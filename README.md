@@ -24,7 +24,8 @@
 
 ### スタッフ画面（モバイルファースト `/staff`）
 - ホーム: 本日のシフト・勤怠報告状況・未読お知らせ・相談返信通知
-- 勤怠報告: 起床 → 出発 → 入店（位置情報取得）→ 退店 の順序制フロー、遅刻自動判定
+- 勤怠報告: 起床 → 出発 → 入店（位置情報取得・写真必須）→ 退店（写真必須） の順序制フロー、遅刻自動判定
+  - 入店/退店報告は写真1枚が必須。カメラ起動 / アルバム選択に対応し、ブラウザ側で JPEG・画質70%・長辺1600px・500KB以下に圧縮（Exif自動除去）してから Cloudflare R2 へアップロード
 - 日報入力: 案件ごとのテンプレートから動的フォーム生成（MNP/PI/新規/機種変/光 等の数値 + 所感）、トラブル/クレームフラグ
 - シフト確認・希望提出、お知らせ（既読管理・重要マーク）、自分の実績（月次集計+日別）、相談窓口（カテゴリ・緊急度・返信履歴）
 
@@ -40,8 +41,9 @@
 - 日報テンプレート配布（携帯ショップ/家電量販店/催事/光回線 標準テンプレ）、伴走支援管理
 
 ## データアーキテクチャ
-- **ストレージ**: Cloudflare D1（SQLite、ローカルは `--local` モード）
+- **ストレージ**: Cloudflare D1（SQLite、ローカルは `--local` モード）+ Cloudflare R2（入店/退店報告の写真、非公開バケット）
 - **テーブル（15）**: companies / users / sessions / staff_profiles / clients / report_templates / projects / shifts / attendance_reports / daily_reports / evaluations / follow_logs / notices / notice_reads / consultations
+  - `attendance_reports.photo_key`: R2オブジェクトキー（画像バイナリ自体はDBに保存しない。マイグレーション `0002_add_attendance_photo.sql`）
 - **マルチテナント**: 全テーブルに `company_id`、ログインは 会社コード+ユーザーコード+パスワード
 - **認証**: SHA-256 ハッシュ + httpOnly Cookie セッション（30日）、ロール別ミドルウェア（/api/admin/*, /api/hq/*）
 - **日報**: テンプレート定義（fields_json）→ 回答は JSON 保存 → `json_extract` で集計
@@ -59,6 +61,66 @@ npx wrangler d1 migrations apply webapp-production --local   # マイグレー�
 node scripts/gen_seed.cjs                                # seed再生成（日付追随）
 npx wrangler d1 execute webapp-production --local --file=./seed.sql  # seed投入
 ```
+
+## 入店/退店報告 写真添付機能 セットアップ
+
+### 1. R2バケット作成（初回のみ・要手動実行）
+```bash
+npx wrangler r2 bucket create saasdev-attendance-photos
+```
+- バケットは**非公開**のまま作成してください（`--jurisdiction` 等の公開設定は行わない）。画像は必ず `/api/staff/attendance-photo/*` のログイン認証付きエンドポイント経由でのみ配信されます。
+- ローカル開発（`npm run dev` / `wrangler dev`）では miniflare が R2 をローカルエミュレートするため、追加設定なしで動作します。
+
+### 2. wrangler.jsonc（設定済み）
+```jsonc
+"r2_buckets": [
+  { "binding": "PHOTOS", "bucket_name": "saasdev-attendance-photos" }
+]
+```
+
+### 3. マイグレーション適用
+```bash
+npx wrangler d1 migrations apply webapp-production --local   # ローカル
+npx wrangler d1 migrations apply webapp-production           # 本番
+```
+
+### 4. 型定義の再生成（R2バインディングを追加したため）
+```bash
+npm run cf-typegen
+```
+
+### 環境変数
+新規の環境変数（`.dev.vars` 等）は不要です。R2アクセスはバインディング経由（`c.env.PHOTOS`）で行うため、アクセスキー等のシークレットは発生しません。
+
+### 追加APIエンドポイント
+| Method | Path | 概要 |
+|---|---|---|
+| POST | `/api/staff/attendance-photo` | 入店/退店報告を写真(multipart/form-data)付きで登録。`shift_id` / `report_type`(`check_in`\|`check_out`) / `photo`(必須) / `latitude` / `longitude`(任意, check_inのみ) |
+| GET | `/api/staff/attendance-photo/*` | R2に保存された写真の取得（ログイン中ユーザーと同一 `company_id` のみ閲覧可、署名付きレスポンスではなくWorker経由のプライベート配信） |
+
+既存の `/api/staff/attendance`（起床・出発報告）は無変更です。
+
+### 変更ファイル一覧
+- `migrations/0002_add_attendance_photo.sql`（新規）: `attendance_reports.photo_key` 列追加
+- `wrangler.jsonc`: R2バケットバインディング追加
+- `src/api.ts`: `PHOTOS: R2Bucket` バインディング型追加、`/staff/attendance-photo`（POST/GET）追加
+- `src/index.tsx`: スタッフ画面に `#modal-root` コンテナ追加（写真添付モーダル表示用）
+- `public/static/staff.js`: 入店/退店報告ボタンの分岐、写真選択・圧縮（canvas, ライブラリ追加なし）・プレビュー・アップロードUI一式を追加
+- `worker-configuration.d.ts`: `wrangler types` 再生成（R2バインディング型を反映）
+
+### 動作確認結果（自己レビュー範囲）
+- ✅ `npx tsc --noEmit` : 型エラー 0件
+- ✅ `npm run build`（`build:css` + `vite build`）: エラー 0件
+- ✅ ESLint: プロジェクトに設定なし（既存踏襲、追加導入は今回のスコープ外）
+- ⚠️ Android / iPhone / PC 実機での撮影・アップロード動作、および 100KB/500KB/5MB/10MB 各サイズでの実写真テストは、開発サンドボックス環境の制約上**未実施**です。デプロイ後に実機で以下を確認してください。
+  - iPhone Safari: カメラ起動・アルバム選択・HEIC画像の読み込み（`createImageBitmap`のHEICデコード可否）
+  - Android Chrome: カメラ起動・アルバム選択（`capture="environment"`の挙動はAndroid機種依存のため要確認）
+  - PC: ファイル選択ダイアログでの動作（カメラボタンはPCではファイル選択ダイアログにフォールバックします）
+
+### 残課題
+- 管理画面（`/admin`）側でのスタッフ詳細画面に写真サムネイル表示は未追加です（`attendance` データには `photo_key` が既に含まれて返却されるため、表示追加は比較的小さな変更で対応可能です）。
+- HEICファイルは端末・ブラウザによっては `createImageBitmap` でのデコードに失敗する場合があり、その際はエラーメッセージを表示してJPEG/PNGでの再選択を促す仕様としています（HEIC→JPEGの確実な変換には専用ライブラリの追加が必要になるため、今回は「不要なライブラリを追加しない」方針を優先しました）。
+- R2バケットの実作成（`wrangler r2 bucket create`）はCloudflareアカウントへの操作が必要なため未実施です。上記セットアップ手順に従って作成してください。
 
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成

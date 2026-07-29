@@ -5,6 +5,12 @@ let HOME = null
 
 const REPORT_LABELS = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', check_out: '退店報告' }
 const REPORT_ICONS = { wake_up: 'fa-sun', departure: 'fa-person-walking-luggage', check_in: 'fa-store', check_out: 'fa-door-open' }
+// 写真添付が必須の報告種別
+const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
+const PHOTO_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 選択可能な元画像の上限 (10MB)
+const PHOTO_TARGET_BYTES = 500 * 1024           // 圧縮後の目標上限 (500KB)
+const PHOTO_MAX_EDGE = 1600                     // 長辺の最大px
+let pendingPhoto = { blob: null, previewUrl: null, type: null, shiftId: null }
 const CAT_LABELS = { health: '体調不良', absence: '遅刻・欠勤相談', store_trouble: '店舗トラブル', claim: 'クレーム', relationship: '人間関係', shift: 'シフト相談', question: '業務質問', other: 'その他' }
 
 function toast(msg) {
@@ -18,6 +24,14 @@ function toast(msg) {
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
 function fmtDate(d) { return d ? dayjs(d).format('M/D(ddd)').replace('Sun','日').replace('Mon','月').replace('Tue','火').replace('Wed','水').replace('Thu','木').replace('Fri','金').replace('Sat','土') : '' }
 function loading() { $app.innerHTML = '<div class="flex justify-center py-16"><span class="spin"></span></div>' }
+function modal(html) {
+  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
+}
+window.closeModal = () => {
+  document.getElementById('modal-root').innerHTML = ''
+  if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
+  pendingPhoto = { blob: null, previewUrl: null, type: null, shiftId: null }
+}
 
 axios.interceptors.response.use(r => r, e => {
   if (e.response && e.response.status === 401) location.href = '/login'
@@ -56,7 +70,9 @@ async function renderHome() {
         ${order.map((t, i) => {
           const done = !!r[t]
           const isNext = i === nextIdx
-          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${done || !isNext ? 'disabled' : ''} onclick="submitAttendance('${t}', ${s.shift_id})">
+          const needsPhoto = PHOTO_REQUIRED_TYPES.includes(t)
+          const onclick = needsPhoto ? `openPhotoAttendance('${t}', ${s.shift_id})` : `submitAttendance('${t}', ${s.shift_id})`
+          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${done || !isNext ? 'disabled' : ''} onclick="${onclick}">
             <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
               <i class="fas ${done ? 'fa-check' : REPORT_ICONS[t]}"></i>
             </span>
@@ -64,7 +80,8 @@ async function renderHome() {
               <span class="block font-bold ${done ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
               <span class="block text-xs ${done ? 'text-emerald-600' : 'text-gray-400'}">
                 ${done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm') : isNext ? 'タップして報告' : '前の報告を先に行ってください'}
-                ${t === 'check_in' && !done ? ' (位置情報を取得します)' : ''}
+                ${t === 'check_in' && !done ? ' (位置情報・写真が必要です)' : ''}
+                ${t === 'check_out' && !done ? ' (写真が必要です)' : ''}
               </span>
             </span>
             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
@@ -141,6 +158,171 @@ window.submitAttendance = async function (type, shiftId) {
     )
   } else {
     doPost(null)
+  }
+}
+
+// ============ 入店/退店報告（写真添付） ============
+window.openPhotoAttendance = function (type, shiftId) {
+  pendingPhoto = { blob: null, previewUrl: null, type, shiftId }
+  modal(photoModalHtml())
+}
+
+function photoModalHtml() {
+  const label = REPORT_LABELS[pendingPhoto.type]
+  return `
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-bold text-gray-800"><i class="fas ${REPORT_ICONS[pendingPhoto.type]} text-blue-600 mr-1"></i>${label}</h3>
+      <button class="text-gray-400" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
+    </div>
+    <p class="text-sm text-gray-500 mb-3">店舗の様子が分かる写真を1枚添付してください（必須）</p>
+    <div id="photo-area">${photoAreaHtml()}</div>
+    <input type="file" id="photo-input-camera" accept="image/*" capture="environment" class="hidden" onchange="onPhotoSelected(this.files[0])">
+    <input type="file" id="photo-input-album" accept="image/*" class="hidden" onchange="onPhotoSelected(this.files[0])">
+    <div id="photo-error" class="text-sm text-red-600 mt-2"></div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button id="photo-submit-btn" class="btn btn-primary flex-1" disabled onclick="submitPhotoAttendance()">
+        <i class="fas fa-paper-plane"></i>送信する
+      </button>
+    </div>`
+}
+
+function photoAreaHtml() {
+  if (pendingPhoto.previewUrl) {
+    return `
+      <div class="relative">
+        <img src="${pendingPhoto.previewUrl}" class="w-full rounded-xl border border-gray-200 max-h-64 object-cover" alt="プレビュー">
+        <button class="absolute top-2 right-2 bg-white/90 text-gray-600 rounded-full w-8 h-8 flex items-center justify-center shadow" onclick="removePendingPhoto()">
+          <i class="fas fa-rotate-left"></i>
+        </button>
+      </div>`
+  }
+  return `
+    <div class="grid grid-cols-2 gap-2">
+      <button type="button" class="btn btn-outline" onclick="document.getElementById('photo-input-camera').click()">
+        <i class="fas fa-camera"></i>カメラで撮影
+      </button>
+      <button type="button" class="btn btn-outline" onclick="document.getElementById('photo-input-album').click()">
+        <i class="fas fa-images"></i>アルバムから選択
+      </button>
+    </div>`
+}
+
+function setPhotoError(msg) {
+  const el = document.getElementById('photo-error')
+  if (el) el.textContent = msg || ''
+}
+function refreshPhotoModal() {
+  const area = document.getElementById('photo-area')
+  if (area) area.innerHTML = photoAreaHtml()
+  const btn = document.getElementById('photo-submit-btn')
+  if (btn) btn.disabled = !pendingPhoto.blob
+}
+
+window.removePendingPhoto = function () {
+  if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
+  pendingPhoto.blob = null
+  pendingPhoto.previewUrl = null
+  setPhotoError('')
+  refreshPhotoModal()
+}
+
+window.onPhotoSelected = async function (file) {
+  setPhotoError('')
+  if (!file) return
+  if (!/^image\//.test(file.type) && !/\.(heic|heif)$/i.test(file.name || '')) {
+    setPhotoError('画像ファイルを選択してください')
+    return
+  }
+  if (file.size > PHOTO_MAX_UPLOAD_BYTES) {
+    setPhotoError('ファイルサイズが大きすぎます（10MBまで）')
+    return
+  }
+
+  const area = document.getElementById('photo-area')
+  if (area) area.innerHTML = '<div class="flex flex-col items-center justify-center py-8 gap-2"><span class="spin"></span><span class="text-xs text-gray-400">画像を処理しています...</span></div>'
+
+  try {
+    const blob = await compressImage(file)
+    if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
+    pendingPhoto.blob = blob
+    pendingPhoto.previewUrl = URL.createObjectURL(blob)
+    refreshPhotoModal()
+  } catch (err) {
+    setPhotoError(err && err.message ? err.message : '画像の処理に失敗しました。別の写真をお試しください')
+    refreshPhotoModal()
+  }
+}
+
+// EXIF補正・リサイズ・JPEG圧縮（500KB以下 / 長辺1600px以下 / 画質70%基準）
+async function compressImage(file) {
+  let bitmap
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+  } catch {
+    try {
+      bitmap = await createImageBitmap(file)
+    } catch {
+      throw new Error('この画像形式は読み込めませんでした。JPEGまたはPNGをお試しください')
+    }
+  }
+
+  let { width, height } = bitmap
+  if (Math.max(width, height) > PHOTO_MAX_EDGE) {
+    const scale = PHOTO_MAX_EDGE / Math.max(width, height)
+    width = Math.round(width * scale)
+    height = Math.round(height * scale)
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width; canvas.height = height
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(bitmap, 0, 0, width, height)
+  bitmap.close && bitmap.close()
+
+  const toBlob = (quality) => new Promise((resolve, reject) => {
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error('画像の変換に失敗しました')), 'image/jpeg', quality)
+  })
+
+  let quality = 0.7
+  let blob = await toBlob(quality)
+  while (blob.size > PHOTO_TARGET_BYTES && quality > 0.35) {
+    quality -= 0.1
+    blob = await toBlob(quality)
+  }
+  if (blob.size > PHOTO_TARGET_BYTES) {
+    throw new Error('画像を十分に圧縮できませんでした。別の写真をお試しください')
+  }
+  return blob
+}
+
+window.submitPhotoAttendance = async function () {
+  if (!pendingPhoto.blob) { setPhotoError('写真を選択してください'); return }
+  const { type, shiftId, blob } = pendingPhoto
+  const btn = document.getElementById('photo-submit-btn')
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:1rem;height:1rem;border-width:2px"></span> 送信中...' }
+
+  const send = async (pos) => {
+    const form = new FormData()
+    form.append('shift_id', String(shiftId))
+    form.append('report_type', type)
+    if (pos) { form.append('latitude', String(pos.coords.latitude)); form.append('longitude', String(pos.coords.longitude)) }
+    form.append('photo', blob, 'attendance.jpg')
+    try {
+      await axios.post('/api/staff/attendance-photo', form)
+      closeModal()
+      toast(REPORT_LABELS[type] + 'を送信しました')
+      renderHome()
+    } catch (e) {
+      setPhotoError((e.response && e.response.data && e.response.data.error) || '通信に失敗しました。電波の良い場所で再度お試しください')
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i>送信する' }
+    }
+  }
+
+  if (type === 'check_in' && navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => send(pos), () => send(null), { timeout: 8000 })
+  } else {
+    send(null)
   }
 }
 

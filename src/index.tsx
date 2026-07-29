@@ -131,6 +131,7 @@ app.get('/staff', async (c) => {
       <a href="#more" class="nav-item py-2.5" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他</a>
     </div>
   </nav>
+  <div id="modal-root"></div>
   <script src="/static/staff.js"></script>
 </body>
 </html>`)

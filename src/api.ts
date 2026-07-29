@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 
-type Bindings = { DB: D1Database }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -24,6 +24,10 @@ function genToken(): string {
 }
 
 const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
+// 写真添付が必須の報告種別（入店報告・退店報告のみ）
+const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
+const PHOTO_MAX_BYTES = 500 * 1024 // 圧縮後の許容上限（500KB）
+const PHOTO_ALLOWED_TYPES = ['image/jpeg', 'image/png']
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
 
 // ============ Auth ============
@@ -145,6 +149,83 @@ api.post('/staff/attendance', async (c) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, u.staff_id, shift_id, report_type, nowJST(), latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status).run()
   return c.json({ ok: true, status })
+})
+
+// 勤怠報告（写真必須：入店報告・退店報告専用）
+// フロント側で圧縮済みのJPEG/PNGをmultipart/form-dataで受け取り、R2へ保存する
+api.post('/staff/attendance-photo', async (c) => {
+  const u = c.get('user')
+
+  let form: FormData
+  try {
+    form = await c.req.formData()
+  } catch {
+    return c.json({ error: '送信データの形式が不正です' }, 400)
+  }
+
+  const shift_id = form.get('shift_id')
+  const report_type = form.get('report_type')
+  const latitude = form.get('latitude')
+  const longitude = form.get('longitude')
+  const photo = form.get('photo')
+
+  if (typeof report_type !== 'string' || !PHOTO_REQUIRED_TYPES.includes(report_type)) {
+    return c.json({ error: '不正な報告種別です' }, 400)
+  }
+  if (typeof shift_id !== 'string' || !shift_id) return c.json({ error: 'シフト情報が不正です' }, 400)
+  if (!(photo instanceof File) || photo.size === 0) return c.json({ error: '写真が添付されていません' }, 400)
+  if (!PHOTO_ALLOWED_TYPES.includes(photo.type)) return c.json({ error: '対応していない画像形式です（JPEG/PNGのみ）' }, 400)
+  if (photo.size > PHOTO_MAX_BYTES) return c.json({ error: '画像サイズが大きすぎます。圧縮に失敗している可能性があります' }, 400)
+
+  const shift = await c.env.DB.prepare('SELECT * FROM shifts WHERE shift_id = ? AND staff_id = ?').bind(shift_id, u.staff_id).first()
+  if (!shift) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const dup = await c.env.DB.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(shift_id, report_type).first()
+  if (dup) return c.json({ error: 'すでに報告済みです' }, 409)
+
+  let status = 'normal'
+  const lat = latitude != null && latitude !== '' ? Number(latitude) : null
+  const lng = longitude != null && longitude !== '' ? Number(longitude) : null
+  if (report_type === 'check_in') {
+    const nowTime = nowJST().slice(11, 16)
+    if (todayJST() === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
+    if (lat == null) status = status === 'late' ? 'late' : 'no_location'
+  }
+
+  const ext = photo.type === 'image/png' ? 'png' : 'jpg'
+  const key = `attendance/${u.company_id}/${u.staff_id}/${shift_id}/${report_type}_${Date.now()}.${ext}`
+
+  try {
+    const buf = await photo.arrayBuffer()
+    await c.env.PHOTOS.put(key, buf, { httpMetadata: { contentType: photo.type } })
+  } catch {
+    return c.json({ error: '写真のアップロードに失敗しました。通信環境を確認して再度お試しください' }, 502)
+  }
+
+  try {
+    await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(u.company_id, u.staff_id, shift_id, report_type, nowJST(), lat, lng, null, c.req.header('user-agent') || '', status, key).run()
+  } catch {
+    // DB登録に失敗した場合はアップロード済みの写真を掃除する
+    await c.env.PHOTOS.delete(key).catch(() => {})
+    return c.json({ error: '報告の登録に失敗しました。もう一度お試しください' }, 500)
+  }
+
+  return c.json({ ok: true, status, photo_key: key })
+})
+
+// 勤怠報告に添付された写真の取得（同一会社のログインユーザーのみ閲覧可）
+api.get('/staff/attendance-photo/*', async (c) => {
+  const u = c.get('user')
+  const key = c.req.path.replace('/api/staff/attendance-photo/', '')
+  if (!key.startsWith(`attendance/${u.company_id}/`)) return c.json({ error: 'forbidden' }, 403)
+
+  const obj = await c.env.PHOTOS.get(key)
+  if (!obj) return c.json({ error: 'not found' }, 404)
+  return c.body(obj.body, 200, {
+    'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg',
+    'Cache-Control': 'private, max-age=3600',
+  })
 })
 
 // 日報テンプレート取得

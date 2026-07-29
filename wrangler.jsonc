@@ -1,18 +1,25 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "saasdev",
-  "compatibility_date": "2026-04-26",
-  "main": "./dist/_worker.js",
-  "assets": {
-    "directory": "./dist"
-  },
-  "compatibility_flags": ["nodejs_compat"],
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "webapp-production",
-      "database_id": "00bc7e67-6487-4ecf-b747-93bb288e18c3"
-    }
-  ]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "saasdev",
+	"compatibility_date": "2026-04-26",
+	"main": "./dist/_worker.js",
+	"assets": {
+		"directory": "./dist"
+	},
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "webapp-production",
+			"database_id": "00bc7e67-6487-4ecf-b747-93bb288e18c3"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "PHOTOS",
+			"bucket_name": "saasdev-attendance-photos"
+		}
+	]
 }
-
