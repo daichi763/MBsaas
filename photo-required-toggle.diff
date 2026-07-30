@@ -1,0 +1,125 @@
+diff --git a/public/static/admin.js b/public/static/admin.js
+index 99ee8d5..e6c2219 100644
+--- a/public/static/admin.js
++++ b/public/static/admin.js
+@@ -32,6 +32,16 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
+ })
+ 
+ // ============ ダッシュボード ============
++window.togglePhotoRequired = async function (enabled) {
++  try {
++    await axios.post('/api/admin/settings/photo-required', { enabled })
++    toast(enabled ? '写真添付を必須にしました' : '写真添付を無効にしました')
++    renderDashboard()
++  } catch {
++    toast('設定の更新に失敗しました')
++  }
++}
++
+ async function renderDashboard() {
+   loading()
+   const { data } = await axios.get('/api/admin/dashboard')
+@@ -65,6 +75,16 @@ async function renderDashboard() {
+       <button class="btn btn-outline" onclick="renderDashboard()"><i class="fas fa-rotate"></i>更新</button>
+     </div>
+ 
++    <div class="card p-4 mb-5 flex items-center justify-between flex-wrap gap-3">
++      <div>
++        <p class="font-bold text-gray-800 text-sm"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
++        <p class="text-xs text-gray-400 mt-0.5">無効にすると写真添付欄は表示されず、スタッフはボタンひとつで報告できます</p>
++      </div>
++      <button class="btn ${data.photo_required_attendance ? 'btn-primary' : 'btn-outline'}" onclick="togglePhotoRequired(${!data.photo_required_attendance})">
++        <i class="fas ${data.photo_required_attendance ? 'fa-toggle-on' : 'fa-toggle-off'}"></i>${data.photo_required_attendance ? '有効' : '無効'}
++      </button>
++    </div>
++
+     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
+       ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600')}
+       ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600')}
+diff --git a/public/static/staff.js b/public/static/staff.js
+index 58262a1..a0e77e8 100644
+--- a/public/static/staff.js
++++ b/public/static/staff.js
+@@ -70,7 +70,8 @@ async function renderHome() {
+         ${order.map((t, i) => {
+           const done = !!r[t]
+           const isNext = i === nextIdx
+-          const needsPhoto = PHOTO_REQUIRED_TYPES.includes(t)
++          const photoOn = data.photo_required_attendance !== false
++          const needsPhoto = photoOn && PHOTO_REQUIRED_TYPES.includes(t)
+           const onclick = needsPhoto ? `openPhotoAttendance('${t}', ${s.shift_id})` : `submitAttendance('${t}', ${s.shift_id})`
+           return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${done || !isNext ? 'disabled' : ''} onclick="${onclick}">
+             <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
+@@ -80,8 +81,8 @@ async function renderHome() {
+               <span class="block font-bold ${done ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
+               <span class="block text-xs ${done ? 'text-emerald-600' : 'text-gray-400'}">
+                 ${done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm') : isNext ? 'タップして報告' : '前の報告を先に行ってください'}
+-                ${t === 'check_in' && !done ? ' (位置情報・写真が必要です)' : ''}
+-                ${t === 'check_out' && !done ? ' (写真が必要です)' : ''}
++                ${t === 'check_in' && !done ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
++                ${t === 'check_out' && !done && photoOn ? ' (写真が必要です)' : ''}
+               </span>
+             </span>
+             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
+diff --git a/src/api.ts b/src/api.ts
+index 2ccac7d..f39bd54 100644
+--- a/src/api.ts
++++ b/src/api.ts
+@@ -28,6 +28,16 @@ const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
+ const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
+ const PHOTO_MAX_BYTES = 500 * 1024 // 圧縮後の許容上限（500KB）
+ const PHOTO_ALLOWED_TYPES = ['image/jpeg', 'image/png']
++
++// companies.settings_json (JSON文字列) から真偽値設定を安全に読み取る
++function getCompanySetting(u: any, key: string, defaultValue: boolean): boolean {
++  try {
++    const s = JSON.parse(u.settings_json || '{}')
++    return typeof s[key] === 'boolean' ? s[key] : defaultValue
++  } catch {
++    return defaultValue
++  }
++}
+ const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
+ 
+ // ============ Auth ============
+@@ -125,7 +135,11 @@ api.get('/staff/home', async (c) => {
+ 
+   const openConsult = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
+ 
+-  return c.json({ today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results, replied_consultations: openConsult?.n || 0 })
++  return c.json({
++    today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results,
++    replied_consultations: openConsult?.n || 0,
++    photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
++  })
+ })
+ 
+ // 勤怠報告
+@@ -470,9 +484,27 @@ api.get('/admin/dashboard', async (c) => {
+     project_performance: projPerf.results,
+     open_consultations: openConsults.results,
+     todos: todos.sort((a, b) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1)),
++    photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
+   })
+ })
+ 
++// 入店/退店報告の写真添付必須設定を切り替え
++api.post('/admin/settings/photo-required', async (c) => {
++  const u = c.get('user')
++  const body = await c.req.json().catch(() => ({}))
++  if (typeof body.enabled !== 'boolean') return c.json({ error: '不正なパラメータです' }, 400)
++
++  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
++  let settings: Record<string, any> = {}
++  try { settings = JSON.parse((row?.settings_json as string) || '{}') } catch { settings = {} }
++  settings.photo_required_attendance = body.enabled
++
++  await c.env.DB.prepare('UPDATE companies SET settings_json = ? WHERE company_id = ?')
++    .bind(JSON.stringify(settings), u.company_id).run()
++
++  return c.json({ ok: true, photo_required_attendance: body.enabled })
++})
++
+ function catLabel(cat: string): string {
+   const m: Record<string, string> = { health: '体調不良', absence: '遅刻・欠勤相談', store_trouble: '店舗トラブル', claim: 'クレーム', relationship: '人間関係', shift: 'シフト相談', question: '業務質問', other: 'その他' }
+   return m[cat] || cat

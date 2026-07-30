@@ -32,6 +32,16 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 })
 
 // ============ ダッシュボード ============
+window.togglePhotoRequired = async function (enabled) {
+  try {
+    await axios.post('/api/admin/settings/photo-required', { enabled })
+    toast(enabled ? '写真添付を必須にしました' : '写真添付を無効にしました')
+    renderDashboard()
+  } catch {
+    toast('設定の更新に失敗しました')
+  }
+}
+
 async function renderDashboard() {
   loading()
   const { data } = await axios.get('/api/admin/dashboard')
@@ -63,6 +73,16 @@ async function renderDashboard() {
         <p class="text-sm text-gray-500">${dayjs(data.today).format('YYYY年M月D日')} — 今日見るべきこと・対応すべきこと</p>
       </div>
       <button class="btn btn-outline" onclick="renderDashboard()"><i class="fas fa-rotate"></i>更新</button>
+    </div>
+
+    <div class="card p-4 mb-5 flex items-center justify-between flex-wrap gap-3">
+      <div>
+        <p class="font-bold text-gray-800 text-sm"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
+        <p class="text-xs text-gray-400 mt-0.5">無効にすると写真添付欄は表示されず、スタッフはボタンひとつで報告できます</p>
+      </div>
+      <button class="btn ${data.photo_required_attendance ? 'btn-primary' : 'btn-outline'}" onclick="togglePhotoRequired(${!data.photo_required_attendance})">
+        <i class="fas ${data.photo_required_attendance ? 'fa-toggle-on' : 'fa-toggle-off'}"></i>${data.photo_required_attendance ? '有効' : '無効'}
+      </button>
     </div>
 
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">

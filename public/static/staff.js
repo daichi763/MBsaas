@@ -70,7 +70,8 @@ async function renderHome() {
         ${order.map((t, i) => {
           const done = !!r[t]
           const isNext = i === nextIdx
-          const needsPhoto = PHOTO_REQUIRED_TYPES.includes(t)
+          const photoOn = data.photo_required_attendance !== false
+          const needsPhoto = photoOn && PHOTO_REQUIRED_TYPES.includes(t)
           const onclick = needsPhoto ? `openPhotoAttendance('${t}', ${s.shift_id})` : `submitAttendance('${t}', ${s.shift_id})`
           return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${done || !isNext ? 'disabled' : ''} onclick="${onclick}">
             <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
@@ -80,8 +81,8 @@ async function renderHome() {
               <span class="block font-bold ${done ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
               <span class="block text-xs ${done ? 'text-emerald-600' : 'text-gray-400'}">
                 ${done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm') : isNext ? 'タップして報告' : '前の報告を先に行ってください'}
-                ${t === 'check_in' && !done ? ' (位置情報・写真が必要です)' : ''}
-                ${t === 'check_out' && !done ? ' (写真が必要です)' : ''}
+                ${t === 'check_in' && !done ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
+                ${t === 'check_out' && !done && photoOn ? ' (写真が必要です)' : ''}
               </span>
             </span>
             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}

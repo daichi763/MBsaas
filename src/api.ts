@@ -28,6 +28,16 @@ const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
 const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
 const PHOTO_MAX_BYTES = 500 * 1024 // 圧縮後の許容上限（500KB）
 const PHOTO_ALLOWED_TYPES = ['image/jpeg', 'image/png']
+
+// companies.settings_json (JSON文字列) から真偽値設定を安全に読み取る
+function getCompanySetting(u: any, key: string, defaultValue: boolean): boolean {
+  try {
+    const s = JSON.parse(u.settings_json || '{}')
+    return typeof s[key] === 'boolean' ? s[key] : defaultValue
+  } catch {
+    return defaultValue
+  }
+}
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
 
 // ============ Auth ============
@@ -125,7 +135,11 @@ api.get('/staff/home', async (c) => {
 
   const openConsult = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
 
-  return c.json({ today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results, replied_consultations: openConsult?.n || 0 })
+  return c.json({
+    today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results,
+    replied_consultations: openConsult?.n || 0,
+    photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
+  })
 })
 
 // 勤怠報告
@@ -470,7 +484,25 @@ api.get('/admin/dashboard', async (c) => {
     project_performance: projPerf.results,
     open_consultations: openConsults.results,
     todos: todos.sort((a, b) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1)),
+    photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
   })
+})
+
+// 入店/退店報告の写真添付必須設定を切り替え
+api.post('/admin/settings/photo-required', async (c) => {
+  const u = c.get('user')
+  const body = await c.req.json().catch(() => ({}))
+  if (typeof body.enabled !== 'boolean') return c.json({ error: '不正なパラメータです' }, 400)
+
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  let settings: Record<string, any> = {}
+  try { settings = JSON.parse((row?.settings_json as string) || '{}') } catch { settings = {} }
+  settings.photo_required_attendance = body.enabled
+
+  await c.env.DB.prepare('UPDATE companies SET settings_json = ? WHERE company_id = ?')
+    .bind(JSON.stringify(settings), u.company_id).run()
+
+  return c.json({ ok: true, photo_required_attendance: body.enabled })
 })
 
 function catLabel(cat: string): string {
