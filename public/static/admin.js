@@ -42,6 +42,16 @@ window.togglePhotoRequired = async function (enabled) {
   }
 }
 
+window.updateProjectPhotoRequired = async function (pid, override) {
+  try {
+    await axios.put(`/api/admin/projects/${pid}/photo-required`, { override })
+    toast('設定を更新しました')
+    renderProjectDetail(pid)
+  } catch {
+    toast('設定の更新に失敗しました')
+  }
+}
+
 async function renderDashboard() {
   loading()
   const { data } = await axios.get('/api/admin/dashboard')
@@ -599,6 +609,14 @@ async function renderProjectDetail(pid) {
           ${(p.template_fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}">${esc(f.label)}</span>`).join('')}
         </div>
         <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
+        <div class="mt-4 pt-3 border-t border-gray-100">
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
+          <select class="inp text-sm" onchange="updateProjectPhotoRequired(${p.project_id}, this.value)">
+            <option value="inherit" ${p.photo_required_override == null ? 'selected' : ''}>会社設定に従う（現在: ${data.company_photo_default ? '必須' : '不要'}）</option>
+            <option value="on" ${p.photo_required_override === 1 ? 'selected' : ''}>この案件は必須にする</option>
+            <option value="off" ${p.photo_required_override === 0 ? 'selected' : ''}>この案件は不要にする</option>
+          </select>
+        </div>
       </section>
     </div>`
 }

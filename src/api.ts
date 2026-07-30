@@ -38,6 +38,12 @@ function getCompanySetting(u: any, key: string, defaultValue: boolean): boolean 
     return defaultValue
   }
 }
+
+// 案件の photo_required_override (NULL=会社設定に従う / 1=必須 / 0=不要) を加味した実効値
+function resolvePhotoRequired(u: any, projectOverride: number | null | undefined): boolean {
+  const companyDefault = getCompanySetting(u, 'photo_required_attendance', true)
+  return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
+}
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
 
 // ============ Auth ============
@@ -109,7 +115,7 @@ api.use('/hq/*', async (c, next) => {
 api.get('/staff/home', async (c) => {
   const u = c.get('user'); const today = todayJST()
   const shift = await c.env.DB.prepare(`
-    SELECT s.*, p.project_name, p.project_type, p.report_template_id
+    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override
     FROM shifts s JOIN projects p ON s.project_id = p.project_id
     WHERE s.staff_id = ? AND s.work_date = ? AND s.status != 'absent' LIMIT 1`)
     .bind(u.staff_id, today).first()
@@ -138,7 +144,7 @@ api.get('/staff/home', async (c) => {
   return c.json({
     today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results,
     replied_consultations: openConsult?.n || 0,
-    photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
+    photo_required_attendance: resolvePhotoRequired(u, shift ? (shift.photo_required_override as number | null) : undefined),
   })
 })
 
@@ -149,6 +155,12 @@ api.post('/staff/attendance', async (c) => {
   if (!REPORT_TYPES.includes(report_type)) return c.json({ error: '不正な報告種別です' }, 400)
   const shift = await c.env.DB.prepare('SELECT * FROM shifts WHERE shift_id = ? AND staff_id = ?').bind(shift_id, u.staff_id).first()
   if (!shift) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
+    const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
+    if (resolvePhotoRequired(u, proj?.photo_required_override as number | null)) {
+      return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
+    }
+  }
   const dup = await c.env.DB.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(shift_id, report_type).first()
   if (dup) return c.json({ error: 'すでに報告済みです' }, 409)
 
@@ -683,7 +695,8 @@ api.get('/admin/projects/:id', async (c) => {
     project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [] },
     staff_performance: staffPerf.results,
     incidents: (incidents.results as any[]).map(i => ({ ...i, values: JSON.parse(i.report_values) })),
-    month_summary: monthShifts, month
+    month_summary: monthShifts, month,
+    company_photo_default: getCompanySetting(u, 'photo_required_attendance', true),
   })
 })
 
@@ -695,6 +708,20 @@ api.post('/admin/projects', async (c) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.client_id ?? null, b.project_name, b.project_type || 'mobile_shop', b.location ?? null,
       b.unit_price_type || 'daily', b.unit_price || 0, b.required_skills ?? null, b.report_template_id ?? 1, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null).run()
+  return c.json({ ok: true })
+})
+
+// 案件ごとの入店/退店報告 写真添付オーバーライド更新
+api.put('/admin/projects/:id/photo-required', async (c) => {
+  const u = c.get('user'); const pid = c.req.param('id')
+  const { override } = await c.req.json().catch(() => ({ override: undefined }))
+  if (!['inherit', 'on', 'off'].includes(override)) return c.json({ error: '不正なパラメータです' }, 400)
+  const value = override === 'inherit' ? null : override === 'on' ? 1 : 0
+
+  const proj = await c.env.DB.prepare('SELECT project_id FROM projects WHERE project_id = ? AND company_id = ?').bind(pid, u.company_id).first()
+  if (!proj) return c.json({ error: '案件が見つかりません' }, 404)
+
+  await c.env.DB.prepare('UPDATE projects SET photo_required_override = ? WHERE project_id = ?').bind(value, pid).run()
   return c.json({ ok: true })
 })
 

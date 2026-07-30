@@ -1,8 +1,18 @@
+diff --git a/migrations/0003_add_project_photo_override.sql b/migrations/0003_add_project_photo_override.sql
+new file mode 100644
+index 0000000..ac718d1
+--- /dev/null
++++ b/migrations/0003_add_project_photo_override.sql
+@@ -0,0 +1,4 @@
++-- 案件ごとの入店/退店報告 写真添付オーバーライド
++-- NULL = 会社全体の設定(companies.settings_json.photo_required_attendance)に従う
++-- 1 = この案件は写真添付を必須にする / 0 = この案件は不要にする
++ALTER TABLE projects ADD COLUMN photo_required_override INTEGER;
 diff --git a/public/static/admin.js b/public/static/admin.js
-index 99ee8d5..e6c2219 100644
+index 99ee8d5..b00b33f 100644
 --- a/public/static/admin.js
 +++ b/public/static/admin.js
-@@ -32,6 +32,16 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
+@@ -32,6 +32,26 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
  })
  
  // ============ ダッシュボード ============
@@ -16,10 +26,20 @@ index 99ee8d5..e6c2219 100644
 +  }
 +}
 +
++window.updateProjectPhotoRequired = async function (pid, override) {
++  try {
++    await axios.put(`/api/admin/projects/${pid}/photo-required`, { override })
++    toast('設定を更新しました')
++    renderProjectDetail(pid)
++  } catch {
++    toast('設定の更新に失敗しました')
++  }
++}
++
  async function renderDashboard() {
    loading()
    const { data } = await axios.get('/api/admin/dashboard')
-@@ -65,6 +75,16 @@ async function renderDashboard() {
+@@ -65,6 +85,16 @@ async function renderDashboard() {
        <button class="btn btn-outline" onclick="renderDashboard()"><i class="fas fa-rotate"></i>更新</button>
      </div>
  
@@ -36,6 +56,21 @@ index 99ee8d5..e6c2219 100644
      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
        ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600')}
        ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600')}
+@@ -579,6 +609,14 @@ async function renderProjectDetail(pid) {
+           ${(p.template_fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}">${esc(f.label)}</span>`).join('')}
+         </div>
+         <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
++        <div class="mt-4 pt-3 border-t border-gray-100">
++          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
++          <select class="inp text-sm" onchange="updateProjectPhotoRequired(${p.project_id}, this.value)">
++            <option value="inherit" ${p.photo_required_override == null ? 'selected' : ''}>会社設定に従う（現在: ${data.company_photo_default ? '必須' : '不要'}）</option>
++            <option value="on" ${p.photo_required_override === 1 ? 'selected' : ''}>この案件は必須にする</option>
++            <option value="off" ${p.photo_required_override === 0 ? 'selected' : ''}>この案件は不要にする</option>
++          </select>
++        </div>
+       </section>
+     </div>`
+ }
 diff --git a/public/static/staff.js b/public/static/staff.js
 index 58262a1..a0e77e8 100644
 --- a/public/static/staff.js
@@ -62,10 +97,10 @@ index 58262a1..a0e77e8 100644
              </span>
              ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
 diff --git a/src/api.ts b/src/api.ts
-index 2ccac7d..f39bd54 100644
+index 2ccac7d..c7830bc 100644
 --- a/src/api.ts
 +++ b/src/api.ts
-@@ -28,6 +28,16 @@ const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
+@@ -28,6 +28,22 @@ const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
  const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
  const PHOTO_MAX_BYTES = 500 * 1024 // 圧縮後の許容上限（500KB）
  const PHOTO_ALLOWED_TYPES = ['image/jpeg', 'image/png']
@@ -79,10 +114,25 @@ index 2ccac7d..f39bd54 100644
 +    return defaultValue
 +  }
 +}
++
++// 案件の photo_required_override (NULL=会社設定に従う / 1=必須 / 0=不要) を加味した実効値
++function resolvePhotoRequired(u: any, projectOverride: number | null | undefined): boolean {
++  const companyDefault = getCompanySetting(u, 'photo_required_attendance', true)
++  return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
++}
  const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
  
  // ============ Auth ============
-@@ -125,7 +135,11 @@ api.get('/staff/home', async (c) => {
+@@ -99,7 +115,7 @@ api.use('/hq/*', async (c, next) => {
+ api.get('/staff/home', async (c) => {
+   const u = c.get('user'); const today = todayJST()
+   const shift = await c.env.DB.prepare(`
+-    SELECT s.*, p.project_name, p.project_type, p.report_template_id
++    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override
+     FROM shifts s JOIN projects p ON s.project_id = p.project_id
+     WHERE s.staff_id = ? AND s.work_date = ? AND s.status != 'absent' LIMIT 1`)
+     .bind(u.staff_id, today).first()
+@@ -125,7 +141,11 @@ api.get('/staff/home', async (c) => {
  
    const openConsult = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
  
@@ -90,12 +140,25 @@ index 2ccac7d..f39bd54 100644
 +  return c.json({
 +    today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results,
 +    replied_consultations: openConsult?.n || 0,
-+    photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
++    photo_required_attendance: resolvePhotoRequired(u, shift ? (shift.photo_required_override as number | null) : undefined),
 +  })
  })
  
  // 勤怠報告
-@@ -470,9 +484,27 @@ api.get('/admin/dashboard', async (c) => {
+@@ -135,6 +155,12 @@ api.post('/staff/attendance', async (c) => {
+   if (!REPORT_TYPES.includes(report_type)) return c.json({ error: '不正な報告種別です' }, 400)
+   const shift = await c.env.DB.prepare('SELECT * FROM shifts WHERE shift_id = ? AND staff_id = ?').bind(shift_id, u.staff_id).first()
+   if (!shift) return c.json({ error: 'シフトが見つかりません' }, 404)
++  if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
++    const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
++    if (resolvePhotoRequired(u, proj?.photo_required_override as number | null)) {
++      return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
++    }
++  }
+   const dup = await c.env.DB.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(shift_id, report_type).first()
+   if (dup) return c.json({ error: 'すでに報告済みです' }, 409)
+ 
+@@ -470,9 +496,27 @@ api.get('/admin/dashboard', async (c) => {
      project_performance: projPerf.results,
      open_consultations: openConsults.results,
      todos: todos.sort((a, b) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1)),
@@ -123,3 +186,34 @@ index 2ccac7d..f39bd54 100644
  function catLabel(cat: string): string {
    const m: Record<string, string> = { health: '体調不良', absence: '遅刻・欠勤相談', store_trouble: '店舗トラブル', claim: 'クレーム', relationship: '人間関係', shift: 'シフト相談', question: '業務質問', other: 'その他' }
    return m[cat] || cat
+@@ -651,7 +695,8 @@ api.get('/admin/projects/:id', async (c) => {
+     project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [] },
+     staff_performance: staffPerf.results,
+     incidents: (incidents.results as any[]).map(i => ({ ...i, values: JSON.parse(i.report_values) })),
+-    month_summary: monthShifts, month
++    month_summary: monthShifts, month,
++    company_photo_default: getCompanySetting(u, 'photo_required_attendance', true),
+   })
+ })
+ 
+@@ -666,6 +711,20 @@ api.post('/admin/projects', async (c) => {
+   return c.json({ ok: true })
+ })
+ 
++// 案件ごとの入店/退店報告 写真添付オーバーライド更新
++api.put('/admin/projects/:id/photo-required', async (c) => {
++  const u = c.get('user'); const pid = c.req.param('id')
++  const { override } = await c.req.json().catch(() => ({ override: undefined }))
++  if (!['inherit', 'on', 'off'].includes(override)) return c.json({ error: '不正なパラメータです' }, 400)
++  const value = override === 'inherit' ? null : override === 'on' ? 1 : 0
++
++  const proj = await c.env.DB.prepare('SELECT project_id FROM projects WHERE project_id = ? AND company_id = ?').bind(pid, u.company_id).first()
++  if (!proj) return c.json({ error: '案件が見つかりません' }, 404)
++
++  await c.env.DB.prepare('UPDATE projects SET photo_required_override = ? WHERE project_id = ?').bind(value, pid).run()
++  return c.json({ ok: true })
++})
++
+ // シフト管理
+ api.get('/admin/shifts', async (c) => {
+   const u = c.get('user')
