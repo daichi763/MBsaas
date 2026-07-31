@@ -58,13 +58,14 @@ api.post('/auth/login', async (c) => {
   if (!user) return c.json({ error: 'ユーザーIDまたはパスワードが正しくありません' }, 401)
 
   const token = genToken()
-  const expires = new Date(Date.now() + 30 * 24 * 3600 * 1000)
+  const SESSION_HOURS = 12 // 1シフト分を目安とした有効期限
+  const expires = new Date(Date.now() + SESSION_HOURS * 3600 * 1000)
   // 期限切れセッションの補助的な削除(主軸はCron Trigger、ここは即時性のための保険)
   await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND expires_at < CURRENT_TIMESTAMP').bind(user.user_id).run()
   await c.env.DB.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at) VALUES (?, ?, ?, ?)')
     .bind(token, user.user_id, user.company_id, expires.toISOString()).run()
   await c.env.DB.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
-  setCookie(c, 'session', token, { path: '/', httpOnly: true, sameSite: 'Lax', maxAge: 30 * 24 * 3600 })
+  setCookie(c, 'session', token, { path: '/', httpOnly: true, sameSite: 'Lax', maxAge: SESSION_HOURS * 3600 })
 
   const home = user.role === 'staff' ? '/staff' : user.role === 'system_admin' ? '/hq' : '/admin'
   return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name }, redirect: home })
