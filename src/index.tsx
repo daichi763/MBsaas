@@ -225,4 +225,13 @@ app.get('/hq', async (c) => {
 </html>`)
 })
 
-export default app
+export default {
+  fetch: app.fetch,
+  // Cron Trigger: 毎日3時(UTC) = 日本時間12時 に期限切れセッションを削除
+  async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+    const result = await env.DB.prepare(
+      'DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP'
+    ).run()
+    console.log(`Deleted ${result.meta.changes} expired sessions`)
+  },
+}

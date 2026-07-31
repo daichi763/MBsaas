@@ -59,6 +59,8 @@ api.post('/auth/login', async (c) => {
 
   const token = genToken()
   const expires = new Date(Date.now() + 30 * 24 * 3600 * 1000)
+  // 期限切れセッションの補助的な削除(主軸はCron Trigger、ここは即時性のための保険)
+  await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND expires_at < CURRENT_TIMESTAMP').bind(user.user_id).run()
   await c.env.DB.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at) VALUES (?, ?, ?, ?)')
     .bind(token, user.user_id, user.company_id, expires.toISOString()).run()
   await c.env.DB.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
