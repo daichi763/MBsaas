@@ -341,9 +341,9 @@ async function renderStaffDetail(sid) {
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-file-lines text-blue-500 mr-1"></i>履歴書</h3>
-          <button class="btn btn-outline text-xs" onclick="openDocumentUpload(${sid})"><i class="fas fa-upload"></i>履歴書アップロード</button>
+          <button class="btn btn-outline text-xs" onclick="openDocumentUpload('staff', ${sid})"><i class="fas fa-upload"></i>履歴書アップロード</button>
         </div>
-        <div id="staff-documents-list">${documentListHtml(docData.documents, sid)}</div>
+        <div id="staff-documents-list">${documentListHtml(docData.documents, 'staff', sid)}</div>
       </section>
 
       <section class="card p-4">
@@ -446,7 +446,7 @@ window.toggleFollow = async function (sid, flag) {
   renderStaffDetail(sid)
 }
 
-// ============ 履歴書ファイル管理 ============
+// ============ 汎用ファイル管理（履歴書・契約書で共通利用） ============
 const DOC_ICON = { pdf: 'fa-file-pdf text-red-500', doc: 'fa-file-word text-blue-500', docx: 'fa-file-word text-blue-500',
   xls: 'fa-file-excel text-emerald-600', xlsx: 'fa-file-excel text-emerald-600', csv: 'fa-file-csv text-emerald-600',
   ppt: 'fa-file-powerpoint text-orange-500', pptx: 'fa-file-powerpoint text-orange-500', txt: 'fa-file-lines text-gray-500',
@@ -462,8 +462,14 @@ function formatFileSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
-function documentListHtml(docs, sid) {
-  if (!docs || docs.length === 0) return '<p class="text-sm text-gray-400">履歴書ファイルはありません</p>'
+// kind: 'staff'（履歴書） | 'client'（契約書） で、APIパスと再描画先を切り替える
+const DOC_ENTITY = {
+  staff: { collectionUrl: id => `/api/admin/staff/${id}/documents`, itemUrl: docId => `/api/admin/staff/documents/${docId}`, containerId: 'staff-documents-list', emptyText: '履歴書ファイルはありません', title: '履歴書アップロード' },
+  client: { collectionUrl: id => `/api/admin/clients/${id}/documents`, itemUrl: docId => `/api/admin/clients/documents/${docId}`, containerId: 'client-documents-list', emptyText: '契約書ファイルはありません', title: '契約書アップロード' },
+}
+function documentListHtml(docs, kind, id) {
+  const cfg = DOC_ENTITY[kind]
+  if (!docs || docs.length === 0) return `<p class="text-sm text-gray-400">${cfg.emptyText}</p>`
   return `<div class="space-y-1.5">${docs.map(d => `
     <div class="flex items-center gap-2 p-2 rounded-lg bg-gray-50">
       <i class="fas ${docIconClass(d.original_file_name)}"></i>
@@ -471,21 +477,22 @@ function documentListHtml(docs, sid) {
         <p class="text-sm text-gray-800 truncate">${esc(d.original_file_name)}</p>
         <p class="text-xs text-gray-400">${dayjs(d.uploaded_at).format('YYYY/M/D HH:mm')} ・ ${formatFileSize(d.file_size)}</p>
       </div>
-      <a class="btn btn-outline text-xs" href="/api/admin/staff/documents/${d.document_id}/download" target="_blank" rel="noopener"><i class="fas fa-download"></i></a>
-      <button class="btn btn-danger text-xs" onclick="deleteDocument(${sid}, ${d.document_id}, '${esc(d.original_file_name).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
+      <a class="btn btn-outline text-xs" href="${cfg.itemUrl(d.document_id)}/download" target="_blank" rel="noopener"><i class="fas fa-download"></i></a>
+      <button class="btn btn-danger text-xs" onclick="deleteDocument('${kind}', ${id}, ${d.document_id}, '${esc(d.original_file_name).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
     </div>`).join('')}</div>`
 }
 
-window.openDocumentUpload = function (sid) {
+window.openDocumentUpload = function (kind, id) {
+  const cfg = DOC_ENTITY[kind]
   modal(`
     <div class="flex items-center justify-between mb-3">
-      <h3 class="font-bold text-gray-800"><i class="fas fa-file-lines text-blue-600 mr-1"></i>履歴書アップロード</h3>
+      <h3 class="font-bold text-gray-800"><i class="fas fa-file-lines text-blue-600 mr-1"></i>${cfg.title}</h3>
       <button class="text-gray-400" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
     </div>
     <div id="doc-dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center text-gray-500 cursor-pointer"
          ondragover="event.preventDefault(); this.classList.add('border-blue-400','bg-blue-50')"
          ondragleave="this.classList.remove('border-blue-400','bg-blue-50')"
-         ondrop="onDocDrop(event, ${sid})"
+         ondrop="onDocDrop(event, '${kind}', ${id})"
          onclick="document.getElementById('doc-file-input').click()">
       <i class="fas fa-paperclip text-2xl mb-2"></i>
       <p class="text-sm">ファイルをここにドラッグ＆ドロップ</p>
@@ -493,48 +500,50 @@ window.openDocumentUpload = function (sid) {
       <span class="btn btn-outline text-xs inline-flex"><i class="fas fa-folder-open"></i>ファイルを選択</span>
       <p class="text-xs text-gray-400 mt-2">PDF/Word/Excel/PowerPoint/CSV/テキスト/画像・1ファイル20MBまで・複数選択可</p>
     </div>
-    <input type="file" id="doc-file-input" class="hidden" multiple onchange="onDocFilesSelected(this.files, ${sid})">
+    <input type="file" id="doc-file-input" class="hidden" multiple onchange="onDocFilesSelected(this.files, '${kind}', ${id})">
     <div id="doc-upload-progress" class="mt-3 space-y-1.5"></div>
   `)
 }
 
-window.onDocDrop = function (e, sid) {
+window.onDocDrop = function (e, kind, id) {
   e.preventDefault()
   document.getElementById('doc-dropzone').classList.remove('border-blue-400', 'bg-blue-50')
-  onDocFilesSelected(e.dataTransfer.files, sid)
+  onDocFilesSelected(e.dataTransfer.files, kind, id)
 }
 
-window.onDocFilesSelected = async function (fileList, sid) {
+window.onDocFilesSelected = async function (fileList, kind, id) {
+  const cfg = DOC_ENTITY[kind]
   const files = Array.from(fileList)
   if (files.length === 0) return
   const progress = document.getElementById('doc-upload-progress')
-  progress.innerHTML = files.map(f => `<div class="text-xs flex items-center gap-2" id="doc-row-${esc(f.name).replace(/[^a-zA-Z0-9]/g, '_')}-${files.indexOf(f)}"><span class="spin" style="width:.9rem;height:.9rem;border-width:2px"></span>${esc(f.name)} アップロード中...</div>`).join('')
+  progress.innerHTML = files.map(f => `<div class="text-xs flex items-center gap-2"><span class="spin" style="width:.9rem;height:.9rem;border-width:2px"></span>${esc(f.name)} アップロード中...</div>`).join('')
 
   const form = new FormData()
   files.forEach(f => form.append('files', f))
 
   try {
-    const { data } = await axios.post(`/api/admin/staff/${sid}/documents`, form)
+    const { data } = await axios.post(cfg.collectionUrl(id), form)
     progress.innerHTML = data.results.map(r => r.ok
       ? `<div class="text-xs text-emerald-600"><i class="fas fa-check"></i> ${esc(r.filename)} アップロード完了</div>`
       : `<div class="text-xs text-red-600"><i class="fas fa-xmark"></i> ${esc(r.filename)}：${esc(r.error)}</div>`
     ).join('')
     const successCount = data.results.filter(r => r.ok).length
     if (successCount > 0) toast(`${successCount}件のファイルをアップロードしました`)
-    const { data: docData } = await axios.get(`/api/admin/staff/${sid}/documents`)
-    document.getElementById('staff-documents-list').innerHTML = documentListHtml(docData.documents, sid)
+    const { data: docData } = await axios.get(cfg.collectionUrl(id))
+    document.getElementById(cfg.containerId).innerHTML = documentListHtml(docData.documents, kind, id)
   } catch {
     progress.innerHTML = '<div class="text-xs text-red-600">ファイルのアップロードに失敗しました。</div>'
   }
 }
 
-window.deleteDocument = async function (sid, docId, filename) {
+window.deleteDocument = async function (kind, id, docId, filename) {
   if (!confirm(`${filename} を削除しますか？`)) return
+  const cfg = DOC_ENTITY[kind]
   try {
-    await axios.delete(`/api/admin/staff/documents/${docId}`)
+    await axios.delete(cfg.itemUrl(docId))
     toast('ファイルを削除しました')
-    const { data: docData } = await axios.get(`/api/admin/staff/${sid}/documents`)
-    document.getElementById('staff-documents-list').innerHTML = documentListHtml(docData.documents, sid)
+    const { data: docData } = await axios.get(cfg.collectionUrl(id))
+    document.getElementById(cfg.containerId).innerHTML = documentListHtml(docData.documents, kind, id)
   } catch {
     toast('ファイルの削除に失敗しました')
   }
@@ -739,7 +748,7 @@ async function renderClients() {
       ${data.clients.map(c => `
         <section class="card p-4">
           <div class="flex items-start justify-between mb-2">
-            <h3 class="font-bold text-gray-800">${esc(c.client_name)}</h3>
+            <h3 class="font-bold text-gray-800"><a href="#clients/${c.client_id}" class="hover:underline">${esc(c.client_name)}</a></h3>
             <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           </div>
           <dl class="text-xs text-gray-600 space-y-1.5">
@@ -752,6 +761,51 @@ async function renderClients() {
           ${c.ng_staff_ids ? '<p class="text-xs text-red-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
           ${c.memo ? `<p class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2 text-gray-500">${esc(c.memo)}</p>` : ''}
         </section>`).join('')}
+    </div>`
+}
+
+// クライアント（発注元企業）詳細画面。会社情報 + 契約書ファイル管理を表示する
+async function renderClientDetail(cid) {
+  loading()
+  const [{ data }, { data: docData }] = await Promise.all([
+    axios.get('/api/admin/clients/' + cid),
+    axios.get('/api/admin/clients/' + cid + '/documents'),
+  ])
+  const c = data.client
+  $app.innerHTML = `
+    <div class="flex items-center gap-3 mb-5 flex-wrap">
+      <a href="#clients" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+      <div class="flex-1">
+        <h2 class="text-xl font-bold text-gray-900">${esc(c.client_name)}</h2>
+        <div class="flex gap-2 mt-1">
+          <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
+          ${c.ng_staff_ids ? '<span class="badge badge-red"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</span>' : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-4">
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3">会社情報</h3>
+        <dl class="text-sm space-y-2">
+          <div class="flex"><dt class="w-24 text-gray-400">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">住所</dt><dd>${esc(c.address || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">評価</dt><dd>${'★'.repeat(c.client_rating || 0)}${'☆'.repeat(5 - (c.client_rating || 0))}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
+          <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600">${esc(c.memo || '-')}</dd></div>
+        </dl>
+      </section>
+
+      <section class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-file-signature text-blue-500 mr-1"></i>契約書</h3>
+          <button class="btn btn-outline text-xs" onclick="openDocumentUpload('client', ${cid})"><i class="fas fa-upload"></i>契約書をアップロード</button>
+        </div>
+        <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
+      </section>
     </div>`
 }
 
@@ -1227,6 +1281,7 @@ function route() {
   if (mob && routes[tab]) mob.value = tab
   if (tab === 'staff' && id) return renderStaffDetail(id)
   if (tab === 'projects' && id) return renderProjectDetail(id)
+  if (tab === 'clients' && id) return renderClientDetail(id)
   ;(routes[tab] || renderDashboard)()
 }
 

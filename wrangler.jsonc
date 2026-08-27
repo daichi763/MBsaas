@@ -24,6 +24,10 @@
 		{
 			"binding": "DOCUMENTS",
 			"bucket_name": "mbsaas-staff-documents"
+		},
+		{
+			"binding": "CONTRACTS",
+			"bucket_name": "mbsaas-client-contracts"
 		}
 	],
 	"triggers": {

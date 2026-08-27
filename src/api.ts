@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket }
 type Variables = { user: any }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -789,6 +789,125 @@ api.post('/admin/clients', async (c) => {
   await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.client_name, b.stream_type || 'upstream', b.contact_name ?? null, b.email ?? null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null).run()
+  return c.json({ ok: true })
+})
+
+// クライアント詳細（会社詳細画面用。まだ一覧のみだったため今回新設）
+api.get('/admin/clients/:id', async (c) => {
+  const u = c.get('user'); const cid = c.req.param('id')
+  const client = await c.env.DB.prepare(`
+    SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects
+    FROM clients cl WHERE cl.client_id = ? AND cl.company_id = ?`).bind(cid, u.company_id).first()
+  if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  return c.json({ client })
+})
+
+// ============ クライアント契約書ファイル管理 ============
+// バリデーション用の定数・ヘルパーは履歴書機能（DOC_ALLOWED_EXT等）をそのまま再利用する
+async function assertClientInCompany(c: any, cid: string) {
+  const u = c.get('user')
+  return c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
+}
+
+// ファイル一覧
+api.get('/admin/clients/:id/documents', async (c) => {
+  const cid = c.req.param('id')
+  const client = await assertClientInCompany(c, cid)
+  if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const docs = await c.env.DB.prepare(
+    'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at DESC'
+  ).bind(cid).all()
+  return c.json({ documents: docs.results })
+})
+
+// アップロード（複数ファイル対応。履歴書機能と同一の検証ロジックを再利用）
+api.post('/admin/clients/:id/documents', async (c) => {
+  const u = c.get('user'); const cid = c.req.param('id')
+  const client = await assertClientInCompany(c, cid)
+  if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
+
+  let form: FormData
+  try {
+    form = await c.req.formData()
+  } catch {
+    return c.json({ error: '送信データの形式が不正です' }, 400)
+  }
+  const files = form.getAll('files').filter(f => f instanceof File) as File[]
+  if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
+
+  const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
+
+  for (const file of files) {
+    const ext = docExt(file.name)
+    if (!DOC_ALLOWED_EXT.includes(ext)) {
+      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
+      continue
+    }
+    if (file.size > DOC_MAX_BYTES) {
+      results.push({ filename: file.name, ok: false, error: 'ファイルサイズは20MB以下にしてください。' })
+      continue
+    }
+    const acceptableMimes = DOC_MIME_MAP[ext] || []
+    if (file.type && file.type !== 'application/octet-stream' && acceptableMimes.length && !acceptableMimes.includes(file.type)) {
+      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
+      continue
+    }
+
+    const uuid = crypto.randomUUID()
+    const key = `client-documents/${u.company_id}/${cid}/${uuid}/${sanitizeForKey(file.name)}`
+    try {
+      const buf = await file.arrayBuffer()
+      await c.env.CONTRACTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
+    } catch {
+      results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' })
+      continue
+    }
+
+    try {
+      const r = await c.env.DB.prepare(`INSERT INTO client_documents (company_id, client_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .bind(u.company_id, cid, file.name, key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+      results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
+    } catch {
+      await c.env.CONTRACTS.delete(key).catch(() => {})
+      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました。' })
+    }
+  }
+
+  return c.json({ results })
+})
+
+// ダウンロード
+api.get('/admin/clients/documents/:docId/download', async (c) => {
+  const u = c.get('user'); const docId = c.req.param('docId')
+  const doc = await c.env.DB.prepare('SELECT * FROM client_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
+  if (!doc) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
+
+  const obj = await c.env.CONTRACTS.get(doc.storage_key as string)
+  if (!obj) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
+
+  const filename = (doc.original_file_name as string).replace(/["\\]/g, '_')
+  const encoded = encodeURIComponent(doc.original_file_name as string)
+  return c.body(obj.body, 200, {
+    'Content-Type': (doc.mime_type as string) || 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=0',
+  })
+})
+
+// 削除（D1を先に消し、R2はベストエフォート。履歴書機能と同じ順序方針）
+api.delete('/admin/clients/documents/:docId', async (c) => {
+  const u = c.get('user'); const docId = c.req.param('docId')
+  const doc = await c.env.DB.prepare('SELECT * FROM client_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
+  if (!doc) return c.json({ error: 'ファイルの削除に失敗しました' }, 404)
+
+  try {
+    await c.env.DB.prepare('DELETE FROM client_documents WHERE document_id = ?').bind(docId).run()
+  } catch {
+    return c.json({ error: 'ファイルの削除に失敗しました' }, 500)
+  }
+  await c.env.CONTRACTS.delete(doc.storage_key as string).catch(() => {})
   return c.json({ ok: true })
 })
 
