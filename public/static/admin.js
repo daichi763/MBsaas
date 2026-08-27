@@ -294,7 +294,10 @@ window.addStaff = async function () {
 // ============ スタッフ詳細 ============
 async function renderStaffDetail(sid) {
   loading()
-  const { data } = await axios.get('/api/admin/staff/' + sid)
+  const [{ data }, { data: docData }] = await Promise.all([
+    axios.get('/api/admin/staff/' + sid),
+    axios.get('/api/admin/staff/' + sid + '/documents'),
+  ])
   const p = data.profile
   const evalRadar = data.evaluations[0]
 
@@ -333,6 +336,14 @@ async function renderStaffDetail(sid) {
               ${p.follow_flag ? 'フォロー解除' : '要フォロー登録'}</button>
           </div>
         </div>
+      </section>
+
+      <section class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-file-lines text-blue-500 mr-1"></i>履歴書</h3>
+          <button class="btn btn-outline text-xs" onclick="openDocumentUpload(${sid})"><i class="fas fa-upload"></i>履歴書アップロード</button>
+        </div>
+        <div id="staff-documents-list">${documentListHtml(docData.documents, sid)}</div>
       </section>
 
       <section class="card p-4">
@@ -433,6 +444,100 @@ window.toggleFollow = async function (sid, flag) {
   await axios.put('/api/admin/staff/' + sid, { follow_flag: flag })
   toast(flag ? '要フォローに登録しました' : 'フォローを解除しました')
   renderStaffDetail(sid)
+}
+
+// ============ 履歴書ファイル管理 ============
+const DOC_ICON = { pdf: 'fa-file-pdf text-red-500', doc: 'fa-file-word text-blue-500', docx: 'fa-file-word text-blue-500',
+  xls: 'fa-file-excel text-emerald-600', xlsx: 'fa-file-excel text-emerald-600', csv: 'fa-file-csv text-emerald-600',
+  ppt: 'fa-file-powerpoint text-orange-500', pptx: 'fa-file-powerpoint text-orange-500', txt: 'fa-file-lines text-gray-500',
+  odt: 'fa-file-word text-blue-500', ods: 'fa-file-excel text-emerald-600', odp: 'fa-file-powerpoint text-orange-500',
+  jpg: 'fa-file-image text-purple-500', jpeg: 'fa-file-image text-purple-500', png: 'fa-file-image text-purple-500',
+  gif: 'fa-file-image text-purple-500', webp: 'fa-file-image text-purple-500' }
+function docIconClass(filename) {
+  const ext = (filename.split('.').pop() || '').toLowerCase()
+  return DOC_ICON[ext] || 'fa-file text-gray-400'
+}
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+function documentListHtml(docs, sid) {
+  if (!docs || docs.length === 0) return '<p class="text-sm text-gray-400">履歴書ファイルはありません</p>'
+  return `<div class="space-y-1.5">${docs.map(d => `
+    <div class="flex items-center gap-2 p-2 rounded-lg bg-gray-50">
+      <i class="fas ${docIconClass(d.original_file_name)}"></i>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm text-gray-800 truncate">${esc(d.original_file_name)}</p>
+        <p class="text-xs text-gray-400">${dayjs(d.uploaded_at).format('YYYY/M/D HH:mm')} ・ ${formatFileSize(d.file_size)}</p>
+      </div>
+      <a class="btn btn-outline text-xs" href="/api/admin/staff/documents/${d.document_id}/download" target="_blank" rel="noopener"><i class="fas fa-download"></i></a>
+      <button class="btn btn-danger text-xs" onclick="deleteDocument(${sid}, ${d.document_id}, '${esc(d.original_file_name).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
+    </div>`).join('')}</div>`
+}
+
+window.openDocumentUpload = function (sid) {
+  modal(`
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-bold text-gray-800"><i class="fas fa-file-lines text-blue-600 mr-1"></i>履歴書アップロード</h3>
+      <button class="text-gray-400" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div id="doc-dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center text-gray-500 cursor-pointer"
+         ondragover="event.preventDefault(); this.classList.add('border-blue-400','bg-blue-50')"
+         ondragleave="this.classList.remove('border-blue-400','bg-blue-50')"
+         ondrop="onDocDrop(event, ${sid})"
+         onclick="document.getElementById('doc-file-input').click()">
+      <i class="fas fa-paperclip text-2xl mb-2"></i>
+      <p class="text-sm">ファイルをここにドラッグ＆ドロップ</p>
+      <p class="text-xs text-gray-400 my-1">または</p>
+      <span class="btn btn-outline text-xs inline-flex"><i class="fas fa-folder-open"></i>ファイルを選択</span>
+      <p class="text-xs text-gray-400 mt-2">PDF/Word/Excel/PowerPoint/CSV/テキスト/画像・1ファイル20MBまで・複数選択可</p>
+    </div>
+    <input type="file" id="doc-file-input" class="hidden" multiple onchange="onDocFilesSelected(this.files, ${sid})">
+    <div id="doc-upload-progress" class="mt-3 space-y-1.5"></div>
+  `)
+}
+
+window.onDocDrop = function (e, sid) {
+  e.preventDefault()
+  document.getElementById('doc-dropzone').classList.remove('border-blue-400', 'bg-blue-50')
+  onDocFilesSelected(e.dataTransfer.files, sid)
+}
+
+window.onDocFilesSelected = async function (fileList, sid) {
+  const files = Array.from(fileList)
+  if (files.length === 0) return
+  const progress = document.getElementById('doc-upload-progress')
+  progress.innerHTML = files.map(f => `<div class="text-xs flex items-center gap-2" id="doc-row-${esc(f.name).replace(/[^a-zA-Z0-9]/g, '_')}-${files.indexOf(f)}"><span class="spin" style="width:.9rem;height:.9rem;border-width:2px"></span>${esc(f.name)} アップロード中...</div>`).join('')
+
+  const form = new FormData()
+  files.forEach(f => form.append('files', f))
+
+  try {
+    const { data } = await axios.post(`/api/admin/staff/${sid}/documents`, form)
+    progress.innerHTML = data.results.map(r => r.ok
+      ? `<div class="text-xs text-emerald-600"><i class="fas fa-check"></i> ${esc(r.filename)} アップロード完了</div>`
+      : `<div class="text-xs text-red-600"><i class="fas fa-xmark"></i> ${esc(r.filename)}：${esc(r.error)}</div>`
+    ).join('')
+    const successCount = data.results.filter(r => r.ok).length
+    if (successCount > 0) toast(`${successCount}件のファイルをアップロードしました`)
+    const { data: docData } = await axios.get(`/api/admin/staff/${sid}/documents`)
+    document.getElementById('staff-documents-list').innerHTML = documentListHtml(docData.documents, sid)
+  } catch {
+    progress.innerHTML = '<div class="text-xs text-red-600">ファイルのアップロードに失敗しました。</div>'
+  }
+}
+
+window.deleteDocument = async function (sid, docId, filename) {
+  if (!confirm(`${filename} を削除しますか？`)) return
+  try {
+    await axios.delete(`/api/admin/staff/documents/${docId}`)
+    toast('ファイルを削除しました')
+    const { data: docData } = await axios.get(`/api/admin/staff/${sid}/documents`)
+    document.getElementById('staff-documents-list').innerHTML = documentListHtml(docData.documents, sid)
+  } catch {
+    toast('ファイルの削除に失敗しました')
+  }
 }
 
 window.showSkillSheet = async function (sid) {
