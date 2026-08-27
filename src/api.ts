@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket }
 type Variables = { user: any }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -630,6 +630,147 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
     FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
   return c.json({ profile, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
+})
+
+// ============ スタッフ履歴書ファイル管理 ============
+// 対応形式・上限は既存の写真添付(PHOTO_*)とは別に定義する
+const DOC_ALLOWED_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt', 'odt', 'ods', 'odp', 'jpg', 'jpeg', 'png', 'gif', 'webp']
+const DOC_MAX_BYTES = 20 * 1024 * 1024 // 20MB
+const DOC_MIME_MAP: Record<string, string[]> = {
+  pdf: ['application/pdf'],
+  doc: ['application/msword'],
+  docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  xls: ['application/vnd.ms-excel'],
+  xlsx: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  csv: ['text/csv', 'application/vnd.ms-excel', 'text/plain'],
+  ppt: ['application/vnd.ms-powerpoint'],
+  pptx: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  txt: ['text/plain'],
+  odt: ['application/vnd.oasis.opendocument.text'],
+  ods: ['application/vnd.oasis.opendocument.spreadsheet'],
+  odp: ['application/vnd.oasis.opendocument.presentation'],
+  jpg: ['image/jpeg'], jpeg: ['image/jpeg'],
+  png: ['image/png'],
+  gif: ['image/gif'],
+  webp: ['image/webp'],
+}
+function docExt(filename: string): string {
+  const m = /\.([a-zA-Z0-9]+)$/.exec(filename)
+  return m ? m[1].toLowerCase() : ''
+}
+// R2キーの一部に使うため危険な記号だけ置換する（元のファイル名はDB側にそのまま保持）
+function sanitizeForKey(filename: string): string {
+  return filename.replace(/[\/\\:*?"<>|]/g, '_').slice(0, 150)
+}
+async function assertStaffInCompany(c: any, sid: string) {
+  const u = c.get('user')
+  return c.env.DB.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
+}
+
+// ファイル一覧
+api.get('/admin/staff/:id/documents', async (c) => {
+  const sid = c.req.param('id')
+  const staff = await assertStaffInCompany(c, sid)
+  if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const docs = await c.env.DB.prepare(
+    'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM staff_documents WHERE staff_id = ? ORDER BY uploaded_at DESC'
+  ).bind(sid).all()
+  return c.json({ documents: docs.results })
+})
+
+// アップロード（複数ファイル対応。1ファイルずつ個別に検証し、成功分のみ保存する）
+api.post('/admin/staff/:id/documents', async (c) => {
+  const u = c.get('user'); const sid = c.req.param('id')
+  const staff = await assertStaffInCompany(c, sid)
+  if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
+
+  let form: FormData
+  try {
+    form = await c.req.formData()
+  } catch {
+    return c.json({ error: '送信データの形式が不正です' }, 400)
+  }
+  const files = form.getAll('files').filter(f => f instanceof File) as File[]
+  if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
+
+  const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
+
+  for (const file of files) {
+    const ext = docExt(file.name)
+    if (!DOC_ALLOWED_EXT.includes(ext)) {
+      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
+      continue
+    }
+    if (file.size > DOC_MAX_BYTES) {
+      results.push({ filename: file.name, ok: false, error: 'ファイルサイズは20MB以下にしてください。' })
+      continue
+    }
+    // MIME Typeは端末・ブラウザ差で信頼性が低いため、拡張子を主判定としつつ
+    // 明確に一致しない場合のみ弾く補助チェックとする（空/octet-streamは許容）
+    const acceptableMimes = DOC_MIME_MAP[ext] || []
+    if (file.type && file.type !== 'application/octet-stream' && acceptableMimes.length && !acceptableMimes.includes(file.type)) {
+      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
+      continue
+    }
+
+    // 同名ファイルでも上書きされないよう、UUIDを含むキーにする
+    const uuid = crypto.randomUUID()
+    const key = `staff-documents/${u.company_id}/${sid}/${uuid}/${sanitizeForKey(file.name)}`
+    try {
+      const buf = await file.arrayBuffer()
+      await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
+    } catch {
+      results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' })
+      continue
+    }
+
+    try {
+      const r = await c.env.DB.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .bind(u.company_id, sid, file.name, key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+      results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
+    } catch {
+      // D1登録に失敗した場合はアップロード済みのR2オブジェクトを掃除する
+      await c.env.DOCUMENTS.delete(key).catch(() => {})
+      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました。' })
+    }
+  }
+
+  return c.json({ results })
+})
+
+// ダウンロード（元ファイル名・元Content-Typeで返す。実行される事故を避けるため常にattachment指定）
+api.get('/admin/staff/documents/:docId/download', async (c) => {
+  const u = c.get('user'); const docId = c.req.param('docId')
+  const doc = await c.env.DB.prepare('SELECT * FROM staff_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
+  if (!doc) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
+
+  const obj = await c.env.DOCUMENTS.get(doc.storage_key as string)
+  if (!obj) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
+
+  const filename = (doc.original_file_name as string).replace(/["\\]/g, '_')
+  const encoded = encodeURIComponent(doc.original_file_name as string)
+  return c.body(obj.body, 200, {
+    'Content-Type': (doc.mime_type as string) || 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=0',
+  })
+})
+
+// 削除（D1を先に消し、R2はベストエフォート。孤立するならR2側の残骸の方が実害が小さいため）
+api.delete('/admin/staff/documents/:docId', async (c) => {
+  const u = c.get('user'); const docId = c.req.param('docId')
+  const doc = await c.env.DB.prepare('SELECT * FROM staff_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
+  if (!doc) return c.json({ error: 'ファイルの削除に失敗しました' }, 404)
+
+  try {
+    await c.env.DB.prepare('DELETE FROM staff_documents WHERE document_id = ?').bind(docId).run()
+  } catch {
+    return c.json({ error: 'ファイルの削除に失敗しました' }, 500)
+  }
+  await c.env.DOCUMENTS.delete(doc.storage_key as string).catch(() => {})
+  return c.json({ ok: true })
 })
 
 // クライアント

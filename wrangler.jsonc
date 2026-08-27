@@ -20,6 +20,10 @@
 		{
 			"binding": "PHOTOS",
 			"bucket_name": "mbsaas-attendance-photos"
+		},
+		{
+			"binding": "DOCUMENTS",
+			"bucket_name": "mbsaas-staff-documents"
 		}
 	],
 	"triggers": {
