@@ -1134,6 +1134,90 @@ window.showReads = async function (id) {
     </div>`)
 }
 
+// ============ お知らせ既読率レポート ============
+function fiscalYearLabel(fy) { return `${fy}年度（${fy}/04〜${fy + 1}/03）` }
+function currentFiscalYearJs() {
+  const d = new Date(Date.now() + 9 * 3600 * 1000) // JST
+  const y = d.getUTCFullYear(); const m = d.getUTCMonth() + 1
+  return m >= 4 ? y : y - 1
+}
+async function renderNoticeReadReport(fy) {
+  loading()
+  fy = fy || currentFiscalYearJs() - 1 // 直近の確定年度をデフォルト表示（今年度はまだ集計対象外のため）
+  const { data } = await axios.get(`/api/admin/notice-reports/${fy}`)
+  window._noticeReportData = data
+  const s = data.summary
+  const fyOptions = []
+  for (let y = currentFiscalYearJs(); y >= currentFiscalYearJs() - 6; y--) fyOptions.push(y)
+
+  $app.innerHTML = `
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <h2 class="text-xl font-bold text-gray-900">お知らせ既読率レポート</h2>
+      <div class="flex items-center gap-2">
+        <select class="inp text-sm" onchange="renderNoticeReadReport(Number(this.value))">
+          ${fyOptions.map(y => `<option value="${y}" ${y === fy ? 'selected' : ''}>${fiscalYearLabel(y)}</option>`).join('')}
+        </select>
+        <button class="btn btn-outline text-sm" onclick="recalculateNoticeReadReport(${fy})"><i class="fas fa-rotate"></i>再集計</button>
+        <a class="btn btn-outline text-sm" href="/api/admin/notice-reports/${fy}/csv"><i class="fas fa-file-csv"></i>CSV出力</a>
+      </div>
+    </div>
+
+    <section class="card p-4 mb-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-3">年度全体</h3>
+      ${!s ? `<p class="text-sm text-gray-400">このレポートはまだ生成されていません。「再集計」を実行してください。</p>` : `
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div><p class="text-xs text-gray-400">対象お知らせ数</p><p class="text-lg font-bold">${s.target_notice_count}件</p></div>
+          <div><p class="text-xs text-gray-400">対象延べ人数</p><p class="text-lg font-bold">${s.target_user_count}人</p></div>
+          <div><p class="text-xs text-gray-400">既読延べ人数</p><p class="text-lg font-bold text-emerald-600">${s.read_count}人</p></div>
+          <div><p class="text-xs text-gray-400">年度既読率</p><p class="text-lg font-bold text-blue-600">${s.read_rate == null ? '-' : s.read_rate.toFixed(1) + '%'}</p></div>
+        </div>`}
+    </section>
+
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別（人事評価の参考資料）</h3>
+      ${data.staff_reports.length === 0 ? '<p class="text-sm text-gray-400">対象となるお知らせがありません。</p>' : `
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>スタッフ</th><th>対象数</th><th>既読数</th><th>未読数</th><th>既読率</th><th></th></tr></thead>
+          <tbody>
+            ${data.staff_reports.map(r => `
+              <tr>
+                <td>${esc(r.staff_name)}</td>
+                <td>${r.target_count}</td>
+                <td>${r.read_count}</td>
+                <td>${r.unread_count}</td>
+                <td>${r.read_rate == null ? '-' : r.read_rate.toFixed(1) + '%'}</td>
+                <td><button class="text-xs text-blue-600 hover:underline" onclick="showStaffNoticeReport(${fy}, ${r.staff_id})">詳細</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </section>`
+}
+window.recalculateNoticeReadReport = async function (fy) {
+  try {
+    await axios.post(`/api/admin/notice-reports/${fy}/recalculate`)
+    toast('再集計しました')
+    renderNoticeReadReport(fy)
+  } catch {
+    toast('再集計に失敗しました')
+  }
+}
+window.showStaffNoticeReport = async function (fy, staffId) {
+  const { data } = await axios.get(`/api/admin/notice-reports/${fy}/staff/${staffId}`)
+  modal(`
+    <h3 class="font-bold text-lg mb-1">${esc(data.staff_name)}</h3>
+    <p class="text-sm text-gray-400 mb-4">${fiscalYearLabel(fy)}</p>
+    <div class="space-y-1.5 max-h-96 overflow-y-auto">
+      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません（2年以上前のためデータが削除されている可能性があります）</p>' : data.notices.map(n => `
+        <div class="flex items-center justify-between text-sm p-2 rounded-lg bg-gray-50">
+          <span class="truncate">${esc(n.title)}</span>
+          <span class="badge ${n.is_read ? 'badge-green' : 'badge-gray'} shrink-0 ml-2">${n.is_read ? '既読' : '未読'}</span>
+        </div>`).join('')}
+    </div>`)
+}
+
+
 // ============ フォロー履歴 ============
 async function renderFollow() {
   loading()
@@ -1270,7 +1354,8 @@ window.exportBillingCsv = function () {
 const routes = {
   dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => renderShifts(), reports: () => renderReports(), analytics: () => renderAnalytics(),
-  notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling()
+  notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(),
+  'notice-reports': () => renderNoticeReadReport()
 }
 
 function route() {

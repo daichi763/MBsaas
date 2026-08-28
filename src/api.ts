@@ -22,6 +22,16 @@ function genToken(): string {
   const a = new Uint8Array(32); crypto.getRandomValues(a)
   return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
 }
+// 日本の年度（4/1〜翌3/31）。fiscal_year=2025 は 2025/04/01〜2026/03/31 を指す
+function fiscalYearOf(dateStr: string): number {
+  const y = Number(dateStr.slice(0, 4)); const m = Number(dateStr.slice(5, 7))
+  return m >= 4 ? y : y - 1
+}
+function fiscalYearRange(fy: number): { start: string; end: string } {
+  return { start: `${fy}-04-01`, end: `${fy + 1}-04-01` }
+}
+function currentFiscalYear(): number { return fiscalYearOf(todayJST()) }
+function round1(n: number): number { return Math.round(n * 10) / 10 }
 
 const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
 // 写真添付が必須の報告種別（入店報告・退店報告のみ）
@@ -45,6 +55,143 @@ function resolvePhotoRequired(u: any, projectOverride: number | null | undefined
   return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
 }
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
+
+// ============ お知らせ既読率レポート（集計・Cron共用ロジック） ============
+// 対象者判定は /staff/notices の実クエリ（target_type: all/staff/project）と同じルールに揃える
+type NoticeReadReport = {
+  targetNoticeCount: number
+  targetUserCount: number
+  readCount: number
+  unreadCount: number
+  readRate: number | null
+  perStaff: Map<number, { target: number; read: number }>
+}
+
+async function computeNoticeReadReport(db: D1Database, companyId: number, fiscalYear: number): Promise<NoticeReadReport> {
+  const { start, end } = fiscalYearRange(fiscalYear)
+
+  const staffRows = await db.prepare(
+    `SELECT sp.staff_id, sp.user_id FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active'`
+  ).bind(companyId).all()
+  const staffList = staffRows.results as { staff_id: number; user_id: number }[]
+  const staffById = new Map(staffList.map(s => [s.staff_id, s.user_id]))
+
+  const noticeRows = await db.prepare(
+    `SELECT notice_id, target_type, target_ids FROM notices WHERE company_id = ? AND published_at >= ? AND published_at < ?`
+  ).bind(companyId, start, end).all()
+  const notices = noticeRows.results as { notice_id: number; target_type: string; target_ids: string }[]
+
+  const perStaff = new Map<number, { target: number; read: number }>()
+  for (const s of staffList) perStaff.set(s.staff_id, { target: 0, read: 0 })
+  let targetUserCount = 0
+  let readCount = 0
+
+  for (const n of notices) {
+    let targetStaffIds: number[] = []
+    if (n.target_type === 'all') {
+      targetStaffIds = staffList.map(s => s.staff_id)
+    } else if (n.target_type === 'staff') {
+      const ids = new Set((n.target_ids || '').split(',').map(v => v.trim()).filter(Boolean).map(Number))
+      targetStaffIds = staffList.filter(s => ids.has(s.staff_id)).map(s => s.staff_id)
+    } else if (n.target_type === 'project') {
+      const projIds = (n.target_ids || '').split(',').map(v => v.trim()).filter(Boolean)
+      if (projIds.length) {
+        const placeholders = projIds.map(() => '?').join(',')
+        const shiftRows = await db.prepare(`SELECT DISTINCT staff_id FROM shifts WHERE project_id IN (${placeholders})`).bind(...projIds).all()
+        const projStaffIds = new Set((shiftRows.results as { staff_id: number }[]).map(r => r.staff_id))
+        targetStaffIds = staffList.filter(s => projStaffIds.has(s.staff_id)).map(s => s.staff_id)
+      }
+    }
+    if (targetStaffIds.length === 0) continue
+
+    const userIds = targetStaffIds.map(sid => staffById.get(sid) as number)
+    const placeholders = userIds.map(() => '?').join(',')
+    const readRows = await db.prepare(`SELECT user_id FROM notice_reads WHERE notice_id = ? AND user_id IN (${placeholders})`).bind(n.notice_id, ...userIds).all()
+    const readUserIds = new Set((readRows.results as { user_id: number }[]).map(r => r.user_id))
+
+    targetUserCount += targetStaffIds.length
+    for (const sid of targetStaffIds) {
+      const acc = perStaff.get(sid)!
+      acc.target++
+      if (readUserIds.has(staffById.get(sid) as number)) { acc.read++; readCount++ }
+    }
+  }
+
+  return {
+    targetNoticeCount: notices.length,
+    targetUserCount,
+    readCount,
+    unreadCount: targetUserCount - readCount,
+    readRate: targetUserCount > 0 ? round1((readCount / targetUserCount) * 100) : null,
+    perStaff,
+  }
+}
+
+// 指定会社・年度のレポートを再計算してUPSERT保存する（同一年度を何度実行しても重複しない）
+async function generateNoticeReadReport(db: D1Database, companyId: number, fiscalYear: number): Promise<void> {
+  const r = await computeNoticeReadReport(db, companyId, fiscalYear)
+
+  await db.prepare(`
+    INSERT INTO notice_read_reports (company_id, fiscal_year, target_notice_count, target_user_count, read_count, unread_count, read_rate, calculated_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(company_id, fiscal_year) DO UPDATE SET
+      target_notice_count = excluded.target_notice_count, target_user_count = excluded.target_user_count,
+      read_count = excluded.read_count, unread_count = excluded.unread_count, read_rate = excluded.read_rate,
+      calculated_at = excluded.calculated_at, updated_at = excluded.updated_at
+  `).bind(companyId, fiscalYear, r.targetNoticeCount, r.targetUserCount, r.readCount, r.unreadCount, r.readRate, nowJST(), nowJST()).run()
+
+  for (const [staffId, v] of r.perStaff) {
+    const rate = v.target > 0 ? round1((v.read / v.target) * 100) : null
+    await db.prepare(`
+      INSERT INTO notice_read_staff_reports (company_id, fiscal_year, staff_id, target_count, read_count, unread_count, read_rate, calculated_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(company_id, fiscal_year, staff_id) DO UPDATE SET
+        target_count = excluded.target_count, read_count = excluded.read_count, unread_count = excluded.unread_count,
+        read_rate = excluded.read_rate, calculated_at = excluded.calculated_at, updated_at = excluded.updated_at
+    `).bind(companyId, fiscalYear, staffId, v.target, v.read, v.target - v.read, rate, nowJST(), nowJST()).run()
+  }
+}
+
+// Cron: 全社について「直前に終了した年度」のレポートを生成/更新する（冪等）
+export async function generateFiscalYearReportsForAllCompanies(db: D1Database): Promise<{ companies: number; ok: number; failed: number }> {
+  const fy = currentFiscalYear() - 1 // まだ年度途中の当年度は対象外。確定済みの前年度を対象にする
+  const companies = await db.prepare('SELECT company_id FROM companies').all()
+  let ok = 0, failed = 0
+  for (const row of companies.results as { company_id: number }[]) {
+    try {
+      await generateNoticeReadReport(db, row.company_id, fy)
+      ok++
+    } catch (e) {
+      failed++
+      console.log(`notice_read_reports generation failed: company_id=${row.company_id} fiscal_year=${fy} error=${e}`)
+    }
+  }
+  return { companies: companies.results.length, ok, failed }
+}
+
+// Cron: 2年（730日）以上経過した notice_reads をバッチ削除する（1回のCronで最大10,000件、以降は翌日以降に継続）
+export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; batches: number; error?: string }> {
+  const cutoff = new Date(Date.now() - 730 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const BATCH_SIZE = 500
+  const MAX_BATCHES = 20
+  let deleted = 0
+  try {
+    for (let i = 0; i < MAX_BATCHES; i++) {
+      const result = await db.prepare(`
+        DELETE FROM notice_reads WHERE (notice_id, user_id) IN (
+          SELECT notice_id, user_id FROM notice_reads WHERE read_at < ? LIMIT ?
+        )
+      `).bind(cutoff, BATCH_SIZE).run()
+      const changes = result.meta.changes || 0
+      deleted += changes
+      if (changes < BATCH_SIZE) break
+    }
+    return { deleted, batches: Math.ceil(deleted / BATCH_SIZE) || 0 }
+  } catch (e) {
+    console.log(`notice_reads purge failed after deleting ${deleted}: error=${e}`)
+    return { deleted, batches: 0, error: String(e) }
+  }
+}
 
 // ============ Auth ============
 api.post('/auth/login', async (c) => {
@@ -1108,6 +1255,96 @@ api.get('/admin/notices/:id/reads', async (c) => {
     SELECT us.name FROM users us WHERE us.company_id = ? AND us.role = 'staff' AND us.status = 'active'
     AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = ? AND r.user_id = us.user_id)`).bind(u.company_id, c.req.param('id')).all()
   return c.json({ read: rows.results, unread: unread.results })
+})
+
+// ============ お知らせ既読率レポート ============
+// 年度別（会社サマリ + スタッフ別）。長期保存されたレポートテーブルから取得する
+api.get('/admin/notice-reports/:fiscalYear', async (c) => {
+  const u = c.get('user'); const fy = Number(c.req.param('fiscalYear'))
+  if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
+
+  const summary = await c.env.DB.prepare(
+    'SELECT * FROM notice_read_reports WHERE company_id = ? AND fiscal_year = ?'
+  ).bind(u.company_id, fy).first()
+
+  const staffRows = await c.env.DB.prepare(`
+    SELECT r.staff_id, us.name AS staff_name, r.target_count, r.read_count, r.unread_count, r.read_rate
+    FROM notice_read_staff_reports r
+    JOIN staff_profiles sp ON sp.staff_id = r.staff_id
+    JOIN users us ON us.user_id = sp.user_id
+    WHERE r.company_id = ? AND r.fiscal_year = ?
+    ORDER BY us.name`).bind(u.company_id, fy).all()
+
+  return c.json({
+    fiscal_year: fy,
+    summary: summary || null, // 未生成の年度はnull（「対象となるお知らせがありません」表示等はフロント側で判断）
+    staff_reports: staffRows.results,
+  })
+})
+
+// 再集計（管理者が任意年度を指定して即時更新）
+api.post('/admin/notice-reports/:fiscalYear/recalculate', async (c) => {
+  const u = c.get('user'); const fy = Number(c.req.param('fiscalYear'))
+  if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
+  try {
+    await generateNoticeReadReport(c.env.DB, u.company_id, fy)
+  } catch {
+    return c.json({ error: '再集計に失敗しました' }, 500)
+  }
+  return c.json({ ok: true })
+})
+
+// スタッフ別・お知らせ単位の詳細（notice_readsが残っている直近2年分のみ表示可能）
+api.get('/admin/notice-reports/:fiscalYear/staff/:staffId', async (c) => {
+  const u = c.get('user'); const fy = Number(c.req.param('fiscalYear')); const staffId = c.req.param('staffId')
+  if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
+
+  const staff = await c.env.DB.prepare(
+    'SELECT sp.staff_id, sp.user_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ? AND sp.company_id = ?'
+  ).bind(staffId, u.company_id).first()
+  if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
+
+  const { start, end } = fiscalYearRange(fy)
+  const noticeRows = await c.env.DB.prepare(`
+    SELECT n.notice_id, n.title, n.published_at, n.target_type, n.target_ids,
+      EXISTS(SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = ?) AS is_read
+    FROM notices n WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
+      AND (n.target_type = 'all'
+        OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || ? || ',%')
+        OR (n.target_type = 'project' AND EXISTS (
+             SELECT 1 FROM shifts sh WHERE sh.staff_id = ? AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
+    ORDER BY n.published_at DESC`).bind(staff.user_id, u.company_id, start, end, staffId, staffId).all()
+
+  return c.json({
+    fiscal_year: fy, staff_name: staff.name,
+    notices: noticeRows.results.map((n: any) => ({ notice_id: n.notice_id, title: n.title, published_at: n.published_at, is_read: !!n.is_read })),
+  })
+})
+
+// CSV出力（スタッフ別レポート。人事評価の参考資料用）
+api.get('/admin/notice-reports/:fiscalYear/csv', async (c) => {
+  const u = c.get('user'); const fy = Number(c.req.param('fiscalYear'))
+  if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
+
+  const company = await c.env.DB.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  const staffRows = await c.env.DB.prepare(`
+    SELECT us.name AS staff_name, r.target_count, r.read_count, r.unread_count, r.read_rate
+    FROM notice_read_staff_reports r
+    JOIN staff_profiles sp ON sp.staff_id = r.staff_id
+    JOIN users us ON us.user_id = sp.user_id
+    WHERE r.company_id = ? AND r.fiscal_year = ?
+    ORDER BY us.name`).bind(u.company_id, fy).all()
+
+  let csv = '\uFEFF年度,会社,スタッフ,対象数,既読数,未読数,既読率\n'
+  for (const r of staffRows.results as any[]) {
+    const rate = r.read_rate == null ? '-' : `${r.read_rate.toFixed(1)}%`
+    csv += `${fy},${(company?.company_name as string) || ''},${r.staff_name},${r.target_count},${r.read_count},${r.unread_count},${rate}\n`
+  }
+
+  return c.body(csv, 200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="notice_read_report_${fy}.csv"`,
+  })
 })
 
 // 相談対応

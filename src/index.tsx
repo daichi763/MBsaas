@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
-import api from './api'
+import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
 
 type Bindings = { DB: D1Database }
 
@@ -163,6 +163,7 @@ app.get('/admin', async (c) => {
         <a href="#reports" class="side-link" data-tab="reports"><i class="fas fa-file-lines w-5"></i>日報一覧</a>
         <a href="#analytics" class="side-link" data-tab="analytics"><i class="fas fa-chart-column w-5"></i>実績分析</a>
         <a href="#notices" class="side-link" data-tab="notices"><i class="fas fa-bullhorn w-5"></i>お知らせ配信</a>
+        <a href="#notice-reports" class="side-link" data-tab="notice-reports"><i class="fas fa-chart-pie w-5"></i>既読率レポート</a>
         <a href="#follow" class="side-link" data-tab="follow"><i class="fas fa-handshake-angle w-5"></i>フォロー履歴</a>
         <a href="#consult" class="side-link" data-tab="consult"><i class="fas fa-comments w-5"></i>相談対応</a>
         <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>
@@ -181,7 +182,7 @@ app.get('/admin', async (c) => {
           <option value="dashboard">ダッシュボード</option><option value="staff">スタッフ</option>
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option>
-          <option value="analytics">分析</option><option value="notices">お知らせ</option>
+          <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
           <option value="follow">フォロー</option><option value="consult">相談</option><option value="billing">請求前確認</option>
         </select>
       </header>
@@ -227,11 +228,30 @@ app.get('/hq', async (c) => {
 
 export default {
   fetch: app.fetch,
-  // Cron Trigger: 毎日3時(UTC) = 日本時間12時 に期限切れセッションを削除
+  // Cron Trigger: 毎日3時(UTC) = 日本時間12時 に実行。
+  // 3つの処理は互いに独立させ、一方が失敗しても他方の実行を妨げないようにする。
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
-    const result = await env.DB.prepare(
-      'DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP'
-    ).run()
-    console.log(`Deleted ${result.meta.changes} expired sessions`)
+    try {
+      const result = await env.DB.prepare(
+        'DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP'
+      ).run()
+      console.log(`Deleted ${result.meta.changes} expired sessions`)
+    } catch (e) {
+      console.log(`session cleanup failed: ${e}`)
+    }
+
+    try {
+      const r = await generateFiscalYearReportsForAllCompanies(env.DB)
+      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed}`)
+    } catch (e) {
+      console.log(`notice_read_reports generation failed: ${e}`)
+    }
+
+    try {
+      const r = await purgeOldNoticeReads(env.DB)
+      console.log(`notice_reads cleanup completed: deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
+    } catch (e) {
+      console.log(`notice_reads cleanup failed: ${e}`)
+    }
   },
 }
