@@ -1091,6 +1091,7 @@ async function renderNotices() {
             <select id="nt-project" class="inp">${pj.projects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select>
           </div>
           <label class="flex items-center gap-2 text-sm"><input id="nt-required" type="checkbox" class="w-4 h-4">既読確認を必須にする</label>
+          <label class="flex items-center gap-2 text-sm"><input id="nt-send-email" type="checkbox" class="w-4 h-4">メールでも通知する</label>
           <button class="btn btn-primary w-full" onclick="sendNotice()">配信する</button>
         </div>
       </section>
@@ -1118,7 +1119,8 @@ window.sendNotice = async function () {
     title, body: document.getElementById('nt-body').value,
     target_type: target, target_ids: target === 'project' ? document.getElementById('nt-project').value : '',
     importance: document.getElementById('nt-importance').value,
-    read_required: document.getElementById('nt-required').checked
+    read_required: document.getElementById('nt-required').checked,
+    send_email: document.getElementById('nt-send-email').checked
   })
   toast('お知らせを配信しました'); renderNotices()
 }

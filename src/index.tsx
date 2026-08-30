@@ -68,9 +68,23 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
         <button type="submit" id="login-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
           ログイン
         </button>
+        <p class="text-center"><button type="button" id="forgot-link" class="text-sm text-blue-600 hover:underline">パスワードを忘れた方はこちら</button></p>
+      </form>
+
+      <form id="forgot-form" class="space-y-4 hidden">
+        <p class="text-sm text-gray-500">登録済みのメールアドレスを入力してください。パスワード再設定用のリンクをお送りします。</p>
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">メールアドレス</label>
+          <input id="forgot-email" type="email" autocomplete="email" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+        </div>
+        <p id="forgot-message" class="hidden text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2"></p>
+        <button type="submit" id="forgot-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
+          送信する
+        </button>
+        <p class="text-center"><button type="button" id="back-to-login-link" class="text-sm text-gray-500 hover:underline">ログインに戻る</button></p>
       </form>
     </section>
-    <aside class="mt-6 bg-blue-50 rounded-xl p-4 text-xs text-blue-900 leading-relaxed">
+    <aside id="demo-account-aside" class="mt-6 bg-blue-50 rounded-xl p-4 text-xs text-blue-900 leading-relaxed">
       <p class="font-bold mb-1"><i class="fas fa-circle-info mr-1"></i>デモアカウント（パスワードは全て pass1234）</p>
       <ul class="space-y-0.5">
         <li>スタッフ: 会社コード <b>sample</b> / ID <b>st001</b>（〜st020）</li>
@@ -97,6 +111,92 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
         err.textContent = (e2.response && e2.response.data && e2.response.data.error) || 'ログインに失敗しました'
         err.classList.remove('hidden')
         btn.disabled = false; btn.textContent = 'ログイン'
+      }
+    })
+    document.getElementById('forgot-link').addEventListener('click', () => {
+      document.getElementById('login-form').classList.add('hidden')
+      document.getElementById('forgot-form').classList.remove('hidden')
+      document.getElementById('demo-account-aside').classList.add('hidden')
+    })
+    document.getElementById('back-to-login-link').addEventListener('click', () => {
+      document.getElementById('forgot-form').classList.add('hidden')
+      document.getElementById('login-form').classList.remove('hidden')
+      document.getElementById('demo-account-aside').classList.remove('hidden')
+    })
+    document.getElementById('forgot-form').addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const btn = document.getElementById('forgot-btn')
+      const msg = document.getElementById('forgot-message')
+      btn.disabled = true; btn.textContent = '送信中...'
+      try {
+        const res = await axios.post('/api/auth/forgot-password', { email: document.getElementById('forgot-email').value.trim() })
+        msg.textContent = res.data.message
+        msg.classList.remove('hidden')
+      } catch {
+        msg.textContent = 'パスワード再設定メールを送信しました。'
+        msg.classList.remove('hidden')
+      }
+      btn.disabled = false; btn.textContent = '送信する'
+    })
+  </script>
+</body>
+</html>`))
+
+// パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る）
+app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>${head('パスワード再設定')}</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+  <main class="w-full max-w-sm">
+    <header class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+        <i class="fas fa-key"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-gray-800">パスワード再設定</h1>
+    </header>
+    <section id="reset-card" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <form id="reset-form" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード</label>
+          <input id="new-password" type="password" autocomplete="new-password" minlength="8" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+          <p class="text-xs text-gray-400 mt-1">8文字以上で入力してください</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード（確認）</label>
+          <input id="new-password-confirm" type="password" autocomplete="new-password" minlength="8" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+        </div>
+        <p id="reset-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2"></p>
+        <button type="submit" id="reset-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
+          パスワードを再設定する
+        </button>
+      </form>
+      <div id="reset-success" class="hidden text-center">
+        <p class="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3 mb-4"><i class="fas fa-check-circle mr-1"></i>パスワードを再設定しました。</p>
+        <a href="/login" class="text-sm text-blue-600 hover:underline">ログイン画面へ</a>
+      </div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search)
+    const token = params.get('token')
+    document.getElementById('reset-form').addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const err = document.getElementById('reset-error')
+      err.classList.add('hidden')
+      const p1 = document.getElementById('new-password').value
+      const p2 = document.getElementById('new-password-confirm').value
+      if (p1 !== p2) { err.textContent = '入力したパスワードが一致しません'; err.classList.remove('hidden'); return }
+      if (!token) { err.textContent = 'リンクが正しくありません。メールのリンクから再度アクセスしてください。'; err.classList.remove('hidden'); return }
+      const btn = document.getElementById('reset-btn')
+      btn.disabled = true; btn.textContent = '処理中...'
+      try {
+        await axios.post('/api/auth/reset-password', { token, password: p1 })
+        document.getElementById('reset-form').classList.add('hidden')
+        document.getElementById('reset-success').classList.remove('hidden')
+      } catch (e2) {
+        err.textContent = (e2.response && e2.response.data && e2.response.data.error) || '処理に失敗しました'
+        err.classList.remove('hidden')
+        btn.disabled = false; btn.textContent = 'パスワードを再設定する'
       }
     })
   </script>

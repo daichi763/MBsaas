@@ -1,7 +1,13 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { sendEmail } from './services/email'
+import { passwordResetEmail } from './email-templates/password-reset'
+import { noticeEmail } from './email-templates/notice'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket }
+type Bindings = {
+  DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
+  RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
+}
 type Variables = { user: any }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -216,6 +222,57 @@ api.post('/auth/login', async (c) => {
 
   const home = user.role === 'staff' ? '/staff' : user.role === 'system_admin' ? '/hq' : '/admin'
   return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name }, redirect: home })
+})
+
+// パスワード再設定メールの送信リクエスト
+// セキュリティ: メールアドレスの存在有無に関わらず常に同じレスポンスを返す（アカウント存在の推測を防ぐ）
+api.post('/auth/forgot-password', async (c) => {
+  const { email } = await c.req.json().catch(() => ({} as { email?: string }))
+  const genericResponse = { ok: true, message: 'パスワード再設定メールを送信しました。' }
+  if (!email) return c.json(genericResponse)
+
+  // 簡易レート制限: 同一メールアドレスへの直近1時間のリクエストが5件を超えたら新規発行しない
+  const recent = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id WHERE u.email = ? AND t.created_at > datetime('now', '-1 hour')`
+  ).bind(email).first()
+  if (((recent?.n as number) || 0) >= 5) return c.json(genericResponse)
+
+  const users = await c.env.DB.prepare(`SELECT user_id, name, company_id FROM users WHERE email = ? AND status = 'active'`).bind(email).all()
+  const EXPIRES_HOURS = 1
+  for (const u of users.results as { user_id: number; name: string; company_id: number }[]) {
+    const rawToken = genToken()
+    const tokenHash = await sha256(rawToken)
+    const expiresAt = new Date(Date.now() + EXPIRES_HOURS * 3600 * 1000).toISOString()
+    await c.env.DB.prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
+      .bind(u.user_id, tokenHash, expiresAt).run()
+
+    const resetUrl = `${c.env.APP_BASE_URL}/reset-password?token=${rawToken}`
+    const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: EXPIRES_HOURS })
+    // レスポンスを待たせないため、実際の送信はバックグラウンドで行う
+    c.executionCtx.waitUntil(sendEmail(c.env, { to: email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'password_reset', company_id: u.company_id }))
+  }
+
+  return c.json(genericResponse)
+})
+
+// パスワード再設定の実行（トークンは生の値では保存されておらずハッシュ照合、1回使用したら失効）
+api.post('/auth/reset-password', async (c) => {
+  const { token, password } = await c.req.json().catch(() => ({} as { token?: string; password?: string }))
+  if (!token || !password) return c.json({ error: '入力内容が不足しています' }, 400)
+  if (password.length < 8) return c.json({ error: 'パスワードは8文字以上で入力してください' }, 400)
+
+  const tokenHash = await sha256(token)
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP`
+  ).bind(tokenHash).first()
+  if (!row) return c.json({ error: 'このリンクは無効か、有効期限が切れています' }, 400)
+
+  const newHash = await sha256(password)
+  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').bind(newHash, row.user_id).run()
+  await c.env.DB.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
+    .bind(nowJST(), row.user_id).run() // 同一ユーザーの他の未使用トークンも合わせて失効させる
+
+  return c.json({ ok: true })
 })
 
 api.post('/auth/logout', async (c) => {
@@ -1237,12 +1294,69 @@ api.get('/admin/notices', async (c) => {
   return c.json({ notices: rows.results })
 })
 
+// お知らせの対象者を解決する（画面表示・既読率レポートと同じtarget_type判定ルールを踏襲）
+async function resolveNoticeTargets(db: D1Database, companyId: number, targetType: string, targetIds: string):
+  Promise<{ staff_id: number; user_id: number; name: string; email: string | null }[]> {
+  if (targetType === 'all') {
+    const rows = await db.prepare(
+      `SELECT sp.staff_id, u.user_id, u.name, u.email FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id
+       WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active'`
+    ).bind(companyId).all()
+    return rows.results as any[]
+  }
+  if (targetType === 'staff') {
+    const ids = (targetIds || '').split(',').map(v => v.trim()).filter(Boolean)
+    if (!ids.length) return []
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = await db.prepare(
+      `SELECT sp.staff_id, u.user_id, u.name, u.email FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id
+       WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active' AND sp.staff_id IN (${placeholders})`
+    ).bind(companyId, ...ids).all()
+    return rows.results as any[]
+  }
+  if (targetType === 'project') {
+    const projIds = (targetIds || '').split(',').map(v => v.trim()).filter(Boolean)
+    if (!projIds.length) return []
+    const placeholders = projIds.map(() => '?').join(',')
+    const rows = await db.prepare(
+      `SELECT DISTINCT sp.staff_id, u.user_id, u.name, u.email FROM shifts sh
+       JOIN staff_profiles sp ON sp.staff_id = sh.staff_id JOIN users u ON u.user_id = sp.user_id
+       WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active' AND sh.project_id IN (${placeholders})`
+    ).bind(companyId, ...projIds).all()
+    return rows.results as any[]
+  }
+  return []
+}
+
+// 対象者へお知らせメールを一括送信する（同時実行数を絞って処理し、1件の失敗が他に波及しないようにする）
+async function sendNoticeEmails(env: Bindings, recipients: { name: string; email: string }[], title: string, body: string, companyId: number) {
+  const CONCURRENCY = 10
+  const url = `${env.APP_BASE_URL}/staff`
+  for (let i = 0; i < recipients.length; i += CONCURRENCY) {
+    const batch = recipients.slice(i, i + CONCURRENCY)
+    await Promise.allSettled(batch.map(r => {
+      const tpl = noticeEmail({ name: r.name, title, body, url })
+      return sendEmail(env, { to: r.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notice', company_id: companyId })
+    }))
+  }
+}
+
 api.post('/admin/notices', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.title) return c.json({ error: 'タイトルは必須です' }, 400)
+  const target_type = b.target_type || 'all'; const target_ids = b.target_ids ?? ''
   await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.title, b.body ?? '', b.target_type || 'all', b.target_ids ?? '', b.importance || 'normal', b.read_required ? 1 : 0, nowJST(), u.user_id).run()
+    .bind(u.company_id, b.title, b.body ?? '', target_type, target_ids, b.importance || 'normal', b.read_required ? 1 : 0, nowJST(), u.user_id).run()
+
+  // メール通知（対象者判定ロジックは既存のnotice表示ロジックを再利用。既読状態には一切影響しない）
+  if (b.send_email) {
+    const recipients = (await resolveNoticeTargets(c.env.DB, u.company_id, target_type, target_ids))
+      .filter(r => r.email) as { name: string; email: string }[]
+    if (recipients.length) {
+      c.executionCtx.waitUntil(sendNoticeEmails(c.env, recipients, b.title, b.body ?? '', u.company_id))
+    }
+  }
   return c.json({ ok: true })
 })
 
