@@ -36,6 +36,7 @@
 	"vars": {
 		"MAIL_FROM": "Field OS <onboarding@resend.dev>",
 		"APP_BASE_URL": "https://mbsaas.saas-2a2.workers.dev",
-		"MAIL_ENABLED": "true"
+		"MAIL_ENABLED": "true",
+		"RETENTION_ENABLED": "true"
 	}
 }

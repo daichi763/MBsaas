@@ -258,6 +258,68 @@ window.addTemplate = async function () {
   closeModal(); toast('テンプレートを配信しました'); renderTemplates()
 }
 
+// ============ データ保持（定期削除） ============
+const RETENTION_TARGET_LABEL = {
+  daily_reports: '日報（3年）', attendance_reports: '出退勤記録（退職後7年）', shifts: 'シフト（退職後7年）',
+  evaluations: '人事評価（退職後7年）', follow_logs: 'やり取り履歴（退職後7年）', consultations: '相談内容（退職後7年）',
+  r2_photos: 'R2写真（退職後7年）',
+}
+async function renderRetention() {
+  loading()
+  const { data } = await axios.get('/api/hq/retention/logs')
+  $app.innerHTML = `
+    <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
+      <div>
+        <h2 class="text-xl font-bold">データ保持（定期削除）</h2>
+        <p class="text-sm text-slate-400 mt-1">日報は3年、出退勤記録・シフト・評価・やり取り・相談・R2写真は退職後7年で自動削除されます（毎日Cronで実行）。</p>
+      </div>
+      <button class="btn btn-outline" onclick="runRetentionDryRun()"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
+    </div>
+    <div id="retention-dryrun-result" class="mb-5"></div>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <h3 class="font-bold mb-3">直近の実行ログ</h3>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>実行日時</th><th>対象</th><th>種別</th><th>対象件数</th><th>削除件数</th><th>失敗</th></tr></thead>
+          <tbody>
+            ${data.logs.length === 0 ? '<tr><td colspan="6" class="text-center text-slate-500 py-4">実行履歴がありません</td></tr>' : data.logs.map(l => `
+              <tr>
+                <td class="text-xs">${l.finished_at ? dayjs(l.finished_at).format('YYYY/M/D HH:mm') : '-'}</td>
+                <td>${RETENTION_TARGET_LABEL[l.target] || esc(l.target)}</td>
+                <td><span class="badge ${l.dry_run ? 'badge-gray' : 'badge-blue'}">${l.dry_run ? 'dry-run' : '実削除'}</span></td>
+                <td>${l.target_count}</td>
+                <td>${l.deleted_count}</td>
+                <td>${l.failed_count > 0 ? `<span class="text-red-400">${l.failed_count}</span>` : '0'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>`
+}
+window.runRetentionDryRun = async function () {
+  const box = document.getElementById('retention-dryrun-result')
+  box.innerHTML = '<div class="flex justify-center py-6"><span class="spin"></span></div>'
+  try {
+    const { data } = await axios.post('/api/hq/retention/dry-run')
+    box.innerHTML = `
+      <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+        <h3 class="font-bold mb-3">dry-run結果（削除は実行していません）</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          ${data.results.map(r => `
+            <div class="bg-slate-900 rounded-lg p-3">
+              <p class="text-xs text-slate-400">${RETENTION_TARGET_LABEL[r.target] || esc(r.target)}</p>
+              <p class="text-lg font-bold ${r.targetCount > 0 ? 'text-amber-400' : ''}">${r.targetCount}件</p>
+            </div>`).join('')}
+        </div>
+      </section>`
+    toast('dry-runが完了しました')
+    renderRetention()
+  } catch {
+    box.innerHTML = ''
+    toast('dry-runの実行に失敗しました')
+  }
+}
+
 // ============ 伴走支援 ============
 async function renderSupport() {
   loading()
@@ -302,7 +364,7 @@ async function renderSupport() {
 }
 
 // ============ ルーティング ============
-const routes = { companies: renderCompanies, templates: renderTemplates, support: renderSupport }
+const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport }
 
 function route() {
   const hash = (location.hash || '#companies').slice(1)

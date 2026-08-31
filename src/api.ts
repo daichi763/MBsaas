@@ -3,10 +3,12 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
+import { runRetentionCleanup } from './services/retention'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
   RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
+  RETENTION_ENABLED?: string
 }
 type Variables = { user: any }
 
@@ -752,7 +754,7 @@ api.get('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
   const db = c.env.DB
   const profile = await db.prepare(`
-    SELECT sp.*, us.user_code, us.name, us.email, us.phone, us.status, us.last_login_at
+    SELECT sp.*, us.user_code, us.name, us.email, us.phone, us.status, us.last_login_at, us.retired_at
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
     WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(sid, u.company_id).first()
   if (!profile) return c.json({ error: 'not found' }, 404)
@@ -788,13 +790,20 @@ api.get('/admin/staff/:id', async (c) => {
 
 // スタッフ更新 (メモ・フォローフラグ・リスク)
 api.put('/admin/staff/:id', async (c) => {
-  const u = c.get('user')
-  const { memo, follow_flag, retention_risk, skills, career, work_area } = await c.req.json()
+  const u = c.get('user'); const sid = c.req.param('id')
+  const { memo, follow_flag, retention_risk, skills, career, work_area, retired_at } = await c.req.json()
   await c.env.DB.prepare(`UPDATE staff_profiles SET
       memo = COALESCE(?, memo), follow_flag = COALESCE(?, follow_flag), retention_risk = COALESCE(?, retention_risk),
       skills = COALESCE(?, skills), career = COALESCE(?, career), work_area = COALESCE(?, work_area)
     WHERE staff_id = ? AND company_id = ?`)
-    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null, skills ?? null, career ?? null, work_area ?? null, c.req.param('id'), u.company_id).run()
+    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null, skills ?? null, career ?? null, work_area ?? null, sid, u.company_id).run()
+
+  // 退職日はusersテーブル側で管理する（定期削除の「退職後7年」判定に使用）
+  if (retired_at !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET retired_at = ?, status = ?
+      WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`)
+      .bind(retired_at || null, retired_at ? 'suspended' : 'active', sid, u.company_id).run()
+  }
   return c.json({ ok: true })
 })
 
@@ -1620,4 +1629,19 @@ api.post('/hq/templates', async (c) => {
   return c.json({ ok: true })
 })
 
+// ============ データ保持（定期削除、system_admin限定）============
+// 注意: 実際の削除はCron Triggerからのみ実行する（HTTP経由の一般APIとしては公開しない）。
+// ここではdry-run（削除せず対象件数のみ確認）と、過去の実行ログの閲覧のみ提供する。
+// 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定とする。
+api.post('/hq/retention/dry-run', async (c) => {
+  const result = await runRetentionCleanup(c.env.DB, c.env.PHOTOS, { dryRun: true })
+  return c.json(result)
+})
+
+api.get('/hq/retention/logs', async (c) => {
+  const rows = await c.env.DB.prepare('SELECT * FROM retention_logs ORDER BY log_id DESC LIMIT 30').all()
+  return c.json({ logs: rows.results })
+})
+
 export default api
+

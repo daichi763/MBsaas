@@ -336,6 +336,17 @@ async function renderStaffDetail(sid) {
               ${p.follow_flag ? 'フォロー解除' : '要フォロー登録'}</button>
           </div>
         </div>
+        <div class="mt-3 pt-3 border-t border-gray-100">
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-person-walking-arrow-right text-gray-400 mr-1"></i>在籍状況</p>
+          ${p.retired_at
+            ? `<p class="text-sm text-gray-700 mb-2">退職済み（退職日: ${esc(p.retired_at)}）</p>
+               <button class="btn btn-outline text-xs" onclick="setStaffRetiredAt(${sid}, null)">現役に戻す</button>`
+            : `<div class="flex gap-2">
+                 <input type="date" id="staff-retired-date" class="inp text-sm flex-1">
+                 <button class="btn btn-outline text-xs" onclick="setStaffRetiredAt(${sid}, document.getElementById('staff-retired-date').value)">退職日を設定</button>
+               </div>
+               <p class="text-xs text-gray-400 mt-1">退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>`}
+        </div>
       </section>
 
       <section class="card p-4">
@@ -444,6 +455,16 @@ window.toggleFollow = async function (sid, flag) {
   await axios.put('/api/admin/staff/' + sid, { follow_flag: flag })
   toast(flag ? '要フォローに登録しました' : 'フォローを解除しました')
   renderStaffDetail(sid)
+}
+window.setStaffRetiredAt = async function (sid, date) {
+  if (date && !confirm(`退職日を ${date} に設定しますか？\n7年経過すると出退勤記録等が定期削除の対象になります。`)) return
+  try {
+    await axios.put('/api/admin/staff/' + sid, { retired_at: date })
+    toast(date ? '退職日を設定しました' : '現役に戻しました')
+    renderStaffDetail(sid)
+  } catch {
+    toast('更新に失敗しました')
+  }
 }
 
 // ============ 汎用ファイル管理（履歴書・契約書で共通利用） ============

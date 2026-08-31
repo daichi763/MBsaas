@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
+import { runRetentionCleanup } from './services/retention'
 
-type Bindings = { DB: D1Database }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -313,6 +314,7 @@ app.get('/hq', async (c) => {
         <nav class="flex gap-1">
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
+          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持</a>
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
@@ -352,6 +354,18 @@ export default {
       console.log(`notice_reads cleanup completed: deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
     } catch (e) {
       console.log(`notice_reads cleanup failed: ${e}`)
+    }
+
+    // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
+    // RETENTION_ENABLED が 'true' になるまでは dry-run（削除せず対象件数のみログ・記録）で動作する。
+    // 本番投入時は、dry-runの結果を確認してから RETENTION_ENABLED=true に切り替えること。
+    try {
+      const dryRun = env.RETENTION_ENABLED !== 'true'
+      const r = await runRetentionCleanup(env.DB, env.PHOTOS, { dryRun })
+      const summary = r.results.map(x => `${x.target}:${dryRun ? x.targetCount : x.deletedCount}`).join(' ')
+      console.log(`retention cleanup completed (dryRun=${dryRun}): ${summary}`)
+    } catch (e) {
+      console.log(`retention cleanup failed: ${e}`)
     }
   },
 }
