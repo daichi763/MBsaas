@@ -294,12 +294,14 @@ window.addStaff = async function () {
 // ============ スタッフ詳細 ============
 async function renderStaffDetail(sid) {
   loading()
-  const [{ data }, { data: docData }] = await Promise.all([
+  const [{ data }, { data: docData }, { data: affData }] = await Promise.all([
     axios.get('/api/admin/staff/' + sid),
     axios.get('/api/admin/staff/' + sid + '/documents'),
+    axios.get('/api/admin/staff-affiliations'),
   ])
   const p = data.profile
   const evalRadar = data.evaluations[0]
+  const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
 
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
@@ -307,6 +309,7 @@ async function renderStaffDetail(sid) {
       <div class="flex-1">
         <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_code)}</span></h2>
         <div class="flex gap-2 mt-1">
+          <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
           ${RISK_BADGE[p.retention_risk]}
           ${p.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : ''}
           <span class="badge badge-blue">評価 ${Number(p.evaluation_score).toFixed(1)}</span>
@@ -320,13 +323,34 @@ async function renderStaffDetail(sid) {
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3">基本情報</h3>
         <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400">所属</dt><dd>${esc(p.affiliation || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">年代</dt><dd>${esc(p.age_group || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">エリア</dt><dd>${esc(p.work_area || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">スキル</dt><dd class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '-'}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">連絡先</dt><dd class="text-xs">${esc(p.phone || '')}<br>${esc(p.email || '')}</dd></div>
+          <div class="flex items-center gap-2">
+            <dt class="w-28 text-gray-400 shrink-0">所属会社名</dt>
+            <dd class="flex-1"><input list="affiliation-list" id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}"></dd>
+          </div>
+          <datalist id="affiliation-list">${affData.affiliations.map(a => `<option value="${esc(a.affiliation_name)}">`).join('')}</datalist>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">所属先担当者名</dt><dd class="flex-1"><input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">フリガナ</dt><dd class="flex-1"><input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">性別</dt><dd class="flex-1">
+            <select id="staff-gender" class="inp text-xs">
+              <option value="">-</option>
+              <option value="male" ${p.gender === 'male' ? 'selected' : ''}>男性</option>
+              <option value="female" ${p.gender === 'female' ? 'selected' : ''}>女性</option>
+              <option value="other" ${p.gender === 'other' ? 'selected' : ''}>その他</option>
+              <option value="unspecified" ${p.gender === 'unspecified' ? 'selected' : ''}>回答しない</option>
+            </select></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="staff-dob" class="inp text-xs" value="${p.date_of_birth || ''}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">年齢</dt><dd>${p.age != null ? p.age + '歳' : '-'}</dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">エリア</dt><dd>${esc(p.work_area || '-')}</dd></div>
+          <div class="flex gap-1"><dt class="w-28 text-gray-400 shrink-0">最寄駅</dt><dd class="flex-1 flex gap-1">
+            <input id="staff-station-line" placeholder="路線" class="inp text-xs" value="${esc(p.nearest_station_line || '')}">
+            <input id="staff-station" placeholder="駅" class="inp text-xs" value="${esc(p.nearest_station || '')}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">通勤可能時間</dt><dd class="flex-1"><input type="number" id="staff-commute" class="inp text-xs" value="${p.commute_minutes ?? ''}" placeholder="分"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">稼働開始可能日</dt><dd class="flex-1"><input type="date" id="staff-available-from" class="inp text-xs" value="${p.available_from || ''}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">スキル</dt><dd class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '-'}</dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(p.phone || '')}<br>${esc(p.email || '')}</dd></div>
           <div><dt class="text-gray-400 mb-1">経歴</dt><dd class="text-xs text-gray-600">${esc(p.career || '-')}</dd></div>
         </dl>
+        <button class="btn btn-outline text-xs w-full mt-2" onclick="saveStaffBasicInfo(${sid})">基本情報を保存</button>
         <div class="mt-3 pt-3 border-t border-gray-100">
           <label class="text-xs text-gray-400 block mb-1">管理者メモ</label>
           <textarea id="staff-memo" rows="2" class="inp text-xs">${esc(p.memo || '')}</textarea>
@@ -338,14 +362,21 @@ async function renderStaffDetail(sid) {
         </div>
         <div class="mt-3 pt-3 border-t border-gray-100">
           <p class="text-xs text-gray-500 mb-1"><i class="fas fa-person-walking-arrow-right text-gray-400 mr-1"></i>在籍状況</p>
+          <select id="staff-emp-status" class="inp text-sm mb-2" onchange="if(this.value!=='retired') setStaffEmploymentStatus(${sid}, this.value)">
+            <option value="working" ${p.employment_status === 'working' || !p.employment_status ? 'selected' : ''}>在職中</option>
+            <option value="leave" ${p.employment_status === 'leave' ? 'selected' : ''}>休職中</option>
+            <option value="preboarding" ${p.employment_status === 'preboarding' ? 'selected' : ''}>入社予定</option>
+            <option value="retired" ${p.employment_status === 'retired' ? 'selected' : ''}>退職</option>
+          </select>
           ${p.retired_at
-            ? `<p class="text-sm text-gray-700 mb-2">退職済み（退職日: ${esc(p.retired_at)}）</p>
+            ? `<p class="text-sm text-gray-700 mb-2">退職日: ${esc(p.retired_at)}</p>
                <button class="btn btn-outline text-xs" onclick="setStaffRetiredAt(${sid}, null)">現役に戻す</button>`
             : `<div class="flex gap-2">
                  <input type="date" id="staff-retired-date" class="inp text-sm flex-1">
                  <button class="btn btn-outline text-xs" onclick="setStaffRetiredAt(${sid}, document.getElementById('staff-retired-date').value)">退職日を設定</button>
                </div>
                <p class="text-xs text-gray-400 mt-1">退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>`}
+          ${p.affiliation && p.affiliation === p.company_name ? '' : ''}
         </div>
       </section>
 
@@ -466,6 +497,37 @@ window.setStaffRetiredAt = async function (sid, date) {
     toast('更新に失敗しました')
   }
 }
+window.setStaffEmploymentStatus = async function (sid, status) {
+  try {
+    await axios.put('/api/admin/staff/' + sid, { employment_status: status })
+    toast('在籍状況を更新しました')
+    renderStaffDetail(sid)
+  } catch {
+    toast('更新に失敗しました')
+  }
+}
+window.saveStaffBasicInfo = async function (sid) {
+  try {
+    await axios.put('/api/admin/staff/' + sid, {
+      affiliation: document.getElementById('staff-affiliation').value,
+      affiliation_contact: document.getElementById('staff-affiliation-contact').value,
+      kana: document.getElementById('staff-kana').value,
+      gender: document.getElementById('staff-gender').value,
+      date_of_birth: document.getElementById('staff-dob').value || null,
+      nearest_station_line: document.getElementById('staff-station-line').value,
+      nearest_station: document.getElementById('staff-station').value,
+      commute_minutes: document.getElementById('staff-commute').value ? Number(document.getElementById('staff-commute').value) : null,
+      available_from: document.getElementById('staff-available-from').value || null,
+    })
+    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）
+    const aff = document.getElementById('staff-affiliation').value.trim()
+    if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
+    toast('基本情報を保存しました')
+    renderStaffDetail(sid)
+  } catch {
+    toast('保存に失敗しました')
+  }
+}
 
 // ============ 汎用ファイル管理（履歴書・契約書で共通利用） ============
 const DOC_ICON = { pdf: 'fa-file-pdf text-red-500', doc: 'fa-file-word text-blue-500', docx: 'fa-file-word text-blue-500',
@@ -487,6 +549,7 @@ function formatFileSize(bytes) {
 const DOC_ENTITY = {
   staff: { collectionUrl: id => `/api/admin/staff/${id}/documents`, itemUrl: docId => `/api/admin/staff/documents/${docId}`, containerId: 'staff-documents-list', emptyText: '履歴書ファイルはありません', title: '履歴書アップロード' },
   client: { collectionUrl: id => `/api/admin/clients/${id}/documents`, itemUrl: docId => `/api/admin/clients/documents/${docId}`, containerId: 'client-documents-list', emptyText: '契約書ファイルはありません', title: '契約書アップロード' },
+  employee: { collectionUrl: id => `/api/admin/employees/${id}/documents`, itemUrl: docId => `/api/admin/employees/documents/${docId}`, containerId: 'employee-documents-list', emptyText: '入社時書類はありません', title: '入社時書類アップロード' },
 }
 function documentListHtml(docs, kind, id) {
   const cfg = DOC_ENTITY[kind]
@@ -828,6 +891,185 @@ async function renderClientDetail(cid) {
         <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
       </section>
     </div>`
+}
+
+// ============ 社員名簿（自社社員のみ表示） ============
+const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
+async function renderEmployees() {
+  loading()
+  const { data } = await axios.get('/api/admin/employees')
+  $app.innerHTML = `
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-xl font-bold text-gray-900">社員名簿</h2>
+      <p class="text-sm text-gray-400">自社（所属会社名が自社と一致するスタッフ）のみ表示されます</p>
+    </div>
+    <section class="card p-4">
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>社員番号</th><th>氏名</th><th>フリガナ</th><th>在籍確認</th><th>所属</th><th>役職</th><th>拠点</th><th>契約形態</th></tr></thead>
+          <tbody>
+            ${data.employees.length === 0 ? '<tr><td colspan="8" class="text-center text-gray-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
+              <tr class="cursor-pointer" onclick="location.hash='employees/${e.staff_id}'">
+                <td>${esc(e.employee_number || '-')}</td>
+                <td class="text-blue-600 hover:underline">${esc(e.name)}</td>
+                <td>${esc(e.kana || '-')}</td>
+                <td><span class="badge ${e.employment_status === 'retired' ? 'badge-gray' : e.employment_status === 'leave' ? 'badge-yellow' : e.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[e.employment_status] || '在職中'}</span></td>
+                <td>${esc(e.department || '-')}</td>
+                <td>${esc(e.job_title || '-')}</td>
+                <td>${esc(e.base_location || '-')}</td>
+                <td>${esc(e.contract_type || '-')}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>`
+}
+
+async function renderEmployeeDetail(sid) {
+  loading()
+  const [{ data }, { data: docData }] = await Promise.all([
+    axios.get('/api/admin/employees/' + sid),
+    axios.get('/api/admin/employees/' + sid + '/documents'),
+  ])
+  const s = data.staff; const r = data.record || {}
+  const field = (id, label, value, type = 'text') =>
+    `<div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">${label}</dt><dd class="flex-1"><input type="${type}" id="${id}" class="inp text-xs" value="${value ?? ''}"></dd></div>`
+
+  $app.innerHTML = `
+    <div class="flex items-center gap-3 mb-5 flex-wrap">
+      <a href="#employees" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+      <div class="flex-1">
+        <h2 class="text-xl font-bold text-gray-900">${esc(s.name)}</h2>
+        <div class="flex gap-2 mt-1">
+          <span class="badge ${s.employment_status === 'retired' ? 'badge-gray' : s.employment_status === 'leave' ? 'badge-yellow' : s.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[s.employment_status] || '在職中'}</span>
+        </div>
+      </div>
+      <a class="btn btn-outline" href="#staff/${sid}"><i class="fas fa-user"></i>スタッフ情報を見る</a>
+      <button class="btn btn-primary" onclick="saveEmployeeRecord(${sid})"><i class="fas fa-floppy-disk"></i>保存</button>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-4">
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3">在籍・雇用情報</h3>
+        <dl class="space-y-2">
+          ${field('emp-number', '社員番号', r.employee_number)}
+          ${field('emp-hire-date', '入社年月日', r.hire_date, 'date')}
+          <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">勤続年月</dt><dd class="text-xs">${r.tenure || '-'}</dd></div>
+          ${field('emp-location', '拠点', r.base_location)}
+          ${field('emp-department', '所属', r.department)}
+          ${field('emp-job-title', '役職', r.job_title)}
+          ${field('emp-contract-type', '契約形態', r.contract_type)}
+          ${field('emp-work-style', '勤務形態', r.work_style)}
+          ${field('emp-hours', '所定労働時間', r.scheduled_hours, 'number')}
+          ${field('emp-days-week', '所定労働日数(週)', r.scheduled_days_week, 'number')}
+          ${field('emp-days-month', '所定労働日数(月)', r.scheduled_days_month, 'number')}
+        </dl>
+        <div class="mt-4 pt-3 border-t border-gray-100">
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-xs font-bold text-gray-500"><i class="fas fa-file-lines text-blue-500 mr-1"></i>入社時書類</h4>
+            <button class="btn btn-outline text-xs" onclick="openDocumentUpload('employee', ${sid})"><i class="fas fa-upload"></i>アップロード</button>
+          </div>
+          <div id="employee-documents-list">${documentListHtml(docData.documents, 'employee', sid)}</div>
+        </div>
+      </section>
+
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3">個人情報</h3>
+        <dl class="space-y-2">
+          ${field('emp-postal', '郵便番号', r.postal_code)}
+          ${field('emp-pref', '都道府県', r.prefecture)}
+          ${field('emp-city', '市区町村', r.city)}
+          ${field('emp-town', '町名', r.town)}
+          ${field('emp-address', '住所', r.address_detail)}
+          ${field('emp-personal-email', 'メアド（個人）', r.personal_email)}
+          ${field('emp-phone-main', '電話番号（メイン）', r.phone_main)}
+          ${field('emp-phone-work', '電話番号（業務）', r.phone_work)}
+          ${field('emp-dependents-info', '扶養情報', r.dependents_info)}
+          ${field('emp-dependents-count', '扶養人数', r.dependents_count, 'number')}
+          <p class="text-xs text-gray-400 pt-1">マイナンバーは今回のバージョンでは保存されません（項目のみ用意）</p>
+          <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">マイナンバー</dt><dd class="flex-1"><input class="inp text-xs bg-gray-50" disabled placeholder="未実装（保存されません）"></dd></div>
+        </dl>
+      </section>
+
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3">緊急連絡先</h3>
+        <dl class="space-y-2">
+          ${field('emp-em-name', '名前', r.emergency_name)}
+          ${field('emp-em-kana', 'フリガナ', r.emergency_kana)}
+          ${field('emp-em-relationship', '続柄', r.emergency_relationship)}
+          ${field('emp-em-phone', '電話番号', r.emergency_phone)}
+          ${field('emp-em-postal', '郵便番号', r.emergency_postal_code)}
+          ${field('emp-em-pref', '都道府県', r.emergency_prefecture)}
+          ${field('emp-em-city', '市区町村', r.emergency_city)}
+          ${field('emp-em-town', '町名', r.emergency_town)}
+          ${field('emp-em-address', '住所', r.emergency_address)}
+        </dl>
+      </section>
+
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3">給与・契約・保険</h3>
+        <dl class="space-y-2">
+          ${field('emp-contract-start', '契約開始', r.contract_start, 'date')}
+          ${field('emp-contract-end', '契約終了', r.contract_end, 'date')}
+          ${field('emp-bank-code', '銀行コード', r.bank_code)}
+          ${field('emp-bank-name', '銀行名', r.bank_name)}
+          ${field('emp-branch-name', '支店名', r.branch_name)}
+          ${field('emp-branch-code', '支店番号', r.branch_code)}
+          ${field('emp-account-type', '種別', r.account_type)}
+          ${field('emp-account-number', '口座番号', r.account_number)}
+          ${field('emp-salary-type', '基本給種別', r.base_salary_type)}
+          ${field('emp-salary', '基本給', r.base_salary, 'number')}
+          ${field('emp-ot-hours', '固定残業時間', r.fixed_overtime_hours, 'number')}
+          ${field('emp-ot-pay', '固定残業代', r.fixed_overtime_pay, 'number')}
+          ${field('emp-gross', '総支給額', r.gross_pay, 'number')}
+          ${field('emp-position-note', '役職手当（摘要）', r.position_allowance_note)}
+          ${field('emp-position-pay', '役職手当', r.position_allowance, 'number')}
+          ${field('emp-sales-note', '営業手当（摘要）', r.sales_allowance_note)}
+          ${field('emp-sales-pay', '営業手当', r.sales_allowance, 'number')}
+          ${field('emp-deduction-note', 'その他控除（摘要）', r.other_deduction_note)}
+          ${field('emp-deduction', 'その他控除', r.other_deduction, 'number')}
+          ${field('emp-emp-ins', '雇用保険被保険者番号', r.employment_insurance_no)}
+          ${field('emp-soc-ins', '社会保険番号', r.social_insurance_no)}
+          ${field('emp-leave-granted', '有給付与日', r.paid_leave_granted_at, 'date')}
+          ${field('emp-leave-remaining', '有給残数', r.paid_leave_remaining, 'number')}
+          ${field('emp-telework', '今月テレワーク残数', r.telework_remaining_this_month, 'number')}
+        </dl>
+      </section>
+    </div>`
+}
+
+window.saveEmployeeRecord = async function (sid) {
+  const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }
+  const str = (id) => document.getElementById(id).value || null
+  try {
+    await axios.put('/api/admin/employees/' + sid, {
+      employee_number: str('emp-number'), hire_date: str('emp-hire-date'), base_location: str('emp-location'),
+      department: str('emp-department'), job_title: str('emp-job-title'), contract_type: str('emp-contract-type'),
+      work_style: str('emp-work-style'), scheduled_hours: num('emp-hours'), scheduled_days_week: num('emp-days-week'),
+      scheduled_days_month: num('emp-days-month'),
+      postal_code: str('emp-postal'), prefecture: str('emp-pref'), city: str('emp-city'), town: str('emp-town'),
+      address_detail: str('emp-address'), personal_email: str('emp-personal-email'), phone_main: str('emp-phone-main'),
+      phone_work: str('emp-phone-work'), dependents_info: str('emp-dependents-info'), dependents_count: num('emp-dependents-count'),
+      emergency_name: str('emp-em-name'), emergency_kana: str('emp-em-kana'), emergency_relationship: str('emp-em-relationship'),
+      emergency_phone: str('emp-em-phone'), emergency_postal_code: str('emp-em-postal'), emergency_prefecture: str('emp-em-pref'),
+      emergency_city: str('emp-em-city'), emergency_town: str('emp-em-town'), emergency_address: str('emp-em-address'),
+      contract_start: str('emp-contract-start'), contract_end: str('emp-contract-end'),
+      bank_code: str('emp-bank-code'), bank_name: str('emp-bank-name'), branch_name: str('emp-branch-name'),
+      branch_code: str('emp-branch-code'), account_type: str('emp-account-type'), account_number: str('emp-account-number'),
+      base_salary_type: str('emp-salary-type'), base_salary: num('emp-salary'), fixed_overtime_hours: num('emp-ot-hours'),
+      fixed_overtime_pay: num('emp-ot-pay'), gross_pay: num('emp-gross'),
+      position_allowance_note: str('emp-position-note'), position_allowance: num('emp-position-pay'),
+      sales_allowance_note: str('emp-sales-note'), sales_allowance: num('emp-sales-pay'),
+      other_deduction_note: str('emp-deduction-note'), other_deduction: num('emp-deduction'),
+      employment_insurance_no: str('emp-emp-ins'), social_insurance_no: str('emp-soc-ins'),
+      paid_leave_granted_at: str('emp-leave-granted'), paid_leave_remaining: num('emp-leave-remaining'),
+      telework_remaining_this_month: num('emp-telework'),
+    })
+    toast('社員名簿を保存しました')
+    renderEmployeeDetail(sid)
+  } catch (e) {
+    toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました')
+  }
 }
 
 window.showAddClient = function () {
@@ -1378,7 +1620,7 @@ const routes = {
   dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => renderShifts(), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(),
-  'notice-reports': () => renderNoticeReadReport()
+  'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees
 }
 
 function route() {
@@ -1390,6 +1632,7 @@ function route() {
   if (tab === 'staff' && id) return renderStaffDetail(id)
   if (tab === 'projects' && id) return renderProjectDetail(id)
   if (tab === 'clients' && id) return renderClientDetail(id)
+  if (tab === 'employees' && id) return renderEmployeeDetail(id)
   ;(routes[tab] || renderDashboard)()
 }
 

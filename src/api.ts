@@ -22,6 +22,26 @@ async function sha256(text: string): Promise<string> {
 function todayJST(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
 }
+// 生年月日から満年齢を計算する（NULLならnull）
+function calcAge(dob: string | null | undefined): number | null {
+  if (!dob) return null
+  const today = todayJST()
+  const [ty, tm, td] = today.split('-').map(Number)
+  const [by, bm, bd] = dob.slice(0, 10).split('-').map(Number)
+  let age = ty - by
+  if (tm < bm || (tm === bm && td < bd)) age--
+  return age
+}
+// 入社年月日から勤続年月（"n年mヶ月"）を計算する
+function calcTenure(hireDate: string | null | undefined): string | null {
+  if (!hireDate) return null
+  const today = todayJST()
+  const [ty, tm] = today.split('-').map(Number)
+  const [hy, hm] = hireDate.slice(0, 10).split('-').map(Number)
+  let months = (ty - hy) * 12 + (tm - hm)
+  if (months < 0) months = 0
+  return `${Math.floor(months / 12)}年${months % 12}ヶ月`
+}
 function monthJST(): string { return todayJST().slice(0, 7) }
 function nowJST(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
@@ -778,7 +798,7 @@ api.get('/admin/staff/:id', async (c) => {
     FROM daily_reports WHERE staff_id = ? GROUP BY ym ORDER BY ym DESC LIMIT 3`).bind(sid).all()
 
   return c.json({
-    profile,
+    profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
     shifts: shifts.results,
     attendance: attendance.results,
     reports: (reports.results as any[]).map(r => ({ ...r, values: JSON.parse(r.report_values) })),
@@ -791,18 +811,44 @@ api.get('/admin/staff/:id', async (c) => {
 // スタッフ更新 (メモ・フォローフラグ・リスク)
 api.put('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
-  const { memo, follow_flag, retention_risk, skills, career, work_area, retired_at } = await c.req.json()
+  const {
+    memo, follow_flag, retention_risk, skills, career, work_area, retired_at,
+    affiliation, affiliation_contact, kana, gender, date_of_birth,
+    nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
+  } = await c.req.json()
+
   await c.env.DB.prepare(`UPDATE staff_profiles SET
       memo = COALESCE(?, memo), follow_flag = COALESCE(?, follow_flag), retention_risk = COALESCE(?, retention_risk),
-      skills = COALESCE(?, skills), career = COALESCE(?, career), work_area = COALESCE(?, work_area)
+      skills = COALESCE(?, skills), career = COALESCE(?, career), work_area = COALESCE(?, work_area),
+      affiliation = COALESCE(?, affiliation), affiliation_contact = COALESCE(?, affiliation_contact), kana = COALESCE(?, kana),
+      gender = COALESCE(?, gender), date_of_birth = COALESCE(?, date_of_birth),
+      nearest_station_line = COALESCE(?, nearest_station_line), nearest_station = COALESCE(?, nearest_station),
+      commute_minutes = COALESCE(?, commute_minutes), available_from = COALESCE(?, available_from)
     WHERE staff_id = ? AND company_id = ?`)
-    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null, skills ?? null, career ?? null, work_area ?? null, sid, u.company_id).run()
+    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null, skills ?? null, career ?? null, work_area ?? null,
+      affiliation ?? null, affiliation_contact ?? null, kana ?? null, gender ?? null, date_of_birth ?? null,
+      nearest_station_line ?? null, nearest_station ?? null, commute_minutes ?? null, available_from ?? null,
+      sid, u.company_id).run()
 
-  // 退職日はusersテーブル側で管理する（定期削除の「退職後7年」判定に使用）
+  // 退職日はusersテーブル側で管理する（定期削除の「退職後7年」判定に使用）。
+  // 既存の users.status('active'/'suspended') は他機能の対象判定に既に使われているため、
+  // 「退職」の時だけ suspended に連動させ、休職中/入社予定/在職中は active のまま維持する。
   if (retired_at !== undefined) {
     await c.env.DB.prepare(`UPDATE users SET retired_at = ?, status = ?
       WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`)
       .bind(retired_at || null, retired_at ? 'suspended' : 'active', sid, u.company_id).run()
+    await c.env.DB.prepare(`UPDATE staff_profiles SET employment_status = ? WHERE staff_id = ? AND company_id = ?`)
+      .bind(retired_at ? 'retired' : 'working', sid, u.company_id).run()
+  } else if (employment_status !== undefined) {
+    // 退職以外（在職中/休職中/入社予定）への変更。誤って退職日が残らないよう、
+    // 退職以外に変更する場合は退職日もクリアする。
+    await c.env.DB.prepare(`UPDATE staff_profiles SET employment_status = ? WHERE staff_id = ? AND company_id = ?`)
+      .bind(employment_status, sid, u.company_id).run()
+    if (employment_status !== 'retired') {
+      await c.env.DB.prepare(`UPDATE users SET retired_at = NULL, status = 'active'
+        WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`)
+        .bind(sid, u.company_id).run()
+    }
   }
   return c.json({ ok: true })
 })
@@ -842,7 +888,7 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
       COUNT(*) AS total_days
     FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
-  return c.json({ profile, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
+  return c.json({ profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
 })
 
 // ============ スタッフ履歴書ファイル管理 ============
@@ -1013,6 +1059,173 @@ api.get('/admin/clients/:id', async (c) => {
     FROM clients cl WHERE cl.client_id = ? AND cl.company_id = ?`).bind(cid, u.company_id).first()
   if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
   return c.json({ client })
+})
+
+// ============ 所属会社マスタ（スタッフの「所属会社名」選択肢） ============
+api.get('/admin/staff-affiliations', async (c) => {
+  const u = c.get('user')
+  const rows = await c.env.DB.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE company_id = ? ORDER BY affiliation_name')
+    .bind(u.company_id).all()
+  return c.json({ affiliations: rows.results })
+})
+api.post('/admin/staff-affiliations', async (c) => {
+  const u = c.get('user'); const { affiliation_name } = await c.req.json()
+  if (!affiliation_name) return c.json({ error: '所属会社名は必須です' }, 400)
+  await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)')
+    .bind(u.company_id, affiliation_name).run()
+  return c.json({ ok: true })
+})
+
+// ============ 社員名簿（自社社員のみ。affiliation = 自社名 のスタッフだけに絞る） ============
+// 「自社」は、このテナント自身の会社名（companies.company_name）と一致する affiliation を指す。
+// これによりB派遣会社（他のaffiliation）のスタッフはスタッフ管理には表示されても、
+// 自社の社員名簿には一切表示されない。
+async function ownCompanyName(db: D1Database, companyId: number): Promise<string> {
+  const row = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first()
+  return (row?.company_name as string) || ''
+}
+
+api.get('/admin/employees', async (c) => {
+  const u = c.get('user')
+  const ownName = await ownCompanyName(c.env.DB, u.company_id)
+  const rows = await c.env.DB.prepare(`
+    SELECT sp.staff_id, us.name, sp.kana, sp.employment_status, er.employee_number, er.department, er.job_title, er.base_location, er.contract_type
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = sp.staff_id
+    WHERE sp.company_id = ? AND sp.affiliation = ?
+    ORDER BY us.name`).bind(u.company_id, ownName).all()
+  return c.json({ employees: rows.results })
+})
+
+api.get('/admin/employees/:staffId', async (c) => {
+  const u = c.get('user'); const sid = c.req.param('staffId')
+  const ownName = await ownCompanyName(c.env.DB, u.company_id)
+  // 自社社員でなければ（=affiliationが自社名と一致しなければ）社員名簿としては閲覧不可にする
+  const staff = await c.env.DB.prepare(`
+    SELECT sp.*, us.name, us.email, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.staff_id = ? AND sp.company_id = ? AND sp.affiliation = ?`).bind(sid, u.company_id, ownName).first()
+  if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
+
+  const record = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
+  return c.json({
+    staff: { ...staff, age: calcAge(staff.date_of_birth as string | null) },
+    record: record ? { ...record, tenure: calcTenure(record.hire_date as string | null) } : null,
+  })
+})
+
+api.put('/admin/employees/:staffId', async (c) => {
+  const u = c.get('user'); const sid = c.req.param('staffId')
+  const ownName = await ownCompanyName(c.env.DB, u.company_id)
+  const staff = await c.env.DB.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ? AND affiliation = ?')
+    .bind(sid, u.company_id, ownName).first()
+  if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
+
+  const b = await c.req.json()
+  if (b.employee_number) {
+    const dup = await c.env.DB.prepare('SELECT 1 FROM employee_records WHERE company_id = ? AND employee_number = ? AND staff_id != ?')
+      .bind(u.company_id, b.employee_number, sid).first()
+    if (dup) return c.json({ error: 'この社員番号は既に使用されています' }, 409)
+  }
+
+  const cols = [
+    'employee_number', 'hire_date', 'base_location', 'department', 'job_title', 'contract_type', 'work_style',
+    'scheduled_hours', 'scheduled_days_week', 'scheduled_days_month', 'hr_staff_user_id',
+    'postal_code', 'prefecture', 'city', 'town', 'address_detail', 'personal_email', 'phone_main', 'phone_work',
+    'dependents_info', 'dependents_count',
+    'emergency_name', 'emergency_kana', 'emergency_relationship', 'emergency_phone',
+    'emergency_postal_code', 'emergency_prefecture', 'emergency_city', 'emergency_town', 'emergency_address',
+    'bank_code', 'bank_name', 'branch_name', 'branch_code', 'account_type', 'account_number',
+    'contract_start', 'contract_end',
+    'base_salary_type', 'base_salary', 'fixed_overtime_hours', 'fixed_overtime_pay', 'gross_pay',
+    'position_allowance_note', 'position_allowance', 'sales_allowance_note', 'sales_allowance',
+    'other_deduction_note', 'other_deduction',
+    'employment_insurance_no', 'social_insurance_no',
+    'paid_leave_granted_at', 'paid_leave_remaining', 'telework_remaining_this_month',
+  ]
+  const exists = await c.env.DB.prepare('SELECT employee_record_id FROM employee_records WHERE staff_id = ?').bind(sid).first()
+  if (exists) {
+    const setClause = cols.map(k => `${k} = COALESCE(?, ${k})`).join(', ')
+    await c.env.DB.prepare(`UPDATE employee_records SET ${setClause}, updated_at = ? WHERE staff_id = ? AND company_id = ?`)
+      .bind(...cols.map(k => b[k] ?? null), nowJST(), sid, u.company_id).run()
+  } else {
+    const placeholders = cols.map(() => '?').join(', ')
+    await c.env.DB.prepare(`INSERT INTO employee_records (staff_id, company_id, ${cols.join(', ')}) VALUES (?, ?, ${placeholders})`)
+      .bind(sid, u.company_id, ...cols.map(k => b[k] ?? null)).run()
+  }
+  return c.json({ ok: true })
+})
+
+// ============ 入社時書類（履歴書と同一パターン。既存DOCUMENTSバケットを別キー接頭辞で再利用） ============
+api.get('/admin/employees/:staffId/documents', async (c) => {
+  const staff = await assertStaffInCompany(c, c.req.param('staffId'))
+  if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const docs = await c.env.DB.prepare(
+    'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM employee_documents WHERE staff_id = ? ORDER BY uploaded_at DESC'
+  ).bind(c.req.param('staffId')).all()
+  return c.json({ documents: docs.results })
+})
+
+api.post('/admin/employees/:staffId/documents', async (c) => {
+  const u = c.get('user'); const sid = c.req.param('staffId')
+  const staff = await assertStaffInCompany(c, sid)
+  if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
+
+  let form: FormData
+  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
+  const files = form.getAll('files').filter(f => f instanceof File) as File[]
+  if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
+
+  const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
+  for (const file of files) {
+    const ext = docExt(file.name)
+    if (!DOC_ALLOWED_EXT.includes(ext)) { results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' }); continue }
+    if (file.size > DOC_MAX_BYTES) { results.push({ filename: file.name, ok: false, error: 'ファイルサイズは20MB以下にしてください。' }); continue }
+    const acceptableMimes = DOC_MIME_MAP[ext] || []
+    if (file.type && file.type !== 'application/octet-stream' && acceptableMimes.length && !acceptableMimes.includes(file.type)) {
+      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' }); continue
+    }
+    const uuid = crypto.randomUUID()
+    const key = `employee-documents/${u.company_id}/${sid}/${uuid}/${sanitizeForKey(file.name)}`
+    try {
+      const buf = await file.arrayBuffer()
+      await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
+    } catch { results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' }); continue }
+    try {
+      const r = await c.env.DB.prepare(`INSERT INTO employee_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, file.name, key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+      results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
+    } catch {
+      await c.env.DOCUMENTS.delete(key).catch(() => {})
+      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました。' })
+    }
+  }
+  return c.json({ results })
+})
+
+api.get('/admin/employees/documents/:docId/download', async (c) => {
+  const u = c.get('user'); const docId = c.req.param('docId')
+  const doc = await c.env.DB.prepare('SELECT * FROM employee_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
+  if (!doc) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
+  const obj = await c.env.DOCUMENTS.get(doc.storage_key as string)
+  if (!obj) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
+  const filename = (doc.original_file_name as string).replace(/["\\]/g, '_')
+  const encoded = encodeURIComponent(doc.original_file_name as string)
+  return c.body(obj.body, 200, {
+    'Content-Type': (doc.mime_type as string) || 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`,
+    'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=0',
+  })
+})
+
+api.delete('/admin/employees/documents/:docId', async (c) => {
+  const u = c.get('user'); const docId = c.req.param('docId')
+  const doc = await c.env.DB.prepare('SELECT * FROM employee_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
+  if (!doc) return c.json({ error: 'ファイルの削除に失敗しました' }, 404)
+  try {
+    await c.env.DB.prepare('DELETE FROM employee_documents WHERE document_id = ?').bind(docId).run()
+  } catch { return c.json({ error: 'ファイルの削除に失敗しました' }, 500) }
+  await c.env.DOCUMENTS.delete(doc.storage_key as string).catch(() => {})
+  return c.json({ ok: true })
 })
 
 // ============ クライアント契約書ファイル管理 ============
