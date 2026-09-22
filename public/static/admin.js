@@ -855,7 +855,7 @@ async function renderClientDetail(cid) {
     axios.get('/api/admin/clients/' + cid),
     axios.get('/api/admin/clients/' + cid + '/documents'),
   ])
-  const c = data.client
+  const c = data.client; const contacts = data.contacts || []
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#clients" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
@@ -870,7 +870,7 @@ async function renderClientDetail(cid) {
 
     <div class="grid lg:grid-cols-2 gap-4">
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">会社情報</h3>
+        <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報</h3>
         <dl class="text-sm space-y-2">
           <div class="flex"><dt class="w-24 text-gray-400">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
@@ -881,9 +881,26 @@ async function renderClientDetail(cid) {
           <div class="flex"><dt class="w-24 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600">${esc(c.memo || '-')}</dd></div>
         </dl>
+        <div class="mt-3 pt-3 border-t border-gray-100 space-y-2">
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
+          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">代表者役職</dt><dd class="flex-1"><input id="cl-rep-title" class="inp text-xs" value="${esc(c.representative_title || '')}"></dd></div>
+          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">代表者氏名</dt><dd class="flex-1"><input id="cl-rep-name" class="inp text-xs" value="${esc(c.representative_name || '')}"></dd></div>
+          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">代表者フリガナ</dt><dd class="flex-1"><input id="cl-rep-kana" class="inp text-xs" value="${esc(c.representative_kana || '')}"></dd></div>
+          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">インボイス番号</dt><dd class="flex-1"><input id="cl-invoice" class="inp text-xs" placeholder="T1234567890123" value="${esc(c.invoice_number || '')}"></dd></div>
+          <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
+          <button class="btn btn-outline text-xs w-full" onclick="saveClientBasicInfo(${cid})">保存</button>
+        </div>
       </section>
 
       <section class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-address-book text-blue-500 mr-1"></i>顧客担当者</h3>
+          <button class="btn btn-outline text-xs" onclick="showClientContactForm(${cid})"><i class="fas fa-plus"></i>担当者を追加</button>
+        </div>
+        <div id="client-contacts-list">${clientContactsHtml(contacts, cid)}</div>
+      </section>
+
+      <section class="card p-4 lg:col-span-2">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-file-signature text-blue-500 mr-1"></i>契約書</h3>
           <button class="btn btn-outline text-xs" onclick="openDocumentUpload('client', ${cid})"><i class="fas fa-upload"></i>契約書をアップロード</button>
@@ -891,6 +908,97 @@ async function renderClientDetail(cid) {
         <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
       </section>
     </div>`
+}
+
+function clientContactsHtml(contacts, cid) {
+  if (contacts.length === 0) return '<p class="text-sm text-gray-400">顧客担当者が登録されていません</p>'
+  return `<div class="space-y-2">${contacts.map(ct => `
+    <div class="p-2.5 rounded-lg bg-gray-50">
+      <div class="flex items-start justify-between gap-2">
+        <div class="text-sm min-w-0">
+          <p class="font-medium text-gray-800">${esc(ct.contact_name)}${ct.title ? ` <span class="text-xs text-gray-400">（${esc(ct.title)}）</span>` : ''}</p>
+          <p class="text-xs text-gray-500">${[ct.branch_name, ct.department].filter(Boolean).map(esc).join(' / ') || '-'}</p>
+          <p class="text-xs text-gray-500">${esc(ct.phone || '-')}　${esc(ct.email || '')}</p>
+        </div>
+        <div class="flex gap-1 shrink-0">
+          <button class="btn btn-outline text-xs" onclick="showClientContactForm(${cid}, ${JSON.stringify(ct).replace(/"/g, '&quot;')})">編集</button>
+          <button class="btn btn-danger text-xs" onclick="deleteClientContact(${cid}, ${ct.contact_id}, '${esc(ct.contact_name).replace(/'/g, "\\'")}')">削除</button>
+        </div>
+      </div>
+    </div>`).join('')}</div>`
+}
+
+window.showClientContactForm = function (cid, contact) {
+  const ct = contact || {}
+  modal(`
+    <h3 class="font-bold text-lg mb-4">${ct.contact_id ? '担当者を編集' : '担当者を追加'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">顧客名（担当者氏名） *</label><input id="cc-name" class="inp" value="${esc(ct.contact_name || '')}"></div>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="text-sm text-gray-600 block mb-1">支店名</label><input id="cc-branch" class="inp" value="${esc(ct.branch_name || '')}"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">部署名</label><input id="cc-department" class="inp" value="${esc(ct.department || '')}"></div>
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">担当者役職</label><input id="cc-title" class="inp" value="${esc(ct.title || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">電話番号</label><input id="cc-phone" class="inp" value="${esc(ct.phone || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス</label><input id="cc-email" type="email" class="inp" value="${esc(ct.email || '')}"></div>
+      <p id="cc-error" class="hidden text-sm text-red-600"></p>
+      <div class="flex gap-2 pt-2">
+        <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+        <button class="btn btn-primary flex-1" onclick="saveClientContact(${cid}, ${ct.contact_id || 'null'})">保存</button>
+      </div>
+    </div>`)
+}
+
+window.saveClientContact = async function (cid, contactId) {
+  const err = document.getElementById('cc-error')
+  err.classList.add('hidden')
+  const name = document.getElementById('cc-name').value.trim()
+  if (!name) { err.textContent = '担当者氏名は必須です'; err.classList.remove('hidden'); return }
+  const payload = {
+    contact_name: name,
+    branch_name: document.getElementById('cc-branch').value || null,
+    department: document.getElementById('cc-department').value || null,
+    title: document.getElementById('cc-title').value || null,
+    phone: document.getElementById('cc-phone').value || null,
+    email: document.getElementById('cc-email').value || null,
+  }
+  try {
+    if (contactId) await axios.put(`/api/admin/clients/contacts/${contactId}`, payload)
+    else await axios.post(`/api/admin/clients/${cid}/contacts`, payload)
+    closeModal(); toast('担当者を保存しました'); renderClientDetail(cid)
+  } catch (e) {
+    err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
+    err.classList.remove('hidden')
+  }
+}
+
+window.deleteClientContact = async function (cid, contactId, name) {
+  if (!confirm(`${name} を削除しますか？`)) return
+  try {
+    await axios.delete(`/api/admin/clients/contacts/${contactId}`)
+    toast('担当者を削除しました')
+    renderClientDetail(cid)
+  } catch {
+    toast('削除に失敗しました')
+  }
+}
+
+window.saveClientBasicInfo = async function (cid) {
+  const err = document.getElementById('cl-basic-error')
+  err.classList.add('hidden')
+  try {
+    await axios.put('/api/admin/clients/' + cid, {
+      representative_title: document.getElementById('cl-rep-title').value || null,
+      representative_name: document.getElementById('cl-rep-name').value || null,
+      representative_kana: document.getElementById('cl-rep-kana').value || null,
+      invoice_number: document.getElementById('cl-invoice').value || null,
+    })
+    toast('会社基本情報を保存しました')
+    renderClientDetail(cid)
+  } catch (e) {
+    err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
+    err.classList.remove('hidden')
+  }
 }
 
 // ============ 社員名簿（自社社員のみ表示） ============

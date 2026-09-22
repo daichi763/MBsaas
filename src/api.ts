@@ -1058,7 +1058,99 @@ api.get('/admin/clients/:id', async (c) => {
     SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects
     FROM clients cl WHERE cl.client_id = ? AND cl.company_id = ?`).bind(cid, u.company_id).first()
   if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
-  return c.json({ client })
+  const contacts = await c.env.DB.prepare(
+    'SELECT * FROM client_contacts WHERE client_id = ? AND company_id = ? ORDER BY contact_id'
+  ).bind(cid, u.company_id).all()
+  return c.json({ client, contacts: contacts.results })
+})
+
+// インボイス登録番号: T + 数字13桁のみ許可（前後の空白はトリムする）
+function validateInvoiceNumber(v: string | null | undefined): string | null | 'invalid' {
+  if (v == null || v === '') return null
+  const trimmed = v.trim()
+  return /^T\d{13}$/.test(trimmed) ? trimmed : 'invalid'
+}
+
+api.put('/admin/clients/:id', async (c) => {
+  const u = c.get('user'); const cid = c.req.param('id')
+  const b = await c.req.json()
+
+  let invoiceNumber: string | null = null
+  if (b.invoice_number !== undefined) {
+    const v = validateInvoiceNumber(b.invoice_number)
+    if (v === 'invalid') return c.json({ error: 'インボイス登録番号は「T」+数字13桁で入力してください（例: T1234567890123）' }, 400)
+    invoiceNumber = v
+  }
+
+  const exists = await c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
+  if (!exists) return c.json({ error: 'クライアントが見つかりません' }, 404)
+
+  await c.env.DB.prepare(`UPDATE clients SET
+      client_name = COALESCE(?, client_name), stream_type = COALESCE(?, stream_type), contract_type = COALESCE(?, contract_type),
+      billing_rule = COALESCE(?, billing_rule), memo = COALESCE(?, memo), client_rating = COALESCE(?, client_rating),
+      representative_title = COALESCE(?, representative_title), representative_name = COALESCE(?, representative_name),
+      representative_kana = COALESCE(?, representative_kana)
+      ${b.invoice_number !== undefined ? ', invoice_number = ?' : ''}
+    WHERE client_id = ? AND company_id = ?`)
+    .bind(
+      b.client_name ?? null, b.stream_type ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, b.client_rating ?? null,
+      b.representative_title ?? null, b.representative_name ?? null, b.representative_kana ?? null,
+      ...(b.invoice_number !== undefined ? [invoiceNumber] : []),
+      cid, u.company_id
+    ).run()
+  return c.json({ ok: true })
+})
+
+// ============ 顧客担当者（1会社に複数登録可、支店・部署は自由入力） ============
+async function assertClientOwned(c: any, cid: string) {
+  const u = c.get('user')
+  return c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
+}
+
+api.get('/admin/clients/:id/contacts', async (c) => {
+  const cid = c.req.param('id')
+  if (!(await assertClientOwned(c, cid))) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const u = c.get('user')
+  const rows = await c.env.DB.prepare('SELECT * FROM client_contacts WHERE client_id = ? AND company_id = ? ORDER BY contact_id')
+    .bind(cid, u.company_id).all()
+  return c.json({ contacts: rows.results })
+})
+
+api.post('/admin/clients/:id/contacts', async (c) => {
+  const u = c.get('user'); const cid = c.req.param('id')
+  if (!(await assertClientOwned(c, cid))) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const b = await c.req.json()
+  if (!b.contact_name) return c.json({ error: '担当者氏名は必須です' }, 400)
+  if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
+
+  await c.env.DB.prepare(`INSERT INTO client_contacts (company_id, client_id, contact_name, branch_name, department, title, phone, email)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, cid, b.contact_name, b.branch_name ?? null, b.department ?? null, b.title ?? null, b.phone ?? null, b.email ?? null).run()
+  return c.json({ ok: true })
+})
+
+api.put('/admin/clients/contacts/:contactId', async (c) => {
+  const u = c.get('user'); const contactId = c.req.param('contactId')
+  const existing = await c.env.DB.prepare('SELECT contact_id FROM client_contacts WHERE contact_id = ? AND company_id = ?').bind(contactId, u.company_id).first()
+  if (!existing) return c.json({ error: '担当者が見つかりません' }, 404)
+  const b = await c.req.json()
+  if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
+
+  await c.env.DB.prepare(`UPDATE client_contacts SET
+      contact_name = COALESCE(?, contact_name), branch_name = COALESCE(?, branch_name), department = COALESCE(?, department),
+      title = COALESCE(?, title), phone = COALESCE(?, phone), email = COALESCE(?, email), updated_at = ?
+    WHERE contact_id = ? AND company_id = ?`)
+    .bind(b.contact_name ?? null, b.branch_name ?? null, b.department ?? null, b.title ?? null, b.phone ?? null, b.email ?? null,
+      nowJST(), contactId, u.company_id).run()
+  return c.json({ ok: true })
+})
+
+api.delete('/admin/clients/contacts/:contactId', async (c) => {
+  const u = c.get('user'); const contactId = c.req.param('contactId')
+  const existing = await c.env.DB.prepare('SELECT contact_id FROM client_contacts WHERE contact_id = ? AND company_id = ?').bind(contactId, u.company_id).first()
+  if (!existing) return c.json({ error: '担当者が見つかりません' }, 404)
+  await c.env.DB.prepare('DELETE FROM client_contacts WHERE contact_id = ?').bind(contactId).run()
+  return c.json({ ok: true })
 })
 
 // ============ 所属会社マスタ（スタッフの「所属会社名」選択肢） ============
