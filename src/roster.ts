@@ -6,6 +6,7 @@
 // api.ts からは api.route('/admin/roster', rosterApi) で認証・権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
+import { getCookie } from 'hono/cookie'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -275,7 +276,7 @@ rosterApi.get('/lookup', async (c) => {
 
 async function findLinkSource(db: D1Database, code: string): Promise<any | null> {
   return db.prepare(`
-    SELECT sp.staff_id, sp.company_id, sp.person_id, sp.kana, sp.gender, us.name, pe.global_staff_code, co.company_name AS owner_company_name
+    SELECT sp.staff_id, sp.company_id, sp.person_id, sp.kana, sp.gender, us.name, us.role AS source_role, pe.global_staff_code, co.company_name AS owner_company_name
     FROM persons pe
     JOIN staff_profiles sp ON sp.person_id = pe.person_id AND sp.source_staff_id IS NULL AND sp.affiliation_type = 'own_employee'
     JOIN users us ON us.user_id = sp.user_id
@@ -296,11 +297,13 @@ rosterApi.post('/link', async (c) => {
   const already = await db.prepare('SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ?').bind(u.company_id, src.person_id).first()
   if (already) return c.json({ error: 'このスタッフは既に連携済みです', staff_id: already.staff_id }, 409)
 
-  // 稼働先側のユーザー行（シフト・勤怠等の既存機能との互換用）。
-  // 本人のログインはフェーズHの統合ログイン（同一person_idの企業切替）で対応するため、現時点では role='roster_only'（ログイン不可・お知らせ対象外）
+  // 稼働先側のユーザー行（シフト・勤怠等の既存機能との互換用）。パスワードは照合不能＝稼働先の会社コードでは直接ログインできない。
+  // 所属元でログインを持つスタッフは role='staff'（統合ログインの企業切替で稼働先の画面を利用可・フェーズH）、
+  // ログインを持たない場合は role='roster_only'（お知らせ対象外）
   const userCode = 'LK-' + src.global_staff_code
-  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?)`)
-    .bind(u.company_id, userCode, src.name, await unusablePasswordHash(), src.person_id).run()
+  const linkedRole = src.source_role === 'staff' ? 'staff' : 'roster_only'
+  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, userCode, src.name, linkedRole, await unusablePasswordHash(), src.person_id).run()
   const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, source_staff_id, affiliation)
     VALUES (?, ?, ?, ?, 'linked_external', ?, ?)`)
     .bind(r.meta.last_row_id, u.company_id, src.person_id, src.company_id, src.staff_id, src.owner_company_name).run()
@@ -414,6 +417,25 @@ rosterApi.post('/', async (c) => {
   return c.json({ ok: true, staff_id: staffId, global_staff_code: person.global_staff_code })
 })
 
+// ---------- フェーズH: 同一人物の所属企業（統合ログイン・勤怠の自動振り分け） ----------
+export type PersonStaffRow = { staff_id: number; company_id: number; user_id: number; company_name: string; settings_json: string }
+/**
+ * ログイン中ユーザーと同一人物（person_id）の、稼働管理対象のスタッフマスタ行を全企業分返す。
+ * 対象: users.status='active' かつ role='staff'、skillsheet_only 以外。person_id が無い場合は自分の行のみ。
+ */
+export async function personStaffRows(db: D1Database, u: any): Promise<PersonStaffRow[]> {
+  const self: PersonStaffRow[] = u.staff_id ? [{ staff_id: u.staff_id, company_id: u.company_id, user_id: u.user_id, company_name: u.company_name, settings_json: u.settings_json }] : []
+  if (!u.person_id) return self
+  const rows = await db.prepare(`
+    SELECT sp.staff_id, sp.company_id, us.user_id, co.company_name, co.settings_json
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = sp.company_id
+    WHERE sp.person_id = ? AND us.person_id = ? AND us.status = 'active' AND us.role = 'staff' AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
+    ORDER BY (sp.company_id != ?), sp.staff_id`).bind(u.person_id, u.person_id, u.company_id).all()
+  const list = rows.results as PersonStaffRow[]
+  if (u.staff_id && !list.some(r => r.staff_id === u.staff_id)) list.unshift(...self)
+  return list
+}
+
 // ---------- スタッフ本人向け（/api/staff/me/*） ----------
 // 本人は自分のスタッフマスタ基本項目と連携用IDのみ閲覧可。追記項目（評価・メモ）や企業間チャットは一切返さない。
 export const staffSelfApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -427,6 +449,24 @@ staffSelfApi.get('/profile', async (c) => {
   // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
   pick.global_staff_code = r.linkable ? r.global_staff_code : null
   return c.json({ profile: pick })
+})
+
+// 所属企業の一覧（統合ログインの企業切替用）
+staffSelfApi.get('/companies', async (c) => {
+  const u = c.get('user')
+  const rows = await personStaffRows(c.env.DB, u)
+  return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id })) })
+})
+// 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）
+staffSelfApi.post('/switch-company', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const target = (await personStaffRows(db, u)).find(r => r.company_id === Number(b.company_id))
+  if (!target) return c.json({ error: '切り替え先の企業が見つかりません' }, 404)
+  const token = getCookie(c, 'session')
+  if (!token) return c.json({ error: 'unauthorized' }, 401)
+  await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, token).run()
+  return c.json({ ok: true, company_name: target.company_name })
 })
 
 export default rosterApi
