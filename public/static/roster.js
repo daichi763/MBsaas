@@ -178,7 +178,8 @@ window.showRosterForm = async function (route) {
           ${f('rf-line', '最寄駅（路線）')}
           ${f('rf-station', '最寄駅（駅）')}
           ${f('rf-available', '稼働開始可能日', 'type="date"')}
-        </div>` : ''}
+        </div>
+        ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0"')}` : ''}
       <p class="text-xs text-gray-400"><span class="text-red-500">*</span> は必須項目です（氏名・性別は全企業共通の必須項目）</p>
     </div>
     <div class="flex gap-2 mt-4">
@@ -193,6 +194,7 @@ window.submitRosterForm = async function (route) {
     route, name: v('rf-name'), kana: v('rf-kana'), gender: v('rf-gender'), date_of_birth: v('rf-dob') || null,
     skills: v('rf-skills'), work_area: v('rf-area'), career: v('rf-career'),
     nearest_station_line: v('rf-line'), nearest_station: v('rf-station'), available_from: v('rf-available') || null,
+    commute_minutes: v('rf-commute') ? Number(v('rf-commute')) : null,
     user_code: v('rf-code'), password: v('rf-pass'), email: v('rf-email'), phone: v('rf-phone'),
     employee_number: v('rf-empno'), hire_date: v('rf-hire') || null, contract_type: v('rf-contract'),
     affiliation_contact: v('rf-aff-contact'), affiliation: v('rf-affiliation'),
@@ -218,3 +220,223 @@ window.submitRosterForm = async function (route) {
 
 // 画面遷移（hash変更）時に開いたままの作成モーダルを閉じる
 window.addEventListener('hashchange', () => { if (typeof closeModal === 'function') closeModal() })
+
+// =========================================================
+// フェーズD: 必須項目の企業別設定
+// =========================================================
+let ROSTER_REQUIRED = null // { code: true } のキャッシュ（フォームの * 表示用）
+async function loadRosterRequired(force) {
+  if (ROSTER_REQUIRED && !force) return ROSTER_REQUIRED
+  try {
+    const { data } = await axios.get('/api/admin/roster/field-settings')
+    ROSTER_REQUIRED = Object.fromEntries(data.fields.filter(f => f.is_required).map(f => [f.code, true]))
+    ROSTER_REQUIRED.__meta = data
+  } catch { ROSTER_REQUIRED = {} }
+  return ROSTER_REQUIRED
+}
+
+window.showRosterFieldSettings = async function () {
+  const req = await loadRosterRequired(true)
+  const data = req.__meta
+  const canEdit = ME && ['company_admin', 'system_admin'].includes(ME.role)
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>スタッフマスタ 必須項目の設定</h3>
+    <p class="text-xs text-gray-500 mb-4">新規作成時・基本項目の更新時に入力を必須にする項目を選択します。${canEdit ? '' : '<br><span class="text-red-500">変更は会社管理者のみ可能です</span>'}</p>
+    <p class="text-xs font-bold text-gray-500 mb-1">常に必須（変更不可）</p>
+    <div class="flex gap-2 mb-4">${data.absolute.map(f => `<span class="badge badge-red">${esc(f.label)}</span>`).join('')}</div>
+    <p class="text-xs font-bold text-gray-500 mb-1">企業ごとに設定</p>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      ${data.fields.map(f => `
+        <label class="flex items-center gap-2 p-2 rounded-lg border border-gray-200 ${canEdit ? 'cursor-pointer' : 'opacity-70'}">
+          <input type="checkbox" class="rq-field" data-code="${f.code}" ${f.is_required ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
+          <span class="text-sm">${esc(f.label)}</span>
+          ${f.skillsheet ? '' : '<span class="text-[10px] text-gray-400 ml-auto" title="④スキルシートのみ作成では必須判定しません">④対象外</span>'}
+        </label>`).join('')}
+    </div>
+    <p class="text-xs text-gray-400 mt-3">※ ①QR/ID連携で登録したスタッフの基本項目は所属元企業が管理するため、自社の必須設定は適用されません。</p>
+    ${canEdit ? '<button class="btn btn-primary w-full mt-4" onclick="saveRosterFieldSettings()">保存する</button>' : ''}`)
+}
+window.saveRosterFieldSettings = async function () {
+  const required = {}
+  document.querySelectorAll('.rq-field').forEach(el => { required[el.dataset.code] = el.checked })
+  try {
+    await axios.put('/api/admin/roster/field-settings', { required })
+    await loadRosterRequired(true)
+    closeModal(); toast('必須項目の設定を保存しました')
+  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました') }
+}
+
+// 作成フォームのラベルに必須マークを付ける（showRosterForm の描画後に呼ぶ）
+const RF_FIELD_IDS = { kana: 'rf-kana', date_of_birth: 'rf-dob', affiliation_contact: 'rf-aff-contact', skills: 'rf-skills', career: 'rf-career',
+  work_area: 'rf-area', nearest_station_line: 'rf-line', nearest_station: 'rf-station', available_from: 'rf-available', commute_minutes: 'rf-commute' }
+const RF_SKILLSHEET_EXEMPT = ['affiliation_contact', 'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from']
+function markRequiredInForm(route) {
+  const req = ROSTER_REQUIRED || {}
+  for (const [code, id] of Object.entries(RF_FIELD_IDS)) {
+    if (!req[code] || (route === 'skillsheet' && RF_SKILLSHEET_EXEMPT.includes(code))) continue
+    const el = document.getElementById(id); if (!el) continue
+    const label = el.parentElement && el.parentElement.querySelector('label')
+    if (label && !label.querySelector('.req-mark')) label.insertAdjacentHTML('beforeend', ' <span class="text-red-500 req-mark">*</span>')
+  }
+}
+const _origShowRosterForm = window.showRosterForm
+window.showRosterForm = async function (route) {
+  await loadRosterRequired(true)
+  await _origShowRosterForm(route)
+  markRequiredInForm(route)
+}
+const _origSubmitRosterForm = window.submitRosterForm
+window.submitRosterForm = async function (route) {
+  const req = ROSTER_REQUIRED || {}
+  const lacks = []
+  for (const [code, id] of Object.entries(RF_FIELD_IDS)) {
+    if (!req[code] || (route === 'skillsheet' && RF_SKILLSHEET_EXEMPT.includes(code))) continue
+    const el = document.getElementById(id)
+    if (el && !el.value.trim()) lacks.push(el.parentElement.querySelector('label').textContent.replace('*', '').trim())
+  }
+  if (lacks.length) { toast('次の項目は必須です: ' + lacks.join('・')); return }
+  return _origSubmitRosterForm(route)
+}
+
+// =========================================================
+// フェーズE: QRコード（恒久固定）の表示 / カメラで読み取り
+// =========================================================
+function qrSvg(text, cell) {
+  const qr = qrcode(0, 'M'); qr.addData(text); qr.make()
+  return qr.createSvgTag({ cellSize: cell || 6, margin: 2, scalable: true })
+}
+window.showShareQr = async function (sid) {
+  try {
+    const { data } = await axios.get(`/api/admin/roster/${sid}/share-code`)
+    modal(`
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-lg"><i class="fas fa-qrcode text-blue-600 mr-1"></i>連携用QRコード</h3>
+        <button class="btn btn-outline text-xs" onclick="window.print()"><i class="fas fa-print"></i>印刷</button>
+      </div>
+      <div class="text-center">
+        <div class="w-56 h-56 mx-auto">${qrSvg(data.global_staff_code)}</div>
+        <p class="font-mono text-xl font-bold tracking-widest mt-2">${esc(data.global_staff_code)}</p>
+        <p class="text-sm text-gray-700 mt-1">${esc(data.name)}（${esc(data.company_name)}）</p>
+      </div>
+      <ul class="text-xs text-gray-500 mt-4 space-y-1">
+        <li>・このQRコード / スタッフIDは恒久固定です（再発行・有効期限はありません）。</li>
+        <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目のみが共有されます。</li>
+        <li>・従業員管理の情報（給与・口座・社会保険等）は共有されません。</li>
+      </ul>`)
+  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '取得に失敗しました') }
+}
+
+let qrStream = null
+function stopQrScan() {
+  if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null }
+}
+window.startQrScan = async function () {
+  const box = document.getElementById('rl-scan')
+  if (!box) return
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('この端末ではカメラを利用できません。IDを入力してください'); return }
+  box.innerHTML = `<video id="rl-video" class="w-full rounded-lg bg-black" playsinline muted></video>
+    <p class="text-xs text-gray-500 mt-1 text-center">QRコードを枠内に映してください（画像はサーバーに送信されません）</p>
+    <button class="btn btn-outline w-full mt-2 text-xs" onclick="stopQrScanUi()">カメラを停止</button>`
+  try {
+    qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+  } catch { box.innerHTML = ''; toast('カメラへのアクセスが許可されませんでした'); return }
+  const video = document.getElementById('rl-video'); video.srcObject = qrStream; await video.play()
+  const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  const tick = () => {
+    if (!qrStream || !document.getElementById('rl-video')) { stopQrScan(); return }
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      const hit = window.jsQR && jsQR(img.data, img.width, img.height)
+      if (hit && hit.data) {
+        stopQrScan(); box.innerHTML = ''
+        document.getElementById('rl-code').value = hit.data.trim()
+        lookupRosterCode(); return
+      }
+    }
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+window.stopQrScanUi = function () { stopQrScan(); const b = document.getElementById('rl-scan'); if (b) b.innerHTML = '' }
+window.addEventListener('hashchange', stopQrScan)
+
+// ① のモーダルにカメラ読み取りボタンを追加
+const _origShowRosterLink = window.showRosterLink
+window.showRosterLink = function (prefill) {
+  _origShowRosterLink(prefill)
+  const res = document.getElementById('rl-result')
+  if (res) res.insertAdjacentHTML('beforebegin', `
+    <button class="btn btn-outline w-full mt-2" onclick="startQrScan()"><i class="fas fa-camera"></i>カメラでQRコードを読み取る</button>
+    <div id="rl-scan" class="mt-2"></div>`)
+}
+const _origCloseModal = window.closeModal
+window.closeModal = function () { stopQrScan(); _origCloseModal() }
+
+// =========================================================
+// フェーズE/F: スタッフ詳細への追加パネル（連携状況・共有追記項目・同意履歴）
+// admin.js の renderStaffDetail 描画後に呼び出される
+// =========================================================
+window.renderRosterPanels = async function (sid, p) {
+  const host = document.getElementById('roster-panels')
+  if (!host) return
+  let links = null
+  try { links = (await axios.get(`/api/admin/roster/${sid}/links`)).data } catch { links = null }
+  const hostNotes = p.affiliation_type === 'linked_external' ? `
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-pen-to-square text-emerald-500 mr-1"></i>稼働先追記項目</h3>
+      <p class="text-xs text-gray-400 mb-3">ここに記入した内容は所属元「${esc(p.owner_company_name || '')}」も閲覧できます（スタッフ本人には表示されません）。社内だけのメモは「管理者メモ」に記入してください。</p>
+      <label class="text-xs text-gray-500 block mb-1">現場評価</label>
+      <textarea id="host-site-eval" rows="2" class="inp text-xs mb-2">${esc(p.site_evaluation || '')}</textarea>
+      <label class="text-xs text-gray-500 block mb-1">稼働メモ</label>
+      <textarea id="host-work-memo" rows="2" class="inp text-xs">${esc(p.work_memo || '')}</textarea>
+      <div class="flex items-center justify-between mt-2">
+        <span class="text-[11px] text-gray-400">${p.host_note_updated_at ? '最終更新 ' + esc(p.host_note_updated_at) : ''}</span>
+        <button class="btn btn-outline text-xs" onclick="saveHostNotes(${sid})">保存</button>
+      </div>
+    </section>` : ''
+  let linkHtml = ''
+  if (links && links.role === 'owner') {
+    linkHtml = `
+      <section class="card p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-link text-blue-500 mr-1"></i>連携先企業（稼働先）</h3>
+          ${p.linkable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
+        </div>
+        ${links.links.length ? links.links.map(l => `
+          <div class="p-2.5 rounded-lg bg-gray-50 mb-2">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="font-bold text-gray-800">${esc(l.host_company_name)}</span>
+              <span class="text-gray-400">連携 ${esc((l.consented_at || l.linked_at || '').slice(0, 10))}</span>
+              <span class="ml-auto text-gray-500">今月 ${l.month_days}日 / 最終 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
+            </div>
+            ${l.site_evaluation || l.work_memo ? `
+              <p class="text-xs text-gray-700 mt-1"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
+              <p class="text-xs text-gray-700"><span class="text-gray-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>` : '<p class="text-xs text-gray-400 mt-1">稼働先からの追記はまだありません</p>'}
+          </div>`).join('') : `<p class="text-sm text-gray-400">${p.linkable ? 'まだ他社には連携されていません' : '連携対象外のスタッフです'}</p>`}
+        <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。</p>
+      </section>`
+  } else if (links && links.role === 'host') {
+    linkHtml = `
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-shield-halved text-blue-500 mr-1"></i>連携の同意履歴</h3>
+        ${links.consents.map(x => `
+          <div class="p-2.5 rounded-lg bg-gray-50 mb-2 text-xs">
+            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc(x.created_at)}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
+            <p class="text-gray-500 mt-1">共有範囲: ${esc(Array.isArray(x.shared_scope) ? x.shared_scope.join('・') : x.shared_scope)}</p>
+          </div>`).join('') || '<p class="text-sm text-gray-400">記録がありません</p>'}
+      </section>`
+  }
+  host.innerHTML = hostNotes + linkHtml
+  host.classList.toggle('hidden', !(hostNotes || linkHtml))
+}
+window.saveHostNotes = async function (sid) {
+  try {
+    await axios.put('/api/admin/staff/' + sid, {
+      site_evaluation: document.getElementById('host-site-eval').value,
+      work_memo: document.getElementById('host-work-memo').value,
+    })
+    toast('稼働先追記項目を保存しました')
+  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました') }
+}

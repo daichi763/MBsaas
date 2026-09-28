@@ -139,7 +139,11 @@ npm run cf-typegen
   - `POST /api/admin/roster`（`route`: `employee` / `partner` / `skillsheet`）
   - `GET /api/admin/roster/partners` / `GET /api/admin/roster/consents[?staff_id=]`
 - **マイグレーション**: `0012_add_persons_and_staff_master.sql`（`persons` と `roster_consents` を追加し、`staff_profiles` / `users` / `staff_affiliations` に列を追加。既存の `staff_id` の値は変更しない）
-- **今後のフェーズ**: D 必須項目の企業別設定 / E QRコード画像の発行・スキャン / G 企業間チャット / H 統合ログイン・勤怠の自動振り分け
+- **フェーズD 必須項目の企業別設定**: スタッフマスタ画面の「必須項目の設定」から変更します（変更できるのは会社管理者のみ）。氏名・性別は常に必須で変更できません。設定は `roster_field_requirements` に保存され、新規作成と基本項目の更新の両方に適用されます。①連携で登録したスタッフには適用しません。④スキルシートのみでは、最寄駅などの稼働系の項目は必須判定の対象外です
+- **フェーズE QRコード**: 自社雇用スタッフのスタッフ詳細と、スタッフ本人の画面（その他 → マイプロフィール）に、恒久固定のQRコードを表示します。①連携ではカメラでQRを読み取れます。読み取りはブラウザ内の jsQR で行い、画像はサーバーへ送信しません
+- **フェーズF 追記項目の共有**: 稼働先の「稼働先追記項目」（現場評価・稼働メモ。列は `site_evaluation` / `work_memo`）は、所属元のスタッフ詳細「連携先企業」パネルに閲覧専用で表示されます。各社の管理者メモ・フォロー履歴・日報は他社に公開しません
+  - API: `GET/PUT /api/admin/roster/field-settings`, `GET /api/admin/roster/:id/share-code`, `GET /api/admin/roster/:id/links`, `GET /api/staff/me/profile`（本人向け。基本項目と連携用IDのみを返します）
+- **今後のフェーズ**: G 企業間チャット / H 統合ログイン・勤怠の自動振り分け
 
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成

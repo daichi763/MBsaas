@@ -234,6 +234,8 @@ app.get('/staff', async (c) => {
   </nav>
   <div id="modal-root"></div>
   <script src="/static/staff.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script src="/static/staff-profile.js"></script>
 </body>
 </html>`)
 })
@@ -292,6 +294,8 @@ app.get('/admin', async (c) => {
     </div>
   </div>
   <div id="modal-root"></div>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
 </body>
