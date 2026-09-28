@@ -234,6 +234,8 @@ app.get('/staff', async (c) => {
   </nav>
   <div id="modal-root"></div>
   <script src="/static/staff.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script src="/static/staff-profile.js"></script>
 </body>
 </html>`)
 })
@@ -257,8 +259,8 @@ app.get('/admin', async (c) => {
       </div>
       <nav class="flex-1 overflow-y-auto py-3 px-3 space-y-0.5 text-sm" id="side-nav">
         <a href="#dashboard" class="side-link" data-tab="dashboard"><i class="fas fa-gauge-high w-5"></i>ダッシュボード</a>
-        <a href="#staff" class="side-link" data-tab="staff"><i class="fas fa-users w-5"></i>スタッフ管理</a>
-        <a href="#employees" class="side-link" data-tab="employees"><i class="fas fa-id-card w-5"></i>社員名簿</a>
+        <a href="#staff" class="side-link" data-tab="staff"><i class="fas fa-users w-5"></i>スタッフマスタ</a>
+        <a href="#employees" class="side-link" data-tab="employees"><i class="fas fa-id-card w-5"></i>従業員管理</a>
         <a href="#projects" class="side-link" data-tab="projects"><i class="fas fa-briefcase w-5"></i>案件管理</a>
         <a href="#clients" class="side-link" data-tab="clients"><i class="fas fa-building w-5"></i>クライアント</a>
         <a href="#shifts" class="side-link" data-tab="shifts"><i class="fas fa-calendar-days w-5"></i>シフト管理</a>
@@ -268,6 +270,7 @@ app.get('/admin', async (c) => {
         <a href="#notice-reports" class="side-link" data-tab="notice-reports"><i class="fas fa-chart-pie w-5"></i>既読率レポート</a>
         <a href="#follow" class="side-link" data-tab="follow"><i class="fas fa-handshake-angle w-5"></i>フォロー履歴</a>
         <a href="#consult" class="side-link" data-tab="consult"><i class="fas fa-comments w-5"></i>相談対応</a>
+        <a href="#roster-chat" class="side-link flex items-center" data-tab="roster-chat"><i class="fas fa-people-arrows w-5"></i>企業間チャット</a>
         <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>
       </nav>
       <div class="p-3 border-t border-gray-100">
@@ -281,18 +284,22 @@ app.get('/admin', async (c) => {
       <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-3 flex items-center justify-between gap-2">
         <h1 class="font-bold text-gray-800 truncate min-w-0 flex-1"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理</h1>
         <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0">
-          <option value="dashboard">ダッシュボード</option><option value="staff">スタッフ</option><option value="employees">社員名簿</option>
+          <option value="dashboard">ダッシュボード</option><option value="staff">スタッフマスタ</option><option value="employees">従業員管理</option>
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
-          <option value="follow">フォロー</option><option value="consult">相談</option><option value="billing">請求前確認</option>
+          <option value="follow">フォロー</option><option value="consult">相談</option><option value="roster-chat">企業間チャット</option><option value="billing">請求前確認</option>
         </select>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
     </div>
   </div>
   <div id="modal-root"></div>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <script src="/static/admin.js"></script>
+  <script src="/static/roster.js"></script>
+  <script src="/static/roster-chat.js"></script>
 </body>
 </html>`)
 })
