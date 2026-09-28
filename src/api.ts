@@ -4,6 +4,7 @@ import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
+import chatApi from './roster-chat'
 import rosterApi, { staffSelfApi, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
@@ -339,6 +340,8 @@ api.use('/hq/*', async (c, next) => {
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
 api.route('/admin/roster', rosterApi)
 api.route('/staff/me', staffSelfApi)
+// 企業間チャット（所属元⇔稼働先担当者）。/admin/* 配下のみ。スタッフ本人向けAPIには公開しない（src/roster-chat.ts）
+api.route('/admin/roster-chat', chatApi)
 
 // =========================================================
 // スタッフ側 API
