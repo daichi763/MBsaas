@@ -5,7 +5,7 @@ import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
-import rosterApi, { staffSelfApi, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
+import rosterApi, { staffSelfApi, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -761,6 +761,7 @@ function catLabel(cat: string): string {
 // スタッフ一覧
 api.get('/admin/staff', async (c) => {
   const u = c.get('user'); const month = monthJST(); const today = todayJST()
+  await ensureRosterIdentity(c.env.DB, u.company_id) // person_id 未採番の行を補完（seed後投入・他経路INSERT対策）
   const rows = await c.env.DB.prepare(`
     SELECT sp.staff_id, sp.evaluation_score, sp.retention_risk, sp.follow_flag,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
@@ -1229,6 +1230,7 @@ async function ownCompanyName(db: D1Database, companyId: number): Promise<string
 
 api.get('/admin/employees', async (c) => {
   const u = c.get('user')
+  await ensureRosterIdentity(c.env.DB, u.company_id)
   const rows = await c.env.DB.prepare(`
     SELECT sp.staff_id, us.name, sp.kana, sp.employment_status, er.employee_number, er.department, er.job_title, er.base_location, er.contract_type
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
