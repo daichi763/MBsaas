@@ -4,6 +4,7 @@ import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
+import rosterApi, { loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS } from './roster'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -335,6 +336,8 @@ api.use('/hq/*', async (c, next) => {
   if (c.get('user').role !== 'system_admin') return c.json({ error: 'forbidden' }, 403)
   return next()
 })
+// スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
+api.route('/admin/roster', rosterApi)
 
 // =========================================================
 // スタッフ側 API
@@ -755,8 +758,13 @@ function catLabel(cat: string): string {
 api.get('/admin/staff', async (c) => {
   const u = c.get('user'); const month = monthJST(); const today = todayJST()
   const rows = await c.env.DB.prepare(`
-    SELECT sp.staff_id, sp.evaluation_score, sp.retention_risk, sp.follow_flag, sp.skills, sp.work_area,
-           us.user_id, us.user_code, us.name, us.status,
+    SELECT sp.staff_id, sp.evaluation_score, sp.retention_risk, sp.follow_flag,
+           CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
+           CASE WHEN sp.affiliation_type = 'linked_external' THEN src.work_area ELSE sp.work_area END AS work_area,
+           CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
+           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status,
+           oc.company_name AS owner_company_name, pe.global_staff_code,
+           us.user_id, us.user_code, us.name, us.status, us.role AS user_role,
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
            (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status = 'confirmed') AS last_work_date,
            (SELECT MAX(dr.work_date) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id) AS last_report_date,
@@ -765,6 +773,9 @@ api.get('/admin/staff', async (c) => {
            (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id AND dr.work_date LIKE ?) AS month_seiyaku,
            (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date LIKE ?) AS projects
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
+    LEFT JOIN staff_profiles src ON src.staff_id = sp.source_staff_id
+    LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
+    LEFT JOIN persons pe ON pe.person_id = sp.person_id
     WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(month + '%', today, today, today, month + '%', month + '%', u.company_id).all()
   return c.json({ staff: rows.results })
 })
@@ -773,10 +784,8 @@ api.get('/admin/staff', async (c) => {
 api.get('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
   const db = c.env.DB
-  const profile = await db.prepare(`
-    SELECT sp.*, us.user_code, us.name, us.email, us.phone, us.status, us.last_login_at, us.retired_at
-    FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(sid, u.company_id).first()
+  // 基本項目は linked_external（他社から連携）の場合、所属元企業の値で解決される（src/roster.ts）
+  const profile = await loadRoster(db, sid, u.company_id)
   if (!profile) return c.json({ error: 'not found' }, 404)
 
   const [shifts, attendance, reports, evals, follows] = await Promise.all([
@@ -811,11 +820,23 @@ api.get('/admin/staff/:id', async (c) => {
 // スタッフ更新 (メモ・フォローフラグ・リスク)
 api.put('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
+  const body = await c.req.json()
   const {
     memo, follow_flag, retention_risk, skills, career, work_area, retired_at,
     affiliation, affiliation_contact, kana, gender, date_of_birth,
     nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
-  } = await c.req.json()
+  } = body
+  // 権限制御: 基本項目（氏名・スキル等）は所属元企業のみ編集可。稼働先（linked_external）は追記項目のみ
+  const roster = await loadRoster(c.env.DB, sid, u.company_id)
+  if (!roster) return c.json({ error: 'not found' }, 404)
+  const touchesBase = body.name !== undefined || (ROSTER_BASE_FIELDS as readonly string[]).some(f => body[f] !== undefined)
+  if (touchesBase && !roster.can_edit_base) return c.json({ error: '基本項目は所属元企業のみ編集できます' }, 403)
+  if (body.name !== undefined) {
+    const newName = String(body.name || '').trim()
+    if (!newName) return c.json({ error: '氏名は必須です' }, 400)
+    await c.env.DB.prepare('UPDATE users SET name = ? WHERE user_id = ?').bind(newName, roster.user_id).run()
+    await propagateNameToLinked(c.env.DB, sid, newName)
+  }
 
   await c.env.DB.prepare(`UPDATE staff_profiles SET
       memo = COALESCE(?, memo), follow_flag = COALESCE(?, follow_flag), retention_risk = COALESCE(?, retention_risk),
@@ -829,6 +850,13 @@ api.put('/admin/staff/:id', async (c) => {
       affiliation ?? null, affiliation_contact ?? null, kana ?? null, gender ?? null, date_of_birth ?? null,
       nearest_station_line ?? null, nearest_station ?? null, commute_minutes ?? null, available_from ?? null,
       sid, u.company_id).run()
+
+  // 取引先所属スタッフの所属会社名を変更した場合は、取引先マスタ（staff_affiliations）のIDも追従させる
+  if (roster.affiliation_type === 'partner_manual' && affiliation) {
+    await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, affiliation).run()
+    await c.env.DB.prepare(`UPDATE staff_profiles SET partner_affiliation_id = (SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)
+      WHERE staff_id = ? AND company_id = ?`).bind(u.company_id, affiliation, sid, u.company_id).run()
+  }
 
   // 退職日はusersテーブル側で管理する（定期削除の「退職後7年」判定に使用）。
   // 既存の users.status('active'/'suspended') は他機能の対象判定に既に使われているため、
@@ -862,8 +890,10 @@ api.post('/admin/staff', async (c) => {
   try {
     const r = await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone) VALUES (?, ?, ?, 'staff', ?, ?, ?)`)
       .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null).run()
-    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '').run()
+    const person = await createPerson(c.env.DB, u.company_id)
+    await c.env.DB.prepare('UPDATE users SET person_id = ? WHERE user_id = ?').bind(person.person_id, r.meta.last_row_id).run()
+    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own_employee')`)
+      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id).run()
     return c.json({ ok: true })
   } catch (e) {
     return c.json({ error: 'スタッフ番号が重複しています' }, 409)
@@ -873,9 +903,7 @@ api.post('/admin/staff', async (c) => {
 // スキルシート生成
 api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
-  const profile = await c.env.DB.prepare(`
-    SELECT sp.*, us.name FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(sid, u.company_id).first()
+  const profile = await loadRoster(c.env.DB, sid, u.company_id)
   if (!profile) return c.json({ error: 'not found' }, 404)
   const projects = await c.env.DB.prepare(`
     SELECT DISTINCT p.project_name, p.project_type FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ?`).bind(sid).all()
@@ -1168,10 +1196,16 @@ api.post('/admin/staff-affiliations', async (c) => {
   return c.json({ ok: true })
 })
 
-// ============ 社員名簿（自社社員のみ。affiliation = 自社名 のスタッフだけに絞る） ============
-// 「自社」は、このテナント自身の会社名（companies.company_name）と一致する affiliation を指す。
-// これによりB派遣会社（他のaffiliation）のスタッフはスタッフ管理には表示されても、
-// 自社の社員名簿には一切表示されない。
+// ============ 従業員管理（社員名簿）: 自社雇用者のみ ============
+// 0012 以降、「自社」判定は所属会社名の文字列一致ではなく staff_profiles.affiliation_type = 'own_employee'
+// （かつ所属元企業 = 自社）で行う。他社から連携したスタッフ（linked_external）・取引先所属（partner_manual）・
+// スキルシートのみ（skillsheet_only）は従業員管理に一切表示されず、APIでも参照・更新できない。
+// ※既存データは 0012 の移行で「所属会社名 = 自社名」だったものが own_employee に変換済み。
+const OWN_EMPLOYEE_COND = `COALESCE(sp.affiliation_type, 'own_employee') = 'own_employee' AND COALESCE(sp.owner_company_id, sp.company_id) = sp.company_id`
+async function assertOwnEmployee(c: any, sid: string) {
+  const u = c.get('user')
+  return c.env.DB.prepare(`SELECT sp.staff_id FROM staff_profiles sp WHERE sp.staff_id = ? AND sp.company_id = ? AND ${OWN_EMPLOYEE_COND}`).bind(sid, u.company_id).first()
+}
 async function ownCompanyName(db: D1Database, companyId: number): Promise<string> {
   const row = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first()
   return (row?.company_name as string) || ''
@@ -1179,23 +1213,21 @@ async function ownCompanyName(db: D1Database, companyId: number): Promise<string
 
 api.get('/admin/employees', async (c) => {
   const u = c.get('user')
-  const ownName = await ownCompanyName(c.env.DB, u.company_id)
   const rows = await c.env.DB.prepare(`
     SELECT sp.staff_id, us.name, sp.kana, sp.employment_status, er.employee_number, er.department, er.job_title, er.base_location, er.contract_type
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = sp.staff_id
-    WHERE sp.company_id = ? AND sp.affiliation = ?
-    ORDER BY us.name`).bind(u.company_id, ownName).all()
+    WHERE sp.company_id = ? AND ${OWN_EMPLOYEE_COND}
+    ORDER BY us.name`).bind(u.company_id).all()
   return c.json({ employees: rows.results })
 })
 
 api.get('/admin/employees/:staffId', async (c) => {
   const u = c.get('user'); const sid = c.req.param('staffId')
-  const ownName = await ownCompanyName(c.env.DB, u.company_id)
-  // 自社社員でなければ（=affiliationが自社名と一致しなければ）社員名簿としては閲覧不可にする
+  // 自社雇用者（own_employee）でなければ従業員管理としては閲覧不可にする
   const staff = await c.env.DB.prepare(`
     SELECT sp.*, us.name, us.email, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    WHERE sp.staff_id = ? AND sp.company_id = ? AND sp.affiliation = ?`).bind(sid, u.company_id, ownName).first()
+    WHERE sp.staff_id = ? AND sp.company_id = ? AND ${OWN_EMPLOYEE_COND}`).bind(sid, u.company_id).first()
   if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
 
   const record = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
@@ -1207,9 +1239,7 @@ api.get('/admin/employees/:staffId', async (c) => {
 
 api.put('/admin/employees/:staffId', async (c) => {
   const u = c.get('user'); const sid = c.req.param('staffId')
-  const ownName = await ownCompanyName(c.env.DB, u.company_id)
-  const staff = await c.env.DB.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ? AND affiliation = ?')
-    .bind(sid, u.company_id, ownName).first()
+  const staff = await assertOwnEmployee(c, sid)
   if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
 
   const b = await c.req.json()
@@ -1249,7 +1279,7 @@ api.put('/admin/employees/:staffId', async (c) => {
 
 // ============ 入社時書類（履歴書と同一パターン。既存DOCUMENTSバケットを別キー接頭辞で再利用） ============
 api.get('/admin/employees/:staffId/documents', async (c) => {
-  const staff = await assertStaffInCompany(c, c.req.param('staffId'))
+  const staff = await assertOwnEmployee(c, c.req.param('staffId'))
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const docs = await c.env.DB.prepare(
     'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM employee_documents WHERE staff_id = ? ORDER BY uploaded_at DESC'
@@ -1259,7 +1289,7 @@ api.get('/admin/employees/:staffId/documents', async (c) => {
 
 api.post('/admin/employees/:staffId/documents', async (c) => {
   const u = c.get('user'); const sid = c.req.param('staffId')
-  const staff = await assertStaffInCompany(c, sid)
+  const staff = await assertOwnEmployee(c, sid)
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
 
   let form: FormData
@@ -1866,7 +1896,7 @@ api.get('/admin/templates', async (c) => {
 api.get('/hq/companies', async (c) => {
   const rows = await c.env.DB.prepare(`
     SELECT co.*,
-      (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.status = 'active') AS user_count,
+      (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.status = 'active' AND u.role != 'roster_only') AS user_count,
       (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.last_login_at >= date('now', '-7 days')) AS active_users,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.company_id = co.company_id AND dr.work_date >= date('now', '-30 days')) AS reports_30d
     FROM companies co ORDER BY co.company_id`).all()
