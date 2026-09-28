@@ -205,6 +205,7 @@ async function renderDashboard() {
         </table>
       </div>
     </section>`
+  if (window.renderChatDashboardNotice) renderChatDashboardNotice()
 }
 
 window.markAbsent = async function (shiftId) {
@@ -465,6 +466,7 @@ async function renderStaffDetail(sid) {
     </div>
 
     <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
+    <div id="roster-chat-panel" class="mt-4 hidden"></div>
 
     <section class="card p-4 mt-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-clock text-gray-400 mr-1"></i>勤怠報告履歴（直近）</h3>
@@ -486,6 +488,7 @@ async function renderStaffDetail(sid) {
     </section>`
 
   if (window.renderRosterPanels) renderRosterPanels(sid, p)
+  if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
   if (evalRadar) {
     new Chart(document.getElementById('eval-chart'), {
       type: 'radar',

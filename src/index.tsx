@@ -270,6 +270,7 @@ app.get('/admin', async (c) => {
         <a href="#notice-reports" class="side-link" data-tab="notice-reports"><i class="fas fa-chart-pie w-5"></i>既読率レポート</a>
         <a href="#follow" class="side-link" data-tab="follow"><i class="fas fa-handshake-angle w-5"></i>フォロー履歴</a>
         <a href="#consult" class="side-link" data-tab="consult"><i class="fas fa-comments w-5"></i>相談対応</a>
+        <a href="#roster-chat" class="side-link flex items-center" data-tab="roster-chat"><i class="fas fa-people-arrows w-5"></i>企業間チャット</a>
         <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>
       </nav>
       <div class="p-3 border-t border-gray-100">
@@ -287,7 +288,7 @@ app.get('/admin', async (c) => {
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
-          <option value="follow">フォロー</option><option value="consult">相談</option><option value="billing">請求前確認</option>
+          <option value="follow">フォロー</option><option value="consult">相談</option><option value="roster-chat">企業間チャット</option><option value="billing">請求前確認</option>
         </select>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
@@ -298,6 +299,7 @@ app.get('/admin', async (c) => {
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
+  <script src="/static/roster-chat.js"></script>
 </body>
 </html>`)
 })
