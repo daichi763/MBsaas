@@ -205,6 +205,7 @@ async function renderDashboard() {
         </table>
       </div>
     </section>`
+  if (window.renderChatDashboardNotice) renderChatDashboardNotice()
 }
 
 window.markAbsent = async function (shiftId) {
@@ -234,7 +235,10 @@ function drawStaffTable(filter) {
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">スタッフマスタ <span class="text-sm font-normal text-gray-400">${list.length}名</span></h2>
-      <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
+      <div class="flex gap-2">
+        <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
+        <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
+      </div>
     </div>
     <div class="flex gap-2 mb-4 flex-wrap" id="staff-filters">
       ${[['all', 'すべて'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']].map(([k, v]) =>
@@ -329,6 +333,7 @@ async function renderStaffDetail(sid) {
         </div>
       </div>
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
+      ${p.linkable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
       <button class="btn btn-primary" onclick="showFollowModal(${sid}, '${esc(p.name)}')"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
@@ -460,6 +465,9 @@ async function renderStaffDetail(sid) {
       </section>
     </div>
 
+    <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
+    <div id="roster-chat-panel" class="mt-4 hidden"></div>
+
     <section class="card p-4 mt-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-clock text-gray-400 mr-1"></i>勤怠報告履歴（直近）</h3>
       <div class="overflow-x-auto">
@@ -479,6 +487,8 @@ async function renderStaffDetail(sid) {
       </div>
     </section>`
 
+  if (window.renderRosterPanels) renderRosterPanels(sid, p)
+  if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
   if (evalRadar) {
     new Chart(document.getElementById('eval-chart'), {
       type: 'radar',

@@ -6,6 +6,7 @@
 // api.ts からは api.route('/admin/roster', rosterApi) で認証・権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
+import { getCookie } from 'hono/cookie'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -21,7 +22,49 @@ export const ROSTER_BASE_FIELDS = [
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from',
 ] as const
 // 稼働先でも編集できる「追記項目」（各社のスタッフマスタ行ごとに独立して保持）
-export const ROSTER_APPEND_FIELDS = ['memo', 'follow_flag', 'retention_risk', 'evaluation_score', 'employment_status'] as const
+export const ROSTER_APPEND_FIELDS = ['memo', 'follow_flag', 'retention_risk', 'evaluation_score', 'employment_status', 'site_evaluation', 'work_memo'] as const
+// 追記項目のうち、所属元企業にも共有される項目（それ以外の memo 等は各社の社内情報）
+export const ROSTER_SHARED_HOST_FIELDS = ['site_evaluation', 'work_memo'] as const
+
+// ---------- フェーズD: 必須項目の企業別設定 ----------
+// 絶対必須（全企業共通・設定不可）
+export const ROSTER_ABSOLUTE_REQUIRED = [
+  { code: 'name', label: '氏名' },
+  { code: 'gender', label: '性別' },
+]
+// 企業ごとに必須/任意を切り替えられる項目（既定: 任意）
+// skillsheet: ④スキルシートのみ作成でも入力を求めるか（false の項目は④では必須判定しない）
+export const ROSTER_CONFIGURABLE_FIELDS: { code: string; label: string; skillsheet: boolean }[] = [
+  { code: 'kana', label: 'フリガナ', skillsheet: true },
+  { code: 'date_of_birth', label: '生年月日', skillsheet: true },
+  { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false },
+  { code: 'skills', label: 'スキル', skillsheet: true },
+  { code: 'career', label: '経歴', skillsheet: true },
+  { code: 'work_area', label: '稼働可能エリア', skillsheet: true },
+  { code: 'nearest_station_line', label: '最寄駅（路線）', skillsheet: false },
+  { code: 'nearest_station', label: '最寄駅（駅）', skillsheet: false },
+  { code: 'commute_minutes', label: '通勤可能時間', skillsheet: false },
+  { code: 'available_from', label: '稼働開始可能日', skillsheet: false },
+]
+
+export async function getRequiredFields(db: D1Database, companyId: number): Promise<Set<string>> {
+  const rows = await db.prepare('SELECT field_code FROM roster_field_requirements WHERE company_id = ? AND is_required = 1').bind(companyId).all()
+  const valid = new Set(ROSTER_CONFIGURABLE_FIELDS.map(f => f.code))
+  return new Set((rows.results as any[]).map(r => r.field_code as string).filter(c => valid.has(c)))
+}
+function isBlank(v: any) { return v === undefined || v === null || String(v).trim() === '' }
+/**
+ * 企業の必須設定に対する不足項目のラベルを返す。
+ * mode='create': body に無い/空の必須項目をすべて不足とする
+ * mode='update': body に含まれていて空にしようとしている必須項目のみ不足とする（部分更新を妨げない）
+ */
+export function missingRequired(required: Set<string>, body: any, mode: 'create' | 'update', type?: string): string[] {
+  return ROSTER_CONFIGURABLE_FIELDS
+    .filter(f => required.has(f.code))
+    .filter(f => !(type === 'skillsheet_only' && !f.skillsheet))
+    .filter(f => mode === 'create' ? isBlank(body[f.code]) : (body[f.code] !== undefined && isBlank(body[f.code])))
+    .map(f => f.label)
+}
 
 // 連携時の同意ポップアップで明示する共有範囲（フロント表示と同意履歴の双方で同じ文言を使う）
 export const CONSENT_VERSION = 'v1'
@@ -137,6 +180,69 @@ rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.
 // 同意文面（共有範囲）— フロントのポップアップ表示用
 rosterApi.get('/consent-terms', (c) => c.json({ version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE }))
 
+// 必須項目設定の取得
+rosterApi.get('/field-settings', async (c) => {
+  const u = c.get('user')
+  const required = await getRequiredFields(c.env.DB, u.company_id)
+  return c.json({
+    absolute: ROSTER_ABSOLUTE_REQUIRED,
+    fields: ROSTER_CONFIGURABLE_FIELDS.map(f => ({ ...f, is_required: required.has(f.code) })),
+  })
+})
+// 必須項目設定の更新（会社管理者のみ）
+rosterApi.put('/field-settings', async (c) => {
+  const u = c.get('user')
+  if (!['company_admin', 'system_admin'].includes(u.role)) return c.json({ error: '必須項目の設定は会社管理者のみ変更できます' }, 403)
+  const b = await c.req.json().catch(() => ({} as any))
+  const req: Record<string, boolean> = b.required || {}
+  const valid = new Set(ROSTER_CONFIGURABLE_FIELDS.map(f => f.code))
+  const stmts = Object.entries(req).filter(([k]) => valid.has(k)).map(([k, v]) =>
+    c.env.DB.prepare(`INSERT INTO roster_field_requirements (company_id, field_code, is_required, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(company_id, field_code) DO UPDATE SET is_required = excluded.is_required, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+      .bind(u.company_id, k, v ? 1 : 0, u.user_id, nowJST()))
+  if (stmts.length) await c.env.DB.batch(stmts)
+  return c.json({ ok: true })
+})
+
+// ---------- フェーズE: QR（恒久固定のスタッフID） ----------
+// 自社雇用スタッフの連携用ID（QRの中身）。再発行・有効期限なし。
+rosterApi.get('/:id/share-code', async (c) => {
+  const u = c.get('user')
+  const r = await loadRoster(c.env.DB, c.req.param('id'), u.company_id)
+  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r.linkable) return c.json({ error: '連携用IDを共有できるのは自社雇用スタッフのみです' }, 400)
+  return c.json({ global_staff_code: r.global_staff_code, name: r.name, company_name: r.owner_company_name })
+})
+
+// ---------- フェーズF: 所属元⇔稼働先の連携状況 ----------
+// 所属元: 自社スタッフの連携先企業一覧 + 稼働先が記入した共有追記項目（閲覧のみ）
+// 稼働先: 自社の連携レコードの同意履歴
+rosterApi.get('/:id/links', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const sid = c.req.param('id')
+  const r = await loadRoster(db, sid, u.company_id)
+  if (!r) return c.json({ error: 'not found' }, 404)
+  if (r.affiliation_type === 'linked_external') {
+    const consents = await db.prepare(`
+      SELECT rc.consent_id, rc.consent_version, rc.shared_scope, rc.created_at, um.name AS agreed_by
+      FROM roster_consents rc LEFT JOIN users um ON um.user_id = rc.user_id
+      WHERE rc.company_id = ? AND rc.staff_id = ? ORDER BY rc.created_at DESC`).bind(u.company_id, sid).all()
+    return c.json({ role: 'host', owner_company_name: r.owner_company_name,
+      consents: (consents.results as any[]).map(x => ({ ...x, shared_scope: safeJson(x.shared_scope) })) })
+  }
+  // 所属元が閲覧できるのは: 連携先企業名・連携日・共有追記項目（現場評価/稼働メモ）・稼働実績の件数のみ
+  // （稼働先の社内メモ・フォロー履歴・日報本文等は返さない）
+  const month = nowJST().slice(0, 7)
+  const links = await db.prepare(`
+    SELECT sp.staff_id AS linked_staff_id, co.company_name AS host_company_name, sp.created_at AS linked_at,
+      sp.site_evaluation, sp.work_memo, sp.host_note_updated_at,
+      (SELECT MIN(rc.created_at) FROM roster_consents rc WHERE rc.staff_id = sp.staff_id) AS consented_at,
+      (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
+      (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.status IN ('confirmed','substitute')) AS last_work_date
+    FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
+    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', sid).all()
+  return c.json({ role: 'owner', links: links.results })
+})
+
 // 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations
 rosterApi.get('/partners', async (c) => {
   const u = c.get('user')
@@ -170,7 +276,7 @@ rosterApi.get('/lookup', async (c) => {
 
 async function findLinkSource(db: D1Database, code: string): Promise<any | null> {
   return db.prepare(`
-    SELECT sp.staff_id, sp.company_id, sp.person_id, sp.kana, sp.gender, us.name, pe.global_staff_code, co.company_name AS owner_company_name
+    SELECT sp.staff_id, sp.company_id, sp.person_id, sp.kana, sp.gender, us.name, us.role AS source_role, pe.global_staff_code, co.company_name AS owner_company_name
     FROM persons pe
     JOIN staff_profiles sp ON sp.person_id = pe.person_id AND sp.source_staff_id IS NULL AND sp.affiliation_type = 'own_employee'
     JOIN users us ON us.user_id = sp.user_id
@@ -191,11 +297,13 @@ rosterApi.post('/link', async (c) => {
   const already = await db.prepare('SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ?').bind(u.company_id, src.person_id).first()
   if (already) return c.json({ error: 'このスタッフは既に連携済みです', staff_id: already.staff_id }, 409)
 
-  // 稼働先側のユーザー行（シフト・勤怠等の既存機能との互換用）。
-  // 本人のログインはフェーズHの統合ログイン（同一person_idの企業切替）で対応するため、現時点では role='roster_only'（ログイン不可・お知らせ対象外）
+  // 稼働先側のユーザー行（シフト・勤怠等の既存機能との互換用）。パスワードは照合不能＝稼働先の会社コードでは直接ログインできない。
+  // 所属元でログインを持つスタッフは role='staff'（統合ログインの企業切替で稼働先の画面を利用可・フェーズH）、
+  // ログインを持たない場合は role='roster_only'（お知らせ対象外）
   const userCode = 'LK-' + src.global_staff_code
-  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?)`)
-    .bind(u.company_id, userCode, src.name, await unusablePasswordHash(), src.person_id).run()
+  const linkedRole = src.source_role === 'staff' ? 'staff' : 'roster_only'
+  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, userCode, src.name, linkedRole, await unusablePasswordHash(), src.person_id).run()
   const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, source_staff_id, affiliation)
     VALUES (?, ?, ?, ?, 'linked_external', ?, ?)`)
     .bind(r.meta.last_row_id, u.company_id, src.person_id, src.company_id, src.staff_id, src.owner_company_name).run()
@@ -238,6 +346,8 @@ rosterApi.post('/', async (c) => {
   // 絶対必須項目（企業ごとの必須設定の対象外）: 氏名・性別
   if (!name) return c.json({ error: '氏名は必須です' }, 400)
   if (!b.gender) return c.json({ error: '性別は必須です' }, 400)
+  const missing = missingRequired(await getRequiredFields(db, u.company_id), b, 'create', type)
+  if (missing.length) return c.json({ error: `次の項目は必須です: ${missing.join('・')}`, missing }, 400)
 
   // ログイン: ②は必須（自社スタッフとして勤怠報告等を行うため）、③は任意、④は作らない
   const wantsLogin = type === 'own_employee' || (type === 'partner_manual' && b.user_code && b.password)
@@ -305,6 +415,58 @@ rosterApi.post('/', async (c) => {
       .bind(staffId, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, nowJST()).run()
   }
   return c.json({ ok: true, staff_id: staffId, global_staff_code: person.global_staff_code })
+})
+
+// ---------- フェーズH: 同一人物の所属企業（統合ログイン・勤怠の自動振り分け） ----------
+export type PersonStaffRow = { staff_id: number; company_id: number; user_id: number; company_name: string; settings_json: string }
+/**
+ * ログイン中ユーザーと同一人物（person_id）の、稼働管理対象のスタッフマスタ行を全企業分返す。
+ * 対象: users.status='active' かつ role='staff'、skillsheet_only 以外。person_id が無い場合は自分の行のみ。
+ */
+export async function personStaffRows(db: D1Database, u: any): Promise<PersonStaffRow[]> {
+  const self: PersonStaffRow[] = u.staff_id ? [{ staff_id: u.staff_id, company_id: u.company_id, user_id: u.user_id, company_name: u.company_name, settings_json: u.settings_json }] : []
+  if (!u.person_id) return self
+  const rows = await db.prepare(`
+    SELECT sp.staff_id, sp.company_id, us.user_id, co.company_name, co.settings_json
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = sp.company_id
+    WHERE sp.person_id = ? AND us.person_id = ? AND us.status = 'active' AND us.role = 'staff' AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
+    ORDER BY (sp.company_id != ?), sp.staff_id`).bind(u.person_id, u.person_id, u.company_id).all()
+  const list = rows.results as PersonStaffRow[]
+  if (u.staff_id && !list.some(r => r.staff_id === u.staff_id)) list.unshift(...self)
+  return list
+}
+
+// ---------- スタッフ本人向け（/api/staff/me/*） ----------
+// 本人は自分のスタッフマスタ基本項目と連携用IDのみ閲覧可。追記項目（評価・メモ）や企業間チャットは一切返さない。
+export const staffSelfApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+staffSelfApi.get('/profile', async (c) => {
+  const u = c.get('user')
+  if (!u.staff_id) return c.json({ error: 'not found' }, 404)
+  const r = await loadRoster(c.env.DB, u.staff_id, u.company_id)
+  if (!r) return c.json({ error: 'not found' }, 404)
+  const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
+  for (const f of ROSTER_BASE_FIELDS) pick[f] = r[f]
+  // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
+  pick.global_staff_code = r.linkable ? r.global_staff_code : null
+  return c.json({ profile: pick })
+})
+
+// 所属企業の一覧（統合ログインの企業切替用）
+staffSelfApi.get('/companies', async (c) => {
+  const u = c.get('user')
+  const rows = await personStaffRows(c.env.DB, u)
+  return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id })) })
+})
+// 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）
+staffSelfApi.post('/switch-company', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const target = (await personStaffRows(db, u)).find(r => r.company_id === Number(b.company_id))
+  if (!target) return c.json({ error: '切り替え先の企業が見つかりません' }, 404)
+  const token = getCookie(c, 'session')
+  if (!token) return c.json({ error: 'unauthorized' }, 401)
+  await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, token).run()
+  return c.json({ ok: true, company_name: target.company_name })
 })
 
 export default rosterApi
