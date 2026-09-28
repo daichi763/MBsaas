@@ -4,7 +4,7 @@ import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
-import rosterApi, { loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS } from './roster'
+import rosterApi, { staffSelfApi, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -338,6 +338,7 @@ api.use('/hq/*', async (c, next) => {
 })
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
 api.route('/admin/roster', rosterApi)
+api.route('/staff/me', staffSelfApi)
 
 // =========================================================
 // スタッフ側 API
@@ -831,6 +832,12 @@ api.put('/admin/staff/:id', async (c) => {
   if (!roster) return c.json({ error: 'not found' }, 404)
   const touchesBase = body.name !== undefined || (ROSTER_BASE_FIELDS as readonly string[]).some(f => body[f] !== undefined)
   if (touchesBase && !roster.can_edit_base) return c.json({ error: '基本項目は所属元企業のみ編集できます' }, 403)
+  if (touchesBase) {
+    // 企業ごとの必須項目設定（フェーズD）: 必須項目を空にする更新は拒否する
+    const missing = missingRequired(await getRequiredFields(c.env.DB, u.company_id), body, 'update', roster.affiliation_type)
+    if (body.gender !== undefined && !body.gender) missing.unshift('性別')
+    if (missing.length) return c.json({ error: `次の項目は必須です: ${missing.join('・')}`, missing }, 400)
+  }
   if (body.name !== undefined) {
     const newName = String(body.name || '').trim()
     if (!newName) return c.json({ error: '氏名は必須です' }, 400)
@@ -850,6 +857,12 @@ api.put('/admin/staff/:id', async (c) => {
       affiliation ?? null, affiliation_contact ?? null, kana ?? null, gender ?? null, date_of_birth ?? null,
       nearest_station_line ?? null, nearest_station ?? null, commute_minutes ?? null, available_from ?? null,
       sid, u.company_id).run()
+
+  // 稼働先追記項目（所属元にも共有される: 現場評価・稼働メモ）
+  if (body.site_evaluation !== undefined || body.work_memo !== undefined) {
+    await c.env.DB.prepare(`UPDATE staff_profiles SET site_evaluation = COALESCE(?, site_evaluation), work_memo = COALESCE(?, work_memo), host_note_updated_at = ?
+      WHERE staff_id = ? AND company_id = ?`).bind(body.site_evaluation ?? null, body.work_memo ?? null, nowJST(), sid, u.company_id).run()
+  }
 
   // 取引先所属スタッフの所属会社名を変更した場合は、取引先マスタ（staff_affiliations）のIDも追従させる
   if (roster.affiliation_type === 'partner_manual' && affiliation) {
@@ -1552,6 +1565,10 @@ api.get('/admin/shifts', async (c) => {
 api.post('/admin/shifts', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.staff_id || !b.project_id || !b.work_date) return c.json({ error: 'スタッフ・案件・日付は必須です' }, 400)
+  // 自社のスタッフマスタ行のみシフト登録可。スキルシートのみ作成（稼働管理対象外）は不可
+  const st = await c.env.DB.prepare('SELECT affiliation_type FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(b.staff_id, u.company_id).first()
+  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
   const proj = await c.env.DB.prepare('SELECT location, unit_price FROM projects WHERE project_id = ?').bind(b.project_id).first()
   await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -1839,6 +1856,7 @@ api.get('/admin/follow-logs', async (c) => {
 api.post('/admin/follow-logs', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.staff_id || !b.follow_type) return c.json({ error: 'スタッフと種別は必須です' }, 400)
+  if (!(await assertStaffInCompany(c, String(b.staff_id)))) return c.json({ error: 'スタッフが見つかりません' }, 404)
   await c.env.DB.prepare(`INSERT INTO follow_logs (company_id, staff_id, manager_id, follow_type, content, next_action, status, related_project_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.staff_id, u.user_id, b.follow_type, b.content ?? '', b.next_action ?? null, b.status || 'open', b.related_project_id ?? null, nowJST()).run()
