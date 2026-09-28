@@ -117,6 +117,31 @@ export function rosterBaseSelect(local = 'sp', src = 'src'): string {
   ).join(', ')
 }
 
+/**
+ * 0012 以降に person_id を付けずに作られた staff_profiles（seed.sql の後投入、他経路の INSERT 等）を補完する。
+ * 所属区分は 0012 の移行と同じルール（所属会社名=自社名/未設定 → own_employee、それ以外 → partner_manual）。
+ * 冪等。person_id が NULL の行が無ければ何もしない。
+ */
+export async function ensureRosterIdentity(db: D1Database, companyId: number): Promise<void> {
+  const missing = await db.prepare(`SELECT sp.staff_id, sp.user_id, sp.affiliation, sp.affiliation_type, co.company_name
+    FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
+    WHERE sp.company_id = ? AND sp.person_id IS NULL LIMIT 500`).bind(companyId).all()
+  for (const r of missing.results as any[]) {
+    const person = await createPerson(db, companyId)
+    const type = r.affiliation && r.affiliation !== r.company_name ? 'partner_manual' : 'own_employee'
+    await db.batch([
+      db.prepare(`UPDATE staff_profiles SET person_id = ?, owner_company_id = COALESCE(owner_company_id, company_id),
+        affiliation_type = CASE WHEN source_staff_id IS NULL THEN ? ELSE affiliation_type END WHERE staff_id = ? AND person_id IS NULL`).bind(person.person_id, type, r.staff_id),
+      db.prepare('UPDATE users SET person_id = ? WHERE user_id = ? AND person_id IS NULL').bind(person.person_id, r.user_id),
+    ])
+    if (type === 'partner_manual' && r.affiliation) {
+      await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(companyId, r.affiliation).run()
+      await db.prepare(`UPDATE staff_profiles SET partner_affiliation_id = (SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?) WHERE staff_id = ?`)
+        .bind(companyId, r.affiliation, r.staff_id).run()
+    }
+  }
+}
+
 /** スタッフマスタ1件を取得（基本項目は所属元の値で解決済み）。自社の行でなければ null */
 export async function loadRoster(db: D1Database, staffId: string | number, companyId: number): Promise<any | null> {
   const row = await db.prepare(`
@@ -150,6 +175,7 @@ export async function propagateNameToLinked(db: D1Database, sourceStaffId: numbe
 
 // ---------- ルーティング ----------
 const rosterApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.get('user').company_id); return next() })
 
 // 同意文面（共有範囲）— フロントのポップアップ表示用
 rosterApi.get('/consent-terms', (c) => c.json({ version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE }))
