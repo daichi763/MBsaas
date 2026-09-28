@@ -122,6 +122,25 @@ npm run cf-typegen
 - HEICファイルは端末・ブラウザによっては `createImageBitmap` でのデコードに失敗する場合があり、その際はエラーメッセージを表示してJPEG/PNGでの再選択を促す仕様としています（HEIC→JPEGの確実な変換には専用ライブラリの追加が必要になるため、今回は「不要なライブラリを追加しない」方針を優先しました）。
 - R2バケットの実作成（`wrangler r2 bucket create`）はCloudflareアカウントへの操作が必要なため未実施です。上記セットアップ手順に従って作成してください。
 
+## スタッフマスタ / 従業員管理 分離・企業間スタッフ連携（フェーズA〜C）
+仕様: `docs/spec_multi_company_staff.md`
+
+- **管理画面の分離**: 「スタッフマスタ」（企業間で共有し得る情報）と「従業員管理」（旧 社員名簿。雇用・給与・口座等、自社のみ）
+- **所属区分（affiliation_type）**: `own_employee`（自社雇用）/ `linked_external`（他社連携）/ `partner_manual`（取引先所属）/ `skillsheet_only`（スキルシートのみ）
+- **新規作成の4つのルート**（スタッフマスタの「新規追加」ボタン）
+  1. QRコード / スタッフIDから連携: 他社の自社雇用スタッフを、恒久固定のスタッフID（`persons.global_staff_code`, 例 `FS1A2B3C4D5E`）で連携。連携のたびに同意確認ポップアップを表示し、同意は `roster_consents` に記録する
+  2. 従業員管理から作成: ログインアカウント・スタッフマスタ・従業員管理を同時に作成
+  3. 取引先から作成: 取引先マスタ（`staff_affiliations`）から選択するか新規登録。ログインの発行は任意
+  4. スキルシートのみ作成: ログインなし。既存のスキルシート生成機能をそのまま利用
+- **権限制御**: 他社連携スタッフの基本項目（氏名・スキル等）は所属元企業の値を参照するだけで、稼働先はAPIレベルで編集不可（403）。メモ・評価・フォロー等の追記項目は企業ごとに独立して保持する。従業員管理は `own_employee` かつ所属元が自社のスタッフに限り参照・更新できる
+- **ログインを持たない人物**: `users.role = 'roster_only'`（ログイン不可。お知らせ対象・スタッフ数集計の対象外）。既存のシフト・勤怠・評価等は従来どおり `staff_id` で紐付ける
+- **API**（`src/roster.ts`。`/api/admin/*` の管理者ロールでのみ利用可）
+  - `GET /api/admin/roster/consent-terms` / `GET /api/admin/roster/lookup?code=` / `POST /api/admin/roster/link`
+  - `POST /api/admin/roster`（`route`: `employee` / `partner` / `skillsheet`）
+  - `GET /api/admin/roster/partners` / `GET /api/admin/roster/consents[?staff_id=]`
+- **マイグレーション**: `0012_add_persons_and_staff_master.sql`（`persons` と `roster_consents` を追加し、`staff_profiles` / `users` / `staff_affiliations` に列を追加。既存の `staff_id` の値は変更しない）
+- **今後のフェーズ**: D 必須項目の企業別設定 / E QRコード画像の発行・スキャン / G 企業間チャット / H 統合ログイン・勤怠の自動振り分け
+
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成
 - クライアント閲覧用アカウント画面、給与明細連携、勤怠打刻の位置検証強化

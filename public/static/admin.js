@@ -8,6 +8,11 @@ const FOLLOW_LABELS = { interview: '面談', phone: '電話', line: 'LINE連絡'
 const PTYPE_LABELS = { mobile_shop: '携帯ショップ', electronics: '家電量販店', event: '催事・イベント', fiber: '光回線', fixed_line: '固定回線', callcenter: 'コールセンター', other: 'その他' }
 const RISK_BADGE = { low: '<span class="badge badge-green">低</span>', mid: '<span class="badge badge-yellow">中</span>', high: '<span class="badge badge-red">高</span>' }
 
+// スタッフマスタの所属区分（作成ルート）
+const AFF_TYPE_LABEL = { own_employee: '自社雇用', linked_external: '他社連携', partner_manual: '取引先所属', skillsheet_only: 'スキルシートのみ' }
+const AFF_TYPE_BADGE = { own_employee: 'badge-green', linked_external: 'badge-blue', partner_manual: 'badge-purple', skillsheet_only: 'badge-gray' }
+function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${AFF_TYPE_LABEL[t] || t}</span>` }
+
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
 function yen(n) { return '¥' + Number(n || 0).toLocaleString() }
 function toast(msg) {
@@ -224,24 +229,29 @@ function drawStaffTable(filter) {
   if (filter === 'risk') list = list.filter(s => s.retention_risk !== 'low')
   if (filter === 'noreport') list = list.filter(s => s.today_shift && !s.today_checkin)
   if (filter === 'lowscore') list = list.filter(s => s.evaluation_score < 3)
+  if (AFF_TYPE_LABEL[filter]) list = list.filter(s => s.affiliation_type === filter)
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">スタッフ管理 <span class="text-sm font-normal text-gray-400">${list.length}名</span></h2>
-      <button class="btn btn-primary" onclick="showAddStaff()"><i class="fas fa-user-plus"></i>スタッフ登録</button>
+      <h2 class="text-xl font-bold text-gray-900">スタッフマスタ <span class="text-sm font-normal text-gray-400">${list.length}名</span></h2>
+      <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
     </div>
     <div class="flex gap-2 mb-4 flex-wrap" id="staff-filters">
       ${[['all', 'すべて'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']].map(([k, v]) =>
         `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
+      <span class="border-l border-gray-200 mx-1"></span>
+      ${Object.entries(AFF_TYPE_LABEL).map(([k, v]) =>
+        `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
     </div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>番号</th><th>氏名</th><th>所属案件</th><th>今月稼働</th><th>今月成約</th><th>評価</th><th>離職リスク</th><th>要フォロー</th><th>最終稼働</th><th>最終日報</th></tr></thead>
+        <thead><tr><th>番号</th><th>氏名</th><th>所属区分</th><th>所属案件</th><th>今月稼働</th><th>今月成約</th><th>評価</th><th>離職リスク</th><th>要フォロー</th><th>最終稼働</th><th>最終日報</th></tr></thead>
         <tbody>
           ${list.map(s => `
             <tr class="cursor-pointer" onclick="location.hash='staff/${s.staff_id}'">
               <td class="text-gray-400">${esc(s.user_code)}</td>
               <td class="font-medium text-blue-700">${esc(s.name)}</td>
+              <td>${affTypeBadge(s.affiliation_type)}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
               <td>${s.month_days}日</td>
               <td class="font-bold">${s.month_seiyaku || 0}</td>
@@ -302,55 +312,61 @@ async function renderStaffDetail(sid) {
   const p = data.profile
   const evalRadar = data.evaluations[0]
   const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
+  const ro = p.can_edit_base ? '' : 'disabled'
 
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#staff" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_code)}</span></h2>
-        <div class="flex gap-2 mt-1">
+        <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : p.user_code)}</span></h2>
+        <div class="flex gap-2 mt-1 flex-wrap">
+          ${affTypeBadge(p.affiliation_type)}
+          ${p.global_staff_code ? `<span class="badge badge-gray" title="企業間連携用のスタッフID（恒久固定）"><i class="fas fa-fingerprint mr-1"></i>${esc(p.global_staff_code)}</span>` : ''}
           <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
           ${RISK_BADGE[p.retention_risk]}
           ${p.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : ''}
           <span class="badge badge-blue">評価 ${Number(p.evaluation_score).toFixed(1)}</span>
         </div>
       </div>
+      ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
       <button class="btn btn-primary" onclick="showFollowModal(${sid}, '${esc(p.name)}')"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
 
     <div class="grid lg:grid-cols-3 gap-4 mb-4">
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">基本情報</h3>
+        <h3 class="text-sm font-bold text-gray-700 mb-3">基本情報 <span class="text-xs font-normal text-gray-400">（スタッフマスタ共有項目）</span></h3>
+        ${p.can_edit_base ? '' : `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本項目は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。メモ・評価・フォロー等の追記項目は編集できます。</div>`}
         <dl class="text-sm space-y-2">
+          ${p.can_edit_base ? `<div class="flex"><dt class="w-28 text-gray-400 shrink-0">氏名</dt><dd class="flex-1"><input id="staff-name" class="inp text-xs" value="${esc(p.name || '')}"></dd></div>` : ''}
           <div class="flex items-center gap-2">
             <dt class="w-28 text-gray-400 shrink-0">所属会社名</dt>
-            <dd class="flex-1"><input list="affiliation-list" id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}"></dd>
+            <dd class="flex-1"><input list="affiliation-list" id="staff-affiliation" class="inp text-xs" ${ro} value="${esc(p.affiliation || '')}"></dd>
           </div>
           <datalist id="affiliation-list">${affData.affiliations.map(a => `<option value="${esc(a.affiliation_name)}">`).join('')}</datalist>
-          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">所属先担当者名</dt><dd class="flex-1"><input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}"></dd></div>
-          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">フリガナ</dt><dd class="flex-1"><input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">所属先担当者名</dt><dd class="flex-1"><input id="staff-affiliation-contact" class="inp text-xs" ${ro} value="${esc(p.affiliation_contact || '')}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">フリガナ</dt><dd class="flex-1"><input id="staff-kana" class="inp text-xs" ${ro} value="${esc(p.kana || '')}"></dd></div>
           <div class="flex"><dt class="w-28 text-gray-400 shrink-0">性別</dt><dd class="flex-1">
-            <select id="staff-gender" class="inp text-xs">
+            <select id="staff-gender" class="inp text-xs" ${ro}>
               <option value="">-</option>
               <option value="male" ${p.gender === 'male' ? 'selected' : ''}>男性</option>
               <option value="female" ${p.gender === 'female' ? 'selected' : ''}>女性</option>
               <option value="other" ${p.gender === 'other' ? 'selected' : ''}>その他</option>
               <option value="unspecified" ${p.gender === 'unspecified' ? 'selected' : ''}>回答しない</option>
             </select></dd></div>
-          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="staff-dob" class="inp text-xs" value="${p.date_of_birth || ''}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="staff-dob" class="inp text-xs" ${ro} value="${p.date_of_birth || ''}"></dd></div>
           <div class="flex"><dt class="w-28 text-gray-400 shrink-0">年齢</dt><dd>${p.age != null ? p.age + '歳' : '-'}</dd></div>
           <div class="flex"><dt class="w-28 text-gray-400 shrink-0">エリア</dt><dd>${esc(p.work_area || '-')}</dd></div>
           <div class="flex gap-1"><dt class="w-28 text-gray-400 shrink-0">最寄駅</dt><dd class="flex-1 flex gap-1">
-            <input id="staff-station-line" placeholder="路線" class="inp text-xs" value="${esc(p.nearest_station_line || '')}">
-            <input id="staff-station" placeholder="駅" class="inp text-xs" value="${esc(p.nearest_station || '')}"></dd></div>
-          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">通勤可能時間</dt><dd class="flex-1"><input type="number" id="staff-commute" class="inp text-xs" value="${p.commute_minutes ?? ''}" placeholder="分"></dd></div>
-          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">稼働開始可能日</dt><dd class="flex-1"><input type="date" id="staff-available-from" class="inp text-xs" value="${p.available_from || ''}"></dd></div>
+            <input id="staff-station-line" placeholder="路線" class="inp text-xs" ${ro} value="${esc(p.nearest_station_line || '')}">
+            <input id="staff-station" placeholder="駅" class="inp text-xs" ${ro} value="${esc(p.nearest_station || '')}"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">通勤可能時間</dt><dd class="flex-1"><input type="number" id="staff-commute" class="inp text-xs" ${ro} value="${p.commute_minutes ?? ''}" placeholder="分"></dd></div>
+          <div class="flex"><dt class="w-28 text-gray-400 shrink-0">稼働開始可能日</dt><dd class="flex-1"><input type="date" id="staff-available-from" class="inp text-xs" ${ro} value="${p.available_from || ''}"></dd></div>
           <div class="flex"><dt class="w-28 text-gray-400 shrink-0">スキル</dt><dd class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '-'}</dd></div>
           <div class="flex"><dt class="w-28 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(p.phone || '')}<br>${esc(p.email || '')}</dd></div>
           <div><dt class="text-gray-400 mb-1">経歴</dt><dd class="text-xs text-gray-600">${esc(p.career || '-')}</dd></div>
         </dl>
-        <button class="btn btn-outline text-xs w-full mt-2" onclick="saveStaffBasicInfo(${sid})">基本情報を保存</button>
+        ${p.can_edit_base ? `<button class="btn btn-outline text-xs w-full mt-2" onclick="saveStaffBasicInfo(${sid})">基本情報を保存</button>` : ''}
         <div class="mt-3 pt-3 border-t border-gray-100">
           <label class="text-xs text-gray-400 block mb-1">管理者メモ</label>
           <textarea id="staff-memo" rows="2" class="inp text-xs">${esc(p.memo || '')}</textarea>
@@ -508,7 +524,9 @@ window.setStaffEmploymentStatus = async function (sid, status) {
 }
 window.saveStaffBasicInfo = async function (sid) {
   try {
+    const nameEl = document.getElementById('staff-name')
     await axios.put('/api/admin/staff/' + sid, {
+      ...(nameEl ? { name: nameEl.value.trim() } : {}),
       affiliation: document.getElementById('staff-affiliation').value,
       affiliation_contact: document.getElementById('staff-affiliation-contact').value,
       kana: document.getElementById('staff-kana').value,
@@ -524,8 +542,8 @@ window.saveStaffBasicInfo = async function (sid) {
     if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     toast('基本情報を保存しました')
     renderStaffDetail(sid)
-  } catch {
-    toast('保存に失敗しました')
+  } catch (e) {
+    toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました')
   }
 }
 
@@ -1008,8 +1026,11 @@ async function renderEmployees() {
   const { data } = await axios.get('/api/admin/employees')
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5">
-      <h2 class="text-xl font-bold text-gray-900">社員名簿</h2>
-      <p class="text-sm text-gray-400">自社（所属会社名が自社と一致するスタッフ）のみ表示されます</p>
+      <h2 class="text-xl font-bold text-gray-900">従業員管理 <span class="text-sm font-normal text-gray-400">（社員名簿）</span></h2>
+      <div class="flex items-center gap-3 flex-wrap">
+        <p class="text-sm text-gray-400"><i class="fas fa-lock mr-1"></i>自社雇用者のみ表示。雇用・給与・口座等は他社に一切共有されません</p>
+        <button class="btn btn-primary" onclick="showRosterForm('employee')"><i class="fas fa-user-plus"></i>従業員を登録</button>
+      </div>
     </div>
     <section class="card p-4">
       <div class="overflow-x-auto">
@@ -1262,7 +1283,7 @@ window.showAddShift = async function (defaultDate) {
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">スタッフ *</label>
-          <select id="sh-staff" class="inp">${st.staff.map(s => `<option value="${s.staff_id}">${esc(s.name)}</option>`).join('')}</select></div>
+          <select id="sh-staff" class="inp">${st.staff.filter(s => s.affiliation_type !== 'skillsheet_only').map(s => `<option value="${s.staff_id}">${esc(s.name)}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">案件 *</label>
           <select id="sh-project" class="inp">${pj.projects.filter(p => p.status === 'active').map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
       </div>
