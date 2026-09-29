@@ -6,6 +6,7 @@ import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
+import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
@@ -323,9 +324,14 @@ api.post('/auth/logout', async (c) => {
   return c.json({ ok: true })
 })
 
+// ログイン不要のシフト専用報告用URL（トークンで1シフトのみ操作可。src/staff-lifecycle.ts）。認証ミドルウェアより前に登録する
+api.route('/public/report', publicReportApi)
+
 // 認証ミドルウェア
 api.use('/*', async (c, next) => {
   if (c.req.path.endsWith('/auth/login') || c.req.path.endsWith('/auth/logout')) return next()
+  // 報告用URL（/api/public/report/*）はトークンで認可するためセッション不要
+  if (c.req.path.startsWith('/api/public/report/')) return next()
   const token = getCookie(c, 'session')
   if (!token) return c.json({ error: 'unauthorized' }, 401)
   const row = await c.env.DB.prepare(`
@@ -361,6 +367,8 @@ api.route('/staff/me', staffSelfApi)
 api.route('/admin/roster-chat', chatApi)
 // 常勤/スポットのシフトボード・募集枠・単価（請求/支払）。金額は /api/admin/* のみで返す（src/shift-board.ts）
 api.route('/admin', shiftBoardApi)
+// 所属区分の移行・仮登録・提出設定・代理入力・報告用URLの発行（src/staff-lifecycle.ts）
+api.route('/admin', adminLifecycleApi)
 
 // =========================================================
 // スタッフ側 API
@@ -383,6 +391,8 @@ api.get('/staff/home', async (c) => {
 
   let reports: Record<string, any> = {}
   let dailyReportDone = false
+  // 勤怠・日報の提出設定（案件 → スタッフ → シフトの順に上書き。第2段階）
+  const shiftModes = shift ? (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id) || null : null
   if (shift) {
     const rows = await c.env.DB.prepare('SELECT report_type, reported_at, status FROM attendance_reports WHERE shift_id = ?').bind(shift.shift_id).all()
     for (const r of rows.results) reports[r.report_type as string] = r
@@ -403,7 +413,9 @@ api.get('/staff/home', async (c) => {
   const openConsult = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
 
   return c.json({
-    today, shift: stripMoney(shift), reports, daily_report_done: dailyReportDone, notices: notices.results,
+    today, shift: stripMoney(shift), reports, daily_report_done: dailyReportDone,
+    required_attendance: shiftModes ? shiftModes.required_attendance : ['wake_up', 'departure', 'check_in', 'check_out'],
+    daily_report_required: shiftModes ? shiftModes.daily_report_required : true, notices: notices.results,
     replied_consultations: openConsult?.n || 0,
     // 写真必須設定はシフトの所有企業の設定に従う
     photo_required_attendance: resolvePhotoRequired(shiftOwner || u, shift ? (shift.photo_required_override as number | null) : undefined),
@@ -422,6 +434,8 @@ api.post('/staff/attendance', async (c) => {
   const resolved = await resolvePersonShift(c, shift_id)
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
+  const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
+  if (modes && !modes.required_attendance.includes(report_type)) return c.json({ error: 'このシフトでは不要な報告です' }, 400)
   if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
     const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
     if (resolvePhotoRequired(owner, proj?.photo_required_override as number | null)) {
@@ -675,16 +689,24 @@ api.get('/admin/dashboard', async (c) => {
 
   const active = shifts.results as any[]
   const revenue = active.reduce((a, s) => a + (s.unit_price || 0), 0)
+  // 提出設定で「不要」の報告は未報告アラートの対象外（第2段階）
+  const todayModes = await modesForShifts(db, active.map(s => s.shift_id))
+  const needs = (s: any, t: string) => (todayModes.get(s.shift_id)?.required_attendance ?? ['wake_up', 'departure', 'check_in', 'check_out']).includes(t)
 
   // 昨日までの日報未提出 (直近3日)
   const missingReports = await db.prepare(`
-    SELECT s.work_date, us.name AS staff_name, s.staff_id, p.project_name
+    SELECT s.shift_id, s.work_date, us.name AS staff_name, s.staff_id, p.project_name
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.status = 'confirmed' AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
       AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.staff_id = s.staff_id AND dr.work_date = s.work_date)
     ORDER BY s.work_date DESC`).bind(cid, today, today).all()
+  // 日報「不要」のシフトは未提出の対象外（第2段階）
+  {
+    const m = await modesForShifts(db, (missingReports.results as any[]).map(r => r.shift_id))
+    missingReports.results = (missingReports.results as any[]).filter(r => m.get(r.shift_id)?.daily_report_required !== false)
+  }
 
   // インシデント (直近7日)
   const incidents = await db.prepare(`
@@ -767,9 +789,9 @@ api.get('/admin/dashboard', async (c) => {
     revenue_forecast: revenue,
     shifts: active,
     unreported: {
-      wake_up: active.filter(s => !s.wake_up).map(s => ({ staff_id: s.staff_id, name: s.staff_name, project: s.project_name })),
-      departure: active.filter(s => !s.departure).map(s => ({ staff_id: s.staff_id, name: s.staff_name, project: s.project_name })),
-      check_in: active.filter(s => !s.check_in).map(s => ({ staff_id: s.staff_id, name: s.staff_name, project: s.project_name })),
+      wake_up: active.filter(s => !s.wake_up && needs(s, 'wake_up')).map(s => ({ staff_id: s.staff_id, name: s.staff_name, project: s.project_name })),
+      departure: active.filter(s => !s.departure && needs(s, 'departure')).map(s => ({ staff_id: s.staff_id, name: s.staff_name, project: s.project_name })),
+      check_in: active.filter(s => !s.check_in && needs(s, 'check_in')).map(s => ({ staff_id: s.staff_id, name: s.staff_name, project: s.project_name })),
     },
     missing_daily_reports: missingReports.results,
     incidents: (incidents.results as any[]).map(i => ({ ...i, values: JSON.parse(i.report_values) })),
@@ -812,7 +834,7 @@ api.get('/admin/staff', async (c) => {
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.work_area ELSE sp.work_area END AS work_area,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
-           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status,
+           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status, sp.is_provisional, us.phone,
            oc.company_name AS owner_company_name, pe.global_staff_code,
            us.user_id, us.user_code, us.name, us.status, us.role AS user_role,
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
@@ -830,6 +852,8 @@ api.get('/admin/staff', async (c) => {
   return c.json({ staff: rows.results })
 })
 
+// 第2段階: 自社日雇い（daily_worker）・個人事業主（freelance）は従業員管理がないため、スタッフマスタで編集する
+const STAFF_MASTER_EDITABLE_TYPES = ['partner_manual', 'skillsheet_only', 'daily_worker', 'freelance']
 // スタッフ詳細
 api.get('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
@@ -843,7 +867,7 @@ api.get('/admin/staff/:id', async (c) => {
     if (er) Object.assign(profile, { emp_phone: er.phone_main, emp_email: er.personal_email, employee_number: er.employee_number, department: er.department, job_title: er.job_title })
   }
   // 画面の編集可否（APIでも同じ判定で制御している）
-  profile.can_edit_in_master = ['partner_manual', 'skillsheet_only'].includes(profile.affiliation_type) && profile.can_edit_base
+  profile.can_edit_in_master = STAFF_MASTER_EDITABLE_TYPES.includes(profile.affiliation_type) && profile.can_edit_base
 
   const [shifts, attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT s.*, p.project_name FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ? ORDER BY s.work_date DESC LIMIT 30`).bind(sid).all(),
@@ -881,7 +905,6 @@ api.get('/admin/staff/:id', async (c) => {
 //  - partner_manual / skillsheet_only: スタッフマスタ画面から編集可
 //  - linked_external（他社連携）    : 所属元企業が管理するため編集不可
 //  - 管理者メモ・要フォロー・稼働先追記項目 は全スタッフでスタッフマスタ画面から編集可
-const STAFF_MASTER_EDITABLE_TYPES = ['partner_manual', 'skillsheet_only']
 const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[])]
 function touchesProfileBase(body: any): boolean {
   return PROFILE_BASE_KEYS.some(k => body[k] !== undefined)
@@ -1314,7 +1337,14 @@ api.get('/admin/employees', async (c) => {
     LEFT JOIN employee_records er ON er.staff_id = sp.staff_id
     WHERE sp.company_id = ? AND ${OWN_EMPLOYEE_COND}
     ORDER BY us.name`).bind(u.company_id).all()
-  return c.json({ employees: rows.results })
+  // 第2段階: 自社雇用から他の区分へ移行したスタッフ（雇用終了）は閲覧のみで一覧に表示する
+  const ended = await c.env.DB.prepare(`
+    SELECT sp.staff_id, us.name, sp.kana, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, er.employee_number, er.department, er.job_title,
+      er.employment_ended_at, er.ended_reason
+    FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id JOIN users us ON us.user_id = sp.user_id
+    WHERE er.company_id = ? AND er.employment_ended_at IS NOT NULL AND COALESCE(sp.affiliation_type,'own_employee') != 'own_employee'
+    ORDER BY er.employment_ended_at DESC`).bind(u.company_id).all()
+  return c.json({ employees: rows.results, ended: ended.results })
 })
 
 api.get('/admin/employees/:staffId', async (c) => {
@@ -1323,7 +1353,14 @@ api.get('/admin/employees/:staffId', async (c) => {
   const staff = await c.env.DB.prepare(`
     SELECT sp.*, us.name, us.email, us.phone, us.retired_at FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.staff_id = ? AND sp.company_id = ? AND ${OWN_EMPLOYEE_COND}`).bind(sid, u.company_id).first()
-  if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
+  if (!staff) {
+    // 雇用終了（自社雇用から他の区分へ移行）した従業員は閲覧のみで返す
+    const endedStaff = await c.env.DB.prepare(`SELECT sp.*, us.name, us.email, us.phone, us.retired_at FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+      JOIN employee_records er ON er.staff_id = sp.staff_id WHERE sp.staff_id = ? AND sp.company_id = ? AND er.employment_ended_at IS NOT NULL`).bind(sid, u.company_id).first()
+    if (!endedStaff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
+    const rec = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
+    return c.json({ staff: { ...endedStaff, age: calcAge(endedStaff.date_of_birth as string | null) }, record: rec ? { ...rec, tenure: calcTenure(rec.hire_date as string | null) } : null, read_only: true })
+  }
 
   const record = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
   return c.json({
@@ -1386,7 +1423,9 @@ api.put('/admin/employees/:staffId', async (c) => {
 
 // ============ 入社時書類（履歴書と同一パターン。既存DOCUMENTSバケットを別キー接頭辞で再利用） ============
 api.get('/admin/employees/:staffId/documents', async (c) => {
-  const staff = await assertOwnEmployee(c, c.req.param('staffId'))
+  // 雇用終了した従業員（他区分へ移行）の書類も閲覧はできる（7年保存）
+  const staff = (await assertOwnEmployee(c, c.req.param('staffId'))) || (await c.env.DB.prepare(
+    'SELECT staff_id FROM employee_records WHERE staff_id = ? AND company_id = ? AND employment_ended_at IS NOT NULL').bind(c.req.param('staffId'), c.get('user').company_id).first())
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const docs = await c.env.DB.prepare(
     'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM employee_documents WHERE staff_id = ? ORDER BY uploaded_at DESC'

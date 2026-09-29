@@ -15,8 +15,8 @@
 ## 1. 段階計画
 | 段階 | 内容 |
 |---|---|
-| 第1段階（本PR） | 案件区分（常勤/スポット）、開催場所（現場マスタの土台）、募集枠と役割、単価ルール（請求/支払/交通費）、シフトへの金額記録、繰り返し登録、常勤の一括登録・前週コピー、シフトボード（複数案件の比較・ドラッグ・充足・重複警告・金額合計） |
-| 第2段階 | 区分の新設（自社日雇い・個人事業主）、仮登録、区分変更の手順と履歴（適用日以降の予定シフトの単価・支払先の置き換え）、雇用終了と退職の分離、勤怠・日報の提出設定（案件→スタッフ→シフト）、シフト専用の報告URL（コピーして送付）、代理入力 |
+| 第1段階（実装済み） | 案件区分（常勤/スポット）、開催場所（現場マスタの土台）、募集枠と役割、単価ルール（請求/支払/交通費）、シフトへの金額記録、繰り返し登録、常勤の一括登録・前週コピー、シフトボード（複数案件の比較・ドラッグ・充足・重複警告・金額合計） |
+| 第2段階（本PR） | 区分の新設（自社日雇い・個人事業主）、仮登録、区分変更の手順と履歴（適用日以降の予定シフトの単価・支払先の置き換え）、雇用終了と退職の分離、勤怠・日報の提出設定（案件→スタッフ→シフト）、シフト専用の報告URL（コピーして送付）、代理入力 |
 | 第3段階 | 実績の確定（入店・退店報告から実働時間を反映）、請求・支払の集計（クライアント別 / 支払先別、月ごと・任意の期間）、CSV出力 |
 | 第4段階 | 公開の募集ページ（URL・QR、Turnstile、送信回数の制限）、承認による確定と仮登録の自動作成、既存スタッフの希望日提出 |
 | 第5段階 | 仮登録スタッフと連携スタッフの統合（シフト・勤怠・評価の引き継ぎ） |
@@ -115,3 +115,59 @@
 - 報告用URL: 管理者が画面からコピーして送る（SMS の自動送信は行わない）
 - 募集: すべて管理者の承認が必要。基本は管理者がシフトを組み、募集は補助機能
 - 枠の規模: 1枠 1〜10名以上（平均3〜4名）、表示期間は最大1か月
+
+## 6. 第2段階 データモデル（migrations/0017_add_staff_lifecycle_and_report_settings.sql）
+- `staff_profiles.affiliation_type` に `daily_worker`（自社日雇い）・`freelance`（個人事業主）を追加（列の追加はなく、値の追加のみ）
+- `staff_profiles.is_provisional`（仮登録）、`attendance_mode`・`daily_report_mode`（スタッフ別の提出設定。NULL = 案件に従う）
+- `projects.attendance_mode`（既定 `full`）・`daily_report_mode`（既定 `required`）
+- `shifts.attendance_mode`・`daily_report_mode`（シフト別の上書き。NULL = スタッフ → 案件の順に従う）
+- `attendance_reports.entry_method`（`app` / `link` / `proxy`）・`entered_by`、`daily_reports.entry_method`
+- `employee_records.employment_ended_at`・`ended_reason`（雇用終了。退職 `users.retired_at` とは別に持つ）
+- `staff_affiliation_history`（区分変更の履歴: 変更前後の区分・所属、適用日、置き換えたシフト数、メモ、変更者）
+- `shift_report_tokens`（シフト専用の報告URL。勤務日の翌日 23:59:59 まで有効、取り消し可能）
+
+### 6.1 提出設定
+| 値 | 勤怠 attendance_mode | 日報 daily_report_mode |
+|---|---|---|
+| none | 報告なし | 提出なし |
+| in_out | 入店・退店のみ | — |
+| full | 出発・入店・休憩・退店など従来どおり | — |
+| required | — | 提出必須 |
+- 優先順位: シフト ＞ スタッフ ＞ 案件（案件の既定は full / required）
+- スタッフ画面・報告URL・ダッシュボードの未報告一覧は、不要な報告を表示・受け付けしない
+
+### 6.2 支払先（payee_type）
+| 区分 | payee_type |
+|---|---|
+| own_employee | payroll |
+| daily_worker | payroll_daily |
+| freelance | freelance |
+| partner_manual | partner |
+| linked_external | linked |
+
+## 7. 第2段階 API（`/api/admin/*`。src/staff-lifecycle.ts）
+- `GET /staff-lookup?phone=` 電話番号で既存スタッフを検索
+- `POST /staff-quick` 仮登録（氏名・電話・区分のみ）。電話番号が重複すると 409（`need_force` で確認後に登録）。ログインは発行しない
+- `POST /staff/:id/finalize` 仮登録の本登録（性別は必須、ログインの発行は任意）
+- `POST /staff/:id/affiliation-change` 区分変更。`dry_run: true` で影響（置き換えるシフト数・従業員データの扱い）を返す
+  - 適用日以降の未報告のシフトは単価を再計算する。手動で金額を変えたシフト（price_locked）は支払先だけ置き換える
+  - 他社連携 → 他の区分: 基本情報をコピーして連携を解除（元の企業への通知なし）
+  - 自社雇用へ: 従業員データを作成（雇用終了済みなら再開）
+  - 自社雇用から: 従業員データに雇用終了日（適用日の前日）を記録し、閲覧のみで保持（7年保存ルールの対象）
+- `GET /staff/:id/lifecycle` 区分・履歴・提出設定
+- `PUT /staff/:id/report-settings`、`PUT /projects/:id/report-settings`、`PUT /shifts/:id/report-settings`
+- `GET /shifts/:id/report-status` 提出状況
+- `POST /shifts/:id/proxy-attendance`、`DELETE /shifts/:id/proxy-attendance/:type` 管理者の代理入力（代理入力した分のみ削除可）
+- `POST /shifts/:id/report-link`（`regenerate` で再発行）、`DELETE /shifts/:id/report-link` 報告URLの発行・取り消し
+
+### 7.1 公開の報告URL（ログイン不要。`/r/:token`、API は `/api/public/report/:token`）
+- `GET` 名（名字なし）・案件・シフトの時間・提出設定・提出状況・日報テンプレートを返す。金額は返さない
+- `POST /attendance` 提出設定・順序・重複・勤務日（退店は翌日も可）・写真の必須を確認して記録（entry_method = link）
+- `POST /daily-report` 日報の登録・更新
+- ページは noindex・no-referrer。URL は管理者がコピーして送る
+
+## 8. 第2段階 画面
+- スタッフマスタ: 一覧に「仮」バッジ・仮登録ボタン・仮登録の絞り込み。詳細に「区分・登録状態」（履歴・本登録・区分変更）と「勤怠・日報の提出設定」
+- 日雇い・個人事業主はスタッフマスタで基本情報を編集できる
+- シフトボード: 候補一覧から仮登録してそのまま割り当て。シフト詳細に提出状況・提出設定・報告URL・代理入力。案件パネルに提出設定
+- 従業員管理: 雇用終了した従業員を別の一覧に表示し、詳細は閲覧のみ

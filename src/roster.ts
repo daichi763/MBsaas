@@ -12,7 +12,8 @@ type Bindings = { DB: D1Database }
 type Variables = { user: any }
 
 // ---------- 定数 ----------
-export const AFFILIATION_TYPES = ['own_employee', 'linked_external', 'partner_manual', 'skillsheet_only'] as const
+// daily_worker（自社日雇い）/ freelance（個人事業主）は第2段階で追加（docs/spec_spot_shift.md）
+export const AFFILIATION_TYPES = ['own_employee', 'linked_external', 'partner_manual', 'skillsheet_only', 'daily_worker', 'freelance'] as const
 export type AffiliationType = typeof AFFILIATION_TYPES[number]
 
 // 所属元のみが編集できる「基本項目」（稼働先=linked_external 行では編集不可・所属元の値を参照表示）

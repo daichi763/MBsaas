@@ -9,8 +9,8 @@ const PTYPE_LABELS = { mobile_shop: '携帯ショップ', electronics: '家電�
 const RISK_BADGE = { low: '<span class="badge badge-green">低</span>', mid: '<span class="badge badge-yellow">中</span>', high: '<span class="badge badge-red">高</span>' }
 
 // スタッフマスタの所属区分（作成ルート）
-const AFF_TYPE_LABEL = { own_employee: '自社雇用', linked_external: '他社連携', partner_manual: '取引先所属', skillsheet_only: 'スキルシートのみ' }
-const AFF_TYPE_BADGE = { own_employee: 'badge-green', linked_external: 'badge-blue', partner_manual: 'badge-purple', skillsheet_only: 'badge-gray' }
+const AFF_TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
+const AFF_TYPE_BADGE = { own_employee: 'badge-green', daily_worker: 'badge-yellow', freelance: 'badge-yellow', linked_external: 'badge-blue', partner_manual: 'badge-purple', skillsheet_only: 'badge-gray' }
 function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${AFF_TYPE_LABEL[t] || t}</span>` }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
@@ -227,6 +227,7 @@ async function renderStaff() {
 function drawStaffTable(filter) {
   let list = staffCache
   if (filter === 'follow') list = list.filter(s => s.follow_flag)
+  if (filter === 'provisional') list = list.filter(s => s.is_provisional)
   if (filter === 'risk') list = list.filter(s => s.retention_risk !== 'low')
   if (filter === 'noreport') list = list.filter(s => s.today_shift && !s.today_checkin)
   if (filter === 'lowscore') list = list.filter(s => s.evaluation_score < 3)
@@ -237,11 +238,12 @@ function drawStaffTable(filter) {
       <h2 class="text-xl font-bold text-gray-900">スタッフマスタ <span class="text-sm font-normal text-gray-400">${list.length}名</span></h2>
       <div class="flex gap-2">
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
+        <button class="btn btn-outline" onclick="showQuickRegister && showQuickRegister()"><i class="fas fa-bolt"></i>仮登録（氏名・電話のみ）</button>
         <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
       </div>
     </div>
     <div class="flex gap-2 mb-4 flex-wrap" id="staff-filters">
-      ${[['all', 'すべて'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']].map(([k, v]) =>
+      ${[['all', 'すべて'], ['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']].map(([k, v]) =>
         `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
       <span class="border-l border-gray-200 mx-1"></span>
       ${Object.entries(AFF_TYPE_LABEL).map(([k, v]) =>
@@ -254,7 +256,7 @@ function drawStaffTable(filter) {
           ${list.map(s => `
             <tr class="cursor-pointer" onclick="location.hash='staff/${s.staff_id}'">
               <td class="text-gray-400">${esc(s.user_code)}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}</td>
               <td>${affTypeBadge(s.affiliation_type)}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
               <td>${s.month_days}日</td>
@@ -315,6 +317,7 @@ function basicInfoNotice(p) {
   if (p.affiliation_type === 'own_employee') return `<div class="text-xs bg-emerald-50 text-emerald-700 rounded-lg p-2 mb-3"><i class="fas fa-id-card mr-1"></i>自社雇用スタッフです。基本情報は従業員管理のデータを表示しています（編集は従業員管理から）。管理者メモは下の欄で記入できます。</div>`
   if (p.affiliation_type === 'linked_external') return `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本情報は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。管理者メモ・稼働先追記項目は記入できます。</div>`
   if (!p.can_edit_in_master) return `<div class="text-xs bg-gray-50 text-gray-600 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>このスタッフの基本情報は編集できません。</div>`
+  if (p.is_provisional) return `<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-3"><i class="fas fa-bolt mr-1"></i>仮登録のスタッフです（氏名・電話のみで稼働できます）。下の「区分・登録状態」から本登録してください。</div>`
   return ''
 }
 
@@ -338,6 +341,7 @@ async function renderStaffDetail(sid) {
         <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : p.user_code)}</span></h2>
         <div class="flex gap-2 mt-1 flex-wrap">
           ${affTypeBadge(p.affiliation_type)}
+          ${p.is_provisional ? '<span class="badge badge-red"><i class="fas fa-bolt mr-1"></i>仮登録</span>' : ''}
           ${p.global_staff_code ? `<span class="badge badge-gray" title="企業間連携用のスタッフID（恒久固定）"><i class="fas fa-fingerprint mr-1"></i>${esc(p.global_staff_code)}</span>` : ''}
           <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
           ${RISK_BADGE[p.retention_risk]}
@@ -480,6 +484,7 @@ async function renderStaffDetail(sid) {
 
     <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
     <div id="roster-chat-panel" class="mt-4 hidden"></div>
+    <div id="staff-lifecycle-panel" class="mt-4"></div>
     <div id="staff-rate-panel" class="mt-4"></div>
 
     <section class="card p-4 mt-4">
@@ -505,6 +510,8 @@ async function renderStaffDetail(sid) {
   if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
   // スタッフ別の単価ルール（public/static/shift-board.js）
   if (window.renderStaffRatePanel) renderStaffRatePanel(sid, p)
+  // 区分・登録状態・提出設定（public/static/staff-lifecycle.js）
+  if (window.renderStaffLifecyclePanel) renderStaffLifecyclePanel(sid, p)
   if (evalRadar) {
     new Chart(document.getElementById('eval-chart'), {
       type: 'radar',
@@ -1081,7 +1088,15 @@ async function renderEmployees() {
           </tbody>
         </table>
       </div>
-    </section>`
+    </section>
+    ${(data.ended || []).length ? `<section class="card p-4 mt-4" id="employees-ended">
+      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-box-archive text-gray-400 mr-1"></i>雇用終了（他の区分へ移行したスタッフ）</h3>
+      <p class="text-xs text-gray-400 mb-2">従業員管理のデータは閲覧のみで保持しています（7年保存）。スタッフとしての稼働はスタッフマスタで管理します</p>
+      <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>社員番号</th><th>氏名</th><th>現在の区分</th><th>雇用終了日</th><th>理由</th></tr></thead><tbody>
+        ${data.ended.map(e => `<tr class="cursor-pointer" onclick="location.hash='employees/${e.staff_id}'"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
+          <td>${affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-gray-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
+      </tbody></table></div>
+    </section>` : ''}`
 }
 
 async function renderEmployeeDetail(sid) {
@@ -1123,7 +1138,7 @@ async function renderEmployeeDetail(sid) {
             ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(s.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
           </select></dd></div>
         ${field('sp-retired', '退職日', s.retired_at, 'date')}
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">所属会社名</dt><dd class="text-xs">${esc(s.affiliation || '')}（自社）</dd></div>
+        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">所属会社名</dt><dd class="text-xs">${esc(s.affiliation || '')}${data.read_only ? `（現在: ${esc(AFF_TYPE_LABEL[s.affiliation_type] || s.affiliation_type || '')}）` : '（自社）'}</dd></div>
         ${field('sp-station-line', '最寄駅（路線）', esc(s.nearest_station_line || ''))}
         ${field('sp-station', '最寄駅（駅）', esc(s.nearest_station || ''))}
         ${field('sp-commute', '通勤可能時間（分）', s.commute_minutes, 'number')}
@@ -1223,6 +1238,15 @@ async function renderEmployeeDetail(sid) {
         </dl>
       </section>
     </div>`
+  // 雇用終了（他の区分へ移行）した従業員は閲覧のみ（第2段階）
+  if (data.read_only) {
+    $app.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true })
+    $app.querySelectorAll('button[onclick^="saveEmployeeRecord"], button[onclick^="openDocumentUpload"], button[onclick^="deleteDocument"]').forEach(el => el.remove())
+    const head = $app.querySelector('#employee-staff-profile')
+    if (head) head.insertAdjacentHTML('beforebegin', `<div class="text-sm bg-gray-100 text-gray-700 rounded-lg p-3 mb-4" id="employee-ended-notice">
+      <i class="fas fa-box-archive mr-1"></i>雇用終了日: <b>${esc(r.employment_ended_at || '-')}</b>（${esc(r.ended_reason || '')}）。従業員管理のデータは閲覧のみで保持しています（7年保存）。
+      自社雇用に戻す場合はスタッフ詳細の「区分を変更」から行ってください。</div>`)
+  }
 }
 
 window.saveEmployeeRecord = async function (sid) {

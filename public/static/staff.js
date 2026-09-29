@@ -49,8 +49,11 @@ async function renderHome() {
   HOME = data
   const s = data.shift
   const r = data.reports
-  const order = ['wake_up', 'departure', 'check_in', 'check_out']
+  // 提出設定（案件・スタッフ・シフトごと）で必要な報告だけを表示する
+  const order = (data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out'])
+  const dailyRequired = data.daily_report_required !== false
   const nextIdx = order.findIndex(t => !r[t])
+  const allDone = nextIdx === -1 && (!dailyRequired || data.daily_report_done)
 
   let shiftCard
   if (s) {
@@ -65,7 +68,8 @@ async function renderHome() {
       <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
     </section>
     <section class="mb-4" id="attendance-section">
-      <h2 class="font-bold text-gray-800 mb-2 px-1">本日の報告 ${nextIdx === -1 && data.daily_report_done ? '<span class="badge badge-green ml-1">すべて完了</span>' : ''}</h2>
+      <h2 class="font-bold text-gray-800 mb-2 px-1">本日の報告 ${allDone ? '<span class="badge badge-green ml-1">すべて完了</span>' : ''}</h2>
+      ${!order.length && !dailyRequired ? '<p class="card p-4 text-sm text-gray-500">このシフトは勤怠報告・日報の提出は不要です</p>' : ''}
       <div class="space-y-2.5">
         ${order.map((t, i) => {
           const done = !!r[t]
@@ -88,7 +92,7 @@ async function renderHome() {
             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
           </button>`
         }).join('')}
-        <button class="report-btn ${data.daily_report_done ? 'done' : r.check_out ? 'next' : ''}" onclick="location.hash='report'">
+        ${dailyRequired ? `<button class="report-btn ${data.daily_report_done ? 'done' : (r.check_out || nextIdx === -1) ? 'next' : ''}" onclick="location.hash='report'">
           <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${data.daily_report_done ? 'bg-emerald-500 text-white' : r.check_out ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
             <i class="fas ${data.daily_report_done ? 'fa-check' : 'fa-pen-to-square'}"></i>
           </span>
@@ -97,7 +101,7 @@ async function renderHome() {
             <span class="block text-xs text-gray-400">${data.daily_report_done ? '提出済み（修正可）' : '稼働終了後に入力してください'}</span>
           </span>
           <i class="fas fa-chevron-right text-gray-300"></i>
-        </button>
+        </button>` : ''}
       </div>
     </section>`
   } else {
@@ -416,6 +420,7 @@ async function renderReport() {
     <section class="card p-4 mb-4">
       <h2 class="font-bold text-gray-800">${esc(s.project_name)}</h2>
       <p class="text-xs text-gray-400">${fmtDate(HOME.today)} の日報 ${data.template ? '｜' + esc(data.template.template_name) : ''}</p>
+      ${HOME.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
     </section>
     <form id="report-form" class="space-y-4 pb-8">
       <section class="card p-4">
