@@ -834,6 +834,13 @@ api.get('/admin/staff/:id', async (c) => {
   // 基本項目は linked_external（他社から連携）の場合、所属元企業の値で解決される（src/roster.ts）
   const profile = await loadRoster(db, sid, u.company_id)
   if (!profile) return c.json({ error: 'not found' }, 404)
+  // 自社雇用者は従業員管理（社員名簿）の連絡先をそのまま表示する
+  if (profile.affiliation_type === 'own_employee') {
+    const er = await db.prepare('SELECT phone_main, personal_email, employee_number, department, job_title FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
+    if (er) Object.assign(profile, { emp_phone: er.phone_main, emp_email: er.personal_email, employee_number: er.employee_number, department: er.department, job_title: er.job_title })
+  }
+  // 画面の編集可否（APIでも同じ判定で制御している）
+  profile.can_edit_in_master = ['partner_manual', 'skillsheet_only'].includes(profile.affiliation_type) && profile.can_edit_base
 
   const [shifts, attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT s.*, p.project_name FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ? ORDER BY s.work_date DESC LIMIT 30`).bind(sid).all(),
@@ -865,28 +872,35 @@ api.get('/admin/staff/:id', async (c) => {
 })
 
 // スタッフ更新 (メモ・フォローフラグ・リスク)
-api.put('/admin/staff/:id', async (c) => {
-  const u = c.get('user'); const sid = c.req.param('id')
-  const body = await c.req.json()
+// ============ スタッフ基本情報の更新（スタッフマスタ / 従業員管理 共通） ============
+// 編集できる画面の振り分け:
+//  - own_employee（自社雇用）      : 従業員管理画面からのみ（スタッフマスタ画面は閲覧のみ）
+//  - partner_manual / skillsheet_only: スタッフマスタ画面から編集可
+//  - linked_external（他社連携）    : 所属元企業が管理するため編集不可
+//  - 管理者メモ・要フォロー・稼働先追記項目 は全スタッフでスタッフマスタ画面から編集可
+const STAFF_MASTER_EDITABLE_TYPES = ['partner_manual', 'skillsheet_only']
+const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[])]
+function touchesProfileBase(body: any): boolean {
+  return PROFILE_BASE_KEYS.some(k => body[k] !== undefined)
+}
+// 必須項目チェック（企業ごとの必須設定 + 氏名・性別）。不足があればエラーメッセージを返す
+async function validateProfileBase(c: any, body: any, roster: any): Promise<string | null> {
+  const u = c.get('user')
+  const missing = missingRequired(await getRequiredFields(c.env.DB, u.company_id), body, 'update', roster.affiliation_type)
+  if (body.gender !== undefined && !body.gender) missing.unshift('性別')
+  if (body.name !== undefined && !String(body.name || '').trim()) missing.unshift('氏名')
+  return missing.length ? `次の項目は必須です: ${missing.join('・')}` : null
+}
+// 基本情報・追記項目・在籍状況を保存する（権限チェックは呼び出し側で実施済みであること）
+async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
+  const u = c.get('user')
   const {
     memo, follow_flag, retention_risk, skills, career, work_area, retired_at,
     affiliation, affiliation_contact, kana, gender, date_of_birth,
     nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
   } = body
-  // 権限制御: 基本項目（氏名・スキル等）は所属元企業のみ編集可。稼働先（linked_external）は追記項目のみ
-  const roster = await loadRoster(c.env.DB, sid, u.company_id)
-  if (!roster) return c.json({ error: 'not found' }, 404)
-  const touchesBase = body.name !== undefined || (ROSTER_BASE_FIELDS as readonly string[]).some(f => body[f] !== undefined)
-  if (touchesBase && !roster.can_edit_base) return c.json({ error: '基本項目は所属元企業のみ編集できます' }, 403)
-  if (touchesBase) {
-    // 企業ごとの必須項目設定（フェーズD）: 必須項目を空にする更新は拒否する
-    const missing = missingRequired(await getRequiredFields(c.env.DB, u.company_id), body, 'update', roster.affiliation_type)
-    if (body.gender !== undefined && !body.gender) missing.unshift('性別')
-    if (missing.length) return c.json({ error: `次の項目は必須です: ${missing.join('・')}`, missing }, 400)
-  }
   if (body.name !== undefined) {
-    const newName = String(body.name || '').trim()
-    if (!newName) return c.json({ error: '氏名は必須です' }, 400)
+    const newName = String(body.name).trim()
     await c.env.DB.prepare('UPDATE users SET name = ? WHERE user_id = ?').bind(newName, roster.user_id).run()
     await propagateNameToLinked(c.env.DB, sid, newName)
   }
@@ -920,7 +934,8 @@ api.put('/admin/staff/:id', async (c) => {
   // 退職日はusersテーブル側で管理する（定期削除の「退職後7年」判定に使用）。
   // 既存の users.status('active'/'suspended') は他機能の対象判定に既に使われているため、
   // 「退職」の時だけ suspended に連動させ、休職中/入社予定/在職中は active のまま維持する。
-  if (retired_at !== undefined) {
+  // retired_at に日付があれば「退職」。null で employment_status 指定がある場合は employment_status を優先する。
+  if (retired_at !== undefined && (retired_at || employment_status === undefined)) {
     await c.env.DB.prepare(`UPDATE users SET retired_at = ?, status = ?
       WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`)
       .bind(retired_at || null, retired_at ? 'suspended' : 'active', sid, u.company_id).run()
@@ -937,6 +952,23 @@ api.put('/admin/staff/:id', async (c) => {
         .bind(sid, u.company_id).run()
     }
   }
+}
+
+// スタッフ更新（スタッフマスタ画面から）
+api.put('/admin/staff/:id', async (c) => {
+  const u = c.get('user'); const sid = c.req.param('id')
+  const body = await c.req.json()
+  const roster = await loadRoster(c.env.DB, sid, u.company_id)
+  if (!roster) return c.json({ error: 'not found' }, 404)
+  if (touchesProfileBase(body)) {
+    if (roster.affiliation_type === 'own_employee') return c.json({ error: '自社雇用スタッフの基本情報は従業員管理から編集してください' }, 403)
+    if (!STAFF_MASTER_EDITABLE_TYPES.includes(roster.affiliation_type) || !roster.can_edit_base) {
+      return c.json({ error: '基本項目は所属元企業のみ編集できます' }, 403)
+    }
+    const err = await validateProfileBase(c, body, roster)
+    if (err) return c.json({ error: err }, 400)
+  }
+  await applyProfileUpdate(c, sid, body, roster)
   return c.json({ ok: true })
 })
 
@@ -1286,7 +1318,7 @@ api.get('/admin/employees/:staffId', async (c) => {
   const u = c.get('user'); const sid = c.req.param('staffId')
   // 自社雇用者（own_employee）でなければ従業員管理としては閲覧不可にする
   const staff = await c.env.DB.prepare(`
-    SELECT sp.*, us.name, us.email, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    SELECT sp.*, us.name, us.email, us.phone, us.retired_at FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.staff_id = ? AND sp.company_id = ? AND ${OWN_EMPLOYEE_COND}`).bind(sid, u.company_id).first()
   if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
 
@@ -1303,6 +1335,17 @@ api.put('/admin/employees/:staffId', async (c) => {
   if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
 
   const b = await c.req.json()
+  // スタッフ基本情報（スタッフマスタに反映される項目）。自社雇用者はここでのみ編集できる
+  // 所属会社名は自社名で固定のため受け付けない。メモ・フォロー等の追記項目はスタッフマスタ画面側で扱う
+  const profile: Record<string, any> = {}
+  if (b.profile && typeof b.profile === 'object') {
+    for (const k of PROFILE_BASE_KEYS) if (k !== 'affiliation' && b.profile[k] !== undefined) profile[k] = b.profile[k]
+  }
+  const roster = Object.keys(profile).length ? await loadRoster(c.env.DB, sid, u.company_id) : null
+  if (roster) {
+    const err = await validateProfileBase(c, profile, roster)
+    if (err) return c.json({ error: err }, 400)
+  }
   if (b.employee_number) {
     const dup = await c.env.DB.prepare('SELECT 1 FROM employee_records WHERE company_id = ? AND employee_number = ? AND staff_id != ?')
       .bind(u.company_id, b.employee_number, sid).first()
@@ -1334,6 +1377,7 @@ api.put('/admin/employees/:staffId', async (c) => {
     await c.env.DB.prepare(`INSERT INTO employee_records (staff_id, company_id, ${cols.join(', ')}) VALUES (?, ?, ${placeholders})`)
       .bind(sid, u.company_id, ...cols.map(k => b[k] ?? null)).run()
   }
+  if (roster) await applyProfileUpdate(c, sid, profile, roster)
   return c.json({ ok: true })
 })
 
