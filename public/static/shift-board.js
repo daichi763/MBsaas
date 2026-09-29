@@ -320,6 +320,8 @@
         <span class="badge badge-gray ml-1">${ST_LABEL[a.status]}</span></p>
       ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(x => (x.other_company ? x.company_name + '（他社）' : x.project_name) + ' ' + x.start_time + '〜' + x.end_time).join(' / '))}</p>` : ''}
       ${a.ng ? '<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2">クライアントのNGスタッフに指定されています</p>' : ''}
+      ${a.settle_status === 'confirmed' ? '<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
+      ${a.actual_start ? `<p class="text-xs text-gray-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${a.actual_start}〜${a.actual_end}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
       <div class="grid grid-cols-4 gap-1.5 mb-4">
         ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-blue-400' : ''}" onclick="boardShiftStatus(${id}, '${st}')">${ST_LABEL[st]}</button>`).join('')}
       </div>
@@ -616,7 +618,10 @@
             <label>交通費の支払<select id="pp-pt" class="inp text-sm">${opt(PT_LABEL, p.pay_transport_type || 'actual')}</select></label>
             <label>上限 / 定額の金額<input id="pp-pt-amt" type="number" class="inp text-sm" value="${p.pay_transport_amount || 0}"></label>
             <label>休憩（時給計算用・分）<input id="pp-break" type="number" class="inp text-sm" value="${p.default_break_minutes ?? 60}"></label>
+            <label>時給の時間の数え方<select id="pp-hours-basis" class="inp text-sm">${opt({ clipped: '実働（予定の範囲内）', actual: '実働どおり', scheduled: '予定どおり' }, p.hours_basis || 'clipped')}</select></label>
+            <label>時刻の丸め<select id="pp-round" class="inp text-sm">${opt({ 0: '丸めない', 5: '5分', 10: '10分', 15: '15分', 30: '30分' }, String(p.time_round_minutes || 0))}</select></label>
           </div>
+          <p class="text-[11px] text-gray-400 mt-1">時給は入店・退店の実績から計算します。「予定の範囲内」は早く来た・遅く残った分を含めません。丸めは開始を切り上げ、終了を切り捨てます</p>
           <button class="btn btn-primary w-full mt-3 text-sm" onclick="saveProjectPricing(${p.project_id})">保存する</button>
           <p class="text-[11px] text-gray-400 mt-2">保存しても、登録済みのシフトの金額は変わりません。変更を反映するには「単価ルールを再適用」を使ってください</p>
           <button class="btn btn-outline w-full mt-2 text-xs" onclick="repriceProject(${p.project_id})"><i class="fas fa-rotate"></i>今後のシフトに単価ルールを再適用</button>
@@ -658,6 +663,7 @@
       await axios.put(`/api/admin/projects/${pid}/pricing`, {
         engagement_type: v('pp-eng'), unit_price_type: v('pp-bill-unit'), unit_price: v('pp-bill'), pay_unit_type: v('pp-pay-unit'), pay_rate: v('pp-pay'),
         bill_transport_type: v('pp-bt'), bill_transport_amount: v('pp-bt-amt'), pay_transport_type: v('pp-pt'), pay_transport_amount: v('pp-pt-amt'), default_break_minutes: v('pp-break'),
+        hours_basis: v('pp-hours-basis'), time_round_minutes: v('pp-round'),
       })
       invalidateMaster(); toast('保存しました'); renderProjectDetail(pid)
     } catch (e) { toast(errMsg(e)) }
