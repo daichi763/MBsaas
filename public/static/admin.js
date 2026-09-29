@@ -480,6 +480,7 @@ async function renderStaffDetail(sid) {
 
     <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
     <div id="roster-chat-panel" class="mt-4 hidden"></div>
+    <div id="staff-rate-panel" class="mt-4"></div>
 
     <section class="card p-4 mt-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-clock text-gray-400 mr-1"></i>勤怠報告履歴（直近）</h3>
@@ -502,6 +503,8 @@ async function renderStaffDetail(sid) {
 
   if (window.renderRosterPanels) renderRosterPanels(sid, p)
   if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
+  // スタッフ別の単価ルール（public/static/shift-board.js）
+  if (window.renderStaffRatePanel) renderStaffRatePanel(sid, p)
   if (evalRadar) {
     new Chart(document.getElementById('eval-chart'), {
       type: 'radar',
@@ -855,7 +858,10 @@ async function renderProjectDetail(pid) {
           </select>
         </div>
       </section>
-    </div>`
+    </div>
+    <div id="project-pricing-panel" class="mt-4"></div>`
+  // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
+  if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
 }
 
 // ============ クライアント ============
@@ -946,7 +952,10 @@ async function renderClientDetail(cid) {
         </div>
         <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
       </section>
-    </div>`
+    </div>
+    <div id="client-sites-panel" class="mt-4"></div>`
+  // 開催場所（public/static/shift-board.js）
+  if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
 }
 
 function clientContactsHtml(contacts, cid) {
@@ -1810,7 +1819,7 @@ window.exportBillingCsv = function () {
 // ============ ルーティング ============
 const routes = {
   dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
-  shifts: () => renderShifts(), reports: () => renderReports(), analytics: () => renderAnalytics(),
+  shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees
 }
@@ -1825,6 +1834,7 @@ function route() {
   if (tab === 'projects' && id) return renderProjectDetail(id)
   if (tab === 'clients' && id) return renderClientDetail(id)
   if (tab === 'employees' && id) return renderEmployeeDetail(id)
+  if (tab === 'shifts' && id === 'week') return renderShifts()
   ;(routes[tab] || renderDashboard)()
 }
 

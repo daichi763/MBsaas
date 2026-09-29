@@ -5,6 +5,7 @@ import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
+import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
@@ -358,6 +359,8 @@ api.route('/admin/roster', rosterApi)
 api.route('/staff/me', staffSelfApi)
 // 企業間チャット（所属元⇔稼働先担当者）。/admin/* 配下のみ。スタッフ本人向けAPIには公開しない（src/roster-chat.ts）
 api.route('/admin/roster-chat', chatApi)
+// 常勤/スポットのシフトボード・募集枠・単価（請求/支払）。金額は /api/admin/* のみで返す（src/shift-board.ts）
+api.route('/admin', shiftBoardApi)
 
 // =========================================================
 // スタッフ側 API
@@ -400,7 +403,7 @@ api.get('/staff/home', async (c) => {
   const openConsult = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
 
   return c.json({
-    today, shift, reports, daily_report_done: dailyReportDone, notices: notices.results,
+    today, shift: stripMoney(shift), reports, daily_report_done: dailyReportDone, notices: notices.results,
     replied_consultations: openConsult?.n || 0,
     // 写真必須設定はシフトの所有企業の設定に従う
     photo_required_attendance: resolvePhotoRequired(shiftOwner || u, shift ? (shift.photo_required_override as number | null) : undefined),
@@ -574,7 +577,7 @@ api.get('/staff/shifts', async (c) => {
     SELECT s.*, p.project_name, co.company_name, (s.company_id != ?) AS other_company FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN companies co ON co.company_id = s.company_id
     WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date LIKE ? ORDER BY s.work_date, s.start_time`).bind(u.company_id, ...ids, month + '%').all()
-  return c.json({ shifts: rows.results, month })
+  return c.json({ shifts: (rows.results as any[]).map(stripMoney), month })
 })
 
 // シフト希望提出
@@ -1661,11 +1664,17 @@ api.post('/admin/shifts', async (c) => {
   if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
   const proj = await c.env.DB.prepare('SELECT location, unit_price FROM projects WHERE project_id = ?').bind(b.project_id).first()
-  await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
+  const ins = await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.staff_id, b.project_id, b.work_date, b.start_time || '09:30', b.end_time || '19:00',
       b.location || proj?.location || '', b.role || '販売スタッフ', b.unit_price ?? proj?.unit_price ?? 0, b.transportation_fee || 0,
       b.status || 'confirmed', u.user_id, b.memo ?? null).run()
+  // 単価ルール（請求/支払/交通費）を適用。単価を明示指定した場合は請求をその値で固定する
+  const sid = ins.meta.last_row_id
+  if (sid) {
+    await applyPricingToShift(c.env.DB, u.company_id, sid)
+    if (b.unit_price != null) await c.env.DB.prepare("UPDATE shifts SET unit_price = ?, bill_rate = ?, bill_unit_type = 'daily', bill_qty = 1, price_locked = 1 WHERE shift_id = ?").bind(b.unit_price, b.unit_price, sid).run()
+  }
   return c.json({ ok: true })
 })
 
@@ -1676,6 +1685,8 @@ api.put('/admin/shifts/:id', async (c) => {
       staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo)
     WHERE shift_id = ? AND company_id = ?`)
     .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, c.req.param('id'), u.company_id).run()
+  // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
+  if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
   return c.json({ ok: true })
 })
 
