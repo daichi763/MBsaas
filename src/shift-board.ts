@@ -337,7 +337,7 @@ app.get('/shift-board/candidates', async (c) => {
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute')) AS week_days
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN staff_profiles src ON src.staff_id = sp.source_staff_id
-    WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type,'own_employee') != 'skillsheet_only'
+    WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type,'own_employee') != 'skillsheet_only' AND sp.merged_into_staff_id IS NULL
       AND COALESCE(sp.employment_status,'working') NOT IN ('retired') AND us.status = 'active'
     ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, addDays(role.work_date, -weekday(role.work_date)), addDays(role.work_date, 6 - weekday(role.work_date)), u.company_id).all()).results as any[]
   const conflicts = await findConflicts(db, u.company_id, staff.map(s => s.staff_id), role.work_date, role.work_date)
@@ -477,10 +477,11 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   const staffIds: number[] = [...new Set(((Array.isArray(b.staff_ids) ? b.staff_ids : [b.staff_id]) as any[]).map(Number).filter(Boolean))]
   if (!staffIds.length) return c.json({ error: 'スタッフを選択してください' }, 400)
   const status = ['confirmed', 'requested'].includes(b.status) ? b.status : 'confirmed'
-  const staffRows = (await db.prepare(`SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+  const staffRows = (await db.prepare(`SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.merged_into_staff_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.company_id = ? AND sp.staff_id IN (${staffIds.map(() => '?').join(',')})`).bind(u.company_id, ...staffIds).all()).results as any[]
   if (staffRows.length !== staffIds.length) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (staffRows.some(s => s.affiliation_type === 'skillsheet_only')) return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
+  if (staffRows.some(s => s.merged_into_staff_id)) return c.json({ error: '統合済みのスタッフにはシフトを登録できません（統合先のスタッフを選んでください）' }, 400)
 
   const already = new Set(((await db.prepare("SELECT staff_id FROM shifts WHERE slot_role_id = ? AND status != 'absent'").bind(role.slot_role_id).all()).results as any[]).map(r => r.staff_id))
   const conflicts = await findConflicts(db, u.company_id, staffIds, role.work_date, role.work_date)

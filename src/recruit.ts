@@ -377,7 +377,7 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
   let createdStaff = false
   if (toApprove.length && !staffId) {
     if (b.staff_id) {
-      const st = await db.prepare(`SELECT staff_id, COALESCE(affiliation_type,'own_employee') AS t FROM staff_profiles WHERE staff_id = ? AND company_id = ?`).bind(b.staff_id, u.company_id).first() as any
+      const st = await db.prepare(`SELECT staff_id, COALESCE(affiliation_type,'own_employee') AS t FROM staff_profiles WHERE staff_id = ? AND company_id = ? AND merged_into_staff_id IS NULL`).bind(b.staff_id, u.company_id).first() as any
       if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
       if (st.t === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
       staffId = st.staff_id

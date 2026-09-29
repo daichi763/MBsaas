@@ -225,7 +225,8 @@ async function renderStaff() {
 }
 
 function drawStaffTable(filter) {
-  let list = staffCache
+  // 統合済み（第5段階）のスタッフは「統合済み」の絞り込みでのみ表示する
+  let list = filter === 'merged' ? staffCache.filter(s => s.merged_into_staff_id) : staffCache.filter(s => !s.merged_into_staff_id)
   if (filter === 'follow') list = list.filter(s => s.follow_flag)
   if (filter === 'provisional') list = list.filter(s => s.is_provisional)
   if (filter === 'risk') list = list.filter(s => s.retention_risk !== 'low')
@@ -245,6 +246,7 @@ function drawStaffTable(filter) {
     <div class="flex gap-2 mb-4 flex-wrap" id="staff-filters">
       ${[['all', 'すべて'], ['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']].map(([k, v]) =>
         `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
+      ${staffCache.some(s => s.merged_into_staff_id) ? `<button class="btn ${filter === 'merged' ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('merged')">統合済み</button>` : ''}
       <span class="border-l border-gray-200 mx-1"></span>
       ${Object.entries(AFF_TYPE_LABEL).map(([k, v]) =>
         `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
@@ -256,7 +258,7 @@ function drawStaffTable(filter) {
           ${list.map(s => `
             <tr class="cursor-pointer" onclick="location.hash='staff/${s.staff_id}'">
               <td class="text-gray-400">${esc(s.user_code)}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}</td>
               <td>${affTypeBadge(s.affiliation_type)}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
               <td>${s.month_days}日</td>
@@ -314,10 +316,11 @@ function genderOptions(v) {
 }
 // 基本情報欄の上部に出す「どこで編集できるか」の案内
 function basicInfoNotice(p) {
+  if (p.merged_into_staff_id) return `<div class="text-xs bg-gray-100 text-gray-700 rounded-lg p-2 mb-3" id="staff-merged-notice"><i class="fas fa-code-merge mr-1"></i>このスタッフは別のスタッフに統合済みです（シフト・勤怠・日報などは統合先に移しました）。<a class="text-blue-600 underline" href="#staff/${p.merged_into_staff_id}">統合先を開く</a></div>`
   if (p.affiliation_type === 'own_employee') return `<div class="text-xs bg-emerald-50 text-emerald-700 rounded-lg p-2 mb-3"><i class="fas fa-id-card mr-1"></i>自社雇用スタッフです。基本情報は従業員管理のデータを表示しています（編集は従業員管理から）。管理者メモは下の欄で記入できます。</div>`
   if (p.affiliation_type === 'linked_external') return `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本情報は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。管理者メモ・稼働先追記項目は記入できます。</div>`
   if (!p.can_edit_in_master) return `<div class="text-xs bg-gray-50 text-gray-600 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>このスタッフの基本情報は編集できません。</div>`
-  if (p.is_provisional) return `<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-3"><i class="fas fa-bolt mr-1"></i>仮登録のスタッフです（氏名・電話のみで稼働できます）。下の「区分・登録状態」から本登録してください。</div>`
+  if (p.is_provisional) return `<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-3"><i class="fas fa-bolt mr-1"></i>仮登録のスタッフです（氏名・電話のみで稼働できます）。すでに登録のある人（他社連携など）と同じ人なら「区分・登録状態」の「既存のスタッフに統合」を、別の人なら「本登録」を使ってください。</div>`
   return ''
 }
 
@@ -341,7 +344,7 @@ async function renderStaffDetail(sid) {
         <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : p.user_code)}</span></h2>
         <div class="flex gap-2 mt-1 flex-wrap">
           ${affTypeBadge(p.affiliation_type)}
-          ${p.is_provisional ? '<span class="badge badge-red"><i class="fas fa-bolt mr-1"></i>仮登録</span>' : ''}
+          ${p.merged_into_staff_id ? '<span class="badge badge-gray"><i class="fas fa-code-merge mr-1"></i>統合済み</span>' : p.is_provisional ? '<span class="badge badge-red"><i class="fas fa-bolt mr-1"></i>仮登録</span>' : ''}
           ${p.global_staff_code ? `<span class="badge badge-gray" title="企業間連携用のスタッフID（恒久固定）"><i class="fas fa-fingerprint mr-1"></i>${esc(p.global_staff_code)}</span>` : ''}
           <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
           ${RISK_BADGE[p.retention_risk]}
@@ -1379,7 +1382,7 @@ window.showAddShift = async function (defaultDate) {
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">スタッフ *</label>
-          <select id="sh-staff" class="inp">${st.staff.filter(s => s.affiliation_type !== 'skillsheet_only').map(s => `<option value="${s.staff_id}">${esc(s.name)}</option>`).join('')}</select></div>
+          <select id="sh-staff" class="inp">${st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id).map(s => `<option value="${s.staff_id}">${esc(s.name)}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">案件 *</label>
           <select id="sh-project" class="inp">${pj.projects.filter(p => p.status === 'active').map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
       </div>
