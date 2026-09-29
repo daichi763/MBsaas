@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
 import { runRetentionCleanup } from './services/retention'
+import { purgeOldApplications } from './recruit'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string }
 
@@ -218,6 +219,20 @@ app.get('/r/:token', (c) => c.html(`<!DOCTYPE html>
 </body>
 </html>`))
 
+// ============ 公開の募集ページ（ログイン不要。/api/public/recruit/:token） ============
+app.get('/apply/:token', (c) => c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>${head('スタッフ募集')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<body class="bg-gray-50 min-h-screen">
+  <header class="bg-white border-b border-gray-100 sticky top-0 z-20">
+    <div class="max-w-lg mx-auto px-4 py-3"><h1 class="font-bold text-gray-800 flex items-center gap-2" id="apply-header"><i class="fas fa-bullhorn text-blue-600"></i>スタッフ募集</h1></div>
+  </header>
+  <main id="app" class="max-w-lg mx-auto px-4 py-4 pb-28"></main>
+  <div id="modal-root"></div>
+  <script src="/static/apply.js"></script>
+</body>
+</html>`))
+
 // ============ スタッフ画面 (スマホファースト SPA) ============
 app.get('/staff', async (c) => {
   const u = await currentUser(c)
@@ -285,6 +300,7 @@ app.get('/admin', async (c) => {
         <a href="#follow" class="side-link" data-tab="follow"><i class="fas fa-handshake-angle w-5"></i>フォロー履歴</a>
         <a href="#consult" class="side-link" data-tab="consult"><i class="fas fa-comments w-5"></i>相談対応</a>
         <a href="#roster-chat" class="side-link flex items-center" data-tab="roster-chat"><i class="fas fa-people-arrows w-5"></i>企業間チャット</a>
+        <a href="#recruit" class="side-link flex items-center" data-tab="recruit"><i class="fas fa-bullhorn w-5"></i>募集・応募<span id="recruit-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
         <a href="#settlement" class="side-link" data-tab="settlement"><i class="fas fa-scale-balanced w-5"></i>精算（請求・支払）</a>
         <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>
       </nav>
@@ -303,7 +319,7 @@ app.get('/admin', async (c) => {
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
-          <option value="follow">フォロー</option><option value="consult">相談</option><option value="roster-chat">企業間チャット</option><option value="settlement">精算</option><option value="billing">請求前確認</option>
+          <option value="follow">フォロー</option><option value="consult">相談</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option>
         </select>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
@@ -319,6 +335,8 @@ app.get('/admin', async (c) => {
   <script src="/static/shift-board.js"></script>
   <script src="/static/staff-lifecycle.js"></script>
   <script src="/static/settlement.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script src="/static/recruit.js"></script>
 </body>
 </html>`)
 })
@@ -381,6 +399,14 @@ export default {
       console.log(`notice_reads cleanup completed: deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
     } catch (e) {
       console.log(`notice_reads cleanup failed: ${e}`)
+    }
+
+    // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
+    try {
+      const n = await purgeOldApplications(env.DB)
+      console.log(`recruit applications cleanup completed: deleted=${n}`)
+    } catch (e) {
+      console.log(`recruit applications cleanup failed: ${e}`)
     }
 
     // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。

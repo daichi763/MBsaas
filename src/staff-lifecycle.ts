@@ -30,6 +30,33 @@ export function payeeTypeFor(type: string): string {
   return 'payroll'
 }
 
+// ---------- 仮登録の作成（仮登録API・募集の承認で共用）。ログインは発行しない ----------
+export async function insertProvisionalStaff(db: D1Database, companyId: number, byUserId: number | null, o: {
+  name: string; phone: string; type: string; affiliation: string | null; partnerId: number | null; kana?: any; gender?: any
+  attendance_mode?: any; daily_report_mode?: any; memo?: any; email?: string | null; note: string
+}) {
+  const person = await createPerson(db, companyId)
+  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, phone, email, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?, ?, ?)`)
+    .bind(companyId, 'TMP-' + person.global_staff_code, o.name, await unusablePasswordHash(), o.phone || null, o.email || null, person.person_id).run()
+  const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
+      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?)`)
+    .bind(r.meta.last_row_id, companyId, person.person_id, companyId, o.type, o.partnerId, o.affiliation,
+      o.kana || null, o.gender || null,
+      ['none', 'in_out', 'full'].includes(o.attendance_mode) ? o.attendance_mode : null,
+      ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null).run()
+  const staffId = sr.meta.last_row_id as number
+  await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, note, changed_by)
+    VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?)`).bind(companyId, staffId, o.type, nowJST().slice(0, 10), o.affiliation, o.partnerId, o.note, byUserId).run()
+  return { staff_id: staffId, global_staff_code: person.global_staff_code }
+}
+export async function findStaffByPhone(db: D1Database, companyId: number, phone: string) {
+  const p = normalizePhone(phone); if (p.length < 10) return []
+  return ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL`)
+    .bind(companyId).all()).results as any[]).filter(r => normalizePhone(r.phone) === p)
+}
+
 // ---------- 提出設定（案件 → スタッフ → シフト の順に上書き） ----------
 export const ATTENDANCE_MODES = ['none', 'in_out', 'full'] as const
 export const DAILY_REPORT_MODES = ['none', 'required'] as const
@@ -135,21 +162,9 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
     } else return c.json({ error: '取引先を選択または入力してください' }, 400)
   }
 
-  const person = await createPerson(db, u.company_id)
-  const userCode = 'TMP-' + person.global_staff_code
-  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, phone, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?, ?)`)
-    .bind(u.company_id, userCode, name, await unusablePasswordHash(), phone, person.person_id).run()
-  const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
-      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?)`)
-    .bind(r.meta.last_row_id, u.company_id, person.person_id, u.company_id, type, partnerId, affiliation,
-      b.kana || null, b.gender || null,
-      ['none', 'in_out', 'full'].includes(b.attendance_mode) ? b.attendance_mode : null,
-      ['none', 'required'].includes(b.daily_report_mode) ? b.daily_report_mode : null, b.memo || null).run()
-  const staffId = sr.meta.last_row_id as number
-  await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, note, changed_by)
-    VALUES (?, ?, 'new', ?, ?, ?, ?, '仮登録', ?)`).bind(u.company_id, staffId, type, todayJST(), affiliation, partnerId, u.user_id).run()
-  return c.json({ ok: true, staff_id: staffId, global_staff_code: person.global_staff_code })
+  const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name, phone, type, affiliation, partnerId, kana: b.kana, gender: b.gender,
+    attendance_mode: b.attendance_mode, daily_report_mode: b.daily_report_mode, memo: b.memo, email: null, note: '仮登録' })
+  return c.json({ ok: true, ...created })
 })
 
 // ---------- 本登録（仮登録を解除。ログイン発行は任意） ----------
