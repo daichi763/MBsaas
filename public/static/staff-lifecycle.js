@@ -101,14 +101,16 @@
       <section class="card p-4" id="staff-lifecycle">
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-arrows-rotate text-blue-500 mr-1"></i>区分・登録状態</h3>
-          <div class="flex gap-2">
+          <div class="flex gap-2 flex-wrap justify-end">
+            ${data.merged_into_staff_id ? '' : `
+            ${data.is_provisional ? `<button class="btn btn-outline text-xs" onclick="openMerge(${sid})" id="merge-open-btn"><i class="fas fa-code-merge"></i>既存のスタッフに統合</button>` : ''}
             ${data.is_provisional ? `<button class="btn btn-primary text-xs" onclick="openFinalize(${sid})"><i class="fas fa-user-check"></i>本登録する</button>` : ''}
-            <button class="btn btn-outline text-xs" onclick="openAffiliationChange(${sid}, '${t}')"><i class="fas fa-right-left"></i>区分を変更</button>
+            <button class="btn btn-outline text-xs" onclick="openAffiliationChange(${sid}, '${t}')"><i class="fas fa-right-left"></i>区分を変更</button>`}
           </div>
         </div>
         <dl class="text-xs space-y-1.5">
           <div class="flex gap-2"><dt class="w-24 text-gray-400">現在の区分</dt><dd class="font-bold">${TYPE_LABEL[t] || t}</dd></div>
-          <div class="flex gap-2"><dt class="w-24 text-gray-400">登録状態</dt><dd>${data.is_provisional ? '<span class="badge badge-red">仮登録</span>' : '<span class="badge badge-green">本登録</span>'}</dd></div>
+          <div class="flex gap-2"><dt class="w-24 text-gray-400">登録状態</dt><dd>${data.merged_into_staff_id ? `<span class="badge badge-gray">統合済み</span> <a class="text-blue-600 hover:underline" href="#staff/${data.merged_into_staff_id}">${esc(data.merged_into_name || '統合先')}</a>（${esc(String(data.merged_at || '').slice(0, 10))}）` : data.is_provisional ? '<span class="badge badge-red">仮登録</span>' : '<span class="badge badge-green">本登録</span>'}</dd></div>
           <div class="flex gap-2"><dt class="w-24 text-gray-400">ログイン</dt><dd>${data.has_login ? 'あり（' + esc(data.user_code) + '）' : 'なし（報告用URLまたは代理入力で記録）'}</dd></div>
           ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-blue-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
         </dl>
@@ -129,6 +131,52 @@
       </section>
     </div>`
   }
+  // =========================================================
+  // 仮登録スタッフの統合（第5段階。src/staff-merge.ts）
+  // =========================================================
+  window.openMerge = async function (sid, q) {
+    let d; try { d = (await axios.get(`/api/admin/staff/${sid}/merge-candidates` + (q ? '?q=' + encodeURIComponent(q) : ''))).data } catch (e) { return toast(errMsg(e)) }
+    modal(`
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-code-merge text-blue-600 mr-1"></i>既存のスタッフに統合</h3>
+      <p class="text-xs text-gray-500 mb-3">仮登録の「${esc(d.source.name)}」が、すでに登録のある人（他社から連携したスタッフなど）と同じ人の場合に使います。シフト・勤怠・日報・評価などを統合先に移します</p>
+      <div class="flex gap-2 mb-2"><input id="mg-q" class="inp text-sm flex-1" placeholder="氏名・フリガナで探す" value="${esc(q || '')}" onkeydown="if(event.key==='Enter')openMerge(${sid}, this.value)">
+        <button class="btn btn-outline text-xs" onclick="openMerge(${sid}, document.getElementById('mg-q').value)"><i class="fas fa-magnifying-glass"></i></button></div>
+      <div class="space-y-1.5 max-h-72 overflow-y-auto" id="merge-candidates">
+        ${d.candidates.map(r => `<button class="w-full text-left p-2.5 rounded-lg border border-gray-200 hover:border-blue-400 hover:bg-blue-50" onclick="previewMerge(${sid}, ${r.staff_id})">
+          <div class="flex items-center justify-between gap-2"><p class="font-bold text-sm">${esc(r.name)} <span class="text-xs font-normal text-gray-400">${esc(r.kana || '')}</span></p>
+            <span class="badge ${r.affiliation_type === 'linked_external' ? 'badge-blue' : 'badge-gray'}">${esc(TYPE_LABEL[r.affiliation_type] || r.affiliation_type)}${r.affiliation_type === 'linked_external' && r.owner_company_name ? '・' + esc(r.owner_company_name) : ''}</span></div>
+          <p class="text-[11px] text-gray-500">${r.reasons.map(x => `<span class="text-emerald-700">${esc(x)}</span>`).join('・') || '検索に一致'}${r.global_staff_code ? '・ID ' + esc(r.global_staff_code) : ''}・稼働 ${r.shift_count}件${r.last_work_date ? '（最終 ' + esc(r.last_work_date) + '）' : ''}${r.is_provisional ? '・<span class="text-red-600">仮登録</span>' : ''}</p>
+        </button>`).join('') || '<p class="text-xs text-gray-400 p-3 text-center">候補が見つかりません。氏名で検索するか、他社のスタッフなら先に「スタッフマスタ → 新規追加 → QR/ID連携」で連携してください</p>'}
+      </div>
+      <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
+  }
+  window.previewMerge = async function (sid, targetId) {
+    let d; try { d = (await axios.post(`/api/admin/staff/${sid}/merge`, { target_staff_id: targetId, dry_run: true })).data } catch (e) { return toast(errMsg(e)) }
+    modal(`
+      <h3 class="font-bold text-lg mb-2">統合の確認</h3>
+      <div class="flex items-center gap-2 text-sm mb-3" id="merge-preview">
+        <div class="flex-1 p-2 rounded-lg bg-red-50"><p class="text-[11px] text-gray-500">統合元（仮登録）</p><p class="font-bold">${esc(d.source.name)}</p><p class="text-[11px]">${esc(d.source.type_label)}</p></div>
+        <i class="fas fa-arrow-right text-gray-400"></i>
+        <div class="flex-1 p-2 rounded-lg bg-blue-50"><p class="text-[11px] text-gray-500">統合先</p><p class="font-bold">${esc(d.target.name)}</p><p class="text-[11px]">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
+      </div>
+      <ul class="text-xs space-y-1 mb-3 list-disc pl-4">${d.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+      ${d.warnings.length ? `<div class="text-xs bg-amber-50 text-amber-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
+      <label class="block text-xs text-gray-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>
+      <div class="flex gap-2">
+        <button class="btn btn-outline flex-1" onclick="openMerge(${sid})">戻る</button>
+        <button class="btn btn-danger flex-1" onclick="runMerge(${sid}, ${targetId}, ${d.warnings.length ? 'true' : 'false'})">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>
+      </div>`)
+  }
+  window.runMerge = async function (sid, targetId, force) {
+    if (!confirm('統合は元に戻せません。統合しますか？')) return
+    try {
+      const { data } = await axios.post(`/api/admin/staff/${sid}/merge`, { target_staff_id: targetId, force, note: document.getElementById('mg-note').value })
+      closeModal(); toast(`統合しました（シフト${data.moved.shifts}件を移動）`)
+      if (window.invalidateBoardMaster) window.invalidateBoardMaster()
+      location.hash = 'staff/' + data.target_staff_id
+    } catch (e) { toast(errMsg(e)) }
+  }
+
   window.saveStaffReportSettings = async function (sid) {
     try { await axios.put(`/api/admin/staff/${sid}/report-settings`, { attendance_mode: document.getElementById('sl-att').value, daily_report_mode: document.getElementById('sl-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
   }

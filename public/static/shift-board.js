@@ -23,7 +23,7 @@
     if (MASTER) return MASTER
     const [{ data: pj }, { data: cl }, { data: si }, { data: st }] = await Promise.all([
       axios.get('/api/admin/projects'), axios.get('/api/admin/clients'), axios.get('/api/admin/sites'), axios.get('/api/admin/staff')])
-    MASTER = { projects: pj.projects, clients: cl.clients, sites: si.sites, staff: st.staff.filter(s => s.affiliation_type !== 'skillsheet_only') }
+    MASTER = { projects: pj.projects, clients: cl.clients, sites: si.sites, staff: st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id) }
     return MASTER
   }
   function invalidateMaster() { MASTER = null }

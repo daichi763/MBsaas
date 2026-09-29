@@ -53,7 +53,7 @@ export async function insertProvisionalStaff(db: D1Database, companyId: number, 
 export async function findStaffByPhone(db: D1Database, companyId: number, phone: string) {
   const p = normalizePhone(phone); if (p.length < 10) return []
   return ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL`)
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
     .bind(companyId).all()).results as any[]).filter(r => normalizePhone(r.phone) === p)
 }
 
@@ -127,7 +127,7 @@ adminLifecycleApi.get('/staff-lookup', async (c) => {
   const u = c.get('user'); const phone = normalizePhone(c.req.query('phone'))
   if (phone.length < 10) return c.json({ matches: [] })
   const rows = (await c.env.DB.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional, sp.employment_status
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL`).bind(u.company_id).all()).results as any[]
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`).bind(u.company_id).all()).results as any[]
   return c.json({ matches: rows.filter(r => normalizePhone(r.phone) === phone) })
 })
 
@@ -140,7 +140,7 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
   if (phone.length < 10 || phone.length > 11) return c.json({ error: '電話番号を正しく入力してください' }, 400)
   if (!['daily_worker', 'freelance', 'partner_manual', 'own_employee'].includes(type)) return c.json({ error: '区分が正しくありません' }, 400)
   // 電話番号の重複確認（force で登録を続行できる）
-  const dup = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL`)
+  const dup = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
     .bind(u.company_id).all()).results as any[]).filter(r => normalizePhone(r.phone) === phone)
   if (dup.length && !b.force) return c.json({ error: 'この電話番号のスタッフが登録済みです', matches: dup, need_force: true }, 409)
 
@@ -172,6 +172,7 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
   if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
   if (!sp.is_provisional) return c.json({ error: 'このスタッフは本登録済みです' }, 400)
   if (!sp.gender && !b.gender) return c.json({ error: '本登録には性別の入力が必要です' }, 400)
   if (b.gender) await db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id).run()
@@ -192,6 +193,7 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
   if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフの区分は変更できません' }, 409)
   const from = sp.affiliation_type || 'own_employee'
   const to = String(b.to_type || '')
   const effective = isDate(b.effective_date) ? b.effective_date : todayJST()
@@ -293,6 +295,8 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
     has_login: sp.user_role === 'staff', user_code: sp.user_role === 'staff' ? sp.user_code : null, phone: sp.phone,
     attendance_mode: sp.attendance_mode, daily_report_mode: sp.daily_report_mode, employee_record: er, history,
     partner_affiliation_id: sp.partner_affiliation_id,
+    merged_into_staff_id: sp.merged_into_staff_id, merged_at: sp.merged_at,
+    merged_into_name: sp.merged_into_staff_id ? ((await db.prepare('SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(sp.merged_into_staff_id).first()) as any)?.name : null,
   })
 })
 

@@ -8,6 +8,7 @@ import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
 import settlementApi, { syncActualFromReports } from './settlement'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
+import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
@@ -379,6 +380,8 @@ api.route('/admin', adminLifecycleApi)
 api.route('/admin', settlementApi)
 // 募集ページ・応募の承認（src/recruit.ts）
 api.route('/admin', recruitAdminApi)
+// 仮登録スタッフと既存スタッフの統合（src/staff-merge.ts）
+api.route('/admin', staffMergeApi)
 // スタッフアプリからの応募（src/recruit.ts）
 api.route('/staff/recruit', recruitStaffApi)
 
@@ -849,7 +852,7 @@ api.get('/admin/staff', async (c) => {
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.work_area ELSE sp.work_area END AS work_area,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
-           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status, sp.is_provisional, us.phone,
+           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status, sp.is_provisional, sp.merged_into_staff_id, us.phone,
            oc.company_name AS owner_company_name, pe.global_staff_code,
            us.user_id, us.user_code, us.name, us.status, us.role AS user_role,
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
@@ -882,7 +885,7 @@ api.get('/admin/staff/:id', async (c) => {
     if (er) Object.assign(profile, { emp_phone: er.phone_main, emp_email: er.personal_email, employee_number: er.employee_number, department: er.department, job_title: er.job_title })
   }
   // 画面の編集可否（APIでも同じ判定で制御している）
-  profile.can_edit_in_master = STAFF_MASTER_EDITABLE_TYPES.includes(profile.affiliation_type) && profile.can_edit_base
+  profile.can_edit_in_master = STAFF_MASTER_EDITABLE_TYPES.includes(profile.affiliation_type) && profile.can_edit_base && !profile.merged_into_staff_id
 
   const [shifts, attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT s.*, p.project_name FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ? ORDER BY s.work_date DESC LIMIT 30`).bind(sid).all(),
@@ -1001,6 +1004,7 @@ api.put('/admin/staff/:id', async (c) => {
   const body = await c.req.json()
   const roster = await loadRoster(c.env.DB, sid, u.company_id)
   if (!roster) return c.json({ error: 'not found' }, 404)
+  if (roster.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません（統合先のスタッフで編集してください）' }, 409)
   if (touchesProfileBase(body)) {
     if (roster.affiliation_type === 'own_employee') return c.json({ error: '自社雇用スタッフの基本情報は従業員管理から編集してください' }, 403)
     if (!STAFF_MASTER_EDITABLE_TYPES.includes(roster.affiliation_type) || !roster.can_edit_base) {
@@ -1714,8 +1718,9 @@ api.post('/admin/shifts', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.staff_id || !b.project_id || !b.work_date) return c.json({ error: 'スタッフ・案件・日付は必須です' }, 400)
   // 自社のスタッフマスタ行のみシフト登録可。スキルシートのみ作成（稼働管理対象外）は不可
-  const st = await c.env.DB.prepare('SELECT affiliation_type FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(b.staff_id, u.company_id).first()
+  const st = await c.env.DB.prepare('SELECT affiliation_type, merged_into_staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(b.staff_id, u.company_id).first()
   if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (st.merged_into_staff_id) return c.json({ error: '統合済みのスタッフにはシフトを登録できません' }, 400)
   if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
   const proj = await c.env.DB.prepare('SELECT location, unit_price FROM projects WHERE project_id = ?').bind(b.project_id).first()
   const ins = await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
