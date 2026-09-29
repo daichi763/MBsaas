@@ -7,6 +7,7 @@ import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
 import settlementApi, { syncActualFromReports } from './settlement'
+import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
@@ -14,6 +15,7 @@ type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
   RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   RETENTION_ENABLED?: string
+  TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string
 }
 type Variables = { user: any }
 
@@ -327,12 +329,15 @@ api.post('/auth/logout', async (c) => {
 
 // ログイン不要のシフト専用報告用URL（トークンで1シフトのみ操作可。src/staff-lifecycle.ts）。認証ミドルウェアより前に登録する
 api.route('/public/report', publicReportApi)
+// 公開の募集ページ（ログイン不要。src/recruit.ts）
+api.route('/public/recruit', recruitPublicApi)
 
 // 認証ミドルウェア
 api.use('/*', async (c, next) => {
   if (c.req.path.endsWith('/auth/login') || c.req.path.endsWith('/auth/logout')) return next()
   // 報告用URL（/api/public/report/*）はトークンで認可するためセッション不要
   if (c.req.path.startsWith('/api/public/report/')) return next()
+  if (c.req.path.startsWith('/api/public/recruit/')) return next()
   const token = getCookie(c, 'session')
   if (!token) return c.json({ error: 'unauthorized' }, 401)
   const row = await c.env.DB.prepare(`
@@ -372,6 +377,10 @@ api.route('/admin', shiftBoardApi)
 api.route('/admin', adminLifecycleApi)
 // 実績の確定・請求/支払の集計・CSV出力（src/settlement.ts）
 api.route('/admin', settlementApi)
+// 募集ページ・応募の承認（src/recruit.ts）
+api.route('/admin', recruitAdminApi)
+// スタッフアプリからの応募（src/recruit.ts）
+api.route('/staff/recruit', recruitStaffApi)
 
 // =========================================================
 // スタッフ側 API

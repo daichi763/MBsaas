@@ -205,7 +205,7 @@ async function ownProject(db: D1Database, companyId: number, projectId: any) {
 async function ownSlot(db: D1Database, companyId: number, slotId: any) {
   return db.prepare('SELECT * FROM shift_slots WHERE slot_id = ? AND company_id = ?').bind(slotId, companyId).first() as Promise<any>
 }
-async function ownSlotRole(db: D1Database, companyId: number, slotRoleId: any) {
+export async function ownSlotRole(db: D1Database, companyId: number, slotRoleId: any) {
   return db.prepare(`SELECT r.*, s.company_id, s.project_id, s.site_id, s.location, s.work_date, s.start_time, s.end_time, s.break_minutes
     FROM shift_slot_roles r JOIN shift_slots s ON s.slot_id = r.slot_id WHERE r.slot_role_id = ? AND s.company_id = ?`).bind(slotRoleId, companyId).first() as Promise<any>
 }
@@ -221,7 +221,7 @@ export async function findConflicts(db: D1Database, companyId: number, staffIds:
   if (!staffIds.length) return new Map<number, any[]>()
   const ids = [...new Set(staffIds)]
   const rows = (await db.prepare(`
-    SELECT me.staff_id AS my_staff_id, s.shift_id, s.staff_id, s.company_id, s.work_date, s.start_time, s.end_time, s.status,
+    SELECT me.staff_id AS my_staff_id, s.shift_id, s.slot_role_id, s.staff_id, s.company_id, s.work_date, s.start_time, s.end_time, s.status,
       p.project_name, co.company_name
     FROM staff_profiles me
     JOIN staff_profiles sp ON (sp.person_id = me.person_id AND me.person_id IS NOT NULL) OR sp.staff_id = me.staff_id
@@ -235,10 +235,10 @@ export async function findConflicts(db: D1Database, companyId: number, staffIds:
   for (const r of rows) { const a = map.get(r.my_staff_id) || []; if (!a.some(x => x.shift_id === r.shift_id)) a.push(r); map.set(r.my_staff_id, a) }
   return map
 }
-function conflictFor(list: any[] | undefined, date: string, start: string, end: string, excludeShiftId?: number) {
+export function conflictFor(list: any[] | undefined, date: string, start: string, end: string, excludeShiftId?: number) {
   return (list || []).filter(x => x.work_date === date && x.shift_id !== excludeShiftId && overlaps(x.start_time, x.end_time, start, end))
 }
-async function ngStaffIds(db: D1Database, projectId: number): Promise<number[]> {
+export async function ngStaffIds(db: D1Database, projectId: number): Promise<number[]> {
   const r = await db.prepare('SELECT cl.ng_staff_ids FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE p.project_id = ?').bind(projectId).first() as any
   return parseIds(r?.ng_staff_ids)
 }
@@ -272,7 +272,10 @@ app.get('/shift-board', async (c) => {
     WHERE sl.company_id = ? AND sl.project_id IN (${inP}) AND sl.work_date BETWEEN ? AND ? ${siteId ? 'AND sl.site_id = ?' : ''}
     ORDER BY sl.work_date, sl.start_time`).bind(u.company_id, ...pids, from, to, ...(siteId ? [siteId] : [])).all()).results as any[]
   const slotIds = slotRows.map(s => s.slot_id)
-  const roles = slotIds.length ? (await db.prepare(`SELECT * FROM shift_slot_roles WHERE slot_id IN (${slotIds.map(() => '?').join(',')}) ORDER BY sort_order, slot_role_id`).bind(...slotIds).all()).results as any[] : []
+  // 募集の未対応の応募数（第4段階。src/recruit.ts）を役割ごとに持たせる
+  const roles = slotIds.length ? (await db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+      WHERE i.slot_role_id = r.slot_role_id AND i.status = 'pending' AND a.status = 'pending') AS applicants
+    FROM shift_slot_roles r WHERE r.slot_id IN (${slotIds.map(() => '?').join(',')}) ORDER BY r.sort_order, r.slot_role_id`).bind(...slotIds).all()).results as any[] : []
 
   const shiftRows = (await db.prepare(`
     SELECT s.*, us.name AS staff_name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, si.site_name

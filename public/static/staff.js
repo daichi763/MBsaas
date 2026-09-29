@@ -347,6 +347,7 @@ async function renderShifts(month) {
       <h2 class="font-bold text-gray-800">${dayjs(month + '-01').format('YYYY年M月')}</h2>
       <button class="btn btn-outline" onclick="renderShifts('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-right"></i></button>
     </div>
+    <div id="recruit-open" class="mb-3"></div>
     <button class="btn btn-primary w-full mb-4" onclick="showShiftRequest()"><i class="fas fa-plus"></i>シフト希望を提出する</button>
     <div class="space-y-2" id="shift-list">
       ${Object.keys(byDate).sort().map(d => `
@@ -365,6 +366,68 @@ async function renderShifts(month) {
         </div>`).join('') || '<p class="text-center text-gray-400 py-10">この月のシフトはありません</p>'}
     </div>
     <div id="shift-modal"></div>`
+  loadRecruitOpen()
+}
+
+// ============ 募集中のお仕事（管理者の承認で確定。/api/staff/recruit） ============
+let RECRUIT = null
+async function loadRecruitOpen() {
+  const host = document.getElementById('recruit-open'); if (!host) return
+  try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) { host.innerHTML = ''; return }
+  const open = RECRUIT.pages.reduce((n, p) => n + p.roles.filter(r => !r.my_status && !r.full).length, 0)
+  const pending = RECRUIT.applications.filter(a => a.status === 'pending').length
+  if (!RECRUIT.pages.length && !RECRUIT.applications.length) { host.innerHTML = ''; return }
+  host.innerHTML = `<button class="report-btn" onclick="renderRecruitList()" id="recruit-open-btn">
+    <span class="w-11 h-11 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-lg"><i class="fas fa-bullhorn"></i></span>
+    <span class="flex-1"><span class="block font-bold text-gray-800">募集中のお仕事</span>
+      <span class="block text-xs text-gray-500">${open ? `応募できる日時 ${open}件` : '応募できる日時はありません'}${pending ? `・承認待ち ${pending}件` : ''}</span></span>
+    <i class="fas fa-chevron-right text-gray-300"></i></button>`
+}
+const RC_STATUS = { pending: '<span class="badge badge-yellow">承認待ち</span>', approved: '<span class="badge badge-green">確定</span>', rejected: '<span class="badge badge-gray">見送り</span>', cancelled: '<span class="badge badge-gray">取り下げ</span>' }
+window.renderRecruitList = function () {
+  const d = RECRUIT; if (!d) return
+  const picked = new Set()
+  window.__rcPicked = picked
+  $app.innerHTML = `
+    <button class="text-sm text-blue-600 mb-3" onclick="renderShifts()"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
+    ${d.applications.length ? `<section class="card p-3 mb-3" id="recruit-my-apps"><h3 class="text-sm font-bold text-gray-700 mb-2">応募した日時</h3>
+      ${d.applications.map(a => `<div class="flex items-center justify-between text-sm py-1.5 border-b border-gray-50 last:border-0">
+        <div><p class="font-medium">${fmtDate(a.work_date)} ${esc(a.start_time)}〜${esc(a.end_time)}</p><p class="text-xs text-gray-400">${esc(a.place)}${a.role_name ? '・' + esc(a.role_name) : ''}</p></div>
+        <div class="text-right">${RC_STATUS[a.status] || ''}${a.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1" onclick="cancelRecruitItem(${a.item_id})">取り下げ</button>` : ''}</div></div>`).join('')}</section>` : ''}
+    ${d.pages.map(p => `<section class="card p-3 mb-3" data-page-id="${p.page_id}">
+      <h3 class="font-bold text-gray-800">${esc(p.title)}</h3>
+      <p class="text-xs text-gray-500 mb-1">${fmtDate(p.date_from)}〜${fmtDate(p.date_to)}</p>
+      ${p.description ? `<p class="text-xs text-gray-600 mb-1 whitespace-pre-wrap">${esc(p.description)}</p>` : ''}
+      ${p.pay_note ? `<p class="text-xs mb-2"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>${esc(p.pay_note)}</p>` : ''}
+      <div class="space-y-1.5">${p.roles.map(r => `<label class="flex items-center gap-3 p-2.5 rounded-lg border border-gray-200 ${r.my_status || r.full ? 'opacity-60' : ''}">
+        ${r.my_status ? '<span class="w-5"></span>' : `<input type="checkbox" class="w-5 h-5" onchange="this.checked ? window.__rcPicked.add('${p.page_id}:${r.slot_role_id}') : window.__rcPicked.delete('${p.page_id}:${r.slot_role_id}')">`}
+        <span class="flex-1 min-w-0"><span class="block text-sm font-medium">${fmtDate(r.work_date)} ${esc(r.start_time)}〜${esc(r.end_time)}</span>
+          <span class="block text-xs text-gray-500 truncate">${esc(r.place)}${r.role_name ? '・' + esc(r.role_name) : ''}</span></span>
+        <span class="text-xs whitespace-nowrap">${r.my_status === 'assigned' ? '<span class="badge badge-green">シフトあり</span>' : r.my_status ? RC_STATUS[r.my_status] : r.full ? '<span class="text-gray-500">定員</span>' : r.remaining != null ? `<span class="text-emerald-600">残り${r.remaining}名</span>` : ''}</span></label>`).join('') || '<p class="text-xs text-gray-400">募集中の日時はありません</p>'}</div>
+    </section>`).join('')}
+    ${d.pages.length ? `<textarea id="rc-note" class="inp mb-3" rows="2" maxlength="500" placeholder="メモ（任意）"></textarea>
+      <button class="btn btn-primary w-full py-3" onclick="submitRecruitApply()">選んだ日時に応募する</button>
+      <p class="text-[11px] text-gray-400 text-center mt-2">管理者が承認するとシフトが確定します</p>` : ''}`
+}
+window.submitRecruitApply = async function () {
+  const picked = [...window.__rcPicked]
+  if (!picked.length) return toast('日時を選択してください')
+  const byPage = {}
+  for (const k of picked) { const [pid, rid] = k.split(':'); (byPage[pid] = byPage[pid] || []).push(Number(rid)) }
+  let n = 0
+  try {
+    for (const [pid, ids] of Object.entries(byPage)) {
+      const { data } = await axios.post('/api/staff/recruit/apply', { page_id: Number(pid), slot_role_ids: ids, note: document.getElementById('rc-note').value })
+      n += data.count || 0
+    }
+    toast(n ? `${n}件応募しました。承認をお待ちください` : 'すでに応募済みです')
+    RECRUIT = (await axios.get('/api/staff/recruit')).data; renderRecruitList()
+  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '応募に失敗しました') }
+}
+window.cancelRecruitItem = async function (id) {
+  if (!confirm('この応募を取り下げますか？')) return
+  try { await axios.post(`/api/staff/recruit/items/${id}/cancel`); toast('取り下げました'); RECRUIT = (await axios.get('/api/staff/recruit')).data; renderRecruitList() }
+  catch (e) { toast((e.response && e.response.data && e.response.data.error) || '取り下げに失敗しました') }
 }
 
 window.showShiftRequest = function () {
