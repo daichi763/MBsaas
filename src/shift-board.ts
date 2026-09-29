@@ -141,6 +141,9 @@ export async function resolvePayee(db: D1Database, companyId: number, staffId: n
   const t = sp?.affiliation_type || 'own_employee'
   if (t === 'linked_external') return { payee_type: 'linked', payee_affiliation_id: null, payee_company_id: sp.owner_company_id ?? null }
   if (t === 'partner_manual') return { payee_type: 'partner', payee_affiliation_id: sp.partner_affiliation_id ?? null, payee_company_id: null }
+  // 第2段階: 個人事業主（本人へ業務委託費）/ 自社日雇い（日雇いの給与）
+  if (t === 'freelance') return { payee_type: 'freelance', payee_affiliation_id: null, payee_company_id: null }
+  if (t === 'daily_worker') return { payee_type: 'payroll_daily', payee_affiliation_id: null, payee_company_id: null }
   return { payee_type: 'payroll', payee_affiliation_id: null, payee_company_id: null }
 }
 

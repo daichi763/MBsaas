@@ -27,6 +27,7 @@
     return MASTER
   }
   function invalidateMaster() { MASTER = null }
+  window.invalidateBoardMaster = invalidateMaster
 
   // =========================================================
   // シフトボード
@@ -294,7 +295,8 @@
         <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録</option></select>
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（任意）">
       </div>
-      <button class="btn btn-primary w-full mt-3" onclick="assignFromCandidates(${slotRoleId})">選択したスタッフを割り当て</button>`)
+      <button class="btn btn-primary w-full mt-3" onclick="assignFromCandidates(${slotRoleId})">選択したスタッフを割り当て</button>
+      <button class="btn btn-outline w-full mt-2 text-sm" onclick="showQuickRegister && showQuickRegister({ slot_role_id: ${slotRoleId} })"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
   }
   window.assignFromCandidates = function (slotRoleId) {
     const ids = [...document.querySelectorAll('.cand-check:checked')].map(el => Number(el.value))
@@ -348,10 +350,13 @@
         </div>
         <button class="btn btn-primary w-full text-xs" onclick="boardSavePrice(${id})">金額を保存（このシフトだけ手動で変更）</button>
       </div>
+      <div id="shift-report-panel" class="mb-3"></div>
       <div class="flex gap-2">
         <a class="btn btn-outline flex-1 text-xs" href="#staff/${a.staff_id}">スタッフ詳細</a>
         <button class="btn btn-danger flex-1 text-xs" onclick="boardDeleteShift(${id})"><i class="fas fa-trash"></i>シフトを削除</button>
       </div>`)
+    // 勤怠・日報の報告状況 / 報告用URL / 代理入力（public/static/staff-lifecycle.js）
+    if (window.renderShiftReportPanel) renderShiftReportPanel(id)
   }
   window.boardShiftStatus = async function (id, status) {
     try { await axios.put('/api/admin/shifts/' + id, { status }); closeModal(); toast('更新しました'); renderShiftBoard() } catch (e) { toast(errMsg(e)) }
@@ -630,6 +635,7 @@
           </div>
         </section>
 
+        <section class="card p-4 lg:col-span-2" id="project-report-settings"></section>
         <section class="card p-4 lg:col-span-2" id="project-patterns">
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-repeat text-blue-500 mr-1"></i>繰り返し登録</h3>
@@ -643,6 +649,8 @@
         </section>
       </div>`
     window.__projectForPanel = p
+    // 勤怠・日報の提出設定（案件の初期値。public/static/staff-lifecycle.js）
+    if (window.renderProjectReportSettings) renderProjectReportSettings(p)
   }
   window.saveProjectPricing = async function (pid) {
     const v = (k) => document.getElementById(k).value

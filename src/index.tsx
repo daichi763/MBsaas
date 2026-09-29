@@ -204,6 +204,20 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 </body>
 </html>`))
 
+// ============ シフト専用の報告用URL（ログイン不要。public/static/report-link.js） ============
+app.get('/r/:token', (c) => c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>${head('勤怠・日報の報告')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<body class="bg-gray-50 min-h-screen">
+  <header class="bg-white border-b border-gray-100 sticky top-0 z-20">
+    <div class="max-w-lg mx-auto px-4 py-3"><h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i>勤怠・日報の報告</h1></div>
+  </header>
+  <main id="app" class="max-w-lg mx-auto px-4 py-4"></main>
+  <div id="modal-root"></div>
+  <script src="/static/report-link.js"></script>
+</body>
+</html>`))
+
 // ============ スタッフ画面 (スマホファースト SPA) ============
 app.get('/staff', async (c) => {
   const u = await currentUser(c)
@@ -302,6 +316,7 @@ app.get('/admin', async (c) => {
   <script src="/static/roster-chat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
   <script src="/static/shift-board.js"></script>
+  <script src="/static/staff-lifecycle.js"></script>
 </body>
 </html>`)
 })
