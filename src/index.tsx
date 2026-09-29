@@ -300,6 +300,8 @@ app.get('/admin', async (c) => {
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <script src="/static/shift-board.js"></script>
 </body>
 </html>`)
 })
