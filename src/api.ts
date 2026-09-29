@@ -6,6 +6,7 @@ import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
+import settlementApi, { syncActualFromReports } from './settlement'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
 
@@ -369,6 +370,8 @@ api.route('/admin/roster-chat', chatApi)
 api.route('/admin', shiftBoardApi)
 // 所属区分の移行・仮登録・提出設定・代理入力・報告用URLの発行（src/staff-lifecycle.ts）
 api.route('/admin', adminLifecycleApi)
+// 実績の確定・請求/支払の集計・CSV出力（src/settlement.ts）
+api.route('/admin', settlementApi)
 
 // =========================================================
 // スタッフ側 API
@@ -455,6 +458,8 @@ api.post('/staff/attendance', async (c) => {
   await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(owner.company_id, owner.staff_id, shift_id, report_type, nowJST(), latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status).run()
+  // 入店・退店の時刻を実績（実働時間）に反映
+  if (report_type === 'check_in' || report_type === 'check_out') await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
   return c.json({ ok: true, status })
 })
 
@@ -518,6 +523,7 @@ api.post('/staff/attendance-photo', async (c) => {
     await c.env.PHOTOS.delete(key).catch(() => {})
     return c.json({ error: '報告の登録に失敗しました。もう一度お試しください' }, 500)
   }
+  await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
 
   return c.json({ ok: true, status, photo_key: key })
 })
@@ -1719,6 +1725,10 @@ api.post('/admin/shifts', async (c) => {
 
 api.put('/admin/shifts/:id', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
+  // 確定済み（精算）のシフトはメモ以外を変更できない
+  const cur = await c.env.DB.prepare('SELECT settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (cur?.settle_status === 'confirmed' && (b.status != null || b.start_time != null || b.end_time != null || b.staff_id != null))
+    return c.json({ error: '確定済みのシフトは変更できません。精算画面で確定を取り消してください' }, 409)
   await c.env.DB.prepare(`UPDATE shifts SET
       status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
       staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo)
@@ -1731,6 +1741,13 @@ api.put('/admin/shifts/:id', async (c) => {
 
 api.delete('/admin/shifts/:id', async (c) => {
   const u = c.get('user')
+  const cur = await c.env.DB.prepare('SELECT settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (cur?.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトは削除できません。精算画面で確定を取り消してください' }, 409)
+  // 勤怠・日報の報告があるシフトは削除できない（記録を残すため。欠勤などに変更する）
+  const rep = await c.env.DB.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) + (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS n')
+    .bind(c.req.param('id'), c.req.param('id')).first() as any
+  if (rep?.n > 0) return c.json({ error: '勤怠・日報の報告があるシフトは削除できません。状態を「欠勤」などに変更してください' }, 409)
+  await c.env.DB.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
   await c.env.DB.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
   return c.json({ ok: true })
 })

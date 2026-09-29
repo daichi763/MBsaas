@@ -8,6 +8,7 @@
 import { Hono } from 'hono'
 import { createPerson } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
+import { syncActualFromReports } from './settlement'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -205,7 +206,7 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   // 影響範囲: 適用日以降の予定シフト（勤怠報告のないもの）
   const shifts = (await db.prepare(`SELECT s.shift_id, s.project_id, s.work_date, s.price_locked,
       (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reported
-    FROM shifts s WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.status != 'absent'`).bind(sp.staff_id, u.company_id, effective).all()).results as any[]
+    FROM shifts s WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.status != 'absent' AND COALESCE(s.settle_status,'planned') != 'confirmed'`).bind(sp.staff_id, u.company_id, effective).all()).results as any[]
   const targets = shifts.filter(s => !s.reported)
   const er = await db.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, u.company_id).first() as any
   const effects: string[] = []
@@ -346,6 +347,7 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
       VALUES (?, ?, ?, ?, ?, 'normal', 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, t, at, u.user_id).run()
     created++
   }
+  if (types.some(t => t === 'check_in' || t === 'check_out')) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
   return c.json({ ok: true, created })
 })
 adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
@@ -353,7 +355,9 @@ adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
   const s = await ownShift(c.env.DB, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   // 取り消せるのは代理入力のみ（本人の報告は取り消せない）
+  if (s.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトです。精算画面で確定を取り消してください' }, 409)
   const r = await c.env.DB.prepare("DELETE FROM attendance_reports WHERE shift_id = ? AND report_type = ? AND entry_method = 'proxy'").bind(s.shift_id, c.req.param('type')).run()
+  await syncActualFromReports(c.env.DB, u.company_id, s.shift_id).catch(() => {})
   return c.json({ ok: true, deleted: r.meta.changes || 0 })
 })
 
@@ -460,6 +464,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
   }
   await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, device_info, status, photo_key, entry_method)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(t.company_id, t.staff_id, t.shift_id, reportType, nowJST(), lat, lng, (c.req.header('user-agent') || '').slice(0, 300), status, key).run()
+  if (reportType === 'check_in' || reportType === 'check_out') await syncActualFromReports(db, t.company_id, t.shift_id).catch(() => {})
   return c.json({ ok: true, status })
 })
 

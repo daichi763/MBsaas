@@ -70,7 +70,7 @@ function ruleLabel(r: any) {
 export async function loadPricingData(db: D1Database, companyId: number, projectIds: number[]) {
   const ids = [...new Set(projectIds.filter(Boolean))]
   const projects = ids.length ? (await db.prepare(`SELECT project_id, unit_price_type, unit_price, pay_unit_type, pay_rate,
-      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes
+      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes, hours_basis, time_round_minutes
       FROM projects WHERE company_id = ? AND project_id IN (${ids.map(() => '?').join(',')})`).bind(companyId, ...ids).all()).results as any[] : []
   const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL ${ids.length ? `OR project_id IN (${ids.map(() => '?').join(',')})` : ''})`)
     .bind(companyId, ...ids).all()).results as any[]
@@ -109,9 +109,9 @@ export function resolvePrice(ctx: PriceContext, data: { projects: Map<number, an
   return out
 }
 
-// 数量（日額=1、時給=拘束時間−休憩）と金額の計算
-export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_rate' | 'pay_unit_type' | 'pay_rate'>, start: string, end: string, breakMin: number) {
-  const hours = Math.max(0, (spanMinutes(start, end) - (breakMin || 0)) / 60)
+// 数量（日額=1、時給=拘束時間−休憩）と金額の計算。hoursOverride を渡すとその時間で計算する（実働時間）
+export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_rate' | 'pay_unit_type' | 'pay_rate'>, start: string, end: string, breakMin: number, hoursOverride?: number | null) {
+  const hours = hoursOverride != null ? Math.max(0, hoursOverride) : Math.max(0, (spanMinutes(start, end) - (breakMin || 0)) / 60)
   const qty = (u: string) => (u === 'hourly' ? Math.round(hours * 100) / 100 : 1)
   const billQty = qty(price.bill_unit_type), payQty = qty(price.pay_unit_type)
   return {
@@ -119,6 +119,32 @@ export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_
     pay_qty: payQty, pay_amount: price.pay_rate == null ? null : Math.round(price.pay_rate * payQty),
   }
 }
+// ---------- 実働時間（第3段階） ----------
+// hours_basis: clipped（実績。ただし予定の範囲内）/ actual（実績どおり）/ scheduled（予定どおり）
+export const HOURS_BASIS = ['clipped', 'actual', 'scheduled'] as const
+export function workHours(s: any, proj: any = {}) {
+  const brkPlan = Number(s.break_minutes ?? proj.default_break_minutes ?? 0) || 0
+  const planStart = toMin(s.start_time), planEnd = planStart + spanMinutes(s.start_time, s.end_time)
+  const planned = Math.max(0, planEnd - planStart - brkPlan) / 60
+  const basis = HOURS_BASIS.includes(proj.hours_basis) ? proj.hours_basis : 'clipped'
+  const hasActual = isTime(s.actual_start) && isTime(s.actual_end)
+  if (!hasActual) return { hours: round2(planned), planned_hours: round2(planned), actual_hours: null as number | null, basis, used: 'planned' as const, break_minutes: brkPlan }
+  let aStart = toMin(s.actual_start)
+  // 日をまたぐ予定で、実績の開始が予定より大きく前なら翌日とみなす
+  if (planEnd > 1440 && aStart < planStart - 360) aStart += 1440
+  let aEnd = toMin(s.actual_end); while (aEnd <= aStart) aEnd += 1440
+  const brk = s.actual_break_minutes != null ? Number(s.actual_break_minutes) : brkPlan
+  const r = Number(proj.time_round_minutes || 0)
+  const roundUp = (m: number) => (r > 0 ? Math.ceil(m / r) * r : m), roundDown = (m: number) => (r > 0 ? Math.floor(m / r) * r : m)
+  const actual = Math.max(0, roundDown(aEnd) - roundUp(aStart) - brk) / 60
+  const cs = roundUp(Math.max(aStart, planStart)), ce = roundDown(Math.min(aEnd, planEnd))
+  const clipped = Math.max(0, ce - cs - brk) / 60
+  const hours = basis === 'scheduled' ? planned : basis === 'actual' ? actual : clipped
+  return { hours: round2(hours), planned_hours: round2(planned), actual_hours: round2(actual), basis, used: basis === 'scheduled' ? 'planned' as const : 'actual' as const, break_minutes: brk }
+}
+function round2(n: number) { return Math.round(n * 100) / 100 }
+export const isSettled = (s: any) => s?.settle_status === 'confirmed'
+
 // 交通費（請求・支払）: 実費 transportation_fee とシフトに記録したルールから算出
 export function transportAmounts(s: any) {
   const actual = Number(s.transportation_fee || 0)
@@ -151,13 +177,14 @@ export async function resolvePayee(db: D1Database, companyId: number, staffId: n
 export async function applyPricingToShift(db: D1Database, companyId: number, shiftId: number, opts: { force?: boolean; data?: any } = {}) {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
   if (!s) return
+  if (isSettled(s)) return // 確定済みは変更しない
   if (s.price_locked && !opts.force) return
   const data = opts.data || await loadPricingData(db, companyId, [s.project_id])
   const slotRole = s.slot_role_id ? await db.prepare('SELECT * FROM shift_slot_roles WHERE slot_role_id = ?').bind(s.slot_role_id).first() : null
   const price = resolvePrice({ company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: s.role, staff_id: s.staff_id, slot_role: slotRole }, data)
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
-  const amt = calcAmounts(price, s.start_time, s.end_time, brk)
+  const amt = calcAmounts(price, s.start_time, s.end_time, brk, workHours({ ...s, break_minutes: brk }, proj).hours)
   const payee = await resolvePayee(db, companyId, s.staff_id)
   await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?,
       pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
@@ -416,7 +443,7 @@ app.put('/shift-slots/:id', async (c) => {
     }
   }
   // 割り当て済みシフトへ反映
-  await db.prepare(`UPDATE shifts SET work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, site_id = ?, location = COALESCE(?, location) WHERE slot_id = ? AND company_id = ?`)
+  await db.prepare(`UPDATE shifts SET work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, site_id = ?, location = COALESCE(?, location) WHERE slot_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'`)
     .bind(next.work_date, next.start_time, next.end_time, intOrNull(next.break_minutes), next.site_id || null, next.location || null, slot.slot_id, u.company_id).run()
   const data = await loadPricingData(db, u.company_id, [slot.project_id])
   const sids = ((await db.prepare('SELECT shift_id FROM shifts WHERE slot_id = ? AND company_id = ?').bind(slot.slot_id, u.company_id).all()).results as any[])
@@ -484,6 +511,7 @@ app.post('/shifts/:id/move', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (isSettled(s)) return c.json({ error: '確定済みのシフトは移動できません。精算画面で確定を取り消してください' }, 409)
   const role = await ownSlotRole(db, u.company_id, b.slot_role_id)
   if (!role) return c.json({ error: '移動先の枠が見つかりません' }, 404)
   const hasReports = await db.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) + (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS n').bind(s.shift_id, s.shift_id).first().catch(() => ({ n: 0 })) as any
@@ -506,13 +534,16 @@ app.put('/shifts/:id/price', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (isSettled(s)) return c.json({ error: '確定済みのシフトの金額は変更できません。精算画面で確定を取り消してください' }, 409)
   if (b.reset) { await applyPricingToShift(db, u.company_id, s.shift_id, { force: true }); return c.json({ ok: true }) }
   const unit = (v: any, d: string) => (v === 'hourly' ? 'hourly' : v === 'daily' ? 'daily' : d)
   const billUnit = unit(b.bill_unit_type, s.bill_unit_type || 'daily'), payUnit = unit(b.pay_unit_type, s.pay_unit_type || 'daily')
   const billRate = b.bill_rate !== undefined ? intOrNull(b.bill_rate) : s.bill_rate
   const payRate = b.pay_rate !== undefined ? intOrNull(b.pay_rate) : s.pay_rate
   const brk = b.break_minutes !== undefined ? intOrNull(b.break_minutes) : s.break_minutes
-  const amt = calcAmounts({ bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }, s.start_time, s.end_time, brk || 0)
+  const pdata = await loadPricingData(db, u.company_id, [s.project_id])
+  const amt = calcAmounts({ bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }, s.start_time, s.end_time, brk || 0,
+    workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {}).hours)
   // 数量を直接指定した場合（実働時間など）はそちらを優先
   const billQty = b.bill_qty != null && b.bill_qty !== '' ? Number(b.bill_qty) : amt.bill_qty
   const payQty = b.pay_qty != null && b.pay_qty !== '' ? Number(b.pay_qty) : amt.pay_qty
@@ -534,7 +565,7 @@ app.put('/shifts/:id/price', async (c) => {
 app.post('/shifts/reprice', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
   if (!isDate(b.from) || !isDate(b.to)) return c.json({ error: '期間を指定してください' }, 400)
-  const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0']; const bind: any[] = [u.company_id, b.from, b.to]
+  const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'"]; const bind: any[] = [u.company_id, b.from, b.to]
   if (b.project_id) { f.push('project_id = ?'); bind.push(b.project_id) }
   if (b.staff_id) { f.push('staff_id = ?'); bind.push(b.staff_id) }
   const rows = (await db.prepare(`SELECT shift_id, project_id FROM shifts WHERE ${f.join(' AND ')}`).bind(...bind).all()).results as any[]
@@ -719,9 +750,10 @@ app.delete('/sites/:id', async (c) => {
 // =========================================================
 function ruleValues(b: any) {
   return {
-    bill_unit_type: b.bill_unit_type === 'hourly' ? 'hourly' : b.bill_unit_type === 'daily' ? 'daily' : null,
+    // 単価を指定して単位を省略した場合は日額（案件の単位を引き継ぐと、日額の金額が時給として計算されるため）
+    bill_unit_type: b.bill_unit_type === 'hourly' ? 'hourly' : b.bill_unit_type === 'daily' || intOrNull(b.bill_rate) != null ? 'daily' : null,
     bill_rate: intOrNull(b.bill_rate),
-    pay_unit_type: b.pay_unit_type === 'hourly' ? 'hourly' : b.pay_unit_type === 'daily' ? 'daily' : null,
+    pay_unit_type: b.pay_unit_type === 'hourly' ? 'hourly' : b.pay_unit_type === 'daily' || intOrNull(b.pay_rate) != null ? 'daily' : null,
     pay_rate: intOrNull(b.pay_rate),
     bill_transport_type: BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : null,
     bill_transport_amount: intOrNull(b.bill_transport_amount),
@@ -796,15 +828,17 @@ app.put('/projects/:id/pricing', async (c) => {
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
   const eng = b.engagement_type === 'spot' ? 'spot' : b.engagement_type === 'regular' ? 'regular' : (p.engagement_type || 'regular')
   const unit = (v: any, d: string) => (v === 'hourly' ? 'hourly' : v === 'daily' ? 'daily' : d)
+  const basis = HOURS_BASIS.includes(b.hours_basis) ? b.hours_basis : (p.hours_basis || 'clipped')
+  const roundMin = [0, 1, 5, 10, 15, 30].includes(Number(b.time_round_minutes)) ? Number(b.time_round_minutes) : (p.time_round_minutes || 0)
   await c.env.DB.prepare(`UPDATE projects SET engagement_type = ?, unit_price_type = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?,
-      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, default_break_minutes = ? WHERE project_id = ?`)
+      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, default_break_minutes = ?, hours_basis = ?, time_round_minutes = ? WHERE project_id = ?`)
     .bind(eng, unit(b.unit_price_type, p.unit_price_type === 'hourly' ? 'hourly' : 'daily'), intOrNull(b.unit_price) ?? p.unit_price ?? 0,
       unit(b.pay_unit_type, p.pay_unit_type || 'daily'), b.pay_rate !== undefined ? intOrNull(b.pay_rate) : p.pay_rate,
       BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : (p.bill_transport_type || 'actual'),
       intOrNull(b.bill_transport_amount) ?? p.bill_transport_amount ?? 0,
       PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : (p.pay_transport_type || 'actual'),
       intOrNull(b.pay_transport_amount) ?? p.pay_transport_amount ?? 0,
-      intOrNull(b.default_break_minutes) ?? p.default_break_minutes ?? 60, p.project_id).run()
+      intOrNull(b.default_break_minutes) ?? p.default_break_minutes ?? 60, basis, roundMin, p.project_id).run()
   return c.json({ ok: true })
 })
 

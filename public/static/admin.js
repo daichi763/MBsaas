@@ -1844,7 +1844,7 @@ window.exportBillingCsv = function () {
 const routes = {
   dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
-  notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(),
+  notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees
 }
 
