@@ -245,9 +245,9 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   if (from === 'linked_external' && sp.source_staff_id) {
     const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.source_staff_id).first() as any
     if (src) {
-      await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, work_area = ?, age_group = ?,
+      await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
           nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?, affiliation_contact = ? WHERE staff_id = ?`)
-        .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
+        .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
           src.commute_minutes, src.available_from, src.affiliation_contact, sp.staff_id).run()
     }
     // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する

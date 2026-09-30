@@ -19,9 +19,51 @@ export type AffiliationType = typeof AFFILIATION_TYPES[number]
 // 所属元のみが編集できる「基本項目」（稼働先=linked_external 行では編集不可・所属元の値を参照表示）
 export const ROSTER_BASE_FIELDS = [
   'kana', 'gender', 'date_of_birth', 'affiliation', 'affiliation_contact',
-  'skills', 'career', 'work_area', 'age_group',
+  'skills', 'career', 'career_rows', 'work_area', 'age_group',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from',
+  'pr_points', 'remarks',
 ] as const
+// スタッフマスタ画面で扱う「業務側」の項目（社員名簿=労務側 / スタッフマスタ=業務側）。
+// linked_external（他社連携）以外の全区分（自社雇用を含む）でスタッフマスタ画面から編集できる。
+// pr_points / remarks も基本項目として連携先に共有する（その会社独自の情報は「管理者メモ」に書く運用）
+export const ROSTER_BUSINESS_FIELDS = ['commute_minutes', 'available_from', 'work_area', 'skills', 'career', 'career_rows', 'pr_points', 'remarks'] as const
+export type CareerRow = { from: string; to: string; company: string; work: string; note: string }
+const CAREER_MAX_ROWS = 50
+function normYm(v: any): string | null {
+  const t = String(v ?? '').trim()
+  if (!t) return ''
+  const m = t.match(/^(\d{4})[-/.年](\d{1,2})月?$/)
+  if (!m) return null
+  const mo = Number(m[2]); if (mo < 1 || mo > 12) return null
+  return `${m[1]}-${String(mo).padStart(2, '0')}`
+}
+/** 経歴テーブルの入力を検証・正規化する。空行は捨てる。エラー時は { error } */
+export function normalizeCareerRows(input: any): { rows: CareerRow[] } | { error: string } {
+  if (input === null || input === '') return { rows: [] }
+  let arr = input
+  if (typeof arr === 'string') { try { arr = JSON.parse(arr) } catch { return { error: '経歴の形式が不正です' } } }
+  if (!Array.isArray(arr)) return { error: '経歴の形式が不正です' }
+  const rows: CareerRow[] = []
+  for (const [i, r] of arr.entries()) {
+    if (!r || typeof r !== 'object') return { error: '経歴の形式が不正です' }
+    const s = (v: any) => String(v ?? '').trim()
+    const row = { from: normYm(r.from), to: normYm(r.to), company: s(r.company), work: s(r.work), note: s(r.note) }
+    if (row.from === null || row.to === null) return { error: `経歴 ${i + 1}行目: 開始・終了は「2024-04」の形式（年月）で入力してください` }
+    if (!row.from && !row.to && !row.company && !row.work && !row.note) continue
+    if (row.from && row.to && row.from > row.to) return { error: `経歴 ${i + 1}行目: 終了年月が開始年月より前になっています` }
+    if (row.company.length > 200 || row.work.length > 1000 || row.note.length > 1000) return { error: `経歴 ${i + 1}行目: 入力が長すぎます` }
+    rows.push(row as CareerRow)
+  }
+  if (rows.length > CAREER_MAX_ROWS) return { error: `経歴は${CAREER_MAX_ROWS}行までです` }
+  return { rows }
+}
+/** 経歴テーブルからテキスト要約を作る（career 列に保存し、一覧・連携先・必須判定などで使う） */
+export function careerSummary(rows: CareerRow[]): string {
+  return rows.map(r => {
+    const period = r.from || r.to ? `${r.from || ''}〜${r.to || ''}` : ''
+    return [period, r.company, r.work, r.note ? `（${r.note}）` : ''].filter(Boolean).join(' ')
+  }).join('\n')
+}
 // 稼働先でも編集できる「追記項目」（各社のスタッフマスタ行ごとに独立して保持）
 export const ROSTER_APPEND_FIELDS = ['memo', 'follow_flag', 'retention_risk', 'evaluation_score', 'employment_status', 'site_evaluation', 'work_memo'] as const
 // 追記項目のうち、所属元企業にも共有される項目（それ以外の memo 等は各社の社内情報）
@@ -40,7 +82,7 @@ export const ROSTER_CONFIGURABLE_FIELDS: { code: string; label: string; skillshe
   { code: 'date_of_birth', label: '生年月日', skillsheet: true },
   { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false },
   { code: 'skills', label: 'スキル', skillsheet: true },
-  { code: 'career', label: '経歴', skillsheet: true },
+  { code: 'career', label: '経歴', skillsheet: true }, // 経歴テーブル（career_rows）入力時は要約テキストで判定
   { code: 'work_area', label: '稼働可能エリア', skillsheet: true },
   { code: 'nearest_station_line', label: '最寄駅（路線）', skillsheet: false },
   { code: 'nearest_station', label: '最寄駅（駅）', skillsheet: false },
@@ -68,10 +110,11 @@ export function missingRequired(required: Set<string>, body: any, mode: 'create'
 }
 
 // 連携時の同意ポップアップで明示する共有範囲（フロント表示と同意履歴の双方で同じ文言を使う）
-export const CONSENT_VERSION = 'v1'
+export const CONSENT_VERSION = 'v2' // v2: 共有範囲に「経験・スキル・人柄・PRポイント等」「備考」を追加
 export const SHARED_SCOPE = [
   '氏名', 'フリガナ', '性別', '生年月日・年齢', '年代', '所属会社名・所属先担当者名',
   '最寄駅', '通勤可能時間', '稼働開始可能日', '稼働可能エリア', 'スキル', '経歴',
+  '経験・スキル・人柄・PRポイント等', '備考',
 ]
 export const NOT_SHARED_SCOPE = [
   '従業員管理の情報（雇用形態・給与・手当・口座・社会保険/雇用保険番号・緊急連絡先 等）',
@@ -446,7 +489,8 @@ staffSelfApi.get('/profile', async (c) => {
   const r = await loadRoster(c.env.DB, u.staff_id, u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
   const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
-  for (const f of ROSTER_BASE_FIELDS) pick[f] = r[f]
+  // PRポイント・備考は企業間で共有する業務情報のため、スタッフ本人向けには返さない
+  for (const f of ROSTER_BASE_FIELDS) if (f !== 'pr_points' && f !== 'remarks') pick[f] = r[f]
   // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
   pick.global_staff_code = r.linkable ? r.global_staff_code : null
   return c.json({ profile: pick })
