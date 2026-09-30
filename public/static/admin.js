@@ -388,12 +388,12 @@ function staffBusinessSectionHtml(p, edBiz) {
       <div>
         ${label('fa-star', '経験・スキル・人柄・PRポイント等')}
         ${edBiz ? `<textarea id="staff-pr-points" rows="4" class="inp text-xs w-full">${esc(p.pr_points || '')}</textarea>`
-          : `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.affiliation_type === 'linked_external' ? '（所属元の社内情報のため表示されません）' : (p.pr_points || '-'))}</p>`}
+          : `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.pr_points || '-')}</p>`}
       </div>
       <div>
         ${label('fa-comment-dots', '備考')}
         ${edBiz ? `<textarea id="staff-remarks" rows="3" class="inp text-xs w-full">${esc(p.remarks || '')}</textarea>`
-          : `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.affiliation_type === 'linked_external' ? '（所属元の社内情報のため表示されません）' : (p.remarks || '-'))}</p>`}
+          : `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.remarks || '-')}</p>`}
       </div>
     </div>`
 }
@@ -783,7 +783,7 @@ window.showSkillSheet = async function (sid) {
     <div class="border border-gray-200 rounded-xl p-4 text-sm space-y-3">
       <div class="border-b pb-2"><p class="text-lg font-bold">${esc(p.name)}</p><p class="text-xs text-gray-500">${esc(p.age_group || '')} ｜ 稼働可能エリア: ${esc(p.work_area || '-')}</p></div>
       <div><p class="text-xs font-bold text-gray-400 mb-1">経歴</p>${careerTableReadonly(p)}</div>
-      ${p.pr_points && p.affiliation_type !== 'linked_external' ? `<div><p class="text-xs font-bold text-gray-400 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(p.pr_points)}</p></div>` : ''}
+      ${p.pr_points ? `<div><p class="text-xs font-bold text-gray-400 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(p.pr_points)}</p></div>` : ''}
       <div><p class="text-xs font-bold text-gray-400 mb-1">経験案件</p>
         <div class="flex flex-wrap gap-1">${data.experienced_projects.map(pr => `<span class="badge badge-blue">${esc(pr.project_name)}</span>`).join('') || '-'}</div></div>
       <div><p class="text-xs font-bold text-gray-400 mb-1">保有スキル</p>

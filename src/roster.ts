@@ -21,10 +21,11 @@ export const ROSTER_BASE_FIELDS = [
   'kana', 'gender', 'date_of_birth', 'affiliation', 'affiliation_contact',
   'skills', 'career', 'career_rows', 'work_area', 'age_group',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from',
+  'pr_points', 'remarks',
 ] as const
 // スタッフマスタ画面で扱う「業務側」の項目（社員名簿=労務側 / スタッフマスタ=業務側）。
 // linked_external（他社連携）以外の全区分（自社雇用を含む）でスタッフマスタ画面から編集できる。
-// pr_points / remarks は各社の行ごとに保持し、他社連携先には共有しない（ROSTER_BASE_FIELDS に含めない）
+// pr_points / remarks も基本項目として連携先に共有する（その会社独自の情報は「管理者メモ」に書く運用）
 export const ROSTER_BUSINESS_FIELDS = ['commute_minutes', 'available_from', 'work_area', 'skills', 'career', 'career_rows', 'pr_points', 'remarks'] as const
 export type CareerRow = { from: string; to: string; company: string; work: string; note: string }
 const CAREER_MAX_ROWS = 50
@@ -109,10 +110,11 @@ export function missingRequired(required: Set<string>, body: any, mode: 'create'
 }
 
 // 連携時の同意ポップアップで明示する共有範囲（フロント表示と同意履歴の双方で同じ文言を使う）
-export const CONSENT_VERSION = 'v1'
+export const CONSENT_VERSION = 'v2' // v2: 共有範囲に「経験・スキル・人柄・PRポイント等」「備考」を追加
 export const SHARED_SCOPE = [
   '氏名', 'フリガナ', '性別', '生年月日・年齢', '年代', '所属会社名・所属先担当者名',
   '最寄駅', '通勤可能時間', '稼働開始可能日', '稼働可能エリア', 'スキル', '経歴',
+  '経験・スキル・人柄・PRポイント等', '備考',
 ]
 export const NOT_SHARED_SCOPE = [
   '従業員管理の情報（雇用形態・給与・手当・口座・社会保険/雇用保険番号・緊急連絡先 等）',
@@ -487,7 +489,8 @@ staffSelfApi.get('/profile', async (c) => {
   const r = await loadRoster(c.env.DB, u.staff_id, u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
   const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
-  for (const f of ROSTER_BASE_FIELDS) pick[f] = r[f]
+  // PRポイント・備考は企業間で共有する業務情報のため、スタッフ本人向けには返さない
+  for (const f of ROSTER_BASE_FIELDS) if (f !== 'pr_points' && f !== 'remarks') pick[f] = r[f]
   // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
   pick.global_staff_code = r.linkable ? r.global_staff_code : null
   return c.json({ profile: pick })
