@@ -317,39 +317,59 @@ function genderOptions(v) {
 // 基本情報欄の上部に出す「どこで編集できるか」の案内
 function basicInfoNotice(p) {
   if (p.merged_into_staff_id) return `<div class="text-xs bg-gray-100 text-gray-700 rounded-lg p-2 mb-3" id="staff-merged-notice"><i class="fas fa-code-merge mr-1"></i>このスタッフは別のスタッフに統合済みです（シフト・勤怠・日報などは統合先に移しました）。<a class="text-blue-600 underline" href="#staff/${p.merged_into_staff_id}">統合先を開く</a></div>`
-  if (p.affiliation_type === 'own_employee') return `<div class="text-xs bg-emerald-50 text-emerald-700 rounded-lg p-2 mb-3"><i class="fas fa-id-card mr-1"></i>自社雇用スタッフです。通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考（業務側の情報）はこの画面で編集できます。氏名・生年月日・最寄駅・在籍状況などの労務側の情報は従業員管理から編集してください。</div>`
-  if (p.affiliation_type === 'linked_external') return `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本情報は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。管理者メモ・稼働先追記項目は記入できます。</div>`
+  if (p.affiliation_type === 'own_employee') return `<div class="text-xs bg-emerald-50 text-emerald-700 rounded-lg p-2 mb-3"><i class="fas fa-id-card mr-1"></i>自社雇用スタッフです。通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考（業務側の情報）はこの画面の「編集」から編集できます。氏名・生年月日・最寄駅・在籍状況などの労務側の情報は従業員管理から編集してください。</div>`
+  if (p.affiliation_type === 'linked_external') return `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本情報は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。管理者メモ（「編集」から）・稼働先追記項目は記入できます。</div>`
   if (!p.can_edit_in_master) return `<div class="text-xs bg-gray-50 text-gray-600 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>このスタッフの基本情報は編集できません。</div>`
   if (p.is_provisional) return `<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-3"><i class="fas fa-bolt mr-1"></i>仮登録のスタッフです（氏名・電話のみで稼働できます）。すでに登録のある人（他社連携など）と同じ人なら「区分・登録状態」の「既存のスタッフに統合」を、別の人なら「本登録」を使ってください。</div>`
   return ''
 }
 
 // ---------- スタッフマスタ: 業務側項目（経歴テーブル・PRポイント・備考） ----------
+// 備考列は廃止。以前入力した備考は業務内容の末尾に引き継いで編集する
 function careerRowHtml(r = {}) {
   return `<tr class="career-row align-top">
-    <td class="p-1"><input type="month" class="inp text-xs cr-from w-full px-1" value="${esc(r.from || '')}" placeholder="2024-04"></td>
-    <td class="p-1"><input type="month" class="inp text-xs cr-to w-full px-1" value="${esc(r.to || '')}" placeholder="2025-03"></td>
+    <td class="p-1"><input type="text" class="inp text-xs cr-from cr-month w-full bg-white" value="${esc(r.from || '')}" placeholder="選択" readonly></td>
+    <td class="p-1"><input type="text" class="inp text-xs cr-to cr-month w-full bg-white" value="${esc(r.to || '')}" placeholder="選択" readonly></td>
     <td class="p-1"><input class="inp text-xs cr-company w-full" value="${esc(r.company || '')}" placeholder="勤務先・店舗など"></td>
-    <td class="p-1"><textarea rows="2" class="inp text-xs cr-work w-full" placeholder="業務内容">${esc(r.work || '')}</textarea></td>
-    <td class="p-1"><textarea rows="2" class="inp text-xs cr-note w-full" placeholder="備考">${esc(r.note || '')}</textarea></td>
+    <td class="p-1"><textarea rows="3" class="inp text-xs cr-work w-full" style="resize:vertical" placeholder="業務内容">${esc([r.work, r.note].filter(Boolean).join('\n'))}</textarea></td>
     <td class="p-1 text-center"><button type="button" class="btn btn-outline text-xs px-2" title="この行を削除" onclick="removeCareerRow(this)"><i class="fas fa-trash text-red-500"></i></button></td>
   </tr>`
+}
+// 開始・終了はカレンダー（年月選択）から選ぶ。flatpickr が読めない環境では type=month にフォールバック
+function initCareerPickers(root) {
+  const els = (root || document).querySelectorAll('input.cr-month:not([data-fp])')
+  els.forEach(el => {
+    el.dataset.fp = '1'
+    if (!window.flatpickr || !window.monthSelectPlugin) { el.type = 'month'; el.readOnly = false; return }
+    flatpickr(el, {
+      locale: (flatpickr.l10ns && flatpickr.l10ns.ja) || 'default', disableMobile: true, allowInput: false,
+      plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: 'Y-m', altFormat: 'Y年n月' })],
+      altInput: true, altInputClass: 'inp text-xs w-full bg-white cursor-pointer',
+      onReady: (_, __, fp) => {
+        // 選択を取り消せるよう「クリア」ボタンを付ける
+        const btn = document.createElement('button'); btn.type = 'button'; btn.textContent = 'クリア'
+        btn.className = 'text-xs text-gray-500 hover:text-red-500 w-full py-1 border-t border-gray-100'
+        btn.onclick = () => { fp.clear(); fp.close() }
+        fp.calendarContainer.appendChild(btn)
+      },
+    })
+  })
 }
 window.addCareerRow = function () {
   const tb = document.getElementById('staff-career-rows')
   tb.insertAdjacentHTML('beforeend', careerRowHtml())
-  tb.lastElementChild.querySelector('.cr-from').focus()
+  initCareerPickers(tb.lastElementChild)
 }
 window.removeCareerRow = function (btn) {
   const tb = document.getElementById('staff-career-rows')
   btn.closest('tr').remove()
-  if (!tb.children.length) tb.insertAdjacentHTML('beforeend', careerRowHtml())
+  if (!tb.children.length) { tb.insertAdjacentHTML('beforeend', careerRowHtml()); initCareerPickers(tb) }
 }
 function collectCareerRows() {
   return [...document.querySelectorAll('#staff-career-rows .career-row')].map(tr => ({
     from: tr.querySelector('.cr-from').value.trim(), to: tr.querySelector('.cr-to').value.trim(),
-    company: tr.querySelector('.cr-company').value.trim(), work: tr.querySelector('.cr-work').value.trim(), note: tr.querySelector('.cr-note').value.trim(),
-  })).filter(r => r.from || r.to || r.company || r.work || r.note)
+    company: tr.querySelector('.cr-company').value.trim(), work: tr.querySelector('.cr-work').value.trim(), note: '',
+  })).filter(r => r.from || r.to || r.company || r.work)
 }
 const fmtYm = v => v ? String(v).replace(/^(\d{4})-(\d{2})$/, (_, y, m) => `${y}年${Number(m)}月`) : ''
 // 経歴テーブル（閲覧用）。テーブル未入力で旧形式の経歴テキストがあればそれを表示する
@@ -357,9 +377,9 @@ function careerTableReadonly(p) {
   const rows = Array.isArray(p.career_rows) ? p.career_rows : []
   if (!rows.length) return `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.career || '-')}</p>`
   return `<div class="overflow-x-auto"><table class="tbl text-xs" id="staff-career-table">
-    <thead><tr><th class="whitespace-nowrap">開始</th><th class="whitespace-nowrap">終了</th><th>勤務</th><th>業務内容</th><th>備考</th></tr></thead>
+    <thead><tr><th class="whitespace-nowrap">開始</th><th class="whitespace-nowrap">終了</th><th>勤務</th><th>業務内容</th></tr></thead>
     <tbody>${rows.map(r => `<tr><td class="whitespace-nowrap">${esc(fmtYm(r.from)) || '-'}</td><td class="whitespace-nowrap">${esc(fmtYm(r.to)) || '-'}</td>
-      <td>${esc(r.company || '')}</td><td class="whitespace-pre-wrap">${esc(r.work || '')}</td><td class="whitespace-pre-wrap">${esc(r.note || '')}</td></tr>`).join('')}</tbody></table></div>`
+      <td>${esc(r.company || '')}</td><td class="whitespace-pre-wrap">${esc(r.work || '')}${r.note ? `<span class="text-gray-400">（${esc(r.note)}）</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
 }
 function staffBusinessSectionHtml(p, edBiz) {
   const rows = Array.isArray(p.career_rows) ? p.career_rows : []
@@ -375,15 +395,15 @@ function staffBusinessSectionHtml(p, edBiz) {
         </div>
         ${edBiz ? `
         ${!rows.length && p.career ? '<p class="text-xs text-amber-600 mb-1"><i class="fas fa-circle-info mr-1"></i>以前のテキスト形式の経歴を1行目に表示しています。開始・終了・勤務などに分けて入力し直してください。</p>' : ''}
-        <div class="overflow-x-auto"><table class="w-full text-xs min-w-[760px]" style="table-layout:fixed" id="staff-career-table">
-          <colgroup><col style="width:130px"><col style="width:130px"><col style="width:22%"><col><col style="width:20%"><col style="width:44px"></colgroup>
+        <div class="overflow-x-auto"><table class="w-full text-xs min-w-[640px]" style="table-layout:fixed" id="staff-career-table">
+          <colgroup><col style="width:120px"><col style="width:120px"><col style="width:24%"><col><col style="width:44px"></colgroup>
           <thead><tr class="text-gray-500 text-left">
-            <th class="p-1 font-normal">開始（年月）</th><th class="p-1 font-normal">終了（年月）</th>
-            <th class="p-1 font-normal">勤務</th><th class="p-1 font-normal">業務内容</th><th class="p-1 font-normal">備考</th><th class="p-1"></th>
+            <th class="p-1 font-normal">開始</th><th class="p-1 font-normal">終了</th>
+            <th class="p-1 font-normal">勤務</th><th class="p-1 font-normal">業務内容</th><th class="p-1"></th>
           </tr></thead>
           <tbody id="staff-career-rows">${initRows.map(careerRowHtml).join('')}</tbody>
         </table></div>
-        <p class="text-xs text-gray-400 mt-1">終了が空欄の場合は「現在まで」として扱います。</p>` : careerTableReadonly(p)}
+        <p class="text-xs text-gray-400 mt-1">開始・終了はクリックしてカレンダーから選択します。終了が空欄の場合は「現在まで」として扱います。</p>` : careerTableReadonly(p)}
       </div>
       <div>
         ${label('fa-star', '経験・スキル・人柄・PRポイント等')}
@@ -398,7 +418,13 @@ function staffBusinessSectionHtml(p, edBiz) {
     </div>`
 }
 
-async function renderStaffDetail(sid) {
+// スタッフ詳細は閲覧モードで開き、「編集」ボタンで区分に応じた項目だけ入力欄に切り替える
+let staffEditingSid = null
+window.startStaffEdit = function (sid) { staffEditingSid = String(sid); renderStaffDetail(sid, { keepEdit: true }) }
+window.cancelStaffEdit = function (sid) { staffEditingSid = null; renderStaffDetail(sid) }
+async function renderStaffDetail(sid, opts = {}) {
+  if (!opts.keepEdit) staffEditingSid = null
+  const editing = staffEditingSid === String(sid)
   loading()
   const [{ data }, { data: docData }, { data: affData }] = await Promise.all([
     axios.get('/api/admin/staff/' + sid),
@@ -408,8 +434,13 @@ async function renderStaffDetail(sid) {
   const p = data.profile
   const evalRadar = data.evaluations[0]
   const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
-  const ed = !!p.can_edit_in_master // スタッフマスタ画面で基本情報（氏名・所属等）を編集できるか（取引先所属・スキルシートのみ・日雇い・個人事業主）
-  const edBiz = !!p.can_edit_business // 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）を編集できるか（他社連携以外の全区分）
+  // 編集できる範囲（APIでも同じ判定で制御している）
+  //  canBase: 基本情報（氏名・所属・最寄駅・在籍状況等）… 取引先所属・スキルシートのみ・日雇い・個人事業主
+  //  canBiz : 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）… 他社連携以外の全区分
+  //  管理者メモは統合済み以外の全スタッフで編集できる
+  const canBase = !!p.can_edit_in_master, canBiz = !!p.can_edit_business, canEdit = !p.merged_into_staff_id
+  const ed = editing && canBase
+  const edBiz = editing && canBiz
   const bi = (label, html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">${label}</dt><dd class="flex-1 min-w-0 pt-1">${html}</dd></div>`
 
   $app.innerHTML = `
@@ -438,11 +469,15 @@ async function renderStaffDetail(sid) {
         <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 class="text-sm font-bold text-gray-700">基本情報 <span class="text-xs font-normal text-gray-400">（スタッフマスタ共有項目）</span></h3>
           <div class="flex gap-2 flex-wrap">
-            ${p.affiliation_type === 'own_employee' && !p.merged_into_staff_id ? `<a class="btn btn-outline text-xs" href="#employees/${sid}"><i class="fas fa-pen"></i>労務情報は従業員管理で編集</a>` : ''}
-            ${ed || edBiz ? `<button class="btn btn-primary text-xs" id="staff-basic-save" onclick="saveStaffBasicInfo(${sid})"><i class="fas fa-floppy-disk"></i>基本情報を保存</button>` : ''}
+            ${p.affiliation_type === 'own_employee' && !p.merged_into_staff_id ? `<a class="btn btn-outline text-xs" href="#employees/${sid}"><i class="fas fa-id-card"></i>労務情報は従業員管理で編集</a>` : ''}
+            ${!canEdit ? '' : editing
+              ? `<button class="btn btn-outline text-xs" id="staff-edit-cancel" onclick="cancelStaffEdit(${sid})">キャンセル</button>
+                 <button class="btn btn-primary text-xs" id="staff-basic-save" onclick="saveStaffBasicInfo(${sid})"><i class="fas fa-floppy-disk"></i>保存</button>`
+              : `<button class="btn btn-primary text-xs" id="staff-edit" onclick="startStaffEdit(${sid})"><i class="fas fa-pen"></i>編集</button>`}
           </div>
         </div>
         ${basicInfoNotice(p)}
+        ${editing ? `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3" id="staff-editing-notice"><i class="fas fa-pen mr-1"></i>編集中です。${canBase ? '' : canBiz ? '入力欄になっている業務側の項目と管理者メモを編集できます。' : '管理者メモを編集できます。'}変更後は「保存」を押してください。</div>` : ''}
         <dl class="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
           ${bi('氏名', ed ? `<input id="staff-name" class="inp text-xs" value="${esc(p.name || '')}">` : esc(p.name))}
           ${bi('フリガナ', ed ? `<input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}">` : esc(p.kana || '-'))}
@@ -469,30 +504,28 @@ async function renderStaffDetail(sid) {
 
         <div class="mt-4 pt-3 border-t border-gray-100 space-y-4" id="staff-memo-block">
           <div>
-            <label class="text-xs text-gray-500 block mb-1"><i class="fas fa-note-sticky text-gray-400 mr-1"></i>管理者メモ <span class="text-gray-400">（自社内のみ・全スタッフ記入可）</span></label>
-            <textarea id="staff-memo" rows="3" class="inp text-xs w-full">${esc(p.memo || '')}</textarea>
-            <div class="flex gap-2 mt-2 flex-wrap">
-              <button class="btn btn-outline text-xs" onclick="saveStaffMemo(${sid})">メモ保存</button>
+            <p class="text-xs text-gray-500 mb-1"><i class="fas fa-note-sticky text-gray-400 mr-1"></i>管理者メモ <span class="text-gray-400">（自社内のみ・連携先には共有されません）</span></p>
+            ${editing ? `<textarea id="staff-memo" rows="3" class="inp text-xs w-full">${esc(p.memo || '')}</textarea>`
+              : `<p class="text-xs text-gray-600 whitespace-pre-wrap" id="staff-memo-view">${esc(p.memo || '-')}</p>`}
+            ${editing || !canEdit ? '' : `<div class="flex gap-2 mt-2 flex-wrap">
               <button class="btn ${p.follow_flag ? 'btn-danger' : 'btn-outline'} text-xs" onclick="toggleFollow(${sid}, ${p.follow_flag ? 0 : 1})">
                 ${p.follow_flag ? 'フォロー解除' : '要フォロー登録'}</button>
-            </div>
+            </div>`}
           </div>
           ${ed ? `
           <div class="pt-3 border-t border-gray-100">
             <p class="text-xs text-gray-500 mb-1"><i class="fas fa-person-walking-arrow-right text-gray-400 mr-1"></i>在籍状況</p>
-            <div class="flex gap-2 flex-wrap items-start">
-            <select id="staff-emp-status" class="inp text-sm w-40" onchange="if(this.value!=='retired') setStaffEmploymentStatus(${sid}, this.value)">
-              <option value="working" ${p.employment_status === 'working' || !p.employment_status ? 'selected' : ''}>在職中</option>
-              <option value="leave" ${p.employment_status === 'leave' ? 'selected' : ''}>休職中</option>
-              <option value="preboarding" ${p.employment_status === 'preboarding' ? 'selected' : ''}>入社予定</option>
-              <option value="retired" ${p.employment_status === 'retired' ? 'selected' : ''}>退職</option>
-            </select>
-            ${p.retired_at
-              ? `<button class="btn btn-outline text-xs" onclick="setStaffRetiredAt(${sid}, null)">現役に戻す</button>`
-              : `<input type="date" id="staff-retired-date" class="inp text-sm w-44">
-                 <button class="btn btn-outline text-xs" onclick="setStaffRetiredAt(${sid}, document.getElementById('staff-retired-date').value)">退職日を設定</button>`}
+            <div class="flex gap-2 flex-wrap items-center">
+              <select id="staff-emp-status" class="inp text-sm w-40" data-orig="${esc(p.employment_status || 'working')}"
+                onchange="document.getElementById('staff-retired-wrap').classList.toggle('hidden', this.value !== 'retired')">
+                ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(p.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
+              </select>
+              <span id="staff-retired-wrap" class="flex items-center gap-2 ${p.employment_status === 'retired' ? '' : 'hidden'}">
+                <span class="text-xs text-gray-500">退職日</span>
+                <input type="date" id="staff-retired-date" class="inp text-sm w-44" value="${esc(p.retired_at || '')}" data-orig="${esc(p.retired_at || '')}">
+              </span>
             </div>
-            ${p.retired_at ? '' : '<p class="text-xs text-gray-400 mt-1">退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>'}
+            <p class="text-xs text-gray-400 mt-1">退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>
           </div>` : ''}
         </div>
       </section>
@@ -593,6 +626,7 @@ async function renderStaffDetail(sid) {
   if (window.renderStaffRatePanel) renderStaffRatePanel(sid, p)
   // 区分・登録状態・提出設定（public/static/staff-lifecycle.js）
   if (window.renderStaffLifecyclePanel) renderStaffLifecyclePanel(sid, p)
+  if (edBiz) initCareerPickers(document.getElementById('staff-career-rows'))
   if (evalRadar) {
     new Chart(document.getElementById('eval-chart'), {
       type: 'radar',
@@ -637,18 +671,31 @@ window.setStaffEmploymentStatus = async function (sid, status) {
   }
 }
 window.saveStaffBasicInfo = async function (sid) {
-  // スタッフマスタ画面での保存。
-  //  - 基本項目（氏名・所属等）: 取引先所属・スキルシートのみ・日雇い・個人事業主のみ（自社雇用は従業員管理から）
+  // 編集モードの「保存」。画面に出ている入力欄（=区分ごとに編集できる項目）だけを送る
+  //  - 基本項目（氏名・所属・最寄駅・在籍状況等）: 取引先所属・スキルシートのみ・日雇い・個人事業主のみ（自社雇用は従業員管理から）
   //  - 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）: 他社連携以外の全区分
+  //  - 管理者メモ: 全スタッフ
   try {
     const val = id => { const el = document.getElementById(id); return el ? el.value : undefined }
-    const body = {}
+    const body = { memo: val('staff-memo') }
     if (document.getElementById('staff-name')) Object.assign(body, {
       name: (val('staff-name') || '').trim(),
       kana: val('staff-kana'), gender: val('staff-gender'), date_of_birth: val('staff-dob') || null,
       affiliation: val('staff-affiliation'), affiliation_contact: val('staff-affiliation-contact'),
       nearest_station_line: val('staff-station-line'), nearest_station: val('staff-station'),
     })
+    const st = document.getElementById('staff-emp-status')
+    if (st) {
+      const rd = document.getElementById('staff-retired-date')
+      const status = st.value, retired = rd ? rd.value : ''
+      if (status !== st.dataset.orig || (status === 'retired' && retired !== rd.dataset.orig)) {
+        if (status === 'retired') {
+          if (!retired) { toast('退職にする場合は退職日を入力してください'); return }
+          if (!confirm(`退職日を ${retired} に設定しますか？\n7年経過すると出退勤記録等が定期削除の対象になります。`)) return
+          body.retired_at = retired
+        } else Object.assign(body, { retired_at: null, employment_status: status })
+      }
+    }
     if (document.getElementById('staff-career-rows')) {
       const commute = val('staff-commute')
       Object.assign(body, {
@@ -661,7 +708,8 @@ window.saveStaffBasicInfo = async function (sid) {
     // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）
     const aff = (val('staff-affiliation') || '').trim()
     if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
-    toast('基本情報を保存しました')
+    toast('保存しました')
+    staffEditingSid = null
     renderStaffDetail(sid)
   } catch (e) {
     toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました')
