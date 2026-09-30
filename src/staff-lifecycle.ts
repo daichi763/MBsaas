@@ -6,7 +6,7 @@
 // api.ts から認証ミドルウェアの前後に分けて登録する。金額は返さない（報告用URLはスタッフ本人向け）。
 // =========================================================
 import { Hono } from 'hono'
-import { createPerson } from './roster'
+import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
 
@@ -156,6 +156,8 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
     } else if (String(b.new_partner_name || '').trim()) {
       const pname = String(b.new_partner_name).trim()
       if (pname === ownName) return c.json({ error: '自社名は取引先として登録できません' }, 400)
+      const conflict = await partnerNameConflict(db, u.company_id, pname)
+      if (conflict) return c.json({ error: conflict }, 400)
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, pname).run()
       const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, pname).first() as any
       partnerId = p?.affiliation_id ?? null; affiliation = pname
@@ -215,6 +217,8 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
     } else if (String(b.new_partner_name || '').trim()) {
       affiliation = String(b.new_partner_name).trim()
       if (affiliation === ownName) return c.json({ error: '自社名は取引先として登録できません' }, 400)
+      const conflict = await partnerNameConflict(db, u.company_id, affiliation)
+      if (conflict) return c.json({ error: conflict }, 400)
     } else return c.json({ error: '取引先を選択または入力してください' }, 400)
     if (to === from && partnerId === sp.partner_affiliation_id) return c.json({ error: '現在と同じ取引先です' }, 400)
   }

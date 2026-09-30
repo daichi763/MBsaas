@@ -109,6 +109,17 @@ export async function createPerson(db: D1Database, companyId: number): Promise<{
 }
 
 /**
+ * 取引先（Field OS未契約の所属元）として登録しようとしている名前が、他の導入企業の会社名と一致するかを確認する。
+ * 導入企業のスタッフは取引先ではなく ①QR/ID連携（linked_external）で扱うため、一致した場合はエラーメッセージを返す。
+ */
+export async function partnerNameConflict(db: D1Database, companyId: number, name: string | null | undefined): Promise<string | null> {
+  const n = String(name || '').trim()
+  if (!n) return null
+  const hit = await db.prepare('SELECT 1 FROM companies WHERE company_name = ? AND company_id != ? LIMIT 1').bind(n, companyId).first()
+  return hit ? `「${n}」はField OSの導入企業のため、取引先として登録できません（①QR/ID連携で登録してください）` : null
+}
+
+/**
  * スタッフマスタの基本項目を、linked_external 行なら所属元（source）の値で解決する SELECT 句を返す。
  * local = 自社の staff_profiles エイリアス / src = 所属元 staff_profiles エイリアス
  */
@@ -193,7 +204,7 @@ rosterApi.get('/field-settings', async (c) => {
 // 必須項目設定の更新（会社管理者のみ）
 rosterApi.put('/field-settings', async (c) => {
   const u = c.get('user')
-  if (!['company_admin', 'system_admin'].includes(u.role)) return c.json({ error: '必須項目の設定は会社管理者のみ変更できます' }, 403)
+  if (u.role !== 'company_admin') return c.json({ error: '必須項目の設定は会社管理者のみ変更できます' }, 403)
   const b = await c.req.json().catch(() => ({} as any))
   const req: Record<string, boolean> = b.required || {}
   const valid = new Set(ROSTER_CONFIGURABLE_FIELDS.map(f => f.code))
@@ -369,6 +380,8 @@ rosterApi.post('/', async (c) => {
     } else if (b.new_partner_name && String(b.new_partner_name).trim()) {
       const pname = String(b.new_partner_name).trim()
       if (pname === ownName) return c.json({ error: '自社名は取引先として登録できません（②従業員管理から作成を選択してください）' }, 400)
+      const conflict = await partnerNameConflict(db, u.company_id, pname)
+      if (conflict) return c.json({ error: conflict }, 400)
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, contact_name, phone, email) VALUES (?, ?, ?, ?, ?)')
         .bind(u.company_id, pname, b.new_partner_contact ?? null, b.new_partner_phone ?? null, b.new_partner_email ?? null).run()
       const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, pname).first()
