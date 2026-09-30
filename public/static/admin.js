@@ -418,32 +418,11 @@ function staffBusinessSectionHtml(p, edBiz) {
     </div>`
 }
 
-// スタッフ詳細は閲覧モードで開き、「編集」ボタンで区分に応じた項目だけ入力欄に切り替える
-let staffEditingSid = null
-window.startStaffEdit = function (sid) { staffEditingSid = String(sid); renderStaffDetail(sid, { keepEdit: true }) }
-window.cancelStaffEdit = function (sid) { staffEditingSid = null; renderStaffDetail(sid) }
-async function renderStaffDetail(sid, opts = {}) {
-  if (!opts.keepEdit) staffEditingSid = null
-  const editing = staffEditingSid === String(sid)
-  loading()
-  const [{ data }, { data: docData }, { data: affData }] = await Promise.all([
-    axios.get('/api/admin/staff/' + sid),
-    axios.get('/api/admin/staff/' + sid + '/documents'),
-    axios.get('/api/admin/staff-affiliations'),
-  ])
-  const p = data.profile
-  const evalRadar = data.evaluations[0]
-  const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
-  // 編集できる範囲（APIでも同じ判定で制御している）
-  //  canBase: 基本情報（氏名・所属・最寄駅・在籍状況等）… 取引先所属・スキルシートのみ・日雇い・個人事業主
-  //  canBiz : 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）… 他社連携以外の全区分
-  //  管理者メモは統合済み以外の全スタッフで編集できる
-  const canBase = !!p.can_edit_in_master, canBiz = !!p.can_edit_business, canEdit = !p.merged_into_staff_id
-  const ed = editing && canBase
-  const edBiz = editing && canBiz
-  const bi = (label, html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">${label}</dt><dd class="flex-1 min-w-0 pt-1">${html}</dd></div>`
-
-  $app.innerHTML = `
+// ---------- スタッフ詳細: ヘッダー・基本情報カード（編集/保存時はここだけ差し替えて、画面全体を再読み込みしない） ----------
+const STAFF_EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
+function staffDetailHeaderHtml(sid, p) {
+  const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
+  return `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#staff" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
@@ -463,9 +442,19 @@ async function renderStaffDetail(sid, opts = {}) {
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
       <button class="btn btn-primary" onclick="showFollowModal(${sid}, '${esc(p.name)}')"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
-
-    <div class="grid lg:grid-cols-3 gap-4 mb-4">
-      <section class="card p-4 lg:col-span-2" id="staff-basic-info">
+`
+}
+function staffBasicCardHtml(sid, p, affData, editing) {
+  const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
+  // 編集できる範囲（APIでも同じ判定で制御している）
+  //  canBase: 基本情報（氏名・所属・最寄駅・在籍状況等）… 取引先所属・スキルシートのみ・日雇い・個人事業主
+  //  canBiz : 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）… 他社連携以外の全区分
+  //  管理者メモは統合済み以外の全スタッフで編集できる
+  const canBase = !!p.can_edit_in_master, canBiz = !!p.can_edit_business, canEdit = !p.merged_into_staff_id
+  const ed = editing && canBase
+  const edBiz = editing && canBiz
+  const bi = (label, html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">${label}</dt><dd class="flex-1 min-w-0 pt-1">${html}</dd></div>`
+  return `
         <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 class="text-sm font-bold text-gray-700">基本情報 <span class="text-xs font-normal text-gray-400">（スタッフマスタ共有項目）</span></h3>
           <div class="flex gap-2 flex-wrap">
@@ -528,6 +517,47 @@ async function renderStaffDetail(sid, opts = {}) {
             <p class="text-xs text-gray-400 mt-1">退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>
           </div>` : ''}
         </div>
+`
+}
+// 直近に表示したスタッフ詳細のデータ（編集切替・保存後の部分再描画に使う）
+let staffDetailState = null
+function redrawStaffCard(editing) {
+  const st = staffDetailState; if (!st) return
+  const card = document.getElementById('staff-basic-info'); if (!card) return
+  card.innerHTML = staffBasicCardHtml(st.sid, st.p, st.affData, editing)
+  const hd = document.getElementById('staff-detail-header'); if (hd) hd.innerHTML = staffDetailHeaderHtml(st.sid, st.p)
+  if (editing && st.p.can_edit_business) initCareerPickers(document.getElementById('staff-career-rows'))
+}
+// 保存後などに、画面をローディング表示にせずプロフィールだけ取り直して差し替える
+async function refreshStaffProfile(sid) {
+  const { data } = await axios.get('/api/admin/staff/' + sid)
+  if (!staffDetailState || String(staffDetailState.sid) !== String(sid)) return
+  staffDetailState.p = data.profile
+  redrawStaffCard(false)
+}
+// スタッフ詳細は閲覧モードで開き、「編集」ボタンで区分に応じた項目だけ入力欄に切り替える
+let staffEditingSid = null
+window.startStaffEdit = function (sid) { staffEditingSid = String(sid); redrawStaffCard(true) }
+window.cancelStaffEdit = function (sid) { staffEditingSid = null; redrawStaffCard(false) }
+async function renderStaffDetail(sid, opts = {}) {
+  if (!opts.keepEdit) staffEditingSid = null
+  const editing = staffEditingSid === String(sid)
+  loading()
+  const [{ data }, { data: docData }, { data: affData }] = await Promise.all([
+    axios.get('/api/admin/staff/' + sid),
+    axios.get('/api/admin/staff/' + sid + '/documents'),
+    axios.get('/api/admin/staff-affiliations'),
+  ])
+  const p = data.profile
+  const evalRadar = data.evaluations[0]
+  staffDetailState = { sid, p, affData }
+  const edBiz = editing && !!p.can_edit_business
+  $app.innerHTML = `
+    <div id="staff-detail-header">${staffDetailHeaderHtml(sid, p)}</div>
+
+    <div class="grid lg:grid-cols-3 gap-4 mb-4">
+      <section class="card p-4 lg:col-span-2" id="staff-basic-info">
+        ${staffBasicCardHtml(sid, p, affData, editing)}
       </section>
 
       <div class="space-y-4">
@@ -649,7 +679,8 @@ window.saveStaffMemo = async function (sid) {
 window.toggleFollow = async function (sid, flag) {
   await axios.put('/api/admin/staff/' + sid, { follow_flag: flag })
   toast(flag ? '要フォローに登録しました' : 'フォローを解除しました')
-  renderStaffDetail(sid)
+  if (staffDetailState && String(staffDetailState.sid) === String(sid)) await refreshStaffProfile(sid)
+  else renderStaffDetail(sid)
 }
 window.setStaffRetiredAt = async function (sid, date) {
   if (date && !confirm(`退職日を ${date} に設定しますか？\n7年経過すると出退勤記録等が定期削除の対象になります。`)) return
@@ -710,7 +741,7 @@ window.saveStaffBasicInfo = async function (sid) {
     if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     toast('保存しました')
     staffEditingSid = null
-    renderStaffDetail(sid)
+    await refreshStaffProfile(sid)
   } catch (e) {
     toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました')
   }
