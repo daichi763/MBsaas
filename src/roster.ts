@@ -323,12 +323,14 @@ rosterApi.get('/lookup', async (c) => {
   if (!src) return c.json({ error: '該当するスタッフが見つかりません（連携できるのは他社で自社雇用として登録されたスタッフのみです）' }, 404)
   if (src.company_id === u.company_id) return c.json({ error: '自社に登録済みのスタッフです' }, 409)
   const already = await db.prepare('SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ?').bind(u.company_id, src.person_id).first()
+  // 既に自社に登録済みの人なら、コードの持ち主（雇用元など）の企業名は返さない（多段連携の経路が分からないように）
+  if (already) return c.json({ candidate: { name: src.name }, already_linked_staff_id: already.staff_id })
   return c.json({
     candidate: {
       global_staff_code: src.global_staff_code, name: src.name, kana: src.kana, gender: src.gender,
       owner_company_name: src.owner_company_name,
     },
-    already_linked_staff_id: already ? already.staff_id : null,
+    already_linked_staff_id: null,
     consent: { version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE },
   })
 })
