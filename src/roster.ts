@@ -134,7 +134,7 @@ function nowJST(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
 }
 // ログイン不可のユーザー行用。ランダム値のハッシュなので、どのパスワードとも一致しない
-async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randHex(32)) }
+export async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randHex(32)) }
 function normalizeCode(code: string): string { return String(code || '').trim().toUpperCase().replace(/[^0-9A-Z]/g, '') }
 
 /** 人物IDと恒久固定コード（QR/ID連携用）を採番する */

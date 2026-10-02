@@ -340,6 +340,11 @@
       actions.push(`<button class="btn btn-primary text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'adopted')"><i class="fas fa-check"></i>採用</button>`)
       actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'declined')">見送り</button>`)
     }
+    if (isReceiver && pr.status === 'adopted') {
+      actions.push(pr.imported_staff_id
+        ? `<a class="btn btn-outline text-xs" href="#staff/${pr.imported_staff_id}"><i class="fas fa-user-check"></i>スタッフマスタで開く</a>`
+        : `<button class="btn btn-primary text-xs board-import-btn" onclick="__boardImport(${pr.proposal_id})"><i class="fas fa-file-import"></i>スタッフマスタに取り込む</button>`)
+    }
     if (pr.is_mine && ['proposed', 'interview'].includes(pr.status)) actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'withdrawn')">取り下げ</button>`)
     const nameLine = pr.disclosed && pr.disclosed.name
       ? `<span class="font-bold text-gray-900">${esc(pr.disclosed.name)}</span>${pr.disclosed.kana ? ` <span class="text-[11px] text-gray-400">${esc(pr.disclosed.kana)}</span>` : ''}${pr.is_mine && pr.status !== 'adopted' ? ' <span class="text-[10px] text-gray-400">（相手には採用まで非表示）</span>' : ''}`
@@ -460,6 +465,41 @@
       toast({ adopted: '採用しました', declined: '見送りにしました', withdrawn: '取り下げました', interview: '面談希望にしました' }[status] || '更新しました')
       if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id)
     } catch (e) { toast(errMsg(e, '更新に失敗しました')) }
+  }
+
+  // 採用した人材を自社スタッフマスタへ（取引先所属・所属会社名 = 提案企業名）
+  window.__boardImport = async function (proposalId) {
+    const pr = PROPS[proposalId]
+    const from = pr ? pr.proposer_company_name : '提案企業'
+    if (!confirm(`この人材をスタッフマスタに取り込みますか？\n\n・区分: 取引先所属（所属会社: ${from}）\n・氏名とスキルシートの内容をコピーします（以後は自社で編集でき、提案元とは同期しません）\n・ログインIDは発行しません`)) return
+    try {
+      const { data } = await axios.post(`/api/admin/board/proposals/${proposalId}/import`)
+      if (window.invalidateBoardMaster) window.invalidateBoardMaster()
+      if (data.shift) {
+        modal(`
+          <h3 class="font-bold text-lg mb-2"><i class="fas fa-circle-check text-emerald-500 mr-1"></i>スタッフマスタに登録しました</h3>
+          <p class="text-sm text-gray-600 mb-4">このスポット案件は自社の案件と紐づいています。続けてシフトボードで割り当てできます。</p>
+          <div class="flex flex-col gap-2">
+            <button class="btn btn-primary" id="board-import-to-shift" onclick="__boardGoShift(${Number(data.shift.project_id)}, '${esc(data.shift.date_from || '')}')"><i class="fas fa-calendar-plus"></i>シフトボードで割り当てる</button>
+            <a class="btn btn-outline" href="#staff/${data.staff_id}" onclick="closeModal()"><i class="fas fa-user"></i>スタッフ詳細を開く</a>
+            <button class="btn btn-outline" onclick="closeModal()">閉じる</button>
+          </div>`)
+      } else toast('スタッフマスタに登録しました')
+      if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id)
+    } catch (e) {
+      const d = e && e.response && e.response.data
+      if (d && d.staff_id) { toast(d.error); location.hash = '#staff/' + d.staff_id; return }
+      toast(errMsg(e, '取り込みに失敗しました'))
+    }
+  }
+  // シフトボードを該当案件・実施週に絞って開く
+  window.__boardGoShift = function (projectId, dateFrom) {
+    closeModal()
+    const bs = window.__boardState = window.__boardState || {}
+    bs.projectIds = [projectId]; bs.clientId = ''; bs.engagement = ''
+    if (dateFrom) bs.from = dayjs(dateFrom).startOf('week').add(1, 'day').format('YYYY-MM-DD')
+    if (dateFrom && dayjs(dateFrom).day() === 0) bs.from = dayjs(dateFrom).subtract(6, 'day').format('YYYY-MM-DD')
+    location.hash = '#shifts'
   }
 
   window.__boardThreadStatus = async function (threadId, status) {

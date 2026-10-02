@@ -5,7 +5,7 @@
 // - 他社に返すのは掲載内容と掲載企業名のみ（コピー元の自社案件・作成者などの社内情報は返さない）
 // =========================================================
 import { Hono } from 'hono'
-import { loadRoster } from './roster'
+import { loadRoster, createPerson, unusablePasswordHash } from './roster'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -451,6 +451,8 @@ function shapeProposal(p: any, companyId: number) {
   }
   if (mine || p.status === 'adopted') out.disclosed = (() => { try { return JSON.parse(p.disclosed || 'null') } catch { return null } })()
   if (mine) { out.staff_id = p.staff_id; out.staff_kind = p.staff_kind }
+  // 取り込み先の行は受け手（自社）のものなので受け手にだけ返す
+  if (!mine && p.receiver_company_id === companyId) out.imported_staff_id = p.imported_alive ?? null
   return out
 }
 
@@ -533,7 +535,7 @@ boardApi.get('/threads/:id/proposals', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const t = await loadThread(db, c.req.param('id'), u.company_id)
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
-  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id
+  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id
     WHERE p.thread_id = ? ORDER BY p.proposal_id`).bind(t.thread_id).all()).results as any[]
   return c.json({ proposals: rows.map(p => shapeProposal(p, u.company_id)) })
 })
@@ -541,7 +543,7 @@ boardApi.get('/threads/:id/proposals', async (c) => {
 // 状態変更: 受け手 = 面談希望 / 採用 / 見送り、提案者 = 取り下げ（採用前のみ）
 boardApi.post('/proposals/:id/status', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id WHERE p.proposal_id = ?`)
+  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id WHERE p.proposal_id = ?`)
     .bind(c.req.param('id')).first() as any
   if (!p || (p.proposer_company_id !== u.company_id && p.receiver_company_id !== u.company_id)) return c.json({ error: '提案が見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
@@ -570,7 +572,7 @@ boardApi.post('/proposals/:id/status', async (c) => {
 boardApi.get('/proposals', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const side = c.req.query('side') === 'received' ? 'received' : 'sent'
-  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, rc.company_name AS receiver_company_name, bp.title AS post_title, bp.engagement_type,
+  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive, rc.company_name AS receiver_company_name, bp.title AS post_title, bp.engagement_type,
       ${side === 'sent' ? 'us.name AS staff_name' : 'NULL AS staff_name'}
     FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id JOIN companies rc ON rc.company_id = p.receiver_company_id
     JOIN board_posts bp ON bp.post_id = p.post_id
@@ -578,6 +580,67 @@ boardApi.get('/proposals', async (c) => {
     WHERE ${side === 'sent' ? 'p.proposer_company_id' : 'p.receiver_company_id'} = ? ORDER BY p.updated_at DESC LIMIT 300`).bind(u.company_id).all()).results as any[]
   return c.json({ side, proposals: rows.map(p => ({ ...shapeProposal(p, u.company_id), post_title: p.post_title, engagement_type: p.engagement_type,
     receiver_company_name: p.receiver_company_name, staff_name: side === 'sent' ? p.staff_name : undefined })) })
+})
+
+// ---------- 第4段階: 採用した人材を自社スタッフマスタへ取り込む ----------
+// 取り込んだ行は partner_manual（取引先所属）、所属会社名 = 提案企業名（取引先マスタにも登録）。
+// 基本項目・業務側項目は採用時点の開示内容（氏名 + スナップショット）をコピーし、以後は自社で編集（提案元とは同期しない）。
+// 経路は board_proposals.upstream_chain にだけ残り、取り込んだ行には提案IDだけを記録する（頭超え防止）
+boardApi.post('/proposals/:id/import', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive, bp.engagement_type, bp.source_project_id, bp.date_from, bp.company_id AS post_company_id
+    FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id JOIN board_posts bp ON bp.post_id = p.post_id WHERE p.proposal_id = ?`)
+    .bind(c.req.param('id')).first() as any
+  if (!p || p.receiver_company_id !== u.company_id) return c.json({ error: '提案が見つかりません' }, 404)
+  if (p.status !== 'adopted') return c.json({ error: '採用した提案だけ取り込めます' }, 400)
+  if (p.imported_staff_id) {
+    const ex = await db.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(p.imported_staff_id, u.company_id).first()
+    if (ex) return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです', staff_id: p.imported_staff_id }, 409)
+    // 取り込んだ行が削除されている場合は取り込み直せる
+    await db.prepare('UPDATE board_proposals SET imported_staff_id = NULL WHERE proposal_id = ? AND imported_staff_id = ?').bind(p.proposal_id, p.imported_staff_id).run()
+  }
+  const sn = (() => { try { return JSON.parse(p.snapshot) } catch { return {} } })()
+  const dis = (() => { try { return JSON.parse(p.disclosed || '{}') } catch { return {} } })()
+  const name = String(dis.name || '').trim() || `候補者No.${p.proposal_id}`
+  const partnerName = String(p.proposer_company_name || '').trim()
+  // 取引先マスタ（提案企業名）
+  await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, partnerName).run()
+  const pa = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, partnerName).first() as any
+  const person = await createPerson(db, u.company_id)
+  let userId: number
+  try {
+    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?)`)
+      .bind(u.company_id, 'BD-' + person.global_staff_code, name, await unusablePasswordHash(), person.person_id).run()
+    userId = r.meta.last_row_id as number
+  } catch {
+    await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
+    return c.json({ error: '取り込みに失敗しました。もう一度お試しください' }, 500)
+  }
+  const careerRows = Array.isArray(sn.career_rows) ? sn.career_rows.map((x: any) => ({ from: x.from || '', to: x.to || '', company: x.company || '', work: x.work || '', note: '' })) : []
+  const remarks = [`掲示板経由（提案: ${partnerName}）`, p.proposed_price ? `提示単価: ${({ hourly: '時給', daily: '日給', monthly: '月給' } as any)[p.price_unit] || ''}${Number(p.proposed_price).toLocaleString()}円` : '', p.comment ? `提案コメント: ${p.comment}` : ''].filter(Boolean).join('\n')
+  const sr = await db.prepare(`INSERT INTO staff_profiles
+      (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
+       kana, gender, age_group, skills, career, career_rows, pr_points, remarks, work_area, nearest_station, commute_minutes, available_from, employment_status, board_proposal_id)
+      VALUES (?, ?, ?, ?, 'partner_manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?)`)
+    .bind(userId, u.company_id, person.person_id, u.company_id, pa?.affiliation_id ?? null, partnerName,
+      dis.kana || null, sn.gender || 'unspecified', sn.age_group || null, sn.skills || '', sn.career || '', JSON.stringify(careerRows), sn.pr_points || '', remarks,
+      sn.work_area || '', sn.nearest_station || null, sn.commute_minutes ?? null, sn.available_from || null, p.proposal_id).run()
+  const staffId = sr.meta.last_row_id as number
+  // 二重取り込み防止（同時押下でも1件だけ有効にする）
+  const upd = await db.prepare('UPDATE board_proposals SET imported_staff_id = ?, updated_at = ? WHERE proposal_id = ? AND imported_staff_id IS NULL')
+    .bind(staffId, nowJST(), p.proposal_id).run()
+  if (!upd.meta.changes) {
+    await db.prepare('DELETE FROM staff_profiles WHERE staff_id = ?').bind(staffId).run()
+    await db.prepare('DELETE FROM users WHERE user_id = ?').bind(userId).run()
+    await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
+    return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです' }, 409)
+  }
+  const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  await addMessage(db, p.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}が採用した人材をスタッフマスタに登録しました`)
+  // スポット掲載で自社案件と紐づいている場合はシフト割当への導線を返す
+  const shift = p.engagement_type === 'spot' && p.source_project_id && p.post_company_id === u.company_id
+    ? { project_id: p.source_project_id, date_from: p.date_from || null } : null
+  return c.json({ ok: true, staff_id: staffId, shift })
 })
 
 export default boardApi

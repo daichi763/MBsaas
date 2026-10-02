@@ -276,7 +276,14 @@ npm run cf-typegen
   - 掲載企業は 面談希望 / 採用 / 見送り、提案者は採用前なら取り下げ可。採用すると氏名を開示し、以後は変更不可
   - 経路（連携元・大元企業・取引先・掲示板経由の取り込み元）は `upstream_chain` に保存するが、画面・APIには出さない
   - API: `GET /api/admin/board/threads/:id/proposal-candidates`, `GET .../proposal-preview?staff_id=`, `POST .../proposals`, `GET .../proposals`, `POST /api/admin/board/proposals/:id/status`, `GET /api/admin/board/proposals?side=sent|received`
-- 次の段階: 採用した人材を受け手のスタッフマスタへ取り込む（第4段階。取引先所属として登録し、提案企業名だけを表示）
+- **第4段階: 採用後の取り込み**（`staff_profiles.board_proposal_id`、migration 0026）
+  - 採用した企業の提案カードに「スタッフマスタに取り込む」。区分は取引先所属、所属会社名は提案企業名（取引先マスタにも自動登録）
+  - 氏名と採用時点のスキルシート（性別・年代・最寄駅・エリア・スキル・経歴・PR）をコピー。提示単価・提案コメントは備考に記録。以後は自社で編集でき、提案元とは同期しない。ログインIDは発行しない（`BD-` + 人物コード、roster_only）
+  - スタッフ一覧・詳細に「掲示板経由（提案: ○○）」。詳細のバッジからやり取りに戻れる。経路は出さない
+  - 同じ提案の二重取り込みは不可（取り込んだ行を削除した場合は取り込み直せる）。取り込んだ人材をさらに提案すると、経路は upstream_chain にだけ引き継ぐ
+  - スポット掲載が自社案件と紐づいていれば、取り込み後に「シフトボードで割り当てる」（案件・実施週で絞り込んで開く）
+  - API: `POST /api/admin/board/proposals/:id/import`
+- 次の段階（任意）: メール通知、不適切掲載の通報、相手先指定公開、権限の細分化
 
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成
