@@ -6,6 +6,7 @@ import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
+import boardApi from './board'
 import settlementApi, { syncActualFromReports } from './settlement'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
@@ -382,6 +383,8 @@ api.route('/admin', settlementApi)
 api.route('/admin', recruitAdminApi)
 // 仮登録スタッフと既存スタッフの統合（src/staff-merge.ts）
 api.route('/admin', staffMergeApi)
+// 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
+api.route('/admin/board', boardApi)
 // スタッフアプリからの応募（src/recruit.ts）
 api.route('/staff/recruit', recruitStaffApi)
 
