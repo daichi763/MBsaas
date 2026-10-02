@@ -34,6 +34,9 @@
   window.renderBoard = function (id) {
     if (!id) return renderList()
     if (id === 'new') return renderForm(null)
+    if (id === 'threads') return renderThreadList()
+    const tm = String(id).match(/^t(\d+)$/)
+    if (tm) return renderThread(Number(tm[1]))
     const m = String(id).match(/^(\d+)(-edit)?$/)
     if (!m) return renderList()
     return m[2] ? renderForm(Number(m[1])) : renderDetail(Number(m[1]))
@@ -54,6 +57,7 @@
         ${['regular', 'spot'].map(k => `<button class="btn ${S.eng === k ? 'btn-primary' : 'btn-outline'} text-sm" data-eng="${k}" onclick="__boardSet('eng','${k}')">${ENG[k]} <span class="board-count text-xs opacity-80" data-k="${k}"></span></button>`).join('')}
         <span class="mx-2 text-gray-300">|</span>
         ${[['open', '掲載中の案件'], ['mine', '自社の掲載']].map(([k, l]) => `<button class="btn ${S.scope === k ? 'btn-primary' : 'btn-outline'} text-xs" data-scope="${k}" onclick="__boardSet('scope','${k}')">${l}</button>`).join('')}
+        <a class="btn btn-outline text-xs" href="#board/threads" id="board-threads-link"><i class="fas fa-comments"></i>やり取り一覧<span class="board-unread-total hidden ml-1 badge badge-red"></span></a>
       </div>
       <section class="card p-3 mb-3" id="board-filters">
         <div class="grid md:grid-cols-6 gap-2 text-xs">
@@ -89,6 +93,7 @@
       const { data } = await axios.get('/api/admin/board/posts', { params: {
         scope: S.scope, engagement_type: S.eng, prefecture: f.prefecture || undefined, area: f.area || undefined, date: f.date || undefined,
         skill: f.skill || undefined, q: f.q || undefined, hide_mine: f.hide_mine ? '1' : undefined } })
+      window.refreshBoardBadge()
       document.querySelectorAll('.board-count').forEach(el => { const n = (data.open_counts || {})[el.dataset.k] || 0; el.textContent = n ? `(${n})` : '' })
       if (!data.posts.length) {
         box.innerHTML = `<div class="card p-8 text-center text-sm text-gray-400">${S.scope === 'mine' ? `自社の${ENG[S.eng]}の掲載はまだありません。<a class="text-blue-600 underline" href="#board/new">案件を掲載</a>` : `条件に合う${ENG[S.eng]}の掲載はありません`}</div>`
@@ -116,7 +121,11 @@
             <span class="ml-2 text-gray-500"><i class="fas fa-user-group mr-0.5"></i>${p.headcount}名</span></p>
         </div>
         ${p.required_skills ? `<div class="mt-2 flex flex-wrap gap-1">${skillBadges(p.required_skills)}</div>` : ''}
-        ${p.deadline ? `<p class="text-[11px] text-gray-400 mt-2">締切 ${esc(fmtD(p.deadline))}</p>` : ''}
+        <div class="flex items-center gap-2 mt-2 text-[11px]">
+          ${p.deadline ? `<span class="text-gray-400">締切 ${esc(fmtD(p.deadline))}</span>` : ''}
+          ${p.thread_count ? `<span class="ml-auto text-blue-700"><i class="fas fa-comments mr-0.5"></i>${p.is_mine ? `問い合わせ ${p.thread_count}社` : 'やり取り中'}</span>` : ''}
+          ${p.unread ? `<span class="badge badge-red ${p.thread_count ? '' : 'ml-auto'}">未読 ${p.unread}</span>` : ''}
+        </div>
       </a>`
   }
 
@@ -174,15 +183,165 @@
         <aside class="space-y-4">
           <section class="card p-4" id="board-contact">
             <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-comments text-blue-600 mr-1"></i>この案件について</h3>
-            ${p.is_mine
-              ? '<p class="text-xs text-gray-500">問い合わせ企業とのチャット・人材提案の受付は次の段階で追加されます。</p>'
-              : `<p class="text-xs text-gray-500 mb-3">掲載企業: <span class="font-bold text-gray-700">${esc(p.company_name)}</span></p>
-                 <button class="btn btn-primary w-full text-sm" disabled title="次の段階で利用できるようになります"><i class="fas fa-comment-dots"></i>問い合わせる・人材を提案する（準備中）</button>
-                 <p class="text-[11px] text-gray-400 mt-2">案件ごとのチャットと、スタッフマスタからの人材提案は次の段階で利用できるようになります。</p>`}
+            ${p.is_mine ? `
+              <p class="text-xs text-gray-500 mb-2">問い合わせ企業とのやり取り（企業ごとに1対1）</p>
+              <div id="board-post-threads" class="space-y-1.5"><div class="flex justify-center py-3"><span class="spin"></span></div></div>`
+            : p.my_thread ? `
+              <p class="text-xs text-gray-500 mb-3">掲載企業: <span class="font-bold text-gray-700">${esc(p.company_name)}</span></p>
+              <a class="btn btn-primary w-full text-sm" href="#board/t${p.my_thread.thread_id}" id="board-open-thread"><i class="fas fa-comment-dots"></i>やり取りを開く${p.my_thread.unread ? ` <span class="badge badge-red">${p.my_thread.unread}</span>` : ''}</a>
+              <p class="text-[11px] text-gray-400 mt-2">人材の提案は次の段階で、このやり取りの中から行えるようになります。</p>`
+            : p.status === 'open' ? `
+              <p class="text-xs text-gray-500 mb-2">掲載企業: <span class="font-bold text-gray-700">${esc(p.company_name)}</span></p>
+              <textarea id="board-first-msg" rows="4" maxlength="2000" class="inp text-sm" placeholder="例: 光回線の経験者を2名ご提案可能です。詳細を伺えますか。"></textarea>
+              <button class="btn btn-primary w-full text-sm mt-2" id="board-inquire" onclick="__boardInquire(${p.post_id})"><i class="fas fa-paper-plane"></i>問い合わせる</button>
+              <p class="text-[11px] text-gray-400 mt-2">やり取りは掲載企業と自社の間だけで行われ、他社には表示されません。スタッフ本人にも表示されません。</p>`
+            : '<p class="text-xs text-gray-500">この掲載は募集を終了しています。</p>'}
           </section>
         </aside>
       </div>`
+    if (p.is_mine) loadPostThreads(p.post_id)
   }
+  async function loadPostThreads(postId) {
+    const box = document.getElementById('board-post-threads'); if (!box) return
+    try {
+      const { data } = await axios.get('/api/admin/board/threads', { params: { post_id: postId } })
+      box.innerHTML = data.threads.map(t => `
+        <a href="#board/t${t.thread_id}" class="block p-2.5 rounded-lg bg-gray-50 hover:bg-blue-50 board-thread-item">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="font-bold text-gray-800 truncate">${esc(t.partner_company_name)}</span>
+            ${t.status === 'closed' ? '<span class="badge badge-gray">終了</span>' : ''}
+            ${t.unread ? `<span class="badge badge-red ml-auto">${t.unread}</span>` : `<span class="ml-auto text-gray-400">${esc((t.last_message_at || '').slice(5, 16))}</span>`}
+          </div>
+          <p class="text-[11px] text-gray-500 truncate mt-0.5">${esc(t.last_body || '')}</p>
+        </a>`).join('') || '<p class="text-xs text-gray-400">まだ問い合わせはありません</p>'
+    } catch (e) { box.innerHTML = `<p class="text-xs text-red-500">${esc(errMsg(e))}</p>` }
+  }
+  window.__boardInquire = async function (postId) {
+    const body = document.getElementById('board-first-msg').value.trim()
+    if (!body) { toast('メッセージを入力してください'); return }
+    try { const { data } = await axios.post(`/api/admin/board/posts/${postId}/threads`, { body }); toast('問い合わせを送信しました'); location.hash = '#board/t' + data.thread_id }
+    catch (e) { toast(errMsg(e, '送信に失敗しました')) }
+  }
+
+  // ---------- やり取り一覧 ----------
+  async function renderThreadList() {
+    loading()
+    let data
+    try { data = (await axios.get('/api/admin/board/threads')).data } catch (e) { $app.innerHTML = `<div class="card p-6 text-sm text-red-500">${esc(errMsg(e))}</div>`; return }
+    $app.innerHTML = `
+      <div class="flex items-center gap-3 mb-4 flex-wrap">
+        <a href="#board" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+        <h2 class="text-xl font-bold text-gray-900 flex-1"><i class="fas fa-comments text-blue-600 mr-1"></i>案件掲示板のやり取り</h2>
+      </div>
+      <section class="card p-0 overflow-x-auto" id="board-thread-list">
+        <table class="tbl">
+          <thead><tr><th>案件</th><th>相手企業</th><th>自社の立場</th><th>最新メッセージ</th><th>更新</th><th></th></tr></thead>
+          <tbody>${data.threads.map(t => `
+            <tr class="cursor-pointer" onclick="location.hash='#board/t${t.thread_id}'">
+              <td><span class="badge ${ENG_BADGE[t.engagement_type]}">${ENG[t.engagement_type]}</span> <span class="font-bold text-gray-800">${esc(t.post_title)}</span>
+                ${t.post_status !== 'open' ? `<span class="badge badge-gray">${STATUS[t.post_status] || ''}</span>` : ''}</td>
+              <td class="text-sm">${esc(t.partner_company_name)}</td>
+              <td>${t.my_side === 'poster' ? '<span class="badge badge-green">掲載企業</span>' : '<span class="badge badge-blue">問い合わせ</span>'}${t.status === 'closed' ? ' <span class="badge badge-gray">終了</span>' : ''}</td>
+              <td class="text-xs text-gray-600 max-w-[320px] truncate">${esc(t.last_body || '—')}</td>
+              <td class="text-xs text-gray-400 whitespace-nowrap">${esc((t.last_message_at || t.created_at || '').slice(5, 16))}</td>
+              <td>${t.unread ? `<span class="badge badge-red">${t.unread}</span>` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-8">まだやり取りはありません（掲載中の案件の詳細から「問い合わせる」で開始できます）</td></tr>'}
+          </tbody>
+        </table>
+      </section>`
+    window.refreshBoardBadge()
+  }
+
+  // ---------- やり取り（スレッド） ----------
+  let threadTimer = null
+  async function renderThread(threadId) {
+    loading()
+    let data
+    try { data = (await axios.get('/api/admin/board/threads/' + threadId)).data } catch (e) {
+      $app.innerHTML = `<div class="card p-8 text-center text-sm text-gray-500">${esc(errMsg(e, 'やり取りが見つかりません'))}<br><a class="text-blue-600 underline" href="#board/threads">やり取り一覧に戻る</a></div>`; return
+    }
+    const t = data.thread
+    $app.innerHTML = `
+      <div class="flex items-center gap-3 mb-4 flex-wrap">
+        <a href="#board/${t.post_id}" class="btn btn-outline" title="案件に戻る"><i class="fas fa-arrow-left"></i></a>
+        <div class="flex-1 min-w-0">
+          <div class="flex gap-2 mb-1 flex-wrap">
+            <span class="badge ${ENG_BADGE[t.engagement_type]}">${ENG[t.engagement_type]}</span>
+            ${t.my_side === 'poster' ? '<span class="badge badge-green">自社の掲載</span>' : '<span class="badge badge-blue">問い合わせ中</span>'}
+            ${t.post_status !== 'open' ? `<span class="badge badge-gray">掲載: ${STATUS[t.post_status] || ''}</span>` : ''}
+            ${t.status === 'closed' ? '<span class="badge badge-gray">やり取り終了</span>' : ''}
+          </div>
+          <h2 class="text-lg font-bold text-gray-900 truncate"><a class="hover:underline" href="#board/${t.post_id}">${esc(t.post_title)}</a></h2>
+          <p class="text-sm text-gray-500">相手: <span class="font-bold text-gray-700">${esc(t.partner_company_name)}</span></p>
+        </div>
+        <button class="btn btn-outline text-sm" id="board-thread-toggle" onclick="__boardThreadStatus(${t.thread_id}, '${t.status === 'closed' ? 'open' : 'closed'}')">
+          <i class="fas ${t.status === 'closed' ? 'fa-rotate-right' : 'fa-circle-xmark'}"></i>${t.status === 'closed' ? 'やり取りを再開' : 'やり取りを終了'}</button>
+      </div>
+      <section class="card p-4 max-w-4xl" id="board-thread">
+        <p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3"><i class="fas fa-eye-slash mr-1"></i>このやり取りは ${esc(t.poster_company_name)} と ${esc(t.inquirer_company_name)} の担当者のみ閲覧できます（他社・スタッフ本人には表示されません）</p>
+        <div id="board-chat-log" class="space-y-2 max-h-[60vh] overflow-y-auto p-2 bg-gray-50 rounded-lg">${messagesHtml(data.messages)}</div>
+        ${t.status === 'closed' ? '<p class="text-xs text-gray-500 text-center mt-3">このやり取りは終了しています。再開すると送信できます。</p>' : `
+        <div class="flex gap-2 mt-3">
+          <textarea id="board-chat-input" rows="3" maxlength="2000" class="inp text-sm flex-1" placeholder="メッセージを入力（Ctrl+Enterで送信）"></textarea>
+          <button class="btn btn-primary self-end" id="board-chat-send" onclick="__boardSend(${t.thread_id})"><i class="fas fa-paper-plane"></i>送信</button>
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">人材の提案（スタッフマスタから選んでスキルシートを送る機能）は次の段階で追加されます。</p>`}
+      </section>`
+    const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight
+    const inp = document.getElementById('board-chat-input')
+    if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); window.__boardSend(t.thread_id) } })
+    window.refreshBoardBadge()
+    // 開いている間は30秒ごとに新着を確認（画面全体は再描画しない）
+    clearInterval(threadTimer)
+    threadTimer = setInterval(() => {
+      if (location.hash !== '#board/t' + threadId) { clearInterval(threadTimer); return }
+      refreshThreadLog(threadId)
+    }, 30 * 1000)
+  }
+  function messagesHtml(msgs) {
+    return msgs.map(m => m.kind === 'system'
+      ? `<div class="text-center"><span class="inline-block text-[11px] text-gray-500 bg-white border border-gray-200 rounded-full px-3 py-0.5">${esc(m.body)} ・ ${esc((m.created_at || '').slice(5, 16))}</span></div>`
+      : `<div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
+          <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800'}">
+            <p class="text-[10px] ${m.mine ? 'text-blue-100' : 'text-gray-400'} mb-0.5">${esc(m.author_company_name)}${m.author_name ? ' ・ ' + esc(m.author_name) : ''} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
+            <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
+          </div>
+        </div>`).join('') || '<p class="text-xs text-gray-400 text-center py-6">まだメッセージはありません</p>'
+  }
+  async function refreshThreadLog(threadId) {
+    const log = document.getElementById('board-chat-log'); if (!log) return
+    try {
+      const { data } = await axios.get('/api/admin/board/threads/' + threadId)
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+      log.innerHTML = messagesHtml(data.messages)
+      if (atBottom) log.scrollTop = log.scrollHeight
+      window.refreshBoardBadge()
+    } catch (e) { /* noop */ }
+  }
+  window.__boardSend = async function (threadId) {
+    const el = document.getElementById('board-chat-input'); const body = el.value.trim()
+    if (!body) return
+    const btn = document.getElementById('board-chat-send'); btn.disabled = true
+    try { await axios.post(`/api/admin/board/threads/${threadId}/messages`, { body }); el.value = ''; await refreshThreadLog(threadId); const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight }
+    catch (e) { toast(errMsg(e, '送信に失敗しました')) } finally { btn.disabled = false; el.focus() }
+  }
+  window.__boardThreadStatus = async function (threadId, status) {
+    if (status === 'closed' && !confirm('このやり取りを終了しますか？（履歴は残り、あとで再開できます）')) return
+    try { await axios.post(`/api/admin/board/threads/${threadId}/status`, { status }); toast(status === 'closed' ? 'やり取りを終了しました' : 'やり取りを再開しました'); renderThread(threadId) }
+    catch (e) { toast(errMsg(e)) }
+  }
+
+  // ---------- 未読バッジ（サイドバー / モバイルメニュー / 一覧のボタン） ----------
+  window.refreshBoardBadge = async function () {
+    let n = 0
+    try { n = (await axios.get('/api/admin/board/unread-count')).data.unread } catch { return }
+    const el = document.getElementById('board-badge'); if (el) { el.textContent = n; el.classList.toggle('hidden', !n) }
+    const opt = document.querySelector('#mobile-nav option[value="board"]'); if (opt) opt.textContent = '案件掲示板' + (n ? `（${n}）` : '')
+    document.querySelectorAll('.board-unread-total').forEach(b => { b.textContent = n; b.classList.toggle('hidden', !n) })
+  }
+  setInterval(() => window.refreshBoardBadge(), 60 * 1000)
+  setTimeout(() => window.refreshBoardBadge(), 900)
+
   window.__boardStatus = async function (id, status) {
     const msg = { open: 'この案件を掲載しますか？掲載内容と自社名が全利用企業に公開されます。', closed: 'この掲載を締め切りますか？一覧に表示されなくなります。', filled: '充足（募集終了）にしますか？一覧に表示されなくなります。' }[status]
     if (msg && !confirm(msg)) return
