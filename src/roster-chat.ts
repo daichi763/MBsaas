@@ -33,7 +33,9 @@ async function resolveThread(db: D1Database, companyId: number, staffId: string,
     .bind(staffId, companyId).first()
   if (!mine) return null
   let threadId: number | null = null
-  if (mine.affiliation_type === 'linked_external') threadId = mine.staff_id as number
+  // 多段連携: 中間企業は「所属元（1つ前）とのスレッド」と「自社が連携した先とのスレッド」の両方を持つ。
+  // host_staff_id を指定したら連携先とのスレッド、指定しなければ（連携行なら）所属元とのスレッド
+  if (mine.affiliation_type === 'linked_external' && !hostStaffId) threadId = mine.staff_id as number
   else if (hostStaffId) {
     const t = await db.prepare(`SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND source_staff_id = ? AND affiliation_type = 'linked_external'`)
       .bind(hostStaffId, mine.staff_id).first()

@@ -83,14 +83,14 @@ window.renderRosterChatList = async function () {
 window.renderRosterChatPanel = async function (sid, p) {
   const host = document.getElementById('roster-chat-panel')
   if (!host) return
+  // 所属元（1つ前の企業）とのスレッド + 自社から連携した先（直接の連携先のみ）とのスレッド
   let threads = []
-  if (p.affiliation_type === 'linked_external') {
-    threads = [{ key: '', label: p.owner_company_name || '所属元' }]
-  } else if (p.linkable) {
+  if (p.affiliation_type === 'linked_external') threads.push({ key: '', label: (p.owner_company_name || '所属元') + '（所属元）' })
+  if (p.linkable) {
     try {
       const links = (await axios.get(`/api/admin/roster/${sid}/links`)).data
-      threads = (links.links || []).map(l => ({ key: String(l.linked_staff_id), label: l.host_company_name }))
-    } catch { threads = [] }
+      threads.push(...(links.links || []).map(l => ({ key: String(l.linked_staff_id), label: l.host_company_name + '（連携先）' })))
+    } catch { /* noop */ }
   }
   if (!threads.length) { host.classList.add('hidden'); return }
   host.classList.remove('hidden')
