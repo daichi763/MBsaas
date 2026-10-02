@@ -2036,6 +2036,7 @@ function route() {
   if (tab === 'clients' && id) return renderClientDetail(id)
   if (tab === 'employees' && id) return renderEmployeeDetail(id)
   if (tab === 'shifts' && id === 'week') return renderShifts()
+  if (tab === 'board' && window.renderBoard) return renderBoard(id)
   ;(routes[tab] || renderDashboard)()
 }
 

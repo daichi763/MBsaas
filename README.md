@@ -252,6 +252,16 @@ npm run cf-typegen
 - 経路は `staff_profiles.root_staff_id`（雇用元の行）として保持するが、画面・APIには出さない
 - マイグレーション: `0022_add_roster_multi_level_link.sql`（root_staff_id / relink_code。既存の連携は1段目として移行）
 
+## 案件掲示板（第1段階: 掲載・一覧・詳細） — docs/spec_board.md
+- サイドメニュー「案件掲示板」（`#board`）。利用企業どうしで案件を掲載・閲覧（掲載企業名は公開、公開範囲は全利用企業）
+- タブ: 常勤 / スポット × 掲載中の案件 / 自社の掲載。絞り込み: 都道府県・エリア/駅・稼働日・スキル・キーワード・自社の掲載を除く
+- 掲載項目: 案件名・勤務地・期間/実施日・時間帯・勤務条件・人数・求めるスキル・**単価（必須）＋単価の備考**（「スキルにより交渉可能」「応相談」等）・業務内容・締切日
+- 状態: 下書き → 掲載中 → 締切 / 充足（再掲載可）。締切日を過ぎた掲載は閲覧時に自動で締切。削除は下書きのみ
+- 自社の案件から内容をコピーして作成可（コピー元案件・クライアント名は他社に出さない）。掲載の複製も可
+- API: `GET/POST /api/admin/board/posts`、`GET/PUT /api/admin/board/posts/:id`、`POST /api/admin/board/posts/:id/status`、`DELETE /api/admin/board/posts/:id`（下書きのみ）、`GET /api/admin/board/project-template/:projectId`
+- マイグレーション: `0023_add_board_posts.sql`
+- 次の段階: 案件チャット（第2段階）→ 人材提案（第3段階）→ 採用後の取り込み（第4段階）
+
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成
 - クライアント閲覧用アカウント画面、給与明細連携、勤怠打刻の位置検証強化
