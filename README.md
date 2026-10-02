@@ -267,7 +267,16 @@ npm run cf-typegen
   - やり取りの終了/再開（どちらの企業からでも可・履歴は残る）。開始・終了などはシステムメッセージとして記録（未読には数えない）
   - API: `POST /api/admin/board/posts/:id/threads`、`GET /api/admin/board/threads`、`GET /api/admin/board/threads/:id`、`POST /api/admin/board/threads/:id/messages`、`POST /api/admin/board/threads/:id/status`、`GET /api/admin/board/unread-count`
   - マイグレーション: `0024_add_board_threads.sql`
-- 次の段階: 人材提案（第3段階）→ 採用後の取り込み（第4段階）
+- **第3段階: 人材提案**（`board_proposals`、migration 0025）
+  - 問い合わせた企業がチャット内「人材を提案」から自社スタッフマスタの人材を選び、プレビューを確認して掲載企業へ送る（掲載企業からは提案しない）
+  - 提案時は匿名スキルシート（イニシャル・年代・性別・最寄駅・稼働エリア・スキル・経歴テーブル・PR）。イニシャルが作れない場合は「候補者No.○」
+  - 所属は区分にかかわらず常に「提案元企業」。区分バッジ・取引先名・連携元は出さない
+  - 取引先所属・他社連携の人材は、提案者にだけ注意文を表示し、確認チェックがないと送れない。統合済み・退職者は提案不可。同じスレッドで有効な提案の重複は不可
+  - 提示単価（任意・単位付き）と提案コメント
+  - 掲載企業は 面談希望 / 採用 / 見送り、提案者は採用前なら取り下げ可。採用すると氏名を開示し、以後は変更不可
+  - 経路（連携元・大元企業・取引先・掲示板経由の取り込み元）は `upstream_chain` に保存するが、画面・APIには出さない
+  - API: `GET /api/admin/board/threads/:id/proposal-candidates`, `GET .../proposal-preview?staff_id=`, `POST .../proposals`, `GET .../proposals`, `POST /api/admin/board/proposals/:id/status`, `GET /api/admin/board/proposals?side=sent|received`
+- 次の段階: 採用した人材を受け手のスタッフマスタへ取り込む（第4段階。取引先所属として登録し、提案企業名だけを表示）
 
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成
