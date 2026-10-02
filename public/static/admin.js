@@ -259,7 +259,7 @@ function drawStaffTable(filter) {
             <tr class="cursor-pointer" onclick="location.hash='staff/${s.staff_id}'">
               <td class="text-gray-400">${esc(s.user_code)}</td>
               <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}</td>
-              <td>${affTypeBadge(s.affiliation_type)}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
+              <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
               <td>${s.month_days}日</td>
               <td class="font-bold">${s.month_seiyaku || 0}</td>
@@ -429,6 +429,7 @@ function staffDetailHeaderHtml(sid, p) {
         <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : p.user_code)}</span></h2>
         <div class="flex gap-2 mt-1 flex-wrap">
           ${affTypeBadge(p.affiliation_type)}
+          ${p.board_source ? `<a href="#board/t${p.board_source.thread_id}" class="badge badge-purple" title="案件掲示板のやり取りを開く"><i class="fas fa-clipboard-list mr-1"></i>掲示板経由（提案: ${esc(p.board_source.proposer_company_name)}）</a>` : ''}
           ${p.merged_into_staff_id ? '<span class="badge badge-gray"><i class="fas fa-code-merge mr-1"></i>統合済み</span>' : p.is_provisional ? '<span class="badge badge-red"><i class="fas fa-bolt mr-1"></i>仮登録</span>' : ''}
           ${p.global_staff_code ? `<span class="badge badge-gray" title="企業間連携用のスタッフID（恒久固定）"><i class="fas fa-fingerprint mr-1"></i>${esc(p.global_staff_code)}</span>` : ''}
           <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
