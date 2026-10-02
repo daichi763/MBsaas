@@ -257,10 +257,14 @@
   async function renderThread(threadId) {
     loading()
     let data
-    try { data = (await axios.get('/api/admin/board/threads/' + threadId)).data } catch (e) {
+    try {
+      const [r1, r2] = await Promise.all([axios.get('/api/admin/board/threads/' + threadId), axios.get(`/api/admin/board/threads/${threadId}/proposals`)])
+      data = r1.data; PROPS = Object.fromEntries(r2.data.proposals.map(x => [x.proposal_id, x]))
+    } catch (e) {
       $app.innerHTML = `<div class="card p-8 text-center text-sm text-gray-500">${esc(errMsg(e, 'やり取りが見つかりません'))}<br><a class="text-blue-600 underline" href="#board/threads">やり取り一覧に戻る</a></div>`; return
     }
     const t = data.thread
+    CUR_THREAD = t
     $app.innerHTML = `
       <div class="flex items-center gap-3 mb-4 flex-wrap">
         <a href="#board/${t.post_id}" class="btn btn-outline" title="案件に戻る"><i class="fas fa-arrow-left"></i></a>
@@ -283,9 +287,12 @@
         ${t.status === 'closed' ? '<p class="text-xs text-gray-500 text-center mt-3">このやり取りは終了しています。再開すると送信できます。</p>' : `
         <div class="flex gap-2 mt-3">
           <textarea id="board-chat-input" rows="3" maxlength="2000" class="inp text-sm flex-1" placeholder="メッセージを入力（Ctrl+Enterで送信）"></textarea>
-          <button class="btn btn-primary self-end" id="board-chat-send" onclick="__boardSend(${t.thread_id})"><i class="fas fa-paper-plane"></i>送信</button>
+          <div class="flex flex-col gap-2 self-end">
+            ${t.my_side === 'inquirer' ? `<button class="btn btn-outline text-sm" id="board-propose" onclick="__boardOpenPropose(${t.thread_id})"><i class="fas fa-user-plus"></i>人材を提案</button>` : ''}
+            <button class="btn btn-primary" id="board-chat-send" onclick="__boardSend(${t.thread_id})"><i class="fas fa-paper-plane"></i>送信</button>
+          </div>
         </div>
-        <p class="text-[11px] text-gray-400 mt-1">人材の提案（スタッフマスタから選んでスキルシートを送る機能）は次の段階で追加されます。</p>`}
+        ${t.my_side === 'inquirer' ? '<p class="text-[11px] text-gray-400 mt-1">「人材を提案」で自社のスタッフマスタから選んだ人材のスキルシートを送れます（提案時は氏名を伏せ、採用されると開示されます）。</p>' : '<p class="text-[11px] text-gray-400 mt-1">届いた提案は「面談希望」「採用」「見送り」で返答できます。採用すると氏名が開示されます。</p>'}`}
       </section>`
     const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight
     const inp = document.getElementById('board-chat-input')
@@ -298,8 +305,66 @@
       refreshThreadLog(threadId)
     }, 30 * 1000)
   }
+  let PROPS = {}, CUR_THREAD = null
+  const GENDER = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
+  const PSTATUS_BADGE = { proposed: 'badge-blue', interview: 'badge-yellow', adopted: 'badge-green', declined: 'badge-gray', withdrawn: 'badge-gray' }
+  const fmtYm = v => v ? String(v).replace(/^(\d{4})-(\d{2})$/, (_, y, m) => `${y}年${Number(m)}月`) : ''
+  // 匿名スキルシート（提案相手に見える内容そのもの）
+  function skillSheetHtml(sn, opts = {}) {
+    const row = (l, v) => v ? `<div class="flex gap-2"><dt class="w-24 shrink-0 text-gray-400">${l}</dt><dd class="flex-1 min-w-0">${v}</dd></div>` : ''
+    const rows = Array.isArray(sn.career_rows) ? sn.career_rows : []
+    return `
+      <dl class="text-xs space-y-1">
+        ${row('所属', esc(sn.affiliation || ''))}
+        ${row('年代・性別', esc([sn.age_group, GENDER[sn.gender]].filter(Boolean).join('・')))}
+        ${row('最寄駅', esc(sn.nearest_station || ''))}
+        ${row('通勤可能時間', sn.commute_minutes != null && sn.commute_minutes !== '' ? esc(sn.commute_minutes) + '分' : '')}
+        ${row('稼働開始可能日', esc(sn.available_from || ''))}
+        ${row('稼働可能エリア', esc(sn.work_area || ''))}
+        ${row('スキル', sn.skills ? `<span class="flex flex-wrap gap-1">${skillBadges(sn.skills)}</span>` : '')}
+      </dl>
+      ${rows.length ? `<p class="text-[11px] font-bold text-gray-400 mt-2 mb-1">経歴</p>
+        <table class="w-full text-[11px]"><tbody>${rows.map(r => `<tr class="border-t border-gray-100 align-top">
+          <td class="py-1 pr-2 whitespace-nowrap text-gray-500">${esc(fmtYm(r.from))}〜${esc(fmtYm(r.to))}</td><td class="py-1 pr-2">${esc(r.company || '')}</td><td class="py-1 whitespace-pre-wrap">${esc(r.work || '')}</td></tr>`).join('')}</tbody></table>`
+        : sn.career ? `<p class="text-[11px] font-bold text-gray-400 mt-2 mb-1">経歴</p><p class="text-xs whitespace-pre-wrap">${esc(sn.career)}</p>` : ''}
+      ${sn.pr_points ? `<p class="text-[11px] font-bold text-gray-400 mt-2 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(sn.pr_points)}</p>` : ''}`
+  }
+  function proposalCardHtml(pr) {
+    if (!pr) return ''
+    const sn = pr.snapshot || {}
+    const t = CUR_THREAD || {}
+    const isReceiver = !pr.is_mine
+    const actions = []
+    if (isReceiver && ['proposed', 'interview'].includes(pr.status)) {
+      if (pr.status === 'proposed') actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'interview')"><i class="fas fa-handshake"></i>面談希望</button>`)
+      actions.push(`<button class="btn btn-primary text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'adopted')"><i class="fas fa-check"></i>採用</button>`)
+      actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'declined')">見送り</button>`)
+    }
+    if (pr.is_mine && ['proposed', 'interview'].includes(pr.status)) actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'withdrawn')">取り下げ</button>`)
+    const nameLine = pr.disclosed && pr.disclosed.name
+      ? `<span class="font-bold text-gray-900">${esc(pr.disclosed.name)}</span>${pr.disclosed.kana ? ` <span class="text-[11px] text-gray-400">${esc(pr.disclosed.kana)}</span>` : ''}${pr.is_mine && pr.status !== 'adopted' ? ' <span class="text-[10px] text-gray-400">（相手には採用まで非表示）</span>' : ''}`
+      : `<span class="font-bold text-gray-900">${esc(sn.initials && sn.initials !== '—' ? sn.initials : '候補者No.' + pr.proposal_id)}</span> <span class="text-[11px] text-gray-400">（氏名は採用後に開示）</span>`
+    return `
+      <div class="bg-white border-2 ${pr.status === 'adopted' ? 'border-emerald-300' : 'border-blue-200'} rounded-xl p-3 mt-1 text-gray-800 board-proposal-card" data-proposal="${pr.proposal_id}">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <i class="fas fa-id-badge text-blue-600"></i>${nameLine}
+          <span class="badge ${PSTATUS_BADGE[pr.status]} ml-auto">${esc(pr.status_label)}</span>
+        </div>
+        ${skillSheetHtml(sn)}
+        ${pr.proposed_price ? `<p class="text-xs mt-2"><span class="text-gray-400">提示単価</span> <span class="font-bold">${esc(UNIT[pr.price_unit] || '')} ${Number(pr.proposed_price).toLocaleString()}円</span></p>` : ''}
+        ${pr.comment ? `<p class="text-xs mt-2 bg-gray-50 rounded-lg p-2 whitespace-pre-wrap">${esc(pr.comment)}</p>` : ''}
+        ${actions.length ? `<div class="flex gap-2 mt-3 flex-wrap justify-end">${actions.join('')}</div>` : ''}
+      </div>`
+  }
   function messagesHtml(msgs) {
-    return msgs.map(m => m.kind === 'system'
+    return msgs.map(m => m.kind === 'proposal'
+      ? `<div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
+          <div class="w-full max-w-[560px]">
+            <p class="text-[10px] text-gray-400 mb-0.5 ${m.mine ? 'text-right' : ''}">${esc(m.author_company_name)}${m.author_name ? ' ・ ' + esc(m.author_name) : ''} ・ ${esc((m.created_at || '').slice(5, 16))} ・ 人材の提案</p>
+            ${proposalCardHtml(PROPS[m.proposal_id])}
+          </div>
+        </div>`
+      : m.kind === 'system'
       ? `<div class="text-center"><span class="inline-block text-[11px] text-gray-500 bg-white border border-gray-200 rounded-full px-3 py-0.5">${esc(m.body)} ・ ${esc((m.created_at || '').slice(5, 16))}</span></div>`
       : `<div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
           <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800'}">
@@ -311,7 +376,8 @@
   async function refreshThreadLog(threadId) {
     const log = document.getElementById('board-chat-log'); if (!log) return
     try {
-      const { data } = await axios.get('/api/admin/board/threads/' + threadId)
+      const [r1, r2] = await Promise.all([axios.get('/api/admin/board/threads/' + threadId), axios.get(`/api/admin/board/threads/${threadId}/proposals`)])
+      const data = r1.data; PROPS = Object.fromEntries(r2.data.proposals.map(x => [x.proposal_id, x]))
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
       log.innerHTML = messagesHtml(data.messages)
       if (atBottom) log.scrollTop = log.scrollHeight
@@ -325,6 +391,77 @@
     try { await axios.post(`/api/admin/board/threads/${threadId}/messages`, { body }); el.value = ''; await refreshThreadLog(threadId); const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight }
     catch (e) { toast(errMsg(e, '送信に失敗しました')) } finally { btn.disabled = false; el.focus() }
   }
+  // ---------- 人材提案 ----------
+  const KIND_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', skillsheet_only: 'スキルシートのみ', partner_manual: '取引先所属', linked_external: '他社連携' }
+  window.__boardOpenPropose = function (threadId) {
+    modal(`
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-user-plus text-blue-600 mr-1"></i>人材を提案</h3>
+      <p class="text-xs text-gray-500 mb-3">自社のスタッフマスタから選びます。相手には氏名を伏せたスキルシートが届き、所属は「${esc(ME ? ME.company_name : '自社')}」と表示されます（採用されると氏名を開示）。</p>
+      <div class="flex gap-2 mb-2"><input id="bpr-q" class="inp text-sm" placeholder="氏名・フリガナ・スキルで検索"><button class="btn btn-outline text-sm" onclick="__boardLoadCandidates(${threadId})"><i class="fas fa-magnifying-glass"></i></button></div>
+      <div id="bpr-list" class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50"><div class="flex justify-center py-6"><span class="spin"></span></div></div>
+      <div id="bpr-detail" class="mt-3"></div>`)
+    document.getElementById('bpr-q').addEventListener('keydown', e => { if (e.key === 'Enter') window.__boardLoadCandidates(threadId) })
+    window.__boardLoadCandidates(threadId)
+  }
+  window.__boardLoadCandidates = async function (threadId) {
+    const box = document.getElementById('bpr-list'); if (!box) return
+    try {
+      const { data } = await axios.get(`/api/admin/board/threads/${threadId}/proposal-candidates`, { params: { q: document.getElementById('bpr-q').value.trim() || undefined } })
+      box.innerHTML = data.candidates.map(c => `
+        <button type="button" class="w-full text-left p-2.5 hover:bg-blue-50 flex items-center gap-2 bpr-cand ${c.already ? 'opacity-50' : ''}" ${c.already ? 'disabled title="このやり取りで提案済みです"' : ''} onclick="__boardPreview(${threadId}, ${c.staff_id})">
+          <span class="font-bold text-sm text-gray-800">${esc(c.name)}</span>
+          <span class="badge badge-gray">${esc(KIND_LABEL[c.kind] || c.kind)}</span>
+          ${c.warning ? '<i class="fas fa-triangle-exclamation text-amber-500" title="注意事項あり"></i>' : ''}
+          ${c.already ? '<span class="text-[11px] text-gray-400">提案済み</span>' : ''}
+          <span class="ml-auto text-[11px] text-gray-500 truncate max-w-[200px]">${esc(c.skills || '')}</span>
+        </button>`).join('') || '<p class="text-xs text-gray-400 p-4 text-center">提案できるスタッフがいません（統合済み・退職のスタッフは提案できません）</p>'
+    } catch (e) { box.innerHTML = `<p class="text-xs text-red-500 p-3">${esc(errMsg(e))}</p>` }
+  }
+  window.__boardPreview = async function (threadId, staffId) {
+    const box = document.getElementById('bpr-detail')
+    box.innerHTML = '<div class="flex justify-center py-4"><span class="spin"></span></div>'
+    try {
+      const { data } = await axios.get(`/api/admin/board/threads/${threadId}/proposal-preview`, { params: { staff_id: staffId } })
+      box.innerHTML = `
+        <div class="border border-gray-200 rounded-xl p-3">
+          <p class="text-xs text-gray-500 mb-2"><i class="fas fa-eye mr-1"></i>相手に届く内容（<span class="font-bold text-gray-700">${esc(data.name)}</span> さん。氏名は採用まで非表示）</p>
+          <div class="bg-gray-50 rounded-lg p-3"><p class="font-bold text-sm mb-1">${esc(data.snapshot.initials || '候補者No.（フリガナ未登録のため番号で表示）')}</p>${skillSheetHtml(data.snapshot)}</div>
+          <div class="grid grid-cols-12 gap-2 mt-3 items-center">
+            <span class="col-span-12 text-xs text-gray-600">提示単価（任意）</span>
+            <select id="bpr-unit" class="inp text-sm col-span-4">${Object.entries(UNIT).map(([k, l]) => `<option value="${k}" ${k === 'daily' ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            <input id="bpr-price" type="number" min="1" class="inp text-sm col-span-8" placeholder="金額（円）">
+          </div>
+          <textarea id="bpr-comment" rows="3" maxlength="1000" class="inp text-sm mt-2" placeholder="提案コメント（例: 光回線の獲得実績が豊富です。土日稼働可能）"></textarea>
+          ${data.warning ? `<label class="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 rounded-lg p-2 mt-2"><input type="checkbox" id="bpr-ack" class="mt-0.5"><span><i class="fas fa-triangle-exclamation mr-1"></i>${esc(data.warning)}（確認しました）</span></label>` : ''}
+          <div class="flex justify-end gap-2 mt-3">
+            <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
+            <button class="btn btn-primary text-sm" id="bpr-send" onclick="__boardSendProposal(${threadId}, ${staffId}, ${data.warning ? 'true' : 'false'})"><i class="fas fa-paper-plane"></i>この内容で提案する</button>
+          </div>
+        </div>`
+    } catch (e) { box.innerHTML = `<p class="text-xs text-red-500">${esc(errMsg(e))}</p>` }
+  }
+  window.__boardSendProposal = async function (threadId, staffId, needAck) {
+    const ack = document.getElementById('bpr-ack')
+    if (needAck && !(ack && ack.checked)) { toast('注意事項を確認してチェックを入れてください'); return }
+    const price = document.getElementById('bpr-price').value
+    try {
+      await axios.post(`/api/admin/board/threads/${threadId}/proposals`, {
+        staff_id: staffId, acknowledged: needAck ? true : undefined, comment: document.getElementById('bpr-comment').value,
+        proposed_price: price === '' ? null : Number(price), price_unit: document.getElementById('bpr-unit').value })
+      closeModal(); toast('人材を提案しました'); await refreshThreadLog(threadId)
+      const log = document.getElementById('board-chat-log'); if (log) log.scrollTop = log.scrollHeight
+    } catch (e) { toast(errMsg(e, '提案に失敗しました')) }
+  }
+  window.__boardProposalStatus = async function (proposalId, status) {
+    const msg = { adopted: '採用しますか？相手に通知され、氏名が開示されます。採用後は変更できません。', declined: '見送りにしますか？', withdrawn: 'この提案を取り下げますか？', interview: '面談希望にしますか？' }[status]
+    if (msg && !confirm(msg)) return
+    try {
+      await axios.post(`/api/admin/board/proposals/${proposalId}/status`, { status })
+      toast({ adopted: '採用しました', declined: '見送りにしました', withdrawn: '取り下げました', interview: '面談希望にしました' }[status] || '更新しました')
+      if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id)
+    } catch (e) { toast(errMsg(e, '更新に失敗しました')) }
+  }
+
   window.__boardThreadStatus = async function (threadId, status) {
     if (status === 'closed' && !confirm('このやり取りを終了しますか？（履歴は残り、あとで再開できます）')) return
     try { await axios.post(`/api/admin/board/threads/${threadId}/status`, { status }); toast(status === 'closed' ? 'やり取りを終了しました' : 'やり取りを再開しました'); renderThread(threadId) }
