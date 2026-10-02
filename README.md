@@ -260,7 +260,14 @@ npm run cf-typegen
 - 自社の案件から内容をコピーして作成可（コピー元案件・クライアント名は他社に出さない）。掲載の複製も可
 - API: `GET/POST /api/admin/board/posts`、`GET/PUT /api/admin/board/posts/:id`、`POST /api/admin/board/posts/:id/status`、`DELETE /api/admin/board/posts/:id`（下書きのみ）、`GET /api/admin/board/project-template/:projectId`
 - マイグレーション: `0023_add_board_posts.sql`
-- 次の段階: 案件チャット（第2段階）→ 人材提案（第3段階）→ 採用後の取り込み（第4段階）
+- **第2段階: 案件チャット** — 掲載1件 × 問い合わせ企業1社の1対1スレッド（`#board/t{id}`）。参加は掲載企業と問い合わせ企業の管理系ユーザーのみ
+  - 掲載詳細から「問い合わせる」（最初のメッセージ必須・自社の掲載/締切後は新規不可。既存のやり取りは締切後も継続可）
+  - 掲載企業は掲載詳細で問い合わせ企業ごとのスレッドを一覧。「やり取り一覧」（`#board/threads`）で全スレッドを横断表示
+  - 既読は企業単位。サイドメニューに未読バッジ（1分ごと更新）、スレッドを開いている間は30秒ごとに新着を取得
+  - やり取りの終了/再開（どちらの企業からでも可・履歴は残る）。開始・終了などはシステムメッセージとして記録（未読には数えない）
+  - API: `POST /api/admin/board/posts/:id/threads`、`GET /api/admin/board/threads`、`GET /api/admin/board/threads/:id`、`POST /api/admin/board/threads/:id/messages`、`POST /api/admin/board/threads/:id/status`、`GET /api/admin/board/unread-count`
+  - マイグレーション: `0024_add_board_threads.sql`
+- 次の段階: 人材提案（第3段階）→ 採用後の取り込み（第4段階）
 
 ## 未実装（次フェーズ候補）
 - 本番Cloudflare Pagesデプロイ + 本番D1作成

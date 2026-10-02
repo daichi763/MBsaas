@@ -106,7 +106,16 @@ boardApi.get('/posts', async (c) => {
     ORDER BY ${scope === 'mine' ? "CASE bp.status WHEN 'open' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, bp.updated_at DESC" : 'bp.published_at DESC, bp.post_id DESC'}
     LIMIT ${MAX_LIST}`).bind(...bind).all()).results as any[]
   const counts = (await db.prepare(`SELECT engagement_type, COUNT(*) AS n FROM board_posts WHERE status = 'open' GROUP BY engagement_type`).all()).results as any[]
-  return c.json({ posts: rows.map(r => shape(r, u.company_id)), open_counts: Object.fromEntries(counts.map(x => [x.engagement_type, x.n])) })
+  // 一覧にやり取りの有無・未読を付ける（自社が参加しているスレッドのみ）
+  const ids = rows.map(r => r.post_id)
+  const tmap: Record<number, { threads: number; unread: number }> = {}
+  if (ids.length) {
+    const ts = (await db.prepare(`SELECT t.post_id, COUNT(*) AS threads, SUM(${UNREAD_SQL}) AS unread FROM board_threads t
+      WHERE t.post_id IN (${ids.map(() => '?').join(',')}) AND (t.poster_company_id = ? OR t.inquirer_company_id = ?) GROUP BY t.post_id`)
+      .bind(u.company_id, u.company_id, ...ids, u.company_id, u.company_id).all()).results as any[]
+    for (const x of ts) tmap[x.post_id] = { threads: x.threads, unread: x.unread || 0 }
+  }
+  return c.json({ posts: rows.map(r => ({ ...shape(r, u.company_id), thread_count: tmap[r.post_id]?.threads || 0, unread: tmap[r.post_id]?.unread || 0 })), open_counts: Object.fromEntries(counts.map(x => [x.engagement_type, x.n])) })
 })
 
 // ---------- 詳細 ----------
@@ -119,7 +128,18 @@ boardApi.get('/posts/:id', async (c) => {
     WHERE bp.post_id = ?`).bind(c.req.param('id')).first() as any
   // 他社の下書きは存在自体を返さない
   if (!row || (row.company_id !== u.company_id && row.status === 'draft')) return c.json({ error: '掲載が見つかりません' }, 404)
-  return c.json({ post: shape(row, u.company_id) })
+  const post = shape(row, u.company_id)
+  if (post.is_mine) {
+    // 掲載企業: 問い合わせ件数と未読
+    const r = await db.prepare(`SELECT COUNT(*) AS n, SUM(${UNREAD_SQL}) AS unread FROM board_threads t WHERE t.post_id = ?`).bind(u.company_id, u.company_id, row.post_id).first() as any
+    post.thread_count = r?.n || 0; post.unread = r?.unread || 0
+  } else {
+    // 問い合わせ企業: 自社のスレッド
+    const t = await db.prepare(`SELECT t.thread_id, t.status, ${UNREAD_SQL} AS unread FROM board_threads t WHERE t.post_id = ? AND t.inquirer_company_id = ?`)
+      .bind(u.company_id, u.company_id, row.post_id, u.company_id).first() as any
+    post.my_thread = t || null
+  }
+  return c.json({ post })
 })
 
 // ---------- 自社案件からのコピー用 ----------
@@ -205,6 +225,148 @@ boardApi.delete('/posts/:id', async (c) => {
   const u = c.get('user')
   const r = await c.env.DB.prepare(`DELETE FROM board_posts WHERE post_id = ? AND company_id = ? AND status = 'draft'`).bind(c.req.param('id'), u.company_id).run()
   if (!r.meta.changes) return c.json({ error: '削除できるのは自社の下書きのみです（掲載後は「締め切る」を使ってください）' }, 400)
+  return c.json({ ok: true })
+})
+
+// =========================================================
+// 第2段階: 案件チャット（掲載1件 × 問い合わせ企業1社の1対1スレッド）
+// - 参加できるのは掲載企業と問い合わせ企業のみ。他社どうしのやり取りは見えない
+// - 既読は企業単位。履歴は削除しない
+// =========================================================
+const MAX_BODY = 2000
+
+/** 自社が参加しているスレッドを返す（参加していなければ null） */
+async function loadThread(db: D1Database, threadId: any, companyId: number) {
+  const t = await db.prepare(`SELECT t.*, bp.title AS post_title, bp.engagement_type, bp.status AS post_status,
+      pc.company_name AS poster_company_name, ic.company_name AS inquirer_company_name
+    FROM board_threads t JOIN board_posts bp ON bp.post_id = t.post_id
+    JOIN companies pc ON pc.company_id = t.poster_company_id JOIN companies ic ON ic.company_id = t.inquirer_company_id
+    WHERE t.thread_id = ?`).bind(threadId).first() as any
+  if (!t || (t.poster_company_id !== companyId && t.inquirer_company_id !== companyId)) return null
+  return {
+    ...t,
+    my_side: t.poster_company_id === companyId ? 'poster' : 'inquirer',
+    partner_company_name: t.poster_company_id === companyId ? t.inquirer_company_name : t.poster_company_name,
+  }
+}
+
+async function addMessage(db: D1Database, threadId: number, companyId: number, userId: number | null, kind: string, body: string) {
+  const now = nowJST()
+  const r = await db.prepare(`INSERT INTO board_messages (thread_id, author_company_id, author_user_id, kind, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(threadId, companyId, userId, kind, body, now).run()
+  const id = r.meta.last_row_id as number
+  await db.batch([
+    db.prepare('UPDATE board_threads SET last_message_id = ?, last_message_at = ? WHERE thread_id = ?').bind(id, now, threadId),
+    // 自社の投稿は自社既読として扱う
+    db.prepare(`INSERT INTO board_thread_reads (thread_id, company_id, last_read_message_id, read_by, read_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(thread_id, company_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id), read_by = excluded.read_by, read_at = excluded.read_at`)
+      .bind(threadId, companyId, id, userId, now),
+  ])
+  return id
+}
+
+// 未読はテキストのみ数える（「問い合わせが開始されました」等のシステムメッセージは数えない）
+const UNREAD_SQL = `(SELECT COUNT(*) FROM board_messages m WHERE m.thread_id = t.thread_id AND m.author_company_id != ? AND m.kind != 'system'
+   AND m.message_id > COALESCE((SELECT r.last_read_message_id FROM board_thread_reads r WHERE r.thread_id = t.thread_id AND r.company_id = ?), 0))`
+
+// 問い合わせを開始する（既にあれば既存スレッドを返す）。自社の掲載・掲載中でない掲載には問い合わせできない
+boardApi.post('/posts/:id/threads', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const post = await db.prepare('SELECT post_id, company_id, status FROM board_posts WHERE post_id = ?').bind(c.req.param('id')).first() as any
+  if (!post || post.status === 'draft') return c.json({ error: '掲載が見つかりません' }, 404)
+  if (post.company_id === u.company_id) return c.json({ error: '自社の掲載には問い合わせできません' }, 400)
+  const exist = await db.prepare('SELECT thread_id FROM board_threads WHERE post_id = ? AND inquirer_company_id = ?').bind(post.post_id, u.company_id).first() as any
+  if (exist) return c.json({ ok: true, thread_id: exist.thread_id, existed: true })
+  if (post.status !== 'open') return c.json({ error: 'この掲載は募集を終了しています' }, 409)
+  const b = await c.req.json().catch(() => ({} as any))
+  const body = String(b.body || '').trim()
+  if (!body) return c.json({ error: '最初のメッセージを入力してください' }, 400)
+  if (body.length > MAX_BODY) return c.json({ error: `メッセージは${MAX_BODY}文字以内で入力してください` }, 400)
+  const r = await db.prepare(`INSERT INTO board_threads (post_id, poster_company_id, inquirer_company_id, created_by, created_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(post_id, inquirer_company_id) DO NOTHING`).bind(post.post_id, post.company_id, u.company_id, u.user_id, nowJST()).run()
+  const t = await db.prepare('SELECT thread_id FROM board_threads WHERE post_id = ? AND inquirer_company_id = ?').bind(post.post_id, u.company_id).first() as any
+  if (r.meta.changes) await addMessage(db, t.thread_id, u.company_id, null, 'system', 'この案件への問い合わせが開始されました')
+  await addMessage(db, t.thread_id, u.company_id, u.user_id, 'text', body)
+  return c.json({ ok: true, thread_id: t.thread_id })
+})
+
+// スレッド一覧（自社が参加する全スレッド）。post_id を指定するとその掲載のスレッドのみ
+boardApi.get('/threads', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const postId = c.req.query('post_id')
+  const w = ['(t.poster_company_id = ? OR t.inquirer_company_id = ?)']; const bind: any[] = [u.company_id, u.company_id]
+  if (postId) { w.push('t.post_id = ?'); bind.push(postId) }
+  const rows = (await db.prepare(`SELECT t.thread_id, t.post_id, t.poster_company_id, t.inquirer_company_id, t.status, t.last_message_at, t.created_at,
+      bp.title AS post_title, bp.engagement_type, bp.status AS post_status,
+      pc.company_name AS poster_company_name, ic.company_name AS inquirer_company_name,
+      (SELECT m.body FROM board_messages m WHERE m.thread_id = t.thread_id ORDER BY m.message_id DESC LIMIT 1) AS last_body,
+      ${UNREAD_SQL} AS unread
+    FROM board_threads t JOIN board_posts bp ON bp.post_id = t.post_id
+    JOIN companies pc ON pc.company_id = t.poster_company_id JOIN companies ic ON ic.company_id = t.inquirer_company_id
+    WHERE ${w.join(' AND ')}
+    ORDER BY COALESCE(t.last_message_at, t.created_at) DESC LIMIT 300`).bind(u.company_id, u.company_id, ...bind).all()).results as any[]
+  const threads = rows.map(t => ({
+    ...t,
+    my_side: t.poster_company_id === u.company_id ? 'poster' : 'inquirer',
+    partner_company_name: t.poster_company_id === u.company_id ? t.inquirer_company_name : t.poster_company_name,
+  }))
+  return c.json({ threads, unread_total: threads.reduce((a, t) => a + (t.unread || 0), 0) })
+})
+
+// 未読件数のみ（サイドバーのバッジ用・軽量）
+boardApi.get('/unread-count', async (c) => {
+  const u = c.get('user')
+  const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM board_messages m JOIN board_threads t ON t.thread_id = m.thread_id
+    WHERE (t.poster_company_id = ? OR t.inquirer_company_id = ?) AND m.author_company_id != ? AND m.kind != 'system'
+      AND m.message_id > COALESCE((SELECT r.last_read_message_id FROM board_thread_reads r WHERE r.thread_id = t.thread_id AND r.company_id = ?), 0)`)
+    .bind(u.company_id, u.company_id, u.company_id, u.company_id).first()
+  return c.json({ unread: (r?.n as number) || 0 })
+})
+
+// メッセージ取得（全履歴）。取得時に自社として既読化する
+boardApi.get('/threads/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const t = await loadThread(db, c.req.param('id'), u.company_id)
+  if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
+  const rows = (await db.prepare(`SELECT m.message_id, m.kind, m.body, m.created_at, m.author_company_id, um.name AS author_name, co.company_name AS author_company_name
+    FROM board_messages m LEFT JOIN users um ON um.user_id = m.author_user_id LEFT JOIN companies co ON co.company_id = m.author_company_id
+    WHERE m.thread_id = ? ORDER BY m.message_id`).bind(t.thread_id).all()).results as any[]
+  const msgs = rows.map(m => ({ ...m, mine: m.author_company_id === u.company_id, author_name: m.kind === 'system' ? null : m.author_name }))
+  const last = msgs.length ? msgs[msgs.length - 1].message_id : 0
+  if (last) {
+    await db.prepare(`INSERT INTO board_thread_reads (thread_id, company_id, last_read_message_id, read_by, read_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(thread_id, company_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id), read_by = excluded.read_by, read_at = excluded.read_at`)
+      .bind(t.thread_id, u.company_id, last, u.user_id, nowJST()).run()
+  }
+  const { created_by: _cb, ...thread } = t
+  return c.json({ thread, messages: msgs })
+})
+
+// 投稿
+boardApi.post('/threads/:id/messages', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const t = await loadThread(db, c.req.param('id'), u.company_id)
+  if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
+  if (t.status === 'closed') return c.json({ error: 'このやり取りは終了しています' }, 409)
+  const b = await c.req.json().catch(() => ({} as any))
+  const body = String(b.body || '').trim()
+  if (!body) return c.json({ error: 'メッセージを入力してください' }, 400)
+  if (body.length > MAX_BODY) return c.json({ error: `メッセージは${MAX_BODY}文字以内で入力してください` }, 400)
+  const id = await addMessage(db, t.thread_id, u.company_id, u.user_id, 'text', body)
+  return c.json({ ok: true, message_id: id })
+})
+
+// やり取りの終了 / 再開（どちらの企業からでも可。履歴は残る）
+boardApi.post('/threads/:id/status', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const t = await loadThread(db, c.req.param('id'), u.company_id)
+  if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
+  const b = await c.req.json().catch(() => ({} as any))
+  if (!['open', 'closed'].includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
+  if (b.status === t.status) return c.json({ ok: true })
+  await db.prepare('UPDATE board_threads SET status = ? WHERE thread_id = ?').bind(b.status, t.thread_id).run()
+  const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  await addMessage(db, t.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}がやり取りを${b.status === 'closed' ? '終了' : '再開'}しました`)
   return c.json({ ok: true })
 })
 
