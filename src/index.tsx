@@ -299,6 +299,9 @@ app.get('/admin', async (c) => {
         <a href="#clients" class="side-link" data-tab="clients"><i class="fas fa-building w-5"></i>クライアント</a>
         <a href="#shifts" class="side-link" data-tab="shifts"><i class="fas fa-calendar-days w-5"></i>シフト管理</a>
         <a href="#reports" class="side-link" data-tab="reports"><i class="fas fa-file-lines w-5"></i>日報一覧</a>
+        <p class="px-3 pt-3 pb-1 text-[11px] font-bold text-gray-400">勤怠管理</p>
+        <a href="#report-settings" class="side-link" data-tab="report-settings"><i class="fas fa-list-check w-5"></i>案件報告管理</a>
+        <div class="border-t border-gray-100 my-2"></div>
         <a href="#analytics" class="side-link" data-tab="analytics"><i class="fas fa-chart-column w-5"></i>実績分析</a>
         <a href="#notices" class="side-link" data-tab="notices"><i class="fas fa-bullhorn w-5"></i>お知らせ配信</a>
         <a href="#notice-reports" class="side-link" data-tab="notice-reports"><i class="fas fa-chart-pie w-5"></i>既読率レポート</a>
@@ -323,7 +326,7 @@ app.get('/admin', async (c) => {
         <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0">
           <option value="dashboard">ダッシュボード</option><option value="staff">スタッフマスタ</option><option value="employees">従業員管理</option>
           <option value="projects">案件</option><option value="clients">クライアント</option>
-          <option value="shifts">シフト</option><option value="reports">日報</option>
+          <option value="shifts">シフト</option><option value="reports">日報</option><option value="report-settings">案件報告管理</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
           <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option>
         </select>
@@ -341,6 +344,7 @@ app.get('/admin', async (c) => {
   <script src="/static/shift-board.js"></script>
   <script src="/static/staff-lifecycle.js"></script>
   <script src="/static/settlement.js"></script>
+  <script src="/static/report-settings.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>

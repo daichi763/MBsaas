@@ -3,7 +3,8 @@
 // docs/spec_spot_shift.md 第3段階
 //
 // 管理者向け（/api/admin/*）のみ。api.ts から権限ミドルウェアの後に登録する。
-// 実働時間: 入店・退店報告（アプリ・報告URL・代理入力）から actual_start / actual_end に反映する。
+// 実働時間: 勤務開始・勤務終了の報告（なければ入店・退店）から actual_start / actual_end に反映する。
+// 休憩入・休憩出の報告が両方あれば、その差を actual_break_minutes に反映する（docs/spec_attendance_correction.md 4.7）。
 // 管理者が入力した実績（actual_source = 'manual'）は報告で上書きしない。
 // 確定（settle_status = 'confirmed'）したシフトは金額・時間・スタッフを変更できない。
 // =========================================================
@@ -45,17 +46,23 @@ export async function refreshShiftAmounts(db: D1Database, companyId: number, shi
       payHourly ? amt.pay_qty : s.pay_qty, payHourly ? amt.pay_amount : s.pay_amount, shiftId).run()
 }
 
-// 入店・退店報告の時刻を実績に反映する（管理者の手入力・確定済みは対象外）。報告の登録・削除のたびに呼ぶ
+// 報告の時刻を実績に反映する（管理者の手入力・確定済みは対象外）。報告の登録・変更・削除のたびに呼ぶ
+//   開始 = 勤務開始（なければ入店）、終了 = 勤務終了（なければ退店）。両方そろったときだけ反映
+//   休憩 = 休憩出 − 休憩入（分。両方あるときのみ。ないときは NULL = 予定の休憩）
 export async function syncActualFromReports(db: D1Database, companyId: number, shiftId: number) {
-  const s = await db.prepare('SELECT shift_id, actual_source, settle_status, actual_start, actual_end FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
+  const s = await db.prepare('SELECT shift_id, actual_source, settle_status, actual_start, actual_end, actual_break_minutes FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
   if (!s || isSettled(s) || s.actual_source === 'manual') return false
-  const reps = (await db.prepare("SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ? AND report_type IN ('check_in','check_out')").bind(shiftId).all()).results as any[]
-  const hm = (t: string) => (String(t || '').match(/(\d{2}:\d{2})/) || [])[1] || null
-  const cin = hm(reps.find(r => r.report_type === 'check_in')?.reported_at), cout = hm(reps.find(r => r.report_type === 'check_out')?.reported_at)
+  const reps = (await db.prepare("SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ? AND report_type IN ('check_in','check_out','work_start','work_end','break_start','break_end')").bind(shiftId).all()).results as any[]
+  const at = (t: string) => reps.find(r => r.report_type === t)?.reported_at as string | undefined
+  const hm = (t?: string) => (String(t || '').match(/(\d{2}:\d{2})/) || [])[1] || null
+  const cin = hm(at('work_start') || at('check_in')), cout = hm(at('work_end') || at('check_out'))
   const start = cin && cout ? cin : null, end = cin && cout ? cout : null
-  if (start === (s.actual_start || null) && end === (s.actual_end || null)) return false
-  await db.prepare('UPDATE shifts SET actual_start = ?, actual_end = ?, actual_source = ? WHERE shift_id = ?')
-    .bind(start, end, start ? 'report' : null, shiftId).run()
+  const bs = at('break_start'), be = at('break_end')
+  const brkMin = bs && be ? Math.round((Date.parse(be.replace(' ', 'T') + 'Z') - Date.parse(bs.replace(' ', 'T') + 'Z')) / 60000) : NaN
+  const brk = Number.isFinite(brkMin) && brkMin >= 0 && brkMin <= 1440 ? brkMin : null
+  if (start === (s.actual_start || null) && end === (s.actual_end || null) && brk === (s.actual_break_minutes ?? null)) return false
+  await db.prepare('UPDATE shifts SET actual_start = ?, actual_end = ?, actual_break_minutes = ?, actual_source = ? WHERE shift_id = ?')
+    .bind(start, end, brk, start || brk != null ? 'report' : null, shiftId).run()
   await refreshShiftAmounts(db, companyId, shiftId)
   return true
 }

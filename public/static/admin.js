@@ -186,21 +186,23 @@ async function renderDashboard() {
       <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-day text-blue-600 mr-1"></i>本日のシフト・報告状況</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>時間</th><th>起床</th><th>出発</th><th>入店</th><th>退店</th><th>操作</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>時間</th><th>報告状況</th><th>操作</th></tr></thead>
           <tbody>
             ${data.shifts.map(s => {
-              const mark = v => v ? '<i class="fas fa-circle-check text-emerald-500"></i>' : '<i class="fas fa-circle-xmark text-red-400"></i>'
+              // 有効な報告（案件報告管理の設定）だけを順に表示。緑 = 報告済み / 灰 = 未報告
+              const RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
+              const done = new Set(s.done_types || [])
+              const chips = (s.required_types || []).map(t => `<span class="badge ${done.has(t) ? 'badge-green' : 'badge-gray'} text-[10px]">${RS[t] || t}</span>`).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
               return `<tr>
                 <td><a href="#staff/${s.staff_id}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a></td>
                 <td class="text-xs">${esc(s.project_name)}</td>
                 <td class="text-xs">${s.start_time}〜${s.end_time}</td>
-                <td class="text-center">${mark(s.wake_up)}</td><td class="text-center">${mark(s.departure)}</td>
-                <td class="text-center">${mark(s.check_in)}</td><td class="text-center">${mark(s.check_out)}</td>
+                <td><div class="flex flex-wrap gap-1 min-w-[10rem]">${chips}</div></td>
                 <td>
                   <button class="text-xs text-red-600 hover:underline" onclick="markAbsent(${s.shift_id})">欠勤にする</button>
                 </td>
               </tr>`
-            }).join('') || '<tr><td colspan="8" class="text-center text-gray-400 py-4">本日のシフトはありません</td></tr>'}
+            }).join('') || '<tr><td colspan="5" class="text-center text-gray-400 py-4">本日のシフトはありません</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -638,7 +640,7 @@ async function renderStaffDetail(sid, opts = {}) {
         <table class="tbl">
           <thead><tr><th>稼働日</th><th>種別</th><th>報告時刻</th><th>状態</th><th>位置情報</th></tr></thead>
           <tbody>${data.attendance.slice(0, 20).map(a => {
-            const RL = { wake_up: '起床', departure: '出発', check_in: '入店', check_out: '退店' }
+            const RL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
             return `<tr>
               <td>${dayjs(a.work_date).format('M/D')}</td>
               <td>${RL[a.report_type] || a.report_type}</td>
@@ -2023,7 +2025,8 @@ const routes = {
   dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
-  'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees
+  'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
+  'report-settings': () => (window.renderReportSettings ? renderReportSettings() : renderDashboard())
 }
 
 function route() {
@@ -2038,6 +2041,7 @@ function route() {
   if (tab === 'employees' && id) return renderEmployeeDetail(id)
   if (tab === 'shifts' && id === 'week') return renderShifts()
   if (tab === 'board' && window.renderBoard) return renderBoard(id)
+  if (tab === 'report-settings' && window.renderReportSettings) return renderReportSettings(id)
   ;(routes[tab] || renderDashboard)()
 }
 
