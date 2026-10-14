@@ -92,6 +92,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
   const rows = (await db.prepare(`SELECT s.*, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.default_break_minutes, cl.client_name,
       st.site_name, us.name AS staff_name, sp.affiliation_type, er.employee_number,
       aff.affiliation_name AS payee_affiliation_name, pco.company_name AS payee_company_name,
+      (SELECT MAX(c.decided_at) FROM attendance_corrections c WHERE c.shift_id = s.shift_id AND c.status = 'approved') AS last_correction_at,
       (SELECT MAX(CASE WHEN a.report_type = 'check_in' THEN 1 END) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS has_check_in,
       (SELECT MAX(CASE WHEN a.report_type = 'check_out' THEN 1 END) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS has_check_out,
       (SELECT COUNT(*) FROM daily_reports d WHERE d.shift_id = s.shift_id) AS has_daily
@@ -112,6 +113,8 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     if (past && !r.actual_start) issues.push(!r.has_check_in ? '入店報告なし' : !r.has_check_out ? '退店報告なし' : '実績未入力')
     if (h.actual_hours != null && Math.abs(h.actual_hours - h.planned_hours) >= 0.5) issues.push(`実働が予定と${h.actual_hours > h.planned_hours ? '+' : ''}${Math.round((h.actual_hours - h.planned_hours) * 100) / 100}h 違う`)
     if (r.pay_amount == null) issues.push('支払単価未設定')
+    // 確定の後に打刻修正を承認した（報告は更新済み・実績と金額は確定時のまま）。確定を取り消して「実績を反映」すると反映される
+    if (r.settle_status === 'confirmed' && r.last_correction_at && (!r.settled_at || r.last_correction_at >= r.settled_at)) issues.push('確定後に打刻修正あり')
     if (!r.unit_price && !r.bill_rate) issues.push('請求単価未設定')
     if (r.price_locked && ((r.bill_unit_type === 'hourly' && Number(r.bill_qty) !== h.hours) || (r.pay_unit_type === 'hourly' && Number(r.pay_qty) !== h.hours))) issues.push('手動変更（数量が実働と違う）')
     const payeeType = r.payee_type || 'payroll'

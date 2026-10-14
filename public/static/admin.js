@@ -2026,7 +2026,8 @@ const routes = {
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
-  'report-settings': () => (window.renderReportSettings ? renderReportSettings() : renderDashboard())
+  'report-settings': () => (window.renderReportSettings ? renderReportSettings() : renderDashboard()),
+  corrections: () => (window.renderCorrections ? renderCorrections() : renderDashboard())
 }
 
 function route() {
@@ -2042,6 +2043,7 @@ function route() {
   if (tab === 'shifts' && id === 'week') return renderShifts()
   if (tab === 'board' && window.renderBoard) return renderBoard(id)
   if (tab === 'report-settings' && window.renderReportSettings) return renderReportSettings(id)
+  if (tab === 'corrections' && window.renderCorrections) return renderCorrections(id)
   ;(routes[tab] || renderDashboard)()
 }
 
