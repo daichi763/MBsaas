@@ -115,6 +115,7 @@ async function renderHome() {
 
   const unread = (data.notices || []).filter(n => !n.is_read)
   $app.innerHTML = `
+    <div id="notif-banner"></div>
     ${unread.length ? `<div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="alert">
       <i class="fas fa-bell mr-1"></i>未読のお知らせが <b>${unread.length}件</b> あります
       <a href="#more" onclick="setTimeout(()=>renderNotices(),50)" class="underline font-bold ml-1">確認する</a></div>` : ''}
@@ -137,6 +138,7 @@ async function renderHome() {
       <a href="#shift" class="card p-4 text-center"><i class="fas fa-calendar-days text-blue-500 text-xl mb-1 block"></i><span class="text-sm font-bold text-gray-700">シフト確認</span></a>
       <a href="#more" onclick="setTimeout(()=>renderConsult(),50)" class="card p-4 text-center"><i class="fas fa-comments text-blue-500 text-xl mb-1 block"></i><span class="text-sm font-bold text-gray-700">相談・連絡</span></a>
     </div>`
+  if (window.loadNotifBanner) loadNotifBanner()
 }
 
 // 勤怠報告送信
@@ -593,6 +595,7 @@ async function renderPerf(month) {
 
 // ============ その他 (お知らせ / 相談) ============
 function renderMore() {
+  setTimeout(() => window.loadNotifBanner && loadNotifBanner(), 0)
   $app.innerHTML = `
     <div class="space-y-3">
       <button class="report-btn" onclick="renderNotices()">
@@ -603,6 +606,11 @@ function renderMore() {
       <button class="report-btn" onclick="renderConsult()">
         <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-comments"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">相談・連絡</span><span class="block text-xs text-gray-400">管理者への相談・連絡</span></span>
+        <i class="fas fa-chevron-right text-gray-300"></i>
+      </button>
+      <button class="report-btn" onclick="location.hash='notifications'">
+        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-bell"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">通知 <span id="more-notif-count" class="badge badge-red hidden"></span></span><span class="block text-xs text-gray-400">打刻修正申請の受付・承認・却下</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </button>
       <button class="report-btn" onclick="location.hash='attendance'">
@@ -725,13 +733,14 @@ window.renderManual = function () {
 
 // ============ ルーティング ============
 const routes = { home: renderHome, shift: () => renderShifts(), report: renderReport, perf: () => renderPerf(), more: renderMore,
-  attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()) }
-const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請' }
+  attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()),
+  notifications: () => (window.renderStaffNotifications ? renderStaffNotifications() : renderHome()) }
+const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請', notifications: '通知' }
 
 function route() {
   const tab = (location.hash || '#home').slice(1).split('/')[0]
   const fn = routes[tab] || renderHome
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (tab === 'attendance' ? 'more' : tab)))
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (tab === 'attendance' || tab === 'notifications' ? 'more' : tab)))
   document.getElementById('header-title').textContent = titles[tab] || 'ホーム'
   fn()
 }

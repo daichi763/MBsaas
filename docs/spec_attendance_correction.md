@@ -1,6 +1,6 @@
 # 案件報告管理 / 打刻修正申請・承認ワークフロー 仕様（設計）
 
-最終更新: 2026-10-14（第1段階: 2章・3章・4.7 / 第2段階: 4章・6章の申請・承認・タイムライン を実装済み。5章 通知・8章 保存期間・CSV は未実装）
+最終更新: 2026-10-14（第1段階: 2章・3章・4.7 / 第2段階: 4章・6章の申請・承認・タイムライン / 第3段階: 5章 通知 を実装済み。8章 保存期間・CSV は未実装）
 
 ## 0. 背景と方針
 - 勤怠報告を「案件 × スタッフ」ごとに 8 種類まで ON/OFF できるようにする。あわせて、スタッフ本人・管理者が打刻の修正と打刻漏れの追加を申請し、管理者が承認する流れを作る
@@ -215,7 +215,7 @@
 | 列 | 内容 |
 |---|---|
 | notification_id / company_id / user_id | |
-| kind | `correction_submitted` / `correction_received` / `correction_approved` / `correction_rejected` |
+| kind | `correction_submitted`（管理者への承認依頼）/ `correction_received`（申請者への受付）/ `correction_approved`・`correction_rejected`（申請者への結果）/ `correction_processed`（処理した管理者への控え） |
 | title / body | 受信者に必要な範囲（案件名・スタッフ名・報告種類・対象日時・結果・理由／コメント） |
 | link | 画面内のリンク（例: `#corrections/123`） |
 | related_id | correction_id |
@@ -236,6 +236,9 @@
 - 送信状態は `notification_emails`（delivery_id、company_id、correction_id、event、user_id、to_email、status = `pending` / `sent` / `failed`、error、attempts、last_attempt_at、created_at）に記録する。本文は保存しない
 - 再送: 管理者が送信失敗一覧から選んで再送する。本文は申請データから作り直す。結果（成功・失敗）を同じ行に記録する（attempts を加算）
 - `MAIL_ENABLED='false'` のときは既存どおり送信せず成功扱い（開発環境）
+- 本部アカウント（`system_admin`）は通知の宛先に含めない
+- 再送は「送信失敗」の行を「送信中」に切り替えられた場合だけ送る（同時に再送しても送るのは 1 回）
+- 管理画面: サイドメニュー「通知」（未読件数）・打刻修正承認 → メール送信状況（`#corrections/emails`）。スタッフ画面: ホームの未読の案内・その他 → 通知（`#notifications`）
 
 ## 6. 画面
 
