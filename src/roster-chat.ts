@@ -9,7 +9,7 @@ type Bindings = { DB: D1Database }
 type Variables = { user: any }
 const chatApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-const CHAT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
+const CHAT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 const MAX_BODY = 2000
 
 function nowJST(): string {
