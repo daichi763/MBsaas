@@ -12,7 +12,7 @@ import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -93,7 +93,9 @@ function resolvePhotoRequired(u: any, projectOverride: number | null | undefined
   const companyDefault = getCompanySetting(u, 'photo_required_attendance', true)
   return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
 }
-const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff', 'system_admin']
+// system_admin（SaaS本部）は含めない。本部ユーザーは company_id=1 に所属しているため、
+// /admin を操作できると本部の操作がテナント1のデータとして登録されてしまう。本部は /hq のみを使う。
+const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 
 // ============ 勤怠の自動振り分け（フェーズH） ============
 // 同一人物が複数企業に所属する場合、シフトの所有企業（shifts.company_id / staff_id）に基づいて
@@ -998,7 +1000,11 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
   const missing = missingRequired(await getRequiredFields(c.env.DB, u.company_id), body, 'update', roster.affiliation_type)
   if (body.gender !== undefined && !body.gender) missing.unshift('性別')
   if (body.name !== undefined && !String(body.name || '').trim()) missing.unshift('氏名')
-  return missing.length ? `次の項目は必須です: ${missing.join('・')}` : null
+  if (missing.length) return `次の項目は必須です: ${missing.join('・')}`
+  // 取引先所属スタッフの所属会社名を変えるときは、導入企業名を受け付けない（取引先マスタに登録されるため）。
+  // 変えていない場合は確認しない（案件掲示板から取り込んだスタッフは、提案企業＝導入企業を所属会社として持つ: board.ts）
+  if (roster.affiliation_type === 'partner_manual' && body.affiliation && body.affiliation !== roster.affiliation) return partnerNameConflict(c.env.DB, u.company_id, body.affiliation)
+  return null
 }
 // 基本情報・追記項目・在籍状況を保存する（権限チェックは呼び出し側で実施済みであること）
 async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
@@ -1406,6 +1412,8 @@ api.get('/admin/staff-affiliations', async (c) => {
 api.post('/admin/staff-affiliations', async (c) => {
   const u = c.get('user'); const { affiliation_name } = await c.req.json()
   if (!affiliation_name) return c.json({ error: '所属会社名は必須です' }, 400)
+  const conflict = await partnerNameConflict(c.env.DB, u.company_id, affiliation_name)
+  if (conflict) return c.json({ error: conflict }, 400)
   await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)')
     .bind(u.company_id, affiliation_name).run()
   return c.json({ ok: true })
