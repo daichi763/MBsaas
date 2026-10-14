@@ -15,7 +15,7 @@
   const DR_LABEL = { '': '案件の設定に従う', none: '日報なし', required: '日報あり' }
   const RT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
   const reportSettingsLink = (pid) => `<a href="#report-settings${pid ? '/' + pid : ''}" class="text-blue-600 hover:underline" onclick="closeModal && closeModal()">案件報告管理</a>`
-  const ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力' }
+  const ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '修正申請の承認' }
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const opts = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${String(v ?? '') === k ? 'selected' : ''}>${l}</option>`).join('')
 
@@ -276,7 +276,7 @@
       <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
         <span class="text-gray-400">${d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
-        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? dayjs(r.reported_at).format('HH:mm') : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
+        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? dayjs(r.reported_at).format('HH:mm') : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : r && r.entry_method === 'correction' ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
       <div class="grid grid-cols-2 gap-2">

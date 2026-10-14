@@ -12,6 +12,7 @@ import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
+import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
@@ -386,6 +387,8 @@ api.route('/admin', recruitAdminApi)
 // 仮登録スタッフと既存スタッフの統合（src/staff-merge.ts）
 api.route('/admin', staffMergeApi)
 api.route('/admin', reportSettingsApi)
+api.route('/admin', correctionsAdminApi)
+api.route('/staff', correctionsStaffApi)
 // 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
 api.route('/admin/board', boardApi)
 // スタッフアプリからの応募（src/recruit.ts）

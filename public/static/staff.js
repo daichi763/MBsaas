@@ -68,7 +68,8 @@ async function renderHome() {
       <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
     </section>
     <section class="mb-4" id="attendance-section">
-      <h2 class="font-bold text-gray-800 mb-2 px-1">本日の報告 ${allDone ? '<span class="badge badge-green ml-1">すべて完了</span>' : ''}</h2>
+      <h2 class="font-bold text-gray-800 mb-2 px-1 flex items-center">本日の報告 ${allDone ? '<span class="badge badge-green ml-1">すべて完了</span>' : ''}
+        <a href="#attendance" class="ml-auto text-xs font-normal text-blue-600"><i class="fas fa-user-clock mr-0.5"></i>打刻の修正・追加</a></h2>
       ${!order.length && !dailyRequired ? '<p class="card p-4 text-sm text-gray-500">このシフトは勤怠報告・日報の提出は不要です</p>' : ''}
       <div class="space-y-2.5">
         ${order.map((t, i) => {
@@ -604,6 +605,11 @@ function renderMore() {
         <span class="flex-1"><span class="block font-bold text-gray-800">相談・連絡</span><span class="block text-xs text-gray-400">管理者への相談・連絡</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </button>
+      <button class="report-btn" onclick="location.hash='attendance'">
+        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-user-clock"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">打刻履歴・修正申請</span><span class="block text-xs text-gray-400">打刻の確認・時刻の修正・打刻漏れの追加</span></span>
+        <i class="fas fa-chevron-right text-gray-300"></i>
+      </button>
       <button class="report-btn" onclick="renderManual()">
         <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-book-open"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">研修・マニュアル</span><span class="block text-xs text-gray-400">案件マニュアル・研修資料</span></span>
@@ -718,13 +724,14 @@ window.renderManual = function () {
 }
 
 // ============ ルーティング ============
-const routes = { home: renderHome, shift: () => renderShifts(), report: renderReport, perf: () => renderPerf(), more: renderMore }
-const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他' }
+const routes = { home: renderHome, shift: () => renderShifts(), report: renderReport, perf: () => renderPerf(), more: renderMore,
+  attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()) }
+const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請' }
 
 function route() {
   const tab = (location.hash || '#home').slice(1).split('/')[0]
   const fn = routes[tab] || renderHome
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (tab === 'attendance' ? 'more' : tab)))
   document.getElementById('header-title').textContent = titles[tab] || 'ホーム'
   fn()
 }
