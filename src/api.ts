@@ -11,6 +11,7 @@ import settlementApi, { syncActualFromReports } from './settlement'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
+import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
@@ -70,7 +71,8 @@ function fiscalYearRange(fy: number): { start: string; end: string } {
 function currentFiscalYear(): number { return fiscalYearOf(todayJST()) }
 function round1(n: number): number { return Math.round(n * 10) / 10 }
 
-const REPORT_TYPES = ['wake_up', 'departure', 'check_in', 'check_out']
+// 勤怠報告の種類（8 種類。順序・表示名は report-settings.ts）
+const REPORT_TYPES: readonly string[] = ALL_REPORT_TYPES
 // 写真添付が必須の報告種別（入店報告・退店報告のみ）
 const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
 const PHOTO_MAX_BYTES = 500 * 1024 // 圧縮後の許容上限（500KB）
@@ -385,6 +387,7 @@ api.route('/admin', settlementApi)
 api.route('/admin', recruitAdminApi)
 // 仮登録スタッフと既存スタッフの統合（src/staff-merge.ts）
 api.route('/admin', staffMergeApi)
+api.route('/admin', reportSettingsApi)
 // 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
 api.route('/admin/board', boardApi)
 // スタッフアプリからの応募（src/recruit.ts）
@@ -434,7 +437,7 @@ api.get('/staff/home', async (c) => {
 
   return c.json({
     today, shift: stripMoney(shift), reports, daily_report_done: dailyReportDone,
-    required_attendance: shiftModes ? shiftModes.required_attendance : ['wake_up', 'departure', 'check_in', 'check_out'],
+    required_attendance: shiftModes ? shiftModes.required_attendance : [...REPORT_TYPES],
     daily_report_required: shiftModes ? shiftModes.daily_report_required : true, notices: notices.results,
     replied_consultations: openConsult?.n || 0,
     // 写真必須設定はシフトの所有企業の設定に従う
@@ -455,7 +458,10 @@ api.post('/staff/attendance', async (c) => {
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
   const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  if (modes && !modes.required_attendance.includes(report_type)) return c.json({ error: 'このシフトでは不要な報告です' }, 400)
+  // 有効な報告か・報告済みでないか・前の報告が済んでいるか（報告設定で OFF の報告は順序から除く）
+  const done = new Set(((await c.env.DB.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(shift.shift_id).all()).results as any[]).map(r => r.report_type))
+  const ng = checkReportable(modes ? modes.required_attendance : [...REPORT_TYPES], done, report_type)
+  if (ng) return c.json({ error: ng.error }, ng.status as 400)
   if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
     const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
     if (resolvePhotoRequired(owner, proj?.photo_required_override as number | null)) {
@@ -475,8 +481,8 @@ api.post('/staff/attendance', async (c) => {
   await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(owner.company_id, owner.staff_id, shift_id, report_type, nowJST(), latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status).run()
-  // 入店・退店の時刻を実績（実働時間）に反映
-  if (report_type === 'check_in' || report_type === 'check_out') await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
+  // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
+  if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
   return c.json({ ok: true, status })
 })
 
@@ -509,8 +515,10 @@ api.post('/staff/attendance-photo', async (c) => {
   const resolved = await resolvePersonShift(c, shift_id)
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
-  const dup = await c.env.DB.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(shift_id, report_type).first()
-  if (dup) return c.json({ error: 'すでに報告済みです' }, 409)
+  const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
+  const done = new Set(((await c.env.DB.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(shift.shift_id).all()).results as any[]).map(r => r.report_type))
+  const ng = checkReportable(modes ? modes.required_attendance : [...REPORT_TYPES], done, report_type)
+  if (ng) return c.json({ error: ng.error }, ng.status as 400)
 
   let status = 'normal'
   const lat = latitude != null && latitude !== '' ? Number(latitude) : null
@@ -703,7 +711,8 @@ api.get('/admin/dashboard', async (c) => {
            (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = 'wake_up') AS wake_up,
            (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = 'departure') AS departure,
            (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = 'check_in') AS check_in,
-           (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = 'check_out') AS check_out
+           (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = 'check_out') AS check_out,
+           (SELECT GROUP_CONCAT(a.report_type) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS done_types
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id
@@ -714,7 +723,12 @@ api.get('/admin/dashboard', async (c) => {
   const revenue = active.reduce((a, s) => a + (s.unit_price || 0), 0)
   // 提出設定で「不要」の報告は未報告アラートの対象外（第2段階）
   const todayModes = await modesForShifts(db, active.map(s => s.shift_id))
-  const needs = (s: any, t: string) => (todayModes.get(s.shift_id)?.required_attendance ?? ['wake_up', 'departure', 'check_in', 'check_out']).includes(t)
+  const needs = (s: any, t: string) => (todayModes.get(s.shift_id)?.required_attendance ?? REPORT_TYPES).includes(t)
+  // 画面の報告状況の列: シフトごとの有効な報告と報告済みの種類
+  for (const s of active) {
+    s.required_types = todayModes.get(s.shift_id)?.required_attendance ?? [...REPORT_TYPES]
+    s.done_types = String(s.done_types || '').split(',').filter(Boolean)
+  }
 
   // 昨日までの日報未提出 (直近3日)
   const missingReports = await db.prepare(`

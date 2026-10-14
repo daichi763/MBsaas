@@ -6,8 +6,8 @@
   const $app = document.getElementById('app')
   const TOKEN = location.pathname.split('/').pop()
   const API = '/api/public/report/' + encodeURIComponent(TOKEN)
-  const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', check_out: '退店報告' }
-  const ICON = { wake_up: 'fa-sun', departure: 'fa-person-walking-luggage', check_in: 'fa-store', check_out: 'fa-door-open' }
+  const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
+  const ICON = { wake_up: 'fa-sun', departure: 'fa-person-walking-luggage', check_in: 'fa-store', work_start: 'fa-briefcase', break_start: 'fa-mug-hot', break_end: 'fa-person-walking', work_end: 'fa-flag-checkered', check_out: 'fa-door-open' }
   const WD = ['日', '月', '火', '水', '木', '金', '土']
   const TARGET_BYTES = 480 * 1024, MAX_EDGE = 1600
   let DATA = null, pending = null

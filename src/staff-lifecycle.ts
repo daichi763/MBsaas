@@ -9,6 +9,7 @@ import { Hono } from 'hono'
 import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
+import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -60,8 +61,10 @@ export async function findStaffByPhone(db: D1Database, companyId: number, phone:
 // ---------- 提出設定（案件 → スタッフ → シフト の順に上書き） ----------
 export const ATTENDANCE_MODES = ['none', 'in_out', 'full'] as const
 export const DAILY_REPORT_MODES = ['none', 'required'] as const
+// シフト単位の例外（shifts.attendance_mode）の意味。full は「案件 × スタッフの報告設定どおり」
+// 案件・スタッフ単位の勤怠の提出設定は 0027 で 8 種類の設定（report-settings.ts）に移した。ここでは日報の提出設定のみを解決する
 export const ATTENDANCE_TYPES_BY_MODE: Record<string, string[]> = {
-  none: [], in_out: ['check_in', 'check_out'], full: ['wake_up', 'departure', 'check_in', 'check_out'],
+  none: [], in_out: ['check_in', 'check_out'], full: [...REPORT_TYPES],
 }
 export function resolveModes(project: any, staff: any, shift: any) {
   const pick = (vals: any[], allowed: readonly string[], d: string) => vals.find(v => v && allowed.includes(v)) || d
@@ -70,22 +73,30 @@ export function resolveModes(project: any, staff: any, shift: any) {
   const source = (k: 'attendance_mode' | 'daily_report_mode') => shift?.[k] ? 'shift' : staff?.[k] ? 'staff' : 'project'
   return {
     attendance_mode: attendance, daily_report_mode: daily,
-    required_attendance: ATTENDANCE_TYPES_BY_MODE[attendance], daily_report_required: daily === 'required',
-    attendance_source: source('attendance_mode'), daily_report_source: source('daily_report_mode'),
+    required_attendance: ATTENDANCE_TYPES_BY_MODE[attendance] as string[], daily_report_required: daily === 'required',
+    attendance_source: source('attendance_mode') as string, daily_report_source: source('daily_report_mode'),
   }
 }
-// シフトID群に対して、提出設定を解決する（ダッシュボード・未報告アラート用）
+// シフトID群に対して、提出設定を解決する（スタッフのホーム・報告API・報告URL・ダッシュボード・シフト詳細）
+// 勤怠: 8 種類の報告設定（シフトの例外 → 案件 × スタッフ → 案件の標準設定）。日報: 従来どおり（シフト → スタッフ → 案件）
 export async function modesForShifts(db: D1Database, shiftIds: number[]) {
   const map = new Map<number, ReturnType<typeof resolveModes>>()
   if (!shiftIds.length) return map
   const ids = [...new Set(shiftIds)]
+  const att = await attendanceTypesForShifts(db, ids)
   for (let i = 0; i < ids.length; i += 90) {
     const chunk = ids.slice(i, i + 90)
     const rows = (await db.prepare(`SELECT s.shift_id, s.attendance_mode AS s_att, s.daily_report_mode AS s_dr,
-        sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr
+        sp.daily_report_mode AS sp_dr, p.daily_report_mode AS p_dr
       FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
       WHERE s.shift_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all()).results as any[]
-    for (const r of rows) map.set(r.shift_id, resolveModes({ attendance_mode: r.p_att, daily_report_mode: r.p_dr }, { attendance_mode: r.sp_att, daily_report_mode: r.sp_dr }, { attendance_mode: r.s_att, daily_report_mode: r.s_dr }))
+    for (const r of rows) {
+      const m = resolveModes({ daily_report_mode: r.p_dr }, { daily_report_mode: r.sp_dr }, { attendance_mode: r.s_att, daily_report_mode: r.s_dr })
+      const a = att.get(r.shift_id)
+      m.required_attendance = a ? a.types : [...REPORT_TYPES]
+      m.attendance_source = a ? a.source : 'default'
+      map.set(r.shift_id, m)
+    }
   }
   return map
 }
@@ -319,9 +330,12 @@ adminLifecycleApi.put('/staff/:id/report-settings', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
   const sp = await loadStaffRow(c.env.DB, u.company_id, c.req.param('id'))
   if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  const a = modeVal(b.attendance_mode, ATTENDANCE_MODES), d = modeVal(b.daily_report_mode, DAILY_REPORT_MODES)
-  if (a === undefined || d === undefined) return c.json({ error: '設定値が正しくありません' }, 400)
-  await c.env.DB.prepare('UPDATE staff_profiles SET attendance_mode = ?, daily_report_mode = ? WHERE staff_id = ?').bind(a, d, sp.staff_id).run()
+  const a = b.attendance_mode === undefined ? undefined : modeVal(b.attendance_mode, ATTENDANCE_MODES)
+  const d = modeVal(b.daily_report_mode, DAILY_REPORT_MODES)
+  if ((b.attendance_mode !== undefined && a === undefined) || d === undefined) return c.json({ error: '設定値が正しくありません' }, 400)
+  await c.env.DB.prepare('UPDATE staff_profiles SET daily_report_mode = ? WHERE staff_id = ?').bind(d, sp.staff_id).run()
+  // 勤怠は案件 × スタッフの報告設定に書き込む（所属する全案件。空は案件の標準設定に戻す）
+  if (b.attendance_mode !== undefined) await applyLegacyStaffMode(c.env.DB, u.company_id, sp.staff_id, a, u)
   return c.json({ ok: true })
 })
 adminLifecycleApi.put('/projects/:id/report-settings', async (c) => {
@@ -329,8 +343,10 @@ adminLifecycleApi.put('/projects/:id/report-settings', async (c) => {
   const p = await c.env.DB.prepare('SELECT project_id FROM projects WHERE project_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first()
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
   const a = ATTENDANCE_MODES.includes(b.attendance_mode) ? b.attendance_mode : null, d = DAILY_REPORT_MODES.includes(b.daily_report_mode) ? b.daily_report_mode : null
-  if (!a || !d) return c.json({ error: '設定値が正しくありません' }, 400)
-  await c.env.DB.prepare('UPDATE projects SET attendance_mode = ?, daily_report_mode = ? WHERE project_id = ?').bind(a, d, c.req.param('id')).run()
+  if ((b.attendance_mode !== undefined && !a) || !d) return c.json({ error: '設定値が正しくありません' }, 400)
+  await c.env.DB.prepare('UPDATE projects SET daily_report_mode = ? WHERE project_id = ?').bind(d, c.req.param('id')).run()
+  // 勤怠は案件の標準設定（8 種類）に書き込む
+  if (a) await setProjectDefaults(c.env.DB, u.company_id, Number(c.req.param('id')), flagsFromLegacyMode(a), u)
   return c.json({ ok: true })
 })
 
@@ -345,7 +361,7 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const modes = resolveModes({ attendance_mode: s.p_att, daily_report_mode: s.p_dr }, { attendance_mode: s.sp_att, daily_report_mode: s.sp_dr }, s)
+  const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
   const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.entry_method, um.name AS entered_by_name FROM attendance_reports a
     LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results
   const daily = await db.prepare('SELECT daily_report_id, submitted_at, entry_method FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(s.staff_id, s.work_date, s.project_id).first()
@@ -367,19 +383,20 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const types: string[] = (Array.isArray(b.report_types) ? b.report_types : [b.report_type]).filter((t: any) => ['wake_up', 'departure', 'check_in', 'check_out'].includes(t))
+  const types: string[] = (Array.isArray(b.report_types) ? b.report_types : [b.report_type]).filter((t: any) => (REPORT_TYPES as readonly string[]).includes(t))
   if (!types.length) return c.json({ error: '報告の種類を選択してください' }, 400)
   const time = /^\d{2}:\d{2}$/.test(b.time || '') ? b.time : null
   let created = 0
   for (const t of types) {
     const dup = await db.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(s.shift_id, t).first()
     if (dup) continue
-    const at = time ? `${s.work_date} ${time}:00` : (t === 'check_in' ? `${s.work_date} ${s.start_time}:00` : t === 'check_out' ? `${s.work_date} ${s.end_time}:00` : nowJST())
+    // 時刻の指定がなければ: 入店・勤務開始 = 予定の開始、勤務終了・退店 = 予定の終了、それ以外 = 現在時刻
+    const at = time ? `${s.work_date} ${time}:00` : (t === 'check_in' || t === 'work_start') ? `${s.work_date} ${s.start_time}:00` : (t === 'check_out' || t === 'work_end') ? `${s.work_date} ${s.end_time}:00` : nowJST()
     await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by)
       VALUES (?, ?, ?, ?, ?, 'normal', 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, t, at, u.user_id).run()
     created++
   }
-  if (types.some(t => t === 'check_in' || t === 'check_out')) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
+  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
   return c.json({ ok: true, created })
 })
 adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
@@ -447,7 +464,7 @@ publicReportApi.get('/:token', async (c) => {
   const db = c.env.DB
   const t = await loadToken(db, c.req.param('token'))
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
-  const modes = resolveModes({ attendance_mode: t.p_att, daily_report_mode: t.p_dr }, { attendance_mode: t.sp_att, daily_report_mode: t.sp_dr }, { attendance_mode: t.s_att, daily_report_mode: t.s_dr })
+  const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
   const reports = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results
   const daily = await db.prepare('SELECT report_values, submitted_at FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
   const tpl = modes.daily_report_required ? await db.prepare('SELECT template_name, fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id).first() as any : null
@@ -465,7 +482,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
   const db = c.env.DB
   const t = await loadToken(db, c.req.param('token'))
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
-  const modes = resolveModes({ attendance_mode: t.p_att, daily_report_mode: t.p_dr }, { attendance_mode: t.sp_att, daily_report_mode: t.sp_dr }, { attendance_mode: t.s_att, daily_report_mode: t.s_dr })
+  const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
   let reportType = '', lat: number | null = null, lng: number | null = null, photo: File | null = null
   const ct = c.req.header('content-type') || ''
   if (ct.includes('multipart/form-data')) {
@@ -475,13 +492,11 @@ publicReportApi.post('/:token/attendance', async (c) => {
   } else {
     const b = await c.req.json().catch(() => ({} as any)); reportType = b.report_type; lat = b.latitude ?? null; lng = b.longitude ?? null
   }
-  if (!modes.required_attendance.includes(reportType)) return c.json({ error: 'このシフトでは不要な報告です' }, 400)
-  const order = modes.required_attendance
   const done = new Set(((await db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results as any[]).map(r => r.report_type))
-  if (done.has(reportType)) return c.json({ error: 'すでに報告済みです' }, 409)
-  const idx = order.indexOf(reportType)
-  if (order.slice(0, idx).some(x => !done.has(x))) return c.json({ error: '前の報告を先に行ってください' }, 400)
-  if (t.work_date !== todayJST() && !(reportType === 'check_out' && addDays(t.work_date, 1) === todayJST())) return c.json({ error: '稼働日当日に報告してください' }, 400)
+  const ng = checkReportable(modes.required_attendance, done, reportType)
+  if (ng) return c.json({ error: ng.error }, ng.status as 400)
+  // 日をまたぐ勤務: 休憩・勤務終了・退店は稼働日の翌日も受け付ける
+  if (t.work_date !== todayJST() && !(NEXT_DAY_TYPES.includes(reportType) && addDays(t.work_date, 1) === todayJST())) return c.json({ error: '稼働日当日に報告してください' }, 400)
   let status = 'normal'
   if (reportType === 'check_in') {
     if (nowJST().slice(11, 16) > t.start_time) status = 'late'
@@ -496,7 +511,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
   }
   await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, device_info, status, photo_key, entry_method)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(t.company_id, t.staff_id, t.shift_id, reportType, nowJST(), lat, lng, (c.req.header('user-agent') || '').slice(0, 300), status, key).run()
-  if (reportType === 'check_in' || reportType === 'check_out') await syncActualFromReports(db, t.company_id, t.shift_id).catch(() => {})
+  if (ACTUAL_SYNC_TYPES.includes(reportType)) await syncActualFromReports(db, t.company_id, t.shift_id).catch(() => {})
   return c.json({ ok: true, status })
 })
 

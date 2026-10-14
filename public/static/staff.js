@@ -3,8 +3,8 @@ const $app = document.getElementById('app')
 let ME = null
 let HOME = null
 
-const REPORT_LABELS = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', check_out: '退店報告' }
-const REPORT_ICONS = { wake_up: 'fa-sun', departure: 'fa-person-walking-luggage', check_in: 'fa-store', check_out: 'fa-door-open' }
+const REPORT_LABELS = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
+const REPORT_ICONS = { wake_up: 'fa-sun', departure: 'fa-person-walking-luggage', check_in: 'fa-store', work_start: 'fa-briefcase', break_start: 'fa-mug-hot', break_end: 'fa-person-walking', work_end: 'fa-flag-checkered', check_out: 'fa-door-open' }
 // 写真添付が必須の報告種別
 const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
 const PHOTO_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 選択可能な元画像の上限 (10MB)

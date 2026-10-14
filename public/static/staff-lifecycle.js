@@ -10,9 +10,11 @@
     freelance: '個人で業務委託する人。支払は本人への業務委託費になります',
     partner_manual: '取引先（Field OS 未利用の会社）に所属する人。支払は取引先へ',
   }
-  const ATT_LABEL = { '': '案件の設定に従う', none: '勤怠報告なし', in_out: '入店・退店のみ', full: '起床・出発・入店・退店' }
+  // シフト単位の例外のみ（案件・スタッフ単位の勤怠報告は「案件報告管理」で 8 種類ごとに設定する）
+  const ATT_LABEL = { '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ', full: '案件報告管理の設定どおり' }
   const DR_LABEL = { '': '案件の設定に従う', none: '日報なし', required: '日報あり' }
-  const RT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', check_out: '退店' }
+  const RT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
+  const reportSettingsLink = (pid) => `<a href="#report-settings${pid ? '/' + pid : ''}" class="text-blue-600 hover:underline" onclick="closeModal && closeModal()">案件報告管理</a>`
   const ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力' }
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const opts = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${String(v ?? '') === k ? 'selected' : ''}>${l}</option>`).join('')
@@ -45,9 +47,9 @@
           <input id="qr-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="取引先名">
         </div>
         <input id="qr-trade" class="inp text-sm hidden" placeholder="屋号（任意）">
-        <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">勤怠報告<select id="qr-att" class="inp text-sm">${opts(ATT_LABEL, '')}</select></label>
+        <div class="grid grid-cols-2 gap-3 items-end">
           <label class="text-sm text-gray-600">日報<select id="qr-dr" class="inp text-sm">${opts(DR_LABEL, '')}</select></label>
+          <p class="text-[11px] text-gray-400">勤怠報告は、シフトを割り当てた案件の標準設定が適用されます</p>
         </div>
         <input id="qr-memo" class="inp text-sm" placeholder="メモ（任意・紹介元など）">
         <button class="btn btn-primary w-full" onclick='submitQuickRegister(${JSON.stringify(ctx)})'>${ctx.slot_role_id ? '仮登録して枠に割り当てる' : '仮登録する'}</button>
@@ -71,7 +73,7 @@
   window.submitQuickRegister = async function (ctx, force) {
     const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
     const type = v('qr-type')
-    const body = { name: v('qr-name'), phone: v('qr-phone'), affiliation_type: type, attendance_mode: v('qr-att'), daily_report_mode: v('qr-dr'), memo: v('qr-memo'), trade_name: v('qr-trade'), force: !!force }
+    const body = { name: v('qr-name'), phone: v('qr-phone'), affiliation_type: type, daily_report_mode: v('qr-dr'), memo: v('qr-memo'), trade_name: v('qr-trade'), force: !!force }
     if (type === 'partner_manual') { const p = v('qr-partner-id'); if (p && p !== 'new') body.partner_affiliation_id = Number(p); else body.new_partner_name = v('qr-partner-new') }
     if (!body.name) { toast('氏名を入力してください'); return }
     try {
@@ -121,12 +123,9 @@
           <span class="text-gray-400">${esc(h.changed_by_name || '')}</span></div>`).join('') || '<p class="text-[11px] text-gray-400">履歴はありません</p>'}</div>
       </section>
       <section class="card p-4" id="staff-report-settings">
-        <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>勤怠・日報の提出設定</h3>
-        <p class="text-[11px] text-gray-400 mb-2">案件の初期値 → スタッフ → シフトの順に上書きします。「不要」にした報告は未報告アラートの対象外です</p>
-        <div class="grid grid-cols-2 gap-2">
-          <label class="text-xs text-gray-600">勤怠報告<select id="sl-att" class="inp text-sm">${opts(ATT_LABEL, data.attendance_mode || '')}</select></label>
-          <label class="text-xs text-gray-600">日報<select id="sl-dr" class="inp text-sm">${opts(DR_LABEL, data.daily_report_mode || '')}</select></label>
-        </div>
+        <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>日報の提出設定</h3>
+        <p class="text-[11px] text-gray-400 mb-2">案件の初期値 → スタッフ → シフトの順に上書きします。勤怠報告（8 種類）は${reportSettingsLink()}で案件ごとに設定します</p>
+        <label class="text-xs text-gray-600 block">日報<select id="sl-dr" class="inp text-sm">${opts(DR_LABEL, data.daily_report_mode || '')}</select></label>
         <button class="btn btn-outline w-full text-xs mt-2" onclick="saveStaffReportSettings(${sid})">保存する</button>
       </section>
     </div>`
@@ -178,7 +177,7 @@
   }
 
   window.saveStaffReportSettings = async function (sid) {
-    try { await axios.put(`/api/admin/staff/${sid}/report-settings`, { attendance_mode: document.getElementById('sl-att').value, daily_report_mode: document.getElementById('sl-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
+    try { await axios.put(`/api/admin/staff/${sid}/report-settings`, { daily_report_mode: document.getElementById('sl-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
   }
 
   // ---------- 本登録 ----------
@@ -281,7 +280,7 @@
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
       <div class="grid grid-cols-2 gap-2">
-        <label>このシフトの勤怠報告<select id="sr-att" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': 'スタッフ・案件の設定（' + (ATT_LABEL[d.modes.attendance_mode] || '') + '）', none: '勤怠報告なし', in_out: '入店・退店のみ', full: '起床・出発・入店・退店' }, d.shift_attendance_mode || '')}</select></label>
+        <label>このシフトの勤怠報告<select id="sr-att" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ' }, d.shift_attendance_mode === 'full' ? '' : (d.shift_attendance_mode || ''))}</select></label>
         <label>このシフトの日報<select id="sr-dr" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': 'スタッフ・案件の設定（' + (DR_LABEL[d.modes.daily_report_mode] || '') + '）', none: '日報なし', required: '日報あり' }, d.shift_daily_report_mode || '')}</select></label>
       </div>
       <div class="flex flex-wrap gap-1.5">
@@ -313,7 +312,7 @@
     box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-amber-50 space-y-2" id="proxy-form">
       <p class="font-bold text-amber-800">代理入力（管理者が記録します。「代理入力」と表示されます）</p>
       <div class="flex flex-wrap gap-2">${types.map(t => `<label class="flex items-center gap-1"><input type="checkbox" class="px-type" value="${t}" ${['check_in', 'check_out'].includes(t) ? 'checked' : ''}>${RT_LABEL[t]}</label>`).join('')}</div>
-      <label class="flex items-center gap-2">時刻<input id="px-time" type="time" class="inp text-xs w-auto"><span class="text-gray-400">空欄: 入店=開始時刻・退店=終了時刻</span></label>
+      <label class="flex items-center gap-2 flex-wrap">時刻<input id="px-time" type="time" class="inp text-xs w-auto"><span class="text-gray-400">空欄: 入店・勤務開始=開始時刻、勤務終了・退店=終了時刻、それ以外=現在時刻</span></label>
       <button class="btn btn-primary text-xs w-full" onclick="submitProxyAttendance(${shiftId})">記録する</button></div>`)
     const btn = box.querySelector('button[onclick^="openProxyAttendance"]'); if (btn) btn.remove()
   }
@@ -329,15 +328,14 @@
   window.renderProjectReportSettings = function (p) {
     const host = document.getElementById('project-report-settings'); if (!host) return
     host.innerHTML = `<div class="flex items-center justify-between flex-wrap gap-2">
-      <div><h3 class="text-sm font-bold text-gray-700"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>勤怠・日報の提出設定（この案件の初期値）</h3>
-        <p class="text-[11px] text-gray-400">スタッフごと・シフトごとに上書きできます。「不要」の報告は未報告アラートの対象外です</p></div>
+      <div><h3 class="text-sm font-bold text-gray-700"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>日報の提出設定（この案件の初期値）</h3>
+        <p class="text-[11px] text-gray-400">スタッフごと・シフトごとに上書きできます。勤怠報告（8 種類）は${reportSettingsLink(p.project_id)}で設定します</p></div>
       <div class="flex gap-2 items-end">
-        <label class="text-xs text-gray-600">勤怠報告<select id="pr-att" class="inp text-sm">${opts({ none: '勤怠報告なし', in_out: '入店・退店のみ', full: '起床・出発・入店・退店' }, p.attendance_mode || 'full')}</select></label>
         <label class="text-xs text-gray-600">日報<select id="pr-dr" class="inp text-sm">${opts({ none: '日報なし', required: '日報あり' }, p.daily_report_mode || 'required')}</select></label>
         <button class="btn btn-outline text-xs" onclick="saveProjectReportSettings(${p.project_id})">保存</button>
       </div></div>`
   }
   window.saveProjectReportSettings = async function (pid) {
-    try { await axios.put(`/api/admin/projects/${pid}/report-settings`, { attendance_mode: document.getElementById('pr-att').value, daily_report_mode: document.getElementById('pr-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
+    try { await axios.put(`/api/admin/projects/${pid}/report-settings`, { daily_report_mode: document.getElementById('pr-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
   }
 })()
