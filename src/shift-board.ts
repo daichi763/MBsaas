@@ -336,7 +336,7 @@ app.get('/shift-board/candidates', async (c) => {
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.site_id = ? AND s.site_id IS NOT NULL AND s.status IN ('confirmed','substitute')) AS site_count,
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute')) AS week_days
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = sp.source_staff_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
     WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type,'own_employee') != 'skillsheet_only' AND sp.merged_into_staff_id IS NULL
       AND COALESCE(sp.employment_status,'working') NOT IN ('retired') AND us.status = 'active'
     ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, addDays(role.work_date, -weekday(role.work_date)), addDays(role.work_date, 6 - weekday(role.work_date)), u.company_id).all()).results as any[]

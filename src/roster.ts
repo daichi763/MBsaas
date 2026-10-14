@@ -19,9 +19,51 @@ export type AffiliationType = typeof AFFILIATION_TYPES[number]
 // 所属元のみが編集できる「基本項目」（稼働先=linked_external 行では編集不可・所属元の値を参照表示）
 export const ROSTER_BASE_FIELDS = [
   'kana', 'gender', 'date_of_birth', 'affiliation', 'affiliation_contact',
-  'skills', 'career', 'work_area', 'age_group',
+  'skills', 'career', 'career_rows', 'work_area', 'age_group',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from',
+  'pr_points', 'remarks',
 ] as const
+// スタッフマスタ画面で扱う「業務側」の項目（社員名簿=労務側 / スタッフマスタ=業務側）。
+// linked_external（他社連携）以外の全区分（自社雇用を含む）でスタッフマスタ画面から編集できる。
+// pr_points / remarks も基本項目として連携先に共有する（その会社独自の情報は「管理者メモ」に書く運用）
+export const ROSTER_BUSINESS_FIELDS = ['commute_minutes', 'available_from', 'work_area', 'skills', 'career', 'career_rows', 'pr_points', 'remarks'] as const
+export type CareerRow = { from: string; to: string; company: string; work: string; note: string }
+const CAREER_MAX_ROWS = 50
+function normYm(v: any): string | null {
+  const t = String(v ?? '').trim()
+  if (!t) return ''
+  const m = t.match(/^(\d{4})[-/.年](\d{1,2})月?$/)
+  if (!m) return null
+  const mo = Number(m[2]); if (mo < 1 || mo > 12) return null
+  return `${m[1]}-${String(mo).padStart(2, '0')}`
+}
+/** 経歴テーブルの入力を検証・正規化する。空行は捨てる。エラー時は { error } */
+export function normalizeCareerRows(input: any): { rows: CareerRow[] } | { error: string } {
+  if (input === null || input === '') return { rows: [] }
+  let arr = input
+  if (typeof arr === 'string') { try { arr = JSON.parse(arr) } catch { return { error: '経歴の形式が不正です' } } }
+  if (!Array.isArray(arr)) return { error: '経歴の形式が不正です' }
+  const rows: CareerRow[] = []
+  for (const [i, r] of arr.entries()) {
+    if (!r || typeof r !== 'object') return { error: '経歴の形式が不正です' }
+    const s = (v: any) => String(v ?? '').trim()
+    const row = { from: normYm(r.from), to: normYm(r.to), company: s(r.company), work: s(r.work), note: s(r.note) }
+    if (row.from === null || row.to === null) return { error: `経歴 ${i + 1}行目: 開始・終了は「2024-04」の形式（年月）で入力してください` }
+    if (!row.from && !row.to && !row.company && !row.work && !row.note) continue
+    if (row.from && row.to && row.from > row.to) return { error: `経歴 ${i + 1}行目: 終了年月が開始年月より前になっています` }
+    if (row.company.length > 200 || row.work.length > 1000 || row.note.length > 1000) return { error: `経歴 ${i + 1}行目: 入力が長すぎます` }
+    rows.push(row as CareerRow)
+  }
+  if (rows.length > CAREER_MAX_ROWS) return { error: `経歴は${CAREER_MAX_ROWS}行までです` }
+  return { rows }
+}
+/** 経歴テーブルからテキスト要約を作る（career 列に保存し、一覧・連携先・必須判定などで使う） */
+export function careerSummary(rows: CareerRow[]): string {
+  return rows.map(r => {
+    const period = r.from || r.to ? `${r.from || ''}〜${r.to || ''}` : ''
+    return [period, r.company, r.work, r.note ? `（${r.note}）` : ''].filter(Boolean).join(' ')
+  }).join('\n')
+}
 // 稼働先でも編集できる「追記項目」（各社のスタッフマスタ行ごとに独立して保持）
 export const ROSTER_APPEND_FIELDS = ['memo', 'follow_flag', 'retention_risk', 'evaluation_score', 'employment_status', 'site_evaluation', 'work_memo'] as const
 // 追記項目のうち、所属元企業にも共有される項目（それ以外の memo 等は各社の社内情報）
@@ -40,7 +82,7 @@ export const ROSTER_CONFIGURABLE_FIELDS: { code: string; label: string; skillshe
   { code: 'date_of_birth', label: '生年月日', skillsheet: true },
   { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false },
   { code: 'skills', label: 'スキル', skillsheet: true },
-  { code: 'career', label: '経歴', skillsheet: true },
+  { code: 'career', label: '経歴', skillsheet: true }, // 経歴テーブル（career_rows）入力時は要約テキストで判定
   { code: 'work_area', label: '稼働可能エリア', skillsheet: true },
   { code: 'nearest_station_line', label: '最寄駅（路線）', skillsheet: false },
   { code: 'nearest_station', label: '最寄駅（駅）', skillsheet: false },
@@ -68,10 +110,11 @@ export function missingRequired(required: Set<string>, body: any, mode: 'create'
 }
 
 // 連携時の同意ポップアップで明示する共有範囲（フロント表示と同意履歴の双方で同じ文言を使う）
-export const CONSENT_VERSION = 'v1'
+export const CONSENT_VERSION = 'v2' // v2: 共有範囲に「経験・スキル・人柄・PRポイント等」「備考」を追加
 export const SHARED_SCOPE = [
   '氏名', 'フリガナ', '性別', '生年月日・年齢', '年代', '所属会社名・所属先担当者名',
   '最寄駅', '通勤可能時間', '稼働開始可能日', '稼働可能エリア', 'スキル', '経歴',
+  '経験・スキル・人柄・PRポイント等', '備考',
 ]
 export const NOT_SHARED_SCOPE = [
   '従業員管理の情報（雇用形態・給与・手当・口座・社会保険/雇用保険番号・緊急連絡先 等）',
@@ -91,7 +134,7 @@ function nowJST(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
 }
 // ログイン不可のユーザー行用。ランダム値のハッシュなので、どのパスワードとも一致しない
-async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randHex(32)) }
+export async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randHex(32)) }
 function normalizeCode(code: string): string { return String(code || '').trim().toUpperCase().replace(/[^0-9A-Z]/g, '') }
 
 /** 人物IDと恒久固定コード（QR/ID連携用）を採番する */
@@ -123,8 +166,10 @@ export async function partnerNameConflict(db: D1Database, companyId: number, nam
  * スタッフマスタの基本項目を、linked_external 行なら所属元（source）の値で解決する SELECT 句を返す。
  * local = 自社の staff_profiles エイリアス / src = 所属元 staff_profiles エイリアス
  */
+// 所属会社名・所属先担当者名は「直接連携した1つ前の企業」を表す自社の行の値を使う（多段連携で雇用元の企業名・担当者が見えないように）
+const ROSTER_LOCAL_FIELDS = ['affiliation', 'affiliation_contact']
 export function rosterBaseSelect(local = 'sp', src = 'src'): string {
-  return ROSTER_BASE_FIELDS.map(f =>
+  return ROSTER_BASE_FIELDS.map(f => ROSTER_LOCAL_FIELDS.includes(f) ? `${local}.${f} AS ${f}` :
     `CASE WHEN ${local}.affiliation_type = 'linked_external' THEN ${src}.${f} ELSE ${local}.${f} END AS ${f}`
   ).join(', ')
 }
@@ -162,26 +207,33 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
            oc.company_name AS owner_company_name, pe.global_staff_code,
            pa.affiliation_name AS partner_name
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = sp.source_staff_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
     LEFT JOIN staff_affiliations pa ON pa.affiliation_id = sp.partner_affiliation_id
     WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(staffId, companyId).first()
   if (!row) return null
   const type = (row.affiliation_type as string) || 'own_employee'
+  // 経路（雇用元の行）は画面・APIに出さない（頭超え防止）
+  const { root_staff_id: _root, relink_code: _rc, ...rest } = row as any
   return {
-    ...row,
+    ...rest,
     affiliation_type: type,
     // 基本項目を編集できるのは所属元企業のみ（linked_external は稼働先なので不可）
     can_edit_base: type !== 'linked_external' && (row.owner_company_id == null || row.owner_company_id === companyId),
-    // QR/ID で他社に連携できるのは自社雇用の元データのみ
-    linkable: type === 'own_employee',
+    // QR/ID で他社に連携できるのは、自社雇用の元データと、他社から連携で受け入れた行（さらに次の企業へ＝多段連携）。
+    // 自社雇用は本人の恒久ID（persons.global_staff_code）、連携で受け入れた行は自社専用の relink_code を使う
+    // （恒久IDを渡すと次の企業が雇用元と直接つながってしまうため。頭超え防止）
+    linkable: (type === 'own_employee' || type === 'linked_external') && !row.merged_into_staff_id,
+    // 画面に出すスタッフID（他社の恒久IDは見せない）
+    global_staff_code: type === 'linked_external' ? (row.relink_code || null) : row.global_staff_code,
   }
 }
 
 /** 所属元（自社）で基本項目の名前が変わったとき、連携先各社のユーザー表示名も揃える */
 export async function propagateNameToLinked(db: D1Database, sourceStaffId: number | string, name: string) {
-  await db.prepare(`UPDATE users SET name = ? WHERE user_id IN (SELECT user_id FROM staff_profiles WHERE source_staff_id = ?)`)
+  // 多段連携の先（2次・3次…）も含め、雇用元の行を参照している全ての連携行
+  await db.prepare(`UPDATE users SET name = ? WHERE user_id IN (SELECT user_id FROM staff_profiles WHERE COALESCE(root_staff_id, source_staff_id) = ? AND affiliation_type = 'linked_external')`)
     .bind(name, sourceStaffId).run()
 }
 
@@ -222,8 +274,12 @@ rosterApi.get('/:id/share-code', async (c) => {
   const u = c.get('user')
   const r = await loadRoster(c.env.DB, c.req.param('id'), u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
-  if (!r.linkable) return c.json({ error: '連携用IDを共有できるのは自社雇用スタッフのみです' }, 400)
-  return c.json({ global_staff_code: r.global_staff_code, name: r.name, company_name: r.owner_company_name })
+  if (!r.linkable) return c.json({ error: '連携用IDを共有できるのは自社雇用スタッフと、他社から連携したスタッフのみです' }, 400)
+  let code = r.global_staff_code
+  if (r.affiliation_type === 'linked_external' && !code) code = await issueRelinkCode(c.env.DB, r.staff_id)
+  const own = await c.env.DB.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  // 連携相手に見える所属元は、コードを発行した自社（多段連携でも直前の企業名のみ）
+  return c.json({ global_staff_code: code, name: r.name, company_name: own?.company_name || '', relink: r.affiliation_type === 'linked_external' })
 })
 
 // ---------- フェーズF: 所属元⇔稼働先の連携状況 ----------
@@ -233,13 +289,13 @@ rosterApi.get('/:id/links', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const sid = c.req.param('id')
   const r = await loadRoster(db, sid, u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
+  let consents: any[] | null = null
   if (r.affiliation_type === 'linked_external') {
-    const consents = await db.prepare(`
+    consents = ((await db.prepare(`
       SELECT rc.consent_id, rc.consent_version, rc.shared_scope, rc.created_at, um.name AS agreed_by
       FROM roster_consents rc LEFT JOIN users um ON um.user_id = rc.user_id
-      WHERE rc.company_id = ? AND rc.staff_id = ? ORDER BY rc.created_at DESC`).bind(u.company_id, sid).all()
-    return c.json({ role: 'host', owner_company_name: r.owner_company_name,
-      consents: (consents.results as any[]).map(x => ({ ...x, shared_scope: safeJson(x.shared_scope) })) })
+      WHERE rc.company_id = ? AND rc.staff_id = ? ORDER BY rc.created_at DESC`).bind(u.company_id, sid).all()).results as any[])
+      .map(x => ({ ...x, shared_scope: safeJson(x.shared_scope) }))
   }
   // 所属元が閲覧できるのは: 連携先企業名・連携日・共有追記項目（現場評価/稼働メモ）・稼働実績の件数のみ
   // （稼働先の社内メモ・フォロー履歴・日報本文等は返さない）
@@ -252,6 +308,8 @@ rosterApi.get('/:id/links', async (c) => {
       (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
     WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', sid).all()
+  // 連携先は「自社から直接連携した企業」のみ（その先の企業は出さない）
+  if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: links.results })
   return c.json({ role: 'owner', links: links.results })
 })
 
@@ -276,24 +334,58 @@ rosterApi.get('/lookup', async (c) => {
   if (!src) return c.json({ error: '該当するスタッフが見つかりません（連携できるのは他社で自社雇用として登録されたスタッフのみです）' }, 404)
   if (src.company_id === u.company_id) return c.json({ error: '自社に登録済みのスタッフです' }, 409)
   const already = await db.prepare('SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ?').bind(u.company_id, src.person_id).first()
+  // 既に自社に登録済みの人なら、コードの持ち主（雇用元など）の企業名は返さない（多段連携の経路が分からないように）
+  if (already) return c.json({ candidate: { name: src.name }, already_linked_staff_id: already.staff_id })
   return c.json({
     candidate: {
       global_staff_code: src.global_staff_code, name: src.name, kana: src.kana, gender: src.gender,
       owner_company_name: src.owner_company_name,
     },
-    already_linked_staff_id: already ? already.staff_id : null,
+    already_linked_staff_id: null,
     consent: { version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE },
   })
 })
 
+/**
+ * 連携元を解決する。
+ *  - 恒久ID（FS…）: 雇用元の自社雇用行
+ *  - 再連携コード（RL…）: 他社から連携で受け入れた行（多段連携）。所属元として見えるのはこの行の企業のみ
+ * root_staff_id は雇用元の行（基本項目の参照先）。画面・APIには出さない
+ */
 async function findLinkSource(db: D1Database, code: string): Promise<any | null> {
+  if (code.startsWith('RL')) {
+    return db.prepare(`
+      SELECT sp.staff_id, sp.company_id, sp.person_id, src.kana, src.gender, us.name, rus.role AS source_role, sp.relink_code AS global_staff_code,
+             co.company_name AS owner_company_name, COALESCE(sp.root_staff_id, sp.source_staff_id) AS root_staff_id
+      FROM staff_profiles sp
+      JOIN users us ON us.user_id = sp.user_id
+      JOIN companies co ON co.company_id = sp.company_id
+      JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+      JOIN users rus ON rus.user_id = src.user_id
+      WHERE sp.relink_code = ? AND sp.affiliation_type = 'linked_external' AND sp.merged_into_staff_id IS NULL LIMIT 1`).bind(code).first()
+  }
   return db.prepare(`
-    SELECT sp.staff_id, sp.company_id, sp.person_id, sp.kana, sp.gender, us.name, us.role AS source_role, pe.global_staff_code, co.company_name AS owner_company_name
+    SELECT sp.staff_id, sp.company_id, sp.person_id, sp.kana, sp.gender, us.name, us.role AS source_role, pe.global_staff_code,
+           co.company_name AS owner_company_name, sp.staff_id AS root_staff_id
     FROM persons pe
     JOIN staff_profiles sp ON sp.person_id = pe.person_id AND sp.source_staff_id IS NULL AND sp.affiliation_type = 'own_employee'
     JOIN users us ON us.user_id = sp.user_id
     JOIN companies co ON co.company_id = sp.company_id
-    WHERE pe.global_staff_code = ? ORDER BY sp.staff_id LIMIT 1`).bind(code).first()
+    WHERE pe.global_staff_code = ? AND sp.merged_into_staff_id IS NULL ORDER BY sp.staff_id LIMIT 1`).bind(code).first()
+}
+
+/** 連携で受け入れた行に、次の企業へ連携するための自社専用コードを発行する（一度発行したら固定） */
+async function issueRelinkCode(db: D1Database, staffId: number): Promise<string> {
+  for (let i = 0; i < 5; i++) {
+    const code = 'RL' + randHex(5).toUpperCase()
+    try {
+      const r = await db.prepare('UPDATE staff_profiles SET relink_code = ? WHERE staff_id = ? AND relink_code IS NULL').bind(code, staffId).run()
+      if (r.meta.changes) return code
+      const cur = await db.prepare('SELECT relink_code FROM staff_profiles WHERE staff_id = ?').bind(staffId).first()
+      if (cur?.relink_code) return cur.relink_code as string
+    } catch { /* コード衝突時は再採番 */ }
+  }
+  throw new Error('relink code generation failed')
 }
 
 // ①QR/ID連携: 同意の上で稼働先のスタッフマスタに連携登録する
@@ -312,13 +404,14 @@ rosterApi.post('/link', async (c) => {
   // 稼働先側のユーザー行（シフト・勤怠等の既存機能との互換用）。パスワードは照合不能＝稼働先の会社コードでは直接ログインできない。
   // 所属元でログインを持つスタッフは role='staff'（統合ログインの企業切替で稼働先の画面を利用可・フェーズH）、
   // ログインを持たない場合は role='roster_only'（お知らせ対象外）
-  const userCode = 'LK-' + src.global_staff_code
+  // 連携の経路（雇用元・途中の企業）がたどれないよう、ユーザーコードは自社内で新規に採番する
+  const userCode = 'LK-' + randHex(5).toUpperCase()
   const linkedRole = src.source_role === 'staff' ? 'staff' : 'roster_only'
   const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, userCode, src.name, linkedRole, await unusablePasswordHash(), src.person_id).run()
-  const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, source_staff_id, affiliation)
-    VALUES (?, ?, ?, ?, 'linked_external', ?, ?)`)
-    .bind(r.meta.last_row_id, u.company_id, src.person_id, src.company_id, src.staff_id, src.owner_company_name).run()
+  const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, source_staff_id, root_staff_id, affiliation)
+    VALUES (?, ?, ?, ?, 'linked_external', ?, ?, ?)`)
+    .bind(r.meta.last_row_id, u.company_id, src.person_id, src.company_id, src.staff_id, src.root_staff_id, src.owner_company_name).run()
   const staffId = sr.meta.last_row_id
   await db.prepare(`INSERT INTO roster_consents (company_id, user_id, person_id, source_staff_id, source_company_id, staff_id, consent_version, shared_scope, agreed, ip_address, user_agent)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
@@ -459,9 +552,10 @@ staffSelfApi.get('/profile', async (c) => {
   const r = await loadRoster(c.env.DB, u.staff_id, u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
   const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
-  for (const f of ROSTER_BASE_FIELDS) pick[f] = r[f]
+  // PRポイント・備考は企業間で共有する業務情報のため、スタッフ本人向けには返さない
+  for (const f of ROSTER_BASE_FIELDS) if (f !== 'pr_points' && f !== 'remarks') pick[f] = r[f]
   // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
-  pick.global_staff_code = r.linkable ? r.global_staff_code : null
+  pick.global_staff_code = r.affiliation_type === 'own_employee' && r.linkable ? r.global_staff_code : null
   return c.json({ profile: pick })
 })
 

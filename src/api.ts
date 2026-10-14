@@ -6,11 +6,12 @@ import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
+import boardApi from './board'
 import settlementApi, { syncActualFromReports } from './settlement'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, getRequiredFields, missingRequired } from './roster'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -384,6 +385,8 @@ api.route('/admin', settlementApi)
 api.route('/admin', recruitAdminApi)
 // 仮登録スタッフと既存スタッフの統合（src/staff-merge.ts）
 api.route('/admin', staffMergeApi)
+// 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
+api.route('/admin/board', boardApi)
 // スタッフアプリからの応募（src/recruit.ts）
 api.route('/staff/recruit', recruitStaffApi)
 
@@ -854,8 +857,8 @@ api.get('/admin/staff', async (c) => {
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.work_area ELSE sp.work_area END AS work_area,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
-           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status, sp.is_provisional, sp.merged_into_staff_id, us.phone,
-           oc.company_name AS owner_company_name, pe.global_staff_code,
+           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status, sp.is_provisional, sp.merged_into_staff_id, sp.board_proposal_id, us.phone,
+           oc.company_name AS owner_company_name, CASE WHEN sp.affiliation_type = 'linked_external' THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
            us.user_id, us.user_code, us.name, us.status, us.role AS user_role,
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
            (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status = 'confirmed') AS last_work_date,
@@ -865,7 +868,7 @@ api.get('/admin/staff', async (c) => {
            (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id AND dr.work_date LIKE ?) AS month_seiyaku,
            (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date LIKE ?) AS projects
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = sp.source_staff_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
     WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(month + '%', today, today, today, month + '%', month + '%', u.company_id).all()
@@ -888,6 +891,15 @@ api.get('/admin/staff/:id', async (c) => {
   }
   // 画面の編集可否（APIでも同じ判定で制御している）
   profile.can_edit_in_master = STAFF_MASTER_EDITABLE_TYPES.includes(profile.affiliation_type) && profile.can_edit_base && !profile.merged_into_staff_id
+  // 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）は他社連携以外の全区分で編集可
+  profile.can_edit_business = canEditBusiness(profile)
+  profile.career_rows = parseCareerRows(profile.career_rows)
+  // 掲示板経由で取り込んだ行: 直前の提案企業名だけを返す（経路は出さない）
+  if (profile.board_proposal_id) {
+    const bp = await db.prepare(`SELECT co.company_name, p.thread_id FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id
+      WHERE p.proposal_id = ? AND p.receiver_company_id = ?`).bind(profile.board_proposal_id, u.company_id).first() as any
+    profile.board_source = bp ? { proposer_company_name: bp.company_name, thread_id: bp.thread_id } : null
+  }
 
   const [shifts, attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT s.*, p.project_name FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ? ORDER BY s.work_date DESC LIMIT 30`).bind(sid).all(),
@@ -920,14 +932,53 @@ api.get('/admin/staff/:id', async (c) => {
 
 // スタッフ更新 (メモ・フォローフラグ・リスク)
 // ============ スタッフ基本情報の更新（スタッフマスタ / 従業員管理 共通） ============
-// 編集できる画面の振り分け:
-//  - own_employee（自社雇用）      : 従業員管理画面からのみ（スタッフマスタ画面は閲覧のみ）
-//  - partner_manual / skillsheet_only: スタッフマスタ画面から編集可
+// 編集できる画面の振り分け（社員名簿=労務側 / スタッフマスタ=業務側）:
+//  - 業務側項目（ROSTER_BUSINESS_FIELDS: 通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考）
+//      : linked_external 以外の全区分（自社雇用を含む）でスタッフマスタ画面から編集可
+//  - それ以外の基本項目（氏名・フリガナ・性別・生年月日・所属・最寄駅・在籍状況 等）
+//      own_employee（自社雇用）      : 従業員管理画面からのみ
+//      partner_manual / skillsheet_only / daily_worker / freelance: スタッフマスタ画面から編集可
 //  - linked_external（他社連携）    : 所属元企業が管理するため編集不可
 //  - 管理者メモ・要フォロー・稼働先追記項目 は全スタッフでスタッフマスタ画面から編集可
 const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[])]
+const BUSINESS_KEYS = ROSTER_BUSINESS_FIELDS as readonly string[]
 function touchesProfileBase(body: any): boolean {
-  return PROFILE_BASE_KEYS.some(k => body[k] !== undefined)
+  return PROFILE_BASE_KEYS.some(k => body[k] !== undefined && !BUSINESS_KEYS.includes(k))
+}
+function touchesBusiness(body: any): boolean {
+  return BUSINESS_KEYS.some(k => body[k] !== undefined)
+}
+function canEditBusiness(roster: any): boolean {
+  return roster.affiliation_type !== 'linked_external' && !!roster.can_edit_base && !roster.merged_into_staff_id
+}
+function parseCareerRows(v: any): any[] {
+  if (Array.isArray(v)) return v
+  try { const a = JSON.parse(String(v || '[]')); return Array.isArray(a) ? a : [] } catch { return [] }
+}
+/** 業務側項目の入力を検証・正規化する（経歴テーブル → career 要約の生成を含む）。エラー時はメッセージを返す */
+function normalizeBusinessBody(body: any): string | null {
+  if (body.career_rows !== undefined) {
+    const r = normalizeCareerRows(body.career_rows)
+    if ('error' in r) return r.error
+    body.career_rows = JSON.stringify(r.rows)
+    body.career = careerSummary(r.rows)
+  } else if (body.career !== undefined) {
+    // 旧形式（経歴テキストのみ）で更新された場合は、食い違わないよう経歴テーブルを外してテキストを正とする
+    body.career_rows = null
+  }
+  for (const k of ['pr_points', 'remarks']) {
+    if (body[k] !== undefined) {
+      body[k] = body[k] == null ? '' : String(body[k])
+      if (body[k].length > 4000) return (k === 'pr_points' ? '経験・スキル・人柄・PRポイント等' : '備考') + 'は4000文字以内で入力してください'
+    }
+  }
+  if (body.commute_minutes !== undefined && body.commute_minutes !== null && body.commute_minutes !== '') {
+    const n = Number(body.commute_minutes)
+    if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
+    body.commute_minutes = Math.round(n)
+  } else if (body.commute_minutes === '') body.commute_minutes = null
+  if (body.available_from !== undefined && body.available_from && !/^\d{4}-\d{2}-\d{2}$/.test(String(body.available_from))) return '稼働開始可能日の形式が不正です'
+  return null
 }
 // 必須項目チェック（企業ごとの必須設定 + 氏名・性別）。不足があればエラーメッセージを返す
 async function validateProfileBase(c: any, body: any, roster: any): Promise<string | null> {
@@ -936,17 +987,18 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
   if (body.gender !== undefined && !body.gender) missing.unshift('性別')
   if (body.name !== undefined && !String(body.name || '').trim()) missing.unshift('氏名')
   if (missing.length) return `次の項目は必須です: ${missing.join('・')}`
-  // 取引先所属スタッフの所属会社名は取引先マスタに登録されるため、導入企業名は受け付けない
-  if (roster.affiliation_type === 'partner_manual' && body.affiliation) return partnerNameConflict(c.env.DB, u.company_id, body.affiliation)
+  // 取引先所属スタッフの所属会社名を変えるときは、導入企業名を受け付けない（取引先マスタに登録されるため）。
+  // 変えていない場合は確認しない（案件掲示板から取り込んだスタッフは、提案企業＝導入企業を所属会社として持つ: board.ts）
+  if (roster.affiliation_type === 'partner_manual' && body.affiliation && body.affiliation !== roster.affiliation) return partnerNameConflict(c.env.DB, u.company_id, body.affiliation)
   return null
 }
 // 基本情報・追記項目・在籍状況を保存する（権限チェックは呼び出し側で実施済みであること）
 async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
   const u = c.get('user')
   const {
-    memo, follow_flag, retention_risk, skills, career, work_area, retired_at,
+    memo, follow_flag, retention_risk, retired_at,
     affiliation, affiliation_contact, kana, gender, date_of_birth,
-    nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
+    nearest_station_line, nearest_station, employment_status,
   } = body
   if (body.name !== undefined) {
     const newName = String(body.name).trim()
@@ -956,16 +1008,23 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
 
   await c.env.DB.prepare(`UPDATE staff_profiles SET
       memo = COALESCE(?, memo), follow_flag = COALESCE(?, follow_flag), retention_risk = COALESCE(?, retention_risk),
-      skills = COALESCE(?, skills), career = COALESCE(?, career), work_area = COALESCE(?, work_area),
       affiliation = COALESCE(?, affiliation), affiliation_contact = COALESCE(?, affiliation_contact), kana = COALESCE(?, kana),
       gender = COALESCE(?, gender), date_of_birth = COALESCE(?, date_of_birth),
-      nearest_station_line = COALESCE(?, nearest_station_line), nearest_station = COALESCE(?, nearest_station),
-      commute_minutes = COALESCE(?, commute_minutes), available_from = COALESCE(?, available_from)
+      nearest_station_line = COALESCE(?, nearest_station_line), nearest_station = COALESCE(?, nearest_station)
     WHERE staff_id = ? AND company_id = ?`)
-    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null, skills ?? null, career ?? null, work_area ?? null,
+    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null,
       affiliation ?? null, affiliation_contact ?? null, kana ?? null, gender ?? null, date_of_birth ?? null,
-      nearest_station_line ?? null, nearest_station ?? null, commute_minutes ?? null, available_from ?? null,
+      nearest_station_line ?? null, nearest_station ?? null,
       sid, u.company_id).run()
+
+  // 業務側項目は「送られてきた項目だけ」をそのまま保存する（空欄にしてクリアできるように COALESCE は使わない）
+  // skills / career / work_area は従来どおり NOT NULL 相当の扱いなので null は空文字にする
+  const biz = BUSINESS_KEYS.filter(k => body[k] !== undefined)
+  if (biz.length) {
+    const textKeys = ['skills', 'career', 'work_area', 'pr_points', 'remarks']
+    await c.env.DB.prepare(`UPDATE staff_profiles SET ${biz.map(k => `${k} = ?`).join(', ')} WHERE staff_id = ? AND company_id = ?`)
+      .bind(...biz.map(k => body[k] === null && textKeys.includes(k) ? '' : (body[k] ?? null)), sid, u.company_id).run()
+  }
 
   // 稼働先追記項目（所属元にも共有される: 現場評価・稼働メモ）
   if (body.site_evaluation !== undefined || body.work_memo !== undefined) {
@@ -1011,10 +1070,17 @@ api.put('/admin/staff/:id', async (c) => {
   if (!roster) return c.json({ error: 'not found' }, 404)
   if (roster.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません（統合先のスタッフで編集してください）' }, 409)
   if (touchesProfileBase(body)) {
-    if (roster.affiliation_type === 'own_employee') return c.json({ error: '自社雇用スタッフの基本情報は従業員管理から編集してください' }, 403)
+    if (roster.affiliation_type === 'own_employee') return c.json({ error: '自社雇用スタッフの氏名・生年月日・最寄駅・在籍状況などは従業員管理から編集してください' }, 403)
     if (!STAFF_MASTER_EDITABLE_TYPES.includes(roster.affiliation_type) || !roster.can_edit_base) {
       return c.json({ error: '基本項目は所属元企業のみ編集できます' }, 403)
     }
+  }
+  if (touchesBusiness(body)) {
+    if (!canEditBusiness(roster)) return c.json({ error: '他社連携のスタッフの経歴・スキル等は所属元企業のみ編集できます' }, 403)
+    const bizErr = normalizeBusinessBody(body)
+    if (bizErr) return c.json({ error: bizErr }, 400)
+  }
+  if (touchesProfileBase(body) || touchesBusiness(body)) {
     const err = await validateProfileBase(c, body, roster)
     if (err) return c.json({ error: err }, 400)
   }
@@ -1057,7 +1123,7 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
       COUNT(*) AS total_days
     FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
-  return c.json({ profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
+  return c.json({ profile: { ...profile, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
 })
 
 // ============ スタッフ履歴書ファイル管理 ============
@@ -1407,6 +1473,11 @@ api.put('/admin/employees/:staffId', async (c) => {
   if (b.profile && typeof b.profile === 'object') {
     for (const k of PROFILE_BASE_KEYS) if (k !== 'affiliation' && b.profile[k] !== undefined) profile[k] = b.profile[k]
   }
+  if (b.profile && typeof b.profile === 'object') {
+    for (const k of ['pr_points', 'remarks']) if (b.profile[k] !== undefined) profile[k] = b.profile[k]
+  }
+  const bizErr = normalizeBusinessBody(profile)
+  if (bizErr) return c.json({ error: bizErr }, 400)
   const roster = Object.keys(profile).length ? await loadRoster(c.env.DB, sid, u.company_id) : null
   if (roster) {
     const err = await validateProfileBase(c, profile, roster)

@@ -247,18 +247,27 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   }
   // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
   if (from === 'linked_external' && sp.source_staff_id) {
-    const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.source_staff_id).first() as any
+    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする
+    const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
     if (src) {
-      await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, work_area = ?, age_group = ?,
+      await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
           nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?, affiliation_contact = ? WHERE staff_id = ?`)
-        .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
+        .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
           src.commute_minutes, src.available_from, src.affiliation_contact, sp.staff_id).run()
     }
     // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
   }
   await db.prepare(`UPDATE staff_profiles SET affiliation_type = ?, affiliation = ?, partner_affiliation_id = ?, owner_company_id = ?,
-      source_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE source_staff_id END WHERE staff_id = ? AND company_id = ?`)
-    .bind(to, affiliation, to === 'partner_manual' ? partnerId : null, u.company_id, from, sp.staff_id, u.company_id).run()
+      source_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE source_staff_id END,
+      root_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE root_staff_id END, relink_code = NULL WHERE staff_id = ? AND company_id = ?`)
+    .bind(to, affiliation, to === 'partner_manual' ? partnerId : null, u.company_id, from, from, sp.staff_id, u.company_id).run()
+  // 多段連携の中間企業が自社管理に切り替えた場合、その先（自社から連携した企業・さらにその先）の基本項目の参照先を自社の行に付け替える
+  if (from === 'linked_external') {
+    await db.prepare(`WITH RECURSIVE down(id) AS (
+        SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
+        UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
+      UPDATE staff_profiles SET root_staff_id = ? WHERE staff_id IN (SELECT id FROM down)`).bind(sp.staff_id, sp.staff_id).run()
+  }
 
   // 従業員管理
   if (to === 'own_employee') {

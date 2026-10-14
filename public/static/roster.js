@@ -319,8 +319,9 @@ window.showShareQr = async function (sid) {
         <p class="text-sm text-gray-700 mt-1">${esc(data.name)}（${esc(data.company_name)}）</p>
       </div>
       <ul class="text-xs text-gray-500 mt-4 space-y-1">
-        <li>・このQRコード / スタッフIDは恒久固定です（再発行・有効期限はありません）。</li>
+        <li>・このQRコード / スタッフIDは${data.relink ? '自社から連携するための専用コードで、固定です' : '恒久固定です（再発行・有効期限はありません）'}。</li>
         <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目のみが共有されます。</li>
+        <li>・連携先から見える所属元は${data.relink ? '自社（' + esc(data.company_name) + '）のみです。自社の所属元の企業名は連携先には表示されません' : '自社のみです。連携先がさらに別の企業へ連携しても、その先の企業から見える所属元は直前の企業だけです'}。</li>
         <li>・従業員管理の情報（給与・口座・社会保険等）は共有されません。</li>
       </ul>`)
   } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '取得に失敗しました') }
@@ -397,11 +398,11 @@ window.renderRosterPanels = async function (sid, p) {
       </div>
     </section>` : ''
   let linkHtml = ''
-  if (links && links.role === 'owner') {
+  if (links && (links.role === 'owner' || (links.role === 'host' && links.links && links.links.length))) {
     linkHtml = `
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-link text-blue-500 mr-1"></i>連携先企業（稼働先）</h3>
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-link text-blue-500 mr-1"></i>連携先企業（自社から連携した稼働先）</h3>
           ${p.linkable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
         </div>
         ${links.links.length ? links.links.map(l => `
@@ -417,8 +418,9 @@ window.renderRosterPanels = async function (sid, p) {
           </div>`).join('') : `<p class="text-sm text-gray-400">${p.linkable ? 'まだ他社には連携されていません' : '連携対象外のスタッフです'}</p>`}
         <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。</p>
       </section>`
-  } else if (links && links.role === 'host') {
-    linkHtml = `
+  }
+  if (links && links.role === 'host') {
+    linkHtml += `
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-shield-halved text-blue-500 mr-1"></i>連携の同意履歴</h3>
         ${links.consents.map(x => `
