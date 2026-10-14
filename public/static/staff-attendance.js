@@ -152,6 +152,38 @@
     showForm(toInput(c.requested_at), c.reason)
   }
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', approved_exception: '承認（順序の矛盾を確認済み）', rejected: '却下', cancelled: '取り消し' }
+  // ---------- 通知（打刻修正申請の受付・承認・却下）----------
+  // ホーム・その他を開いたときに未読件数を表示する（staff.js の renderHome / renderMore から呼ぶ）
+  window.loadNotifBanner = async function () {
+    let n = 0
+    try { n = (await axios.get('/api/staff/notifications/unread-count')).data.count } catch (e) { return }
+    const banner = document.getElementById('notif-banner')
+    if (banner) banner.innerHTML = n ? `<a href="#notifications" class="block bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-800" role="alert"><i class="fas fa-bell mr-1"></i>未読の通知が <b>${n}件</b> あります <span class="underline font-bold ml-1">確認する</span></a>` : ''
+    const more = document.getElementById('more-notif-count')
+    if (more) { more.textContent = n; more.classList.toggle('hidden', !n) }
+  }
+  window.renderStaffNotifications = async function () {
+    loading()
+    let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { $app.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    $app.innerHTML = `
+      <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
+        ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
+      <div class="space-y-2">${d.notifications.map(n => `
+        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" onclick="notifOpenStaff(${n.notification_id})">
+          <div class="flex items-center gap-2">${n.read_at ? '<span class="badge badge-gray">既読</span>' : '<span class="badge badge-blue">未読</span>'}<span class="text-[11px] text-gray-400 ml-auto">${esc(dayjs(n.created_at.replace(' ', 'T')).format('M/D HH:mm'))}</span></div>
+          <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
+          <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
+        </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
+  }
+  window.notifOpenStaff = async function (id) {
+    try { await axios.post(`/api/staff/notifications/${id}/read`) } catch (e) { }
+    S.tab = 'requests'; location.hash = 'attendance'
+  }
+  window.notifReadAllStaff = async function () {
+    try { await axios.post('/api/staff/notifications/read-all') } catch (e) { toast(errMsg(e)) }
+    renderStaffNotifications()
+  }
+
   window.attDetail = async function (id) {
     let d; try { d = (await axios.get(`/api/staff/corrections/${id}`)).data } catch (e) { toast(errMsg(e)); return }
     const c = d.correction

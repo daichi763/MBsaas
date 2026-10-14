@@ -39,7 +39,8 @@
       <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
         <div><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-user-clock text-blue-600 mr-1"></i>打刻修正承認</h2>
           <p class="text-xs text-gray-500 mt-1">スタッフ・管理者からの打刻の修正と打刻漏れの追加の申請です。承認すると勤怠の記録と実績に反映します</p></div>
-        <button class="btn btn-primary text-sm" onclick="corrNew()"><i class="fas fa-plus"></i>管理者として申請</button>
+        <div class="flex gap-2 flex-wrap"><a href="#corrections/emails" class="btn btn-outline text-sm"><i class="fas fa-envelope"></i>メール送信状況</a>
+          <button class="btn btn-primary text-sm" onclick="corrNew()"><i class="fas fa-plus"></i>管理者として申請</button></div>
       </div>
       <div class="flex gap-2 overflow-x-auto pb-1 mb-3">${tab('pending', '承認待ち')}${tab('approved', '承認済み')}${tab('rejected', '却下')}${tab('cancelled', '取り消し済み')}${tab('', 'すべて')}</div>
       <details class="card p-3 mb-3" ${['project_id', 'staff_name', 'from', 'to', 'work_from', 'work_to', 'report_type', 'kind'].some(k => S[k]) ? 'open' : ''}>
@@ -121,7 +122,7 @@
       </div>
       <p id="corr-msg" class="text-xs text-red-600 mt-2"></p>`)
   }
-  const done = (msg) => { toast(msg); closeModal(); location.hash === '#corrections' ? renderCorrections() : (location.hash = 'corrections') }
+  const done = (msg) => { toast(msg); closeModal(); if (window.refreshNotifBadge) refreshNotifBadge(); location.hash === '#corrections' ? renderCorrections() : (location.hash = 'corrections') }
   const fail = (e, btn) => { document.getElementById('corr-msg').textContent = errMsg(e); if (btn) btn.disabled = false }
   window.corrApprove = async function (btn) {
     if (busy) return

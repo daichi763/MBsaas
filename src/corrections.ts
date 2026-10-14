@@ -13,8 +13,9 @@ import { Hono } from 'hono'
 import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts } from './report-settings'
 import { syncActualFromReports } from './settlement'
 import { personStaffRows } from './roster'
+import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
 
-type Bindings = { DB: D1Database }
+type Bindings = NotifyEnv
 type Variables = { user: any }
 type Actor = { user_id: number; name: string; role: string }
 const actorOf = (u: any): Actor => ({ user_id: u.user_id, name: u.name, role: u.role })
@@ -284,6 +285,11 @@ async function ownCorrection(c: any) {
   return row && row.company_id === c.get('user').company_id ? row : null
 }
 const send = (c: any, r: any) => ('error' in r ? c.json(r, r.status) : c.json(r))
+// 成功したら通知（アプリ内・メール）を送ってから応答する。通知の失敗は結果に影響しない
+async function sendAndNotify(c: any, r: any, correctionId: number | undefined, event: CorrectionEvent) {
+  if (!('error' in r) && correctionId) await notifyCorrection(c, correctionId, event)
+  return send(c, r)
+}
 
 correctionsAdminApi.get('/corrections/pending-count', async (c) => {
   const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(c.get('user').company_id).first() as any
@@ -332,19 +338,20 @@ correctionsAdminApi.post('/corrections', async (c) => {
   const p = await prepareRequest(c.env.DB, s, b)
   if ('error' in p) return c.json(p, p.status)
   if (b.dry_run) return c.json({ ok: true, dry_run: true, ...p })
-  return send(c, await insertCorrection(c.env.DB, s, p, actorOf(u), null))
+  const r = await insertCorrection(c.env.DB, s, p, actorOf(u), null)
+  return sendAndNotify(c, r, (r as any).correction_id, 'submitted')
 })
 correctionsAdminApi.post('/corrections/:id{[0-9]+}/approve', async (c) => {
   const row = await ownCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  return send(c, await approveCorrection(c.env.DB, row, actorOf(c.get('user')), { comment: b.comment, exception: b.exception }))
+  return sendAndNotify(c, await approveCorrection(c.env.DB, row, actorOf(c.get('user')), { comment: b.comment, exception: b.exception }), row.correction_id, 'approved')
 })
 correctionsAdminApi.post('/corrections/:id{[0-9]+}/reject', async (c) => {
   const row = await ownCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  return send(c, await rejectCorrection(c.env.DB, row, actorOf(c.get('user')), b.reason, b.comment))
+  return sendAndNotify(c, await rejectCorrection(c.env.DB, row, actorOf(c.get('user')), b.reason, b.comment), row.correction_id, 'rejected')
 })
 correctionsAdminApi.post('/corrections/:id{[0-9]+}/cancel', async (c) => {
   const row = await ownCorrection(c)
@@ -354,7 +361,8 @@ correctionsAdminApi.post('/corrections/:id{[0-9]+}/cancel', async (c) => {
 correctionsAdminApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
   const row = await ownCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
-  return send(c, await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), await c.req.json().catch(() => ({} as any))))
+  const r: any = await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), await c.req.json().catch(() => ({} as any)))
+  return sendAndNotify(c, r, r.dry_run ? undefined : r.correction_id, 'resubmitted')
 })
 
 // =========================================================
@@ -434,7 +442,8 @@ correctionsStaffApi.post('/corrections', async (c) => {
   const p = await prepareRequest(c.env.DB, s, b)
   if ('error' in p) return c.json(p, p.status)
   if (b.dry_run) return c.json({ ok: true, dry_run: true, ...p })
-  return send(c, await insertCorrection(c.env.DB, s, p, actorOf(c.get('user')), null))
+  const r = await insertCorrection(c.env.DB, s, p, actorOf(c.get('user')), null)
+  return sendAndNotify(c, r, (r as any).correction_id, 'submitted')
 })
 correctionsStaffApi.post('/corrections/:id{[0-9]+}/cancel', async (c) => {
   const row = await myCorrection(c)
@@ -444,5 +453,6 @@ correctionsStaffApi.post('/corrections/:id{[0-9]+}/cancel', async (c) => {
 correctionsStaffApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
   const row = await myCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
-  return send(c, await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), await c.req.json().catch(() => ({} as any))))
+  const r: any = await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), await c.req.json().catch(() => ({} as any)))
+  return sendAndNotify(c, r, r.dry_run ? undefined : r.correction_id, 'resubmitted')
 })
