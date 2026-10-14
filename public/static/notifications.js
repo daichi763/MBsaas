@@ -64,7 +64,8 @@
     const action = (r) => r.status === 'failed' ? `<button class="btn btn-outline text-xs whitespace-nowrap" onclick="mailResend(${r.delivery_id}, this)"><i class="fas fa-rotate"></i>再送</button>` : ''
     $app.innerHTML = `
       <a href="#corrections" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>打刻修正承認</a>
-      <h2 class="text-xl font-bold text-gray-800 mt-2"><i class="fas fa-envelope text-blue-600 mr-1"></i>メール送信状況</h2>
+      <div class="flex items-center justify-between flex-wrap gap-2 mt-2"><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-envelope text-blue-600 mr-1"></i>メール送信状況</h2>
+        <a class="btn btn-outline text-sm" href="/api/admin/notification-emails/export${EMAIL_STATUS === 'all' ? '' : '?status=' + EMAIL_STATUS}"><i class="fas fa-file-csv"></i>CSV 出力</a></div>
       <p class="text-xs text-gray-500 mt-1 mb-3">打刻修正申請の通知メールの送信結果です。送信に失敗しても申請・承認は保存されています。失敗したメールは再送できます（再送の結果も記録します）</p>
       <div class="flex gap-2 overflow-x-auto pb-1 mb-3">${tab('failed', '送信失敗')}${tab('pending', '送信中')}${tab('sent', '送信済み')}${tab('all', 'すべて')}</div>
       <div class="hidden md:block card overflow-x-auto"><table class="tbl">

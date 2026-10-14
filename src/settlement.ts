@@ -10,6 +10,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { calcAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
+import { toCsv } from './csv'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -269,15 +270,7 @@ async function loadRowsByIds(db: D1Database, companyId: number, ids: number[]) {
 }
 
 // ---------- CSV ----------
-function csvCell(v: any): string {
-  if (v == null) return ''
-  let s = String(v)
-  if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s // 数式の実行を防ぐ（負の数値はそのまま）
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-function toCsv(header: string[], rows: any[][]) {
-  return '\uFEFF' + [header, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n'
-}
+// csvCell / toCsv は src/csv.ts（UTF-8 BOM 付き・CRLF・数式インジェクション対策）
 const UNIT_LABEL: Record<string, string> = { daily: '日額', hourly: '時給' }
 
 app.get('/settlement/export', async (c) => {

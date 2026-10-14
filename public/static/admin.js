@@ -2028,7 +2028,8 @@ const routes = {
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
   'report-settings': () => (window.renderReportSettings ? renderReportSettings() : renderDashboard()),
   corrections: () => (window.renderCorrections ? renderCorrections() : renderDashboard()),
-  notifications: () => (window.renderNotificationsInbox ? renderNotificationsInbox() : renderDashboard())
+  notifications: () => (window.renderNotificationsInbox ? renderNotificationsInbox() : renderDashboard()),
+  'attendance-history': () => (window.renderAttendanceHistory ? renderAttendanceHistory() : renderDashboard())
 }
 
 function route() {

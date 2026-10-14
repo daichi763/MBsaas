@@ -2,6 +2,9 @@
 //
 // 対象と基準:
 //   daily_reports              : work_date から3年
+//   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
+//   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
+//                              : 勤怠と同じく、スタッフの退職日から7年（docs/spec_attendance_correction.md 8章）
 //   attendance_reports / shifts
 //   evaluations / follow_logs
 //   consultations / R2写真     : スタッフの退職日(users.retired_at)から7年
@@ -17,6 +20,11 @@ const RETIRED_YEARS = 7
 const DAILY_REPORTS_BATCH = 500
 const DAILY_REPORTS_MAX_BATCHES = 20
 const STAFF_BATCH = 20 // 1回のCronで処理する退職スタッフの上限人数
+const NOTIFICATIONS_YEARS = 2
+const NOTIFICATIONS_BATCH = 500
+const NOTIFICATIONS_MAX_BATCHES = 20
+// 退職スタッフに紐づく打刻修正・報告設定のデータ（勤怠と同じ「退職後7年」）
+const RETIRED_EXTRA_TARGETS = ['attendance_corrections', 'attendance_correction_events', 'notification_emails', 'report_setting_logs', 'project_staff_report_settings']
 
 export type RetentionTargetResult = {
   target: string
@@ -63,6 +71,29 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
   }
 }
 
+async function cleanupUserNotifications(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  const cutoff = cutoffDate(NOTIFICATIONS_YEARS)
+  if (dryRun) {
+    const row = await db.prepare('SELECT COUNT(*) AS n FROM user_notifications WHERE created_at < ?').bind(cutoff).first()
+    return { target: 'user_notifications', targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
+  }
+  let deleted = 0
+  try {
+    for (let i = 0; i < NOTIFICATIONS_MAX_BATCHES; i++) {
+      const result = await db.prepare(
+        `DELETE FROM user_notifications WHERE notification_id IN (SELECT notification_id FROM user_notifications WHERE created_at < ? LIMIT ?)`
+      ).bind(cutoff, NOTIFICATIONS_BATCH).run()
+      const changes = result.meta.changes || 0
+      deleted += changes
+      if (changes < NOTIFICATIONS_BATCH) break
+    }
+    return { target: 'user_notifications', targetCount: deleted, deletedCount: deleted, failedCount: 0 }
+  } catch (e) {
+    console.log(`retention: user_notifications cleanup failed after deleting ${deleted}: ${e}`)
+    return { target: 'user_notifications', targetCount: deleted, deletedCount: deleted, failedCount: 1, error: String(e) }
+  }
+}
+
 async function getEligibleRetiredStaffIds(db: D1Database, limit: number): Promise<number[]> {
   const cutoff = cutoffDate(RETIRED_YEARS)
   const rows = await db.prepare(
@@ -73,7 +104,7 @@ async function getEligibleRetiredStaffIds(db: D1Database, limit: number): Promis
 }
 
 async function dryRunRetiredStaffData(db: D1Database): Promise<Record<string, RetentionTargetResult>> {
-  const targets = ['attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'r2_photos']
+  const targets = ['attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'r2_photos', ...RETIRED_EXTRA_TARGETS]
   const acc: Record<string, RetentionTargetResult> = {}
   for (const t of targets) acc[t] = { target: t, targetCount: 0, deletedCount: 0, failedCount: 0 }
 
@@ -93,11 +124,24 @@ async function dryRunRetiredStaffData(db: D1Database): Promise<Record<string, Re
     `SELECT COUNT(*) AS n FROM attendance_reports WHERE staff_id IN (${placeholders}) AND photo_key IS NOT NULL`
   ).bind(...ids).first()
   acc.r2_photos.targetCount = (photoRow?.n as number) || 0
+  // 打刻修正・報告設定（退職スタッフの判定はサブクエリで行う）
+  const retired = `SELECT sp.staff_id FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id WHERE u.retired_at IS NOT NULL AND u.retired_at <= ?`
+  const counts: Record<string, string> = {
+    attendance_corrections: `SELECT COUNT(*) AS n FROM attendance_corrections WHERE staff_id IN (${retired})`,
+    attendance_correction_events: `SELECT COUNT(*) AS n FROM attendance_correction_events WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id IN (${retired}))`,
+    notification_emails: `SELECT COUNT(*) AS n FROM notification_emails WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id IN (${retired}))`,
+    report_setting_logs: `SELECT COUNT(*) AS n FROM report_setting_logs WHERE staff_id IN (${retired})`,
+    project_staff_report_settings: `SELECT COUNT(*) AS n FROM project_staff_report_settings WHERE staff_id IN (${retired})`,
+  }
+  for (const [t, sql] of Object.entries(counts)) {
+    const row = await db.prepare(sql).bind(cutoff).first()
+    acc[t].targetCount = (row?.n as number) || 0
+  }
   return acc
 }
 
 async function cleanupRetiredStaffData(db: D1Database, photos: R2Bucket): Promise<Record<string, RetentionTargetResult>> {
-  const targets = ['attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'r2_photos']
+  const targets = ['attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'r2_photos', ...RETIRED_EXTRA_TARGETS]
   const acc: Record<string, RetentionTargetResult> = {}
   for (const t of targets) acc[t] = { target: t, targetCount: 0, deletedCount: 0, failedCount: 0 }
 
@@ -134,8 +178,17 @@ async function cleanupRetiredStaffData(db: D1Database, photos: R2Bucket): Promis
         db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId),
         db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId),
         db.prepare('DELETE FROM consultations WHERE staff_id = ?').bind(staffId),
+        // 打刻修正の操作履歴・通知メールは申請より先に消す（申請 ID で対象を特定するため）
+        db.prepare('DELETE FROM attendance_correction_events WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId),
+        db.prepare('DELETE FROM notification_emails WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId),
+        db.prepare('DELETE FROM attendance_corrections WHERE staff_id = ?').bind(staffId),
+        db.prepare('DELETE FROM report_setting_logs WHERE staff_id = ?').bind(staffId),
+        db.prepare('DELETE FROM project_staff_report_settings WHERE staff_id = ?').bind(staffId),
       ])
       const changes = del.map(r => r.meta.changes || 0)
+      ;['attendance_correction_events', 'notification_emails', 'attendance_corrections', 'report_setting_logs', 'project_staff_report_settings'].forEach((t, i) => {
+        acc[t].targetCount += changes[5 + i]; acc[t].deletedCount += changes[5 + i]
+      })
       acc.attendance_reports.targetCount += changes[0]; acc.attendance_reports.deletedCount += changes[0]
       acc.shifts.targetCount += changes[1]; acc.shifts.deletedCount += changes[1]
       acc.evaluations.targetCount += changes[2]; acc.evaluations.deletedCount += changes[2]
@@ -143,7 +196,7 @@ async function cleanupRetiredStaffData(db: D1Database, photos: R2Bucket): Promis
       acc.consultations.targetCount += changes[4]; acc.consultations.deletedCount += changes[4]
     } catch (e) {
       console.log(`retention: cleanup failed for staff_id=${staffId}: ${e}`)
-      for (const t of ['attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations']) acc[t].failedCount++
+      for (const t of ['attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', ...RETIRED_EXTRA_TARGETS]) acc[t].failedCount++
     }
   }
   return acc
@@ -154,9 +207,10 @@ export async function runRetentionCleanup(db: D1Database, photos: R2Bucket, opts
   const startedAt = new Date().toISOString()
 
   const dailyReportsResult = await cleanupDailyReports(db, opts.dryRun)
+  const notificationsResult = await cleanupUserNotifications(db, opts.dryRun)
   const retiredResults = opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, photos)
 
-  const results = [dailyReportsResult, ...Object.values(retiredResults)]
+  const results = [dailyReportsResult, notificationsResult, ...Object.values(retiredResults)]
   const finishedAt = new Date().toISOString()
 
   for (const r of results) {
