@@ -1,6 +1,6 @@
 # 案件報告管理 / 打刻修正申請・承認ワークフロー 仕様（設計）
 
-最終更新: 2026-10-14（第1段階: 2章・3章・4.7 / 第2段階: 4章・6章の申請・承認・タイムライン / 第3段階: 5章 通知 を実装済み。8章 保存期間・CSV は未実装）
+最終更新: 2026-10-14（第1〜第4段階 実装済み）
 
 ## 0. 背景と方針
 - 勤怠報告を「案件 × スタッフ」ごとに 8 種類まで ON/OFF できるようにする。あわせて、スタッフ本人・管理者が打刻の修正と打刻漏れの追加を申請し、管理者が承認する流れを作る
@@ -297,8 +297,15 @@
 - 退職日から 7 年の定期削除（`retention.ts`）に、`attendance_corrections`・`attendance_correction_events`・`report_setting_logs`（スタッフ別の行）・`project_staff_report_settings`・`notification_emails` を追加する。退職日が NULL のスタッフは削除しない（既存の規則）
 - 案件の標準設定の履歴（staff_id が NULL）は個人情報を含まないため削除しない
 - `user_notifications` は 2 年で削除（§5.1）
+- 定期削除は毎日の cron（`scheduled`）で動く。**現状のビルド設定（`@hono/vite-build/cloudflare-pages`）では `scheduled` がビルド結果に含まれず、cron が動いていない**（既存の不具合。別の PR で修正）。修正されるまで、この章の削除は行われない
 
-## 9. マイグレーション（0027 の予定）
+## 8.1 履歴の検索・CSV（第4段階）
+- 管理画面「勤怠管理 > 履歴・CSV」（`#attendance-history`）: 打刻修正の操作履歴（申請・再申請・承認・例外承認・却下・取り消し）と報告設定の変更履歴（全案件）を、期間・案件・スタッフ名・報告の種類・操作で検索し、表示中の条件で CSV を出力する
+- 申請の一覧（打刻修正承認）とメール送信状況にも、表示中の条件の CSV 出力を付ける
+- CSV は既存の精算と同じ形式（UTF-8 BOM 付き・CRLF・数式インジェクション対策。`src/csv.ts` に共通化）。最大 10,000 件
+- CSV を出力できるのは管理ロールのみ（`/api/admin/*`）。自社のデータのみ。案件担当者の概念は作らない方針のため、管理ロール全員が全案件を出力できる
+
+## 9. マイグレーション（0027〜0029）
 - 追加: `project_report_defaults`、`project_staff_report_settings`、`report_setting_logs`、`attendance_corrections`（一意インデックス含む）、`attendance_correction_events`、`user_notifications`、`notification_emails` とインデックス
 - 移行: §2.4 の初期値の投入と、その履歴（`action='migration'`）
 - 既存の列・データは変更・削除しない

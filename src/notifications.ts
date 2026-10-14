@@ -12,6 +12,7 @@ import { Hono } from 'hono'
 import { sendEmail } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 import { REPORT_LABEL } from './report-settings'
+import { toCsv, csvResponse } from './csv'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -190,6 +191,21 @@ notificationsAdminApi.get('/notification-emails', async (c) => {
     WHERE e.company_id = ? ${status ? 'AND e.status = ?' : ''} ORDER BY e.delivery_id DESC LIMIT 300`).bind(u.company_id, ...(status ? [status] : [])).all()).results
   const counts = (await c.env.DB.prepare('SELECT status, COUNT(*) AS n FROM notification_emails WHERE company_id = ? GROUP BY status').bind(u.company_id).all()).results as any[]
   return c.json({ deliveries: rows, counts: Object.fromEntries(counts.map(r => [r.status, r.n])), labels: REPORT_LABEL })
+})
+notificationsAdminApi.get('/notification-emails/export', async (c) => {
+  const u = c.get('user')
+  const status = ['failed', 'sent', 'pending'].includes(c.req.query('status') || '') ? c.req.query('status') : null
+  const rows = (await c.env.DB.prepare(`SELECT e.*, us.name AS recipient_name, ub.name AS last_attempt_by_name, c.report_type, s.work_date, su.name AS staff_name
+    FROM notification_emails e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN users ub ON ub.user_id = e.last_attempt_by
+    LEFT JOIN attendance_corrections c ON c.correction_id = e.correction_id LEFT JOIN shifts s ON s.shift_id = c.shift_id
+    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users su ON su.user_id = sp.user_id
+    WHERE e.company_id = ? ${status ? 'AND e.status = ?' : ''} ORDER BY e.delivery_id LIMIT 10000`).bind(u.company_id, ...(status ? [status] : [])).all()).results as any[]
+  const ST: Record<string, string> = { sent: '送信済み', failed: '送信失敗', pending: '送信中' }
+  const EV: Record<string, string> = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下' }
+  const csv = toCsv(['送信ID', '作成日時', '状態', '通知', '宛先', 'メールアドレス', '申請ID', 'スタッフ', '勤務日', '報告', '失敗の理由', '試行回数', '最終送信日時', '再送した人'],
+    rows.map(r => [r.delivery_id, r.created_at, ST[r.status] || r.status, EV[r.event] || r.event, r.recipient_name, r.to_email, r.correction_id, r.staff_name, r.work_date,
+      REPORT_LABEL[r.report_type] || r.report_type, r.error, r.attempts, r.last_attempt_at, r.last_attempt_by_name]))
+  return csvResponse(`通知メールの送信状況_${nowJST().slice(0, 10)}.csv`, csv)
 })
 notificationsAdminApi.post('/notification-emails/:id{[0-9]+}/resend', async (c) => {
   const u = c.get('user')

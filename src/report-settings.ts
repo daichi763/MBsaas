@@ -10,6 +10,7 @@
 // 管理者向け API（/api/admin/report-settings/*）は api.ts から権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
+import { toCsv, csvResponse } from './csv'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -324,22 +325,40 @@ reportSettingsApi.post('/report-settings/projects/:id/bulk', async (c) => {
   }
 })
 
-// 設定変更の履歴（案件・スタッフ・期間・報告種類で絞り込み）
-reportSettingsApi.get('/report-settings/logs', async (c) => {
-  const u = c.get('user'); const q = (k: string) => c.req.query(k)
-  const w = ['l.company_id = ?']; const bind: any[] = [u.company_id]
+// 設定変更の履歴（案件・スタッフ・期間・報告種類・操作で絞り込み）
+function logFilter(companyId: number, q: (k: string) => string | undefined) {
+  const w = ['l.company_id = ?']; const bind: any[] = [companyId]
   if (q('project_id')) { w.push('l.project_id = ?'); bind.push(Number(q('project_id'))) }
   if (q('staff_id')) { w.push('l.staff_id = ?'); bind.push(Number(q('staff_id'))) }
   if (q('scope') === 'default') w.push('l.staff_id IS NULL')
   if (isReportType(q('report_type'))) { w.push('l.report_type = ?'); bind.push(q('report_type')) }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q('from') || '')) { w.push('l.created_at >= ?'); bind.push(q('from') + ' 00:00:00') }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q('to') || '')) { w.push('l.created_at <= ?'); bind.push(q('to') + ' 23:59:59') }
+  if (q('staff_name')) { w.push("us.name LIKE ? ESCAPE '\\'"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%') }
+  if (q('action') && ACTION_LABEL[q('action')!]) { w.push('l.action = ?'); bind.push(q('action')) }
+  return { where: w.join(' AND '), bind }
+}
+const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行' }
+const LOG_FROM = `FROM report_setting_logs l LEFT JOIN projects p ON p.project_id = l.project_id
+    LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+reportSettingsApi.get('/report-settings/logs', async (c) => {
+  const u = c.get('user'); const q = (k: string) => c.req.query(k)
+  const { where, bind } = logFilter(u.company_id, q)
   const limit = Math.min(500, Math.max(1, Number(q('limit')) || 200))
-  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, us.name AS staff_name FROM report_setting_logs l
-    LEFT JOIN projects p ON p.project_id = l.project_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
-    WHERE ${w.join(' AND ')} ORDER BY l.log_id DESC LIMIT ?`).bind(...bind, limit).all()).results
+  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name ${LOG_FROM}
+    WHERE ${where} ORDER BY l.log_id DESC LIMIT ?`).bind(...bind, limit).all()).results
   return c.json({ logs: rows, labels: REPORT_LABEL })
+})
+reportSettingsApi.get('/report-settings/logs/export', async (c) => {
+  const u = c.get('user')
+  const { where, bind } = logFilter(u.company_id, k => c.req.query(k))
+  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name ${LOG_FROM}
+    WHERE ${where} ORDER BY l.log_id LIMIT 10000`).bind(...bind).all()).results as any[]
+  const onoff = (v: any) => v == null ? '' : v ? 'ON' : 'OFF'
+  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール'],
+    rows.map(l => [l.log_id, l.created_at, l.project_name, (l.project_status || 'active') === 'active' ? '稼働中' : '終了', l.staff_id ? l.staff_name : '標準設定',
+      REPORT_LABEL[l.report_type] || l.report_type, onoff(l.old_enabled), onoff(l.new_enabled), ACTION_LABEL[l.action] || l.action, l.batch_id, l.changed_by_name || (l.action === 'migration' ? 'システム' : ''), l.changed_by_role]))
+  return csvResponse(`報告設定の変更履歴_${nowJST().slice(0, 10)}.csv`, csv)
 })
 
 export default reportSettingsApi
