@@ -274,6 +274,7 @@ app.get('/admin', async (c) => {
   const u = await currentUser(c)
   if (!u) return c.redirect('/login')
   if (u.role === 'staff') return c.redirect('/staff')
+  if (u.role === 'system_admin') return c.redirect('/hq')
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('管理画面')}
