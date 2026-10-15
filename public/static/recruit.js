@@ -12,6 +12,7 @@
   const S = window.__recruitState = window.__recruitState || { tab: 'applications', status: 'pending' }
   let projects = null
   const pageUrl = (t) => location.origin + '/apply/' + t
+  const MAX_PAGE_PROJECTS = 50 // src/recruit.ts と同じ上限
 
   // サイドメニューの未対応件数
   window.refreshRecruitBadge = async function () {
@@ -78,7 +79,7 @@
           <div class="max-h-36 overflow-y-auto border border-gray-200 rounded-lg p-2 mt-1 space-y-1">
             ${spot.map(x => `<label class="flex items-center gap-2 text-xs"><input type="checkbox" class="rp-proj" value="${x.project_id}" ${sel.has(x.project_id) ? 'checked' : ''}>${esc(x.project_name)}<span class="text-gray-400">${esc(x.client_name || '')}</span>${x.engagement_type === 'spot' ? '<span class="badge badge-purple">スポット</span>' : ''}</label>`).join('')}
           </div>
-          <p class="text-[11px] text-gray-400 mt-1">案件名・クライアント名・金額は公開ページに表示しません。表示するのは、日時・開催場所・役割・残り人数です</p></div>
+          <p class="text-[11px] text-gray-400 mt-1">案件名・クライアント名・金額は公開ページに表示しません。表示するのは、日時・開催場所・役割・残り人数です（対象の案件は${MAX_PAGE_PROJECTS}件まで）</p></div>
         <div class="grid grid-cols-2 gap-2">
           <label class="text-gray-600">期間（開始）<input id="rp-from" type="date" class="inp" value="${p?.date_from || dayjs().format('YYYY-MM-DD')}"></label>
           <label class="text-gray-600">期間（終了）<input id="rp-to" type="date" class="inp" value="${p?.date_to || dayjs().add(1, 'month').format('YYYY-MM-DD')}"></label>
@@ -104,6 +105,7 @@
       show_remaining: document.getElementById('rp-remaining').checked, allow_staff: document.getElementById('rp-staff').checked,
       ...(id && document.getElementById('rp-regen')?.checked ? { regenerate_token: true } : {}),
     }
+    if (body.project_ids.length > MAX_PAGE_PROJECTS) return toast(`対象の案件は${MAX_PAGE_PROJECTS}件までです（${body.project_ids.length}件選択中）`)
     try {
       const { data } = id ? await axios.put('/api/admin/recruit-pages/' + id, body) : await axios.post('/api/admin/recruit-pages', body)
       closeModal(); toast(id ? '保存しました' : '募集ページを作成しました')
@@ -147,6 +149,7 @@
           `<button class="btn ${S.status === k ? 'btn-primary' : 'btn-outline'} text-xs" onclick="window.__recruitState.status='${k}';renderRecruit()">${l}</button>`).join('')}
         ${S.page_id ? `<span class="badge badge-blue">募集ページで絞り込み中 <button onclick="window.__recruitState.page_id=null;renderRecruit()" class="ml-1"><i class="fas fa-xmark"></i></button></span>` : ''}
       </div>
+      ${data.truncated ? `<p class="text-xs text-amber-600 mb-2" id="recruit-app-truncated"><i class="fas fa-circle-info mr-1"></i>件数が多いため、${S.status === 'pending' ? '古い順' : '新しい順'}に${data.applications.length}件だけ表示しています。募集ページで絞り込んでください</p>` : ''}
       <div class="space-y-3" id="recruit-app-list">
         ${data.applications.map(appCard).join('') || '<p class="card p-6 text-center text-sm text-gray-400">応募はありません</p>'}
       </div>`

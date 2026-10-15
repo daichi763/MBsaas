@@ -185,10 +185,15 @@
     </div>`
   }
 
+  // 重複の表示。他社のシフトは会社名・案件名を出さず「他社の予定あり」と時間帯だけにする（呼び出し側で esc する）
+  function conflictText(x) {
+    return (x.other_company ? '他社の予定あり' : (x.project_name || '自社のシフト')) + ' ' + (x.start_time || '') + '〜' + (x.end_time || '')
+  }
+
   function staffChip(a) {
     const warn = (a.conflicts && a.conflicts.length) || a.ng
     const title = [
-      a.conflicts && a.conflicts.length ? '重複: ' + a.conflicts.map(x => (x.other_company ? x.company_name + '（他社）' : x.project_name) + ' ' + x.start_time + '〜' + x.end_time).join(' / ') : '',
+      a.conflicts && a.conflicts.length ? '重複: ' + a.conflicts.map(conflictText).join(' / ') : '',
       a.ng ? 'NGスタッフに指定されています' : '',
       BS.showMoney ? `請求 ${yen(a.bill_total)} / 支払 ${a.pay_total == null ? '未設定' : yen(a.pay_total)}` : '',
     ].filter(Boolean).join('\n')
@@ -318,7 +323,7 @@
       <h3 class="font-bold text-lg mb-1">${esc(a.staff_name)}</h3>
       <p class="text-xs text-gray-500 mb-3">${dayjs(a.work_date).format('M/D')}(${WD[dayjs(a.work_date).day()]}) ${a.start_time}〜${a.end_time}・${esc(a.site_name || a.location || '')}・${esc(a.role || '')}
         <span class="badge badge-gray ml-1">${ST_LABEL[a.status]}</span></p>
-      ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(x => (x.other_company ? x.company_name + '（他社）' : x.project_name) + ' ' + x.start_time + '〜' + x.end_time).join(' / '))}</p>` : ''}
+      ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(conflictText).join(' / '))}</p>` : ''}
       ${a.ng ? '<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2">クライアントのNGスタッフに指定されています</p>' : ''}
       ${a.settle_status === 'confirmed' ? '<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
       ${a.actual_start ? `<p class="text-xs text-gray-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${a.actual_start}〜${a.actual_end}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
