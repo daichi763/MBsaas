@@ -4,7 +4,7 @@
 // =========================================================
 (function () {
   const WD = ['日', '月', '火', '水', '木', '金', '土']
-  const ST_LABEL = { requested: '希望', confirmed: '確定', absent: '欠勤', substitute: '代打' }
+  const ST_LABEL = { requested: '希望（仮）', confirmed: '確定', absent: '欠勤', substitute: '代打' }
   const UNIT_LABEL = { daily: '日額', hourly: '時給' }
   const BT_LABEL = { actual: '実費を請求', fixed: '定額を請求', included: '単価に込み（請求なし）' }
   const PT_LABEL = { actual: '実費を支払', capped: '実費（上限あり）', fixed: '定額を支払', none: '支払なし' }
@@ -61,6 +61,7 @@
           <button class="btn btn-outline" onclick="openPatternModal()"><i class="fas fa-repeat"></i>繰り返し登録</button>
           <button class="btn btn-outline" onclick="openBulkModal()"><i class="fas fa-calendar-week"></i>常勤の一括登録</button>
           <button class="btn btn-outline" onclick="openCopyModal()"><i class="fas fa-copy"></i>コピー</button>
+          <button class="btn btn-outline" data-action="openShiftRequests"><i class="fas fa-hand"></i>シフト希望<span id="board-req-count"></span></button>
           <a class="btn btn-outline" href="#shifts/week"><i class="fas fa-table-columns"></i>週表示（従来）</a>
         </div>
       </div>
@@ -115,6 +116,7 @@
         </aside>
       </div>`
     enableDnD()
+    loadRequestCount()
   }
 
   function slotGrid(days) {
@@ -195,11 +197,12 @@
     const title = [
       a.conflicts && a.conflicts.length ? '重複: ' + a.conflicts.map(conflictText).join(' / ') : '',
       a.ng ? 'NGスタッフに指定されています' : '',
+      replyText(a),
       BS.showMoney ? `請求 ${yen(a.bill_total)} / 支払 ${a.pay_total == null ? '未設定' : yen(a.pay_total)}` : '',
     ].filter(Boolean).join('\n')
     return `<div class="board-chip shift-chip st-${a.status} ${warn ? 'chip-warn' : ''}" data-shift-id="${a.shift_id}" title="${esc(title)}" onclick="openShiftDetail(${a.shift_id})">
       <span class="truncate">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(a.staff_name)}</span>
-      <span class="text-[10px] shrink-0">${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${a.price_locked ? '<i class="fas fa-pen text-gray-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-amber-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
+      <span class="text-[10px] shrink-0">${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${replyMark(a)}${a.price_locked ? '<i class="fas fa-pen text-gray-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-amber-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
     </div>`
   }
 
@@ -222,7 +225,7 @@
           const p = proj.get(a.project_id) || {}
           const warn = (a.conflicts && a.conflicts.length) || a.ng
           return `<div class="board-chip st-${a.status} ${warn ? 'chip-warn' : ''} flex-col items-start" onclick="openShiftDetail(${a.shift_id})" title="${esc(p.project_name + ' / ' + (a._site || ''))}">
-            <span class="truncate w-full text-[11px] font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(p.project_name || '')}</span>
+            <span class="truncate w-full text-[11px] font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(p.project_name || '')}${replyMark(a)}</span>
             <span class="truncate w-full text-[10px] text-gray-500">${esc(a._site || '')} ${esc(a.start_time)}〜${esc(a.end_time)}</span></div>` }).join('')}</td>`).join('')}</tr>`
     }).join('')}</tbody></table>`
   }
@@ -297,7 +300,7 @@
         </label>`).join('') || '<p class="p-3 text-sm text-gray-400">候補がいません</p>'}
       </div>
       <div class="grid grid-cols-2 gap-2 mt-3">
-        <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録</option></select>
+        <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録（本人が可否を返事）</option></select>
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（任意）">
       </div>
       <button class="btn btn-primary w-full mt-3" onclick="assignFromCandidates(${slotRoleId})">選択したスタッフを割り当て</button>
@@ -323,6 +326,7 @@
       <h3 class="font-bold text-lg mb-1">${esc(a.staff_name)}</h3>
       <p class="text-xs text-gray-500 mb-3">${dayjs(a.work_date).format('M/D')}(${WD[dayjs(a.work_date).day()]}) ${esc(a.start_time)}〜${esc(a.end_time)}・${esc(a.site_name || a.location || '')}・${esc(a.role || '')}
         <span class="badge badge-gray ml-1">${ST_LABEL[a.status]}</span></p>
+      ${a.status === 'requested' ? `<p class="text-xs ${a.staff_reply === 'ng' ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-amber-50'} rounded p-2 mb-2">${replyMark(a)} ${esc(replyText(a))}${a.staff_reply_at ? `<span class="text-gray-400 ml-1">${esc(a.staff_reply_at)}</span>` : ''}</p>` : ''}
       ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(conflictText).join(' / '))}</p>` : ''}
       ${a.ng ? '<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2">クライアントのNGスタッフに指定されています</p>' : ''}
       ${a.settle_status === 'confirmed' ? '<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
@@ -387,6 +391,83 @@
       })
       closeModal(); toast('金額を保存しました'); renderShiftBoard()
     } catch (e) { toast(errMsg(e)) }
+  }
+
+  // =========================================================
+  // スタッフのシフト希望（#12 #353）
+  // 採用・見送りの返事だけを記録する（本人の画面に出る）。シフトは枠への割り当てなど通常の経路で登録する
+  // =========================================================
+  const REQ_ST = { pending: ['返事待ち', 'badge-yellow'], accepted: ['採用', 'badge-green'], declined: ['見送り', 'badge-gray'], withdrawn: ['本人が取り下げ', 'badge-gray'] }
+  let REQ_ALL = false
+  function boardRange() { return { from: BS.from, to: dayjs(BS.from).add(BS.days - 1, 'day').format('YYYY-MM-DD') } }
+  async function loadRequestCount() {
+    const el = document.getElementById('board-req-count'); if (!el) return
+    try {
+      const { data } = await axios.get('/api/admin/shift-requests?' + new URLSearchParams({ ...boardRange(), status: 'pending' }))
+      el.innerHTML = data.pending ? `<span class="badge badge-red ml-1">${Number(data.pending)}</span>` : ''
+    } catch (e) { /* 件数の表示のみ */ }
+  }
+  async function openShiftRequests() {
+    const r = boardRange()
+    let data
+    try { data = (await axios.get('/api/admin/shift-requests?' + new URLSearchParams({ ...r, status: REQ_ALL ? 'all' : 'pending' }))).data }
+    catch (e) { toast(errMsg(e)); return }
+    const row = (q) => {
+      const st = REQ_ST[q.status] || [q.status, 'badge-gray']
+      return `<div class="py-2 text-sm" data-request-id="${q.request_id}">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <p><span class="font-bold">${dayjs(q.work_date).format('M/D')}(${WD[dayjs(q.work_date).day()]}) ${esc(q.start_time)}〜${esc(q.end_time)}</span>
+              <a href="#staff/${q.staff_id}" class="ml-1 font-bold text-blue-700 hover:underline">${esc(q.staff_name)}</a></p>
+            <p class="text-xs text-gray-500">${q.project_name ? esc(q.project_name) : '案件の指定なし'}${q.memo ? '・' + esc(q.memo) : ''}</p>
+            <p class="text-[11px] ${q.shifts_on_date ? 'text-emerald-700' : 'text-gray-400'}">${q.shifts_on_date ? `この日のシフト ${q.shifts_on_date}件あり` : 'この日のシフトはまだありません'}</p>
+            ${q.status !== 'pending' && q.response_note ? `<p class="text-[11px] text-gray-500">返事: ${esc(q.response_note)}</p>` : ''}
+            ${q.responded_by_name ? `<p class="text-[11px] text-gray-400">${esc(q.responded_by_name)} ${esc(q.responded_at || '')}</p>` : ''}
+          </div>
+          <span class="badge ${st[1]} shrink-0">${esc(st[0])}</span>
+        </div>
+        ${q.status === 'pending' ? `<div class="flex gap-2 mt-1.5 items-center">
+          <input class="inp text-xs flex-1" maxlength="500" placeholder="本人への返事（任意）" data-note-for="${q.request_id}">
+          <button class="btn btn-primary text-xs" data-action="respondShiftRequest" data-id="${q.request_id}" data-decision="accept">採用</button>
+          <button class="btn btn-outline text-xs" data-action="respondShiftRequest" data-id="${q.request_id}" data-decision="decline">見送り</button>
+        </div>` : ''}
+      </div>`
+    }
+    modal(`
+      <h3 class="font-bold text-lg mb-1">シフト希望</h3>
+      <p class="text-xs text-gray-500 mb-2">${dayjs(data.from).format('M/D')}〜${dayjs(data.to).format('M/D')}（ボードの表示期間）・返事待ち ${data.pending}件。
+        採用・見送りは本人のシフト画面に表示されます。採用したら、枠への割り当てでシフトを登録してください</p>
+      <label class="flex items-center gap-1 text-xs mb-2"><input type="checkbox" data-action="toggleShiftRequestsAll" ${REQ_ALL ? 'checked' : ''}>返事済み・取り下げも表示</label>
+      <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100" id="shift-request-list">
+        ${data.requests.map(row).join('') || '<p class="p-3 text-sm text-gray-400">シフト希望はありません</p>'}
+      </div>`)
+  }
+  delegate('openShiftRequests', () => openShiftRequests())
+  delegate('toggleShiftRequestsAll', (el) => { REQ_ALL = !!el.checked; openShiftRequests() })
+  delegate('respondShiftRequest', async (el) => {
+    const id = Number(el.dataset.id)
+    const decision = el.dataset.decision
+    const input = document.querySelector(`[data-note-for="${id}"]`)
+    if (decision === 'decline' && !confirm('この希望を見送りにしますか？（本人の画面に「見送り」と表示されます）')) return
+    await withSubmitLock(el, async () => {
+      try { await axios.post(`/api/admin/shift-requests/${id}/respond`, { decision, note: input ? input.value : '' }) }
+      catch (e) { toast(errMsg(e)); return openShiftRequests() }
+      toast(decision === 'accept' ? '採用にしました' : '見送りにしました')
+      openShiftRequests(); loadRequestCount()
+    })
+  })
+
+  // 管理者が『希望（仮）』で入れたシフトへの本人の返事（#411）
+  function replyMark(a) {
+    if (a.status !== 'requested') return ''
+    if (a.staff_reply === 'ok') return '<i class="fas fa-circle-check text-emerald-600 ml-0.5" title="本人: 入れます"></i>'
+    if (a.staff_reply === 'ng') return '<i class="fas fa-circle-xmark text-red-500 ml-0.5" title="本人: 入れません"></i>'
+    return '<i class="fas fa-hourglass-half text-gray-400 ml-0.5" title="本人の返事待ち"></i>'
+  }
+  function replyText(a) {
+    if (a.status !== 'requested') return ''
+    if (!a.staff_reply) return '本人の返事待ち'
+    return '本人: ' + (a.staff_reply === 'ok' ? '入れます' : '入れません') + (a.staff_reply_note ? '（' + a.staff_reply_note + '）' : '')
   }
 
   // =========================================================

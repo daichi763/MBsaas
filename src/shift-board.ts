@@ -223,6 +223,48 @@ function parseIds(v: any): number[] { return String(v || '').split(',').map(x =>
 export { findConflicts, conflictFor, ngStaffIds }
 
 // =========================================================
+// スタッフのシフト希望（shift_requests。#12 #353）
+// 希望はシフトではないので、ここでは採用・見送りの返事だけを記録する。シフトは枠への割り当てなど通常の経路で登録する
+// =========================================================
+const SHIFT_REQUEST_MAX_RANGE_DAYS = 92
+app.get('/shift-requests', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const from = isDate(c.req.query('from')) ? c.req.query('from')! : new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
+  let to = isDate(c.req.query('to')) ? c.req.query('to')! : addDays(from, 30)
+  if (dayDiff(from, to) < 0) to = from
+  if (dayDiff(from, to) > SHIFT_REQUEST_MAX_RANGE_DAYS - 1) to = addDays(from, SHIFT_REQUEST_MAX_RANGE_DAYS - 1)
+  const onlyPending = c.req.query('status') !== 'all'
+  const rows = (await db.prepare(`
+    SELECT r.request_id, r.staff_id, r.project_id, r.work_date, r.start_time, r.end_time, r.memo, r.status, r.response_note, r.responded_at, r.withdrawn_at, r.created_at,
+      us.name AS staff_name, p.project_name, rb.name AS responded_by_name,
+      (SELECT COUNT(*) FROM shifts s WHERE s.company_id = r.company_id AND s.staff_id = r.staff_id AND s.work_date = r.work_date AND s.status IN ('requested','confirmed','substitute')) AS shifts_on_date
+    FROM shift_requests r JOIN staff_profiles sp ON sp.staff_id = r.staff_id AND sp.company_id = r.company_id JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN projects p ON p.project_id = r.project_id AND p.company_id = r.company_id
+    LEFT JOIN users rb ON rb.user_id = r.responded_by
+    WHERE r.company_id = ? AND r.work_date BETWEEN ? AND ? ${onlyPending ? "AND r.status = 'pending'" : ''}
+    ORDER BY r.work_date, r.start_time, us.name, r.request_id LIMIT 500`).bind(u.company_id, from, to).all()).results
+  const n = await db.prepare(`SELECT COUNT(*) AS n FROM shift_requests WHERE company_id = ? AND work_date BETWEEN ? AND ? AND status = 'pending'`).bind(u.company_id, from, to).first() as any
+  return c.json({ from, to, requests: rows, pending: n?.n || 0 })
+})
+
+// 採用（accept）・見送り（decline）の返事。返事待ちのものだけ（本人が取り下げた後や二重の返事は 409）
+app.post('/shift-requests/:id/respond', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const status = b.decision === 'accept' ? 'accepted' : b.decision === 'decline' ? 'declined' : null
+  if (!status) return c.json({ error: '採用か見送りを選んでください' }, 400)
+  if (b.note != null && typeof b.note !== 'string') return c.json({ error: '返事の内容が正しくありません' }, 400)
+  const note = String(b.note || '').trim()
+  if (note.length > 500) return c.json({ error: '返事は500文字以内で入力してください' }, 400)
+  const req = await db.prepare('SELECT request_id, status FROM shift_requests WHERE request_id = ? AND company_id = ?').bind(intOrNull(c.req.param('id')), u.company_id).first() as any
+  if (!req) return c.json({ error: '希望が見つかりません' }, 404)
+  const r = await db.prepare(`UPDATE shift_requests SET status = ?, response_note = ?, responded_by = ?, responded_at = datetime('now', '+9 hours')
+    WHERE request_id = ? AND company_id = ? AND status = 'pending'`).bind(status, note || null, u.user_id, req.request_id, u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: req.status === 'withdrawn' ? '本人が取り下げた希望です' : 'すでに返事をした希望です' }, 409)
+  return c.json({ ok: true, status })
+})
+
+// =========================================================
 // シフトボード
 // =========================================================
 app.get('/shift-board', async (c) => {

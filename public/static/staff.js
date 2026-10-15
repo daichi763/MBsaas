@@ -395,15 +395,57 @@ window.submitPhotoAttendance = async function () {
 }
 
 // ============ シフト ============
+// shifts: 確定・代打・欠勤と、会社が仮で押さえた枠（status='requested'。本人が可否を返事する）
+// requests: 本人が出したシフト希望（返事待ち・採用・見送り。返事待ちは取り下げできる）
+let SHIFT_REQ_PROJECTS = []
+let SHIFTS_MONTH = null
+const SHIFT_REQ_BADGE = {
+  pending: '<span class="badge badge-yellow">希望を提出済み</span>',
+  accepted: '<span class="badge badge-green">採用</span>',
+  declined: '<span class="badge badge-gray">見送り</span>',
+}
 async function renderShifts(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
+  SHIFTS_MONTH = month
   const { data } = await axios.get('/api/staff/shifts?month=' + month)
+  SHIFT_REQ_PROJECTS = data.request_projects || []
   const byDate = {}
-  for (const s of data.shifts) { (byDate[s.work_date] = byDate[s.work_date] || []).push(s) }
+  const day = (d) => (byDate[d] = byDate[d] || { shifts: [], requests: [] })
+  for (const s of data.shifts) day(s.work_date).shifts.push(s)
+  for (const r of data.requests || []) day(r.work_date).requests.push(r)
   const today = dayjs().format('YYYY-MM-DD')
-  const statusBadge = { requested: '<span class="badge badge-yellow">希望</span>', confirmed: '<span class="badge badge-green">確定</span>', absent: '<span class="badge badge-red">欠勤</span>', substitute: '<span class="badge badge-purple">代打</span>' }
+  const statusBadge = { requested: '<span class="badge bg-orange-100 text-orange-700">仮押さえ（確定前）</span>', confirmed: '<span class="badge badge-green">確定</span>', absent: '<span class="badge badge-red">欠勤</span>', substitute: '<span class="badge badge-purple">代打</span>' }
+  const replyLabel = { ok: '「入れます」と返事済み', ng: '「入れません」と返事済み' }
+  // 会社の仮押さえへの返事（入れます／入れません）。過ぎた日は返事できない
+  const replyBox = (s) => {
+    if (s.status !== 'requested') return ''
+    const canReply = s.work_date >= today
+    return `<div class="mt-1 rounded-lg bg-orange-50 px-2.5 py-2 text-xs text-gray-600">
+      <p>会社が仮で押さえた枠です。まだ確定していません。${canReply ? '入れるかどうか返事をしてください' : ''}</p>
+      ${s.staff_reply ? `<p class="mt-1 font-bold ${s.staff_reply === 'ok' ? 'text-emerald-700' : 'text-red-600'}">${replyLabel[s.staff_reply] || ''}${s.staff_reply_note ? '：' + esc(s.staff_reply_note) : ''}</p>` : ''}
+      ${canReply ? `<div class="flex gap-2 mt-1.5">
+        <button class="btn ${s.staff_reply === 'ok' ? 'btn-primary' : 'btn-outline'} flex-1 text-xs" data-action="replyShift" data-id="${s.shift_id}" data-answer="ok">入れます</button>
+        <button class="btn ${s.staff_reply === 'ng' ? 'btn-danger' : 'btn-outline'} flex-1 text-xs" data-action="replyShift" data-id="${s.shift_id}" data-answer="ng">入れません</button>
+      </div>` : ''}
+    </div>`
+  }
+  const requestRow = (r) => `
+    <div class="mt-2 pt-2 border-t border-dashed border-gray-200 text-sm shift-request-row" data-request-id="${r.request_id}">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <p class="font-medium text-gray-700"><i class="fas fa-hand text-amber-500 mr-1"></i>シフト希望・${r.project_name ? esc(r.project_name) : '案件の指定なし'}</p>
+          <p class="text-xs text-gray-400">${esc(r.start_time)}〜${esc(r.end_time)}${r.memo ? ' ' + esc(r.memo) : ''}</p>
+        </div>
+        <div class="text-right shrink-0">${SHIFT_REQ_BADGE[r.status] || ''}
+          ${r.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1 ml-auto" data-action="withdrawShiftRequest" data-id="${r.request_id}">取り下げ</button>` : ''}</div>
+      </div>
+      ${r.status === 'pending' ? '<p class="text-[11px] text-gray-400 mt-0.5">管理者の返事を待っています</p>' : ''}
+      ${r.status === 'accepted' ? '<p class="text-[11px] text-gray-500 mt-0.5">シフトが登録されると、この日に「確定」のシフトとして表示されます</p>' : ''}
+      ${r.status !== 'pending' && r.response_note ? `<p class="text-xs text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1">管理者より：${esc(r.response_note)}</p>` : ''}
+    </div>`
 
+  // 1つのシフトにつき .mt-1.5 の行を1つだけ出す（staff-profile.js が他社シフトの会社名を行の順番で付けるため）
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-3">
       <button class="btn btn-outline" onclick="renderShifts('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
@@ -418,14 +460,15 @@ async function renderShifts(month) {
           <div class="flex items-center justify-between">
             <span class="font-bold ${d === today ? 'text-blue-700' : 'text-gray-800'}">${fmtDate(d)} ${d === today ? '<span class="badge badge-blue">今日</span>' : ''}</span>
           </div>
-          ${byDate[d].map(s => `
+          ${byDate[d].shifts.map(s => `
             <div class="mt-1.5 flex items-center justify-between text-sm">
               <div>
                 <p class="font-medium text-gray-700">${esc(s.project_name)}</p>
                 <p class="text-xs text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.location || '')}</p>
               </div>
               ${statusBadge[s.status] || ''}
-            </div>`).join('')}
+            </div>${replyBox(s)}`).join('')}
+          ${byDate[d].requests.map(requestRow).join('')}
         </div>`).join('') || '<p class="text-center text-gray-400 py-10">この月のシフトはありません</p>'}
     </div>
     <div id="shift-modal"></div>`
@@ -494,35 +537,81 @@ window.cancelRecruitItem = async function (id) {
 }
 
 window.showShiftRequest = function () {
+  const projects = SHIFT_REQ_PROJECTS || []
   document.getElementById('shift-modal').innerHTML = `
     <div class="modal-bg" onclick="if(event.target===this)this.remove()">
       <div class="modal-box p-5">
-        <h3 class="font-bold text-lg mb-4">シフト希望提出</h3>
+        <h3 class="font-bold text-lg mb-1">シフト希望提出</h3>
+        <p class="text-xs text-gray-500 mb-4">管理者が確認して返事をします。返事があるまでは取り下げできます</p>
         <div class="space-y-3">
           <div><label class="text-sm text-gray-600 block mb-1">日付</label><input id="req-date" type="date" class="inp" min="${dayjs().format('YYYY-MM-DD')}"></div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="text-sm text-gray-600 block mb-1">開始</label><input id="req-start" type="time" value="09:30" class="inp"></div>
             <div><label class="text-sm text-gray-600 block mb-1">終了</label><input id="req-end" type="time" value="19:00" class="inp"></div>
           </div>
-          <div><label class="text-sm text-gray-600 block mb-1">備考</label><input id="req-memo" type="text" class="inp" placeholder="希望条件など"></div>
-          <button class="btn btn-primary w-full" onclick="submitShiftRequest()">提出する</button>
+          ${projects.length ? `<div><label class="text-sm text-gray-600 block mb-1">案件（任意）</label><select id="req-project" class="inp">
+            <option value="">指定しない</option>${projects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>` : ''}
+          <div><label class="text-sm text-gray-600 block mb-1">備考</label><input id="req-memo" type="text" class="inp" maxlength="500" placeholder="希望条件など"></div>
+          <p id="req-error" class="text-sm text-red-600 hidden"></p>
+          <button class="btn btn-primary w-full" onclick="submitShiftRequest(this)">提出する</button>
         </div>
       </div>
     </div>`
 }
 
-window.submitShiftRequest = async function () {
+window.submitShiftRequest = async function (btn) {
+  const errEl = document.getElementById('req-error')
+  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.remove('hidden') }
   const date = document.getElementById('req-date').value
-  if (!date) { toast('日付を選択してください'); return }
-  await axios.post('/api/staff/shifts/request', {
-    work_date: date,
-    start_time: document.getElementById('req-start').value,
-    end_time: document.getElementById('req-end').value,
-    memo: document.getElementById('req-memo').value
+  const start = document.getElementById('req-start').value
+  const end = document.getElementById('req-end').value
+  if (!date) return showErr('日付を選択してください')
+  if (date < dayjs().format('YYYY-MM-DD')) return showErr('過去の日付には希望を出せません')
+  if (!start || !end) return showErr('開始・終了の時刻を入力してください')
+  if (start === end) return showErr('開始と終了に同じ時刻は指定できません')
+  const proj = document.getElementById('req-project')
+  await withSubmitLock(btn, async () => {
+    try {
+      await axios.post('/api/staff/shifts/request', {
+        work_date: date, start_time: start, end_time: end,
+        project_id: proj && proj.value ? Number(proj.value) : null,
+        memo: document.getElementById('req-memo').value,
+      })
+    } catch (e) {
+      showErr((e.response && e.response.data && e.response.data.error) || '提出に失敗しました。電波の良い場所で再度お試しください')
+      return
+    }
+    toast('シフト希望を提出しました')
+    renderShifts(date.slice(0, 7))
   })
-  toast('シフト希望を提出しました')
-  renderShifts(date.slice(0, 7))
 }
+
+// シフト希望の取り下げ（返事待ちのものだけ）
+delegate('withdrawShiftRequest', async (el) => {
+  if (!confirm('このシフト希望を取り下げますか？')) return
+  await withSubmitLock(el, async () => {
+    try { await axios.post(`/api/staff/shift-requests/${Number(el.dataset.id)}/cancel`) }
+    catch (e) { showApiError(e, '取り下げに失敗しました'); return }
+    toast('取り下げました')
+    renderShifts(SHIFTS_MONTH)
+  })
+})
+
+// 会社の仮押さえへの返事
+delegate('replyShift', async (el) => {
+  const answer = el.dataset.answer
+  let note = ''
+  if (answer === 'ng') {
+    note = prompt('入れない理由など、ひとことあれば入力してください（任意）', '')
+    if (note === null) return
+  }
+  await withSubmitLock(el, async () => {
+    try { await axios.post(`/api/staff/shifts/${Number(el.dataset.id)}/reply`, { answer, note }) }
+    catch (e) { showApiError(e, '返事を送れませんでした'); return }
+    toast(answer === 'ok' ? '「入れます」と返事しました' : '「入れません」と返事しました')
+    renderShifts(SHIFTS_MONTH)
+  })
+})
 
 // ============ 日報入力 ============
 // 対象のシフトは #report/<shift_id> で指定する。指定がなければ、報告が済んで日報が未提出のシフト → ホームのシフトの順に選ぶ

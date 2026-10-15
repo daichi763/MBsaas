@@ -23,7 +23,7 @@ import {
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, linkedStaffEmails } from './roster'
-import { isHHMM, oneOf, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
+import { isHHMM, isISODate, oneOf, toInt, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 
 type Bindings = {
@@ -751,9 +751,12 @@ api.get('/staff/my-reports', async (c) => {
 })
 
 // シフト確認
+// shifts は確定・代打・欠勤と、管理者が入れた『希望（仮）』（status='requested'。本人は可否を返事できる）。
+// 本人が出したシフト希望は shift_requests にあり、requests で別に返す（#411）
 api.get('/staff/shifts', async (c) => {
   const u = c.get('user')
-  const month = c.req.query('month') || monthJST()
+  const q = c.req.query('month') || ''
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST()
   // 同一人物の全所属企業のシフトを表示（他社分は company_name で識別）
   const ids = (await personStaffRows(c.env.DB, u)).map(r => r.staff_id)
   if (!ids.length) ids.push(u.staff_id)
@@ -761,18 +764,89 @@ api.get('/staff/shifts', async (c) => {
     SELECT s.*, p.project_name, co.company_name, (s.company_id != ?) AS other_company FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN companies co ON co.company_id = s.company_id
     WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date LIKE ? ORDER BY s.work_date, s.start_time`).bind(u.company_id, ...ids, month + '%').all()
-  return c.json({ shifts: (rows.results as any[]).map(stripMoney), month })
+  // 本人が出した希望（取り下げたものは出さない）。案件は自社の行だけ名前を付ける
+  const requests = (await c.env.DB.prepare(`
+    SELECT r.request_id, r.work_date, r.start_time, r.end_time, r.memo, r.status, r.response_note, r.responded_at, r.created_at, r.project_id, p.project_name
+    FROM shift_requests r LEFT JOIN projects p ON p.project_id = r.project_id AND p.company_id = r.company_id
+    WHERE r.company_id = ? AND r.staff_id = ? AND r.status != 'withdrawn' AND r.work_date LIKE ?
+    ORDER BY r.work_date, r.start_time, r.request_id`).bind(u.company_id, u.staff_id, month + '%').all()).results
+  return c.json({
+    shifts: (rows.results as any[]).map(s => ({ ...stripMoney(s), tentative: s.status === 'requested' })),
+    requests,
+    request_projects: await requestableProjects(c.env.DB, u),
+    month,
+  })
 })
 
-// シフト希望提出
+// シフト希望で選べる案件: 自社の稼働中の案件のうち、本人がシフトに入ったことのあるもの（#59 他社・無関係の案件は選べない）
+async function requestableProjects(db: D1Database, u: any): Promise<{ project_id: number; project_name: string }[]> {
+  if (!u.staff_id) return []
+  return (await db.prepare(`
+    SELECT p.project_id, p.project_name FROM projects p
+    WHERE p.company_id = ? AND COALESCE(p.status, 'active') = 'active'
+      AND EXISTS (SELECT 1 FROM shifts s WHERE s.project_id = p.project_id AND s.company_id = p.company_id AND s.staff_id = ? AND s.status != 'absent')
+    ORDER BY p.project_name`).bind(u.company_id, u.staff_id).all()).results as any[]
+}
+
+const SHIFT_REQUEST_MAX_DAYS_AHEAD = 366
+
+// シフト希望提出（#12 shift_requests に保存する。#59 案件は自社の選べる案件だけ）
 api.post('/staff/shifts/request', async (c) => {
-  const u = c.get('user')
-  const { work_date, start_time, end_time, project_id, memo } = await c.req.json()
-  if (!work_date) return c.json({ error: '日付は必須です' }, 400)
-  if ((start_time && !isHHMM(start_time)) || (end_time && !isHHMM(end_time))) return c.json({ error: '時刻は HH:MM の形式で入力してください' }, 400)
-  await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, status, registered_by, memo)
-    VALUES (?, ?, ?, ?, ?, ?, 'requested', ?, ?)`)
-    .bind(u.company_id, u.staff_id, project_id || 0, work_date, start_time || '09:30', end_time || '19:00', u.user_id, memo || '希望提出').run()
+  const u = c.get('user'); const db = c.env.DB
+  if (!u.staff_id) return c.json({ error: 'スタッフ情報が見つかりません' }, 403)
+  const b = await c.req.json().catch(() => ({} as any))
+  const { work_date, memo } = b
+  const start_time = b.start_time || '09:30', end_time = b.end_time || '19:00'
+  if (!isISODate(work_date)) return c.json({ error: '日付を選択してください' }, 400)
+  const today = todayJST()
+  if (work_date < today) return c.json({ error: '過去の日付には希望を出せません' }, 400)
+  if (work_date > addDays(today, SHIFT_REQUEST_MAX_DAYS_AHEAD)) return c.json({ error: '1年より先の日付には希望を出せません' }, 400)
+  if (!isHHMM(start_time) || !isHHMM(end_time)) return c.json({ error: '時刻は HH:MM の形式で入力してください' }, 400)
+  if (start_time === end_time) return c.json({ error: '開始と終了に同じ時刻は指定できません' }, 400)
+  if (memo != null && typeof memo !== 'string') return c.json({ error: '備考が正しくありません' }, 400)
+  const note = String(memo || '').trim()
+  if (note.length > 500) return c.json({ error: '備考は500文字以内で入力してください' }, 400)
+  let projectId: number | null = null
+  if (b.project_id !== undefined && b.project_id !== null && b.project_id !== '') {
+    projectId = toInt(b.project_id, 1)
+    if (projectId == null || !(await requestableProjects(db, u)).some(p => p.project_id === projectId)) return c.json({ error: '案件が見つかりません' }, 400)
+  }
+  // 同じ日時の返事待ちの希望は1件だけ（uq_shift_requests_pending）。二度押しは 409 で返す
+  const r = await db.prepare(`INSERT INTO shift_requests (company_id, staff_id, user_id, project_id, work_date, start_time, end_time, memo, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT DO NOTHING`)
+    .bind(u.company_id, u.staff_id, u.user_id, projectId, work_date, start_time, end_time, note || null, nowJST()).run()
+  if (!r.meta.changes) return c.json({ error: '同じ日時の希望をすでに提出しています' }, 409)
+  return c.json({ ok: true, request_id: r.meta.last_row_id })
+})
+
+// シフト希望の取り下げ（#353）。返事待ちのものだけ。採用・見送りの後は管理者に連絡してもらう
+api.post('/staff/shift-requests/:id/cancel', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const id = toInt(c.req.param('id'), 1)
+  const req = id == null ? null : await db.prepare('SELECT request_id, status FROM shift_requests WHERE request_id = ? AND company_id = ? AND staff_id = ?').bind(id, u.company_id, u.staff_id).first() as any
+  if (!req) return c.json({ error: '希望が見つかりません' }, 404)
+  const r = await db.prepare(`UPDATE shift_requests SET status = 'withdrawn', withdrawn_at = ? WHERE request_id = ? AND status = 'pending'`).bind(nowJST(), req.request_id).run()
+  if (!r.meta.changes) return c.json({ error: req.status === 'withdrawn' ? 'すでに取り下げています' : '管理者が返事をした希望は取り下げできません。変更は管理者に連絡してください' }, 409)
+  return c.json({ ok: true })
+})
+
+// 管理者が『希望（仮）』で入れたシフトへの返事（#411）。answer: ok（入れます）/ ng（入れません）
+api.post('/staff/shifts/:id/reply', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  if (!oneOf(b.answer, ['ok', 'ng'] as const)) return c.json({ error: '返事を選んでください' }, 400)
+  if (b.note != null && typeof b.note !== 'string') return c.json({ error: 'ひとことが正しくありません' }, 400)
+  const note = String(b.note || '').trim()
+  if (note.length > 200) return c.json({ error: 'ひとことは200文字以内で入力してください' }, 400)
+  const id = toInt(c.req.param('id'), 1)
+  const ids = (await personStaffRows(db, u)).map(r => r.staff_id)
+  if (!ids.length && u.staff_id) ids.push(u.staff_id)
+  const s = id == null || !ids.length ? null : await db.prepare(`SELECT shift_id, status, work_date, settle_status FROM shifts WHERE shift_id = ? AND staff_id IN (${ids.map(() => '?').join(',')})`).bind(id, ...ids).first() as any
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (s.status !== 'requested') return c.json({ error: 'このシフトはすでに確定・変更されています。画面を更新してください' }, 409)
+  if (s.work_date < todayJST()) return c.json({ error: '過ぎた日のシフトには返事できません' }, 409)
+  await db.prepare(`UPDATE shifts SET staff_reply = ?, staff_reply_note = ?, staff_reply_at = ? WHERE shift_id = ? AND status = 'requested'`)
+    .bind(b.answer, note || null, nowJST(), s.shift_id).run()
   return c.json({ ok: true })
 })
 
