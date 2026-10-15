@@ -293,8 +293,9 @@ async function deletePhotos(db: D1Database, photos: R2Bucket, keys: string[], ac
   acc.r2_photos.targetCount += keys.length
   acc.r2_photos.deletedCount += done.length
   acc.r2_photos.failedCount += keys.length - done.length
-  for (const k of done) {
-    await db.prepare('DELETE FROM retention_pending_r2 WHERE photo_key = ?').bind(k).run()
+  // 1件ずつ消すと写真の多い人でクエリ数が膨らむため、json_each で1文にまとめる（バインドは1個）
+  if (done.length) {
+    await db.prepare('DELETE FROM retention_pending_r2 WHERE photo_key IN (SELECT value FROM json_each(?))').bind(JSON.stringify(done)).run()
   }
 }
 

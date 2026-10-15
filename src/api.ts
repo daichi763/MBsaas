@@ -1067,7 +1067,8 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
 const EMPLOYMENT_STATUSES = ['working', 'leave', 'retired', 'preboarding']
 
 /** 退職日・在籍状況の入力を確認し、body.retired_at を正規化する。確認が必要なときは confirm_required を付けて返す */
-async function validateRetirement(db: D1Database, sid: string, body: any, roster: any): Promise<{ error: string; confirm_required?: boolean } | null> {
+// hireDateOverride: 同じ送信で入社日も変えるとき（従業員管理）はその値で比べる
+async function validateRetirement(db: D1Database, sid: string, body: any, roster: any, hireDateOverride?: string | null): Promise<{ error: string; confirm_required?: boolean } | null> {
   const status = body.employment_status
   if (status !== undefined && !EMPLOYMENT_STATUSES.includes(status)) return { error: '在籍状況の値が正しくありません' }
   if (body.retired_at === undefined) {
@@ -1081,7 +1082,7 @@ async function validateRetirement(db: D1Database, sid: string, body: any, roster
   if (raw && !unchanged && body.retired_at_confirmed !== true) {
     const hire = await db.prepare('SELECT hire_date FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
     const last = await db.prepare('SELECT MAX(work_date) AS d FROM shifts WHERE staff_id = ?').bind(sid).first() as any
-    hireDate = hire?.hire_date || null; lastWorkDate = last?.d || null
+    hireDate = hireDateOverride !== undefined ? (hireDateOverride || null) : (hire?.hire_date || null); lastWorkDate = last?.d || null
   }
   const v = validateRetiredAt(raw, { today: todayJST(), confirmed: unchanged || body.retired_at_confirmed === true, hireDate, lastWorkDate })
   if (!v.ok) return { error: v.error, confirm_required: v.confirm || undefined }
@@ -1541,7 +1542,7 @@ api.put('/admin/employees/:staffId', async (c) => {
     const err = await validateProfileBase(c, profile, roster)
     if (err) return c.json({ error: err }, 400)
     if (b.profile.retired_at_confirmed === true) profile.retired_at_confirmed = true
-    const retErr = await validateRetirement(c.env.DB, sid, profile, roster)
+    const retErr = await validateRetirement(c.env.DB, sid, profile, roster, b.hire_date === undefined ? undefined : (typeof b.hire_date === 'string' ? b.hire_date.trim() : null))
     if (retErr) return c.json(retErr, retErr.confirm_required ? 409 : 400)
   }
   if (b.employee_number) {
