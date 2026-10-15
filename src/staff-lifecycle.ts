@@ -496,7 +496,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
   const done = new Set(((await db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results as any[]).map(r => r.report_type))
   const ng = checkReportable(modes.required_attendance, done, reportType)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 受付の時間帯（稼働日。休憩・勤務終了・退店は翌日も。0時台の開始は前日の夜から）。アプリと同じ判定
+  // 受付の時間帯（稼働日。休憩・勤務終了・退店は翌日も。lib/shift-time.ts の reportableWindow）。アプリと同じ判定
   const late = checkReportTime(t, reportType, nowJST())
   if (late) return c.json({ error: late.error }, late.status as 400)
   let status = 'normal'
