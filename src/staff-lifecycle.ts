@@ -10,6 +10,7 @@ import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
+import { checkReportTime } from './report-settings'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -495,8 +496,9 @@ publicReportApi.post('/:token/attendance', async (c) => {
   const done = new Set(((await db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results as any[]).map(r => r.report_type))
   const ng = checkReportable(modes.required_attendance, done, reportType)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 日をまたぐ勤務: 休憩・勤務終了・退店は稼働日の翌日も受け付ける
-  if (t.work_date !== todayJST() && !(NEXT_DAY_TYPES.includes(reportType) && addDays(t.work_date, 1) === todayJST())) return c.json({ error: '稼働日当日に報告してください' }, 400)
+  // 受付の時間帯（稼働日。休憩・勤務終了・退店は翌日も。0時台の開始は前日の夜から）。アプリと同じ判定
+  const late = checkReportTime(t, reportType, nowJST())
+  if (late) return c.json({ error: late.error }, late.status as 400)
   let status = 'normal'
   if (reportType === 'check_in') {
     if (nowJST().slice(11, 16) > t.start_time) status = 'late'

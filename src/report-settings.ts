@@ -11,6 +11,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { toCsv, csvResponse } from './csv'
+import { NEXT_DAY_TYPES, reportableWindow, type ShiftTimes } from './lib/shift-time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -21,8 +22,8 @@ export const REPORT_LABEL: Record<string, string> = {
   wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始',
   break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告',
 }
-// 稼働日の翌日も受け付ける報告（日をまたぐ勤務）
-export const NEXT_DAY_TYPES = ['break_start', 'break_end', 'work_end', 'check_out']
+// 稼働日の翌日も受け付ける報告（日をまたぐ勤務）。受付の時間帯は lib/shift-time.ts の reportableWindow
+export { NEXT_DAY_TYPES }
 // 実績（実働・休憩）に関わる報告。登録・変更のたびに syncActualFromReports を呼ぶ
 export const ACTUAL_SYNC_TYPES = ['check_in', 'check_out', 'work_start', 'work_end', 'break_start', 'break_end']
 
@@ -85,6 +86,14 @@ export function checkReportable(required: string[], done: Set<string>, type: str
   if (done.has(type)) return { error: 'すでに報告済みです', status: 409 }
   const idx = required.indexOf(type)
   if (required.slice(0, idx).some(t => !done.has(t))) return { error: '前の報告を先に行ってください', status: 400 }
+  return null
+}
+
+// 報告を受け付ける時間帯か（now は JST の 'YYYY-MM-DD HH:MM:SS'）。時間帯の外ならエラーを返す
+export function checkReportTime(shift: ShiftTimes, type: string, now: string): { error: string; status: number } | null {
+  const w = reportableWindow(shift, type)
+  if (now < w.start) return { error: `まだ報告できません（${Number(w.start.slice(5, 7))}/${Number(w.start.slice(8, 10))} ${w.start.slice(11, 16)} から報告できます）`, status: 400 }
+  if (now > w.end) return { error: '報告の受付期間を過ぎています。打刻の修正申請から追加してください', status: 400 }
   return null
 }
 
