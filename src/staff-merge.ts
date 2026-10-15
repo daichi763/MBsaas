@@ -10,6 +10,8 @@
 import { Hono } from 'hono'
 import { applyPricingToShift, conflictFor, findConflicts, loadPricingData } from './shift-board'
 import { TYPE_LABEL, normalizePhone, payeeTypeFor } from './staff-lifecycle'
+import { revokeSessionsStmt } from './lib/auth'
+import { conflictLabel } from './lib/staff-eligibility'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -103,7 +105,7 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     const cf = await findConflicts(db, u.company_id, [tgt.staff_id], dates[0], dates[dates.length - 1])
     for (const s of active) {
       const list = conflictFor(cf.get(tgt.staff_id), s.work_date, s.start_time, s.end_time)
-      if (list.length) warnings.push(`${s.work_date} ${s.start_time}〜${s.end_time} ${s.project_name}: 統合先に同じ時間帯のシフトがあります（${list.map((x: any) => (x.company_id === u.company_id ? x.project_name : x.company_name + '・他社') + ' ' + x.start_time + '〜' + x.end_time).join('、')}）${list.some((x: any) => x.slot_role_id && x.slot_role_id === s.slot_role_id) ? '・同じ枠' : ''}`)
+      if (list.length) warnings.push(`${s.work_date} ${s.start_time}〜${s.end_time} ${s.project_name}: 統合先に同じ時間帯のシフトがあります（${list.map((x: any) => conflictLabel(x, u.company_id)).join('、')}）${list.some((x: any) => x.company_id === u.company_id && x.slot_role_id && x.slot_role_id === s.slot_role_id) ? '・同じ枠' : ''}`)
     }
   }
   const srcEr = await db.prepare('SELECT employee_record_id, employment_ended_at FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
@@ -153,7 +155,7 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   // 統合元を「統合済み」に。ログインとセッションを無効化
   stmts.push(db.prepare('UPDATE staff_profiles SET merged_into_staff_id = ?, merged_at = ? WHERE staff_id = ?').bind(T, nowJST(), sid))
   stmts.push(db.prepare("UPDATE users SET status = 'inactive' WHERE user_id = ?").bind(src.user_id))
-  stmts.push(db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(src.user_id))
+  stmts.push(revokeSessionsStmt(db, src.user_id))
   await db.batch(stmts)
 
   // クライアントのNGスタッフ（カンマ区切り）の付け替え

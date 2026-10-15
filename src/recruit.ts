@@ -10,6 +10,8 @@
 import { Hono } from 'hono'
 import { applyPricingToShift, conflictFor, findConflicts, loadPricingData, ngStaffIds } from './shift-board'
 import { findStaffByPhone, insertProvisionalStaff, normalizePhone } from './staff-lifecycle'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { conflictLabel } from './lib/staff-eligibility'
 
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string }
 type Variables = { user: any }
@@ -17,6 +19,8 @@ type Variables = { user: any }
 // ---------- 定数 ----------
 const MAX_PAGE_DAYS = 62
 const MAX_SLOTS_PER_APPLY = 31
+const MAX_PAGE_PROJECTS = 50      // 1つの募集ページで対象にできる案件の数
+const MAX_APPLICATIONS_LIST = 200 // 応募一覧で一度に返す件数
 const RATE_PER_IP_HOUR = 5        // 同じ接続元からの送信は1時間に5件まで
 const RATE_PER_PHONE_DAY = 3      // 同じ電話番号からの送信は1日に3件まで（募集ページごと）
 const MIN_FILL_MS = 3000          // 表示から3秒未満の送信は機械的な送信とみなす
@@ -48,9 +52,10 @@ async function openRoles(db: D1Database, page: any, opts: { fromDate?: string; r
   const pids = parseIds(page.project_ids)
   if (!pids.length) return []
   const from = [page.date_from, opts.fromDate || todayJST()].sort().pop()!
-  const w = [`sl.company_id = ?`, `sl.project_id IN (${pids.map(() => '?').join(',')})`, `sl.work_date BETWEEN ? AND ?`, `COALESCE(sl.status,'open') = 'open'`]
-  const bind: any[] = [page.company_id, ...pids, from, page.date_to]
-  if (opts.roleIds) { if (!opts.roleIds.length) return []; w.push(`r.slot_role_id IN (${opts.roleIds.map(() => '?').join(',')})`); bind.push(...opts.roleIds) }
+  // 案件・枠のIDは json_each で1つにまとめてバインドする（D1 のバインド上限 100）
+  const w = [`sl.company_id = ?`, `sl.project_id IN ${JSON_IN}`, `sl.work_date BETWEEN ? AND ?`, `COALESCE(sl.status,'open') = 'open'`]
+  const bind: any[] = [page.company_id, bindJsonArray(pids), from, page.date_to]
+  if (opts.roleIds) { if (!opts.roleIds.length) return []; w.push(`r.slot_role_id IN ${JSON_IN}`); bind.push(bindJsonArray(opts.roleIds)) }
   const rows = (await db.prepare(`SELECT r.slot_role_id, r.role_name, r.headcount, sl.slot_id, sl.project_id, sl.work_date, sl.start_time, sl.end_time, sl.break_minutes,
       COALESCE(si.site_name, sl.location, p.location, '') AS place, si.address AS site_address,
       (SELECT COUNT(*) FROM shifts s WHERE s.slot_role_id = r.slot_role_id AND s.status != 'absent') AS assigned,
@@ -136,8 +141,8 @@ recruitPublicApi.post('/:token/apply', async (c) => {
   if (!roles.length) return c.json({ error: '選択した日時は募集が終了しました。ページを再読み込みしてください' }, 409)
   // 同じ電話番号で同じ枠にすでに未対応の応募がある場合は重複させない
   const dupRows = (await db.prepare(`SELECT i.slot_role_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    WHERE a.company_id = ? AND a.phone = ? AND i.status IN ('pending','approved') AND i.slot_role_id IN (${roles.map(() => '?').join(',')})`)
-    .bind(page.company_id, phone, ...roles.map(r => r.slot_role_id)).all()).results as any[]
+    WHERE a.company_id = ? AND a.phone = ? AND i.status IN ('pending','approved') AND i.slot_role_id IN ${JSON_IN}`)
+    .bind(page.company_id, phone, bindJsonArray(roles.map(r => r.slot_role_id))).all()).results as any[]
   const dup = new Set(dupRows.map(r => r.slot_role_id))
   const targets = roles.filter(r => !dup.has(r.slot_role_id))
   if (!targets.length) return c.json({ ok: true, count: 0, message: '選択した日時はすでに応募済みです' })
@@ -249,13 +254,15 @@ function pageValues(b: any, cur: any = {}) {
   let error: string | null = null
   if (!v.title) error = '募集のタイトルを入力してください'
   else if (!v.project_ids) error = '対象の案件を選択してください'
+  // 件数の上限は案件を送ってきたときだけ確認する（既存のページの終了・再開は妨げない）
+  else if (b.project_ids !== undefined && parseIds(b.project_ids).length > MAX_PAGE_PROJECTS) error = `対象の案件は${MAX_PAGE_PROJECTS}件までです`
   else if (!isDate(v.date_from) || !isDate(v.date_to) || dayDiff(v.date_from, v.date_to) < 0) error = '期間を正しく入力してください'
   else if (dayDiff(v.date_from, v.date_to) > MAX_PAGE_DAYS - 1) error = `期間は${MAX_PAGE_DAYS}日以内で指定してください`
   return { v, error }
 }
 async function checkProjects(db: D1Database, companyId: number, ids: string) {
   const list = parseIds(ids)
-  const n = await db.prepare(`SELECT COUNT(*) AS n FROM projects WHERE company_id = ? AND project_id IN (${list.map(() => '?').join(',')})`).bind(companyId, ...list).first() as any
+  const n = await db.prepare(`SELECT COUNT(*) AS n FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(list)).first() as any
   return n?.n === list.length
 }
 
@@ -318,18 +325,21 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
   const w = ['a.company_id = ?']; const bind: any[] = [u.company_id]
   if (['pending', 'done', 'cancelled'].includes(status)) { w.push('a.status = ?'); bind.push(status) }
   if (c.req.query('page_id')) { w.push('a.page_id = ?'); bind.push(Number(c.req.query('page_id'))) }
-  const apps = ((await db.prepare(`SELECT a.*, rp.title AS page_title, us.name AS staff_name, sp.is_provisional, COALESCE(sp.affiliation_type,'own_employee') AS staff_affiliation_type
+  const fetched = ((await db.prepare(`SELECT a.*, rp.title AS page_title, us.name AS staff_name, sp.is_provisional, COALESCE(sp.affiliation_type,'own_employee') AS staff_affiliation_type
     FROM recruit_applications a LEFT JOIN recruit_pages rp ON rp.page_id = a.page_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = a.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
-    WHERE ${w.join(' AND ')} ORDER BY a.created_at ${status === 'pending' ? 'ASC' : 'DESC'} LIMIT 200`).bind(...bind).all()).results as any[])
-  if (!apps.length) return c.json({ applications: [], counts: await counts(db, u.company_id) })
-  const ids = apps.map(a => a.application_id)
+    WHERE ${w.join(' AND ')} ORDER BY a.created_at ${status === 'pending' ? 'ASC' : 'DESC'} LIMIT ${MAX_APPLICATIONS_LIST + 1}`).bind(...bind).all()).results as any[])
+  // 上限を超えた分は返さず、画面に「表示しきれていない」ことを伝える
+  const truncated = fetched.length > MAX_APPLICATIONS_LIST
+  const apps = fetched.slice(0, MAX_APPLICATIONS_LIST)
+  if (!apps.length) return c.json({ applications: [], counts: await counts(db, u.company_id), truncated: false })
+  // 応募IDは json_each で1つにまとめてバインドする（D1 のバインド上限 100）
   const items = ((await db.prepare(`SELECT i.*, r.role_name, r.headcount, sl.slot_id, sl.project_id, sl.work_date, sl.start_time, sl.end_time, p.project_name,
       COALESCE(si.site_name, sl.location, '') AS place,
       (SELECT COUNT(*) FROM shifts s WHERE s.slot_role_id = i.slot_role_id AND s.status != 'absent') AS assigned
     FROM recruit_application_items i JOIN shift_slot_roles r ON r.slot_role_id = i.slot_role_id JOIN shift_slots sl ON sl.slot_id = r.slot_id
     JOIN projects p ON p.project_id = sl.project_id LEFT JOIN sites si ON si.site_id = sl.site_id
-    WHERE i.application_id IN (${ids.map(() => '?').join(',')}) ORDER BY sl.work_date, sl.start_time`).bind(...ids).all()).results as any[])
+    WHERE i.application_id IN ${JSON_IN} ORDER BY sl.work_date, sl.start_time`).bind(bindJsonArray(apps.map(a => a.application_id))).all()).results as any[])
   // 登録済みスタッフの重複（同じ時間帯のシフト）
   const staffIds = [...new Set(apps.map(a => a.staff_id).filter(Boolean))] as number[]
   const dates = items.map(i => i.work_date).sort()
@@ -338,12 +348,12 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
   for (const a of apps) {
     const its = items.filter(i => i.application_id === a.application_id).map(i => ({
       ...i, remaining: Math.max(0, i.headcount - i.assigned), past: i.work_date < todayJST(),
-      conflicts: a.staff_id && i.status === 'pending' ? conflictFor(conflicts.get(a.staff_id), i.work_date, i.start_time, i.end_time).map((x: any) => (x.company_id === u.company_id ? x.project_name : x.company_name + '（他社）') + ' ' + x.start_time + '〜' + x.end_time) : [],
+      conflicts: a.staff_id && i.status === 'pending' ? conflictFor(conflicts.get(a.staff_id), i.work_date, i.start_time, i.end_time).map((x: any) => conflictLabel(x, u.company_id)) : [],
     }))
     const matches = !a.staff_id && a.phone ? await findStaffByPhone(db, u.company_id, a.phone) : []
     out.push({ ...a, ip_hash: undefined, items: its, phone_matches: matches })
   }
-  return c.json({ applications: out, counts: await counts(db, u.company_id) })
+  return c.json({ applications: out, counts: await counts(db, u.company_id), truncated })
 })
 async function counts(db: D1Database, companyId: number) {
   const r = await db.prepare(`SELECT COUNT(*) AS pending, SUM(CASE WHEN source = 'public' THEN 1 ELSE 0 END) AS pending_public FROM recruit_applications WHERE company_id = ? AND status = 'pending'`).bind(companyId).first() as any
@@ -450,7 +460,7 @@ async function approvalWarnings(db: D1Database, companyId: number, staffId: numb
     const cf = await findConflicts(db, companyId, [staffId], dates[0], dates[dates.length - 1])
     for (const i of items) {
       const list = conflictFor(cf.get(staffId), i.work_date, i.start_time, i.end_time).filter((x: any) => x.slot_role_id !== i.slot_role_id)
-      if (list.length) w.push(`${label(i)}: 同じ時間帯に別のシフトがあります（${list.map((x: any) => (x.company_id === companyId ? x.project_name : x.company_name + '・他社') + ' ' + x.start_time + '〜' + x.end_time).join('、')}）`)
+      if (list.length) w.push(`${label(i)}: 同じ時間帯に別のシフトがあります（${list.map((x: any) => conflictLabel(x, companyId)).join('、')}）`)
     }
     const projects = [...new Set(items.map(i => i.project_id))]
     for (const pid of projects) if ((await ngStaffIds(db, pid)).includes(staffId)) w.push(`クライアントのNGスタッフに指定されています（${items.find(i => i.project_id === pid)!.work_date}〜）`)

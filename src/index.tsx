@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
-import { runRetentionCleanup } from './services/retention'
+import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
+import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -18,29 +19,29 @@ const head = (title: string) => `
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  <script src="/static/common.js"></script>
   <link href="/static/style.css" rel="stylesheet">
 `
 
+// API の認証ミドルウェアと同じ判定（期限・退職・停止中の企業）で、ログイン中の利用者を返す
 async function currentUser(c: any) {
-  const token = getCookie(c, 'session')
-  if (!token) return null
-  const row = await c.env.DB.prepare(`
-    SELECT u.user_id, u.role, s.expires_at FROM sessions s JOIN users u ON s.user_id = u.user_id WHERE s.token = ?`).bind(token).first()
-  if (!row || new Date(row.expires_at) < new Date()) return null
-  return row
+  const r = await loadSessionUser(c.env.DB, getCookie(c, SESSION_COOKIE))
+  return r.ok ? r.user : null
 }
 
 // ルート: ロール別リダイレクト
 app.get('/', async (c) => {
   const u = await currentUser(c)
   if (!u) return c.redirect('/login')
-  if (u.role === 'staff') return c.redirect('/staff')
-  if (u.role === 'system_admin') return c.redirect('/hq')
-  return c.redirect('/admin')
+  return c.redirect(homePathFor(u.role))
 })
 
 // ============ ログイン画面 ============
-app.get('/login', (c) => c.html(`<!DOCTYPE html>
+// ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ）
+app.get('/login', async (c) => {
+  const u = await currentUser(c)
+  if (u) return c.redirect(homePathFor(u.role))
+  return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('ログイン')}</head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
@@ -56,11 +57,11 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
       <form id="login-form" class="space-y-4">
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">会社コード</label>
-          <input id="company_code" type="text" autocomplete="organization" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="例: sample" required>
+          <input id="company_code" type="text" autocomplete="organization" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="所属の会社から案内されたコード" required>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">スタッフ番号 / ユーザーID</label>
-          <input id="user_code" type="text" autocomplete="username" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="例: st001" required>
+          <input id="user_code" type="text" autocomplete="username" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="スタッフ番号またはID" required>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">パスワード</label>
@@ -71,6 +72,7 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
           ログイン
         </button>
         <p class="text-center"><button type="button" id="forgot-link" class="text-sm text-blue-600 hover:underline">パスワードを忘れた方はこちら</button></p>
+        <p class="text-xs text-gray-400 text-center">ログインできない場合やメールが届かない場合は、所属の会社の担当者にお問い合わせください。</p>
       </form>
 
       <form id="forgot-form" class="space-y-4 hidden">
@@ -86,14 +88,14 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
         <p class="text-center"><button type="button" id="back-to-login-link" class="text-sm text-gray-500 hover:underline">ログインに戻る</button></p>
       </form>
     </section>
-    <aside id="demo-account-aside" class="mt-6 bg-blue-50 rounded-xl p-4 text-xs text-blue-900 leading-relaxed">
+    ${c.env.DEMO_MODE === 'true' ? `<aside id="demo-account-aside" class="mt-6 bg-blue-50 rounded-xl p-4 text-xs text-blue-900 leading-relaxed">
       <p class="font-bold mb-1"><i class="fas fa-circle-info mr-1"></i>デモアカウント（パスワードは全て pass1234）</p>
       <ul class="space-y-0.5">
         <li>スタッフ: 会社コード <b>sample</b> / ID <b>st001</b>（〜st020）</li>
         <li>管理者: 会社コード <b>sample</b> / ID <b>admin</b> または <b>mgr01</b></li>
         <li>SaaS本部: 会社コード <b>sample</b> / ID <b>hq</b></li>
       </ul>
-    </aside>
+    </aside>` : ''}
   </main>
   <script>
     document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -118,12 +120,12 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
     document.getElementById('forgot-link').addEventListener('click', () => {
       document.getElementById('login-form').classList.add('hidden')
       document.getElementById('forgot-form').classList.remove('hidden')
-      document.getElementById('demo-account-aside').classList.add('hidden')
+      document.getElementById('demo-account-aside')?.classList.add('hidden')
     })
     document.getElementById('back-to-login-link').addEventListener('click', () => {
       document.getElementById('forgot-form').classList.add('hidden')
       document.getElementById('login-form').classList.remove('hidden')
-      document.getElementById('demo-account-aside').classList.remove('hidden')
+      document.getElementById('demo-account-aside')?.classList.remove('hidden')
     })
     document.getElementById('forgot-form').addEventListener('submit', async (e) => {
       e.preventDefault()
@@ -135,14 +137,15 @@ app.get('/login', (c) => c.html(`<!DOCTYPE html>
         msg.textContent = res.data.message
         msg.classList.remove('hidden')
       } catch {
-        msg.textContent = 'パスワード再設定メールを送信しました。'
+        msg.textContent = '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
         msg.classList.remove('hidden')
       }
       btn.disabled = false; btn.textContent = '送信する'
     })
   </script>
 </body>
-</html>`))
+</html>`)
+})
 
 // パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る）
 app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
@@ -398,10 +401,9 @@ export default {
   // 3つの処理は互いに独立させ、一方が失敗しても他方の実行を妨げないようにする。
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
     try {
-      const result = await env.DB.prepare(
-        'DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP'
-      ).run()
-      console.log(`Deleted ${result.meta.changes} expired sessions`)
+      // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
+      const r = await purgeExpiredAuthRows(env.DB)
+      console.log(`Deleted ${r.sessions} expired sessions, ${r.attempts} old login attempts`)
     } catch (e) {
       console.log(`session cleanup failed: ${e}`)
     }
@@ -438,6 +440,14 @@ export default {
       console.log(`retention cleanup completed (dryRun=${dryRun}): ${summary}`)
     } catch (e) {
       console.log(`retention cleanup failed: ${e}`)
+    }
+
+    // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
+    try {
+      const n = await applyDueRetirements(env.DB)
+      console.log(`scheduled retirements applied: ${n}`)
+    } catch (e) {
+      console.log(`scheduled retirements failed: ${e}`)
     }
   },
 }
