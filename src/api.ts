@@ -331,7 +331,7 @@ api.post('/auth/forgot-password', async (c) => {
   const users = await c.env.DB.prepare(`SELECT u.user_id, u.name, u.user_code, u.email, u.company_id, co.company_name
     FROM users u JOIN companies co ON co.company_id = u.company_id
     WHERE LOWER(TRIM(u.email)) = ? AND u.status = 'active' AND u.role != 'roster_only'
-      AND (co.active_status != 'inactive' OR u.role = 'system_admin')`).bind(email).all()
+      AND (COALESCE(co.active_status, 'active') != 'inactive' OR u.role = 'system_admin')`).bind(email).all()
   const EXPIRES_HOURS = 1
   for (const u of users.results as { user_id: number; name: string; user_code: string; email: string; company_id: number; company_name: string }[]) {
     const rawToken = genToken()
