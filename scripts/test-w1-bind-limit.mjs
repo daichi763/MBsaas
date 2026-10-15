@@ -69,7 +69,8 @@ ok('#14 候補一覧: 同じ日に割り当て済みの人は重複として出�
 
 // 割当可能な条件: 退職者は候補に出ない（共通の条件 assignableStaffSql）
 const retiree = newStaff[149]
-await admin.put(`/api/admin/employees/${retiree.staff_id}`, { profile: { retired_at: today } })
+// 今日以降の退職日は退職予定になる（w1-staff-save-retention #34）ため、昨日の日付で退職にする。退職日より後のシフトがあるので確認済みで送る
+await admin.put(`/api/admin/employees/${retiree.staff_id}`, { profile: { retired_at: addDays(today, -1), employment_status: 'retired', retired_at_confirmed: true } })
 const cand2 = await admin.get(`/api/admin/shift-board/candidates?slot_role_id=${roles[0].slot_role_id}`)
 const retireeRow = (await admin.get('/api/admin/staff')).data.staff.find(s => s.staff_id === retiree.staff_id)
 if (retireeRow && (retireeRow.employment_status === 'retired' || retireeRow.status !== 'active')) ok('割当可能な条件: 退職者は候補に出ない', cand2.status === 200 && !cand2.data.candidates.some(c => c.staff_id === retiree.staff_id), cand2.status)
