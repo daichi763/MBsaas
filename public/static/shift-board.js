@@ -218,7 +218,7 @@
           const warn = (a.conflicts && a.conflicts.length) || a.ng
           return `<div class="board-chip st-${a.status} ${warn ? 'chip-warn' : ''} flex-col items-start" onclick="openShiftDetail(${a.shift_id})" title="${esc(p.project_name + ' / ' + (a._site || ''))}">
             <span class="truncate w-full text-[11px] font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(p.project_name || '')}</span>
-            <span class="truncate w-full text-[10px] text-gray-500">${esc(a._site || '')} ${a.start_time}〜${a.end_time}</span></div>` }).join('')}</td>`).join('')}</tr>`
+            <span class="truncate w-full text-[10px] text-gray-500">${esc(a._site || '')} ${esc(a.start_time)}〜${esc(a.end_time)}</span></div>` }).join('')}</td>`).join('')}</tr>`
     }).join('')}</tbody></table>`
   }
 
@@ -279,7 +279,7 @@
     const r = data.slot_role
     modal(`
       <h3 class="font-bold text-lg mb-1">スタッフを割り当て</h3>
-      <p class="text-xs text-gray-500 mb-3">${dayjs(r.work_date).format('M/D')}(${WD[dayjs(r.work_date).day()]}) ${r.start_time}〜${r.end_time}・${esc(r.location || '')}・<b>${esc(r.role_name)}</b>（必要 ${r.headcount}名）</p>
+      <p class="text-xs text-gray-500 mb-3">${dayjs(r.work_date).format('M/D')}(${WD[dayjs(r.work_date).day()]}) ${esc(r.start_time)}〜${esc(r.end_time)}・${esc(r.location || '')}・<b>${esc(r.role_name)}</b>（必要 ${r.headcount}名）</p>
       <input class="inp text-sm mb-2" placeholder="名前で絞り込み" oninput="document.querySelectorAll('.cand-row').forEach(el=>el.style.display=!this.value||el.dataset.name.includes(this.value)?'':'none')">
       <div class="max-h-96 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
         ${data.candidates.map(c => `<label class="cand-row flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-red-50' : ''}" data-name="${esc(c.name)}">
@@ -316,12 +316,12 @@
     const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
     modal(`
       <h3 class="font-bold text-lg mb-1">${esc(a.staff_name)}</h3>
-      <p class="text-xs text-gray-500 mb-3">${dayjs(a.work_date).format('M/D')}(${WD[dayjs(a.work_date).day()]}) ${a.start_time}〜${a.end_time}・${esc(a.site_name || a.location || '')}・${esc(a.role || '')}
+      <p class="text-xs text-gray-500 mb-3">${dayjs(a.work_date).format('M/D')}(${WD[dayjs(a.work_date).day()]}) ${esc(a.start_time)}〜${esc(a.end_time)}・${esc(a.site_name || a.location || '')}・${esc(a.role || '')}
         <span class="badge badge-gray ml-1">${ST_LABEL[a.status]}</span></p>
       ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(x => (x.other_company ? x.company_name + '（他社）' : x.project_name) + ' ' + x.start_time + '〜' + x.end_time).join(' / '))}</p>` : ''}
       ${a.ng ? '<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2">クライアントのNGスタッフに指定されています</p>' : ''}
       ${a.settle_status === 'confirmed' ? '<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
-      ${a.actual_start ? `<p class="text-xs text-gray-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${a.actual_start}〜${a.actual_end}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
+      ${a.actual_start ? `<p class="text-xs text-gray-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${esc(a.actual_start)}〜${esc(a.actual_end)}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
       <div class="grid grid-cols-4 gap-1.5 mb-4">
         ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-blue-400' : ''}" onclick="boardShiftStatus(${id}, '${st}')">${ST_LABEL[st]}</button>`).join('')}
       </div>
@@ -428,8 +428,8 @@
         </div>
         <input id="slot-location" class="inp text-sm" placeholder="場所の補足（開催場所マスタにない場合はここに入力）" value="${esc(s.location && !s.site_id ? s.location : '')}">
         <div class="grid grid-cols-3 gap-3">
-          <label class="text-sm text-gray-600">開始<input id="slot-start" type="time" class="inp" value="${s.start_time || '10:00'}"></label>
-          <label class="text-sm text-gray-600">終了<input id="slot-end" type="time" class="inp" value="${s.end_time || '19:00'}"></label>
+          <label class="text-sm text-gray-600">開始<input id="slot-start" type="time" class="inp" value="${esc(s.start_time || '10:00')}"></label>
+          <label class="text-sm text-gray-600">終了<input id="slot-end" type="time" class="inp" value="${esc(s.end_time || '19:00')}"></label>
           <label class="text-sm text-gray-600">休憩（分）<input id="slot-break" type="number" class="inp" value="${s.break_minutes ?? ''}" placeholder="案件の設定"></label>
         </div>
         <div>
@@ -450,10 +450,10 @@
     modal(`
       <h3 class="font-bold text-lg mb-3">${slotId ? '枠を編集' : '枠を作成'}</h3>
       ${slotFormHtml(m, s, roles)}
-      ${slotId ? `<label class="text-sm text-gray-600 block mt-3">日付<input id="slot-date" type="date" class="inp" value="${s.work_date}"></label>
+      ${slotId ? `<label class="text-sm text-gray-600 block mt-3">日付<input id="slot-date" type="date" class="inp" value="${esc(s.work_date)}"></label>
         <p class="text-[11px] text-gray-400 mt-1">日付・時間・場所を変えると、割り当て済みのシフトにも反映し、単価を再計算します</p>` :
         `<div class="mt-3"><p class="text-sm text-gray-600 mb-1">日付 *（複数選択できます）</p>
-          <div class="flex gap-2"><input id="slot-date-input" type="date" class="inp" value="${s.work_date || BS.from}" onchange="addSlotDate()"><button id="slot-date-add" class="btn btn-outline shrink-0 whitespace-nowrap" onclick="addSlotDate()">日付を追加</button></div>
+          <div class="flex gap-2"><input id="slot-date-input" type="date" class="inp" value="${esc(s.work_date || BS.from)}" onchange="addSlotDate()"><button id="slot-date-add" class="btn btn-outline shrink-0 whitespace-nowrap" onclick="addSlotDate()">日付を追加</button></div>
           <p class="text-[11px] text-gray-400 mt-1">日付を選ぶと追加されます。同じ内容の枠を選んだ日付すべてに作成します</p>
           <div id="slot-dates" class="flex flex-wrap gap-1 mt-2"></div></div>`}
       <div class="flex gap-2 mt-4">
@@ -647,7 +647,7 @@
             <button class="btn btn-outline text-xs" onclick="openPatternModal({project_id:${p.project_id}})"><i class="fas fa-plus"></i>追加</button>
           </div>
           <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>曜日</th><th>期間</th><th>時間</th><th>開催場所</th><th>役割</th><th>枠</th><th></th></tr></thead><tbody>
-            ${pt.patterns.map(x => `<tr><td>${x.weekdays.split(',').map(i => WD[i]).join('・')}</td><td>${x.date_from}〜${x.date_to}</td><td>${x.start_time}〜${x.end_time}</td>
+            ${pt.patterns.map(x => `<tr><td>${x.weekdays.split(',').map(i => WD[i]).join('・')}</td><td>${esc(x.date_from)}〜${esc(x.date_to)}</td><td>${esc(x.start_time)}〜${esc(x.end_time)}</td>
               <td>${esc(x.site_name || x.location || '-')}</td><td>${x.roles.map(r => esc(r.role_name) + r.headcount + '名').join('・')}</td><td>${x.slot_count}件</td>
               <td><button class="text-xs text-red-600 hover:underline" onclick="deletePattern(${x.pattern_id}, ${p.project_id})">削除</button></td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400">繰り返し登録はありません</td></tr>'}
           </tbody></table></div>
@@ -763,7 +763,7 @@
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th>シフト</th><th>状態</th><th></th></tr></thead><tbody>
         ${data.sites.map(s => `<tr><td class="font-bold">${esc(s.site_name)}</td><td class="text-xs text-gray-500">${esc(s.address || '-')}</td><td>${s.shift_count}件</td>
           <td>${s.status === 'inactive' ? '<span class="badge badge-gray">無効</span>' : '<span class="badge badge-green">有効</span>'}</td>
-          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" onclick="renameSite(${s.site_id}, ${cid}, '${esc(s.site_name).replace(/'/g, '&#39;')}')">名前を変更</button>
+          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" data-action="renameSite" data-id="${s.site_id}" data-cid="${esc(cid)}" data-name="${esc(s.site_name)}">名前を変更</button>
             ${s.status === 'inactive' ? `<button class="text-xs text-blue-600 hover:underline" onclick="toggleSite(${s.site_id}, ${cid}, 'active')">有効にする</button>` : `<button class="text-xs text-red-600 hover:underline" onclick="removeSite(${s.site_id}, ${cid})">削除</button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
       </tbody></table></div>
     </section>`
@@ -777,6 +777,7 @@
     const v = prompt('開催場所名', name); if (!v) return
     try { await axios.put('/api/admin/sites/' + id, { site_name: v }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
   }
+  delegate('renameSite', el => renameSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.name))
   window.toggleSite = async function (id, cid, status) {
     try { await axios.put('/api/admin/sites/' + id, { status }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
   }

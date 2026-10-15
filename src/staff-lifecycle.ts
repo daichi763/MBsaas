@@ -9,6 +9,7 @@ import { Hono } from 'hono'
 import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
+import { pickReportValues } from './lib/validate'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
@@ -520,8 +521,11 @@ publicReportApi.post('/:token/daily-report', async (c) => {
   const t = await loadToken(db, c.req.param('token'))
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  const values = typeof b.values === 'object' && b.values ? b.values : {}
-  const json = JSON.stringify(values)
+  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）
+  const tpl = await db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id ?? null).first() as any
+  const picked = pickReportValues(tpl?.fields_json, b.values)
+  if ('error' in picked) return c.json({ error: picked.error }, 400)
+  const json = JSON.stringify(picked.values)
   if (json.length > 20000) return c.json({ error: '入力内容が長すぎます' }, 400)
   const exists = await db.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
   if (exists) await db.prepare("UPDATE daily_reports SET report_values = ?, incident_flag = ?, complaint_flag = ?, submitted_at = ?, entry_method = 'link' WHERE daily_report_id = ?")
