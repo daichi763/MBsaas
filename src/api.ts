@@ -3,7 +3,8 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
-import { runRetentionCleanup } from './services/retention'
+import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective } from './services/retention'
+import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
 import boardApi from './board'
@@ -1078,27 +1079,21 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
 // 基本情報・追記項目・在籍状況を保存する（権限チェックは呼び出し側で実施済みであること）
 async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
   const u = c.get('user')
-  const {
-    memo, follow_flag, retention_risk, retired_at,
-    affiliation, affiliation_contact, kana, gender, date_of_birth,
-    nearest_station_line, nearest_station, employment_status,
-  } = body
+  const { retired_at, affiliation, employment_status } = body
   if (body.name !== undefined) {
     const newName = String(body.name).trim()
     await c.env.DB.prepare('UPDATE users SET name = ? WHERE user_id = ?').bind(newName, roster.user_id).run()
     await propagateNameToLinked(c.env.DB, sid, newName)
   }
 
-  await c.env.DB.prepare(`UPDATE staff_profiles SET
-      memo = COALESCE(?, memo), follow_flag = COALESCE(?, follow_flag), retention_risk = COALESCE(?, retention_risk),
-      affiliation = COALESCE(?, affiliation), affiliation_contact = COALESCE(?, affiliation_contact), kana = COALESCE(?, kana),
-      gender = COALESCE(?, gender), date_of_birth = COALESCE(?, date_of_birth),
-      nearest_station_line = COALESCE(?, nearest_station_line), nearest_station = COALESCE(?, nearest_station)
-    WHERE staff_id = ? AND company_id = ?`)
-    .bind(memo ?? null, follow_flag ?? null, retention_risk ?? null,
-      affiliation ?? null, affiliation_contact ?? null, kana ?? null, gender ?? null, date_of_birth ?? null,
-      nearest_station_line ?? null, nearest_station ?? null,
-      sid, u.company_id).run()
+  // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#18）。
+  // follow_flag・retention_risk は空にできない（空で送られたら変更しない）
+  const base = buildUpdate(body, ['memo', 'follow_flag', 'retention_risk', 'affiliation', 'affiliation_contact', 'kana', 'gender',
+    'date_of_birth', 'nearest_station_line', 'nearest_station'], { required: ['follow_flag', 'retention_risk'] })
+  if (base.clause) {
+    await c.env.DB.prepare(`UPDATE staff_profiles SET ${base.clause} WHERE staff_id = ? AND company_id = ?`)
+      .bind(...base.values, sid, u.company_id).run()
+  }
 
   // 業務側項目は「送られてきた項目だけ」をそのまま保存する（空欄にしてクリアできるように COALESCE は使わない）
   // skills / career / work_area は従来どおり NOT NULL 相当の扱いなので null は空文字にする
@@ -1122,27 +1117,72 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
       WHERE staff_id = ? AND company_id = ?`).bind(u.company_id, affiliation, sid, u.company_id).run()
   }
 
-  // 退職日はusersテーブル側で管理する（定期削除の「退職後7年」判定に使用）。
-  // 既存の users.status('active'/'suspended') は他機能の対象判定に既に使われているため、
-  // 「退職」の時だけ suspended に連動させ、休職中/入社予定/在職中は active のまま維持する。
-  // retired_at に日付があれば「退職」。null で employment_status 指定がある場合は employment_status を優先する。
-  if (retired_at !== undefined && (retired_at || employment_status === undefined)) {
-    await c.env.DB.prepare(`UPDATE users SET retired_at = ?, status = ?
-      WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`)
-      .bind(retired_at || null, retired_at ? 'suspended' : 'active', sid, u.company_id).run()
-    await c.env.DB.prepare(`UPDATE staff_profiles SET employment_status = ? WHERE staff_id = ? AND company_id = ?`)
-      .bind(retired_at ? 'retired' : 'working', sid, u.company_id).run()
-  } else if (employment_status !== undefined) {
-    // 退職以外（在職中/休職中/入社予定）への変更。誤って退職日が残らないよう、
-    // 退職以外に変更する場合は退職日もクリアする。
-    await c.env.DB.prepare(`UPDATE staff_profiles SET employment_status = ? WHERE staff_id = ? AND company_id = ?`)
-      .bind(employment_status, sid, u.company_id).run()
-    if (employment_status !== 'retired') {
-      await c.env.DB.prepare(`UPDATE users SET retired_at = NULL, status = 'active'
-        WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`)
-        .bind(sid, u.company_id).run()
-    }
+  if (retired_at !== undefined || employment_status !== undefined) await applyRetirement(c.env.DB, sid, u.company_id, roster, retired_at, employment_status)
+}
+
+// ============ 退職日・在籍状況（#5 #34 #139） ============
+// 退職日は users テーブル側で管理する（定期削除の「退職後7年」判定に使用）。
+// users.status('active'/'suspended') は他機能の対象判定に使われているため、退職が効力を持つときだけ suspended にする。
+//  - 退職日が今日より前        : 退職（suspended・employment_status=retired）
+//  - 退職日が今日以降          : 退職予定。退職日だけを保存し、在籍状況とログインはそのまま。
+//                                退職日の翌日に毎日の cron（applyDueRetirements）が退職へ切り替える
+//  - 退職日を消す / 退職以外へ : 退職日を消して active に戻す
+const EMPLOYMENT_STATUSES = ['working', 'leave', 'retired', 'preboarding']
+
+/** 退職日・在籍状況の入力を確認し、body.retired_at を正規化する。確認が必要なときは confirm_required を付けて返す */
+// hireDateOverride: 同じ送信で入社日も変えるとき（従業員管理）はその値で比べる
+async function validateRetirement(db: D1Database, sid: string, body: any, roster: any, hireDateOverride?: string | null): Promise<{ error: string; confirm_required?: boolean } | null> {
+  const status = body.employment_status
+  if (status !== undefined && !EMPLOYMENT_STATUSES.includes(status)) return { error: '在籍状況の値が正しくありません' }
+  if (body.retired_at === undefined) {
+    if (status === 'retired' && !roster.retired_at) return { error: '退職にする場合は退職日を入力してください' }
+    return null
   }
+  const raw = typeof body.retired_at === 'string' ? body.retired_at.trim() : body.retired_at
+  // 保存済みと同じ退職日なら、確認は済んでいるものとして扱う（従業員管理は毎回退職日も送るため）
+  const unchanged = !!raw && raw === roster.retired_at
+  let hireDate: string | null = null, lastWorkDate: string | null = null
+  if (raw && !unchanged && body.retired_at_confirmed !== true) {
+    const hire = await db.prepare('SELECT hire_date FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
+    const last = await db.prepare('SELECT MAX(work_date) AS d FROM shifts WHERE staff_id = ?').bind(sid).first() as any
+    hireDate = hireDateOverride !== undefined ? (hireDateOverride || null) : (hire?.hire_date || null); lastWorkDate = last?.d || null
+  }
+  const v = validateRetiredAt(raw, { today: todayJST(), confirmed: unchanged || body.retired_at_confirmed === true, hireDate, lastWorkDate })
+  if (!v.ok) return { error: v.error, confirm_required: v.confirm || undefined }
+  body.retired_at = v.value
+  if (v.value === null && status === 'retired') return { error: '退職にする場合は退職日を入力してください' }
+  // 在籍状況と退職日の食い違い（退職以外なのに、過去の退職日が残っている）は保存しない
+  if (v.value && !v.scheduled && status !== undefined && status !== 'retired') {
+    return { error: '在籍状況が「退職」以外のときは、退職日を空欄にしてください（今日以降の日付なら退職予定として登録できます）' }
+  }
+  return null
+}
+
+async function applyRetirement(db: D1Database, sid: string, companyId: number, roster: any, retiredAt: string | null | undefined, status: string | undefined) {
+  const current = (roster.employment_status as string) || 'working'
+  let newRetired: string | null, userStatus: string, empStatus: string
+  if (retiredAt === undefined) {
+    // 在籍状況だけの変更。退職（退職日は保存済み）以外にするときは退職日を消す
+    if (status === 'retired') {
+      await db.prepare('UPDATE staff_profiles SET employment_status = ? WHERE staff_id = ? AND company_id = ?').bind('retired', sid, companyId).run()
+      return
+    }
+    newRetired = null; userStatus = 'active'; empStatus = status as string
+  } else if (retiredAt && isRetirementEffective(retiredAt, todayJST())) {
+    newRetired = retiredAt; userStatus = 'suspended'; empStatus = 'retired'
+  } else {
+    // 退職予定（今日以降の日付）または退職日を消す。在籍状況は指定があればそれに、退職のままなら在職中に戻す
+    newRetired = retiredAt || null; userStatus = 'active'
+    empStatus = status && status !== 'retired' ? status : (current === 'retired' ? 'working' : current)
+  }
+  // 退職日が変わったら、定期削除の猶予をやり直す
+  const changed = (roster.retired_at || null) !== newRetired
+  await db.batch([
+    db.prepare(`UPDATE users SET retired_at = ?, status = ?
+      WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)`).bind(newRetired, userStatus, sid, companyId),
+    db.prepare(`UPDATE staff_profiles SET employment_status = ?${changed ? ', retention_flagged_at = NULL' : ''} WHERE staff_id = ? AND company_id = ?`)
+      .bind(empStatus, sid, companyId),
+  ])
 }
 
 // スタッフ更新（スタッフマスタ画面から）
@@ -1167,6 +1207,8 @@ api.put('/admin/staff/:id', async (c) => {
     const err = await validateProfileBase(c, body, roster)
     if (err) return c.json({ error: err }, 400)
   }
+  const retErr = await validateRetirement(c.env.DB, sid, body, roster)
+  if (retErr) return c.json(retErr, retErr.confirm_required ? 409 : 400)
   await applyProfileUpdate(c, sid, body, roster)
   return c.json({ ok: true })
 })
@@ -1410,19 +1452,17 @@ api.put('/admin/clients/:id', async (c) => {
   const exists = await c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
   if (!exists) return c.json({ error: 'クライアントが見つかりません' }, 404)
 
-  await c.env.DB.prepare(`UPDATE clients SET
-      client_name = COALESCE(?, client_name), stream_type = COALESCE(?, stream_type), contract_type = COALESCE(?, contract_type),
-      billing_rule = COALESCE(?, billing_rule), memo = COALESCE(?, memo), client_rating = COALESCE(?, client_rating),
-      representative_title = COALESCE(?, representative_title), representative_name = COALESCE(?, representative_name),
-      representative_kana = COALESCE(?, representative_kana)
-      ${b.invoice_number !== undefined ? ', invoice_number = ?' : ''}
-    WHERE client_id = ? AND company_id = ?`)
-    .bind(
-      b.client_name ?? null, b.stream_type ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, b.client_rating ?? null,
-      b.representative_title ?? null, b.representative_name ?? null, b.representative_kana ?? null,
-      ...(b.invoice_number !== undefined ? [invoiceNumber] : []),
-      cid, u.company_id
-    ).run()
+  // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#92）。
+  // 会社名は空にできない。区分・評価は空で送られたら変更しない
+  const upd = buildUpdate({ ...b, invoice_number: b.invoice_number === undefined ? undefined : invoiceNumber },
+    ['client_name', 'stream_type', 'contract_type', 'billing_rule', 'memo', 'client_rating',
+      'representative_title', 'representative_name', 'representative_kana', 'invoice_number'],
+    { required: ['client_name', 'stream_type', 'client_rating'] })
+  if (upd.missing.includes('client_name')) return c.json({ error: 'クライアント名は必須です' }, 400)
+  if (upd.clause) {
+    await c.env.DB.prepare(`UPDATE clients SET ${upd.clause} WHERE client_id = ? AND company_id = ?`)
+      .bind(...upd.values, cid, u.company_id).run()
+  }
   return c.json({ ok: true })
 })
 
@@ -1461,12 +1501,11 @@ api.put('/admin/clients/contacts/:contactId', async (c) => {
   const b = await c.req.json()
   if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
 
-  await c.env.DB.prepare(`UPDATE client_contacts SET
-      contact_name = COALESCE(?, contact_name), branch_name = COALESCE(?, branch_name), department = COALESCE(?, department),
-      title = COALESCE(?, title), phone = COALESCE(?, phone), email = COALESCE(?, email), updated_at = ?
-    WHERE contact_id = ? AND company_id = ?`)
-    .bind(b.contact_name ?? null, b.branch_name ?? null, b.department ?? null, b.title ?? null, b.phone ?? null, b.email ?? null,
-      nowJST(), contactId, u.company_id).run()
+  // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#92）。氏名は空にできない
+  const upd = buildUpdate(b, ['contact_name', 'branch_name', 'department', 'title', 'phone', 'email'], { required: ['contact_name'] })
+  if (upd.missing.length) return c.json({ error: '担当者氏名は必須です' }, 400)
+  await c.env.DB.prepare(`UPDATE client_contacts SET ${upd.clause ? upd.clause + ', ' : ''}updated_at = ? WHERE contact_id = ? AND company_id = ?`)
+    .bind(...upd.values, nowJST(), contactId, u.company_id).run()
   return c.json({ ok: true })
 })
 
@@ -1572,6 +1611,9 @@ api.put('/admin/employees/:staffId', async (c) => {
   if (roster) {
     const err = await validateProfileBase(c, profile, roster)
     if (err) return c.json({ error: err }, 400)
+    if (b.profile.retired_at_confirmed === true) profile.retired_at_confirmed = true
+    const retErr = await validateRetirement(c.env.DB, sid, profile, roster, b.hire_date === undefined ? undefined : (typeof b.hire_date === 'string' ? b.hire_date.trim() : null))
+    if (retErr) return c.json(retErr, retErr.confirm_required ? 409 : 400)
   }
   if (b.employee_number) {
     const dup = await c.env.DB.prepare('SELECT 1 FROM employee_records WHERE company_id = ? AND employee_number = ? AND staff_id != ?')
@@ -1596,13 +1638,14 @@ api.put('/admin/employees/:staffId', async (c) => {
   ]
   const exists = await c.env.DB.prepare('SELECT employee_record_id FROM employee_records WHERE staff_id = ?').bind(sid).first()
   if (exists) {
-    const setClause = cols.map(k => `${k} = COALESCE(?, ${k})`).join(', ')
-    await c.env.DB.prepare(`UPDATE employee_records SET ${setClause}, updated_at = ? WHERE staff_id = ? AND company_id = ?`)
-      .bind(...cols.map(k => b[k] ?? null), nowJST(), sid, u.company_id).run()
+    // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#18）
+    const upd = buildUpdate(b, cols)
+    await c.env.DB.prepare(`UPDATE employee_records SET ${upd.clause ? upd.clause + ', ' : ''}updated_at = ? WHERE staff_id = ? AND company_id = ?`)
+      .bind(...upd.values, nowJST(), sid, u.company_id).run()
   } else {
     const placeholders = cols.map(() => '?').join(', ')
     await c.env.DB.prepare(`INSERT INTO employee_records (staff_id, company_id, ${cols.join(', ')}) VALUES (?, ?, ${placeholders})`)
-      .bind(sid, u.company_id, ...cols.map(k => b[k] ?? null)).run()
+      .bind(sid, u.company_id, ...cols.map(k => b[k] === '' ? null : (b[k] ?? null))).run()
   }
   if (roster) await applyProfileUpdate(c, sid, profile, roster)
   return c.json({ ok: true })
@@ -2369,6 +2412,11 @@ api.post('/hq/templates', async (c) => {
 api.post('/hq/retention/dry-run', async (c) => {
   const result = await runRetentionCleanup(c.env.DB, c.env.PHOTOS, { dryRun: true })
   return c.json(result)
+})
+
+// 次回削除予定（猶予中・猶予待ち）と、退職日より後にシフトがあるため対象外にしている退職者の一覧
+api.get('/hq/retention/schedule', async (c) => {
+  return c.json(await listRetentionSchedule(c.env.DB))
 })
 
 api.get('/hq/retention/logs', async (c) => {

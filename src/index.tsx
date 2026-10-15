@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
-import { runRetentionCleanup } from './services/retention'
+import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 
@@ -440,6 +440,14 @@ export default {
       console.log(`retention cleanup completed (dryRun=${dryRun}): ${summary}`)
     } catch (e) {
       console.log(`retention cleanup failed: ${e}`)
+    }
+
+    // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
+    try {
+      const n = await applyDueRetirements(env.DB)
+      console.log(`scheduled retirements applied: ${n}`)
+    } catch (e) {
+      console.log(`scheduled retirements failed: ${e}`)
     }
   },
 }
