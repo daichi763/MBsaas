@@ -129,7 +129,8 @@
         ${DATA.contact_note ? `<p class="text-xs text-gray-500 mt-4">${esc(DATA.contact_note)}</p>` : ''}
       </section>`
     } catch (e) {
-      toast(errMsg(e, '送信に失敗しました。通信環境を確認してもう一度お試しください'))
+      // 応答があった失敗（サーバー側のエラー）は通信環境の問題と区別して案内する
+      toast(errMsg(e, e && e.response ? '送信に失敗しました。時間をおいてもう一度お試しいただくか、お問い合わせ先へご連絡ください' : '送信に失敗しました。通信環境を確認してもう一度お試しください'))
       btn.disabled = false; btn.textContent = '応募する'
       if (window.turnstile && tsWidget !== null) { try { window.turnstile.reset(tsWidget) } catch (x) { } tsToken = '' }
     }

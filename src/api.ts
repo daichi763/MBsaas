@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
@@ -163,17 +164,15 @@ async function computeNoticeReadReport(db: D1Database, companyId: number, fiscal
     } else if (n.target_type === 'project') {
       const projIds = (n.target_ids || '').split(',').map(v => v.trim()).filter(Boolean)
       if (projIds.length) {
-        const placeholders = projIds.map(() => '?').join(',')
-        const shiftRows = await db.prepare(`SELECT DISTINCT staff_id FROM shifts WHERE project_id IN (${placeholders})`).bind(...projIds).all()
+        const shiftRows = await db.prepare(`SELECT DISTINCT staff_id FROM shifts WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(projIds)).all()
         const projStaffIds = new Set((shiftRows.results as { staff_id: number }[]).map(r => r.staff_id))
         targetStaffIds = staffList.filter(s => projStaffIds.has(s.staff_id)).map(s => s.staff_id)
       }
     }
     if (targetStaffIds.length === 0) continue
 
-    const userIds = targetStaffIds.map(sid => staffById.get(sid) as number)
-    const placeholders = userIds.map(() => '?').join(',')
-    const readRows = await db.prepare(`SELECT user_id FROM notice_reads WHERE notice_id = ? AND user_id IN (${placeholders})`).bind(n.notice_id, ...userIds).all()
+    // 既読者はお知らせ単位で全件取り、対象者との突き合わせは手元で行う（在籍者を IN に並べると D1 のバインド上限 100 を超える）
+    const readRows = await db.prepare(`SELECT user_id FROM notice_reads WHERE notice_id = ?`).bind(n.notice_id).all()
     const readUserIds = new Set((readRows.results as { user_id: number }[]).map(r => r.user_id))
 
     targetUserCount += targetStaffIds.length
@@ -207,16 +206,19 @@ async function generateNoticeReadReport(db: D1Database, companyId: number, fisca
       calculated_at = excluded.calculated_at, updated_at = excluded.updated_at
   `).bind(companyId, fiscalYear, r.targetNoticeCount, r.targetUserCount, r.readCount, r.unreadCount, r.readRate, nowJST(), nowJST()).run()
 
+  // スタッフ別は1人1文のまま、db.batch でまとめて書く（在籍者が多くても問い合わせ回数を抑える）
+  const stmts: D1PreparedStatement[] = []
   for (const [staffId, v] of r.perStaff) {
     const rate = v.target > 0 ? round1((v.read / v.target) * 100) : null
-    await db.prepare(`
+    stmts.push(db.prepare(`
       INSERT INTO notice_read_staff_reports (company_id, fiscal_year, staff_id, target_count, read_count, unread_count, read_rate, calculated_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(company_id, fiscal_year, staff_id) DO UPDATE SET
         target_count = excluded.target_count, read_count = excluded.read_count, unread_count = excluded.unread_count,
         read_rate = excluded.read_rate, calculated_at = excluded.calculated_at, updated_at = excluded.updated_at
-    `).bind(companyId, fiscalYear, staffId, v.target, v.read, v.target - v.read, rate, nowJST(), nowJST()).run()
+    `).bind(companyId, fiscalYear, staffId, v.target, v.read, v.target - v.read, rate, nowJST(), nowJST()))
   }
+  await batchInChunks(db, stmts)
 }
 
 // Cron: 全社について「直前に終了した年度」のレポートを生成/更新する（冪等）
