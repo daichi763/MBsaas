@@ -1,6 +1,7 @@
 // 履歴の検索・CSV 出力・保存期間（docs/spec_attendance_correction.md 8章・10章）の統合テスト
 // 前提: test-report-settings → test-corrections → test-notifications の後に、同じ DB で実行する（申請・履歴のデータを使う）
 //   定期削除の確認には、wrangler dev を --test-scheduled 付きで起動し、環境変数 PERSIST に --persist-to の保存先を指定する
+//   （wrangler.jsonc のローカルの既定は RETENTION_ENABLED=false（dry-run）なので、--var RETENTION_ENABLED:true も付ける）
 //   （ローカルの D1 に退職日・古い通知を書き込み、/__scheduled で毎日の cron を実行する。テスト用の DB 専用）
 //   注意: 現状のビルド設定（cloudflare-pages）は scheduled を出力しないため、定期削除の確認は
 //   vite.config.ts を @hono/vite-build/cloudflare-workers（output: '_worker.js'）にしたビルドで行う（別 PR で修正予定）

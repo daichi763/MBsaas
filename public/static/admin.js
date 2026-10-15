@@ -971,6 +971,9 @@ async function renderProjects() {
 
 window.showAddProject = async function () {
   const [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  // 既定は先頭の有効なテンプレート（項目が1つ以上あるもの）。固定のIDは前提にしない
+  const usable = tp.templates.find(t => { try { const f = JSON.parse(t.fields_json || '[]'); return Array.isArray(f) && f.length > 0 } catch { return false } })
+  const defaultTpl = usable ? usable.template_id : null
   modal(`
     <h3 class="font-bold text-lg mb-4">案件登録</h3>
     <div class="space-y-3">
@@ -985,7 +988,8 @@ window.showAddProject = async function () {
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">日単価（円）</label><input id="np-price" type="number" class="inp" value="16000"></div>
         <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
-          <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${t.template_id}">${esc(t.template_name)}</option>`).join('')}</select></div>
+          <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
+          ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp"></textarea></div>
       <button class="btn btn-primary w-full" onclick="addProject()">登録する</button>
@@ -1816,7 +1820,7 @@ async function renderNotices() {
           </div>
           <label class="flex items-center gap-2 text-sm"><input id="nt-required" type="checkbox" class="w-4 h-4">既読確認を必須にする</label>
           <label class="flex items-center gap-2 text-sm"><input id="nt-send-email" type="checkbox" class="w-4 h-4">メールでも通知する</label>
-          <button class="btn btn-primary w-full" onclick="sendNotice()">配信する</button>
+          <button class="btn btn-primary w-full" onclick="sendNotice(this)">配信する</button>
         </div>
       </section>
       <section class="lg:col-span-3 space-y-3">
@@ -1831,22 +1835,73 @@ async function renderNotices() {
             </div>
             <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
             <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
+            ${noticeEmailSummary(n)}
           </div>`).join('')}
       </section>
     </div>`
 }
-window.sendNotice = async function () {
+// お知らせメールの送信結果（状態ごとの人数）。押すと1人ずつの結果を出す
+const NOTICE_MAIL_STATUS = { sent: '送信済み', failed: '送信失敗', no_email: 'メール未登録', pending: '送信中', skipped: '送信停止中' }
+function noticeEmailSummary(n) {
+  const m = n.email_counts
+  if (!m) return ''
+  // 10分以上たっても送信中のものは、処理が途中で止まったとみなす
+  const stalled = m.pending && dayjs().diff(dayjs(n.published_at), 'minute') >= 10
+  const parts = Object.keys(NOTICE_MAIL_STATUS).filter(k => m[k]).map(k => {
+    const label = k === 'pending' && stalled ? '未完了' : NOTICE_MAIL_STATUS[k]
+    return `<span class="${k === 'failed' || (k === 'pending' && stalled) ? 'text-red-600' : k === 'no_email' ? 'text-amber-600' : ''}">${label} ${Number(m[k])}名</span>`
+  })
+  return `<button class="text-xs text-gray-500 mt-2 hover:underline text-left" onclick="showNoticeEmails(${Number(n.notice_id)})">
+    <i class="fas fa-envelope mr-1"></i>メール: ${parts.join(' ・')}</button>`
+}
+window.showNoticeEmails = async function (id) {
+  const { data } = await axios.get(`/api/admin/notices/${Number(id)}/email-deliveries`)
+  const ERR = { mail_not_configured: 'メールの送信設定がありません', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', invalid_address: 'メールアドレスの形式が正しくありません', internal_error: '送信処理が途中で止まりました' }
+  const badge = (s) => `<span class="badge ${s === 'sent' ? 'badge-green' : s === 'failed' ? 'badge-red' : s === 'no_email' ? 'badge-yellow' : 'badge-gray'} whitespace-nowrap">${NOTICE_MAIL_STATUS[s] || esc(s)}</span>`
+  modal(`
+    <h3 class="font-bold text-lg mb-1">メールの送信結果</h3>
+    <p class="text-sm text-gray-600 mb-3">${esc(data.notice.title)}</p>
+    <div class="space-y-1 text-sm max-h-96 overflow-y-auto">${data.deliveries.map(d => `<div class="flex items-center gap-2">${badge(d.status)}<span>${esc(d.name || '')}</span>
+      ${d.error ? `<span class="text-xs text-red-600">${esc(ERR[d.error] || d.error)}</span>` : ''}</div>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div>
+    <p class="text-xs text-gray-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。</p>`)
+}
+// 二重配信の防止用キー（配信が成功するまで同じキーを使う。サーバーは同じキーの配信を受け付けない）
+let NOTICE_REQUEST_ID = null
+function newNoticeRequestId() {
+  return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)
+}
+window.sendNotice = async function (btn) {
   const title = document.getElementById('nt-title').value.trim()
   if (!title) { toast('タイトルを入力してください'); return }
+  if (btn && btn.disabled) return
   const target = document.getElementById('nt-target').value
-  await axios.post('/api/admin/notices', {
-    title, body: document.getElementById('nt-body').value,
-    target_type: target, target_ids: target === 'project' ? document.getElementById('nt-project').value : '',
-    importance: document.getElementById('nt-importance').value,
-    read_required: document.getElementById('nt-required').checked,
-    send_email: document.getElementById('nt-send-email').checked
-  })
-  toast('お知らせを配信しました'); renderNotices()
+  if (!NOTICE_REQUEST_ID) NOTICE_REQUEST_ID = newNoticeRequestId()
+  const label = btn ? btn.innerHTML : ''
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>送信中…' }
+  try {
+    const { data } = await axios.post('/api/admin/notices', {
+      title, body: document.getElementById('nt-body').value,
+      target_type: target, target_ids: target === 'project' ? document.getElementById('nt-project').value : '',
+      importance: document.getElementById('nt-importance').value,
+      read_required: document.getElementById('nt-required').checked,
+      send_email: document.getElementById('nt-send-email').checked,
+      client_request_id: NOTICE_REQUEST_ID
+    })
+    NOTICE_REQUEST_ID = null
+    const e = data.email
+    let msg = 'お知らせを配信しました'
+    if (e) {
+      msg += e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
+        : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
+        : `（メール送信対象 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
+    }
+    toast(msg); renderNotices()
+  } catch (err) {
+    const r = err.response
+    if (r && r.status === 409 && r.data && r.data.duplicate) { NOTICE_REQUEST_ID = null; toast(r.data.error); renderNotices(); return }
+    toast((r && r.data && r.data.error) || 'お知らせを配信できませんでした。通信状況を確認してください')
+    if (btn) { btn.disabled = false; btn.innerHTML = label }
+  }
 }
 window.showReads = async function (id) {
   const { data } = await axios.get(`/api/admin/notices/${id}/reads`)
