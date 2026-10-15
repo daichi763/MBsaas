@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
-import { sendEmail } from './services/email'
+import { sendEmail, sendEmailBatch, mailMode } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup } from './services/retention'
@@ -14,7 +14,7 @@ import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, linkedStaffEmails } from './roster'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -1922,7 +1922,13 @@ api.get('/admin/notices', async (c) => {
     SELECT n.*, (SELECT COUNT(*) FROM notice_reads r WHERE r.notice_id = n.notice_id) AS read_count,
       (SELECT COUNT(*) FROM users us WHERE us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active') AS staff_total
     FROM notices n WHERE n.company_id = ? ORDER BY n.published_at DESC LIMIT 50`).bind(u.company_id).all()
-  return c.json({ notices: rows.results })
+  // メールの送信結果（状態ごとの人数）。メールを送らなかったお知らせは email_counts = null
+  const ids = (rows.results as any[]).map(n => n.notice_id)
+  const counts = ids.length ? (await c.env.DB.prepare(`SELECT notice_id, status, COUNT(*) AS n FROM notice_email_deliveries
+    WHERE company_id = ? AND notice_id IN (SELECT value FROM json_each(?)) GROUP BY notice_id, status`).bind(u.company_id, JSON.stringify(ids)).all()).results as any[] : []
+  const byNotice = new Map<number, Record<string, number>>()
+  for (const r of counts) { const m = byNotice.get(r.notice_id) || {}; m[r.status] = r.n; byNotice.set(r.notice_id, m) }
+  return c.json({ notices: (rows.results as any[]).map(({ client_request_id: _k, ...n }) => ({ ...n, email_counts: byNotice.get(n.notice_id) || null })) })
 })
 
 // お知らせの対象者を解決する（画面表示・既読率レポートと同じtarget_type判定ルールを踏襲）
@@ -1959,36 +1965,94 @@ async function resolveNoticeTargets(db: D1Database, companyId: number, targetTyp
   return []
 }
 
-// 対象者へお知らせメールを一括送信する（同時実行数を絞って処理し、1件の失敗が他に波及しないようにする）
-async function sendNoticeEmails(env: Bindings, recipients: { name: string; email: string }[], title: string, body: string, companyId: number) {
-  const CONCURRENCY = 10
-  const url = `${env.APP_BASE_URL}/staff`
-  for (let i = 0; i < recipients.length; i += CONCURRENCY) {
-    const batch = recipients.slice(i, i + CONCURRENCY)
-    await Promise.allSettled(batch.map(r => {
+// 対象者へお知らせメールをまとめて送り、1人ずつの結果を notice_email_deliveries に記録する（pending → sent / failed / skipped）
+type NoticeMailRecipient = { user_id: number; name: string; email: string }
+async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: number, title: string, body: string, recipients: NoticeMailRecipient[]) {
+  const db = env.DB
+  try {
+    const url = `${String(env.APP_BASE_URL || '').replace(/\/+$/, '')}/staff`
+    const inputs = recipients.map(r => {
       const tpl = noticeEmail({ name: r.name, title, body, url })
-      return sendEmail(env, { to: r.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notice', company_id: companyId })
+      return { to: r.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notice', company_id: companyId }
+    })
+    // 冪等キーはお知らせ単位（同じお知らせの送信が二重に動いても、Resend 側で同じバッチを二度送らない）
+    const results = await sendEmailBatch(env, inputs, { idempotencyKey: `notice-${noticeId}` })
+    const rows = recipients.map((r, k) => ({
+      u: r.user_id, s: results[k].skipped ? 'skipped' : results[k].ok ? 'sent' : 'failed',
+      e: results[k].ok ? null : (results[k].error || 'unknown'), id: results[k].skipped ? null : (results[k].id ?? null),
     }))
+    await db.prepare(`UPDATE notice_email_deliveries AS d SET status = json_extract(j.value, '$.s'), error = json_extract(j.value, '$.e'),
+        provider_message_id = json_extract(j.value, '$.id'), sent_at = ?
+      FROM json_each(?) AS j WHERE d.notice_id = ? AND d.user_id = json_extract(j.value, '$.u')`)
+      .bind(nowJST(), JSON.stringify(rows), noticeId).run()
+  } catch {
+    console.log(`notice mail failed: notice=${noticeId}`)
+    // 途中で止まった分は送信失敗として残す（送信中のまま放置しない）
+    try {
+      await db.prepare(`UPDATE notice_email_deliveries SET status = 'failed', error = 'internal_error' WHERE notice_id = ? AND status = 'pending'`).bind(noticeId).run()
+    } catch { /* 記録の失敗は無視 */ }
   }
 }
 
+// 二重配信とみなす時間（同じ作成者・同じ内容・同じ対象）
+const NOTICE_DUP_WINDOW_SEC = 30
+
 api.post('/admin/notices', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
-  if (!b.title) return c.json({ error: 'タイトルは必須です' }, 400)
-  const target_type = b.target_type || 'all'; const target_ids = b.target_ids ?? ''
-  await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.title, b.body ?? '', target_type, target_ids, b.importance || 'normal', b.read_required ? 1 : 0, nowJST(), u.user_id).run()
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  const title = String(b.title ?? '').trim()
+  if (!title) return c.json({ error: 'タイトルは必須です' }, 400)
+  const body = String(b.body ?? '')
+  const target_type = b.target_type || 'all'; const target_ids = String(b.target_ids ?? '')
+  // 二重送信の防止（#105）: 画面が発行した一意キー（client_request_id）が同じなら受け付けない。
+  // キーが無い呼び出しも、同じ人が同じ内容を直前に配信していれば重複として扱う
+  const requestId = typeof b.client_request_id === 'string' && b.client_request_id.trim() ? b.client_request_id.trim().slice(0, 64) : null
+  const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_DUP_WINDOW_SEC * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dup = await c.env.DB.prepare(`SELECT notice_id FROM notices WHERE company_id = ? AND created_by = ? AND title = ? AND COALESCE(body, '') = ?
+    AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? LIMIT 1`)
+    .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since).first() as any
+  if (dup) return c.json({ error: '同じお知らせを配信したばかりです。一覧を確認してください', duplicate: true, notice_id: dup.notice_id }, 409)
+  const ins = await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by, client_request_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING notice_id`)
+    .bind(u.company_id, title, body, target_type, target_ids, b.importance || 'normal', b.read_required ? 1 : 0, nowJST(), u.user_id, requestId).first() as any
+  if (!ins) return c.json({ error: 'このお知らせは配信済みです。一覧を確認してください', duplicate: true }, 409)
+  const noticeId = Number(ins.notice_id)
 
   // メール通知（対象者判定ロジックは既存のnotice表示ロジックを再利用。既読状態には一切影響しない）
+  // 送信対象・メール未登録の人数を返し、1人ずつの結果を記録する（#24）。連携スタッフは雇用元の本人のアドレスに送る（#128）
+  let email: { mode: string; targets: number; with_email: number; no_email: number } | null = null
   if (b.send_email) {
-    const recipients = (await resolveNoticeTargets(c.env.DB, u.company_id, target_type, target_ids))
-      .filter(r => r.email) as { name: string; email: string }[]
-    if (recipients.length) {
-      c.executionCtx.waitUntil(sendNoticeEmails(c.env, recipients, b.title, b.body ?? '', u.company_id))
+    const targets = await resolveNoticeTargets(c.env.DB, u.company_id, target_type, target_ids)
+    const linked = await linkedStaffEmails(c.env.DB, targets.filter(t => !String(t.email || '').trim()).map(t => t.staff_id))
+    const withEmail: NoticeMailRecipient[] = []
+    const rows: { u: number; s: string }[] = []
+    const seen = new Set<number>()
+    for (const t of targets) {
+      if (seen.has(t.user_id)) continue
+      seen.add(t.user_id)
+      const addr = String(t.email || '').trim() || linked.get(Number(t.staff_id)) || ''
+      if (addr) withEmail.push({ user_id: t.user_id, name: t.name, email: addr })
+      rows.push({ u: t.user_id, s: addr ? 'pending' : 'no_email' })
     }
+    if (rows.length) {
+      await c.env.DB.prepare(`INSERT OR IGNORE INTO notice_email_deliveries (notice_id, company_id, user_id, status, created_at)
+        SELECT ?, ?, json_extract(value, '$.u'), json_extract(value, '$.s'), ? FROM json_each(?)`)
+        .bind(noticeId, u.company_id, nowJST(), JSON.stringify(rows)).run()
+    }
+    if (withEmail.length) c.executionCtx.waitUntil(sendNoticeEmails(c.env, noticeId, u.company_id, title, body, withEmail))
+    email = { mode: mailMode(c.env), targets: rows.length, with_email: withEmail.length, no_email: rows.length - withEmail.length }
   }
-  return c.json({ ok: true })
+  return c.json({ ok: true, notice_id: noticeId, email })
+})
+
+// お知らせメールの送信結果（1人ずつ）。メールアドレスは返さない（連携スタッフの所属元のアドレスを見せないため）
+api.get('/admin/notices/:id{[0-9]+}/email-deliveries', async (c) => {
+  const u = c.get('user')
+  const n = await c.env.DB.prepare('SELECT notice_id, title FROM notices WHERE notice_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first()
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  const rows = (await c.env.DB.prepare(`SELECT d.user_id, us.name, d.status, d.error, d.sent_at FROM notice_email_deliveries d
+    LEFT JOIN users us ON us.user_id = d.user_id WHERE d.notice_id = ? AND d.company_id = ?
+    ORDER BY CASE d.status WHEN 'failed' THEN 0 WHEN 'no_email' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END, us.name`).bind(n.notice_id, u.company_id).all()).results
+  return c.json({ notice: n, deliveries: rows })
 })
 
 // お知らせ既読状況

@@ -1,5 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
+	// トップレベルはローカル開発用（wrangler dev / --local）。本番は env.production（npm run deploy = wrangler deploy --env production）。
+	// vars・d1_databases・r2_buckets は環境ごとに引き継がれないため、env.production に同じものを書く。
 	"name": "mbsaas",
 	"compatibility_date": "2026-04-26",
 	"main": "./dist/_worker.js",
@@ -33,10 +35,55 @@
 	"triggers": {
 		"crons": ["0 18 * * *"]
 	},
+	// ローカルの既定: メールは送らない・定期削除は dry-run・メールのリンクはローカルを指す・デモ案内を出す
 	"vars": {
 		"MAIL_FROM": "Field OS <onboarding@resend.dev>",
-		"APP_BASE_URL": "https://mbsaas.saas-2a2.workers.dev",
-		"MAIL_ENABLED": "true",
-		"RETENTION_ENABLED": "true"
+		"APP_BASE_URL": "http://localhost:8787",
+		"MAIL_ENABLED": "false",
+		"RETENTION_ENABLED": "false",
+		"DEMO_MODE": "true"
+	},
+	"env": {
+		"production": {
+			// 環境名を付けた別の Worker（mbsaas-production）にならないよう、名前を明示する
+			"name": "mbsaas",
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "mbsaas-production",
+					"database_id": "050d6fd5-7d49-4282-a0bf-f2b47981d086"
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "PHOTOS",
+					"bucket_name": "mbsaas-attendance-photos"
+				},
+				{
+					"binding": "DOCUMENTS",
+					"bucket_name": "mbsaas-staff-documents"
+				},
+				{
+					"binding": "CONTRACTS",
+					"bucket_name": "mbsaas-client-contracts"
+				}
+			],
+			"triggers": {
+				"crons": ["0 18 * * *"]
+			},
+			// MAIL_FROM: Resend で認証した独自ドメインの送信元に変えること（resend.dev のテスト用アドレスはアカウント所有者あてにしか届かない）
+			// RETENTION_ENABLED: 'true' で定期削除を実行する。'true' 以外は dry-run
+			"vars": {
+				"MAIL_FROM": "Field OS <onboarding@resend.dev>",
+				"APP_BASE_URL": "https://mbsaas.saas-2a2.workers.dev",
+				"MAIL_ENABLED": "true",
+				"RETENTION_ENABLED": "true",
+				"DEMO_MODE": "false"
+			},
+			// Workers Logs。有効にするかは運用で決める（有効にすると送信失敗などのログをダッシュボードで確認できる）
+			"observability": {
+				"enabled": false
+			}
+		}
 	}
 }

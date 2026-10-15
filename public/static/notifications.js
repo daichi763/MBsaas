@@ -7,7 +7,7 @@
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下' }
   const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え' }
-  const ERR = { mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', source_missing: '申請または宛先のユーザーが見つかりません' }
+  const ERR = { mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', source_missing: '申請または宛先のユーザーが見つかりません', recipient_suspended: '宛先のアカウントが停止中のため送信しません' }
   const fmtAt = (at) => at ? dayjs(at.replace(' ', 'T')).format('YYYY/M/D HH:mm') : '－'
   let busy = false
 
@@ -61,7 +61,9 @@
     const tab = (k, l) => `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${EMAIL_STATUS === k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" onclick="mailTab('${k}')">${l}${n[k] ? ` <span class="text-xs opacity-80">${n[k]}</span>` : ''}</button>`
     const st = (s) => s === 'sent' ? '<span class="badge badge-green whitespace-nowrap">送信済み</span>' : s === 'failed' ? '<span class="badge badge-red whitespace-nowrap">送信失敗</span>' : '<span class="badge badge-yellow whitespace-nowrap">送信中</span>'
     const rows = d.deliveries
-    const action = (r) => r.status === 'failed' ? `<button class="btn btn-outline text-xs whitespace-nowrap" onclick="mailResend(${r.delivery_id}, this)"><i class="fas fa-rotate"></i>再送</button>` : ''
+    // 宛先が停止中のものは再送できない（サーバーも受け付けない）
+    const resendable = (r) => r.status === 'failed' && r.error !== 'recipient_suspended'
+    const action = (r) => resendable(r) ? `<button class="btn btn-outline text-xs whitespace-nowrap" onclick="mailResend(${r.delivery_id}, this)"><i class="fas fa-rotate"></i>再送</button>` : ''
     $app.innerHTML = `
       <a href="#corrections" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>打刻修正承認</a>
       <div class="flex items-center justify-between flex-wrap gap-2 mt-2"><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-envelope text-blue-600 mr-1"></i>メール送信状況</h2>
@@ -81,7 +83,7 @@
         <p class="text-xs text-gray-500 break-all">${esc(r.to_email)}</p>
         <p class="text-xs mt-1"><a class="text-blue-600" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${esc(r.staff_name || '')} ${LABEL[r.report_type] || ''}</p>
         ${r.error ? `<p class="text-xs text-red-600 mt-1">${esc(ERR[r.error] || r.error)}</p>` : ''}
-        ${r.status === 'failed' ? `<div class="mt-2">${action(r).replace('btn-outline text-xs whitespace-nowrap', 'btn-outline text-xs w-full')}</div>` : ''}</div>`).join('') || '<p class="text-center text-gray-400 py-6">該当するメールはありません</p>'}</div>`
+        ${resendable(r) ? `<div class="mt-2">${action(r).replace('btn-outline text-xs whitespace-nowrap', 'btn-outline text-xs w-full')}</div>` : ''}</div>`).join('') || '<p class="text-center text-gray-400 py-6">該当するメールはありません</p>'}</div>`
   }
   window.mailTab = function (k) { EMAIL_STATUS = k; renderCorrectionEmails() }
   window.mailResend = async function (id, btn) {

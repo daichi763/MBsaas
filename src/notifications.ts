@@ -120,9 +120,11 @@ export async function sendDelivery(env: NotifyEnv, deliveryId: number, byUserId:
   const d = await db.prepare('SELECT * FROM notification_emails WHERE delivery_id = ?').bind(deliveryId).first() as any
   if (!d) return { ok: false, error: 'not_found' }
   const c = await loadInfo(db, d.correction_id)
-  const u = await db.prepare('SELECT name, role FROM users WHERE user_id = ?').bind(d.user_id).first() as any
+  const u = await db.prepare('SELECT name, role, status FROM users WHERE user_id = ?').bind(d.user_id).first() as any
   let result: { ok: boolean; id?: string; error?: string }
   if (!c || !u) result = { ok: false, error: 'source_missing' }
+  // 作成後に退職・停止・統合された宛先には送らない（再送も同じ。#260）
+  else if (u.status !== 'active') result = { ok: false, error: 'recipient_suspended' }
   else {
     const m = content(c, d.kind, NOTIFY_ADMIN_ROLES.includes(u.role) || u.role === 'system_admin')
     const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
@@ -209,9 +211,15 @@ notificationsAdminApi.get('/notification-emails/export', async (c) => {
 })
 notificationsAdminApi.post('/notification-emails/:id{[0-9]+}/resend', async (c) => {
   const u = c.get('user')
-  const d = await c.env.DB.prepare('SELECT delivery_id, status FROM notification_emails WHERE delivery_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  const d = await c.env.DB.prepare(`SELECT e.delivery_id, e.status, us.status AS user_status FROM notification_emails e LEFT JOIN users us ON us.user_id = e.user_id
+    WHERE e.delivery_id = ? AND e.company_id = ?`).bind(c.req.param('id'), u.company_id).first() as any
   if (!d) return c.json({ error: '送信記録が見つかりません' }, 404)
   if (d.status === 'sent') return c.json({ error: 'このメールは送信済みです' }, 409)
+  // 退職・停止中の宛先には再送しない（#260）
+  if (d.user_status !== 'active') {
+    await c.env.DB.prepare(`UPDATE notification_emails SET error = 'recipient_suspended' WHERE delivery_id = ? AND status = 'failed'`).bind(d.delivery_id).run()
+    return c.json({ error: '宛先のアカウントが停止中のため送信しません', reason: 'recipient_suspended' }, 409)
+  }
   // 二重送信の防止: 失敗の行を「送信中」にできた場合だけ送る
   const claim = await c.env.DB.prepare(`UPDATE notification_emails SET status = 'pending' WHERE delivery_id = ? AND status = 'failed'`).bind(d.delivery_id).run()
   if (!claim.meta.changes) return c.json({ error: '送信中です。しばらくしてから一覧を確認してください' }, 409)

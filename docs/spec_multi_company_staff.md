@@ -187,7 +187,8 @@ Field OSを利用していない所属元企業を記録する軽量マスタ。
 - 既存の認証方式(SHA-256ハッシュ + httpOnly Cookieセッション)、マルチテナント構造(`company_id`ベース)との整合性を保つこと。
 - 既存機能(シフト管理・勤怠報告・日報・評価・実績分析・請求前チェック等)を壊さないよう、既存の `staff_id` 参照は可能な限り維持する形で移行すること。
 - マイグレーションファイルは `migrations/` 配下に連番で追加し、既存の `0001`〜`0004` を変更しないこと。
-- 本番環境: Cloudflare Pagesプロジェクト名 `mbsaas`、D1データベース `mbsaas-production`、R2バケット `mbsaas-attendance-photos`。デプロイ済みで本番URLは https://mbsaas.pages.dev/ 。GitHubリポジトリ `daichi763/MBsaas`(mainブランチ)と連携済み。本番D1には現時点でテストデータは未投入(テーブルスキーマのみ)。
+- 本番環境: Cloudflare Pagesプロジェクト名 `mbsaas`、D1データベース `mbsaas-production`、R2バケット `mbsaas-attendance-photos`。デプロイ済みで本番URLは https://mbsaas.pages.dev/ 。GitHubリポジトリ `daichi763/MBsaas`(mainブランチ)と連携済み。本番D1には現時点でテストデータは未投入(テーブルスキーマのみ)。本部の標準日報テンプレート4種(携帯ショップ・家電量販店・催事・光回線)はマイグレーション `0032_mail_env.sql` で投入する(seed.sql には含めない)。
+- 設定は環境ごとに分ける: `wrangler.jsonc` のトップレベルはローカル開発用(`MAIL_ENABLED=false`・`RETENTION_ENABLED=false`・`APP_BASE_URL=http://localhost:8787`・`DEMO_MODE=true`)、本番は `env.production`。デプロイは `npm run deploy`(`wrangler deploy --env production`)で行い、GitHub 連携の自動デプロイを使う場合もデプロイコマンドに `--env production` を付けること。本番の `MAIL_FROM` は Resend で認証した独自ドメインの送信元にする(`onboarding@resend.dev` はアカウント所有者あてにしか届かない)。
 
 ---
 

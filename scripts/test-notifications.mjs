@@ -1,9 +1,11 @@
 // 打刻修正申請の通知（docs/spec_attendance_correction.md 5章）の統合テスト
 // 前提: bash scripts/setup-test-db.sh でローカルの D1 を作り直し、`wrangler dev` で起動していること。
+//   wrangler.jsonc のローカルの既定は MAIL_ENABLED=false（送らずに成功扱い）なので、1) は --var MAIL_ENABLED:true を付けて起動する。
 //   ローカルでは RESEND_API_KEY が未設定のため、メールは実際には送られず「送信失敗（mail_not_configured）」として記録される。
 // 実行:
-//   1) node scripts/test-notifications.mjs                     （通常の起動: 通知・送信失敗の記録・再送の失敗）
-//   2) wrangler dev を --var MAIL_ENABLED:false で起動し直して
+//   1) wrangler dev を --var MAIL_ENABLED:true で起動して
+//      node scripts/test-notifications.mjs                     （通知・送信失敗の記録・再送の失敗）
+//   2) wrangler dev を --var MAIL_ENABLED:false（既定）で起動し直して
 //      node scripts/test-notifications.mjs --mail-disabled     （再送の成功・送信済みの再送拒否）
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
 const MAIL_DISABLED = process.argv.includes('--mail-disabled')
