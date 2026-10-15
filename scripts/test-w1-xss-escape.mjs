@@ -87,7 +87,8 @@ async function createShift(staff_id, project_id, work_date, memo) {
     return ((await admin.get('/api/admin/projects')).data.projects || []).find(p => p.project_name === name).project_id
   }
   const pJp = await pj(tname, tpl && tpl.template_id)
-  const pNone = await pj('XSS-NO-TPL-' + Date.now(), 0)
+  // テンプレートの無い案件は、画面と同じく空欄で登録する（存在しないテンプレートIDは w1-tenant-guard で 400 になる）
+  const pNone = await pj('XSS-NO-TPL-' + Date.now(), '')
   const d = addDays(today, 43)
   const s1 = await createShift(1, pJp, d, 'XSS-JP')
   const r1 = await st1.post('/api/staff/daily-report', { project_id: pJp, shift_id: s1, work_date: d, values: { '架電数': 12, 'メモ': 'テスト' } })
