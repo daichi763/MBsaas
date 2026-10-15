@@ -476,7 +476,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('性別', ed ? `<select id="staff-gender" class="inp text-xs">${genderOptions(p.gender)}</select>` : esc(GENDER_LABEL_ADMIN[p.gender] || '-'))}
           ${bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${p.date_of_birth || ''}">` : esc(p.date_of_birth || '-'))}
           ${bi('年齢', p.age != null ? p.age + '歳' : '-')}
-          ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs text-gray-500">退職日 ${esc(p.retired_at)}</span>` : ''}`)}
+          ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-gray-500' : 'text-amber-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
           ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? `<input list="affiliation-list" id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">`
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
           ${bi('所属先担当者名', ed ? `<input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}">` : esc(p.affiliation_contact || '-'))}
@@ -509,15 +509,15 @@ function staffBasicCardHtml(sid, p, affData, editing) {
             <p class="text-xs text-gray-500 mb-1"><i class="fas fa-person-walking-arrow-right text-gray-400 mr-1"></i>在籍状況</p>
             <div class="flex gap-2 flex-wrap items-center">
               <select id="staff-emp-status" class="inp text-sm w-40" data-orig="${esc(p.employment_status || 'working')}"
-                onchange="document.getElementById('staff-retired-wrap').classList.toggle('hidden', this.value !== 'retired')">
+                onchange="document.getElementById('staff-retired-wrap').classList.toggle('hidden', this.value !== 'retired' && !document.getElementById('staff-retired-date').value)">
                 ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(p.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
               </select>
-              <span id="staff-retired-wrap" class="flex items-center gap-2 ${p.employment_status === 'retired' ? '' : 'hidden'}">
+              <span id="staff-retired-wrap" class="flex items-center gap-2 ${p.employment_status === 'retired' || p.retired_at ? '' : 'hidden'}">
                 <span class="text-xs text-gray-500">退職日</span>
                 <input type="date" id="staff-retired-date" class="inp text-sm w-44" value="${esc(p.retired_at || '')}" data-orig="${esc(p.retired_at || '')}">
               </span>
             </div>
-            <p class="text-xs text-gray-400 mt-1">退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>
+            <p class="text-xs text-gray-400 mt-1">退職日に今日以降の日付を入れると「退職予定」になり、退職日の当日まではログインできます（翌日に退職へ切り替わります）。退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>
           </div>` : ''}
         </div>
 `
@@ -685,14 +685,51 @@ window.toggleFollow = async function (sid, flag) {
   if (staffDetailState && String(staffDetailState.sid) === String(sid)) await refreshStaffProfile(sid)
   else renderStaffDetail(sid)
 }
-window.setStaffRetiredAt = async function (sid, date) {
-  if (date && !confirm(`退職日を ${date} に設定しますか？\n7年経過すると出退勤記録等が定期削除の対象になります。`)) return
+// ============ 退職日・在籍状況の保存（スタッフ詳細・従業員管理で共通。#5 #34 #139） ============
+function todayJSTStr() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10) }
+// 在籍状況と退職日の入力から、送る内容と確認の文言を決める。
+//  - 退職日が今日以降なら「退職予定」: 退職日だけを登録し、当日まではログインできる（翌日に退職へ切り替わる）
+//  - 在籍状況が退職以外で過去の退職日が残っているときは、退職日を消して在籍状況を戻す
+function retirementBody(status, date, origDate) {
+  const today = todayJSTStr()
+  if (status === 'retired' && !date) return { error: '退職にする場合は退職日を入力してください' }
+  if (date && date >= today) {
+    return { body: { retired_at: date, employment_status: status === 'retired' ? 'retired' : status },
+      confirm: date === origDate ? null : `退職予定日を ${date} で登録しますか？\n${date} まではログインでき、翌日に退職（ログイン停止）へ切り替わります。` }
+  }
+  if (status === 'retired') {
+    return { body: { retired_at: date, employment_status: 'retired' },
+      confirm: date === origDate ? null : `退職日を ${date} に設定しますか？\n本人はすぐにログインできなくなります。退職日から7年経過すると、出退勤記録・シフト・写真等が定期削除の対象になります。` }
+  }
+  if (date) {
+    return { body: { retired_at: null, employment_status: status },
+      confirm: `在籍状況を「${EMP_STATUS_LABEL[status] || status}」に戻すと、退職日 ${date} は消去されます。よろしいですか？` }
+  }
+  return { body: { retired_at: null, employment_status: status }, confirm: null }
+}
+// 保存する。退職日に確認が必要なとき（サーバーが confirm_required を返す: 7年以上前・1年以上前・入社日より前・
+// 退職日より後にシフトがある）は、内容を見せて確認できたら確認済みとして送り直す。取りやめたら null を返す
+async function putConfirmingRetiredAt(url, body, target) {
   try {
-    await axios.put('/api/admin/staff/' + sid, { retired_at: date })
+    return await axios.put(url, body)
+  } catch (e) {
+    const d = e.response && e.response.data
+    if (!(e.response && e.response.status === 409 && d && d.confirm_required)) throw e
+    if (!confirm(d.error + '\n\nこの日付で保存しますか？')) return null
+    ;(target || body).retired_at_confirmed = true
+    return axios.put(url, body)
+  }
+}
+window.setStaffRetiredAt = async function (sid, date) {
+  const r = retirementBody(date ? 'retired' : 'working', date || '', null)
+  if (r.error) { toast(r.error); return }
+  if (date && r.confirm && !confirm(r.confirm)) return
+  try {
+    if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, r.body))) return
     toast(date ? '退職日を設定しました' : '現役に戻しました')
     renderStaffDetail(sid)
-  } catch {
-    toast('更新に失敗しました')
+  } catch (e) {
+    toast((e.response && e.response.data && e.response.data.error) || '更新に失敗しました')
   }
 }
 window.setStaffEmploymentStatus = async function (sid, status) {
@@ -700,8 +737,8 @@ window.setStaffEmploymentStatus = async function (sid, status) {
     await axios.put('/api/admin/staff/' + sid, { employment_status: status })
     toast('在籍状況を更新しました')
     renderStaffDetail(sid)
-  } catch {
-    toast('更新に失敗しました')
+  } catch (e) {
+    toast((e.response && e.response.data && e.response.data.error) || '更新に失敗しました')
   }
 }
 window.saveStaffBasicInfo = async function (sid) {
@@ -721,13 +758,12 @@ window.saveStaffBasicInfo = async function (sid) {
     const st = document.getElementById('staff-emp-status')
     if (st) {
       const rd = document.getElementById('staff-retired-date')
-      const status = st.value, retired = rd ? rd.value : ''
-      if (status !== st.dataset.orig || (status === 'retired' && retired !== rd.dataset.orig)) {
-        if (status === 'retired') {
-          if (!retired) { toast('退職にする場合は退職日を入力してください'); return }
-          if (!confirm(`退職日を ${retired} に設定しますか？\n7年経過すると出退勤記録等が定期削除の対象になります。`)) return
-          body.retired_at = retired
-        } else Object.assign(body, { retired_at: null, employment_status: status })
+      const status = st.value, retired = rd ? rd.value : '', origRetired = rd ? rd.dataset.orig : ''
+      if (status !== st.dataset.orig || retired !== origRetired) {
+        const r = retirementBody(status, retired, origRetired)
+        if (r.error) { toast(r.error); return }
+        if (r.confirm && !confirm(r.confirm)) return
+        Object.assign(body, r.body)
       }
     }
     if (document.getElementById('staff-career-rows')) {
@@ -738,7 +774,7 @@ window.saveStaffBasicInfo = async function (sid) {
         career_rows: collectCareerRows(), pr_points: val('staff-pr-points'), remarks: val('staff-remarks'),
       })
     }
-    await axios.put('/api/admin/staff/' + sid, body)
+    if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, body))) return
     // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）
     const aff = (val('staff-affiliation') || '').trim()
     if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
@@ -1434,19 +1470,25 @@ window.saveEmployeeRecord = async function (sid) {
   const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }
   const str = (id) => document.getElementById(id).value || null
   const raw = (id) => document.getElementById(id).value
-  // スタッフ基本情報（スタッフマスタに反映）。退職日の有無で在籍状況を決める
-  const retired = raw('sp-retired')
-  const empStatus = raw('sp-emp-status')
+  // スタッフ基本情報（スタッフマスタに反映）。在籍状況と退職日は、変えたときだけ送る（#139）
+  const retiredEl = document.getElementById('sp-retired'), statusEl = document.getElementById('sp-emp-status')
+  const retired = retiredEl.value, empStatus = statusEl.value
+  const origRetired = retiredEl.defaultValue
+  const origStatus = ([...statusEl.options].find(o => o.defaultSelected) || statusEl.options[0]).value
   if (!raw('sp-name').trim()) { toast('氏名を入力してください'); return }
   if (!raw('sp-gender')) { toast('性別を選択してください'); return }
-  if (empStatus === 'retired' && !retired) { toast('退職にする場合は退職日を入力してください'); return }
   const profile = {
     name: raw('sp-name').trim(), kana: raw('sp-kana'), gender: raw('sp-gender'), date_of_birth: str('sp-dob'),
     nearest_station_line: raw('sp-station-line'), nearest_station: raw('sp-station'),
-    ...(retired ? { retired_at: retired } : { retired_at: null, employment_status: empStatus }),
+  }
+  if (retired !== origRetired || empStatus !== origStatus) {
+    const r = retirementBody(empStatus, retired, origRetired)
+    if (r.error) { toast(r.error); return }
+    if (r.confirm && !confirm(r.confirm)) return
+    Object.assign(profile, r.body)
   }
   try {
-    await axios.put('/api/admin/employees/' + sid, {
+    const saved = await putConfirmingRetiredAt('/api/admin/employees/' + sid, {
       profile,
       employee_number: str('emp-number'), hire_date: str('emp-hire-date'), base_location: str('emp-location'),
       department: str('emp-department'), job_title: str('emp-job-title'), contract_type: str('emp-contract-type'),
@@ -1469,7 +1511,8 @@ window.saveEmployeeRecord = async function (sid) {
       employment_insurance_no: str('emp-emp-ins'), social_insurance_no: str('emp-soc-ins'),
       paid_leave_granted_at: str('emp-leave-granted'), paid_leave_remaining: num('emp-leave-remaining'),
       telework_remaining_this_month: num('emp-telework'),
-    })
+    }, profile)
+    if (!saved) return
     toast('従業員情報を保存しました（スタッフマスタにも反映されます）')
     renderEmployeeDetail(sid)
   } catch (e) {

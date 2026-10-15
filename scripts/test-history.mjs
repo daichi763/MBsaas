@@ -123,7 +123,10 @@ if (!PERSIST) {
   console.log('SKIP  定期削除の確認（PERSIST が未指定）')
 } else {
   // スタッフ 1 を 8 年前に退職したことにし、3 年前の通知を 1 件入れる（テスト用の DB のみ）
+  // 退職日より後にシフトがある人と、猶予中の人は削除しないため、シフトを退職日より前へ移し、猶予も明けたことにする
   d1(`UPDATE users SET retired_at = '2018-01-01' WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = 1);
+      UPDATE shifts SET work_date = date(work_date, '-9 years') WHERE staff_id = 1;
+      UPDATE staff_profiles SET retention_flagged_at = '2000-01-01' WHERE staff_id = 1;
       INSERT INTO user_notifications (company_id, user_id, kind, title, created_at) VALUES (1, 1, 'correction_submitted', '古い通知', '2023-01-01 09:00:00');`)
   await waitServer()
   const hq = client(await login('sample', 'hq'))

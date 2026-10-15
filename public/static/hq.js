@@ -262,13 +262,61 @@ window.addTemplate = async function () {
 const RETENTION_TARGET_LABEL = {
   daily_reports: '日報（3年）', attendance_reports: '出退勤記録（退職後7年）', shifts: 'シフト（退職後7年）',
   evaluations: '人事評価（退職後7年）', follow_logs: 'やり取り履歴（退職後7年）', consultations: '相談内容（退職後7年）',
-  r2_photos: 'R2写真（退職後7年）',
+  r2_photos: 'R2写真（退職後7年）', shift_report_tokens: '報告用URL（退職後7年）', retired_staff: '退職者データ（退職後7年）',
   user_notifications: 'アプリ内通知（2年）', attendance_corrections: '打刻修正申請（退職後7年）', attendance_correction_events: '打刻修正の操作履歴（退職後7年）',
   notification_emails: '通知メールの送信状態（退職後7年）', report_setting_logs: '報告設定の変更履歴（退職後7年）', project_staff_report_settings: '報告設定（スタッフ別・退職後7年）',
 }
-async function renderRetention() {
+// 次回削除予定・対象外の一覧（退職日の入力誤りに気づけるよう、削除前に本部で確認できるようにする）
+function retentionScheduleHtml(sch) {
+  const row = (s, note) => `
+    <tr>
+      <td class="text-xs">${esc(s.company_name || '-')}</td>
+      <td>${esc(s.name || '-')} <span class="text-xs text-slate-500">#${esc(s.staff_id)}</span></td>
+      <td class="text-xs">${esc(s.retired_at || '-')}</td>
+      <td class="text-xs">${esc(s.last_work_date || '-')}</td>
+      <td class="text-xs">${note}</td>
+    </tr>`
+  const table = (rows, empty) => `
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead><tr><th>会社</th><th>スタッフ</th><th>退職日</th><th>最終稼働日</th><th>状況</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5" class="text-center text-slate-500 py-4">${empty}</td></tr>`}</tbody>
+      </table>
+    </div>`
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-1">次回削除予定</h3>
+      <p class="text-xs text-slate-400 mb-3">初めて対象になったスタッフは${esc(sch.grace_days)}日間削除せずに猶予します。退職日に誤りがあれば、猶予中に各社で退職日を直してください（直すと猶予をやり直します）。</p>
+      ${table(sch.scheduled.map(s => row(s, s.delete_on
+        ? `<span class="text-amber-400">${esc(s.delete_on)} 以降の定期削除で削除</span>`
+        : '<span class="text-slate-400">次回の定期削除で猶予を開始</span>')).join(''), '削除予定のスタッフはいません')}
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-1">対象外（退職日より後にシフトあり）</h3>
+      <p class="text-xs text-slate-400 mb-3">退職日の入力誤りの可能性があるため削除しません。各社に退職日の確認を依頼してください。</p>
+      ${table(sch.excluded.map(s => row(s, '<span class="text-red-400">退職日より後にシフトあり</span>')).join(''), '該当するスタッフはいません')}
+    </section>`
+}
+function retentionDryRunHtml(data) {
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <h3 class="font-bold mb-3">dry-run結果（削除は実行していません。猶予中のスタッフも含みます）</h3>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${data.results.map(r => `
+          <div class="bg-slate-900 rounded-lg p-3">
+            <p class="text-xs text-slate-400">${RETENTION_TARGET_LABEL[r.target] || esc(r.target)}</p>
+            <p class="text-lg font-bold ${r.targetCount > 0 ? 'text-amber-400' : ''}">${esc(r.targetCount)}件</p>
+            ${r.failedCount > 0 ? `<p class="text-xs text-red-400">集計に失敗しました</p>` : ''}
+          </div>`).join('')}
+      </div>
+    </section>`
+}
+async function renderRetention(dryRunResult) {
   loading()
-  const { data } = await axios.get('/api/hq/retention/logs')
+  const [{ data }, sch] = await Promise.all([
+    axios.get('/api/hq/retention/logs'),
+    axios.get('/api/hq/retention/schedule').then(r => r.data).catch(() => null),
+  ])
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>
@@ -277,7 +325,8 @@ async function renderRetention() {
       </div>
       <button class="btn btn-outline" onclick="runRetentionDryRun()"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
     </div>
-    <div id="retention-dryrun-result" class="mb-5"></div>
+    <div id="retention-dryrun-result" class="mb-5">${dryRunResult ? retentionDryRunHtml(dryRunResult) : ''}</div>
+    ${sch ? retentionScheduleHtml(sch) : '<p class="text-sm text-red-400 mb-5">次回削除予定の取得に失敗しました</p>'}
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
       <h3 class="font-bold mb-3">直近の実行ログ</h3>
       <div class="overflow-x-auto">
@@ -291,7 +340,7 @@ async function renderRetention() {
                 <td><span class="badge ${l.dry_run ? 'badge-gray' : 'badge-blue'}">${l.dry_run ? 'dry-run' : '実削除'}</span></td>
                 <td>${l.target_count}</td>
                 <td>${l.deleted_count}</td>
-                <td>${l.failed_count > 0 ? `<span class="text-red-400">${l.failed_count}</span>` : '0'}</td>
+                <td>${l.failed_count > 0 ? `<span class="text-red-400" title="${esc(l.error_message || '')}">${l.failed_count}</span>` : '0'}</td>
               </tr>`).join('')}
           </tbody>
         </table>
@@ -303,19 +352,9 @@ window.runRetentionDryRun = async function () {
   box.innerHTML = '<div class="flex justify-center py-6"><span class="spin"></span></div>'
   try {
     const { data } = await axios.post('/api/hq/retention/dry-run')
-    box.innerHTML = `
-      <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-        <h3 class="font-bold mb-3">dry-run結果（削除は実行していません）</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-          ${data.results.map(r => `
-            <div class="bg-slate-900 rounded-lg p-3">
-              <p class="text-xs text-slate-400">${RETENTION_TARGET_LABEL[r.target] || esc(r.target)}</p>
-              <p class="text-lg font-bold ${r.targetCount > 0 ? 'text-amber-400' : ''}">${r.targetCount}件</p>
-            </div>`).join('')}
-        </div>
-      </section>`
     toast('dry-runが完了しました')
-    renderRetention()
+    // 実行ログも新しくするため描き直す（結果は消さずに残す）
+    renderRetention(data)
   } catch {
     box.innerHTML = ''
     toast('dry-runの実行に失敗しました')
