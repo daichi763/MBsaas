@@ -43,10 +43,61 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 })
 
 // ============ ホーム ============
+// 描画は部分ごとの関数（シフトカード・報告ボタン・お知らせ・相談バナー・メニュー）を並べるだけにする
+let HOME_SHIFT_ID = null   // ホームで選んだシフト（未選択ならサーバーが選ぶ）
+let HOME_LOADED_DAY = null // ホームを読んだ日（端末の日付）
+
 async function renderHome() {
   loading()
-  const { data } = await axios.get('/api/staff/home')
+  const { data } = await axios.get('/api/staff/home' + (HOME_SHIFT_ID ? '?shift_id=' + encodeURIComponent(HOME_SHIFT_ID) : ''))
   HOME = data
+  HOME_LOADED_DAY = dayjs().format('YYYY-MM-DD')
+  $app.innerHTML = `
+    <div id="notif-banner"></div>
+    ${homeNoticeBannerHtml(data)}
+    ${homeConsultBannerHtml(data)}
+    ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) : homeNoShiftHtml()}
+    ${homeNoticesHtml(data)}
+    ${homeMenuHtml()}`
+  if (window.loadNotifBanner) loadNotifBanner()
+}
+
+// ホームのシフトを切り替える（本日のシフトの一覧から）
+window.selectHomeShift = function (shiftId) {
+  HOME_SHIFT_ID = Number(shiftId) || null
+  renderHome()
+}
+
+// 画面を開いたまま日付が変わったら、ホームを読み直す（前日のシフトに今の時刻で報告しないように）。読み直したら true
+function homeIsStale() {
+  if (!HOME_LOADED_DAY || HOME_LOADED_DAY === dayjs().format('YYYY-MM-DD')) return false
+  HOME = null; HOME_SHIFT_ID = null; HOME_LOADED_DAY = null
+  const tab = (location.hash || '#home').slice(1).split('/')[0]
+  if (!tab || tab === 'home') renderHome()
+  return true
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') homeIsStale() })
+window.addEventListener('pageshow', () => homeIsStale())
+setInterval(() => homeIsStale(), 60 * 1000)
+
+// シフトカード
+function homeShiftCardHtml(data) {
+  const s = data.shift
+  return `
+    <section class="card p-4 mb-4" id="today-shift">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-bold text-gray-800"><i class="fas fa-calendar-check text-blue-600 mr-1"></i>${data.carryover ? '昨日からの勤務' : '今日の稼働'}</h2>
+        <span class="badge ${data.carryover ? 'badge-yellow' : 'badge-blue'}">${esc(fmtDate(s.work_date || data.today))}</span>
+      </div>
+      <p class="text-lg font-bold text-gray-900">${esc(s.project_name)}</p>
+      <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location)}</p>
+      <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
+      ${data.carryover ? '<p class="text-xs mt-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-moon mr-1"></i>日付をまたぐ勤務です。勤務終了・退店などは、このまま報告できます。</p>' : ''}
+    </section>`
+}
+
+// 報告ボタン（勤怠報告と日報）
+function homeReportButtonsHtml(data) {
   const s = data.shift
   const r = data.reports
   // 提出設定（案件・スタッフ・シフトごと）で必要な報告だけを表示する
@@ -54,23 +105,15 @@ async function renderHome() {
   const dailyRequired = data.daily_report_required !== false
   const nextIdx = order.findIndex(t => !r[t])
   const allDone = nextIdx === -1 && (!dailyRequired || data.daily_report_done)
-
-  let shiftCard
-  if (s) {
-    shiftCard = `
-    <section class="card p-4 mb-4" id="today-shift">
-      <div class="flex items-center justify-between mb-2">
-        <h2 class="font-bold text-gray-800"><i class="fas fa-calendar-check text-blue-600 mr-1"></i>今日の稼働</h2>
-        <span class="badge badge-blue">${esc(fmtDate(data.today))}</span>
-      </div>
-      <p class="text-lg font-bold text-gray-900">${esc(s.project_name)}</p>
-      <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location)}</p>
-      <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
-    </section>
+  // ほかのシフトで、報告は済んだが日報が未提出のもの（1日に複数のシフトがある場合）
+  const pendingDaily = (data.today_shifts || []).filter(x => x.shift_id !== s.shift_id && x.attendance_done && x.daily_report_required && !x.daily_report_done)
+  return `
     <section class="mb-4" id="attendance-section">
-      <h2 class="font-bold text-gray-800 mb-2 px-1 flex items-center">本日の報告 ${allDone ? '<span class="badge badge-green ml-1">すべて完了</span>' : ''}
+      <h2 class="font-bold text-gray-800 mb-2 px-1 flex items-center">${data.carryover ? '勤務の報告' : '本日の報告'} ${allDone ? '<span class="badge badge-green ml-1">すべて完了</span>' : ''}
         <a href="#attendance" class="ml-auto text-xs font-normal text-blue-600"><i class="fas fa-user-clock mr-0.5"></i>打刻の修正・追加</a></h2>
       ${!order.length && !dailyRequired ? '<p class="card p-4 text-sm text-gray-500">このシフトは勤怠報告・日報の提出は不要です</p>' : ''}
+      ${pendingDaily.map(x => `<button class="w-full text-left bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-2.5 text-sm text-amber-800" onclick="location.hash='report/${Number(x.shift_id)}'">
+        <i class="fas fa-pen-to-square mr-1"></i>${esc(x.start_time)}〜 ${esc(x.project_name)} の日報が未提出です<span class="underline font-bold ml-1">入力する</span></button>`).join('')}
       <div class="space-y-2.5">
         ${order.map((t, i) => {
           const done = !!r[t]
@@ -93,7 +136,7 @@ async function renderHome() {
             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
           </button>`
         }).join('')}
-        ${dailyRequired ? `<button class="report-btn ${data.daily_report_done ? 'done' : (r.check_out || nextIdx === -1) ? 'next' : ''}" onclick="location.hash='report'">
+        ${dailyRequired ? `<button class="report-btn ${data.daily_report_done ? 'done' : (r.check_out || nextIdx === -1) ? 'next' : ''}" onclick="location.hash='report/${Number(s.shift_id)}'">
           <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${data.daily_report_done ? 'bg-emerald-500 text-white' : r.check_out ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
             <i class="fas ${data.daily_report_done ? 'fa-check' : 'fa-pen-to-square'}"></i>
           </span>
@@ -105,23 +148,28 @@ async function renderHome() {
         </button>` : ''}
       </div>
     </section>`
-  } else {
-    shiftCard = `<section class="card p-6 mb-4 text-center text-gray-500">
+}
+
+// シフトがない日
+function homeNoShiftHtml() {
+  return `<section class="card p-6 mb-4 text-center text-gray-500">
       <i class="fas fa-mug-hot text-3xl text-gray-300 mb-2"></i>
       <p class="font-bold">今日の稼働予定はありません</p>
       <p class="text-xs mt-1">シフトタブから予定を確認できます</p>
     </section>`
-  }
+}
 
+// お知らせ: 未読の案内
+function homeNoticeBannerHtml(data) {
   const unread = (data.notices || []).filter(n => !n.is_read)
-  $app.innerHTML = `
-    <div id="notif-banner"></div>
-    ${unread.length ? `<div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="alert">
+  return unread.length ? `<div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="alert">
       <i class="fas fa-bell mr-1"></i>未読のお知らせが <b>${unread.length}件</b> あります
-      <a href="#more" onclick="setTimeout(()=>renderNotices(),50)" class="underline font-bold ml-1">確認する</a></div>` : ''}
-    ${data.replied_consultations ? `<div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-800" role="alert">
-      <i class="fas fa-reply mr-1"></i>管理者から相談への返信があります</div>` : ''}
-    ${shiftCard}
+      <a href="#more" onclick="setTimeout(()=>renderNotices(),50)" class="underline font-bold ml-1">確認する</a></div>` : ''
+}
+
+// お知らせ: 新しい順に3件
+function homeNoticesHtml(data) {
+  return `
     <section class="card p-4 mb-4" id="notice-preview">
       <h2 class="font-bold text-gray-800 mb-2"><i class="fas fa-bullhorn text-blue-600 mr-1"></i>お知らせ</h2>
       ${(data.notices || []).slice(0, 3).map(n => `
@@ -133,16 +181,27 @@ async function renderHome() {
           </div>
           <span class="text-xs text-gray-400">${dayjs(n.published_at).format('M/D')}</span>
         </a>`).join('') || '<p class="text-sm text-gray-400">お知らせはありません</p>'}
-    </section>
+    </section>`
+}
+
+// 相談バナー（管理者から返信がある場合）
+function homeConsultBannerHtml(data) {
+  return data.replied_consultations ? `<div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-800" role="alert">
+      <i class="fas fa-reply mr-1"></i>管理者から相談への返信があります</div>` : ''
+}
+
+// メニュー
+function homeMenuHtml() {
+  return `
     <div class="grid grid-cols-2 gap-3">
       <a href="#shift" class="card p-4 text-center"><i class="fas fa-calendar-days text-blue-500 text-xl mb-1 block"></i><span class="text-sm font-bold text-gray-700">シフト確認</span></a>
       <a href="#more" onclick="setTimeout(()=>renderConsult(),50)" class="card p-4 text-center"><i class="fas fa-comments text-blue-500 text-xl mb-1 block"></i><span class="text-sm font-bold text-gray-700">相談・連絡</span></a>
     </div>`
-  if (window.loadNotifBanner) loadNotifBanner()
 }
 
 // 勤怠報告送信
 window.submitAttendance = async function (type, shiftId) {
+  if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
   const doPost = async (pos) => {
     try {
       await axios.post('/api/staff/attendance', {
@@ -171,6 +230,7 @@ window.submitAttendance = async function (type, shiftId) {
 
 // ============ 入店/退店報告（写真添付） ============
 window.openPhotoAttendance = function (type, shiftId) {
+  if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
   pendingPhoto = { blob: null, previewUrl: null, type, shiftId }
   modal(photoModalHtml())
 }
@@ -465,10 +525,18 @@ window.submitShiftRequest = async function () {
 }
 
 // ============ 日報入力 ============
+// 対象のシフトは #report/<shift_id> で指定する。指定がなければ、報告が済んで日報が未提出のシフト → ホームのシフトの順に選ぶ
 async function renderReport() {
   loading()
-  if (!HOME) { const { data } = await axios.get('/api/staff/home'); HOME = data }
-  const s = HOME.shift
+  // 開いたまま日付が変わっても前日の内容で送らないよう、毎回読み直す
+  const { data: home } = await axios.get('/api/staff/home')
+  HOME = home
+  HOME_LOADED_DAY = dayjs().format('YYYY-MM-DD')
+  const list = home.today_shifts || []
+  const wanted = Number((location.hash || '').slice(1).split('/')[1]) || 0
+  const s = list.find(x => x.shift_id === wanted)
+    || list.find(x => x.attendance_done && x.daily_report_required && !x.daily_report_done)
+    || list.find(x => home.shift && x.shift_id === home.shift.shift_id) || list[0] || null
   if (!s) {
     $app.innerHTML = `<div class="card p-6 text-center text-gray-500 mt-4">
       <i class="fas fa-circle-info text-2xl text-gray-300 mb-2 block"></i>
@@ -485,8 +553,11 @@ async function renderReport() {
   $app.innerHTML = `
     <section class="card p-4 mb-4">
       <h2 class="font-bold text-gray-800">${esc(s.project_name)}</h2>
-      <p class="text-xs text-gray-400">${fmtDate(HOME.today)} の日報 ${data.template ? '｜' + esc(data.template.template_name) : ''}</p>
-      ${HOME.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
+      <p class="text-xs text-gray-400">${fmtDate(s.work_date)} ${esc(s.start_time)}〜${esc(s.end_time)} の日報 ${data.template ? '｜' + esc(data.template.template_name) : ''}</p>
+      ${list.length > 1 ? `<select id="report-shift" class="inp text-sm mt-2" aria-label="日報を入力するシフト">
+        ${list.map(x => `<option value="${Number(x.shift_id)}" ${x.shift_id === s.shift_id ? 'selected' : ''}>${esc(fmtDate(x.work_date))} ${esc(x.start_time)}〜${esc(x.end_time)} ${esc(x.project_name)}${x.daily_report_done ? '（提出済み）' : x.daily_report_required ? '' : '（日報不要）'}</option>`).join('')}
+      </select>` : ''}
+      ${s.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
     </section>
     <form id="report-form" class="space-y-4 pb-8">
       <section class="card p-4">
@@ -515,9 +586,11 @@ async function renderReport() {
         <label class="flex items-center gap-3 py-1"><input id="incident-flag" type="checkbox" class="w-5 h-5 rounded"><span class="text-sm font-medium text-gray-700">インシデントがあった</span></label>
         <label class="flex items-center gap-3 py-1"><input id="complaint-flag" type="checkbox" class="w-5 h-5 rounded"><span class="text-sm font-medium text-gray-700">クレームがあった</span></label>
       </section>
-      <button type="submit" class="btn btn-primary w-full py-3.5 text-base">${HOME.daily_report_done ? '日報を修正して再提出' : '日報を提出する'}</button>
+      <button type="submit" class="btn btn-primary w-full py-3.5 text-base">${s.daily_report_done ? '日報を修正して再提出' : '日報を提出する'}</button>
     </form>`
 
+  const sel = document.getElementById('report-shift')
+  if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
   document.getElementById('report-form').addEventListener('submit', async (e) => {
     e.preventDefault()
     const values = {}
@@ -525,8 +598,9 @@ async function renderReport() {
       const k = el.dataset.key
       values[k] = el.type === 'number' ? Number(el.value || 0) : el.value
     })
+    // 稼働日はシフトの稼働日（日をまたぐ勤務や、開いたまま日付が変わった場合も前日の日付で送る）
     await axios.post('/api/staff/daily-report', {
-      project_id: s.project_id, shift_id: s.shift_id, work_date: HOME.today, values,
+      project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date, values,
       incident_flag: document.getElementById('incident-flag').checked,
       complaint_flag: document.getElementById('complaint-flag').checked
     })

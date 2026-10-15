@@ -14,6 +14,7 @@ import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
+import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
 import {
@@ -457,54 +458,127 @@ api.route('/staff/recruit', recruitStaffApi)
 // スタッフ側 API
 // =========================================================
 
-// スタッフホーム
-api.get('/staff/home', async (c) => {
-  const u = c.get('user'); const today = todayJST()
-  // 勤怠の自動振り分け（フェーズH）: 同一人物の全所属企業のシフトから本日分を探す（開始時刻順。未退店のものを優先）
-  const personRows = await personStaffRows(c.env.DB, u)
-  const personIds = personRows.length ? personRows.map(r => r.staff_id) : [u.staff_id]
-  const todays = (await c.env.DB.prepare(`
-    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name,
-      (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = 'check_out') AS checked_out
+// ---------- スタッフホーム ----------
+// 取得はシフト・報告・日報・お知らせ・相談の部分関数に分け、ルートはそれを並べるだけにする
+// 前日に始まった日をまたぐシフトを、終了予定から何時間ホームに出すか
+const HOME_CARRYOVER_HOURS = 6
+
+// シフト: 本日のシフトと、前日に始まった日をまたぐシフト（同一人物の全所属企業。欠勤を除く）
+async function homeLoadShifts(db: D1Database, personIds: number[], today: string): Promise<any[]> {
+  const rows = (await db.prepare(`
+    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
-    WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date = ? AND s.status != 'absent'
-    ORDER BY s.start_time`).bind(...personIds, today).all()).results as any[]
-  const shift = todays.find(s => !s.checked_out) || todays[0] || null
-  const shiftOwner = shift ? (personRows.find(r => r.staff_id === shift.staff_id) || { staff_id: u.staff_id, settings_json: u.settings_json }) : null
+    WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date IN (?, ?) AND s.status != 'absent'
+    ORDER BY s.work_date, s.start_time`).bind(...personIds, addDays(today, -1), today).all()).results as any[]
+  return rows.filter(s => s.work_date === today || crossesMidnight(s))
+}
 
-  let reports: Record<string, any> = {}
-  let dailyReportDone = false
-  // 勤怠・日報の提出設定（案件 → スタッフ → シフトの順に上書き。第2段階）
-  const shiftModes = shift ? (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id) || null : null
-  if (shift) {
-    const rows = await c.env.DB.prepare('SELECT report_type, reported_at, status FROM attendance_reports WHERE shift_id = ?').bind(shift.shift_id).all()
-    for (const r of rows.results) reports[r.report_type as string] = r
-    const dr = await c.env.DB.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(shift.staff_id, today, shift.project_id).first()
-    dailyReportDone = !!dr
+// 報告: シフトごとの有効な報告（提出設定）と報告済みのもの
+async function homeLoadReports(db: D1Database, shifts: any[]) {
+  const out = new Map<number, { required_attendance: string[]; daily_report_required: boolean; reports: Record<string, any> }>()
+  if (!shifts.length) return out
+  const ids = shifts.map(s => s.shift_id as number)
+  const modes = await modesForShifts(db, ids)
+  for (const id of ids) {
+    const m = modes.get(id)
+    out.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {} })
   }
+  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status FROM attendance_reports WHERE shift_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results as any[]
+  for (const r of rows) { const o = out.get(r.shift_id); if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status } }
+  return out
+}
 
-  // お知らせ (対象: all / 所属案件 / 個人)
-  const notices = await c.env.DB.prepare(`
+// 日報: 提出済みのシフト。shift_id で照合する（shift_id の無い古い日報と、同じ日・同じ案件の日報は稼働日・案件でも照合する）
+async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Set<number>> {
+  const done = new Set<number>()
+  if (!shifts.length) return done
+  const ids = shifts.map(s => s.shift_id as number)
+  const staffIds = [...new Set(shifts.map(s => s.staff_id as number))]
+  const dates = [...new Set(shifts.map(s => s.work_date as string))]
+  const rows = (await db.prepare(`SELECT shift_id, staff_id, work_date, project_id FROM daily_reports
+    WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
+    .bind(...ids, ...staffIds, ...dates).all()).results as any[]
+  for (const s of shifts) {
+    if (rows.some(d => d.shift_id === s.shift_id || (d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))) done.add(s.shift_id)
+  }
+  return done
+}
+
+// 対象のシフトを選ぶ。指定があればそれ。なければ
+//   1. 前日からの日をまたぐシフトで、報告が残っているもの（夜勤明けの勤務終了・退店）
+//   2. 本日のシフトで、報告が残っているもの（開始時刻順。報告の不要なシフトは飛ばす）
+//   3. 報告は済んだが、日報が未提出のもの
+//   4. 本日の最初のシフト
+function homePickShift(items: any[], requestedId: number | null): any | null {
+  if (requestedId) { const r = items.find(s => s.shift_id === requestedId); if (r) return r }
+  return items.find(s => s.carryover && !s.attendance_done)
+    || items.find(s => !s.carryover && !s.attendance_done)
+    || items.find(s => s.daily_report_required && !s.daily_report_done)
+    || items.find(s => !s.carryover) || items[0] || null
+}
+
+// お知らせ (対象: all / 所属案件 / 個人)
+async function homeLoadNotices(db: D1Database, u: any) {
+  return (await db.prepare(`
     SELECT n.*, (SELECT COUNT(*) FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = ?) AS is_read
     FROM notices n WHERE n.company_id = ?
       AND (n.target_type = 'all'
         OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || ? || ',%')
         OR (n.target_type = 'project' AND EXISTS (
              SELECT 1 FROM shifts sh WHERE sh.staff_id = ? AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
-    ORDER BY n.published_at DESC LIMIT 5`).bind(u.user_id, u.company_id, u.staff_id, u.staff_id).all()
+    ORDER BY n.published_at DESC LIMIT 5`).bind(u.user_id, u.company_id, u.staff_id, u.staff_id).all()).results
+}
 
-  const openConsult = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
+// 相談: 管理者から返信のある未完了の相談の件数
+async function homeLoadConsultations(db: D1Database, u: any): Promise<number> {
+  const r = await db.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
+  return (r?.n as number) || 0
+}
+
+// スタッフホーム。?shift_id= で対象のシフトを選べる（本日のシフトと前日からの日をまたぐシフトの中から）
+api.get('/staff/home', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const today = todayJST(); const now = nowJST()
+  // 勤怠の自動振り分け（フェーズH）: 同一人物の全所属企業のシフトから探す
+  const personRows = await personStaffRows(db, u)
+  const personIds = personRows.length ? personRows.map(r => r.staff_id) : [u.staff_id]
+  const shifts = await homeLoadShifts(db, personIds, today)
+  const status = await homeLoadReports(db, shifts)
+  const dailyDone = await homeLoadDailyReports(db, shifts)
+
+  const items = shifts.map(s => {
+    const st = status.get(s.shift_id)!
+    const next = st.required_attendance.find(t => !st.reports[t])
+    return { ...s, ...st, carryover: s.work_date !== today, next_type: next || null,
+      attendance_done: !next, daily_report_done: dailyDone.has(s.shift_id) }
+  }).filter(s => {
+    if (!s.carryover) return true
+    // 前日からのシフトは、終了予定から HOME_CARRYOVER_HOURS 時間まで、残りの報告を受け付けている間か日報が未提出の間だけ出す
+    const w = shiftWindow(s.work_date, s.start_time, s.end_time)
+    if (now > addMinutes(w.end, HOME_CARRYOVER_HOURS * 60)) return false
+    if (s.next_type) return isWithin(reportableWindow(s, s.next_type), now)
+    return s.daily_report_required && !s.daily_report_done
+  })
+  const picked = homePickShift(items, Number(c.req.query('shift_id')) || null)
+  const shift = picked ? shifts.find(s => s.shift_id === picked.shift_id) : null
+  const shiftOwner = shift ? (personRows.find(r => r.staff_id === shift.staff_id) || { staff_id: u.staff_id, settings_json: u.settings_json }) : null
+
+  const notices = await homeLoadNotices(db, u)
+  const replied = await homeLoadConsultations(db, u)
 
   return c.json({
-    today, shift: stripMoney(shift), reports, daily_report_done: dailyReportDone,
-    required_attendance: shiftModes ? shiftModes.required_attendance : [...REPORT_TYPES],
-    daily_report_required: shiftModes ? shiftModes.daily_report_required : true, notices: notices.results,
-    replied_consultations: openConsult?.n || 0,
+    today, shift: stripMoney(shift), carryover: !!picked?.carryover,
+    reports: picked ? picked.reports : {}, daily_report_done: picked ? picked.daily_report_done : false,
+    required_attendance: picked ? picked.required_attendance : [...REPORT_TYPES],
+    daily_report_required: picked ? picked.daily_report_required : true, notices,
+    replied_consultations: replied,
     // 写真必須設定はシフトの所有企業の設定に従う
     photo_required_attendance: resolvePhotoRequired(shiftOwner || u, shift ? (shift.photo_required_override as number | null) : undefined),
-    // 本日の全シフト（複数企業・複数案件）。他社のシフトは shift_company_name で識別
-    today_shifts: todays.map(s => ({ shift_id: s.shift_id, project_name: s.project_name, start_time: s.start_time, end_time: s.end_time,
-      company_name: s.shift_company_name, other_company: s.company_id !== u.company_id, checked_out: !!s.checked_out })),
+    // 本日の全シフト（複数企業・複数案件）と、前日からの日をまたぐシフト。他社のシフトは company_name で識別
+    today_shifts: items.map(s => ({ shift_id: s.shift_id, work_date: s.work_date, project_id: s.project_id, project_name: s.project_name,
+      start_time: s.start_time, end_time: s.end_time, company_name: s.shift_company_name, other_company: s.company_id !== u.company_id,
+      checked_out: !!s.reports.check_out, carryover: s.carryover, attendance_done: s.attendance_done,
+      daily_report_required: s.daily_report_required, daily_report_done: s.daily_report_done })),
   })
 })
 
