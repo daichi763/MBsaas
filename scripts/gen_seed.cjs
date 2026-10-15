@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 
 const hash = (s) => crypto.createHash('sha256').update(s).digest('hex');
-const PASS = hash('pass1234');
+// パスワードは src/lib/auth.ts と同じ PBKDF2 形式（pbkdf2$回数$ソルト$ハッシュ）で入れる
+const pbkdf2 = (pw) => { const salt = crypto.randomBytes(16); return `pbkdf2$100000$${salt.toString('base64')}$${crypto.pbkdf2Sync(pw, salt, 100000, 32, 'sha256').toString('base64')}`; };
+const PASS = pbkdf2('pass1234');
 
 // JST基準の日付
 const now = new Date(Date.now() + 9 * 3600 * 1000);

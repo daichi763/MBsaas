@@ -7,6 +7,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -457,7 +458,10 @@ rosterApi.post('/', async (c) => {
   // ログイン: ②は必須（自社スタッフとして勤怠報告等を行うため）、③は任意、④は作らない
   const wantsLogin = type === 'own_employee' || (type === 'partner_manual' && b.user_code && b.password)
   if (type === 'own_employee' && (!b.user_code || !b.password)) return c.json({ error: 'スタッフ番号・初期パスワードは必須です' }, 400)
-  if (wantsLogin && String(b.password).length < 4) return c.json({ error: 'パスワードが短すぎます' }, 400)
+  if (wantsLogin) {
+    const pwErr = validatePassword(String(b.password))
+    if (pwErr) return c.json({ error: pwErr }, 400)
+  }
 
   // 所属会社（取引先）の解決
   const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first())?.company_name as string) || ''
@@ -494,7 +498,7 @@ rosterApi.post('/', async (c) => {
   const userCode = wantsLogin ? String(b.user_code).trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
   // ログインしない人物は role='roster_only'（お知らせ対象・スタッフ数集計・ログインの対象外）
   const role = wantsLogin ? 'staff' : 'roster_only'
-  const pwHash = wantsLogin ? await sha256(String(b.password)) : await unusablePasswordHash()
+  const pwHash = wantsLogin ? await hashPassword(String(b.password)) : await unusablePasswordHash()
 
   let userId: number
   try {
@@ -571,9 +575,13 @@ staffSelfApi.post('/switch-company', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const target = (await personStaffRows(db, u)).find(r => r.company_id === Number(b.company_id))
   if (!target) return c.json({ error: '切り替え先の企業が見つかりません' }, 404)
+  // 本部で停止にした企業へは切り替えない
+  const co = await db.prepare('SELECT active_status FROM companies WHERE company_id = ?').bind(target.company_id).first()
+  if (!co || !isCompanyActive(co.active_status)) return c.json({ error: 'この企業は現在ご利用いただけません' }, 403)
   const token = getCookie(c, 'session')
   if (!token) return c.json({ error: 'unauthorized' }, 401)
-  await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, token).run()
+  // sessions.token にはトークンのハッシュを保存している（src/lib/auth.ts）
+  await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, await hashToken(token)).run()
   return c.json({ ok: true, company_name: target.company_name })
 })
 

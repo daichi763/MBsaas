@@ -10,6 +10,7 @@ import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
 import { pickReportValues } from './lib/validate'
+import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
@@ -192,10 +193,12 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   if (b.gender) await db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id).run()
   if (b.kana !== undefined) await db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(b.kana || null, sp.staff_id).run()
   if (b.user_code || b.password) {
-    if (!b.user_code || !b.password || String(b.password).length < 4) return c.json({ error: 'ログインを発行する場合は、スタッフ番号と4文字以上のパスワードを入力してください' }, 400)
+    if (!b.user_code || !String(b.user_code).trim() || !b.password) return c.json({ error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください' }, 400)
+    const pwErr = validatePassword(String(b.password))
+    if (pwErr) return c.json({ error: pwErr }, 400)
     try {
       await db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = COALESCE(?, email) WHERE user_id = ? AND company_id = ?`)
-        .bind(String(b.user_code).trim(), await sha256(String(b.password)), b.email || null, sp.user_id, u.company_id).run()
+        .bind(String(b.user_code).trim(), await hashPassword(String(b.password)), b.email || null, sp.user_id, u.company_id).run()
     } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
   }
   await db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id).run()
@@ -449,11 +452,14 @@ async function loadToken(db: D1Database, token: string) {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return null
   const t = await db.prepare(`SELECT t.*, s.work_date, s.start_time, s.end_time, s.location, s.status AS shift_status, s.project_id, s.role,
       s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, p.project_name, p.report_template_id, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
-      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override
+      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
+      co.active_status AS company_active_status
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     WHERE t.token = ? AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(token).first() as any
   if (!t || t.revoked || t.expires_at <= nowJST() || t.shift_status === 'absent') return null
+  // 本部で停止にした企業の報告用URLは使えない（ログインの停止と同じ判定。src/lib/auth.ts）
+  if (!isCompanyActive(t.company_active_status)) return null
   return t
 }
 function firstName(n: string) { return String(n || '').split(/\s+/)[0] || n }
