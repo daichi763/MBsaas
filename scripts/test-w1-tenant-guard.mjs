@@ -83,6 +83,8 @@ const pr4 = await admin.post('/api/admin/projects', { project_name: `TGテンプ
 ok('#22 存在しない・他社の日報テンプレートは指定できない（400）', pr4.status === 400, pr4)
 const pr5 = await admin.post('/api/admin/projects', { project_name: `TG正常${tag}`, project_type: 'event', client_id: 1 })
 ok('#22 自社のクライアント・正しい種別なら登録できる', pr5.status === 200, pr5)
+const pr6 = await admin.post('/api/admin/projects', { project_name: `TG空欄${tag}`, client_id: 1, report_template_id: '' })
+ok('#22 日報テンプレートが空欄なら従来どおり登録できる（空欄のクライアントは #37 で扱う）', pr6.status === 200, pr6)
 
 // ---------- #143 フォロー履歴 ----------
 const f1 = await admin.post('/api/admin/follow-logs', { staff_id: 1, follow_type: '<script>x</script>', content: 'x' })

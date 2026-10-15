@@ -1798,7 +1798,7 @@ api.post('/admin/projects', async (c) => {
   if (b.unit_price_type && !UNIT_PRICE_TYPES.includes(b.unit_price_type)) return c.json({ error: '単価の種類が正しくありません' }, 400)
   // 他社のクライアント・テンプレートは指定できない
   if (b.client_id != null && b.client_id !== '' && !(await ownClient(c.env.DB, u.company_id, b.client_id))) return c.json({ error: 'クライアントが見つかりません' }, 400)
-  if (b.report_template_id != null && !(await c.env.DB.prepare('SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?)').bind(b.report_template_id, u.company_id).first()))
+  if (b.report_template_id != null && b.report_template_id !== '' && !(await c.env.DB.prepare('SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?)').bind(b.report_template_id, u.company_id).first()))
     return c.json({ error: '日報テンプレートが見つかりません' }, 400)
   await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
