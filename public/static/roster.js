@@ -27,6 +27,11 @@ window.showAddRoster = function () {
 }
 
 // ---------- ① QR / ID 連携 ----------
+// 検索した候補と同意画面の値（ボタンの onclick に値を埋め込まないため、ここに保持して data-action から呼ぶ）
+const ROSTER_LINK = { candidate: null, consent: null }
+delegate('rosterConsent', () => { if (ROSTER_LINK.candidate) showRosterConsent(ROSTER_LINK.candidate) })
+delegate('rosterLinkBack', () => showRosterLink(ROSTER_LINK.consent ? ROSTER_LINK.consent.code : ''))
+delegate('rosterLinkSubmit', () => { if (ROSTER_LINK.consent) submitRosterLink(ROSTER_LINK.consent) })
 window.showRosterLink = function (prefill) {
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-qrcode text-blue-600 mr-1"></i>スタッフIDから連携</h3>
@@ -47,6 +52,8 @@ window.lookupRosterCode = async function () {
   try {
     const { data } = await axios.get('/api/admin/roster/lookup', { params: { code } })
     const cand = data.candidate
+    // 他社が登録した氏名・会社名を含むため、onclick に埋め込まずここに保持する
+    ROSTER_LINK.candidate = { code: cand.global_staff_code, name: cand.name, owner: cand.owner_company_name, consent: data.consent }
     if (data.already_linked_staff_id) {
       box.innerHTML = `<div class="p-3 rounded-lg bg-amber-50 text-amber-700 text-sm">
         「${esc(cand.name)}」さんは既に連携済みです。<a class="underline font-bold" href="#staff/${data.already_linked_staff_id}" onclick="closeModal()">スタッフマスタを開く</a></div>`
@@ -58,7 +65,7 @@ window.lookupRosterCode = async function () {
         <p class="font-bold text-gray-900">${esc(cand.name)} <span class="text-xs font-normal text-gray-400">${esc(cand.kana || '')}</span></p>
         <p class="text-xs text-gray-500 mt-1">所属元: ${esc(cand.owner_company_name)} ／ ID: <span class="font-mono">${esc(cand.global_staff_code)}</span></p>
       </div>
-      <button class="btn btn-primary w-full mt-3" onclick='showRosterConsent(${JSON.stringify({ code: cand.global_staff_code, name: cand.name, owner: cand.owner_company_name, consent: data.consent }).replace(/'/g, '&#39;')})'>
+      <button class="btn btn-primary w-full mt-3" data-action="rosterConsent">
         <i class="fas fa-link"></i>この人を連携登録する</button>`
   } catch (e) {
     box.innerHTML = `<div class="p-3 rounded-lg bg-red-50 text-red-600 text-sm">${esc((e.response && e.response.data && e.response.data.error) || '検索に失敗しました')}</div>`
@@ -67,6 +74,7 @@ window.lookupRosterCode = async function () {
 
 // 同意確認ポップアップ（連携のたびに毎回表示。同意結果はサーバー側で roster_consents に記録）
 window.showRosterConsent = function (info) {
+  ROSTER_LINK.consent = { code: info.code, version: info.consent.version }
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>情報共有の同意確認</h3>
     <p class="text-sm text-gray-600 mb-3">「${esc(info.owner)}」に所属する <b>${esc(info.name)}</b> さんを自社のスタッフマスタに連携します。連携すると、以下の範囲の情報が所属元企業から共有されます。</p>
@@ -90,8 +98,8 @@ window.showRosterConsent = function (info) {
       <span class="text-sm text-gray-700">上記の共有範囲と利用条件を確認し、同意します（同意の記録は保存されます）</span>
     </label>
     <div class="flex gap-2 mt-4">
-      <button class="btn btn-outline flex-1" onclick="showRosterLink('${esc(info.code)}')">戻る</button>
-      <button id="rc-submit" class="btn btn-primary flex-1" disabled onclick='submitRosterLink(${JSON.stringify({ code: info.code, version: info.consent.version })})'>同意して連携する</button>
+      <button class="btn btn-outline flex-1" data-action="rosterLinkBack">戻る</button>
+      <button id="rc-submit" class="btn btn-primary flex-1" disabled data-action="rosterLinkSubmit">同意して連携する</button>
     </div>`)
 }
 

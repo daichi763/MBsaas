@@ -11,9 +11,8 @@ const RISK_BADGE = { low: '<span class="badge badge-green">低</span>', mid: '<s
 // スタッフマスタの所属区分（作成ルート）
 const AFF_TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
 const AFF_TYPE_BADGE = { own_employee: 'badge-green', daily_worker: 'badge-yellow', freelance: 'badge-yellow', linked_external: 'badge-blue', partner_manual: 'badge-purple', skillsheet_only: 'badge-gray' }
-function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${AFF_TYPE_LABEL[t] || t}</span>` }
+function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${esc(AFF_TYPE_LABEL[t] || t)}</span>` }
 
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
 function yen(n) { return '¥' + Number(n || 0).toLocaleString() }
 function toast(msg) {
   let root = document.getElementById('toast')
@@ -192,11 +191,11 @@ async function renderDashboard() {
               // 有効な報告（案件報告管理の設定）だけを順に表示。緑 = 報告済み / 灰 = 未報告
               const RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
               const done = new Set(s.done_types || [])
-              const chips = (s.required_types || []).map(t => `<span class="badge ${done.has(t) ? 'badge-green' : 'badge-gray'} text-[10px]">${RS[t] || t}</span>`).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
+              const chips = (s.required_types || []).map(t => `<span class="badge ${done.has(t) ? 'badge-green' : 'badge-gray'} text-[10px]">${esc(RS[t] || t)}</span>`).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
               return `<tr>
                 <td><a href="#staff/${s.staff_id}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a></td>
                 <td class="text-xs">${esc(s.project_name)}</td>
-                <td class="text-xs">${s.start_time}〜${s.end_time}</td>
+                <td class="text-xs">${esc(s.start_time)}〜${esc(s.end_time)}</td>
                 <td><div class="flex flex-wrap gap-1 min-w-[10rem]">${chips}</div></td>
                 <td>
                   <button class="text-xs text-red-600 hover:underline" onclick="markAbsent(${s.shift_id})">欠勤にする</button>
@@ -443,7 +442,7 @@ function staffDetailHeaderHtml(sid, p) {
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
       ${p.linkable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
-      <button class="btn btn-primary" onclick="showFollowModal(${sid}, '${esc(p.name)}')"><i class="fas fa-plus"></i>フォロー記録</button>
+      <button class="btn btn-primary" data-action="showFollowModal" data-id="${sid}" data-name="${esc(p.name)}"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
 `
 }
@@ -474,7 +473,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('氏名', ed ? `<input id="staff-name" class="inp text-xs" value="${esc(p.name || '')}">` : esc(p.name))}
           ${bi('フリガナ', ed ? `<input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}">` : esc(p.kana || '-'))}
           ${bi('性別', ed ? `<select id="staff-gender" class="inp text-xs">${genderOptions(p.gender)}</select>` : esc(GENDER_LABEL_ADMIN[p.gender] || '-'))}
-          ${bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${p.date_of_birth || ''}">` : esc(p.date_of_birth || '-'))}
+          ${bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}">` : esc(p.date_of_birth || '-'))}
           ${bi('年齢', p.age != null ? p.age + '歳' : '-')}
           ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs text-gray-500">退職日 ${esc(p.retired_at)}</span>` : ''}`)}
           ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? `<input list="affiliation-list" id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">`
@@ -484,8 +483,8 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('連絡先', `<span class="text-xs">${esc(p.affiliation_type === 'own_employee' ? (p.emp_phone || p.phone || '-') : (p.phone || '-'))}<br>${esc(p.affiliation_type === 'own_employee' ? (p.emp_email || p.email || '') : (p.email || ''))}</span>`)}
           ${bi('最寄駅', ed ? `<div class="flex gap-1"><input id="staff-station-line" placeholder="路線" class="inp text-xs" value="${esc(p.nearest_station_line || '')}"><input id="staff-station" placeholder="駅" class="inp text-xs" value="${esc(p.nearest_station || '')}"></div>`
               : esc([p.nearest_station_line, p.nearest_station].filter(Boolean).join(' ') || '-'))}
-          ${bi('通勤可能時間', edBiz ? `<input type="number" min="0" max="1440" id="staff-commute" class="inp text-xs" value="${p.commute_minutes ?? ''}" placeholder="分">` : (p.commute_minutes != null ? p.commute_minutes + '分' : '-'))}
-          ${bi('稼働開始可能日', edBiz ? `<input type="date" id="staff-available-from" class="inp text-xs" value="${p.available_from || ''}">` : esc(p.available_from || '-'))}
+          ${bi('通勤可能時間', edBiz ? `<input type="number" min="0" max="1440" id="staff-commute" class="inp text-xs" value="${esc(p.commute_minutes ?? '')}" placeholder="分">` : (p.commute_minutes != null ? esc(p.commute_minutes) + '分' : '-'))}
+          ${bi('稼働開始可能日', edBiz ? `<input type="date" id="staff-available-from" class="inp text-xs" value="${esc(p.available_from || '')}">` : esc(p.available_from || '-'))}
           ${bi('稼働可能エリア', edBiz ? `<input id="staff-work-area" class="inp text-xs" value="${esc(p.work_area || '')}">` : esc(p.work_area || '-'))}
           <div class="md:col-span-2">${bi('スキル', edBiz ? `<input id="staff-skills" class="inp text-xs" value="${esc(p.skills || '')}" placeholder="カンマ区切り（例: MNP,接客,クロージング）">`
               : `<span class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(x => `<span class="badge badge-blue">${esc(x)}</span>`).join('') || '-'}</span>`)}</div>
@@ -598,7 +597,7 @@ async function renderStaffDetail(sid, opts = {}) {
           ${data.follow_logs.map(f => `
             <div class="p-2.5 rounded-lg bg-gray-50">
               <div class="flex items-center gap-2 text-xs mb-1">
-                <span class="badge badge-purple">${FOLLOW_LABELS[f.follow_type] || f.follow_type}</span>
+                <span class="badge badge-purple">${esc(FOLLOW_LABELS[f.follow_type] || f.follow_type)}</span>
                 <span class="text-gray-400">${dayjs(f.created_at).format('M/D HH:mm')}</span>
                 <span class="text-gray-500">${esc(f.manager_name || '')}</span>
                 ${f.status === 'open' ? '<span class="badge badge-yellow">対応中</span>' : '<span class="badge badge-green">完了</span>'}
@@ -621,7 +620,7 @@ async function renderStaffDetail(sid, opts = {}) {
                 ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
               </div>
               <div class="flex flex-wrap gap-1">
-                ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-gray">${LABELS[k] || k} ${v}</span>`).join('')}
+                ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-gray">${esc(LABELS[k] || k)} ${esc(v)}</span>`).join('')}
               </div>
               ${r.values.free ? `<p class="text-xs text-gray-500 mt-1">${esc(r.values.free)}</p>` : ''}
             </div>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'}
@@ -643,7 +642,7 @@ async function renderStaffDetail(sid, opts = {}) {
             const RL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
             return `<tr>
               <td>${dayjs(a.work_date).format('M/D')}</td>
-              <td>${RL[a.report_type] || a.report_type}</td>
+              <td>${esc(RL[a.report_type] || a.report_type)}</td>
               <td>${dayjs(a.reported_at).format('HH:mm')}</td>
               <td>${a.status === 'late' ? '<span class="badge badge-red">遅延</span>' : a.status === 'no_location' ? '<span class="badge badge-yellow">位置不明</span>' : '<span class="badge badge-green">正常</span>'}</td>
               <td class="text-xs text-gray-400">${a.latitude ? Number(a.latitude).toFixed(4) + ', ' + Number(a.longitude).toFixed(4) : '-'}</td>
@@ -783,7 +782,7 @@ function documentListHtml(docs, kind, id) {
         <p class="text-xs text-gray-400">${dayjs(d.uploaded_at).format('YYYY/M/D HH:mm')} ・ ${formatFileSize(d.file_size)}</p>
       </div>
       <a class="btn btn-outline text-xs" href="${cfg.itemUrl(d.document_id)}/download" target="_blank" rel="noopener"><i class="fas fa-download"></i></a>
-      <button class="btn btn-danger text-xs" onclick="deleteDocument('${kind}', ${id}, ${d.document_id}, '${esc(d.original_file_name).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
+      <button class="btn btn-danger text-xs" data-action="deleteDocument" data-kind="${esc(kind)}" data-id="${esc(id)}" data-doc-id="${d.document_id}" data-name="${esc(d.original_file_name)}"><i class="fas fa-trash"></i></button>
     </div>`).join('')}</div>`
 }
 
@@ -853,6 +852,8 @@ window.deleteDocument = async function (kind, id, docId, filename) {
     toast('ファイルの削除に失敗しました')
   }
 }
+// ファイル名は onclick に埋め込まず、ボタンの data-* から読む（documentListHtml）
+delegate('deleteDocument', el => deleteDocument(el.dataset.kind, Number(el.dataset.id), Number(el.dataset.docId), el.dataset.name))
 
 window.showSkillSheet = async function (sid) {
   const { data } = await axios.get('/api/admin/staff/' + sid + '/skill-sheet')
@@ -892,6 +893,7 @@ window.showFollowModal = function (sid, name) {
       <button class="btn btn-primary w-full" onclick="addFollowLog(${sid})">記録する</button>
     </div>`)
 }
+delegate('showFollowModal', el => showFollowModal(Number(el.dataset.id), el.dataset.name))
 window.addFollowLog = async function (sid) {
   await axios.post('/api/admin/follow-logs', {
     staff_id: sid, follow_type: document.getElementById('fl-type').value,
@@ -917,7 +919,7 @@ async function renderProjects() {
             <tr class="cursor-pointer" onclick="location.hash='projects/${p.project_id}'">
               <td class="font-medium text-blue-700">${esc(p.project_name)}</td>
               <td class="text-xs">${esc(p.client_name || '-')}</td>
-              <td><span class="badge badge-gray">${PTYPE_LABELS[p.project_type] || p.project_type}</span></td>
+              <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
               <td class="text-xs">${esc(p.location || '-')}</td>
               <td>${yen(p.unit_price)}/日</td>
               <td>${p.month_shifts}件 (${p.staff_count}名)</td>
@@ -1138,7 +1140,11 @@ async function renderClientDetail(cid) {
   if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
 }
 
+// 描画した顧客担当者（編集・削除ボタンは contact_id だけを持ち、値はここから取り出す）
+const CLIENT_CONTACTS = new Map()
 function clientContactsHtml(contacts, cid) {
+  CLIENT_CONTACTS.clear()
+  contacts.forEach(ct => CLIENT_CONTACTS.set(Number(ct.contact_id), ct))
   if (contacts.length === 0) return '<p class="text-sm text-gray-400">顧客担当者が登録されていません</p>'
   return `<div class="space-y-2">${contacts.map(ct => `
     <div class="p-2.5 rounded-lg bg-gray-50">
@@ -1149,8 +1155,8 @@ function clientContactsHtml(contacts, cid) {
           <p class="text-xs text-gray-500">${esc(ct.phone || '-')}　${esc(ct.email || '')}</p>
         </div>
         <div class="flex gap-1 shrink-0">
-          <button class="btn btn-outline text-xs" onclick="showClientContactForm(${cid}, ${JSON.stringify(ct).replace(/"/g, '&quot;')})">編集</button>
-          <button class="btn btn-danger text-xs" onclick="deleteClientContact(${cid}, ${ct.contact_id}, '${esc(ct.contact_name).replace(/'/g, "\\'")}')">削除</button>
+          <button class="btn btn-outline text-xs" data-action="editClientContact" data-cid="${esc(cid)}" data-id="${ct.contact_id}">編集</button>
+          <button class="btn btn-danger text-xs" data-action="deleteClientContact" data-cid="${esc(cid)}" data-id="${ct.contact_id}">削除</button>
         </div>
       </div>
     </div>`).join('')}</div>`
@@ -1210,6 +1216,11 @@ window.deleteClientContact = async function (cid, contactId, name) {
     toast('削除に失敗しました')
   }
 }
+delegate('editClientContact', el => showClientContactForm(Number(el.dataset.cid), CLIENT_CONTACTS.get(Number(el.dataset.id))))
+delegate('deleteClientContact', el => {
+  const ct = CLIENT_CONTACTS.get(Number(el.dataset.id))
+  deleteClientContact(Number(el.dataset.cid), Number(el.dataset.id), ct ? ct.contact_name : '')
+})
 
 window.saveClientBasicInfo = async function (cid) {
   const err = document.getElementById('cl-basic-error')
@@ -1280,7 +1291,7 @@ async function renderEmployeeDetail(sid) {
   ])
   const s = data.staff; const r = data.record || {}
   const field = (id, label, value, type = 'text') =>
-    `<div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">${label}</dt><dd class="flex-1"><input type="${type}" id="${id}" class="inp text-xs" value="${value ?? ''}"></dd></div>`
+    `<div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">${label}</dt><dd class="flex-1"><input type="${type}" id="${id}" class="inp text-xs" value="${esc(value ?? '')}"></dd></div>`
 
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
@@ -1301,8 +1312,8 @@ async function renderEmployeeDetail(sid) {
         <span class="text-xs text-gray-400"><i class="fas fa-circle-info mr-1"></i>自社雇用スタッフの労務側の基本情報はこの画面でのみ編集できます</span>
       </div>
       <dl class="grid md:grid-cols-2 gap-x-6 gap-y-2">
-        ${field('sp-name', '氏名 *', esc(s.name))}
-        ${field('sp-kana', 'フリガナ', esc(s.kana || ''))}
+        ${field('sp-name', '氏名 *', s.name)}
+        ${field('sp-kana', 'フリガナ', s.kana || '')}
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">性別 *</dt><dd class="flex-1"><select id="sp-gender" class="inp text-xs">${genderOptions(s.gender)}</select></dd></div>
         ${field('sp-dob', '生年月日', s.date_of_birth, 'date')}
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">年齢</dt><dd class="text-xs">${s.age != null ? s.age + '歳' : '-'}</dd></div>
@@ -1312,8 +1323,8 @@ async function renderEmployeeDetail(sid) {
           </select></dd></div>
         ${field('sp-retired', '退職日', s.retired_at, 'date')}
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">所属会社名</dt><dd class="text-xs">${esc(s.affiliation || '')}${data.read_only ? `（現在: ${esc(AFF_TYPE_LABEL[s.affiliation_type] || s.affiliation_type || '')}）` : '（自社）'}</dd></div>
-        ${field('sp-station-line', '最寄駅（路線）', esc(s.nearest_station_line || ''))}
-        ${field('sp-station', '最寄駅（駅）', esc(s.nearest_station || ''))}
+        ${field('sp-station-line', '最寄駅（路線）', s.nearest_station_line || '')}
+        ${field('sp-station', '最寄駅（駅）', s.nearest_station || '')}
       </dl>
       <div class="mt-3 pt-3 border-t border-gray-100 text-xs" id="employee-business-summary">
         <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
@@ -1337,7 +1348,7 @@ async function renderEmployeeDetail(sid) {
         <dl class="space-y-2">
           ${field('emp-number', '社員番号', r.employee_number)}
           ${field('emp-hire-date', '入社年月日', r.hire_date, 'date')}
-          <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">勤続年月</dt><dd class="text-xs">${r.tenure || '-'}</dd></div>
+          <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">勤続年月</dt><dd class="text-xs">${esc(r.tenure || '-')}</dd></div>
           ${field('emp-location', '拠点', r.base_location)}
           ${field('emp-department', '所属', r.department)}
           ${field('emp-job-title', '役職', r.job_title)}
@@ -1422,7 +1433,7 @@ async function renderEmployeeDetail(sid) {
   // 雇用終了（他の区分へ移行）した従業員は閲覧のみ（第2段階）
   if (data.read_only) {
     $app.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true })
-    $app.querySelectorAll('button[onclick^="saveEmployeeRecord"], button[onclick^="openDocumentUpload"], button[onclick^="deleteDocument"]').forEach(el => el.remove())
+    $app.querySelectorAll('button[onclick^="saveEmployeeRecord"], button[onclick^="openDocumentUpload"], button[data-action="deleteDocument"]').forEach(el => el.remove())
     const head = $app.querySelector('#employee-staff-profile')
     if (head) head.insertAdjacentHTML('beforebegin', `<div class="text-sm bg-gray-100 text-gray-700 rounded-lg p-3 mb-4" id="employee-ended-notice">
       <i class="fas fa-box-archive mr-1"></i>雇用終了日: <b>${esc(r.employment_ended_at || '-')}</b>（${esc(r.ended_reason || '')}）。従業員管理のデータは閲覧のみで保持しています（7年保存）。
@@ -1541,10 +1552,10 @@ async function renderShifts(dateStr) {
             ${dayjs(d).format('M/D')}(${dow})${isToday ? ' <span class="badge badge-blue">今日</span>' : ''}</p>
           <div class="space-y-1.5">
             ${(byDay[d] || []).map(s => `
-              <div class="border rounded-lg p-1.5 text-xs ${stColor[s.status] || ''} cursor-pointer" onclick="showEditShift(${s.shift_id}, '${esc(s.staff_name)}', '${s.status}')">
+              <div class="border rounded-lg p-1.5 text-xs ${stColor[s.status] || ''} cursor-pointer" data-action="showEditShift" data-id="${s.shift_id}" data-name="${esc(s.staff_name)}" data-status="${esc(s.status)}">
                 <p class="font-bold truncate">${esc(s.staff_name)}</p>
                 <p class="text-gray-500 truncate">${esc(s.project_name)}</p>
-                <p class="text-gray-400">${s.start_time}〜${s.end_time} <span class="font-bold">${stLabel[s.status] || ''}</span></p>
+                <p class="text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} <span class="font-bold">${stLabel[s.status] || ''}</span></p>
               </div>`).join('') || '<p class="text-xs text-gray-300 text-center py-2">-</p>'}
           </div>
         </div>`
@@ -1597,6 +1608,7 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>`)
 }
+delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 window.updateShift = async function (id, status) {
   await axios.put('/api/admin/shifts/' + id, { status })
   closeModal(); toast('シフトを更新しました'); renderShifts()
@@ -1615,7 +1627,7 @@ async function renderReports(date) {
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">日報一覧</h2>
-      <input type="date" class="inp" style="width:auto" value="${date || ''}" onchange="renderReports(this.value)">
+      <input type="date" class="inp" style="width:auto" value="${esc(date || '')}" onchange="renderReports(this.value)">
     </div>
     <div class="space-y-3">
       ${data.reports.map(r => `
@@ -1630,7 +1642,7 @@ async function renderReports(date) {
             <span class="text-xs text-gray-400 ml-auto">提出 ${dayjs(r.submitted_at).format('M/D HH:mm')}</span>
           </div>
           <div class="flex flex-wrap gap-1.5 mb-2">
-            ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-blue">${LABELS[k] || k} ${v}</span>`).join('')}
+            ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-blue">${esc(LABELS[k] || k)} ${esc(v)}</span>`).join('')}
           </div>
           ${r.values.good_case ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5 mb-1"><i class="fas fa-star mr-1"></i>好事例: ${esc(r.values.good_case)}</p>` : ''}
           ${r.values.store_share ? `<p class="text-xs text-blue-700 bg-blue-50 rounded-lg px-2.5 py-1.5 mb-1"><i class="fas fa-store mr-1"></i>店舗共有: ${esc(r.values.store_share)}</p>` : ''}
@@ -1898,7 +1910,7 @@ async function renderFollow() {
       ${data.logs.map(f => `
         <section class="card p-4">
           <div class="flex items-center gap-2 flex-wrap mb-1">
-            <span class="badge badge-purple">${FOLLOW_LABELS[f.follow_type] || f.follow_type}</span>
+            <span class="badge badge-purple">${esc(FOLLOW_LABELS[f.follow_type] || f.follow_type)}</span>
             <a href="#staff/${f.staff_id}" class="font-bold text-blue-700 hover:underline">${esc(f.staff_name)}</a>
             <span class="text-xs text-gray-400">対応者: ${esc(f.manager_name || '-')}</span>
             <span class="text-xs text-gray-400">${dayjs(f.created_at).format('M/D HH:mm')}</span>
@@ -1925,7 +1937,7 @@ async function renderConsult() {
       ${data.consultations.map(co => `
         <section class="card p-4">
           <div class="flex items-center gap-2 flex-wrap mb-1">
-            <span class="badge badge-gray">${CAT_LABELS[co.category] || co.category}</span>
+            <span class="badge badge-gray">${esc(CAT_LABELS[co.category] || co.category)}</span>
             ${co.urgency === 'high' ? '<span class="badge badge-red">緊急</span>' : ''}
             <a href="#staff/${co.staff_id}" class="font-bold text-blue-700 hover:underline">${esc(co.staff_name)}</a>
             <span class="text-xs text-gray-400">${dayjs(co.created_at).format('M/D HH:mm')}</span>

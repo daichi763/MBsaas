@@ -145,8 +145,8 @@
           <td class="whitespace-nowrap">${dayjs(r.work_date).format('M/D(dd)')}</td>
           <td class="min-w-[220px]"><p class="font-medium">${esc(r.project_name)}</p><p class="text-gray-400">${esc(r.client_name)}${r.site_name ? '・' + esc(r.site_name) : ''}${r.role ? '・' + esc(r.role) : ''}</p></td>
           <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline" href="#staff/${r.staff_id}">${esc(r.staff_name)}</a></td>
-          <td class="whitespace-nowrap">${r.start_time}〜${r.end_time}<span class="text-gray-400 block">休憩${r.break_minutes}分・${hrs(r.planned_hours)}</span></td>
-          <td class="whitespace-nowrap">${r.actual_start ? `${r.actual_start}〜${r.actual_end}<span class="text-gray-400 block">${r.actual_source === 'manual' ? '手入力' : '報告'}・${hrs(r.actual_hours)}</span>` : '<span class="text-gray-400">-</span>'}</td>
+          <td class="whitespace-nowrap">${esc(r.start_time)}〜${esc(r.end_time)}<span class="text-gray-400 block">休憩${r.break_minutes}分・${hrs(r.planned_hours)}</span></td>
+          <td class="whitespace-nowrap">${r.actual_start ? `${esc(r.actual_start)}〜${esc(r.actual_end)}<span class="text-gray-400 block">${r.actual_source === 'manual' ? '手入力' : '報告'}・${hrs(r.actual_hours)}</span>` : '<span class="text-gray-400">-</span>'}</td>
           <td class="text-right whitespace-nowrap">${r.bill_unit_type === 'hourly' || r.pay_unit_type === 'hourly' ? hrs(r.hours) : '<span class="text-gray-400">日額</span>'}</td>
           <td class="text-right whitespace-nowrap">${yen(r.bill_total)}<span class="text-gray-400 block">${r.bill_rate != null ? yen(r.bill_rate) + '/' + UNIT[r.bill_unit_type] : ''}</span></td>
           <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-amber-600">未設定</span>' : yen(r.pay_total)}<span class="text-gray-400 block">${r.pay_rate != null ? yen(r.pay_rate) + '/' + UNIT[r.pay_unit_type] : ''}</span></td>
@@ -209,10 +209,10 @@
       <p class="text-xs text-gray-500 mb-3">${esc(r.client_name)} ${esc(r.project_name)}${r.site_name ? '・' + esc(r.site_name) : ''}${r.role ? '・' + esc(r.role) : ''}</p>
       ${locked ? `<div class="p-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs mb-3" id="settle-locked-notice"><i class="fas fa-lock mr-1"></i>確定済み（${esc(r.settled_at || '')}）。変更するには確定を取り消してください</div>` : ''}
       <section class="rounded-lg border border-gray-100 p-3 mb-3 text-sm" id="settle-actual-form">
-        <p class="font-bold text-gray-700 text-xs mb-2"><i class="fas fa-clock mr-1"></i>実績（予定 ${r.start_time}〜${r.end_time}・休憩${r.break_minutes}分）</p>
+        <p class="font-bold text-gray-700 text-xs mb-2"><i class="fas fa-clock mr-1"></i>実績（予定 ${esc(r.start_time)}〜${esc(r.end_time)}・休憩${r.break_minutes}分）</p>
         <div class="grid grid-cols-3 gap-2 text-xs">
-          <label>開始<input type="time" id="se-start" class="inp text-sm" value="${r.actual_start || ''}" ${dis}></label>
-          <label>終了<input type="time" id="se-end" class="inp text-sm" value="${r.actual_end || ''}" ${dis}></label>
+          <label>開始<input type="time" id="se-start" class="inp text-sm" value="${esc(r.actual_start || '')}" ${dis}></label>
+          <label>終了<input type="time" id="se-end" class="inp text-sm" value="${esc(r.actual_end || '')}" ${dis}></label>
           <label>休憩（分）<input type="number" id="se-break" class="inp text-sm" value="${r.actual_break_minutes ?? ''}" placeholder="${r.break_minutes}" ${dis}></label>
           <label class="col-span-3">メモ<input id="se-note" class="inp text-sm" value="${esc(r.actual_note || '')}" placeholder="例: 30分残業（店長了承）" ${dis}></label>
         </div>

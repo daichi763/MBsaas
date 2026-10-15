@@ -15,6 +15,7 @@ import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES,
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
+import { isHHMM, oneOf, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -596,15 +597,20 @@ api.post('/staff/daily-report', async (c) => {
     if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
     owner = resolved.staff
   }
+  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため、任意の文字列を保存させない）
+  const tpl = await c.env.DB.prepare('SELECT rt.fields_json FROM projects p LEFT JOIN report_templates rt ON rt.template_id = p.report_template_id WHERE p.project_id = ?').bind(project_id ?? null).first<{ fields_json: string | null }>()
+  const picked = pickReportValues(tpl?.fields_json, values)
+  if ('error' in picked) return c.json({ error: picked.error }, 400)
+  const valuesJson = JSON.stringify(picked.values)
   const exists = await c.env.DB.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(owner.staff_id, date, project_id).first()
   if (exists) {
     await c.env.DB.prepare('UPDATE daily_reports SET report_values = ?, incident_flag = ?, complaint_flag = ?, submitted_at = ? WHERE daily_report_id = ?')
-      .bind(JSON.stringify(values || {}), incident_flag ? 1 : 0, complaint_flag ? 1 : 0, nowJST(), exists.daily_report_id).run()
+      .bind(valuesJson, incident_flag ? 1 : 0, complaint_flag ? 1 : 0, nowJST(), exists.daily_report_id).run()
     return c.json({ ok: true, updated: true })
   }
   await c.env.DB.prepare(`INSERT INTO daily_reports (company_id, staff_id, project_id, shift_id, work_date, report_values, incident_flag, complaint_flag, submitted_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(owner.company_id, owner.staff_id, project_id, shift_id ?? null, date, JSON.stringify(values || {}), incident_flag ? 1 : 0, complaint_flag ? 1 : 0, nowJST()).run()
+    .bind(owner.company_id, owner.staff_id, project_id, shift_id ?? null, date, valuesJson, incident_flag ? 1 : 0, complaint_flag ? 1 : 0, nowJST()).run()
   return c.json({ ok: true })
 })
 
@@ -636,6 +642,7 @@ api.post('/staff/shifts/request', async (c) => {
   const u = c.get('user')
   const { work_date, start_time, end_time, project_id, memo } = await c.req.json()
   if (!work_date) return c.json({ error: '日付は必須です' }, 400)
+  if ((start_time && !isHHMM(start_time)) || (end_time && !isHHMM(end_time))) return c.json({ error: '時刻は HH:MM の形式で入力してください' }, 400)
   await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, status, registered_by, memo)
     VALUES (?, ?, ?, ?, ?, ?, 'requested', ?, ?)`)
     .bind(u.company_id, u.staff_id, project_id || 0, work_date, start_time || '09:30', end_time || '19:00', u.user_id, memo || '希望提出').run()
@@ -695,6 +702,8 @@ api.post('/staff/consultations', async (c) => {
   const u = c.get('user')
   const { category, body, urgency, target_project_id, target_date } = await c.req.json()
   if (!category || !body) return c.json({ error: 'カテゴリと内容は必須です' }, 400)
+  if (!oneOf(category, CONSULT_CATEGORIES)) return c.json({ error: 'カテゴリが正しくありません' }, 400)
+  if (urgency && !oneOf(urgency, CONSULT_URGENCIES)) return c.json({ error: '緊急度が正しくありません' }, 400)
   await c.env.DB.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, u.staff_id, category, body, urgency || 'normal', target_project_id ?? null, target_date ?? null, nowJST()).run()
@@ -1241,7 +1250,7 @@ api.post('/admin/staff/:id/documents', async (c) => {
     try {
       const r = await c.env.DB.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, sid, file.name, key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+        .bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id).run()
       results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
     } catch {
       // D1登録に失敗した場合はアップロード済みのR2オブジェクトを掃除する
@@ -1577,7 +1586,7 @@ api.post('/admin/employees/:staffId/documents', async (c) => {
     } catch { results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' }); continue }
     try {
       const r = await c.env.DB.prepare(`INSERT INTO employee_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, file.name, key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id).run()
       results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
     } catch {
       await c.env.DOCUMENTS.delete(key).catch(() => {})
@@ -1677,7 +1686,7 @@ api.post('/admin/clients/:id/documents', async (c) => {
     try {
       const r = await c.env.DB.prepare(`INSERT INTO client_documents (company_id, client_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, cid, file.name, key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+        .bind(u.company_id, cid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id).run()
       results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
     } catch {
       await c.env.CONTRACTS.delete(key).catch(() => {})
