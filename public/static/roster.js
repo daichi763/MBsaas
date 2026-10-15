@@ -145,7 +145,7 @@ window.showRosterForm = async function (route) {
           <p class="text-xs font-bold text-emerald-700"><i class="fas fa-key mr-1"></i>ログインアカウント（勤怠報告・日報用）</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             ${f('rf-code', 'スタッフ番号', 'placeholder="st021"', true)}
-            ${f('rf-pass', '初期パスワード', 'value="pass1234"', true)}
+            ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"', true)}
             ${f('rf-email', 'メール')}
             ${f('rf-phone', '電話')}
           </div>
@@ -161,7 +161,7 @@ window.showRosterForm = async function (route) {
           <summary class="text-sm text-gray-600 cursor-pointer">ログインアカウントを発行する（任意・勤怠報告を行う場合）</summary>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
             ${f('rf-code', 'スタッフ番号', 'placeholder="pt001"')}
-            ${f('rf-pass', '初期パスワード')}
+            ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"')}
             ${f('rf-email', 'メール')}
             ${f('rf-phone', '電話')}
           </div>

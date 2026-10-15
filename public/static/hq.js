@@ -104,7 +104,7 @@ window.showAddCompany = function () {
       <div class="grid grid-cols-3 gap-3">
         <div><label class="text-xs text-gray-600 block mb-1">管理者ID</label><input id="co-admin-code" class="inp" placeholder="admin"></div>
         <div><label class="text-xs text-gray-600 block mb-1">氏名</label><input id="co-admin-name" class="inp"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" value="pass1234"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
       </div>
       <button class="btn btn-primary w-full" onclick="addCompany()">登録する</button>
     </div>`)
@@ -158,7 +158,7 @@ async function renderCompanyDetail(cid) {
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="text-xs text-slate-400 block mb-1">利用状態</label>
-              <select id="cd-status" class="inp" style="background:#1e293b;border-color:#334155;color:#fff">
+              <select id="cd-status" data-current="${esc(c.active_status)}" class="inp" style="background:#1e293b;border-color:#334155;color:#fff">
                 ${['active', 'trial', 'inactive'].map(s => `<option value="${s}" ${c.active_status === s ? 'selected' : ''}>${s === 'active' ? '利用中' : s === 'trial' ? 'トライアル' : '停止'}</option>`).join('')}
               </select></div>
             <div><label class="text-xs text-slate-400 block mb-1">請求状態</label>
@@ -197,7 +197,11 @@ async function renderCompanyDetail(cid) {
 }
 
 window.saveCompany = async function (cid) {
-  await axios.put('/api/hq/companies/' + cid, {
+  const status = document.getElementById('cd-status')
+  // 停止にすると、その企業の利用者は全員ログアウトされ、ログインと報告用URLも使えなくなる
+  if (status.value === 'inactive' && status.dataset.current !== 'inactive'
+    && !confirm('この企業を「停止」にします。\nこの企業の管理者・スタッフは全員ログアウトされ、ログインも報告用URLも使えなくなります。よろしいですか？')) return
+  const { data } = await axios.put('/api/hq/companies/' + cid, {
     plan: document.getElementById('cd-plan').value,
     user_limit: Number(document.getElementById('cd-limit').value),
     active_status: document.getElementById('cd-status').value,
@@ -205,7 +209,8 @@ window.saveCompany = async function (cid) {
     maturity_level: Number(document.getElementById('cd-maturity').value),
     support_memo: document.getElementById('cd-memo').value
   })
-  toast('保存しました')
+  status.dataset.current = status.value
+  toast(data.revoked_sessions ? `保存しました（${data.revoked_sessions}件のログインを終了しました）` : '保存しました')
 }
 
 // ============ テンプレート配信 ============

@@ -14,6 +14,11 @@ import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
+import {
+  SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
+  hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
+  loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
+} from './lib/auth'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
 
 type Bindings = {
@@ -253,56 +258,93 @@ export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: nu
 }
 
 // ============ Auth ============
+// 会社コード・ID・パスワードのどれが違っても同じ文言・同じステータスで返す（会社コードの有無を推測されないように）
+const LOGIN_FAILED_MESSAGE = '会社コード・ID・パスワードのいずれかが正しくありません'
+const LOGIN_HELP = 'ログインできない場合は、所属の会社の担当者にお問い合わせください'
 api.post('/auth/login', async (c) => {
-  const { company_code, user_code, password } = await c.req.json()
+  const b = await c.req.json().catch(() => ({} as any))
+  const company_code = String(b.company_code ?? '').trim()
+  const user_code = String(b.user_code ?? '').trim()
+  const password = typeof b.password === 'string' ? b.password : ''
   if (!company_code || !user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
-  const company = await c.env.DB.prepare('SELECT * FROM companies WHERE company_code = ?').bind(company_code).first()
-  if (!company) return c.json({ error: '会社コードが正しくありません' }, 401)
-  const hash = await sha256(password)
-  const user = await c.env.DB.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ? AND password_hash = ? AND status = "active"')
-    .bind(company.company_id, user_code, hash).first()
-  if (!user) return c.json({ error: 'ユーザーIDまたはパスワードが正しくありません' }, 401)
+  const db = c.env.DB
 
+  const keys = await loginAttemptKeys(company_code, user_code, c.req.header('CF-Connecting-IP'))
+  if (await isLoginLocked(db, keys)) {
+    return c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
+  }
+
+  const company = await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(company_code).first() as any
+  const user = company
+    ? await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(company.company_id, user_code).first() as any
+    : null
+  // ログインできないロール（スタッフマスタだけの行・仮登録）は、パスワードが合っても通さない
+  let passwordOk = false
+  if (user && canLogin(user.role)) passwordOk = await verifyPassword(password, user.password_hash)
+  else await dummyVerify(password)
+  if (!passwordOk) {
+    await recordLoginFailure(db, keys)
+    return c.json({ error: LOGIN_FAILED_MESSAGE }, 401)
+  }
+  // パスワードが合ったときだけ、利用できない理由を伝える（アカウントの有無は漏れない）
+  if (user.status !== 'active') return c.json({ error: `このアカウントは現在利用できません。${LOGIN_HELP}` }, 403)
+  if (user.role !== 'system_admin' && !isCompanyActive(company.active_status)) {
+    return c.json({ error: `ご契約が停止中のため、現在ご利用いただけません。${LOGIN_HELP}` }, 403)
+  }
+  await clearLoginFailures(db, keys)
+  // 旧形式（ソルトなし SHA-256）のパスワードは、ここで PBKDF2 に作り直す
+  if (needsRehash(user.password_hash)) {
+    await db.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').bind(await hashPassword(password), user.user_id).run()
+  }
+
+  // 同じ端末の古いセッション（Cookie で送られてきたもの）と、期限切れのセッションは消してから発行する
+  const oldToken = getCookie(c, SESSION_COOKIE)
+  if (oldToken) await db.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(oldToken)).run()
+  const nowIso = new Date().toISOString()
+  await db.prepare('DELETE FROM sessions WHERE user_id = ? AND expires_at < ?').bind(user.user_id, nowIso).run()
   const token = genToken()
-  const SESSION_HOURS = 12 // 1シフト分を目安とした有効期限
   const expires = new Date(Date.now() + SESSION_HOURS * 3600 * 1000)
-  // 期限切れセッションの補助的な削除(主軸はCron Trigger、ここは即時性のための保険)
-  await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND expires_at < CURRENT_TIMESTAMP').bind(user.user_id).run()
-  await c.env.DB.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at) VALUES (?, ?, ?, ?)')
-    .bind(token, user.user_id, user.company_id, expires.toISOString()).run()
-  await c.env.DB.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
-  setCookie(c, 'session', token, { path: '/', httpOnly: true, sameSite: 'Lax', maxAge: SESSION_HOURS * 3600 })
+  await db.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at) VALUES (?, ?, ?, ?)')
+    .bind(await hashToken(token), user.user_id, user.company_id, expires.toISOString()).run()
+  await db.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
+  setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
 
-  const home = user.role === 'staff' ? '/staff' : user.role === 'system_admin' ? '/hq' : '/admin'
-  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name }, redirect: home })
+  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name }, redirect: homePathFor(user.role) })
 })
 
 // パスワード再設定メールの送信リクエスト
 // セキュリティ: メールアドレスの存在有無に関わらず常に同じレスポンスを返す（アカウント存在の推測を防ぐ）
 api.post('/auth/forgot-password', async (c) => {
-  const { email } = await c.req.json().catch(() => ({} as { email?: string }))
-  const genericResponse = { ok: true, message: 'パスワード再設定メールを送信しました。' }
+  const body = await c.req.json().catch(() => ({} as { email?: string }))
+  const genericResponse = { ok: true, message: '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。' }
+  // メールアドレスは前後の空白を除き、小文字にそろえて照合する（登録時の表記ゆれで届かないのを防ぐ）
+  const email = normalizeEmail(body.email)
   if (!email) return c.json(genericResponse)
 
   // 簡易レート制限: 同一メールアドレスへの直近1時間のリクエストが5件を超えたら新規発行しない
   const recent = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id WHERE u.email = ? AND t.created_at > datetime('now', '-1 hour')`
+    `SELECT COUNT(*) AS n FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id WHERE LOWER(TRIM(u.email)) = ? AND t.created_at > datetime('now', '-1 hour')`
   ).bind(email).first()
   if (((recent?.n as number) || 0) >= 5) return c.json(genericResponse)
 
-  const users = await c.env.DB.prepare(`SELECT user_id, name, company_id FROM users WHERE email = ? AND status = 'active'`).bind(email).all()
+  // ログインできる行だけが対象（仮登録・スタッフマスタだけの行、退職者、停止中の企業の利用者は除く）
+  const users = await c.env.DB.prepare(`SELECT u.user_id, u.name, u.user_code, u.email, u.company_id, co.company_name
+    FROM users u JOIN companies co ON co.company_id = u.company_id
+    WHERE LOWER(TRIM(u.email)) = ? AND u.status = 'active' AND u.role != 'roster_only'
+      AND (co.active_status != 'inactive' OR u.role = 'system_admin')`).bind(email).all()
   const EXPIRES_HOURS = 1
-  for (const u of users.results as { user_id: number; name: string; company_id: number }[]) {
+  for (const u of users.results as { user_id: number; name: string; user_code: string; email: string; company_id: number; company_name: string }[]) {
     const rawToken = genToken()
-    const tokenHash = await sha256(rawToken)
+    const tokenHash = await hashToken(rawToken)
     const expiresAt = new Date(Date.now() + EXPIRES_HOURS * 3600 * 1000).toISOString()
     await c.env.DB.prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
       .bind(u.user_id, tokenHash, expiresAt).run()
 
     const resetUrl = `${c.env.APP_BASE_URL}/reset-password?token=${rawToken}`
-    const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: EXPIRES_HOURS })
+    // 同じメールアドレスに複数の会社のアカウントがあっても、どのアカウントのリンクか分かるように会社名とIDを入れる
+    const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: EXPIRES_HOURS, companyName: u.company_name, userCode: u.user_code })
     // レスポンスを待たせないため、実際の送信はバックグラウンドで行う
-    c.executionCtx.waitUntil(sendEmail(c.env, { to: email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'password_reset', company_id: u.company_id }))
+    c.executionCtx.waitUntil(sendEmail(c.env, { to: String(u.email).trim(), subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'password_reset', company_id: u.company_id }))
   }
 
   return c.json(genericResponse)
@@ -312,26 +354,30 @@ api.post('/auth/forgot-password', async (c) => {
 api.post('/auth/reset-password', async (c) => {
   const { token, password } = await c.req.json().catch(() => ({} as { token?: string; password?: string }))
   if (!token || !password) return c.json({ error: '入力内容が不足しています' }, 400)
-  if (password.length < 8) return c.json({ error: 'パスワードは8文字以上で入力してください' }, 400)
+  const pwErr = validatePassword(password)
+  if (pwErr) return c.json({ error: pwErr }, 400)
 
-  const tokenHash = await sha256(token)
+  const tokenHash = await hashToken(token)
+  // expires_at は ISO 8601 で保存しているので、同じ書式の現在時刻と比べる
   const row = await c.env.DB.prepare(
-    `SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP`
-  ).bind(tokenHash).first()
-  if (!row) return c.json({ error: 'このリンクは無効か、有効期限が切れています' }, 400)
+    `SELECT t.*, u.status AS user_status, u.role AS user_role FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id
+     WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?`
+  ).bind(tokenHash, new Date().toISOString()).first() as any
+  if (!row || row.user_status !== 'active' || !canLogin(row.user_role)) return c.json({ error: 'このリンクは無効か、有効期限が切れています' }, 400)
 
-  const newHash = await sha256(password)
-  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').bind(newHash, row.user_id).run()
+  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').bind(await hashPassword(password), row.user_id).run()
   await c.env.DB.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
     .bind(nowJST(), row.user_id).run() // 同一ユーザーの他の未使用トークンも合わせて失効させる
+  // 乗っ取られた場合に備え、既存のセッションはすべて切る（再設定後はログインし直す）
+  await revokeSessions(c.env.DB, row.user_id)
 
   return c.json({ ok: true })
 })
 
 api.post('/auth/logout', async (c) => {
-  const token = getCookie(c, 'session')
-  if (token) await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run()
-  deleteCookie(c, 'session', { path: '/' })
+  const token = getCookie(c, SESSION_COOKIE)
+  if (token) await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(token)).run()
+  deleteCookie(c, SESSION_COOKIE, { path: '/', secure: new URL(c.req.url).protocol === 'https:' })
   return c.json({ ok: true })
 })
 
@@ -341,22 +387,20 @@ api.route('/public/report', publicReportApi)
 api.route('/public/recruit', recruitPublicApi)
 
 // 認証ミドルウェア
+// /auth/login・/auth/logout などの公開ルートは、このミドルウェアより前に登録してあるのでここには来ない。
+// 除外はパスの完全一致・前方一致だけで判定する（末尾一致だと /api/xxx/auth/login が認証なしで通るため）
 api.use('/*', async (c, next) => {
-  if (c.req.path.endsWith('/auth/login') || c.req.path.endsWith('/auth/logout')) return next()
-  // 報告用URL（/api/public/report/*）はトークンで認可するためセッション不要
   if (c.req.path.startsWith('/api/public/report/')) return next()
   if (c.req.path.startsWith('/api/public/recruit/')) return next()
-  const token = getCookie(c, 'session')
-  if (!token) return c.json({ error: 'unauthorized' }, 401)
-  const row = await c.env.DB.prepare(`
-    SELECT u.*, s.expires_at, c.company_name, c.company_code, c.settings_json,
-           sp.staff_id
-    FROM sessions s JOIN users u ON s.user_id = u.user_id
-    JOIN companies c ON u.company_id = c.company_id
-    LEFT JOIN staff_profiles sp ON sp.user_id = u.user_id
-    WHERE s.token = ?`).bind(token).first()
-  if (!row || new Date(row.expires_at as string) < new Date()) return c.json({ error: 'unauthorized' }, 401)
-  c.set('user', row)
+  const token = getCookie(c, SESSION_COOKIE)
+  const r = await loadSessionUser(c.env.DB, token)
+  if (!r.ok) {
+    // 退職・停止になった利用者のセッションは、その場で消す
+    if (token && r.reason !== 'none') await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(token)).run()
+    if (r.reason === 'company_inactive') return c.json({ error: 'ご契約が停止中のため、現在ご利用いただけません', code: 'company_inactive' }, 403)
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  c.set('user', r.user)
   return next()
 })
 
@@ -367,11 +411,16 @@ api.get('/auth/me', (c) => {
 
 // 権限チェックミドルウェア
 api.use('/admin/*', async (c, next) => {
-  if (!ADMIN_ROLES.includes(c.get('user').role)) return c.json({ error: 'forbidden' }, 403)
+  if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: 'forbidden' }, 403)
   return next()
 })
 api.use('/hq/*', async (c, next) => {
-  if (c.get('user').role !== 'system_admin') return c.json({ error: 'forbidden' }, 403)
+  if (c.get('user')?.role !== 'system_admin') return c.json({ error: 'forbidden' }, 403)
+  return next()
+})
+// スタッフ本人向け API（/api/staff/*）はスタッフのロールだけ（管理者・本部のセッションでは使えない）
+api.use('/staff/*', async (c, next) => {
+  if (c.get('user')?.role !== 'staff') return c.json({ error: 'forbidden' }, 403)
   return next()
 })
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
@@ -1111,9 +1160,12 @@ api.put('/admin/staff/:id', async (c) => {
 // スタッフ登録
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
-  const { user_code, name, password, email, phone, skills, career, work_area } = await c.req.json()
+  const { user_code: rawCode, name, password, email, phone, skills, career, work_area } = await c.req.json()
+  const user_code = String(rawCode ?? '').trim()
   if (!user_code || !name || !password) return c.json({ error: 'スタッフ番号・氏名・パスワードは必須です' }, 400)
-  const hash = await sha256(password)
+  const pwErr = validatePassword(password)
+  if (pwErr) return c.json({ error: pwErr }, 400)
+  const hash = await hashPassword(password)
   try {
     const r = await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone) VALUES (?, ?, ?, 'staff', ?, ?, ?)`)
       .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null).run()
@@ -2212,23 +2264,33 @@ api.get('/hq/companies/:id', async (c) => {
 
 api.put('/hq/companies/:id', async (c) => {
   const b = await c.req.json()
+  if (b.active_status != null && !['active', 'trial', 'inactive'].includes(b.active_status)) return c.json({ error: '利用状態の値が正しくありません' }, 400)
   await c.env.DB.prepare(`UPDATE companies SET
       plan = COALESCE(?, plan), user_limit = COALESCE(?, user_limit), active_status = COALESCE(?, active_status),
       billing_status = COALESCE(?, billing_status), support_memo = COALESCE(?, support_memo), maturity_level = COALESCE(?, maturity_level)
     WHERE company_id = ?`)
     .bind(b.plan ?? null, b.user_limit ?? null, b.active_status ?? null, b.billing_status ?? null, b.support_memo ?? null, b.maturity_level ?? null, c.req.param('id')).run()
-  return c.json({ ok: true })
+  // 停止にした時点で、その企業の利用者（本部ユーザーを除く）をログアウトさせる
+  const revoked = b.active_status === 'inactive' ? await revokeCompanySessions(c.env.DB, Number(c.req.param('id'))) : 0
+  return c.json({ ok: true, revoked_sessions: revoked })
 })
 
 api.post('/hq/companies', async (c) => {
   const b = await c.req.json()
+  b.company_code = String(b.company_code ?? '').trim()
+  b.admin_code = String(b.admin_code ?? '').trim()
   if (!b.company_code || !b.company_name) return c.json({ error: '会社コードと会社名は必須です' }, 400)
+  if (b.admin_code || b.admin_password) {
+    if (!b.admin_code) return c.json({ error: '初期管理者のIDを入力してください' }, 400)
+    const pwErr = validatePassword(b.admin_password)
+    if (pwErr) return c.json({ error: '初期管理者の' + pwErr }, 400)
+  }
   try {
     const r = await c.env.DB.prepare('INSERT INTO companies (company_code, company_name, plan, user_limit, active_status) VALUES (?, ?, ?, ?, ?)')
       .bind(b.company_code, b.company_name, b.plan || 'basic', b.user_limit || 3, 'trial').run()
     // 初期管理者作成
     if (b.admin_code && b.admin_password) {
-      const hash = await sha256(b.admin_password)
+      const hash = await hashPassword(b.admin_password)
       await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash) VALUES (?, ?, ?, 'company_admin', ?)`)
         .bind(r.meta.last_row_id, b.admin_code, b.admin_name || '管理者', hash).run()
     }

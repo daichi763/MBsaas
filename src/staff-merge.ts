@@ -10,6 +10,7 @@
 import { Hono } from 'hono'
 import { applyPricingToShift, conflictFor, findConflicts, loadPricingData } from './shift-board'
 import { TYPE_LABEL, normalizePhone, payeeTypeFor } from './staff-lifecycle'
+import { revokeSessionsStmt } from './lib/auth'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -153,7 +154,7 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   // 統合元を「統合済み」に。ログインとセッションを無効化
   stmts.push(db.prepare('UPDATE staff_profiles SET merged_into_staff_id = ?, merged_at = ? WHERE staff_id = ?').bind(T, nowJST(), sid))
   stmts.push(db.prepare("UPDATE users SET status = 'inactive' WHERE user_id = ?").bind(src.user_id))
-  stmts.push(db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(src.user_id))
+  stmts.push(revokeSessionsStmt(db, src.user_id))
   await db.batch(stmts)
 
   // クライアントのNGスタッフ（カンマ区切り）の付け替え

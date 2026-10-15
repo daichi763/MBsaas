@@ -285,7 +285,7 @@ window.showAddStaff = function () {
         <div><label class="text-sm text-gray-600 block mb-1">スタッフ番号 *</label><input id="ns-code" class="inp" placeholder="st021"></div>
         <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="ns-name" class="inp" placeholder="山田 太郎"></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード *</label><input id="ns-pass" class="inp" value="pass1234"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード *</label><input id="ns-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="ns-email" class="inp"></div>
         <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="ns-phone" class="inp"></div>
