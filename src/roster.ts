@@ -258,7 +258,7 @@ export async function linkedStaffEmails(db: D1Database, staffIds: number[]): Pro
 }
 
 // ---------- ルーティング ----------
-const rosterApi =new Hono<{ Bindings: Bindings; Variables: Variables }>()
+const rosterApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.get('user').company_id); return next() })
 
 // 同意文面（共有範囲）— フロントのポップアップ表示用

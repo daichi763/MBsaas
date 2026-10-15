@@ -1836,7 +1836,8 @@ window.sendNotice = async function (btn) {
     let msg = 'お知らせを配信しました'
     if (e) {
       msg += e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
-        : `（メール送信対象 ${e.with_email}名・メール未登録 ${e.no_email}名）`
+        : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
+        : `（メール送信対象 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
     }
     toast(msg); renderNotices()
   } catch (err) {
