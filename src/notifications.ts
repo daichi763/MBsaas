@@ -13,6 +13,7 @@ import { sendEmail } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 import { REPORT_LABEL } from './report-settings'
 import { toCsv, csvResponse } from './csv'
+import { shareableEmail } from './lib/tenant'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -180,26 +181,35 @@ export const notificationsStaffApi = notificationRoutes()
 export const notificationsAdminApi = notificationRoutes()
 
 // ---------- メール送信失敗の一覧・再送（管理者）----------
+// 他社連携のスタッフが申請すると、宛先は所属元（他社）のユーザーになる。連携の同意ではメールを共有しないので、
+// 一覧・CSV では自社に属さない宛先のアドレスを伏せる（再送は保存済みのアドレスへ送るので影響しない）
+const shareableDelivery = (viewerCompanyId: number) => (r: any) => {
+  const { recipient_company_id, ...rest } = r
+  const hidden = !!r.to_email && recipient_company_id !== viewerCompanyId
+  // 送信失敗の理由にアドレスが含まれる場合があるので、そこも伏せる
+  const error = hidden && r.error ? String(r.error).split(r.to_email).join('（伏せています）') : r.error
+  return { ...rest, to_email: shareableEmail(r.to_email, recipient_company_id, viewerCompanyId), to_email_hidden: hidden, error }
+}
 notificationsAdminApi.get('/notification-emails', async (c) => {
   const u = c.get('user')
   const status = ['failed', 'sent', 'pending'].includes(c.req.query('status') || '') ? c.req.query('status') : c.req.query('status') === 'all' ? null : 'failed'
   const rows = (await c.env.DB.prepare(`SELECT e.delivery_id, e.correction_id, e.event, e.kind, e.to_email, e.status, e.error, e.attempts, e.last_attempt_at, e.created_at,
-      us.name AS recipient_name, ub.name AS last_attempt_by_name, c.report_type, s.work_date, p.project_name, su.name AS staff_name
+      us.name AS recipient_name, us.company_id AS recipient_company_id, ub.name AS last_attempt_by_name, c.report_type, s.work_date, p.project_name, su.name AS staff_name
     FROM notification_emails e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN users ub ON ub.user_id = e.last_attempt_by
     LEFT JOIN attendance_corrections c ON c.correction_id = e.correction_id LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users su ON su.user_id = sp.user_id
-    WHERE e.company_id = ? ${status ? 'AND e.status = ?' : ''} ORDER BY e.delivery_id DESC LIMIT 300`).bind(u.company_id, ...(status ? [status] : [])).all()).results
+    WHERE e.company_id = ? ${status ? 'AND e.status = ?' : ''} ORDER BY e.delivery_id DESC LIMIT 300`).bind(u.company_id, ...(status ? [status] : [])).all()).results as any[]
   const counts = (await c.env.DB.prepare('SELECT status, COUNT(*) AS n FROM notification_emails WHERE company_id = ? GROUP BY status').bind(u.company_id).all()).results as any[]
-  return c.json({ deliveries: rows, counts: Object.fromEntries(counts.map(r => [r.status, r.n])), labels: REPORT_LABEL })
+  return c.json({ deliveries: rows.map(shareableDelivery(u.company_id)), counts: Object.fromEntries(counts.map(r => [r.status, r.n])), labels: REPORT_LABEL })
 })
 notificationsAdminApi.get('/notification-emails/export', async (c) => {
   const u = c.get('user')
   const status = ['failed', 'sent', 'pending'].includes(c.req.query('status') || '') ? c.req.query('status') : null
-  const rows = (await c.env.DB.prepare(`SELECT e.*, us.name AS recipient_name, ub.name AS last_attempt_by_name, c.report_type, s.work_date, su.name AS staff_name
+  const rows = (await c.env.DB.prepare(`SELECT e.*, us.name AS recipient_name, us.company_id AS recipient_company_id, ub.name AS last_attempt_by_name, c.report_type, s.work_date, su.name AS staff_name
     FROM notification_emails e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN users ub ON ub.user_id = e.last_attempt_by
     LEFT JOIN attendance_corrections c ON c.correction_id = e.correction_id LEFT JOIN shifts s ON s.shift_id = c.shift_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users su ON su.user_id = sp.user_id
-    WHERE e.company_id = ? ${status ? 'AND e.status = ?' : ''} ORDER BY e.delivery_id LIMIT 10000`).bind(u.company_id, ...(status ? [status] : [])).all()).results as any[]
+    WHERE e.company_id = ? ${status ? 'AND e.status = ?' : ''} ORDER BY e.delivery_id LIMIT 10000`).bind(u.company_id, ...(status ? [status] : [])).all()).results.map(shareableDelivery(u.company_id)) as any[]
   const ST: Record<string, string> = { sent: '送信済み', failed: '送信失敗', pending: '送信中' }
   const EV: Record<string, string> = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下' }
   const csv = toCsv(['送信ID', '作成日時', '状態', '通知', '宛先', 'メールアドレス', '申請ID', 'スタッフ', '勤務日', '報告', '失敗の理由', '試行回数', '最終送信日時', '再送した人'],

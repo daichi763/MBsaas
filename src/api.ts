@@ -15,6 +15,7 @@ import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES,
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired } from './roster'
+import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -658,6 +659,10 @@ api.get('/staff/notices', async (c) => {
 
 api.post('/staff/notices/:id/read', async (c) => {
   const u = c.get('user')
+  // 自社のお知らせで、本人が配信対象のものだけ既読にできる
+  const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id'))
+  const targets = n ? await resolveNoticeTargets(c.env.DB, u.company_id, n.target_type, n.target_ids) : []
+  if (!targets.some(t => t.user_id === u.user_id)) return c.json({ error: 'お知らせが見つかりません' }, 404)
   await c.env.DB.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(c.req.param('id'), u.user_id).run()
   return c.json({ ok: true })
 })
@@ -1132,8 +1137,10 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
   const profile = await loadRoster(c.env.DB, sid, u.company_id)
   if (!profile) return c.json({ error: 'not found' }, 404)
+  // 経験案件は、確定・代打で稼働日が今日までのシフトに限る（欠勤・希望・未来の予定は含めない）
   const projects = await c.env.DB.prepare(`
-    SELECT DISTINCT p.project_name, p.project_type FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ?`).bind(sid).all()
+    SELECT DISTINCT p.project_name, p.project_type FROM shifts s JOIN projects p ON s.project_id = p.project_id
+    WHERE s.staff_id = ? AND s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date <= ?`).bind(sid, u.company_id, todayJST()).all()
   const perf = await c.env.DB.prepare(`
     SELECT SUM(COALESCE(json_extract(report_values,'$.mnp'),0)) AS mnp,
       SUM(COALESCE(json_extract(report_values,'$.pi'),0)) AS pi,
@@ -1143,7 +1150,9 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
       COUNT(*) AS total_days
     FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
-  return c.json({ profile: { ...profile, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
+  // 管理者メモは社内用なので、社外に出すスキルシートには返さない（推薦コメントは作成時に入力する）
+  const { memo: _memo, ...sheet } = profile
+  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results, performance: perf, evaluation: latestEval })
 })
 
 // ============ スタッフ履歴書ファイル管理 ============
@@ -1731,7 +1740,7 @@ api.get('/admin/projects', async (c) => {
       (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
       (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date LIKE ?) AS month_seiyaku,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date LIKE ?) AS incidents
-    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id
+    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     WHERE p.company_id = ? ORDER BY p.project_id`).bind(month + '%', month + '%', month + '%', month + '%', u.company_id).all()
   return c.json({ projects: rows.results, month })
 })
@@ -1742,7 +1751,7 @@ api.get('/admin/projects/:id', async (c) => {
   const db = c.env.DB
   const project = await db.prepare(`
     SELECT p.*, cl.client_name, rt.template_name, rt.fields_json
-    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id
+    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     LEFT JOIN report_templates rt ON p.report_template_id = rt.template_id
     WHERE p.project_id = ? AND p.company_id = ?`).bind(pid, u.company_id).first()
   if (!project) return c.json({ error: 'not found' }, 404)
@@ -1774,10 +1783,23 @@ api.get('/admin/projects/:id', async (c) => {
   })
 })
 
+// 画面の選択肢と同じ値だけを受け付ける（admin.js の PTYPE_LABELS・FOLLOW_LABELS）
+const PROJECT_TYPES = ['mobile_shop', 'electronics', 'event', 'fiber', 'fixed_line', 'callcenter', 'other']
+const UNIT_PRICE_TYPES = ['monthly', 'daily', 'hourly', 'performance']
+const FOLLOW_TYPES = ['interview', 'phone', 'line', 'warning', 'praise', 'training', 'claim', 'health', 'shift', 'career', 'round']
+const FOLLOW_STATUSES = ['open', 'done']
+const SHIFT_STATUSES = ['requested', 'confirmed', 'substitute', 'absent']
+
 // 案件登録
 api.post('/admin/projects', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.project_name) return c.json({ error: '案件名は必須です' }, 400)
+  if (b.project_type && !PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
+  if (b.unit_price_type && !UNIT_PRICE_TYPES.includes(b.unit_price_type)) return c.json({ error: '単価の種類が正しくありません' }, 400)
+  // 他社のクライアント・テンプレートは指定できない
+  if (b.client_id != null && b.client_id !== '' && !(await ownClient(c.env.DB, u.company_id, b.client_id))) return c.json({ error: 'クライアントが見つかりません' }, 400)
+  if (b.report_template_id != null && !(await c.env.DB.prepare('SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?)').bind(b.report_template_id, u.company_id).first()))
+    return c.json({ error: '日報テンプレートが見つかりません' }, 400)
   await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.client_id ?? null, b.project_name, b.project_type || 'mobile_shop', b.location ?? null,
@@ -1820,7 +1842,10 @@ api.post('/admin/shifts', async (c) => {
   if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (st.merged_into_staff_id) return c.json({ error: '統合済みのスタッフにはシフトを登録できません' }, 400)
   if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
-  const proj = await c.env.DB.prepare('SELECT location, unit_price FROM projects WHERE project_id = ?').bind(b.project_id).first()
+  if (b.status && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
+  // 自社の案件のみ（他社の案件名・場所・単価を取り込まない）
+  const proj = await ownProject(c.env.DB, u.company_id, b.project_id)
+  if (!proj) return c.json({ error: '案件が見つかりません' }, 404)
   const ins = await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.staff_id, b.project_id, b.work_date, b.start_time || '09:30', b.end_time || '19:00',
@@ -1838,9 +1863,18 @@ api.post('/admin/shifts', async (c) => {
 api.put('/admin/shifts/:id', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   // 確定済み（精算）のシフトはメモ以外を変更できない
-  const cur = await c.env.DB.prepare('SELECT settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
-  if (cur?.settle_status === 'confirmed' && (b.status != null || b.start_time != null || b.end_time != null || b.staff_id != null))
+  const cur = await ownShift(c.env.DB, u.company_id, c.req.param('id'))
+  if (!cur) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (cur.settle_status === 'confirmed' && (b.status != null || b.start_time != null || b.end_time != null || b.staff_id != null))
     return c.json({ error: '確定済みのシフトは変更できません。精算画面で確定を取り消してください' }, 409)
+  if (b.status != null && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
+  // 付け替え先は自社のスタッフマスタ行のみ（統合済み・スキルシートのみは不可）
+  if (b.staff_id != null) {
+    const st = await ownStaff(c.env.DB, u.company_id, b.staff_id)
+    if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+    if (st.merged_into_staff_id) return c.json({ error: '統合済みのスタッフにはシフトを登録できません' }, 400)
+    if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
+  }
   await c.env.DB.prepare(`UPDATE shifts SET
       status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
       staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo)
@@ -1909,7 +1943,7 @@ api.get('/admin/analytics', async (c) => {
     WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY dr.project_id`).bind(cid, month + '%').all()
   const byClient = await db.prepare(`
     SELECT cl.client_name, COUNT(*) AS days, ${sel.replace(/report_values/g, 'dr.report_values')}
-    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN clients cl ON p.client_id = cl.client_id
+    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY cl.client_id`).bind(cid, month + '%').all()
 
   return c.json({ month, totals, daily: daily.results, by_staff: byStaff.results, by_project: byProject.results, by_client: byClient.results })
@@ -1994,8 +2028,9 @@ api.post('/admin/notices', async (c) => {
 // お知らせ既読状況
 api.get('/admin/notices/:id/reads', async (c) => {
   const u = c.get('user')
+  if (!(await ownNotice(c.env.DB, u.company_id, c.req.param('id')))) return c.json({ error: 'お知らせが見つかりません' }, 404)
   const rows = await c.env.DB.prepare(`
-    SELECT us.name, r.read_at FROM notice_reads r JOIN users us ON r.user_id = us.user_id WHERE r.notice_id = ?`).bind(c.req.param('id')).all()
+    SELECT us.name, r.read_at FROM notice_reads r JOIN users us ON r.user_id = us.user_id WHERE r.notice_id = ? AND us.company_id = ?`).bind(c.req.param('id'), u.company_id).all()
   const unread = await c.env.DB.prepare(`
     SELECT us.name FROM users us WHERE us.company_id = ? AND us.role = 'staff' AND us.status = 'active'
     AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = ? AND r.user_id = us.user_id)`).bind(u.company_id, c.req.param('id')).all()
@@ -2126,7 +2161,10 @@ api.get('/admin/follow-logs', async (c) => {
 api.post('/admin/follow-logs', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.staff_id || !b.follow_type) return c.json({ error: 'スタッフと種別は必須です' }, 400)
+  if (!FOLLOW_TYPES.includes(b.follow_type)) return c.json({ error: '対応種別が正しくありません' }, 400)
+  if (b.status && !FOLLOW_STATUSES.includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
   if (!(await assertStaffInCompany(c, String(b.staff_id)))) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (b.related_project_id != null && b.related_project_id !== '' && !(await ownProject(c.env.DB, u.company_id, b.related_project_id))) return c.json({ error: '案件が見つかりません' }, 404)
   await c.env.DB.prepare(`INSERT INTO follow_logs (company_id, staff_id, manager_id, follow_type, content, next_action, status, related_project_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.staff_id, u.user_id, b.follow_type, b.content ?? '', b.next_action ?? null, b.status || 'open', b.related_project_id ?? null, nowJST()).run()
@@ -2135,6 +2173,7 @@ api.post('/admin/follow-logs', async (c) => {
 
 api.put('/admin/follow-logs/:id', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
+  if (b.status != null && !FOLLOW_STATUSES.includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
   await c.env.DB.prepare('UPDATE follow_logs SET status = COALESCE(?, status), next_action = COALESCE(?, next_action) WHERE follow_id = ? AND company_id = ?')
     .bind(b.status ?? null, b.next_action ?? null, c.req.param('id'), u.company_id).run()
   return c.json({ ok: true })
@@ -2152,7 +2191,7 @@ api.get('/admin/billing-check', async (c) => {
       SUM(CASE WHEN s.status IN ('confirmed','substitute') THEN s.transportation_fee ELSE 0 END) AS total_transport,
       COUNT(DISTINCT s.staff_id) AS staff_count,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date LIKE ?) AS report_count
-    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id
+    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     LEFT JOIN shifts s ON s.project_id = p.project_id AND s.work_date LIKE ? AND s.work_date <= ?
     WHERE p.company_id = ? GROUP BY p.project_id`).bind(month + '%', month + '%', todayJST(), u.company_id).all()
 

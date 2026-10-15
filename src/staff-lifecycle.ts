@@ -258,13 +258,16 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   }
   // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
   if (from === 'linked_external' && sp.source_staff_id) {
-    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする
+    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
+    // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
+    // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
     const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
     if (src) {
       await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
-          nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?, affiliation_contact = ? WHERE staff_id = ?`)
+          nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
+          affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
         .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
-          src.commute_minutes, src.available_from, src.affiliation_contact, sp.staff_id).run()
+          src.commute_minutes, src.available_from, to, sp.staff_id).run()
     }
     // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
   }

@@ -877,7 +877,8 @@ window.showSkillSheet = async function (sid) {
         </div></div>
       ${ev ? `<div><p class="text-xs font-bold text-gray-400 mb-1">評価（${esc(ev.evaluation_period)}）</p>
         <p class="text-xs">勤怠 ${ev.attendance_score}/5 ・報告 ${ev.report_score}/5 ・実績 ${ev.performance_score}/5 ・クライアント ${ev.client_score}/5</p></div>` : ''}
-      <div><p class="text-xs font-bold text-gray-400 mb-1">推薦コメント</p><p class="text-xs text-gray-600">${esc(p.memo || '真面目に稼働いただけるスタッフです。')}</p></div>
+      <div><p class="text-xs font-bold text-gray-400 mb-1">推薦コメント</p>
+        <textarea id="ss-comment" rows="3" class="inp text-xs" placeholder="推薦コメントを入力してから印刷してください（任意・保存されません）"></textarea></div>
     </div>`)
 }
 
