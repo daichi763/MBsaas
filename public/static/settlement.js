@@ -6,6 +6,7 @@
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const PAYEE_LABEL = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' }
   const UNIT = { daily: '日', hourly: '時' }
+  const PENDING_ISSUE = '承認待ちの打刻修正あり' // src/settlement.ts の確認事項と同じ文言
   const S = window.__settleState = window.__settleState || {
     from: dayjs().startOf('month').format('YYYY-MM-DD'), to: dayjs().endOf('month').format('YYYY-MM-DD'),
     client_id: '', project_id: '', payee_type: '', settle: '', issues_only: false, tab: 'detail', selected: new Set(),
@@ -28,7 +29,8 @@
     window.__settleData = data
     S.selected = new Set([...S.selected].filter(id => data.rows.some(r => r.shift_id === id)))
     const t = data.totals
-    const gross = t.bill - t.pay
+    // 粗利は支払が決まっているシフトだけで計算する（サーバーの profit / profit_bill）。支払単価が未設定のシフトの請求額は除く
+    const gross = t.profit
     const projects = master.projects.filter(p => !S.client_id || String(p.client_id) === String(S.client_id))
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -38,9 +40,10 @@
           <div class="relative" id="settle-export">
             <button class="btn btn-primary text-sm" onclick="document.getElementById('settle-export-menu').classList.toggle('hidden')"><i class="fas fa-file-csv"></i>CSV出力 <i class="fas fa-caret-down"></i></button>
             <div id="settle-export-menu" class="hidden absolute right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 w-56 text-sm">
-              <a class="block px-3 py-2 hover:bg-gray-50" href="/api/admin/settlement/export?kind=detail&${qs()}">シフト明細（1シフト1行）</a>
+              ${data.truncated ? `<p class="px-3 py-2 text-xs text-amber-700">${data.max_rows}件を超えるため出力できません。期間や条件を絞ってください</p>` : `
+              <a class="block px-3 py-2 hover:bg-gray-50" href="/api/admin/settlement/export?kind=detail&${qs()}">シフト明細（1シフト1行）${S.issues_only ? '<span class="block text-[11px] text-gray-400">確認が必要なもののみ</span>' : ''}</a>
               <a class="block px-3 py-2 hover:bg-gray-50" href="/api/admin/settlement/export?kind=billing&${qs()}">請求集計（クライアント・案件別）</a>
-              <a class="block px-3 py-2 hover:bg-gray-50" href="/api/admin/settlement/export?kind=payment&${qs()}">支払集計（支払先・スタッフ別）</a>
+              <a class="block px-3 py-2 hover:bg-gray-50" href="/api/admin/settlement/export?kind=payment&${qs()}">支払集計（支払先・スタッフ別）</a>`}
             </div>
           </div>
         </div>
@@ -70,7 +73,8 @@
 
       <section class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4" id="settle-totals">
         ${[['シフト', t.shifts + '件'], ['確定済み', `${t.confirmed} / ${t.shifts}`], ['請求合計', yen(t.bill)], ['支払合計', yen(t.pay) + (t.pay_unset ? `<span class="text-[10px] text-amber-600 block">単価未設定 ${t.pay_unset}件</span>` : '')],
-          ['粗利', yen(gross) + `<span class="text-[10px] text-gray-400 block">${t.bill ? Math.round(gross / t.bill * 1000) / 10 + '%' : '-'}</span>`],
+          ['粗利', (gross == null ? '-' : yen(gross)) + `<span class="text-[10px] text-gray-400 block">${t.profit_bill && gross != null ? Math.round(gross / t.profit_bill * 1000) / 10 + '%' : '-'}</span>`
+            + (t.pay_unset ? `<span class="text-[10px] text-amber-600 block">支払未設定 ${t.pay_unset}件・請求 ${yen(t.pay_unset_bill)} を除外</span>` : '')],
           ['確認が必要', `<span class="${t.issues ? 'text-red-600' : 'text-emerald-600'}">${t.issues}件</span>`]]
           .map(([l, v]) => `<div class="card p-3"><p class="text-[11px] text-gray-500">${l}</p><p class="text-lg font-bold">${v}</p></div>`).join('')}
       </section>
@@ -80,7 +84,7 @@
           `<button class="btn ${S.tab === k ? 'btn-primary' : 'btn-outline'} text-xs" onclick="window.__settleState.tab='${k}';renderSettlementBody()">${l}</button>`).join('')}
       </div>
       <section class="card p-3" id="settle-body"></section>
-      ${data.truncated ? '<p class="text-xs text-amber-600 mt-2">件数が多いため先頭5000件のみ表示しています。期間を短くしてください</p>' : ''}`
+      ${data.truncated ? `<p class="text-xs text-amber-600 mt-2" id="settle-truncated">対象が${data.max_rows}件を超えるため、先頭の${data.max_rows}件だけを表示しています（集計もこの件数分です）。CSV出力と正しい集計には、期間や条件を絞ってください</p>` : ''}`
     document.getElementById('st-from').addEventListener('change', settleApply)
     document.getElementById('st-to').addEventListener('change', settleApply)
     renderSettlementBody()
@@ -108,7 +112,8 @@
         <th class="text-right">請求基本額</th><th class="text-right">交通費</th><th class="text-right">調整</th><th class="text-right">請求合計</th><th class="text-right">支払合計</th><th class="text-right">粗利</th><th>確定</th></tr></thead><tbody>
         ${data.by_client.map(g => `<tr><td>${esc(g.client_name || '-')}</td><td class="font-medium">${esc(g.project_name)}</td><td class="text-right">${g.shifts}</td><td class="text-right">${g.staff}</td><td class="text-right">${hrs(g.hours)}</td>
           <td class="text-right">${yen(g.bill_base)}</td><td class="text-right">${yen(g.bill_transport)}</td><td class="text-right">${g.bill_adjust ? yen(g.bill_adjust) : '-'}</td><td class="text-right font-bold">${yen(g.bill_total)}</td>
-          <td class="text-right">${yen(g.pay_total)}</td><td class="text-right">${yen(g.bill_total - g.pay_total)}</td>
+          <td class="text-right">${yen(g.pay_total)}${g.pay_unset ? `<span class="block text-[10px] text-amber-600">単価未設定 ${g.pay_unset}件</span>` : ''}</td>
+          <td class="text-right">${g.profit == null ? '<span class="text-gray-400" title="支払単価が未設定のため計算できません">—</span>' : yen(g.profit)}${g.pay_unset && g.profit != null ? `<span class="block text-[10px] text-amber-600">請求 ${yen(g.pay_unset_bill)} を除外</span>` : ''}</td>
           <td>${g.confirmed === g.shifts ? '<span class="badge badge-green">確定</span>' : `<span class="badge badge-gray">${g.confirmed}/${g.shifts}</span>`}</td></tr>`).join('') || '<tr><td colspan="12" class="text-center text-gray-400">対象のシフトはありません</td></tr>'}
         </tbody></table></div>`
       return
@@ -132,8 +137,8 @@
       <div class="flex items-center justify-between flex-wrap gap-2 mb-2 text-xs">
         <p class="text-gray-500">${data.rows.length}件${sel.size ? `・<b>${sel.size}件を選択中</b>` : ''}</p>
         <div class="flex gap-1.5">
-          <button class="btn btn-primary text-xs" onclick="settleConfirm(true)"><i class="fas fa-check-double"></i>${sel.size ? '選択したシフトを確定' : '表示中のシフトをすべて確定'}</button>
-          <button class="btn btn-outline text-xs" onclick="settleConfirm(false)"><i class="fas fa-rotate-left"></i>${sel.size ? '選択の確定を取り消す' : '表示中の確定を取り消す'}</button>
+          <button class="btn btn-primary text-xs" onclick="settleConfirm(true, this)"><i class="fas fa-check-double"></i>${sel.size ? '選択したシフトを確定' : '表示中のシフトをすべて確定'}</button>
+          <button class="btn btn-outline text-xs" onclick="settleConfirm(false, this)"><i class="fas fa-rotate-left"></i>${sel.size ? '選択の確定を取り消す' : '表示中の確定を取り消す'}</button>
         </div>
       </div>
       <div class="overflow-x-auto"><table class="tbl text-xs" id="settle-detail-table"><thead><tr>
@@ -146,12 +151,14 @@
           <td class="min-w-[220px]"><p class="font-medium">${esc(r.project_name)}</p><p class="text-gray-400">${esc(r.client_name)}${r.site_name ? '・' + esc(r.site_name) : ''}${r.role ? '・' + esc(r.role) : ''}</p></td>
           <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline" href="#staff/${r.staff_id}">${esc(r.staff_name)}</a></td>
           <td class="whitespace-nowrap">${esc(r.start_time)}〜${esc(r.end_time)}<span class="text-gray-400 block">休憩${r.break_minutes}分・${hrs(r.planned_hours)}</span></td>
-          <td class="whitespace-nowrap">${r.actual_start ? `${esc(r.actual_start)}〜${esc(r.actual_end)}<span class="text-gray-400 block">${r.actual_source === 'manual' ? '手入力' : '報告'}・${hrs(r.actual_hours)}</span>` : '<span class="text-gray-400">-</span>'}</td>
+          <td class="whitespace-nowrap">${r.actual_start ? `${esc(r.actual_start)}〜${esc(r.actual_end)}<span class="text-gray-400 block">${r.actual_source === 'manual' ? '手入力' : '報告'}・休憩${r.used_break_minutes}分・${hrs(r.actual_hours)}</span>` : '<span class="text-gray-400">-</span>'}</td>
           <td class="text-right whitespace-nowrap">${r.bill_unit_type === 'hourly' || r.pay_unit_type === 'hourly' ? hrs(r.hours) : '<span class="text-gray-400">日額</span>'}</td>
           <td class="text-right whitespace-nowrap">${yen(r.bill_total)}<span class="text-gray-400 block">${r.bill_rate != null ? yen(r.bill_rate) + '/' + UNIT[r.bill_unit_type] : ''}</span></td>
           <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-amber-600">未設定</span>' : yen(r.pay_total)}<span class="text-gray-400 block">${r.pay_rate != null ? yen(r.pay_rate) + '/' + UNIT[r.pay_unit_type] : ''}</span></td>
           <td class="whitespace-nowrap">${esc(PAYEE_LABEL[r.payee_type] || r.payee_type)}${r.payee_type === 'partner' || r.payee_type === 'linked' ? `<span class="text-gray-400 block">${esc(r.payee_name)}</span>` : ''}</td>
-          <td>${r.issues.map(i => `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('') || '<i class="fas fa-check text-emerald-500"></i>'}</td>
+          <td>${r.issues.map(i => i === PENDING_ISSUE
+            ? `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleOpenCorrections" data-date="${esc(r.work_date)}" title="この勤務日の承認待ちの申請を開く">${esc(i)} <i class="fas fa-arrow-up-right-from-square text-[9px]"></i></button>`
+            : `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('') || '<i class="fas fa-check text-emerald-500"></i>'}</td>
           <td class="whitespace-nowrap">${r.settle_status === 'confirmed' ? '<span class="badge badge-green">確定</span>' : '<span class="badge badge-gray">未確定</span>'}</td>
           <td><button class="text-blue-600 hover:underline whitespace-nowrap" onclick="openSettleEdit(${r.shift_id})">${r.settle_status === 'confirmed' ? '詳細' : '実績・金額'}</button></td>
         </tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400">対象のシフトはありません（確定・代打のシフトが対象です）</td></tr>'}
@@ -167,37 +174,58 @@
     } catch (e) { toast(errMsg(e)) }
   }
 
-  window.settleConfirm = async function (confirm) {
-    const body = S.selected.size ? { shift_ids: [...S.selected] } : filterBody()
+  // 確定・取り消しの対象は、画面に表示中（選択があれば選択中）のシフトの ID を送る。条件で送ると、表示していないシフトまで処理されるため
+  const targetIds = () => (S.selected.size ? [...S.selected] : window.__settleData.rows.map(r => r.shift_id))
+  const syncedNote = (n) => (n ? `（${n}件は報告の時刻を実績に反映しました）` : '')
+  window.settleConfirm = async function (confirm, btn) {
+    const ids = targetIds(), label = S.selected.size ? '選択中' : '表示中'
+    if (!ids.length) return toast('対象のシフトはありません')
     if (!confirm) {
-      if (!window.confirm(`${S.selected.size ? '選択した' : '表示中の'}シフトの確定を取り消します。よろしいですか？`)) return
-      try { const { data } = await axios.post('/api/admin/settlement/unconfirm', body); toast(`${data.unconfirmed}件の確定を取り消しました`); S.selected.clear(); renderSettlement() } catch (e) { toast(errMsg(e)) }
-      return
+      const idSet = new Set(ids)
+      const n = window.__settleData.rows.filter(r => idSet.has(r.shift_id) && r.settle_status === 'confirmed').length
+      if (!n) return toast(`${label}のシフトに確定済みのものはありません`)
+      if (!window.confirm(`${label}のシフト ${ids.length}件のうち、確定済みの ${n}件 の確定を取り消します。\n確定の後に承認した打刻修正や報告は、取り消しと同時に実績・金額に反映します（手入力の実績は変えません）。よろしいですか？`)) return
+      return withSubmitLock(btn, async () => {
+        try {
+          const { data } = await axios.post('/api/admin/settlement/unconfirm', { shift_ids: ids })
+          toast(`${data.unconfirmed}件の確定を取り消しました${syncedNote(data.synced)}`); S.selected.clear(); renderSettlement()
+        } catch (e) { toast(errMsg(e)) }
+      })
     }
     let pre
-    try { pre = (await axios.post('/api/admin/settlement/confirm', { ...body, dry_run: true })).data } catch (e) { return toast(errMsg(e)) }
+    try { pre = await withSubmitLock(btn, async () => (await axios.post('/api/admin/settlement/confirm', { shift_ids: ids, dry_run: true })).data) } catch (e) { return toast(errMsg(e)) }
+    if (!pre) return
     modal(`
       <h3 class="font-bold text-lg mb-2"><i class="fas fa-check-double text-blue-600 mr-1"></i>実績を確定する</h3>
       <div class="text-sm space-y-1 mb-3" id="settle-confirm-summary">
-        <p>確定するシフト: <b>${pre.count}件</b>（請求 ${yen(pre.bill)} / 支払 ${yen(pre.pay)}）</p>
+        <p>${label}のシフト: <b>${ids.length}件</b> ／ 確定するシフト: <b>${pre.count}件</b>（請求 ${yen(pre.bill)} / 支払 ${yen(pre.pay)}）</p>
         ${pre.with_issues ? `<p class="text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>確認が必要なシフトが ${pre.with_issues}件 含まれています</p>` : ''}
-        ${pre.pay_unset ? `<p class="text-amber-600">支払単価が未設定のシフトが ${pre.pay_unset}件 あります（支払0円として集計されます）</p>` : ''}
+        ${pre.pay_unset ? `<p class="text-amber-600">支払単価が未設定のシフトが ${pre.pay_unset}件 あります（支払の金額には含まれません）</p>` : ''}
+        ${pre.in_progress ? `<p class="text-gray-500">勤務が終わっていないシフト ${pre.in_progress}件 は確定しません（退店・勤務終了の報告の後か、翌日以降に確定できます）</p>` : ''}
         ${pre.future ? `<p class="text-gray-500">今日より後のシフト ${pre.future}件 は確定しません</p>` : ''}
         ${pre.already ? `<p class="text-gray-500">確定済みの ${pre.already}件 はそのままです</p>` : ''}
       </div>
       <p class="text-xs text-gray-500 mb-3">確定したシフトは、時間・スタッフ・金額を変更できなくなります（シフトボードや単価ルールの再適用、区分変更の対象外になります）。取り消せば再び変更できます</p>
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
-        <button class="btn btn-primary flex-1" ${pre.count ? '' : 'disabled'} onclick="settleConfirmRun(${pre.with_issues ? 'true' : 'false'})">${pre.with_issues ? '確認済みとして確定する' : '確定する'}</button>
+        <button class="btn btn-primary flex-1" ${pre.count ? '' : 'disabled'} onclick="settleConfirmRun(${pre.with_issues ? 'true' : 'false'}, this)">${pre.with_issues ? '確認済みとして確定する' : '確定する'}</button>
       </div>`)
-    window.__settleConfirmBody = body
+    window.__settleConfirmBody = { shift_ids: ids }
   }
-  window.settleConfirmRun = async function (force) {
-    try {
-      const { data } = await axios.post('/api/admin/settlement/confirm', { ...window.__settleConfirmBody, force })
-      closeModal(); toast(`${data.confirmed}件を確定しました`); S.selected.clear(); renderSettlement()
-    } catch (e) { toast(errMsg(e)) }
+  window.settleConfirmRun = function (force, btn) {
+    return withSubmitLock(btn, async () => {
+      try {
+        const { data } = await axios.post('/api/admin/settlement/confirm', { ...window.__settleConfirmBody, force })
+        closeModal(); toast(`${data.confirmed}件を確定しました`); S.selected.clear(); renderSettlement()
+      } catch (e) { toast(errMsg(e)) }
+    })
   }
+  // 承認待ちの打刻修正の確認事項から、その勤務日の承認待ちの申請一覧を開く
+  delegate('settleOpenCorrections', el => {
+    const st = window.__corrState
+    if (st) Object.assign(st, { status: 'pending', project_id: '', staff_name: '', from: '', to: '', report_type: '', kind: '', work_from: el.dataset.date, work_to: el.dataset.date })
+    location.hash = 'corrections'
+  })
 
   // ---------- 実績・金額の編集 ----------
   window.openSettleEdit = function (id) {
@@ -257,9 +285,10 @@
         const r = window.__settleData.rows.find(x => x.shift_id === id)
         if (r && r.issues.length && !window.confirm(`確認事項があります（${r.issues.join('、')}）。確定しますか？`)) return
         const { data } = await axios.post('/api/admin/settlement/confirm', { shift_ids: [id], force: true })
-        if (!data.confirmed) return toast(data.skipped_future ? '今日より後のシフトは確定できません' : '確定できませんでした')
+        if (!data.confirmed) return toast(data.skipped_future ? '今日より後のシフトは確定できません'
+          : data.skipped_in_progress ? '勤務が終わっていないため確定できません（退店・勤務終了の報告の後か、翌日以降に確定できます）' : '確定できませんでした')
         toast('確定しました')
-      } else { await axios.post('/api/admin/settlement/unconfirm', { shift_ids: [id] }); toast('確定を取り消しました') }
+      } else { const { data } = await axios.post('/api/admin/settlement/unconfirm', { shift_ids: [id] }); toast(`確定を取り消しました${syncedNote(data.synced)}`) }
       closeModal(); renderSettlement()
     } catch (e) { toast(errMsg(e)) }
   }

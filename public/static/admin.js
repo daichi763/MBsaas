@@ -2063,25 +2063,28 @@ window.closeConsult = async function (id) {
 }
 
 // ============ 請求前確認 ============
+// 金額は精算と同じ計算（交通費の請求区分・請求の調整額を含む請求合計）。total_bill / total がサーバーで計算した請求合計
 async function renderBilling(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
-  const { data } = await axios.get('/api/admin/billing-check?month=' + month)
+  let data
+  try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
       <div class="flex gap-2 items-center">
-        <button class="btn btn-outline" onclick="renderBilling('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
+        <button class="btn btn-outline" data-action="renderBilling" data-month="${esc(dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM'))}"><i class="fas fa-chevron-left"></i></button>
         <span class="font-bold">${dayjs(month + '-01').format('YYYY年M月')}</span>
-        <button class="btn btn-outline" onclick="renderBilling('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-right"></i></button>
+        <button class="btn btn-outline" data-action="renderBilling" data-month="${esc(dayjs(month + '-01').add(1, 'month').format('YYYY-MM'))}"><i class="fas fa-chevron-right"></i></button>
         <button class="btn btn-primary" onclick="exportBillingCsv()"><i class="fas fa-file-csv"></i>CSV出力</button>
       </div>
     </div>
+    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください</p>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>稼働金額</th><th>交通費</th><th>合計</th></tr></thead>
+          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
           <tbody>${data.by_project.map(p => `
             <tr>
               <td class="font-medium">${esc(p.project_name)}</td>
@@ -2090,8 +2093,8 @@ async function renderBilling(month) {
               <td>${p.absent_days ? `<span class="badge badge-red">${p.absent_days}</span>` : 0}</td>
               <td>${p.substitute_days || 0}</td>
               <td>${p.report_count}/${p.work_days} ${p.report_count < p.work_days ? '<i class="fas fa-triangle-exclamation text-amber-500" title="日報と稼働日数が一致しません"></i>' : '<i class="fas fa-check text-emerald-500"></i>'}</td>
-              <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td>
-              <td class="font-bold">${yen((p.total_amount || 0) + (p.total_transport || 0))}</td>
+              <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
+              <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -2101,14 +2104,14 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>稼働金額</th><th>交通費</th><th>合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td>
-              <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td>
-              <td class="font-bold">${yen((d.amount || 0) + (d.transport || 0))}</td>
+              <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
+              <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -2116,13 +2119,15 @@ async function renderBilling(month) {
     </section>`
   window._billingData = data
 }
+delegate('renderBilling', el => renderBilling(el.dataset.month))
 window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
-  let csv = '\uFEFFスタッフ,案件,稼働日数,欠勤,稼働金額,交通費,合計\n'
-  for (const d of data.detail) {
-    csv += `${d.name},${d.project_name},${d.work_days},${d.absent_days || 0},${d.amount || 0},${d.transport || 0},${(d.amount || 0) + (d.transport || 0)}\n`
-  }
+  // 値はダブルクォートで囲み、表計算ソフトで式として読まれる先頭の文字（= + - @ タブ CR）には ' を付ける
+  const cell = (v) => { let t = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(t) && !/^-?\d+(\.\d+)?$/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"' }
+  const lines = [['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計']]
+  for (const d of data.detail) lines.push([d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0])
+  const csv = '﻿' + lines.map(l => l.map(cell).join(',')).join('\r\n') + '\r\n'
   const blob = new Blob([csv], { type: 'text/csv' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)

@@ -58,7 +58,7 @@ export function orderConflicts(reports: Map<string, string>, type: string, at: s
 
 // ---------- 読み込み ----------
 async function loadShift(db: D1Database, shiftId: any) {
-  return db.prepare(`SELECT s.shift_id, s.company_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.settled_at,
+  return db.prepare(`SELECT s.shift_id, s.company_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.settled_at, s.actual_source,
       p.project_name, us.name AS staff_name, co.company_name
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
     JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = s.company_id WHERE s.shift_id = ?`).bind(shiftId).first() as Promise<any>
@@ -166,7 +166,10 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
     }
   }
   const at = nowJST(), token = randToken(), settled = shift.settle_status === 'confirmed' ? 1 : 0
-  const applied = `EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND decision_token = ?)`
+  // 実績が手入力のシフトは、報告を直しても実績・金額は変わらない（syncActualFromReports は手入力を上書きしない）。
+  // 操作履歴（applied_while_manual）と応答で知らせ、精算の確認事項「手入力後に打刻修正あり」に出す
+  const manual = !settled && shift.actual_source === 'manual'
+  const applied =`EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND decision_token = ?)`
   const guard = c.kind === 'modify'
     ? db.prepare(`UPDATE attendance_corrections SET status = 'approved', decided_by = ?, decided_by_name = ?, decided_at = ?, decision_token = ?, decision_comment = ?,
           is_exception = 0, applied_while_settled = ?, updated_at = ?
@@ -190,7 +193,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${applied}`)
         .bind(c.correction_id, c.company_id, event, a.user_id, a.name, a.role,
-          JSON.stringify({ comment, before_at: c.before_at, requested_at: c.requested_at, exception: !!exception, conflicts, applied_while_settled: !!settled }), at, c.correction_id, token),
+          JSON.stringify({ comment, before_at: c.before_at, requested_at: c.requested_at, exception: !!exception, conflicts, applied_while_settled: !!settled, ...(manual ? { applied_while_manual: true } : {}) }), at, c.correction_id, token),
     ])
   } catch (e: any) {
     if (/UNIQUE/i.test(String(e?.message || e))) return { error: 'この報告はすでに登録されています（二重登録になるため承認できません）', status: 409 }
@@ -203,7 +206,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
   }
   // 実績・時給の数量に反映（確定済み・手入力の実績は既存の規則どおり変えない）
   await syncActualFromReports(db, c.company_id, c.shift_id).catch(() => {})
-  return { ok: true, exception: !!exception, applied_while_settled: !!settled }
+  return { ok: true, exception: !!exception, applied_while_settled: !!settled, applied_while_manual: manual }
 }
 
 async function rejectCorrection(db: D1Database, c: any, a: Actor, reasonIn: any, commentIn: any) {
@@ -364,7 +367,7 @@ const eventSummary = (e: any) => {
   if (!d) return ''
   if (e.event === 'submitted' || e.event === 'resubmitted') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at} 理由: ${d.reason || ''}${d.warnings && d.warnings.length ? ' 矛盾: ' + d.warnings.join(' / ') : ''}`
   if (e.event === 'rejected') return `却下理由: ${d.reason || ''}${d.comment ? ' コメント: ' + d.comment : ''}`
-  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}`
+  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}${d.applied_while_manual ? '（実績は手入力のまま）' : ''}`
   return ''
 }
 correctionsAdminApi.get('/corrections/events', async (c) => {
@@ -386,7 +389,9 @@ correctionsAdminApi.get('/corrections/events/export', async (c) => {
 correctionsAdminApi.get('/corrections/:id{[0-9]+}', async (c) => {
   const row = await ownCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
-  return c.json(await correctionDetail(c.env.DB, row, 'admin'))
+  // 承認の前に「実績が手入力のシフト」と分かるように、シフトの実績の入力元を添える（管理者のみ）
+  const s = await c.env.DB.prepare('SELECT actual_source FROM shifts WHERE shift_id = ? AND company_id = ?').bind(row.shift_id, row.company_id).first() as any
+  return c.json({ ...await correctionDetail(c.env.DB, row, 'admin'), shift_actual_source: s?.actual_source ?? null })
 })
 
 // 管理者による申請（自社のシフト）。dry_run で確認のみ
