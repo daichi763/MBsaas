@@ -2050,6 +2050,8 @@ function route() {
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
+  // 詳細画面の ID は onclick などに埋め込まれるため、数字以外（細工したリンク）は一覧へ戻す
+  if (['staff', 'projects', 'clients', 'employees'].includes(tab) && id && !/^\d+$/.test(id)) { location.hash = tab; return }
   if (tab === 'staff' && id) return renderStaffDetail(id)
   if (tab === 'projects' && id) return renderProjectDetail(id)
   if (tab === 'clients' && id) return renderClientDetail(id)

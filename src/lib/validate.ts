@@ -31,17 +31,20 @@ export const CONSULT_URGENCIES = ['low', 'normal', 'high'] as const
 
 // 日報の値を、案件の日報テンプレートの項目（fields_json）に合わせて取り出す。
 // テンプレートにないキーは捨てる。数値の項目は数値、それ以外は文字列（長さに上限）にする。
-const REPORT_KEY_RE = /^[A-Za-z0-9_]{1,40}$/
+// キーは本部が自由に付けられる（日本語の場合もある）ため、文字種は制限せず、制御文字と長さだけを見る。
+// テンプレートの無い案件では、報告用URLの画面が「報告内容（free）」の欄だけを出すので、free だけを受け付ける。
+const REPORT_KEY_RE = /^[^\u0000-\u001f\u007f]{1,100}$/
 const REPORT_TEXT_MAX = 2000
+const NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: 'textarea' }]
 export function pickReportValues(fieldsJson: unknown, values: unknown): { values: Record<string, number | string> } | { error: string } {
   let fields: any[] = []
   try { fields = typeof fieldsJson === 'string' ? JSON.parse(fieldsJson) : [] } catch { fields = [] }
-  if (!Array.isArray(fields)) fields = []
+  if (!Array.isArray(fields) || fields.length === 0) fields = NO_TEMPLATE_FIELDS
   const src = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
   const out: Record<string, number | string> = {}
   for (const f of fields) {
     const key = f && typeof f.key === 'string' ? f.key : ''
-    if (!REPORT_KEY_RE.test(key) || !Object.prototype.hasOwnProperty.call(src, key)) continue
+    if (!REPORT_KEY_RE.test(key) || key === '__proto__' || !Object.prototype.hasOwnProperty.call(src, key)) continue
     const v = src[key]
     if (v === null || v === undefined) continue
     const label = String(f.label || key)

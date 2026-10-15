@@ -74,6 +74,33 @@ async function createShift(staff_id, project_id, work_date, memo) {
   ok('#2 報告用URL: テンプレートにないキーは保存されない', rep2 && !(IMG in rep2.values) && rep2.values.pi === 2, rep2 && rep2.values)
 }
 
+// ---------- #2 既存の使い方を壊さない（日本語のキーのテンプレート・テンプレートの無い案件） ----------
+{
+  const hq = client(await login('sample', 'hq'))
+  const tname = 'XSS-JP-TPL-' + Date.now()
+  const ct = await hq.post('/api/hq/templates', { template_name: tname, fields: [{ key: '架電数', label: '架電数', type: 'number' }, { key: 'メモ', label: 'メモ', type: 'textarea' }] })
+  ok('#2 日本語のキーのテンプレートを作成', ct.status === 200, ct)
+  const tpl = ((await hq.get('/api/hq/templates')).data.templates || []).find(t => t.template_name === tname)
+  const pj = async (name, report_template_id) => {
+    const r = await admin.post('/api/admin/projects', { project_name: name, client_id: 1, report_template_id })
+    if (r.status !== 200) throw new Error('create project ' + JSON.stringify(r.data))
+    return ((await admin.get('/api/admin/projects')).data.projects || []).find(p => p.project_name === name).project_id
+  }
+  const pJp = await pj(tname, tpl && tpl.template_id)
+  const pNone = await pj('XSS-NO-TPL-' + Date.now(), 0)
+  const d = addDays(today, 43)
+  const s1 = await createShift(1, pJp, d, 'XSS-JP')
+  const r1 = await st1.post('/api/staff/daily-report', { project_id: pJp, shift_id: s1, work_date: d, values: { '架電数': 12, 'メモ': 'テスト' } })
+  const rep1 = ((await admin.get(`/api/admin/daily-reports?date=${d}`)).data.reports || []).find(x => x.shift_id === s1)
+  ok('#2 日本語のキーの項目も保存される', r1.status === 200 && rep1 && rep1.values['架電数'] === 12 && rep1.values['メモ'] === 'テスト', rep1 && rep1.values)
+  const d2 = addDays(today, 44)
+  const s2 = await createShift(1, pNone, d2, 'XSS-NOTPL')
+  const link = await admin.post(`/api/admin/shifts/${s2}/report-link`)
+  const res = await fetch(`${BASE}/api/public/report/${link.data.token}/daily-report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { free: '報告です', [IMG]: 1 } }) })
+  const rep2 = ((await admin.get(`/api/admin/daily-reports?date=${d2}`)).data.reports || []).find(x => x.shift_id === s2)
+  ok('#2 テンプレートの無い案件: 報告用URLの「報告内容」は保存され、それ以外は捨てる', res.status === 200 && rep2 && rep2.values.free === '報告です' && Object.keys(rep2.values).length === 1, rep2 && rep2.values)
+}
+
 // ---------- #3 相談のカテゴリ・緊急度は許可リスト ----------
 {
   const bad = await st1.post('/api/staff/consultations', { category: IMG, body: 'test' })
