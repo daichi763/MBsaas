@@ -11,6 +11,7 @@ import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
 import { pickReportValues } from './lib/validate'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
+import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
 import { checkReportTime } from './report-settings'
 
@@ -329,6 +330,26 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
     partner_affiliation_id: sp.partner_affiliation_id,
     merged_into_staff_id: sp.merged_into_staff_id, merged_at: sp.merged_at,
     merged_into_name: sp.merged_into_staff_id ? ((await db.prepare('SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(sp.merged_into_staff_id).first()) as any)?.name : null,
+  })
+})
+
+// ---------- パスワードの再発行（#45。メールのないスタッフも、管理者が仮パスワードを発行してログインできる状態に戻す） ----------
+// 自社でログインを発行したスタッフだけが対象。他社から連携したスタッフは所属元の会社で再発行する（稼働先の行ではログインできない）。
+// 仮パスワードはこの応答で一度だけ返し、次回ログインで本人に変更を求める。今のセッションと未使用の再設定リンクは無効にする
+adminLifecycleApi.post('/staff/:id/reset-password', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです。統合先のスタッフで再発行してください' }, 409)
+  if (sp.affiliation_type === 'linked_external') return c.json({ error: '他社から連携したスタッフのパスワードは、所属元の会社で再発行してください' }, 400)
+  if (sp.user_role !== 'staff') return c.json({ error: 'このスタッフにはログインが発行されていません' }, 400)
+  if (sp.user_status !== 'active') return c.json({ error: '退職・停止中のスタッフのパスワードは再発行できません' }, 409)
+  const owner = await db.prepare('SELECT company_id FROM users WHERE user_id = ?').bind(sp.user_id).first() as any
+  if (!owner || owner.company_id !== u.company_id) return c.json({ error: 'このスタッフのパスワードは、所属元の会社で再発行してください' }, 400)
+  const tempPassword = await issueTempPassword(db, sp.user_id)
+  return c.json({
+    ok: true, temp_password: tempPassword, name: sp.name, user_code: sp.user_code, company_code: u.company_code,
+    login_url: new URL(c.req.url).origin + '/login', has_email: !!(sp.email && String(sp.email).trim()),
   })
 })
 

@@ -25,6 +25,7 @@ import {
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, linkedStaffEmails } from './roster'
 import { isHHMM, oneOf, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
+import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -105,8 +106,8 @@ function resolvePhotoRequired(u: any, projectOverride: number | null | undefined
   const companyDefault = getCompanySetting(u, 'photo_required_attendance', true)
   return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
 }
-// system_admin（SaaS本部）は含めない。本部ユーザーは company_id=1 に所属しているため、
-// /admin を操作できると本部の操作がテナント1のデータとして登録されてしまう。本部は /hq のみを使う。
+// system_admin（SaaS本部）は含めない。本部ユーザーは本部専用の企業行（0033。active_status='internal'）に所属し、
+// /admin を操作できると本部の操作がその企業のデータとして登録されてしまう。本部は /hq のみを使う。
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 
 // ============ 勤怠の自動振り分け（フェーズH） ============
@@ -272,18 +273,33 @@ api.post('/auth/login', async (c) => {
   const company_code = String(b.company_code ?? '').trim()
   const user_code = String(b.user_code ?? '').trim()
   const password = typeof b.password === 'string' ? b.password : ''
-  if (!company_code || !user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
+  // 会社コードは本部ユーザーだけ空欄でよい（#372）
+  if (!user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
   const db = c.env.DB
+  const ip = c.req.header('CF-Connecting-IP')
+  const lockedResponse = () => c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
 
-  const keys = await loginAttemptKeys(company_code, user_code, c.req.header('CF-Connecting-IP'))
-  if (await isLoginLocked(db, keys)) {
-    return c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
-  }
+  let keys = await loginAttemptKeys(company_code, user_code, ip)
+  if (await isLoginLocked(db, keys)) return lockedResponse()
 
-  const company = await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(company_code).first() as any
-  const user = company
+  let company = company_code ? await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(company_code).first() as any : null
+  let user = company
     ? await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(company.company_id, user_code).first() as any
     : null
+  // 本部ユーザー（本部専用の企業行に所属）は会社コードなしでログインする。以前の案内どおり会社コードを入れても、
+  // その会社に同じ ID がなければ本部ユーザーとして照合する。失敗回数は会社コードによらず同じ記録で数える
+  if (!user) {
+    const hq = await db.prepare(`SELECT u.* FROM users u JOIN companies co ON co.company_id = u.company_id
+      WHERE co.active_status = ? AND u.role = 'system_admin' AND u.user_code = ? ORDER BY u.user_id LIMIT 1`).bind(HQ_COMPANY_STATUS, user_code).first() as any
+    if (hq) {
+      if (company_code) {
+        keys = await loginAttemptKeys('', user_code, ip)
+        if (await isLoginLocked(db, keys)) return lockedResponse()
+      }
+      user = hq
+      company = await db.prepare('SELECT * FROM companies WHERE company_id = ?').bind(hq.company_id).first() as any
+    }
+  }
   // ログインできないロール（スタッフマスタだけの行・仮登録）は、パスワードが合っても通さない
   let passwordOk = false
   if (user && canLogin(user.role)) passwordOk = await verifyPassword(password, user.password_hash)
@@ -315,7 +331,7 @@ api.post('/auth/login', async (c) => {
   await db.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
   setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
 
-  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name }, redirect: homePathFor(user.role) })
+  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name, must_change_password: !!user.must_change_password }, redirect: homePathFor(user.role) })
 })
 
 // パスワード再設定メールの送信リクエスト
@@ -371,7 +387,8 @@ api.post('/auth/reset-password', async (c) => {
   ).bind(tokenHash, new Date().toISOString()).first() as any
   if (!row || row.user_status !== 'active' || !canLogin(row.user_role)) return c.json({ error: 'このリンクは無効か、有効期限が切れています' }, 400)
 
-  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').bind(await hashPassword(password), row.user_id).run()
+  // 本人が決めたパスワードになるので、仮パスワードの変更の要求は消す
+  await c.env.DB.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE user_id = ?').bind(await hashPassword(password), row.user_id).run()
   await c.env.DB.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
     .bind(nowJST(), row.user_id).run() // 同一ユーザーの他の未使用トークンも合わせて失効させる
   // 乗っ取られた場合に備え、既存のセッションはすべて切る（再設定後はログインし直す）
@@ -412,7 +429,8 @@ api.use('/*', async (c, next) => {
 
 api.get('/auth/me', (c) => {
   const u = c.get('user')
-  return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id })
+  return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
+    user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password })
 })
 
 // 権限チェックミドルウェア
@@ -429,6 +447,10 @@ api.use('/staff/*', async (c, next) => {
   if (c.get('user')?.role !== 'staff') return c.json({ error: 'forbidden' }, 403)
   return next()
 })
+// 自分のアカウント（氏名・メール・パスワードの変更）・管理者アカウント・本部からの管理者の管理（src/accounts.ts）
+api.route('/auth', authAccountApi)
+api.route('/admin', adminUsersApi)
+api.route('/hq', hqUsersApi)
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
 api.route('/admin/roster', rosterApi)
 api.route('/staff/me', staffSelfApi)
@@ -1299,7 +1321,8 @@ api.post('/admin/staff', async (c) => {
   if (pwErr) return c.json({ error: pwErr }, 400)
   const hash = await hashPassword(password)
   try {
-    const r = await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone) VALUES (?, ?, ?, 'staff', ?, ?, ?)`)
+    // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
+    const r = await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, must_change_password) VALUES (?, ?, ?, 'staff', ?, ?, ?, 1)`)
       .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null).run()
     const person = await createPerson(c.env.DB, u.company_id)
     await c.env.DB.prepare('UPDATE users SET person_id = ? WHERE user_id = ?').bind(person.person_id, r.meta.last_row_id).run()
@@ -2465,12 +2488,13 @@ api.get('/admin/templates', async (c) => {
 // SaaS本部 API
 // =========================================================
 api.get('/hq/companies', async (c) => {
+  // 本部専用の企業行（internal）は出さない。ユーザー数・週次アクティブに本部ユーザー（system_admin）は数えない（#372）
   const rows = await c.env.DB.prepare(`
     SELECT co.*,
-      (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.status = 'active' AND u.role != 'roster_only') AS user_count,
-      (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.last_login_at >= date('now', '-7 days')) AS active_users,
+      (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.status = 'active' AND u.role NOT IN ('roster_only', 'system_admin')) AS user_count,
+      (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND u.role NOT IN ('roster_only', 'system_admin') AND u.last_login_at >= date('now', '-7 days')) AS active_users,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.company_id = co.company_id AND dr.work_date >= date('now', '-30 days')) AS reports_30d
-    FROM companies co ORDER BY co.company_id`).all()
+    FROM companies co WHERE COALESCE(co.active_status, 'active') != ? ORDER BY co.company_id`).bind(HQ_COMPANY_STATUS).all()
   // 料金計算: 基本990円(3ユーザー) + 追加1ユーザー300円
   const companies = (rows.results as any[]).map(co => ({
     ...co,
@@ -2481,9 +2505,12 @@ api.get('/hq/companies', async (c) => {
 
 api.get('/hq/companies/:id', async (c) => {
   const cid = c.req.param('id')
-  const company = await c.env.DB.prepare('SELECT * FROM companies WHERE company_id = ?').bind(cid).first()
+  const company = await c.env.DB.prepare('SELECT * FROM companies WHERE company_id = ? AND COALESCE(active_status, \'active\') != ?').bind(cid, HQ_COMPANY_STATUS).first()
   if (!company) return c.json({ error: 'not found' }, 404)
-  const users = await c.env.DB.prepare('SELECT user_id, user_code, name, role, status, last_login_at FROM users WHERE company_id = ? ORDER BY user_id').bind(cid).all()
+  // 本部ユーザーは一覧に出さない。メールアドレスは管理者アカウントの分だけ返す（スタッフの連絡先は本部に出さない）
+  const users = await c.env.DB.prepare(`SELECT user_id, user_code, name, role, status, last_login_at, must_change_password,
+      CASE WHEN role IN ('company_admin','sales_manager','field_manager','office_staff') THEN email END AS email
+    FROM users WHERE company_id = ? AND role != 'system_admin' ORDER BY user_id`).bind(cid).all()
   const stats = await c.env.DB.prepare(`
     SELECT
       (SELECT COUNT(*) FROM daily_reports WHERE company_id = ?) AS total_reports,
@@ -2496,11 +2523,13 @@ api.get('/hq/companies/:id', async (c) => {
 api.put('/hq/companies/:id', async (c) => {
   const b = await c.req.json()
   if (b.active_status != null && !['active', 'trial', 'inactive'].includes(b.active_status)) return c.json({ error: '利用状態の値が正しくありません' }, 400)
-  await c.env.DB.prepare(`UPDATE companies SET
+  // 本部専用の企業行（internal）は変更しない
+  const r = await c.env.DB.prepare(`UPDATE companies SET
       plan = COALESCE(?, plan), user_limit = COALESCE(?, user_limit), active_status = COALESCE(?, active_status),
       billing_status = COALESCE(?, billing_status), support_memo = COALESCE(?, support_memo), maturity_level = COALESCE(?, maturity_level)
-    WHERE company_id = ?`)
-    .bind(b.plan ?? null, b.user_limit ?? null, b.active_status ?? null, b.billing_status ?? null, b.support_memo ?? null, b.maturity_level ?? null, c.req.param('id')).run()
+    WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`)
+    .bind(b.plan ?? null, b.user_limit ?? null, b.active_status ?? null, b.billing_status ?? null, b.support_memo ?? null, b.maturity_level ?? null, c.req.param('id'), HQ_COMPANY_STATUS).run()
+  if (!r.meta.changes) return c.json({ error: 'not found' }, 404)
   // 停止にした時点で、その企業の利用者（本部ユーザーを除く）をログアウトさせる
   const revoked = b.active_status === 'inactive' ? await revokeCompanySessions(c.env.DB, Number(c.req.param('id'))) : 0
   return c.json({ ok: true, revoked_sessions: revoked })
@@ -2511,24 +2540,35 @@ api.post('/hq/companies', async (c) => {
   b.company_code = String(b.company_code ?? '').trim()
   b.admin_code = String(b.admin_code ?? '').trim()
   if (!b.company_code || !b.company_name) return c.json({ error: '会社コードと会社名は必須です' }, 400)
-  if (b.admin_code || b.admin_password) {
+  // 初期管理者: メールアドレスを登録すると、承認依頼の通知とパスワード再設定のメールが届く（#25）。
+  // パスワードを空欄にすると仮パスワードを作って一度だけ返す。どちらも初回ログインで本人に変更を求める
+  let adminPassword = typeof b.admin_password === 'string' ? b.admin_password : ''
+  let generated = false
+  const adminEmail = cleanEmail(b.admin_email)
+  if (b.admin_code || adminPassword || b.admin_email) {
     if (!b.admin_code) return c.json({ error: '初期管理者のIDを入力してください' }, 400)
-    const pwErr = validatePassword(b.admin_password)
+    if (!/^\S{1,40}$/.test(b.admin_code)) return c.json({ error: '初期管理者の ID は空白なしの40文字以内で入力してください' }, 400)
+    if (adminEmail === undefined) return c.json({ error: '初期管理者のメールアドレスの形式が正しくありません' }, 400)
+    if (!adminPassword) { adminPassword = genTempPassword(); generated = true }
+    const pwErr = validatePassword(adminPassword)
     if (pwErr) return c.json({ error: '初期管理者の' + pwErr }, 400)
   }
+  const db = c.env.DB
+  if (await db.prepare('SELECT 1 FROM companies WHERE company_code = ?').bind(b.company_code).first()) return c.json({ error: '会社コードが重複しています' }, 409)
+  // 企業と初期管理者は1つの batch で作る（管理者の作成に失敗して、管理者のいない企業だけが残らないように）
+  const stmts = [db.prepare('INSERT INTO companies (company_code, company_name, plan, user_limit, active_status) VALUES (?, ?, ?, ?, ?)')
+    .bind(b.company_code, b.company_name, b.plan || 'basic', b.user_limit || 3, 'trial')]
+  if (b.admin_code) {
+    stmts.push(db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, must_change_password)
+      SELECT company_id, ?, ?, 'company_admin', ?, ?, 1 FROM companies WHERE company_code = ?`)
+      .bind(b.admin_code, String(b.admin_name || '').trim() || '管理者', await hashPassword(adminPassword), adminEmail, b.company_code))
+  }
   try {
-    const r = await c.env.DB.prepare('INSERT INTO companies (company_code, company_name, plan, user_limit, active_status) VALUES (?, ?, ?, ?, ?)')
-      .bind(b.company_code, b.company_name, b.plan || 'basic', b.user_limit || 3, 'trial').run()
-    // 初期管理者作成
-    if (b.admin_code && b.admin_password) {
-      const hash = await hashPassword(b.admin_password)
-      await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash) VALUES (?, ?, ?, 'company_admin', ?)`)
-        .bind(r.meta.last_row_id, b.admin_code, b.admin_name || '管理者', hash).run()
-    }
-    return c.json({ ok: true })
+    await db.batch(stmts)
   } catch (e) {
     return c.json({ error: '会社コードが重複しています' }, 409)
   }
+  return c.json({ ok: true, ...(generated ? { admin_temp_password: adminPassword } : {}) })
 })
 
 // テンプレート配信管理

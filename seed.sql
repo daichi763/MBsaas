@@ -30,6 +30,9 @@ INSERT OR IGNORE INTO users (user_id, company_id, user_code, name, role, passwor
 (22, 1, 'st019', '斎藤 大和', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff19@example.com', '090-1111-1018', 'active'),
 (23, 1, 'st020', '清水 陽菜', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff20@example.com', '090-1111-1019', 'active'),
 (100, 1, 'hq', 'ディセクテラ本部', 'system_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'hq@dissectra.co.jp', NULL, 'active');
+-- 本部ユーザーは本部専用の企業行（0033 で作成。active_status = 'internal'）に置く。0033 より前に seed を入れた場合は 0033 が移す
+UPDATE OR IGNORE users SET company_id = (SELECT company_id FROM companies WHERE active_status = 'internal' ORDER BY company_id LIMIT 1)
+WHERE role = 'system_admin' AND EXISTS (SELECT 1 FROM companies WHERE active_status = 'internal');
 
 INSERT OR IGNORE INTO staff_profiles (staff_id, user_id, company_id, affiliation, career, skills, work_area, age_group, evaluation_score, retention_risk, follow_flag, memo) VALUES
 (1, 4, 1, '株式会社サンプルモバイル人材', '携帯ショップ経験3年。クロージングが得意。', 'MNP,接客,クロージング', '東京23区', '20代', 3.0, 'low', 0, ''),

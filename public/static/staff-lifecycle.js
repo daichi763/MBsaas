@@ -339,3 +339,31 @@
     try { await axios.put(`/api/admin/projects/${pid}/report-settings`, { daily_report_mode: document.getElementById('pr-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
   }
 })()
+
+// =========================================================
+// スタッフのパスワード再発行（#45）。区分・登録状態のパネルの「ログイン」欄にボタンを足す
+// メールのないスタッフも、管理者が仮パスワードを発行してログインできる状態に戻せる（仮パスワードは一度だけ表示）
+// =========================================================
+;(function () {
+  const orig = window.renderStaffLifecyclePanel
+  if (!orig) return
+  window.renderStaffLifecyclePanel = async function (sid, p) {
+    await orig(sid, p)
+    if (!p || p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return
+    let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch { return }
+    if (!d.has_login || d.merged_into_staff_id) return
+    const dl = document.querySelector('#staff-lifecycle dl')
+    if (!dl || document.getElementById('staff-reset-password-btn')) return
+    dl.insertAdjacentHTML('beforeend', `<div class="flex gap-2 items-center"><dt class="w-24 text-gray-400">パスワード</dt><dd>
+      <button id="staff-reset-password-btn" class="btn btn-outline text-xs" data-action="resetStaffPassword" data-id="${Number(sid)}"><i class="fas fa-key"></i>パスワードを再発行</button></dd></div>`)
+  }
+  delegate('resetStaffPassword', (el) => {
+    if (!confirm('仮パスワードを発行します。今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      try {
+        const { data } = await axios.post(`/api/admin/staff/${Number(el.dataset.id)}/reset-password`)
+        showTempPassword('仮パスワードを発行しました', data.temp_password, [`氏名: ${data.name}`, `会社コード: ${data.company_code}`, `スタッフ番号: ${data.user_code}`, `ログイン: ${data.login_url}`])
+      } catch (e) { showApiError(e, '再発行に失敗しました') }
+    })
+  })
+})()

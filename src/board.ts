@@ -7,6 +7,7 @@
 import { Hono } from 'hono'
 import { loadRoster, createPerson, unusablePasswordHash } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { isCompanyActive } from './lib/auth'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -78,6 +79,12 @@ function validatePost(b: any, publish: boolean): { v?: any; error?: string } {
   return { v }
 }
 
+// 掲載企業が利用中か（本部で停止にした企業は false。#66）
+async function posterActive(db: D1Database, companyId: number): Promise<boolean> {
+  const co = await db.prepare('SELECT active_status FROM companies WHERE company_id = ?').bind(companyId).first() as any
+  return !!co && isCompanyActive(co.active_status)
+}
+
 // ---------- 一覧 ----------
 // scope: open（全企業の掲載中）/ mine（自社の掲載すべて）
 boardApi.get('/posts', async (c) => {
@@ -87,7 +94,8 @@ boardApi.get('/posts', async (c) => {
   const scope = q.scope === 'mine' ? 'mine' : 'open'
   const w: string[] = []; const bind: any[] = []
   if (scope === 'mine') { w.push('bp.company_id = ?'); bind.push(u.company_id) }
-  else w.push(`bp.status = 'open'`)
+  // 本部で停止にした企業の掲載は、他社の一覧に出さない（#66）
+  else w.push(`bp.status = 'open' AND COALESCE(co.active_status, 'active') != 'inactive'`)
   if (ENGAGEMENT_TYPES.includes(q.engagement_type as any)) { w.push('bp.engagement_type = ?'); bind.push(q.engagement_type) }
   if (q.prefecture) { w.push('bp.prefecture = ?'); bind.push(q.prefecture) }
   if (q.area) { w.push('(bp.area LIKE ? OR bp.nearest_station LIKE ?)'); bind.push(`%${q.area}%`, `%${q.area}%`) }
@@ -107,7 +115,8 @@ boardApi.get('/posts', async (c) => {
     WHERE ${w.join(' AND ')}
     ORDER BY ${scope === 'mine' ? "CASE bp.status WHEN 'open' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, bp.updated_at DESC" : 'bp.published_at DESC, bp.post_id DESC'}
     LIMIT ${MAX_LIST}`).bind(...bind).all()).results as any[]
-  const counts = (await db.prepare(`SELECT engagement_type, COUNT(*) AS n FROM board_posts WHERE status = 'open' GROUP BY engagement_type`).all()).results as any[]
+  const counts = (await db.prepare(`SELECT engagement_type, COUNT(*) AS n FROM board_posts WHERE status = 'open'
+    AND company_id NOT IN (SELECT company_id FROM companies WHERE active_status = 'inactive') GROUP BY engagement_type`).all()).results as any[]
   // 一覧にやり取りの有無・未読を付ける（自社が参加しているスレッドのみ）
   const ids = rows.map(r => r.post_id)
   const tmap: Record<number, { threads: number; unread: number }> = {}
@@ -130,6 +139,8 @@ boardApi.get('/posts/:id', async (c) => {
     WHERE bp.post_id = ?`).bind(c.req.param('id')).first() as any
   // 他社の下書きは存在自体を返さない
   if (!row || (row.company_id !== u.company_id && row.status === 'draft')) return c.json({ error: '掲載が見つかりません' }, 404)
+  // 本部で停止にした企業の掲載は、他社には見せない（#66）
+  if (row.company_id !== u.company_id && !(await posterActive(db, row.company_id))) return c.json({ error: '掲載が見つかりません' }, 404)
   const post = shape(row, u.company_id)
   if (post.is_mine) {
     // 掲載企業: 問い合わせ件数と未読
@@ -279,7 +290,7 @@ boardApi.post('/posts/:id/threads', async (c) => {
   if (post.company_id === u.company_id) return c.json({ error: '自社の掲載には問い合わせできません' }, 400)
   const exist = await db.prepare('SELECT thread_id FROM board_threads WHERE post_id = ? AND inquirer_company_id = ?').bind(post.post_id, u.company_id).first() as any
   if (exist) return c.json({ ok: true, thread_id: exist.thread_id, existed: true })
-  if (post.status !== 'open') return c.json({ error: 'この掲載は募集を終了しています' }, 409)
+  if (post.status !== 'open' || !(await posterActive(db, post.company_id))) return c.json({ error: 'この掲載は募集を終了しています' }, 409)
   const b = await c.req.json().catch(() => ({} as any))
   const body = String(b.body || '').trim()
   if (!body) return c.json({ error: '最初のメッセージを入力してください' }, 400)
@@ -498,6 +509,7 @@ boardApi.post('/threads/:id/proposals', async (c) => {
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
   if (t.my_side !== 'inquirer') return c.json({ error: '人材の提案は問い合わせた企業から掲載企業へ行います' }, 403)
   if (t.status === 'closed') return c.json({ error: 'このやり取りは終了しています' }, 409)
+  if (!(await posterActive(db, t.poster_company_id))) return c.json({ error: '掲載企業が現在ご利用を停止しているため、提案できません' }, 409)
   const b = await c.req.json().catch(() => ({} as any))
   const r = await loadRoster(db, b.staff_id, u.company_id)
   if (!r) return c.json({ error: 'スタッフが見つかりません' }, 404)
