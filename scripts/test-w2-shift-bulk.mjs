@@ -132,6 +132,13 @@ ok('#78 もう一度コピーしても枠とシフトは二重にならない', 
 // 区分の絞り込み: PA はスポットではないので、スポットだけのコピーでは何も作らない
 c = must(await admin.post('/api/admin/shifts/copy-week', { source_from: W, days: 7, engagement: 'spot', project_ids: `${PA},${PB}`, target_from: addDays(T, 7), dry_run: true }), 'copy spot')
 ok('#493 コピー: 区分（スポットのみ）の絞り込みも反映する', c.projects.length === 0 && c.slots === 0 && c.shifts === 0, c)
+// 同じ内容の枠が2つあるとき、続きから実行しても、前の呼び出しで作ったコピーを使い回さずに2つ作る
+for (let k = 0; k < 2; k++) must(await admin.post('/api/admin/shift-slots', { project_id: PA, dates: [addDays(W, 2)], start_time: '18:00', end_time: '20:00', roles: [{ role_name: '販売', headcount: 1 }] }), 'twin slot')
+const U = addDays(W, 21)
+r = await runAll(admin, '/api/admin/shifts/copy-week', { source_from: W, days: 7, client_id: CA, include_assignments: false, target_from: U, limit: 1 }, ['slots', 'slots_reused'])
+board = must(await admin.get(`/api/admin/shift-board?from=${U}&to=${addDays(U, 6)}`), 'board U')
+const twins = board.slots.filter(s => s.project_id === PA && s.work_date === addDays(U, 2) && s.start_time === '18:00')
+ok('#78 コピー: 同じ内容の枠は、続きから実行しても別々にコピーする', !r.error && r.calls > 1 && r.sum.slots === 3 && r.sum.slots_reused === 0 && twins.length === 2, { sum: r.sum, calls: r.calls, twins: twins.length })
 
 // ---------- #15 実績の反映 ----------
 const P = addDays(today, -3)

@@ -756,7 +756,10 @@ app.post('/shifts/copy-week', async (c) => {
   const copied = new Set(tgtShifts.filter(s => s.source_shift_id).map(s => `${s.source_shift_id}:${s.work_date}`))
   const staffInSlot = new Map<number, Set<number>>()
   for (const s of tgtShifts) if (s.slot_id && s.status !== 'absent') { const a = staffInSlot.get(s.slot_id) || new Set<number>(); a.add(s.staff_id); staffInSlot.set(s.slot_id, a) }
-  const srcSlotIds = new Set(srcSlots.map(s => s.slot_id))
+  // コピー元の期間のすべての枠。続きから実行したとき、前の呼び出しで作ったほかの枠のコピーを「同じ内容の既存の枠」として使わないよう、カーソルより前の枠も含める
+  const srcSlotIds = new Set<number>(srcSlots.length
+    ? (await all(`SELECT slot_id FROM shift_slots WHERE company_id = ? AND work_date BETWEEN ? AND ? AND project_id IN ${inP}`, cid, b.source_from, sourceTo, ...pb)).map(s => s.slot_id)
+    : [])
   const tgtRolesBySlot = group(tgtRoles, r => r.slot_id), srcRolesBySlot = group(srcRoles, r => r.slot_id), assignedByRole = group(srcAssigned, s => s.slot_role_id)
   const claimedSlots = new Set<number>()
   const slotPlans: SlotPlan[] = [], rolePlans: RolePlan[] = [], shiftPlans: ShiftPlan[] = []
