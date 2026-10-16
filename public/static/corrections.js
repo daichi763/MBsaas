@@ -15,6 +15,7 @@
   const statusBadge = (s) => `<span class="badge ${(STATUS[s] || [])[1] || 'badge-gray'}">${(STATUS[s] || [s])[0]}</span>`
   const showAt = (at, wd) => at ? (wd && at.slice(0, 10) === wd ? at.slice(11, 16) : dayjs(at.slice(0, 10)).format('M/D') + ' ' + at.slice(11, 16)) : '－'
   const fmtAt = (at) => at ? dayjs(at.replace(' ', 'T')).format('YYYY/M/D HH:mm') : '－'
+  const MANUAL_NOTE = '実績が手入力のシフトのため、実績・金額は手入力のままです（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）'
 
   window.refreshCorrectionsBadge = async function () {
     try {
@@ -88,6 +89,9 @@
     const c = d.correction
     const mine = ME && c.requested_by === ME.user_id
     const warns = c.status === 'pending' ? d.current_conflicts : c.order_warnings
+    // 実績が手入力のシフト（承認しても実績・金額は変わらない）。承認済みは承認時の記録、承認待ちは今のシフトの状態で判断する
+    const appliedWhileManual = d.events.some(e => (e.event === 'approved' || e.event === 'approved_exception') && e.detail && e.detail.applied_while_manual)
+    const manualNow = d.shift_actual_source === 'manual' && c.settle_status !== 'confirmed'
     const dl = (k, v) => `<div class="flex gap-2 py-1 border-b border-gray-50"><dt class="w-28 shrink-0 text-gray-500">${k}</dt><dd class="flex-1 min-w-0 break-words">${v}</dd></div>`
     modal(`<div class="flex items-start justify-between gap-2 mb-2"><h3 class="font-bold text-gray-800">${LABEL[c.report_type]}（${KIND[c.kind]}） #${c.correction_id}</h3>${statusBadge(c.status)}</div>
       <dl class="text-sm">
@@ -103,8 +107,10 @@
         ${c.decision_comment ? dl('承認者コメント', `<span class="whitespace-pre-wrap">${esc(c.decision_comment)}</span>`) : ''}
         ${c.reject_reason ? dl('却下理由', `<span class="whitespace-pre-wrap">${esc(c.reject_reason)}</span>`) : ''}
         ${c.cancelled_at ? dl('取り消し', esc(fmtAt(c.cancelled_at))) : ''}
-        ${c.applied_while_settled ? dl('反映', '<span class="text-amber-700">確定済みのシフトのため、実績・金額は確定時のままです（確定を取り消して「実績を反映」すると反映されます）</span>') : ''}
+        ${c.applied_while_settled ? dl('反映', '<span class="text-amber-700">確定済みのシフトのため、実績・金額は確定時のままです（精算で確定を取り消すと、報告の時刻が実績・金額に反映されます）</span>') : ''}
+        ${appliedWhileManual ? dl('反映', `<span class="text-amber-700">${MANUAL_NOTE}</span>`) : ''}
       </dl>
+      ${c.status === 'pending' && manualNow ? `<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><i class="fas fa-pen-to-square mr-1"></i>このシフトは実績が手入力です。承認しても勤怠の記録だけが変わり、実績・金額は変わりません（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）</div>` : ''}
       ${warns && warns.length ? `<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>報告の順序の矛盾</p><ul class="list-disc pl-4">${warns.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
       <div class="mt-3"><p class="text-xs font-bold text-gray-500 mb-1">このシフトの今の記録</p>
         <div class="flex flex-wrap gap-1">${TYPES.map(t => { const r = d.reports.find(x => x.report_type === t); return r ? `<span class="badge ${t === c.report_type ? 'badge-blue' : 'badge-gray'} text-[10px]">${LABEL[t]} ${esc(showAt(r.reported_at, c.work_date))}</span>` : '' }).join('') || '<span class="text-xs text-gray-400">記録はありません</span>'}</div></div>
@@ -133,7 +139,8 @@
     busy = true; btn.disabled = true
     try {
       const { data } = await axios.post(`/api/admin/corrections/${c.correction_id}/approve`, { comment: document.getElementById('corr-comment').value, exception: !!(exEl && exEl.checked) })
-      done(data.applied_while_settled ? '承認しました（確定済みのため実績・金額は変えていません）' : '承認しました')
+      done(data.applied_while_settled ? '承認しました（確定済みのため実績・金額は変えていません）'
+        : data.applied_while_manual ? '承認しました（実績が手入力のため実績・金額は変えていません。精算で「報告の時刻に戻す」と反映されます）' : '承認しました')
     } catch (e) { fail(e, btn) } finally { busy = false }
   }
   window.corrReject = async function (btn) {

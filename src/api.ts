@@ -10,6 +10,7 @@ import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
 import boardApi from './board'
 import settlementApi, { syncActualFromReports } from './settlement'
+import { shiftTotals } from './shift-board'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
@@ -2561,13 +2562,25 @@ api.put('/admin/follow-logs/:id', async (c) => {
 // 請求前確認
 api.get('/admin/billing-check', async (c) => {
   const u = c.get('user'); const month = c.req.query('month') || monthJST()
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return c.json({ error: '月を正しく指定してください' }, 400)
+  // 件数は SQL で数え、金額は精算と同じ shiftTotals（交通費の請求区分・請求の調整額を含む）で、シフトの行を読んでから合計する
+  const money = (await c.env.DB.prepare(`SELECT s.project_id, s.staff_id, s.unit_price, s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust
+    FROM shifts s WHERE s.company_id = ? AND s.work_date LIKE ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`)
+    .bind(u.company_id, month + '%', todayJST()).all()).results as any[]
+  type Money = { base: number; transport: number; adjust: number; total: number }
+  const byProject = new Map<number, Money>(), byStaff = new Map<string, Money>()
+  const add = (m: Map<any, Money>, k: any, s: any) => {
+    const t = shiftTotals(s); const a = m.get(k) || { base: 0, transport: 0, adjust: 0, total: 0 }
+    a.base += Number(s.unit_price || 0); a.transport += t.bill_transport; a.adjust += Number(s.bill_adjust || 0); a.total += t.bill_total
+    m.set(k, a)
+  }
+  for (const s of money) { add(byProject, s.project_id, s); add(byStaff, `${s.staff_id}:${s.project_id}`, s) }
+  const zero: Money = { base: 0, transport: 0, adjust: 0, total: 0 }
   const rows = await c.env.DB.prepare(`
     SELECT p.project_id, p.project_name, cl.client_name,
       COUNT(CASE WHEN s.status IN ('confirmed','substitute') THEN 1 END) AS work_days,
       COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
       COUNT(CASE WHEN s.status = 'substitute' THEN 1 END) AS substitute_days,
-      SUM(CASE WHEN s.status IN ('confirmed','substitute') THEN s.unit_price ELSE 0 END) AS total_amount,
-      SUM(CASE WHEN s.status IN ('confirmed','substitute') THEN s.transportation_fee ELSE 0 END) AS total_transport,
       COUNT(DISTINCT s.staff_id) AS staff_count,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date LIKE ?) AS report_count
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
@@ -2576,17 +2589,20 @@ api.get('/admin/billing-check', async (c) => {
 
   // スタッフ別明細
   const detail = await c.env.DB.prepare(`
-    SELECT s.staff_id, us.name, p.project_name,
+    SELECT s.staff_id, s.project_id, us.name, p.project_name,
       COUNT(CASE WHEN s.status IN ('confirmed','substitute') THEN 1 END) AS work_days,
-      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
-      SUM(CASE WHEN s.status IN ('confirmed','substitute') THEN s.unit_price ELSE 0 END) AS amount,
-      SUM(CASE WHEN s.status IN ('confirmed','substitute') THEN s.transportation_fee ELSE 0 END) AS transport
+      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days
     FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.work_date LIKE ? AND s.work_date <= ?
     GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, month + '%', todayJST()).all()
 
-  return c.json({ month, by_project: rows.results, detail: detail.results })
+  // total_amount / amount = 請求基本額、total_transport / transport = 請求する交通費、total_adjust / adjust = 請求の調整、total_bill / total = 請求合計（精算の請求合計と同じ）
+  return c.json({
+    month,
+    by_project: (rows.results as any[]).map(p => { const m = byProject.get(p.project_id) || zero; return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_bill: m.total } }),
+    detail: (detail.results as any[]).map(d => { const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero; return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, total: m.total } }),
+  })
 })
 
 // テンプレート一覧 (企業側から参照)

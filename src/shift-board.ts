@@ -113,13 +113,16 @@ export function resolvePrice(ctx: PriceContext, data: { projects: Map<number, an
 }
 
 // 数量（日額=1、時給=拘束時間−休憩）と金額の計算。hoursOverride を渡すとその時間で計算する（実働時間）
+// 時給の金額は、分単位の時間に単価を掛けてから円に丸める（小数2桁に丸めた時間に掛けると、分単位の勤務で数円ずれるため）。
+// 数量は表示用に小数2桁に丸める。hoursOverride は workHours の hours（小数2桁）でよい（実働は分単位なので、60 を掛けて丸めると元の分数に戻る）
 export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_rate' | 'pay_unit_type' | 'pay_rate'>, start: string, end: string, breakMin: number, hoursOverride?: number | null) {
-  const hours = hoursOverride != null ? Math.max(0, hoursOverride) : Math.max(0, (spanMinutes(start, end) - (breakMin || 0)) / 60)
-  const qty = (u: string) => (u === 'hourly' ? Math.round(hours * 100) / 100 : 1)
-  const billQty = qty(price.bill_unit_type), payQty = qty(price.pay_unit_type)
+  const minutes = hoursOverride != null ? Math.max(0, Math.round(hoursOverride * 60)) : Math.max(0, spanMinutes(start, end) - (breakMin || 0))
+  const hourly = (u: string) => u === 'hourly'
+  const qty = (u: string) => (hourly(u) ? Math.round(minutes / 60 * 100) / 100 : 1)
+  const amount = (u: string, rate: number) => (hourly(u) ? Math.round(rate * minutes / 60) : Math.round(rate))
   return {
-    bill_qty: billQty, unit_price: Math.round((price.bill_rate || 0) * billQty),
-    pay_qty: payQty, pay_amount: price.pay_rate == null ? null : Math.round(price.pay_rate * payQty),
+    bill_qty: qty(price.bill_unit_type), unit_price: amount(price.bill_unit_type, price.bill_rate || 0),
+    pay_qty: qty(price.pay_unit_type), pay_amount: price.pay_rate == null ? null : amount(price.pay_unit_type, price.pay_rate),
   }
 }
 // ---------- 実働時間（第3段階） ----------
@@ -131,7 +134,8 @@ export function workHours(s: any, proj: any = {}) {
   const planned = Math.max(0, planEnd - planStart - brkPlan) / 60
   const basis = HOURS_BASIS.includes(proj.hours_basis) ? proj.hours_basis : 'clipped'
   const hasActual = isTime(s.actual_start) && isTime(s.actual_end)
-  if (!hasActual) return { hours: round2(planned), planned_hours: round2(planned), actual_hours: null as number | null, basis, used: 'planned' as const, break_minutes: brkPlan }
+  // planned_break_minutes = 予定の休憩、break_minutes = 実働の計算に使った休憩（実績の休憩があればその値）
+  if (!hasActual) return { hours: round2(planned), planned_hours: round2(planned), actual_hours: null as number | null, basis, used: 'planned' as const, break_minutes: brkPlan, planned_break_minutes: brkPlan }
   let aStart = toMin(s.actual_start)
   // 日をまたぐ予定で、実績の開始が予定より大きく前なら翌日とみなす
   if (planEnd > 1440 && aStart < planStart - 360) aStart += 1440
@@ -143,7 +147,7 @@ export function workHours(s: any, proj: any = {}) {
   const cs = roundUp(Math.max(aStart, planStart)), ce = roundDown(Math.min(aEnd, planEnd))
   const clipped = Math.max(0, ce - cs - brk) / 60
   const hours = basis === 'scheduled' ? planned : basis === 'actual' ? actual : clipped
-  return { hours: round2(hours), planned_hours: round2(planned), actual_hours: round2(actual), basis, used: basis === 'scheduled' ? 'planned' as const : 'actual' as const, break_minutes: brk }
+  return { hours: round2(hours), planned_hours: round2(planned), actual_hours: round2(actual), basis, used: basis === 'scheduled' ? 'planned' as const : 'actual' as const, break_minutes: brk, planned_break_minutes: brkPlan }
 }
 function round2(n: number) { return Math.round(n * 100) / 100 }
 export const isSettled = (s: any) => s?.settle_status === 'confirmed'
@@ -283,9 +287,9 @@ app.get('/shift-board', async (c) => {
   if (projectIds.length) { pf.push(`p.project_id IN ${JSON_IN}`); pb.push(bindJsonArray(projectIds)) }
   if (engagement === 'regular' || engagement === 'spot') { pf.push("COALESCE(p.engagement_type,'regular') = ?"); pb.push(engagement) }
   const projects = (await db.prepare(`SELECT p.project_id, p.project_name, p.client_id, cl.client_name, p.status, COALESCE(p.engagement_type,'regular') AS engagement_type, p.location
-    FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE ${pf.join(' AND ')} ORDER BY cl.client_name, p.project_name`).bind(...pb).all()).results as any[]
+    FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id WHERE ${pf.join(' AND ')} ORDER BY cl.client_name, p.project_name`).bind(...pb).all()).results as any[]
   const pids = projects.map(p => p.project_id)
-  const empty = { from, to, projects, slots: [], unslotted: [], staff: [], totals: { bill: 0, pay: 0, profit: 0, required: 0, filled: 0, pay_missing: 0 } }
+  const empty = { from, to, projects, slots: [], unslotted: [], staff: [], totals: { bill: 0, pay: 0, profit: 0, profit_bill: 0, required: 0, filled: 0, pay_missing: 0, pay_missing_bill: 0 } }
   if (!pids.length) return c.json(empty)
   // 案件・枠のIDは1つずつバインドしない（D1 のバインド上限 100）。案件は同じ絞り込みのサブクエリ、枠は json_each で渡す
   const inP = `(SELECT p.project_id FROM projects p WHERE ${pf.join(' AND ')})`
@@ -309,14 +313,18 @@ app.get('/shift-board', async (c) => {
   const conflicts = await findConflicts(db, u.company_id, shiftRows.map(s => s.staff_id), from!, to!)
   const ngByProject = new Map<number, number[]>()
   for (const p of projects) ngByProject.set(p.project_id, [])
-  const ngRows = (await db.prepare(`SELECT p.project_id, cl.ng_staff_ids FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE p.company_id = ? AND p.project_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(pids)).all()).results as any[]
+  const ngRows = (await db.prepare(`SELECT p.project_id, cl.ng_staff_ids FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id WHERE p.company_id = ? AND p.project_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(pids)).all()).results as any[]
   for (const r of ngRows) ngByProject.set(r.project_id, parseIds(r.ng_staff_ids))
 
-  const totals = { bill: 0, pay: 0, profit: 0, required: 0, filled: 0, pay_missing: 0 }
+  // 粗利は支払が決まっているシフトだけで計算する（profit_bill = その請求額）。支払単価が未設定のシフトは件数と請求額を pay_missing* に出す
+  const totals = { bill: 0, pay: 0, profit: 0, profit_bill: 0, required: 0, filled: 0, pay_missing: 0, pay_missing_bill: 0 }
   const decorate = (s: any) => {
     const t = shiftTotals(s)
     const active = ['confirmed', 'substitute'].includes(s.status)
-    if (active) { totals.bill += t.bill_total; if (t.pay_total == null) totals.pay_missing++; else totals.pay += t.pay_total }
+    if (active) {
+      totals.bill += t.bill_total
+      if (t.pay_total == null) { totals.pay_missing++; totals.pay_missing_bill += t.bill_total } else { totals.pay += t.pay_total; totals.profit_bill += t.bill_total }
+    }
     const cf = conflictFor(conflicts.get(s.staff_id), s.work_date, s.start_time, s.end_time, s.shift_id)
     return {
       ...s, ...t,
@@ -340,7 +348,7 @@ app.get('/shift-board', async (c) => {
   // 割り当てのない役割のシフトが消えた枠でも、役割に孤立したシフトがあれば枠なし扱いにする
   const knownRoles = new Set(roles.map(r => r.slot_role_id))
   for (const [rid, list] of byRole) if (!knownRoles.has(rid)) unslotted.push(...list)
-  totals.profit = totals.bill - totals.pay
+  totals.profit = totals.profit_bill - totals.pay
   return c.json({ from, to, projects, slots, unslotted, totals })
 })
 
@@ -571,14 +579,19 @@ app.put('/shifts/:id/price', async (c) => {
   const amt = calcAmounts({ bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }, s.start_time, s.end_time, brk || 0,
     workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {}).hours)
   // 数量を直接指定した場合（実働時間など）はそちらを優先
-  const billQty = b.bill_qty != null && b.bill_qty !== '' ? Number(b.bill_qty) : amt.bill_qty
-  const payQty = b.pay_qty != null && b.pay_qty !== '' ? Number(b.pay_qty) : amt.pay_qty
+  // 数量を指定しないとき、または計算どおりの数量のとき（シフトボードの画面は計算した数量を入れたまま送る）は、calcAmounts の金額（分単位で計算）を使う
+  const billQtyIn = b.bill_qty != null && b.bill_qty !== '', payQtyIn = b.pay_qty != null && b.pay_qty !== ''
+  const billQty = billQtyIn ? Number(b.bill_qty) : amt.bill_qty
+  const payQty = payQtyIn ? Number(b.pay_qty) : amt.pay_qty
+  const sameQty = (q: number, calc: number) => Math.abs(q - calc) < 0.005
+  const billAmount = billQtyIn && !sameQty(billQty, amt.bill_qty) ? Math.round((billRate || 0) * billQty) : amt.unit_price
+  const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? Math.round(payRate * payQty) : amt.pay_amount
   const bt = BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : s.bill_transport_type
   const pt = PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : s.pay_transport_type
   await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
       break_minutes = ?, transportation_fee = ?, bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?,
       bill_adjust = ?, pay_adjust = ?, adjust_note = ?, price_locked = 1, price_source = ? WHERE shift_id = ?`)
-    .bind(billUnit, billRate, billQty, Math.round((billRate || 0) * billQty), payUnit, payRate, payQty, payRate == null ? null : Math.round(payRate * payQty),
+    .bind(billUnit, billRate, billQty, billAmount, payUnit, payRate, payQty, payAmount,
       brk, b.transportation_fee !== undefined ? (intOrNull(b.transportation_fee) ?? 0) : s.transportation_fee,
       bt, b.bill_transport_amount !== undefined ? (intOrNull(b.bill_transport_amount) ?? 0) : s.bill_transport_amount,
       pt, b.pay_transport_amount !== undefined ? (intOrNull(b.pay_transport_amount) ?? 0) : s.pay_transport_amount,
@@ -742,7 +755,7 @@ app.get('/sites', async (c) => {
   const clientId = intOrNull(c.req.query('client_id'))
   const rows = (await c.env.DB.prepare(`SELECT si.*, cl.client_name,
       (SELECT COUNT(*) FROM shifts s WHERE s.site_id = si.site_id) AS shift_count
-    FROM sites si LEFT JOIN clients cl ON cl.client_id = si.client_id
+    FROM sites si LEFT JOIN clients cl ON cl.client_id = si.client_id AND cl.company_id = si.company_id
     WHERE si.company_id = ? ${clientId ? 'AND si.client_id = ?' : ''} ORDER BY cl.client_name, si.site_name`).bind(u.company_id, ...(clientId ? [clientId] : [])).all()).results
   return c.json({ sites: rows })
 })
