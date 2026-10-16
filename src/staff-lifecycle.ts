@@ -12,7 +12,7 @@ import { syncActualFromReports } from './settlement'
 import { pickReportValues } from './lib/validate'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
-import { checkReportTime } from './report-settings'
+import { checkStaffReport, loadReportState } from './report-settings'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -503,12 +503,10 @@ publicReportApi.post('/:token/attendance', async (c) => {
   } else {
     const b = await c.req.json().catch(() => ({} as any)); reportType = b.report_type; lat = b.latitude ?? null; lng = b.longitude ?? null
   }
-  const done = new Set(((await db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results as any[]).map(r => r.report_type))
-  const ng = checkReportable(modes.required_attendance, done, reportType)
+  // アプリと同じ判定（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序。report-settings.ts の checkStaffReport）
+  const cur = await db.prepare('SELECT status, settle_status FROM shifts WHERE shift_id = ?').bind(t.shift_id).first() as any
+  const ng = checkStaffReport({ ...t, status: cur?.status, settle_status: cur?.settle_status }, reportType, nowJST(), modes.required_attendance, await loadReportState(db, t.shift_id))
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 受付の時間帯（稼働日。休憩・勤務終了・退店は翌日も。lib/shift-time.ts の reportableWindow）。アプリと同じ判定
-  const late = checkReportTime(t, reportType, nowJST())
-  if (late) return c.json({ error: late.error }, late.status as 400)
   let status = 'normal'
   if (reportType === 'check_in') {
     if (nowJST().slice(11, 16) > t.start_time) status = 'late'

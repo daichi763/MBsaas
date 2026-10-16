@@ -67,8 +67,7 @@ const homeShift = await createShift(admin, 1, 1, today, 'RS-TEST-HOME')
 {
   const home = await st1.get('/api/staff/home')
   ok('ホーム: 今日のシフトに 8 種類が順に表示される', home.data.shift && home.data.shift.shift_id === homeShift && JSON.stringify(home.data.required_attendance) === JSON.stringify(ALL), home.data.required_attendance)
-  const early = await st1.post('/api/staff/attendance', { shift_id: homeShift, report_type: 'work_start' })
-  ok('順序: 前の報告が済んでいないと勤務開始は 400（サーバー側の確認）', early.status === 400 && /前の報告/.test(early.data.error), early)
+  // 前の報告を飛ばして後の報告を押せること・後の報告の後に前の報告を押せないことは scripts/test-w2-attendance-report.mjs（#47）
   const bad = await st1.post('/api/staff/attendance', { shift_id: homeShift, report_type: 'nap' })
   ok('不正な報告種別は 400', bad.status === 400, bad)
   const w = await st1.post('/api/staff/attendance', { shift_id: homeShift, report_type: 'wake_up' })
@@ -87,8 +86,6 @@ const homeShift = await createShift(admin, 1, 1, today, 'RS-TEST-HOME')
   ok('OFF にしても登録済みの報告（起床）は残る', status.data.reports.some(r => r.report_type === 'wake_up'), status.data.reports)
   const ws = await st1.post('/api/staff/attendance', { shift_id: homeShift, report_type: 'work_start' })
   ok('OFF の報告を順序から外して勤務開始を報告できる', ws.status === 200, ws)
-  const be = await st1.post('/api/staff/attendance', { shift_id: homeShift, report_type: 'break_end' })
-  ok('順序: 休憩入より前に休憩出は 400', be.status === 400, be)
   for (const t of ['break_start', 'break_end', 'work_end']) {
     const r = await st1.post('/api/staff/attendance', { shift_id: homeShift, report_type: t })
     ok(`${t} を報告できる`, r.status === 200, r)
@@ -191,9 +188,10 @@ let p4members
   const pub = await fetch(`${BASE}/api/public/report/${token}`).then(r => r.json())
   ok('報告URL: 8 種類が返る', JSON.stringify(pub.modes.required_attendance) === JSON.stringify(ALL), pub.modes)
   const post = (t) => fetch(`${BASE}/api/public/report/${token}/attendance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ report_type: t }) }).then(async r => ({ status: r.status, data: await r.json() }))
-  const early = await post('work_start')
-  ok('報告URL: 順序の確認（勤務開始は 400）', early.status === 400, early)
   ok('報告URL: 起床報告は成功', (await post('wake_up')).status === 200)
+  ok('報告URL: 前の報告を飛ばして勤務開始を報告できる', (await post('work_start')).status === 200)
+  const late = await post('departure')
+  ok('報告URL: 順序の確認（勤務開始の後に出発報告は 400）', late.status === 400, late)
 }
 
 // ---------- 9. 旧来の提出設定 API（互換）----------
