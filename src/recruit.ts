@@ -12,6 +12,7 @@ import { applyPricingToShift, conflictFor, findConflicts, loadPricingData, ngSta
 import { findStaffByPhone, insertProvisionalStaff, normalizePhone } from './staff-lifecycle'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { conflictLabel } from './lib/staff-eligibility'
+import { isCompanyActive } from './lib/auth'
 
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string }
 type Variables = { user: any }
@@ -83,6 +84,15 @@ function publicRole(r: any, showRemaining: boolean) {
 // 公開ページ（ログイン不要）
 // =========================================================
 export const recruitPublicApi = new Hono<{ Bindings: Bindings }>()
+
+// 本部で停止にした企業の募集ページは、表示も応募の受け付けも止める（#66。ログインの要らない公開URLのため、ログインの停止とは別に確かめる）
+recruitPublicApi.use('/:token/*', async (c, next) => {
+  const token = c.req.param('token')
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(token || '')) return next()
+  const co = await c.env.DB.prepare(`SELECT co.active_status FROM recruit_pages rp JOIN companies co ON co.company_id = rp.company_id WHERE rp.token = ?`).bind(token).first() as any
+  if (co && !isCompanyActive(co.active_status)) return c.json({ error: 'この募集は終了しました', closed: true }, 410)
+  return next()
+})
 
 recruitPublicApi.get('/:token', async (c) => {
   const page = await loadPageByToken(c.env.DB, c.req.param('token'))

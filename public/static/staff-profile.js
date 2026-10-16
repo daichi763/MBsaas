@@ -45,11 +45,61 @@ if (_origRenderMore) {
         <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-id-badge"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">マイプロフィール / スタッフID</span><span class="block text-xs text-gray-400">登録情報と企業間連携用QRコード</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
+      </button>
+      <button class="report-btn" onclick="renderChangePassword()">
+        <span class="w-11 h-11 rounded-xl bg-gray-100 text-gray-600 flex items-center justify-center text-lg"><i class="fas fa-lock"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">パスワードの変更</span><span class="block text-xs text-gray-400">ログインのパスワードを変更します</span></span>
+        <i class="fas fa-chevron-right text-gray-300"></i>
       </button>`)
   }
   // routes テーブルは staff.js 内の const のため直接差し替える
   if (typeof routes === 'object') routes.more = window.renderMore
 }
+
+// =========================================================
+// パスワードの変更（#43）。管理者が発行した仮パスワード・初期パスワードのままなら、ログイン直後に変更を求める
+// =========================================================
+function passwordFormHtml(prefix) {
+  return `
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード</label><input id="${prefix}-current" type="password" class="inp" autocomplete="current-password"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（8文字以上）</label><input id="${prefix}-new" type="password" class="inp" autocomplete="new-password"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（確認）</label><input id="${prefix}-new2" type="password" class="inp" autocomplete="new-password"></div>
+      <button class="btn btn-primary w-full" data-action="staffChangePassword" data-prefix="${prefix}">変更する</button>
+    </div>`
+}
+window.renderChangePassword = function () {
+  $app.innerHTML = `
+    <button class="text-sm text-blue-600 mb-3" onclick="renderMore()"><i class="fas fa-chevron-left mr-1"></i>戻る</button>
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-lock text-blue-500 mr-1"></i>パスワードの変更</h3>
+      ${passwordFormHtml('spw')}
+      <p class="text-[11px] text-gray-400 mt-3">変更すると、ほかの端末のログインは終了します。パスワードを忘れたときは、登録したメールアドレスで再設定するか、所属会社の担当者に再発行を依頼してください。</p>
+    </section>`
+}
+delegate('staffChangePassword', (el) => withSubmitLock(el, async () => {
+  const p = el.dataset.prefix
+  const cur = document.getElementById(p + '-current').value
+  const next = document.getElementById(p + '-new').value
+  if (next !== document.getElementById(p + '-new2').value) { toast('新しいパスワード（確認）が一致しません'); return }
+  try {
+    await axios.post('/api/auth/change-password', { current_password: cur, new_password: next })
+    toast('パスワードを変更しました')
+    if (p === 'fpw') closeModal()
+    else renderMore()
+  } catch (e) { showApiError(e, 'パスワードの変更に失敗しました') }
+}))
+// 仮パスワードのままなら、閉じられない画面で変更を求める（背景のタップでは閉じない）
+;(async () => {
+  let me
+  try { me = (await axios.get('/api/auth/me')).data } catch { return }
+  if (!me || !me.must_change_password) return
+  document.getElementById('modal-root').innerHTML = `<div class="modal-bg"><div class="modal-box p-5">
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-key text-blue-600 mr-1"></i>パスワードを変更してください</h3>
+    <p class="text-xs text-gray-500 mb-3">所属会社の担当者が発行したパスワードのままです。自分だけが知っているパスワードに変更してから使ってください。</p>
+    ${passwordFormHtml('fpw')}
+  </div></div>`
+})()
 
 // =========================================================
 // フェーズH: 統合ログイン（企業切替）/ 勤怠の自動振り分けの表示

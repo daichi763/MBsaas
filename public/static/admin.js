@@ -2131,9 +2131,221 @@ window.exportBillingCsv = function () {
   toast('CSVをダウンロードしました')
 }
 
+// ============ アカウント設定（自分のアカウント・パスワード変更・管理者アカウント。#25 #43 #44） ============
+const ADMIN_ROLE_LABEL = { company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当' }
+const adminRoleOptions = (cur) => Object.entries(ADMIN_ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${v}</option>`).join('')
+let ADMIN_USERS = new Map()
+
+// 仮パスワードを一度だけ表示する（閉じると二度と表示できない）。staff-lifecycle.js のスタッフの再発行でも使う
+window.showTempPassword = function (title, password, lines) {
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-key text-blue-600 mr-1"></i>${esc(title)}</h3>
+    <p class="text-xs text-red-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
+    <textarea id="temp-pw-text" class="inp font-mono text-sm" rows="${(lines || []).length + 1}" readonly>${esc([...(lines || []), '仮パスワード: ' + password].join('\n'))}</textarea>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-outline flex-1" data-action="copyTempPassword"><i class="fas fa-copy"></i>コピー</button>
+      <button class="btn btn-primary flex-1" onclick="closeModal()">閉じる</button>
+    </div>`)
+}
+delegate('copyTempPassword', async () => {
+  const el = document.getElementById('temp-pw-text'); if (!el) return
+  try { await navigator.clipboard.writeText(el.value) } catch { el.select(); document.execCommand && document.execCommand('copy') }
+  toast('コピーしました')
+})
+
+async function renderAccount() {
+  loading()
+  let me, list = null
+  try {
+    me = (await axios.get('/api/auth/account')).data
+    if (me.role === 'company_admin') list = (await axios.get('/api/admin/users')).data
+  } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
+  ADMIN_USERS = new Map((list ? list.users : []).map(u => [u.user_id, u]))
+  $app.innerHTML = `
+    <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
+    ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
+    ${!me.email ? `<div class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800"><i class="fas fa-envelope mr-1"></i>メールアドレスが登録されていません。登録すると、打刻修正の承認依頼などの通知と、パスワードを忘れたときの再設定メールが届きます。</div>` : ''}
+    <div class="grid lg:grid-cols-2 gap-4 mb-6">
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-user text-blue-500 mr-1"></i>自分のアカウント</h3>
+        <dl class="text-sm mb-3">
+          <div class="flex py-1"><dt class="w-24 text-gray-400">ID</dt><dd>${esc(me.user_code)}</dd></div>
+          <div class="flex py-1"><dt class="w-24 text-gray-400">権限</dt><dd>${esc(ADMIN_ROLE_LABEL[me.role] || me.role)}</dd></div>
+        </dl>
+        <div class="space-y-3">
+          <div><label class="text-sm text-gray-600 block mb-1">氏名</label><input id="ac-name" class="inp" value="${esc(me.name)}" maxlength="60"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="ac-email" type="email" class="inp" value="${esc(me.email || '')}" data-current="${esc(me.email || '')}" autocomplete="email"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード（メールアドレスを変更するときだけ）</label><input id="ac-email-pw" type="password" class="inp" autocomplete="current-password"></div>
+          <button class="btn btn-primary w-full" data-action="saveMyAccount">保存する</button>
+          <p class="text-[11px] text-gray-400">メールアドレスを変更すると、新しいアドレスに確認のメールを、以前のアドレスに変更のお知らせを送ります。</p>
+        </div>
+      </section>
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-lock text-blue-500 mr-1"></i>パスワードの変更</h3>
+        <div class="space-y-3">
+          <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード</label><input id="pw-current" type="password" class="inp" autocomplete="current-password"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（8文字以上）</label><input id="pw-new" type="password" class="inp" autocomplete="new-password"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（確認）</label><input id="pw-new2" type="password" class="inp" autocomplete="new-password"></div>
+          <button class="btn btn-primary w-full" data-action="changeMyPassword">変更する</button>
+          <p class="text-[11px] text-gray-400">変更すると、ほかの端末のログインは終了します。</p>
+        </div>
+      </section>
+    </div>
+    ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
+}
+
+function adminUsersHtml(users, meId) {
+  return `
+    <section class="card p-4">
+      <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-user-shield text-blue-500 mr-1"></i>管理者アカウント</h3>
+          <p class="text-[11px] text-gray-400">営業・現場・事務の担当者ごとにアカウントを作ると、承認・確定した人が正しく記録されます。退職した担当者は「停止」にしてください。</p>
+        </div>
+        <button class="btn btn-primary text-sm" data-action="showAddAdminUser"><i class="fas fa-plus"></i>管理者を追加</button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
+            <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">最終ログイン</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${users.map(u => `
+              <tr class="border-b border-gray-50">
+                <td class="py-2 text-gray-500">${esc(u.user_code)}</td>
+                <td class="py-2">${esc(u.name)}${u.user_id === meId ? ' <span class="badge badge-blue">自分</span>' : ''}</td>
+                <td class="py-2 text-xs">${u.email ? esc(u.email) : '<span class="text-amber-600">未登録</span>'}</td>
+                <td class="py-2">${esc(ADMIN_ROLE_LABEL[u.role] || u.role)}</td>
+                <td class="py-2">${u.status === 'active' ? '<span class="badge badge-green">利用中</span>' : '<span class="badge badge-gray">停止</span>'}${u.must_change_password ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
+                <td class="py-2 text-xs text-gray-400">${u.last_login_at ? esc(dayjs(u.last_login_at).format('M/D HH:mm')) : '-'}</td>
+                <td class="py-2 text-right whitespace-nowrap">
+                  <button class="btn btn-outline text-xs" data-action="editAdminUser" data-id="${u.user_id}">編集</button>
+                  ${u.user_id === meId ? '' : `
+                    ${u.status === 'active' ? `<button class="btn btn-outline text-xs" data-action="resetAdminUserPassword" data-id="${u.user_id}">パスワード再発行</button>` : ''}
+                    <button class="btn btn-outline text-xs" data-action="toggleAdminUserStatus" data-id="${u.user_id}">${u.status === 'active' ? '停止' : '利用を再開'}</button>`}
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>`
+}
+
+delegate('saveMyAccount', (el) => withSubmitLock(el, async () => {
+  const email = document.getElementById('ac-email')
+  const body = { name: document.getElementById('ac-name').value.trim(), email: email.value.trim() }
+  if (body.email !== (email.dataset.current || '')) body.current_password = document.getElementById('ac-email-pw').value
+  try {
+    const { data } = await axios.put('/api/auth/account', body)
+    ME = (await axios.get('/api/auth/me')).data
+    document.getElementById('company-name').textContent = ME.company_name + ' / ' + ME.name
+    toast(data.email_notice_sent ? '保存しました。新しいメールアドレスに確認のメールを送りました' : '保存しました')
+    renderAccount()
+  } catch (e) { showApiError(e, '保存に失敗しました') }
+}))
+delegate('changeMyPassword', (el) => withSubmitLock(el, async () => {
+  const cur = document.getElementById('pw-current').value
+  const next = document.getElementById('pw-new').value
+  if (next !== document.getElementById('pw-new2').value) { toast('新しいパスワード（確認）が一致しません'); return }
+  try {
+    await axios.post('/api/auth/change-password', { current_password: cur, new_password: next })
+    if (ME) ME.must_change_password = false
+    toast('パスワードを変更しました')
+    renderAccount()
+  } catch (e) { showApiError(e, 'パスワードの変更に失敗しました') }
+}))
+
+delegate('showAddAdminUser', () => {
+  modal(`
+    <h3 class="font-bold text-lg mb-4">管理者を追加</h3>
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">ID *</label><input id="au-code" class="inp" placeholder="sales02"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="au-name" class="inp" maxlength="60"></div>
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="au-email" type="email" class="inp"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">権限 *</label><select id="au-role" class="inp">${adminRoleOptions('field_manager')}</select></div>
+      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード（空欄なら自動で作ります）</label><input id="au-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
+      <p class="text-[11px] text-gray-400">初回ログインで、本人にパスワードの変更を求めます。ログインの会社コードは自社の会社コードです。</p>
+      <button class="btn btn-primary w-full" data-action="addAdminUser">追加する</button>
+    </div>`)
+})
+delegate('addAdminUser', (el) => withSubmitLock(el, async () => {
+  const v = id => document.getElementById(id).value.trim()
+  try {
+    const { data } = await axios.post('/api/admin/users', { user_code: v('au-code'), name: v('au-name'), email: v('au-email'), role: v('au-role'), password: document.getElementById('au-pass').value })
+    const code = v('au-code'), name = v('au-name')
+    closeModal(); toast('管理者を追加しました'); renderAccount()
+    if (data.temp_password) showTempPassword('管理者を追加しました', data.temp_password, [`氏名: ${name}`, `ID: ${code}`, `ログイン: ${location.origin}/login`])
+  } catch (e) { showApiError(e, '追加に失敗しました') }
+}))
+delegate('editAdminUser', (el) => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  const isMe = ME && u.user_id === ME.user_id
+  modal(`
+    <h3 class="font-bold text-lg mb-4">管理者の編集（${esc(u.user_code)}）</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="eu-name" class="inp" value="${esc(u.name)}" maxlength="60"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス</label><input id="eu-email" type="email" class="inp" value="${esc(u.email || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">権限</label><select id="eu-role" class="inp" ${isMe ? 'disabled' : ''}>${adminRoleOptions(u.role)}</select>
+        ${isMe ? '<p class="text-[11px] text-gray-400 mt-1">自分の権限は変更できません。自分のメールアドレスは「自分のアカウント」から変更してください。</p>' : ''}</div>
+      <button class="btn btn-primary w-full" data-action="saveAdminUser" data-id="${u.user_id}">保存する</button>
+    </div>`)
+  if (isMe) document.getElementById('eu-email').disabled = true
+})
+delegate('saveAdminUser', (el) => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const isMe = ME && id === ME.user_id
+  const body = { name: document.getElementById('eu-name').value.trim() }
+  if (!isMe) { body.email = document.getElementById('eu-email').value.trim(); body.role = document.getElementById('eu-role').value }
+  try {
+    await axios.put('/api/admin/users/' + id, body)
+    closeModal(); toast('保存しました'); renderAccount()
+  } catch (e) { showApiError(e, '保存に失敗しました') }
+}))
+delegate('toggleAdminUserStatus', (el) => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  const next = u.status === 'active' ? 'suspended' : 'active'
+  if (next === 'suspended' && !confirm(`${u.name}（${u.user_code}）のアカウントを停止します。ログイン中の画面もすぐに使えなくなります。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    try {
+      await axios.put('/api/admin/users/' + u.user_id, { status: next })
+      toast(next === 'suspended' ? '停止しました' : '利用を再開しました'); renderAccount()
+    } catch (e) { showApiError(e, '変更に失敗しました') }
+  })
+})
+delegate('resetAdminUserPassword', (el) => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  modal(`
+    <h3 class="font-bold text-lg mb-2">パスワードの再発行（${esc(u.name)}）</h3>
+    <p class="text-xs text-gray-500 mb-3">今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。</p>
+    <div class="space-y-2">
+      ${u.email ? `<button class="btn btn-outline w-full" data-action="doResetAdminUserPassword" data-id="${u.user_id}" data-mode="email"><i class="fas fa-envelope"></i>再設定メールを送る（${esc(u.email)}）</button>` : ''}
+      <button class="btn btn-primary w-full" data-action="doResetAdminUserPassword" data-id="${u.user_id}" data-mode="temp"><i class="fas fa-key"></i>仮パスワードを発行する</button>
+      <button class="btn btn-outline w-full" onclick="closeModal()">キャンセル</button>
+    </div>`)
+})
+delegate('doResetAdminUserPassword', (el) => withSubmitLock(el, async () => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  try {
+    const { data } = await axios.post(`/api/admin/users/${u.user_id}/reset-password`, { mode: el.dataset.mode })
+    closeModal(); renderAccount()
+    if (data.mode === 'email') toast('パスワード再設定メールを送りました')
+    else showTempPassword('仮パスワードを発行しました', data.temp_password, [`氏名: ${u.name}`, `ID: ${u.user_code}`, `ログイン: ${location.origin}/login`])
+  } catch (e) { showApiError(e, '再発行に失敗しました') }
+}))
+
+// ダッシュボード: メールアドレスのない管理者に登録を案内する（#25）
+function accountEmailNotice() {
+  if (!ME || ME.email || document.getElementById('account-email-notice')) return
+  $app.insertAdjacentHTML('afterbegin', `<div id="account-email-notice" class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800 flex items-center gap-2 flex-wrap">
+    <i class="fas fa-envelope"></i><span class="flex-1">通知メール（打刻修正の承認依頼など）を受け取るには、メールアドレスを登録してください。</span>
+    <a href="#account" class="btn btn-outline text-xs">アカウント設定へ</a></div>`)
+}
+
 // ============ ルーティング ============
 const routes = {
-  dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
+  dashboard: async () => { await renderDashboard(); accountEmailNotice() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
@@ -2146,6 +2358,8 @@ const routes = {
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)
   const [tab, id] = hash.split('/')
+  // 仮パスワードのままの間は、パスワードの変更を先に求める（#43 #44）
+  if (ME && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab

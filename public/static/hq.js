@@ -104,32 +104,56 @@ window.showAddCompany = function () {
       <div class="grid grid-cols-3 gap-3">
         <div><label class="text-xs text-gray-600 block mb-1">管理者ID</label><input id="co-admin-code" class="inp" placeholder="admin"></div>
         <div><label class="text-xs text-gray-600 block mb-1">氏名</label><input id="co-admin-name" class="inp"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="空欄なら自動で作成"></div>
       </div>
-      <button class="btn btn-primary w-full" onclick="addCompany()">登録する</button>
+      <div><label class="text-xs text-gray-600 block mb-1">管理者のメールアドレス（承認依頼の通知・パスワード再設定の宛先）</label><input id="co-admin-email" type="email" class="inp"></div>
+      <p class="text-[11px] text-gray-400">初回ログインで、管理者本人にパスワードの変更を求めます。</p>
+      <button class="btn btn-primary w-full" data-action="addCompany">登録する</button>
     </div>`)
 }
-window.addCompany = async function () {
+delegate('addCompany', (el) => withSubmitLock(el, async () => {
+  const code = document.getElementById('co-code').value.trim()
+  const adminCode = document.getElementById('co-admin-code').value.trim()
   try {
-    await axios.post('/api/hq/companies', {
+    const { data } = await axios.post('/api/hq/companies', {
       company_code: document.getElementById('co-code').value.trim(),
       company_name: document.getElementById('co-name').value.trim(),
       plan: document.getElementById('co-plan').value,
       user_limit: Number(document.getElementById('co-limit').value || 3),
       admin_code: document.getElementById('co-admin-code').value.trim(),
       admin_name: document.getElementById('co-admin-name').value.trim(),
-      admin_password: document.getElementById('co-admin-pass').value
+      admin_password: document.getElementById('co-admin-pass').value,
+      admin_email: document.getElementById('co-admin-email').value.trim()
     })
     closeModal(); toast('企業を登録しました'); renderCompanies()
+    if (data.admin_temp_password) showTempPassword('初期管理者を作成しました', data.admin_temp_password, [`会社コード: ${code}`, `管理者ID: ${adminCode}`, `ログイン: ${location.origin}/login`])
   } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '登録に失敗しました') }
+}))
+
+// 仮パスワードを一度だけ表示する（閉じると二度と表示できない）
+function showTempPassword(title, password, lines) {
+  modal(`
+    <h3 class="font-bold text-lg mb-2 text-gray-800"><i class="fas fa-key text-cyan-600 mr-1"></i>${esc(title)}</h3>
+    <p class="text-xs text-red-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。管理者本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
+    <textarea id="temp-pw-text" class="inp font-mono text-sm text-gray-800" rows="${lines.length + 1}" readonly>${esc([...lines, '仮パスワード: ' + password].join('\n'))}</textarea>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-outline flex-1" data-action="copyTempPassword"><i class="fas fa-copy"></i>コピー</button>
+      <button class="btn btn-primary flex-1" onclick="closeModal()">閉じる</button>
+    </div>`)
 }
+delegate('copyTempPassword', async () => {
+  const el = document.getElementById('temp-pw-text'); if (!el) return
+  try { await navigator.clipboard.writeText(el.value) } catch { el.select(); document.execCommand && document.execCommand('copy') }
+  toast('コピーしました')
+})
 
 // ============ 企業詳細 ============
 async function renderCompanyDetail(cid) {
   loading()
   const { data } = await axios.get('/api/hq/companies/' + cid)
   const c = data.company
-  const ROLE_LABELS = { company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当', staff: 'スタッフ', system_admin: 'システム管理者' }
+  HQ_USERS = new Map(data.users.map(u => [u.user_id, u]))
+  const ROLE_LABELS ={ company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当', staff: 'スタッフ', system_admin: 'システム管理者' }
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5">
       <a href="#companies" class="btn btn-outline" style="border-color:#334155;color:#94a3b8"><i class="fas fa-arrow-left"></i></a>
@@ -175,19 +199,25 @@ async function renderCompanyDetail(cid) {
       </section>
 
       <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-        <h3 class="font-bold mb-3"><i class="fas fa-users text-cyan-400 mr-1"></i>ユーザー一覧 (${data.users.length}名)</h3>
+        <div class="flex items-center justify-between mb-3 gap-2">
+          <h3 class="font-bold"><i class="fas fa-users text-cyan-400 mr-1"></i>ユーザー一覧 (${data.users.length}名)</h3>
+          <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="hqAddAdmin" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>管理者を追加</button>
+        </div>
+        <p class="text-[11px] text-slate-400 mb-2">管理者のメールアドレスは、承認依頼の通知とパスワード再設定の宛先です。スタッフのパスワードは各社の管理画面（スタッフ詳細）で再発行します。</p>
         <div class="max-h-96 overflow-y-auto">
           <table class="w-full text-xs">
             <thead><tr class="text-slate-400 border-b border-slate-700">
-              <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">権限</th><th class="text-left py-2">最終ログイン</th>
+              <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">権限</th><th class="text-left py-2">メール</th><th class="text-left py-2">最終ログイン</th><th></th>
             </tr></thead>
             <tbody>
               ${data.users.map(u => `
                 <tr class="border-b border-slate-700/40">
                   <td class="py-2 text-slate-400">${esc(u.user_code)}</td>
-                  <td class="py-2">${esc(u.name)}</td>
-                  <td class="py-2"><span class="badge ${u.role === 'staff' ? 'badge-gray' : 'badge-blue'}">${ROLE_LABELS[u.role] || u.role}</span></td>
+                  <td class="py-2">${esc(u.name)}${u.status !== 'active' ? ' <span class="badge badge-gray">停止</span>' : ''}${u.must_change_password && HQ_ADMIN_ROLES.includes(u.role) ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
+                  <td class="py-2"><span class="badge ${u.role === 'staff' ? 'badge-gray' : 'badge-blue'}">${ROLE_LABELS[u.role] || esc(u.role)}</span></td>
+                  <td class="py-2 text-slate-400">${HQ_ADMIN_ROLES.includes(u.role) ? (u.email ? esc(u.email) : '<span class="text-amber-400">未登録</span>') : ''}</td>
                   <td class="py-2 text-slate-400">${u.last_login_at ? dayjs(u.last_login_at).format('M/D HH:mm') : '-'}</td>
+                  <td class="py-2 text-right whitespace-nowrap">${HQ_ADMIN_ROLES.includes(u.role) ? `<button class="text-cyan-400 hover:underline" data-action="hqManageAdmin" data-cid="${Number(cid)}" data-id="${u.user_id}">管理</button>` : ''}</td>
                 </tr>`).join('')}
             </tbody>
           </table>
@@ -212,6 +242,86 @@ window.saveCompany = async function (cid) {
   status.dataset.current = status.value
   toast(data.revoked_sessions ? `保存しました（${data.revoked_sessions}件のログインを終了しました）` : '保存しました')
 }
+
+// ============ 導入企業の管理者アカウント（#44 #25） ============
+const HQ_ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+const HQ_ADMIN_ROLE_LABEL = { company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当' }
+let HQ_USERS = new Map()
+const hqErr = (e, fallback) => toast((e.response && e.response.data && e.response.data.error) || fallback)
+
+delegate('hqAddAdmin', (el) => {
+  const cid = Number(el.dataset.cid)
+  modal(`
+    <h3 class="font-bold text-lg mb-4 text-gray-800">管理者を追加</h3>
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-gray-600 block mb-1">管理者ID *</label><input id="ha-code" class="inp"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">氏名 *</label><input id="ha-name" class="inp" maxlength="60"></div>
+      </div>
+      <div><label class="text-xs text-gray-600 block mb-1">メールアドレス</label><input id="ha-email" type="email" class="inp"></div>
+      <div><label class="text-xs text-gray-600 block mb-1">権限</label><select id="ha-role" class="inp">${Object.entries(HQ_ADMIN_ROLE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+      <p class="text-[11px] text-gray-400">仮パスワードを自動で作ります。初回ログインで本人に変更を求めます。</p>
+      <button class="btn btn-primary w-full" data-action="hqDoAddAdmin" data-cid="${cid}">追加する</button>
+    </div>`)
+})
+delegate('hqDoAddAdmin', (el) => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid)
+  const v = id => document.getElementById(id).value.trim()
+  try {
+    const { data } = await axios.post(`/api/hq/companies/${cid}/users`, { user_code: v('ha-code'), name: v('ha-name'), email: v('ha-email'), role: v('ha-role') })
+    const code = v('ha-code'), name = v('ha-name')
+    closeModal(); toast('管理者を追加しました'); renderCompanyDetail(cid)
+    if (data.temp_password) showTempPassword('管理者を追加しました', data.temp_password, [`氏名: ${name}`, `管理者ID: ${code}`, `ログイン: ${location.origin}/login`])
+  } catch (e) { hqErr(e, '追加に失敗しました') }
+}))
+delegate('hqManageAdmin', (el) => {
+  const cid = Number(el.dataset.cid)
+  const u = HQ_USERS.get(Number(el.dataset.id)); if (!u) return
+  const active = u.status === 'active'
+  modal(`
+    <h3 class="font-bold text-lg mb-1 text-gray-800">${esc(u.name)}（${esc(u.user_code)}）</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(HQ_ADMIN_ROLE_LABEL[u.role] || u.role)} ・ ${active ? '利用中' : '停止中'}</p>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label>
+        <div class="flex gap-2"><input id="hm-email" type="email" class="inp flex-1" value="${esc(u.email || '')}">
+          <button class="btn btn-outline text-xs" data-action="hqSaveAdminEmail" data-cid="${cid}" data-id="${u.user_id}">保存</button></div></div>
+      ${active ? `
+        <p class="text-xs font-bold text-gray-600 pt-1">パスワードの再発行（今のパスワードは使えなくなり、ログイン中の画面もログアウトされます）</p>
+        ${u.email ? `<button class="btn btn-outline w-full" data-action="hqResetAdmin" data-cid="${cid}" data-id="${u.user_id}" data-mode="email"><i class="fas fa-envelope"></i>再設定メールを送る</button>` : ''}
+        <button class="btn btn-outline w-full" data-action="hqResetAdmin" data-cid="${cid}" data-id="${u.user_id}" data-mode="temp"><i class="fas fa-key"></i>仮パスワードを発行する</button>` : ''}
+      <button class="btn ${active ? 'btn-outline text-red-600' : 'btn-primary'} w-full" data-action="hqToggleAdmin" data-cid="${cid}" data-id="${u.user_id}">${active ? 'このアカウントを停止する' : '利用を再開する'}</button>
+      <button class="btn btn-outline w-full" onclick="closeModal()">閉じる</button>
+    </div>`)
+})
+delegate('hqSaveAdminEmail', (el) => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid)
+  try {
+    await axios.put(`/api/hq/companies/${cid}/users/${Number(el.dataset.id)}`, { email: document.getElementById('hm-email').value.trim() })
+    closeModal(); toast('メールアドレスを保存しました'); renderCompanyDetail(cid)
+  } catch (e) { hqErr(e, '保存に失敗しました') }
+}))
+delegate('hqResetAdmin', (el) => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid)
+  const u = HQ_USERS.get(Number(el.dataset.id)); if (!u) return
+  try {
+    const { data } = await axios.post(`/api/hq/companies/${cid}/users/${u.user_id}/reset-password`, { mode: el.dataset.mode })
+    closeModal(); renderCompanyDetail(cid)
+    if (data.mode === 'email') toast(data.skipped ? 'メール送信が無効の環境のため、送信を省略しました' : 'パスワード再設定メールを送りました')
+    else showTempPassword('仮パスワードを発行しました', data.temp_password, [`氏名: ${u.name}`, `管理者ID: ${u.user_code}`, `ログイン: ${location.origin}/login`])
+  } catch (e) { hqErr(e, '再発行に失敗しました') }
+}))
+delegate('hqToggleAdmin', (el) => {
+  const cid = Number(el.dataset.cid)
+  const u = HQ_USERS.get(Number(el.dataset.id)); if (!u) return
+  const next = u.status === 'active' ? 'suspended' : 'active'
+  if (next === 'suspended' && !confirm(`${u.name}（${u.user_code}）のアカウントを停止します。ログイン中の画面もすぐに使えなくなります。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    try {
+      await axios.put(`/api/hq/companies/${cid}/users/${u.user_id}`, { status: next })
+      closeModal(); toast(next === 'suspended' ? '停止しました' : '利用を再開しました'); renderCompanyDetail(cid)
+    } catch (e) { hqErr(e, '変更に失敗しました') }
+  })
+})
 
 // ============ テンプレート配信 ============
 async function renderTemplates() {
