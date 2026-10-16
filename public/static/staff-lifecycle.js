@@ -121,7 +121,13 @@
         <dl class="text-xs space-y-1.5">
           <div class="flex gap-2"><dt class="w-24 text-gray-400">現在の区分</dt><dd class="font-bold">${TYPE_LABEL[t] || t}</dd></div>
           <div class="flex gap-2"><dt class="w-24 text-gray-400">登録状態</dt><dd>${data.merged_into_staff_id ? `<span class="badge badge-gray">統合済み</span> <a class="text-blue-600 hover:underline" href="#staff/${data.merged_into_staff_id}">${esc(data.merged_into_name || '統合先')}</a>（${esc(String(data.merged_at || '').slice(0, 10))}）` : data.is_provisional ? '<span class="badge badge-red">仮登録</span>' : '<span class="badge badge-green">本登録</span>'}</dd></div>
-          <div class="flex gap-2"><dt class="w-24 text-gray-400">ログイン</dt><dd>${data.has_login ? 'あり（' + esc(data.user_code) + '）' : 'なし（報告用URLまたは代理入力で記録）'}</dd></div>
+          <div class="flex gap-2"><dt class="w-24 text-gray-400">ログイン</dt><dd>${data.has_own_login ? 'あり（' + esc(data.user_code) + '）' : data.has_login ? '所属元の会社のログインから企業を切り替えて利用' : 'なし（報告用URLまたは代理入力で記録）'}
+            ${data.can_issue_login ? `<button class="btn btn-outline text-xs ml-1" id="issue-login-btn" data-action="openIssueLogin" data-id="${Number(sid)}"><i class="fas fa-key"></i>ログインを発行</button>` : ''}</dd></div>
+          ${t !== 'linked_external' && !data.merged_into_staff_id ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">メール</dt><dd>${data.email ? esc(data.email) : '<span class="text-gray-400">なし</span>'}
+            ${data.unverified_email ? `<div class="mt-1" id="unverified-email"><span class="badge badge-yellow">未確認</span> ${esc(data.unverified_email)}
+              <span class="block text-[11px] text-gray-400">応募フォームなどで入力された、本人確認をしていないメールです。ログイン・パスワード再設定・お知らせには使いません</span>
+              <button class="btn btn-outline text-xs mt-1" data-action="confirmUnverifiedEmail" data-id="${Number(sid)}" data-email="${esc(data.unverified_email)}" data-current="${esc(data.email || '')}">本人に確認したので設定する</button>
+              <button class="btn btn-outline text-xs mt-1" data-action="discardUnverifiedEmail" data-id="${Number(sid)}">消す</button></div>` : ''}</dd></div>` : ''}
           ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-blue-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
         </dl>
         ${(data.schedules || []).map(s => s.status === 'pending'
@@ -189,7 +195,7 @@
         <button class="btn btn-outline text-xs" onclick="openMerge(${sid}, document.getElementById('mg-q').value)"><i class="fas fa-magnifying-glass"></i></button></div>
       <div class="space-y-1.5 max-h-72 overflow-y-auto" id="merge-candidates">
         ${d.candidates.map(r => `<button class="w-full text-left p-2.5 rounded-lg border border-gray-200 hover:border-blue-400 hover:bg-blue-50" onclick="previewMerge(${sid}, ${r.staff_id})">
-          <div class="flex items-center justify-between gap-2"><p class="font-bold text-sm">${esc(r.name)} <span class="text-xs font-normal text-gray-400">${esc(r.kana || '')}</span></p>
+          <div class="flex items-center justify-between gap-2"><p class="font-bold text-sm">${esc(r.name)} <span class="text-xs font-normal text-gray-400">${esc(r.kana || '')}</span>${r.inactive ? ` <span class="badge badge-red">${esc(r.inactive)}</span>` : ''}</p>
             <span class="badge ${r.affiliation_type === 'linked_external' ? 'badge-blue' : 'badge-gray'}">${esc(TYPE_LABEL[r.affiliation_type] || r.affiliation_type)}${r.affiliation_type === 'linked_external' && r.owner_company_name ? '・' + esc(r.owner_company_name) : ''}</span></div>
           <p class="text-[11px] text-gray-500">${r.reasons.map(x => `<span class="text-emerald-700">${esc(x)}</span>`).join('・') || '検索に一致'}${r.global_staff_code ? '・ID ' + esc(r.global_staff_code) : ''}・稼働 ${r.shift_count}件${r.last_work_date ? '（最終 ' + esc(r.last_work_date) + '）' : ''}${r.is_provisional ? '・<span class="text-red-600">仮登録</span>' : ''}</p>
         </button>`).join('') || '<p class="text-xs text-gray-400 p-3 text-center">候補が見つかりません。氏名で検索するか、他社のスタッフなら先に「スタッフマスタ → 新規追加 → QR/ID連携」で連携してください</p>'}
@@ -228,30 +234,90 @@
   }
 
   // ---------- 本登録 ----------
-  window.openFinalize = function (sid) {
+  // ログインの入力欄（本登録・後からの発行で共用）。メール欄には今のログイン用のメールを入れ、
+  // 応募フォームなどの未確認のメールは初期値に入れず、管理者が本人に確認して選んだときだけ使う（#148）
+  const GENDER_LABEL = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
+  const loginFieldsHtml = (d, px) => `
+    <div class="grid grid-cols-2 gap-3">
+      <input id="${px}-code" class="inp text-sm" placeholder="スタッフ番号" maxlength="50"><input id="${px}-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）" autocomplete="new-password">
+      <label class="text-xs text-gray-600 col-span-2">メール（ログイン・パスワード再設定の宛先。任意）<input id="${px}-email" class="inp text-sm" type="email" maxlength="254" value="${esc(d.email || '')}" placeholder="メール（任意）"></label>
+      ${d.unverified_email ? `<label class="col-span-2 flex items-start gap-2 text-xs p-2 rounded bg-amber-50 text-amber-800"><input type="checkbox" id="${px}-use-unverified" class="mt-0.5">
+        <span>応募時などに入力されたメール <b>${esc(d.unverified_email)}</b>（未確認）を使う。本人のものと確認できた場合だけ選んでください</span></label>` : ''}
+    </div>`
+  const val = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
+  const loginBody = (px) => {
+    const body = { user_code: val(px + '-code'), password: val(px + '-pass'), email: val(px + '-email') }
+    const use = document.getElementById(px + '-use-unverified')
+    if (use && use.checked) { body.use_unverified_email = true; delete body.email }
+    return body
+  }
+
+  // ---------- 本登録 ----------
+  // 今のフリガナ・性別・メールを入力欄に入れて開く（空欄のまま本登録しても応募時のフリガナを消さない。#505）
+  window.openFinalize = async function (sid) {
+    let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
     modal(`<h3 class="font-bold text-lg mb-1">本登録</h3>
       <p class="text-xs text-gray-500 mb-3">性別などの必須項目を入力し、仮登録を解除します。ログインの発行は任意です（発行しない場合は報告用URLまたは代理入力で記録します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">性別 <span class="text-red-500">*</span><select id="fz-gender" class="inp"><option value="">選択してください</option><option value="male">男性</option><option value="female">女性</option><option value="other">その他</option><option value="unspecified">回答しない</option></select></label>
-          <label class="text-sm text-gray-600">フリガナ<input id="fz-kana" class="inp"></label>
+          <label class="text-sm text-gray-600">性別 <span class="text-red-500">*</span><select id="fz-gender" class="inp"><option value="">選択してください</option>${Object.entries(GENDER_LABEL).map(([k, l]) => `<option value="${k}" ${d.gender === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="text-sm text-gray-600">フリガナ<input id="fz-kana" class="inp" maxlength="60" value="${esc(d.kana || '')}"></label>
         </div>
+        ${d.unverified_email ? `<p class="text-[11px] text-amber-700"><i class="fas fa-circle-info mr-1"></i>応募時のメール ${esc(d.unverified_email)} は未確認のため、ログイン・パスワード再設定には使っていません</p>` : ''}
         <details class="p-3 rounded-lg border border-gray-200"><summary class="text-sm text-gray-600 cursor-pointer">ログインを発行する（任意）</summary>
-          <div class="grid grid-cols-2 gap-3 mt-3">
-            <input id="fz-code" class="inp text-sm" placeholder="スタッフ番号"><input id="fz-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）">
-            <input id="fz-email" class="inp text-sm col-span-2" placeholder="メール（任意）">
-          </div></details>
+          <div class="mt-3">${loginFieldsHtml(d, 'fz')}</div></details>
         <p class="text-[11px] text-gray-400">その他の項目（生年月日・スキル等）は本登録後に基本情報欄で入力できます</p>
-        <button class="btn btn-primary w-full" onclick="submitFinalize(${sid})">本登録する</button>
+        <button class="btn btn-primary w-full" data-action="submitFinalize" data-id="${Number(sid)}">本登録する</button>
       </div>`)
   }
-  window.submitFinalize = async function (sid) {
-    const v = (id) => document.getElementById(id).value.trim()
+  delegate('submitFinalize', (el) => withSubmitLock(el, async () => {
+    const sid = Number(el.dataset.id)
+    const body = { gender: val('fz-gender'), kana: val('fz-kana') }
+    // ログインの欄に入力があるときだけ、ログインの発行とメールを送る
+    if (val('fz-code') || val('fz-pass')) Object.assign(body, loginBody('fz'))
     try {
-      await axios.post(`/api/admin/staff/${sid}/finalize`, { gender: v('fz-gender'), kana: v('fz-kana'), user_code: v('fz-code'), password: v('fz-pass'), email: v('fz-email') })
+      await axios.post(`/api/admin/staff/${sid}/finalize`, body)
       closeModal(); toast('本登録しました'); renderStaffDetail(sid)
     } catch (e) { toast(errMsg(e)) }
-  }
+  }))
+
+  // ---------- ログインの発行（仮登録ではない、ログインのないスタッフ。#89） ----------
+  delegate('openIssueLogin', async (el) => {
+    const sid = Number(el.dataset.id)
+    let d; try { d = (await axios.get(`/api/admin/staff/${sid}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
+    modal(`<h3 class="font-bold text-lg mb-1">ログインを発行</h3>
+      <p class="text-xs text-gray-500 mb-3">スタッフ番号と初期パスワードを設定し、スタッフ用のアプリでシフトの確認・勤怠報告ができるようにします。初期パスワードは本人に伝えてください</p>
+      <div class="space-y-3">${loginFieldsHtml(d, 'il')}
+        <button class="btn btn-primary w-full" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div>`)
+  })
+  delegate('submitIssueLogin', (el) => withSubmitLock(el, async () => {
+    const sid = Number(el.dataset.id)
+    try {
+      await axios.post(`/api/admin/staff/${sid}/issue-login`, loginBody('il'))
+      closeModal(); toast('ログインを発行しました'); renderStaffDetail(sid)
+    } catch (e) { toast(errMsg(e)) }
+  }))
+
+  // ---------- 未確認のメール（本人に確認したら設定する／不要なら消す。#38 #148） ----------
+  delegate('confirmUnverifiedEmail', (el) => {
+    const cur = el.dataset.current
+    if (!confirm(`${cur ? `今のメール（${cur}）を ` : ''}${el.dataset.email} ${cur ? 'に置き換えます' : 'をログイン・パスワード再設定の宛先に設定します'}。\n本人のメールアドレスであることを確認しましたか？`)) return
+    withSubmitLock(el, async () => {
+      try {
+        await axios.post(`/api/admin/staff/${Number(el.dataset.id)}/unverified-email`, { action: 'confirm' })
+        toast('メールアドレスを設定しました'); renderStaffDetail(Number(el.dataset.id))
+      } catch (e) { toast(errMsg(e)) }
+    })
+  })
+  delegate('discardUnverifiedEmail', (el) => {
+    if (!confirm('未確認のメールアドレスを消します。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      try {
+        await axios.post(`/api/admin/staff/${Number(el.dataset.id)}/unverified-email`, { action: 'discard' })
+        toast('未確認のメールアドレスを消しました'); renderStaffDetail(Number(el.dataset.id))
+      } catch (e) { toast(errMsg(e)) }
+    })
+  })
 
   // ---------- 区分の変更（確認画面で影響を表示してから実行） ----------
   // 確認した後に入力（区分・適用日・取引先・入社日・屋号・雇用形態）を変えたら、確認結果と実行ボタンを消して確認し直してもらう。

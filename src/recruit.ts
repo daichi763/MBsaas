@@ -419,7 +419,8 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
       // 事前チェック（仮登録を作る前に、定員・重複を確認する）
       const pre = await approvalWarnings(db, u.company_id, null, toApprove)
       if (pre.length && !b.force) return c.json({ warnings: pre, need_force: true }, 409)
-      const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name: a.name, phone: a.phone || '', type, affiliation, partnerId, kana: a.kana, email: a.email, memo: a.note ? `応募時のメモ: ${a.note}` : null, note: '募集から仮登録' })
+      // 応募フォームのメールは本人確認をしていないため、ログイン・再設定の宛先（users.email）には入れず未確認のメールとして持つ（#38 #148）
+      const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name: a.name, phone: a.phone || '', type, affiliation, partnerId, kana: a.kana, unverified_email: a.email, memo: a.note ? `応募時のメモ: ${a.note}` : null, note: '募集から仮登録' })
       staffId = created.staff_id; createdStaff = true
     }
   }

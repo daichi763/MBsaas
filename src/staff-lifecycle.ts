@@ -39,20 +39,21 @@ export function payeeTypeFor(type: string): string {
 }
 
 // ---------- 仮登録の作成（仮登録API・募集の承認で共用）。ログインは発行しない ----------
+// email は users.email（ログイン・再設定・お知らせの宛先）に入る。応募フォームなど本人確認をしていないメールは unverified_email に渡す（#38 #148）
 export async function insertProvisionalStaff(db: D1Database, companyId: number, byUserId: number | null, o: {
   name: string; phone: string; type: string; affiliation: string | null; partnerId: number | null; kana?: any; gender?: any
-  attendance_mode?: any; daily_report_mode?: any; memo?: any; email?: string | null; note: string
+  attendance_mode?: any; daily_report_mode?: any; memo?: any; email?: string | null; unverified_email?: string | null; note: string
 }) {
   const person = await createPerson(db, companyId)
   const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, phone, email, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?, ?, ?)`)
     .bind(companyId, 'TMP-' + person.global_staff_code, o.name, await unusablePasswordHash(), o.phone || null, o.email || null, person.person_id).run()
   const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
-      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?)`)
+      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo, unverified_email)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?, ?)`)
     .bind(r.meta.last_row_id, companyId, person.person_id, companyId, o.type, o.partnerId, o.affiliation,
       o.kana || null, o.gender || null,
       ['none', 'in_out', 'full'].includes(o.attendance_mode) ? o.attendance_mode : null,
-      ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null).run()
+      ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null, String(o.unverified_email || '').trim() || null).run()
   const staffId = sr.meta.last_row_id as number
   await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, note, changed_by)
     VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?)`).bind(companyId, staffId, o.type, nowJST().slice(0, 10), o.affiliation, o.partnerId, o.note, byUserId).run()
@@ -230,18 +231,107 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
   if (!sp.is_provisional) return c.json({ error: 'このスタッフは本登録済みです' }, 400)
   if (!sp.gender && !b.gender) return c.json({ error: '本登録には性別の入力が必要です' }, 400)
-  if (b.gender) await db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id).run()
-  if (b.kana !== undefined) await db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(b.kana || null, sp.staff_id).run()
+  const stmts: D1PreparedStatement[] = []
+  if (b.gender) stmts.push(db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id))
+  // フリガナは空欄なら今の値を残す（応募時に入力されたフリガナを消さない。#505）
+  const kana = typeof b.kana === 'string' ? b.kana.trim() : ''
+  if (kana) stmts.push(db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(kana.slice(0, 60), sp.staff_id))
   if (b.user_code || b.password) {
-    if (!b.user_code || !String(b.user_code).trim() || !b.password) return c.json({ error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください' }, 400)
-    const pwErr = validatePassword(String(b.password))
-    if (pwErr) return c.json({ error: pwErr }, 400)
-    try {
-      await db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = COALESCE(?, email) WHERE user_id = ? AND company_id = ?`)
-        .bind(String(b.user_code).trim(), await hashPassword(String(b.password)), b.email || null, sp.user_id, u.company_id).run()
-    } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+    const login = await loginStatements(db, u.company_id, sp, b)
+    if ('error' in login) return c.json({ error: login.error }, login.status as any)
+    stmts.push(...login.stmts)
   }
-  await db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id).run()
+  stmts.push(db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id))
+  // まとめて実行する（スタッフ番号の重複で失敗したら、性別・フリガナ・本登録もやり直せるように取り消す）
+  try { await db.batch(stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+  return c.json({ ok: true })
+})
+
+// ---------- ログインの発行（本登録・後からの発行で共用。#89 #103 #148） ----------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// ログイン用のメール: use_unverified_email なら応募時の未確認のメールを、管理者が確認したものとして使う。
+// email キーがあればその値（空欄は NULL）で上書きする。どちらもなければ今の値のまま
+function loginEmail(sp: any, b: any): { set: boolean; email: string | null; clearUnverified: boolean } | { error: string } {
+  if (b.use_unverified_email === true) {
+    const v = String(sp.unverified_email || '').trim()
+    if (!v) return { error: '未確認のメールアドレスがありません' }
+    return { set: true, email: v, clearUnverified: true }
+  }
+  if (b.email === undefined || b.email === null) return { set: false, email: null, clearUnverified: false }
+  const v = String(b.email).trim()
+  if (v && (v.length > 254 || !EMAIL_RE.test(v))) return { error: 'メールアドレスの形式が正しくありません' }
+  return { set: true, email: v || null, clearUnverified: !!v && v.toLowerCase() === String(sp.unverified_email || '').trim().toLowerCase() }
+}
+// 他社へ連携した先の行（多段連携の先を含む）。本人がログインを持ったら、連携先でもアプリでシフトを見て報告できるようにする（#103）。
+// 連携した時点で所属元にログインがなかった行は roster_only で作られているため、ここで staff に変える（roster.ts の /link と同じ扱い）
+export function promoteLinkedLoginsStmt(db: D1Database, staffId: number) {
+  return db.prepare(`WITH RECURSIVE down(id) AS (
+      SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
+      UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
+    UPDATE users SET role = 'staff' WHERE role = 'roster_only' AND status = 'active'
+      AND user_id IN (SELECT sp.user_id FROM staff_profiles sp WHERE sp.staff_id IN (SELECT id FROM down) AND sp.merged_into_staff_id IS NULL)`).bind(staffId)
+}
+// 入力を確かめて、ログインを発行する文を返す（実行は呼び出し側で db.batch。スタッフ番号の重複は batch の失敗になる）
+async function loginStatements(db: D1Database, companyId: number, sp: any, b: any): Promise<{ stmts: D1PreparedStatement[] } | { error: string; status: number }> {
+  const code = String(b.user_code || '').trim()
+  if (!code || !b.password) return { error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください', status: 400 }
+  if (code.length > 50) return { error: 'スタッフ番号は50文字以内で入力してください', status: 400 }
+  const pwErr = validatePassword(b.password)
+  if (pwErr) return { error: pwErr, status: 400 }
+  const em = loginEmail(sp, b)
+  if ('error' in em) return { error: em.error, status: 400 }
+  const stmts = [
+    db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = CASE WHEN ? = 1 THEN ? ELSE email END WHERE user_id = ? AND company_id = ?`)
+      .bind(code, await hashPassword(String(b.password)), em.set ? 1 : 0, em.email, sp.user_id, companyId),
+  ]
+  if (em.clearUnverified) stmts.push(db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id))
+  stmts.push(promoteLinkedLoginsStmt(db, sp.staff_id))
+  return { stmts }
+}
+// 自社で発行したログインか（他社連携の行は、連携時に照合できないパスワードで作った LK- の行。区分を変えても自社のログインはない）
+function hasOwnLogin(sp: any) { return sp.user_role === 'staff' && !String(sp.user_code || '').startsWith('LK-') }
+function canIssueLogin(sp: any) {
+  const t = sp.affiliation_type || 'own_employee'
+  return !sp.merged_into_staff_id && !sp.is_provisional && !hasOwnLogin(sp) && t !== 'linked_external' && t !== 'skillsheet_only'
+    && sp.user_status === 'active' && sp.employment_status !== 'retired' && !(sp.retired_at && sp.retired_at < todayJST())
+}
+
+// 仮登録ではない、ログインのないスタッフ（ログインなしで登録した人・本登録でログインを発行しなかった人・他社連携から自社管理に切り替えた人）に、後からログインを発行する（#89）
+adminLifecycleApi.post('/staff/:id/issue-login', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
+  const t = sp.affiliation_type || 'own_employee'
+  if (t === 'linked_external') return c.json({ error: '他社から連携したスタッフのログインは、所属元の会社で発行します（所属元のログインから企業を切り替えて使えます）' }, 400)
+  if (t === 'skillsheet_only') return c.json({ error: 'スキルシートのみのスタッフにはログインを発行できません' }, 400)
+  if (sp.is_provisional) return c.json({ error: '仮登録のスタッフは「本登録する」からログインを発行してください' }, 400)
+  if (hasOwnLogin(sp)) return c.json({ error: 'このスタッフにはすでにログインがあります' }, 409)
+  if (!canIssueLogin(sp)) return c.json({ error: '退職・停止中のスタッフにはログインを発行できません' }, 409)
+  const login = await loginStatements(db, u.company_id, sp, b)
+  if ('error' in login) return c.json({ error: login.error }, login.status as any)
+  try { await db.batch(login.stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+  return c.json({ ok: true })
+})
+
+// 未確認のメール（応募フォーム・統合元から引き継いだもの）を、本人に確認できたらログイン・再設定用に設定する／不要なら消す（#38 #148）
+adminLifecycleApi.post('/staff/:id/unverified-email', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
+  const v = String(sp.unverified_email || '').trim()
+  if (!v) return c.json({ error: '未確認のメールアドレスはありません' }, 404)
+  if (b.action === 'discard') {
+    await db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id).run()
+    return c.json({ ok: true })
+  }
+  if (b.action !== 'confirm') return c.json({ error: '操作が正しくありません' }, 400)
+  if ((sp.affiliation_type || 'own_employee') === 'linked_external') return c.json({ error: '他社から連携したスタッフのメールアドレスは、所属元の会社で設定します' }, 400)
+  await db.batch([
+    db.prepare('UPDATE users SET email = ? WHERE user_id = ? AND company_id = ?').bind(v, sp.user_id, u.company_id),
+    db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id),
+  ])
   return c.json({ ok: true })
 })
 
@@ -534,6 +624,9 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
   return c.json({
     staff_id: sp.staff_id, affiliation_type: sp.affiliation_type || 'own_employee', is_provisional: !!sp.is_provisional,
     has_login: sp.user_role === 'staff', user_code: sp.user_role === 'staff' ? sp.user_code : null, phone: sp.phone,
+    // 本登録・ログインの発行の画面に今の値を出す（#148 #505）。unverified_email は応募フォームなどで入力された未確認のメール
+    has_own_login: hasOwnLogin(sp), can_issue_login: canIssueLogin(sp), email: sp.email || null, unverified_email: sp.unverified_email || null,
+    kana: sp.kana || null, gender: sp.gender || null,
     attendance_mode: sp.attendance_mode, daily_report_mode: sp.daily_report_mode, employee_record: er, history, schedules, employment_periods,
     partner_affiliation_id: sp.partner_affiliation_id,
     merged_into_staff_id: sp.merged_into_staff_id, merged_at: sp.merged_at,
