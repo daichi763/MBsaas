@@ -156,6 +156,14 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
   if (!name) return c.json({ error: '氏名を入力してください' }, 400)
   if (phone.length < 10 || phone.length > 11) return c.json({ error: '電話番号を正しく入力してください' }, 400)
   if (!['daily_worker', 'freelance', 'partner_manual', 'own_employee'].includes(type)) return c.json({ error: '区分が正しくありません' }, 400)
+  // 同じ画面からの再送（先の送信で作成済み）は、作成済みのスタッフを返す（#568）
+  const key = String(b.request_key || '').slice(0, 64) || null
+  if (key) {
+    const prev = await db.prepare(`SELECT sp.staff_id, pe.global_staff_code FROM staff_quick_locks lk
+      JOIN staff_profiles sp ON sp.staff_id = lk.staff_id AND sp.company_id = lk.company_id LEFT JOIN persons pe ON pe.person_id = sp.person_id
+      WHERE lk.company_id = ? AND lk.phone_norm = ? AND lk.request_key = ?`).bind(u.company_id, phone, key).first() as any
+    if (prev) return c.json({ ok: true, staff_id: prev.staff_id, global_staff_code: prev.global_staff_code, reused: true })
+  }
   // 電話番号の重複確認（force で登録を続行できる）
   const dup = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
     .bind(u.company_id).all()).results as any[]).filter(r => normalizePhone(r.phone) === phone)
@@ -181,10 +189,37 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
     } else return c.json({ error: '取引先を選択または入力してください' }, 400)
   }
 
-  const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name, phone, type, affiliation, partnerId, kana: b.kana, gender: b.gender,
-    attendance_mode: b.attendance_mode, daily_report_mode: b.daily_report_mode, memo: b.memo, email: null, note: '仮登録' })
+  // 二度押し・同時送信の防止（#568）: 同じ電話番号の仮登録は、処理中と直後 QUICK_LOCK_MS の間は1件だけにする。
+  // 同じ画面からの再送（request_key が同じ）には、作成済みのスタッフを返す。
+  // 直後でも、別の画面から force で「別の人として登録」したときは新しく作る
+  const now = Date.now()
+  const claim = await db.prepare(`INSERT INTO staff_quick_locks (company_id, phone_norm, request_key, staff_id, created_at) VALUES (?, ?, ?, NULL, ?)
+    ON CONFLICT(company_id, phone_norm) DO UPDATE SET request_key = excluded.request_key, staff_id = NULL, created_at = excluded.created_at
+    WHERE staff_quick_locks.created_at < ?
+      OR (? = 1 AND staff_quick_locks.staff_id IS NOT NULL AND COALESCE(staff_quick_locks.request_key, '') != COALESCE(excluded.request_key, ''))`)
+    .bind(u.company_id, phone, key, now, now - QUICK_LOCK_MS, b.force ? 1 : 0).run()
+  if (!claim.meta.changes) {
+    const lk = await db.prepare('SELECT request_key, staff_id FROM staff_quick_locks WHERE company_id = ? AND phone_norm = ?').bind(u.company_id, phone).first() as any
+    if (lk?.staff_id && (lk.request_key || null) === key) {
+      const prev = await db.prepare(`SELECT sp.staff_id, pe.global_staff_code FROM staff_profiles sp LEFT JOIN persons pe ON pe.person_id = sp.person_id
+        WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(lk.staff_id, u.company_id).first() as any
+      if (prev) return c.json({ ok: true, staff_id: prev.staff_id, global_staff_code: prev.global_staff_code, reused: true })
+    }
+    return c.json({ error: 'この電話番号の仮登録を処理中です。少し待ってから一覧を確認してください' }, 409)
+  }
+  let created: { staff_id: number; global_staff_code: string }
+  try {
+    created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name, phone, type, affiliation, partnerId, kana: b.kana, gender: b.gender,
+      attendance_mode: b.attendance_mode, daily_report_mode: b.daily_report_mode, memo: b.memo, email: null, note: '仮登録' })
+  } catch (e) {
+    await db.prepare('DELETE FROM staff_quick_locks WHERE company_id = ? AND phone_norm = ? AND staff_id IS NULL').bind(u.company_id, phone).run().catch(() => {})
+    throw e
+  }
+  await db.prepare('UPDATE staff_quick_locks SET staff_id = ? WHERE company_id = ? AND phone_norm = ?').bind(created.staff_id, u.company_id, phone).run()
   return c.json({ ok: true, ...created })
 })
+// 仮登録の重複防止の時間（ミリ秒）
+const QUICK_LOCK_MS = 60 * 1000
 
 // ---------- 本登録（仮登録を解除。ログイン発行は任意） ----------
 adminLifecycleApi.post('/staff/:id/finalize', async (c) => {

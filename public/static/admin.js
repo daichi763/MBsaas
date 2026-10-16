@@ -708,7 +708,40 @@ function retirementBody(status, date, origDate) {
 }
 // 保存する。退職日に確認が必要なとき（サーバーが confirm_required を返す: 7年以上前・1年以上前・入社日より前・
 // 退職日より後にシフトがある）は、内容を見せて確認できたら確認済みとして送り直す。取りやめたら null を返す
+// 退職日を設定するときは、退職日より後の今後のシフトを確認画面に出し、選べば保存の後にまとめて外す（#500）
 async function putConfirmingRetiredAt(url, body, target) {
+  const plan = await retireFutureShiftsPlan(url, target || body)
+  if (plan === false) return null
+  const res = await putRetiredAtOnce(url, body, target)
+  if (res && plan && plan.release) {
+    try {
+      const { data } = await axios.post(`/api/admin/staff/${plan.sid}/release-future-shifts`, { from: plan.from, shift_ids: plan.shift_ids })
+      toast(`今後のシフトを外しました（枠を空きに戻した ${data.removed}件・欠勤にした ${data.absent}件）`)
+    } catch (e) { showApiError(e, '今後のシフトを外せませんでした。シフト管理から外してください') }
+  }
+  return res
+}
+// 確認の結果: null = 確認不要（退職日なし・今後のシフトなし）、false = 取りやめ、{ release } = 外すかどうか
+async function retireFutureShiftsPlan(url, p) {
+  const m = /\/api\/admin\/(?:staff|employees)\/(\d+)$/.exec(url)
+  if (!m || !p || !p.retired_at) return null
+  const d = new Date(p.retired_at + 'T00:00:00Z'); if (isNaN(d)) return null
+  d.setUTCDate(d.getUTCDate() + 1)
+  const from = d.toISOString().slice(0, 10) // 退職日の当日は稼働できるので、翌日以降を対象にする
+  let data
+  try { data = (await axios.get(`/api/admin/staff/${m[1]}/future-shifts`, { params: { from } })).data } catch { return null }
+  if (!data.count && !data.linked_count) return null
+  const ST = { confirmed: '確定', substitute: '代打', requested: '希望' }
+  const list = data.shifts.slice(0, 5).map(s => `・${s.work_date} ${s.start_time}〜${s.end_time} ${s.project_name || ''}（${ST[s.status] || s.status}）`).join('\n')
+  const linked = data.linked_count ? `\n連携先の企業にも、退職日より後のシフトが ${data.linked_count}件あります（連携先では割当の候補から外れます。企業間チャットで連絡してください）。` : ''
+  if (!data.count) { alert(`退職日より後のシフトの確認${linked}`); return null }
+  const msg = `退職日（${p.retired_at}）より後に、シフトが ${data.count}件あります。\n${list}${data.count > 5 ? `\nほか ${data.count - 5}件` : ''}${linked}\n\n`
+    + 'OK: 保存して、これらのシフトを外す（枠は空きに戻します。勤怠などの記録があるシフトは欠勤にします）\nキャンセル: シフトをどうするか選び直す'
+  if (confirm(msg)) return { release: true, sid: m[1], from: data.from, shift_ids: data.shifts.map(s => s.shift_id) }
+  if (confirm('シフトはそのまま残して保存しますか？\n（残したシフトは、シフト管理・シフトボードから個別に外せます）')) return { release: false }
+  return false
+}
+async function putRetiredAtOnce(url, body, target) {
   try {
     return await axios.put(url, body)
   } catch (e) {
@@ -1613,14 +1646,17 @@ async function renderShifts(dateStr) {
 
 window.showAddShift = async function (defaultDate) {
   const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff'), axios.get('/api/admin/projects')])
+  // 割り当てられる人だけを出す（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職は assignable=0 #94）
+  const staff = st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id && s.assignable !== 0)
+  addShiftProjects = pj.projects.filter(p => p.status === 'active')
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト登録</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">スタッフ *</label>
-          <select id="sh-staff" class="inp">${st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id).map(s => `<option value="${s.staff_id}">${esc(s.name)}</option>`).join('')}</select></div>
+          <select id="sh-staff" class="inp">${staff.map(s => `<option value="${s.staff_id}">${esc(s.name)}${s.employment_status === 'leave' ? '（休職中）' : ''}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">案件 *</label>
-          <select id="sh-project" class="inp">${pj.projects.filter(p => p.status === 'active').map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
+          <select id="sh-project" class="inp" onchange="addShiftFeeHint()">${addShiftProjects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">日付 *</label><input id="sh-date" type="date" class="inp" value="${defaultDate || ''}"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1630,21 +1666,47 @@ window.showAddShift = async function (defaultDate) {
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">状態</label>
           <select id="sh-status" class="inp"><option value="confirmed">確定</option><option value="requested">希望</option><option value="substitute">代打</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">交通費</label><input id="sh-fee" type="number" value="1200" class="inp"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">交通費（実費）</label><input id="sh-fee" type="number" min="0" class="inp" placeholder="空欄なら0円">
+          <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
-      <button class="btn btn-primary w-full" onclick="addShift()">登録する</button>
+      <button class="btn btn-primary w-full" data-action="addShift">登録する</button>
     </div>`)
+  addShiftFeeHint()
 }
-window.addShift = async function () {
+// 案件の交通費ルール（実費の入力が請求・支払にどう効くか）を入力欄の下に出す（#94）
+let addShiftProjects = []
+const BILL_TRANSPORT_LABEL = { actual: '実費', fixed: '定額', included: '単価に含む' }
+const PAY_TRANSPORT_LABEL = { actual: '実費', capped: '上限あり', fixed: '定額', none: '支給なし' }
+window.addShiftFeeHint = function () {
+  const el = document.getElementById('sh-fee-hint'); if (!el) return
+  const p = addShiftProjects.find(x => String(x.project_id) === document.getElementById('sh-project').value)
+  if (!p) { el.textContent = ''; return }
+  const bt = p.bill_transport_type || 'actual', pt = p.pay_transport_type || 'actual'
+  el.textContent = `案件の交通費: 請求 ${BILL_TRANSPORT_LABEL[bt] || bt}${bt === 'fixed' ? ' ' + Number(p.bill_transport_amount || 0) + '円' : ''}`
+    + ` ／ 支払 ${PAY_TRANSPORT_LABEL[pt] || pt}${pt === 'fixed' || pt === 'capped' ? ' ' + Number(p.pay_transport_amount || 0) + '円' : ''}`
+}
+// 重複・NG・休職中があれば内容を出して確認し、確認できたら force で登録する（シフトボードと同じ流れ #94）
+window.addShift = async function (force) {
   const date = document.getElementById('sh-date').value
   if (!date) { toast('日付を選択してください'); return }
-  await axios.post('/api/admin/shifts', {
-    staff_id: document.getElementById('sh-staff').value, project_id: document.getElementById('sh-project').value,
-    work_date: date, start_time: document.getElementById('sh-start').value, end_time: document.getElementById('sh-end').value,
-    status: document.getElementById('sh-status').value, transportation_fee: Number(document.getElementById('sh-fee').value || 0)
-  })
+  const staffId = document.getElementById('sh-staff').value
+  if (!staffId) { toast('スタッフを選択してください'); return }
+  const fee = document.getElementById('sh-fee').value
+  try {
+    await axios.post('/api/admin/shifts', {
+      staff_id: Number(staffId), project_id: document.getElementById('sh-project').value,
+      work_date: date, start_time: document.getElementById('sh-start').value, end_time: document.getElementById('sh-end').value,
+      status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
+      confirm_warnings: true, force: !!force,
+    })
+  } catch (e) {
+    const d = e.response && e.response.data
+    if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま登録しますか？')) return addShift(true); return }
+    showApiError(e, '登録に失敗しました'); return
+  }
   closeModal(); toast('シフトを登録しました'); renderShifts(date)
 }
+delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
 window.showEditShift = function (shiftId, staffName, status) {
   modal(`
@@ -1658,7 +1720,8 @@ window.showEditShift = function (shiftId, staffName, status) {
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 window.updateShift = async function (id, status) {
-  await axios.put('/api/admin/shifts/' + id, { status })
+  // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
+  try { await axios.put('/api/admin/shifts/' + id, { status }) } catch (e) { showApiError(e, '更新に失敗しました'); return }
   closeModal(); toast('シフトを更新しました'); renderShifts()
 }
 window.deleteShift = async function (id) {

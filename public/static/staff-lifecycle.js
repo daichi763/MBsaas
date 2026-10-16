@@ -52,7 +52,7 @@
           <p class="text-[11px] text-gray-400">勤怠報告は、シフトを割り当てた案件の標準設定が適用されます</p>
         </div>
         <input id="qr-memo" class="inp text-sm" placeholder="メモ（任意・紹介元など）">
-        <button class="btn btn-primary w-full" onclick='submitQuickRegister(${JSON.stringify(ctx)})'>${ctx.slot_role_id ? '仮登録して枠に割り当てる' : '仮登録する'}</button>
+        <button class="btn btn-primary w-full" data-action="submitQuickRegister" data-slot-role-id="${Number(ctx.slot_role_id) || ''}" data-request-key="${esc(newRequestKey())}">${ctx.slot_role_id ? '仮登録して枠に割り当てる' : '仮登録する'}</button>
       </div>`)
   }
   window.quickTypeChanged = function () {
@@ -70,21 +70,29 @@
       ${data.matches.map(m => `<a class="underline font-bold ml-1" href="#staff/${m.staff_id}" onclick="closeModal()">${esc(m.name)}（${TYPE_LABEL[m.affiliation_type] || ''}）</a>`).join('')}
       <span class="block mt-1">同じ人の場合は、既存のスタッフをシフトに割り当ててください</span></div>` : ''
   }
-  window.submitQuickRegister = async function (ctx, force) {
+  // 画面を開くたびに作る値。同じ画面からの再送（二度押し・通信の再試行）をサーバーが同じ登録として扱う（#568）
+  function newRequestKey() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID() } catch { }
+    return Date.now().toString(36) + Math.random().toString(36).slice(2)
+  }
+  // 送信中はボタンを無効にする（二度押しで同じ人が2人登録され、同じ枠に2件割り当てられるのを防ぐ）
+  delegate('submitQuickRegister', (el) => withSubmitLock(el, () =>
+    submitQuickRegister({ slot_role_id: Number(el.dataset.slotRoleId) || null }, false, el.dataset.requestKey)))
+  window.submitQuickRegister = async function (ctx, force, requestKey) {
     const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
     const type = v('qr-type')
-    const body = { name: v('qr-name'), phone: v('qr-phone'), affiliation_type: type, daily_report_mode: v('qr-dr'), memo: v('qr-memo'), trade_name: v('qr-trade'), force: !!force }
+    const body = { name: v('qr-name'), phone: v('qr-phone'), affiliation_type: type, daily_report_mode: v('qr-dr'), memo: v('qr-memo'), trade_name: v('qr-trade'), force: !!force, request_key: requestKey || null }
     if (type === 'partner_manual') { const p = v('qr-partner-id'); if (p && p !== 'new') body.partner_affiliation_id = Number(p); else body.new_partner_name = v('qr-partner-new') }
     if (!body.name) { toast('氏名を入力してください'); return }
     try {
       const { data } = await axios.post('/api/admin/staff-quick', body)
       if (window.invalidateBoardMaster) invalidateBoardMaster()
-      if (ctx && ctx.slot_role_id && window.boardAssign) { toast('仮登録しました'); return boardAssign(ctx.slot_role_id, [data.staff_id]) }
+      if (ctx && ctx.slot_role_id && window.boardAssign) { toast(data.reused ? '登録済みのスタッフを割り当てます' : '仮登録しました'); return boardAssign(ctx.slot_role_id, [data.staff_id]) }
       closeModal(); toast('仮登録しました'); location.hash = 'staff/' + data.staff_id
     } catch (e) {
       const d = e.response && e.response.data
       if (d && d.need_force) {
-        if (confirm(`この電話番号のスタッフが登録済みです（${d.matches.map(m => m.name).join('、')}）。\n別の人として登録しますか？`)) return submitQuickRegister(ctx, true)
+        if (confirm(`この電話番号のスタッフが登録済みです（${d.matches.map(m => m.name).join('、')}）。\n別の人として登録しますか？`)) return submitQuickRegister(ctx, true, requestKey)
         return
       }
       toast(errMsg(e))
@@ -129,7 +137,36 @@
         <button class="btn btn-outline w-full text-xs mt-2" onclick="saveStaffReportSettings(${sid})">保存する</button>
       </section>
     </div>`
+    renderHostStatusPanel(sid, p)
   }
+  // =========================================================
+  // 他社連携のスタッフ: 稼働先での取引状況（#249）と所属元での退職（#187）
+  // 所属元のユーザー状態・退職日は変えない。取引終了・所属元で退職の人はシフトの割当候補から外れる
+  // =========================================================
+  const HOST_STATUS_LABEL = { working: '稼働中', leave: '休止中', ended: '取引終了' }
+  function renderHostStatusPanel(sid, p) {
+    const host = document.getElementById('staff-lifecycle-panel')
+    if (!host || !p || p.affiliation_type !== 'linked_external' || p.merged_into_staff_id) return
+    const cur = p.link_ended_at ? 'ended' : p.employment_status === 'leave' ? 'leave' : 'working'
+    host.insertAdjacentHTML('afterbegin', `<section class="card p-4 mb-4" id="staff-host-status">
+      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-handshake text-blue-500 mr-1"></i>自社での取引状況</h3>
+      ${p.source_retired ? '<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>所属元で退職（または利用停止）になっています。シフトの割当候補には出ません</div>' : ''}
+      <div class="flex gap-2 flex-wrap items-center">
+        <select id="host-status" class="inp text-sm w-40">${opts(HOST_STATUS_LABEL, cur)}</select>
+        <button class="btn btn-outline text-xs" data-action="saveHostStatus" data-sid="${Number(sid)}">保存する</button>
+        ${p.link_ended_at ? `<span class="text-xs text-gray-500">取引終了 ${esc(String(p.link_ended_at).slice(0, 10))}</span>` : ''}
+      </div>
+      <p class="text-[11px] text-gray-400 mt-1">「取引終了」にすると、自社のシフトの割当候補から外れます（所属元の登録内容・ログインは変わりません）。「休止中」は割り当てるときに警告を出します</p>
+    </section>`)
+  }
+  delegate('saveHostStatus', (el) => withSubmitLock(el, async () => {
+    const sid = Number(el.dataset.sid), status = document.getElementById('host-status').value
+    if (status === 'ended' && !confirm('取引終了にしますか？\n自社のシフトの割当候補から外れます（登録済みのシフトはそのまま残ります）')) return
+    try {
+      await axios.put(`/api/admin/roster/${sid}/host-status`, { status })
+      toast('取引状況を保存しました'); if (window.invalidateBoardMaster) invalidateBoardMaster(); renderStaffDetail(sid)
+    } catch (e) { toast(errMsg(e)) }
+  }))
   // =========================================================
   // 仮登録スタッフの統合（第5段階。src/staff-merge.ts）
   // =========================================================

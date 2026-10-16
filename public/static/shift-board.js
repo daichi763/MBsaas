@@ -23,7 +23,8 @@
     if (MASTER) return MASTER
     const [{ data: pj }, { data: cl }, { data: si }, { data: st }] = await Promise.all([
       axios.get('/api/admin/projects'), axios.get('/api/admin/clients'), axios.get('/api/admin/sites'), axios.get('/api/admin/staff')])
-    MASTER = { projects: pj.projects, clients: cl.clients, sites: si.sites, staff: st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id) }
+    // 割り当てられる人だけを出す（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職は assignable=0）
+    MASTER = { projects: pj.projects, clients: cl.clients, sites: si.sites, staff: st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id && s.assignable !== 0) }
     return MASTER
   }
   function invalidateMaster() { MASTER = null }
@@ -111,7 +112,7 @@
           <input class="inp text-xs mb-2" placeholder="名前で絞り込み" oninput="boardFilterStaff(this.value)">
           <div id="board-staff-list" class="space-y-1">
             ${m.staff.map(s => `<div class="board-chip staff-src" data-staff-id="${s.staff_id}" data-name="${esc(s.name)}">
-              <span class="truncate">${esc(s.name)}</span><span class="text-[10px] text-gray-400">${AFF_SHORT[s.affiliation_type] || ''}</span></div>`).join('')}
+              <span class="truncate">${esc(s.name)}</span>${s.employment_status === 'leave' ? '<span class="text-[10px] text-amber-600">休職中</span>' : ''}<span class="text-[10px] text-gray-400">${AFF_SHORT[s.affiliation_type] || ''}</span></div>`).join('')}
           </div>
         </aside>
       </div>`
@@ -251,6 +252,7 @@
           const item = evt.item, toRole = Number(evt.to.dataset.slotRoleId)
           const shiftId = item.dataset.shiftId, staffId = item.dataset.staffId
           item.remove()
+          if (assigning) { toast('処理中です。終わってからもう一度操作してください'); return }
           if (shiftId) await moveShift(Number(shiftId), toRole)
           else if (staffId) await assignStaff(toRole, [Number(staffId)])
         },
@@ -258,24 +260,40 @@
     })
   }
 
+  // 割当の送信中（二度押し・ドラッグの連続で同じ人を二重に割り当てないように #530）
+  let assigning = false
   async function assignStaff(slotRoleId, staffIds, force, extra) {
+    if (assigning && !force) return
+    assigning = true
+    try {
+      return await assignStaffOnce(slotRoleId, staffIds, force, extra)
+    } finally { assigning = false }
+  }
+  async function assignStaffOnce(slotRoleId, staffIds, force, extra) {
     try {
       const { data } = await axios.post(`/api/admin/shift-slots/roles/${slotRoleId}/assign`, { staff_ids: staffIds, force: !!force, ...(extra || {}) })
       toast(data.warnings && data.warnings.length ? '警告を確認のうえ割り当てました' : '割り当てました')
       closeModal(); renderShiftBoard()
     } catch (e) {
       const d = e.response && e.response.data
-      if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま割り当てますか？')) return assignStaff(slotRoleId, staffIds, true, extra); return renderShiftBoard() }
+      if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま割り当てますか？')) return assignStaffOnce(slotRoleId, staffIds, true, extra); return renderShiftBoard() }
       toast(errMsg(e)); renderShiftBoard()
     }
   }
   async function moveShift(shiftId, slotRoleId, force) {
+    if (assigning && !force) return
+    assigning = true
+    try {
+      return await moveShiftOnce(shiftId, slotRoleId, force)
+    } finally { assigning = false }
+  }
+  async function moveShiftOnce(shiftId, slotRoleId, force) {
     try {
       await axios.post(`/api/admin/shifts/${shiftId}/move`, { slot_role_id: slotRoleId, force: !!force })
       toast('移動しました（単価は移動先に合わせて再計算）'); renderShiftBoard()
     } catch (e) {
       const d = e.response && e.response.data
-      if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま移動しますか？')) return moveShift(shiftId, slotRoleId, true); return renderShiftBoard() }
+      if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま移動しますか？')) return moveShiftOnce(shiftId, slotRoleId, true); return renderShiftBoard() }
       toast(errMsg(e)); renderShiftBoard()
     }
   }
@@ -303,15 +321,17 @@
         <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録（本人が可否を返事）</option></select>
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（任意）">
       </div>
-      <button class="btn btn-primary w-full mt-3" onclick="assignFromCandidates(${slotRoleId})">選択したスタッフを割り当て</button>
-      <button class="btn btn-outline w-full mt-2 text-sm" onclick="showQuickRegister && showQuickRegister({ slot_role_id: ${slotRoleId} })"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
+      <button class="btn btn-primary w-full mt-3" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button>
+      <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
   }
   window.assignFromCandidates = function (slotRoleId) {
     const ids = [...document.querySelectorAll('.cand-check:checked')].map(el => Number(el.value))
     if (!ids.length) { toast('スタッフを選択してください'); return }
     const fee = document.getElementById('cand-fee').value
-    assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}) })
+    return assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}) })
   }
+  delegate('assignFromCandidates', (el) => withSubmitLock(el, () => assignFromCandidates(Number(el.dataset.slotRoleId))))
+  delegate('openQuickRegister', (el) => { if (window.showQuickRegister) showQuickRegister({ slot_role_id: Number(el.dataset.slotRoleId) }) })
 
   // ---------- シフト詳細（状態・金額） ----------
   function findShift(id) {
