@@ -26,6 +26,7 @@ import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRos
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport } from './lib/daily-report'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -510,7 +511,7 @@ async function homeLoadReports(db: D1Database, shifts: any[]) {
   return out
 }
 
-// 日報: 提出済みのシフト。shift_id で照合する（shift_id の無い古い日報と、同じ日・同じ案件の日報は稼働日・案件でも照合する）
+// 日報: 提出済みのシフト。shift_id で照合する（日報はシフトごとに1件。shift_id の無い古い日報だけは稼働日・案件で照合する。src/lib/daily-report.ts）
 async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Set<number>> {
   const done = new Set<number>()
   if (!shifts.length) return done
@@ -518,10 +519,10 @@ async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Set<
   const staffIds = [...new Set(shifts.map(s => s.staff_id as number))]
   const dates = [...new Set(shifts.map(s => s.work_date as string))]
   const rows = (await db.prepare(`SELECT shift_id, staff_id, work_date, project_id FROM daily_reports
-    WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
+    WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
     .bind(...ids, ...staffIds, ...dates).all()).results as any[]
   for (const s of shifts) {
-    if (rows.some(d => d.shift_id === s.shift_id || (d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))) done.add(s.shift_id)
+    if (rows.some(d => d.shift_id === s.shift_id || (d.shift_id == null && d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))) done.add(s.shift_id)
   }
   return done
 }
@@ -734,33 +735,51 @@ api.get('/staff/report-template/:projectId', async (c) => {
   return c.json({ template: t ? { ...t, fields: JSON.parse(t.fields_json as string) } : null })
 })
 
-// 日報提出
+// 日報の対象シフトの案件と日報テンプレート（案件はシフトの所有企業のものに限る）
+async function shiftReportTemplate(db: D1Database, shift: any): Promise<{ project: any; template: any | null } | null> {
+  const project = await ownProject(db, shift.company_id, shift.project_id)
+  if (!project) return null
+  const template = (await db.prepare('SELECT * FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null).first()) ?? null
+  return { project, template }
+}
+
+// 日報の入力画面: 対象シフトの日報テンプレートと、提出済みの内容（修正して再提出するときの初期値）
+api.get('/staff/daily-report/:shiftId', async (c) => {
+  const resolved = await resolvePersonShift(c, c.req.param('shiftId'))
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const pt = await shiftReportTemplate(c.env.DB, resolved.shift)
+  if (!pt) return c.json({ error: '案件が見つかりません' }, 404)
+  const t = pt.template
+  let fields: any = []
+  try { fields = t ? JSON.parse(t.fields_json as string) : [] } catch { fields = [] }
+  const report = dailyReportView(await findDailyReport(c.env.DB, resolved.shift))
+  return c.json({ template: t ? { ...t, fields: Array.isArray(fields) ? fields : [] } : null, report })
+})
+
+// 日報提出（シフトごとに1件。同じシフトに再提出すると上書きし、管理者の確認済みを外す）
 api.post('/staff/daily-report', async (c) => {
-  const u = c.get('user')
-  const { project_id, shift_id, work_date, values, incident_flag, complaint_flag } = await c.req.json()
-  const date = work_date || todayJST()
-  // 勤怠の自動振り分け: shift_id があればシフトの所有企業に記録。無い場合は従来どおりログイン中の企業
-  let owner = { company_id: u.company_id as number, staff_id: u.staff_id as number }
-  if (shift_id) {
-    const resolved = await resolvePersonShift(c, shift_id)
-    if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
-    owner = resolved.staff
-  }
-  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため、任意の文字列を保存させない）
-  const tpl = await c.env.DB.prepare('SELECT rt.fields_json FROM projects p LEFT JOIN report_templates rt ON rt.template_id = p.report_template_id WHERE p.project_id = ?').bind(project_id ?? null).first<{ fields_json: string | null }>()
-  const picked = pickReportValues(tpl?.fields_json, values)
+  const b = await c.req.json().catch(() => ({} as any))
+  if (!b.shift_id) return c.json({ error: '日報を入力するシフトを選んでください' }, 400)
+  // 勤怠の自動振り分け: シフトの所有企業・スタッフ行に記録する（同一人物の他社シフトも可）
+  const resolved = await resolvePersonShift(c, b.shift_id)
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const { shift, staff: owner } = resolved
+  // 案件・稼働日はシフトの値を使う。本文で別の値が送られたら受け付けない
+  if (b.project_id != null && b.project_id !== '' && Number(b.project_id) !== shift.project_id) return c.json({ error: '案件がシフトと一致しません' }, 400)
+  if (b.work_date && b.work_date !== shift.work_date) return c.json({ error: '稼働日がシフトと一致しません' }, 400)
+  const blocked = dailyReportBlocked(shift, todayJST())
+  if (blocked) return c.json({ error: blocked }, 400)
+  const pt = await shiftReportTemplate(c.env.DB, shift)
+  if (!pt) return c.json({ error: '案件が見つかりません' }, 404)
+  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため、任意の文字列を保存させない）。数値・長さも確かめる
+  const picked = pickReportValues(pt.template?.fields_json, b.values)
   if ('error' in picked) return c.json({ error: picked.error }, 400)
-  const valuesJson = JSON.stringify(picked.values)
-  const exists = await c.env.DB.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(owner.staff_id, date, project_id).first()
-  if (exists) {
-    await c.env.DB.prepare('UPDATE daily_reports SET report_values = ?, incident_flag = ?, complaint_flag = ?, submitted_at = ? WHERE daily_report_id = ?')
-      .bind(valuesJson, incident_flag ? 1 : 0, complaint_flag ? 1 : 0, nowJST(), exists.daily_report_id).run()
-    return c.json({ ok: true, updated: true })
-  }
-  await c.env.DB.prepare(`INSERT INTO daily_reports (company_id, staff_id, project_id, shift_id, work_date, report_values, incident_flag, complaint_flag, submitted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(owner.company_id, owner.staff_id, project_id, shift_id ?? null, date, valuesJson, incident_flag ? 1 : 0, complaint_flag ? 1 : 0, nowJST()).run()
-  return c.json({ ok: true })
+  const r = await saveDailyReport(c.env.DB, {
+    company_id: owner.company_id, staff_id: owner.staff_id, project_id: shift.project_id, shift_id: shift.shift_id, work_date: shift.work_date,
+    values_json: JSON.stringify(picked.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
+    flags_explicit: b.flags_explicit === true, entry_method: 'app', now: nowJST(),
+  })
+  return c.json({ ok: true, updated: r.updated })
 })
 
 // 自分の日報一覧
@@ -972,15 +991,16 @@ api.get('/admin/dashboard', async (c) => {
     s.done_types = String(s.done_types || '').split(',').filter(Boolean)
   }
 
-  // 昨日までの日報未提出 (直近3日)
+  // 昨日までの日報未提出 (直近3日)。代打も含め、シフトごとに判定する（shift_id の無い古い日報だけは稼働日・案件で照合）
   const missingReports = await db.prepare(`
     SELECT s.shift_id, s.work_date, us.name AS staff_name, s.staff_id, p.project_name
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.status = 'confirmed' AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
-      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.staff_id = s.staff_id AND dr.work_date = s.work_date)
-    ORDER BY s.work_date DESC`).bind(cid, today, today).all()
+    WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
+    ORDER BY s.work_date DESC, s.start_time`).bind(cid, today, today).all()
   // 日報「不要」のシフトは未提出の対象外（第2段階）
   {
     const m = await modesForShifts(db, (missingReports.results as any[]).map(r => r.shift_id))
@@ -1023,16 +1043,18 @@ api.get('/admin/dashboard', async (c) => {
 
   // ===== 管理者ToDo (ルールベース) =====
   const todos: any[] = []
-  // ルール1: 日報未提出3回以上
-  const drCounts: Record<string, { name: string; count: number; staff_id: number }> = {}
+  // ルール1: 日報未提出。件数はシフトの数、「n日連続」は稼働日の数で数える（直近3日のすべての日に未提出があれば連続）
+  const drCounts: Record<string, { name: string; count: number; dates: Set<string>; staff_id: number }> = {}
   for (const m of missingReports.results as any[]) {
     const k = String(m.staff_id)
-    drCounts[k] = drCounts[k] || { name: m.staff_name, count: 0, staff_id: m.staff_id }
+    drCounts[k] = drCounts[k] || { name: m.staff_name, count: 0, dates: new Set(), staff_id: m.staff_id }
     drCounts[k].count++
+    drCounts[k].dates.add(m.work_date)
   }
   for (const v of Object.values(drCounts)) {
-    if (v.count >= 3) todos.push({ level: 'high', text: `${v.name}さんが${v.count}日連続で日報未提出です。面談してください。`, staff_id: v.staff_id })
-    else if (v.count >= 1) todos.push({ level: 'mid', text: `${v.name}さんの日報が${v.count}件未提出です。リマインドしてください。`, staff_id: v.staff_id })
+    const days = v.dates.size
+    if (days >= 3) todos.push({ level: 'high', text: `${v.name}さんが${days}日連続で日報未提出です（${v.count}件）。面談してください。`, staff_id: v.staff_id })
+    else if (v.count >= 1) todos.push({ level: 'mid', text: `${v.name}さんの日報が${v.count}件（${days}日分）未提出です。リマインドしてください。`, staff_id: v.staff_id })
   }
   // ルール2: 入店報告遅れが月2回以上
   const lateRows = await db.prepare(`

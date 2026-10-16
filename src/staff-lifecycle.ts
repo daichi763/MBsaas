@@ -10,6 +10,7 @@ import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
 import { pickReportValues } from './lib/validate'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport } from './lib/daily-report'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
@@ -393,7 +394,8 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
   const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.entry_method, um.name AS entered_by_name FROM attendance_reports a
     LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results
-  const daily = await db.prepare('SELECT daily_report_id, submitted_at, entry_method FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(s.staff_id, s.work_date, s.project_id).first()
+  const dr = await findDailyReport(db, s)
+  const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method } : null
   const token = await db.prepare('SELECT token, expires_at, last_used_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first()
   return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token })
 })
@@ -498,14 +500,14 @@ publicReportApi.get('/:token', async (c) => {
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
   const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
   const reports = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results
-  const daily = await db.prepare('SELECT report_values, submitted_at FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
+  const daily = dailyReportView(await findDailyReport(db, t))
   const tpl = modes.daily_report_required ? await db.prepare('SELECT template_name, fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id).first() as any : null
   await db.prepare('UPDATE shift_report_tokens SET last_used_at = ? WHERE token = ?').bind(nowJST(), t.token).run()
   return c.json({
     company_name: t.company_name, staff_name: firstName(t.staff_name), project_name: t.project_name,
     shift: { work_date: t.work_date, start_time: t.start_time, end_time: t.end_time, location: t.location, role: t.role },
     today: todayJST(), expires_at: t.expires_at, modes, reports, photo_required: photoRequired(t),
-    daily_report: daily ? { submitted_at: daily.submitted_at, values: JSON.parse(daily.report_values || '{}') } : null,
+    daily_report: daily ? { submitted_at: daily.submitted_at, values: daily.values, incident_flag: daily.incident_flag, complaint_flag: daily.complaint_flag } : null,
     template: tpl ? { name: tpl.template_name, fields: JSON.parse(tpl.fields_json || '[]') } : null,
   })
 })
@@ -553,18 +555,21 @@ publicReportApi.post('/:token/daily-report', async (c) => {
   const t = await loadToken(db, c.req.param('token'))
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）
+  // 日報「不要」のシフトと、稼働日の前は受け付けない（画面もフォームを出さない・ボタンを押せない）
+  const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
+  if (!modes.daily_report_required) return c.json({ error: 'このシフトは日報の提出は不要です' }, 400)
+  const blocked = dailyReportBlocked({ work_date: t.work_date, status: t.shift_status }, todayJST())
+  if (blocked) return c.json({ error: blocked }, 400)
+  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）。数値・長さはアプリと同じ検証
   const tpl = await db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id ?? null).first() as any
   const picked = pickReportValues(tpl?.fields_json, b.values)
   if ('error' in picked) return c.json({ error: picked.error }, 400)
-  const json = JSON.stringify(picked.values)
-  if (json.length > 20000) return c.json({ error: '入力内容が長すぎます' }, 400)
-  const exists = await db.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
-  if (exists) await db.prepare("UPDATE daily_reports SET report_values = ?, incident_flag = ?, complaint_flag = ?, submitted_at = ?, entry_method = 'link' WHERE daily_report_id = ?")
-    .bind(json, b.incident_flag ? 1 : 0, b.complaint_flag ? 1 : 0, nowJST(), exists.daily_report_id).run()
-  else await db.prepare(`INSERT INTO daily_reports (company_id, staff_id, project_id, shift_id, work_date, report_values, incident_flag, complaint_flag, submitted_at, entry_method)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(t.company_id, t.staff_id, t.project_id, t.shift_id, t.work_date, json, b.incident_flag ? 1 : 0, b.complaint_flag ? 1 : 0, nowJST()).run()
-  return c.json({ ok: true, updated: !!exists })
+  const r = await saveDailyReport(db, {
+    company_id: t.company_id, staff_id: t.staff_id, project_id: t.project_id, shift_id: t.shift_id, work_date: t.work_date,
+    values_json: JSON.stringify(picked.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
+    flags_explicit: b.flags_explicit === true, entry_method: 'link', now: nowJST(),
+  })
+  return c.json({ ok: true, updated: r.updated })
 })
 
 export { stripMoney }
