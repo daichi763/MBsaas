@@ -552,15 +552,17 @@ api.get('/staff/home', async (c) => {
   const items = shifts.map(s => {
     const st = status.get(s.shift_id)!
     // 次の報告: 前の報告を飛ばしていても、後の報告は押せる（report-settings.ts の checkReportable）
-    const next = reportableTypes(st.required_attendance, new Set(Object.keys(st.reports)), new Set(Object.keys(st.pending_corrections)))[0]
-    return { ...s, ...st, carryover: s.work_date !== today, next_type: next || null,
+    const open = reportableTypes(st.required_attendance, new Set(Object.keys(st.reports)), new Set(Object.keys(st.pending_corrections)))
+    const next = open[0]
+    return { ...s, ...st, carryover: s.work_date !== today, next_type: next || null, open_types: open,
       attendance_done: !next, daily_report_done: dailyDone.has(s.shift_id), tentative: isTentativeShift(s.status) }
   }).filter(s => {
     if (!s.carryover) return true
     // 前日からのシフトは、終了予定から HOME_CARRYOVER_HOURS 時間まで、残りの報告を受け付けている間か日報が未提出の間だけ出す
     const w = shiftWindow(s.work_date, s.start_time, s.end_time)
     if (now > addMinutes(w.end, HOME_CARRYOVER_HOURS * 60)) return false
-    if (s.next_type) return isWithin(reportableWindow(s, s.next_type), now)
+    // 前の報告（起床など）を飛ばしたまま日付が変わっても、受付中の後の報告（勤務終了・退店など）があれば出す
+    if (s.next_type) return s.open_types.some((t: string) =>isWithin(reportableWindow(s, t), now))
     return s.daily_report_required && !s.daily_report_done
   })
   const picked = homePickShift(items, Number(c.req.query('shift_id')) || null)

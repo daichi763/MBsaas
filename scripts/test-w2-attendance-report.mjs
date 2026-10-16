@@ -204,6 +204,23 @@ let T1
   }
 }
 
+// ---------- 9. #47 前日からの日をまたぐシフト: 起床などを飛ばしたままでも、翌日に勤務終了・退店を報告できる ----------
+{
+  const hour = Number(jstNow().slice(11, 13))
+  if (hour >= 20) {
+    console.log('SKIP  #47 日をまたぐシフト（JST 20 時以降は終了時刻を作れないため省略）')
+  } else {
+    const end = String(hour + 2).padStart(2, '0') + ':00'
+    const N1 = await createShift(admin, 10, 3, yesterday, 'W2AR-NIGHT', { start_time: '23:00', end_time: end })
+    const h = await st10.get(`/api/staff/home?shift_id=${N1}`)
+    ok('#47 報告のない前日からのシフトもホームに出る（勤務終了・退店を受付中）', h.data.today_shifts.some(x => x.shift_id === N1 && x.carryover), h.data.today_shifts)
+    const wk = await st10.post('/api/staff/attendance', { shift_id: N1, report_type: 'wake_up' })
+    ok('#47 前日からのシフトの起床は受付期間外（400）', wk.status === 400 && /受付期間/.test(wk.data.error), wk)
+    const we = await st10.post('/api/staff/attendance', { shift_id: N1, report_type: 'work_end' })
+    ok('#47 前日からのシフトに勤務終了を報告できる', we.status === 200, we)
+  }
+}
+
 await admin.post('/api/admin/settings/photo-required', { enabled: true })
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length} / ${results.length} passed`)

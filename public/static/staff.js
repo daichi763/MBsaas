@@ -101,11 +101,14 @@ function homeShiftCardHtml(data) {
 //   done: 報告済み / pending: 打刻修正を申請中（承認待ち。押せない）/ skipped: 後の報告が済んでいて押せない（打刻修正の申請で追加する）
 //   open: 押せる（前の報告を飛ばして押すこともできる）。open の先頭が『次の報告』
 const REPORT_ORDER = ['wake_up', 'departure', 'check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out']
-function homeReportStates(order, reports, pending) {
+//   前日からのシフト（carryover）は、翌日も受け付ける報告（休憩・勤務終了・退店）だけを押せる（サーバーの reportableWindow）
+const NEXT_DAY_REPORTS = ['break_start', 'break_end', 'work_end', 'check_out']
+function homeReportStates(order, reports, pending, carryover) {
   const lastDone = REPORT_ORDER.reduce((m, t, i) => reports[t] ? i : m, -1)
   const out = {}
   for (const t of order) {
-    out[t] = reports[t] ? 'done' : pending[t] ? 'pending' : REPORT_ORDER.indexOf(t) < lastDone ? 'skipped' : 'open'
+    out[t] = reports[t] ? 'done' : pending[t] ? 'pending'
+      : REPORT_ORDER.indexOf(t) < lastDone || (carryover && !NEXT_DAY_REPORTS.includes(t)) ? 'skipped' : 'open'
   }
   return out
 }
@@ -118,7 +121,7 @@ function homeReportButtonsHtml(data) {
   // 提出設定（案件・スタッフ・シフトごと）で必要な報告だけを表示する
   const order = (data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out'])
   const dailyRequired = data.daily_report_required !== false
-  const states = homeReportStates(order, r, pend)
+  const states = homeReportStates(order, r, pend, data.carryover)
   const nextType = order.find(t => states[t] === 'open')
   const nextIdx = nextType ? order.indexOf(nextType) : -1
   const skipped = order.filter(t => states[t] === 'skipped')
@@ -230,7 +233,7 @@ delegate('homeReport', (el) => {
   const type = el.dataset.type, shiftId = Number(el.dataset.shiftId)
   if (HOME.tentative && !confirm('このシフトはまだ確定していません（希望（仮））。確定されるまでは支払いの対象になりません。\n管理者に勤務を確認したうえで報告しますか？')) return
   const order = HOME.required_attendance || []
-  const states = homeReportStates(order, HOME.reports || {}, HOME.pending_corrections || {})
+  const states = homeReportStates(order, HOME.reports || {}, HOME.pending_corrections || {}, HOME.carryover)
   const skipping = order.filter(t => states[t] === 'open' && REPORT_ORDER.indexOf(t) < REPORT_ORDER.indexOf(type))
   if (skipping.length && !confirm(`${skipping.map(t => REPORT_LABELS[t]).join('・')} が未報告です。\n飛ばして${REPORT_LABELS[type]}を報告すると、飛ばした報告はこの画面から押せなくなります（打刻履歴から打刻漏れの追加を申請してください）。\n報告しますか？`)) return
   const photoOn = HOME.photo_required_attendance !== false
