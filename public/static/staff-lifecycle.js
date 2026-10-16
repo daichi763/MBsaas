@@ -270,13 +270,15 @@
   window.renderShiftReportPanel = async function (shiftId) {
     const host = document.getElementById('shift-report-panel'); if (!host) return
     let d; try { d = (await axios.get(`/api/admin/shifts/${shiftId}/report-status`)).data } catch { host.innerHTML = ''; return }
+    reportStatusCache[shiftId] = d
     const done = new Map(d.reports.map(r => [r.report_type, r]))
+    const pending = d.modes.required_attendance.some(t => !done.has(t))
     const url = d.token ? location.origin + '/r/' + d.token.token : ''
     host.innerHTML = `<div class="rounded-lg border border-gray-100 p-3 text-xs space-y-2" id="shift-report-box">
       <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
         <span class="text-gray-400">${d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
-        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? dayjs(r.reported_at).format('HH:mm') : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : r && r.entry_method === 'correction' ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
+        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : r && r.entry_method === 'correction' ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
       <div class="grid grid-cols-2 gap-2">
@@ -288,7 +290,8 @@
           <button class="btn btn-primary text-xs" onclick="copyReportLink()"><i class="fas fa-copy"></i>コピー</button>
           <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
         : `<button class="btn btn-outline text-xs flex-1" onclick="issueReportLink(${shiftId})"><i class="fas fa-link"></i>報告用URLを発行（ログイン不要）</button>`}
-        ${d.modes.required_attendance.some(t => !done.has(t)) ? `<button class="btn btn-outline text-xs" onclick="openProxyAttendance(${shiftId}, ${JSON.stringify(d.modes.required_attendance.filter(t => !done.has(t)))})"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
+        ${pending && !d.proxy_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyAttendance" data-shift-id="${shiftId}"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
+        ${pending && d.proxy_blocked ? `<span class="text-[11px] text-gray-400 py-1">${esc(d.proxy_blocked)}のシフトは代理入力できません</span>` : ''}
       </div>
       ${d.token ? `<p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください</p>` : ''}
     </div>`
@@ -307,20 +310,43 @@
     const el = document.getElementById('sr-url'); if (!el) return
     try { await navigator.clipboard.writeText(el.value); toast('URLをコピーしました') } catch { el.select(); document.execCommand && document.execCommand('copy'); toast('URLをコピーしました') }
   }
-  window.openProxyAttendance = function (shiftId, types) {
-    const box = document.getElementById('shift-report-box'); if (!box) return
+  // 代理入力: 報告状況の最後の取得結果（シフトごと）。既定の時刻・未報告の種類はここから読む
+  const reportStatusCache = {}
+  // 'YYYY-MM-DD HH:MM:SS' を表示用に（稼働日と違う日付なら M/D を付ける）
+  const atLabel = (at, workDate) => at ? (String(at).slice(0, 10) !== workDate ? dayjs(at).format('M/D HH:mm') : dayjs(at).format('HH:mm')) : ''
+  window.openProxyAttendance = function (shiftId) {
+    const box = document.getElementById('shift-report-box'); const d = reportStatusCache[shiftId]; if (!box || !d) return
+    if (document.getElementById('proxy-form')) return
+    const done = new Set(d.reports.map(r => r.report_type))
+    const types = d.modes.required_attendance.filter(t => !done.has(t))
+    const crosses = d.end_time <= d.start_time
+    // 既定のチェックは入店だけ（勤務中に予定どおりの退店まで記録しないように）
     box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-amber-50 space-y-2" id="proxy-form">
       <p class="font-bold text-amber-800">代理入力（管理者が記録します。「代理入力」と表示されます）</p>
-      <div class="flex flex-wrap gap-2">${types.map(t => `<label class="flex items-center gap-1"><input type="checkbox" class="px-type" value="${t}" ${['check_in', 'check_out'].includes(t) ? 'checked' : ''}>${RT_LABEL[t]}</label>`).join('')}</div>
-      <label class="flex items-center gap-2 flex-wrap">時刻<input id="px-time" type="time" class="inp text-xs w-auto"><span class="text-gray-400">空欄: 入店・勤務開始=開始時刻、勤務終了・退店=終了時刻、それ以外=現在時刻</span></label>
-      <button class="btn btn-primary text-xs w-full" onclick="submitProxyAttendance(${shiftId})">記録する</button></div>`)
-    const btn = box.querySelector('button[onclick^="openProxyAttendance"]'); if (btn) btn.remove()
+      <div class="space-y-1">${types.map(t => { const def = d.proxy_defaults && d.proxy_defaults[t]; return `<label class="flex items-center gap-2 flex-wrap">
+        <input type="checkbox" class="px-type" value="${esc(t)}" ${t === 'check_in' ? 'checked' : ''}><span class="w-16">${esc(RT_LABEL[t] || t)}</span>
+        <input type="time" class="inp text-xs w-auto px-time" data-type="${esc(t)}">
+        <span class="text-gray-400">${def ? '空欄: ' + esc(atLabel(def, d.work_date)) + '（予定）' : '時刻を入力してください'}</span></label>` }).join('')}</div>
+      <p class="text-[11px] text-gray-500">実際の時刻を種類ごとに入力します。まだ来ていない時刻は記録できません。${crosses ? '日をまたぐシフトです。翌日の時刻はそのまま入力すると翌日として記録します。' : ''}</p>
+      <button class="btn btn-primary text-xs w-full" data-action="submitProxyAttendance" data-shift-id="${shiftId}">記録する</button></div>`)
+    // 時刻を入力した種類にはチェックを入れる
+    box.querySelectorAll('#proxy-form .px-time').forEach(el => el.addEventListener('input', () => { if (el.value) el.closest('label').querySelector('.px-type').checked = true }))
   }
-  window.submitProxyAttendance = async function (shiftId) {
-    const types = [...document.querySelectorAll('.px-type:checked')].map(el => el.value)
+  window.submitProxyAttendance = async function (shiftId, button) {
+    const types = [...document.querySelectorAll('#proxy-form .px-type:checked')].map(el => el.value)
     if (!types.length) { toast('報告の種類を選択してください'); return }
-    try { const { data } = await axios.post(`/api/admin/shifts/${shiftId}/proxy-attendance`, { report_types: types, time: document.getElementById('px-time').value }); toast(`${data.created}件を代理入力しました`); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
+    const times = {}
+    document.querySelectorAll('#proxy-form .px-time').forEach(el => { if (types.includes(el.dataset.type) && el.value) times[el.dataset.type] = el.value })
+    await withSubmitLock(button, async () => {
+      try {
+        const { data } = await axios.post(`/api/admin/shifts/${shiftId}/proxy-attendance`, { report_types: types, times })
+        const late = (data.reports || []).some(r => r.status === 'late')
+        toast(`${data.created}件を代理入力しました${late ? '（入店は遅延として記録）' : ''}`); renderShiftReportPanel(shiftId)
+      } catch (e) { toast(errMsg(e)) }
+    })
   }
+  delegate('openProxyAttendance', el => { openProxyAttendance(Number(el.dataset.shiftId)); el.remove() })
+  delegate('submitProxyAttendance', el => submitProxyAttendance(Number(el.dataset.shiftId), el))
 
   // =========================================================
   // 案件詳細: 提出設定の初期値

@@ -173,11 +173,12 @@ let p4members
   await proxy(b, 'work_start', '11:00'); await proxy(b, 'work_end', '15:00')
   r = await settlementRow(admin, b, d)
   ok('集計: 確定済みのシフトは実績を変えない（既存の規則）', r && r.actual_start === '09:55' && r.actual_end === '19:05', r && [r.actual_start, r.actual_end])
-  // 日をまたぐ勤務
-  const n = await createShift(admin, 7, 1, d, 'RS-TEST-NIGHT', { start_time: '22:00', end_time: '06:00' })
+  // 日をまたぐ勤務（代理入力は翌日の 05:30 として記録し、未来の日時は受け付けないので、2日前のシフトにする）
+  const d2 = addDays(today, -2)
+  const n = await createShift(admin, 7, 1, d2, 'RS-TEST-NIGHT', { start_time: '22:00', end_time: '06:00' })
   await proxy(n, 'work_start', '22:00')
   const nn = await admin.post(`/api/admin/shifts/${n}/proxy-attendance`, { report_types: ['work_end'], time: '05:30' })
-  r = await settlementRow(admin, n, d)
+  r = await settlementRow(admin, n, d2)
   ok('集計: 日をまたぐ勤務（22:00〜翌05:30）', nn.status === 200 && r && r.actual_start === '22:00' && r.actual_end === '05:30' && r.actual_hours != null && r.actual_hours > 0, r && [r.actual_start, r.actual_end, r.actual_hours])
 }
 
