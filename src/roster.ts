@@ -239,6 +239,7 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
   // 経路（雇用元の行）は画面・APIに出さない（頭超え防止）
   const { root_staff_id: _root, relink_code: _rc, person_created_company_id: _pc, link_in_service: _ls, ...rest } = row as any
   const relink = usesRelinkCode(type, row.person_created_company_id, row.company_id)
+  const linkable = (type === 'own_employee' || type === 'linked_external') && !row.merged_into_staff_id
   return {
     ...rest,
     affiliation_type: type,
@@ -247,8 +248,10 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
     // QR/ID で他社に連携できるのは、自社雇用の元データと、他社から連携で受け入れた行（さらに次の企業へ＝多段連携）。
     // 自社雇用は本人の恒久ID（persons.global_staff_code）、連携で受け入れた行は自社専用の relink_code を使う
     // （恒久IDを渡すと次の企業が雇用元と直接つながってしまうため。頭超え防止）
-    // 退職・停止中の人は連携させない（#41。他社連携の行は雇用元の行も在籍中であること）
-    linkable: (type === 'own_employee' || type === 'linked_external') && !row.merged_into_staff_id && !!row.link_in_service,
+    // linkable は区分による可否（企業間チャットの連携先スレッドの表示にも使うため、在籍状況では変えない）
+    linkable,
+    // 連携用QR/IDを今共有できるか。退職・停止中の人は連携させない（#41。他社連携の行は雇用元の行も在籍中であること）
+    link_shareable: linkable && !!row.link_in_service,
     // 画面に出すスタッフID（他社の恒久IDは見せない。他社連携から切り替えた行も自社専用のコードのみ: #63）
     global_staff_code: relink ? (row.relink_code || null) : row.global_staff_code,
     // 連携用IDが自社専用の再連携コードか（QR画面の説明の出し分け用）
@@ -344,9 +347,8 @@ rosterApi.get('/:id/share-code', async (c) => {
   const u = c.get('user')
   const r = await loadRoster(c.env.DB, c.req.param('id'), u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
-  if (!r.linkable) {
-    const typeOk = (r.affiliation_type === 'own_employee' || r.affiliation_type === 'linked_external') && !r.merged_into_staff_id
-    return c.json({ error: typeOk ? '退職・停止中のスタッフ（他社連携の場合は所属元で退職済みの人を含む）は連携用IDを共有できません'
+  if (!r.link_shareable) {
+    return c.json({ error: r.linkable ? '退職・停止中のスタッフ（他社連携の場合は所属元で退職済みの人を含む）は連携用IDを共有できません'
       : '連携用IDを共有できるのは自社雇用スタッフと、他社から連携したスタッフのみです' }, 400)
   }
   let code = r.global_staff_code
@@ -686,7 +688,7 @@ staffSelfApi.get('/profile', async (c) => {
   // PRポイント・備考は企業間で共有する業務情報のため、スタッフ本人向けには返さない
   for (const f of ROSTER_BASE_FIELDS) if (f !== 'pr_points' && f !== 'remarks') pick[f] = r[f]
   // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
-  pick.global_staff_code = r.affiliation_type === 'own_employee' && r.linkable ? r.global_staff_code : null
+  pick.global_staff_code = r.affiliation_type === 'own_employee' && r.link_shareable ? r.global_staff_code : null
   return c.json({ profile: pick })
 })
 

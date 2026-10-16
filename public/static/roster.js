@@ -414,7 +414,7 @@ window.renderRosterPanels = async function (sid, p) {
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-link text-blue-500 mr-1"></i>連携先企業（自社から連携した稼働先）</h3>
-          ${p.linkable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
+          ${p.link_shareable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
         </div>
         ${links.links.length ? links.links.map(l => `
           <div class="p-2.5 rounded-lg bg-gray-50 mb-2">
@@ -426,7 +426,7 @@ window.renderRosterPanels = async function (sid, p) {
             ${l.site_evaluation || l.work_memo ? `
               <p class="text-xs text-gray-700 mt-1"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
               <p class="text-xs text-gray-700"><span class="text-gray-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>` : '<p class="text-xs text-gray-400 mt-1">稼働先からの追記はまだありません</p>'}
-          </div>`).join('') : `<p class="text-sm text-gray-400">${p.linkable ? 'まだ他社には連携されていません' : '連携対象外のスタッフです'}</p>`}
+          </div>`).join('') : `<p class="text-sm text-gray-400">${!p.linkable ? '連携対象外のスタッフです' : p.link_shareable ? 'まだ他社には連携されていません' : '退職・停止中のため、新しく連携することはできません'}</p>`}
         <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。</p>
       </section>`
   }

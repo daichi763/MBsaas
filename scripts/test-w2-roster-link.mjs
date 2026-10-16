@@ -85,7 +85,7 @@ const detail = async (api, sid) => (await api.get(`/api/admin/staff/${sid}`)).da
   ok('#41 連携先に行が作られていない', !must(await co.B.api.get('/api/admin/staff'), 'B staff').staff.some(s => s.name === `${PFX} 連携Z`))
   const sc = await admin.get(`/api/admin/roster/${staff.Z.staff_id}/share-code`)
   ok('#41 退職者の連携用QRは出さない（400）', sc.status === 400, sc)
-  ok('#41 退職者は linkable=false', (await detail(admin, staff.Z.staff_id))?.linkable === false)
+  { const pz = await detail(admin, staff.Z.staff_id); ok('#41 退職者は link_shareable=false（区分の linkable は true のままで、企業間チャットの連携先スレッドは出る）', pz?.link_shareable === false && pz?.linkable === true, pz && [pz.link_shareable, pz.linkable]) }
   // 退職予定（今日以降の退職日）の人は連携できる
   r = await putEmp(staff.Z.staff_id, { profile: { retired_at: null, employment_status: 'working' } })
   ok('（前提）Z の退職を取り消す', r.status === 200, r)
@@ -107,7 +107,7 @@ const detail = async (api, sid) => (await api.get(`/api/admin/staff/${sid}`)).da
   const yC = await co.C.api.get(`/api/admin/roster/lookup?code=${rl.global_staff_code}`)
   ok('#41 多段連携: 雇用元で退職した人は、途中の会社の RL コードでも連携できない（409）', yC.status === 409, yC)
   const pa = await detail(co.A.api, yA), pb = await detail(co.B.api, yB)
-  ok('#127 連携行（A）に雇用元の退職日が伝わり、退職扱いになる', pa && pa.retired_at === yesterday && pa.status === 'suspended' && pa.employment_status === 'retired' && pa.linkable === false, pa && [pa.retired_at, pa.status, pa.employment_status, pa.linkable])
+  ok('#127 連携行（A）に雇用元の退職日が伝わり、退職扱いになる', pa && pa.retired_at === yesterday && pa.status === 'suspended' && pa.employment_status === 'retired' && pa.link_shareable === false, pa && [pa.retired_at, pa.status, pa.employment_status, pa.link_shareable])
   ok('#127 多段連携の先（B）にも退職日が伝わる', pb && pb.retired_at === yesterday && pb.status === 'suspended', pb && [pb.retired_at, pb.status])
   const scA = await co.A.api.get(`/api/admin/roster/${yA}/share-code`)
   ok('#41 雇用元で退職した人の連携用QRは連携先でも出さない（400）', scA.status === 400, scA)
@@ -150,7 +150,7 @@ const detail = async (api, sid) => (await api.get(`/api/admin/staff/${sid}`)).da
   const ch = await co.A.api.post(`/api/admin/staff/${xA}/affiliation-change`, { to_type: 'own_employee', hire_date: today, effective_date: today })
   ok('（前提）A で X を自社雇用に切り替える', ch.status === 200, ch)
   const p = await detail(co.A.api, xA)
-  ok('#63 切り替えた行には雇用元の恒久IDを出さない', p && p.global_staff_code !== staff.X.global_staff_code && p.linkable === true, p && [p.global_staff_code, p.linkable])
+  ok('#63 切り替えた行には雇用元の恒久IDを出さない', p && p.global_staff_code !== staff.X.global_staff_code && p.link_shareable === true, p && [p.global_staff_code, p.link_shareable])
   const listRow = must(await co.A.api.get('/api/admin/staff'), 'A staff').staff.find(s => s.staff_id === xA)
   ok('#63 スタッフ一覧にも雇用元の恒久IDを出さない', listRow && listRow.global_staff_code !== staff.X.global_staff_code, listRow && listRow.global_staff_code)
   const sc = must(await co.A.api.get(`/api/admin/roster/${xA}/share-code`), 'share-code')
