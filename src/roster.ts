@@ -8,6 +8,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
+import { isISODate } from './lib/validate'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -78,10 +79,16 @@ export const ROSTER_ABSOLUTE_REQUIRED = [
 ]
 // 企業ごとに必須/任意を切り替えられる項目（既定: 任意）
 // skillsheet: ④スキルシートのみ作成でも入力を求めるか（false の項目は④では必須判定しない）
-export const ROSTER_CONFIGURABLE_FIELDS: { code: string; label: string; skillsheet: boolean }[] = [
+// only: この区分のスタッフだけに求める（所属先担当者名は取引先所属だけ。自社雇用では所属先＝自社のため意味がない）
+// login_only: ログインを持つスタッフだけに求める（メールはログインのある人にだけ保存するため）
+// note: 設定画面に出す対象の説明
+export type RosterConfigurableField = { code: string; label: string; skillsheet: boolean; only?: string[]; login_only?: boolean; note?: string }
+export const ROSTER_CONFIGURABLE_FIELDS: RosterConfigurableField[] = [
   { code: 'kana', label: 'フリガナ', skillsheet: true },
   { code: 'date_of_birth', label: '生年月日', skillsheet: true },
-  { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false },
+  { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false, only: ['partner_manual'], note: '③取引先のみ' },
+  { code: 'phone', label: '電話番号', skillsheet: false },
+  { code: 'email', label: 'メール', skillsheet: false, login_only: true, note: 'ログインのある人のみ' },
   { code: 'skills', label: 'スキル', skillsheet: true },
   { code: 'career', label: '経歴', skillsheet: true }, // 経歴テーブル（career_rows）入力時は要約テキストで判定
   { code: 'work_area', label: '稼働可能エリア', skillsheet: true },
@@ -90,6 +97,14 @@ export const ROSTER_CONFIGURABLE_FIELDS: { code: string; label: string; skillshe
   { code: 'commute_minutes', label: '通勤可能時間', skillsheet: false },
   { code: 'available_from', label: '稼働開始可能日', skillsheet: false },
 ]
+/** その区分（とログインの有無）のスタッフに、この項目の必須設定を当てはめるか。hasLogin が未指定なら login_only は当てはめる */
+export function requirementApplies(f: RosterConfigurableField, type?: string, hasLogin?: boolean): boolean {
+  if (type === 'linked_external') return false // 基本項目は所属元が管理する
+  if (type === 'skillsheet_only' && !f.skillsheet) return false
+  if (f.only && type && !f.only.includes(type)) return false
+  if (f.login_only && hasLogin === false) return false
+  return true
+}
 
 export async function getRequiredFields(db: D1Database, companyId: number): Promise<Set<string>> {
   const rows = await db.prepare('SELECT field_code FROM roster_field_requirements WHERE company_id = ? AND is_required = 1').bind(companyId).all()
@@ -102,12 +117,52 @@ function isBlank(v: any) { return v === undefined || v === null || String(v).tri
  * mode='create': body に無い/空の必須項目をすべて不足とする
  * mode='update': body に含まれていて空にしようとしている必須項目のみ不足とする（部分更新を妨げない）
  */
-export function missingRequired(required: Set<string>, body: any, mode: 'create' | 'update', type?: string): string[] {
+export function missingRequired(required: Set<string>, body: any, mode: 'create' | 'update', type?: string, hasLogin?: boolean): string[] {
   return ROSTER_CONFIGURABLE_FIELDS
     .filter(f => required.has(f.code))
-    .filter(f => !(type === 'skillsheet_only' && !f.skillsheet))
+    .filter(f => requirementApplies(f, type, hasLogin))
     .filter(f => mode === 'create' ? isBlank(body[f.code]) : (body[f.code] !== undefined && isBlank(body[f.code])))
     .map(f => f.label)
+}
+
+/**
+ * スタッフマスタの値の形式を確かめて正規化する（作成・更新で共通。送られてきた項目だけを見る）。エラー時はメッセージを返す。
+ * 通勤可能時間は 0〜1440 の整数、生年月日・稼働開始可能日は実在する YYYY-MM-DD、電話番号は数字10〜11桁。
+ * 空欄は null にする。
+ */
+export function normalizeRosterValues(body: any): string | null {
+  const cm = body.commute_minutes
+  if (cm !== undefined && cm !== null && String(cm).trim() !== '') {
+    const n = typeof cm === 'boolean' ? NaN : Number(String(cm).trim())
+    if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
+    body.commute_minutes = Math.round(n)
+  } else if (cm !== undefined) body.commute_minutes = null
+  const today = nowJST().slice(0, 10)
+  for (const [k, label] of [['date_of_birth', '生年月日'], ['available_from', '稼働開始可能日']] as const) {
+    if (body[k] === undefined) continue
+    const s = String(body[k] ?? '').trim()
+    if (!s) { body[k] = null; continue }
+    if (!isISODate(s)) return `${label}は「2000-01-31」の形式で入力してください`
+    if (k === 'date_of_birth' && (s < '1900-01-01' || s > today)) return '生年月日が正しくありません'
+    body[k] = s
+  }
+  if (body.phone !== undefined) {
+    const s = String(body.phone ?? '').trim()
+    if (s && !/^\d{10,11}$/.test(phoneDigits(s))) return '電話番号は10〜11桁の数字で入力してください'
+    body.phone = s || null
+  }
+  if (body.email !== undefined) {
+    const s = String(body.email ?? '').trim()
+    if (s && (s.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))) return 'メールアドレスの形式が正しくありません'
+    body.email = s || null
+  }
+  return null
+}
+// 電話番号の数字だけ（+81 は 0 に）。staff-lifecycle.ts の normalizePhone と同じ規則（循環 import を避けるためここに置く）
+function phoneDigits(p: string): string {
+  let s = p.replace(/[^\d+]/g, '')
+  if (s.startsWith('+81')) s = '0' + s.slice(3)
+  return s.replace(/\D/g, '')
 }
 
 // 連携時の同意ポップアップで明示する共有範囲（フロント表示と同意履歴の双方で同じ文言を使う）
@@ -287,6 +342,32 @@ rosterApi.put('/field-settings', async (c) => {
       .bind(u.company_id, k, v ? 1 : 0, u.user_id, nowJST()))
   if (stmts.length) await c.env.DB.batch(stmts)
   return c.json({ ok: true })
+})
+// 必須項目が未入力の既存スタッフ（必須を後から ON にしたときの確認用）。
+// 他社連携（所属元が管理）・統合済み・退職者は対象外。④スキルシートのみはスキルシート対象の項目だけを見る
+const MISSING_LIST_MAX = 500
+rosterApi.get('/field-settings/missing', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const required = await getRequiredFields(db, u.company_id)
+  const fields = ROSTER_CONFIGURABLE_FIELDS.filter(f => required.has(f.code))
+  if (!fields.length) return c.json({ count: 0, staff: [], truncated: false })
+  const rows = (await db.prepare(`
+    SELECT sp.staff_id, us.name, us.role, us.email, us.phone, COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type,
+      sp.kana, sp.date_of_birth, sp.affiliation_contact, sp.skills, sp.career, sp.work_area,
+      sp.nearest_station_line, sp.nearest_station, sp.commute_minutes, sp.available_from
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type, 'own_employee') != 'linked_external'
+      AND sp.merged_into_staff_id IS NULL AND us.status = 'active' AND COALESCE(sp.employment_status, 'working') != 'retired'
+    ORDER BY sp.staff_id`).bind(u.company_id).all()).results as any[]
+  const out: { staff_id: number; name: string; affiliation_type: string; missing: string[] }[] = []
+  let count = 0
+  for (const r of rows) {
+    const missing = fields.filter(f => requirementApplies(f, r.affiliation_type, r.role === 'staff') && isBlank(r[f.code])).map(f => f.label)
+    if (!missing.length) continue
+    count++
+    if (out.length < MISSING_LIST_MAX) out.push({ staff_id: r.staff_id, name: r.name, affiliation_type: r.affiliation_type, missing })
+  }
+  return c.json({ count, staff: out, truncated: count > out.length })
 })
 
 // ---------- フェーズE: QR（恒久固定のスタッフID） ----------
@@ -473,11 +554,15 @@ rosterApi.post('/', async (c) => {
   // 絶対必須項目（企業ごとの必須設定の対象外）: 氏名・性別
   if (!name) return c.json({ error: '氏名は必須です' }, 400)
   if (!b.gender) return c.json({ error: '性別は必須です' }, 400)
-  const missing = missingRequired(await getRequiredFields(db, u.company_id), b, 'create', type)
-  if (missing.length) return c.json({ error: `次の項目は必須です: ${missing.join('・')}`, missing }, 400)
+  // 自社雇用・④では所属先担当者名を保存しない（入力欄もない）
+  if (type !== 'partner_manual') b.affiliation_contact = null
+  const valueErr = normalizeRosterValues(b)
+  if (valueErr) return c.json({ error: valueErr }, 400)
 
   // ログイン: ②は必須（自社スタッフとして勤怠報告等を行うため）、③は任意、④は作らない
-  const wantsLogin = type === 'own_employee' || (type === 'partner_manual' && b.user_code && b.password)
+  const wantsLogin = type === 'own_employee' || (type === 'partner_manual' && !!b.user_code && !!b.password)
+  const missing = missingRequired(await getRequiredFields(db, u.company_id), b, 'create', type, wantsLogin)
+  if (missing.length) return c.json({ error: `次の項目は必須です: ${missing.join('・')}`, missing }, 400)
   if (type === 'own_employee' && (!b.user_code || !b.password)) return c.json({ error: 'スタッフ番号・初期パスワードは必須です' }, 400)
   if (wantsLogin) {
     const pwErr = validatePassword(String(b.password))
@@ -510,6 +595,7 @@ rosterApi.post('/', async (c) => {
   }
   if (type === 'skillsheet_only') affiliation = b.affiliation ? String(b.affiliation) : null
 
+  if (type === 'own_employee' && b.hire_date && !isISODate(String(b.hire_date))) return c.json({ error: '入社年月日は「2000-01-31」の形式で入力してください' }, 400)
   if (type === 'own_employee' && b.employee_number) {
     const dup = await db.prepare('SELECT 1 FROM employee_records WHERE company_id = ? AND employee_number = ?').bind(u.company_id, b.employee_number).first()
     if (dup) return c.json({ error: 'この社員番号は既に使用されています' }, 409)

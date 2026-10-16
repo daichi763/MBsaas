@@ -22,8 +22,8 @@ import {
   hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, linkedStaffEmails } from './roster'
-import { isHHMM, oneOf, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails } from './roster'
+import { isHHMM, oneOf, toInt, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 
 type Bindings = {
@@ -1143,6 +1143,9 @@ function normalizeBusinessBody(body: any): string | null {
 // 必須項目チェック（企業ごとの必須設定 + 氏名・性別）。不足があればエラーメッセージを返す
 async function validateProfileBase(c: any, body: any, roster: any): Promise<string | null> {
   const u = c.get('user')
+  // 生年月日・通勤可能時間・稼働開始可能日の形式（作成時と同じ確認）
+  const valueErr = normalizeRosterValues(body)
+  if (valueErr) return valueErr
   const missing = missingRequired(await getRequiredFields(c.env.DB, u.company_id), body, 'update', roster.affiliation_type)
   if (body.gender !== undefined && !body.gender) missing.unshift('性別')
   if (body.name !== undefined && !String(body.name || '').trim()) missing.unshift('氏名')
@@ -1486,12 +1489,22 @@ api.get('/admin/clients', async (c) => {
 
 api.post('/admin/clients', async (c) => {
   const u = c.get('user')
-  const b = await c.req.json()
-  if (!b.client_name) return c.json({ error: 'クライアント名は必須です' }, 400)
-  await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.client_name, b.stream_type || 'upstream', b.contact_name ?? null, b.email ?? null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null).run()
-  return c.json({ ok: true })
+  const b = await c.req.json().catch(() => ({} as any))
+  const name = String(b.client_name ?? '').trim()
+  if (!name) return c.json({ error: 'クライアント名は必須です' }, 400)
+  let rating = 3
+  if (b.client_rating !== undefined && b.client_rating !== null && String(b.client_rating).trim() !== '') {
+    const r = toInt(b.client_rating, 1, 5)
+    if (r === null) return c.json({ error: '評価は1〜5で入力してください' }, 400)
+    rating = r
+  }
+  // 二度押し・入力ミスで同じクライアントが2件できないよう、同名があれば確認を求める（確認済みなら登録する）
+  if (b.allow_duplicate !== true && await c.env.DB.prepare('SELECT 1 FROM clients WHERE company_id = ? AND client_name = ? LIMIT 1').bind(u.company_id, name).first())
+    return c.json({ error: `同じ名前のクライアント「${name}」が既に登録されています`, confirm_duplicate: true }, 409)
+  const r = await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo, client_rating)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, name, b.stream_type || 'upstream', b.contact_name ?? null, b.email ?? null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating).run()
+  return c.json({ ok: true, client_id: r.meta.last_row_id })
 })
 
 // クライアント詳細（会社詳細画面用。まだ一覧のみだったため今回新設）
@@ -1523,6 +1536,12 @@ api.put('/admin/clients/:id', async (c) => {
     const v = validateInvoiceNumber(b.invoice_number)
     if (v === 'invalid') return c.json({ error: 'インボイス登録番号は「T」+数字13桁で入力してください（例: T1234567890123）' }, 400)
     invoiceNumber = v
+  }
+  // 評価は1〜5の整数（範囲外の値が入ると一覧の星の描画が止まる）。空なら変更しない
+  if (b.client_rating !== undefined && b.client_rating !== null && String(b.client_rating).trim() !== '') {
+    const r = toInt(b.client_rating, 1, 5)
+    if (r === null) return c.json({ error: '評価は1〜5で入力してください' }, 400)
+    b.client_rating = r
   }
 
   const exists = await c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
@@ -1972,19 +1991,35 @@ const SHIFT_STATUSES = ['requested', 'confirmed', 'substitute', 'absent']
 
 // 案件登録
 api.post('/admin/projects', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
-  if (!b.project_name) return c.json({ error: '案件名は必須です' }, 400)
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  const name = String(b.project_name ?? '').trim()
+  if (!name) return c.json({ error: '案件名は必須です' }, 400)
   if (b.project_type && !PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
   if (b.unit_price_type && !UNIT_PRICE_TYPES.includes(b.unit_price_type)) return c.json({ error: '単価の種類が正しくありません' }, 400)
-  // 他社のクライアント・テンプレートは指定できない
-  if (b.client_id != null && b.client_id !== '' && !(await ownClient(c.env.DB, u.company_id, b.client_id))) return c.json({ error: 'クライアントが見つかりません' }, 400)
-  if (b.report_template_id != null && b.report_template_id !== '' && !(await c.env.DB.prepare('SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?)').bind(b.report_template_id, u.company_id).first()))
-    return c.json({ error: '日報テンプレートが見つかりません' }, 400)
-  await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
+  // クライアントは任意（社内研修など）。空欄は NULL にする（'' のまま入れると外部キー違反になる）。他社のクライアントは指定できない
+  const blank = (v: any) => v === undefined || v === null || String(v).trim() === ''
+  const clientId = blank(b.client_id) ? null : b.client_id
+  if (clientId !== null && !(await ownClient(c.env.DB, u.company_id, clientId))) return c.json({ error: 'クライアントが見つかりません' }, 400)
+  // 日報テンプレートは自社または本部のものだけ。未指定なら、項目のあるテンプレートのうち最初のもの（画面の既定と同じ）
+  let templateId: any = null
+  if (!blank(b.report_template_id)) {
+    if (!(await c.env.DB.prepare('SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?)').bind(b.report_template_id, u.company_id).first()))
+      return c.json({ error: '日報テンプレートが見つかりません' }, 400)
+    templateId = b.report_template_id
+  } else {
+    const t = await c.env.DB.prepare(`SELECT template_id FROM report_templates WHERE (company_id IS NULL OR company_id = ?)
+      AND json_valid(fields_json) AND json_array_length(fields_json) > 0 ORDER BY template_id LIMIT 1`).bind(u.company_id).first()
+    if (!t) return c.json({ error: '日報テンプレートが登録されていません。本部に登録を依頼してください' }, 400)
+    templateId = t.template_id
+  }
+  // 二度押し・入力ミスで同じ案件が2件できないよう、稼働中の同名案件があれば確認を求める（確認済みなら登録する）
+  if (b.allow_duplicate !== true && await c.env.DB.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active' LIMIT 1`).bind(u.company_id, name).first())
+    return c.json({ error: `同じ名前の稼働中の案件「${name}」が既に登録されています`, confirm_duplicate: true }, 409)
+  const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.client_id ?? null, b.project_name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, b.required_skills ?? null, b.report_template_id ?? 1, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null).run()
-  return c.json({ ok: true })
+    .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
+      b.unit_price_type || 'daily', b.unit_price || 0, b.required_skills ?? null, templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null).run()
+  return c.json({ ok: true, project_id: r.meta.last_row_id })
 })
 
 // 案件ごとの入店/退店報告 写真添付オーバーライド更新
