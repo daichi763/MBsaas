@@ -31,7 +31,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_shift_requests_pending ON shift_requests(st
 -- 2) これまでスタッフ本人が出した希望（shifts.status = 'requested' で登録者が本人）を移す。
 --    勤怠・日報・報告用URL・打刻修正・応募と結び付いた行は、参照を壊さないよう移さずに残す。
 INSERT OR IGNORE INTO shift_requests (company_id, staff_id, user_id, project_id, work_date, start_time, end_time, memo, status, legacy_shift_id, created_at)
-SELECT s.company_id, s.staff_id, s.registered_by, s.project_id, s.work_date, s.start_time, s.end_time, NULLIF(s.memo, '希望提出'), 'pending', s.shift_id, s.created_at
+SELECT s.company_id, s.staff_id, s.registered_by, s.project_id, s.work_date, s.start_time, s.end_time, NULLIF(s.memo, '希望提出'), 'pending', s.shift_id,
+  COALESCE(datetime(s.created_at, '+9 hours'), datetime('now', '+9 hours'))  -- shifts.created_at は UTC（CURRENT_TIMESTAMP）
 FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id
 WHERE s.status = 'requested' AND s.registered_by IS NOT NULL AND s.registered_by = sp.user_id
   AND s.slot_id IS NULL AND COALESCE(s.settle_status, 'planned') != 'confirmed'
