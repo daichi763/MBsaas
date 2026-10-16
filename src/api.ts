@@ -1189,8 +1189,14 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
   // 取引先所属スタッフの所属会社名を変更した場合は、取引先マスタ（staff_affiliations）のIDも追従させる
   if (roster.affiliation_type === 'partner_manual' && affiliation) {
     await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, affiliation).run()
-    await c.env.DB.prepare(`UPDATE staff_profiles SET partner_affiliation_id = (SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)
-      WHERE staff_id = ? AND company_id = ?`).bind(u.company_id, affiliation, sid, u.company_id).run()
+    const partner = `(SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)`
+    // 今日以降の未確定の予定シフトの支払先も新しい取引先にそろえる（#28。精算はシフトの payee_affiliation_id で支払先を決めるため）
+    await c.env.DB.batch([
+      c.env.DB.prepare(`UPDATE staff_profiles SET partner_affiliation_id = ${partner} WHERE staff_id = ? AND company_id = ?`).bind(u.company_id, affiliation, sid, u.company_id),
+      c.env.DB.prepare(`UPDATE shifts SET payee_affiliation_id = ${partner}
+        WHERE staff_id = ? AND company_id = ? AND work_date >= ? AND payee_type = 'partner' AND status != 'absent' AND COALESCE(settle_status,'planned') != 'confirmed'
+          AND payee_affiliation_id IS NOT ${partner}`).bind(u.company_id, affiliation, sid, u.company_id, todayJST(), u.company_id, affiliation),
+    ])
   }
 
   if (retired_at !== undefined || employment_status !== undefined) await applyRetirement(c.env.DB, sid, u.company_id, roster, retired_at, employment_status)

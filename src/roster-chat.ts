@@ -76,10 +76,52 @@ chatApi.get('/threads', async (c) => {
     partner_company_name: t.host_company_id === u.company_id ? t.owner_company_name : t.host_company_name,
     // 自社画面で開くべき staff_id（稼働先=連携行 / 所属元=元スタッフ行）
     open_staff_id: t.host_company_id === u.company_id ? t.thread_staff_id : t.source_staff_id,
+    ended: false,
   }))
-  const unread_total = threads.reduce((a, t) => a + (t.unread || 0), 0)
-  return c.json({ threads, unread_total })
+  // 区分の変更などで連携が終わったスレッド（閲覧のみ）。未読件数（/unread-count）と同じく、やり取りの記録の所属元・稼働先で数える（#237）
+  const ended = (await endedThreads(db, u.company_id)).map(t => ({
+    ...t,
+    my_side: t.host_company_id === u.company_id ? 'host' : 'owner',
+    partner_company_name: t.host_company_id === u.company_id ? t.owner_company_name : t.host_company_name,
+    open_staff_id: null, ended: true,
+  }))
+  const all = [...threads, ...ended].sort((a, b) => (b.last_comment_id || 0) - (a.last_comment_id || 0))
+  const unread_total = all.reduce((a, t) => a + (t.unread || 0), 0)
+  return c.json({ threads: all, unread_total })
 })
+
+/**
+ * 連携が終わったスレッド: 自社が所属元・稼働先として参加したやり取りがあり、スレッドの行がもう自社の連携行（linked_external）でないもの。
+ * 稼働先が「区分を変更」で自社管理に切り替えると、行は残るが連携行ではなくなる（#237）。
+ * 未読件数はやり取りの記録（owner_company_id / host_company_id）で数えるため、ここで一覧に出し、開いて既読にできるようにする
+ */
+async function endedThreads(db: D1Database, companyId: number) {
+  const rows = await db.prepare(`
+    WITH t AS (
+      SELECT rc.thread_staff_id, MAX(rc.comment_id) AS last_comment_id
+      FROM roster_comments rc LEFT JOIN staff_profiles sp ON sp.staff_id = rc.thread_staff_id
+      WHERE (rc.owner_company_id = ? OR rc.host_company_id = ?)
+        AND NOT (COALESCE(sp.affiliation_type, '') = 'linked_external' AND (sp.company_id = ? OR sp.owner_company_id = ?))
+      GROUP BY rc.thread_staff_id
+    )
+    SELECT t.thread_staff_id, t.last_comment_id, lc.owner_company_id, lc.host_company_id, lc.body AS last_body, lc.created_at AS last_at,
+           hc.company_name AS host_company_name, oc.company_name AS owner_company_name, us.name AS staff_name,
+           (SELECT COUNT(*) FROM roster_comments rc WHERE rc.thread_staff_id = t.thread_staff_id AND rc.author_company_id != ?
+              AND (rc.owner_company_id = ? OR rc.host_company_id = ?)
+              AND rc.comment_id > COALESCE((SELECT r.last_read_comment_id FROM roster_comment_reads r WHERE r.thread_staff_id = t.thread_staff_id AND r.company_id = ?), 0)) AS unread
+    FROM t JOIN roster_comments lc ON lc.comment_id = t.last_comment_id
+    LEFT JOIN companies hc ON hc.company_id = lc.host_company_id LEFT JOIN companies oc ON oc.company_id = lc.owner_company_id
+    LEFT JOIN staff_profiles sp ON sp.staff_id = t.thread_staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    ORDER BY t.last_comment_id DESC LIMIT 200`)
+    .bind(companyId, companyId, companyId, companyId, companyId, companyId, companyId, companyId).all()
+  return rows.results as any[]
+}
+
+async function markRead(db: D1Database, threadStaffId: number, companyId: number, commentId: number, userId: number) {
+  await db.prepare(`INSERT INTO roster_comment_reads (thread_staff_id, company_id, last_read_comment_id, read_by, read_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(thread_staff_id, company_id) DO UPDATE SET last_read_comment_id = MAX(last_read_comment_id, excluded.last_read_comment_id), read_by = excluded.read_by, read_at = excluded.read_at`)
+    .bind(threadStaffId, companyId, commentId, userId, nowJST()).run()
+}
 
 // 未読件数のみ（ダッシュボード/サイドバーのバッジ用・軽量）
 chatApi.get('/unread-count', async (c) => {
@@ -90,6 +132,33 @@ chatApi.get('/unread-count', async (c) => {
       AND rc.comment_id > COALESCE((SELECT r.last_read_comment_id FROM roster_comment_reads r WHERE r.thread_staff_id = rc.thread_staff_id AND r.company_id = ?), 0)`)
     .bind(u.company_id, u.company_id, u.company_id, u.company_id).first()
   return c.json({ unread: (r?.n as number) || 0 })
+})
+
+// 連携が終わったスレッドのメッセージ（閲覧のみ・投稿はできない）。取得時に自社として既読にする（#237）
+// 自社が所属元・稼働先として参加したやり取りだけを返す。連携中のスレッドはスタッフ詳細のチャット欄から開く
+chatApi.get('/ended/:threadStaffId', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const tid = Number(c.req.param('threadStaffId'))
+  if (!Number.isInteger(tid) || tid <= 0) return c.json({ error: 'スレッドが見つかりません' }, 404)
+  const rows = (await db.prepare(`
+    SELECT rc.comment_id, rc.body, rc.created_at, rc.author_company_id, rc.owner_company_id, rc.host_company_id,
+           um.name AS author_name, co.company_name AS author_company_name
+    FROM roster_comments rc LEFT JOIN users um ON um.user_id = rc.author_user_id LEFT JOIN companies co ON co.company_id = rc.author_company_id
+    WHERE rc.thread_staff_id = ? AND (rc.owner_company_id = ? OR rc.host_company_id = ?) ORDER BY rc.comment_id`).bind(tid, u.company_id, u.company_id).all()).results as any[]
+  if (!rows.length) return c.json({ error: 'スレッドが見つかりません' }, 404)
+  const last = rows[rows.length - 1]
+  const names = await db.prepare(`SELECT
+      (SELECT company_name FROM companies WHERE company_id = ?) AS owner_company_name, (SELECT company_name FROM companies WHERE company_id = ?) AS host_company_name,
+      (SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?) AS staff_name`)
+    .bind(last.owner_company_id, last.host_company_id, tid).first() as any
+  await markRead(db, tid, u.company_id, last.comment_id, u.user_id)
+  const mySide = last.host_company_id === u.company_id ? 'host' : 'owner'
+  return c.json({
+    thread: { thread_staff_id: tid, my_side: mySide, ended: true, staff_name: names?.staff_name || null,
+      partner_company_name: mySide === 'host' ? names?.owner_company_name : names?.host_company_name },
+    messages: rows.map(m => ({ comment_id: m.comment_id, body: m.body, created_at: m.created_at, author_name: m.author_name,
+      author_company_name: m.author_company_name, mine: m.author_company_id === u.company_id })),
+  })
 })
 
 // メッセージ取得（全履歴）。取得時に自社として既読化する

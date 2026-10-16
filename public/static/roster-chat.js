@@ -37,9 +37,9 @@ window.renderChatDashboardNotice = async function () {
       </div>
       <div class="space-y-1">
         ${unread.slice(0, 5).map(t => `
-          <a href="#staff/${t.open_staff_id}" onclick="window.__chatHost='${t.my_side === 'owner' ? t.thread_staff_id : ''}'" class="flex items-center gap-2 text-sm p-2 rounded-lg hover:bg-gray-50">
-            <span class="badge badge-red">${t.unread}</span>
-            <span class="font-medium text-gray-800">${esc(t.staff_name)}</span>
+          <a href="#roster-chat" ${chatOpenAttrs(t)} class="flex items-center gap-2 text-sm p-2 rounded-lg hover:bg-gray-50">
+            <span class="badge badge-red">${Number(t.unread)}</span>
+            <span class="font-medium text-gray-800">${esc(t.staff_name || '（削除済み）')}</span>${t.ended ? '<span class="badge badge-gray">連携終了</span>' : ''}
             <span class="text-xs text-gray-400">${esc(t.partner_company_name)}</span>
             <span class="text-xs text-gray-500 truncate flex-1">${esc(t.last_body || '')}</span>
           </a>`).join('')}
@@ -64,18 +64,48 @@ window.renderRosterChatList = async function () {
         <thead><tr><th>スタッフ</th><th>相手企業</th><th>自社の立場</th><th>最新メッセージ</th><th>日時</th><th>未読</th></tr></thead>
         <tbody>
           ${data.threads.map(t => `
-            <tr class="cursor-pointer" onclick="window.__chatHost='${t.my_side === 'owner' ? t.thread_staff_id : ''}'; location.hash='staff/${t.open_staff_id}'">
-              <td class="font-medium text-blue-700">${esc(t.staff_name)}</td>
+            <tr class="cursor-pointer" ${chatOpenAttrs(t)}>
+              <td class="font-medium text-blue-700">${esc(t.staff_name || '（削除済み）')}${t.ended ? ' <span class="badge badge-gray" title="区分の変更などで連携が終わったスレッドです。閲覧のみできます">連携終了</span>' : ''}</td>
               <td>${esc(t.partner_company_name)}</td>
               <td>${t.my_side === 'owner' ? '<span class="badge badge-green">所属元</span>' : '<span class="badge badge-blue">稼働先</span>'}</td>
               <td class="text-xs text-gray-600 max-w-[320px] truncate">${esc(t.last_body || '—')}</td>
               <td class="text-xs text-gray-400">${t.last_at ? esc(t.last_at.slice(5, 16)) : ''}</td>
-              <td>${t.unread ? `<span class="badge badge-red">${t.unread}</span>` : ''}</td>
+              <td>${t.unread ? `<span class="badge badge-red">${Number(t.unread)}</span>` : ''}</td>
             </tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-6">連携中のスタッフがいません（①QR/ID連携で登録すると、所属元企業とのチャットが利用できます）</td></tr>'}
         </tbody>
       </table>
     </section>`
   refreshChatBadge()
+}
+
+// 一覧・ダッシュボードからスレッドを開く。連携中はスタッフ詳細のチャット欄へ、連携が終わったスレッドは閲覧のみの画面を開く（#237）
+function chatOpenAttrs(t) {
+  return `data-action="openChatThread" data-thread="${Number(t.thread_staff_id)}" data-staff="${Number(t.open_staff_id) || ''}"`
+    + ` data-host="${t.my_side === 'owner' ? Number(t.thread_staff_id) : ''}" data-ended="${t.ended ? '1' : ''}"`
+}
+delegate('openChatThread', (el, ev) => {
+  if (ev) ev.preventDefault()
+  if (el.dataset.ended) return openEndedChat(Number(el.dataset.thread))
+  window.__chatHost = el.dataset.host || ''
+  location.hash = 'staff/' + Number(el.dataset.staff)
+})
+async function openEndedChat(threadId) {
+  let d
+  try { d = (await axios.get(`/api/admin/roster-chat/ended/${Number(threadId)}`)).data } catch (e) { return toast((e.response && e.response.data && e.response.data.error) || '読み込みに失敗しました') }
+  modal(`<h3 class="font-bold text-lg mb-1"><i class="fas fa-comments text-blue-600 mr-1"></i>企業間チャット（連携終了）</h3>
+    <p class="text-xs text-gray-500 mb-2">${esc(d.thread.staff_name || '（削除済み）')} ・ 相手: ${esc(d.thread.partner_company_name || '')}（${d.thread.my_side === 'owner' ? '自社は所属元' : '自社は稼働先'}）</p>
+    <p class="text-xs text-gray-600 bg-gray-50 rounded-lg p-2 mb-3">区分の変更などで連携が終わったため、閲覧のみできます（新しいメッセージは送れません）</p>
+    <div class="space-y-2 max-h-96 overflow-y-auto p-1 bg-gray-50 rounded-lg" id="ended-chat-log">${d.messages.map(m => `
+      <div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
+        <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800'}">
+          <p class="text-[10px] ${m.mine ? 'text-blue-100' : 'text-gray-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
+          <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
+        </div>
+      </div>`).join('')}</div>
+    <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
+  // 開いたので既読になった。一覧の未読表示とバッジを更新する
+  refreshChatBadge()
+  if (location.hash === '#roster-chat') renderRosterChatList()
 }
 
 // ---------- スタッフ詳細のチャット欄 ----------
@@ -86,7 +116,9 @@ window.renderRosterChatPanel = async function (sid, p) {
   // 所属元（1つ前の企業）とのスレッド + 自社から連携した先（直接の連携先のみ）とのスレッド
   let threads = []
   if (p.affiliation_type === 'linked_external') threads.push({ key: '', label: (p.owner_company_name || '所属元') + '（所属元）' })
-  if (p.linkable) {
+  // 連携先とのスレッドは、今の区分にかかわらず連携先があれば出す（自社雇用から区分を変えても連携は続くため。#140）。
+  // 連携用QRを出せるかどうか（p.linkable）とは別に判断する
+  if (!p.merged_into_staff_id) {
     try {
       const links = (await axios.get(`/api/admin/roster/${sid}/links`)).data
       threads.push(...(links.links || []).map(l => ({ key: String(l.linked_staff_id), label: l.host_company_name + '（連携先）' })))

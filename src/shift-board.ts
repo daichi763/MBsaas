@@ -165,7 +165,16 @@ export function shiftTotals(s: any) {
 }
 
 // 支払先（第2段階の区分変更で置き換える。第1段階は現在の所属区分から決める）
-export async function resolvePayee(db: D1Database, companyId: number, staffId: number) {
+// workDate を渡すと、その日より後に適用した区分変更があれば変更前の支払先を返す（適用日より前のシフトを計算し直しても、
+// 新しい区分の支払先にしない。#82）。変更前の支払先を記録していない履歴（0039 より前の変更・統合の記録）なら、今の区分から決める。
+// 区分が変わらない記録（支払先の付け直し）は見ない
+export async function resolvePayee(db: D1Database, companyId: number, staffId: number, workDate?: string | null) {
+  if (workDate) {
+    const h = await db.prepare(`SELECT from_payee_type, from_payee_affiliation_id, from_payee_company_id FROM staff_affiliation_history
+      WHERE staff_id = ? AND company_id = ? AND from_type != 'new' AND (from_type != to_type OR from_payee_type IS NOT NULL) AND effective_date > ?
+      ORDER BY effective_date, history_id LIMIT 1`).bind(staffId, companyId, workDate).first() as any
+    if (h?.from_payee_type) return { payee_type: h.from_payee_type as string, payee_affiliation_id: (h.from_payee_affiliation_id ?? null) as number | null, payee_company_id: (h.from_payee_company_id ?? null) as number | null }
+  }
   const sp = await db.prepare('SELECT affiliation_type, partner_affiliation_id, owner_company_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).first() as any
   const t = sp?.affiliation_type || 'own_employee'
   if (t === 'linked_external') return { payee_type: 'linked', payee_affiliation_id: null, payee_company_id: sp.owner_company_id ?? null }
@@ -188,7 +197,7 @@ export async function applyPricingToShift(db: D1Database, companyId: number, shi
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
   const amt = calcAmounts(price, s.start_time, s.end_time, brk, workHours({ ...s, break_minutes: brk }, proj).hours)
-  const payee = await resolvePayee(db, companyId, s.staff_id)
+  const payee = await resolvePayee(db, companyId, s.staff_id, s.work_date)
   await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?,
       pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
       bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?,

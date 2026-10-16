@@ -107,7 +107,7 @@
             ${data.merged_into_staff_id ? '' : `
             ${data.is_provisional ? `<button class="btn btn-outline text-xs" onclick="openMerge(${sid})" id="merge-open-btn"><i class="fas fa-code-merge"></i>既存のスタッフに統合</button>` : ''}
             ${data.is_provisional ? `<button class="btn btn-primary text-xs" onclick="openFinalize(${sid})"><i class="fas fa-user-check"></i>本登録する</button>` : ''}
-            <button class="btn btn-outline text-xs" onclick="openAffiliationChange(${sid}, '${t}')"><i class="fas fa-right-left"></i>区分を変更</button>`}
+            <button class="btn btn-outline text-xs" data-action="openAffiliationChange" data-sid="${Number(sid)}" data-from="${esc(t)}"><i class="fas fa-right-left"></i>区分を変更</button>`}
           </div>
         </div>
         <dl class="text-xs space-y-1.5">
@@ -116,11 +116,19 @@
           <div class="flex gap-2"><dt class="w-24 text-gray-400">ログイン</dt><dd>${data.has_login ? 'あり（' + esc(data.user_code) + '）' : 'なし（報告用URLまたは代理入力で記録）'}</dd></div>
           ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-blue-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
         </dl>
+        ${(data.schedules || []).map(s => s.status === 'pending'
+          ? `<div class="text-xs bg-blue-50 text-blue-900 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap" id="aff-schedule"><i class="fas fa-clock"></i>
+              <span class="flex-1"><b>${esc(s.effective_date)}</b> から「${esc(TYPE_LABEL[s.to_type] || s.to_type)}${s.to_affiliation ? '（' + esc(s.to_affiliation) + '）' : ''}」に変更する予約があります</span>
+              <button class="btn btn-outline text-xs" data-action="cancelAffiliationSchedule" data-sid="${Number(sid)}" data-id="${Number(s.schedule_id)}">予約を取り消す</button></div>`
+          : `<div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mt-3"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(s.effective_date)} からの「${esc(TYPE_LABEL[s.to_type] || s.to_type)}」への変更の予約は適用できませんでした: ${esc(s.error || '')}</div>`).join('')}
         <p class="text-xs font-bold text-gray-600 mt-3 mb-1">変更履歴</p>
         <div class="space-y-1 max-h-40 overflow-y-auto">${data.history.map(h => `<div class="text-[11px] bg-gray-50 rounded p-1.5">
           <b>${esc(h.effective_date)}</b> ${h.from_type === 'new' ? '登録' : esc(TYPE_LABEL[h.from_type] || h.from_type) + ' → '}<b>${esc(TYPE_LABEL[h.to_type] || h.to_type)}</b>
-          ${h.to_affiliation ? `（${esc(h.to_affiliation)}）` : ''}${h.affected_shifts ? ` ・予定シフト${h.affected_shifts}件を置き換え` : ''}${h.note ? ` ・${esc(h.note)}` : ''}
+          ${h.to_affiliation ? `（${esc(h.to_affiliation)}）` : ''}${h.affected_shifts ? ` ・予定シフト${Number(h.affected_shifts)}件を置き換え` : ''}${h.excluded_shifts ? `（勤務済み${Number(h.excluded_shifts)}件は対象外）` : ''}${h.note ? ` ・${esc(h.note)}` : ''}
           <span class="text-gray-400">${esc(h.changed_by_name || '')}</span></div>`).join('') || '<p class="text-[11px] text-gray-400">履歴はありません</p>'}</div>
+        ${(data.employment_periods || []).length ? `<p class="text-xs font-bold text-gray-600 mt-3 mb-1">過去の雇用期間</p>
+        <div class="space-y-1" id="employment-periods">${data.employment_periods.map(e => `<div class="text-[11px] bg-gray-50 rounded p-1.5">
+          入社 <b>${esc(e.hire_date || '未登録')}</b> 〜 雇用終了 <b>${esc(e.employment_ended_at || '未登録')}</b>${e.ended_reason ? `（${esc(e.ended_reason)}）` : ''}${e.contract_type ? ` ・${esc(e.contract_type)}` : ''}</div>`).join('')}</div>` : ''}
       </section>
       <section class="card p-4" id="staff-report-settings">
         <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>日報の提出設定</h3>
@@ -207,32 +215,46 @@
   }
 
   // ---------- 区分の変更（確認画面で影響を表示してから実行） ----------
+  // 確認した後に入力（区分・適用日・取引先・入社日・屋号・雇用形態）を変えたら、確認結果と実行ボタンを消して確認し直してもらう。
+  // 実行のときは確認で受け取った preview_token を送り、サーバーで内容が同じことを確かめる（#100）
   window.openAffiliationChange = async function (sid, from) {
     let partners = []
     try { partners = (await axios.get('/api/admin/roster/partners')).data.partners } catch { }
     const targets = ['own_employee', 'daily_worker', 'freelance', 'partner_manual'].filter(k => k !== from || k === 'partner_manual')
     modal(`<h3 class="font-bold text-lg mb-1">区分を変更</h3>
-      <p class="text-xs text-gray-500 mb-3">現在: <b>${TYPE_LABEL[from]}</b>。スタッフIDは変わらず、シフト・勤怠・評価・メモの履歴はそのまま引き継がれます</p>
-      <div class="space-y-3">
+      <p class="text-xs text-gray-500 mb-3">現在: <b>${esc(TYPE_LABEL[from] || from)}</b>。スタッフIDは変わらず、シフト・勤怠・評価・メモの履歴はそのまま引き継がれます</p>
+      <div class="space-y-3" id="ac-form" data-sid="${Number(sid)}">
         <div class="space-y-1.5">${targets.map((k, i) => `<label class="flex items-start gap-2 p-2 rounded-lg border border-gray-200 cursor-pointer has-[:checked]:border-blue-400 has-[:checked]:bg-blue-50">
-          <input type="radio" name="ac-type" value="${k}" ${i === 0 ? 'checked' : ''} onchange="acTypeChanged()" class="mt-1"><span><b class="text-sm">${TYPE_LABEL[k]}</b><span class="block text-[11px] text-gray-500">${TYPE_DESC[k]}</span></span></label>`).join('')}</div>
+          <input type="radio" name="ac-type" value="${k}" ${i === 0 ? 'checked' : ''} class="mt-1"><span><b class="text-sm">${TYPE_LABEL[k]}</b><span class="block text-[11px] text-gray-500">${TYPE_DESC[k]}</span></span></label>`).join('')}</div>
         <div id="ac-partner" class="hidden p-3 rounded-lg bg-purple-50 space-y-2">
-          <select id="ac-partner-id" class="inp text-sm" onchange="document.getElementById('ac-partner-new').classList.toggle('hidden', this.value !== 'new')">
-            ${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい取引先</option></select>
+          <select id="ac-partner-id" class="inp text-sm">
+            ${partners.map(p => `<option value="${Number(p.affiliation_id)}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい取引先</option></select>
           <input id="ac-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="取引先名">
         </div>
         <input id="ac-trade" class="inp text-sm hidden" placeholder="屋号（任意）">
         <div class="grid grid-cols-2 gap-3">
           <label class="text-sm text-gray-600">適用日 *<input id="ac-date" type="date" class="inp" value="${dayjs().format('YYYY-MM-DD')}"></label>
-          <div id="ac-emp" class="hidden"><label class="text-sm text-gray-600">入社日<input id="ac-hire" type="date" class="inp" value="${dayjs().format('YYYY-MM-DD')}"></label></div>
+          <div id="ac-emp" class="hidden"><label class="text-sm text-gray-600">入社日<input id="ac-hire" type="date" class="inp"></label>
+            <p class="text-[11px] text-gray-400">空欄なら適用日を入社日にします</p></div>
         </div>
+        <p class="text-[11px] text-gray-400">適用日が明日以降なら予約になり、適用日の早朝に切り替わります（それまでは今の区分のままです）</p>
         <input id="ac-contract" class="inp text-sm hidden" placeholder="雇用形態（正社員 / アルバイト / パート 等）">
         <input id="ac-note" class="inp text-sm" placeholder="メモ（任意）">
         <div id="ac-preview"></div>
-        <button id="ac-check" class="btn btn-outline w-full" onclick="previewAffiliationChange(${sid})">影響を確認する</button>
+        <button id="ac-check" class="btn btn-outline w-full" data-action="previewAffiliationChange" data-sid="${Number(sid)}">影響を確認する</button>
       </div>`)
+    const form = document.getElementById('ac-form')
+    // メモ以外の入力が変わったら確認をやり直す
+    const onEdit = (e) => {
+      if (e.target && e.target.id === 'ac-note') return
+      if (e.target && e.target.id === 'ac-partner-id') document.getElementById('ac-partner-new').classList.toggle('hidden', e.target.value !== 'new')
+      acTypeChanged()
+    }
+    form.addEventListener('input', onEdit)
+    form.addEventListener('change', onEdit)
     acTypeChanged()
   }
+  delegate('openAffiliationChange', (el) => openAffiliationChange(Number(el.dataset.sid), el.dataset.from))
   window.acTypeChanged = function () {
     const t = (document.querySelector('input[name=ac-type]:checked') || {}).value
     document.getElementById('ac-partner').classList.toggle('hidden', t !== 'partner_manual')
@@ -240,29 +262,50 @@
     document.getElementById('ac-emp').classList.toggle('hidden', t !== 'own_employee')
     document.getElementById('ac-contract').classList.toggle('hidden', t !== 'own_employee')
     document.getElementById('ac-preview').innerHTML = ''
+    const chk = document.getElementById('ac-check'); if (chk) chk.classList.remove('hidden')
   }
   function acBody() {
-    const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
+    const v = (id) => { const el = document.getElementById(id); return el && !el.closest('.hidden') ? el.value.trim() : '' }
     const t = (document.querySelector('input[name=ac-type]:checked') || {}).value
     const b = { to_type: t, effective_date: v('ac-date'), trade_name: v('ac-trade'), hire_date: v('ac-hire'), contract_type: v('ac-contract'), note: v('ac-note') }
     if (t === 'partner_manual') { const p = v('ac-partner-id'); if (p && p !== 'new') b.partner_affiliation_id = Number(p); else b.new_partner_name = v('ac-partner-new') }
     return b
   }
-  window.previewAffiliationChange = async function (sid) {
+  delegate('previewAffiliationChange', (el) => withSubmitLock(el, async () => {
+    const sid = Number(el.dataset.sid)
     try {
       const { data } = await axios.post(`/api/admin/staff/${sid}/affiliation-change`, { ...acBody(), dry_run: true })
       document.getElementById('ac-preview').innerHTML = `<div class="p-3 rounded-lg bg-blue-50 text-xs text-blue-900" id="ac-effects">
-        <p class="font-bold mb-1">${esc(data.effective_date)} から「${esc(data.from_label)}」→「${esc(data.to_label)}${data.affiliation ? '（' + esc(data.affiliation) + '）' : ''}」</p>
+        <p class="font-bold mb-1">${esc(data.effective_date)} から「${esc(data.from_label)}」→「${esc(data.to_label)}${data.affiliation ? '（' + esc(data.affiliation) + '）' : ''}」${data.scheduled ? ' <span class="badge badge-blue">予約</span>' : ''}</p>
         <ul class="list-disc ml-4 space-y-0.5">${data.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
-        <button class="btn btn-primary w-full mt-3" onclick="applyAffiliationChange(${sid})">この内容で変更する</button>`
+        ${(data.warnings || []).length ? `<div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mt-2" id="ac-warnings"><i class="fas fa-triangle-exclamation mr-1"></i>${data.warnings.map(x => esc(x)).join('<br>')}</div>` : ''}
+        <button class="btn btn-primary w-full mt-3" id="ac-apply" data-action="applyAffiliationChange" data-sid="${sid}" data-token="${esc(data.preview_token)}" data-scheduled="${data.scheduled ? '1' : ''}">${data.scheduled ? 'この内容で予約する' : 'この内容で変更する'}</button>`
+      el.classList.add('hidden')
     } catch (e) { toast(errMsg(e)) }
-  }
-  window.applyAffiliationChange = async function (sid) {
+  }))
+  delegate('applyAffiliationChange', (el) => withSubmitLock(el, async () => {
+    const sid = Number(el.dataset.sid)
+    if (document.getElementById('ac-warnings') && !confirm('確認事項があります。この内容で実行しますか？')) return
     try {
-      const { data } = await axios.post(`/api/admin/staff/${sid}/affiliation-change`, acBody())
-      closeModal(); toast(`区分を変更しました（予定シフト${data.affected_shifts}件を置き換え）`); if (window.invalidateBoardMaster) invalidateBoardMaster(); renderStaffDetail(sid)
+      const { data } = await axios.post(`/api/admin/staff/${sid}/affiliation-change`, { ...acBody(), preview_token: el.dataset.token })
+      closeModal()
+      toast(data.scheduled ? `${data.effective_date} に区分を変更する予約をしました` : `区分を変更しました（予定シフト${data.affected_shifts}件を置き換え）`)
+      if (window.invalidateBoardMaster) invalidateBoardMaster(); renderStaffDetail(sid)
+    } catch (e) {
+      toast(errMsg(e))
+      // 確認したときから内容が変わった: 確認からやり直す
+      if (e.response && e.response.data && e.response.data.preview_changed) acTypeChanged()
+    }
+  }))
+  // 区分変更の予約の取消
+  delegate('cancelAffiliationSchedule', (el) => withSubmitLock(el, async () => {
+    if (!confirm('区分変更の予約を取り消しますか？')) return
+    const sid = Number(el.dataset.sid)
+    try {
+      await axios.delete(`/api/admin/staff/${sid}/affiliation-schedules/${Number(el.dataset.id)}`)
+      toast('予約を取り消しました'); renderStaffDetail(sid)
     } catch (e) { toast(errMsg(e)) }
-  }
+  }))
 
   // =========================================================
   // シフト詳細（シフトボード）: 報告状況・報告用URL・代理入力・提出設定

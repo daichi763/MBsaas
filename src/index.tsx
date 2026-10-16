@@ -3,6 +3,7 @@ import { getCookie } from 'hono/cookie'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
 import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
+import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
@@ -448,6 +449,14 @@ export default {
       console.log(`scheduled retirements applied: ${n}`)
     } catch (e) {
       console.log(`scheduled retirements failed: ${e}`)
+    }
+
+    // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
+    try {
+      const r = await applyDueAffiliationSchedules(env.DB)
+      console.log(`affiliation schedules: due=${r.due} applied=${r.applied} failed=${r.failed}`)
+    } catch (e) {
+      console.log(`affiliation schedules failed: ${e}`)
     }
   },
 }

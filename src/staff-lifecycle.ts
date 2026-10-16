@@ -7,7 +7,8 @@
 // =========================================================
 import { Hono } from 'hono'
 import { createPerson, partnerNameConflict } from './roster'
-import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
+import { loadPricingData, stripMoney, resolvePrice, calcAmounts, workHours } from './shift-board'
+import { JSON_IN, bindJsonArray, chunk } from './lib/d1-chunk'
 import { syncActualFromReports } from './settlement'
 import { pickReportValues } from './lib/validate'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
@@ -207,113 +208,287 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
 })
 
 // ---------- 所属区分の変更（dry_run で影響範囲を確認 → 実行） ----------
+// - 確認（dry_run）が返す preview_token を実行のときに送る。区分・適用日・取引先・入社日・置き換えるシフトが
+//   確認したときと変わっていれば 409 を返し、確認し直してもらう（#100）
+// - 適用日が明日以降なら予約（staff_affiliation_schedules）として保存し、適用日の早朝に cron が切り替える（#82）
+// - 実行は 1 回の db.batch（トランザクション）にまとめ、途中で失敗しても区分だけが変わることがないようにする（#121）
+// - 勤怠報告・実績の入力・日報のどれかがあるシフト（勤務済み）は置き換えない（#149）
+// - 区分がすでに変更先と同じでも、支払先が前の区分のままの予定シフトが残っていれば、支払先の付け直しとして実行できる（#121）
+type PayeeRow = { payee_type: string; payee_affiliation_id: number | null; payee_company_id: number | null }
+function payeeOfProfile(sp: any): PayeeRow {
+  const t = sp.affiliation_type || 'own_employee'
+  return { payee_type: payeeTypeFor(t), payee_affiliation_id: t === 'partner_manual' ? sp.partner_affiliation_id ?? null : null, payee_company_id: t === 'linked_external' ? sp.owner_company_id ?? null : null }
+}
+type AffPlan = {
+  from: string; to: string; effective: string; affiliation: string | null; partnerId: number | null; newPartnerName: string | null
+  tradeName: string | null; hire: string | null; contractType: string | null; er: any; repair: boolean; scheduled: boolean
+  targets: any[]; excluded: number; effects: string[]; warnings: string[]; token: string
+}
+type PlanResult = { ok: true; plan: AffPlan } | { ok: false; error: string; status: 400 | 404 | 409 }
+async function planAffiliationChange(db: D1Database, companyId: number, sp: any, b: any, opts: { today: string; fromSchedule?: boolean }): Promise<PlanResult> {
+  const fail = (error: string, status: 400 | 404 | 409 = 400): PlanResult => ({ ok: false, error, status })
+  if (sp.merged_into_staff_id) return fail('統合済みのスタッフの区分は変更できません', 409)
+  const from = sp.affiliation_type || 'own_employee'
+  const to = String(b.to_type || '')
+  if (b.effective_date && !isDate(b.effective_date)) return fail('適用日を正しく入力してください')
+  if (b.hire_date && !isDate(b.hire_date)) return fail('入社日を正しく入力してください')
+  const effective: string = isDate(b.effective_date) ? b.effective_date : opts.today
+  if (from === 'skillsheet_only') return fail('スキルシートのみのスタッフは区分を変更できません（新規に登録してください）')
+  if (!WORKING_TYPES.includes(to as any)) return fail('変更先の区分が正しくありません')
+  // 予約中の変更がある間は、新しい変更を受け付けない（取り消してから）
+  if (!opts.fromSchedule) {
+    const pending = await db.prepare(`SELECT effective_date, to_type FROM staff_affiliation_schedules WHERE staff_id = ? AND company_id = ? AND status = 'pending'`).bind(sp.staff_id, companyId).first() as any
+    if (pending) return fail(`予約中の区分変更があります（${pending.effective_date} から「${TYPE_LABEL[pending.to_type] || pending.to_type}」）。取り消してから変更してください`, 409)
+  }
+
+  // 変更先の所属会社
+  const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first())?.company_name as string) || ''
+  let affiliation: string | null = null, partnerId: number | null = null, newPartnerName: string | null = null
+  const tradeName = to === 'freelance' ? String(b.trade_name || '').trim() || null : null
+  if (to === 'own_employee' || to === 'daily_worker') affiliation = ownName
+  if (to === 'freelance') affiliation = tradeName || '個人事業主'
+  if (to === 'partner_manual') {
+    if (b.partner_affiliation_id) {
+      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, companyId).first() as any
+      if (!p) return fail('取引先が見つかりません', 404)
+      partnerId = p.affiliation_id; affiliation = p.affiliation_name
+    } else if (String(b.new_partner_name || '').trim()) {
+      affiliation = String(b.new_partner_name).trim()
+      if (affiliation === ownName) return fail('自社名は取引先として登録できません')
+      const conflict = await partnerNameConflict(db, companyId, affiliation)
+      if (conflict) return fail(conflict)
+      // 同じ名前の取引先が登録済みならそれを使う
+      const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(companyId, affiliation).first() as any
+      if (p) partnerId = p.affiliation_id
+      else newPartnerName = affiliation
+    } else return fail('取引先を選択または入力してください')
+  }
+  const newPayee: PayeeRow = { payee_type: payeeTypeFor(to), payee_affiliation_id: to === 'partner_manual' ? partnerId : null, payee_company_id: null }
+  const repair = to === from && (to !== 'partner_manual' || (partnerId != null && partnerId === sp.partner_affiliation_id))
+  const scheduled = !opts.fromSchedule && !repair && effective > opts.today
+  const hire = to === 'own_employee' && !repair ? (isDate(b.hire_date) ? b.hire_date : effective) : null
+  const contractType = to === 'own_employee' ? String(b.contract_type || '').trim() || null : null
+
+  // 影響範囲: 適用日以降の未確定・欠勤以外のシフトのうち、勤務済みでないもの
+  const shifts = (await db.prepare(`SELECT s.shift_id, s.work_date, s.price_locked, s.payee_type, s.payee_affiliation_id, s.payee_company_id,
+      EXISTS (SELECT 1 FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reported,
+      (s.actual_start IS NOT NULL OR s.actual_end IS NOT NULL OR s.actual_source = 'manual') AS has_actual,
+      EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id) AS has_daily
+    FROM shifts s WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.status != 'absent' AND COALESCE(s.settle_status,'planned') != 'confirmed'
+    ORDER BY s.work_date, s.shift_id`).bind(sp.staff_id, companyId, effective).all()).results as any[]
+  const unworked = shifts.filter(s => !s.reported && !s.has_actual && !s.has_daily)
+  const excluded = shifts.length - unworked.length
+  const samePayee = (s: any) => (s.payee_type || 'payroll') === newPayee.payee_type && (newPayee.payee_type !== 'partner' || s.payee_affiliation_id === newPayee.payee_affiliation_id)
+  const targets = repair ? unworked.filter(s => !samePayee(s)) : unworked
+  if (repair && !targets.length) return fail(to === 'partner_manual' ? '現在と同じ取引先です' : '現在と同じ区分です')
+
+  const er = await db.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, companyId).first() as any
+  const linksOut = ((await db.prepare(`SELECT COUNT(*) AS n FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'`).bind(sp.staff_id).first()) as any)?.n || 0
+  const effects: string[] = [], warnings: string[] = []
+  if (scheduled) effects.push(`適用日が明日以降のため、予約として保存します。${effective} の早朝に自動で切り替わり、それまでは「${TYPE_LABEL[from]}」のままです（予約は取り消せます）`)
+  if (repair) effects.push(`区分はすでに「${TYPE_LABEL[to]}${to === 'partner_manual' && affiliation ? '（' + affiliation + '）' : ''}」です。支払先が前の区分のままになっている予定シフトを置き換えます`)
+  if (to === 'own_employee' && !repair) {
+    if (er && (er.hire_date || er.employment_ended_at)) effects.push(`従業員管理のデータを再開します（入社日 ${hire}）。前の雇用期間（入社 ${er.hire_date || '未登録'}〜雇用終了 ${er.employment_ended_at || '未登録'}）は雇用期間の履歴に残します`)
+    else effects.push(er ? `従業員管理のデータを再開します（入社日 ${hire}）` : `従業員管理のデータを作成します（入社日 ${hire}）`)
+  }
+  if (from === 'own_employee' && to !== 'own_employee') effects.push(`従業員管理のデータを「雇用終了（${addDays(effective, -1)}）」として保持します（削除しません・7年保存）`)
+  if (from === 'linked_external' && !repair) {
+    effects.push('他社との連携を終了し、基本情報をコピーして自社で管理します（元の企業への通知はしません）')
+    effects.push('所属元との企業間チャットは終了します。これまでのやり取りは「企業間チャット」の一覧から閲覧できます')
+  }
+  if (linksOut && !repair) effects.push(`自社から他社への連携 ${linksOut} 件は継続します（企業間チャットもそのまま使えます）`)
+  effects.push(`適用日以降の予定シフト ${targets.length} 件の支払先・単価を置き換えます${scheduled ? '（件数は今の時点のものです。適用日に数え直します）' : ''}`)
+  if (excluded) effects.push(`勤務済み（勤怠報告・実績の入力・日報のどれかがある）の ${excluded} 件は置き換えません`)
+  if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
+  if (!repair) {
+    if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は本登録から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
+    else if (sp.user_role === 'staff') effects.push('ログインはそのまま使えます')
+  }
+  if (effective < opts.today) {
+    const past = targets.filter(s => s.work_date < opts.today)
+    warnings.push(`適用日（${effective}）が今日より前です。${past.length ? `過去の未確定シフト ${past.length} 件（${past[0].work_date}〜${past[past.length - 1].work_date}）も置き換えの対象です。` : ''}日付に誤りがないか確認してください`)
+  }
+  const token = await sha256(JSON.stringify([sp.staff_id, from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, repair, scheduled, targets.map(s => s.shift_id)]))
+  return { ok: true, plan: { from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, er, repair, scheduled, targets, excluded, effects, warnings, token } }
+}
+
+// 取引先の新規登録（区分変更の実行・予約のとき）。同じ名前があればそれを使う
+async function ensurePartner(db: D1Database, companyId: number, name: string): Promise<number | null> {
+  await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(companyId, name).run()
+  return ((await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(companyId, name).first()) as any)?.affiliation_id ?? null
+}
+
+// シフトの更新を JSON 1 つにまとめた UPDATE 文（1 文あたり 100 件）。確定済みのシフトは書き換えない
+const PRICE_COLUMNS = ['bill_unit_type', 'bill_rate', 'bill_qty', 'unit_price', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
+  'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount', 'payee_type', 'payee_affiliation_id', 'payee_company_id', 'price_source', 'price_locked']
+const PAYEE_COLUMNS = ['payee_type', 'payee_affiliation_id', 'payee_company_id']
+function shiftUpdateStmts(db: D1Database, companyId: number, cols: string[], rows: Record<string, any>[]): D1PreparedStatement[] {
+  const sql = `UPDATE shifts SET ${cols.map((c, i) => `${c} = j.v${i}`).join(', ')}
+    FROM (SELECT json_extract(value, '$.shift_id') AS k, ${cols.map((c, i) => `json_extract(value, '$.${c}') AS v${i}`).join(', ')} FROM json_each(?)) AS j
+    WHERE shifts.shift_id = j.k AND shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed'`
+  return chunk(rows, 100).map(part => db.prepare(sql).bind(JSON.stringify(part.map(r => Object.fromEntries(['shift_id', ...cols].map(c => [c, r[c] ?? null])))), companyId))
+}
+
+// 区分変更の実行。すべての更新を 1 回の db.batch にまとめる（scheduleId: cron から予約を適用するとき）
+async function executeAffiliationChange(db: D1Database, companyId: number, actorId: number | null, sp: any, p: AffPlan, note: string | null, scheduleId?: number) {
+  const { from, to, effective, affiliation } = p
+  let partnerId = p.partnerId
+  if (to === 'partner_manual' && !partnerId && p.newPartnerName) partnerId = await ensurePartner(db, companyId, p.newPartnerName)
+  const now = nowJST()
+  const stmts: D1PreparedStatement[] = []
+
+  if (!p.repair) {
+    // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
+    if (from === 'linked_external' && sp.source_staff_id) {
+      // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
+      // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
+      // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
+      const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
+      if (src) {
+        stmts.push(db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
+            nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
+            affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
+          .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
+            src.commute_minutes, src.available_from, to, sp.staff_id))
+      }
+      // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
+    }
+    stmts.push(db.prepare(`UPDATE staff_profiles SET affiliation_type = ?, affiliation = ?, partner_affiliation_id = ?, owner_company_id = ?,
+        source_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE source_staff_id END,
+        root_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE root_staff_id END, relink_code = NULL WHERE staff_id = ? AND company_id = ?`)
+      .bind(to, affiliation, to === 'partner_manual' ? partnerId : null, companyId, from, from, sp.staff_id, companyId))
+    // 多段連携の中間企業が自社管理に切り替えた場合、その先（自社から連携した企業・さらにその先）の基本項目の参照先を自社の行に付け替える
+    if (from === 'linked_external') {
+      stmts.push(db.prepare(`WITH RECURSIVE down(id) AS (
+          SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
+          UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
+        UPDATE staff_profiles SET root_staff_id = ? WHERE staff_id IN (SELECT id FROM down)`).bind(sp.staff_id, sp.staff_id))
+    }
+    // 従業員管理
+    const er = p.er
+    if (to === 'own_employee') {
+      if (er) {
+        // 再雇用: 前の雇用期間（入社日・雇用終了日）を上書きする前に履歴に残す（#99）
+        if (er.hire_date || er.employment_ended_at) stmts.push(db.prepare(`INSERT INTO employment_periods (company_id, staff_id, hire_date, employment_ended_at, ended_reason, contract_type, recorded_by, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(companyId, sp.staff_id, er.hire_date || null, er.employment_ended_at || null, er.ended_reason || null, er.contract_type || null, actorId, now))
+        stmts.push(db.prepare('UPDATE employee_records SET employment_ended_at = NULL, ended_reason = NULL, hire_date = ?, contract_type = COALESCE(?, contract_type), updated_at = ? WHERE staff_id = ?')
+          .bind(p.hire, p.contractType, now, sp.staff_id))
+      } else stmts.push(db.prepare('INSERT INTO employee_records (staff_id, company_id, hire_date, contract_type, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .bind(sp.staff_id, companyId, p.hire, p.contractType, now))
+    } else if (from === 'own_employee') {
+      if (er) stmts.push(db.prepare('UPDATE employee_records SET employment_ended_at = ?, ended_reason = ?, updated_at = ? WHERE staff_id = ?')
+        .bind(addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, now, sp.staff_id))
+      else stmts.push(db.prepare('INSERT INTO employee_records (staff_id, company_id, employment_ended_at, ended_reason, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .bind(sp.staff_id, companyId, addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, now))
+    }
+  }
+
+  // 予定シフトの支払先・単価の置き換え（手動変更の金額は保持し、支払先のみ）。必要な行をまとめて読み、メモリ上で計算する
+  const payee: PayeeRow = { payee_type: payeeTypeFor(to), payee_affiliation_id: to === 'partner_manual' ? partnerId : null, payee_company_id: null }
+  const ids = bindJsonArray(p.targets.map(s => s.shift_id))
+  const rows = ids === '[]' ? [] : (await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[]
+  const roleIds = bindJsonArray(rows.map(s => s.slot_role_id))
+  const roles = new Map((roleIds === '[]' ? [] : (await db.prepare(`SELECT * FROM shift_slot_roles WHERE slot_role_id IN ${JSON_IN}`).bind(roleIds).all()).results as any[]).map(r => [r.slot_role_id, r]))
+  const data = await loadPricingData(db, companyId, rows.map(s => s.project_id))
+  const priced: Record<string, any>[] = [], locked: Record<string, any>[] = []
+  for (const s of rows) {
+    if (s.price_locked) { locked.push({ shift_id: s.shift_id, ...payee }); continue }
+    // applyPricingToShift と同じ計算（支払先は変更後の区分）
+    const price = resolvePrice({ company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: s.role, staff_id: s.staff_id, slot_role: s.slot_role_id ? roles.get(s.slot_role_id) || null : null }, data)
+    const proj = data.projects.get(Number(s.project_id)) || {}
+    const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
+    const amt = calcAmounts(price, s.start_time, s.end_time, brk, workHours({ ...s, break_minutes: brk }, proj).hours)
+    priced.push({
+      shift_id: s.shift_id, bill_unit_type: price.bill_unit_type, bill_rate: price.bill_rate, bill_qty: amt.bill_qty, unit_price: amt.unit_price,
+      pay_unit_type: price.pay_unit_type, pay_rate: price.pay_rate, pay_qty: amt.pay_qty, pay_amount: amt.pay_amount,
+      bill_transport_type: price.bill_transport_type, bill_transport_amount: price.bill_transport_amount, pay_transport_type: price.pay_transport_type, pay_transport_amount: price.pay_transport_amount,
+      ...payee, price_source: JSON.stringify(price.sources), price_locked: 0,
+    })
+  }
+  stmts.push(...shiftUpdateStmts(db, companyId, PRICE_COLUMNS, priced), ...shiftUpdateStmts(db, companyId, PAYEE_COLUMNS, locked))
+
+  // 変更履歴。変更前の支払先を残し、適用日より前のシフトを計算し直したときに使う（shift-board.ts の resolvePayee）。付け直しでは残さない
+  const fromPayee = p.repair ? null : payeeOfProfile(sp)
+  const histNote = [p.repair ? '支払先の付け直し' : '', scheduleId ? '予約を適用' : '', note || ''].filter(Boolean).join('・') || null
+  stmts.push(db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, partner_affiliation_id, affected_shifts, excluded_shifts,
+      from_payee_type, from_payee_affiliation_id, from_payee_company_id, note, changed_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(companyId, sp.staff_id, from, to, effective, sp.affiliation ?? null, affiliation, partnerId, rows.length, p.excluded,
+      fromPayee?.payee_type ?? null, fromPayee?.payee_affiliation_id ?? null, fromPayee?.payee_company_id ?? null, histNote, actorId))
+  if (scheduleId) stmts.push(db.prepare(`UPDATE staff_affiliation_schedules SET status = 'applied', applied_at = ?, error = NULL,
+      history_id = (SELECT MAX(history_id) FROM staff_affiliation_history WHERE staff_id = ? AND company_id = ?) WHERE schedule_id = ? AND status = 'pending'`)
+    .bind(now, sp.staff_id, companyId, scheduleId))
+  await db.batch(stmts)
+  return { affected_shifts: rows.length, excluded_shifts: p.excluded }
+}
+
 adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
   if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフの区分は変更できません' }, 409)
-  const from = sp.affiliation_type || 'own_employee'
-  const to = String(b.to_type || '')
-  const effective = isDate(b.effective_date) ? b.effective_date : todayJST()
-  if (from === 'skillsheet_only') return c.json({ error: 'スキルシートのみのスタッフは区分を変更できません（新規に登録してください）' }, 400)
-  if (!WORKING_TYPES.includes(to as any)) return c.json({ error: '変更先の区分が正しくありません' }, 400)
-  if (to === from && to !== 'partner_manual') return c.json({ error: '現在と同じ区分です' }, 400)
-  if (from === 'linked_external' && to !== 'own_employee' && to !== 'partner_manual' && to !== 'daily_worker' && to !== 'freelance') return c.json({ error: '変更できない区分です' }, 400)
+  const r = await planAffiliationChange(db, u.company_id, sp, b, { today: todayJST() })
+  if (!r.ok) return c.json({ error: r.error }, r.status)
+  const p = r.plan
+  if (b.dry_run) return c.json({
+    from_type: p.from, to_type: p.to, from_label: TYPE_LABEL[p.from], to_label: TYPE_LABEL[p.to], effective_date: p.effective, affiliation: p.affiliation,
+    hire_date: p.hire, scheduled: p.scheduled, repair: p.repair, affected_shifts: p.targets.length, excluded_shifts: p.excluded,
+    effects: p.effects, warnings: p.warnings, preview_token: p.token,
+  })
+  // 確認した内容と違えば実行しない（#100）
+  if (!b.preview_token) return c.json({ error: '「影響を確認する」で内容を確認してから実行してください' }, 400)
+  if (b.preview_token !== p.token) return c.json({ error: '確認したときから内容が変わりました。もう一度「影響を確認する」を押してください', preview_changed: true }, 409)
+  const note = String(b.note || '').trim().slice(0, 300) || null
 
-  // 変更先の所属会社
-  const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first())?.company_name as string) || ''
-  let affiliation: string | null = null, partnerId: number | null = null
-  if (to === 'own_employee' || to === 'daily_worker') affiliation = ownName
-  if (to === 'freelance') affiliation = String(b.trade_name || '').trim() || '個人事業主'
-  if (to === 'partner_manual') {
-    if (b.partner_affiliation_id) {
-      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any
-      if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
-      partnerId = p.affiliation_id; affiliation = p.affiliation_name
-    } else if (String(b.new_partner_name || '').trim()) {
-      affiliation = String(b.new_partner_name).trim()
-      if (affiliation === ownName) return c.json({ error: '自社名は取引先として登録できません' }, 400)
-      const conflict = await partnerNameConflict(db, u.company_id, affiliation)
-      if (conflict) return c.json({ error: conflict }, 400)
-    } else return c.json({ error: '取引先を選択または入力してください' }, 400)
-    if (to === from && partnerId === sp.partner_affiliation_id) return c.json({ error: '現在と同じ取引先です' }, 400)
+  if (p.scheduled) {
+    // 予約: 区分・従業員管理・シフトは適用日まで変えない。新しい取引先は今のうちに取引先マスタへ登録しておく
+    const partnerId = p.to === 'partner_manual' && !p.partnerId && p.newPartnerName ? await ensurePartner(db, u.company_id, p.newPartnerName) : p.partnerId
+    try {
+      const res = await db.prepare(`INSERT INTO staff_affiliation_schedules (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, request_json, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sp.staff_id, p.from, p.to, p.effective, p.affiliation, partnerId,
+        JSON.stringify({ trade_name: p.tradeName, hire_date: p.hire, contract_type: p.contractType, note }), u.user_id).run()
+      return c.json({ ok: true, scheduled: true, schedule_id: res.meta.last_row_id, effective_date: p.effective, affected_shifts: 0 })
+    } catch { return c.json({ error: '予約中の区分変更があります。取り消してから変更してください' }, 409) }
   }
-  if (to === 'own_employee' && !b.dry_run && !isDate(b.hire_date || effective)) return c.json({ error: '入社日を入力してください' }, 400)
-
-  // 影響範囲: 適用日以降の予定シフト（勤怠報告のないもの）
-  const shifts = (await db.prepare(`SELECT s.shift_id, s.project_id, s.work_date, s.price_locked,
-      (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reported
-    FROM shifts s WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.status != 'absent' AND COALESCE(s.settle_status,'planned') != 'confirmed'`).bind(sp.staff_id, u.company_id, effective).all()).results as any[]
-  const targets = shifts.filter(s => !s.reported)
-  const er = await db.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, u.company_id).first() as any
-  const effects: string[] = []
-  if (to === 'own_employee') effects.push(er ? '従業員管理のデータを再開します（雇用終了日を解除）' : '従業員管理のデータを作成します')
-  if (from === 'own_employee' && to !== 'own_employee') effects.push(`従業員管理のデータを「雇用終了（${addDays(effective, -1)}）」として保持します（削除しません・7年保存）`)
-  if (from === 'linked_external') effects.push('他社との連携を終了し、基本情報をコピーして自社で管理します（元の企業への通知はしません）')
-  effects.push(`適用日以降の予定シフト ${targets.length} 件の支払先・単価を置き換えます${shifts.length - targets.length ? `（勤怠報告済みの ${shifts.length - targets.length} 件は対象外）` : ''}`)
-  if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
-  if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は本登録から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
-  else if (sp.user_role === 'staff') effects.push('ログインはそのまま使えます')
-  if (b.dry_run) return c.json({ from_type: from, to_type: to, from_label: TYPE_LABEL[from], to_label: TYPE_LABEL[to], effective_date: effective, affiliation, affected_shifts: targets.length, effects })
-
-  // ---- 実行 ----
-  if (to === 'partner_manual' && !partnerId && affiliation) {
-    await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, affiliation).run()
-    partnerId = ((await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, affiliation).first()) as any)?.affiliation_id ?? null
-  }
-  // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
-  if (from === 'linked_external' && sp.source_staff_id) {
-    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
-    // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
-    // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
-    const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
-    if (src) {
-      await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
-          nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
-          affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
-        .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
-          src.commute_minutes, src.available_from, to, sp.staff_id).run()
-    }
-    // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
-  }
-  await db.prepare(`UPDATE staff_profiles SET affiliation_type = ?, affiliation = ?, partner_affiliation_id = ?, owner_company_id = ?,
-      source_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE source_staff_id END,
-      root_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE root_staff_id END, relink_code = NULL WHERE staff_id = ? AND company_id = ?`)
-    .bind(to, affiliation, to === 'partner_manual' ? partnerId : null, u.company_id, from, from, sp.staff_id, u.company_id).run()
-  // 多段連携の中間企業が自社管理に切り替えた場合、その先（自社から連携した企業・さらにその先）の基本項目の参照先を自社の行に付け替える
-  if (from === 'linked_external') {
-    await db.prepare(`WITH RECURSIVE down(id) AS (
-        SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
-        UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
-      UPDATE staff_profiles SET root_staff_id = ? WHERE staff_id IN (SELECT id FROM down)`).bind(sp.staff_id, sp.staff_id).run()
-  }
-
-  // 従業員管理
-  if (to === 'own_employee') {
-    const hire = isDate(b.hire_date) ? b.hire_date : effective
-    if (er) await db.prepare('UPDATE employee_records SET employment_ended_at = NULL, ended_reason = NULL, hire_date = COALESCE(?, hire_date), contract_type = COALESCE(?, contract_type), updated_at = ? WHERE staff_id = ?')
-      .bind(hire, b.contract_type || null, nowJST(), sp.staff_id).run()
-    else await db.prepare('INSERT INTO employee_records (staff_id, company_id, hire_date, contract_type, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(sp.staff_id, u.company_id, hire, b.contract_type || null, nowJST()).run()
-  } else if (from === 'own_employee') {
-    if (er) await db.prepare('UPDATE employee_records SET employment_ended_at = ?, ended_reason = ?, updated_at = ? WHERE staff_id = ?')
-      .bind(addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, nowJST(), sp.staff_id).run()
-    else await db.prepare('INSERT INTO employee_records (staff_id, company_id, employment_ended_at, ended_reason, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(sp.staff_id, u.company_id, addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, nowJST()).run()
-  }
-
-  // 予定シフトの支払先・単価の置き換え（手動変更の金額は保持し、支払先のみ）
-  const data = await loadPricingData(db, u.company_id, targets.map(s => s.project_id))
-  for (const s of targets) {
-    if (s.price_locked) {
-      await db.prepare('UPDATE shifts SET payee_type = ?, payee_affiliation_id = ?, payee_company_id = NULL WHERE shift_id = ?')
-        .bind(payeeTypeFor(to), to === 'partner_manual' ? partnerId : null, s.shift_id).run()
-    } else await applyPricingToShift(db, u.company_id, s.shift_id, { data })
-  }
-  await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, partner_affiliation_id, affected_shifts, note, changed_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sp.staff_id, from, to, effective, sp.affiliation, affiliation, partnerId, targets.length, b.note || null, u.user_id).run()
-  return c.json({ ok: true, affected_shifts: targets.length })
+  const done = await executeAffiliationChange(db, u.company_id, u.user_id, sp, p, note)
+  return c.json({ ok: true, ...done })
 })
+
+// 区分変更の予約の取消
+adminLifecycleApi.delete('/staff/:id/affiliation-schedules/:scheduleId', async (c) => {
+  const u = c.get('user')
+  const r = await c.env.DB.prepare(`UPDATE staff_affiliation_schedules SET status = 'canceled', canceled_by = ?, canceled_at = ?
+    WHERE schedule_id = ? AND staff_id = ? AND company_id = ? AND status = 'pending'`).bind(u.user_id, nowJST(), c.req.param('scheduleId'), c.req.param('id'), u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '取り消せる予約が見つかりません（適用済み・取消済みの可能性があります）' }, 404)
+  return c.json({ ok: true })
+})
+
+// 適用日になった区分変更の予約を適用する（毎日の cron。index.tsx の scheduled）。
+// 予約したときと状況が変わって適用できない場合（統合・退職・同じ区分になった等）は failed にして理由を残す
+export async function applyDueAffiliationSchedules(db: D1Database) {
+  const today = todayJST()
+  const due = (await db.prepare(`SELECT * FROM staff_affiliation_schedules WHERE status = 'pending' AND effective_date <= ? ORDER BY effective_date, schedule_id LIMIT 100`).bind(today).all()).results as any[]
+  let applied = 0, failed = 0
+  const markFailed = async (id: number, msg: string) => {
+    failed++
+    await db.prepare(`UPDATE staff_affiliation_schedules SET status = 'failed', error = ? WHERE schedule_id = ? AND status = 'pending'`).bind(msg.slice(0, 300), id).run()
+  }
+  for (const s of due) {
+    try {
+      const sp = await loadStaffRow(db, s.company_id, s.staff_id)
+      if (!sp) { await markFailed(s.schedule_id, 'スタッフが見つかりません'); continue }
+      if (sp.employment_status === 'retired' || sp.user_status !== 'active') { await markFailed(s.schedule_id, '退職・停止中のため適用しませんでした'); continue }
+      let req: any = {}; try { req = JSON.parse(s.request_json || '{}') } catch { }
+      const body = { to_type: s.to_type, effective_date: s.effective_date, partner_affiliation_id: s.partner_affiliation_id, trade_name: req.trade_name, hire_date: req.hire_date, contract_type: req.contract_type }
+      const r = await planAffiliationChange(db, s.company_id, sp, body, { today, fromSchedule: true })
+      if (!r.ok) { await markFailed(s.schedule_id, r.error); continue }
+      if (r.plan.repair) { await markFailed(s.schedule_id, `すでに「${TYPE_LABEL[s.to_type] || s.to_type}」に変更されています`); continue }
+      await executeAffiliationChange(db, s.company_id, s.created_by ?? null, sp, r.plan, req.note || null, s.schedule_id)
+      applied++
+    } catch (e) {
+      try { await markFailed(s.schedule_id, '適用に失敗しました: ' + String(e)) } catch { }
+    }
+  }
+  return { due: due.length, applied, failed }
+}
 
 adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
   const u = c.get('user'); const db = c.env.DB
@@ -322,10 +497,15 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
   const history = (await db.prepare(`SELECT h.*, um.name AS changed_by_name FROM staff_affiliation_history h LEFT JOIN users um ON um.user_id = h.changed_by
     WHERE h.staff_id = ? AND h.company_id = ? ORDER BY h.effective_date DESC, h.history_id DESC`).bind(sp.staff_id, u.company_id).all()).results
   const er = await db.prepare('SELECT employment_ended_at, ended_reason, hire_date FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, u.company_id).first()
+  // 区分変更の予約（予約中と、適用できなかったもの）と、過去の雇用期間（再雇用の前の期間）
+  const schedules = (await db.prepare(`SELECT schedule_id, to_type, effective_date, to_affiliation, status, error, created_at FROM staff_affiliation_schedules
+    WHERE staff_id = ? AND company_id = ? AND status IN ('pending', 'failed') ORDER BY schedule_id DESC LIMIT 5`).bind(sp.staff_id, u.company_id).all()).results
+  const employment_periods = (await db.prepare(`SELECT hire_date, employment_ended_at, ended_reason, contract_type, recorded_at FROM employment_periods
+    WHERE staff_id = ? AND company_id = ? ORDER BY period_id DESC`).bind(sp.staff_id, u.company_id).all()).results
   return c.json({
     staff_id: sp.staff_id, affiliation_type: sp.affiliation_type || 'own_employee', is_provisional: !!sp.is_provisional,
     has_login: sp.user_role === 'staff', user_code: sp.user_role === 'staff' ? sp.user_code : null, phone: sp.phone,
-    attendance_mode: sp.attendance_mode, daily_report_mode: sp.daily_report_mode, employee_record: er, history,
+    attendance_mode: sp.attendance_mode, daily_report_mode: sp.daily_report_mode, employee_record: er, history, schedules, employment_periods,
     partner_affiliation_id: sp.partner_affiliation_id,
     merged_into_staff_id: sp.merged_into_staff_id, merged_at: sp.merged_at,
     merged_into_name: sp.merged_into_staff_id ? ((await db.prepare('SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(sp.merged_into_staff_id).first()) as any)?.name : null,
