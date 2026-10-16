@@ -25,6 +25,7 @@ import {
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, linkedStaffEmails } from './roster'
 import { isHHMM, oneOf, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
+import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -1012,6 +1013,8 @@ function catLabel(cat: string): string {
 api.get('/admin/staff', async (c) => {
   const u = c.get('user'); const month = monthJST(); const today = todayJST()
   await ensureRosterIdentity(c.env.DB, u.company_id) // person_id 未採番の行を補完（seed後投入・他経路INSERT対策）
+  // assignable: 今日の時点でシフトに割り当てられるか（退職・統合・取引終了・所属元で退職などを除く。シフト登録・シフトボードの選択肢に使う）
+  const elig = assignableStaffSql({ sp: 'sp', us: 'us' })
   const rows = await c.env.DB.prepare(`
     SELECT sp.staff_id, sp.evaluation_score, sp.retention_risk, sp.follow_flag,
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
@@ -1019,7 +1022,8 @@ api.get('/admin/staff', async (c) => {
            CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
            COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sp.affiliation, sp.employment_status, sp.is_provisional, sp.merged_into_staff_id, sp.board_proposal_id, us.phone,
            oc.company_name AS owner_company_name, CASE WHEN sp.affiliation_type = 'linked_external' THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
-           us.user_id, us.user_code, us.name, us.status, us.role AS user_role,
+           us.user_id, us.user_code, us.name, us.status, us.role AS user_role, sp.link_ended_at,
+           CASE WHEN ${elig.sql} THEN 1 ELSE 0 END AS assignable,
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
            (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status = 'confirmed') AS last_work_date,
            (SELECT MAX(dr.work_date) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id) AS last_report_date,
@@ -1031,7 +1035,7 @@ api.get('/admin/staff', async (c) => {
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
-    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(month + '%', today, today, today, month + '%', month + '%', u.company_id).all()
+    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, month + '%', today, today, today, month + '%', month + '%', u.company_id).all()
   return c.json({ staff: rows.results })
 })
 
@@ -2017,19 +2021,26 @@ api.get('/admin/shifts', async (c) => {
 api.post('/admin/shifts', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.staff_id || !b.project_id || !b.work_date) return c.json({ error: 'スタッフ・案件・日付は必須です' }, 400)
-  // 自社のスタッフマスタ行のみシフト登録可。スキルシートのみ作成（稼働管理対象外）は不可
-  const st = await c.env.DB.prepare('SELECT affiliation_type, merged_into_staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(b.staff_id, u.company_id).first()
-  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  if (st.merged_into_staff_id) return c.json({ error: '統合済みのスタッフにはシフトを登録できません' }, 400)
-  if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.work_date))) return c.json({ error: '日付の形式が正しくありません' }, 400)
+  if ((b.start_time && !isHHMM(b.start_time)) || (b.end_time && !isHHMM(b.end_time))) return c.json({ error: '時刻は HH:MM の形式で入力してください' }, 400)
   if (b.status && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
   // 自社の案件のみ（他社の案件名・場所・単価を取り込まない）
   const proj = await ownProject(c.env.DB, u.company_id, b.project_id)
   if (!proj) return c.json({ error: '案件が見つかりません' }, 404)
+  // 交通費（実費）は空欄なら 0。案件の交通費ルール（定額・なし）は単価の適用で反映される（#94）
+  const fee = b.transportation_fee === undefined || b.transportation_fee === null || b.transportation_fee === '' ? 0 : Number(b.transportation_fee)
+  if (!Number.isInteger(fee) || fee < 0 || fee > 100000) return c.json({ error: '交通費は0〜100000の整数で入力してください' }, 400)
+  const start = b.start_time || '09:30', end = b.end_time || '19:00'
+  // 自社のスタッフマスタ行のみ。退職・統合・スキルシートのみ・取引終了は不可（#94）。
+  // 重複・NG・休職中の警告: 画面（シフト管理の登録）は confirm_warnings を付けて送り、409 で確認してから force で登録する。
+  // 付けずに呼んだ場合は登録し、警告を応答に含める（既存の呼び出しの動きを変えないため）
+  const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: proj, slot: null, staffId: Number(b.staff_id), workDate: b.work_date, start, end })
+  if (chk.error) return c.json({ error: chk.error }, chk.status)
+  if (chk.warnings.length && b.confirm_warnings === true && !b.force) return c.json({ warnings: chk.warnings, need_force: true }, 409)
   const ins = await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.staff_id, b.project_id, b.work_date, b.start_time || '09:30', b.end_time || '19:00',
-      b.location || proj?.location || '', b.role || '販売スタッフ', b.unit_price ?? proj?.unit_price ?? 0, b.transportation_fee || 0,
+    .bind(u.company_id, b.staff_id, b.project_id, b.work_date, start, end,
+      b.location || proj?.location || '', b.role || '販売スタッフ', b.unit_price ?? proj?.unit_price ?? 0, fee,
       b.status || 'confirmed', u.user_id, b.memo ?? null).run()
   // 単価ルール（請求/支払/交通費）を適用。単価を明示指定した場合は請求をその値で固定する
   const sid = ins.meta.last_row_id
@@ -2037,7 +2048,7 @@ api.post('/admin/shifts', async (c) => {
     await applyPricingToShift(c.env.DB, u.company_id, sid)
     if (b.unit_price != null) await c.env.DB.prepare("UPDATE shifts SET unit_price = ?, bill_rate = ?, bill_unit_type = 'daily', bill_qty = 1, price_locked = 1 WHERE shift_id = ?").bind(b.unit_price, b.unit_price, sid).run()
   }
-  return c.json({ ok: true })
+  return c.json({ ok: true, shift_id: sid, warnings: chk.warnings })
 })
 
 api.put('/admin/shifts/:id', async (c) => {
@@ -2048,18 +2059,28 @@ api.put('/admin/shifts/:id', async (c) => {
   if (cur.settle_status === 'confirmed' && (b.status != null || b.start_time != null || b.end_time != null || b.staff_id != null))
     return c.json({ error: '確定済みのシフトは変更できません。精算画面で確定を取り消してください' }, 409)
   if (b.status != null && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
-  // 付け替え先は自社のスタッフマスタ行のみ（統合済み・スキルシートのみは不可）
-  if (b.staff_id != null) {
-    const st = await ownStaff(c.env.DB, u.company_id, b.staff_id)
-    if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
-    if (st.merged_into_staff_id) return c.json({ error: '統合済みのスタッフにはシフトを登録できません' }, 400)
-    if (st.affiliation_type === 'skillsheet_only') return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
+  // 付け替え先は割り当てられるスタッフのみ（退職・統合済み・スキルシートのみ・取引終了は不可）。重複・NG・休職中は確認のうえ
+  if (b.staff_id != null && Number(b.staff_id) !== cur.staff_id) {
+    const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: cur.project_id, slot: cur.slot_role_id ? { slot_role_id: cur.slot_role_id } : null,
+      staffId: Number(b.staff_id), workDate: cur.work_date, start: b.start_time ?? cur.start_time, end: b.end_time ?? cur.end_time, excludeShiftId: cur.shift_id })
+    if (chk.error) return c.json({ error: chk.error }, chk.status)
+    if (chk.warnings.length && !b.force) return c.json({ warnings: chk.warnings, need_force: true }, 409)
+  } else if (b.status != null && b.status !== 'absent' && cur.status === 'absent') {
+    // 欠勤から戻すときも、退職・取引終了などの人には戻さない
+    const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: cur.project_id, slot: null, staffId: cur.staff_id, workDate: cur.work_date, start: cur.start_time, end: cur.end_time })
+    if (chk.error) return c.json({ error: chk.error }, chk.status)
   }
-  await c.env.DB.prepare(`UPDATE shifts SET
-      status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
-      staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo)
-    WHERE shift_id = ? AND company_id = ?`)
-    .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, c.req.param('id'), u.company_id).run()
+  try {
+    await c.env.DB.prepare(`UPDATE shifts SET
+        status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
+        staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo)
+      WHERE shift_id = ? AND company_id = ?`)
+      .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, c.req.param('id'), u.company_id).run()
+  } catch (e) {
+    // 欠勤から戻すなどで、同じ枠に同じ人の有効なシフトが2件になる（一意インデックス #530）
+    if (isUniqueViolation(e)) return c.json({ error: '同じ枠に、このスタッフの有効なシフトがすでにあります' }, 409)
+    throw e
+  }
   // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
   if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
   return c.json({ ok: true })

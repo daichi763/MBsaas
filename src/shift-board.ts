@@ -7,8 +7,8 @@
 // 金額（請求・支払・粗利）は管理画面（/api/admin/*）でのみ返す。
 // =========================================================
 import { Hono } from 'hono'
-import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
-import { assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, ngStaffIds } from './lib/staff-eligibility'
+import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
+import { assertAssignable, assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, isUniqueViolation, ngStaffIds } from './lib/staff-eligibility'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -335,8 +335,8 @@ app.get('/shift-board/candidates', async (c) => {
       ng: ng.includes(s.staff_id), on_leave: s.employment_status === 'leave',
     }
   })
-  // 並び: 空きあり → NGでない → 同じ開催場所の経験 → 案件の経験 → スキル一致 → 週の稼働が少ない
-  list.sort((a, b) => Number(a.busy) - Number(b.busy) || Number(a.ng) - Number(b.ng) || b.site_count - a.site_count || b.project_count - a.project_count || b.skill_match - a.skill_match || a.week_days - b.week_days)
+  // 並び: 空きあり → NGでない → 休職中でない → 同じ開催場所の経験 → 案件の経験 → スキル一致 → 週の稼働が少ない
+  list.sort((a, b) => Number(a.busy) - Number(b.busy) || Number(a.ng) - Number(b.ng) || Number(a.on_leave) - Number(b.on_leave) || b.site_count - a.site_count || b.project_count - a.project_count || b.skill_match - a.skill_match || a.week_days - b.week_days)
   return c.json({ slot_role: role, candidates: list })
 })
 
@@ -457,35 +457,29 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   const staffIds: number[] = [...new Set(((Array.isArray(b.staff_ids) ? b.staff_ids : [b.staff_id]) as any[]).map(Number).filter(Boolean))]
   if (!staffIds.length) return c.json({ error: 'スタッフを選択してください' }, 400)
   const status = ['confirmed', 'requested'].includes(b.status) ? b.status : 'confirmed'
-  const staffRows = (await db.prepare(`SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.merged_into_staff_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    WHERE sp.company_id = ? AND sp.staff_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(staffIds)).all()).results as any[]
-  if (staffRows.length !== staffIds.length) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  if (staffRows.some(s => s.affiliation_type === 'skillsheet_only')) return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
-  if (staffRows.some(s => s.merged_into_staff_id)) return c.json({ error: '統合済みのスタッフにはシフトを登録できません（統合先のスタッフを選んでください）' }, 400)
-
-  const already = new Set(((await db.prepare("SELECT staff_id FROM shifts WHERE slot_role_id = ? AND status != 'absent'").bind(role.slot_role_id).all()).results as any[]).map(r => r.staff_id))
-  const conflicts = await findConflicts(db, u.company_id, staffIds, role.work_date, role.work_date)
-  const ng = await ngStaffIds(db, role.project_id)
-  const warnings = staffRows.flatMap(s => {
-    const w: string[] = []
-    if (already.has(s.staff_id)) w.push(`${s.name}: すでにこの枠に割り当て済みです`)
-    const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time)
-    if (cf.length) w.push(`${s.name}: 同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`)
-    if (ng.includes(s.staff_id)) w.push(`${s.name}: クライアントのNGスタッフに指定されています`)
-    return w
-  })
+  // 退職・統合・取引終了などは割り当てない。重複・NG・休職中・割当済みは確認のうえ force で続ける（#119 #354）
+  const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffIds, workDate: role.work_date, start: role.start_time, end: role.end_time })
+  if (chk.error) return c.json({ error: chk.error }, chk.status)
+  const warnings = chk.warnings
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
 
   const data = await loadPricingData(db, u.company_id, [role.project_id])
   const created: number[] = []
-  for (const s of staffRows) {
-    if (already.has(s.staff_id)) continue
-    const res = await db.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo, slot_id, slot_role_id, site_id, break_minutes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(u.company_id, s.staff_id, role.project_id, role.work_date, role.start_time, role.end_time, role.location || '', role.role_name,
-        intOrNull(b.transportation_fee) ?? 0, status, u.user_id, b.memo ?? null, role.slot_id, role.slot_role_id, role.site_id ?? null, role.break_minutes ?? null).run()
-    await applyPricingToShift(db, u.company_id, res.meta.last_row_id, { data })
-    created.push(res.meta.last_row_id)
+  for (const s of chk.staff) {
+    if (chk.already.has(s.staff_id)) continue
+    let res: D1Result
+    try {
+      res = await db.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo, slot_id, slot_role_id, site_id, break_minutes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(u.company_id, s.staff_id, role.project_id, role.work_date, role.start_time, role.end_time, role.location || '', role.role_name,
+          intOrNull(b.transportation_fee) ?? 0, status, u.user_id, b.memo ?? null, role.slot_id, role.slot_role_id, role.site_id ?? null, role.break_minutes ?? null).run()
+    } catch (e) {
+      // 同時に届いた別のリクエストが先に割り当てた（一意インデックス）。二重には作らない（#530）
+      if (isUniqueViolation(e)) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
+      throw e
+    }
+    await applyPricingToShift(db, u.company_id, res.meta.last_row_id as number, { data })
+    created.push(res.meta.last_row_id as number)
   }
   return c.json({ ok: true, shift_ids: created, warnings })
 })
@@ -500,17 +494,81 @@ app.post('/shifts/:id/move', async (c) => {
   if (!role) return c.json({ error: '移動先の枠が見つかりません' }, 404)
   const hasReports = await db.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) + (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS n').bind(s.shift_id, s.shift_id).first().catch(() => ({ n: 0 })) as any
   if (hasReports?.n > 0 && (role.work_date !== s.work_date || role.project_id !== s.project_id)) return c.json({ error: '勤怠・日報の報告があるシフトは、別の日付・案件へ移動できません' }, 409)
-  const conflicts = await findConflicts(db, u.company_id, [s.staff_id], role.work_date, role.work_date)
-  const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time, s.shift_id)
-  const ng = (await ngStaffIds(db, role.project_id)).includes(s.staff_id)
-  const warnings = [...(cf.length ? [`同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`] : []), ...(ng ? ['クライアントのNGスタッフに指定されています'] : [])]
+  const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffId: s.staff_id, workDate: role.work_date, start: role.start_time, end: role.end_time, excludeShiftId: s.shift_id })
+  if (chk.error) return c.json({ error: chk.error }, chk.status)
+  const warnings = chk.warnings
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
   const projectChanged = role.project_id !== s.project_id
-  await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ? WHERE shift_id = ?`)
-    .bind(role.project_id, role.slot_id, role.slot_role_id, role.site_id ?? null, role.work_date, role.start_time, role.end_time, role.break_minutes ?? null, role.role_name, role.location || s.location || '', s.shift_id).run()
+  try {
+    await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ? WHERE shift_id = ?`)
+      .bind(role.project_id, role.slot_id, role.slot_role_id, role.site_id ?? null, role.work_date, role.start_time, role.end_time, role.break_minutes ?? null, role.role_name, role.location || s.location || '', s.shift_id).run()
+  } catch (e) {
+    if (isUniqueViolation(e)) return c.json({ error: 'このスタッフはすでに移動先の枠に割り当て済みです' }, 409)
+    throw e
+  }
   // 手動変更した金額でも、案件が変わった場合は移動先の単価に置き換える
   await applyPricingToShift(db, u.company_id, s.shift_id, { force: projectChanged })
   return c.json({ ok: true, warnings })
+})
+
+// =========================================================
+// 退職・取引終了にするときの、今後のシフトの確認と取り外し（#500 #187）
+// 対象: 自社の、from 以降（今日より前は対象外）の希望・確定・代打のシフトで、精算が確定していないもの
+// =========================================================
+const todayJST = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
+async function futureShiftsOf(db: D1Database, companyId: number, staffId: number, from: string) {
+  return (await db.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.slot_role_id, p.project_name,
+      (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) + (SELECT COUNT(*) FROM daily_reports d WHERE d.shift_id = s.shift_id)
+        + (SELECT COUNT(*) FROM attendance_corrections ac WHERE ac.shift_id = s.shift_id)
+        + (SELECT COUNT(*) FROM recruit_application_items ri WHERE ri.shift_id = s.shift_id) AS records
+    FROM shifts s LEFT JOIN projects p ON p.project_id = s.project_id
+    WHERE s.company_id = ? AND s.staff_id = ? AND s.work_date >= ? AND s.status IN ('requested','confirmed','substitute')
+      AND COALESCE(s.settle_status,'planned') != 'confirmed'
+    ORDER BY s.work_date, s.start_time`).bind(companyId, staffId, from).all()).results as any[]
+}
+function futureFrom(v: any): string | null {
+  if (!isDate(v)) return null
+  const t = todayJST()
+  return v < t ? t : v
+}
+
+// 今後のシフトの件数と一覧。退職日を保存する前の確認に使う（from = 退職日の翌日）
+app.get('/staff/:id/future-shifts', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const st = await db.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const from = futureFrom(c.req.query('from'))
+  if (!from) return c.json({ error: '日付の形式が正しくありません' }, 400)
+  const shifts = await futureShiftsOf(db, u.company_id, st.staff_id, from)
+  // 連携先（多段連携の先を含む）のシフトは件数だけを返す（会社名・案件名は出さない）
+  const linked = await db.prepare(`SELECT COUNT(*) AS n FROM shifts s JOIN staff_profiles l ON l.staff_id = s.staff_id
+    WHERE l.affiliation_type = 'linked_external' AND COALESCE(l.root_staff_id, l.source_staff_id) = ? AND l.company_id != ?
+      AND s.work_date >= ? AND s.status IN ('requested','confirmed','substitute')`).bind(st.staff_id, u.company_id, from).first() as any
+  return c.json({ from, count: shifts.length, shifts: shifts.map(({ records, ...x }) => ({ ...x, has_records: records > 0 })), linked_count: Number(linked?.n || 0) })
+})
+
+// 今後のシフトをまとめて外す。記録（勤怠・日報・打刻修正・募集の承認）のないシフトは削除して枠を空きに戻し、
+// 記録のあるシフトは残して欠勤にする。shift_ids を送ったときは、確認画面に出したものだけを処理する
+app.post('/staff/:id/release-future-shifts', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const st = await db.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const from = futureFrom(b.from)
+  if (!from) return c.json({ error: '日付の形式が正しくありません' }, 400)
+  let shifts = await futureShiftsOf(db, u.company_id, st.staff_id, from)
+  if (Array.isArray(b.shift_ids)) { const want = new Set(b.shift_ids.map(Number)); shifts = shifts.filter(s => want.has(s.shift_id)) }
+  const stmts: D1PreparedStatement[] = []
+  let removed = 0, absent = 0
+  for (const s of shifts) {
+    if (s.records > 0) { stmts.push(db.prepare("UPDATE shifts SET status = 'absent' WHERE shift_id = ? AND company_id = ?").bind(s.shift_id, u.company_id)); absent++ }
+    else {
+      stmts.push(db.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id))
+      stmts.push(db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id))
+      removed++
+    }
+  }
+  await batchInChunks(db, stmts)
+  return c.json({ ok: true, removed, absent })
 })
 
 // 金額の手動変更 / ルールに戻す

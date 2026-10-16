@@ -206,9 +206,13 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
     SELECT sp.*, ${rosterBaseSelect()},
            us.user_code, us.name, us.email, us.phone, us.status, us.last_login_at, us.retired_at, us.role AS user_role,
            oc.company_name AS owner_company_name, pe.global_staff_code,
-           pa.affiliation_name AS partner_name
+           pa.affiliation_name AS partner_name,
+           -- 他社連携の行: 所属元（雇用元）で退職・ログイン停止になっているか（日付は出さない #187）
+           CASE WHEN sp.affiliation_type = 'linked_external' AND src.staff_id IS NOT NULL
+             AND (COALESCE(src.employment_status,'working') = 'retired' OR srcu.status != 'active') THEN 1 ELSE 0 END AS source_retired
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN users srcu ON srcu.user_id = src.user_id
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
     LEFT JOIN staff_affiliations pa ON pa.affiliation_id = sp.partner_affiliation_id
@@ -301,6 +305,27 @@ rosterApi.get('/:id/share-code', async (c) => {
   const own = await c.env.DB.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
   // 連携相手に見える所属元は、コードを発行した自社（多段連携でも直前の企業名のみ）
   return c.json({ global_staff_code: code, name: r.name, company_name: own?.company_name || '', relink: r.affiliation_type === 'linked_external' })
+})
+
+// ---------- 稼働先での取引状況（#249） ----------
+// 他社連携の行（稼働先の自社の行）について、稼働先が「稼働中・休止中・取引終了」を設定する。
+// 在籍状況（employment_status）は追記項目なので連携行ごとに持てる（ROSTER_APPEND_FIELDS）。取引終了は link_ended_at に持つ。
+// 所属元のユーザー状態・退職日・在籍状況は変えない。取引終了・所属元で退職の人は、シフトの割当候補から外れる（staff-eligibility）
+export const HOST_STATUSES = ['working', 'leave', 'ended'] as const
+rosterApi.put('/:id/host-status', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const r = await loadRoster(db, c.req.param('id'), u.company_id)
+  if (!r) return c.json({ error: 'not found' }, 404)
+  if (r.affiliation_type !== 'linked_external') return c.json({ error: '取引状況を設定できるのは、他社から連携したスタッフのみです（自社のスタッフは在籍状況で管理します）' }, 400)
+  if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません' }, 409)
+  if (!(HOST_STATUSES as readonly string[]).includes(b.status)) return c.json({ error: '取引状況の値が正しくありません' }, 400)
+  if (b.status === 'ended') {
+    await db.prepare('UPDATE staff_profiles SET link_ended_at = COALESCE(link_ended_at, ?) WHERE staff_id = ? AND company_id = ?').bind(nowJST(), r.staff_id, u.company_id).run()
+  } else {
+    await db.prepare('UPDATE staff_profiles SET link_ended_at = NULL, employment_status = ? WHERE staff_id = ? AND company_id = ?').bind(b.status, r.staff_id, u.company_id).run()
+  }
+  return c.json({ ok: true })
 })
 
 // ---------- フェーズF: 所属元⇔稼働先の連携状況 ----------
