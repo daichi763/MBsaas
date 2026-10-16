@@ -497,7 +497,7 @@ async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Set<
   const staffIds = [...new Set(shifts.map(s => s.staff_id as number))]
   const dates = [...new Set(shifts.map(s => s.work_date as string))]
   const rows = (await db.prepare(`SELECT shift_id, staff_id, work_date, project_id FROM daily_reports
-    WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (shift_id IS NULL AND staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
+    WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
     .bind(...ids, ...staffIds, ...dates).all()).results as any[]
   for (const s of shifts) {
     if (rows.some(d => d.shift_id === s.shift_id || (d.shift_id == null && d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))) done.add(s.shift_id)
@@ -903,7 +903,7 @@ api.get('/admin/dashboard', async (c) => {
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
       AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
-      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
     ORDER BY s.work_date DESC, s.start_time`).bind(cid, today, today).all()
   // 日報「不要」のシフトは未提出の対象外（第2段階）
   {

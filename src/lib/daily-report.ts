@@ -2,6 +2,7 @@
 // 日報はシフト（shift_id）単位で1件（migrations/0035_daily_report.sql の ux_daily_reports_shift）。
 // アプリ（POST /api/staff/daily-report）と報告用URL（POST /api/public/report/:token/daily-report）で共用する。
 // shift_id の無い古い日報だけは、同じスタッフ・稼働日・案件で照合する。
+// その照合の `+shift_id IS NULL` の + は、shift_id の一意索引で全社の古い日報を走査させず、稼働日などの索引を使わせるため（api.ts の同じ照合も同じ）。
 // =========================================================
 
 export type DailyReportShift = { shift_id: number; staff_id: number; work_date: string; project_id: number }
@@ -9,7 +10,7 @@ export type DailyReportShift = { shift_id: number; staff_id: number; work_date: 
 /** シフトの日報（shift_id の一致を優先し、無ければ shift_id の無い古い日報） */
 export async function findDailyReport(db: D1Database, s: DailyReportShift): Promise<any | null> {
   return (await db.prepare(`SELECT * FROM daily_reports
-    WHERE shift_id = ? OR (shift_id IS NULL AND staff_id = ? AND work_date = ? AND project_id = ?)
+    WHERE shift_id = ? OR (+shift_id IS NULL AND staff_id = ? AND work_date = ? AND project_id = ?)
     ORDER BY shift_id IS NULL, submitted_at DESC, daily_report_id DESC LIMIT 1`)
     .bind(s.shift_id, s.staff_id, s.work_date, s.project_id).first()) ?? null
 }
@@ -48,7 +49,7 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
     // 新しい行を足すと、古い行と二重に集計されるため
     const claimed = await db.prepare(`UPDATE daily_reports SET shift_id = ?
       WHERE daily_report_id = (SELECT daily_report_id FROM daily_reports
-          WHERE shift_id IS NULL AND company_id = ? AND staff_id = ? AND work_date = ? AND project_id = ?
+          WHERE +shift_id IS NULL AND company_id = ? AND staff_id = ? AND work_date = ? AND project_id = ?
           ORDER BY submitted_at DESC, daily_report_id DESC LIMIT 1)
         AND NOT EXISTS (SELECT 1 FROM daily_reports WHERE shift_id = ?)`)
       .bind(r.shift_id, r.company_id, r.staff_id, r.work_date, r.project_id, r.shift_id).run()
