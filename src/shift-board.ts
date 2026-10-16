@@ -171,12 +171,22 @@ export function shiftTotals(s: any) {
 }
 
 // 支払先（第2段階の区分変更で置き換える。第1段階は現在の所属区分から決める）
-export async function resolvePayee(db: D1Database, companyId: number, staffId: number) {
+// workDate を渡すと、その日より後に適用した区分変更があれば変更前の支払先を返す（適用日より前のシフトを計算し直しても、
+// 新しい区分の支払先にしない。#82）。変更前の支払先を記録していない履歴（0039 より前の変更・統合の記録）なら、今の区分から決める。
+// 区分が変わらない記録（支払先の付け直し）は見ない
+export async function resolvePayee(db: D1Database, companyId: number, staffId: number, workDate?: string | null) {
+  if (workDate) {
+    const h = await db.prepare(`SELECT from_payee_type, from_payee_affiliation_id, from_payee_company_id FROM staff_affiliation_history
+      WHERE staff_id = ? AND company_id = ? AND from_type != 'new' AND (from_type != to_type OR from_payee_type IS NOT NULL) AND effective_date > ?
+      ORDER BY effective_date, history_id LIMIT 1`).bind(staffId, companyId, workDate).first() as any
+    if (h?.from_payee_type) return { payee_type: h.from_payee_type as string, payee_affiliation_id: (h.from_payee_affiliation_id ?? null) as number | null, payee_company_id: (h.from_payee_company_id ?? null) as number | null }
+  }
   const sp = await db.prepare('SELECT affiliation_type, partner_affiliation_id, owner_company_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).first() as any
   return payeeFromProfile(sp)
 }
+export type Payee = { payee_type: string; payee_affiliation_id: number | null; payee_company_id: number | null }
 // staff_profiles の行（affiliation_type, partner_affiliation_id, owner_company_id）から支払先を決める。一括処理では、まとめて読んだ行を渡す
-export function payeeFromProfile(sp: any) {
+export function payeeFromProfile(sp: any): Payee {
   const t = sp?.affiliation_type || 'own_employee'
   if (t === 'linked_external') return { payee_type: 'linked', payee_affiliation_id: null, payee_company_id: sp.owner_company_id ?? null }
   if (t === 'partner_manual') return { payee_type: 'partner', payee_affiliation_id: sp.partner_affiliation_id ?? null, payee_company_id: null }
@@ -186,11 +196,28 @@ export function payeeFromProfile(sp: any) {
   return { payee_type: 'payroll', payee_affiliation_id: null, payee_company_id: null }
 }
 
+// 区分変更の履歴（resolvePayee と同じ条件の行）をスタッフごとにまとめて読む。一括処理（再適用・一括登録・コピー）で payeeOn に渡す
+export async function loadPayeeHistory(db: D1Database, companyId: number, staffIds: number[]) {
+  const map = new Map<number, any[]>()
+  const ids = bindJsonArray(staffIds)
+  if (ids === '[]') return map
+  const rows = (await db.prepare(`SELECT staff_id, effective_date, from_payee_type, from_payee_affiliation_id, from_payee_company_id FROM staff_affiliation_history
+    WHERE company_id = ? AND staff_id IN ${JSON_IN} AND from_type != 'new' AND (from_type != to_type OR from_payee_type IS NOT NULL)
+    ORDER BY staff_id, effective_date, history_id`).bind(companyId, ids).all()).results as any[]
+  for (const r of rows) { const a = map.get(r.staff_id) || []; a.push(r); map.set(r.staff_id, a) }
+  return map
+}
+// その日のシフトの支払先（resolvePayee と同じ規則）。sp は staff_profiles の行、hist は loadPayeeHistory で読んだそのスタッフの履歴
+export function payeeOn(sp: any, hist: any[] | undefined, workDate: string): Payee {
+  const h = hist?.find(x => x.effective_date > workDate)
+  if (h?.from_payee_type) return { payee_type: h.from_payee_type as string, payee_affiliation_id: (h.from_payee_affiliation_id ?? null) as number | null, payee_company_id: (h.from_payee_company_id ?? null) as number | null }
+  return payeeFromProfile(sp)
+}
 // シフトの単価・金額・支払先を計算する（書き込みはしない）。s は shifts の行（これから登録する行でもよい）
 export const PRICE_COLUMNS = ['bill_unit_type', 'bill_rate', 'bill_qty', 'unit_price', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
   'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount',
   'payee_type', 'payee_affiliation_id', 'payee_company_id', 'price_source', 'price_locked']
-export function computeShiftPricing(companyId: number, s: any, slotRole: any, payee: ReturnType<typeof payeeFromProfile>, data: { projects: Map<number, any>; rules: any[] }) {
+export function computeShiftPricing(companyId: number, s: any, slotRole: any, payee: Payee, data: { projects: Map<number, any>; rules: any[] }) {
   const price = resolvePrice({ company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: s.role, staff_id: s.staff_id, slot_role: slotRole }, data)
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
@@ -214,7 +241,7 @@ export async function applyPricingToShift(db: D1Database, companyId: number, shi
   if (s.price_locked && !opts.force) return
   const data = opts.data || await loadPricingData(db, companyId, [s.project_id])
   const slotRole = s.slot_role_id ? await db.prepare('SELECT * FROM shift_slot_roles WHERE slot_role_id = ?').bind(s.slot_role_id).first() : null
-  const v = computeShiftPricing(companyId, s, slotRole, await resolvePayee(db, companyId, s.staff_id), data)
+  const v = computeShiftPricing(companyId, s, slotRole, await resolvePayee(db, companyId, s.staff_id, s.work_date), data)
   await db.prepare(`UPDATE shifts SET ${PRICE_COLUMNS.map(k => `${k} = ?`).join(', ')} WHERE shift_id = ? AND company_id = ?`)
     .bind(...PRICE_COLUMNS.map(k => v[k]), shiftId, companyId).run()
 }
@@ -729,11 +756,12 @@ async function repriceRows(db: D1Database, companyId: number, rows: any[]): Prom
   if (!rows.length) return 0
   const data = await loadPricingData(db, companyId, rows.map(r => r.project_id))
   const staff = await loadStaffForAssign(db, companyId, rows.map(r => r.staff_id))
+  const hist = await loadPayeeHistory(db, companyId, rows.map(r => r.staff_id))
   const roleIds = bindJsonArray(rows.map(r => r.slot_role_id))
   const roles = roleIds === '[]' ? [] : (await db.prepare(`SELECT r.* FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id
     WHERE sl.company_id = ? AND r.slot_role_id IN ${JSON_IN}`).bind(companyId, roleIds).all()).results as any[]
   const roleMap = new Map(roles.map(r => [r.slot_role_id, r]))
-  const upd = rows.map(s => ({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roleMap.get(s.slot_role_id) || null : null, payeeFromProfile(staff.get(s.staff_id)), data) }))
+  const upd = rows.map(s => ({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roleMap.get(s.slot_role_id) || null : null, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), s.work_date), data) }))
   // 読み込みの後に確定・手動変更されたシフトは書き換えない
   const res = await batchInChunks(db, updateRowsStmts(db, 'shifts', 'shift_id', PRICE_COLUMNS, upd,
     "shifts.company_id = ? AND COALESCE(shifts.price_locked,0) = 0 AND COALESCE(shifts.settle_status,'planned') != 'confirmed'", [companyId]))
@@ -773,6 +801,7 @@ app.post('/shifts/bulk', async (c) => {
   if (!isTime(b.start_time) || !isTime(b.end_time)) return c.json({ error: '開始・終了時刻を入力してください' }, 400)
   const staff = await loadStaffForAssign(db, u.company_id, staffIds)
   if (staff.size !== staffIds.length) return c.json({ error: 'スタッフが見つかりません' }, 400)
+  const hist = await loadPayeeHistory(db, u.company_id, staffIds)
   const site = b.site_id ? await ownSite(db, u.company_id, b.site_id) : null
 
   const items: [string, number][] = []
@@ -802,7 +831,7 @@ app.post('/shifts/bulk', async (c) => {
     }
     if (reason) { skipped.push({ date: d, staff_id: sid, staff_name: st?.name || '', reason, detail, project_name: project.project_name, start_time: b.start_time, end_time: b.end_time }); continue }
     const row: any = { ...base, staff_id: sid, work_date: d }
-    rows.push({ ...row, ...computeShiftPricing(u.company_id, row, null, payeeFromProfile(st), data) })
+    rows.push({ ...row, ...computeShiftPricing(u.company_id, row, null, payeeOn(st, hist.get(sid), d), data) })
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
   const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows))
@@ -978,6 +1007,7 @@ app.post('/shifts/copy-week', async (c) => {
   let shiftsCreated = 0
   if (shiftPlans.length) {
     const pdata = await loadPricingData(db, cid, usedProjectIds)
+    const hist = await loadPayeeHistory(db, cid, shiftPlans.map(p => p.src.staff_id))
     const rows = shiftPlans.map(p => {
       const s = p.src, role = p.role?.target || null, slot = p.role?.slot.target || null
       const row: any = {
@@ -986,7 +1016,7 @@ app.post('/shifts/copy-week', async (c) => {
         status: 'confirmed', registered_by: u.user_id, slot_id: slot?.slot_id ?? null, slot_role_id: role?.slot_role_id ?? null,
         site_id: slot ? slot.site_id ?? null : s.site_id ?? null, break_minutes: slot ? slot.break_minutes ?? null : s.break_minutes ?? null, source_shift_id: s.shift_id,
       }
-      return { ...row, ...computeShiftPricing(cid, row, role, payeeFromProfile(staff.get(s.staff_id)), pdata) }
+      return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })
     shiftsCreated = changesOf(await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true })))
   }
