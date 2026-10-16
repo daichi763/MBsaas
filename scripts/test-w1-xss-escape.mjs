@@ -44,7 +44,7 @@ async function createShift(staff_id, project_id, work_date, memo) {
 
 // ---------- #2 日報の values のキーはテンプレートの項目に限る ----------
 {
-  const d = addDays(today, -3) // 日報は稼働日以降に受け付ける（w2-daily-report #241）。今日にすると、ほかのテストのホームのシフトと重なる
+  const d = addDays(today, -1) // 日報は稼働日以降、報告用URLは稼働日の翌日まで（w2-daily-report #241）。今日にすると、ほかのテストのホームのシフトと重なる
   const shiftId = await createShift(1, 1, d, 'XSS-DR')
   const bad = await st1.post('/api/staff/daily-report', { project_id: 1, shift_id: shiftId, work_date: d, values: { mnp: 'abc' } })
   ok('#2 数値の項目に数値以外は 400', bad.status === 400, bad)
