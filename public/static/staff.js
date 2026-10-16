@@ -87,8 +87,9 @@ function homeShiftCardHtml(data) {
     <section class="card p-4 mb-4" id="today-shift">
       <div class="flex items-center justify-between mb-2">
         <h2 class="font-bold text-gray-800"><i class="fas fa-calendar-check text-blue-600 mr-1"></i>${data.carryover ? '昨日からの勤務' : '今日の稼働'}</h2>
-        <span class="badge ${data.carryover ? 'badge-yellow' : 'badge-blue'}">${esc(fmtDate(s.work_date || data.today))}</span>
+        <span class="flex items-center gap-1">${data.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}<span class="badge ${data.carryover ? 'badge-yellow' : 'badge-blue'}">${esc(fmtDate(s.work_date || data.today))}</span></span>
       </div>
+      ${data.tentative ? '<p class="text-xs mb-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-hourglass-half mr-1"></i>管理者の確定待ちのシフト（希望（仮））です。確定されるまでは支払いの対象になりません。勤務する場合は管理者に確認してください。</p>' : ''}
       <p class="text-lg font-bold text-gray-900">${esc(s.project_name)}</p>
       <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location)}</p>
       <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
@@ -96,15 +97,35 @@ function homeShiftCardHtml(data) {
     </section>`
 }
 
+// 報告の状態（サーバーの checkReportable と同じ考え方）
+//   done: 報告済み / pending: 打刻修正を申請中（承認待ち。押せない）/ skipped: 後の報告が済んでいて押せない（打刻修正の申請で追加する）
+//   open: 押せる（前の報告を飛ばして押すこともできる）。open の先頭が『次の報告』
+const REPORT_ORDER = ['wake_up', 'departure', 'check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out']
+//   前日からのシフト（carryover）は、翌日も受け付ける報告（休憩・勤務終了・退店）だけを押せる（サーバーの reportableWindow）
+const NEXT_DAY_REPORTS = ['break_start', 'break_end', 'work_end', 'check_out']
+function homeReportStates(order, reports, pending, carryover) {
+  const lastDone = REPORT_ORDER.reduce((m, t, i) => reports[t] ? i : m, -1)
+  const out = {}
+  for (const t of order) {
+    out[t] = reports[t] ? 'done' : pending[t] ? 'pending'
+      : REPORT_ORDER.indexOf(t) < lastDone || (carryover && !NEXT_DAY_REPORTS.includes(t)) ? 'skipped' : 'open'
+  }
+  return out
+}
+
 // 報告ボタン（勤怠報告と日報）
 function homeReportButtonsHtml(data) {
   const s = data.shift
   const r = data.reports
+  const pend = data.pending_corrections || {}
   // 提出設定（案件・スタッフ・シフトごと）で必要な報告だけを表示する
   const order = (data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out'])
   const dailyRequired = data.daily_report_required !== false
-  const nextIdx = order.findIndex(t => !r[t])
-  const allDone = nextIdx === -1 && (!dailyRequired || data.daily_report_done)
+  const states = homeReportStates(order, r, pend, data.carryover)
+  const nextType = order.find(t => states[t] === 'open')
+  const nextIdx = nextType ? order.indexOf(nextType) : -1
+  const skipped = order.filter(t => states[t] === 'skipped')
+  const allDone = nextIdx === -1 && !skipped.length && !order.some(t => states[t] === 'pending') && (!dailyRequired || data.daily_report_done)
   // ほかのシフトで、報告は済んだが日報が未提出のもの（1日に複数のシフトがある場合）
   const pendingDaily = (data.today_shifts || []).filter(x => x.shift_id !== s.shift_id && x.attendance_done && x.daily_report_required && !x.daily_report_done)
   return `
@@ -114,28 +135,35 @@ function homeReportButtonsHtml(data) {
       ${!order.length && !dailyRequired ? '<p class="card p-4 text-sm text-gray-500">このシフトは勤怠報告・日報の提出は不要です</p>' : ''}
       ${pendingDaily.map(x => `<button class="w-full text-left bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-2.5 text-sm text-amber-800" onclick="location.hash='report/${Number(x.shift_id)}'">
         <i class="fas fa-pen-to-square mr-1"></i>${esc(x.start_time)}〜 ${esc(x.project_name)} の日報が未提出です<span class="underline font-bold ml-1">入力する</span></button>`).join('')}
+      ${skipped.length ? `<a href="#attendance" class="block bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-2.5 text-sm text-amber-800">
+        <i class="fas fa-triangle-exclamation mr-1"></i>${esc(skipped.map(t => REPORT_LABELS[t]).join('・'))} が未報告です。打刻履歴から打刻漏れの追加を申請してください<span class="underline font-bold ml-1">申請する</span></a>` : ''}
       <div class="space-y-2.5">
         ${order.map((t, i) => {
-          const done = !!r[t]
+          const st = states[t]
+          const done = st === 'done'
           const isNext = i === nextIdx
+          const open = st === 'open'
           const photoOn = data.photo_required_attendance !== false
-          const needsPhoto = photoOn && PHOTO_REQUIRED_TYPES.includes(t)
-          const onclick = needsPhoto ? `openPhotoAttendance('${t}', ${s.shift_id})` : `submitAttendance('${t}', ${s.shift_id})`
-          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${done || !isNext ? 'disabled' : ''} onclick="${onclick}">
-            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
-              <i class="fas ${done ? 'fa-check' : REPORT_ICONS[t]}"></i>
+          const sub = done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm')
+            : st === 'pending' ? `打刻修正を申請中 ${dayjs(String(pend[t]).replace(' ', 'T')).format('HH:mm')}（承認待ち）`
+            : st === 'skipped' ? '未報告（打刻履歴から追加を申請してください）'
+            : isNext ? 'タップして報告' : 'タップして報告（前の報告を飛ばします）'
+          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${open ? '' : 'disabled'} data-action="homeReport" data-type="${esc(t)}" data-shift-id="${Number(s.shift_id)}">
+            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : st === 'pending' ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400'}">
+              <i class="fas ${done ? 'fa-check' : st === 'pending' ? 'fa-hourglass-half' : REPORT_ICONS[t]}"></i>
             </span>
             <span class="flex-1">
               <span class="block font-bold ${done ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
-              <span class="block text-xs ${done ? 'text-emerald-600' : 'text-gray-400'}">
-                ${done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm') : isNext ? 'タップして報告' : '前の報告を先に行ってください'}
-                ${t === 'check_in' && !done ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
-                ${t === 'check_out' && !done && photoOn ? ' (写真が必要です)' : ''}
+              <span class="block text-xs ${done ? 'text-emerald-600' : st === 'pending' ? 'text-amber-700' : 'text-gray-400'}">
+                ${esc(sub)}
+                ${t === 'check_in' && open ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
+                ${t === 'check_out' && open && photoOn ? ' (写真が必要です)' : ''}
               </span>
             </span>
             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
           </button>`
         }).join('')}
+        ${order.some(t => states[t] === 'pending') ? '<a href="#attendance" class="block text-xs text-blue-600 px-1">申請中の報告を今の時刻で報告する場合は、打刻履歴の「修正申請」から申請を取り消してください</a>' : ''}
         ${dailyRequired ? `<button class="report-btn ${data.daily_report_done ? 'done' : (r.check_out || nextIdx === -1) ? 'next' : ''}" onclick="location.hash='report/${Number(s.shift_id)}'">
           <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${data.daily_report_done ? 'bg-emerald-500 text-white' : r.check_out ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
             <i class="fas ${data.daily_report_done ? 'fa-check' : 'fa-pen-to-square'}"></i>
@@ -199,33 +227,58 @@ function homeMenuHtml() {
     </div>`
 }
 
-// 勤怠報告送信
-window.submitAttendance = async function (type, shiftId) {
-  if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
-  const doPost = async (pos) => {
-    try {
-      await axios.post('/api/staff/attendance', {
-        shift_id: shiftId, report_type: type,
-        latitude: pos ? pos.coords.latitude : null,
-        longitude: pos ? pos.coords.longitude : null,
-        address: null
-      })
-      toast(REPORT_LABELS[type] + 'を送信しました')
-      renderHome()
-    } catch (e) {
-      toast((e.response && e.response.data && e.response.data.error) || '送信に失敗しました')
-    }
-  }
-  if (type === 'check_in' && navigator.geolocation) {
-    toast('位置情報を取得しています...')
+// 報告ボタン: 未確定のシフト・前の報告を飛ばす場合は確認してから、写真が必要なら写真の画面、それ以外はそのまま送信する
+delegate('homeReport', (el) => {
+  if (!HOME || !HOME.shift) return
+  const type = el.dataset.type, shiftId = Number(el.dataset.shiftId)
+  if (HOME.tentative && !confirm('このシフトはまだ確定していません（希望（仮））。確定されるまでは支払いの対象になりません。\n管理者に勤務を確認したうえで報告しますか？')) return
+  const order = HOME.required_attendance || []
+  const states = homeReportStates(order, HOME.reports || {}, HOME.pending_corrections || {}, HOME.carryover)
+  const skipping = order.filter(t => states[t] === 'open' && REPORT_ORDER.indexOf(t) < REPORT_ORDER.indexOf(type))
+  if (skipping.length && !confirm(`${skipping.map(t => REPORT_LABELS[t]).join('・')} が未報告です。\n飛ばして${REPORT_LABELS[type]}を報告すると、飛ばした報告はこの画面から押せなくなります（打刻履歴から打刻漏れの追加を申請してください）。\n報告しますか？`)) return
+  const photoOn = HOME.photo_required_attendance !== false
+  if (photoOn && PHOTO_REQUIRED_TYPES.includes(type)) openPhotoAttendance(type, shiftId)
+  else submitAttendance(type, shiftId, el)
+})
+
+// 位置情報（取れなければ null）。端末が応答しない場合も 10 秒で諦める
+function getPositionOrNull() {
+  if (!navigator.geolocation) return Promise.resolve(null)
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), 10000)
     navigator.geolocation.getCurrentPosition(
-      pos => doPost(pos),
-      () => { toast('位置情報が取得できませんでした（位置なしで送信します）'); doPost(null) },
-      { timeout: 8000 }
-    )
-  } else {
-    doPost(null)
+      pos => { clearTimeout(timer); resolve(pos) },
+      () => { clearTimeout(timer); toast('位置情報が取得できませんでした（位置なしで送信します）'); resolve(null) },
+      { timeout: 8000 })
+  })
+}
+
+// 勤怠報告送信（送信中は押せない。位置情報を待つ間も含む）
+let ATTENDANCE_SENDING = false
+window.submitAttendance = async function (type, shiftId, button) {
+  if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
+  if (ATTENDANCE_SENDING) return
+  ATTENDANCE_SENDING = true
+  try {
+    await withSubmitLock(button, async () => {
+      let pos = null
+      if (type === 'check_in') { toast('位置情報を取得しています...'); pos = await getPositionOrNull() }
+      try {
+        await axios.post('/api/staff/attendance', {
+          shift_id: shiftId, report_type: type,
+          latitude: pos ? pos.coords.latitude : null,
+          longitude: pos ? pos.coords.longitude : null,
+          address: null
+        })
+        toast(REPORT_LABELS[type] + 'を送信しました')
+      } catch (e) {
+        toast((e.response && e.response.data && e.response.data.error) || '送信に失敗しました')
+      }
+    })
+  } finally {
+    ATTENDANCE_SENDING = false
   }
+  renderHome()
 }
 
 // ============ 入店/退店報告（写真添付） ============

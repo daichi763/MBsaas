@@ -15,6 +15,7 @@ import { syncActualFromReports } from './settlement'
 import { personStaffRows } from './roster'
 import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
 import { toCsv, csvResponse } from './csv'
+import { isTentativeShift, isWorkingShift } from './lib/shift-status'
 
 type Bindings = NotifyEnv
 type Variables = { user: any }
@@ -43,15 +44,17 @@ export function normalizeDateTime(v: any): string | null {
 const fmt = (at: string) => { const m = String(at).match(/^\d{4}-(\d{2})-(\d{2}) (\d{2}:\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])} ${m[3]}` : at }
 
 // 報告の順序（REPORT_TYPES の順に日時が前後していないか）。申請した報告が関わる矛盾だけを返す。日付込みで比較する
+// 比較は分の単位（申請は分までしか入力できず、表示も分まで。秒の差だけで矛盾にしない。#133）。同じ分は矛盾にしない
 export function orderConflicts(reports: Map<string, string>, type: string, at: string): string[] {
   const idx = REPORT_TYPES.indexOf(type as any)
   const out: string[] = []
+  const min = (v: string) => String(v).slice(0, 16)
   for (const t of REPORT_TYPES) {
     if (t === type) continue
     const other = reports.get(t); if (!other) continue
     const j = REPORT_TYPES.indexOf(t)
-    if (j < idx && other > at) out.push(`${REPORT_LABEL[type]}（${fmt(at)}）が${REPORT_LABEL[t]}（${fmt(other)}）より前です`)
-    if (j > idx && other < at) out.push(`${REPORT_LABEL[t]}（${fmt(other)}）が${REPORT_LABEL[type]}（${fmt(at)}）より前です`)
+    if (j < idx && min(other) > min(at)) out.push(`${REPORT_LABEL[type]}（${fmt(at)}）が${REPORT_LABEL[t]}（${fmt(other)}）より前です`)
+    if (j > idx && min(other) < min(at)) out.push(`${REPORT_LABEL[t]}（${fmt(other)}）が${REPORT_LABEL[type]}（${fmt(at)}）より前です`)
   }
   return out
 }
@@ -97,6 +100,8 @@ async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepa
   if (!reason) return { error: '修正理由を入力してください', status: 400 }
   if (reason.length > REASON_MAX) return { error: `修正理由は${REASON_MAX}文字以内で入力してください`, status: 400 }
   if (shift.status === 'absent') return { error: '欠勤のシフトには申請できません', status: 400 }
+  // 希望（仮）のシフトは精算に出ないため、打刻を追加・修正しない（#559。lib/shift-status.ts）
+  if (!isWorkingShift(shift.status)) return { error: '未確定（希望（仮））のシフトには申請できません。管理者がシフトを確定してから申請してください', status: 400 }
   const reports = await loadReports(db, shift.shift_id)
   const existing = reports.find(r => r.report_type === b.report_type)
   const map = reportMap(reports.filter(r => r.report_type !== b.report_type))
@@ -104,7 +109,7 @@ async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepa
   let prep: Prepared
   if (b.kind === 'modify') {
     if (!existing) return { error: 'この報告はまだ登録されていません。打刻漏れの追加を申請してください', status: 409 }
-    if (existing.reported_at === at) return { error: '変更前と同じ日時です', status: 400 }
+    if (String(existing.reported_at).slice(0, 16) === at.slice(0, 16)) return { error: '変更前と同じ日時です', status: 400 }
     // 時刻修正は報告の順序に違反してはいけない
     if (conflicts.length) return { error: `報告の順序に矛盾があるため申請できません: ${conflicts.join(' / ')}`, status: 400, conflicts }
     prep = { kind: 'modify', report_type: b.report_type, requested_at: at, reason, attendance_id: existing.attendance_id, before_at: existing.reported_at, warnings: [] }
@@ -473,11 +478,13 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
     }
   }
   const own = (await personStaffRows(c.env.DB, c.get('user'))).map(r => r.company_id)
+  // 希望（仮）のシフトは勤務ではないので出さない。報告してしまったものだけ『未確定』として出す（申請はできない。#559）
+  const shown = shifts.filter(s => !isTentativeShift(s.status) || (reports.get(s.shift_id) || []).length > 0)
   return c.json({
     from, to, report_types: REPORT_TYPES, labels: REPORT_LABEL,
-    shifts: shifts.map(s => ({
+    shifts: shown.map(s => ({
       shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, status: s.status, project_name: s.project_name,
-      company_name: own.length > 1 ? s.company_name : null,
+      company_name: own.length > 1 ? s.company_name : null, tentative: isTentativeShift(s.status),
       enabled: enabled.get(s.shift_id)?.types ?? [...REPORT_TYPES], reports: reports.get(s.shift_id) || [], pending: pending.get(s.shift_id) || [],
     })),
   })

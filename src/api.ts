@@ -13,7 +13,8 @@ import settlementApi, { syncActualFromReports } from './settlement'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
-import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkReportable } from './report-settings'
+import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, loadReportState, reportableTypes, reportedAtMinute } from './report-settings'
+import { isTentativeShift } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
@@ -496,18 +497,20 @@ async function homeLoadShifts(db: D1Database, personIds: number[], today: string
   return rows.filter(s => s.work_date === today || crossesMidnight(s))
 }
 
-// 報告: シフトごとの有効な報告（提出設定）と報告済みのもの
+// 報告: シフトごとの有効な報告（提出設定）と報告済みのもの、承認待ちの打刻修正申請（種類 → 申請の日時）
 async function homeLoadReports(db: D1Database, shifts: any[]) {
-  const out = new Map<number, { required_attendance: string[]; daily_report_required: boolean; reports: Record<string, any> }>()
+  const out = new Map<number, { required_attendance: string[]; daily_report_required: boolean; reports: Record<string, any>; pending_corrections: Record<string, string> }>()
   if (!shifts.length) return out
   const ids = shifts.map(s => s.shift_id as number)
   const modes = await modesForShifts(db, ids)
   for (const id of ids) {
     const m = modes.get(id)
-    out.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {} })
+    out.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {}, pending_corrections: {} })
   }
   const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status FROM attendance_reports WHERE shift_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results as any[]
   for (const r of rows) { const o = out.get(r.shift_id); if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status } }
+  const pend = (await db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND status = 'pending'`).bind(...ids).all()).results as any[]
+  for (const r of pend) { const o = out.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
   return out
 }
 
@@ -571,15 +574,18 @@ api.get('/staff/home', async (c) => {
 
   const items = shifts.map(s => {
     const st = status.get(s.shift_id)!
-    const next = st.required_attendance.find(t => !st.reports[t])
-    return { ...s, ...st, carryover: s.work_date !== today, next_type: next || null,
-      attendance_done: !next, daily_report_done: dailyDone.has(s.shift_id) }
+    // 次の報告: 前の報告を飛ばしていても、後の報告は押せる（report-settings.ts の checkReportable）
+    const open = reportableTypes(st.required_attendance, new Set(Object.keys(st.reports)), new Set(Object.keys(st.pending_corrections)))
+    const next = open[0]
+    return { ...s, ...st, carryover: s.work_date !== today, next_type: next || null, open_types: open,
+      attendance_done: !next, daily_report_done: dailyDone.has(s.shift_id), tentative: isTentativeShift(s.status) }
   }).filter(s => {
     if (!s.carryover) return true
     // 前日からのシフトは、終了予定から HOME_CARRYOVER_HOURS 時間まで、残りの報告を受け付けている間か日報が未提出の間だけ出す
     const w = shiftWindow(s.work_date, s.start_time, s.end_time)
     if (now > addMinutes(w.end, HOME_CARRYOVER_HOURS * 60)) return false
-    if (s.next_type) return isWithin(reportableWindow(s, s.next_type), now)
+    // 前の報告（起床など）を飛ばしたまま日付が変わっても、受付中の後の報告（勤務終了・退店など）があれば出す
+    if (s.next_type) return s.open_types.some((t: string) =>isWithin(reportableWindow(s, t), now))
     return s.daily_report_required && !s.daily_report_done
   })
   const picked = homePickShift(items, Number(c.req.query('shift_id')) || null)
@@ -592,6 +598,8 @@ api.get('/staff/home', async (c) => {
   return c.json({
     today, shift: stripMoney(shift), carryover: !!picked?.carryover,
     reports: picked ? picked.reports : {}, daily_report_done: picked ? picked.daily_report_done : false,
+    // 承認待ちの打刻修正申請がある報告（その報告はホームから押せない）と、希望（仮）のシフト（未確定。報告の前に確認を出す）
+    pending_corrections: picked ? picked.pending_corrections : {}, tentative: !!picked?.tentative,
     required_attendance: picked ? picked.required_attendance : [...REPORT_TYPES],
     daily_report_required: picked ? picked.daily_report_required : true, notices,
     replied_consultations: replied,
@@ -600,7 +608,7 @@ api.get('/staff/home', async (c) => {
     // 本日の全シフト（複数企業・複数案件）と、前日からの日をまたぐシフト。他社のシフトは company_name で識別
     today_shifts: items.map(s => ({ shift_id: s.shift_id, work_date: s.work_date, project_id: s.project_id, project_name: s.project_name,
       start_time: s.start_time, end_time: s.end_time, company_name: s.shift_company_name, other_company: s.company_id !== u.company_id,
-      checked_out: !!s.reports.check_out, carryover: s.carryover, attendance_done: s.attendance_done,
+      checked_out: !!s.reports.check_out, carryover: s.carryover, attendance_done: s.attendance_done, tentative: s.tentative,
       daily_report_required: s.daily_report_required, daily_report_done: s.daily_report_done })),
   })
 })
@@ -614,10 +622,11 @@ api.post('/staff/attendance', async (c) => {
   const resolved = await resolvePersonShift(c, shift_id)
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
+  const now = nowJST()
   const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  // 有効な報告か・報告済みでないか・前の報告が済んでいるか（報告設定で OFF の報告は順序から除く）
-  const done = new Set(((await c.env.DB.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(shift.shift_id).all()).results as any[]).map(r => r.report_type))
-  const ng = checkReportable(modes ? modes.required_attendance : [...REPORT_TYPES], done, report_type)
+  // 欠勤・確定済みでないか・受付の時間帯か（稼働日。休憩・勤務終了・退店は翌日も）・有効か・報告済みや申請中でないか・順序（#116 #84 #122 #47）
+  const state = await loadReportState(c.env.DB, shift.shift_id)
+  const ng = checkStaffReport(shift, report_type, now, modes ? modes.required_attendance : [...REPORT_TYPES], state)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
   if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
     const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
@@ -625,21 +634,21 @@ api.post('/staff/attendance', async (c) => {
       return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
     }
   }
-  const dup = await c.env.DB.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(shift_id, report_type).first()
-  if (dup) return c.json({ error: 'すでに報告済みです' }, 409)
 
   // 遅延判定: 入店報告がシフト開始後なら late
   let status = 'normal'
   if (report_type === 'check_in') {
-    const nowTime = nowJST().slice(11, 16)
-    if (todayJST() === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
+    const nowTime = now.slice(11, 16)
+    if (now.slice(0, 10) === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
     if (latitude == null) status = status === 'late' ? 'late' : 'no_location'
   }
-  await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(owner.company_id, owner.staff_id, shift_id, report_type, nowJST(), latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status).run()
+  // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
+  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, reportedAtMinute(now), latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status).run()
+  if (!ins.meta.changes) return c.json({ error: 'すでに報告済みです' }, 409)
   // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
-  if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
+  if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
   return c.json({ ok: true, status })
 })
 
@@ -672,17 +681,19 @@ api.post('/staff/attendance-photo', async (c) => {
   const resolved = await resolvePersonShift(c, shift_id)
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
+  const now = nowJST()
   const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  const done = new Set(((await c.env.DB.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(shift.shift_id).all()).results as any[]).map(r => r.report_type))
-  const ng = checkReportable(modes ? modes.required_attendance : [...REPORT_TYPES], done, report_type)
+  // POST /staff/attendance と同じ確認（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序）
+  const state = await loadReportState(c.env.DB, shift.shift_id)
+  const ng = checkStaffReport(shift, report_type, now, modes ? modes.required_attendance : [...REPORT_TYPES], state)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
 
   let status = 'normal'
   const lat = latitude != null && latitude !== '' ? Number(latitude) : null
   const lng = longitude != null && longitude !== '' ? Number(longitude) : null
   if (report_type === 'check_in') {
-    const nowTime = nowJST().slice(11, 16)
-    if (todayJST() === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
+    const nowTime = now.slice(11, 16)
+    if (now.slice(0, 10) === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
     if (lat == null) status = status === 'late' ? 'late' : 'no_location'
   }
 
@@ -697,9 +708,14 @@ api.post('/staff/attendance-photo', async (c) => {
   }
 
   try {
-    await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(owner.company_id, owner.staff_id, shift_id, report_type, nowJST(), lat, lng, null, c.req.header('user-agent') || '', status, key).run()
+    // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
+    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, reportedAtMinute(now), lat, lng, null, c.req.header('user-agent') || '', status, key).run()
+    if (!ins.meta.changes) {
+      await c.env.PHOTOS.delete(key).catch(() => {})
+      return c.json({ error: 'すでに報告済みです' }, 409)
+    }
   } catch {
     // DB登録に失敗した場合はアップロード済みの写真を掃除する
     await c.env.PHOTOS.delete(key).catch(() => {})
