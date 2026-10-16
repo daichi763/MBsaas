@@ -347,7 +347,7 @@ function logFilter(companyId: number, q: (k: string) => string | undefined) {
   if (q('action') && ACTION_LABEL[q('action')!]) { w.push('l.action = ?'); bind.push(q('action')) }
   return { where: w.join(' AND '), bind }
 }
-const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行' }
+const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行', merge: 'スタッフ統合' }
 const LOG_FROM = `FROM report_setting_logs l LEFT JOIN projects p ON p.project_id = l.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
 reportSettingsApi.get('/report-settings/logs', async (c) => {

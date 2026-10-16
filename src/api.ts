@@ -1615,7 +1615,8 @@ api.post('/admin/staff-affiliations', async (c) => {
 // （かつ所属元企業 = 自社）で行う。他社から連携したスタッフ（linked_external）・取引先所属（partner_manual）・
 // スキルシートのみ（skillsheet_only）は従業員管理に一切表示されず、APIでも参照・更新できない。
 // ※既存データは 0012 の移行で「所属会社名 = 自社名」だったものが own_employee に変換済み。
-const OWN_EMPLOYEE_COND = `COALESCE(sp.affiliation_type, 'own_employee') = 'own_employee' AND COALESCE(sp.owner_company_id, sp.company_id) = sp.company_id`
+// 統合済みの行（仮登録を既存のスタッフに統合した統合元）は在職者として扱わず、一覧・編集・保存の対象から外す（#108）
+const OWN_EMPLOYEE_COND = `COALESCE(sp.affiliation_type, 'own_employee') = 'own_employee' AND COALESCE(sp.owner_company_id, sp.company_id) = sp.company_id AND sp.merged_into_staff_id IS NULL`
 async function assertOwnEmployee(c: any, sid: string) {
   const u = c.get('user')
   return c.env.DB.prepare(`SELECT sp.staff_id FROM staff_profiles sp WHERE sp.staff_id = ? AND sp.company_id = ? AND ${OWN_EMPLOYEE_COND}`).bind(sid, u.company_id).first()
@@ -1634,12 +1635,12 @@ api.get('/admin/employees', async (c) => {
     LEFT JOIN employee_records er ON er.staff_id = sp.staff_id
     WHERE sp.company_id = ? AND ${OWN_EMPLOYEE_COND}
     ORDER BY us.name`).bind(u.company_id).all()
-  // 第2段階: 自社雇用から他の区分へ移行したスタッフ（雇用終了）は閲覧のみで一覧に表示する
+  // 第2段階: 自社雇用から他の区分へ移行したスタッフ（雇用終了）は閲覧のみで一覧に表示する。統合して統合元に残った従業員データも同じ（#109）
   const ended = await c.env.DB.prepare(`
-    SELECT sp.staff_id, us.name, sp.kana, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, er.employee_number, er.department, er.job_title,
+    SELECT sp.staff_id, us.name, sp.kana, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.merged_into_staff_id, er.employee_number, er.department, er.job_title,
       er.employment_ended_at, er.ended_reason
     FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id JOIN users us ON us.user_id = sp.user_id
-    WHERE er.company_id = ? AND er.employment_ended_at IS NOT NULL AND COALESCE(sp.affiliation_type,'own_employee') != 'own_employee'
+    WHERE er.company_id = ? AND er.employment_ended_at IS NOT NULL AND (COALESCE(sp.affiliation_type,'own_employee') != 'own_employee' OR sp.merged_into_staff_id IS NOT NULL)
     ORDER BY er.employment_ended_at DESC`).bind(u.company_id).all()
   return c.json({ employees: rows.results, ended: ended.results })
 })
