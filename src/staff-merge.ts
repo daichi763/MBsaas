@@ -26,15 +26,15 @@ function todayJST(): string { return nowJST().slice(0, 10) }
 const normName = (s: any) => String(s || '').replace(/[\s\u3000]/g, '').toLowerCase()
 // ひらがな→カタカナ・空白除去（フリガナの比較用）
 const normKana = (s: any) => String(s || '').replace(/[\s\u3000]/g, '').replace(/[\u3041-\u3096]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60))
-// \u9000\u8077\u30fb\u505c\u6b62\u4e2d\u306a\u3089\u753b\u9762\u306b\u51fa\u3059\u5370\uff08\u5728\u7c4d\u4e2d\u306f null\uff09
+// 退職・停止中なら画面に出す印（在籍中は null）
 function inactiveLabel(r: any, today: string): string | null {
-  if (r.employment_status === 'retired' || (r.retired_at && r.retired_at < today)) return '\u9000\u8077'
-  if (r.user_status && r.user_status !== 'active') return '\u505c\u6b62'
+  if (r.employment_status === 'retired' || (r.retired_at && r.retired_at < today)) return '退職'
+  if (r.user_status && r.user_status !== 'active') return '停止'
   return null
 }
 function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
-const yen = (v: any) => v == null ? '-' : Number(v).toLocaleString('ja-JP') + '\u5186'
-// \u5358\u4fa1\u30eb\u30fc\u30eb\u306e\u7bc4\u56f2\uff08\u6848\u4ef6\u30fb\u958b\u50ac\u5834\u6240\u30fb\u5f79\u5272\uff09\u304c\u540c\u3058\u304b
+const yen = (v: any) => v == null ? '-' : Number(v).toLocaleString('ja-JP') + '円'
+// 単価ルールの範囲（案件・開催場所・役割）が同じか
 const sameScope = (a: any, b: any) => (a.project_id ?? null) === (b.project_id ?? null) && (a.site_id ?? null) === (b.site_id ?? null) && (a.role_name || null) === (b.role_name || null)
 
 async function loadStaff(db: D1Database, companyId: number, staffId: any) {
@@ -97,6 +97,10 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   const tType = tgt.affiliation_type || 'own_employee'
   if (tType === 'skillsheet_only') return c.json({ error: 'スキルシートのみのスタッフには統合できません' }, 400)
   const today = todayJST()
+  // 統合先が退職・停止中なら統合しない。今後のシフトが、割り当てできない人に付いてしまうため。
+  // 再雇用などで同じ人として使う場合は、統合先の在籍状況を戻してから統合する（#97）
+  const tInactive = inactiveLabel(tgt, today)
+  if (tInactive) return c.json({ error: `統合先の「${tgt.name}」は${tInactive === '退職' ? '退職済み' : '停止中'}のため統合できません。統合すると今後のシフトが${tInactive === '退職' ? '退職者' : '停止中のスタッフ'}に付き、新しいシフトにも割り当てられません。同じ人として使う場合は、統合先の在籍状況を戻してから統合してください`, target_inactive: tInactive }, 409)
 
   // ---- 影響範囲 ----
   const count = async (sql: string, ...bind: any[]) => Number(((await db.prepare(sql).bind(...bind).first()) as any)?.n || 0)
@@ -126,9 +130,6 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   // 重複の確認: 統合先（他社のシフトを含む同一人物）と同じ時間帯・同じ枠
   const active = shifts.filter(s => s.status !== 'absent')
   const warnings: string[] = []
-  // 統合先が退職・停止中なら、今後のシフトが退職者に付くため確認を求める（再雇用なら在籍状況を戻してから統合する。#97）
-  const tInactive = inactiveLabel(tgt, today)
-  if (tInactive) warnings.push(`統合先の「${tgt.name}」は${tInactive === '退職' ? '退職済み' : '停止中'}です。統合すると、今後のシフトは${tInactive === '退職' ? '退職者' : '停止中のスタッフ'}に付き、新しいシフトには割り当てられません。再雇用などで同じ人として使う場合は、統合先の在籍状況を戻してから統合してください`)
   if (active.length) {
     const dates = active.map(s => s.work_date).sort()
     const cf = await findConflicts(db, u.company_id, [tgt.staff_id], dates[0], dates[dates.length - 1])
@@ -202,7 +203,7 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   ]
   if (b.dry_run) return c.json({
     source: { staff_id: sid, name: src.name, type: srcType, type_label: TYPE_LABEL[srcType] || srcType },
-    target: { staff_id: tgt.staff_id, name: tgt.name, type: tType, type_label: TYPE_LABEL[tType] || tType, owner_company_name: tgt.owner_company_name, inactive: tInactive },
+    target: { staff_id: tgt.staff_id, name: tgt.name, type: tType, type_label: TYPE_LABEL[tType] || tType, owner_company_name: tgt.owner_company_name },
     counts, future_shifts: future.length, effects, warnings,
   })
   if (warnings.length && !b.force) return c.json({ error: '確認が必要な点があります', warnings, need_force: true }, 409)

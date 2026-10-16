@@ -147,7 +147,7 @@ const merge = (src, tgt, extra = {}) => admin.post(`/api/admin/staff/${src}/merg
   ok('#10 報告設定（入店 OFF）が統合先に引き継がれる', row && (row.values ? row.values.check_in === 0 : row.settings?.check_in === 0), row || Object.keys(rs))
 }
 
-// ---------- #97 統合先が退職済みなら確認が必要 / #499 単価ルールの重なり ----------
+// ---------- #97 統合先が退職済みなら統合できない / #499 単価ルールの重なり ----------
 {
   const src = await quick(`${PFX} 統合元 二郎`)
   const tgt = await staffWithLogin(`${PFX}T2`, `${PFX} 統合先 二郎`)
@@ -162,8 +162,12 @@ const merge = (src, tgt, extra = {}) => admin.post(`/api/admin/staff/${src}/merg
   const cand = must(await admin.get(`/api/admin/staff/${src}/merge-candidates?q=${encodeURIComponent(PFX + ' 統合先 二郎')}`), 'candidates')
   const cRow = cand.candidates.find(x => x.staff_id === tgt)
   ok('#97 統合候補に「退職」の印が付く', cRow && cRow.inactive === '退職', cRow)
-  dry = must(await merge(src, tgt, { dry_run: true }), 'dry 97')
-  ok('#97 統合先が退職済みなら警告を出す', dry.target.inactive === '退職' && dry.warnings.some(w => w.includes('退職済み')), dry.warnings)
+  const rd = await merge(src, tgt, { dry_run: true })
+  const rf = await merge(src, tgt, { force: true })
+  ok('#97 統合先が退職済みなら、確認画面でも force を付けても統合できない（409）', rd.status === 409 && rf.status === 409 && String(rf.data?.error || '').includes('退職済み'), { rd, rf })
+  ok('#97 拒否したとき、統合元は統合されないまま', !(await lifecycle(src)).merged_into_staff_id)
+  // 在籍状況を戻してから統合する
+  must(await admin.put(`/api/admin/employees/${tgt}`, { profile: { retired_at: null, employment_status: 'working' } }), 'restore tgt')
   const mr = await merge(src, tgt, { force: true })
   const rules = must(await admin.get(`/api/admin/rate-rules?project_id=${pid}`), 'rules').rules.filter(r => r.staff_id === tgt || r.staff_id === src || r.rule_id === srcRule)
   ok('#499 実行後: 統合先のルール（1,500円）だけが残り、統合元のルールは削除される', mr.status === 200 && rules.length === 1 && rules[0].pay_rate === 1500 && rules[0].staff_id === tgt, rules)

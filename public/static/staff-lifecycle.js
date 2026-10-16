@@ -162,7 +162,7 @@
       <div class="flex items-center gap-2 text-sm mb-3" id="merge-preview">
         <div class="flex-1 p-2 rounded-lg bg-red-50"><p class="text-[11px] text-gray-500">統合元（仮登録）</p><p class="font-bold">${esc(d.source.name)}</p><p class="text-[11px]">${esc(d.source.type_label)}</p></div>
         <i class="fas fa-arrow-right text-gray-400"></i>
-        <div class="flex-1 p-2 rounded-lg bg-blue-50"><p class="text-[11px] text-gray-500">統合先</p><p class="font-bold">${esc(d.target.name)}${d.target.inactive ? ` <span class="badge badge-red">${esc(d.target.inactive)}</span>` : ''}</p><p class="text-[11px]">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
+        <div class="flex-1 p-2 rounded-lg bg-blue-50"><p class="text-[11px] text-gray-500">統合先</p><p class="font-bold">${esc(d.target.name)}</p><p class="text-[11px]">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
       </div>
       <ul class="text-xs space-y-1 mb-3 list-disc pl-4">${d.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
       ${d.warnings.length ? `<div class="text-xs bg-amber-50 text-amber-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
