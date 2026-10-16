@@ -195,6 +195,12 @@ authAccountApi.get('/account', async (c) => {
   })
 })
 
+/** 現在のパスワードの確認で使う失敗回数の記録（ログインと同じ記録。本部ユーザーは会社コードなしでログインするため空欄で数える） */
+function passwordCheckKeys(c: any, u: any) {
+  const companyCode = u.role === 'system_admin' ? '' : String(u.company_code || '')
+  return loginAttemptKeys(companyCode, String(u.user_code || ''), c.req.header('CF-Connecting-IP'))
+}
+
 // 氏名・メールアドレスの変更（管理者・本部のみ。スタッフの登録情報は所属会社が管理する）
 // メールアドレスの変更は乗っ取りの踏み台になるため、現在のパスワードを確かめる
 authAccountApi.put('/account', async (c) => {
@@ -212,8 +218,12 @@ authAccountApi.put('/account', async (c) => {
     const email = cleanEmail(b.email)
     if (email === undefined) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
     if ((email || '') !== String(u.email || '').trim()) {
+      // 総当たりを防ぐため、パスワードの変更と同じくログインの失敗回数の制限を使う
+      const keys = await passwordCheckKeys(c, u)
+      if (await isLoginLocked(db, keys)) return c.json({ error: `失敗が続いたため、一時的に変更を止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください` }, 429)
       const cur = await db.prepare('SELECT password_hash FROM users WHERE user_id = ?').bind(u.user_id).first() as any
       if (!(await verifyPassword(String(b.current_password ?? ''), cur?.password_hash))) {
+        await recordLoginFailure(db, keys)
         return c.json({ error: 'メールアドレスを変更するには、現在のパスワードを正しく入力してください' }, 400)
       }
       emailChanged = true; newEmail = email
@@ -249,7 +259,7 @@ authAccountApi.post('/change-password', async (c) => {
   if (pwErr) return c.json({ error: '新しい' + pwErr }, 400)
   if (current === next) return c.json({ error: '現在と同じパスワードは使えません' }, 400)
   // 現在のパスワードの総当たりを防ぐため、ログインと同じ失敗回数の制限を使う
-  const keys = await loginAttemptKeys(String(u.company_code || ''), String(u.user_code || ''), c.req.header('CF-Connecting-IP'))
+  const keys = await passwordCheckKeys(c, u)
   if (await isLoginLocked(db, keys)) return c.json({ error: `失敗が続いたため、一時的に変更を止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください` }, 429)
   const loginId = await loginUserId(db, u)
   const cur = await db.prepare('SELECT password_hash FROM users WHERE user_id = ?').bind(loginId).first() as any

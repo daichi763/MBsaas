@@ -79,6 +79,7 @@ ok('#25 #44 企業と初期管理者（メールあり・パスワード空欄�
 ok('#25 同じ会社コードは 409', (await hq.post('/api/hq/companies', { company_code: coCode, company_name: 'dup' })).status === 409)
 const coId = (await hq.get('/api/hq/companies')).data.companies.find(c => c.company_code === coCode)?.company_id
 let boss = client(await login(coCode, 'boss', created.data.admin_temp_password))
+let boss2Pw = ''
 {
   const me = await boss.get('/api/auth/me')
   ok('#25 初期管理者のメールアドレスが保存されている', me.data?.email === `boss${SUF}@example.com`, me.data)
@@ -161,7 +162,8 @@ const admin = client(await login('sample', 'admin'))
   const tmp = await hq.post(`/api/hq/companies/${coId}/users/${bossId}/reset-password`, { mode: 'temp' })
   ok('#44 本部から仮パスワードを発行できる', tmp.status === 200 && (await rawLogin(coCode, 'boss', tmp.data.temp_password)).status === 200, tmp)
   ok('#44 本部はスタッフ・本部のアカウントを操作できない（404）', (await hq.put(`/api/hq/companies/1/users/4`, { status: 'suspended' })).status === 404)
-  boss = client(await login(coCode, 'boss2', add2.data.temp_password))
+  boss2Pw = add2.data.temp_password
+  boss = client(await login(coCode, 'boss2', boss2Pw))
   const sus = await hq.put(`/api/hq/companies/${coId}/users/${bossId}`, { status: 'suspended' })
   ok('#44 ほかに会社管理者がいれば停止できる', sus.status === 200, sus)
 }
@@ -267,6 +269,17 @@ const admin = client(await login('sample', 'admin'))
   ok('#66 本部ユーザーは企業1を停止しても使える', (await hq.get('/api/hq/companies')).status === 200)
   await hq.put('/api/hq/companies/1', { active_status: 'active' })
   ok('#66 再開すると募集ページが開ける', (await fetch(`${BASE}/api/public/recruit/${token}`)).status === 200)
+}
+
+// ---------- #25 メールアドレスの変更でのパスワード確認にも、ログインと同じ失敗回数の制限をかける ----------
+{
+  // #66 で企業を停止したときにセッションが切れているので、ログインし直す
+  const b2 = client(await login(coCode, 'boss2', boss2Pw))
+  let last
+  for (let i = 0; i < 10; i++) last = await b2.put('/api/auth/account', { email: `lock${SUF}@example.com`, current_password: `wrong-${i}` })
+  const locked = await b2.put('/api/auth/account', { email: `lock${SUF}@example.com`, current_password: 'wrong-x' })
+  ok('#25 メールアドレスの変更で現在のパスワードを10回まちがえると一時的に 429', last?.status === 400 && locked.status === 429, { last, locked })
+  ok('#25 同じ失敗の記録で、その ID のログインも止まる', (await rawLogin(coCode, 'boss2', 'wrong-pass')).status === 429)
 }
 
 const failed = results.filter(r => !r.pass)
