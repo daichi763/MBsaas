@@ -222,8 +222,8 @@
   }
   // 承認待ちの打刻修正の確認事項から、その勤務日の承認待ちの申請一覧を開く
   delegate('settleOpenCorrections', el => {
-    const st = window.__corrState
-    if (st) Object.assign(st, { status: 'pending', project_id: '', staff_name: '', from: '', to: '', report_type: '', kind: '', work_from: el.dataset.date, work_to: el.dataset.date })
+    // 打刻修正の画面をまだ開いていないときも絞り込みが効くよう、状態を作っておく（corrections.js は既存の状態を使う）
+    window.__corrState = Object.assign(window.__corrState || {}, { status: 'pending', project_id: '', staff_name: '', from: '', to: '', report_type: '', kind: '', work_from: el.dataset.date, work_to: el.dataset.date })
     location.hash = 'corrections'
   })
 

@@ -169,7 +169,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
   // 実績が手入力のシフトは、報告を直しても実績・金額は変わらない（syncActualFromReports は手入力を上書きしない）。
   // 操作履歴（applied_while_manual）と応答で知らせ、精算の確認事項「手入力後に打刻修正あり」に出す
   const manual = !settled && shift.actual_source === 'manual'
-  const applied =`EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND decision_token = ?)`
+  const applied = `EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND decision_token = ?)`
   const guard = c.kind === 'modify'
     ? db.prepare(`UPDATE attendance_corrections SET status = 'approved', decided_by = ?, decided_by_name = ?, decided_at = ?, decision_token = ?, decision_comment = ?,
           is_exception = 0, applied_while_settled = ?, updated_at = ?
