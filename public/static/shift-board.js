@@ -610,12 +610,66 @@
     } catch (e) { toast(errMsg(e)) }
   }
 
+  // ---------- 一括処理（一括登録・コピー・単価の再適用）の共通部分 ----------
+  // サーバーは1回に処理する件数に上限があり、残りがあると next_cursor を返す。続きを自動で呼び、結果を合計する。
+  // 途中で失敗したら、それまでの結果と「続きから実行」を出す（最後に受け取った next_cursor から再開する）
+  let BULK_JOB = null
+  const fmtDay = (d) => `${dayjs(d).format('M/D')}(${WD[dayjs(d).day()]})`
+  function newJob(o) { return { ...o, counts: Object.fromEntries(o.keys.map(k => [k, 0])), skipped: [], cursor: null, running: false } }
+  async function runJob(job) {
+    if (job.running || (BULK_JOB && BULK_JOB.running)) { toast('ほかの一括処理を実行中です'); return }
+    BULK_JOB = job; job.running = true
+    let error = null
+    try {
+      for (;;) {
+        const { data } = await axios.post(job.url, { ...job.body, ...(job.cursor != null ? { cursor: job.cursor } : {}) })
+        for (const k of job.keys) job.counts[k] += Number(data[k] || 0)
+        if (Array.isArray(data.skipped)) job.skipped.push(...data.skipped)
+        job.cursor = data.next_cursor ?? null
+        if (job.cursor == null) break
+        toast(`${job.summary(job.counts)}（続きを処理しています）`)
+      }
+    } catch (e) { error = errMsg(e) }
+    job.running = false
+    if (!error) BULK_JOB = null
+    showJobResult(job, error)
+    if (job.done) job.done()
+  }
+  function showJobResult(job, error) {
+    if (!error && !job.skipped.length) { closeModal(); toast(job.summary(job.counts)); return }
+    modal(`
+      <h3 class="font-bold text-lg mb-1">${esc(job.title)}</h3>
+      ${error ? `<p class="text-sm text-red-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>途中で止まりました（${esc(error)}）。ここまでの結果を表示しています。「続きから実行」で残りを処理できます（処理済みの分は二重に作りません）</p>` : ''}
+      <p class="text-sm text-gray-700">${esc(job.summary(job.counts))}</p>
+      ${skippedTable(job.skipped)}
+      ${error ? '<button class="btn btn-primary w-full mt-4" data-action="bulkResume"><i class="fas fa-play"></i>続きから実行</button>' : ''}
+      <button class="btn btn-outline w-full mt-2" onclick="closeModal()">閉じる</button>`)
+  }
+  delegate('bulkResume', el => withSubmitLock(el, () => (BULK_JOB ? runJob(BULK_JOB) : null)))
+  delegate('bulkSkipCandidates', el => openCandidates(Number(el.dataset.id)))
+
+  // スキップしたシフトの一覧（理由ごとの件数と、日付・スタッフ・理由・内容）。コピー先の枠が分かるものは候補を開ける
+  const REASON_BADGE = { '重複': 'badge-yellow', '割当済み': 'badge-gray', 'NG': 'badge-red', '退職': 'badge-red', '統合済み': 'badge-gray', '停止中': 'badge-gray' }
+  function skippedTable(skipped) {
+    if (!skipped.length) return ''
+    const byReason = {}
+    for (const s of skipped) byReason[s.reason] = (byReason[s.reason] || 0) + 1
+    return `<div class="mt-3">
+      <p class="text-sm font-bold text-gray-700 mb-1">スキップ ${skipped.length}件 ${Object.entries(byReason).map(([r, n]) => `<span class="badge ${REASON_BADGE[r] || 'badge-gray'}">${esc(r)} ${n}</span>`).join(' ')}</p>
+      <div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>理由</th><th>内容</th><th></th></tr></thead><tbody>
+        ${skipped.map(s => `<tr><td class="whitespace-nowrap">${esc(fmtDay(s.date))}</td><td>${esc(s.staff_name || 'ID ' + s.staff_id)}</td>
+          <td><span class="badge ${REASON_BADGE[s.reason] || 'badge-gray'}">${esc(s.reason)}</span></td>
+          <td>${esc([s.project_name, s.start_time ? s.start_time + '〜' + s.end_time : '', s.detail].filter(Boolean).join(' / '))}</td>
+          <td>${s.slot_role_id ? `<button class="text-blue-600 hover:underline whitespace-nowrap" data-action="bulkSkipCandidates" data-id="${Number(s.slot_role_id)}">候補</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div></div>`
+  }
+
   // ---------- 常勤の一括登録 ----------
   window.openBulkModal = async function () {
     const m = await loadMaster()
     modal(`
       <h3 class="font-bold text-lg mb-1">常勤の一括登録</h3>
-      <p class="text-xs text-gray-500 mb-3">スタッフ × 曜日 × 期間でシフトをまとめて登録します（同じ時間帯に別のシフトがある日はスキップ）</p>
+      <p class="text-xs text-gray-500 mb-3">スタッフ × 曜日 × 期間でシフトをまとめて登録します（退職・NG のスタッフと、同じ時間帯に別のシフトがある日はスキップし、一覧で表示します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label class="text-sm text-gray-600">案件 *<select id="bk-project" class="inp">${m.projects.filter(p => p.status === 'active').map(p => `<option value="${p.project_id}">${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}</select></label>
@@ -632,38 +686,112 @@
           <label class="text-sm text-gray-600">交通費の実費<input id="bk-fee" type="number" class="inp" value="0"></label>
         </div>
         <datalist id="role-suggest"><option value="販売スタッフ"><option value="リーダー"></datalist>
-        <button class="btn btn-primary w-full" onclick="saveBulk()">登録する</button>
+        <button class="btn btn-primary w-full" data-action="saveBulk">登録する</button>
       </div>`)
   }
-  window.saveBulk = async function () {
+  async function saveBulk() {
     const v = (k) => document.getElementById(k).value
-    try {
-      const { data } = await axios.post('/api/admin/shifts/bulk', {
-        project_id: Number(v('bk-project')), role: v('bk-role'), staff_ids: [...document.querySelectorAll('.bk-staff:checked')].map(el => Number(el.value)),
-        weekdays: [...document.querySelectorAll('.bk-wd:checked')].map(el => Number(el.value)), date_from: v('bk-from'), date_to: v('bk-to'),
-        start_time: v('bk-start'), end_time: v('bk-end'), transportation_fee: v('bk-fee'),
-      })
-      closeModal(); toast(`${data.created}件登録しました${data.skipped.length ? `（重複のため${data.skipped.length}件スキップ）` : ''}`); renderShiftBoard()
-    } catch (e) { toast(errMsg(e)) }
+    const body = {
+      project_id: Number(v('bk-project')), role: v('bk-role'), staff_ids: [...document.querySelectorAll('.bk-staff:checked')].map(el => Number(el.value)),
+      weekdays: [...document.querySelectorAll('.bk-wd:checked')].map(el => Number(el.value)), date_from: v('bk-from'), date_to: v('bk-to'),
+      start_time: v('bk-start'), end_time: v('bk-end'), transportation_fee: v('bk-fee'),
+    }
+    await runJob(newJob({
+      title: '常勤の一括登録', url: '/api/admin/shifts/bulk', body, keys: ['created'],
+      summary: (n) => `${n.created}件登録しました`, done: () => renderShiftBoard(),
+    }))
   }
+  delegate('saveBulk', el => withSubmitLock(el, saveBulk))
 
   // ---------- コピー ----------
-  window.openCopyModal = function () {
+  // 曜日がずれないよう、コピーする期間は週単位（表示中の期間に収まる週数まで）にする
+  function copyScopeText(m) {
+    const parts = []
+    const cl = BS.clientId ? m.clients.find(c => String(c.client_id) === String(BS.clientId)) : null
+    parts.push(cl ? cl.client_name : 'すべてのクライアント')
+    if (BS.engagement) parts.push(BS.engagement === 'spot' ? 'スポットのみ' : '常勤のみ')
+    if (BS.projectIds.length) parts.push('案件: ' + BS.projectIds.map(id => (m.projects.find(p => p.project_id === id) || {}).project_name || ('ID ' + id)).join('、'))
+    else parts.push('案件: 絞り込みに合うすべての案件')
+    return parts.join(' / ')
+  }
+  function copyBody() {
+    return {
+      source_from: BS.from, target_from: document.getElementById('cp-to').value, days: Number(document.getElementById('cp-days').value),
+      client_id: BS.clientId || null, engagement: BS.engagement || '', project_ids: BS.projectIds.join(','),
+      include_assignments: document.getElementById('cp-assign').checked,
+    }
+  }
+  // コピー元・コピー先の期間と、重なり・曜日のずれ
+  function copyRange() {
+    const body = copyBody()
+    if (!body.target_from) return null
+    const off = dayjs(body.target_from).diff(dayjs(body.source_from), 'day')
+    return {
+      body, overlap: Math.abs(off) < body.days, shift: ((off % 7) + 7) % 7,
+      srcTo: dayjs(body.source_from).add(body.days - 1, 'day').format('YYYY-MM-DD'), tgtTo: dayjs(body.target_from).add(body.days - 1, 'day').format('YYYY-MM-DD'),
+    }
+  }
+  // 期間を曜日付きで出す。重なる指定は確認・実行できなくし、曜日がずれる指定は警告する。条件を変えたら確認をやり直す
+  function copyRangeCheck() {
+    const r = copyRange(); const el = document.getElementById('cp-range')
+    document.getElementById('cp-preview').innerHTML = ''; document.getElementById('cp-run').disabled = true
+    document.getElementById('cp-check').disabled = !r || r.overlap
+    if (!r) { el.innerHTML = ''; return }
+    const b = r.body
+    el.innerHTML = `<span class="font-bold">${fmtDay(b.source_from)}〜${fmtDay(r.srcTo)}</span> → <span class="font-bold">${fmtDay(b.target_from)}〜${fmtDay(r.tgtTo)}</span>
+      ${r.overlap ? '<span class="block text-xs text-red-600 mt-1">コピー元とコピー先の期間が重なっています。コピー先の開始日を後ろにしてください</span>'
+        : r.shift ? `<span class="block text-xs text-amber-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>コピー先の曜日が${r.shift}日ずれます（例: ${fmtDay(b.source_from)} → ${fmtDay(b.target_from)}）</span>` : ''}`
+  }
+  window.openCopyModal = async function () {
+    const m = await loadMaster()
+    const weeks = Math.max(1, Math.floor(BS.days / 7))
     modal(`
       <h3 class="font-bold text-lg mb-1">枠とシフトをコピー</h3>
-      <p class="text-xs text-gray-500 mb-3">表示中の期間（${dayjs(BS.from).format('M/D')}〜${BS.days}日間${BS.projectIds.length ? '・選択中の案件' : '・すべての案件'}）を、指定した日から始まる期間へコピーします</p>
-      <label class="text-sm text-gray-600 block">コピー先の開始日<input id="cp-to" type="date" class="inp" value="${dayjs(BS.from).add(BS.days, 'day').format('YYYY-MM-DD')}"></label>
+      <p class="text-xs text-gray-500 mb-3">対象: ${esc(copyScopeText(m))}（シフトボードの絞り込みと同じ条件）</p>
+      <div class="grid grid-cols-2 gap-3">
+        <label class="text-sm text-gray-600">コピーする期間<select id="cp-days" class="inp">${Array.from({ length: weeks }, (_, i) => `<option value="${(i + 1) * 7}" ${i + 1 === weeks ? 'selected' : ''}>${i + 1}週間（${(i + 1) * 7}日）</option>`).join('')}</select></label>
+        <label class="text-sm text-gray-600">コピー先の開始日<input id="cp-to" type="date" class="inp" value="${dayjs(BS.from).add(weeks * 7, 'day').format('YYYY-MM-DD')}"></label>
+      </div>
+      <p id="cp-range" class="text-sm text-gray-700 mt-2"></p>
       <label class="flex items-center gap-2 text-sm mt-3"><input type="checkbox" id="cp-assign" checked>割り当て（確定・代打）もコピーする</label>
-      <p class="text-[11px] text-gray-400 mt-1">同じ時間帯に別のシフトがあるスタッフはスキップします。希望・欠勤はコピーしません</p>
-      <button class="btn btn-primary w-full mt-4" onclick="saveCopy()">コピーする</button>`)
+      <p class="text-[11px] text-gray-400 mt-1">退職・NG のスタッフと、同じ時間帯に別のシフトがあるスタッフはスキップします。希望・欠勤はコピーしません。コピー済みの枠・シフトは二重に作りません</p>
+      <div id="cp-preview" class="mt-3"></div>
+      <button id="cp-check" class="btn btn-outline w-full mt-3" data-action="copyPreview">コピーする内容を確認</button>
+      <button id="cp-run" class="btn btn-primary w-full mt-2" data-action="copyRun" disabled>コピーする</button>`)
+    document.getElementById('cp-days').addEventListener('change', () => {
+      document.getElementById('cp-to').value = dayjs(BS.from).add(Number(document.getElementById('cp-days').value), 'day').format('YYYY-MM-DD')
+      copyRangeCheck()
+    })
+    document.getElementById('cp-to').addEventListener('change', copyRangeCheck)
+    document.getElementById('cp-assign').addEventListener('change', copyRangeCheck)
+    copyRangeCheck()
   }
-  window.saveCopy = async function () {
+  async function copyPreview() {
+    const r = copyRange(); if (!r || r.overlap) return
     try {
-      const { data } = await axios.post('/api/admin/shifts/copy-week', { source_from: BS.from, target_from: document.getElementById('cp-to').value, days: BS.days, project_ids: BS.projectIds.join(','), include_assignments: document.getElementById('cp-assign').checked })
-      closeModal(); toast(`枠${data.slots}件・シフト${data.shifts}件をコピーしました${data.skipped.length ? `（${data.skipped.length}件スキップ）` : ''}`)
-      renderShiftBoard()
+      const { data } = await axios.post('/api/admin/shifts/copy-week', { ...r.body, dry_run: true })
+      const names = data.projects.map(p => (p.client_name ? p.client_name + ' / ' : '') + p.project_name)
+      const empty = !data.slots && !data.slots_reused && !data.shifts
+      document.getElementById('cp-preview').innerHTML = `<div class="rounded-lg bg-gray-50 p-3 text-sm">
+        ${empty && !data.already && !data.skipped.length ? '<p class="text-gray-500">コピーする枠・シフトはありません</p>' : `
+        <p class="text-xs text-gray-500 mb-1">対象の案件 ${names.length}件: ${esc(names.slice(0, 8).join('、'))}${names.length > 8 ? ` ほか${names.length - 8}件` : ''}</p>
+        <p>枠: 作成 <b>${data.slots}</b>件${data.slots_reused ? `・コピー先の既存の枠を使う ${data.slots_reused}件` : ''}</p>
+        <p>シフト: 作成 <b>${data.shifts}</b>件${data.already ? `・コピー済み ${data.already}件（作りません）` : ''}</p>`}
+        ${skippedTable(data.skipped)}</div>`
+      document.getElementById('cp-run').disabled = empty
     } catch (e) { toast(errMsg(e)) }
   }
+  async function copyRun() {
+    const r = copyRange(); if (!r || r.overlap) return
+    if (r.shift && !confirm(`コピー先の曜日が${r.shift}日ずれます。このままコピーしますか？`)) return
+    await runJob(newJob({
+      title: '枠とシフトのコピー', url: '/api/admin/shifts/copy-week', body: { ...r.body, force: !!r.shift }, keys: ['slots', 'slots_reused', 'shifts', 'already'],
+      summary: (n) => `枠${n.slots}件を作成${n.slots_reused ? `（既存の枠を使用 ${n.slots_reused}件）` : ''}・シフト${n.shifts}件をコピーしました${n.already ? `（コピー済み ${n.already}件は作成していません）` : ''}`,
+      done: () => renderShiftBoard(),
+    }))
+  }
+  delegate('copyPreview', el => withSubmitLock(el, copyPreview))
+  delegate('copyRun', el => withSubmitLock(el, copyRun))
 
   // =========================================================
   // 案件詳細: 区分・単価・単価ルール・繰り返し登録
@@ -757,11 +885,17 @@
   window.repriceProject = async function (pid, staffId) {
     const from = dayjs().format('YYYY-MM-DD'), to = dayjs().add(1, 'year').format('YYYY-MM-DD')
     const body = { from, to, ...(pid ? { project_id: pid } : {}), ...(staffId ? { staff_id: staffId } : {}) }
-    const { data } = await axios.post('/api/admin/shifts/reprice', { ...body, dry_run: true })
-    if (!data.count) { toast('対象のシフトはありません'); return }
-    if (!confirm(`今日以降の ${data.count} 件のシフトに、現在の単価ルールを適用します（金額を手動で変更したシフトは除きます）。よろしいですか？`)) return
-    const r = await axios.post('/api/admin/shifts/reprice', body)
-    toast(`${r.data.count}件のシフトを再計算しました`)
+    if (BULK_JOB && BULK_JOB.running) { toast('ほかの一括処理を実行中です'); return }
+    try {
+      const { data } = await axios.post('/api/admin/shifts/reprice', { ...body, dry_run: true })
+      if (!data.count) { toast('対象のシフトはありません'); return }
+      if (!confirm(`今日以降の ${data.count} 件のシフトに、現在の単価ルールを適用します（金額を手動で変更したシフト・確定済みのシフトは除きます）。よろしいですか？`)) return
+    } catch (e) { toast(errMsg(e)); return }
+    // 件数が多いときは何回かに分けて処理する（runJob が続きを自動で呼ぶ）
+    await runJob(newJob({
+      title: '単価ルールの再適用', url: '/api/admin/shifts/reprice', body, keys: ['count', 'updated'],
+      summary: (n) => `${n.count}件のシフトを再計算しました`,
+    }))
   }
   window.deletePattern = async function (id, pid) {
     const future = confirm('この繰り返し登録を削除します。\n\n[OK] 今日以降の、割り当てのない枠も削除する\n[キャンセル] 次の確認へ')

@@ -13,6 +13,7 @@ import { calcAmounts, isSettled, loadPricingData, shiftTotals, workHours } from 
 import { toCsv } from './csv'
 import { JSON_IN, batchInChunks, bindJsonArray, chunk } from './lib/d1-chunk'
 import { shiftWindow } from './lib/shift-time'
+import { changesOf, updateRowsStmts } from './lib/bulk-write'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -255,17 +256,51 @@ app.get('/settlement', async (c) => {
 })
 
 // ---------- 実績の反映（入店・退店報告から）----------
+// 対象のシフトを SYNC_PAGE 件ずつ、報告と一緒にまとめて読み、計算はメモリ上で行い、変わったシフトだけを db.batch でまとめて書く
+// （規則は1件ずつの syncActualFromReports・refreshShiftAmounts と同じ。D1 の1回の実行あたりの問い合わせ数の上限に達しないように）。
+// 1回の呼び出しで SYNC_PAGE × SYNC_MAX_PAGES 件まで確認し、残りがあれば next_cursor（最後に確認した shift_id）を返す。cursor に渡すと続きから確認する
+const SYNC_PAGE = 2000
+const SYNC_MAX_PAGES = 10
+// 報告から実績を求める規則は actualFromReports、金額は amountsForActual（syncActualFromReports・refreshShiftAmounts と共用）
 app.post('/settlement/sync-actuals', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const f = parseFilters(k => (b[k] != null ? String(b[k]) : undefined))
   if ('error' in f) return c.json({ error: f.error }, 400)
-  const ids = ((await db.prepare(`SELECT s.shift_id FROM shifts s JOIN projects p ON p.project_id = s.project_id
-    WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
-      ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''}`)
-    .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : [])).all()).results as any[]).map(r => r.shift_id)
-  let updated = 0
-  for (const id of ids) if (await syncActualFromReports(db, u.company_id, id)) updated++
-  return c.json({ ok: true, checked: ids.length, updated })
+  let after = Math.max(0, Math.floor(Number(b.cursor) || 0))
+  let checked = 0, updated = 0, more = false
+  // 読み込みの後に確定・手入力されたシフトは書き換えない
+  const guard = "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.actual_source,'') != 'manual'"
+  const actualCols = ['actual_start', 'actual_end', 'actual_break_minutes', 'actual_source']
+  for (let page = 0; page < SYNC_MAX_PAGES; page++) {
+    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
+      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
+        ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''} AND s.shift_id > ? ORDER BY s.shift_id LIMIT ?`)
+      .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : []), after, SYNC_PAGE + 1).all()).results as any[]
+    const part = rows.slice(0, SYNC_PAGE)
+    if (!part.length) break
+    const reps = (await db.prepare(`SELECT shift_id, report_type, reported_at FROM attendance_reports
+      WHERE shift_id IN ${JSON_IN} AND report_type IN (SELECT value FROM json_each(?)) ORDER BY shift_id, attendance_id`)
+      .bind(bindJsonArray(part.map(s => s.shift_id)), JSON.stringify(ACTUAL_REPORT_TYPES)).all()).results as any[]
+    const repsBy = new Map<number, any[]>()
+    for (const r of reps) { const a = repsBy.get(r.shift_id) || []; a.push(r); repsBy.set(r.shift_id, a) }
+    const actualOnly: any[] = [], withAmounts: any[] = []
+    for (const s of part) {
+      const reps1 = repsBy.get(s.shift_id) || []
+      const { start, end, brk } = actualFromReports(t => reps1.find(r => r.report_type === t)?.reported_at as string | undefined)
+      if (start === (s.actual_start || null) && end === (s.actual_end || null) && brk === (s.actual_break_minutes ?? null)) continue
+      const row = { shift_id: s.shift_id, actual_start: start, actual_end: end, actual_break_minutes: brk, actual_source: start || brk != null ? 'report' : null }
+      const amt = amountsForActual({ ...s, ...row }, s)
+      if (amt) withAmounts.push({ ...row, ...amt }); else actualOnly.push(row)
+    }
+    const res = await batchInChunks(db, [
+      ...updateRowsStmts(db, 'shifts', 'shift_id', actualCols, actualOnly, guard, [u.company_id]),
+      ...updateRowsStmts(db, 'shifts', 'shift_id', [...actualCols, 'bill_qty', 'unit_price', 'pay_qty', 'pay_amount'], withAmounts, guard, [u.company_id]),
+    ])
+    checked += part.length; updated += changesOf(res); after = part[part.length - 1].shift_id
+    more = rows.length > SYNC_PAGE
+    if (!more) break
+  }
+  return c.json({ ok: true, checked, updated, next_cursor: more ? after : null })
 })
 
 // ---------- 実績の手入力 ----------
