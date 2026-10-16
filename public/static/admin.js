@@ -440,7 +440,7 @@ function staffDetailHeaderHtml(sid, p) {
         </div>
       </div>
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
-      ${p.linkable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
+      ${p.link_shareable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
       <button class="btn btn-primary" data-action="showFollowModal" data-id="${sid}" data-name="${esc(p.name)}"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
@@ -807,9 +807,11 @@ window.saveStaffBasicInfo = async function (sid) {
       })
     }
     if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, body))) return
-    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）
+    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）。
+    // 取引先マスタに入るため、取引先所属のスタッフだけにする（屋号・自社名・スキルシートの所属を取引先にしない。#262）
     const aff = (val('staff-affiliation') || '').trim()
-    if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
+    const isPartner = staffDetailState && staffDetailState.p && staffDetailState.p.affiliation_type === 'partner_manual'
+    if (aff && isPartner) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     toast('保存しました')
     staffEditingSid = null
     await refreshStaffProfile(sid)
