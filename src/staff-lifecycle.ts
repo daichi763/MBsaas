@@ -452,11 +452,11 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   return c.json({ ok: true, ...done })
 })
 
-// 区分変更の予約の取消
+// 区分変更の予約の取消（適用できなかった予約は、確認したら表示を消せるように同じく取消にする）
 adminLifecycleApi.delete('/staff/:id/affiliation-schedules/:scheduleId', async (c) => {
   const u = c.get('user')
   const r = await c.env.DB.prepare(`UPDATE staff_affiliation_schedules SET status = 'canceled', canceled_by = ?, canceled_at = ?
-    WHERE schedule_id = ? AND staff_id = ? AND company_id = ? AND status = 'pending'`).bind(u.user_id, nowJST(), c.req.param('scheduleId'), c.req.param('id'), u.company_id).run()
+    WHERE schedule_id = ? AND staff_id = ? AND company_id = ? AND status IN ('pending', 'failed')`).bind(u.user_id, nowJST(), c.req.param('scheduleId'), c.req.param('id'), u.company_id).run()
   if (!r.meta.changes) return c.json({ error: '取り消せる予約が見つかりません（適用済み・取消済みの可能性があります）' }, 404)
   return c.json({ ok: true })
 })

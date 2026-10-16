@@ -120,7 +120,9 @@
           ? `<div class="text-xs bg-blue-50 text-blue-900 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap" id="aff-schedule"><i class="fas fa-clock"></i>
               <span class="flex-1"><b>${esc(s.effective_date)}</b> から「${esc(TYPE_LABEL[s.to_type] || s.to_type)}${s.to_affiliation ? '（' + esc(s.to_affiliation) + '）' : ''}」に変更する予約があります</span>
               <button class="btn btn-outline text-xs" data-action="cancelAffiliationSchedule" data-sid="${Number(sid)}" data-id="${Number(s.schedule_id)}">予約を取り消す</button></div>`
-          : `<div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mt-3"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(s.effective_date)} からの「${esc(TYPE_LABEL[s.to_type] || s.to_type)}」への変更の予約は適用できませんでした: ${esc(s.error || '')}</div>`).join('')}
+          : `<div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap"><i class="fas fa-triangle-exclamation"></i>
+              <span class="flex-1">${esc(s.effective_date)} からの「${esc(TYPE_LABEL[s.to_type] || s.to_type)}」への変更の予約は適用できませんでした: ${esc(s.error || '')}</span>
+              <button class="btn btn-outline text-xs" data-action="cancelAffiliationSchedule" data-sid="${Number(sid)}" data-id="${Number(s.schedule_id)}" data-failed="1">確認した（表示を消す）</button></div>`).join('')}
         <p class="text-xs font-bold text-gray-600 mt-3 mb-1">変更履歴</p>
         <div class="space-y-1 max-h-40 overflow-y-auto">${data.history.map(h => `<div class="text-[11px] bg-gray-50 rounded p-1.5">
           <b>${esc(h.effective_date)}</b> ${h.from_type === 'new' ? '登録' : esc(TYPE_LABEL[h.from_type] || h.from_type) + ' → '}<b>${esc(TYPE_LABEL[h.to_type] || h.to_type)}</b>
@@ -299,11 +301,12 @@
   }))
   // 区分変更の予約の取消
   delegate('cancelAffiliationSchedule', (el) => withSubmitLock(el, async () => {
-    if (!confirm('区分変更の予約を取り消しますか？')) return
+    const failed = !!el.dataset.failed
+    if (!failed && !confirm('区分変更の予約を取り消しますか？')) return
     const sid = Number(el.dataset.sid)
     try {
       await axios.delete(`/api/admin/staff/${sid}/affiliation-schedules/${Number(el.dataset.id)}`)
-      toast('予約を取り消しました'); renderStaffDetail(sid)
+      toast(failed ? '表示を消しました' : '予約を取り消しました'); renderStaffDetail(sid)
     } catch (e) { toast(errMsg(e)) }
   }))
 

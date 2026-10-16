@@ -172,6 +172,20 @@ if (PERSIST) {
   lc = await lifecycle(A)
   ok('#99 再雇用しても、前の雇用期間（入社日・雇用終了日）が残る', r.status === 200 && lc.employment_periods.length === 1 && lc.employment_periods[0].hire_date === today && lc.employment_periods[0].employment_ended_at === addDays(today, -1), lc.employment_periods)
   ok('#99 従業員管理は再開される', lc.affiliation_type === 'own_employee' && !lc.employee_record.employment_ended_at, lc.employee_record)
+
+  // ---------- #82 適用できなかった予約は理由を残し、確認したら表示を消せる ----------
+  const D = must(await admin.post('/api/admin/staff-quick', { name: `${PFX} 予約失敗`, phone: phone(4), affiliation_type: 'daily_worker' }), 'staff-quick D').staff_id
+  r = await changeConfirmed(admin, D, { to_type: 'freelance', effective_date: addDays(today, 3) })
+  ok('#82 （前提）予約する', r.status === 200 && r.data.scheduled, r)
+  await d1w(`UPDATE staff_affiliation_schedules SET effective_date = '${today}' WHERE staff_id = ${D} AND status = 'pending'`)
+  await d1w(`UPDATE staff_profiles SET employment_status = 'retired' WHERE staff_id = ${D}`)
+  await fetch(`${BASE}/__scheduled?cron=0+18+*+*+*`); await waitServer()
+  let lcD = await lifecycle(D)
+  const failedS = lcD.schedules.find(s => s.status === 'failed')
+  ok('#82 退職した人の予約は適用せず、理由を残す', lcD.affiliation_type === 'daily_worker' && failedS && String(failedS.error).includes('退職'), lcD.schedules)
+  r = await admin.del(`/api/admin/staff/${D}/affiliation-schedules/${failedS?.schedule_id}`)
+  lcD = await lifecycle(D)
+  ok('#82 適用できなかった予約は、確認したら表示を消せる', r.status === 200 && lcD.schedules.length === 0, [r, lcD.schedules])
 } else console.log('SKIP  #82 cron での予約の適用・#99（PERSIST 未指定）')
 
 // ---------- #121 シフトが多いスタッフ（100件超）でも1回で最後まで置き換える ----------
