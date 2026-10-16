@@ -224,7 +224,11 @@ const admin = client(await login('sample', 'admin'))
   const noLogin = await admin.post(`/api/admin/staff/${sheet.data?.staff_id}/reset-password`)
   ok('#45 ログインのないスタッフは再発行できない（400）', sheet.status === 200 && noLogin.status === 400, { sheet, noLogin })
   const mgr = client(await login('sample', 'mgr01'))
-  ok('#45 現場管理者もスタッフのパスワードを再発行できる', (await mgr.post('/api/admin/staff/3/reset-password')).status === 200)
+  const r3 = await mgr.post('/api/admin/staff/3/reset-password')
+  ok('#45 現場管理者もスタッフのパスワードを再発行できる', r3.status === 200, r3)
+  // ほかのテストのため、st003 のパスワードを元に戻す
+  const l3 = await rawLogin('sample', 'st003', r3.data?.temp_password)
+  if (l3.status === 200) await client(l3.cookie).post('/api/auth/change-password', { current_password: r3.data.temp_password, new_password: 'pass1234' })
 }
 
 // ---------- #66 停止した企業の掲示板の掲載 ----------
