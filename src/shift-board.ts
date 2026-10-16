@@ -537,12 +537,13 @@ app.put('/shifts/:id/price', async (c) => {
   const amt = calcAmounts({ bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }, s.start_time, s.end_time, brk || 0,
     workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {}).hours)
   // 数量を直接指定した場合（実働時間など）はそちらを優先
-  // 数量を指定しないときの金額は calcAmounts の値（分単位で計算）を使う
+  // 数量を指定しないとき、または計算どおりの数量のとき（シフトボードの画面は計算した数量を入れたまま送る）は、calcAmounts の金額（分単位で計算）を使う
   const billQtyIn = b.bill_qty != null && b.bill_qty !== '', payQtyIn = b.pay_qty != null && b.pay_qty !== ''
   const billQty = billQtyIn ? Number(b.bill_qty) : amt.bill_qty
   const payQty = payQtyIn ? Number(b.pay_qty) : amt.pay_qty
-  const billAmount = billQtyIn ? Math.round((billRate || 0) * billQty) : amt.unit_price
-  const payAmount = payRate == null ? null : payQtyIn ? Math.round(payRate * payQty) : amt.pay_amount
+  const sameQty = (q: number, calc: number) => Math.abs(q - calc) < 0.005
+  const billAmount = billQtyIn && !sameQty(billQty, amt.bill_qty) ? Math.round((billRate || 0) * billQty) : amt.unit_price
+  const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? Math.round(payRate * payQty) : amt.pay_amount
   const bt = BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : s.bill_transport_type
   const pt = PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : s.pay_transport_type
   await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,

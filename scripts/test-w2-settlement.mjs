@@ -160,6 +160,13 @@ async function row(id, date) { return ((await list(date, date)).data.rows || [])
   ok('#147 時給の金額は分単位で計算する（数量は小数2桁）', p.status === 200 && minutes === 395 && r.pay_base === Math.round(1200 * minutes / 60) && r.bill_base === Math.round(1500 * minutes / 60) && r.pay_qty === 6.58,
     [r.hours, r.pay_qty, r.pay_base, r.bill_base])
   ok('#147 丸めた時間に掛けた額（ずれる額）ではない', r.pay_base !== Math.round(1200 * r.pay_qty), [r.pay_base, Math.round(1200 * r.pay_qty)])
+  // シフトボードの金額の画面は、計算した数量（小数2桁）を入れたまま送る。その数量のときも分単位の金額のまま
+  await admin.put(`/api/admin/shifts/${I}/price`, { bill_unit_type: 'hourly', bill_rate: 1500, pay_unit_type: 'hourly', pay_rate: 1200, bill_qty: String(r.bill_qty), pay_qty: String(r.pay_qty), transportation_fee: 500 })
+  const r2 = await row(I, d)
+  ok('#147 計算どおりの数量を送っても、金額は分単位のまま', r2.pay_base === Math.round(1200 * minutes / 60) && r2.bill_base === Math.round(1500 * minutes / 60), [r2.pay_qty, r2.pay_base, r2.bill_base])
+  await admin.put(`/api/admin/shifts/${I}/price`, { bill_unit_type: 'hourly', bill_rate: 1500, pay_unit_type: 'hourly', pay_rate: 1200, bill_qty: '7', pay_qty: '7' })
+  const r3 = await row(I, d)
+  ok('#147 数量を変えたときは、その数量で計算する', r3.pay_base === 8400 && r3.bill_base === 10500, [r3.pay_qty, r3.pay_base, r3.bill_base])
 }
 
 // ---------- #565 粗利は支払が決まっている行だけ ----------
