@@ -11,6 +11,8 @@
 import { Hono } from 'hono'
 import { calcAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
 import { toCsv } from './csv'
+import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
+import { changesOf, updateRowsStmts } from './lib/bulk-write'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -180,17 +182,75 @@ app.get('/settlement', async (c) => {
 })
 
 // ---------- 実績の反映（入店・退店報告から）----------
+// 対象のシフトを SYNC_PAGE 件ずつ、報告と一緒にまとめて読み、計算はメモリ上で行い、変わったシフトだけを db.batch でまとめて書く
+// （1件ずつの syncActualFromReports・refreshShiftAmounts と同じ規則。D1 の1回の実行あたりの問い合わせ数の上限に達しないように）。
+// 1回の呼び出しで SYNC_PAGE × SYNC_MAX_PAGES 件まで確認し、残りがあれば next_cursor（最後に確認した shift_id）を返す。cursor に渡すと続きから確認する
+const SYNC_PAGE = 2000
+const SYNC_MAX_PAGES = 10
+const SYNC_REPORT_TYPES = ['check_in', 'check_out', 'work_start', 'work_end', 'break_start', 'break_end']
+// 1シフト分の報告から実績（開始・終了・休憩）を求める。規則は syncActualFromReports と同じ
+function actualsOf(reps: any[]) {
+  const at = (t: string) => reps.find(r => r.report_type === t)?.reported_at as string | undefined
+  const hm = (t?: string) => (String(t || '').match(/(\d{2}:\d{2})/) || [])[1] || null
+  const cin = hm(at('work_start') || at('check_in')), cout = hm(at('work_end') || at('check_out'))
+  const start = cin && cout ? cin : null, end = cin && cout ? cout : null
+  const bs = at('break_start'), be = at('break_end')
+  const brkMin = bs && be ? Math.round((Date.parse(be.replace(' ', 'T') + 'Z') - Date.parse(bs.replace(' ', 'T') + 'Z')) / 60000) : NaN
+  const brk = Number.isFinite(brkMin) && brkMin >= 0 && brkMin <= 1440 ? brkMin : null
+  return { start, end, brk }
+}
+// 実績を変えた後の数量・金額。規則は refreshShiftAmounts と同じ（変えないときは null）
+function amountsOf(s: any, proj: any) {
+  if (isSettled(s) || s.price_locked) return null
+  const billHourly = s.bill_unit_type === 'hourly' && s.bill_rate != null
+  const payHourly = s.pay_unit_type === 'hourly' && s.pay_rate != null
+  if (!billHourly && !payHourly) return null
+  const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
+  const h = workHours({ ...s, break_minutes: brk }, proj).hours
+  const amt = calcAmounts({ bill_unit_type: 'hourly', bill_rate: s.bill_rate, pay_unit_type: 'hourly', pay_rate: s.pay_rate }, s.start_time, s.end_time, brk, h)
+  return {
+    bill_qty: billHourly ? amt.bill_qty : s.bill_qty, unit_price: billHourly ? amt.unit_price : s.unit_price,
+    pay_qty: payHourly ? amt.pay_qty : s.pay_qty, pay_amount: payHourly ? amt.pay_amount : s.pay_amount,
+  }
+}
 app.post('/settlement/sync-actuals', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const f = parseFilters(k => (b[k] != null ? String(b[k]) : undefined))
   if ('error' in f) return c.json({ error: f.error }, 400)
-  const ids = ((await db.prepare(`SELECT s.shift_id FROM shifts s JOIN projects p ON p.project_id = s.project_id
-    WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
-      ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''}`)
-    .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : [])).all()).results as any[]).map(r => r.shift_id)
-  let updated = 0
-  for (const id of ids) if (await syncActualFromReports(db, u.company_id, id)) updated++
-  return c.json({ ok: true, checked: ids.length, updated })
+  let after = Math.max(0, Math.floor(Number(b.cursor) || 0))
+  let checked = 0, updated = 0, more = false
+  // 読み込みの後に確定・手入力されたシフトは書き換えない
+  const guard = "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.actual_source,'') != 'manual'"
+  const actualCols = ['actual_start', 'actual_end', 'actual_break_minutes', 'actual_source']
+  for (let page = 0; page < SYNC_MAX_PAGES; page++) {
+    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
+      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
+        ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''} AND s.shift_id > ? ORDER BY s.shift_id LIMIT ?`)
+      .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : []), after, SYNC_PAGE + 1).all()).results as any[]
+    const part = rows.slice(0, SYNC_PAGE)
+    if (!part.length) break
+    const reps = (await db.prepare(`SELECT shift_id, report_type, reported_at FROM attendance_reports
+      WHERE shift_id IN ${JSON_IN} AND report_type IN (SELECT value FROM json_each(?)) ORDER BY shift_id, attendance_id`)
+      .bind(bindJsonArray(part.map(s => s.shift_id)), JSON.stringify(SYNC_REPORT_TYPES)).all()).results as any[]
+    const repsBy = new Map<number, any[]>()
+    for (const r of reps) { const a = repsBy.get(r.shift_id) || []; a.push(r); repsBy.set(r.shift_id, a) }
+    const actualOnly: any[] = [], withAmounts: any[] = []
+    for (const s of part) {
+      const { start, end, brk } = actualsOf(repsBy.get(s.shift_id) || [])
+      if (start === (s.actual_start || null) && end === (s.actual_end || null) && brk === (s.actual_break_minutes ?? null)) continue
+      const row = { shift_id: s.shift_id, actual_start: start, actual_end: end, actual_break_minutes: brk, actual_source: start || brk != null ? 'report' : null }
+      const amt = amountsOf({ ...s, ...row }, s)
+      if (amt) withAmounts.push({ ...row, ...amt }); else actualOnly.push(row)
+    }
+    const res = await batchInChunks(db, [
+      ...updateRowsStmts(db, 'shifts', 'shift_id', actualCols, actualOnly, guard, [u.company_id]),
+      ...updateRowsStmts(db, 'shifts', 'shift_id', [...actualCols, 'bill_qty', 'unit_price', 'pay_qty', 'pay_amount'], withAmounts, guard, [u.company_id]),
+    ])
+    checked += part.length; updated += changesOf(res); after = part[part.length - 1].shift_id
+    more = rows.length > SYNC_PAGE
+    if (!more) break
+  }
+  return c.json({ ok: true, checked, updated, next_cursor: more ? after : null })
 })
 
 // ---------- 実績の手入力 ----------
