@@ -545,8 +545,13 @@ async function renderReport() {
     loadPastReports()
     return
   }
-  const { data } = await axios.get('/api/staff/report-template/' + s.project_id)
-  const fields = (data.template && data.template.fields) || []
+  // 提出済みなら前回の内容を初期値にする（修正して再提出しても、ほかの項目が0や空欄で上書きされないように）
+  const { data } = await axios.get('/api/staff/daily-report/' + Number(s.shift_id))
+  const prev = data.report
+  const pv = (k) => (prev && prev.values && prev.values[k] != null ? prev.values[k] : '')
+  const tplFields = (data.template && data.template.fields) || []
+  // テンプレートの無い案件は「報告内容」の欄だけ（報告用URLの画面・サーバーの検証と同じ）
+  const fields = tplFields.length ? tplFields : [{ key: 'free', label: '報告内容', type: 'textarea' }]
   const numFields = fields.filter(f => f.type === 'number')
   const textFields = fields.filter(f => f.type !== 'number')
 
@@ -558,55 +563,67 @@ async function renderReport() {
         ${list.map(x => `<option value="${Number(x.shift_id)}" ${x.shift_id === s.shift_id ? 'selected' : ''}>${esc(fmtDate(x.work_date))} ${esc(x.start_time)}〜${esc(x.end_time)} ${esc(x.project_name)}${x.daily_report_done ? '（提出済み）' : x.daily_report_required ? '' : '（日報不要）'}</option>`).join('')}
       </select>` : ''}
       ${s.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
+      ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
+      ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots mr-1"></i>${esc(prev.manager_comment)}</p>` : ''}
     </section>
     <form id="report-form" class="space-y-4 pb-8">
-      <section class="card p-4">
+      ${numFields.length ? `<section class="card p-4">
         <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
         <div class="grid grid-cols-2 gap-3">
           ${numFields.map(f => `
             <div>
               <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}</label>
-              <input type="number" inputmode="numeric" min="0" data-key="${esc(f.key)}" class="inp rpt-field text-center text-lg font-bold" value="0">
+              <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" class="inp rpt-field text-center text-lg font-bold" value="${esc(pv(f.key))}" placeholder="0">
             </div>`).join('')}
         </div>
-      </section>
-      <section class="card p-4">
+      </section>` : ''}
+      ${textFields.length ? `<section class="card p-4">
         <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-message text-blue-500 mr-1"></i>報告事項</h3>
         <div class="space-y-3">
           ${textFields.map(f => `
             <div>
               <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}</label>
               ${f.type === 'textarea'
-                ? `<textarea data-key="${esc(f.key)}" rows="3" class="inp rpt-field" placeholder="${esc(f.label)}を入力"></textarea>`
-                : `<input type="text" data-key="${esc(f.key)}" class="inp rpt-field" placeholder="${esc(f.label)}を入力">`}
+                ? `<textarea data-key="${esc(f.key)}" rows="3" maxlength="2000" class="inp rpt-field" placeholder="${esc(f.label)}を入力">${esc(pv(f.key))}</textarea>`
+                : `<input type="text" data-key="${esc(f.key)}" maxlength="2000" class="inp rpt-field" placeholder="${esc(f.label)}を入力" value="${esc(pv(f.key))}">`}
             </div>`).join('')}
         </div>
-      </section>
+      </section>` : ''}
       <section class="card p-4">
-        <label class="flex items-center gap-3 py-1"><input id="incident-flag" type="checkbox" class="w-5 h-5 rounded"><span class="text-sm font-medium text-gray-700">インシデントがあった</span></label>
-        <label class="flex items-center gap-3 py-1"><input id="complaint-flag" type="checkbox" class="w-5 h-5 rounded"><span class="text-sm font-medium text-gray-700">クレームがあった</span></label>
+        <label class="flex items-center gap-3 py-1"><input id="incident-flag" type="checkbox" class="w-5 h-5 rounded" ${prev && prev.incident_flag ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">インシデントがあった</span></label>
+        <label class="flex items-center gap-3 py-1"><input id="complaint-flag" type="checkbox" class="w-5 h-5 rounded" ${prev && prev.complaint_flag ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">クレームがあった</span></label>
       </section>
-      <button type="submit" class="btn btn-primary w-full py-3.5 text-base">${s.daily_report_done ? '日報を修正して再提出' : '日報を提出する'}</button>
+      <button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base">${prev ? '日報を修正して再提出' : '日報を提出する'}</button>
     </form>`
 
   const sel = document.getElementById('report-shift')
   if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
-  document.getElementById('report-form').addEventListener('submit', async (e) => {
+  document.getElementById('report-form').addEventListener('submit', (e) => {
     e.preventDefault()
     const values = {}
     document.querySelectorAll('.rpt-field').forEach(el => {
       const k = el.dataset.key
       values[k] = el.type === 'number' ? Number(el.value || 0) : el.value
     })
-    // 稼働日はシフトの稼働日（日をまたぐ勤務や、開いたまま日付が変わった場合も前日の日付で送る）
-    await axios.post('/api/staff/daily-report', {
-      project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date, values,
-      incident_flag: document.getElementById('incident-flag').checked,
-      complaint_flag: document.getElementById('complaint-flag').checked
+    // 送信中はボタンを押せないようにする（二度押しで同じ日報を送らない）
+    withSubmitLock(document.getElementById('report-submit'), async () => {
+      try {
+        // 案件・稼働日はシフトの値（サーバーでもシフトと一致するかを確かめる）。
+        // インシデント・クレームは前回の値を表示したうえで送るので flags_explicit を付ける（外したときだけ印を下げる）
+        await axios.post('/api/staff/daily-report', {
+          project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date, values,
+          incident_flag: document.getElementById('incident-flag').checked,
+          complaint_flag: document.getElementById('complaint-flag').checked,
+          flags_explicit: true
+        })
+      } catch (err) {
+        showApiError(err, '日報の送信に失敗しました')
+        return
+      }
+      toast('日報を提出しました。お疲れさまでした！')
+      HOME = null
+      location.hash = 'home'
     })
-    toast('日報を提出しました。お疲れさまでした！')
-    HOME = null
-    location.hash = 'home'
   })
 }
 

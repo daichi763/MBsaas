@@ -44,7 +44,7 @@ async function createShift(staff_id, project_id, work_date, memo) {
 
 // ---------- #2 日報の values のキーはテンプレートの項目に限る ----------
 {
-  const d = addDays(today, 40)
+  const d = today // 日報は稼働日以降に受け付ける（w2-daily-report #241）
   const shiftId = await createShift(1, 1, d, 'XSS-DR')
   const bad = await st1.post('/api/staff/daily-report', { project_id: 1, shift_id: shiftId, work_date: d, values: { mnp: 'abc' } })
   ok('#2 数値の項目に数値以外は 400', bad.status === 400, bad)
@@ -89,12 +89,12 @@ async function createShift(staff_id, project_id, work_date, memo) {
   const pJp = await pj(tname, tpl && tpl.template_id)
   // テンプレートの無い案件は、画面と同じく空欄で登録する（存在しないテンプレートIDは w1-tenant-guard で 400 になる）
   const pNone = await pj('XSS-NO-TPL-' + Date.now(), '')
-  const d = addDays(today, 43)
+  const d = addDays(today, -2)
   const s1 = await createShift(1, pJp, d, 'XSS-JP')
   const r1 = await st1.post('/api/staff/daily-report', { project_id: pJp, shift_id: s1, work_date: d, values: { '架電数': 12, 'メモ': 'テスト' } })
   const rep1 = ((await admin.get(`/api/admin/daily-reports?date=${d}`)).data.reports || []).find(x => x.shift_id === s1)
   ok('#2 日本語のキーの項目も保存される', r1.status === 200 && rep1 && rep1.values['架電数'] === 12 && rep1.values['メモ'] === 'テスト', rep1 && rep1.values)
-  const d2 = addDays(today, 44)
+  const d2 = addDays(today, -1) // 報告用URLは稼働日の翌日まで
   const s2 = await createShift(1, pNone, d2, 'XSS-NOTPL')
   const link = await admin.post(`/api/admin/shifts/${s2}/report-link`)
   const res = await fetch(`${BASE}/api/public/report/${link.data.token}/daily-report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { free: '報告です', [IMG]: 1 } }) })
