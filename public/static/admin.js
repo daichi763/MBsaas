@@ -1015,7 +1015,7 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">案件名 *</label><input id="np-name" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">クライアント</label>
-          <select id="np-client" class="inp">${cl.clients.map(c => `<option value="${c.client_id}">${esc(c.client_name)}</option>`).join('')}</select></div>
+          <select id="np-client" class="inp"><option value="">（クライアントなし）</option>${cl.clients.map(c => `<option value="${Number(c.client_id)}">${esc(c.client_name)}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">業務種別</label>
           <select id="np-type" class="inp">${Object.entries(PTYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
       </div>
@@ -1027,19 +1027,34 @@ window.showAddProject = async function () {
           ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp"></textarea></div>
-      <button class="btn btn-primary w-full" onclick="addProject()">登録する</button>
+      <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
 }
+// 登録する。同名の登録があるとき（サーバーが confirm_duplicate を返す）は、確認できたら確認済みとして送り直す。取りやめたら null を返す
+async function postConfirmingDuplicate(url, body) {
+  try {
+    return await axios.post(url, body)
+  } catch (e) {
+    const d = e.response && e.response.data
+    if (!(e.response && e.response.status === 409 && d && d.confirm_duplicate)) throw e
+    if (!confirm(d.error + '\n\nそれでも登録しますか？')) return null
+    return axios.post(url, { ...body, allow_duplicate: true })
+  }
+}
+delegate('addProject', el => withSubmitLock(el, addProject))
 window.addProject = async function () {
   const name = document.getElementById('np-name').value.trim()
   if (!name) { toast('案件名を入力してください'); return }
-  await axios.post('/api/admin/projects', {
-    project_name: name, client_id: document.getElementById('np-client').value,
-    project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
-    unit_price: Number(document.getElementById('np-price').value || 0),
-    report_template_id: document.getElementById('np-tpl').value, requirements: document.getElementById('np-req').value
-  })
-  closeModal(); toast('案件を登録しました'); renderProjects()
+  try {
+    const res = await postConfirmingDuplicate('/api/admin/projects', {
+      project_name: name, client_id: document.getElementById('np-client').value || null,
+      project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
+      unit_price: Number(document.getElementById('np-price').value || 0),
+      report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value
+    })
+    if (!res) return
+    closeModal(); toast('案件を登録しました'); renderProjects()
+  } catch (e) { showApiError(e, '案件の登録に失敗しました') }
 }
 
 async function renderProjectDetail(pid) {
@@ -1123,6 +1138,11 @@ async function renderProjectDetail(pid) {
 }
 
 // ============ クライアント ============
+// 評価の星。範囲外・数値でない値でも描画が止まらないよう 0〜5 に丸める
+function ratingStars(v) {
+  const n = Math.max(0, Math.min(5, Math.round(Number(v) || 0)))
+  return '★'.repeat(n) + '☆'.repeat(5 - n)
+}
 async function renderClients() {
   loading()
   const { data } = await axios.get('/api/admin/clients')
@@ -1142,7 +1162,7 @@ async function renderClients() {
             <div class="flex"><dt class="w-20 text-gray-400">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${'★'.repeat(c.client_rating || 0)}${'☆'.repeat(5 - (c.client_rating || 0))}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
           </dl>
           ${c.ng_staff_ids ? '<p class="text-xs text-red-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
@@ -1180,7 +1200,7 @@ async function renderClientDetail(cid) {
           <div class="flex"><dt class="w-24 text-gray-400">住所</dt><dd>${esc(c.address || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">評価</dt><dd>${'★'.repeat(c.client_rating || 0)}${'☆'.repeat(5 - (c.client_rating || 0))}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600">${esc(c.memo || '-')}</dd></div>
         </dl>
@@ -1588,19 +1608,23 @@ window.showAddClient = function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
-      <button class="btn btn-primary w-full" onclick="addClient()">登録する</button>
+      <button class="btn btn-primary w-full" data-action="addClient">登録する</button>
     </div>`)
 }
+delegate('addClient', el => withSubmitLock(el, addClient))
 window.addClient = async function () {
   const name = document.getElementById('nc-name').value.trim()
   if (!name) { toast('クライアント名を入力してください'); return }
-  await axios.post('/api/admin/clients', {
-    client_name: name, stream_type: document.getElementById('nc-stream').value,
-    contract_type: document.getElementById('nc-contract').value, contact_name: document.getElementById('nc-contact').value,
-    phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
-    memo: document.getElementById('nc-memo').value
-  })
-  closeModal(); toast('クライアントを登録しました'); renderClients()
+  try {
+    const res = await postConfirmingDuplicate('/api/admin/clients', {
+      client_name: name, stream_type: document.getElementById('nc-stream').value,
+      contract_type: document.getElementById('nc-contract').value, contact_name: document.getElementById('nc-contact').value,
+      phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
+      memo: document.getElementById('nc-memo').value
+    })
+    if (!res) return
+    closeModal(); toast('クライアントを登録しました'); renderClients()
+  } catch (e) { showApiError(e, 'クライアントの登録に失敗しました') }
 }
 
 // ============ シフト管理 ============
