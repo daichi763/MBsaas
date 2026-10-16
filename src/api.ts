@@ -2060,7 +2060,9 @@ api.put('/admin/shifts/:id', async (c) => {
     return c.json({ error: '確定済みのシフトは変更できません。精算画面で確定を取り消してください' }, 409)
   if (b.status != null && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
   // 付け替え先は割り当てられるスタッフのみ（退職・統合済み・スキルシートのみ・取引終了は不可）。重複・NG・休職中は確認のうえ
-  if (b.staff_id != null && Number(b.staff_id) !== cur.staff_id) {
+  // 付け替えたシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
+  const staffChanged = b.staff_id != null && Number(b.staff_id) !== cur.staff_id
+  if (staffChanged) {
     const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: cur.project_id, slot: cur.slot_role_id ? { slot_role_id: cur.slot_role_id } : null,
       staffId: Number(b.staff_id), workDate: cur.work_date, start: b.start_time ?? cur.start_time, end: b.end_time ?? cur.end_time, excludeShiftId: cur.shift_id })
     if (chk.error) return c.json({ error: chk.error }, chk.status)
@@ -2073,9 +2075,10 @@ api.put('/admin/shifts/:id', async (c) => {
   try {
     await c.env.DB.prepare(`UPDATE shifts SET
         status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
-        staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo)
+        staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo),
+        legacy_duplicate = CASE WHEN ? = 1 THEN NULL ELSE legacy_duplicate END
       WHERE shift_id = ? AND company_id = ?`)
-      .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, c.req.param('id'), u.company_id).run()
+      .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, staffChanged ? 1 : 0, c.req.param('id'), u.company_id).run()
   } catch (e) {
     // 欠勤から戻すなどで、同じ枠に同じ人の有効なシフトが2件になる（一意インデックス #530）
     if (isUniqueViolation(e)) return c.json({ error: '同じ枠に、このスタッフの有効なシフトがすでにあります' }, 409)

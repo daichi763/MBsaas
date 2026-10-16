@@ -319,7 +319,7 @@
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（任意）">
       </div>
       <button class="btn btn-primary w-full mt-3" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button>
-      <button class="btn btn-outline w-full mt-2 text-sm" onclick="showQuickRegister && showQuickRegister({ slot_role_id: ${slotRoleId} })"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
+      <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
   }
   window.assignFromCandidates = function (slotRoleId) {
     const ids = [...document.querySelectorAll('.cand-check:checked')].map(el => Number(el.value))
@@ -328,6 +328,7 @@
     return assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}) })
   }
   delegate('assignFromCandidates', (el) => withSubmitLock(el, () => assignFromCandidates(Number(el.dataset.slotRoleId))))
+  delegate('openQuickRegister', (el) => { if (window.showQuickRegister) showQuickRegister({ slot_role_id: Number(el.dataset.slotRoleId) }) })
 
   // ---------- シフト詳細（状態・金額） ----------
   function findShift(id) {
