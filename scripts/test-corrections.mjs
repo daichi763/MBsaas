@@ -34,6 +34,16 @@ async function createShift(staff_id, project_id, work_date, memo, start_time = '
   return s.shift_id
 }
 const proxy = (id, t, time) => admin.post(`/api/admin/shifts/${id}/proxy-attendance`, { report_types: [t], time })
+// 代理入力は、報告設定で OFF の種類を受け付けない（#20）。test-report-settings の後は案件1・スタッフ1 の入店が OFF なので、
+// OFF の種類を記録するときだけ一時的に ON にして、元の設定に戻す
+async function proxyEvenIfOff(id, t, time) {
+  const cur = (await admin.get('/api/admin/report-settings/projects/1')).data.staff.find(x => x.staff_id === 1)?.settings?.[t]
+  if (cur === 0) await admin.put('/api/admin/report-settings/projects/1/staff/1', { settings: { [t]: true } })
+  const r = await proxy(id, t, time)
+  if (cur === 0) await admin.put('/api/admin/report-settings/projects/1/staff/1', { settings: { [t]: false } })
+  if (r.status !== 200) throw new Error('proxy ' + t + ' ' + JSON.stringify(r.data))
+  return r
+}
 async function reports(id) { return (await admin.get(`/api/admin/shifts/${id}/report-status`)).data.reports }
 async function reportAt(id, t) { const r = (await reports(id)).find(x => x.report_type === t); return r ? r.reported_at : null }
 async function settle(id, date) { return ((await admin.get(`/api/admin/settlement?from=${date}&to=${date}`)).data.rows || []).find(x => x.shift_id === id) }
@@ -41,7 +51,7 @@ const req = (cl, body) => cl.post(cl === admin || cl === mgr ? '/api/admin/corre
 
 const dA = addDays(today, -2)
 const A = await createShift(1, 1, dA, 'CR-A')
-for (const [t, tm] of [['check_in', '09:55'], ['work_start', '10:00'], ['break_start', '12:00'], ['break_end', '13:00'], ['work_end', '18:00'], ['check_out', '18:05']]) await proxy(A, t, tm)
+for (const [t, tm] of [['check_in', '09:55'], ['work_start', '10:00'], ['break_start', '12:00'], ['break_end', '13:00'], ['work_end', '18:00'], ['check_out', '18:05']]) await proxyEvenIfOff(A, t, tm)
 
 // ---------- 申請の入力チェック ----------
 {
@@ -119,7 +129,7 @@ let c1
   r = await req(st1, { shift_id: C, report_type: 'wake_up', kind: 'add', requested_at: `${addDays(today, 3)} 06:00`, reason: '先に申請しておく' })
   ok('未来の日時も申請できる', r.status === 200, r)
   const old = await createShift(1, 1, '2025-01-10', 'CR-OLD')
-  await proxy(old, 'check_in', '10:00')
+  await proxyEvenIfOff(old, 'check_in', '10:00')
   r = await req(st1, { shift_id: old, report_type: 'check_in', kind: 'modify', requested_at: '2025-01-10 09:58', reason: '期限のない過去分の修正' })
   ok('期限なし: 過去の勤務日の修正を申請できる', r.status === 200, r)
   const ap = await admin.post(`/api/admin/corrections/${r.data.correction_id}/approve`, {})
