@@ -31,7 +31,7 @@ window.showAddRoster = function () {
 const ROSTER_LINK = { candidate: null, consent: null }
 delegate('rosterConsent', () => { if (ROSTER_LINK.candidate) showRosterConsent(ROSTER_LINK.candidate) })
 delegate('rosterLinkBack', () => showRosterLink(ROSTER_LINK.consent ? ROSTER_LINK.consent.code : ''))
-delegate('rosterLinkSubmit', () => { if (ROSTER_LINK.consent) submitRosterLink(ROSTER_LINK.consent) })
+delegate('rosterLinkSubmit', (el) => { if (ROSTER_LINK.consent) submitRosterLink(ROSTER_LINK.consent, el) })
 window.showRosterLink = function (prefill) {
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-qrcode text-blue-600 mr-1"></i>スタッフIDから連携</h3>
@@ -103,13 +103,16 @@ window.showRosterConsent = function (info) {
     </div>`)
 }
 
-window.submitRosterLink = async function (p) {
+// 送信中はボタンを止める（二度押しで同じ人が二重に連携されないように。#238）
+window.submitRosterLink = async function (p, button) {
   if (!document.getElementById('rc-agree').checked) { toast('同意が必要です'); return }
-  try {
-    const { data } = await axios.post('/api/admin/roster/link', { code: p.code, agreed: true, consent_version: p.version })
-    closeModal(); toast('スタッフマスタに連携登録しました')
-    location.hash = 'staff/' + data.staff_id
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '連携に失敗しました') }
+  await withSubmitLock(button || document.getElementById('rc-submit'), async () => {
+    try {
+      const { data } = await axios.post('/api/admin/roster/link', { code: p.code, agreed: true, consent_version: p.version })
+      closeModal(); toast('スタッフマスタに連携登録しました')
+      location.hash = 'staff/' + data.staff_id
+    } catch (e) { showApiError(e, '連携に失敗しました') }
+  })
 }
 
 // ---------- ②③④ フォーム ----------
@@ -433,7 +436,7 @@ window.renderRosterPanels = async function (sid, p) {
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-shield-halved text-blue-500 mr-1"></i>連携の同意履歴</h3>
         ${links.consents.map(x => `
           <div class="p-2.5 rounded-lg bg-gray-50 mb-2 text-xs">
-            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc(x.created_at)}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
+            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc((x.created_at || '').slice(0, 16))}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
             <p class="text-gray-500 mt-1">共有範囲: ${esc(Array.isArray(x.shared_scope) ? x.shared_scope.join('・') : x.shared_scope)}</p>
           </div>`).join('') || '<p class="text-sm text-gray-400">記録がありません</p>'}
       </section>`

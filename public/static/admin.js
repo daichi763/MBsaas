@@ -774,9 +774,11 @@ window.saveStaffBasicInfo = async function (sid) {
       })
     }
     if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, body))) return
-    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）
+    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）。
+    // 取引先マスタに入るため、取引先所属のスタッフだけにする（屋号・自社名・スキルシートの所属を取引先にしない。#262）
     const aff = (val('staff-affiliation') || '').trim()
-    if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
+    const isPartner = staffDetailState && staffDetailState.p && staffDetailState.p.affiliation_type === 'partner_manual'
+    if (aff && isPartner) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     toast('保存しました')
     staffEditingSid = null
     await refreshStaffProfile(sid)

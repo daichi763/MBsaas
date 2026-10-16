@@ -134,13 +134,26 @@ window.loadRosterChat = async function (sid, hostKey) {
     refreshChatBadge()
   } catch { log.innerHTML = '<p class="text-xs text-red-500 text-center py-6">読み込みに失敗しました</p>' }
 }
+// 送信中は送信ボタンと Ctrl+Enter を止め、入力欄は送る前に空にする（失敗したら戻す）。
+// 二度押しで同じメッセージが相手に2件届かないように（#263）
+let CHAT_SENDING = false
 window.sendRosterChat = async function (sid) {
   const el = document.getElementById('chat-input'); const body = el.value.trim()
-  if (!body) return
+  if (!body || CHAT_SENDING) return
+  const button = el.parentElement ? el.parentElement.querySelector('button') : null
+  CHAT_SENDING = true
+  el.value = ''
   try {
-    await axios.post(`/api/admin/roster-chat/${sid}`, { body, host_staff_id: CHAT_CUR.hostKey || undefined })
-    el.value = ''; loadRosterChat(sid, CHAT_CUR.hostKey)
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '送信に失敗しました') }
+    await withSubmitLock(button, async () => {
+      try {
+        await axios.post(`/api/admin/roster-chat/${sid}`, { body, host_staff_id: CHAT_CUR.hostKey || undefined })
+        loadRosterChat(sid, CHAT_CUR.hostKey)
+      } catch (e) {
+        if (!el.value) el.value = body
+        showApiError(e, '送信に失敗しました')
+      }
+    })
+  } finally { CHAT_SENDING = false }
 }
 
 // ルート追加（admin.js の routes に登録）

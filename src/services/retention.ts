@@ -119,9 +119,14 @@ export async function applyDueRetirements(db: D1Database): Promise<number> {
 // 対象の退職スタッフを選ぶサブクエリ（バインド: cutoff 1個）。
 // 退職日より後のシフトがある人は外すので、残る人の最終稼働日は退職日以前になり、
 // 「退職日と最終稼働日の遅い方から7年」＝「退職日から7年」になる。
-const ELIGIBLE_STAFF_SQL = `SELECT sp.staff_id FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id
-  WHERE u.retired_at IS NOT NULL AND length(u.retired_at) >= 10 AND u.retired_at <= ?
-    AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date > u.retired_at)`
+// 退職日（sp・u を参照する）。他社連携の行（linked_external）で自分の行に退職日がなければ、雇用元の行の退職日を使う（#127）。
+// 連携行には所属元の退職日を伝えている（roster.ts の propagateRetirementStmts・0041 の移行）が、伝わっていない行も対象にする
+const STAFF_RETIRED_AT_SQL = `COALESCE(u.retired_at, CASE WHEN sp.affiliation_type = 'linked_external' THEN (SELECT ru.retired_at FROM staff_profiles r
+    JOIN users ru ON ru.user_id = r.user_id WHERE r.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)) END)`
+const ELIGIBLE_STAFF_SQL = `SELECT x.staff_id FROM (SELECT sp.staff_id, ${STAFF_RETIRED_AT_SQL} AS retired_at
+    FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id) x
+  WHERE x.retired_at IS NOT NULL AND length(x.retired_at) >= 10 AND x.retired_at <= ?
+    AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.staff_id = x.staff_id AND s.work_date > x.retired_at)`
 // まだ削除すべきデータが残っているか（sp.staff_id を参照する）
 const HAS_DATA_SQL = `(EXISTS (SELECT 1 FROM shifts WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM attendance_reports WHERE staff_id = sp.staff_id)
@@ -143,16 +148,16 @@ export type RetentionScheduleRow = {
  */
 export async function listRetentionSchedule(db: D1Database): Promise<{ scheduled: RetentionScheduleRow[]; excluded: RetentionScheduleRow[]; grace_days: number }> {
   const cutoff = cutoffDate(RETIRED_YEARS)
-  const cols = `sp.staff_id, u.name, c.company_name, u.retired_at, sp.retention_flagged_at AS flagged_at,
+  const cols = `sp.staff_id, u.name, c.company_name, ${STAFF_RETIRED_AT_SQL} AS retired_at, sp.retention_flagged_at AS flagged_at,
     (SELECT MAX(work_date) FROM shifts WHERE staff_id = sp.staff_id) AS last_work_date
     FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id LEFT JOIN companies c ON c.company_id = sp.company_id`
   const scheduled = (await db.prepare(`SELECT ${cols}
     WHERE sp.staff_id IN (${ELIGIBLE_STAFF_SQL}) AND ${HAS_DATA_SQL}
-    ORDER BY sp.retention_flagged_at IS NULL, sp.retention_flagged_at, u.retired_at, sp.staff_id LIMIT 200`).bind(cutoff).all()).results as any[]
-  const excluded = (await db.prepare(`SELECT ${cols}
-    WHERE u.retired_at IS NOT NULL AND length(u.retired_at) >= 10 AND u.retired_at <= ?
-      AND EXISTS (SELECT 1 FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date > u.retired_at)
-    ORDER BY u.retired_at, sp.staff_id LIMIT 100`).bind(cutoff).all()).results as any[]
+    ORDER BY sp.retention_flagged_at IS NULL, sp.retention_flagged_at, retired_at, sp.staff_id LIMIT 200`).bind(cutoff).all()).results as any[]
+  const excluded = (await db.prepare(`SELECT * FROM (SELECT ${cols}) x
+    WHERE x.retired_at IS NOT NULL AND length(x.retired_at) >= 10 AND x.retired_at <= ?
+      AND EXISTS (SELECT 1 FROM shifts s WHERE s.staff_id = x.staff_id AND s.work_date > x.retired_at)
+    ORDER BY x.retired_at, x.staff_id LIMIT 100`).bind(cutoff).all()).results as any[]
   return {
     scheduled: scheduled.map(r => ({ ...r, delete_on: r.flagged_at ? addDays(r.flagged_at, RETENTION_GRACE_DAYS) : null })),
     excluded: excluded.map(r => ({ ...r, delete_on: null })),
