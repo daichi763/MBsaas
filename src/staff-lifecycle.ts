@@ -7,12 +7,13 @@
 // =========================================================
 import { Hono } from 'hono'
 import { createPerson, partnerNameConflict } from './roster'
-import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
+import { applyPricingToShift, isSettled, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
-import { pickReportValues } from './lib/validate'
+import { isHHMM, pickReportValues } from './lib/validate'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
-import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
+import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
 import { checkReportTime } from './report-settings'
+import { addMinutes, isLateCheckIn, shiftWindow, type ShiftTimes } from './lib/shift-time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -361,7 +362,8 @@ adminLifecycleApi.put('/projects/:id/report-settings', async (c) => {
 // シフトの報告状況（提出設定・報告済み・報告用URL）
 async function ownShift(db: D1Database, companyId: number, shiftId: any) {
   return db.prepare(`SELECT s.*, us.name AS staff_name, p.project_name, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
-      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, sp.is_provisional, us.role AS user_role
+      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, sp.is_provisional, us.role AS user_role,
+      p.default_break_minutes AS p_break_minutes, sp.merged_into_staff_id, sp.employment_status, us.retired_at
     FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id JOIN projects p ON p.project_id = s.project_id
     WHERE s.shift_id = ? AND s.company_id = ?`).bind(shiftId, companyId).first() as Promise<any>
 }
@@ -374,7 +376,11 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
     LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results
   const daily = await db.prepare('SELECT daily_report_id, submitted_at, entry_method FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(s.staff_id, s.work_date, s.project_id).first()
   const token = await db.prepare('SELECT token, expires_at, last_used_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first()
-  return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token })
+  // 代理入力: 受け付けない理由（確定済み・欠勤・稼働日より前）と、時刻が空欄のときの既定値
+  const proxyBlocked = isSettled(s) ? '確定済み' : s.status === 'absent' ? '欠勤' : s.work_date > todayJST() ? '稼働日より前' : null
+  const proxy_defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
+  return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token,
+    work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, now: nowJST(), proxy_blocked: proxyBlocked, proxy_defaults })
 })
 adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
@@ -387,25 +393,100 @@ adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
 })
 
 // ---------- 代理入力（管理者が勤怠を記録。entry_method='proxy'） ----------
+// 時刻は種類ごとに times: { check_in: 'HH:MM', ... } で受け取る（1つの時刻を全種類に使わない）。
+// 日付は受け取らない。稼働日の前日・当日・翌日のうち、その種類の予定の日時（shiftWindow から決める）に近い日付で記録する（夜勤の翌日分）。
+// 空欄の種類は予定から既定の時刻を決める（proxyDefaultTimes）。押した日時は使わない。決められない種類は入力を必須にする。
+const minutesBetween = (a: string, b: string) => Math.round((Date.parse(b.replace(' ', 'T') + 'Z') - Date.parse(a.replace(' ', 'T') + 'Z')) / 60000)
+const fmtAt = (at: string) => `${Number(at.slice(5, 7))}/${Number(at.slice(8, 10))} ${at.slice(11, 16)}`
+// 時刻（HH:MM）を日時にする。目安: 勤務終了・退店 = 予定の終了、休憩 = 勤務時間の中ほど、それ以外 = 予定の開始。
+// 稼働日の前日・当日・翌日のうち、目安に最も近い日付を選ぶ（同じ近さなら稼働日）
+function proxyDateTime(s: ShiftTimes, type: string, hhmm: string): string {
+  const w = shiftWindow(s.work_date, s.start_time, s.end_time)
+  const anchor = ['work_end', 'check_out'].includes(type) ? w.end
+    : ['break_start', 'break_end'].includes(type) ? addMinutes(w.start, Math.floor(minutesBetween(w.start, w.end) / 2)) : w.start
+  let best = `${s.work_date} ${hhmm}:00`
+  for (const d of [addDays(s.work_date, -1), addDays(s.work_date, 1)]) {
+    const at = `${d} ${hhmm}:00`
+    if (Math.abs(minutesBetween(anchor, at)) < Math.abs(minutesBetween(anchor, best))) best = at
+  }
+  return best
+}
+// 時刻が空欄のときの既定値。入店・勤務開始 = 予定の開始、勤務終了・退店 = 予定の終了、
+// 休憩 = 予定の休憩を勤務時間の中ほどに置いた時刻（予定の休憩がなければ決められない）。起床・出発は決められない（null）
+function proxyDefaultTimes(s: ShiftTimes, breakMinutes: number): Record<string, string | null> {
+  const w = shiftWindow(s.work_date, s.start_time, s.end_time)
+  const span = minutesBetween(w.start, w.end)
+  const out: Record<string, string | null> = { wake_up: null, departure: null, check_in: w.start, work_start: w.start, break_start: null, break_end: null, work_end: w.end, check_out: w.end }
+  if (breakMinutes > 0 && breakMinutes < span) {
+    const bs = addMinutes(w.start, Math.floor((span - breakMinutes) / 2 / 15) * 15)
+    out.break_start = bs; out.break_end = addMinutes(bs, breakMinutes)
+  }
+  return out
+}
+// 同じ時刻を許さない組（後の種類 → 前の種類）。実働・休憩が0分になるのを防ぐ
+const PROXY_STRICT_AFTER: Record<string, string[]> = { break_end: ['break_start'], work_end: ['check_in', 'work_start'], check_out: ['check_in', 'work_start'] }
+
 adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const types: string[] = (Array.isArray(b.report_types) ? b.report_types : [b.report_type]).filter((t: any) => (REPORT_TYPES as readonly string[]).includes(t))
+  // 取り消し（DELETE）・報告用URLの発行と同じ条件
+  if (isSettled(s)) return c.json({ error: '確定済みのシフトです。精算画面で確定を取り消してください' }, 409)
+  if (s.status === 'absent') return c.json({ error: '欠勤のシフトには代理入力できません' }, 400)
+  const now = nowJST()
+  if (s.work_date > now.slice(0, 10)) return c.json({ error: '稼働日より前のシフトには代理入力できません' }, 400)
+  const raw: any[] = Array.isArray(b.report_types) ? b.report_types : [b.report_type]
+  const types = REPORT_TYPES.filter(t => raw.includes(t)) as string[] // 報告の順に並べる
   if (!types.length) return c.json({ error: '報告の種類を選択してください' }, 400)
-  const time = /^\d{2}:\d{2}$/.test(b.time || '') ? b.time : null
-  let created = 0
+  // 時刻（種類ごと）。旧形式の time（1つ）は、種類が1つのときだけ受け付ける
+  let times: Record<string, any> = b.times && typeof b.times === 'object' ? b.times : {}
+  if (!b.times && b.time) {
+    if (types.length > 1) return c.json({ error: '時刻は報告の種類ごとに入力してください' }, 400)
+    times = { [types[0]]: b.time }
+  }
+  const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
+  const existing = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(s.shift_id).all()).results as any[]
+  // 必要な種類か・報告済みでないか（checkReportable と同じ文言）。順序は下で時刻の前後関係として確かめる。
+  // 前の報告が欠けていても記録できる（起床・出発などを管理者が知らないことがあるため。欠けた報告も後から代理入力できる）
+  const done = new Set(existing.map(r => r.report_type as string))
   for (const t of types) {
-    const dup = await db.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(s.shift_id, t).first()
-    if (dup) continue
-    // 時刻の指定がなければ: 入店・勤務開始 = 予定の開始、勤務終了・退店 = 予定の終了、それ以外 = 現在時刻
-    const at = time ? `${s.work_date} ${time}:00` : (t === 'check_in' || t === 'work_start') ? `${s.work_date} ${s.start_time}:00` : (t === 'check_out' || t === 'work_end') ? `${s.work_date} ${s.end_time}:00` : nowJST()
-    await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by)
-      VALUES (?, ?, ?, ?, ?, 'normal', 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, t, at, u.user_id).run()
-    created++
+    if (!modes.required_attendance.includes(t)) return c.json({ error: `${REPORT_LABEL[t]}: このシフトでは不要な報告です` }, 400)
+    if (done.has(t)) return c.json({ error: `${REPORT_LABEL[t]}: すでに報告済みです` }, 409)
+  }
+  // 記録する日時
+  const defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
+  const atOf = new Map<string, string>()
+  for (const t of types) {
+    const v = times[t]
+    if (v !== undefined && v !== null && v !== '' && !isHHMM(v)) return c.json({ error: `${REPORT_LABEL[t]}の時刻が正しくありません` }, 400)
+    const at = v ? proxyDateTime(s, t, v) : defaults[t]
+    if (!at) return c.json({ error: `${REPORT_LABEL[t]}の時刻を入力してください（予定から決められません）` }, 400)
+    if (at > now) return c.json({ error: `${REPORT_LABEL[t]}（${fmtAt(at)}）はまだ先の日時です。実際の時刻を入力してください` }, 400)
+    atOf.set(t, at)
+  }
+  // 時刻の前後関係（すでにある報告も含めて、報告の順に並んでいるか）
+  const all = new Map<string, string>(existing.map(r => [r.report_type, r.reported_at]))
+  for (const [t, at] of atOf) all.set(t, at)
+  const ordered = REPORT_TYPES.filter(t => all.has(t)) as string[]
+  for (let j = 0; j < ordered.length; j++) for (let i = 0; i < j; i++) {
+    const ti = ordered[i], tj = ordered[j]
+    if (!atOf.has(ti) && !atOf.has(tj)) continue
+    const ai = all.get(ti)!, aj = all.get(tj)!
+    if (aj < ai) return c.json({ error: `${REPORT_LABEL[tj]}（${fmtAt(aj)}）が${REPORT_LABEL[ti]}（${fmtAt(ai)}）より前になっています` }, 400)
+    if (aj === ai && PROXY_STRICT_AFTER[tj]?.includes(ti)) return c.json({ error: `${REPORT_LABEL[tj]}と${REPORT_LABEL[ti]}が同じ時刻（${fmtAt(aj)}）です` }, 400)
+  }
+  // 入店は、アプリ・報告用URLと同じ判定で遅延にする
+  const rows = types.map(t => ({ report_type: t, reported_at: atOf.get(t)!, status: t === 'check_in' && isLateCheckIn(s, atOf.get(t)!) ? 'late' : 'normal' }))
+  try {
+    await db.batch(rows.map(r => db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by)
+      VALUES (?, ?, ?, ?, ?, ?, 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, r.report_type, r.reported_at, r.status, u.user_id)))
+  } catch (e: any) {
+    // 本人の報告と同時になった場合（attendance_reports の一意制約）
+    if (/UNIQUE|constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
+    throw e
   }
   if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
-  return c.json({ ok: true, created })
+  return c.json({ ok: true, created: rows.length, reports: rows })
 })
 adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
   const u = c.get('user')
@@ -424,6 +505,8 @@ adminLifecycleApi.post('/shifts/:id/report-link', async (c) => {
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (s.status === 'absent') return c.json({ error: '欠勤のシフトには発行できません' }, 400)
+  const gone = staffGoneForShift(s)
+  if (gone) return c.json({ error: `${gone}。報告用URLは発行できません` }, 400)
   const expires = `${addDays(s.work_date, 1)} 23:59:59`
   if (expires <= nowJST()) return c.json({ error: '稼働日の翌日を過ぎたシフトには発行できません' }, 400)
   const existing = await db.prepare('SELECT token, expires_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first() as any
@@ -449,18 +532,27 @@ adminLifecycleApi.delete('/shifts/:id/report-link', async (c) => {
 export const publicReportApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const PUBLIC_PHOTO_MAX = 500 * 1024
 
+// 退職・統合で、このシフトの報告を受け付けない理由（なければ null）。退職日当日までのシフトは受け付ける
+function staffGoneForShift(r: { merged_into_staff_id?: any; employment_status?: any; retired_at?: any; work_date: string }): string | null {
+  if (r.merged_into_staff_id) return '統合済みのスタッフです'
+  if (r.retired_at && r.work_date > r.retired_at) return '退職日より後のシフトです'
+  if (r.employment_status === 'retired' && !r.retired_at) return '退職したスタッフです'
+  return null
+}
 async function loadToken(db: D1Database, token: string) {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return null
   const t = await db.prepare(`SELECT t.*, s.work_date, s.start_time, s.end_time, s.location, s.status AS shift_status, s.project_id, s.role,
       s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, p.project_name, p.report_template_id, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
       sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
-      co.active_status AS company_active_status
+      co.active_status AS company_active_status, sp.merged_into_staff_id, sp.employment_status, us.retired_at
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     WHERE t.token = ? AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(token).first() as any
   if (!t || t.revoked || t.expires_at <= nowJST() || t.shift_status === 'absent') return null
   // 本部で停止にした企業の報告用URLは使えない（ログインの停止と同じ判定。src/lib/auth.ts）
   if (!isCompanyActive(t.company_active_status)) return null
+  // 退職日より後のシフト・統合済みのスタッフの報告用URLは使えない（退職日当日までは使える）
+  if (staffGoneForShift(t)) return null
   return t
 }
 function firstName(n: string) { return String(n || '').split(/\s+/)[0] || n }
@@ -511,7 +603,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
   if (late) return c.json({ error: late.error }, late.status as 400)
   let status = 'normal'
   if (reportType === 'check_in') {
-    if (nowJST().slice(11, 16) > t.start_time) status = 'late'
+    if (isLateCheckIn(t, nowJST())) status = 'late'
     if (lat == null && status !== 'late') status = 'no_location'
   }
   if (['check_in', 'check_out'].includes(reportType) && photoRequired(t) && !photo) return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
