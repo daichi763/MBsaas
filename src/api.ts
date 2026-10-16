@@ -130,8 +130,38 @@ async function resolvePersonShift(c: any, shiftId: any): Promise<{ shift: any; s
   return { shift, staff }
 }
 
-// ============ お知らせ既読率レポート（集計・Cron共用ロジック） ============
-// 対象者判定は /staff/notices の実クエリ（target_type: all/staff/project）と同じルールに揃える
+// ============ お知らせの配信対象と既読率レポート（集計・Cron共用ロジック） ============
+// 配信対象の判定は下の SQL の条件にまとめ、一覧の「既読 x/y名」・既読状況・メールの宛先・既読率レポートで同じものを使う（#7）。
+// 条件は n = notices、us = users、sp = staff_profiles の別名を前提にする。
+//  ・登録より前に公開されたお知らせは対象外（#227）。users.created_at は UTC、published_at は JST なので +9時間して比べる。
+//    仮登録から本登録した人は、仮登録の日を基準にする
+//  ・案件あては、公開日の30日前以降に、その案件で確定・代打のシフトがある人（#335）。
+//    昔に一度だけ入った人や、欠勤・希望（仮）のシフトしかない人は外す
+const NOTICE_PROJECT_LOOKBACK_DAYS = 30
+const NOTICE_TARGET_IDS_SQL = `(',' || REPLACE(COALESCE(n.target_ids, ''), ' ', '') || ',')`
+const NOTICE_TARGET_SQL = `datetime(us.created_at, '+9 hours') <= n.published_at
+  AND (n.target_type = 'all'
+    OR (n.target_type = 'staff' AND ${NOTICE_TARGET_IDS_SQL} LIKE '%,' || sp.staff_id || ',%')
+    OR (n.target_type = 'project' AND EXISTS (SELECT 1 FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.company_id = n.company_id
+         AND sh.status IN ('confirmed', 'substitute') AND sh.work_date >= date(n.published_at, '-${NOTICE_PROJECT_LOOKBACK_DAYS} days')
+         AND ${NOTICE_TARGET_IDS_SQL} LIKE '%,' || sh.project_id || ',%')))`
+// 今の対象者（一覧の既読数・既読状況・メールの宛先）: いま在籍中で、ログインのあるスタッフ
+const NOTICE_MEMBER_NOW_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL`
+// 公開した時点の対象者（既読率レポート）: 後で退職した人も含めて、公開日に在籍していた人（#49。今の在籍状況では決めない）。
+// 退職日の無い停止中の人（退職日の列ができる前に退職した人など）は、いつまで在籍したか分からないので含めない
+const NOTICE_MEMBER_AT_PUBLISH_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND sp.merged_into_staff_id IS NULL
+  AND ((us.retired_at IS NULL AND us.status = 'active') OR us.retired_at >= date(n.published_at))`
+// お知らせ n の今の対象人数・既読人数（既読は対象者の分だけ数える。退職者や対象外の人の既読は含めない）
+const NOTICE_TARGET_COUNT_NOW_SQL = `(SELECT COUNT(DISTINCT us.user_id) FROM users us JOIN staff_profiles sp ON sp.user_id = us.user_id
+  WHERE ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL})`
+const NOTICE_READ_COUNT_NOW_SQL = `(SELECT COUNT(DISTINCT us.user_id) FROM notice_reads r JOIN users us ON us.user_id = r.user_id JOIN staff_profiles sp ON sp.user_id = us.user_id
+  WHERE r.notice_id = n.notice_id AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL})`
+
+// 既読の記録（notice_reads）は、お知らせの公開から2年で削除する（purgeOldNoticeReads）
+const NOTICE_READS_KEEP_DAYS = 730
+// 前年度のレポートは、年度末からこの日数がたったら最後の集計をして確定する（#49）
+const NOTICE_REPORT_FINALIZE_AFTER_DAYS = 30
+
 type NoticeReadReport = {
   targetNoticeCount: number
   targetUserCount: number
@@ -143,54 +173,27 @@ type NoticeReadReport = {
 
 async function computeNoticeReadReport(db: D1Database, companyId: number, fiscalYear: number): Promise<NoticeReadReport> {
   const { start, end } = fiscalYearRange(fiscalYear)
-
-  const staffRows = await db.prepare(
-    `SELECT sp.staff_id, sp.user_id FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active'`
-  ).bind(companyId).all()
-  const staffList = staffRows.results as { staff_id: number; user_id: number }[]
-  const staffById = new Map(staffList.map(s => [s.staff_id, s.user_id]))
-
-  const noticeRows = await db.prepare(
-    `SELECT notice_id, target_type, target_ids FROM notices WHERE company_id = ? AND published_at >= ? AND published_at < ?`
-  ).bind(companyId, start, end).all()
-  const notices = noticeRows.results as { notice_id: number; target_type: string; target_ids: string }[]
+  const cnt = await db.prepare(`SELECT COUNT(*) AS n FROM notices WHERE company_id = ? AND published_at >= ? AND published_at < ?`)
+    .bind(companyId, start, end).first() as { n: number } | null
+  // お知らせ×対象者の組を、スタッフごとにまとめて1回で数える（在籍者を IN に並べない。D1 のバインド上限を超えないように）
+  const rows = (await db.prepare(`
+    SELECT sp.staff_id, COUNT(*) AS target_n,
+      SUM(EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = us.user_id)) AS read_n
+    FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
+    WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
+      AND ${NOTICE_MEMBER_AT_PUBLISH_SQL} AND ${NOTICE_TARGET_SQL}
+    GROUP BY sp.staff_id`).bind(companyId, start, end).all()).results as { staff_id: number; target_n: number; read_n: number }[]
 
   const perStaff = new Map<number, { target: number; read: number }>()
-  for (const s of staffList) perStaff.set(s.staff_id, { target: 0, read: 0 })
   let targetUserCount = 0
   let readCount = 0
-
-  for (const n of notices) {
-    let targetStaffIds: number[] = []
-    if (n.target_type === 'all') {
-      targetStaffIds = staffList.map(s => s.staff_id)
-    } else if (n.target_type === 'staff') {
-      const ids = new Set((n.target_ids || '').split(',').map(v => v.trim()).filter(Boolean).map(Number))
-      targetStaffIds = staffList.filter(s => ids.has(s.staff_id)).map(s => s.staff_id)
-    } else if (n.target_type === 'project') {
-      const projIds = (n.target_ids || '').split(',').map(v => v.trim()).filter(Boolean)
-      if (projIds.length) {
-        const shiftRows = await db.prepare(`SELECT DISTINCT staff_id FROM shifts WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(projIds)).all()
-        const projStaffIds = new Set((shiftRows.results as { staff_id: number }[]).map(r => r.staff_id))
-        targetStaffIds = staffList.filter(s => projStaffIds.has(s.staff_id)).map(s => s.staff_id)
-      }
-    }
-    if (targetStaffIds.length === 0) continue
-
-    // 既読者はお知らせ単位で全件取り、対象者との突き合わせは手元で行う（在籍者を IN に並べると D1 のバインド上限 100 を超える）
-    const readRows = await db.prepare(`SELECT user_id FROM notice_reads WHERE notice_id = ?`).bind(n.notice_id).all()
-    const readUserIds = new Set((readRows.results as { user_id: number }[]).map(r => r.user_id))
-
-    targetUserCount += targetStaffIds.length
-    for (const sid of targetStaffIds) {
-      const acc = perStaff.get(sid)!
-      acc.target++
-      if (readUserIds.has(staffById.get(sid) as number)) { acc.read++; readCount++ }
-    }
+  for (const r of rows) {
+    perStaff.set(r.staff_id, { target: r.target_n, read: r.read_n })
+    targetUserCount += r.target_n
+    readCount += r.read_n
   }
-
   return {
-    targetNoticeCount: notices.length,
+    targetNoticeCount: cnt?.n || 0,
     targetUserCount,
     readCount,
     unreadCount: targetUserCount - readCount,
@@ -199,21 +202,31 @@ async function computeNoticeReadReport(db: D1Database, companyId: number, fiscal
   }
 }
 
-// 指定会社・年度のレポートを再計算してUPSERT保存する（同一年度を何度実行しても重複しない）
-async function generateNoticeReadReport(db: D1Database, companyId: number, fiscalYear: number): Promise<void> {
+// 再集計できない理由（できるなら null）。確定した年度と、既読の記録が削除され始めた年度は作り直さない（#48 #49）
+function noticeReportRecalcBlock(fiscalYear: number, finalizedAt: string | null | undefined): string | null {
+  if (fiscalYear > currentFiscalYear()) return 'まだ始まっていない年度は集計できません'
+  if (finalizedAt) return '確定済みの年度のため、再集計できません'
+  if (todayJST() >= addDays(fiscalYearRange(fiscalYear).start, NOTICE_READS_KEEP_DAYS)) {
+    return '既読の記録の保存期間（2年）を過ぎた年度のため、再集計できません'
+  }
+  return null
+}
+
+// 指定会社・年度のレポートを再計算して保存する（同一年度を何度実行しても重複しない）。
+// finalize = true なら、集計した値で確定する。確定済み・保存期間外の年度は作り直さず、理由を返す
+async function generateNoticeReadReport(db: D1Database, companyId: number, fiscalYear: number, opts: { finalize?: boolean } = {}):
+  Promise<{ ok: true; calculated_at: string; finalized: boolean } | { ok: false; reason: string }> {
+  const cur = await db.prepare('SELECT finalized_at FROM notice_read_reports WHERE company_id = ? AND fiscal_year = ?')
+    .bind(companyId, fiscalYear).first() as { finalized_at: string | null } | null
+  const blocked = noticeReportRecalcBlock(fiscalYear, cur?.finalized_at)
+  if (blocked) return { ok: false, reason: blocked }
+
   const r = await computeNoticeReadReport(db, companyId, fiscalYear)
-
-  await db.prepare(`
-    INSERT INTO notice_read_reports (company_id, fiscal_year, target_notice_count, target_user_count, read_count, unread_count, read_rate, calculated_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(company_id, fiscal_year) DO UPDATE SET
-      target_notice_count = excluded.target_notice_count, target_user_count = excluded.target_user_count,
-      read_count = excluded.read_count, unread_count = excluded.unread_count, read_rate = excluded.read_rate,
-      calculated_at = excluded.calculated_at, updated_at = excluded.updated_at
-  `).bind(companyId, fiscalYear, r.targetNoticeCount, r.targetUserCount, r.readCount, r.unreadCount, r.readRate, nowJST(), nowJST()).run()
-
-  // スタッフ別は1人1文のまま、db.batch でまとめて書く（在籍者が多くても問い合わせ回数を抑える）
+  const now = nowJST()
   const stmts: D1PreparedStatement[] = []
+  // 今回の対象に入らなかったスタッフの行は消す（古い値の行が残って、年度全体とスタッフ別の合計が合わなくなるのを防ぐ #481）
+  stmts.push(db.prepare(`DELETE FROM notice_read_staff_reports WHERE company_id = ? AND fiscal_year = ? AND staff_id NOT IN ${JSON_IN}`)
+    .bind(companyId, fiscalYear, bindJsonArray(r.perStaff.keys())))
   for (const [staffId, v] of r.perStaff) {
     const rate = v.target > 0 ? round1((v.read / v.target) * 100) : null
     stmts.push(db.prepare(`
@@ -222,49 +235,86 @@ async function generateNoticeReadReport(db: D1Database, companyId: number, fisca
       ON CONFLICT(company_id, fiscal_year, staff_id) DO UPDATE SET
         target_count = excluded.target_count, read_count = excluded.read_count, unread_count = excluded.unread_count,
         read_rate = excluded.read_rate, calculated_at = excluded.calculated_at, updated_at = excluded.updated_at
-    `).bind(companyId, fiscalYear, staffId, v.target, v.read, v.target - v.read, rate, nowJST(), nowJST()))
+    `).bind(companyId, fiscalYear, staffId, v.target, v.read, v.target - v.read, rate, now, now))
   }
+  // 年度全体は最後に書く（確定もここで行う。確定済みの行は上書きしない）
+  stmts.push(db.prepare(`
+    INSERT INTO notice_read_reports (company_id, fiscal_year, target_notice_count, target_user_count, read_count, unread_count, read_rate, calculated_at, updated_at, finalized_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(company_id, fiscal_year) DO UPDATE SET
+      target_notice_count = excluded.target_notice_count, target_user_count = excluded.target_user_count,
+      read_count = excluded.read_count, unread_count = excluded.unread_count, read_rate = excluded.read_rate,
+      calculated_at = excluded.calculated_at, updated_at = excluded.updated_at, finalized_at = excluded.finalized_at
+    WHERE notice_read_reports.finalized_at IS NULL
+  `).bind(companyId, fiscalYear, r.targetNoticeCount, r.targetUserCount, r.readCount, r.unreadCount, r.readRate, now, now, opts.finalize ? now : null))
   await batchInChunks(db, stmts)
+  return { ok: true, calculated_at: now, finalized: !!opts.finalize }
 }
 
-// Cron: 全社について「直前に終了した年度」のレポートを生成/更新する（冪等）
-export async function generateFiscalYearReportsForAllCompanies(db: D1Database): Promise<{ companies: number; ok: number; failed: number }> {
-  const fy = currentFiscalYear() - 1 // まだ年度途中の当年度は対象外。確定済みの前年度を対象にする
+// Cron: 全社について、今年度（年度の途中の値を毎日更新する #481）と前年度のレポートを作る（冪等）。
+// 前年度は、年度末から30日たったら最後の集計をして確定し、それ以降は作り直さない（#49）
+export async function generateFiscalYearReportsForAllCompanies(db: D1Database): Promise<{ companies: number; ok: number; failed: number; finalized: number }> {
+  const cur = currentFiscalYear()
+  const finalizeLast = todayJST() >= addDays(fiscalYearRange(cur - 1).end, NOTICE_REPORT_FINALIZE_AFTER_DAYS)
   const companies = await db.prepare('SELECT company_id FROM companies').all()
-  let ok = 0, failed = 0
+  let ok = 0, failed = 0, finalized = 0
   for (const row of companies.results as { company_id: number }[]) {
-    try {
-      await generateNoticeReadReport(db, row.company_id, fy)
-      ok++
-    } catch (e) {
-      failed++
-      console.log(`notice_read_reports generation failed: company_id=${row.company_id} fiscal_year=${fy} error=${e}`)
+    for (const fy of [cur - 1, cur]) {
+      try {
+        const r = await generateNoticeReadReport(db, row.company_id, fy, { finalize: fy === cur - 1 && finalizeLast })
+        if (r.ok) { ok++; if (r.finalized) finalized++ }
+      } catch (e) {
+        failed++
+        console.log(`notice_read_reports generation failed: company_id=${row.company_id} fiscal_year=${fy} error=${e}`)
+      }
     }
   }
-  return { companies: companies.results.length, ok, failed }
+  return { companies: companies.results.length, ok, failed, finalized }
 }
 
-// Cron: 2年（730日）以上経過した notice_reads をバッチ削除する（1回のCronで最大10,000件、以降は翌日以降に継続）
-export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; batches: number; error?: string }> {
-  const cutoff = new Date(Date.now() - 730 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+// Cron: 公開から2年（730日）たったお知らせの既読の記録（notice_reads）を削除する。
+// お知らせごとに、削除の直前の既読数・対象人数を notices に残してから、そのお知らせの記録をまとめて消す（#245。
+// 管理画面の「既読 x/y名」が0名に戻らないように。1件のお知らせの記録が一部だけ消えた状態も作らない）。
+// そのあとで、締めた後に付いた既読などの残りを、既読の日時から2年で削除する（1回のCronでそれぞれ上限まで。続きは翌日以降）
+export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; notices: number; batches: number; error?: string }> {
+  const keepMs = NOTICE_READS_KEEP_DAYS * 24 * 3600 * 1000
+  const cutoffJst = new Date(Date.now() + 9 * 3600 * 1000 - keepMs).toISOString().slice(0, 19).replace('T', ' ')
+  const cutoffUtc = new Date(Date.now() - keepMs).toISOString().slice(0, 19).replace('T', ' ') // read_at は UTC（列の既定値）
+  const NOTICE_BATCH = 20
   const BATCH_SIZE = 500
   const MAX_BATCHES = 20
-  let deleted = 0
+  let deleted = 0, notices = 0, batches = 0
   try {
+    for (let i = 0; i < MAX_BATCHES; i++) {
+      const ids = ((await db.prepare(`SELECT notice_id FROM notices WHERE reads_purged_at IS NULL AND published_at < ? ORDER BY published_at LIMIT ?`)
+        .bind(cutoffJst, NOTICE_BATCH).all()).results as { notice_id: number }[]).map(r => r.notice_id)
+      if (!ids.length) break
+      const json = bindJsonArray(ids)
+      const res = await db.batch([
+        db.prepare(`UPDATE notices AS n SET final_target_count = ${NOTICE_TARGET_COUNT_NOW_SQL}, final_read_count = ${NOTICE_READ_COUNT_NOW_SQL},
+            reads_purged_at = ? WHERE n.notice_id IN ${JSON_IN} AND n.reads_purged_at IS NULL`).bind(nowJST(), json),
+        db.prepare(`DELETE FROM notice_reads WHERE notice_id IN ${JSON_IN}`).bind(json),
+      ])
+      notices += ids.length
+      deleted += res[1].meta.changes || 0
+      batches++
+      if (ids.length < NOTICE_BATCH) break
+    }
     for (let i = 0; i < MAX_BATCHES; i++) {
       const result = await db.prepare(`
         DELETE FROM notice_reads WHERE (notice_id, user_id) IN (
           SELECT notice_id, user_id FROM notice_reads WHERE read_at < ? LIMIT ?
         )
-      `).bind(cutoff, BATCH_SIZE).run()
+      `).bind(cutoffUtc, BATCH_SIZE).run()
       const changes = result.meta.changes || 0
       deleted += changes
+      if (changes) batches++
       if (changes < BATCH_SIZE) break
     }
-    return { deleted, batches: Math.ceil(deleted / BATCH_SIZE) || 0 }
+    return { deleted, notices, batches }
   } catch (e) {
     console.log(`notice_reads purge failed after deleting ${deleted}: error=${e}`)
-    return { deleted, batches: 0, error: String(e) }
+    return { deleted, notices, batches, error: String(e) }
   }
 }
 
@@ -925,10 +975,19 @@ api.get('/staff/notices', async (c) => {
 
 api.post('/staff/notices/:id/read', async (c) => {
   const u = c.get('user')
-  // 自社のお知らせで、本人が配信対象のものだけ既読にできる
+  // 自社のお知らせで、本人が配信対象のものだけ既読にできる。
+  // ただし、お知らせ一覧（GET /staff/notices）が配信対象の新しい条件（#227 #335）にそろうまでは、一覧に出ているものも既読にできるようにする
+  // （一覧に出ているのに「確認しました」が失敗しないように。既読数・既読率は配信対象の人の分だけを数えるので、数字には影響しない）
   const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id'))
-  const targets = n ? await resolveNoticeTargets(c.env.DB, u.company_id, n.target_type, n.target_ids) : []
-  if (!targets.some(t => t.user_id === u.user_id)) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  const allowed = n && await c.env.DB.prepare(`SELECT 1 FROM notices n JOIN users us ON us.user_id = ? JOIN staff_profiles sp ON sp.user_id = us.user_id
+    WHERE n.notice_id = ? AND ${NOTICE_MEMBER_NOW_SQL}
+      AND ((${NOTICE_TARGET_SQL})
+        OR n.target_type = 'all'
+        OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || sp.staff_id || ',%')
+        OR (n.target_type = 'project' AND EXISTS (
+             SELECT 1 FROM shifts sh WHERE sh.staff_id = sp.staff_id AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
+    LIMIT 1`).bind(u.user_id, n.notice_id).first()
+  if (!allowed) return c.json({ error: 'お知らせが見つかりません' }, 404)
   await c.env.DB.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(c.req.param('id'), u.user_id).run()
   return c.json({ ok: true })
 })
@@ -2338,11 +2397,13 @@ api.get('/admin/analytics', async (c) => {
 })
 
 // お知らせ配信
+// 「既読 x/y名」は配信対象の人だけで数える（#7）。既読の記録を削除したお知らせは、削除の直前の人数を出す（#245）
 api.get('/admin/notices', async (c) => {
   const u = c.get('user')
   const rows = await c.env.DB.prepare(`
-    SELECT n.*, (SELECT COUNT(*) FROM notice_reads r WHERE r.notice_id = n.notice_id) AS read_count,
-      (SELECT COUNT(*) FROM users us WHERE us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active') AS staff_total
+    SELECT n.*,
+      CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_READ_COUNT_NOW_SQL} ELSE n.final_read_count END AS read_count,
+      CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_TARGET_COUNT_NOW_SQL} ELSE n.final_target_count END AS staff_total
     FROM notices n WHERE n.company_id = ? ORDER BY n.published_at DESC LIMIT 50`).bind(u.company_id).all()
   // メールの送信結果（状態ごとの人数）。メールを送らなかったお知らせは email_counts = null
   const ids = (rows.results as any[]).map(n => n.notice_id)
@@ -2353,38 +2414,13 @@ api.get('/admin/notices', async (c) => {
   return c.json({ notices: (rows.results as any[]).map(({ client_request_id: _k, ...n }) => ({ ...n, email_counts: byNotice.get(n.notice_id) || null })) })
 })
 
-// お知らせの対象者を解決する（画面表示・既読率レポートと同じtarget_type判定ルールを踏襲）
-async function resolveNoticeTargets(db: D1Database, companyId: number, targetType: string, targetIds: string):
+// お知らせの今の対象者（メールの宛先など）。条件は NOTICE_MEMBER_NOW_SQL と NOTICE_TARGET_SQL（一覧の既読数・既読状況と同じ）
+async function resolveNoticeTargets(db: D1Database, companyId: number, noticeId: number):
   Promise<{ staff_id: number; user_id: number; name: string; email: string | null }[]> {
-  if (targetType === 'all') {
-    const rows = await db.prepare(
-      `SELECT sp.staff_id, u.user_id, u.name, u.email FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id
-       WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active'`
-    ).bind(companyId).all()
-    return rows.results as any[]
-  }
-  if (targetType === 'staff') {
-    const ids = (targetIds || '').split(',').map(v => v.trim()).filter(Boolean)
-    if (!ids.length) return []
-    const placeholders = ids.map(() => '?').join(',')
-    const rows = await db.prepare(
-      `SELECT sp.staff_id, u.user_id, u.name, u.email FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id
-       WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active' AND sp.staff_id IN (${placeholders})`
-    ).bind(companyId, ...ids).all()
-    return rows.results as any[]
-  }
-  if (targetType === 'project') {
-    const projIds = (targetIds || '').split(',').map(v => v.trim()).filter(Boolean)
-    if (!projIds.length) return []
-    const placeholders = projIds.map(() => '?').join(',')
-    const rows = await db.prepare(
-      `SELECT DISTINCT sp.staff_id, u.user_id, u.name, u.email FROM shifts sh
-       JOIN staff_profiles sp ON sp.staff_id = sh.staff_id JOIN users u ON u.user_id = sp.user_id
-       WHERE u.company_id = ? AND u.role = 'staff' AND u.status = 'active' AND sh.project_id IN (${placeholders})`
-    ).bind(companyId, ...projIds).all()
-    return rows.results as any[]
-  }
-  return []
+  const rows = await db.prepare(`SELECT sp.staff_id, us.user_id, us.name, us.email
+    FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
+    WHERE n.notice_id = ? AND n.company_id = ? AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL}`).bind(noticeId, companyId).all()
+  return rows.results as any[]
 }
 
 // 対象者へお知らせメールをまとめて送り、1人ずつの結果を notice_email_deliveries に記録する（pending → sent / failed / skipped）
@@ -2443,7 +2479,7 @@ api.post('/admin/notices', async (c) => {
   // 送信対象・メール未登録の人数を返し、1人ずつの結果を記録する（#24）。連携スタッフは雇用元の本人のアドレスに送る（#128）
   let email: { mode: string; targets: number; with_email: number; no_email: number } | null = null
   if (b.send_email) {
-    const targets = await resolveNoticeTargets(c.env.DB, u.company_id, target_type, target_ids)
+    const targets = await resolveNoticeTargets(c.env.DB, u.company_id, noticeId)
     const linked = await linkedStaffEmails(c.env.DB, targets.filter(t => !String(t.email || '').trim()).map(t => t.staff_id))
     const withEmail: NoticeMailRecipient[] = []
     const rows: { u: number; s: string }[] = []
@@ -2477,27 +2513,38 @@ api.get('/admin/notices/:id{[0-9]+}/email-deliveries', async (c) => {
   return c.json({ notice: n, deliveries: rows })
 })
 
-// お知らせ既読状況
+// お知らせ既読状況。既読・未読とも、今の配信対象の人だけを出す（#7）。
+// 既読の時刻は UTC で保存している（列の既定値）ので、日本時間にして返す（#104）
 api.get('/admin/notices/:id/reads', async (c) => {
   const u = c.get('user')
-  if (!(await ownNotice(c.env.DB, u.company_id, c.req.param('id')))) return c.json({ error: 'お知らせが見つかりません' }, 404)
-  const rows = await c.env.DB.prepare(`
-    SELECT us.name, r.read_at FROM notice_reads r JOIN users us ON r.user_id = us.user_id WHERE r.notice_id = ? AND us.company_id = ?`).bind(c.req.param('id'), u.company_id).all()
-  const unread = await c.env.DB.prepare(`
-    SELECT us.name FROM users us WHERE us.company_id = ? AND us.role = 'staff' AND us.status = 'active'
-    AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = ? AND r.user_id = us.user_id)`).bind(u.company_id, c.req.param('id')).all()
-  return c.json({ read: rows.results, unread: unread.results })
+  const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.reads_purged_at) {
+    // 公開から2年たって既読の記録を削除したお知らせ（#245）。削除の直前の人数だけを返す
+    return c.json({ read: [], unread: [], purged: true, read_count: n.final_read_count, target_count: n.final_target_count })
+  }
+  const rows = (await c.env.DB.prepare(`
+    SELECT DISTINCT us.user_id, us.name, CASE WHEN r.read_at IS NULL THEN NULL ELSE datetime(r.read_at, '+9 hours') END AS read_at, r.user_id IS NOT NULL AS is_read
+    FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
+    LEFT JOIN notice_reads r ON r.notice_id = n.notice_id AND r.user_id = us.user_id
+    WHERE n.notice_id = ? AND n.company_id = ? AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL}
+    ORDER BY us.name`).bind(n.notice_id, u.company_id).all()).results as any[]
+  const read = rows.filter(r => r.is_read).map(r => ({ name: r.name, read_at: r.read_at }))
+    .sort((a, b) => String(a.read_at || '').localeCompare(String(b.read_at || '')))
+  const unread = rows.filter(r => !r.is_read).map(r => ({ name: r.name }))
+  return c.json({ read, unread, purged: false, read_count: read.length, target_count: rows.length })
 })
 
 // ============ お知らせ既読率レポート ============
-// 年度別（会社サマリ + スタッフ別）。長期保存されたレポートテーブルから取得する
+// 年度別（会社サマリ + スタッフ別）。長期保存されたレポートテーブルから取得する。
+// 再集計できるかどうか（確定済み・保存期間外ならできない #48 #49）と、年度の途中かどうか（#481）も返す
 api.get('/admin/notice-reports/:fiscalYear', async (c) => {
   const u = c.get('user'); const fy = Number(c.req.param('fiscalYear'))
   if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
 
   const summary = await c.env.DB.prepare(
     'SELECT * FROM notice_read_reports WHERE company_id = ? AND fiscal_year = ?'
-  ).bind(u.company_id, fy).first()
+  ).bind(u.company_id, fy).first() as any
 
   const staffRows = await c.env.DB.prepare(`
     SELECT r.staff_id, us.name AS staff_name, r.target_count, r.read_count, r.unread_count, r.read_rate
@@ -2507,26 +2554,34 @@ api.get('/admin/notice-reports/:fiscalYear', async (c) => {
     WHERE r.company_id = ? AND r.fiscal_year = ?
     ORDER BY us.name`).bind(u.company_id, fy).all()
 
+  const block = noticeReportRecalcBlock(fy, summary?.finalized_at)
   return c.json({
     fiscal_year: fy,
     summary: summary || null, // 未生成の年度はnull（「対象となるお知らせがありません」表示等はフロント側で判断）
     staff_reports: staffRows.results,
+    in_progress: fy === currentFiscalYear(), // 年度の途中（毎日の集計で値が変わる）
+    finalized: !!summary?.finalized_at,
+    recalculable: !block,
+    recalc_block_reason: block,
   })
 })
 
-// 再集計（管理者が任意年度を指定して即時更新）
+// 再集計（管理者が年度を指定して即時更新）。確定済み・保存期間外の年度は 409 で断る（長期保存した値を上書きしない #48）
 api.post('/admin/notice-reports/:fiscalYear/recalculate', async (c) => {
   const u = c.get('user'); const fy = Number(c.req.param('fiscalYear'))
   if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
+  let r: Awaited<ReturnType<typeof generateNoticeReadReport>>
   try {
-    await generateNoticeReadReport(c.env.DB, u.company_id, fy)
+    r = await generateNoticeReadReport(c.env.DB, u.company_id, fy)
   } catch {
     return c.json({ error: '再集計に失敗しました' }, 500)
   }
-  return c.json({ ok: true })
+  if (!r.ok) return c.json({ error: r.reason }, 409)
+  return c.json({ ok: true, calculated_at: r.calculated_at })
 })
 
-// スタッフ別・お知らせ単位の詳細（notice_readsが残っている直近2年分のみ表示可能）
+// スタッフ別・お知らせ単位の詳細。対象の判定は年度のレポートと同じ（公開した時点の対象者 #49 #481）。
+// 既読の記録を削除したお知らせは is_read = null（記録なし）で返す
 api.get('/admin/notice-reports/:fiscalYear/staff/:staffId', async (c) => {
   const u = c.get('user'); const fy = Number(c.req.param('fiscalYear')); const staffId = c.req.param('staffId')
   if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
@@ -2538,18 +2593,16 @@ api.get('/admin/notice-reports/:fiscalYear/staff/:staffId', async (c) => {
 
   const { start, end } = fiscalYearRange(fy)
   const noticeRows = await c.env.DB.prepare(`
-    SELECT n.notice_id, n.title, n.published_at, n.target_type, n.target_ids,
-      EXISTS(SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = ?) AS is_read
-    FROM notices n WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
-      AND (n.target_type = 'all'
-        OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || ? || ',%')
-        OR (n.target_type = 'project' AND EXISTS (
-             SELECT 1 FROM shifts sh WHERE sh.staff_id = ? AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
-    ORDER BY n.published_at DESC`).bind(staff.user_id, u.company_id, start, end, staffId, staffId).all()
+    SELECT n.notice_id, n.title, n.published_at, n.reads_purged_at,
+      EXISTS(SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = us.user_id) AS is_read
+    FROM notices n JOIN staff_profiles sp ON sp.staff_id = ? JOIN users us ON us.user_id = sp.user_id
+    WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
+      AND ${NOTICE_MEMBER_AT_PUBLISH_SQL} AND ${NOTICE_TARGET_SQL}
+    ORDER BY n.published_at DESC`).bind(staff.staff_id, u.company_id, start, end).all()
 
   return c.json({
     fiscal_year: fy, staff_name: staff.name,
-    notices: noticeRows.results.map((n: any) => ({ notice_id: n.notice_id, title: n.title, published_at: n.published_at, is_read: !!n.is_read })),
+    notices: noticeRows.results.map((n: any) => ({ notice_id: n.notice_id, title: n.title, published_at: n.published_at, is_read: n.reads_purged_at ? null : !!n.is_read })),
   })
 })
 

@@ -414,14 +414,14 @@ export default {
 
     try {
       const r = await generateFiscalYearReportsForAllCompanies(env.DB)
-      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed}`)
+      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed} finalized=${r.finalized}`)
     } catch (e) {
       console.log(`notice_read_reports generation failed: ${e}`)
     }
 
     try {
       const r = await purgeOldNoticeReads(env.DB)
-      console.log(`notice_reads cleanup completed: deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
+      console.log(`notice_reads cleanup completed: notices=${r.notices} deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
     } catch (e) {
       console.log(`notice_reads cleanup failed: ${e}`)
     }

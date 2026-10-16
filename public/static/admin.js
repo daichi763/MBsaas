@@ -1919,8 +1919,9 @@ async function renderNotices() {
               ${n.importance !== 'normal' ? '<span class="badge badge-red">重要</span>' : ''}
               <span class="badge badge-gray">${n.target_type === 'all' ? '全体' : n.target_type === 'project' ? '案件別' : '個人'}</span>
               <span class="text-xs text-gray-400">${dayjs(n.published_at).format('M/D HH:mm')}</span>
-              <button class="text-xs text-blue-600 ml-auto hover:underline" onclick="showReads(${n.notice_id})">
-                既読 ${n.read_count}/${n.staff_total}名</button>
+              <button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${Number(n.notice_id)}"
+                ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
+                既読 ${Number(n.read_count) || 0}/${Number(n.staff_total) || 0}名${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>
             </div>
             <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
             <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
@@ -1992,17 +1993,28 @@ window.sendNotice = async function (btn) {
     if (btn) { btn.disabled = false; btn.innerHTML = label }
   }
 }
+// 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）
 window.showReads = async function (id) {
-  const { data } = await axios.get(`/api/admin/notices/${id}/reads`)
+  let data
+  try { data = (await axios.get(`/api/admin/notices/${Number(id)}/reads`)).data } catch (e) { showApiError(e, '既読状況を読み込めませんでした'); return }
+  if (data.purged) {
+    modal(`
+      <h3 class="font-bold text-lg mb-4">既読状況</h3>
+      <p class="text-sm text-gray-600">公開から2年たったため、既読の記録は削除済みです。</p>
+      <p class="text-sm text-gray-600 mt-2">削除の直前の既読: ${Number(data.read_count) || 0}/${Number(data.target_count) || 0}名</p>`)
+    return
+  }
   modal(`
-    <h3 class="font-bold text-lg mb-4">既読状況</h3>
+    <h3 class="font-bold text-lg mb-1">既読状況</h3>
+    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）</p>
     <div class="grid grid-cols-2 gap-4">
       <div><h4 class="text-sm font-bold text-emerald-700 mb-2">既読 ${data.read.length}名</h4>
-        <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${dayjs(r.read_at).format('M/D HH:mm')}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
+        <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
       <div><h4 class="text-sm font-bold text-red-700 mb-2">未読 ${data.unread.length}名</h4>
         <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
     </div>`)
 }
+delegate('showReads', el => showReads(Number(el.dataset.id)))
 
 // ============ お知らせ既読率レポート ============
 function fiscalYearLabel(fy) { return `${fy}年度（${fy}/04〜${fy + 1}/03）` }
@@ -2011,14 +2023,22 @@ function currentFiscalYearJs() {
   const y = d.getUTCFullYear(); const m = d.getUTCMonth() + 1
   return m >= 4 ? y : y - 1
 }
+// 集計日時（JST の 'YYYY-MM-DD HH:MM:SS'）を表示用にする
+function noticeReportTime(t) { return t ? esc(dayjs(String(t).replace(' ', 'T')).format('YYYY/M/D HH:mm')) : '-' }
 async function renderNoticeReadReport(fy) {
   loading()
-  fy = fy || currentFiscalYearJs() - 1 // 直近の確定年度をデフォルト表示（今年度はまだ集計対象外のため）
+  fy = fy || currentFiscalYearJs() - 1 // 直近に終わった年度を既定で表示する（今年度は年度の途中の値）
   const { data } = await axios.get(`/api/admin/notice-reports/${fy}`)
   window._noticeReportData = data
   const s = data.summary
   const fyOptions = []
   for (let y = currentFiscalYearJs(); y >= currentFiscalYearJs() - 6; y--) fyOptions.push(y)
+  // 年度の状態: 確定済み / 年度の途中（毎日更新）/ 集計中（確定前）
+  const state = !s ? '' : data.finalized
+    ? `<span class="badge badge-green">確定</span><span class="text-xs text-gray-500">確定日時: ${noticeReportTime(s.finalized_at)}</span>`
+    : data.in_progress
+      ? `<span class="badge badge-yellow">年度の途中</span><span class="text-xs text-gray-500">${noticeReportTime(s.calculated_at)} 時点の集計（毎日更新）</span>`
+      : `<span class="badge badge-gray">確定前</span><span class="text-xs text-gray-500">${noticeReportTime(s.calculated_at)} 時点の集計（年度末から30日後に確定）</span>`
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -2027,20 +2047,22 @@ async function renderNoticeReadReport(fy) {
         <select class="inp text-sm" onchange="renderNoticeReadReport(Number(this.value))">
           ${fyOptions.map(y => `<option value="${y}" ${y === fy ? 'selected' : ''}>${fiscalYearLabel(y)}</option>`).join('')}
         </select>
-        <button class="btn btn-outline text-sm" onclick="recalculateNoticeReadReport(${fy})"><i class="fas fa-rotate"></i>再集計</button>
-        <a class="btn btn-outline text-sm" href="/api/admin/notice-reports/${fy}/csv"><i class="fas fa-file-csv"></i>CSV出力</a>
+        <button class="btn btn-outline text-sm" data-action="recalcNoticeReport" data-fy="${Number(fy)}" ${data.recalculable ? '' : `disabled title="${escAttr(data.recalc_block_reason || '')}"`}><i class="fas fa-rotate"></i>再集計</button>
+        <a class="btn btn-outline text-sm" href="/api/admin/notice-reports/${Number(fy)}/csv"><i class="fas fa-file-csv"></i>CSV出力</a>
       </div>
     </div>
+    ${data.recalculable ? '' : `<p class="text-xs text-gray-500 mb-3"><i class="fas fa-lock mr-1"></i>${esc(data.recalc_block_reason || '')}（保存済みの集計を表示しています）</p>`}
 
     <section class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">年度全体</h3>
-      ${!s ? `<p class="text-sm text-gray-400">このレポートはまだ生成されていません。「再集計」を実行してください。</p>` : `
+      <div class="flex items-center gap-2 mb-3 flex-wrap"><h3 class="text-sm font-bold text-gray-700">年度全体</h3>${state}</div>
+      ${!s ? `<p class="text-sm text-gray-400">このレポートはまだ生成されていません。${data.recalculable ? '「再集計」を実行してください。' : ''}</p>` : `
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div><p class="text-xs text-gray-400">対象お知らせ数</p><p class="text-lg font-bold">${s.target_notice_count}件</p></div>
           <div><p class="text-xs text-gray-400">対象延べ人数</p><p class="text-lg font-bold">${s.target_user_count}人</p></div>
           <div><p class="text-xs text-gray-400">既読延べ人数</p><p class="text-lg font-bold text-emerald-600">${s.read_count}人</p></div>
           <div><p class="text-xs text-gray-400">年度既読率</p><p class="text-lg font-bold text-blue-600">${s.read_rate == null ? '-' : s.read_rate.toFixed(1) + '%'}</p></div>
-        </div>`}
+        </div>
+        <p class="text-xs text-gray-500 mt-3">対象は、お知らせを公開した時点で在籍していた人です（後で退職した人も含みます。入社前のお知らせは含みません）。</p>`}
     </section>
 
     <section class="card p-4">
@@ -2057,35 +2079,43 @@ async function renderNoticeReadReport(fy) {
                 <td>${r.read_count}</td>
                 <td>${r.unread_count}</td>
                 <td>${r.read_rate == null ? '-' : r.read_rate.toFixed(1) + '%'}</td>
-                <td><button class="text-xs text-blue-600 hover:underline" onclick="showStaffNoticeReport(${fy}, ${r.staff_id})">詳細</button></td>
+                <td><button class="text-xs text-blue-600 hover:underline" data-action="showStaffNoticeReport" data-fy="${Number(fy)}" data-id="${Number(r.staff_id)}">詳細</button></td>
               </tr>`).join('')}
           </tbody>
         </table>
       </div>`}
     </section>`
 }
-window.recalculateNoticeReadReport = async function (fy) {
-  try {
-    await axios.post(`/api/admin/notice-reports/${fy}/recalculate`)
-    toast('再集計しました')
-    renderNoticeReadReport(fy)
-  } catch {
-    toast('再集計に失敗しました')
-  }
+window.recalculateNoticeReadReport = async function (fy, btn) {
+  await withSubmitLock(btn, async () => {
+    try {
+      const { data } = await axios.post(`/api/admin/notice-reports/${Number(fy)}/recalculate`)
+      toast(`再集計しました（${noticeReportTime(data.calculated_at)} 時点）`)
+      renderNoticeReadReport(fy)
+    } catch (e) {
+      showApiError(e, '再集計に失敗しました')
+    }
+  })
 }
+delegate('recalcNoticeReport', el => recalculateNoticeReadReport(Number(el.dataset.fy), el))
+// スタッフ別の詳細はその場で計算する。一覧の数字は集計した時点の値なので、その日時を添える（#481）
 window.showStaffNoticeReport = async function (fy, staffId) {
-  const { data } = await axios.get(`/api/admin/notice-reports/${fy}/staff/${staffId}`)
+  let data
+  try { data = (await axios.get(`/api/admin/notice-reports/${Number(fy)}/staff/${Number(staffId)}`)).data } catch (e) { showApiError(e, '詳細を読み込めませんでした'); return }
+  const s = window._noticeReportData && window._noticeReportData.fiscal_year === fy ? window._noticeReportData.summary : null
   modal(`
     <h3 class="font-bold text-lg mb-1">${esc(data.staff_name)}</h3>
-    <p class="text-sm text-gray-400 mb-4">${fiscalYearLabel(fy)}</p>
+    <p class="text-sm text-gray-400 mb-1">${fiscalYearLabel(fy)}</p>
+    <p class="text-xs text-gray-500 mb-4">下の既読・未読はいまの状態です。一覧の数字は ${s ? noticeReportTime(s.calculated_at) : '-'} 時点の集計です。</p>
     <div class="space-y-1.5 max-h-96 overflow-y-auto">
-      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません（2年以上前のためデータが削除されている可能性があります）</p>' : data.notices.map(n => `
+      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません</p>' : data.notices.map(n => `
         <div class="flex items-center justify-between text-sm p-2 rounded-lg bg-gray-50">
           <span class="truncate">${esc(n.title)}</span>
-          <span class="badge ${n.is_read ? 'badge-green' : 'badge-gray'} shrink-0 ml-2">${n.is_read ? '既読' : '未読'}</span>
+          <span class="badge ${n.is_read === null ? 'badge-gray' : n.is_read ? 'badge-green' : 'badge-gray'} shrink-0 ml-2">${n.is_read === null ? '記録なし（保存期間外）' : n.is_read ? '既読' : '未読'}</span>
         </div>`).join('')}
     </div>`)
 }
+delegate('showStaffNoticeReport', el => showStaffNoticeReport(Number(el.dataset.fy), Number(el.dataset.id)))
 
 
 // ============ フォロー履歴 ============
