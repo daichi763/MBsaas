@@ -482,7 +482,7 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
       VALUES (?, ?, ?, ?, ?, ?, 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, r.report_type, r.reported_at, r.status, u.user_id)))
   } catch (e: any) {
     // 本人の報告と同時になった場合（attendance_reports の一意制約）
-    if (/UNIQUE|constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
+    if (/UNIQUE constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
     throw e
   }
   if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
