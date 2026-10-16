@@ -142,9 +142,10 @@ const NOTICE_TARGET_SQL = `datetime(us.created_at, '+9 hours') <= n.published_at
          AND ${NOTICE_TARGET_IDS_SQL} LIKE '%,' || sh.project_id || ',%')))`
 // 今の対象者（一覧の既読数・既読状況・メールの宛先）: いま在籍中で、ログインのあるスタッフ
 const NOTICE_MEMBER_NOW_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL`
-// 公開した時点の対象者（既読率レポート）: 後で退職した人も含めて、公開日に在籍していた人（#49。今の在籍状況では決めない）
+// 公開した時点の対象者（既読率レポート）: 後で退職した人も含めて、公開日に在籍していた人（#49。今の在籍状況では決めない）。
+// 退職日の無い停止中の人（退職日の列ができる前に退職した人など）は、いつまで在籍したか分からないので含めない
 const NOTICE_MEMBER_AT_PUBLISH_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND sp.merged_into_staff_id IS NULL
-  AND (us.retired_at IS NULL OR us.retired_at >= date(n.published_at))`
+  AND ((us.retired_at IS NULL AND us.status = 'active') OR us.retired_at >= date(n.published_at))`
 // お知らせ n の今の対象人数・既読人数（既読は対象者の分だけ数える。退職者や対象外の人の既読は含めない）
 const NOTICE_TARGET_COUNT_NOW_SQL = `(SELECT COUNT(DISTINCT us.user_id) FROM users us JOIN staff_profiles sp ON sp.user_id = us.user_id
   WHERE ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL})`

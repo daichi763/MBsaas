@@ -146,6 +146,12 @@ if (!PERSIST) {
   must(await admin.post(`/api/admin/notice-reports/${fy}/recalculate`), 'recalc after retire')
   const rep2 = (await admin.get(`/api/admin/notice-reports/${fy}`)).data
   ok('#49 公開した後に退職した人も、レポートの対象に残る', rep2.staff_reports.some(r => r.staff_id === c.staff_id) && rep2.summary.target_user_count === rep.summary.target_user_count, [rep.summary.target_user_count, rep2.summary.target_user_count])
+  // 退職日の無い停止中の人（退職日の列ができる前の退職者など）は、在籍の期間が分からないのでレポートの対象に入れない
+  d1(`UPDATE users SET status = 'suspended', retired_at = NULL WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ${d.staff_id})`)
+  await waitServer()
+  must(await admin.post(`/api/admin/notice-reports/${fy}/recalculate`), 'recalc after suspend')
+  const rep3 = (await admin.get(`/api/admin/notice-reports/${fy}`)).data
+  ok('#49 退職日の無い停止中の人はレポートの対象に入らない', rep2.staff_reports.some(r => r.staff_id === d.staff_id) && !rep3.staff_reports.some(r => r.staff_id === d.staff_id), rep3.staff_reports.map(r => r.staff_id))
 
   // ---------- #49 #48 確定済みの年度は作り直さない ----------
   d1(`UPDATE notice_read_reports SET finalized_at = '2026-05-01 03:00:00', read_rate = 12.3 WHERE company_id = 1 AND fiscal_year = ${fy - 1}`)
