@@ -5,6 +5,7 @@
 --    残さない行は daily_report_duplicates に控えを移してから消す（中身を失わないように）。
 -- 2) shift_id の無い古い日報は、同じ会社・スタッフ・稼働日・案件のシフトが1件だけで、
 --    そのシフトの日報がまだ無いときに限り shift_id を補う（同じ組の古い日報が複数あれば最後の1件だけ）。
+--    shift_id の無い古い日報で、同じ組にもっと新しい日報がある行も、二度押しなどの重複として 1) と同じく控えに移す。
 -- 3) shift_id に一意インデックスを付ける（SQLite の一意インデックスは NULL を重複とみなさないので、shift_id の無い古い行はそのまま残る）。
 -- 4) 管理者が確認済みにした日報を、スタッフが後から修正したときの日時（revised_after_check_at）を足す。
 
@@ -72,6 +73,42 @@ WHERE shift_id IS NULL
     WHERE d3.shift_id IS NULL AND +d3.company_id = daily_reports.company_id AND d3.staff_id = daily_reports.staff_id
       AND d3.work_date = daily_reports.work_date AND d3.project_id = daily_reports.project_id
     ORDER BY d3.submitted_at DESC, d3.daily_report_id DESC LIMIT 1);
+
+-- 2b) shift_id の無い古い日報の重複。変更前の登録は同じ会社・スタッフ・稼働日・案件の行を上書きしていたので、
+--     同じ組に2行以上あるのは同時に送られた場合だけ。組の中で最後に提出された行（shift_id の有無は問わない）を残し、
+--     それより古い shift_id の無い行を控えに移す（shift_id のある行は 1) で整理済みなので動かさない）
+UPDATE daily_reports SET
+  incident_flag = MAX(COALESCE(incident_flag, 0), (SELECT COALESCE(MAX(d.incident_flag), 0) FROM daily_reports d
+    WHERE d.shift_id IS NULL AND d.company_id = daily_reports.company_id AND d.staff_id = daily_reports.staff_id
+      AND d.work_date = daily_reports.work_date AND d.project_id = daily_reports.project_id)),
+  complaint_flag = MAX(COALESCE(complaint_flag, 0), (SELECT COALESCE(MAX(d.complaint_flag), 0) FROM daily_reports d
+    WHERE d.shift_id IS NULL AND d.company_id = daily_reports.company_id AND d.staff_id = daily_reports.staff_id
+      AND d.work_date = daily_reports.work_date AND d.project_id = daily_reports.project_id)),
+  manager_comment = COALESCE(manager_comment, (SELECT d.manager_comment FROM daily_reports d
+    WHERE d.shift_id IS NULL AND d.company_id = daily_reports.company_id AND d.staff_id = daily_reports.staff_id
+      AND d.work_date = daily_reports.work_date AND d.project_id = daily_reports.project_id AND d.manager_comment IS NOT NULL
+    ORDER BY d.submitted_at DESC, d.daily_report_id DESC LIMIT 1))
+WHERE EXISTS (SELECT 1 FROM daily_reports d WHERE d.shift_id IS NULL AND d.daily_report_id != daily_reports.daily_report_id
+      AND d.company_id = daily_reports.company_id AND d.staff_id = daily_reports.staff_id
+      AND d.work_date = daily_reports.work_date AND d.project_id = daily_reports.project_id)
+  AND daily_report_id = (SELECT g.daily_report_id FROM daily_reports g
+    WHERE g.company_id = daily_reports.company_id AND g.staff_id = daily_reports.staff_id
+      AND g.work_date = daily_reports.work_date AND g.project_id = daily_reports.project_id
+    ORDER BY g.submitted_at DESC, g.daily_report_id DESC LIMIT 1);
+
+INSERT OR IGNORE INTO daily_report_duplicates (daily_report_id, kept_daily_report_id, company_id, staff_id, project_id, shift_id, work_date,
+  report_values, incident_flag, complaint_flag, manager_comment, manager_checked, submitted_at, entry_method)
+SELECT d.daily_report_id, k.kept_id,
+  d.company_id, d.staff_id, d.project_id, d.shift_id, d.work_date, d.report_values, d.incident_flag, d.complaint_flag,
+  d.manager_comment, d.manager_checked, d.submitted_at, d.entry_method
+FROM daily_reports d
+JOIN (SELECT x.daily_report_id AS id, (SELECT g.daily_report_id FROM daily_reports g
+    WHERE g.company_id = x.company_id AND g.staff_id = x.staff_id AND g.work_date = x.work_date AND g.project_id = x.project_id
+    ORDER BY g.submitted_at DESC, g.daily_report_id DESC LIMIT 1) AS kept_id
+  FROM daily_reports x WHERE x.shift_id IS NULL) k ON k.id = d.daily_report_id
+WHERE k.kept_id IS NOT NULL AND k.kept_id != d.daily_report_id;
+
+DELETE FROM daily_reports WHERE daily_report_id IN (SELECT daily_report_id FROM daily_report_duplicates);
 
 -- 3) シフトごとに1件（登録は INSERT ... ON CONFLICT(shift_id) DO UPDATE。src/lib/daily-report.ts）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_daily_reports_shift ON daily_reports(shift_id);
