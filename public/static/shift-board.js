@@ -352,11 +352,11 @@
       ${a.settle_status === 'confirmed' ? '<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
       ${a.actual_start ? `<p class="text-xs text-gray-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${esc(a.actual_start)}〜${esc(a.actual_end)}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
       <div class="grid grid-cols-4 gap-1.5 mb-4">
-        ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-blue-400' : ''}" onclick="boardShiftStatus(${id}, '${st}')">${ST_LABEL[st]}</button>`).join('')}
+        ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-blue-400' : ''}" data-action="boardShiftStatus" data-id="${id}" data-status="${st}">${ST_LABEL[st]}</button>`).join('')}
       </div>
       <div class="rounded-lg border border-gray-100 p-3 mb-3 text-xs space-y-2" id="shift-price-form">
         <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>金額（管理画面のみ表示）</p>
-          ${a.price_locked ? `<button class="text-blue-600 hover:underline" onclick="boardResetPrice(${id})">単価ルールに戻す</button>` : '<span class="text-gray-400">単価ルールから自動計算</span>'}</div>
+          ${a.price_locked ? `<button class="text-blue-600 hover:underline" data-action="boardResetPrice" data-id="${id}">単価ルールに戻す</button>` : '<span class="text-gray-400">単価ルールから自動計算</span>'}</div>
         <div class="grid grid-cols-3 gap-2 items-end">
           <label>請求<select id="sp-bill-unit" class="inp text-xs">${opt(UNIT_LABEL, a.bill_unit_type || 'daily')}</select></label>
           <label>請求単価<input id="sp-bill-rate" type="number" class="inp text-xs" value="${a.bill_rate ?? ''}"></label>
@@ -370,8 +370,8 @@
           <label>休憩（分）<input id="sp-break" type="number" class="inp text-xs" value="${a.break_minutes ?? ''}"></label>
           <label>交通費の支払<select id="sp-pt" class="inp text-xs">${opt(PT_LABEL, a.pay_transport_type || 'actual')}</select></label>
           <label>上限/定額<input id="sp-pt-amt" type="number" class="inp text-xs" value="${a.pay_transport_amount ?? 0}"></label>
-          <label>請求の調整<input id="sp-bill-adj" type="number" class="inp text-xs" value="${a.bill_adjust || 0}"></label>
-          <label>支払の調整<input id="sp-pay-adj" type="number" class="inp text-xs" value="${a.pay_adjust || 0}"></label>
+          <label>請求の調整<input id="sp-bill-adj" type="number" class="inp text-xs" value="${a.bill_adjust || ''}" placeholder="0"></label>
+          <label>支払の調整<input id="sp-pay-adj" type="number" class="inp text-xs" value="${a.pay_adjust || ''}" placeholder="0"></label>
           <label>調整の内容<input id="sp-adj-note" class="inp text-xs" value="${esc(a.adjust_note || '')}" placeholder="残業・手当など"></label>
         </div>
         <div class="grid grid-cols-3 gap-2 bg-gray-50 rounded p-2">
@@ -379,12 +379,12 @@
           <p>支払 <b>${a.pay_total == null ? '未設定' : yen(a.pay_total)}</b><span class="block text-gray-400">基本${a.pay_amount == null ? '-' : yen(a.pay_amount)}＋交通費${yen(a.pay_transport)}</span></p>
           <p>粗利 <b>${a.pay_total == null ? '-' : yen(a.bill_total - a.pay_total)}</b><span class="block text-gray-400">${esc(src.manual || src.bill || '')}${src.pay && !src.manual ? ' / 支払: ' + esc(src.pay) : ''}</span></p>
         </div>
-        <button class="btn btn-primary w-full text-xs" onclick="boardSavePrice(${id})">金額を保存（このシフトだけ手動で変更）</button>
+        <button class="btn btn-primary w-full text-xs" data-action="boardSavePrice" data-id="${id}">金額を保存（このシフトだけ手動で変更）</button>
       </div>
       <div id="shift-report-panel" class="mb-3"></div>
       <div class="flex gap-2">
         <a class="btn btn-outline flex-1 text-xs" href="#staff/${a.staff_id}">スタッフ詳細</a>
-        <button class="btn btn-danger flex-1 text-xs" onclick="boardDeleteShift(${id})"><i class="fas fa-trash"></i>シフトを削除</button>
+        <button class="btn btn-danger flex-1 text-xs" data-action="boardDeleteShift" data-id="${id}"><i class="fas fa-trash"></i>シフトを削除</button>
       </div>`)
     // 勤怠・日報の報告状況 / 報告用URL / 代理入力（public/static/staff-lifecycle.js）
     if (window.renderShiftReportPanel) renderShiftReportPanel(id)
@@ -412,6 +412,10 @@
       closeModal(); toast('金額を保存しました'); renderShiftBoard()
     } catch (e) { toast(errMsg(e)) }
   }
+  delegate('boardShiftStatus', el => withSubmitLock(el, () => boardShiftStatus(Number(el.dataset.id), el.dataset.status)))
+  delegate('boardResetPrice', el => withSubmitLock(el, () => boardResetPrice(Number(el.dataset.id))))
+  delegate('boardSavePrice', el => withSubmitLock(el, () => boardSavePrice(Number(el.dataset.id))))
+  delegate('boardDeleteShift', el => withSubmitLock(el, () => boardDeleteShift(Number(el.dataset.id))))
 
   // =========================================================
   // スタッフのシフト希望（#12 #353）
@@ -512,16 +516,21 @@
   window.addRoleRow = function () {
     const box = document.getElementById('slot-roles'); box.insertAdjacentHTML('beforeend', roleRowsHtml([{ role_name: '', headcount: 1 }]))
   }
+  // 無効の開催場所は選択肢に出さない。ただし今選ばれている場所は、無効でも「（無効）」を付けて残す（保存で場所が外れないように。#492）
   function siteOptions(m, projectId, selected) {
     const p = m.projects.find(x => String(x.project_id) === String(projectId))
-    const list = m.sites.filter(s => s.status !== 'inactive' && (!p || !p.client_id || !s.client_id || String(s.client_id) === String(p.client_id)))
-    return `<option value="">（開催場所を選択 / 直接入力）</option>` + list.map(s => `<option value="${s.site_id}" ${String(selected) === String(s.site_id) ? 'selected' : ''}>${esc(s.site_name)}</option>`).join('')
+    const isSel = (s) => selected != null && selected !== '' && String(selected) === String(s.site_id)
+    const list = m.sites.filter(s => isSel(s) || (s.status !== 'inactive' && (!p || !p.client_id || !s.client_id || String(s.client_id) === String(p.client_id))))
+    return `<option value="">（開催場所を選択 / 直接入力）</option>` + list.map(s => `<option value="${s.site_id}" ${isSel(s) ? 'selected' : ''}>${esc(s.site_name)}${s.status === 'inactive' ? '（無効）' : ''}</option>`).join('')
   }
   window.slotProjectChanged = function () {
     const m = MASTER; const pid = document.getElementById('slot-project').value
     document.getElementById('slot-site').innerHTML = siteOptions(m, pid, '')
   }
   function slotFormHtml(m, s, roles) {
+    // 場所の補足: 開催場所の名前と違う場所名（補足を入力した枠）は、編集画面でもそのまま出す
+    const site = s.site_id ? m.sites.find(x => String(x.site_id) === String(s.site_id)) : null
+    const extra = s.location && (!s.site_id || !site || s.location !== site.site_name) ? s.location : ''
     return `
       <div class="space-y-3">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -530,9 +539,9 @@
               ${m.projects.filter(p => p.status === 'active' || String(p.project_id) === String(s.project_id)).map(p => `<option value="${p.project_id}" ${String(p.project_id) === String(s.project_id) ? 'selected' : ''}>${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}
             </select></label>
           <label class="text-sm text-gray-600">開催場所
-            <select id="slot-site" class="inp">${siteOptions(m, s.project_id || (m.projects[0] || {}).project_id, s.site_id)}</select></label>
+            <select id="slot-site" class="inp" data-orig="${esc(s.site_id || '')}">${siteOptions(m, s.project_id || (m.projects[0] || {}).project_id, s.site_id)}</select></label>
         </div>
-        <input id="slot-location" class="inp text-sm" placeholder="場所の補足（開催場所マスタにない場合はここに入力）" value="${esc(s.location && !s.site_id ? s.location : '')}">
+        <input id="slot-location" class="inp text-sm" placeholder="場所の補足（開催場所マスタにない場合はここに入力）" value="${esc(extra)}">
         <div class="grid grid-cols-3 gap-3">
           <label class="text-sm text-gray-600">開始<input id="slot-start" type="time" class="inp" value="${esc(s.start_time || '10:00')}"></label>
           <label class="text-sm text-gray-600">終了<input id="slot-end" type="time" class="inp" value="${esc(s.end_time || '19:00')}"></label>
@@ -557,14 +566,14 @@
       <h3 class="font-bold text-lg mb-3">${slotId ? '枠を編集' : '枠を作成'}</h3>
       ${slotFormHtml(m, s, roles)}
       ${slotId ? `<label class="text-sm text-gray-600 block mt-3">日付<input id="slot-date" type="date" class="inp" value="${esc(s.work_date)}"></label>
-        <p class="text-[11px] text-gray-400 mt-1">日付・時間・場所を変えると、割り当て済みのシフトにも反映し、単価を再計算します</p>` :
+        <p class="text-[11px] text-gray-400 mt-1">日付・時間・場所・休憩を変えると、割り当て済みのシフトにも反映し、単価を再計算します（休憩をシフトごとに直したもの、手動で変えた金額はそのまま。勤怠・日報の報告があるシフトと確定済みのシフトは日時を動かしません）</p>` :
         `<div class="mt-3"><p class="text-sm text-gray-600 mb-1">日付 *（複数選択できます）</p>
           <div class="flex gap-2"><input id="slot-date-input" type="date" class="inp" value="${esc(s.work_date || BS.from)}" onchange="addSlotDate()"><button id="slot-date-add" class="btn btn-outline shrink-0 whitespace-nowrap" onclick="addSlotDate()">日付を追加</button></div>
           <p class="text-[11px] text-gray-400 mt-1">日付を選ぶと追加されます。同じ内容の枠を選んだ日付すべてに作成します</p>
           <div id="slot-dates" class="flex flex-wrap gap-1 mt-2"></div></div>`}
       <div class="flex gap-2 mt-4">
-        ${slotId ? `<button class="btn btn-danger" onclick="deleteSlot(${slotId})"><i class="fas fa-trash"></i></button>` : ''}
-        <button class="btn btn-primary flex-1" onclick="saveSlot(${slotId || 0})">${slotId ? '保存する' : '作成する'}</button>
+        ${slotId ? `<button class="btn btn-danger" data-action="deleteSlot" data-id="${slotId}"><i class="fas fa-trash"></i></button>` : ''}
+        <button class="btn btn-primary flex-1" data-action="saveSlot" data-id="${slotId || 0}">${slotId ? '保存する' : '作成する'}</button>
       </div>`)
     if (!slotId) { window.__slotDates = new Set([s.work_date || BS.from]); drawSlotDates() }
   }
@@ -586,15 +595,38 @@
   }
   window.saveSlot = async function (slotId) {
     const b = slotBody()
-    try {
-      if (slotId) await axios.put('/api/admin/shift-slots/' + slotId, { ...b, work_date: document.getElementById('slot-date').value })
-      else {
-        if (!window.__slotDates.size) { toast('日付を追加してください'); return }
+    if (!slotId) {
+      if (!window.__slotDates.size) { toast('日付を追加してください'); return }
+      try {
         await axios.post('/api/admin/shift-slots', { ...b, roles: b.roles.filter(r => !r._delete), dates: [...window.__slotDates] })
+        closeModal(); toast('枠を作成しました'); renderShiftBoard()
+      } catch (e) { toast(errMsg(e)) }
+      return
+    }
+    const orig = document.getElementById('slot-site').dataset.orig
+    if (orig && !b.site_id && !confirm('開催場所を外します。開催場所の単価ルール（交通費の定額・場所手当など）が当たらなくなり、割り当て済みのシフトの金額が変わることがあります。保存しますか？')) return
+    const body = { ...b, work_date: document.getElementById('slot-date').value }
+    try {
+      let res
+      try { res = await axios.put('/api/admin/shift-slots/' + slotId, body) } catch (e) {
+        const d = e.response && e.response.data
+        if (!(d && d.need_force)) throw e
+        // 報告済み・確定済みのシフトの扱いと、割り当て済みスタッフの重複・NG などを確認してから続ける（#57 #117）
+        const lines = []
+        if (d.detach && d.detach.length) lines.push(`次の ${d.detach.length} 件は元の日時のまま残し、枠から外します（${d.detach.map(x => x.staff_name + '：' + x.reason).join('、')}）`)
+        if (d.warnings && d.warnings.length) lines.push('確認してください:\n' + d.warnings.join('\n'))
+        if (!confirm(lines.join('\n\n') + '\n\nこのまま保存しますか？')) return
+        res = await axios.put('/api/admin/shift-slots/' + slotId, { ...body, force: true })
       }
-      closeModal(); toast(slotId ? '枠を保存しました' : '枠を作成しました'); renderShiftBoard()
+      const r = res.data || {}
+      const notes = []
+      if (r.detached) notes.push(`${r.detached}件を枠なしにしました`)
+      if (r.locked_kept) notes.push(`手動で数量を変えた${r.locked_kept}件は金額を変えていません`)
+      closeModal(); toast('枠を保存しました' + (notes.length ? '（' + notes.join('、') + '）' : '')); renderShiftBoard()
     } catch (e) { toast(errMsg(e)) }
   }
+  delegate('saveSlot', el => withSubmitLock(el, () => saveSlot(Number(el.dataset.id) || 0)))
+  delegate('deleteSlot', el => withSubmitLock(el, () => deleteSlot(Number(el.dataset.id))))
   window.deleteSlot = async function (slotId, force) {
     if (!force && !confirm('この枠を削除しますか？')) return
     try { await axios.delete('/api/admin/shift-slots/' + slotId + (force ? '?force=1' : '')); closeModal(); toast('枠を削除しました'); renderShiftBoard() } catch (e) {
@@ -1004,7 +1036,7 @@
         ${data.sites.map(s => `<tr><td class="font-bold">${esc(s.site_name)}</td><td class="text-xs text-gray-500">${esc(s.address || '-')}</td><td>${s.shift_count}件</td>
           <td>${s.status === 'inactive' ? '<span class="badge badge-gray">無効</span>' : '<span class="badge badge-green">有効</span>'}</td>
           <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" data-action="renameSite" data-id="${s.site_id}" data-cid="${esc(cid)}" data-name="${esc(s.site_name)}">名前を変更</button>
-            ${s.status === 'inactive' ? `<button class="text-xs text-blue-600 hover:underline" onclick="toggleSite(${s.site_id}, ${cid}, 'active')">有効にする</button>` : `<button class="text-xs text-red-600 hover:underline" onclick="removeSite(${s.site_id}, ${cid})">削除</button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
+            ${s.status === 'inactive' ? `<button class="text-xs text-blue-600 hover:underline" data-action="toggleSite" data-id="${s.site_id}" data-cid="${esc(cid)}" data-status="active">有効にする</button>` : `<button class="text-xs text-red-600 hover:underline" data-action="removeSite" data-id="${s.site_id}" data-cid="${esc(cid)}">削除</button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
       </tbody></table></div>
     </section>`
   }
@@ -1018,6 +1050,8 @@
     try { await axios.put('/api/admin/sites/' + id, { site_name: v }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
   }
   delegate('renameSite', el => renameSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.name))
+  delegate('toggleSite', el => withSubmitLock(el, () => toggleSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.status)))
+  delegate('removeSite', el => withSubmitLock(el, () => removeSite(Number(el.dataset.id), Number(el.dataset.cid))))
   window.toggleSite = async function (id, cid, status) {
     try { await axios.put('/api/admin/sites/' + id, { status }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
   }

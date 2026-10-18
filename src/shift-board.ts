@@ -11,6 +11,7 @@ import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { assertAssignable, assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, isUniqueViolation, ngStaffIds } from './lib/staff-eligibility'
 import type { ConflictRow } from './lib/staff-eligibility'
 import { changesOf, insertRowsStmts, updateRowsStmts } from './lib/bulk-write'
+import { buildUpdate } from './lib/update-builder'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -532,47 +533,158 @@ app.get('/shift-slots/:id', async (c) => {
   return c.json({ slot, roles })
 })
 
-// 枠の変更: 時間・場所・役割（人数・単価）。時間/場所を変えたら割り当て済みシフトにも反映し、単価を再計算する
+// 枠の変更: 日付・時間・場所・休憩・役割（人数・単価）。
+//  - 役割・開催場所・割り当て済みスタッフの確認をすべて済ませてから、枠・役割・シフトの更新を1つの batch で書く（途中で失敗しても一部だけ保存しない。#146）
+//  - 日付・時刻を変えるとき、勤怠・日報の報告があるシフトと確定済みのシフトは動かさず、元の日時のまま「枠なし」にする。
+//    それらがあるとき、または割り当て済みスタッフに重複・NG などの警告があるときは、確認のうえ force で続ける（#57 #117）
+//  - シフトには、枠で変えた項目だけを反映する。休憩は、シフトの値が変更前の枠の値と同じとき（シフトごとに直していないとき）だけ書き換える（#118）
+//  - 送られていない項目は変えない。開催場所は site_id を送らなければそのまま（無効にした場所でも外さない。#492）
+const SLOT_EDIT_FIELDS = ['site_id', 'location', 'work_date', 'start_time', 'end_time', 'break_minutes', 'memo', 'status'] as const
+const sameVal = (a: any, b: any) => (a ?? null) === (b ?? null)
 app.put('/shift-slots/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
   const slot = await ownSlot(db, u.company_id, c.req.param('id'))
   if (!slot) return c.json({ error: '枠が見つかりません' }, 404)
-  const next = { ...slot, ...Object.fromEntries(Object.entries(b).filter(([k, v]) => ['site_id', 'location', 'work_date', 'start_time', 'end_time', 'break_minutes', 'memo', 'status'].includes(k) && v !== undefined)) }
+  const next: any = { ...slot }
+  for (const k of SLOT_EDIT_FIELDS) if (b[k] !== undefined) next[k] = b[k]
+  next.site_id = intOrNull(next.site_id); next.break_minutes = intOrNull(next.break_minutes)
+  next.location = String(next.location ?? '').trim() || null; next.memo = next.memo || null; next.status = next.status === 'closed' ? 'closed' : 'open'
   if (!isTime(next.start_time) || !isTime(next.end_time) || !isDate(next.work_date)) return c.json({ error: '日付・時刻が正しくありません' }, 400)
-  if (next.site_id && !(await ownSite(db, u.company_id, next.site_id))) return c.json({ error: '開催場所が見つかりません' }, 400)
-  await db.prepare(`UPDATE shift_slots SET site_id = ?, location = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, memo = ?, status = ? WHERE slot_id = ?`)
-    .bind(next.site_id || null, next.location || null, next.work_date, next.start_time, next.end_time, intOrNull(next.break_minutes), next.memo || null, next.status || 'open', slot.slot_id).run()
+  const siteChanged = !sameVal(next.site_id, slot.site_id)
+  if (next.site_id && siteChanged) {
+    const site = await ownSite(db, u.company_id, next.site_id)
+    if (!site) return c.json({ error: '開催場所が見つかりません' }, 400)
+    if (site.status === 'inactive') return c.json({ error: '無効にした開催場所は選べません（クライアント詳細で有効にしてください）' }, 400)
+  }
 
+  // ---- 役割の確認（ここでは書き込まない） ----
+  const existing = (await db.prepare('SELECT * FROM shift_slot_roles WHERE slot_id = ?').bind(slot.slot_id).all()).results as any[]
+  const existingById = new Map(existing.map(r => [Number(r.slot_role_id), r]))
+  const roleStmts: D1PreparedStatement[] = []
   if (Array.isArray(b.roles)) {
-    const roles = normalizeRoles(b.roles.filter((r: any) => !r._delete)); if (!roles && b.roles.some((r: any) => !r._delete)) return c.json({ error: '役割と必要人数を入力してください' }, 400)
-    for (const [i, r] of (b.roles as any[]).entries()) {
-      if (r.slot_role_id) {
-        const own = await db.prepare('SELECT slot_role_id FROM shift_slot_roles WHERE slot_role_id = ? AND slot_id = ?').bind(r.slot_role_id, slot.slot_id).first()
-        if (!own) continue
-        if (r._delete) {
-          const used = await db.prepare("SELECT COUNT(*) AS n FROM shifts WHERE slot_role_id = ? AND status != 'absent'").bind(r.slot_role_id).first() as any
-          if (used.n > 0) return c.json({ error: `役割「${r.role_name}」には割り当て済みのスタッフがいるため削除できません` }, 409)
-          await db.prepare('DELETE FROM shift_slot_roles WHERE slot_role_id = ?').bind(r.slot_role_id).run()
-          continue
-        }
-        const n = normalizeRoles([r])![0]
-        await db.prepare(`UPDATE shift_slot_roles SET role_name = ?, headcount = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?, sort_order = ? WHERE slot_role_id = ?`)
-          .bind(n.role_name, n.headcount, n.bill_unit_type, n.bill_rate, n.pay_unit_type, n.pay_rate, i, r.slot_role_id).run()
-        await db.prepare('UPDATE shifts SET role = ? WHERE slot_role_id = ?').bind(n.role_name, r.slot_role_id).run()
-      } else if (!r._delete) {
-        const n = normalizeRoles([r])![0]
-        await db.prepare(`INSERT INTO shift_slot_roles (slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(slot.slot_id, n.role_name, n.headcount, n.bill_unit_type, n.bill_rate, n.pay_unit_type, n.pay_rate, i).run()
+    const items = b.roles as any[]
+    const deleteIds = new Set<number>()
+    let added = 0
+    for (const r of items) {
+      const id = Number(r.slot_role_id) || 0
+      if (id && !existingById.has(id)) continue // 他の枠の役割は扱わない
+      if (r._delete) { if (id) deleteIds.add(id); continue }
+      if (!normalizeRoles([r])) return c.json({ error: '役割と必要人数を入力してください' }, 400)
+      if (!id) added++
+    }
+    if (existing.length - deleteIds.size + added < 1) return c.json({ error: '役割を1つ以上残してください（枠をなくすときは枠の削除を使ってください）' }, 400)
+    if (deleteIds.size) {
+      const used = (await db.prepare(`SELECT slot_role_id, COUNT(*) AS n FROM shifts WHERE slot_role_id IN ${JSON_IN} AND status != 'absent' GROUP BY slot_role_id`)
+        .bind(bindJsonArray(deleteIds)).all()).results as any[]
+      const u0 = used.find(x => Number(x.n) > 0)
+      if (u0) return c.json({ error: `役割「${existingById.get(Number(u0.slot_role_id))?.role_name || ''}」には割り当て済みのスタッフがいるため削除できません` }, 409)
+    }
+    for (const [i, r] of items.entries()) {
+      const id = Number(r.slot_role_id) || 0
+      if (id && !existingById.has(id)) continue
+      if (id && deleteIds.has(id)) { roleStmts.push(db.prepare('DELETE FROM shift_slot_roles WHERE slot_role_id = ? AND slot_id = ?').bind(id, slot.slot_id)); continue }
+      if (r._delete) continue
+      const n = normalizeRoles([r])![0]
+      if (id) {
+        roleStmts.push(db.prepare(`UPDATE shift_slot_roles SET role_name = ?, headcount = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?, sort_order = ? WHERE slot_role_id = ? AND slot_id = ?`)
+          .bind(n.role_name, n.headcount, n.bill_unit_type, n.bill_rate, n.pay_unit_type, n.pay_rate, i, id, slot.slot_id))
+        // 確定済みのシフトの役割名は変えない（確定後に明細・CSV の役割名が変わらないように）
+        if (n.role_name !== existingById.get(id).role_name)
+          roleStmts.push(db.prepare("UPDATE shifts SET role = ? WHERE slot_role_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'").bind(n.role_name, id, u.company_id))
+      } else {
+        roleStmts.push(db.prepare(`INSERT INTO shift_slot_roles (slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .bind(slot.slot_id, n.role_name, n.headcount, n.bill_unit_type, n.bill_rate, n.pay_unit_type, n.pay_rate, i))
       }
     }
   }
-  // 割り当て済みシフトへ反映
-  await db.prepare(`UPDATE shifts SET work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, site_id = ?, location = COALESCE(?, location) WHERE slot_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'`)
-    .bind(next.work_date, next.start_time, next.end_time, intOrNull(next.break_minutes), next.site_id || null, next.location || null, slot.slot_id, u.company_id).run()
-  const data = await loadPricingData(db, u.company_id, [slot.project_id])
-  const sids = ((await db.prepare('SELECT shift_id FROM shifts WHERE slot_id = ? AND company_id = ?').bind(slot.slot_id, u.company_id).all()).results as any[])
-  for (const s of sids) await applyPricingToShift(db, u.company_id, s.shift_id, { data })
-  return c.json({ ok: true })
+
+  // ---- 割り当て済みシフトの確認 ----
+  const dateTimeChanged = next.work_date !== slot.work_date || next.start_time !== slot.start_time || next.end_time !== slot.end_time
+  const breakChanged = !sameVal(next.break_minutes, slot.break_minutes)
+  const locationChanged = !sameVal(next.location, slot.location)
+  const shifts = (await db.prepare(`SELECT s.*, us.name AS staff_name,
+      (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) + (SELECT COUNT(*) FROM daily_reports d WHERE d.shift_id = s.shift_id) AS report_count
+    FROM shifts s LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    WHERE s.slot_id = ? AND s.company_id = ? ORDER BY s.shift_id`).bind(slot.slot_id, u.company_id).all()).results as any[]
+  // 日付・時刻を変えるときに動かさないシフト（報告あり・確定済み）。元の日時のまま枠から外す
+  const detach = dateTimeChanged ? shifts.filter(s => isSettled(s) || Number(s.report_count) > 0) : []
+  const follow = shifts.filter(s => !isSettled(s) && !detach.includes(s))
+  const warnings: string[] = []
+  if (dateTimeChanged) {
+    for (const s of follow) {
+      if (!ACTIVE_STATUSES.includes(s.status)) continue
+      const chk = await assertAssignable(db, { companyId: u.company_id, project: slot.project_id, slot: null, staffId: s.staff_id,
+        workDate: next.work_date, start: next.start_time, end: next.end_time, excludeShiftId: s.shift_id })
+      if (chk.error) return c.json({ error: chk.error + '\n（このスタッフを枠から外してから、日付・時間を変えてください）' }, chk.status)
+      warnings.push(...chk.warnings)
+    }
+  }
+  if ((detach.length || warnings.length) && !b.force) {
+    return c.json({
+      need_force: true, warnings,
+      detach: detach.map(s => ({ shift_id: s.shift_id, staff_name: s.staff_name, reason: isSettled(s) ? '確定済み' : '報告あり' })),
+    }, 409)
+  }
+
+  // ---- 書き込み（枠・役割・シフトをまとめて） ----
+  const stmts: D1PreparedStatement[] = [
+    db.prepare(`UPDATE shift_slots SET site_id = ?, location = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, memo = ?, status = ? WHERE slot_id = ? AND company_id = ?`)
+      .bind(next.site_id, next.location, next.work_date, next.start_time, next.end_time, next.break_minutes, next.memo, next.status, slot.slot_id, u.company_id),
+    ...roleStmts,
+  ]
+  for (const s of detach)
+    stmts.push(db.prepare('UPDATE shifts SET slot_id = NULL, slot_role_id = NULL WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id))
+  const pdata = await loadPricingData(db, u.company_id, [slot.project_id])
+  const proj = pdata.projects.get(Number(slot.project_id)) || {}
+  let lockedKept = 0
+  for (const s of follow) {
+    const set: Record<string, any> = {}
+    if (dateTimeChanged) {
+      Object.assign(set, { work_date: next.work_date, start_time: next.start_time, end_time: next.end_time })
+      // 本人の「入れます／入れません」の返事は前の日時に対するものなので消す（#411）
+      Object.assign(set, { staff_reply: null, staff_reply_note: null, staff_reply_at: null })
+    }
+    if (breakChanged && sameVal(s.break_minutes, slot.break_minutes)) set.break_minutes = next.break_minutes
+    if (siteChanged) set.site_id = next.site_id
+    if (locationChanged && next.location && (s.location || '') === (slot.location || '')) set.location = next.location
+    // 手動で金額を変えたシフト（price_locked）は単価の再計算から外れるため、時間・休憩が変わったら、単価はそのままで時給の数量と金額を計算し直す。
+    // 数量を手で直していた（計算どおりでない）ときは変えない
+    if (s.price_locked && ('start_time' in set || 'break_minutes' in set)) {
+      const amtOf = (x: any) => {
+        const brk = x.break_minutes ?? proj.default_break_minutes ?? 0
+        return calcAmounts({ bill_unit_type: x.bill_unit_type || 'daily', bill_rate: x.bill_rate, pay_unit_type: x.pay_unit_type || 'daily', pay_rate: x.pay_rate },
+          x.start_time, x.end_time, brk, workHours({ ...x, break_minutes: brk }, proj).hours)
+      }
+      const before = amtOf(s), after = amtOf({ ...s, ...set })
+      const near = (a: any, z: any) => a != null && z != null && Math.abs(Number(a) - Number(z)) < 0.005
+      let kept = false
+      if (s.bill_unit_type === 'hourly') {
+        if (near(s.bill_qty, before.bill_qty) && near(s.unit_price, before.unit_price)) Object.assign(set, { bill_qty: after.bill_qty, unit_price: after.unit_price })
+        else kept = true
+      }
+      if (s.pay_unit_type === 'hourly' && s.pay_rate != null) {
+        if (near(s.pay_qty, before.pay_qty) && near(s.pay_amount, before.pay_amount)) Object.assign(set, { pay_qty: after.pay_qty, pay_amount: after.pay_amount })
+        else kept = true
+      }
+      if (kept) lockedKept++
+    }
+    const cols = Object.keys(set)
+    if (!cols.length) continue
+    stmts.push(db.prepare(`UPDATE shifts SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE shift_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'`)
+      .bind(...cols.map(k => set[k]), s.shift_id, u.company_id))
+  }
+  try {
+    await db.batch(stmts)
+  } catch (e) {
+    // コピーで作った枠・シフトは、同じコピー元から同じ日付に2つ作れない（idx_shift_slots_source / idx_shifts_source）
+    if (isUniqueViolation(e)) return c.json({ error: '同じコピー元の枠（またはシフト）が、変更先の日付にすでにあります' }, 409)
+    throw e
+  }
+  // 単価の再計算（手動変更・確定済みは対象外。役割の単価・開催場所・時間の変更を反映する）
+  const rows = (await db.prepare(`SELECT * FROM shifts WHERE slot_id = ? AND company_id = ? AND COALESCE(price_locked,0) = 0 AND COALESCE(settle_status,'planned') != 'confirmed'`)
+    .bind(slot.slot_id, u.company_id).all()).results as any[]
+  await repriceRows(db, u.company_id, rows)
+  return c.json({ ok: true, detached: detach.length, locked_kept: lockedKept, warnings })
 })
 
 app.delete('/shift-slots/:id', async (c) => {
@@ -738,15 +850,20 @@ app.put('/shifts/:id/price', async (c) => {
   const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? Math.round(payRate * payQty) : amt.pay_amount
   const bt = BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : s.bill_transport_type
   const pt = PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : s.pay_transport_type
+  // 調整額・調整の内容は、送られてきたときだけ変える。空欄で保存したら消す（NULL = 調整なし。#137）
+  const adj = buildUpdate({
+    bill_adjust: b.bill_adjust === undefined ? undefined : (intOrNull(b.bill_adjust) ?? ''),
+    pay_adjust: b.pay_adjust === undefined ? undefined : (intOrNull(b.pay_adjust) ?? ''),
+    adjust_note: b.adjust_note,
+  }, ['bill_adjust', 'pay_adjust', 'adjust_note'])
   await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
       break_minutes = ?, transportation_fee = ?, bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?,
-      bill_adjust = ?, pay_adjust = ?, adjust_note = ?, price_locked = 1, price_source = ? WHERE shift_id = ?`)
+      ${adj.clause ? adj.clause + ', ' : ''}price_locked = 1, price_source = ? WHERE shift_id = ?`)
     .bind(billUnit, billRate, billQty, billAmount, payUnit, payRate, payQty, payAmount,
       brk, b.transportation_fee !== undefined ? (intOrNull(b.transportation_fee) ?? 0) : s.transportation_fee,
       bt, b.bill_transport_amount !== undefined ? (intOrNull(b.bill_transport_amount) ?? 0) : s.bill_transport_amount,
       pt, b.pay_transport_amount !== undefined ? (intOrNull(b.pay_transport_amount) ?? 0) : s.pay_transport_amount,
-      intOrNull(b.bill_adjust) ?? s.bill_adjust ?? 0, intOrNull(b.pay_adjust) ?? s.pay_adjust ?? 0, b.adjust_note !== undefined ? (b.adjust_note || null) : s.adjust_note,
-      JSON.stringify({ manual: '手動変更' }), s.shift_id).run()
+      ...adj.values, JSON.stringify({ manual: '手動変更' }), s.shift_id).run()
   return c.json({ ok: true })
 })
 
@@ -1102,8 +1219,25 @@ app.put('/sites/:id', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   const s = await ownSite(c.env.DB, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: '開催場所が見つかりません' }, 404)
-  await c.env.DB.prepare('UPDATE sites SET site_name = ?, address = ?, memo = ?, status = ? WHERE site_id = ?')
-    .bind(String(b.site_name ?? s.site_name).trim() || s.site_name, b.address ?? s.address, b.memo ?? s.memo, b.status === 'inactive' ? 'inactive' : 'active', s.site_id).run()
+  // 送られてきた項目だけを変える（名前の変更だけで無効の場所が有効に戻らないように。#130）。住所・メモは空欄で消す
+  const name = b.site_name === undefined ? undefined : String(b.site_name ?? '').trim()
+  if (name === '') return c.json({ error: '開催場所名を入力してください' }, 400)
+  const upd = buildUpdate({
+    site_name: name, address: b.address, memo: b.memo,
+    status: b.status === undefined ? undefined : (b.status === 'inactive' ? 'inactive' : 'active'),
+  }, ['site_name', 'address', 'memo', 'status'])
+  if (!upd.clause) return c.json({ ok: true })
+  const db = c.env.DB
+  const stmts = [db.prepare(`UPDATE sites SET ${upd.clause} WHERE site_id = ? AND company_id = ?`).bind(...upd.values, s.site_id, u.company_id)]
+  // 名前を変えたら、枠・シフトに写してある場所名も新しい名前にする（スタッフのアプリは shifts.location を表示するため。#142）。
+  // 確定済みと過去のシフト、場所名を別に入力したもの（前の名前と違うもの）は変えない
+  if (name !== undefined && name !== s.site_name) {
+    const today = todayJST()
+    stmts.push(db.prepare('UPDATE shift_slots SET location = ? WHERE site_id = ? AND company_id = ? AND location = ? AND work_date >= ?').bind(name, s.site_id, u.company_id, s.site_name, today))
+    stmts.push(db.prepare(`UPDATE shifts SET location = ? WHERE site_id = ? AND company_id = ? AND location = ? AND work_date >= ?
+      AND COALESCE(settle_status,'planned') != 'confirmed'`).bind(name, s.site_id, u.company_id, s.site_name, today))
+  }
+  await db.batch(stmts)
   return c.json({ ok: true })
 })
 app.delete('/sites/:id', async (c) => {
