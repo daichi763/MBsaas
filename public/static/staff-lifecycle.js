@@ -216,18 +216,21 @@
       <label class="block text-xs text-gray-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" onclick="openMerge(${sid})">戻る</button>
-        <button class="btn btn-danger flex-1" onclick="runMerge(${sid}, ${targetId}, ${d.warnings.length ? 'true' : 'false'})">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>
+        <button class="btn btn-danger flex-1" data-action="runMerge" data-id="${Number(sid)}" data-target="${Number(targetId)}" data-force="${d.warnings.length ? '1' : ''}">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>
       </div>`)
   }
-  window.runMerge = async function (sid, targetId, force) {
-    if (!confirm('統合は元に戻せません。統合しますか？')) return
-    try {
-      const { data } = await axios.post(`/api/admin/staff/${sid}/merge`, { target_staff_id: targetId, force, note: document.getElementById('mg-note').value })
-      closeModal(); toast(`統合しました（シフト${data.moved.shifts}件を移動）`)
-      if (window.invalidateBoardMaster) window.invalidateBoardMaster()
-      location.hash = 'staff/' + data.target_staff_id
-    } catch (e) { toast(errMsg(e)) }
-  }
+  // 統合の実行（二度押しで2回送らないように送信ロックをかける）
+  delegate('runMerge', (el) => {
+    if (el.dataset.busy === '1' || !confirm('統合は元に戻せません。統合しますか？')) return
+    withSubmitLock(el, async () => {
+      try {
+        const { data } = await axios.post(`/api/admin/staff/${Number(el.dataset.id)}/merge`, { target_staff_id: Number(el.dataset.target), force: el.dataset.force === '1', note: document.getElementById('mg-note').value })
+        closeModal(); toast(`統合しました（シフト${data.moved.shifts}件を移動）`)
+        if (window.invalidateBoardMaster) window.invalidateBoardMaster()
+        location.hash = 'staff/' + data.target_staff_id
+      } catch (e) { toast(errMsg(e)) }
+    })
+  })
 
   window.saveStaffReportSettings = async function (sid) {
     try { await axios.put(`/api/admin/staff/${sid}/report-settings`, { daily_report_mode: document.getElementById('sl-dr').value }); toast('提出設定を保存しました') } catch (e) { toast(errMsg(e)) }
