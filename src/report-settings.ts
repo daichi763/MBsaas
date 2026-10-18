@@ -15,7 +15,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { toCsv, csvResponse } from './csv'
-import { NEXT_DAY_TYPES, addDays, reportableWindow, type ShiftTimes } from './lib/shift-time'
+import { NEXT_DAY_TYPES, addDays, reportableWindow, shiftWindow, type ShiftTimes } from './lib/shift-time'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
 type Bindings = { DB: D1Database }
@@ -165,6 +165,51 @@ export async function loadReportState(db: D1Database, shiftId: number): Promise<
 // 報告の記録日時は分の単位にそろえる（打刻修正の申請と同じ精度。#133）
 export function reportedAtMinute(now: string): string {
   return now.slice(0, 16) + ':00'
+}
+
+// ---------- 遅刻・早退の判定（#219 #497） ----------
+// 報告を書き込むとき（アプリ・写真付き・報告用URL・代理入力。打刻修正の承認でも）にこの関数で判定し、
+// attendance_reports の status（'late'）・late_minutes・early_leave_minutes に保存する。集計・画面は保存された値を読む
+//   遅刻: 入店・勤務開始が、シフト開始の絶対日時より後（分単位）。late_minutes に遅れた分数を入れ、
+//         会社設定の猶予（settings_json.late_grace_minutes）を超えたら late。勤務開始だけで運用する案件でも判定する
+//   早退: 勤務終了・退店が、シフト終了の絶対日時より前。early_leave_minutes に早かった分数を入れる（0 なら早退でない。status は変えない）
+//   ほかの報告は、どちらも NULL
+export const LATE_TYPES = ['check_in', 'work_start']
+export const EARLY_LEAVE_TYPES = ['work_end', 'check_out']
+export const MAX_LATE_GRACE_MINUTES = 120
+export type LatenessSettings = { grace_minutes: number }
+export type ReportLateness = { report_type: string; late: boolean; late_minutes: number | null; early_leave_minutes: number | null }
+
+// 会社設定（companies.settings_json）から遅刻の猶予を読む。未設定・不正なら 0 分
+export function latenessSettings(settingsJson: any): LatenessSettings {
+  let g = 0
+  try {
+    const v = JSON.parse(settingsJson || '{}').late_grace_minutes
+    if (Number.isInteger(v) && v >= 0 && v <= MAX_LATE_GRACE_MINUTES) g = v
+  } catch { }
+  return { grace_minutes: g }
+}
+// a から b までの分数（'YYYY-MM-DD HH:MM[:SS]'。秒は切り捨てて分で比べる）
+const minuteOf = (t: string) => Date.parse(String(t).slice(0, 16).replace(' ', 'T') + ':00Z') / 60000
+const minutesFromTo = (a: string, b: string) => Math.round(minuteOf(b) - minuteOf(a))
+
+export function lateness(shift: ShiftTimes, reports: { report_type: string; reported_at: string }[], settings: LatenessSettings): ReportLateness[] {
+  const w = shiftWindow(shift.work_date, shift.start_time, shift.end_time)
+  return reports.map(r => {
+    if (LATE_TYPES.includes(r.report_type)) {
+      const m = Math.max(0, minutesFromTo(w.start, r.reported_at))
+      return { report_type: r.report_type, late: m > settings.grace_minutes, late_minutes: m, early_leave_minutes: null }
+    }
+    if (EARLY_LEAVE_TYPES.includes(r.report_type)) {
+      return { report_type: r.report_type, late: false, late_minutes: null, early_leave_minutes: Math.max(0, minutesFromTo(r.reported_at, w.end)) }
+    }
+    return { report_type: r.report_type, late: false, late_minutes: null, early_leave_minutes: null }
+  })
+}
+// 本人の報告の status。遅刻なら late、位置が取れなかった入店は no_location、それ以外は normal（位置の扱いは従来どおり入店のみ）
+export function reportStatus(j: ReportLateness, latitude: any): 'late' | 'no_location' | 'normal' {
+  if (j.late) return 'late'
+  return j.report_type === 'check_in' && latitude == null ? 'no_location' : 'normal'
 }
 
 // ---------- 設定の読み書き ----------

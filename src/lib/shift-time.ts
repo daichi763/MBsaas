@@ -9,9 +9,13 @@ export type ShiftTimes = { work_date: string; start_time: string; end_time: stri
 
 // 稼働日の翌日も受け付ける報告（勤務開始より後の報告。日をまたぐ勤務）
 export const NEXT_DAY_TYPES = ['break_start', 'break_end', 'work_end', 'check_out']
+// 日をまたぐ勤務で、0時を過ぎても予定の終了まで受け付ける到着の報告（23時台に始まる勤務の遅れた入店など。#134）
+export const ARRIVAL_TYPES = ['check_in', 'work_start']
 // 開始時刻の何時間前から報告を受け付けるか。0 の間は稼働日の 0:00 から。
-// 0時台に始まるシフトを前日の夜から報告できるようにする（#256）ときに増やす。その前に入店の遅延判定を絶対日時にすること
+// 0時台に始まるシフトを前日の夜から報告できるようにする（#256）ときに増やす。遅刻の判定（report-settings.ts の lateness）は絶対日時で比べている
 export const PRE_START_HOURS = 0
+// 休憩・勤務終了・退店を、予定の終了から何時間後まで受け付けるか（残業と押し忘れの分。稼働日の翌日 23:59:59 は超えない）
+export const AFTER_END_HOURS = 12
 
 export function addDays(d: string, n: number): string {
   const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10)
@@ -27,6 +31,7 @@ export function atMinutes(workDate: string, minutes: number): string {
   return `${addDays(workDate, days)} ${hh}:${mm}:00`
 }
 const earlier = (a: string, b: string) => (a < b ? a : b)
+const later = (a: string, b: string) => (a > b ? a : b)
 
 // シフトの開始・終了の絶対日時。終了が開始以前なら翌日
 export function shiftWindow(workDate: string, start: string, end: string): DateTimeRange {
@@ -42,10 +47,17 @@ export function crossesMidnight(shift: ShiftTimes): boolean {
 
 // 報告を受け付ける時間帯
 //   開始: 稼働日の 0:00 と、開始時刻の PRE_START_HOURS 時間前の早いほう
-//   終了: 休憩・勤務終了・退店（NEXT_DAY_TYPES）は稼働日の翌日 23:59:59 まで（報告用URLの有効期限と同じ）。それ以外は稼働日の 23:59:59 まで
+//   終了: 休憩・勤務終了・退店（NEXT_DAY_TYPES）は、稼働日の 23:59:59 と予定の終了の AFTER_END_HOURS 時間後の遅いほう。
+//         ただし稼働日の翌日 23:59:59（報告用URLの有効期限）まで。日をまたがない勤務の終了を、翌日の同じ時刻に押すことはできない（#116）
+//         入店・勤務開始（ARRIVAL_TYPES）は、稼働日の 23:59:59 と予定の終了の遅いほう。23時台に始まる勤務は、0時を過ぎても受け付ける（#134）
+//         起床・出発は稼働日の 23:59:59 まで
 export function reportableWindow(shift: ShiftTimes, type: string): DateTimeRange {
   const start = earlier(`${shift.work_date} 00:00:00`, atMinutes(shift.work_date, toMin(shift.start_time) - PRE_START_HOURS * 60))
-  const end = NEXT_DAY_TYPES.includes(type) ? `${addDays(shift.work_date, 1)} 23:59:59` : `${shift.work_date} 23:59:59`
+  const w = shiftWindow(shift.work_date, shift.start_time, shift.end_time)
+  const dayEnd = `${shift.work_date} 23:59:59`
+  const end = NEXT_DAY_TYPES.includes(type) ? earlier(later(dayEnd, addMinutes(w.end, AFTER_END_HOURS * 60)), `${addDays(shift.work_date, 1)} 23:59:59`)
+    : ARRIVAL_TYPES.includes(type) ? later(dayEnd, w.end)
+    : dayEnd
   return { start, end }
 }
 
@@ -64,8 +76,8 @@ export function addMinutes(dateTime: string, minutes: number): string {
   return x.toISOString().slice(0, 19).replace('T', ' ')
 }
 
-// 入店の遅延判定（報告用URL・代理入力で共通。アプリの POST /staff/attendance も同じ考え方）。
-// 報告の日時（分まで）がシフト開始の絶対日時より後なら遅延。日をまたいだ後の入店も日付を含めて比べる
+// 報告の日時（分まで）がシフト開始の絶対日時より後か。日をまたいだ後の入店も日付を含めて比べる。
+// 報告の遅刻・早退の判定は report-settings.ts の lateness を使う（猶予・遅れた分数・勤務開始・早退を含む）
 export function isLateCheckIn(shift: ShiftTimes, at: string): boolean {
   return String(at).slice(0, 16) > shiftWindow(shift.work_date, shift.start_time, shift.end_time).start.slice(0, 16)
 }

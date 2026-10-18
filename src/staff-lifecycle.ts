@@ -15,8 +15,8 @@ import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport }
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
-import { checkStaffReport, loadReportState } from './report-settings'
-import { addMinutes, isLateCheckIn, shiftWindow, type ShiftTimes } from './lib/shift-time'
+import { checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus } from './report-settings'
+import { addMinutes, shiftWindow, type ShiftTimes } from './lib/shift-time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -693,7 +693,7 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
-  const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.entry_method, um.name AS entered_by_name FROM attendance_reports a
+  const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.late_minutes, a.early_leave_minutes, a.entry_method, um.name AS entered_by_name FROM attendance_reports a
     LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results
   const dr = await findDailyReport(db, s)
   const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method } : null
@@ -799,11 +799,13 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
     if (aj < ai) return c.json({ error: `${REPORT_LABEL[tj]}（${fmtAt(aj)}）が${REPORT_LABEL[ti]}（${fmtAt(ai)}）より前になっています` }, 400)
     if (aj === ai && PROXY_STRICT_AFTER[tj]?.includes(ti)) return c.json({ error: `${REPORT_LABEL[tj]}と${REPORT_LABEL[ti]}が同じ時刻（${fmtAt(aj)}）です` }, 400)
   }
-  // 入店は、アプリ・報告用URLと同じ判定で遅延にする
-  const rows = types.map(t => ({ report_type: t, reported_at: atOf.get(t)!, status: t === 'check_in' && isLateCheckIn(s, atOf.get(t)!) ? 'late' : 'normal' }))
+  // 遅刻・早退は、アプリ・報告用URLと同じ判定（report-settings.ts の lateness。入店・勤務開始の遅刻と猶予、勤務終了・退店の早退）
+  const judged = lateness(s, types.map(t => ({ report_type: t, reported_at: atOf.get(t)! })), latenessSettings(u.settings_json))
+  const rows = judged.map(j => ({ report_type: j.report_type, reported_at: atOf.get(j.report_type)!, status: j.late ? 'late' : 'normal',
+    late_minutes: j.late_minutes, early_leave_minutes: j.early_leave_minutes }))
   try {
-    await db.batch(rows.map(r => db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by)
-      VALUES (?, ?, ?, ?, ?, ?, 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, r.report_type, r.reported_at, r.status, u.user_id)))
+    await db.batch(rows.map(r => db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by, late_minutes, early_leave_minutes)
+      VALUES (?, ?, ?, ?, ?, ?, 'proxy', 'proxy', ?, ?, ?)`).bind(u.company_id, s.staff_id, s.shift_id, r.report_type, r.reported_at, r.status, u.user_id, r.late_minutes, r.early_leave_minutes)))
   } catch (e: any) {
     // 本人の報告と同時になった場合（attendance_reports の一意制約）
     if (/UNIQUE constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
@@ -920,14 +922,13 @@ publicReportApi.post('/:token/attendance', async (c) => {
     const b = await c.req.json().catch(() => ({} as any)); reportType = b.report_type; lat = b.latitude ?? null; lng = b.longitude ?? null
   }
   // アプリと同じ判定（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序。report-settings.ts の checkStaffReport）
+  const now = nowJST()
   const cur = await db.prepare('SELECT status, settle_status FROM shifts WHERE shift_id = ?').bind(t.shift_id).first() as any
-  const ng = checkStaffReport({ ...t, status: cur?.status, settle_status: cur?.settle_status }, reportType, nowJST(), modes.required_attendance, await loadReportState(db, t.shift_id))
+  const ng = checkStaffReport({ ...t, status: cur?.status, settle_status: cur?.settle_status }, reportType, now, modes.required_attendance, await loadReportState(db, t.shift_id))
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  let status = 'normal'
-  if (reportType === 'check_in') {
-    if (isLateCheckIn(t, nowJST())) status = 'late'
-    if (lat == null && status !== 'late') status = 'no_location'
-  }
+  // 遅刻・早退の判定（アプリと同じ。23時台に始まる勤務で 0時を過ぎた入店・勤務開始も、日付を含めて比べる。#134 #219 #497）
+  const judged = lateness(t, [{ report_type: reportType, reported_at: now }], latenessSettings(t.settings_json))[0]
+  const status = reportStatus(judged, lat)
   if (['check_in', 'check_out'].includes(reportType) && photoRequired(t) && !photo) return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
   let key: string | null = null
   if (photo) {
@@ -935,10 +936,11 @@ publicReportApi.post('/:token/attendance', async (c) => {
     key = `attendance/${t.company_id}/${t.staff_id}/${t.shift_id}/${reportType}_${Date.now()}.${photo.type === 'image/png' ? 'png' : 'jpg'}`
     try { await c.env.PHOTOS.put(key, await photo.arrayBuffer(), { httpMetadata: { contentType: photo.type } }) } catch { return c.json({ error: '写真のアップロードに失敗しました' }, 502) }
   }
-  await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, device_info, status, photo_key, entry_method)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(t.company_id, t.staff_id, t.shift_id, reportType, nowJST(), lat, lng, (c.req.header('user-agent') || '').slice(0, 300), status, key).run()
+  await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, device_info, status, photo_key, entry_method, late_minutes, early_leave_minutes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'link', ?, ?)`).bind(t.company_id, t.staff_id, t.shift_id, reportType, now, lat, lng, (c.req.header('user-agent') || '').slice(0, 300), status, key,
+    judged.late_minutes, judged.early_leave_minutes).run()
   if (ACTUAL_SYNC_TYPES.includes(reportType)) await syncActualFromReports(db, t.company_id, t.shift_id).catch(() => {})
-  return c.json({ ok: true, status })
+  return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes })
 })
 
 publicReportApi.post('/:token/daily-report', async (c) => {

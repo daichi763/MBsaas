@@ -14,7 +14,7 @@ import { shiftTotals } from './shift-board'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
-import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, loadReportState, reportableTypes, reportedAtMinute } from './report-settings'
+import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { isTentativeShift } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
@@ -687,21 +687,19 @@ api.post('/staff/attendance', async (c) => {
     }
   }
 
-  // 遅延判定: 入店報告がシフト開始後なら late
-  let status = 'normal'
-  if (report_type === 'check_in') {
-    const nowTime = now.slice(11, 16)
-    if (now.slice(0, 10) === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
-    if (latitude == null) status = status === 'late' ? 'late' : 'no_location'
-  }
+  // 遅刻・早退の判定（入店・勤務開始は開始の絶対日時と比べ、会社設定の猶予を超えたら late。勤務終了・退店は早退の分数。#134 #219 #497）
+  const at = reportedAtMinute(now)
+  const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
+  const status = reportStatus(judged, latitude)
   // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
-  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, reportedAtMinute(now), latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status).run()
+  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status,
+      judged.late_minutes, judged.early_leave_minutes).run()
   if (!ins.meta.changes) return c.json({ error: 'すでに報告済みです' }, 409)
   // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
   if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
-  return c.json({ ok: true, status })
+  return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes })
 })
 
 // 勤怠報告（写真必須：入店報告・退店報告専用）
@@ -740,14 +738,12 @@ api.post('/staff/attendance-photo', async (c) => {
   const ng = checkStaffReport(shift, report_type, now, modes ? modes.required_attendance : [...REPORT_TYPES], state)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
 
-  let status = 'normal'
   const lat = latitude != null && latitude !== '' ? Number(latitude) : null
   const lng = longitude != null && longitude !== '' ? Number(longitude) : null
-  if (report_type === 'check_in') {
-    const nowTime = now.slice(11, 16)
-    if (now.slice(0, 10) === shift.work_date && nowTime > (shift.start_time as string)) status = 'late'
-    if (lat == null) status = status === 'late' ? 'late' : 'no_location'
-  }
+  // 遅刻・早退の判定（POST /staff/attendance と同じ）
+  const at = reportedAtMinute(now)
+  const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
+  const status = reportStatus(judged, lat)
 
   const ext = photo.type === 'image/png' ? 'png' : 'jpg'
   const key = `attendance/${owner.company_id}/${owner.staff_id}/${shift_id}/${report_type}_${Date.now()}.${ext}`
@@ -761,9 +757,10 @@ api.post('/staff/attendance-photo', async (c) => {
 
   try {
     // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
-    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, reportedAtMinute(now), lat, lng, null, c.req.header('user-agent') || '', status, key).run()
+    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, c.req.header('user-agent') || '', status, key,
+        judged.late_minutes, judged.early_leave_minutes).run()
     if (!ins.meta.changes) {
       await c.env.PHOTOS.delete(key).catch(() => {})
       return c.json({ error: 'すでに報告済みです' }, 409)
@@ -775,7 +772,7 @@ api.post('/staff/attendance-photo', async (c) => {
   }
   await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
 
-  return c.json({ ok: true, status, photo_key: key })
+  return c.json({ ok: true, status, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes })
 })
 
 // 勤怠報告に添付された写真の取得（同一会社のログインユーザーのみ閲覧可）
@@ -1196,6 +1193,23 @@ api.post('/admin/settings/photo-required', async (c) => {
     .bind(JSON.stringify(settings), u.company_id).run()
 
   return c.json({ ok: true, photo_required_attendance: body.enabled })
+})
+
+// 遅刻の猶予（分）。入店・勤務開始が開始時刻から何分以内なら遅刻にしないか（report-settings.ts の lateness。#497）
+api.get('/admin/settings/lateness', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  return c.json({ ...latenessSettings(row?.settings_json), max_grace_minutes: MAX_LATE_GRACE_MINUTES })
+})
+api.put('/admin/settings/lateness', async (c) => {
+  const u = c.get('user')
+  const body = await c.req.json().catch(() => ({} as any))
+  const g = body.grace_minutes
+  if (!Number.isInteger(g) || g < 0 || g > MAX_LATE_GRACE_MINUTES) return c.json({ error: `遅刻の猶予は 0〜${MAX_LATE_GRACE_MINUTES} 分の整数で入力してください` }, 400)
+  // ほかの設定（写真必須など）を上書きしないよう、この項目だけを書き換える。これから記録する報告に効く（記録済みの報告は判定し直さない）
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.late_grace_minutes', ?) WHERE company_id = ?`)
+    .bind(g, u.company_id).run()
+  return c.json({ ok: true, grace_minutes: g })
 })
 
 function catLabel(cat: string): string {
