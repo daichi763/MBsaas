@@ -15,6 +15,12 @@
   const statusBadge = (s) => `<span class="badge ${(STATUS[s] || [])[1] || 'badge-gray'}">${(STATUS[s] || [s])[0]}</span>`
   const showAt = (at, wd) => at ? (wd && at.slice(0, 10) === wd ? at.slice(11, 16) : dayjs(at.slice(0, 10)).format('M/D') + ' ' + at.slice(11, 16)) : '－'
   const fmtAt = (at) => at ? dayjs(at.replace(' ', 'T')).format('YYYY/M/D HH:mm') : '－'
+  // 承認待ちの申請から何日たったか（2日以上は赤）
+  const waitLabel = (c) => {
+    if (c.status !== 'pending' || !c.created_at) return ''
+    const days = Math.max(0, dayjs().diff(dayjs(c.created_at.replace(' ', 'T')), 'day'))
+    return `<span class="block text-[11px] ${days >= 2 ? 'text-red-600 font-bold' : 'text-gray-400'}">申請から${days ? days + '日' : '1日未満'}</span>`
+  }
   const MANUAL_NOTE = '実績が手入力のシフトのため、実績・金額は手入力のままです（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）'
 
   window.refreshCorrectionsBadge = async function () {
@@ -34,7 +40,9 @@
     let data
     try { data = (await axios.get('/api/admin/corrections', { params })).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
     const n = data.counts || {}
-    const tab = (k, l) => `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${S.status === k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" onclick="corrSet('status', '${k}')">${l}${k && n[k] ? ` <span class="text-xs opacity-80">${n[k]}</span>` : ''}</button>`
+    // 件数は状態以外の絞り込みを反映した数（すべて = 各状態の合計）
+    const total = Object.values(n).reduce((a, x) => a + Number(x || 0), 0)
+    const tab = (k, l) => { const cnt = k ? n[k] : total; return `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${S.status === k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" onclick="corrSet('status', '${k}')">${l}${cnt ? ` <span class="text-xs opacity-80">${Number(cnt)}</span>` : ''}</button>` }
     const rows = data.corrections
     $app.innerHTML = `
       <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
@@ -45,6 +53,7 @@
           <button class="btn btn-primary text-sm" onclick="corrNew()"><i class="fas fa-plus"></i>管理者として申請</button></div>
       </div>
       <div class="flex gap-2 overflow-x-auto pb-1 mb-3">${tab('pending', '承認待ち')}${tab('approved', '承認済み')}${tab('rejected', '却下')}${tab('cancelled', '取り消し済み')}${tab('', 'すべて')}</div>
+      ${data.truncated ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3"><i class="fas fa-circle-info mr-1"></i>該当が多いため、先頭の${Number(data.limit)}件を表示しています（承認待ちは申請の古い順）。絞り込みで件数を減らしてください</p>` : ''}
       <details class="card p-3 mb-3" ${['project_id', 'staff_name', 'from', 'to', 'work_from', 'work_to', 'report_type', 'kind'].some(k => S[k]) ? 'open' : ''}>
         <summary class="text-sm font-bold text-gray-700 cursor-pointer"><i class="fas fa-filter text-gray-400 mr-1"></i>絞り込み</summary>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 text-xs">
@@ -62,7 +71,7 @@
       <div class="hidden md:block card overflow-x-auto">
         <table class="tbl"><thead><tr><th>状態</th><th>勤務日</th><th>案件</th><th>スタッフ</th><th>報告</th><th>種類</th><th>変更前 → 変更後</th><th>申請者・申請日時</th><th></th></tr></thead>
           <tbody>${rows.map(c => `<tr class="cursor-pointer" onclick="location.hash='corrections/${c.correction_id}'">
-            <td>${statusBadge(c.status)}${c.order_warnings.length ? ' <i class="fas fa-triangle-exclamation text-amber-500" title="順序の矛盾あり"></i>' : ''}</td>
+            <td>${statusBadge(c.status)}${c.order_warnings.length ? ' <i class="fas fa-triangle-exclamation text-amber-500" title="順序の矛盾あり"></i>' : ''}${waitLabel(c)}</td>
             <td class="whitespace-nowrap">${esc(c.work_date ? dayjs(c.work_date).format('M/D') : '')}</td>
             <td class="text-xs">${esc(c.project_name || '')}${c.project_status && c.project_status !== 'active' ? ' <span class="badge badge-gray text-[10px]">終了</span>' : ''}</td>
             <td class="whitespace-nowrap">${esc(c.staff_name || '')}</td><td class="whitespace-nowrap">${LABEL[c.report_type] || ''}</td><td class="text-xs whitespace-nowrap">${KIND[c.kind]}</td>
@@ -71,7 +80,7 @@
             <td><i class="fas fa-chevron-right text-gray-300"></i></td></tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-6">申請はありません</td></tr>'}</tbody></table>
       </div>
       <div class="md:hidden space-y-2">${rows.map(c => `<a href="#corrections/${c.correction_id}" class="card p-3 block">
-          <div class="flex items-center justify-between gap-2">${statusBadge(c.status)}<span class="text-[11px] text-gray-400">${esc(fmtAt(c.created_at))}</span></div>
+          <div class="flex items-center justify-between gap-2"><span>${statusBadge(c.status)}${waitLabel(c)}</span><span class="text-[11px] text-gray-400">${esc(fmtAt(c.created_at))}</span></div>
           <p class="font-bold text-gray-800 mt-1">${esc(c.staff_name || '')} ・${LABEL[c.report_type] || ''}</p>
           <p class="text-xs text-gray-500">${esc(c.work_date ? dayjs(c.work_date).format('M/D') : '')} ${esc(c.project_name || '')} ・${KIND[c.kind]}</p>
           <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b>${c.order_warnings.length ? ' <span class="badge badge-yellow text-[10px]">順序の矛盾</span>' : ''}</p></a>`).join('') || '<p class="text-center text-gray-400 py-6">申請はありません</p>'}</div>`

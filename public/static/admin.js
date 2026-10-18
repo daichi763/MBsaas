@@ -56,10 +56,20 @@ window.updateProjectPhotoRequired = async function (pid, override) {
   }
 }
 
+// ダッシュボードの最後の取得結果（シフトID → シフト）。欠勤・代わりの手配・報告状況のモーダルで使う
+const DASH_SHIFTS = new Map()
+const DASH_RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
+// 経過時間（分）を「n分」「n時間m分」に
+function dashElapsed(min) { min = Math.max(0, Number(min) || 0); return min < 60 ? `${min}分` : `${Math.floor(min / 60)}時間${min % 60 ? (min % 60) + '分' : ''}` }
+
 async function renderDashboard() {
   loading()
   const { data } = await axios.get('/api/admin/dashboard')
   const un = data.unreported
+  DASH_SHIFTS.clear()
+  for (const s of [...data.shifts, ...(data.absent_shifts || [])]) DASH_SHIFTS.set(s.shift_id, s)
+  // 未報告の一覧には、本日の一覧にない前日のシフトも入る
+  for (const u of Object.values(un).flat()) if (!DASH_SHIFTS.has(u.shift_id)) DASH_SHIFTS.set(u.shift_id, { shift_id: u.shift_id, staff_id: u.staff_id, staff_name: u.name, project_name: u.project, work_date: u.work_date, start_time: u.start_time, end_time: u.end_time })
   const kpi = (label, value, icon, color, sub) => `
     <div class="card p-4 min-w-0">
       <div class="flex items-center justify-between">
@@ -72,12 +82,17 @@ async function renderDashboard() {
       </div>
     </div>`
 
-  const alertList = (title, list, color) => `
+  // 未報告の一覧: 予定の時刻を過ぎた人だけ。押すとそのシフトの報告状況（代理入力・報告用URL）を開く
+  const alertList = (title, list, color, isEnd) => `
     <div class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-2">${title}
-        <span class="badge ${list.length ? 'badge-' + color : 'badge-green'} ml-1">${list.length ? list.length + '名' : 'なし'}</span></h3>
-      ${list.length ? `<div class="flex flex-wrap gap-1.5">${list.map(s => `<a href="#staff/${s.staff_id}" class="badge badge-${color} hover:opacity-80">${esc(s.name)}</a>`).join('')}</div>`
-      : '<p class="text-xs text-gray-400">全員報告済みです <i class="fas fa-check text-emerald-500"></i></p>'}
+        <span class="badge ${list.length ? 'badge-' + color : 'badge-green'} ml-1">${list.length ? list.length + '件' : 'なし'}</span></h3>
+      ${list.length ? `<div class="space-y-1 max-h-48 overflow-y-auto">${list.map(s => `
+        <button type="button" class="w-full text-left px-2 py-1 rounded-lg ${color === 'red' ? 'bg-red-50' : 'bg-amber-50'} hover:opacity-80 text-xs" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">
+          <span class="font-bold text-gray-800">${esc(s.name)}</span>${s.work_date !== data.today ? ' <span class="badge badge-gray text-[10px]">前日</span>' : ''}
+          <span class="block text-gray-500">${isEnd ? `${esc(s.end_time)}終了予定・未: ${esc((s.missing || []).map(t => DASH_RS[t] || t).join('・'))}` : `${esc(s.start_time)}開始`}・${dashElapsed(s.overdue_minutes)}経過 ${esc(s.project || '')}</span>
+        </button>`).join('')}</div>`
+      : '<p class="text-xs text-gray-400">予定の時刻を過ぎた未報告はありません <i class="fas fa-check text-emerald-500"></i></p>'}
     </div>`
 
   $app.innerHTML = `
@@ -106,11 +121,13 @@ async function renderDashboard() {
       ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400')}
     </section>
 
-    <section class="grid md:grid-cols-3 gap-4 mb-5" id="unreported-section">
+    <section class="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mb-1" id="unreported-section">
       ${alertList('<i class="fas fa-sun text-amber-500 mr-1"></i>未起床報告', un.wake_up, 'red')}
       ${alertList('<i class="fas fa-person-walking-luggage text-blue-500 mr-1"></i>未出発報告', un.departure, 'yellow')}
-      ${alertList('<i class="fas fa-store text-purple-500 mr-1"></i>未入店報告', un.check_in, 'yellow')}
+      ${alertList('<i class="fas fa-store text-purple-500 mr-1"></i>未入店報告', un.check_in, 'red')}
+      ${alertList('<i class="fas fa-door-open text-gray-500 mr-1"></i>勤務終了・退店の未報告', un.work_end || [], 'yellow', true)}
     </section>
+    <p class="text-[11px] text-gray-400 mb-5">予定の時刻を過ぎた人だけを出します（起床は開始の2時間前、出発は1時間前、入店は開始時刻、勤務終了・退店は終了の30分後。前日分を含む）。名前を押すと代理入力・報告用URLの発行ができます</p>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-5">
       <section class="card p-4" id="todo-section">
@@ -120,7 +137,7 @@ async function renderDashboard() {
             <div class="flex items-start gap-2.5 p-2.5 rounded-lg ${t.level === 'high' ? 'bg-red-50' : 'bg-amber-50'}">
               <i class="fas ${t.level === 'high' ? 'fa-circle-exclamation text-red-500' : 'fa-triangle-exclamation text-amber-500'} mt-0.5"></i>
               <p class="text-sm ${t.level === 'high' ? 'text-red-800' : 'text-amber-800'} flex-1">${esc(t.text)}</p>
-              ${t.staff_id ? `<a href="#staff/${t.staff_id}" class="text-xs text-blue-600 whitespace-nowrap hover:underline">詳細→</a>` : ''}
+              ${t.staff_id ? `<a href="#staff/${Number(t.staff_id)}" class="text-xs text-blue-600 whitespace-nowrap hover:underline">詳細→</a>` : t.href === '#corrections' ? '<a href="#corrections" class="text-xs text-blue-600 whitespace-nowrap hover:underline">確認→</a>' : ''}
             </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">対応すべきタスクはありません <i class="fas fa-check text-emerald-500"></i></p>'}
         </div>
       </section>
@@ -188,33 +205,143 @@ async function renderDashboard() {
           <thead><tr><th>スタッフ</th><th>案件</th><th>時間</th><th>報告状況</th><th>操作</th></tr></thead>
           <tbody>
             ${data.shifts.map(s => {
-              // 有効な報告（案件報告管理の設定）だけを順に表示。緑 = 報告済み / 灰 = 未報告
-              const RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
-              const done = new Set(s.done_types || [])
-              const chips = (s.required_types || []).map(t => `<span class="badge ${done.has(t) ? 'badge-green' : 'badge-gray'} text-[10px]">${esc(RS[t] || t)}</span>`).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
+              // 有効な報告（案件報告管理の設定）だけを順に表示。緑 = 報告済み / 黄 = 修正の申請中 / 灰 = 未報告
+              const done = new Set(s.done_types || []), pend = new Set(s.pending_types || [])
+              const chips = (s.required_types || []).map(t => `<span class="badge ${done.has(t) ? 'badge-green' : pend.has(t) ? 'badge-yellow' : 'badge-gray'} text-[10px]" ${pend.has(t) && !done.has(t) ? 'title="打刻修正の申請中"' : ''}>${esc(DASH_RS[t] || t)}</span>`).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
+              // 入店以降の報告があるシフト・確定済みのシフトは、ここから欠勤にしない（#221）
+              const absentBtn = s.started ? '<span class="text-[11px] text-gray-400" title="入店以降の報告があるため、欠勤にできません">勤務の報告あり</span>'
+                : s.settle_status === 'confirmed' ? '<span class="text-[11px] text-gray-400">確定済み</span>'
+                : `<button type="button" class="text-xs text-red-600 hover:underline" data-action="markAbsent" data-id="${Number(s.shift_id)}">欠勤にする</button>`
               return `<tr>
-                <td><a href="#staff/${s.staff_id}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a></td>
+                <td><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a>
+                  ${s.staff_unavailable ? '<span class="badge badge-red text-[10px]" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}</td>
                 <td class="text-xs">${esc(s.project_name)}</td>
-                <td class="text-xs">${esc(s.start_time)}〜${esc(s.end_time)}</td>
+                <td class="text-xs whitespace-nowrap">${s.carried_over ? `<span class="badge badge-purple text-[10px]">前日から継続</span><br>${esc(dayjs(s.work_date).format('M/D'))} ` : ''}${esc(s.start_time)}〜${esc(s.end_time)}</td>
                 <td><div class="flex flex-wrap gap-1 min-w-[10rem]">${chips}</div></td>
-                <td>
-                  <button class="text-xs text-red-600 hover:underline" onclick="markAbsent(${s.shift_id})">欠勤にする</button>
+                <td class="whitespace-nowrap">
+                  <button type="button" class="text-xs text-blue-600 hover:underline mr-2" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">報告</button>
+                  ${absentBtn}
                 </td>
               </tr>`
             }).join('') || '<tr><td colspan="5" class="text-center text-gray-400 py-4">本日のシフトはありません</td></tr>'}
           </tbody>
         </table>
       </div>
+      ${(data.absent_shifts || []).length ? `
+      <div class="mt-4" id="today-absent">
+        <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-user-xmark text-red-500 mr-1"></i>本日の欠勤（${data.absent_shifts.length}件）</h4>
+        <div class="space-y-1.5">${data.absent_shifts.map(s => `
+          <div class="flex items-center gap-2 flex-wrap p-2 rounded-lg bg-red-50 text-xs">
+            <a href="#staff/${Number(s.staff_id)}" class="font-bold text-gray-800 hover:underline">${esc(s.staff_name)}</a>
+            <span class="text-gray-500">${esc(s.project_name)}・${esc(s.start_time)}〜${esc(s.end_time)}</span>
+            <button type="button" class="btn btn-outline text-xs ml-auto" data-action="findSubstitute" data-id="${Number(s.shift_id)}"><i class="fas fa-user-plus"></i>代わりを探す</button>
+          </div>`).join('')}</div>
+      </div>` : ''}
     </section>`
   if (window.renderChatDashboardNotice) renderChatDashboardNotice()
 }
 
-window.markAbsent = async function (shiftId) {
-  if (!confirm('このシフトを欠勤に変更しますか？')) return
-  await axios.put('/api/admin/shifts/' + shiftId, { status: 'absent' })
-  toast('欠勤として登録しました')
-  renderDashboard()
+// ---------- ダッシュボード: 欠勤・代わりの手配・報告状況 ----------
+// 欠勤にする。押す前に最新の報告を確かめ、入店以降の報告があれば時刻を示して確認する（#221）。成功したら代わりの候補を出す（#216）
+async function markAbsent(shiftId, button) {
+  const s = DASH_SHIFTS.get(shiftId); if (!s) return
+  let started = null
+  try {
+    const { data } = await axios.get(`/api/admin/shifts/${shiftId}/report-status`)
+    started = (data.reports || []).filter(r => ['check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out'].includes(r.report_type))
+      .sort((a, b) => String(a.reported_at).localeCompare(String(b.reported_at)))[0] || null
+  } catch (e) { /* 確かめられなくても、通常の確認で続ける */ }
+  const head = `${s.staff_name}さん（${s.project_name} ${s.start_time}〜${s.end_time}）を欠勤にしますか？\n欠勤のシフトは精算（支払・請求）の対象から外れます。`
+  const msg = started ? `${DASH_RS[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(11, 16)} にあります（勤務した記録があります）。\n${head}` : head
+  if (!confirm(msg)) return
+  await withSubmitLock(button, async () => {
+    try {
+      await axios.put('/api/admin/shifts/' + shiftId, { status: 'absent' })
+    } catch (e) { showApiError(e, '欠勤にできませんでした'); return }
+    toast('欠勤として登録しました')
+    await renderDashboard()
+    openSubstitute(shiftId)
+  })
 }
+delegate('markAbsent', el => markAbsent(Number(el.dataset.id), el))
+
+// 欠勤にしたシフトの代わりの候補（枠のあるシフト: シフトボードの候補 API。枠のないシフト: シフトボードの該当日へ）
+async function openSubstitute(shiftId) {
+  const s = DASH_SHIFTS.get(shiftId); if (!s) return
+  const head = `<h3 class="font-bold text-lg mb-1">代わりのスタッフを探す</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.project_name)}（欠勤: ${esc(s.staff_name)}）</p>`
+  const boardBtn = `<button type="button" class="btn btn-outline w-full mt-2 text-sm" data-action="openBoardAt" data-date="${esc(s.work_date)}" data-project-id="${Number(s.project_id)}"><i class="fas fa-table-cells"></i>シフトボードでこの日を開く</button>`
+  if (!s.slot_role_id) {
+    modal(`${head}<p class="text-sm text-gray-600">このシフトは募集枠に入っていないため、候補の一覧を出せません。シフトボードで代わりのシフトを登録してください。</p>${boardBtn}
+      <button type="button" class="btn btn-outline w-full mt-2 text-sm" onclick="closeModal()">閉じる</button>`)
+    return
+  }
+  let data
+  try { data = (await axios.get('/api/admin/shift-board/candidates?slot_role_id=' + Number(s.slot_role_id))).data } catch (e) { showApiError(e, '候補を読み込めませんでした'); return }
+  const list = (data.candidates || []).filter(c => c.staff_id !== s.staff_id)
+  modal(`${head}
+    <p class="text-[11px] text-gray-400 mb-2">空きのある人・同じ開催場所や案件の経験がある人から順に並べています</p>
+    <div class="max-h-80 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
+      ${list.map(c => `<label class="flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-red-50' : ''}">
+        <input type="radio" name="sub-staff" value="${Number(c.staff_id)}">
+        <span class="flex-1 min-w-0"><span class="font-bold">${esc(c.name)}</span>
+          <span class="block text-[11px] text-gray-500">${c.busy ? `<span class="text-red-600">${esc((c.busy_detail || []).join('、'))}</span>` : '<span class="text-emerald-600">空き</span>'}${c.ng ? '<span class="text-red-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-amber-600 ml-1">休職中</span>' : ''}
+            ・この場所 ${Number(c.site_count) || 0}回・この案件 ${Number(c.project_count) || 0}回</span></span>
+      </label>`).join('') || '<p class="p-3 text-sm text-gray-400">候補がいません</p>'}
+    </div>
+    <button type="button" class="btn btn-primary w-full mt-3" data-action="assignSubstitute" data-id="${Number(shiftId)}">代打として割り当てる</button>
+    ${boardBtn}
+    <button type="button" class="btn btn-outline w-full mt-2 text-sm" onclick="closeModal()">あとで探す</button>`)
+}
+delegate('findSubstitute', el => openSubstitute(Number(el.dataset.id)))
+
+// 選んだスタッフを、欠勤のシフトと同じ枠の役割に代打（substitute）で割り当てる。重複・NG などは確認のうえ続ける
+async function assignSubstitute(shiftId, button) {
+  const s = DASH_SHIFTS.get(shiftId); if (!s) return
+  const picked = document.querySelector('input[name="sub-staff"]:checked')
+  if (!picked) { toast('スタッフを選択してください'); return }
+  const send = (force) => axios.post(`/api/admin/shift-slots/roles/${Number(s.slot_role_id)}/assign`, { staff_ids: [Number(picked.value)], status: 'substitute', ...(force ? { force: true } : {}) })
+  await withSubmitLock(button, async () => {
+    let data
+    try {
+      data = (await send(false)).data
+    } catch (e) {
+      const d = e.response && e.response.data
+      if (!(d && d.need_force)) { showApiError(e, '割り当てに失敗しました'); return }
+      if (!confirm((d.warnings || []).join('\n') + '\n\nこのまま割り当てますか？')) return
+      try { data = (await send(true)).data } catch (e2) { showApiError(e2, '割り当てに失敗しました'); return }
+    }
+    if (!(data.shift_ids || []).length) { toast((data.warnings || []).join('\n') || '割り当てられませんでした'); return }
+    closeModal(); toast('代打として割り当てました'); renderDashboard()
+  })
+}
+delegate('assignSubstitute', el => assignSubstitute(Number(el.dataset.id), el))
+
+// シフトボードを、その日の週・その案件の絞り込みで開く
+delegate('openBoardAt', el => {
+  const d = dayjs(el.dataset.date)
+  if (window.__boardState) {
+    window.__boardState.from = d.subtract((d.day() + 6) % 7, 'day').format('YYYY-MM-DD')
+    window.__boardState.projectIds = [Number(el.dataset.projectId)]
+    window.__boardState.clientId = ''
+  }
+  closeModal()
+  if (location.hash === '#shifts') route(); else location.hash = 'shifts'
+})
+
+// シフトの報告状況（代理入力・報告用URLの発行）をモーダルで開く（public/static/staff-lifecycle.js の renderShiftReportPanel）
+delegate('dashShiftReport', el => {
+  const id = Number(el.dataset.id)
+  const s = DASH_SHIFTS.get(id) || {}
+  modal(`<h3 class="font-bold text-lg mb-1">${esc(s.staff_name || '')}</h3>
+    <p class="text-xs text-gray-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(s.start_time || '')}〜${esc(s.end_time || '')}・${esc(s.project_name || '')}</p>
+    <div id="shift-report-panel" class="mb-3"><p class="text-xs text-gray-400">読み込み中…</p></div>
+    <div class="flex gap-2">
+      ${s.staff_id ? `<a class="btn btn-outline flex-1 text-xs" href="#staff/${Number(s.staff_id)}" onclick="closeModal()">スタッフ詳細</a>` : ''}
+      <button type="button" class="btn btn-outline flex-1 text-xs" onclick="closeModal(); renderDashboard()">閉じて更新</button>
+    </div>`)
+  if (window.renderShiftReportPanel) renderShiftReportPanel(id)
+})
 
 // ============ スタッフ一覧 ============
 let staffCache = []

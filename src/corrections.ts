@@ -321,15 +321,25 @@ function correctionFilter(companyId: number, q: (k: string) => string | undefine
 }
 const CORRECTION_FROM = `FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+const LIST_LIMIT = 300
 correctionsAdminApi.get('/corrections', async (c) => {
   const u = c.get('user')
   const { where, bind } = correctionFilter(u.company_id, k => c.req.query(k))
+  // 承認待ちは待っている時間の長い順（申請の古い順）、それ以外は新しい順。上限を超えたら truncated で知らせる（#226）
   const rows = (await c.env.DB.prepare(`SELECT c.correction_id, c.kind, c.report_type, c.status, c.before_at, c.requested_at, c.reason, c.order_warnings, c.is_exception,
       c.requested_by_name, c.created_at, c.decided_by_name, c.decided_at, c.resubmitted_from, c.shift_id, s.work_date, p.project_name, p.status AS project_status, us.name AS staff_name
     ${CORRECTION_FROM}
-    WHERE ${where} ORDER BY CASE WHEN c.status = 'pending' THEN 0 ELSE 1 END, c.correction_id DESC LIMIT 300`).bind(...bind).all()).results as any[]
-  const counts = (await c.env.DB.prepare(`SELECT status, COUNT(*) AS n FROM attendance_corrections WHERE company_id = ? GROUP BY status`).bind(u.company_id).all()).results as any[]
-  return c.json({ corrections: rows.map(r => ({ ...r, order_warnings: parseWarnings(r) })), counts: Object.fromEntries(counts.map(r => [r.status, r.n])), labels: REPORT_LABEL })
+    WHERE ${where} ORDER BY CASE WHEN c.status = 'pending' THEN 0 ELSE 1 END,
+      CASE WHEN c.status = 'pending' THEN c.created_at END ASC, CASE WHEN c.status = 'pending' THEN c.correction_id END ASC, c.correction_id DESC
+    LIMIT ${LIST_LIMIT + 1}`).bind(...bind).all()).results as any[]
+  const truncated = rows.length > LIST_LIMIT
+  // タブの件数は、状態以外の絞り込みを反映して数える
+  const f = correctionFilter(u.company_id, k => (k === 'status' ? undefined : c.req.query(k)))
+  const counts = (await c.env.DB.prepare(`SELECT c.status, COUNT(*) AS n ${CORRECTION_FROM} WHERE ${f.where} GROUP BY c.status`).bind(...f.bind).all()).results as any[]
+  return c.json({
+    corrections: rows.slice(0, LIST_LIMIT).map(r => ({ ...r, order_warnings: parseWarnings(r) })),
+    counts: Object.fromEntries(counts.map(r => [r.status, r.n])), labels: REPORT_LABEL, truncated, limit: LIST_LIMIT,
+  })
 })
 
 // CSV（一覧と同じ絞り込み。管理者のみ: /api/admin/* のため管理ロール以外は 403）

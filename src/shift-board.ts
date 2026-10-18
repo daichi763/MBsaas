@@ -597,7 +597,8 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   if (!role) return c.json({ error: '枠が見つかりません' }, 404)
   const staffIds: number[] = [...new Set(((Array.isArray(b.staff_ids) ? b.staff_ids : [b.staff_id]) as any[]).map(Number).filter(Boolean))]
   if (!staffIds.length) return c.json({ error: 'スタッフを選択してください' }, 400)
-  const status = ['confirmed', 'requested'].includes(b.status) ? b.status : 'confirmed'
+  // substitute: ダッシュボードで欠勤にしたシフトの代わりを割り当てるとき（#216）
+  const status = ['confirmed', 'requested', 'substitute'].includes(b.status) ? b.status : 'confirmed'
   // 退職・統合・取引終了などは割り当てない。重複・NG・休職中・割当済みは確認のうえ force で続ける（#119 #354）
   const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffIds, workDate: role.work_date, start: role.start_time, end: role.end_time })
   if (chk.error) return c.json({ error: chk.error }, chk.status)
