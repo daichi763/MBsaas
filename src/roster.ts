@@ -520,15 +520,18 @@ rosterApi.post('/link', async (c) => {
   // 自社にその人の行がまだないときだけ作る。link_key の一意インデックス（0041）でも重複を防ぐ
   const notYet = 'NOT EXISTS (SELECT 1 FROM staff_profiles x WHERE x.company_id = ? AND x.person_id = ?)'
   const newUser = 'SELECT user_id FROM users WHERE company_id = ? AND user_code = ?'
+  const linkKey = `${u.company_id}:${src.person_id}`
   let res: D1Result[]
   try {
     res = await db.batch([
+      // 統合（staff-merge）で人物IDが付け替わった行に残る古い link_key は外す（別の人の連携が一意インデックスに当たらないように）
+      db.prepare('UPDATE staff_profiles SET link_key = NULL WHERE link_key = ? AND person_id IS NOT ?').bind(linkKey, src.person_id),
       db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id, retired_at)
         SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${notYet}`)
         .bind(u.company_id, userCode, src.name, linkedRole, await unusablePasswordHash(), src.person_id, src.root_retired_at || null, u.company_id, src.person_id),
       db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, source_staff_id, root_staff_id, affiliation, link_key, created_at)
         SELECT user_id, ?, ?, ?, 'linked_external', ?, ?, ?, ?, ? FROM users WHERE user_id = (${newUser}) AND ${notYet}`)
-        .bind(u.company_id, src.person_id, src.company_id, src.staff_id, src.root_staff_id, src.owner_company_name, `${u.company_id}:${src.person_id}`, now,
+        .bind(u.company_id, src.person_id, src.company_id, src.staff_id, src.root_staff_id, src.owner_company_name, linkKey, now,
           u.company_id, userCode, u.company_id, src.person_id),
       // 同意の日時は日本時間で保存する（#255。既定値の CURRENT_TIMESTAMP は UTC）
       db.prepare(`INSERT INTO roster_consents (company_id, user_id, person_id, source_staff_id, source_company_id, staff_id, consent_version, shared_scope, agreed, ip_address, user_agent, created_at)
@@ -542,7 +545,7 @@ rosterApi.post('/link', async (c) => {
     if (dup) return c.json({ error: 'このスタッフは既に連携済みです', staff_id: dup.staff_id }, 409)
     throw e
   }
-  if (!res[1].meta.changes) {
+  if (!res[2].meta.changes) {
     const dup = await findLinked()
     return c.json({ error: 'このスタッフは既に連携済みです', staff_id: dup?.staff_id ?? null }, 409)
   }
