@@ -17,7 +17,7 @@ import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, loadReportState, reportableTypes, reportedAtMinute } from './report-settings'
 import { isTentativeShift } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
-import { correctionsAdminApi, correctionsStaffApi } from './corrections'
+import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -2305,44 +2305,82 @@ api.put('/admin/shifts/:id', async (c) => {
   // 付け替え先は割り当てられるスタッフのみ（退職・統合済み・スキルシートのみ・取引終了は不可）。重複・NG・休職中は確認のうえ
   // 付け替えたシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
   const staffChanged = b.staff_id != null && Number(b.staff_id) !== cur.staff_id
+  const newStaffId = staffChanged ? Number(b.staff_id) : cur.staff_id
   if (staffChanged) {
     const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: cur.project_id, slot: cur.slot_role_id ? { slot_role_id: cur.slot_role_id } : null,
-      staffId: Number(b.staff_id), workDate: cur.work_date, start: b.start_time ?? cur.start_time, end: b.end_time ?? cur.end_time, excludeShiftId: cur.shift_id })
+      staffId: newStaffId, workDate: cur.work_date, start: b.start_time ?? cur.start_time, end: b.end_time ?? cur.end_time, excludeShiftId: cur.shift_id })
     if (chk.error) return c.json({ error: chk.error }, chk.status)
-    if (chk.warnings.length && !b.force) return c.json({ warnings: chk.warnings, need_force: true }, 409)
+    // 報告済み・打刻修正の申請中のシフトの差し替えは、確認してから行う（報告は新しい担当者に付け替え、前の担当者の申請は取り消す。#115 #101）
+    const warnings = [...chk.warnings]
+    const rep = await c.env.DB.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) AS a, (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS d')
+      .bind(cur.shift_id, cur.shift_id).first() as any
+    if (Number(rep?.a || 0) + Number(rep?.d || 0) > 0)
+      warnings.push(`このシフトには勤怠報告${Number(rep?.a || 0)}件・日報${Number(rep?.d || 0)}件があります。差し替えると、これらの報告は新しいスタッフの報告として扱います（前のスタッフが勤務した場合は、欠勤にして新しいシフトを作ってください）`)
+    const pend = await pendingCorrectionCount(c.env.DB, cur.shift_id, newStaffId)
+    if (pend) warnings.push(`承認待ちの打刻修正申請が${pend}件あります。差し替えると取り消して申請者に知らせます`)
+    if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
   } else if (b.status != null && b.status !== 'absent' && cur.status === 'absent') {
     // 欠勤から戻すときも、退職・取引終了などの人には戻さない
     const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: cur.project_id, slot: null, staffId: cur.staff_id, workDate: cur.work_date, start: cur.start_time, end: cur.end_time })
     if (chk.error) return c.json({ error: chk.error }, chk.status)
   }
-  try {
-    await c.env.DB.prepare(`UPDATE shifts SET
+  // 担当者・時間が変わったら、スタッフの『入れます』などの返事を消す（別の人・別の時間には答えていない。#411 の残り）
+  const timeChanged = (b.start_time != null && b.start_time !== cur.start_time) || (b.end_time != null && b.end_time !== cur.end_time)
+  const db = c.env.DB, sid = cur.shift_id
+  const stmts: D1PreparedStatement[] = [db.prepare(`UPDATE shifts SET
         status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
         staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo),
-        legacy_duplicate = CASE WHEN ? = 1 THEN NULL ELSE legacy_duplicate END
+        legacy_duplicate = CASE WHEN ? = 1 THEN NULL ELSE legacy_duplicate END,
+        staff_reply = CASE WHEN ? = 1 THEN NULL ELSE staff_reply END, staff_reply_note = CASE WHEN ? = 1 THEN NULL ELSE staff_reply_note END,
+        staff_reply_at = CASE WHEN ? = 1 THEN NULL ELSE staff_reply_at END
       WHERE shift_id = ? AND company_id = ?`)
-      .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, staffChanged ? 1 : 0, c.req.param('id'), u.company_id).run()
+    .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, staffChanged ? 1 : 0,
+      ...Array(3).fill(staffChanged || timeChanged ? 1 : 0), sid, u.company_id)]
+  const cancelToken = newCancelToken()
+  if (staffChanged) {
+    stmts.push(
+      // 報告を新しい担当者に付け替える（前の担当者の staff_id のまま残ると、退職後の定期削除で他人の記録が消える・削除が失敗する。#115）
+      db.prepare('UPDATE attendance_reports SET staff_id = ? WHERE shift_id = ?').bind(newStaffId, sid),
+      db.prepare('UPDATE daily_reports SET staff_id = ? WHERE shift_id = ?').bind(newStaffId, sid),
+      // 前の担当者に送った報告用URLは使えなくする（#81）
+      db.prepare('UPDATE shift_report_tokens SET revoked = 1 WHERE shift_id = ? AND revoked = 0').bind(sid),
+      // 前の担当者の承認待ちの打刻修正申請は取り消す（#101）
+      ...autoCancelStatements(db, sid, 'staff_changed', actorOf(u), cancelToken, newStaffId),
+    )
+  }
+  try {
+    await db.batch(stmts)
   } catch (e) {
     // 欠勤から戻すなどで、同じ枠に同じ人の有効なシフトが2件になる（一意インデックス #530）
     if (isUniqueViolation(e)) return c.json({ error: '同じ枠に、このスタッフの有効なシフトがすでにあります' }, 409)
     throw e
   }
+  const cancelled = staffChanged ? await notifyAutoCancelled(c, sid, cancelToken) : 0
   // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
   if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
-  return c.json({ ok: true })
+  // 欠勤にしたシフトの承認待ちは承認できない（却下が必要）ので、件数を返す（#70）
+  const pendingAbsent = b.status === 'absent' && cur.status !== 'absent' ? await pendingCorrectionCount(db, sid) : 0
+  return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}), ...(pendingAbsent ? { pending_corrections: pendingAbsent } : {}) })
 })
 
 api.delete('/admin/shifts/:id', async (c) => {
   const u = c.get('user')
-  const cur = await c.env.DB.prepare('SELECT settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
-  if (cur?.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトは削除できません。精算画面で確定を取り消してください' }, 409)
+  const cur = await c.env.DB.prepare('SELECT shift_id, settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!cur) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (cur.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトは削除できません。精算画面で確定を取り消してください' }, 409)
   // 勤怠・日報の報告があるシフトは削除できない（記録を残すため。欠勤などに変更する）
   const rep = await c.env.DB.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) + (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS n')
     .bind(c.req.param('id'), c.req.param('id')).first() as any
   if (rep?.n > 0) return c.json({ error: '勤怠・日報の報告があるシフトは削除できません。状態を「欠勤」などに変更してください' }, 409)
-  await c.env.DB.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
-  await c.env.DB.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
-  return c.json({ ok: true })
+  // 承認待ちの打刻修正申請（打刻漏れの追加）は、処理できなくなるので『取り消し（シフト削除）』にして申請者に知らせる（#70）
+  const db = c.env.DB, cancelToken = newCancelToken()
+  await db.batch([
+    ...autoCancelStatements(db, cur.shift_id, 'shift_deleted', actorOf(u), cancelToken),
+    db.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
+    db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
+  ])
+  const cancelled = await notifyAutoCancelled(c, cur.shift_id, cancelToken)
+  return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}) })
 })
 
 // 日報一覧

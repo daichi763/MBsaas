@@ -430,7 +430,7 @@
       <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
         <span class="text-gray-400">${d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
-        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : r && r.entry_method === 'correction' ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
+        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') + correctedNote(r, d.work_date) : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
       <div class="grid grid-cols-2 gap-2">
@@ -466,6 +466,9 @@
   const reportStatusCache = {}
   // 'YYYY-MM-DD HH:MM:SS' を表示用に（稼働日と違う日付なら M/D を付ける）
   const atLabel = (at, workDate) => at ? (String(at).slice(0, 10) !== workDate ? dayjs(at).format('M/D HH:mm') : dayjs(at).format('HH:mm')) : ''
+  // 打刻修正の承認で直した報告の注記（元の打刻の日時。位置・写真は元の打刻のもの。#252）
+  const correctedNote = (r, workDate) => r.original_reported_at ? ` ・打刻修正で変更（元: ${esc(atLabel(r.original_reported_at, workDate))}）`
+    : (r.corrected_by_correction_id || r.entry_method === 'correction') ? ' ・打刻修正で追加' : ''
   window.openProxyAttendance = function (shiftId) {
     const box = document.getElementById('shift-report-box'); const d = reportStatusCache[shiftId]; if (!box || !d) return
     if (document.getElementById('proxy-form')) return
