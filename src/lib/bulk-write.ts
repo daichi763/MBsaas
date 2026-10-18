@@ -28,12 +28,14 @@ export function insertRowsStmts(db: D1Database, table: string, cols: string[], r
   return chunk(rows, ROWS_PER_STATEMENT).map(part => db.prepare(sql).bind(JSON.stringify(part.map(r => pick(r, cols)))))
 }
 
-// where は更新先の表の列を「表名.列名」で書く追加の条件（例: 'shifts.company_id = ?'）。binds はその値
+// where は更新先の表の列を「表名.列名」で書く追加の条件（例: 'shifts.company_id = ?'）。binds はその値。
+// where は +( ) で囲み、索引の条件に使わせない。company_id などの索引が使われると、更新先の表をその条件で全件読み、
+// 1行ごとに json_each を読み直すため（行数 × 100 回）、キーの主キーで1行ずつ引く形にする
 export function updateRowsStmts(db: D1Database, table: string, key: string, cols: string[], rows: Record<string, any>[], where: string, binds: any[] = []): D1PreparedStatement[] {
   assertNames([table, key, ...cols])
   const sql = `UPDATE ${table} SET ${cols.map((c, i) => `${c} = j.v${i}`).join(', ')}
     FROM (SELECT json_extract(value, '$.${key}') AS k, ${cols.map((c, i) => `json_extract(value, '$.${c}') AS v${i}`).join(', ')} FROM json_each(?)) AS j
-    WHERE ${table}.${key} = j.k${where ? ' AND ' + where : ''}`
+    WHERE ${table}.${key} = j.k${where ? ` AND +(${where})` : ''}`
   return chunk(rows, ROWS_PER_STATEMENT).map(part => db.prepare(sql).bind(JSON.stringify(part.map(r => pick(r, [key, ...cols]))), ...binds))
 }
 
