@@ -212,10 +212,11 @@ function homeNoticesHtml(data) {
     </section>`
 }
 
-// 相談バナー（管理者から返信がある場合）
+// 相談バナー（管理者からの返信をまだ読んでいない場合）。相談・連絡の画面を開くと既読になって消える（#320）
 function homeConsultBannerHtml(data) {
-  return data.replied_consultations ? `<div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-800" role="alert">
-      <i class="fas fa-reply mr-1"></i>管理者から相談への返信があります</div>` : ''
+  const n = Number(data.replied_consultations) || 0
+  return n ? `<a href="#consult" class="block bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-800" role="alert">
+      <i class="fas fa-reply mr-1"></i>管理者から相談への返信があります（${n}件） <span class="underline font-bold ml-1">確認する</span></a>` : ''
 }
 
 // メニュー
@@ -759,7 +760,8 @@ async function renderReport() {
           flags_explicit: true
         })
       } catch (err) {
-        showApiError(err, '日報の送信に失敗しました')
+        // 通信できなかったときは電波の案内を出す。入力した内容はそのまま残す（#194）
+        showApiError(err, err && err.response ? '日報の送信に失敗しました' : '通信に失敗しました。電波の良い場所で再度お試しください（入力した内容は残っています）')
         return
       }
       toast('日報を提出しました。お疲れさまでした！')
@@ -885,23 +887,65 @@ window.markRead = async function (id) {
   renderNotices()
 }
 
+// ============ 相談・連絡 ============
+// 送り先の会社と対象のシフトを選べる（#222 #195）。カテゴリは未選択から始める（#235）。
+// 送信中はボタンを押せず、失敗したら入力を残したままエラーを出す（#194）。開いたら管理者の返信を既読にする（#320）
+const CONSULT_NET_ERROR = '通信に失敗しました。電波の良い場所で再度お試しください'
+function consultApiError(e, fallback) { return showApiError(e, e && e.response ? fallback : CONSULT_NET_ERROR) }
+const CONSULT_ST_BADGE = { open: '<span class="badge badge-yellow">未対応</span>', in_progress: '<span class="badge badge-blue">対応中</span>', done: '<span class="badge badge-green">対応済</span>' }
+// 対象のシフトを選ばないと送れないカテゴリ（選べるシフトがある場合だけ）
+const CONSULT_SHIFT_REQUIRED = ['absence']
+
+function consultShiftLabel(s, multi) {
+  return `${fmtDate(s.work_date)} ${s.start_time}〜${s.end_time} ${s.project_name || ''}${multi ? `（${s.company_name}）` : ''}${s.status === 'requested' ? '［希望（仮）］' : ''}`
+}
+
 window.renderConsult = async function () {
   loading()
-  const { data } = await axios.get('/api/staff/consultations')
-  const stBadge = { open: '<span class="badge badge-yellow">未対応</span>', in_progress: '<span class="badge badge-blue">対応中</span>', done: '<span class="badge badge-green">対応済</span>' }
+  // ヘッダーと下のメニューは『その他』の扱い（#consult から開いた場合も）
+  document.getElementById('header-title').textContent = '相談・連絡'
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === 'more'))
+  let data
+  try { data = (await axios.get('/api/staff/consultations')).data } catch (e) {
+    $app.innerHTML = `<section class="card p-4 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || (e && e.response ? '相談・連絡を読み込めませんでした' : CONSULT_NET_ERROR))}</p>
+      <button class="btn btn-outline" data-action="consultReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
+    return
+  }
+  const companies = data.companies || []
+  const targets = data.targets || []
+  const multi = companies.length > 1
+  const coName = (cid) => (companies.find(c => c.company_id === cid) || {}).company_name || ''
+  // 既定の対象: 今日のシフト（複数あれば最初のもの）。既定の送り先: そのシフトの会社、なければ今の会社
+  const todayShift = targets.find(s => s.work_date === data.today)
   $app.innerHTML = `
     <h2 class="font-bold text-gray-800 mb-3 px-1"><i class="fas fa-comments text-blue-600 mr-1"></i>相談・連絡</h2>
     <section class="card p-4 mb-4">
       <form id="consult-form" class="space-y-3">
         <div>
-          <label class="text-sm text-gray-600 block mb-1">カテゴリ</label>
-          <select id="c-cat" class="inp">
-            ${Object.entries(CAT_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+          <label class="text-sm text-gray-600 block mb-1" for="c-cat">カテゴリ</label>
+          <select id="c-cat" class="inp" required>
+            <option value="">選択してください</option>
+            ${Object.entries(CAT_LABELS).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('')}
           </select>
         </div>
         <div>
-          <label class="text-sm text-gray-600 block mb-1">内容</label>
-          <textarea id="c-body" rows="3" class="inp" placeholder="相談内容を入力してください" required></textarea>
+          <label class="text-sm text-gray-600 block mb-1" for="c-shift">対象のシフト</label>
+          <select id="c-shift" class="inp">
+            <option value="">シフトを選ばない（シフト以外の相談）</option>
+            ${targets.map(s => `<option value="${esc(s.shift_id)}" ${todayShift && todayShift.shift_id === s.shift_id ? 'selected' : ''}>${esc(consultShiftLabel(s, multi))}</option>`).join('')}
+          </select>
+          <p class="text-xs text-gray-400 mt-1">${targets.length ? '遅刻・欠勤の連絡は、対象のシフトを選んでください（前日〜7日後のシフトを表示）' : '前日〜7日後のシフトはありません'}</p>
+        </div>
+        <div>
+          <label class="text-sm text-gray-600 block mb-1" for="c-company">送り先</label>
+          ${multi ? `<select id="c-company" class="inp">
+              ${companies.map(c => `<option value="${esc(c.company_id)}" ${c.company_id === data.current_company_id ? 'selected' : ''}>${esc(c.company_name)}</option>`).join('')}
+            </select>` : `<p class="text-sm font-bold text-gray-800">${esc(companies[0] ? companies[0].company_name : '')}</p>`}
+          <p id="c-company-note" class="text-xs text-gray-400 mt-1">${multi ? '選んだ会社の管理者に届きます。シフトを選ぶと、そのシフトの会社に届きます' : 'この会社の管理者に届きます'}</p>
+        </div>
+        <div>
+          <label class="text-sm text-gray-600 block mb-1" for="c-body">内容</label>
+          <textarea id="c-body" rows="4" class="inp" maxlength="2000" placeholder="相談内容を入力してください" required></textarea>
         </div>
         <div>
           <label class="text-sm text-gray-600 block mb-1">緊急度</label>
@@ -911,36 +955,71 @@ window.renderConsult = async function () {
             <label class="flex items-center justify-center gap-1 border border-gray-200 rounded-lg py-2 text-sm has-[:checked]:bg-red-50 has-[:checked]:border-red-400"><input type="radio" name="urgency" value="high" class="hidden">高</label>
           </div>
         </div>
-        <button type="submit" class="btn btn-primary w-full">送信する</button>
+        <button type="submit" id="consult-submit" class="btn btn-primary w-full">送信する</button>
       </form>
     </section>
     <h3 class="font-bold text-gray-700 mb-2 px-1">相談履歴</h3>
     <div class="space-y-2">
-      ${data.consultations.map(co => `
-        <div class="card p-4">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="badge badge-gray">${CAT_LABELS[co.category] || co.category}</span>
+      ${(data.consultations || []).map(co => `
+        <div class="card p-4 ${co.reply_unread ? 'ring-2 ring-blue-300' : ''}">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
+            <span class="badge badge-gray">${esc(CAT_LABELS[co.category] || co.category)}</span>
             ${co.urgency === 'high' ? '<span class="badge badge-red">緊急</span>' : ''}
-            ${stBadge[co.status] || ''}
-            <span class="text-xs text-gray-400 ml-auto">${dayjs(co.created_at).format('M/D HH:mm')}</span>
+            ${CONSULT_ST_BADGE[co.status] || ''}
+            ${co.reply_unread ? '<span class="badge badge-blue">新しい返信</span>' : ''}
+            <span class="text-xs text-gray-400 ml-auto">${dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm')}</span>
           </div>
-          <p class="text-sm text-gray-700 whitespace-pre-wrap">${esc(co.body)}</p>
-          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信</p><p class="text-sm text-blue-900">${esc(co.manager_reply)}</p></div>` : ''}
+          ${multi || co.target_date ? `<p class="text-xs text-gray-500 mb-1">${multi ? `<i class="fas fa-building mr-1"></i>${esc(co.company_name)}` : ''}${multi && co.target_date ? '・' : ''}${co.target_date ? `対象: ${esc(fmtDate(co.target_date))} ${esc(co.target_project_name || '')}` : ''}</p>` : ''}
+          <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
+          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信</p><p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${esc(co.manager_reply)}</p></div>` : ''}
         </div>`).join('') || '<p class="text-center text-gray-400 py-6">相談履歴はありません</p>'}
     </div>`
-  document.getElementById('consult-form').addEventListener('submit', async (e) => {
+
+  // シフトを選んだら、送り先はそのシフトの会社に固定する
+  const shiftSel = document.getElementById('c-shift')
+  const companySel = document.getElementById('c-company')
+  const syncCompany = () => {
+    const s = targets.find(x => String(x.shift_id) === shiftSel.value)
+    if (companySel) {
+      if (s) companySel.value = String(s.company_id)
+      companySel.disabled = !!s
+    }
+    const note = document.getElementById('c-company-note')
+    if (note && multi) note.textContent = s ? `このシフトの会社（${s.company_name}）の管理者に届きます` : '選んだ会社の管理者に届きます。シフトを選ぶと、そのシフトの会社に届きます'
+  }
+  shiftSel.addEventListener('change', syncCompany)
+  syncCompany()
+
+  // 返信を表示したので既読にする（失敗しても表示はそのまま。次に開いたときにもう一度既読にする）
+  if ((data.consultations || []).some(co => co.reply_unread)) axios.post('/api/staff/consultations/read-replies').catch(() => { })
+
+  document.getElementById('consult-form').addEventListener('submit', (e) => {
     e.preventDefault()
+    const category = document.getElementById('c-cat').value
     const body = document.getElementById('c-body').value.trim()
-    if (!body) return
-    await axios.post('/api/staff/consultations', {
-      category: document.getElementById('c-cat').value,
-      body,
-      urgency: (document.querySelector('input[name=urgency]:checked') || {}).value || 'normal'
+    if (!category) { toast('カテゴリを選んでください'); return }
+    if (!body) { toast('内容を入力してください'); return }
+    const shiftId = shiftSel.value
+    if (!shiftId && targets.length && CONSULT_SHIFT_REQUIRED.includes(category)) { toast('対象のシフトを選んでください'); shiftSel.focus(); return }
+    const payload = { category, body, urgency: (document.querySelector('input[name=urgency]:checked') || {}).value || 'normal' }
+    if (shiftId) payload.shift_id = Number(shiftId)
+    else payload.company_id = companySel ? Number(companySel.value) : data.current_company_id
+    const btn = document.getElementById('consult-submit')
+    withSubmitLock(btn, async () => {
+      btn.textContent = '送信中…'
+      let res
+      try { res = (await axios.post('/api/staff/consultations', payload)).data } catch (err) {
+        btn.textContent = '送信する'
+        consultApiError(err, '送信に失敗しました。時間をおいてもう一度お試しください')
+        return
+      }
+      const to = res.company_name || coName(payload.company_id)
+      toast(`${to ? to + 'に' : ''}送信しました。管理者からの返信をお待ちください`)
+      renderConsult()
     })
-    toast('送信しました。管理者からの返信をお待ちください')
-    renderConsult()
   })
 }
+delegate('consultReload', () => renderConsult())
 
 window.renderManual = function () {
   $app.innerHTML = `
@@ -977,6 +1056,9 @@ function route() {
   document.getElementById('header-title').textContent = titles[tab] || 'ホーム'
   fn()
 }
+
+// 相談・連絡（ホームの返信バナーから開く。#320）
+routes.consult = () => renderConsult()
 
 window.addEventListener('hashchange', route)
 

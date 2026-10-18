@@ -2145,40 +2145,111 @@ window.closeFollow = async function (id) {
 }
 
 // ============ 相談対応 ============
+// 状態で絞り、ページ送りで古い相談まで見られる（#90）。対象のシフト（日付・案件）を出し、シフトボードで開ける（#195）。
+// 本文・返信は改行を保って表示し、返信は複数行のモーダルで書く（#422）
+const CONSULT_ST_BADGE = { open: '<span class="badge badge-red">未対応</span>', in_progress: '<span class="badge badge-blue">対応中</span>', done: '<span class="badge badge-green">対応済</span>' }
+const CONSULT_TABS = [['active', '未完了'], ['open', '未対応'], ['in_progress', '対応中'], ['done', '対応済み'], ['all', 'すべて']]
+const CONSULT_VIEW = { status: 'active', page: 1, list: [] }
+
 async function renderConsult() {
   loading()
-  const { data } = await axios.get('/api/admin/consultations')
-  const stBadge = { open: '<span class="badge badge-red">未対応</span>', in_progress: '<span class="badge badge-blue">対応中</span>', done: '<span class="badge badge-green">対応済</span>' }
+  let data
+  try {
+    data = (await axios.get('/api/admin/consultations?' + new URLSearchParams({ status: CONSULT_VIEW.status, page: String(CONSULT_VIEW.page) }))).data
+  } catch (e) {
+    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">相談対応</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '相談を読み込めませんでした')}</p>
+      <button class="btn btn-outline" data-action="consultReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
+    return
+  }
+  CONSULT_VIEW.list = data.consultations || []
+  const counts = data.counts || {}
+  const tabCount = { active: (counts.open || 0) + (counts.in_progress || 0), open: counts.open || 0, in_progress: counts.in_progress || 0, done: counts.done || 0, all: (counts.open || 0) + (counts.in_progress || 0) + (counts.done || 0) }
+  const pages = Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 50)))
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">相談対応</h2>
+    <div class="flex gap-2 flex-wrap mb-4">
+      ${CONSULT_TABS.map(([k, l]) => `<button class="btn ${data.status === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="consultTab" data-status="${esc(k)}">${esc(l)}（${tabCount[k]}）</button>`).join('')}
+    </div>
     <div class="space-y-3">
-      ${data.consultations.map(co => `
+      ${CONSULT_VIEW.list.map(co => `
         <section class="card p-4">
           <div class="flex items-center gap-2 flex-wrap mb-1">
             <span class="badge badge-gray">${esc(CAT_LABELS[co.category] || co.category)}</span>
             ${co.urgency === 'high' ? '<span class="badge badge-red">緊急</span>' : ''}
-            <a href="#staff/${co.staff_id}" class="font-bold text-blue-700 hover:underline">${esc(co.staff_name)}</a>
-            <span class="text-xs text-gray-400">${dayjs(co.created_at).format('M/D HH:mm')}</span>
-            <span class="ml-auto">${stBadge[co.status] || ''}</span>
+            <a href="#staff/${Number(co.staff_id)}" class="font-bold text-blue-700 hover:underline">${esc(co.staff_name)}</a>
+            <span class="text-xs text-gray-400">${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</span>
+            <span class="ml-auto">${CONSULT_ST_BADGE[co.status] || ''}</span>
           </div>
-          <p class="text-sm text-gray-700">${esc(co.body)}</p>
-          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>` : ''}
+          ${co.target_date ? `<p class="text-xs text-gray-600 mb-1"><i class="fas fa-calendar-day mr-1 text-gray-400"></i>対象: ${esc(dayjs(co.target_date).format('M/D'))} ${esc(co.target_project_name || '')}
+            <button class="text-blue-700 hover:underline ml-1" data-action="consultOpenBoard" data-date="${esc(co.target_date)}" data-project-id="${esc(co.target_project_id || '')}">シフトボードで見る</button>
+            ${co.target_project_id && !co.target_shift_id ? '<span class="text-gray-400 ml-1">（該当のシフトは見つかりません）</span>' : ''}</p>` : ''}
+          <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
+          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>` : ''}
           <div class="flex gap-2 mt-3">
-            <button class="btn btn-outline text-xs" onclick="replyConsult(${co.consultation_id})"><i class="fas fa-reply"></i>返信する</button>
-            ${co.status !== 'done' ? `<button class="btn btn-outline text-xs" onclick="closeConsult(${co.consultation_id})"><i class="fas fa-check"></i>対応済みにする</button>` : ''}
+            <button class="btn btn-outline text-xs" data-action="consultReply" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>${co.manager_reply ? '返信を書き直す' : '返信する'}</button>
+            ${co.status !== 'done' ? `<button class="btn btn-outline text-xs" data-action="consultClose" data-id="${Number(co.consultation_id)}"><i class="fas fa-check"></i>対応済みにする</button>` : ''}
           </div>
-        </section>`).join('') || '<p class="text-center text-gray-400 py-10">相談はありません</p>'}
-    </div>`
+        </section>`).join('') || '<p class="text-center text-gray-400 py-10">該当する相談はありません</p>'}
+    </div>
+    ${pages > 1 ? `<div class="flex items-center justify-center gap-3 mt-4 text-sm">
+      <button class="btn btn-outline text-xs" data-action="consultPage" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
+      <span class="text-gray-600">${data.page} / ${pages}ページ（${data.total}件）</span>
+      <button class="btn btn-outline text-xs" data-action="consultPage" data-page="${data.page + 1}" ${data.page >= pages ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
+    </div>` : ''}`
 }
-window.replyConsult = async function (id) {
-  const reply = prompt('返信内容を入力してください')
-  if (!reply) return
-  await axios.put('/api/admin/consultations/' + id, { manager_reply: reply, status: 'in_progress' })
-  toast('返信しました'); renderConsult()
+delegate('consultReload', () => renderConsult())
+delegate('consultTab', el => { CONSULT_VIEW.status = el.dataset.status; CONSULT_VIEW.page = 1; renderConsult() })
+delegate('consultPage', el => { CONSULT_VIEW.page = Math.max(1, Number(el.dataset.page) || 1); renderConsult() })
+// 対象の日を含む週（月曜始まり）と案件でシフトボードを開く
+delegate('consultOpenBoard', el => {
+  const d = dayjs(el.dataset.date)
+  const BS = window.__boardState
+  if (BS && d.isValid()) {
+    BS.from = d.subtract((d.day() + 6) % 7, 'day').format('YYYY-MM-DD')
+    BS.clientId = ''
+    BS.projectIds = el.dataset.projectId ? [Number(el.dataset.projectId)] : []
+  }
+  location.hash = 'shifts'
+})
+delegate('consultReply', el => replyConsult(Number(el.dataset.id)))
+delegate('consultClose', el => closeConsult(Number(el.dataset.id), el))
+
+// 返信は相談の本文を見ながら複数行で書く（#422）。未対応の相談は返信で『対応中』にする
+window.replyConsult = function (id) {
+  const co = CONSULT_VIEW.list.find(x => x.consultation_id === id)
+  if (!co) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">相談への返信</h3>
+    <p class="text-xs text-gray-500 mb-2">${esc(co.staff_name)}・${esc(CAT_LABELS[co.category] || co.category)}・${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</p>
+    <div class="bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-700 whitespace-pre-wrap break-words max-h-48 overflow-y-auto mb-3">${esc(co.body)}</div>
+    <label class="text-sm text-gray-600 block mb-1" for="consult-reply">返信</label>
+    <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください">${esc(co.manager_reply || '')}</textarea>
+    <p class="text-xs text-gray-400 mt-1">スタッフのアプリに通知され、ホームに『返信があります』と表示されます</p>
+    <div class="flex justify-end gap-2 mt-4">
+      <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="consult-reply-send" data-action="consultReplySend" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>返信する</button>
+    </div>`)
+  const ta = document.getElementById('consult-reply')
+  if (ta) ta.focus()
 }
-window.closeConsult = async function (id) {
-  await axios.put('/api/admin/consultations/' + id, { status: 'done' })
-  toast('対応済みにしました'); renderConsult()
+delegate('consultReplySend', el => {
+  const id = Number(el.dataset.id)
+  const co = CONSULT_VIEW.list.find(x => x.consultation_id === id)
+  const reply = (document.getElementById('consult-reply') || {}).value || ''
+  if (!reply.trim()) { toast('返信内容を入力してください'); return }
+  withSubmitLock(el, async () => {
+    try {
+      await axios.put('/api/admin/consultations/' + id, { manager_reply: reply, ...(co && co.status === 'open' ? { status: 'in_progress' } : {}) })
+    } catch (e) { showApiError(e, '返信を保存できませんでした'); return }
+    closeModal(); toast('返信しました'); renderConsult()
+  })
+})
+window.closeConsult = async function (id, btn) {
+  await withSubmitLock(btn, async () => {
+    try { await axios.put('/api/admin/consultations/' + id, { status: 'done' }) } catch (e) { showApiError(e, '対応済みにできませんでした'); return }
+    toast('対応済みにしました'); renderConsult()
+  })
 }
 
 // ============ 請求前確認 ============

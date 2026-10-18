@@ -172,14 +172,16 @@
       <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
         ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
       <div class="space-y-2">${d.notifications.map(n => `
-        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" onclick="notifOpenStaff(${n.notification_id})">
+        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" onclick="notifOpenStaff(${n.notification_id}${n.kind === 'consult_reply' ? ", 'consult'" : ''})">
           <div class="flex items-center gap-2">${n.read_at ? '<span class="badge badge-gray">既読</span>' : '<span class="badge badge-blue">未読</span>'}<span class="text-[11px] text-gray-400 ml-auto">${esc(dayjs(n.created_at.replace(' ', 'T')).format('M/D HH:mm'))}</span></div>
           <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
   }
-  window.notifOpenStaff = async function (id) {
+  // 相談への返信の通知（consult_reply）は相談・連絡の画面へ。それ以外は打刻修正の申請一覧へ
+  window.notifOpenStaff = async function (id, to) {
     try { await axios.post(`/api/staff/notifications/${id}/read`) } catch (e) { }
+    if (to === 'consult') { location.hash = 'consult'; return }
     S.tab = 'requests'; location.hash = 'attendance'
   }
   window.notifReadAllStaff = async function () {
