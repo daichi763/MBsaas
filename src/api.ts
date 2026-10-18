@@ -15,7 +15,7 @@ import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, loadReportState, reportableTypes, reportedAtMinute } from './report-settings'
-import { isTentativeShift } from './lib/shift-status'
+import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
@@ -539,14 +539,46 @@ api.route('/staff/recruit', recruitStaffApi)
 // 前日に始まった日をまたぐシフトを、終了予定から何時間ホームに出すか
 const HOME_CARRYOVER_HOURS = 6
 
+// シフトに付ける開催場所（名前・住所・地図の位置）と枠（メモ・休憩）、案件の標準の休憩の項目（#188）。s = shifts、p = projects の別名を前提にする
+// 休憩はシフト → 枠 → 案件の標準の順（精算の予定の休憩と同じ。shift-board.ts の workHours）
+const STAFF_SHIFT_PLACE_COLUMNS = `si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng, sl.memo AS slot_memo, sl.break_minutes AS slot_break_minutes,
+  p.default_break_minutes AS project_break_minutes`
+const STAFF_SHIFT_PLACE_JOINS = `LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
+    LEFT JOIN shift_slots sl ON sl.slot_id = s.slot_id AND sl.company_id = s.company_id`
+
 // シフト: 本日のシフトと、前日に始まった日をまたぐシフト（同一人物の全所属企業。欠勤を除く）
 async function homeLoadShifts(db: D1Database, personIds: number[], today: string): Promise<any[]> {
   const rows = (await db.prepare(`
-    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name
+    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
+    ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date IN (?, ?) AND s.status != 'absent'
     ORDER BY s.work_date, s.start_time`).bind(...personIds, addDays(today, -1), today).all()).results as any[]
   return rows.filter(s => s.work_date === today || crossesMidnight(s))
+}
+
+// 報告漏れ: 直近 HOME_MISSED_DAYS 日の勤務（確定・代打。精算の確定前）で、有効な報告に未報告のもの（承認待ちの申請があるものは除く）（#483）。
+// ホームに出しているシフト（本日・前日からの日をまたぐシフト）は除く。画面からは打刻修正の申請（打刻漏れの追加）へ進む
+const HOME_MISSED_DAYS = 7
+const HOME_MISSED_MAX = 20
+async function homeLoadMissedReports(db: D1Database, personIds: number[], today: string, shownIds: Set<number>) {
+  const rows = ((await db.prepare(`
+    SELECT s.shift_id, s.staff_id, s.company_id, s.project_id, s.work_date, s.start_time, s.end_time, p.project_name, co.company_name
+    FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
+    WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date BETWEEN ? AND ?
+      AND s.status IN (${WORKING_SHIFT_STATUSES.map(() => '?').join(',')}) AND COALESCE(s.settle_status, 'planned') != 'confirmed'
+    ORDER BY s.work_date DESC, s.start_time DESC LIMIT 60`).bind(...personIds, addDays(today, -HOME_MISSED_DAYS), addDays(today, -1), ...WORKING_SHIFT_STATUSES).all()).results as any[])
+    .filter(s => !shownIds.has(s.shift_id))
+  const status = await homeLoadReports(db, rows)
+  const out: any[] = []
+  for (const s of rows) {
+    const st = status.get(s.shift_id)
+    if (!st) continue
+    const missing = st.required_attendance.filter(t => !st.reports[t] && !st.pending_corrections[t])
+    if (!missing.length) continue
+    out.push({ shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, project_name: s.project_name, company_name: s.company_name, missing })
+  }
+  return { total: out.length, shifts: out.slice(0, HOME_MISSED_MAX) }
 }
 
 // 報告: シフトごとの有効な報告（提出設定）と報告済みのもの、承認待ちの打刻修正申請（種類 → 申請の日時）
@@ -644,6 +676,8 @@ api.get('/staff/home', async (c) => {
   const shift = picked ? shifts.find(s => s.shift_id === picked.shift_id) : null
   const shiftOwner = shift ? (personRows.find(r => r.staff_id === shift.staff_id) || { staff_id: u.staff_id, settings_json: u.settings_json }) : null
 
+  const missed = await homeLoadMissedReports(db, personIds, today, new Set(items.map(s => s.shift_id as number)))
+
   const notices = await homeLoadNotices(db, u)
   const replied = await homeLoadConsultations(db, u)
 
@@ -660,8 +694,12 @@ api.get('/staff/home', async (c) => {
     // 本日の全シフト（複数企業・複数案件）と、前日からの日をまたぐシフト。他社のシフトは company_name で識別
     today_shifts: items.map(s => ({ shift_id: s.shift_id, work_date: s.work_date, project_id: s.project_id, project_name: s.project_name,
       start_time: s.start_time, end_time: s.end_time, company_name: s.shift_company_name, other_company: s.company_id !== u.company_id,
+      location: s.site_name || s.location || null,
       checked_out: !!s.reports.check_out, carryover: s.carryover, attendance_done: s.attendance_done, tentative: s.tentative,
       daily_report_required: s.daily_report_required, daily_report_done: s.daily_report_done })),
+    // 2社以上に所属しているか（シフトにどの会社のものかを出す。#503）と、前日以前の報告漏れ（#483）
+    multi_company: new Set(personRows.map(r => r.company_id)).size > 1,
+    missed_reports: missed,
   })
 })
 
@@ -850,13 +888,48 @@ api.post('/staff/daily-report', async (c) => {
   return c.json({ ok: true, updated: r.updated })
 })
 
-// 自分の日報一覧
+// 日報の値（JSON）を読む。壊れていれば空にする
+function parseReportValues(json: any): Record<string, unknown> {
+  try { const v = JSON.parse(json || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {} } catch { return {} }
+}
+// 日報テンプレートの項目（key・label・type）。壊れていれば空
+function parseTemplateFields(json: any): { key: string; label: string; type: string }[] {
+  let f: any = []
+  try { f = JSON.parse(json || '[]') } catch { f = [] }
+  return Array.isArray(f) ? f.filter((x: any) => x && typeof x.key === 'string').map((x: any) => ({ key: x.key, label: String(x.label || x.key), type: String(x.type || 'text') })) : []
+}
+// 同一人物の全所属のスタッフ行（連携先のシフトで出した日報も本人のものとして出す。#75）
+async function personStaffIds(db: D1Database, u: any): Promise<number[]> {
+  const ids = (await personStaffRows(db, u)).map(r => r.staff_id)
+  return ids.length ? ids : (u.staff_id ? [u.staff_id] : [])
+}
+
+// 自分の日報一覧（過去の日報。#319 #371）。同一人物の全所属の分を新しい順に。項目の表示名は案件のテンプレートから付ける
 api.get('/staff/my-reports', async (c) => {
-  const u = c.get('user')
-  const rows = await c.env.DB.prepare(`
-    SELECT dr.*, p.project_name FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
-    WHERE dr.staff_id = ? ORDER BY dr.work_date DESC LIMIT 30`).bind(u.staff_id).all()
-  return c.json({ reports: rows.results.map((r: any) => ({ ...r, values: JSON.parse(r.report_values) })) })
+  const u = c.get('user'); const db = c.env.DB
+  const ids = await personStaffIds(db, u)
+  if (!ids.length) return c.json({ reports: [], templates: {} })
+  const rows = (await db.prepare(`
+    SELECT dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
+      dr.manager_comment, dr.manager_checked, dr.submitted_at, dr.revised_after_check_at,
+      p.project_name, p.report_template_id, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
+    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
+    LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id
+    WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) ORDER BY dr.work_date DESC, dr.submitted_at DESC LIMIT 30`).bind(u.company_id, ...ids).all()).results as any[]
+  const tplIds = [...new Set(rows.map(r => r.report_template_id).filter((x: any) => x != null))]
+  const templates: Record<string, any[]> = {}
+  if (tplIds.length) {
+    const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN (${tplIds.map(() => '?').join(',')})`).bind(...tplIds).all()).results as any[]
+    for (const t of ts) templates[t.template_id] = parseTemplateFields(t.fields_json)
+  }
+  return c.json({
+    reports: rows.map(r => {
+      const { report_values, ...rest } = r
+      return { ...rest, template_id: r.report_template_id, other_company: !!r.other_company, incident_flag: !!r.incident_flag, complaint_flag: !!r.complaint_flag,
+        manager_checked: !!r.manager_checked, values: parseReportValues(report_values) }
+    }),
+    templates,
+  })
 })
 
 // シフト確認
@@ -867,11 +940,15 @@ api.get('/staff/shifts', async (c) => {
   const q = c.req.query('month') || ''
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST()
   // 同一人物の全所属企業のシフトを表示（他社分は company_name で識別）
-  const ids = (await personStaffRows(c.env.DB, u)).map(r => r.staff_id)
+  const personRows = await personStaffRows(c.env.DB, u)
+  const ids = personRows.map(r => r.staff_id)
   if (!ids.length) ids.push(u.staff_id)
+  // 開催場所の住所・地図と枠のメモ・休憩も返す（#188）
   const rows = await c.env.DB.prepare(`
-    SELECT s.*, p.project_name, co.company_name, (s.company_id != ?) AS other_company FROM shifts s JOIN projects p ON s.project_id = p.project_id
+    SELECT s.*, p.project_name, co.company_name, (s.company_id != ?) AS other_company, ${STAFF_SHIFT_PLACE_COLUMNS}
+    FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN companies co ON co.company_id = s.company_id
+    ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date LIKE ? ORDER BY s.work_date, s.start_time`).bind(u.company_id, ...ids, month + '%').all()
   // 本人が出した希望（取り下げたものは出さない）。案件は自社の行だけ名前を付ける
   const requests = (await c.env.DB.prepare(`
@@ -884,6 +961,8 @@ api.get('/staff/shifts', async (c) => {
     requests,
     request_projects: await requestableProjects(c.env.DB, u),
     month,
+    // 2社以上に所属しているか（各シフトにどの会社のものかを出す。#503）
+    multi_company: new Set(personRows.map(r => r.company_id)).size > 1,
   })
 })
 
@@ -992,26 +1071,58 @@ api.post('/staff/notices/:id/read', async (c) => {
   return c.json({ ok: true })
 })
 
-// 自分の実績
+// 自分の実績（#75 #76）。同一人物の全所属の日報を、案件ごとにテンプレートの数値項目（表示名・並び順）で集計する。
+// 実績を見せない設定（show_performance）の案件は出さない。テンプレートに無い数値（項目を変える前の日報）は、キーを表示名にして後ろに足す
 api.get('/staff/performance', async (c) => {
-  const u = c.get('user')
-  const month = c.req.query('month') || monthJST()
-  const rows = await c.env.DB.prepare(`
-    SELECT dr.work_date, dr.report_values, p.project_name, p.show_performance, dr.manager_comment
-    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
-    WHERE dr.staff_id = ? AND dr.work_date LIKE ? ORDER BY dr.work_date`).bind(u.staff_id, month + '%').all()
-  const visible = rows.results.filter((r: any) => r.show_performance)
+  const u = c.get('user'); const db = c.env.DB
+  const q = c.req.query('month') || ''
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST()
+  const ids = await personStaffIds(db, u)
+  if (!ids.length) return c.json({ month, projects: [], daily: [], totals: {} })
+  const rows = (await db.prepare(`
+    SELECT dr.work_date, dr.report_values, dr.manager_comment, dr.project_id, p.project_name, p.show_performance, co.company_name, (dr.company_id != ?) AS other_company, t.fields_json
+    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
+    LEFT JOIN report_templates t ON t.template_id = p.report_template_id
+    WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) AND dr.work_date LIKE ? ORDER BY dr.work_date, dr.submitted_at`).bind(u.company_id, ...ids, month + '%').all()).results as any[]
   const totals: Record<string, number> = {}
+  const projects = new Map<number, { project_id: number; project_name: string; company_name: string; other_company: boolean; fields: { key: string; label: string }[]; totals: Record<string, number>; days: number }>()
   const daily: any[] = []
-  for (const r of visible as any[]) {
-    const v = JSON.parse(r.report_values)
-    const day: any = { date: r.work_date, project: r.project_name, comment: r.manager_comment }
-    for (const [k, val] of Object.entries(v)) {
-      if (typeof val === 'number') { totals[k] = (totals[k] || 0) + val; day[k] = val }
+  for (const r of rows) {
+    if (!r.show_performance) continue
+    let pj = projects.get(r.project_id)
+    if (!pj) {
+      const fields = parseTemplateFields(r.fields_json).filter(f => f.type === 'number').map(f => ({ key: f.key, label: f.label }))
+      pj = { project_id: r.project_id, project_name: r.project_name, company_name: r.company_name, other_company: !!r.other_company, fields, totals: {}, days: 0 }
+      projects.set(r.project_id, pj)
     }
-    daily.push(day)
+    pj.days++
+    const values: Record<string, number> = {}
+    for (const [k, val] of Object.entries(parseReportValues(r.report_values))) {
+      if (typeof val !== 'number' || !Number.isFinite(val)) continue
+      values[k] = val
+      pj.totals[k] = (pj.totals[k] || 0) + val
+      totals[k] = (totals[k] || 0) + val
+      if (!pj.fields.some(f => f.key === k)) pj.fields.push({ key: k, label: k })
+    }
+    daily.push({ date: r.work_date, project_id: r.project_id, project: r.project_name, company_name: r.company_name, other_company: !!r.other_company, comment: r.manager_comment, values })
   }
-  return c.json({ month, totals, daily })
+  return c.json({ month, projects: [...projects.values()], daily, totals })
+})
+
+// 研修・マニュアル（#74）: 本人がシフトに入っている案件（直近30日〜今後。同一人物の全所属。欠勤を除く）の、案件マニュアル・注意事項と求められる内容
+api.get('/staff/manuals', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const ids = await personStaffIds(db, u)
+  if (!ids.length) return c.json({ projects: [] })
+  const today = todayJST()
+  const rows = (await db.prepare(`
+    SELECT p.project_id, p.project_name, p.manual_text, p.requirements, co.company_name, (p.company_id != ?) AS other_company,
+      MIN(CASE WHEN s.work_date >= ? THEN s.work_date END) AS next_date, MAX(s.work_date) AS last_date
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id JOIN companies co ON co.company_id = p.company_id
+    WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date >= ? AND s.status != 'absent' AND COALESCE(p.status, 'active') = 'active'
+    GROUP BY p.project_id
+    ORDER BY next_date IS NULL, next_date, last_date DESC LIMIT 50`).bind(u.company_id, today, ...ids, addDays(today, -30)).all()).results as any[]
+  return c.json({ projects: rows.map(r => ({ ...r, other_company: !!r.other_company })) })
 })
 
 // 相談・連絡

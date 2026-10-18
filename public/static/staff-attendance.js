@@ -198,4 +198,11 @@
       <ul class="space-y-1 mb-4">${d.history.map(h => `<li class="text-xs ${h.correction_id === c.correction_id ? 'font-bold' : ''}">#${h.correction_id} ${(STATUS[h.status] || [h.status])[0]} ・${esc(showAt(h.requested_at, c.work_date))}${h.reject_reason ? ' ・却下の理由: ' + esc(h.reject_reason) : ''}</li>`).join('')}</ul>
       <button class="btn btn-outline w-full" onclick="closeModal()">閉じる</button>`)
   }
+  // ホームの『報告漏れ』から開く（#483）: 打刻履歴（直近2週間）を出してから、そのシフト・報告の打刻漏れの追加の申請を開く
+  window.attOpenMissed = async function (shiftId, type) {
+    S.tab = 'timeline'; S.to = null
+    if (location.hash !== '#attendance') history.pushState(null, '', '#attendance')
+    await (typeof route === 'function' ? route() : renderStaffAttendance())
+    if (TL && TL.shifts.some(x => x.shift_id === shiftId)) attOpen(shiftId, type)
+  }
 })()

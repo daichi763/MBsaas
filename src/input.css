@@ -88,3 +88,9 @@ body { font-family: 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Noto Sans JP'
 .board-add:hover { background: #eff6ff; }
 .sortable-ghost { opacity: .45; }
 .inp.w-auto { width: auto; }
+
+/* スマホ幅では入力欄の文字を16px以上にする（iOS の Safari は16px未満の入力欄にフォーカスすると画面を拡大し、戻らないため。#231）。
+   スタッフ画面・報告用URL・募集ページの .inp すべてに効かせる。拡大そのもの（maximum-scale）は禁止しない */
+@media (max-width: 640px) {
+  .inp:not(.text-lg):not(.text-xl):not(.text-2xl) { font-size: 16px; }
+}
