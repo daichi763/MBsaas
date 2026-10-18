@@ -147,7 +147,10 @@ const detail = async (api, sid) => (await api.get(`/api/admin/staff/${sid}`)).da
 // ---------- #63 他社連携から自社管理に切り替えた人のQRは、今の管理元に解決する ----------
 {
   const xA = staff.X.inA
-  const ch = await co.A.api.post(`/api/admin/staff/${xA}/affiliation-change`, { to_type: 'own_employee', hire_date: today, effective_date: today })
+  // 所属区分の変更は、影響の確認（dry_run）で受け取った preview_token を付けて実行する（w2-status-change）
+  const chBody = { to_type: 'own_employee', hire_date: today, effective_date: today }
+  const pv = await co.A.api.post(`/api/admin/staff/${xA}/affiliation-change`, { ...chBody, dry_run: true })
+  const ch = pv.status === 200 ? await co.A.api.post(`/api/admin/staff/${xA}/affiliation-change`, { ...chBody, preview_token: pv.data.preview_token }) : pv
   ok('（前提）A で X を自社雇用に切り替える', ch.status === 200, ch)
   const p = await detail(co.A.api, xA)
   ok('#63 切り替えた行には雇用元の恒久IDを出さない', p && p.global_staff_code !== staff.X.global_staff_code && p.link_shareable === true, p && [p.global_staff_code, p.link_shareable])

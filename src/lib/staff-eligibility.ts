@@ -82,12 +82,13 @@ export async function assertAssignable(db: D1Database, t: AssignTarget): Promise
   for (const r of rows) {
     if (r.affiliation_type === 'skillsheet_only') errors.push(`${r.name}: スキルシートのみ作成のスタッフにはシフトを登録できません`)
     else if (r.merged_into_staff_id) errors.push(`${r.name}: 統合済みのスタッフにはシフトを登録できません（統合先のスタッフを選んでください）`)
-    else if (r.employment_status === 'retired' || r.user_status !== 'active' || (r.retired_at && r.retired_at < t.workDate))
-      errors.push(`${r.name}: 退職（または退職日より後の日付）のため、シフトを登録できません`)
-    else if (r.link_ended_at) errors.push(`${r.name}: 取引終了にしたスタッフです（スタッフ詳細の「取引状況」を戻すと割り当てられます）`)
+    // 所属元での退職は連携行にも伝わる（roster.ts の propagateRetirementStmts）ため、連携行自身の退職より先に見て理由を示す
     else if (r.affiliation_type === 'linked_external' && r.emp_user_status != null
       && (r.emp_status === 'retired' || r.emp_user_status !== 'active' || (r.emp_retired_at && r.emp_retired_at < t.workDate)))
       errors.push(`${r.name}: 所属元で退職になっているため、シフトを登録できません`)
+    else if (r.employment_status === 'retired' || r.user_status !== 'active' || (r.retired_at && r.retired_at < t.workDate))
+      errors.push(`${r.name}: 退職（または退職日より後の日付）のため、シフトを登録できません`)
+    else if (r.link_ended_at) errors.push(`${r.name}: 取引終了にしたスタッフです（スタッフ詳細の「取引状況」を戻すと割り当てられます）`)
   }
   if (errors.length) return { ...out, status: 400, error: errors.join('\n') }
 
