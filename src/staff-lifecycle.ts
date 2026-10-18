@@ -399,13 +399,15 @@ adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
 const minutesBetween = (a: string, b: string) => Math.round((Date.parse(b.replace(' ', 'T') + 'Z') - Date.parse(a.replace(' ', 'T') + 'Z')) / 60000)
 const fmtAt = (at: string) => `${Number(at.slice(5, 7))}/${Number(at.slice(8, 10))} ${at.slice(11, 16)}`
 // 時刻（HH:MM）を日時にする。目安: 勤務終了・退店 = 予定の終了、休憩 = 勤務時間の中ほど、それ以外 = 予定の開始。
-// 稼働日の前日・当日・翌日のうち、目安に最も近い日付を選ぶ（同じ近さなら稼働日）
+// 稼働日の前日・当日・翌日のうち、目安に最も近い日付を選ぶ（同じ近さなら稼働日）。
+// ただし起床・出発は翌日に、休憩・勤務終了・退店は前日にしない（夜勤の日中の起床を翌日にしないなど）
 function proxyDateTime(s: ShiftTimes, type: string, hhmm: string): string {
   const w = shiftWindow(s.work_date, s.start_time, s.end_time)
   const anchor = ['work_end', 'check_out'].includes(type) ? w.end
     : ['break_start', 'break_end'].includes(type) ? addMinutes(w.start, Math.floor(minutesBetween(w.start, w.end) / 2)) : w.start
+  const offsets = ['wake_up', 'departure'].includes(type) ? [-1] : ['check_in', 'work_start'].includes(type) ? [-1, 1] : [1]
   let best = `${s.work_date} ${hhmm}:00`
-  for (const d of [addDays(s.work_date, -1), addDays(s.work_date, 1)]) {
+  for (const d of offsets.map(n => addDays(s.work_date, n))) {
     const at = `${d} ${hhmm}:00`
     if (Math.abs(minutesBetween(anchor, at)) < Math.abs(minutesBetween(anchor, best))) best = at
   }

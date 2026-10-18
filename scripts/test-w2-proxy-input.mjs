@@ -117,6 +117,9 @@ async function settleRow(id, date) { return ((await admin.get(`/api/admin/settle
   ok('#98 入店は稼働日、休憩出・退店は翌日の日付', r.status === 200 && at('check_in') === `${d} 21:55:00` && at('break_start') === `${d} 23:30:00` && at('break_end') === `${next} 00:30:00` && at('check_out') === `${next} 06:10:00`, reps)
   const row = await settleRow(n, d)
   ok('#98 実績の休憩は60分（予定の休憩に戻らない）', row && row.actual_break_minutes === 60 && row.actual_start === '22:00' && row.actual_end === '06:00', row && [row.actual_start, row.actual_end, row.actual_break_minutes])
+  r = await proxy(n, { report_types: ['wake_up'], times: { wake_up: '09:00' } })
+  const wk = await reportOf(n, 'wake_up')
+  ok('#98 夜勤の日中の起床は翌日にせず稼働日の日付', r.status === 200 && wk && wk.reported_at === `${d} 09:00:00`, [r, wk])
 }
 
 // ---------- 5. #567 未来の日時・稼働日より前のシフト ----------
