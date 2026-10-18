@@ -85,25 +85,55 @@ export async function attendanceTypesForShifts(db: D1Database, shiftIds: number[
         hasPersonal.add(`${r.project_id}:${r.staff_id}`)
       }
     }
-    for (const s of shifts) {
-      if (s.attendance_mode === 'none') { map.set(s.shift_id, { types: [], source: 'shift' }); continue }
-      if (s.attendance_mode === 'in_out') { map.set(s.shift_id, { types: ['check_in', 'check_out'], source: 'shift' }); continue }
-      const fixed = parseFixedTypes(s.attendance_types_fixed)
-      const legacy = hasPersonal.has(`${s.project_id}:${s.staff_id}`) ? null : legacyStaffFlags(s.legacy_mode)
-      let source: AttendanceSource = legacy ? 'staff' : 'default'
-      const types = REPORT_TYPES.filter(t => {
-        const pv = personal.get(`${s.project_id}:${s.staff_id}:${t}`)
-        if (pv !== undefined) { source = 'staff'; return !!pv }
-        if (legacy) return !!legacy[t]
-        const dv = defaults.get(`${s.project_id}:${t}`)
-        if (dv !== undefined) { if (source === 'default') source = 'project'; return !!dv }
-        return true
-      })
-      // 報告を始めた後に設定が変わったシフトは、変わる前に OFF だった報告を ON にしない（OFF にした報告はすぐ外す。docs 2.7）
-      map.set(s.shift_id, { types: fixed ? types.filter(t => fixed.includes(t)) : types, source })
-    }
+    for (const s of shifts) map.set(s.shift_id, resolveAttendanceTypes(s, defaults, personal, hasPersonal))
   }
   return map
+}
+
+// 1つのシフトの有効な報告を決める（attendanceTypesForShifts・attendanceTypesForRows で共用）。
+// s は shift_id, project_id, staff_id, attendance_mode（シフトの例外）, attendance_types_fixed, legacy_mode（staff_profiles.attendance_mode）
+function resolveAttendanceTypes(s: any, defaults: Map<string, number>, personal: Map<string, number>, hasPersonal: Set<string>): ShiftAttendance {
+  if (s.attendance_mode === 'none') return { types: [], source: 'shift' }
+  if (s.attendance_mode === 'in_out') return { types: ['check_in', 'check_out'], source: 'shift' }
+  const fixed = parseFixedTypes(s.attendance_types_fixed)
+  const legacy = hasPersonal.has(`${s.project_id}:${s.staff_id}`) ? null : legacyStaffFlags(s.legacy_mode)
+  let source: AttendanceSource = legacy ? 'staff' : 'default'
+  const types = REPORT_TYPES.filter(t => {
+    const pv = personal.get(`${s.project_id}:${s.staff_id}:${t}`)
+    if (pv !== undefined) { source = 'staff'; return !!pv }
+    if (legacy) return !!legacy[t]
+    const dv = defaults.get(`${s.project_id}:${t}`)
+    if (dv !== undefined) { if (source === 'default') source = 'project'; return !!dv }
+    return true
+  })
+  // 報告を始めた後に設定が変わったシフトは、変わる前に OFF だった報告を ON にしない（OFF にした報告はすぐ外す。docs 2.7）
+  return { types: fixed ? types.filter(t => fixed.includes(t)) : types, source }
+}
+
+// シフトの行を読み済みのとき（精算の一覧など件数の多い一覧）に、有効な報告をまとめて決める。
+// 規則は attendanceTypesForShifts と同じ。設定は json_each で2回の問い合わせにまとめて読む（シフトの件数で問い合わせが増えない）
+export async function attendanceTypesForRows(db: D1Database, rows: { shift_id: number; project_id: number; staff_id: number; attendance_mode?: any; attendance_types_fixed?: any; legacy_mode?: any }[]) {
+  const map = new Map<number, ShiftAttendance>()
+  if (!rows.length) return map
+  const defaults = new Map<string, number>(), personal = new Map<string, number>(), hasPersonal = new Set<string>()
+  const pset = new Set(rows.map(r => Number(r.project_id)))
+  for (const r of (await db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults WHERE project_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(pset)).all()).results as any[]) defaults.set(`${r.project_id}:${r.report_type}`, r.enabled)
+  for (const r of (await db.prepare(`SELECT project_id, staff_id, report_type, enabled FROM project_staff_report_settings WHERE staff_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(rows.map(x => x.staff_id))).all()).results as any[]) {
+    if (!pset.has(Number(r.project_id))) continue
+    personal.set(`${r.project_id}:${r.staff_id}:${r.report_type}`, r.enabled)
+    hasPersonal.add(`${r.project_id}:${r.staff_id}`)
+  }
+  for (const s of rows) map.set(s.shift_id, resolveAttendanceTypes(s, defaults, personal, hasPersonal))
+  return map
+}
+
+// 日報が必要なシフトか（SQL の式）。シフト → スタッフ → 案件の順に none / required の最初の値、なければ required。
+// staff-lifecycle.ts の resolveModes（modesForShifts）と同じ規則を、集計の SQL の中で使う。引数は shifts・staff_profiles・projects の別名
+export function dailyReportRequiredSql(s: string, sp: string, p: string): string {
+  const v = (a: string) => `CASE WHEN ${a}.daily_report_mode IN ('none','required') THEN ${a}.daily_report_mode END`
+  return `(COALESCE(${v(s)}, ${v(sp)}, ${v(p)}, 'required') = 'required')`
 }
 
 type Ng = { error: string; status: number }

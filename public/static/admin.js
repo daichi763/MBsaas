@@ -2198,7 +2198,8 @@ async function renderBilling(month) {
         <button class="btn btn-primary" onclick="exportBillingCsv()"><i class="fas fa-file-csv"></i>CSV出力</button>
       </div>
     </div>
-    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください</p>
+    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください。
+      稼働人数は確定・代打のシフトの人数、日報提出は日報が必要な確定・代打のシフトのうち日報があるものです（欠勤・希望（仮）と、日報を不要にしたシフトは数えません）</p>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
@@ -2211,7 +2212,7 @@ async function renderBilling(month) {
               <td>${p.work_days}</td><td>${p.staff_count}</td>
               <td>${p.absent_days ? `<span class="badge badge-red">${p.absent_days}</span>` : 0}</td>
               <td>${p.substitute_days || 0}</td>
-              <td>${p.report_count}/${p.work_days} ${p.report_count < p.work_days ? '<i class="fas fa-triangle-exclamation text-amber-500" title="日報と稼働日数が一致しません"></i>' : '<i class="fas fa-check text-emerald-500"></i>'}</td>
+              <td>${billingReportCell(p)}</td>
               <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
               <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
@@ -2223,12 +2224,12 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
-              <td>${d.work_days}</td><td>${d.absent_days || 0}</td>
+              <td>${d.work_days}</td><td>${d.absent_days || 0}</td><td>${billingReportCell(d)}</td>
               <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
               <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
@@ -2239,6 +2240,12 @@ async function renderBilling(month) {
   window._billingData = data
 }
 delegate('renderBilling', el => renderBilling(el.dataset.month))
+// 日報提出 n/m（m = 日報が必要な確定・代打のシフト。#448）。日報が必要なシフトがなければ「不要」（稼働がなければ -）
+function billingReportCell(x) {
+  const need = Number(x.report_required || 0), done = Number(x.report_count || 0)
+  if (!need) return Number(x.work_days) ? '<span class="text-gray-400">不要</span>' : '-'
+  return `${done}/${need} ${done < need ? `<i class="fas fa-triangle-exclamation text-amber-500" title="日報が未提出のシフトが ${need - done}件 あります"></i>` : '<i class="fas fa-check text-emerald-500"></i>'}`
+}
 window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
