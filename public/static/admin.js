@@ -975,6 +975,8 @@ window.addFollowLog = async function (sid) {
 }
 
 // ============ 案件 ============
+// 請求の標準単価の単位（時給の案件を日単価に見せない #91。日額・時給以外の古い値は日額として計算している）
+function priceUnitLabel(t) { return t === 'hourly' ? '/時' : '/日' }
 async function renderProjects() {
   loading()
   const { data } = await axios.get('/api/admin/projects')
@@ -993,7 +995,7 @@ async function renderProjects() {
               <td class="text-xs">${esc(p.client_name || '-')}</td>
               <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
               <td class="text-xs">${esc(p.location || '-')}</td>
-              <td>${yen(p.unit_price)}/日</td>
+              <td>${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}</td>
               <td>${p.month_shifts}件 (${p.staff_count}名)</td>
               <td class="font-bold">${p.month_seiyaku || 0}</td>
               <td>${p.incidents ? `<span class="badge badge-red">${p.incidents}件</span>` : '<span class="text-gray-300">0</span>'}</td>
@@ -1021,7 +1023,10 @@ window.showAddProject = async function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="np-loc" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">日単価（円）</label><input id="np-price" type="number" class="inp" value="16000"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">請求単価（円）</label>
+          <div class="flex gap-2"><select id="np-price-unit" class="inp w-24 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option></select>
+            <input id="np-price" type="number" min="0" class="inp" value="16000"></div>
+          <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費は、登録後に案件詳細の「区分・標準単価」で設定します</p></div>
         <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
           ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
@@ -1049,7 +1054,7 @@ window.addProject = async function () {
     const res = await postConfirmingDuplicate('/api/admin/projects', {
       project_name: name, client_id: document.getElementById('np-client').value || null,
       project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
-      unit_price: Number(document.getElementById('np-price').value || 0),
+      unit_price: Number(document.getElementById('np-price').value || 0), unit_price_type: document.getElementById('np-price-unit').value,
       report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value
     })
     if (!res) return
@@ -1072,7 +1077,7 @@ async function renderProjectDetail(pid) {
     </div>
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-      <div class="card p-4"><p class="text-xs text-gray-500">単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">/日</span></p></div>
+      <div class="card p-4"><p class="text-xs text-gray-500">請求単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">今月稼働</p><p class="text-xl font-bold">${data.month_summary.n || 0}<span class="text-xs font-normal text-gray-400">件</span></p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">今月売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p></div>

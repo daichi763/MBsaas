@@ -11,6 +11,7 @@ import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { assertAssignable, assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, isUniqueViolation, ngStaffIds } from './lib/staff-eligibility'
 import type { ConflictRow } from './lib/staff-eligibility'
 import { changesOf, insertRowsStmts, updateRowsStmts } from './lib/bulk-write'
+import { isHHMM, isISODate } from './lib/validate'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -45,19 +46,40 @@ function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:
 function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) }
 function weekday(d: string): number { return new Date(d + 'T00:00:00Z').getUTCDay() }
 const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
-const isTime = (s: any) => typeof s === 'string' && /^\d{2}:\d{2}$/.test(s)
+// 時刻は 00:00〜23:59 だけを受け付ける（25:00 や 99:99 を通さない。#218）
+const isTime = (s: any) => isHHMM(s)
 function overlaps(aS: string, aE: string, bS: string, bE: string): boolean {
   const as = toMin(aS), ae = as + spanMinutes(aS, aE), bs = toMin(bS), be = bs + spanMinutes(bS, bE)
   return as < be && bs < ae
 }
 const intOrNull = (v: any) => (v === '' || v == null || isNaN(Number(v))) ? null : Math.round(Number(v))
 
+// ---------- 金額・休憩・数量の範囲（#218） ----------
+// 単価・交通費は0以上、休憩は0〜600分、数量は0〜24。調整額（bill_adjust / pay_adjust）は控除に使うため負の値も認める
+export const MONEY_MAX = 10000000
+export const BREAK_MAX = 600
+export const QTY_MAX = 24
+// [項目名, 値, 最小, 最大] を並べて渡し、範囲外の最初の項目のエラー文を返す（空欄・未指定は確かめない）
+export function rangeError(items: [string, any, number, number][]): string | null {
+  for (const [label, v, min, max] of items) {
+    if (v === undefined || v === null || v === '') continue
+    const n = Number(v)
+    if (typeof v === 'boolean' || typeof v === 'object' || !Number.isFinite(n)) return `${label}は数値で入力してください`
+    if (n < min) return min === 0 ? `${label}にマイナスの値は入力できません` : `${label}は${min}〜${max}の範囲で入力してください`
+    if (n > max) return `${label}は${min}〜${max}の範囲で入力してください`
+  }
+  return null
+}
+const unitOf = (v: any): 'daily' | 'hourly' => (v === 'hourly' ? 'hourly' : 'daily')
+
 // =========================================================
 // 単価の解決
 // 優先順: シフトの手動変更 ＞ 枠の役割の単価 ＞ 単価ルール（具体度: スタッフ8 役割4 開催場所2 案件1）＞ 案件の標準
 // 項目ごとに（請求単価 / 支払単価 / 交通費の請求 / 交通費の支払）最も具体的な値を採用する
+// 単価ルールと案件の標準単価は、シフトの稼働日（work_date）に適用期間が含まれるものを使う（#210）
 // =========================================================
-export type PriceContext = { company_id: number; project_id: number; site_id?: number | null; role_name?: string | null; staff_id?: number | null; slot_role?: any }
+export type PriceContext = { company_id: number; project_id: number; site_id?: number | null; role_name?: string | null; staff_id?: number | null; slot_role?: any; work_date?: string | null }
+export type PricingData = { projects: Map<number, any>; rules: any[]; history?: Map<number, any[]> }
 export type ResolvedPrice = {
   bill_unit_type: string; bill_rate: number | null; pay_unit_type: string; pay_rate: number | null
   bill_transport_type: string; bill_transport_amount: number; pay_transport_type: string; pay_transport_amount: number
@@ -75,16 +97,37 @@ export async function loadPricingData(db: D1Database, companyId: number, project
   // 案件IDは json_each で1つにまとめてバインドする（D1 のバインド上限 100 を超えないように）
   const ids = bindJsonArray(projectIds)
   const projects = ids !== '[]' ? (await db.prepare(`SELECT project_id, unit_price_type, unit_price, pay_unit_type, pay_rate,
-      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes, hours_basis, time_round_minutes
+      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes, hours_basis, time_round_minutes,
+      pay_time_round, price_valid_from
       FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[] : []
   const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL OR project_id IN ${JSON_IN})`)
     .bind(companyId, ids).all()).results as any[]
-  return { projects: new Map(projects.map(p => [p.project_id, p])), rules }
+  // 改定前の案件の標準単価（#210）
+  const history = new Map<number, any[]>()
+  if (ids !== '[]') {
+    const rows = (await db.prepare(`SELECT * FROM project_price_history WHERE company_id = ? AND project_id IN ${JSON_IN} ORDER BY project_id, valid_to, history_id`)
+      .bind(companyId, ids).all()).results as any[]
+    for (const h of rows) { const a = history.get(h.project_id) || []; a.push(h); history.set(h.project_id, a) }
+  }
+  return { projects: new Map(projects.map(p => [p.project_id, p])), rules, history } as PricingData
 }
 
-export function resolvePrice(ctx: PriceContext, data: { projects: Map<number, any>; rules: any[] }): ResolvedPrice {
-  const p = data.projects.get(Number(ctx.project_id)) || {}
-  const unit = (v: any) => (v === 'hourly' ? 'hourly' : 'daily')
+// 稼働日に使う案件の標準単価。今の標準単価の適用開始日より前の稼働日は、その日を含む改定前の単価を使う（見つからなければ今の単価）
+export const PROJECT_PRICE_FIELDS = ['unit_price_type', 'unit_price', 'pay_unit_type', 'pay_rate', 'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount'] as const
+export function projectPriceOn(p: any, history: any[] | undefined, workDate?: string | null) {
+  if (!p || !workDate || !p.price_valid_from || workDate >= p.price_valid_from) return p || {}
+  const h = (history || []).find(x => (!x.valid_from || x.valid_from <= workDate) && x.valid_to >= workDate)
+  if (!h) return p
+  const out: any = { ...p }
+  for (const k of PROJECT_PRICE_FIELDS) out[k] = h[k]
+  return out
+}
+// 単価ルールの適用期間に稼働日が含まれるか（期間のないルール、稼働日の分からないプレビューは常に対象）
+export const ruleActiveOn = (r: any, workDate?: string | null) => !workDate || ((!r.valid_from || r.valid_from <= workDate) && (!r.valid_to || r.valid_to >= workDate))
+
+export function resolvePrice(ctx: PriceContext, data: PricingData): ResolvedPrice {
+  const p = projectPriceOn(data.projects.get(Number(ctx.project_id)), data.history?.get(Number(ctx.project_id)), ctx.work_date)
+  const unit = unitOf
   const out: ResolvedPrice = {
     bill_unit_type: unit(p.unit_price_type), bill_rate: p.unit_price ?? null,
     pay_unit_type: unit(p.pay_unit_type), pay_rate: p.pay_rate ?? null,
@@ -92,7 +135,7 @@ export function resolvePrice(ctx: PriceContext, data: { projects: Map<number, an
     pay_transport_type: p.pay_transport_type || 'actual', pay_transport_amount: p.pay_transport_amount || 0,
     sources: { bill: '案件の標準', pay: p.pay_rate == null ? '未設定' : '案件の標準', bill_transport: '案件の標準', pay_transport: '案件の標準' },
   }
-  const matches = data.rules.filter(r =>
+  const matches = data.rules.filter(r => ruleActiveOn(r, ctx.work_date) &&
     (!r.project_id || Number(r.project_id) === Number(ctx.project_id)) &&
     (!r.site_id || (ctx.site_id && Number(r.site_id) === Number(ctx.site_id))) &&
     (!r.role_name || (ctx.role_name && r.role_name === ctx.role_name)) &&
@@ -117,14 +160,19 @@ export function resolvePrice(ctx: PriceContext, data: { projects: Map<number, an
 // 数量（日額=1、時給=拘束時間−休憩）と金額の計算。hoursOverride を渡すとその時間で計算する（実働時間）
 // 時給の金額は、分単位の時間に単価を掛けてから円に丸める（小数2桁に丸めた時間に掛けると、分単位の勤務で数円ずれるため）。
 // 数量は表示用に小数2桁に丸める。hoursOverride は workHours の hours（小数2桁）でよい（実働は分単位なので、60 を掛けて丸めると元の分数に戻る）
-export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_rate' | 'pay_unit_type' | 'pay_rate'>, start: string, end: string, breakMin: number, hoursOverride?: number | null) {
-  const minutes = hoursOverride != null ? Math.max(0, Math.round(hoursOverride * 60)) : Math.max(0, spanMinutes(start, end) - (breakMin || 0))
+// 請求と支払で時間が違う（支払は丸めない #220）ときは { bill, pay } で渡す（workHours の hours と pay_hours）
+export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_rate' | 'pay_unit_type' | 'pay_rate'>, start: string, end: string, breakMin: number,
+  hoursOverride?: number | { bill: number; pay: number } | null) {
+  const planned = Math.max(0, spanMinutes(start, end) - (breakMin || 0))
+  const toMinutes = (h: number | null | undefined) => (h != null ? Math.max(0, Math.round(h * 60)) : planned)
+  const billMin = toMinutes(typeof hoursOverride === 'object' && hoursOverride ? hoursOverride.bill : hoursOverride as number | null | undefined)
+  const payMin = toMinutes(typeof hoursOverride === 'object' && hoursOverride ? hoursOverride.pay : hoursOverride as number | null | undefined)
   const hourly = (u: string) => u === 'hourly'
-  const qty = (u: string) => (hourly(u) ? Math.round(minutes / 60 * 100) / 100 : 1)
-  const amount = (u: string, rate: number) => (hourly(u) ? Math.round(rate * minutes / 60) : Math.round(rate))
+  const qty = (u: string, minutes: number) => (hourly(u) ? Math.round(minutes / 60 * 100) / 100 : 1)
+  const amount = (u: string, rate: number, minutes: number) => (hourly(u) ? Math.round(rate * minutes / 60) : Math.round(rate))
   return {
-    bill_qty: qty(price.bill_unit_type), unit_price: amount(price.bill_unit_type, price.bill_rate || 0),
-    pay_qty: qty(price.pay_unit_type), pay_amount: price.pay_rate == null ? null : amount(price.pay_unit_type, price.pay_rate),
+    bill_qty: qty(price.bill_unit_type, billMin), unit_price: amount(price.bill_unit_type, price.bill_rate || 0, billMin),
+    pay_qty: qty(price.pay_unit_type, payMin), pay_amount: price.pay_rate == null ? null : amount(price.pay_unit_type, price.pay_rate, payMin),
   }
 }
 // ---------- 実働時間（第3段階） ----------
@@ -137,20 +185,28 @@ export function workHours(s: any, proj: any = {}) {
   const basis = HOURS_BASIS.includes(proj.hours_basis) ? proj.hours_basis : 'clipped'
   const hasActual = isTime(s.actual_start) && isTime(s.actual_end)
   // planned_break_minutes = 予定の休憩、break_minutes = 実働の計算に使った休憩（実績の休憩があればその値）
-  if (!hasActual) return { hours: round2(planned), planned_hours: round2(planned), actual_hours: null as number | null, basis, used: 'planned' as const, break_minutes: brkPlan, planned_break_minutes: brkPlan }
+  // hours = 請求の数量に使う時間、pay_hours = 支払の数量に使う時間（支払側の丸めを分ける #220。pay_time_round が same のときだけ支払も丸める）
+  if (!hasActual) return { hours: round2(planned), pay_hours: round2(planned), planned_hours: round2(planned), actual_hours: null as number | null, basis, used: 'planned' as const, break_minutes: brkPlan, planned_break_minutes: brkPlan }
+  // 実績は時刻だけを記録しているため、予定の開始に最も近い日（前日・当日・翌日）の時刻とみなす（#80）。
+  // 日をまたぐ予定で0時を過ぎてから始めた場合は翌日、0時台に始まる予定で前日の23時台に始めた場合は前日になる
   let aStart = toMin(s.actual_start)
-  // 日をまたぐ予定で、実績の開始が予定より大きく前なら翌日とみなす
-  if (planEnd > 1440 && aStart < planStart - 360) aStart += 1440
+  if (aStart - planStart > 720) aStart -= 1440
+  else if (planStart - aStart > 720) aStart += 1440
   let aEnd = toMin(s.actual_end); while (aEnd <= aStart) aEnd += 1440
   const brk = s.actual_break_minutes != null ? Number(s.actual_break_minutes) : brkPlan
+  const calc = (r: number) => {
+    const roundUp = (m: number) => (r > 0 ? Math.ceil(m / r) * r : m), roundDown = (m: number) => (r > 0 ? Math.floor(m / r) * r : m)
+    const actual = Math.max(0, roundDown(aEnd) - roundUp(aStart) - brk) / 60
+    const cs = roundUp(Math.max(aStart, planStart)), ce = roundDown(Math.min(aEnd, planEnd))
+    const clipped = Math.max(0, ce - cs - brk) / 60
+    return { actual, hours: basis === 'scheduled' ? planned : basis === 'actual' ? actual : clipped }
+  }
   const r = Number(proj.time_round_minutes || 0)
-  const roundUp = (m: number) => (r > 0 ? Math.ceil(m / r) * r : m), roundDown = (m: number) => (r > 0 ? Math.floor(m / r) * r : m)
-  const actual = Math.max(0, roundDown(aEnd) - roundUp(aStart) - brk) / 60
-  const cs = roundUp(Math.max(aStart, planStart)), ce = roundDown(Math.min(aEnd, planEnd))
-  const clipped = Math.max(0, ce - cs - brk) / 60
-  const hours = basis === 'scheduled' ? planned : basis === 'actual' ? actual : clipped
-  return { hours: round2(hours), planned_hours: round2(planned), actual_hours: round2(actual), basis, used: basis === 'scheduled' ? 'planned' as const : 'actual' as const, break_minutes: brk, planned_break_minutes: brkPlan }
+  const bill = calc(r), pay = proj.pay_time_round === 'same' ? bill : calc(0)
+  return { hours: round2(bill.hours), pay_hours: round2(pay.hours), planned_hours: round2(planned), actual_hours: round2(bill.actual), basis, used: basis === 'scheduled' ? 'planned' as const : 'actual' as const, break_minutes: brk, planned_break_minutes: brkPlan }
 }
+// workHours の結果を calcAmounts に渡す形にする（請求と支払の時間）
+export const hoursForAmounts = (h: { hours: number; pay_hours: number }) => ({ bill: h.hours, pay: h.pay_hours })
 function round2(n: number) { return Math.round(n * 100) / 100 }
 export const isSettled = (s: any) => s?.settle_status === 'confirmed'
 
@@ -217,11 +273,16 @@ export function payeeOn(sp: any, hist: any[] | undefined, workDate: string): Pay
 export const PRICE_COLUMNS = ['bill_unit_type', 'bill_rate', 'bill_qty', 'unit_price', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
   'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount',
   'payee_type', 'payee_affiliation_id', 'payee_company_id', 'price_source', 'price_locked']
-export function computeShiftPricing(companyId: number, s: any, slotRole: any, payee: Payee, data: { projects: Map<number, any>; rules: any[] }) {
-  const price = resolvePrice({ company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: s.role, staff_id: s.staff_id, slot_role: slotRole }, data)
+// 枠のシフトは、単価ルールの役割を枠の役割（slot_role_id）から決める。役割の名前を変えても単価を変えないことを選んだ役割は、
+// 変更前の名前（rate_role_name）で照合する（#144）。枠のないシフトはシフトの役割名で照合する
+export function rateRoleName(s: any, slotRole: any): string | null {
+  return (slotRole ? (slotRole.rate_role_name || slotRole.role_name) : null) || s.role || null
+}
+export function computeShiftPricing(companyId: number, s: any, slotRole: any, payee: Payee, data: PricingData) {
+  const price = resolvePrice({ company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: rateRoleName(s, slotRole), staff_id: s.staff_id, slot_role: slotRole, work_date: s.work_date }, data)
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
-  const amt = calcAmounts(price, s.start_time, s.end_time, brk, workHours({ ...s, break_minutes: brk }, proj).hours)
+  const amt = calcAmounts(price, s.start_time, s.end_time, brk, hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj)))
   return {
     bill_unit_type: price.bill_unit_type, bill_rate: price.bill_rate, bill_qty: amt.bill_qty, unit_price: amt.unit_price,
     pay_unit_type: price.pay_unit_type, pay_rate: price.pay_rate, pay_qty: amt.pay_qty, pay_amount: amt.pay_amount,
@@ -489,11 +550,23 @@ function normalizeRoles(roles: any): { role_name: string; headcount: number; bil
   const out = roles.map((r: any) => ({
     role_name: String(r.role_name || '').trim(), headcount: Math.max(1, Math.min(200, Number(r.headcount) || 1)),
     bill_rate: intOrNull(r.bill_rate), pay_rate: intOrNull(r.pay_rate),
-    bill_unit_type: r.bill_unit_type === 'hourly' ? 'hourly' : r.bill_unit_type === 'daily' ? 'daily' : null,
-    pay_unit_type: r.pay_unit_type === 'hourly' ? 'hourly' : r.pay_unit_type === 'daily' ? 'daily' : null,
+    // 単価には単位を必ず付ける。単位を省略したら日額（単価ルールと同じ。案件の単位を引き継ぐと、日額のつもりの金額が時給で計算されるため #145）
+    bill_unit_type: intOrNull(r.bill_rate) == null ? null : unitOf(r.bill_unit_type),
+    pay_unit_type: intOrNull(r.pay_rate) == null ? null : unitOf(r.pay_unit_type),
   }))
   if (out.some(r => !r.role_name)) return null
   return out
+}
+// 枠の役割の単価・人数の範囲（#218）。normalizeRoles の前に呼ぶ
+function rolesRangeError(roles: any): string | null {
+  if (!Array.isArray(roles)) return null
+  for (const r of roles) {
+    if (!r || r._delete) continue
+    const name = String(r.role_name || '').trim() || '役割'
+    const err = rangeError([[`「${name}」の請求単価`, r.bill_rate, 0, MONEY_MAX], [`「${name}」の支払単価`, r.pay_rate, 0, MONEY_MAX], [`「${name}」の必要人数`, r.headcount, 1, 200]])
+    if (err) return err
+  }
+  return null
 }
 async function insertSlot(db: D1Database, u: any, b: any, date: string, roles: any[], patternId: number | null) {
   const res = await db.prepare(`INSERT INTO shift_slots (company_id, project_id, site_id, location, work_date, start_time, end_time, break_minutes, pattern_id, memo, created_by)
@@ -508,7 +581,35 @@ async function validateSlotBody(db: D1Database, u: any, b: any): Promise<string 
   if (!b.project_id || !(await ownProject(db, u.company_id, b.project_id))) return '案件を選択してください'
   if (!isTime(b.start_time) || !isTime(b.end_time)) return '開始・終了時刻を入力してください'
   if (b.site_id && !(await ownSite(db, u.company_id, b.site_id))) return '開催場所が見つかりません'
-  return null
+  return rangeError([['休憩', b.break_minutes, 0, BREAK_MAX]]) || rolesRangeError(b.roles)
+}
+// 枠の役割名の変更と単価ルール（#144）。単価ルールは役割名で照合するため、名前を変えると当たるルールが変わることがある。
+// 変更前・変更後の名前の単価ルールがあるときは、どちらで計算するかを確かめる（role_rate: follow = 新しい名前のルール / keep = 今のルールのまま）。
+// 返す map: 名前を変える役割ごとの、単価ルールの照合に使う名前（rate_role_name。null = 役割名で照合）
+async function planRoleRename(db: D1Database, companyId: number, slot: any, b: any) {
+  const map = new Map<number, string | null>()
+  if (!Array.isArray(b.roles)) return { map }
+  const cur = new Map(((await db.prepare('SELECT slot_role_id, role_name, rate_role_name FROM shift_slot_roles WHERE slot_id = ?').bind(slot.slot_id).all()).results as any[]).map(r => [r.slot_role_id, r]))
+  const ask: { slot_role_id: number; from: string; to: string; rules_from: number; rules_to: number }[] = []
+  for (const r of b.roles) {
+    const c = r && !r._delete ? cur.get(Number(r.slot_role_id)) : null
+    const to = String(r?.role_name || '').trim()
+    if (!c || !to || to === c.role_name) continue
+    const from = c.rate_role_name || c.role_name
+    if (to === from) { map.set(c.slot_role_id, null); continue }
+    const n = await db.prepare(`SELECT SUM(role_name = ?) AS f, SUM(role_name = ?) AS t FROM rate_rules
+      WHERE company_id = ? AND role_name IN (?, ?) AND (project_id IS NULL OR project_id = ?)`).bind(from, to, companyId, from, to, slot.project_id).first() as any
+    const rf = Number(n?.f || 0), rt = Number(n?.t || 0)
+    if (!rf && !rt) { map.set(c.slot_role_id, null); continue }
+    if (b.role_rate === 'follow') map.set(c.slot_role_id, null)
+    else if (b.role_rate === 'keep') map.set(c.slot_role_id, from)
+    else ask.push({ slot_role_id: c.slot_role_id, from, to, rules_from: rf, rules_to: rt })
+  }
+  if (ask.length) {
+    const text = ask.map(a => `役割「${a.from}」→「${a.to}」: 「${a.from}」の単価ルール ${a.rules_from}件、「${a.to}」の単価ルール ${a.rules_to}件`).join('\n')
+    return { map, confirm: { error: `役割名を変えると、当たる単価ルールが変わります。\n${text}`, need_role_rate: true, roles: ask } }
+  }
+  return { map }
 }
 
 app.post('/shift-slots', async (c) => {
@@ -540,6 +641,9 @@ app.put('/shift-slots/:id', async (c) => {
   const next = { ...slot, ...Object.fromEntries(Object.entries(b).filter(([k, v]) => ['site_id', 'location', 'work_date', 'start_time', 'end_time', 'break_minutes', 'memo', 'status'].includes(k) && v !== undefined)) }
   if (!isTime(next.start_time) || !isTime(next.end_time) || !isDate(next.work_date)) return c.json({ error: '日付・時刻が正しくありません' }, 400)
   if (next.site_id && !(await ownSite(db, u.company_id, next.site_id))) return c.json({ error: '開催場所が見つかりません' }, 400)
+  const rangeErr = rangeError([['休憩', next.break_minutes, 0, BREAK_MAX]]) || rolesRangeError(b.roles); if (rangeErr) return c.json({ error: rangeErr }, 400)
+  // 役割名の変更で当たる単価ルールが変わるときは、書き込む前に確かめる（#144）
+  const rename = await planRoleRename(db, u.company_id, slot, b); if (rename.confirm) return c.json(rename.confirm, 409)
   await db.prepare(`UPDATE shift_slots SET site_id = ?, location = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, memo = ?, status = ? WHERE slot_id = ?`)
     .bind(next.site_id || null, next.location || null, next.work_date, next.start_time, next.end_time, intOrNull(next.break_minutes), next.memo || null, next.status || 'open', slot.slot_id).run()
 
@@ -558,7 +662,9 @@ app.put('/shift-slots/:id', async (c) => {
         const n = normalizeRoles([r])![0]
         await db.prepare(`UPDATE shift_slot_roles SET role_name = ?, headcount = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?, sort_order = ? WHERE slot_role_id = ?`)
           .bind(n.role_name, n.headcount, n.bill_unit_type, n.bill_rate, n.pay_unit_type, n.pay_rate, i, r.slot_role_id).run()
-        await db.prepare('UPDATE shifts SET role = ? WHERE slot_role_id = ?').bind(n.role_name, r.slot_role_id).run()
+        // 確定済みのシフトの役割名は変えない（精算CSVの内容を確定時のままにする）。名前を変えた役割は、単価ルールの照合に使う名前を記録する（#144）
+        await db.prepare("UPDATE shifts SET role = ? WHERE slot_role_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'").bind(n.role_name, r.slot_role_id).run()
+        if (rename.map.has(Number(r.slot_role_id))) await db.prepare('UPDATE shift_slot_roles SET rate_role_name = ? WHERE slot_role_id = ?').bind(rename.map.get(Number(r.slot_role_id)), r.slot_role_id).run()
       } else if (!r._delete) {
         const n = normalizeRoles([r])![0]
         await db.prepare(`INSERT INTO shift_slot_roles (slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -720,6 +826,11 @@ app.put('/shifts/:id/price', async (c) => {
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトの金額は変更できません。精算画面で確定を取り消してください' }, 409)
   if (b.reset) { await applyPricingToShift(db, u.company_id, s.shift_id, { force: true }); return c.json({ ok: true }) }
+  // 負の単価・休憩、範囲外の数量は受け付けない（#218）。調整額は控除に使うため負の値も認める
+  const err = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX], ['請求の数量', b.bill_qty, 0, QTY_MAX], ['支払の数量', b.pay_qty, 0, QTY_MAX],
+    ['休憩', b.break_minutes, 0, BREAK_MAX], ['交通費の実費', b.transportation_fee, 0, MONEY_MAX], ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX], ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX],
+    ['請求の調整', b.bill_adjust, -MONEY_MAX, MONEY_MAX], ['支払の調整', b.pay_adjust, -MONEY_MAX, MONEY_MAX]])
+  if (err) return c.json({ error: err }, 400)
   const unit = (v: any, d: string) => (v === 'hourly' ? 'hourly' : v === 'daily' ? 'daily' : d)
   const billUnit = unit(b.bill_unit_type, s.bill_unit_type || 'daily'), payUnit = unit(b.pay_unit_type, s.pay_unit_type || 'daily')
   const billRate = b.bill_rate !== undefined ? intOrNull(b.bill_rate) : s.bill_rate
@@ -727,9 +838,9 @@ app.put('/shifts/:id/price', async (c) => {
   const brk = b.break_minutes !== undefined ? intOrNull(b.break_minutes) : s.break_minutes
   const pdata = await loadPricingData(db, u.company_id, [s.project_id])
   const amt = calcAmounts({ bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }, s.start_time, s.end_time, brk || 0,
-    workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {}).hours)
+    hoursForAmounts(workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {})))
   // 数量を直接指定した場合（実働時間など）はそちらを優先
-  // 数量を指定しないとき、または計算どおりの数量のとき（シフトボードの画面は計算した数量を入れたまま送る）は、calcAmounts の金額（分単位で計算）を使う
+  // 数量を指定しないとき、または計算どおりの数量のときは、calcAmounts の金額（分単位で計算）を使う
   const billQtyIn = b.bill_qty != null && b.bill_qty !== '', payQtyIn = b.pay_qty != null && b.pay_qty !== ''
   const billQty = billQtyIn ? Number(b.bill_qty) : amt.bill_qty
   const payQty = payQtyIn ? Number(b.pay_qty) : amt.pay_qty
@@ -738,22 +849,31 @@ app.put('/shifts/:id/price', async (c) => {
   const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? Math.round(payRate * payQty) : amt.pay_amount
   const bt = BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : s.bill_transport_type
   const pt = PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : s.pay_transport_type
+  const btAmt = b.bill_transport_amount !== undefined ? (intOrNull(b.bill_transport_amount) ?? 0) : s.bill_transport_amount
+  const ptAmt = b.pay_transport_amount !== undefined ? (intOrNull(b.pay_transport_amount) ?? 0) : s.pay_transport_amount
+  // 数量は、計算と違う値を入れたときだけ固定する（qty_locked）。空欄なら計算時間に合わせ、実績が入れば実働に合わせる（#196）
+  const qtyLocked = (billQtyIn && !sameQty(billQty, amt.bill_qty)) || (payQtyIn && !sameQty(payQty, amt.pay_qty))
+  // 単価・単位・数量・交通費のルールを変えたときだけ手動変更（price_locked）にする。交通費の実費・調整・休憩だけを直したときは、単価ルールの対象のまま
+  const same = (a: any, x: any) => (a ?? null) === (x ?? null)
+  const priceChanged = qtyLocked || billUnit !== (s.bill_unit_type || 'daily') || payUnit !== (s.pay_unit_type || 'daily') || !same(billRate, s.bill_rate) || !same(payRate, s.pay_rate)
+    || (bt || 'actual') !== (s.bill_transport_type || 'actual') || (pt || 'actual') !== (s.pay_transport_type || 'actual')
+    || Number(btAmt || 0) !== Number(s.bill_transport_amount || 0) || Number(ptAmt || 0) !== Number(s.pay_transport_amount || 0)
+  const locked = s.price_locked || priceChanged ? 1 : 0
   await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
       break_minutes = ?, transportation_fee = ?, bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?,
-      bill_adjust = ?, pay_adjust = ?, adjust_note = ?, price_locked = 1, price_source = ? WHERE shift_id = ?`)
+      bill_adjust = ?, pay_adjust = ?, adjust_note = ?, price_locked = ?, qty_locked = ?, price_source = ? WHERE shift_id = ?`)
     .bind(billUnit, billRate, billQty, billAmount, payUnit, payRate, payQty, payAmount,
       brk, b.transportation_fee !== undefined ? (intOrNull(b.transportation_fee) ?? 0) : s.transportation_fee,
-      bt, b.bill_transport_amount !== undefined ? (intOrNull(b.bill_transport_amount) ?? 0) : s.bill_transport_amount,
-      pt, b.pay_transport_amount !== undefined ? (intOrNull(b.pay_transport_amount) ?? 0) : s.pay_transport_amount,
+      bt, btAmt, pt, ptAmt,
       intOrNull(b.bill_adjust) ?? s.bill_adjust ?? 0, intOrNull(b.pay_adjust) ?? s.pay_adjust ?? 0, b.adjust_note !== undefined ? (b.adjust_note || null) : s.adjust_note,
-      JSON.stringify({ manual: '手動変更' }), s.shift_id).run()
-  return c.json({ ok: true })
+      locked, qtyLocked ? 1 : 0, locked ? JSON.stringify({ manual: '手動変更' }) : s.price_source, s.shift_id).run()
+  return c.json({ ok: true, price_locked: !!locked, qty_locked: qtyLocked })
 })
 
 // 単価ルールの再適用（手動変更・確定済みのシフトは対象外）。
 // 必要な行をまとめて読み、メモリ上で計算して、まとめて書き込む。1回に BULK_LIMIT 件まで処理し、残りがあれば next_cursor（最後に処理した shift_id）を返す
-async function repriceRows(db: D1Database, companyId: number, rows: any[]): Promise<number> {
-  if (!rows.length) return 0
+// 再適用した後の単価・金額・支払先を計算する（書き込みはしない）。staff はスタッフ名の表示にも使う
+async function planReprice(db: D1Database, companyId: number, rows: any[]) {
   const data = await loadPricingData(db, companyId, rows.map(r => r.project_id))
   const staff = await loadStaffForAssign(db, companyId, rows.map(r => r.staff_id))
   const hist = await loadPayeeHistory(db, companyId, rows.map(r => r.staff_id))
@@ -762,20 +882,57 @@ async function repriceRows(db: D1Database, companyId: number, rows: any[]): Prom
     WHERE sl.company_id = ? AND r.slot_role_id IN ${JSON_IN}`).bind(companyId, roleIds).all()).results as any[]
   const roleMap = new Map(roles.map(r => [r.slot_role_id, r]))
   const upd = rows.map(s => ({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roleMap.get(s.slot_role_id) || null : null, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), s.work_date), data) }))
+  return { upd, staff }
+}
+async function repriceRows(db: D1Database, companyId: number, rows: any[]): Promise<number> {
+  if (!rows.length) return 0
+  const { upd } = await planReprice(db, companyId, rows)
   // 読み込みの後に確定・手動変更されたシフトは書き換えない
   const res = await batchInChunks(db, updateRowsStmts(db, 'shifts', 'shift_id', PRICE_COLUMNS, upd,
     "shifts.company_id = ? AND COALESCE(shifts.price_locked,0) = 0 AND COALESCE(shifts.settle_status,'planned') != 'confirmed'", [companyId]))
   return changesOf(res)
 }
+// 再適用の前の確認（#469）: 金額・支払先が変わるシフトの一覧（日付・スタッフ・請求と支払の前後・支払先の前後）と、請求・支払の増減の合計。
+// 計算するのは日付順に PREVIEW_MAX 件まで（超えたら truncated）。一覧は PREVIEW_LIST 件まで返す
+const PREVIEW_MAX = 3000, PREVIEW_LIST = 200
+const sameValue = (a: any, b: any) => (a == null || b == null) ? (a == null) === (b == null) : (typeof a === 'number' || typeof b === 'number') ? Math.abs(Number(a) - Number(b)) < 0.005 : String(a) === String(b)
+async function repricePreview(db: D1Database, companyId: number, where: string[], binds: any[]) {
+  const rows = (await db.prepare(`SELECT * FROM shifts WHERE ${where.join(' AND ')} ORDER BY work_date, shift_id LIMIT ?`).bind(...binds, PREVIEW_MAX + 1).all()).results as any[]
+  const part = rows.slice(0, PREVIEW_MAX)
+  const out = { checked: part.length, truncated: rows.length > PREVIEW_MAX, changed: 0, bill_diff: 0, pay_diff: 0, payee_changed: 0, pay_set_changed: 0, changes: [] as any[] }
+  if (!part.length) return out
+  const { upd, staff } = await planReprice(db, companyId, part)
+  const names = new Map(((await db.prepare(`SELECT project_id, project_name FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`)
+    .bind(companyId, bindJsonArray(part.map(s => s.project_id))).all()).results as any[]).map(p => [p.project_id, p.project_name]))
+  const compared = PRICE_COLUMNS.filter(k => k !== 'price_source' && k !== 'price_locked')
+  part.forEach((s, i) => {
+    const v = upd[i] as Record<string, any>
+    if (compared.every(k => sameValue(s[k], v[k]))) return
+    const before = shiftTotals(s), after = shiftTotals({ ...s, ...v })
+    const payeeChanged = !sameValue(s.payee_type, v.payee_type) || !sameValue(s.payee_affiliation_id, v.payee_affiliation_id) || !sameValue(s.payee_company_id, v.payee_company_id)
+    out.changed++
+    out.bill_diff += after.bill_total - before.bill_total
+    if (before.pay_total != null && after.pay_total != null) out.pay_diff += after.pay_total - before.pay_total
+    else if ((before.pay_total == null) !== (after.pay_total == null)) out.pay_set_changed++
+    if (payeeChanged) out.payee_changed++
+    if (out.changes.length < PREVIEW_LIST) out.changes.push({
+      shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, staff_name: staff.get(s.staff_id)?.name || '', project_name: names.get(s.project_id) || '',
+      bill_before: before.bill_total, bill_after: after.bill_total, pay_before: before.pay_total, pay_after: after.pay_total,
+      payee_before: s.payee_type || null, payee_after: v.payee_type || null, payee_changed: payeeChanged,
+    })
+  })
+  return out
+}
 app.post('/shifts/reprice', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
-  if (!isDate(b.from) || !isDate(b.to)) return c.json({ error: '期間を指定してください' }, 400)
+  if (!isISODate(b.from) || !isISODate(b.to)) return c.json({ error: '期間を指定してください' }, 400)
+  if (b.from > b.to) return c.json({ error: '期間の開始日は終了日以前にしてください' }, 400)
   const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'"]; const bind: any[] = [u.company_id, b.from, b.to]
   if (b.project_id) { f.push('project_id = ?'); bind.push(b.project_id) }
   if (b.staff_id) { f.push('staff_id = ?'); bind.push(b.staff_id) }
   if (b.dry_run) {
     const r = await db.prepare(`SELECT COUNT(*) AS n FROM shifts WHERE ${f.join(' AND ')}`).bind(...bind).first() as any
-    return c.json({ count: Number(r?.n || 0) })
+    return c.json({ count: Number(r?.n || 0), ...(await repricePreview(db, u.company_id, f, bind)) })
   }
   const limit = bulkLimit(b.limit)
   const after = Math.max(0, Math.floor(Number(b.cursor) || 0))
@@ -994,9 +1151,9 @@ app.post('/shifts/copy-week', async (c) => {
   }
   const newRoles = rolePlans.filter(p => !p.target)
   if (newRoles.length) {
-    const res = await batchInChunks(db, insertRowsStmts(db, 'shift_slot_roles', ['slot_id', 'role_name', 'headcount', 'bill_unit_type', 'bill_rate', 'pay_unit_type', 'pay_rate', 'sort_order', 'source_slot_role_id'],
+    const res = await batchInChunks(db, insertRowsStmts(db, 'shift_slot_roles', ['slot_id', 'role_name', 'headcount', 'bill_unit_type', 'bill_rate', 'pay_unit_type', 'pay_rate', 'sort_order', 'source_slot_role_id', 'rate_role_name'],
       newRoles.map(p => ({ slot_id: p.slot.target.slot_id, role_name: p.src.role_name, headcount: p.src.headcount, bill_unit_type: p.src.bill_unit_type ?? null, bill_rate: p.src.bill_rate ?? null,
-        pay_unit_type: p.src.pay_unit_type ?? null, pay_rate: p.src.pay_rate ?? null, sort_order: p.src.sort_order ?? 0, source_slot_role_id: p.src.slot_role_id })), { orIgnore: true }))
+        pay_unit_type: p.src.pay_unit_type ?? null, pay_rate: p.src.pay_rate ?? null, sort_order: p.src.sort_order ?? 0, source_slot_role_id: p.src.slot_role_id, rate_role_name: p.src.rate_role_name ?? null })), { orIgnore: true }))
     rolesCreated = changesOf(res)
     const got = await all(`SELECT * FROM shift_slot_roles WHERE slot_id IN ${JSON_IN} AND source_slot_role_id IS NOT NULL`, bindJsonArray(newRoles.map(p => p.slot.target.slot_id)))
     for (const p of newRoles) {
@@ -1132,6 +1289,8 @@ function ruleValues(b: any) {
     pay_transport_amount: intOrNull(b.pay_transport_amount),
   }
 }
+// 適用期間（#210）。空欄は期限なし
+const optDate = (v: any) => (v === undefined || v === null || v === '' ? null : v)
 app.get('/rate-rules', async (c) => {
   const u = c.get('user')
   const pid = intOrNull(c.req.query('project_id')), sid = intOrNull(c.req.query('staff_id'))
@@ -1141,7 +1300,7 @@ app.get('/rate-rules', async (c) => {
   const rows = (await c.env.DB.prepare(`SELECT r.*, p.project_name, si.site_name, us.name AS staff_name
     FROM rate_rules r LEFT JOIN projects p ON p.project_id = r.project_id LEFT JOIN sites si ON si.site_id = r.site_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = r.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
-    WHERE ${f.join(' AND ')} ORDER BY r.project_id, r.site_id, r.role_name, r.staff_id`).bind(...b).all()).results
+    WHERE ${f.join(' AND ')} ORDER BY r.project_id, r.site_id, r.role_name, r.staff_id, COALESCE(r.valid_from, '')`).bind(...b).all()).results
   return c.json({ rules: rows })
 })
 async function validateRuleScope(db: D1Database, u: any, b: any): Promise<string | null> {
@@ -1149,6 +1308,12 @@ async function validateRuleScope(db: D1Database, u: any, b: any): Promise<string
   if (b.project_id && !(await ownProject(db, u.company_id, b.project_id))) return '案件が見つかりません'
   if (b.site_id && !(await ownSite(db, u.company_id, b.site_id))) return '開催場所が見つかりません'
   if (b.staff_id && !(await db.prepare('SELECT 1 FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(b.staff_id, u.company_id).first())) return 'スタッフが見つかりません'
+  const range = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX],
+    ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX], ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX]])
+  if (range) return range
+  const from = optDate(b.valid_from), to = optDate(b.valid_to)
+  if ((from && !isISODate(from)) || (to && !isISODate(to))) return '適用期間の日付が正しくありません'
+  if (from && to && from > to) return '適用開始日は適用終了日以前にしてください'
   const v = ruleValues(b)
   if (v.bill_rate == null && v.pay_rate == null && !v.bill_transport_type && !v.pay_transport_type) return '単価または交通費ルールを1つ以上入力してください'
   return null
@@ -1158,9 +1323,10 @@ app.post('/rate-rules', async (c) => {
   const err = await validateRuleScope(c.env.DB, u, b); if (err) return c.json({ error: err }, 400)
   const v = ruleValues(b)
   const res = await c.env.DB.prepare(`INSERT INTO rate_rules (company_id, project_id, site_id, role_name, staff_id, bill_unit_type, bill_rate, pay_unit_type, pay_rate,
-      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, memo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, memo, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, b.project_id || null, b.site_id || null, String(b.role_name || '').trim() || null, b.staff_id || null,
-      v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, b.memo || null).run()
+      v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, b.memo || null,
+      optDate(b.valid_from), optDate(b.valid_to)).run()
   return c.json({ ok: true, rule_id: res.meta.last_row_id })
 })
 app.put('/rate-rules/:id', async (c) => {
@@ -1171,9 +1337,10 @@ app.put('/rate-rules/:id', async (c) => {
   const err = await validateRuleScope(c.env.DB, u, merged); if (err) return c.json({ error: err }, 400)
   const v = ruleValues(merged)
   await c.env.DB.prepare(`UPDATE rate_rules SET project_id = ?, site_id = ?, role_name = ?, staff_id = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?,
-      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, memo = ? WHERE rule_id = ?`)
+      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, memo = ?, valid_from = ?, valid_to = ? WHERE rule_id = ?`)
     .bind(merged.project_id || null, merged.site_id || null, String(merged.role_name || '').trim() || null, merged.staff_id || null,
-      v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, merged.memo || null, r.rule_id).run()
+      v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, merged.memo || null,
+      optDate(merged.valid_from), optDate(merged.valid_to), r.rule_id).run()
   return c.json({ ok: true })
 })
 app.delete('/rate-rules/:id', async (c) => {
@@ -1181,36 +1348,85 @@ app.delete('/rate-rules/:id', async (c) => {
   await c.env.DB.prepare('DELETE FROM rate_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
   return c.json({ ok: true })
 })
-// 適用結果のプレビュー
+// 適用結果のプレビュー（work_date を省略したら今日の単価）
 app.get('/rate-rules/resolve', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const pid = intOrNull(c.req.query('project_id'))
   if (!pid || !(await ownProject(db, u.company_id, pid))) return c.json({ error: '案件を指定してください' }, 400)
   const data = await loadPricingData(db, u.company_id, [pid])
-  const price = resolvePrice({ company_id: u.company_id, project_id: pid, site_id: intOrNull(c.req.query('site_id')), role_name: c.req.query('role_name') || null, staff_id: intOrNull(c.req.query('staff_id')) }, data)
+  const workDate = isISODate(c.req.query('work_date')) ? c.req.query('work_date')! : todayJST()
+  const price = resolvePrice({ company_id: u.company_id, project_id: pid, site_id: intOrNull(c.req.query('site_id')), role_name: c.req.query('role_name') || null, staff_id: intOrNull(c.req.query('staff_id')), work_date: workDate }, data)
   const start = isTime(c.req.query('start_time')) ? c.req.query('start_time')! : '10:00', end = isTime(c.req.query('end_time')) ? c.req.query('end_time')! : '19:00'
   const brk = intOrNull(c.req.query('break_minutes')) ?? data.projects.get(pid)?.default_break_minutes ?? 60
-  return c.json({ price, amounts: calcAmounts(price, start, end, brk) })
+  return c.json({ work_date: workDate, price, amounts: calcAmounts(price, start, end, brk) })
 })
 
-app.put('/projects/:id/pricing', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+// 案件の標準単価の改定履歴（#210）
+app.get('/projects/:id/price-history', async (c) => {
+  const u = c.get('user')
   const p = await ownProject(c.env.DB, u.company_id, c.req.param('id'))
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
+  const rows = (await c.env.DB.prepare('SELECT * FROM project_price_history WHERE company_id = ? AND project_id = ? ORDER BY valid_to DESC, history_id DESC')
+    .bind(u.company_id, p.project_id).all()).results
+  return c.json({ price_valid_from: p.price_valid_from || null, history: rows })
+})
+
+// 区分・標準単価・交通費ルール・時間の数え方。
+// price_valid_from（適用開始日）を付けて単価を変えると、その前日までの稼働日には今の単価を使い続ける（改定前の単価を project_price_history に残す。#210）。
+// 付けずに変えると、今の単価の適用期間（price_valid_from 以降。未設定ならすべての期間）の単価を直す
+app.put('/projects/:id/pricing', async (c) => {
+  const u = c.get('user'); const b = await c.req.json(); const db = c.env.DB
+  const p = await ownProject(db, u.company_id, c.req.param('id'))
+  if (!p) return c.json({ error: '案件が見つかりません' }, 404)
+  // 負の単価・交通費・休憩は受け付けない（#218）
+  const range = rangeError([['請求単価', b.unit_price, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX], ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX],
+    ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX], ['休憩', b.default_break_minutes, 0, BREAK_MAX]])
+  if (range) return c.json({ error: range }, 400)
+  const validFrom = optDate(b.price_valid_from)
+  if (validFrom && !isISODate(validFrom)) return c.json({ error: '適用開始日が正しくありません' }, 400)
   const eng = b.engagement_type === 'spot' ? 'spot' : b.engagement_type === 'regular' ? 'regular' : (p.engagement_type || 'regular')
   const unit = (v: any, d: string) => (v === 'hourly' ? 'hourly' : v === 'daily' ? 'daily' : d)
   const basis = HOURS_BASIS.includes(b.hours_basis) ? b.hours_basis : (p.hours_basis || 'clipped')
   const roundMin = [0, 1, 5, 10, 15, 30].includes(Number(b.time_round_minutes)) ? Number(b.time_round_minutes) : (p.time_round_minutes || 0)
-  await c.env.DB.prepare(`UPDATE projects SET engagement_type = ?, unit_price_type = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?,
-      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, default_break_minutes = ?, hours_basis = ?, time_round_minutes = ? WHERE project_id = ?`)
-    .bind(eng, unit(b.unit_price_type, p.unit_price_type === 'hourly' ? 'hourly' : 'daily'), intOrNull(b.unit_price) ?? p.unit_price ?? 0,
-      unit(b.pay_unit_type, p.pay_unit_type || 'daily'), b.pay_rate !== undefined ? intOrNull(b.pay_rate) : p.pay_rate,
-      BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : (p.bill_transport_type || 'actual'),
-      intOrNull(b.bill_transport_amount) ?? p.bill_transport_amount ?? 0,
-      PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : (p.pay_transport_type || 'actual'),
-      intOrNull(b.pay_transport_amount) ?? p.pay_transport_amount ?? 0,
-      intOrNull(b.default_break_minutes) ?? p.default_break_minutes ?? 60, basis, roundMin, p.project_id).run()
-  return c.json({ ok: true })
+  // 支払側の丸め（#220）: none = 支払は丸めない / same = 請求と同じく丸める
+  const payRound = b.pay_time_round === 'same' || b.pay_time_round === 'none' ? b.pay_time_round : (p.pay_time_round || 'none')
+  const next: Record<string, any> = {
+    unit_price_type: unit(b.unit_price_type, p.unit_price_type === 'hourly' ? 'hourly' : 'daily'), unit_price: intOrNull(b.unit_price) ?? p.unit_price ?? 0,
+    pay_unit_type: unit(b.pay_unit_type, p.pay_unit_type || 'daily'), pay_rate: b.pay_rate !== undefined ? intOrNull(b.pay_rate) : p.pay_rate,
+    bill_transport_type: BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : (p.bill_transport_type || 'actual'),
+    bill_transport_amount: intOrNull(b.bill_transport_amount) ?? p.bill_transport_amount ?? 0,
+    pay_transport_type: PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : (p.pay_transport_type || 'actual'),
+    pay_transport_amount: intOrNull(b.pay_transport_amount) ?? p.pay_transport_amount ?? 0,
+  }
+  const cur: Record<string, any> = {
+    unit_price_type: p.unit_price_type === 'hourly' ? 'hourly' : 'daily', unit_price: p.unit_price ?? 0, pay_unit_type: p.pay_unit_type || 'daily', pay_rate: p.pay_rate,
+    bill_transport_type: p.bill_transport_type || 'actual', bill_transport_amount: p.bill_transport_amount ?? 0,
+    pay_transport_type: p.pay_transport_type || 'actual', pay_transport_amount: p.pay_transport_amount ?? 0,
+  }
+  const priceChanged = PROJECT_PRICE_FIELDS.some(k => !sameValue(cur[k], next[k]))
+  const stmts: D1PreparedStatement[] = []
+  let priceFrom = p.price_valid_from || null
+  if (validFrom && priceChanged) {
+    const dayBefore = addDays(validFrom, -1)
+    // 適用開始日以降に始まる改定前の単価は新しい単価に置き換わり、適用開始日をまたぐものはその前日までにする
+    stmts.push(db.prepare('DELETE FROM project_price_history WHERE company_id = ? AND project_id = ? AND valid_from >= ?').bind(u.company_id, p.project_id, validFrom))
+    stmts.push(db.prepare('UPDATE project_price_history SET valid_to = ? WHERE company_id = ? AND project_id = ? AND valid_to >= ?').bind(dayBefore, u.company_id, p.project_id, validFrom))
+    // 今の単価は、適用開始日の前日までの単価として残す（今の単価の適用開始日が新しい適用開始日以降なら、今の単価は使われないので残さない）
+    if (!priceFrom || priceFrom < validFrom) {
+      stmts.push(db.prepare(`INSERT INTO project_price_history (company_id, project_id, valid_from, valid_to, ${PROJECT_PRICE_FIELDS.join(', ')}, created_by)
+        VALUES (?, ?, ?, ?, ${PROJECT_PRICE_FIELDS.map(() => '?').join(', ')}, ?)`)
+        .bind(u.company_id, p.project_id, priceFrom, dayBefore, ...PROJECT_PRICE_FIELDS.map(k => p[k] ?? null), u.user_id))
+    }
+    priceFrom = validFrom
+  }
+  stmts.push(db.prepare(`UPDATE projects SET engagement_type = ?, unit_price_type = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?,
+      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, default_break_minutes = ?, hours_basis = ?, time_round_minutes = ?,
+      pay_time_round = ?, price_valid_from = ? WHERE project_id = ? AND company_id = ?`)
+    .bind(eng, next.unit_price_type, next.unit_price, next.pay_unit_type, next.pay_rate, next.bill_transport_type, next.bill_transport_amount,
+      next.pay_transport_type, next.pay_transport_amount, intOrNull(b.default_break_minutes) ?? p.default_break_minutes ?? 60, basis, roundMin,
+      payRound, priceFrom, p.project_id, u.company_id))
+  await db.batch(stmts)
+  return c.json({ ok: true, price_valid_from: priceFrom, price_changed: priceChanged })
 })
 
 export default app

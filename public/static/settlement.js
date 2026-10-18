@@ -245,7 +245,7 @@
           <label class="col-span-3">メモ<input id="se-note" class="inp text-sm" value="${esc(r.actual_note || '')}" placeholder="例: 30分残業（店長了承）" ${dis}></label>
         </div>
         <p class="text-[11px] text-gray-400 mt-1">${r.actual_source === 'manual' ? '手入力の実績です（入店・退店報告では上書きしません）' : r.actual_source === 'report' ? '入店・退店報告から反映した実績です' : '実績はまだありません'}。
-          実働 ${hrs(r.actual_hours)}・計算に使う時間 ${hrs(r.hours)}</p>
+          実働 ${hrs(r.actual_hours)}・計算に使う時間 ${hrs(r.hours)}${r.pay_hours != null && r.pay_hours !== r.hours ? `（支払は丸めずに ${hrs(r.pay_hours)}）` : ''}</p>
         ${locked ? '' : `<div class="flex gap-2 mt-2">
           <button class="btn btn-primary text-xs flex-1" onclick="saveSettleActual(${r.shift_id})">実績を保存して再計算</button>
           ${r.actual_source === 'manual' ? `<button class="btn btn-outline text-xs" onclick="resetSettleActual(${r.shift_id})">報告の時刻に戻す</button>` : ''}</div>`}
@@ -260,7 +260,7 @@
             <p>交通費 ${yen(r.pay_transport)}（実費 ${yen(r.transportation_fee)}）${r.pay_adjust ? `・調整 ${yen(r.pay_adjust)}` : ''}</p><p class="font-bold">合計 ${r.pay_total == null ? '-' : yen(r.pay_total)}</p></div>
         </div>
         ${r.adjust_note ? `<p class="text-gray-500 mt-1">調整メモ: ${esc(r.adjust_note)}</p>` : ''}
-        ${r.price_locked ? '<p class="text-amber-600 mt-1">手動で金額を変更したシフトです（単価はそのまま、時給の数量だけ実働に合わせます）</p>' : ''}
+        ${r.price_locked ? `<p class="text-amber-600 mt-1">${r.qty_locked ? '手動で金額を変更したシフトです（単価・数量とも固定。実働が変わっても金額は変わりません）' : '手動で単価を変更したシフトです（単価はそのまま、時給の数量は実働に合わせます）'}</p>` : ''}
         ${locked ? '' : `<button class="btn btn-outline text-xs w-full mt-2" onclick="closeModal();openShiftPriceFromSettle(${r.shift_id})"><i class="fas fa-pen"></i>単価・交通費・調整を変更</button>`}
       </section>
       <div class="flex gap-2">
@@ -301,14 +301,14 @@
     const r = window.__settleData.rows.find(x => x.shift_id === id); if (!r) return
     modal(`
       <h3 class="font-bold text-lg mb-1">金額の変更</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(r.staff_name)}・${dayjs(r.work_date).format('M/D(dd)')}・${esc(r.project_name)}。時給の数量を空欄にすると計算時間（${hrs(r.hours)}）を使います</p>
+      <p class="text-xs text-gray-500 mb-3">${esc(r.staff_name)}・${dayjs(r.work_date).format('M/D(dd)')}・${esc(r.project_name)}。時給の数量を空欄にすると計算時間（${hrs(r.hours)}${r.pay_hours != null && r.pay_hours !== r.hours ? `・支払 ${hrs(r.pay_hours)}` : ''}）を使い、実績が変われば数量も変わります。数量を入れると固定します</p>
       <div class="grid grid-cols-3 gap-2 text-xs" id="settle-price-form">
         <label>請求<select id="spx-bill-unit" class="inp text-xs">${opt(UNIT_LABEL, r.bill_unit_type)}</select></label>
         <label>請求単価<input id="spx-bill-rate" type="number" class="inp text-xs" value="${r.bill_rate ?? ''}"></label>
-        <label>数量<input id="spx-bill-qty" type="number" step="0.25" class="inp text-xs" value="" placeholder="${r.bill_qty ?? ''}"></label>
+        <label>数量<input id="spx-bill-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" value="${r.qty_locked ? (r.bill_qty ?? '') : ''}" placeholder="${r.bill_qty ?? ''}"></label>
         <label>支払<select id="spx-pay-unit" class="inp text-xs">${opt(UNIT_LABEL, r.pay_unit_type)}</select></label>
         <label>支払単価<input id="spx-pay-rate" type="number" class="inp text-xs" value="${r.pay_rate ?? ''}" placeholder="未設定"></label>
-        <label>数量<input id="spx-pay-qty" type="number" step="0.25" class="inp text-xs" value="" placeholder="${r.pay_qty ?? ''}"></label>
+        <label>数量<input id="spx-pay-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" value="${r.qty_locked ? (r.pay_qty ?? '') : ''}" placeholder="${r.pay_qty ?? ''}"></label>
         <label>交通費の実費<input id="spx-fee" type="number" class="inp text-xs" value="${r.transportation_fee}"></label>
         <label>交通費の請求<select id="spx-bt" class="inp text-xs">${opt(BT_LABEL, r.bill_transport_type)}</select></label>
         <label>請求額（定額時）<input id="spx-bt-amt" type="number" class="inp text-xs" value="${r.bill_transport_amount}"></label>

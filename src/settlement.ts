@@ -9,7 +9,8 @@
 // 確定（settle_status = 'confirmed'）したシフトは金額・時間・スタッフを変更できない。
 // =========================================================
 import { Hono } from 'hono'
-import { calcAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
+import { calcAmounts, hoursForAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
+import { isHHMM } from './lib/validate'
 import { toCsv } from './csv'
 import { JSON_IN, batchInChunks, bindJsonArray, chunk } from './lib/d1-chunk'
 import { shiftWindow } from './lib/shift-time'
@@ -24,7 +25,8 @@ const MAX_RANGE_DAYS = 93
 export const MAX_ROWS = 5000
 const WORK_STATUSES = ['confirmed', 'substitute']
 const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
-const isTime = (s: any) => typeof s === 'string' && /^\d{2}:\d{2}$/.test(s)
+// 時刻は 00:00〜23:59 だけを受け付ける（#218）
+const isTime = (s: any) => isHHMM(s)
 function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) }
 function intOrNull(v: any): number | null { if (v === '' || v == null) return null; const n = Math.round(Number(v)); return Number.isFinite(n) ? n : null }
@@ -35,15 +37,18 @@ export const PAYEE_LABEL: Record<string, string> = {
 
 // ---------- 金額の再計算（実績の変更時） ----------
 // 単価ルールは再適用しない（過去のシフトの単価を変えないため）。記録済みの単価のまま、時給の数量だけを実働時間に合わせる。
-// 日額のシフトは金額を変えない。手動で金額を変えたシフト（price_locked）は数量も変えず、精算画面の「確認」に表示する
+// 日額のシフトは金額を変えない。手動で金額を変えたシフト（price_locked）は、数量も固定したもの（qty_locked。従来の行は NULL）なら数量も変えず、
+// 精算画面の「確認」に表示する。単価だけを固定したもの（qty_locked = 0）は、時給の数量を実働に合わせる（#196）
+// 請求と支払の時間は workHours の hours と pay_hours（支払側の丸めを分ける #220）
+export const qtyFixed = (s: any) => !!s.price_locked && s.qty_locked !== 0
 // s はシフトの行（shifts.*）、proj は案件の休憩・時間の計算方法。変えないときは null
 export function amountsForActual(s: any, proj: any) {
-  if (isSettled(s) || s.price_locked) return null
+  if (isSettled(s) || qtyFixed(s)) return null
   const billHourly = s.bill_unit_type === 'hourly' && s.bill_rate != null
   const payHourly = s.pay_unit_type === 'hourly' && s.pay_rate != null
   if (!billHourly && !payHourly) return null
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
-  const h = workHours({ ...s, break_minutes: brk }, proj).hours
+  const h = hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj))
   const amt = calcAmounts({ bill_unit_type: 'hourly', bill_rate: s.bill_rate, pay_unit_type: 'hourly', pay_rate: s.pay_rate }, s.start_time, s.end_time, brk, h)
   return {
     bill_qty: billHourly ? amt.bill_qty : s.bill_qty, unit_price: billHourly ? amt.unit_price : s.unit_price,
@@ -52,7 +57,7 @@ export function amountsForActual(s: any, proj: any) {
 }
 export async function refreshShiftAmounts(db: D1Database, companyId: number, shiftId: number) {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
-  if (!s || isSettled(s) || s.price_locked) return
+  if (!s || isSettled(s) || qtyFixed(s)) return
   const data = await loadPricingData(db, companyId, [s.project_id])
   const amt = amountsForActual(s, data.projects.get(Number(s.project_id)) || {})
   if (!amt) return
@@ -96,7 +101,7 @@ export async function syncActualFromReports(db: D1Database, companyId: number, s
 export async function syncActualsForShifts(db: D1Database, companyId: number, shiftIds: number[]) {
   let updated = 0
   for (const part of chunk(shiftIds, 500)) {
-    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.default_break_minutes, ${REPORT_COLS}
+    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, ${REPORT_COLS}
       FROM shifts s JOIN projects p ON p.project_id = s.project_id WHERE s.company_id = ? AND s.shift_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(part)).all()).results as any[]
     const stmts: D1PreparedStatement[] = []
     for (const s of rows) {
@@ -104,7 +109,7 @@ export async function syncActualsForShifts(db: D1Database, companyId: number, sh
       const a = actualFromReports(t => s['r_' + t])
       if (sameActual(a, s)) continue
       const amt = amountsForActual({ ...s, actual_start: a.start, actual_end: a.end, actual_break_minutes: a.brk },
-        { hours_basis: s.hours_basis, time_round_minutes: s.time_round_minutes, default_break_minutes: s.default_break_minutes })
+        { hours_basis: s.hours_basis, time_round_minutes: s.time_round_minutes, pay_time_round: s.pay_time_round, default_break_minutes: s.default_break_minutes })
       stmts.push(db.prepare(`UPDATE shifts SET actual_start = ?, actual_end = ?, actual_break_minutes = ?, actual_source = ?, bill_qty = ?, unit_price = ?, pay_qty = ?, pay_amount = ?
         WHERE shift_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed' AND COALESCE(actual_source,'') != 'manual'`)
         .bind(a.start, a.end, a.brk, a.start || a.brk != null ? 'report' : null,
@@ -139,7 +144,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
   if (f.settle === 'confirmed') w.push("s.settle_status = 'confirmed'")
   if (f.settle === 'planned') w.push("COALESCE(s.settle_status,'planned') != 'confirmed'")
   // manual_correction_at: 実績が手入力のときに承認した打刻修正（承認の操作履歴に applied_while_manual を記録している）
-  const rows = (await db.prepare(`SELECT s.*, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.default_break_minutes, cl.client_name,
+  const rows = (await db.prepare(`SELECT s.*, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, cl.client_name,
       st.site_name, us.name AS staff_name, sp.affiliation_type, er.employee_number,
       aff.affiliation_name AS payee_affiliation_name, pco.company_name AS payee_company_name,
       (SELECT MAX(c.decided_at) FROM attendance_corrections c WHERE c.shift_id = s.shift_id AND c.status = 'approved') AS last_correction_at,
@@ -157,7 +162,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     WHERE ${w.join(' AND ')} ORDER BY s.work_date, cl.client_name, p.project_name, s.start_time, us.name LIMIT ${MAX_ROWS + 1}`).bind(...bind).all()).results as any[]
   const today = nowJST().slice(0, 10)
   const out = rows.map(r => {
-    const proj = { hours_basis: r.hours_basis, time_round_minutes: r.time_round_minutes, default_break_minutes: r.default_break_minutes }
+    const proj = { hours_basis: r.hours_basis, time_round_minutes: r.time_round_minutes, pay_time_round: r.pay_time_round, default_break_minutes: r.default_break_minutes }
     const h = workHours(r, proj)
     const t = shiftTotals(r)
     const settled = r.settle_status === 'confirmed'
@@ -182,7 +187,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     // 手入力の実績のあるシフトで打刻修正を承認した（実績・金額は手入力のまま）。「報告の時刻に戻す」で反映される
     if (r.actual_source === 'manual' && r.manual_correction_at && !sameActual(fromReports, r)) issues.push('手入力後に打刻修正あり')
     if (!r.unit_price && !r.bill_rate) issues.push('請求単価未設定')
-    if (r.price_locked && ((r.bill_unit_type === 'hourly' && Number(r.bill_qty) !== h.hours) || (r.pay_unit_type === 'hourly' && Number(r.pay_qty) !== h.hours))) issues.push('手動変更（数量が実働と違う）')
+    if (qtyFixed(r) && ((r.bill_unit_type === 'hourly' && Number(r.bill_qty) !== h.hours) || (r.pay_unit_type === 'hourly' && Number(r.pay_qty) !== h.pay_hours))) issues.push('手動変更（数量が実働と違う）')
     const payeeType = r.payee_type || 'payroll'
     const payeeName = payeeType === 'partner' ? (r.payee_affiliation_name || r.affiliation || '取引先') : payeeType === 'linked' ? (r.payee_company_name || '連携元')
       : payeeType === 'freelance' ? r.staff_name : PAYEE_LABEL[payeeType] || payeeType
@@ -193,13 +198,13 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       // break_minutes = 予定の休憩、used_break_minutes = 実働の計算に使った休憩（実績の休憩があればその値）
       start_time: r.start_time, end_time: r.end_time, break_minutes: h.planned_break_minutes, used_break_minutes: h.break_minutes, actual_start: r.actual_start, actual_end: r.actual_end,
       actual_break_minutes: r.actual_break_minutes, actual_source: r.actual_source, actual_note: r.actual_note,
-      planned_hours: h.planned_hours, actual_hours: h.actual_hours, hours: h.hours, hours_basis: h.basis,
+      planned_hours: h.planned_hours, actual_hours: h.actual_hours, hours: h.hours, pay_hours: h.pay_hours, hours_basis: h.basis,
       bill_unit_type: r.bill_unit_type || 'daily', bill_rate: r.bill_rate, bill_qty: r.bill_qty, bill_base: Number(r.unit_price || 0), bill_transport: t.bill_transport, bill_adjust: Number(r.bill_adjust || 0), bill_total: t.bill_total,
       pay_unit_type: r.pay_unit_type || 'daily', pay_rate: r.pay_rate, pay_qty: r.pay_qty, pay_base: r.pay_amount == null ? null : Number(r.pay_amount), pay_transport: t.pay_transport, pay_adjust: Number(r.pay_adjust || 0), pay_total: t.pay_total,
       transportation_fee: Number(r.transportation_fee || 0), adjust_note: r.adjust_note || '',
       bill_transport_type: r.bill_transport_type || 'actual', bill_transport_amount: Number(r.bill_transport_amount || 0), pay_transport_type: r.pay_transport_type || 'actual', pay_transport_amount: Number(r.pay_transport_amount || 0),
       payee_type: payeeType, payee_label: PAYEE_LABEL[payeeType] || payeeType, payee_name: payeeName, payee_key: `${payeeType}:${payeeType === 'partner' ? (r.payee_affiliation_id || r.affiliation || '') : payeeType === 'linked' ? (r.payee_company_id || '') : payeeType === 'freelance' ? r.staff_id : ''}`,
-      price_locked: !!r.price_locked, settle_status: settled ? 'confirmed' : 'planned', settled_at: r.settled_at,
+      price_locked: !!r.price_locked, qty_locked: qtyFixed(r), settle_status: settled ? 'confirmed' : 'planned', settled_at: r.settled_at,
       has_check_in: hasIn, has_check_out: hasOut, has_end_report: hasOut || !!at('work_end'), has_daily: !!r.has_daily,
       pending_corrections: Number(r.pending_corrections || 0), issues,
     }
@@ -235,7 +240,7 @@ function summarize(rows: Row[]) {
     staff_id: a[0].payee_type === 'partner' || a[0].payee_type === 'linked' ? null : a[0].staff_id,
     staff_name: a[0].payee_type === 'partner' || a[0].payee_type === 'linked' ? [...new Set(a.map(r => r.staff_name))].join('、') : a[0].staff_name,
     employee_number: a[0].payee_type === 'payroll' || a[0].payee_type === 'payroll_daily' ? a[0].employee_number : '',
-    shifts: a.length, days: new Set(a.map(r => `${r.staff_id}:${r.work_date}`)).size, hours: Math.round(sum(a, 'hours') * 100) / 100,
+    shifts: a.length, days: new Set(a.map(r => `${r.staff_id}:${r.work_date}`)).size, hours: Math.round(sum(a, 'pay_hours') * 100) / 100,
     pay_base: sum(a, 'pay_base'), pay_transport: sum(a, 'pay_transport'), pay_adjust: sum(a, 'pay_adjust'), pay_total: sum(a, 'pay_total'),
     pay_unset: a.filter(r => r.pay_total == null).length, confirmed: a.filter(r => r.settle_status === 'confirmed').length,
   })).sort((x, y) => x.payee_type.localeCompare(y.payee_type) || x.payee_name.localeCompare(y.payee_name, 'ja') || (x.staff_name || '').localeCompare(y.staff_name || '', 'ja'))
@@ -272,7 +277,7 @@ app.post('/settlement/sync-actuals', async (c) => {
   const guard = "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.actual_source,'') != 'manual'"
   const actualCols = ['actual_start', 'actual_end', 'actual_break_minutes', 'actual_source']
   for (let page = 0; page < SYNC_MAX_PAGES; page++) {
-    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
+    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
       WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
         ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''} AND s.shift_id > ? ORDER BY s.shift_id LIMIT ?`)
       .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : []), after, SYNC_PAGE + 1).all()).results as any[]

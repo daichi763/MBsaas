@@ -7,7 +7,7 @@ import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective } from './services/retention'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
-import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
+import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
 import boardApi from './board'
 import settlementApi, { syncActualFromReports } from './settlement'
 import { shiftTotals } from './shift-board'
@@ -2208,6 +2208,9 @@ api.post('/admin/projects', async (c) => {
   if (!name) return c.json({ error: '案件名は必須です' }, 400)
   if (b.project_type && !PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
   if (b.unit_price_type && !UNIT_PRICE_TYPES.includes(b.unit_price_type)) return c.json({ error: '単価の種類が正しくありません' }, 400)
+  // 負の単価は受け付けない（#218。単価パネルの PUT /admin/projects/:id/pricing と同じ範囲）
+  const priceErr = rangeError([['単価', b.unit_price, 0, MONEY_MAX]])
+  if (priceErr) return c.json({ error: priceErr }, 400)
   // クライアントは任意（社内研修など）。空欄は NULL にする（'' のまま入れると外部キー違反になる）。他社のクライアントは指定できない
   const blank = (v: any) => v === undefined || v === null || String(v).trim() === ''
   const clientId = blank(b.client_id) ? null : b.client_id
