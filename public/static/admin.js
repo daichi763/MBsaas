@@ -2736,10 +2736,21 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
-    <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>`)
+    <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
+    <div id="edit-shift-withdrawals"></div>`)
   loadAttendancePhotos(document.getElementById('edit-shift-photos'), shiftId)
+  loadAttendanceWithdrawals(document.getElementById('edit-shift-withdrawals'), shiftId)
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
+// スタッフ本人が押し間違いで取り消した勤怠報告の記録（#323）。無ければ何も出さない
+async function loadAttendanceWithdrawals(box, shiftId) {
+  if (!box) return
+  let data
+  try { data = (await axios.get('/api/admin/shifts/' + Number(shiftId) + '/attendance-withdrawals')).data } catch (e) { return }
+  if (!data.withdrawals.length) return
+  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">本人が取り消した報告</p>
+    <ul class="space-y-1">${data.withdrawals.map(w => `<li class="text-xs text-gray-600"><i class="fas fa-rotate-left text-gray-400 mr-1"></i>${esc(w.body || w.title)}</li>`).join('')}</ul></div>`
+}
 
 // ============ 勤怠報告の写真（入店・退店。#217） ============
 // 他の画面からも使えるように、data-action="attendancePhotos" data-id="シフトID" data-name="スタッフ名" のボタンで開く。

@@ -81,7 +81,7 @@
             <label class="flex items-center gap-3 p-2.5 rounded-lg border ${picked.has(r.slot_role_id) ? 'border-blue-500 bg-blue-50' : 'border-gray-200'} ${r.full ? 'opacity-60' : ''}">
               <input type="checkbox" class="w-5 h-5" data-role-id="${Number(r.slot_role_id)}" ${picked.has(r.slot_role_id) ? 'checked' : ''} onchange="applyPick(${r.slot_role_id}, this.checked)">
               <span class="flex-1 min-w-0">
-                <span class="block font-medium text-sm">${esc(r.start_time)}〜${esc(r.end_time)}${r.role_name ? `<span class="text-gray-500 font-normal">・${esc(r.role_name)}</span>` : ''}</span>
+                <span class="block font-medium text-sm">${esc(formatShiftTime(r.start_time, r.end_time))}${r.role_name ? `<span class="text-gray-500 font-normal">・${esc(r.role_name)}</span>` : ''}</span>
                 <span class="block text-xs text-gray-500 truncate">${r.place ? '<i class="fas fa-location-dot mr-1"></i>' + esc(r.place) : ''}</span>
               </span>
               <span class="text-xs whitespace-nowrap ${r.full ? 'text-gray-500' : 'text-emerald-600'}">${r.full ? '定員に達しています<br><span class="text-[10px]">（キャンセル待ち）</span>' : r.remaining != null ? `残り${r.remaining}名` : '募集中'}</span>

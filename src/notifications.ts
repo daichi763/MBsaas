@@ -336,6 +336,29 @@ notificationsAdminApi.post('/notification-emails/:id{[0-9]+}/resend', async (c) 
 })
 
 // =========================================================
+// 管理者の代理入力（#327）
+// 管理者がスタッフの勤怠を代理入力したら、そのスタッフ本人（在籍中のスタッフのユーザー）にアプリ内通知（kind=attendance_proxy）で知らせる。
+// 通知から打刻履歴を開き、時刻が違えば打刻修正を申請できる。メールは送らない。通知の失敗で代理入力は取り消さない。
+// =========================================================
+export const ATTENDANCE_PROXY_KIND = 'attendance_proxy'
+export async function notifyProxyAttendance(db: D1Database, shift: { shift_id: number; company_id: number; staff_id: number; work_date: string },
+  rows: { report_type: string; reported_at: string }[], actorName: string) {
+  if (!rows.length) return
+  try {
+    const owner = await db.prepare(`SELECT us.user_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+      WHERE sp.staff_id = ? AND us.role = 'staff' AND us.status = 'active'`).bind(shift.staff_id).first() as any
+    if (!owner) return
+    const title = `管理者があなたの勤怠を記録しました: ${fmtDate(shift.work_date)} ${rows.map(r => REPORT_LABEL[r.report_type] || r.report_type).join('・')}`
+    const body = [...rows.map(r => `${REPORT_LABEL[r.report_type] || r.report_type}: ${fmtAt(r.reported_at)}`), `記録した人: ${actorName || '管理者'}`,
+      '時刻が違う場合は、打刻履歴から修正を申請してください'].join('\n')
+    await db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(shift.company_id, owner.user_id, ATTENDANCE_PROXY_KIND, title, body, '#attendance', shift.shift_id, nowJST()).run()
+  } catch (e) {
+    console.log(`proxy notify failed: shift=${shift.shift_id}`)
+  }
+}
+
+// =========================================================
 // 日報のインシデント・クレームの報告（#232）
 // スタッフが日報でインシデント・クレームの印を新しく付けたら（更新で付けた場合も）、シフトの所有企業の管理者全員に
 // アプリ内通知（kind=incident_reported）とメールで知らせる。リンク先は管理画面の日報一覧の該当日（インシデント・クレームのみ）。

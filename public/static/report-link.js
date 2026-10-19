@@ -95,7 +95,7 @@
         <p class="text-sm text-gray-600 mt-1">${esc(d.staff_name)} さん</p>
         <p class="text-lg font-bold text-gray-900 mt-1">${esc(d.project_name)}</p>
         <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location || '')}</p>
-        <p class="text-sm text-gray-600"><i class="far fa-calendar text-gray-400 mr-1"></i>${fmt(s.work_date)} <i class="far fa-clock text-gray-400 ml-2 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
+        <p class="text-sm text-gray-600"><i class="far fa-calendar text-gray-400 mr-1"></i>${fmt(s.work_date)} <i class="far fa-clock text-gray-400 ml-2 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}</p>
         ${!isToday && d.today < s.work_date ? `<p class="text-xs text-amber-700 bg-amber-50 rounded p-2 mt-2">報告は稼働日当日に行えます</p>` : ''}
       </section>
       ${order.length ? `<section class="mb-4 space-y-2.5" id="report-link-attendance">
@@ -105,7 +105,7 @@
           return `<button class="report-btn ${r ? 'done' : isNext ? 'next' : ''}" ${r || !isNext ? 'disabled' : ''} data-action="linkReport" data-type="${esc(t)}">
             <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${r ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}"><i class="fas ${r ? 'fa-check' : ICON[t]}"></i></span>
             <span class="flex-1 text-left"><span class="block font-bold ${r ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${LABEL[t]}</span>
-              <span class="rl-sub block text-xs ${r ? 'text-emerald-600' : 'text-gray-400'}">${r ? '報告済み ' + dayjs(r.reported_at).format('HH:mm') : isNext ? 'タップして報告' : '前の報告を先に行ってください'}${!r && d.photo_required && ['check_in', 'check_out'].includes(t) ? '（写真が必要です）' : ''}</span></span>
+              <span class="rl-sub block text-xs ${r ? 'text-emerald-600' : 'text-gray-400'}">${r ? '報告済み ' + esc(formatReportedTime(r.reported_at, s.work_date)) : isNext ? 'タップして報告' : '前の報告を先に行ってください'}${!r && d.photo_required && ['check_in', 'check_out'].includes(t) ? '（写真が必要です）' : ''}</span></span>
           </button>`
         }).join('')}
       </section>` : ''}

@@ -13,6 +13,7 @@ import { syncActualFromReports } from './settlement'
 import { isHHMM, pickReportValues, reportFieldRulesError } from './lib/validate'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
 import { notifyDailyReportIncident } from './notifications'
+import { notifyProxyAttendance } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
@@ -925,6 +926,8 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
     throw e
   }
   if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
+  // スタッフ本人に、管理者が記録したことを知らせる（#327）
+  await notifyProxyAttendance(db, s, rows, u.name)
   return c.json({ ok: true, created: rows.length, reports: rows })
 })
 adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {

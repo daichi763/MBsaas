@@ -152,6 +152,14 @@ export function checkReportable(required: string[], done: Set<string>, type: str
   return null
 }
 
+// 『休憩なし』の申告（休憩入・休憩出を同じ時刻で記録し、休憩0分にする。#324）ができるか。
+// 休憩入・休憩出の両方が有効で、どちらも checkReportable で押せること（未報告・申請中でない・勤務終了などの後の報告が済んでいない）
+export function checkNoBreak(required: string[], done: Set<string>, pending?: Set<string>): Ng | null {
+  if (!required.includes('break_start') || !required.includes('break_end')) return { error: 'このシフトでは休憩の報告は不要です', status: 400 }
+  if (done.has('break_start') || done.has('break_end')) return { error: '休憩の報告がすでにあるため、休憩なしにはできません。打刻履歴から修正を申請してください', status: 409 }
+  return checkReportable(required, done, 'break_start', pending) || checkReportable(required, done, 'break_end', pending)
+}
+
 // 今押せる報告（REPORT_TYPES の順）。先頭がホームの『次の報告』。空なら報告は済んでいる（飛ばした報告は打刻修正の申請で追加する）
 export function reportableTypes(required: string[], done: Set<string>, pending?: Set<string>): string[] {
   return required.filter(t => !checkReportable(required, done, t, pending))
