@@ -669,50 +669,165 @@ async function renderShifts(month) {
 }
 
 // ============ 募集中のお仕事（管理者の承認で確定。/api/staff/recruit） ============
+// シフト画面の入口は件数だけの API（/summary）で描き、枠の一覧は『募集中のお仕事』を開いたときにだけ取得する（#410）
 let RECRUIT = null
+const RC_OPEN_AFTER_SWITCH = 'rc-open-after-switch'
 async function loadRecruitOpen() {
   const host = document.getElementById('recruit-open'); if (!host) return
-  try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) { host.innerHTML = ''; return }
-  const open = RECRUIT.pages.reduce((n, p) => n + p.roles.filter(r => !r.my_status && !r.full).length, 0)
-  const pending = RECRUIT.applications.filter(a => a.status === 'pending').length
-  if (!RECRUIT.pages.length && !RECRUIT.applications.length) { host.innerHTML = ''; return }
-  host.innerHTML = `<button class="report-btn" onclick="renderRecruitList()" id="recruit-open-btn">
+  let s
+  try { s = (await axios.get('/api/staff/recruit/summary')).data } catch (e) { host.innerHTML = ''; return }
+  // 承認待ちの日時など（シフト一覧で使えるように残す）
+  window.__recruitSummary = s
+  // 所属企業を切り替えて募集を見ようとしていたら、切り替えた後にそのまま一覧を開く（#364）
+  let reopen = false
+  // （切り替えから1分以内だけ。後で別の操作からシフト画面を開いたときには開かない）
+  try { const t = Number(sessionStorage.getItem(RC_OPEN_AFTER_SWITCH)); sessionStorage.removeItem(RC_OPEN_AFTER_SWITCH); reopen = t > 0 && Date.now() - t < 60000 } catch (e) { }
+  if (reopen) return openRecruitList()
+  const others = s.other_companies || []
+  if (!s.pages && !s.applications && !others.length) { host.innerHTML = ''; return }
+  host.innerHTML = `${s.pages || s.applications ? `<button class="report-btn" data-action="rcOpen" id="recruit-open-btn">
     <span class="w-11 h-11 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-lg"><i class="fas fa-bullhorn"></i></span>
     <span class="flex-1"><span class="block font-bold text-gray-800">募集中のお仕事</span>
-      <span class="block text-xs text-gray-500">${open ? `応募できる日時 ${open}件` : '応募できる日時はありません'}${pending ? `・承認待ち ${pending}件` : ''}</span></span>
-    <i class="fas fa-chevron-right text-gray-300"></i></button>`
+      <span class="block text-xs text-gray-500">${s.open ? `応募できる日時 ${Number(s.open)}件` : '応募できる日時はありません'}${s.pending ? `・承認待ち ${Number(s.pending)}件` : ''}</span></span>
+    <i class="fas fa-chevron-right text-gray-300"></i></button>` : ''}
+    ${rcOtherCompaniesHtml(others)}`
+}
+// 切り替えていない所属企業の募集（#364）。押すとその企業に切り替えて一覧を開く
+function rcOtherCompaniesHtml(others) {
+  if (!others || !others.length) return ''
+  return `<div class="mt-2 space-y-1.5" id="rc-other-companies">${others.map(o => `
+    <button class="w-full flex items-center gap-2 text-left text-xs bg-white border border-amber-200 rounded-lg px-3 py-2" data-action="rcSwitchCompany" data-id="${Number(o.company_id)}">
+      <i class="fas fa-building text-amber-500"></i>
+      <span class="flex-1 min-w-0"><b class="text-gray-800">${esc(o.company_name)}</b> の募集${o.open ? ` 応募できる日時 ${Number(o.open)}件` : ''}${o.pending ? `・承認待ち ${Number(o.pending)}件` : ''}</span>
+      <span class="text-blue-600 whitespace-nowrap">切り替えて見る</span></button>`).join('')}</div>`
+}
+delegate('rcOpen', () => openRecruitList())
+delegate('rcBack', () => renderShifts())
+delegate('rcSwitchCompany', async (el) => {
+  if (typeof switchStaffCompany !== 'function') return
+  await withSubmitLock(el, async () => {
+    try { sessionStorage.setItem(RC_OPEN_AFTER_SWITCH, String(Date.now())) } catch (e) { }
+    try { await switchStaffCompany(Number(el.dataset.id)) } catch (e) {
+      try { sessionStorage.removeItem(RC_OPEN_AFTER_SWITCH) } catch (x) { }
+      toast((e.response && e.response.data && e.response.data.error) || '切り替えに失敗しました')
+    }
+  })
+})
+async function openRecruitList() {
+  loading()
+  try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) {
+    $app.innerHTML = `<button class="text-sm text-blue-600 mb-3" data-action="rcBack"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
+      <div class="card p-6 text-center text-sm text-gray-500">募集の読み込みに失敗しました<button class="btn btn-outline w-full mt-3" data-action="rcOpen">もう一度読み込む</button></div>`
+    return
+  }
+  renderRecruitList()
 }
 // released: 承認の後にシフトから外れた（削除・欠勤・差し替え・移動）。同じ枠にもう一度応募できる / slot_removed: 応募の後に枠が削除された
 const RC_STATUS = { pending: '<span class="badge badge-yellow">承認待ち</span>', approved: '<span class="badge badge-green">確定</span>', rejected: '<span class="badge badge-gray">見送り</span>', cancelled: '<span class="badge badge-gray">取り下げ</span>', released: '<span class="badge badge-red">シフト解除</span>', slot_removed: '<span class="badge badge-gray">募集終了</span>' }
-// keep: 続きの日時を読み込んだときなど、選んだ日時とメモを保ったまま描き直す
+// 問い合わせ先の表示。電話番号・メールアドレスはリンクにする（esc した後で数字・記号だけの部分を置き換える。#513）
+function rcContactHtml(note) {
+  return esc(note)
+    .replace(/\+?\d[\d-]{8,}\d/g, m => { const tel = m.replace(/[^\d+]/g, ''); return tel.length >= 10 && tel.length <= 13 ? `<a href="tel:${tel}" class="text-blue-600 underline">${m}</a>` : m })
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, m => `<a href="mailto:${m}" class="text-blue-600 underline">${m}</a>`)
+}
+// 枠の場所・住所（地図）・休憩（#362）
+function rcPlaceHtml(r) {
+  const map = r.site_address ? shiftMapUrl({ site_address: r.site_address }) : ''
+  return `${r.place ? `<span class="block text-xs text-gray-500"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(r.place)}</span>` : ''}
+    ${r.site_address ? `<span class="block text-[11px] text-gray-500">${esc(r.site_address)}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図</a>` : ''}</span>` : ''}`
+}
+const rcKey = (pageId, roleId) => `${Number(pageId)}:${Number(roleId)}`
+const rcSelectable = (r) => !r.my_status
+// 応募した日時を、募集ごとにまとめて出す（#514）
+function rcApplicationsHtml(apps) {
+  if (!apps.length) return ''
+  const groups = []
+  for (const a of apps) {
+    const k = a.page_id || 0
+    let g = groups.find(x => x.k === k)
+    if (!g) { g = { k, title: a.page_title || '募集', rows: [] }; groups.push(g) }
+    g.rows.push(a)
+  }
+  return `<section class="card p-3 mb-3" id="recruit-my-apps"><h3 class="text-sm font-bold text-gray-700 mb-2">応募した日時</h3>
+    ${groups.map(g => `<div class="mb-2 last:mb-0"><p class="text-xs font-bold text-gray-600 mb-1"><i class="fas fa-bullhorn text-amber-500 mr-1"></i>${esc(g.title)}</p>
+      ${g.rows.map(a => `<div class="flex items-center justify-between gap-2 text-sm py-1.5 border-b border-gray-50 last:border-0" data-item-id="${Number(a.item_id)}">
+        <div class="min-w-0"><p class="font-medium">${fmtDate(a.work_date)} ${esc(a.start_time)}〜${esc(a.end_time)}</p>
+          <p class="text-xs text-gray-400">${esc(a.place)}${a.role_name ? '・' + esc(a.role_name) : ''}${Number(a.break_minutes) > 0 ? `・休憩${Number(a.break_minutes)}分` : ''}</p></div>
+        <div class="text-right shrink-0">${RC_STATUS[a.status] || ''}
+          ${a.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1 ml-auto" data-action="rcCancel" data-id="${Number(a.item_id)}">取り下げ</button>` : ''}
+          ${a.status === 'approved' ? `<button class="block text-[11px] text-blue-600 underline mt-1 ml-auto" data-action="rcContact" data-id="${Number(a.item_id)}">担当者に連絡</button>` : ''}</div></div>`).join('')}</div>`).join('')}</section>`
+}
+// 募集の枠を日付ごとにまとめて出す（#361）
+function rcRolesHtml(p, picked) {
+  if (!p.roles.length) return '<p class="text-xs text-gray-400">募集中の日時はありません</p>'
+  const dates = [...new Set(p.roles.map(r => r.work_date))]
+  return dates.map(d => `<div class="mb-2"><p class="text-xs font-bold text-gray-700 mb-1">${fmtDate(d)}</p><div class="space-y-1.5">
+    ${p.roles.filter(r => r.work_date === d).map(r => {
+      const key = rcKey(p.page_id, r.slot_role_id), on = picked.has(key)
+      const right = r.my_status === 'assigned' ? '<span class="badge badge-green">シフトあり</span>' : r.my_status ? RC_STATUS[r.my_status] || ''
+        : r.full ? '<span class="text-gray-500">定員<br><span class="text-[10px]">（キャンセル待ちで応募）</span></span>' : r.remaining != null ? `<span class="text-emerald-600">残り${Number(r.remaining)}名</span>` : ''
+      return `<label class="rc-role flex items-center gap-3 p-2.5 rounded-lg border ${on ? 'border-blue-500 bg-blue-50' : 'border-gray-200'} ${r.my_status ? 'opacity-60' : ''}" data-key="${key}">
+        ${rcSelectable(r) ? `<input type="checkbox" class="w-5 h-5" data-action="rcPick" data-key="${key}" data-full="${r.full ? 1 : 0}" ${on ? 'checked' : ''}>` : '<span class="w-5"></span>'}
+        <span class="flex-1 min-w-0"><span class="block text-sm font-medium">${esc(r.start_time)}〜${esc(r.end_time)}${r.role_name ? `<span class="text-gray-500 font-normal">・${esc(r.role_name)}</span>` : ''}${Number(r.break_minutes) > 0 ? `<span class="text-xs text-gray-500 font-normal ml-1">休憩${Number(r.break_minutes)}分</span>` : ''}</span>
+          ${rcPlaceHtml(r)}
+          ${r.my_status === 'rejected' ? '<span class="block text-[11px] text-gray-500">この日時は見送りになりました</span>' : ''}
+          ${r.conflicts && r.conflicts.length ? `<span class="block text-[11px] text-amber-700"><i class="fas fa-triangle-exclamation mr-1"></i>この時間は別のシフトあり（${r.conflicts.map(esc).join('、')}）</span>` : ''}</span>
+        <span class="text-xs whitespace-nowrap text-right">${right}</span></label>`
+    }).join('')}</div></div>`).join('')
+}
+// keep: 続きの日時を読み込んだとき・応募に失敗したときなど、選んだ日時とメモを保ったまま描き直す
 window.renderRecruitList = function (keep) {
   const d = RECRUIT; if (!d) return
   const note = keep ? ((document.getElementById('rc-note') || {}).value || '') : ''
-  const picked = keep && window.__rcPicked ? window.__rcPicked : new Set()
+  // 選べなくなった日時（応募済み・募集終了）は選択から外す
+  const selectable = new Set(d.pages.flatMap(p => p.roles.filter(rcSelectable).map(r => rcKey(p.page_id, r.slot_role_id))))
+  const picked = new Set(keep && window.__rcPicked ? [...window.__rcPicked].filter(k => selectable.has(k)) : [])
   window.__rcPicked = picked
+  const result = window.__rcResult; window.__rcResult = null
   $app.innerHTML = `
-    <button class="text-sm text-blue-600 mb-3" onclick="renderShifts()"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
-    ${d.applications.length ? `<section class="card p-3 mb-3" id="recruit-my-apps"><h3 class="text-sm font-bold text-gray-700 mb-2">応募した日時</h3>
-      ${d.applications.map(a => `<div class="flex items-center justify-between text-sm py-1.5 border-b border-gray-50 last:border-0">
-        <div><p class="font-medium">${fmtDate(a.work_date)} ${esc(a.start_time)}〜${esc(a.end_time)}</p><p class="text-xs text-gray-400">${esc(a.place)}${a.role_name ? '・' + esc(a.role_name) : ''}</p></div>
-        <div class="text-right">${RC_STATUS[a.status] || ''}${a.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1" onclick="cancelRecruitItem(${a.item_id})">取り下げ</button>` : ''}</div></div>`).join('')}</section>` : ''}
-    ${d.pages.map(p => `<section class="card p-3 mb-3" data-page-id="${p.page_id}">
+    <button class="text-sm text-blue-600 mb-3" data-action="rcBack"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
+    ${result ? `<div class="rounded-lg px-3 py-2 mb-3 text-sm ${result.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}" id="rc-result" role="status">${esc(result.text)}</div>` : ''}
+    ${(d.other_companies || []).length ? `<section class="mb-3"><h3 class="text-xs font-bold text-gray-600 mb-1">ほかの所属企業の募集</h3>${rcOtherCompaniesHtml(d.other_companies)}</section>` : ''}
+    ${rcApplicationsHtml(d.applications)}
+    ${d.pages.map(p => `<section class="card p-3 mb-3" data-page-id="${Number(p.page_id)}">
       <h3 class="font-bold text-gray-800">${esc(p.title)}</h3>
       <p class="text-xs text-gray-500 mb-1">${fmtDate(p.date_from)}〜${fmtDate(p.date_to)}</p>
       ${p.description ? `<p class="text-xs text-gray-600 mb-1 whitespace-pre-wrap">${esc(p.description)}</p>` : ''}
-      ${p.pay_note ? `<p class="text-xs mb-2"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>${esc(p.pay_note)}</p>` : ''}
-      <div class="space-y-1.5">${p.roles.map(r => `<label class="flex items-center gap-3 p-2.5 rounded-lg border border-gray-200 ${r.my_status || r.full ? 'opacity-60' : ''}">
-        ${r.my_status ? '<span class="w-5"></span>' : `<input type="checkbox" class="w-5 h-5" ${picked.has(p.page_id + ':' + r.slot_role_id) ? 'checked' : ''} onchange="this.checked ? window.__rcPicked.add('${p.page_id}:${r.slot_role_id}') : window.__rcPicked.delete('${p.page_id}:${r.slot_role_id}')">`}
-        <span class="flex-1 min-w-0"><span class="block text-sm font-medium">${fmtDate(r.work_date)} ${esc(r.start_time)}〜${esc(r.end_time)}</span>
-          <span class="block text-xs text-gray-500 truncate">${esc(r.place)}${r.role_name ? '・' + esc(r.role_name) : ''}</span></span>
-        <span class="text-xs whitespace-nowrap">${r.my_status === 'assigned' ? '<span class="badge badge-green">シフトあり</span>' : r.my_status ? RC_STATUS[r.my_status] : r.full ? '<span class="text-gray-500">定員</span>' : r.remaining != null ? `<span class="text-emerald-600">残り${r.remaining}名</span>` : ''}</span></label>`).join('') || '<p class="text-xs text-gray-400">募集中の日時はありません</p>'}</div>
-      ${p.next_from ? `<button class="btn btn-outline w-full text-xs mt-2" data-action="recruitMoreRoles" data-id="${p.page_id}">さらに後の日時を表示</button>` : ''}
+      ${p.pay_note ? `<p class="text-xs mb-1"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>${esc(p.pay_note)}</p>` : ''}
+      ${p.contact_note ? `<p class="text-xs text-gray-600 mb-1"><i class="fas fa-phone text-blue-500 mr-1"></i>問い合わせ先: ${rcContactHtml(p.contact_note)}</p>` : ''}
+      <div class="mt-2">${rcRolesHtml(p, picked)}</div>
+      ${p.next_from ? `<button class="btn btn-outline w-full text-xs mt-2" data-action="recruitMoreRoles" data-id="${Number(p.page_id)}">さらに後の日時を表示</button>` : ''}
     </section>`).join('')}
-    ${d.pages.length ? `<textarea id="rc-note" class="inp mb-3" rows="2" maxlength="500" placeholder="メモ（任意）"></textarea>
-      <button class="btn btn-primary w-full py-3" onclick="submitRecruitApply()">選んだ日時に応募する</button>
-      <p class="text-[11px] text-gray-400 text-center mt-2">管理者が承認するとシフトが確定します</p>` : ''}`
+    ${d.pages.length ? `<textarea id="rc-note" class="inp mb-2" rows="2" maxlength="500" placeholder="メモ（任意）"></textarea>
+      <p class="text-[11px] text-gray-400 text-center mb-2">管理者が承認するとシフトが確定します。定員に達している日時はキャンセル待ちになります</p>
+      <div style="height:5rem"></div>
+      <div id="rc-bar" class="fixed inset-x-0 z-30 bg-white border-t border-gray-200 shadow-lg" style="bottom:0">
+        <div class="max-w-lg mx-auto px-4 py-2 flex items-center gap-3">
+          <span class="text-sm text-gray-600 whitespace-nowrap" id="rc-count"></span>
+          <button class="btn btn-primary flex-1 py-3" id="rc-submit" data-action="rcSubmit">選んだ日時に応募する</button>
+        </div>
+      </div>` : ''}`
   if (note && document.getElementById('rc-note')) document.getElementById('rc-note').value = note
+  // 応募ボタンは下のメニューのすぐ上に固定する
+  const bar = document.getElementById('rc-bar'), nav = document.getElementById('bottom-nav')
+  if (bar && nav) bar.style.bottom = nav.offsetHeight + 'px'
+  rcSyncPicked()
 }
+// 選んだ件数とボタンの状態
+function rcSyncPicked() {
+  const n = window.__rcPicked ? window.__rcPicked.size : 0
+  const cnt = document.getElementById('rc-count'); if (cnt) cnt.innerHTML = n ? `<b class="text-blue-700">${n}件</b> 選択中` : '日時を選んでください'
+  const btn = document.getElementById('rc-submit'); if (btn && btn.dataset.busy !== '1') btn.disabled = !n
+}
+// チェックした枠を強調し、定員の枠はキャンセル待ちになることを伝える（#315 #361）
+delegate('rcPick', (el) => {
+  const key = el.dataset.key
+  if (el.checked) window.__rcPicked.add(key); else window.__rcPicked.delete(key)
+  const label = el.closest('.rc-role')
+  if (label) { label.classList.toggle('border-blue-500', el.checked); label.classList.toggle('bg-blue-50', el.checked); label.classList.toggle('border-gray-200', !el.checked) }
+  if (el.checked && el.dataset.full === '1') toast('定員に達しているため、キャンセル待ちとして応募します')
+  rcSyncPicked()
+})
 // 募集ページの続きの日時（枠が多いページは日付の順に分けて取得する）
 delegate('recruitMoreRoles', (el) => loadMoreRecruitRoles(Number(el.dataset.id), el))
 async function loadMoreRecruitRoles(pageId, btn) {
@@ -727,26 +842,92 @@ async function loadMoreRecruitRoles(pageId, btn) {
     renderRecruitList(true)
   })
 }
-window.submitRecruitApply = async function () {
-  const picked = [...window.__rcPicked]
+// 応募。選んだ日時を募集ごとにまとめて1回で送る（すべて登録されるか、どれも登録されない。#239）。
+// 送信中はボタンを止め（#270）、成否にかかわらず一覧を読み直して今の状態を出す
+function rcPickedRoles() {
+  const out = []
+  for (const k of window.__rcPicked || []) {
+    const [pid, rid] = k.split(':').map(Number)
+    const p = RECRUIT && RECRUIT.pages.find(x => x.page_id === pid)
+    const r = p && p.roles.find(x => x.slot_role_id === rid)
+    if (r) out.push({ page_id: pid, role: r })
+  }
+  return out
+}
+const rcRoleLabel = (r) => `${fmtDate(r.work_date)} ${r.start_time}〜${r.end_time}`
+delegate('rcSubmit', (el) => submitRecruitApply(el))
+async function submitRecruitApply(btn) {
+  const picked = rcPickedRoles()
   if (!picked.length) return toast('日時を選択してください')
-  const byPage = {}
-  for (const k of picked) { const [pid, rid] = k.split(':'); (byPage[pid] = byPage[pid] || []).push(Number(rid)) }
-  let n = 0
-  try {
-    for (const [pid, ids] of Object.entries(byPage)) {
-      const { data } = await axios.post('/api/staff/recruit/apply', { page_id: Number(pid), slot_role_ids: ids, note: document.getElementById('rc-note').value })
-      n += data.count || 0
+  // 自分のほかのシフトと重なる日時を選んでいたら、確かめてから送る（#310）
+  const cf = picked.filter(x => x.role.conflicts && x.role.conflicts.length)
+  if (cf.length && !confirm(`次の日時は、同じ時間帯にほかのシフトがあります。\n${cf.map(x => '・' + rcRoleLabel(x.role) + '（' + x.role.conflicts.join('、') + '）').join('\n')}\n\nこのまま応募しますか？`)) return
+  const byPage = new Map()
+  for (const x of picked) byPage.set(x.page_id, (byPage.get(x.page_id) || []).concat(x.role.slot_role_id))
+  const body = { pages: [...byPage].map(([page_id, slot_role_ids]) => ({ page_id, slot_role_ids })), note: (document.getElementById('rc-note') || {}).value || '', force: cf.length > 0 }
+  let done = false
+  await withSubmitLock(btn, async () => {
+    btn.textContent = '送信中…'
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await axios.post('/api/staff/recruit/apply', body)
+        const n = data.count || 0
+        const text = n ? `${n}件応募しました。承認をお待ちください${data.full_count ? `（うち${data.full_count}件は定員に達しているため、キャンセル待ちです）` : ''}${data.rejected_count ? `。見送りになった日時（${data.rejected_count}件）は応募していません` : ''}`
+          : (data.message || 'すでに応募済みです')
+        window.__rcResult = { ok: true, text }; toast(n ? `${n}件応募しました` : text)
+        done = true
+      } catch (e) {
+        const d = e.response && e.response.data
+        // 選んだ後にほかのシフトが入ったときは、確かめてから送り直す
+        if (d && d.need_force && !body.force) {
+          const ok = confirm(`${d.error}\n${(d.conflicts || []).map(x => '・' + rcRoleLabel(x) + '（' + (x.conflicts || []).join('、') + '）').join('\n')}\n\nこのまま応募しますか？`)
+          if (ok) { body.force = true; continue }
+          window.__rcResult = null
+        } else if (!e.response) {
+          // 通信が切れたときは、届いたかどうか分からないため、読み直した一覧で確かめてもらう
+          window.__rcResult = { ok: false, text: '通信に失敗しました。下の「応募した日時」に出ていない日時は応募されていません。もう一度お試しください' }
+        } else {
+          window.__rcResult = { ok: false, text: (d && d.error) || '応募に失敗しました。応募は送られていません' }
+        }
+      }
+      break
     }
-    toast(n ? `${n}件応募しました。承認をお待ちください` : 'すでに応募済みです')
-    RECRUIT = (await axios.get('/api/staff/recruit')).data; renderRecruitList()
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '応募に失敗しました') }
+    try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) { }
+  })
+  btn.textContent = '選んだ日時に応募する'
+  if (done) window.__rcPicked = new Set()
+  renderRecruitList(!done)
+  window.scrollTo(0, 0)
 }
-window.cancelRecruitItem = async function (id) {
+delegate('rcCancel', (el) => cancelRecruitItem(Number(el.dataset.id), el))
+async function cancelRecruitItem(id, btn) {
   if (!confirm('この応募を取り下げますか？')) return
-  try { await axios.post(`/api/staff/recruit/items/${id}/cancel`); toast('取り下げました'); RECRUIT = (await axios.get('/api/staff/recruit')).data; renderRecruitList() }
-  catch (e) { toast((e.response && e.response.data && e.response.data.error) || '取り下げに失敗しました') }
+  await withSubmitLock(btn, async () => {
+    try {
+      await axios.post(`/api/staff/recruit/items/${id}/cancel`); toast('取り下げました')
+    } catch (e) {
+      const d = e.response && e.response.data
+      if (d && d.contact_note !== undefined) return rcContactModal(d.contact_note, d.error)
+      toast((d && d.error) || '取り下げに失敗しました'); return
+    }
+    try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) { }
+    renderRecruitList(true)
+  })
 }
+// 確定した応募の『担当者に連絡』。募集の問い合わせ先と、相談・連絡の画面への入口を出す（#513）
+delegate('rcContact', (el) => {
+  const a = RECRUIT && RECRUIT.applications.find(x => x.item_id === Number(el.dataset.id))
+  rcContactModal(a ? a.contact_note : '', a ? `${a.page_title ? a.page_title + '・' : ''}${rcRoleLabel(a)}` : '')
+})
+function rcContactModal(note, lead) {
+  modal(`<h3 class="font-bold text-lg mb-2">担当者に連絡</h3>
+    ${lead ? `<p class="text-xs text-gray-500 mb-2">${esc(lead)}</p>` : ''}
+    ${note ? `<p class="text-sm text-gray-700 bg-gray-50 rounded-lg p-3 mb-3 whitespace-pre-wrap">${rcContactHtml(note)}</p>`
+      : '<p class="text-sm text-gray-500 mb-3">この募集の問い合わせ先は登録されていません。相談・連絡からお知らせください</p>'}
+    <a href="#consult" class="btn btn-outline w-full mb-2" data-action="rcCloseModal"><i class="fas fa-comments"></i>相談・連絡を開く</a>
+    <button class="btn btn-primary w-full" data-action="rcCloseModal">閉じる</button>`)
+}
+delegate('rcCloseModal', () => closeModal())
 
 window.showShiftRequest = function () {
   const projects = SHIFT_REQ_PROJECTS || []
