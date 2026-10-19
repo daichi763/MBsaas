@@ -108,7 +108,8 @@ const all2 = await publish(`全員あて2${tag}`)
 ok('#227 登録後のお知らせには入る', all2.staff_total === all1.staff_total + 1, [all1.staff_total, all2.staff_total])
 const eRead = await e.api.post(`/api/staff/notices/${all1.notice_id}/read`)
 const all1c = await noticeByTitle(`全員あて1${tag}`)
-ok('#227 一覧に出ている登録前のお知らせも「確認しました」は失敗しない（数には入らない）', eRead.status === 200 && all1c.read_count === all1b.read_count, [eRead, all1b.read_count, all1c.read_count])
+// w3-notice-ux でスタッフの一覧も配信対象の条件にそろえたため、登録前のお知らせは一覧に出ず、既読にもできない（404）
+ok('#227 登録前のお知らせは既読にできない（数にも入らない）', eRead.status === 404 && all1c.read_count === all1b.read_count, [eRead, all1b.read_count, all1c.read_count])
 const eReads = (await admin.get(`/api/admin/notices/${all1.notice_id}/reads`)).data
 ok('#227 既読状況にも登録前の人は出ない', ![...eReads.read, ...eReads.unread].some(r => r.name === e.name), eReads)
 

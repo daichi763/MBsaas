@@ -192,7 +192,7 @@ function homeNoticeBannerHtml(data) {
   const unread = (data.notices || []).filter(n => !n.is_read)
   return unread.length ? `<div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="alert">
       <i class="fas fa-bell mr-1"></i>未読のお知らせが <b>${unread.length}件</b> あります
-      <a href="#more" onclick="setTimeout(()=>renderNotices(),50)" class="underline font-bold ml-1">確認する</a></div>` : ''
+      <a href="#notices" class="underline font-bold ml-1">確認する</a></div>` : ''
 }
 
 // お知らせ: 新しい順に3件
@@ -201,9 +201,9 @@ function homeNoticesHtml(data) {
     <section class="card p-4 mb-4" id="notice-preview">
       <h2 class="font-bold text-gray-800 mb-2"><i class="fas fa-bullhorn text-blue-600 mr-1"></i>お知らせ</h2>
       ${(data.notices || []).slice(0, 3).map(n => `
-        <a class="block py-2 border-b border-gray-50 last:border-0" href="#more" onclick="setTimeout(()=>renderNotices(),50)">
+        <a class="block py-2 border-b border-gray-50 last:border-0" href="#notices/${Number(n.notice_id)}">
           <div class="flex items-center gap-2">
-            ${n.importance !== 'normal' ? '<span class="badge badge-red">重要</span>' : ''}
+            ${noticeImportanceBadge(n)}
             ${!n.is_read ? '<span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>' : ''}
             <span class="text-sm ${n.is_read ? 'text-gray-500' : 'font-bold text-gray-800'} truncate">${esc(n.title)}</span>
           </div>
@@ -831,7 +831,7 @@ function renderMore() {
   setTimeout(() => window.loadNotifBanner && loadNotifBanner(), 0)
   $app.innerHTML = `
     <div class="space-y-3">
-      <button class="report-btn" onclick="renderNotices()">
+      <button class="report-btn" onclick="location.hash='notices'">
         <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-bullhorn"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">お知らせ</span><span class="block text-xs text-gray-400">会社からのお知らせを確認</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
@@ -843,7 +843,7 @@ function renderMore() {
       </button>
       <button class="report-btn" onclick="location.hash='notifications'">
         <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-bell"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">通知 <span id="more-notif-count" class="badge badge-red hidden"></span></span><span class="block text-xs text-gray-400">打刻修正申請の受付・承認・却下</span></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">通知 <span id="more-notif-count" class="badge badge-red hidden"></span></span><span class="block text-xs text-gray-400">打刻修正申請の受付・承認・却下、お知らせの確認のお願い</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </button>
       <button class="report-btn" onclick="location.hash='attendance'">
@@ -859,31 +859,145 @@ function renderMore() {
     </div>`
 }
 
-window.renderNotices = async function () {
-  loading()
-  const { data } = await axios.get('/api/staff/notices')
-  $app.innerHTML = `
-    <h2 class="font-bold text-gray-800 mb-3 px-1"><i class="fas fa-bullhorn text-blue-600 mr-1"></i>お知らせ</h2>
-    <div class="space-y-2">
-      ${data.notices.map(n => `
-        <div class="card p-4 ${!n.is_read ? 'ring-1 ring-blue-200' : ''}" id="notice-${n.notice_id}">
-          <div class="flex items-center gap-2 mb-1">
-            ${n.importance !== 'normal' ? '<span class="badge badge-red">重要</span>' : ''}
-            ${!n.is_read ? '<span class="badge badge-blue">未読</span>' : '<span class="badge badge-gray">既読</span>'}
-            <span class="text-xs text-gray-400 ml-auto">${dayjs(n.published_at).format('M/D HH:mm')}</span>
-          </div>
-          <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
-          <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
-          ${!n.is_read ? `<button class="btn btn-primary w-full mt-3" onclick="markRead(${n.notice_id})"><i class="fas fa-check"></i>確認しました</button>` : ''}
-        </div>`).join('') || '<p class="text-center text-gray-400 py-10">お知らせはありません</p>'}
+// ============ お知らせ（一覧 #notices・個別 #notices/:id #333） ============
+// 一覧は未読（緊急・確認必須を先）→ 既読の順。既読の本文は3行に折りたたむ（#553）。
+// 「確認しました」は、そのカードだけを既読の表示に変える（一覧を読み直さない #334）
+let NOTICES = { list: [], offset: 0, has_more: false, filter: 'all', unread_count: 0, other: [] }
+let NOTICE_DETAIL = null
+const NOTICE_SEND_ERROR = '送信できませんでした。通信状況を確認して、もう一度押してください'
+
+// 重要度（緊急と重要を分ける #191）と配信先（全体／案件名 #455）の印
+function noticeImportanceBadge(n) {
+  return n.importance === 'urgent' ? '<span class="badge badge-red"><i class="fas fa-triangle-exclamation"></i>緊急</span>'
+    : n.importance === 'important' ? '<span class="badge badge-yellow">重要</span>' : ''
+}
+function noticeBadgesHtml(n) {
+  return noticeImportanceBadge(n)
+    + (n.read_required && !n.is_read ? '<span class="badge badge-purple">確認必須</span>' : '')
+    + (n.target_type === 'project' ? `<span class="badge badge-gray">案件: ${esc(n.project_names || '-')}</span>`
+      : n.target_type === 'staff' ? '<span class="badge badge-gray">あなたあて</span>' : '<span class="badge badge-gray">全体</span>')
+}
+// まとめて確認できるお知らせ（緊急・確認必須は1件ずつ開いて確認してもらう）
+function noticeBulkReadable(n) { return !n.is_read && !n.read_required && n.importance !== 'urgent' }
+
+function noticeCardHtml(n, detail) {
+  // 既読の本文は折りたたむ（この画面で確認したばかりのものは開いたままにする）
+  const collapsed = n.is_read && !detail && !n._open
+  const body = String(n.body || '')
+  const long = body.length > 120 || body.split('\n').length > 3
+  const strong = !n.is_read && (n.read_required || n.importance === 'urgent')
+  return `
+    <div class="card p-4 ${n.is_read ? '' : strong ? 'ring-2 ring-red-300' : 'ring-1 ring-blue-200'}" id="notice-${Number(n.notice_id)}">
+      <div class="flex items-center gap-1.5 mb-1 flex-wrap">
+        ${noticeBadgesHtml(n)}
+        ${n.no_confirm ? '<span class="badge badge-gray">確認不要</span>' : !n.is_read ? '<span class="badge badge-blue">未読</span>' : '<span class="badge badge-gray">既読</span>'}
+        <span class="text-xs text-gray-400 ml-auto">${esc(dayjs(String(n.published_at).replace(' ', 'T')).format('M/D HH:mm'))}</span>
+      </div>
+      <h3 class="font-bold text-gray-800">${detail ? esc(n.title) : `<a href="#notices/${Number(n.notice_id)}" class="hover:underline">${esc(n.title)}</a>`}</h3>
+      <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap ${collapsed && long ? 'line-clamp-3' : ''}" id="notice-body-${Number(n.notice_id)}">${esc(body)}</p>
+      ${collapsed && long ? `<button class="text-xs text-blue-600 mt-1" data-action="noticeExpand" data-id="${Number(n.notice_id)}">続きを読む</button>` : ''}
+      ${n.no_confirm ? '<p class="text-[11px] text-gray-400 mt-2">公開から2年以上たったお知らせのため、確認は不要です</p>' : ''}
+      ${!n.is_read ? `<button class="btn btn-primary w-full mt-3" data-action="noticeMarkRead" data-id="${Number(n.notice_id)}"><i class="fas fa-check"></i>確認しました</button>` : ''}
     </div>`
 }
 
-window.markRead = async function (id) {
-  await axios.post('/api/staff/notices/' + id + '/read')
-  toast('既読にしました')
-  renderNotices()
+function noticeToolbarHtml() {
+  const bulk = NOTICES.list.filter(noticeBulkReadable).length
+  const tab = (f, label) => `<button class="px-3 py-1.5 rounded-lg text-xs font-bold ${NOTICES.filter === f ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" data-action="noticeFilter" data-filter="${f}">${label}</button>`
+  return `
+    ${tab('all', 'すべて')}${tab('unread', `未読のみ（${Number(NOTICES.unread_count) || 0}）`)}
+    ${bulk >= 2 ? `<button class="text-xs text-blue-600 font-bold ml-auto" data-action="noticeReadAll"><i class="fas fa-check-double mr-1"></i>すべて確認しました（${bulk}件）</button>` : ''}`
 }
+
+function drawNotices() {
+  const other = NOTICES.other.map(o => `
+    <div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3 text-sm text-amber-800" role="alert">
+      <i class="fas fa-building mr-1"></i>${esc(o.company_name)} に未読のお知らせが <b>${Number(o.unread)}件</b> あります
+      <button class="underline font-bold ml-1" data-action="noticeSwitchCompany" data-id="${Number(o.company_id)}">切り替えて見る</button>
+    </div>`).join('')
+  $app.innerHTML = `
+    <h2 class="font-bold text-gray-800 mb-3 px-1"><i class="fas fa-bullhorn text-blue-600 mr-1"></i>お知らせ</h2>
+    ${other}
+    <div class="flex items-center gap-2 mb-3 px-1" id="notice-toolbar">${noticeToolbarHtml()}</div>
+    <div class="space-y-2">
+      ${NOTICES.list.map(n => noticeCardHtml(n, false)).join('') || `<p class="text-center text-gray-400 py-10">${NOTICES.filter === 'unread' ? '未読のお知らせはありません' : 'お知らせはありません'}</p>`}
+    </div>
+    ${NOTICES.has_more ? '<button class="btn btn-outline w-full mt-3" data-action="noticeMore">もっと見る</button>' : ''}`
+}
+
+window.renderNotices = async function (more) {
+  if (more !== true) { NOTICES.list = []; NOTICES.offset = 0; loading() }
+  let d
+  try {
+    d = (await axios.get('/api/staff/notices', { params: { offset: NOTICES.offset, filter: NOTICES.filter } })).data
+  } catch (e) {
+    if (more === true) { showApiError(e, 'お知らせを読み込めませんでした。もう一度お試しください'); return }
+    $app.innerHTML = `<div class="card p-4 text-center text-sm text-gray-600">お知らせを読み込めませんでした。通信状況を確認してください
+      <button class="btn btn-outline w-full mt-3" data-action="noticeRetry">再読み込み</button></div>`
+    return
+  }
+  const seen = new Set(NOTICES.list.map(n => n.notice_id))
+  NOTICES.list.push(...d.notices.filter(n => !seen.has(n.notice_id)))
+  NOTICES.offset = Number(d.offset || 0) + d.notices.length
+  NOTICES.has_more = !!d.has_more
+  if (d.unread_count != null) NOTICES.unread_count = d.unread_count
+  if (d.other_companies) NOTICES.other = d.other_companies
+  drawNotices()
+}
+
+async function renderNoticeDetail(id) {
+  loading()
+  NOTICE_DETAIL = null
+  const back = '<a href="#notices" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>お知らせ一覧へ</a>'
+  let d
+  try { d = (await axios.get(`/api/staff/notices/${Number(id)}`)).data } catch (e) {
+    const r = e.response && e.response.data
+    $app.innerHTML = `${back}<div class="card p-4 text-sm text-gray-600">
+      ${esc(e.response ? (r && r.error) || 'お知らせが見つかりません' : 'お知らせを読み込めませんでした。通信状況を確認してください')}
+      ${r && r.other_company ? `<button class="btn btn-primary w-full mt-3" data-action="noticeSwitchCompany" data-id="${Number(r.other_company.company_id)}">${esc(r.other_company.company_name)} に切り替えて開く</button>`
+        : !e.response ? '<button class="btn btn-outline w-full mt-3" data-action="noticeRetry">再読み込み</button>' : ''}</div>`
+    return
+  }
+  NOTICE_DETAIL = d.notice
+  $app.innerHTML = back + noticeCardHtml(d.notice, true)
+}
+
+delegate('noticeMarkRead', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  try { await axios.post(`/api/staff/notices/${id}/read`) } catch (e) { showApiError(e, NOTICE_SEND_ERROR); return }
+  const inDetail = /^#notices\/\d+/.test(location.hash) && NOTICE_DETAIL && NOTICE_DETAIL.notice_id === id
+  const rows = [NOTICES.list.find(x => x.notice_id === id), inDetail ? NOTICE_DETAIL : null].filter(Boolean)
+  if (rows.some(n => !n.is_read)) NOTICES.unread_count = Math.max(0, (Number(NOTICES.unread_count) || 0) - 1)
+  rows.forEach(n => { n.is_read = 1; n._open = true })
+  const card = document.getElementById('notice-' + id)
+  if (card && rows.length) card.outerHTML = noticeCardHtml(inDetail ? NOTICE_DETAIL : rows[0], !!inDetail)
+  const bar = document.getElementById('notice-toolbar')
+  if (bar) bar.innerHTML = noticeToolbarHtml()
+  toast('確認しました')
+}))
+delegate('noticeReadAll', el => withSubmitLock(el, async () => {
+  const ids = NOTICES.list.filter(noticeBulkReadable).map(n => n.notice_id)
+  if (!ids.length || !confirm(`未読のお知らせ ${ids.length}件を確認済みにしますか？\n（緊急・確認必須のお知らせは、1件ずつ開いて確認してください）`)) return
+  let d
+  try { d = (await axios.post('/api/staff/notices/read-all', { ids })).data } catch (e) { showApiError(e, NOTICE_SEND_ERROR); return }
+  const done = new Set(d.read || [])
+  for (const n of NOTICES.list) if (done.has(n.notice_id)) n.is_read = 1
+  NOTICES.unread_count = Math.max(0, (Number(NOTICES.unread_count) || 0) - done.size)
+  drawNotices()
+  toast(`${done.size}件を確認しました`)
+}))
+delegate('noticeExpand', el => {
+  const p = document.getElementById('notice-body-' + Number(el.dataset.id))
+  if (p) p.classList.remove('line-clamp-3')
+  el.remove()
+})
+delegate('noticeFilter', el => { NOTICES.filter = el.dataset.filter === 'unread' ? 'unread' : 'all'; renderNotices() })
+delegate('noticeMore', el => withSubmitLock(el, () => renderNotices(true)))
+delegate('noticeRetry', () => route())
+delegate('noticeSwitchCompany', el => withSubmitLock(el, async () => {
+  if (!window.switchStaffCompany) return
+  try { await switchStaffCompany(Number(el.dataset.id)) } catch (e) { showApiError(e, '切り替えに失敗しました') }
+}))
 
 window.renderConsult = async function () {
   loading()
@@ -967,13 +1081,14 @@ window.renderManual = function () {
 // ============ ルーティング ============
 const routes = { home: renderHome, shift: () => renderShifts(), report: renderReport, perf: () => renderPerf(), more: renderMore,
   attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()),
-  notifications: () => (window.renderStaffNotifications ? renderStaffNotifications() : renderHome()) }
-const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請', notifications: '通知' }
+  notifications: () => (window.renderStaffNotifications ? renderStaffNotifications() : renderHome()),
+  notices: () => { const id = Number((location.hash.split('/')[1]) || 0); return id ? renderNoticeDetail(id) : renderNotices() } }
+const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請', notifications: '通知', notices: 'お知らせ' }
 
 function route() {
   const tab = (location.hash || '#home').slice(1).split('/')[0]
   const fn = routes[tab] || renderHome
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (tab === 'attendance' || tab === 'notifications' ? 'more' : tab)))
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (tab === 'attendance' || tab === 'notifications' || tab === 'notices' ? 'more' : tab)))
   document.getElementById('header-title').textContent = titles[tab] || 'ホーム'
   fn()
 }

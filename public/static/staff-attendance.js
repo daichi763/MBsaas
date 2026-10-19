@@ -165,9 +165,11 @@
     const more = document.getElementById('more-notif-count')
     if (more) { more.textContent = n; more.classList.toggle('hidden', !n) }
   }
+  let NOTIF_LIST = []
   window.renderStaffNotifications = async function () {
     loading()
     let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { $app.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    NOTIF_LIST = d.notifications
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
         ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
@@ -178,8 +180,11 @@
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
   }
+  // お知らせの確認のお願い（再通知 #191）は、そのお知らせを開く。それ以外は打刻修正申請の一覧を開く
   window.notifOpenStaff = async function (id) {
     try { await axios.post(`/api/staff/notifications/${id}/read`) } catch (e) { }
+    const n = NOTIF_LIST.find(x => x.notification_id === id)
+    if (n && /^#notices\/\d+$/.test(n.link || '')) { location.hash = n.link.slice(1); return }
     S.tab = 'requests'; location.hash = 'attendance'
   }
   window.notifReadAllStaff = async function () {

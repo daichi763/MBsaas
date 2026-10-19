@@ -30,6 +30,7 @@ import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tena
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
+import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -131,20 +132,9 @@ async function resolvePersonShift(c: any, shiftId: any): Promise<{ shift: any; s
 }
 
 // ============ お知らせの配信対象と既読率レポート（集計・Cron共用ロジック） ============
-// 配信対象の判定は下の SQL の条件にまとめ、一覧の「既読 x/y名」・既読状況・メールの宛先・既読率レポートで同じものを使う（#7）。
+// 配信対象の判定（NOTICE_TARGET_SQL）は src/lib/notices.ts にまとめ、一覧の「既読 x/y名」・既読状況・メールの宛先・
+// 既読率レポートと、スタッフの一覧・ホーム・企業切替の未読数で同じものを使う（#7 #370）。
 // 条件は n = notices、us = users、sp = staff_profiles の別名を前提にする。
-//  ・登録より前に公開されたお知らせは対象外（#227）。users.created_at は UTC、published_at は JST なので +9時間して比べる。
-//    仮登録から本登録した人は、仮登録の日を基準にする
-//  ・案件あては、公開日の30日前以降に、その案件で確定・代打のシフトがある人（#335）。
-//    昔に一度だけ入った人や、欠勤・希望（仮）のシフトしかない人は外す
-const NOTICE_PROJECT_LOOKBACK_DAYS = 30
-const NOTICE_TARGET_IDS_SQL = `(',' || REPLACE(COALESCE(n.target_ids, ''), ' ', '') || ',')`
-const NOTICE_TARGET_SQL = `datetime(us.created_at, '+9 hours') <= n.published_at
-  AND (n.target_type = 'all'
-    OR (n.target_type = 'staff' AND ${NOTICE_TARGET_IDS_SQL} LIKE '%,' || sp.staff_id || ',%')
-    OR (n.target_type = 'project' AND EXISTS (SELECT 1 FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.company_id = n.company_id
-         AND sh.status IN ('confirmed', 'substitute') AND sh.work_date >= date(n.published_at, '-${NOTICE_PROJECT_LOOKBACK_DAYS} days')
-         AND ${NOTICE_TARGET_IDS_SQL} LIKE '%,' || sh.project_id || ',%')))`
 // 今の対象者（一覧の既読数・既読状況・メールの宛先）: いま在籍中で、ログインのあるスタッフ
 const NOTICE_MEMBER_NOW_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL`
 // 公開した時点の対象者（既読率レポート）: 後で退職した人も含めて、公開日に在籍していた人（#49。今の在籍状況では決めない）。
@@ -595,16 +585,9 @@ function homePickShift(items: any[], requestedId: number | null): any | null {
     || items.find(s => !s.carryover) || items[0] || null
 }
 
-// お知らせ (対象: all / 所属案件 / 個人)
+// お知らせ（新しい順に5件）。配信対象の判定はお知らせ一覧と同じ（#370 #227 #335。LIKE での走査はしない）
 async function homeLoadNotices(db: D1Database, u: any) {
-  return (await db.prepare(`
-    SELECT n.*, (SELECT COUNT(*) FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = ?) AS is_read
-    FROM notices n WHERE n.company_id = ?
-      AND (n.target_type = 'all'
-        OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || ? || ',%')
-        OR (n.target_type = 'project' AND EXISTS (
-             SELECT 1 FROM shifts sh WHERE sh.staff_id = ? AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
-    ORDER BY n.published_at DESC LIMIT 5`).bind(u.user_id, u.company_id, u.staff_id, u.staff_id).all()).results
+  return loadStaffNotices(db, u.user_id, { order: 'recent', limit: 5 })
 }
 
 // 相談: 管理者から返信のある未完了の相談の件数
@@ -959,37 +942,63 @@ api.post('/staff/shifts/:id/reply', async (c) => {
   return c.json({ ok: true })
 })
 
-// お知らせ
+// お知らせ一覧。未読（既読確認が必須・緊急のものを先）→ 既読の順に、1回に50件ずつ（offset でページ送り #553）。
+// 配信対象の判定は管理画面の既読数・メールの宛先と同じ（#227 #335 #370）。公開から2年たって既読の記録を削除した
+// お知らせは「確認不要」（no_confirm）として既読の扱いにする（#245）
+const STAFF_NOTICE_PAGE = 50
 api.get('/staff/notices', async (c) => {
-  const u = c.get('user')
-  const rows = await c.env.DB.prepare(`
-    SELECT n.*, (SELECT COUNT(*) FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = ?) AS is_read
-    FROM notices n WHERE n.company_id = ?
-      AND (n.target_type = 'all'
-        OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || ? || ',%')
-        OR (n.target_type = 'project' AND EXISTS (
-             SELECT 1 FROM shifts sh WHERE sh.staff_id = ? AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
-    ORDER BY n.published_at DESC LIMIT 50`).bind(u.user_id, u.company_id, u.staff_id, u.staff_id).all()
-  return c.json({ notices: rows.results })
+  const u = c.get('user'); const db = c.env.DB
+  const offset = toInt(c.req.query('offset'), 0, 100000) ?? 0
+  const unreadOnly = c.req.query('filter') === 'unread'
+  const rows = await loadStaffNotices(db, u.user_id, { unreadOnly, limit: STAFF_NOTICE_PAGE + 1, offset })
+  const res: any = { notices: rows.slice(0, STAFF_NOTICE_PAGE), has_more: rows.length > STAFF_NOTICE_PAGE, offset }
+  if (offset === 0) {
+    // 未読の件数と、ほかの所属企業（切り替えていない企業）の未読（#203）
+    const persons = (await personStaffRows(db, u)).filter(r => r.user_id && r.company_id !== u.company_id)
+    const counts = await countUnreadNotices(db, [u.user_id, ...persons.map(r => r.user_id)])
+    res.unread_count = counts.get(u.user_id) || 0
+    res.other_companies = persons.map(r => ({ company_id: r.company_id, company_name: r.company_name, unread: counts.get(r.user_id) || 0 }))
+      .filter(r => r.unread > 0)
+  }
+  return c.json(res)
 })
 
-api.post('/staff/notices/:id/read', async (c) => {
+// お知らせの個別画面（#333）。今の企業に無ければ、同じ人のほかの所属企業のお知らせかを調べ、切り替え先を返す
+api.get('/staff/notices/:id{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const id = Number(c.req.param('id'))
+  const [n] = await loadStaffNotices(db, u.user_id, { id, limit: 1 })
+  if (n) return c.json({ notice: n })
+  for (const r of await personStaffRows(db, u)) {
+    if (!r.user_id || r.company_id === u.company_id) continue
+    const [o] = await loadStaffNotices(db, r.user_id, { id, limit: 1 })
+    if (o) return c.json({ error: `${r.company_name} のお知らせです。所属企業を切り替えると表示できます`, other_company: { company_id: r.company_id, company_name: r.company_name } }, 404)
+  }
+  return c.json({ error: 'お知らせが見つかりません（配信の対象外か、削除された可能性があります）' }, 404)
+})
+
+// 確認しました（既読）。自社のお知らせで、本人が配信対象のものだけ既読にできる（一覧に出す条件と同じ）
+api.post('/staff/notices/:id{[0-9]+}/read', async (c) => {
   const u = c.get('user')
-  // 自社のお知らせで、本人が配信対象のものだけ既読にできる。
-  // ただし、お知らせ一覧（GET /staff/notices）が配信対象の新しい条件（#227 #335）にそろうまでは、一覧に出ているものも既読にできるようにする
-  // （一覧に出ているのに「確認しました」が失敗しないように。既読数・既読率は配信対象の人の分だけを数えるので、数字には影響しない）
-  const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id'))
-  const allowed = n && await c.env.DB.prepare(`SELECT 1 FROM notices n JOIN users us ON us.user_id = ? JOIN staff_profiles sp ON sp.user_id = us.user_id
-    WHERE n.notice_id = ? AND ${NOTICE_MEMBER_NOW_SQL}
-      AND ((${NOTICE_TARGET_SQL})
-        OR n.target_type = 'all'
-        OR (n.target_type = 'staff' AND (',' || n.target_ids || ',') LIKE '%,' || sp.staff_id || ',%')
-        OR (n.target_type = 'project' AND EXISTS (
-             SELECT 1 FROM shifts sh WHERE sh.staff_id = sp.staff_id AND (',' || n.target_ids || ',') LIKE '%,' || sh.project_id || ',%')))
-    LIMIT 1`).bind(u.user_id, n.notice_id).first()
-  if (!allowed) return c.json({ error: 'お知らせが見つかりません' }, 404)
-  await c.env.DB.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(c.req.param('id'), u.user_id).run()
+  const [n] = await loadStaffNotices(c.env.DB, u.user_id, { id: Number(c.req.param('id')), limit: 1 })
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.no_confirm) return c.json({ ok: true, no_confirm: true })
+  await c.env.DB.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(n.notice_id, u.user_id).run()
   return c.json({ ok: true })
+})
+
+// まとめて確認（#553）。画面に出ていた未読（ids）のうち、既読確認が必須・緊急でないものだけを既読にする
+api.post('/staff/notices/read-all', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const ids: number[] = Array.isArray(b.ids) ? [...new Set<number>(b.ids.map((x: any) => toInt(x, 1)).filter((x: number | null) => x != null))].slice(0, 200) : []
+  if (!ids.length) return c.json({ error: '確認するお知らせがありません' }, 400)
+  const rows = await loadStaffNotices(db, u.user_id, { ids, unreadOnly: true, limit: ids.length })
+  const ok = rows.filter(n => !n.read_required && n.importance !== 'urgent').map(n => n.notice_id)
+  if (ok.length) {
+    await db.prepare(`INSERT OR IGNORE INTO notice_reads (notice_id, user_id) SELECT value, ? FROM json_each(?)`).bind(u.user_id, bindJsonArray(ok)).run()
+  }
+  return c.json({ ok: true, read: ok, skipped: rows.length - ok.length })
 })
 
 // 自分の実績
@@ -2398,20 +2407,49 @@ api.get('/admin/analytics', async (c) => {
 
 // お知らせ配信
 // 「既読 x/y名」は配信対象の人だけで数える（#7）。既読の記録を削除したお知らせは、削除の直前の人数を出す（#245）
+// 1回に50件ずつ（offset でページ送り）。キーワード（タイトル・本文）・配信先の案件・期間で絞り込める（#368）。
+// 配信先の案件名・スタッフ名と、配信した人の名前も返す
+const ADMIN_NOTICE_PAGE = 50
 api.get('/admin/notices', async (c) => {
   const u = c.get('user')
-  const rows = await c.env.DB.prepare(`
-    SELECT n.*,
+  const offset = toInt(c.req.query('offset'), 0, 100000) ?? 0
+  const where: string[] = ['n.company_id = ?']
+  const binds: any[] = [u.company_id]
+  const q = String(c.req.query('q') || '').trim().slice(0, 100)
+  if (q) {
+    const like = '%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%'
+    where.push(`(n.title LIKE ? ESCAPE '\\' OR COALESCE(n.body, '') LIKE ? ESCAPE '\\')`); binds.push(like, like)
+  }
+  const projectId = toInt(c.req.query('project_id'), 1)
+  if (projectId) {
+    where.push(`EXISTS (SELECT 1 FROM notice_targets nt WHERE nt.notice_id = n.notice_id AND nt.target_type = 'project' AND nt.target_id = ?)`); binds.push(projectId)
+  }
+  const from = c.req.query('from'), to = c.req.query('to')
+  if (isISODate(from)) { where.push('n.published_at >= ?'); binds.push(from) }
+  if (isISODate(to)) { where.push('n.published_at < ?'); binds.push(addDays(to, 1)) }
+  binds.push(ADMIN_NOTICE_PAGE + 1, offset)
+  const rows = (await c.env.DB.prepare(`
+    SELECT n.notice_id, n.title, n.body, n.target_type, n.target_ids, n.importance, n.read_required, n.published_at, n.created_by,
+      n.reads_purged_at, n.reminded_at, n.remind_count, cu.name AS created_by_name,
       CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_READ_COUNT_NOW_SQL} ELSE n.final_read_count END AS read_count,
-      CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_TARGET_COUNT_NOW_SQL} ELSE n.final_target_count END AS staff_total
-    FROM notices n WHERE n.company_id = ? ORDER BY n.published_at DESC LIMIT 50`).bind(u.company_id).all()
+      CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_TARGET_COUNT_NOW_SQL} ELSE n.final_target_count END AS staff_total,
+      CASE n.target_type
+        WHEN 'project' THEN (SELECT group_concat(p.project_name, '、') FROM notice_targets nt JOIN projects p ON p.project_id = nt.target_id AND p.company_id = n.company_id
+          WHERE nt.notice_id = n.notice_id AND nt.target_type = 'project')
+        WHEN 'staff' THEN (SELECT group_concat(su.name, '、') FROM notice_targets nt JOIN staff_profiles tsp ON tsp.staff_id = nt.target_id AND tsp.company_id = n.company_id
+          JOIN users su ON su.user_id = tsp.user_id WHERE nt.notice_id = n.notice_id AND nt.target_type = 'staff')
+      END AS target_names
+    FROM notices n LEFT JOIN users cu ON cu.user_id = n.created_by AND cu.company_id = n.company_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY n.published_at DESC, n.notice_id DESC LIMIT ? OFFSET ?`).bind(...binds).all()).results as any[]
+  const page = rows.slice(0, ADMIN_NOTICE_PAGE)
   // メールの送信結果（状態ごとの人数）。メールを送らなかったお知らせは email_counts = null
-  const ids = (rows.results as any[]).map(n => n.notice_id)
+  const ids = page.map(n => n.notice_id)
   const counts = ids.length ? (await c.env.DB.prepare(`SELECT notice_id, status, COUNT(*) AS n FROM notice_email_deliveries
     WHERE company_id = ? AND notice_id IN (SELECT value FROM json_each(?)) GROUP BY notice_id, status`).bind(u.company_id, JSON.stringify(ids)).all()).results as any[] : []
   const byNotice = new Map<number, Record<string, number>>()
   for (const r of counts) { const m = byNotice.get(r.notice_id) || {}; m[r.status] = r.n; byNotice.set(r.notice_id, m) }
-  return c.json({ notices: (rows.results as any[]).map(({ client_request_id: _k, ...n }) => ({ ...n, email_counts: byNotice.get(n.notice_id) || null })) })
+  return c.json({ notices: page.map(n => ({ ...n, email_counts: byNotice.get(n.notice_id) || null })), has_more: rows.length > ADMIN_NOTICE_PAGE, offset })
 })
 
 // お知らせの今の対象者（メールの宛先など）。条件は NOTICE_MEMBER_NOW_SQL と NOTICE_TARGET_SQL（一覧の既読数・既読状況と同じ）
@@ -2425,16 +2463,21 @@ async function resolveNoticeTargets(db: D1Database, companyId: number, noticeId:
 
 // 対象者へお知らせメールをまとめて送り、1人ずつの結果を notice_email_deliveries に記録する（pending → sent / failed / skipped）
 type NoticeMailRecipient = { user_id: number; name: string; email: string }
-async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: number, title: string, body: string, recipients: NoticeMailRecipient[]) {
+// メールのボタンは、そのお知らせの個別画面を開く（#333）。再通知は冪等キーを分け、送信結果の表には記録しない（#191。
+// notice_email_deliveries は最初の配信の結果を1人1行で持つため）
+async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: number, title: string, body: string, recipients: NoticeMailRecipient[],
+  opts: { idempotencyKey?: string; record?: boolean } = {}) {
   const db = env.DB
+  const record = opts.record !== false
   try {
-    const url = `${String(env.APP_BASE_URL || '').replace(/\/+$/, '')}/staff`
+    const url = `${String(env.APP_BASE_URL || '').replace(/\/+$/, '')}/staff#notices/${noticeId}`
     const inputs = recipients.map(r => {
       const tpl = noticeEmail({ name: r.name, title, body, url })
       return { to: r.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notice', company_id: companyId }
     })
     // 冪等キーはお知らせ単位（同じお知らせの送信が二重に動いても、Resend 側で同じバッチを二度送らない）
-    const results = await sendEmailBatch(env, inputs, { idempotencyKey: `notice-${noticeId}` })
+    const results = await sendEmailBatch(env, inputs, { idempotencyKey: opts.idempotencyKey || `notice-${noticeId}` })
+    if (!record) return
     const rows = recipients.map((r, k) => ({
       u: r.user_id, s: results[k].skipped ? 'skipped' : results[k].ok ? 'sent' : 'failed',
       e: results[k].ok ? null : (results[k].error || 'unknown'), id: results[k].skipped ? null : (results[k].id ?? null),
@@ -2446,6 +2489,7 @@ async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: numb
   } catch {
     console.log(`notice mail failed: notice=${noticeId}`)
     // 途中で止まった分は送信失敗として残す（送信中のまま放置しない）
+    if (!record) return
     try {
       await db.prepare(`UPDATE notice_email_deliveries SET status = 'failed', error = 'internal_error' WHERE notice_id = ? AND status = 'pending'`).bind(noticeId).run()
     } catch { /* 記録の失敗は無視 */ }
@@ -2455,12 +2499,55 @@ async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: numb
 // 二重配信とみなす時間（同じ作成者・同じ内容・同じ対象）
 const NOTICE_DUP_WINDOW_SEC = 30
 
+// 配信先の ID（カンマ区切り）を「1,2,3」の形にそろえる。自社の案件・スタッフでないものがあれば null（#370。notice_targets に展開する）
+async function normalizeNoticeTargetIds(db: D1Database, companyId: number, targetType: string, raw: unknown): Promise<string | null> {
+  if (targetType === 'all') return ''
+  const ids = [...new Set(String(raw ?? '').split(',').map(s => toInt(s.trim(), 1)))]
+  if (!ids.length || ids.some(x => x == null)) return null
+  const table = targetType === 'project' ? 'projects' : 'staff_profiles'
+  const key = targetType === 'project' ? 'project_id' : 'staff_id'
+  const r = await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE company_id = ? AND ${key} IN ${JSON_IN}`).bind(companyId, bindJsonArray(ids)).first() as any
+  return Number(r?.n) === ids.length ? ids.join(',') : null
+}
+
+// メールの宛先（連携スタッフは雇用元の本人のアドレスに送る #128）と、1人ずつの記録の行
+async function noticeMailRecipients(db: D1Database, targets: { staff_id: number; user_id: number; name: string; email: string | null }[]) {
+  const linked = await linkedStaffEmails(db, targets.filter(t => !String(t.email || '').trim()).map(t => t.staff_id))
+  const withEmail: NoticeMailRecipient[] = []
+  const rows: { u: number; s: string }[] = []
+  const seen = new Set<number>()
+  for (const t of targets) {
+    if (seen.has(t.user_id)) continue
+    seen.add(t.user_id)
+    const addr = String(t.email || '').trim() || linked.get(Number(t.staff_id)) || ''
+    if (addr) withEmail.push({ user_id: t.user_id, name: t.name, email: addr })
+    rows.push({ u: t.user_id, s: addr ? 'pending' : 'no_email' })
+  }
+  return { withEmail, rows }
+}
+
+// メールの本文。案件あてなら、どの案件あてかを先頭に書く（#455）
+async function noticeMailBody(db: D1Database, n: { notice_id: number; company_id: number; target_type: string; body: string | null }) {
+  if (n.target_type !== 'project') return String(n.body ?? '')
+  const r = await db.prepare(`SELECT group_concat(p.project_name, '、') AS names FROM notice_targets nt JOIN projects p ON p.project_id = nt.target_id AND p.company_id = ?
+    WHERE nt.notice_id = ? AND nt.target_type = 'project'`).bind(n.company_id, n.notice_id).first() as any
+  return r?.names ? `対象の案件: ${r.names}\n\n${n.body ?? ''}` : String(n.body ?? '')
+}
+
+const NOTICE_IMPORTANCE = ['normal', 'important', 'urgent'] as const
+const NOTICE_TARGET_TYPES = ['all', 'project', 'staff'] as const
+
 api.post('/admin/notices', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
   const title = String(b.title ?? '').trim()
   if (!title) return c.json({ error: 'タイトルは必須です' }, 400)
   const body = String(b.body ?? '')
-  const target_type = b.target_type || 'all'; const target_ids = String(b.target_ids ?? '')
+  const target_type = b.target_type || 'all'
+  if (!oneOf(target_type, NOTICE_TARGET_TYPES)) return c.json({ error: '配信対象の指定が正しくありません' }, 400)
+  const importance = b.importance || 'normal'
+  if (!oneOf(importance, NOTICE_IMPORTANCE)) return c.json({ error: '重要度の指定が正しくありません' }, 400)
+  const target_ids = await normalizeNoticeTargetIds(c.env.DB, u.company_id, target_type, b.target_ids)
+  if (target_ids == null) return c.json({ error: target_type === 'project' ? '対象の案件を選んでください' : '対象のスタッフを選んでください' }, 400)
   // 二重送信の防止（#105）: 画面が発行した一意キー（client_request_id）が同じなら受け付けない。
   // キーが無い呼び出しも、同じ人が同じ内容を直前に配信していれば重複として扱う
   const requestId = typeof b.client_request_id === 'string' && b.client_request_id.trim() ? b.client_request_id.trim().slice(0, 64) : null
@@ -2469,9 +2556,10 @@ api.post('/admin/notices', async (c) => {
     AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? LIMIT 1`)
     .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since).first() as any
   if (dup) return c.json({ error: '同じお知らせを配信したばかりです。一覧を確認してください', duplicate: true, notice_id: dup.notice_id }, 409)
+  // 配信先（notice_targets）は notices のトリガーで展開する（0052）
   const ins = await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by, client_request_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING notice_id`)
-    .bind(u.company_id, title, body, target_type, target_ids, b.importance || 'normal', b.read_required ? 1 : 0, nowJST(), u.user_id, requestId).first() as any
+    .bind(u.company_id, title, body, target_type, target_ids, importance, b.read_required ? 1 : 0, nowJST(), u.user_id, requestId).first() as any
   if (!ins) return c.json({ error: 'このお知らせは配信済みです。一覧を確認してください', duplicate: true }, 409)
   const noticeId = Number(ins.notice_id)
 
@@ -2480,26 +2568,57 @@ api.post('/admin/notices', async (c) => {
   let email: { mode: string; targets: number; with_email: number; no_email: number } | null = null
   if (b.send_email) {
     const targets = await resolveNoticeTargets(c.env.DB, u.company_id, noticeId)
-    const linked = await linkedStaffEmails(c.env.DB, targets.filter(t => !String(t.email || '').trim()).map(t => t.staff_id))
-    const withEmail: NoticeMailRecipient[] = []
-    const rows: { u: number; s: string }[] = []
-    const seen = new Set<number>()
-    for (const t of targets) {
-      if (seen.has(t.user_id)) continue
-      seen.add(t.user_id)
-      const addr = String(t.email || '').trim() || linked.get(Number(t.staff_id)) || ''
-      if (addr) withEmail.push({ user_id: t.user_id, name: t.name, email: addr })
-      rows.push({ u: t.user_id, s: addr ? 'pending' : 'no_email' })
-    }
+    const { withEmail, rows } = await noticeMailRecipients(c.env.DB, targets)
     if (rows.length) {
       await c.env.DB.prepare(`INSERT OR IGNORE INTO notice_email_deliveries (notice_id, company_id, user_id, status, created_at)
         SELECT ?, ?, json_extract(value, '$.u'), json_extract(value, '$.s'), ? FROM json_each(?)`)
         .bind(noticeId, u.company_id, nowJST(), JSON.stringify(rows)).run()
     }
-    if (withEmail.length) c.executionCtx.waitUntil(sendNoticeEmails(c.env, noticeId, u.company_id, title, body, withEmail))
+    if (withEmail.length) {
+      const mailBody = await noticeMailBody(c.env.DB, { notice_id: noticeId, company_id: u.company_id, target_type, body })
+      c.executionCtx.waitUntil(sendNoticeEmails(c.env, noticeId, u.company_id, title, mailBody, withEmail))
+    }
     email = { mode: mailMode(c.env), targets: rows.length, with_email: withEmail.length, no_email: rows.length - withEmail.length }
   }
   return c.json({ ok: true, notice_id: noticeId, email })
+})
+
+// 未読者への再通知（#191）。今の配信対象で未読の人に、アプリ内通知（押すとそのお知らせを開く）を送る。
+// send_email なら、メールでも送る。続けて何度も送らないよう、前回から10分は受け付けない
+const NOTICE_REMIND_INTERVAL_MIN = 10
+api.post('/admin/notices/:id{[0-9]+}/remind', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.reads_purged_at) return c.json({ error: '公開から2年たったお知らせは再通知できません' }, 400)
+  const unread = (await db.prepare(`SELECT sp.staff_id, us.user_id, us.name, us.email
+    FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
+    WHERE n.notice_id = ? AND n.company_id = ? AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL}
+      AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = us.user_id)`).bind(n.notice_id, u.company_id).all()).results as any[]
+  if (!unread.length) return c.json({ error: '未読の人はいません' }, 400)
+  // 先に再通知の日時を書き、同時に押されても1回だけ送る
+  const now = nowJST()
+  const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_REMIND_INTERVAL_MIN * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const claim = await db.prepare(`UPDATE notices SET reminded_at = ?, remind_count = remind_count + 1
+    WHERE notice_id = ? AND (reminded_at IS NULL OR reminded_at < ?) RETURNING remind_count`).bind(now, n.notice_id, since).first() as any
+  if (!claim) return c.json({ error: `再通知は前回から${NOTICE_REMIND_INTERVAL_MIN}分たってから送れます` }, 409)
+  const users = [...new Map(unread.map(t => [t.user_id, t])).values()]
+  await db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+    SELECT ?, value, 'notice_reminder', ?, ?, ?, ?, ? FROM json_each(?)`)
+    .bind(u.company_id, 'お知らせを確認してください', `「${n.title}」をまだ確認していません。開いて「確認しました」を押してください。`,
+      `#notices/${n.notice_id}`, n.notice_id, now, bindJsonArray(users.map(t => t.user_id))).run()
+  let email: { mode: string; with_email: number; no_email: number } | null = null
+  if (b.send_email) {
+    const { withEmail, rows } = await noticeMailRecipients(db, users)
+    if (withEmail.length) {
+      const mailBody = `まだ確認されていないお知らせです。開いて「確認しました」を押してください。\n\n${await noticeMailBody(db, n)}`
+      c.executionCtx.waitUntil(sendNoticeEmails(c.env, n.notice_id, u.company_id, `（再通知）${n.title}`, mailBody, withEmail,
+        { idempotencyKey: `notice-${n.notice_id}-remind-${claim.remind_count}`, record: false }))
+    }
+    email = { mode: mailMode(c.env), with_email: withEmail.length, no_email: rows.length - withEmail.length }
+  }
+  return c.json({ ok: true, notified: users.length, remind_count: claim.remind_count, reminded_at: now, email })
 })
 
 // お知らせメールの送信結果（1人ずつ）。メールアドレスは返さない（連携スタッフの所属元のアドレスを見せないため）
