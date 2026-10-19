@@ -710,7 +710,7 @@ function drawHqMailLogs() {
       <tbody>${HQ_MAIL.logs.map(l => `<tr class="border-b border-slate-700/40">
         <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(l.created_at || '')}</td><td class="px-2 text-xs">${esc(l.company_name || '－')}</td>
         <td class="px-2 text-xs">${esc(MAIL_TYPE_LABEL[l.type] || l.type)}</td><td class="px-2 text-xs font-mono">${esc(l.to_email)}</td>
-        <td class="px-2 text-xs ${['failed', 'bounced', 'complained'].includes(l.status) ? 'text-red-400' : ''}">${esc(MAIL_STATUS_LABEL[l.status] || l.status)}</td>
+        <td class="px-2 text-xs ${['failed', 'bounced', 'bounced_soft', 'complained'].includes(l.status) ? 'text-red-400' : ''}">${esc(MAIL_STATUS_LABEL[l.status] || l.status)}</td>
         <td class="px-2 text-xs text-slate-400 break-all">${esc(errText(l.error_message))}</td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">該当する記録はありません</td></tr>'}</tbody></table></div>
     ${HQ_MAIL.hasMore ? '<div class="text-center mt-2"><button class="text-cyan-400 text-sm hover:underline" data-action="hqMailMore">さらに読み込む</button></div>' : ''}`
 }

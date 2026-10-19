@@ -547,7 +547,8 @@ export const mailHqApi = new Hono<{ Bindings: NotifyEnv; Variables: Variables }>
 // 失敗率の警告: 直近の期間に、ある企業の送信（送信停止を除く）が MIN 件以上あり、届かなかった割合が RATE 以上
 const MAIL_ALERT_MIN = 5
 const MAIL_ALERT_RATE = 0.2
-const FAILED_STATUSES = `('failed', 'bounced', 'complained')`
+// 届かなかったもの（企業の画面の「届かなかったもの」の絞り込みと同じ。一時的な不達も含める）
+const FAILED_STATUSES = `('failed', 'bounced', 'bounced_soft', 'complained')`
 mailHqApi.get('/email-stats', async (c) => {
   const days = Math.min(90, Math.max(1, Number.parseInt(c.req.query('days') || '', 10) || 7))
   const since = `-${days} days`
