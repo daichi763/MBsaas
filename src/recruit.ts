@@ -11,7 +11,8 @@ import { Hono } from 'hono'
 import { applyPricingToShift, conflictFor, findConflicts, loadPricingData, ngStaffIds } from './shift-board'
 import { findStaffByPhone, insertProvisionalStaff, normalizePhone } from './staff-lifecycle'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
-import { assertAssignable, conflictLabel } from './lib/staff-eligibility'
+import { assertAssignable, conflictLabel, isUniqueViolation } from './lib/staff-eligibility'
+import { personStaffRows } from './roster'
 import { shiftWindow } from './lib/shift-time'
 import { isCompanyActive } from './lib/auth'
 
@@ -21,6 +22,7 @@ type Variables = { user: any }
 // ---------- 定数 ----------
 const MAX_PAGE_DAYS = 62
 const MAX_SLOTS_PER_APPLY = 31
+const MAX_PAGES_PER_STAFF_APPLY = 10 // スタッフアプリで一度に応募できる募集ページの数（#239）
 const MAX_PAGE_PROJECTS = 50      // 1つの募集ページで対象にできる案件の数
 const MAX_APPLICATIONS_LIST = 200 // 応募一覧で一度に返す件数
 const ROLES_PER_PAGE = 300        // 公開ページ・スタッフアプリで一度に返す枠の数（続きは next_from の日付から取得する。#126）
@@ -84,7 +86,9 @@ async function openRoles(db: D1Database, page: any, opts: { fromDate?: string; r
 // 公開ページ・スタッフアプリ向けに、fromDate の日から ROLES_PER_PAGE 件ずつ返す（#126）。
 // 日付の途中では切らず、最後の日付は次の取得に回す（next_from）。1日だけで上限を超えるときは、その日の上限までを返して翌日から続ける
 async function openRolesPage(db: D1Database, page: any, fromDate?: string) {
-  const rows = await openRoles(db, page, { fromDate, limit: ROLES_PER_PAGE + 1 })
+  return cutRolesPage(await openRoles(db, page, { fromDate, limit: ROLES_PER_PAGE + 1 }))
+}
+function cutRolesPage(rows: any[]) {
   if (rows.length <= ROLES_PER_PAGE) return { roles: rows, next_from: null as string | null }
   const lastDate = rows[ROLES_PER_PAGE].work_date
   const before = rows.slice(0, ROLES_PER_PAGE).filter(r => r.work_date < lastDate)
@@ -92,13 +96,33 @@ async function openRolesPage(db: D1Database, page: any, fromDate?: string) {
   return { roles: rows.slice(0, ROLES_PER_PAGE), next_from: addDays(lastDate, 1) }
 }
 
-// 管理画面の「募集中の枠 n件（残りm名）」。件数で打ち切らずに数える（#126）
-async function openRolesSummary(db: D1Database, page: any) {
-  const q = openRolesWhere(page)
-  if (!q) return { roles: 0, remaining: 0 }
-  const r = await db.prepare(`SELECT COUNT(*) AS roles, COALESCE(SUM(MAX(0, headcount - assigned)), 0) AS remaining FROM (
-      SELECT r.headcount, ${ASSIGNED_SQL} AS assigned FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id WHERE ${q.sql})`).bind(...q.bind).first() as any
-  return { roles: Number(r?.roles || 0), remaining: Number(r?.remaining || 0) }
+// 複数の募集ページの対象の枠を、ページごとに問い合わせずに1回で取るための WITH 句（#410）。
+// pageWhere で選んだ募集ページ（rp）ごとに、openRolesWhere と同じ条件（案件・期間・枠が募集中・開始前）の枠を pr として返す。
+// bind は [今日, ...pageBind, 今日, 今の時刻] の順
+function pagesRolesCte(pageWhere: string, pageBind: any[]) {
+  const now = nowJST(), today = now.slice(0, 10)
+  const sql = `WITH pg AS (
+      SELECT rp.page_id, rp.company_id, rp.project_ids, MAX(rp.date_from, ?) AS dfrom, rp.date_to FROM recruit_pages rp WHERE ${pageWhere}
+    ), pp AS (
+      SELECT DISTINCT pg.page_id, pg.company_id, CAST(j.value AS INTEGER) AS project_id, pg.dfrom, pg.date_to
+      FROM pg, json_each(CASE WHEN json_valid('[' || COALESCE(pg.project_ids, '') || ']') THEN '[' || COALESCE(pg.project_ids, '') || ']' ELSE '[]' END) j
+    ), pr AS (
+      SELECT pp.page_id, r.slot_role_id, r.role_name, r.headcount, r.sort_order, sl.slot_id, sl.project_id, sl.site_id, sl.location, sl.work_date, sl.start_time, sl.end_time, sl.break_minutes
+      FROM pp JOIN shift_slots sl ON sl.project_id = pp.project_id AND sl.company_id = pp.company_id AND sl.work_date BETWEEN pp.dfrom AND pp.date_to
+      JOIN shift_slot_roles r ON r.slot_id = sl.slot_id
+      WHERE COALESCE(sl.status,'open') = 'open' AND (sl.work_date > ? OR sl.start_time > ?)
+    )`
+  return { sql, bind: [today, ...pageBind, today, now.slice(11, 16)] }
+}
+const PR_ASSIGNED_SQL = `(SELECT COUNT(*) FROM shifts s WHERE s.slot_role_id = pr.slot_role_id AND s.status != 'absent')`
+
+// 管理画面の「募集中の枠 n件（残りm名）」。公開中のページをまとめて、件数で打ち切らずに数える（#126 #410）
+async function openRolesSummaries(db: D1Database, companyId: number) {
+  const cte = pagesRolesCte(`rp.company_id = ? AND rp.status = 'open' AND rp.date_to >= ?`, [companyId, todayJST()])
+  const rows = (await db.prepare(`${cte.sql}
+    SELECT page_id, COUNT(*) AS roles, COALESCE(SUM(MAX(0, headcount - assigned)), 0) AS remaining
+    FROM (SELECT pr.page_id, pr.headcount, ${PR_ASSIGNED_SQL} AS assigned FROM pr) GROUP BY page_id`).bind(...cte.bind).all()).results as any[]
+  return new Map(rows.map(r => [r.page_id, { roles: Number(r.roles || 0), remaining: Number(r.remaining || 0) }]))
 }
 
 // 応募の日時の状態。承認済みでも、作ったシフトが削除・欠勤・別のスタッフへの差し替え・別の枠への移動になったものは
@@ -266,41 +290,129 @@ async function myAppScope(db: D1Database, u: any): Promise<{ sql: string; bind: 
   if (matches.length !== 1 || Number(matches[0].staff_id) !== Number(u.staff_id)) return base
   return { sql: `a.company_id = ? AND (a.staff_id = ? OR (a.staff_id IS NULL AND a.source = 'public' AND a.phone = ?))`, bind: [u.company_id, u.staff_id, phone] }
 }
-// 自分が応募済み（未対応・シフトが残っている承認済み）の枠と、割り当て済みの枠
+// 自分の応募の状態（未対応・シフトが残っている承認済みと、見送り）の枠と、割り当て済みの枠。
+// 見送りの枠は一覧で『見送り』と出し、同じ枠に応募し直させない（#316。見送りの取り消しは管理者が行う）
 async function myRoleStates(db: D1Database, u: any, scope: { sql: string; bind: any[] }) {
   const mine = ((await db.prepare(`SELECT i.slot_role_id, CASE WHEN i.status = 'processing' THEN 'pending' ELSE i.status END AS status
     FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    WHERE ${scope.sql} AND ${ACTIVE_ITEM_SQL}`).bind(...scope.bind).all()).results as any[])
+    WHERE ${scope.sql} AND (${ACTIVE_ITEM_SQL} OR i.status = 'rejected')`).bind(...scope.bind).all()).results as any[])
+  // 応募中・確定の状態を見送りより優先する
+  const mineMap = new Map<number, string>()
+  for (const r of mine) if (!mineMap.has(r.slot_role_id) || mineMap.get(r.slot_role_id) === 'rejected') mineMap.set(r.slot_role_id, r.status)
   const assigned = new Set(((await db.prepare(`SELECT slot_role_id FROM shifts WHERE staff_id = ? AND slot_role_id IS NOT NULL AND status != 'absent' AND work_date >= ?`)
     .bind(u.staff_id, todayJST()).all()).results as any[]).map(r => r.slot_role_id))
-  return { mineMap: new Map(mine.map(r => [r.slot_role_id, r.status])), assigned }
+  return { mineMap, assigned, conflicts: new Map<number, string[]>() }
 }
-function staffRole(r: any, p: any, st: { mineMap: Map<any, any>; assigned: Set<any> }) {
-  return { ...publicRole(r, !!p.show_remaining), my_status: st.assigned.has(r.slot_role_id) ? 'assigned' : st.mineMap.get(r.slot_role_id) || null }
+// 自分のほかのシフト（他社・連携先を含む。shift-board.ts の findConflicts）と時間が重なる枠（#310）。slot_role_id → 重なるシフトの表示
+async function roleConflicts(db: D1Database, u: any, roles: any[]) {
+  const out = new Map<number, string[]>()
+  if (!roles.length) return out
+  const dates = roles.map(r => r.work_date).sort()
+  const cf = (await findConflicts(db, u.company_id, [u.staff_id], dates[0], dates[dates.length - 1])).get(u.staff_id)
+  if (!cf || !cf.length) return out
+  for (const r of roles) {
+    const list = conflictFor(cf, r.work_date, r.start_time, r.end_time).filter((x: any) => x.slot_role_id !== r.slot_role_id)
+    if (list.length) out.set(r.slot_role_id, list.map((x: any) => conflictLabel(x, u.company_id)))
+  }
+  return out
 }
+// スタッフアプリでは、会場の住所（地図）と重なるシフトも返す（#310 #362。公開ページには住所を出さない）
+function staffRole(r: any, p: any, st: { mineMap: Map<any, any>; assigned: Set<any>; conflicts: Map<number, string[]> }) {
+  const my_status = st.assigned.has(r.slot_role_id) ? 'assigned' : st.mineMap.get(r.slot_role_id) || null
+  return { ...publicRole(r, !!p.show_remaining), site_address: r.site_address || null, my_status, conflicts: my_status ? [] : st.conflicts.get(r.slot_role_id) || [] }
+}
+
+// スタッフアプリから応募できる公開中の募集ページ
+const STAFF_PAGE_WHERE = `rp.company_id = ? AND rp.status = 'open' AND rp.allow_staff = 1 AND rp.date_to >= ?`
+// 公開中の全ページの枠を1回で取り、ページごとに振り分ける（#410）。各ページは先頭から ROLES_PER_PAGE + 1 件まで（cutRolesPage で切る）
+async function staffPagesRoles(db: D1Database, companyId: number) {
+  const cte = pagesRolesCte(STAFF_PAGE_WHERE, [companyId, todayJST()])
+  const rows = (await db.prepare(`${cte.sql}
+    SELECT x.page_id, x.slot_role_id, x.role_name, x.headcount, x.slot_id, x.project_id, x.work_date, x.start_time, x.end_time, x.break_minutes,
+      COALESCE(si.site_name, x.location, p.location, '') AS place, si.address AS site_address,
+      (SELECT COUNT(*) FROM shifts s WHERE s.slot_role_id = x.slot_role_id AND s.status != 'absent') AS assigned
+    FROM (SELECT pr.*, ROW_NUMBER() OVER (PARTITION BY pr.page_id ORDER BY pr.work_date, pr.start_time, pr.sort_order, pr.slot_role_id) AS rn FROM pr) x
+    JOIN projects p ON p.project_id = x.project_id LEFT JOIN sites si ON si.site_id = x.site_id
+    WHERE x.rn <= ? ORDER BY x.page_id, x.rn`).bind(...cte.bind, ROLES_PER_PAGE + 1).all()).results as any[]
+  const map = new Map<number, any[]>()
+  for (const r of rows) {
+    const a = map.get(r.page_id) || []
+    a.push({ ...r, remaining: Math.max(0, Number(r.headcount) - Number(r.assigned)) }); map.set(r.page_id, a)
+  }
+  return map
+}
+// 募集の入口に出す件数: 応募できる日時（定員に達していない・応募していない・見送りでない・自分のシフトでない）、承認待ち、表示する応募
+async function staffRecruitCounts(db: D1Database, companyId: number, staffId: number, scope: { sql: string; bind: any[] }) {
+  const cte = pagesRolesCte(STAFF_PAGE_WHERE, [companyId, todayJST()])
+  const r = await db.prepare(`${cte.sql}
+    SELECT (SELECT COUNT(*) FROM pg) AS pages,
+      (SELECT COUNT(DISTINCT pr.slot_role_id) FROM pr WHERE pr.headcount > ${PR_ASSIGNED_SQL}
+        AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.slot_role_id = pr.slot_role_id AND s.staff_id = ? AND s.status != 'absent')
+        AND NOT EXISTS (SELECT 1 FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+          WHERE i.slot_role_id = pr.slot_role_id AND ${scope.sql} AND (${ACTIVE_ITEM_SQL} OR i.status = 'rejected'))) AS open`)
+    .bind(...cte.bind, staffId, ...scope.bind).first() as any
+  const today = todayJST()
+  const a = await db.prepare(`SELECT COUNT(*) AS apps, SUM(CASE WHEN i.status IN ('pending','processing') AND sl.work_date >= ? THEN 1 ELSE 0 END) AS pending
+    FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+    JOIN shift_slot_roles r ON r.slot_role_id = i.slot_role_id JOIN shift_slots sl ON sl.slot_id = r.slot_id
+    WHERE ${scope.sql} AND sl.work_date >= ?`).bind(today, ...scope.bind, addDays(today, -7)).first() as any
+  return { pages: Number(r?.pages || 0), open: Number(r?.open || 0), pending: Number(a?.pending || 0), applications: Number(a?.apps || 0) }
+}
+// 切り替えていない所属企業の募集（#364）。応募できる日時か承認待ちがある企業だけを返す（切り替えるとその企業の一覧を開ける）
+async function otherCompaniesRecruit(db: D1Database, u: any) {
+  const rows = (await personStaffRows(db, u)).filter(r => r.company_id !== u.company_id && r.staff_id)
+  if (!rows.length) return []
+  const cos = (await db.prepare(`SELECT company_id, active_status FROM companies WHERE company_id IN ${JSON_IN}`).bind(bindJsonArray(rows.map(r => r.company_id))).all()).results as any[]
+  const active = new Set(cos.filter(x => isCompanyActive(x.active_status)).map(x => x.company_id))
+  const out = []
+  for (const r of rows) {
+    if (!active.has(r.company_id)) continue
+    const n = await staffRecruitCounts(db, r.company_id, r.staff_id, { sql: 'a.company_id = ? AND a.staff_id = ?', bind: [r.company_id, r.staff_id] })
+    if (n.open || n.pending) out.push({ company_id: r.company_id, company_name: r.company_name, open: n.open, pending: n.pending })
+  }
+  return out
+}
+
+// 募集の入口（シフト画面のボタン）用の件数だけを返す（#410。枠の一覧は『募集中のお仕事』を開いたときに GET / で取る）
+// pending_items: 今日以降の承認待ちの日時（シフト一覧に『承認待ち』として出すときに使う）
+recruitStaffApi.get('/summary', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  if (!u.staff_id) return c.json({ pages: 0, open: 0, pending: 0, applications: 0, pending_items: [], other_companies: [] })
+  const scope = await myAppScope(db, u)
+  const n = await staffRecruitCounts(db, u.company_id, u.staff_id, scope)
+  const pending = n.pending ? ((await db.prepare(`SELECT i.item_id, i.slot_role_id, a.page_id, rp.title AS page_title, sl.work_date, sl.start_time, sl.end_time, r.role_name,
+      COALESCE(si.site_name, sl.location, p.location, '') AS place
+    FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+    JOIN shift_slot_roles r ON r.slot_role_id = i.slot_role_id JOIN shift_slots sl ON sl.slot_id = r.slot_id LEFT JOIN sites si ON si.site_id = sl.site_id
+    LEFT JOIN projects p ON p.project_id = sl.project_id LEFT JOIN recruit_pages rp ON rp.page_id = a.page_id
+    WHERE ${scope.sql} AND i.status IN ('pending','processing') AND sl.work_date >= ? ORDER BY sl.work_date, sl.start_time LIMIT 100`).bind(...scope.bind, todayJST()).all()).results as any[]) : []
+  return c.json({ ...n, pending_items: pending, other_companies: await otherCompaniesRecruit(db, u) })
+})
 
 recruitStaffApi.get('/', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  if (!u.staff_id) return c.json({ pages: [], applications: [] })
+  if (!u.staff_id) return c.json({ pages: [], applications: [], other_companies: [] })
   await settleRemovedSlotItems(db, u.company_id)
-  const pages = ((await db.prepare(`SELECT * FROM recruit_pages WHERE company_id = ? AND status = 'open' AND allow_staff = 1 AND date_to >= ? ORDER BY date_from`)
+  const pages = ((await db.prepare(`SELECT rp.* FROM recruit_pages rp WHERE ${STAFF_PAGE_WHERE} ORDER BY rp.date_from`)
     .bind(u.company_id, todayJST()).all()).results as any[])
-  // 自分のシフト（同じ時間帯の確認用）と応募状況
+  // 自分の応募状況と、自分のほかのシフトとの重なり
   const scope = await myAppScope(db, u)
   const st = await myRoleStates(db, u, scope)
-  const out = []
-  for (const p of pages) {
-    const { roles, next_from } = await openRolesPage(db, p)
-    out.push({ page_id: p.page_id, title: p.title, description: p.description || '', pay_note: p.pay_note || '', date_from: p.date_from, date_to: p.date_to,
-      roles: roles.map(r => staffRole(r, p, st)), next_from })
-  }
-  // 応募した日時。承認後にシフトが外れたものは released（シフト解除）で返す（#64）
-  const apps = ((await db.prepare(`SELECT i.item_id, CASE WHEN i.status = 'processing' THEN 'pending' ELSE ${ITEM_STATE_SQL} END AS status, i.slot_role_id, a.application_id, a.source, a.created_at,
-      sl.work_date, sl.start_time, sl.end_time, r.role_name, COALESCE(si.site_name, sl.location, '') AS place
+  const rolesByPage = pages.length ? await staffPagesRoles(db, u.company_id) : new Map<number, any[]>()
+  const cut = pages.map(p => ({ p, ...cutRolesPage(rolesByPage.get(p.page_id) || []) }))
+  st.conflicts = await roleConflicts(db, u, cut.flatMap(x => x.roles))
+  const out = cut.map(({ p, roles, next_from }) => ({ page_id: p.page_id, title: p.title, description: p.description || '', pay_note: p.pay_note || '', contact_note: p.contact_note || '',
+    date_from: p.date_from, date_to: p.date_to, roles: roles.map(r => staffRole(r, p, st)), next_from }))
+  // 応募した日時。承認後にシフトが外れたものは released（シフト解除）で返す（#64）。
+  // どの募集への応募かが分かるように募集名と問い合わせ先を付け、場所は募集中の枠と同じく案件の所在地まで補う（#513 #514）
+  const apps = ((await db.prepare(`SELECT i.item_id, CASE WHEN i.status = 'processing' THEN 'pending' ELSE ${ITEM_STATE_SQL} END AS status, i.slot_role_id, a.application_id, a.page_id, a.source, a.created_at,
+      sl.work_date, sl.start_time, sl.end_time, sl.break_minutes, r.role_name, COALESCE(si.site_name, sl.location, p.location, '') AS place,
+      rp.title AS page_title, rp.contact_note
     FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
     JOIN shift_slot_roles r ON r.slot_role_id = i.slot_role_id JOIN shift_slots sl ON sl.slot_id = r.slot_id LEFT JOIN sites si ON si.site_id = sl.site_id
+    LEFT JOIN projects p ON p.project_id = sl.project_id LEFT JOIN recruit_pages rp ON rp.page_id = a.page_id
     WHERE ${scope.sql} AND sl.work_date >= ? ORDER BY sl.work_date, sl.start_time LIMIT 100`).bind(...scope.bind, addDays(todayJST(), -7)).all()).results as any[])
-  return c.json({ pages: out, applications: apps })
+  return c.json({ pages: out, applications: apps, other_companies: await otherCompaniesRecruit(db, u) })
 })
 
 // 募集ページの続きの日時（next_from の日から。#126）
@@ -310,43 +422,96 @@ recruitStaffApi.get('/pages/:id/roles', async (c) => {
   if (!pageIsOpen(p)) return c.json({ error: 'この募集は終了しました' }, 410)
   const st = await myRoleStates(db, u, await myAppScope(db, u))
   const { roles, next_from } = await openRolesPage(db, p, c.req.query('from'))
+  st.conflicts = await roleConflicts(db, u, roles)
   return c.json({ roles: roles.map(r => staffRole(r, p, st)), next_from })
 })
 
+// 応募。複数の募集ページへの応募を1回で受け、すべて登録するか、どれも登録しないかにする（#239）。
+// body: { pages: [{ page_id, slot_role_ids }], note?, force? }（以前の形 { page_id, slot_role_ids } も受ける）
+// - 選んだ日時が1件でも締め切られていたら、どれも登録せずに 409（closed_role_ids）を返す
+// - 応募済み・確定・見送りの日時は登録しない（二度押しで同時に届いた分は、一意インデックスで止める。#270 #316）
+// - 自分のほかのシフトと重なる日時があれば、force がない限り 409（need_force・conflicts）を返す（#310）
 recruitStaffApi.post('/apply', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   if (!u.staff_id) return c.json({ error: 'スタッフ情報が見つかりません' }, 400)
-  const page = await db.prepare(`SELECT * FROM recruit_pages WHERE page_id = ? AND company_id = ? AND allow_staff = 1`).bind(b.page_id, u.company_id).first() as any
-  if (!pageIsOpen(page)) return c.json({ error: 'この募集は終了しました' }, 410)
-  const roleIds = parseIds(b.slot_role_ids)
-  if (!roleIds.length) return c.json({ error: '希望する日時を選択してください' }, 400)
-  if (roleIds.length > MAX_SLOTS_PER_APPLY) return c.json({ error: `一度に選べるのは${MAX_SLOTS_PER_APPLY}件までです` }, 400)
-  const roles = await openRoles(db, page, { roleIds })
-  if (!roles.length) return c.json({ error: '選択した日時は募集が終了しました' }, 409)
-  // 応募済み（公開URLから出した自分の応募を含む）と割り当て済みの枠には重ねて応募しない。シフトが外れた承認済みの枠には応募し直せる（#64 #114）
-  const scope = await myAppScope(db, u)
-  const exists = new Set(((await db.prepare(`SELECT i.slot_role_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    WHERE ${scope.sql} AND ${ACTIVE_ITEM_SQL}`).bind(...scope.bind).all()).results as any[]).map(r => r.slot_role_id))
-  const assigned = new Set(((await db.prepare(`SELECT slot_role_id FROM shifts WHERE staff_id = ? AND slot_role_id IS NOT NULL AND status != 'absent'`).bind(u.staff_id).all()).results as any[]).map(r => r.slot_role_id))
-  const targets = roles.filter(r => !exists.has(r.slot_role_id) && !assigned.has(r.slot_role_id))
-  if (!targets.length) return c.json({ ok: true, count: 0, message: '選択した日時はすでに応募済みです' })
+  const reqs = new Map<number, number[]>()
+  for (const x of (Array.isArray(b.pages) ? b.pages : [{ page_id: b.page_id, slot_role_ids: b.slot_role_ids }])) {
+    const pid = Number(x && x.page_id)
+    if (!Number.isInteger(pid) || pid <= 0) continue
+    const ids = [...new Set([...(reqs.get(pid) || []), ...parseIds(x.slot_role_ids)])]
+    if (ids.length) reqs.set(pid, ids)
+  }
+  if (!reqs.size) return c.json({ error: '希望する日時を選択してください' }, 400)
+  if (reqs.size > MAX_PAGES_PER_STAFF_APPLY) return c.json({ error: `一度に応募できる募集は${MAX_PAGES_PER_STAFF_APPLY}件までです` }, 400)
+  if ([...reqs.values()].some(ids => ids.length > MAX_SLOTS_PER_APPLY)) return c.json({ error: `1つの募集で一度に選べるのは${MAX_SLOTS_PER_APPLY}件までです` }, 400)
+  const pageRows = (await db.prepare(`SELECT * FROM recruit_pages WHERE company_id = ? AND allow_staff = 1 AND page_id IN ${JSON_IN}`)
+    .bind(u.company_id, bindJsonArray([...reqs.keys()])).all()).results as any[]
+  const pmap = new Map(pageRows.map(p => [p.page_id, p]))
+  const closedPages = [...reqs.keys()].filter(id => !pageIsOpen(pmap.get(id)))
+  if (closedPages.length) {
+    const names = closedPages.map(id => pmap.get(id)?.title).filter(Boolean).map(t => `「${t}」`).join('')
+    return c.json({ error: `${names || '選んだ'}募集は終了しました。応募は送られていません。画面を読み直してください`, closed_page_ids: closedPages }, 410)
+  }
+  // 選んだ日時がまだ募集中か（1件でも締め切られていたら、どれも登録しない）
+  const roles: any[] = []; const closedRoles: number[] = []
+  for (const [pid, ids] of reqs) {
+    const rs = await openRoles(db, pmap.get(pid), { roleIds: ids })
+    const open = new Set(rs.map(r => r.slot_role_id))
+    closedRoles.push(...ids.filter(id => !open.has(id)))
+    roles.push(...rs.map(r => ({ ...r, page_id: pid })))
+  }
+  if (closedRoles.length) return c.json({ error: `選んだ日時のうち${closedRoles.length}件は募集が終了しました。応募は送られていません。選び直してください`, closed_role_ids: closedRoles }, 409)
+  // 応募済み（公開URLから出した自分の応募を含む）・見送り・割り当て済みの枠には重ねて応募しない。シフトが外れた承認済みの枠には応募し直せる（#64 #114 #316）
+  const st = await myRoleStates(db, u, await myAppScope(db, u))
+  const seen = new Set<number>()
+  const targets = roles.filter(r => {
+    if (seen.has(r.slot_role_id) || st.mineMap.has(r.slot_role_id) || st.assigned.has(r.slot_role_id)) return false
+    seen.add(r.slot_role_id); return true
+  })
+  const rejectedCount = new Set(roles.filter(r => st.mineMap.get(r.slot_role_id) === 'rejected').map(r => r.slot_role_id)).size
+  if (!targets.length) return c.json({ ok: true, count: 0, rejected_count: rejectedCount, message: rejectedCount ? '選んだ日時は見送りになっているため、応募できません' : '選択した日時はすでに応募済みです' })
+  if (!b.force) {
+    const cf = await roleConflicts(db, u, targets)
+    const list = targets.filter(r => cf.has(r.slot_role_id)).map(r => ({ slot_role_id: r.slot_role_id, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time, conflicts: cf.get(r.slot_role_id) }))
+    if (list.length) return c.json({ error: '同じ時間帯にほかのシフトがある日時が含まれています', need_force: true, conflicts: list }, 409)
+  }
   const me = await db.prepare('SELECT us.name, us.phone, us.email, sp.kana FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(u.staff_id).first() as any
-  const app = await db.prepare(`INSERT INTO recruit_applications (company_id, page_id, source, staff_id, name, kana, phone, email, note, created_at)
-    VALUES (?, ?, 'staff', ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, page.page_id, u.staff_id, me?.name || u.name, me?.kana || null, normalizePhone(me?.phone) || null, me?.email || null, str(b.note, 500) || null, nowJST()).run()
-  await db.batch(targets.map(r => db.prepare('INSERT OR IGNORE INTO recruit_application_items (application_id, slot_role_id) VALUES (?, ?)').bind(app.meta.last_row_id, r.slot_role_id)))
-  return c.json({ ok: true, count: targets.length })
+  const now = nowJST(), note = str(b.note, 500) || null
+  const stmts: D1PreparedStatement[] = []
+  const perPage: { page_id: number; count: number }[] = []
+  for (const pid of reqs.keys()) {
+    const ids = targets.filter(r => r.page_id === pid).map(r => r.slot_role_id)
+    if (!ids.length) continue
+    perPage.push({ page_id: pid, count: ids.length })
+    stmts.push(db.prepare(`INSERT INTO recruit_applications (company_id, page_id, source, staff_id, name, kana, phone, email, note, created_at)
+      VALUES (?, ?, 'staff', ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, pid, u.staff_id, me?.name || u.name, me?.kana || null, normalizePhone(me?.phone) || null, me?.email || null, note, now))
+    // 直前に登録した応募（batch は1つのトランザクションで順に実行される）に明細を付ける
+    stmts.push(db.prepare(`INSERT INTO recruit_application_items (application_id, slot_role_id, staff_id)
+      SELECT (SELECT MAX(application_id) FROM recruit_applications WHERE company_id = ? AND page_id = ? AND staff_id = ? AND source = 'staff'), CAST(j.value AS INTEGER), ?
+      FROM json_each(?) j`).bind(u.company_id, pid, u.staff_id, u.staff_id, bindJsonArray(ids)))
+  }
+  try {
+    await db.batch(stmts)
+  } catch (e) {
+    if (isUniqueViolation(e)) return c.json({ error: '選んだ日時はすでに応募済みです。画面を読み直してください', duplicate: true }, 409)
+    throw e
+  }
+  // full_count: 定員に達していた日時（キャンセル待ちとして受け付けた件数。#315）
+  return c.json({ ok: true, count: targets.length, full_count: targets.filter(r => r.remaining <= 0).length, rejected_count: rejectedCount, pages: perPage })
 })
 
 recruitStaffApi.post('/items/:id/cancel', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const scope = await myAppScope(db, u)
-  const it = await db.prepare(`SELECT i.*, a.application_id AS aid FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    WHERE i.item_id = ? AND ${scope.sql}`).bind(c.req.param('id'), ...scope.bind).first() as any
+  const it = await db.prepare(`SELECT i.*, a.application_id AS aid, rp.contact_note FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+    LEFT JOIN recruit_pages rp ON rp.page_id = a.page_id WHERE i.item_id = ? AND ${scope.sql}`).bind(c.req.param('id'), ...scope.bind).first() as any
   if (!it) return c.json({ error: '応募が見つかりません' }, 404)
-  if (it.status !== 'pending') return c.json({ error: '承認済み・対応済みの応募は取り下げできません。管理者に連絡してください' }, 409)
+  // 取り下げできないときは、募集の問い合わせ先を返す（#513）
+  const denied = () => c.json({ error: '承認済み・対応済みの応募は取り下げできません。募集の問い合わせ先か管理者に連絡してください', contact_note: it.contact_note || '' }, 409)
+  if (it.status !== 'pending') return denied()
   // 管理者が同時に承認しているとき（processing）は取り下げにしない
   const r = await db.prepare("UPDATE recruit_application_items SET status = 'cancelled', decided_at = ? WHERE item_id = ? AND status = 'pending'").bind(nowJST(), it.item_id).run()
-  if (!r.meta.changes) return c.json({ error: '承認済み・対応済みの応募は取り下げできません。管理者に連絡してください' }, 409)
+  if (!r.meta.changes) return denied()
   await closeIfDone(db, it.aid)
   return c.json({ ok: true })
 })
@@ -395,15 +560,19 @@ async function checkProjects(db: D1Database, companyId: number, ids: string) {
 
 recruitAdminApi.get('/recruit-pages', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  const rows = ((await db.prepare(`SELECT rp.*,
-      (SELECT COUNT(*) FROM recruit_applications a WHERE a.page_id = rp.page_id AND a.status = 'pending') AS pending_count,
-      (SELECT COUNT(*) FROM recruit_applications a WHERE a.page_id = rp.page_id) AS application_count
-    FROM recruit_pages rp WHERE rp.company_id = ? ORDER BY rp.status = 'open' DESC, rp.date_from DESC, rp.page_id DESC LIMIT 200`).bind(u.company_id).all()).results as any[])
+  // 応募の件数はページごとの副問い合わせにせず、会社の応募をページでまとめて数える（#410）
+  const rows = ((await db.prepare(`SELECT rp.*, COALESCE(ac.pending_count, 0) AS pending_count, COALESCE(ac.application_count, 0) AS application_count
+    FROM recruit_pages rp LEFT JOIN (
+      SELECT page_id, SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count, COUNT(*) AS application_count
+      FROM recruit_applications WHERE company_id = ? AND page_id IS NOT NULL GROUP BY page_id
+    ) ac ON ac.page_id = rp.page_id
+    WHERE rp.company_id = ? ORDER BY rp.status = 'open' DESC, rp.date_from DESC, rp.page_id DESC LIMIT 200`).bind(u.company_id, u.company_id).all()).results as any[])
   const projects = ((await db.prepare('SELECT project_id, project_name FROM projects WHERE company_id = ?').bind(u.company_id).all()).results as any[])
   const pname = new Map(projects.map(p => [p.project_id, p.project_name]))
+  const sums = rows.some(pageIsOpen) ? await openRolesSummaries(db, u.company_id) : new Map()
   const out = []
   for (const r of rows) {
-    const sum = pageIsOpen(r) ? await openRolesSummary(db, r) : { roles: 0, remaining: 0 }
+    const sum = (pageIsOpen(r) && sums.get(r.page_id)) || { roles: 0, remaining: 0 }
     // expired: 期間の終了日を過ぎている（再開するには期間の延長が必要。#136）
     out.push({ ...r, project_names: parseIds(r.project_ids).map(id => pname.get(id) || `#${id}`), open_roles: sum.roles,
       open_remaining: sum.remaining, is_open: pageIsOpen(r), expired: r.date_to < todayJST() })
