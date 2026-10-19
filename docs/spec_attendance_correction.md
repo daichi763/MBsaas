@@ -348,14 +348,16 @@
 - 追加: `project_report_defaults`、`project_staff_report_settings`、`report_setting_logs`、`attendance_corrections`（一意インデックス含む）、`attendance_correction_events`、`user_notifications`、`notification_emails` とインデックス
 - 移行: §2.4 の初期値の投入と、その履歴（`action='migration'`）
 - 既存の列・データは変更・削除しない
-- 本番への適用は手動: `npx wrangler d1 migrations apply mbsaas-production --remote`
+- 本番への適用は手動で、デプロイより先に行う: `npm run db:migrate:remote`（= `npx wrangler d1 migrations apply mbsaas-production --remote --env production`）
+- `npm run deploy` は直前（`predeploy`）に型チェック（`npm run typecheck`）と、本番の D1 に未適用のマイグレーションがないかの確認（`scripts/check-migrations.mjs`）を行い、どちらかで問題があればデプロイを止める（#340）
 - 適用前の戻し先の確保（#213）: ファイルを作らずに戻せる D1 の Time Travel を使う。適用の直前に `npx wrangler d1 time-travel info mbsaas-production` を実行し、表示されたブックマークを作業記録に控える。戻すときは `npx wrangler d1 time-travel restore mbsaas-production --bookmark=<控えたブックマーク>`
 - どうしてもエクスポートする場合は、出力先を repo の外にする（例: cmd では `--output="%TEMP%\mbsaas-backup.sql"`、PowerShell では `--output="$env:TEMP\mbsaas-backup.sql"`）。ダンプには口座番号・住所・給与などの個人情報が入るため、作業が終わったら削除し、共有フォルダやチャットに置かない。repo の中に作らない（`.gitignore` で `backup*.sql` などを除外しているが、それに頼らない）
 - ロールバック: アプリを前のバージョンに戻せば、旧来の `attendance_mode` の列がそのまま残っているので従来の動作に戻る。ただし新しい設定で行った変更と申請中の内容は旧来の動作に反映されない。新しいテーブルは削除しなくても旧版の動作に影響しない
 
 ## 10. テスト
-- 自動テストの仕組みがないため、ローカル（`wrangler dev` + ローカル D1 にマイグレーションとシードを適用）で API を呼ぶ統合テストのスクリプトを `scripts/` に追加して実行する
-- `bash scripts/setup-test-db.sh <保存先>` → `npm run build` → `npx wrangler dev --local --port 8799 --persist-to <保存先>` → `node scripts/test-report-settings.mjs` → `node scripts/test-corrections.mjs`（この順で実行。テストのたびに DB を作り直す）
+- ローカル（`wrangler dev` + ローカル D1 にマイグレーションとシードを適用）で API を呼ぶ統合テストのスクリプトを `scripts/test-*.mjs` に追加して実行する
+- まとめて実行するときは `npm test`（`scripts/run-tests.mjs`。テスト用の D1 を1回作り、テストのファイルごとに複製して `wrangler dev --local` を起動・停止する。`npm test -- <名前の一部>` で絞り込める）
+- 1つずつ手で流す場合: `bash scripts/setup-test-db.sh <保存先>` → `npm run build` → `npx wrangler dev --local --port 8799 --persist-to <保存先>` → `node scripts/test-report-settings.mjs` → `node scripts/test-corrections.mjs`（この順で実行。テストのたびに DB を作り直す）
 - 対象: 指示書 15 章の項目のうち、担当者に関するものを除くすべて。画面は PC とスマートフォン幅で表示を確認する
 - 実行できなかった項目は、理由と未確認の範囲を完了報告に明記する
 

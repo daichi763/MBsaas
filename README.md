@@ -9,7 +9,7 @@
 - **開発プレビュー（sandbox）**: https://3000-iuu45cp1y072lqbwcd8ow-b32ec7bb.sandbox.novita.ai
 - **GitHub**: https://github.com/n0101r2000/SaaSDev
 - **ログイン**: `/login`（会社コード + ユーザーコード + パスワード）
-- **本番デプロイ**: 未実施（Cloudflare Pages へデプロイ可能な構成）
+- **本番デプロイ**: Cloudflare Workers（Worker 名 `mbsaas`。手順は下の「デプロイ（本番）」）
 
 ## デモアカウント（パスワードは全て `pass1234`。seed.sql を入れた開発環境のみ）
 - ログイン画面のデモアカウントの案内は、環境変数 `DEMO_MODE` が `true` のときだけ表示する（本番は `false`）。本番 DB には seed を入れない。
@@ -41,11 +41,11 @@
 ### SaaS運営本部画面（`/hq`）
 - 導入企業一覧（MRR・アクティブ率・日報数・成熟度）、企業詳細（プラン/状態/成熟度/支援メモ編集）
 - 日報テンプレート配布（携帯ショップ/家電量販店/催事/光回線 標準テンプレ）、伴走支援管理
-- 本部アカウント（`system_admin`）は `/hq` 専用。各社の管理画面（`/admin`・`/api/admin/*`）は操作できない（本部ユーザーは company_id=1 所属のため、操作がテナント1のデータとして登録されるのを防ぐ）
+- 本部アカウント（`system_admin`）は `/hq` 専用。各社の管理画面（`/admin`・`/api/admin/*`）は操作できない（本部ユーザーは本部専用の企業行に所属する。マイグレーション 0033）
 
 ## データアーキテクチャ
 - **ストレージ**: Cloudflare D1（SQLite、ローカルは `--local` モード）+ Cloudflare R2（入店/退店報告の写真、非公開バケット）
-- **テーブル（15）**: companies / users / sessions / staff_profiles / clients / report_templates / projects / shifts / attendance_reports / daily_reports / evaluations / follow_logs / notices / notice_reads / consultations
+- **主なテーブル**: companies / users / sessions / staff_profiles / clients / report_templates / projects / shifts / attendance_reports / daily_reports / evaluations / follow_logs / notices / notice_reads / consultations
   - `attendance_reports.photo_key`: R2オブジェクトキー（画像バイナリ自体はDBに保存しない。マイグレーション `0002_add_attendance_photo.sql`）
 - **マルチテナント**: 全テーブルに `company_id`、ログインは 会社コード+ユーザーコード+パスワード
 - **認証**（共通部品は `src/lib/auth.ts`）:
@@ -61,22 +61,62 @@
 ## サンプルデータ
 - 株式会社サンプルモバイル人材: スタッフ20名 / クライアント3社 / 案件5件 / シフト231件 / 勤怠594件 / 日報137件
 - デモ状態: 未報告スタッフ（田中彩香=高リスク、小林竜也=起床のみ・遅刻頻発、井上結衣=欠勤2回）、トラブル報告、未対応相談 など
-- **日付追随**: `node scripts/gen_seed.cjs` で seed.sql を当日基準に再生成可能 → `npm run db:reset` 相当で再投入
+- **日付追随**: `node scripts/gen_seed.cjs` で seed.sql を当日基準に再生成可能 → `npm run db:reset:local` で再投入
 
 ## 開発・運用コマンド
+D1 のデータベース名は `mbsaas-production`（`wrangler.jsonc`）。ローカルは `--local`、本番は `--remote --env production` を必ず明示する（wrangler 4 は省略するとローカルに適用する）。
+
 ```bash
-npm run build                                            # ビルド
-pm2 start ecosystem.config.cjs                           # 開発サーバ起動（port 3000）
-npx wrangler d1 migrations apply webapp-production --local   # マイグレーション
-node scripts/gen_seed.cjs                                # seed再生成（日付追随）
-npx wrangler d1 execute webapp-production --local --file=./seed.sql  # seed投入
+npm install
+npm run db:reset:local        # ローカルの D1 を作り直す（マイグレーションをすべて適用 → seed.sql を投入）
+npm run dev                   # 開発サーバ（vite。src の変更をすぐ反映）
+npm run build && npx wrangler dev --local --port 8787   # ビルド結果（dist/_worker.js）で起動。cron も確かめるときは --test-scheduled
+npm run typecheck             # 型チェック（tsc --noEmit。vite build は型を確かめない）
+npm test                      # 統合テスト（scripts/test-*.mjs をローカルの D1 で順に実行。npm test -- w3-board で絞り込み）
+node scripts/gen_seed.cjs     # seed.sql を今日の日付に合わせて作り直す（その後 npm run db:reset:local）
 ```
+
+| npm スクリプト | 内容 |
+|---|---|
+| `db:migrate:local` / `db:seed:local` / `db:reset:local` | ローカルの D1 にマイグレーションを適用 / seed.sql を投入 / 作り直す |
+| `db:migrate:remote` | **本番**の D1 にマイグレーションを適用する（`--remote --env production`） |
+| `db:migrations:check` | 本番の D1 に未適用のマイグレーションがあれば一覧を出して失敗する（`--local` を付けるとローカルを確かめる） |
+| `typecheck` / `test` | 型チェック / 統合テスト（テスト用の D1 は OS の一時フォルダに作り、本番には接続しない） |
+| `deploy` | 本番へデプロイ（`wrangler deploy --env production`）。直前に `predeploy` が型チェックと未適用マイグレーションの確認を行い、問題があれば止める |
+
+- pm2 で常駐させる場合: `npm run build && pm2 start ecosystem.config.cjs`（`wrangler dev --local` をポート 3000 で起動する）
+- 統合テストを1つだけ手で流す場合: `bash scripts/setup-test-db.sh <保存先>` → `npx wrangler dev --local --port 8799 --persist-to <保存先>` → `BASE=http://127.0.0.1:8799 PERSIST=<保存先> node scripts/test-xxx.mjs`（起動オプションは各テストの先頭のコメントに書いてある）
+
+## デプロイ（本番）
+本番は Cloudflare Workers（Worker 名 `mbsaas`。設定は `wrangler.jsonc` の `env.production`）。マイグレーションの適用は手動で、**必ずデプロイより先に**行う（新しいテーブル・列を使うコードを先に出すと、その API が 500 になる）。
+
+```bash
+npx wrangler d1 time-travel info mbsaas-production --env production   # 適用前の戻し先（ブックマーク）を控える
+npm run db:migrate:remote                                             # 本番の D1 にマイグレーションを適用
+npm run deploy                                                        # 型チェック・未適用の確認（predeploy）→ ビルド → デプロイ
+```
+- 未適用の確認を意図して省くときだけ `SKIP_MIGRATION_CHECK=1 npm run deploy`（通常は使わない）
+- 秘密の値は `npx wrangler secret put <名前> --env production` で設定する: `RESEND_API_KEY`（メール送信）、`TURNSTILE_SECRET_KEY`（応募フォームのボット対策。任意）など
+- 戻し方・バックアップの扱いは `docs/spec_attendance_correction.md` の 9 章
+
+## 定期処理（Cron Trigger）
+`wrangler.jsonc` の `triggers.crons`（時刻は UTC）と `src/index.tsx` の `CRON_JOBS` で決める。各処理は独立して実行し、結果を `cron_runs` に記録して本部画面「データ保持・定期処理」に出す（失敗・25時間以上の未実行は本部画面の上部に警告）。
+
+| 起動（UTC） | 日本時間 | 処理 |
+|---|---|---|
+| `0 18 * * *` | 毎日 3:00 | 期限切れのセッション・ログイン試行の削除 / 応募の削除（180日）/ データ保持の定期削除（`RETENTION_ENABLED=true` のときだけ実際に削除。それ以外は dry-run）/ 退職予定日を過ぎたスタッフの退職への切り替え / 所属区分の変更の予約の適用 / お知らせの既読の記録の削除（2年） |
+| `30 18 * * *` | 毎日 3:30 | 既読率レポートの集計 |
+
+- 処理の一覧の正は `src/index.tsx` の `CRON_JOBS`（ここに足した処理は上の表にも足す）
+- ローカルで試すときは `npx wrangler dev --local --test-scheduled` で起動し、`/__scheduled?cron=0+18+*+*+*` を開く
 
 ## 入店/退店報告 写真添付機能 セットアップ
 
 ### 1. R2バケット作成（初回のみ・要手動実行）
 ```bash
-npx wrangler r2 bucket create saasdev-attendance-photos
+npx wrangler r2 bucket create mbsaas-attendance-photos   # 入店・退店の写真
+npx wrangler r2 bucket create mbsaas-staff-documents     # 履歴書・入社時書類
+npx wrangler r2 bucket create mbsaas-client-contracts    # クライアントの契約書
 ```
 - バケットは**非公開**のまま作成してください（`--jurisdiction` 等の公開設定は行わない）。画像は必ず `/api/staff/attendance-photo/*` のログイン認証付きエンドポイント経由でのみ配信されます。
 - ローカル開発（`npm run dev` / `wrangler dev`）では miniflare が R2 をローカルエミュレートするため、追加設定なしで動作します。
@@ -84,14 +124,17 @@ npx wrangler r2 bucket create saasdev-attendance-photos
 ### 2. wrangler.jsonc（設定済み）
 ```jsonc
 "r2_buckets": [
-  { "binding": "PHOTOS", "bucket_name": "saasdev-attendance-photos" }
+  { "binding": "PHOTOS", "bucket_name": "mbsaas-attendance-photos" },
+  { "binding": "DOCUMENTS", "bucket_name": "mbsaas-staff-documents" },
+  { "binding": "CONTRACTS", "bucket_name": "mbsaas-client-contracts" }
 ]
 ```
+（`env.production` にも同じものを書く）
 
 ### 3. マイグレーション適用
 ```bash
-npx wrangler d1 migrations apply webapp-production --local   # ローカル
-npx wrangler d1 migrations apply webapp-production           # 本番
+npm run db:migrate:local    # ローカル
+npm run db:migrate:remote   # 本番（--remote --env production。デプロイより先に）
 ```
 
 ### 4. 型定義の再生成（R2バインディングを追加したため）
@@ -297,14 +340,12 @@ npm run cf-typegen
 - 次の段階（任意）: メール通知、不適切掲載の通報、相手先指定公開、権限の細分化
 
 ## 未実装（次フェーズ候補）
-- 本番Cloudflare Pagesデプロイ + 本番D1作成
 - クライアント閲覧用アカウント画面、給与明細連携、勤怠打刻の位置検証強化
 - 業務マニュアル/研修コンテンツ（Phase 4）、AI活用（要約・リスク予兆）、多店舗チェーン向け機能
 - 通知のプッシュ/LINE連携、監査ログ、CSVインポート
 
 ## 技術スタック / デプロイ
-- **Platform**: Cloudflare Pages + Workers（edge runtime）
+- **Platform**: Cloudflare Workers（`@hono/vite-build/cloudflare-workers` で `dist/_worker.js` を作り、静的ファイルは Workers Assets で配信。`scheduled` = cron も同じ Worker）
 - **Backend**: Hono 4 + TypeScript、**DB**: Cloudflare D1
-- **Frontend**: Vanilla JS SPA（hash routing）+ TailwindCSS CDN + Chart.js + axios + dayjs + FontAwesome
-- **Status**: ✅ 開発サーバ稼働中（sandbox）
+- **Frontend**: Vanilla JS SPA（hash routing）+ TailwindCSS（`npm run build:css` で `public/static/style.css` を生成）+ Chart.js + axios + dayjs + FontAwesome
 - **Last Updated**: 2026-07-06
