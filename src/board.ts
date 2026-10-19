@@ -8,6 +8,7 @@ import { Hono } from 'hono'
 import { loadRoster, createPerson, unusablePasswordHash } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
+import { isISODate } from './lib/validate'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -24,10 +25,19 @@ const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s
 const isTime = (s: any) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
 const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
 
-// 締切日を過ぎた掲載を「締切」にする（cron を使わない遅延処理。一覧・詳細を開いたときに実行）
+// 締切日を過ぎた掲載と、実施日（終了日があれば終了日）を過ぎたスポット・終了予定日を過ぎた常勤の掲載を「締切」にする
+// （cron を使わない遅延処理。一覧・詳細・編集・問い合わせ・提案のときに実行。#88）。やり取り中の企業にも知らせる（#476）
+const EXPIRED_SQL = `status = 'open' AND ((deadline IS NOT NULL AND deadline < ?)
+  OR COALESCE(date_to, CASE WHEN engagement_type = 'spot' THEN date_from END) < ?)`
 async function closeExpired(db: D1Database) {
-  await db.prepare(`UPDATE board_posts SET status = 'closed', updated_at = ? WHERE status = 'open' AND deadline IS NOT NULL AND deadline < ?`)
-    .bind(nowJST(), todayJST()).run()
+  const today = todayJST()
+  const ids = ((await db.prepare(`SELECT post_id FROM board_posts WHERE ${EXPIRED_SQL} LIMIT 200`).bind(today, today).all()).results as any[]).map(r => r.post_id)
+  const now = nowJST()
+  for (const id of ids) {
+    // 同時に開かれても、締切にした1回だけ知らせる
+    const r = await db.prepare(`UPDATE board_posts SET status = 'closed', updated_at = ? WHERE post_id = ? AND ${EXPIRED_SQL}`).bind(now, id, today, today).run()
+    if (r.meta.changes) await notifyPostThreads(db, id, '締切日（実施日）を過ぎたため、この掲載は締切になりました。新しい人材の提案は受け付けていません')
+  }
 }
 
 // 他社にも返してよい項目（社内情報 source_project_id / created_by / updated_by は自社のときだけ付ける）
@@ -75,6 +85,9 @@ function validatePost(b: any, publish: boolean): { v?: any; error?: string } {
     if (!v.date_from) return { error: v.engagement_type === 'spot' ? '掲載するには実施日を入力してください' : '掲載するには開始日を入力してください' }
     if (v.engagement_type === 'spot' && (!v.time_from || !v.time_to)) return { error: 'スポットの掲載には時間帯（開始・終了）を入力してください' }
     if (v.deadline && v.deadline < todayJST()) return { error: '締切日が過去の日付です' }
+    // 実施日（終了日があれば終了日）・終了予定日が過去の掲載は出さない（#88）
+    if (v.engagement_type === 'spot' && (v.date_to || v.date_from) < todayJST()) return { error: v.date_to ? '実施日（終了）が過去の日付です' : '実施日が過去の日付です' }
+    if (v.engagement_type === 'regular' && v.date_to && v.date_to < todayJST()) return { error: '終了予定日が過去の日付です' }
   }
   return { v }
 }
@@ -159,13 +172,15 @@ boardApi.get('/posts/:id', async (c) => {
 boardApi.get('/project-template/:projectId', async (c) => {
   const u = c.get('user')
   const p = await c.env.DB.prepare(`SELECT project_id, project_name, COALESCE(engagement_type,'regular') AS engagement_type, location, required_skills, requirements,
-      unit_price, unit_price_type, pay_rate FROM projects WHERE project_id = ? AND company_id = ?`).bind(c.req.param('projectId'), u.company_id).first() as any
+      pay_rate, pay_unit_type FROM projects WHERE project_id = ? AND company_id = ?`).bind(c.req.param('projectId'), u.company_id).first() as any
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
-  // 掲示板に出す単価は「支払単価（pay_rate）」を優先し、なければ空欄（請求単価はそのまま出さない）
-  const unitMap: any = { hourly: 'hourly', daily: 'daily', monthly: 'monthly' }
+  // 掲示板に出す単価は「支払単価（pay_rate）」とその単位（pay_unit_type）。請求単価・請求の単位は使わない（#540）。
+  // 支払単価が未設定、または単位が時給・日給・月給以外なら、単価・単位とも空にして掲載する人に選ばせる
+  const unit = (PRICE_UNITS as readonly string[]).includes(p.pay_unit_type || 'daily') ? (p.pay_unit_type || 'daily') : ''
+  const hasPay = p.pay_rate != null && Number(p.pay_rate) > 0 && !!unit
   return c.json({ template: {
     engagement_type: p.engagement_type, title: p.project_name, area: p.location || '', required_skills: p.required_skills || '',
-    description: p.requirements || '', price_amount: p.pay_rate || '', price_unit: unitMap[p.unit_price_type] || 'daily', source_project_id: p.project_id,
+    description: p.requirements || '', price_amount: hasPay ? p.pay_rate : '', price_unit: hasPay ? unit : '', source_project_id: p.project_id,
   } })
 })
 
@@ -193,10 +208,15 @@ boardApi.post('/posts', async (c) => {
 
 boardApi.put('/posts/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB
+  await closeExpired(db)
   const cur = await db.prepare('SELECT * FROM board_posts WHERE post_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!cur) return c.json({ error: '自社の掲載のみ編集できます' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
+  // status を送らなければ今の状態のまま保存する。締切・充足の掲載を掲載中に戻すのは、republish を付けたときだけ（#125）
   const nextStatus = POST_STATUSES.includes(b.status) ? b.status : cur.status
+  if ((cur.status === 'closed' || cur.status === 'filled') && nextStatus === 'open' && b.republish !== true) {
+    return c.json({ error: `この掲載は${cur.status === 'closed' ? '締切' : '充足'}です。再掲載する場合は「保存して再掲載」を使ってください`, need_republish: true }, 409)
+  }
   const { v, error } = validatePost({ ...cur, ...b }, nextStatus === 'open')
   if (error) return c.json({ error }, 400)
   if (v.source_project_id && v.source_project_id !== cur.source_project_id) {
@@ -213,8 +233,39 @@ boardApi.put('/posts/:id', async (c) => {
       v.date_from, v.date_to, v.time_from, v.time_to, v.schedule_note, v.headcount, v.required_skills,
       v.price_amount, v.price_unit, v.price_note, v.deadline, nextStatus, v.source_project_id,
       nextStatus, now, u.user_id, now, cur.post_id, u.company_id).run()
+  // 条件（単価・日程・時間帯・人数）の変更と状態の変更を、やり取り中の企業に知らせる（#476）
+  const changes = postChanges(cur, v)
+  if (changes.length) await notifyPostThreads(db, cur.post_id, `掲載内容が変更されました（${changes.join('、')}）`)
+  if (nextStatus !== cur.status && STATUS_NOTICE[nextStatus]) await notifyPostThreads(db, cur.post_id, STATUS_NOTICE[nextStatus])
   return c.json({ ok: true })
 })
+
+// やり取り中の企業に知らせる状態の変更
+const STATUS_NOTICE: Record<string, string> = {
+  open: 'この掲載の募集が再開されました',
+  closed: 'この掲載は締め切られました。新しい人材の提案は受け付けていません',
+  filled: 'この掲載は充足（募集終了）になりました。新しい人材の提案は受け付けていません',
+  draft: 'この掲載は非公開（下書き）になりました。新しい人材の提案は受け付けていません',
+}
+const UNIT_LABEL: Record<string, string> = { hourly: '時給', daily: '日給', monthly: '月給' }
+/** 問い合わせ中の企業に知らせる条件の変更（単価・日程・時間帯・人数）。変更がなければ空 */
+function postChanges(cur: any, v: any): string[] {
+  const out: string[] = []
+  const price = (x: any) => `${UNIT_LABEL[x.price_unit] || ''}${Number(x.price_amount || 0).toLocaleString('ja-JP')}円`
+  if (Number(cur.price_amount) !== Number(v.price_amount) || cur.price_unit !== v.price_unit) out.push(`単価: ${price(cur)}→${price(v)}`)
+  const days = (x: any) => x.date_from ? `${x.date_from}${x.date_to && x.date_to !== x.date_from ? '〜' + x.date_to : ''}` : '未定'
+  if ((cur.date_from || null) !== (v.date_from || null) || (cur.date_to || null) !== (v.date_to || null)) out.push(`日程: ${days(cur)}→${days(v)}`)
+  const times = (x: any) => x.time_from || x.time_to ? `${x.time_from || ''}〜${x.time_to || ''}` : '未定'
+  if ((cur.time_from || null) !== (v.time_from || null) || (cur.time_to || null) !== (v.time_to || null)) out.push(`時間帯: ${times(cur)}→${times(v)}`)
+  if (Number(cur.headcount) !== Number(v.headcount)) out.push(`募集人数: ${cur.headcount}名→${v.headcount}名`)
+  return out
+}
+
+/** 掲載のやり取り（終了していないもの）すべてに、相手企業の未読に数えるシステムメッセージを入れる（#476） */
+async function notifyPostThreads(db: D1Database, postId: number, body: string) {
+  const ts = (await db.prepare(`SELECT thread_id, poster_company_id FROM board_threads WHERE post_id = ? AND status = 'open'`).bind(postId).all()).results as any[]
+  for (const t of ts) await addMessage(db, t.thread_id, t.poster_company_id, null, 'system', body, true)
+}
 
 // 状態だけの変更（掲載する / 締め切る / 充足 / 下書きに戻す）
 boardApi.post('/posts/:id/status', async (c) => {
@@ -227,9 +278,12 @@ boardApi.post('/posts/:id/status', async (c) => {
     const { error } = validatePost(cur, true)
     if (error) return c.json({ error }, 400)
   }
+  if (b.status === cur.status) return c.json({ ok: true })
   const now = nowJST()
-  await db.prepare(`UPDATE board_posts SET status = ?, published_at = CASE WHEN ? = 'open' AND published_at IS NULL THEN ? ELSE published_at END,
-    updated_by = ?, updated_at = ? WHERE post_id = ?`).bind(b.status, b.status, now, u.user_id, now, cur.post_id).run()
+  // 今の状態を条件にして更新し、変えた1回だけ知らせる（二度押し・同時操作で通知が重ならないように）
+  const upd = await db.prepare(`UPDATE board_posts SET status = ?, published_at = CASE WHEN ? = 'open' AND published_at IS NULL THEN ? ELSE published_at END,
+    updated_by = ?, updated_at = ? WHERE post_id = ? AND status = ?`).bind(b.status, b.status, now, u.user_id, now, cur.post_id, cur.status).run()
+  if (upd.meta.changes && STATUS_NOTICE[b.status]) await notifyPostThreads(db, cur.post_id, STATUS_NOTICE[b.status])
   return c.json({ ok: true })
 })
 
@@ -263,28 +317,31 @@ async function loadThread(db: D1Database, threadId: any, companyId: number) {
   }
 }
 
-async function addMessage(db: D1Database, threadId: number, companyId: number, userId: number | null, kind: string, body: string) {
+/** notify = true のシステムメッセージは、相手企業の未読に数える（提案の結果・やり取りの終了・掲載の変更など。#124） */
+async function addMessage(db: D1Database, threadId: number, companyId: number, userId: number | null, kind: string, body: string, notify = false) {
   const now = nowJST()
-  const r = await db.prepare(`INSERT INTO board_messages (thread_id, author_company_id, author_user_id, kind, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(threadId, companyId, userId, kind, body, now).run()
+  const r = await db.prepare(`INSERT INTO board_messages (thread_id, author_company_id, author_user_id, kind, body, notify, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(threadId, companyId, userId, kind, body, notify ? 1 : 0, now).run()
   const id = r.meta.last_row_id as number
-  await db.batch([
-    db.prepare('UPDATE board_threads SET last_message_id = ?, last_message_at = ? WHERE thread_id = ?').bind(id, now, threadId),
-    // 自社の投稿は自社既読として扱う
-    db.prepare(`INSERT INTO board_thread_reads (thread_id, company_id, last_read_message_id, read_by, read_at) VALUES (?, ?, ?, ?, ?)
+  const stmts = [db.prepare('UPDATE board_threads SET last_message_id = ?, last_message_at = ? WHERE thread_id = ?').bind(id, now, threadId)]
+  // 自社の投稿は自社既読として扱う。システムメッセージ（自動の締切など、画面を見ていない間にも入るもの）では既読位置を動かさない
+  if (kind !== 'system') stmts.push(db.prepare(`INSERT INTO board_thread_reads (thread_id, company_id, last_read_message_id, read_by, read_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(thread_id, company_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id), read_by = excluded.read_by, read_at = excluded.read_at`)
-      .bind(threadId, companyId, id, userId, now),
-  ])
+      .bind(threadId, companyId, id, userId, now))
+  await db.batch(stmts)
   return id
 }
 
-// 未読はテキストのみ数える（「問い合わせが開始されました」等のシステムメッセージは数えない）
-const UNREAD_SQL = `(SELECT COUNT(*) FROM board_messages m WHERE m.thread_id = t.thread_id AND m.author_company_id != ? AND m.kind != 'system'
+// 未読は本文・提案と、相手企業に知らせるシステムメッセージ（notify = 1）を数える
+// （「問い合わせが開始されました」のように直後に本文が続くシステムメッセージは数えない。#124）
+const UNREAD_KIND = `(m.kind != 'system' OR m.notify = 1)`
+const UNREAD_SQL = `(SELECT COUNT(*) FROM board_messages m WHERE m.thread_id = t.thread_id AND m.author_company_id != ? AND ${UNREAD_KIND}
    AND m.message_id > COALESCE((SELECT r.last_read_message_id FROM board_thread_reads r WHERE r.thread_id = t.thread_id AND r.company_id = ?), 0))`
 
 // 問い合わせを開始する（既にあれば既存スレッドを返す）。自社の掲載・掲載中でない掲載には問い合わせできない
 boardApi.post('/posts/:id/threads', async (c) => {
   const u = c.get('user'); const db = c.env.DB
+  await closeExpired(db)
   const post = await db.prepare('SELECT post_id, company_id, status FROM board_posts WHERE post_id = ?').bind(c.req.param('id')).first() as any
   if (!post || post.status === 'draft') return c.json({ error: '掲載が見つかりません' }, 404)
   if (post.company_id === u.company_id) return c.json({ error: '自社の掲載には問い合わせできません' }, 400)
@@ -330,7 +387,7 @@ boardApi.get('/threads', async (c) => {
 boardApi.get('/unread-count', async (c) => {
   const u = c.get('user')
   const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM board_messages m JOIN board_threads t ON t.thread_id = m.thread_id
-    WHERE (t.poster_company_id = ? OR t.inquirer_company_id = ?) AND m.author_company_id != ? AND m.kind != 'system'
+    WHERE (t.poster_company_id = ? OR t.inquirer_company_id = ?) AND m.author_company_id != ? AND ${UNREAD_KIND}
       AND m.message_id > COALESCE((SELECT r.last_read_message_id FROM board_thread_reads r WHERE r.thread_id = t.thread_id AND r.company_id = ?), 0)`)
     .bind(u.company_id, u.company_id, u.company_id, u.company_id).first()
   return c.json({ unread: (r?.n as number) || 0 })
@@ -377,10 +434,20 @@ boardApi.post('/threads/:id/status', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   if (!['open', 'closed'].includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
   if (b.status === t.status) return c.json({ ok: true })
-  await db.prepare('UPDATE board_threads SET status = ? WHERE thread_id = ?').bind(b.status, t.thread_id).run()
+  const upd = await db.prepare('UPDATE board_threads SET status = ? WHERE thread_id = ? AND status = ?').bind(b.status, t.thread_id, t.status).run()
+  if (!upd.meta.changes) return c.json({ ok: true })
+  // 終了したら、未決の提案（提案中・面談希望）を取り下げにする。再開しても戻さない（終了後に採用・氏名の開示ができないように。#141）
+  let withdrawn = 0
+  if (b.status === 'closed') {
+    const now = nowJST()
+    const w = await db.prepare(`UPDATE board_proposals SET status = 'withdrawn', updated_at = ?, decided_at = ? WHERE thread_id = ? AND status IN ('proposed','interview')`)
+      .bind(now, now, t.thread_id).run()
+    withdrawn = w.meta.changes || 0
+  }
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
-  await addMessage(db, t.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}がやり取りを${b.status === 'closed' ? '終了' : '再開'}しました`)
-  return c.json({ ok: true })
+  await addMessage(db, t.thread_id, u.company_id, null, 'system',
+    `${own?.company_name || ''}がやり取りを${b.status === 'closed' ? '終了' : '再開'}しました` + (withdrawn ? `（未決の提案 ${withdrawn}件は取り下げになりました）` : ''), true)
+  return c.json({ ok: true, withdrawn })
 })
 
 // =========================================================
@@ -452,6 +519,9 @@ async function upstreamChain(db: D1Database, r: any) {
   return chain
 }
 
+// 取り込み先の行（統合したら統合先の行）。行が削除されていれば NULL
+const IMPORTED_ALIVE = `(SELECT COALESCE(x.merged_into_staff_id, x.staff_id) FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive`
+
 /** 受け手に返してよい形に整える（採用前は disclosed を出さない。提案元の内部情報は提案元にだけ返す） */
 function shapeProposal(p: any, companyId: number) {
   const mine = p.proposer_company_id === companyId
@@ -463,6 +533,9 @@ function shapeProposal(p: any, companyId: number) {
   }
   if (mine || p.status === 'adopted') out.disclosed = (() => { try { return JSON.parse(p.disclosed || 'null') } catch { return null } })()
   if (mine) { out.staff_id = p.staff_id; out.staff_kind = p.staff_kind }
+  // 本人同意の記録（取得方法・日付）は双方に返す。所属元（取引先）の承諾は上流の経路にあたるため提案元にだけ返す（#502）
+  out.consent = p.consent_method ? { method: p.consent_method, method_label: CONSENT_METHODS[p.consent_method] || p.consent_method, obtained_on: p.consent_obtained_on } : null
+  if (mine && p.consent_method) Object.assign(out.consent, { note: p.consent_note, upstream_on: p.upstream_consent_on, upstream_note: p.upstream_consent_note })
   // 取り込み先の行は受け手（自社）のものなので受け手にだけ返す
   if (!mine && p.receiver_company_id === companyId) out.imported_staff_id = p.imported_alive ?? null
   return out
@@ -499,16 +572,41 @@ boardApi.get('/threads/:id/proposal-preview', async (c) => {
   if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは提案できません（統合先のスタッフで提案してください）' }, 400)
   if (!PROPOSABLE_KINDS.includes(r.affiliation_type)) return c.json({ error: 'このスタッフは提案できません' }, 400)
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  return c.json({ snapshot: buildSnapshot(r, own?.company_name || ''), name: r.name, warning: PROPOSAL_WARNINGS[r.affiliation_type] || null })
+  // 他社連携の人材は、連携のときに本人が同意した範囲（自社への共有）を示し、所属元の承諾を求める（#502。roster_consents は参照のみ）
+  const link = r.affiliation_type === 'linked_external'
+    ? await db.prepare('SELECT consent_version, created_at FROM roster_consents WHERE staff_id = ? ORDER BY created_at DESC LIMIT 1').bind(r.staff_id).first() as any
+    : null
+  return c.json({ snapshot: buildSnapshot(r, own?.company_name || ''), name: r.name, warning: PROPOSAL_WARNINGS[r.affiliation_type] || null,
+    need_upstream_consent: !!PROPOSAL_WARNINGS[r.affiliation_type], upstream_label: r.affiliation_type === 'linked_external' ? '所属元' : '取引先', link_consent: link ? { version: link.consent_version, created_at: link.created_at } : null,
+    consent_methods: CONSENT_METHODS })
 })
+
+// 人材提案の本人同意の取得方法（#502）
+const CONSENT_METHODS: Record<string, string> = { written: '書面', electronic: 'メール・チャット等の記録', verbal: '口頭（記録を残している）' }
+/** 提案に必要な同意の記録を検証する。他社連携・取引先所属の人材は所属元（取引先）の承諾も求める */
+function validateConsent(b: any, kind: string): { v?: any; error?: string } {
+  const today = todayJST()
+  if (!CONSENT_METHODS[b.consent_method]) return { error: '本人の同意の取得方法を選択してください（提案には本人の同意が必要です）' }
+  if (!isISODate(b.consent_obtained_on) || b.consent_obtained_on > today) return { error: '本人の同意を得た日を入力してください（今日以前）' }
+  const v: any = { consent_method: b.consent_method, consent_obtained_on: b.consent_obtained_on, consent_note: str(b.consent_note, 200) || null,
+    upstream_consent_on: null, upstream_consent_note: null }
+  if (PROPOSAL_WARNINGS[kind]) {
+    if (!isISODate(b.upstream_consent_on) || b.upstream_consent_on > today) return { error: `${kind === 'linked_external' ? '所属元' : '取引先'}から再提案の承諾を得た日を入力してください（今日以前）` }
+    v.upstream_consent_on = b.upstream_consent_on; v.upstream_consent_note = str(b.upstream_consent_note, 200) || null
+  }
+  return { v }
+}
 
 // 提案の送信
 boardApi.post('/threads/:id/proposals', async (c) => {
   const u = c.get('user'); const db = c.env.DB
+  await closeExpired(db)
   const t = await loadThread(db, c.req.param('id'), u.company_id)
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
   if (t.my_side !== 'inquirer') return c.json({ error: '人材の提案は問い合わせた企業から掲載企業へ行います' }, 403)
   if (t.status === 'closed') return c.json({ error: 'このやり取りは終了しています' }, 409)
+  // 締切・充足・非公開の掲載には提案しない（#476）
+  if (t.post_status !== 'open') return c.json({ error: 'この掲載は募集を終了しているため、人材を提案できません' }, 409)
   if (!(await posterActive(db, t.poster_company_id))) return c.json({ error: '掲載企業が現在ご利用を停止しているため、提案できません' }, 409)
   const b = await c.req.json().catch(() => ({} as any))
   const r = await loadRoster(db, b.staff_id, u.company_id)
@@ -516,7 +614,10 @@ boardApi.post('/threads/:id/proposals', async (c) => {
   if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは提案できません（統合先のスタッフで提案してください）' }, 400)
   if (!PROPOSABLE_KINDS.includes(r.affiliation_type)) return c.json({ error: 'このスタッフは提案できません' }, 400)
   if (r.employment_status === 'retired') return c.json({ error: '退職したスタッフは提案できません' }, 400)
-  if (PROPOSAL_WARNINGS[r.affiliation_type] && b.acknowledged !== true) return c.json({ error: '注意事項を確認してください', warning: PROPOSAL_WARNINGS[r.affiliation_type] }, 400)
+  // 本人の同意（と所属元・取引先の承諾）の記録がなければ提案しない（#502）
+  const consent = validateConsent(b, r.affiliation_type)
+  if (consent.error) return c.json({ error: consent.error, warning: PROPOSAL_WARNINGS[r.affiliation_type] || null }, 400)
+  const cv = consent.v
   const dup = await db.prepare(`SELECT 1 FROM board_proposals WHERE thread_id = ? AND staff_id = ? AND status NOT IN ('withdrawn','declined')`).bind(t.thread_id, r.staff_id).first()
   if (dup) return c.json({ error: 'このスタッフはこのやり取りで提案済みです' }, 409)
   const cnt = await db.prepare('SELECT COUNT(*) AS n FROM board_proposals WHERE thread_id = ?').bind(t.thread_id).first() as any
@@ -533,10 +634,12 @@ boardApi.post('/threads/:id/proposals', async (c) => {
   const now = nowJST()
   const receiver = t.poster_company_id
   const ins = await db.prepare(`INSERT INTO board_proposals (thread_id, post_id, proposer_company_id, receiver_company_id, staff_id, staff_kind, snapshot, disclosed,
-      proposed_price, price_unit, comment, status, upstream_chain, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?)`)
+      proposed_price, price_unit, comment, status, upstream_chain, consent_method, consent_obtained_on, consent_note, upstream_consent_on, upstream_consent_note,
+      created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(t.thread_id, t.post_id, u.company_id, receiver, r.staff_id, r.affiliation_type, JSON.stringify(snapshot), JSON.stringify(disclosed),
-      price, price != null ? unit : null, comment, JSON.stringify(chain), u.user_id, now, now).run()
+      price, price != null ? unit : null, comment, JSON.stringify(chain), cv.consent_method, cv.consent_obtained_on, cv.consent_note, cv.upstream_consent_on, cv.upstream_consent_note,
+      u.user_id, now, now).run()
   const pid = ins.meta.last_row_id as number
   const mid = await addMessage(db, t.thread_id, u.company_id, u.user_id, 'proposal', `人材を提案しました（${anonLabel(snapshot, pid)}・${snapshot.age_group || '年代不明'}）`)
   await db.prepare('UPDATE board_messages SET proposal_id = ? WHERE message_id = ?').bind(pid, mid).run()
@@ -548,7 +651,7 @@ boardApi.get('/threads/:id/proposals', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const t = await loadThread(db, c.req.param('id'), u.company_id)
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
-  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id
+  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, ${IMPORTED_ALIVE} FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id
     WHERE p.thread_id = ? ORDER BY p.proposal_id`).bind(t.thread_id).all()).results as any[]
   return c.json({ proposals: rows.map(p => shapeProposal(p, u.company_id)) })
 })
@@ -556,7 +659,7 @@ boardApi.get('/threads/:id/proposals', async (c) => {
 // 状態変更: 受け手 = 面談希望 / 採用 / 見送り、提案者 = 取り下げ（採用前のみ）
 boardApi.post('/proposals/:id/status', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id WHERE p.proposal_id = ?`)
+  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, ${IMPORTED_ALIVE} FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id WHERE p.proposal_id = ?`)
     .bind(c.req.param('id')).first() as any
   if (!p || (p.proposer_company_id !== u.company_id && p.receiver_company_id !== u.company_id)) return c.json({ error: '提案が見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
@@ -569,14 +672,20 @@ boardApi.post('/proposals/:id/status', async (c) => {
     if (p.status === 'adopted') return c.json({ error: '採用済みの提案は変更できません' }, 409)
     return c.json({ error: isReceiver ? 'この状態には変更できません' : '提案した側ができるのは採用前の取り下げのみです' }, 400)
   }
+  // 終了したやり取りでは、面談希望・採用・見送りにしない（採用で氏名が開示されるため。#141）
+  const th = await db.prepare('SELECT status FROM board_threads WHERE thread_id = ?').bind(p.thread_id).first() as any
+  if (to !== 'withdrawn' && th?.status !== 'open') return c.json({ error: 'このやり取りは終了しています。提案の状態は変更できません' }, 409)
   const now = nowJST()
-  await db.prepare(`UPDATE board_proposals SET status = ?, updated_at = ?, decided_at = CASE WHEN ? IN ('adopted','declined','withdrawn') THEN ? ELSE decided_at END WHERE proposal_id = ?`)
-    .bind(to, now, to, now, p.proposal_id).run()
+  // 状態とやり取りの状態を条件にして更新する（二度押しや、終了と同時の採用を防ぐ）
+  const upd = await db.prepare(`UPDATE board_proposals SET status = ?, updated_at = ?, decided_at = CASE WHEN ? IN ('adopted','declined','withdrawn') THEN ? ELSE decided_at END
+    WHERE proposal_id = ? AND status = ? AND (? = 'withdrawn' OR EXISTS (SELECT 1 FROM board_threads t WHERE t.thread_id = board_proposals.thread_id AND t.status = 'open'))`)
+    .bind(to, now, to, now, p.proposal_id, p.status, to).run()
+  if (!upd.meta.changes) return c.json({ error: '提案の状態が変わりました。画面を読み直してください' }, 409)
   const snap = (() => { try { return JSON.parse(p.snapshot) } catch { return {} } })()
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
   const note = str(b.note, 300)
   const msg = `${own?.company_name || ''}が提案（${anonLabel(snap, p.proposal_id)}${snap.age_group ? '・' + snap.age_group : ''}）を「${PROPOSAL_LABEL[to]}」にしました` + (to === 'adopted' ? '。氏名が開示されました' : '') + (note ? `\n${note}` : '')
-  const mid = await addMessage(db, p.thread_id, u.company_id, null, 'system', msg)
+  const mid = await addMessage(db, p.thread_id, u.company_id, null, 'system', msg, true)
   await db.prepare('UPDATE board_messages SET proposal_id = ? WHERE message_id = ?').bind(p.proposal_id, mid).run()
   return c.json({ ok: true })
 })
@@ -585,7 +694,7 @@ boardApi.post('/proposals/:id/status', async (c) => {
 boardApi.get('/proposals', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const side = c.req.query('side') === 'received' ? 'received' : 'sent'
-  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive, rc.company_name AS receiver_company_name, bp.title AS post_title, bp.engagement_type,
+  const rows = (await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, ${IMPORTED_ALIVE}, rc.company_name AS receiver_company_name, bp.title AS post_title, bp.engagement_type,
       ${side === 'sent' ? 'us.name AS staff_name' : 'NULL AS staff_name'}
     FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id JOIN companies rc ON rc.company_id = p.receiver_company_id
     JOIN board_posts bp ON bp.post_id = p.post_id
@@ -601,17 +710,40 @@ boardApi.get('/proposals', async (c) => {
 // 経路は board_proposals.upstream_chain にだけ残り、取り込んだ行には提案IDだけを記録する（頭超え防止）
 boardApi.post('/proposals/:id/import', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, (SELECT x.staff_id FROM staff_profiles x WHERE x.staff_id = p.imported_staff_id AND x.company_id = p.receiver_company_id) AS imported_alive, bp.engagement_type, bp.source_project_id, bp.date_from, bp.company_id AS post_company_id
+  const p = await db.prepare(`SELECT p.*, co.company_name AS proposer_company_name, ${IMPORTED_ALIVE}, bp.engagement_type, bp.source_project_id, bp.date_from, bp.company_id AS post_company_id
     FROM board_proposals p JOIN companies co ON co.company_id = p.proposer_company_id JOIN board_posts bp ON bp.post_id = p.post_id WHERE p.proposal_id = ?`)
     .bind(c.req.param('id')).first() as any
   if (!p || p.receiver_company_id !== u.company_id) return c.json({ error: '提案が見つかりません' }, 404)
   if (p.status !== 'adopted') return c.json({ error: '採用した提案だけ取り込めます' }, 400)
   if (p.imported_staff_id) {
-    const ex = await db.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(p.imported_staff_id, u.company_id).first()
-    if (ex) return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです', staff_id: p.imported_staff_id }, 409)
+    if (p.imported_alive) return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです', staff_id: p.imported_alive }, 409)
     // 取り込んだ行が削除されている場合は取り込み直せる
     await db.prepare('UPDATE board_proposals SET imported_staff_id = NULL WHERE proposal_id = ? AND imported_staff_id = ?').bind(p.proposal_id, p.imported_staff_id).run()
   }
+  const b = await c.req.json().catch(() => ({} as any))
+  const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  // スポット掲載で自社案件と紐づいている場合はシフト割当への導線を返す
+  const shift = p.engagement_type === 'spot' && p.source_project_id && p.post_company_id === u.company_id
+    ? { project_id: p.source_project_id, date_from: p.date_from || null } : null
+
+  // 同じ人がすでに自社のスタッフマスタにいるか（同じ提案元の同じスタッフを以前に取り込んだ行・同じ人物の連携行など。#135）
+  const existing = await sameProposedPerson(db, p, u.company_id)
+  if (existing.length && b.mode !== 'link' && b.mode !== 'new') {
+    return c.json({ error: '同じ人がすでにスタッフマスタに登録されています。登録済みのスタッフに紐づけるか、別の行として登録するかを選んでください', need_choice: true,
+      existing: existing.map(x => ({ staff_id: x.staff_id, name: x.name, via_board: !!x.via_board })) }, 409)
+  }
+  if (b.mode === 'link') {
+    const target = existing.find(x => x.staff_id === Number(b.staff_id))
+    if (!target) return c.json({ error: '紐づけるスタッフが見つかりません' }, 400)
+    // 新しい行は作らず、この提案の取り込み先として登録済みのスタッフを記録する（提案の履歴は board_proposals に残る）
+    const upd = await db.prepare('UPDATE board_proposals SET imported_staff_id = ?, updated_at = ? WHERE proposal_id = ? AND imported_staff_id IS NULL')
+      .bind(target.staff_id, nowJST(), p.proposal_id).run()
+    if (!upd.meta.changes) return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです' }, 409)
+    await addMessage(db, p.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}が採用した人材をスタッフマスタに登録しました`, true)
+    return c.json({ ok: true, staff_id: target.staff_id, linked: true, shift })
+  }
+  // 同じ人の行があるのに別の行として登録するときは仮登録にし、あとから「既存のスタッフに統合」でまとめられるようにする
+  const provisional = existing.length ? 1 : 0
   const sn = (() => { try { return JSON.parse(p.snapshot) } catch { return {} } })()
   const dis = (() => { try { return JSON.parse(p.disclosed || '{}') } catch { return {} } })()
   const name = String(dis.name || '').trim() || `候補者No.${p.proposal_id}`
@@ -630,14 +762,16 @@ boardApi.post('/proposals/:id/import', async (c) => {
     return c.json({ error: '取り込みに失敗しました。もう一度お試しください' }, 500)
   }
   const careerRows = Array.isArray(sn.career_rows) ? sn.career_rows.map((x: any) => ({ from: x.from || '', to: x.to || '', company: x.company || '', work: x.work || '', note: '' })) : []
-  const remarks = [`掲示板経由（提案: ${partnerName}）`, p.proposed_price ? `提示単価: ${({ hourly: '時給', daily: '日給', monthly: '月給' } as any)[p.price_unit] || ''}${Number(p.proposed_price).toLocaleString()}円` : '', p.comment ? `提案コメント: ${p.comment}` : ''].filter(Boolean).join('\n')
+  // 提案元が記録した本人同意（取得方法・日付）も引き継ぐ（#502）
+  const consentLine = p.consent_method ? `本人の同意: ${CONSENT_METHODS[p.consent_method] || p.consent_method}（${p.consent_obtained_on || '日付なし'}・提案元の記録）` : ''
+  const remarks = [`掲示板経由（提案: ${partnerName}）`, p.proposed_price ? `提示単価: ${({ hourly: '時給', daily: '日給', monthly: '月給' } as any)[p.price_unit] || ''}${Number(p.proposed_price).toLocaleString()}円` : '', p.comment ? `提案コメント: ${p.comment}` : '', consentLine].filter(Boolean).join('\n')
   const sr = await db.prepare(`INSERT INTO staff_profiles
       (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
-       kana, gender, age_group, skills, career, career_rows, pr_points, remarks, work_area, nearest_station, commute_minutes, available_from, employment_status, board_proposal_id)
-      VALUES (?, ?, ?, ?, 'partner_manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?)`)
+       kana, gender, age_group, skills, career, career_rows, pr_points, remarks, work_area, nearest_station, commute_minutes, available_from, employment_status, board_proposal_id, is_provisional)
+      VALUES (?, ?, ?, ?, 'partner_manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?)`)
     .bind(userId, u.company_id, person.person_id, u.company_id, pa?.affiliation_id ?? null, partnerName,
       dis.kana || null, sn.gender || 'unspecified', sn.age_group || null, sn.skills || '', sn.career || '', JSON.stringify(careerRows), sn.pr_points || '', remarks,
-      sn.work_area || '', sn.nearest_station || null, sn.commute_minutes ?? null, sn.available_from || null, p.proposal_id).run()
+      sn.work_area || '', sn.nearest_station || null, sn.commute_minutes ?? null, sn.available_from || null, p.proposal_id, provisional).run()
   const staffId = sr.meta.last_row_id as number
   // 二重取り込み防止（同時押下でも1件だけ有効にする）
   const upd = await db.prepare('UPDATE board_proposals SET imported_staff_id = ?, updated_at = ? WHERE proposal_id = ? AND imported_staff_id IS NULL')
@@ -648,12 +782,30 @@ boardApi.post('/proposals/:id/import', async (c) => {
     await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
     return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです' }, 409)
   }
-  const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  await addMessage(db, p.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}が採用した人材をスタッフマスタに登録しました`)
-  // スポット掲載で自社案件と紐づいている場合はシフト割当への導線を返す
-  const shift = p.engagement_type === 'spot' && p.source_project_id && p.post_company_id === u.company_id
-    ? { project_id: p.source_project_id, date_from: p.date_from || null } : null
-  return c.json({ ok: true, staff_id: staffId, shift })
+  await addMessage(db, p.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}が採用した人材をスタッフマスタに登録しました`, true)
+  return c.json({ ok: true, staff_id: staffId, shift, provisional: !!provisional })
 })
+
+/**
+ * 取り込もうとしている人材と同じ人の、自社のスタッフ行（統合済みは統合先に読み替える）。
+ * - 同じ提案元の同じスタッフ（または同じ人物）を、以前の提案で取り込んだ行
+ * - 提案元のスタッフと同じ人物の、自社の行（QR/ID 連携の行や、自社が所属元の行）
+ */
+async function sameProposedPerson(db: D1Database, p: any, companyId: number): Promise<{ staff_id: number; name: string; via_board: boolean }[]> {
+  const src = await db.prepare('SELECT person_id FROM staff_profiles WHERE staff_id = ?').bind(p.staff_id).first() as any
+  const person = src?.person_id || null
+  const rows = (await db.prepare(`SELECT DISTINCT COALESCE(sp.merged_into_staff_id, sp.staff_id) AS sid, 1 AS via_board
+      FROM board_proposals q JOIN staff_profiles sp ON sp.staff_id = q.imported_staff_id AND sp.company_id = q.receiver_company_id
+      LEFT JOIN staff_profiles ps ON ps.staff_id = q.staff_id
+      WHERE q.receiver_company_id = ? AND q.proposal_id != ? AND ((q.proposer_company_id = ? AND q.staff_id = ?) OR (? IS NOT NULL AND ps.person_id = ?))
+    UNION SELECT COALESCE(sp.merged_into_staff_id, sp.staff_id) AS sid, 0 AS via_board FROM staff_profiles sp WHERE sp.company_id = ? AND ? IS NOT NULL AND sp.person_id = ?`)
+    .bind(companyId, p.proposal_id, p.proposer_company_id, p.staff_id, person, person, companyId, person, person).all()).results as any[]
+  const ids = [...new Set(rows.map(r => Number(r.sid)))]
+  if (!ids.length) return []
+  const viaBoard = new Set(rows.filter(r => r.via_board).map(r => Number(r.sid)))
+  const list = (await db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL AND sp.staff_id IN ${JSON_IN} ORDER BY sp.staff_id`).bind(companyId, bindJsonArray(ids)).all()).results as any[]
+  return list.map(r => ({ staff_id: r.staff_id, name: r.name, via_board: viaBoard.has(r.staff_id) }))
+}
 
 export default boardApi
