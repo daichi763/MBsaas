@@ -629,8 +629,136 @@ async function renderSupport() {
     </section>`
 }
 
+// ============ メール送信（#438 #541） ============
+// 直近の期間の会社別・種類別の送信数と、届かなかった割合・理由の上位・最後に成功した日時。宛先は伏せて表示する
+const MAIL_TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認' }
+const MAIL_STATUS_LABEL = { sent: '送信済み', delivered: '配信済み', failed: '送信失敗', bounced: '不達', bounced_soft: '一時的な不達', complained: '迷惑メール報告', skipped: '送信無効' }
+const MAIL_ERR_LABEL = { mail_not_configured: '送信設定なし（RESEND_API_KEY / MAIL_FROM）', resend_error: '送信サービスのエラー', network_error: '通信エラー', invalid_address: 'アドレスの形式の誤り',
+  bounced: '不達', bounced_soft: '一時的な不達', complained: '迷惑メール報告', suppressed_bounced: '不達のアドレスのため停止', suppressed_complained: '迷惑メール報告のアドレスのため停止', company_inactive: '契約停止中の企業' }
+const HQ_MAIL = { days: 7, company_id: '', status: 'failed', logs: [], hasMore: false }
+async function renderHqMail() {
+  loading()
+  let stats, sup
+  try {
+    [stats, sup] = await Promise.all([axios.get('/api/hq/email-stats', { params: { days: HQ_MAIL.days } }), axios.get('/api/hq/email-suppressions')]).then(r => r.map(x => x.data))
+    await loadHqMailLogs(false)
+  } catch (e) { $app.innerHTML = `<p class="text-red-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>`; return }
+  if (HQ_MAIL.days === 7) renderMailAlert(stats)
+  const pct = (r) => `${Math.round(r * 1000) / 10}%`
+  $app.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
+      <h2 class="text-xl font-bold">メール送信</h2>
+      <select id="hm-days" class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm">${[7, 30, 90].map(d => `<option value="${d}" ${HQ_MAIL.days === d ? 'selected' : ''}>直近${d}日</option>`).join('')}</select>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      ${[['送信', stats.totals.total, ''], ['送信済み・配信済み', stats.totals.ok, 'text-emerald-400'], ['届かなかった', stats.totals.failed, stats.totals.failed ? 'text-red-400' : ''], ['送信を止めているアドレス', stats.suppressed_count, '']]
+        .map(([l, v, c]) => `<div class="bg-slate-800 border border-slate-700 rounded-xl p-3"><p class="text-xs text-slate-400">${l}</p><p class="text-2xl font-bold ${c}">${Number(v)}</p></div>`).join('')}
+    </div>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
+      <h3 class="font-bold mb-2"><i class="fas fa-building text-cyan-400 mr-1"></i>会社別</h3>
+      <p class="text-[11px] text-slate-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。</p>
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">企業</th><th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
+        <tbody>${stats.companies.map(c => `<tr class="border-b border-slate-700/40">
+          <td class="px-2 py-2">${esc(c.company_name)}</td><td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
+          <td class="px-2 text-right ${c.failed ? 'text-red-400' : ''}">${c.failed}</td><td class="px-2 text-right ${c.failure_rate >= stats.alert.rate ? 'text-red-400 font-bold' : ''}">${pct(c.failure_rate)}</td>
+          <td class="px-2 text-xs text-slate-400">${c.types.map(t => `${esc(MAIL_TYPE_LABEL[t.type] || t.type)} ${t.ok}/${t.total}`).join('、')}</td>
+          <td class="px-2 text-xs">${esc(c.last_success_at || '－')}</td>
+          <td class="px-2">${c.company_id ? `<button class="text-cyan-400 text-xs hover:underline" data-action="hqMailCompany" data-id="${Number(c.company_id)}">記録</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="text-center text-slate-500 py-4">この期間の送信はありません</td></tr>'}</tbody>
+      </table>
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+      <h3 class="font-bold mb-2"><i class="fas fa-circle-exclamation text-cyan-400 mr-1"></i>届かなかった理由の上位</h3>
+      ${stats.reasons.length ? `<ul class="text-sm space-y-1">${stats.reasons.map(r => `<li><span class="font-bold">${esc(MAIL_ERR_LABEL[r.code] || r.code)}</span> ${Number(r.n)}件${r.sample ? `<span class="block text-[11px] text-slate-400 break-all">例: ${esc(r.sample)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="text-sm text-slate-500">ありません</p>'}
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <h3 class="font-bold"><i class="fas fa-list text-cyan-400 mr-1"></i>送信の記録</h3>
+        <div class="flex gap-2 text-sm">
+          <select id="hm-company" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1"><option value="">すべての企業</option>${stats.companies.filter(c => c.company_id).map(c => `<option value="${Number(c.company_id)}" ${String(HQ_MAIL.company_id) === String(c.company_id) ? 'selected' : ''}>${esc(c.company_name)}</option>`).join('')}</select>
+          <select id="hm-status" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1">${[['failed', '届かなかったもの'], ['', 'すべて']].map(([v, l]) => `<option value="${v}" ${HQ_MAIL.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div id="hm-logs"></div>
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <h3 class="font-bold mb-1"><i class="fas fa-ban text-cyan-400 mr-1"></i>送信を止めているアドレス</h3>
+      <p class="text-[11px] text-slate-400 mb-2">Resend の Webhook で、宛先に届かなかった（恒久的な不達）か迷惑メールと報告されたアドレスです。以後、このアドレスには送りません。受信できるようになったと確かめた場合は解除します。</p>
+      <div class="space-y-1 text-sm">${sup.suppressions.map(x => `<div class="flex items-center gap-2 flex-wrap border-b border-slate-700/40 py-1">
+        <span class="font-mono">${esc(x.masked)}</span><span class="text-xs text-slate-400">${esc(x.companies || '')}</span>
+        <span class="badge ${x.reason === 'complained' ? 'badge-yellow' : 'badge-red'}">${x.reason === 'complained' ? '迷惑メール報告' : '不達'}</span><span class="text-[11px] text-slate-500">${esc(x.created_at || '')}</span>
+        <button class="text-cyan-400 text-xs hover:underline ml-auto" data-action="hqMailRelease" data-email="${esc(x.email)}" data-masked="${esc(x.masked)}">解除</button>
+        ${x.detail ? `<p class="w-full text-[11px] text-slate-500 break-all">${esc(x.detail)}</p>` : ''}</div>`).join('') || '<p class="text-slate-500">ありません</p>'}</div>
+    </section>`
+  drawHqMailLogs()
+  document.getElementById('hm-days').addEventListener('change', e => { HQ_MAIL.days = Number(e.target.value); renderHqMail() })
+  document.getElementById('hm-company').addEventListener('change', e => { HQ_MAIL.company_id = e.target.value; reloadHqMailLogs() })
+  document.getElementById('hm-status').addEventListener('change', e => { HQ_MAIL.status = e.target.value; reloadHqMailLogs() })
+}
+async function loadHqMailLogs(more) {
+  const last = more && HQ_MAIL.logs.length ? HQ_MAIL.logs[HQ_MAIL.logs.length - 1].log_id : null
+  const params = { ...(HQ_MAIL.company_id ? { company_id: HQ_MAIL.company_id } : {}), ...(HQ_MAIL.status ? { status: HQ_MAIL.status } : {}), ...(last ? { before: last } : {}) }
+  const d = (await axios.get('/api/hq/email-logs', { params })).data
+  HQ_MAIL.logs = more ? HQ_MAIL.logs.concat(d.logs) : d.logs
+  HQ_MAIL.hasMore = !!d.has_more
+}
+function drawHqMailLogs() {
+  const box = document.getElementById('hm-logs'); if (!box) return
+  const errText = (e) => { if (!e) return ''; const k = String(e).split(':')[0]; const rest = String(e).slice(k.length + 1).trim(); return (MAIL_ERR_LABEL[k] || k) + (rest ? `（${rest}）` : '') }
+  box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
+      <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">企業</th><th class="text-left px-2">種類</th><th class="text-left px-2">宛先</th><th class="text-left px-2">状態</th><th class="text-left px-2">理由</th></tr></thead>
+      <tbody>${HQ_MAIL.logs.map(l => `<tr class="border-b border-slate-700/40">
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(l.created_at || '')}</td><td class="px-2 text-xs">${esc(l.company_name || '－')}</td>
+        <td class="px-2 text-xs">${esc(MAIL_TYPE_LABEL[l.type] || l.type)}</td><td class="px-2 text-xs font-mono">${esc(l.to_email)}</td>
+        <td class="px-2 text-xs ${['failed', 'bounced', 'complained'].includes(l.status) ? 'text-red-400' : ''}">${esc(MAIL_STATUS_LABEL[l.status] || l.status)}</td>
+        <td class="px-2 text-xs text-slate-400 break-all">${esc(errText(l.error_message))}</td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">該当する記録はありません</td></tr>'}</tbody></table></div>
+    ${HQ_MAIL.hasMore ? '<div class="text-center mt-2"><button class="text-cyan-400 text-sm hover:underline" data-action="hqMailMore">さらに読み込む</button></div>' : ''}`
+}
+async function reloadHqMailLogs() {
+  try { await loadHqMailLogs(false) } catch (e) { showApiError(e, '読み込めませんでした'); return }
+  drawHqMailLogs()
+}
+delegate('hqMailMore', (el) => withSubmitLock(el, async () => {
+  try { await loadHqMailLogs(true) } catch (e) { showApiError(e, '読み込めませんでした'); return }
+  drawHqMailLogs()
+}))
+delegate('hqMailCompany', (el) => {
+  HQ_MAIL.company_id = el.dataset.id
+  const sel = document.getElementById('hm-company'); if (sel) sel.value = el.dataset.id
+  reloadHqMailLogs()
+  const box = document.getElementById('hm-logs'); if (box) box.scrollIntoView({ behavior: 'smooth' })
+})
+delegate('hqMailRelease', (el) => withSubmitLock(el, async () => {
+  if (!confirm(`${el.dataset.masked} への送信の停止を解除します。受信できることを確かめましたか？`)) return
+  try { await axios.post('/api/hq/email-suppressions/release', { email: el.dataset.email }); toast('解除しました') } catch (e) { showApiError(e, '解除できませんでした'); return }
+  renderHqMail()
+}))
+// 届かなかった割合が高い会社の警告を、どのタブでも画面の上部に出す（定期処理の警告の下）
+function renderMailAlert(stats) {
+  let box = document.getElementById('hq-mail-alert')
+  if (!box) {
+    box = document.createElement('div')
+    box.id = 'hq-mail-alert'
+    box.className = 'max-w-7xl mx-auto p-4 md:p-6'
+    box.style.paddingBottom = '0'
+    $app.parentNode.insertBefore(box, $app)
+  }
+  const warnings = (stats && stats.warnings) || []
+  box.innerHTML = warnings.length ? `
+    <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#f59e0b">
+      <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>メールが届いていない会社があります</p>
+      <ul class="mt-1 text-xs">${warnings.map(w => `<li>・${esc(w.message)}</li>`).join('')}</ul>
+      <a href="#mail" class="text-cyan-400 text-xs hover:underline">メール送信を開く →</a>
+    </div>` : ''
+  box.style.display = warnings.length ? '' : 'none'
+}
+async function refreshMailAlert() {
+  try { renderMailAlert((await axios.get('/api/hq/email-stats', { params: { days: 7 } })).data) } catch { }
+}
+
 // ============ ルーティング ============
 const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport }
+routes.mail = renderHqMail
 
 function route() {
   const hash = (location.hash || '#companies').slice(1)
@@ -646,4 +774,6 @@ window.addEventListener('hashchange', route)
   route()
   // データ保持のタブは自分で警告を描き直すので、それ以外のタブで開いたときに取る
   if (!/^#retention/.test(location.hash)) refreshCronAlert()
+  // メールの届かない会社の警告（#438）。メール送信のタブは自分で描き直す
+  if (!/^#mail/.test(location.hash)) refreshMailAlert()
 })()

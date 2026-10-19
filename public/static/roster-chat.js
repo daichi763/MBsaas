@@ -12,8 +12,7 @@ async function refreshChatBadge() {
     if (!b) { b = document.createElement('span'); b.className = 'chat-badge ml-auto badge badge-red'; link.appendChild(b) }
     b.textContent = n; b.style.display = n ? '' : 'none'
   }
-  const opt = document.querySelector('#mobile-nav option[value="roster-chat"]')
-  if (opt) opt.textContent = '企業間チャット' + (n ? `（${n}）` : '')
+  if (window.setNavCount) setNavCount('roster-chat', n)
   return n
 }
 window.refreshChatBadge = refreshChatBadge

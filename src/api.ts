@@ -21,7 +21,7 @@ import { dailyReportRequiredSql } from './report-settings'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
-import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident } from './notifications'
+import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -538,6 +538,8 @@ api.post('/auth/logout', async (c) => {
 api.route('/public/report', publicReportApi)
 // 公開の募集ページ（ログイン不要。src/recruit.ts）
 api.route('/public/recruit', recruitPublicApi)
+// お知らせメールの「確認しました」（ログイン不要。メールのワンタイムのトークンで既読にする #454。src/notifications.ts）
+api.route('/public/notice-ack', noticeAckPublicApi)
 
 // 認証ミドルウェア
 // /auth/login・/auth/logout などの公開ルートは、このミドルウェアより前に登録してあるのでここには来ない。
@@ -644,6 +646,8 @@ api.route('/admin', reportSettingsApi)
 api.route('/admin', correctionsAdminApi)
 api.route('/staff', correctionsStaffApi)
 api.route('/admin', notificationsAdminApi)
+// メールの送信記録・送信を止めているアドレス（本部。#438 #541）
+api.route('/hq', mailHqApi)
 api.route('/staff', notificationsStaffApi)
 // 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
 api.route('/admin/board', boardApi)
@@ -3342,10 +3346,22 @@ async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: numb
   const db = env.DB
   const record = opts.record !== false
   try {
-    const url = `${String(env.APP_BASE_URL || '').replace(/\/+$/, '')}/staff#notices/${noticeId}`
+    const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+    const url = `${base}/staff#notices/${noticeId}`
+    // 件名・末尾に会社名・重要度・案件名・問い合わせ先を入れ、返信先を企業のアドレスにする（#367 #455）。
+    // 「確認しました」のリンクは1人ずつのワンタイムのトークン（#454。確認が要らないお知らせには付けない）
+    const [contact, n] = await Promise.all([
+      loadMailContact(db, companyId),
+      db.prepare(`SELECT n.importance, n.reads_purged_at, CASE WHEN n.target_type = 'project' THEN (SELECT group_concat(p.project_name, '、') FROM notice_targets nt
+          JOIN projects p ON p.project_id = nt.target_id AND p.company_id = n.company_id WHERE nt.notice_id = n.notice_id AND nt.target_type = 'project') END AS project_names
+        FROM notices n WHERE n.notice_id = ? AND n.company_id = ?`).bind(noticeId, companyId).first() as Promise<any>,
+    ])
+    const tokens = n && !n.reads_purged_at ? await createNoticeAckTokens(db, noticeId, companyId, recipients.map(r => r.user_id)) : new Map<number, string>()
     const inputs = recipients.map(r => {
-      const tpl = noticeEmail({ name: r.name, title, body, url })
-      return { to: r.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notice', company_id: companyId }
+      const token = tokens.get(r.user_id)
+      const tpl = noticeEmail({ name: r.name, title, body, url, companyName: contact.company_name, importance: n?.importance, projectNames: n?.project_names,
+        ackUrl: token ? `${base}/notice-ack?token=${token}` : null, contactEmail: contact.reply_to, contactPhone: contact.phone })
+      return { to: r.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notice', company_id: companyId, reply_to: contact.reply_to }
     })
     // 冪等キーはお知らせ単位（同じお知らせの送信が二重に動いても、Resend 側で同じバッチを二度送らない）
     const results = await sendEmailBatch(env, inputs, { idempotencyKey: opts.idempotencyKey || `notice-${noticeId}` })
