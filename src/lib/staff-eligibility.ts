@@ -62,12 +62,18 @@ export type AssignCheck = {
 //   error   : 自社のスタッフでない・スキルシートのみ・統合済み・退職（ログイン停止・稼働日が退職日より後）・
 //             稼働先で取引終了・所属元で退職、移動先の枠に割り当て済み（移動・付け替えのとき）
 //   warnings: 同じ枠に割り当て済み・同じ時間帯の別のシフト・クライアントのNG・休職中
+//   error には、終了した案件（#153）も含む
 // 案件の条件（終了した案件など）を足すときは、この関数の中に足す（各経路のハンドラーは変えない）
 export async function assertAssignable(db: D1Database, t: AssignTarget): Promise<AssignCheck> {
   const projectId = typeof t.project === 'number' ? t.project : Number(t.project?.project_id)
   const staffIds = [...new Set([...(t.staffIds || []), ...(t.staffId != null ? [t.staffId] : [])].map(Number).filter(n => Number.isInteger(n) && n > 0))]
   const out: AssignCheck = { status: 200, warnings: [], staff: [], already: new Set() }
   if (!staffIds.length) return { ...out, status: 400, error: 'スタッフを選択してください' }
+  // 終了した案件には新しいシフトを入れない（#153。案件詳細で「稼働中に戻す」と割り当てられる）
+  if (projectId) {
+    const pj = await db.prepare('SELECT status FROM projects WHERE project_id = ?').bind(projectId).first() as any
+    if (pj && (pj.status || 'active') !== 'active') return { ...out, status: 400, error: '終了した案件のため、シフトを登録・変更できません（案件詳細で「稼働中に戻す」と登録できます）' }
+  }
   const rows = (await db.prepare(`
     SELECT sp.staff_id, us.name, us.status AS user_status, us.retired_at, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type,
       sp.merged_into_staff_id, COALESCE(sp.employment_status,'working') AS employment_status, sp.link_ended_at,
