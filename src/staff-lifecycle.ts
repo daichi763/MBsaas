@@ -16,7 +16,7 @@ import { notifyDailyReportIncident } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
-import { checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus } from './report-settings'
+import { checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, shiftOverrideLogStatements } from './report-settings'
 import { addMinutes, shiftWindow, type ShiftTimes } from './lib/shift-time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
@@ -754,7 +754,9 @@ adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   const a = modeVal(b.attendance_mode, ATTENDANCE_MODES), d = modeVal(b.daily_report_mode, DAILY_REPORT_MODES)
   if (a === undefined || d === undefined) return c.json({ error: '設定値が正しくありません' }, 400)
-  await c.env.DB.prepare('UPDATE shifts SET attendance_mode = ?, daily_report_mode = ? WHERE shift_id = ?').bind(a, d, s.shift_id).run()
+  // シフト単位の例外の変更は、報告設定の変更履歴にも残す（#313。同じ batch で書く）
+  const logs = await shiftOverrideLogStatements(c.env.DB, u.company_id, s, a, u)
+  await c.env.DB.batch([c.env.DB.prepare('UPDATE shifts SET attendance_mode = ?, daily_report_mode = ? WHERE shift_id = ?').bind(a, d, s.shift_id), ...logs])
   return c.json({ ok: true })
 })
 
