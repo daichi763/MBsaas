@@ -473,6 +473,52 @@ function unavailableOn(workDate: string, affiliationType: string, st: StaffState
   if (st.link_ended_at) return '取引終了'
   return retiredOn(workDate, st)
 }
+
+/**
+ * 期間内の人員不足の枠（役割ごとの確定・代打が必要人数に満たないもの）と、希望（仮）のままのシフト（ダッシュボード #299）。
+ * 充足の数え方はシフトボードと同じ（退職などで稼働できない人は数えない）。返す行数には上限を設ける
+ */
+export const STAFFING_GAP_LIMIT = 100
+export async function staffingGaps(db: D1Database, companyId: number, from: string, to: string) {
+  const [roleRows, assignedRows, requestedRows] = (await db.batch([
+    db.prepare(`SELECT r.slot_role_id, r.role_name, r.headcount, sl.slot_id, sl.work_date, sl.start_time, sl.end_time, p.project_id, p.project_name,
+        (SELECT COUNT(*) FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+          WHERE i.slot_role_id = r.slot_role_id AND i.status = 'pending' AND a.status = 'pending') AS applicants
+      FROM shift_slots sl JOIN shift_slot_roles r ON r.slot_id = sl.slot_id JOIN projects p ON p.project_id = sl.project_id AND p.company_id = sl.company_id
+      WHERE sl.company_id = ? AND sl.work_date BETWEEN ? AND ?
+      ORDER BY sl.work_date, sl.start_time, p.project_name, r.sort_order, r.slot_role_id`).bind(companyId, from, to),
+    db.prepare(`SELECT s.slot_role_id, s.work_date, s.status, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type,
+        COALESCE(sp.employment_status,'working') AS employment_status, us.status AS user_status, us.retired_at, sp.link_ended_at,
+        COALESCE(emp_sp.employment_status,'working') AS emp_status, emp_us.status AS emp_user_status, emp_us.retired_at AS emp_retired_at
+      FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+      LEFT JOIN staff_profiles emp_sp ON sp.affiliation_type = 'linked_external' AND emp_sp.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+      LEFT JOIN users emp_us ON emp_us.user_id = emp_sp.user_id
+      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.slot_role_id IS NOT NULL AND s.status IN ('confirmed','substitute','requested')`).bind(companyId, from, to),
+    db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.slot_role_id, p.project_id, p.project_name, us.name AS staff_name
+      FROM shifts s JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id
+      JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.status = 'requested'
+      ORDER BY s.work_date, s.start_time, p.project_name, us.name LIMIT ?`).bind(companyId, from, to, STAFFING_GAP_LIMIT + 1),
+  ])).map(r => (r.results || []) as any[])
+  const count = new Map<number, { filled: number; requested: number }>()
+  for (const a of assignedRows) {
+    const c = count.get(a.slot_role_id) || { filled: 0, requested: 0 }
+    if (a.status === 'requested') c.requested++
+    else if (!unavailableOn(a.work_date, a.affiliation_type, { employment_status: a.employment_status, user_status: a.user_status, retired_at: a.retired_at, link_ended_at: a.link_ended_at },
+      { employment_status: a.emp_status, user_status: a.emp_user_status, retired_at: a.emp_retired_at })) c.filled++
+    count.set(a.slot_role_id, c)
+  }
+  const short = roleRows.map(r => {
+    const c = count.get(r.slot_role_id) || { filled: 0, requested: 0 }
+    return { ...r, filled: c.filled, requested: c.requested, applicants: Number(r.applicants) || 0, shortage: Number(r.headcount) - c.filled }
+  }).filter(r => r.shortage > 0)
+  return {
+    from, to,
+    short_roles: short.slice(0, STAFFING_GAP_LIMIT), short_role_count: short.length,
+    short_headcount: short.reduce((a, r) => a + r.shortage, 0),
+    requested_shifts: requestedRows.slice(0, STAFFING_GAP_LIMIT), requested_more: requestedRows.length > STAFFING_GAP_LIMIT,
+  }
+}
 app.get('/shift-board', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const from = c.req.query('from'); let to = c.req.query('to')
