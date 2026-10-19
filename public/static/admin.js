@@ -1662,7 +1662,8 @@ async function renderShifts(dateStr) {
               <div class="border rounded-lg p-1.5 text-xs ${stColor[s.status] || ''} cursor-pointer" data-action="showEditShift" data-id="${s.shift_id}" data-name="${esc(s.staff_name)}" data-status="${esc(s.status)}">
                 <p class="font-bold truncate">${esc(s.staff_name)}</p>
                 <p class="text-gray-500 truncate">${esc(s.project_name)}</p>
-                <p class="text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} <span class="font-bold">${stLabel[s.status] || ''}</span></p>
+                <p class="text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} <span class="font-bold">${stLabel[s.status] || ''}</span>
+                  ${Number(s.photo_count) > 0 ? `<button class="text-blue-500 ml-1" title="入店・退店の写真" data-action="attendancePhotos" data-id="${Number(s.shift_id)}" data-name="${esc(s.staff_name)}"><i class="fas fa-camera"></i></button>` : ''}</p>
               </div>`).join('') || '<p class="text-xs text-gray-300 text-center py-2">-</p>'}
           </div>
         </div>`
@@ -1742,9 +1743,41 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'absent')"><i class="fas fa-user-xmark text-red-500"></i>欠勤にする</button>
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
-    </div>`)
+    </div>
+    <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>`)
+  loadAttendancePhotos(document.getElementById('edit-shift-photos'), shiftId)
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
+
+// ============ 勤怠報告の写真（入店・退店。#217） ============
+// 他の画面からも使えるように、data-action="attendancePhotos" data-id="シフトID" data-name="スタッフ名" のボタンで開く。
+// 写真は GET /api/admin/attendance-photo/:attendance_id（自社のシフトの報告だけ返す）。クリックで原寸を別タブに開く
+const PHOTO_REPORT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
+const PHOTO_ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力' }
+async function loadAttendancePhotos(box, shiftId) {
+  if (!box) return
+  box.innerHTML = '<span class="spin"></span>'
+  let data
+  try { data = (await axios.get('/api/admin/shifts/' + Number(shiftId) + '/attendance-photos')).data } catch (e) {
+    box.innerHTML = `<p class="text-xs text-red-600">${esc((e.response && e.response.data && e.response.data.error) || '写真を読み込めませんでした')}</p>`
+    return
+  }
+  const rows = data.reports.filter(r => r.has_photo)
+  box.innerHTML = rows.length ? `<div class="grid grid-cols-2 gap-2">${rows.map(r => `
+      <a href="/api/admin/attendance-photo/${Number(r.attendance_id)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden hover:ring-2 ring-blue-300">
+        <img src="/api/admin/attendance-photo/${Number(r.attendance_id)}" alt="${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}の写真" loading="lazy" class="w-full h-32 object-cover bg-gray-100">
+        <p class="text-xs px-2 py-1 text-gray-600"><span class="font-bold">${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}</span> ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}
+          <span class="text-gray-400">${esc(PHOTO_ENTRY_LABEL[r.entry_method] || '')}</span></p>
+      </a>`).join('')}</div>`
+    : '<p class="text-xs text-gray-400">写真の付いた報告はありません</p>'
+}
+window.loadAttendancePhotos = loadAttendancePhotos
+window.openAttendancePhotos = function (shiftId, staffName) {
+  modal(`<h3 class="font-bold text-lg mb-4">勤怠報告の写真${staffName ? ' — ' + esc(staffName) : ''}</h3><div id="attendance-photos"></div>
+    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+  loadAttendancePhotos(document.getElementById('attendance-photos'), shiftId)
+}
+delegate('attendancePhotos', el => openAttendancePhotos(Number(el.dataset.id), el.dataset.name))
 window.updateShift = async function (id, status) {
   // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
   try { await axios.put('/api/admin/shifts/' + id, { status }) } catch (e) { showApiError(e, '更新に失敗しました'); return }
