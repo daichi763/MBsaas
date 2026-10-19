@@ -48,3 +48,19 @@ function showApiError(e, fallback) {
   else alert(msg)
   return msg
 }
+
+// シフトの時刻の表示（#415 #547）。終了が開始以前のシフト（22:00〜06:00 など。日をまたぐ勤務）は、終了に『翌』を付ける。
+// sep は区切り（既定は『〜』）。戻り値はエスケープしていないので、HTML に入れるときは esc() を通す
+function formatShiftTime(start, end, sep) {
+  const s = String(start || '').slice(0, 5), e = String(end || '').slice(0, 5)
+  const min = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t); return m ? Number(m[1]) * 60 + Number(m[2]) : null }
+  const next = min(s) != null && min(e) != null && min(e) <= min(s)
+  return `${s}${sep == null ? '〜' : sep}${next ? '翌' : ''}${e}`
+}
+
+// 報告の日時（'YYYY-MM-DD HH:MM[:SS]'）の表示。稼働日と同じ日なら時刻だけ、違う日（日をまたいだ後の報告）なら『10/16 01:30』（#547）
+function formatReportedTime(at, workDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/.exec(String(at || ''))
+  if (!m) return ''
+  return `${m[1]}-${m[2]}-${m[3]}` === String(workDate || '').slice(0, 10) ? m[4] : `${Number(m[2])}/${Number(m[3])} ${m[4]}`
+}

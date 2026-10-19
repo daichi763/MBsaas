@@ -18,6 +18,8 @@ import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, norma
 import { loginEmailVerifyEmail } from './email-templates/login-email'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { dailyReportRequiredSql } from './report-settings'
+import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-settings'
+import { chunk } from './lib/d1-chunk'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
@@ -711,25 +713,33 @@ async function homeLoadReports(db: D1Database, shifts: any[]) {
     const m = modes.get(id)
     out.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {}, pending_corrections: {} })
   }
-  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status FROM attendance_reports WHERE shift_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results as any[]
-  for (const r of rows) { const o = out.get(r.shift_id); if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status } }
+  // 遅延・位置不明（status・late_minutes）、早退の分数、打刻の方法（代理入力の区別・押し間違いの取消の可否）もボタンに出す（#347 #327 #323）
+  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id
+    FROM attendance_reports WHERE shift_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results as any[]
+  for (const r of rows) {
+    const o = out.get(r.shift_id)
+    if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status, late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
+      entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null }
+  }
   const pend = (await db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND status = 'pending'`).bind(...ids).all()).results as any[]
   for (const r of pend) { const o = out.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
   return out
 }
 
 // 日報: 提出済みのシフト。shift_id で照合する（日報はシフトごとに1件。shift_id の無い古い日報だけは稼働日・案件で照合する。src/lib/daily-report.ts）
-async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Set<number>> {
-  const done = new Set<number>()
+// 値は管理者が確認した日時（未確認・確認の後に直した日報は null。#371）
+async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Map<number, { checked_at: string | null }>> {
+  const done = new Map<number, { checked_at: string | null }>()
   if (!shifts.length) return done
   const ids = shifts.map(s => s.shift_id as number)
   const staffIds = [...new Set(shifts.map(s => s.staff_id as number))]
   const dates = [...new Set(shifts.map(s => s.work_date as string))]
-  const rows = (await db.prepare(`SELECT shift_id, staff_id, work_date, project_id FROM daily_reports
+  const rows = (await db.prepare(`SELECT shift_id, staff_id, work_date, project_id, manager_checked, manager_checked_at FROM daily_reports
     WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
     .bind(...ids, ...staffIds, ...dates).all()).results as any[]
   for (const s of shifts) {
-    if (rows.some(d => d.shift_id === s.shift_id || (d.shift_id == null && d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))) done.add(s.shift_id)
+    const d = rows.find(d => d.shift_id === s.shift_id || (d.shift_id == null && d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))
+    if (d) done.set(s.shift_id, { checked_at: d.manager_checked ? (d.manager_checked_at || '') : null })
   }
   return done
 }
@@ -779,7 +789,8 @@ api.get('/staff/home', async (c) => {
     const open = reportableTypes(st.required_attendance, new Set(Object.keys(st.reports)), new Set(Object.keys(st.pending_corrections)))
     const next = open[0]
     return { ...s, ...st, carryover: s.work_date !== today, next_type: next || null, open_types: open,
-      attendance_done: !next, daily_report_done: dailyDone.has(s.shift_id), tentative: isTentativeShift(s.status) }
+      attendance_done: !next, daily_report_done: dailyDone.has(s.shift_id), daily_report_checked_at: dailyDone.get(s.shift_id)?.checked_at ?? null,
+      tentative: isTentativeShift(s.status) }
   }).filter(s => {
     if (!s.carryover) return true
     // 前日からのシフトは、終了予定から HOME_CARRYOVER_HOURS 時間まで、残りの報告を受け付けている間か日報が未提出の間だけ出す
@@ -801,6 +812,9 @@ api.get('/staff/home', async (c) => {
   return c.json({
     today, shift: stripMoney(shift), carryover: !!picked?.carryover,
     reports: picked ? picked.reports : {}, daily_report_done: picked ? picked.daily_report_done : false,
+    // 日報を管理者が確認した日時（未確認は null。#371）と、今受け付けている報告の種類（日をまたいだ後の入店などをホームで押せるように。#134）
+    daily_report_checked_at: picked ? picked.daily_report_checked_at : null,
+    report_window_open: picked ? Object.fromEntries(picked.required_attendance.map((t: string) => [t, isWithin(reportableWindow(picked, t), now)])) : {},
     // 承認待ちの打刻修正申請がある報告（その報告はホームから押せない）と、希望（仮）のシフト（未確定。報告の前に確認を出す）
     pending_corrections: picked ? picked.pending_corrections : {}, tentative: !!picked?.tentative,
     required_attendance: picked ? picked.required_attendance : [...REPORT_TYPES],
@@ -818,6 +832,117 @@ api.get('/staff/home', async (c) => {
     multi_company: new Set(personRows.map(r => r.company_id)).size > 1,
     missed_reports: missed,
   })
+})
+
+// ---------- 勤怠報告の『休憩なし』と、押し間違いの取消（#324 #323） ----------
+// 休憩なし: 休憩入・休憩出を同じ時刻で記録する（実績の休憩は0分になる。settlement.ts の actualFromReports）。
+//   理由は、シフトの所有企業の管理者へのアプリ内通知（kind=attendance_no_break）に残す
+// 取消: 本人がアプリで送った報告を、送ってから ATTENDANCE_WITHDRAW_MINUTES 分以内で、後の報告がなければ取り消せる。
+//   代理入力・報告用URL・打刻修正で記録した報告は取り消せない（打刻修正の申請で直す）。
+//   取り消した記録は、本人あての既読の通知（kind=attendance_withdrawn。related_id = shift_id）として残し、管理画面のシフト操作に出す
+const ATTENDANCE_WITHDRAW_MINUTES = 5
+const ATTENDANCE_WITHDRAWN_KIND = 'attendance_withdrawn'
+const ATTENDANCE_NO_BREAK_KIND = 'attendance_no_break'
+const NO_BREAK_REASON_MAX = 200
+const fmtMd = (d: string) => { const m = String(d || '').match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])}` : '' }
+const fmtHm = (at: string) => (String(at || '').match(/ (\d{2}:\d{2})/) || [])[1] || ''
+const fmtMdHm = (at: string) => `${fmtMd(at)} ${fmtHm(at)}`
+
+api.post('/staff/attendance/no-break', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+  if (!reason) return c.json({ error: '休憩を取らなかった理由を選んでください' }, 400)
+  if (reason.length > NO_BREAK_REASON_MAX) return c.json({ error: `理由は${NO_BREAK_REASON_MAX}文字以内で入力してください` }, 400)
+  const resolved = await resolvePersonShift(c, b.shift_id)
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const { shift, staff: owner } = resolved
+  const now = nowJST()
+  const modes = (await modesForShifts(db, [shift.shift_id])).get(shift.shift_id)
+  const required = modes ? modes.required_attendance : [...REPORT_TYPES]
+  const state = await loadReportState(db, shift.shift_id)
+  // シフトの状態・受付の時間帯（休憩入・休憩出は同じ）・休憩入と休憩出の両方を押せるか
+  const ng = checkStaffReport(shift, 'break_start', now, required, state) || checkNoBreak(required, state.done, state.pending)
+  if (ng) return c.json({ error: ng.error }, ng.status as 400)
+  const at = reportedAtMinute(now)
+  const ins = (t: string) => db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, device_info, status) VALUES (?, ?, ?, ?, ?, ?, 'normal')`)
+    .bind(owner.company_id, owner.staff_id, shift.shift_id, t, at, c.req.header('user-agent') || '')
+  try { await db.batch([ins('break_start'), ins('break_end')]) } catch (e) {
+    if (isUniqueViolation(e)) return c.json({ error: 'すでに報告済みです' }, 409)
+    throw e
+  }
+  await syncActualFromReports(db, owner.company_id, Number(shift.shift_id)).catch(() => {})
+  // 管理者に理由を知らせる（失敗しても報告は取り消さない）
+  try {
+    const p = await db.prepare('SELECT project_name FROM projects WHERE project_id = ?').bind(shift.project_id).first() as any
+    const admins = ((await db.prepare(`SELECT user_id FROM users WHERE company_id = ? AND status = 'active' AND role IN (${ADMIN_ROLES.map(() => '?').join(',')})`)
+      .bind(owner.company_id, ...ADMIN_ROLES).all()).results as any[]).map(a => a.user_id as number)
+    const title = `休憩なしの申告: ${u.name || ''} ${fmtMd(shift.work_date)} ${p?.project_name || ''}`
+    const body = `理由: ${reason}\n休憩入・休憩出を ${fmtMdHm(at)} で記録し、休憩0分として実績に反映しました`
+    const stmts = chunk(admins, 10).map(ids => db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES ${ids.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`)
+      .bind(...ids.flatMap(id => [owner.company_id, id, ATTENDANCE_NO_BREAK_KIND, title, body, '/admin#shifts', shift.shift_id, now])))
+    if (stmts.length) await db.batch(stmts)
+  } catch (e) { console.log(`no-break notify failed: shift=${shift.shift_id}`) }
+  return c.json({ ok: true, reported_at: at })
+})
+
+api.post('/staff/attendance/withdraw', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  if (!REPORT_TYPES.includes(b.report_type)) return c.json({ error: '不正な報告種別です' }, 400)
+  // 休憩なし（休憩入・休憩出が同じ時刻）は、まとめて取り消す
+  const types: string[] = b.no_break ? ['break_start', 'break_end'] : [b.report_type]
+  const resolved = await resolvePersonShift(c, b.shift_id)
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const { shift, staff: owner } = resolved
+  const ng = checkShiftAcceptsReport(shift)
+  if (ng) return c.json({ error: ng.error }, ng.status as 400)
+  const rows = ((await db.prepare(`SELECT attendance_id, report_type, reported_at, photo_key, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id
+    FROM attendance_reports WHERE shift_id = ? AND report_type IN (${types.map(() => '?').join(',')})`).bind(shift.shift_id, ...types).all()).results as any[])
+  if (rows.length !== types.length) return c.json({ error: '取り消す報告が見つかりません。画面を読み直してください' }, 404)
+  if (b.no_break && rows[0].reported_at !== rows[1].reported_at) return c.json({ error: '休憩なしで記録した報告ではありません' }, 400)
+  const label = types.map(t => REPORT_LABEL[t]).join('・')
+  if (rows.some(r => r.entry_method !== 'app' || r.corrected_by_correction_id != null)) {
+    return c.json({ error: '管理者の代理入力・報告用URL・打刻修正で記録した報告は取り消せません。時刻が違う場合は、打刻履歴から修正を申請してください' }, 409)
+  }
+  const now = nowJST()
+  if (rows.some(r => now > addMinutes(String(r.reported_at).slice(0, 19), ATTENDANCE_WITHDRAW_MINUTES))) {
+    return c.json({ error: `報告から${ATTENDANCE_WITHDRAW_MINUTES}分を過ぎたため取り消せません。時刻が違う場合は、打刻履歴から修正を申請してください` }, 409)
+  }
+  const state = await loadReportState(db, shift.shift_id)
+  const last = Math.max(...types.map(t => REPORT_TYPES.indexOf(t as any)))
+  const later = REPORT_TYPES.find((t, j) => j > last && state.done.has(t))
+  if (later) return c.json({ error: `${REPORT_LABEL[later]}を報告済みのため、${label}は取り消せません。打刻履歴から修正を申請してください` }, 409)
+  if (types.some(t => state.pending.has(t))) return c.json({ error: `${label}は打刻修正を申請中のため取り消せません` }, 409)
+  // 取り消しと記録を1つの batch で行う。記録は、報告が消えたときだけ残す（同時に状態が変わった場合は何も変えない）
+  const ids = rows.map(r => r.attendance_id as number)
+  const sent = rows.map(r => fmtHm(r.reported_at)).filter((v, i, a) => a.indexOf(v) === i).join('・')
+  const title = `${fmtMd(shift.work_date)} ${label}の報告を取り消しました`
+  const body = `${sent} に送った${label}を、${fmtMdHm(now)} に本人が取り消しました（押し間違いの取消）`
+  const recordUser = (owner as any).user_id || u.user_id
+  const res = await db.batch([
+    ...rows.map(r => db.prepare(`DELETE FROM attendance_reports WHERE attendance_id = ? AND reported_at = ? AND COALESCE(entry_method, 'app') = 'app' AND corrected_by_correction_id IS NULL`)
+      .bind(r.attendance_id, r.reported_at)),
+    db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at, read_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM attendance_reports WHERE attendance_id IN (${ids.map(() => '?').join(',')}))`)
+      .bind(owner.company_id, recordUser, ATTENDANCE_WITHDRAWN_KIND, title, body, '#attendance', shift.shift_id, now, now, ...ids),
+  ])
+  if (!res[res.length - 1].meta.changes) return c.json({ error: '報告の状態が変わりました。画面を読み直してください' }, 409)
+  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, owner.company_id, Number(shift.shift_id)).catch(() => {})
+  // 写真は D1 から消した後に消す（失敗しても取消は戻さない）
+  for (const r of rows) if (r.photo_key) await c.env.PHOTOS.delete(r.photo_key).catch(() => {})
+  return c.json({ ok: true, withdrawn: types })
+})
+
+// 本人が取り消した報告の記録（シフト操作のモーダルに出す。#323）
+api.get('/admin/shifts/:id/attendance-withdrawals', async (c) => {
+  const u = c.get('user')
+  const s = await ownShift(c.env.DB, u.company_id, c.req.param('id'))
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const rows = (await c.env.DB.prepare(`SELECT title, body, created_at FROM user_notifications
+    WHERE user_id IN (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND user_id IS NOT NULL) AND kind = ? AND related_id = ? AND company_id = ? ORDER BY notification_id`)
+    .bind(s.staff_id, ATTENDANCE_WITHDRAWN_KIND, s.shift_id, u.company_id).all()).results
+  return c.json({ withdrawals: rows })
 })
 
 // 勤怠報告
@@ -1090,7 +1215,7 @@ api.get('/staff/my-reports', async (c) => {
   if (!ids.length) return c.json({ reports: [], templates: {} })
   const rows = (await db.prepare(`
     SELECT dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_comment, dr.manager_checked, dr.submitted_at, dr.revised_after_check_at,
+      dr.manager_comment, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at,
       p.project_name, p.report_template_id, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
     LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id

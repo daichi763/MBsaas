@@ -64,14 +64,15 @@
         : `<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${r ? '修正' : '追加申請'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
-        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
+        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
         ${action}</li>`
     }
     return `<div class="card p-3 mb-2">
       <div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-800 truncate">${esc(s.project_name)}</p>${absent ? '<span class="badge badge-gray">欠勤</span>' : s.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}</div>
-      <p class="text-xs text-gray-500">${esc(s.start_time)}〜${esc(s.end_time)}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
+      <p class="text-xs text-gray-500">${esc(formatShiftTime(s.start_time, s.end_time))}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
       ${s.tentative ? '<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1">管理者の確定待ちのシフトです。確定されるまで打刻の修正・追加は申請できません。勤務した場合は管理者に連絡してください</p>' : ''}
       <ul class="mt-1">${(s.tentative ? shown.filter(t => rep[t]) : shown).map(row).join('')}</ul>
+      ${s.reports.some(r => r.entry_method === 'proxy') && !locked ? '<p class="text-[11px] text-gray-500 mt-1">「管理者が入力」は、あなたの代わりに管理者が記録した時刻です。違っていたら「修正」から申請してください</p>' : ''}
       ${!locked && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
     </div>`
   }
