@@ -10,7 +10,7 @@ import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
 import boardApi from './board'
-import settlementApi, { syncActualFromReports } from './settlement'
+import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
 import { shiftTotals } from './shift-board'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
@@ -3439,6 +3439,9 @@ api.post('/admin/shifts', async (c) => {
   // 自社の案件のみ（他社の案件名・場所・単価を取り込まない）
   const proj = await ownProject(c.env.DB, u.company_id, b.project_id)
   if (!proj) return c.json({ error: '案件が見つかりません' }, 404)
+  // 精算を締めた期間には追加しない（#170）
+  const closedAdd = await closedMessage(c.env.DB, u.company_id, b.work_date)
+  if (closedAdd) return c.json({ error: closedAdd }, 409)
   // 交通費（実費）は空欄なら 0。案件の交通費ルール（定額・なし）は単価の適用で反映される（#94）
   const fee = b.transportation_fee === undefined || b.transportation_fee === null || b.transportation_fee === '' ? 0 : Number(b.transportation_fee)
   if (!Number.isInteger(fee) || fee < 0 || fee > 100000) return c.json({ error: '交通費は0〜100000の整数で入力してください' }, 400)
@@ -3471,6 +3474,14 @@ api.put('/admin/shifts/:id', async (c) => {
   if (cur.settle_status === 'confirmed' && (b.status != null || b.start_time != null || b.end_time != null || b.staff_id != null))
     return c.json({ error: '確定済みのシフトは変更できません。精算画面で確定を取り消してください' }, 409)
   if (b.status != null && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
+  // 精算を締めた期間のシフトは、状態・時間・スタッフを変えない（#170。メモだけの変更や、同じ値の送信は受け付ける）
+  if ((b.status != null && b.status !== cur.status) || (b.start_time != null && b.start_time !== cur.start_time)
+    || (b.end_time != null && b.end_time !== cur.end_time) || (b.staff_id != null && Number(b.staff_id) !== cur.staff_id)) {
+    const closed = await closedMessage(c.env.DB, u.company_id, cur.work_date)
+    if (closed) return c.json({ error: closed }, 409)
+  }
+  // 欠勤・中止の理由（任意。staff / client。#283）。指定があれば精算のキャンセル料・補償の入力欄に入れる
+  if (b.cancel_reason != null && b.cancel_reason !== '' && !['staff', 'client'].includes(b.cancel_reason)) return c.json({ error: '欠勤・中止の理由が正しくありません' }, 400)
   // 付け替え先は割り当てられるスタッフのみ（退職・統合済み・スキルシートのみ・取引終了は不可）。重複・NG・休職中は確認のうえ
   // 付け替えたシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
   const staffChanged = b.staff_id != null && Number(b.staff_id) !== cur.staff_id
@@ -3515,6 +3526,16 @@ api.put('/admin/shifts/:id', async (c) => {
       WHERE shift_id = ? AND company_id = ?`)
     .bind(b.status ?? null, b.start_time ?? null, b.end_time ?? null, b.staff_id ?? null, b.memo ?? null, staffChanged ? 1 : 0,
       ...Array(3).fill(staffChanged || timeChanged ? 1 : 0), sid, u.company_id)]
+  // 欠勤にした日時を残し（精算のキャンセル料の連絡日の初期値。#283）、欠勤から戻したらキャンセル料・補償を消す
+  if (b.status === 'absent' && cur.status !== 'absent') {
+    stmts.push(db.prepare('UPDATE shifts SET absent_at = ? WHERE shift_id = ? AND company_id = ?').bind(nowJST(), sid, u.company_id))
+    if (b.cancel_reason) stmts.push(db.prepare(`INSERT INTO shift_cancellations (shift_id, company_id, reason, notified_on, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(shift_id) DO UPDATE SET reason = excluded.reason, notified_on = excluded.notified_on, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+      .bind(sid, u.company_id, b.cancel_reason, todayJST(), u.user_id, nowJST()))
+  } else if (b.status != null && b.status !== 'absent' && cur.status === 'absent') {
+    stmts.push(db.prepare('UPDATE shifts SET absent_at = NULL WHERE shift_id = ? AND company_id = ?').bind(sid, u.company_id),
+      db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(sid, u.company_id))
+  }
   const cancelToken = newCancelToken()
   if (staffChanged) {
     stmts.push(
@@ -3544,9 +3565,11 @@ api.put('/admin/shifts/:id', async (c) => {
 
 api.delete('/admin/shifts/:id', async (c) => {
   const u = c.get('user')
-  const cur = await c.env.DB.prepare('SELECT shift_id, settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  const cur = await c.env.DB.prepare('SELECT shift_id, work_date, settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!cur) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (cur.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトは削除できません。精算画面で確定を取り消してください' }, 409)
+  const closedDel = await closedMessage(c.env.DB, u.company_id, cur.work_date)
+  if (closedDel) return c.json({ error: closedDel }, 409)
   // 勤怠・日報の報告があるシフトは削除できない（記録を残すため。欠勤などに変更する）
   const rep = await c.env.DB.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) + (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS n')
     .bind(c.req.param('id'), c.req.param('id')).first() as any
@@ -3556,6 +3579,7 @@ api.delete('/admin/shifts/:id', async (c) => {
   await db.batch([
     ...autoCancelStatements(db, cur.shift_id, 'shift_deleted', actorOf(u), cancelToken),
     db.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
+    db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
     db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
   ])
   const cancelled = await notifyAutoCancelled(c, cur.shift_id, cancelToken)
