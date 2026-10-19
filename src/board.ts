@@ -30,14 +30,26 @@ const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
 const EXPIRED_SQL = `status = 'open' AND ((deadline IS NOT NULL AND deadline < ?)
   OR COALESCE(date_to, CASE WHEN engagement_type = 'spot' THEN date_from END) < ?)`
 async function closeExpired(db: D1Database) {
-  const today = todayJST()
-  const ids = ((await db.prepare(`SELECT post_id FROM board_posts WHERE ${EXPIRED_SQL} LIMIT 200`).bind(today, today).all()).results as any[]).map(r => r.post_id)
-  const now = nowJST()
-  for (const id of ids) {
-    // 同時に開かれても、締切にした1回だけ知らせる
-    const r = await db.prepare(`UPDATE board_posts SET status = 'closed', updated_at = ? WHERE post_id = ? AND ${EXPIRED_SQL}`).bind(now, id, today, today).run()
-    if (r.meta.changes) await notifyPostThreads(db, id, '締切日（実施日）を過ぎたため、この掲載は締切になりました。新しい人材の提案は受け付けていません')
-  }
+  const today = todayJST(); const now = nowJST()
+  // 件数に関係なく決まった数の文で処理する（期限切れが溜まっていても、1回の呼び出しのクエリ数が増えないように）。
+  // batch は1つのトランザクションなので、同時に開かれても知らせるのは締切にした1回だけ
+  await db.batch([
+    ...threadNoticeStmts(db, `SELECT post_id FROM board_posts WHERE ${EXPIRED_SQL}`, [today, today],
+      '締切日（実施日）を過ぎたため、この掲載は締切になりました。新しい人材の提案は受け付けていません', now),
+    db.prepare(`UPDATE board_posts SET status = 'closed', updated_at = ? WHERE ${EXPIRED_SQL}`).bind(now, today, today),
+  ])
+}
+
+/** postsSql（post_id を返す SELECT）の掲載のやり取り（終了していないもの）すべてに、相手企業の未読に数えるシステムメッセージを入れる文（#476）。
+ *  書き手は掲載企業。システムメッセージなので既読位置は動かさない（addMessage と同じ扱い） */
+function threadNoticeStmts(db: D1Database, postsSql: string, binds: any[], body: string, now: string): D1PreparedStatement[] {
+  const target = `status = 'open' AND post_id IN (${postsSql})`
+  return [
+    db.prepare(`INSERT INTO board_messages (thread_id, author_company_id, author_user_id, kind, body, notify, created_at)
+      SELECT thread_id, poster_company_id, NULL, 'system', ?, 1, ? FROM board_threads WHERE ${target}`).bind(body, now, ...binds),
+    db.prepare(`UPDATE board_threads SET last_message_id = (SELECT MAX(m.message_id) FROM board_messages m WHERE m.thread_id = board_threads.thread_id), last_message_at = ?
+      WHERE ${target}`).bind(now, ...binds),
+  ]
 }
 
 // 他社にも返してよい項目（社内情報 source_project_id / created_by / updated_by は自社のときだけ付ける）
@@ -263,8 +275,7 @@ function postChanges(cur: any, v: any): string[] {
 
 /** 掲載のやり取り（終了していないもの）すべてに、相手企業の未読に数えるシステムメッセージを入れる（#476） */
 async function notifyPostThreads(db: D1Database, postId: number, body: string) {
-  const ts = (await db.prepare(`SELECT thread_id, poster_company_id FROM board_threads WHERE post_id = ? AND status = 'open'`).bind(postId).all()).results as any[]
-  for (const t of ts) await addMessage(db, t.thread_id, t.poster_company_id, null, 'system', body, true)
+  await db.batch(threadNoticeStmts(db, 'SELECT ?', [postId], body, nowJST()))
 }
 
 // 状態だけの変更（掲載する / 締め切る / 充足 / 下書きに戻す）
