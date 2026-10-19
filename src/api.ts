@@ -28,7 +28,7 @@ import {
   hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails } from './roster'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
@@ -2082,11 +2082,16 @@ api.put('/admin/staff/:id', async (c) => {
 // スタッフ登録
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
-  const { user_code: rawCode, name, password, email, phone, skills, career, work_area } = await c.req.json()
+  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force } = await c.req.json()
   const user_code = normalizeLoginCode(rawCode) // ログイン画面と同じく全角を半角にそろえて保存する（#387）
   if (!user_code || !name || !password) return c.json({ error: 'スタッフ番号・氏名・パスワードは必須です' }, 400)
   const pwErr = validatePassword(password)
   if (pwErr) return c.json({ error: pwErr }, 400)
+  // 同じ人の確認（#223。スタッフマスタの新規追加と同じ。force で登録を続ける）
+  if (!force) {
+    const matches = await findSamePersonCandidates(c.env.DB, u.company_id, { name, phone })
+    if (matches.length) return c.json({ error: '同じ人と思われるスタッフが登録済みです', matches, need_force: true }, 409)
+  }
   const hash = await hashPassword(password)
   try {
     // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
@@ -2098,7 +2103,8 @@ api.post('/admin/staff', async (c) => {
       .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id).run()
     return c.json({ ok: true })
   } catch (e) {
-    return c.json({ error: 'スタッフ番号が重複しています' }, 409)
+    // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
+    return c.json({ error: 'スタッフ番号が重複しています', suggested_code: (await nextStaffCode(c.env.DB, u.company_id)).code }, 409)
   }
 })
 

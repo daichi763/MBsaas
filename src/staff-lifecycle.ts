@@ -6,7 +6,7 @@
 // api.ts から認証ミドルウェアの前後に分けて登録する。金額は返さない（報告用URLはスタッフ本人向け）。
 // =========================================================
 import { Hono } from 'hono'
-import { createPerson, partnerNameConflict } from './roster'
+import { createPerson, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk } from './lib/d1-chunk'
 import { syncActualFromReports } from './settlement'
@@ -143,12 +143,20 @@ export const adminLifecycleApi = new Hono<{ Bindings: Bindings; Variables: Varia
 
 // ---------- 仮登録（氏名・電話だけで登録し、すぐシフトに入れられる） ----------
 // 電話番号で既存スタッフと照合し、一致した場合は既存のスタッフを返す（重複登録を防ぐ）
+// 退職・停止中の人には inactive（'退職' / '停止' / '休職'）を付け、画面で在籍中の人と区別する（#356）
+async function phoneMatches(db: D1Database, companyId: number, phone: string) {
+  const today = todayJST()
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
+      COALESCE(sp.employment_status, 'working') AS employment_status, us.status AS user_status, us.retired_at
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
+  return rows.filter(r => normalizePhone(r.phone) === phone).map(({ user_status: _s, ...r }) => ({
+    ...r, retired_at: r.retired_at || null, inactive: inactiveLabelOf({ ...r, user_status: _s }, today),
+  }))
+}
 adminLifecycleApi.get('/staff-lookup', async (c) => {
   const u = c.get('user'); const phone = normalizePhone(c.req.query('phone'))
   if (phone.length < 10) return c.json({ matches: [] })
-  const rows = (await c.env.DB.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional, sp.employment_status
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`).bind(u.company_id).all()).results as any[]
-  return c.json({ matches: rows.filter(r => normalizePhone(r.phone) === phone) })
+  return c.json({ matches: await phoneMatches(c.env.DB, u.company_id, phone) })
 })
 
 adminLifecycleApi.post('/staff-quick', async (c) => {
@@ -168,8 +176,7 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
     if (prev) return c.json({ ok: true, staff_id: prev.staff_id, global_staff_code: prev.global_staff_code, reused: true })
   }
   // 電話番号の重複確認（force で登録を続行できる）
-  const dup = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
-    .bind(u.company_id).all()).results as any[]).filter(r => normalizePhone(r.phone) === phone)
+  const dup = await phoneMatches(db, u.company_id, phone)
   if (dup.length && !b.force) return c.json({ error: 'この電話番号のスタッフが登録済みです', matches: dup, need_force: true }, 409)
 
   let affiliation: string | null = null, partnerId: number | null = null
@@ -232,10 +239,13 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
   if (!sp.is_provisional) return c.json({ error: 'このスタッフは本登録済みです' }, 400)
   if (!sp.gender && !b.gender) return c.json({ error: '本登録には性別の入力が必要です' }, 400)
-  const stmts: D1PreparedStatement[] = []
-  if (b.gender) stmts.push(db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id))
   // フリガナは空欄なら今の値を残す（応募時に入力されたフリガナを消さない。#505）
   const kana = typeof b.kana === 'string' ? b.kana.trim() : ''
+  // 企業が必須にした項目（#251）: 送られた値と今の値を合わせて確かめ、不足があれば本登録しない
+  const req = await finalizeRequirements(db, u.company_id, sp, b, kana)
+  if ('error' in req) return c.json(req.body, 400)
+  const stmts: D1PreparedStatement[] = [...req.stmts]
+  if (b.gender) stmts.push(db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id))
   if (kana) stmts.push(db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(kana.slice(0, 60), sp.staff_id))
   if (b.user_code || b.password) {
     const login = await loginStatements(db, u.company_id, sp, b)
@@ -244,9 +254,62 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   }
   stmts.push(db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id))
   // まとめて実行する（スタッフ番号の重複で失敗したら、性別・フリガナ・本登録もやり直せるように取り消す）
-  try { await db.batch(stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+  try { await db.batch(stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています', suggested_code: (await nextStaffCode(db, u.company_id)).code }, 409) }
   return c.json({ ok: true, ...(b.user_code || b.password ? { login: loginGuide(c, b) } : {}) })
 })
+
+// ---------- 本登録の必須項目（#251） ----------
+// staff_profiles の列で持つ項目（電話は users.phone、メールはログインの欄で扱う）
+const FINALIZE_PROFILE_COLUMNS = ['date_of_birth', 'affiliation_contact', 'skills', 'career', 'work_area', 'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from']
+/** 本登録で、企業の必須設定のうちこの人に当てはまる項目と今の値（画面の入力欄の表示用）。ログインのない人には「ログインのある人のみ」の項目も出す（発行すれば必要になるため） */
+function finalizeRequiredFields(required: Set<string>, sp: any) {
+  const type = sp.affiliation_type || 'own_employee'
+  return ROSTER_CONFIGURABLE_FIELDS.filter(f => required.has(f.code) && requirementApplies(f, type))
+    .map(f => ({ code: f.code, label: f.label, login_only: !!f.login_only, value: f.code === 'phone' ? sp.phone ?? null : f.code === 'email' ? sp.email ?? null : sp[f.code] ?? null }))
+}
+/**
+ * 本登録の入力（body）と今の値を合わせて、企業の必須設定に足りない項目がないかを確かめる。
+ * 足りていれば、送られた項目を保存する文を返す（実行は呼び出し側の batch）
+ */
+async function finalizeRequirements(db: D1Database, companyId: number, sp: any, b: any, kana: string):
+  Promise<{ stmts: D1PreparedStatement[] } | { error: true; body: any }> {
+  const type = sp.affiliation_type || 'own_employee'
+  const upd: any = {}
+  for (const k of [...FINALIZE_PROFILE_COLUMNS, 'phone']) if (b[k] !== undefined) upd[k] = typeof b[k] === 'string' ? b[k].trim() : b[k]
+  if (type !== 'partner_manual') delete upd.affiliation_contact
+  const valueErr = normalizeRosterValues(upd)
+  if (valueErr) return { error: true, body: { error: valueErr } }
+  for (const k of ['skills', 'career', 'work_area', 'nearest_station_line', 'nearest_station', 'affiliation_contact']) {
+    // スキル・経歴・エリアは登録時と同じく空欄を ''、それ以外は NULL にする
+    if (upd[k] !== undefined) upd[k] = String(upd[k] ?? '').slice(0, k === 'career' ? 5000 : 500) || (['skills', 'career', 'work_area'].includes(k) ? '' : null)
+  }
+  const issuing = !!(b.user_code || b.password)
+  const hasLogin = issuing || sp.user_role === 'staff'
+  // ログインのメール: 未確認のメールを使う／メール欄の値／今の値
+  const email = issuing ? (b.use_unverified_email === true ? sp.unverified_email : b.email !== undefined && b.email !== null ? String(b.email).trim() : sp.email) : sp.email
+  const merged: any = { kana: kana || sp.kana, phone: sp.phone, email }
+  for (const k of FINALIZE_PROFILE_COLUMNS) merged[k] = sp[k]
+  for (const [k, v] of Object.entries(upd)) merged[k] = v
+  const missing = missingRequired(await getRequiredFields(db, companyId), merged, 'create', type, hasLogin)
+  if (missing.length) return { error: true, body: { error: `次の項目は必須です: ${missing.join('・')}`, missing } }
+  const stmts: D1PreparedStatement[] = []
+  const cols = Object.keys(upd).filter(k => k !== 'phone')
+  if (cols.length) stmts.push(db.prepare(`UPDATE staff_profiles SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE staff_id = ?`).bind(...cols.map(k => upd[k] ?? null), sp.staff_id))
+  if (upd.phone !== undefined) stmts.push(db.prepare('UPDATE users SET phone = ? WHERE user_id = ? AND company_id = ?').bind(upd.phone ?? null, sp.user_id, companyId))
+  return { stmts }
+}
+
+// 統合元にできるか（#223）。仮登録のほか、シフトのない重複登録の行（他社連携・スキルシートのみ以外）も統合元にできる
+export async function mergeSourceCheck(db: D1Database, sp: any): Promise<string | null> {
+  if (sp.merged_into_staff_id) return 'このスタッフはすでに統合済みです'
+  if (sp.is_provisional) return null
+  const t = sp.affiliation_type || 'own_employee'
+  if (t === 'linked_external') return '他社連携のスタッフは統合元にできません（不要なら取引終了にしてください）'
+  if (t === 'skillsheet_only') return 'スキルシートのみのスタッフは統合元にできません'
+  const n = await db.prepare('SELECT COUNT(*) AS n FROM shifts WHERE staff_id = ?').bind(sp.staff_id).first() as any
+  if (Number(n?.n || 0) > 0) return '本登録のスタッフを統合元にできるのは、シフトが1件もない場合だけです（シフトのある側を統合先にしてください）'
+  return null
+}
 
 // ---------- ログインの発行（本登録・後からの発行で共用。#89 #103 #148） ----------
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -321,7 +384,7 @@ adminLifecycleApi.post('/staff/:id/issue-login', async (c) => {
   if (!canIssueLogin(sp)) return c.json({ error: '退職・停止中のスタッフにはログインを発行できません' }, 409)
   const login = await loginStatements(db, u.company_id, sp, b)
   if ('error' in login) return c.json({ error: login.error }, login.status as any)
-  try { await db.batch(login.stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+  try { await db.batch(login.stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています', suggested_code: (await nextStaffCode(db, u.company_id)).code }, 409) }
   return c.json({ ok: true, login: loginGuide(c, b) })
 })
 
@@ -660,6 +723,10 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
     partner_affiliation_id: sp.partner_affiliation_id,
     merged_into_staff_id: sp.merged_into_staff_id, merged_at: sp.merged_at,
     merged_into_name: sp.merged_into_staff_id ? ((await db.prepare('SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(sp.merged_into_staff_id).first()) as any)?.name : null,
+    // 本登録の画面に出す、企業が必須にした項目と今の値（#251）
+    required_fields: sp.is_provisional && !sp.merged_into_staff_id ? finalizeRequiredFields(await getRequiredFields(db, u.company_id), sp) : [],
+    // 「既存のスタッフに統合」を出すか（#223。仮登録と、シフトのない重複登録）
+    can_merge: !(await mergeSourceCheck(db, sp)),
   })
 })
 

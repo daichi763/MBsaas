@@ -542,12 +542,16 @@ function drawStaffTable(filter) {
 }
 window.drawStaffTable = drawStaffTable
 
-window.showAddStaff = function () {
+// スタッフ番号には空いている番号（#424）を入れておく（手で変えることもできる）
+window.showAddStaff = async function () {
+  let next = null
+  try { next = (await axios.get('/api/admin/roster/next-code')).data } catch { next = null }
   modal(`
     <h3 class="font-bold text-lg mb-4">スタッフ登録</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">スタッフ番号 *</label><input id="ns-code" class="inp" placeholder="st021"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">スタッフ番号 *</label><input id="ns-code" class="inp" placeholder="st021" value="${esc(next ? next.code : '')}">
+          ${next && next.last_code ? `<p class="text-[11px] text-gray-400 mt-1">空いている番号です（最後の番号: ${esc(next.last_code)}）</p>` : ''}</div>
         <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="ns-name" class="inp" placeholder="山田 太郎"></div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">初期パスワード *</label><input id="ns-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
@@ -558,11 +562,15 @@ window.showAddStaff = function () {
       <div><label class="text-sm text-gray-600 block mb-1">スキル（カンマ区切り）</label><input id="ns-skills" class="inp" placeholder="MNP,接客"></div>
       <div><label class="text-sm text-gray-600 block mb-1">経歴</label><input id="ns-career" class="inp"></div>
       <div><label class="text-sm text-gray-600 block mb-1">稼働可能エリア</label><input id="ns-area" class="inp" placeholder="東京23区"></div>
-      <button class="btn btn-primary w-full" onclick="addStaff()">登録する</button>
+      <div id="ns-dup"></div>
+      <button class="btn btn-primary w-full" data-action="addStaff">登録する</button>
     </div>`)
 }
+// 送信中はボタンを無効にする（二度押しで同じ人が2人登録されないように。#223）
+delegate('addStaff', (el) => withSubmitLock(el, () => addStaff(false)))
+delegate('addStaffForce', (el) => withSubmitLock(el, () => addStaff(true)))
 
-window.addStaff = async function () {
+window.addStaff = async function (force) {
   try {
     await axios.post('/api/admin/staff', {
       user_code: document.getElementById('ns-code').value.trim(),
@@ -570,10 +578,22 @@ window.addStaff = async function () {
       password: document.getElementById('ns-pass').value,
       email: document.getElementById('ns-email').value, phone: document.getElementById('ns-phone').value,
       skills: document.getElementById('ns-skills').value, career: document.getElementById('ns-career').value,
-      work_area: document.getElementById('ns-area').value
+      work_area: document.getElementById('ns-area').value, force: !!force,
     })
     closeModal(); toast('スタッフを登録しました'); renderStaff()
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '登録に失敗しました') }
+  } catch (e) {
+    const d = e.response && e.response.data
+    // 同じ人と思われるスタッフがいる（#223）: 一覧を出し、別の人なら登録を続けられるようにする
+    const box = document.getElementById('ns-dup')
+    if (d && d.need_force && d.matches && box && window.samePersonListHtml) {
+      box.innerHTML = `<div class="p-3 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>同じ人と思われるスタッフが登録済みです</p>
+        <ul class="space-y-1 mb-2">${samePersonListHtml(d.matches)}</ul>
+        <button class="btn btn-outline text-xs" data-action="addStaffForce">別の人として登録する</button></div>`
+      return
+    }
+    if (d && d.suggested_code) { document.getElementById('ns-code').value = d.suggested_code; toast(`スタッフ番号が使われています。空いている番号（${d.suggested_code}）を入れました`); return }
+    toast((d && d.error) || '登録に失敗しました')
+  }
 }
 
 // ============ スタッフ詳細 ============
