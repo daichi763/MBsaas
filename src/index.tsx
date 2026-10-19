@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
-import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens } from './services/retention'
+import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServiceRetentionJob } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
@@ -776,6 +776,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
     return { due: r.due, applied: r.applied, not_applied: r.failed }
   } },
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
+  // 在職中の保存期間（位置情報と写真・相談・フォロー記録・決着した人材提案・雇用終了の従業員データ）の削除。D1 の問い合わせの数を分けるため 3:30 の起動で行う（#420 #511 #350 #425）
+  { name: 'retention_in_service', label: 'データ保持の定期削除（在職中の位置情報・写真・相談など）', cron: CRON_REPORTS, run: env => runInServiceRetentionJob(env.DB, env, env.RETENTION_ENABLED === 'true') },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
 ])
 

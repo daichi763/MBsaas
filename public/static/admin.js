@@ -3050,6 +3050,7 @@ async function renderReports(refresh) {
         ${filtered ? '<a href="#reports" class="text-xs text-blue-600 hover:underline">条件をクリア</a>' : ''}
       </div>
     </section>
+    ${reportArchiveBarHtml()}
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
       <p class="text-xs text-gray-500">全 ${total} 件${total ? `中 ${start}〜${end} 件を表示` : ''}</p>
       ${uncheckedShown ? `<button class="btn btn-primary text-xs" data-action="checkShownReports"><i class="fas fa-check-double"></i>表示中の未確認 ${uncheckedShown}件をまとめて確認済みにする</button>` : ''}
@@ -3058,10 +3059,84 @@ async function renderReports(refresh) {
       ${data.reports.map(r => reportCardHtml(r, data.templates[r.report_template_id])).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
     </div>
     ${pager}`
+  loadReportRetentionNote()
   if (refresh) window.scrollTo(0, scrollY)
   // ページ送りで最後のページより後を開いた（確認して件数が減ったときなど）ら、最後のページへ
   if (!data.reports.length && page > 1 && total > 0) goReports({ ...f, page: lastPage })
 }
+// ---------- 日報の書き出しと保存期間の案内（#417） ----------
+// 日報は稼働日から3年で定期削除される。削除の前に控えを取れるよう、期間・案件・スタッフで絞って CSV で書き出す
+let REPORT_RETENTION = null // 保存期間と、今後30日で削除される件数（画面を開いた最初の1回だけ読む）
+function reportArchiveBarHtml() {
+  return `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-3 text-xs text-gray-500">
+      <p id="rp-retention"><i class="fas fa-box-archive mr-1"></i>日報は稼働日から3年で自動削除されます。必要な日報は CSV で控えを保存してください。</p>
+      <button class="btn btn-outline text-xs" data-action="openReportCsv"><i class="fas fa-file-csv"></i>CSVで書き出す</button>
+    </div>`
+}
+async function loadReportRetentionNote() {
+  if (!REPORT_RETENTION) {
+    try { REPORT_RETENTION = (await axios.get('/api/admin/daily-reports-retention')).data } catch (e) { return }
+  }
+  const el = document.getElementById('rp-retention')
+  const r = REPORT_RETENTION
+  if (!el || !r) return
+  const due = r.due_count > 0
+    ? `今後${Number(r.days)}日のうちに <b class="text-red-600">${Number(r.due_count)}件</b>（稼働日 ${esc(r.due_from)}〜${esc(r.due_to)}）が削除されます。`
+    : `今後${Number(r.days)}日のうちに削除される日報はありません。`
+  el.innerHTML = `<i class="fas fa-box-archive mr-1"></i>日報は稼働日から${Number(r.years)}年で自動削除されます。${due}必要な日報は CSV で控えを保存してください。`
+}
+delegate('openReportCsv', () => {
+  const f = reportFilterFromHash()
+  const r = REPORT_RETENTION
+  // 期間の既定: 絞り込みの期間。なければ、今後削除される日報の範囲（最大62日）か、先月
+  const today = dayjs()
+  let from = f.from || '', to = f.to || ''
+  if (!from || !to) {
+    if (r && r.due_count > 0 && r.due_from) { from = r.due_from; to = dayjs(r.due_from).add(61, 'day').format('YYYY-MM-DD'); if (r.due_to < to) to = r.due_to }
+    else { from = today.subtract(1, 'month').startOf('month').format('YYYY-MM-DD'); to = today.subtract(1, 'month').endOf('month').format('YYYY-MM-DD') }
+  }
+  const opts = REPORT_OPTIONS || { projects: [], staff: [] }
+  modal(`
+    <h3 class="font-bold text-lg mb-2">日報をCSVで書き出す</h3>
+    <p class="text-xs text-gray-500 mb-3">日報は稼働日から3年で自動削除されます。1回に書き出せる期間は62日まで（2,000件まで）です。項目ごとの列と、インシデント・コメントを含みます。</p>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <label>開始日<input id="rpc-from" type="date" class="inp" value="${esc(from)}"></label>
+      <label>終了日<input id="rpc-to" type="date" class="inp" value="${esc(to)}"></label>
+      <label class="col-span-2">案件<select id="rpc-project" class="inp"><option value="">すべて</option>
+        ${opts.projects.map(p => `<option value="${Number(p.project_id)}" ${f.project === p.project_id ? 'selected' : ''}>${esc(p.project_name)}${p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}</select></label>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary flex-1" data-action="downloadReportCsv"><i class="fas fa-download"></i>書き出す</button>
+    </div>`)
+})
+delegate('downloadReportCsv', (el) => withSubmitLock(el, async () => {
+  const from = document.getElementById('rpc-from').value, to = document.getElementById('rpc-to').value
+  const project = document.getElementById('rpc-project').value
+  if (!from || !to) return toast('開始日と終了日を入力してください')
+  if (from > to) return toast('開始日は終了日より前にしてください')
+  if (dayjs(to).diff(dayjs(from), 'day') >= 62) return toast('書き出す期間は62日以内にしてください')
+  const f = reportFilterFromHash()
+  const params = { from, to }
+  if (project) params.project_id = project
+  if (f.staff) params.staff_id = f.staff
+  try {
+    const res = await axios.get('/api/admin/daily-reports-csv', { params, responseType: 'blob' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(res.data)
+    a.download = `daily_reports_${from}_${to}.csv`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000)
+    closeModal()
+    toast(res.headers['x-csv-truncated'] === '1' ? `上限の2,000件までを書き出しました（全${Number(res.headers['x-csv-total'])}件）。期間を分けて書き出してください` : 'CSVをダウンロードしました')
+  } catch (e) {
+    // blob で受けたエラーの本文（JSON）を読んでから出す
+    let msg = null
+    try { msg = JSON.parse(await e.response.data.text()).error } catch { }
+    toast(msg || 'CSVを書き出せませんでした')
+  }
+}))
 delegate('reportPage', (el) => { const f = reportFilterFromHash(); goReports({ ...f, page: Number(el.dataset.page) || 1 }); window.scrollTo(0, 0) })
 delegate('reportQuick', (el) => {
   const f = reportFilterFromHash()

@@ -513,7 +513,7 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
     if (er && (er.hire_date || er.employment_ended_at)) effects.push(`従業員管理のデータを再開します（入社日 ${hire}）。前の雇用期間（入社 ${er.hire_date || '未登録'}〜雇用終了 ${er.employment_ended_at || '未登録'}）は雇用期間の履歴に残します`)
     else effects.push(er ? `従業員管理のデータを再開します（入社日 ${hire}）` : `従業員管理のデータを作成します（入社日 ${hire}）`)
   }
-  if (from === 'own_employee' && to !== 'own_employee') effects.push(`従業員管理のデータを「雇用終了（${addDays(effective, -1)}）」として保持します（削除しません・7年保存）`)
+  if (from === 'own_employee' && to !== 'own_employee') effects.push(`従業員管理のデータを「雇用終了（${addDays(effective, -1)}）」として保持します（すぐには削除しません。雇用終了から7年で、給与・口座・保険番号などの従業員データと入社時書類を定期削除します）`)
   if (from === 'linked_external' && !repair) {
     effects.push('他社との連携を終了し、基本情報をコピーして自社で管理します（元の企業への通知はしません）')
     effects.push('所属元との企業間チャットは終了します。これまでのやり取りは「企業間チャット」の一覧から閲覧できます')
