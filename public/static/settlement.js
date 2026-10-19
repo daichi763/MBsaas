@@ -314,8 +314,8 @@
         <label>請求額（定額時）<input id="spx-bt-amt" type="number" class="inp text-xs" value="${r.bill_transport_amount}"></label>
         <label class="col-start-2">交通費の支払<select id="spx-pt" class="inp text-xs">${opt(PT_LABEL, r.pay_transport_type)}</select></label>
         <label>上限/定額<input id="spx-pt-amt" type="number" class="inp text-xs" value="${r.pay_transport_amount}"></label>
-        <label>請求の調整<input id="spx-bill-adj" type="number" class="inp text-xs" value="${r.bill_adjust}"></label>
-        <label>支払の調整<input id="spx-pay-adj" type="number" class="inp text-xs" value="${r.pay_adjust}"></label>
+        <label>請求の調整<input id="spx-bill-adj" type="number" class="inp text-xs" value="${r.bill_adjust || ''}" placeholder="0"></label>
+        <label>支払の調整<input id="spx-pay-adj" type="number" class="inp text-xs" value="${r.pay_adjust || ''}" placeholder="0"></label>
         <label>調整の内容<input id="spx-adj-note" class="inp text-xs" value="${esc(r.adjust_note)}" placeholder="残業・手当など"></label>
       </div>
       <div class="flex gap-2 mt-4">
