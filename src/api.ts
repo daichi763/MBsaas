@@ -13,7 +13,8 @@ import settlementApi, { syncActualFromReports } from './settlement'
 import { shiftTotals } from './shift-board'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
-import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
+import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
+import { loginEmailVerifyEmail } from './email-templates/login-email'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { dailyReportRequiredSql } from './report-settings'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
@@ -325,10 +326,34 @@ export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: nu
 // 会社コード・ID・パスワードのどれが違っても同じ文言・同じステータスで返す（会社コードの有無を推測されないように）
 const LOGIN_FAILED_MESSAGE = '会社コード・ID・パスワードのいずれかが正しくありません'
 const LOGIN_HELP = 'ログインできない場合は、所属の会社の担当者にお問い合わせください'
+// パスワード再設定の受付の、接続元（IP）ごとの1時間あたりの上限（#382。同じ店舗の Wi-Fi から複数人が使っても足りる数）
+const RESET_IP_MAX = 20
+// 会社コード・ID は、全角で入力されても照合できるよう NFKC でそろえる（#201 #387）
+export function normalizeLoginCode(v: unknown): string {
+  return String(v ?? '').normalize('NFKC').trim()
+}
+// 完全一致がなければ、大文字・小文字の違いだけのものを探す（スマホの自動大文字化で「Sample」「St001」と入っても通す）。
+// 大文字・小文字だけが違う行が複数あるときは、どれか決められないので一致なしにする。
+// 以前は全角のまま保存できたため、正規化した値で見つからなければ、入力どおり（trim のみ）の値でも完全一致を探す
+async function findCompanyByCode(db: D1Database, code: string, raw: string): Promise<any> {
+  const exact = await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(code).first()
+  if (exact) return exact
+  const rows = (await db.prepare('SELECT * FROM companies WHERE LOWER(company_code) = LOWER(?) LIMIT 2').bind(code).all()).results
+  if (rows.length === 1) return rows[0]
+  return raw && raw !== code ? await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(raw).first() : null
+}
+async function findUserByCode(db: D1Database, companyId: number, code: string, raw: string): Promise<any> {
+  const exact = await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(companyId, code).first()
+  if (exact) return exact
+  const rows = (await db.prepare('SELECT * FROM users WHERE company_id = ? AND LOWER(user_code) = LOWER(?) LIMIT 2').bind(companyId, code).all()).results
+  if (rows.length === 1) return rows[0]
+  return raw && raw !== code ? await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(companyId, raw).first() : null
+}
 api.post('/auth/login', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
-  const company_code = String(b.company_code ?? '').trim()
-  const user_code = String(b.user_code ?? '').trim()
+  const company_code = normalizeLoginCode(b.company_code)
+  const user_code = normalizeLoginCode(b.user_code)
+  const rawCompanyCode = String(b.company_code ?? '').trim(), rawUserCode = String(b.user_code ?? '').trim()
   const password = typeof b.password === 'string' ? b.password : ''
   // 会社コードは本部ユーザーだけ空欄でよい（#372）
   if (!user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
@@ -339,15 +364,13 @@ api.post('/auth/login', async (c) => {
   let keys = await loginAttemptKeys(company_code, user_code, ip)
   if (await isLoginLocked(db, keys)) return lockedResponse()
 
-  let company = company_code ? await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(company_code).first() as any : null
-  let user = company
-    ? await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(company.company_id, user_code).first() as any
-    : null
+  let company = company_code ? await findCompanyByCode(db, company_code, rawCompanyCode) : null
+  let user = company ? await findUserByCode(db, company.company_id, user_code, rawUserCode) : null
   // 本部ユーザー（本部専用の企業行に所属）は会社コードなしでログインする。以前の案内どおり会社コードを入れても、
   // その会社に同じ ID がなければ本部ユーザーとして照合する。失敗回数は会社コードによらず同じ記録で数える
   if (!user) {
     const hq = await db.prepare(`SELECT u.* FROM users u JOIN companies co ON co.company_id = u.company_id
-      WHERE co.active_status = ? AND u.role = 'system_admin' AND u.user_code = ? ORDER BY u.user_id LIMIT 1`).bind(HQ_COMPANY_STATUS, user_code).first() as any
+      WHERE co.active_status = ? AND u.role = 'system_admin' AND LOWER(u.user_code) = LOWER(?) ORDER BY (u.user_code != ?), u.user_id LIMIT 1`).bind(HQ_COMPANY_STATUS, user_code, user_code).first() as any
     if (hq) {
       if (company_code) {
         keys = await loginAttemptKeys('', user_code, ip)
@@ -388,7 +411,9 @@ api.post('/auth/login', async (c) => {
   await db.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
   setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
 
-  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name, must_change_password: !!user.must_change_password }, redirect: homePathFor(user.role) })
+  // 会社コード・ID は登録どおりの表記で返す（ログイン画面が次回の入力欄に入れておく。#308）
+  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name, must_change_password: !!user.must_change_password },
+    company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, redirect: homePathFor(user.role) })
 })
 
 // パスワード再設定メールの送信リクエスト
@@ -400,6 +425,19 @@ api.post('/auth/forgot-password', async (c) => {
   const email = normalizeEmail(body.email)
   if (!email) return c.json(genericResponse)
 
+  // 接続元ごとの回数制限（#382）: 1時間に RESET_IP_MAX 件まで受け付ける。超えても同じ応答を返す（制限に達したことも、アカウントの有無も伝えない）。
+  // 記録は login_attempts（scope='reset_ip'。IP はハッシュで保存し、1日たつと定期処理で消える）
+  const ip = c.req.header('CF-Connecting-IP')
+  if (ip) {
+    try {
+      const key = await sha256(`reset_ip|${ip}`)
+      const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM login_attempts WHERE scope = 'reset_ip' AND key_hash = ? AND attempted_at > ?`)
+        .bind(key, new Date(Date.now() - 3600 * 1000).toISOString()).first() as any
+      if ((n?.n || 0) >= RESET_IP_MAX) return c.json(genericResponse)
+      await c.env.DB.prepare(`INSERT INTO login_attempts (scope, key_hash, attempted_at) VALUES ('reset_ip', ?, ?)`).bind(key, new Date().toISOString()).run()
+    } catch (e) { console.log(`reset_ip limit failed: ${e}`) }
+  }
+
   // 簡易レート制限: 同一メールアドレスへの直近1時間のリクエストが5件を超えたら新規発行しない
   const recent = await c.env.DB.prepare(
     `SELECT COUNT(*) AS n FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id WHERE LOWER(TRIM(u.email)) = ? AND t.created_at > datetime('now', '-1 hour')`
@@ -407,12 +445,12 @@ api.post('/auth/forgot-password', async (c) => {
   if (((recent?.n as number) || 0) >= 5) return c.json(genericResponse)
 
   // ログインできる行だけが対象（仮登録・スタッフマスタだけの行、退職者、停止中の企業の利用者は除く）
-  const users = await c.env.DB.prepare(`SELECT u.user_id, u.name, u.user_code, u.email, u.company_id, co.company_name
+  const users = await c.env.DB.prepare(`SELECT u.user_id, u.name, u.user_code, u.email, u.company_id, u.role, co.company_name, co.company_code
     FROM users u JOIN companies co ON co.company_id = u.company_id
     WHERE LOWER(TRIM(u.email)) = ? AND u.status = 'active' AND u.role != 'roster_only'
       AND (COALESCE(co.active_status, 'active') != 'inactive' OR u.role = 'system_admin')`).bind(email).all()
   const EXPIRES_HOURS = 1
-  for (const u of users.results as { user_id: number; name: string; user_code: string; email: string; company_id: number; company_name: string }[]) {
+  for (const u of users.results as { user_id: number; name: string; user_code: string; email: string; company_id: number; role: string; company_name: string; company_code: string }[]) {
     const rawToken = genToken()
     const tokenHash = await hashToken(rawToken)
     const expiresAt = new Date(Date.now() + EXPIRES_HOURS * 3600 * 1000).toISOString()
@@ -421,7 +459,9 @@ api.post('/auth/forgot-password', async (c) => {
 
     const resetUrl = `${c.env.APP_BASE_URL}/reset-password?token=${rawToken}`
     // 同じメールアドレスに複数の会社のアカウントがあっても、どのアカウントのリンクか分かるように会社名とIDを入れる
-    const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: EXPIRES_HOURS, companyName: u.company_name, userCode: u.user_code })
+    // ログインに必要な会社コードも入れる（本部ユーザーは会社コードなしでログインするため入れない。#208）
+    const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: EXPIRES_HOURS, companyName: u.company_name, userCode: u.user_code,
+      companyCode: u.role === 'system_admin' ? undefined : u.company_code })
     // レスポンスを待たせないため、実際の送信はバックグラウンドで行う
     c.executionCtx.waitUntil(sendEmail(c.env, { to: String(u.email).trim(), subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'password_reset', company_id: u.company_id }))
   }
@@ -439,7 +479,8 @@ api.post('/auth/reset-password', async (c) => {
   const tokenHash = await hashToken(token)
   // expires_at は ISO 8601 で保存しているので、同じ書式の現在時刻と比べる
   const row = await c.env.DB.prepare(
-    `SELECT t.*, u.status AS user_status, u.role AS user_role FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id
+    `SELECT t.*, u.status AS user_status, u.role AS user_role, u.user_code, co.company_code FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id
+     JOIN companies co ON co.company_id = u.company_id
      WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?`
   ).bind(tokenHash, new Date().toISOString()).first() as any
   if (!row || row.user_status !== 'active' || !canLogin(row.user_role)) return c.json({ error: 'このリンクは無効か、有効期限が切れています' }, 400)
@@ -451,7 +492,30 @@ api.post('/auth/reset-password', async (c) => {
   // 乗っ取られた場合に備え、既存のセッションはすべて切る（再設定後はログインし直す）
   await revokeSessions(c.env.DB, row.user_id)
 
-  return c.json({ ok: true })
+  // 完了画面からログイン画面へ、会社コードと ID を入れた状態で移れるように返す（#208）
+  return c.json({ ok: true, company_code: row.user_role === 'system_admin' ? '' : row.company_code, user_code: row.user_code })
+})
+
+// ログイン用メールアドレスの確認（#207）。管理者が登録したアドレスに届いたリンク（/verify-email）から、本人が確認したときに有効にする
+api.post('/auth/verify-email', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  const token = typeof b.token === 'string' ? b.token : ''
+  const invalid = () => c.json({ error: 'このリンクは無効か、有効期限が切れています。所属の会社の担当者にお問い合わせください' }, 400)
+  if (!token) return invalid()
+  const db = c.env.DB
+  const v = await db.prepare(`SELECT v.*, u.status AS user_status, u.role AS user_role, u.user_code, co.company_code, co.company_name
+    FROM login_email_verifications v JOIN users u ON u.user_id = v.user_id AND u.company_id = v.company_id JOIN companies co ON co.company_id = v.company_id
+    WHERE v.token_hash = ? AND v.verified_at IS NULL AND v.canceled_at IS NULL AND v.expires_at > ?`).bind(await hashToken(token), new Date().toISOString()).first() as any
+  if (!v || v.user_status !== 'active' || v.user_role !== 'staff') return invalid()
+  const now = nowJST()
+  await db.batch([
+    db.prepare('UPDATE users SET email = ? WHERE user_id = ?').bind(v.email, v.user_id),
+    db.prepare('UPDATE login_email_verifications SET verified_at = ? WHERE verification_id = ?').bind(now, v.verification_id),
+    // 同じ人のほかの確認待ちは取り消し、以前のアドレスに送った再設定リンクは使えなくする
+    db.prepare('UPDATE login_email_verifications SET canceled_at = ? WHERE user_id = ? AND verification_id != ? AND verified_at IS NULL AND canceled_at IS NULL').bind(now, v.user_id, v.verification_id),
+    db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL').bind(now, v.user_id),
+  ])
+  return c.json({ ok: true, email: v.email, company_name: v.company_name, company_code: v.company_code, user_code: v.user_code })
 })
 
 api.post('/auth/logout', async (c) => {
@@ -1555,6 +1619,11 @@ api.get('/admin/staff/:id', async (c) => {
     const er = await db.prepare('SELECT phone_main, personal_email, employee_number, department, job_title FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
     if (er) Object.assign(profile, { emp_phone: er.phone_main, emp_email: er.personal_email, employee_number: er.employee_number, department: er.department, job_title: er.job_title })
   }
+  // ログイン用メール（users.email）と、確認待ちのメール（#207）。他社連携の行の LK- コードは自社のログインではない（#569）
+  profile.has_own_login = hasOwnLoginRow(profile)
+  profile.login_email_pending = profile.has_own_login ? await db.prepare(`SELECT email, expires_at, created_at FROM login_email_verifications
+    WHERE user_id = ? AND company_id = ? AND verified_at IS NULL AND canceled_at IS NULL AND expires_at > ? ORDER BY verification_id DESC LIMIT 1`)
+    .bind(profile.user_id, u.company_id, new Date().toISOString()).first() : null
   // 画面の編集可否（APIでも同じ判定で制御している）
   profile.can_edit_in_master = STAFF_MASTER_EDITABLE_TYPES.includes(profile.affiliation_type) && profile.can_edit_base && !profile.merged_into_staff_id
   // 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）は他社連携以外の全区分で編集可
@@ -1711,6 +1780,102 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
   if (retired_at !== undefined || employment_status !== undefined) await applyRetirement(c.env.DB, sid, u.company_id, roster, retired_at, employment_status)
 }
 
+// ============ 電話番号・ログイン用メール（#123 #207） ============
+// 自社で発行したログインか（他社連携の行は、連携時に照合できないパスワードで作った LK- の行）
+function hasOwnLoginRow(r: any): boolean {
+  return r.user_role === 'staff' && !String(r.user_code || '').startsWith('LK-')
+}
+const LOGIN_EMAIL_VERIFY_HOURS = 72
+type ContactCheck = { status: 400 | 403 | 409; body: any } | null
+/**
+ * phone・login_email の入力を確かめて正規化する（PUT /admin/staff/:id）。
+ * 電話番号: 基本項目と同じ権限（自社雇用は従業員管理の電話番号から、他社連携は所属元のみ）。照合用に数字だけで保存し、
+ *   ほかのスタッフと同じ番号なら phone_confirmed が無い限り 409 で確認を求める。
+ * ログイン用メール: 自社で発行したログインのあるスタッフだけ。同じ会社の別の人が使っているアドレスは受け付けない。
+ */
+async function checkContactUpdate(c: any, sid: string, body: any, roster: any): Promise<ContactCheck> {
+  const u = c.get('user'); const db = c.env.DB
+  if (body.phone !== undefined) {
+    if (roster.affiliation_type === 'own_employee') return { status: 403, body: { error: '自社雇用スタッフの電話番号は従業員管理（電話番号）から編集してください' } }
+    if (!STAFF_MASTER_EDITABLE_TYPES.includes(roster.affiliation_type) || !roster.can_edit_base) return { status: 403, body: { error: '電話番号は所属元企業のみ編集できます' } }
+    const raw = String(body.phone ?? '').trim()
+    const digits = normalizePhone(raw)
+    if (raw && (digits.length < 10 || digits.length > 11)) return { status: 400, body: { error: '電話番号は10〜11桁の数字で入力してください' } }
+    if (!raw) {
+      const missing = missingRequired(await getRequiredFields(db, u.company_id), { phone: null }, 'update', roster.affiliation_type, roster.user_role === 'staff')
+      if (missing.length) return { status: 400, body: { error: `次の項目は必須です: ${missing.join('・')}` } }
+    }
+    body.phone = digits || null
+    if (digits && digits !== normalizePhone(roster.phone) && body.phone_confirmed !== true) {
+      const matches = (await findStaffByPhone(db, u.company_id, digits)).filter(m => String(m.staff_id) !== String(sid))
+      if (matches.length) return { status: 409, body: { error: 'この電話番号のスタッフが登録済みです', phone_matches: matches, need_confirm: true } }
+    }
+  }
+  if (body.login_email !== undefined) {
+    if (roster.affiliation_type === 'linked_external') return { status: 403, body: { error: '他社から連携したスタッフのメールアドレスは、所属元の会社で設定します' } }
+    if (!hasOwnLoginRow(roster)) return { status: 400, body: { error: 'ログインのないスタッフです。ログイン用のメールアドレスは、ログインを発行してから設定してください' } }
+    const email = cleanEmail(body.login_email)
+    if (email === undefined) return { status: 400, body: { error: 'メールアドレスの形式が正しくありません' } }
+    if (email && normalizeEmail(email) !== normalizeEmail(roster.email)) {
+      const dup = await db.prepare(`SELECT 1 FROM users WHERE company_id = ? AND user_id != ? AND status = 'active' AND role != 'roster_only'
+        AND LOWER(TRIM(email)) = ? AND (person_id IS NULL OR person_id IS NOT ?) LIMIT 1`).bind(u.company_id, roster.user_id, normalizeEmail(email), roster.person_id ?? null).first()
+      if (dup) return { status: 409, body: { error: 'このメールアドレスは、自社の別のスタッフ・管理者のログインで使われています' } }
+    }
+    body.login_email = email
+  }
+  return null
+}
+/**
+ * 電話番号とログイン用メールを保存する（checkContactUpdate の後に呼ぶ）。
+ * ログイン用メールは、空欄ならすぐに消す。新しいアドレスはすぐには使わず、確認用のリンクを送り、本人が確認したときに有効にする（/auth/verify-email）
+ */
+async function applyContactUpdate(c: any, body: any, roster: any): Promise<{ login_email?: { pending: string | null; cleared?: boolean; mail_sent?: boolean; mail_skipped?: boolean } }> {
+  const u = c.get('user'); const db = c.env.DB
+  const out: any = {}
+  if (body.phone !== undefined) await db.prepare('UPDATE users SET phone = ? WHERE user_id = ? AND company_id = ?').bind(body.phone, roster.user_id, u.company_id).run()
+  if (body.login_email === undefined) return out
+  const now = nowJST()
+  const cancelPending = db.prepare('UPDATE login_email_verifications SET canceled_at = ? WHERE user_id = ? AND verified_at IS NULL AND canceled_at IS NULL').bind(now, roster.user_id)
+  const email: string | null = body.login_email
+  if (!email) {
+    await db.batch([
+      cancelPending,
+      db.prepare('UPDATE users SET email = NULL WHERE user_id = ? AND company_id = ?').bind(roster.user_id, u.company_id),
+      db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL').bind(now, roster.user_id),
+    ])
+    out.login_email = { pending: null, cleared: true }
+    return out
+  }
+  if (normalizeEmail(email) === normalizeEmail(roster.email)) {
+    await cancelPending.run()
+    out.login_email = { pending: null }
+    return out
+  }
+  const raw = genToken()
+  const expires = new Date(Date.now() + LOGIN_EMAIL_VERIFY_HOURS * 3600 * 1000).toISOString()
+  await db.batch([
+    // 確認・取消の済んだ行と、期限を30日過ぎた行は消す（メールアドレスを残し続けない）
+    db.prepare('DELETE FROM login_email_verifications WHERE user_id = ? AND (verified_at IS NOT NULL OR canceled_at IS NOT NULL OR expires_at < ?)')
+      .bind(roster.user_id, new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()),
+    cancelPending,
+    db.prepare(`INSERT INTO login_email_verifications (user_id, company_id, email, token_hash, expires_at, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(roster.user_id, u.company_id, email, await hashToken(raw), expires, u.user_id, now),
+  ])
+  const co = await db.prepare('SELECT company_name, company_code FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  const tpl = loginEmailVerifyEmail({ name: roster.name, companyName: co?.company_name || '', companyCode: co?.company_code || '', userCode: roster.user_code,
+    verifyUrl: `${c.env.APP_BASE_URL}/verify-email?token=${raw}`, expiresInHours: LOGIN_EMAIL_VERIFY_HOURS })
+  const sent = await sendEmail(c.env, { to: email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'login_email_verify', company_id: u.company_id })
+  out.login_email = { pending: email, mail_sent: !!sent.ok, mail_skipped: !!sent.skipped }
+  return out
+}
+// 従業員管理で電話番号（phone_main）を変えたら、照合（仮登録・応募の重複確認、統合候補）に使う users.phone にもそろえる（#123）
+async function syncUserPhoneFromEmployee(db: D1Database, sid: string, companyId: number, phoneMain: unknown) {
+  const raw = String(phoneMain ?? '').trim()
+  const digits = normalizePhone(raw)
+  await db.prepare('UPDATE users SET phone = ? WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?)')
+    .bind(digits.length >= 10 && digits.length <= 11 ? digits : (raw || null), sid, companyId).run()
+}
+
 // ============ 退職日・在籍状況（#5 #34 #139） ============
 // 退職日は users テーブル側で管理する（定期削除の「退職後7年」判定に使用）。
 // users.status('active'/'suspended') は他機能の対象判定に使われているため、退職が効力を持つときだけ suspended にする。
@@ -1802,15 +1967,18 @@ api.put('/admin/staff/:id', async (c) => {
   }
   const retErr = await validateRetirement(c.env.DB, sid, body, roster)
   if (retErr) return c.json(retErr, retErr.confirm_required ? 409 : 400)
+  const contactErr = await checkContactUpdate(c, sid, body, roster)
+  if (contactErr) return c.json(contactErr.body, contactErr.status)
   await applyProfileUpdate(c, sid, body, roster)
-  return c.json({ ok: true })
+  const contact = await applyContactUpdate(c, body, roster)
+  return c.json({ ok: true, ...contact })
 })
 
 // スタッフ登録
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
   const { user_code: rawCode, name, password, email, phone, skills, career, work_area } = await c.req.json()
-  const user_code = String(rawCode ?? '').trim()
+  const user_code = normalizeLoginCode(rawCode) // ログイン画面と同じく全角を半角にそろえて保存する（#387）
   if (!user_code || !name || !password) return c.json({ error: 'スタッフ番号・氏名・パスワードは必須です' }, 400)
   const pwErr = validatePassword(password)
   if (pwErr) return c.json({ error: pwErr }, 400)
@@ -2249,7 +2417,9 @@ api.put('/admin/employees/:staffId', async (c) => {
     'employment_insurance_no', 'social_insurance_no',
     'paid_leave_granted_at', 'paid_leave_remaining', 'telework_remaining_this_month',
   ]
-  const exists = await c.env.DB.prepare('SELECT employee_record_id FROM employee_records WHERE staff_id = ?').bind(sid).first()
+  const exists = await c.env.DB.prepare('SELECT employee_record_id, phone_main FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
+  // 電話番号が変わったときだけ users.phone にそろえる（従業員管理を初めて保存したときに、登録時の電話番号を空欄で消さないように比べる。#123）
+  const phoneChanged = b.phone_main !== undefined && normalizePhone(b.phone_main) !== normalizePhone(exists?.phone_main)
   if (exists) {
     // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#18）
     const upd = buildUpdate(b, cols)
@@ -2261,6 +2431,7 @@ api.put('/admin/employees/:staffId', async (c) => {
       .bind(sid, u.company_id, ...cols.map(k => b[k] === '' ? null : (b[k] ?? null))).run()
   }
   if (roster) await applyProfileUpdate(c, sid, profile, roster)
+  if (phoneChanged) await syncUserPhoneFromEmployee(c.env.DB, sid, u.company_id, b.phone_main)
   return c.json({ ok: true })
 })
 

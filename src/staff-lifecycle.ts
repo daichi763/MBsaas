@@ -244,7 +244,7 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   stmts.push(db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id))
   // まとめて実行する（スタッフ番号の重複で失敗したら、性別・フリガナ・本登録もやり直せるように取り消す）
   try { await db.batch(stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...(b.user_code || b.password ? { login: loginGuide(c, b) } : {}) })
 })
 
 // ---------- ログインの発行（本登録・後からの発行で共用。#89 #103 #148） ----------
@@ -272,8 +272,11 @@ export function promoteLinkedLoginsStmt(db: D1Database, staffId: number) {
       AND user_id IN (SELECT sp.user_id FROM staff_profiles sp WHERE sp.staff_id IN (SELECT id FROM down) AND sp.merged_into_staff_id IS NULL)`).bind(staffId)
 }
 // 入力を確かめて、ログインを発行する文を返す（実行は呼び出し側で db.batch。スタッフ番号の重複は batch の失敗になる）
+// 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（must_change_password。#43）。
+// スタッフ番号はログイン画面と同じく全角を半角にそろえて保存する（#387）
 async function loginStatements(db: D1Database, companyId: number, sp: any, b: any): Promise<{ stmts: D1PreparedStatement[] } | { error: string; status: number }> {
-  const code = String(b.user_code || '').trim()
+  const code = String(b.user_code || '').normalize('NFKC').trim()
+  b.user_code = code
   if (!code || !b.password) return { error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください', status: 400 }
   if (code.length > 50) return { error: 'スタッフ番号は50文字以内で入力してください', status: 400 }
   const pwErr = validatePassword(b.password)
@@ -281,12 +284,19 @@ async function loginStatements(db: D1Database, companyId: number, sp: any, b: an
   const em = loginEmail(sp, b)
   if ('error' in em) return { error: em.error, status: 400 }
   const stmts = [
-    db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = CASE WHEN ? = 1 THEN ? ELSE email END WHERE user_id = ? AND company_id = ?`)
+    db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', must_change_password = 1, email = CASE WHEN ? = 1 THEN ? ELSE email END WHERE user_id = ? AND company_id = ?`)
       .bind(code, await hashPassword(String(b.password)), em.set ? 1 : 0, em.email, sp.user_id, companyId),
   ]
   if (em.clearUnverified) stmts.push(db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id))
   stmts.push(promoteLinkedLoginsStmt(db, sp.staff_id))
   return { stmts }
+}
+// 本人に渡すログイン案内（#328）。ログインURLは会社コードを入れた状態で開く（/login?c=）。初期パスワードは管理者が入力した値をそのまま返す（保存はしない）
+function loginGuide(c: any, b: any) {
+  const u = c.get('user')
+  const origin = new URL(c.req.url).origin
+  return { login_url: `${origin}/login?c=${encodeURIComponent(u.company_code || '')}`, company_code: u.company_code || '', company_name: u.company_name || '',
+    user_code: String(b.user_code || ''), password: String(b.password || '') }
 }
 // 自社で発行したログインか（他社連携の行は、連携時に照合できないパスワードで作った LK- の行。区分を変えても自社のログインはない）
 function hasOwnLogin(sp: any) { return sp.user_role === 'staff' && !String(sp.user_code || '').startsWith('LK-') }
@@ -311,7 +321,7 @@ adminLifecycleApi.post('/staff/:id/issue-login', async (c) => {
   const login = await loginStatements(db, u.company_id, sp, b)
   if ('error' in login) return c.json({ error: login.error }, login.status as any)
   try { await db.batch(login.stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
-  return c.json({ ok: true })
+  return c.json({ ok: true, login: loginGuide(c, b) })
 })
 
 // 未確認のメール（応募フォーム・統合元から引き継いだもの）を、本人に確認できたらログイン・再設定用に設定する／不要なら消す（#38 #148）
@@ -441,7 +451,7 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   }
   if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
   if (!repair) {
-    if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は本登録から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
+    if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は、変更の後に「区分・登録状態」の「ログインを発行」から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
     else if (sp.user_role === 'staff') effects.push('ログインはそのまま使えます')
   }
   if (effective < opts.today) {
@@ -640,7 +650,8 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
     WHERE staff_id = ? AND company_id = ? ORDER BY period_id DESC`).bind(sp.staff_id, u.company_id).all()).results
   return c.json({
     staff_id: sp.staff_id, affiliation_type: sp.affiliation_type || 'own_employee', is_provisional: !!sp.is_provisional,
-    has_login: sp.user_role === 'staff', user_code: sp.user_role === 'staff' ? sp.user_code : null, phone: sp.phone,
+    // 他社連携の行の LK- コードは自社ではログインに使えないため、スタッフ番号として返さない（#569）
+    has_login: sp.user_role === 'staff', user_code: hasOwnLogin(sp) ? sp.user_code : null, phone: sp.phone,
     // 本登録・ログインの発行の画面に今の値を出す（#148 #505）。unverified_email は応募フォームなどで入力された未確認のメール
     has_own_login: hasOwnLogin(sp), can_issue_login: canIssueLogin(sp), email: sp.email || null, unverified_email: sp.unverified_email || null,
     kana: sp.kana || null, gender: sp.gender || null,
@@ -718,7 +729,10 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   // 代理入力: 受け付けない理由（確定済み・欠勤・稼働日より前）と、時刻が空欄のときの既定値
   const proxyBlocked = isSettled(s) ? '確定済み' : s.status === 'absent' ? '欠勤' : s.work_date > todayJST() ? '稼働日より前' : null
   const proxy_defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
-  return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token,
+  // 他社連携のスタッフ（他社連携から区分を変えた LK- の行も）は、所属元のアカウントから企業を切り替えて報告する（自社のログインではない。#569）
+  const aff = await db.prepare('SELECT sp.affiliation_type, us.user_code FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(s.staff_id).first() as any
+  const viaOwner = s.user_role === 'staff' && (aff?.affiliation_type === 'linked_external' || String(aff?.user_code || '').startsWith('LK-'))
+  return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', login_via_owner: viaOwner,shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token,
     work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, now: nowJST(), proxy_blocked: proxyBlocked, proxy_defaults })
 })
 adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
