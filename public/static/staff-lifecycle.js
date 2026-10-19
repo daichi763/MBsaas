@@ -148,11 +148,14 @@
       </section>
       <section class="card p-4" id="staff-report-settings">
         <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>日報の提出設定</h3>
-        <p class="text-[11px] text-gray-400 mb-2">案件の初期値 → スタッフ → シフトの順に上書きします。勤怠報告（8 種類）は${reportSettingsLink()}で案件ごとに設定します</p>
+        <p class="text-[11px] text-gray-400 mb-2">案件の初期値 → スタッフ → シフトの順に上書きします。勤怠報告（8 種類）は${reportSettingsLink()}で案件ごとに設定します（下の一覧から、このスタッフの全案件をまとめて設定できます）</p>
         <label class="text-xs text-gray-600 block">日報<select id="sl-dr" class="inp text-sm">${opts(DR_LABEL, data.daily_report_mode || '')}</select></label>
         <button class="btn btn-outline w-full text-xs mt-2" onclick="saveStaffReportSettings(${sid})">保存する</button>
+        <div id="staff-attendance-report-summary" class="mt-3"></div>
       </section>
     </div>`
+    // 案件ごとの勤怠報告の要約（report-settings.js。#413）
+    if (window.renderStaffReportSummary) renderStaffReportSummary(sid)
     renderHostStatusPanel(sid, p)
   }
   // =========================================================

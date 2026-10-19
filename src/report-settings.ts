@@ -253,32 +253,62 @@ async function projectDefaults(db: D1Database, projectId: number): Promise<Recor
   for (const r of rows) if (isReportType(r.report_type)) out[r.report_type] = r.enabled ? 1 : 0
   return out
 }
+// 所属スタッフの在籍状況（SQL の式。sp = staff_profiles、us = users）
+//   merged = 統合済み / retired = 退職・停止 / ended = 他社連携の取引終了 / leave = 休職 / active = 在籍
+// retired・merged・ended は一括変更と「今の所属スタッフにも適用」の対象にしない（#247 #379）
+const MEMBER_STATUS_SQL = `CASE WHEN sp.merged_into_staff_id IS NOT NULL THEN 'merged'
+  WHEN COALESCE(sp.employment_status, 'working') = 'retired' OR us.status != 'active' THEN 'retired'
+  WHEN sp.link_ended_at IS NOT NULL THEN 'ended'
+  WHEN sp.employment_status = 'leave' THEN 'leave' ELSE 'active' END`
+const INACTIVE_STATUSES = ['retired', 'merged', 'ended']
+const isInactive = (status: any) => INACTIVE_STATUSES.includes(status)
 // 案件にシフトがあるスタッフ（= 所属スタッフ）
 async function projectMemberIds(db: D1Database, companyId: number, projectId: number): Promise<number[]> {
-  return ((await db.prepare('SELECT DISTINCT staff_id FROM shifts WHERE project_id = ? AND company_id = ?').bind(projectId, companyId).all()).results as any[]).map(r => r.staff_id)
+  return [...(await projectMemberStatus(db, companyId, projectId)).keys()]
 }
+// 所属スタッフと在籍状況（staff_id → member_status）
+async function projectMemberStatus(db: D1Database, companyId: number, projectId: number): Promise<Map<number, string>> {
+  const rows = (await db.prepare(`SELECT m.staff_id, ${MEMBER_STATUS_SQL} AS member_status
+    FROM (SELECT DISTINCT staff_id FROM shifts WHERE project_id = ? AND company_id = ?) m
+    LEFT JOIN staff_profiles sp ON sp.staff_id = m.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`).bind(projectId, companyId).all()).results as any[]
+  return new Map(rows.map(r => [r.staff_id as number, String(r.member_status)]))
+}
+// 設定の種類（#268）
+//   none       = 行がない（案件の標準設定に従う）
+//   inherited  = 標準設定の変更の前に、その時点の値で固定した行・導入時の移行の行だけ（標準（引き継ぎ））
+//   individual = 個別変更・一括変更の行がある（個別）
+//   legacy     = 行がなく、0027 より前のスタッフ単位の設定（none / in_out）を使っている（個別の扱い）
+export type SettingKind = 'none' | 'inherited' | 'individual' | 'legacy'
+type StaffSetting = { values: Record<string, number>; hasRows: boolean; kind: SettingKind; legacy_mode: string | null }
+const EXPLICIT_SOURCES = ['individual', 'bulk']
 // スタッフ別の値（行がなければ、0027 より前のスタッフ単位の設定（none / in_out）か案件の標準設定）
 async function staffSettings(db: D1Database, projectId: number, staffIds: number[], defaults: Record<string, number>) {
-  const out = new Map<number, { values: Record<string, number>; individual: boolean; legacy_mode: string | null }>()
-  for (const id of staffIds) out.set(id, { values: { ...defaults }, individual: false, legacy_mode: null })
+  const out = new Map<number, StaffSetting>()
+  for (const id of staffIds) out.set(id, emptySetting(defaults))
   for (let i = 0; i < staffIds.length; i += 90) {
     const chunk = staffIds.slice(i, i + 90)
     const legacy = (await db.prepare(`SELECT staff_id, attendance_mode FROM staff_profiles WHERE staff_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all()).results as any[]
-    for (const r of legacy) {
-      const s = out.get(r.staff_id); const flags = legacyStaffFlags(r.attendance_mode)
-      if (s && flags) { s.values = flags; s.legacy_mode = r.attendance_mode }
-    }
-    const rows = (await db.prepare(`SELECT staff_id, report_type, enabled FROM project_staff_report_settings WHERE project_id = ? AND staff_id IN (${chunk.map(() => '?').join(',')})`)
+    for (const r of legacy) { const s = out.get(r.staff_id); if (s) applyLegacy(s, r.attendance_mode) }
+    const rows = (await db.prepare(`SELECT staff_id, report_type, enabled, source FROM project_staff_report_settings WHERE project_id = ? AND staff_id IN (${chunk.map(() => '?').join(',')})`)
       .bind(projectId, ...chunk).all()).results as any[]
-    for (const r of rows) {
-      const s = out.get(r.staff_id); if (!s || !isReportType(r.report_type)) continue
-      // 行がある組み合わせは、スタッフ単位の旧設定を使わない（attendanceTypesForShifts と同じ）
-      if (!s.individual && s.legacy_mode) { s.values = { ...defaults }; s.legacy_mode = null }
-      s.values[r.report_type] = r.enabled ? 1 : 0; s.individual = true
-    }
+    for (const r of rows) { const s = out.get(r.staff_id); if (s) applyRow(s, r, defaults) }
   }
   return out
 }
+const emptySetting = (defaults: Record<string, number>): StaffSetting => ({ values: { ...defaults }, hasRows: false, kind: 'none', legacy_mode: null })
+function applyLegacy(s: StaffSetting, mode: any) {
+  const flags = legacyStaffFlags(mode)
+  if (flags && !s.hasRows) { s.values = flags; s.legacy_mode = mode; s.kind = 'legacy' }
+}
+function applyRow(s: StaffSetting, r: { report_type: string; enabled: any; source: string }, defaults: Record<string, number>) {
+  if (!isReportType(r.report_type)) return
+  // 行がある組み合わせは、スタッフ単位の旧設定を使わない（attendanceTypesForShifts と同じ）
+  if (!s.hasRows) { s.values = { ...defaults }; s.legacy_mode = null; s.kind = 'inherited' }
+  s.values[r.report_type] = r.enabled ? 1 : 0; s.hasRows = true
+  if (EXPLICIT_SOURCES.includes(r.source)) s.kind = 'individual'
+}
+// 画面の『個別』の印: 個別変更・一括変更をした人と、スタッフ単位の旧設定を使っている人
+const isCustom = (s: StaffSetting) => s.kind === 'individual' || s.kind === 'legacy'
 
 // 報告を始めたシフト（稼働日が昨日・今日で、報告が 1 つ以上ある）の、設定を変える前の有効な報告を記録する文を返す。
 // 勤務の途中で ON にした報告は、そのシフトでは求めない（次のシフトから効く。#458）。OFF にした報告はすぐ外れる
@@ -309,46 +339,107 @@ async function sha256(text: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
-// 1 人分（最大 8 行）を 1 文で書く（D1 のバインド変数は 1 文 100 個まで: 8 行 × 8 個 = 64）
-function upsertStaffRows(db: D1Database, companyId: number, projectId: number, staffId: number, rows: { t: string; enabled: number; source: string }[], by: number | null, at: string) {
-  return db.prepare(`INSERT INTO project_staff_report_settings (project_id, staff_id, company_id, report_type, enabled, source, updated_by, updated_at)
-    VALUES ${rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}
+// 案件 × スタッフ別の行の書き込み。同じ（種類・値・由来）のスタッフをまとめて 1 文で書く（json_each）。
+// 文の数はスタッフの人数で増えない（最大 8 種類 × 2 値 × 由来の数）ため、人数の多い案件でも D1 の batch の上限に当たらない（#247）
+type Cell = { staffId: number; t: string; enabled: number; source: string }
+function upsertCells(db: D1Database, companyId: number, projectId: number, cells: Cell[], by: number | null, at: string): D1PreparedStatement[] {
+  const groups = new Map<string, { c: Cell; ids: number[] }>()
+  for (const c of cells) {
+    const k = `${c.t}|${c.enabled}|${c.source}`
+    if (!groups.has(k)) groups.set(k, { c, ids: [] }); groups.get(k)!.ids.push(c.staffId)
+  }
+  // INSERT ... SELECT に ON CONFLICT を付けるときは、構文の曖昧さを避けるため WHERE が要る
+  return [...groups.values()].map(({ c, ids }) => db.prepare(`INSERT INTO project_staff_report_settings (project_id, staff_id, company_id, report_type, enabled, source, updated_by, updated_at)
+    SELECT ?, j.value, ?, ?, ?, ?, ?, ? FROM json_each(?) j WHERE 1
     ON CONFLICT(project_id, staff_id, report_type) DO UPDATE SET enabled = excluded.enabled, source = excluded.source, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
-    .bind(...rows.flatMap(r => [projectId, staffId, companyId, r.t, r.enabled, r.source, by, at]))
+    .bind(projectId, companyId, c.t, c.enabled, c.source, by, at, bindJsonArray(ids)))
 }
-// 履歴を 1 文で書く（最大 8 行 × 12 個 = 96）
-function logRows(db: D1Database, companyId: number, projectId: number, staffId: number | null, rows: { t: string; oldV: number | null; newV: number }[], action: string, batchId: string, a: Actor | null, at: string) {
-  return db.prepare(`INSERT INTO report_setting_logs (company_id, project_id, staff_id, report_type, old_enabled, new_enabled, action, batch_id, changed_by, changed_by_name, changed_by_role, created_at)
-    VALUES ${rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`)
-    .bind(...rows.flatMap(r => [companyId, projectId, staffId, r.t, r.oldV, r.newV, action, batchId, a?.user_id ?? null, a?.name ?? null, a?.role ?? null, at]))
+// 履歴の書き込み。同じ（種類・変更前・変更後）のスタッフをまとめて 1 文で書く。staffId が null の行は案件の標準設定の変更
+type LogCell = { staffId: number | null; t: string; oldV: number | null; newV: number }
+type LogExtra = { shift_id?: number | null; detail?: string | null }
+function logCells(db: D1Database, companyId: number, projectId: number, cells: LogCell[], action: string, batchId: string, a: Actor | null, at: string, extra: LogExtra = {}): D1PreparedStatement[] {
+  const cols = `(company_id, project_id, staff_id, report_type, old_enabled, new_enabled, action, batch_id, changed_by, changed_by_name, changed_by_role, created_at, shift_id, detail)`
+  const tail = [action, batchId, a?.user_id ?? null, a?.name ?? null, a?.role ?? null, at, extra.shift_id ?? null, extra.detail ?? null]
+  const stmts: D1PreparedStatement[] = []
+  const groups = new Map<string, { c: LogCell; ids: number[] }>()
+  for (const c of cells) {
+    if (c.staffId == null) {
+      stmts.push(db.prepare(`INSERT INTO report_setting_logs ${cols} VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(companyId, projectId, c.t, c.oldV, c.newV, ...tail))
+      continue
+    }
+    const k = `${c.t}|${c.oldV}|${c.newV}`
+    if (!groups.has(k)) groups.set(k, { c, ids: [] }); groups.get(k)!.ids.push(c.staffId)
+  }
+  for (const { c, ids } of groups.values()) {
+    stmts.push(db.prepare(`INSERT INTO report_setting_logs ${cols} SELECT ?, ?, j.value, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM json_each(?) j`)
+      .bind(companyId, projectId, c.t, c.oldV, c.newV, ...tail, bindJsonArray(ids)))
+  }
+  return stmts
 }
 async function runBatch(db: D1Database, stmts: D1PreparedStatement[]) {
   // D1 の batch は 1 トランザクション。途中で失敗したら全体が取り消される
   if (stmts.length) await db.batch(stmts)
 }
 
-// 案件の標準設定を変える。変える前に、個別の行がない所属スタッフへ今の値を固定する（標準設定の変更は新しく所属するスタッフにだけ効く）
-export async function setProjectDefaults(db: D1Database, companyId: number, projectId: number, next: Record<string, any>, u: any) {
+// 案件の標準設定の版番号（楽観ロック。#509）
+async function defaultsVersion(db: D1Database, projectId: number): Promise<number> {
+  return Number(((await db.prepare('SELECT report_defaults_version AS v FROM projects WHERE project_id = ?').bind(projectId).first()) as any)?.v || 0)
+}
+
+// 案件の標準設定を変える（docs 2.5）。apply で、今の所属スタッフにも当てるかを選ぶ（#329）
+//   none     : 変える前に、個別の行がない所属スタッフへ今の値を固定する（標準設定の変更は新しく所属するスタッフにだけ効く）
+//   standard : 個別に変えていない在籍中の所属スタッフにも当てる（個別に変えた人・退職者などは今の値で固定）
+//   all      : 個別に変えた人を含め、在籍中の所属スタッフ全員に当てる（変えた種類だけを上書きする）
+// version を渡すと、画面を開いた時点の版番号と比べ、ほかの人が先に変えていたら conflict を返す（#509）
+export type ApplyScope = 'none' | 'standard' | 'all'
+export async function setProjectDefaults(db: D1Database, companyId: number, projectId: number, next: Record<string, any>, u: any,
+  opts: { apply?: ApplyScope; version?: number | null } = {}) {
   const cur = await projectDefaults(db, projectId)
+  const version = await defaultsVersion(db, projectId)
+  if (opts.version != null && opts.version !== version) return { conflict: true, changed: 0, applied_staff: 0, version }
   const changed = REPORT_TYPES.filter(t => next[t] !== undefined && (next[t] ? 1 : 0) !== cur[t])
-  if (!changed.length) return { changed: 0 }
+  if (!changed.length) return { changed: 0, applied_staff: 0, version }
+  const apply = opts.apply || 'none'
+  const nv = (t: string) => next[t] ? 1 : 0
   const at = nowJST(), batchId = newBatchId(), a = actorOf(u)
-  const members = await projectMemberIds(db, companyId, projectId)
-  const settings = await staffSettings(db, projectId, members, cur)
-  const stmts: D1PreparedStatement[] = []
+  const members = await projectMemberStatus(db, companyId, projectId)
+  const settings = await staffSettings(db, projectId, [...members.keys()], cur)
+  const cells: Cell[] = [], staffLogs: LogCell[] = [], applied: number[] = []
   for (const [staffId, s] of settings) {
-    if (s.individual) continue
-    // 今の値（標準設定。スタッフ単位の旧設定がある人はその値）を固定する
-    stmts.push(upsertStaffRows(db, companyId, projectId, staffId, REPORT_TYPES.map(t => ({ t, enabled: s.values[t], source: 'default' })), a.user_id, at))
+    // 旧設定（スタッフ単位の none / in_out）の値は本人に明示した設定なので、固定するときも『個別』として残す
+    const keepSource = s.legacy_mode ? 'individual' : 'default'
+    const target = apply !== 'none' && !isInactive(members.get(staffId)) && (apply === 'all' || !isCustom(s))
+    if (!target) {
+      if (s.hasRows) continue
+      // 今の値（標準設定。スタッフ単位の旧設定がある人はその値）を固定する
+      cells.push(...REPORT_TYPES.map(t => ({ staffId, t, enabled: s.values[t], source: keepSource })))
+      continue
+    }
+    const diff = changed.filter(t => s.values[t] !== nv(t))
+    if (diff.length) { applied.push(staffId); staffLogs.push(...diff.map(t => ({ staffId, t, oldV: s.values[t], newV: nv(t) }))) }
+    // 行のない人は書かずに、変更後の標準設定に従わせる
+    if (s.kind === 'none') continue
+    // 行のある人・旧設定の人は、変えた種類だけを変更後の値にする（旧設定の人は 8 種類の行を作る）
+    cells.push(...REPORT_TYPES.filter(t => changed.includes(t) || !s.hasRows)
+      .map(t => changed.includes(t) ? { staffId, t, enabled: nv(t), source: 'default' } : { staffId, t, enabled: s.values[t], source: keepSource }))
   }
+  const stmts: D1PreparedStatement[] = []
+  // 版番号を進める（読んだ版のときだけ）
+  stmts.push(db.prepare('UPDATE projects SET report_defaults_version = COALESCE(report_defaults_version, 0) + 1 WHERE project_id = ? AND company_id = ? AND COALESCE(report_defaults_version, 0) = ?')
+    .bind(projectId, companyId, version))
+  // 当てる人の、報告を始めたシフトは変える前の設定で固定する
+  stmts.push(...await freezeStartedShifts(db, companyId, projectId, applied))
   for (const t of changed) {
     stmts.push(db.prepare(`INSERT INTO project_report_defaults (project_id, company_id, report_type, enabled, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(project_id, report_type) DO UPDATE SET enabled = excluded.enabled, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
-      .bind(projectId, companyId, t, next[t] ? 1 : 0, a.user_id, at))
+      .bind(projectId, companyId, t, nv(t), a.user_id, at))
   }
-  stmts.push(logRows(db, companyId, projectId, null, changed.map(t => ({ t, oldV: cur[t], newV: next[t] ? 1 : 0 })), 'project_default', batchId, a, at))
+  stmts.push(...upsertCells(db, companyId, projectId, cells, a.user_id, at))
+  stmts.push(...logCells(db, companyId, projectId, changed.map(t => ({ staffId: null, t, oldV: cur[t], newV: nv(t) })), 'project_default', batchId, a, at))
+  // 今の所属スタッフに当てた分は、スタッフごとに履歴を残す（同じ batch_id）
+  stmts.push(...logCells(db, companyId, projectId, staffLogs, 'default_apply', batchId, a, at))
   await runBatch(db, stmts)
-  return { changed: changed.length }
+  return { changed: changed.length, applied_staff: applied.length, version: version + 1 }
 }
 
 // スタッフ別の設定を変える（individual / bulk）。changes: staffId → { type: 0|1 }
@@ -357,45 +448,101 @@ async function setStaffSettings(db: D1Database, companyId: number, projectId: nu
   const settings = await staffSettings(db, projectId, [...changes.keys()], defaults)
   const at = nowJST(), batchId = newBatchId(), a = actorOf(u)
   const stmts: D1PreparedStatement[] = []
-  let staffChanged = 0, cells = 0
+  let staffChanged = 0, cellCount = 0
   // 報告を始めたシフトは、変える前の設定で固定してから変更する（同じ batch で書く）
   const changedIds = [...changes].filter(([id, next]) => REPORT_TYPES.some(t => next[t] !== undefined && next[t] !== settings.get(id)!.values[t])).map(([id]) => id)
   stmts.push(...await freezeStartedShifts(db, companyId, projectId, changedIds))
+  const cells: Cell[] = [], logs: LogCell[] = []
   for (const [staffId, next] of changes) {
-    const cur = settings.get(staffId)!.values
+    const s = settings.get(staffId)!, cur = s.values
     const diff = REPORT_TYPES.filter(t => next[t] !== undefined && next[t] !== cur[t])
     if (!diff.length) continue
-    staffChanged++; cells += diff.length
+    staffChanged++; cellCount += diff.length
     // 8 種類すべての行を持たせる（変えない種類は今の値のまま。由来は変えた種類のみ更新）
-    const individual = settings.get(staffId)!.individual
-    const rows = REPORT_TYPES.filter(t => diff.includes(t) || !individual)
-      .map(t => diff.includes(t) ? { t, enabled: next[t], source: action } : { t, enabled: cur[t], source: 'default' })
-    stmts.push(upsertStaffRows(db, companyId, projectId, staffId, rows, a.user_id, at))
-    stmts.push(logRows(db, companyId, projectId, staffId, diff.map(t => ({ t, oldV: cur[t], newV: next[t] })), action, batchId, a, at))
+    cells.push(...REPORT_TYPES.filter(t => diff.includes(t) || !s.hasRows)
+      .map(t => diff.includes(t) ? { staffId, t, enabled: next[t], source: action } : { staffId, t, enabled: cur[t], source: s.legacy_mode ? 'individual' : 'default' }))
+    logs.push(...diff.map(t => ({ staffId, t, oldV: cur[t], newV: next[t] })))
   }
+  stmts.push(...upsertCells(db, companyId, projectId, cells, a.user_id, at))
+  stmts.push(...logCells(db, companyId, projectId, logs, action, batchId, a, at))
   await runBatch(db, stmts)
-  return { staff_changed: staffChanged, cells, batch_id: staffChanged ? batchId : null }
+  return { staff_changed: staffChanged, cells: cellCount, batch_id: staffChanged ? batchId : null }
+}
+
+// スタッフにシフトがある案件
+async function staffProjectIds(db: D1Database, companyId: number, staffId: number): Promise<number[]> {
+  return ((await db.prepare('SELECT DISTINCT project_id FROM shifts WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).all()).results as any[]).map(r => r.project_id)
 }
 
 // 旧来のスタッフ単位の提出設定 API（PUT /admin/staff/:id/report-settings）の勤怠部分: 所属する全案件の設定を置き換える
-// mode = '' / null は「案件の標準設定に戻す」
+// mode = '' / null は「案件の標準設定に戻す」（案件 × スタッフ別の行を消し、スタッフ単位の値も消す。#413）
 export async function applyLegacyStaffMode(db: D1Database, companyId: number, staffId: number, mode: any, u: any) {
-  const projects = ((await db.prepare('SELECT DISTINCT project_id FROM shifts WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).all()).results as any[]).map(r => r.project_id)
-  for (const pid of projects) {
-    const next = mode ? flagsFromLegacyMode(mode) : await projectDefaults(db, pid)
-    await setStaffSettings(db, companyId, pid, new Map([[staffId, next]]), 'individual', u)
-  }
+  if (!mode) return { projects: (await resetStaffSettings(db, companyId, staffId, null, u)).projects }
+  const projects = await staffProjectIds(db, companyId, staffId)
+  for (const pid of projects) await setStaffSettings(db, companyId, pid, new Map([[staffId, flagsFromLegacyMode(mode)]]), 'individual', u)
   // スタッフ単位の値も保存する（これから所属する案件で、案件 × スタッフ別の行がない間に使う）
-  await db.prepare('UPDATE staff_profiles SET attendance_mode = ? WHERE staff_id = ? AND company_id = ?').bind(mode || null, staffId, companyId).run()
+  await db.prepare('UPDATE staff_profiles SET attendance_mode = ? WHERE staff_id = ? AND company_id = ?').bind(mode, staffId, companyId).run()
   return { projects: projects.length }
+}
+
+// スタッフの設定を案件の標準設定に戻す（#413）。案件 × スタッフ別の行を消して、標準設定に従う状態にする。
+// projectIds が null なら、シフトのあるすべての案件。すべての案件を戻すときは、スタッフ単位の旧設定（none / in_out）も消す。
+// 一部の案件だけを戻すときに旧設定が残っている場合は、行を消すと旧設定が効くため、標準設定の値で行を作る（標準（引き継ぎ））
+export async function resetStaffSettings(db: D1Database, companyId: number, staffId: number, projectIds: number[] | null, u: any) {
+  const all = await staffProjectIds(db, companyId, staffId)
+  const targets = projectIds ? all.filter(p => projectIds.includes(p)) : all
+  const legacyMode = ((await db.prepare('SELECT attendance_mode FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).first()) as any)?.attendance_mode
+  const hasLegacy = !!legacyStaffFlags(legacyMode)
+  const clearLegacy = hasLegacy && targets.length === all.length
+  const at = nowJST(), batchId = newBatchId(), a = actorOf(u)
+  let projects = 0, cells = 0
+  for (const pid of targets) {
+    const defaults = await projectDefaults(db, pid)
+    const s = (await staffSettings(db, pid, [staffId], defaults)).get(staffId)!
+    const diff = REPORT_TYPES.filter(t => s.values[t] !== defaults[t])
+    if (!s.hasRows && !diff.length) continue
+    const stmts: D1PreparedStatement[] = [...await freezeStartedShifts(db, companyId, pid, diff.length ? [staffId] : [])]
+    stmts.push(db.prepare('DELETE FROM project_staff_report_settings WHERE project_id = ? AND staff_id = ? AND company_id = ?').bind(pid, staffId, companyId))
+    if (hasLegacy && !clearLegacy) stmts.push(...upsertCells(db, companyId, pid, REPORT_TYPES.map(t => ({ staffId, t, enabled: defaults[t], source: 'default' })), a.user_id, at))
+    stmts.push(...logCells(db, companyId, pid, diff.map(t => ({ staffId, t, oldV: s.values[t], newV: defaults[t] })), 'staff_reset', batchId, a, at))
+    await runBatch(db, stmts)
+    projects++; cells += diff.length
+  }
+  if (clearLegacy) await db.prepare('UPDATE staff_profiles SET attendance_mode = NULL WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).run()
+  return { projects, cells, batch_id: projects ? batchId : null }
+}
+
+// シフト単位の例外（shifts.attendance_mode）を変えたときの履歴の文（#313）。
+// shift は shifts の行（s.*）に sp_att（staff_profiles.attendance_mode）を加えたもの。例外が変わらなければ空
+const SHIFT_MODE_LABEL: Record<string, string> = { full: '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ' }
+const normShiftMode = (m: any) => m === 'none' || m === 'in_out' ? m : 'full'
+export async function shiftOverrideLogStatements(db: D1Database, companyId: number, shift: any, nextMode: any, u: any): Promise<D1PreparedStatement[]> {
+  const from = normShiftMode(shift.attendance_mode), to = normShiftMode(nextMode)
+  if (from === to) return []
+  const row = { shift_id: shift.shift_id, project_id: shift.project_id, staff_id: shift.staff_id, attendance_types_fixed: shift.attendance_types_fixed, legacy_mode: shift.sp_att }
+  const before = (await attendanceTypesForRows(db, [{ ...row, attendance_mode: shift.attendance_mode }])).get(shift.shift_id)!.types
+  const after = (await attendanceTypesForRows(db, [{ ...row, attendance_mode: nextMode }])).get(shift.shift_id)!.types
+  let cells: LogCell[] = REPORT_TYPES.filter(t => before.includes(t) !== after.includes(t))
+    .map(t => ({ staffId: shift.staff_id, t, oldV: before.includes(t) ? 1 : 0, newV: after.includes(t) ? 1 : 0 }))
+  // 有効な報告が変わらない変更も、誰がいつ例外を付けたかを残す（入店報告の行に、変更前と同じ値で記録する）
+  if (!cells.length) { const v = after.includes('check_in') ? 1 : 0; cells = [{ staffId: shift.staff_id, t: 'check_in', oldV: v, newV: v }] }
+  const detail = `${shift.work_date} ${shift.start_time || ''}〜${shift.end_time || ''} のシフト: ${SHIFT_MODE_LABEL[from]} → ${SHIFT_MODE_LABEL[to]}`
+  return logCells(db, companyId, shift.project_id, cells, 'shift_override', newBatchId(), actorOf(u), nowJST(), { shift_id: shift.shift_id, detail })
 }
 
 // ---------- 管理者 API ----------
 export const reportSettingsApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+// クライアントは案件と同じ会社のものだけを結ぶ（他社のクライアント名を出さない。#22）
+const CLIENT_JOIN = 'LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id'
 async function ownProject(db: D1Database, companyId: number, id: any) {
-  return db.prepare('SELECT p.project_id, p.project_name, p.status, p.attendance_mode, cl.client_name FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE p.project_id = ? AND p.company_id = ?')
+  return db.prepare(`SELECT p.project_id, p.project_name, p.status, p.attendance_mode, cl.client_name, COALESCE(p.report_defaults_version, 0) AS defaults_version
+    FROM projects p ${CLIENT_JOIN} WHERE p.project_id = ? AND p.company_id = ?`)
     .bind(id, companyId).first() as Promise<any>
+}
+async function ownStaffRow(db: D1Database, companyId: number, id: any) {
+  return db.prepare(`SELECT sp.staff_id, us.name, sp.attendance_mode, ${MEMBER_STATUS_SQL} AS member_status
+    FROM staff_profiles sp LEFT JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(Number(id) || 0, companyId).first() as Promise<any>
 }
 function parseSettings(b: any): Record<string, number> | null {
   if (!b || typeof b !== 'object') return null
@@ -406,50 +553,78 @@ function parseSettings(b: any): Record<string, number> | null {
   }
   return Object.keys(out).length ? out : null
 }
+function parseIdList(v: any): number[] | null {
+  if (v === undefined || v === null) return null
+  if (!Array.isArray(v)) return []
+  return [...new Set(v.map(Number))].filter(n => Number.isInteger(n) && n > 0)
+}
 function todayJST(): string { return nowJST().slice(0, 10) }
+const TOO_MANY = '保存に失敗しました。設定は変更されていません。対象が多い場合は、スタッフを分けて実行してください'
 
-// 案件一覧（終了した案件は include_closed=1 で表示）
+// 案件一覧（終了した案件は include_closed=1 で表示）。
+// 個別設定のある人数と、OFF の報告がある在籍中の所属スタッフの人数も返す（#446）
 reportSettingsApi.get('/report-settings/projects', async (c) => {
   const u = c.get('user')
   const includeClosed = c.req.query('include_closed') === '1'
   const rows = (await c.env.DB.prepare(`SELECT p.project_id, p.project_name, p.status, cl.client_name,
       (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id) AS member_count,
-      (SELECT COUNT(*) FROM project_report_defaults d WHERE d.project_id = p.project_id AND d.enabled = 0) AS default_off
-    FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id
+      (SELECT COUNT(*) FROM project_report_defaults d WHERE d.project_id = p.project_id AND d.enabled = 0) AS default_off,
+      (SELECT COUNT(DISTINCT r.staff_id) FROM project_staff_report_settings r WHERE r.project_id = p.project_id AND r.source IN ('individual', 'bulk')) AS custom_count,
+      (SELECT COUNT(DISTINCT r.staff_id) FROM project_staff_report_settings r JOIN staff_profiles sp ON sp.staff_id = r.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+        WHERE r.project_id = p.project_id AND r.enabled = 0 AND ${MEMBER_STATUS_SQL} NOT IN ('retired', 'merged', 'ended')) AS off_staff_count
+    FROM projects p ${CLIENT_JOIN}
     WHERE p.company_id = ? ${includeClosed ? '' : "AND COALESCE(p.status, 'active') = 'active'"}
     ORDER BY CASE WHEN COALESCE(p.status, 'active') = 'active' THEN 0 ELSE 1 END, p.project_name`).bind(u.company_id).all()).results
   return c.json({ projects: rows })
 })
 
-// 案件詳細: 標準設定・所属スタッフ別の設定
+// 案件詳細: 標準設定（版番号つき）・所属スタッフ別の設定（在籍状況・設定の種類・今後のシフトの例外の件数）
 reportSettingsApi.get('/report-settings/projects/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const p = await ownProject(db, u.company_id, c.req.param('id'))
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
   const defaults = await projectDefaults(db, p.project_id)
+  const today = todayJST()
   const members = (await db.prepare(`SELECT s.staff_id, us.name, COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type,
       MIN(s.work_date) AS first_date, MAX(s.work_date) AS last_date,
-      SUM(CASE WHEN s.work_date >= ? AND s.status != 'absent' THEN 1 ELSE 0 END) AS upcoming
+      SUM(CASE WHEN s.work_date >= ? AND s.status != 'absent' THEN 1 ELSE 0 END) AS upcoming,
+      SUM(CASE WHEN s.work_date >= ? AND s.status != 'absent' AND s.attendance_mode IN ('none', 'in_out') THEN 1 ELSE 0 END) AS upcoming_exceptions,
+      ${MEMBER_STATUS_SQL} AS member_status
     FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
-    WHERE s.project_id = ? AND s.company_id = ? GROUP BY s.staff_id ORDER BY us.name`).bind(todayJST(), p.project_id, u.company_id).all()).results as any[]
+    WHERE s.project_id = ? AND s.company_id = ? GROUP BY s.staff_id ORDER BY us.name`).bind(today, today, p.project_id, u.company_id).all()).results as any[]
   const settings = await staffSettings(db, p.project_id, members.map(m => m.staff_id), defaults)
   return c.json({
     project: { project_id: p.project_id, project_name: p.project_name, status: p.status || 'active', client_name: p.client_name },
-    report_types: REPORT_TYPES, labels: REPORT_LABEL, defaults,
+    report_types: REPORT_TYPES, labels: REPORT_LABEL, defaults, defaults_version: p.defaults_version,
+    // kind: none（標準）/ inherited（標準（引き継ぎ））/ individual（個別）/ legacy（スタッフ単位の旧設定）。individual は画面の『個別』の印（#268）
     // legacy_mode: 0027 より前のスタッフ単位の設定（none / in_out）を使っている人
-    staff: members.map(m => ({ ...m, settings: settings.get(m.staff_id)!.values, individual: settings.get(m.staff_id)!.individual, legacy_mode: settings.get(m.staff_id)!.legacy_mode })),
+    staff: members.map(m => {
+      const s = settings.get(m.staff_id)!
+      return { ...m, settings: s.values, kind: s.kind, individual: isCustom(s), legacy_mode: s.legacy_mode }
+    }),
   })
 })
 
-// 標準設定の変更（新しく所属するスタッフにだけ効く）
+// 標準設定の変更。version は画面を開いた時点の版番号（違えば 409。#509）。
+// apply: none = 新しく所属するスタッフにだけ / standard = 個別に変えていない今の所属スタッフにも / all = 今の所属スタッフ全員にも（#329）
 reportSettingsApi.put('/report-settings/projects/:id/default', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const p = await ownProject(db, u.company_id, c.req.param('id'))
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
-  const next = parseSettings((await c.req.json().catch(() => ({} as any))).settings)
+  const b = await c.req.json().catch(() => ({} as any))
+  const next = parseSettings(b.settings)
   if (!next) return c.json({ error: '設定値が正しくありません' }, 400)
-  const r = await setProjectDefaults(db, u.company_id, p.project_id, next, u)
-  return c.json({ ok: true, ...r })
+  const apply = b.apply === undefined ? 'none' : b.apply
+  if (!['none', 'standard', 'all'].includes(apply)) return c.json({ error: '適用の範囲が正しくありません' }, 400)
+  const version = b.version === undefined || b.version === null ? null : Number(b.version)
+  if (version !== null && !Number.isInteger(version)) return c.json({ error: '版番号が正しくありません' }, 400)
+  try {
+    const r = await setProjectDefaults(db, u.company_id, p.project_id, next, u, { apply, version })
+    if (r.conflict) return c.json({ error: 'ほかの人が標準設定を変更しました。画面を読み込み直してから、もう一度変更してください', conflict: true, version: r.version }, 409)
+    return c.json({ ok: true, ...r })
+  } catch {
+    return c.json({ error: TOO_MANY }, 500)
+  }
 })
 
 // スタッフ別の変更（1 人）
@@ -466,7 +641,8 @@ reportSettingsApi.put('/report-settings/projects/:id/staff/:staffId', async (c) 
 })
 
 // 一括変更。dry_run で確認内容（対象者ごとの変更前・変更後、影響人数）と確認トークンを返す。
-// 保存時は確認トークンを送る。確認後に設定が変わっていた場合（別の操作・二重送信）は 409 で再確認を求める
+// 保存時は確認トークンを送る。確認後に設定が変わっていた場合（別の操作・二重送信）は 409 で再確認を求める。
+// 退職・統合済み・取引終了のスタッフは対象にしない（#247）
 reportSettingsApi.post('/report-settings/projects/:id/bulk', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const p = await ownProject(db, u.company_id, c.req.param('id'))
@@ -475,10 +651,11 @@ reportSettingsApi.post('/report-settings/projects/:id/bulk', async (c) => {
   const types = Array.isArray(b.report_types) ? [...new Set(b.report_types)].filter(isReportType) as string[] : []
   if (!types.length || types.length !== new Set(b.report_types).size) return c.json({ error: '報告の種類を選択してください' }, 400)
   if (typeof b.enabled !== 'boolean') return c.json({ error: 'ON / OFF を選択してください' }, 400)
-  const members = await projectMemberIds(db, u.company_id, p.project_id)
+  const members = await projectMemberStatus(db, u.company_id, p.project_id)
   const staffIds = Array.isArray(b.staff_ids) ? [...new Set(b.staff_ids.map(Number))] as number[] : []
   if (!staffIds.length) return c.json({ error: '対象のスタッフを選択してください' }, 400)
-  if (staffIds.some(id => !members.includes(id))) return c.json({ error: 'この案件に所属していないスタッフが含まれています' }, 400)
+  if (staffIds.some(id => !members.has(id))) return c.json({ error: 'この案件に所属していないスタッフが含まれています' }, 400)
+  if (staffIds.some(id => isInactive(members.get(id)))) return c.json({ error: '退職・統合済み・取引終了のスタッフは一括変更の対象にできません。選択から外してください' }, 400)
   const v = b.enabled ? 1 : 0
   const defaults = await projectDefaults(db, p.project_id)
   const settings = await staffSettings(db, p.project_id, staffIds, defaults)
@@ -510,8 +687,151 @@ reportSettingsApi.post('/report-settings/projects/:id/bulk', async (c) => {
     const r = await setStaffSettings(db, u.company_id, p.project_id, changes, 'bulk', u)
     return c.json({ ok: true, ...r, target_count: staffIds.length })
   } catch {
-    return c.json({ error: '保存に失敗しました。設定は変更されていません。もう一度お試しください' }, 500)
+    return c.json({ error: TOO_MANY }, 500)
   }
+})
+
+// ---------- シフト単位の例外（#313） ----------
+// 今日以降のシフトのうち、シフト単位の例外（勤怠報告なし・入店・退店のみ）があるもの。project_id・staff_id で絞り込む
+async function upcomingExceptions(db: D1Database, companyId: number, f: { project_id?: number; staff_id?: number; include_closed?: boolean }, limit = 300) {
+  const w = ["s.company_id = ?", 's.work_date >= ?', "s.status != 'absent'", "s.attendance_mode IN ('none', 'in_out')"]
+  const bind: any[] = [companyId, todayJST()]
+  if (f.project_id) { w.push('s.project_id = ?'); bind.push(f.project_id) }
+  if (f.staff_id) { w.push('s.staff_id = ?'); bind.push(f.staff_id) }
+  if (!f.include_closed) w.push("COALESCE(p.status, 'active') = 'active'")
+  return (await db.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.attendance_mode, s.project_id, p.project_name, s.staff_id, us.name AS staff_name
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    WHERE ${w.join(' AND ')} ORDER BY s.work_date, s.start_time, s.shift_id LIMIT ?`).bind(...bind, limit).all()).results as any[]
+}
+reportSettingsApi.get('/report-settings/exceptions', async (c) => {
+  const u = c.get('user')
+  const rows = await upcomingExceptions(c.env.DB, u.company_id, {
+    project_id: Number(c.req.query('project_id')) || undefined, staff_id: Number(c.req.query('staff_id')) || undefined,
+    include_closed: c.req.query('include_closed') === '1',
+  })
+  return c.json({ exceptions: rows })
+})
+
+// ---------- スタッフ 1 人の全案件の設定（#413） ----------
+// スタッフにシフトがある案件ごとの、標準設定・スタッフ別の値・設定の種類・今後のシフト
+async function staffProjectSettings(db: D1Database, companyId: number, staffId: number, legacyMode: any) {
+  const today = todayJST()
+  const projects = (await db.prepare(`SELECT p.project_id, p.project_name, COALESCE(p.status, 'active') AS status, cl.client_name,
+      MIN(s.work_date) AS first_date, MAX(s.work_date) AS last_date,
+      SUM(CASE WHEN s.work_date >= ? AND s.status != 'absent' THEN 1 ELSE 0 END) AS upcoming,
+      SUM(CASE WHEN s.work_date >= ? AND s.status != 'absent' AND s.attendance_mode IN ('none', 'in_out') THEN 1 ELSE 0 END) AS upcoming_exceptions
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id ${CLIENT_JOIN}
+    WHERE s.staff_id = ? AND s.company_id = ? AND p.company_id = s.company_id
+    GROUP BY p.project_id ORDER BY CASE WHEN COALESCE(p.status, 'active') = 'active' THEN 0 ELSE 1 END, MAX(s.work_date) DESC`).bind(today, today, staffId, companyId).all()).results as any[]
+  if (!projects.length) return []
+  const ids = projects.map(p => p.project_id)
+  const defaults = new Map<number, Record<string, number>>()
+  for (const id of ids) defaults.set(id, Object.fromEntries(REPORT_TYPES.map(t => [t, 1])))
+  for (const r of (await db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults WHERE project_id IN ${JSON_IN}`).bind(bindJsonArray(ids)).all()).results as any[]) {
+    if (isReportType(r.report_type)) defaults.get(r.project_id)![r.report_type] = r.enabled ? 1 : 0
+  }
+  const settings = new Map<number, StaffSetting>()
+  for (const id of ids) { const s = emptySetting(defaults.get(id)!); applyLegacy(s, legacyMode); settings.set(id, s) }
+  for (const r of (await db.prepare('SELECT project_id, report_type, enabled, source FROM project_staff_report_settings WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).all()).results as any[]) {
+    const s = settings.get(r.project_id); if (s) applyRow(s, r, defaults.get(r.project_id)!)
+  }
+  return projects.map(p => {
+    const s = settings.get(p.project_id)!
+    return { ...p, defaults: defaults.get(p.project_id), settings: s.values, kind: s.kind, individual: isCustom(s), legacy_mode: s.legacy_mode }
+  })
+}
+reportSettingsApi.get('/report-settings/staff/:staffId', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const st = await ownStaffRow(db, u.company_id, c.req.param('staffId'))
+  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  return c.json({
+    staff: { staff_id: st.staff_id, name: st.name, member_status: st.member_status, legacy_mode: legacyStaffFlags(st.attendance_mode) ? st.attendance_mode : null },
+    report_types: REPORT_TYPES, labels: REPORT_LABEL, projects: await staffProjectSettings(db, u.company_id, st.staff_id, st.attendance_mode),
+  })
+})
+// すべての案件（または選んだ案件）に同じ設定を当てる。dry_run で案件ごとの変更前・変更後と確認トークンを返す（一括変更と同じ流れ）
+// project_ids を省くと、稼働中の案件すべて
+reportSettingsApi.post('/report-settings/staff/:staffId/apply', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const st = await ownStaffRow(db, u.company_id, c.req.param('staffId'))
+  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (isInactive(st.member_status)) return c.json({ error: '退職・統合済み・取引終了のスタッフの設定は変更できません' }, 400)
+  const b = await c.req.json().catch(() => ({} as any))
+  const next = parseSettings(b.settings)
+  if (!next) return c.json({ error: '設定値が正しくありません' }, 400)
+  const all = await staffProjectSettings(db, u.company_id, st.staff_id, st.attendance_mode)
+  const ids = parseIdList(b.project_ids)
+  if (ids && ids.some(id => !all.some(p => p.project_id === id))) return c.json({ error: 'このスタッフにシフトのない案件が含まれています' }, 400)
+  const targets = ids ? all.filter(p => ids.includes(p.project_id)) : all.filter(p => p.status === 'active')
+  if (!targets.length) return c.json({ error: '対象の案件を選択してください' }, 400)
+  const preview = targets.map(p => {
+    const after = { ...p.settings }; for (const [t, v] of Object.entries(next)) after[t] = v
+    return { project_id: p.project_id, project_name: p.project_name, before: p.settings, after, changed: REPORT_TYPES.some(t => after[t] !== p.settings[t]), upcoming: p.upcoming }
+  })
+  const changedRows = preview.filter(r => r.changed)
+  const token = await sha256(JSON.stringify([st.staff_id, next, preview.map(r => [r.project_id, REPORT_TYPES.map(t => r.before[t])])]))
+  if (b.dry_run) return c.json({ target_count: targets.length, changed_count: changedRows.length, rows: preview, confirm_token: token })
+  if (b.confirm_token !== token) return c.json({ error: '確認後に設定が変わりました。もう一度内容を確認してください', need_confirm: true }, 409)
+  let cells = 0
+  for (const r of changedRows) cells += (await setStaffSettings(db, u.company_id, r.project_id, new Map([[st.staff_id, next]]), 'individual', u)).cells
+  return c.json({ ok: true, projects_changed: changedRows.length, cells })
+})
+// 案件の標準設定に戻す（案件 × スタッフ別の行を消す）。project_ids を省くとシフトのある全案件
+reportSettingsApi.post('/report-settings/staff/:staffId/reset', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const st = await ownStaffRow(db, u.company_id, c.req.param('staffId'))
+  if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const b = await c.req.json().catch(() => ({} as any))
+  const ids = parseIdList(b.project_ids)
+  if (ids && !ids.length) return c.json({ error: '対象の案件を選択してください' }, 400)
+  const r = await resetStaffSettings(db, u.company_id, st.staff_id, ids, u)
+  return c.json({ ok: true, ...r })
+})
+
+// ---------- 案件をまたいだ OFF の設定一覧（#446） ----------
+// 案件 × スタッフ別の行で OFF になっている報告。既定では、在籍中のスタッフ・稼働中の案件・標準設定と違う OFF だけ
+// （行がなくスタッフ単位の旧設定で OFF になっている人は、案件詳細で『個別（旧設定）』として表示する）
+function offFilter(companyId: number, q: (k: string) => string | undefined) {
+  const w = ['r.company_id = ?', 'r.enabled = 0']; const bind: any[] = [companyId]
+  if (Number(q('project_id'))) { w.push('r.project_id = ?'); bind.push(Number(q('project_id'))) }
+  if (Number(q('staff_id'))) { w.push('r.staff_id = ?'); bind.push(Number(q('staff_id'))) }
+  if (isReportType(q('report_type'))) { w.push('r.report_type = ?'); bind.push(q('report_type')) }
+  if (q('include_closed') !== '1') w.push("COALESCE(p.status, 'active') = 'active'")
+  if (q('include_inactive') !== '1') w.push(`${MEMBER_STATUS_SQL} NOT IN ('retired', 'merged', 'ended')`)
+  if (q('include_default') !== '1') w.push('COALESCE(d.enabled, 1) = 1')
+  return { where: w.join(' AND '), bind }
+}
+const OFF_FROM = `FROM project_staff_report_settings r
+    JOIN projects p ON p.project_id = r.project_id AND p.company_id = r.company_id ${CLIENT_JOIN}
+    JOIN staff_profiles sp ON sp.staff_id = r.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN users um ON um.user_id = r.updated_by
+    LEFT JOIN employee_records er ON er.staff_id = r.staff_id AND er.company_id = r.company_id
+    LEFT JOIN project_report_defaults d ON d.project_id = r.project_id AND d.report_type = r.report_type`
+const OFF_SELECT = `SELECT r.project_id, p.project_name, COALESCE(p.status, 'active') AS project_status, cl.client_name, r.staff_id, us.name AS staff_name, er.employee_number,
+    r.report_type, r.source, r.updated_at, um.name AS updated_by_name, COALESCE(d.enabled, 1) AS default_enabled, ${MEMBER_STATUS_SQL} AS member_status`
+const OFF_ORDER = `ORDER BY p.project_name, r.project_id, us.name, r.staff_id, instr('${REPORT_TYPES.join(',')}', r.report_type)`
+const SOURCE_LABEL: Record<string, string> = { individual: '個別変更', bulk: '一括変更', default: '標準設定から引き継ぎ', migration: '導入時の移行' }
+const MEMBER_STATUS_LABEL: Record<string, string> = { active: '在籍', leave: '休職', retired: '退職', merged: '統合済み', ended: '取引終了' }
+reportSettingsApi.get('/report-settings/off-list', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const q = (k: string) => c.req.query(k)
+  const { where, bind } = offFilter(u.company_id, q)
+  const limit = 1000
+  const rows = (await db.prepare(`${OFF_SELECT} ${OFF_FROM} WHERE ${where} ${OFF_ORDER} LIMIT ?`).bind(...bind, limit + 1).all()).results as any[]
+  const total = rows.length > limit ? Number(((await db.prepare(`SELECT COUNT(*) AS n ${OFF_FROM} WHERE ${where}`).bind(...bind).first()) as any)?.n || 0) : rows.length
+  const exceptions = await upcomingExceptions(db, u.company_id, { project_id: Number(q('project_id')) || undefined, staff_id: Number(q('staff_id')) || undefined, include_closed: q('include_closed') === '1' })
+  return c.json({ rows: rows.slice(0, limit), total, limit, exceptions, labels: REPORT_LABEL, csv_limit: CSV_LIMIT })
+})
+reportSettingsApi.get('/report-settings/off-list/export', async (c) => {
+  const u = c.get('user'); const q = (k: string) => c.req.query(k)
+  const { where, bind } = offFilter(u.company_id, q)
+  const got = (await c.env.DB.prepare(`${OFF_SELECT} ${OFF_FROM} WHERE ${where} ${OFF_ORDER} LIMIT ${CSV_LIMIT + 1}`).bind(...bind).all()).results as any[]
+  const total = got.length > CSV_LIMIT ? Number(((await c.env.DB.prepare(`SELECT COUNT(*) AS n ${OFF_FROM} WHERE ${where}`).bind(...bind).first()) as any)?.n || 0) : got.length
+  const csv = toCsv(['案件', '案件の状態', 'クライアント', 'スタッフ', 'スタッフID', '社員番号', '在籍状況', '報告', '案件の標準設定', '設定の由来', '最終変更日時', '最終変更者'],
+    got.slice(0, CSV_LIMIT).map(r => [r.project_name, r.project_status === 'active' ? '稼働中' : '終了', r.client_name || '', r.staff_name, r.staff_id, r.employee_number ?? '',
+      MEMBER_STATUS_LABEL[r.member_status] || r.member_status, REPORT_LABEL[r.report_type] || r.report_type, r.default_enabled ? 'ON' : 'OFF',
+      SOURCE_LABEL[r.source] || r.source, r.updated_at || '', r.updated_by_name || '']),
+    { textCols: ['社員番号'], note: csvLimitNote(total) })
+  return csvResponse(`報告OFFの設定一覧_${nowJST().slice(0, 10)}.csv`, csv, csvLimitHeaders(total))
 })
 
 // 設定変更の履歴（案件・スタッフ・期間・報告種類・操作で絞り込み）
@@ -530,7 +850,11 @@ function logFilter(companyId: number, q: (k: string) => string | undefined) {
   if (q('exclude_migration') === '1' && q('action') !== 'migration') w.push("l.action != 'migration'")
   return { where: w.join(' AND '), bind }
 }
-const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行', merge: 'スタッフ統合' }
+// default_apply = 標準設定の変更を今の所属スタッフに当てた（#329）/ staff_reset = 案件の標準設定に戻した（#413）/ shift_override = シフト単位の例外（#313）
+const ACTION_LABEL: Record<string, string> = {
+  project_default: '標準設定', default_apply: '標準設定の適用', individual: '個別変更', bulk: '一括変更', staff_reset: '標準に戻す',
+  shift_override: 'シフト単位の例外', migration: '導入時の移行', merge: 'スタッフ統合',
+}
 const LOG_FROM = `FROM report_setting_logs l LEFT JOIN projects p ON p.project_id = l.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = l.staff_id AND er.company_id = l.company_id`
@@ -542,7 +866,7 @@ reportSettingsApi.get('/report-settings/logs', async (c) => {
     WHERE ${where} ORDER BY l.log_id DESC LIMIT ?`).bind(...bind, limit).all()).results
   // 条件に合う全件数（画面で、表示と CSV の上限を超えたかを知らせる #102）
   const total = Number(((await c.env.DB.prepare(`SELECT COUNT(*) AS n ${LOG_FROM} WHERE ${where}`).bind(...bind).first()) as any)?.n || 0)
-  return c.json({ logs: rows, labels: REPORT_LABEL, total, csv_limit: CSV_LIMIT })
+  return c.json({ logs: rows, labels: REPORT_LABEL, actions: ACTION_LABEL, total, csv_limit: CSV_LIMIT })
 })
 reportSettingsApi.get('/report-settings/logs/export', async (c) => {
   const u = c.get('user')
@@ -553,11 +877,12 @@ reportSettingsApi.get('/report-settings/logs/export', async (c) => {
     `SELECT COUNT(*) AS n ${LOG_FROM} WHERE ${where}`, bind)
   const onoff = (v: any) => v == null ? '' : v ? 'ON' : 'OFF'
   // 同姓同名を区別できるよう、対象のスタッフID・社員番号も出す（既存の列の位置を変えないよう末尾に足す）。ロールは日本語にする（#474）
-  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール', 'スタッフID', '社員番号'],
+  // シフト単位の例外は、シフトID と内容（勤務日・時間・変更前後の例外）を末尾に出す（#313）
+  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール', 'スタッフID', '社員番号', 'シフトID', '内容'],
     rows.map(l => [l.log_id, l.created_at, l.project_name, (l.project_status || 'active') === 'active' ? '稼働中' : '終了', l.staff_id ? l.staff_name : '標準設定',
       REPORT_LABEL[l.report_type] || l.report_type, onoff(l.old_enabled), onoff(l.new_enabled), ACTION_LABEL[l.action] || l.action, l.batch_id,
       l.changed_by_name || (l.action === 'migration' ? 'システム' : ''), roleLabel(l.changed_by_role),
-      l.staff_id ?? '', l.employee_number ?? '']),
+      l.staff_id ?? '', l.employee_number ?? '', l.shift_id ?? '', l.detail ?? '']),
     { textCols: ['社員番号'], note: csvLimitNote(total) })
   return csvResponse(`報告設定の変更履歴_${nowJST().slice(0, 10)}.csv`, csv, csvLimitHeaders(total))
 })
