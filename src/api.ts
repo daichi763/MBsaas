@@ -2345,29 +2345,137 @@ api.delete('/admin/shifts/:id', async (c) => {
   return c.json({ ok: true })
 })
 
-// 日報一覧
+// 日報一覧（#113 ページ送り、#183 未確認のみ、#404 案件・スタッフ・期間、#106 テンプレートの項目、#521 生の report_values は返さない）
+// 条件: date（1日）または from〜to、project_id、staff_id、unchecked=1（未確認のみ）、flagged=1（インシデント・クレームのみ）、offset、limit（既定50・最大200）
+// options=1 のときは、絞り込みの選択肢（案件・日報のあるスタッフ）も返す
+const DAILY_REPORT_PAGE_MAX = 200
+// 未確認の条件。migrations/0050_report_admin.sql の部分索引と同じ式にする（同じ式でないと索引が使われない）
+const DR_UNCHECKED_SQL = 'COALESCE(dr.manager_checked, 0) = 0'
+const DR_FLAGGED_SQL = '(dr.incident_flag = 1 OR dr.complaint_flag = 1)'
 api.get('/admin/daily-reports', async (c) => {
-  const u = c.get('user')
-  const date = c.req.query('date')
-  const projectId = c.req.query('project_id')
-  let sql = `
-    SELECT dr.*, p.project_name, us.name AS staff_name
-    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
-    JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE dr.company_id = ?`
+  const u = c.get('user'); const db = c.env.DB
+  const q = (k: string) => { const v = c.req.query(k); return v === undefined || v === '' ? null : v }
+  const date = q('date'), from = q('from'), to = q('to')
+  for (const [v, name] of [[date, '日付'], [from, '開始日'], [to, '終了日']] as const) {
+    if (v !== null && !isISODate(v)) return c.json({ error: `${name}の形式が正しくありません` }, 400)
+  }
+  if (from && to && from > to) return c.json({ error: '期間の開始日が終了日より後になっています' }, 400)
+  const projectId = q('project_id') === null ? null : toInt(q('project_id'), 1)
+  const staffId = q('staff_id') === null ? null : toInt(q('staff_id'), 1)
+  if ((q('project_id') !== null && projectId === null) || (q('staff_id') !== null && staffId === null)) return c.json({ error: '絞り込みの条件が正しくありません' }, 400)
+  const limit = Math.min(toInt(q('limit') ?? 50, 1) ?? 50, DAILY_REPORT_PAGE_MAX)
+  const offset = toInt(q('offset') ?? 0, 0) ?? 0
+  const unchecked = q('unchecked') === '1', flagged = q('flagged') === '1'
+
+  // 件数の内訳（未確認・インシデント）は、未確認のみ・インシデントのみの条件を外して数える
+  let base = ' WHERE dr.company_id = ?'
   const binds: any[] = [u.company_id]
-  if (date) { sql += ' AND dr.work_date = ?'; binds.push(date) }
-  if (projectId) { sql += ' AND dr.project_id = ?'; binds.push(projectId) }
-  sql += ' ORDER BY dr.work_date DESC, dr.submitted_at DESC LIMIT 100'
-  const rows = await c.env.DB.prepare(sql).bind(...binds).all()
-  return c.json({ reports: (rows.results as any[]).map(r => ({ ...r, values: JSON.parse(r.report_values) })) })
+  if (date) { base += ' AND dr.work_date = ?'; binds.push(date) }
+  if (from) { base += ' AND dr.work_date >= ?'; binds.push(from) }
+  if (to) { base += ' AND dr.work_date <= ?'; binds.push(to) }
+  if (projectId) { base += ' AND dr.project_id = ?'; binds.push(projectId) }
+  if (staffId) { base += ' AND dr.staff_id = ?'; binds.push(staffId) }
+  const extra = (unchecked ? ` AND ${DR_UNCHECKED_SQL}` : '') + (flagged ? ` AND ${DR_FLAGGED_SQL}` : '')
+  const [rowsRes, countRes] = await db.batch([
+    db.prepare(`
+      SELECT dr.*, p.project_name, p.report_template_id, us.name AS staff_name,
+        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name
+      FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
+      JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
+      LEFT JOIN users ku ON ku.user_id = dr.manager_checked_by
+      ${base}${extra}
+      ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset),
+    db.prepare(`SELECT COUNT(*) AS total_all,
+        SUM(CASE WHEN ${DR_UNCHECKED_SQL} THEN 1 ELSE 0 END) AS unchecked,
+        SUM(CASE WHEN ${DR_FLAGGED_SQL} THEN 1 ELSE 0 END) AS flagged,
+        SUM(CASE WHEN 1${extra} THEN 1 ELSE 0 END) AS total
+      FROM daily_reports dr${base}`).bind(...binds),
+  ])
+  const rows = rowsRes.results as any[]
+  const cnt = (countRes.results as any[])[0] || {}
+  // 案件の日報テンプレートの項目（表示の順とラベルに使う）
+  const tplIds = [...new Set(rows.map(r => r.report_template_id).filter(Boolean))]
+  const templates: Record<string, { key: string; label: string; type: string }[]> = {}
+  if (tplIds.length) {
+    const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN ${JSON_IN}`).bind(bindJsonArray(tplIds)).all()).results as any[]
+    for (const t of ts) {
+      let f: any[] = []
+      try { const v = JSON.parse(t.fields_json || '[]'); if (Array.isArray(v)) f = v } catch { f = [] }
+      templates[t.template_id] = f.filter(x => x && typeof x.key === 'string').map(x => ({ key: x.key, label: String(x.label || x.key), type: String(x.type || 'text') }))
+    }
+  }
+  const reports = rows.map(r => {
+    const { report_values, ...rest } = r
+    let values: Record<string, unknown> = {}
+    try { const v = JSON.parse(report_values || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) values = v } catch { values = {} }
+    return { ...rest, values }
+  })
+  let options: any = undefined
+  if (q('options') === '1') {
+    const [pr, st] = await db.batch([
+      db.prepare(`SELECT project_id, project_name, status FROM projects WHERE company_id = ? ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, project_id`).bind(u.company_id),
+      db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
+        WHERE sp.staff_id IN (SELECT DISTINCT staff_id FROM daily_reports WHERE company_id = ?) ORDER BY us.name, sp.staff_id`).bind(u.company_id),
+    ])
+    options = { projects: pr.results, staff: st.results }
+  }
+  return c.json({
+    reports, templates, offset, limit, total: Number(cnt.total || 0),
+    counts: { all: Number(cnt.total_all || 0), unchecked: Number(cnt.unchecked || 0), flagged: Number(cnt.flagged || 0) },
+    ...(options ? { options } : {}),
+  })
 })
 
-// 日報コメント・確認
+// 表示中の日報をまとめて確認済みにする（#183）。ids は最大 DAILY_REPORT_PAGE_MAX 件。すでに確認済みのものは変えない
+api.post('/admin/daily-reports/check', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({})) as any
+  if (!Array.isArray(b.ids) || b.ids.length === 0) return c.json({ error: '確認する日報を選んでください' }, 400)
+  if (b.ids.length > DAILY_REPORT_PAGE_MAX) return c.json({ error: `一度に確認できるのは${DAILY_REPORT_PAGE_MAX}件までです` }, 400)
+  const r = await c.env.DB.prepare(`UPDATE daily_reports SET manager_checked = 1, manager_checked_by = ?, manager_checked_at = ?
+    WHERE daily_report_id IN ${JSON_IN} AND company_id = ? AND COALESCE(manager_checked, 0) = 0`)
+    .bind(u.user_id, nowJST(), bindJsonArray(b.ids), u.company_id).run()
+  return c.json({ ok: true, checked: r.meta?.changes ?? 0 })
+})
+
+// 日報コメント・確認（#360）
+// - manager_comment: キーがあれば、その値で置き換える（空欄は削除）。expected_comment（開いたときの内容）を一緒に送ると、
+//   今の内容と違うときは 409 を返して書かない（別の管理者のコメントを黙って上書きしないため）
+// - manager_checked: 1 で確認済み、0 で未確認に戻す
+const MANAGER_COMMENT_MAX = 2000
+const COMMENT_CONFLICT = '開いている間に、ほかの管理者がコメントを変更しました。内容を確かめてから保存してください'
 api.put('/admin/daily-reports/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
-  await c.env.DB.prepare('UPDATE daily_reports SET manager_comment = COALESCE(?, manager_comment), manager_checked = COALESCE(?, manager_checked) WHERE daily_report_id = ? AND company_id = ?')
-    .bind(b.manager_comment ?? null, b.manager_checked ?? null, c.req.param('id'), u.company_id).run()
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({})) as any
+  const has = (k: string) => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k)
+  const id = toInt(c.req.param('id'), 1)
+  const cur = id ? await c.env.DB.prepare('SELECT daily_report_id, manager_comment FROM daily_reports WHERE daily_report_id = ? AND company_id = ?').bind(id, u.company_id).first() as any : null
+  if (!cur) return c.json({ error: '日報が見つかりません' }, 404)
+  const sets: string[] = []; const vals: any[] = []
+  const now = nowJST()
+  let guard = false
+  if (has('manager_comment')) {
+    if (b.manager_comment !== null && typeof b.manager_comment !== 'string') return c.json({ error: 'コメントの形式が正しくありません' }, 400)
+    const comment = typeof b.manager_comment === 'string' && b.manager_comment.trim() ? b.manager_comment.trim() : null
+    if (comment && comment.length > MANAGER_COMMENT_MAX) return c.json({ error: `コメントは${MANAGER_COMMENT_MAX}文字以内で入力してください` }, 400)
+    if (has('expected_comment')) {
+      if ((b.expected_comment || '') !== (cur.manager_comment || '')) return c.json({ error: COMMENT_CONFLICT, current_comment: cur.manager_comment ?? null }, 409)
+      guard = true
+    }
+    sets.push('manager_comment = ?', 'manager_comment_by = ?', 'manager_comment_at = ?')
+    vals.push(comment, comment ? u.user_id : null, comment ? now : null)
+  }
+  if (has('manager_checked')) {
+    const m = b.manager_checked
+    const v = m === true || m === 1 || m === '1' ? 1 : m === false || m === 0 || m === '0' ? 0 : null
+    if (v === null) return c.json({ error: '確認の状態が正しくありません' }, 400)
+    sets.push('manager_checked = ?', 'manager_checked_by = ?', 'manager_checked_at = ?')
+    vals.push(v, v ? u.user_id : null, v ? now : null)
+  }
+  if (!sets.length) return c.json({ error: '変更する項目がありません' }, 400)
+  // 読み取りと書き込みの間に別の管理者が変えた場合も上書きしないよう、開いたときの内容を条件にする
+  const r = await c.env.DB.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${guard ? " AND COALESCE(manager_comment, '') = ?" : ''}`)
+    .bind(...vals, id, u.company_id, ...(guard ? [cur.manager_comment || ''] : [])).run()
+  if (guard && !(r.meta?.changes ?? 0)) return c.json({ error: COMMENT_CONFLICT }, 409)
   return c.json({ ok: true })
 })
 
