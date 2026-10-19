@@ -3,7 +3,9 @@
 // docs/spec_attendance_correction.md 5章
 //
 // 宛先:
-//   申請・再申請 → 自社の管理者全員（管理ロール・在籍中。本部アカウントは含めない）＋ 申請者本人（受付の通知）
+//   申請・再申請 → 自社の管理者全員（管理ロール・在籍中。本部アカウントは含めない）＋ 申請者本人（受付の控え。既読で登録し、メールは送らない #341）
+//                  管理者が代わりに出した申請は、スタッフ本人にも未読で知らせる（メールは送らない）。
+//                  まとめて出した申請の承認依頼メールは1通にまとめ、本人が取り消した直後の申請し直しはメールを送らない（#392）
 //   承認・却下   → 申請者本人 ＋ 処理した管理者。管理者が出した申請の承認は、記録が変わったスタッフ本人にも知らせる（#181）
 //   取り消し     → シフトの削除・担当者の差し替えで自動で取り消した場合だけ申請者本人へ（本人の取り消しは通知しない）
 //   承認・却下・取り消しの後は、その申請の承認依頼（correction_submitted）を全員分既読にする（#189）
@@ -32,34 +34,53 @@ const fmtAt = (at: string | null) => { const m = String(at || '').match(/^(\d{4}
 const fmtDate = (d: string | null) => { const m = String(d || '').match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])}` : '' }
 
 async function loadInfo(db: D1Database, correctionId: number) {
-  return db.prepare(`SELECT c.*, s.work_date, p.project_name, us.name AS staff_name
+  const c = await db.prepare(`SELECT c.*, s.work_date, p.project_name, us.name AS staff_name
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id = ?`).bind(correctionId).first() as Promise<any>
+    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id = ?`).bind(correctionId).first() as any
+  if (!c) return c
+  // まとめて出した申請（同じシフト・申請者・申請日時。corrections.ts の insertCorrections）。承認依頼のメールは先頭の1件にまとめる（#392 #214）
+  const group = (await db.prepare(`SELECT correction_id, kind, report_type, before_at, requested_at FROM attendance_corrections
+    WHERE shift_id = ? AND requested_by = ? AND created_at = ? ORDER BY correction_id`).bind(c.shift_id, c.requested_by, c.created_at).all()).results as any[]
+  c.group = group.length > 1 ? group : null
+  return c
 }
 
 // 受信者の立場（kind）ごとの文面。受信者が閲覧できる範囲の情報のみ
 // kind: correction_submitted（管理者への承認依頼）/ correction_received（申請者への受付）/
 //       correction_approved・correction_rejected（申請者への結果）/ correction_processed（処理した管理者への控え）
-//       correction_changed_by_admin（管理者が出して承認した修正の、スタッフ本人への知らせ）/ correction_cancelled（自動で取り消した申請の申請者への知らせ）
+//       correction_changed_by_admin（管理者が出して承認した修正の、スタッフ本人への知らせ）/ correction_cancelled（自動で取り消した申請の申請者への知らせ）/
+//       correction_proxy_submitted（管理者が代わりに出した申請の、スタッフ本人への知らせ。#341 #486）
+// 承認待ちの承認依頼で、まとめて出した申請（c.group）は、まとめた内容を1通に書く（#214 #392）
 function content(c: any, kind: string, isAdmin: boolean) {
   // シフトが削除された申請は稼働日が取れないので、申請の日時の日付を出す
   const what = `${fmtDate(c.work_date || c.requested_at)} ${REPORT_LABEL[c.report_type] || c.report_type}`
-  const change = c.before_at ? `${fmtAt(c.before_at)} → ${fmtAt(c.requested_at)}` : `${fmtAt(c.requested_at)}（追加）`
-  const lines: [string, string][] = [['案件', c.project_name || ''], ['スタッフ', c.staff_name || ''], ['報告', `${REPORT_LABEL[c.report_type] || ''}（${KIND_LABEL[c.kind] || ''}）`], ['対象日時', change]]
+  const changeOf = (x: any) => x.before_at ? `${fmtAt(x.before_at)} → ${fmtAt(x.requested_at)}` : `${fmtAt(x.requested_at)}（追加）`
+  const grouped = kind === 'correction_submitted' && c.group ? c.group as any[] : null
+  const lines: [string, string][] = [['案件', c.project_name || ''], ['スタッフ', c.staff_name || '']]
+  if (grouped) grouped.forEach((x, i) => lines.push([`報告${i + 1}`, `${REPORT_LABEL[x.report_type] || ''}（${KIND_LABEL[x.kind] || ''}） ${changeOf(x)}`]))
+  else lines.push(['報告', `${REPORT_LABEL[c.report_type] || ''}（${KIND_LABEL[c.kind] || ''}）`], ['対象日時', changeOf(c)])
+  // 精算が確定済みのシフトに反映した承認は、支払額が変わらないことを伝える（#215）
+  const settledNote = '勤怠の記録は変更しましたが、精算が確定済みのため支払額は自動では変わりません。必要な対応は管理者が別途行います。'
   let title = '', headline = ''
   if (kind === 'correction_submitted') {
-    title = `打刻修正の承認依頼: ${c.staff_name || ''} ${what}`
-    headline = c.resubmitted_from ? '打刻修正の再申請が届きました。内容を確認し、承認または却下してください。' : '打刻修正の申請が届きました。内容を確認し、承認または却下してください。'
+    title = `打刻修正の承認依頼: ${c.staff_name || ''} ${what}${grouped ? ` ほか${grouped.length - 1}件` : ''}`
+    headline = grouped ? `打刻修正の申請が${grouped.length}件まとめて届きました。上から順に承認すると、途中で順序の矛盾が出ません。`
+      : c.resubmitted_from ? '打刻修正の再申請が届きました。内容を確認し、承認または却下してください。' : '打刻修正の申請が届きました。内容を確認し、承認または却下してください。'
     lines.push(['修正理由', c.reason || ''], ['申請者', c.requested_by_name || ''])
     if (c.order_warnings) lines.push(['注意', '報告の順序に矛盾があります（詳細は画面で確認してください）'])
   } else if (kind === 'correction_received') {
     title = `打刻修正を申請しました: ${what}`
     headline = '打刻修正の申請を受け付けました。承認されると勤怠の記録が変わります。'
     lines.push(['修正理由', c.reason || ''])
+  } else if (kind === 'correction_proxy_submitted') {
+    title = `管理者があなたの打刻の修正を申請しました: ${what}`
+    headline = '管理者が次のとおり、あなたの打刻の修正を申請しました。承認されると勤怠の記録が変わります。内容に心当たりがない場合は、管理者に確認してください。'
+    lines.push(['修正理由', c.reason || ''], ['申請者', c.requested_by_name || ''])
   } else if (kind === 'correction_approved') {
     title = `打刻修正が承認されました: ${what}`
-    headline = '打刻修正の申請が承認され、勤怠の記録を変更しました。'
+    headline = c.applied_while_settled ? `打刻修正の申請が承認されました。${settledNote}` : '打刻修正の申請が承認され、勤怠の記録を変更しました。'
     lines.push(['結果', '承認'], ['承認者', c.decided_by_name || ''])
+    if (c.applied_while_settled) lines.push(['支払額', '確定済みのため変わりません（管理者が別途対応します）'])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_rejected') {
     title = `打刻修正が却下されました: ${what}`
@@ -68,8 +89,9 @@ function content(c: any, kind: string, isAdmin: boolean) {
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_changed_by_admin') {
     title = `管理者があなたの打刻を修正しました: ${what}`
-    headline = '管理者が次のとおり、あなたの勤怠の記録を修正しました。内容に心当たりがない場合は、管理者に確認してください。'
+    headline = '管理者が次のとおり、あなたの勤怠の記録を修正しました。内容に心当たりがない場合は、管理者に確認してください。' + (c.applied_while_settled ? settledNote : '')
     lines.push(['修正理由', c.reason || ''], ['処理した人', c.decided_by_name || ''])
+    if (c.applied_while_settled) lines.push(['支払額', '確定済みのため変わりません（管理者が別途対応します）'])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_cancelled') {
     title = `打刻修正の申請が取り消されました: ${what}`
@@ -83,22 +105,40 @@ function content(c: any, kind: string, isAdmin: boolean) {
     if (!approved) lines.push(['却下の理由', c.reject_reason || ''])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   }
-  const link = isAdmin ? `/admin#corrections/${c.correction_id}` : '/staff#attendance'
+  // スタッフは該当の申請を開く（staff.js の route が #attendance/request/:id を受ける。#306）
+  const link = isAdmin ? `/admin#corrections/${c.correction_id}` : `/staff#attendance/request/${c.correction_id}`
   const body = lines.map(([k, v]) => `${k}: ${v}`).join('\n')
   return { title, headline, lines, body, link, button: isAdmin ? '申請を確認する' : '打刻修正申請を確認する' }
 }
 
-type Recipient = { user_id: number; name: string; email: string | null; role: string; kind: string }
+// read: 既読で登録する（自分の操作の控え）。noEmail: メールを送らない
+type Recipient = { user_id: number; name: string; email: string | null; role: string; kind: string; read?: boolean; noEmail?: boolean }
+// 本人が取り消してから、この時間内に同じ報告を申請し直したときは、管理者へのメールを送らない（アプリ内通知だけ。#392）
+const RESUBMIT_QUIET_MINUTES = 30
 async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Promise<Recipient[]> {
   const user = async (id: number | null) => id ? await db.prepare('SELECT user_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
   const out = new Map<number, Recipient>()
-  const add = (u: any, kind: string) => { if (u && u.status !== 'suspended' && !out.has(u.user_id)) out.set(u.user_id, { user_id: u.user_id, name: u.name, email: u.email || null, role: u.role, kind }) }
+  const add = (u: any, kind: string, opt: { read?: boolean; noEmail?: boolean } = {}) => {
+    if (u && u.status !== 'suspended' && !out.has(u.user_id)) out.set(u.user_id, { user_id: u.user_id, name: u.name, email: u.email || null, role: u.role, kind, ...opt })
+  }
   const requester = await user(c.requested_by)
+  const owner = async () => await db.prepare(`SELECT us.user_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.staff_id = ? AND us.role = 'staff' AND us.status = 'active'`).bind(c.staff_id).first() as any
+  const samePerson = (a: any, b: any) => !!a && !!b && (a.user_id === b.user_id || (!!a.person_id && a.person_id === b.person_id))
   if (event === 'submitted' || event === 'resubmitted') {
-    add(requester, 'correction_received')
+    // 自分で出した申請の受付は、既読の控えとして残すだけ（未読にしない・メールも送らない。受付は画面のトーストで伝える。#341）
+    add(requester, 'correction_received', { read: true, noEmail: true })
+    // 管理者が代わりに出した申請は、記録が変わるスタッフ本人に未読で知らせる（#341 #486）
+    const o = await owner()
+    if (o && !samePerson(o, requester)) add(o, 'correction_proxy_submitted', { noEmail: true })
+    // まとめて出した申請の2件目以降と、本人が取り消した直後の同じ報告の申請し直しは、承認依頼のメールを送らない（#392）
+    const lead = !c.group || c.group[0].correction_id === c.correction_id
+    const since = new Date(Date.now() + 9 * 3600 * 1000 - RESUBMIT_QUIET_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const recentCancel = await db.prepare(`SELECT 1 FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND status = 'cancelled' AND cancel_reason IS NULL
+      AND requested_by = ? AND cancelled_at >= ? AND correction_id < ? LIMIT 1`).bind(c.shift_id, c.report_type, c.requested_by, since, c.correction_id).first()
     const admins = (await db.prepare(`SELECT user_id, name, email, role, status FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
       .bind(c.company_id, ...NOTIFY_ADMIN_ROLES).all()).results as any[]
-    for (const a of admins) add(a, 'correction_submitted')
+    for (const a of admins) add(a, 'correction_submitted', { noEmail: !lead || !!recentCancel })
   } else if (event === 'cancelled') {
     // 本人の取り消しは誰にも送らない（承認依頼は notifyCorrection で既読にする）
     if (c.cancel_reason) add(requester, 'correction_cancelled')
@@ -107,10 +147,8 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Pr
     add(await user(c.decided_by), 'correction_processed')
     // 管理者が出した申請を承認したときは、記録が変わったスタッフ本人にも知らせる（申請者と同じ人なら送らない。#181）
     if (event === 'approved') {
-      const owner = await db.prepare(`SELECT us.user_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-        WHERE sp.staff_id = ? AND us.role = 'staff' AND us.status = 'active'`).bind(c.staff_id).first() as any
-      const samePerson = owner && requester && (owner.user_id === requester.user_id || (owner.person_id && owner.person_id === requester.person_id))
-      if (owner && !samePerson) add(owner, 'correction_changed_by_admin')
+      const o = await owner()
+      if (o && !samePerson(o, requester)) add(o, 'correction_changed_by_admin')
     }
   }
   return [...out.values()]
@@ -124,16 +162,16 @@ export async function createCorrectionNotifications(db: D1Database, correctionId
   const at = nowJST()
   const rows = rcpts.map(r => ({ r, m: content(c, r.kind, NOTIFY_ADMIN_ROLES.includes(r.role) || r.role === 'system_admin') }))
   const stmts: D1PreparedStatement[] = []
-  // 1 文 100 バインドまで（1 行 8 個 → 10 行ずつ）
+  // 1 文 100 バインドまで（1 行 9 個 → 10 行ずつ）
   for (let i = 0; i < rows.length; i += 10) {
     const chunk = rows.slice(i, i + 10)
-    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES ${chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`)
-      .bind(...chunk.flatMap(({ r, m }) => [c.company_id, r.user_id, r.kind, m.title, m.body, m.link, c.correction_id, at])))
+    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at, read_at) VALUES ${chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`)
+      .bind(...chunk.flatMap(({ r, m }) => [c.company_id, r.user_id, r.kind, m.title, m.body, m.link, c.correction_id, at, r.read ? at : null])))
   }
   if (stmts.length) await db.batch(stmts)
   const deliveries: number[] = []
   for (const { r } of rows) {
-    if (!r.email) continue
+    if (!r.email || r.noEmail) continue
     const d = await db.prepare(`INSERT INTO notification_emails (company_id, correction_id, event, kind, user_id, to_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING delivery_id`)
       .bind(c.company_id, c.correction_id, event, r.kind, r.user_id, r.email, at).first() as any
     if (d) deliveries.push(d.delivery_id)
@@ -157,7 +195,7 @@ export async function sendDelivery(env: NotifyEnv, deliveryId: number, byUserId:
   else {
     const m = content(c, d.kind, NOTIFY_ADMIN_ROLES.includes(u.role) || u.role === 'system_admin')
     const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
-    const tpl = attendanceCorrectionEmail({ name: u.name, headline: m.headline, lines: m.lines, url: base + m.link, button: m.button })
+    const tpl = attendanceCorrectionEmail({ name: u.name, title: m.title, headline: m.headline, lines: m.lines, url: base + m.link, button: m.button })
     result = await sendEmail(env, { to: d.to_email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'attendance_correction', company_id: d.company_id })
   }
   await db.prepare(`UPDATE notification_emails SET status = ?, error = ?, provider_message_id = ?, attempts = attempts + 1, last_attempt_at = ?, last_attempt_by = ? WHERE delivery_id = ?`)

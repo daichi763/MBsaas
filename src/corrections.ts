@@ -17,7 +17,7 @@ import { personStaffRows } from './roster'
 import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
 import { isTentativeShift, isWorkingShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
-import { crossesMidnight, toMin, NEXT_DAY_TYPES } from './lib/shift-time'
+import { crossesMidnight, toMin, NEXT_DAY_TYPES, reportableWindow } from './lib/shift-time'
 
 type Bindings = NotifyEnv
 type Variables = { user: any }
@@ -31,6 +31,10 @@ export const KIND_LABEL: Record<string, string> = { modify: '時刻修正', add:
 export const CANCEL_REASON_LABEL: Record<string, string> = { shift_deleted: 'シフトが削除されたため', staff_changed: 'シフトの担当者が差し替えられたため' }
 const WORKING_IN = `(${WORKING_SHIFT_STATUSES.map(s => `'${s}'`).join(',')})`
 const REASON_MAX = 500
+// スタッフの申請（申請・再申請・まとめて申請の件数）の上限（1時間あたり。#392）。超えたら 429
+export const CORRECTION_HOURLY_LIMIT = 20
+// まとめて申請できる報告の数（1シフトの報告の種類の数まで。#214）
+const BULK_MAX = 8
 
 function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 function randToken(): string { const a = new Uint8Array(12); crypto.getRandomValues(a); return [...a].map(b => b.toString(16).padStart(2, '0')).join('') }
@@ -67,7 +71,7 @@ export function orderConflicts(reports: Map<string, string>, type: string, at: s
 // ---------- 読み込み ----------
 async function loadShift(db: D1Database, shiftId: any) {
   return db.prepare(`SELECT s.shift_id, s.company_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.settled_at, s.actual_source,
-      p.project_name, us.name AS staff_name, co.company_name
+      p.project_name, us.name AS staff_name, co.company_name, co.settings_json
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
     JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = s.company_id WHERE s.shift_id = ?`).bind(shiftId).first() as Promise<any>
 }
@@ -101,9 +105,23 @@ async function shiftContext(db: D1Database, shift: any) {
 }
 
 // ---------- 申請の内容の確認（申請・再申請・確認用の dry_run で共用） ----------
-type Prepared = { kind: 'modify' | 'add'; report_type: string; requested_at: string; reason: string; attendance_id: number | null; before_at: string | null; warnings: string[] }
-type Fail = { error: string; status: 400 | 404 | 409; conflicts?: string[] }
-async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepared | Fail> {
+// warnings は報告の順序の矛盾（申請に保存する）。notices は申請者への注意（確定済みのシフトなど。保存しない。#215）
+type Prepared = { kind: 'modify' | 'add'; report_type: string; requested_at: string; reason: string; attendance_id: number | null; before_at: string | null; warnings: string[]; notices: string[] }
+type Fail = { error: string; status: 400 | 404 | 409 | 429; conflicts?: string[]; report_type?: string }
+// staff: スタッフ本人の申請（会社設定の受付期限を当てる）。others: まとめて申請するほかの報告の日時（順序はそれを反映した後の組み合わせで確かめる。#214）
+type PrepareOpts = { staff?: boolean; others?: Map<string, string> }
+
+// 会社設定（companies.settings_json.correction_deadline_days）の受付期限（勤務日から何日後まで）。未設定・不正なら期限なし
+export function correctionDeadlineDays(settingsJson: any): number | null {
+  let v: any
+  try { v = JSON.parse(settingsJson || '{}')?.correction_deadline_days } catch { return null }
+  const n = Number(v)
+  return Number.isInteger(n) && n > 0 && n <= 366 ? n : null
+}
+// 確定済みのシフトへの申請の注意（承認されても実績・金額は変わらない。settlement.ts の syncActualFromReports は確定済みを変えない）
+export const SETTLED_NOTICE = '精算が確定済みのシフトです。承認されると勤怠の記録は変わりますが、支払額は自動では変わりません（必要な対応は管理者が行います）'
+
+async function prepareRequest(db: D1Database, shift: any, b: any, opts: PrepareOpts = {}): Promise<Prepared | Fail> {
   if (b.kind !== 'modify' && b.kind !== 'add') return { error: '申請の種類を選択してください', status: 400 }
   if (!isReportType(b.report_type)) return { error: '報告の種類を選択してください', status: 400 }
   const at = normalizeDateTime(b.requested_at)
@@ -117,9 +135,20 @@ async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepa
   // 日時は稼働日の前日 0:00 から翌日 23:59 まで（日をまたぐシフトの翌日の退店を含む。年・月の打ち間違いを止める）
   if (at < `${addDays(shift.work_date, -1)} 00:00:00` || at > `${addDays(shift.work_date, 1)} 23:59:59`)
     return { error: `日時は稼働日（${fmtDay(shift.work_date)}）の前日から翌日までの範囲で入力してください`, status: 400 }
+  // 報告の種類ごとの受付時間帯の終わり（起床・出発は稼働日のうち、退店などは予定の終了の後まで。lib/shift-time.ts の reportableWindow）より後は受け付けない（#312）
+  const win = reportableWindow(shift, b.report_type)
+  if (at > win.end) return { error: `${REPORT_LABEL[b.report_type]}の日時は ${fmt(win.end)} までで入力してください`, status: 400 }
+  // これから来る日時の打刻は申請できない（当日に本人が報告できなくなるため。#312）
+  if (at.slice(0, 16) > nowJST().slice(0, 16)) return { error: 'まだ来ていない日時は申請できません。その時刻になったら、ホームの報告ボタンで報告してください', status: 400 }
+  // 会社が受付期限を決めている場合、期限を過ぎたスタッフの申請は受け付けない（管理者の申請は受け付ける。#215）
+  const deadline = opts.staff ? correctionDeadlineDays(shift.settings_json) : null
+  if (deadline && nowJST().slice(0, 10) > addDays(shift.work_date, deadline))
+    return { error: `勤務日から${deadline}日を過ぎたため、アプリからは申請できません。管理者に連絡してください`, status: 400 }
+  const notices = shift.settle_status === 'confirmed' ? [SETTLED_NOTICE] : []
   const reports = await loadReports(db, shift.shift_id)
   const existing = reports.find(r => r.report_type === b.report_type)
   const map = reportMap(reports.filter(r => r.report_type !== b.report_type))
+  for (const [t, v] of opts.others || []) if (t !== b.report_type) map.set(t, v)
   const conflicts = orderConflicts(map, b.report_type, at)
   // 日をまたぐシフトで、休憩・勤務終了・退店の日付が稼働日のままになっている（翌日の入れ忘れ。#52）
   const hint = nextDayHint(shift, b.report_type, at)
@@ -130,13 +159,15 @@ async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepa
     // 時刻修正は報告の順序に違反してはいけない
     if (conflicts.length) {
       const all = hint ? [...conflicts, hint] : conflicts
-      return { error: `報告の順序に矛盾があるため申請できません: ${all.join(' / ')}`, status: 400, conflicts: all }
+      // 隣の報告も一緒に直せば矛盾しない場合があるので、まとめて申請できることを案内する（#214）
+      const guide = opts.others ? '' : '（隣の報告も違っている場合は、「ほかの報告も一緒に直す」でまとめて申請してください）'
+      return { error: `報告の順序に矛盾があるため申請できません: ${all.join(' / ')}${guide}`, status: 400, conflicts: all }
     }
-    prep = { kind: 'modify', report_type: b.report_type, requested_at: at, reason, attendance_id: existing.attendance_id, before_at: existing.reported_at, warnings: [] }
+    prep = { kind: 'modify', report_type: b.report_type, requested_at: at, reason, attendance_id: existing.attendance_id, before_at: existing.reported_at, warnings: [], notices }
   } else {
     if (existing) return { error: 'この報告はすでに登録されています。時刻の修正を申請してください', status: 409 }
     // 打刻漏れの追加は矛盾があっても申請できる（警告として保存し、承認者が例外として承認できる）
-    prep = { kind: 'add', report_type: b.report_type, requested_at: at, reason, attendance_id: null, before_at: null, warnings: hint ? [...conflicts, hint] : conflicts }
+    prep = { kind: 'add', report_type: b.report_type, requested_at: at, reason, attendance_id: null, before_at: null, warnings: hint ? [...conflicts, hint] : conflicts, notices }
   }
   const dup = await db.prepare(`SELECT correction_id FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND status = 'pending'`).bind(shift.shift_id, b.report_type).first()
   if (dup) return { error: 'この報告には承認待ちの申請があります。取り消すか、結果が出てから申請してください', status: 409 }
@@ -151,27 +182,91 @@ function nextDayHint(shift: any, type: string, at: string): string | null {
   return `日をまたぐシフトです。${REPORT_LABEL[type]}の日付が稼働日（${fmtDay(shift.work_date)}）のままです。翌日（${fmtDay(addDays(shift.work_date, 1))}）ではありませんか？`
 }
 
-// 申請の登録（申請と操作履歴を 1 トランザクションで）
-async function insertCorrection(db: D1Database, shift: any, p: Prepared, a: Actor, resubmittedFrom: number | null) {
+// 申請の登録（申請と操作履歴を 1 トランザクションで）。まとめて申請（#214）は同じ created_at で全件を1つの batch に入れる（全件成功か全件失敗）。
+// 同じシフト・申請者・created_at の承認待ちを「まとめて出した申請」として扱い、承認依頼のメールを1通にまとめる（notifications.ts。#392）
+type NewRequest = { p: Prepared; from: number | null }
+async function insertCorrections(db: D1Database, shift: any, items: NewRequest[], a: Actor) {
   const at = nowJST()
   try {
-    await db.batch([
+    await db.batch(items.flatMap(({ p, from }) => [
       db.prepare(`INSERT INTO attendance_corrections (company_id, project_id, shift_id, staff_id, attendance_id, kind, report_type, before_at, requested_at, reason, order_warnings,
           status, requested_by, requested_by_name, requested_by_role, resubmitted_from, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`)
         .bind(shift.company_id, shift.project_id, shift.shift_id, shift.staff_id, p.attendance_id, p.kind, p.report_type, p.before_at, p.requested_at, p.reason,
-          p.warnings.length ? JSON.stringify(p.warnings) : null, a.user_id, a.name, a.role, resubmittedFrom, at, at),
+          p.warnings.length ? JSON.stringify(p.warnings) : null, a.user_id, a.name, a.role, from, at, at),
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
         SELECT correction_id, company_id, ?, ?, ?, ?, ?, ? FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND status = 'pending'`)
-        .bind(resubmittedFrom ? 'resubmitted' : 'submitted', a.user_id, a.name, a.role,
-          JSON.stringify({ kind: p.kind, before_at: p.before_at, requested_at: p.requested_at, reason: p.reason, warnings: p.warnings, resubmitted_from: resubmittedFrom }), at, shift.shift_id, p.report_type),
-    ])
+        .bind(from ? 'resubmitted' : 'submitted', a.user_id, a.name, a.role,
+          JSON.stringify({ kind: p.kind, before_at: p.before_at, requested_at: p.requested_at, reason: p.reason, warnings: p.warnings, resubmitted_from: from, ...(items.length > 1 ? { bulk: items.length } : {}) }),
+          at, shift.shift_id, p.report_type),
+    ]))
   } catch (e: any) {
     if (/UNIQUE/i.test(String(e?.message || e))) return { error: 'この報告には承認待ちの申請があります', status: 409 as const }
     throw e
   }
-  const row = await db.prepare(`SELECT correction_id FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND status = 'pending'`).bind(shift.shift_id, p.report_type).first() as any
-  return { correction_id: row?.correction_id as number, warnings: p.warnings }
+  const types = items.map(i => i.p.report_type)
+  const rows = (await db.prepare(`SELECT correction_id, report_type, resubmitted_from FROM attendance_corrections WHERE shift_id = ? AND status = 'pending' AND report_type IN (${types.map(() => '?').join(',')}) ORDER BY correction_id`)
+    .bind(shift.shift_id, ...types).all()).results as any[]
+  return { corrections: rows.map(r => ({ correction_id: r.correction_id as number, report_type: r.report_type as string, resubmitted: !!r.resubmitted_from })) }
+}
+async function insertCorrection(db: D1Database, shift: any, p: Prepared, a: Actor, resubmittedFrom: number | null) {
+  const r = await insertCorrections(db, shift, [{ p, from: resubmittedFrom }], a)
+  if ('error' in r) return r
+  return { correction_id: r.corrections[0]?.correction_id, warnings: p.warnings, notices: p.notices }
+}
+
+// 同じ報告の最新の申請が、本人が出して却下され、まだ再申請していないものなら、その申請（新しい申請を再申請としてつなぐ。#399）
+async function unresolvedRejection(db: D1Database, shiftId: number, staffId: number, type: string, selfIds: number[]): Promise<number | null> {
+  const r = await db.prepare(`SELECT correction_id, status, requested_by FROM attendance_corrections WHERE shift_id = ? AND staff_id = ? AND report_type = ? ORDER BY correction_id DESC LIMIT 1`)
+    .bind(shiftId, staffId, type).first() as any
+  return r && r.status === 'rejected' && selfIds.includes(r.requested_by) ? r.correction_id : null
+}
+
+// まとめて申請（#214）: 1シフトの複数の報告の時刻を、理由1つで申請する。
+// 順序は、申請するすべての時刻を反映した後の組み合わせで確かめる。承認は1件ずつなので、
+// 上から順に承認すれば途中で矛盾しない順番に並べて登録する（承認待ちの一覧は申請の古い順・ID の小さい順）
+async function prepareBulk(db: D1Database, shift: any, b: any, opts: PrepareOpts): Promise<Prepared[] | Fail> {
+  const items = Array.isArray(b.items) ? b.items : []
+  if (!items.length || items.length > BULK_MAX) return { error: `まとめて申請できる報告は1〜${BULK_MAX}件です`, status: 400 }
+  const others = new Map<string, string>()
+  for (const it of items) {
+    if (!isReportType(it?.report_type)) return { error: '報告の種類を選択してください', status: 400 }
+    if (others.has(it.report_type)) return { error: `${REPORT_LABEL[it.report_type]}が2回含まれています`, status: 400 }
+    const at = normalizeDateTime(it.requested_at)
+    if (!at) return { error: `${REPORT_LABEL[it.report_type]}の日付と時刻を正しく入力してください`, status: 400, report_type: it.report_type }
+    others.set(it.report_type, at)
+  }
+  const reports = await loadReports(db, shift.shift_id)
+  const preps: Prepared[] = []
+  for (const [type, at] of others) {
+    const kind = reports.some(r => r.report_type === type) ? 'modify' : 'add'
+    const p = await prepareRequest(db, shift, { kind, report_type: type, requested_at: at, reason: b.reason }, { ...opts, others })
+    if ('error' in p) return { ...p, error: items.length > 1 ? `${REPORT_LABEL[type]}: ${p.error}` : p.error, report_type: type }
+    preps.push(p)
+  }
+  // 1件ずつ承認しても矛盾しない順番（矛盾のないものから。打刻漏れの追加は例外として承認できるので最後に回す）
+  const now = reportMap(reports)
+  const ordered: Prepared[] = []
+  const rest = [...preps]
+  while (rest.length) {
+    const fits = (p: Prepared) => !orderConflicts(new Map([...now].filter(([t]) => t !== p.report_type)), p.report_type, p.requested_at).length
+    let i = rest.findIndex(fits)
+    if (i < 0) i = rest.findIndex(p => p.kind === 'add')
+    if (i < 0) return { error: '1件ずつ承認できる順番がない組み合わせです。管理者に連絡してください', status: 400 }
+    const [p] = rest.splice(i, 1)
+    now.set(p.report_type, p.requested_at); ordered.push(p)
+  }
+  return ordered
+}
+
+// スタッフの申請の回数の上限（同じ人のユーザーが直近1時間に出した申請の数。取り消した申請も数える。#392）
+async function overHourlyLimit(db: D1Database, staffIds: number[], selfIds: number[], adding: number): Promise<Fail | null> {
+  const since = new Date(Date.now() + 9 * 3600 * 1000 - 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const q = (ids: number[]) => ids.map(() => '?').join(',')
+  const r = await db.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE staff_id IN (${q(staffIds)}) AND requested_by IN (${q(selfIds)}) AND created_at >= ?`)
+    .bind(...staffIds, ...selfIds, since).first() as any
+  if (Number(r?.n || 0) + adding <= CORRECTION_HOURLY_LIMIT) return null
+  return { error: `短い時間に申請が多すぎます（1時間に${CORRECTION_HOURLY_LIMIT}件まで）。しばらくしてから申請してください`, status: 429 }
 }
 
 // ---------- 承認・却下・取り消し ----------
@@ -402,6 +497,10 @@ export async function pendingCorrectionCount(db: D1Database, shiftId: number, ex
 async function resubmitCorrection(db: D1Database, c: any, a: Actor, b: any, selfIds: number[] = [a.user_id], ownStaffIds?: number[]) {
   if (!selfIds.includes(c.requested_by)) return { error: '再申請できるのは申請者本人のみです', status: 403 }
   if (c.status !== 'rejected') return { error: '再申請できるのは却下された申請のみです', status: 409 }
+  // 同じ報告に後から出した申請があるとき（再申請済み・打刻履歴から申請し直した）は、その申請の結果を見て申請し直す（#399）
+  const later = await db.prepare('SELECT correction_id FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND correction_id > ? ORDER BY correction_id DESC LIMIT 1')
+    .bind(c.shift_id, c.report_type, c.correction_id).first() as any
+  if (later) return { error: `この報告は、後の申請 #${later.correction_id} で申請し直しています。そちらの結果を確認してください`, status: 409 }
   const shift = await loadShift(db, c.shift_id)
   if (!shift) return { error: '対象のシフトが見つかりません', status: 404 }
   // 申請の後にシフトの担当者が差し替えられた場合は、前の担当者の申請から作り直さない（#101）
@@ -410,7 +509,7 @@ async function resubmitCorrection(db: D1Database, c: any, a: Actor, b: any, self
   // 報告の種類とシフトは元の申請と同じ。申請の種類は今の登録状況から決める（却下後に報告が登録・変更されている場合があるため）
   const exists = (await loadReports(db, c.shift_id)).some(r => r.report_type === c.report_type)
   const body = { kind: exists ? 'modify' : 'add', report_type: c.report_type, requested_at: b.requested_at ?? c.requested_at, reason: b.reason ?? c.reason }
-  const p = await prepareRequest(db, shift, body)
+  const p = await prepareRequest(db, shift, body, { staff: !!ownStaffIds })
   if ('error' in p) return p
   if (b.dry_run) return { ok: true, dry_run: true, ...p }
   return insertCorrection(db, shift, p, a, c.correction_id)
@@ -693,12 +792,13 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
   let from = isDate(c.req.query('from')) ? c.req.query('from')! : addDays(to, -13)
   if (from > to) from = to
   if (addDays(from, 61) < to) from = addDays(to, -61)
-  const shifts = (await c.env.DB.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, p.project_name, co.company_name, s.company_id
+  const shifts = (await c.env.DB.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.break_minutes, p.project_name, co.company_name, co.settings_json, s.company_id
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN companies co ON co.company_id = s.company_id
     WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date BETWEEN ? AND ? ORDER BY s.work_date DESC, s.start_time`).bind(...ids, from, to).all()).results as any[]
   const shiftIds = shifts.map(s => s.shift_id)
   const enabled = await attendanceTypesForShifts(c.env.DB, shiftIds)
-  const reports = new Map<number, any[]>(), pending = new Map<number, any[]>()
+  const reports = new Map<number, any[]>(), pending = new Map<number, any[]>(), rejected = new Map<number, any[]>()
+  const self = await myUserIds(c)
   for (let i = 0; i < shiftIds.length; i += 90) {
     const chunk = shiftIds.slice(i, i + 90), q = chunk.map(() => '?').join(',')
     for (const r of (await c.env.DB.prepare(`SELECT shift_id, report_type, reported_at, entry_method, corrected_by_correction_id, original_reported_at FROM attendance_reports WHERE shift_id IN (${q})`).bind(...chunk).all()).results as any[]) {
@@ -708,6 +808,14 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
     for (const r of (await c.env.DB.prepare(`SELECT x.correction_id, x.shift_id, x.report_type, x.kind, x.requested_at FROM attendance_corrections x JOIN shifts s ON s.shift_id = x.shift_id AND s.staff_id = x.staff_id
         WHERE x.shift_id IN (${q}) AND x.status = 'pending'`).bind(...chunk).all()).results as any[]) {
       if (!pending.has(r.shift_id)) pending.set(r.shift_id, []); pending.get(r.shift_id)!.push(r)
+    }
+    // 報告ごとの最新の申請が、本人が出して却下されたもの（理由と再申請の入口を行に出す。管理者が出した申請の却下は、本人の再申請につながらないので出さない。#399）
+    for (const r of (await c.env.DB.prepare(`SELECT x.correction_id, x.shift_id, x.report_type, x.reject_reason, x.requested_at, x.requested_by FROM attendance_corrections x JOIN shifts s ON s.shift_id = x.shift_id AND s.staff_id = x.staff_id
+        WHERE x.shift_id IN (${q}) AND x.status = 'rejected'
+          AND NOT EXISTS (SELECT 1 FROM attendance_corrections y WHERE y.shift_id = x.shift_id AND y.report_type = x.report_type AND y.correction_id > x.correction_id)`).bind(...chunk).all()).results as any[]) {
+      if (!self.includes(r.requested_by)) continue
+      const { requested_by, ...x } = r
+      if (!rejected.has(r.shift_id)) rejected.set(r.shift_id, []); rejected.get(r.shift_id)!.push(x)
     }
   }
   const own = (await personStaffRows(c.env.DB, c.get('user'))).map(r => r.company_id)
@@ -719,7 +827,11 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
       shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, status: s.status, project_name: s.project_name,
       company_name: own.length > 1 ? s.company_name : null, tentative: isTentativeShift(s.status),
       enabled: enabled.get(s.shift_id)?.types ?? [...REPORT_TYPES], reports: reports.get(s.shift_id) || [], pending: pending.get(s.shift_id) || [],
+      // 申請画面の注意（精算が確定済み・会社の受付期限 #215）と、既定の時刻の推定（予定の休憩 #342）に使う
+      settled: s.settle_status === 'confirmed', request_until: (d => d ? addDays(s.work_date, d) : null)(correctionDeadlineDays(s.settings_json)),
+      break_minutes: s.break_minutes ?? null, rejected: rejected.get(s.shift_id) || [],
     })),
+    settled_notice: SETTLED_NOTICE,
   })
 })
 
@@ -727,12 +839,16 @@ correctionsStaffApi.get('/corrections', async (c) => {
   const ids = await myStaffIds(c)
   if (!ids.length) return c.json({ corrections: [] })
   const rows = (await c.env.DB.prepare(`SELECT c.correction_id, c.kind, c.report_type, c.status, c.before_at, c.requested_at, c.reason, c.order_warnings, c.created_at,
-      c.decided_by_name, c.decided_at, c.decision_comment, c.reject_reason, c.cancelled_at, c.cancel_reason, c.resubmitted_from, c.requested_by, c.shift_id, s.work_date, p.project_name,
-      (SELECT COUNT(*) FROM attendance_corrections x WHERE x.resubmitted_from = c.correction_id) AS resubmitted_count
+      c.decided_by_name, c.decided_at, c.decision_comment, c.reject_reason, c.cancelled_at, c.cancel_reason, c.resubmitted_from, c.requested_by, c.requested_by_name, c.requested_by_role,
+      c.applied_while_settled, c.shift_id, s.work_date, s.start_time, s.end_time, CASE WHEN s.settle_status = 'confirmed' THEN 1 ELSE 0 END AS settled, p.project_name,
+      (SELECT COUNT(*) FROM attendance_corrections x WHERE x.resubmitted_from = c.correction_id) AS resubmitted_count,
+      (SELECT MAX(x.correction_id) FROM attendance_corrections x WHERE x.shift_id = c.shift_id AND x.staff_id = c.staff_id AND x.report_type = c.report_type AND x.correction_id > c.correction_id) AS superseded_by
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
     WHERE c.staff_id IN (${ids.map(() => '?').join(',')}) ORDER BY c.correction_id DESC LIMIT 200`).bind(...ids).all()).results as any[]
   const self = await myUserIds(c)
-  return c.json({ corrections: rows.map(r => ({ ...r, order_warnings: parseWarnings(r), mine: self.includes(r.requested_by), cancel_reason_label: r.cancel_reason ? CANCEL_REASON_LABEL[r.cancel_reason] || null : null })), labels: REPORT_LABEL })
+  // 管理者が代わりに出した申請は by_admin で区別する（申請者の氏名を出す。ロールは返さない。#486）
+  return c.json({ corrections: rows.map(({ requested_by_role, ...r }) => ({ ...r, order_warnings: parseWarnings(r), mine: self.includes(r.requested_by), by_admin: !self.includes(r.requested_by) && requested_by_role !== 'staff',
+    cancel_reason_label: r.cancel_reason ? CANCEL_REASON_LABEL[r.cancel_reason] || null : null })), labels: REPORT_LABEL })
 })
 correctionsStaffApi.get('/corrections/:id{[0-9]+}', async (c) => {
   const row = await myCorrection(c)
@@ -743,11 +859,35 @@ correctionsStaffApi.post('/corrections', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const s = await myShift(c, b.shift_id)
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const p = await prepareRequest(c.env.DB, s, b)
+  const p = await prepareRequest(c.env.DB, s, b, { staff: true })
   if ('error' in p) return c.json(p, p.status)
   if (b.dry_run) return c.json({ ok: true, dry_run: true, ...p })
-  const r = await insertCorrection(c.env.DB, s, p, actorOf(c.get('user')), null)
-  return sendAndNotify(c, r, (r as any).correction_id, 'submitted')
+  const self = await myUserIds(c)
+  const limited = await overHourlyLimit(c.env.DB, await myStaffIds(c), self, 1)
+  if (limited) return c.json(limited, limited.status)
+  // 同じ報告の却下された申請があれば、その再申請としてつなぐ（#399）
+  const from = await unresolvedRejection(c.env.DB, s.shift_id, s.staff_id, p.report_type, self)
+  const r = await insertCorrection(c.env.DB, s, p, actorOf(c.get('user')), from)
+  return sendAndNotify(c, r, (r as any).correction_id, from ? 'resubmitted' : 'submitted')
+})
+// まとめて申請（#214）: { shift_id, reason, items: [{ report_type, requested_at }], dry_run }。申請の種類（時刻修正・打刻漏れの追加）は今の記録から決める
+correctionsStaffApi.post('/corrections/bulk', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  const s = await myShift(c, b.shift_id)
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const preps = await prepareBulk(c.env.DB, s, b, { staff: true })
+  if ('error' in preps) return c.json(preps, preps.status)
+  const warnings = preps.flatMap(p => p.warnings), notices = [...new Set(preps.flatMap(p => p.notices))]
+  if (b.dry_run) return c.json({ ok: true, dry_run: true, items: preps, warnings, notices })
+  const self = await myUserIds(c)
+  const limited = await overHourlyLimit(c.env.DB, await myStaffIds(c), self, preps.length)
+  if (limited) return c.json(limited, limited.status)
+  const items: NewRequest[] = []
+  for (const p of preps) items.push({ p, from: await unresolvedRejection(c.env.DB, s.shift_id, s.staff_id, p.report_type, self) })
+  const r = await insertCorrections(c.env.DB, s, items, actorOf(c.get('user')))
+  if ('error' in r) return c.json(r, r.status)
+  for (const x of r.corrections) await notifyCorrection(c, x.correction_id, x.resubmitted ? 'resubmitted' : 'submitted')
+  return c.json({ ok: true, corrections: r.corrections, warnings, notices })
 })
 correctionsStaffApi.post('/corrections/:id{[0-9]+}/cancel', async (c) => {
   const row = await myCorrection(c)
@@ -757,6 +897,12 @@ correctionsStaffApi.post('/corrections/:id{[0-9]+}/cancel', async (c) => {
 correctionsStaffApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
   const row = await myCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
-  const r: any = await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), await c.req.json().catch(() => ({} as any)), await myUserIds(c), await myStaffIds(c))
+  const b = await c.req.json().catch(() => ({} as any))
+  const self = await myUserIds(c), staffIds = await myStaffIds(c)
+  if (!b.dry_run) {
+    const limited = await overHourlyLimit(c.env.DB, staffIds, self, 1)
+    if (limited) return c.json(limited, limited.status)
+  }
+  const r: any = await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), b, self, staffIds)
   return sendAndNotify(c, r, r.dry_run ? undefined : r.correction_id, 'resubmitted')
 })
