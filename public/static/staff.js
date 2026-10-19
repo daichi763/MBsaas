@@ -73,7 +73,7 @@ delegate('staffLogout', (el) => {
     const msg = document.getElementById('logout-msg')
     if (msg) msg.classList.add('hidden')
     let ok = true
-    try { await axios.post('/api/auth/logout') } catch (e) { ok = !!e.response } // サーバーが応答した（ログインの期限切れなど）ならログアウト済み
+    try { await axios.post('/api/auth/logout') } catch (e) { ok = !!e.response && e.response.status < 500 } // 4xx（ログインの期限切れなど）ならログアウト済み。5xx ではセッションが残っているかもしれない
     draftClearAll()
     if (ok) { SESSION_ENDED = true; location.href = '/login'; return }
     const text = '通信できないため、ログアウトできませんでした。この端末はログインしたままです。電波の良い場所で、もう一度「ログアウト」を押してください'
@@ -671,7 +671,8 @@ async function renderShifts(from) {
   const to = shiftViewTo(from)
   let data
   try { data = (await axios.get('/api/staff/shifts', { params: { from, to } })).data } catch (e) { showLoadError(e); return }
-  if (SHIFTS_FROM !== from) return // 読み込み中にほかの期間へ移った
+  // 読み込み中にほかの期間・ほかの画面へ移った
+  if (SHIFTS_FROM !== from || (location.hash || '#home').slice(1).split('/')[0] !== 'shift') return
   SHIFT_REQ_PROJECTS = data.request_projects || []
   const day = (n) => dayjs(from).add(n, 'day').format('YYYY-MM-DD')
   $app.innerHTML = `
@@ -1553,7 +1554,7 @@ window.renderConsult = async function () {
     if (cdraft.category && CAT_LABELS[cdraft.category]) document.getElementById('c-cat').value = cdraft.category
     if (cdraft.shift_id && targets.some(x => String(x.shift_id) === String(cdraft.shift_id))) { shiftSel.value = String(cdraft.shift_id); syncCompany() }
     if (cdraft.body) document.getElementById('c-body').value = cdraft.body
-    const ur = cdraft.urgency && cform.querySelector(`input[name=urgency][value="${esc(cdraft.urgency)}"]`)
+    const ur = ['low', 'normal', 'high'].includes(cdraft.urgency) && cform.querySelector(`input[name=urgency][value="${esc(cdraft.urgency)}"]`)
     if (ur) ur.checked = true
     if (cdraft.body) toast('入力途中の内容を戻しました（まだ送信していません）')
   }
