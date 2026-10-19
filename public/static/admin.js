@@ -243,7 +243,7 @@ async function renderDashboard() {
     <div class="card p-4 mb-5 flex items-center justify-between flex-wrap gap-3">
       <div>
         <p class="font-bold text-gray-800 text-sm"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
-        <p class="text-xs text-gray-400 mt-0.5">無効にすると写真添付欄は表示されず、スタッフはボタンひとつで報告できます</p>
+        <p class="text-xs text-gray-400 mt-0.5">無効にすると写真添付欄は表示されず、スタッフはボタンひとつで報告できます。<button type="button" class="text-blue-600 underline" data-action="photoSkipSetting">写真を送れないときの扱い</button></p>
       </div>
       <button class="btn ${data.photo_required_attendance ? 'btn-primary' : 'btn-outline'}" onclick="togglePhotoRequired(${!data.photo_required_attendance})">
         <i class="fas ${data.photo_required_attendance ? 'fa-toggle-on' : 'fa-toggle-off'}"></i>${data.photo_required_attendance ? '有効' : '無効'}
@@ -2122,6 +2122,24 @@ delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.
 // 写真は GET /api/admin/attendance-photo/:attendance_id（自社のシフトの報告だけ返す）。クリックで原寸を別タブに開く
 const PHOTO_REPORT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
 const PHOTO_ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力' }
+const PHOTO_SOURCE_LABEL = { camera: 'カメラで撮影', album: 'アルバムから選択' }
+// 写真を送れないときの扱い（会社設定。#535）: 許可すると、スタッフは理由を選んで写真なしで入店・退店を報告できる（理由は報告状況・写真の一覧に出る）
+delegate('photoSkipSetting', async () => {
+  let d
+  try { d = (await axios.get('/api/admin/settings/photo-skip')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  modal(`<h3 class="font-bold text-lg mb-2">写真を送れないときの扱い</h3>
+    <p class="text-sm text-gray-600 mb-3">店舗が撮影禁止・カメラが使えないなどで写真を送れないとき、スタッフが理由を選んで写真なしで入店・退店を報告できるようにします（アプリと報告用URL）。写真なしの報告と理由は、シフトの報告状況と写真の一覧に表示されます。</p>
+    <p class="text-xs text-gray-500 mb-3">選べる理由: ${Object.values(d.reasons || {}).map(esc).join('・')}</p>
+    <p class="text-sm mb-4">現在: <span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '写真なしの報告を許可' : '許可しない（担当者に連絡してもらう）'}</span></p>
+    <div class="flex gap-2"><button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
+      <button class="btn btn-primary flex-1" data-action="savePhotoSkip" data-enabled="${d.enabled ? '0' : '1'}">${d.enabled ? '許可をやめる' : '許可する'}</button></div>`)
+})
+delegate('savePhotoSkip', (el) => withSubmitLock(el, async () => {
+  try {
+    await axios.post('/api/admin/settings/photo-skip', { enabled: el.dataset.enabled === '1' })
+    closeModal(); toast(el.dataset.enabled === '1' ? '写真なしの報告を許可しました' : '写真なしの報告を許可しないようにしました')
+  } catch (e) { showApiError(e, '設定の更新に失敗しました') }
+}))
 async function loadAttendancePhotos(box, shiftId) {
   if (!box) return
   box.innerHTML = '<span class="spin"></span>'
@@ -2131,13 +2149,17 @@ async function loadAttendancePhotos(box, shiftId) {
     return
   }
   const rows = data.reports.filter(r => r.has_photo)
-  box.innerHTML = rows.length ? `<div class="grid grid-cols-2 gap-2">${rows.map(r => `
+  // 写真なしで報告した入店・退店（理由つき。#535）
+  const skipped = data.reports.filter(r => !r.has_photo && r.no_photo_reason)
+  box.innerHTML = (rows.length ? `<div class="grid grid-cols-2 gap-2">${rows.map(r => `
       <a href="/api/admin/attendance-photo/${Number(r.attendance_id)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden hover:ring-2 ring-blue-300">
         <img src="/api/admin/attendance-photo/${Number(r.attendance_id)}" alt="${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}の写真" loading="lazy" class="w-full h-32 object-cover bg-gray-100">
         <p class="text-xs px-2 py-1 text-gray-600"><span class="font-bold">${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}</span> ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}
-          <span class="text-gray-400">${esc(PHOTO_ENTRY_LABEL[r.entry_method] || '')}</span></p>
+          <span class="text-gray-400">${esc(PHOTO_ENTRY_LABEL[r.entry_method] || '')}${r.device ? '・' + esc(r.device) : ''}${r.photo_source ? '・' + esc(PHOTO_SOURCE_LABEL[r.photo_source] || '') : ''}</span>
+          ${r.photo_stale ? `<span class="block text-amber-700"><i class="fas fa-clock-rotate-left mr-0.5"></i>写真の日時 ${esc(dayjs(r.photo_taken_at).format('M/D HH:mm'))}（報告と30分以上ずれています）</span>` : ''}</p>
       </a>`).join('')}</div>`
-    : '<p class="text-xs text-gray-400">写真の付いた報告はありません</p>'
+    : '<p class="text-xs text-gray-400">写真の付いた報告はありません</p>')
+    + skipped.map(r => `<p class="text-xs text-amber-800 bg-amber-50 rounded p-2 mt-2"><i class="fas fa-camera-slash mr-1"></i>${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)} ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}: 写真なしで報告（${esc(r.no_photo_reason)}）</p>`).join('')
 }
 window.loadAttendancePhotos = loadAttendancePhotos
 window.openAttendancePhotos = function (shiftId, staffName) {

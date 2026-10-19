@@ -7,7 +7,7 @@ const REPORT_LABELS = { wake_up: '起床報告', departure: '出発報告', chec
 const REPORT_ICONS = { wake_up: 'fa-sun', departure: 'fa-person-walking-luggage', check_in: 'fa-store', work_start: 'fa-briefcase', break_start: 'fa-mug-hot', break_end: 'fa-person-walking', work_end: 'fa-flag-checkered', check_out: 'fa-door-open' }
 // 写真添付が必須の報告種別
 const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
-const PHOTO_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 選択可能な元画像の上限 (10MB)
+const PHOTO_MAX_UPLOAD_BYTES = 50 * 1024 * 1024 // 選択可能な元画像の上限 (50MB)。端末の中で縮小してから送るので、高画素の写真も受け付ける（#536）
 const PHOTO_TARGET_BYTES = 500 * 1024           // 圧縮後の目標上限 (500KB)
 const PHOTO_MAX_EDGE = 1600                     // 長辺の最大px
 let pendingPhoto = { blob: null, previewUrl: null, type: null, shiftId: null }
@@ -415,7 +415,8 @@ window.submitAttendance = async function (type, shiftId, button) {
 // ============ 入店/退店報告（写真添付） ============
 window.openPhotoAttendance = function (type, shiftId) {
   if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
-  pendingPhoto = { blob: null, previewUrl: null, type, shiftId }
+  // takenAt・source: 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
+  pendingPhoto = { blob: null, previewUrl: null, type, shiftId, takenAt: null, source: null }
   modal(photoModalHtml())
 }
 
@@ -428,14 +429,18 @@ function photoModalHtml() {
     </div>
     <p class="text-sm text-gray-500 mb-3">店舗の様子が分かる写真を1枚添付してください（必須）</p>
     <div id="photo-area">${photoAreaHtml()}</div>
-    <input type="file" id="photo-input-camera" accept="image/*" capture="environment" class="hidden" onchange="onPhotoSelected(this.files[0])">
-    <input type="file" id="photo-input-album" accept="image/*" class="hidden" onchange="onPhotoSelected(this.files[0])">
+    <input type="file" id="photo-input-camera" accept="image/*" capture="environment" class="hidden" onchange="onPhotoSelected(this.files[0], 'camera'); this.value = ''">
+    <input type="file" id="photo-input-album" accept="image/*" class="hidden" onchange="onPhotoSelected(this.files[0], 'album'); this.value = ''">
     <div id="photo-error" class="text-sm text-red-600 mt-2"></div>
+    <div id="photo-retry"></div>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
       <button id="photo-submit-btn" class="btn btn-primary flex-1" disabled onclick="submitPhotoAttendance()">
         <i class="fas fa-paper-plane"></i>送信する
       </button>
+    </div>
+    <div id="photo-skip-area" class="mt-4 pt-3 border-t">
+      <button type="button" class="text-sm text-gray-600 underline" data-action="photoSkipOpen">写真を送れない場合</button>
     </div>`
 }
 
@@ -444,8 +449,8 @@ function photoAreaHtml() {
     return `
       <div class="relative">
         <img src="${pendingPhoto.previewUrl}" class="w-full rounded-xl border border-gray-200 max-h-64 object-cover" alt="プレビュー">
-        <button class="absolute top-2 right-2 bg-white/90 text-gray-600 rounded-full w-8 h-8 flex items-center justify-center shadow" onclick="removePendingPhoto()">
-          <i class="fas fa-rotate-left"></i>
+        <button class="absolute top-2 right-2 bg-white/90 text-gray-700 rounded-full px-3 h-8 flex items-center gap-1 shadow text-xs font-bold" onclick="removePendingPhoto()">
+          <i class="fas fa-rotate-left"></i>撮り直す
         </button>
       </div>`
   }
@@ -460,9 +465,12 @@ function photoAreaHtml() {
     </div>`
 }
 
-function setPhotoError(msg) {
+// 写真のエラー。撮り直しで直るものは、カメラのボタンをエラーの近くに出す（#536）
+function setPhotoError(msg, withCamera) {
   const el = document.getElementById('photo-error')
   if (el) el.textContent = msg || ''
+  const r = document.getElementById('photo-retry')
+  if (r) r.innerHTML = msg && withCamera ? `<button type="button" class="btn btn-outline w-full mt-2" onclick="document.getElementById('photo-input-camera').click()"><i class="fas fa-camera"></i>カメラで撮り直す</button>` : ''
 }
 function refreshPhotoModal() {
   const area = document.getElementById('photo-area')
@@ -475,19 +483,21 @@ window.removePendingPhoto = function () {
   if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
   pendingPhoto.blob = null
   pendingPhoto.previewUrl = null
+  pendingPhoto.takenAt = null
+  pendingPhoto.source = null
   setPhotoError('')
   refreshPhotoModal()
 }
 
-window.onPhotoSelected = async function (file) {
+window.onPhotoSelected = async function (file, source) {
   setPhotoError('')
   if (!file) return
   if (!/^image\//.test(file.type) && !/\.(heic|heif)$/i.test(file.name || '')) {
-    setPhotoError('画像ファイルを選択してください')
+    setPhotoError('画像ファイルを選択してください', true)
     return
   }
   if (file.size > PHOTO_MAX_UPLOAD_BYTES) {
-    setPhotoError('ファイルサイズが大きすぎます（10MBまで）')
+    setPhotoError('写真のファイルが大きすぎます（50MBまで）。「カメラで撮影」から撮り直してください', true)
     return
   }
 
@@ -499,12 +509,54 @@ window.onPhotoSelected = async function (file) {
     if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
     pendingPhoto.blob = blob
     pendingPhoto.previewUrl = URL.createObjectURL(blob)
+    pendingPhoto.takenAt = file.lastModified || null
+    pendingPhoto.source = source === 'camera' ? 'camera' : 'album'
     refreshPhotoModal()
   } catch (err) {
-    setPhotoError(err && err.message ? err.message : '画像の処理に失敗しました。別の写真をお試しください')
+    setPhotoError(err && err.message ? err.message : '画像の処理に失敗しました。「カメラで撮影」から撮り直してください', true)
     refreshPhotoModal()
   }
 }
+
+// 写真を送れないとき（#535）: 会社が許可していれば理由を選んで写真なしで報告できる。許可していなければ代わりの手段を案内する
+delegate('photoSkipOpen', async (el) => {
+  const box = document.getElementById('photo-skip-area'); if (!box) return
+  const { type, shiftId } = pendingPhoto
+  let opt = null
+  await withSubmitLock(el, async () => {
+    try { opt = (await axios.get('/api/staff/photo-options', { params: { shift_id: shiftId } })).data } catch (e) { opt = null }
+  })
+  if (!document.getElementById('photo-skip-area') || pendingPhoto.shiftId !== shiftId) return
+  const guide = `写真を送れない場合は、<a href="#attendance" class="text-blue-600 underline" onclick="closeModal()">打刻履歴</a>から打刻の追加を申請するか、管理者に連絡してください`
+  box.innerHTML = opt && opt.skip_allowed ? `<div class="space-y-2 text-sm">
+      <p class="font-bold text-gray-700">写真なしで報告する</p>
+      <select id="photo-skip-reason" class="inp text-sm">${Object.entries(opt.reasons || {}).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join('')}</select>
+      <input id="photo-skip-note" class="inp text-sm" maxlength="100" placeholder="補足（「その他」のときは必須）">
+      <button type="button" class="btn btn-outline w-full" data-action="photoSkipSubmit"><i class="fas fa-ban"></i>写真なしで${esc(REPORT_LABELS[type])}する</button>
+      <p class="text-xs text-gray-400">写真なしで報告したことと理由は、管理者に表示されます。${guide}</p></div>`
+    : `<p class="text-xs text-gray-500">${guide}</p>`
+})
+let PHOTO_SKIP_SENDING = false
+delegate('photoSkipSubmit', async (el) => {
+  if (PHOTO_SKIP_SENDING) return
+  const { type, shiftId } = pendingPhoto
+  const reason = (document.getElementById('photo-skip-reason') || {}).value
+  const note = ((document.getElementById('photo-skip-note') || {}).value || '').trim()
+  if (reason === 'other' && !note) { setPhotoError('「その他」の場合は理由を入力してください'); return }
+  PHOTO_SKIP_SENDING = true
+  try {
+    await withSubmitLock(el, async () => {
+      const pos = type === 'check_in' ? await getPositionOrNull() : null
+      try {
+        await axios.post('/api/staff/attendance', { shift_id: shiftId, report_type: type, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, address: null, no_photo_reason: reason, no_photo_note: note })
+        closeModal(); toast(REPORT_LABELS[type] + 'を写真なしで送信しました'); renderHome()
+      } catch (e) {
+        if (e.response && e.response.status === 409 && e.response.data && e.response.data.error === 'すでに報告済みです') { closeModal(); toast(attendanceErrorMessage(e, type)); renderHome(); return }
+        setPhotoError(attendanceErrorMessage(e, type))
+      }
+    })
+  } finally { PHOTO_SKIP_SENDING = false }
+})
 
 // EXIF補正・リサイズ・JPEG圧縮（500KB以下 / 長辺1600px以下 / 画質70%基準）
 async function compressImage(file) {
@@ -515,7 +567,7 @@ async function compressImage(file) {
     try {
       bitmap = await createImageBitmap(file)
     } catch {
-      throw new Error('この画像形式は読み込めませんでした。JPEGまたはPNGをお試しください')
+      throw new Error('この画像は読み込めませんでした（HEIC など）。「カメラで撮影」から撮り直すか、JPEG・PNG の写真を選んでください')
     }
   }
 
@@ -543,7 +595,7 @@ async function compressImage(file) {
     blob = await toBlob(quality)
   }
   if (blob.size > PHOTO_TARGET_BYTES) {
-    throw new Error('画像を十分に圧縮できませんでした。別の写真をお試しください')
+    throw new Error('画像を十分に小さくできませんでした。「カメラで撮影」から撮り直してください')
   }
   return blob
 }
@@ -560,6 +612,9 @@ window.submitPhotoAttendance = async function () {
     form.append('report_type', type)
     if (pos) { form.append('latitude', String(pos.coords.latitude)); form.append('longitude', String(pos.coords.longitude)) }
     form.append('photo', blob, 'attendance.jpg')
+    // 写真のファイルの日時・選び方（#418）
+    if (pendingPhoto.takenAt) form.append('photo_taken_at', String(pendingPhoto.takenAt))
+    if (pendingPhoto.source) form.append('photo_source', pendingPhoto.source)
     try {
       await axios.post('/api/staff/attendance-photo', form)
       closeModal()
