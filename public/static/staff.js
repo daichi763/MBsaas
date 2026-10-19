@@ -542,10 +542,13 @@ async function loadRecruitOpen() {
       <span class="block text-xs text-gray-500">${open ? `応募できる日時 ${open}件` : '応募できる日時はありません'}${pending ? `・承認待ち ${pending}件` : ''}</span></span>
     <i class="fas fa-chevron-right text-gray-300"></i></button>`
 }
-const RC_STATUS = { pending: '<span class="badge badge-yellow">承認待ち</span>', approved: '<span class="badge badge-green">確定</span>', rejected: '<span class="badge badge-gray">見送り</span>', cancelled: '<span class="badge badge-gray">取り下げ</span>' }
-window.renderRecruitList = function () {
+// released: 承認の後にシフトから外れた（削除・欠勤・差し替え・移動）。同じ枠にもう一度応募できる / slot_removed: 応募の後に枠が削除された
+const RC_STATUS = { pending: '<span class="badge badge-yellow">承認待ち</span>', approved: '<span class="badge badge-green">確定</span>', rejected: '<span class="badge badge-gray">見送り</span>', cancelled: '<span class="badge badge-gray">取り下げ</span>', released: '<span class="badge badge-red">シフト解除</span>', slot_removed: '<span class="badge badge-gray">募集終了</span>' }
+// keep: 続きの日時を読み込んだときなど、選んだ日時とメモを保ったまま描き直す
+window.renderRecruitList = function (keep) {
   const d = RECRUIT; if (!d) return
-  const picked = new Set()
+  const note = keep ? ((document.getElementById('rc-note') || {}).value || '') : ''
+  const picked = keep && window.__rcPicked ? window.__rcPicked : new Set()
   window.__rcPicked = picked
   $app.innerHTML = `
     <button class="text-sm text-blue-600 mb-3" onclick="renderShifts()"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
@@ -559,14 +562,30 @@ window.renderRecruitList = function () {
       ${p.description ? `<p class="text-xs text-gray-600 mb-1 whitespace-pre-wrap">${esc(p.description)}</p>` : ''}
       ${p.pay_note ? `<p class="text-xs mb-2"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>${esc(p.pay_note)}</p>` : ''}
       <div class="space-y-1.5">${p.roles.map(r => `<label class="flex items-center gap-3 p-2.5 rounded-lg border border-gray-200 ${r.my_status || r.full ? 'opacity-60' : ''}">
-        ${r.my_status ? '<span class="w-5"></span>' : `<input type="checkbox" class="w-5 h-5" onchange="this.checked ? window.__rcPicked.add('${p.page_id}:${r.slot_role_id}') : window.__rcPicked.delete('${p.page_id}:${r.slot_role_id}')">`}
+        ${r.my_status ? '<span class="w-5"></span>' : `<input type="checkbox" class="w-5 h-5" ${picked.has(p.page_id + ':' + r.slot_role_id) ? 'checked' : ''} onchange="this.checked ? window.__rcPicked.add('${p.page_id}:${r.slot_role_id}') : window.__rcPicked.delete('${p.page_id}:${r.slot_role_id}')">`}
         <span class="flex-1 min-w-0"><span class="block text-sm font-medium">${fmtDate(r.work_date)} ${esc(r.start_time)}〜${esc(r.end_time)}</span>
           <span class="block text-xs text-gray-500 truncate">${esc(r.place)}${r.role_name ? '・' + esc(r.role_name) : ''}</span></span>
         <span class="text-xs whitespace-nowrap">${r.my_status === 'assigned' ? '<span class="badge badge-green">シフトあり</span>' : r.my_status ? RC_STATUS[r.my_status] : r.full ? '<span class="text-gray-500">定員</span>' : r.remaining != null ? `<span class="text-emerald-600">残り${r.remaining}名</span>` : ''}</span></label>`).join('') || '<p class="text-xs text-gray-400">募集中の日時はありません</p>'}</div>
+      ${p.next_from ? `<button class="btn btn-outline w-full text-xs mt-2" data-action="recruitMoreRoles" data-id="${p.page_id}">さらに後の日時を表示</button>` : ''}
     </section>`).join('')}
     ${d.pages.length ? `<textarea id="rc-note" class="inp mb-3" rows="2" maxlength="500" placeholder="メモ（任意）"></textarea>
       <button class="btn btn-primary w-full py-3" onclick="submitRecruitApply()">選んだ日時に応募する</button>
       <p class="text-[11px] text-gray-400 text-center mt-2">管理者が承認するとシフトが確定します</p>` : ''}`
+  if (note && document.getElementById('rc-note')) document.getElementById('rc-note').value = note
+}
+// 募集ページの続きの日時（枠が多いページは日付の順に分けて取得する）
+delegate('recruitMoreRoles', (el) => loadMoreRecruitRoles(Number(el.dataset.id), el))
+async function loadMoreRecruitRoles(pageId, btn) {
+  const p = RECRUIT && RECRUIT.pages.find(x => x.page_id === pageId); if (!p || !p.next_from) return
+  await withSubmitLock(btn, async () => {
+    try {
+      const { data } = await axios.get(`/api/staff/recruit/pages/${pageId}/roles?from=${encodeURIComponent(p.next_from)}`)
+      const seen = new Set(p.roles.map(r => r.slot_role_id))
+      p.roles = p.roles.concat(data.roles.filter(r => !seen.has(r.slot_role_id)))
+      p.next_from = data.next_from
+    } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '読み込みに失敗しました'); return }
+    renderRecruitList(true)
+  })
 }
 window.submitRecruitApply = async function () {
   const picked = [...window.__rcPicked]
