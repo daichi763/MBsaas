@@ -10,8 +10,9 @@
 // 管理者 API（/api/admin/corrections*）は api.ts から権限ミドルウェアの後に、スタッフ API（/api/staff/*）は認証の後に登録する。
 // =========================================================
 import { Hono } from 'hono'
-import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts } from './report-settings'
-import { syncActualFromReports } from './settlement'
+import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts, lateness, latenessSettings, type ReportLateness } from './report-settings'
+import { syncActualFromReports, actualFromReports, amountsForActual } from './settlement'
+import { isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
 import { personStaffRows } from './roster'
 import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
@@ -74,6 +75,13 @@ async function loadReports(db: D1Database, shiftId: number) {
   return (await db.prepare('SELECT attendance_id, report_type, reported_at, entry_method FROM attendance_reports WHERE shift_id = ?').bind(shiftId).all()).results as any[]
 }
 const reportMap = (rows: any[]) => new Map(rows.map(r => [r.report_type as string, r.reported_at as string]))
+// 承認画面の根拠の表示用（管理者のみ）: 元の打刻の方法・入力者・位置・写真の有無・遅刻の判定（#443）
+async function loadReportsDetail(db: D1Database, shiftId: number) {
+  return (await db.prepare(`SELECT a.attendance_id, a.report_type, a.reported_at, a.entry_method, a.status, a.late_minutes, a.early_leave_minutes,
+      a.latitude, a.longitude, a.address, CASE WHEN a.photo_key IS NOT NULL THEN 1 ELSE 0 END AS has_photo, a.entered_by, um.name AS entered_by_name,
+      a.original_reported_at, a.corrected_by_correction_id
+    FROM attendance_reports a LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(shiftId).all()).results as any[]
+}
 async function loadCorrection(db: D1Database, id: any) {
   return db.prepare(`SELECT c.*, s.work_date, s.start_time, s.end_time, s.settle_status, p.project_name, p.status AS project_status, us.name AS staff_name
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
@@ -169,55 +177,139 @@ async function insertCorrection(db: D1Database, shift: any, p: Prepared, a: Acto
 // ---------- 承認・却下・取り消し ----------
 const DONE_MESSAGE: Record<string, string> = { approved: 'この申請はすでに承認されています', rejected: 'この申請はすでに却下されています', cancelled: 'この申請は取り消されています' }
 
-async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comment?: any; exception?: any }) {
+// 承認で反映する報告の status（#69）。遅刻は承認する日時で判定し直す（アプリの報告と同じ report-settings.ts の lateness）。
+// 時刻修正で、位置が取れなかった本人の入店（no_location）は、遅刻でなければ no_location のまま（時刻を直しても位置は変わらないため）
+function correctedStatus(j: ReportLateness, prev: any | null): 'late' | 'no_location' | 'normal' {
+  if (j.late) return 'late'
+  if (prev && j.report_type === 'check_in' && prev.latitude == null
+    && (prev.status === 'no_location' || (prev.status === 'late' && !['proxy', 'correction'].includes(prev.entry_method || 'app')))) return 'no_location'
+  return 'normal'
+}
+// 承認者が直した日時の範囲（申請と同じ: 稼働日の前日 0:00 から翌日 23:59 まで）
+const inShiftRange = (workDate: string, at: string) => at >= `${addDays(workDate, -1)} 00:00:00` && at <= `${addDays(workDate, 1)} 23:59:59`
+
+// 承認する日時での遅刻・早退の判定（#69）と、承認した場合の実績・金額（変更前 → 変更後。#443）。書き込みはしない。
+// 実績は syncActualFromReports と同じ規則（確定済み・手入力の実績は変えない）で計算する
+async function judgeApproval(db: D1Database, c: any, shift: any, reports: any[], at: string) {
+  const co = await db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(c.company_id).first() as any
+  const judged = lateness(shift, [{ report_type: c.report_type, reported_at: at }], latenessSettings(co?.settings_json))[0]
+  const prev = reports.find(r => r.report_type === c.report_type) || null
+  const status = prev ? correctedStatus(judged, prev) : (judged.late ? 'late' : 'normal')
+  return { judged, status, prev }
+}
+async function approvalPreview(db: D1Database, c: any, reports: any[], at: string, j: { judged: ReportLateness; status: string; prev: any }) {
+  const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.shift_id, c.company_id).first() as any
+  if (!s) return null
+  const proj: any = (await loadPricingData(db, c.company_id, [Number(s.project_id)])).projects.get(Number(s.project_id)) || {}
+  const view = (x: any) => {
+    const w = workHours({ ...x, break_minutes: x.break_minutes ?? proj.default_break_minutes ?? 0 }, proj)
+    const t = shiftTotals(x)
+    return { actual_start: x.actual_start || null, actual_end: x.actual_end || null, actual_break_minutes: x.actual_break_minutes ?? null,
+      hours: w.hours, pay_hours: w.pay_hours, used: w.used, bill_total: t.bill_total, pay_total: t.pay_total }
+  }
+  const before = view(s)
+  const fixed = isSettled(s) ? 'settled' : s.actual_source === 'manual' ? 'manual' : null
+  let after = before
+  if (!fixed) {
+    const a = actualFromReports(t => (t === c.report_type ? at : reports.find(r => r.report_type === t)?.reported_at))
+    const ns = { ...s, actual_start: a.start, actual_end: a.end, actual_break_minutes: a.brk }
+    after = view({ ...ns, ...(amountsForActual(ns, proj) || {}) })
+  }
+  return {
+    requested_at: at,
+    actual: { before, after, fixed },
+    lateness: {
+      before: j.prev ? { status: j.prev.status, late_minutes: j.prev.late_minutes, early_leave_minutes: j.prev.early_leave_minutes } : null,
+      after: { status: j.status, late_minutes: j.judged.late_minutes, early_leave_minutes: j.judged.early_leave_minutes },
+    },
+  }
+}
+
+// 承認。requested_at を渡すと、承認者が日時を直して承認する（#548。直した理由のコメントは必須。申請の日時は操作履歴に残す）。
+// 申請の後に打刻が変わった時刻修正は、承認者が今の記録を確かめた（base_at = 今の記録の日時）ときだけ、今の記録をもとに承認する。
+// dry_run は書き込まずに、承認した場合の遅刻の判定と実績・金額を返す
+type ApproveOpts = { comment?: any; exception?: any; requested_at?: any; base_at?: any; dry_run?: any }
+async function approveCorrection(db: D1Database, c: any, a: Actor, opts: ApproveOpts) {
   if (c.status !== 'pending') return { error: DONE_MESSAGE[c.status] || '承認できない状態です', status: 409 }
   const comment = String(opts.comment ?? '').trim().slice(0, REASON_MAX) || null
+  const dryRun = opts.dry_run === true
+  let at: string = c.requested_at, adjusted = false
+  if (opts.requested_at != null && String(opts.requested_at).trim() !== '') {
+    const n = normalizeDateTime(opts.requested_at)
+    if (!n) return { error: '承認する日時を正しく入力してください', status: 400 }
+    if (n.slice(0, 16) !== String(c.requested_at).slice(0, 16)) { at = n; adjusted = true }
+  }
+  if (adjusted && !comment && !dryRun) return { error: '日時を修正して承認するときは、修正の理由をコメントに入力してください（申請者に知らせます）', status: 400 }
   const shift = await loadShift(db, c.shift_id)
   if (!shift) return { error: '対象のシフトが見つかりません', status: 409 }
   // 申請の後にシフトの担当者が差し替えられた・欠勤になった・希望（仮）に戻された場合は承認しない（#101 #70 #559）
   if (shift.staff_id !== c.staff_id) return { error: 'シフトの担当者が変わったため承認できません。却下してください', status: 409 }
   if (shift.status === 'absent') return { error: '欠勤のシフトです。承認できないため却下してください', status: 409 }
   if (!isWorkingShift(shift.status)) return { error: '未確定（希望（仮））のシフトです。シフトを確定してから承認するか、却下してください', status: 409 }
-  const reports = await loadReports(db, c.shift_id)
+  if (adjusted && !inShiftRange(shift.work_date, at)) return { error: `日時は稼働日（${fmtDay(shift.work_date)}）の前日から翌日までの範囲で入力してください`, status: 400 }
+  const reports = await loadReportsDetail(db, c.shift_id)
   const existing = reports.find(r => r.report_type === c.report_type)
-  const conflicts = orderConflicts(reportMap(reports.filter(r => r.report_type !== c.report_type)), c.report_type, c.requested_at)
-  let exception = 0
+  const conflicts = orderConflicts(reportMap(reports.filter(r => r.report_type !== c.report_type)), c.report_type, at)
+  let exception = 0, before: string | null = c.before_at, rebased = false
   if (c.kind === 'modify') {
-    if (!existing || existing.attendance_id !== c.attendance_id || existing.reported_at !== c.before_at) {
+    if (!existing || existing.attendance_id !== c.attendance_id) {
       return { error: '申請の後に打刻が変更されました。内容を確認し、却下して再申請してもらってください', status: 409 }
     }
+    if (existing.reported_at !== c.before_at) {
+      if (opts.base_at == null || String(opts.base_at) !== existing.reported_at)
+        return { error: `申請の後に打刻が変更されました（今の記録: ${fmt(existing.reported_at)}）。今の記録をもとに日時を確かめて承認するか、却下してください`, status: 409, changed: true, current_at: existing.reported_at }
+      before = existing.reported_at; rebased = true
+    }
+    if (String(before).slice(0, 16) === at.slice(0, 16)) return { error: '変更前と同じ日時です（承認しても記録は変わりません）。日時を直すか、却下してください', status: 400 }
     if (conflicts.length) return { error: `報告の順序に矛盾があるため承認できません: ${conflicts.join(' / ')}`, status: 409, conflicts }
   } else {
     if (existing) return { error: 'この報告はすでに登録されています（二重登録になるため承認できません）', status: 409 }
     if (conflicts.length) {
-      if (opts.exception !== true) return { error: '報告の順序に矛盾があります。内容を確認し、例外として承認してください', status: 409, conflicts, need_exception: true }
+      if (opts.exception !== true && !dryRun) return { error: '報告の順序に矛盾があります。内容を確認し、例外として承認してください', status: 409, conflicts, need_exception: true }
       exception = 1
     }
   }
-  const at = nowJST(), token = randToken(), settled = shift.settle_status === 'confirmed' ? 1 : 0
+  // 遅刻・早退を承認する日時で判定し直す（#69）
+  const j = await judgeApproval(db, c, shift, reports, at)
+  if (dryRun) {
+    return { ok: true, dry_run: true, adjusted, rebased, conflicts, need_exception: c.kind === 'add' && conflicts.length > 0, preview: await approvalPreview(db, c, reports, at, j) }
+  }
+  const nowAt = nowJST(), token = randToken(), settled = shift.settle_status === 'confirmed' ? 1 : 0
   // 実績が手入力のシフトは、報告を直しても実績・金額は変わらない（syncActualFromReports は手入力を上書きしない）。
   // 操作履歴（applied_while_manual）と応答で知らせ、精算の確認事項「手入力後に打刻修正あり」に出す
   const manual = !settled && shift.actual_source === 'manual'
   const applied = `EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND decision_token = ?)`
   // 承認と同時にシフトが差し替え・欠勤にされても反映しない（担当者が申請と同じで、勤務として扱う状態のときだけ承認する）
   const shiftOk = `EXISTS (SELECT 1 FROM shifts WHERE shift_id = ? AND staff_id = ? AND status IN ${WORKING_IN})`
+  // 申請の日時・変更前は、承認した内容に書き換える（申請のときの日時は操作履歴の submitted と approved の detail に残る。#548）
   const guard = c.kind === 'modify'
     ? db.prepare(`UPDATE attendance_corrections SET status = 'approved', decided_by = ?, decided_by_name = ?, decided_at = ?, decision_token = ?, decision_comment = ?,
-          is_exception = 0, applied_while_settled = ?, updated_at = ?
+          is_exception = 0, applied_while_settled = ?, requested_at = ?, before_at = ?, updated_at = ?
         WHERE correction_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM attendance_reports WHERE attendance_id = ? AND shift_id = ? AND report_type = ? AND reported_at = ?) AND ${shiftOk}`)
-      .bind(a.user_id, a.name, at, token, comment, settled, at, c.correction_id, c.attendance_id, c.shift_id, c.report_type, c.before_at, c.shift_id, c.staff_id)
+      .bind(a.user_id, a.name, nowAt, token, comment, settled, at, before, nowAt, c.correction_id, c.attendance_id, c.shift_id, c.report_type, before, c.shift_id, c.staff_id)
     : db.prepare(`UPDATE attendance_corrections SET status = 'approved', decided_by = ?, decided_by_name = ?, decided_at = ?, decision_token = ?, decision_comment = ?,
-          is_exception = ?, order_warnings = ?, applied_while_settled = ?, updated_at = ?
+          is_exception = ?, order_warnings = ?, applied_while_settled = ?, requested_at = ?, updated_at = ?
         WHERE correction_id = ? AND status = 'pending' AND NOT EXISTS (SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?) AND ${shiftOk}`)
-      .bind(a.user_id, a.name, at, token, comment, exception, conflicts.length ? JSON.stringify(conflicts) : c.order_warnings, settled, at, c.correction_id, c.shift_id, c.report_type, c.shift_id, c.staff_id)
-  // 承認で変わった報告に修正の印を付ける。元の打刻の方法（entry_method）は変えず、最初の修正の前の日時を残す（#252）
+      .bind(a.user_id, a.name, nowAt, token, comment, exception, conflicts.length ? JSON.stringify(conflicts) : c.order_warnings, settled, at, nowAt, c.correction_id, c.shift_id, c.report_type, c.shift_id, c.staff_id)
+  // 承認で変わった報告に修正の印を付ける。元の打刻の方法（entry_method）は変えず、最初の修正の前の日時を残す（#252）。
+  // 遅刻・早退の判定（status・late_minutes・early_leave_minutes）も承認した日時で入れ直す（#69。ToDo・スタッフ詳細は保存された値を読む）
   const apply = c.kind === 'modify'
-    ? db.prepare(`UPDATE attendance_reports SET reported_at = ?, original_reported_at = COALESCE(original_reported_at, reported_at), corrected_by_correction_id = ?, corrected_at = ?
-        WHERE attendance_id = ? AND ${applied}`).bind(c.requested_at, c.correction_id, at, c.attendance_id, c.correction_id, token)
-    : db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by, corrected_by_correction_id, corrected_at)
-        SELECT ?, ?, ?, ?, ?, 'normal', 'correction', 'correction', ?, ?, ? WHERE ${applied}`)
-      .bind(c.company_id, c.staff_id, c.shift_id, c.report_type, c.requested_at, a.user_id, c.correction_id, at, c.correction_id, token)
+    ? db.prepare(`UPDATE attendance_reports SET reported_at = ?, status = ?, late_minutes = ?, early_leave_minutes = ?,
+          original_reported_at = COALESCE(original_reported_at, reported_at), corrected_by_correction_id = ?, corrected_at = ?
+        WHERE attendance_id = ? AND ${applied}`)
+      .bind(at, j.status, j.judged.late_minutes, j.judged.early_leave_minutes, c.correction_id, nowAt, c.attendance_id, c.correction_id, token)
+    : db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, device_info, entry_method, entered_by, corrected_by_correction_id, corrected_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'correction', 'correction', ?, ?, ? WHERE ${applied}`)
+      .bind(c.company_id, c.staff_id, c.shift_id, c.report_type, at, j.status, j.judged.late_minutes, j.judged.early_leave_minutes, a.user_id, c.correction_id, nowAt, c.correction_id, token)
   const event = exception ? 'approved_exception' : 'approved'
+  const detail = {
+    comment, before_at: before, requested_at: at, exception: !!exception, conflicts, applied_while_settled: !!settled, ...(manual ? { applied_while_manual: true } : {}),
+    // 承認者が日時を直した（#548）・申請の後に変わった今の記録をもとに承認した
+    ...(adjusted ? { adjusted: true, requested_at_original: c.requested_at } : {}),
+    ...(rebased ? { rebased: true, before_at_original: c.before_at } : {}),
+    // 遅刻の判定の変化（#69）
+    before_status: j.prev ? j.prev.status : null, report_status: j.status, late_minutes: j.judged.late_minutes, early_leave_minutes: j.judged.early_leave_minutes,
+  }
   try {
     await db.batch([
       guard, apply,
@@ -225,8 +317,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
         .bind(c.shift_id, c.report_type, c.correction_id, token),
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${applied}`)
-        .bind(c.correction_id, c.company_id, event, a.user_id, a.name, a.role,
-          JSON.stringify({ comment, before_at: c.before_at, requested_at: c.requested_at, exception: !!exception, conflicts, applied_while_settled: !!settled, ...(manual ? { applied_while_manual: true } : {}) }), at, c.correction_id, token),
+        .bind(c.correction_id, c.company_id, event, a.user_id, a.name, a.role, JSON.stringify(detail), nowAt, c.correction_id, token),
     ])
   } catch (e: any) {
     if (/UNIQUE/i.test(String(e?.message || e))) return { error: 'この報告はすでに登録されています（二重登録になるため承認できません）', status: 409 }
@@ -239,7 +330,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
   }
   // 実績・時給の数量に反映（確定済み・手入力の実績は既存の規則どおり変えない）
   await syncActualFromReports(db, c.company_id, c.shift_id).catch(() => {})
-  return { ok: true, exception: !!exception, applied_while_settled: !!settled, applied_while_manual: manual }
+  return { ok: true, exception: !!exception, applied_while_settled: !!settled, applied_while_manual: manual, adjusted, requested_at: at, report_status: j.status, late_minutes: j.judged.late_minutes }
 }
 
 async function rejectCorrection(db: D1Database, c: any, a: Actor, reasonIn: any, commentIn: any) {
@@ -333,12 +424,20 @@ async function correctionDetail(db: D1Database, c: any, viewer: 'admin' | 'staff
     .bind(c.shift_id, c.report_type, ...(viewer === 'staff' ? [c.staff_id] : [])).all()).results as any[]
   // 担当者が差し替えられたシフトの今の報告（新しい担当者の打刻）は、前の担当者には返さない（#101）
   const owner = viewer === 'staff' ? await db.prepare('SELECT staff_id FROM shifts WHERE shift_id = ?').bind(c.shift_id).first() as any : null
-  const reports = viewer === 'staff' && owner?.staff_id !== c.staff_id ? [] : await loadReports(db, c.shift_id)
+  // 管理者には、承認の根拠として元の打刻の方法・入力者・位置・写真の有無・遅刻の判定も返す（#443）
+  const reports = viewer === 'staff' && owner?.staff_id !== c.staff_id ? [] : viewer === 'admin' ? await loadReportsDetail(db, c.shift_id) : await loadReports(db, c.shift_id)
   const current = c.status === 'pending' ? orderConflicts(reportMap(reports.filter(r => r.report_type !== c.report_type)), c.report_type, c.requested_at) : []
   const out: any = {
     correction: { ...c, decision_token: undefined, order_warnings: parseWarnings(c), status_label: STATUS_LABEL[c.status], kind_label: KIND_LABEL[c.kind], report_label: REPORT_LABEL[c.report_type] },
     events: events.map(e => ({ ...e, detail: (() => { try { return e.detail ? JSON.parse(e.detail) : null } catch { return null } })() })),
     history: related, reports, current_conflicts: current,
+  }
+  if (viewer === 'admin' && c.status === 'pending') {
+    // 承認した場合の遅刻の判定と実績・金額（変更前 → 変更後）。計算できなくても詳細は返す
+    try {
+      const shift = await loadShift(db, c.shift_id)
+      if (shift) out.preview = await approvalPreview(db, c, reports, c.requested_at, await judgeApproval(db, c, shift, reports, c.requested_at))
+    } catch { out.preview = null }
   }
   if (viewer === 'staff') {
     // スタッフ本人には承認者の識別情報（ロール）と処理の内部情報を返さない
@@ -460,7 +559,7 @@ const eventSummary = (e: any) => {
   if (!d) return ''
   if (e.event === 'submitted' || e.event === 'resubmitted') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at} 理由: ${d.reason || ''}${d.warnings && d.warnings.length ? ' 矛盾: ' + d.warnings.join(' / ') : ''}`
   if (e.event === 'rejected') return `却下理由: ${d.reason || ''}${d.comment ? ' コメント: ' + d.comment : ''}`
-  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}${d.applied_while_manual ? '（実績は手入力のまま）' : ''}`
+  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.adjusted ? `（申請 ${d.requested_at_original} を修正して承認）` : ''}${d.rebased ? `（申請後に変わった記録 ${d.before_at} をもとに承認）` : ''}${d.report_status === 'late' ? ` 遅刻${d.late_minutes != null ? d.late_minutes + '分' : ''}` : d.before_status === 'late' ? ' 遅刻を解消' : ''}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}${d.applied_while_manual ? '（実績は手入力のまま）' : ''}`
   if (e.event === 'cancelled' && d.auto) return `自動で取り消し（${CANCEL_REASON_LABEL[d.reason] || d.reason}）`
   return ''
 }
@@ -493,6 +592,32 @@ correctionsAdminApi.get('/corrections/:id{[0-9]+}', async (c) => {
   return c.json({ ...await correctionDetail(c.env.DB, row, 'admin'), shift_actual_source: s?.actual_source ?? null })
 })
 
+// 管理者として申請するシフトの候補（#393）。勤務日の範囲（31日まで）・スタッフ・氏名／案件名／社員番号で絞る。
+// 欠勤・希望（仮）のシフトには申請できないので返さない
+const CANDIDATE_LIMIT = 200
+correctionsAdminApi.get('/corrections/shift-candidates', async (c) => {
+  const u = c.get('user'), q = (k: string) => c.req.query(k)
+  const from = isDate(q('from')) ? q('from')! : nowJST().slice(0, 10)
+  const to = isDate(q('to')) ? q('to')! : from
+  if (to < from) return c.json({ error: '期間の終わりは始まり以降の日付にしてください' }, 400)
+  if (addDays(from, 30) < to) return c.json({ error: '期間は31日以内で指定してください' }, 400)
+  const w = ['s.company_id = ?', 's.work_date BETWEEN ? AND ?', `s.status IN ${WORKING_IN}`]; const bind: any[] = [u.company_id, from, to]
+  const staffId = Number(q('staff_id'))
+  if (Number.isInteger(staffId) && staffId > 0) { w.push('s.staff_id = ?'); bind.push(staffId) }
+  const kw = String(q('q') || '').trim().slice(0, 50)
+  if (kw) {
+    const like = '%' + kw.replace(/[\\%_]/g, m => '\\' + m) + '%'
+    w.push("(us.name LIKE ? ESCAPE '\\' OR p.project_name LIKE ? ESCAPE '\\' OR er.employee_number = ?)"); bind.push(like, like, kw)
+  }
+  const rows = (await c.env.DB.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, p.project_name, us.name AS staff_name, er.employee_number,
+      (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS report_count,
+      (SELECT COUNT(*) FROM attendance_corrections x WHERE x.shift_id = s.shift_id AND x.status = 'pending') AS pending_count
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = s.staff_id AND er.company_id = s.company_id
+    WHERE ${w.join(' AND ')} ORDER BY s.work_date DESC, s.start_time, us.name, s.shift_id LIMIT ${CANDIDATE_LIMIT + 1}`).bind(...bind).all()).results as any[]
+  return c.json({ from, to, shifts: rows.slice(0, CANDIDATE_LIMIT), truncated: rows.length > CANDIDATE_LIMIT, limit: CANDIDATE_LIMIT })
+})
+
 // 管理者による申請（自社のシフト）。dry_run で確認のみ
 correctionsAdminApi.get('/corrections/shift/:shiftId', async (c) => {
   const s = await loadShift(c.env.DB, c.req.param('shiftId'))
@@ -513,7 +638,8 @@ correctionsAdminApi.post('/corrections/:id{[0-9]+}/approve', async (c) => {
   const row = await ownCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  return sendAndNotify(c, await approveCorrection(c.env.DB, row, actorOf(c.get('user')), { comment: b.comment, exception: b.exception }), row.correction_id, 'approved')
+  const r = await approveCorrection(c.env.DB, row, actorOf(c.get('user')), { comment: b.comment, exception: b.exception, requested_at: b.requested_at, base_at: b.base_at, dry_run: b.dry_run })
+  return (r as any).dry_run ? send(c, r) : sendAndNotify(c, r, row.correction_id, 'approved')
 })
 correctionsAdminApi.post('/corrections/:id{[0-9]+}/reject', async (c) => {
   const row = await ownCorrection(c)

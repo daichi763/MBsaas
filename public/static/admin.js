@@ -21,10 +21,17 @@ function toast(msg) {
   root.appendChild(el); setTimeout(() => el.remove(), 2500)
 }
 function loading() { $app.innerHTML = '<div class="flex justify-center py-20"><span class="spin"></span></div>' }
-function modal(html) {
+// opts.onClose: 閉じたとき（ボタン・背景のタップ・画面の移動のどれでも）に1回だけ呼ぶ。別のモーダルに置き換えたときは呼ばない（#266）
+let MODAL_ON_CLOSE = null
+function modal(html, opts = {}) {
+  MODAL_ON_CLOSE = typeof opts.onClose === 'function' ? opts.onClose : null
   document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
 }
-window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
+window.closeModal = () => {
+  document.getElementById('modal-root').innerHTML = ''
+  const fn = MODAL_ON_CLOSE; MODAL_ON_CLOSE = null
+  if (fn) { try { fn() } catch (e) { } }
+}
 
 // ============ API 呼び出しの共通処理: ログインの期限切れ・アカウントの切り替え（#346 #526）・エラーの表示（#230） ============
 // バッジ更新・やり取りの新着確認など、利用者の操作によらない定期の取得（config に background: true を付けたものも含む）。
@@ -378,6 +385,21 @@ async function renderDashboard() {
 }
 
 // ---------- ダッシュボード: 欠勤・代わりの手配・報告状況 ----------
+// シフトの状態を変える。入店以降の報告があるシフトを欠勤にするときは、サーバーが確認を求める（need_force）ので、
+// 理由を示して確認できたら force を付けて送り直す（#221）。取りやめたら false。エラーは呼び出し元へ投げる
+async function putShiftStatus(shiftId, status, force) {
+  try {
+    await axios.put('/api/admin/shifts/' + shiftId, force ? { status, force: true } : { status })
+    return true
+  } catch (e) {
+    const d = e.response && e.response.status === 409 ? e.response.data : null
+    if (d && d.need_force && !force) {
+      if (!confirm(`${(d.warnings || []).join('\n')}\nこのまま変更しますか？`)) return false
+      return putShiftStatus(shiftId, status, true)
+    }
+    throw e
+  }
+}
 // 欠勤にする。押す前に最新の報告を確かめ、入店以降の報告があれば時刻を示して確認する（#221）。成功したら代わりの候補を出す（#216）
 async function markAbsent(shiftId, button) {
   const s = DASH_SHIFTS.get(shiftId); if (!s) return
@@ -392,8 +414,9 @@ async function markAbsent(shiftId, button) {
     const head = `${s.staff_name}さん（${s.project_name} ${s.start_time}〜${s.end_time}）を欠勤にしますか？\n欠勤のシフトは精算（支払・請求）の対象から外れます。`
     const msg = started ? `${DASH_RS[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(11, 16)} にあります（勤務した記録があります）。\n${head}` : head
     if (!confirm(msg)) return
+    // 報告の時刻を示して確認したときは、そのまま確認済み（force）で送る
     try {
-      await axios.put('/api/admin/shifts/' + shiftId, { status: 'absent' })
+      if (!await putShiftStatus(shiftId, 'absent', !!started)) return
     } catch (e) { showApiError(e, '欠勤にできませんでした'); return }
     toast('欠勤として登録しました')
     await renderDashboard()
@@ -477,6 +500,7 @@ delegate('dashShiftReport', el => {
     <div id="shift-report-panel" class="mb-3"><p class="text-xs text-gray-400">読み込み中…</p></div>
     <div class="flex gap-2">
       ${s.staff_id ? `<a class="btn btn-outline flex-1 text-xs" href="#staff/${Number(s.staff_id)}" onclick="closeModal()">スタッフ詳細</a>` : ''}
+      ${s.status !== 'absent' ? `<button type="button" class="btn btn-outline flex-1 text-xs" data-action="corrNew" data-shift-id="${id}" title="このシフトの打刻の修正・打刻漏れの追加を、管理者として申請します">打刻を修正</button>` : ''}
       <button type="button" class="btn btn-outline flex-1 text-xs" onclick="closeModal(); renderDashboard()">閉じて更新</button>
     </div>`)
   if (window.renderShiftReportPanel) renderShiftReportPanel(id)
@@ -2148,7 +2172,7 @@ window.openAttendancePhotos = function (shiftId, staffName) {
 delegate('attendancePhotos', el => openAttendancePhotos(Number(el.dataset.id), el.dataset.name))
 window.updateShift = async function (id, status) {
   // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
-  try { await axios.put('/api/admin/shifts/' + id, { status }) } catch (e) { showApiError(e, '更新に失敗しました'); return }
+  try { if (!await putShiftStatus(id, status)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
   closeModal(); toast('シフトを更新しました'); renderShifts()
 }
 window.deleteShift = async function (id) {
