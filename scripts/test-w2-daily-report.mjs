@@ -110,7 +110,7 @@ const s2 = await createShift(admin, 8, 1, today, 'DR-S2', '23:50', '23:55')
 
 // ---------- #67 インシデント・クレームの印を保つ ----------
 {
-  const r = await st8.post('/api/staff/daily-report', { shift_id: s1, values: { mnp: 1 }, incident_flag: true, complaint_flag: true, flags_explicit: true })
+  const r = await st8.post('/api/staff/daily-report', { shift_id: s1, values: { mnp: 1 }, incident_flag: true, complaint_flag: true, incident_note: 'テストのインシデント', complaint_note: 'テストのクレーム', flags_explicit: true })
   ok('インシデント・クレームありで提出', r.status === 200, r)
   const link = await admin.post(`/api/admin/shifts/${s1}/report-link`)
   ok('報告用URLの発行', link.status === 200 && link.data.token, link)

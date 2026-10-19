@@ -236,3 +236,61 @@ notificationsAdminApi.post('/notification-emails/:id{[0-9]+}/resend', async (c) 
   const r = await sendDelivery(c.env, d.delivery_id, u.user_id)
   return c.json({ ok: true, sent: r.ok, error: r.ok ? null : r.error })
 })
+
+// =========================================================
+// 日報のインシデント・クレームの報告（#232）
+// スタッフが日報でインシデント・クレームの印を新しく付けたら（更新で付けた場合も）、シフトの所有企業の管理者全員に
+// アプリ内通知（kind=incident_reported）とメールで知らせる。リンク先は管理画面の日報一覧の該当日（インシデント・クレームのみ）。
+// 送信状態の記録（notification_emails）は打刻修正の申請に結び付くため使わず、送信の結果は email_logs に残る。
+// 通知の失敗で日報の提出は取り消さない。
+// =========================================================
+export type IncidentKind = 'incident' | 'complaint'
+const INCIDENT_LABEL: Record<IncidentKind, string> = { incident: 'インシデント', complaint: 'クレーム' }
+const INCIDENT_NOTE_PREVIEW = 500
+
+export async function notifyDailyReportIncident(c: any, shiftId: number, raised: IncidentKind[]) {
+  if (!raised.length) return
+  try {
+    const db: D1Database = c.env.DB
+    const r = await db.prepare(`SELECT dr.daily_report_id, dr.company_id, dr.work_date, dr.report_values, p.project_name, us.name AS staff_name
+      FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
+      LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+      WHERE dr.shift_id = ?`).bind(shiftId).first() as any
+    if (!r) return
+    let values: Record<string, unknown> = {}
+    try { const v = JSON.parse(r.report_values || '{}'); if (v && typeof v === 'object') values = v } catch { values = {} }
+    const kinds = raised.map(k => INCIDENT_LABEL[k]).join('・')
+    const lines: [string, string][] = [['稼働日', fmtDate(r.work_date)], ['案件', r.project_name || ''], ['スタッフ', r.staff_name || '']]
+    for (const k of raised) {
+      const note = String(values[`${k}_note`] ?? '').trim()
+      const short = note.length > INCIDENT_NOTE_PREVIEW ? note.slice(0, INCIDENT_NOTE_PREVIEW) + '…' : note
+      lines.push([`${INCIDENT_LABEL[k]}の内容`, short || '（記入なし）'])
+    }
+    const title = `${kinds}の報告: ${r.staff_name || ''} ${fmtDate(r.work_date)} ${r.project_name || ''}`
+    const headline = `スタッフの日報で${kinds}の報告がありました。内容を確認し、必要な対応をしてください。`
+    const body = lines.map(([k, v]) => `${k}: ${v}`).join('\n')
+    const link = `/admin#reports/date=${encodeURIComponent(r.work_date)}&flagged=1`
+    const admins = (await db.prepare(`SELECT user_id, name, email FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+      .bind(r.company_id, ...NOTIFY_ADMIN_ROLES).all()).results as any[]
+    if (!admins.length) return
+    const at = nowJST()
+    const stmts: D1PreparedStatement[] = []
+    // 1 文 100 バインドまで（1 行 8 個 → 10 行ずつ）
+    for (let i = 0; i < admins.length; i += 10) {
+      const chunk = admins.slice(i, i + 10)
+      stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES ${chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`)
+        .bind(...chunk.flatMap(a => [r.company_id, a.user_id, 'incident_reported', title, body, link, r.daily_report_id, at])))
+    }
+    await db.batch(stmts)
+    const base = String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')
+    const mails = admins.filter(a => a.email).map(a => {
+      const tpl = attendanceCorrectionEmail({ name: a.name, headline, lines, url: base + link, button: '日報を確認する' })
+      return { to: a.email as string, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'incident_report', company_id: r.company_id }
+    })
+    if (!mails.length) return
+    const job = (async () => { for (const m of mails) { try { await sendEmail(c.env, m) } catch { /* 送信の失敗は email_logs に残る */ } } })()
+    try { c.executionCtx.waitUntil(job) } catch { await job }
+  } catch (e) {
+    console.log(`incident notify failed: shift=${shiftId}`)
+  }
+}

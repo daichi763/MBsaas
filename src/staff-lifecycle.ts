@@ -10,8 +10,9 @@ import { createPerson, partnerNameConflict } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk } from './lib/d1-chunk'
 import { syncActualFromReports } from './settlement'
-import { isHHMM, pickReportValues } from './lib/validate'
-import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport } from './lib/daily-report'
+import { isHHMM, pickReportValues, reportFieldRulesError } from './lib/validate'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
+import { notifyDailyReportIncident } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
@@ -953,13 +954,22 @@ publicReportApi.post('/:token/daily-report', async (c) => {
   if (blocked) return c.json({ error: blocked }, 400)
   // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）。数値・長さはアプリと同じ検証
   const tpl = await db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id ?? null).first() as any
+  // テンプレートの必須項目・文字数の上限（アプリと同じ検証。#349）
+  const rulesError = reportFieldRulesError(tpl?.fields_json, b.values)
+  if (rulesError) return c.json({ error: rulesError }, 400)
   const picked = pickReportValues(tpl?.fields_json, b.values)
   if ('error' in picked) return c.json({ error: picked.error }, 400)
+  // インシデント・クレームの内容は、送られていれば保存し、送られなければ前回の内容を保つ（この画面には内容の欄がまだ無いので必須にはしない）。
+  // 新しく付いた印は管理者に知らせる（#232）
+  const prev = dailyReportView(await findDailyReport(db, t))
+  const merged = mergeIncidentNotes(picked.values, b, prev, { requireNote: false })
+  if ('error' in merged) return c.json({ error: merged.error }, 400)
   const r = await saveDailyReport(db, {
     company_id: t.company_id, staff_id: t.staff_id, project_id: t.project_id, shift_id: t.shift_id, work_date: t.work_date,
-    values_json: JSON.stringify(picked.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
+    values_json: JSON.stringify(merged.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
     flags_explicit: b.flags_explicit === true, entry_method: 'link', now: nowJST(),
   })
+  await notifyDailyReportIncident(c, t.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
 })
 

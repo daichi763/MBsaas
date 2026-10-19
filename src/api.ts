@@ -18,17 +18,17 @@ import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES,
 import { isTentativeShift } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
-import { notificationsAdminApi, notificationsStaffApi } from './notifications'
+import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident } from './notifications'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
   hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails } from './roster'
-import { isHHMM, isISODate, oneOf, toInt, pickReportValues, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
+import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
-import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport } from './lib/daily-report'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
 
 type Bindings = {
@@ -811,7 +811,20 @@ async function shiftReportTemplate(db: D1Database, shift: any): Promise<{ projec
   return { project, template }
 }
 
-// 日報の入力画面: 対象シフトの日報テンプレートと、提出済みの内容（修正して再提出するときの初期値）
+// 日報の入力画面に出すシフト（他社のシフトは会社名で区別する）。blocked は提出できない理由（欠勤・稼働日の前）
+async function dailyReportShiftView(db: D1Database, u: any, shift: any, project: any) {
+  const modes = (await modesForShifts(db, [shift.shift_id])).get(shift.shift_id)
+  const co = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(shift.company_id).first() as any
+  return {
+    shift_id: shift.shift_id, work_date: shift.work_date, start_time: shift.start_time, end_time: shift.end_time,
+    project_id: shift.project_id, project_name: project.project_name, company_name: co?.company_name ?? null, other_company: shift.company_id !== u.company_id,
+    status: shift.status, tentative: isTentativeShift(shift.status), daily_report_required: modes ? modes.daily_report_required : true,
+    blocked: dailyReportBlocked(shift, todayJST()),
+  }
+}
+
+// 日報の入力画面: 対象シフトと日報テンプレート、提出済みの内容（修正して再提出するときの初期値）。
+// 前日以前のシフト（未提出の日報の一覧から選んだもの）も同じ形で返す
 api.get('/staff/daily-report/:shiftId', async (c) => {
   const resolved = await resolvePersonShift(c, c.req.param('shiftId'))
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
@@ -821,7 +834,35 @@ api.get('/staff/daily-report/:shiftId', async (c) => {
   let fields: any = []
   try { fields = t ? JSON.parse(t.fields_json as string) : [] } catch { fields = [] }
   const report = dailyReportView(await findDailyReport(c.env.DB, resolved.shift))
-  return c.json({ template: t ? { ...t, fields: Array.isArray(fields) ? fields : [] } : null, report })
+  const shift = await dailyReportShiftView(c.env.DB, c.get('user'), resolved.shift, pt.project)
+  return c.json({ template: t ? { ...t, fields: Array.isArray(fields) ? fields : [] } : null, report, shift })
+})
+
+// 前日以前の未提出の日報（#185）。直近 DAILY_REPORT_PENDING_DAYS 日の確定・代打のシフトで、日報が必要で未提出のもの（同一人物の全所属）。
+// ホームには出さず、日報画面で選んで提出する。未提出の判定は管理者ダッシュボードの日報未提出と同じ（shift_id の無い古い日報は稼働日・案件で照合）
+const DAILY_REPORT_PENDING_DAYS = 7
+api.get('/staff/pending-daily-reports', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const today = todayJST()
+  const rows = await personStaffRows(db, u)
+  if (!rows.length) return c.json({ days: DAILY_REPORT_PENDING_DAYS, shifts: [] })
+  // シフトの所有企業とスタッフ行の企業が一致するものだけ（resolvePersonShift と同じ。提出できるシフトに限る）
+  const owned = rows.map(() => '(s.staff_id = ? AND s.company_id = ?)').join(' OR ')
+  const list = (await db.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.project_id, s.company_id, p.project_name, co.company_name
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN companies co ON co.company_id = s.company_id
+    WHERE (${owned}) AND s.status IN ('confirmed','substitute') AND s.work_date < ? AND s.work_date >= ?
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
+    ORDER BY s.work_date DESC, s.start_time LIMIT 50`).bind(...rows.flatMap(r => [r.staff_id, r.company_id]), today, addDays(today, -DAILY_REPORT_PENDING_DAYS)).all()).results as any[]
+  const modes = await modesForShifts(db, list.map(s => s.shift_id as number))
+  return c.json({
+    days: DAILY_REPORT_PENDING_DAYS,
+    shifts: list.filter(s => modes.get(s.shift_id)?.daily_report_required !== false).map(s => ({
+      shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, project_id: s.project_id,
+      project_name: s.project_name, company_name: s.company_name, other_company: s.company_id !== u.company_id,
+      daily_report_required: true, daily_report_done: false,
+    })),
+  })
 })
 
 // 日報提出（シフトごとに1件。同じシフトに再提出すると上書きし、管理者の確認済みを外す）
@@ -839,14 +880,22 @@ api.post('/staff/daily-report', async (c) => {
   if (blocked) return c.json({ error: blocked }, 400)
   const pt = await shiftReportTemplate(c.env.DB, shift)
   if (!pt) return c.json({ error: '案件が見つかりません' }, 404)
+  // テンプレートの必須項目・文字数の上限（#349 #525。報告用URLと同じ検証）
+  const rulesError = reportFieldRulesError(pt.template?.fields_json, b.values)
+  if (rulesError) return c.json({ error: rulesError }, 400)
   // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため、任意の文字列を保存させない）。数値・長さも確かめる
   const picked = pickReportValues(pt.template?.fields_json, b.values)
   if ('error' in picked) return c.json({ error: picked.error }, 400)
+  // インシデント・クレームの印を付けたら内容を必須にし、新しく付いた印は管理者に知らせる（#232）
+  const prev = dailyReportView(await findDailyReport(c.env.DB, shift))
+  const merged = mergeIncidentNotes(picked.values, b, prev, { requireNote: true })
+  if ('error' in merged) return c.json({ error: merged.error }, 400)
   const r = await saveDailyReport(c.env.DB, {
     company_id: owner.company_id, staff_id: owner.staff_id, project_id: shift.project_id, shift_id: shift.shift_id, work_date: shift.work_date,
-    values_json: JSON.stringify(picked.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
+    values_json: JSON.stringify(merged.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
     flags_explicit: b.flags_explicit === true, entry_method: 'app', now: nowJST(),
   })
+  await notifyDailyReportIncident(c, shift.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
 })
 
