@@ -862,7 +862,8 @@ function renderMore() {
 // ============ お知らせ（一覧 #notices・個別 #notices/:id #333） ============
 // 一覧は未読（緊急・確認必須を先）→ 既読の順。既読の本文は3行に折りたたむ（#553）。
 // 「確認しました」は、そのカードだけを既読の表示に変える（一覧を読み直さない #334）
-let NOTICES = { list: [], offset: 0, has_more: false, filter: 'all', unread_count: 0, other: [] }
+// moved: 読み込んだ後に既読にした件数（並び順が変わるので、続きはその分だけ戻って取り、重複は除く）
+let NOTICES = { list: [], offset: 0, has_more: false, filter: 'all', unread_count: 0, other: [], moved: 0, seq: 0 }
 let NOTICE_DETAIL = null
 const NOTICE_SEND_ERROR = '送信できませんでした。通信状況を確認して、もう一度押してください'
 
@@ -926,19 +927,23 @@ function drawNotices() {
 }
 
 window.renderNotices = async function (more) {
-  if (more !== true) { NOTICES.list = []; NOTICES.offset = 0; loading() }
+  if (more !== true) { NOTICES.list = []; NOTICES.offset = 0; NOTICES.moved = 0; loading() }
+  const seq = ++NOTICES.seq
   let d
   try {
-    d = (await axios.get('/api/staff/notices', { params: { offset: NOTICES.offset, filter: NOTICES.filter } })).data
+    d = (await axios.get('/api/staff/notices', { params: { offset: Math.max(0, NOTICES.offset - NOTICES.moved), filter: NOTICES.filter } })).data
   } catch (e) {
+    if (seq !== NOTICES.seq) return
     if (more === true) { showApiError(e, 'お知らせを読み込めませんでした。もう一度お試しください'); return }
     $app.innerHTML = `<div class="card p-4 text-center text-sm text-gray-600">お知らせを読み込めませんでした。通信状況を確認してください
       <button class="btn btn-outline w-full mt-3" data-action="noticeRetry">再読み込み</button></div>`
     return
   }
+  if (seq !== NOTICES.seq) return // 後から始めた読み込み（絞り込みの切替など）を優先する
   const seen = new Set(NOTICES.list.map(n => n.notice_id))
   NOTICES.list.push(...d.notices.filter(n => !seen.has(n.notice_id)))
   NOTICES.offset = Number(d.offset || 0) + d.notices.length
+  NOTICES.moved = 0
   NOTICES.has_more = !!d.has_more
   if (d.unread_count != null) NOTICES.unread_count = d.unread_count
   if (d.other_companies) NOTICES.other = d.other_companies
@@ -968,6 +973,7 @@ delegate('noticeMarkRead', el => withSubmitLock(el, async () => {
   const inDetail = /^#notices\/\d+/.test(location.hash) && NOTICE_DETAIL && NOTICE_DETAIL.notice_id === id
   const rows = [NOTICES.list.find(x => x.notice_id === id), inDetail ? NOTICE_DETAIL : null].filter(Boolean)
   if (rows.some(n => !n.is_read)) NOTICES.unread_count = Math.max(0, (Number(NOTICES.unread_count) || 0) - 1)
+  if (rows[0] && rows[0] !== NOTICE_DETAIL && !rows[0].is_read) NOTICES.moved++
   rows.forEach(n => { n.is_read = 1; n._open = true })
   const card = document.getElementById('notice-' + id)
   if (card && rows.length) card.outerHTML = noticeCardHtml(inDetail ? NOTICE_DETAIL : rows[0], !!inDetail)
@@ -981,7 +987,7 @@ delegate('noticeReadAll', el => withSubmitLock(el, async () => {
   let d
   try { d = (await axios.post('/api/staff/notices/read-all', { ids })).data } catch (e) { showApiError(e, NOTICE_SEND_ERROR); return }
   const done = new Set(d.read || [])
-  for (const n of NOTICES.list) if (done.has(n.notice_id)) n.is_read = 1
+  for (const n of NOTICES.list) if (done.has(n.notice_id) && !n.is_read) { n.is_read = 1; NOTICES.moved++ }
   NOTICES.unread_count = Math.max(0, (Number(NOTICES.unread_count) || 0) - done.size)
   drawNotices()
   toast(`${done.size}件を確認しました`)
