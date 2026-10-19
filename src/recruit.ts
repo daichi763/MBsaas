@@ -27,11 +27,13 @@ const ROLES_PER_PAGE = 300        // 公開ページ・スタッフアプリで�
 const RATE_PER_IP_HOUR = 30       // 同じ接続元からの送信は、募集ページごとに1時間に30件まで（会場の共用回線を考えてページ単位にする。#225）
 const RATE_PER_PHONE_DAY = 3      // 同じ電話番号からの送信は1日に3件まで（募集ページごと）
 const MIN_FILL_MS = 3000          // 表示から3秒未満の送信は機械的な送信とみなす
+const PROCESSING_STALE_MIN = 10   // 承認の処理中（processing）のまま止まった明細を未対応に戻すまでの分数
 const NEW_STAFF_TYPES = ['daily_worker', 'freelance', 'partner_manual', 'own_employee']
 
 // ---------- ユーティリティ ----------
 function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 function todayJST(): string { return nowJST().slice(0, 10) }
+function addMinutesJST(m: number): string { return new Date(Date.now() + (9 * 60 + m) * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
 function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) }
 const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
@@ -110,6 +112,9 @@ const ACTIVE_ITEM_SQL = `(i.status IN ('pending','processing') OR (i.status = 'a
 // 枠・役割が削除されて残った未対応の応募を「枠の削除」で処理済みにする（#65）。
 // 枠の削除・繰り返し登録の削除（shift-board.ts）の後と、応募一覧・件数の取得のときに呼ぶ（枠の編集で役割を消した分もここで片づく）
 export async function settleRemovedSlotItems(db: D1Database, companyId: number) {
+  // 承認の途中で処理が止まった（通信が切れて打ち切られたなど）明細は、一定時間たったら未対応に戻す（#86。processing の間の decided_at は押さえた時刻）
+  await db.prepare(`UPDATE recruit_application_items SET status = 'pending', decided_at = NULL WHERE status = 'processing' AND (decided_at IS NULL OR decided_at < ?)
+    AND application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = ?)`).bind(addMinutesJST(-PROCESSING_STALE_MIN), companyId).run()
   const rows = (await db.prepare(`SELECT i.item_id, i.application_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
     WHERE a.company_id = ? AND a.status = 'pending' AND i.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shift_slot_roles r WHERE r.slot_role_id = i.slot_role_id)`)
     .bind(companyId).all()).results as any[]
@@ -573,9 +578,9 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
 
   // ---- 対象の明細を押さえる（ほかの操作で対応済み・処理中のものがあれば何もしない） ----
   const allIds = [...approveIds, ...rejectIds]
-  const claimed = await db.batch(allIds.map(id => db.prepare("UPDATE recruit_application_items SET status = 'processing' WHERE item_id = ? AND application_id = ? AND status = 'pending'").bind(id, a.application_id)))
+  const claimed = await db.batch(allIds.map(id => db.prepare("UPDATE recruit_application_items SET status = 'processing', decided_at = ? WHERE item_id = ? AND application_id = ? AND status = 'pending'").bind(nowJST(), id, a.application_id)))
   const mine = allIds.filter((_, k) => Number(claimed[k].meta.changes || 0) > 0)
-  const release = async () => { if (mine.length) await db.batch(mine.map(id => db.prepare("UPDATE recruit_application_items SET status = 'pending' WHERE item_id = ? AND status = 'processing'").bind(id))) }
+  const release = async () => { if (mine.length) await db.batch(mine.map(id => db.prepare("UPDATE recruit_application_items SET status = 'pending', decided_at = NULL WHERE item_id = ? AND status = 'processing'").bind(id))) }
   if (mine.length !== allIds.length) {
     await release()
     return c.json({ error: 'この応募は、ほかの操作で対応中または対応済みです。画面を読み直してください' }, 409)

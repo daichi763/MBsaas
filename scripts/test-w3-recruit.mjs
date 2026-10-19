@@ -3,7 +3,21 @@
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8821 node scripts/test-w3-recruit.mjs
 //   #501 を確かめるときは、秘密鍵だけを渡して起動し（--var TURNSTILE_SECRET_KEY:dummy）、TURNSTILE=secret_key_only を付けて実行する
+//   PERSIST=<保存先> を付けると、ローカルの D1 を直接書き換える確認（処理中のまま止まった明細の復旧）も行う
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
+const PERSIST = process.env.PERSIST || ''
+let sqlSeq = 0, SQL_DIR = ''
+function sql(command) {
+  SQL_DIR = SQL_DIR || mkdtempSync(join(tmpdir(), 'w3rc-'))
+  const file = join(SQL_DIR, `q${++sqlSeq}.sql`)
+  writeFileSync(file, command)
+  const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', `"${PERSIST}"`, '--json', `--file="${file}"`], { encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  return JSON.parse(out)[0].results
+}
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 400) : ''}`) }
 
@@ -15,7 +29,9 @@ async function login(company_code, user_code, password = 'pass1234') {
 }
 function client(cookie) {
   const call = async (method, path, body) => {
-    const r = await fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie || '', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const send = () => fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie || '', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    // sql() の実行中に待ち受け側が閉じた接続を使い回すと ECONNRESET になるため、通信の失敗は1回だけやり直す
+    const r = await send().catch(() => send())
     let data = null; try { data = await r.json() } catch { }
     return { status: r.status, data }
   }
@@ -150,6 +166,24 @@ const D = addDays(today, 5)
   const done = (await appsOf(page.page_id, 'done')).find(a => a.application_id === app.application_id)
   ok('#86 応募は対応済みになり、明細は承認', done && done.items.every(i => i.status === 'approved'), done)
 }
+// ---------- #86 処理中（processing）のまま止まった明細は、一定時間たつと未対応に戻る ----------
+if (PERSIST) {
+  const s2 = await newRoles(pid, D, '16:00', '17:00', [{ role_name: '受付', headcount: 2 }, { role_name: '誘導', headcount: 2 }])
+  const page = await newPage([pid], today, addDays(today, 20))
+  const phone = newPhone()
+  must(await publicApply(page.token, phone, s2.roles.map(r => r.slot_role_id), `${PFX} 処理中`), 'apply')
+  const app = (await appsOf(page.page_id)).find(a => a.phone === phone)
+  const [stale, fresh] = app.items.map(i => Number(i.item_id))
+  sql(`UPDATE recruit_application_items SET status = 'processing', decided_at = datetime('now', '+9 hours', '-30 minutes') WHERE item_id = ${stale};
+    UPDATE recruit_application_items SET status = 'processing', decided_at = datetime('now', '+9 hours') WHERE item_id = ${fresh};`)
+  const items = (await appsOf(page.page_id)).find(a => a.application_id === app.application_id).items
+  ok('#86 30分前から処理中の明細は未対応に戻る', items.find(i => i.item_id === stale)?.status === 'pending', items)
+  ok('#86 押さえたばかりの処理中の明細はそのまま', items.find(i => i.item_id === fresh)?.status === 'processing', items)
+  const r = await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { reject: [fresh] })
+  ok('#86 処理中の明細は見送りにもできない（409）', r.status === 409, r)
+  sql(`UPDATE recruit_application_items SET status = 'pending', decided_at = NULL WHERE item_id = ${fresh}`)
+  must(await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { reject: [stale, fresh] }), 'reject')
+} else console.log('SKIP  #86 処理中のまま止まった明細の復旧（PERSIST 未指定）')
 
 // ---------- #64 承認後にシフトを削除したら『シフト解除』になり、応募し直せる ----------
 {
