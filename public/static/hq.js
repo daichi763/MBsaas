@@ -15,9 +15,31 @@ function modal(html) {
 }
 window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
 
+// ---------- API 呼び出しの共通処理（#230 #346） ----------
+let HQ_ME = null
+let SESSION_ENDED = false
+axios.interceptors.request.use(cfg => {
+  // 起動時に読んだ自分と違う人のセッションで操作が記録されないよう、サーバーで照合する
+  if (HQ_ME) cfg.headers['X-Expected-User-Id'] = String(HQ_ME.user_id)
+  return cfg
+})
 axios.interceptors.response.use(r => r, e => {
-  if (e.response && e.response.status === 401) location.href = '/login'
+  const r = e.response
+  if (r && !SESSION_ENDED && r.status === 409 && r.data && r.data.code === 'account_switched') {
+    SESSION_ENDED = true
+    alert('このブラウザで別のアカウントにログインされました。画面を読み直します。')
+    location.reload()
+  } else if (r && !SESSION_ENDED && r.status === 401) {
+    SESSION_ENDED = true
+    location.href = '/login'
+  }
   return Promise.reject(e)
+})
+// 画面の処理で受け止められなかった API のエラー（500 など）を表示する。サーバーの文言には参照番号が入る
+window.addEventListener('unhandledrejection', ev => {
+  const e = ev.reason
+  if (!e || !e.isAxiosError || SESSION_ENDED) return
+  showApiError(e, e.response ? '処理に失敗しました' : '通信できませんでした。接続を確かめて、もう一度お試しください')
 })
 document.getElementById('logout-btn').addEventListener('click', async () => {
   await axios.post('/api/auth/logout'); location.href = '/login'
@@ -532,6 +554,6 @@ function route() {
 window.addEventListener('hashchange', route)
 
 ;(async () => {
-  try { await axios.get('/api/auth/me') } catch (e) { return }
+  try { HQ_ME = (await axios.get('/api/auth/me')).data } catch (e) { return }
   route()
 })()

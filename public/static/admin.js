@@ -26,10 +26,144 @@ function modal(html) {
 }
 window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
 
-axios.interceptors.response.use(r => r, e => {
-  if (e.response && e.response.status === 401) location.href = '/login'
+// ============ API 呼び出しの共通処理: ログインの期限切れ・アカウントの切り替え（#346 #526）・エラーの表示（#230） ============
+// バッジ更新・やり取りの新着確認など、利用者の操作によらない定期の取得（config に background: true を付けたものも含む）。
+// これらはセッションを延長せず（X-Background）、期限が切れても画面を移動しない
+const BACKGROUND_API = /^\/api\/admin\/(notifications\/unread-count|corrections\/pending-count|board\/unread-count|roster-chat\/unread-count|recruit-applications\/summary)(\?|$)/
+const SESSION_WARN_MINUTES = 30
+let SESSION_STATE = 'active' // active: 利用中 / expired: 期限切れ（再ログイン待ち） / switched: 別のアカウントでログインされた
+let SESSION_EXPIRES = null   // サーバーが返したセッションの期限（ミリ秒。端末の時計とのずれを補正済み）
+let RELOGIN_WAITERS = []     // 期限切れで止まった利用者の操作（再ログインの後に送り直す）
+// 定期の取得を止めるかどうか（notifications.js・board.js・roster-chat.js のポーリングで使う）
+window.sessionUsable = () => SESSION_STATE === 'active'
+
+axios.interceptors.request.use(cfg => {
+  if (cfg.background || BACKGROUND_API.test(cfg.url || '')) { cfg.background = true; cfg.headers['X-Background'] = '1' }
+  // 起動時に読んだ自分と違う人のセッションで処理されないよう、サーバーで照合する
+  if (ME) cfg.headers['X-Expected-User-Id'] = String(ME.user_id)
+  return cfg
+})
+function noteSessionExpires(res) {
+  const exp = res && res.headers && res.headers['x-session-expires']
+  if (!exp) return
+  const skew = res.headers.date ? Date.parse(res.headers.date) - Date.now() : 0
+  SESSION_EXPIRES = Date.parse(exp) - (Number.isFinite(skew) ? skew : 0)
+}
+axios.interceptors.response.use(r => { noteSessionExpires(r); return r }, e => {
+  const r = e.response
+  if (r) noteSessionExpires(r)
+  if (e.config && e.config.skipSessionCheck) return Promise.reject(e)
+  if (r && r.status === 409 && r.data && r.data.code === 'account_switched') { showAccountSwitched(); return Promise.reject(e) }
+  if (r && r.status === 401) {
+    if (!ME) { location.href = '/login'; return Promise.reject(e) }
+    showSessionExpired()
+    if (e.config && e.config.background) return Promise.reject(e)
+    // 利用者の操作: 入力中の画面を残したまま再ログインしてもらい、ログインできたら同じ操作を送り直す
+    return new Promise((resolve, reject) => RELOGIN_WAITERS.push({ resolve, reject, config: e.config }))
+  }
   return Promise.reject(e)
 })
+// 画面の処理で受け止められなかった API のエラー（500 など）を表示する。サーバーの文言には参照番号が入る
+window.addEventListener('unhandledrejection', ev => {
+  const e = ev.reason
+  if (!e || !e.isAxiosError || (e.config && (e.config.background || e.config.skipSessionCheck))) return
+  const st = e.response && e.response.status
+  if (st === 401 || (st === 409 && e.response.data && e.response.data.code === 'account_switched')) return
+  showApiError(e, st ? '処理に失敗しました' : '通信できませんでした。接続を確かめて、もう一度お試しください')
+})
+
+function sessionRoot() {
+  let el = document.getElementById('session-root')
+  if (!el) { el = document.createElement('div'); el.id = 'session-root'; document.body.appendChild(el) }
+  return el
+}
+function showSessionExpired() {
+  if (SESSION_STATE !== 'active') return
+  SESSION_STATE = 'expired'
+  hideSessionWarning()
+  // 入力中のモーダル（#modal-root）は消さずに、その上に重ねて出す
+  sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
+    <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-lock text-amber-500 mr-1"></i>ログインの期限が切れました</h3>
+    <p class="text-sm text-gray-600 mb-3">入力中の内容は残っています。パスワードを入力してログインし直すと、そのまま続けられます。保存などの操作は、ログインし直した後にもう一度送ります。</p>
+    <form id="relogin-form">
+      <p class="text-xs text-gray-500 mb-1">${ME.company_code ? '会社コード ' + esc(ME.company_code) + ' / ' : ''}ID ${esc(ME.user_code)}（${esc(ME.name)}）</p>
+      <input type="password" id="relogin-pw" class="inp" autocomplete="current-password" placeholder="パスワード" required>
+      <p id="relogin-error" class="hidden text-sm text-red-600 mt-2"></p>
+      <div class="flex flex-wrap gap-2 justify-end mt-4">
+        <button type="button" class="btn btn-outline" data-action="sessionGoLogin">ログイン画面へ（入力中の内容は消えます）</button>
+        <button type="submit" class="btn btn-primary" id="relogin-btn">ログインし直す</button>
+      </div>
+    </form></div></div>`
+  document.getElementById('relogin-form').addEventListener('submit', ev => { ev.preventDefault(); relogin(document.getElementById('relogin-btn')) })
+  setTimeout(() => { const pw = document.getElementById('relogin-pw'); if (pw) pw.focus() }, 0)
+}
+function relogin(btn) {
+  return withSubmitLock(btn, async () => {
+    const err = document.getElementById('relogin-error')
+    err.classList.add('hidden')
+    try {
+      const { data } = await axios.post('/api/auth/login', { company_code: ME.company_code || '', user_code: ME.user_code, password: document.getElementById('relogin-pw').value },
+        { skipSessionCheck: true })
+      if (!data.user || data.user.user_id !== ME.user_id) { SESSION_STATE = 'active'; showAccountSwitched(); return }
+    } catch (e) {
+      err.textContent = (e.response && e.response.data && e.response.data.error) || 'ログインに失敗しました。通信の状況を確かめてください'
+      err.classList.remove('hidden')
+      return
+    }
+    SESSION_STATE = 'active'
+    sessionRoot().innerHTML = ''
+    const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
+    waiters.forEach(w => axios(w.config).then(w.resolve, w.reject))
+    toast('ログインし直しました')
+    if (window.refreshNotifBadge) refreshNotifBadge()
+    if (window.refreshBoardBadge) refreshBoardBadge()
+    if (window.refreshChatBadge) refreshChatBadge()
+  })
+}
+delegate('sessionGoLogin', () => { location.href = '/login' })
+function showAccountSwitched() {
+  if (SESSION_STATE === 'switched') return
+  SESSION_STATE = 'switched'
+  hideSessionWarning()
+  const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
+  waiters.forEach(w => w.reject(new Error('account_switched')))
+  sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
+    <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-user-group text-amber-500 mr-1"></i>別のアカウントでログインされました</h3>
+    <p class="text-sm text-gray-600 mb-4">このブラウザで別のアカウントにログインされたため、この画面（${esc(ME ? ME.name : '')}）からの操作を止めました。操作した人と違う名前で記録されるのを防ぐためです。画面を読み直すと、今ログインしているアカウントで開き直します。</p>
+    <div class="flex justify-end"><button type="button" class="btn btn-primary" data-action="sessionReload">画面を読み直す</button></div>
+  </div></div>`
+}
+delegate('sessionReload', () => location.reload())
+
+// 期限の30分前から、画面の下に予告を出す（操作すれば延びる。ログインからの最長期間に達したら延ばせない）
+function showSessionWarning(left) {
+  let el = document.getElementById('session-warning')
+  if (!el) {
+    el = document.createElement('div'); el.id = 'session-warning'
+    el.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2 text-sm shadow flex flex-wrap items-center gap-3 max-w-[95vw]'
+    document.body.appendChild(el)
+  }
+  const at = dayjs(SESSION_EXPIRES).format('HH:mm')
+  el.innerHTML = el.dataset.capped === '1'
+    ? `<span><i class="fas fa-clock mr-1"></i>ログインからの最長期間に達するため、${at} にログインの期限が切れます。それまでに保存して、ログインし直してください。</span>`
+    : `<span><i class="fas fa-clock mr-1"></i>あと${Math.max(1, Math.ceil(left / 60000))}分（${at}）でログインの期限が切れます。</span><button type="button" class="btn btn-outline text-xs" data-action="sessionExtend">延長する</button>`
+}
+function hideSessionWarning() { const el = document.getElementById('session-warning'); if (el) el.remove() }
+delegate('sessionExtend', (btn) => withSubmitLock(btn, async () => {
+  try { await axios.get('/api/auth/me') } catch (e) { return }
+  const left = SESSION_EXPIRES - Date.now()
+  if (left > SESSION_WARN_MINUTES * 60000) { hideSessionWarning(); toast('ログインの期限を延長しました'); return }
+  const el = document.getElementById('session-warning'); if (el) el.dataset.capped = '1'
+  showSessionWarning(left)
+}))
+setInterval(() => {
+  if (SESSION_STATE !== 'active' || !SESSION_EXPIRES) return
+  const left = SESSION_EXPIRES - Date.now()
+  // 期限を過ぎたら、画面を移動せずにサーバーへ確かめる（切れていれば再ログインのダイアログを出す）
+  if (left <= 0) { axios.get('/api/auth/me', { background: true }).catch(() => {}); return }
+  if (left <= SESSION_WARN_MINUTES * 60000) showSessionWarning(left)
+  else hideSessionWarning()
+}, 60 * 1000)
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
   await axios.post('/api/auth/logout'); location.href = '/login'
@@ -2702,6 +2836,12 @@ function route() {
   if (mob && routes[tab]) mob.value = tab
   // 詳細画面の ID は onclick などに埋め込まれるため、数字以外（細工したリンク）は一覧へ戻す
   if (['staff', 'projects', 'clients', 'employees'].includes(tab) && id && !/^\d+$/.test(id)) { location.hash = tab; return }
+  // 従業員管理（労務情報）は会社管理者・事務担当のみ（#205。API でも同じ判定で止める）
+  // 社員の詳細へのリンク（スタッフマスタの登録後・未入力の一覧など）は、スタッフ詳細で開く
+  if (tab === 'employees' && ME && !ME.can_manage_hr) {
+    if (id) { history.replaceState(null, '', '#staff/' + id); return route() }
+    $app.innerHTML = '<div class="card p-6 text-center text-sm text-gray-500"><i class="fas fa-lock mr-1"></i>従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます。</div>'; return
+  }
   if (tab === 'staff' && id) return renderStaffDetail(id)
   if (tab === 'projects' && id) return renderProjectDetail(id)
   if (tab === 'clients' && id) return renderClientDetail(id)
@@ -2723,5 +2863,10 @@ document.getElementById('mobile-nav').addEventListener('change', e => { location
     ME = data
     document.getElementById('company-name').textContent = data.company_name + ' / ' + data.name
   } catch (e) { return }
+  // 従業員管理を扱えないロールには、メニューとスタッフ詳細の「従業員管理」ボタンを出さない（#205）
+  if (!ME.can_manage_hr) {
+    document.querySelectorAll('.side-link[data-tab="employees"], #mobile-nav option[value="employees"]').forEach(el => el.remove())
+    const st = document.createElement('style'); st.textContent = 'a.btn[href^="#employees/"]{display:none!important}'; document.head.appendChild(st)
+  }
   route()
 })()

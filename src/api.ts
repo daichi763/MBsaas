@@ -114,6 +114,8 @@ function resolvePhotoRequired(u: any, projectOverride: number | null | undefined
 // system_admin（SaaS本部）は含めない。本部ユーザーは本部専用の企業行（0033。active_status='internal'）に所属し、
 // /admin を操作できると本部の操作がその企業のデータとして登録されてしまう。本部は /hq のみを使う。
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+// 従業員管理（給与・口座・保険番号・緊急連絡先・入社時書類）を扱えるロール（#205）。現場管理者・営業管理者は扱えない
+const HR_ROLES = ['company_admin', 'office_staff']
 
 // ============ 勤怠の自動振り分け（フェーズH） ============
 // 同一人物が複数企業に所属する場合、シフトの所有企業（shifts.company_id / staff_id）に基づいて
@@ -478,13 +480,50 @@ api.use('/*', async (c, next) => {
     if (r.reason === 'company_inactive') return c.json({ error: 'ご契約が停止中のため、現在ご利用いただけません', code: 'company_inactive' }, 403)
     return c.json({ error: 'unauthorized' }, 401)
   }
-  c.set('user', r.user)
+  const u = r.user
+  // 同じブラウザで別のアカウントにログインし直されたら、開いたままの画面からの操作を通さない（#346）。
+  // 画面は起動時に読んだ自分の user_id を X-Expected-User-Id で送る。違えば別の人として記録しないよう 409 で止める
+  const expected = c.req.header('X-Expected-User-Id')
+  c.header('X-User-Id', String(u.user_id))
+  if (expected && expected !== String(u.user_id)) {
+    return c.json({ error: '別のアカウントでログインされたため、この画面からは操作できません。画面を読み直してください', code: 'account_switched' }, 409)
+  }
+  c.header('X-Session-Expires', await extendSession(c, token!, u))
+  c.set('user', u)
   return next()
 })
+
+// セッションの延長（#180）: 利用者の操作による API 呼び出しのたびに、期限を「今から一定時間」に延ばす。
+// ・バッジ更新などの定期の取得（X-Background: 1）では延ばさない（画面を開いたままでも、操作がなければ期限が来る）
+// ・ログインから最長期間（SESSION_MAX_DAYS）を超えては延ばさない
+// ・書き込みを減らすため、前回の延長から SESSION_EXTEND_STEP_MINUTES 以上たったときだけ更新する
+// スタッフは日をまたぐ勤務や翌日の報告があるため、操作のない時間の上限と最長期間を長くする
+const SESSION_IDLE_HOURS: Record<string, number> = { staff: 72 }
+const SESSION_MAX_DAYS: Record<string, number> = { staff: 30 }
+const SESSION_MAX_DAYS_DEFAULT = 7
+const SESSION_EXTEND_STEP_MINUTES = 10
+async function extendSession(c: any, token: string, u: any): Promise<string> {
+  const current = String(u.expires_at)
+  if (c.req.header('X-Background') === '1') return current
+  const idleHours = SESSION_IDLE_HOURS[u.role] ?? SESSION_HOURS
+  const maxDays = SESSION_MAX_DAYS[u.role] ?? SESSION_MAX_DAYS_DEFAULT
+  const target = new Date(Date.now() + idleHours * 3600 * 1000).toISOString()
+  if (Date.parse(current) > Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000) return current
+  // created_at は CURRENT_TIMESTAMP（UTC）。expires_at と同じ ISO 8601 の書式にして比べる
+  const maxSql = `COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+${maxDays} days'), expires_at)`
+  const row = await c.env.DB.prepare(`UPDATE sessions SET expires_at = MIN(?, ${maxSql})
+      WHERE token = ? AND expires_at < MIN(?, ${maxSql}) RETURNING expires_at`)
+    .bind(target, await hashToken(token), target).first() as any
+  if (!row) return current
+  const maxAge = Math.floor((Date.parse(row.expires_at) - Date.now()) / 1000)
+  if (maxAge > 0) setCookie(c, SESSION_COOKIE, token, { ...sessionCookieOptions(c), maxAge })
+  return String(row.expires_at)
+}
 
 api.get('/auth/me', (c) => {
   const u = c.get('user')
   return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
+    company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: HR_ROLES.includes(u.role),
     user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password })
 })
 
@@ -493,6 +532,13 @@ api.use('/admin/*', async (c, next) => {
   if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: 'forbidden' }, 403)
   return next()
 })
+// 従業員管理（社員名簿・入社時書類）は会社管理者・事務担当のみ（#205）
+const hrOnly = async (c: any, next: any) => {
+  if (!HR_ROLES.includes(c.get('user')?.role)) return c.json({ error: '従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます', code: 'hr_forbidden' }, 403)
+  return next()
+}
+api.use('/admin/employees', hrOnly)
+api.use('/admin/employees/*', hrOnly)
 api.use('/hq/*', async (c, next) => {
   if (c.get('user')?.role !== 'system_admin') return c.json({ error: 'forbidden' }, 403)
   return next()

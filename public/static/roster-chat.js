@@ -17,8 +17,10 @@ async function refreshChatBadge() {
   return n
 }
 window.refreshChatBadge = refreshChatBadge
-setInterval(refreshChatBadge, 60 * 1000)
-setTimeout(refreshChatBadge, 500)
+// 定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
+const chatPollable = () => !window.sessionUsable || window.sessionUsable()
+setInterval(() => { if (!document.hidden && chatPollable()) refreshChatBadge() }, 60 * 1000)
+setTimeout(() => { if (chatPollable()) refreshChatBadge() }, 500)
 
 // ---------- ダッシュボード通知（新着のみ表示） ----------
 window.renderChatDashboardNotice = async function () {
