@@ -4,7 +4,7 @@ import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { sendEmail, sendEmailBatch, mailMode } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
-import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective } from './services/retention'
+import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS } from './services/retention'
 import { cronStatus } from './services/cron'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
@@ -3883,21 +3883,66 @@ api.post('/hq/templates', async (c) => {
 // 注意: 実際の削除はCron Triggerからのみ実行する（HTTP経由の一般APIとしては公開しない）。
 // ここではdry-run（削除せず対象件数のみ確認）と、過去の実行ログの閲覧のみ提供する。
 // 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定とする。
+// 会社別・退職者別の内訳（detail）も返す（#365）
 api.post('/hq/retention/dry-run', async (c) => {
-  const result = await runRetentionCleanup(c.env.DB, c.env, { dryRun: true, trigger: 'manual', triggeredBy: c.get('user').user_id })
+  const result = await runRetentionCleanup(c.env.DB, c.env, { dryRun: true, trigger: 'manual', triggeredBy: c.get('user').user_id, detail: true })
   return c.json(result)
 })
 
-// 次回削除予定（猶予中・猶予待ち）と、退職日より後にシフトがあるため対象外にしている退職者の一覧
+// 次回削除予定（猶予中・猶予待ち）と、退職日より後にシフトがあるため対象外にしている退職者の一覧。
+// 今の動作モード（RETENTION_ENABLED が 'true' なら実削除、それ以外は dry-run のみ）も返す（#365）
 api.get('/hq/retention/schedule', async (c) => {
-  return c.json(await listRetentionSchedule(c.env.DB))
+  return c.json({ ...await listRetentionSchedule(c.env.DB), enabled: c.env.RETENTION_ENABLED === 'true' })
 })
 
-// 実行ログ。実行元（cron / 手動の dry-run）と、手動で実行した本部ユーザーの名前も返す（#234）
+// 実行ログ。1回の実行（started_at が同じ行）を1行にまとめ、ページ送りする（#305）。
+// trigger: all / cron（定期処理）/ manual（本部画面の dry-run）。実行元を記録する前（0048 より前）の行は、
+// 実削除なら定期処理、dry-run なら手動として扱う。見出し用に、直近の実削除・定期処理の日時も返す
+const RETENTION_RUNS_PER_PAGE = 20
+const RETENTION_TRIGGER_SQL = `COALESCE(l.trigger_source, CASE WHEN l.dry_run = 0 THEN 'cron' ELSE 'manual' END)`
 api.get('/hq/retention/logs', async (c) => {
-  const rows = await c.env.DB.prepare(`SELECT l.*, u.name AS triggered_by_name FROM retention_logs l LEFT JOIN users u ON u.user_id = l.triggered_by
-    ORDER BY l.log_id DESC LIMIT 30`).all()
-  return c.json({ logs: rows.results })
+  const db = c.env.DB
+  const q = c.req.query('trigger')
+  const trigger = oneOf(q, ['cron', 'manual'] as const) ? q : 'all'
+  const page = toInt(c.req.query('page'), 1, 100000) || 1
+  const where = trigger === 'all' ? '' : `WHERE ${RETENTION_TRIGGER_SQL} = ?`
+  const binds = trigger === 'all' ? [] : [trigger]
+  const groupBy = `GROUP BY l.started_at, l.dry_run, ${RETENTION_TRIGGER_SQL}`
+  const total = await db.prepare(`SELECT COUNT(*) AS n FROM (SELECT 1 FROM retention_logs l ${where} ${groupBy})`).bind(...binds).first() as { n: number } | null
+  const runs = (await db.prepare(`SELECT l.started_at, l.dry_run, ${RETENTION_TRIGGER_SQL} AS trigger_source, MAX(l.finished_at) AS finished_at,
+      MAX(l.duration_ms) AS duration_ms, MAX(l.triggered_by) AS triggered_by, MAX(l.log_id) AS last_log_id
+    FROM retention_logs l ${where} ${groupBy} ORDER BY MAX(l.log_id) DESC LIMIT ? OFFSET ?`)
+    .bind(...binds, RETENTION_RUNS_PER_PAGE, (page - 1) * RETENTION_RUNS_PER_PAGE).all()).results as any[]
+  // ページに出す実行の内訳（対象ごとの行）。started_at は文字列なので JSON の配列で1個にまとめて渡す
+  const keys = [...new Set(runs.map(r => r.started_at).filter(Boolean))]
+  const items = keys.length ? (await db.prepare(`SELECT l.started_at, l.dry_run, ${RETENTION_TRIGGER_SQL} AS trigger_source, l.target,
+      l.target_count, l.deleted_count, l.failed_count, l.error_message
+    FROM retention_logs l WHERE l.started_at IN ${JSON_IN} ORDER BY l.log_id`).bind(JSON.stringify(keys)).all()).results as any[] : []
+  const userIds = runs.map(r => r.triggered_by).filter(Boolean)
+  const names = new Map<number, string>()
+  if (userIds.length) {
+    const us = (await db.prepare(`SELECT user_id, name FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray(userIds)).all()).results as any[]
+    for (const u of us) names.set(u.user_id, u.name)
+  }
+  const nonRow = new Set(RETENTION_NON_ROW_TARGETS)
+  const out = runs.map(r => {
+    const rows = items.filter(i => i.started_at === r.started_at && i.dry_run === r.dry_run && i.trigger_source === r.trigger_source)
+    // 合計は行数の対象だけを足す（人数・翌日に回したファイル数は足さない）
+    const sum = (k: string) => rows.filter(i => !nonRow.has(i.target)).reduce((a, i) => a + (Number(i[k]) || 0), 0)
+    const staff = rows.find(i => i.target === 'retired_staff')
+    return {
+      started_at: r.started_at, finished_at: r.finished_at, dry_run: r.dry_run, trigger_source: r.trigger_source, duration_ms: r.duration_ms,
+      triggered_by_name: r.triggered_by ? names.get(r.triggered_by) || null : null,
+      target_count: sum('target_count'), deleted_count: sum('deleted_count'),
+      failed_count: rows.reduce((a, i) => a + (Number(i.failed_count) || 0), 0),
+      staff_count: staff ? staff.target_count : null,
+      items: rows.map(i => ({ target: i.target, target_count: i.target_count, deleted_count: i.deleted_count, failed_count: i.failed_count, error_message: i.error_message })),
+    }
+  })
+  const latest = await db.prepare(`SELECT
+      (SELECT MAX(started_at) FROM retention_logs WHERE dry_run = 0) AS last_real_run,
+      (SELECT MAX(l.started_at) FROM retention_logs l WHERE ${RETENTION_TRIGGER_SQL} = 'cron') AS last_cron_run`).first()
+  return c.json({ runs: out, page, per_page: RETENTION_RUNS_PER_PAGE, total: Number(total?.n) || 0, trigger, latest })
 })
 
 // 定期処理（cron）の処理ごとの最終実行・直近の実行記録・警告（#192）

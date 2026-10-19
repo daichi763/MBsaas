@@ -400,14 +400,43 @@ const RETENTION_TARGET_LABEL = {
   daily_reports: '日報（3年）', attendance_reports: '出退勤記録（退職後7年）', shifts: 'シフト（退職後7年）',
   evaluations: '人事評価（退職後7年）', follow_logs: 'やり取り履歴（退職後7年）', consultations: '相談内容（退職後7年）',
   r2_photos: 'R2写真（退職後7年）', shift_report_tokens: '報告用URL（退職後7年）', retired_staff: '退職スタッフ（人数・退職後7年）',
-  user_notifications: 'アプリ内通知（2年）', attendance_corrections: '打刻修正申請（退職後7年）', attendance_correction_events: '打刻修正の操作履歴（退職後7年）',
+  user_notifications: 'アプリ内通知（2年）', email_logs: 'メール送信ログ（1年）',
+  attendance_corrections: '打刻修正申請（退職後7年）', attendance_correction_events: '打刻修正の操作履歴（退職後7年）',
   notification_emails: '通知メールの送信状態（退職後7年）', report_setting_logs: '報告設定の変更履歴（退職後7年）', project_staff_report_settings: '報告設定（スタッフ別・退職後7年）',
+  notice_read_staff_reports: '既読率（スタッフ別・退職後7年）',
   employee_records: '従業員データ（口座・住所・給与・緊急連絡先。退職後7年）', employment_periods: '過去の雇用期間（退職後7年）',
   staff_documents: '履歴書など（退職後7年）', employee_documents: '入社時書類（退職後7年）', r2_documents: 'R2書類ファイル（退職後7年）',
   roster_comments: '企業間チャット（退職後7年）', roster_comment_reads: '企業間チャットの既読位置（退職後7年）', roster_consents: '連携の同意履歴（退職後7年）',
   anonymized_staff: '本人情報の匿名化（退職後7年）',
+  retired_staff_deferred: '上限で翌日に回した退職スタッフ（人数）', r2_pending: '翌日以降に消すR2ファイル（残り）',
+  password_reset_tokens: 'パスワード再設定のリンク（期限切れ・使用済み）', expired_report_tokens: '報告用URL（期限から30日・取り消し済み）',
 }
+// 人ごとの dry-run の内訳で出す列（API の DRY_RUN_STAFF_COUNTS と同じキー）
+const RETENTION_STAFF_COLS = [
+  ['shifts', 'シフト'], ['attendance_reports', '出退勤'], ['r2_photos', '写真'], ['evaluations', '評価'], ['follow_logs', 'やり取り'],
+  ['consultations', '相談'], ['attendance_corrections', '打刻修正'], ['employee_records', '従業員データ'], ['documents', '書類'],
+  ['roster_comments', 'チャット'], ['notice_read_staff_reports', '既読率'],
+]
 const RETENTION_TRIGGER_LABEL = { cron: '定期処理', manual: '手動' }
+// dry-run の結果と実行ログの表示状態（dry-run の後に描き直しても結果が消えないよう、ここに残す。#244）
+const retentionState = { dryRun: null, logPage: 1, logTrigger: 'all' }
+
+// 今の動作モードと、次の定期削除で削除する人数（#365）
+function retentionModeHtml(sch) {
+  if (!sch) return ''
+  const mode = sch.enabled
+    ? '<span class="badge badge-red">実削除</span> <span class="text-xs text-slate-400">毎日の定期処理で実際に削除・匿名化します（RETENTION_ENABLED=true）</span>'
+    : '<span class="badge badge-gray">dry-run のみ</span> <span class="text-xs text-slate-400">定期処理は対象件数を記録するだけで、削除しません（RETENTION_ENABLED が true ではありません）</span>'
+  const next = sch.enabled
+    ? `${esc(sch.next_run_date)} 3:00 の定期処理で <b class="${sch.next_run_count > 0 ? 'text-amber-400' : ''}">${esc(sch.next_run_count)}人</b> の退職者のデータを削除します` +
+      (sch.next_run_due > sch.next_run_count ? `（猶予が明けた ${esc(sch.next_run_due)}人のうち、1回の上限 ${esc(sch.staff_batch)}人）` : '')
+    : `${esc(sch.next_run_date)} 3:00 の定期処理は dry-run のため削除しません（猶予が明けた退職者: ${esc(sch.next_run_due)}人）`
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <p class="text-sm mb-1">動作モード: ${mode}</p>
+      <p class="text-sm">${next}</p>
+    </section>`
+}
 // 次回削除予定・対象外の一覧（退職日の入力誤りに気づけるよう、削除前に本部で確認できるようにする）
 function retentionScheduleHtml(sch) {
   const row = (s, note) => `
@@ -439,24 +468,64 @@ function retentionScheduleHtml(sch) {
       ${table(sch.excluded.map(s => row(s, '<span class="text-red-400">退職日より後にシフトあり</span>')).join(''), '該当するスタッフはいません')}
     </section>`
 }
+// dry-run の会社別・退職者別の内訳（#365）
+function retentionDryRunDetailHtml(data) {
+  if (data.detailError) return `<p class="text-xs text-red-400 mt-3">会社別・退職者別の内訳の集計に失敗しました: ${esc(data.detailError)}</p>`
+  const d = data.detail
+  if (!d) return ''
+  const num = (n) => n > 0 ? `<span class="text-amber-400">${esc(n)}</span>` : '<span class="text-slate-500">0</span>'
+  const head = RETENTION_STAFF_COLS.map(([, l]) => `<th>${esc(l)}</th>`).join('')
+  const cells = (counts) => RETENTION_STAFF_COLS.map(([k]) => `<td class="text-xs">${num(counts[k] || 0)}</td>`).join('')
+  const companies = d.companies.length ? d.companies.map(c => `
+    <tr><td>${esc(c.company_name || '-')}</td><td>${esc(c.staff_count)}人</td>${cells(c.counts)}</tr>`).join('')
+    : `<tr><td colspan="${RETENTION_STAFF_COLS.length + 2}" class="text-center text-slate-500 py-4">対象の退職者はいません</td></tr>`
+  const flagged = d.staff.filter(s => s.report_after_retired).length
+  const staff = d.staff.map(s => `
+    <tr>
+      <td class="text-xs">${esc(s.company_name || '-')}</td>
+      <td>${esc(s.name || '-')} <span class="text-xs text-slate-500">#${esc(s.staff_id)}</span>
+        ${s.report_after_retired ? '<br><span class="badge badge-red">退職日より後に勤怠あり</span>' : ''}</td>
+      <td class="text-xs">${esc(s.retired_at || '-')}</td>
+      <td class="text-xs">${esc(s.last_work_date || '-')}${s.last_report_date ? `<br><span class="text-slate-500">最終報告 ${esc(s.last_report_date)}</span>` : ''}</td>
+      <td class="text-xs">${s.delete_on ? esc(s.delete_on) + ' 以降' : '<span class="text-slate-400">猶予前</span>'}</td>
+      ${cells(s.counts)}
+    </tr>`).join('')
+  return `
+    <h4 class="font-bold text-sm mt-5 mb-2">会社別</h4>
+    <div class="overflow-x-auto">
+      <table class="tbl"><thead><tr><th>会社</th><th>退職者</th>${head}</tr></thead><tbody>${companies}</tbody></table>
+    </div>
+    <h4 class="font-bold text-sm mt-5 mb-1">退職者別（${esc(d.staff_total)}人${d.staff_total > d.staff.length ? `のうち先頭の${esc(d.staff.length)}人` : ''}）</h4>
+    ${flagged ? `<p class="text-xs text-red-400 mb-2">退職日より後に勤怠の報告がある人が ${esc(flagged)}人います。退職日の入力誤りでないか、各社に確認してください。</p>` : ''}
+    ${d.staff.length ? `
+    <details${d.staff.length <= 20 ? ' open' : ''}>
+      <summary class="text-xs text-slate-400 cursor-pointer">一覧を開く</summary>
+      <div class="overflow-x-auto mt-2">
+        <table class="tbl"><thead><tr><th>会社</th><th>スタッフ</th><th>退職日</th><th>最終稼働日</th><th>削除できる日</th>${head}</tr></thead><tbody>${staff}</tbody></table>
+      </div>
+    </details>` : ''}`
+}
 function retentionDryRunHtml(data) {
+  // 実削除のときだけ意味のある項目（翌日に回した人数）は出さない
+  const results = data.results.filter(r => r.target !== 'retired_staff_deferred')
   return `
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-      <h3 class="font-bold mb-3">dry-run結果（削除は実行していません。猶予中のスタッフも含みます）</h3>
+      <h3 class="font-bold mb-1">dry-run結果（削除は実行していません。猶予中のスタッフも含みます）</h3>
+      <p class="text-xs text-slate-500 mb-3">${data.finishedAt ? esc(dayjs(data.finishedAt).format('YYYY/M/D HH:mm')) + ' に集計' : ''}</p>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-        ${data.results.map(r => `
+        ${results.map(r => `
           <div class="bg-slate-900 rounded-lg p-3">
-            <p class="text-xs text-slate-400">${RETENTION_TARGET_LABEL[r.target] || esc(r.target)}</p>
+            <p class="text-xs text-slate-400">${esc(RETENTION_TARGET_LABEL[r.target] || r.target)}</p>
             <p class="text-lg font-bold ${r.targetCount > 0 ? 'text-amber-400' : ''}">${esc(r.targetCount)}件</p>
             ${r.failedCount > 0 ? `<p class="text-xs text-red-400">集計に失敗しました</p>` : ''}
           </div>`).join('')}
       </div>
+      ${retentionDryRunDetailHtml(data)}
     </section>`
 }
-async function renderRetention(dryRunResult) {
+async function renderRetention() {
   loading()
-  const [{ data }, sch, cron] = await Promise.all([
-    axios.get('/api/hq/retention/logs'),
+  const [sch, cron] = await Promise.all([
     axios.get('/api/hq/retention/schedule').then(r => r.data).catch(() => null),
     axios.get('/api/hq/cron/status').then(r => r.data).catch(() => null),
   ])
@@ -465,47 +534,105 @@ async function renderRetention(dryRunResult) {
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>
         <h2 class="text-xl font-bold">データ保持・定期処理</h2>
-        <p class="text-sm text-slate-400 mt-1">日報は3年、出退勤記録・シフト・評価・やり取り・相談・R2写真・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴は退職後7年で自動削除し、氏名・連絡先などの本人情報は匿名化します（毎日Cronで実行）。</p>
+        <p class="text-sm text-slate-400 mt-1">日報は3年、アプリ内通知は2年、メール送信ログは1年で削除します。出退勤記録・シフト・評価・やり取り・相談・R2写真・打刻修正・報告設定・スタッフ別の既読率・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴は退職後7年で削除し、氏名・連絡先などの本人情報は匿名化します（毎日Cronで実行）。期限切れ・使用済みのパスワード再設定のリンクと報告用URLも毎日削除します。</p>
       </div>
       <button class="btn btn-outline" data-action="runRetentionDryRun"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
     </div>
+    ${retentionModeHtml(sch)}
     ${cron ? cronStatusHtml(cron) : '<p class="text-sm text-red-400 mb-5">定期処理の実行記録の取得に失敗しました</p>'}
-    <div id="retention-dryrun-result" class="mb-5">${dryRunResult ? retentionDryRunHtml(dryRunResult) : ''}</div>
+    <div id="retention-dryrun-result" class="mb-5">${retentionState.dryRun ? retentionDryRunHtml(retentionState.dryRun) : ''}</div>
     ${sch ? retentionScheduleHtml(sch) : '<p class="text-sm text-red-400 mb-5">次回削除予定の取得に失敗しました</p>'}
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-      <h3 class="font-bold mb-3">直近の実行ログ</h3>
-      <div class="overflow-x-auto">
-        <table class="tbl">
-          <thead><tr><th>実行日時</th><th>実行元</th><th>対象</th><th>種別</th><th>対象件数</th><th>削除件数</th><th>失敗</th><th>所要時間</th></tr></thead>
-          <tbody>
-            ${data.logs.length === 0 ? '<tr><td colspan="8" class="text-center text-slate-500 py-4">実行履歴がありません</td></tr>' : data.logs.map(l => `
-              <tr>
-                <td class="text-xs">${l.finished_at ? dayjs(l.finished_at).format('YYYY/M/D HH:mm') : '-'}</td>
-                <td class="text-xs">${esc(RETENTION_TRIGGER_LABEL[l.trigger_source] || '-')}${l.triggered_by_name ? `<br><span class="text-slate-500">${esc(l.triggered_by_name)}</span>` : ''}</td>
-                <td>${esc(RETENTION_TARGET_LABEL[l.target] || l.target)}</td>
-                <td><span class="badge ${l.dry_run ? 'badge-gray' : 'badge-blue'}">${l.dry_run ? 'dry-run' : '実削除'}</span></td>
-                <td>${esc(l.target_count)}</td>
-                <td>${esc(l.deleted_count)}</td>
-                <td>${l.failed_count > 0 ? `<span class="text-red-400">${esc(l.failed_count)}</span>` : '0'}</td>
-                <td class="text-xs">${l.duration_ms == null ? '-' : esc(formatDuration(l.duration_ms))}</td>
-              </tr>${l.error_message ? `
-              <tr><td colspan="8" class="text-xs text-red-400" style="white-space:pre-wrap;word-break:break-all">失敗の理由: ${esc(l.error_message)}</td></tr>` : ''}`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </section>`
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4" id="retention-logs"></section>`
+  await loadRetentionLogs()
 }
-// 二重に実行しないよう、実行中はボタンを無効にする
+
+// 実行ログ（1回の実行を1行にまとめ、開くと対象ごとの内訳。#305）
+function retentionRunRow(r) {
+  const items = r.items.map(i => `
+    <tr>
+      <td>${esc(RETENTION_TARGET_LABEL[i.target] || i.target)}</td>
+      <td>${esc(i.target_count)}</td><td>${esc(i.deleted_count)}</td>
+      <td>${i.failed_count > 0 ? `<span class="text-red-400">${esc(i.failed_count)}</span>` : '0'}</td>
+    </tr>${i.error_message ? `
+    <tr><td colspan="4" class="text-xs text-red-400" style="white-space:pre-wrap;word-break:break-all">失敗の理由: ${esc(i.error_message)}</td></tr>` : ''}`).join('')
+  return `
+    <tr>
+      <td class="text-xs">${r.started_at ? esc(dayjs(r.started_at).format('YYYY/M/D HH:mm')) : '-'}</td>
+      <td class="text-xs">${esc(RETENTION_TRIGGER_LABEL[r.trigger_source] || '-')}${r.triggered_by_name ? `<br><span class="text-slate-500">${esc(r.triggered_by_name)}</span>` : ''}</td>
+      <td><span class="badge ${r.dry_run ? 'badge-gray' : 'badge-blue'}">${r.dry_run ? 'dry-run' : '実削除'}</span></td>
+      <td>${r.staff_count == null ? '-' : esc(r.staff_count) + '人'}</td>
+      <td>${esc(r.target_count)}</td>
+      <td>${esc(r.deleted_count)}</td>
+      <td>${r.failed_count > 0 ? `<span class="badge badge-red">失敗 ${esc(r.failed_count)}</span>` : '<span class="badge badge-green">なし</span>'}</td>
+      <td class="text-xs">${r.duration_ms == null ? '-' : esc(formatDuration(r.duration_ms))}</td>
+    </tr>
+    <tr>
+      <td colspan="8" style="padding-top:0">
+        <details${r.failed_count > 0 ? ' open' : ''}>
+          <summary class="text-xs text-slate-400 cursor-pointer">対象ごとの内訳（${esc(r.items.length)}件）</summary>
+          <div class="overflow-x-auto mt-1">
+            <table class="tbl"><thead><tr><th>対象</th><th>対象件数</th><th>削除件数</th><th>失敗</th></tr></thead><tbody>${items}</tbody></table>
+          </div>
+        </details>
+      </td>
+    </tr>`
+}
+async function loadRetentionLogs() {
+  const box = document.getElementById('retention-logs')
+  if (!box) return
+  let data
+  try {
+    data = (await axios.get('/api/hq/retention/logs', { params: { page: retentionState.logPage, trigger: retentionState.logTrigger } })).data
+  } catch (e) {
+    box.innerHTML = '<p class="text-sm text-red-400">実行ログの取得に失敗しました</p>'
+    return
+  }
+  const pages = Math.max(1, Math.ceil(data.total / data.per_page))
+  const fmt = (v) => v ? esc(dayjs(v).format('YYYY/M/D HH:mm')) : 'まだありません'
+  const tab = (key, label) => `<button class="btn ${retentionState.logTrigger === key ? 'btn-primary' : 'btn-outline'} text-xs" data-action="retentionLogTrigger" data-trigger="${key}">${label}</button>`
+  box.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+      <h3 class="font-bold">実行ログ</h3>
+      <div class="flex gap-1">${tab('all', 'すべて')}${tab('cron', '定期処理')}${tab('manual', '手動の dry-run')}</div>
+    </div>
+    <p class="text-xs text-slate-400 mb-3">直近の定期処理: ${fmt(data.latest && data.latest.last_cron_run)} ／ 直近の実削除: ${fmt(data.latest && data.latest.last_real_run)}。件数の合計に退職スタッフの人数は含みません。</p>
+    <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead><tr><th>実行日時</th><th>実行元</th><th>種別</th><th>退職者</th><th>対象件数</th><th>削除件数</th><th>失敗</th><th>所要時間</th></tr></thead>
+        <tbody>${data.runs.length ? data.runs.map(retentionRunRow).join('') : '<tr><td colspan="8" class="text-center text-slate-500 py-4">実行履歴がありません</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="flex items-center justify-between mt-3 text-xs text-slate-400">
+      <span>全${esc(data.total)}回</span>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-outline text-xs" data-action="retentionLogPage" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}>前へ</button>
+        <span>${esc(data.page)} / ${esc(pages)}</span>
+        <button class="btn btn-outline text-xs" data-action="retentionLogPage" data-page="${data.page + 1}" ${data.page >= pages ? 'disabled' : ''}>次へ</button>
+      </div>
+    </div>`
+}
+delegate('retentionLogTrigger', el => {
+  retentionState.logTrigger = el.dataset.trigger || 'all'
+  retentionState.logPage = 1
+  loadRetentionLogs()
+})
+delegate('retentionLogPage', el => {
+  retentionState.logPage = Math.max(1, Number(el.dataset.page) || 1)
+  loadRetentionLogs()
+})
+// 二重に実行しないよう、実行中はボタンを無効にする。結果は描き直さずに残し、実行ログだけを取り直す（#244）
 delegate('runRetentionDryRun', el => withSubmitLock(el, async () => {
   const box = document.getElementById('retention-dryrun-result')
   box.innerHTML = '<div class="flex justify-center py-6"><span class="spin"></span></div>'
   try {
     const { data } = await axios.post('/api/hq/retention/dry-run')
+    retentionState.dryRun = data
+    box.innerHTML = retentionDryRunHtml(data)
     toast('dry-runが完了しました')
-    // 実行ログも新しくするため描き直す（結果は消さずに残す）
-    await renderRetention(data)
+    retentionState.logPage = 1
+    await loadRetentionLogs()
   } catch (e) {
-    box.innerHTML = ''
+    box.innerHTML = retentionState.dryRun ? retentionDryRunHtml(retentionState.dryRun) : ''
     showApiError(e, 'dry-runの実行に失敗しました')
   }
 }))
