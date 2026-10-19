@@ -7,7 +7,10 @@ import type { Context } from 'hono'
 
 export const SESSION_COOKIE = 'session'
 export const SESSION_HOURS = 12 // 1シフト分を目安とした有効期限
-const PBKDF2_ITERATIONS = 100000 // Workers の PBKDF2 の上限（100,000回）
+// Workers の Free プラン（CPU 10ms/リクエスト）に収まる回数。Paid プランに移ったら 100000 まで上げてよい
+// （上げると、回数の少ないハッシュはログイン成功時に作り直される。needsRehash）
+const PBKDF2_ITERATIONS = 10000
+const PBKDF2_MAX_ITERATIONS = 100000 // Workers の PBKDF2 の上限。照合はこの回数まで受け付ける
 const PBKDF2_BITS = 256
 // ログインできないロール（スタッフマスタだけの行・仮登録の行）
 const NO_LOGIN_ROLES = ['roster_only']
@@ -51,7 +54,7 @@ export async function verifyPassword(password: string, stored: string | null | u
   if (s.startsWith('pbkdf2$')) {
     const [, iter, saltB64, hashB64] = s.split('$')
     const n = Number(iter)
-    if (!Number.isInteger(n) || n < 1 || n > PBKDF2_ITERATIONS || !saltB64 || !hashB64) return false
+    if (!Number.isInteger(n) || n < 1 || n > PBKDF2_MAX_ITERATIONS || !saltB64 || !hashB64) return false
     try {
       const dk = await pbkdf2(password, fromB64(saltB64), n)
       return safeEqual(toB64(dk), hashB64)

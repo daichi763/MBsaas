@@ -49,7 +49,7 @@
   - `attendance_reports.photo_key`: R2オブジェクトキー（画像バイナリ自体はDBに保存しない。マイグレーション `0002_add_attendance_photo.sql`）
 - **マルチテナント**: 全テーブルに `company_id`、ログインは 会社コード+ユーザーコード+パスワード
 - **認証**（共通部品は `src/lib/auth.ts`）:
-  - パスワードは PBKDF2（SHA-256・10万回・ソルト付き。`pbkdf2$回数$ソルト$ハッシュ`）。旧形式（ソルトなし SHA-256）はログイン成功時に作り直す。最低条件は全経路で `validatePassword`（8文字以上）
+  - パスワードは PBKDF2（SHA-256・1万回（Workers の Free プランの CPU 時間に合わせた値。src/lib/auth.ts の PBKDF2_ITERATIONS）・ソルト付き。`pbkdf2$回数$ソルト$ハッシュ`）。旧形式（ソルトなし SHA-256）はログイン成功時に作り直す。最低条件は全経路で `validatePassword`（8文字以上）
   - セッションは httpOnly Cookie（https では Secure）で12時間。DB にはトークンの SHA-256 だけを保存する（再設定トークンも同じ）
   - 認証ミドルウェアで、期限切れ・退職（status!=active）・ログインできないロール（roster_only）・本部で停止にした企業（system_admin を除く）を止める。ロール別に /api/admin/*・/api/hq/*・/api/staff/*（staff のみ）を確認する
   - ログインの失敗は 15分間に 会社コード＋ID 単位で10回、IP 単位で50回までで、超えると一時的に止める（`login_attempts`。マイグレーション 0030）
