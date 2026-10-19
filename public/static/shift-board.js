@@ -223,7 +223,7 @@
     // 『不足のみ』では、同じ行の不足していない日のセルを薄く出す
     return `<div class="board-cell ${short ? 'board-short' : over ? 'board-over' : 'board-ok'} ${BS.onlyShort && !short ? 'opacity-40' : ''}" data-slot-role-id="${role.slot_role_id}">
       <div class="flex items-center justify-between gap-1 mb-1">
-        <button class="text-[11px] font-bold ${short ? 'text-red-600' : 'text-emerald-700'}" onclick="openSlotModal(null, ${slot.slot_id})" title="枠を編集">${role.filled}/${role.headcount}${role.requested ? `<span class="text-amber-600 ml-1">希望${role.requested}</span>` : ''}</button>${role.applicants ? `<a href="#recruit" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="未対応の応募">応募${role.applicants}</a>` : ''}
+        <button class="text-[11px] font-bold ${short ? 'text-red-600' : 'text-emerald-700'}" onclick="openSlotModal(null, ${slot.slot_id})" title="枠を編集">${role.filled}/${role.headcount}${role.requested ? `<span class="text-amber-600 ml-1">希望${role.requested}</span>` : ''}</button>${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${role.applicants}</a>` : ''}
         <span class="flex items-center gap-1">
           ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400">${yen(money)}</span>` : ''}
           <button class="board-add" onclick="openCandidates(${role.slot_role_id})" title="候補から割り当て"><i class="fas fa-plus"></i></button>
