@@ -882,7 +882,11 @@ api.post('/auth/mfa/disable', async (c) => {
   const bad = await confirmPassword(c, u, b.password)
   if (bad) return bad
   const okCode = (await verifyTotp(u.totp_secret, b.code, u.totp_last_step)) !== null || (await consumeRecoveryCode(u.mfa_recovery_codes, b.code)) !== null
-  if (!okCode) return c.json({ error: '確認コードが正しくありません' }, 400)
+  if (!okCode) {
+    // ログイン中の画面からコードを総当たりして解除できないよう、ログインと同じ失敗回数に数える
+    await recordLoginFailure(db, await loginAttemptKeys(u.role === 'system_admin' ? '' : String(u.company_code || ''), String(u.user_code || ''), c.req.header('CF-Connecting-IP')))
+    return c.json({ error: '確認コードが正しくありません' }, 400)
+  }
   await clearMfaStmt(db, u.user_id).run()
   return c.json({ ok: true, changed: true })
 })

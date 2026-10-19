@@ -603,7 +603,7 @@ app.get('/admin', async (c) => {
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option><option value="report-settings">案件報告管理</option><option value="corrections">打刻修正承認</option><option value="attendance-history">履歴・CSV</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
-          <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option><option value="security">セキュリティ</option>
+          <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option>
         </select>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>

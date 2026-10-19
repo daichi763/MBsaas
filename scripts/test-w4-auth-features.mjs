@@ -171,6 +171,8 @@ let secret = null, recovery = []
   // 会社管理者は、スマホを失くした管理者の二段階認証を解除できる（ここでは自分以外の行がないため、本部から admin を解除して確かめる）
   const off = await req('PUT', '/api/admin/security/settings', { cookie: admin, body: { mfa_required: false } })
   ok('#544 必須を外せる', off.status === 200 && off.data.mfa_required === false, off)
+  const wrongDis = await req('POST', '/api/auth/mfa/disable', { cookie: admin, body: { password: 'pass1234', code: '000000' } })
+  ok('#544 解除は確認コードが違えば行わない（失敗回数に数える）', wrongDis.status === 400 && (await req('GET', '/api/auth/mfa', { cookie: admin })).data?.enabled === true, wrongDis)
   ok('#544 必須を外すと登録待ちも解ける', (await req('GET', '/api/admin/dashboard', { cookie: mgr })).status === 200)
 }
 
