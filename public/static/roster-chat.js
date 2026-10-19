@@ -58,7 +58,7 @@ window.renderRosterChatList = async function () {
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">企業間チャット</h2>
-      <span class="text-sm text-gray-400">未読 ${data.unread_total}件</span>
+      <span class="text-sm text-gray-400">未読 ${data.unread_total}件 ・ <a href="#roster-notes" class="text-blue-600 hover:underline">連携先からの追記（現場評価・稼働メモ）</a></span>
     </div>
     <p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-4"><i class="fas fa-eye-slash mr-1"></i>${CHAT_NOTICE}</p>
     <section class="card overflow-x-auto">
@@ -132,32 +132,62 @@ window.renderRosterChatPanel = async function (sid, p) {
     <section class="card p-4">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
         <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-comments text-blue-600 mr-1"></i>企業間チャット</h3>
-        ${threads.length > 1 ? `<select id="chat-thread-sel" class="inp text-xs w-auto" onchange="loadRosterChat(${sid}, this.value)">
-          ${threads.map(t => `<option value="${t.key}">${esc(t.label)}</option>`).join('')}</select>` : `<span class="text-xs text-gray-500">相手: ${esc(threads[0].label)}</span>`}
+        ${threads.length > 1 ? `<select id="chat-thread-sel" class="inp text-xs w-auto">
+          ${threads.map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('')}</select>` : `<span class="text-xs text-gray-500">相手: ${esc(threads[0].label)}</span>`}
       </div>
       <p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3"><i class="fas fa-eye-slash mr-1"></i>${CHAT_NOTICE}</p>
       <div id="chat-log" class="space-y-2 max-h-80 overflow-y-auto p-1 bg-gray-50 rounded-lg"></div>
+      <p id="chat-reads" class="text-[11px] text-gray-400 mt-1"></p>
       <div class="flex gap-2 mt-3">
         <textarea id="chat-input" rows="2" maxlength="2000" class="inp text-sm flex-1" placeholder="メッセージを入力（Ctrl+Enterで送信）"></textarea>
-        <button class="btn btn-primary self-end" onclick="sendRosterChat(${sid})"><i class="fas fa-paper-plane"></i>送信</button>
+        <button class="btn btn-primary self-end" data-action="sendRosterChat" data-sid="${Number(sid)}"><i class="fas fa-paper-plane"></i>送信</button>
       </div>
     </section>`
   document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendRosterChat(sid) })
-  // 一覧・ダッシュボードから遷移した場合は該当スレッドを開いてチャット欄までスクロール
+  const sel = document.getElementById('chat-thread-sel')
+  // スレッドを選び直したのは、そのスレッドを読むための操作なので既読にする
+  if (sel) sel.addEventListener('change', () => loadRosterChat(sid, sel.value, { markRead: true }))
+  // 一覧・ダッシュボードから遷移した場合は該当スレッドを開いてチャット欄までスクロールし、既読にする。
+  // スタッフ詳細を別の目的で開いただけのときは、チャット欄が画面に見えるまで既読にしない（#462）
   const want = window.__chatHost; window.__chatHost = null
   const initial = want && threads.some(t => t.key === String(want)) ? String(want) : threads[0].key
-  const sel = document.getElementById('chat-thread-sel'); if (sel) sel.value = initial
-  loadRosterChat(sid, initial)
-  if (want !== null && want !== undefined) host.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  if (sel) sel.value = initial
+  const opened = want !== null && want !== undefined
+  loadRosterChat(sid, initial, { markRead: opened })
+  if (opened) host.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
+delegate('sendRosterChat', (el) => sendRosterChat(Number(el.dataset.sid)))
 
 let CHAT_CUR = { sid: null, hostKey: '' }
-window.loadRosterChat = async function (sid, hostKey) {
+let CHAT_OBSERVER = null
+// 既読にする（ユーザー単位）。表示中のメッセージの最後までを既読にし、バッジを更新する
+async function markRosterChatRead(sid, hostKey, lastId) {
+  if (!lastId) return
+  try {
+    await axios.post(`/api/admin/roster-chat/${sid}/read`, { host_staff_id: hostKey || undefined, last_comment_id: lastId })
+    const mark = document.getElementById('chat-unread-mark'); if (mark) mark.remove()
+    refreshChatBadge()
+  } catch { /* 既読にできなくても表示は続ける */ }
+}
+// 自社の担当者の既読（相手の最新のメッセージまで読んだ人）
+function chatReadsText(data) {
+  const lastTheirs = data.messages.filter(m => !m.mine).reduce((a, m) => Math.max(a, m.comment_id), 0)
+  if (!lastTheirs) return ''
+  const readers = (data.reads || []).filter(r => r.last_read_comment_id >= lastTheirs)
+  return readers.length ? '自社の既読: ' + readers.map(r => `${r.name || ''}${r.me ? '（自分）' : ''} ${(r.read_at || '').slice(5, 16)}`).join('、') : '自社ではまだ誰も最新のメッセージを読んでいません'
+}
+window.loadRosterChat = async function (sid, hostKey, opts) {
   CHAT_CUR = { sid, hostKey: hostKey || '' }
+  if (CHAT_OBSERVER) { CHAT_OBSERVER.disconnect(); CHAT_OBSERVER = null }
   const log = document.getElementById('chat-log'); if (!log) return
   try {
     const { data } = await axios.get(`/api/admin/roster-chat/${sid}`, { params: hostKey ? { host_staff_id: hostKey } : {} })
+    if (CHAT_CUR.sid !== sid || CHAT_CUR.hostKey !== (hostKey || '')) return // 読み込み中に別のスレッドへ切り替えた
+    const myRead = Number(data.my_last_read_comment_id) || 0
+    // 相手からの未読の始まりに印を付ける
+    const firstUnread = data.messages.find(m => !m.mine && m.comment_id > myRead)
     log.innerHTML = data.messages.map(m => `
+      ${firstUnread && m.comment_id === firstUnread.comment_id ? '<p id="chat-unread-mark" class="text-[11px] text-red-500 text-center border-t border-red-200 pt-1">ここから未読</p>' : ''}
       <div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
         <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800'}">
           <p class="text-[10px] ${m.mine ? 'text-blue-100' : 'text-gray-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
@@ -165,7 +195,25 @@ window.loadRosterChat = async function (sid, hostKey) {
         </div>
       </div>`).join('') || '<p class="text-xs text-gray-400 text-center py-6">まだメッセージはありません</p>'
     log.scrollTop = log.scrollHeight
-    refreshChatBadge()
+    const readsEl = document.getElementById('chat-reads'); if (readsEl) readsEl.textContent = chatReadsText(data)
+    const lastId = data.messages.length ? data.messages[data.messages.length - 1].comment_id : 0
+    if (!firstUnread) return
+    if (opts && opts.markRead) { markRosterChatRead(sid, hostKey, lastId); return }
+    // チャット欄の半分以上が2秒続けて見えたら既読にする（スクロールして読んだとき。通り過ぎただけでは既読にしない）
+    if ('IntersectionObserver' in window) {
+      let timer = null
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.some(e => e.isIntersecting)
+        if (!visible || document.hidden) { clearTimeout(timer); timer = null; return }
+        if (timer) return
+        timer = setTimeout(() => {
+          observer.disconnect(); if (CHAT_OBSERVER === observer) CHAT_OBSERVER = null
+          if (CHAT_CUR.sid === sid && CHAT_CUR.hostKey === (hostKey || '') && document.body.contains(log)) markRosterChatRead(sid, hostKey, lastId)
+        }, 2000)
+      }, { threshold: 0.5 })
+      CHAT_OBSERVER = observer
+      observer.observe(log)
+    }
   } catch { log.innerHTML = '<p class="text-xs text-red-500 text-center py-6">読み込みに失敗しました</p>' }
 }
 // 送信中は送信ボタンと Ctrl+Enter を止め、入力欄は送る前に空にする（失敗したら戻す）。
@@ -181,7 +229,7 @@ window.sendRosterChat = async function (sid) {
     await withSubmitLock(button, async () => {
       try {
         await axios.post(`/api/admin/roster-chat/${sid}`, { body, host_staff_id: CHAT_CUR.hostKey || undefined })
-        loadRosterChat(sid, CHAT_CUR.hostKey)
+        loadRosterChat(sid, CHAT_CUR.hostKey, { markRead: true })
       } catch (e) {
         if (!el.value) el.value = body
         showApiError(e, '送信に失敗しました')

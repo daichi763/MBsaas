@@ -372,6 +372,15 @@ window.submitRosterForm = async function (route) {
 // =========================================================
 // フェーズE: QRコード（恒久固定）の表示 / カメラで読み取り
 // =========================================================
+// 連携用IDのコピー（メール・チャットで離れた稼働先に送れるように。#475）
+delegate('copyShareCode', async (el) => {
+  const code = el.dataset.code || ''
+  try { await navigator.clipboard.writeText(code); toast('スタッフIDをコピーしました') } catch {
+    const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select()
+    try { document.execCommand && document.execCommand('copy'); toast('スタッフIDをコピーしました') } catch { toast('コピーできませんでした') }
+    ta.remove()
+  }
+})
 function qrSvg(text, cell) {
   const qr = qrcode(0, 'M'); qr.addData(text); qr.make()
   return qr.createSvgTag({ cellSize: cell || 6, margin: 2, scalable: true })
@@ -386,12 +395,13 @@ window.showShareQr = async function (sid) {
       </div>
       <div class="text-center">
         <div class="w-56 h-56 mx-auto">${qrSvg(data.global_staff_code)}</div>
-        <p class="font-mono text-xl font-bold tracking-widest mt-2">${esc(data.global_staff_code)}</p>
+        <p class="font-mono text-xl font-bold tracking-widest mt-2">${esc(String(data.global_staff_code || '').replace(/(.{4})(?=.)/g, '$1 '))}</p>
         <p class="text-sm text-gray-700 mt-1">${esc(data.name)}（${esc(data.company_name)}）</p>
+        <button class="btn btn-outline text-xs mt-2" data-action="copyShareCode" data-code="${esc(data.global_staff_code)}"><i class="fas fa-copy"></i>IDをコピー</button>
       </div>
       <ul class="text-xs text-gray-500 mt-4 space-y-1">
-        <li>・このQRコード / スタッフIDは${data.relink ? '自社から連携するための専用コードで、固定です' : '恒久固定です（再発行・有効期限はありません）'}。</li>
-        <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目のみが共有されます。</li>
+        <li>・このQRコード / スタッフIDは${data.relink ? '自社から連携するための専用コードで、固定です' : '恒久固定です（再発行・有効期限・取り消しはありません）'}。IDを渡した企業はいつでも連携できるため、渡す相手を確かめてください。</li>
+        <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目（氏名・生年月日・最寄駅・スキル・経歴のほか、「経験・スキル・人柄・PRポイント等」「備考」を含む）が共有されます。</li>
         <li>・連携先から見える所属元は${data.relink ? '自社（' + esc(data.company_name) + '）のみです。自社の所属元の企業名は連携先には表示されません' : '自社のみです。連携先がさらに別の企業へ連携しても、その先の企業から見える所属元は直前の企業だけです'}。</li>
         <li>・従業員管理の情報（給与・口座・社会保険等）は共有されません。</li>
       </ul>`)
@@ -465,7 +475,7 @@ window.renderRosterPanels = async function (sid, p) {
       <textarea id="host-work-memo" rows="2" class="inp text-xs">${esc(p.work_memo || '')}</textarea>
       <div class="flex items-center justify-between mt-2">
         <span class="text-[11px] text-gray-400">${p.host_note_updated_at ? '最終更新 ' + esc(p.host_note_updated_at) : ''}</span>
-        <button class="btn btn-outline text-xs" onclick="saveHostNotes(${sid})">保存</button>
+        <button class="btn btn-outline text-xs" data-action="saveHostNotes" data-sid="${Number(sid)}">保存</button>
       </div>
     </section>` : ''
   let linkHtml = ''
@@ -484,10 +494,16 @@ window.renderRosterPanels = async function (sid, p) {
               <span class="ml-auto text-gray-500">今月の稼働 ${Number(l.month_days) || 0}日${Number(l.month_planned_days) > Number(l.month_days) ? `（予定を含め ${Number(l.month_planned_days)}日）` : ''} / 最終稼働 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
             </div>
             ${l.site_evaluation || l.work_memo ? `
-              <p class="text-xs text-gray-700 mt-1"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
-              <p class="text-xs text-gray-700"><span class="text-gray-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>` : '<p class="text-xs text-gray-400 mt-1">稼働先からの追記はまだありません</p>'}
+              <p class="text-xs text-gray-700 mt-1 whitespace-pre-wrap break-words"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
+              <p class="text-xs text-gray-700 whitespace-pre-wrap break-words"><span class="text-gray-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>
+              ${l.host_note_updated_at ? `<p class="text-[11px] text-gray-400">更新 ${esc(String(l.host_note_updated_at).slice(0, 16))}</p>` : ''}` : '<p class="text-xs text-gray-400 mt-1">稼働先からの追記はまだありません</p>'}
+            ${(l.history || []).length > 1 ? `<details class="mt-1"><summary class="text-[11px] text-blue-600 cursor-pointer">変更の履歴（${l.history.length}件${l.history.length >= 10 ? '・新しい10件' : ''}）</summary>
+              <div class="mt-1 space-y-1">${l.history.map(h => `<div class="text-[11px] text-gray-600 border-l-2 border-gray-200 pl-2">
+                <p class="text-gray-400">${esc(String(h.created_at || '').slice(0, 16))}</p>
+                <p class="whitespace-pre-wrap break-words">現場評価: ${esc(h.site_evaluation || '-')}</p>
+                <p class="whitespace-pre-wrap break-words">稼働メモ: ${esc(h.work_memo || '-')}</p></div>`).join('')}</div></details>` : ''}
           </div>`).join('') : `<p class="text-sm text-gray-400">${!p.linkable ? '連携対象外のスタッフです' : p.link_shareable ? 'まだ他社には連携されていません' : '退職・停止中のため、新しく連携することはできません'}</p>`}
-        <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。</p>
+        <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。<a href="#roster-notes" class="text-blue-600 hover:underline">連携先からの追記の一覧</a></p>
       </section>`
   }
   if (links && links.role === 'host') {
@@ -510,6 +526,57 @@ window.saveHostNotes = async function (sid) {
       site_evaluation: document.getElementById('host-site-eval').value,
       work_memo: document.getElementById('host-work-memo').value,
     })
-    toast('稼働先追記項目を保存しました')
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました') }
+    toast('稼働先追記項目を保存しました（所属元にも通知されます）')
+  } catch (e) { showApiError(e, '保存に失敗しました') }
 }
+delegate('saveHostNotes', el => withSubmitLock(el, () => saveHostNotes(Number(el.dataset.sid))))
+
+// =========================================================
+// 連携先からの追記の一覧（#538）: 自社から連携した稼働先が書いた現場評価・稼働メモの変更を新しい順に
+// =========================================================
+const HOST_NOTES_VIEW = { unseen: false, offset: 0 }
+window.renderRosterHostNotes = async function () {
+  loading()
+  let d
+  try { d = (await axios.get('/api/admin/roster/host-notes', { params: { unseen: HOST_NOTES_VIEW.unseen ? 1 : undefined, offset: HOST_NOTES_VIEW.offset || undefined } })).data } catch (e) {
+    $app.innerHTML = `<div class="card p-6 text-center text-sm text-red-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
+  }
+  const diff = (label, now, prev, first) => `<p class="text-sm whitespace-pre-wrap break-words"><span class="text-xs text-gray-400">${label}:</span> ${esc(now || '-')}</p>
+    ${!first && (prev || '') !== (now || '') ? `<p class="text-[11px] text-gray-400 whitespace-pre-wrap break-words line-through">前: ${esc(prev || '（空欄）')}</p>` : ''}`
+  $app.innerHTML = `
+    <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+      <h2 class="text-xl font-bold text-gray-900">連携先からの追記</h2>
+      <div class="flex items-center gap-2">
+        <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="hn-unseen" ${HOST_NOTES_VIEW.unseen ? 'checked' : ''}>未確認だけ</label>
+        <button class="btn btn-outline text-xs" data-action="hostNotesSeen" ${d.unseen_count ? '' : 'disabled'}><i class="fas fa-check-double"></i>すべて確認済みにする</button>
+      </div>
+    </div>
+    <p class="text-xs text-gray-500 mb-4">自社から連携した稼働先の企業が書いた「現場評価」「稼働メモ」の変更です（未確認 ${Number(d.unseen_count) || 0}件）。スタッフ本人には表示されません。</p>
+    <div class="space-y-2">
+      ${d.notes.map(n => `
+        <section class="card p-3 ${n.unseen ? 'border-l-4 border-blue-500' : ''}">
+          <div class="flex items-center gap-2 flex-wrap text-xs mb-1">
+            ${n.unseen ? '<span class="badge badge-blue">未確認</span>' : ''}
+            <a href="#staff/${Number(n.staff_id)}" class="font-bold text-blue-700 hover:underline text-sm">${esc(n.staff_name || '')}</a>
+            <span class="text-gray-500">${esc(n.host_company_name || '')}</span>
+            <span class="text-gray-400 ml-auto">${esc(String(n.created_at || '').slice(0, 16))}</span>
+          </div>
+          ${diff('現場評価', n.site_evaluation, n.prev_site_evaluation, n.prev_site_evaluation == null && n.prev_work_memo == null)}
+          ${diff('稼働メモ', n.work_memo, n.prev_work_memo, n.prev_site_evaluation == null && n.prev_work_memo == null)}
+        </section>`).join('') || `<p class="card p-6 text-center text-sm text-gray-400">${HOST_NOTES_VIEW.unseen ? '未確認の追記はありません' : '連携先からの追記はまだありません'}</p>`}
+    </div>
+    <div class="flex justify-between mt-3">
+      ${HOST_NOTES_VIEW.offset ? '<button class="btn btn-outline text-xs" data-action="hostNotesPage" data-dir="-1">前へ</button>' : '<span></span>'}
+      ${d.has_more ? '<button class="btn btn-outline text-xs" data-action="hostNotesPage" data-dir="1">次へ</button>' : ''}
+    </div>`
+  const cb = document.getElementById('hn-unseen')
+  if (cb) cb.addEventListener('change', () => { HOST_NOTES_VIEW.unseen = cb.checked; HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() })
+}
+delegate('hostNotesPage', (el) => {
+  HOST_NOTES_VIEW.offset = Math.max(0, HOST_NOTES_VIEW.offset + Number(el.dataset.dir) * 50)
+  renderRosterHostNotes()
+})
+delegate('hostNotesSeen', (el) => withSubmitLock(el, async () => {
+  try { await axios.post('/api/admin/roster/host-notes/seen', {}); toast('確認済みにしました'); renderRosterHostNotes() } catch (e) { showApiError(e, '更新に失敗しました') }
+}))
+if (typeof routes === 'object') routes['roster-notes'] = () => { HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() }

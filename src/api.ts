@@ -28,7 +28,7 @@ import {
   hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails } from './roster'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
@@ -1839,7 +1839,8 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
 async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
   const u = c.get('user')
   const { retired_at, affiliation, employment_status } = body
-  if (body.name !== undefined) {
+  // 氏名は変わったときだけ保存し、連携先の表示名をそろえる（#482。従業員管理の保存は毎回氏名を送るため）
+  if (body.name !== undefined && String(body.name).trim() !== String(roster.name ?? '')) {
     const newName = String(body.name).trim()
     await c.env.DB.prepare('UPDATE users SET name = ? WHERE user_id = ?').bind(newName, roster.user_id).run()
     await propagateNameToLinked(c.env.DB, sid, newName)
@@ -1863,10 +1864,10 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
       .bind(...biz.map(k => body[k] === null && textKeys.includes(k) ? '' : (body[k] ?? null)), sid, u.company_id).run()
   }
 
-  // 稼働先追記項目（所属元にも共有される: 現場評価・稼働メモ）
+  // 稼働先追記項目（所属元にも共有される: 現場評価・稼働メモ）。変わったときだけ保存し、履歴に残して所属元に知らせる（#538）
   if (body.site_evaluation !== undefined || body.work_memo !== undefined) {
-    await c.env.DB.prepare(`UPDATE staff_profiles SET site_evaluation = COALESCE(?, site_evaluation), work_memo = COALESCE(?, work_memo), host_note_updated_at = ?
-      WHERE staff_id = ? AND company_id = ?`).bind(body.site_evaluation ?? null, body.work_memo ?? null, nowJST(), sid, u.company_id).run()
+    const stmts = hostNoteStmts(c.env.DB, roster, body.site_evaluation, body.work_memo, u.user_id)
+    if (stmts.length) await c.env.DB.batch(stmts)
   }
 
   // 取引先所属スタッフの所属会社名を変更した場合は、取引先マスタ（staff_affiliations）のIDも追従させる
