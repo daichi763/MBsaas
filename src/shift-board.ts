@@ -183,7 +183,9 @@ export function workHours(s: any, proj: any = {}) {
   const planStart = toMin(s.start_time), planEnd = planStart + spanMinutes(s.start_time, s.end_time)
   const planned = Math.max(0, planEnd - planStart - brkPlan) / 60
   const basis = HOURS_BASIS.includes(proj.hours_basis) ? proj.hours_basis : 'clipped'
-  const hasActual = isTime(s.actual_start) && isTime(s.actual_end)
+  // 保存済みの実績は、入力の検証を厳しくする前（#218）の 24:30 などもあるため、形だけを見る
+  const storedTime = (t: any) => typeof t === 'string' && /^\d{2}:\d{2}$/.test(t)
+  const hasActual = storedTime(s.actual_start) && storedTime(s.actual_end)
   // planned_break_minutes = 予定の休憩、break_minutes = 実働の計算に使った休憩（実績の休憩があればその値）
   // hours = 請求の数量に使う時間、pay_hours = 支払の数量に使う時間（支払側の丸めを分ける #220。pay_time_round が same のときだけ支払も丸める）
   if (!hasActual) return { hours: round2(planned), pay_hours: round2(planned), planned_hours: round2(planned), actual_hours: null as number | null, basis, used: 'planned' as const, break_minutes: brkPlan, planned_break_minutes: brkPlan }
