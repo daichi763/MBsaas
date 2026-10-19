@@ -22,6 +22,7 @@ import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-se
 import { chunk } from './lib/d1-chunk'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
+import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident } from './notifications'
 import { toCsv, csvResponse } from './csv'
@@ -988,7 +989,7 @@ api.get('/admin/shifts/:id/attendance-withdrawals', async (c) => {
 // 勤怠報告
 api.post('/staff/attendance', async (c) => {
   const u = c.get('user')
-  const { shift_id, report_type, latitude, longitude, address } = await c.req.json()
+  const { shift_id, report_type, latitude, longitude, address, no_photo_reason, no_photo_note } = await c.req.json()
   if (!REPORT_TYPES.includes(report_type)) return c.json({ error: '不正な報告種別です' }, 400)
   // 勤怠の自動振り分け: シフトの所有企業・スタッフ行に記録する（同一人物の他社シフトも可）
   const resolved = await resolvePersonShift(c, shift_id)
@@ -1000,10 +1001,15 @@ api.post('/staff/attendance', async (c) => {
   const state = await loadReportState(c.env.DB, shift.shift_id)
   const ng = checkStaffReport(shift, report_type, now, modes ? modes.required_attendance : [...REPORT_TYPES], state)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
+  // 写真が必須の入店・退店は写真付きの API で送る。写真を送れないときは、会社が許可していれば理由つきで写真なしで受け付ける（#535）
+  let noPhotoReason: string | null = null
   if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
     const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
     if (resolvePhotoRequired(owner, proj?.photo_required_override as number | null)) {
-      return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
+      const reason = noPhotoReasonText(no_photo_reason, no_photo_note)
+      if (reason && typeof reason === 'object') return c.json({ error: reason.error }, 400)
+      if (!reason || !photoSkipAllowed(owner.settings_json)) return c.json({ error: PHOTO_REQUIRED_ERROR }, 400)
+      noPhotoReason = reason
     }
   }
 
@@ -1012,10 +1018,11 @@ api.post('/staff/attendance', async (c) => {
   const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
   const status = reportStatus(judged, latitude)
   // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
-  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, address ?? null, c.req.header('user-agent') || '', status,
-      judged.late_minutes, judged.early_leave_minutes).run()
+  // 住所・user-agent は長さを切って保存する（報告用URLと同じ。#521）
+  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, typeof address === 'string' && address ? address.slice(0, 200) : null,
+      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason).run()
   if (!ins.meta.changes) return c.json({ error: 'すでに報告済みです' }, 409)
   // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
   if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
@@ -1039,6 +1046,9 @@ api.post('/staff/attendance-photo', async (c) => {
   const latitude = form.get('latitude')
   const longitude = form.get('longitude')
   const photo = form.get('photo')
+  // 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
+  const takenAt = photoTakenAt(form.get('photo_taken_at'))
+  const source = photoSource(form.get('photo_source'))
 
   if (typeof report_type !== 'string' || !PHOTO_REQUIRED_TYPES.includes(report_type)) {
     return c.json({ error: '不正な報告種別です' }, 400)
@@ -1077,10 +1087,11 @@ api.post('/staff/attendance-photo', async (c) => {
 
   try {
     // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
-    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, c.req.header('user-agent') || '', status, key,
-        judged.late_minutes, judged.early_leave_minutes).run()
+    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes,
+        photo_taken_at, photo_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, (c.req.header('user-agent') || '').slice(0, 300), status, key,
+        judged.late_minutes, judged.early_leave_minutes, takenAt, source).run()
     if (!ins.meta.changes) {
       await c.env.PHOTOS.delete(key).catch(() => {})
       return c.json({ error: 'すでに報告済みです' }, 409)
@@ -1123,6 +1134,30 @@ api.get('/admin/attendance-photo/:attendanceId', async (c) => {
     WHERE ar.attendance_id = ? AND s.company_id = ? AND ar.photo_key IS NOT NULL`).bind(c.req.param('attendanceId'), u.company_id).first() as any
   if (!row) return c.json({ error: '写真が見つかりません' }, 404)
   return attendancePhotoResponse(c, row.photo_key)
+})
+
+// 写真が送れないときの扱い（#535）。スタッフ: シフトの所有企業が写真なしの報告を許可しているかと、理由の選択肢
+api.get('/staff/photo-options', async (c) => {
+  const resolved = await resolvePersonShift(c, c.req.query('shift_id'))
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  return c.json({ skip_allowed: photoSkipAllowed(resolved.staff.settings_json), reasons: NO_PHOTO_REASONS })
+})
+// 管理者: 写真なしの報告を許可するか（companies.settings_json の photo_skip_allowed。既定は許可しない）
+api.get('/admin/settings/photo-skip', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ enabled: photoSkipAllowed(row?.settings_json), reasons: NO_PHOTO_REASONS })
+})
+api.post('/admin/settings/photo-skip', async (c) => {
+  const u = c.get('user')
+  const body = await c.req.json().catch(() => ({}))
+  if (typeof body.enabled !== 'boolean') return c.json({ error: '不正なパラメータです' }, 400)
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  let settings: Record<string, any> = {}
+  try { settings = JSON.parse((row?.settings_json as string) || '{}') } catch { settings = {} }
+  settings.photo_skip_allowed = body.enabled
+  await c.env.DB.prepare('UPDATE companies SET settings_json = ? WHERE company_id = ?').bind(JSON.stringify(settings), u.company_id).run()
+  return c.json({ ok: true, enabled: body.enabled })
 })
 
 // 日報テンプレート取得
@@ -3382,9 +3417,12 @@ api.get('/admin/shifts/:id/attendance-photos', async (c) => {
   const u = c.get('user')
   const shift = await ownShift(c.env.DB, u.company_id, c.req.param('id'))
   if (!shift) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const rows = await c.env.DB.prepare(`SELECT attendance_id, report_type, reported_at, status, entry_method, (photo_key IS NOT NULL) AS has_photo
+  // 写真の日時・選び方と、写真なしの理由・端末の要約（#418 #532 #535）
+  const rows = await c.env.DB.prepare(`SELECT attendance_id, report_type, reported_at, status, entry_method, (photo_key IS NOT NULL) AS has_photo,
+      photo_taken_at, photo_source, no_photo_reason, device_info, original_reported_at
     FROM attendance_reports WHERE shift_id = ? ORDER BY reported_at, attendance_id`).bind(shift.shift_id).all()
-  return c.json({ shift_id: shift.shift_id, work_date: shift.work_date, reports: rows.results.map((r: any) => ({ ...r, has_photo: !!r.has_photo })) })
+  return c.json({ shift_id: shift.shift_id, work_date: shift.work_date, reports: rows.results.map(({ device_info, original_reported_at, ...r }: any) => ({ ...r, has_photo: !!r.has_photo,
+    photo_stale: !!r.has_photo && isPhotoStale(r.photo_taken_at, original_reported_at || r.reported_at), device: r.entry_method === 'proxy' ? '' : deviceSummary(device_info) })) })
 })
 
 api.post('/admin/shifts', async (c) => {

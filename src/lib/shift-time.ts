@@ -11,9 +11,10 @@ export type ShiftTimes = { work_date: string; start_time: string; end_time: stri
 export const NEXT_DAY_TYPES = ['break_start', 'break_end', 'work_end', 'check_out']
 // 日をまたぐ勤務で、0時を過ぎても予定の終了まで受け付ける到着の報告（23時台に始まる勤務の遅れた入店など。#134）
 export const ARRIVAL_TYPES = ['check_in', 'work_start']
-// 開始時刻の何時間前から報告を受け付けるか。0 の間は稼働日の 0:00 から。
-// 0時台に始まるシフトを前日の夜から報告できるようにする（#256）ときに増やす。遅刻の判定（report-settings.ts の lateness）は絶対日時で比べている
-export const PRE_START_HOURS = 0
+// 開始時刻の何時間前から報告を受け付けるか（稼働日の 0:00 より前になるときだけ効く）。
+// 0時台・早朝に始まるシフトの起床・出発・入店を、前日の夜から報告できるようにする（#256。00:30 開始なら前日 18:30 から）。
+// 6:00 以降に始まるシフトは、これまでどおり稼働日の 0:00 から。遅刻の判定（report-settings.ts の lateness）は絶対日時で比べている
+export const PRE_START_HOURS = 6
 // 休憩・勤務終了・退店を、予定の終了から何時間後まで受け付けるか（残業と押し忘れの分。稼働日の翌日 23:59:59 は超えない）
 export const AFTER_END_HOURS = 12
 

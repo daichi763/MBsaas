@@ -529,27 +529,60 @@
     const done = new Map(d.reports.map(r => [r.report_type, r]))
     const pending = d.modes.required_attendance.some(t => !done.has(t))
     const url = d.token ? location.origin + '/r/' + d.token.token : ''
+    const phone = String(d.staff_phone || '').replace(/[^\d+]/g, '')
+    // 取り消せる代理入力（確定済みのシフト・打刻修正で直した報告は取り消せない。#322）
+    const cancellable = d.settled ? [] : d.reports.filter(r => r.entry_method === 'proxy' && !r.corrected_by_correction_id)
     host.innerHTML = `<div class="rounded-lg border border-gray-100 p-3 text-xs space-y-2" id="shift-report-box">
       <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
         <span class="text-gray-400">${d.login_via_owner ? '所属元のアカウントで報告' : d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
-        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') + correctedNote(r, d.work_date) : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
+        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? (r.no_photo_reason || r.photo_stale ? 'badge-yellow' : 'badge-green') : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') + (r.device ? ' ・' + esc(r.device) : '') + correctedNote(r, d.work_date) : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? '・修正' : ''}${r && r.no_photo_reason ? '・写真なし' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
+      ${reportNotesHtml(d)}
+      ${cancellable.length ? `<div class="flex flex-wrap items-center gap-1"><span class="text-gray-500">代理入力の取消:</span>${cancellable.map(r => `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="cancelProxyAttendance" data-shift-id="${Number(shiftId)}" data-type="${esc(r.report_type)}" title="この代理入力を取り消す"><i class="fas fa-xmark"></i>${esc(RT_LABEL[r.report_type] || r.report_type)} ${esc(atLabel(r.reported_at, d.work_date))}</button>`).join('')}</div>` : ''}
       <div class="grid grid-cols-2 gap-2">
         <label>このシフトの勤怠報告<select id="sr-att" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ' }, d.shift_attendance_mode === 'full' ? '' : (d.shift_attendance_mode || ''))}</select></label>
-        <label>このシフトの日報<select id="sr-dr" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': 'スタッフ・案件の設定（' + (DR_LABEL[d.modes.daily_report_mode] || '') + '）', none: '日報なし', required: '日報あり' }, d.shift_daily_report_mode || '')}</select></label>
+        <label>このシフトの日報<select id="sr-dr" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': 'スタッフ・案件の設定（' + (DR_LABEL[d.inherited_daily_report_mode || d.modes.daily_report_mode] || '') + '）', none: '日報なし', required: '日報あり' }, d.shift_daily_report_mode || '')}</select></label>
       </div>
+      ${d.shift_daily_report_mode && DR_LABEL[d.shift_daily_report_mode] ? `<p class="text-[11px] text-gray-500">日報は、このシフトの例外で「${esc(DR_LABEL[d.shift_daily_report_mode])}」にしています（指定なしに戻すと、スタッフ・案件の設定の「${esc(DR_LABEL[d.inherited_daily_report_mode] || '')}」になります）</p>` : ''}
       <div class="flex flex-wrap gap-1.5">
         ${d.token ? `<input class="inp text-[11px] flex-1 min-w-0" id="sr-url" readonly value="${esc(url)}">
-          <button class="btn btn-primary text-xs" onclick="copyReportLink()"><i class="fas fa-copy"></i>コピー</button>
+          <button class="btn btn-primary text-xs" data-action="copyReportLink" title="URLだけをコピー"><i class="fas fa-copy"></i>コピー</button>
+          <button class="btn btn-outline text-xs" data-action="copyReportGuide" data-shift-id="${Number(shiftId)}" title="日時・現場名・有効期限を添えた案内文をコピー"><i class="fas fa-file-lines"></i>案内文ごとコピー</button>
           <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
         : `<button class="btn btn-outline text-xs flex-1" onclick="issueReportLink(${shiftId})"><i class="fas fa-link"></i>報告用URLを発行（ログイン不要）</button>`}
         ${pending && !d.proxy_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyAttendance" data-shift-id="${shiftId}"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
         ${pending && d.proxy_blocked ? `<span class="text-[11px] text-gray-400 py-1">${esc(d.proxy_blocked)}のシフトは代理入力できません</span>` : ''}
       </div>
-      ${d.token ? `<p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください</p>` : ''}
+      ${d.token ? `<div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span class="text-gray-500"><i class="fas fa-phone mr-0.5"></i>${phone ? `<a href="tel:${esc(phone)}" class="text-blue-600 underline">${esc(d.staff_phone)}</a>` : '電話番号の登録なし'}</span>
+          ${phone ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(phone)}?&body=${esc(encodeURIComponent(reportGuideText(d, url)))}"><i class="fas fa-comment-sms"></i>SMSで送る</a>` : ''}
+          ${navigator.share ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="shareReportGuide" data-shift-id="${Number(shiftId)}"><i class="fas fa-share-nodes"></i>LINEなどで送る</button>` : ''}
+        </div>
+        <p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください（送り先の番号を確かめてください）</p>` : ''}
     </div>`
+  }
+  // 報告の確認事項: 写真なしの報告・撮影日時のずれ・報告用URLの端末（#418 #532 #535）
+  const SOURCE_LABEL = { camera: 'カメラで撮影', album: 'アルバムから選択' }
+  function reportNotesHtml(d) {
+    const notes = []
+    for (const r of d.reports) {
+      const label = RT_LABEL[r.report_type] || r.report_type
+      if (r.no_photo_reason) notes.push(`<i class="fas fa-camera-slash mr-1"></i>${esc(label)}: 写真なしで報告（${esc(r.no_photo_reason)}）`)
+      if (r.photo_stale) notes.push(`<i class="fas fa-clock-rotate-left mr-1"></i>${esc(label)}: 写真のファイルの日時（${esc(dayjs(r.photo_taken_at).format('M/D HH:mm'))}${r.photo_source ? '・' + esc(SOURCE_LABEL[r.photo_source] || '') : ''}）が報告の時刻と30分以上ずれています`)
+    }
+    const ld = d.link_devices || { count: 0, summaries: [] }
+    if (ld.count > 1) notes.push(`<i class="fas fa-mobile-screen mr-1"></i>報告用URLが ${Number(ld.count)} 台の端末から使われています${ld.summaries.length ? '（' + esc(ld.summaries.join('、')) + '）' : ''}。本人以外が報告していないか確かめてください`)
+    const linkInfo = ld.count === 1 && ld.summaries.length ? `<p class="text-[11px] text-gray-400"><i class="fas fa-mobile-screen mr-1"></i>報告用URLの端末: ${esc(ld.summaries.join('、'))}</p>` : ''
+    return (notes.length ? `<div class="rounded bg-amber-50 text-amber-800 p-2 space-y-0.5">${notes.map(n => `<p>${n}</p>`).join('')}</div>` : '') + linkInfo
+  }
+  // 報告用URLの案内文（会社名・稼働日・時間・案件・場所・有効期限。#441）
+  const GUIDE_WD = ['日', '月', '火', '水', '木', '金', '土']
+  function reportGuideText(d, url) {
+    const x = dayjs(d.work_date)
+    const end = d.end_time <= d.start_time ? '翌' + d.end_time : d.end_time
+    return `【${d.company_name}】${x.format('M/D')}(${GUIDE_WD[x.day()]}) ${d.start_time}〜${end} ${d.project_name}${d.place ? '（' + d.place + '）' : ''}の勤怠・日報は、こちらのURLから報告してください（${dayjs(d.token.expires_at).format('M/D HH:mm')}まで有効。${d.staff_name}さん専用のURLです）\n${url}`
   }
   window.saveShiftReportSettings = async function (shiftId) {
     try { await axios.put(`/api/admin/shifts/${shiftId}/report-settings`, { attendance_mode: document.getElementById('sr-att').value, daily_report_mode: document.getElementById('sr-dr').value }); toast('このシフトの提出設定を保存しました'); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
@@ -561,10 +594,38 @@
     if (!confirm('この報告用URLを無効にしますか？')) return
     try { await axios.delete(`/api/admin/shifts/${shiftId}/report-link`); toast('無効にしました'); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
   }
+  async function copyText(text, done) {
+    try { await navigator.clipboard.writeText(text); toast(done) } catch {
+      // クリップボードが使えない環境: 一時的な入力欄から写す
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select()
+      try { document.execCommand && document.execCommand('copy'); toast(done) } catch { toast('コピーできませんでした。URLを長押ししてコピーしてください') }
+      ta.remove()
+    }
+  }
   window.copyReportLink = async function () {
     const el = document.getElementById('sr-url'); if (!el) return
-    try { await navigator.clipboard.writeText(el.value); toast('URLをコピーしました') } catch { el.select(); document.execCommand && document.execCommand('copy'); toast('URLをコピーしました') }
+    copyText(el.value, 'URLをコピーしました')
   }
+  delegate('copyReportLink', () => copyReportLink())
+  delegate('copyReportGuide', (el) => {
+    const d = reportStatusCache[Number(el.dataset.shiftId)]; if (!d || !d.token) return
+    copyText(reportGuideText(d, location.origin + '/r/' + d.token.token), '案内文をコピーしました')
+  })
+  // スマホの管理画面から、そのまま LINE などで送る（navigator.share がある端末だけボタンを出す。#441）
+  delegate('shareReportGuide', async (el) => {
+    const d = reportStatusCache[Number(el.dataset.shiftId)]; if (!d || !d.token || !navigator.share) return
+    try { await navigator.share({ text: reportGuideText(d, location.origin + '/r/' + d.token.token) }) } catch { }
+  })
+  // 代理入力の取消（確認のうえ DELETE を呼び、パネルを描き直す。#322）
+  delegate('cancelProxyAttendance', (el) => withSubmitLock(el, async () => {
+    const shiftId = Number(el.dataset.shiftId), type = el.dataset.type
+    if (!confirm(`${RT_LABEL[type] || type}の代理入力を取り消しますか？\n実績（実働時間）も報告に合わせて計算し直します。`)) return
+    try {
+      const { data } = await axios.delete(`/api/admin/shifts/${shiftId}/proxy-attendance/${encodeURIComponent(type)}`)
+      toast(data.deleted ? '代理入力を取り消しました' : '取り消す代理入力がありませんでした（画面を更新しました）')
+      renderShiftReportPanel(shiftId)
+    } catch (e) { toast(errMsg(e)) }
+  }))
   // 代理入力: 報告状況の最後の取得結果（シフトごと）。既定の時刻・未報告の種類はここから読む
   const reportStatusCache = {}
   // 'YYYY-MM-DD HH:MM:SS' を表示用に（稼働日と違う日付なら M/D を付ける）
