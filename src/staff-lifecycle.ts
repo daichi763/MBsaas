@@ -693,11 +693,11 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
-  const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.late_minutes, a.early_leave_minutes, a.entry_method, um.name AS entered_by_name FROM attendance_reports a
+  const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.late_minutes, a.early_leave_minutes, a.entry_method, a.corrected_by_correction_id, a.original_reported_at, um.name AS entered_by_name FROM attendance_reports a
     LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results
   const dr = await findDailyReport(db, s)
   const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method } : null
-  const token = await db.prepare('SELECT token, expires_at, last_used_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first()
+  const token = await currentReportToken(db, s)
   // 代理入力: 受け付けない理由（確定済み・欠勤・稼働日より前）と、時刻が空欄のときの既定値
   const proxyBlocked = isSettled(s) ? '確定済み' : s.status === 'absent' ? '欠勤' : s.work_date > todayJST() ? '稼働日より前' : null
   const proxy_defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
@@ -820,12 +820,26 @@ adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   // 取り消せるのは代理入力のみ（本人の報告は取り消せない）
   if (s.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトです。精算画面で確定を取り消してください' }, 409)
-  const r = await c.env.DB.prepare("DELETE FROM attendance_reports WHERE shift_id = ? AND report_type = ? AND entry_method = 'proxy'").bind(s.shift_id, c.req.param('type')).run()
+  // 承認済みの打刻修正で直した報告は取り消さない（承認の記録と食い違うため。#252）
+  const corrected = await c.env.DB.prepare("SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ? AND entry_method = 'proxy' AND corrected_by_correction_id IS NOT NULL")
+    .bind(s.shift_id, c.req.param('type')).first()
+  if (corrected) return c.json({ error: '承認済みの打刻修正で直した報告は取り消せません。打刻修正の申請で時刻を直してください' }, 409)
+  const r = await c.env.DB.prepare("DELETE FROM attendance_reports WHERE shift_id = ? AND report_type = ? AND entry_method = 'proxy' AND corrected_by_correction_id IS NULL").bind(s.shift_id, c.req.param('type')).run()
   await syncActualFromReports(c.env.DB, u.company_id, s.shift_id).catch(() => {})
   return c.json({ ok: true, deleted: r.meta.changes || 0 })
 })
 
 // ---------- 報告用URL（シフト専用。稼働日の翌日 23:59 まで有効） ----------
+// 有効期限は、確認するときのシフトの稼働日から決める（発行後にシフトの日付を変えても、新しい稼働日の翌日まで使える。#68）。
+// shift_report_tokens.expires_at は発行時の値の記録として残す
+function reportTokenExpiry(workDate: string): string { return `${addDays(workDate, 1)} 23:59:59` }
+// シフトの今の担当者に発行した、使える報告用URL（差し替え前の担当者のURLは使えないので出さない。#81）
+async function currentReportToken(db: D1Database, s: { shift_id: number; staff_id: number; work_date: string }) {
+  if (reportTokenExpiry(s.work_date) <= nowJST()) return null
+  const t = await db.prepare('SELECT token, last_used_at FROM shift_report_tokens WHERE shift_id = ? AND staff_id = ? AND revoked = 0 ORDER BY created_at DESC LIMIT 1')
+    .bind(s.shift_id, s.staff_id).first() as any
+  return t ? { ...t, expires_at: reportTokenExpiry(s.work_date) } : null
+}
 adminLifecycleApi.post('/shifts/:id/report-link', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const s = await ownShift(db, u.company_id, c.req.param('id'))
@@ -833,9 +847,9 @@ adminLifecycleApi.post('/shifts/:id/report-link', async (c) => {
   if (s.status === 'absent') return c.json({ error: '欠勤のシフトには発行できません' }, 400)
   const gone = staffGoneForShift(s)
   if (gone) return c.json({ error: `${gone}。報告用URLは発行できません` }, 400)
-  const expires = `${addDays(s.work_date, 1)} 23:59:59`
+  const expires = reportTokenExpiry(s.work_date)
   if (expires <= nowJST()) return c.json({ error: '稼働日の翌日を過ぎたシフトには発行できません' }, 400)
-  const existing = await db.prepare('SELECT token, expires_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first() as any
+  const existing = await currentReportToken(db, s)
   if (existing && !(await c.req.json().catch(() => ({} as any))).regenerate) return c.json({ ok: true, token: existing.token, expires_at: existing.expires_at })
   await db.prepare('UPDATE shift_report_tokens SET revoked = 1 WHERE shift_id = ?').bind(s.shift_id).run()
   const token = randToken(24)
@@ -874,7 +888,7 @@ async function loadToken(db: D1Database, token: string) {
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     WHERE t.token = ? AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(token).first() as any
-  if (!t || t.revoked || t.expires_at <= nowJST() || t.shift_status === 'absent') return null
+  if (!t || t.revoked || reportTokenExpiry(t.work_date) <= nowJST() || t.shift_status === 'absent') return null
   // 本部で停止にした企業の報告用URLは使えない（ログインの停止と同じ判定。src/lib/auth.ts）
   if (!isCompanyActive(t.company_active_status)) return null
   // 退職日より後のシフト・統合済みのスタッフの報告用URLは使えない（退職日当日までは使える）
@@ -901,7 +915,7 @@ publicReportApi.get('/:token', async (c) => {
   return c.json({
     company_name: t.company_name, staff_name: firstName(t.staff_name), project_name: t.project_name,
     shift: { work_date: t.work_date, start_time: t.start_time, end_time: t.end_time, location: t.location, role: t.role },
-    today: todayJST(), expires_at: t.expires_at, modes, reports, photo_required: photoRequired(t),
+    today: todayJST(), expires_at: reportTokenExpiry(t.work_date), modes, reports, photo_required: photoRequired(t),
     daily_report: daily ? { submitted_at: daily.submitted_at, values: daily.values, incident_flag: daily.incident_flag, complaint_flag: daily.complaint_flag } : null,
     template: tpl ? { name: tpl.template_name, fields: JSON.parse(tpl.fields_json || '[]') } : null,
   })
