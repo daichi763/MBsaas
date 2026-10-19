@@ -13,8 +13,8 @@ function careerHtml(p) {
   let rows = []
   try { const a = JSON.parse(p.career_rows || '[]'); if (Array.isArray(a)) rows = a } catch { rows = [] }
   if (rows.length) {
-    return `<ul class="space-y-1">${rows.map(r => `<li class="whitespace-pre-wrap break-words">
-      ${r.from || r.to ? `<span class="text-xs text-gray-500">${esc(r.from || '')}〜${esc(r.to || '')}</span> ` : ''}${esc(r.company || '')}${r.work ? ` <span class="text-gray-600">${esc(r.work)}</span>` : ''}${r.note ? ` <span class="text-xs text-gray-400">（${esc(r.note)}）</span>` : ''}</li>`).join('')}</ul>`
+    // dd は改行をそのまま出す（whitespace-pre-wrap）ため、タグの間に改行・字下げを入れない
+    return `<ul class="space-y-1">${rows.map(r => `<li class="whitespace-pre-wrap break-words">${r.from || r.to ? `<span class="text-xs text-gray-500">${esc(r.from || '')}〜${esc(r.to || '')}</span> ` : ''}${esc(r.company || '')}${r.work ? ` <span class="text-gray-600">${esc(r.work)}</span>` : ''}${r.note ? ` <span class="text-xs text-gray-400">（${esc(r.note)}）</span>` : ''}</li>`).join('')}</ul>`
   }
   return p.career ? `<span class="whitespace-pre-wrap break-words">${esc(p.career)}</span>` : '-'
 }

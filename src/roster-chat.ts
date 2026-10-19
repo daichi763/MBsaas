@@ -189,17 +189,19 @@ chatApi.get('/:staffId', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const t = await resolveThread(db, u.company_id, c.req.param('staffId'), c.req.query('host_staff_id'))
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
-  const [rows, reads] = await db.batch([
+  const [rows, reads, myRead] = await db.batch([
     db.prepare(`
       SELECT rc.comment_id, rc.body, rc.created_at, rc.author_company_id, um.name AS author_name, co.company_name AS author_company_name
       FROM roster_comments rc LEFT JOIN users um ON um.user_id = rc.author_user_id LEFT JOIN companies co ON co.company_id = rc.author_company_id
       WHERE rc.thread_staff_id = ? ORDER BY rc.comment_id`).bind(t.thread_staff_id),
     db.prepare(`SELECT ur.user_id, ur.last_read_comment_id, ur.read_at, us.name FROM roster_comment_user_reads ur JOIN users us ON us.user_id = ur.user_id
       WHERE ur.thread_staff_id = ? AND ur.company_id = ? AND ur.read_at IS NOT NULL ORDER BY ur.read_at DESC LIMIT 20`).bind(t.thread_staff_id, u.company_id),
+    // 自分の既読位置は上の一覧（新しい20人）とは別に取る（担当者が多くても未読の印の位置がずれないように）
+    db.prepare('SELECT last_read_comment_id FROM roster_comment_user_reads WHERE thread_staff_id = ? AND user_id = ?').bind(t.thread_staff_id, u.user_id),
   ])
   const msgs = (rows.results as any[]).map(m => ({ ...m, mine: m.author_company_id === u.company_id }))
   const readRows = reads.results as any[]
-  const mine = readRows.find(r => r.user_id === u.user_id)
+  const mine = (myRead.results as any[])[0]
   return c.json({
     thread: { ...t, my_side: t.host_company_id === u.company_id ? 'host' : 'owner' }, messages: msgs,
     my_last_read_comment_id: mine ? mine.last_read_comment_id : 0,

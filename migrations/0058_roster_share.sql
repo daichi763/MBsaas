@@ -3,6 +3,7 @@
 -- #462 企業間チャットの既読を、会社単位からユーザー単位にする。
 --   roster_comment_reads（会社単位）は「自社で最後に読んだ人」の記録として残し、未読件数はこの表で数える。
 --   既存の会社単位の既読位置は、その会社の管理系ユーザー全員の既読位置として引き継ぐ（移行直後に未読が増えないように）。
+--   読んだ日時（read_at）は実際に読んだ人（read_by）の分だけ残し、ほかの人は NULL にする（「自社の既読」に読んでいない人を出さない）。
 --   定期削除で roster_comment_reads（スレッドの既読位置）を消したら、この表の同じスレッドの行も消す（トリガー）。
 CREATE TABLE IF NOT EXISTS roster_comment_user_reads (
   thread_staff_id INTEGER NOT NULL,      -- 稼働先側の連携行の staff_id（roster_comments.thread_staff_id）
@@ -15,7 +16,7 @@ CREATE TABLE IF NOT EXISTS roster_comment_user_reads (
 CREATE INDEX IF NOT EXISTS idx_roster_comment_user_reads_user ON roster_comment_user_reads(user_id, thread_staff_id);
 
 INSERT OR IGNORE INTO roster_comment_user_reads (thread_staff_id, user_id, company_id, last_read_comment_id, read_at)
-SELECT r.thread_staff_id, us.user_id, r.company_id, r.last_read_comment_id, r.read_at
+SELECT r.thread_staff_id, us.user_id, r.company_id, r.last_read_comment_id, CASE WHEN us.user_id = r.read_by THEN r.read_at END
 FROM roster_comment_reads r
 JOIN users us ON us.company_id = r.company_id AND us.status = 'active'
   AND us.role IN ('company_admin', 'sales_manager', 'field_manager', 'office_staff');
