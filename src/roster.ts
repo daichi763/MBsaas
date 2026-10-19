@@ -9,6 +9,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
+import { countUnreadNotices } from './lib/notices'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -809,11 +810,12 @@ staffSelfApi.get('/profile', async (c) => {
   return c.json({ profile: pick })
 })
 
-// 所属企業の一覧（統合ログインの企業切替用）
+// 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）
 staffSelfApi.get('/companies', async (c) => {
   const u = c.get('user')
   const rows = await personStaffRows(c.env.DB, u)
-  return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id })) })
+  const unread = rows.length > 1 ? await countUnreadNotices(c.env.DB, rows.map(r => r.user_id)) : new Map<number, number>()
+  return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id, unread_notices: unread.get(r.user_id) || 0 })) })
 })
 // 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）
 staffSelfApi.post('/switch-company', async (c) => {

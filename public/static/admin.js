@@ -2513,9 +2513,67 @@ function drawAnalytics() {
 }
 
 // ============ お知らせ配信 ============
+// 一覧は50件ずつ（もっと見る）。キーワード・配信先の案件・期間で絞り込める。配信先の案件名・配信した人も出す（#368）
+let NOTICE_ADMIN = { list: [], offset: 0, has_more: false, q: '', project_id: '', from: '', to: '' }
+function noticeAdminImportanceBadge(n) {
+  return n.importance === 'urgent' ? '<span class="badge badge-red"><i class="fas fa-triangle-exclamation"></i>緊急</span>'
+    : n.importance === 'important' ? '<span class="badge badge-yellow">重要</span>' : ''
+}
+function noticeAdminCardHtml(n) {
+  const read = Number(n.read_count) || 0, total = Number(n.staff_total) || 0
+  const target = n.target_type === 'all' ? '全体'
+    : n.target_type === 'project' ? `案件: ${esc(n.target_names || '（削除された案件）')}`
+    : `個人: ${esc(n.target_names || '-')}`
+  return `
+    <div class="card p-4">
+      <div class="flex items-center gap-2 mb-1 flex-wrap">
+        ${noticeAdminImportanceBadge(n)}
+        ${n.read_required ? '<span class="badge badge-purple">既読確認必須</span>' : ''}
+        <span class="badge badge-gray">${target}</span>
+        <span class="text-xs text-gray-400">${esc(dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}</span>
+        <span class="text-xs text-gray-400">配信: ${esc(n.created_by_name || '-')}</span>
+        <button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${Number(n.notice_id)}"
+          ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
+          既読 ${read}/${total}名${!n.reads_purged_at && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-red-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>
+      </div>
+      <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
+      <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
+      ${n.remind_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${esc(dayjs(String(n.reminded_at).replace(' ', 'T')).format('M/D HH:mm'))}）</p>` : ''}
+      ${noticeEmailSummary(n)}
+    </div>`
+}
+async function loadAdminNotices(more) {
+  const f = NOTICE_ADMIN
+  const params = { offset: more ? f.offset : 0 }
+  if (f.q) params.q = f.q
+  if (f.project_id) params.project_id = f.project_id
+  if (f.from) params.from = f.from
+  if (f.to) params.to = f.to
+  const { data } = await axios.get('/api/admin/notices', { params })
+  if (!more) f.list = []
+  const seen = new Set(f.list.map(n => n.notice_id))
+  f.list.push(...data.notices.filter(n => !seen.has(n.notice_id)))
+  f.offset = Number(data.offset || 0) + data.notices.length
+  f.has_more = !!data.has_more
+}
+function drawAdminNoticeList() {
+  const el = document.getElementById('notice-admin-list')
+  if (!el) return
+  const f = NOTICE_ADMIN
+  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-gray-400 text-center py-8">${f.q || f.project_id || f.from || f.to ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
+    + (f.has_more ? '<button class="btn btn-outline w-full" data-action="noticeAdminMore">もっと見る</button>' : '')
+}
 async function renderNotices() {
   loading()
-  const [{ data }, { data: pj }] = await Promise.all([axios.get('/api/admin/notices'), axios.get('/api/admin/projects')])
+  let pj
+  try {
+    const [, p] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects')])
+    pj = p.data
+  } catch (e) {
+    $app.innerHTML = `<div class="card p-4 text-sm text-gray-600">お知らせを読み込めませんでした。<button class="btn btn-outline ml-2" onclick="renderNotices()">再読み込み</button></div>`
+    return
+  }
+  const f = NOTICE_ADMIN
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">お知らせ配信</h2>
     <div class="grid lg:grid-cols-5 gap-4">
@@ -2534,31 +2592,43 @@ async function renderNotices() {
           </div>
           <div id="nt-project-wrap" style="display:none">
             <label class="text-sm text-gray-600 block mb-1">対象案件</label>
-            <select id="nt-project" class="inp">${pj.projects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select>
+            <select id="nt-project" class="inp">${pj.projects.map(p => `<option value="${Number(p.project_id)}">${esc(p.project_name)}</option>`).join('')}</select>
+            <p class="text-[11px] text-gray-400 mt-1">公開日の30日前以降に、この案件で確定・代打のシフトがあるスタッフに届きます</p>
           </div>
           <label class="flex items-center gap-2 text-sm"><input id="nt-required" type="checkbox" class="w-4 h-4">既読確認を必須にする</label>
+          <p class="text-[11px] text-gray-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
           <label class="flex items-center gap-2 text-sm"><input id="nt-send-email" type="checkbox" class="w-4 h-4">メールでも通知する</label>
           <button class="btn btn-primary w-full" onclick="sendNotice(this)">配信する</button>
         </div>
       </section>
       <section class="lg:col-span-3 space-y-3">
-        ${data.notices.map(n => `
-          <div class="card p-4">
-            <div class="flex items-center gap-2 mb-1 flex-wrap">
-              ${n.importance !== 'normal' ? '<span class="badge badge-red">重要</span>' : ''}
-              <span class="badge badge-gray">${n.target_type === 'all' ? '全体' : n.target_type === 'project' ? '案件別' : '個人'}</span>
-              <span class="text-xs text-gray-400">${dayjs(n.published_at).format('M/D HH:mm')}</span>
-              <button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${Number(n.notice_id)}"
-                ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
-                既読 ${Number(n.read_count) || 0}/${Number(n.staff_total) || 0}名${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>
-            </div>
-            <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
-            <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
-            ${noticeEmailSummary(n)}
-          </div>`).join('')}
+        <div class="card p-3 flex flex-wrap items-end gap-2">
+          <div class="flex-1 min-w-[10rem]"><label class="text-xs text-gray-500 block mb-1">キーワード（タイトル・本文）</label><input id="nf-q" class="inp text-sm" value="${esc(f.q)}"></div>
+          <div><label class="text-xs text-gray-500 block mb-1">配信先の案件</label>
+            <select id="nf-project" class="inp text-sm"><option value="">すべて</option>${pj.projects.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === String(f.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></div>
+          <div><label class="text-xs text-gray-500 block mb-1">配信日</label>
+            <div class="flex items-center gap-1"><input id="nf-from" type="date" class="inp text-sm" value="${esc(f.from)}"><span class="text-xs">〜</span><input id="nf-to" type="date" class="inp text-sm" value="${esc(f.to)}"></div></div>
+          <button class="btn btn-outline text-sm" data-action="noticeAdminSearch"><i class="fas fa-magnifying-glass"></i>絞り込む</button>
+          ${f.q || f.project_id || f.from || f.to ? '<button class="text-xs text-gray-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
+        </div>
+        <div id="notice-admin-list" class="space-y-3"></div>
       </section>
     </div>`
+  drawAdminNoticeList()
 }
+delegate('noticeAdminSearch', el => withSubmitLock(el, async () => {
+  Object.assign(NOTICE_ADMIN, {
+    q: document.getElementById('nf-q').value.trim(), project_id: document.getElementById('nf-project').value,
+    from: document.getElementById('nf-from').value, to: document.getElementById('nf-to').value,
+  })
+  try { await loadAdminNotices(false) } catch (e) { showApiError(e, 'お知らせを読み込めませんでした'); return }
+  drawAdminNoticeList()
+}))
+delegate('noticeAdminClear', () => { Object.assign(NOTICE_ADMIN, { q: '', project_id: '', from: '', to: '' }); renderNotices() })
+delegate('noticeAdminMore', el => withSubmitLock(el, async () => {
+  try { await loadAdminNotices(true) } catch (e) { showApiError(e, 'お知らせを読み込めませんでした'); return }
+  drawAdminNoticeList()
+}))
 // お知らせメールの送信結果（状態ごとの人数）。押すと1人ずつの結果を出す
 const NOTICE_MAIL_STATUS = { sent: '送信済み', failed: '送信失敗', no_email: 'メール未登録', pending: '送信中', skipped: '送信停止中' }
 function noticeEmailSummary(n) {
@@ -2641,9 +2711,30 @@ window.showReads = async function (id) {
         <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
       <div><h4 class="text-sm font-bold text-red-700 mb-2">未読 ${data.unread.length}名</h4>
         <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
-    </div>`)
+    </div>
+    ${data.unread.length ? `<div class="border-t border-gray-100 mt-4 pt-3">
+      <label class="flex items-center gap-2 text-sm mb-2"><input id="remind-email" type="checkbox" class="w-4 h-4">メールでも送る</label>
+      <button class="btn btn-primary w-full" data-action="remindNotice" data-id="${Number(id)}"><i class="fas fa-bell"></i>未読の ${data.unread.length}名に再通知する</button>
+      <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に確認のお願いが届きます（押すとこのお知らせが開きます）</p>
+    </div>` : ''}`)
 }
 delegate('showReads', el => showReads(Number(el.dataset.id)))
+// 未読者への再通知（#191）。アプリ内通知と、選んだときはメールも送る
+delegate('remindNotice', el => withSubmitLock(el, async () => {
+  const sendEmail = !!(document.getElementById('remind-email') || {}).checked
+  if (!confirm(`未読の人に再通知します${sendEmail ? '（メールも送ります）' : ''}。よろしいですか？`)) return
+  let data
+  try { data = (await axios.post(`/api/admin/notices/${Number(el.dataset.id)}/remind`, { send_email: sendEmail })).data } catch (e) { showApiError(e, '再通知できませんでした'); return }
+  const e = data.email
+  let msg = `未読の ${Number(data.notified)}名に再通知しました`
+  if (e) {
+    msg += e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
+      : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
+      : `（メール送信 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
+  }
+  toast(msg); closeModal()
+  try { await loadAdminNotices(false); drawAdminNoticeList() } catch (_) { }
+}))
 
 // ============ お知らせ既読率レポート ============
 function fiscalYearLabel(fy) { return `${fy}年度（${fy}/04〜${fy + 1}/03）` }

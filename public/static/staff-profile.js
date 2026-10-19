@@ -104,22 +104,35 @@ delegate('staffChangePassword', (el) => withSubmitLock(el, async () => {
 // =========================================================
 // フェーズH: 統合ログイン（企業切替）/ 勤怠の自動振り分けの表示
 // =========================================================
-// ヘッダーに所属企業の切替を表示（2社以上に所属している場合のみ）
+// 所属企業を切り替えて、今の画面（URL の #以降）を開き直す。お知らせの画面からも呼ぶ（staff.js）
+window.switchStaffCompany = async function (companyId) {
+  const r = await axios.post('/api/staff/me/switch-company', { company_id: Number(companyId) })
+  toast(r.data.company_name + ' に切り替えました'); setTimeout(() => location.reload(), 400)
+}
+// ヘッダーに所属企業の切替を表示（2社以上に所属している場合のみ）。
+// 切り替えていない企業に未読のお知らせがあれば、件数を選択肢に出し、切替に印を付ける（#203）
 async function renderCompanySwitcher() {
   let data
   try { data = (await axios.get('/api/staff/me/companies')).data } catch { return }
   if (!data.companies || data.companies.length < 2) return
   const nameEl = document.getElementById('user-name')
   if (!nameEl || document.getElementById('company-switch')) return
+  const otherUnread = data.companies.filter(c => !c.current).reduce((s, c) => s + (Number(c.unread_notices) || 0), 0)
   nameEl.insertAdjacentHTML('beforebegin', `
-    <select id="company-switch" class="text-xs border border-gray-200 rounded-lg px-1.5 py-1 max-w-[9rem]" title="表示する所属企業（お知らせ・相談の切替）">
-      ${data.companies.map(c => `<option value="${c.company_id}" ${c.current ? 'selected' : ''}>${esc(c.company_name)}</option>`).join('')}
-    </select>`)
-  document.getElementById('company-switch').addEventListener('change', async (e) => {
-    try {
-      const r = await axios.post('/api/staff/me/switch-company', { company_id: Number(e.target.value) })
-      toast(r.data.company_name + ' に切り替えました'); setTimeout(() => location.reload(), 400)
-    } catch (err) { toast((err.response && err.response.data && err.response.data.error) || '切り替えに失敗しました') }
+    <span class="relative inline-flex">
+      <select id="company-switch" class="text-xs border ${otherUnread ? 'border-red-300' : 'border-gray-200'} rounded-lg px-1.5 py-1 max-w-[9rem]"
+        title="表示する所属企業（お知らせ・相談の切替）${otherUnread ? `。ほかの所属企業に未読のお知らせが ${otherUnread}件 あります` : ''}">
+        ${data.companies.map(c => `<option value="${Number(c.company_id)}" ${c.current ? 'selected' : ''}>${esc(c.company_name)}${!c.current && c.unread_notices ? `（未読${Number(c.unread_notices)}）` : ''}</option>`).join('')}
+      </select>
+      ${otherUnread ? '<span class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-red-500" aria-hidden="true"></span>' : ''}
+    </span>`)
+  const sel = document.getElementById('company-switch')
+  sel.addEventListener('change', async (e) => {
+    sel.disabled = true
+    try { await switchStaffCompany(Number(e.target.value)) } catch (err) {
+      sel.disabled = false; sel.value = String(data.current_company_id)
+      toast((err.response && err.response.data && err.response.data.error) || '切り替えに失敗しました')
+    }
   })
 }
 setTimeout(renderCompanySwitcher, 300)
