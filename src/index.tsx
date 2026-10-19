@@ -79,6 +79,8 @@ const SRI: Record<string, string> = {
 }
 const cdnJs = (p: string) => `<script src="${CDN}${p}" integrity="${SRI[p]}" crossorigin="anonymous"></script>`
 const cdnCss = (p: string) => `<link href="${CDN}${p}" rel="stylesheet" integrity="${SRI[p]}" crossorigin="anonymous">`
+// CDN の axios・dayjs を読み込めなかったとき（店舗の Wi-Fi のフィルタ・CDN の障害など）は、白い画面のままにせず理由を出す（#409）
+const LIB_FALLBACK = `<script>if(!window.axios||!window.dayjs){window.__LIB_MISSING=true;document.addEventListener('DOMContentLoaded',function(){var d=document.createElement('div');d.setAttribute('role','alert');d.style.cssText='margin:16px;padding:16px;border:1px solid #fca5a5;background:#fef2f2;color:#991b1b;border-radius:12px;font-size:14px;line-height:1.6';d.textContent='画面の部品を読み込めませんでした。電波の良い場所で、ページを再読み込みしてください。店舗のWi-Fiでは開けない場合があります（モバイルデータ通信でお試しください）。';document.body.insertBefore(d,document.body.firstChild)})}</script>`
 const head = (title: string) => `
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -86,6 +88,7 @@ const head = (title: string) => `
   ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
   ${cdnJs('axios@1.6.0/dist/axios.min.js')}
   ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
+  ${LIB_FALLBACK}
   <script src="/static/common.js"></script>
   <link href="/static/style.css" rel="stylesheet">
 `
@@ -453,7 +456,6 @@ app.get('/staff', async (c) => {
       <h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i><span id="header-title">ホーム</span></h1>
       <div class="flex items-center gap-3">
         <span id="user-name" class="text-sm text-gray-500"></span>
-        <button id="logout-btn" class="text-gray-400 hover:text-gray-600" title="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </div>
     </div>
   </header>
@@ -464,7 +466,7 @@ app.get('/staff', async (c) => {
       <a href="#shift" class="nav-item py-2.5" data-tab="shift"><i class="fas fa-calendar-days block text-lg mb-0.5"></i>シフト</a>
       <a href="#report" class="nav-item py-2.5" data-tab="report"><i class="fas fa-pen-to-square block text-lg mb-0.5"></i>日報</a>
       <a href="#perf" class="nav-item py-2.5" data-tab="perf"><i class="fas fa-chart-line block text-lg mb-0.5"></i>実績</a>
-      <a href="#more" class="nav-item py-2.5" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他</a>
+      <a href="#more" class="nav-item py-2.5 relative" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他<span id="nav-more-badge" class="hidden absolute top-1 left-1/2 ml-2 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[1.1rem] font-bold" aria-live="polite"></span></a>
     </div>
   </nav>
   <div id="modal-root"></div>

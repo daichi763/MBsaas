@@ -115,26 +115,30 @@ delegate('shareMyStaffId', async () => {
   }
 })
 
-// 「その他」メニューに項目を追加
+// 「その他」メニューに項目を追加。画面は URL（#profile・#password）で開く（戻る・下のタブで戻れるように #374）
 const _origRenderMore = window.renderMore || (typeof renderMore === 'function' ? renderMore : null)
 if (_origRenderMore) {
   window.renderMore = function () {
-    _origRenderMore()
+    if (_origRenderMore() === false) return false // URL を #more に変えて描き直す途中
     const wrap = $app.querySelector('.space-y-3')
     if (wrap) wrap.insertAdjacentHTML('beforeend', `
-      <button class="report-btn" onclick="renderMyProfile()">
+      <a href="#profile" class="report-btn">
         <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-id-badge"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">マイプロフィール / スタッフID</span><span class="block text-xs text-gray-400">登録情報と企業間連携用QRコード</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
-      </button>
-      <button class="report-btn" onclick="renderChangePassword()">
+      </a>
+      <a href="#password" class="report-btn">
         <span class="w-11 h-11 rounded-xl bg-gray-100 text-gray-600 flex items-center justify-center text-lg"><i class="fas fa-lock"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">パスワードの変更</span><span class="block text-xs text-gray-400">ログインのパスワードを変更します</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
-      </button>`)
+      </a>`)
   }
   // routes テーブルは staff.js 内の const のため直接差し替える
-  if (typeof routes === 'object') routes.more = window.renderMore
+  if (typeof routes === 'object') {
+    routes.more = window.renderMore
+    routes.profile = () => window.renderMyProfile()
+    routes.password = () => window.renderChangePassword()
+  }
 }
 
 // =========================================================

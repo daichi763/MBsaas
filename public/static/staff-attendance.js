@@ -17,38 +17,82 @@
   const toInput = (at) => at ? at.slice(0, 16).replace(' ', 'T') : ''
   const statusBadge = (s) => `<span class="badge ${(STATUS[s] || [])[1] || 'badge-gray'}">${(STATUS[s] || [s])[0]}</span>`
 
+  // URL で画面を指定できる（#376 #400 #306）
+  //   #attendance                         … 今のタブ（画面を離れると打刻履歴・今日までに戻る。staff.js の route）
+  //   #attendance/timeline[/日付[/シフトID]] … 打刻履歴。日付までの2週間を出し、シフトの位置まで送る
+  //   #attendance/requests                … 修正申請の一覧
+  //   #attendance/request/申請ID           … 修正申請の一覧を出して、その申請の経緯を開く
+  let FOCUS_SHIFT = null
   window.renderStaffAttendance = function () {
+    const parts = (location.hash || '').slice(1).split('/')
+    let openId = null
+    FOCUS_SHIFT = null
+    if (parts[1] === 'timeline') {
+      S.tab = 'timeline'
+      S.to = /^\d{4}-\d{2}-\d{2}$/.test(parts[2] || '') ? (parts[2] > today() ? today() : parts[2]) : null
+      FOCUS_SHIFT = Number(parts[3]) || null
+    } else if (parts[1] === 'requests') S.tab = 'requests'
+    else if (parts[1] === 'request' && Number(parts[2])) { S.tab = 'requests'; openId = Number(parts[2]) }
     $app.innerHTML = `
+      <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
       <div class="grid grid-cols-2 gap-2 mb-4" role="tablist">
-        <button class="btn ${S.tab === 'timeline' ? 'btn-primary' : 'btn-outline'}" onclick="attTab('timeline')"><i class="fas fa-clock"></i>打刻履歴</button>
-        <button class="btn ${S.tab === 'requests' ? 'btn-primary' : 'btn-outline'}" onclick="attTab('requests')"><i class="fas fa-file-pen"></i>修正申請</button>
+        <button class="btn ${S.tab === 'timeline' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'timeline'}" onclick="attTab('timeline')"><i class="fas fa-clock"></i>打刻履歴</button>
+        <button class="btn ${S.tab === 'requests' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'requests'}" onclick="attTab('requests')"><i class="fas fa-file-pen"></i>修正申請</button>
       </div>
       <div id="att-body"><div class="flex justify-center py-12"><span class="spin"></span></div></div>`
-    return S.tab === 'requests' ? renderRequests() : renderTimeline()
+    if (S.tab !== 'requests') return renderTimeline()
+    return Promise.resolve(renderRequests()).then(() => { if (openId && window.attDetail) attDetail(openId) })
   }
-  window.attTab = function (t) { S.tab = t; renderStaffAttendance() }
+  // タブを切り替える。URL も合わせて書き換える（再読み込みしても同じタブを開く。履歴は増やさない）
+  window.attTab = function (t) {
+    S.tab = t === 'requests' ? 'requests' : 'timeline'
+    if (S.tab === 'timeline') S.to = null
+    try { history.replaceState(null, '', '#attendance/' + S.tab) } catch (e) { }
+    renderStaffAttendance()
+  }
 
   // ---------- 打刻履歴（タイムライン） ----------
   async function renderTimeline() {
     const host = document.getElementById('att-body')
     const to = S.to || today()
-    try { TL = (await axios.get('/api/staff/attendance/timeline', { params: { to, from: dayjs(to).subtract(13, 'day').format('YYYY-MM-DD') } })).data } catch (e) { host.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    try { TL = (await axios.get('/api/staff/attendance/timeline', { params: { to, from: dayjs(to).subtract(13, 'day').format('YYYY-MM-DD') } })).data } catch (e) {
+      if (!host.isConnected) return
+      host.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-red-600 mb-3">${esc(e && e.response ? errMsg(e, '打刻履歴を読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
+        <button class="btn btn-outline" data-action="attReload"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
+      return
+    }
+    if (!host.isConnected) return // 読み込み中にほかの画面へ移った
     const byDate = {}
     for (const s of TL.shifts) (byDate[s.work_date] = byDate[s.work_date] || []).push(s)
+    // 期間は『この日まで2週間』を日付で選べる（#376）
     host.innerHTML = `
-      <div class="flex items-center justify-between mb-3">
-        <button class="btn btn-outline text-xs" onclick="attMove(-14)"><i class="fas fa-chevron-left"></i>前の2週間</button>
-        <span class="text-xs text-gray-500">${dayjs(TL.from).format('M/D')}〜${dayjs(TL.to).format('M/D')}</span>
-        <button class="btn btn-outline text-xs" onclick="attMove(14)" ${TL.to >= today() ? 'disabled' : ''}>次の2週間<i class="fas fa-chevron-right"></i></button>
+      <div class="flex items-center justify-between gap-2 mb-3">
+        <button class="btn btn-outline text-xs" onclick="attMove(-14)" aria-label="前の2週間"><i class="fas fa-chevron-left"></i>前</button>
+        <label class="text-xs text-gray-500 text-center">${dayjs(TL.from).format('M/D')}〜
+          <input type="date" id="att-to" class="inp py-1 text-xs w-36 inline-block" value="${esc(TL.to)}" max="${esc(today())}" aria-label="この日までの2週間を表示"></label>
+        <button class="btn btn-outline text-xs" onclick="attMove(14)" ${TL.to >= today() ? 'disabled' : ''} aria-label="次の2週間">次<i class="fas fa-chevron-right"></i></button>
       </div>
+      ${TL.to < today() ? '<p class="text-center mb-2"><button class="text-xs text-blue-600 underline" onclick="attMove(0)">今日までの表示に戻る</button></p>' : ''}
       <p class="text-[11px] text-gray-500 mb-3 px-1">報告をタップすると時刻の修正、未報告の項目は打刻漏れの追加を申請できます。承認されるまで記録は変わりません</p>
       <div class="space-y-3">${Object.keys(byDate).map(d => `
         <section>
           <h3 class="text-sm font-bold text-gray-700 mb-1.5 px-1">${esc(fmtDate(d))}</h3>
-          ${byDate[d].map(shiftCard).join('')}
+          ${byDate[d].map(s => `<div id="att-shift-${Number(s.shift_id)}">${shiftCard(s)}</div>`).join('')}
         </section>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'}</div>`
+    const picker = document.getElementById('att-to')
+    if (picker) picker.addEventListener('change', () => { if (/^\d{4}-\d{2}-\d{2}$/.test(picker.value)) { S.to = picker.value > today() ? today() : picker.value; renderTimeline() } })
+    // シフト一覧から開いたときは、そのシフトの位置まで送って目立たせる
+    const focus = FOCUS_SHIFT && document.getElementById('att-shift-' + FOCUS_SHIFT)
+    FOCUS_SHIFT = null
+    if (focus) {
+      focus.scrollIntoView({ block: 'center' })
+      const card = focus.firstElementChild
+      if (card) { card.classList.add('ring-2', 'ring-blue-400'); setTimeout(() => card.classList.remove('ring-2', 'ring-blue-400'), 2500) }
+    }
   }
-  window.attMove = function (n) { S.to = dayjs(S.to || today()).add(n, 'day').format('YYYY-MM-DD'); if (S.to > today()) S.to = today(); renderTimeline() }
+  // n 日送る（0 で今日までに戻す）。今日より先には送らない
+  window.attMove = function (n) { S.to = n ? dayjs(S.to || today()).add(n, 'day').format('YYYY-MM-DD') : null; if (S.to && S.to >= today()) S.to = null; renderTimeline() }
+  delegate('attReload', () => renderTimeline())
 
   function shiftCard(s) {
     const rep = Object.fromEntries(s.reports.map(r => [r.report_type, r]))

@@ -40,6 +40,21 @@ export function stripMoney<T extends Record<string, any>>(row: T | null): T | nu
   return out
 }
 
+// スタッフ向けAPIで返すシフトの列（許可リスト。#520）。精算のメモ（actual_note）・確定の状況・登録者・金額は返さない。
+// shifts に列を足しても、ここに足さない限りスタッフには渡らない。開催場所・枠・案件の列は api.ts の取得で付けたもの
+export const STAFF_SHIFT_COLUMNS = [
+  'shift_id', 'company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'status', 'break_minutes',
+  'site_id', 'slot_id', 'staff_reply', 'staff_reply_note', 'staff_reply_at',
+  'project_name', 'company_name', 'other_company', 'tentative',
+  'site_name', 'site_address', 'site_lat', 'site_lng', 'slot_memo', 'slot_break_minutes', 'project_break_minutes',
+] as const
+export function staffShiftView(row: Record<string, any> | null | undefined): Record<string, any> | null {
+  if (!row) return null
+  const out: Record<string, any> = {}
+  for (const k of STAFF_SHIFT_COLUMNS) if (row[k] !== undefined) out[k] = row[k]
+  return out
+}
+
 // ---------- 日付・時間ユーティリティ ----------
 function toMin(t: string): number { const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0) }
 // 終了が開始より前なら日跨ぎ（翌日）とみなす
