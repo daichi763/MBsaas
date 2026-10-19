@@ -245,21 +245,24 @@ async function renderDashboard() {
 // 欠勤にする。押す前に最新の報告を確かめ、入店以降の報告があれば時刻を示して確認する（#221）。成功したら代わりの候補を出す（#216）
 async function markAbsent(shiftId, button) {
   const s = DASH_SHIFTS.get(shiftId); if (!s) return
-  let started = null
-  try {
-    const { data } = await axios.get(`/api/admin/shifts/${shiftId}/report-status`)
-    started = (data.reports || []).filter(r => ['check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out'].includes(r.report_type))
-      .sort((a, b) => String(a.reported_at).localeCompare(String(b.reported_at)))[0] || null
-  } catch (e) { /* 確かめられなくても、通常の確認で続ける */ }
-  const head = `${s.staff_name}さん（${s.project_name} ${s.start_time}〜${s.end_time}）を欠勤にしますか？\n欠勤のシフトは精算（支払・請求）の対象から外れます。`
-  const msg = started ? `${DASH_RS[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(11, 16)} にあります（勤務した記録があります）。\n${head}` : head
-  if (!confirm(msg)) return
+  // 報告の確認中も含めてボタンを止める（二度押しで確認が2回出ないように）
   await withSubmitLock(button, async () => {
+    let started = null
+    try {
+      const { data } = await axios.get(`/api/admin/shifts/${shiftId}/report-status`)
+      started = (data.reports || []).filter(r => ['check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out'].includes(r.report_type))
+        .sort((a, b) => String(a.reported_at).localeCompare(String(b.reported_at)))[0] || null
+    } catch (e) { /* 確かめられなくても、通常の確認で続ける */ }
+    const head = `${s.staff_name}さん（${s.project_name} ${s.start_time}〜${s.end_time}）を欠勤にしますか？\n欠勤のシフトは精算（支払・請求）の対象から外れます。`
+    const msg = started ? `${DASH_RS[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(11, 16)} にあります（勤務した記録があります）。\n${head}` : head
+    if (!confirm(msg)) return
     try {
       await axios.put('/api/admin/shifts/' + shiftId, { status: 'absent' })
     } catch (e) { showApiError(e, '欠勤にできませんでした'); return }
     toast('欠勤として登録しました')
     await renderDashboard()
+    // 前日から継続のシフトは再取得後の「本日の欠勤」に入らないので、手元の情報で候補を開く
+    if (!DASH_SHIFTS.has(shiftId)) DASH_SHIFTS.set(shiftId, { ...s, status: 'absent' })
     openSubstitute(shiftId)
   })
 }
