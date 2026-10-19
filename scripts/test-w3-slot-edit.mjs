@@ -208,6 +208,33 @@ const D = addDays(today, 10)
   ok('#492 別の無効の場所への変更は 400', r3.status === 400, r3)
 }
 
+// ---------- 持ち越し #411 日時を変えたら本人の返事を消す（枠の編集・シフトの移動） ----------
+{
+  const st = await newStaff('RPL')
+  const staff = client(await login('sample', `${PFX}RPL`))
+  const sl = await newSlot(pid, D, { start: '05:00', end: '06:00' })
+  const to = await newSlot(pid, D, { start: '22:00', end: '23:00' })
+  const sid = must(await admin.post(`/api/admin/shift-slots/roles/${sl.roles[0].slot_role_id}/assign`, { staff_ids: [st.staff_id], status: 'requested', force: true }), 'assign requested').shift_ids[0]
+  must(await staff.post(`/api/staff/shifts/${sid}/reply`, { answer: 'ok' }), 'reply 1')
+  must(await admin.put('/api/admin/shift-slots/' + sl.slot.slot_id, slotBody(sl, null, { memo: '日時は変えない' })), 'memo only')
+  ok('#411 日時を変えない枠の保存では返事を残す', (await shiftById(sid, D)).staff_reply === 'ok')
+  must(await admin.put('/api/admin/shift-slots/' + sl.slot.slot_id, slotBody(sl, null, { end_time: '06:30', force: true })), 'time change')
+  const s1 = await shiftById(sid, D)
+  ok('#411 枠の時間を変えると返事を消す', s1.end_time === '06:30' && s1.staff_reply == null && s1.staff_reply_at == null, s1)
+  must(await staff.post(`/api/staff/shifts/${sid}/reply`, { answer: 'ng', note: 'x' }), 'reply 2')
+  must(await admin.post(`/api/admin/shifts/${sid}/move`, { slot_role_id: to.roles[0].slot_role_id, force: true }), 'move')
+  const s2 = await shiftById(sid, D)
+  ok('#411 別の時間の枠へ移動すると返事を消す', s2.start_time === '22:00' && s2.staff_reply == null && s2.staff_reply_note == null, s2)
+}
+
+// ---------- 枠の編集: 存在しない役割IDは扱わない ----------
+{
+  const sl = await newSlot(pid, D, { start: '14:00', end: '15:00' })
+  const r = await admin.put('/api/admin/shift-slots/' + sl.slot.slot_id, slotBody(sl, [...sl.roles.map(x => ({ slot_role_id: x.slot_role_id, role_name: x.role_name, headcount: 2 })), { slot_role_id: 999999, role_name: 'X', _delete: true }]))
+  const g = must(await admin.get('/api/admin/shift-slots/' + sl.slot.slot_id), 'g')
+  ok('枠の編集: 存在しない役割IDは無視して保存する', r.status === 200 && g.roles.length === 1 && g.roles[0].headcount === 2, { r, g })
+}
+
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
 process.exit(failed.length ? 1 : 0)

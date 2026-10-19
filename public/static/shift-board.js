@@ -1031,7 +1031,7 @@
         <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-location-dot text-blue-500 mr-1"></i>開催場所<span class="text-[11px] font-normal text-gray-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>
       </div>
       <div class="flex gap-2 mb-3"><input id="site-new-name" class="inp text-sm" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm" placeholder="住所（任意）">
-        <button class="btn btn-primary text-sm shrink-0" onclick="addSite(${cid})"><i class="fas fa-plus"></i>追加</button></div>
+        <button class="btn btn-primary text-sm shrink-0" data-action="addSite" data-cid="${esc(cid)}"><i class="fas fa-plus"></i>追加</button></div>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th>シフト</th><th>状態</th><th></th></tr></thead><tbody>
         ${data.sites.map(s => `<tr><td class="font-bold">${esc(s.site_name)}</td><td class="text-xs text-gray-500">${esc(s.address || '-')}</td><td>${s.shift_count}件</td>
           <td>${s.status === 'inactive' ? '<span class="badge badge-gray">無効</span>' : '<span class="badge badge-green">有効</span>'}</td>
@@ -1049,6 +1049,7 @@
     const v = prompt('開催場所名', name); if (!v) return
     try { await axios.put('/api/admin/sites/' + id, { site_name: v }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
   }
+  delegate('addSite', el => withSubmitLock(el, () => addSite(Number(el.dataset.cid))))
   delegate('renameSite', el => renameSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.name))
   delegate('toggleSite', el => withSubmitLock(el, () => toggleSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.status)))
   delegate('removeSite', el => withSubmitLock(el, () => removeSite(Number(el.dataset.id), Number(el.dataset.cid))))
