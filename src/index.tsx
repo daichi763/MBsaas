@@ -2,11 +2,12 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
-import { runRetentionCleanup, applyDueRetirements } from './services/retention'
+import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs } from './services/cron'
+import { handleResendWebhook, type MailEnv } from './services/email'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -59,6 +60,10 @@ app.onError((err, c) => {
 
 app.route('/api', api)
 
+// ============ Resend の Webhook（不達・迷惑メールの報告・配信済み。#541） ============
+// ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts）
+app.post('/webhooks/resend', (c) => handleResendWebhook(c.env as unknown as MailEnv, c.req.raw))
+
 // ============ 共通レイアウト ============
 // CDN のファイルはバージョンを固定し、integrity（SRI）を付ける。版を上げるときはハッシュも計算し直す
 //   計算: curl -s <URL> | openssl dgst -sha384 -binary | openssl base64 -A
@@ -79,6 +84,8 @@ const SRI: Record<string, string> = {
 }
 const cdnJs = (p: string) => `<script src="${CDN}${p}" integrity="${SRI[p]}" crossorigin="anonymous"></script>`
 const cdnCss = (p: string) => `<link href="${CDN}${p}" rel="stylesheet" integrity="${SRI[p]}" crossorigin="anonymous">`
+// CDN の axios・dayjs を読み込めなかったとき（店舗の Wi-Fi のフィルタ・CDN の障害など）は、白い画面のままにせず理由を出す（#409）
+const LIB_FALLBACK = `<script>if(!window.axios||!window.dayjs){window.__LIB_MISSING=true;document.addEventListener('DOMContentLoaded',function(){var d=document.createElement('div');d.setAttribute('role','alert');d.style.cssText='margin:16px;padding:16px;border:1px solid #fca5a5;background:#fef2f2;color:#991b1b;border-radius:12px;font-size:14px;line-height:1.6';d.textContent='画面の部品を読み込めませんでした。電波の良い場所で、ページを再読み込みしてください。店舗のWi-Fiでは開けない場合があります（モバイルデータ通信でお試しください）。';document.body.insertBefore(d,document.body.firstChild)})}</script>`
 const head = (title: string) => `
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -86,6 +93,7 @@ const head = (title: string) => `
   ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
   ${cdnJs('axios@1.6.0/dist/axios.min.js')}
   ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
+  ${LIB_FALLBACK}
   <script src="/static/common.js"></script>
   <link href="/static/style.css" rel="stylesheet">
 `
@@ -158,6 +166,19 @@ app.get('/login', async (c) => {
         </button>
         <p class="text-center"><button type="button" id="forgot-link" class="text-sm text-blue-600 hover:underline">パスワードを忘れた方はこちら</button></p>
         <p class="text-xs text-gray-400 text-center">ログインできない場合やメールが届かない場合は、所属の会社の担当者にお問い合わせください。</p>
+      </form>
+
+      <!-- 二段階認証（#544）: パスワードの後で、認証アプリの6桁（または予備コード）を確かめる -->
+      <form id="mfa-form" class="space-y-4 hidden" novalidate>
+        <p class="text-sm text-gray-600"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>認証アプリ（Google Authenticator など）に表示されている6桁の確認コードを入力してください。</p>
+        <div>
+          <label for="mfa-code" class="block text-sm font-medium text-gray-600 mb-1">確認コード</label>
+          <input id="mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20" class="${LOGIN_INPUT} tracking-widest" placeholder="123456">
+          <p class="text-[11px] text-gray-400 mt-1">スマホを失くしたなどで認証アプリを使えないときは、登録のときに控えた予備コード（xxxxx-xxxxx）を入力できます。</p>
+        </div>
+        <p id="mfa-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+        <button type="submit" id="mfa-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認してログイン</button>
+        <p class="text-center"><button type="button" id="mfa-back" class="text-sm text-gray-500 hover:underline">最初からやり直す</button></p>
       </form>
 
       <form id="forgot-form" class="space-y-4 hidden">
@@ -240,16 +261,65 @@ app.get('/login', async (c) => {
       if (!norm(uc.value) || !pw.value) return showErr('スタッフ番号（ID）とパスワードを入力してください')
       if (navigator.onLine === false) return showErr(OFFLINE_MSG)
       btn.disabled = true; btn.textContent = 'ログイン中...'
+      const body = { company_code: cc.value, user_code: uc.value, password: pw.value }
       try {
-        const res = await axios.post('/api/auth/login', { company_code: cc.value, user_code: uc.value, password: pw.value }, { timeout: TIMEOUT_MS })
-        try {
-          if (remember.checked) localStorage.setItem(STORE_KEY, JSON.stringify({ c: res.data.company_code || '', u: res.data.user_code || uc.value }))
-          else localStorage.removeItem(STORE_KEY)
-        } catch (e3) { /* 保存できない端末（プライベートブラウズなど）でもログインは続ける */ }
-        location.href = nextUrl(res.data.redirect)
+        let res
+        try { res = await axios.post('/api/auth/login', body, { timeout: TIMEOUT_MS }) }
+        catch (e4) {
+          // このブラウザで別の人がログイン中なら、切り替えてよいかを確かめる（#346）
+          const d = e4.response && e4.response.data
+          if (!(e4.response && e4.response.status === 409 && d && d.code === 'already_logged_in')) throw e4
+          if (!confirm(d.error)) { btn.disabled = false; btn.textContent = 'ログイン'; return }
+          res = await axios.post('/api/auth/login', Object.assign({ confirm_switch: true }, body), { timeout: TIMEOUT_MS })
+        }
+        if (res.data.mfa_required) { showMfa(res.data.mfa_token); btn.disabled = false; btn.textContent = 'ログイン'; return }
+        finishLogin(res.data)
       } catch (e2) {
         showErr(loginErrorMessage(e2))
         btn.disabled = false; btn.textContent = 'ログイン'
+      }
+    })
+    function finishLogin(data) {
+      try {
+        if (remember.checked) localStorage.setItem(STORE_KEY, JSON.stringify({ c: data.company_code || '', u: data.user_code || uc.value }))
+        else localStorage.removeItem(STORE_KEY)
+      } catch (e3) { /* 保存できない端末（プライベートブラウズなど）でもログインは続ける */ }
+      location.href = nextUrl(data.redirect)
+    }
+    // 二段階認証（#544）。一時トークンはこの画面の変数だけに持つ（5分で期限切れ）
+    let mfaToken = null
+    const mfaForm = document.getElementById('mfa-form'), mfaCode = document.getElementById('mfa-code'), mfaErr = document.getElementById('mfa-error')
+    function showMfa(token) {
+      mfaToken = token
+      document.getElementById('login-form').classList.add('hidden')
+      document.getElementById('demo-account-aside')?.classList.add('hidden')
+      mfaForm.classList.remove('hidden'); mfaErr.classList.add('hidden'); mfaCode.value = ''; mfaCode.focus()
+    }
+    function backToLogin(msg) {
+      mfaToken = null; pw.value = ''
+      mfaForm.classList.add('hidden')
+      document.getElementById('login-form').classList.remove('hidden')
+      document.getElementById('demo-account-aside')?.classList.remove('hidden')
+      const err = document.getElementById('login-error')
+      if (msg) { err.textContent = msg; err.classList.remove('hidden') } else err.classList.add('hidden')
+      pw.focus()
+    }
+    document.getElementById('mfa-back').addEventListener('click', () => backToLogin(''))
+    mfaForm.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const btn = document.getElementById('mfa-btn')
+      mfaErr.classList.add('hidden')
+      const code = norm(mfaCode.value)
+      if (!code) { mfaErr.textContent = '確認コードを入力してください'; mfaErr.classList.remove('hidden'); return }
+      btn.disabled = true; btn.textContent = '確認中...'
+      try {
+        const res = await axios.post('/api/auth/login/mfa', { mfa_token: mfaToken, code }, { timeout: TIMEOUT_MS })
+        finishLogin(res.data)
+      } catch (e2) {
+        const d = e2.response && e2.response.data
+        if (d && d.code === 'mfa_expired') backToLogin(d.error)
+        else { mfaErr.textContent = loginErrorMessage(e2); mfaErr.classList.remove('hidden'); mfaCode.select() }
+        btn.disabled = false; btn.textContent = '確認してログイン'
       }
     })
     document.getElementById('forgot-link').addEventListener('click', () => {
@@ -411,6 +481,65 @@ app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
 </body>
 </html>`))
 
+// お知らせメールの「確認しました」（#454。メールのリンクから開く）。
+// メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack）
+app.get('/notice-ack', (c) => c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>${head('お知らせの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+  <main class="w-full max-w-sm">
+    <header class="text-center mb-6">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+        <i class="fas fa-bullhorn"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-gray-800">お知らせの確認</h1>
+    </header>
+    <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+      <div id="ack-info" class="text-sm text-gray-600">読み込んでいます…</div>
+      <p id="ack-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+      <button type="button" id="ack-btn" class="hidden w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認しました</button>
+      <p id="ack-done" class="hidden text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3"><i class="fas fa-check-circle mr-1"></i>確認済みにしました。</p>
+      <a href="/staff#notices" class="block text-center text-sm text-blue-600 hover:underline">アプリでお知らせを開く</a>
+    </section>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || ''
+    const $ = (id) => document.getElementById(id)
+    const showError = (msg) => { $('ack-error').textContent = msg; $('ack-error').classList.remove('hidden') }
+    const OFFLINE = '通信できませんでした。電波の良い場所で、もう一度お試しください'
+    ;(async () => {
+      if (!token) { $('ack-info').textContent = ''; showError('リンクが正しくありません。メールのリンクから開いてください。'); return }
+      try {
+        const d = (await axios.get('/api/public/notice-ack', { params: { token }, timeout: 15000 })).data
+        $('ack-info').textContent = ''
+        const p1 = document.createElement('p'); p1.className = 'text-xs text-gray-500'; p1.textContent = d.company_name
+        const p2 = document.createElement('p'); p2.className = 'font-bold text-gray-800 mt-1'; p2.textContent = d.title
+        $('ack-info').append(p1, p2)
+        if (d.used) { $('ack-done').classList.remove('hidden'); return }
+        if (d.expired) { showError('リンクの有効期限が切れています。アプリでお知らせを開き、「確認しました」を押してください'); return }
+        $('ack-btn').classList.remove('hidden')
+      } catch (e) {
+        $('ack-info').textContent = ''
+        showError(!e.response ? OFFLINE : (e.response.data && e.response.data.error) || '読み込めませんでした')
+      }
+    })()
+    $('ack-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget
+      $('ack-error').classList.add('hidden')
+      btn.disabled = true; btn.textContent = '処理中...'
+      try {
+        await axios.post('/api/public/notice-ack', { token }, { timeout: 15000 })
+        btn.classList.add('hidden')
+        $('ack-done').classList.remove('hidden')
+      } catch (e2) {
+        showError(!e2.response ? OFFLINE : (e2.response.data && e2.response.data.error) || '確認できませんでした')
+        btn.disabled = false; btn.textContent = '確認しました'
+      }
+    })
+  </script>
+</body>
+</html>`))
+
 // ============ シフト専用の報告用URL（ログイン不要。public/static/report-link.js） ============
 app.get('/r/:token', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
@@ -453,7 +582,6 @@ app.get('/staff', async (c) => {
       <h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i><span id="header-title">ホーム</span></h1>
       <div class="flex items-center gap-3">
         <span id="user-name" class="text-sm text-gray-500"></span>
-        <button id="logout-btn" class="text-gray-400 hover:text-gray-600" title="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </div>
     </div>
   </header>
@@ -464,7 +592,7 @@ app.get('/staff', async (c) => {
       <a href="#shift" class="nav-item py-2.5" data-tab="shift"><i class="fas fa-calendar-days block text-lg mb-0.5"></i>シフト</a>
       <a href="#report" class="nav-item py-2.5" data-tab="report"><i class="fas fa-pen-to-square block text-lg mb-0.5"></i>日報</a>
       <a href="#perf" class="nav-item py-2.5" data-tab="perf"><i class="fas fa-chart-line block text-lg mb-0.5"></i>実績</a>
-      <a href="#more" class="nav-item py-2.5" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他</a>
+      <a href="#more" class="nav-item py-2.5 relative" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他<span id="nav-more-badge" class="hidden absolute top-1 left-1/2 ml-2 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[1.1rem] font-bold" aria-live="polite"></span></a>
     </div>
   </nav>
   <div id="modal-root"></div>
@@ -529,19 +657,25 @@ app.get('/admin', async (c) => {
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
         <a href="#account" class="side-link mt-1" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
+        <a href="#security" class="side-link" data-tab="security"><i class="fas fa-shield-halved w-5"></i>セキュリティ</a>
         <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-50 mt-1"><i class="fas fa-right-from-bracket mr-1"></i>ログアウト</button>
       </div>
     </aside>
     <div class="flex-1 md:ml-60 min-w-0">
-      <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-3 flex items-center justify-between gap-2">
-        <h1 class="font-bold text-gray-800 truncate min-w-0 flex-1"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理</h1>
-        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0">
+      <!-- スマホ用のヘッダー（#236）: 会社名・氏名、未対応の件数の合計（メニューの各項目にも件数を出す）、ログアウト -->
+      <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-2 flex items-center justify-between gap-2">
+        <div class="min-w-0 flex-1">
+          <h1 class="font-bold text-gray-800 truncate"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
+          <p id="mobile-company-name" class="text-[11px] text-gray-400 truncate"></p>
+        </div>
+        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">
           <option value="dashboard">ダッシュボード</option><option value="notifications">通知</option><option value="staff">スタッフマスタ</option><option value="employees">従業員管理</option>
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option><option value="report-settings">案件報告管理</option><option value="corrections">打刻修正承認</option><option value="attendance-history">履歴・CSV</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
           <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option>
         </select>
+        <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
     </div>
@@ -562,6 +696,7 @@ app.get('/admin', async (c) => {
   <script src="/static/attendance-history.js"></script>
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>
+  <script src="/static/security.js"></script>
 </body>
 </html>`)
 })
@@ -585,7 +720,9 @@ app.get('/hq', async (c) => {
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
           <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
+          <a href="#mail" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="mail">メール送信</a>
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
+          <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
       </div>
@@ -594,6 +731,8 @@ app.get('/hq', async (c) => {
   <main id="app" class="max-w-7xl mx-auto p-4 md:p-6"></main>
   <div id="modal-root"></div>
   <script src="/static/hq.js"></script>
+  ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
+  <script src="/static/security.js"></script>
 </body>
 </html>`)
 })
@@ -609,6 +748,8 @@ const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポート�
 const CRON_JOBS = defineCronJobs<Bindings>([
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
+  // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）
+  { name: 'token_purge', label: '期限切れ・使用済みのトークンの削除', cron: CRON_DAILY, run: env => purgeExpiredTokens(env.DB) },
   // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
   { name: 'recruit_applications_purge', label: '応募の削除（180日）', cron: CRON_DAILY, run: async env => ({ deleted: await purgeOldApplications(env.DB) }) },
   // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
@@ -641,7 +782,9 @@ const CRON_JOBS = defineCronJobs<Bindings>([
 export default {
   fetch: app.fetch,
   // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
-  // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）
+  // 起動は毎日 UTC 18:00（日本時間 3:00）と UTC 18:30（日本時間 3:30）の2回（wrangler.jsonc の triggers.crons）。
+  // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）。
+  // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
     await runCronJobs(env, CRON_JOBS, event.cron)
   },

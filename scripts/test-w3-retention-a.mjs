@@ -94,7 +94,7 @@ await waitServer()
   ok('#228 dry-run: 企業間チャット・既読位置・同意履歴を数える（所属元の退職で連携先のスレッドも対象）', t.roster_comments >= 1 && t.roster_comment_reads >= 1 && t.roster_consents >= 1, t)
   ok('#480 dry-run: 匿名化する本人情報（人数）を数える', t.anonymized_staff >= 3 && t.retired_staff >= 3, t)
   ok('dry-run: どの対象も集計に失敗しない', !(dry.data.results || []).some(x => x.failedCount > 0), dry.data.results)
-  const logs = (await hq.get('/api/hq/retention/logs')).data.logs || []
+  const logs = (await hq.get('/api/hq/retention/logs')).data.runs || [] // 1回の実行を1行にまとめた形（w4-retention-b #305）
   const last = logs[0] || {}
   ok('#234 手動の dry-run は実行元「manual」と実行した本部ユーザーを記録する', last.trigger_source === 'manual' && last.dry_run === 1 && !!last.triggered_by_name, last)
 }
@@ -112,7 +112,7 @@ ok('（前提）毎日の cron（3:00）を実行（1回目: 猶予の開始）'
   ok('#198 既読率レポートは 3:00 の起動では実行しない', !jobs.includes('notice_read_reports'), jobs)
   const ret = runs.find(x => x.job === 'retention')
   ok('#192 データ保持の結果（実削除・件数）を記録する', ret && ret.status === 'ok' && JSON.parse(ret.result_json).dry_run === false, ret)
-  const logs = (await hq.get('/api/hq/retention/logs')).data.logs || []
+  const logs = (await hq.get('/api/hq/retention/logs')).data.runs || []
   ok('#234 cron の実行は実行元「cron」で記録する', logs[0] && logs[0].trigger_source === 'cron' && logs[0].dry_run === 0, logs[0])
 }
 ok('（前提）既読率レポートの cron（3:30）を実行', await cron(REPORTS) === 200)
@@ -177,7 +177,7 @@ ok('（前提）毎日の cron を実行（2回目: 猶予明けの削除）', a
   ok('#192 データ保持の失敗を定期処理の実行記録に「失敗」として残す', y[3][0].status === 'failed' && /retired_staff/.test(y[3][0].error_message || ''), y[3][0])
   const s = (await hq.get('/api/hq/cron/status')).data
   ok('#192 本部の定期処理の状況: 処理ごとの最終実行と、失敗の警告を返す', s.latest.some(x => x.job === 'retention' && x.status === 'failed') && s.warnings.some(w => w.kind === 'failed' && w.job === 'retention'), s.warnings)
-  const logs = (await hq.get('/api/hq/retention/logs')).data.logs || []
+  const logs = ((await hq.get('/api/hq/retention/logs')).data.runs || []).flatMap(r => r.items)
   ok('#234 本部の実行ログで失敗の理由（error_message）を返す', logs.some(l => l.target === 'retired_staff' && /staff_id=13/.test(l.error_message || '')), logs.slice(0, 3))
 }
 

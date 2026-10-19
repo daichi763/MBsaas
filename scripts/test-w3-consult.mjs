@@ -151,8 +151,10 @@ ok('存在しない相談は 404', r.status === 404, r)
 const old = await st2.post('/api/staff/consultations', { category: 'health', body: `古い未対応の相談${tag}` })
 const oldId = old.data.consultation_id
 const newer = []
+// 1人が24時間に送れる相談は20件まで（#510）なので、4人で分けて送る
+const senders = [st2, ...await Promise.all(['st004', 'st005', 'st006'].map(async code => client(await login('sample', code))))]
 for (let i = 0; i < 52; i++) {
-  const x = await st2.post('/api/staff/consultations', { category: 'question', body: `質問${tag}-${i}` })
+  const x = await senders[i % senders.length].post('/api/staff/consultations', { category: 'question', body: `質問${tag}-${i}` })
   newer.push(x.data.consultation_id)
 }
 for (const id of newer) await admin.put(`/api/admin/consultations/${id}`, { status: 'done' })

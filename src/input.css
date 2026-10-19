@@ -2,92 +2,104 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Field OS 共通スタイル */
-* { -webkit-tap-highlight-color: transparent; }
-body { font-family: 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Noto Sans JP', Meiryo, sans-serif; }
+/* Field OS 共通スタイル
+   共通クラス（.card .badge .inp .btn .report-btn など）は @layer components に書く。
+   ユーティリティ（py-3・text-lg・hidden など）より前に出力されるので、要素に付けたユーティリティの指定が優先される（#495）。
+   @layer components のクラスは、tailwind.config.js の content のファイルに名前が書かれているものだけが出力される。
+   ライブラリが付けるクラス（.sortable-ghost）や、名前を組み立てて付けるクラスは @layer の外に書く */
+@layer base {
+  * { -webkit-tap-highlight-color: transparent; }
+  body { font-family: 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Noto Sans JP', Meiryo, sans-serif; }
+}
 
-/* スタッフ下部ナビ */
-.nav-item { color: #9ca3af; transition: color .15s; }
-.nav-item.active { color: #2563eb; font-weight: 700; }
+@layer components {
+  /* スタッフ下部ナビ */
+  .nav-item { color: #9ca3af; transition: color .15s; }
+  .nav-item.active { color: #2563eb; font-weight: 700; }
 
-/* 管理サイドバー */
-.side-link { display: flex; align-items: center; gap: .35rem; padding: .55rem .75rem; border-radius: .6rem; color: #4b5563; }
-.side-link:hover { background: #f3f4f6; }
-.side-link.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+  /* 管理サイドバー */
+  .side-link { display: flex; align-items: center; gap: .35rem; padding: .55rem .75rem; border-radius: .6rem; color: #4b5563; }
+  .side-link:hover { background: #f3f4f6; }
+  .side-link.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
 
-/* 本部ナビ */
-.hq-nav { color: #94a3b8; }
-.hq-nav:hover { background: #334155; color: #fff; }
-.hq-nav.active { background: #0e7490; color: #fff; font-weight: 700; }
+  /* 本部ナビ */
+  .hq-nav { color: #94a3b8; }
+  .hq-nav:hover { background: #334155; color: #fff; }
+  .hq-nav.active { background: #0e7490; color: #fff; font-weight: 700; }
 
-/* カード */
-.card { background: #fff; border: 1px solid #f3f4f6; border-radius: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+  /* カード */
+  .card { background: #fff; border: 1px solid #f3f4f6; border-radius: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
 
-/* バッジ */
-.badge { display: inline-flex; align-items: center; gap: .25rem; font-size: .7rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
-.badge-red { background: #fee2e2; color: #b91c1c; }
-.badge-yellow { background: #fef3c7; color: #b45309; }
-.badge-green { background: #d1fae5; color: #047857; }
-.badge-blue { background: #dbeafe; color: #1d4ed8; }
-.badge-gray { background: #f3f4f6; color: #6b7280; }
-.badge-purple { background: #ede9fe; color: #6d28d9; }
+  /* バッジ */
+  .badge { display: inline-flex; align-items: center; gap: .25rem; font-size: .7rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .badge-red { background: #fee2e2; color: #b91c1c; }
+  .badge-yellow { background: #fef3c7; color: #b45309; }
+  .badge-green { background: #d1fae5; color: #047857; }
+  .badge-blue { background: #dbeafe; color: #1d4ed8; }
+  .badge-gray { background: #f3f4f6; color: #6b7280; }
+  .badge-purple { background: #ede9fe; color: #6d28d9; }
 
-/* テーブル */
-.tbl { width: 100%; font-size: .82rem; }
-.tbl th { text-align: left; padding: .5rem .6rem; color: #6b7280; font-weight: 600; border-bottom: 1px solid #e5e7eb; white-space: nowrap; background: #f9fafb; }
-.tbl td { padding: .55rem .6rem; border-bottom: 1px solid #f3f4f6; }
-.tbl tbody tr:hover { background: #f9fafb; }
+  /* テーブル */
+  .tbl { width: 100%; font-size: .82rem; }
+  .tbl th { text-align: left; padding: .5rem .6rem; color: #6b7280; font-weight: 600; border-bottom: 1px solid #e5e7eb; white-space: nowrap; background: #f9fafb; }
+  .tbl td { padding: .55rem .6rem; border-bottom: 1px solid #f3f4f6; }
+  .tbl tbody tr:hover { background: #f9fafb; }
 
-/* フォーム */
-.inp { width: 100%; padding: .6rem .8rem; border: 1px solid #e5e7eb; border-radius: .65rem; font-size: .9rem; outline: none; }
-.inp:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; padding: .55rem 1rem; border-radius: .65rem; font-weight: 700; font-size: .85rem; transition: all .15s; cursor: pointer; }
-.btn-primary { background: #2563eb; color: #fff; }
-.btn-primary:hover { background: #1d4ed8; }
-.btn-outline { border: 1px solid #e5e7eb; color: #4b5563; background: #fff; }
-.btn-outline:hover { background: #f9fafb; }
-.btn-danger { background: #fee2e2; color: #b91c1c; }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
+  /* フォーム */
+  .inp { width: 100%; padding: .6rem .8rem; border: 1px solid #e5e7eb; border-radius: .65rem; font-size: .9rem; outline: none; }
+  .inp:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; padding: .55rem 1rem; border-radius: .65rem; font-weight: 700; font-size: .85rem; transition: all .15s; cursor: pointer; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-outline { border: 1px solid #e5e7eb; color: #4b5563; background: #fff; }
+  .btn-outline:hover { background: #f9fafb; }
+  .btn-danger { background: #fee2e2; color: #b91c1c; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
 
-/* モーダル */
-.modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 1rem; }
-.modal-box { background: #fff; border-radius: 1rem; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; color: #111827; }
+  /* モーダル */
+  .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .modal-box { background: #fff; border-radius: 1rem; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; color: #111827; }
 
-/* 報告ボタン(スタッフ) */
-.report-btn { width: 100%; display: flex; align-items: center; gap: .9rem; padding: 1rem; border-radius: 1rem; border: 2px solid #e5e7eb; background: #fff; text-align: left; transition: all .15s; }
-.report-btn.done { border-color: #10b981; background: #ecfdf5; }
-.report-btn.next { border-color: #2563eb; background: #eff6ff; box-shadow: 0 4px 12px rgba(37,99,235,.12); }
-.report-btn:disabled { opacity: .55; }
+  /* 報告ボタン(スタッフ) */
+  .report-btn { width: 100%; display: flex; align-items: center; gap: .9rem; padding: 1rem; border-radius: 1rem; border: 2px solid #e5e7eb; background: #fff; text-align: left; transition: all .15s; }
+  .report-btn.done { border-color: #10b981; background: #ecfdf5; }
+  .report-btn.next { border-color: #2563eb; background: #eff6ff; box-shadow: 0 4px 12px rgba(37,99,235,.12); }
+  .report-btn:disabled { opacity: .55; }
 
-/* ローディング */
-.spin { display: inline-block; width: 1.4rem; height: 1.4rem; border: 3px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite; }
+  /* ローディング */
+  .spin { display: inline-block; width: 1.4rem; height: 1.4rem; border: 3px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite; }
+
+  /* トースト */
+  .toast-msg { background: #111827; color: #fff; padding: .7rem 1.2rem; border-radius: .8rem; font-size: .85rem; box-shadow: 0 8px 20px rgba(0,0,0,.25); animation: toastIn .25s ease; }
+
+  /* シフトボード（public/static/shift-board.js） */
+  .board-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: .78rem; }
+  .board-th { padding: .45rem .5rem; font-weight: 700; color: #4b5563; border-bottom: 1px solid #e5e7eb; white-space: nowrap; text-align: center; }
+  .board-td { padding: .3rem; border-bottom: 1px solid #f3f4f6; border-left: 1px solid #f3f4f6; }
+  .board-rowhead { padding: .4rem .6rem; border-bottom: 1px solid #f3f4f6; max-width: 240px; }
+  .board-group { padding: .45rem .6rem; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: .78rem; }
+  .board-cell { border-radius: .5rem; padding: .3rem; border: 1px solid; margin-bottom: .25rem; }
+  .board-ok { background: #f0fdf4; border-color: #bbf7d0; }
+  .board-short { background: #fef2f2; border-color: #fecaca; }
+  .board-over { background: #fffbeb; border-color: #fde68a; }
+  .board-drop { min-height: 1.4rem; }
+  .board-chip { display: flex; align-items: center; justify-content: space-between; gap: .25rem; padding: .15rem .4rem; border-radius: .35rem; background: #fff; border: 1px solid #e5e7eb; cursor: grab; font-size: .74rem; line-height: 1.25; }
+  .board-chip:hover { border-color: #93c5fd; }
+  .board-chip.chip-warn { border-color: #f87171; box-shadow: inset 3px 0 0 #ef4444; }
+  .board-add { width: 1.2rem; height: 1.2rem; border-radius: .3rem; background: #fff; border: 1px solid #d1d5db; color: #2563eb; font-size: .6rem; }
+  .board-add:hover { background: #eff6ff; }
+}
+
+/* ---------- @layer の外（名前を組み立てて付けるクラス・ライブラリが付けるクラス・id） ---------- */
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* トースト */
-#toast { position: fixed; bottom: 5.5rem; left: 50%; transform: translateX(-50%); z-index: 60; }
-.toast-msg { background: #111827; color: #fff; padding: .7rem 1.2rem; border-radius: .8rem; font-size: .85rem; box-shadow: 0 8px 20px rgba(0,0,0,.25); animation: toastIn .25s ease; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
-/* シフトボード（public/static/shift-board.js） */
-.board-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: .78rem; }
-.board-th { padding: .45rem .5rem; font-weight: 700; color: #4b5563; border-bottom: 1px solid #e5e7eb; white-space: nowrap; text-align: center; }
-.board-td { padding: .3rem; border-bottom: 1px solid #f3f4f6; border-left: 1px solid #f3f4f6; }
-.board-rowhead { padding: .4rem .6rem; border-bottom: 1px solid #f3f4f6; max-width: 240px; }
-.board-group { padding: .45rem .6rem; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: .78rem; }
-.board-cell { border-radius: .5rem; padding: .3rem; border: 1px solid; margin-bottom: .25rem; }
-.board-ok { background: #f0fdf4; border-color: #bbf7d0; }
-.board-short { background: #fef2f2; border-color: #fecaca; }
-.board-over { background: #fffbeb; border-color: #fde68a; }
-.board-drop { min-height: 1.4rem; }
-.board-chip { display: flex; align-items: center; justify-content: space-between; gap: .25rem; padding: .15rem .4rem; border-radius: .35rem; background: #fff; border: 1px solid #e5e7eb; cursor: grab; font-size: .74rem; line-height: 1.25; }
-.board-chip:hover { border-color: #93c5fd; }
+#toast { position: fixed; bottom: 5.5rem; left: 50%; transform: translateX(-50%); z-index: 60; }
+/* シフトボードの状態（'st-' + シフトの状態で付ける） */
 .board-chip.st-requested { background: #fffbeb; border-color: #fcd34d; }
 .board-chip.st-substitute { background: #f5f3ff; border-color: #c4b5fd; }
 .board-chip.st-absent { background: #f3f4f6; color: #9ca3af; text-decoration: line-through; }
-.board-chip.chip-warn { border-color: #f87171; box-shadow: inset 3px 0 0 #ef4444; }
-.board-add { width: 1.2rem; height: 1.2rem; border-radius: .3rem; background: #fff; border: 1px solid #d1d5db; color: #2563eb; font-size: .6rem; }
-.board-add:hover { background: #eff6ff; }
+/* SortableJS がドラッグ中に付ける */
 .sortable-ghost { opacity: .45; }
-.inp.w-auto { width: auto; }
 
 /* スマホ幅では入力欄の文字を16px以上にする（iOS の Safari は16px未満の入力欄にフォーカスすると画面を拡大し、戻らないため。#231）。
    スタッフ画面・報告用URL・募集ページの .inp すべてに効かせる。拡大そのもの（maximum-scale）は禁止しない */

@@ -8,7 +8,8 @@
   const TYPES = ['wake_up', 'departure', 'check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out']
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', approved_exception: '例外承認', rejected: '却下', cancelled: '取り消し' }
-  const ACTION = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行' }
+  // shift_override = シフト単位の例外（#313）/ default_apply = 標準設定を今の所属スタッフに適用（#329）/ staff_reset = 案件の標準設定に戻す（#413）
+  const ACTION = { project_default: '標準設定', default_apply: '標準設定の適用', individual: '個別変更', bulk: '一括変更', staff_reset: '標準に戻す', shift_override: 'シフト単位の例外', migration: '導入時の移行', merge: 'スタッフ統合' }
   const KIND = { modify: '時刻修正', add: '打刻漏れの追加' }
   const S = window.__histState = window.__histState || { tab: 'events', from: '', to: '', project_id: '', staff_name: '', report_type: '', event: '', action: '', exclude_migration: '1' }
   let projects = null
@@ -70,10 +71,10 @@
       <div class="hidden md:block card overflow-x-auto"><table class="tbl"><thead><tr><th>日時</th><th>案件</th><th>対象</th><th>報告</th><th>変更</th><th>操作</th><th>変更者</th></tr></thead>
         <tbody>${rows.map(l => `<tr><td class="text-xs whitespace-nowrap">${esc(fmtAt(l.created_at))}</td><td class="text-xs">${esc(l.project_name || '')}${l.project_status && l.project_status !== 'active' ? ' <span class="badge badge-gray text-[10px]">終了</span>' : ''}</td>
           <td class="text-xs">${l.staff_id ? who(l) : '<span class="badge badge-blue text-[10px]">標準設定</span>'}</td><td class="text-xs whitespace-nowrap">${LABEL[l.report_type] || esc(l.report_type)}</td>
-          <td class="text-xs whitespace-nowrap">${onoff(l.old_enabled)} → <b>${onoff(l.new_enabled)}</b></td><td class="text-xs whitespace-nowrap">${ACTION[l.action] || esc(l.action)}</td>
+          <td class="text-xs whitespace-nowrap">${onoff(l.old_enabled)} → <b>${onoff(l.new_enabled)}</b></td><td class="text-xs">${ACTION[l.action] || esc(l.action)}${l.detail ? `<span class="block text-[11px] text-gray-500">${esc(l.detail)}</span>` : ''}</td>
           <td class="text-xs whitespace-nowrap">${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))}</td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-6">履歴はありません</td></tr>'}</tbody></table></div>
       <div class="md:hidden space-y-2">${rows.map(l => `<div class="card p-3 text-xs"><p><b>${l.staff_id ? who(l) : '標準設定'}</b> ・${LABEL[l.report_type] || ''} ${onoff(l.old_enabled)} → <b>${onoff(l.new_enabled)}</b></p>
-        <p class="text-gray-500 mt-0.5">${esc(l.project_name || '')} ・${ACTION[l.action] || ''} ・${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))} ・${esc(fmtAt(l.created_at))}</p></div>`).join('') || '<p class="text-center text-gray-400 py-6">履歴はありません</p>'}</div>`}`
+        <p class="text-gray-500 mt-0.5">${esc(l.project_name || '')} ・${ACTION[l.action] || ''} ・${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))} ・${esc(fmtAt(l.created_at))}</p>${l.detail ? `<p class="text-gray-500 mt-0.5">${esc(l.detail)}</p>` : ''}</div>`).join('') || '<p class="text-center text-gray-400 py-6">履歴はありません</p>'}</div>`}`
   }
   window.histSet = function (k, v) { S[k] = v; renderAttendanceHistory() }
 })()

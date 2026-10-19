@@ -7,9 +7,11 @@
 // 休憩入・休憩出の報告が両方あれば、その差を actual_break_minutes に反映する（docs/spec_attendance_correction.md 4.7）。
 // 管理者が入力した実績（actual_source = 'manual'）は報告で上書きしない。
 // 確定（settle_status = 'confirmed'）したシフトは金額・時間・スタッフを変更できない。
+// 締め（settlement_closings。#170）た期間のシフトは、確定・取り消し・実績と金額の変更・報告の反映を受け付けない。
+// 欠勤のシフトは、キャンセル料・補償（shift_cancellations。#283）を入れたものだけを精算の対象にする。
 // =========================================================
 import { Hono } from 'hono'
-import { calcAmounts, hoursForAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
+import { MONEY_MAX, calcAmounts, hoursForAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
 import { isHHMM } from './lib/validate'
 import { toCsv } from './csv'
 import { JSON_IN, batchInChunks, bindJsonArray, chunk } from './lib/d1-chunk'
@@ -17,6 +19,7 @@ import { addDays, overlaps, shiftWindow } from './lib/shift-time'
 import { changesOf, updateRowsStmts } from './lib/bulk-write'
 import { isWorkingShift } from './lib/shift-status'
 import { REPORT_TYPES, attendanceTypesForRows } from './report-settings'
+import { ownClient, ownProject } from './lib/tenant'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -35,6 +38,25 @@ function intOrNull(v: any): number | null { if (v === '' || v == null) return nu
 
 export const PAYEE_LABEL: Record<string, string> = {
   payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主（業務委託）', partner: '取引先', linked: '他社（連携元）',
+}
+// 欠勤・中止の理由（#283）
+export const CANCEL_REASON_LABEL: Record<string, string> = { staff: 'スタッフ都合の欠勤', client: 'クライアント都合の中止' }
+
+// ---------- 締め（#170） ----------
+type Closing = { closing_id: number; period_from: string; period_to: string; closed_at: string; closed_by_name: string | null; shift_count: number; bill_total: number; pay_total: number }
+// from〜to（稼働日）と重なる有効な締め
+async function loadClosings(db: D1Database, companyId: number, from: string, to: string): Promise<Closing[]> {
+  return (await db.prepare(`SELECT k.closing_id, k.period_from, k.period_to, k.closed_at, k.shift_count, k.bill_total, k.pay_total, us.name AS closed_by_name
+    FROM settlement_closings k LEFT JOIN users us ON us.user_id = k.closed_by
+    WHERE k.company_id = ? AND k.reopened_at IS NULL AND k.period_from <= ? AND k.period_to >= ? ORDER BY k.period_from`).bind(companyId, to, from).all()).results as any[]
+}
+const closingOf = (list: Closing[], date: string) => list.find(k => k.period_from <= date && date <= k.period_to) || null
+const closedText = (k: Closing) => `${k.period_from}〜${k.period_to} は精算を締めています。変更するには精算画面で締めを解除してください`
+// 稼働日が締めた期間に入っていれば、その文言を返す（シフトの追加・変更・削除の確認に api.ts からも呼ぶ）
+export async function closedMessage(db: D1Database, companyId: number, workDate: any): Promise<string | null> {
+  if (!isDate(workDate)) return null
+  const k = closingOf(await loadClosings(db, companyId, workDate, workDate), workDate)
+  return k ? closedText(k) : null
 }
 
 // ---------- 金額の再計算（実績の変更時） ----------
@@ -60,6 +82,7 @@ export function amountsForActual(s: any, proj: any) {
 export async function refreshShiftAmounts(db: D1Database, companyId: number, shiftId: number) {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
   if (!s || isSettled(s) || qtyFixed(s)) return
+  if (await closedMessage(db, companyId, s.work_date)) return
   const data = await loadPricingData(db, companyId, [s.project_id])
   const amt = amountsForActual(s, data.projects.get(Number(s.project_id)) || {})
   if (!amt) return
@@ -85,10 +108,11 @@ const sameActual = (a: { start: string | null; end: string | null; brk: number |
 // 実績に関わる報告の時刻を、シフトの行と一緒に読むための列（r_check_in など）。shifts の別名は s
 const REPORT_COLS = ACTUAL_REPORT_TYPES.map(t => `(SELECT a.reported_at FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = '${t}') AS r_${t}`).join(',\n      ')
 
-// 報告の時刻を実績に反映する（管理者の手入力・確定済みは対象外）。報告の登録・変更・削除のたびに呼ぶ
+// 報告の時刻を実績に反映する（管理者の手入力・確定済み・締めた期間は対象外）。報告の登録・変更・削除と、打刻修正の承認のたびに呼ぶ
 export async function syncActualFromReports(db: D1Database, companyId: number, shiftId: number) {
-  const s = await db.prepare('SELECT shift_id, actual_source, settle_status, actual_start, actual_end, actual_break_minutes FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
+  const s = await db.prepare('SELECT shift_id, work_date, actual_source, settle_status, actual_start, actual_end, actual_break_minutes FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
   if (!s || isSettled(s) || s.actual_source === 'manual') return false
+  if (await closedMessage(db, companyId, s.work_date)) return false
   const reps = (await db.prepare("SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ? AND report_type IN ('check_in','check_out','work_start','work_end','break_start','break_end')").bind(shiftId).all()).results as any[]
   const a = actualFromReports(t => reps.find(r => r.report_type === t)?.reported_at as string | undefined)
   if (sameActual(a, s)) return false
@@ -141,6 +165,7 @@ const CORRECTED_AFTER_SETTLE = '確定後に打刻修正あり'
 const REPORTED_AFTER_SETTLE = '確定後に報告あり（実績に未反映）'
 export const RECALC_ISSUE = '数量・金額が今の計算と違う'
 const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前のまま）'
+const CANCEL_UNSET_ISSUE = 'キャンセル料・補償が未入力'
 // 確定の後に起きる項目。確定済みの行では、これだけを確認が必要として数える（それ以外は確定したときに確認したものとして扱う。#563）
 const AFTER_SETTLE_ISSUES = new Set([PENDING_ISSUE, CORRECTED_AFTER_SETTLE, REPORTED_AFTER_SETTLE])
 // 承認待ちの打刻修正は、承認・却下で片づけるものなので確認済みにはできない
@@ -188,8 +213,9 @@ async function loadOverlaps(db: D1Database, companyId: number, rows: any[]) {
 }
 
 // 条件に合うシフトを MAX_ROWS + 1 件まで読む（上限を超えたかどうかを呼び出し側で判定できるように1件多く読む）
+// 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤のシフト（#283）
 async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?: number[]) {
-  const w = ['s.company_id = ?', `s.status IN (${WORK_STATUSES.map(() => '?').join(',')})`]; const bind: any[] = [companyId, ...WORK_STATUSES]
+  const w = ['s.company_id = ?', `(s.status IN (${WORK_STATUSES.map(() => '?').join(',')}) OR (s.status = 'absent' AND sc.shift_id IS NOT NULL))`]; const bind: any[] = [companyId, ...WORK_STATUSES]
   if (shiftIds) { w.push(`s.shift_id IN ${JSON_IN}`); bind.push(bindJsonArray(shiftIds)) }
   else { w.push('s.work_date BETWEEN ? AND ?'); bind.push(f.from, f.to) }
   if (f.client_id) { w.push('p.client_id = ?'); bind.push(f.client_id) }
@@ -211,8 +237,10 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
         OR (+d.shift_id IS NULL AND d.staff_id = s.staff_id AND d.work_date = s.work_date AND d.project_id = s.project_id)) AS has_daily,
       sp.attendance_mode AS legacy_mode, sp.daily_report_mode AS sp_daily_mode, p.daily_report_mode AS p_daily_mode,
       (SELECT x.to_payee_type || ':' || COALESCE(x.to_payee_affiliation_id, '') FROM affiliation_excluded_shifts x
-        WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id ORDER BY x.history_id DESC LIMIT 1) AS aff_excluded_payee
+        WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id ORDER BY x.history_id DESC LIMIT 1) AS aff_excluded_payee,
+      sc.reason AS cx_reason, sc.notified_on AS cx_notified_on, sc.bill_amount AS cx_bill, sc.pay_amount AS cx_pay, sc.note AS cx_note
     FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+    LEFT JOIN shift_cancellations sc ON sc.shift_id = s.shift_id AND sc.company_id = s.company_id
     LEFT JOIN sites st ON st.site_id = s.site_id
     JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = s.staff_id
@@ -221,7 +249,10 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     WHERE ${w.join(' AND ')} ORDER BY s.work_date, cl.client_name, p.project_name, s.start_time, us.name LIMIT ${MAX_ROWS + 1}`).bind(...bind).all()).results as any[]
   const now = nowJST(), today = now.slice(0, 10)
   // 報告の設定（#209）、確認済みの印（#563）、同じ人の時間が重なるシフト（#467）をまとめて読む
-  const [attTypes, acks, overlapsOf] = await Promise.all([attendanceTypesForRows(db, rows), loadAcks(db, companyId, rows), loadOverlaps(db, companyId, rows)])
+  // 締めた期間（#170）も、行の稼働日の範囲で読む
+  const dates = rows.map(r => String(r.work_date)).sort()
+  const [attTypes, acks, overlapsOf, closings] = await Promise.all([attendanceTypesForRows(db, rows), loadAcks(db, companyId, rows), loadOverlaps(db, companyId, rows),
+    dates.length ? loadClosings(db, companyId, dates[0], dates[dates.length - 1]) : Promise.resolve([] as Closing[])])
   const out = rows.map(r => {
     const proj = { hours_basis: r.hours_basis, time_round_minutes: r.time_round_minutes, pay_time_round: r.pay_time_round, default_break_minutes: r.default_break_minutes }
     const h = workHours(r, proj)
@@ -274,6 +305,9 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     }
     // 同じスタッフの時間が重なる確定・代打のシフト（#467）
     for (const o of overlapsOf.get(r.shift_id) || []) issues.push(`同じ時間帯に別のシフトあり（${Number(o.work_date.slice(5, 7))}/${Number(o.work_date.slice(8, 10))} ${o.start_time}〜${o.end_time} ${o.project_name} #${o.shift_id}）`)
+    // 欠勤・中止のシフト（#283）は勤務の確認事項を出さず、金額が未入力のときだけ確認事項にする
+    const cancel = r.status === 'absent'
+    if (cancel) issues.splice(0, issues.length, ...(r.cx_bill == null && r.cx_pay == null ? [CANCEL_UNSET_ISSUE] : []))
     // 確認済みの印（#563）。確定済みの行では、確定後に起きる項目だけを確認事項として数え、それ以外は確定したときに確認したものとして扱う
     const eventAt = (i: string) => (i === CORRECTED_AFTER_SETTLE ? r.last_correction_at : i === REPORTED_AFTER_SETTLE ? (lastReportAt || r.settled_at) : null)
     const open: string[] = [], acked: string[] = []
@@ -288,7 +322,8 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     const payeeType = r.payee_type || 'payroll'
     const payeeName = payeeType === 'partner' ? (r.payee_affiliation_name || r.affiliation || '取引先') : payeeType === 'linked' ? (r.payee_company_name || '連携元')
       : payeeType === 'freelance' ? r.staff_name : PAYEE_LABEL[payeeType] || payeeType
-    return {
+    const closing = closingOf(closings, String(r.work_date))
+    const row = {
       shift_id: r.shift_id, work_date: r.work_date, client_id: r.client_id, client_name: r.client_name || '', project_id: r.project_id, project_name: r.project_name,
       site_name: r.site_name || r.location || '', role: r.role || '', staff_id: r.staff_id, staff_name: r.staff_name, employee_number: r.employee_number || '',
       affiliation_type: r.affiliation_type || 'own_employee', status: r.status,
@@ -308,12 +343,26 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       // issues = 確認が必要な事項、acked_issues = 確認済みの事項（件数・確定前の警告に数えない）
       pending_corrections: Number(r.pending_corrections || 0), issues: open, acked_issues: acked,
       acked_at: lastAck ? lastAck.acked_at as string : null, acked_by_name: lastAck ? (lastAck.acked_by_name || '') as string : null,
+      // kind: work = 勤務、cancel = 欠勤・中止のキャンセル料・補償（#283）。closed: 締めた期間のシフト（#170）
+      kind: (cancel ? 'cancel' : 'work') as 'cancel' | 'work', cancel_reason: cancel ? String(r.cx_reason) : null, cancel_notified_on: cancel ? (r.cx_notified_on as string | null) : null,
+      closed: !!closing, closing_id: closing ? closing.closing_id : null,
+    }
+    if (!cancel) return row
+    // 欠勤・中止: 金額は shift_cancellations の値（未入力は 0）。時間・単価・交通費は使わない
+    const bill = r.cx_bill == null ? 0 : Number(r.cx_bill), pay = r.cx_pay == null ? 0 : Number(r.cx_pay)
+    return {
+      ...row, actual_start: null, actual_end: null, actual_hours: null, hours: 0, pay_hours: 0,
+      bill_rate: null, bill_qty: null, bill_base: bill, bill_transport: 0, bill_adjust: 0, bill_total: bill,
+      pay_rate: null, pay_qty: null, pay_base: pay, pay_transport: 0, pay_adjust: 0, pay_total: pay, transportation_fee: 0,
+      adjust_note: String(r.cx_note || ''), price_locked: false, qty_locked: false,
     }
   })
   return out
 }
 type Row = Awaited<ReturnType<typeof loadRows>>[number]
 
+// 支払集計のまとめ方（自社給与・日雇い給与はスタッフごと、それ以外は支払先ごと）。支払明細書（#168）の宛先の指定にも使う
+const payeeGroupKey = (r: Row) => (r.payee_type === 'payroll' || r.payee_type === 'payroll_daily' ? `${r.payee_type}:staff${r.staff_id}` : r.payee_key) as string
 // 粗利は支払が決まっている行だけで計算する（profit_bill = その行の請求額）。支払単価が未設定の行は件数と請求額を pay_unset* に出す
 function summarize(rows: Row[]) {
   const sum = (a: Row[], k: keyof Row) => a.reduce((n, r) => n + Number((r as any)[k] || 0), 0)
@@ -331,6 +380,9 @@ function summarize(rows: Row[]) {
     confirmed: rows.filter(r => r.settle_status === 'confirmed').length, issues: rows.filter(r => r.settle_status !== 'confirmed' && r.issues.length).length,
     settled_issues: rows.filter(r => r.settle_status === 'confirmed' && r.issues.length).length,
     recalc: rows.filter(r => r.issues.includes(RECALC_ISSUE)).length,
+    // 欠勤・中止のキャンセル料・補償（#283。請求・支払の合計に含む）
+    cancel_shifts: rows.filter(r => r.kind === 'cancel').length,
+    cancel_bill: sum(rows.filter(r => r.kind === 'cancel'), 'bill_total'), cancel_pay: sum(rows.filter(r => r.kind === 'cancel'), 'pay_total'),
     ...profitOf(rows),
   }
   const by_client = [...group(r => `${r.client_id || 0}:${r.project_id}` as string)].map(([, a]) => ({
@@ -339,8 +391,8 @@ function summarize(rows: Row[]) {
     bill_base: sum(a, 'bill_base'), bill_transport: sum(a, 'bill_transport'), bill_adjust: sum(a, 'bill_adjust'), bill_total: sum(a, 'bill_total'),
     pay_total: sum(a, 'pay_total'), ...profitOf(a), confirmed: a.filter(r => r.settle_status === 'confirmed').length,
   })).sort((x, y) => (x.client_name || '').localeCompare(y.client_name || '', 'ja') || x.project_name.localeCompare(y.project_name, 'ja'))
-  const by_payee = [...group(r => (r.payee_type === 'payroll' || r.payee_type === 'payroll_daily' ? `${r.payee_type}:staff${r.staff_id}` : r.payee_key) as string)].map(([, a]) => ({
-    payee_type: a[0].payee_type, payee_label: a[0].payee_label, payee_name: a[0].payee_name,
+  const by_payee = [...group(payeeGroupKey)].map(([key, a]) => ({
+    group_key: key, payee_type: a[0].payee_type, payee_label: a[0].payee_label, payee_name: a[0].payee_name,
     staff_id: a[0].payee_type === 'partner' || a[0].payee_type === 'linked' ? null : a[0].staff_id,
     staff_name: a[0].payee_type === 'partner' || a[0].payee_type === 'linked' ? [...new Set(a.map(r => r.staff_name))].join('、') : a[0].staff_name,
     employee_number: a[0].payee_type === 'payroll' || a[0].payee_type === 'payroll_daily' ? a[0].employee_number : '',
@@ -361,9 +413,34 @@ app.get('/settlement', async (c) => {
   if (truncated) rows = rows.slice(0, MAX_ROWS)
   const summary = summarize(rows)
   if (f.issues_only) rows = rows.filter(r => r.issues.length)
-  const tentative = await loadTentativeReported(c.env.DB, u.company_id, f)
-  return c.json({ from: f.from, to: f.to, rows, ...summary, truncated, max_rows: MAX_ROWS, tentative_reported: tentative })
+  const [tentative, absent, staffOptions, closings] = await Promise.all([loadTentativeReported(c.env.DB, u.company_id, f), loadAbsentUnhandled(c.env.DB, u.company_id, f),
+    loadStaffOptions(c.env.DB, u.company_id, f), loadClosings(c.env.DB, u.company_id, f.from, f.to)])
+  return c.json({ from: f.from, to: f.to, rows, ...summary, truncated, max_rows: MAX_ROWS, tentative_reported: tentative,
+    absent_shifts: absent, staff_options: staffOptions, closings, can_reopen: u.role === 'company_admin' })
 })
+
+// 絞り込みの選択肢: 期間内に精算の対象（確定・代打・欠勤）のシフトがあるスタッフ（#168。スタッフの絞り込みは外して数える）
+async function loadStaffOptions(db: D1Database, companyId: number, f: Filters) {
+  return (await db.prepare(`SELECT DISTINCT s.staff_id, us.name AS staff_name, er.employee_number FROM shifts s
+    JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id LEFT JOIN employee_records er ON er.staff_id = s.staff_id
+    WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute','absent') ORDER BY us.name, s.staff_id LIMIT 2000`)
+    .bind(companyId, f.from, f.to).all()).results as any[]
+}
+
+// キャンセル料・補償をまだ入れていない欠勤のシフト（#283）。精算の対象ではないが、ここから金額を入れると対象になる。上限 TENTATIVE_MAX 件
+async function loadAbsentUnhandled(db: D1Database, companyId: number, f: Filters) {
+  if (f.settle === 'confirmed') return []
+  const w = ["s.company_id = ?", "s.status = 'absent'", 's.work_date BETWEEN ? AND ?', 'NOT EXISTS (SELECT 1 FROM shift_cancellations sc WHERE sc.shift_id = s.shift_id)']
+  const bind: any[] = [companyId, f.from, f.to]
+  if (f.client_id) { w.push('p.client_id = ?'); bind.push(f.client_id) }
+  if (f.project_id) { w.push('s.project_id = ?'); bind.push(f.project_id) }
+  if (f.staff_id) { w.push('s.staff_id = ?'); bind.push(f.staff_id) }
+  if (f.payee_type) { w.push("COALESCE(s.payee_type,'payroll') = ?"); bind.push(f.payee_type) }
+  return (await db.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.absent_at, s.staff_id, us.name AS staff_name, p.project_name, cl.client_name
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+    JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+    WHERE ${w.join(' AND ')} ORDER BY s.work_date, s.start_time LIMIT ${TENTATIVE_MAX}`).bind(...bind).all()).results as any[]
+}
 
 // 勤怠報告のある希望（仮）のシフト（#19 の続き）。精算の対象（確定・代打）ではないため一覧と金額には出ないが、
 // 働いた分の請求・支払が漏れないよう、確定（または欠勤）にするよう知らせる。上限 TENTATIVE_MAX 件
@@ -404,6 +481,8 @@ app.post('/settlement/sync-actuals', async (c) => {
   // 読み込みの後に確定・手入力されたシフトは書き換えない
   const guard = "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.actual_source,'') != 'manual'"
   const actualCols = ['actual_start', 'actual_end', 'actual_break_minutes', 'actual_source']
+  // 締めた期間のシフトは反映しない（#170）
+  const closings = await loadClosings(db, u.company_id, f.from, f.to)
   for (let page = 0; page < SYNC_MAX_PAGES; page++) {
     const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
       WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
@@ -418,6 +497,7 @@ app.post('/settlement/sync-actuals', async (c) => {
     for (const r of reps) { const a = repsBy.get(r.shift_id) || []; a.push(r); repsBy.set(r.shift_id, a) }
     const actualOnly: any[] = [], withAmounts: any[] = []
     for (const s of part) {
+      if (closingOf(closings, String(s.work_date))) continue
       const reps1 = repsBy.get(s.shift_id) || []
       const { start, end, brk } = actualFromReports(t => reps1.find(r => r.report_type === t)?.reported_at as string | undefined)
       if (start === (s.actual_start || null) && end === (s.actual_end || null) && brk === (s.actual_break_minutes ?? null)) continue
@@ -442,6 +522,9 @@ app.put('/shifts/:id/actual', async (c) => {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトです。確定を取り消してから変更してください' }, 409)
+  const closed = await closedMessage(db, u.company_id, s.work_date)
+  if (closed) return c.json({ error: closed }, 409)
+  if (s.status === 'absent') return c.json({ error: '欠勤のシフトには実績を入力できません（キャンセル料・補償は欠勤の欄から入力してください）' }, 400)
   if (b.reset) {
     // 報告の時刻に戻す
     await db.prepare('UPDATE shifts SET actual_start = NULL, actual_end = NULL, actual_break_minutes = NULL, actual_source = NULL, actual_note = NULL WHERE shift_id = ?').bind(s.shift_id).run()
@@ -480,6 +563,8 @@ async function targetRows(db: D1Database, companyId: number, b: any): Promise<{ 
 function finishedForSettle(r: Row, now: string) {
   const today = now.slice(0, 10)
   if (r.work_date > today) return false
+  // 欠勤・中止のキャンセル料・補償は、稼働日が来れば確定できる
+  if (r.kind === 'cancel') return true
   if (r.has_end_report || (r.actual_source === 'manual' && r.actual_start)) return true
   return r.work_date < today && shiftWindow(r.work_date, r.start_time, r.end_time).end <= now
 }
@@ -489,13 +574,15 @@ app.post('/settlement/confirm', async (c) => {
   if (t.error) return c.json({ error: t.error }, 400)
   const rows = t.rows
   const now = nowJST(), today = now.slice(0, 10)
-  const targets = rows.filter(r => r.settle_status !== 'confirmed')
+  // 締めた期間のシフトは確定しない（締めたときの合計を変えないため。#170）
+  const closed = rows.filter(r => r.settle_status !== 'confirmed' && r.closed)
+  const targets = rows.filter(r => r.settle_status !== 'confirmed' && !r.closed)
   const future = targets.filter(r => r.work_date > today)
   const inProgress = targets.filter(r => r.work_date <= today && !finishedForSettle(r, now))
   const ok = targets.filter(r => finishedForSettle(r, now))
   const withIssues = ok.filter(r => r.issues.length)
   const paid = ok.filter(r => r.pay_total != null)
-  if (b.dry_run) return c.json({ target: rows.length, count: ok.length, with_issues: withIssues.length, future: future.length, in_progress: inProgress.length, already: rows.length - targets.length,
+  if (b.dry_run) return c.json({ target: rows.length, count: ok.length, with_issues: withIssues.length, future: future.length, in_progress: inProgress.length, closed: closed.length, already: rows.length - targets.length - closed.length,
     bill: ok.reduce((n, r) => n + r.bill_total, 0), pay: paid.reduce((n, r) => n + Number(r.pay_total), 0), pay_unset: ok.length - paid.length })
   if (withIssues.length && !b.force) return c.json({ error: `確認が必要なシフトが ${withIssues.length} 件あります`, need_force: true, with_issues: withIssues.length }, 409)
   let confirmed = 0
@@ -507,12 +594,15 @@ app.post('/settlement/confirm', async (c) => {
   }
   // 『確認済みとして確定する』で確定した確認事項は、確認済みとして記録する（確定を取り消した後も、同じ事項なら確認済みのまま。#563）
   if (withIssues.length) await saveAcks(db, u.company_id, u.user_id, withIssues, now)
-  return c.json({ ok: true, confirmed, skipped_future: future.length, skipped_in_progress: inProgress.length })
+  return c.json({ ok: true, confirmed, skipped_future: future.length, skipped_in_progress: inProgress.length, skipped_closed: closed.length })
 })
 app.post('/settlement/unconfirm', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const t = await targetRows(db, u.company_id, b)
   if (t.error) return c.json({ error: t.error }, 400)
+  // 締めた期間の確定は取り消せない（一部だけを取り消さずに断る。#170）
+  const closedRows = t.rows.filter(r => r.settle_status === 'confirmed' && r.closed)
+  if (closedRows.length) return c.json({ error: `締めた期間のシフトが ${closedRows.length}件 含まれているため、確定を取り消せません。取り消すには、先に締めを解除してください`, closed: closedRows.length }, 409)
   const ids: number[] = []
   for (const part of chunk(t.rows.filter(r => r.settle_status === 'confirmed').map(r => r.shift_id), 500)) {
     const r = await db.prepare(`UPDATE shifts SET settle_status = 'planned', settled_at = NULL, settled_by = NULL
@@ -572,8 +662,11 @@ app.post('/settlement/recalc', async (c) => {
   for (const part of chunk(ids, 1000)) {
     const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
       WHERE s.company_id = ? AND s.shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(part)).all()).results as any[]
+    const dates = rows.map(s => String(s.work_date)).sort()
+    const closings = dates.length ? await loadClosings(db, u.company_id, dates[0], dates[dates.length - 1]) : []
     for (const s of rows) {
       checked++
+      if (s.status === 'absent' || closingOf(closings, String(s.work_date))) continue
       const amt = amountsForActual(s, s)
       if (!amt || !(numDiff(amt.bill_qty, s.bill_qty) || numDiff(amt.unit_price, s.unit_price) || numDiff(amt.pay_qty, s.pay_qty) || numDiff(amt.pay_amount, s.pay_amount))) continue
       changed.push({ shift_id: s.shift_id, ...amt })
@@ -617,17 +710,237 @@ app.get('/settlement/export', async (c) => {
       '支払単位', '支払単価', '支払数量', '支払基本額', '交通費実費', '支払交通費', '支払調整', '支払合計', '調整メモ', '確定', '確認事項', 'スタッフID'],
       rows.map(r => [r.shift_id, r.work_date, r.client_name, r.project_name, r.site_name, r.role, r.staff_name, r.employee_number, r.payee_label, r.payee_name,
         r.start_time, r.end_time, r.break_minutes, r.actual_start || '', r.actual_end || '', r.actual_start ? r.used_break_minutes : '',
-        r.actual_source === 'manual' ? '手入力' : r.actual_source === 'report' ? '報告' : '',
+        // 欠勤・中止のキャンセル料・補償の行は『実績の入力』に理由を出す（列の並びは変えない。#283）
+        r.kind === 'cancel' ? `キャンセル（${CANCEL_REASON_LABEL[r.cancel_reason || ''] || ''}）` : r.actual_source === 'manual' ? '手入力' : r.actual_source === 'report' ? '報告' : '',
         r.planned_hours, r.actual_hours ?? '', r.hours,
         UNIT_LABEL[r.bill_unit_type] || r.bill_unit_type, r.bill_rate ?? '', r.bill_qty ?? '', r.bill_base, r.bill_transport, r.bill_adjust, r.bill_total,
         UNIT_LABEL[r.pay_unit_type] || r.pay_unit_type, r.pay_rate ?? '', r.pay_qty ?? '', r.pay_base ?? '', r.transportation_fee, r.pay_transport, r.pay_adjust, r.pay_total ?? '', r.adjust_note,
         r.settle_status === 'confirmed' ? '確定' : '未確定', r.issues.join(' / '), r.staff_id]), { textCols: ['社員番号'] })
   }
+  await logExport(c.env.DB, u, kind, f, kind === 'billing' ? by_client.length : kind === 'payment' ? by_payee.length : rows.length)
   return new Response(csv, { headers: {
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="settlement.csv"; filename*=UTF-8''${encodeURIComponent(name)}`,
     'Cache-Control': 'no-store',
   } })
+})
+
+// CSV・明細書を出力した記録（#170。いつ・だれが・どの期間を出したか）。記録に失敗しても出力は止めない
+async function logExport(db: D1Database, u: any, kind: string, f: Filters, rowCount: number, extra: Record<string, any> = {}) {
+  const filters = { client_id: f.client_id, project_id: f.project_id, staff_id: f.staff_id, payee_type: f.payee_type || null, settle: f.settle || null, issues_only: f.issues_only || null, ...extra }
+  await db.prepare(`INSERT INTO settlement_export_logs (company_id, kind, period_from, period_to, filters_json, row_count, exported_by, exported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, kind, f.from, f.to, JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([, v]) => v != null))), rowCount, u.user_id, nowJST()).run().catch(() => {})
+}
+
+// ---------- 絞り込みの選択肢（#494） ----------
+// 精算画面を開くたびに取り直す（後から登録した案件・クライアントも選べるように）。締め日（#168）も返す
+app.get('/settlement/options', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const [cl, pj] = await db.batch([
+    db.prepare('SELECT client_id, client_name, billing_rule, billing_closing_day FROM clients WHERE company_id = ? ORDER BY client_name, client_id').bind(u.company_id),
+    db.prepare("SELECT project_id, project_name, client_id, status FROM projects WHERE company_id = ? ORDER BY CASE WHEN COALESCE(status, 'active') = 'active' THEN 0 ELSE 1 END, project_name, project_id").bind(u.company_id),
+  ])
+  return c.json({ clients: cl.results, projects: pj.results })
+})
+
+// ---------- クライアントの締め日（#168） ----------
+// day: 1〜31（31 = 月末）。空欄で未設定（暦月）に戻す
+app.put('/settlement/clients/:id/closing-day', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  const cl = await ownClient(c.env.DB, u.company_id, c.req.param('id'))
+  if (!cl) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const day = intOrNull(b.day)
+  if (b.day !== '' && b.day != null && (day == null || day < 1 || day > 31)) return c.json({ error: '締め日は1〜31（31 = 月末）で入力してください' }, 400)
+  await c.env.DB.prepare('UPDATE clients SET billing_closing_day = ? WHERE client_id = ? AND company_id = ?').bind(day, cl.client_id, u.company_id).run()
+  return c.json({ ok: true, billing_closing_day: day })
+})
+
+// ---------- 締め（#170） ----------
+app.get('/settlement/closings', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const [cl, ex] = await db.batch([
+    db.prepare(`SELECT k.*, cu.name AS closed_by_name, ru.name AS reopened_by_name FROM settlement_closings k
+      LEFT JOIN users cu ON cu.user_id = k.closed_by LEFT JOIN users ru ON ru.user_id = k.reopened_by
+      WHERE k.company_id = ? ORDER BY k.period_from DESC, k.closing_id DESC LIMIT 50`).bind(u.company_id),
+    db.prepare(`SELECT l.log_id, l.kind, l.period_from, l.period_to, l.filters_json, l.row_count, l.exported_at, us.name AS exported_by_name FROM settlement_export_logs l
+      LEFT JOIN users us ON us.user_id = l.exported_by WHERE l.company_id = ? ORDER BY l.exported_at DESC, l.log_id DESC LIMIT 30`).bind(u.company_id),
+  ])
+  return c.json({ closings: cl.results, exports: ex.results, can_reopen: u.role === 'company_admin' })
+})
+// 期間を締める。期間内の精算の対象（確定・代打・キャンセル料を入れた欠勤）がすべて確定済みのときだけ締められる。
+// 確定後に対応が必要な事項（確定後の打刻修正など）があるときは、確認してから force で締める
+app.post('/settlement/closings', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const f = parseFilters(k => ((k === 'from' || k === 'to') && b[k] != null ? String(b[k]) : undefined))
+  if ('error' in f) return c.json({ error: f.error }, 400)
+  const overlap = await loadClosings(db, u.company_id, f.from, f.to)
+  if (overlap.length) return c.json({ error: `${overlap[0].period_from}〜${overlap[0].period_to} がすでに締められています（期間が重なっています）` }, 409)
+  const rows = await loadRows(db, u.company_id, f)
+  if (rows.length > MAX_ROWS) return c.json({ error: `対象が${MAX_ROWS}件を超えています。期間を分けて締めてください` }, 400)
+  const unconfirmed = rows.filter(r => r.settle_status !== 'confirmed').length
+  if (unconfirmed) return c.json({ error: `未確定のシフトが ${unconfirmed}件 あります。すべて確定してから締めてください`, unconfirmed }, 409)
+  const withIssues = rows.filter(r => r.issues.length).length
+  if (withIssues && !b.force) return c.json({ error: `確定後に対応が必要なシフトが ${withIssues}件 あります`, need_force: true, with_issues: withIssues }, 409)
+  const t = summarize(rows).totals
+  // 同時に締めたときに期間が重ならないよう、重なる締めがないことを条件に入れる
+  const r = await db.prepare(`INSERT INTO settlement_closings (company_id, period_from, period_to, shift_count, bill_total, pay_total, note, closed_by, closed_at)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM settlement_closings WHERE company_id = ? AND reopened_at IS NULL AND period_from <= ? AND period_to >= ?)`)
+    .bind(u.company_id, f.from, f.to, t.shifts, t.bill, t.pay, String(b.note || '').trim().slice(0, 200) || null, u.user_id, nowJST(), u.company_id, f.to, f.from).run()
+  if (!r.meta.changes) return c.json({ error: '同じ期間がすでに締められています' }, 409)
+  return c.json({ ok: true, closing_id: r.meta.last_row_id, shifts: t.shifts, bill: t.bill, pay: t.pay })
+})
+// 締めの解除は会社管理者だけ。理由を必ず残す（行は消さない）
+app.post('/settlement/closings/:id/reopen', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  if (u.role !== 'company_admin') return c.json({ error: '締めの解除は会社管理者だけが行えます' }, 403)
+  const reason = String(b.reason ?? '').trim()
+  if (!reason) return c.json({ error: '解除の理由を入力してください' }, 400)
+  const r = await c.env.DB.prepare('UPDATE settlement_closings SET reopened_at = ?, reopened_by = ?, reopen_reason = ? WHERE closing_id = ? AND company_id = ? AND reopened_at IS NULL')
+    .bind(nowJST(), u.user_id, reason.slice(0, 500), c.req.param('id'), u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '締めが見つからないか、すでに解除されています' }, 404)
+  return c.json({ ok: true })
+})
+
+// ---------- 欠勤・中止のキャンセル料・補償（#283） ----------
+const MONEY_MIN = -MONEY_MAX
+async function loadAbsentShift(db: D1Database, companyId: number, id: any) {
+  return await db.prepare(`SELECT s.shift_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.absent_at,
+      s.unit_price, s.pay_amount, s.payee_type, p.project_name, cl.client_name, us.name AS staff_name
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+    JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+    WHERE s.shift_id = ? AND s.company_id = ?`).bind(id, companyId).first() as any
+}
+// 入力欄の初期値に使う、予定の金額（請求基本額・支払基本額）と案件の規定を返す
+app.get('/settlement/cancellations/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const s = await loadAbsentShift(db, u.company_id, c.req.param('id'))
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const [cx, policy, closed] = await Promise.all([
+    db.prepare('SELECT reason, notified_on, bill_amount, pay_amount, note, updated_at FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id).first(),
+    db.prepare('SELECT bill_rate_prev_day, bill_rate_same_day, pay_rate FROM project_cancel_policies WHERE project_id = ? AND company_id = ?').bind(s.project_id, u.company_id).first(),
+    closedMessage(db, u.company_id, s.work_date),
+  ])
+  return c.json({
+    shift: { shift_id: s.shift_id, project_id: s.project_id, project_name: s.project_name, client_name: s.client_name || '', staff_name: s.staff_name, work_date: s.work_date,
+      start_time: s.start_time, end_time: s.end_time, status: s.status, settle_status: s.settle_status === 'confirmed' ? 'confirmed' : 'planned', absent_at: s.absent_at,
+      planned_bill: Number(s.unit_price || 0), planned_pay: s.pay_amount == null ? null : Number(s.pay_amount), payee_type: s.payee_type || 'payroll' },
+    cancellation: cx || null, policy: policy || null, closed,
+  })
+})
+// 欠勤のシフトのキャンセル料・補償を保存する（remove: true で取り消し、精算の対象から外す）
+app.put('/settlement/cancellations/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const s = await loadAbsentShift(db, u.company_id, c.req.param('id'))
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (s.status !== 'absent') return c.json({ error: '欠勤のシフトだけに入力できます' }, 400)
+  if (isSettled(s)) return c.json({ error: '確定済みです。確定を取り消してから変更してください' }, 409)
+  const closed = await closedMessage(db, u.company_id, s.work_date)
+  if (closed) return c.json({ error: closed }, 409)
+  if (b.remove) {
+    await db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id).run()
+    return c.json({ ok: true, removed: true })
+  }
+  if (!CANCEL_REASON_LABEL[b.reason]) return c.json({ error: '理由を選んでください' }, 400)
+  if (b.notified_on != null && b.notified_on !== '' && !isDate(b.notified_on)) return c.json({ error: '連絡日の形式が正しくありません' }, 400)
+  const bill = intOrNull(b.bill_amount), pay = intOrNull(b.pay_amount)
+  for (const [v, raw, name] of [[bill, b.bill_amount, 'キャンセル料（請求）'], [pay, b.pay_amount, '補償・控除（支払）']] as const) {
+    if (raw !== '' && raw != null && v == null) return c.json({ error: `${name}は数値で入力してください` }, 400)
+    if (v != null && (v < MONEY_MIN || v > MONEY_MAX)) return c.json({ error: `${name}は${MONEY_MIN}〜${MONEY_MAX}で入力してください` }, 400)
+  }
+  // 別の画面で確定・欠勤の取り消しをされていても上書きしないよう、欠勤かつ未確定を条件にする
+  const r = await db.prepare(`INSERT INTO shift_cancellations (shift_id, company_id, reason, notified_on, bill_amount, pay_amount, note, updated_by, updated_at)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM shifts WHERE shift_id = ? AND company_id = ? AND status = 'absent' AND COALESCE(settle_status,'planned') != 'confirmed')
+    ON CONFLICT(shift_id) DO UPDATE SET reason = excluded.reason, notified_on = excluded.notified_on, bill_amount = excluded.bill_amount, pay_amount = excluded.pay_amount,
+      note = excluded.note, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .bind(s.shift_id, u.company_id, b.reason, b.notified_on || null, bill, pay, String(b.note || '').trim().slice(0, 200) || null, u.user_id, nowJST(), s.shift_id, u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: 'シフトの状態が変わったため保存できませんでした。画面を読み直してください' }, 409)
+  return c.json({ ok: true })
+})
+// 案件のキャンセル料の規定（率は 0〜100%。空欄 = 規定なし）
+app.put('/settlement/projects/:id/cancel-policy', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  const p = await ownProject(c.env.DB, u.company_id, c.req.param('id'))
+  if (!p) return c.json({ error: '案件が見つかりません' }, 404)
+  const vals: (number | null)[] = []
+  for (const [k, name] of [['bill_rate_prev_day', '前日の連絡の率'], ['bill_rate_same_day', '当日の連絡の率'], ['pay_rate', '補償率']] as const) {
+    const v = intOrNull(b[k])
+    if ((b[k] !== '' && b[k] != null && v == null) || (v != null && (v < 0 || v > 100))) return c.json({ error: `${name}は0〜100（%）で入力してください` }, 400)
+    vals.push(v)
+  }
+  await c.env.DB.prepare(`INSERT INTO project_cancel_policies (project_id, company_id, bill_rate_prev_day, bill_rate_same_day, pay_rate, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(project_id) DO UPDATE SET bill_rate_prev_day = excluded.bill_rate_prev_day, bill_rate_same_day = excluded.bill_rate_same_day, pay_rate = excluded.pay_rate,
+      updated_by = excluded.updated_by, updated_at = excluded.updated_at`).bind(p.project_id, u.company_id, ...vals, u.user_id, nowJST()).run()
+  return c.json({ ok: true })
+})
+
+// ---------- 支払明細書・請求明細書（#168） ----------
+// 印刷用のページ（ブラウザの印刷から PDF に保存できる）。確定済みのシフトだけを載せる。
+//   kind=payment&group=<支払集計の group_key>  … 支払先（スタッフ・取引先・他社）あて
+//   kind=billing&client_id=<クライアント。0 = クライアントなし> … クライアントあて
+const h = (v: any) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!))
+const yenText = (n: any) => (n == null ? '-' : (Number(n) < 0 ? '-' : '') + '¥' + String(Math.abs(Math.round(Number(n)))).replace(/\B(?=(\d{3})+(?!\d))/g, ','))
+const hoursText = (n: any) => (n == null ? '' : String(Math.round(Number(n) * 100) / 100) + 'h')
+const mdText = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
+function statementPage(title: string, body: string) {
+  return `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${h(title)}</title>
+<style>
+body{font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif;color:#111;margin:24px;font-size:12px}
+h1{font-size:20px;text-align:center;letter-spacing:.3em;margin:0 0 16px}
+.meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:12px}.to{font-size:15px;font-weight:bold;border-bottom:1px solid #111;padding-bottom:2px}
+.total{font-size:16px;font-weight:bold;margin:8px 0 12px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:3px 5px;vertical-align:top}
+th{background:#f2f2f2;font-weight:bold}td.n{text-align:right;white-space:nowrap}tfoot td{font-weight:bold}.note{color:#555;margin-top:8px}
+.bar{margin-bottom:12px}.bar button{padding:6px 14px;font-size:13px}@media print{.bar{display:none}body{margin:0}}@page{size:A4;margin:12mm}
+</style></head><body><div class="bar"><button type="button" onclick="window.print()">印刷・PDFに保存</button></div>${body}</body></html>`
+}
+app.get('/settlement/statement', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const fail = (msg: string, status: 400 | 404 = 400) => c.html(statementPage('明細書', `<p>${h(msg)}</p>`), status)
+  const base = parseFilters(k => (k === 'from' || k === 'to' ? c.req.query(k) : undefined))
+  if ('error' in base) return fail(base.error!)
+  const kind = c.req.query('kind') === 'billing' ? 'billing' : 'payment'
+  const clientId = intOrNull(c.req.query('client_id')), group = String(c.req.query('group') || '')
+  if (kind === 'billing' && clientId == null) return fail('クライアントを指定してください')
+  if (kind === 'payment' && !group) return fail('支払先を指定してください')
+  // 読む件数を減らすため、宛先で絞れる条件は問い合わせに入れる（最後は宛先の一致で選ぶ）
+  const staffOfGroup = group.match(/^(?:payroll|payroll_daily):staff(\d+)$/) || group.match(/^freelance:(\d+)$/)
+  const f: Filters = { ...base, client_id: kind === 'billing' && clientId ? clientId : null, staff_id: kind === 'payment' && staffOfGroup ? Number(staffOfGroup[1]) : null }
+  const all = await loadRows(db, u.company_id, f)
+  if (all.length > MAX_ROWS) return fail(`対象が${MAX_ROWS}件を超えています。期間を絞ってください`)
+  const mine = all.filter(r => (kind === 'billing' ? Number(r.client_id || 0) === clientId : payeeGroupKey(r) === group))
+  if (!mine.length) return fail('この期間に対象のシフトはありません', 404)
+  const rows = mine.filter(r => r.settle_status === 'confirmed')
+  const unconfirmed = mine.length - rows.length
+  const co = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  const first = mine[0]
+  // 宛先: クライアント、取引先・他社はその会社、自社給与・日雇い給与・個人事業主はスタッフ本人
+  const company = first.payee_type === 'partner' || first.payee_type === 'linked'
+  const toName = kind === 'billing' ? `${first.client_name || '（クライアントなし）'} 御中` : company ? `${first.payee_name} 御中` : `${first.staff_name} 様（${PAYEE_LABEL[first.payee_type] || first.payee_type}）`
+  const title = kind === 'billing' ? '請求明細書' : '支払明細書'
+  const v = (r: Row, k: string) => (r as any)[(kind === 'billing' ? 'bill_' : 'pay_') + k]
+  const sum = (k: string) => rows.reduce((n, r) => n + Number(v(r, k) || 0), 0)
+  const showStaff = kind === 'billing' || first.payee_type === 'partner' || first.payee_type === 'linked'
+  const lines = rows.map(r => {
+    const isCancel = r.kind === 'cancel'
+    const unit = v(r, 'unit_type'), rate = v(r, 'rate'), qty = v(r, 'qty')
+    const hours = isCancel ? '' : unit === 'hourly' ? hoursText(kind === 'billing' ? r.hours : r.pay_hours) : '日額'
+    const memo = isCancel ? `${CANCEL_REASON_LABEL[r.cancel_reason || ''] || 'キャンセル'}${r.adjust_note ? '・' + r.adjust_note : ''}` : r.adjust_note
+    return `<tr><td>${h(mdText(r.work_date))}</td><td>${h(r.project_name)}${r.site_name ? '<br><small>' + h(r.site_name) + '</small>' : ''}</td>${showStaff ? `<td>${h(r.staff_name)}</td>` : ''}
+      <td>${isCancel ? '' : h(`${r.actual_start || r.start_time}〜${r.actual_end || r.end_time}`)}</td><td class="n">${h(hours)}</td>
+      <td class="n">${rate == null ? '' : h(yenText(rate) + (unit === 'hourly' ? '/時' : '/日'))}</td><td class="n">${qty == null ? '' : h(qty)}</td>
+      <td class="n">${h(yenText(v(r, 'base')))}</td><td class="n">${v(r, 'transport') ? h(yenText(v(r, 'transport'))) : ''}</td><td class="n">${v(r, 'adjust') ? h(yenText(v(r, 'adjust'))) : ''}</td>
+      <td class="n">${h(yenText(v(r, 'total')))}</td><td>${h(memo)}</td></tr>`
+  }).join('')
+  const cols = showStaff ? 12 : 11
+  const body = `<h1>${h(title)}</h1>
+<div class="meta"><div><p class="to">${h(toName)}</p><p>対象期間: ${h(base.from)} 〜 ${h(base.to)}</p></div>
+<div style="text-align:right"><p>発行日: ${h(nowJST().slice(0, 10))}</p><p>${h(co?.company_name || '')}</p></div></div>
+<p class="total">${kind === 'billing' ? '請求' : '支払'}合計: ${h(yenText(sum('total')))}</p>
+<table><thead><tr><th>日付</th><th>案件・場所</th>${showStaff ? '<th>スタッフ</th>' : ''}<th>時間帯</th><th>時間</th><th>単価</th><th>数量</th><th>基本額</th><th>交通費</th><th>調整</th><th>合計</th><th>備考</th></tr></thead>
+<tbody>${lines || `<tr><td colspan="${cols}">確定済みのシフトはありません</td></tr>`}</tbody>
+<tfoot><tr><td colspan="${cols - 5}">合計（${rows.length}件）</td><td class="n">${h(yenText(sum('base')))}</td><td class="n">${h(yenText(sum('transport')))}</td><td class="n">${h(yenText(sum('adjust')))}</td><td class="n">${h(yenText(sum('total')))}</td><td></td></tr></tfoot></table>
+<p class="note">確定済みのシフトだけを載せています。${unconfirmed ? `この期間の未確定のシフト ${unconfirmed}件 は含みません。` : ''}金額は精算画面の確定値です（消費税の計算は含みません）。</p>`
+  await logExport(db, u, 'statement_' + kind, base, rows.length, kind === 'billing' ? { client_id: clientId } : { group })
+  return c.html(statementPage(`${title}_${toName}_${base.from}_${base.to}`, body))
 })
 
 export default app

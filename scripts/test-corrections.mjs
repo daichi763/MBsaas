@@ -127,7 +127,7 @@ let c1
   ok('報告設定が OFF の報告も追加申請できる', r.status === 200, r)
   const C = await createShift(1, 3, addDays(today, 3), 'CR-C')
   r = await req(st1, { shift_id: C, report_type: 'wake_up', kind: 'add', requested_at: `${addDays(today, 3)} 06:00`, reason: '先に申請しておく' })
-  ok('未来の日時も申請できる', r.status === 200, r)
+  ok('まだ来ていない日時は申請できない（#312）', r.status === 400, r)
   const old = await createShift(1, 1, '2025-01-10', 'CR-OLD')
   await proxyEvenIfOff(old, 'check_in', '10:00')
   r = await req(st1, { shift_id: old, report_type: 'check_in', kind: 'modify', requested_at: '2025-01-10 09:58', reason: '期限のない過去分の修正' })

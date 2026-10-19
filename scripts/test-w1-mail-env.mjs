@@ -130,7 +130,8 @@ if (mode === 'not_configured') {
   const r = await admin.post(`/api/admin/notification-emails/${mine.delivery_id}/resend`)
   ok('#260 停止中の宛先への再送は409（送らない）', r.status === 409 && r.data.reason === 'recipient_suspended', r)
   const after = (await admin.get('/api/admin/notification-emails?status=all')).data.deliveries.find(x => x.delivery_id === mine.delivery_id)
-  ok('#260 一覧の理由が「宛先が停止中」になり、試行回数は増えない', after.status === 'failed' && after.error === 'recipient_suspended' && after.attempts === mine.attempts, after)
+  // w4-notifications-mail（#357）から、送る必要のなくなった行は「対応不要」（skipped）にする
+  ok('#260 一覧の理由が「宛先が停止中」になり、試行回数は増えない', after.status === 'skipped' && after.error === 'recipient_suspended' && after.attempts === mine.attempts, after)
   const r2 = await admin.post(`/api/admin/notification-emails/${toAdmin.delivery_id}/resend`)
   ok('#260 在籍中の宛先へは再送する', r2.status === 200 && r2.data.ok === true, r2)
   await admin.put('/api/admin/employees/3', { profile: { retired_at: null, employment_status: 'working' } })

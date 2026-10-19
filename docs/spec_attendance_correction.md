@@ -82,21 +82,53 @@
 ### 2.5 新しく所属したスタッフ
 - 案件の所属は「その案件にシフトがあること」とする（所属を表すデータがないため）
 - 個別の行がないスタッフには、案件の標準設定がそのまま効く
-- 案件の標準設定を変えるときは、変える直前に、その案件にシフトがあって個別の行がないスタッフ全員について、今の値で行を作る（`source='default'`）。これで標準設定の変更は「これから所属するスタッフ」だけに効く。この値の固定は実際に適用される値を変えないため、設定変更の履歴には記録しない
+- 案件の標準設定を変えるときは、変える直前に、その案件にシフトがあって個別の行がないスタッフ全員について、今の値で行を作る（`source='default'`。スタッフ単位の旧設定を使っている人は `individual`）。これで標準設定の変更は「これから所属するスタッフ」だけに効く。この値の固定は実際に適用される値を変えないため、設定変更の履歴には記録しない
+- 標準設定の保存では、今の所属スタッフにも当てるかを選べる（#329。API の `apply`）
+  - `none`（既定）: 上のとおり、これから所属するスタッフにだけ効く
+  - `standard`: 個別に変えていない在籍中のスタッフ（行がない人・標準（引き継ぎ）の人）にも当てる。行がない人は書かずに標準設定に従わせ、引き継ぎの行は変えた種類だけを新しい値にする
+  - `all`: 個別に変えた人を含め、在籍中のスタッフ全員に変えた種類だけを当てる（案件全体の OFF を 1 回の操作でできる）
+  - 退職・統合済み・取引終了の人には当てない（今の値で固定する）。当てた人は、スタッフごとに履歴を残す（`action='default_apply'`）。報告を始めたシフトは §2.7 のとおり固定する
+- 標準設定には版番号（`projects.report_defaults_version`）を持たせる。画面は開いた時点の版番号と、変えた種類だけを送り、ほかの人が先に保存していたら 409 で読み込み直しを求める（#509）
 - 仮登録の画面の「勤怠報告」の選択は廃止した（シフトのないスタッフには案件 × スタッフの行を作れないため）。仮登録のスタッフにも、シフトを割り当てた案件の設定が適用される
 - シフトを作る経路（シフトボード・繰り返し登録・募集の承認・掲示板の取り込み等）には手を入れない
 
 ### 2.6 一括変更
 - 案件を選ぶ → 変更する報告の種類と ON/OFF を選ぶ → 対象スタッフを選ぶ → 対象人数と、スタッフごとの変更前・変更後の一覧を確認（`dry_run`）→ 保存 → 結果を表示
+- 対象にできるのは在籍中・休職中の所属スタッフ。退職・統合済み・取引終了の人は選べない（API も 400）。初期の選択は在籍中の人で、「今後のシフトがある人」「全員」をボタンで選び直せる（#247 #379）
 - 選んだスタッフの個別の行を上書きする（`source='bulk'`）。一括変更の後に個別に変えた値は、そのまま個別設定として残る
-- 保存は `db.batch()` で 1 回にまとめ、途中で失敗したら全体を取り消す（D1 の batch はトランザクション）。同じ `batch_id` で履歴を残す
+- 保存は `db.batch()` で 1 回にまとめ、途中で失敗したら全体を取り消す（D1 の batch はトランザクション）。同じ `batch_id` で履歴を残す。設定の行と履歴は、同じ（種類・値）のスタッフをまとめて 1 文で書く（`json_each`）ため、文の数は人数で増えない（#247）
 - 二重送信: 画面はボタンを無効化。サーバーは `dry_run` で返したトークンを保存時に受け取り、同じトークンの 2 回目は保存しない
 - OFF にするときは、影響を受けるスタッフ数（今日以降にその案件のシフトがある人数）を表示して確認する
+
+### 2.6.1 設定の種類の表示（#268）
+| 表示 | 条件 |
+|---|---|
+| 個別 | 個別変更・一括変更の行（`source` が `individual` / `bulk`）がある。0027・0036 の移行の行のうち、スタッフ単位の旧設定から作った組み合わせは 0056 で `individual` にした |
+| 個別（旧設定） | 行がなく、スタッフ単位の旧設定（none / in_out）を使っている |
+| 標準（引き継ぎ） | 行が `default` / `migration` だけ（標準設定を変える前の値で固定した人） |
+| 標準 | 行がない（案件の標準設定に従う） |
+- 案件詳細のスタッフ表は、案件の標準設定と違う値のマスに色を付ける
+- 既定では在籍中の人と今後のシフトがある人だけを表示し、退職・休職の人は切り替えで表示する。氏名で絞り込める（#379）
+
+### 2.6.2 スタッフ 1 人の全案件の設定（#413。`#report-settings/staff/:id`）
+- スタッフにシフトがある案件ごとに、8 種類の ON/OFF・設定の種類・今後のシフト・シフト単位の例外の件数を出す。スタッフ詳細の提出設定の欄に要約とリンクを置く
+- 「すべての案件に同じ設定」: 8 種類の値と対象の案件（既定は稼働中の案件）を選び、案件ごとの変更前・変更後を確認してから保存する（個別変更として記録）
+- 「標準に戻す」: 案件 × スタッフ別の行を消して、案件の標準設定に従う状態にする（`action='staff_reset'` で履歴を残す）。すべての案件を戻すときは、スタッフ単位の旧設定も消す。一部の案件だけを戻すときに旧設定が残っていれば、標準設定の値で行を作る
+- 旧来の `PUT /admin/staff/:id/report-settings` の `attendance_mode: ''` も、この「標準に戻す」と同じ扱い
+
+### 2.6.3 OFF の設定一覧（#446。`#report-settings/off`）
+- 案件をまたいで、案件 × スタッフ別の行で OFF になっている報告を、案件・報告の種類で絞り込んで一覧にし、CSV で出力する。既定では在籍中のスタッフ・稼働中の案件・案件の標準設定と違う OFF だけ
+- 案件一覧には、個別設定のある人数と、OFF の報告がある在籍中の所属スタッフの人数を出す
+- 同じ画面に、今日以降のシフト単位の例外（§2.8）を出す
 
 ### 2.7 OFF にした報告の扱い
 - スタッフの報告画面ではボタンを表示しない。アプリ・報告URL・写真付き報告の API でも受け付けない
 - 登録済みの報告・申請・履歴は削除しない。過去の報告の閲覧、修正申請、打刻漏れの追加申請、承認は OFF でも行える
 - 勤務中に OFF にした場合、スタッフ画面は次の再読み込み（画面の切り替え・送信後の再取得）で反映する
+
+### 2.8 シフト単位の例外（#313）
+- シフト詳細の「このシフトの勤怠報告」（`shifts.attendance_mode`）を変えたら、設定変更の履歴に残す（`action='shift_override'`、`shift_id` と、勤務日・時間・変更前後の例外を `detail` に入れる）。有効な報告が変わった種類ごとに 1 行。変わらない変更も入店報告の行に同じ値で 1 行残す
+- 案件報告管理のスタッフ行に、今日以降のシフトの例外の件数を出し、そこからシフトの設定を開ける
 
 ## 3. 設定変更の履歴（`report_setting_logs`。追記のみ）
 | 列 | 内容 |
@@ -106,7 +138,8 @@
 | staff_id | NULL = 案件の標準設定の変更 |
 | report_type | |
 | old_enabled / new_enabled | 0 / 1（新規作成時の old は NULL） |
-| action | `project_default` / `individual` / `bulk` / `migration` |
+| action | `project_default` / `default_apply`（標準設定を今の所属スタッフに適用）/ `individual` / `bulk` / `staff_reset`（標準に戻す）/ `shift_override`（シフト単位の例外）/ `migration` / `merge` |
+| shift_id / detail | `shift_override` の対象シフトと内容（0056） |
 | batch_id | 一括変更・移行の識別子 |
 | changed_by / changed_by_name / changed_by_role | 変更者の user_id と、変更時点の氏名・ロール |
 | created_at | 日本時間（アプリの記録 `nowJST()` と移行時の記録をそろえる） |
@@ -270,7 +303,7 @@
 ### 6.1 管理画面（サイドメニューに「勤怠管理」の見出しを追加）
 | 画面 | 内容 |
 |---|---|
-| 案件報告管理（`#report-settings`） | 案件一覧（終了案件も表示切り替えで閲覧可）→ 案件詳細: 案件名・状態・所属スタッフ一覧 × 8 種類の ON/OFF・標準設定・一括変更（確認画面付き）・設定変更履歴 |
+| 案件報告管理（`#report-settings`） | 案件一覧（終了案件も表示切り替えで閲覧可）→ 案件詳細: 案件名・状態・所属スタッフ一覧 × 8 種類の ON/OFF・標準設定・一括変更（確認画面付き）・設定変更履歴。OFF の設定一覧（`#report-settings/off`）とスタッフの全案件の設定（`#report-settings/staff/:id`） |
 | 打刻修正承認（`#corrections`） | 状態タブ（承認待ち / 承認済み / 却下 / 取り消し済み / すべて）と絞り込み（案件・スタッフ名・申請期間・対象日・報告種類・申請種類）。詳細パネルに §4.1 の全項目・順序の警告・申請の履歴（再申請の連なり）。状態に応じて承認・却下ボタン。管理者による申請の作成 |
 | 送信失敗（打刻修正承認の中のタブ） | 送信失敗の一覧と再送 |
 | 履歴（打刻修正承認の中のタブ） | 設定変更履歴・申請履歴の検索と CSV 出力 |
@@ -288,10 +321,15 @@
 |---|---|---|
 | GET | `/report-settings/projects` | 案件一覧（`include_closed`） |
 | GET | `/report-settings/projects/:id` | 標準設定・所属スタッフ別の設定 |
-| PUT | `/report-settings/projects/:id/default` | 標準設定の変更（§2.5 の値の固定を含む） |
+| PUT | `/report-settings/projects/:id/default` | 標準設定の変更（§2.5 の値の固定を含む。`version`・`apply`） |
 | PUT | `/report-settings/projects/:id/staff/:staffId` | 個別の変更 |
 | POST | `/report-settings/projects/:id/bulk` | 一括変更（`dry_run` で確認内容と影響人数を返す） |
 | GET | `/report-settings/logs` | 設定変更履歴（案件・スタッフ・期間・報告種類） |
+| GET | `/report-settings/exceptions` | 今日以降のシフト単位の例外（`project_id`・`staff_id`） |
+| GET | `/report-settings/off-list`（`/export` は CSV） | OFF の設定一覧（`project_id`・`report_type`・`include_default`・`include_inactive`・`include_closed`） |
+| GET | `/report-settings/staff/:staffId` | スタッフ 1 人の全案件の設定 |
+| POST | `/report-settings/staff/:staffId/apply` | 選んだ案件に同じ設定を当てる（`dry_run` と確認トークン） |
+| POST | `/report-settings/staff/:staffId/reset` | 案件の標準設定に戻す（`project_ids` を省くと全案件） |
 | GET | `/corrections` | 申請一覧（§6.1 の絞り込み） |
 | GET | `/corrections/:id` | 詳細・操作履歴・再申請の連なり |
 | POST | `/corrections` | 管理者による申請 |
@@ -348,14 +386,16 @@
 - 追加: `project_report_defaults`、`project_staff_report_settings`、`report_setting_logs`、`attendance_corrections`（一意インデックス含む）、`attendance_correction_events`、`user_notifications`、`notification_emails` とインデックス
 - 移行: §2.4 の初期値の投入と、その履歴（`action='migration'`）
 - 既存の列・データは変更・削除しない
-- 本番への適用は手動: `npx wrangler d1 migrations apply mbsaas-production --remote`
+- 本番への適用は手動で、デプロイより先に行う: `npm run db:migrate:remote`（= `npx wrangler d1 migrations apply mbsaas-production --remote --env production`）
+- `npm run deploy` は直前（`predeploy`）に型チェック（`npm run typecheck`）と、本番の D1 に未適用のマイグレーションがないかの確認（`scripts/check-migrations.mjs`）を行い、どちらかで問題があればデプロイを止める（#340）
 - 適用前の戻し先の確保（#213）: ファイルを作らずに戻せる D1 の Time Travel を使う。適用の直前に `npx wrangler d1 time-travel info mbsaas-production` を実行し、表示されたブックマークを作業記録に控える。戻すときは `npx wrangler d1 time-travel restore mbsaas-production --bookmark=<控えたブックマーク>`
 - どうしてもエクスポートする場合は、出力先を repo の外にする（例: cmd では `--output="%TEMP%\mbsaas-backup.sql"`、PowerShell では `--output="$env:TEMP\mbsaas-backup.sql"`）。ダンプには口座番号・住所・給与などの個人情報が入るため、作業が終わったら削除し、共有フォルダやチャットに置かない。repo の中に作らない（`.gitignore` で `backup*.sql` などを除外しているが、それに頼らない）
 - ロールバック: アプリを前のバージョンに戻せば、旧来の `attendance_mode` の列がそのまま残っているので従来の動作に戻る。ただし新しい設定で行った変更と申請中の内容は旧来の動作に反映されない。新しいテーブルは削除しなくても旧版の動作に影響しない
 
 ## 10. テスト
-- 自動テストの仕組みがないため、ローカル（`wrangler dev` + ローカル D1 にマイグレーションとシードを適用）で API を呼ぶ統合テストのスクリプトを `scripts/` に追加して実行する
-- `bash scripts/setup-test-db.sh <保存先>` → `npm run build` → `npx wrangler dev --local --port 8799 --persist-to <保存先>` → `node scripts/test-report-settings.mjs` → `node scripts/test-corrections.mjs`（この順で実行。テストのたびに DB を作り直す）
+- ローカル（`wrangler dev` + ローカル D1 にマイグレーションとシードを適用）で API を呼ぶ統合テストのスクリプトを `scripts/test-*.mjs` に追加して実行する
+- まとめて実行するときは `npm test`（`scripts/run-tests.mjs`。テスト用の D1 を1回作り、テストのファイルごとに複製して `wrangler dev --local` を起動・停止する。`npm test -- <名前の一部>` で絞り込める）
+- 1つずつ手で流す場合: `bash scripts/setup-test-db.sh <保存先>` → `npm run build` → `npx wrangler dev --local --port 8799 --persist-to <保存先>` → `node scripts/test-report-settings.mjs` → `node scripts/test-corrections.mjs`（この順で実行。テストのたびに DB を作り直す）
 - 対象: 指示書 15 章の項目のうち、担当者に関するものを除くすべて。画面は PC とスマートフォン幅で表示を確認する
 - 実行できなかった項目は、理由と未確認の範囲を完了報告に明記する
 

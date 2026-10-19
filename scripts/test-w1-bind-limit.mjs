@@ -106,14 +106,15 @@ const sp = await st1.get('/api/staff/recruit')
 const myPage = (sp.data?.pages || []).find(p => p.page_id === page.data.page_id)
 const openRoleIds = (myPage?.roles || []).filter(r => !r.my_status).map(r => r.slot_role_id)
 ok('#264 スタッフアプリ: 案件50件の募集ページを開ける', sp.status === 200 && openRoleIds.length >= 31, { status: sp.status, n: openRoleIds.length })
-const ap = await st1.post('/api/staff/recruit/apply', { page_id: page.data.page_id, slot_role_ids: openRoleIds.slice(0, 31) })
+// 自分のほかのシフトと重なる日時は確認（force）が要る（w4-recruit-staffapp #310）
+const ap = await st1.post('/api/staff/recruit/apply', { page_id: page.data.page_id, slot_role_ids: openRoleIds.slice(0, 31), force: true })
 ok('#264 スタッフアプリ: 案件50件のページで31件の日時に応募できる', ap.status === 200 && ap.data.count === 31, ap)
 
 // ---------- #29 応募一覧（105件） ----------
 // 自分が割り当て済みの枠は応募の対象外になるため、2件ずつ選んで必ず1件の応募ができるようにする
 await pool([...Array(105).keys()], 6, async (i) => {
   const s = client(await login('sample', `${PFX}S${i}`))
-  must(await s.post('/api/staff/recruit/apply', { page_id: page.data.page_id, slot_role_ids: [openRoleIds[i % openRoleIds.length], openRoleIds[(i + 1) % openRoleIds.length]] }), 'apply ' + i)
+  must(await s.post('/api/staff/recruit/apply', { page_id: page.data.page_id, slot_role_ids: [openRoleIds[i % openRoleIds.length], openRoleIds[(i + 1) % openRoleIds.length]], force: true }), 'apply ' + i)
 })
 const apps = await admin.get(`/api/admin/recruit-applications?status=pending&page_id=${page.data.page_id}`)
 ok('#29 応募一覧: 応募が100件を超えても開ける', apps.status === 200 && apps.data.applications.length >= 106, { status: apps.status, n: apps.data?.applications?.length, error: apps.data?.error })
