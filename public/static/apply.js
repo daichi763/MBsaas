@@ -34,7 +34,28 @@
     if (DATA.turnstile_site_key) loadTurnstile()
   }
 
+  // 続きの日時を読み込む（枠が多いページは日付の順に分けて取得する。#126）
+  delegate('applyLoadMore', (btn) => applyLoadMore(btn))
+  async function applyLoadMore(btn) {
+    if (!DATA.next_from) return
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'
+    try {
+      const { data } = await axios.get(API + '?from=' + encodeURIComponent(DATA.next_from))
+      const seen = new Set(DATA.roles.map(r => r.slot_role_id))
+      DATA.roles = DATA.roles.concat(data.roles.filter(r => !seen.has(r.slot_role_id)))
+      DATA.next_from = data.next_from
+      render()
+    } catch (e) {
+      toast(errMsg(e, '読み込みに失敗しました。通信環境を確認してもう一度お試しください'))
+      btn.disabled = false; btn.textContent = 'さらに後の日時を表示'
+    }
+  }
+
   function render() {
+    // 入力中の内容は描き直しても保つ
+    const keep = {}
+    for (const id of ['ap-name', 'ap-kana', 'ap-phone', 'ap-email', 'ap-note', 'ap-website']) { const el = document.getElementById(id); if (el) keep[id] = el.value }
+    const agreed = !!(document.getElementById('ap-agree') || {}).checked
     const d = DATA
     const byDate = {}
     for (const r of d.roles) (byDate[r.work_date] = byDate[r.work_date] || []).push(r)
@@ -61,7 +82,10 @@
               </span>
               <span class="text-xs whitespace-nowrap ${r.full ? 'text-gray-500' : 'text-emerald-600'}">${r.full ? '定員に達しています<br><span class="text-[10px]">（キャンセル待ち）</span>' : r.remaining != null ? `残り${r.remaining}名` : '募集中'}</span>
             </label>`).join('')}</div></div>`).join('') || '<p class="card p-6 text-center text-gray-400 text-sm">現在、募集中の日時はありません</p>'}
+        ${d.next_from ? `<button class="btn btn-outline w-full" id="apply-more" data-action="applyLoadMore">さらに後の日時を表示</button>` : ''}
       </section>
+      ${dates.length ? `<p class="text-xs text-gray-500 bg-white border border-gray-100 rounded-lg p-3 mb-3" id="apply-staff-note"><i class="fas fa-mobile-screen mr-1 text-blue-500"></i>
+        すでにスタッフ登録をしている方は、<a href="/login" class="text-blue-600 underline">スタッフアプリ</a>の「シフト」→「募集中のお仕事」からも応募できます。アプリから応募すると、応募の状況の確認や取り下げができます</p>` : ''}
 
       ${dates.length ? `<section class="card p-4 mb-3" id="apply-form">
         <h3 class="text-sm font-bold text-gray-700 mb-3">② ご連絡先</h3>
@@ -85,6 +109,8 @@
           <p class="text-sm text-gray-600 whitespace-nowrap"><b id="ap-count">${picked.size}</b>件選択</p>
           <button class="btn btn-primary flex-1 py-3" id="ap-submit" onclick="applySubmit()" ${picked.size ? '' : 'disabled'}>応募する</button>
         </div></div>` : ''}`
+    for (const [id, v] of Object.entries(keep)) { const el = document.getElementById(id); if (el) el.value = v }
+    if (agreed && document.getElementById('ap-agree')) document.getElementById('ap-agree').checked = true
     if (tsWidget !== null && window.turnstile) renderTurnstile()
   }
   window.applyPick = function (id, on) {

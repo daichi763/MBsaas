@@ -7,6 +7,7 @@
 // 金額（請求・支払・粗利）は管理画面（/api/admin/*）でのみ返す。
 // =========================================================
 import { Hono } from 'hono'
+import { settleRemovedSlotItems } from './recruit'
 import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { assertAssignable, assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, isUniqueViolation, ngStaffIds } from './lib/staff-eligibility'
 import type { ConflictRow } from './lib/staff-eligibility'
@@ -803,6 +804,7 @@ app.delete('/shift-slots/:id', async (c) => {
     db.prepare('DELETE FROM shift_slot_roles WHERE slot_id = ?').bind(slot.slot_id),
     db.prepare('DELETE FROM shift_slots WHERE slot_id = ?').bind(slot.slot_id),
   ])
+  await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
   return c.json({ ok: true })
 })
 
@@ -1351,6 +1353,7 @@ app.delete('/slot-patterns/:id', async (c) => {
     db.prepare('UPDATE shift_slots SET pattern_id = NULL WHERE pattern_id = ?').bind(p.pattern_id),
     db.prepare('DELETE FROM slot_patterns WHERE pattern_id = ?').bind(p.pattern_id),
   ])
+  if (removed) await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
   return c.json({ ok: true, removed })
 })
 
