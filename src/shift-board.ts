@@ -389,6 +389,25 @@ async function ownSite(db: D1Database, companyId: number, siteId: any) {
 }
 function parseIds(v: any): number[] { return String(v || '').split(',').map(x => Number(x)).filter(n => Number.isInteger(n) && n > 0) }
 
+// ---------- 必要人数の超過（#407） ----------
+// adds: 役割（slot_role_id）ごとに、今回確定・代打として加える人数。確定・代打の人数＋今回の人数が必要人数を超える役割の警告を返す。
+// excludeShiftIds: 数えないシフト（移動・確定にする本人のシフト）。文言は募集の承認（recruit.ts の approvalWarnings）とそろえる
+export async function capacityWarnings(db: D1Database, companyId: number, adds: Map<number, number>, excludeShiftIds: number[] = []): Promise<string[]> {
+  const ids = [...adds.entries()].filter(([, n]) => n > 0).map(([id]) => id)
+  if (!ids.length) return []
+  const rows = (await db.prepare(`SELECT r.slot_role_id, r.role_name, r.headcount, s.work_date, s.start_time, s.end_time,
+      (SELECT COUNT(*) FROM shifts x WHERE x.slot_role_id = r.slot_role_id AND x.status IN ('confirmed','substitute') AND x.shift_id NOT IN ${JSON_IN}) AS filled
+    FROM shift_slot_roles r JOIN shift_slots s ON s.slot_id = r.slot_id WHERE s.company_id = ? AND r.slot_role_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(excludeShiftIds), companyId, bindJsonArray(ids)).all()).results as any[]
+  const out: string[] = []
+  for (const r of rows) {
+    const add = adds.get(Number(r.slot_role_id)) || 0
+    if (Number(r.filled) + add > Number(r.headcount))
+      out.push(`${String(r.work_date).slice(5).replace('-', '/')} ${r.start_time}〜${r.end_time} ${r.role_name}: 定員（${r.headcount}名）を超えます（確定・代打 ${Number(r.filled)}名＋今回 ${add}名）`)
+  }
+  return out
+}
+
 // ---------- 重複・NGチェック ----------
 // 本体は src/lib/staff-eligibility.ts（他社の会社名を出さない重複チェックと、割当可能な条件）。既存の import のため再エクスポートする
 export { findConflicts, conflictFor, ngStaffIds }
@@ -720,6 +739,7 @@ app.put('/shift-slots/:id', async (c) => {
   const existing = (await db.prepare('SELECT * FROM shift_slot_roles WHERE slot_id = ?').bind(slot.slot_id).all()).results as any[]
   const existingById = new Map(existing.map(r => [Number(r.slot_role_id), r]))
   const roleStmts: D1PreparedStatement[] = []
+  const shrunk = new Map<number, { role_name: string; headcount: number }>() // 必要人数を減らした役割（#456 の残り）
   if (Array.isArray(b.roles)) {
     const items = b.roles as any[]
     const deleteIds = new Set<number>()
@@ -745,6 +765,7 @@ app.put('/shift-slots/:id', async (c) => {
       if (r._delete) continue
       const n = normalizeRoles([r])![0]
       if (id) {
+        if (n.headcount < Number(existingById.get(id).headcount)) shrunk.set(id, { role_name: n.role_name, headcount: n.headcount })
         roleStmts.push(db.prepare(`UPDATE shift_slot_roles SET role_name = ?, headcount = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?, sort_order = ? WHERE slot_role_id = ? AND slot_id = ?`)
           .bind(n.role_name, n.headcount, n.bill_unit_type, n.bill_rate, n.pay_unit_type, n.pay_rate, i, id, slot.slot_id))
         // 確定済みのシフトの役割名は変えない（確定後に明細・CSV の役割名が変わらないように）
@@ -778,6 +799,22 @@ app.put('/shift-slots/:id', async (c) => {
         workDate: next.work_date, start: next.start_time, end: next.end_time, excludeShiftId: s.shift_id })
       if (chk.error) return c.json({ error: chk.error + '\n（このスタッフを枠から外してから、日付・時間を変えてください）' }, chk.status)
       warnings.push(...chk.warnings)
+    }
+  }
+  // 消す役割に未対応の応募があれば確かめる（削除すると「枠の削除」として処理済みになる。#65 の残り）
+  const deletedRoleIds = Array.isArray(b.roles) ? (b.roles as any[]).filter(r => r._delete && existingById.has(Number(r.slot_role_id))).map(r => Number(r.slot_role_id)) : []
+  if (deletedRoleIds.length) {
+    const pend = (await db.prepare(`SELECT i.slot_role_id, COUNT(*) AS n FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+      WHERE i.slot_role_id IN ${JSON_IN} AND i.status = 'pending' AND a.status = 'pending' GROUP BY i.slot_role_id`).bind(bindJsonArray(deletedRoleIds)).all()).results as any[]
+    for (const p of pend) warnings.push(`役割「${existingById.get(Number(p.slot_role_id))?.role_name || ''}」には未対応の応募が${Number(p.n)}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります`)
+  }
+  // 必要人数を、割り当て済みの確定・代打の人数より少なくするときは確かめる（人を外し忘れて超過のまま残らないように）
+  if (shrunk.size) {
+    const filled = (await db.prepare(`SELECT slot_role_id, COUNT(*) AS n FROM shifts WHERE slot_role_id IN ${JSON_IN} AND status IN ('confirmed','substitute') GROUP BY slot_role_id`)
+      .bind(bindJsonArray(shrunk.keys())).all()).results as any[]
+    for (const f of filled) {
+      const r = shrunk.get(Number(f.slot_role_id))
+      if (r && Number(f.n) > r.headcount) warnings.push(`役割「${r.role_name}」: 必要人数（${r.headcount}名）が、割り当て済みの確定・代打（${Number(f.n)}名）より少なくなります`)
     }
   }
   if ((detach.length || warnings.length) && !b.force) {
@@ -877,6 +914,11 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffIds, workDate: role.work_date, start: role.start_time, end: role.end_time })
   if (chk.error) return c.json({ error: chk.error }, chk.status)
   const warnings = chk.warnings
+  // 確定・代打で入れるときは、必要人数を超えないかも確かめる（希望（仮）は充足に数えないので確かめない。#407）
+  if (status !== 'requested') {
+    const adding = chk.staff.filter(s => !chk.already.has(s.staff_id)).length
+    warnings.push(...await capacityWarnings(db, u.company_id, new Map([[Number(role.slot_role_id), adding]])))
+  }
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
 
   const data = await loadPricingData(db, u.company_id, [role.project_id])
@@ -913,6 +955,9 @@ app.post('/shifts/:id/move', async (c) => {
   const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffId: s.staff_id, workDate: role.work_date, start: role.start_time, end: role.end_time, excludeShiftId: s.shift_id })
   if (chk.error) return c.json({ error: chk.error }, chk.status)
   const warnings = chk.warnings
+  // 確定・代打のシフトを別の役割へ移すときは、移動先の必要人数を超えないかを確かめる（#407）
+  if (['confirmed', 'substitute'].includes(s.status) && Number(role.slot_role_id) !== Number(s.slot_role_id))
+    warnings.push(...await capacityWarnings(db, u.company_id, new Map([[Number(role.slot_role_id), 1]]), [s.shift_id]))
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
   const projectChanged = role.project_id !== s.project_id
   // 日時が変わるときは、本人の「入れます／入れません」の返事（前の日時に対するもの）を消す（#411）
@@ -929,6 +974,54 @@ app.post('/shifts/:id/move', async (c) => {
   // 手動変更した金額でも、案件が変わった場合は移動先の単価に置き換える
   await applyPricingToShift(db, u.company_id, s.shift_id, { force: projectChanged })
   return c.json({ ok: true, warnings })
+})
+
+// 希望（仮）のシフトをまとめて確定にする（#390）。shift_ids: 確定にするシフト（1回に500件まで）
+// 希望（仮）でないもの・実績が確定済みのもの・退職などで稼働できない人のものは skipped に理由を付けて返し、確定にしない。
+// 重複・NG・休職中・本人の『入れません』・必要人数の超過は警告として返し、確認のうえ force で続ける
+const CONFIRM_REQUESTED_MAX = 500
+app.post('/shifts/confirm-requested', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const ids = [...new Set((Array.isArray(b.shift_ids) ? b.shift_ids : []).map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] as number[]
+  if (!ids.length) return c.json({ error: '確定にするシフトを選んでください' }, 400)
+  if (ids.length > CONFIRM_REQUESTED_MAX) return c.json({ error: `一度に確定にできるのは${CONFIRM_REQUESTED_MAX}件までです` }, 400)
+  const rows = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.project_id, s.slot_role_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.staff_reply, s.staff_reply_note,
+      p.project_name FROM shifts s LEFT JOIN projects p ON p.project_id = s.project_id
+    WHERE s.company_id = ? AND s.shift_id IN ${JSON_IN} ORDER BY s.work_date, s.start_time, s.shift_id`).bind(u.company_id, bindJsonArray(ids)).all()).results as any[]
+  const staff = await loadStaffForAssign(db, u.company_id, rows.map(r => r.staff_id))
+  const skipped: { shift_id: number; staff_name: string; work_date: string; reason: string }[] = []
+  const targets: any[] = []
+  for (const r of rows) {
+    const st = staff.get(r.staff_id)
+    const name = st?.name || ''
+    const reason = r.status !== 'requested' ? '希望（仮）ではありません' : isSettled(r) ? '実績が確定済みです' : ineligibleReason(st, r.work_date)
+    if (reason) skipped.push({ shift_id: r.shift_id, staff_name: name, work_date: r.work_date, reason })
+    else targets.push({ ...r, staff_name: name, employment_status: st?.employment_status })
+  }
+  if (!targets.length) return c.json({ ok: true, confirmed: 0, skipped })
+
+  const warnings: string[] = []
+  if (!b.force) {
+    const label = (r: any) => `${String(r.work_date).slice(5).replace('-', '/')} ${r.start_time}〜${r.end_time} ${r.staff_name}`
+    const dates = targets.map(r => r.work_date).sort()
+    const conflicts = await findConflicts(db, u.company_id, targets.map(r => r.staff_id), dates[0], dates[dates.length - 1])
+    const ng = await ngByProjects(db, u.company_id, targets.map(r => r.project_id))
+    for (const r of targets) {
+      const cf = conflictFor(conflicts.get(r.staff_id), r.work_date, r.start_time, r.end_time, r.shift_id)
+      if (cf.length) warnings.push(`${label(r)}: 同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`)
+      if ((ng.get(r.project_id) || []).includes(r.staff_id)) warnings.push(`${label(r)}: クライアントのNGスタッフに指定されています`)
+      if (r.employment_status === 'leave') warnings.push(`${label(r)}: 休職中です`)
+      if (r.staff_reply === 'ng') warnings.push(`${label(r)}: 本人が「入れません」と返事しています${r.staff_reply_note ? `（${r.staff_reply_note}）` : ''}`)
+    }
+    const adds = new Map<number, number>()
+    for (const r of targets) if (r.slot_role_id) adds.set(Number(r.slot_role_id), (adds.get(Number(r.slot_role_id)) || 0) + 1)
+    warnings.push(...await capacityWarnings(db, u.company_id, adds))
+    if (warnings.length) return c.json({ need_force: true, warnings, skipped, count: targets.length }, 409)
+  }
+  // 確認の後に状態が変わったもの（別の画面で確定・削除した等）は変えない
+  const res = await db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
+    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targets.map(r => r.shift_id))).run()
+  return c.json({ ok: true, confirmed: res.meta.changes || 0, skipped })
 })
 
 // =========================================================
@@ -1589,12 +1682,23 @@ app.get('/sites', async (c) => {
     .bind(...(counts ? [u.company_id, u.company_id, ...cb] : []), u.company_id, ...cb).all()).results
   return c.json({ sites: rows })
 })
+// 開催場所の緯度・経度（#406）。送られていなければ undefined（変えない）、空欄なら null（消す）。片方だけ・範囲外は error
+function siteLatLng(b: any): { lat?: number | null; lng?: number | null; error?: string } {
+  if (b.lat === undefined && b.lng === undefined) return {}
+  const num = (v: any) => (v === undefined || v === null || String(v).trim() === '' ? null : Number(v))
+  const lat = num(b.lat), lng = num(b.lng)
+  if (lat == null && lng == null) return { lat: null, lng: null }
+  if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)
+    return { error: '緯度（-90〜90）と経度（-180〜180）を両方とも数値で入力してください' }
+  return { lat, lng }
+}
 app.post('/sites', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!String(b.site_name || '').trim()) return c.json({ error: '開催場所名を入力してください' }, 400)
   if (b.client_id) { const cl = await c.env.DB.prepare('SELECT 1 FROM clients WHERE client_id = ? AND company_id = ?').bind(b.client_id, u.company_id).first(); if (!cl) return c.json({ error: 'クライアントが見つかりません' }, 404) }
+  const latlng = siteLatLng(b); if (latlng.error) return c.json({ error: latlng.error }, 400)
   const res = await c.env.DB.prepare('INSERT INTO sites (company_id, client_id, site_name, address, lat, lng, memo) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(u.company_id, b.client_id || null, String(b.site_name).trim(), b.address || null, b.lat ?? null, b.lng ?? null, b.memo || null).run()
+    .bind(u.company_id, b.client_id || null, String(b.site_name).trim(), String(b.address ?? '').trim() || null, latlng.lat ?? null, latlng.lng ?? null, String(b.memo ?? '').trim() || null).run()
   return c.json({ ok: true, site_id: res.meta.last_row_id })
 })
 app.put('/sites/:id', async (c) => {
@@ -1604,10 +1708,13 @@ app.put('/sites/:id', async (c) => {
   // 送られてきた項目だけを変える（名前の変更だけで無効の場所が有効に戻らないように。#130）。住所・メモは空欄で消す
   const name = b.site_name === undefined ? undefined : String(b.site_name ?? '').trim()
   if (name === '') return c.json({ error: '開催場所名を入力してください' }, 400)
+  // 位置（緯度・経度。#406）は両方そろえて入れる。空欄なら消す
+  const latlng = siteLatLng(b); if (latlng.error) return c.json({ error: latlng.error }, 400)
+  const textOf = (v: any) => (v === undefined ? undefined : String(v ?? '').trim())
   const upd = buildUpdate({
-    site_name: name, address: b.address, memo: b.memo,
+    site_name: name, address: textOf(b.address), memo: textOf(b.memo), lat: latlng.lat, lng: latlng.lng,
     status: b.status === undefined ? undefined : (b.status === 'inactive' ? 'inactive' : 'active'),
-  }, ['site_name', 'address', 'memo', 'status'])
+  }, ['site_name', 'address', 'memo', 'lat', 'lng', 'status'])
   if (!upd.clause) return c.json({ ok: true })
   const db = c.env.DB
   const stmts = [db.prepare(`UPDATE sites SET ${upd.clause} WHERE site_id = ? AND company_id = ?`).bind(...upd.values, s.site_id, u.company_id)]
@@ -1618,6 +1725,8 @@ app.put('/sites/:id', async (c) => {
     stmts.push(db.prepare('UPDATE shift_slots SET location = ? WHERE site_id = ? AND company_id = ? AND location = ? AND work_date >= ?').bind(name, s.site_id, u.company_id, s.site_name, today))
     stmts.push(db.prepare(`UPDATE shifts SET location = ? WHERE site_id = ? AND company_id = ? AND location = ? AND work_date >= ?
       AND COALESCE(settle_status,'planned') != 'confirmed'`).bind(name, s.site_id, u.company_id, s.site_name, today))
+    // 繰り返し登録の場所名も直す（延長で作る枠に前の名前が付かないように。#142 の残り）
+    stmts.push(db.prepare('UPDATE slot_patterns SET location = ? WHERE site_id = ? AND company_id = ? AND location = ?').bind(name, s.site_id, u.company_id, s.site_name))
   }
   await db.batch(stmts)
   return c.json({ ok: true })

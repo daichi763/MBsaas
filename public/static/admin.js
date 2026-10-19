@@ -2644,9 +2644,19 @@ window.addClient = async function () {
 }
 
 // ============ シフト管理 ============
+// 表示中の週の初日。確定・欠勤・代打・削除・登録の後も、同じ週を出し直す（#551）
+let shiftsWeekFrom = null
+function refreshShiftWeek(date) {
+  let from = shiftsWeekFrom || dayjs().format('YYYY-MM-DD')
+  // 登録した日が表示中の週の外なら、週の区切り（曜日）を保ったまま、その日を含む週へ移る
+  const off = date ? dayjs(date).diff(dayjs(from), 'day') : 0
+  if (off < 0 || off > 6) from = dayjs(from).add(Math.floor(off / 7) * 7, 'day').format('YYYY-MM-DD')
+  return renderShifts(from)
+}
 async function renderShifts(dateStr) {
   loading()
   const from = dateStr || dayjs().format('YYYY-MM-DD')
+  shiftsWeekFrom = from
   const to = dayjs(from).add(6, 'day').format('YYYY-MM-DD')
   const { data } = await axios.get(`/api/admin/shifts?from=${from}&to=${to}`)
   const days = []
@@ -2747,7 +2757,7 @@ window.addShift = async function (force) {
     if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま登録しますか？')) return addShift(true); return }
     showApiError(e, '登録に失敗しました'); return
   }
-  closeModal(); toast('シフトを登録しました'); renderShifts(date)
+  closeModal(); toast('シフトを登録しました'); refreshShiftWeek(date)
 }
 delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
@@ -2830,12 +2840,12 @@ delegate('attendancePhotos', el => openAttendancePhotos(Number(el.dataset.id), e
 window.updateShift = async function (id, status) {
   // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
   try { if (!await putShiftStatus(id, status)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
-  closeModal(); toast('シフトを更新しました'); renderShifts()
+  closeModal(); toast('シフトを更新しました'); refreshShiftWeek()
 }
 window.deleteShift = async function (id) {
   if (!confirm('このシフトを削除しますか？')) return
-  await axios.delete('/api/admin/shifts/' + id)
-  closeModal(); toast('シフトを削除しました'); renderShifts()
+  try { await axios.delete('/api/admin/shifts/' + id) } catch (e) { showApiError(e, '削除に失敗しました'); return }
+  closeModal(); toast('シフトを削除しました'); refreshShiftWeek()
 }
 
 // ============ 日報一覧 ============

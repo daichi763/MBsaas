@@ -189,7 +189,8 @@ async function createShift(staff_id, project_id, work_date, memo) {
   ok('#4 フォロー記録・シフト操作は data-action で開く', /data-action="showFollowModal"/.test(srcs['admin.js']) && /data-action="showEditShift"/.test(srcs['admin.js']))
   ok('#93 顧客担当者の編集・削除は data-action で開く', /data-action="editClientContact"/.test(srcs['admin.js']) && /data-action="deleteClientContact"/.test(srcs['admin.js']))
   ok('#132 書類の削除は data-action で開く', /data-action="deleteDocument"/.test(srcs['admin.js']) && /button\[data-action="deleteDocument"\]/.test(srcs['admin.js']))
-  ok('#138 開催場所の名前の変更は data-action で開く', /data-action="renameSite"/.test(srcs['shift-board.js']))
+  // 第4波（#406）で、名前の変更は編集のモーダル（editSite）にまとめた
+  ok('#138 開催場所の名前の変更は data-action で開く', /data-action="(renameSite|editSite)"/.test(srcs['shift-board.js']))
   ok('#39 連携候補のボタンは data-action で開く', /data-action="rosterConsent"/.test(srcs['roster.js']) && /data-action="rosterLinkSubmit"/.test(srcs['roster.js']))
   ok('#460 従業員管理の入力欄の値はエスケープする', /class="inp text-xs" value="\$\{esc\(value \?\? ''\)\}"/.test(srcs['admin.js']))
   ok('#2 #3 日報の項目名・相談のカテゴリはエスケープする', /\$\{esc\(LABELS\[k\] \|\| k\)\}/.test(srcs['admin.js']) && /\$\{esc\(CAT_LABELS\[co\.category\] \|\| co\.category\)\}/.test(srcs['admin.js']))
