@@ -224,6 +224,8 @@ const hiddenBy = (d, key) => (d.hidden_todos || []).find(t => t.key === key)
 
 // ---------- #314 要フォローから退職・統合済みを外す ----------
 {
+  // 後で同じ DB で流すほかのテストが staff 12・14 を使うので、元の値を控えて最後に戻す
+  const orig = PERSIST ? sql('SELECT staff_id, employment_status, retention_risk, merged_into_staff_id FROM staff_profiles WHERE staff_id IN (12, 14);') : []
   const r1 = await admin.put('/api/admin/staff/12', { retention_risk: 'high' })
   let d = await dash()
   ok('（前提）離職リスク高のスタッフは要フォローに出る', r1.status === 200 && d.follow_staff.some(s => s.staff_id === 12), r1)
@@ -232,6 +234,8 @@ const hiddenBy = (d, key) => (d.hidden_todos || []).find(t => t.key === key)
     sql("UPDATE staff_profiles SET employment_status = 'retired' WHERE staff_id = 12; UPDATE staff_profiles SET retention_risk = 'mid', merged_into_staff_id = 1 WHERE staff_id = 14;")
     d = await dash()
     ok('#314 退職・統合済みのスタッフは要フォローに出ない', !d.follow_staff.some(s => s.staff_id === 12 || s.staff_id === 14), d.follow_staff.map(s => s.staff_id))
+    const lit = v => (v == null ? 'NULL' : typeof v === 'number' ? String(v) : `'${String(v).replace(/'/g, "''")}'`)
+    sql(orig.map(o => `UPDATE staff_profiles SET employment_status = ${lit(o.employment_status)}, retention_risk = ${lit(o.retention_risk)}, merged_into_staff_id = ${lit(o.merged_into_staff_id)} WHERE staff_id = ${Number(o.staff_id)};`).join(' '))
   } else skip('#314 退職・統合済みのスタッフ', 'PERSIST 未指定')
 }
 
