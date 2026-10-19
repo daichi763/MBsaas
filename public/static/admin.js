@@ -602,64 +602,197 @@ delegate('dashShiftReport', el => {
 })
 
 // ============ スタッフ一覧 ============
+// 一覧の検索・絞り込み・並べ替え（#197 #433 #537）。
+// 状態の絞り込み（仮登録・要フォローなど）はすべてを満たす人、区分は選んだどれかに当たる人を出す。
+// 選んだ条件は STAFF_LIST に持ち、詳細から戻っても同じ条件・同じスクロール位置で出す（タブを閉じるまで保つ）
 let staffCache = []
-async function renderStaff() {
-  loading()
-  const { data } = await axios.get('/api/admin/staff')
-  staffCache = data.staff
-  drawStaffTable('all')
+const STAFF_LIST_KEY = 'admin.staffList'
+const STAFF_CACHE_MS = 60 * 1000
+const STAFF_LIST = Object.assign({ q: '', states: [], types: [], merged: false, retired: false, dormant: '', sort: 'staff_id', dir: 1 }, (() => {
+  try { return JSON.parse(sessionStorage.getItem(STAFF_LIST_KEY) || '{}') || {} } catch { return {} }
+})())
+if (!Array.isArray(STAFF_LIST.states)) STAFF_LIST.states = []
+if (!Array.isArray(STAFF_LIST.types)) STAFF_LIST.types = []
+let staffCacheAt = 0, staffListScroll = null, staffListIds = []
+// 何かを保存・変更したら、次に一覧を開くときに読み直す（一覧の値が古いままにならないように）
+axios.interceptors.response.use(r => {
+  if (r && r.config && r.config.method && r.config.method.toLowerCase() !== 'get') staffCacheAt = 0
+  return r
+})
+function saveStaffListState() {
+  const { q, states, types, merged, retired, dormant, sort, dir } = STAFF_LIST
+  try { sessionStorage.setItem(STAFF_LIST_KEY, JSON.stringify({ q, states, types, merged, retired, dormant, sort, dir })) } catch { }
+}
+// 検索用に文字をそろえる（全角英数→半角、大文字→小文字、ひらがな→カタカナ）
+function searchNorm(s) {
+  return String(s == null ? '' : s).normalize('NFKC').toLowerCase().replace(/[ぁ-ゖ]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60))
+}
+// 空白で区切った語をすべて含むか。電話番号は、ハイフンの有無にかかわらず数字だけでも探せる
+function matchesKeyword(q, values) {
+  const words = searchNorm(q).split(/\s+/).filter(Boolean)
+  if (!words.length) return true
+  const text = searchNorm(values.filter(v => v != null).join(' '))
+  const digits = text.replace(/[^0-9]/g, '')
+  return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
+}
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']]
+const STAFF_STATE_TEST = {
+  provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
+  noreport: s => s.today_shift && !s.today_checkin, lowscore: s => s.evaluation_score < 3,
+}
+// 最終稼働からの日数で休眠の人を探す（#433。最終稼働は、確定・代打のシフトの今日までの日付）
+const STAFF_DORMANT = [['', '最終稼働: すべて'], ['30', '30日以上稼働なし'], ['60', '60日以上稼働なし'], ['90', '90日以上稼働なし'], ['never', '稼働したことがない']]
+const RISK_ORDER = { low: 0, mid: 1, high: 2 }
+const STAFF_SORT = {
+  staff_id: s => Number(s.staff_id), code: s => staffCodeLabel(s) || null, name: s => searchNorm(s.kana || s.name),
+  month_days: s => Number(s.month_days || 0), month_seiyaku: s => Number(s.month_seiyaku || 0), evaluation_score: s => Number(s.evaluation_score || 0),
+  retention_risk: s => RISK_ORDER[s.retention_risk] ?? 0, last_work_date: s => s.last_work_date || null, last_report_date: s => s.last_report_date || null,
+}
+const isRetiredStaff = s => s.employment_status === 'retired'
+function staffEmpBadge(s) {
+  const st = s.employment_status || 'working'
+  const cls = st === 'retired' ? 'badge-gray' : st === 'leave' ? 'badge-yellow' : st === 'preboarding' ? 'badge-purple' : 'badge-green'
+  return `<span class="badge ${cls}">${esc(STAFF_EMP_STATUS_LABEL[st] || '在職中')}</span>${s.status === 'suspended' && st !== 'retired' ? ' <span class="badge badge-gray" title="ログインを停止中">停止</span>' : ''}`
+}
+function filteredStaff() {
+  const L = STAFF_LIST
+  let list = L.merged ? staffCache.filter(s => s.merged_into_staff_id) : staffCache.filter(s => !s.merged_into_staff_id)
+  if (!L.merged && !L.retired) list = list.filter(s => !isRetiredStaff(s))
+  for (const k of L.states) if (STAFF_STATE_TEST[k]) list = list.filter(STAFF_STATE_TEST[k])
+  if (L.types.length) list = list.filter(s => L.types.includes(s.affiliation_type))
+  if (L.dormant === 'never') list = list.filter(s => !s.last_work_date)
+  else if (L.dormant) {
+    const limit = dayjs(todayJSTStr()).subtract(Number(L.dormant), 'day').format('YYYY-MM-DD')
+    list = list.filter(s => !s.last_work_date || s.last_work_date <= limit)
+  }
+  if (L.q.trim()) list = list.filter(s => matchesKeyword(L.q, [s.name, s.kana, s.phone, staffCodeLabel(s), s.global_staff_code, s.skills, s.work_area, s.affiliation, s.owner_company_name]))
+  const key = STAFF_SORT[L.sort] || STAFF_SORT.staff_id
+  const blank = v => v == null || v === ''
+  // 値の無い行（最終稼働なし等）は、並べる向きにかかわらず後ろに出す
+  return list.map(s => [key(s), s]).sort((a, b) => {
+    if (blank(a[0]) || blank(b[0])) return (blank(a[0]) ? 1 : 0) - (blank(b[0]) ? 1 : 0) || (a[1].staff_id - b[1].staff_id)
+    return (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) * L.dir || (a[1].staff_id - b[1].staff_id)
+  }).map(x => x[1])
 }
 
-function drawStaffTable(filter) {
-  // 統合済み（第5段階）のスタッフは「統合済み」の絞り込みでのみ表示する
-  let list = filter === 'merged' ? staffCache.filter(s => s.merged_into_staff_id) : staffCache.filter(s => !s.merged_into_staff_id)
-  if (filter === 'follow') list = list.filter(s => s.follow_flag)
-  if (filter === 'provisional') list = list.filter(s => s.is_provisional)
-  if (filter === 'risk') list = list.filter(s => s.retention_risk !== 'low')
-  if (filter === 'noreport') list = list.filter(s => s.today_shift && !s.today_checkin)
-  if (filter === 'lowscore') list = list.filter(s => s.evaluation_score < 3)
-  if (AFF_TYPE_LABEL[filter]) list = list.filter(s => s.affiliation_type === filter)
+async function renderStaff(opts = {}) {
+  const fresh = staffCache.length && staffCacheAt && Date.now() - staffCacheAt < STAFF_CACHE_MS && !opts.reload
+  if (!fresh) {
+    loading()
+    const { data } = await axios.get('/api/admin/staff')
+    staffCache = data.staff; staffCacheAt = Date.now()
+  }
+  drawStaffTable()
+  // 詳細から戻ったときは、開いたときのスクロール位置に戻す
+  if (staffListScroll != null) { const y = staffListScroll; staffListScroll = null; requestAnimationFrame(() => window.scrollTo(0, y)) }
+}
+delegate('reloadStaffList', () => renderStaff({ reload: true }))
 
+// filter を渡すと（以前の呼び出し方）、その1つの条件だけで表示する
+function drawStaffTable(filter) {
+  if (typeof filter === 'string') {
+    Object.assign(STAFF_LIST, { states: STAFF_STATE_TEST[filter] ? [filter] : [], types: AFF_TYPE_LABEL[filter] ? [filter] : [], merged: filter === 'merged', dormant: '' })
+    saveStaffListState()
+  }
+  const L = STAFF_LIST
+  const chip = (on, attrs, label) => `<button type="button" class="btn ${on ? 'btn-primary' : 'btn-outline'} text-xs" ${attrs}>${label}</button>`
+  const th = (k, label) => `<th class="cursor-pointer select-none whitespace-nowrap" data-action="sortStaff" data-key="${k}" title="クリックで並べ替え">${label}${L.sort === k ? `<i class="fas fa-caret-${L.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>` : ''}</th>`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">スタッフマスタ <span class="text-sm font-normal text-gray-400">${list.length}名</span></h2>
-      <div class="flex gap-2">
+      <h2 class="text-xl font-bold text-gray-900">スタッフマスタ <span class="text-sm font-normal text-gray-400" id="staff-count"></span></h2>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn btn-outline" data-action="reloadStaffList" title="最新の情報に読み直す" aria-label="読み直す"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
         <button class="btn btn-outline" onclick="showQuickRegister && showQuickRegister()"><i class="fas fa-bolt"></i>仮登録（氏名・電話のみ）</button>
         <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
       </div>
     </div>
-    <div class="flex gap-2 mb-4 flex-wrap" id="staff-filters">
-      ${[['all', 'すべて'], ['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']].map(([k, v]) =>
-        `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
-      ${staffCache.some(s => s.merged_into_staff_id) ? `<button class="btn ${filter === 'merged' ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('merged')">統合済み</button>` : ''}
-      <span class="border-l border-gray-200 mx-1"></span>
-      ${Object.entries(AFF_TYPE_LABEL).map(([k, v]) =>
-        `<button class="btn ${filter === k ? 'btn-primary' : 'btn-outline'}" onclick="drawStaffTable('${k}')">${v}</button>`).join('')}
+    <div class="card p-3 mb-4 space-y-2" id="staff-filters">
+      <div class="flex gap-2 flex-wrap items-center">
+        <input id="staff-q" class="inp text-sm flex-1 min-w-[220px]" placeholder="氏名・フリガナ・電話・番号・スキル・エリア・所属で検索" value="${esc(L.q)}">
+        <select id="staff-dormant" class="inp text-sm w-auto">${STAFF_DORMANT.map(([k, v]) => `<option value="${k}" ${L.dormant === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="staff-retired" ${L.retired ? 'checked' : ''} ${L.merged ? 'disabled' : ''}>退職者を含む</label>
+        ${staffCache.some(s => s.merged_into_staff_id) ? `<label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="staff-merged" ${L.merged ? 'checked' : ''}>統合済みだけを表示</label>` : ''}
+        ${L.q || L.states.length || L.types.length || L.dormant || L.merged ? '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="clearStaffFilter">条件をクリア</button>' : ''}
+      </div>
+      <div class="flex gap-1.5 flex-wrap items-center">
+        <span class="text-[11px] text-gray-400 w-10">状態</span>
+        ${STAFF_STATE_FILTERS.map(([k, v]) => chip(L.states.includes(k), `data-action="toggleStaffFilter" data-group="states" data-key="${k}"`, v)).join('')}
+        <span class="text-[11px] text-gray-400">（選んだ条件をすべて満たす人）</span>
+      </div>
+      <div class="flex gap-1.5 flex-wrap items-center">
+        <span class="text-[11px] text-gray-400 w-10">区分</span>
+        ${Object.entries(AFF_TYPE_LABEL).map(([k, v]) => chip(L.types.includes(k), `data-action="toggleStaffFilter" data-group="types" data-key="${k}"`, esc(v))).join('')}
+        <span class="text-[11px] text-gray-400">（選んだどれかに当たる人）</span>
+      </div>
     </div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>番号</th><th>氏名</th><th>所属区分</th><th>所属案件</th><th>今月稼働</th><th>今月成約</th><th>評価</th><th>離職リスク</th><th>要フォロー</th><th>最終稼働</th><th>最終日報</th></tr></thead>
-        <tbody>
-          ${list.map(s => `
-            <tr class="cursor-pointer" onclick="location.hash='staff/${s.staff_id}'">
+        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}</tr></thead>
+        <tbody id="staff-rows"></tbody>
+      </table>
+    </div>`
+  let timer = null
+  document.getElementById('staff-q').addEventListener('input', ev => {
+    clearTimeout(timer)
+    timer = setTimeout(() => { STAFF_LIST.q = ev.target.value; saveStaffListState(); drawStaffRows() }, 200)
+  })
+  document.getElementById('staff-dormant').addEventListener('change', ev => { STAFF_LIST.dormant = ev.target.value; saveStaffListState(); drawStaffTable() })
+  document.getElementById('staff-retired').addEventListener('change', ev => { STAFF_LIST.retired = ev.target.checked; saveStaffListState(); drawStaffRows() })
+  const merged = document.getElementById('staff-merged')
+  if (merged) merged.addEventListener('change', ev => { STAFF_LIST.merged = ev.target.checked; saveStaffListState(); drawStaffTable() })
+  drawStaffRows()
+}
+window.drawStaffTable = drawStaffTable
+function drawStaffRows() {
+  const list = filteredStaff()
+  staffListIds = list.map(s => Number(s.staff_id))
+  const total = staffCache.filter(s => !s.merged_into_staff_id && !isRetiredStaff(s)).length
+  document.getElementById('staff-count').textContent = `${list.length}名${list.length !== total ? `（在籍 ${total}名）` : ''}`
+  document.getElementById('staff-rows').innerHTML = list.map(s => `
+            <tr class="cursor-pointer${isRetiredStaff(s) ? ' opacity-60' : ''}" data-action="openStaffDetail" data-id="${Number(s.staff_id)}">
               <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
+              <td class="whitespace-nowrap">${staffEmpBadge(s)}</td>
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
-              <td>${s.month_days}日</td>
-              <td class="font-bold">${s.month_seiyaku || 0}</td>
+              <td>${Number(s.month_days || 0)}日</td>
+              <td class="font-bold">${Number(s.month_seiyaku || 0)}</td>
               <td>${Number(s.evaluation_score).toFixed(1)}</td>
               <td>${RISK_BADGE[s.retention_risk] || ''}</td>
               <td>${s.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : '<span class="text-gray-300">-</span>'}</td>
-              <td class="text-xs text-gray-500">${s.last_work_date ? dayjs(s.last_work_date).format('M/D') : '-'}</td>
-              <td class="text-xs text-gray-500">${s.last_report_date ? dayjs(s.last_report_date).format('M/D') : '-'}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`
+              <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
+              <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
+            </tr>`).join('') || '<tr><td colspan="12" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
 }
-window.drawStaffTable = drawStaffTable
+delegate('toggleStaffFilter', el => {
+  const arr = STAFF_LIST[el.dataset.group]; const k = el.dataset.key
+  if (!Array.isArray(arr)) return
+  const i = arr.indexOf(k); if (i >= 0) arr.splice(i, 1); else arr.push(k)
+  STAFF_LIST.merged = false
+  saveStaffListState(); drawStaffTable()
+})
+delegate('clearStaffFilter', () => {
+  Object.assign(STAFF_LIST, { q: '', states: [], types: [], merged: false, dormant: '' })
+  saveStaffListState(); drawStaffTable()
+})
+delegate('sortStaff', el => {
+  const k = el.dataset.key
+  // 数の列・日付の列は、初めに押したとき多い順・新しい順にする
+  if (STAFF_LIST.sort === k) STAFF_LIST.dir = -STAFF_LIST.dir
+  else { STAFF_LIST.sort = k; STAFF_LIST.dir = ['code', 'name'].includes(k) ? 1 : -1 }
+  saveStaffListState(); drawStaffRows()
+  document.querySelectorAll('[data-action="sortStaff"]').forEach(h => {
+    const ic = h.querySelector('i'); if (ic) ic.remove()
+    if (h.dataset.key === STAFF_LIST.sort) h.insertAdjacentHTML('beforeend', `<i class="fas fa-caret-${STAFF_LIST.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>`)
+  })
+})
+delegate('openStaffDetail', el => { staffListScroll = window.scrollY; location.hash = 'staff/' + Number(el.dataset.id) })
+// スタッフ詳細の『前の人・次の人』（一覧で絞り込んだ順。#537）
+function staffNeighbors(sid) {
+  const i = staffListIds.indexOf(Number(sid))
+  return i < 0 ? null : { prev: staffListIds[i - 1] || null, next: staffListIds[i + 1] || null, pos: i + 1, total: staffListIds.length }
+}
 
 // スタッフ番号には空いている番号（#424）を入れておく（手で変えることもできる）
 window.showAddStaff = async function () {
@@ -830,9 +963,15 @@ function staffCodeLabel(s) { return String(s.user_code || '').startsWith('LK-') 
 const STAFF_EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
 function staffDetailHeaderHtml(sid, p) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
+  const nb = staffNeighbors(sid)
   return `
+    ${nb && nb.total > 1 ? `<div class="flex items-center gap-2 mb-2 text-xs text-gray-500">
+      <span>一覧の ${nb.pos} / ${nb.total} 人目</span>
+      ${nb.prev ? `<a href="#staff/${nb.prev}" class="btn btn-outline text-xs"><i class="fas fa-chevron-left"></i>前の人</a>` : ''}
+      ${nb.next ? `<a href="#staff/${nb.next}" class="btn btn-outline text-xs">次の人<i class="fas fa-chevron-right"></i></a>` : ''}
+    </div>` : ''}
     <div class="flex items-center gap-3 mb-5 flex-wrap">
-      <a href="#staff" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+      <a href="#staff" class="btn btn-outline" title="スタッフ一覧に戻る（絞り込みはそのまま）"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
         <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : staffCodeLabel(p))}</span></h2>
         <div class="flex gap-2 mt-1 flex-wrap">
@@ -908,9 +1047,13 @@ function staffBasicCardHtml(sid, p, affData, editing) {
             <p class="text-xs text-gray-500 mb-1"><i class="fas fa-note-sticky text-gray-400 mr-1"></i>管理者メモ <span class="text-gray-400">（自社内のみ・連携先には共有されません）</span></p>
             ${editing ? `<textarea id="staff-memo" rows="3" class="inp text-xs w-full">${esc(p.memo || '')}</textarea>`
               : `<p class="text-xs text-gray-600 whitespace-pre-wrap" id="staff-memo-view">${esc(p.memo || '-')}</p>`}
-            ${editing || !canEdit ? '' : `<div class="flex gap-2 mt-2 flex-wrap">
+            ${editing || !canEdit ? '' : `<div class="flex gap-2 mt-2 flex-wrap items-center">
               <button class="btn ${p.follow_flag ? 'btn-danger' : 'btn-outline'} text-xs" onclick="toggleFollow(${sid}, ${p.follow_flag ? 0 : 1})">
                 ${p.follow_flag ? 'フォロー解除' : '要フォロー登録'}</button>
+              <label class="text-xs text-gray-500 flex items-center gap-1" title="中・高にすると、ダッシュボードの要フォロースタッフと一覧の『離職リスク』に出ます">離職リスク
+                <select class="inp text-xs w-auto" data-staff-risk="${sid}" data-orig="${esc(p.retention_risk || 'low')}">
+                  ${[['low', '低'], ['mid', '中'], ['high', '高']].map(([k, v]) => `<option value="${k}" ${(p.retention_risk || 'low') === k ? 'selected' : ''}>${v}</option>`).join('')}
+                </select></label>
             </div>`}
           </div>
           ${ed ? `
@@ -1004,12 +1147,12 @@ async function renderStaffDetail(sid, opts = {}) {
     <div id="staff-shift-panel" class="mb-4"></div>
 
     <section class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">月次実績推移</h3>
+      <h3 class="text-sm font-bold text-gray-700 mb-3">月次実績推移 <span class="text-xs font-normal text-gray-400">（今月と前の2か月。日報のない月は0）</span></h3>
       <div class="overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>月</th><th>日数</th><th>MNP</th><th>PI</th><th>新規</th><th>光</th><th>成約</th></tr></thead>
         <tbody>${data.performance.map(m => `
-          <tr><td>${esc(m.ym)}</td><td>${m.days}</td><td>${m.mnp}</td><td>${m.pi}</td><td>${m.shinki}</td><td>${m.hikari}</td><td class="font-bold">${m.seiyaku}</td></tr>`).join('') || '<tr><td colspan="7" class="text-gray-400 text-center py-3">データなし</td></tr>'}
+          <tr class="${m.days ? '' : 'text-gray-400'}"><td>${esc(dayjs(m.ym + '-01').format('YYYY年M月'))}</td><td>${m.days}</td><td>${m.mnp}</td><td>${m.pi}</td><td>${m.shinki}</td><td>${m.hikari}</td><td class="font-bold">${m.seiyaku}</td></tr>`).join('') || '<tr><td colspan="7" class="text-gray-400 text-center py-3">データなし</td></tr>'}
         </tbody>
       </table>
       </div>
@@ -1027,14 +1170,14 @@ async function renderStaffDetail(sid, opts = {}) {
                 <span class="text-gray-500">${esc(f.manager_name || '')}</span>
                 ${f.status === 'open' ? '<span class="badge badge-yellow">対応中</span>' : '<span class="badge badge-green">完了</span>'}
               </div>
-              <p class="text-xs text-gray-700">${esc(f.content)}</p>
-              ${f.next_action ? `<p class="text-xs text-blue-700 mt-1"><i class="fas fa-arrow-right mr-1"></i>${esc(f.next_action)}</p>` : ''}
+              <p class="text-xs text-gray-700 whitespace-pre-wrap">${esc(f.content)}</p>
+              ${f.next_action ? `<p class="text-xs text-blue-700 mt-1 whitespace-pre-wrap"><i class="fas fa-arrow-right mr-1"></i>${esc(f.next_action)}</p>` : ''}
             </div>`).join('') || '<p class="text-sm text-gray-400">フォロー履歴はありません</p>'}
         </div>
       </section>
 
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-file-lines text-blue-500 mr-1"></i>日報履歴</h3>
+        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-file-lines text-blue-500 mr-1"></i>日報履歴<a href="#reports/staff=${Number(sid)}" class="ml-auto text-xs font-normal text-blue-600 hover:underline">日報一覧で見る</a></h3>
         <div class="space-y-2 max-h-72 overflow-y-auto">
           ${data.reports.map(r => `
             <div class="p-2.5 rounded-lg bg-gray-50">
@@ -1047,7 +1190,7 @@ async function renderStaffDetail(sid, opts = {}) {
               <div class="flex flex-wrap gap-1">
                 ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-gray">${esc(LABELS[k] || k)} ${esc(v)}</span>`).join('')}
               </div>
-              ${r.values.free ? `<p class="text-xs text-gray-500 mt-1">${esc(r.values.free)}</p>` : ''}
+              ${r.values.free ? `<p class="text-xs text-gray-500 mt-1 whitespace-pre-wrap">${esc(r.values.free)}</p>` : ''}
             </div>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'}
         </div>
       </section>
@@ -1105,6 +1248,22 @@ window.saveStaffMemo = async function (sid) {
   await axios.put('/api/admin/staff/' + sid, { memo: document.getElementById('staff-memo').value })
   toast('メモを保存しました')
 }
+// 離職リスク（低・中・高）の変更（#381）。失敗したら選択を元に戻す
+document.addEventListener('change', async (ev) => {
+  const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-staff-risk]') : null
+  if (!sel) return
+  const sid = Number(sel.dataset.staffRisk)
+  sel.disabled = true
+  try {
+    await axios.put('/api/admin/staff/' + sid, { retention_risk: sel.value })
+    sel.dataset.orig = sel.value
+    toast('離職リスクを「' + ({ low: '低', mid: '中', high: '高' }[sel.value]) + '」にしました')
+    if (staffDetailState && String(staffDetailState.sid) === String(sid)) await refreshStaffProfile(sid)
+  } catch (e) {
+    sel.value = sel.dataset.orig
+    showApiError(e, '離職リスクを変更できませんでした')
+  } finally { sel.disabled = false }
+})
 window.toggleFollow = async function (sid, flag) {
   await axios.put('/api/admin/staff/' + sid, { follow_flag: flag })
   toast(flag ? '要フォローに登録しました' : 'フォローを解除しました')
@@ -1398,9 +1557,26 @@ window.showSkillSheet = async function (sid) {
         </div></div>
       ${ev ? `<div><p class="text-xs font-bold text-gray-400 mb-1">評価（${esc(ev.evaluation_period)}）</p>
         <p class="text-xs">勤怠 ${ev.attendance_score}/5 ・報告 ${ev.report_score}/5 ・実績 ${ev.performance_score}/5 ・クライアント ${ev.client_score}/5</p></div>` : ''}
-      <div><p class="text-xs font-bold text-gray-400 mb-1">推薦コメント</p>
-        <textarea id="ss-comment" rows="3" class="inp text-xs" placeholder="推薦コメントを入力してから印刷してください（任意・保存されません）"></textarea></div>
-    </div>`)
+      <div id="ss-comment-box"><p class="text-xs font-bold text-gray-400 mb-1">推薦コメント</p>
+        <textarea id="ss-comment" rows="3" class="inp text-xs ss-no-print" placeholder="推薦コメントを入力してから印刷してください（任意）"></textarea>
+        <p class="text-[11px] text-gray-400 mt-1 ss-no-print">入力した内容は、この端末にだけ下書きとして残ります（空欄なら印刷に出しません）</p>
+        <p id="ss-comment-print" class="ss-print-only text-xs whitespace-pre-wrap"></p></div>
+    </div>
+    <style>.ss-print-only{display:none}@media print{.ss-no-print{display:none!important}.ss-print-only{display:block!important}#ss-comment-box.ss-empty{display:none!important}}</style>`)
+  // 推薦コメントは印刷用の段落に写し、長文でも途中で切れないようにする（#447）。下書きはこの端末に残す
+  const key = 'admin.skillSheetComment.' + Number(sid)
+  const ta = document.getElementById('ss-comment'), out = document.getElementById('ss-comment-print'), box = document.getElementById('ss-comment-box')
+  const sync = () => {
+    out.textContent = ta.value
+    box.classList.toggle('ss-empty', !ta.value.trim())
+    ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'
+  }
+  try { ta.value = localStorage.getItem(key) || '' } catch { }
+  sync()
+  ta.addEventListener('input', () => {
+    sync()
+    try { if (ta.value.trim()) localStorage.setItem(key, ta.value); else localStorage.removeItem(key) } catch { }
+  })
 }
 
 window.showFollowModal = function (sid, name) {
@@ -1447,34 +1623,126 @@ delegate('addFollowLog', el => addFollowLog(Number(el.dataset.id), el))
 // ============ 案件 ============
 // 請求の標準単価の単位（時給の案件を日単価に見せない #91。日額・時給以外の古い値は日額として計算している）
 function priceUnitLabel(t) { return t === 'hourly' ? '/時' : '/日' }
+// 月の切り替え（案件一覧・案件詳細・クライアント詳細で共通。#450）
+function monthNavHtml(action, month) {
+  const m0 = dayjs(month + '-01')
+  return `<div class="flex gap-2 items-center">
+    <button class="btn btn-outline" data-action="${action}" data-month="${esc(m0.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+    <span class="font-bold whitespace-nowrap">${esc(m0.format('YYYY年M月'))}</span>
+    <button class="btn btn-outline" data-action="${action}" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+  </div>`
+}
+const monthLabel = month => dayjs(month + '-01').format('YYYY年M月')
+// 日報一覧の絞り込みのリンク（#404。日報一覧の reportFilterFromHash と同じ形）
+function reportsLink(f) { return reportsHash(f) }
+function monthRangeOf(month) { const m0 = dayjs(month + '-01'); return { from: m0.format('YYYY-MM-DD'), to: m0.endOf('month').format('YYYY-MM-DD') } }
+
+// 案件一覧の検索・絞り込み・並べ替え（#490）。月は詳細と共通（#450）
+const PROJ_LIST = { month: '', q: '', client: '', status: '', worked: false, incident: false, sort: 'project_id', dir: 1, data: null }
+const PROJ_SORT = {
+  project_id: p => Number(p.project_id), name: p => searchNorm(p.project_name), client: p => p.client_name ? searchNorm(p.client_name) : null,
+  unit_price: p => Number(p.unit_price || 0), month_shifts: p => Number(p.month_shifts || 0), month_seiyaku: p => Number(p.month_seiyaku || 0), incidents: p => Number(p.incidents || 0),
+}
 async function renderProjects() {
   loading()
-  const { data } = await axios.get('/api/admin/projects')
+  PROJ_LIST.month = PROJ_LIST.month || dayjs().format('YYYY-MM')
+  try { PROJ_LIST.data = (await axios.get('/api/admin/projects', { params: { month: PROJ_LIST.month } })).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, '案件を読み込めませんでした'))}</p>`; return }
+  const L = PROJ_LIST; const projects = L.data.projects
+  const clients = [...new Map(projects.filter(p => p.client_id).map(p => [Number(p.client_id), p.client_name])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ja'))
+  const th = (k, label) => `<th class="cursor-pointer select-none whitespace-nowrap" data-action="sortProjects" data-key="${k}" title="クリックで並べ替え">${label}${L.sort === k ? `<i class="fas fa-caret-${L.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>` : ''}</th>`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">案件管理</h2>
-      <button class="btn btn-primary" onclick="showAddProject()"><i class="fas fa-plus"></i>案件登録</button>
+      <h2 class="text-xl font-bold text-gray-900">案件管理 <span class="text-sm font-normal text-gray-400" id="proj-count"></span></h2>
+      <div class="flex gap-2 items-center flex-wrap">
+        ${monthNavHtml('projectsMonth', L.month)}
+        <button class="btn btn-outline" data-action="showLatenessSetting" title="入店・勤務開始を何分まで遅刻にしないか（会社全体の設定）"><i class="fas fa-stopwatch"></i>遅刻の猶予</button>
+        <button class="btn btn-primary" onclick="showAddProject()"><i class="fas fa-plus"></i>案件登録</button>
+      </div>
+    </div>
+    <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
+      <input id="proj-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="案件名・稼働場所・クライアント名で検索" value="${esc(L.q)}">
+      <select id="proj-client" class="inp text-sm w-auto"><option value="">クライアント: すべて</option><option value="none" ${L.client === 'none' ? 'selected' : ''}>（クライアントなし）</option>
+        ${clients.map(([id, name]) => `<option value="${id}" ${String(L.client) === String(id) ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>
+      <select id="proj-status" class="inp text-sm w-auto">${[['', '状態: すべて'], ['active', '稼働中のみ'], ['ended', '終了のみ']].map(([k, v]) => `<option value="${k}" ${L.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="proj-worked" ${L.worked ? 'checked' : ''}>この月に稼働あり</label>
+      <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="proj-incident" ${L.incident ? 'checked' : ''}>インシデントあり</label>
     </div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>案件名</th><th>クライアント</th><th>種別</th><th>稼働場所</th><th>単価</th><th>今月稼働</th><th>今月成約</th><th>インシデント</th><th>状態</th></tr></thead>
-        <tbody>
-          ${data.projects.map(p => `
-            <tr class="cursor-pointer" onclick="location.hash='projects/${p.project_id}'">
+        <thead><tr>${th('name', '案件名')}${th('client', 'クライアント')}<th>種別</th><th>稼働場所</th>${th('unit_price', '単価')}${th('month_shifts', '稼働')}${th('month_seiyaku', '成約')}${th('incidents', 'インシデント')}<th>状態</th></tr></thead>
+        <tbody id="proj-rows"></tbody>
+      </table>
+    </div>
+    <p class="text-xs text-gray-400 mt-2">稼働・成約・インシデントは ${esc(monthLabel(L.month))} の集計です。</p>`
+  let timer = null
+  document.getElementById('proj-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawProjectRows() }, 200) })
+  for (const [id, k] of [['proj-client', 'client'], ['proj-status', 'status']]) document.getElementById(id).addEventListener('change', ev => { L[k] = ev.target.value; drawProjectRows() })
+  for (const [id, k] of [['proj-worked', 'worked'], ['proj-incident', 'incident']]) document.getElementById(id).addEventListener('change', ev => { L[k] = ev.target.checked; drawProjectRows() })
+  drawProjectRows()
+}
+function drawProjectRows() {
+  const L = PROJ_LIST; const all = L.data.projects
+  let list = all
+  if (L.client === 'none') list = list.filter(p => !p.client_id)
+  else if (L.client) list = list.filter(p => String(p.client_id) === String(L.client))
+  if (L.status === 'active') list = list.filter(p => p.status === 'active')
+  if (L.status === 'ended') list = list.filter(p => p.status !== 'active')
+  if (L.worked) list = list.filter(p => Number(p.month_shifts) > 0)
+  if (L.incident) list = list.filter(p => Number(p.incidents) > 0)
+  if (L.q.trim()) list = list.filter(p => matchesKeyword(L.q, [p.project_name, p.location, p.client_name]))
+  const key = PROJ_SORT[L.sort] || PROJ_SORT.project_id
+  list = list.map(p => [key(p), p]).sort((a, b) => {
+    if (a[0] == null || b[0] == null) return (a[0] == null ? 1 : 0) - (b[0] == null ? 1 : 0)
+    return (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) * L.dir || (a[1].project_id - b[1].project_id)
+  }).map(x => x[1])
+  document.getElementById('proj-count').textContent = list.length === all.length ? `${all.length}件` : `${list.length}件（全${all.length}件）`
+  document.getElementById('proj-rows').innerHTML = list.map(p => `
+            <tr class="cursor-pointer" data-action="openProject" data-id="${Number(p.project_id)}">
               <td class="font-medium text-blue-700">${esc(p.project_name)}</td>
               <td class="text-xs">${esc(p.client_name || '-')}</td>
               <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
               <td class="text-xs">${esc(p.location || '-')}</td>
-              <td>${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}</td>
-              <td>${p.month_shifts}件 (${p.staff_count}名)</td>
-              <td class="font-bold">${p.month_seiyaku || 0}</td>
-              <td>${p.incidents ? `<span class="badge badge-red">${p.incidents}件</span>` : '<span class="text-gray-300">0</span>'}</td>
+              <td class="whitespace-nowrap">${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}</td>
+              <td class="whitespace-nowrap">${Number(p.month_shifts || 0)}件 (${Number(p.staff_count || 0)}名)</td>
+              <td class="font-bold">${Number(p.month_seiyaku || 0)}</td>
+              <td>${p.incidents ? `<span class="badge badge-red">${Number(p.incidents)}件</span>` : '<span class="text-gray-300">0</span>'}</td>
               <td>${p.status === 'active' ? '<span class="badge badge-green">稼働中</span>' : '<span class="badge badge-gray">終了</span>'}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`
+            </tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-6">条件に合う案件はありません</td></tr>'
 }
+delegate('openProject', el => { location.hash = 'projects/' + Number(el.dataset.id) })
+delegate('openEmployee', el => { location.hash = 'employees/' + Number(el.dataset.id) })
+delegate('projectsMonth', el => { PROJ_LIST.month = el.dataset.month; renderProjects() })
+delegate('sortProjects', el => {
+  const k = el.dataset.key
+  if (PROJ_LIST.sort === k) PROJ_LIST.dir = -PROJ_LIST.dir
+  else { PROJ_LIST.sort = k; PROJ_LIST.dir = ['name', 'client'].includes(k) ? 1 : -1 }
+  drawProjectRows()
+  document.querySelectorAll('[data-action="sortProjects"]').forEach(h => {
+    const ic = h.querySelector('i'); if (ic) ic.remove()
+    if (h.dataset.key === PROJ_LIST.sort) h.insertAdjacentHTML('beforeend', `<i class="fas fa-caret-${PROJ_LIST.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>`)
+  })
+})
+
+// 遅刻の猶予（分）。会社全体の設定で、これから記録する入店・勤務開始の報告に効く（#497。API は GET/PUT /admin/settings/lateness）
+delegate('showLatenessSetting', async () => {
+  let s
+  try { s = (await axios.get('/api/admin/settings/lateness')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-stopwatch text-blue-600 mr-1"></i>遅刻の猶予</h3>
+    <p class="text-xs text-gray-500 mb-3">入店・勤務開始の報告が、シフトの開始時刻から何分以内なら遅刻にしないかを決めます（会社全体）。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）。</p>
+    <label class="text-sm text-gray-600 block mb-1">猶予（分）</label>
+    <input id="late-grace" type="number" min="0" max="${Number(s.max_grace_minutes) || 0}" step="1" class="inp" value="${Number(s.grace_minutes) || 0}">
+    <p class="text-[11px] text-gray-400 mt-1">0〜${Number(s.max_grace_minutes) || 0}分。0 にすると、開始時刻を1分でも過ぎたら遅刻になります</p>
+    <button class="btn btn-primary w-full mt-4" data-action="saveLatenessSetting">保存する</button>`)
+})
+delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
+  const v = document.getElementById('late-grace').value.trim()
+  if (!/^\d+$/.test(v)) { toast('猶予は0以上の整数で入力してください'); return }
+  try {
+    await axios.put('/api/admin/settings/lateness', { grace_minutes: Number(v) })
+    closeModal(); toast(`遅刻の猶予を${Number(v)}分にしました`)
+  } catch (e) { showApiError(e, '保存できませんでした') }
+}))
 
 window.showAddProject = async function () {
   const [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
@@ -1501,6 +1769,8 @@ window.showAddProject = async function () {
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
           ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
       </div>
+      <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="np-skills" class="inp" maxlength="500" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）">
+        <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp"></textarea></div>
       <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
@@ -1525,59 +1795,86 @@ window.addProject = async function () {
       project_name: name, client_id: document.getElementById('np-client').value || null,
       project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
       unit_price: Number(document.getElementById('np-price').value || 0), unit_price_type: document.getElementById('np-price-unit').value,
-      report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value
+      report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value,
+      required_skills: document.getElementById('np-skills').value
     })
     if (!res) return
     closeModal(); toast('案件を登録しました'); renderProjects()
   } catch (e) { showApiError(e, '案件の登録に失敗しました') }
 }
 
+// スタッフ別ランキングの並べ方（#489）: 合計 / 1日あたり / 成約率（成約÷商談）。日数の少ない人で順位がぶれないよう、最低日数で絞れる
+const RANK_MODES = [['total', '合計'], ['per_day', '1日あたり'], ['rate', '成約率']]
+const RANK_STATE = { mode: 'total', minDays: 0 }
+function rankControlsHtml(action, hasRate) {
+  return `<span class="flex items-center gap-1 flex-wrap text-xs font-normal">
+    ${RANK_MODES.filter(([k]) => k !== 'rate' || hasRate).map(([k, v]) => `<button type="button" class="btn ${RANK_STATE.mode === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="${action}" data-mode="${k}">${v}</button>`).join('')}
+    <select class="inp text-xs w-auto" data-rank-min="${action}">${[0, 3, 5, 10].map(n => `<option value="${n}" ${RANK_STATE.minDays === n ? 'selected' : ''}>${n ? n + '日以上' : '日数: すべて'}</option>`).join('')}</select>
+  </span>`
+}
+// rows: { days, val, num, den } の配列（val: 合計、num/den: 成約・商談）。並べた結果を返す
+function rankRows(rows, hasRate) {
+  const mode = RANK_STATE.mode === 'rate' && !hasRate ? 'total' : RANK_STATE.mode
+  const score = r => mode === 'per_day' ? (r.days ? r.val / r.days : 0) : mode === 'rate' ? (r.den ? r.num / r.den : -1) : r.val
+  return rows.filter(r => r.days >= RANK_STATE.minDays).sort((a, b) => (score(b) - score(a)) || (b.val - a.val) || (b.days - a.days))
+}
+const perDay = (v, d) => d ? (Math.round((v / d) * 10) / 10).toLocaleString() : '-'
+const ratePct = (n, d) => d ? Math.round((n / d) * 100) + '%' : '-'
+document.addEventListener('change', ev => {
+  const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-rank-min]') : null
+  if (!sel) return
+  RANK_STATE.minDays = Number(sel.value) || 0
+  if (sel.dataset.rankMin === 'rankAnalytics') drawAnalytics(); else drawProjectStaffPerf()
+})
+
+let PROJECT_DETAIL = null
 async function renderProjectDetail(pid) {
   loading()
-  const { data } = await axios.get('/api/admin/projects/' + pid)
-  const p = data.project
+  PROJ_LIST.month = PROJ_LIST.month || dayjs().format('YYYY-MM')
+  const { data } = await axios.get('/api/admin/projects/' + pid, { params: { month: PROJ_LIST.month } })
+  const p = data.project; const month = data.month
+  PROJECT_DETAIL = { pid: Number(p.project_id), data }
+  const range = monthRangeOf(month); const ml = monthLabel(month)
   $app.innerHTML = `
-    <div class="flex items-center gap-3 mb-5">
+    <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#projects" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
         <h2 class="text-xl font-bold text-gray-900">${esc(p.project_name)}</h2>
-        <p class="text-sm text-gray-500">${esc(p.client_name || '')} ｜ ${PTYPE_LABELS[p.project_type] || ''} ｜ ${esc(p.location || '')}</p>
+        <p class="text-sm text-gray-500">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="hover:underline">${esc(p.client_name || '')}</a>` : ''} ｜ ${PTYPE_LABELS[p.project_type] || ''} ｜ ${esc(p.location || '')}</p>
       </div>
+      ${monthNavHtml('projectDetailMonth', month)}
       <span class="badge ${p.status === 'active' ? 'badge-green' : 'badge-gray'}">${p.status === 'active' ? '稼働中' : '終了'}</span>
     </div>
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
       <div class="card p-4"><p class="text-xs text-gray-500">請求単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p></div>
-      <div class="card p-4"><p class="text-xs text-gray-500">今月稼働</p><p class="text-xl font-bold">${data.month_summary.n || 0}<span class="text-xs font-normal text-gray-400">件</span></p></div>
-      <div class="card p-4"><p class="text-xs text-gray-500">今月売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
-      <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-gray-400">件</span></p></div>
+      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
+        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a></div>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-4">
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別実績（今月）</h3>
-        <div class="overflow-x-auto">
-        <table class="tbl">
-          <thead><tr><th>スタッフ</th><th>日数</th><th>MNP</th><th>PI</th><th>新規</th><th>光</th><th>成約</th></tr></thead>
-          <tbody>${data.staff_performance.map(s => `
-            <tr><td><a href="#staff/${s.staff_id}" class="text-blue-600 hover:underline">${esc(s.name)}</a></td>
-            <td>${s.days}</td><td>${s.mnp}</td><td>${s.pi}</td><td>${s.shinki}</td><td>${s.hikari}</td><td class="font-bold">${s.seiyaku}</td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-3">データなし</td></tr>'}
-          </tbody>
-        </table>
+        <div class="flex items-center gap-2 mb-3 flex-wrap">
+          <h3 class="text-sm font-bold text-gray-700">スタッフ別実績（${esc(ml)}）</h3>
+          <span class="ml-auto">${rankControlsHtml('rankProject', true)}</span>
         </div>
+        <div class="overflow-x-auto" id="project-staff-perf"></div>
       </section>
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-bolt text-red-500 mr-1"></i>インシデント・クレーム</h3>
+        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-bolt text-red-500 mr-1"></i>インシデント・クレーム<span class="text-xs font-normal text-gray-400 ml-1">（直近10件）</span>
+          <a href="${esc(reportsLink({ project: p.project_id, flagged: 1 }))}" class="ml-auto text-xs font-normal text-blue-600 hover:underline">日報一覧で見る</a></h3>
         <div class="space-y-2 max-h-64 overflow-y-auto">
           ${data.incidents.map(i => `
-            <div class="p-2.5 rounded-lg bg-red-50 text-xs">
+            <a href="${esc(reportsLink({ project: p.project_id, from: i.work_date, to: i.work_date }))}" class="block p-2.5 rounded-lg bg-red-50 text-xs hover:bg-red-100" title="この日の日報を開く">
               <div class="flex gap-2 mb-1">
                 ${i.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
                 ${i.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
-                <span class="text-gray-500">${dayjs(i.work_date).format('M/D')} ${esc(i.staff_name)}</span>
+                <span class="text-gray-500">${esc(dayjs(i.work_date).format('YYYY/M/D'))} ${esc(i.staff_name)}</span>
               </div>
-              <p class="text-gray-700">${esc((i.values && i.values.free) || '')}</p>
-            </div>`).join('') || '<p class="text-sm text-gray-400">インシデントはありません</p>'}
+              <p class="text-gray-700 whitespace-pre-wrap">${esc((i.values && i.values.free) || '')}</p>
+            </a>`).join('') || '<p class="text-sm text-gray-400">インシデントはありません</p>'}
         </div>
       </section>
     </div>
@@ -1585,11 +1882,13 @@ async function renderProjectDetail(pid) {
     <div class="grid lg:grid-cols-2 gap-4">
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-2">求められる内容</h3>
-        <p class="text-sm text-gray-600">${esc(p.requirements || '-')}</p>
+        <p class="text-sm text-gray-600 whitespace-pre-wrap">${esc(p.requirements || '-')}</p>
         <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2">案件マニュアル・注意事項</h3>
         <p class="text-sm text-gray-600 whitespace-pre-wrap">${esc(p.manual_text || '-')}</p>
-        <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2">必要スキル</h3>
-        <div class="flex flex-wrap gap-1">${(p.required_skills || '').split(',').filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '-'}</div>
+        <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2 flex items-center">必要スキル
+          <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectSkills" data-id="${Number(p.project_id)}" data-skills="${esc(p.required_skills || '')}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
+        <div class="flex flex-wrap gap-1" id="project-skills">${projectSkillBadges(p.required_skills)}</div>
+        <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p>
       </section>
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-2">日報テンプレート項目</h3>
@@ -1599,7 +1898,7 @@ async function renderProjectDetail(pid) {
         <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
         <div class="mt-4 pt-3 border-t border-gray-100">
           <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
-          <select class="inp text-sm" onchange="updateProjectPhotoRequired(${p.project_id}, this.value)">
+          <select class="inp text-sm" onchange="updateProjectPhotoRequired(${Number(p.project_id)}, this.value)">
             <option value="inherit" ${p.photo_required_override == null ? 'selected' : ''}>会社設定に従う（現在: ${data.company_photo_default ? '必須' : '不要'}）</option>
             <option value="on" ${p.photo_required_override === 1 ? 'selected' : ''}>この案件は必須にする</option>
             <option value="off" ${p.photo_required_override === 0 ? 'selected' : ''}>この案件は不要にする</option>
@@ -1608,9 +1907,49 @@ async function renderProjectDetail(pid) {
       </section>
     </div>
     <div id="project-pricing-panel" class="mt-4"></div>`
+  drawProjectStaffPerf()
   // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
   if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
 }
+function projectSkillBadges(v) {
+  return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-gray-400">-</span>'
+}
+// 案件詳細のスタッフ別実績。成約/日・成約率も出し、並べ方を切り替えられる（#489）
+function drawProjectStaffPerf() {
+  const host = document.getElementById('project-staff-perf'); if (!host || !PROJECT_DETAIL) return
+  const { data } = PROJECT_DETAIL; const range = monthRangeOf(data.month)
+  const rows = rankRows(data.staff_performance.map(s => ({ ...s, days: Number(s.days || 0), val: Number(s.seiyaku || 0), num: Number(s.seiyaku || 0), den: Number(s.shodan || 0) })), true)
+  host.innerHTML = `<table class="tbl">
+    <thead><tr><th>スタッフ</th><th>日数</th><th>MNP</th><th>PI</th><th>新規</th><th>光</th><th>成約</th><th class="whitespace-nowrap">成約/日</th><th>成約率</th></tr></thead>
+    <tbody>${rows.map(s => `
+      <tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name)}</a>
+        <a href="${esc(reportsLink({ project: data.project.project_id, staff: s.staff_id, ...range }))}" class="text-[11px] text-gray-400 hover:underline ml-1" title="この人の日報を見る"><i class="fas fa-file-lines"></i></a></td>
+      <td>${s.days}</td><td>${Number(s.mnp || 0)}</td><td>${Number(s.pi || 0)}</td><td>${Number(s.shinki || 0)}</td><td>${Number(s.hikari || 0)}</td><td class="font-bold">${s.val}</td>
+      <td>${perDay(s.val, s.days)}</td><td>${ratePct(s.num, s.den)}</td></tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-3">データなし</td></tr>'}
+    </tbody></table>
+    <p class="text-[11px] text-gray-400 mt-1">日数は日報の数。成約率は成約÷商談（商談の入力がない人は -）</p>`
+}
+delegate('rankProject', el => { RANK_STATE.mode = el.dataset.mode; renderProjectDetailRankButtons(); drawProjectStaffPerf() })
+function renderProjectDetailRankButtons() {
+  document.querySelectorAll('[data-action="rankProject"]').forEach(b => { b.classList.toggle('btn-primary', b.dataset.mode === RANK_STATE.mode); b.classList.toggle('btn-outline', b.dataset.mode !== RANK_STATE.mode) })
+}
+delegate('projectDetailMonth', el => { PROJ_LIST.month = el.dataset.month; if (PROJECT_DETAIL) renderProjectDetail(PROJECT_DETAIL.pid) })
+delegate('editProjectSkills', el => {
+  modal(`
+    <h3 class="font-bold text-lg mb-2">必要スキル</h3>
+    <p class="text-xs text-gray-500 mb-3">カンマ・読点で区切って入力します。空欄にすると消えます。</p>
+    <input id="pj-skills" class="inp" maxlength="500" value="${esc(el.dataset.skills || '')}" placeholder="例: MNP、光回線、クロージング">
+    <button class="btn btn-primary w-full mt-4" data-action="saveProjectSkills" data-id="${Number(el.dataset.id)}">保存する</button>`)
+})
+delegate('saveProjectSkills', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id)
+  try {
+    const { data } = await axios.put(`/api/admin/projects/${pid}/required-skills`, { required_skills: document.getElementById('pj-skills').value })
+    closeModal(); toast('必要スキルを保存しました')
+    const box = document.getElementById('project-skills'); if (box) box.innerHTML = projectSkillBadges(data.required_skills)
+    const btn = document.querySelector('[data-action="editProjectSkills"]'); if (btn) btn.dataset.skills = data.required_skills || ''
+  } catch (e) { showApiError(e, '必要スキルを保存できませんでした') }
+}))
 
 // ============ クライアント ============
 // 評価の星。範囲外・数値でない値でも描画が止まらないよう 0〜5 に丸める
@@ -1618,19 +1957,44 @@ function ratingStars(v) {
   const n = Math.max(0, Math.min(5, Math.round(Number(v) || 0)))
   return '★'.repeat(n) + '☆'.repeat(5 - n)
 }
+// クライアント一覧の検索・並べ替え（#490）
+const CLIENT_LIST = { q: '', stream: '', sort: 'client_id', data: null }
 async function renderClients() {
   loading()
-  const { data } = await axios.get('/api/admin/clients')
+  try { CLIENT_LIST.data = (await axios.get('/api/admin/clients')).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
+  const L = CLIENT_LIST
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">クライアント管理</h2>
+      <h2 class="text-xl font-bold text-gray-900">クライアント管理 <span class="text-sm font-normal text-gray-400" id="client-count"></span></h2>
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
-    <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-      ${data.clients.map(c => `
+    <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・担当者・稼働案件で検索" value="${esc(L.q)}">
+      <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    </div>
+    <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" id="client-cards"></div>`
+  let timer = null
+  document.getElementById('client-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawClientCards() }, 200) })
+  document.getElementById('client-stream').addEventListener('change', ev => { L.stream = ev.target.value; drawClientCards() })
+  document.getElementById('client-sort').addEventListener('change', ev => { L.sort = ev.target.value; drawClientCards() })
+  drawClientCards()
+}
+function drawClientCards() {
+  const L = CLIENT_LIST; const all = L.data.clients
+  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && matchesKeyword(L.q, [c.client_name, c.contact_name, c.active_projects, c.phone, c.email]))
+  const by = {
+    client_id: (a, b) => a.client_id - b.client_id,
+    name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
+    active: (a, b) => (Number(b.active_project_count || 0) - Number(a.active_project_count || 0)) || (a.client_id - b.client_id),
+    rating: (a, b) => (Number(b.client_rating || 0) - Number(a.client_rating || 0)) || (a.client_id - b.client_id),
+  }[L.sort] || ((a, b) => a.client_id - b.client_id)
+  list = list.slice().sort(by)
+  document.getElementById('client-count').textContent = list.length === all.length ? `${all.length}社` : `${list.length}社（全${all.length}社）`
+  document.getElementById('client-cards').innerHTML = list.map(c => `
         <section class="card p-4">
           <div class="flex items-start justify-between mb-2">
-            <h3 class="font-bold text-gray-800"><a href="#clients/${c.client_id}" class="hover:underline">${esc(c.client_name)}</a></h3>
+            <h3 class="font-bold text-gray-800"><a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
             <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           </div>
           <dl class="text-xs text-gray-600 space-y-1.5">
@@ -1638,22 +2002,117 @@ async function renderClients() {
             <div class="flex"><dt class="w-20 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
+              ${c.active_projects ? `<span class="block text-gray-500 truncate max-w-[220px]">${esc(c.active_projects)}</span>` : ''}</dd></div>
           </dl>
           ${c.ng_staff_ids ? '<p class="text-xs text-red-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
-          ${c.memo ? `<p class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2 text-gray-500">${esc(c.memo)}</p>` : ''}
-        </section>`).join('')}
-    </div>`
+          ${c.memo ? `<p class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2 text-gray-500 whitespace-pre-wrap">${esc(c.memo)}</p>` : ''}
+        </section>`).join('') || '<p class="text-sm text-gray-400">条件に合うクライアントはありません</p>'
 }
 
-// クライアント（発注元企業）詳細画面。会社情報 + 契約書ファイル管理を表示する
+// クライアント（発注元企業）詳細画面。会社情報 + 取引の実績 + 契約書ファイル管理を表示する
+// 会社基本情報は「編集」で入力欄に切り替え、表示中の項目をすべて保存できる（#307）
+let CLIENT_DETAIL = { cid: null, month: '' }
+const CLIENT_CONTRACT_TYPES = ['業務委託', '派遣', '請負', '紹介']
+function clientBasicHtml(c, editing) {
+  const cid = Number(c.client_id)
+  if (!editing) return `
+        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center">会社基本情報
+          <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientBasic"><i class="fas fa-pen"></i>編集</button></h3>
+        <dl class="text-sm space-y-2">
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(c.address || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+          <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
+        </dl>
+        <div class="mt-3 pt-3 border-t border-gray-100">
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
+          <dl class="text-xs space-y-1.5">
+            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者</dt><dd>${esc([c.representative_title, c.representative_name].filter(Boolean).join(' ') || '-')}${c.representative_kana ? `<span class="text-gray-400 ml-1">（${esc(c.representative_kana)}）</span>` : ''}</dd></div>
+            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">インボイス番号</dt><dd>${esc(c.invoice_number || '-')}</dd></div>
+          </dl>
+        </div>`
+  const inp = (id, label, v, extra = '') => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" value="${esc(v || '')}" ${extra}></div>`
+  const contractOpts = CLIENT_CONTRACT_TYPES.includes(c.contract_type || '') || !c.contract_type ? CLIENT_CONTRACT_TYPES : [c.contract_type, ...CLIENT_CONTRACT_TYPES]
+  return `
+        <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
+        <div class="space-y-2">
+          ${inp('cl-name', 'クライアント名 *', c.client_name, 'maxlength="200"')}
+          <div class="flex items-center gap-2"><label for="cl-stream" class="w-28 text-xs text-gray-400 shrink-0">上流/下流</label>
+            <select id="cl-stream" class="inp text-xs flex-1"><option value="upstream" ${c.stream_type === 'upstream' ? 'selected' : ''}>上流</option><option value="downstream" ${c.stream_type === 'downstream' ? 'selected' : ''}>下流</option></select></div>
+          ${inp('cl-contact', '担当者', c.contact_name)}
+          ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
+          ${inp('cl-email', 'メール', c.email, 'type="email"')}
+          ${inp('cl-address', '住所', c.address)}
+          <div class="flex items-center gap-2"><label for="cl-contract" class="w-28 text-xs text-gray-400 shrink-0">契約形態</label>
+            <select id="cl-contract" class="inp text-xs flex-1"><option value="">（未設定）</option>${contractOpts.map(v => `<option ${c.contract_type === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+          ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
+          <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
+            <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
+          <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
+          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
+          ${inp('cl-rep-title', '代表者役職', c.representative_title)}
+          ${inp('cl-rep-name', '代表者氏名', c.representative_name)}
+          ${inp('cl-rep-kana', '代表者フリガナ', c.representative_kana)}
+          ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
+          <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
+          <div class="flex gap-2">
+            <button type="button" class="btn btn-outline text-xs flex-1" data-action="cancelClientBasic">取り消す</button>
+            <button type="button" class="btn btn-primary text-xs flex-1" data-action="saveClientBasic" data-id="${cid}">保存</button>
+          </div>
+        </div>`
+}
+// 取引の実績（#345）: 案件ごとの稼働・売上・日報・インシデントと、6か月の月別推移。終了した案件は折りたたむ
+function clientDealsHtml(data) {
+  const ml = monthLabel(data.month); const range = monthRangeOf(data.month)
+  const projects = data.projects || []
+  const active = projects.filter(p => p.status === 'active'), ended = projects.filter(p => p.status !== 'active')
+  const row = p => `<tr>
+      <td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline">${esc(p.project_name)}</a>${p.location ? `<span class="block text-[11px] text-gray-400">${esc(p.location)}</span>` : ''}</td>
+      <td>${p.status === 'active' ? '<span class="badge badge-green">稼働中</span>' : '<span class="badge badge-gray">終了</span>'}</td>
+      <td class="whitespace-nowrap">${Number(p.shifts)}件（${Number(p.staff_count)}名）</td>
+      <td class="whitespace-nowrap">${yen(p.bill_total)}</td>
+      <td>${p.reports ? `<a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-blue-600 hover:underline">${Number(p.reports)}</a>` : '0'}</td>
+      <td>${p.incidents ? `<a href="${esc(reportsLink({ project: p.project_id, ...range, flagged: 1 }))}" class="badge badge-red">${Number(p.incidents)}件</a>` : '<span class="text-gray-300">0</span>'}</td></tr>`
+  const head = '<thead><tr><th>案件</th><th>状態</th><th>稼働</th><th>売上（概算）</th><th>日報</th><th>インシデント</th></tr></thead>'
+  const sum = projects.reduce((a, p) => ({ shifts: a.shifts + Number(p.shifts), bill: a.bill + Number(p.bill_total), incidents: a.incidents + Number(p.incidents) }), { shifts: 0, bill: 0, incidents: 0 })
+  const maxBill = Math.max(1, ...(data.trend || []).map(t => Number(t.bill_total)))
+  return `
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-chart-column text-blue-500 mr-1"></i>取引の実績</h3>
+        <span class="ml-auto">${monthNavHtml('clientDetailMonth', data.month)}</span>
+      </div>
+      <div class="grid grid-cols-3 gap-3 mb-3 text-center">
+        <div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${sum.shifts}件</p><p class="text-xs text-gray-500">${esc(ml)}の稼働</p></div>
+        <div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${yen(sum.bill)}</p><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p></div>
+        <div class="bg-gray-50 rounded-lg py-2"><p class="font-bold ${sum.incidents ? 'text-red-600' : 'text-blue-600'}">${sum.incidents}件</p><p class="text-xs text-gray-500">インシデント</p></div>
+      </div>
+      <div class="overflow-x-auto"><table class="tbl">${head}<tbody>${active.map(row).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-3">稼働中の案件はありません</td></tr>'}</tbody></table></div>
+      ${ended.length ? `<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">終了した案件（${ended.length}件）</summary>
+        <div class="overflow-x-auto mt-1"><table class="tbl">${head}<tbody>${ended.map(row).join('')}</tbody></table></div></details>` : ''}
+      <p class="text-xs font-bold text-gray-500 mt-4 mb-1">月別の推移（${esc(monthLabel((data.trend || [])[0] ? data.trend[0].ym : data.month))}〜${esc(ml)}）</p>
+      <div class="space-y-1">${(data.trend || []).map(t => `
+        <div class="flex items-center gap-2 text-xs">
+          <span class="w-16 text-gray-500 shrink-0">${esc(dayjs(t.ym + '-01').format('YY年M月'))}</span>
+          <span class="flex-1 bg-gray-100 rounded h-3 overflow-hidden"><span class="block h-3 bg-blue-500" style="width:${Math.round((Number(t.bill_total) / maxBill) * 100)}%"></span></span>
+          <span class="w-28 text-right whitespace-nowrap">${yen(t.bill_total)}</span>
+          <span class="w-14 text-right text-gray-500">${Number(t.shifts)}件</span>
+        </div>`).join('')}</div>
+      <p class="text-[11px] text-gray-400 mt-2">売上は、今日までの確定・代打のシフトの請求額（単価・交通費・調整）の合計です。精算の確定前の概算を含みます</p>`
+}
 async function renderClientDetail(cid) {
   loading()
+  if (String(CLIENT_DETAIL.cid) !== String(cid)) CLIENT_DETAIL = { cid: Number(cid), month: CLIENT_DETAIL.month }
+  CLIENT_DETAIL.month = CLIENT_DETAIL.month || dayjs().format('YYYY-MM')
   const [{ data }, { data: docData }] = await Promise.all([
-    axios.get('/api/admin/clients/' + cid),
+    axios.get('/api/admin/clients/' + cid, { params: { month: CLIENT_DETAIL.month } }),
     axios.get('/api/admin/clients/' + cid + '/documents'),
   ])
   const c = data.client; const contacts = data.contacts || []
+  CLIENT_DETAIL.client = c
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#clients" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
@@ -1667,41 +2126,22 @@ async function renderClientDetail(cid) {
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4">
-      <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報</h3>
-        <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">住所</dt><dd>${esc(c.address || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
-          <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600">${esc(c.memo || '-')}</dd></div>
-        </dl>
-        <div class="mt-3 pt-3 border-t border-gray-100 space-y-2">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
-          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">代表者役職</dt><dd class="flex-1"><input id="cl-rep-title" class="inp text-xs" value="${esc(c.representative_title || '')}"></dd></div>
-          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">代表者氏名</dt><dd class="flex-1"><input id="cl-rep-name" class="inp text-xs" value="${esc(c.representative_name || '')}"></dd></div>
-          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">代表者フリガナ</dt><dd class="flex-1"><input id="cl-rep-kana" class="inp text-xs" value="${esc(c.representative_kana || '')}"></dd></div>
-          <div class="flex items-center gap-2"><dt class="w-28 text-xs text-gray-400 shrink-0">インボイス番号</dt><dd class="flex-1"><input id="cl-invoice" class="inp text-xs" placeholder="T1234567890123" value="${esc(c.invoice_number || '')}"></dd></div>
-          <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
-          <button class="btn btn-outline text-xs w-full" onclick="saveClientBasicInfo(${cid})">保存</button>
-        </div>
-      </section>
+      <section class="card p-4" id="client-basic-info">${clientBasicHtml(c, false)}</section>
 
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-address-book text-blue-500 mr-1"></i>顧客担当者</h3>
-          <button class="btn btn-outline text-xs" onclick="showClientContactForm(${cid})"><i class="fas fa-plus"></i>担当者を追加</button>
+          <button class="btn btn-outline text-xs" onclick="showClientContactForm(${Number(cid)})"><i class="fas fa-plus"></i>担当者を追加</button>
         </div>
         <div id="client-contacts-list">${clientContactsHtml(contacts, cid)}</div>
       </section>
 
+      <section class="card p-4 lg:col-span-2" id="client-deals">${clientDealsHtml(data)}</section>
+
       <section class="card p-4 lg:col-span-2">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-file-signature text-blue-500 mr-1"></i>契約書</h3>
-          <button class="btn btn-outline text-xs" onclick="openDocumentUpload('client', ${cid})"><i class="fas fa-upload"></i>契約書をアップロード</button>
+          <button class="btn btn-outline text-xs" onclick="openDocumentUpload('client', ${Number(cid)})"><i class="fas fa-upload"></i>契約書をアップロード</button>
         </div>
         <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
       </section>
@@ -1712,6 +2152,17 @@ async function renderClientDetail(cid) {
   // 開催場所（public/static/shift-board.js）
   if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
 }
+// 月を切り替えたら、取引の実績の欄だけを取り直す（編集中の入力を消さない）
+delegate('clientDetailMonth', async el => {
+  const cid = CLIENT_DETAIL.cid; if (!cid) return
+  CLIENT_DETAIL.month = el.dataset.month
+  const box = document.getElementById('client-deals'); if (!box) return
+  try { box.innerHTML = clientDealsHtml((await axios.get('/api/admin/clients/' + cid, { params: { month: CLIENT_DETAIL.month } })).data) }
+  catch (e) { showApiError(e, '実績を読み込めませんでした') }
+})
+delegate('editClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true) })
+delegate('cancelClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, false) })
+delegate('saveClientBasic', el => withSubmitLock(el, () => saveClientBasicInfo(Number(el.dataset.id))))
 
 // クライアントのNGスタッフ（#204）。シフトボードの候補・割当、応募の承認で警告する
 let CLIENT_NG = { cid: null, list: [] }
@@ -1719,8 +2170,8 @@ async function renderClientNgPanel(cid) {
   const host = document.getElementById('client-ng-panel'); if (!host) return
   let list, staff
   try {
-    const [{ data: ng }, { data: st }] = await Promise.all([axios.get(`/api/admin/clients/${Number(cid)}/ng-staff`), axios.get('/api/admin/staff')])
-    list = ng.staff; staff = st.staff.filter(s => !s.merged_into_staff_id && s.affiliation_type !== 'skillsheet_only')
+    const [{ data: ng }, { data: st }] = await Promise.all([axios.get(`/api/admin/clients/${Number(cid)}/ng-staff`), axios.get('/api/admin/staff/options', { params: { include: 'all' } })])
+    list = ng.staff; staff = st.staff
   } catch (e) { host.innerHTML = '<section class="card p-4 text-sm text-red-600">NGスタッフを読み込めませんでした</section>'; return }
   CLIENT_NG = { cid: Number(cid), list }
   const ngIds = new Set(list.map(s => s.staff_id))
@@ -1846,15 +2297,18 @@ delegate('deleteClientContact', el => {
   deleteClientContact(Number(el.dataset.cid), Number(el.dataset.id), ct ? ct.contact_name : '')
 })
 
+// 会社基本情報の保存（#307）。空欄は消す（クライアント名は必須）
 window.saveClientBasicInfo = async function (cid) {
   const err = document.getElementById('cl-basic-error')
   err.classList.add('hidden')
+  const v = id => document.getElementById(id).value.trim()
+  if (!v('cl-name')) { err.textContent = 'クライアント名を入力してください'; err.classList.remove('hidden'); return }
   try {
     await axios.put('/api/admin/clients/' + cid, {
-      representative_title: document.getElementById('cl-rep-title').value || null,
-      representative_name: document.getElementById('cl-rep-name').value || null,
-      representative_kana: document.getElementById('cl-rep-kana').value || null,
-      invoice_number: document.getElementById('cl-invoice').value || null,
+      client_name: v('cl-name'), stream_type: v('cl-stream'), contact_name: v('cl-contact'), phone: v('cl-phone'), email: v('cl-email'),
+      address: v('cl-address'), contract_type: v('cl-contract'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
+      memo: document.getElementById('cl-memo').value,
+      representative_title: v('cl-rep-title'), representative_name: v('cl-rep-name'), representative_kana: v('cl-rep-kana'), invoice_number: v('cl-invoice'),
     })
     toast('会社基本情報を保存しました')
     renderClientDetail(cid)
@@ -1878,12 +2332,13 @@ async function renderEmployees() {
       </div>
     </div>
     <section class="card p-4">
+      <input id="emp-q" class="inp text-sm mb-3" placeholder="社員番号・氏名・フリガナ・所属・役職・拠点で検索">
       <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>社員番号</th><th>氏名</th><th>フリガナ</th><th>在籍確認</th><th>所属</th><th>役職</th><th>拠点</th><th>契約形態</th></tr></thead>
           <tbody>
             ${data.employees.length === 0 ? '<tr><td colspan="8" class="text-center text-gray-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
-              <tr class="cursor-pointer" onclick="location.hash='employees/${e.staff_id}'">
+              <tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}" data-search="${escAttr([e.employee_number, e.name, e.kana, e.department, e.job_title, e.base_location].filter(Boolean).join(' '))}">
                 <td>${esc(e.employee_number || '-')}</td>
                 <td class="text-blue-600 hover:underline">${esc(e.name)}</td>
                 <td>${esc(e.kana || '-')}</td>
@@ -1901,10 +2356,14 @@ async function renderEmployees() {
       <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-box-archive text-gray-400 mr-1"></i>雇用終了（他の区分へ移行・統合したスタッフ）</h3>
       <p class="text-xs text-gray-400 mb-2">従業員管理のデータは閲覧のみで保持しています（7年保存）。スタッフとしての稼働はスタッフマスタで管理します</p>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>社員番号</th><th>氏名</th><th>現在の区分</th><th>雇用終了日</th><th>理由</th></tr></thead><tbody>
-        ${data.ended.map(e => `<tr class="cursor-pointer" onclick="location.hash='employees/${e.staff_id}'"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
+        ${data.ended.map(e => `<tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
           <td>${e.merged_into_staff_id ? '<span class="badge badge-gray">統合済み</span>' : affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-gray-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
       </tbody></table></div>
     </section>` : ''}`
+  document.getElementById('emp-q').addEventListener('input', ev => {
+    const q = ev.target.value
+    document.querySelectorAll('tr[data-search]').forEach(tr => { tr.hidden = !matchesKeyword(q, [tr.dataset.search]) })
+  })
 }
 
 async function renderEmployeeDetail(sid) {
@@ -2132,7 +2591,11 @@ window.showAddClient = function () {
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">担当者</label><input id="nc-contact" class="inp"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
@@ -2148,6 +2611,7 @@ window.addClient = async function () {
       client_name: name, stream_type: document.getElementById('nc-stream').value,
       contract_type: document.getElementById('nc-contract').value, contact_name: document.getElementById('nc-contact').value,
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
+      email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
       memo: document.getElementById('nc-memo').value
     })
     if (!res) return
@@ -2200,9 +2664,9 @@ async function renderShifts(dateStr) {
 }
 
 window.showAddShift = async function (defaultDate) {
-  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff'), axios.get('/api/admin/projects')])
-  // 割り当てられる人だけを出す（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職は assignable=0 #94）
-  const staff = st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id && s.assignable !== 0)
+  // スタッフは選択肢用の軽いAPIで取る（#463）。割り当てられる人だけが返る（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職を除く #94）
+  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects')])
+  const staff = st.staff.filter(s => s.assignable !== 0)
   addShiftProjects = pj.projects.filter(p => p.status === 'active')
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト登録</h3>
@@ -2589,6 +3053,7 @@ async function renderAnalytics(month) {
 }
 delegate('analyticsMonth', el => renderAnalytics(el.dataset.month))
 window.setAnalyticsKey = function (key) { ANALYTICS.key = key; drawAnalytics() }
+delegate('rankAnalytics', el => { RANK_STATE.mode = el.dataset.mode; drawAnalytics() })
 function drawAnalytics() {
   const data = ANALYTICS.data; const month = data.month; const fields = data.fields; const key = ANALYTICS.key
   const tv = (data.totals && data.totals.values) || {}
@@ -2599,8 +3064,11 @@ function drawAnalytics() {
   const cells = r => fields.map(f => `<td class="${f.key === key ? 'font-bold' : ''}">${num(r.values[f.key])}</td>`).join('')
   const csvLink = by => `<a class="text-xs text-blue-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(new URLSearchParams({ month, by }).toString())}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
   const empty = (n) => `<tr><td colspan="${n}" class="text-center text-gray-400 py-4">日報はありません</td></tr>`
-  const staff = data.by_staff.slice().sort((a, b) => ((b.values[key] || 0) - (a.values[key] || 0)) || (b.reports - a.reports))
+  // ランキングは 合計・1日あたり・成約率 で並べ替えられる（#489）。日数は日報の数
+  const hasRate = has('shodan') && has('seiyaku')
+  const staff = rankRows(data.by_staff.map(s => ({ ...s, days: Number(s.reports || 0), val: Number(s.values[key] || 0), num: Number(s.values.seiyaku || 0), den: Number(s.values.shodan || 0) })), hasRate)
   const keyLabel = (fields.find(f => f.key === key) || {}).label || ''
+  const rankLabel = { total: `${keyLabel}の多い順`, per_day: `1日あたりの${keyLabel}の多い順`, rate: '成約率の高い順' }[RANK_STATE.mode === 'rate' && !hasRate ? 'total' : RANK_STATE.mode]
   const m0 = dayjs(month + '-01')
 
   $app.innerHTML = `
@@ -2625,14 +3093,17 @@ function drawAnalytics() {
       ${key ? '<canvas id="daily-chart" height="80"></canvas>' : '<p class="text-sm text-gray-400">表示する項目がありません</p>'}
     </section>
     <section class="card p-4 mb-5">
-      <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別ランキング${keyLabel ? `（${esc(keyLabel)}の多い順）` : ''}${csvLink('staff')}</h3>
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別ランキング${keyLabel ? `（${esc(rankLabel)}）` : ''}${csvLink('staff')}</h3>
+        ${key ? `<span class="ml-auto">${rankControlsHtml('rankAnalytics', hasRate)}</span>` : ''}
+      </div>
       <div class="overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>#</th><th>スタッフ</th><th>日報</th>${heads}</tr></thead>
+        <thead><tr><th>#</th><th>スタッフ</th><th>日報</th>${heads}${key ? `<th class="whitespace-nowrap">${esc(keyLabel)}/日</th>` : ''}${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
         <tbody>${staff.map((s, i) => `
           <tr><td>${i < 3 && key && s.values[key] ? ['🥇', '🥈', '🥉'][i] : i + 1}</td>
           <td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name || '')}</a></td>
-          <td>${s.reports}</td>${cells(s)}</tr>`).join('') || empty(fields.length + 3)}
+          <td>${s.reports}</td>${cells(s)}${key ? `<td>${perDay(s.val, s.days)}</td>` : ''}${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || empty(fields.length + 3 + (key ? 1 : 0) + (hasRate ? 1 : 0))}
         </tbody>
       </table>
       </div>
@@ -2662,11 +3133,14 @@ function drawAnalytics() {
     </section>`
 
   if (!key) return
+  // 日別推移は月の1日から末日まで並べ、日報のない日は0にする（#550。日付が詰まって見えないように）
+  const byDay = new Map(data.daily.map(d => [d.work_date, d]))
+  const days = Array.from({ length: m0.daysInMonth() }, (_, i) => m0.add(i, 'day').format('YYYY-MM-DD'))
   new Chart(document.getElementById('daily-chart'), {
     type: 'bar',
     data: {
-      labels: data.daily.map(d => dayjs(d.work_date).format('M/D')),
-      datasets: [{ label: keyLabel, data: data.daily.map(d => d.values[key] || 0), backgroundColor: '#2563eb' }],
+      labels: days.map(d => dayjs(d).format('M/D')),
+      datasets: [{ label: keyLabel, data: days.map(d => (byDay.get(d) ? byDay.get(d).values[key] || 0 : 0)), backgroundColor: '#2563eb' }],
     },
     options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
   })
