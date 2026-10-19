@@ -6,6 +6,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { loadRoster, createPerson, unusablePasswordHash } from './roster'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -112,8 +113,8 @@ boardApi.get('/posts', async (c) => {
   const tmap: Record<number, { threads: number; unread: number }> = {}
   if (ids.length) {
     const ts = (await db.prepare(`SELECT t.post_id, COUNT(*) AS threads, SUM(${UNREAD_SQL}) AS unread FROM board_threads t
-      WHERE t.post_id IN (${ids.map(() => '?').join(',')}) AND (t.poster_company_id = ? OR t.inquirer_company_id = ?) GROUP BY t.post_id`)
-      .bind(u.company_id, u.company_id, ...ids, u.company_id, u.company_id).all()).results as any[]
+      WHERE t.post_id IN ${JSON_IN} AND (t.poster_company_id = ? OR t.inquirer_company_id = ?) GROUP BY t.post_id`)
+      .bind(u.company_id, u.company_id, bindJsonArray(ids), u.company_id, u.company_id).all()).results as any[]
     for (const x of ts) tmap[x.post_id] = { threads: x.threads, unread: x.unread || 0 }
   }
   return c.json({ posts: rows.map(r => ({ ...shape(r, u.company_id), thread_count: tmap[r.post_id]?.threads || 0, unread: tmap[r.post_id]?.unread || 0 })), open_counts: Object.fromEntries(counts.map(x => [x.engagement_type, x.n])) })

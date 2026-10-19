@@ -6,30 +6,30 @@ INSERT OR IGNORE INTO companies (company_id, company_code, company_name, plan, u
  (3, 'demo3', '合同会社ネクストコネクト', 'basic', 15, 'active', 2, '', '{}');
 
 INSERT OR IGNORE INTO users (user_id, company_id, user_code, name, role, password_hash, email, phone, status) VALUES
-(1, 1, 'admin', '出井 代表', 'company_admin', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'admin@sample-mobile.jp', '03-0000-0001', 'active'),
-(2, 1, 'mgr01', '藤田 現場長', 'field_manager', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'fujita@sample-mobile.jp', '090-0000-0002', 'active'),
-(3, 1, 'sales01', '岡本 営業', 'sales_manager', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'okamoto@sample-mobile.jp', '090-0000-0003', 'active'),
-(4, 1, 'st001', '佐藤 健太', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff1@example.com', '090-1111-1000', 'active'),
-(5, 1, 'st002', '鈴木 美咲', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff2@example.com', '090-1111-1001', 'active'),
-(6, 1, 'st003', '高橋 大輔', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff3@example.com', '090-1111-1002', 'active'),
-(7, 1, 'st004', '田中 彩香', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff4@example.com', '090-1111-1003', 'active'),
-(8, 1, 'st005', '伊藤 翔太', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff5@example.com', '090-1111-1004', 'active'),
-(9, 1, 'st006', '渡辺 由衣', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff6@example.com', '090-1111-1005', 'active'),
-(10, 1, 'st007', '山本 拓海', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff7@example.com', '090-1111-1006', 'active'),
-(11, 1, 'st008', '中村 花菜', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff8@example.com', '090-1111-1007', 'active'),
-(12, 1, 'st009', '小林 竜也', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff9@example.com', '090-1111-1008', 'active'),
-(13, 1, 'st010', '加藤 芽衣', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff10@example.com', '090-1111-1009', 'active'),
-(14, 1, 'st011', '吉田 悠人', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff11@example.com', '090-1111-1010', 'active'),
-(15, 1, 'st012', '山田 莉子', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff12@example.com', '090-1111-1011', 'active'),
-(16, 1, 'st013', '佐々木 蓮', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff13@example.com', '090-1111-1012', 'active'),
-(17, 1, 'st014', '山口 心春', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff14@example.com', '090-1111-1013', 'active'),
-(18, 1, 'st015', '松本 陸', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff15@example.com', '090-1111-1014', 'active'),
-(19, 1, 'st016', '井上 結衣', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff16@example.com', '090-1111-1015', 'active'),
-(20, 1, 'st017', '木村 颯太', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff17@example.com', '090-1111-1016', 'active'),
-(21, 1, 'st018', '林 美月', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff18@example.com', '090-1111-1017', 'active'),
-(22, 1, 'st019', '斎藤 大和', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff19@example.com', '090-1111-1018', 'active'),
-(23, 1, 'st020', '清水 陽菜', 'staff', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'staff20@example.com', '090-1111-1019', 'active'),
-(100, 1, 'hq', 'ディセクテラ本部', 'system_admin', 'bd94dcda26fccb4e68d6a31f9b5aac0b571ae266d822620e901ef7ebe3a11d4f', 'hq@dissectra.co.jp', NULL, 'active');
+(1, 1, 'admin', '出井 代表', 'company_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'admin@sample-mobile.jp', '03-0000-0001', 'active'),
+(2, 1, 'mgr01', '藤田 現場長', 'field_manager', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'fujita@sample-mobile.jp', '090-0000-0002', 'active'),
+(3, 1, 'sales01', '岡本 営業', 'sales_manager', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'okamoto@sample-mobile.jp', '090-0000-0003', 'active'),
+(4, 1, 'st001', '佐藤 健太', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff1@example.com', '090-1111-1000', 'active'),
+(5, 1, 'st002', '鈴木 美咲', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff2@example.com', '090-1111-1001', 'active'),
+(6, 1, 'st003', '高橋 大輔', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff3@example.com', '090-1111-1002', 'active'),
+(7, 1, 'st004', '田中 彩香', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff4@example.com', '090-1111-1003', 'active'),
+(8, 1, 'st005', '伊藤 翔太', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff5@example.com', '090-1111-1004', 'active'),
+(9, 1, 'st006', '渡辺 由衣', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff6@example.com', '090-1111-1005', 'active'),
+(10, 1, 'st007', '山本 拓海', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff7@example.com', '090-1111-1006', 'active'),
+(11, 1, 'st008', '中村 花菜', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff8@example.com', '090-1111-1007', 'active'),
+(12, 1, 'st009', '小林 竜也', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff9@example.com', '090-1111-1008', 'active'),
+(13, 1, 'st010', '加藤 芽衣', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff10@example.com', '090-1111-1009', 'active'),
+(14, 1, 'st011', '吉田 悠人', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff11@example.com', '090-1111-1010', 'active'),
+(15, 1, 'st012', '山田 莉子', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff12@example.com', '090-1111-1011', 'active'),
+(16, 1, 'st013', '佐々木 蓮', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff13@example.com', '090-1111-1012', 'active'),
+(17, 1, 'st014', '山口 心春', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff14@example.com', '090-1111-1013', 'active'),
+(18, 1, 'st015', '松本 陸', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff15@example.com', '090-1111-1014', 'active'),
+(19, 1, 'st016', '井上 結衣', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff16@example.com', '090-1111-1015', 'active'),
+(20, 1, 'st017', '木村 颯太', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff17@example.com', '090-1111-1016', 'active'),
+(21, 1, 'st018', '林 美月', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff18@example.com', '090-1111-1017', 'active'),
+(22, 1, 'st019', '斎藤 大和', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff19@example.com', '090-1111-1018', 'active'),
+(23, 1, 'st020', '清水 陽菜', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff20@example.com', '090-1111-1019', 'active'),
+(100, 1, 'hq', 'ディセクテラ本部', 'system_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'hq@dissectra.co.jp', NULL, 'active');
 
 INSERT OR IGNORE INTO staff_profiles (staff_id, user_id, company_id, affiliation, career, skills, work_area, age_group, evaluation_score, retention_risk, follow_flag, memo) VALUES
 (1, 4, 1, '株式会社サンプルモバイル人材', '携帯ショップ経験3年。クロージングが得意。', 'MNP,接客,クロージング', '東京23区', '20代', 3.0, 'low', 0, ''),
@@ -58,11 +58,7 @@ INSERT OR IGNORE INTO clients (client_id, company_id, client_name, stream_type, 
  (2, 1, 'テレコムセールスパートナーズ株式会社', 'upstream', '大森 様', 'omori@tsp.example.jp', '06-9876-5432', '東京都千代田区丸の内2-2-2', '業務委託', '15日締め・翌月15日払い', '16', 3, '家電量販店案件。品質要求が高い。NGスタッフ1名あり。'),
  (3, 1, '株式会社ブロードバンドエージェンシー', 'upstream', '片山 様', 'katayama@bba.example.jp', '03-5555-1111', '東京都渋谷区道玄坂3-3-3', '請負', '月末締め・翌々月5日払い', '', 4, '光回線イベント。土日中心。');
 
-INSERT OR IGNORE INTO report_templates (template_id, company_id, template_name, template_type, fields_json) VALUES
- (1, NULL, '携帯ショップ稼働テンプレート', 'hq', '[{"key":"mnp","label":"MNP件数","type":"number"},{"key":"pi","label":"PI件数","type":"number"},{"key":"shinki","label":"新規件数","type":"number"},{"key":"kishuhen","label":"機種変更件数","type":"number"},{"key":"hikari","label":"光回線件数","type":"number"},{"key":"denki","label":"でんき件数","type":"number"},{"key":"card","label":"クレジットカード件数","type":"number"},{"key":"koekake","label":"声かけ数","type":"number"},{"key":"shodan","label":"商談数","type":"number"},{"key":"seiyaku","label":"成約数","type":"number"},{"key":"good_case","label":"好事例","type":"text"},{"key":"store_share","label":"店舗共有事項","type":"text"},{"key":"other_result","label":"他社実績","type":"text"},{"key":"free","label":"自由記述","type":"textarea"}]'),
- (2, NULL, '家電量販店稼働テンプレート', 'hq', '[{"key":"mnp","label":"MNP件数","type":"number"},{"key":"shinki","label":"新規件数","type":"number"},{"key":"hikari","label":"光回線件数","type":"number"},{"key":"wifi","label":"置き型Wi-Fi件数","type":"number"},{"key":"koekake","label":"声かけ数","type":"number"},{"key":"shodan","label":"商談数","type":"number"},{"key":"seiyaku","label":"成約数","type":"number"},{"key":"store_share","label":"店舗共有事項","type":"text"},{"key":"free","label":"自由記述","type":"textarea"}]'),
- (3, NULL, '催事・イベント稼働テンプレート', 'hq', '[{"key":"koekake","label":"声かけ数","type":"number"},{"key":"shodan","label":"商談数","type":"number"},{"key":"seiyaku","label":"成約数","type":"number"},{"key":"mnp","label":"MNP件数","type":"number"},{"key":"hikari","label":"光回線件数","type":"number"},{"key":"good_case","label":"好事例","type":"text"},{"key":"free","label":"自由記述","type":"textarea"}]'),
- (4, NULL, '光回線・固定回線テンプレート', 'hq', '[{"key":"hikari","label":"光回線件数","type":"number"},{"key":"wifi","label":"置き型Wi-Fi件数","type":"number"},{"key":"denki","label":"でんき件数","type":"number"},{"key":"koekake","label":"声かけ数","type":"number"},{"key":"shodan","label":"商談数","type":"number"},{"key":"seiyaku","label":"成約数","type":"number"},{"key":"free","label":"自由記述","type":"textarea"}]');
+-- 本部の標準日報テンプレート（ID 1〜4）はマイグレーション 0032_mail_env.sql で投入する
 
 INSERT OR IGNORE INTO projects (project_id, company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, show_performance, requirements, manual_text, status, memo) VALUES
  (1, 1, 1, 'ドコモショップ新宿西口 常駐販売', 'mobile_shop', 'ドコモショップ新宿西口店', 'daily', 18000, 'MNP,接客', 1, 1, 'MNP獲得・新規/機変対応。月間PI目標30件。', '開店30分前入店。制服貸与。店長への朝挨拶必須。', 'active', '長期継続中の主力案件。'),

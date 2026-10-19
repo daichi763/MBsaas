@@ -191,7 +191,7 @@
         </div>
         <details class="p-3 rounded-lg border border-gray-200"><summary class="text-sm text-gray-600 cursor-pointer">ログインを発行する（任意）</summary>
           <div class="grid grid-cols-2 gap-3 mt-3">
-            <input id="fz-code" class="inp text-sm" placeholder="スタッフ番号"><input id="fz-pass" class="inp text-sm" placeholder="初期パスワード（4文字以上）">
+            <input id="fz-code" class="inp text-sm" placeholder="スタッフ番号"><input id="fz-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）">
             <input id="fz-email" class="inp text-sm col-span-2" placeholder="メール（任意）">
           </div></details>
         <p class="text-[11px] text-gray-400">その他の項目（生年月日・スキル等）は本登録後に基本情報欄で入力できます</p>

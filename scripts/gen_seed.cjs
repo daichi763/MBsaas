@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 
 const hash = (s) => crypto.createHash('sha256').update(s).digest('hex');
-const PASS = hash('pass1234');
+// パスワードは src/lib/auth.ts と同じ PBKDF2 形式（pbkdf2$回数$ソルト$ハッシュ）で入れる
+const pbkdf2 = (pw) => { const salt = crypto.randomBytes(16); return `pbkdf2$10000$${salt.toString('base64')}$${crypto.pbkdf2Sync(pw, salt, 10000, 32, 'sha256').toString('base64')}`; };
+const PASS = pbkdf2('pass1234');
 
 // JST基準の日付
 const now = new Date(Date.now() + 9 * 3600 * 1000);
@@ -79,40 +81,7 @@ INSERT OR IGNORE INTO clients (client_id, company_id, client_name, stream_type, 
  (3, 1, '株式会社ブロードバンドエージェンシー', 'upstream', '片山 様', 'katayama@bba.example.jp', '03-5555-1111', '東京都渋谷区道玄坂3-3-3', '請負', '月末締め・翌々月5日払い', '', 4, '光回線イベント。土日中心。');
 `;
 
-// ============ テンプレート ============
-const tpl = (fields) => JSON.stringify(fields).replace(/'/g, "''");
-const tplMobile = tpl([
-  {key:'mnp', label:'MNP件数', type:'number'},{key:'pi', label:'PI件数', type:'number'},
-  {key:'shinki', label:'新規件数', type:'number'},{key:'kishuhen', label:'機種変更件数', type:'number'},
-  {key:'hikari', label:'光回線件数', type:'number'},{key:'denki', label:'でんき件数', type:'number'},
-  {key:'card', label:'クレジットカード件数', type:'number'},
-  {key:'koekake', label:'声かけ数', type:'number'},{key:'shodan', label:'商談数', type:'number'},{key:'seiyaku', label:'成約数', type:'number'},
-  {key:'good_case', label:'好事例', type:'text'},{key:'store_share', label:'店舗共有事項', type:'text'},
-  {key:'other_result', label:'他社実績', type:'text'},{key:'free', label:'自由記述', type:'textarea'}
-]);
-const tplDenka = tpl([
-  {key:'mnp', label:'MNP件数', type:'number'},{key:'shinki', label:'新規件数', type:'number'},
-  {key:'hikari', label:'光回線件数', type:'number'},{key:'wifi', label:'置き型Wi-Fi件数', type:'number'},
-  {key:'koekake', label:'声かけ数', type:'number'},{key:'shodan', label:'商談数', type:'number'},{key:'seiyaku', label:'成約数', type:'number'},
-  {key:'store_share', label:'店舗共有事項', type:'text'},{key:'free', label:'自由記述', type:'textarea'}
-]);
-const tplEvent = tpl([
-  {key:'koekake', label:'声かけ数', type:'number'},{key:'shodan', label:'商談数', type:'number'},{key:'seiyaku', label:'成約数', type:'number'},
-  {key:'mnp', label:'MNP件数', type:'number'},{key:'hikari', label:'光回線件数', type:'number'},
-  {key:'good_case', label:'好事例', type:'text'},{key:'free', label:'自由記述', type:'textarea'}
-]);
-const tplHikari = tpl([
-  {key:'hikari', label:'光回線件数', type:'number'},{key:'wifi', label:'置き型Wi-Fi件数', type:'number'},
-  {key:'denki', label:'でんき件数', type:'number'},{key:'koekake', label:'声かけ数', type:'number'},
-  {key:'shodan', label:'商談数', type:'number'},{key:'seiyaku', label:'成約数', type:'number'},{key:'free', label:'自由記述', type:'textarea'}
-]);
-sql += `
-INSERT OR IGNORE INTO report_templates (template_id, company_id, template_name, template_type, fields_json) VALUES
- (1, NULL, '携帯ショップ稼働テンプレート', 'hq', '${tplMobile}'),
- (2, NULL, '家電量販店稼働テンプレート', 'hq', '${tplDenka}'),
- (3, NULL, '催事・イベント稼働テンプレート', 'hq', '${tplEvent}'),
- (4, NULL, '光回線・固定回線テンプレート', 'hq', '${tplHikari}');
-`;
+// 本部の標準日報テンプレート（ID 1〜4）はマイグレーション 0032_mail_env.sql で投入する（ここでは出力しない）
 
 // ============ 案件 ============
 sql += `

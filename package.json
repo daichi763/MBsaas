@@ -3,10 +3,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run build:css && vite build",
+    "build": "npm run build:css && vite build && node scripts/ci-wrangler-config.mjs",
     "build:css": "tailwindcss -i ./src/input.css -o ./public/static/style.css --minify",
     "preview": "wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && wrangler deploy --env production",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {

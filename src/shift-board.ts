@@ -7,6 +7,8 @@
 // 金額（請求・支払・粗利）は管理画面（/api/admin/*）でのみ返す。
 // =========================================================
 import { Hono } from 'hono'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, ngStaffIds } from './lib/staff-eligibility'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -68,12 +70,13 @@ function ruleLabel(r: any) {
 }
 
 export async function loadPricingData(db: D1Database, companyId: number, projectIds: number[]) {
-  const ids = [...new Set(projectIds.filter(Boolean))]
-  const projects = ids.length ? (await db.prepare(`SELECT project_id, unit_price_type, unit_price, pay_unit_type, pay_rate,
+  // 案件IDは json_each で1つにまとめてバインドする（D1 のバインド上限 100 を超えないように）
+  const ids = bindJsonArray(projectIds)
+  const projects = ids !== '[]' ? (await db.prepare(`SELECT project_id, unit_price_type, unit_price, pay_unit_type, pay_rate,
       bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes, hours_basis, time_round_minutes
-      FROM projects WHERE company_id = ? AND project_id IN (${ids.map(() => '?').join(',')})`).bind(companyId, ...ids).all()).results as any[] : []
-  const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL ${ids.length ? `OR project_id IN (${ids.map(() => '?').join(',')})` : ''})`)
-    .bind(companyId, ...ids).all()).results as any[]
+      FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[] : []
+  const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL OR project_id IN ${JSON_IN})`)
+    .bind(companyId, ids).all()).results as any[]
   return { projects: new Map(projects.map(p => [p.project_id, p])), rules }
 }
 
@@ -216,32 +219,8 @@ async function ownSite(db: D1Database, companyId: number, siteId: any) {
 function parseIds(v: any): number[] { return String(v || '').split(',').map(x => Number(x)).filter(n => Number.isInteger(n) && n > 0) }
 
 // ---------- 重複・NGチェック ----------
-// 同じ人物（person_id）の全企業のシフトから、同じ日・時間帯の重なりを探す
-export async function findConflicts(db: D1Database, companyId: number, staffIds: number[], from: string, to: string) {
-  if (!staffIds.length) return new Map<number, any[]>()
-  const ids = [...new Set(staffIds)]
-  const rows = (await db.prepare(`
-    SELECT me.staff_id AS my_staff_id, s.shift_id, s.slot_role_id, s.staff_id, s.company_id, s.work_date, s.start_time, s.end_time, s.status,
-      p.project_name, co.company_name
-    FROM staff_profiles me
-    JOIN staff_profiles sp ON (sp.person_id = me.person_id AND me.person_id IS NOT NULL) OR sp.staff_id = me.staff_id
-    JOIN shifts s ON s.staff_id = sp.staff_id
-    JOIN projects p ON p.project_id = s.project_id
-    JOIN companies co ON co.company_id = s.company_id
-    WHERE me.company_id = ? AND me.staff_id IN (${ids.map(() => '?').join(',')})
-      AND s.work_date BETWEEN ? AND ? AND s.status IN ('requested','confirmed','substitute')`)
-    .bind(companyId, ...ids, from, to).all()).results as any[]
-  const map = new Map<number, any[]>()
-  for (const r of rows) { const a = map.get(r.my_staff_id) || []; if (!a.some(x => x.shift_id === r.shift_id)) a.push(r); map.set(r.my_staff_id, a) }
-  return map
-}
-export function conflictFor(list: any[] | undefined, date: string, start: string, end: string, excludeShiftId?: number) {
-  return (list || []).filter(x => x.work_date === date && x.shift_id !== excludeShiftId && overlaps(x.start_time, x.end_time, start, end))
-}
-export async function ngStaffIds(db: D1Database, projectId: number): Promise<number[]> {
-  const r = await db.prepare('SELECT cl.ng_staff_ids FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE p.project_id = ?').bind(projectId).first() as any
-  return parseIds(r?.ng_staff_ids)
-}
+// 本体は src/lib/staff-eligibility.ts（他社の会社名を出さない重複チェックと、割当可能な条件）。既存の import のため再エクスポートする
+export { findConflicts, conflictFor, ngStaffIds }
 
 // =========================================================
 // シフトボード
@@ -259,35 +238,36 @@ app.get('/shift-board', async (c) => {
 
   const pf: string[] = ['p.company_id = ?']; const pb: any[] = [u.company_id]
   if (clientId) { pf.push('p.client_id = ?'); pb.push(clientId) }
-  if (projectIds.length) { pf.push(`p.project_id IN (${projectIds.map(() => '?').join(',')})`); pb.push(...projectIds) }
+  if (projectIds.length) { pf.push(`p.project_id IN ${JSON_IN}`); pb.push(bindJsonArray(projectIds)) }
   if (engagement === 'regular' || engagement === 'spot') { pf.push("COALESCE(p.engagement_type,'regular') = ?"); pb.push(engagement) }
   const projects = (await db.prepare(`SELECT p.project_id, p.project_name, p.client_id, cl.client_name, p.status, COALESCE(p.engagement_type,'regular') AS engagement_type, p.location
     FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE ${pf.join(' AND ')} ORDER BY cl.client_name, p.project_name`).bind(...pb).all()).results as any[]
   const pids = projects.map(p => p.project_id)
   const empty = { from, to, projects, slots: [], unslotted: [], staff: [], totals: { bill: 0, pay: 0, profit: 0, required: 0, filled: 0, pay_missing: 0 } }
   if (!pids.length) return c.json(empty)
-  const inP = pids.map(() => '?').join(',')
+  // 案件・枠のIDは1つずつバインドしない（D1 のバインド上限 100）。案件は同じ絞り込みのサブクエリ、枠は json_each で渡す
+  const inP = `(SELECT p.project_id FROM projects p WHERE ${pf.join(' AND ')})`
 
   const slotRows = (await db.prepare(`SELECT sl.*, si.site_name FROM shift_slots sl LEFT JOIN sites si ON si.site_id = sl.site_id
-    WHERE sl.company_id = ? AND sl.project_id IN (${inP}) AND sl.work_date BETWEEN ? AND ? ${siteId ? 'AND sl.site_id = ?' : ''}
-    ORDER BY sl.work_date, sl.start_time`).bind(u.company_id, ...pids, from, to, ...(siteId ? [siteId] : [])).all()).results as any[]
+    WHERE sl.company_id = ? AND sl.project_id IN ${inP} AND sl.work_date BETWEEN ? AND ? ${siteId ? 'AND sl.site_id = ?' : ''}
+    ORDER BY sl.work_date, sl.start_time`).bind(u.company_id, ...pb, from, to, ...(siteId ? [siteId] : [])).all()).results as any[]
   const slotIds = slotRows.map(s => s.slot_id)
   // 募集の未対応の応募数（第4段階。src/recruit.ts）を役割ごとに持たせる
   const roles = slotIds.length ? (await db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
       WHERE i.slot_role_id = r.slot_role_id AND i.status = 'pending' AND a.status = 'pending') AS applicants
-    FROM shift_slot_roles r WHERE r.slot_id IN (${slotIds.map(() => '?').join(',')}) ORDER BY r.sort_order, r.slot_role_id`).bind(...slotIds).all()).results as any[] : []
+    FROM shift_slot_roles r WHERE r.slot_id IN ${JSON_IN} ORDER BY r.sort_order, r.slot_role_id`).bind(bindJsonArray(slotIds)).all()).results as any[] : []
 
   const shiftRows = (await db.prepare(`
     SELECT s.*, us.name AS staff_name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, si.site_name
     FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN sites si ON si.site_id = s.site_id
-    WHERE s.company_id = ? AND s.project_id IN (${inP}) AND s.work_date BETWEEN ? AND ? ${siteId ? 'AND s.site_id = ?' : ''}
-    ORDER BY s.work_date, s.start_time, us.name`).bind(u.company_id, ...pids, from, to, ...(siteId ? [siteId] : [])).all()).results as any[]
+    WHERE s.company_id = ? AND s.project_id IN ${inP} AND s.work_date BETWEEN ? AND ? ${siteId ? 'AND s.site_id = ?' : ''}
+    ORDER BY s.work_date, s.start_time, us.name`).bind(u.company_id, ...pb, from, to, ...(siteId ? [siteId] : [])).all()).results as any[]
 
   const conflicts = await findConflicts(db, u.company_id, shiftRows.map(s => s.staff_id), from!, to!)
   const ngByProject = new Map<number, number[]>()
   for (const p of projects) ngByProject.set(p.project_id, [])
-  const ngRows = (await db.prepare(`SELECT p.project_id, cl.ng_staff_ids FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE p.project_id IN (${inP})`).bind(...pids).all()).results as any[]
+  const ngRows = (await db.prepare(`SELECT p.project_id, cl.ng_staff_ids FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id WHERE p.company_id = ? AND p.project_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(pids)).all()).results as any[]
   for (const r of ngRows) ngByProject.set(r.project_id, parseIds(r.ng_staff_ids))
 
   const totals = { bill: 0, pay: 0, profit: 0, required: 0, filled: 0, pay_missing: 0 }
@@ -298,7 +278,7 @@ app.get('/shift-board', async (c) => {
     const cf = conflictFor(conflicts.get(s.staff_id), s.work_date, s.start_time, s.end_time, s.shift_id)
     return {
       ...s, ...t,
-      conflicts: cf.map(x => ({ shift_id: x.shift_id, work_date: x.work_date, start_time: x.start_time, end_time: x.end_time, project_name: x.company_id === u.company_id ? x.project_name : null, company_name: x.company_name, other_company: x.company_id !== u.company_id })),
+      conflicts: cf.map(x => conflictView(x, u.company_id)),
       ng: (ngByProject.get(s.project_id) || []).includes(s.staff_id),
     }
   }
@@ -328,6 +308,7 @@ app.get('/shift-board/candidates', async (c) => {
   const role = await ownSlotRole(db, u.company_id, c.req.query('slot_role_id'))
   if (!role) return c.json({ error: '枠が見つかりません' }, 404)
   const proj = await ownProject(db, u.company_id, role.project_id)
+  const elig = assignableStaffSql({ sp: 'sp', us: 'us', onDate: role.work_date })
   const staff = (await db.prepare(`
     SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.employment_status,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
@@ -337,9 +318,8 @@ app.get('/shift-board/candidates', async (c) => {
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute')) AS week_days
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
-    WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type,'own_employee') != 'skillsheet_only' AND sp.merged_into_staff_id IS NULL
-      AND COALESCE(sp.employment_status,'working') NOT IN ('retired') AND us.status = 'active'
-    ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, addDays(role.work_date, -weekday(role.work_date)), addDays(role.work_date, 6 - weekday(role.work_date)), u.company_id).all()).results as any[]
+    WHERE sp.company_id = ? AND ${elig.sql}
+    ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, addDays(role.work_date, -weekday(role.work_date)), addDays(role.work_date, 6 - weekday(role.work_date)), u.company_id, ...elig.binds).all()).results as any[]
   const conflicts = await findConflicts(db, u.company_id, staff.map(s => s.staff_id), role.work_date, role.work_date)
   const ng = await ngStaffIds(db, role.project_id)
   const required = String(proj?.required_skills || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -351,7 +331,7 @@ app.get('/shift-board/candidates', async (c) => {
       staff_id: s.staff_id, name: s.name, affiliation_type: s.affiliation_type, employment_status: s.employment_status,
       project_count: s.project_count, site_count: s.site_count, week_days: s.week_days,
       skill_match: required.filter(r => skills.includes(r)).length, skill_required: required.length,
-      busy: cf.length > 0, busy_detail: cf.map(x => (x.company_id === u.company_id ? x.project_name : x.company_name + '（他社）') + ' ' + x.start_time + '〜' + x.end_time),
+      busy: cf.length > 0, busy_detail: cf.map(x => conflictLabel(x, u.company_id)),
       ng: ng.includes(s.staff_id), on_leave: s.employment_status === 'leave',
     }
   })
@@ -478,7 +458,7 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   if (!staffIds.length) return c.json({ error: 'スタッフを選択してください' }, 400)
   const status = ['confirmed', 'requested'].includes(b.status) ? b.status : 'confirmed'
   const staffRows = (await db.prepare(`SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.merged_into_staff_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    WHERE sp.company_id = ? AND sp.staff_id IN (${staffIds.map(() => '?').join(',')})`).bind(u.company_id, ...staffIds).all()).results as any[]
+    WHERE sp.company_id = ? AND sp.staff_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(staffIds)).all()).results as any[]
   if (staffRows.length !== staffIds.length) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (staffRows.some(s => s.affiliation_type === 'skillsheet_only')) return c.json({ error: 'スキルシートのみ作成のスタッフにはシフトを登録できません' }, 400)
   if (staffRows.some(s => s.merged_into_staff_id)) return c.json({ error: '統合済みのスタッフにはシフトを登録できません（統合先のスタッフを選んでください）' }, 400)
@@ -490,7 +470,7 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     const w: string[] = []
     if (already.has(s.staff_id)) w.push(`${s.name}: すでにこの枠に割り当て済みです`)
     const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time)
-    if (cf.length) w.push(`${s.name}: 同じ時間帯に別のシフトがあります（${cf.map(x => (x.company_id === u.company_id ? x.project_name : x.company_name + '・他社') + ' ' + x.start_time + '〜' + x.end_time).join('、')}）`)
+    if (cf.length) w.push(`${s.name}: 同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`)
     if (ng.includes(s.staff_id)) w.push(`${s.name}: クライアントのNGスタッフに指定されています`)
     return w
   })
@@ -523,7 +503,7 @@ app.post('/shifts/:id/move', async (c) => {
   const conflicts = await findConflicts(db, u.company_id, [s.staff_id], role.work_date, role.work_date)
   const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time, s.shift_id)
   const ng = (await ngStaffIds(db, role.project_id)).includes(s.staff_id)
-  const warnings = [...(cf.length ? [`同じ時間帯に別のシフトがあります（${cf.map(x => (x.company_id === u.company_id ? x.project_name : x.company_name + '・他社') + ' ' + x.start_time + '〜' + x.end_time).join('、')}）`] : []), ...(ng ? ['クライアントのNGスタッフに指定されています'] : [])]
+  const warnings = [...(cf.length ? [`同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`] : []), ...(ng ? ['クライアントのNGスタッフに指定されています'] : [])]
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
   const projectChanged = role.project_id !== s.project_id
   await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ? WHERE shift_id = ?`)
@@ -590,7 +570,7 @@ app.post('/shifts/bulk', async (c) => {
   const wds = new Set(((b.weekdays || []) as any[]).map(Number))
   if (!wds.size) return c.json({ error: '曜日を選択してください' }, 400)
   if (!isTime(b.start_time) || !isTime(b.end_time)) return c.json({ error: '開始・終了時刻を入力してください' }, 400)
-  const staffRows = (await db.prepare(`SELECT staff_id, COALESCE(affiliation_type,'own_employee') AS t FROM staff_profiles WHERE company_id = ? AND staff_id IN (${staffIds.map(() => '?').join(',')})`).bind(u.company_id, ...staffIds).all()).results as any[]
+  const staffRows = (await db.prepare(`SELECT staff_id, COALESCE(affiliation_type,'own_employee') AS t FROM staff_profiles WHERE company_id = ? AND staff_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(staffIds)).all()).results as any[]
   if (staffRows.length !== staffIds.length || staffRows.some(s => s.t === 'skillsheet_only')) return c.json({ error: 'シフトを登録できないスタッフが含まれています' }, 400)
   const site = b.site_id ? await ownSite(db, u.company_id, b.site_id) : null
   const conflicts = await findConflicts(db, u.company_id, staffIds, b.date_from, b.date_to)
@@ -619,11 +599,12 @@ app.post('/shifts/copy-week', async (c) => {
   if (offset === 0) return c.json({ error: 'コピー元とコピー先が同じです' }, 400)
   const sourceTo = addDays(b.source_from, days - 1)
   const projectIds = parseIds(b.project_ids)
-  const pf = projectIds.length ? `AND project_id IN (${projectIds.map(() => '?').join(',')})` : ''
+  const pf = projectIds.length ? `AND project_id IN ${JSON_IN}` : ''
+  const pfb = projectIds.length ? [bindJsonArray(projectIds)] : []
   const includeAssign = b.include_assignments !== false
-  const slots = (await db.prepare(`SELECT * FROM shift_slots WHERE company_id = ? AND work_date BETWEEN ? AND ? ${pf}`).bind(u.company_id, b.source_from, sourceTo, ...projectIds).all()).results as any[]
+  const slots = (await db.prepare(`SELECT * FROM shift_slots WHERE company_id = ? AND work_date BETWEEN ? AND ? ${pf}`).bind(u.company_id, b.source_from, sourceTo, ...pfb).all()).results as any[]
   let slotCount = 0, shiftCount = 0; const skipped: string[] = []
-  const allStaff = includeAssign ? ((await db.prepare(`SELECT DISTINCT staff_id FROM shifts WHERE company_id = ? AND work_date BETWEEN ? AND ? ${pf}`).bind(u.company_id, b.source_from, sourceTo, ...projectIds).all()).results as any[]).map(r => r.staff_id) : []
+  const allStaff = includeAssign ? ((await db.prepare(`SELECT DISTINCT staff_id FROM shifts WHERE company_id = ? AND work_date BETWEEN ? AND ? ${pf}`).bind(u.company_id, b.source_from, sourceTo, ...pfb).all()).results as any[]).map(r => r.staff_id) : []
   const conflicts = await findConflicts(db, u.company_id, allStaff, b.target_from, addDays(b.target_from, days - 1))
   const pdata = await loadPricingData(db, u.company_id, [...new Set(slots.map(s => s.project_id))])
   for (const sl of slots) {
@@ -645,7 +626,7 @@ app.post('/shifts/copy-week', async (c) => {
   }
   // 枠なしのシフト（常勤の従来登録）
   if (includeAssign && b.include_unslotted !== false) {
-    const plain = (await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND work_date BETWEEN ? AND ? AND slot_id IS NULL AND status IN ('confirmed','substitute') ${pf}`).bind(u.company_id, b.source_from, sourceTo, ...projectIds).all()).results as any[]
+    const plain = (await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND work_date BETWEEN ? AND ? AND slot_id IS NULL AND status IN ('confirmed','substitute') ${pf}`).bind(u.company_id, b.source_from, sourceTo, ...pfb).all()).results as any[]
     const pd2 = await loadPricingData(db, u.company_id, [...new Set(plain.map(s => s.project_id))])
     for (const s of plain) {
       const date = addDays(s.work_date, offset)

@@ -11,14 +11,16 @@
 - **ログイン**: `/login`（会社コード + ユーザーコード + パスワード）
 - **本番デプロイ**: 未実施（Cloudflare Pages へデプロイ可能な構成）
 
-## デモアカウント（パスワードは全て `pass1234`）
+## デモアカウント（パスワードは全て `pass1234`。seed.sql を入れた開発環境のみ）
+- ログイン画面のデモアカウントの案内は、環境変数 `DEMO_MODE` が `true` のときだけ表示する（本番は `false`）。本番 DB には seed を入れない。
+
 | 役割 | 会社コード | ユーザーコード | 画面 |
 |---|---|---|---|
 | スタッフ | `sample` | `st001` 〜 `st020` | `/staff`（モバイル向け） |
 | 会社管理者（代表） | `sample` | `admin` | `/admin`（PC向け） |
 | 現場マネージャー | `sample` | `mgr01` | `/admin` |
 | 営業マネージャー | `sample` | `sales01` | `/admin` |
-| SaaS運営本部 | `hq` | `hq` | `/hq`（運営本部・ダーク） |
+| SaaS運営本部 | `sample` | `hq` | `/hq`（運営本部・ダーク） |
 
 ## 実装済み機能
 
@@ -46,7 +48,14 @@
 - **テーブル（15）**: companies / users / sessions / staff_profiles / clients / report_templates / projects / shifts / attendance_reports / daily_reports / evaluations / follow_logs / notices / notice_reads / consultations
   - `attendance_reports.photo_key`: R2オブジェクトキー（画像バイナリ自体はDBに保存しない。マイグレーション `0002_add_attendance_photo.sql`）
 - **マルチテナント**: 全テーブルに `company_id`、ログインは 会社コード+ユーザーコード+パスワード
-- **認証**: SHA-256 ハッシュ + httpOnly Cookie セッション（30日）、ロール別ミドルウェア（/api/admin/*, /api/hq/*）
+- **認証**（共通部品は `src/lib/auth.ts`）:
+  - パスワードは PBKDF2（SHA-256・1万回（Workers の Free プランの CPU 時間に合わせた値。src/lib/auth.ts の PBKDF2_ITERATIONS）・ソルト付き。`pbkdf2$回数$ソルト$ハッシュ`）。旧形式（ソルトなし SHA-256）はログイン成功時に作り直す。最低条件は全経路で `validatePassword`（8文字以上）
+  - セッションは httpOnly Cookie（https では Secure）で12時間。DB にはトークンの SHA-256 だけを保存する（再設定トークンも同じ）
+  - 認証ミドルウェアで、期限切れ・退職（status!=active）・ログインできないロール（roster_only）・本部で停止にした企業（system_admin を除く）を止める。ロール別に /api/admin/*・/api/hq/*・/api/staff/*（staff のみ）を確認する
+  - ログインの失敗は 15分間に 会社コード＋ID 単位で10回、IP 単位で50回までで、超えると一時的に止める（`login_attempts`。マイグレーション 0030）
+  - エラー文言は会社コード・ID・パスワードのどれが違っても同じ。パスワードが合ったときだけ、退職・企業停止を案内する
+  - パスワード再設定はメールアドレスを前後の空白を除き小文字にそろえて照合し、リンクの有効期限は1時間。再設定すると既存のセッションはすべて切れる
+  - 本部で企業を停止すると、その企業のセッションを削除し、報告用URLも使えなくなる
 - **日報**: テンプレート定義（fields_json）→ 回答は JSON 保存 → `json_extract` で集計
 
 ## サンプルデータ

@@ -86,10 +86,16 @@ if (typeof routes === 'object' && routes.home) {
     if (cur && cur.other_company) {
       card.insertAdjacentHTML('beforeend', `<p class="text-xs mt-2 text-blue-700 bg-blue-50 rounded-lg px-2 py-1"><i class="fas fa-building mr-1"></i>${esc(cur.company_name)} のシフトです。報告は自動的に ${esc(cur.company_name)} に送られます。</p>`)
     }
+    // 複数ある場合はタップで報告するシフトを切り替えられる（✓ は報告がすべて済んだシフト）
     if (d.today_shifts.length > 1) {
       card.insertAdjacentHTML('beforeend', `<div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">本日のシフト（${d.today_shifts.length}件）:
-        ${d.today_shifts.map(s => `<div class="flex justify-between mt-0.5"><span>${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.project_name)}</span><span>${esc(s.company_name)}${s.checked_out ? ' ✓' : ''}</span></div>`).join('')}
-        <p class="text-[11px] text-gray-400 mt-1">退店報告が済むと、次のシフトの報告に切り替わります。</p></div>`)
+        ${d.today_shifts.map(s => {
+          const isCur = !!cur && s.shift_id === cur.shift_id
+          return `<button type="button" class="w-full flex justify-between text-left mt-0.5 px-1.5 py-1 rounded ${isCur ? 'bg-blue-50 text-blue-800 font-bold' : ''}" ${isCur ? 'aria-current="true"' : ''} onclick="selectHomeShift(${Number(s.shift_id)})">
+            <span>${s.carryover ? '昨日 ' : ''}${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.project_name)}</span>
+            <span>${esc(s.company_name)}${s.attendance_done ? ' ✓' : ''}${s.attendance_done && s.daily_report_required && !s.daily_report_done ? ' 日報未提出' : ''}</span></button>`
+        }).join('')}
+        <p class="text-[11px] text-gray-400 mt-1">報告がすべて済むと、次のシフトに切り替わります。シフトをタップすると、そのシフトの報告に切り替えられます。</p></div>`)
     }
   }
 }

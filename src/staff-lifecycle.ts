@@ -9,7 +9,10 @@ import { Hono } from 'hono'
 import { createPerson, partnerNameConflict } from './roster'
 import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
 import { syncActualFromReports } from './settlement'
+import { pickReportValues } from './lib/validate'
+import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
+import { checkReportTime } from './report-settings'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -191,10 +194,12 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   if (b.gender) await db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id).run()
   if (b.kana !== undefined) await db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(b.kana || null, sp.staff_id).run()
   if (b.user_code || b.password) {
-    if (!b.user_code || !b.password || String(b.password).length < 4) return c.json({ error: 'ログインを発行する場合は、スタッフ番号と4文字以上のパスワードを入力してください' }, 400)
+    if (!b.user_code || !String(b.user_code).trim() || !b.password) return c.json({ error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください' }, 400)
+    const pwErr = validatePassword(String(b.password))
+    if (pwErr) return c.json({ error: pwErr }, 400)
     try {
       await db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = COALESCE(?, email) WHERE user_id = ? AND company_id = ?`)
-        .bind(String(b.user_code).trim(), await sha256(String(b.password)), b.email || null, sp.user_id, u.company_id).run()
+        .bind(String(b.user_code).trim(), await hashPassword(String(b.password)), b.email || null, sp.user_id, u.company_id).run()
     } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
   }
   await db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id).run()
@@ -258,13 +263,16 @@ adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   }
   // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
   if (from === 'linked_external' && sp.source_staff_id) {
-    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする
+    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
+    // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
+    // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
     const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
     if (src) {
       await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
-          nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?, affiliation_contact = ? WHERE staff_id = ?`)
+          nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
+          affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
         .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
-          src.commute_minutes, src.available_from, src.affiliation_contact, sp.staff_id).run()
+          src.commute_minutes, src.available_from, to, sp.staff_id).run()
     }
     // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
   }
@@ -445,11 +453,14 @@ async function loadToken(db: D1Database, token: string) {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return null
   const t = await db.prepare(`SELECT t.*, s.work_date, s.start_time, s.end_time, s.location, s.status AS shift_status, s.project_id, s.role,
       s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, p.project_name, p.report_template_id, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
-      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override
+      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
+      co.active_status AS company_active_status
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     WHERE t.token = ? AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(token).first() as any
   if (!t || t.revoked || t.expires_at <= nowJST() || t.shift_status === 'absent') return null
+  // 本部で停止にした企業の報告用URLは使えない（ログインの停止と同じ判定。src/lib/auth.ts）
+  if (!isCompanyActive(t.company_active_status)) return null
   return t
 }
 function firstName(n: string) { return String(n || '').split(/\s+/)[0] || n }
@@ -495,8 +506,9 @@ publicReportApi.post('/:token/attendance', async (c) => {
   const done = new Set(((await db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results as any[]).map(r => r.report_type))
   const ng = checkReportable(modes.required_attendance, done, reportType)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 日をまたぐ勤務: 休憩・勤務終了・退店は稼働日の翌日も受け付ける
-  if (t.work_date !== todayJST() && !(NEXT_DAY_TYPES.includes(reportType) && addDays(t.work_date, 1) === todayJST())) return c.json({ error: '稼働日当日に報告してください' }, 400)
+  // 受付の時間帯（稼働日。休憩・勤務終了・退店は翌日も。lib/shift-time.ts の reportableWindow）。アプリと同じ判定
+  const late = checkReportTime(t, reportType, nowJST())
+  if (late) return c.json({ error: late.error }, late.status as 400)
   let status = 'normal'
   if (reportType === 'check_in') {
     if (nowJST().slice(11, 16) > t.start_time) status = 'late'
@@ -520,8 +532,11 @@ publicReportApi.post('/:token/daily-report', async (c) => {
   const t = await loadToken(db, c.req.param('token'))
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  const values = typeof b.values === 'object' && b.values ? b.values : {}
-  const json = JSON.stringify(values)
+  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）
+  const tpl = await db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id ?? null).first() as any
+  const picked = pickReportValues(tpl?.fields_json, b.values)
+  if ('error' in picked) return c.json({ error: picked.error }, 400)
+  const json = JSON.stringify(picked.values)
   if (json.length > 20000) return c.json({ error: '入力内容が長すぎます' }, 400)
   const exists = await db.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
   if (exists) await db.prepare("UPDATE daily_reports SET report_values = ?, incident_flag = ?, complaint_flag = ?, submitted_at = ?, entry_method = 'link' WHERE daily_report_id = ?")

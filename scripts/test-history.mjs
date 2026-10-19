@@ -1,6 +1,7 @@
 // 履歴の検索・CSV 出力・保存期間（docs/spec_attendance_correction.md 8章・10章）の統合テスト
 // 前提: test-report-settings → test-corrections → test-notifications の後に、同じ DB で実行する（申請・履歴のデータを使う）
 //   定期削除の確認には、wrangler dev を --test-scheduled 付きで起動し、環境変数 PERSIST に --persist-to の保存先を指定する
+//   （wrangler.jsonc のローカルの既定は RETENTION_ENABLED=false（dry-run）なので、--var RETENTION_ENABLED:true も付ける）
 //   （ローカルの D1 に退職日・古い通知を書き込み、/__scheduled で毎日の cron を実行する。テスト用の DB 専用）
 //   注意: 現状のビルド設定（cloudflare-pages）は scheduled を出力しないため、定期削除の確認は
 //   vite.config.ts を @hono/vite-build/cloudflare-workers（output: '_worker.js'）にしたビルドで行う（別 PR で修正予定）
@@ -123,7 +124,10 @@ if (!PERSIST) {
   console.log('SKIP  定期削除の確認（PERSIST が未指定）')
 } else {
   // スタッフ 1 を 8 年前に退職したことにし、3 年前の通知を 1 件入れる（テスト用の DB のみ）
+  // 退職日より後にシフトがある人と、猶予中の人は削除しないため、シフトを退職日より前へ移し、猶予も明けたことにする
   d1(`UPDATE users SET retired_at = '2018-01-01' WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = 1);
+      UPDATE shifts SET work_date = date(work_date, '-9 years') WHERE staff_id = 1;
+      UPDATE staff_profiles SET retention_flagged_at = '2000-01-01' WHERE staff_id = 1;
       INSERT INTO user_notifications (company_id, user_id, kind, title, created_at) VALUES (1, 1, 'correction_submitted', '古い通知', '2023-01-01 09:00:00');`)
   await waitServer()
   const hq = client(await login('sample', 'hq'))

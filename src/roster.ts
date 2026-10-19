@@ -7,6 +7,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -237,6 +238,26 @@ export async function propagateNameToLinked(db: D1Database, sourceStaffId: numbe
     .bind(name, sourceStaffId).run()
 }
 
+/**
+ * 他社から連携で受け入れたスタッフ（連携行）の通知先メールアドレス（staff_id → email）。
+ * 連携行の users は email を持たない（ログイン・パスワード再設定の照合に使わせないため、コピーもしない）ので、
+ * 雇用元の行の本人のアドレスを使う。雇用元で role='staff'・在籍中の人に限る。アドレスは画面・APIに出さないこと。
+ */
+export async function linkedStaffEmails(db: D1Database, staffIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  if (!staffIds.length) return out
+  // json_each で1つのバインドにまとめる（D1 のバインド上限を避ける）
+  const rows = (await db.prepare(`
+    SELECT l.staff_id, ou.email FROM staff_profiles l
+    JOIN staff_profiles o ON o.staff_id = COALESCE(l.root_staff_id, l.source_staff_id)
+    JOIN users ou ON ou.user_id = o.user_id
+    WHERE l.staff_id IN (SELECT value FROM json_each(?)) AND l.affiliation_type = 'linked_external'
+      AND o.merged_into_staff_id IS NULL AND ou.role = 'staff' AND ou.status = 'active' AND ou.email IS NOT NULL AND ou.email != ''`)
+    .bind(JSON.stringify(staffIds.map(Number))).all()).results as any[]
+  for (const r of rows) out.set(Number(r.staff_id), String(r.email))
+  return out
+}
+
 // ---------- ルーティング ----------
 const rosterApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.get('user').company_id); return next() })
@@ -405,6 +426,7 @@ rosterApi.post('/link', async (c) => {
   // 所属元でログインを持つスタッフは role='staff'（統合ログインの企業切替で稼働先の画面を利用可・フェーズH）、
   // ログインを持たない場合は role='roster_only'（お知らせ対象外）
   // 連携の経路（雇用元・途中の企業）がたどれないよう、ユーザーコードは自社内で新規に採番する
+  // email はコピーしない（お知らせメールの宛先は送信時に linkedStaffEmails で雇用元の行から取る）
   const userCode = 'LK-' + randHex(5).toUpperCase()
   const linkedRole = src.source_role === 'staff' ? 'staff' : 'roster_only'
   const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, ?, ?, ?)`)
@@ -457,7 +479,10 @@ rosterApi.post('/', async (c) => {
   // ログイン: ②は必須（自社スタッフとして勤怠報告等を行うため）、③は任意、④は作らない
   const wantsLogin = type === 'own_employee' || (type === 'partner_manual' && b.user_code && b.password)
   if (type === 'own_employee' && (!b.user_code || !b.password)) return c.json({ error: 'スタッフ番号・初期パスワードは必須です' }, 400)
-  if (wantsLogin && String(b.password).length < 4) return c.json({ error: 'パスワードが短すぎます' }, 400)
+  if (wantsLogin) {
+    const pwErr = validatePassword(String(b.password))
+    if (pwErr) return c.json({ error: pwErr }, 400)
+  }
 
   // 所属会社（取引先）の解決
   const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first())?.company_name as string) || ''
@@ -494,7 +519,7 @@ rosterApi.post('/', async (c) => {
   const userCode = wantsLogin ? String(b.user_code).trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
   // ログインしない人物は role='roster_only'（お知らせ対象・スタッフ数集計・ログインの対象外）
   const role = wantsLogin ? 'staff' : 'roster_only'
-  const pwHash = wantsLogin ? await sha256(String(b.password)) : await unusablePasswordHash()
+  const pwHash = wantsLogin ? await hashPassword(String(b.password)) : await unusablePasswordHash()
 
   let userId: number
   try {
@@ -571,9 +596,13 @@ staffSelfApi.post('/switch-company', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const target = (await personStaffRows(db, u)).find(r => r.company_id === Number(b.company_id))
   if (!target) return c.json({ error: '切り替え先の企業が見つかりません' }, 404)
+  // 本部で停止にした企業へは切り替えない
+  const co = await db.prepare('SELECT active_status FROM companies WHERE company_id = ?').bind(target.company_id).first()
+  if (!co || !isCompanyActive(co.active_status)) return c.json({ error: 'この企業は現在ご利用いただけません' }, 403)
   const token = getCookie(c, 'session')
   if (!token) return c.json({ error: 'unauthorized' }, 401)
-  await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, token).run()
+  // sessions.token にはトークンのハッシュを保存している（src/lib/auth.ts）
+  await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, await hashToken(token)).run()
   return c.json({ ok: true, company_name: target.company_name })
 })
 
