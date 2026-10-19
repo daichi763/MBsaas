@@ -6,8 +6,9 @@ import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
+import { runCronJobs, defineCronJobs } from './services/cron'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -583,7 +584,7 @@ app.get('/hq', async (c) => {
         <nav class="flex gap-1">
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
-          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持</a>
+          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
@@ -597,67 +598,51 @@ app.get('/hq', async (c) => {
 </html>`)
 })
 
+// ============ 定期処理（Cron Trigger） ============
+// wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
+const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
+const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
+
+// 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
+// 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
+// 個人情報の削除（応募・データ保持）は、問い合わせの上限に当たって止まらないよう先に実行する（#198）
+const CRON_JOBS = defineCronJobs<Bindings>([
+  // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
+  { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
+  // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
+  { name: 'recruit_applications_purge', label: '応募の削除（180日）', cron: CRON_DAILY, run: async env => ({ deleted: await purgeOldApplications(env.DB) }) },
+  // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
+  // RETENTION_ENABLED が 'true' になるまでは dry-run（削除せず対象件数のみログ・記録）で動作する。
+  // 本番投入時は、dry-runの結果を確認してから RETENTION_ENABLED=true に切り替えること。
+  { name: 'retention', label: 'データ保持の定期削除', cron: CRON_DAILY, run: async env => {
+    const dryRun = env.RETENTION_ENABLED !== 'true'
+    const r = await runRetentionCleanup(env.DB, env, { dryRun, trigger: 'cron' })
+    const failedTargets = r.results.filter(x => x.failedCount > 0)
+    return {
+      dry_run: dryRun,
+      target: r.results.reduce((a, x) => a + x.targetCount, 0),
+      deleted: r.results.reduce((a, x) => a + x.deletedCount, 0),
+      failed: failedTargets.reduce((a, x) => a + x.failedCount, 0),
+      error: failedTargets.map(x => `${x.target}: ${x.error || '失敗'}`).join(' / ').slice(0, 1000) || null,
+    }
+  } },
+  // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
+  { name: 'retirements', label: '退職予定日を過ぎたスタッフの退職への切り替え', cron: CRON_DAILY, run: async env => ({ applied: await applyDueRetirements(env.DB) }) },
+  // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
+  { name: 'affiliation_schedules', label: '所属区分の変更の予約の適用', cron: CRON_DAILY, run: async env => {
+    // 状況が変わって適用できなかった予約は、理由をスタッフの画面に出すので定期処理の失敗にはしない
+    const r = await applyDueAffiliationSchedules(env.DB)
+    return { due: r.due, applied: r.applied, not_applied: r.failed }
+  } },
+  { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
+  { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
+])
+
 export default {
   fetch: app.fetch,
-  // Cron Trigger: 毎日3時(UTC) = 日本時間12時 に実行。
-  // 3つの処理は互いに独立させ、一方が失敗しても他方の実行を妨げないようにする。
-  async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
-    try {
-      // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
-      const r = await purgeExpiredAuthRows(env.DB)
-      console.log(`Deleted ${r.sessions} expired sessions, ${r.attempts} old login attempts`)
-    } catch (e) {
-      console.log(`session cleanup failed: ${e}`)
-    }
-
-    try {
-      const r = await generateFiscalYearReportsForAllCompanies(env.DB)
-      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed} finalized=${r.finalized}`)
-    } catch (e) {
-      console.log(`notice_read_reports generation failed: ${e}`)
-    }
-
-    try {
-      const r = await purgeOldNoticeReads(env.DB)
-      console.log(`notice_reads cleanup completed: notices=${r.notices} deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
-    } catch (e) {
-      console.log(`notice_reads cleanup failed: ${e}`)
-    }
-
-    // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
-    try {
-      const n = await purgeOldApplications(env.DB)
-      console.log(`recruit applications cleanup completed: deleted=${n}`)
-    } catch (e) {
-      console.log(`recruit applications cleanup failed: ${e}`)
-    }
-
-    // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
-    // RETENTION_ENABLED が 'true' になるまでは dry-run（削除せず対象件数のみログ・記録）で動作する。
-    // 本番投入時は、dry-runの結果を確認してから RETENTION_ENABLED=true に切り替えること。
-    try {
-      const dryRun = env.RETENTION_ENABLED !== 'true'
-      const r = await runRetentionCleanup(env.DB, env.PHOTOS, { dryRun })
-      const summary = r.results.map(x => `${x.target}:${dryRun ? x.targetCount : x.deletedCount}`).join(' ')
-      console.log(`retention cleanup completed (dryRun=${dryRun}): ${summary}`)
-    } catch (e) {
-      console.log(`retention cleanup failed: ${e}`)
-    }
-
-    // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
-    try {
-      const n = await applyDueRetirements(env.DB)
-      console.log(`scheduled retirements applied: ${n}`)
-    } catch (e) {
-      console.log(`scheduled retirements failed: ${e}`)
-    }
-
-    // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
-    try {
-      const r = await applyDueAffiliationSchedules(env.DB)
-      console.log(`affiliation schedules: due=${r.due} applied=${r.applied} failed=${r.failed}`)
-    } catch (e) {
-      console.log(`affiliation schedules failed: ${e}`)
-    }
+  // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
+  // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）
+  async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
+    await runCronJobs(env, CRON_JOBS, event.cron)
   },
 }
