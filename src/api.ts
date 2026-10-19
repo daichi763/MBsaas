@@ -4,7 +4,7 @@ import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { sendEmail, sendEmailBatch, mailMode } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
-import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS } from './services/retention'
+import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS, RETENTION_TOKEN_TARGETS } from './services/retention'
 import { cronStatus } from './services/cron'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
@@ -3939,9 +3939,11 @@ api.get('/hq/retention/logs', async (c) => {
       items: rows.map(i => ({ target: i.target, target_count: i.target_count, deleted_count: i.deleted_count, failed_count: i.failed_count, error_message: i.error_message })),
     }
   })
+  // トークンの削除は RETENTION_ENABLED に関係なく毎日実削除で記録されるので、データ保持の直近の実行には数えない
+  const notToken = `l.target NOT IN (${RETENTION_TOKEN_TARGETS.map(t => `'${t}'`).join(', ')})`
   const latest = await db.prepare(`SELECT
-      (SELECT MAX(started_at) FROM retention_logs WHERE dry_run = 0) AS last_real_run,
-      (SELECT MAX(l.started_at) FROM retention_logs l WHERE ${RETENTION_TRIGGER_SQL} = 'cron') AS last_cron_run`).first()
+      (SELECT MAX(l.started_at) FROM retention_logs l WHERE l.dry_run = 0 AND ${notToken}) AS last_real_run,
+      (SELECT MAX(l.started_at) FROM retention_logs l WHERE ${RETENTION_TRIGGER_SQL} = 'cron' AND ${notToken}) AS last_cron_run`).first()
   return c.json({ runs: out, page, per_page: RETENTION_RUNS_PER_PAGE, total: Number(total?.n) || 0, trigger, latest })
 })
 

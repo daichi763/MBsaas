@@ -63,6 +63,8 @@ const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evalu
   ...RETIRED_EXTRA_TARGETS, ...RETIRED_PERSONAL_TARGETS, 'retired_staff_deferred', 'r2_pending']
 // 件数の単位が行数でない対象（実行ログの合計に含めない）
 export const RETENTION_NON_ROW_TARGETS = ['retired_staff', 'retired_staff_deferred', 'r2_pending']
+// トークンの削除（purgeExpiredTokens）が retention_logs に残す対象。RETENTION_ENABLED に関係なく実削除で記録する
+export const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens'] as const
 const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件数（それ以上は件数だけ）
 // 匿名化で消す staff_profiles の個人情報の列（所属区分・連携の情報・評価の点数は集計に使うので残す）
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
@@ -686,10 +688,10 @@ export async function purgeExpiredTokens(db: D1Database): Promise<{ deleted: num
   const resetCutoff = new Date(Date.now() - PASSWORD_RESET_KEEP_DAYS * 86400 * 1000).toISOString()
   const reportCutoff = addDays(todayJST(), -(1 + REPORT_TOKEN_KEEP_DAYS))
   const results = [
-    await purgeInBatches(db, 'password_reset_tokens',
+    await purgeInBatches(db, RETENTION_TOKEN_TARGETS[0],
       `DELETE FROM password_reset_tokens WHERE token_id IN (SELECT token_id FROM password_reset_tokens
         WHERE expires_at < ? OR (used_at IS NOT NULL AND created_at < datetime('now', '-1 day')) LIMIT ?)`, [resetCutoff]),
-    await purgeInBatches(db, 'expired_report_tokens',
+    await purgeInBatches(db, RETENTION_TOKEN_TARGETS[1],
       `DELETE FROM shift_report_tokens WHERE token IN (SELECT t.token FROM shift_report_tokens t LEFT JOIN shifts s ON s.shift_id = t.shift_id
         WHERE s.work_date < ? OR s.shift_id IS NULL OR (t.revoked = 1 AND t.created_at < datetime('now', '-${REPORT_TOKEN_KEEP_DAYS} days')) LIMIT ?)`, [reportCutoff]),
   ]
