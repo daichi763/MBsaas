@@ -26,6 +26,7 @@
   window.refreshCorrectionsBadge = async function () {
     try {
       const { data } = await axios.get('/api/admin/corrections/pending-count')
+      if (window.setNavCount) setNavCount('corrections', data.count)
       const el = document.getElementById('corrections-badge'); if (!el) return
       el.textContent = data.count; el.classList.toggle('hidden', !data.count)
     } catch (e) { }

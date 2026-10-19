@@ -174,9 +174,33 @@ setInterval(() => {
   else hideSessionWarning()
 }, 60 * 1000)
 
-document.getElementById('logout-btn').addEventListener('click', async () => {
+async function logout() {
   await axios.post('/api/auth/logout'); location.href = '/login'
-})
+}
+document.getElementById('logout-btn').addEventListener('click', logout)
+// スマホ用ヘッダーのログアウト（#236）。押し間違えやすい位置なので確認する
+const mobileLogout = document.getElementById('mobile-logout-btn')
+if (mobileLogout) mobileLogout.addEventListener('click', () => { if (confirm('ログアウトしますか？')) logout() })
+// ログイン中の会社名・氏名（サイドバーとスマホ用ヘッダー）
+function showCompanyName(text) {
+  for (const id of ['company-name', 'mobile-company-name']) { const el = document.getElementById(id); if (el) el.textContent = text }
+}
+// メニューの件数（#236）。スマホではサイドバーが隠れるので、メニューの選択欄の項目名に「（n）」を付け、ヘッダーに合計を出す。
+// 合計は打刻修正・応募・掲示板・チャット（通知は承認依頼が打刻修正と重なるため、選択欄の項目名にだけ出す）
+const NAV_COUNTS = {}
+const NAV_TOTAL_TABS = ['corrections', 'recruit', 'board', 'roster-chat']
+window.setNavCount = function (tab, n) {
+  n = Number(n) || 0
+  NAV_COUNTS[tab] = n
+  const opt = document.querySelector(`#mobile-nav option[value="${tab}"]`)
+  if (opt) {
+    if (!opt.dataset.label) opt.dataset.label = opt.textContent.replace(/（\d+）$/, '')
+    opt.textContent = opt.dataset.label + (n ? `（${n}）` : '')
+  }
+  const total = NAV_TOTAL_TABS.reduce((a, k) => a + (NAV_COUNTS[k] || 0), 0)
+  const b = document.getElementById('mobile-todo-badge')
+  if (b) { b.textContent = total; b.classList.toggle('hidden', !total) }
+}
 
 // ============ ダッシュボード ============
 window.togglePhotoRequired = async function (enabled) {
@@ -3312,14 +3336,17 @@ function noticeEmailSummary(n) {
 }
 window.showNoticeEmails = async function (id) {
   const { data } = await axios.get(`/api/admin/notices/${Number(id)}/email-deliveries`)
-  const ERR = { mail_not_configured: 'メールの送信設定がありません', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', invalid_address: 'メールアドレスの形式が正しくありません', internal_error: '送信処理が途中で止まりました' }
+  const ERR = { mail_not_configured: 'メールの送信設定がありません', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', invalid_address: 'メールアドレスの形式が正しくありません', internal_error: '送信処理が途中で止まりました',
+    bounced: '宛先に届きませんでした（アドレスの誤り・使われていないアドレス）', bounced_soft: '一時的に届きませんでした（受信側の容量・混雑など）', complained: '受信者が迷惑メールとして報告しました',
+    suppressed_bounced: '以前に届かなかったアドレスのため送っていません', suppressed_complained: '迷惑メールと報告されたアドレスのため送っていません', company_inactive: 'ご契約が停止中のため送っていません' }
+  const errText = (e) => { const k = String(e).split(':')[0]; const rest = String(e).slice(k.length + 1).trim(); return (ERR[k] || k) + (rest ? `（${rest}）` : '') }
   const badge = (s) => `<span class="badge ${s === 'sent' ? 'badge-green' : s === 'failed' ? 'badge-red' : s === 'no_email' ? 'badge-yellow' : 'badge-gray'} whitespace-nowrap">${NOTICE_MAIL_STATUS[s] || esc(s)}</span>`
   modal(`
     <h3 class="font-bold text-lg mb-1">メールの送信結果</h3>
     <p class="text-sm text-gray-600 mb-3">${esc(data.notice.title)}</p>
     <div class="space-y-1 text-sm max-h-96 overflow-y-auto">${data.deliveries.map(d => `<div class="flex items-center gap-2">${badge(d.status)}<span>${esc(d.name || '')}</span>
-      ${d.error ? `<span class="text-xs text-red-600">${esc(ERR[d.error] || d.error)}</span>` : ''}</div>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div>
-    <p class="text-xs text-gray-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。</p>`)
+      ${d.error ? `<span class="text-xs text-red-600">${esc(errText(d.error))}</span>` : ''}</div>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div>
+    <p class="text-xs text-gray-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。届かなかったアドレスは<a href="#corrections/emails" class="text-blue-600 hover:underline" onclick="closeModal()">メール送信状況</a>で確認できます。</p>`)
 }
 // 二重配信の防止用キー（配信が成功するまで同じキーを使う。サーバーは同じキーの配信を受け付けない）
 let NOTICE_REQUEST_ID = null
@@ -3955,7 +3982,7 @@ delegate('saveMyAccount', (el) => withSubmitLock(el, async () => {
   try {
     const { data } = await axios.put('/api/auth/account', body)
     ME = (await axios.get('/api/auth/me')).data
-    document.getElementById('company-name').textContent = ME.company_name + ' / ' + ME.name
+    showCompanyName(ME.company_name + ' / ' + ME.name)
     toast(data.email_notice_sent ? '保存しました。新しいメールアドレスに確認のメールを送りました' : '保存しました')
     renderAccount()
   } catch (e) { showApiError(e, '保存に失敗しました') }
@@ -4107,7 +4134,7 @@ document.getElementById('mobile-nav').addEventListener('change', e => { location
   try {
     const { data } = await axios.get('/api/auth/me')
     ME = data
-    document.getElementById('company-name').textContent = data.company_name + ' / ' + data.name
+    showCompanyName(data.company_name + ' / ' + data.name)
   } catch (e) { return }
   // 従業員管理を扱えないロールには、メニューとスタッフ詳細の「従業員管理」ボタンを出さない（#205）
   if (!ME.can_manage_hr) {

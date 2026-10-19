@@ -7,6 +7,7 @@ import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs } from './services/cron'
+import { handleResendWebhook, type MailEnv } from './services/email'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -58,6 +59,10 @@ app.onError((err, c) => {
 })
 
 app.route('/api', api)
+
+// ============ Resend の Webhook（不達・迷惑メールの報告・配信済み。#541） ============
+// ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts）
+app.post('/webhooks/resend', (c) => handleResendWebhook(c.env as unknown as MailEnv, c.req.raw))
 
 // ============ 共通レイアウト ============
 // CDN のファイルはバージョンを固定し、integrity（SRI）を付ける。版を上げるときはハッシュも計算し直す
@@ -414,6 +419,65 @@ app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
 </body>
 </html>`))
 
+// お知らせメールの「確認しました」（#454。メールのリンクから開く）。
+// メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack）
+app.get('/notice-ack', (c) => c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>${head('お知らせの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+  <main class="w-full max-w-sm">
+    <header class="text-center mb-6">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+        <i class="fas fa-bullhorn"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-gray-800">お知らせの確認</h1>
+    </header>
+    <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+      <div id="ack-info" class="text-sm text-gray-600">読み込んでいます…</div>
+      <p id="ack-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+      <button type="button" id="ack-btn" class="hidden w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認しました</button>
+      <p id="ack-done" class="hidden text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3"><i class="fas fa-check-circle mr-1"></i>確認済みにしました。</p>
+      <a href="/staff#notices" class="block text-center text-sm text-blue-600 hover:underline">アプリでお知らせを開く</a>
+    </section>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || ''
+    const $ = (id) => document.getElementById(id)
+    const showError = (msg) => { $('ack-error').textContent = msg; $('ack-error').classList.remove('hidden') }
+    const OFFLINE = '通信できませんでした。電波の良い場所で、もう一度お試しください'
+    ;(async () => {
+      if (!token) { $('ack-info').textContent = ''; showError('リンクが正しくありません。メールのリンクから開いてください。'); return }
+      try {
+        const d = (await axios.get('/api/public/notice-ack', { params: { token }, timeout: 15000 })).data
+        $('ack-info').textContent = ''
+        const p1 = document.createElement('p'); p1.className = 'text-xs text-gray-500'; p1.textContent = d.company_name
+        const p2 = document.createElement('p'); p2.className = 'font-bold text-gray-800 mt-1'; p2.textContent = d.title
+        $('ack-info').append(p1, p2)
+        if (d.used) { $('ack-done').classList.remove('hidden'); return }
+        if (d.expired) { showError('リンクの有効期限が切れています。アプリでお知らせを開き、「確認しました」を押してください'); return }
+        $('ack-btn').classList.remove('hidden')
+      } catch (e) {
+        $('ack-info').textContent = ''
+        showError(!e.response ? OFFLINE : (e.response.data && e.response.data.error) || '読み込めませんでした')
+      }
+    })()
+    $('ack-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget
+      $('ack-error').classList.add('hidden')
+      btn.disabled = true; btn.textContent = '処理中...'
+      try {
+        await axios.post('/api/public/notice-ack', { token }, { timeout: 15000 })
+        btn.classList.add('hidden')
+        $('ack-done').classList.remove('hidden')
+      } catch (e2) {
+        showError(!e2.response ? OFFLINE : (e2.response.data && e2.response.data.error) || '確認できませんでした')
+        btn.disabled = false; btn.textContent = '確認しました'
+      }
+    })
+  </script>
+</body>
+</html>`))
+
 // ============ シフト専用の報告用URL（ログイン不要。public/static/report-link.js） ============
 app.get('/r/:token', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
@@ -535,15 +599,20 @@ app.get('/admin', async (c) => {
       </div>
     </aside>
     <div class="flex-1 md:ml-60 min-w-0">
-      <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-3 flex items-center justify-between gap-2">
-        <h1 class="font-bold text-gray-800 truncate min-w-0 flex-1"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理</h1>
-        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0">
+      <!-- スマホ用のヘッダー（#236）: 会社名・氏名、未対応の件数の合計（メニューの各項目にも件数を出す）、ログアウト -->
+      <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-2 flex items-center justify-between gap-2">
+        <div class="min-w-0 flex-1">
+          <h1 class="font-bold text-gray-800 truncate"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
+          <p id="mobile-company-name" class="text-[11px] text-gray-400 truncate"></p>
+        </div>
+        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">
           <option value="dashboard">ダッシュボード</option><option value="notifications">通知</option><option value="staff">スタッフマスタ</option><option value="employees">従業員管理</option>
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option><option value="report-settings">案件報告管理</option><option value="corrections">打刻修正承認</option><option value="attendance-history">履歴・CSV</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
           <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option>
         </select>
+        <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
     </div>
@@ -587,6 +656,7 @@ app.get('/hq', async (c) => {
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
           <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
+          <a href="#mail" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="mail">メール送信</a>
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>

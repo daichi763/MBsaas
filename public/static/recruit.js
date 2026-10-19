@@ -21,10 +21,11 @@
   const pageUrl = (t) => location.origin + '/apply/' + t
   const MAX_PAGE_PROJECTS = 50 // src/recruit.ts と同じ上限
 
-  // サイドメニューの未対応件数
+  // サイドメニュー・スマホのメニューの未対応件数。定期の更新は notifications.js の refreshNotifBadge から呼ぶ（#423）
   window.refreshRecruitBadge = async function () {
     try {
       const { data } = await axios.get('/api/admin/recruit-applications/summary')
+      if (window.setNavCount) setNavCount('recruit', data.pending)
       const el = document.getElementById('recruit-badge'); if (!el) return
       el.textContent = data.pending; el.classList.toggle('hidden', !data.pending)
     } catch (e) { }

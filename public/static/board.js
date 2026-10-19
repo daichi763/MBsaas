@@ -670,7 +670,7 @@
     let n = 0
     try { n = (await axios.get('/api/admin/board/unread-count')).data.unread } catch { return }
     const el = document.getElementById('board-badge'); if (el) { el.textContent = n; el.classList.toggle('hidden', !n) }
-    const opt = document.querySelector('#mobile-nav option[value="board"]'); if (opt) opt.textContent = '案件掲示板' + (n ? `（${n}）` : '')
+    if (window.setNavCount) setNavCount('board', n)
     document.querySelectorAll('.board-unread-total').forEach(b => { b.textContent = n; b.classList.toggle('hidden', !n) })
   }
   // 定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
