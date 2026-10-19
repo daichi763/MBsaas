@@ -38,9 +38,26 @@ axios.interceptors.response.use(r => r, e => {
   return Promise.reject(e)
 })
 
+// ログアウト: 通信に失敗してもログイン画面へ移る（#465）
 document.getElementById('logout-btn').addEventListener('click', async () => {
-  await axios.post('/api/auth/logout'); location.href = '/login'
+  try { await axios.post('/api/auth/logout') } catch (e) { /* 移動を優先する */ } finally { location.href = '/login' }
 })
+
+// 読み込みに失敗したときの表示（#182 #465）。再読み込みのボタンで、起動からやり直すか今の画面を読み直す
+function loadErrorHtml(e) {
+  const serverMsg = e && e.response && e.response.data && e.response.data.error
+  return `<div class="card p-6 text-center mt-4" role="alert">
+      <i class="fas fa-wifi text-3xl text-gray-300 mb-2 block"></i>
+      <p class="font-bold text-gray-700">${serverMsg ? esc(serverMsg) : '通信できませんでした'}</p>
+      <p class="text-xs text-gray-500 mt-1">${serverMsg ? '時間をおいて再読み込みしてください' : '電波の良い場所で再読み込みしてください'}</p>
+      <button class="btn btn-primary mt-4" data-action="retryLoad"><i class="fas fa-rotate-right"></i>再読み込み</button>
+    </div>`
+}
+function showLoadError(e) {
+  if (e && e.response && e.response.status === 401) return // ログイン画面へ移る（axios の共通処理）
+  $app.innerHTML = loadErrorHtml(e)
+}
+delegate('retryLoad', () => { ME ? route() : boot() })
 
 // ============ ホーム ============
 // 描画は部分ごとの関数（シフトカード・報告ボタン・お知らせ・相談バナー・メニュー）を並べるだけにする
@@ -49,13 +66,17 @@ let HOME_LOADED_DAY = null // ホームを読んだ日（端末の日付）
 
 async function renderHome() {
   loading()
-  const { data } = await axios.get('/api/staff/home' + (HOME_SHIFT_ID ? '?shift_id=' + encodeURIComponent(HOME_SHIFT_ID) : ''))
+  let data
+  // 通信に失敗したら、読み込み中のまま止めずに再読み込みのボタンを出す（#182）
+  try { data = (await axios.get('/api/staff/home' + (HOME_SHIFT_ID ? '?shift_id=' + encodeURIComponent(HOME_SHIFT_ID) : ''))).data }
+  catch (e) { showLoadError(e); return }
   HOME = data
   HOME_LOADED_DAY = dayjs().format('YYYY-MM-DD')
   $app.innerHTML = `
     <div id="notif-banner"></div>
     ${homeNoticeBannerHtml(data)}
     ${homeConsultBannerHtml(data)}
+    ${homeMissedHtml(data)}
     ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) : homeNoShiftHtml()}
     ${homeNoticesHtml(data)}
     ${homeMenuHtml()}`
@@ -67,6 +88,7 @@ window.selectHomeShift = function (shiftId) {
   HOME_SHIFT_ID = Number(shiftId) || null
   renderHome()
 }
+delegate('selectHomeShift', (el) => selectHomeShift(el.dataset.id))
 
 // 画面を開いたまま日付が変わったら、ホームを読み直す（前日のシフトに今の時刻で報告しないように）。読み直したら true
 function homeIsStale() {
@@ -80,9 +102,38 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pageshow', () => homeIsStale())
 setInterval(() => homeIsStale(), 60 * 1000)
 
+// シフトの開催場所・住所（地図）・休憩・役割・枠のメモ（#188）。ホームのカードとシフト一覧で使う
+function shiftBreakMinutes(s) {
+  const b = s.break_minutes != null ? s.break_minutes : s.slot_break_minutes != null ? s.slot_break_minutes : s.project_break_minutes
+  return b != null && Number(b) > 0 ? Number(b) : null
+}
+function shiftMapUrl(s) {
+  const lat = Number(s.site_lat), lng = Number(s.site_lng)
+  const q = s.site_lat != null && s.site_lng != null && Number.isFinite(lat) && Number.isFinite(lng) ? `${lat},${lng}` : s.site_address
+  return q ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q) : ''
+}
+function shiftPlaceHtml(s, compact) {
+  const place = s.site_name || s.location
+  const map = shiftMapUrl(s)
+  const brk = shiftBreakMinutes(s)
+  const tx = compact ? 'text-xs text-gray-500' : 'text-sm text-gray-600'
+  return `
+    ${place ? `<p class="${tx} mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(place)}</p>` : ''}
+    ${s.site_address || map ? `<p class="text-xs text-gray-500 ${compact ? '' : 'ml-4'}">${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
+    ${compact ? '' : `<p class="${tx}"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}${brk ? `<span class="text-xs text-gray-500 ml-1">（休憩 ${brk}分）</span>` : ''}</p>`}
+    ${s.role ? `<p class="${tx}"><i class="fas fa-user-tag text-gray-400 mr-1"></i>役割: ${esc(s.role)}${compact && brk ? `・休憩 ${brk}分` : ''}</p>` : compact && brk ? `<p class="${tx}">休憩 ${brk}分</p>` : ''}
+    ${s.slot_memo ? `<p class="text-xs text-gray-700 bg-gray-50 rounded-lg px-2 py-1.5 mt-1 whitespace-pre-wrap"><i class="fas fa-note-sticky text-gray-400 mr-1"></i>${esc(s.slot_memo)}</p>` : ''}`
+}
+
 // シフトカード
 function homeShiftCardHtml(data) {
   const s = data.shift
+  const list = data.today_shifts || []
+  const cur = list.find(x => x.shift_id === s.shift_id)
+  // どの会社のシフトか（2社以上に所属している人だけ。他社のシフトは報告の送り先も出す。#503）
+  const company = cur && cur.other_company
+    ? `<p class="text-xs mt-2 text-blue-700 bg-blue-50 rounded-lg px-2 py-1"><i class="fas fa-building mr-1"></i>${esc(cur.company_name)} のシフトです。報告は自動的に ${esc(cur.company_name)} に送られます。</p>`
+    : data.multi_company && cur ? `<p class="text-xs text-gray-500 mt-0.5"><i class="fas fa-building text-gray-400 mr-1"></i>${esc(cur.company_name)} のシフト</p>` : ''
   return `
     <section class="card p-4 mb-4" id="today-shift">
       <div class="flex items-center justify-between mb-2">
@@ -91,11 +142,54 @@ function homeShiftCardHtml(data) {
       </div>
       ${data.tentative ? '<p class="text-xs mb-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-hourglass-half mr-1"></i>管理者の確定待ちのシフト（希望（仮））です。確定されるまでは支払いの対象になりません。勤務する場合は管理者に確認してください。</p>' : ''}
       <p class="text-lg font-bold text-gray-900">${esc(s.project_name)}</p>
-      <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location)}</p>
-      <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
+      ${shiftPlaceHtml(s, false)}
+      ${company}
       ${data.carryover ? '<p class="text-xs mt-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-moon mr-1"></i>日付をまたぐ勤務です。勤務終了・退店などは、このまま報告できます。</p>' : ''}
+      ${homeDayShiftsHtml(data, cur)}
     </section>`
 }
+
+// 本日の予定（同じ日に複数のシフトがある場合。#504）。時刻順に並べ、タップでそのシフトの報告に切り替える
+function homeDayShiftsHtml(data, cur) {
+  const list = data.today_shifts || []
+  if (list.length < 2) return ''
+  return `<div class="mt-3 pt-2 border-t border-gray-100" id="home-day-shifts">
+      <p class="text-xs font-bold text-gray-600 mb-1">本日の予定（${list.length}件）</p>
+      ${list.map(x => {
+        const isCur = !!cur && x.shift_id === cur.shift_id
+        const st = x.tentative ? '<span class="badge badge-yellow">未確定</span>'
+          : x.attendance_done ? `<span class="badge badge-green">報告済み</span>${x.daily_report_required && !x.daily_report_done ? '<span class="badge badge-yellow">日報未提出</span>' : ''}` : ''
+        return `<button type="button" class="w-full text-left mt-1 px-2 py-1.5 rounded-lg border ${isCur ? 'border-blue-300 bg-blue-50' : 'border-gray-100'}" ${isCur ? 'aria-current="true"' : ''} data-action="selectHomeShift" data-id="${Number(x.shift_id)}">
+          <span class="flex items-center justify-between gap-2">
+            <span class="text-sm ${isCur ? 'font-bold text-blue-800' : 'text-gray-700'}">${x.carryover ? '昨日 ' : ''}${esc(x.start_time)}〜${esc(x.end_time)} ${esc(x.project_name)}</span>
+            <span class="flex items-center gap-1 shrink-0">${st}</span>
+          </span>
+          ${x.location || data.multi_company ? `<span class="block text-[11px] text-gray-500">${esc(x.location || '')}${data.multi_company ? `${x.location ? '・' : ''}${esc(x.company_name)}` : ''}</span>` : ''}
+        </button>`
+      }).join('')}
+      <p class="text-[11px] text-gray-400 mt-1">報告がすべて済むと、次のシフトに切り替わります。シフトをタップすると、そのシフトの報告に切り替えられます。</p>
+    </div>`
+}
+
+// 前日以前の報告漏れ（#483）。項目をタップすると、打刻履歴の打刻漏れの追加の申請を開く
+function homeMissedHtml(data) {
+  const m = data.missed_reports
+  if (!m || !m.total) return ''
+  return `<section class="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-800" role="alert" id="missed-reports">
+      <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>前日までの報告漏れがあります（${Number(m.total)}件のシフト）</p>
+      <p class="text-xs mt-0.5">項目をタップすると、打刻漏れの追加を申請できます。管理者が承認すると記録されます</p>
+      ${m.shifts.map(x => `<div class="mt-2 pt-2 border-t border-red-100">
+        <p class="text-xs font-bold">${esc(fmtDate(x.work_date))} ${esc(x.start_time)}〜${esc(x.end_time)} ${esc(x.project_name)}${data.multi_company ? `（${esc(x.company_name)}）` : ''}</p>
+        <div class="flex flex-wrap gap-1.5 mt-1">${x.missing.map(t => `<button type="button" class="text-xs bg-white border border-red-200 text-red-700 rounded-full px-2.5 py-1" data-action="openMissedReport" data-shift-id="${Number(x.shift_id)}" data-type="${esc(t)}">${esc(REPORT_LABELS[t] || t)}<i class="fas fa-chevron-right text-[10px] ml-1"></i></button>`).join('')}</div>
+      </div>`).join('')}
+      ${m.total > m.shifts.length ? `<a href="#attendance" class="block text-xs underline mt-2">ほか ${Number(m.total) - m.shifts.length}件は打刻履歴から申請してください</a>` : ''}
+    </section>`
+}
+delegate('openMissedReport', (el) => {
+  const shiftId = Number(el.dataset.shiftId), type = el.dataset.type
+  if (window.attOpenMissed) attOpenMissed(shiftId, type)
+  else location.hash = 'attendance'
+})
 
 // 報告の状態（サーバーの checkReportable と同じ考え方）
 //   done: 報告済み / pending: 打刻修正を申請中（承認待ち。押せない）/ skipped: 後の報告が済んでいて押せない（打刻修正の申請で追加する）
@@ -184,6 +278,7 @@ function homeNoShiftHtml() {
       <i class="fas fa-mug-hot text-3xl text-gray-300 mb-2"></i>
       <p class="font-bold">今日の稼働予定はありません</p>
       <p class="text-xs mt-1">シフトタブから予定を確認できます</p>
+      <a href="#attendance" class="inline-block text-xs text-blue-600 underline mt-3"><i class="fas fa-user-clock mr-0.5"></i>打刻履歴・修正申請</a>
     </section>`
 }
 
@@ -254,12 +349,23 @@ function getPositionOrNull() {
   })
 }
 
+// 勤怠報告の失敗の文言。すでに報告済み（前の送信が届いていた・別の端末で報告した）なら、エラーではなく報告済みと伝える（#182）
+function attendanceErrorMessage(e, type) {
+  const msg = e && e.response && e.response.data && e.response.data.error
+  if (e && e.response && e.response.status === 409 && msg === 'すでに報告済みです') return REPORT_LABELS[type] + 'は報告済みです'
+  if (!e || !e.response) return '通信できませんでした。電波の良い場所で、報告済みになっていないか確かめてから再度お試しください'
+  return msg || '送信に失敗しました'
+}
+
 // 勤怠報告送信（送信中は押せない。位置情報を待つ間も含む）
 let ATTENDANCE_SENDING = false
 window.submitAttendance = async function (type, shiftId, button) {
   if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
   if (ATTENDANCE_SENDING) return
   ATTENDANCE_SENDING = true
+  // 送信中はボタンに『送信中』を出す（#182）
+  const sub = button && button.querySelector('.flex-1 .text-xs')
+  if (sub) sub.textContent = '送信中...'
   try {
     await withSubmitLock(button, async () => {
       let pos = null
@@ -273,7 +379,7 @@ window.submitAttendance = async function (type, shiftId, button) {
         })
         toast(REPORT_LABELS[type] + 'を送信しました')
       } catch (e) {
-        toast((e.response && e.response.data && e.response.data.error) || '送信に失敗しました')
+        toast(attendanceErrorMessage(e, type))
       }
     })
   } finally {
@@ -436,13 +542,18 @@ window.submitPhotoAttendance = async function () {
       toast(REPORT_LABELS[type] + 'を送信しました')
       renderHome()
     } catch (e) {
+      // すでに報告済み（前の送信が届いていた）なら閉じて最新の状態を出す（#182）
+      if (e.response && e.response.status === 409 && e.response.data && e.response.data.error === 'すでに報告済みです') {
+        closeModal(); toast(attendanceErrorMessage(e, type)); renderHome(); return
+      }
       setPhotoError((e.response && e.response.data && e.response.data.error) || '通信に失敗しました。電波の良い場所で再度お試しください')
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i>送信する' }
     }
   }
 
-  if (type === 'check_in' && navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(pos => send(pos), () => send(null), { timeout: 8000 })
+  // 端末が位置情報に応答しないときも送信中のまま止まらないよう、getPositionOrNull（10秒で諦める）を使う
+  if (type === 'check_in') {
+    getPositionOrNull().then(send)
   } else {
     send(null)
   }
@@ -462,7 +573,8 @@ async function renderShifts(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
   SHIFTS_MONTH = month
-  const { data } = await axios.get('/api/staff/shifts?month=' + month)
+  let data
+  try { data = (await axios.get('/api/staff/shifts?month=' + month)).data } catch (e) { showLoadError(e); return }
   SHIFT_REQ_PROJECTS = data.request_projects || []
   const byDate = {}
   const day = (d) => (byDate[d] = byDate[d] || { shifts: [], requests: [] })
@@ -499,7 +611,9 @@ async function renderShifts(month) {
       ${r.status !== 'pending' && r.response_note ? `<p class="text-xs text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1">管理者より：${esc(r.response_note)}</p>` : ''}
     </div>`
 
-  // 1つのシフトにつき .mt-1.5 の行を1つだけ出す（staff-profile.js が他社シフトの会社名を行の順番で付けるため）
+  // どの会社のシフトか（2社以上に所属している人だけ。他社のシフトは目立たせる。#503）
+  const companyTag = (s) => !data.multi_company ? ''
+    : s.other_company ? ` <span class="badge badge-purple">${esc(s.company_name)}のシフト</span>` : ` <span class="text-[11px] text-gray-400">${esc(s.company_name)}</span>`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-3">
       <button class="btn btn-outline" onclick="renderShifts('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
@@ -515,12 +629,13 @@ async function renderShifts(month) {
             <span class="font-bold ${d === today ? 'text-blue-700' : 'text-gray-800'}">${fmtDate(d)} ${d === today ? '<span class="badge badge-blue">今日</span>' : ''}</span>
           </div>
           ${byDate[d].shifts.map(s => `
-            <div class="mt-1.5 flex items-center justify-between text-sm">
-              <div>
-                <p class="font-medium text-gray-700">${esc(s.project_name)}</p>
-                <p class="text-xs text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.location || '')}</p>
+            <div class="mt-1.5 flex items-start justify-between gap-2 text-sm shift-row" data-shift-id="${Number(s.shift_id)}">
+              <div class="min-w-0">
+                <p class="font-medium text-gray-700">${esc(s.project_name)}${companyTag(s)}</p>
+                <p class="text-xs text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)}</p>
+                ${shiftPlaceHtml(s, true)}
               </div>
-              ${statusBadge[s.status] || ''}
+              <span class="shrink-0">${statusBadge[s.status] || ''}</span>
             </div>${replyBox(s)}`).join('')}
           ${byDate[d].requests.map(requestRow).join('')}
         </div>`).join('') || '<p class="text-center text-gray-400 py-10">この月のシフトはありません</p>'}
@@ -771,61 +886,111 @@ async function renderReport() {
   })
 }
 
+// 過去の日報（#319 #371）。同一人物の全所属の分。タップすると、提出した内容・確認済みかどうか・コメントを開く
+let PAST_REPORTS = null
 async function loadPastReports() {
-  const { data } = await axios.get('/api/staff/my-reports')
   const el = document.getElementById('past-reports')
   if (!el) return
-  el.innerHTML = data.reports.map(r => `
-    <div class="card p-3.5 mb-2">
-      <div class="flex justify-between items-center">
-        <span class="font-bold text-sm text-gray-800">${fmtDate(r.work_date)}</span>
-        <span class="text-xs text-gray-400">${esc(r.project_name)}</span>
-      </div>
-      ${r.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-1.5"><i class="fas fa-comment-dots mr-1"></i>${esc(r.manager_comment)}</p>` : ''}
-    </div>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
+  el.innerHTML = '<div class="flex justify-center py-6"><span class="spin"></span></div>'
+  try { PAST_REPORTS = (await axios.get('/api/staff/my-reports')).data } catch (e) {
+    el.innerHTML = '<p class="text-sm text-gray-500">過去の日報を読み込めませんでした <button class="text-blue-600 underline ml-1" data-action="reloadPastReports">再読み込み</button></p>'
+    return
+  }
+  el.innerHTML = PAST_REPORTS.reports.map((r, i) => `
+    <button type="button" class="card p-3.5 mb-2 w-full text-left block" data-action="openPastReport" data-index="${i}">
+      <span class="flex justify-between items-center gap-2">
+        <span class="font-bold text-sm text-gray-800">${esc(fmtDate(r.work_date))}${r.start_time ? ` <span class="text-xs font-normal text-gray-400">${esc(r.start_time)}〜${esc(r.end_time)}</span>` : ''}</span>
+        ${pastReportCheckBadge(r)}
+      </span>
+      <span class="block text-xs text-gray-500 mt-0.5">${esc(r.project_name)}${r.other_company ? ` <span class="badge badge-purple">${esc(r.company_name)}</span>` : ''}
+        ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレーム</span>' : ''}</span>
+      ${r.manager_comment ? `<span class="block text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-1.5 whitespace-pre-wrap"><i class="fas fa-comment-dots mr-1"></i>${esc(r.manager_comment)}</span>` : ''}
+    </button>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
+}
+delegate('reloadPastReports', () => loadPastReports())
+// 管理者の確認（確認済み／未確認。確認の後に直した日報は、もう一度確認してもらう）
+function pastReportCheckBadge(r) {
+  return r.manager_checked ? '<span class="badge badge-green"><i class="fas fa-check"></i>確認済み</span>'
+    : r.revised_after_check_at ? '<span class="badge badge-yellow">修正後の確認待ち</span>' : '<span class="badge badge-gray">未確認</span>'
+}
+delegate('openPastReport', (el) => {
+  const r = PAST_REPORTS && PAST_REPORTS.reports[Number(el.dataset.index)]
+  if (!r) return
+  // 項目はテンプレートの並び・表示名で出す。テンプレートに無い値（項目を変える前の日報）はキーを表示名にして後ろに出す
+  const fields = ((PAST_REPORTS.templates || {})[r.template_id] || []).slice()
+  for (const k of Object.keys(r.values || {})) if (!fields.some(f => f.key === k)) fields.push({ key: k, label: k === 'free' ? '報告内容' : k, type: typeof r.values[k] === 'number' ? 'number' : 'text' })
+  const shown = fields.filter(f => r.values[f.key] != null && r.values[f.key] !== '')
+  const nums = shown.filter(f => f.type === 'number'), texts = shown.filter(f => f.type !== 'number')
+  modal(`
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="font-bold text-gray-800">${esc(fmtDate(r.work_date))} の日報</h3>
+      <button class="text-gray-400" onclick="closeModal()" aria-label="閉じる"><i class="fas fa-xmark"></i></button>
+    </div>
+    <p class="text-sm text-gray-600">${esc(r.project_name)}${r.start_time ? ` ${esc(r.start_time)}〜${esc(r.end_time)}` : ''}${r.other_company ? ` <span class="badge badge-purple">${esc(r.company_name)}</span>` : ''}</p>
+    <p class="text-xs text-gray-500 mt-1">提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')} ${pastReportCheckBadge(r)}</p>
+    ${nums.length ? `<div class="grid grid-cols-3 gap-2 mt-3">${nums.map(f => `<div class="bg-gray-50 rounded-lg p-2 text-center"><p class="text-lg font-bold text-blue-600">${esc(r.values[f.key])}</p><p class="text-[11px] text-gray-500">${esc(f.label)}</p></div>`).join('')}</div>` : ''}
+    ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-gray-500">${esc(f.label)}</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(r.values[f.key])}</p></div>`).join('')}
+    ${!shown.length ? '<p class="text-sm text-gray-400 mt-3">入力された項目はありません</p>' : ''}
+    ${r.incident_flag || r.complaint_flag ? `<p class="mt-3">${r.incident_flag ? '<span class="badge badge-red">インシデントあり</span> ' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレームあり</span>' : ''}</p>` : ''}
+    ${r.manager_comment ? `<div class="mt-3 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-comment-dots mr-1"></i>管理者のコメント</p><p class="text-sm text-blue-900 whitespace-pre-wrap">${esc(r.manager_comment)}</p></div>` : ''}
+    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+})
+
+// 日報タブ: 本日の入力欄（renderReport）の下に、勤務がある日も過去の日報を出す（#319）
+async function renderReportWithHistory() {
+  await renderReport()
+  if ((location.hash || '').slice(1).split('/')[0] !== 'report') return // 読み込み中にほかのタブへ移った
+  if (document.getElementById('past-reports') || $app.querySelector('[data-action="retryLoad"]')) return
+  $app.insertAdjacentHTML('beforeend', '<h3 class="font-bold text-gray-700 mt-2 mb-2 px-1">過去の日報</h3><div id="past-reports" class="pb-4"></div>')
+  loadPastReports()
 }
 
 // ============ 実績 ============
+// 案件ごとに、日報テンプレートの数値項目（表示名・並び順）で集計して出す（#76）。連携先の案件も含む（#75）
 async function renderPerf(month) {
   loading()
-  month = month || dayjs().format('YYYY-MM')
-  const { data } = await axios.get('/api/staff/performance?month=' + month)
-  const LABELS = { mnp: 'MNP', pi: 'PI', shinki: '新規', kishuhen: '機種変更', hikari: '光回線', wifi: '置き型Wi-Fi', denki: 'でんき', card: 'クレカ', koekake: '声かけ', shodan: '商談', seiyaku: '成約' }
-  const mainKeys = ['mnp', 'pi', 'shinki', 'kishuhen', 'hikari', 'seiyaku'].filter(k => data.totals[k] != null)
+  month = /^\d{4}-\d{2}$/.test(month || '') ? month : dayjs().format('YYYY-MM')
+  let data
+  try { data = (await axios.get('/api/staff/performance?month=' + month)).data } catch (e) { showLoadError(e); return }
+  const projects = data.projects || []
+  const labelOf = {}
+  for (const p of projects) labelOf[p.project_id] = Object.fromEntries(p.fields.map(f => [f.key, f.label]))
+  const card = (p) => {
+    const shown = p.fields.filter(f => Number(p.totals[f.key] || 0) !== 0)
+    return `<section class="card p-4 mb-3">
+      <h3 class="text-sm font-bold text-gray-700 mb-2">${esc(p.project_name)}${p.other_company ? ` <span class="badge badge-purple">${esc(p.company_name)}</span>` : ''}<span class="text-xs font-normal text-gray-400 ml-1">${Number(p.days)}日分</span></h3>
+      ${shown.length ? `<div class="grid grid-cols-3 gap-2">${shown.map(f => `
+        <div class="bg-gray-50 rounded-xl p-2.5 text-center">
+          <p class="text-xl font-bold text-blue-600">${esc(p.totals[f.key])}</p>
+          <p class="text-[11px] text-gray-500 mt-0.5 break-words">${esc(f.label)}</p>
+        </div>`).join('')}</div>` : '<p class="text-xs text-gray-400">数値の実績はありません</p>'}
+    </section>`
+  }
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4">
-      <button class="btn btn-outline" onclick="renderPerf('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
+      <button class="btn btn-outline" onclick="renderPerf('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
       <h2 class="font-bold text-gray-800">${dayjs(month + '-01').format('YYYY年M月')}の実績</h2>
-      <button class="btn btn-outline" onclick="renderPerf('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-right"></i></button>
+      <button class="btn btn-outline" onclick="renderPerf('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
     </div>
-    <div class="grid grid-cols-3 gap-3 mb-4">
-      ${mainKeys.map(k => `
-        <div class="card p-3 text-center">
-          <p class="text-2xl font-bold text-blue-600">${data.totals[k] || 0}</p>
-          <p class="text-xs text-gray-500 mt-0.5">${LABELS[k] || k}</p>
-        </div>`).join('') || '<p class="col-span-3 text-center text-gray-400 py-8">この月の実績データはありません</p>'}
-    </div>
-    ${Object.keys(data.totals).filter(k => !mainKeys.includes(k)).length ? `
-    <div class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-2">その他の実績</h3>
-      <div class="flex flex-wrap gap-2">
-        ${Object.entries(data.totals).filter(([k]) => !mainKeys.includes(k)).map(([k, v]) => `<span class="badge badge-gray">${LABELS[k] || k}: <b class="ml-0.5">${v}</b></span>`).join('')}
-      </div>
-    </div>` : ''}
-    <h3 class="font-bold text-gray-700 mb-2 px-1">日別実績</h3>
+    ${data.daily.length ? projects.map(card).join('') : '<p class="text-center text-gray-400 py-8">この月の実績データはありません</p>'}
+    ${data.daily.length ? `<h3 class="font-bold text-gray-700 mb-2 px-1">日別実績</h3>
     <div class="space-y-2">
-      ${data.daily.slice().reverse().map(d => `
-        <div class="card p-3.5">
-          <div class="flex justify-between items-center">
-            <span class="font-bold text-sm text-gray-800">${fmtDate(d.date)}</span>
-            <span class="text-xs text-gray-400">${esc(d.project)}</span>
+      ${data.daily.slice().reverse().map(d => {
+        const labels = labelOf[d.project_id] || {}
+        const p = projects.find(x => x.project_id === d.project_id)
+        const keys = (p ? p.fields.map(f => f.key) : Object.keys(d.values)).filter(k => Number(d.values[k] || 0) > 0)
+        return `<div class="card p-3.5">
+          <div class="flex justify-between items-center gap-2">
+            <span class="font-bold text-sm text-gray-800">${esc(fmtDate(d.date))}</span>
+            <span class="text-xs text-gray-400 truncate">${esc(d.project)}</span>
           </div>
           <div class="flex flex-wrap gap-1.5 mt-1.5">
-            ${Object.entries(d).filter(([k, v]) => !['date', 'project', 'comment'].includes(k) && v > 0).map(([k, v]) => `<span class="badge badge-blue">${LABELS[k] || k} ${v}</span>`).join('') || '<span class="text-xs text-gray-400">実績なし</span>'}
+            ${keys.map(k => `<span class="badge badge-blue">${esc(labels[k] || k)} ${esc(d.values[k])}</span>`).join('') || '<span class="text-xs text-gray-400">実績なし</span>'}
           </div>
-          ${d.comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots mr-1"></i>${esc(d.comment)}</p>` : ''}
-        </div>`).join('') || '<p class="text-center text-gray-400 py-6">データがありません</p>'}
-    </div>`
+          ${d.comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2 whitespace-pre-wrap"><i class="fas fa-comment-dots mr-1"></i>${esc(d.comment)}</p>` : ''}
+        </div>`
+      }).join('')}
+    </div>` : ''}`
 }
 
 // ============ その他 (お知らせ / 相談) ============
@@ -1021,40 +1186,49 @@ window.renderConsult = async function () {
 }
 delegate('consultReload', () => renderConsult())
 
-window.renderManual = function () {
+// 研修・マニュアル（#74）: シフトに入っている案件の『案件マニュアル・注意事項』と『求められる内容』（管理画面の案件に登録したもの）
+window.renderManual = async function () {
+  loading()
+  let data
+  try { data = (await axios.get('/api/staff/manuals')).data } catch (e) { showLoadError(e); return }
+  const list = data.projects || []
   $app.innerHTML = `
-    <h2 class="font-bold text-gray-800 mb-3 px-1"><i class="fas fa-book-open text-blue-600 mr-1"></i>研修・マニュアル</h2>
-    <div class="space-y-2">
-      ${[
-        { t: '携帯ショップ稼働 基本マニュアル', d: '入店〜退店までの基本フロー', done: true },
-        { t: 'MNP獲得トークスクリプト', d: '声かけ〜クロージングまで', done: true },
-        { t: '光回線+でんきセット訴求資料（7月版）', d: '今月のキャンペーン内容', done: false },
-        { t: 'クレーム初期対応マニュアル', d: 'エスカレーションルール', done: false },
-      ].map(m => `
-        <div class="card p-4 flex items-center gap-3">
-          <span class="w-10 h-10 rounded-lg ${m.done ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'} flex items-center justify-center"><i class="fas ${m.done ? 'fa-circle-check' : 'fa-file-lines'}"></i></span>
-          <div class="flex-1">
-            <p class="font-bold text-sm text-gray-800">${m.t}</p>
-            <p class="text-xs text-gray-400">${m.d}</p>
-          </div>
-          ${m.done ? '<span class="badge badge-green">受講済</span>' : '<span class="badge badge-yellow">未受講</span>'}
-        </div>`).join('')}
-    </div>
-    <p class="text-xs text-gray-400 text-center mt-4">※ 教育管理機能はPhase 4で拡張予定です</p>`
+    <button class="text-sm text-blue-600 mb-3" onclick="renderMore()"><i class="fas fa-chevron-left mr-1"></i>戻る</button>
+    <h2 class="font-bold text-gray-800 mb-1 px-1"><i class="fas fa-book-open text-blue-600 mr-1"></i>研修・マニュアル</h2>
+    <p class="text-xs text-gray-500 mb-3 px-1">シフトに入っている案件（直近30日と今後）のマニュアル・注意事項です</p>
+    <div class="space-y-2" id="manual-list">
+      ${list.map((m, i) => {
+        const has = m.manual_text || m.requirements
+        return `<details class="card p-4" ${i === 0 && has ? 'open' : ''}>
+          <summary class="flex items-center gap-3 cursor-pointer list-none">
+            <span class="w-10 h-10 rounded-lg ${has ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'} flex items-center justify-center shrink-0"><i class="fas fa-file-lines"></i></span>
+            <span class="flex-1 min-w-0">
+              <span class="block font-bold text-sm text-gray-800">${esc(m.project_name)}${m.other_company ? ` <span class="badge badge-purple">${esc(m.company_name)}</span>` : ''}</span>
+              <span class="block text-xs text-gray-400">${m.next_date ? '次の稼働 ' + esc(fmtDate(m.next_date)) : '最後の稼働 ' + esc(fmtDate(m.last_date))}${has ? '' : '・マニュアルは登録されていません'}</span>
+            </span>
+            <i class="fas fa-chevron-down text-gray-300"></i>
+          </summary>
+          ${m.requirements ? `<div class="mt-3"><p class="text-xs font-bold text-gray-500 mb-1">求められる内容</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(m.requirements)}</p></div>` : ''}
+          ${m.manual_text ? `<div class="mt-3"><p class="text-xs font-bold text-gray-500 mb-1">案件マニュアル・注意事項</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(m.manual_text)}</p></div>` : ''}
+          ${has ? '' : '<p class="text-xs text-gray-400 mt-3">この案件のマニュアルはまだ登録されていません。分からないことは相談・連絡から管理者に確認してください</p>'}
+        </details>`
+      }).join('') || '<p class="text-center text-gray-400 py-10">表示できるマニュアルはありません（シフトに入っている案件のマニュアルが表示されます）</p>'}
+    </div>`
 }
 
 // ============ ルーティング ============
-const routes = { home: renderHome, shift: () => renderShifts(), report: renderReport, perf: () => renderPerf(), more: renderMore,
+const routes = { home: renderHome, shift: () => renderShifts(), report: renderReportWithHistory, perf: () => renderPerf(), more: renderMore,
   attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()),
   notifications: () => (window.renderStaffNotifications ? renderStaffNotifications() : renderHome()) }
 const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請', notifications: '通知' }
 
+// 画面を描く。読み込みに失敗したら、読み込み中のまま止めずに再読み込みのボタンを出す（#182）。描き終わるまで待てる Promise を返す
 function route() {
   const tab = (location.hash || '#home').slice(1).split('/')[0]
   const fn = routes[tab] || renderHome
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (tab === 'attendance' || tab === 'notifications' ? 'more' : tab)))
   document.getElementById('header-title').textContent = titles[tab] || 'ホーム'
-  fn()
+  return Promise.resolve().then(fn).catch(showLoadError)
 }
 
 // 相談・連絡（ホームの返信バナーから開く。#320）
@@ -1062,11 +1236,13 @@ routes.consult = () => renderConsult()
 
 window.addEventListener('hashchange', route)
 
-;(async () => {
+// 起動: ログインを確かめてから画面を描く。401 以外の失敗（電波が弱いなど）では、白い画面のままにせず再試行を出す（#465）
+async function boot() {
+  loading()
   try {
-    const { data } = await axios.get('/api/auth/me')
-    ME = data
-    document.getElementById('user-name').textContent = data.name
-  } catch (e) { return }
-  route()
-})()
+    ME = (await axios.get('/api/auth/me')).data
+  } catch (e) { showLoadError(e); return }
+  document.getElementById('user-name').textContent = ME.name
+  return route()
+}
+boot()
