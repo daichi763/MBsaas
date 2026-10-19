@@ -308,8 +308,17 @@ async function roleConflicts(db: D1Database, u: any, roles: any[]) {
   const out = new Map<number, string[]>()
   if (!roles.length) return out
   const dates = roles.map(r => r.work_date).sort()
-  const cf = (await findConflicts(db, u.company_id, [u.staff_id], dates[0], dates[dates.length - 1])).get(u.staff_id)
-  if (!cf || !cf.length) return out
+  const from = dates[0], to = dates[dates.length - 1]
+  const cf: any[] = [...((await findConflicts(db, u.company_id, [u.staff_id], from, to)).get(u.staff_id) || [])]
+  // 連携していないほかの所属企業（同じ人物）のシフトも見る（本人のシフト一覧には出ている）
+  const others = (await personStaffRows(db, u)).map(r => Number(r.staff_id)).filter(id => id && id !== Number(u.staff_id))
+  if (others.length) {
+    const rows = (await db.prepare(`SELECT shift_id, slot_role_id, staff_id, company_id, work_date, start_time, end_time, status FROM shifts
+      WHERE staff_id IN ${JSON_IN} AND work_date BETWEEN ? AND ? AND status IN ('requested','confirmed','substitute')`)
+      .bind(bindJsonArray(others), addDays(from, -1), addDays(to, 1)).all()).results as any[]
+    for (const r of rows) if (!cf.some(x => x.shift_id === r.shift_id)) cf.push({ ...r, project_name: null })
+  }
+  if (!cf.length) return out
   for (const r of roles) {
     const list = conflictFor(cf, r.work_date, r.start_time, r.end_time).filter((x: any) => x.slot_role_id !== r.slot_role_id)
     if (list.length) out.set(r.slot_role_id, list.map((x: any) => conflictLabel(x, u.company_id)))

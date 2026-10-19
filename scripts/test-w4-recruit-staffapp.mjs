@@ -203,6 +203,37 @@ const S1 = await newStaff('S1')
   } else ok('#513 （承認できなかったため確認を省略）', false, dec)
 }
 
+// ---------- #364 #310 ほかの所属企業の募集と、ほかの所属企業のシフトとの重なり ----------
+{
+  const hq = client(await login('sample', 'hq'))
+  const code = `rs${PFX.toLowerCase()}co`
+  const coName = `${PFX} 連携先株式会社`
+  must(await hq.post('/api/hq/companies', { company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
+  const coAdmin = client(await login(code, 'admin'))
+  const S7 = await newStaff('S7')
+  const terms = must(await coAdmin.get('/api/admin/roster/consent-terms'), 'terms')
+  const row = must(await admin.get('/api/admin/staff'), 'staff list').staff.find(s => s.staff_id === S7.staff_id)
+  const lk = await coAdmin.post('/api/admin/roster/link', { code: row.global_staff_code, agreed: true, consent_version: terms.version })
+  ok('（前提）連携先の企業に S7 を連携する', lk.status === 200, lk)
+  must(await coAdmin.post('/api/admin/projects', { project_name: `${PFX}-CO` }), 'co project')
+  const coPid = must(await coAdmin.get('/api/admin/projects'), 'co projects').projects.find(p => p.project_name === `${PFX}-CO`).project_id
+  must(await coAdmin.post('/api/admin/shift-slots', { project_id: coPid, dates: [D2], start_time: '06:00', end_time: '08:00', roles: [{ role_name: '設営', headcount: 1 }] }), 'co slot')
+  must(await coAdmin.post('/api/admin/recruit-pages', { title: `${PFX} 連携先の募集`, project_ids: [coPid], date_from: today, date_to: addDays(today, 20), allow_staff: true, show_remaining: true, description: '', pay_note: '', contact_note: '' }), 'co page')
+  const s = must(await S7.api.get('/api/staff/recruit/summary'), 'summary S7')
+  const other = (s.other_companies || []).find(x => x.company_name === coName)
+  ok('#364 切り替えていない所属企業の応募できる件数を返す', other && other.open === 1 && other.pending === 0, s.other_companies)
+  const d = must(await S7.api.get('/api/staff/recruit'), 'staff recruit S7')
+  ok('#364 一覧にも、ほかの所属企業の募集を返す', (d.other_companies || []).some(x => x.company_name === coName), d.other_companies)
+  // 連携先の企業のシフト（S7 の連携先の行）と、自社の募集の枠（ridA: D の 10:00〜18:00）が重なる
+  const linked = must(await coAdmin.get('/api/admin/staff'), 'co staff').staff.find(x => x.name === S7.name)
+  const sh = await coAdmin.post('/api/admin/shifts', { staff_id: linked.staff_id, project_id: coPid, work_date: D, start_time: '11:00', end_time: '12:00', status: 'confirmed' })
+  if (sh.status === 200) {
+    const d2 = must(await S7.api.get('/api/staff/recruit'), 'staff recruit S7 2')
+    const ra = pageOf(d2, pageA.page_id).roles.find(r => r.slot_role_id === ridA)
+    ok('#310 ほかの所属企業のシフトとの重なりを返す（会社名・案件名は出さない）', ra && ra.conflicts.some(x => /他社の予定あり 11:00〜12:00/.test(x)), ra)
+  } else ok('#310 （連携先のシフトを登録できなかったため確認を省略）', false, sh)
+}
+
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
 if (failed.length) process.exit(1)
