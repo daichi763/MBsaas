@@ -181,6 +181,21 @@ const A = await newStaff(1), B = await newStaff(2), C = await newStaff(3)
   must(await admin.put(`/api/admin/shifts/${worked}/price`, { reset: true }), 'reset')
   r = await rowOf(worked, d1st)
   ok('#233 今の区分の支払先に置き換えると確認事項から消える', r && r.payee_type === 'freelance' && !r.issues.includes('区分変更の対象外（支払先が変更前のまま）'), r && [r.payee_type, r.issues])
+  // 区分を元に戻したとき（支払先がもう変更後と同じシフト）は、前の区分変更の記録で確認事項を出し続けない
+  const G = await newStaff(7)
+  const workedG = await newShift(G, P, d1st)
+  must(await admin.put(`/api/admin/shifts/${workedG}/actual`, { actual_start: '10:00', actual_end: '19:00' }), 'actual G')
+  const change = async (to_type) => {
+    const b = { to_type, effective_date: d1st }
+    const v = must(await admin.post(`/api/admin/staff/${G}/affiliation-change`, { ...b, dry_run: true }), 'dry G')
+    return must(await admin.post(`/api/admin/staff/${G}/affiliation-change`, { ...b, preview_token: v.preview_token }), 'change G')
+  }
+  await change('freelance')
+  r = await rowOf(workedG, d1st)
+  const shownBefore = !!(r && r.issues.includes('区分変更の対象外（支払先が変更前のまま）'))
+  await change('daily_worker')
+  r = await rowOf(workedG, d1st)
+  ok('#233 区分を元に戻すと、支払先が同じになったシフトの確認事項は消える', shownBefore && r && r.payee_type === 'payroll_daily' && !r.issues.includes('区分変更の対象外（支払先が変更前のまま）'), r && [shownBefore, r.payee_type, r.issues])
 }
 
 // ---------- #19 の続き: 勤怠報告のある希望（仮）のシフト ----------

@@ -351,8 +351,9 @@ type AffPlan = {
   from: string; to: string; effective: string; affiliation: string | null; partnerId: number | null; newPartnerName: string | null
   tradeName: string | null; hire: string | null; contractType: string | null; er: any; repair: boolean; scheduled: boolean
   targets: any[]; excluded: number; effects: string[]; warnings: string[]; token: string
-  // 勤務済みのため置き換えないシフトのうち、支払先が変更後と違うもの（実行時に affiliation_excluded_shifts へ記録し、精算の確認事項に出す。#233）
-  excludedShifts?: { shift_id: number; work_date: string }[]
+  // 勤務済みのため置き換えないシフト（実行時に affiliation_excluded_shifts へ記録し、支払先が変更後と違うものを精算の確認事項に出す。#233）。
+  // differs = 今の支払先が変更後と違う。同じものも記録し、精算では最後の区分変更の支払先で判定する（元の区分に戻したときに前の記録で確認事項が残らないように）
+  excludedShifts?: { shift_id: number; work_date: string; differs: boolean }[]
 }
 type PlanResult = { ok: true; plan: AffPlan } | { ok: false; error: string; status: 400 | 404 | 409 }
 async function planAffiliationChange(db: D1Database, companyId: number, sp: any, b: any, opts: { today: string; fromSchedule?: boolean }): Promise<PlanResult> {
@@ -428,13 +429,15 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   }
   if (linksOut && !repair) effects.push(`自社から他社への連携 ${linksOut} 件は継続します（企業間チャットもそのまま使えます）`)
   effects.push(`適用日以降の予定シフト ${targets.length} 件の支払先・単価を置き換えます${scheduled ? '（件数は今の時点のものです。適用日に数え直します）' : ''}`)
-  // 置き換えないシフトのうち支払先が変更後と違うものは、実行したときに記録し、精算の確認事項『区分変更の対象外』に出す（#233）
-  const excludedShifts = scheduled ? [] : shifts.filter(s => (s.reported || s.has_actual || s.has_daily) && !samePayee(s)).map(s => ({ shift_id: s.shift_id as number, work_date: s.work_date as string }))
+  // 置き換えないシフトは実行したときに記録し、支払先が変更後と違うものを精算の確認事項『区分変更の対象外』に出す（#233）
+  const excludedShifts = scheduled ? [] : shifts.filter(s => s.reported || s.has_actual || s.has_daily)
+    .map(s => ({ shift_id: s.shift_id as number, work_date: s.work_date as string, differs: !samePayee(s) }))
   if (excluded) {
     const md = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
-    const dates = [...new Set(excludedShifts.map(s => md(s.work_date)))]
+    const differ = excludedShifts.filter(s => s.differs)
+    const dates = [...new Set(differ.map(s => md(s.work_date)))]
     effects.push(`勤務済み（勤怠報告・実績の入力・日報のどれかがある）の ${excluded} 件は置き換えません`
-      + (dates.length ? `。うち支払先が変わる ${excludedShifts.length} 件（${dates.slice(0, 10).join('、')}${dates.length > 10 ? ' ほか' : ''}）は精算の確認事項に出します（精算の画面から今の区分の支払先・単価に置き換えられます）` : ''))
+      + (dates.length ? `。うち支払先が変わる ${differ.length} 件（${dates.slice(0, 10).join('、')}${dates.length > 10 ? ' ほか' : ''}）は精算の確認事項に出します（精算の画面から今の区分の支払先・単価に置き換えられます）` : ''))
   }
   if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
   if (!repair) {
