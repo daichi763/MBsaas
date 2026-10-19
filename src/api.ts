@@ -1261,8 +1261,18 @@ api.get('/admin/staff/:id', async (c) => {
     profile.board_source = bp ? { proposer_company_name: bp.company_name, thread_id: bp.thread_id } : null
   }
 
-  const [shifts, attendance, reports, evals, follows] = await Promise.all([
-    db.prepare(`SELECT s.*, p.project_name FROM shifts s JOIN projects p ON s.project_id = p.project_id WHERE s.staff_id = ? ORDER BY s.work_date DESC LIMIT 30`).bind(sid).all(),
+  // シフトは今日以降（日付の早い順 20件）と過去（新しい順 30件）を分けて取る。先の予定が多くても過去の稼働が出るように（#224）
+  const today = todayJST()
+  const shiftCols = `s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.role, s.location, s.project_id, s.slot_id, s.settle_status, p.project_name, si.site_name, cl.client_name`
+  const shiftFrom = `FROM shifts s JOIN projects p ON s.project_id = p.project_id AND p.company_id = s.company_id LEFT JOIN sites si ON si.site_id = s.site_id
+    LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id WHERE s.staff_id = ? AND s.company_id = ?`
+  const [upcoming, past, ngClients] = await Promise.all([
+    db.prepare(`SELECT ${shiftCols} ${shiftFrom} AND s.work_date >= ? ORDER BY s.work_date, s.start_time LIMIT 20`).bind(sid, u.company_id, today).all(),
+    db.prepare(`SELECT ${shiftCols} ${shiftFrom} AND s.work_date < ? ORDER BY s.work_date DESC, s.start_time DESC LIMIT 30`).bind(sid, u.company_id, today).all(),
+    db.prepare(`SELECT cl.client_id, cl.client_name, n.reason, n.created_at FROM clients cl LEFT JOIN client_ng_staff n ON n.client_id = cl.client_id AND n.staff_id = ? AND n.company_id = cl.company_id
+      WHERE cl.company_id = ? AND (',' || REPLACE(COALESCE(cl.ng_staff_ids,''), ' ', '') || ',') LIKE ? ORDER BY cl.client_name`).bind(Number(sid), u.company_id, `%,${Number(sid)},%`).all(),
+  ])
+  const [attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT a.*, s.work_date FROM attendance_reports a JOIN shifts s ON a.shift_id = s.shift_id WHERE a.staff_id = ? ORDER BY a.reported_at DESC LIMIT 40`).bind(sid).all(),
     db.prepare(`SELECT dr.*, p.project_name FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id WHERE dr.staff_id = ? ORDER BY dr.work_date DESC LIMIT 20`).bind(sid).all(),
     db.prepare(`SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 6`).bind(sid).all(),
@@ -1281,7 +1291,9 @@ api.get('/admin/staff/:id', async (c) => {
 
   return c.json({
     profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
-    shifts: shifts.results,
+    shifts: [...(upcoming.results as any[])].reverse().concat(past.results as any[]),
+    upcoming_shifts: upcoming.results, past_shifts: past.results, today,
+    ng_clients: ngClients.results,
     attendance: attendance.results,
     reports: (reports.results as any[]).map(r => ({ ...r, values: JSON.parse(r.report_values) })),
     evaluations: evals.results,
@@ -1768,6 +1780,62 @@ api.put('/admin/clients/:id', async (c) => {
       .bind(...upd.values, cid, u.company_id).run()
   }
   return c.json({ ok: true })
+})
+
+// ============ クライアントのNGスタッフ（#204） ============
+// NG の判定（シフトボードの候補・割当の警告・応募の承認）は従来どおり clients.ng_staff_ids を見る。
+// 理由・登録日・登録者は client_ng_staff に持つ（migrations/0051）
+const NG_STAFF_MAX = 500
+async function clientNgStaffList(db: D1Database, companyId: number, client: any) {
+  const ids = String(client.ng_staff_ids || '').split(',').map(x => Number(x)).filter(n => Number.isInteger(n) && n > 0)
+  if (!ids.length) return []
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, COALESCE(sp.employment_status,'working') AS employment_status,
+      n.reason, n.created_at, cb.name AS created_by_name
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN client_ng_staff n ON n.client_id = ? AND n.company_id = sp.company_id AND n.staff_id = sp.staff_id
+    LEFT JOIN users cb ON cb.user_id = n.created_by
+    WHERE sp.company_id = ? AND sp.staff_id IN (SELECT value FROM json_each(?))`).bind(client.client_id, companyId, JSON.stringify(ids)).all()).results as any[]
+  const byId = new Map(rows.map(r => [r.staff_id, r]))
+  return ids.map(id => byId.get(id)).filter(Boolean)
+}
+api.get('/admin/clients/:id/ng-staff', async (c) => {
+  const u = c.get('user')
+  const client = await c.env.DB.prepare('SELECT client_id, ng_staff_ids FROM clients WHERE client_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  return c.json({ staff: await clientNgStaffList(c.env.DB, u.company_id, client) })
+})
+// NGスタッフの一覧を置き換える。body: { staff: [{ staff_id, reason }] }（staff_ids: [id] でも可）。自社の（統合済みでない）スタッフだけを受け付ける
+api.put('/admin/clients/:id/ng-staff', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const client = await db.prepare('SELECT client_id, ng_staff_ids FROM clients WHERE client_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const src: any[] | null = Array.isArray(b.staff) ? b.staff : Array.isArray(b.staff_ids) ? b.staff_ids.map((id: any) => ({ staff_id: id })) : null
+  if (!src) return c.json({ error: 'NGスタッフを指定してください' }, 400)
+  const items: { staff_id: number; reason: string | null }[] = []
+  for (const x of src) {
+    const id = Number(x?.staff_id)
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'スタッフの指定が正しくありません' }, 400)
+    if (x.reason != null && typeof x.reason !== 'string') return c.json({ error: '理由が正しくありません' }, 400)
+    const reason = String(x.reason || '').trim()
+    if (reason.length > 500) return c.json({ error: '理由は500文字以内で入力してください' }, 400)
+    if (!items.some(i => i.staff_id === id)) items.push({ staff_id: id, reason: reason || null })
+  }
+  if (items.length > NG_STAFF_MAX) return c.json({ error: `NGスタッフは${NG_STAFF_MAX}人までです` }, 400)
+  const ids = JSON.stringify(items.map(i => i.staff_id))
+  if (items.length) {
+    const own = await db.prepare('SELECT COUNT(*) AS n FROM staff_profiles WHERE company_id = ? AND merged_into_staff_id IS NULL AND staff_id IN (SELECT value FROM json_each(?))').bind(u.company_id, ids).first() as any
+    if (Number(own?.n || 0) !== items.length) return c.json({ error: 'スタッフが見つかりません（自社のスタッフだけを指定できます）' }, 400)
+  }
+  // 続けて指定された人は登録日・登録者を残し、理由だけを書き換える
+  await db.batch([
+    db.prepare('UPDATE clients SET ng_staff_ids = ? WHERE client_id = ? AND company_id = ?').bind(items.map(i => i.staff_id).join(','), client.client_id, u.company_id),
+    db.prepare('DELETE FROM client_ng_staff WHERE client_id = ? AND company_id = ? AND staff_id NOT IN (SELECT value FROM json_each(?))').bind(client.client_id, u.company_id, ids),
+    db.prepare(`INSERT INTO client_ng_staff (client_id, staff_id, company_id, reason, created_by)
+      SELECT ?, json_extract(value, '$.staff_id'), ?, json_extract(value, '$.reason'), ? FROM json_each(?) WHERE true
+      ON CONFLICT(client_id, staff_id) DO UPDATE SET reason = excluded.reason`).bind(client.client_id, u.company_id, u.user_id, JSON.stringify(items)),
+  ])
+  return c.json({ ok: true, count: items.length })
 })
 
 // ============ 顧客担当者（1会社に複数登録可、支店・部署は自由入力） ============

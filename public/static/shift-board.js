@@ -12,23 +12,39 @@
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const d0 = (d) => dayjs(d).format('YYYY-MM-DD')
 
+  // その日を含む週の月曜日（ボードの週は月曜始まり。日曜は前の月曜からの週に入れる #528）
+  function weekStart(d) { const x = dayjs(d); return x.subtract((x.day() + 6) % 7, 'day').format('YYYY-MM-DD') }
+  window.boardWeekStart = weekStart
+
   // ボードの表示状態（画面遷移しても保持）
   const BS = window.__boardState = window.__boardState || {
-    from: dayjs().startOf('week').add(1, 'day').format('YYYY-MM-DD'), days: 7, clientId: '', projectIds: [], engagement: '',
+    from: weekStart(dayjs()), days: 7, clientId: '', projectIds: [], engagement: '',
     view: 'slot', onlyShort: false, showMoney: true,
   }
-  let BOARD = null, MASTER = null
+  let BOARD = null, MASTER = null, MASTER_AT = 0
 
+  // 案件・クライアント・開催場所・スタッフの選択肢。登録・変更の後（下の axios の処理）と、一定時間ごとに取り直す（#529）
+  const MASTER_TTL_MS = 5 * 60 * 1000
   async function loadMaster() {
-    if (MASTER) return MASTER
+    if (MASTER && Date.now() - MASTER_AT < MASTER_TTL_MS) return MASTER
     const [{ data: pj }, { data: cl }, { data: si }, { data: st }] = await Promise.all([
-      axios.get('/api/admin/projects'), axios.get('/api/admin/clients'), axios.get('/api/admin/sites'), axios.get('/api/admin/staff')])
+      axios.get('/api/admin/projects'), axios.get('/api/admin/clients'), axios.get('/api/admin/sites?counts=0'), axios.get('/api/admin/staff')])
     // 割り当てられる人だけを出す（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職は assignable=0）
     MASTER = { projects: pj.projects, clients: cl.clients, sites: si.sites, staff: st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id && s.assignable !== 0) }
+    MASTER_AT = Date.now()
     return MASTER
   }
   function invalidateMaster() { MASTER = null }
   window.invalidateBoardMaster = invalidateMaster
+  // 案件・クライアント・開催場所・スタッフ（連携・統合・従業員管理を含む）を登録・変更・削除したら、選択肢を取り直す。
+  // 画面ごとに呼び忘れないよう、成功した書き込みの URL で判定する（管理画面のどこから登録しても反映される）
+  const MASTER_WRITE_URL = /^\/api\/admin\/(projects|clients|sites|staff|staff-quick|employees|roster)(\/|\?|$)/
+  if (window.axios && axios.interceptors) axios.interceptors.response.use((res) => {
+    const cfg = res && res.config
+    if (cfg && cfg.method && cfg.method.toLowerCase() !== 'get' && MASTER_WRITE_URL.test(String(cfg.url || ''))) invalidateMaster()
+    return res
+  })
+  window.boardReloadMaster = function () { invalidateMaster(); renderShiftBoard() }
 
   // =========================================================
   // シフトボード
@@ -64,6 +80,7 @@
           <button class="btn btn-outline" onclick="openCopyModal()"><i class="fas fa-copy"></i>コピー</button>
           <button class="btn btn-outline" data-action="openShiftRequests"><i class="fas fa-hand"></i>シフト希望<span id="board-req-count"></span></button>
           <a class="btn btn-outline" href="#shifts/week"><i class="fas fa-table-columns"></i>週表示（従来）</a>
+          <button class="btn btn-outline" onclick="boardReloadMaster()" title="案件・スタッフ・開催場所の一覧を読み直します"><i class="fas fa-rotate"></i>一覧を更新</button>
         </div>
       </div>
 
@@ -98,8 +115,8 @@
         <div class="card p-3"><p class="text-xs text-gray-500">充足</p><p class="text-lg font-bold ${fillRate != null && fillRate < 100 ? 'text-red-600' : ''}">${t.filled}/${t.required}${fillRate != null ? `<span class="text-xs font-normal text-gray-400 ml-1">${fillRate}%</span>` : ''}</p></div>
         <div class="card p-3"><p class="text-xs text-gray-500">請求合計</p><p class="text-lg font-bold">${yen(t.bill)}</p></div>
         <div class="card p-3"><p class="text-xs text-gray-500">支払合計</p><p class="text-lg font-bold">${yen(t.pay)}${t.pay_missing ? `<span class="text-xs text-amber-600 ml-1" title="支払単価が未設定のシフト">未設定${t.pay_missing}件</span>` : ''}</p></div>
-        <div class="card p-3"><p class="text-xs text-gray-500">粗利</p><p class="text-lg font-bold ${t.profit < 0 ? 'text-red-600' : 'text-emerald-700'}">${yen(t.profit)}</p></div>
-        <div class="card p-3"><p class="text-xs text-gray-500">粗利率</p><p class="text-lg font-bold">${t.bill ? Math.round(t.profit / t.bill * 1000) / 10 + '%' : '-'}</p></div>
+        <div class="card p-3"><p class="text-xs text-gray-500">粗利</p><p class="text-lg font-bold ${t.profit < 0 ? 'text-red-600' : 'text-emerald-700'}">${yen(t.profit)}</p>${t.pay_missing ? `<p class="text-[10px] text-amber-600" title="支払単価が未設定のシフトは粗利に含めていません">支払未設定 ${Number(t.pay_missing)}件・請求 ${yen(t.pay_missing_bill)} を除外</p>` : ''}</div>
+        <div class="card p-3"><p class="text-xs text-gray-500">粗利率</p><p class="text-lg font-bold">${t.profit_bill ? Math.round(t.profit / t.profit_bill * 1000) / 10 + '%' : '-'}</p>${t.pay_missing ? '<p class="text-[10px] text-gray-400">支払が決まっているシフトだけで計算</p>' : ''}</div>
       </section>
 
       <div class="flex gap-3 items-start">
@@ -112,7 +129,7 @@
           <input class="inp text-xs mb-2" placeholder="名前で絞り込み" oninput="boardFilterStaff(this.value)">
           <div id="board-staff-list" class="space-y-1">
             ${m.staff.map(s => `<div class="board-chip staff-src" data-staff-id="${s.staff_id}" data-name="${esc(s.name)}">
-              <span class="truncate">${esc(s.name)}</span>${s.employment_status === 'leave' ? '<span class="text-[10px] text-amber-600">休職中</span>' : ''}<span class="text-[10px] text-gray-400">${AFF_SHORT[s.affiliation_type] || ''}</span></div>`).join('')}
+              <span class="truncate">${esc(s.name)}</span>${s.employment_status === 'leave' ? '<span class="text-[10px] text-amber-600">休職中</span>' : s.employment_status === 'preboarding' ? '<span class="text-[10px] text-amber-600">入社予定</span>' : ''}<span class="text-[10px] text-gray-400">${AFF_SHORT[s.affiliation_type] || ''}</span></div>`).join('')}
           </div>
         </aside>
       </div>`
@@ -146,7 +163,7 @@
     const head = `<thead class="sticky top-0 z-10 bg-white"><tr>
       <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:190px">案件 / 開催場所 / 役割</th>
       ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 88 : 108}px;width:${BS.days > 14 ? 88 : 108}px">
-        <button class="hover:underline" onclick="openSlotModal({work_date:'${d}'})" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[w]})</button></th>` }).join('')}
+        <button class="hover:underline" onclick="openSlotModal({work_date:'${d}'})" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[w]})</button>${daySummary(d)}</th>` }).join('')}
     </tr></thead>`
     let lastProject = null
     const body = list.map(r => {
@@ -172,11 +189,39 @@
     return `<table class="board-table">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
   }
 
+  // 列の見出しの下に出す、その日の充足（#566）。不足のある日は赤くし、押すとその日の不足の枠を一覧で開く
+  function daySummary(d) {
+    const x = (BOARD.totals.by_date || {})[d]
+    if (!x || !x.required) return ''
+    const short = x.required - x.filled
+    return short > 0
+      ? `<button class="block w-full text-[10px] font-bold text-red-600 bg-red-50 rounded mt-0.5 hover:underline" data-action="boardDayShort" data-date="${esc(d)}" title="この日の不足の枠を表示">${Number(x.filled)}/${Number(x.required)} 不足${short}</button>`
+      : `<span class="block text-[10px] font-normal text-emerald-700 mt-0.5">${Number(x.filled)}/${Number(x.required)} 充足</span>`
+  }
+  function openDayShort(d) {
+    const rows = []
+    for (const s of BOARD.slots) if (s.work_date === d) for (const r of s.roles) if (r.filled < r.headcount) rows.push({ s, r })
+    const proj = new Map(BOARD.projects.map(p => [p.project_id, p]))
+    rows.sort((a, b) => String(a.s.start_time).localeCompare(b.s.start_time))
+    modal(`
+      <h3 class="font-bold text-lg mb-1">${dayjs(d).format('M/D')}(${WD[dayjs(d).day()]}) の不足</h3>
+      <p class="text-xs text-gray-500 mb-2">必要人数に足りない枠です（表示中の絞り込みの範囲）。「候補」から割り当てられます</p>
+      <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100">
+        ${rows.map(({ s, r }) => `<div class="flex items-center gap-2 py-2 text-sm">
+          <div class="flex-1 min-w-0"><p class="font-bold truncate">${esc((proj.get(s.project_id) || {}).project_name || '')}</p>
+            <p class="text-xs text-gray-500">${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.site_name || s.location || '')}・${esc(r.role_name)}</p></div>
+          <span class="text-xs font-bold text-red-600 whitespace-nowrap">${Number(r.filled)}/${Number(r.headcount)}${r.requested ? `<span class="text-amber-600 ml-1">希望${Number(r.requested)}</span>` : ''}</span>
+          <button class="btn btn-outline text-xs" data-action="bulkSkipCandidates" data-id="${Number(r.slot_role_id)}">候補</button></div>`).join('') || '<p class="p-3 text-sm text-gray-400">不足の枠はありません</p>'}
+      </div>`)
+  }
+  delegate('boardDayShort', el => openDayShort(el.dataset.date))
+
   function slotCell(slot, role) {
     const short = role.filled < role.headcount
     const over = role.filled > role.headcount
     const money = BS.showMoney ? role.assigned.filter(a => ['confirmed', 'substitute'].includes(a.status)).reduce((x, a) => x + (a.bill_total || 0), 0) : 0
-    return `<div class="board-cell ${short ? 'board-short' : over ? 'board-over' : 'board-ok'}" data-slot-role-id="${role.slot_role_id}">
+    // 『不足のみ』では、同じ行の不足していない日のセルを薄く出す
+    return `<div class="board-cell ${short ? 'board-short' : over ? 'board-over' : 'board-ok'} ${BS.onlyShort && !short ? 'opacity-40' : ''}" data-slot-role-id="${role.slot_role_id}">
       <div class="flex items-center justify-between gap-1 mb-1">
         <button class="text-[11px] font-bold ${short ? 'text-red-600' : 'text-emerald-700'}" onclick="openSlotModal(null, ${slot.slot_id})" title="枠を編集">${role.filled}/${role.headcount}${role.requested ? `<span class="text-amber-600 ml-1">希望${role.requested}</span>` : ''}</button>${role.applicants ? `<a href="#recruit" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="未対応の応募">応募${role.applicants}</a>` : ''}
         <span class="flex items-center gap-1">
@@ -193,9 +238,14 @@
     return (x.other_company ? '他社の予定あり' : (x.project_name || '自社のシフト')) + ' ' + (x.start_time || '') + '〜' + (x.end_time || '')
   }
 
+  // 退職などで稼働日に働けない人のシフト（#500。充足には数えない）
+  function unavailableMark(a) {
+    return a.unavailable && a.status !== 'absent' ? `<span class="badge badge-red ml-0.5" title="${esc(a.unavailable)}のため、この日は稼働できません。シフトを外すか代わりの人を入れてください">${esc(a.unavailable)}</span>` : ''
+  }
   function staffChip(a) {
-    const warn = (a.conflicts && a.conflicts.length) || a.ng
+    const warn = (a.conflicts && a.conflicts.length) || a.ng || (a.unavailable && a.status !== 'absent')
     const title = [
+      a.unavailable && a.status !== 'absent' ? a.unavailable + 'のため、この日は稼働できません（充足に数えていません）' : '',
       a.conflicts && a.conflicts.length ? '重複: ' + a.conflicts.map(conflictText).join(' / ') : '',
       a.ng ? 'NGスタッフに指定されています' : '',
       replyText(a),
@@ -203,7 +253,7 @@
     ].filter(Boolean).join('\n')
     return `<div class="board-chip shift-chip st-${a.status} ${warn ? 'chip-warn' : ''}" data-shift-id="${a.shift_id}" title="${esc(title)}" onclick="openShiftDetail(${a.shift_id})">
       <span class="truncate">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(a.staff_name)}</span>
-      <span class="text-[10px] shrink-0">${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${replyMark(a)}${a.price_locked ? '<i class="fas fa-pen text-gray-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-amber-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
+      <span class="text-[10px] shrink-0">${unavailableMark(a)}${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${replyMark(a)}${a.price_locked ? '<i class="fas fa-pen text-gray-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-amber-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
     </div>`
   }
 
@@ -217,16 +267,16 @@
     const today = dayjs().format('YYYY-MM-DD')
     return `<table class="board-table"><thead class="sticky top-0 z-10 bg-white"><tr>
       <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:170px">スタッフ</th><th class="board-th">稼働</th>
-      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 86 : 118}px;max-width:${BS.days > 14 ? 86 : 118}px;width:${BS.days > 14 ? 86 : 118}px">${dayjs(d).format('M/D')}(${WD[w]})</th>` }).join('')}
+      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 86 : 118}px;max-width:${BS.days > 14 ? 86 : 118}px;width:${BS.days > 14 ? 86 : 118}px">${dayjs(d).format('M/D')}(${WD[w]})${daySummary(d)}</th>` }).join('')}
     </tr></thead><tbody>${rows.map(([sid, r]) => {
       const n = Object.values(r.cells).flat().filter(a => ['confirmed', 'substitute'].includes(a.status)).length
       return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><a href="#staff/${sid}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span></td>
         <td class="board-td text-center text-xs font-bold">${n}日</td>
         ${days.map(d => `<td class="board-td align-top" style="max-width:${BS.days > 14 ? 86 : 118}px">${(r.cells[d] || []).map(a => {
           const p = proj.get(a.project_id) || {}
-          const warn = (a.conflicts && a.conflicts.length) || a.ng
+          const warn = (a.conflicts && a.conflicts.length) || a.ng || (a.unavailable && a.status !== 'absent')
           return `<div class="board-chip st-${a.status} ${warn ? 'chip-warn' : ''} flex-col items-start" onclick="openShiftDetail(${a.shift_id})" title="${esc(p.project_name + ' / ' + (a._site || ''))}">
-            <span class="truncate w-full text-[11px] font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(p.project_name || '')}${replyMark(a)}</span>
+            <span class="truncate w-full text-[11px] font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${unavailableMark(a)}${esc(p.project_name || '')}${replyMark(a)}</span>
             <span class="truncate w-full text-[10px] text-gray-500">${esc(a._site || '')} ${esc(a.start_time)}〜${esc(a.end_time)}</span></div>` }).join('')}</td>`).join('')}</tr>`
     }).join('')}</tbody></table>`
   }
@@ -234,7 +284,7 @@
   // ---------- ボード操作 ----------
   window.boardSet = function (k, v) { BS[k] = v; renderShiftBoard() }
   window.boardShift = function (dir) { BS.from = dayjs(BS.from).add(dir * (BS.days >= 28 ? 28 : BS.days), 'day').format('YYYY-MM-DD'); renderShiftBoard() }
-  window.boardToday = function () { BS.from = dayjs().startOf('week').add(1, 'day').format('YYYY-MM-DD'); if (dayjs().day() === 0) BS.from = dayjs().subtract(6, 'day').format('YYYY-MM-DD'); renderShiftBoard() }
+  window.boardToday = function () { BS.from = weekStart(dayjs()); renderShiftBoard() }
   window.boardToggleProject = function (id, on) { BS.projectIds = on ? [...new Set([...BS.projectIds, id])] : BS.projectIds.filter(x => x !== id) }
   window.boardFilterStaff = function (q) {
     document.querySelectorAll('#board-staff-list .staff-src').forEach(el => { el.style.display = !q || el.dataset.name.includes(q) ? '' : 'none' })
@@ -306,15 +356,16 @@
     modal(`
       <h3 class="font-bold text-lg mb-1">スタッフを割り当て</h3>
       <p class="text-xs text-gray-500 mb-3">${dayjs(r.work_date).format('M/D')}(${WD[dayjs(r.work_date).day()]}) ${esc(r.start_time)}〜${esc(r.end_time)}・${esc(r.location || '')}・<b>${esc(r.role_name)}</b>（必要 ${r.headcount}名）</p>
-      <input class="inp text-sm mb-2" placeholder="名前で絞り込み" oninput="document.querySelectorAll('.cand-row').forEach(el=>el.style.display=!this.value||el.dataset.name.includes(this.value)?'':'none')">
+      <input class="inp text-sm mb-2" placeholder="名前・稼働エリアで絞り込み" id="cand-filter">
       <div class="max-h-96 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
-        ${data.candidates.map(c => `<label class="cand-row flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-red-50' : ''}" data-name="${esc(c.name)}">
+        ${data.candidates.map(c => `<label class="cand-row flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-red-50' : ''}" data-key="${esc(c.name + ' ' + (c.work_area || ''))}">
           <input type="checkbox" class="cand-check" value="${c.staff_id}">
           <span class="flex-1 min-w-0"><span class="font-bold">${esc(c.name)}</span> <span class="text-[11px] text-gray-400">${AFF_SHORT[c.affiliation_type] || ''}</span>
+            ${c.work_area ? `<span class="text-[11px] text-gray-500 ml-1"><i class="fas fa-location-dot text-gray-400 mr-0.5"></i>${esc(c.work_area)}</span>` : ''}
             <span class="block text-[11px] text-gray-500">
               ${c.busy ? `<span class="text-red-600"><i class="fas fa-clock mr-0.5"></i>${esc(c.busy_detail.join('、'))}</span>` : '<span class="text-emerald-600">空き</span>'}
-              ${c.ng ? '<span class="text-red-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-amber-600 ml-1">休職中</span>' : ''}
-              ・この場所 ${c.site_count}回・この案件 ${c.project_count}回${c.skill_required ? `・スキル ${c.skill_match}/${c.skill_required}` : ''}・今週 ${c.week_days}日</span></span>
+              ${c.ng ? '<span class="text-red-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-amber-600 ml-1">休職中</span>' : ''}${c.preboarding ? '<span class="text-amber-600 ml-1">入社予定</span>' : ''}${c.not_yet_available ? `<span class="text-amber-600 ml-1">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : ''}
+              ・この場所 ${c.site_count}回・この案件 ${c.project_count}回${c.skill_required ? `・スキル ${c.skill_match}/${c.skill_required}` : ''}・今週（月〜日）${c.week_days}日</span></span>
         </label>`).join('') || '<p class="p-3 text-sm text-gray-400">候補がいません</p>'}
       </div>
       <div class="grid grid-cols-2 gap-2 mt-3">
@@ -323,6 +374,10 @@
       </div>
       <button class="btn btn-primary w-full mt-3" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button>
       <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
+    document.getElementById('cand-filter').addEventListener('input', (ev) => {
+      const q = ev.target.value.trim()
+      document.querySelectorAll('.cand-row').forEach(el => { el.style.display = !q || el.dataset.key.includes(q) ? '' : 'none' })
+    })
   }
   window.assignFromCandidates = function (slotRoleId) {
     const ids = [...document.querySelectorAll('.cand-check:checked')].map(el => Number(el.value))
@@ -611,7 +666,7 @@
     if (!s.project_id && BS.projectIds.length === 1) s.project_id = BS.projectIds[0]
     modal(`
       <h3 class="font-bold text-lg mb-1">繰り返し登録</h3>
-      <p class="text-xs text-gray-500 mb-3">例: 毎週土日・10:00〜19:00・販売3名＋リーダー1名・10月〜12月。作成後は日ごとに変更・削除できます</p>
+      <p class="text-xs text-gray-500 mb-3">例: 毎週土日・10:00〜19:00・販売3名＋リーダー1名・10月〜12月。作成後も、案件詳細の「繰り返し登録」から時間・人数の変更と期間の延長ができます（日ごとの変更は各枠で行えます）</p>
       ${slotFormHtml(m, s, [{ role_name: '販売', headcount: 3 }, { role_name: 'リーダー', headcount: 1 }])}
       <div class="mt-3"><p class="text-sm text-gray-600 mb-1">曜日 *</p>
         <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden pt-wd" value="${i}" ${[0, 6].includes(i) ? 'checked' : ''}>${w}</label>`).join('')}</div></div>
@@ -881,13 +936,14 @@
             <button class="btn btn-outline text-xs" onclick="openPatternModal({project_id:${p.project_id}})"><i class="fas fa-plus"></i>追加</button>
           </div>
           <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>曜日</th><th>期間</th><th>時間</th><th>開催場所</th><th>役割</th><th>枠</th><th></th></tr></thead><tbody>
-            ${pt.patterns.map(x => `<tr><td>${x.weekdays.split(',').map(i => WD[i]).join('・')}</td><td>${esc(x.date_from)}〜${esc(x.date_to)}</td><td>${esc(x.start_time)}〜${esc(x.end_time)}</td>
-              <td>${esc(x.site_name || x.location || '-')}</td><td>${x.roles.map(r => esc(r.role_name) + r.headcount + '名').join('・')}</td><td>${x.slot_count}件</td>
-              <td><button class="text-xs text-red-600 hover:underline" onclick="deletePattern(${x.pattern_id}, ${p.project_id})">削除</button></td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400">繰り返し登録はありません</td></tr>'}
+            ${pt.patterns.map(x => `<tr><td>${x.weekdays.split(',').map(i => WD[i]).join('・')}</td><td class="whitespace-nowrap">${esc(x.date_from)}〜${esc(x.date_to)}${patternEndBadge(x)}</td><td>${esc(x.start_time)}〜${esc(x.end_time)}</td>
+              <td>${esc(x.site_name || x.location || '-')}</td><td>${x.roles.map(r => esc(r.role_name) + Number(r.headcount) + '名').join('・')}</td><td class="whitespace-nowrap">${Number(x.slot_count)}件<span class="block text-[11px] text-gray-400">今日以降 ${Number(x.future_slot_count || 0)}件</span></td>
+              <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" data-action="editPattern" data-id="${Number(x.pattern_id)}">編集・延長</button><button class="text-xs text-red-600 hover:underline" data-action="deletePattern" data-id="${Number(x.pattern_id)}">削除</button></td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400">繰り返し登録はありません</td></tr>'}
           </tbody></table></div>
         </section>
       </div>`
     window.__projectForPanel = p
+    PATTERNS = new Map(pt.patterns.map(x => [x.pattern_id, { ...x, project: p }]))
     // 勤怠・日報の提出設定（案件の初期値。public/static/staff-lifecycle.js）
     if (window.renderProjectReportSettings) renderProjectReportSettings(p)
   }
@@ -917,11 +973,105 @@
       summary: (n) => `${n.count}件のシフトを再計算しました`,
     }))
   }
-  window.deletePattern = async function (id, pid) {
-    const future = confirm('この繰り返し登録を削除します。\n\n[OK] 今日以降の、割り当てのない枠も削除する\n[キャンセル] 次の確認へ')
-    if (!future && !confirm('作成済みの枠は残し、繰り返し登録だけを削除しますか？')) return
-    try { const { data } = await axios.delete(`/api/admin/slot-patterns/${id}?remove_future=${future ? 1 : 0}&today=${dayjs().format('YYYY-MM-DD')}`); toast(`削除しました${data.removed ? `（枠${data.removed}件を削除）` : ''}`); renderProjectDetail(pid) } catch (e) { toast(errMsg(e)) }
+  // ---------- 繰り返し登録の編集・延長・削除（#456） ----------
+  let PATTERNS = new Map()
+  function patternEndBadge(x) {
+    if (x.days_left < 0) return '<span class="badge badge-gray ml-1">終了</span>'
+    if (x.days_left <= 14) return `<span class="badge badge-red ml-1" title="終了日が近づいています。続ける場合は「編集・延長」で終了日を延ばしてください">あと${Number(x.days_left)}日で終了</span>`
+    return ''
   }
+  function patternRoleRows(roles) {
+    return roles.map(r => `<div class="grid grid-cols-12 gap-1.5 items-center pe-role" data-orig="${r.orig ? esc(r.role_name) : ''}">
+      <input class="inp text-xs col-span-6 pe-name" value="${esc(r.role_name || '')}" ${r.orig ? 'readonly title="役割名の変更は枠の編集で行います"' : 'placeholder="役割（追加）" list="role-suggest"'}>
+      <input class="inp text-xs col-span-4 pe-count" type="number" min="1" max="200" value="${Number(r.headcount) || 1}" title="必要人数">
+      <label class="col-span-2 text-[11px] text-gray-500 flex items-center gap-1"><input type="checkbox" class="pe-del">外す</label>
+    </div>`).join('')
+  }
+  function openPatternEdit(id) {
+    const x = PATTERNS.get(id); if (!x) return
+    const today = dayjs().format('YYYY-MM-DD')
+    modal(`
+      <h3 class="font-bold text-lg mb-1">繰り返し登録の編集・延長</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.site_name || x.location || '')}。
+        変えた項目だけを、反映を始める日以降のこの登録の枠に反映します（勤怠・日報の報告があるシフト、実績が確定済みのシフトがある枠は変えません）</p>
+      <div class="space-y-3">
+        <div class="grid grid-cols-3 gap-3">
+          <label class="text-sm text-gray-600">開始<input id="pe-start" type="time" class="inp" value="${esc(x.start_time)}"></label>
+          <label class="text-sm text-gray-600">終了<input id="pe-end" type="time" class="inp" value="${esc(x.end_time)}"></label>
+          <label class="text-sm text-gray-600">休憩（分）<input id="pe-break" type="number" min="0" class="inp" value="${x.break_minutes ?? ''}" placeholder="案件の設定"></label>
+        </div>
+        <div><div class="flex items-center justify-between mb-1"><p class="text-sm text-gray-600">役割と必要人数</p>
+          <button class="text-xs text-blue-600 hover:underline" data-action="patternAddRole"><i class="fas fa-plus mr-0.5"></i>役割を追加</button></div>
+          <div id="pe-roles" class="space-y-1.5">${patternRoleRows(x.roles.map(r => ({ ...r, orig: true })))}</div>
+          <datalist id="role-suggest"><option value="販売"><option value="リーダー"><option value="MC"><option value="設営"><option value="サポート"></datalist>
+          <p class="text-[11px] text-gray-400 mt-1">割り当て・未対応の応募がある枠の役割は外しません</p></div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="text-sm text-gray-600">反映を始める日<input id="pe-from" type="date" class="inp" min="${today}" value="${esc(x.date_from > today ? x.date_from : today)}"></label>
+          <label class="text-sm text-gray-600">終了日（延ばすと枠を追加）<input id="pe-to" type="date" class="inp" min="${esc(x.date_to)}" value="${esc(x.date_to)}"></label>
+        </div>
+        <div id="pe-preview"></div>
+        <button class="btn btn-outline w-full" data-action="patternPreview" data-id="${Number(id)}">反映する内容を確認</button>
+        <button id="pe-run" class="btn btn-primary w-full" data-action="patternSave" data-id="${Number(id)}" disabled>反映する</button>
+      </div>`)
+    document.querySelectorAll('#pe-start,#pe-end,#pe-break,#pe-from,#pe-to').forEach(el => el.addEventListener('change', patternDirty))
+    document.getElementById('pe-roles').addEventListener('input', patternDirty)
+  }
+  function patternDirty() { const b = document.getElementById('pe-run'); if (b) b.disabled = true; const p = document.getElementById('pe-preview'); if (p) p.innerHTML = '' }
+  function patternBody() {
+    const v = (k) => document.getElementById(k).value
+    return {
+      start_time: v('pe-start'), end_time: v('pe-end'), break_minutes: v('pe-break'), apply_from: v('pe-from'), date_to: v('pe-to'),
+      roles: [...document.querySelectorAll('.pe-role')].map(el => ({
+        ...(el.dataset.orig ? { orig_name: el.dataset.orig } : { role_name: el.querySelector('.pe-name').value.trim() }),
+        headcount: Number(el.querySelector('.pe-count').value), _delete: el.querySelector('.pe-del').checked,
+      })).filter(r => r.orig_name != null || (r.role_name && !r._delete)),
+    }
+  }
+  function patternSummary(d) {
+    const parts = [`対象の枠 ${d.slots}件`]
+    if (d.skipped_slots) parts.push(`報告済み・確定済みのため変えない枠 ${d.skipped_slots}件`)
+    if (d.shifts) parts.push(`時刻を合わせるシフト ${d.shifts}件`)
+    if (d.headcount_changed) parts.push('人数を変更')
+    if (d.roles_added) parts.push(`役割を追加 ${d.roles_added}件`)
+    if (d.roles_removed) parts.push(`役割を外す ${d.roles_removed}件`)
+    if (d.roles_kept) parts.push(`割り当て・応募があるため残す役割 ${d.roles_kept}件`)
+    if (d.extend_slots) parts.push(`延長で追加する枠 ${d.extend_slots}件（〜${d.date_to}）`)
+    return parts.join('・')
+  }
+  delegate('patternAddRole', () => document.getElementById('pe-roles').insertAdjacentHTML('beforeend', patternRoleRows([{ role_name: '', headcount: 1 }])))
+  delegate('editPattern', el => openPatternEdit(Number(el.dataset.id)))
+  delegate('patternPreview', el => withSubmitLock(el, async () => {
+    let d
+    try { d = (await axios.put(`/api/admin/slot-patterns/${Number(el.dataset.id)}`, { ...patternBody(), dry_run: true })).data } catch (e) { toast(errMsg(e)); return }
+    document.getElementById('pe-preview').innerHTML = `<div class="rounded-lg bg-gray-50 p-3 text-sm">
+      <p>${esc(patternSummary(d))}</p>
+      ${d.warnings.length ? `<div class="text-xs text-red-600 mt-2"><p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>割り当て済みの人の時間が、別のシフトと重なります</p>${d.warnings.slice(0, 10).map(w => `<p>${esc(w)}</p>`).join('')}${d.warnings.length > 10 ? `<p>ほか${d.warnings.length - 10}件</p>` : ''}</div>` : ''}</div>`
+    const run = document.getElementById('pe-run'); run.disabled = false; run.dataset.force = d.warnings.length ? '1' : ''
+  }))
+  delegate('patternSave', el => withSubmitLock(el, async () => {
+    const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
+    if (el.dataset.force && !confirm('重なりがあります。このまま反映しますか？')) return
+    let d
+    try { d = (await axios.put(`/api/admin/slot-patterns/${Number(el.dataset.id)}`, { ...patternBody(), force: !!el.dataset.force })).data } catch (e) { toast(errMsg(e)); return }
+    closeModal(); toast('反映しました（' + patternSummary(d) + '）'); renderProjectDetail(x.project.project_id)
+  }))
+  // 削除: 作成済みの枠を残すか、今日以降の割り当てのない枠も消すかを選ぶ
+  delegate('deletePattern', (el) => {
+    const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
+    modal(`
+      <h3 class="font-bold text-lg mb-1">繰り返し登録を削除</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.start_time)}〜${esc(x.end_time)}（作成済みの枠 ${Number(x.slot_count)}件・今日以降 ${Number(x.future_slot_count || 0)}件）</p>
+      <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 mb-2"><input type="radio" name="pd-mode" value="keep" checked><span>作成済みの枠は残し、繰り返し登録だけを削除する</span></label>
+      <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-[11px] text-gray-400">割り当てのある枠は残ります</span></span></label>
+      <button class="btn btn-danger w-full mt-4" data-action="deletePatternRun" data-id="${Number(x.pattern_id)}"><i class="fas fa-trash"></i>削除する</button>`)
+  })
+  delegate('deletePatternRun', el => withSubmitLock(el, async () => {
+    const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
+    const future = (document.querySelector('input[name="pd-mode"]:checked') || {}).value === 'future'
+    let data
+    try { data = (await axios.delete(`/api/admin/slot-patterns/${Number(x.pattern_id)}?remove_future=${future ? 1 : 0}&today=${dayjs().format('YYYY-MM-DD')}`)).data } catch (e) { toast(errMsg(e)); return }
+    closeModal(); toast(`削除しました${data.removed ? `（枠${data.removed}件を削除）` : ''}`); renderProjectDetail(x.project.project_id)
+  }))
 
   // ---------- 単価ルールの追加 ----------
   window.openRuleModal = async function (ctx) {
@@ -987,6 +1137,48 @@
         <button class="text-gray-400 hover:text-red-500" onclick="deleteRule(${r.rule_id}, null, ${sid})"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">スタッフ別の単価はありません（案件・枠の単価を使います）</p>'}</div>
     </section>`
   }
+
+  // =========================================================
+  // スタッフ詳細: 今後のシフト・過去の稼働・NG指定（#224 #204）。data は GET /api/admin/staff/:id の結果
+  // =========================================================
+  const ST_BADGE = { requested: 'badge-yellow', confirmed: 'badge-blue', absent: 'badge-red', substitute: 'badge-purple' }
+  window.renderStaffShiftPanel = function (sid, data) {
+    const host = document.getElementById('staff-shift-panel'); if (!host) return
+    if (data.profile && data.profile.affiliation_type === 'skillsheet_only') { host.innerHTML = ''; return }
+    const up = data.upcoming_shifts || [], past = data.past_shifts || [], ng = data.ng_clients || []
+    const rows = (list) => list.map(s => `<tr>
+      <td class="whitespace-nowrap">${esc(dayjs(s.work_date).format('M/D'))}(${WD[dayjs(s.work_date).day()]})</td>
+      <td><span class="font-bold">${esc(s.project_name || '')}</span>${s.client_name ? `<span class="block text-[11px] text-gray-400">${esc(s.client_name)}</span>` : ''}</td>
+      <td class="whitespace-nowrap">${esc(s.start_time)}〜${esc(s.end_time)}</td>
+      <td class="text-xs text-gray-500">${esc([s.site_name || s.location, s.role].filter(Boolean).join('・') || '-')}</td>
+      <td class="whitespace-nowrap"><span class="badge ${ST_BADGE[s.status] || 'badge-gray'}">${esc(ST_LABEL[s.status] || s.status)}</span>${s.settle_status === 'confirmed' ? '<span class="badge badge-green ml-1">実績確定</span>' : ''}</td>
+      <td class="text-right"><button class="text-xs text-blue-600 hover:underline whitespace-nowrap" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button></td></tr>`).join('')
+    const table = (list, empty) => `<div class="overflow-x-auto max-h-80 overflow-y-auto"><table class="tbl"><thead><tr><th>日付</th><th>案件</th><th>時間</th><th>開催場所・役割</th><th>状態</th><th></th></tr></thead>
+      <tbody>${rows(list) || `<tr><td colspan="6" class="text-center text-gray-400">${empty}</td></tr>`}</tbody></table></div>`
+    const absent = past.filter(s => s.status === 'absent').length
+    host.innerHTML = `<section class="card p-4" id="staff-shifts">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-calendar-days text-blue-500 mr-1"></i>シフト</h3>
+        <div class="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+          <button class="px-3 py-1.5 bg-blue-600 text-white" data-action="staffShiftTab" data-tab="up">今後（${up.length}${up.length >= 20 ? '件〜' : '件'}）</button>
+          <button class="px-3 py-1.5 bg-white" data-action="staffShiftTab" data-tab="past">過去の稼働（直近${past.length}件${absent ? `・欠勤${absent}` : ''}）</button>
+        </div>
+      </div>
+      ${ng.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-ban mr-1"></i>NGに指定しているクライアント: ${ng.map(c => `<a href="#clients/${Number(c.client_id)}" class="underline">${esc(c.client_name)}</a>${c.reason ? `（${esc(c.reason)}）` : ''}`).join('、')}</p>` : ''}
+      <div data-shift-tab="up">${table(up, '今日以降のシフトはありません')}${up.length >= 20 ? '<p class="text-[11px] text-gray-400 mt-1">先頭の20件を表示しています。続きはシフトボードの「人ごと」で確認できます</p>' : ''}</div>
+      <div data-shift-tab="past" class="hidden">${table(past, '過去の稼働はありません')}</div>
+    </section>`
+  }
+  delegate('staffShiftTab', (el) => {
+    const box = el.closest('#staff-shifts'); if (!box) return
+    box.querySelectorAll('[data-action="staffShiftTab"]').forEach(b => { const on = b === el; b.classList.toggle('bg-blue-600', on); b.classList.toggle('text-white', on); b.classList.toggle('bg-white', !on) })
+    box.querySelectorAll('[data-shift-tab]').forEach(t => t.classList.toggle('hidden', t.dataset.shiftTab !== el.dataset.tab))
+  })
+  // シフトボードをその日の週で開く（絞り込みは外す）
+  delegate('boardOpenDate', (el) => {
+    Object.assign(BS, { from: weekStart(el.dataset.date), clientId: '', projectIds: [], engagement: '', onlyShort: false })
+    location.hash = '#shifts'
+  })
 
   // =========================================================
   // クライアント詳細: 開催場所

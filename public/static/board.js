@@ -497,8 +497,7 @@
     closeModal()
     const bs = window.__boardState = window.__boardState || {}
     bs.projectIds = [projectId]; bs.clientId = ''; bs.engagement = ''
-    if (dateFrom) bs.from = dayjs(dateFrom).startOf('week').add(1, 'day').format('YYYY-MM-DD')
-    if (dateFrom && dayjs(dateFrom).day() === 0) bs.from = dayjs(dateFrom).subtract(6, 'day').format('YYYY-MM-DD')
+    if (dateFrom) bs.from = window.boardWeekStart ? boardWeekStart(dateFrom) : dayjs(dateFrom).subtract((dayjs(dateFrom).day() + 6) % 7, 'day').format('YYYY-MM-DD') // 月曜始まりの週（#528）
     location.hash = '#shifts'
   }
 

@@ -273,6 +273,11 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     const ids = [...new Set(String(cl.ng_staff_ids || '').split(',').map(x => x.trim()).filter(Boolean).map(x => (x === String(sid) ? String(T) : x)))]
     await db.prepare('UPDATE clients SET ng_staff_ids = ? WHERE client_id = ?').bind(ids.join(','), cl.client_id).run()
   }
+  // NGの理由・登録日（client_ng_staff。#204）も統合先へ付け替える。統合先がすでに同じクライアントのNGなら統合先の記録を残す
+  await db.batch([
+    db.prepare('UPDATE OR IGNORE client_ng_staff SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
+    db.prepare('DELETE FROM client_ng_staff WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id),
+  ])
   // 統合先の空欄を統合元の値で補う（他社連携の基本情報は所属元が正なので触らない）。メールは補わない（上の未確認のメール）
   if (!tgt.phone && src.phone) await db.prepare('UPDATE users SET phone = ? WHERE user_id = ?').bind(src.phone, tgt.user_id).run()
   if (tType !== 'linked_external') {
