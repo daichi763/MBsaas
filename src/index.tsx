@@ -5,7 +5,7 @@ import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
-import { runCronJobs, type CronJob } from './services/cron'
+import { runCronJobs, defineCronJobs } from './services/cron'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -408,7 +408,7 @@ const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポート�
 // 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
 // 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
 // 個人情報の削除（応募・データ保持）は、問い合わせの上限に当たって止まらないよう先に実行する（#198）
-const CRON_JOBS: CronJob<Bindings>[] = [
+const CRON_JOBS = defineCronJobs<Bindings>([
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
   // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
@@ -438,7 +438,7 @@ const CRON_JOBS: CronJob<Bindings>[] = [
   } },
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
-]
+])
 
 export default {
   fetch: app.fetch,

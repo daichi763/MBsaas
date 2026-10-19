@@ -19,6 +19,15 @@ const CRON_RUNS_KEEP_DAYS = 180
 /** これより長く実行されていない処理は本部画面で警告する（毎日の処理なので、起動時刻のずれを見込んで 25 時間） */
 export const CRON_STALE_HOURS = 25
 
+// 定義された処理の一覧（index.tsx の CRON_JOBS）。本部画面で「一度も実行されていない処理」を見つけるのに使う
+// （wrangler.jsonc の triggers.crons から式が抜けると、その式の処理は記録が1行もできず、警告も出ないため）
+let definedJobs: { name: string; label: string; cron: string }[] = []
+/** 定期処理の一覧を定義する（index.tsx で1回だけ呼ぶ） */
+export function defineCronJobs<E>(jobs: CronJob<E>[]): CronJob<E>[] {
+  definedJobs = jobs.map(j => ({ name: j.name, label: j.label, cron: j.cron }))
+  return jobs
+}
+
 /** 起動した cron の式で実行する処理を選ぶ */
 export function selectCronJobs<E>(jobs: CronJob<E>[], cron: string | undefined): CronJob<E>[] {
   const matched = jobs.filter(j => j.cron === cron)
@@ -68,7 +77,7 @@ export type CronRunRow = {
  * 本部画面用: 処理ごとの最終実行と、直近の実行記録、警告。
  * 警告: 最後の実行が失敗した処理、定期処理全体が CRON_STALE_HOURS 時間以上実行されていないこと、
  * 他の処理は動いているのにその処理だけ CRON_STALE_HOURS 時間以上実行されていないこと（一覧から外した処理で警告が出続けないよう、
- * 最後の実行が7日以内のものに限る）、まだ一度も実行されていないこと。
+ * 一覧にない処理は最後の実行が7日以内のものに限る）、まだ一度も実行されていないこと（全体と、一覧の処理ごと）。
  */
 export async function cronStatus(db: D1Database, opts: { limit?: number } = {}) {
   const latest = (await db.prepare(`SELECT r.* FROM cron_runs r
@@ -82,11 +91,21 @@ export async function cronStatus(db: D1Database, opts: { limit?: number } = {}) 
   if (latest.length && (now - newest) / 3600000 >= CRON_STALE_HOURS) {
     warnings.push({ job: null, label: null, kind: 'stale', message: `定期処理が${Math.floor((now - newest) / 3600000)}時間実行されていません（Cron Trigger の設定とデプロイを確認してください）` })
   }
+  const defined = new Set(definedJobs.map(j => j.name))
   for (const r of latest) {
     const name = r.label || r.job
     if (r.status !== 'ok') warnings.push({ job: r.job, label: r.label, kind: 'failed', message: `「${name}」の最後の実行が失敗しました${r.error_message ? `: ${r.error_message.slice(0, 200)}` : ''}` })
     const gap = (newest - Date.parse(r.started_at)) / 3600000
-    if (gap >= CRON_STALE_HOURS && gap < 24 * 7) warnings.push({ job: r.job, label: r.label, kind: 'stale', message: `「${name}」が${Math.floor((now - Date.parse(r.started_at)) / 3600000)}時間実行されていません` })
+    // 一覧にある処理は期間を限らずに警告する。一覧から外した処理は、警告が出続けないよう7日以内に限る
+    if (gap >= CRON_STALE_HOURS && (defined.has(r.job) || gap < 24 * 7)) warnings.push({ job: r.job, label: r.label, kind: 'stale', message: `「${name}」が${Math.floor((now - Date.parse(r.started_at)) / 3600000)}時間実行されていません` })
+  }
+  // 一覧にあるのに一度も実行されていない処理（cron の式が wrangler.jsonc の triggers.crons に無いなど）。
+  // 定期処理全体がまだ一度も動いていないときは上の警告だけを出す
+  if (latest.length) {
+    const ran = new Set(latest.map(r => r.job))
+    for (const j of definedJobs) {
+      if (!ran.has(j.name)) warnings.push({ job: j.name, label: j.label, kind: 'never', message: `「${j.label}」がまだ一度も実行されていません（wrangler.jsonc の triggers.crons に「${j.cron}」があるか確認してください。追加したばかりの処理なら次の実行で消えます）` })
+    }
   }
   return { latest, recent, warnings, stale_hours: CRON_STALE_HOURS }
 }

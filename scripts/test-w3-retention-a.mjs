@@ -201,6 +201,11 @@ ok('（前提）毎日の cron を実行（3回目: 失敗の原因を取り除�
   const s = (await hq.get('/api/hq/cron/status')).data
   ok('#192 止まっている処理を警告する', s.warnings.some(w => w.kind === 'stale' && w.job === 'w3ra_old_job'), s.warnings)
   await d1w(`DELETE FROM cron_runs WHERE job = 'w3ra_old_job'`)
+  ok('#192 一覧の処理がすべて実行済みなら「未実行」の警告は出ない', !s.warnings.some(w => w.kind === 'never'), s.warnings)
+  // 一覧にある処理が一度も実行されていない（wrangler.jsonc の triggers.crons から式が抜けたなど）と警告する
+  await d1w(`DELETE FROM cron_runs WHERE job = 'notice_read_reports'`)
+  const s2 = (await hq.get('/api/hq/cron/status')).data
+  ok('#192 一度も実行されていない処理を警告する', s2.warnings.some(w => w.kind === 'never' && w.job === 'notice_read_reports'), s2.warnings)
 }
 {
   const page = await fetch(`${BASE}/static/hq.js`).then(x => x.text())
