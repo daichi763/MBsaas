@@ -393,9 +393,10 @@ async function defaultsVersion(db: D1Database, projectId: number): Promise<numbe
 // version を渡すと、画面を開いた時点の版番号と比べ、ほかの人が先に変えていたら conflict を返す（#509）
 export type ApplyScope = 'none' | 'standard' | 'all'
 export async function setProjectDefaults(db: D1Database, companyId: number, projectId: number, next: Record<string, any>, u: any,
-  opts: { apply?: ApplyScope; version?: number | null } = {}) {
-  const cur = await projectDefaults(db, projectId)
+  opts: { apply?: ApplyScope; version?: number | null } = {}, retried = false): Promise<{ conflict?: boolean; changed: number; applied_staff: number; version: number }> {
+  // 版番号を先に読む（標準設定・所属スタッフの値はその後に読むので、読んだ後の変更は版番号の照合で必ず分かる）
   const version = await defaultsVersion(db, projectId)
+  const cur = await projectDefaults(db, projectId)
   if (opts.version != null && opts.version !== version) return { conflict: true, changed: 0, applied_staff: 0, version }
   const changed = REPORT_TYPES.filter(t => next[t] !== undefined && (next[t] ? 1 : 0) !== cur[t])
   if (!changed.length) return { changed: 0, applied_staff: 0, version }
@@ -424,9 +425,10 @@ export async function setProjectDefaults(db: D1Database, companyId: number, proj
       .map(t => changed.includes(t) ? { staffId, t, enabled: nv(t), source: 'default' } : { staffId, t, enabled: s.values[t], source: keepSource }))
   }
   const stmts: D1PreparedStatement[] = []
-  // 版番号を進める（読んだ版のときだけ）
-  stmts.push(db.prepare('UPDATE projects SET report_defaults_version = COALESCE(report_defaults_version, 0) + 1 WHERE project_id = ? AND company_id = ? AND COALESCE(report_defaults_version, 0) = ?')
-    .bind(projectId, companyId, version))
+  // 版番号を進める。読んだ後にほかの人が保存して版が変わっていたら NULL を入れ、NOT NULL 制約で batch 全体を取り消す
+  // （読んでから書くまでの間に同時に保存されても上書きしない）
+  stmts.push(db.prepare('UPDATE projects SET report_defaults_version = CASE WHEN COALESCE(report_defaults_version, 0) = ? THEN COALESCE(report_defaults_version, 0) + 1 ELSE NULL END WHERE project_id = ? AND company_id = ?')
+    .bind(version, projectId, companyId))
   // 当てる人の、報告を始めたシフトは変える前の設定で固定する
   stmts.push(...await freezeStartedShifts(db, companyId, projectId, applied))
   for (const t of changed) {
@@ -438,7 +440,15 @@ export async function setProjectDefaults(db: D1Database, companyId: number, proj
   stmts.push(...logCells(db, companyId, projectId, changed.map(t => ({ staffId: null, t, oldV: cur[t], newV: nv(t) })), 'project_default', batchId, a, at))
   // 今の所属スタッフに当てた分は、スタッフごとに履歴を残す（同じ batch_id）
   stmts.push(...logCells(db, companyId, projectId, staffLogs, 'default_apply', batchId, a, at))
-  await runBatch(db, stmts)
+  try {
+    await runBatch(db, stmts)
+  } catch (e) {
+    const now = await defaultsVersion(db, projectId)
+    if (now === version) throw e
+    // 版番号を指定しない呼び出し（案件の編集の勤怠報告など）は、最新の値で 1 回だけやり直す
+    if (opts.version == null && !retried) return setProjectDefaults(db, companyId, projectId, next, u, opts, true)
+    return { conflict: true, changed: 0, applied_staff: 0, version: now }
+  }
   return { changed: changed.length, applied_staff: applied.length, version: version + 1 }
 }
 
