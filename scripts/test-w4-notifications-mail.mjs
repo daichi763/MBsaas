@@ -193,6 +193,8 @@ const dA = addDays(today, -3)
 must(await admin.post('/api/admin/shifts', { staff_id: 1, project_id: 3, work_date: dA, start_time: '10:00', end_time: '19:00', memo: `NM-${tag}` }), 'shift')
 const shiftId = (await admin.get(`/api/admin/shifts?from=${dA}&to=${dA}`)).data.shifts.find(x => x.memo === `NM-${tag}`).shift_id
 const c1 = must(await st1.post('/api/staff/corrections', { shift_id: shiftId, report_type: 'check_in', kind: 'add', requested_at: `${dA} 09:58`, reason: '入店報告を忘れた' }), 'correction 1').correction_id
+// 同じシフト・同じ秒の申請は『まとめて出した申請』として承認依頼メールが1通になる（w4-corrections-staff #392）ので、秒をずらして別の申請にする
+await sleep(1100)
 const c2 = must(await st1.post('/api/staff/corrections', { shift_id: shiftId, report_type: 'check_out', kind: 'add', requested_at: `${dA} 19:05`, reason: '退店報告を忘れた' }), 'correction 2').correction_id
 async function rowsOf(cid) {
   for (let i = 0; i < 30; i++) {
