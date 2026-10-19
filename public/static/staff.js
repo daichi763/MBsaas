@@ -482,11 +482,12 @@ function attendanceNeedsReload(e) {
   const msg = (e.response.data && e.response.data.error) || ''
   return st === 400 && !/写真が添付されていません|画像|送信データ|シフト情報が不正/.test(msg)
 }
-// 報告の結果の知らせ（#347）。遅延・位置情報なし・予定より早い終了で記録されたら、その旨と連絡の方法を長めに出す
-function showAttendanceResult(type, d) {
+// 報告の結果の知らせ（#347）。遅延・位置情報なし・予定より早い終了で記録されたら、その旨と連絡の方法を長めに出す。
+// noPos: 入店で位置情報を送れなかった（遅延のときは status が late になり no_location が付かないため、画面側で分かる値も使う）
+function showAttendanceResult(type, d, noPos) {
   const notes = []
   if (d && d.status === 'late') notes.push(`開始時刻を過ぎていたため「遅延」${Number(d.late_minutes) > 0 ? `（${Number(d.late_minutes)}分）` : ''}として記録しました。遅れた理由は「相談・連絡」から管理者に伝えてください`)
-  else if (d && d.status === 'no_location') notes.push('位置情報が取れなかったため「位置情報なし」として記録しました。端末の設定で、このサイトの位置情報を許可してください')
+  if ((d && d.status === 'no_location') || (type === 'check_in' && noPos)) notes.push('位置情報が取れなかったため「位置情報なし」として記録しました。端末の設定で、このサイトの位置情報を許可してください')
   if (d && Number(d.early_leave_minutes) > 0) notes.push(`予定の終了より${Number(d.early_leave_minutes)}分早い報告として記録しました`)
   toast(REPORT_LABELS[type] + 'を送信しました' + (notes.length ? '。' + notes.join('。') : ''), notes.length ? 7000 : 2500)
 }
@@ -511,7 +512,7 @@ window.submitAttendance = async function (type, shiftId, button) {
           longitude: pos ? pos.coords.longitude : null,
           address: null
         })
-        showAttendanceResult(type, res.data)
+        showAttendanceResult(type, res.data, !pos)
       } catch (e) {
         toast(attendanceErrorMessage(e, type), 5000)
       }
@@ -673,7 +674,7 @@ window.submitPhotoAttendance = async function () {
     try {
       const res = await axios.post('/api/staff/attendance-photo', form)
       closeModal()
-      showAttendanceResult(type, res.data)
+      showAttendanceResult(type, res.data, !pos)
       renderHome()
     } catch (e) {
       // すでに報告済み（前の送信が届いていた・管理者が記録した）・設定の変更などで断られたら、閉じて最新の状態を出す（#182 #426）
