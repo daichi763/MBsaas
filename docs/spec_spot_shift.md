@@ -32,6 +32,7 @@
 | bill_transport_type / bill_transport_amount | 交通費の請求: `actual`（実費）/ `fixed`（定額）/ `included`（単価に込み＝請求なし） |
 | pay_transport_type / pay_transport_amount | 交通費の支払: `actual`（実費）/ `capped`（実費・上限あり）/ `fixed`（定額）/ `none`（支払なし） |
 | default_break_minutes | 時給計算で差し引く休憩（分） |
+| price_valid_from | 今の標準単価（請求・支払・交通費）を使う最初の稼働日（NULL = すべての期間。0045）。それより前の稼働日は `project_price_history` の単価を使う |
 
 ### 2.2 sites（開催場所。今後作成する現場マスタの土台）
 `site_id, company_id, client_id, site_name, address, lat, lng, memo, status(active/inactive)`
@@ -42,6 +43,9 @@
 値: `bill_unit_type, bill_rate, pay_unit_type, pay_rate, bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount`
 - **項目ごとに**、条件に合うルールのうち最も具体的なものを採用する
   - 具体度: スタッフ指定 8 ＞ 役割指定 4 ＞ 開催場所指定 2 ＞ 案件指定 1（合計点が高いほど優先。同点なら新しいルール）
+- 適用期間 `valid_from / valid_to`（0045。NULL は期限なし）。シフトの稼働日が期間に含まれるルールだけを使う。単価を改定するときは、旧ルールに終了日を付けて残し、新しいルールに開始日を入れる（単価ルールの一覧の「終了日」）
+- 役割は役割名で照合する。枠のシフトは枠の役割（`slot_role_id`）の名前で照合し、役割名を変えたときに「今の単価ルールのまま」を選んだ役割は変更前の名前（`shift_slot_roles.rate_role_name`）で照合する
+- 単価・交通費の金額は0以上（負の値は 400）。単位を省略した単価は日額
 - 例
   - 案件Aの役割「リーダー」: 請求 22,000 / 支払 15,000
   - 案件Aの開催場所「△△モール」: 交通費の請求を定額 1,000
@@ -49,7 +53,9 @@
 
 ### 2.4 募集枠
 - `shift_slots`: `slot_id, company_id, project_id, site_id, location, work_date, start_time, end_time, break_minutes, pattern_id, memo, status`
-- `shift_slot_roles`: `slot_role_id, slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate`（単価列は枠でだけ変える場合に使う）
+- `shift_slot_roles`: `slot_role_id, slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate, rate_role_name`（単価列は枠でだけ変える場合に使う）
+  - 枠の単価には必ず単位（日額・時給）を付ける。画面で選び、単位のない単価は日額として保存する（0045 で、既存の単位のない単価には、それまで使われていた単位を補った）
+  - 役割名を変えるとき、変更前・変更後の名前の単価ルールがあれば確認する（PUT の `role_rate`: `follow` = 新しい名前のルールに切り替える / `keep` = 今のルールのまま。`keep` のときは `rate_role_name` に変更前の名前を残す）。確定済みのシフトの役割名は変えない
 - `slot_patterns`（繰り返し）: `project_id, site_id, weekdays('0,6' 等), date_from, date_to, start_time, end_time, break_minutes, roles_json`
   - 登録すると期間内の該当曜日に枠をまとめて作る。個別の枠は後から変更・削除できる（例外日）
   - パターンを削除するときは「割り当てのない今後の枠」も削除できる
@@ -67,8 +73,13 @@
 | bill_adjust / pay_adjust / adjust_note | 調整（残業・手当・値引き・控除など） |
 | payee_type / payee_affiliation_id / payee_company_id | 支払先の種類（`payroll` 自社給与 / `partner` 取引先 / `linked` 他社連携元 など）。第2段階の区分変更で置き換える |
 | price_locked / price_source | 手動で金額を変更したシフトは 1（ルール再適用の対象外）。price_source は採用したルールの説明 |
+| qty_locked | 時給の数量を手動で固定したシフトは 1（0045）。0 なら単価だけを固定し、時給の数量は実働に合わせる。NULL は従来の行（price_locked なら数量も固定） |
 
 **単価の優先順位**（上ほど優先）: シフトの手動変更 ＞ 枠の役割の単価 ＞ 単価ルール（具体度順）＞ 案件の標準 ＞ 未設定
+- 単価ルールと案件の標準単価は、シフトの稼働日に適用期間が含まれるものを使う。単価を改定した後に、改定前の稼働日のシフトを計算し直しても（枠の変更・区分変更・再適用など）、改定前の単価のまま
+- 案件の標準単価は「区分・標準単価」で適用開始日を付けて変えられる。付けると、今の単価を前日までの単価として `project_price_history` に残す。付けずに変えると、今の単価の適用期間の単価を直す
+- 金額の手動変更（PUT /shifts/:id/price）: 単価・単位・数量・交通費のルールを変えたときだけ手動変更（price_locked）にする。交通費の実費・調整・休憩だけを直したときは、単価ルールの対象のまま。数量は空欄なら計算時間を使い、計算と違う値を入れたときだけ固定する（qty_locked）
+- 範囲: 単価・交通費は0以上、休憩は0〜600分、数量は0〜24、時刻は 00:00〜23:59。調整額は控除に使うため負の値も認める
 - 割り当てた時点の金額をシフトに記録する。単価表を変えても確定済みのシフトは変わらない（「単価ルールを再適用」で置き換えられる）
 - 時給の数量: 第1段階では予定時間 −休憩。第3段階で入店・退店報告の実働時間に置き換える
 - 交通費: 請求 = 実費 / 定額 / 0（単価込み）、支払 = 実費 / min(実費, 上限) / 定額 / 0
@@ -83,13 +94,14 @@
 | POST | /admin/shift-slots/roles/:id/assign | 役割にスタッフを割り当てる（複数可。重複・NGは警告を返し、force で登録） |
 | POST | /admin/shifts/:id/move | 別の枠・役割へ移動（案件が変われば単価を再計算） |
 | PUT | /admin/shifts/:id/price | 金額の手動変更（price_locked=1）/ ルールに戻す |
-| POST | /admin/shifts/reprice | 期間・案件を指定して単価ルールを再適用（手動変更したものは除く） |
+| POST | /admin/shifts/reprice | 期間・案件を指定して単価ルールを再適用（手動変更したものは除く）。`dry_run` は件数と、金額・支払先が変わるシフトの一覧（先頭200件）・請求と支払の増減の合計を返す（日付順に3000件まで計算し、超えたら `truncated`） |
 | POST | /admin/shifts/bulk | 常勤の一括登録（スタッフ × 曜日 × 期間） |
 | POST | /admin/shifts/copy-week | 前週のコピー（枠と割り当て） |
 | GET/POST/DELETE | /admin/slot-patterns | 繰り返し登録 |
 | GET/POST/PUT/DELETE | /admin/sites | 開催場所 |
 | GET/POST/PUT/DELETE | /admin/rate-rules, GET /admin/rate-rules/resolve | 単価ルールと適用結果のプレビュー |
-| PUT | /admin/projects/:id/pricing | 案件区分・標準単価・交通費ルール |
+| PUT | /admin/projects/:id/pricing | 案件区分・標準単価・交通費ルール・時間の数え方・丸め（`pay_time_round`）・適用開始日（`price_valid_from`） |
+| GET | /admin/projects/:id/price-history | 標準単価の適用開始日と、改定前の単価 |
 
 - スタッフ向け（`/api/staff/home`, `/api/staff/shifts`）は金額の列を取り除いて返す
 
@@ -177,11 +189,13 @@
 - `shifts.actual_start / actual_end / actual_break_minutes / actual_source(report|manual) / actual_note`
 - `shifts.settle_status(planned|confirmed) / settled_at / settled_by`
 - `projects.hours_basis`（clipped: 実績・予定の範囲内〈既定〉/ actual: 実績どおり / scheduled: 予定どおり）、`projects.time_round_minutes`（開始は切り上げ・終了は切り捨て）
+- `projects.pay_time_round`（0045）: `none` = 支払は丸めない（1分単位。既定）/ `same` = 支払も請求と同じく丸める。丸めは請求の数量に使い、支払の数量は `none` なら丸めない時間を使う（自社給与・日雇い給与の労働時間を日ごとに切り捨てないため）。0045 の時点で丸めを設定していた案件は、金額が黙って変わらないよう `same` にした（画面で `none` に変えられる）
 
 ### 9.2 実働時間の反映
 - 入店・退店の報告（アプリ・報告URL・代理入力・代理入力の削除）のたびに実績へ反映する。両方そろったときだけ反映
 - 管理者の手入力（manual）は報告で上書きしない。「報告の時刻に戻す」で解除
-- 金額: 単価ルールは再適用しない（記録済みの単価のまま）。時給のものだけ数量を計算時間に合わせる。日額は変わらない。手動で金額を変えたシフトは数量も変えず「確認」に表示する
+- 金額: 単価ルールは再適用しない（記録済みの単価のまま）。時給のものだけ数量を計算時間に合わせる。日額は変わらない。手動で数量を固定したシフト（qty_locked。従来の手動変更を含む）は数量も変えず「確認」に表示する。単価だけを手動で変えたシフトは、数量を計算時間に合わせる
+- 実績は時刻だけを記録しているため、実績の開始は予定の開始に最も近い日（前日・当日・翌日）の時刻とみなす。0時台に始まる予定で前日の23時台に入店した場合は前日、日をまたぐ予定で0時を過ぎてから入店した場合は翌日になる
 
 ### 9.3 確定
 - 今日までのシフトのみ確定できる。確認事項（入店/退店報告なし・実績未入力・予定と0.5h以上の差・単価未設定・手動変更の数量差）がある場合は確認のうえ確定
