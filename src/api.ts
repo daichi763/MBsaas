@@ -35,6 +35,7 @@ import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword,
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
 import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
+import { staffShiftView } from './shift-board'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -747,9 +748,32 @@ function homePickShift(items: any[], requestedId: number | null): any | null {
     || items.find(s => !s.carryover) || items[0] || null
 }
 
-// お知らせ（新しい順に5件）。配信対象の判定はお知らせ一覧と同じ（#370 #227 #335。LIKE での走査はしない）
-async function homeLoadNotices(db: D1Database, u: any) {
-  return loadStaffNotices(db, u.user_id, { order: 'recent', limit: 5 })
+// お知らせ。配信対象の判定はお知らせ一覧と同じ（#370 #227 #335。LIKE での走査はしない）
+//  ・未読の緊急・重要・確認必須を先頭に固定し（#384 #191。最大 HOME_NOTICE_PINNED_MAX 件）、残りを新しい順に足して少なくとも HOME_NOTICE_PREVIEW 件にする
+//  ・未読の件数は最新の数件ではなく、すべてのお知らせで数える（#325）。切り替えていない所属企業の未読も返す（#203）
+const HOME_NOTICE_PREVIEW = 3
+const HOME_NOTICE_PINNED_MAX = 5
+async function homeLoadNotices(db: D1Database, u: any, personRows: any[]) {
+  const others = personRows.filter(r => r.user_id && r.company_id !== u.company_id)
+  const [unread, recent, counts] = await Promise.all([
+    loadStaffNotices(db, u.user_id, { unreadOnly: true, order: 'unread_first', limit: 30 }),
+    loadStaffNotices(db, u.user_id, { order: 'recent', limit: HOME_NOTICE_PREVIEW }),
+    countUnreadNotices(db, [u.user_id, ...others.map(r => r.user_id)]),
+  ])
+  const rank = (n: any) => n.importance === 'urgent' ? 0 : n.read_required ? 1 : 2
+  const pinned = unread.filter(n => n.importance === 'urgent' || n.importance === 'important' || n.read_required)
+    .sort((a, b) => rank(a) - rank(b) || String(b.published_at).localeCompare(String(a.published_at)) || b.notice_id - a.notice_id)
+    .slice(0, HOME_NOTICE_PINNED_MAX)
+  const pinnedIds = new Set(pinned.map(n => n.notice_id))
+  const list = [...pinned.map(n => ({ ...n, pinned: 1 })), ...recent.filter(n => !pinnedIds.has(n.notice_id)).map(n => ({ ...n, pinned: 0 }))]
+    .slice(0, Math.max(HOME_NOTICE_PREVIEW, pinned.length))
+  return {
+    // ホームでは本文を使わないので返さない
+    notices: list.map(n => ({ notice_id: n.notice_id, title: n.title, importance: n.importance, read_required: n.read_required, published_at: n.published_at,
+      target_type: n.target_type, project_names: n.project_names, is_read: n.is_read, no_confirm: n.no_confirm, pinned: n.pinned })),
+    unread_count: counts.get(u.user_id) || 0,
+    other_companies: others.map(r => ({ company_id: r.company_id, company_name: r.company_name, unread: counts.get(r.user_id) || 0 })).filter(r => r.unread > 0),
+  }
 }
 
 // 相談: 管理者からの返信をまだ読んでいない相談の件数（本人の全所属企業の分。#320）。
@@ -795,16 +819,18 @@ api.get('/staff/home', async (c) => {
 
   const missed = await homeLoadMissedReports(db, personIds, today, new Set(items.map(s => s.shift_id as number)))
 
-  const notices = await homeLoadNotices(db, u)
+  const noticeInfo = await homeLoadNotices(db, u, personRows)
   const replied = await homeLoadConsultations(db, u)
 
   return c.json({
-    today, shift: stripMoney(shift), carryover: !!picked?.carryover,
+    today, shift: staffShiftView(shift), carryover: !!picked?.carryover,
     reports: picked ? picked.reports : {}, daily_report_done: picked ? picked.daily_report_done : false,
     // 承認待ちの打刻修正申請がある報告（その報告はホームから押せない）と、希望（仮）のシフト（未確定。報告の前に確認を出す）
     pending_corrections: picked ? picked.pending_corrections : {}, tentative: !!picked?.tentative,
     required_attendance: picked ? picked.required_attendance : [...REPORT_TYPES],
-    daily_report_required: picked ? picked.daily_report_required : true, notices,
+    daily_report_required: picked ? picked.daily_report_required : true, notices: noticeInfo.notices,
+    // 未読のお知らせの件数（すべてのお知らせで数える #325）と、切り替えていない所属企業の未読（#203）
+    notice_unread_count: noticeInfo.unread_count, notice_other_companies: noticeInfo.other_companies,
     replied_consultations: replied,
     // 写真必須設定はシフトの所有企業の設定に従う
     photo_required_attendance: resolvePhotoRequired(shiftOwner || u, shift ? (shift.photo_required_override as number | null) : undefined),
@@ -1114,10 +1140,19 @@ api.get('/staff/my-reports', async (c) => {
 // シフト確認
 // shifts は確定・代打・欠勤と、管理者が入れた『希望（仮）』（status='requested'。本人は可否を返事できる）。
 // 本人が出したシフト希望は shift_requests にあり、requests で別に返す（#411）
+// 期間は ?from=&to=（日付。月をまたいでよい。最大 STAFF_SHIFT_MAX_DAYS 日。#428）か ?month=（月）で指定する
+const STAFF_SHIFT_MAX_DAYS = 62
 api.get('/staff/shifts', async (c) => {
   const u = c.get('user')
   const q = c.req.query('month') || ''
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST()
+  let from = month + '-01', to = month + '-31'
+  const qf = c.req.query('from'), qt = c.req.query('to')
+  if (isISODate(qf)) {
+    from = qf as string
+    to = isISODate(qt) && (qt as string) >= from ? qt as string : addDays(from, 13)
+    if (to > addDays(from, STAFF_SHIFT_MAX_DAYS - 1)) to = addDays(from, STAFF_SHIFT_MAX_DAYS - 1)
+  }
   // 同一人物の全所属企業のシフトを表示（他社分は company_name で識別）
   const personRows = await personStaffRows(c.env.DB, u)
   const ids = personRows.map(r => r.staff_id)
@@ -1128,18 +1163,18 @@ api.get('/staff/shifts', async (c) => {
     FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
-    WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date LIKE ? ORDER BY s.work_date, s.start_time`).bind(u.company_id, ...ids, month + '%').all()
+    WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date BETWEEN ? AND ? ORDER BY s.work_date, s.start_time`).bind(u.company_id, ...ids, from, to).all()
   // 本人が出した希望（取り下げたものは出さない）。案件は自社の行だけ名前を付ける
   const requests = (await c.env.DB.prepare(`
     SELECT r.request_id, r.work_date, r.start_time, r.end_time, r.memo, r.status, r.response_note, r.responded_at, r.created_at, r.project_id, p.project_name
     FROM shift_requests r LEFT JOIN projects p ON p.project_id = r.project_id AND p.company_id = r.company_id
-    WHERE r.company_id = ? AND r.staff_id = ? AND r.status != 'withdrawn' AND r.work_date LIKE ?
-    ORDER BY r.work_date, r.start_time, r.request_id`).bind(u.company_id, u.staff_id, month + '%').all()).results
+    WHERE r.company_id = ? AND r.staff_id = ? AND r.status != 'withdrawn' AND r.work_date BETWEEN ? AND ?
+    ORDER BY r.work_date, r.start_time, r.request_id`).bind(u.company_id, u.staff_id, from, to).all()).results
   return c.json({
-    shifts: (rows.results as any[]).map(s => ({ ...stripMoney(s), tentative: s.status === 'requested' })),
+    shifts: (rows.results as any[]).map(s => staffShiftView({ ...s, tentative: s.status === 'requested' })),
     requests,
     request_projects: await requestableProjects(c.env.DB, u),
-    month,
+    month, from, to,
     // 2社以上に所属しているか（各シフトにどの会社のものかを出す。#503）
     multi_company: new Set(personRows.map(r => r.company_id)).size > 1,
   })
@@ -1236,6 +1271,24 @@ api.get('/staff/notices', async (c) => {
       .filter(r => r.unread > 0)
   }
   return c.json(res)
+})
+
+// 下のタブ・その他のメニューに出す未読の件数（#383）。画面を切り替えるたびに呼ぶので、件数だけを返す軽い API にする。
+// notices: 今の企業の未読のお知らせ、notices_other: 切り替えていない所属企業の未読、notifications: 未読の通知（同じ人の全所属の分。通知の一覧と同じ範囲）
+api.get('/staff/badges', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const persons = await personStaffRows(db, u)
+  const others = persons.filter(r => r.user_id && r.company_id !== u.company_id)
+  const uids = [...new Set<number>([u.user_id, ...persons.map(r => r.user_id).filter(Boolean)])]
+  const [counts, notif] = await Promise.all([
+    countUnreadNotices(db, [u.user_id, ...others.map(r => r.user_id)]),
+    db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${uids.map(() => '?').join(',')}) AND read_at IS NULL`).bind(...uids).first() as Promise<any>,
+  ])
+  return c.json({
+    notices: counts.get(u.user_id) || 0,
+    notices_other: others.reduce((n, r) => n + (counts.get(r.user_id) || 0), 0),
+    notifications: Number(notif?.n || 0),
+  })
 })
 
 // お知らせの個別画面（#333）。今の企業に無ければ、同じ人のほかの所属企業のお知らせかを調べ、切り替え先を返す

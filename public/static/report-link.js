@@ -3,6 +3,8 @@
 // docs/spec_spot_shift.md 第2段階。API: /api/public/report/:token
 // =========================================================
 (function () {
+  // axios・dayjs を読み込めなかったときは何もしない（理由は head の LIB_FALLBACK が画面に出す。#409）
+  if (!window.axios || !window.dayjs) return
   const $app = document.getElementById('app')
   const TOKEN = location.pathname.split('/').pop()
   const API = '/api/public/report/' + encodeURIComponent(TOKEN)
