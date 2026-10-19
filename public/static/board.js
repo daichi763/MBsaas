@@ -156,11 +156,11 @@
           <div class="flex gap-2 flex-wrap" id="board-owner-actions">
             <a class="btn btn-outline text-sm" href="#board/${p.post_id}-edit"><i class="fas fa-pen"></i>編集</a>
             ${p.status === 'draft' ? `<button class="btn btn-primary text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="open"><i class="fas fa-paper-plane"></i>掲載する</button>
-               <button class="btn btn-outline text-sm text-red-600" onclick="__boardDelete(${p.post_id})"><i class="fas fa-trash"></i>削除</button>` : ''}
+               <button class="btn btn-outline text-sm text-red-600" data-action="boardDelete" data-id="${Number(p.post_id)}"><i class="fas fa-trash"></i>削除</button>` : ''}
             ${p.status === 'open' ? `<button class="btn btn-outline text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="filled"><i class="fas fa-check"></i>充足にする</button>
                <button class="btn btn-outline text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="closed"><i class="fas fa-ban"></i>締め切る</button>` : ''}
             ${p.status === 'closed' || p.status === 'filled' ? `<button class="btn btn-outline text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="open" data-republish="1"><i class="fas fa-rotate-right"></i>再掲載</button>` : ''}
-            <button class="btn btn-outline text-sm" onclick="__boardDuplicate(${p.post_id})"><i class="fas fa-copy"></i>複製</button>
+            <button class="btn btn-outline text-sm" data-action="boardDuplicate" data-id="${Number(p.post_id)}"><i class="fas fa-copy"></i>複製</button>
           </div>` : ''}
       </div>
       <div class="grid lg:grid-cols-3 gap-4">
@@ -254,7 +254,7 @@
         <table class="tbl">
           <thead><tr><th>案件</th><th>相手企業</th><th>自社の立場</th><th>最新メッセージ</th><th>更新</th><th></th></tr></thead>
           <tbody>${data.threads.map(t => `
-            <tr class="cursor-pointer" onclick="location.hash='#board/t${t.thread_id}'">
+            <tr class="cursor-pointer" data-action="boardOpenThread" data-id="${Number(t.thread_id)}">
               <td><span class="badge ${ENG_BADGE[t.engagement_type]}">${ENG[t.engagement_type]}</span> <span class="font-bold text-gray-800">${esc(t.post_title)}</span>
                 ${t.post_status !== 'open' ? `<span class="badge badge-gray">${STATUS[t.post_status] || ''}</span>` : ''}</td>
               <td class="text-sm">${esc(t.partner_company_name)}</td>
@@ -489,7 +489,8 @@
   window.__boardSend = async function (threadId) {
     const el = document.getElementById('board-chat-input'); const body = el.value.trim()
     if (!body) return
-    const btn = document.getElementById('board-chat-send'); btn.disabled = true
+    // Ctrl+Enter でも送信中は重ねて送らない
+    const btn = document.getElementById('board-chat-send'); if (btn.disabled) return; btn.disabled = true
     try { await axios.post(`/api/admin/board/threads/${threadId}/messages`, { body }); el.value = ''; await refreshThreadLog(threadId); const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight }
     catch (e) { toast(errMsg(e, '送信に失敗しました')) } finally { btn.disabled = false; el.focus() }
   }
@@ -692,6 +693,8 @@
     catch (e) { toast(errMsg(e, '削除に失敗しました')) }
   }
   window.__boardDuplicate = function (id) { S.duplicateFrom = id; location.hash = '#board/new' }
+  delegate('boardDelete', (el) => withSubmitLock(el, () => window.__boardDelete(Number(el.dataset.id))))
+  delegate('boardDuplicate', (el) => window.__boardDuplicate(Number(el.dataset.id)))
 
   // ---------- 作成・編集 ----------
   async function renderForm(id) {
