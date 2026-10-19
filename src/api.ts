@@ -2366,6 +2366,8 @@ api.get('/admin/daily-reports', async (c) => {
   const limit = Math.min(toInt(q('limit') ?? 50, 1) ?? 50, DAILY_REPORT_PAGE_MAX)
   const offset = toInt(q('offset') ?? 0, 0) ?? 0
   const unchecked = q('unchecked') === '1', flagged = q('flagged') === '1'
+  // 一覧を読んだ時刻。確認済みにするときに送り返してもらい、その後に出し直された日報を確認済みにしないために使う
+  const asOf = nowJST()
 
   // 件数の内訳（未確認・インシデント）は、未確認のみ・インシデントのみの条件を外して数える
   let base = ' WHERE dr.company_id = ?'
@@ -2421,20 +2423,27 @@ api.get('/admin/daily-reports', async (c) => {
     options = { projects: pr.results, staff: st.results }
   }
   return c.json({
-    reports, templates, offset, limit, total: Number(cnt.total || 0),
+    reports, templates, offset, limit, total: Number(cnt.total || 0), as_of: asOf,
     counts: { all: Number(cnt.total_all || 0), unchecked: Number(cnt.unchecked || 0), flagged: Number(cnt.flagged || 0) },
     ...(options ? { options } : {}),
   })
 })
+
+// 一覧を読んだ時刻（GET の as_of）。形式が違うものは使わない
+const reportAsOf = (v: unknown): string | null => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v) ? v : null)
+const REPORT_REVISED = '一覧を開いた後に、スタッフが日報を修正しました。内容を確かめてから確認済みにしてください'
 
 // 表示中の日報をまとめて確認済みにする（#183）。ids は最大 DAILY_REPORT_PAGE_MAX 件。すでに確認済みのものは変えない
 api.post('/admin/daily-reports/check', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({})) as any
   if (!Array.isArray(b.ids) || b.ids.length === 0) return c.json({ error: '確認する日報を選んでください' }, 400)
   if (b.ids.length > DAILY_REPORT_PAGE_MAX) return c.json({ error: `一度に確認できるのは${DAILY_REPORT_PAGE_MAX}件までです` }, 400)
-  const r = await c.env.DB.prepare(`UPDATE daily_reports SET manager_checked = 1, manager_checked_by = ?, manager_checked_at = ?
-    WHERE daily_report_id IN ${JSON_IN} AND company_id = ? AND COALESCE(manager_checked, 0) = 0`)
-    .bind(u.user_id, nowJST(), bindJsonArray(b.ids), u.company_id).run()
+  const asOf = reportAsOf(b.as_of)
+  // 確認済みにしたら「確認後に修正あり」の印（revised_after_check_at）は外す（後で未確認に戻したときに古い印が出ないように）。
+  // as_of（一覧を読んだ時刻）より後にスタッフが出し直した日報は、管理者が見ていない内容なので確認済みにしない
+  const r = await c.env.DB.prepare(`UPDATE daily_reports SET manager_checked = 1, manager_checked_by = ?, manager_checked_at = ?, revised_after_check_at = NULL
+    WHERE daily_report_id IN ${JSON_IN} AND company_id = ? AND COALESCE(manager_checked, 0) = 0${asOf ? ' AND submitted_at <= ?' : ''}`)
+    .bind(u.user_id, nowJST(), bindJsonArray(b.ids), u.company_id, ...(asOf ? [asOf] : [])).run()
   return c.json({ ok: true, checked: r.meta?.changes ?? 0 })
 })
 
@@ -2453,6 +2462,7 @@ api.put('/admin/daily-reports/:id', async (c) => {
   const sets: string[] = []; const vals: any[] = []
   const now = nowJST()
   let guard = false
+  let asOf: string | null = null
   if (has('manager_comment')) {
     if (b.manager_comment !== null && typeof b.manager_comment !== 'string') return c.json({ error: 'コメントの形式が正しくありません' }, 400)
     const comment = typeof b.manager_comment === 'string' && b.manager_comment.trim() ? b.manager_comment.trim() : null
@@ -2470,12 +2480,21 @@ api.put('/admin/daily-reports/:id', async (c) => {
     if (v === null) return c.json({ error: '確認の状態が正しくありません' }, 400)
     sets.push('manager_checked = ?', 'manager_checked_by = ?', 'manager_checked_at = ?')
     vals.push(v, v ? u.user_id : null, v ? now : null)
+    // 確認済みにしたら「確認後に修正あり」の印を外す（後で未確認に戻したときに古い印が出ないように）
+    if (v) sets.push('revised_after_check_at = NULL')
+    // as_of（一覧を読んだ時刻）より後にスタッフが出し直していたら、見ていない内容なので確認済みにしない
+    if (v) asOf = reportAsOf(b.as_of)
   }
   if (!sets.length) return c.json({ error: '変更する項目がありません' }, 400)
   // 読み取りと書き込みの間に別の管理者が変えた場合も上書きしないよう、開いたときの内容を条件にする
-  const r = await c.env.DB.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${guard ? " AND COALESCE(manager_comment, '') = ?" : ''}`)
-    .bind(...vals, id, u.company_id, ...(guard ? [cur.manager_comment || ''] : [])).run()
-  if (guard && !(r.meta?.changes ?? 0)) return c.json({ error: COMMENT_CONFLICT }, 409)
+  const conds = (guard ? " AND COALESCE(manager_comment, '') = ?" : '') + (asOf ? ' AND submitted_at <= ?' : '')
+  const r = await c.env.DB.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${conds}`)
+    .bind(...vals, id, u.company_id, ...(guard ? [cur.manager_comment || ''] : []), ...(asOf ? [asOf] : [])).run()
+  if ((guard || asOf) && !(r.meta?.changes ?? 0)) {
+    const latest = await c.env.DB.prepare('SELECT manager_comment, submitted_at FROM daily_reports WHERE daily_report_id = ?').bind(id).first() as any
+    if (asOf && latest && String(latest.submitted_at) > asOf) return c.json({ error: REPORT_REVISED }, 409)
+    return c.json({ error: COMMENT_CONFLICT }, 409)
+  }
   return c.json({ ok: true })
 })
 

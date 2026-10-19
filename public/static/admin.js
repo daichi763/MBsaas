@@ -1762,6 +1762,7 @@ window.deleteShift = async function (id) {
 const REPORT_PAGE_SIZE = 50
 const REPORT_ROWS = new Map()      // 表示中の日報（コメントの編集で使う）
 let REPORT_OPTIONS = null          // 絞り込みの選択肢（案件・日報のあるスタッフ）
+let REPORT_AS_OF = null            // 一覧を読んだ時刻（その後に出し直された日報を、見ないまま確認済みにしないため）
 // テンプレートの無い案件で受け付ける項目（src/lib/validate.ts の NO_TEMPLATE_FIELDS と同じ）
 const REPORT_NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: 'textarea' }]
 // インシデント・クレームの内容（スタッフの日報画面で入力する）。incident_ / complaint_ で始まるキー（_flag を除く）を、
@@ -1891,6 +1892,7 @@ async function renderReports(refresh) {
     showApiError(e, '日報を読み込めませんでした'); return
   }
   if (data.options) REPORT_OPTIONS = data.options
+  REPORT_AS_OF = data.as_of || null
   const opts = REPORT_OPTIONS || { projects: [], staff: [] }
   REPORT_ROWS.clear()
   data.reports.forEach(r => REPORT_ROWS.set(r.daily_report_id, r))
@@ -1947,11 +1949,16 @@ delegate('reportQuick', (el) => {
 
 async function updateReport(el, body, msg) {
   await withSubmitLock(el, async () => {
-    try { await axios.put('/api/admin/daily-reports/' + Number(el.dataset.id), body) } catch (e) { showApiError(e, '更新に失敗しました'); return }
+    try { await axios.put('/api/admin/daily-reports/' + Number(el.dataset.id), body) } catch (e) {
+      showApiError(e, '更新に失敗しました')
+      // 一覧を開いた後にスタッフが修正していた（409）ときは、今の内容で表示し直す
+      if (e.response && e.response.status === 409) renderReports(true)
+      return
+    }
     toast(msg); renderReports(true)
   })
 }
-delegate('checkReport', (el) => updateReport(el, { manager_checked: 1 }, '確認済みにしました'))
+delegate('checkReport', (el) => updateReport(el, { manager_checked: 1, as_of: REPORT_AS_OF }, '確認済みにしました'))
 delegate('uncheckReport', (el) => {
   if (!confirm('この日報を未確認に戻しますか？')) return
   updateReport(el, { manager_checked: 0 }, '未確認に戻しました')
@@ -1961,8 +1968,8 @@ delegate('checkShownReports', (el) => {
   if (!ids.length || !confirm(`表示中の未確認の日報 ${ids.length}件を、まとめて確認済みにしますか？`)) return
   withSubmitLock(el, async () => {
     try {
-      const { data } = await axios.post('/api/admin/daily-reports/check', { ids })
-      toast(`${data.checked}件を確認済みにしました`); renderReports(true)
+      const { data } = await axios.post('/api/admin/daily-reports/check', { ids, as_of: REPORT_AS_OF })
+      toast(`${data.checked}件を確認済みにしました` + (data.checked < ids.length ? '（表示の後に修正・確認された日報は除きました）' : '')); renderReports(true)
     } catch (e) { showApiError(e, '確認済みにできませんでした') }
   })
 })

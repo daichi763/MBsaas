@@ -8,8 +8,8 @@ const BASE = process.env.BASE || 'http://127.0.0.1:8799'
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 300) : ''}`) }
 
-async function login(company_code, user_code) {
-  const r = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_code, user_code, password: 'pass1234' }) })
+async function login(company_code, user_code, password = 'pass1234') {
+  const r = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_code, user_code, password }) })
   const cookie = (r.headers.get('set-cookie') || '').split(';')[0]
   if (!r.ok || !cookie) throw new Error(`login failed: ${user_code} ${r.status}`)
   return cookie
@@ -133,11 +133,44 @@ const list = async (q) => (await admin.get('/api/admin/daily-reports' + (q ? '?'
     ok('#16 確認後にスタッフが直した日報は、未確認に戻り、修正の日時が一覧に返る', after && !after.manager_checked && after.revised_after_check_at && after.values.mnp === 2, after)
     const un = await list(`date=${today}&unchecked=1&limit=200`)
     ok('#16 確認後に直した日報は「未確認のみ」に出る', un.data.reports.some(r => r.daily_report_id === after.daily_report_id))
+    // 一覧を読んだ後（as_of より後）にスタッフが出し直した日報は、見ないまま確認済みにしない
+    const asOf = un.data.as_of
+    ok('一覧は読んだ時刻（as_of）を返す', /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(asOf || ''), asOf)
+    await new Promise(res => setTimeout(res, 1100))
+    await st8.post('/api/staff/daily-report', { shift_id: s.shift_id, values: { mnp: 3 } })
+    const stale = await admin.put(`/api/admin/daily-reports/${after.daily_report_id}`, { manager_checked: 1, as_of: asOf })
+    ok('#16 一覧を読んだ後に出し直された日報は、確認済みにすると 409 で書かない', stale.status === 409 && !(await find()).manager_checked, stale)
+    const staleBulk = await admin.post('/api/admin/daily-reports/check', { ids: [after.daily_report_id], as_of: asOf })
+    ok('#16 まとめて確認でも、一覧を読んだ後に出し直された日報は除く', staleBulk.status === 200 && staleBulk.data.checked === 0 && !(await find()).manager_checked, staleBulk)
+    const fresh = await list(`date=${today}&staff_id=8&limit=200`)
+    const okBulk = await admin.post('/api/admin/daily-reports/check', { ids: [after.daily_report_id], as_of: fresh.data.as_of })
+    const checked = await find()
+    ok('#16 読み直した後なら確認済みにでき、「確認後に修正あり」の印は外れる', okBulk.data.checked === 1 && checked.manager_checked === 1 && checked.revised_after_check_at == null, checked)
+    await admin.put(`/api/admin/daily-reports/${after.daily_report_id}`, { manager_checked: 0 })
+    ok('#16 未確認に戻しても、古い「確認後に修正あり」の印は出ない', (await find()).revised_after_check_at == null)
   }
 }
 
 // ---------- 権限 ----------
 {
+  // 他社の管理者は、この会社の日報を一覧・確認・コメントできない
+  const tag = Date.now().toString(36).slice(-5)
+  const hq = client(await login('sample', 'hq'))
+  const codeB = 'ra' + tag, pwB = 'Ra-Passw0rd-' + tag
+  const cr = await hq.post('/api/hq/companies', { company_code: codeB, company_name: `日報確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
+  if (cr.status !== 200) ok('（前提）B 社を作成', false, cr)
+  else {
+    const adminB = client(await login(codeB, 'adminb', pwB))
+    const target = (await list('date=2026-06-23&limit=1')).data.reports[0]
+    const lb = await adminB.get('/api/admin/daily-reports?limit=200&options=1')
+    ok('他社の管理者の一覧には出ない', lb.status === 200 && lb.data.total === 0 && !lb.data.reports.some(r => r.daily_report_id === target.daily_report_id) && lb.data.options.staff.length === 0, lb.data.total)
+    ok('他社の管理者はコメントできない（404）', (await adminB.put(`/api/admin/daily-reports/${target.daily_report_id}`, { manager_comment: 'x' })).status === 404)
+    await admin.put(`/api/admin/daily-reports/${target.daily_report_id}`, { manager_checked: 0 })
+    const bb = await adminB.post('/api/admin/daily-reports/check', { ids: [target.daily_report_id] })
+    const t2 = (await list('date=2026-06-23&limit=200')).data.reports.find(r => r.daily_report_id === target.daily_report_id)
+    ok('他社の管理者はまとめて確認できない', bb.status === 200 && bb.data.checked === 0 && !t2.manager_checked, bb)
+  }
+
   ok('スタッフは日報一覧を取得できない', [401, 403].includes((await st8.get('/api/admin/daily-reports')).status))
   ok('スタッフはまとめて確認できない', [401, 403].includes((await st8.post('/api/admin/daily-reports/check', { ids: [1] })).status))
 }
