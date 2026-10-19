@@ -156,6 +156,26 @@ const D = addDays(today, 12)
   ok('#388 単価ルールを編集できる（単価とメモ）', e.status === 200 && rule.bill_rate === 1300 && rule.memo === '経験者加算（改定）' && rule.role_name === '販売', { e, rule })
 }
 
+// ---------- #65 の残り: 未対応の応募がある役割を枠の編集で消すときは確かめる ----------
+{
+  const D3 = addDays(today, 14)
+  const pid3 = await newProject(`${PFX}-応募`)
+  const r = must(await admin.post('/api/admin/shift-slots', { project_id: pid3, dates: [D3], start_time: '10:00', end_time: '18:00', break_minutes: 60,
+    roles: [{ role_name: '販売', headcount: 1 }, { role_name: '設営', headcount: 1 }] }), 'slot 2 roles')
+  const sl = must(await admin.get('/api/admin/shift-slots/' + r.slot_ids[0]), 'slot get')
+  const keep = sl.roles.find(x => x.role_name === '販売'), drop = sl.roles.find(x => x.role_name === '設営')
+  const page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [pid3], date_from: D3, date_to: D3, allow_staff: true, show_remaining: true, description: '', pay_note: '', contact_note: '' }), 'page')
+  await newStaff('AP')
+  const sp = client(await login('sample', `${PFX}AP`))
+  must(await sp.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [drop.slot_role_id] }), 'staff apply')
+  const body = (extra = {}) => ({ work_date: D3, start_time: '10:00', end_time: '18:00', roles: [{ slot_role_id: keep.slot_role_id, role_name: '販売', headcount: 1 }, { slot_role_id: drop.slot_role_id, role_name: '設営', headcount: 1, _delete: true }], ...extra })
+  const p1 = await admin.put('/api/admin/shift-slots/' + sl.slot.slot_id, body())
+  ok('#65 未対応の応募がある役割を消すと need_force で件数を出す', p1.status === 409 && p1.data.need_force && p1.data.warnings.some(w => w.includes('設営') && w.includes('未対応の応募が1件')), p1)
+  const p2 = await admin.put('/api/admin/shift-slots/' + sl.slot.slot_id, body({ force: true }))
+  const after = must(await admin.get('/api/admin/shift-slots/' + sl.slot.slot_id), 'slot get')
+  ok('#65 force なら役割を消せる', p2.status === 200 && after.roles.length === 1 && after.roles[0].role_name === '販売', { p2, roles: after.roles })
+}
+
 // ---------- 画面（静的な確認） ----------
 {
   const sb = readFileSync(new URL('../public/static/shift-board.js', import.meta.url), 'utf8')

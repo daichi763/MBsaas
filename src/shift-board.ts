@@ -786,6 +786,13 @@ app.put('/shift-slots/:id', async (c) => {
       warnings.push(...chk.warnings)
     }
   }
+  // 消す役割に未対応の応募があれば確かめる（削除すると「枠の削除」として処理済みになる。#65 の残り）
+  const deletedRoleIds = Array.isArray(b.roles) ? (b.roles as any[]).filter(r => r._delete && existingById.has(Number(r.slot_role_id))).map(r => Number(r.slot_role_id)) : []
+  if (deletedRoleIds.length) {
+    const pend = (await db.prepare(`SELECT i.slot_role_id, COUNT(*) AS n FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+      WHERE i.slot_role_id IN ${JSON_IN} AND i.status = 'pending' AND a.status = 'pending' GROUP BY i.slot_role_id`).bind(bindJsonArray(deletedRoleIds)).all()).results as any[]
+    for (const p of pend) warnings.push(`役割「${existingById.get(Number(p.slot_role_id))?.role_name || ''}」には未対応の応募が${Number(p.n)}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります`)
+  }
   // 必要人数を、割り当て済みの確定・代打の人数より少なくするときは確かめる（人を外し忘れて超過のまま残らないように）
   if (shrunk.size) {
     const filled = (await db.prepare(`SELECT slot_role_id, COUNT(*) AS n FROM shifts WHERE slot_role_id IN ${JSON_IN} AND status IN ('confirmed','substitute') GROUP BY slot_role_id`)
