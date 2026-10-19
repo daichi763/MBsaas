@@ -38,3 +38,6 @@ WHERE status = 'pending' AND EXISTS (SELECT 1 FROM shifts s WHERE s.shift_id = a
 UPDATE user_notifications SET read_at = datetime('now', '+9 hours')
 WHERE kind = 'correction_submitted' AND read_at IS NULL
   AND EXISTS (SELECT 1 FROM attendance_corrections c WHERE c.correction_id = user_notifications.related_id AND c.status != 'pending');
+
+-- 承認・却下・取り消しのたびに、その申請の承認依頼（related_id）を既読にするため（#189。全件の走査を避ける）
+CREATE INDEX IF NOT EXISTS idx_user_notifications_related ON user_notifications(related_id, kind);
