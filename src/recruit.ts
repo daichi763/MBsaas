@@ -736,7 +736,14 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
   // 繰り上げ（見送り → 承認）の明細は、見送りのままであることを条件に押さえ、失敗したときは見送りに戻す（#211）
   const allIds = [...approveIds, ...rejectIds]
   const from = (id: number) => byId.get(id)!
-  const claimed = await db.batch(allIds.map(id => db.prepare("UPDATE recruit_application_items SET status = 'processing', decided_at = ? WHERE item_id = ? AND application_id = ? AND status = ?").bind(nowJST(), id, a.application_id, from(id).status)))
+  let claimed: D1Result[]
+  try {
+    claimed = await db.batch(allIds.map(id => db.prepare("UPDATE recruit_application_items SET status = 'processing', decided_at = ? WHERE item_id = ? AND application_id = ? AND status = ?").bind(nowJST(), id, a.application_id, from(id).status)))
+  } catch (e) {
+    // 繰り上げる日時と同じ枠に、同じスタッフの未対応の応募（応募し直し）があると、未対応・処理中の一意インデックスに当たる（batch なので何も変わらない）
+    if (!toApprove.some(i => i.status === 'rejected') || !/UNIQUE/i.test(String((e as any)?.message || e))) throw e
+    return c.json({ error: '同じ日時に、このスタッフの未対応の応募がほかにあります。そちらの応募を承認してください' }, 409)
+  }
   const mine = allIds.filter((_, k) => Number(claimed[k].meta.changes || 0) > 0)
   const release = async () => {
     if (mine.length) await db.batch(mine.map(id => db.prepare("UPDATE recruit_application_items SET status = ?, decided_at = ? WHERE item_id = ? AND status = 'processing'")
