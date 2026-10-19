@@ -19,6 +19,7 @@ import { isTentativeShift } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi } from './notifications'
+import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
   hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
@@ -2371,29 +2372,93 @@ api.put('/admin/daily-reports/:id', async (c) => {
   return c.json({ ok: true })
 })
 
-// 実績分析
+// 実績分析（#184）。集計する項目は決め打ちにせず、その月に日報のある案件の日報テンプレートの数値項目（type: number）から決める。
+// 値は json_each で項目ごとに合計する（キーを SQL に埋め込まない）。テンプレートから外れた古い数値項目も、キーを名前にして出す
+type AnalyticsField = { key: string; label: string }
+type AnalyticsRow = { reports: number; values: Record<string, number>; [k: string]: any }
+const ANALYTICS_NUM = `CASE WHEN je.type IN ('integer','real') THEN je.value ELSE 0 END`
+const ANALYTICS_JE = `json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je`
+const ANALYTICS_JOINS = `LEFT JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id
+    LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+    LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = dr.staff_id AND er.company_id = dr.company_id`
+// 集計の単位: 日別・スタッフ別・案件別・クライアント別（g は GROUP BY の式、extra は各行に添える列）
+const ANALYTICS_GROUPS = {
+  total: { g: "''", extra: '' },
+  daily: { g: 'dr.work_date', extra: '' },
+  staff: { g: 'dr.staff_id', extra: ', MAX(us.name) AS name, MAX(er.employee_number) AS employee_number' },
+  project: { g: 'dr.project_id', extra: ', MAX(p.project_name) AS project_name, MAX(cl.client_name) AS client_name' },
+  client: { g: 'COALESCE(p.client_id, 0)', extra: ', MAX(cl.client_name) AS client_name' },
+} as const
+type AnalyticsGroup = keyof typeof ANALYTICS_GROUPS
+async function loadAnalytics(db: D1Database, cid: number, month: string) {
+  const where = 'dr.company_id = ? AND dr.work_date LIKE ?'
+  const bind = [cid, month + '%']
+  const groups = Object.keys(ANALYTICS_GROUPS) as AnalyticsGroup[]
+  const stmts = [
+    db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM daily_reports dr
+      JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id JOIN report_templates rt ON rt.template_id = p.report_template_id
+      WHERE ${where} ORDER BY rt.template_id`).bind(...bind),
+    ...groups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, COUNT(*) AS reports ${ANALYTICS_GROUPS[k].extra}
+      FROM daily_reports dr ${ANALYTICS_JOINS} WHERE ${where} GROUP BY g`).bind(...bind)),
+    ...groups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
+      FROM daily_reports dr ${ANALYTICS_JOINS}, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...bind)),
+  ]
+  const res = (await db.batch(stmts)).map(r => (r.results || []) as any[])
+  // 項目: テンプレートの順に、数値項目を重複なく並べる（同じキーは最初のテンプレートのラベル）
+  const fields: AnalyticsField[] = []; const seen = new Set<string>(); const textKeys = new Set<string>()
+  for (const t of res[0]) {
+    let defs: any[] = []
+    try { defs = JSON.parse(t.fields_json) } catch { defs = [] }
+    for (const f of Array.isArray(defs) ? defs : []) {
+      if (!f || typeof f.key !== 'string' || !f.key) continue
+      if (f.type !== 'number') { textKeys.add(f.key); continue }
+      if (!seen.has(f.key)) { seen.add(f.key); fields.push({ key: f.key, label: String(f.label || f.key) }) }
+    }
+  }
+  for (const r of res[1 + groups.length]) { // 合計の行から、テンプレートに無い数値項目を拾う
+    if (r.isnum && !seen.has(r.k) && !textKeys.has(r.k)) { seen.add(r.k); fields.push({ key: r.k, label: r.k }) }
+  }
+  const out = {} as Record<AnalyticsGroup, AnalyticsRow[]>
+  groups.forEach((k, i) => {
+    const rows = new Map<any, AnalyticsRow>()
+    for (const r of res[1 + i]) {
+      const { g, ...rest } = r
+      rows.set(g, { ...rest, values: Object.fromEntries(fields.map(f => [f.key, 0])) })
+    }
+    for (const r of res[1 + groups.length + i]) {
+      const row = rows.get(r.g)
+      if (row && seen.has(r.k)) row.values[r.k] = Number(r.v) || 0
+    }
+    out[k] = [...rows.entries()].map(([g, row]) => (k === 'daily' ? { work_date: g, ...row } : k === 'staff' ? { staff_id: g, ...row }
+      : k === 'project' ? { project_id: g, ...row } : k === 'client' ? { client_id: g || null, ...row } : row))
+  })
+  out.daily.sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)))
+  for (const k of ['staff', 'project', 'client'] as const) out[k].sort((a, b) => b.reports - a.reports)
+  const totals = out.total[0] || { reports: 0, values: Object.fromEntries(fields.map(f => [f.key, 0])) }
+  return { month, fields, totals, daily: out.daily, by_staff: out.staff, by_project: out.project, by_client: out.client }
+}
+const analyticsMonth = (q: string | undefined) => (q && /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST())
 api.get('/admin/analytics', async (c) => {
-  const u = c.get('user'); const month = c.req.query('month') || monthJST()
-  const db = c.env.DB; const cid = u.company_id
-  const KEYS = ['mnp', 'pi', 'shinki', 'kishuhen', 'hikari', 'wifi', 'denki', 'card', 'koekake', 'shodan', 'seiyaku']
-  const sel = KEYS.map(k => `SUM(COALESCE(json_extract(report_values,'$.${k}'),0)) AS ${k}`).join(',')
-
-  const totals = await db.prepare(`SELECT ${sel}, COUNT(*) AS reports FROM daily_reports WHERE company_id = ? AND work_date LIKE ?`).bind(cid, month + '%').first()
-  const daily = await db.prepare(`SELECT work_date, ${sel} FROM daily_reports WHERE company_id = ? AND work_date LIKE ? GROUP BY work_date ORDER BY work_date`).bind(cid, month + '%').all()
-  const byStaff = await db.prepare(`
-    SELECT dr.staff_id, us.name, COUNT(*) AS days, ${sel.replace(/report_values/g, 'dr.report_values')}
-    FROM daily_reports dr JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY dr.staff_id ORDER BY seiyaku DESC`).bind(cid, month + '%').all()
-  const byProject = await db.prepare(`
-    SELECT dr.project_id, p.project_name, COUNT(*) AS days, ${sel.replace(/report_values/g, 'dr.report_values')}
-    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
-    WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY dr.project_id`).bind(cid, month + '%').all()
-  const byClient = await db.prepare(`
-    SELECT cl.client_name, COUNT(*) AS days, ${sel.replace(/report_values/g, 'dr.report_values')}
-    FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY cl.client_id`).bind(cid, month + '%').all()
-
-  return c.json({ month, totals, daily: daily.results, by_staff: byStaff.results, by_project: byProject.results, by_client: byClient.results })
+  const u = c.get('user')
+  return c.json(await loadAnalytics(c.env.DB, u.company_id, analyticsMonth(c.req.query('month'))))
+})
+// 実績分析の CSV（by: staff スタッフ別 / project 案件別 / client クライアント別 / daily 日別）。項目の列は画面と同じ
+api.get('/admin/analytics/csv', async (c) => {
+  const u = c.get('user'); const month = analyticsMonth(c.req.query('month'))
+  const by = (['staff', 'project', 'client', 'daily'] as const).find(k => k === c.req.query('by')) || 'staff'
+  const a = await loadAnalytics(c.env.DB, u.company_id, month)
+  const vals = (r: AnalyticsRow) => a.fields.map(f => r.values[f.key] ?? 0)
+  const labels = a.fields.map(f => f.label)
+  const NAME = { staff: 'スタッフ別', project: '案件別', client: 'クライアント別', daily: '日別' }[by]
+  const csv = by === 'staff'
+    ? toCsv(['月', 'スタッフID', '社員番号', 'スタッフ', '日報数', ...labels], a.by_staff.map(r => [month, r.staff_id, r.employee_number, r.name, r.reports, ...vals(r)]), { textCols: ['社員番号'] })
+    : by === 'project'
+      ? toCsv(['月', '案件ID', '案件', 'クライアント', '日報数', ...labels], a.by_project.map(r => [month, r.project_id, r.project_name, r.client_name, r.reports, ...vals(r)]))
+      : by === 'client'
+        ? toCsv(['月', 'クライアント', '日報数', ...labels], a.by_client.map(r => [month, r.client_name || '（クライアント未設定）', r.reports, ...vals(r)]))
+        : toCsv(['日付', '日報数', ...labels], a.daily.map(r => [r.work_date, r.reports, ...vals(r)]))
+  return csvResponse(`実績分析_${NAME}_${month}.csv`, csv)
 })
 
 // お知らせ配信
@@ -2536,6 +2601,12 @@ api.get('/admin/notices/:id/reads', async (c) => {
 })
 
 // ============ お知らせ既読率レポート ============
+// スタッフ別の行（社員番号を添える）。並びは既読率の低い順で、対象のない人（既読率なし）は最後（#518）
+const NOTICE_STAFF_REPORT_FROM = `FROM notice_read_staff_reports r
+    JOIN staff_profiles sp ON sp.staff_id = r.staff_id
+    JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = r.staff_id AND er.company_id = r.company_id`
+const NOTICE_STAFF_REPORT_ORDER = 'r.read_rate IS NULL, r.read_rate, r.unread_count DESC, us.name, r.staff_id'
 // 年度別（会社サマリ + スタッフ別）。長期保存されたレポートテーブルから取得する。
 // 再集計できるかどうか（確定済み・保存期間外ならできない #48 #49）と、年度の途中かどうか（#481）も返す
 api.get('/admin/notice-reports/:fiscalYear', async (c) => {
@@ -2547,12 +2618,10 @@ api.get('/admin/notice-reports/:fiscalYear', async (c) => {
   ).bind(u.company_id, fy).first() as any
 
   const staffRows = await c.env.DB.prepare(`
-    SELECT r.staff_id, us.name AS staff_name, r.target_count, r.read_count, r.unread_count, r.read_rate
-    FROM notice_read_staff_reports r
-    JOIN staff_profiles sp ON sp.staff_id = r.staff_id
-    JOIN users us ON us.user_id = sp.user_id
+    SELECT r.staff_id, us.name AS staff_name, er.employee_number, r.target_count, r.read_count, r.unread_count, r.read_rate
+    ${NOTICE_STAFF_REPORT_FROM}
     WHERE r.company_id = ? AND r.fiscal_year = ?
-    ORDER BY us.name`).bind(u.company_id, fy).all()
+    ORDER BY ${NOTICE_STAFF_REPORT_ORDER}`).bind(u.company_id, fy).all()
 
   const block = noticeReportRecalcBlock(fy, summary?.finalized_at)
   return c.json({
@@ -2593,7 +2662,7 @@ api.get('/admin/notice-reports/:fiscalYear/staff/:staffId', async (c) => {
 
   const { start, end } = fiscalYearRange(fy)
   const noticeRows = await c.env.DB.prepare(`
-    SELECT n.notice_id, n.title, n.published_at, n.reads_purged_at,
+    SELECT n.notice_id, n.title, n.published_at, n.reads_purged_at, n.importance, n.read_required,
       EXISTS(SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = us.user_id) AS is_read
     FROM notices n JOIN staff_profiles sp ON sp.staff_id = ? JOIN users us ON us.user_id = sp.user_id
     WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
@@ -2602,34 +2671,31 @@ api.get('/admin/notice-reports/:fiscalYear/staff/:staffId', async (c) => {
 
   return c.json({
     fiscal_year: fy, staff_name: staff.name,
-    notices: noticeRows.results.map((n: any) => ({ notice_id: n.notice_id, title: n.title, published_at: n.published_at, is_read: n.reads_purged_at ? null : !!n.is_read })),
+    notices: noticeRows.results.map((n: any) => ({
+      notice_id: n.notice_id, title: n.title, published_at: n.published_at, importance: n.importance || 'normal', read_required: !!n.read_required,
+      is_read: n.reads_purged_at ? null : !!n.is_read,
+    })),
   })
 })
 
-// CSV出力（スタッフ別レポート。人事評価の参考資料用）
+// CSV出力（スタッフ別レポート。人事評価の参考資料用）。共通の toCsv でエスケープする（#72）。
+// 並びは画面の初期表示と同じ既読率の低い順（order=name で氏名順）。スタッフID・社員番号の列も出す（#518）
 api.get('/admin/notice-reports/:fiscalYear/csv', async (c) => {
   const u = c.get('user'); const fy = Number(c.req.param('fiscalYear'))
   if (!Number.isInteger(fy)) return c.json({ error: '年度の指定が不正です' }, 400)
 
   const company = await c.env.DB.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
   const staffRows = await c.env.DB.prepare(`
-    SELECT us.name AS staff_name, r.target_count, r.read_count, r.unread_count, r.read_rate
-    FROM notice_read_staff_reports r
-    JOIN staff_profiles sp ON sp.staff_id = r.staff_id
-    JOIN users us ON us.user_id = sp.user_id
+    SELECT r.staff_id, us.name AS staff_name, er.employee_number, r.target_count, r.read_count, r.unread_count, r.read_rate
+    ${NOTICE_STAFF_REPORT_FROM}
     WHERE r.company_id = ? AND r.fiscal_year = ?
-    ORDER BY us.name`).bind(u.company_id, fy).all()
+    ORDER BY ${c.req.query('order') === 'name' ? 'us.name, r.staff_id' : NOTICE_STAFF_REPORT_ORDER}`).bind(u.company_id, fy).all()
 
-  let csv = '\uFEFF年度,会社,スタッフ,対象数,既読数,未読数,既読率\n'
-  for (const r of staffRows.results as any[]) {
-    const rate = r.read_rate == null ? '-' : `${r.read_rate.toFixed(1)}%`
-    csv += `${fy},${(company?.company_name as string) || ''},${r.staff_name},${r.target_count},${r.read_count},${r.unread_count},${rate}\n`
-  }
-
-  return c.body(csv, 200, {
-    'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': `attachment; filename="notice_read_report_${fy}.csv"`,
-  })
+  const csv = toCsv(['年度', '会社', 'スタッフID', '社員番号', 'スタッフ', '対象数', '既読数', '未読数', '既読率'],
+    (staffRows.results as any[]).map(r => [fy, (company?.company_name as string) || '', r.staff_id, r.employee_number, r.staff_name,
+      r.target_count, r.read_count, r.unread_count, r.read_rate == null ? '-' : `${Number(r.read_rate).toFixed(1)}%`]),
+    { textCols: ['社員番号'] })
+  return csvResponse(`お知らせ既読率_${fy}年度.csv`, csv)
 })
 
 // 相談対応

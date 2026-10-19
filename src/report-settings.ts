@@ -14,7 +14,7 @@
 // 管理者向け API（/api/admin/report-settings/*）は api.ts から権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
-import { toCsv, csvResponse } from './csv'
+import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
 import { NEXT_DAY_TYPES, addDays, reportableWindow, type ShiftTimes } from './lib/shift-time'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
@@ -448,31 +448,43 @@ function logFilter(companyId: number, q: (k: string) => string | undefined) {
   if (isReportType(q('report_type'))) { w.push('l.report_type = ?'); bind.push(q('report_type')) }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q('from') || '')) { w.push('l.created_at >= ?'); bind.push(q('from') + ' 00:00:00') }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q('to') || '')) { w.push('l.created_at <= ?'); bind.push(q('to') + ' 23:59:59') }
-  if (q('staff_name')) { w.push("us.name LIKE ? ESCAPE '\\'"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%') }
+  // スタッフは氏名の一部か、社員番号（完全一致）で探す
+  if (q('staff_name')) { w.push("(us.name LIKE ? ESCAPE '\\' OR er.employee_number = ?)"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%', String(q('staff_name'))) }
   if (q('action') && ACTION_LABEL[q('action')!]) { w.push('l.action = ?'); bind.push(q('action')) }
+  // 導入時の移行（0027 で一度に作った行）を除く（#102）
+  if (q('exclude_migration') === '1' && q('action') !== 'migration') w.push("l.action != 'migration'")
   return { where: w.join(' AND '), bind }
 }
 const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行', merge: 'スタッフ統合' }
 const LOG_FROM = `FROM report_setting_logs l LEFT JOIN projects p ON p.project_id = l.project_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+    LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = l.staff_id AND er.company_id = l.company_id`
 reportSettingsApi.get('/report-settings/logs', async (c) => {
   const u = c.get('user'); const q = (k: string) => c.req.query(k)
   const { where, bind } = logFilter(u.company_id, q)
   const limit = Math.min(500, Math.max(1, Number(q('limit')) || 200))
-  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name ${LOG_FROM}
+  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name, er.employee_number ${LOG_FROM}
     WHERE ${where} ORDER BY l.log_id DESC LIMIT ?`).bind(...bind, limit).all()).results
-  return c.json({ logs: rows, labels: REPORT_LABEL })
+  // 条件に合う全件数（画面で、表示と CSV の上限を超えたかを知らせる #102）
+  const total = Number(((await c.env.DB.prepare(`SELECT COUNT(*) AS n ${LOG_FROM} WHERE ${where}`).bind(...bind).first()) as any)?.n || 0)
+  return c.json({ logs: rows, labels: REPORT_LABEL, total, csv_limit: CSV_LIMIT })
 })
 reportSettingsApi.get('/report-settings/logs/export', async (c) => {
   const u = c.get('user')
   const { where, bind } = logFilter(u.company_id, k => c.req.query(k))
-  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name ${LOG_FROM}
-    WHERE ${where} ORDER BY l.log_id LIMIT 10000`).bind(...bind).all()).results as any[]
+  // 新しい順に上限まで取り、古い順に出す。上限を超えたら注記を入れる（#102）
+  const { rows, total } = await loadLatestForCsv(c.env.DB,
+    `SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name, er.employee_number ${LOG_FROM} WHERE ${where} ORDER BY l.log_id DESC`,
+    `SELECT COUNT(*) AS n ${LOG_FROM} WHERE ${where}`, bind)
   const onoff = (v: any) => v == null ? '' : v ? 'ON' : 'OFF'
-  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール'],
+  // 同姓同名を区別できるよう、対象のスタッフID・社員番号も出す（既存の列の位置を変えないよう末尾に足す）。ロールは日本語にする（#474）
+  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール', 'スタッフID', '社員番号'],
     rows.map(l => [l.log_id, l.created_at, l.project_name, (l.project_status || 'active') === 'active' ? '稼働中' : '終了', l.staff_id ? l.staff_name : '標準設定',
-      REPORT_LABEL[l.report_type] || l.report_type, onoff(l.old_enabled), onoff(l.new_enabled), ACTION_LABEL[l.action] || l.action, l.batch_id, l.changed_by_name || (l.action === 'migration' ? 'システム' : ''), l.changed_by_role]))
-  return csvResponse(`報告設定の変更履歴_${nowJST().slice(0, 10)}.csv`, csv)
+      REPORT_LABEL[l.report_type] || l.report_type, onoff(l.old_enabled), onoff(l.new_enabled), ACTION_LABEL[l.action] || l.action, l.batch_id,
+      l.changed_by_name || (l.action === 'migration' ? 'システム' : ''), roleLabel(l.changed_by_role),
+      l.staff_id ?? '', l.employee_number ?? '']),
+    { textCols: ['社員番号'], note: csvLimitNote(total) })
+  return csvResponse(`報告設定の変更履歴_${nowJST().slice(0, 10)}.csv`, csv, csvLimitHeaders(total))
 })
 
 export default reportSettingsApi

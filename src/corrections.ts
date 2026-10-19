@@ -14,7 +14,7 @@ import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts } fr
 import { syncActualFromReports } from './settlement'
 import { personStaffRows } from './roster'
 import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
-import { toCsv, csvResponse } from './csv'
+import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
 import { isTentativeShift, isWorkingShift } from './lib/shift-status'
 
 type Bindings = NotifyEnv
@@ -305,12 +305,18 @@ correctionsAdminApi.get('/corrections/pending-count', async (c) => {
   return c.json({ count: r?.n || 0 })
 })
 
+// スタッフは氏名の一部か、社員番号（完全一致）で探す（#445。er は employee_records）
+function staffNameFilter(name: string | undefined, w: string[], bind: any[]) {
+  if (!name) return
+  w.push("(us.name LIKE ? ESCAPE '\\' OR er.employee_number = ?)")
+  bind.push('%' + String(name).replace(/[\\%_]/g, m => '\\' + m) + '%', String(name))
+}
 // 一覧・CSV の絞り込み（状態・案件・スタッフ名・申請期間・対象日・報告種類・申請種類）
 function correctionFilter(companyId: number, q: (k: string) => string | undefined) {
   const w = ['c.company_id = ?']; const bind: any[] = [companyId]
   if (CORRECTION_STATUSES.includes(q('status') as any)) { w.push('c.status = ?'); bind.push(q('status')) }
   if (q('project_id')) { w.push('c.project_id = ?'); bind.push(Number(q('project_id'))) }
-  if (q('staff_name')) { w.push("us.name LIKE ? ESCAPE '\\'"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%') }
+  staffNameFilter(q('staff_name'), w, bind)
   if (isDate(q('from'))) { w.push('c.created_at >= ?'); bind.push(q('from') + ' 00:00:00') }
   if (isDate(q('to'))) { w.push('c.created_at <= ?'); bind.push(q('to') + ' 23:59:59') }
   if (isDate(q('work_from'))) { w.push('s.work_date >= ?'); bind.push(q('work_from')) }
@@ -320,7 +326,8 @@ function correctionFilter(companyId: number, q: (k: string) => string | undefine
   return { where: w.join(' AND '), bind }
 }
 const CORRECTION_FROM = `FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = c.staff_id AND er.company_id = c.company_id`
 correctionsAdminApi.get('/corrections', async (c) => {
   const u = c.get('user')
   const { where, bind } = correctionFilter(u.company_id, k => c.req.query(k))
@@ -333,20 +340,26 @@ correctionsAdminApi.get('/corrections', async (c) => {
 })
 
 // CSV（一覧と同じ絞り込み。管理者のみ: /api/admin/* のため管理ロール以外は 403）
-const ROLE_LABEL: Record<string, string> = { company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当', staff: 'スタッフ', system_admin: '本部' }
-const CSV_LIMIT = 10000
+// 精算のシフト明細と突き合わせられるよう、シフトID・社員番号・クライアント・予定の時刻も出す（#445。既存の列の位置を変えないよう末尾に足す）。
+// 新しい順に上限まで取り、古い順に出す。上限を超えたら先頭に注記を入れる（#102）
+const CLIENT_JOIN = 'LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id'
 correctionsAdminApi.get('/corrections/export', async (c) => {
   const u = c.get('user')
   const { where, bind } = correctionFilter(u.company_id, k => c.req.query(k))
-  const rows = (await c.env.DB.prepare(`SELECT c.*, s.work_date, p.project_name, p.status AS project_status, us.name AS staff_name ${CORRECTION_FROM}
-    WHERE ${where} ORDER BY c.correction_id LIMIT ${CSV_LIMIT}`).bind(...bind).all()).results as any[]
+  const { rows, total } = await loadLatestForCsv(c.env.DB,
+    `SELECT c.*, s.work_date, s.start_time, s.end_time, p.project_name, p.status AS project_status, cl.client_name, us.name AS staff_name, er.employee_number
+    ${CORRECTION_FROM} ${CLIENT_JOIN} WHERE ${where} ORDER BY c.correction_id DESC`,
+    `SELECT COUNT(*) AS n ${CORRECTION_FROM} WHERE ${where}`, bind)
   const csv = toCsv(['申請ID', '状態', '申請の種類', '案件', '案件の状態', 'スタッフ', '勤務日', '報告', '変更前', '変更後', '修正理由', '順序の矛盾', '例外承認',
-    '申請者', '申請者のロール', '申請日時', '承認・却下した人', '承認・却下日時', '承認者コメント', '却下理由', '取り消し日時', '再申請の元の申請ID', '反映時に確定済み'],
+    '申請者', '申請者のロール', '申請日時', '承認・却下した人', '承認・却下日時', '承認者コメント', '却下理由', '取り消し日時', '再申請の元の申請ID', '反映時に確定済み',
+    'シフトID', '社員番号', 'クライアント', '予定開始', '予定終了'],
     rows.map(r => [r.correction_id, STATUS_LABEL[r.status] || r.status, KIND_LABEL[r.kind] || r.kind, r.project_name, (r.project_status || 'active') === 'active' ? '稼働中' : '終了',
       r.staff_name, r.work_date, REPORT_LABEL[r.report_type] || r.report_type, r.before_at, r.requested_at, r.reason, parseWarnings(r).join(' / '), r.is_exception ? 'あり' : '',
-      r.requested_by_name, ROLE_LABEL[r.requested_by_role] || r.requested_by_role, r.created_at, r.status === 'cancelled' ? '' : r.decided_by_name, r.status === 'cancelled' ? '' : r.decided_at,
-      r.decision_comment, r.reject_reason, r.cancelled_at, r.resubmitted_from, r.applied_while_settled ? 'はい' : '']))
-  return csvResponse(`打刻修正申請_${nowJST().slice(0, 10)}.csv`, csv)
+      r.requested_by_name, roleLabel(r.requested_by_role), r.created_at, r.status === 'cancelled' ? '' : r.decided_by_name, r.status === 'cancelled' ? '' : r.decided_at,
+      r.decision_comment, r.reject_reason, r.cancelled_at, r.resubmitted_from, r.applied_while_settled ? 'はい' : '',
+      r.shift_id, r.employee_number, r.client_name, r.start_time, r.end_time]),
+    { textCols: ['社員番号'], note: csvLimitNote(total) })
+  return csvResponse(`打刻修正申請_${nowJST().slice(0, 10)}.csv`, csv, csvLimitHeaders(total))
 })
 
 // 操作の履歴（申請・再申請・承認・例外承認・却下・取り消し）の検索と CSV
@@ -358,15 +371,17 @@ function eventFilter(companyId: number, q: (k: string) => string | undefined) {
   if (isDate(q('from'))) { w.push('e.created_at >= ?'); bind.push(q('from') + ' 00:00:00') }
   if (isDate(q('to'))) { w.push('e.created_at <= ?'); bind.push(q('to') + ' 23:59:59') }
   if (q('project_id')) { w.push('c.project_id = ?'); bind.push(Number(q('project_id'))) }
-  if (q('staff_name')) { w.push("us.name LIKE ? ESCAPE '\\'"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%') }
+  staffNameFilter(q('staff_name'), w, bind)
   if (isReportType(q('report_type'))) { w.push('c.report_type = ?'); bind.push(q('report_type')) }
   return { where: w.join(' AND '), bind }
 }
-const EVENT_SELECT = `SELECT e.event_id, e.correction_id, e.event, e.actor_name, e.actor_role, e.detail, e.created_at, c.kind, c.report_type, c.status, c.resubmitted_from,
-    s.work_date, p.project_name, us.name AS staff_name
-  FROM attendance_correction_events e JOIN attendance_corrections c ON c.correction_id = e.correction_id
+const EVENT_FROM = `FROM attendance_correction_events e JOIN attendance_corrections c ON c.correction_id = e.correction_id
   LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
-  LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+  LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+  LEFT JOIN employee_records er ON er.staff_id = c.staff_id AND er.company_id = c.company_id`
+const EVENT_SELECT = `SELECT e.event_id, e.correction_id, e.event, e.actor_name, e.actor_role, e.detail, e.created_at, c.kind, c.report_type, c.status, c.resubmitted_from,
+    c.shift_id, c.staff_id, s.work_date, s.start_time, s.end_time, p.project_name, cl.client_name, us.name AS staff_name, er.employee_number
+  ${EVENT_FROM} ${CLIENT_JOIN}`
 const eventSummary = (e: any) => {
   let d: any = null; try { d = e.detail ? JSON.parse(e.detail) : null } catch { }
   if (!d) return ''
@@ -379,16 +394,21 @@ correctionsAdminApi.get('/corrections/events', async (c) => {
   const u = c.get('user')
   const { where, bind } = eventFilter(u.company_id, k => c.req.query(k))
   const rows = (await c.env.DB.prepare(`${EVENT_SELECT} WHERE ${where} ORDER BY e.event_id DESC LIMIT 300`).bind(...bind).all()).results as any[]
-  return c.json({ events: rows.map(r => ({ ...r, detail: undefined, summary: eventSummary(r) })), labels: REPORT_LABEL })
+  // 条件に合う全件数（画面で、表示と CSV の上限を超えたかを知らせる #102）
+  const total = Number(((await c.env.DB.prepare(`SELECT COUNT(*) AS n ${EVENT_FROM} WHERE ${where}`).bind(...bind).first()) as any)?.n || 0)
+  return c.json({ events: rows.map(r => ({ ...r, detail: undefined, summary: eventSummary(r) })), labels: REPORT_LABEL, total, csv_limit: CSV_LIMIT })
 })
 correctionsAdminApi.get('/corrections/events/export', async (c) => {
   const u = c.get('user')
   const { where, bind } = eventFilter(u.company_id, k => c.req.query(k))
-  const rows = (await c.env.DB.prepare(`${EVENT_SELECT} WHERE ${where} ORDER BY e.event_id LIMIT ${CSV_LIMIT}`).bind(...bind).all()).results as any[]
-  const csv = toCsv(['履歴ID', '日時', '操作', '操作した人', 'ロール', '申請ID', '再申請の元の申請ID', '申請の種類', '案件', 'スタッフ', '勤務日', '報告', '内容', '申請の現在の状態'],
-    rows.map(r => [r.event_id, r.created_at, EVENT_LABEL[r.event] || r.event, r.actor_name, ROLE_LABEL[r.actor_role] || r.actor_role, r.correction_id, r.resubmitted_from,
-      KIND_LABEL[r.kind] || r.kind, r.project_name, r.staff_name, r.work_date, REPORT_LABEL[r.report_type] || r.report_type, eventSummary(r), STATUS_LABEL[r.status] || r.status]))
-  return csvResponse(`打刻修正の操作履歴_${nowJST().slice(0, 10)}.csv`, csv)
+  const { rows, total } = await loadLatestForCsv(c.env.DB, `${EVENT_SELECT} WHERE ${where} ORDER BY e.event_id DESC`, `SELECT COUNT(*) AS n ${EVENT_FROM} WHERE ${where}`, bind)
+  const csv = toCsv(['履歴ID', '日時', '操作', '操作した人', 'ロール', '申請ID', '再申請の元の申請ID', '申請の種類', '案件', 'スタッフ', '勤務日', '報告', '内容', '申請の現在の状態',
+    'シフトID', '社員番号', 'クライアント', '予定開始', '予定終了'],
+    rows.map(r => [r.event_id, r.created_at, EVENT_LABEL[r.event] || r.event, r.actor_name, roleLabel(r.actor_role), r.correction_id, r.resubmitted_from,
+      KIND_LABEL[r.kind] || r.kind, r.project_name, r.staff_name, r.work_date, REPORT_LABEL[r.report_type] || r.report_type, eventSummary(r), STATUS_LABEL[r.status] || r.status,
+      r.shift_id, r.employee_number, r.client_name, r.start_time, r.end_time]),
+    { textCols: ['社員番号'], note: csvLimitNote(total) })
+  return csvResponse(`打刻修正の操作履歴_${nowJST().slice(0, 10)}.csv`, csv, csvLimitHeaders(total))
 })
 
 correctionsAdminApi.get('/corrections/:id{[0-9]+}', async (c) => {

@@ -1804,82 +1804,101 @@ window.commentReport = async function (id, date) {
 }
 
 // ============ 実績分析 ============
+// 集計する項目は、API がその月の日報テンプレートの数値項目から返す（#184）。
+// 指標を選ぶと、スタッフ別ランキングの並びと日別のグラフが切り替わる。各表は CSV でも出せる
+const ANALYTICS = { data: null, key: '' }
 async function renderAnalytics(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
-  const { data } = await axios.get('/api/admin/analytics?month=' + month)
-  const t = data.totals || {}
-  const rate = t.shodan ? Math.round((t.seiyaku / t.shodan) * 100) : 0
+  let data
+  try { data = (await axios.get('/api/admin/analytics', { params: { month } })).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, '実績を読み込めませんでした'))}</p>`; return }
+  ANALYTICS.data = data
+  // 選んでいた指標が無い月は、成約数（あれば）か最初の項目にする
+  if (!data.fields.some(f => f.key === ANALYTICS.key)) ANALYTICS.key = (data.fields.find(f => f.key === 'seiyaku') || data.fields[0] || {}).key || ''
+  drawAnalytics()
+}
+delegate('analyticsMonth', el => renderAnalytics(el.dataset.month))
+window.setAnalyticsKey = function (key) { ANALYTICS.key = key; drawAnalytics() }
+function drawAnalytics() {
+  const data = ANALYTICS.data; const month = data.month; const fields = data.fields; const key = ANALYTICS.key
+  const tv = (data.totals && data.totals.values) || {}
+  const has = k => fields.some(f => f.key === k)
+  const rate = has('shodan') && has('seiyaku') ? (tv.shodan ? Math.round((tv.seiyaku / tv.shodan) * 100) : 0) + '%' : null
+  const num = v => Number(v || 0).toLocaleString()
+  const heads = fields.map(f => `<th class="whitespace-nowrap ${f.key === key ? 'text-blue-700' : ''}">${esc(f.label)}</th>`).join('')
+  const cells = r => fields.map(f => `<td class="${f.key === key ? 'font-bold' : ''}">${num(r.values[f.key])}</td>`).join('')
+  const csvLink = by => `<a class="text-xs text-blue-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(new URLSearchParams({ month, by }).toString())}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
+  const empty = (n) => `<tr><td colspan="${n}" class="text-center text-gray-400 py-4">日報はありません</td></tr>`
+  const staff = data.by_staff.slice().sort((a, b) => ((b.values[key] || 0) - (a.values[key] || 0)) || (b.reports - a.reports))
+  const keyLabel = (fields.find(f => f.key === key) || {}).label || ''
+  const m0 = dayjs(month + '-01')
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">実績分析</h2>
-      <div class="flex gap-2 items-center">
-        <button class="btn btn-outline" onclick="renderAnalytics('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
-        <span class="font-bold">${dayjs(month + '-01').format('YYYY年M月')}</span>
-        <button class="btn btn-outline" onclick="renderAnalytics('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-right"></i></button>
+      <div class="flex gap-2 items-center flex-wrap">
+        <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+        <span class="font-bold">${esc(m0.format('YYYY年M月'))}</span>
+        <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+        ${fields.length ? `<label class="text-xs text-gray-500 flex items-center gap-1 ml-2">指標
+          <select class="inp text-sm w-auto" onchange="setAnalyticsKey(this.value)">${fields.map(f => `<option value="${esc(f.key)}" ${f.key === key ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select></label>` : ''}
       </div>
     </div>
+    <p class="text-xs text-gray-500 mb-3">集計する項目は、この月に日報のある案件の日報テンプレートの数値項目です。</p>
     <section class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-5">
-      ${[['MNP', t.mnp], ['PI', t.pi], ['新規', t.shinki], ['機種変更', t.kishuhen], ['光回線', t.hikari], ['でんき', t.denki], ['声かけ', t.koekake], ['商談', t.shodan], ['成約', t.seiyaku], ['成約率', rate + '%'], ['日報数', t.reports], ['クレカ', t.card]].map(([l, v]) => `
-        <div class="card p-3 text-center"><p class="text-xl font-bold text-blue-600">${v || 0}</p><p class="text-xs text-gray-500">${l}</p></div>`).join('')}
+      ${[...fields.map(f => [f.label, num(tv[f.key])]), ...(rate ? [['成約率（成約数÷商談数）', rate]] : []), ['日報数', num(data.totals && data.totals.reports)]].map(([l, v]) => `
+        <div class="card p-3 text-center"><p class="text-xl font-bold text-blue-600">${esc(v)}</p><p class="text-xs text-gray-500">${esc(l)}</p></div>`).join('')}
+    </section>
+    ${fields.length ? '' : '<p class="card p-4 text-sm text-gray-400 mb-5">この月の日報には、集計できる数値の項目がありません。</p>'}
+    <section class="card p-4 mb-5">
+      <h3 class="text-sm font-bold text-gray-700 mb-3">日別推移${keyLabel ? `（${esc(keyLabel)}）` : ''}${csvLink('daily')}</h3>
+      ${key ? '<canvas id="daily-chart" height="80"></canvas>' : '<p class="text-sm text-gray-400">表示する項目がありません</p>'}
     </section>
     <section class="card p-4 mb-5">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">日別推移</h3>
-      <canvas id="daily-chart" height="80"></canvas>
-    </section>
-    <div class="grid lg:grid-cols-2 gap-4">
-      <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別ランキング（成約順）</h3>
-        <div class="overflow-x-auto">
-        <table class="tbl">
-          <thead><tr><th>#</th><th>スタッフ</th><th>日数</th><th>MNP</th><th>光</th><th>成約</th></tr></thead>
-          <tbody>${data.by_staff.map((s, i) => `
-            <tr><td>${i < 3 ? ['🥇', '🥈', '🥉'][i] : i + 1}</td>
-            <td><a href="#staff/${s.staff_id}" class="text-blue-600 hover:underline">${esc(s.name)}</a></td>
-            <td>${s.days}</td><td>${s.mnp}</td><td>${s.hikari}</td><td class="font-bold">${s.seiyaku}</td></tr>`).join('')}
-          </tbody>
-        </table>
-        </div>
-      </section>
-      <div class="space-y-4">
-        <section class="card p-4">
-          <h3 class="text-sm font-bold text-gray-700 mb-3">案件別実績</h3>
-          <div class="overflow-x-auto">
-          <table class="tbl">
-            <thead><tr><th>案件</th><th>日報</th><th>MNP</th><th>光</th><th>成約</th></tr></thead>
-            <tbody>${data.by_project.map(p => `
-              <tr><td><a href="#projects/${p.project_id}" class="text-blue-600 hover:underline text-xs">${esc(p.project_name)}</a></td>
-              <td>${p.days}</td><td>${p.mnp}</td><td>${p.hikari}</td><td class="font-bold">${p.seiyaku}</td></tr>`).join('')}
-            </tbody>
-          </table>
-          </div>
-        </section>
-        <section class="card p-4">
-          <h3 class="text-sm font-bold text-gray-700 mb-3">クライアント別実績</h3>
-          <div class="overflow-x-auto">
-          <table class="tbl">
-            <thead><tr><th>クライアント</th><th>日報</th><th>成約</th></tr></thead>
-            <tbody>${data.by_client.map(c => `
-              <tr><td class="text-xs">${esc(c.client_name)}</td><td>${c.days}</td><td class="font-bold">${c.seiyaku}</td></tr>`).join('')}
-            </tbody>
-          </table>
-          </div>
-        </section>
+      <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別ランキング${keyLabel ? `（${esc(keyLabel)}の多い順）` : ''}${csvLink('staff')}</h3>
+      <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead><tr><th>#</th><th>スタッフ</th><th>日報</th>${heads}</tr></thead>
+        <tbody>${staff.map((s, i) => `
+          <tr><td>${i < 3 && key && s.values[key] ? ['🥇', '🥈', '🥉'][i] : i + 1}</td>
+          <td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name || '')}</a></td>
+          <td>${s.reports}</td>${cells(s)}</tr>`).join('') || empty(fields.length + 3)}
+        </tbody>
+      </table>
       </div>
-    </div>`
+    </section>
+    <section class="card p-4 mb-5">
+      <h3 class="text-sm font-bold text-gray-700 mb-3">案件別実績${csvLink('project')}</h3>
+      <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead><tr><th>案件</th><th>クライアント</th><th>日報</th>${heads}</tr></thead>
+        <tbody>${data.by_project.map(p => `
+          <tr><td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline text-xs">${esc(p.project_name || '')}</a></td>
+          <td class="text-xs">${esc(p.client_name || '-')}</td><td>${p.reports}</td>${cells(p)}</tr>`).join('') || empty(fields.length + 3)}
+        </tbody>
+      </table>
+      </div>
+    </section>
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-3">クライアント別実績${csvLink('client')}</h3>
+      <div class="overflow-x-auto">
+      <table class="tbl">
+        <thead><tr><th>クライアント</th><th>日報</th>${heads}</tr></thead>
+        <tbody>${data.by_client.map(c => `
+          <tr><td class="text-xs">${esc(c.client_name || '（クライアント未設定）')}</td><td>${c.reports}</td>${cells(c)}</tr>`).join('') || empty(fields.length + 2)}
+        </tbody>
+      </table>
+      </div>
+    </section>`
 
+  if (!key) return
   new Chart(document.getElementById('daily-chart'), {
     type: 'bar',
     data: {
       labels: data.daily.map(d => dayjs(d.work_date).format('M/D')),
-      datasets: [
-        { label: '成約', data: data.daily.map(d => d.seiyaku), backgroundColor: '#2563eb' },
-        { label: 'MNP', data: data.daily.map(d => d.mnp), backgroundColor: '#10b981' },
-        { label: '光回線', data: data.daily.map(d => d.hikari), backgroundColor: '#f59e0b' },
-      ]
+      datasets: [{ label: keyLabel, data: data.daily.map(d => d.values[key] || 0), backgroundColor: '#2563eb' }],
     },
-    options: { responsive: true, scales: { x: { stacked: false }, y: { beginAtZero: true, ticks: { stepSize: 5 } } } }
+    options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
   })
 }
 
@@ -2068,24 +2087,67 @@ async function renderNoticeReadReport(fy) {
     <section class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別（人事評価の参考資料）</h3>
       ${data.staff_reports.length === 0 ? '<p class="text-sm text-gray-400">対象となるお知らせがありません。</p>' : `
-      <div class="overflow-x-auto">
-        <table class="tbl">
-          <thead><tr><th>スタッフ</th><th>対象数</th><th>既読数</th><th>未読数</th><th>既読率</th><th></th></tr></thead>
-          <tbody>
-            ${data.staff_reports.map(r => `
-              <tr>
-                <td>${esc(r.staff_name)}</td>
-                <td>${r.target_count}</td>
-                <td>${r.read_count}</td>
-                <td>${r.unread_count}</td>
-                <td>${r.read_rate == null ? '-' : r.read_rate.toFixed(1) + '%'}</td>
-                <td><button class="text-xs text-blue-600 hover:underline" data-action="showStaffNoticeReport" data-fy="${Number(fy)}" data-id="${Number(r.staff_id)}">詳細</button></td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>`}
+      <div class="flex items-center gap-3 flex-wrap text-xs text-gray-600 mb-3">
+        <label class="flex items-center gap-1">既読率<input type="number" min="0" max="100" step="1" class="inp text-sm w-20" value="${esc(NR_STAFF.rateBelow)}" oninput="setNoticeStaffFilter('rateBelow', this.value)">%未満</label>
+        <label class="flex items-center gap-1">未読<input type="number" min="0" step="1" class="inp text-sm w-20" value="${esc(NR_STAFF.unreadMin)}" oninput="setNoticeStaffFilter('unreadMin', this.value)">件以上</label>
+        <span class="text-gray-400">見出しを押すと並べ替えます</span>
+      </div>
+      <div id="nr-staff-table" class="overflow-x-auto"></div>`}
     </section>`
+  if (data.staff_reports.length) drawNoticeStaffTable()
 }
+// スタッフ別の並べ替えと絞り込み（#518）。初期表示は既読率の低い順。数字は集計した時点の値なので、画面の中だけで並べ替える
+const NR_STAFF = { sort: 'rate', dir: 1, rateBelow: '', unreadMin: '' }
+const NR_SORT = {
+  name: { label: 'スタッフ', dir: 1, v: r => r.staff_name || '' },
+  target: { label: '対象数', dir: -1, v: r => r.target_count || 0 },
+  read: { label: '既読数', dir: -1, v: r => r.read_count || 0 },
+  unread: { label: '未読数', dir: -1, v: r => r.unread_count || 0 },
+  rate: { label: '既読率', dir: 1, v: r => r.read_rate },
+}
+function drawNoticeStaffTable() {
+  const box = document.getElementById('nr-staff-table')
+  const data = window._noticeReportData
+  if (!box || !data) return
+  const fy = data.fiscal_year
+  const below = NR_STAFF.rateBelow === '' ? null : Number(NR_STAFF.rateBelow)
+  const unreadMin = NR_STAFF.unreadMin === '' ? null : Number(NR_STAFF.unreadMin)
+  const key = NR_SORT[NR_STAFF.sort]
+  const rows = data.staff_reports
+    .filter(r => (below == null || (r.read_rate != null && r.read_rate < below)) && (unreadMin == null || r.unread_count >= unreadMin))
+    .sort((a, b) => {
+      const x = key.v(a), y = key.v(b)
+      if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1 // 既読率なしは最後
+      const c = typeof x === 'string' ? x.localeCompare(y, 'ja') : x - y
+      return c * NR_STAFF.dir || String(a.staff_name || '').localeCompare(String(b.staff_name || ''), 'ja')
+    })
+  const th = (k) => `<th><button class="hover:underline whitespace-nowrap ${NR_STAFF.sort === k ? 'text-blue-700' : ''}" data-action="nrStaffSort" data-key="${k}">${NR_SORT[k].label}${NR_STAFF.sort === k ? (NR_STAFF.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`
+  box.innerHTML = `
+    <table class="tbl">
+      <thead><tr>${th('name')}<th>社員番号</th>${th('target')}${th('read')}${th('unread')}${th('rate')}<th></th></tr></thead>
+      <tbody>
+        ${rows.map(r => `
+          <tr>
+            <td>${esc(r.staff_name)}</td>
+            <td class="text-xs text-gray-500">${esc(r.employee_number || '')}</td>
+            <td>${r.target_count}</td>
+            <td>${r.read_count}</td>
+            <td>${r.unread_count}</td>
+            <td>${r.read_rate == null ? '-' : r.read_rate.toFixed(1) + '%'}</td>
+            <td><button class="text-xs text-blue-600 hover:underline" data-action="showStaffNoticeReport" data-fy="${Number(fy)}" data-id="${Number(r.staff_id)}">詳細</button></td>
+          </tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-4">条件に合うスタッフはいません</td></tr>'}
+      </tbody>
+    </table>
+    <p class="text-xs text-gray-400 mt-2">${rows.length} / ${data.staff_reports.length}人を表示</p>`
+}
+delegate('nrStaffSort', el => {
+  const k = el.dataset.key
+  if (!NR_SORT[k]) return
+  NR_STAFF.dir = NR_STAFF.sort === k ? -NR_STAFF.dir : NR_SORT[k].dir
+  NR_STAFF.sort = k
+  drawNoticeStaffTable()
+})
+window.setNoticeStaffFilter = function (k, v) { NR_STAFF[k] = v; drawNoticeStaffTable() }
 window.recalculateNoticeReadReport = async function (fy, btn) {
   await withSubmitLock(btn, async () => {
     try {
@@ -2108,12 +2170,22 @@ window.showStaffNoticeReport = async function (fy, staffId) {
     <p class="text-sm text-gray-400 mb-1">${fiscalYearLabel(fy)}</p>
     <p class="text-xs text-gray-500 mb-4">下の既読・未読はいまの状態です。一覧の数字は ${s ? noticeReportTime(s.calculated_at) : '-'} 時点の集計です。</p>
     <div class="space-y-1.5 max-h-96 overflow-y-auto">
-      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません</p>' : data.notices.map(n => `
-        <div class="flex items-center justify-between text-sm p-2 rounded-lg bg-gray-50">
-          <span class="truncate">${esc(n.title)}</span>
-          <span class="badge ${n.is_read === null ? 'badge-gray' : n.is_read ? 'badge-green' : 'badge-gray'} shrink-0 ml-2">${n.is_read === null ? '記録なし（保存期間外）' : n.is_read ? '既読' : '未読'}</span>
-        </div>`).join('')}
+      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません</p>' : noticeDetailRows(data.notices)}
     </div>`)
+}
+// 未読を上にまとめ、それぞれ配信日の新しい順。配信日と重要度・既読必須も出す（#518）
+const NOTICE_IMPORTANCE_BADGE = { important: '<span class="badge badge-yellow text-[10px]">重要</span>', urgent: '<span class="badge badge-red text-[10px]">緊急</span>' }
+function noticeDetailRows(notices) {
+  const rank = n => (n.is_read === false ? 0 : n.is_read === null ? 1 : 2)
+  return notices.slice().sort((a, b) => rank(a) - rank(b) || String(b.published_at || '').localeCompare(String(a.published_at || ''))).map(n => `
+    <div class="flex items-center justify-between gap-2 text-sm p-2 rounded-lg ${n.is_read === false ? 'bg-red-50' : 'bg-gray-50'}">
+      <div class="min-w-0">
+        <p class="truncate">${esc(n.title)}</p>
+        <p class="text-xs text-gray-500 flex items-center gap-1 flex-wrap">${n.published_at ? esc(dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY/M/D')) + ' 配信' : ''}
+          ${NOTICE_IMPORTANCE_BADGE[n.importance] || ''}${n.read_required ? '<span class="badge badge-blue text-[10px]">既読必須</span>' : ''}</p>
+      </div>
+      <span class="badge ${n.is_read === null ? 'badge-gray' : n.is_read ? 'badge-green' : 'badge-red'} shrink-0">${n.is_read === null ? '記録なし（保存期間外）' : n.is_read ? '既読' : '未読'}</span>
+    </div>`).join('')
 }
 delegate('showStaffNoticeReport', el => showStaffNoticeReport(Number(el.dataset.fy), Number(el.dataset.id)))
 
@@ -2242,17 +2314,26 @@ delegate('renderBilling', el => renderBilling(el.dataset.month))
 window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
-  // 値はダブルクォートで囲み、表計算ソフトで式として読まれる先頭の文字（= + - @ タブ CR）には ' を付ける
-  const cell = (v) => { let t = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(t) && !/^-?\d+(\.\d+)?$/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"' }
-  const lines = [['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計']]
-  for (const d of data.detail) lines.push([d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0])
-  const csv = '﻿' + lines.map(l => l.map(cell).join(',')).join('\r\n') + '\r\n'
-  const blob = new Blob([csv], { type: 'text/csv' })
+  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id])
+  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID'], rows)
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
   a.download = `billing_${data.month}.csv`
   a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000)
   toast('CSVをダウンロードしました')
+}
+// 画面で組み立てる CSV（#71）。サーバーの src/csv.ts の toCsv と同じ規則にする:
+// UTF-8 BOM 付き・CRLF、カンマ・ダブルクォート・改行を含む値は引用符で囲む、= + - @ タブ CR で始まる値（負の数を除く）は先頭に ' を付ける
+function adminCsvCell(v) {
+  if (v == null) return ''
+  let s = String(v)
+  if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+}
+function adminToCsv(header, rows) {
+  return '﻿' + [header, ...rows].map(r => r.map(adminCsvCell).join(',')).join('\r\n') + '\r\n'
 }
 
 // ============ アカウント設定（自分のアカウント・パスワード変更・管理者アカウント。#25 #43 #44） ============
