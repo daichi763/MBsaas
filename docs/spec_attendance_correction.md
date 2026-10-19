@@ -320,7 +320,7 @@
 - 既存の列・データは変更・削除しない
 - 本番への適用は手動: `npx wrangler d1 migrations apply mbsaas-production --remote`
 - 適用前の戻し先の確保（#213）: ファイルを作らずに戻せる D1 の Time Travel を使う。適用の直前に `npx wrangler d1 time-travel info mbsaas-production` を実行し、表示されたブックマークを作業記録に控える。戻すときは `npx wrangler d1 time-travel restore mbsaas-production --bookmark=<控えたブックマーク>`
-- どうしてもエクスポートする場合は、出力先を repo の外にする（例: `--output="%TEMP%mbsaas-backup.sql"`）。ダンプには口座番号・住所・給与などの個人情報が入るため、作業が終わったら削除し、共有フォルダやチャットに置かない。repo の中に作らない（`.gitignore` で `backup*.sql` などを除外しているが、それに頼らない）
+- どうしてもエクスポートする場合は、出力先を repo の外にする（例: cmd では `--output="%TEMP%\mbsaas-backup.sql"`、PowerShell では `--output="$env:TEMP\mbsaas-backup.sql"`）。ダンプには口座番号・住所・給与などの個人情報が入るため、作業が終わったら削除し、共有フォルダやチャットに置かない。repo の中に作らない（`.gitignore` で `backup*.sql` などを除外しているが、それに頼らない）
 - ロールバック: アプリを前のバージョンに戻せば、旧来の `attendance_mode` の列がそのまま残っているので従来の動作に戻る。ただし新しい設定で行った変更と申請中の内容は旧来の動作に反映されない。新しいテーブルは削除しなくても旧版の動作に影響しない
 
 ## 10. テスト
