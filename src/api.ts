@@ -75,6 +75,20 @@ function calcTenure(hireDate: string | null | undefined): string | null {
   return `${Math.floor(months / 12)}年${months % 12}ヶ月`
 }
 function monthJST(): string { return todayJST().slice(0, 7) }
+// 'YYYY-MM' の月初と翌月の月初。work_date >= 月初 AND work_date < 翌月初 で絞る（LIKE と違い、インデックスが使える。#212）
+function monthBounds(month: string): [string, string] {
+  const [y, m] = month.split('-').map(Number)
+  const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
+  return [`${month}-01`, `${next}-01`]
+}
+// ?month=YYYY-MM を受け取る（形式が違う・無いときは今月）
+const queryMonth = (q: string | undefined) => (q && /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST())
+// スキルの区切り（半角・全角のカンマと読点）。掲示板（board.ts）・シフトボードの候補と同じ
+const SKILL_SEP = /[,、，]/
+function normalizeSkills(v: unknown): string | null {
+  const list = [...new Set(String(v ?? '').split(SKILL_SEP).map(s => s.trim()).filter(Boolean))]
+  return list.length ? list.join(',') : null
+}
 function nowJST(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
 }
@@ -1667,7 +1681,7 @@ function catLabel(cat: string): string {
 
 // スタッフ一覧
 api.get('/admin/staff', async (c) => {
-  const u = c.get('user'); const month = monthJST(); const today = todayJST()
+  const u = c.get('user'); const [mFrom, mTo] = monthBounds(monthJST()); const today = todayJST()
   await ensureRosterIdentity(c.env.DB, u.company_id) // person_id 未採番の行を補完（seed後投入・他経路INSERT対策）
   // assignable: 今日の時点でシフトに割り当てられるか（退職・統合・取引終了・所属元で退職などを除く。シフト登録・シフトボードの選択肢に使う）
   const elig = assignableStaffSql({ sp: 'sp', us: 'us' })
@@ -1682,19 +1696,38 @@ api.get('/admin/staff', async (c) => {
            CASE WHEN sp.affiliation_type = 'linked_external' OR pe.created_company_id != sp.company_id THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
            us.user_id, us.user_code, us.name, us.status, us.role AS user_role, sp.link_ended_at,
            CASE WHEN ${elig.sql} THEN 1 ELSE 0 END AS assignable,
-           (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
+           (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')) AS month_days,
            (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date,
            (SELECT MAX(dr.work_date) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id) AS last_report_date,
            -- 本日未入店の絞り込みに使う: 欠勤・希望（仮）のシフトは数えない（#85）
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date = ? AND s.status IN ('confirmed','substitute')) AS today_shift,
            (SELECT COUNT(*) FROM attendance_reports a JOIN shifts s2 ON a.shift_id = s2.shift_id WHERE a.staff_id = sp.staff_id AND s2.work_date = ? AND s2.status IN ('confirmed','substitute') AND a.report_type IN ('check_in','work_start')) AS today_checkin,
-           (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id AND dr.work_date LIKE ?) AS month_seiyaku,
-           (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date LIKE ?) AS projects
+           (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id AND dr.work_date >= ? AND dr.work_date < ?) AS month_seiyaku,
+           (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date >= ? AND s3.work_date < ?) AS projects
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
-    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, month + '%', today, today, today, month + '%', month + '%', u.company_id).all()
+    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, today, mFrom, mTo, mFrom, mTo, u.company_id).all()
+  return c.json({ staff: rows.results })
+})
+
+// スタッフを選ぶための軽い一覧（シフト登録・シフトボード・NGスタッフの選択肢。#463）。集計はしない。
+// 既定は今日の時点で割り当てられる人だけ。?include=all で、統合済み・スキルシートのみ以外の全員（退職・休職を含む）を返す
+api.get('/admin/staff/options', async (c) => {
+  const u = c.get('user')
+  const all = c.req.query('include') === 'all'
+  const elig = assignableStaffSql({ sp: 'sp', us: 'us' })
+  const rows = await c.env.DB.prepare(`
+    SELECT sp.staff_id, us.name,
+           CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
+           COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, COALESCE(sp.employment_status, 'working') AS employment_status, us.status,
+           CASE WHEN ${elig.sql} THEN 1 ELSE 0 END AS assignable
+    FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
+      ${all ? '' : `AND ${elig.sql}`}
+    ORDER BY us.name, sp.staff_id`).bind(...elig.binds, u.company_id, ...(all ? [] : elig.binds)).all()
   return c.json({ staff: rows.results })
 })
 
@@ -1746,8 +1779,9 @@ api.get('/admin/staff/:id', async (c) => {
     db.prepare(`SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 6`).bind(sid).all(),
     db.prepare(`SELECT f.*, um.name AS manager_name FROM follow_logs f LEFT JOIN users um ON f.manager_id = um.user_id WHERE f.staff_id = ? ORDER BY f.created_at DESC LIMIT 20`).bind(sid).all(),
   ])
-  // 月次実績推移 (直近3ヶ月)
-  const perf = await db.prepare(`
+  // 月次実績推移: 今月と前の2か月を新しい順に、日報のない月も0の行として返す（#550）
+  const months = [0, 1, 2].map(i => { const d = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 1 - i, 1)); return d.toISOString().slice(0, 7) })
+  const perfRows = await db.prepare(`
     SELECT substr(work_date, 1, 7) AS ym,
       SUM(COALESCE(json_extract(report_values,'$.mnp'),0)) AS mnp,
       SUM(COALESCE(json_extract(report_values,'$.pi'),0)) AS pi,
@@ -1755,7 +1789,9 @@ api.get('/admin/staff/:id', async (c) => {
       SUM(COALESCE(json_extract(report_values,'$.hikari'),0)) AS hikari,
       SUM(COALESCE(json_extract(report_values,'$.seiyaku'),0)) AS seiyaku,
       COUNT(*) AS days
-    FROM daily_reports WHERE staff_id = ? GROUP BY ym ORDER BY ym DESC LIMIT 3`).bind(sid).all()
+    FROM daily_reports WHERE staff_id = ? AND work_date >= ? AND work_date < ? GROUP BY ym`).bind(sid, months[2] + '-01', monthBounds(months[0])[1]).all()
+  const perfBy = new Map((perfRows.results as any[]).map(r => [r.ym, r]))
+  const perf = months.map(ym => perfBy.get(ym) || { ym, mnp: 0, pi: 0, shinki: 0, hikari: 0, seiyaku: 0, days: 0 })
 
   return c.json({
     profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
@@ -1766,7 +1802,7 @@ api.get('/admin/staff/:id', async (c) => {
     reports: (reports.results as any[]).map(r => ({ ...r, values: JSON.parse(r.report_values) })),
     evaluations: evals.results,
     follow_logs: follows.results,
-    performance: perf.results,
+    performance: perf,
   })
 })
 
@@ -2055,6 +2091,8 @@ api.put('/admin/staff/:id', async (c) => {
   const roster = await loadRoster(c.env.DB, sid, u.company_id)
   if (!roster) return c.json({ error: 'not found' }, 404)
   if (roster.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません（統合先のスタッフで編集してください）' }, 409)
+  // 離職リスクは 低・中・高 のみ（#381。ダッシュボードの要フォロー・一覧の絞り込みは low 以外を対象にする）
+  if (body.retention_risk !== undefined && !['low', 'mid', 'high'].includes(body.retention_risk)) return c.json({ error: '離職リスクは 低・中・高 から選んでください' }, 400)
   if (touchesProfileBase(body)) {
     if (roster.affiliation_type === 'own_employee') return c.json({ error: '自社雇用スタッフの氏名・生年月日・最寄駅・在籍状況などは従業員管理から編集してください' }, 403)
     if (!STAFF_MASTER_EDITABLE_TYPES.includes(roster.affiliation_type) || !roster.can_edit_base) {
@@ -2160,13 +2198,15 @@ async function assertStaffInCompany(c: any, sid: string) {
   return c.env.DB.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
 }
 
+// 書類の一覧の列。uploaded_at は既定値の CURRENT_TIMESTAMP（UTC）で保存されているので、日本時間にして返す（#257。保存の形は変えない）
+const DOC_LIST_COLS = "SELECT document_id, original_file_name, mime_type, file_size, datetime(uploaded_at, '+9 hours') AS uploaded_at"
 // ファイル一覧
 api.get('/admin/staff/:id/documents', async (c) => {
   const sid = c.req.param('id')
   const staff = await assertStaffInCompany(c, sid)
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const docs = await c.env.DB.prepare(
-    'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM staff_documents WHERE staff_id = ? ORDER BY uploaded_at DESC'
+    DOC_LIST_COLS + ' FROM staff_documents WHERE staff_id = ? ORDER BY document_id DESC'
   ).bind(sid).all()
   return c.json({ documents: docs.results })
 })
@@ -2270,7 +2310,9 @@ api.delete('/admin/staff/documents/:docId', async (c) => {
 api.get('/admin/clients', async (c) => {
   const u = c.get('user')
   const rows = await c.env.DB.prepare(`
-    SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects
+    SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects,
+      (SELECT COUNT(*) FROM projects p WHERE p.client_id = cl.client_id AND p.company_id = cl.company_id AND p.status = 'active') AS active_project_count,
+      (SELECT COUNT(*) FROM projects p WHERE p.client_id = cl.client_id AND p.company_id = cl.company_id) AS project_count
     FROM clients cl WHERE cl.company_id = ? ORDER BY cl.client_id`).bind(u.company_id).all()
   return c.json({ clients: rows.results })
 })
@@ -2280,6 +2322,7 @@ api.post('/admin/clients', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const name = String(b.client_name ?? '').trim()
   if (!name) return c.json({ error: 'クライアント名は必須です' }, 400)
+  if (b.email && !CLIENT_EMAIL_RE.test(String(b.email).trim())) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
   let rating = 3
   if (b.client_rating !== undefined && b.client_rating !== null && String(b.client_rating).trim() !== '') {
     const r = toInt(b.client_rating, 1, 5)
@@ -2291,13 +2334,17 @@ api.post('/admin/clients', async (c) => {
     return c.json({ error: `同じ名前のクライアント「${name}」が既に登録されています`, confirm_duplicate: true }, 409)
   const r = await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo, client_rating)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, name, b.stream_type || 'upstream', b.contact_name ?? null, b.email ?? null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating).run()
+    .bind(u.company_id, name, b.stream_type || 'upstream', b.contact_name ?? null, b.email ? String(b.email).trim() : null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating).run()
   return c.json({ ok: true, client_id: r.meta.last_row_id })
 })
 
 // クライアント詳細（会社詳細画面用。まだ一覧のみだったため今回新設）
+// 取引の実績（#345）: 全案件（終了を含む）と、?month=YYYY-MM（無ければ今月）の案件ごとの稼働・売上・日報・インシデント、
+// その月までの6か月の月別の稼働・売上を返す。売上は請求前確認と同じく、今日までの確定・代打のシフトを shiftTotals で合計する（概算）
+const CLIENT_TREND_MONTHS = 6
 api.get('/admin/clients/:id', async (c) => {
   const u = c.get('user'); const cid = c.req.param('id')
+  const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const client = await c.env.DB.prepare(`
     SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects
     FROM clients cl WHERE cl.client_id = ? AND cl.company_id = ?`).bind(cid, u.company_id).first()
@@ -2305,9 +2352,38 @@ api.get('/admin/clients/:id', async (c) => {
   const contacts = await c.env.DB.prepare(
     'SELECT * FROM client_contacts WHERE client_id = ? AND company_id = ? ORDER BY contact_id'
   ).bind(cid, u.company_id).all()
-  return c.json({ client, contacts: contacts.results })
+  const [y, m] = month.split('-').map(Number)
+  const months = Array.from({ length: CLIENT_TREND_MONTHS }, (_, i) => new Date(Date.UTC(y, m - CLIENT_TREND_MONTHS + i, 1)).toISOString().slice(0, 7))
+  const [projectRows, shiftRows] = await c.env.DB.batch([
+    c.env.DB.prepare(`SELECT p.project_id, p.project_name, p.status, p.location,
+        (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date >= ?1 AND dr.work_date < ?2) AS reports,
+        (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents
+      FROM projects p WHERE p.client_id = ?3 AND p.company_id = ?4 ORDER BY CASE WHEN p.status = 'active' THEN 0 ELSE 1 END, p.project_id DESC`).bind(mFrom, mTo, cid, u.company_id),
+    c.env.DB.prepare(`SELECT s.project_id, s.staff_id, s.work_date, s.unit_price, s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust
+      FROM shifts s JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id
+      WHERE p.client_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`)
+      .bind(cid, u.company_id, months[0] + '-01', mTo, todayJST()),
+  ])
+  const perProject = new Map<number, { shifts: number; staff: Set<number>; bill_total: number }>()
+  const trend = new Map(months.map(ym => [ym, { ym, shifts: 0, bill_total: 0 }]))
+  for (const s of (shiftRows.results || []) as any[]) {
+    const bill = shiftTotals(s).bill_total
+    const t = trend.get(String(s.work_date).slice(0, 7))
+    if (t) { t.shifts++; t.bill_total += bill }
+    if (s.work_date < mFrom) continue
+    const p = perProject.get(s.project_id) || { shifts: 0, staff: new Set<number>(), bill_total: 0 }
+    p.shifts++; p.staff.add(s.staff_id); p.bill_total += bill
+    perProject.set(s.project_id, p)
+  }
+  const projects = ((projectRows.results || []) as any[]).map(p => {
+    const a = perProject.get(p.project_id)
+    return { ...p, shifts: a?.shifts || 0, staff_count: a?.staff.size || 0, bill_total: a?.bill_total || 0 }
+  })
+  return c.json({ client, contacts: contacts.results, month, projects, trend: [...trend.values()] })
 })
 
+// クライアントのメールは顧客担当者（client_contacts）と同じ形式で確かめる
+const CLIENT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 // インボイス登録番号: T + 数字13桁のみ許可（前後の空白はトリムする）
 function validateInvoiceNumber(v: string | null | undefined): string | null | 'invalid' {
   if (v == null || v === '') return null
@@ -2332,6 +2408,11 @@ api.put('/admin/clients/:id', async (c) => {
     b.client_rating = r
   }
 
+  if (b.email != null && String(b.email).trim() !== '' && !CLIENT_EMAIL_RE.test(String(b.email).trim())) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
+  if (typeof b.email === 'string') b.email = b.email.trim()
+  if (b.stream_type !== undefined && b.stream_type !== null && String(b.stream_type).trim() !== '' && !['upstream', 'downstream'].includes(b.stream_type))
+    return c.json({ error: '上流・下流の区分が正しくありません' }, 400)
+
   const exists = await c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
   if (!exists) return c.json({ error: 'クライアントが見つかりません' }, 404)
 
@@ -2339,6 +2420,7 @@ api.put('/admin/clients/:id', async (c) => {
   // 会社名は空にできない。区分・評価は空で送られたら変更しない
   const upd = buildUpdate({ ...b, invoice_number: b.invoice_number === undefined ? undefined : invoiceNumber },
     ['client_name', 'stream_type', 'contract_type', 'billing_rule', 'memo', 'client_rating',
+      'contact_name', 'phone', 'email', 'address',
       'representative_title', 'representative_name', 'representative_kana', 'invoice_number'],
     { required: ['client_name', 'stream_type', 'client_rating'] })
   if (upd.missing.includes('client_name')) return c.json({ error: 'クライアント名は必須です' }, 400)
@@ -2603,7 +2685,7 @@ api.get('/admin/employees/:staffId/documents', async (c) => {
     'SELECT staff_id FROM employee_records WHERE staff_id = ? AND company_id = ? AND employment_ended_at IS NOT NULL').bind(c.req.param('staffId'), c.get('user').company_id).first())
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const docs = await c.env.DB.prepare(
-    'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM employee_documents WHERE staff_id = ? ORDER BY uploaded_at DESC'
+    DOC_LIST_COLS + ' FROM employee_documents WHERE staff_id = ? ORDER BY document_id DESC'
   ).bind(c.req.param('staffId')).all()
   return c.json({ documents: docs.results })
 })
@@ -2684,7 +2766,7 @@ api.get('/admin/clients/:id/documents', async (c) => {
   const client = await assertClientInCompany(c, cid)
   if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
   const docs = await c.env.DB.prepare(
-    'SELECT document_id, original_file_name, mime_type, file_size, uploaded_at FROM client_documents WHERE client_id = ? ORDER BY uploaded_at DESC'
+    DOC_LIST_COLS + ' FROM client_documents WHERE client_id = ? ORDER BY document_id DESC'
   ).bind(cid).all()
   return c.json({ documents: docs.results })
 })
@@ -2781,22 +2863,23 @@ api.delete('/admin/clients/documents/:docId', async (c) => {
 })
 
 // 案件一覧
+// ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）
 api.get('/admin/projects', async (c) => {
-  const u = c.get('user'); const month = monthJST()
+  const u = c.get('user'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const rows = await c.env.DB.prepare(`
     SELECT p.*, cl.client_name,
-      (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS staff_count,
-      (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
-      (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date LIKE ?) AS month_seiyaku,
-      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date LIKE ?) AS incidents
+      (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS staff_count,
+      (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS month_shifts,
+      (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date >= ?1 AND dr.work_date < ?2) AS month_seiyaku,
+      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    WHERE p.company_id = ? ORDER BY p.project_id`).bind(month + '%', month + '%', month + '%', month + '%', u.company_id).all()
+    WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id).all()
   return c.json({ projects: rows.results, month })
 })
 
 // 案件詳細
 api.get('/admin/projects/:id', async (c) => {
-  const u = c.get('user'); const pid = c.req.param('id'); const month = monthJST()
+  const u = c.get('user'); const pid = c.req.param('id'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const db = c.env.DB
   const project = await db.prepare(`
     SELECT p.*, cl.client_name, rt.template_name, rt.fields_json
@@ -2812,16 +2895,17 @@ api.get('/admin/projects/:id', async (c) => {
       SUM(COALESCE(json_extract(dr.report_values,'$.pi'),0)) AS pi,
       SUM(COALESCE(json_extract(dr.report_values,'$.shinki'),0)) AS shinki,
       SUM(COALESCE(json_extract(dr.report_values,'$.hikari'),0)) AS hikari,
+      SUM(COALESCE(json_extract(dr.report_values,'$.shodan'),0)) AS shodan,
       SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) AS seiyaku
     FROM daily_reports dr JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE dr.project_id = ? AND dr.work_date LIKE ? GROUP BY dr.staff_id ORDER BY seiyaku DESC`).bind(pid, month + '%').all()
+    WHERE dr.project_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.staff_id ORDER BY seiyaku DESC`).bind(pid, mFrom, mTo).all()
 
   const incidents = await db.prepare(`
     SELECT dr.work_date, dr.incident_flag, dr.complaint_flag, us.name AS staff_name, dr.report_values
     FROM daily_reports dr JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE dr.project_id = ? AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) ORDER BY dr.work_date DESC LIMIT 10`).bind(pid).all()
 
-  const monthShifts = await db.prepare(`SELECT COUNT(*) AS n, SUM(unit_price) AS revenue FROM shifts WHERE project_id = ? AND work_date LIKE ? AND status IN ('confirmed','substitute')`).bind(pid, month + '%').first()
+  const monthShifts = await db.prepare(`SELECT COUNT(*) AS n, SUM(unit_price) AS revenue FROM shifts WHERE project_id = ? AND work_date >= ? AND work_date < ? AND status IN ('confirmed','substitute')`).bind(pid, mFrom, mTo).first()
 
   return c.json({
     project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [] },
@@ -2849,6 +2933,7 @@ api.post('/admin/projects', async (c) => {
   // 負の単価は受け付けない（#218。単価パネルの PUT /admin/projects/:id/pricing と同じ範囲）
   const priceErr = rangeError([['単価', b.unit_price, 0, MONEY_MAX]])
   if (priceErr) return c.json({ error: priceErr }, 400)
+  if ((normalizeSkills(b.required_skills) || '').length > 500) return c.json({ error: '必要スキルは500文字以内で入力してください' }, 400)
   // クライアントは任意（社内研修など）。空欄は NULL にする（'' のまま入れると外部キー違反になる）。他社のクライアントは指定できない
   const blank = (v: any) => v === undefined || v === null || String(v).trim() === ''
   const clientId = blank(b.client_id) ? null : b.client_id
@@ -2871,8 +2956,20 @@ api.post('/admin/projects', async (c) => {
   const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, b.required_skills ?? null, templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null).run()
+      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null).run()
   return c.json({ ok: true, project_id: r.meta.last_row_id })
+})
+
+// 案件の必要スキル（#556。シフトボードの候補一覧の『スキル n/m』に使う）。カンマ・読点で区切り、空欄なら消す
+api.put('/admin/projects/:id/required-skills', async (c) => {
+  const u = c.get('user'); const pid = c.req.param('id')
+  const b = await c.req.json().catch(() => ({} as any))
+  if (b.required_skills !== null && typeof b.required_skills !== 'string') return c.json({ error: '必要スキルの形式が正しくありません' }, 400)
+  const skills = normalizeSkills(b.required_skills)
+  if (skills && skills.length > 500) return c.json({ error: '必要スキルは500文字以内で入力してください' }, 400)
+  const r = await c.env.DB.prepare('UPDATE projects SET required_skills = ? WHERE project_id = ? AND company_id = ?').bind(skills, pid, u.company_id).run()
+  if (!(r.meta?.changes ?? 0)) return c.json({ error: '案件が見つかりません' }, 404)
+  return c.json({ ok: true, required_skills: skills })
 })
 
 // 案件ごとの入店/退店報告 写真添付オーバーライド更新
@@ -3208,8 +3305,8 @@ const ANALYTICS_GROUPS = {
 } as const
 type AnalyticsGroup = keyof typeof ANALYTICS_GROUPS
 async function loadAnalytics(db: D1Database, cid: number, month: string) {
-  const where = 'dr.company_id = ? AND dr.work_date LIKE ?'
-  const bind = [cid, month + '%']
+  const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?'
+  const bind = [cid, ...monthBounds(month)]
   const groups = Object.keys(ANALYTICS_GROUPS) as AnalyticsGroup[]
   const stmts = [
     db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM daily_reports dr

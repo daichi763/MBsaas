@@ -559,10 +559,11 @@ app.get('/shift-board/candidates', async (c) => {
     ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, weekStart(role.work_date), addDays(weekStart(role.work_date), 6), u.company_id, ...elig.binds).all()).results as any[]
   const conflicts = await findConflicts(db, u.company_id, staff.map(s => s.staff_id), role.work_date, role.work_date)
   const ng = await ngStaffIds(db, role.project_id)
-  const required = String(proj?.required_skills || '').split(',').map(s => s.trim()).filter(Boolean)
+  // スキルは半角・全角のカンマと読点のどれで区切っても同じに扱う（#556。掲示板 board.ts と同じ区切り）
+  const required = String(proj?.required_skills || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean)
   const assigned = new Set(((await db.prepare("SELECT staff_id FROM shifts WHERE slot_role_id = ? AND status != 'absent'").bind(role.slot_role_id).all()).results as any[]).map(r => r.staff_id))
   const list = staff.filter(s => !assigned.has(s.staff_id)).map(s => {
-    const skills = String(s.skills || '').split(',').map((x: string) => x.trim())
+    const skills = String(s.skills || '').split(/[,、，]/).map((x: string) => x.trim())
     const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time)
     const availableFrom = isDate(s.available_from) ? s.available_from : null
     return {
