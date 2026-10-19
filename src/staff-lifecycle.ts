@@ -61,10 +61,22 @@ export async function insertProvisionalStaff(db: D1Database, companyId: number, 
   return { staff_id: staffId, global_staff_code: person.global_staff_code }
 }
 export async function findStaffByPhone(db: D1Database, companyId: number, phone: string) {
-  const p = normalizePhone(phone); if (p.length < 10) return []
-  return ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional
+  return (await findStaffByPhones(db, companyId, [phone])).get(normalizePhone(phone)) || []
+}
+// 複数の電話番号をまとめて照合する（応募一覧で応募ごとに全スタッフを読み直さない。#309）。
+// 戻り値は 正規化した電話番号 → 一致したスタッフ。保存されている番号の書き方がまちまちなため、自社のスタッフの電話番号を1回だけ読んで比べる
+export async function findStaffByPhones(db: D1Database, companyId: number, phones: any[]) {
+  const want = new Set(phones.map(normalizePhone).filter(p => p.length >= 10))
+  const out = new Map<string, any[]>()
+  if (!want.size) return out
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
-    .bind(companyId).all()).results as any[]).filter(r => normalizePhone(r.phone) === p)
+    .bind(companyId).all()).results as any[]
+  for (const r of rows) {
+    const p = normalizePhone(r.phone)
+    if (want.has(p)) out.set(p, [...(out.get(p) || []), r])
+  }
+  return out
 }
 
 // ---------- 提出設定（案件 → スタッフ → シフト の順に上書き） ----------
@@ -124,9 +136,9 @@ async function sha256(text: string): Promise<string> {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randToken(24)) }
-// 電話番号の正規化（数字のみ。+81 は 0 に）
+// 電話番号の正規化（数字のみ。+81 は 0 に）。全角の数字・＋は半角にそろえてから数える（#512）
 export function normalizePhone(p: any): string {
-  let s = String(p || '').replace(/[^\d+]/g, '')
+  let s = String(p || '').normalize('NFKC').replace(/[^\d+]/g, '')
   if (s.startsWith('+81')) s = '0' + s.slice(3)
   return s.replace(/\D/g, '')
 }
