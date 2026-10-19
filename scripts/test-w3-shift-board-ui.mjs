@@ -197,6 +197,25 @@ const w = await newStaff('WEEK')
   ok('#456 過去の日からは反映できない（400）', past.status === 400, past)
 }
 
+// ---------- #456 枠ごと・シフトごとに直した時刻・休憩は、繰り返し登録の変更で上書きしない ----------
+{
+  const from = addDays(SUN, 35), to = addDays(from, 2)
+  const p = must(await admin.post('/api/admin/slot-patterns', { project_id: pid, weekdays: [0, 1, 2, 3, 4, 5, 6], date_from: from, date_to: to, start_time: '10:00', end_time: '18:00', break_minutes: 60, roles: [{ role_name: '販売', headcount: 1 }] }), 'pattern2')
+  const b0 = must(await admin.get(`/api/admin/shift-board?from=${from}&to=${to}&project_ids=${pid}`), 'board2')
+  const mine0 = b0.slots.filter(s => s.pattern_id === p.pattern_id)
+  const d1 = mine0.find(s => s.work_date === from), d2 = mine0.find(s => s.work_date === addDays(from, 1))
+  // 1日目は枠の時刻を 12:00〜16:00 に、2日目は枠の休憩を 30分に直す
+  must(await admin.put(`/api/admin/shift-slots/${d1.slot_id}`, { start_time: '12:00', end_time: '16:00' }), 'slot1 edit')
+  must(await admin.put(`/api/admin/shift-slots/${d2.slot_id}`, { break_minutes: 30 }), 'slot2 edit')
+  const run = must(await admin.put(`/api/admin/slot-patterns/${p.pattern_id}`, { start_time: '09:00', end_time: '17:00' }), 'time only')
+  ok('#456 枠ごとに時刻を直した枠は数えて返す', run.custom_slots === 1 && run.slots === 3, run)
+  const b1 = must(await admin.get(`/api/admin/shift-board?from=${from}&to=${to}&project_ids=${pid}`), 'board2 after')
+  const m = new Map(b1.slots.filter(s => s.pattern_id === p.pattern_id).map(s => [s.work_date, s]))
+  ok('#456 時刻を直した枠は元の時刻のまま', m.get(from).start_time === '12:00' && m.get(from).end_time === '16:00', m.get(from))
+  ok('#456 時刻だけを変えても、枠ごとに直した休憩（30分）はそのまま', m.get(addDays(from, 1)).start_time === '09:00' && m.get(addDays(from, 1)).break_minutes === 30, m.get(addDays(from, 1)))
+  ok('#456 直していない枠は新しい時刻・元の休憩', m.get(to).start_time === '09:00' && m.get(to).break_minutes === 60, m.get(to))
+}
+
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
 process.exit(failed.length ? 1 : 0)

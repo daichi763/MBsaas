@@ -993,7 +993,7 @@
     modal(`
       <h3 class="font-bold text-lg mb-1">繰り返し登録の編集・延長</h3>
       <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.site_name || x.location || '')}。
-        変えた項目だけを、反映を始める日以降のこの登録の枠に反映します（勤怠・日報の報告があるシフト、実績が確定済みのシフトがある枠は変えません）</p>
+        変えた項目だけを、反映を始める日以降のこの登録の枠に反映します（勤怠・日報の報告があるシフト、実績が確定済みのシフトがある枠は変えません。枠ごと・シフトごとに直した時刻・休憩はそのまま残します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-3 gap-3">
           <label class="text-sm text-gray-600">開始<input id="pe-start" type="time" class="inp" value="${esc(x.start_time)}"></label>
@@ -1030,6 +1030,7 @@
   function patternSummary(d) {
     const parts = [`対象の枠 ${d.slots}件`]
     if (d.skipped_slots) parts.push(`報告済み・確定済みのため変えない枠 ${d.skipped_slots}件`)
+    if (d.custom_slots) parts.push(`枠ごとに時刻・休憩を直しているため、その項目を変えない枠 ${d.custom_slots}件`)
     if (d.shifts) parts.push(`時刻を合わせるシフト ${d.shifts}件`)
     if (d.headcount_changed) parts.push('人数を変更')
     if (d.roles_added) parts.push(`役割を追加 ${d.roles_added}件`)

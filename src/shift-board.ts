@@ -1185,27 +1185,38 @@ app.put('/slot-patterns/:id', async (c) => {
   for (const s of targets) for (const [i, r] of added.entries()) {
     if (!slotRoles.some(x => x.slot_id === s.slot_id && x.role_name === r.role_name)) addRows.push({ slot_id: s.slot_id, role: r, sort_order: 100 + i })
   }
-  // 時刻・休憩を変える枠の割り当て済みシフト（実績が確定済みのものは除外済み）
-  const moving = (timeChanged || breakChanged) && targets.length ? (await db.prepare(`SELECT sh.* FROM shifts sh
-    WHERE sh.company_id = ? AND sh.slot_id IN ${JSON_IN} AND COALESCE(sh.settle_status,'planned') != 'confirmed'`).bind(u.company_id, targetIds).all()).results as any[] : []
+  // 時刻・休憩は変えた項目だけを、繰り返し登録の元の値のままの枠・シフトに反映する。
+  // 枠ごと・シフトごとに直した時刻・休憩（元の値と違うもの）は上書きしない
+  const sameBreak = (x: any, y: any) => (x ?? null) === (y ?? null)
+  const timeSlotIds = new Set(timeChanged ? targets.filter(s => s.start_time === p.start_time && s.end_time === p.end_time).map(s => s.slot_id) : [])
+  const breakSlotIds = new Set(breakChanged ? targets.filter(s => sameBreak(s.break_minutes, p.break_minutes)).map(s => s.slot_id) : [])
+  const customSlots = targets.filter(s => (timeChanged && !timeSlotIds.has(s.slot_id)) || (breakChanged && !breakSlotIds.has(s.slot_id))).length
   const slotById = new Map(targets.map(s => [s.slot_id, s]))
+  const editIds = targets.filter(s => timeSlotIds.has(s.slot_id) || breakSlotIds.has(s.slot_id)).map(s => s.slot_id)
+  const assignedRows = editIds.length ? (await db.prepare(`SELECT sh.* FROM shifts sh
+    WHERE sh.company_id = ? AND sh.slot_id IN ${JSON_IN} AND COALESCE(sh.settle_status,'planned') != 'confirmed'`).bind(u.company_id, bindJsonArray(editIds)).all()).results as any[] : []
+  const moving = assignedRows.map(s => {
+    const sl = slotById.get(s.slot_id)
+    const moveTime = !!sl && timeSlotIds.has(s.slot_id) && s.start_time === sl.start_time && s.end_time === sl.end_time
+    const moveBreak = !!sl && breakSlotIds.has(s.slot_id) && sameBreak(s.break_minutes, sl.break_minutes)
+    return { s, moveTime, moveBreak }
+  }).filter(x => x.moveTime || x.moveBreak)
   // 時刻を変えると、割り当て済みの人の別のシフトと重なることがある（欠勤は除く）
   const warnings: string[] = []
-  if (timeChanged) {
-    const active = moving.filter(s => s.status !== 'absent')
-    if (active.length) {
-      const dates = active.map(s => s.work_date).sort()
-      const conflicts = await findConflicts(db, u.company_id, active.map(s => s.staff_id), dates[0], dates[dates.length - 1])
-      const names = new Map(((await db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND sp.staff_id IN ${JSON_IN}`)
-        .bind(u.company_id, bindJsonArray(active.map(s => s.staff_id))).all()).results as any[]).map(r => [r.staff_id, r.name]))
-      for (const s of active) {
-        const cf = conflictFor(conflicts.get(s.staff_id), s.work_date, start, end, s.shift_id).filter(x => !moving.some(m => m.shift_id === x.shift_id))
-        if (cf.length) warnings.push(`${s.work_date} ${names.get(s.staff_id) || ''}: 同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`)
-      }
+  const active = moving.filter(x => x.moveTime && x.s.status !== 'absent').map(x => x.s)
+  if (active.length) {
+    const dates = active.map(s => s.work_date).sort()
+    const conflicts = await findConflicts(db, u.company_id, active.map(s => s.staff_id), dates[0], dates[dates.length - 1])
+    const names = new Map(((await db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND sp.staff_id IN ${JSON_IN}`)
+      .bind(u.company_id, bindJsonArray(active.map(s => s.staff_id))).all()).results as any[]).map(r => [r.staff_id, r.name]))
+    const movingIds = new Set(active.map(s => s.shift_id))
+    for (const s of active) {
+      const cf = conflictFor(conflicts.get(s.staff_id), s.work_date, start, end, s.shift_id).filter(x => !movingIds.has(x.shift_id))
+      if (cf.length) warnings.push(`${s.work_date} ${names.get(s.staff_id) || ''}: 同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`)
     }
   }
   const summary = {
-    slots: targets.length, skipped_slots: lockedIds.size, shifts: moving.length,
+    slots: targets.length, skipped_slots: lockedIds.size, custom_slots: customSlots, shifts: moving.length,
     roles_added: addRows.length, roles_removed: removable.length, roles_kept: keptRoles,
     headcount_changed: headcountChanged.length ? targets.length : 0, extend_slots: extendDates.length, date_to: newTo, warnings,
   }
@@ -1214,15 +1225,13 @@ app.put('/slot-patterns/:id', async (c) => {
 
   // ---- 書き込み ----
   const stmts: D1PreparedStatement[] = []
-  if (targets.length && (timeChanged || breakChanged)) {
-    stmts.push(db.prepare(`UPDATE shift_slots SET start_time = ?, end_time = ?, break_minutes = ? WHERE company_id = ? AND slot_id IN ${JSON_IN}`)
-      .bind(start, end, brk ?? null, u.company_id, targetIds))
-    // シフトごとに直した休憩（枠の休憩と違う値）はそのまま残す
-    const upd = moving.map(s => {
-      const sl = slotById.get(s.slot_id)
-      const ownBreak = sl && (s.break_minutes ?? null) !== (sl.break_minutes ?? null)
-      return { shift_id: s.shift_id, start_time: start, end_time: end, break_minutes: ownBreak ? s.break_minutes : (brk ?? null) }
-    })
+  if (timeSlotIds.size) stmts.push(db.prepare(`UPDATE shift_slots SET start_time = ?, end_time = ? WHERE company_id = ? AND slot_id IN ${JSON_IN}`)
+    .bind(start, end, u.company_id, bindJsonArray([...timeSlotIds])))
+  if (breakSlotIds.size) stmts.push(db.prepare(`UPDATE shift_slots SET break_minutes = ? WHERE company_id = ? AND slot_id IN ${JSON_IN}`)
+    .bind(brk ?? null, u.company_id, bindJsonArray([...breakSlotIds])))
+  if (moving.length) {
+    const upd = moving.map(({ s, moveTime, moveBreak }) => ({ shift_id: s.shift_id,
+      start_time: moveTime ? start : s.start_time, end_time: moveTime ? end : s.end_time, break_minutes: moveBreak ? (brk ?? null) : s.break_minutes }))
     stmts.push(...updateRowsStmts(db, 'shifts', 'shift_id', ['start_time', 'end_time', 'break_minutes'], upd,
       "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed'", [u.company_id]))
   }
@@ -1245,7 +1254,7 @@ app.put('/slot-patterns/:id', async (c) => {
   }
   // 時刻・休憩を変えたシフトの単価を計算し直す（時給の時間が変わるため）
   const repriced = moving.length ? await repriceRows(db, u.company_id, ((await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`)
-    .bind(u.company_id, bindJsonArray(moving.map(s => s.shift_id))).all()).results as any[])) : 0
+    .bind(u.company_id, bindJsonArray(moving.map(x => x.s.shift_id))).all()).results as any[])) : 0
   return c.json({ ok: true, ...summary, extend_slots: createdSlots, repriced })
 })
 // パターンの削除: remove_future=1 なら、今日以降で割り当てのない枠も削除
