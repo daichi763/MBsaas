@@ -862,6 +862,8 @@ async function renderStaffDetail(sid, opts = {}) {
       </div>
     </div>
 
+    <div id="staff-shift-panel" class="mb-4"></div>
+
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">月次実績推移</h3>
       <div class="overflow-x-auto">
@@ -936,6 +938,8 @@ async function renderStaffDetail(sid, opts = {}) {
       </div>
     </section>`
 
+  // 今後のシフト・過去の稼働・NG指定（public/static/shift-board.js。#224 #204）
+  if (window.renderStaffShiftPanel) renderStaffShiftPanel(sid, data)
   if (window.renderRosterPanels) renderRosterPanels(sid, p)
   if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
   // スタッフ別の単価ルール（public/static/shift-board.js）
@@ -1542,10 +1546,63 @@ async function renderClientDetail(cid) {
         <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
       </section>
     </div>
+    <div id="client-ng-panel" class="mt-4"></div>
     <div id="client-sites-panel" class="mt-4"></div>`
+  renderClientNgPanel(cid)
   // 開催場所（public/static/shift-board.js）
   if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
 }
+
+// クライアントのNGスタッフ（#204）。シフトボードの候補・割当、応募の承認で警告する
+let CLIENT_NG = { cid: null, list: [] }
+async function renderClientNgPanel(cid) {
+  const host = document.getElementById('client-ng-panel'); if (!host) return
+  let list, staff
+  try {
+    const [{ data: ng }, { data: st }] = await Promise.all([axios.get(`/api/admin/clients/${Number(cid)}/ng-staff`), axios.get('/api/admin/staff')])
+    list = ng.staff; staff = st.staff.filter(s => !s.merged_into_staff_id && s.affiliation_type !== 'skillsheet_only')
+  } catch (e) { host.innerHTML = '<section class="card p-4 text-sm text-red-600">NGスタッフを読み込めませんでした</section>'; return }
+  CLIENT_NG = { cid: Number(cid), list }
+  const ngIds = new Set(list.map(s => s.staff_id))
+  const EMP = { leave: '休職中', retired: '退職', preboarding: '入社予定' }
+  host.innerHTML = `<section class="card p-4" id="client-ng-staff">
+    <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-ban text-red-500 mr-1"></i>NGスタッフ<span class="text-[11px] font-normal text-gray-400 ml-1">（シフトの候補・割り当て・応募の承認で警告します）</span></h3>
+    <div class="overflow-x-auto mb-3"><table class="tbl"><thead><tr><th>スタッフ</th><th>理由</th><th>登録</th><th></th></tr></thead><tbody>
+      ${list.map(s => `<tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="font-bold text-blue-700 hover:underline">${esc(s.name)}</a>${EMP[s.employment_status] ? `<span class="badge badge-gray ml-1">${EMP[s.employment_status]}</span>` : ''}</td>
+        <td class="text-xs text-gray-600 whitespace-pre-wrap">${esc(s.reason || '-')}</td>
+        <td class="text-xs text-gray-400 whitespace-nowrap">${s.created_at ? esc(dayjs(s.created_at).format('YYYY/M/D')) : '-'}${s.created_by_name ? `<span class="block">${esc(s.created_by_name)}</span>` : ''}</td>
+        <td class="text-right"><button class="text-xs text-red-600 hover:underline" data-action="removeClientNg" data-id="${Number(s.staff_id)}" data-name="${esc(s.name)}">解除</button></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-gray-400">NGスタッフは登録されていません</td></tr>'}
+    </tbody></table></div>
+    <div class="grid sm:grid-cols-12 gap-2 items-center">
+      <input id="ng-filter" class="inp text-sm sm:col-span-3" placeholder="名前で絞り込み">
+      <select id="ng-staff" class="inp text-sm sm:col-span-4"><option value="">スタッフを選択</option>${staff.filter(s => !ngIds.has(s.staff_id)).map(s => `<option value="${Number(s.staff_id)}">${esc(s.name)}</option>`).join('')}</select>
+      <input id="ng-reason" class="inp text-sm sm:col-span-3" maxlength="500" placeholder="理由（任意）">
+      <button class="btn btn-primary text-sm sm:col-span-2" data-action="addClientNg"><i class="fas fa-plus"></i>NGに追加</button>
+    </div>
+  </section>`
+  document.getElementById('ng-filter').addEventListener('input', (ev) => {
+    const q = ev.target.value.trim()
+    document.querySelectorAll('#ng-staff option').forEach(o => { if (o.value) o.hidden = !!q && !o.textContent.includes(q) })
+  })
+}
+function saveClientNg(list, el, msg) {
+  return withSubmitLock(el, async () => {
+    try {
+      await axios.put(`/api/admin/clients/${CLIENT_NG.cid}/ng-staff`, { staff: list.map(s => ({ staff_id: s.staff_id, reason: s.reason || '' })) })
+    } catch (e) { showApiError(e, '保存に失敗しました'); return }
+    toast(msg)
+    renderClientDetail(CLIENT_NG.cid)
+  })
+}
+delegate('addClientNg', (el) => {
+  const id = Number(document.getElementById('ng-staff').value)
+  if (!id) { toast('スタッフを選択してください'); return }
+  return saveClientNg([...CLIENT_NG.list, { staff_id: id, reason: document.getElementById('ng-reason').value.trim() }], el, 'NGスタッフに追加しました')
+})
+delegate('removeClientNg', (el) => {
+  if (!confirm(`${el.dataset.name} さんをこのクライアントのNGスタッフから外しますか？`)) return
+  return saveClientNg(CLIENT_NG.list.filter(s => s.staff_id !== Number(el.dataset.id)), el, 'NGスタッフから外しました')
+})
 
 // 描画した顧客担当者（編集・削除ボタンは contact_id だけを持ち、値はここから取り出す）
 const CLIENT_CONTACTS = new Map()
