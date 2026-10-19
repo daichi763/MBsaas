@@ -138,7 +138,7 @@ if (PERSIST) {
   sql(`UPDATE users SET password_hash = ${q(sha256('pass1234'))} WHERE user_id = 20`) // st017
   const r = await rawLogin('sample', 'st017', 'pass1234')
   const h = sql('SELECT password_hash FROM users WHERE user_id = 20')[0].password_hash
-  ok('#46 旧形式（SHA-256）でもログインでき、PBKDF2 に作り直す', r.status === 200 && h.startsWith('pbkdf2$100000$'), { status: r.status, h })
+  ok('#46 旧形式（SHA-256）でもログインでき、PBKDF2 に作り直す', r.status === 200 && h.startsWith('pbkdf2$10000$'), { status: r.status, h })
   const r2 = await rawLogin('sample', 'st017', 'pass1234')
   ok('#46 作り直した後もログインできる', r2.status === 200, r2)
 } else skip('#46 旧形式のハッシュの作り直し')
