@@ -947,18 +947,34 @@ api.post('/staff/attendance-photo', async (c) => {
   return c.json({ ok: true, status, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes })
 })
 
-// 勤怠報告に添付された写真の取得（同一会社のログインユーザーのみ閲覧可）
-api.get('/staff/attendance-photo/*', async (c) => {
-  const u = c.get('user')
-  const key = c.req.path.replace('/api/staff/attendance-photo/', '')
-  if (!key.startsWith(`attendance/${u.company_id}/`)) return c.json({ error: 'forbidden' }, 403)
-
+// 写真（R2）をそのまま返す。見つからなければ 404
+async function attendancePhotoResponse(c: any, key: string) {
   const obj = await c.env.PHOTOS.get(key)
-  if (!obj) return c.json({ error: 'not found' }, 404)
+  if (!obj) return c.json({ error: '写真が見つかりません' }, 404)
   return c.body(obj.body, 200, {
     'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg',
     'Cache-Control': 'private, max-age=3600',
+    'X-Content-Type-Options': 'nosniff',
   })
+}
+
+// 勤怠報告に添付された写真の取得（スタッフ本人の報告の写真だけ。連携先の会社のシフトも person 単位で本人とみなす #217）
+api.get('/staff/attendance-photo/*', async (c) => {
+  const u = c.get('user')
+  const key = c.req.path.replace('/api/staff/attendance-photo/', '')
+  const row = await c.env.DB.prepare('SELECT staff_id FROM attendance_reports WHERE photo_key = ?').bind(key).first() as any
+  const mine = new Set((await personStaffRows(c.env.DB, u)).map(r => Number(r.staff_id)))
+  if (!row || !mine.has(Number(row.staff_id))) return c.json({ error: '写真が見つかりません' }, 404)
+  return attendancePhotoResponse(c, key)
+})
+
+// 管理者: 勤怠報告の写真の取得。報告のシフトが自社のものかを確かめてから返す（写真のキーは画面に出さない #217）
+api.get('/admin/attendance-photo/:attendanceId', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare(`SELECT ar.photo_key FROM attendance_reports ar JOIN shifts s ON s.shift_id = ar.shift_id
+    WHERE ar.attendance_id = ? AND s.company_id = ? AND ar.photo_key IS NOT NULL`).bind(c.req.param('attendanceId'), u.company_id).first() as any
+  if (!row) return c.json({ error: '写真が見つかりません' }, 404)
+  return attendancePhotoResponse(c, row.photo_key)
 })
 
 // 日報テンプレート取得
@@ -2821,11 +2837,22 @@ api.get('/admin/shifts', async (c) => {
   const from = c.req.query('from') || todayJST()
   const to = c.req.query('to') || from
   const rows = await c.env.DB.prepare(`
-    SELECT s.*, p.project_name, us.name AS staff_name
+    SELECT s.*, p.project_name, us.name AS staff_name,
+      (SELECT COUNT(*) FROM attendance_reports ar WHERE ar.shift_id = s.shift_id AND ar.photo_key IS NOT NULL) AS photo_count
     FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? ORDER BY s.work_date, s.start_time`).bind(u.company_id, from, to).all()
   return c.json({ shifts: rows.results })
+})
+
+// シフトの勤怠報告の一覧（写真の有無つき）。写真は GET /admin/attendance-photo/:attendance_id で取得する（#217）
+api.get('/admin/shifts/:id/attendance-photos', async (c) => {
+  const u = c.get('user')
+  const shift = await ownShift(c.env.DB, u.company_id, c.req.param('id'))
+  if (!shift) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const rows = await c.env.DB.prepare(`SELECT attendance_id, report_type, reported_at, status, entry_method, (photo_key IS NOT NULL) AS has_photo
+    FROM attendance_reports WHERE shift_id = ? ORDER BY reported_at, attendance_id`).bind(shift.shift_id).all()
+  return c.json({ shift_id: shift.shift_id, work_date: shift.work_date, reports: rows.results.map((r: any) => ({ ...r, has_photo: !!r.has_photo })) })
 })
 
 api.post('/admin/shifts', async (c) => {
