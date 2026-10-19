@@ -15,6 +15,7 @@ import { syncActualFromReports } from './settlement'
 import { personStaffRows } from './roster'
 import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
 import { toCsv, csvResponse } from './csv'
+import { isTentativeShift, isWorkingShift } from './lib/shift-status'
 
 type Bindings = NotifyEnv
 type Variables = { user: any }
@@ -43,22 +44,24 @@ export function normalizeDateTime(v: any): string | null {
 const fmt = (at: string) => { const m = String(at).match(/^\d{4}-(\d{2})-(\d{2}) (\d{2}:\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])} ${m[3]}` : at }
 
 // 報告の順序（REPORT_TYPES の順に日時が前後していないか）。申請した報告が関わる矛盾だけを返す。日付込みで比較する
+// 比較は分の単位（申請は分までしか入力できず、表示も分まで。秒の差だけで矛盾にしない。#133）。同じ分は矛盾にしない
 export function orderConflicts(reports: Map<string, string>, type: string, at: string): string[] {
   const idx = REPORT_TYPES.indexOf(type as any)
   const out: string[] = []
+  const min = (v: string) => String(v).slice(0, 16)
   for (const t of REPORT_TYPES) {
     if (t === type) continue
     const other = reports.get(t); if (!other) continue
     const j = REPORT_TYPES.indexOf(t)
-    if (j < idx && other > at) out.push(`${REPORT_LABEL[type]}（${fmt(at)}）が${REPORT_LABEL[t]}（${fmt(other)}）より前です`)
-    if (j > idx && other < at) out.push(`${REPORT_LABEL[t]}（${fmt(other)}）が${REPORT_LABEL[type]}（${fmt(at)}）より前です`)
+    if (j < idx && min(other) > min(at)) out.push(`${REPORT_LABEL[type]}（${fmt(at)}）が${REPORT_LABEL[t]}（${fmt(other)}）より前です`)
+    if (j > idx && min(other) < min(at)) out.push(`${REPORT_LABEL[t]}（${fmt(other)}）が${REPORT_LABEL[type]}（${fmt(at)}）より前です`)
   }
   return out
 }
 
 // ---------- 読み込み ----------
 async function loadShift(db: D1Database, shiftId: any) {
-  return db.prepare(`SELECT s.shift_id, s.company_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.settled_at,
+  return db.prepare(`SELECT s.shift_id, s.company_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.settled_at, s.actual_source,
       p.project_name, us.name AS staff_name, co.company_name
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
     JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = s.company_id WHERE s.shift_id = ?`).bind(shiftId).first() as Promise<any>
@@ -97,6 +100,8 @@ async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepa
   if (!reason) return { error: '修正理由を入力してください', status: 400 }
   if (reason.length > REASON_MAX) return { error: `修正理由は${REASON_MAX}文字以内で入力してください`, status: 400 }
   if (shift.status === 'absent') return { error: '欠勤のシフトには申請できません', status: 400 }
+  // 希望（仮）のシフトは精算に出ないため、打刻を追加・修正しない（#559。lib/shift-status.ts）
+  if (!isWorkingShift(shift.status)) return { error: '未確定（希望（仮））のシフトには申請できません。管理者がシフトを確定してから申請してください', status: 400 }
   const reports = await loadReports(db, shift.shift_id)
   const existing = reports.find(r => r.report_type === b.report_type)
   const map = reportMap(reports.filter(r => r.report_type !== b.report_type))
@@ -104,7 +109,7 @@ async function prepareRequest(db: D1Database, shift: any, b: any): Promise<Prepa
   let prep: Prepared
   if (b.kind === 'modify') {
     if (!existing) return { error: 'この報告はまだ登録されていません。打刻漏れの追加を申請してください', status: 409 }
-    if (existing.reported_at === at) return { error: '変更前と同じ日時です', status: 400 }
+    if (String(existing.reported_at).slice(0, 16) === at.slice(0, 16)) return { error: '変更前と同じ日時です', status: 400 }
     // 時刻修正は報告の順序に違反してはいけない
     if (conflicts.length) return { error: `報告の順序に矛盾があるため申請できません: ${conflicts.join(' / ')}`, status: 400, conflicts }
     prep = { kind: 'modify', report_type: b.report_type, requested_at: at, reason, attendance_id: existing.attendance_id, before_at: existing.reported_at, warnings: [] }
@@ -166,6 +171,9 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
     }
   }
   const at = nowJST(), token = randToken(), settled = shift.settle_status === 'confirmed' ? 1 : 0
+  // 実績が手入力のシフトは、報告を直しても実績・金額は変わらない（syncActualFromReports は手入力を上書きしない）。
+  // 操作履歴（applied_while_manual）と応答で知らせ、精算の確認事項「手入力後に打刻修正あり」に出す
+  const manual = !settled && shift.actual_source === 'manual'
   const applied = `EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND decision_token = ?)`
   const guard = c.kind === 'modify'
     ? db.prepare(`UPDATE attendance_corrections SET status = 'approved', decided_by = ?, decided_by_name = ?, decided_at = ?, decision_token = ?, decision_comment = ?,
@@ -190,7 +198,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${applied}`)
         .bind(c.correction_id, c.company_id, event, a.user_id, a.name, a.role,
-          JSON.stringify({ comment, before_at: c.before_at, requested_at: c.requested_at, exception: !!exception, conflicts, applied_while_settled: !!settled }), at, c.correction_id, token),
+          JSON.stringify({ comment, before_at: c.before_at, requested_at: c.requested_at, exception: !!exception, conflicts, applied_while_settled: !!settled, ...(manual ? { applied_while_manual: true } : {}) }), at, c.correction_id, token),
     ])
   } catch (e: any) {
     if (/UNIQUE/i.test(String(e?.message || e))) return { error: 'この報告はすでに登録されています（二重登録になるため承認できません）', status: 409 }
@@ -203,7 +211,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: { comme
   }
   // 実績・時給の数量に反映（確定済み・手入力の実績は既存の規則どおり変えない）
   await syncActualFromReports(db, c.company_id, c.shift_id).catch(() => {})
-  return { ok: true, exception: !!exception, applied_while_settled: !!settled }
+  return { ok: true, exception: !!exception, applied_while_settled: !!settled, applied_while_manual: manual }
 }
 
 async function rejectCorrection(db: D1Database, c: any, a: Actor, reasonIn: any, commentIn: any) {
@@ -364,7 +372,7 @@ const eventSummary = (e: any) => {
   if (!d) return ''
   if (e.event === 'submitted' || e.event === 'resubmitted') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at} 理由: ${d.reason || ''}${d.warnings && d.warnings.length ? ' 矛盾: ' + d.warnings.join(' / ') : ''}`
   if (e.event === 'rejected') return `却下理由: ${d.reason || ''}${d.comment ? ' コメント: ' + d.comment : ''}`
-  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}`
+  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}${d.applied_while_manual ? '（実績は手入力のまま）' : ''}`
   return ''
 }
 correctionsAdminApi.get('/corrections/events', async (c) => {
@@ -386,7 +394,9 @@ correctionsAdminApi.get('/corrections/events/export', async (c) => {
 correctionsAdminApi.get('/corrections/:id{[0-9]+}', async (c) => {
   const row = await ownCorrection(c)
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
-  return c.json(await correctionDetail(c.env.DB, row, 'admin'))
+  // 承認の前に「実績が手入力のシフト」と分かるように、シフトの実績の入力元を添える（管理者のみ）
+  const s = await c.env.DB.prepare('SELECT actual_source FROM shifts WHERE shift_id = ? AND company_id = ?').bind(row.shift_id, row.company_id).first() as any
+  return c.json({ ...await correctionDetail(c.env.DB, row, 'admin'), shift_actual_source: s?.actual_source ?? null })
 })
 
 // 管理者による申請（自社のシフト）。dry_run で確認のみ
@@ -473,11 +483,13 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
     }
   }
   const own = (await personStaffRows(c.env.DB, c.get('user'))).map(r => r.company_id)
+  // 希望（仮）のシフトは勤務ではないので出さない。報告してしまったものだけ『未確定』として出す（申請はできない。#559）
+  const shown = shifts.filter(s => !isTentativeShift(s.status) || (reports.get(s.shift_id) || []).length > 0)
   return c.json({
     from, to, report_types: REPORT_TYPES, labels: REPORT_LABEL,
-    shifts: shifts.map(s => ({
+    shifts: shown.map(s => ({
       shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, status: s.status, project_name: s.project_name,
-      company_name: own.length > 1 ? s.company_name : null,
+      company_name: own.length > 1 ? s.company_name : null, tentative: isTentativeShift(s.status),
       enabled: enabled.get(s.shift_id)?.types ?? [...REPORT_TYPES], reports: reports.get(s.shift_id) || [], pending: pending.get(s.shift_id) || [],
     })),
   })

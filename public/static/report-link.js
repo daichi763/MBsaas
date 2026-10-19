@@ -38,6 +38,8 @@
     const order = d.modes.required_attendance
     const nextIdx = order.findIndex(t => !done.has(t))
     const isToday = s.work_date === d.today
+    // 稼働日の前は日報を提出できない（サーバーも受け付けない）
+    const beforeDay = d.today < s.work_date
     $app.innerHTML = `
       <section class="card p-4 mb-4" id="report-link-shift">
         <p class="text-xs text-gray-400">${esc(d.company_name)}</p>
@@ -60,17 +62,17 @@
       </section>` : ''}
       ${d.modes.daily_report_required ? `<section class="card p-4 mb-4" id="report-link-daily">
         <h2 class="font-bold text-gray-800 mb-1">日報 ${d.daily_report ? '<span class="badge badge-green ml-1">提出済み</span>' : ''}</h2>
-        <p class="text-xs text-gray-400 mb-3">${d.daily_report ? '提出済み（' + dayjs(d.daily_report.submitted_at).format('M/D HH:mm') + '）。修正して再提出できます' : '稼働終了後に入力してください'}</p>
+        <p class="text-xs text-gray-400 mb-3">${d.daily_report ? '提出済み（' + dayjs(d.daily_report.submitted_at).format('M/D HH:mm') + '）。修正して再提出できます' : beforeDay ? '日報は稼働日以降に提出できます' : '稼働終了後に入力してください'}</p>
         <form id="link-daily-form" class="space-y-3">
           ${(d.template ? d.template.fields : []).map(f => {
             const v = d.daily_report && d.daily_report.values ? d.daily_report.values[f.key] : ''
-            if (f.type === 'number') return `<div class="flex items-center gap-3"><label class="text-sm text-gray-600 flex-1 min-w-0">${esc(f.label)}</label><input type="number" inputmode="numeric" min="0" data-key="${esc(f.key)}" class="inp link-field text-center font-bold shrink-0" style="width:6rem" value="${esc(v === '' || v == null ? 0 : v)}"></div>`
+            if (f.type === 'number') return `<div class="flex items-center gap-3"><label class="text-sm text-gray-600 flex-1 min-w-0">${esc(f.label)}</label><input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" class="inp link-field text-center font-bold shrink-0" style="width:6rem" value="${esc(v == null ? '' : v)}" placeholder="0"></div>`
             if (f.type === 'textarea') return `<div><label class="text-sm text-gray-600 block mb-1">${esc(f.label)}</label><textarea data-key="${esc(f.key)}" rows="3" class="inp link-field">${esc(v || '')}</textarea></div>`
             return `<div><label class="text-sm text-gray-600 block mb-1">${esc(f.label)}</label><input data-key="${esc(f.key)}" class="inp link-field" value="${esc(v || '')}"></div>`
           }).join('') || `<div><label class="text-sm text-gray-600 block mb-1">報告内容</label><textarea data-key="free" rows="4" class="inp link-field">${esc((d.daily_report && d.daily_report.values && d.daily_report.values.free) || '')}</textarea></div>`}
-          <label class="flex items-center gap-3"><input id="link-incident" type="checkbox" class="w-5 h-5">インシデントがあった</label>
-          <label class="flex items-center gap-3"><input id="link-complaint" type="checkbox" class="w-5 h-5">クレームがあった</label>
-          <button class="btn btn-primary w-full py-3">${d.daily_report ? '日報を修正して再提出' : '日報を提出する'}</button>
+          <label class="flex items-center gap-3"><input id="link-incident" type="checkbox" class="w-5 h-5" ${d.daily_report && d.daily_report.incident_flag ? 'checked' : ''}>インシデントがあった</label>
+          <label class="flex items-center gap-3"><input id="link-complaint" type="checkbox" class="w-5 h-5" ${d.daily_report && d.daily_report.complaint_flag ? 'checked' : ''}>クレームがあった</label>
+          <button id="link-daily-submit" class="btn btn-primary w-full py-3" ${beforeDay ? 'disabled' : ''}>${d.daily_report ? '日報を修正して再提出' : '日報を提出する'}</button>
         </form>
       </section>` : ''}
       ${!order.length && !d.modes.daily_report_required ? '<section class="card p-6 text-center text-sm text-gray-500">このシフトは報告の提出は不要です</section>' : ''}
@@ -138,14 +140,18 @@
     else post(null)
   }
 
-  async function submitDaily(e) {
+  function submitDaily(e) {
     e.preventDefault()
     const values = {}
     document.querySelectorAll('.link-field').forEach(el => { values[el.dataset.key] = el.type === 'number' ? Number(el.value || 0) : el.value })
-    try {
-      await axios.post(API + '/daily-report', { values, incident_flag: document.getElementById('link-incident').checked, complaint_flag: document.getElementById('link-complaint').checked })
-      toast('日報を提出しました。お疲れさまでした！'); load()
-    } catch (err) { toast(errMsg(err, '送信に失敗しました')) }
+    // 送信中はボタンを押せないようにする（二度押しで同じ日報を送らない）。
+    // インシデント・クレームは前回の値を表示したうえで送るので flags_explicit を付ける（外したときだけ印を下げる）
+    return withSubmitLock(document.getElementById('link-daily-submit'), async () => {
+      try {
+        await axios.post(API + '/daily-report', { values, incident_flag: document.getElementById('link-incident').checked, complaint_flag: document.getElementById('link-complaint').checked, flags_explicit: true })
+        toast('日報を提出しました。お疲れさまでした！'); load()
+      } catch (err) { toast(errMsg(err, '送信に失敗しました')) }
+    })
   }
 
   load()

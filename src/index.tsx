@@ -3,6 +3,7 @@ import { getCookie } from 'hono/cookie'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
 import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
+import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
@@ -57,7 +58,8 @@ app.get('/login', async (c) => {
       <form id="login-form" class="space-y-4">
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">会社コード</label>
-          <input id="company_code" type="text" autocomplete="organization" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="所属の会社から案内されたコード" required>
+          <input id="company_code" type="text" autocomplete="organization" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="所属の会社から案内されたコード">
+          <p class="text-[11px] text-gray-400 mt-1">本部の方は空欄のままログインできます</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">スタッフ番号 / ユーザーID</label>
@@ -77,6 +79,7 @@ app.get('/login', async (c) => {
 
       <form id="forgot-form" class="space-y-4 hidden">
         <p class="text-sm text-gray-500">登録済みのメールアドレスを入力してください。パスワード再設定用のリンクをお送りします。</p>
+        <p class="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">メールアドレスを登録していない方は、所属の会社の担当者にパスワードの再発行を依頼してください（仮パスワードが発行されます）。</p>
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">メールアドレス</label>
           <input id="forgot-email" type="email" autocomplete="email" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
@@ -93,7 +96,7 @@ app.get('/login', async (c) => {
       <ul class="space-y-0.5">
         <li>スタッフ: 会社コード <b>sample</b> / ID <b>st001</b>（〜st020）</li>
         <li>管理者: 会社コード <b>sample</b> / ID <b>admin</b> または <b>mgr01</b></li>
-        <li>SaaS本部: 会社コード <b>sample</b> / ID <b>hq</b></li>
+        <li>SaaS本部: 会社コード <b>空欄</b> / ID <b>hq</b></li>
       </ul>
     </aside>` : ''}
   </main>
@@ -325,6 +328,7 @@ app.get('/admin', async (c) => {
         <button class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" onclick="alert('伴走支援メニュー:\\n・初期設定代行\\n・日報項目設計\\n・スタッフ研修\\n・管理者教育\\n・月次運営レビュー\\n\\nお問い合わせ: support@dissectra.example.jp')">
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
+        <a href="#account" class="side-link mt-1" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
         <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-50 mt-1"><i class="fas fa-right-from-bracket mr-1"></i>ログアウト</button>
       </div>
     </aside>
@@ -336,7 +340,7 @@ app.get('/admin', async (c) => {
           <option value="projects">案件</option><option value="clients">クライアント</option>
           <option value="shifts">シフト</option><option value="reports">日報</option><option value="report-settings">案件報告管理</option><option value="corrections">打刻修正承認</option><option value="attendance-history">履歴・CSV</option>
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
-          <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option>
+          <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option>
         </select>
       </header>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
@@ -410,14 +414,14 @@ export default {
 
     try {
       const r = await generateFiscalYearReportsForAllCompanies(env.DB)
-      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed}`)
+      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed} finalized=${r.finalized}`)
     } catch (e) {
       console.log(`notice_read_reports generation failed: ${e}`)
     }
 
     try {
       const r = await purgeOldNoticeReads(env.DB)
-      console.log(`notice_reads cleanup completed: deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
+      console.log(`notice_reads cleanup completed: notices=${r.notices} deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
     } catch (e) {
       console.log(`notice_reads cleanup failed: ${e}`)
     }
@@ -448,6 +452,14 @@ export default {
       console.log(`scheduled retirements applied: ${n}`)
     } catch (e) {
       console.log(`scheduled retirements failed: ${e}`)
+    }
+
+    // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
+    try {
+      const r = await applyDueAffiliationSchedules(env.DB)
+      console.log(`affiliation schedules: due=${r.due} applied=${r.applied} failed=${r.failed}`)
+    } catch (e) {
+      console.log(`affiliation schedules failed: ${e}`)
     }
   },
 }

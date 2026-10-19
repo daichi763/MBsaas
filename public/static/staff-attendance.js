@@ -54,11 +54,13 @@
     const rep = Object.fromEntries(s.reports.map(r => [r.report_type, r]))
     const pend = Object.fromEntries(s.pending.map(p => [p.report_type, p]))
     const absent = s.status === 'absent'
+    // 未確定（希望（仮））のシフトは、報告してしまったものだけが返る。打刻の修正・追加は申請できない
+    const locked = absent || s.tentative
     const shown = TYPES.filter(t => s.enabled.includes(t) || rep[t] || pend[t])
     const hidden = TYPES.filter(t => !shown.includes(t))
     const row = (t) => {
       const r = rep[t], p = pend[t]
-      const action = absent ? '' : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
+      const action = locked ? '' : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
         : `<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${r ? '修正' : '追加申請'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
@@ -66,10 +68,11 @@
         ${action}</li>`
     }
     return `<div class="card p-3 mb-2">
-      <div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-800 truncate">${esc(s.project_name)}</p>${absent ? '<span class="badge badge-gray">欠勤</span>' : ''}</div>
+      <div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-800 truncate">${esc(s.project_name)}</p>${absent ? '<span class="badge badge-gray">欠勤</span>' : s.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}</div>
       <p class="text-xs text-gray-500">${esc(s.start_time)}〜${esc(s.end_time)}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
-      <ul class="mt-1">${shown.map(row).join('')}</ul>
-      ${!absent && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
+      ${s.tentative ? '<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1">管理者の確定待ちのシフトです。確定されるまで打刻の修正・追加は申請できません。勤務した場合は管理者に連絡してください</p>' : ''}
+      <ul class="mt-1">${(s.tentative ? shown.filter(t => rep[t]) : shown).map(row).join('')}</ul>
+      ${!locked && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
     </div>`
   }
 

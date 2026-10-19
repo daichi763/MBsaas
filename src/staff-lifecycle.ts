@@ -7,12 +7,16 @@
 // =========================================================
 import { Hono } from 'hono'
 import { createPerson, partnerNameConflict } from './roster'
-import { applyPricingToShift, loadPricingData, stripMoney } from './shift-board'
+import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
+import { JSON_IN, bindJsonArray, chunk } from './lib/d1-chunk'
 import { syncActualFromReports } from './settlement'
-import { pickReportValues } from './lib/validate'
+import { isHHMM, pickReportValues } from './lib/validate'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport } from './lib/daily-report'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
-import { REPORT_TYPES, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
-import { checkReportTime } from './report-settings'
+import { issueTempPassword } from './accounts'
+import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
+import { checkStaffReport, loadReportState } from './report-settings'
+import { addMinutes, isLateCheckIn, shiftWindow, type ShiftTimes } from './lib/shift-time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -35,20 +39,21 @@ export function payeeTypeFor(type: string): string {
 }
 
 // ---------- 仮登録の作成（仮登録API・募集の承認で共用）。ログインは発行しない ----------
+// email は users.email（ログイン・再設定・お知らせの宛先）に入る。応募フォームなど本人確認をしていないメールは unverified_email に渡す（#38 #148）
 export async function insertProvisionalStaff(db: D1Database, companyId: number, byUserId: number | null, o: {
   name: string; phone: string; type: string; affiliation: string | null; partnerId: number | null; kana?: any; gender?: any
-  attendance_mode?: any; daily_report_mode?: any; memo?: any; email?: string | null; note: string
+  attendance_mode?: any; daily_report_mode?: any; memo?: any; email?: string | null; unverified_email?: string | null; note: string
 }) {
   const person = await createPerson(db, companyId)
   const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, phone, email, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?, ?, ?)`)
     .bind(companyId, 'TMP-' + person.global_staff_code, o.name, await unusablePasswordHash(), o.phone || null, o.email || null, person.person_id).run()
   const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
-      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?)`)
+      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo, unverified_email)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?, ?)`)
     .bind(r.meta.last_row_id, companyId, person.person_id, companyId, o.type, o.partnerId, o.affiliation,
       o.kana || null, o.gender || null,
       ['none', 'in_out', 'full'].includes(o.attendance_mode) ? o.attendance_mode : null,
-      ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null).run()
+      ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null, String(o.unverified_email || '').trim() || null).run()
   const staffId = sr.meta.last_row_id as number
   await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, note, changed_by)
     VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?)`).bind(companyId, staffId, o.type, nowJST().slice(0, 10), o.affiliation, o.partnerId, o.note, byUserId).run()
@@ -153,6 +158,14 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
   if (!name) return c.json({ error: '氏名を入力してください' }, 400)
   if (phone.length < 10 || phone.length > 11) return c.json({ error: '電話番号を正しく入力してください' }, 400)
   if (!['daily_worker', 'freelance', 'partner_manual', 'own_employee'].includes(type)) return c.json({ error: '区分が正しくありません' }, 400)
+  // 同じ画面からの再送（先の送信で作成済み）は、作成済みのスタッフを返す（#568）
+  const key = String(b.request_key || '').slice(0, 64) || null
+  if (key) {
+    const prev = await db.prepare(`SELECT sp.staff_id, pe.global_staff_code FROM staff_quick_locks lk
+      JOIN staff_profiles sp ON sp.staff_id = lk.staff_id AND sp.company_id = lk.company_id LEFT JOIN persons pe ON pe.person_id = sp.person_id
+      WHERE lk.company_id = ? AND lk.phone_norm = ? AND lk.request_key = ?`).bind(u.company_id, phone, key).first() as any
+    if (prev) return c.json({ ok: true, staff_id: prev.staff_id, global_staff_code: prev.global_staff_code, reused: true })
+  }
   // 電話番号の重複確認（force で登録を続行できる）
   const dup = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
     .bind(u.company_id).all()).results as any[]).filter(r => normalizePhone(r.phone) === phone)
@@ -178,10 +191,37 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
     } else return c.json({ error: '取引先を選択または入力してください' }, 400)
   }
 
-  const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name, phone, type, affiliation, partnerId, kana: b.kana, gender: b.gender,
-    attendance_mode: b.attendance_mode, daily_report_mode: b.daily_report_mode, memo: b.memo, email: null, note: '仮登録' })
+  // 二度押し・同時送信の防止（#568）: 同じ電話番号の仮登録は、処理中と直後 QUICK_LOCK_MS の間は1件だけにする。
+  // 同じ画面からの再送（request_key が同じ）には、作成済みのスタッフを返す。
+  // 直後でも、別の画面から force で「別の人として登録」したときは新しく作る
+  const now = Date.now()
+  const claim = await db.prepare(`INSERT INTO staff_quick_locks (company_id, phone_norm, request_key, staff_id, created_at) VALUES (?, ?, ?, NULL, ?)
+    ON CONFLICT(company_id, phone_norm) DO UPDATE SET request_key = excluded.request_key, staff_id = NULL, created_at = excluded.created_at
+    WHERE staff_quick_locks.created_at < ?
+      OR (? = 1 AND staff_quick_locks.staff_id IS NOT NULL AND COALESCE(staff_quick_locks.request_key, '') != COALESCE(excluded.request_key, ''))`)
+    .bind(u.company_id, phone, key, now, now - QUICK_LOCK_MS, b.force ? 1 : 0).run()
+  if (!claim.meta.changes) {
+    const lk = await db.prepare('SELECT request_key, staff_id FROM staff_quick_locks WHERE company_id = ? AND phone_norm = ?').bind(u.company_id, phone).first() as any
+    if (lk?.staff_id && (lk.request_key || null) === key) {
+      const prev = await db.prepare(`SELECT sp.staff_id, pe.global_staff_code FROM staff_profiles sp LEFT JOIN persons pe ON pe.person_id = sp.person_id
+        WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(lk.staff_id, u.company_id).first() as any
+      if (prev) return c.json({ ok: true, staff_id: prev.staff_id, global_staff_code: prev.global_staff_code, reused: true })
+    }
+    return c.json({ error: 'この電話番号の仮登録を処理中です。少し待ってから一覧を確認してください' }, 409)
+  }
+  let created: { staff_id: number; global_staff_code: string }
+  try {
+    created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name, phone, type, affiliation, partnerId, kana: b.kana, gender: b.gender,
+      attendance_mode: b.attendance_mode, daily_report_mode: b.daily_report_mode, memo: b.memo, email: null, note: '仮登録' })
+  } catch (e) {
+    await db.prepare('DELETE FROM staff_quick_locks WHERE company_id = ? AND phone_norm = ? AND staff_id IS NULL').bind(u.company_id, phone).run().catch(() => {})
+    throw e
+  }
+  await db.prepare('UPDATE staff_quick_locks SET staff_id = ? WHERE company_id = ? AND phone_norm = ?').bind(created.staff_id, u.company_id, phone).run()
   return c.json({ ok: true, ...created })
 })
+// 仮登録の重複防止の時間（ミリ秒）
+const QUICK_LOCK_MS = 60 * 1000
 
 // ---------- 本登録（仮登録を解除。ログイン発行は任意） ----------
 adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
@@ -191,129 +231,383 @@ adminLifecycleApi.post('/staff/:id/finalize', async (c) => {
   if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
   if (!sp.is_provisional) return c.json({ error: 'このスタッフは本登録済みです' }, 400)
   if (!sp.gender && !b.gender) return c.json({ error: '本登録には性別の入力が必要です' }, 400)
-  if (b.gender) await db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id).run()
-  if (b.kana !== undefined) await db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(b.kana || null, sp.staff_id).run()
+  const stmts: D1PreparedStatement[] = []
+  if (b.gender) stmts.push(db.prepare('UPDATE staff_profiles SET gender = ? WHERE staff_id = ?').bind(b.gender, sp.staff_id))
+  // フリガナは空欄なら今の値を残す（応募時に入力されたフリガナを消さない。#505）
+  const kana = typeof b.kana === 'string' ? b.kana.trim() : ''
+  if (kana) stmts.push(db.prepare('UPDATE staff_profiles SET kana = ? WHERE staff_id = ?').bind(kana.slice(0, 60), sp.staff_id))
   if (b.user_code || b.password) {
-    if (!b.user_code || !String(b.user_code).trim() || !b.password) return c.json({ error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください' }, 400)
-    const pwErr = validatePassword(String(b.password))
-    if (pwErr) return c.json({ error: pwErr }, 400)
-    try {
-      await db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = COALESCE(?, email) WHERE user_id = ? AND company_id = ?`)
-        .bind(String(b.user_code).trim(), await hashPassword(String(b.password)), b.email || null, sp.user_id, u.company_id).run()
-    } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+    const login = await loginStatements(db, u.company_id, sp, b)
+    if ('error' in login) return c.json({ error: login.error }, login.status as any)
+    stmts.push(...login.stmts)
   }
-  await db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id).run()
+  stmts.push(db.prepare('UPDATE staff_profiles SET is_provisional = 0 WHERE staff_id = ?').bind(sp.staff_id))
+  // まとめて実行する（スタッフ番号の重複で失敗したら、性別・フリガナ・本登録もやり直せるように取り消す）
+  try { await db.batch(stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+  return c.json({ ok: true })
+})
+
+// ---------- ログインの発行（本登録・後からの発行で共用。#89 #103 #148） ----------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// ログイン用のメール: use_unverified_email なら応募時の未確認のメールを、管理者が確認したものとして使う。
+// email キーがあればその値（空欄は NULL）で上書きする。どちらもなければ今の値のまま
+function loginEmail(sp: any, b: any): { set: boolean; email: string | null; clearUnverified: boolean } | { error: string } {
+  if (b.use_unverified_email === true) {
+    const v = String(sp.unverified_email || '').trim()
+    if (!v) return { error: '未確認のメールアドレスがありません' }
+    return { set: true, email: v, clearUnverified: true }
+  }
+  if (b.email === undefined || b.email === null) return { set: false, email: null, clearUnverified: false }
+  const v = String(b.email).trim()
+  if (v && (v.length > 254 || !EMAIL_RE.test(v))) return { error: 'メールアドレスの形式が正しくありません' }
+  return { set: true, email: v || null, clearUnverified: !!v && v.toLowerCase() === String(sp.unverified_email || '').trim().toLowerCase() }
+}
+// 他社へ連携した先の行（多段連携の先を含む）。本人がログインを持ったら、連携先でもアプリでシフトを見て報告できるようにする（#103）。
+// 連携した時点で所属元にログインがなかった行は roster_only で作られているため、ここで staff に変える（roster.ts の /link と同じ扱い）
+export function promoteLinkedLoginsStmt(db: D1Database, staffId: number) {
+  return db.prepare(`WITH RECURSIVE down(id) AS (
+      SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
+      UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
+    UPDATE users SET role = 'staff' WHERE role = 'roster_only' AND status = 'active'
+      AND user_id IN (SELECT sp.user_id FROM staff_profiles sp WHERE sp.staff_id IN (SELECT id FROM down) AND sp.merged_into_staff_id IS NULL)`).bind(staffId)
+}
+// 入力を確かめて、ログインを発行する文を返す（実行は呼び出し側で db.batch。スタッフ番号の重複は batch の失敗になる）
+async function loginStatements(db: D1Database, companyId: number, sp: any, b: any): Promise<{ stmts: D1PreparedStatement[] } | { error: string; status: number }> {
+  const code = String(b.user_code || '').trim()
+  if (!code || !b.password) return { error: 'ログインを発行する場合は、スタッフ番号とパスワードを入力してください', status: 400 }
+  if (code.length > 50) return { error: 'スタッフ番号は50文字以内で入力してください', status: 400 }
+  const pwErr = validatePassword(b.password)
+  if (pwErr) return { error: pwErr, status: 400 }
+  const em = loginEmail(sp, b)
+  if ('error' in em) return { error: em.error, status: 400 }
+  const stmts = [
+    db.prepare(`UPDATE users SET user_code = ?, password_hash = ?, role = 'staff', email = CASE WHEN ? = 1 THEN ? ELSE email END WHERE user_id = ? AND company_id = ?`)
+      .bind(code, await hashPassword(String(b.password)), em.set ? 1 : 0, em.email, sp.user_id, companyId),
+  ]
+  if (em.clearUnverified) stmts.push(db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id))
+  stmts.push(promoteLinkedLoginsStmt(db, sp.staff_id))
+  return { stmts }
+}
+// 自社で発行したログインか（他社連携の行は、連携時に照合できないパスワードで作った LK- の行。区分を変えても自社のログインはない）
+function hasOwnLogin(sp: any) { return sp.user_role === 'staff' && !String(sp.user_code || '').startsWith('LK-') }
+function canIssueLogin(sp: any) {
+  const t = sp.affiliation_type || 'own_employee'
+  return !sp.merged_into_staff_id && !sp.is_provisional && !hasOwnLogin(sp) && t !== 'linked_external' && t !== 'skillsheet_only'
+    && sp.user_status === 'active' && sp.employment_status !== 'retired' && !(sp.retired_at && sp.retired_at < todayJST())
+}
+
+// 仮登録ではない、ログインのないスタッフ（ログインなしで登録した人・本登録でログインを発行しなかった人・他社連携から自社管理に切り替えた人）に、後からログインを発行する（#89）
+adminLifecycleApi.post('/staff/:id/issue-login', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
+  const t = sp.affiliation_type || 'own_employee'
+  if (t === 'linked_external') return c.json({ error: '他社から連携したスタッフのログインは、所属元の会社で発行します（所属元のログインから企業を切り替えて使えます）' }, 400)
+  if (t === 'skillsheet_only') return c.json({ error: 'スキルシートのみのスタッフにはログインを発行できません' }, 400)
+  if (sp.is_provisional) return c.json({ error: '仮登録のスタッフは「本登録する」からログインを発行してください' }, 400)
+  if (hasOwnLogin(sp)) return c.json({ error: 'このスタッフにはすでにログインがあります' }, 409)
+  if (!canIssueLogin(sp)) return c.json({ error: '退職・停止中のスタッフにはログインを発行できません' }, 409)
+  const login = await loginStatements(db, u.company_id, sp, b)
+  if ('error' in login) return c.json({ error: login.error }, login.status as any)
+  try { await db.batch(login.stmts) } catch { return c.json({ error: 'スタッフ番号が重複しています' }, 409) }
+  return c.json({ ok: true })
+})
+
+// 未確認のメール（応募フォーム・統合元から引き継いだもの）を、本人に確認できたらログイン・再設定用に設定する／不要なら消す（#38 #148）
+adminLifecycleApi.post('/staff/:id/unverified-email', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです' }, 409)
+  const v = String(sp.unverified_email || '').trim()
+  if (!v) return c.json({ error: '未確認のメールアドレスはありません' }, 404)
+  if (b.action === 'discard') {
+    await db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id).run()
+    return c.json({ ok: true })
+  }
+  if (b.action !== 'confirm') return c.json({ error: '操作が正しくありません' }, 400)
+  if ((sp.affiliation_type || 'own_employee') === 'linked_external') return c.json({ error: '他社から連携したスタッフのメールアドレスは、所属元の会社で設定します' }, 400)
+  await db.batch([
+    db.prepare('UPDATE users SET email = ? WHERE user_id = ? AND company_id = ?').bind(v, sp.user_id, u.company_id),
+    db.prepare('UPDATE staff_profiles SET unverified_email = NULL WHERE staff_id = ?').bind(sp.staff_id),
+  ])
   return c.json({ ok: true })
 })
 
 // ---------- 所属区分の変更（dry_run で影響範囲を確認 → 実行） ----------
+// - 確認（dry_run）が返す preview_token を実行のときに送る。区分・適用日・取引先・入社日・置き換えるシフトが
+//   確認したときと変わっていれば 409 を返し、確認し直してもらう（#100）
+// - 適用日が明日以降なら予約（staff_affiliation_schedules）として保存し、適用日の早朝に cron が切り替える（#82）
+// - 実行は 1 回の db.batch（トランザクション）にまとめ、途中で失敗しても区分だけが変わることがないようにする（#121）
+// - 勤怠報告・実績の入力・日報のどれかがあるシフト（勤務済み）は置き換えない（#149）
+// - 区分がすでに変更先と同じでも、支払先が前の区分のままの予定シフトが残っていれば、支払先の付け直しとして実行できる（#121）
+type PayeeRow = { payee_type: string; payee_affiliation_id: number | null; payee_company_id: number | null }
+function payeeOfProfile(sp: any): PayeeRow {
+  const t = sp.affiliation_type || 'own_employee'
+  return { payee_type: payeeTypeFor(t), payee_affiliation_id: t === 'partner_manual' ? sp.partner_affiliation_id ?? null : null, payee_company_id: t === 'linked_external' ? sp.owner_company_id ?? null : null }
+}
+type AffPlan = {
+  from: string; to: string; effective: string; affiliation: string | null; partnerId: number | null; newPartnerName: string | null
+  tradeName: string | null; hire: string | null; contractType: string | null; er: any; repair: boolean; scheduled: boolean
+  targets: any[]; excluded: number; effects: string[]; warnings: string[]; token: string
+}
+type PlanResult = { ok: true; plan: AffPlan } | { ok: false; error: string; status: 400 | 404 | 409 }
+async function planAffiliationChange(db: D1Database, companyId: number, sp: any, b: any, opts: { today: string; fromSchedule?: boolean }): Promise<PlanResult> {
+  const fail = (error: string, status: 400 | 404 | 409 = 400): PlanResult => ({ ok: false, error, status })
+  if (sp.merged_into_staff_id) return fail('統合済みのスタッフの区分は変更できません', 409)
+  const from = sp.affiliation_type || 'own_employee'
+  const to = String(b.to_type || '')
+  if (b.effective_date && !isDate(b.effective_date)) return fail('適用日を正しく入力してください')
+  if (b.hire_date && !isDate(b.hire_date)) return fail('入社日を正しく入力してください')
+  const effective: string = isDate(b.effective_date) ? b.effective_date : opts.today
+  if (from === 'skillsheet_only') return fail('スキルシートのみのスタッフは区分を変更できません（新規に登録してください）')
+  if (!WORKING_TYPES.includes(to as any)) return fail('変更先の区分が正しくありません')
+  // 予約中の変更がある間は、新しい変更を受け付けない（取り消してから）
+  if (!opts.fromSchedule) {
+    const pending = await db.prepare(`SELECT effective_date, to_type FROM staff_affiliation_schedules WHERE staff_id = ? AND company_id = ? AND status = 'pending'`).bind(sp.staff_id, companyId).first() as any
+    if (pending) return fail(`予約中の区分変更があります（${pending.effective_date} から「${TYPE_LABEL[pending.to_type] || pending.to_type}」）。取り消してから変更してください`, 409)
+  }
+
+  // 変更先の所属会社
+  const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first())?.company_name as string) || ''
+  let affiliation: string | null = null, partnerId: number | null = null, newPartnerName: string | null = null
+  const tradeName = to === 'freelance' ? String(b.trade_name || '').trim() || null : null
+  if (to === 'own_employee' || to === 'daily_worker') affiliation = ownName
+  if (to === 'freelance') affiliation = tradeName || '個人事業主'
+  if (to === 'partner_manual') {
+    if (b.partner_affiliation_id) {
+      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, companyId).first() as any
+      if (!p) return fail('取引先が見つかりません', 404)
+      partnerId = p.affiliation_id; affiliation = p.affiliation_name
+    } else if (String(b.new_partner_name || '').trim()) {
+      affiliation = String(b.new_partner_name).trim()
+      if (affiliation === ownName) return fail('自社名は取引先として登録できません')
+      const conflict = await partnerNameConflict(db, companyId, affiliation)
+      if (conflict) return fail(conflict)
+      // 同じ名前の取引先が登録済みならそれを使う
+      const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(companyId, affiliation).first() as any
+      if (p) partnerId = p.affiliation_id
+      else newPartnerName = affiliation
+    } else return fail('取引先を選択または入力してください')
+  }
+  const newPayee: PayeeRow = { payee_type: payeeTypeFor(to), payee_affiliation_id: to === 'partner_manual' ? partnerId : null, payee_company_id: null }
+  const repair = to === from && (to !== 'partner_manual' || (partnerId != null && partnerId === sp.partner_affiliation_id))
+  const scheduled = !opts.fromSchedule && !repair && effective > opts.today
+  const hire = to === 'own_employee' && !repair ? (isDate(b.hire_date) ? b.hire_date : effective) : null
+  const contractType = to === 'own_employee' ? String(b.contract_type || '').trim() || null : null
+
+  // 影響範囲: 適用日以降の未確定・欠勤以外のシフトのうち、勤務済みでないもの
+  const shifts = (await db.prepare(`SELECT s.shift_id, s.work_date, s.price_locked, s.payee_type, s.payee_affiliation_id, s.payee_company_id,
+      EXISTS (SELECT 1 FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reported,
+      (s.actual_start IS NOT NULL OR s.actual_end IS NOT NULL OR s.actual_source = 'manual') AS has_actual,
+      EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id) AS has_daily
+    FROM shifts s WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.status != 'absent' AND COALESCE(s.settle_status,'planned') != 'confirmed'
+    ORDER BY s.work_date, s.shift_id`).bind(sp.staff_id, companyId, effective).all()).results as any[]
+  const unworked = shifts.filter(s => !s.reported && !s.has_actual && !s.has_daily)
+  const excluded = shifts.length - unworked.length
+  const samePayee = (s: any) => (s.payee_type || 'payroll') === newPayee.payee_type && (newPayee.payee_type !== 'partner' || s.payee_affiliation_id === newPayee.payee_affiliation_id)
+  const targets = repair ? unworked.filter(s => !samePayee(s)) : unworked
+  if (repair && !targets.length) return fail(to === 'partner_manual' ? '現在と同じ取引先です' : '現在と同じ区分です')
+
+  const er = await db.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, companyId).first() as any
+  const linksOut = ((await db.prepare(`SELECT COUNT(*) AS n FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'`).bind(sp.staff_id).first()) as any)?.n || 0
+  const effects: string[] = [], warnings: string[] = []
+  if (scheduled) effects.push(`適用日が明日以降のため、予約として保存します。${effective} の早朝に自動で切り替わり、それまでは「${TYPE_LABEL[from]}」のままです（予約は取り消せます）`)
+  if (repair) effects.push(`区分はすでに「${TYPE_LABEL[to]}${to === 'partner_manual' && affiliation ? '（' + affiliation + '）' : ''}」です。支払先が前の区分のままになっている予定シフトを置き換えます`)
+  if (to === 'own_employee' && !repair) {
+    if (er && (er.hire_date || er.employment_ended_at)) effects.push(`従業員管理のデータを再開します（入社日 ${hire}）。前の雇用期間（入社 ${er.hire_date || '未登録'}〜雇用終了 ${er.employment_ended_at || '未登録'}）は雇用期間の履歴に残します`)
+    else effects.push(er ? `従業員管理のデータを再開します（入社日 ${hire}）` : `従業員管理のデータを作成します（入社日 ${hire}）`)
+  }
+  if (from === 'own_employee' && to !== 'own_employee') effects.push(`従業員管理のデータを「雇用終了（${addDays(effective, -1)}）」として保持します（削除しません・7年保存）`)
+  if (from === 'linked_external' && !repair) {
+    effects.push('他社との連携を終了し、基本情報をコピーして自社で管理します（元の企業への通知はしません）')
+    effects.push('所属元との企業間チャットは終了します。これまでのやり取りは「企業間チャット」の一覧から閲覧できます')
+  }
+  if (linksOut && !repair) effects.push(`自社から他社への連携 ${linksOut} 件は継続します（企業間チャットもそのまま使えます）`)
+  effects.push(`適用日以降の予定シフト ${targets.length} 件の支払先・単価を置き換えます${scheduled ? '（件数は今の時点のものです。適用日に数え直します）' : ''}`)
+  if (excluded) effects.push(`勤務済み（勤怠報告・実績の入力・日報のどれかがある）の ${excluded} 件は置き換えません`)
+  if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
+  if (!repair) {
+    if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は本登録から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
+    else if (sp.user_role === 'staff') effects.push('ログインはそのまま使えます')
+  }
+  if (effective < opts.today) {
+    const past = targets.filter(s => s.work_date < opts.today)
+    warnings.push(`適用日（${effective}）が今日より前です。${past.length ? `過去の未確定シフト ${past.length} 件（${past[0].work_date}〜${past[past.length - 1].work_date}）も置き換えの対象です。` : ''}日付に誤りがないか確認してください`)
+  }
+  const token = await sha256(JSON.stringify([sp.staff_id, from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, repair, scheduled, targets.map(s => s.shift_id)]))
+  return { ok: true, plan: { from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, er, repair, scheduled, targets, excluded, effects, warnings, token } }
+}
+
+// 取引先の新規登録（区分変更の実行・予約のとき）。同じ名前があればそれを使う
+async function ensurePartner(db: D1Database, companyId: number, name: string): Promise<number | null> {
+  await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(companyId, name).run()
+  return ((await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(companyId, name).first()) as any)?.affiliation_id ?? null
+}
+
+// シフトの更新を JSON 1 つにまとめた UPDATE 文（1 文あたり 100 件）。確定済みのシフトは書き換えない
+const PRICE_COLUMNS = ['bill_unit_type', 'bill_rate', 'bill_qty', 'unit_price', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
+  'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount', 'payee_type', 'payee_affiliation_id', 'payee_company_id', 'price_source', 'price_locked']
+const PAYEE_COLUMNS = ['payee_type', 'payee_affiliation_id', 'payee_company_id']
+function shiftUpdateStmts(db: D1Database, companyId: number, cols: string[], rows: Record<string, any>[]): D1PreparedStatement[] {
+  const sql = `UPDATE shifts SET ${cols.map((c, i) => `${c} = j.v${i}`).join(', ')}
+    FROM (SELECT json_extract(value, '$.shift_id') AS k, ${cols.map((c, i) => `json_extract(value, '$.${c}') AS v${i}`).join(', ')} FROM json_each(?)) AS j
+    WHERE shifts.shift_id = j.k AND shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed'`
+  return chunk(rows, 100).map(part => db.prepare(sql).bind(JSON.stringify(part.map(r => Object.fromEntries(['shift_id', ...cols].map(c => [c, r[c] ?? null])))), companyId))
+}
+
+// 区分変更の実行。すべての更新を 1 回の db.batch にまとめる（scheduleId: cron から予約を適用するとき）
+async function executeAffiliationChange(db: D1Database, companyId: number, actorId: number | null, sp: any, p: AffPlan, note: string | null, scheduleId?: number) {
+  const { from, to, effective, affiliation } = p
+  let partnerId = p.partnerId
+  if (to === 'partner_manual' && !partnerId && p.newPartnerName) partnerId = await ensurePartner(db, companyId, p.newPartnerName)
+  const now = nowJST()
+  const stmts: D1PreparedStatement[] = []
+
+  if (!p.repair) {
+    // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
+    if (from === 'linked_external' && sp.source_staff_id) {
+      // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
+      // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
+      // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
+      const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
+      if (src) {
+        stmts.push(db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
+            nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
+            affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
+          .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
+            src.commute_minutes, src.available_from, to, sp.staff_id))
+      }
+      // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
+    }
+    stmts.push(db.prepare(`UPDATE staff_profiles SET affiliation_type = ?, affiliation = ?, partner_affiliation_id = ?, owner_company_id = ?,
+        source_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE source_staff_id END,
+        root_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE root_staff_id END, relink_code = NULL WHERE staff_id = ? AND company_id = ?`)
+      .bind(to, affiliation, to === 'partner_manual' ? partnerId : null, companyId, from, from, sp.staff_id, companyId))
+    // 多段連携の中間企業が自社管理に切り替えた場合、その先（自社から連携した企業・さらにその先）の基本項目の参照先を自社の行に付け替える
+    if (from === 'linked_external') {
+      stmts.push(db.prepare(`WITH RECURSIVE down(id) AS (
+          SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
+          UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
+        UPDATE staff_profiles SET root_staff_id = ? WHERE staff_id IN (SELECT id FROM down)`).bind(sp.staff_id, sp.staff_id))
+    }
+    // 従業員管理
+    const er = p.er
+    if (to === 'own_employee') {
+      if (er) {
+        // 再雇用: 前の雇用期間（入社日・雇用終了日）を上書きする前に履歴に残す（#99）
+        if (er.hire_date || er.employment_ended_at) stmts.push(db.prepare(`INSERT INTO employment_periods (company_id, staff_id, hire_date, employment_ended_at, ended_reason, contract_type, recorded_by, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(companyId, sp.staff_id, er.hire_date || null, er.employment_ended_at || null, er.ended_reason || null, er.contract_type || null, actorId, now))
+        stmts.push(db.prepare('UPDATE employee_records SET employment_ended_at = NULL, ended_reason = NULL, hire_date = ?, contract_type = COALESCE(?, contract_type), updated_at = ? WHERE staff_id = ?')
+          .bind(p.hire, p.contractType, now, sp.staff_id))
+      } else stmts.push(db.prepare('INSERT INTO employee_records (staff_id, company_id, hire_date, contract_type, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .bind(sp.staff_id, companyId, p.hire, p.contractType, now))
+    } else if (from === 'own_employee') {
+      if (er) stmts.push(db.prepare('UPDATE employee_records SET employment_ended_at = ?, ended_reason = ?, updated_at = ? WHERE staff_id = ?')
+        .bind(addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, now, sp.staff_id))
+      else stmts.push(db.prepare('INSERT INTO employee_records (staff_id, company_id, employment_ended_at, ended_reason, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .bind(sp.staff_id, companyId, addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, now))
+    }
+  }
+
+  // 予定シフトの支払先・単価の置き換え（手動変更の金額は保持し、支払先のみ）。必要な行をまとめて読み、メモリ上で計算する
+  const payee: PayeeRow = { payee_type: payeeTypeFor(to), payee_affiliation_id: to === 'partner_manual' ? partnerId : null, payee_company_id: null }
+  const ids = bindJsonArray(p.targets.map(s => s.shift_id))
+  const rows = ids === '[]' ? [] : (await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[]
+  const roleIds = bindJsonArray(rows.map(s => s.slot_role_id))
+  const roles = new Map((roleIds === '[]' ? [] : (await db.prepare(`SELECT * FROM shift_slot_roles WHERE slot_role_id IN ${JSON_IN}`).bind(roleIds).all()).results as any[]).map(r => [r.slot_role_id, r]))
+  const data = await loadPricingData(db, companyId, rows.map(s => s.project_id))
+  const priced: Record<string, any>[] = [], locked: Record<string, any>[] = []
+  for (const s of rows) {
+    if (s.price_locked) { locked.push({ shift_id: s.shift_id, ...payee }); continue }
+    // applyPricingToShift と同じ計算（支払先は変更後の区分）
+    priced.push({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roles.get(s.slot_role_id) || null : null, payee, data) })
+  }
+  stmts.push(...shiftUpdateStmts(db, companyId, PRICE_COLUMNS, priced), ...shiftUpdateStmts(db, companyId, PAYEE_COLUMNS, locked))
+
+  // 変更履歴。変更前の支払先を残し、適用日より前のシフトを計算し直したときに使う（shift-board.ts の resolvePayee）。付け直しでは残さない
+  const fromPayee = p.repair ? null : payeeOfProfile(sp)
+  const histNote = [p.repair ? '支払先の付け直し' : '', scheduleId ? '予約を適用' : '', note || ''].filter(Boolean).join('・') || null
+  stmts.push(db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, partner_affiliation_id, affected_shifts, excluded_shifts,
+      from_payee_type, from_payee_affiliation_id, from_payee_company_id, note, changed_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(companyId, sp.staff_id, from, to, effective, sp.affiliation ?? null, affiliation, partnerId, rows.length, p.excluded,
+      fromPayee?.payee_type ?? null, fromPayee?.payee_affiliation_id ?? null, fromPayee?.payee_company_id ?? null, histNote, actorId))
+  if (scheduleId) stmts.push(db.prepare(`UPDATE staff_affiliation_schedules SET status = 'applied', applied_at = ?, error = NULL,
+      history_id = (SELECT MAX(history_id) FROM staff_affiliation_history WHERE staff_id = ? AND company_id = ?) WHERE schedule_id = ? AND status = 'pending'`)
+    .bind(now, sp.staff_id, companyId, scheduleId))
+  await db.batch(stmts)
+  return { affected_shifts: rows.length, excluded_shifts: p.excluded }
+}
+
 adminLifecycleApi.post('/staff/:id/affiliation-change', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
   if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフの区分は変更できません' }, 409)
-  const from = sp.affiliation_type || 'own_employee'
-  const to = String(b.to_type || '')
-  const effective = isDate(b.effective_date) ? b.effective_date : todayJST()
-  if (from === 'skillsheet_only') return c.json({ error: 'スキルシートのみのスタッフは区分を変更できません（新規に登録してください）' }, 400)
-  if (!WORKING_TYPES.includes(to as any)) return c.json({ error: '変更先の区分が正しくありません' }, 400)
-  if (to === from && to !== 'partner_manual') return c.json({ error: '現在と同じ区分です' }, 400)
-  if (from === 'linked_external' && to !== 'own_employee' && to !== 'partner_manual' && to !== 'daily_worker' && to !== 'freelance') return c.json({ error: '変更できない区分です' }, 400)
+  const r = await planAffiliationChange(db, u.company_id, sp, b, { today: todayJST() })
+  if (!r.ok) return c.json({ error: r.error }, r.status)
+  const p = r.plan
+  if (b.dry_run) return c.json({
+    from_type: p.from, to_type: p.to, from_label: TYPE_LABEL[p.from], to_label: TYPE_LABEL[p.to], effective_date: p.effective, affiliation: p.affiliation,
+    hire_date: p.hire, scheduled: p.scheduled, repair: p.repair, affected_shifts: p.targets.length, excluded_shifts: p.excluded,
+    effects: p.effects, warnings: p.warnings, preview_token: p.token,
+  })
+  // 確認した内容と違えば実行しない（#100）
+  if (!b.preview_token) return c.json({ error: '「影響を確認する」で内容を確認してから実行してください' }, 400)
+  if (b.preview_token !== p.token) return c.json({ error: '確認したときから内容が変わりました。もう一度「影響を確認する」を押してください', preview_changed: true }, 409)
+  const note = String(b.note || '').trim().slice(0, 300) || null
 
-  // 変更先の所属会社
-  const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first())?.company_name as string) || ''
-  let affiliation: string | null = null, partnerId: number | null = null
-  if (to === 'own_employee' || to === 'daily_worker') affiliation = ownName
-  if (to === 'freelance') affiliation = String(b.trade_name || '').trim() || '個人事業主'
-  if (to === 'partner_manual') {
-    if (b.partner_affiliation_id) {
-      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any
-      if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
-      partnerId = p.affiliation_id; affiliation = p.affiliation_name
-    } else if (String(b.new_partner_name || '').trim()) {
-      affiliation = String(b.new_partner_name).trim()
-      if (affiliation === ownName) return c.json({ error: '自社名は取引先として登録できません' }, 400)
-      const conflict = await partnerNameConflict(db, u.company_id, affiliation)
-      if (conflict) return c.json({ error: conflict }, 400)
-    } else return c.json({ error: '取引先を選択または入力してください' }, 400)
-    if (to === from && partnerId === sp.partner_affiliation_id) return c.json({ error: '現在と同じ取引先です' }, 400)
+  if (p.scheduled) {
+    // 予約: 区分・従業員管理・シフトは適用日まで変えない。新しい取引先は今のうちに取引先マスタへ登録しておく
+    const partnerId = p.to === 'partner_manual' && !p.partnerId && p.newPartnerName ? await ensurePartner(db, u.company_id, p.newPartnerName) : p.partnerId
+    try {
+      const res = await db.prepare(`INSERT INTO staff_affiliation_schedules (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, request_json, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sp.staff_id, p.from, p.to, p.effective, p.affiliation, partnerId,
+        JSON.stringify({ trade_name: p.tradeName, hire_date: p.hire, contract_type: p.contractType, note }), u.user_id).run()
+      return c.json({ ok: true, scheduled: true, schedule_id: res.meta.last_row_id, effective_date: p.effective, affected_shifts: 0 })
+    } catch { return c.json({ error: '予約中の区分変更があります。取り消してから変更してください' }, 409) }
   }
-  if (to === 'own_employee' && !b.dry_run && !isDate(b.hire_date || effective)) return c.json({ error: '入社日を入力してください' }, 400)
-
-  // 影響範囲: 適用日以降の予定シフト（勤怠報告のないもの）
-  const shifts = (await db.prepare(`SELECT s.shift_id, s.project_id, s.work_date, s.price_locked,
-      (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reported
-    FROM shifts s WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.status != 'absent' AND COALESCE(s.settle_status,'planned') != 'confirmed'`).bind(sp.staff_id, u.company_id, effective).all()).results as any[]
-  const targets = shifts.filter(s => !s.reported)
-  const er = await db.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, u.company_id).first() as any
-  const effects: string[] = []
-  if (to === 'own_employee') effects.push(er ? '従業員管理のデータを再開します（雇用終了日を解除）' : '従業員管理のデータを作成します')
-  if (from === 'own_employee' && to !== 'own_employee') effects.push(`従業員管理のデータを「雇用終了（${addDays(effective, -1)}）」として保持します（削除しません・7年保存）`)
-  if (from === 'linked_external') effects.push('他社との連携を終了し、基本情報をコピーして自社で管理します（元の企業への通知はしません）')
-  effects.push(`適用日以降の予定シフト ${targets.length} 件の支払先・単価を置き換えます${shifts.length - targets.length ? `（勤怠報告済みの ${shifts.length - targets.length} 件は対象外）` : ''}`)
-  if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
-  if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は本登録から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
-  else if (sp.user_role === 'staff') effects.push('ログインはそのまま使えます')
-  if (b.dry_run) return c.json({ from_type: from, to_type: to, from_label: TYPE_LABEL[from], to_label: TYPE_LABEL[to], effective_date: effective, affiliation, affected_shifts: targets.length, effects })
-
-  // ---- 実行 ----
-  if (to === 'partner_manual' && !partnerId && affiliation) {
-    await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, affiliation).run()
-    partnerId = ((await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, affiliation).first()) as any)?.affiliation_id ?? null
-  }
-  // 他社連携 → 自社で管理: 所属元の基本項目をコピーし、連携を外す
-  if (from === 'linked_external' && sp.source_staff_id) {
-    // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
-    // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
-    // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
-    const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
-    if (src) {
-      await db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
-          nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
-          affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
-        .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
-          src.commute_minutes, src.available_from, to, sp.staff_id).run()
-    }
-    // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
-  }
-  await db.prepare(`UPDATE staff_profiles SET affiliation_type = ?, affiliation = ?, partner_affiliation_id = ?, owner_company_id = ?,
-      source_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE source_staff_id END,
-      root_staff_id = CASE WHEN ? = 'linked_external' THEN NULL ELSE root_staff_id END, relink_code = NULL WHERE staff_id = ? AND company_id = ?`)
-    .bind(to, affiliation, to === 'partner_manual' ? partnerId : null, u.company_id, from, from, sp.staff_id, u.company_id).run()
-  // 多段連携の中間企業が自社管理に切り替えた場合、その先（自社から連携した企業・さらにその先）の基本項目の参照先を自社の行に付け替える
-  if (from === 'linked_external') {
-    await db.prepare(`WITH RECURSIVE down(id) AS (
-        SELECT staff_id FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'
-        UNION SELECT sp.staff_id FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id WHERE sp.affiliation_type = 'linked_external')
-      UPDATE staff_profiles SET root_staff_id = ? WHERE staff_id IN (SELECT id FROM down)`).bind(sp.staff_id, sp.staff_id).run()
-  }
-
-  // 従業員管理
-  if (to === 'own_employee') {
-    const hire = isDate(b.hire_date) ? b.hire_date : effective
-    if (er) await db.prepare('UPDATE employee_records SET employment_ended_at = NULL, ended_reason = NULL, hire_date = COALESCE(?, hire_date), contract_type = COALESCE(?, contract_type), updated_at = ? WHERE staff_id = ?')
-      .bind(hire, b.contract_type || null, nowJST(), sp.staff_id).run()
-    else await db.prepare('INSERT INTO employee_records (staff_id, company_id, hire_date, contract_type, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(sp.staff_id, u.company_id, hire, b.contract_type || null, nowJST()).run()
-  } else if (from === 'own_employee') {
-    if (er) await db.prepare('UPDATE employee_records SET employment_ended_at = ?, ended_reason = ?, updated_at = ? WHERE staff_id = ?')
-      .bind(addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, nowJST(), sp.staff_id).run()
-    else await db.prepare('INSERT INTO employee_records (staff_id, company_id, employment_ended_at, ended_reason, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(sp.staff_id, u.company_id, addDays(effective, -1), `区分変更（${TYPE_LABEL[to]}）`, nowJST()).run()
-  }
-
-  // 予定シフトの支払先・単価の置き換え（手動変更の金額は保持し、支払先のみ）
-  const data = await loadPricingData(db, u.company_id, targets.map(s => s.project_id))
-  for (const s of targets) {
-    if (s.price_locked) {
-      await db.prepare('UPDATE shifts SET payee_type = ?, payee_affiliation_id = ?, payee_company_id = NULL WHERE shift_id = ?')
-        .bind(payeeTypeFor(to), to === 'partner_manual' ? partnerId : null, s.shift_id).run()
-    } else await applyPricingToShift(db, u.company_id, s.shift_id, { data })
-  }
-  await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, partner_affiliation_id, affected_shifts, note, changed_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sp.staff_id, from, to, effective, sp.affiliation, affiliation, partnerId, targets.length, b.note || null, u.user_id).run()
-  return c.json({ ok: true, affected_shifts: targets.length })
+  const done = await executeAffiliationChange(db, u.company_id, u.user_id, sp, p, note)
+  return c.json({ ok: true, ...done })
 })
+
+// 区分変更の予約の取消（適用できなかった予約は、確認したら表示を消せるように同じく取消にする）
+adminLifecycleApi.delete('/staff/:id/affiliation-schedules/:scheduleId', async (c) => {
+  const u = c.get('user')
+  const r = await c.env.DB.prepare(`UPDATE staff_affiliation_schedules SET status = 'canceled', canceled_by = ?, canceled_at = ?
+    WHERE schedule_id = ? AND staff_id = ? AND company_id = ? AND status IN ('pending', 'failed')`).bind(u.user_id, nowJST(), c.req.param('scheduleId'), c.req.param('id'), u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '取り消せる予約が見つかりません（適用済み・取消済みの可能性があります）' }, 404)
+  return c.json({ ok: true })
+})
+
+// 適用日になった区分変更の予約を適用する（毎日の cron。index.tsx の scheduled）。
+// 予約したときと状況が変わって適用できない場合（統合・退職・同じ区分になった等）は failed にして理由を残す
+export async function applyDueAffiliationSchedules(db: D1Database) {
+  const today = todayJST()
+  const due = (await db.prepare(`SELECT * FROM staff_affiliation_schedules WHERE status = 'pending' AND effective_date <= ? ORDER BY effective_date, schedule_id LIMIT 100`).bind(today).all()).results as any[]
+  let applied = 0, failed = 0
+  const markFailed = async (id: number, msg: string) => {
+    failed++
+    await db.prepare(`UPDATE staff_affiliation_schedules SET status = 'failed', error = ? WHERE schedule_id = ? AND status = 'pending'`).bind(msg.slice(0, 300), id).run()
+  }
+  for (const s of due) {
+    try {
+      const sp = await loadStaffRow(db, s.company_id, s.staff_id)
+      if (!sp) { await markFailed(s.schedule_id, 'スタッフが見つかりません'); continue }
+      if (sp.employment_status === 'retired' || sp.user_status !== 'active') { await markFailed(s.schedule_id, '退職・停止中のため適用しませんでした'); continue }
+      let req: any = {}; try { req = JSON.parse(s.request_json || '{}') } catch { }
+      const body = { to_type: s.to_type, effective_date: s.effective_date, partner_affiliation_id: s.partner_affiliation_id, trade_name: req.trade_name, hire_date: req.hire_date, contract_type: req.contract_type }
+      const r = await planAffiliationChange(db, s.company_id, sp, body, { today, fromSchedule: true })
+      if (!r.ok) { await markFailed(s.schedule_id, r.error); continue }
+      if (r.plan.repair) { await markFailed(s.schedule_id, `すでに「${TYPE_LABEL[s.to_type] || s.to_type}」に変更されています`); continue }
+      await executeAffiliationChange(db, s.company_id, s.created_by ?? null, sp, r.plan, req.note || null, s.schedule_id)
+      applied++
+    } catch (e) {
+      try { await markFailed(s.schedule_id, '適用に失敗しました: ' + String(e)) } catch { }
+    }
+  }
+  return { due: due.length, applied, failed }
+}
 
 adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
   const u = c.get('user'); const db = c.env.DB
@@ -322,13 +616,41 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
   const history = (await db.prepare(`SELECT h.*, um.name AS changed_by_name FROM staff_affiliation_history h LEFT JOIN users um ON um.user_id = h.changed_by
     WHERE h.staff_id = ? AND h.company_id = ? ORDER BY h.effective_date DESC, h.history_id DESC`).bind(sp.staff_id, u.company_id).all()).results
   const er = await db.prepare('SELECT employment_ended_at, ended_reason, hire_date FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, u.company_id).first()
+  // 区分変更の予約（予約中と、適用できなかったもの）と、過去の雇用期間（再雇用の前の期間）
+  const schedules = (await db.prepare(`SELECT schedule_id, to_type, effective_date, to_affiliation, status, error, created_at FROM staff_affiliation_schedules
+    WHERE staff_id = ? AND company_id = ? AND status IN ('pending', 'failed') ORDER BY schedule_id DESC LIMIT 5`).bind(sp.staff_id, u.company_id).all()).results
+  const employment_periods = (await db.prepare(`SELECT hire_date, employment_ended_at, ended_reason, contract_type, recorded_at FROM employment_periods
+    WHERE staff_id = ? AND company_id = ? ORDER BY period_id DESC`).bind(sp.staff_id, u.company_id).all()).results
   return c.json({
     staff_id: sp.staff_id, affiliation_type: sp.affiliation_type || 'own_employee', is_provisional: !!sp.is_provisional,
     has_login: sp.user_role === 'staff', user_code: sp.user_role === 'staff' ? sp.user_code : null, phone: sp.phone,
-    attendance_mode: sp.attendance_mode, daily_report_mode: sp.daily_report_mode, employee_record: er, history,
+    // 本登録・ログインの発行の画面に今の値を出す（#148 #505）。unverified_email は応募フォームなどで入力された未確認のメール
+    has_own_login: hasOwnLogin(sp), can_issue_login: canIssueLogin(sp), email: sp.email || null, unverified_email: sp.unverified_email || null,
+    kana: sp.kana || null, gender: sp.gender || null,
+    attendance_mode: sp.attendance_mode, daily_report_mode: sp.daily_report_mode, employee_record: er, history, schedules, employment_periods,
     partner_affiliation_id: sp.partner_affiliation_id,
     merged_into_staff_id: sp.merged_into_staff_id, merged_at: sp.merged_at,
     merged_into_name: sp.merged_into_staff_id ? ((await db.prepare('SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?').bind(sp.merged_into_staff_id).first()) as any)?.name : null,
+  })
+})
+
+// ---------- パスワードの再発行（#45。メールのないスタッフも、管理者が仮パスワードを発行してログインできる状態に戻す） ----------
+// 自社でログインを発行したスタッフだけが対象。他社から連携したスタッフは所属元の会社で再発行する（稼働先の行ではログインできない）。
+// 仮パスワードはこの応答で一度だけ返し、次回ログインで本人に変更を求める。今のセッションと未使用の再設定リンクは無効にする
+adminLifecycleApi.post('/staff/:id/reset-password', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです。統合先のスタッフで再発行してください' }, 409)
+  if (sp.affiliation_type === 'linked_external') return c.json({ error: '他社から連携したスタッフのパスワードは、所属元の会社で再発行してください' }, 400)
+  if (sp.user_role !== 'staff') return c.json({ error: 'このスタッフにはログインが発行されていません' }, 400)
+  if (sp.user_status !== 'active') return c.json({ error: '退職・停止中のスタッフのパスワードは再発行できません' }, 409)
+  const owner = await db.prepare('SELECT company_id FROM users WHERE user_id = ?').bind(sp.user_id).first() as any
+  if (!owner || owner.company_id !== u.company_id) return c.json({ error: 'このスタッフのパスワードは、所属元の会社で再発行してください' }, 400)
+  const tempPassword = await issueTempPassword(db, sp.user_id)
+  return c.json({
+    ok: true, temp_password: tempPassword, name: sp.name, user_code: sp.user_code, company_code: u.company_code,
+    login_url: new URL(c.req.url).origin + '/login', has_email: !!(sp.email && String(sp.email).trim()),
   })
 })
 
@@ -361,7 +683,8 @@ adminLifecycleApi.put('/projects/:id/report-settings', async (c) => {
 // シフトの報告状況（提出設定・報告済み・報告用URL）
 async function ownShift(db: D1Database, companyId: number, shiftId: any) {
   return db.prepare(`SELECT s.*, us.name AS staff_name, p.project_name, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
-      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, sp.is_provisional, us.role AS user_role
+      sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, sp.is_provisional, us.role AS user_role,
+      p.default_break_minutes AS p_break_minutes, sp.merged_into_staff_id, sp.employment_status, us.retired_at
     FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id JOIN projects p ON p.project_id = s.project_id
     WHERE s.shift_id = ? AND s.company_id = ?`).bind(shiftId, companyId).first() as Promise<any>
 }
@@ -372,9 +695,14 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
   const reports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.entry_method, um.name AS entered_by_name FROM attendance_reports a
     LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results
-  const daily = await db.prepare('SELECT daily_report_id, submitted_at, entry_method FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(s.staff_id, s.work_date, s.project_id).first()
+  const dr = await findDailyReport(db, s)
+  const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method } : null
   const token = await db.prepare('SELECT token, expires_at, last_used_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first()
-  return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token })
+  // 代理入力: 受け付けない理由（確定済み・欠勤・稼働日より前）と、時刻が空欄のときの既定値
+  const proxyBlocked = isSettled(s) ? '確定済み' : s.status === 'absent' ? '欠勤' : s.work_date > todayJST() ? '稼働日より前' : null
+  const proxy_defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
+  return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token,
+    work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, now: nowJST(), proxy_blocked: proxyBlocked, proxy_defaults })
 })
 adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
@@ -387,25 +715,102 @@ adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
 })
 
 // ---------- 代理入力（管理者が勤怠を記録。entry_method='proxy'） ----------
+// 時刻は種類ごとに times: { check_in: 'HH:MM', ... } で受け取る（1つの時刻を全種類に使わない）。
+// 日付は受け取らない。稼働日の前日・当日・翌日のうち、その種類の予定の日時（shiftWindow から決める）に近い日付で記録する（夜勤の翌日分）。
+// 空欄の種類は予定から既定の時刻を決める（proxyDefaultTimes）。押した日時は使わない。決められない種類は入力を必須にする。
+const minutesBetween = (a: string, b: string) => Math.round((Date.parse(b.replace(' ', 'T') + 'Z') - Date.parse(a.replace(' ', 'T') + 'Z')) / 60000)
+const fmtAt = (at: string) => `${Number(at.slice(5, 7))}/${Number(at.slice(8, 10))} ${at.slice(11, 16)}`
+// 時刻（HH:MM）を日時にする。目安: 勤務終了・退店 = 予定の終了、休憩 = 勤務時間の中ほど、それ以外 = 予定の開始。
+// 稼働日の前日・当日・翌日のうち、目安に最も近い日付を選ぶ（同じ近さなら稼働日）。
+// ただし起床・出発は翌日に、休憩・勤務終了・退店は前日にしない（夜勤の日中の起床を翌日にしないなど）
+function proxyDateTime(s: ShiftTimes, type: string, hhmm: string): string {
+  const w = shiftWindow(s.work_date, s.start_time, s.end_time)
+  const anchor = ['work_end', 'check_out'].includes(type) ? w.end
+    : ['break_start', 'break_end'].includes(type) ? addMinutes(w.start, Math.floor(minutesBetween(w.start, w.end) / 2)) : w.start
+  const offsets = ['wake_up', 'departure'].includes(type) ? [-1] : ['check_in', 'work_start'].includes(type) ? [-1, 1] : [1]
+  let best = `${s.work_date} ${hhmm}:00`
+  for (const d of offsets.map(n => addDays(s.work_date, n))) {
+    const at = `${d} ${hhmm}:00`
+    if (Math.abs(minutesBetween(anchor, at)) < Math.abs(minutesBetween(anchor, best))) best = at
+  }
+  return best
+}
+// 時刻が空欄のときの既定値。入店・勤務開始 = 予定の開始、勤務終了・退店 = 予定の終了、
+// 休憩 = 予定の休憩を勤務時間の中ほどに置いた時刻（予定の休憩がなければ決められない）。起床・出発は決められない（null）
+function proxyDefaultTimes(s: ShiftTimes, breakMinutes: number): Record<string, string | null> {
+  const w = shiftWindow(s.work_date, s.start_time, s.end_time)
+  const span = minutesBetween(w.start, w.end)
+  const out: Record<string, string | null> = { wake_up: null, departure: null, check_in: w.start, work_start: w.start, break_start: null, break_end: null, work_end: w.end, check_out: w.end }
+  if (breakMinutes > 0 && breakMinutes < span) {
+    const bs = addMinutes(w.start, Math.floor((span - breakMinutes) / 2 / 15) * 15)
+    out.break_start = bs; out.break_end = addMinutes(bs, breakMinutes)
+  }
+  return out
+}
+// 同じ時刻を許さない組（後の種類 → 前の種類）。実働・休憩が0分になるのを防ぐ
+const PROXY_STRICT_AFTER: Record<string, string[]> = { break_end: ['break_start'], work_end: ['check_in', 'work_start'], check_out: ['check_in', 'work_start'] }
+
 adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const types: string[] = (Array.isArray(b.report_types) ? b.report_types : [b.report_type]).filter((t: any) => (REPORT_TYPES as readonly string[]).includes(t))
+  // 取り消し（DELETE）・報告用URLの発行と同じ条件
+  if (isSettled(s)) return c.json({ error: '確定済みのシフトです。精算画面で確定を取り消してください' }, 409)
+  if (s.status === 'absent') return c.json({ error: '欠勤のシフトには代理入力できません' }, 400)
+  const now = nowJST()
+  if (s.work_date > now.slice(0, 10)) return c.json({ error: '稼働日より前のシフトには代理入力できません' }, 400)
+  const raw: any[] = Array.isArray(b.report_types) ? b.report_types : [b.report_type]
+  const types = REPORT_TYPES.filter(t => raw.includes(t)) as string[] // 報告の順に並べる
   if (!types.length) return c.json({ error: '報告の種類を選択してください' }, 400)
-  const time = /^\d{2}:\d{2}$/.test(b.time || '') ? b.time : null
-  let created = 0
+  // 時刻（種類ごと）。旧形式の time（1つ）は、種類が1つのときだけ受け付ける
+  let times: Record<string, any> = b.times && typeof b.times === 'object' ? b.times : {}
+  if (!b.times && b.time) {
+    if (types.length > 1) return c.json({ error: '時刻は報告の種類ごとに入力してください' }, 400)
+    times = { [types[0]]: b.time }
+  }
+  const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
+  const existing = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(s.shift_id).all()).results as any[]
+  // 必要な種類か・報告済みでないか（checkReportable と同じ文言）。順序は下で時刻の前後関係として確かめる。
+  // 前の報告が欠けていても記録できる（起床・出発などを管理者が知らないことがあるため。欠けた報告も後から代理入力できる）
+  const done = new Set(existing.map(r => r.report_type as string))
   for (const t of types) {
-    const dup = await db.prepare('SELECT 1 FROM attendance_reports WHERE shift_id = ? AND report_type = ?').bind(s.shift_id, t).first()
-    if (dup) continue
-    // 時刻の指定がなければ: 入店・勤務開始 = 予定の開始、勤務終了・退店 = 予定の終了、それ以外 = 現在時刻
-    const at = time ? `${s.work_date} ${time}:00` : (t === 'check_in' || t === 'work_start') ? `${s.work_date} ${s.start_time}:00` : (t === 'check_out' || t === 'work_end') ? `${s.work_date} ${s.end_time}:00` : nowJST()
-    await db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by)
-      VALUES (?, ?, ?, ?, ?, 'normal', 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, t, at, u.user_id).run()
-    created++
+    if (!modes.required_attendance.includes(t)) return c.json({ error: `${REPORT_LABEL[t]}: このシフトでは不要な報告です` }, 400)
+    if (done.has(t)) return c.json({ error: `${REPORT_LABEL[t]}: すでに報告済みです` }, 409)
+  }
+  // 記録する日時
+  const defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
+  const atOf = new Map<string, string>()
+  for (const t of types) {
+    const v = times[t]
+    if (v !== undefined && v !== null && v !== '' && !isHHMM(v)) return c.json({ error: `${REPORT_LABEL[t]}の時刻が正しくありません` }, 400)
+    const at = v ? proxyDateTime(s, t, v) : defaults[t]
+    if (!at) return c.json({ error: `${REPORT_LABEL[t]}の時刻を入力してください（予定から決められません）` }, 400)
+    if (at > now) return c.json({ error: `${REPORT_LABEL[t]}（${fmtAt(at)}）はまだ先の日時です。実際の時刻を入力してください` }, 400)
+    atOf.set(t, at)
+  }
+  // 時刻の前後関係（すでにある報告も含めて、報告の順に並んでいるか）
+  const all = new Map<string, string>(existing.map(r => [r.report_type, r.reported_at]))
+  for (const [t, at] of atOf) all.set(t, at)
+  const ordered = REPORT_TYPES.filter(t => all.has(t)) as string[]
+  for (let j = 0; j < ordered.length; j++) for (let i = 0; i < j; i++) {
+    const ti = ordered[i], tj = ordered[j]
+    if (!atOf.has(ti) && !atOf.has(tj)) continue
+    const ai = all.get(ti)!, aj = all.get(tj)!
+    if (aj < ai) return c.json({ error: `${REPORT_LABEL[tj]}（${fmtAt(aj)}）が${REPORT_LABEL[ti]}（${fmtAt(ai)}）より前になっています` }, 400)
+    if (aj === ai && PROXY_STRICT_AFTER[tj]?.includes(ti)) return c.json({ error: `${REPORT_LABEL[tj]}と${REPORT_LABEL[ti]}が同じ時刻（${fmtAt(aj)}）です` }, 400)
+  }
+  // 入店は、アプリ・報告用URLと同じ判定で遅延にする
+  const rows = types.map(t => ({ report_type: t, reported_at: atOf.get(t)!, status: t === 'check_in' && isLateCheckIn(s, atOf.get(t)!) ? 'late' : 'normal' }))
+  try {
+    await db.batch(rows.map(r => db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by)
+      VALUES (?, ?, ?, ?, ?, ?, 'proxy', 'proxy', ?)`).bind(u.company_id, s.staff_id, s.shift_id, r.report_type, r.reported_at, r.status, u.user_id)))
+  } catch (e: any) {
+    // 本人の報告と同時になった場合（attendance_reports の一意制約）
+    if (/UNIQUE constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
+    throw e
   }
   if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
-  return c.json({ ok: true, created })
+  return c.json({ ok: true, created: rows.length, reports: rows })
 })
 adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
   const u = c.get('user')
@@ -424,6 +829,8 @@ adminLifecycleApi.post('/shifts/:id/report-link', async (c) => {
   const s = await ownShift(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (s.status === 'absent') return c.json({ error: '欠勤のシフトには発行できません' }, 400)
+  const gone = staffGoneForShift(s)
+  if (gone) return c.json({ error: `${gone}。報告用URLは発行できません` }, 400)
   const expires = `${addDays(s.work_date, 1)} 23:59:59`
   if (expires <= nowJST()) return c.json({ error: '稼働日の翌日を過ぎたシフトには発行できません' }, 400)
   const existing = await db.prepare('SELECT token, expires_at FROM shift_report_tokens WHERE shift_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 1').bind(s.shift_id, nowJST()).first() as any
@@ -449,18 +856,27 @@ adminLifecycleApi.delete('/shifts/:id/report-link', async (c) => {
 export const publicReportApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const PUBLIC_PHOTO_MAX = 500 * 1024
 
+// 退職・統合で、このシフトの報告を受け付けない理由（なければ null）。退職日当日までのシフトは受け付ける
+function staffGoneForShift(r: { merged_into_staff_id?: any; employment_status?: any; retired_at?: any; work_date: string }): string | null {
+  if (r.merged_into_staff_id) return '統合済みのスタッフです'
+  if (r.retired_at && r.work_date > r.retired_at) return '退職日より後のシフトです'
+  if (r.employment_status === 'retired' && !r.retired_at) return '退職したスタッフです'
+  return null
+}
 async function loadToken(db: D1Database, token: string) {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return null
   const t = await db.prepare(`SELECT t.*, s.work_date, s.start_time, s.end_time, s.location, s.status AS shift_status, s.project_id, s.role,
       s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, p.project_name, p.report_template_id, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
       sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
-      co.active_status AS company_active_status
+      co.active_status AS company_active_status, sp.merged_into_staff_id, sp.employment_status, us.retired_at
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     WHERE t.token = ? AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(token).first() as any
   if (!t || t.revoked || t.expires_at <= nowJST() || t.shift_status === 'absent') return null
   // 本部で停止にした企業の報告用URLは使えない（ログインの停止と同じ判定。src/lib/auth.ts）
   if (!isCompanyActive(t.company_active_status)) return null
+  // 退職日より後のシフト・統合済みのスタッフの報告用URLは使えない（退職日当日までは使える）
+  if (staffGoneForShift(t)) return null
   return t
 }
 function firstName(n: string) { return String(n || '').split(/\s+/)[0] || n }
@@ -477,14 +893,14 @@ publicReportApi.get('/:token', async (c) => {
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
   const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
   const reports = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results
-  const daily = await db.prepare('SELECT report_values, submitted_at FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
+  const daily = dailyReportView(await findDailyReport(db, t))
   const tpl = modes.daily_report_required ? await db.prepare('SELECT template_name, fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id).first() as any : null
   await db.prepare('UPDATE shift_report_tokens SET last_used_at = ? WHERE token = ?').bind(nowJST(), t.token).run()
   return c.json({
     company_name: t.company_name, staff_name: firstName(t.staff_name), project_name: t.project_name,
     shift: { work_date: t.work_date, start_time: t.start_time, end_time: t.end_time, location: t.location, role: t.role },
     today: todayJST(), expires_at: t.expires_at, modes, reports, photo_required: photoRequired(t),
-    daily_report: daily ? { submitted_at: daily.submitted_at, values: JSON.parse(daily.report_values || '{}') } : null,
+    daily_report: daily ? { submitted_at: daily.submitted_at, values: daily.values, incident_flag: daily.incident_flag, complaint_flag: daily.complaint_flag } : null,
     template: tpl ? { name: tpl.template_name, fields: JSON.parse(tpl.fields_json || '[]') } : null,
   })
 })
@@ -503,15 +919,13 @@ publicReportApi.post('/:token/attendance', async (c) => {
   } else {
     const b = await c.req.json().catch(() => ({} as any)); reportType = b.report_type; lat = b.latitude ?? null; lng = b.longitude ?? null
   }
-  const done = new Set(((await db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results as any[]).map(r => r.report_type))
-  const ng = checkReportable(modes.required_attendance, done, reportType)
+  // アプリと同じ判定（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序。report-settings.ts の checkStaffReport）
+  const cur = await db.prepare('SELECT status, settle_status FROM shifts WHERE shift_id = ?').bind(t.shift_id).first() as any
+  const ng = checkStaffReport({ ...t, status: cur?.status, settle_status: cur?.settle_status }, reportType, nowJST(), modes.required_attendance, await loadReportState(db, t.shift_id))
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 受付の時間帯（稼働日。休憩・勤務終了・退店は翌日も。lib/shift-time.ts の reportableWindow）。アプリと同じ判定
-  const late = checkReportTime(t, reportType, nowJST())
-  if (late) return c.json({ error: late.error }, late.status as 400)
   let status = 'normal'
   if (reportType === 'check_in') {
-    if (nowJST().slice(11, 16) > t.start_time) status = 'late'
+    if (isLateCheckIn(t, nowJST())) status = 'late'
     if (lat == null && status !== 'late') status = 'no_location'
   }
   if (['check_in', 'check_out'].includes(reportType) && photoRequired(t) && !photo) return c.json({ error: 'この案件は写真の添付が必須です' }, 400)
@@ -532,18 +946,21 @@ publicReportApi.post('/:token/daily-report', async (c) => {
   const t = await loadToken(db, c.req.param('token'))
   if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
-  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）
+  // 日報「不要」のシフトと、稼働日の前は受け付けない（画面もフォームを出さない・ボタンを押せない）
+  const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
+  if (!modes.daily_report_required) return c.json({ error: 'このシフトは日報の提出は不要です' }, 400)
+  const blocked = dailyReportBlocked({ work_date: t.work_date, status: t.shift_status }, todayJST())
+  if (blocked) return c.json({ error: blocked }, 400)
+  // values のキーは案件の日報テンプレートの項目に限る（キーは管理画面に表示されるため）。数値・長さはアプリと同じ検証
   const tpl = await db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(t.report_template_id ?? null).first() as any
   const picked = pickReportValues(tpl?.fields_json, b.values)
   if ('error' in picked) return c.json({ error: picked.error }, 400)
-  const json = JSON.stringify(picked.values)
-  if (json.length > 20000) return c.json({ error: '入力内容が長すぎます' }, 400)
-  const exists = await db.prepare('SELECT daily_report_id FROM daily_reports WHERE staff_id = ? AND work_date = ? AND project_id = ?').bind(t.staff_id, t.work_date, t.project_id).first() as any
-  if (exists) await db.prepare("UPDATE daily_reports SET report_values = ?, incident_flag = ?, complaint_flag = ?, submitted_at = ?, entry_method = 'link' WHERE daily_report_id = ?")
-    .bind(json, b.incident_flag ? 1 : 0, b.complaint_flag ? 1 : 0, nowJST(), exists.daily_report_id).run()
-  else await db.prepare(`INSERT INTO daily_reports (company_id, staff_id, project_id, shift_id, work_date, report_values, incident_flag, complaint_flag, submitted_at, entry_method)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(t.company_id, t.staff_id, t.project_id, t.shift_id, t.work_date, json, b.incident_flag ? 1 : 0, b.complaint_flag ? 1 : 0, nowJST()).run()
-  return c.json({ ok: true, updated: !!exists })
+  const r = await saveDailyReport(db, {
+    company_id: t.company_id, staff_id: t.staff_id, project_id: t.project_id, shift_id: t.shift_id, work_date: t.work_date,
+    values_json: JSON.stringify(picked.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
+    flags_explicit: b.flags_explicit === true, entry_method: 'link', now: nowJST(),
+  })
+  return c.json({ ok: true, updated: r.updated })
 })
 
 export { stripMoney }

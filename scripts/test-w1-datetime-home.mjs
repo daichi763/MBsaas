@@ -38,7 +38,8 @@ async function createShift(admin, staff_id, project_id, work_date, memo, start_t
   if (!s) throw new Error('shift not found ' + memo)
   return s.shift_id
 }
-const proxy = (admin, id, types) => admin.post(`/api/admin/shifts/${id}/proxy-attendance`, { report_types: types })
+// 代理入力（w2-proxy-input 以降、起床・出発は時刻の入力が必須。休憩は予定の休憩がなければ必須）
+const proxy = (admin, id, types, times) => admin.post(`/api/admin/shifts/${id}/proxy-attendance`, { report_types: types, times })
 
 // ---------- 0. 共通関数（ネットワーク不要） ----------
 {
@@ -65,7 +66,7 @@ await admin.post('/api/admin/settings/photo-required', { enabled: false }) // �
   const st = client(await login('sample', 'st003')) // staff_id 3
   // 前日 23:00〜当日 22:00（日をまたぐ）。入店・勤務開始までは前日に済んでいる
   const night = await createShift(admin, 3, 1, yesterday, 'DT-NIGHT', '23:00', '22:00')
-  await proxy(admin, night, PRE)
+  await proxy(admin, night, PRE, { wake_up: '21:00', departure: '22:00' })
   // 前日の日中のシフト（日をまたがない）で報告が残っているもの
   const dayOld = await createShift(admin, 3, 1, yesterday, 'DT-DAY-OLD', '09:00', '10:00')
   const todayShift = await createShift(admin, 3, 2, today, 'DT-TODAY', '23:30', '23:45')
@@ -117,7 +118,7 @@ await admin.post('/api/admin/settings/photo-required', { enabled: false }) // �
   const st = client(await login('sample', 'st005')) // staff_id 5
   const c1 = await createShift(admin, 5, 1, today, 'DT-DR-1', '00:01', '00:02')
   const c2 = await createShift(admin, 5, 2, today, 'DT-DR-2', '23:50', '23:55')
-  await proxy(admin, c1, ALL)
+  await proxy(admin, c1, ALL, { wake_up: '00:00', departure: '00:00', break_start: '00:01', break_end: '00:02' })
   let h = await st.get('/api/staff/home')
   ok('#17 1つ目の報告が済むと、ホームは2つ目の報告に移る', h.data.shift && h.data.shift.shift_id === c2, h.data.shift && h.data.shift.shift_id)
   let t1 = h.data.today_shifts.find(s => s.shift_id === c1)
@@ -146,7 +147,7 @@ await admin.post('/api/admin/settings/photo-required', { enabled: false }) // �
   if (tokOld && tokFut) {
     const r1 = await pub.post(`/api/public/report/${tokOld}/attendance`, { report_type: 'wake_up' })
     ok('前日のシフトの起床報告は受け付けない（受付期間外）', r1.status === 400 && /受付期間/.test(r1.data.error), r1)
-    await proxy(admin, old, PRE)
+    await proxy(admin, old, PRE, { wake_up: '07:00', departure: '08:00' })
     const r2 = await pub.post(`/api/public/report/${tokOld}/attendance`, { report_type: 'break_start' })
     ok('前日のシフトの休憩入は翌日も受け付ける（従来どおり）', r2.status === 200, r2)
     const r3 = await pub.post(`/api/public/report/${tokFut}/attendance`, { report_type: 'wake_up' })

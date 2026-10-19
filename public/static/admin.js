@@ -440,7 +440,7 @@ function staffDetailHeaderHtml(sid, p) {
         </div>
       </div>
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
-      ${p.linkable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
+      ${p.link_shareable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
       <button class="btn btn-primary" data-action="showFollowModal" data-id="${sid}" data-name="${esc(p.name)}"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
@@ -708,7 +708,40 @@ function retirementBody(status, date, origDate) {
 }
 // 保存する。退職日に確認が必要なとき（サーバーが confirm_required を返す: 7年以上前・1年以上前・入社日より前・
 // 退職日より後にシフトがある）は、内容を見せて確認できたら確認済みとして送り直す。取りやめたら null を返す
+// 退職日を設定するときは、退職日より後の今後のシフトを確認画面に出し、選べば保存の後にまとめて外す（#500）
 async function putConfirmingRetiredAt(url, body, target) {
+  const plan = await retireFutureShiftsPlan(url, target || body)
+  if (plan === false) return null
+  const res = await putRetiredAtOnce(url, body, target)
+  if (res && plan && plan.release) {
+    try {
+      const { data } = await axios.post(`/api/admin/staff/${plan.sid}/release-future-shifts`, { from: plan.from, shift_ids: plan.shift_ids })
+      toast(`今後のシフトを外しました（枠を空きに戻した ${data.removed}件・欠勤にした ${data.absent}件）`)
+    } catch (e) { showApiError(e, '今後のシフトを外せませんでした。シフト管理から外してください') }
+  }
+  return res
+}
+// 確認の結果: null = 確認不要（退職日なし・今後のシフトなし）、false = 取りやめ、{ release } = 外すかどうか
+async function retireFutureShiftsPlan(url, p) {
+  const m = /\/api\/admin\/(?:staff|employees)\/(\d+)$/.exec(url)
+  if (!m || !p || !p.retired_at) return null
+  const d = new Date(p.retired_at + 'T00:00:00Z'); if (isNaN(d)) return null
+  d.setUTCDate(d.getUTCDate() + 1)
+  const from = d.toISOString().slice(0, 10) // 退職日の当日は稼働できるので、翌日以降を対象にする
+  let data
+  try { data = (await axios.get(`/api/admin/staff/${m[1]}/future-shifts`, { params: { from } })).data } catch { return null }
+  if (!data.count && !data.linked_count) return null
+  const ST = { confirmed: '確定', substitute: '代打', requested: '希望' }
+  const list = data.shifts.slice(0, 5).map(s => `・${s.work_date} ${s.start_time}〜${s.end_time} ${s.project_name || ''}（${ST[s.status] || s.status}）`).join('\n')
+  const linked = data.linked_count ? `\n連携先の企業にも、退職日より後のシフトが ${data.linked_count}件あります（連携先では割当の候補から外れます。企業間チャットで連絡してください）。` : ''
+  if (!data.count) { alert(`退職日より後のシフトの確認${linked}`); return null }
+  const msg = `退職日（${p.retired_at}）より後に、シフトが ${data.count}件あります。\n${list}${data.count > 5 ? `\nほか ${data.count - 5}件` : ''}${linked}\n\n`
+    + 'OK: 保存して、これらのシフトを外す（枠は空きに戻します。勤怠などの記録があるシフトは欠勤にします）\nキャンセル: シフトをどうするか選び直す'
+  if (confirm(msg)) return { release: true, sid: m[1], from: data.from, shift_ids: data.shifts.map(s => s.shift_id) }
+  if (confirm('シフトはそのまま残して保存しますか？\n（残したシフトは、シフト管理・シフトボードから個別に外せます）')) return { release: false }
+  return false
+}
+async function putRetiredAtOnce(url, body, target) {
   try {
     return await axios.put(url, body)
   } catch (e) {
@@ -774,9 +807,11 @@ window.saveStaffBasicInfo = async function (sid) {
       })
     }
     if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, body))) return
-    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）
+    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）。
+    // 取引先マスタに入るため、取引先所属のスタッフだけにする（屋号・自社名・スキルシートの所属を取引先にしない。#262）
     const aff = (val('staff-affiliation') || '').trim()
-    if (aff) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
+    const isPartner = staffDetailState && staffDetailState.p && staffDetailState.p.affiliation_type === 'partner_manual'
+    if (aff && isPartner) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     toast('保存しました')
     staffEditingSid = null
     await refreshStaffProfile(sid)
@@ -980,7 +1015,7 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">案件名 *</label><input id="np-name" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">クライアント</label>
-          <select id="np-client" class="inp">${cl.clients.map(c => `<option value="${c.client_id}">${esc(c.client_name)}</option>`).join('')}</select></div>
+          <select id="np-client" class="inp"><option value="">（クライアントなし）</option>${cl.clients.map(c => `<option value="${Number(c.client_id)}">${esc(c.client_name)}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">業務種別</label>
           <select id="np-type" class="inp">${Object.entries(PTYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
       </div>
@@ -992,19 +1027,34 @@ window.showAddProject = async function () {
           ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp"></textarea></div>
-      <button class="btn btn-primary w-full" onclick="addProject()">登録する</button>
+      <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
 }
+// 登録する。同名の登録があるとき（サーバーが confirm_duplicate を返す）は、確認できたら確認済みとして送り直す。取りやめたら null を返す
+async function postConfirmingDuplicate(url, body) {
+  try {
+    return await axios.post(url, body)
+  } catch (e) {
+    const d = e.response && e.response.data
+    if (!(e.response && e.response.status === 409 && d && d.confirm_duplicate)) throw e
+    if (!confirm(d.error + '\n\nそれでも登録しますか？')) return null
+    return axios.post(url, { ...body, allow_duplicate: true })
+  }
+}
+delegate('addProject', el => withSubmitLock(el, addProject))
 window.addProject = async function () {
   const name = document.getElementById('np-name').value.trim()
   if (!name) { toast('案件名を入力してください'); return }
-  await axios.post('/api/admin/projects', {
-    project_name: name, client_id: document.getElementById('np-client').value,
-    project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
-    unit_price: Number(document.getElementById('np-price').value || 0),
-    report_template_id: document.getElementById('np-tpl').value, requirements: document.getElementById('np-req').value
-  })
-  closeModal(); toast('案件を登録しました'); renderProjects()
+  try {
+    const res = await postConfirmingDuplicate('/api/admin/projects', {
+      project_name: name, client_id: document.getElementById('np-client').value || null,
+      project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
+      unit_price: Number(document.getElementById('np-price').value || 0),
+      report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value
+    })
+    if (!res) return
+    closeModal(); toast('案件を登録しました'); renderProjects()
+  } catch (e) { showApiError(e, '案件の登録に失敗しました') }
 }
 
 async function renderProjectDetail(pid) {
@@ -1088,6 +1138,11 @@ async function renderProjectDetail(pid) {
 }
 
 // ============ クライアント ============
+// 評価の星。範囲外・数値でない値でも描画が止まらないよう 0〜5 に丸める
+function ratingStars(v) {
+  const n = Math.max(0, Math.min(5, Math.round(Number(v) || 0)))
+  return '★'.repeat(n) + '☆'.repeat(5 - n)
+}
 async function renderClients() {
   loading()
   const { data } = await axios.get('/api/admin/clients')
@@ -1107,7 +1162,7 @@ async function renderClients() {
             <div class="flex"><dt class="w-20 text-gray-400">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${'★'.repeat(c.client_rating || 0)}${'☆'.repeat(5 - (c.client_rating || 0))}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
           </dl>
           ${c.ng_staff_ids ? '<p class="text-xs text-red-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
@@ -1145,7 +1200,7 @@ async function renderClientDetail(cid) {
           <div class="flex"><dt class="w-24 text-gray-400">住所</dt><dd>${esc(c.address || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400">評価</dt><dd>${'★'.repeat(c.client_rating || 0)}${'☆'.repeat(5 - (c.client_rating || 0))}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400">稼働案件</dt><dd>${esc(c.active_projects || '-')}</dd></div>
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600">${esc(c.memo || '-')}</dd></div>
         </dl>
@@ -1315,11 +1370,11 @@ async function renderEmployees() {
       </div>
     </section>
     ${(data.ended || []).length ? `<section class="card p-4 mt-4" id="employees-ended">
-      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-box-archive text-gray-400 mr-1"></i>雇用終了（他の区分へ移行したスタッフ）</h3>
+      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-box-archive text-gray-400 mr-1"></i>雇用終了（他の区分へ移行・統合したスタッフ）</h3>
       <p class="text-xs text-gray-400 mb-2">従業員管理のデータは閲覧のみで保持しています（7年保存）。スタッフとしての稼働はスタッフマスタで管理します</p>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>社員番号</th><th>氏名</th><th>現在の区分</th><th>雇用終了日</th><th>理由</th></tr></thead><tbody>
         ${data.ended.map(e => `<tr class="cursor-pointer" onclick="location.hash='employees/${e.staff_id}'"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
-          <td>${affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-gray-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
+          <td>${e.merged_into_staff_id ? '<span class="badge badge-gray">統合済み</span>' : affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-gray-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
       </tbody></table></div>
     </section>` : ''}`
 }
@@ -1553,19 +1608,23 @@ window.showAddClient = function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
-      <button class="btn btn-primary w-full" onclick="addClient()">登録する</button>
+      <button class="btn btn-primary w-full" data-action="addClient">登録する</button>
     </div>`)
 }
+delegate('addClient', el => withSubmitLock(el, addClient))
 window.addClient = async function () {
   const name = document.getElementById('nc-name').value.trim()
   if (!name) { toast('クライアント名を入力してください'); return }
-  await axios.post('/api/admin/clients', {
-    client_name: name, stream_type: document.getElementById('nc-stream').value,
-    contract_type: document.getElementById('nc-contract').value, contact_name: document.getElementById('nc-contact').value,
-    phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
-    memo: document.getElementById('nc-memo').value
-  })
-  closeModal(); toast('クライアントを登録しました'); renderClients()
+  try {
+    const res = await postConfirmingDuplicate('/api/admin/clients', {
+      client_name: name, stream_type: document.getElementById('nc-stream').value,
+      contract_type: document.getElementById('nc-contract').value, contact_name: document.getElementById('nc-contact').value,
+      phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
+      memo: document.getElementById('nc-memo').value
+    })
+    if (!res) return
+    closeModal(); toast('クライアントを登録しました'); renderClients()
+  } catch (e) { showApiError(e, 'クライアントの登録に失敗しました') }
 }
 
 // ============ シフト管理 ============
@@ -1613,14 +1672,17 @@ async function renderShifts(dateStr) {
 
 window.showAddShift = async function (defaultDate) {
   const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff'), axios.get('/api/admin/projects')])
+  // 割り当てられる人だけを出す（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職は assignable=0 #94）
+  const staff = st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id && s.assignable !== 0)
+  addShiftProjects = pj.projects.filter(p => p.status === 'active')
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト登録</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">スタッフ *</label>
-          <select id="sh-staff" class="inp">${st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id).map(s => `<option value="${s.staff_id}">${esc(s.name)}</option>`).join('')}</select></div>
+          <select id="sh-staff" class="inp">${staff.map(s => `<option value="${s.staff_id}">${esc(s.name)}${s.employment_status === 'leave' ? '（休職中）' : ''}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">案件 *</label>
-          <select id="sh-project" class="inp">${pj.projects.filter(p => p.status === 'active').map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
+          <select id="sh-project" class="inp" onchange="addShiftFeeHint()">${addShiftProjects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">日付 *</label><input id="sh-date" type="date" class="inp" value="${defaultDate || ''}"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1630,21 +1692,47 @@ window.showAddShift = async function (defaultDate) {
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">状態</label>
           <select id="sh-status" class="inp"><option value="confirmed">確定</option><option value="requested">希望</option><option value="substitute">代打</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">交通費</label><input id="sh-fee" type="number" value="1200" class="inp"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">交通費（実費）</label><input id="sh-fee" type="number" min="0" class="inp" placeholder="空欄なら0円">
+          <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
-      <button class="btn btn-primary w-full" onclick="addShift()">登録する</button>
+      <button class="btn btn-primary w-full" data-action="addShift">登録する</button>
     </div>`)
+  addShiftFeeHint()
 }
-window.addShift = async function () {
+// 案件の交通費ルール（実費の入力が請求・支払にどう効くか）を入力欄の下に出す（#94）
+let addShiftProjects = []
+const BILL_TRANSPORT_LABEL = { actual: '実費', fixed: '定額', included: '単価に含む' }
+const PAY_TRANSPORT_LABEL = { actual: '実費', capped: '上限あり', fixed: '定額', none: '支給なし' }
+window.addShiftFeeHint = function () {
+  const el = document.getElementById('sh-fee-hint'); if (!el) return
+  const p = addShiftProjects.find(x => String(x.project_id) === document.getElementById('sh-project').value)
+  if (!p) { el.textContent = ''; return }
+  const bt = p.bill_transport_type || 'actual', pt = p.pay_transport_type || 'actual'
+  el.textContent = `案件の交通費: 請求 ${BILL_TRANSPORT_LABEL[bt] || bt}${bt === 'fixed' ? ' ' + Number(p.bill_transport_amount || 0) + '円' : ''}`
+    + ` ／ 支払 ${PAY_TRANSPORT_LABEL[pt] || pt}${pt === 'fixed' || pt === 'capped' ? ' ' + Number(p.pay_transport_amount || 0) + '円' : ''}`
+}
+// 重複・NG・休職中があれば内容を出して確認し、確認できたら force で登録する（シフトボードと同じ流れ #94）
+window.addShift = async function (force) {
   const date = document.getElementById('sh-date').value
   if (!date) { toast('日付を選択してください'); return }
-  await axios.post('/api/admin/shifts', {
-    staff_id: document.getElementById('sh-staff').value, project_id: document.getElementById('sh-project').value,
-    work_date: date, start_time: document.getElementById('sh-start').value, end_time: document.getElementById('sh-end').value,
-    status: document.getElementById('sh-status').value, transportation_fee: Number(document.getElementById('sh-fee').value || 0)
-  })
+  const staffId = document.getElementById('sh-staff').value
+  if (!staffId) { toast('スタッフを選択してください'); return }
+  const fee = document.getElementById('sh-fee').value
+  try {
+    await axios.post('/api/admin/shifts', {
+      staff_id: Number(staffId), project_id: document.getElementById('sh-project').value,
+      work_date: date, start_time: document.getElementById('sh-start').value, end_time: document.getElementById('sh-end').value,
+      status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
+      confirm_warnings: true, force: !!force,
+    })
+  } catch (e) {
+    const d = e.response && e.response.data
+    if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま登録しますか？')) return addShift(true); return }
+    showApiError(e, '登録に失敗しました'); return
+  }
   closeModal(); toast('シフトを登録しました'); renderShifts(date)
 }
+delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
 window.showEditShift = function (shiftId, staffName, status) {
   modal(`
@@ -1658,7 +1746,8 @@ window.showEditShift = function (shiftId, staffName, status) {
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 window.updateShift = async function (id, status) {
-  await axios.put('/api/admin/shifts/' + id, { status })
+  // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
+  try { await axios.put('/api/admin/shifts/' + id, { status }) } catch (e) { showApiError(e, '更新に失敗しました'); return }
   closeModal(); toast('シフトを更新しました'); renderShifts()
 }
 window.deleteShift = async function (id) {
@@ -1830,8 +1919,9 @@ async function renderNotices() {
               ${n.importance !== 'normal' ? '<span class="badge badge-red">重要</span>' : ''}
               <span class="badge badge-gray">${n.target_type === 'all' ? '全体' : n.target_type === 'project' ? '案件別' : '個人'}</span>
               <span class="text-xs text-gray-400">${dayjs(n.published_at).format('M/D HH:mm')}</span>
-              <button class="text-xs text-blue-600 ml-auto hover:underline" onclick="showReads(${n.notice_id})">
-                既読 ${n.read_count}/${n.staff_total}名</button>
+              <button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${Number(n.notice_id)}"
+                ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
+                既読 ${Number(n.read_count) || 0}/${Number(n.staff_total) || 0}名${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>
             </div>
             <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
             <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
@@ -1903,17 +1993,28 @@ window.sendNotice = async function (btn) {
     if (btn) { btn.disabled = false; btn.innerHTML = label }
   }
 }
+// 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）
 window.showReads = async function (id) {
-  const { data } = await axios.get(`/api/admin/notices/${id}/reads`)
+  let data
+  try { data = (await axios.get(`/api/admin/notices/${Number(id)}/reads`)).data } catch (e) { showApiError(e, '既読状況を読み込めませんでした'); return }
+  if (data.purged) {
+    modal(`
+      <h3 class="font-bold text-lg mb-4">既読状況</h3>
+      <p class="text-sm text-gray-600">公開から2年たったため、既読の記録は削除済みです。</p>
+      <p class="text-sm text-gray-600 mt-2">削除の直前の既読: ${Number(data.read_count) || 0}/${Number(data.target_count) || 0}名</p>`)
+    return
+  }
   modal(`
-    <h3 class="font-bold text-lg mb-4">既読状況</h3>
+    <h3 class="font-bold text-lg mb-1">既読状況</h3>
+    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）</p>
     <div class="grid grid-cols-2 gap-4">
       <div><h4 class="text-sm font-bold text-emerald-700 mb-2">既読 ${data.read.length}名</h4>
-        <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${dayjs(r.read_at).format('M/D HH:mm')}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
+        <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
       <div><h4 class="text-sm font-bold text-red-700 mb-2">未読 ${data.unread.length}名</h4>
         <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
     </div>`)
 }
+delegate('showReads', el => showReads(Number(el.dataset.id)))
 
 // ============ お知らせ既読率レポート ============
 function fiscalYearLabel(fy) { return `${fy}年度（${fy}/04〜${fy + 1}/03）` }
@@ -1922,14 +2023,22 @@ function currentFiscalYearJs() {
   const y = d.getUTCFullYear(); const m = d.getUTCMonth() + 1
   return m >= 4 ? y : y - 1
 }
+// 集計日時（JST の 'YYYY-MM-DD HH:MM:SS'）を表示用にする
+function noticeReportTime(t) { return t ? esc(dayjs(String(t).replace(' ', 'T')).format('YYYY/M/D HH:mm')) : '-' }
 async function renderNoticeReadReport(fy) {
   loading()
-  fy = fy || currentFiscalYearJs() - 1 // 直近の確定年度をデフォルト表示（今年度はまだ集計対象外のため）
+  fy = fy || currentFiscalYearJs() - 1 // 直近に終わった年度を既定で表示する（今年度は年度の途中の値）
   const { data } = await axios.get(`/api/admin/notice-reports/${fy}`)
   window._noticeReportData = data
   const s = data.summary
   const fyOptions = []
   for (let y = currentFiscalYearJs(); y >= currentFiscalYearJs() - 6; y--) fyOptions.push(y)
+  // 年度の状態: 確定済み / 年度の途中（毎日更新）/ 集計中（確定前）
+  const state = !s ? '' : data.finalized
+    ? `<span class="badge badge-green">確定</span><span class="text-xs text-gray-500">確定日時: ${noticeReportTime(s.finalized_at)}</span>`
+    : data.in_progress
+      ? `<span class="badge badge-yellow">年度の途中</span><span class="text-xs text-gray-500">${noticeReportTime(s.calculated_at)} 時点の集計（毎日更新）</span>`
+      : `<span class="badge badge-gray">確定前</span><span class="text-xs text-gray-500">${noticeReportTime(s.calculated_at)} 時点の集計（年度末から30日後に確定）</span>`
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -1938,20 +2047,22 @@ async function renderNoticeReadReport(fy) {
         <select class="inp text-sm" onchange="renderNoticeReadReport(Number(this.value))">
           ${fyOptions.map(y => `<option value="${y}" ${y === fy ? 'selected' : ''}>${fiscalYearLabel(y)}</option>`).join('')}
         </select>
-        <button class="btn btn-outline text-sm" onclick="recalculateNoticeReadReport(${fy})"><i class="fas fa-rotate"></i>再集計</button>
-        <a class="btn btn-outline text-sm" href="/api/admin/notice-reports/${fy}/csv"><i class="fas fa-file-csv"></i>CSV出力</a>
+        <button class="btn btn-outline text-sm" data-action="recalcNoticeReport" data-fy="${Number(fy)}" ${data.recalculable ? '' : `disabled title="${escAttr(data.recalc_block_reason || '')}"`}><i class="fas fa-rotate"></i>再集計</button>
+        <a class="btn btn-outline text-sm" href="/api/admin/notice-reports/${Number(fy)}/csv"><i class="fas fa-file-csv"></i>CSV出力</a>
       </div>
     </div>
+    ${data.recalculable ? '' : `<p class="text-xs text-gray-500 mb-3"><i class="fas fa-lock mr-1"></i>${esc(data.recalc_block_reason || '')}（保存済みの集計を表示しています）</p>`}
 
     <section class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">年度全体</h3>
-      ${!s ? `<p class="text-sm text-gray-400">このレポートはまだ生成されていません。「再集計」を実行してください。</p>` : `
+      <div class="flex items-center gap-2 mb-3 flex-wrap"><h3 class="text-sm font-bold text-gray-700">年度全体</h3>${state}</div>
+      ${!s ? `<p class="text-sm text-gray-400">このレポートはまだ生成されていません。${data.recalculable ? '「再集計」を実行してください。' : ''}</p>` : `
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div><p class="text-xs text-gray-400">対象お知らせ数</p><p class="text-lg font-bold">${s.target_notice_count}件</p></div>
           <div><p class="text-xs text-gray-400">対象延べ人数</p><p class="text-lg font-bold">${s.target_user_count}人</p></div>
           <div><p class="text-xs text-gray-400">既読延べ人数</p><p class="text-lg font-bold text-emerald-600">${s.read_count}人</p></div>
           <div><p class="text-xs text-gray-400">年度既読率</p><p class="text-lg font-bold text-blue-600">${s.read_rate == null ? '-' : s.read_rate.toFixed(1) + '%'}</p></div>
-        </div>`}
+        </div>
+        <p class="text-xs text-gray-500 mt-3">対象は、お知らせを公開した時点で在籍していた人です（後で退職した人も含みます。入社前のお知らせは含みません）。</p>`}
     </section>
 
     <section class="card p-4">
@@ -1968,35 +2079,43 @@ async function renderNoticeReadReport(fy) {
                 <td>${r.read_count}</td>
                 <td>${r.unread_count}</td>
                 <td>${r.read_rate == null ? '-' : r.read_rate.toFixed(1) + '%'}</td>
-                <td><button class="text-xs text-blue-600 hover:underline" onclick="showStaffNoticeReport(${fy}, ${r.staff_id})">詳細</button></td>
+                <td><button class="text-xs text-blue-600 hover:underline" data-action="showStaffNoticeReport" data-fy="${Number(fy)}" data-id="${Number(r.staff_id)}">詳細</button></td>
               </tr>`).join('')}
           </tbody>
         </table>
       </div>`}
     </section>`
 }
-window.recalculateNoticeReadReport = async function (fy) {
-  try {
-    await axios.post(`/api/admin/notice-reports/${fy}/recalculate`)
-    toast('再集計しました')
-    renderNoticeReadReport(fy)
-  } catch {
-    toast('再集計に失敗しました')
-  }
+window.recalculateNoticeReadReport = async function (fy, btn) {
+  await withSubmitLock(btn, async () => {
+    try {
+      const { data } = await axios.post(`/api/admin/notice-reports/${Number(fy)}/recalculate`)
+      toast(`再集計しました（${noticeReportTime(data.calculated_at)} 時点）`)
+      renderNoticeReadReport(fy)
+    } catch (e) {
+      showApiError(e, '再集計に失敗しました')
+    }
+  })
 }
+delegate('recalcNoticeReport', el => recalculateNoticeReadReport(Number(el.dataset.fy), el))
+// スタッフ別の詳細はその場で計算する。一覧の数字は集計した時点の値なので、その日時を添える（#481）
 window.showStaffNoticeReport = async function (fy, staffId) {
-  const { data } = await axios.get(`/api/admin/notice-reports/${fy}/staff/${staffId}`)
+  let data
+  try { data = (await axios.get(`/api/admin/notice-reports/${Number(fy)}/staff/${Number(staffId)}`)).data } catch (e) { showApiError(e, '詳細を読み込めませんでした'); return }
+  const s = window._noticeReportData && window._noticeReportData.fiscal_year === fy ? window._noticeReportData.summary : null
   modal(`
     <h3 class="font-bold text-lg mb-1">${esc(data.staff_name)}</h3>
-    <p class="text-sm text-gray-400 mb-4">${fiscalYearLabel(fy)}</p>
+    <p class="text-sm text-gray-400 mb-1">${fiscalYearLabel(fy)}</p>
+    <p class="text-xs text-gray-500 mb-4">下の既読・未読はいまの状態です。一覧の数字は ${s ? noticeReportTime(s.calculated_at) : '-'} 時点の集計です。</p>
     <div class="space-y-1.5 max-h-96 overflow-y-auto">
-      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません（2年以上前のためデータが削除されている可能性があります）</p>' : data.notices.map(n => `
+      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません</p>' : data.notices.map(n => `
         <div class="flex items-center justify-between text-sm p-2 rounded-lg bg-gray-50">
           <span class="truncate">${esc(n.title)}</span>
-          <span class="badge ${n.is_read ? 'badge-green' : 'badge-gray'} shrink-0 ml-2">${n.is_read ? '既読' : '未読'}</span>
+          <span class="badge ${n.is_read === null ? 'badge-gray' : n.is_read ? 'badge-green' : 'badge-gray'} shrink-0 ml-2">${n.is_read === null ? '記録なし（保存期間外）' : n.is_read ? '既読' : '未読'}</span>
         </div>`).join('')}
     </div>`)
 }
+delegate('showStaffNoticeReport', el => showStaffNoticeReport(Number(el.dataset.fy), Number(el.dataset.id)))
 
 
 // ============ フォロー履歴 ============
@@ -2063,25 +2182,28 @@ window.closeConsult = async function (id) {
 }
 
 // ============ 請求前確認 ============
+// 金額は精算と同じ計算（交通費の請求区分・請求の調整額を含む請求合計）。total_bill / total がサーバーで計算した請求合計
 async function renderBilling(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
-  const { data } = await axios.get('/api/admin/billing-check?month=' + month)
+  let data
+  try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
       <div class="flex gap-2 items-center">
-        <button class="btn btn-outline" onclick="renderBilling('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
+        <button class="btn btn-outline" data-action="renderBilling" data-month="${esc(dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM'))}"><i class="fas fa-chevron-left"></i></button>
         <span class="font-bold">${dayjs(month + '-01').format('YYYY年M月')}</span>
-        <button class="btn btn-outline" onclick="renderBilling('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-right"></i></button>
+        <button class="btn btn-outline" data-action="renderBilling" data-month="${esc(dayjs(month + '-01').add(1, 'month').format('YYYY-MM'))}"><i class="fas fa-chevron-right"></i></button>
         <button class="btn btn-primary" onclick="exportBillingCsv()"><i class="fas fa-file-csv"></i>CSV出力</button>
       </div>
     </div>
+    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください</p>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>稼働金額</th><th>交通費</th><th>合計</th></tr></thead>
+          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
           <tbody>${data.by_project.map(p => `
             <tr>
               <td class="font-medium">${esc(p.project_name)}</td>
@@ -2090,8 +2212,8 @@ async function renderBilling(month) {
               <td>${p.absent_days ? `<span class="badge badge-red">${p.absent_days}</span>` : 0}</td>
               <td>${p.substitute_days || 0}</td>
               <td>${p.report_count}/${p.work_days} ${p.report_count < p.work_days ? '<i class="fas fa-triangle-exclamation text-amber-500" title="日報と稼働日数が一致しません"></i>' : '<i class="fas fa-check text-emerald-500"></i>'}</td>
-              <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td>
-              <td class="font-bold">${yen((p.total_amount || 0) + (p.total_transport || 0))}</td>
+              <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
+              <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -2101,14 +2223,14 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>稼働金額</th><th>交通費</th><th>合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td>
-              <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td>
-              <td class="font-bold">${yen((d.amount || 0) + (d.transport || 0))}</td>
+              <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
+              <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -2116,13 +2238,15 @@ async function renderBilling(month) {
     </section>`
   window._billingData = data
 }
+delegate('renderBilling', el => renderBilling(el.dataset.month))
 window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
-  let csv = '\uFEFFスタッフ,案件,稼働日数,欠勤,稼働金額,交通費,合計\n'
-  for (const d of data.detail) {
-    csv += `${d.name},${d.project_name},${d.work_days},${d.absent_days || 0},${d.amount || 0},${d.transport || 0},${(d.amount || 0) + (d.transport || 0)}\n`
-  }
+  // 値はダブルクォートで囲み、表計算ソフトで式として読まれる先頭の文字（= + - @ タブ CR）には ' を付ける
+  const cell = (v) => { let t = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(t) && !/^-?\d+(\.\d+)?$/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"' }
+  const lines = [['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計']]
+  for (const d of data.detail) lines.push([d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0])
+  const csv = '﻿' + lines.map(l => l.map(cell).join(',')).join('\r\n') + '\r\n'
   const blob = new Blob([csv], { type: 'text/csv' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -2131,9 +2255,221 @@ window.exportBillingCsv = function () {
   toast('CSVをダウンロードしました')
 }
 
+// ============ アカウント設定（自分のアカウント・パスワード変更・管理者アカウント。#25 #43 #44） ============
+const ADMIN_ROLE_LABEL = { company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当' }
+const adminRoleOptions = (cur) => Object.entries(ADMIN_ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${v}</option>`).join('')
+let ADMIN_USERS = new Map()
+
+// 仮パスワードを一度だけ表示する（閉じると二度と表示できない）。staff-lifecycle.js のスタッフの再発行でも使う
+window.showTempPassword = function (title, password, lines) {
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-key text-blue-600 mr-1"></i>${esc(title)}</h3>
+    <p class="text-xs text-red-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
+    <textarea id="temp-pw-text" class="inp font-mono text-sm" rows="${(lines || []).length + 1}" readonly>${esc([...(lines || []), '仮パスワード: ' + password].join('\n'))}</textarea>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-outline flex-1" data-action="copyTempPassword"><i class="fas fa-copy"></i>コピー</button>
+      <button class="btn btn-primary flex-1" onclick="closeModal()">閉じる</button>
+    </div>`)
+}
+delegate('copyTempPassword', async () => {
+  const el = document.getElementById('temp-pw-text'); if (!el) return
+  try { await navigator.clipboard.writeText(el.value) } catch { el.select(); document.execCommand && document.execCommand('copy') }
+  toast('コピーしました')
+})
+
+async function renderAccount() {
+  loading()
+  let me, list = null
+  try {
+    me = (await axios.get('/api/auth/account')).data
+    if (me.role === 'company_admin') list = (await axios.get('/api/admin/users')).data
+  } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
+  ADMIN_USERS = new Map((list ? list.users : []).map(u => [u.user_id, u]))
+  $app.innerHTML = `
+    <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
+    ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
+    ${!me.email ? `<div class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800"><i class="fas fa-envelope mr-1"></i>メールアドレスが登録されていません。登録すると、打刻修正の承認依頼などの通知と、パスワードを忘れたときの再設定メールが届きます。</div>` : ''}
+    <div class="grid lg:grid-cols-2 gap-4 mb-6">
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-user text-blue-500 mr-1"></i>自分のアカウント</h3>
+        <dl class="text-sm mb-3">
+          <div class="flex py-1"><dt class="w-24 text-gray-400">ID</dt><dd>${esc(me.user_code)}</dd></div>
+          <div class="flex py-1"><dt class="w-24 text-gray-400">権限</dt><dd>${esc(ADMIN_ROLE_LABEL[me.role] || me.role)}</dd></div>
+        </dl>
+        <div class="space-y-3">
+          <div><label class="text-sm text-gray-600 block mb-1">氏名</label><input id="ac-name" class="inp" value="${esc(me.name)}" maxlength="60"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="ac-email" type="email" class="inp" value="${esc(me.email || '')}" data-current="${esc(me.email || '')}" autocomplete="email"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード（メールアドレスを変更するときだけ）</label><input id="ac-email-pw" type="password" class="inp" autocomplete="current-password"></div>
+          <button class="btn btn-primary w-full" data-action="saveMyAccount">保存する</button>
+          <p class="text-[11px] text-gray-400">メールアドレスを変更すると、新しいアドレスに確認のメールを、以前のアドレスに変更のお知らせを送ります。</p>
+        </div>
+      </section>
+      <section class="card p-4">
+        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-lock text-blue-500 mr-1"></i>パスワードの変更</h3>
+        <div class="space-y-3">
+          <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード</label><input id="pw-current" type="password" class="inp" autocomplete="current-password"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（8文字以上）</label><input id="pw-new" type="password" class="inp" autocomplete="new-password"></div>
+          <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（確認）</label><input id="pw-new2" type="password" class="inp" autocomplete="new-password"></div>
+          <button class="btn btn-primary w-full" data-action="changeMyPassword">変更する</button>
+          <p class="text-[11px] text-gray-400">変更すると、ほかの端末のログインは終了します。</p>
+        </div>
+      </section>
+    </div>
+    ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
+}
+
+function adminUsersHtml(users, meId) {
+  return `
+    <section class="card p-4">
+      <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-user-shield text-blue-500 mr-1"></i>管理者アカウント</h3>
+          <p class="text-[11px] text-gray-400">営業・現場・事務の担当者ごとにアカウントを作ると、承認・確定した人が正しく記録されます。退職した担当者は「停止」にしてください。</p>
+        </div>
+        <button class="btn btn-primary text-sm" data-action="showAddAdminUser"><i class="fas fa-plus"></i>管理者を追加</button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
+            <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">最終ログイン</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${users.map(u => `
+              <tr class="border-b border-gray-50">
+                <td class="py-2 text-gray-500">${esc(u.user_code)}</td>
+                <td class="py-2">${esc(u.name)}${u.user_id === meId ? ' <span class="badge badge-blue">自分</span>' : ''}</td>
+                <td class="py-2 text-xs">${u.email ? esc(u.email) : '<span class="text-amber-600">未登録</span>'}</td>
+                <td class="py-2">${esc(ADMIN_ROLE_LABEL[u.role] || u.role)}</td>
+                <td class="py-2">${u.status === 'active' ? '<span class="badge badge-green">利用中</span>' : '<span class="badge badge-gray">停止</span>'}${u.must_change_password ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
+                <td class="py-2 text-xs text-gray-400">${u.last_login_at ? esc(dayjs(u.last_login_at).format('M/D HH:mm')) : '-'}</td>
+                <td class="py-2 text-right whitespace-nowrap">
+                  <button class="btn btn-outline text-xs" data-action="editAdminUser" data-id="${u.user_id}">編集</button>
+                  ${u.user_id === meId ? '' : `
+                    ${u.status === 'active' ? `<button class="btn btn-outline text-xs" data-action="resetAdminUserPassword" data-id="${u.user_id}">パスワード再発行</button>` : ''}
+                    <button class="btn btn-outline text-xs" data-action="toggleAdminUserStatus" data-id="${u.user_id}">${u.status === 'active' ? '停止' : '利用を再開'}</button>`}
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>`
+}
+
+delegate('saveMyAccount', (el) => withSubmitLock(el, async () => {
+  const email = document.getElementById('ac-email')
+  const body = { name: document.getElementById('ac-name').value.trim(), email: email.value.trim() }
+  if (body.email !== (email.dataset.current || '')) body.current_password = document.getElementById('ac-email-pw').value
+  try {
+    const { data } = await axios.put('/api/auth/account', body)
+    ME = (await axios.get('/api/auth/me')).data
+    document.getElementById('company-name').textContent = ME.company_name + ' / ' + ME.name
+    toast(data.email_notice_sent ? '保存しました。新しいメールアドレスに確認のメールを送りました' : '保存しました')
+    renderAccount()
+  } catch (e) { showApiError(e, '保存に失敗しました') }
+}))
+delegate('changeMyPassword', (el) => withSubmitLock(el, async () => {
+  const cur = document.getElementById('pw-current').value
+  const next = document.getElementById('pw-new').value
+  if (next !== document.getElementById('pw-new2').value) { toast('新しいパスワード（確認）が一致しません'); return }
+  try {
+    await axios.post('/api/auth/change-password', { current_password: cur, new_password: next })
+    if (ME) ME.must_change_password = false
+    toast('パスワードを変更しました')
+    renderAccount()
+  } catch (e) { showApiError(e, 'パスワードの変更に失敗しました') }
+}))
+
+delegate('showAddAdminUser', () => {
+  modal(`
+    <h3 class="font-bold text-lg mb-4">管理者を追加</h3>
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">ID *</label><input id="au-code" class="inp" placeholder="sales02"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="au-name" class="inp" maxlength="60"></div>
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="au-email" type="email" class="inp"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">権限 *</label><select id="au-role" class="inp">${adminRoleOptions('field_manager')}</select></div>
+      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード（空欄なら自動で作ります）</label><input id="au-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
+      <p class="text-[11px] text-gray-400">初回ログインで、本人にパスワードの変更を求めます。ログインの会社コードは自社の会社コードです。</p>
+      <button class="btn btn-primary w-full" data-action="addAdminUser">追加する</button>
+    </div>`)
+})
+delegate('addAdminUser', (el) => withSubmitLock(el, async () => {
+  const v = id => document.getElementById(id).value.trim()
+  try {
+    const { data } = await axios.post('/api/admin/users', { user_code: v('au-code'), name: v('au-name'), email: v('au-email'), role: v('au-role'), password: document.getElementById('au-pass').value })
+    const code = v('au-code'), name = v('au-name')
+    closeModal(); toast('管理者を追加しました'); renderAccount()
+    if (data.temp_password) showTempPassword('管理者を追加しました', data.temp_password, [`氏名: ${name}`, `ID: ${code}`, `ログイン: ${location.origin}/login`])
+  } catch (e) { showApiError(e, '追加に失敗しました') }
+}))
+delegate('editAdminUser', (el) => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  const isMe = ME && u.user_id === ME.user_id
+  modal(`
+    <h3 class="font-bold text-lg mb-4">管理者の編集（${esc(u.user_code)}）</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="eu-name" class="inp" value="${esc(u.name)}" maxlength="60"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス</label><input id="eu-email" type="email" class="inp" value="${esc(u.email || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">権限</label><select id="eu-role" class="inp" ${isMe ? 'disabled' : ''}>${adminRoleOptions(u.role)}</select>
+        ${isMe ? '<p class="text-[11px] text-gray-400 mt-1">自分の権限は変更できません。自分のメールアドレスは「自分のアカウント」から変更してください。</p>' : ''}</div>
+      <button class="btn btn-primary w-full" data-action="saveAdminUser" data-id="${u.user_id}">保存する</button>
+    </div>`)
+  if (isMe) document.getElementById('eu-email').disabled = true
+})
+delegate('saveAdminUser', (el) => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const isMe = ME && id === ME.user_id
+  const body = { name: document.getElementById('eu-name').value.trim() }
+  if (!isMe) { body.email = document.getElementById('eu-email').value.trim(); body.role = document.getElementById('eu-role').value }
+  try {
+    await axios.put('/api/admin/users/' + id, body)
+    closeModal(); toast('保存しました'); renderAccount()
+  } catch (e) { showApiError(e, '保存に失敗しました') }
+}))
+delegate('toggleAdminUserStatus', (el) => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  const next = u.status === 'active' ? 'suspended' : 'active'
+  if (next === 'suspended' && !confirm(`${u.name}（${u.user_code}）のアカウントを停止します。ログイン中の画面もすぐに使えなくなります。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    try {
+      await axios.put('/api/admin/users/' + u.user_id, { status: next })
+      toast(next === 'suspended' ? '停止しました' : '利用を再開しました'); renderAccount()
+    } catch (e) { showApiError(e, '変更に失敗しました') }
+  })
+})
+delegate('resetAdminUserPassword', (el) => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  modal(`
+    <h3 class="font-bold text-lg mb-2">パスワードの再発行（${esc(u.name)}）</h3>
+    <p class="text-xs text-gray-500 mb-3">今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。</p>
+    <div class="space-y-2">
+      ${u.email ? `<button class="btn btn-outline w-full" data-action="doResetAdminUserPassword" data-id="${u.user_id}" data-mode="email"><i class="fas fa-envelope"></i>再設定メールを送る（${esc(u.email)}）</button>` : ''}
+      <button class="btn btn-primary w-full" data-action="doResetAdminUserPassword" data-id="${u.user_id}" data-mode="temp"><i class="fas fa-key"></i>仮パスワードを発行する</button>
+      <button class="btn btn-outline w-full" onclick="closeModal()">キャンセル</button>
+    </div>`)
+})
+delegate('doResetAdminUserPassword', (el) => withSubmitLock(el, async () => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  try {
+    const { data } = await axios.post(`/api/admin/users/${u.user_id}/reset-password`, { mode: el.dataset.mode })
+    closeModal(); renderAccount()
+    if (data.mode === 'email') toast('パスワード再設定メールを送りました')
+    else showTempPassword('仮パスワードを発行しました', data.temp_password, [`氏名: ${u.name}`, `ID: ${u.user_code}`, `ログイン: ${location.origin}/login`])
+  } catch (e) { showApiError(e, '再発行に失敗しました') }
+}))
+
+// ダッシュボード: メールアドレスのない管理者に登録を案内する（#25）
+function accountEmailNotice() {
+  if (!ME || ME.email || document.getElementById('account-email-notice')) return
+  $app.insertAdjacentHTML('afterbegin', `<div id="account-email-notice" class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800 flex items-center gap-2 flex-wrap">
+    <i class="fas fa-envelope"></i><span class="flex-1">通知メール（打刻修正の承認依頼など）を受け取るには、メールアドレスを登録してください。</span>
+    <a href="#account" class="btn btn-outline text-xs">アカウント設定へ</a></div>`)
+}
+
 // ============ ルーティング ============
 const routes = {
-  dashboard: renderDashboard, staff: renderStaff, projects: renderProjects, clients: renderClients,
+  dashboard: async () => { await renderDashboard(); accountEmailNotice() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
@@ -2146,6 +2482,8 @@ const routes = {
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)
   const [tab, id] = hash.split('/')
+  // 仮パスワードのままの間は、パスワードの変更を先に求める（#43 #44）
+  if (ME && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab

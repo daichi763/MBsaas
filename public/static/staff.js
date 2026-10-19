@@ -87,8 +87,9 @@ function homeShiftCardHtml(data) {
     <section class="card p-4 mb-4" id="today-shift">
       <div class="flex items-center justify-between mb-2">
         <h2 class="font-bold text-gray-800"><i class="fas fa-calendar-check text-blue-600 mr-1"></i>${data.carryover ? '昨日からの勤務' : '今日の稼働'}</h2>
-        <span class="badge ${data.carryover ? 'badge-yellow' : 'badge-blue'}">${esc(fmtDate(s.work_date || data.today))}</span>
+        <span class="flex items-center gap-1">${data.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}<span class="badge ${data.carryover ? 'badge-yellow' : 'badge-blue'}">${esc(fmtDate(s.work_date || data.today))}</span></span>
       </div>
+      ${data.tentative ? '<p class="text-xs mb-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-hourglass-half mr-1"></i>管理者の確定待ちのシフト（希望（仮））です。確定されるまでは支払いの対象になりません。勤務する場合は管理者に確認してください。</p>' : ''}
       <p class="text-lg font-bold text-gray-900">${esc(s.project_name)}</p>
       <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location)}</p>
       <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(s.start_time)} 〜 ${esc(s.end_time)}</p>
@@ -96,15 +97,35 @@ function homeShiftCardHtml(data) {
     </section>`
 }
 
+// 報告の状態（サーバーの checkReportable と同じ考え方）
+//   done: 報告済み / pending: 打刻修正を申請中（承認待ち。押せない）/ skipped: 後の報告が済んでいて押せない（打刻修正の申請で追加する）
+//   open: 押せる（前の報告を飛ばして押すこともできる）。open の先頭が『次の報告』
+const REPORT_ORDER = ['wake_up', 'departure', 'check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out']
+//   前日からのシフト（carryover）は、翌日も受け付ける報告（休憩・勤務終了・退店）だけを押せる（サーバーの reportableWindow）
+const NEXT_DAY_REPORTS = ['break_start', 'break_end', 'work_end', 'check_out']
+function homeReportStates(order, reports, pending, carryover) {
+  const lastDone = REPORT_ORDER.reduce((m, t, i) => reports[t] ? i : m, -1)
+  const out = {}
+  for (const t of order) {
+    out[t] = reports[t] ? 'done' : pending[t] ? 'pending'
+      : REPORT_ORDER.indexOf(t) < lastDone || (carryover && !NEXT_DAY_REPORTS.includes(t)) ? 'skipped' : 'open'
+  }
+  return out
+}
+
 // 報告ボタン（勤怠報告と日報）
 function homeReportButtonsHtml(data) {
   const s = data.shift
   const r = data.reports
+  const pend = data.pending_corrections || {}
   // 提出設定（案件・スタッフ・シフトごと）で必要な報告だけを表示する
   const order = (data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out'])
   const dailyRequired = data.daily_report_required !== false
-  const nextIdx = order.findIndex(t => !r[t])
-  const allDone = nextIdx === -1 && (!dailyRequired || data.daily_report_done)
+  const states = homeReportStates(order, r, pend, data.carryover)
+  const nextType = order.find(t => states[t] === 'open')
+  const nextIdx = nextType ? order.indexOf(nextType) : -1
+  const skipped = order.filter(t => states[t] === 'skipped')
+  const allDone = nextIdx === -1 && !skipped.length && !order.some(t => states[t] === 'pending') && (!dailyRequired || data.daily_report_done)
   // ほかのシフトで、報告は済んだが日報が未提出のもの（1日に複数のシフトがある場合）
   const pendingDaily = (data.today_shifts || []).filter(x => x.shift_id !== s.shift_id && x.attendance_done && x.daily_report_required && !x.daily_report_done)
   return `
@@ -114,28 +135,35 @@ function homeReportButtonsHtml(data) {
       ${!order.length && !dailyRequired ? '<p class="card p-4 text-sm text-gray-500">このシフトは勤怠報告・日報の提出は不要です</p>' : ''}
       ${pendingDaily.map(x => `<button class="w-full text-left bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-2.5 text-sm text-amber-800" onclick="location.hash='report/${Number(x.shift_id)}'">
         <i class="fas fa-pen-to-square mr-1"></i>${esc(x.start_time)}〜 ${esc(x.project_name)} の日報が未提出です<span class="underline font-bold ml-1">入力する</span></button>`).join('')}
+      ${skipped.length ? `<a href="#attendance" class="block bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-2.5 text-sm text-amber-800">
+        <i class="fas fa-triangle-exclamation mr-1"></i>${esc(skipped.map(t => REPORT_LABELS[t]).join('・'))} が未報告です。打刻履歴から打刻漏れの追加を申請してください<span class="underline font-bold ml-1">申請する</span></a>` : ''}
       <div class="space-y-2.5">
         ${order.map((t, i) => {
-          const done = !!r[t]
+          const st = states[t]
+          const done = st === 'done'
           const isNext = i === nextIdx
+          const open = st === 'open'
           const photoOn = data.photo_required_attendance !== false
-          const needsPhoto = photoOn && PHOTO_REQUIRED_TYPES.includes(t)
-          const onclick = needsPhoto ? `openPhotoAttendance('${t}', ${s.shift_id})` : `submitAttendance('${t}', ${s.shift_id})`
-          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${done || !isNext ? 'disabled' : ''} onclick="${onclick}">
-            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
-              <i class="fas ${done ? 'fa-check' : REPORT_ICONS[t]}"></i>
+          const sub = done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm')
+            : st === 'pending' ? `打刻修正を申請中 ${dayjs(String(pend[t]).replace(' ', 'T')).format('HH:mm')}（承認待ち）`
+            : st === 'skipped' ? '未報告（打刻履歴から追加を申請してください）'
+            : isNext ? 'タップして報告' : 'タップして報告（前の報告を飛ばします）'
+          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${open ? '' : 'disabled'} data-action="homeReport" data-type="${esc(t)}" data-shift-id="${Number(s.shift_id)}">
+            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : st === 'pending' ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400'}">
+              <i class="fas ${done ? 'fa-check' : st === 'pending' ? 'fa-hourglass-half' : REPORT_ICONS[t]}"></i>
             </span>
             <span class="flex-1">
               <span class="block font-bold ${done ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
-              <span class="block text-xs ${done ? 'text-emerald-600' : 'text-gray-400'}">
-                ${done ? '報告済み ' + dayjs(r[t].reported_at).format('HH:mm') : isNext ? 'タップして報告' : '前の報告を先に行ってください'}
-                ${t === 'check_in' && !done ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
-                ${t === 'check_out' && !done && photoOn ? ' (写真が必要です)' : ''}
+              <span class="block text-xs ${done ? 'text-emerald-600' : st === 'pending' ? 'text-amber-700' : 'text-gray-400'}">
+                ${esc(sub)}
+                ${t === 'check_in' && open ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
+                ${t === 'check_out' && open && photoOn ? ' (写真が必要です)' : ''}
               </span>
             </span>
             ${isNext ? '<i class="fas fa-chevron-right text-blue-400"></i>' : ''}
           </button>`
         }).join('')}
+        ${order.some(t => states[t] === 'pending') ? '<a href="#attendance" class="block text-xs text-blue-600 px-1">申請中の報告を今の時刻で報告する場合は、打刻履歴の「修正申請」から申請を取り消してください</a>' : ''}
         ${dailyRequired ? `<button class="report-btn ${data.daily_report_done ? 'done' : (r.check_out || nextIdx === -1) ? 'next' : ''}" onclick="location.hash='report/${Number(s.shift_id)}'">
           <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${data.daily_report_done ? 'bg-emerald-500 text-white' : r.check_out ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400'}">
             <i class="fas ${data.daily_report_done ? 'fa-check' : 'fa-pen-to-square'}"></i>
@@ -199,33 +227,58 @@ function homeMenuHtml() {
     </div>`
 }
 
-// 勤怠報告送信
-window.submitAttendance = async function (type, shiftId) {
-  if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
-  const doPost = async (pos) => {
-    try {
-      await axios.post('/api/staff/attendance', {
-        shift_id: shiftId, report_type: type,
-        latitude: pos ? pos.coords.latitude : null,
-        longitude: pos ? pos.coords.longitude : null,
-        address: null
-      })
-      toast(REPORT_LABELS[type] + 'を送信しました')
-      renderHome()
-    } catch (e) {
-      toast((e.response && e.response.data && e.response.data.error) || '送信に失敗しました')
-    }
-  }
-  if (type === 'check_in' && navigator.geolocation) {
-    toast('位置情報を取得しています...')
+// 報告ボタン: 未確定のシフト・前の報告を飛ばす場合は確認してから、写真が必要なら写真の画面、それ以外はそのまま送信する
+delegate('homeReport', (el) => {
+  if (!HOME || !HOME.shift) return
+  const type = el.dataset.type, shiftId = Number(el.dataset.shiftId)
+  if (HOME.tentative && !confirm('このシフトはまだ確定していません（希望（仮））。確定されるまでは支払いの対象になりません。\n管理者に勤務を確認したうえで報告しますか？')) return
+  const order = HOME.required_attendance || []
+  const states = homeReportStates(order, HOME.reports || {}, HOME.pending_corrections || {}, HOME.carryover)
+  const skipping = order.filter(t => states[t] === 'open' && REPORT_ORDER.indexOf(t) < REPORT_ORDER.indexOf(type))
+  if (skipping.length && !confirm(`${skipping.map(t => REPORT_LABELS[t]).join('・')} が未報告です。\n飛ばして${REPORT_LABELS[type]}を報告すると、飛ばした報告はこの画面から押せなくなります（打刻履歴から打刻漏れの追加を申請してください）。\n報告しますか？`)) return
+  const photoOn = HOME.photo_required_attendance !== false
+  if (photoOn && PHOTO_REQUIRED_TYPES.includes(type)) openPhotoAttendance(type, shiftId)
+  else submitAttendance(type, shiftId, el)
+})
+
+// 位置情報（取れなければ null）。端末が応答しない場合も 10 秒で諦める
+function getPositionOrNull() {
+  if (!navigator.geolocation) return Promise.resolve(null)
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), 10000)
     navigator.geolocation.getCurrentPosition(
-      pos => doPost(pos),
-      () => { toast('位置情報が取得できませんでした（位置なしで送信します）'); doPost(null) },
-      { timeout: 8000 }
-    )
-  } else {
-    doPost(null)
+      pos => { clearTimeout(timer); resolve(pos) },
+      () => { clearTimeout(timer); toast('位置情報が取得できませんでした（位置なしで送信します）'); resolve(null) },
+      { timeout: 8000 })
+  })
+}
+
+// 勤怠報告送信（送信中は押せない。位置情報を待つ間も含む）
+let ATTENDANCE_SENDING = false
+window.submitAttendance = async function (type, shiftId, button) {
+  if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
+  if (ATTENDANCE_SENDING) return
+  ATTENDANCE_SENDING = true
+  try {
+    await withSubmitLock(button, async () => {
+      let pos = null
+      if (type === 'check_in') { toast('位置情報を取得しています...'); pos = await getPositionOrNull() }
+      try {
+        await axios.post('/api/staff/attendance', {
+          shift_id: shiftId, report_type: type,
+          latitude: pos ? pos.coords.latitude : null,
+          longitude: pos ? pos.coords.longitude : null,
+          address: null
+        })
+        toast(REPORT_LABELS[type] + 'を送信しました')
+      } catch (e) {
+        toast((e.response && e.response.data && e.response.data.error) || '送信に失敗しました')
+      }
+    })
+  } finally {
+    ATTENDANCE_SENDING = false
   }
+  renderHome()
 }
 
 // ============ 入店/退店報告（写真添付） ============
@@ -395,15 +448,57 @@ window.submitPhotoAttendance = async function () {
 }
 
 // ============ シフト ============
+// shifts: 確定・代打・欠勤と、会社が仮で押さえた枠（status='requested'。本人が可否を返事する）
+// requests: 本人が出したシフト希望（返事待ち・採用・見送り。返事待ちは取り下げできる）
+let SHIFT_REQ_PROJECTS = []
+let SHIFTS_MONTH = null
+const SHIFT_REQ_BADGE = {
+  pending: '<span class="badge badge-yellow">希望を提出済み</span>',
+  accepted: '<span class="badge badge-green">採用</span>',
+  declined: '<span class="badge badge-gray">見送り</span>',
+}
 async function renderShifts(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
+  SHIFTS_MONTH = month
   const { data } = await axios.get('/api/staff/shifts?month=' + month)
+  SHIFT_REQ_PROJECTS = data.request_projects || []
   const byDate = {}
-  for (const s of data.shifts) { (byDate[s.work_date] = byDate[s.work_date] || []).push(s) }
+  const day = (d) => (byDate[d] = byDate[d] || { shifts: [], requests: [] })
+  for (const s of data.shifts) day(s.work_date).shifts.push(s)
+  for (const r of data.requests || []) day(r.work_date).requests.push(r)
   const today = dayjs().format('YYYY-MM-DD')
-  const statusBadge = { requested: '<span class="badge badge-yellow">希望</span>', confirmed: '<span class="badge badge-green">確定</span>', absent: '<span class="badge badge-red">欠勤</span>', substitute: '<span class="badge badge-purple">代打</span>' }
+  const statusBadge = { requested: '<span class="badge bg-orange-100 text-orange-700">仮押さえ（確定前）</span>', confirmed: '<span class="badge badge-green">確定</span>', absent: '<span class="badge badge-red">欠勤</span>', substitute: '<span class="badge badge-purple">代打</span>' }
+  const replyLabel = { ok: '「入れます」と返事済み', ng: '「入れません」と返事済み' }
+  // 会社の仮押さえへの返事（入れます／入れません）。過ぎた日は返事できない
+  const replyBox = (s) => {
+    if (s.status !== 'requested') return ''
+    const canReply = s.work_date >= today
+    return `<div class="mt-1 rounded-lg bg-orange-50 px-2.5 py-2 text-xs text-gray-600">
+      <p>会社が仮で押さえた枠です。まだ確定していません。${canReply ? '入れるかどうか返事をしてください' : ''}</p>
+      ${s.staff_reply ? `<p class="mt-1 font-bold ${s.staff_reply === 'ok' ? 'text-emerald-700' : 'text-red-600'}">${replyLabel[s.staff_reply] || ''}${s.staff_reply_note ? '：' + esc(s.staff_reply_note) : ''}</p>` : ''}
+      ${canReply ? `<div class="flex gap-2 mt-2">
+        <button class="btn ${s.staff_reply === 'ok' ? 'btn-primary' : 'btn-outline'} flex-1 text-xs" data-action="replyShift" data-id="${s.shift_id}" data-answer="ok">入れます</button>
+        <button class="btn ${s.staff_reply === 'ng' ? 'btn-danger' : 'btn-outline'} flex-1 text-xs" data-action="replyShift" data-id="${s.shift_id}" data-answer="ng">入れません</button>
+      </div>` : ''}
+    </div>`
+  }
+  const requestRow = (r) => `
+    <div class="mt-2 pt-2 border-t border-dashed border-gray-200 text-sm shift-request-row" data-request-id="${r.request_id}">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <p class="font-medium text-gray-700"><i class="fas fa-hand text-amber-500 mr-1"></i>シフト希望・${r.project_name ? esc(r.project_name) : '案件の指定なし'}</p>
+          <p class="text-xs text-gray-400">${esc(r.start_time)}〜${esc(r.end_time)}${r.memo ? ' ' + esc(r.memo) : ''}</p>
+        </div>
+        <div class="text-right shrink-0">${SHIFT_REQ_BADGE[r.status] || ''}
+          ${r.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1 ml-auto" data-action="withdrawShiftRequest" data-id="${r.request_id}">取り下げ</button>` : ''}</div>
+      </div>
+      ${r.status === 'pending' ? '<p class="text-[11px] text-gray-400 mt-0.5">管理者の返事を待っています</p>' : ''}
+      ${r.status === 'accepted' ? '<p class="text-[11px] text-gray-500 mt-0.5">シフトが登録されると、この日に「確定」のシフトとして表示されます</p>' : ''}
+      ${r.status !== 'pending' && r.response_note ? `<p class="text-xs text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1">管理者より：${esc(r.response_note)}</p>` : ''}
+    </div>`
 
+  // 1つのシフトにつき .mt-1.5 の行を1つだけ出す（staff-profile.js が他社シフトの会社名を行の順番で付けるため）
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-3">
       <button class="btn btn-outline" onclick="renderShifts('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')"><i class="fas fa-chevron-left"></i></button>
@@ -418,14 +513,15 @@ async function renderShifts(month) {
           <div class="flex items-center justify-between">
             <span class="font-bold ${d === today ? 'text-blue-700' : 'text-gray-800'}">${fmtDate(d)} ${d === today ? '<span class="badge badge-blue">今日</span>' : ''}</span>
           </div>
-          ${byDate[d].map(s => `
+          ${byDate[d].shifts.map(s => `
             <div class="mt-1.5 flex items-center justify-between text-sm">
               <div>
                 <p class="font-medium text-gray-700">${esc(s.project_name)}</p>
                 <p class="text-xs text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.location || '')}</p>
               </div>
               ${statusBadge[s.status] || ''}
-            </div>`).join('')}
+            </div>${replyBox(s)}`).join('')}
+          ${byDate[d].requests.map(requestRow).join('')}
         </div>`).join('') || '<p class="text-center text-gray-400 py-10">この月のシフトはありません</p>'}
     </div>
     <div id="shift-modal"></div>`
@@ -494,35 +590,81 @@ window.cancelRecruitItem = async function (id) {
 }
 
 window.showShiftRequest = function () {
+  const projects = SHIFT_REQ_PROJECTS || []
   document.getElementById('shift-modal').innerHTML = `
     <div class="modal-bg" onclick="if(event.target===this)this.remove()">
       <div class="modal-box p-5">
-        <h3 class="font-bold text-lg mb-4">シフト希望提出</h3>
+        <h3 class="font-bold text-lg mb-1">シフト希望提出</h3>
+        <p class="text-xs text-gray-500 mb-4">管理者が確認して返事をします。返事があるまでは取り下げできます</p>
         <div class="space-y-3">
           <div><label class="text-sm text-gray-600 block mb-1">日付</label><input id="req-date" type="date" class="inp" min="${dayjs().format('YYYY-MM-DD')}"></div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="text-sm text-gray-600 block mb-1">開始</label><input id="req-start" type="time" value="09:30" class="inp"></div>
             <div><label class="text-sm text-gray-600 block mb-1">終了</label><input id="req-end" type="time" value="19:00" class="inp"></div>
           </div>
-          <div><label class="text-sm text-gray-600 block mb-1">備考</label><input id="req-memo" type="text" class="inp" placeholder="希望条件など"></div>
-          <button class="btn btn-primary w-full" onclick="submitShiftRequest()">提出する</button>
+          ${projects.length ? `<div><label class="text-sm text-gray-600 block mb-1">案件（任意）</label><select id="req-project" class="inp">
+            <option value="">指定しない</option>${projects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>` : ''}
+          <div><label class="text-sm text-gray-600 block mb-1">備考</label><input id="req-memo" type="text" class="inp" maxlength="500" placeholder="希望条件など"></div>
+          <p id="req-error" class="text-sm text-red-600 hidden"></p>
+          <button class="btn btn-primary w-full" onclick="submitShiftRequest(this)">提出する</button>
         </div>
       </div>
     </div>`
 }
 
-window.submitShiftRequest = async function () {
+window.submitShiftRequest = async function (btn) {
+  const errEl = document.getElementById('req-error')
+  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.remove('hidden') }
   const date = document.getElementById('req-date').value
-  if (!date) { toast('日付を選択してください'); return }
-  await axios.post('/api/staff/shifts/request', {
-    work_date: date,
-    start_time: document.getElementById('req-start').value,
-    end_time: document.getElementById('req-end').value,
-    memo: document.getElementById('req-memo').value
+  const start = document.getElementById('req-start').value
+  const end = document.getElementById('req-end').value
+  if (!date) return showErr('日付を選択してください')
+  if (date < dayjs().format('YYYY-MM-DD')) return showErr('過去の日付には希望を出せません')
+  if (!start || !end) return showErr('開始・終了の時刻を入力してください')
+  if (start === end) return showErr('開始と終了に同じ時刻は指定できません')
+  const proj = document.getElementById('req-project')
+  await withSubmitLock(btn, async () => {
+    try {
+      await axios.post('/api/staff/shifts/request', {
+        work_date: date, start_time: start, end_time: end,
+        project_id: proj && proj.value ? Number(proj.value) : null,
+        memo: document.getElementById('req-memo').value,
+      })
+    } catch (e) {
+      showErr((e.response && e.response.data && e.response.data.error) || '提出に失敗しました。電波の良い場所で再度お試しください')
+      return
+    }
+    toast('シフト希望を提出しました')
+    renderShifts(date.slice(0, 7))
   })
-  toast('シフト希望を提出しました')
-  renderShifts(date.slice(0, 7))
 }
+
+// シフト希望の取り下げ（返事待ちのものだけ）
+delegate('withdrawShiftRequest', async (el) => {
+  if (!confirm('このシフト希望を取り下げますか？')) return
+  await withSubmitLock(el, async () => {
+    try { await axios.post(`/api/staff/shift-requests/${Number(el.dataset.id)}/cancel`) }
+    catch (e) { showApiError(e, '取り下げに失敗しました'); return }
+    toast('取り下げました')
+    renderShifts(SHIFTS_MONTH)
+  })
+})
+
+// 会社の仮押さえへの返事
+delegate('replyShift', async (el) => {
+  const answer = el.dataset.answer
+  let note = ''
+  if (answer === 'ng') {
+    note = prompt('入れない理由など、ひとことあれば入力してください（任意）', '')
+    if (note === null) return
+  }
+  await withSubmitLock(el, async () => {
+    try { await axios.post(`/api/staff/shifts/${Number(el.dataset.id)}/reply`, { answer, note }) }
+    catch (e) { showApiError(e, '返事を送れませんでした'); return }
+    toast(answer === 'ok' ? '「入れます」と返事しました' : '「入れません」と返事しました')
+    renderShifts(SHIFTS_MONTH)
+  })
+})
 
 // ============ 日報入力 ============
 // 対象のシフトは #report/<shift_id> で指定する。指定がなければ、報告が済んで日報が未提出のシフト → ホームのシフトの順に選ぶ
@@ -545,8 +687,13 @@ async function renderReport() {
     loadPastReports()
     return
   }
-  const { data } = await axios.get('/api/staff/report-template/' + s.project_id)
-  const fields = (data.template && data.template.fields) || []
+  // 提出済みなら前回の内容を初期値にする（修正して再提出しても、ほかの項目が0や空欄で上書きされないように）
+  const { data } = await axios.get('/api/staff/daily-report/' + Number(s.shift_id))
+  const prev = data.report
+  const pv = (k) => (prev && prev.values && prev.values[k] != null ? prev.values[k] : '')
+  const tplFields = (data.template && data.template.fields) || []
+  // テンプレートの無い案件は「報告内容」の欄だけ（報告用URLの画面・サーバーの検証と同じ）
+  const fields = tplFields.length ? tplFields : [{ key: 'free', label: '報告内容', type: 'textarea' }]
   const numFields = fields.filter(f => f.type === 'number')
   const textFields = fields.filter(f => f.type !== 'number')
 
@@ -558,55 +705,67 @@ async function renderReport() {
         ${list.map(x => `<option value="${Number(x.shift_id)}" ${x.shift_id === s.shift_id ? 'selected' : ''}>${esc(fmtDate(x.work_date))} ${esc(x.start_time)}〜${esc(x.end_time)} ${esc(x.project_name)}${x.daily_report_done ? '（提出済み）' : x.daily_report_required ? '' : '（日報不要）'}</option>`).join('')}
       </select>` : ''}
       ${s.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
+      ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
+      ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots mr-1"></i>${esc(prev.manager_comment)}</p>` : ''}
     </section>
     <form id="report-form" class="space-y-4 pb-8">
-      <section class="card p-4">
+      ${numFields.length ? `<section class="card p-4">
         <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
         <div class="grid grid-cols-2 gap-3">
           ${numFields.map(f => `
             <div>
               <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}</label>
-              <input type="number" inputmode="numeric" min="0" data-key="${esc(f.key)}" class="inp rpt-field text-center text-lg font-bold" value="0">
+              <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" class="inp rpt-field text-center text-lg font-bold" value="${esc(pv(f.key))}" placeholder="0">
             </div>`).join('')}
         </div>
-      </section>
-      <section class="card p-4">
+      </section>` : ''}
+      ${textFields.length ? `<section class="card p-4">
         <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-message text-blue-500 mr-1"></i>報告事項</h3>
         <div class="space-y-3">
           ${textFields.map(f => `
             <div>
               <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}</label>
               ${f.type === 'textarea'
-                ? `<textarea data-key="${esc(f.key)}" rows="3" class="inp rpt-field" placeholder="${esc(f.label)}を入力"></textarea>`
-                : `<input type="text" data-key="${esc(f.key)}" class="inp rpt-field" placeholder="${esc(f.label)}を入力">`}
+                ? `<textarea data-key="${esc(f.key)}" rows="3" maxlength="2000" class="inp rpt-field" placeholder="${esc(f.label)}を入力">${esc(pv(f.key))}</textarea>`
+                : `<input type="text" data-key="${esc(f.key)}" maxlength="2000" class="inp rpt-field" placeholder="${esc(f.label)}を入力" value="${esc(pv(f.key))}">`}
             </div>`).join('')}
         </div>
-      </section>
+      </section>` : ''}
       <section class="card p-4">
-        <label class="flex items-center gap-3 py-1"><input id="incident-flag" type="checkbox" class="w-5 h-5 rounded"><span class="text-sm font-medium text-gray-700">インシデントがあった</span></label>
-        <label class="flex items-center gap-3 py-1"><input id="complaint-flag" type="checkbox" class="w-5 h-5 rounded"><span class="text-sm font-medium text-gray-700">クレームがあった</span></label>
+        <label class="flex items-center gap-3 py-1"><input id="incident-flag" type="checkbox" class="w-5 h-5 rounded" ${prev && prev.incident_flag ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">インシデントがあった</span></label>
+        <label class="flex items-center gap-3 py-1"><input id="complaint-flag" type="checkbox" class="w-5 h-5 rounded" ${prev && prev.complaint_flag ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">クレームがあった</span></label>
       </section>
-      <button type="submit" class="btn btn-primary w-full py-3.5 text-base">${s.daily_report_done ? '日報を修正して再提出' : '日報を提出する'}</button>
+      <button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base">${prev ? '日報を修正して再提出' : '日報を提出する'}</button>
     </form>`
 
   const sel = document.getElementById('report-shift')
   if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
-  document.getElementById('report-form').addEventListener('submit', async (e) => {
+  document.getElementById('report-form').addEventListener('submit', (e) => {
     e.preventDefault()
     const values = {}
     document.querySelectorAll('.rpt-field').forEach(el => {
       const k = el.dataset.key
       values[k] = el.type === 'number' ? Number(el.value || 0) : el.value
     })
-    // 稼働日はシフトの稼働日（日をまたぐ勤務や、開いたまま日付が変わった場合も前日の日付で送る）
-    await axios.post('/api/staff/daily-report', {
-      project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date, values,
-      incident_flag: document.getElementById('incident-flag').checked,
-      complaint_flag: document.getElementById('complaint-flag').checked
+    // 送信中はボタンを押せないようにする（二度押しで同じ日報を送らない）
+    withSubmitLock(document.getElementById('report-submit'), async () => {
+      try {
+        // 案件・稼働日はシフトの値（サーバーでもシフトと一致するかを確かめる）。
+        // インシデント・クレームは前回の値を表示したうえで送るので flags_explicit を付ける（外したときだけ印を下げる）
+        await axios.post('/api/staff/daily-report', {
+          project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date, values,
+          incident_flag: document.getElementById('incident-flag').checked,
+          complaint_flag: document.getElementById('complaint-flag').checked,
+          flags_explicit: true
+        })
+      } catch (err) {
+        showApiError(err, '日報の送信に失敗しました')
+        return
+      }
+      toast('日報を提出しました。お疲れさまでした！')
+      HOME = null
+      location.hash = 'home'
     })
-    toast('日報を提出しました。お疲れさまでした！')
-    HOME = null
-    location.hash = 'home'
   })
 }
 

@@ -63,3 +63,9 @@ export function addMinutes(dateTime: string, minutes: number): string {
   const x = new Date(dateTime.replace(' ', 'T') + 'Z'); x.setUTCMinutes(x.getUTCMinutes() + minutes)
   return x.toISOString().slice(0, 19).replace('T', ' ')
 }
+
+// 入店の遅延判定（報告用URL・代理入力で共通。アプリの POST /staff/attendance も同じ考え方）。
+// 報告の日時（分まで）がシフト開始の絶対日時より後なら遅延。日をまたいだ後の入店も日付を含めて比べる
+export function isLateCheckIn(shift: ShiftTimes, at: string): boolean {
+  return String(at).slice(0, 16) > shiftWindow(shift.work_date, shift.start_time, shift.end_time).start.slice(0, 16)
+}

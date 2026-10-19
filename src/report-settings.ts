@@ -5,13 +5,18 @@
 // 有効な報告の決め方（シフトごと）:
 //   1. シフトの例外 shifts.attendance_mode（none = なし / in_out = 入店・退店のみ / full・NULL = 2 以降に従う）
 //   2. 案件 × スタッフ別の設定（project_staff_report_settings）
-//   3. 案件の標準設定（project_report_defaults）
-//   4. いずれもなければ ON
+//   3. 案件 × スタッフ別の行がない組み合わせは、0027 より前のスタッフ単位の設定（staff_profiles.attendance_mode の none / in_out）
+//   4. 案件の標準設定（project_report_defaults）
+//   5. いずれもなければ ON
+//   報告を始めた後に設定が変わったシフトは、変わる前に OFF だった報告を ON にしない（shifts.attendance_types_fixed。ON にした報告は次のシフトから効く。#458）
+// 報告の順序: 有効な報告は REPORT_TYPES の順に押す。前の報告を飛ばして後の報告を押すことはできる（飛ばした報告は打刻修正の申請で追加する）。
+//   後の報告が済んだ後に、それより前の報告を今の時刻で押すことはできない（checkReportable）
 // 管理者向け API（/api/admin/report-settings/*）は api.ts から権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
 import { toCsv, csvResponse } from './csv'
-import { NEXT_DAY_TYPES, reportableWindow, type ShiftTimes } from './lib/shift-time'
+import { NEXT_DAY_TYPES, addDays, reportableWindow, type ShiftTimes } from './lib/shift-time'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -39,18 +44,33 @@ export function flagsFromLegacyMode(mode: any): Record<string, number> {
 export type AttendanceSource = 'shift' | 'staff' | 'project' | 'default'
 export type ShiftAttendance = { types: string[]; source: AttendanceSource }
 
+// 0027 より前のスタッフ単位の提出設定のうち、案件 × スタッフ別の行がない組み合わせに引き継ぐ値（none / in_out のみ。full は案件の標準設定に従う）
+export function legacyStaffFlags(mode: any): Record<string, number> | null {
+  return mode === 'none' || mode === 'in_out' ? flagsFromLegacyMode(mode) : null
+}
+// shifts.attendance_types_fixed（JSON 配列）を REPORT_TYPES の順の配列にする。壊れていれば null
+function parseFixedTypes(v: any): string[] | null {
+  if (typeof v !== 'string' || !v) return null
+  try {
+    const a = JSON.parse(v)
+    return Array.isArray(a) ? REPORT_TYPES.filter(t => a.includes(t)) : null
+  } catch { return null }
+}
+
 // シフトごとに有効な報告（REPORT_TYPES の順）を返す
 export async function attendanceTypesForShifts(db: D1Database, shiftIds: number[]): Promise<Map<number, ShiftAttendance>> {
   const map = new Map<number, ShiftAttendance>()
   const ids = [...new Set(shiftIds.map(Number).filter(n => Number.isInteger(n) && n > 0))]
   for (let i = 0; i < ids.length; i += 90) {
     const chunk = ids.slice(i, i + 90)
-    const shifts = (await db.prepare(`SELECT shift_id, project_id, staff_id, attendance_mode FROM shifts WHERE shift_id IN (${chunk.map(() => '?').join(',')})`)
+    const shifts = (await db.prepare(`SELECT s.shift_id, s.project_id, s.staff_id, s.attendance_mode, s.attendance_types_fixed, sp.attendance_mode AS legacy_mode
+      FROM shifts s LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id WHERE s.shift_id IN (${chunk.map(() => '?').join(',')})`)
       .bind(...chunk).all()).results as any[]
     const projectIds = [...new Set(shifts.map(s => s.project_id))]
     const staffIds = [...new Set(shifts.map(s => s.staff_id))]
     const defaults = new Map<string, number>()
     const personal = new Map<string, number>()
+    const hasPersonal = new Set<string>()
     if (projectIds.length) {
       const q = projectIds.map(() => '?').join(',')
       for (const r of (await db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults WHERE project_id IN (${q})`).bind(...projectIds).all()).results as any[]) {
@@ -60,41 +80,91 @@ export async function attendanceTypesForShifts(db: D1Database, shiftIds: number[
       const pset = new Set(projectIds)
       for (const r of (await db.prepare(`SELECT project_id, staff_id, report_type, enabled FROM project_staff_report_settings WHERE staff_id IN (${staffIds.map(() => '?').join(',')})`)
         .bind(...staffIds).all()).results as any[]) {
-        if (pset.has(r.project_id)) personal.set(`${r.project_id}:${r.staff_id}:${r.report_type}`, r.enabled)
+        if (!pset.has(r.project_id)) continue
+        personal.set(`${r.project_id}:${r.staff_id}:${r.report_type}`, r.enabled)
+        hasPersonal.add(`${r.project_id}:${r.staff_id}`)
       }
     }
     for (const s of shifts) {
       if (s.attendance_mode === 'none') { map.set(s.shift_id, { types: [], source: 'shift' }); continue }
       if (s.attendance_mode === 'in_out') { map.set(s.shift_id, { types: ['check_in', 'check_out'], source: 'shift' }); continue }
-      let source: AttendanceSource = 'default'
+      const fixed = parseFixedTypes(s.attendance_types_fixed)
+      const legacy = hasPersonal.has(`${s.project_id}:${s.staff_id}`) ? null : legacyStaffFlags(s.legacy_mode)
+      let source: AttendanceSource = legacy ? 'staff' : 'default'
       const types = REPORT_TYPES.filter(t => {
         const pv = personal.get(`${s.project_id}:${s.staff_id}:${t}`)
         if (pv !== undefined) { source = 'staff'; return !!pv }
+        if (legacy) return !!legacy[t]
         const dv = defaults.get(`${s.project_id}:${t}`)
         if (dv !== undefined) { if (source === 'default') source = 'project'; return !!dv }
         return true
       })
-      map.set(s.shift_id, { types, source })
+      // 報告を始めた後に設定が変わったシフトは、変わる前に OFF だった報告を ON にしない（OFF にした報告はすぐ外す。docs 2.7）
+      map.set(s.shift_id, { types: fixed ? types.filter(t => fixed.includes(t)) : types, source })
     }
   }
   return map
 }
 
-// 報告できるかの確認（有効・未報告・順序）。done は登録済みの報告の種類
-export function checkReportable(required: string[], done: Set<string>, type: string): { error: string; status: number } | null {
+type Ng = { error: string; status: number }
+
+// 報告できるかの確認（有効・未報告・承認待ちの申請・順序）。done は登録済みの報告の種類、pending は承認待ちの打刻修正申請がある種類
+//   前の報告が済んでいなくても、後の報告は押せる（飛ばした報告は打刻修正の申請で追加する。#47）。
+//   そのため、勤務の途中で前の報告が ON になっても後の報告は止まらない（#458）。
+//   後の報告が済んだ後に、それより前の報告を今の時刻で押すことはできない（順序が逆の記録を作らない）
+export function checkReportable(required: string[], done: Set<string>, type: string, pending?: Set<string>): Ng | null {
   if (!required.includes(type)) return { error: 'このシフトでは不要な報告です', status: 400 }
   if (done.has(type)) return { error: 'すでに報告済みです', status: 409 }
-  const idx = required.indexOf(type)
-  if (required.slice(0, idx).some(t => !done.has(t))) return { error: '前の報告を先に行ってください', status: 400 }
+  if (pending && pending.has(type)) return { error: `${REPORT_LABEL[type]}は打刻修正を申請中です（承認待ち）。今の時刻で報告する場合は、打刻履歴から申請を取り消してください`, status: 409 }
+  const idx = REPORT_TYPES.indexOf(type as any)
+  const later = REPORT_TYPES.find((t, j) => j > idx && done.has(t))
+  if (later) return { error: `${REPORT_LABEL[later]}を報告済みのため、${REPORT_LABEL[type]}は報告できません。打刻の修正申請から追加してください`, status: 400 }
   return null
 }
 
+// 今押せる報告（REPORT_TYPES の順）。先頭がホームの『次の報告』。空なら報告は済んでいる（飛ばした報告は打刻修正の申請で追加する）
+export function reportableTypes(required: string[], done: Set<string>, pending?: Set<string>): string[] {
+  return required.filter(t => !checkReportable(required, done, t, pending))
+}
+
 // 報告を受け付ける時間帯か（now は JST の 'YYYY-MM-DD HH:MM:SS'）。時間帯の外ならエラーを返す
-export function checkReportTime(shift: ShiftTimes, type: string, now: string): { error: string; status: number } | null {
+export function checkReportTime(shift: ShiftTimes, type: string, now: string): Ng | null {
   const w = reportableWindow(shift, type)
   if (now < w.start) return { error: `まだ報告できません（${Number(w.start.slice(5, 7))}/${Number(w.start.slice(8, 10))} ${w.start.slice(11, 16)} から報告できます）`, status: 400 }
   if (now > w.end) return { error: '報告の受付期間を過ぎています。打刻の修正申請から追加してください', status: 400 }
   return null
+}
+
+// スタッフ本人の報告（アプリ・写真付き・報告用URL）を受け付けるシフトか: 欠勤・精算の確定済みは受け付けない（#116）。
+// 希望（仮）のシフトは受け付ける（画面で確認を出す。精算での扱いは確認事項で知らせる）
+export function checkShiftAcceptsReport(shift: { status?: any; shift_status?: any; settle_status?: any }): Ng | null {
+  const status = shift.status ?? shift.shift_status
+  if (status === 'absent') return { error: '欠勤のシフトには報告できません', status: 400 }
+  if (shift.settle_status === 'confirmed') return { error: '精算が確定したシフトには報告できません。打刻の修正は管理者に連絡してください', status: 409 }
+  return null
+}
+
+// スタッフ本人の報告の受付をまとめて確認する（シフトの状態 → 受付の時間帯 → 有効・未報告・申請中・順序）
+export function checkStaffReport(shift: ShiftTimes & { status?: any; shift_status?: any; settle_status?: any }, type: string, now: string,
+  required: string[], state: { done: Set<string>; pending: Set<string> }): Ng | null {
+  return checkShiftAcceptsReport(shift) || checkReportTime(shift, type, now) || checkReportable(required, state.done, type, state.pending)
+}
+
+// シフトの登録済みの報告と、承認待ちの打刻修正申請がある報告
+export async function loadReportState(db: D1Database, shiftId: number): Promise<{ done: Set<string>; pending: Set<string> }> {
+  const [reports, pending] = await db.batch([
+    db.prepare('SELECT report_type FROM attendance_reports WHERE shift_id = ?').bind(shiftId),
+    db.prepare("SELECT report_type FROM attendance_corrections WHERE shift_id = ? AND status = 'pending'").bind(shiftId),
+  ])
+  return {
+    done: new Set((reports.results as any[]).map(r => r.report_type)),
+    pending: new Set((pending.results as any[]).map(r => r.report_type)),
+  }
+}
+
+// 報告の記録日時は分の単位にそろえる（打刻修正の申請と同じ精度。#133）
+export function reportedAtMinute(now: string): string {
+  return now.slice(0, 16) + ':00'
 }
 
 // ---------- 設定の読み書き ----------
@@ -112,20 +182,48 @@ async function projectDefaults(db: D1Database, projectId: number): Promise<Recor
 async function projectMemberIds(db: D1Database, companyId: number, projectId: number): Promise<number[]> {
   return ((await db.prepare('SELECT DISTINCT staff_id FROM shifts WHERE project_id = ? AND company_id = ?').bind(projectId, companyId).all()).results as any[]).map(r => r.staff_id)
 }
-// スタッフ別の値（行がなければ案件の標準設定）
+// スタッフ別の値（行がなければ、0027 より前のスタッフ単位の設定（none / in_out）か案件の標準設定）
 async function staffSettings(db: D1Database, projectId: number, staffIds: number[], defaults: Record<string, number>) {
-  const out = new Map<number, { values: Record<string, number>; individual: boolean }>()
-  for (const id of staffIds) out.set(id, { values: { ...defaults }, individual: false })
+  const out = new Map<number, { values: Record<string, number>; individual: boolean; legacy_mode: string | null }>()
+  for (const id of staffIds) out.set(id, { values: { ...defaults }, individual: false, legacy_mode: null })
   for (let i = 0; i < staffIds.length; i += 90) {
     const chunk = staffIds.slice(i, i + 90)
+    const legacy = (await db.prepare(`SELECT staff_id, attendance_mode FROM staff_profiles WHERE staff_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all()).results as any[]
+    for (const r of legacy) {
+      const s = out.get(r.staff_id); const flags = legacyStaffFlags(r.attendance_mode)
+      if (s && flags) { s.values = flags; s.legacy_mode = r.attendance_mode }
+    }
     const rows = (await db.prepare(`SELECT staff_id, report_type, enabled FROM project_staff_report_settings WHERE project_id = ? AND staff_id IN (${chunk.map(() => '?').join(',')})`)
       .bind(projectId, ...chunk).all()).results as any[]
     for (const r of rows) {
       const s = out.get(r.staff_id); if (!s || !isReportType(r.report_type)) continue
+      // 行がある組み合わせは、スタッフ単位の旧設定を使わない（attendanceTypesForShifts と同じ）
+      if (!s.individual && s.legacy_mode) { s.values = { ...defaults }; s.legacy_mode = null }
       s.values[r.report_type] = r.enabled ? 1 : 0; s.individual = true
     }
   }
   return out
+}
+
+// 報告を始めたシフト（稼働日が昨日・今日で、報告が 1 つ以上ある）の、設定を変える前の有効な報告を記録する文を返す。
+// 勤務の途中で ON にした報告は、そのシフトでは求めない（次のシフトから効く。#458）。OFF にした報告はすぐ外れる
+async function freezeStartedShifts(db: D1Database, companyId: number, projectId: number, staffIds: number[]): Promise<D1PreparedStatement[]> {
+  if (!staffIds.length) return []
+  const today = nowJST().slice(0, 10)
+  const ids = ((await db.prepare(`SELECT s.shift_id FROM shifts s
+    WHERE s.project_id = ? AND s.company_id = ? AND s.staff_id IN ${JSON_IN} AND s.work_date >= ? AND s.status != 'absent'
+      AND s.attendance_types_fixed IS NULL AND EXISTS (SELECT 1 FROM attendance_reports a WHERE a.shift_id = s.shift_id)`)
+    .bind(projectId, companyId, bindJsonArray(staffIds), addDays(today, -1)).all()).results as any[]).map(r => r.shift_id as number)
+  if (!ids.length) return []
+  const current = await attendanceTypesForShifts(db, ids)
+  // 同じ値のシフトをまとめて 1 文で書く（シフトの例外 none / in_out はシフトの設定が優先するので固定しない）
+  const groups = new Map<string, number[]>()
+  for (const id of ids) {
+    const a = current.get(id); if (!a || a.source === 'shift') continue
+    const key = JSON.stringify(a.types)
+    if (!groups.has(key)) groups.set(key, []); groups.get(key)!.push(id)
+  }
+  return [...groups].map(([types, sids]) => db.prepare(`UPDATE shifts SET attendance_types_fixed = ? WHERE shift_id IN ${JSON_IN} AND attendance_types_fixed IS NULL`).bind(types, bindJsonArray(sids)))
 }
 function newBatchId(): string {
   const a = new Uint8Array(8); crypto.getRandomValues(a)
@@ -165,7 +263,8 @@ export async function setProjectDefaults(db: D1Database, companyId: number, proj
   const stmts: D1PreparedStatement[] = []
   for (const [staffId, s] of settings) {
     if (s.individual) continue
-    stmts.push(upsertStaffRows(db, companyId, projectId, staffId, REPORT_TYPES.map(t => ({ t, enabled: cur[t], source: 'default' })), a.user_id, at))
+    // 今の値（標準設定。スタッフ単位の旧設定がある人はその値）を固定する
+    stmts.push(upsertStaffRows(db, companyId, projectId, staffId, REPORT_TYPES.map(t => ({ t, enabled: s.values[t], source: 'default' })), a.user_id, at))
   }
   for (const t of changed) {
     stmts.push(db.prepare(`INSERT INTO project_report_defaults (project_id, company_id, report_type, enabled, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -184,6 +283,9 @@ async function setStaffSettings(db: D1Database, companyId: number, projectId: nu
   const at = nowJST(), batchId = newBatchId(), a = actorOf(u)
   const stmts: D1PreparedStatement[] = []
   let staffChanged = 0, cells = 0
+  // 報告を始めたシフトは、変える前の設定で固定してから変更する（同じ batch で書く）
+  const changedIds = [...changes].filter(([id, next]) => REPORT_TYPES.some(t => next[t] !== undefined && next[t] !== settings.get(id)!.values[t])).map(([id]) => id)
+  stmts.push(...await freezeStartedShifts(db, companyId, projectId, changedIds))
   for (const [staffId, next] of changes) {
     const cur = settings.get(staffId)!.values
     const diff = REPORT_TYPES.filter(t => next[t] !== undefined && next[t] !== cur[t])
@@ -208,6 +310,8 @@ export async function applyLegacyStaffMode(db: D1Database, companyId: number, st
     const next = mode ? flagsFromLegacyMode(mode) : await projectDefaults(db, pid)
     await setStaffSettings(db, companyId, pid, new Map([[staffId, next]]), 'individual', u)
   }
+  // スタッフ単位の値も保存する（これから所属する案件で、案件 × スタッフ別の行がない間に使う）
+  await db.prepare('UPDATE staff_profiles SET attendance_mode = ? WHERE staff_id = ? AND company_id = ?').bind(mode || null, staffId, companyId).run()
   return { projects: projects.length }
 }
 
@@ -257,7 +361,8 @@ reportSettingsApi.get('/report-settings/projects/:id', async (c) => {
   return c.json({
     project: { project_id: p.project_id, project_name: p.project_name, status: p.status || 'active', client_name: p.client_name },
     report_types: REPORT_TYPES, labels: REPORT_LABEL, defaults,
-    staff: members.map(m => ({ ...m, settings: settings.get(m.staff_id)!.values, individual: settings.get(m.staff_id)!.individual })),
+    // legacy_mode: 0027 より前のスタッフ単位の設定（none / in_out）を使っている人
+    staff: members.map(m => ({ ...m, settings: settings.get(m.staff_id)!.values, individual: settings.get(m.staff_id)!.individual, legacy_mode: settings.get(m.staff_id)!.legacy_mode })),
   })
 })
 
@@ -347,7 +452,7 @@ function logFilter(companyId: number, q: (k: string) => string | undefined) {
   if (q('action') && ACTION_LABEL[q('action')!]) { w.push('l.action = ?'); bind.push(q('action')) }
   return { where: w.join(' AND '), bind }
 }
-const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行' }
+const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行', merge: 'スタッフ統合' }
 const LOG_FROM = `FROM report_setting_logs l LEFT JOIN projects p ON p.project_id = l.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
 reportSettingsApi.get('/report-settings/logs', async (c) => {

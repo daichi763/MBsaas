@@ -31,7 +31,7 @@ window.showAddRoster = function () {
 const ROSTER_LINK = { candidate: null, consent: null }
 delegate('rosterConsent', () => { if (ROSTER_LINK.candidate) showRosterConsent(ROSTER_LINK.candidate) })
 delegate('rosterLinkBack', () => showRosterLink(ROSTER_LINK.consent ? ROSTER_LINK.consent.code : ''))
-delegate('rosterLinkSubmit', () => { if (ROSTER_LINK.consent) submitRosterLink(ROSTER_LINK.consent) })
+delegate('rosterLinkSubmit', (el) => { if (ROSTER_LINK.consent) submitRosterLink(ROSTER_LINK.consent, el) })
 window.showRosterLink = function (prefill) {
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-qrcode text-blue-600 mr-1"></i>スタッフIDから連携</h3>
@@ -103,13 +103,16 @@ window.showRosterConsent = function (info) {
     </div>`)
 }
 
-window.submitRosterLink = async function (p) {
+// 送信中はボタンを止める（二度押しで同じ人が二重に連携されないように。#238）
+window.submitRosterLink = async function (p, button) {
   if (!document.getElementById('rc-agree').checked) { toast('同意が必要です'); return }
-  try {
-    const { data } = await axios.post('/api/admin/roster/link', { code: p.code, agreed: true, consent_version: p.version })
-    closeModal(); toast('スタッフマスタに連携登録しました')
-    location.hash = 'staff/' + data.staff_id
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '連携に失敗しました') }
+  await withSubmitLock(button || document.getElementById('rc-submit'), async () => {
+    try {
+      const { data } = await axios.post('/api/admin/roster/link', { code: p.code, agreed: true, consent_version: p.version })
+      closeModal(); toast('スタッフマスタに連携登録しました')
+      location.hash = 'staff/' + data.staff_id
+    } catch (e) { showApiError(e, '連携に失敗しました') }
+  })
 }
 
 // ---------- ②③④ フォーム ----------
@@ -154,8 +157,8 @@ window.showRosterForm = async function (route) {
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             ${f('rf-code', 'スタッフ番号', 'placeholder="st021"', true)}
             ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"', true)}
-            ${f('rf-email', 'メール')}
-            ${f('rf-phone', '電話')}
+            ${f('rf-email', 'メール', 'type="email"')}
+            ${f('rf-phone', '電話', 'type="tel"')}
           </div>
           <p class="text-xs font-bold text-emerald-700 pt-1"><i class="fas fa-id-card mr-1"></i>従業員管理（詳細は登録後に従業員管理画面で入力）</p>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -170,11 +173,13 @@ window.showRosterForm = async function (route) {
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
             ${f('rf-code', 'スタッフ番号', 'placeholder="pt001"')}
             ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"')}
-            ${f('rf-email', 'メール')}
-            ${f('rf-phone', '電話')}
+            ${f('rf-email', 'メール', 'type="email"')}
           </div>
         </details>
-        ${f('rf-aff-contact', '所属先担当者名')}` : ''}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${f('rf-phone', '電話', 'type="tel"')}
+          ${f('rf-aff-contact', '所属先担当者名')}
+        </div>` : ''}
       ${route === 'skillsheet' ? f('rf-affiliation', '所属会社名（任意・スキルシート表示用）') : ''}
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         ${f('rf-skills', 'スキル（カンマ区切り）', 'placeholder="MNP,接客"')}
@@ -187,14 +192,17 @@ window.showRosterForm = async function (route) {
           ${f('rf-station', '最寄駅（駅）')}
           ${f('rf-available', '稼働開始可能日', 'type="date"')}
         </div>
-        ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0"')}` : ''}
+        ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0" max="1440" step="1"')}` : ''}
       <p class="text-xs text-gray-400"><span class="text-red-500">*</span> は必須項目です（氏名・性別は全企業共通の必須項目）</p>
     </div>
     <div class="flex gap-2 mt-4">
-      <button class="btn btn-outline" onclick="showAddRoster()"><i class="fas fa-arrow-left"></i></button>
-      <button class="btn btn-primary flex-1" onclick="submitRosterForm('${route}')">登録する</button>
+      <button class="btn btn-outline" data-action="showAddRoster"><i class="fas fa-arrow-left"></i></button>
+      <button class="btn btn-primary flex-1" data-action="submitRosterForm" data-route="${esc(route)}">登録する</button>
     </div>`)
 }
+delegate('showAddRoster', () => showAddRoster())
+// 送信中はボタンを無効にして二重登録を防ぐ（submitRosterForm は下で必須確認付きに差し替えるため、呼ぶときに window から引く）
+delegate('submitRosterForm', el => withSubmitLock(el, () => window.submitRosterForm(el.dataset.route)))
 
 window.submitRosterForm = async function (route) {
   const v = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
@@ -249,39 +257,91 @@ window.showRosterFieldSettings = async function () {
   const canEdit = ME && ['company_admin', 'system_admin'].includes(ME.role)
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>スタッフマスタ 必須項目の設定</h3>
-    <p class="text-xs text-gray-500 mb-4">新規作成時・基本項目の更新時に入力を必須にする項目を選択します。${canEdit ? '' : '<br><span class="text-red-500">変更は会社管理者のみ可能です</span>'}</p>
+    <p class="text-xs text-gray-500 mb-4">新規作成時・基本項目の更新時に入力を必須にする項目を選択します。登録済みのスタッフで未入力の人は「未入力のスタッフを確認」で一覧できます。${canEdit ? '' : '<br><span class="text-red-500">変更は会社管理者のみ可能です</span>'}</p>
     <p class="text-xs font-bold text-gray-500 mb-1">常に必須（変更不可）</p>
     <div class="flex gap-2 mb-4">${data.absolute.map(f => `<span class="badge badge-red">${esc(f.label)}</span>`).join('')}</div>
     <p class="text-xs font-bold text-gray-500 mb-1">企業ごとに設定</p>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-      ${data.fields.map(f => `
+      ${data.fields.map(f => {
+        // 対象の説明（例: 所属先担当者名は③取引先のみ、メールはログインのある人のみ、④スキルシートのみは対象外）
+        const scope = [f.note, f.skillsheet || f.only ? '' : '④対象外'].filter(Boolean).join('・')
+        return `
         <label class="flex items-center gap-2 p-2 rounded-lg border border-gray-200 ${canEdit ? 'cursor-pointer' : 'opacity-70'}">
-          <input type="checkbox" class="rq-field" data-code="${f.code}" ${f.is_required ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
+          <input type="checkbox" class="rq-field" data-code="${esc(f.code)}" ${f.is_required ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
           <span class="text-sm">${esc(f.label)}</span>
-          ${f.skillsheet ? '' : '<span class="text-[10px] text-gray-400 ml-auto" title="④スキルシートのみ作成では必須判定しません">④対象外</span>'}
-        </label>`).join('')}
+          ${scope ? `<span class="text-[10px] text-gray-400 ml-auto">${esc(scope)}</span>` : ''}
+        </label>`
+      }).join('')}
     </div>
     <p class="text-xs text-gray-400 mt-3">※ ①QR/ID連携で登録したスタッフの基本項目は所属元企業が管理するため、自社の必須設定は適用されません。</p>
-    ${canEdit ? '<button class="btn btn-primary w-full mt-4" onclick="saveRosterFieldSettings()">保存する</button>' : ''}`)
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" data-action="showRosterMissing">未入力のスタッフを確認</button>
+      ${canEdit ? '<button class="btn btn-primary flex-1" data-action="saveRosterFieldSettings">保存する</button>' : ''}
+    </div>`)
 }
+delegate('saveRosterFieldSettings', el => withSubmitLock(el, () => saveRosterFieldSettings()))
+delegate('showRosterMissing', el => withSubmitLock(el, () => showRosterMissing()))
 window.saveRosterFieldSettings = async function () {
   const required = {}
   document.querySelectorAll('.rq-field').forEach(el => { required[el.dataset.code] = el.checked })
   try {
     await axios.put('/api/admin/roster/field-settings', { required })
     await loadRosterRequired(true)
-    closeModal(); toast('必須項目の設定を保存しました')
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました') }
+  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '保存に失敗しました'); return }
+  toast('必須項目の設定を保存しました')
+  // 必須にした項目が未入力の既存スタッフがいれば一覧で知らせる（新規作成・更新時にしか確認しないため）
+  await showRosterMissing({ afterSave: true })
 }
 
-// 作成フォームのラベルに必須マークを付ける（showRosterForm の描画後に呼ぶ）
-const RF_FIELD_IDS = { kana: 'rf-kana', date_of_birth: 'rf-dob', affiliation_contact: 'rf-aff-contact', skills: 'rf-skills', career: 'rf-career',
-  work_area: 'rf-area', nearest_station_line: 'rf-line', nearest_station: 'rf-station', available_from: 'rf-available', commute_minutes: 'rf-commute' }
-const RF_SKILLSHEET_EXEMPT = ['affiliation_contact', 'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from']
+// 必須項目が未入力の既存スタッフの一覧（必須を後から ON にしたときの確認用）
+window.showRosterMissing = async function (opts) {
+  const afterSave = opts && opts.afterSave
+  let data
+  try { data = (await axios.get('/api/admin/roster/field-settings/missing')).data }
+  catch (e) { if (afterSave) closeModal(); toast((e.response && e.response.data && e.response.data.error) || '未入力のスタッフを取得できませんでした'); return }
+  if (!data.count) {
+    if (afterSave) { closeModal(); return }
+    toast('必須項目が未入力のスタッフはいません'); return
+  }
+  const link = s => (s.affiliation_type === 'own_employee' ? '#employees/' : '#staff/') + Number(s.staff_id)
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-triangle-exclamation text-amber-500 mr-1"></i>必須項目が未入力のスタッフ</h3>
+    <p class="text-sm text-gray-600 mb-3">既存スタッフのうち <b>${Number(data.count)}名</b> が未入力です。${data.truncated ? `（先頭の${Number(data.staff.length)}名を表示）` : ''}<br>
+      <span class="text-xs text-gray-400">他社連携・退職・統合済みのスタッフは対象外です。名前を押すと詳細を開きます。</span></p>
+    <div class="max-h-[60vh] overflow-y-auto">
+      <table class="tbl">
+        <thead><tr><th>氏名</th><th>区分</th><th>未入力の項目</th></tr></thead>
+        <tbody>${data.staff.map(s => `
+          <tr>
+            <td><a class="text-blue-700 hover:underline" href="${link(s)}">${esc(s.name)}</a></td>
+            <td class="text-xs">${esc((typeof AFF_TYPE_LABEL !== 'undefined' && AFF_TYPE_LABEL[s.affiliation_type]) || s.affiliation_type)}</td>
+            <td class="text-xs text-red-600">${s.missing.map(esc).join('・')}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+}
+
+// 作成フォームの必須項目（showRosterForm の描画後に * を付け、送信前に確認する。サーバーの missingRequired と同じ考え方）
+const RF_FIELD_IDS = { kana: 'rf-kana', date_of_birth: 'rf-dob', affiliation_contact: 'rf-aff-contact', phone: 'rf-phone', email: 'rf-email',
+  skills: 'rf-skills', career: 'rf-career', work_area: 'rf-area', nearest_station_line: 'rf-line', nearest_station: 'rf-station',
+  available_from: 'rf-available', commute_minutes: 'rf-commute' }
+const RF_ROUTE_TYPE = { employee: 'own_employee', partner: 'partner_manual', skillsheet: 'skillsheet_only' }
+// この作成方法で、その項目に必須設定を当てはめるか。hasLogin が未指定なら、ログインのある人だけの項目も当てはめる
+function rfRequirementApplies(code, route, hasLogin) {
+  const meta = ROSTER_REQUIRED && ROSTER_REQUIRED.__meta
+  const f = meta && meta.fields.find(x => x.code === code)
+  if (!f) return false
+  const type = RF_ROUTE_TYPE[route]
+  if (type === 'skillsheet_only' && !f.skillsheet) return false
+  if (f.only && !f.only.includes(type)) return false
+  if (f.login_only && hasLogin === false) return false
+  return true
+}
 function markRequiredInForm(route) {
   const req = ROSTER_REQUIRED || {}
   for (const [code, id] of Object.entries(RF_FIELD_IDS)) {
-    if (!req[code] || (route === 'skillsheet' && RF_SKILLSHEET_EXEMPT.includes(code))) continue
+    if (!req[code] || !rfRequirementApplies(code, route)) continue
     const el = document.getElementById(id); if (!el) continue
     const label = el.parentElement && el.parentElement.querySelector('label')
     if (label && !label.querySelector('.req-mark')) label.insertAdjacentHTML('beforeend', ' <span class="text-red-500 req-mark">*</span>')
@@ -296,9 +356,12 @@ window.showRosterForm = async function (route) {
 const _origSubmitRosterForm = window.submitRosterForm
 window.submitRosterForm = async function (route) {
   const req = ROSTER_REQUIRED || {}
+  const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
+  // ログイン: ②は必ず作る、③はスタッフ番号と初期パスワードを入れたときだけ、④は作らない
+  const hasLogin = route === 'employee' || (route === 'partner' && !!val('rf-code') && !!val('rf-pass'))
   const lacks = []
   for (const [code, id] of Object.entries(RF_FIELD_IDS)) {
-    if (!req[code] || (route === 'skillsheet' && RF_SKILLSHEET_EXEMPT.includes(code))) continue
+    if (!req[code] || !rfRequirementApplies(code, route, hasLogin)) continue
     const el = document.getElementById(id)
     if (el && !el.value.trim()) lacks.push(el.parentElement.querySelector('label').textContent.replace('*', '').trim())
   }
@@ -411,7 +474,7 @@ window.renderRosterPanels = async function (sid, p) {
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-link text-blue-500 mr-1"></i>連携先企業（自社から連携した稼働先）</h3>
-          ${p.linkable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
+          ${p.link_shareable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
         </div>
         ${links.links.length ? links.links.map(l => `
           <div class="p-2.5 rounded-lg bg-gray-50 mb-2">
@@ -423,7 +486,7 @@ window.renderRosterPanels = async function (sid, p) {
             ${l.site_evaluation || l.work_memo ? `
               <p class="text-xs text-gray-700 mt-1"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
               <p class="text-xs text-gray-700"><span class="text-gray-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>` : '<p class="text-xs text-gray-400 mt-1">稼働先からの追記はまだありません</p>'}
-          </div>`).join('') : `<p class="text-sm text-gray-400">${p.linkable ? 'まだ他社には連携されていません' : '連携対象外のスタッフです'}</p>`}
+          </div>`).join('') : `<p class="text-sm text-gray-400">${!p.linkable ? '連携対象外のスタッフです' : p.link_shareable ? 'まだ他社には連携されていません' : '退職・停止中のため、新しく連携することはできません'}</p>`}
         <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。</p>
       </section>`
   }
@@ -433,7 +496,7 @@ window.renderRosterPanels = async function (sid, p) {
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-shield-halved text-blue-500 mr-1"></i>連携の同意履歴</h3>
         ${links.consents.map(x => `
           <div class="p-2.5 rounded-lg bg-gray-50 mb-2 text-xs">
-            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc(x.created_at)}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
+            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc((x.created_at || '').slice(0, 16))}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
             <p class="text-gray-500 mt-1">共有範囲: ${esc(Array.isArray(x.shared_scope) ? x.shared_scope.join('・') : x.shared_scope)}</p>
           </div>`).join('') || '<p class="text-sm text-gray-400">記録がありません</p>'}
       </section>`

@@ -30,17 +30,22 @@ export const CONSULT_CATEGORIES = ['health', 'absence', 'store_trouble', 'claim'
 export const CONSULT_URGENCIES = ['low', 'normal', 'high'] as const
 
 // 日報の値を、案件の日報テンプレートの項目（fields_json）に合わせて取り出す。
-// テンプレートにないキーは捨てる。数値の項目は数値、それ以外は文字列（長さに上限）にする。
+// テンプレートにないキーは捨てる。数値の項目は 0〜REPORT_NUMBER_MAX の整数、それ以外は文字列（長さに上限）にする。
 // キーは本部が自由に付けられる（日本語の場合もある）ため、文字種は制限せず、制御文字と長さだけを見る。
 // テンプレートの無い案件では、報告用URLの画面が「報告内容（free）」の欄だけを出すので、free だけを受け付ける。
 const REPORT_KEY_RE = /^[^\u0000-\u001f\u007f]{1,100}$/
 const REPORT_TEXT_MAX = 2000
+// 数値の項目は件数（0 以上の整数）。桁違いの誤入力で集計・ランキングがゆがまないよう上限を置く
+export const REPORT_NUMBER_MAX = 99999
+// 保存する JSON 全体の上限（アプリと報告用URLで同じ）
+export const REPORT_JSON_MAX = 20000
 const NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: 'textarea' }]
 export function pickReportValues(fieldsJson: unknown, values: unknown): { values: Record<string, number | string> } | { error: string } {
   let fields: any[] = []
   try { fields = typeof fieldsJson === 'string' ? JSON.parse(fieldsJson) : [] } catch { fields = [] }
   if (!Array.isArray(fields) || fields.length === 0) fields = NO_TEMPLATE_FIELDS
-  const src = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
+  if (values !== undefined && values !== null && (typeof values !== 'object' || Array.isArray(values))) return { error: '日報の形式が正しくありません' }
+  const src = values ? values as Record<string, unknown> : {}
   const out: Record<string, number | string> = {}
   for (const f of fields) {
     const key = f && typeof f.key === 'string' ? f.key : ''
@@ -49,8 +54,10 @@ export function pickReportValues(fieldsJson: unknown, values: unknown): { values
     if (v === null || v === undefined) continue
     const label = String(f.label || key)
     if (f.type === 'number') {
-      const n = v === '' ? 0 : typeof v === 'number' ? v : Number(v)
-      if (typeof v === 'boolean' || !Number.isFinite(n) || Math.abs(n) > 1e9) return { error: `「${label}」は数値で入力してください` }
+      const n = v === '' ? 0 : typeof v === 'number' ? v : Number(String(v).trim())
+      if (typeof v === 'boolean' || typeof v === 'object' || !Number.isInteger(n) || n < 0 || n > REPORT_NUMBER_MAX) {
+        return { error: `「${label}」は0〜${REPORT_NUMBER_MAX}の整数で入力してください` }
+      }
       out[key] = n
     } else {
       if (typeof v === 'object') return { error: `「${label}」の形式が正しくありません` }
@@ -59,6 +66,7 @@ export function pickReportValues(fieldsJson: unknown, values: unknown): { values
       out[key] = s
     }
   }
+  if (JSON.stringify(out).length > REPORT_JSON_MAX) return { error: '入力内容が長すぎます' }
   return { values: out }
 }
 

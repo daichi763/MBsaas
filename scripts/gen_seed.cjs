@@ -53,6 +53,11 @@ staffNames.forEach((n, i) => {
 });
 userRows.push(`(100, 1, 'hq', 'ディセクテラ本部', 'system_admin', '${PASS}', 'hq@dissectra.co.jp', NULL, 'active')`);
 sql += userRows.join(',\n') + ';\n';
+// 本部ユーザーは本部専用の企業行（0033 で作成。active_status = 'internal'）に置く。0033 より前に seed を入れた場合は 0033 が移す
+sql += `-- 本部ユーザーは本部専用の企業行（0033 で作成。active_status = 'internal'）に置く。0033 より前に seed を入れた場合は 0033 が移す
+UPDATE OR IGNORE users SET company_id = (SELECT company_id FROM companies WHERE active_status = 'internal' ORDER BY company_id LIMIT 1)
+WHERE role = 'system_admin' AND EXISTS (SELECT 1 FROM companies WHERE active_status = 'internal');
+`;
 
 // ============ スタッフプロフィール ============
 sql += `\nINSERT OR IGNORE INTO staff_profiles (staff_id, user_id, company_id, affiliation, career, skills, work_area, age_group, evaluation_score, retention_risk, follow_flag, memo) VALUES\n`;
