@@ -35,6 +35,7 @@
     if (!id) return renderList()
     if (id === 'new') return renderForm(null)
     if (id === 'threads') return renderThreadList()
+    if (id === 'proposals') return renderProposalPage()
     const tm = String(id).match(/^t(\d+)$/)
     if (tm) return renderThread(Number(tm[1]))
     const m = String(id).match(/^(\d+)(-edit)?$/)
@@ -58,6 +59,7 @@
         <span class="mx-2 text-gray-300">|</span>
         ${[['open', '掲載中の案件'], ['mine', '自社の掲載']].map(([k, l]) => `<button class="btn ${S.scope === k ? 'btn-primary' : 'btn-outline'} text-xs" data-scope="${k}" onclick="__boardSet('scope','${k}')">${l}</button>`).join('')}
         <a class="btn btn-outline text-xs" href="#board/threads" id="board-threads-link"><i class="fas fa-comments"></i>やり取り一覧<span class="board-unread-total hidden ml-1 badge badge-red"></span></a>
+        <a class="btn btn-outline text-xs" href="#board/proposals" id="board-proposals-link"><i class="fas fa-id-badge"></i>提案一覧</a>
       </div>
       <section class="card p-3 mb-3" id="board-filters">
         <div class="grid md:grid-cols-6 gap-2 text-xs">
@@ -118,7 +120,7 @@
           <p><i class="fas fa-location-dot w-4 text-gray-400"></i>${esc(placeText(p) || '-')}</p>
           <p><i class="fas fa-calendar w-4 text-gray-400"></i>${esc(scheduleText(p) || '-')}${p.schedule_note ? ` <span class="text-gray-500">／${esc(p.schedule_note)}</span>` : ''}</p>
           <p><i class="fas fa-yen-sign w-4 text-gray-400"></i><span class="font-bold text-gray-900">${esc(priceText(p))}</span>${p.price_note ? ` <span class="text-amber-700">（${esc(p.price_note)}）</span>` : ''}
-            <span class="ml-2 text-gray-500"><i class="fas fa-user-group mr-0.5"></i>${p.headcount}名</span></p>
+            <span class="ml-2 text-gray-500"><i class="fas fa-user-group mr-0.5"></i>${p.is_mine && p.adopted_count != null ? `採用 <span class="board-adopted ${p.adopted_count >= p.headcount ? 'text-emerald-700 font-bold' : ''}">${Number(p.adopted_count)}/${Number(p.headcount)}名</span>` : `${Number(p.headcount)}名`}</span></p>
         </div>
         ${p.required_skills ? `<div class="mt-2 flex flex-wrap gap-1">${skillBadges(p.required_skills)}</div>` : ''}
         <div class="flex items-center gap-2 mt-2 text-[11px]">
@@ -166,8 +168,10 @@
           <div class="bg-blue-50 rounded-xl p-4 mb-4 flex items-center gap-4 flex-wrap">
             <div><p class="text-xs text-blue-700">単価</p><p class="text-2xl font-bold text-blue-900">${esc(priceText(p))}</p></div>
             ${p.price_note ? `<span class="badge badge-yellow">${esc(p.price_note)}</span>` : ''}
-            <div class="ml-auto text-right"><p class="text-xs text-blue-700">募集人数</p><p class="text-xl font-bold text-blue-900">${p.headcount}名</p></div>
+            <div class="ml-auto text-right"><p class="text-xs text-blue-700">募集人数</p><p class="text-xl font-bold text-blue-900">${Number(p.headcount)}名</p></div>
+            ${p.is_mine ? `<div class="text-right" id="board-adopted"><p class="text-xs text-blue-700">採用</p><p class="text-xl font-bold ${p.adopted_count >= p.headcount ? 'text-emerald-700' : 'text-blue-900'}">${Number(p.adopted_count || 0)}名</p></div>` : ''}
           </div>
+          ${p.is_mine && p.status === 'open' && p.adopted_count >= p.headcount ? `<p class="text-xs text-emerald-800 bg-emerald-50 rounded-lg p-2 mb-4" id="board-fill-hint"><i class="fas fa-circle-check mr-1"></i>募集人数に達しました。これ以上の問い合わせ・提案が来ないように「充足にする」を押してください。</p>` : ''}
           <dl class="text-sm">
             ${row('勤務地', esc(placeText(p)))}
             ${row(p.engagement_type === 'spot' ? '実施日時' : '期間・時間', esc(scheduleText(p)))}
@@ -189,11 +193,12 @@
             : p.my_thread ? `
               <p class="text-xs text-gray-500 mb-3">掲載企業: <span class="font-bold text-gray-700">${esc(p.company_name)}</span></p>
               <a class="btn btn-primary w-full text-sm" href="#board/t${p.my_thread.thread_id}" id="board-open-thread"><i class="fas fa-comment-dots"></i>やり取りを開く${p.my_thread.unread ? ` <span class="badge badge-red">${p.my_thread.unread}</span>` : ''}</a>
-              <p class="text-[11px] text-gray-400 mt-2">人材の提案は次の段階で、このやり取りの中から行えるようになります。</p>`
+              <p class="text-[11px] text-gray-400 mt-2">やり取りの中の「人材を提案」から、自社のスタッフを提案できます。</p>`
             : p.status === 'open' ? `
               <p class="text-xs text-gray-500 mb-2">掲載企業: <span class="font-bold text-gray-700">${esc(p.company_name)}</span></p>
               <textarea id="board-first-msg" rows="4" maxlength="2000" class="inp text-sm" placeholder="例: 光回線の経験者を2名ご提案可能です。詳細を伺えますか。"></textarea>
-              <button class="btn btn-primary w-full text-sm mt-2" id="board-inquire" onclick="__boardInquire(${p.post_id})"><i class="fas fa-paper-plane"></i>問い合わせる</button>
+              <button class="btn btn-primary w-full text-sm mt-2" id="board-inquire" data-action="boardInquire" data-id="${Number(p.post_id)}"><i class="fas fa-paper-plane"></i>問い合わせる</button>
+              <div id="board-inquire-note"></div>
               <p class="text-[11px] text-gray-400 mt-2">やり取りは掲載企業と自社の間だけで行われ、他社には表示されません。スタッフ本人にも表示されません。</p>`
             : '<p class="text-xs text-gray-500">この掲載は募集を終了しています。</p>'}
           </section>
@@ -219,9 +224,20 @@
   window.__boardInquire = async function (postId) {
     const body = document.getElementById('board-first-msg').value.trim()
     if (!body) { toast('メッセージを入力してください'); return }
-    try { const { data } = await axios.post(`/api/admin/board/posts/${postId}/threads`, { body }); toast('問い合わせを送信しました'); location.hash = '#board/t' + data.thread_id }
-    catch (e) { toast(errMsg(e, '送信に失敗しました')) }
+    try {
+      const { data } = await axios.post(`/api/admin/board/posts/${postId}/threads`, { body })
+      // 自社の別の担当者が先に問い合わせていたときは、本文はそのやり取りに追加される（#435）
+      toast(data.existed ? '自社のやり取りがすでにあったため、そのやり取りに送信しました' : '問い合わせを送信しました')
+      location.hash = '#board/t' + data.thread_id
+    } catch (e) {
+      toast(errMsg(e, '送信に失敗しました'))
+      // 終了したやり取りがある: 入力は残し、やり取りへ案内する
+      const d = e && e.response && e.response.data
+      const note = document.getElementById('board-inquire-note')
+      if (note && d && d.thread_id) note.innerHTML = `<a class="btn btn-outline w-full text-sm mt-2" href="#board/t${Number(d.thread_id)}"><i class="fas fa-comment-dots"></i>自社のやり取りを開く</a>`
+    }
   }
+  delegate('boardInquire', (el) => withSubmitLock(el, () => window.__boardInquire(Number(el.dataset.id))))
 
   // ---------- やり取り一覧 ----------
   async function renderThreadList() {
@@ -250,33 +266,60 @@
           </tbody>
         </table>
       </section>
+      ${proposalSectionHtml()}`
+    loadProposalList()
+    window.refreshBoardBadge()
+  }
+  // ---------- 提案一覧（送った提案・受けた提案。#394） ----------
+  function renderProposalPage() {
+    $app.innerHTML = `
+      <div class="flex items-center gap-3 mb-4 flex-wrap">
+        <a href="#board" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+        <h2 class="text-xl font-bold text-gray-900 flex-1"><i class="fas fa-id-badge text-blue-600 mr-1"></i>人材提案の一覧</h2>
+        <a class="btn btn-outline text-xs" href="#board/threads"><i class="fas fa-comments"></i>やり取り一覧</a>
+      </div>
+      ${proposalSectionHtml()}`
+    loadProposalList()
+  }
+  const PROP_FILTERS = { '': 'すべての状態', pending: '返事待ち（提案中・面談希望）', proposed: '提案中', interview: '面談希望', adopted: '採用', not_imported: '採用・未取り込み', declined: '見送り', withdrawn: '取り下げ' }
+  function proposalSectionHtml() {
+    S.propSide = S.propSide || 'sent'
+    if (S.propSide === 'sent' && S.propStatus === 'not_imported') S.propStatus = ''
+    return `
       <section class="card p-4 mt-4" id="board-proposal-list">
         <div class="flex items-center gap-2 mb-2 flex-wrap">
           <h3 class="text-sm font-bold text-gray-700 flex-1"><i class="fas fa-id-badge text-blue-600 mr-1"></i>人材提案の状況</h3>
+          <select id="board-prop-status" class="inp text-xs w-auto" title="状態で絞り込む">${Object.entries(PROP_FILTERS).filter(([k]) => k !== 'not_imported' || S.propSide === 'received')
+            .map(([k, l]) => `<option value="${k}" ${(S.propStatus || '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
           ${[['sent', '送った提案'], ['received', '受けた提案']].map(([k, l]) => `<button class="btn ${S.propSide === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="boardPropSide" data-side="${k}">${l}</button>`).join('')}
         </div>
         <div id="board-proposal-rows"><div class="flex justify-center py-4"><span class="spin"></span></div></div>
       </section>`
-    loadProposalList()
-    window.refreshBoardBadge()
   }
-  // 提案した側も、面談希望・採用・見送りの結果を一覧で追えるようにする（#124）
+  // 提案した側も、面談希望・採用・見送りの結果を一覧で追えるようにする（#124）。採用したが取り込んでいない提案には印を付ける（#394）
   async function loadProposalList() {
     const box = document.getElementById('board-proposal-rows'); if (!box) return
+    const sel = document.getElementById('board-prop-status')
+    if (sel && !sel.dataset.bound) { sel.dataset.bound = '1'; sel.addEventListener('change', () => { S.propStatus = sel.value; loadProposalList() }) }
     const side = S.propSide || 'sent'
     try {
-      const { data } = await axios.get('/api/admin/board/proposals', { params: { side } })
+      const { data } = await axios.get('/api/admin/board/proposals', { params: { side, status: S.propStatus || undefined } })
       box.innerHTML = data.proposals.length ? `<div class="overflow-x-auto"><table class="tbl"><thead><tr><th>案件</th><th>${side === 'sent' ? '提案先' : '提案元'}</th><th>人材</th><th>状態</th><th>更新</th></tr></thead><tbody>
         ${data.proposals.map(p => `<tr class="cursor-pointer" data-action="boardOpenThread" data-id="${Number(p.thread_id)}">
           <td><span class="badge ${ENG_BADGE[p.engagement_type] || 'badge-gray'}">${ENG[p.engagement_type] || ''}</span> ${esc(p.post_title || '')}</td>
           <td class="text-sm">${esc(side === 'sent' ? p.receiver_company_name : p.proposer_company_name)}</td>
           <td class="text-sm">${esc(side === 'sent' ? (p.staff_name || '') : (p.disclosed && p.disclosed.name) || (p.snapshot && p.snapshot.initials) || '候補者No.' + p.proposal_id)}</td>
-          <td><span class="badge ${PSTATUS_BADGE[p.status] || 'badge-gray'}">${esc(p.status_label)}</span></td>
+          <td class="whitespace-nowrap"><span class="badge ${PSTATUS_BADGE[p.status] || 'badge-gray'}">${esc(p.status_label)}</span>${p.not_imported ? ' <span class="badge badge-yellow board-not-imported">未取り込み</span>' : ''}</td>
           <td class="text-xs text-gray-400 whitespace-nowrap">${esc(String(p.decided_at || p.created_at || '').slice(5, 16))}</td>
-        </tr>`).join('')}</tbody></table></div>` : `<p class="text-xs text-gray-400 py-4 text-center">${side === 'sent' ? '送った提案はまだありません' : '受けた提案はまだありません'}</p>`
+        </tr>`).join('')}</tbody></table></div>` : `<p class="text-xs text-gray-400 py-4 text-center">${S.propStatus ? '条件に合う提案はありません' : side === 'sent' ? '送った提案はまだありません' : '受けた提案はまだありません'}</p>`
     } catch (e) { box.innerHTML = `<p class="text-xs text-red-500">${esc(errMsg(e))}</p>` }
   }
-  delegate('boardPropSide', (el) => { S.propSide = el.dataset.side; document.querySelectorAll('[data-action="boardPropSide"]').forEach(b => { const on = b.dataset.side === S.propSide; b.classList.toggle('btn-primary', on); b.classList.toggle('btn-outline', !on) }); loadProposalList() })
+  delegate('boardPropSide', (el) => {
+    S.propSide = el.dataset.side
+    const sec = document.getElementById('board-proposal-list')
+    if (sec) sec.outerHTML = proposalSectionHtml()
+    loadProposalList()
+  })
   delegate('boardOpenThread', (el) => { location.hash = '#board/t' + Number(el.dataset.id) })
 
   // ---------- やり取り（スレッド） ----------
@@ -315,8 +358,8 @@
         <div class="flex gap-2 mt-3">
           <textarea id="board-chat-input" rows="3" maxlength="2000" class="inp text-sm flex-1" placeholder="メッセージを入力（Ctrl+Enterで送信）"></textarea>
           <div class="flex flex-col gap-2 self-end">
-            ${t.my_side === 'inquirer' && t.post_status === 'open' ? `<button class="btn btn-outline text-sm" id="board-propose" onclick="__boardOpenPropose(${t.thread_id})"><i class="fas fa-user-plus"></i>人材を提案</button>` : ''}
-            <button class="btn btn-primary" id="board-chat-send" onclick="__boardSend(${t.thread_id})"><i class="fas fa-paper-plane"></i>送信</button>
+            ${t.my_side === 'inquirer' && t.post_status === 'open' ? `<button class="btn btn-outline text-sm" id="board-propose" data-action="boardOpenPropose" data-id="${Number(t.thread_id)}"><i class="fas fa-user-plus"></i>人材を提案</button>` : ''}
+            <button class="btn btn-primary" id="board-chat-send" data-action="boardSend" data-id="${Number(t.thread_id)}"><i class="fas fa-paper-plane"></i>送信</button>
           </div>
         </div>
         ${t.my_side === 'inquirer' && t.post_status !== 'open' ? '<p class="text-[11px] text-gray-400 mt-1">この掲載は募集を終了しているため、新しい人材は提案できません（メッセージは送れます）。</p>'
@@ -325,7 +368,10 @@
     const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight
     const inp = document.getElementById('board-chat-input')
     if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); window.__boardSend(t.thread_id) } })
-    window.refreshBoardBadge()
+    // 既読は、画面が表示されていて一番下まで見えているときだけ付ける（#250）。下までスクロールしたときにも付ける
+    READ = { threadId, lastId: lastMessageId(data.messages), sent: 0 }
+    log.addEventListener('scroll', () => { if (logAtBottom(log)) markThreadRead(false) })
+    markThreadRead(false)
     // 開いている間は30秒ごとに新着を確認（画面全体は再描画しない）
     clearInterval(threadTimer)
     threadTimer = setInterval(() => {
@@ -334,6 +380,19 @@
     }, 30 * 1000)
   }
   let PROPS = {}, CUR_THREAD = null
+  let READ = { threadId: 0, lastId: 0, sent: 0 }
+  const lastMessageId = (msgs) => msgs && msgs.length ? Number(msgs[msgs.length - 1].message_id) || 0 : 0
+  const logAtBottom = (log) => log.scrollHeight - log.scrollTop - log.clientHeight < 40
+  // 表示中のやり取りを、画面に出ている最後のメッセージまで既読にする（ユーザー単位。#250）
+  async function markThreadRead(background) {
+    const log = document.getElementById('board-chat-log')
+    if (!log || !READ.threadId || location.hash !== '#board/t' + READ.threadId) return
+    if (document.visibilityState !== 'visible' || !logAtBottom(log) || READ.lastId <= READ.sent) return
+    const upto = READ.lastId; READ.sent = upto
+    try { await axios.post(`/api/admin/board/threads/${READ.threadId}/read`, { message_id: upto }, { background: !!background }); window.refreshBoardBadge() }
+    catch (e) { if (READ.sent === upto) READ.sent = 0 }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markThreadRead(false) })
   const GENDER = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
   const PSTATUS_BADGE = { proposed: 'badge-blue', interview: 'badge-yellow', adopted: 'badge-green', declined: 'badge-gray', withdrawn: 'badge-gray' }
   const fmtYm = v => v ? String(v).replace(/^(\d{4})-(\d{2})$/, (_, y, m) => `${y}年${Number(m)}月`) : ''
@@ -418,12 +477,15 @@
       const cfg = { background: !!background }
       const [r1, r2] = await Promise.all([axios.get('/api/admin/board/threads/' + threadId, cfg), axios.get(`/api/admin/board/threads/${threadId}/proposals`, cfg)])
       const data = r1.data; PROPS = Object.fromEntries(r2.data.proposals.map(x => [x.proposal_id, x]))
-      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+      const atBottom = logAtBottom(log)
       log.innerHTML = messagesHtml(data.messages)
       if (atBottom) log.scrollTop = log.scrollHeight
+      if (READ.threadId === threadId) { READ.lastId = lastMessageId(data.messages); await markThreadRead(background) }
       window.refreshBoardBadge()
     } catch (e) { /* noop */ }
   }
+  delegate('boardOpenPropose', (el) => window.__boardOpenPropose(Number(el.dataset.id)))
+  delegate('boardSend', (el) => window.__boardSend(Number(el.dataset.id)))
   window.__boardSend = async function (threadId) {
     const el = document.getElementById('board-chat-input'); const body = el.value.trim()
     if (!body) return
@@ -437,7 +499,7 @@
     modal(`
       <h3 class="font-bold text-lg mb-1"><i class="fas fa-user-plus text-blue-600 mr-1"></i>人材を提案</h3>
       <p class="text-xs text-gray-500 mb-3">自社のスタッフマスタから選びます。相手には氏名を伏せたスキルシートが届き、所属は「${esc(ME ? ME.company_name : '自社')}」と表示されます（採用されると氏名を開示）。</p>
-      <div class="flex gap-2 mb-2"><input id="bpr-q" class="inp text-sm" placeholder="氏名・フリガナ・スキルで検索"><button class="btn btn-outline text-sm" onclick="__boardLoadCandidates(${threadId})"><i class="fas fa-magnifying-glass"></i></button></div>
+      <div class="flex gap-2 mb-2"><input id="bpr-q" class="inp text-sm" placeholder="氏名・フリガナ・スキルで検索"><button class="btn btn-outline text-sm" data-action="boardLoadCandidates" data-id="${Number(threadId)}"><i class="fas fa-magnifying-glass"></i></button></div>
       <div id="bpr-list" class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50"><div class="flex justify-center py-6"><span class="spin"></span></div></div>
       <div id="bpr-detail" class="mt-3"></div>`)
     document.getElementById('bpr-q').addEventListener('keydown', e => { if (e.key === 'Enter') window.__boardLoadCandidates(threadId) })
@@ -448,14 +510,25 @@
     try {
       const { data } = await axios.get(`/api/admin/board/threads/${threadId}/proposal-candidates`, { params: { q: document.getElementById('bpr-q').value.trim() || undefined } })
       box.innerHTML = data.candidates.map(c => `
-        <button type="button" class="w-full text-left p-2.5 hover:bg-blue-50 flex items-center gap-2 bpr-cand ${c.already ? 'opacity-50' : ''}" ${c.already ? 'disabled title="このやり取りで提案済みです"' : ''} onclick="__boardPreview(${threadId}, ${c.staff_id})">
+        <button type="button" class="w-full text-left p-2.5 hover:bg-blue-50 flex items-center gap-2 flex-wrap bpr-cand ${c.already ? 'opacity-50' : ''}" ${c.already ? 'disabled title="このやり取りで提案済みです"' : ''} data-action="boardPreview" data-thread="${Number(threadId)}" data-staff="${Number(c.staff_id)}">
           <span class="font-bold text-sm text-gray-800">${esc(c.name)}</span>
           <span class="badge badge-gray">${esc(KIND_LABEL[c.kind] || c.kind)}</span>
           ${c.warning ? '<i class="fas fa-triangle-exclamation text-amber-500" title="注意事項あり"></i>' : ''}
           ${c.already ? '<span class="text-[11px] text-gray-400">提案済み</span>' : ''}
+          ${c.other_adopted ? `<span class="badge badge-green bpr-elsewhere" title="${esc(c.adopted_label || '')}">他で採用済み</span>` : ''}
+          ${c.other_pending ? `<span class="badge badge-yellow bpr-elsewhere">他で提案中 ${Number(c.other_pending)}件</span>` : ''}
           <span class="ml-auto text-[11px] text-gray-500 truncate max-w-[200px]">${esc(c.skills || '')}</span>
         </button>`).join('') || '<p class="text-xs text-gray-400 p-4 text-center">提案できるスタッフがいません（統合済み・退職のスタッフは提案できません）</p>'
     } catch (e) { box.innerHTML = `<p class="text-xs text-red-500 p-3">${esc(errMsg(e))}</p>` }
+  }
+  delegate('boardLoadCandidates', (el) => window.__boardLoadCandidates(Number(el.dataset.id)))
+  delegate('boardPreview', (el) => window.__boardPreview(Number(el.dataset.thread), Number(el.dataset.staff)))
+  // ほかの掲載で提案中・採用済みであることの注意（#477）
+  function elsewhereHtml(x) {
+    if (!x || (!x.pending && !x.adopted)) return ''
+    return `<div class="text-xs text-amber-800 bg-amber-50 rounded-lg p-2 mb-2" id="bpr-elsewhere"><i class="fas fa-circle-info mr-1"></i>この人材は、ほかの掲載で${[
+      x.adopted ? `採用済みです（${esc(x.adopted_label || '')}${x.adopted > 1 ? ` ほか${Number(x.adopted) - 1}件` : ''}）` : '',
+      x.pending ? `提案中です（${Number(x.pending)}件）` : ''].filter(Boolean).join('。また、')}。稼働が重ならないか確認してから提案してください。</div>`
   }
   window.__boardPreview = async function (threadId, staffId) {
     const box = document.getElementById('bpr-detail')
@@ -464,6 +537,7 @@
       const { data } = await axios.get(`/api/admin/board/threads/${threadId}/proposal-preview`, { params: { staff_id: staffId } })
       box.innerHTML = `
         <div class="border border-gray-200 rounded-xl p-3">
+          ${elsewhereHtml(data.elsewhere)}
           <p class="text-xs text-gray-500 mb-2"><i class="fas fa-eye mr-1"></i>相手に届く内容（<span class="font-bold text-gray-700">${esc(data.name)}</span> さん。氏名は採用まで非表示）</p>
           <div class="bg-gray-50 rounded-lg p-3"><p class="font-bold text-sm mb-1">${esc(data.snapshot.initials || '候補者No.（フリガナ未登録のため番号で表示）')}</p>${skillSheetHtml(data.snapshot)}</div>
           <div class="grid grid-cols-12 gap-2 mt-3 items-center">
@@ -517,9 +591,14 @@
     const msg = { adopted: '採用しますか？相手に通知され、氏名が開示されます。採用後は変更できません。', declined: '見送りにしますか？', withdrawn: 'この提案を取り下げますか？', interview: '面談希望にしますか？' }[status]
     if (msg && !confirm(msg)) return
     try {
-      await axios.post(`/api/admin/board/proposals/${proposalId}/status`, { status })
+      const { data } = await axios.post(`/api/admin/board/proposals/${proposalId}/status`, { status })
       toast({ adopted: '採用しました', declined: '見送りにしました', withdrawn: '取り下げました', interview: '面談希望にしました' }[status] || '更新しました')
       if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id)
+      // 採用で募集人数に達したら、充足（募集終了）にするかを確かめる（#304）
+      if (data && data.should_fill && CUR_THREAD && confirm(`採用が募集人数に達しました（採用 ${Number(data.adopted_count)}名／募集 ${Number(data.headcount)}名）。\nこの掲載を充足（募集終了）にしますか？一覧に表示されなくなり、問い合わせ中の企業に知らせます。`)) {
+        try { await axios.post(`/api/admin/board/posts/${CUR_THREAD.post_id}/status`, { status: 'filled' }); toast('掲載を充足にしました'); renderThread(CUR_THREAD.thread_id) }
+        catch (e2) { toast(errMsg(e2, '充足にできませんでした')) }
+      }
     } catch (e) { toast(errMsg(e, '更新に失敗しました')); if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id) }
   }
   delegate('boardProposalStatus', (el) => withSubmitLock(el, () => window.__boardProposalStatus(Number(el.dataset.id), el.dataset.status)))
