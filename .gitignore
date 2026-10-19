@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .wrangler/
+# Workers Builds の build で作る本番用の設定（scripts/ci-wrangler-config.mjs）
+wrangler.json
 .env
 .dev.vars
 *.log
