@@ -672,6 +672,7 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
   const shiftIds = shifts.map(s => s.shift_id)
   const enabled = await attendanceTypesForShifts(c.env.DB, shiftIds)
   const reports = new Map<number, any[]>(), pending = new Map<number, any[]>(), rejected = new Map<number, any[]>()
+  const self = await myUserIds(c)
   for (let i = 0; i < shiftIds.length; i += 90) {
     const chunk = shiftIds.slice(i, i + 90), q = chunk.map(() => '?').join(',')
     for (const r of (await c.env.DB.prepare(`SELECT shift_id, report_type, reported_at, entry_method, corrected_by_correction_id, original_reported_at FROM attendance_reports WHERE shift_id IN (${q})`).bind(...chunk).all()).results as any[]) {
@@ -682,11 +683,13 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
         WHERE x.shift_id IN (${q}) AND x.status = 'pending'`).bind(...chunk).all()).results as any[]) {
       if (!pending.has(r.shift_id)) pending.set(r.shift_id, []); pending.get(r.shift_id)!.push(r)
     }
-    // 報告ごとの最新の申請が却下のもの（理由と再申請の入口を行に出す。#399）
-    for (const r of (await c.env.DB.prepare(`SELECT x.correction_id, x.shift_id, x.report_type, x.reject_reason, x.requested_at FROM attendance_corrections x JOIN shifts s ON s.shift_id = x.shift_id AND s.staff_id = x.staff_id
+    // 報告ごとの最新の申請が、本人が出して却下されたもの（理由と再申請の入口を行に出す。管理者が出した申請の却下は、本人の再申請につながらないので出さない。#399）
+    for (const r of (await c.env.DB.prepare(`SELECT x.correction_id, x.shift_id, x.report_type, x.reject_reason, x.requested_at, x.requested_by FROM attendance_corrections x JOIN shifts s ON s.shift_id = x.shift_id AND s.staff_id = x.staff_id
         WHERE x.shift_id IN (${q}) AND x.status = 'rejected'
           AND NOT EXISTS (SELECT 1 FROM attendance_corrections y WHERE y.shift_id = x.shift_id AND y.report_type = x.report_type AND y.correction_id > x.correction_id)`).bind(...chunk).all()).results as any[]) {
-      if (!rejected.has(r.shift_id)) rejected.set(r.shift_id, []); rejected.get(r.shift_id)!.push(r)
+      if (!self.includes(r.requested_by)) continue
+      const { requested_by, ...x } = r
+      if (!rejected.has(r.shift_id)) rejected.set(r.shift_id, []); rejected.get(r.shift_id)!.push(x)
     }
   }
   const own = (await personStaffRows(c.env.DB, c.get('user'))).map(r => r.company_id)

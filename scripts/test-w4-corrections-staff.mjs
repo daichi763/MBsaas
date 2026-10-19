@@ -122,6 +122,10 @@ const myList = async (cl) => (await cl.get('/api/staff/corrections')).data.corre
   ok('#486 スタッフの申請一覧で、管理者が代わりに出した申請を区別できる（申請者の氏名。ロールは返さない）', row && row.by_admin === true && row.mine === false && row.requested_by_name === '出井 代表' && !('requested_by_role' in row), row)
   const own = (await myList(st5)).find(x => x.correction_id === r.correction_id)
   ok('#486 自分の申請は by_admin にならない', own && own.by_admin === false && own.mine === true, own)
+  // 管理者が出した申請の却下は、本人の再申請につながらないので打刻履歴の『却下』に出さない（自分の申請の却下は出す）
+  must(await admin.post(`/api/admin/corrections/${p.correction_id}/reject`, { reason: '取り下げ' }), 'reject admin request')
+  const sc = (await st5.get(`/api/staff/attendance/timeline?to=${d}&from=${d}`)).data.shifts.find(x => x.shift_id === C)
+  ok('#399 #486 打刻履歴の却下は本人が出した申請だけ', sc && sc.rejected.some(x => x.correction_id === r.correction_id) && !sc.rejected.some(x => x.correction_id === p.correction_id) && sc.rejected.every(x => !('requested_by' in x)), sc && sc.rejected)
 }
 
 // ---------- #399 却下された申請を打刻履歴に出し、行からの申請を再申請としてつなぐ ----------
