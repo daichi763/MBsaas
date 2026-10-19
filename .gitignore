@@ -9,3 +9,8 @@ wrangler.json
 .pm2/
 *.tar.gz
 *.bak
+# 本番 DB のバックアップ（個人情報を含む）。repo の中に作らない運用だが、誤ってコミットしないよう除外する（#213）
+backup*.sql
+*.dump.sql
+*-backup.sql
+backups/

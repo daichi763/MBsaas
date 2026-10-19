@@ -35,7 +35,7 @@
 | 権限 | 管理ロール 4 種類が自社の全案件を同じ権限で扱う。案件担当者・案件の所属スタッフを表すデータはない（所属はシフトの有無でのみ表現） | `api.ts` `ADMIN_ROLES` |
 | 通知 | `notices` は管理者からスタッフへのお知らせ。管理者向けの受信箱はない。既読率レポートが全お知らせを集計する | `api.ts`、`migrations/0007` |
 | メール | `sendEmail`（Resend）を `waitUntil` で呼ぶ。`email_logs` に成否を記録。本文は保存しない方針 | `src/services/email.ts` |
-| 保存期間 | 勤怠・シフト等は退職日から 7 年で削除。`notice_reads` は 2 年 | `src/services/retention.ts` |
+| 保存期間 | 勤怠・シフト・従業員データ・書類・企業間チャット等は退職日から 7 年で削除し、本人情報は匿名化。`notice_reads` は 2 年 | `src/services/retention.ts` |
 | CSV | UTF-8（BOM 付き）・CRLF・数式インジェクション対策あり | `settlement.ts` `toCsv` / `csvCell` |
 | テスト | 自動テストなし（`package.json` に test スクリプトなし） | — |
 
@@ -161,6 +161,8 @@
 | 閲覧 | 自分のシフトの申請のみ | 自社の全申請 |
 
 - スタッフ本人の判定は、ログインユーザーの人物（`personStaffRows`）に含まれる `staff_id` のシフトかどうかで行う（既存の勤怠報告と同じ）
+- 「自分が出した申請」（取り消し・再申請・一覧の `mine`）も人物で判定する。`requested_by` が同じ人のいずれかのユーザーなら本人とみなす（所属企業を切り替えるとセッションのユーザーが変わるため。#96）
+- 再申請は、今のシフトの担当者が元の申請と同じ（`shifts.staff_id = attendance_corrections.staff_id`）で、かつ本人のシフトのときだけ受け付ける（#101）
 - 他人の申請 ID・シフト ID を指定しても 404 を返す（存在を明かさない）
 
 ### 4.3 入力の確認（サーバー側）
@@ -169,7 +171,8 @@
 - `modify`: 対象の報告が存在し、同じシフト・種類であること。変更後の日時が変更前と同じなら拒否
 - `add`: 同じシフト・種類の報告がまだないこと
 - 同じシフト・種類に承認待ちの申請がないこと（一意インデックスでも防ぐ）
-- 期限なし。過去日・未来日とも可。報告が OFF でも可
+- 期限なし。過去日・未来日とも可。報告が OFF でも可。ただし日時は稼働日の前日 0:00〜翌日 23:59 の範囲（年・月の打ち間違いを止める）
+- 日をまたぐシフト（終了 <= 開始）で、休憩・勤務終了・退店の日時が稼働日の日付のまま開始時刻より前のときは、「翌日ではありませんか？」の案内を警告に加える（#52）。スタッフ画面の打刻漏れの追加の既定値も、勤務終了・退店は予定の終了の絶対日時（`shiftWindow`。日をまたぐなら翌日）にする
 - 欠勤（`status='absent'`）のシフトへの申請は拒否
 
 ### 4.4 順序の確認
@@ -208,6 +211,25 @@
 - 手入力の実績（`actual_source='manual'`）と確定済みのシフトは従来どおり変えない
 - 確定済みのシフトに修正を承認した場合: 報告は更新するが、実績・金額は変えない（既存の規則）。精算画面の確認事項に「確定後に打刻修正あり」を出す。確定を取り消すと、次の実績の反映（既存の「実績を反映」ボタン）で反映される
 
+### 4.8 修正の印（#252）
+- 承認で変わった報告には `attendance_reports.corrected_by_correction_id`（最後に反映した申請）・`corrected_at` を付ける。時刻修正では `original_reported_at` に最初の修正の前の日時を残す（何度直しても最初の打刻の日時）
+- `entry_method`（`app` / `link` / `proxy` / `correction`）は上書きしない。打刻漏れの追加で作った報告だけが `correction`
+- スタッフの打刻履歴は「（修正済み・元: 18:00）」、管理画面の報告状況は「・修正」と注記（元の日時）を出す。位置・写真は元の打刻のもの
+- 代理入力の取り消し（`DELETE /api/admin/shifts/:id/proxy-attendance/:type`）は、承認済みの修正がある報告を対象にしない（409）
+
+### 4.9 シフトの差し替え・欠勤・削除との整合（#70 #81 #101 #115）
+| 操作 | 打刻修正申請 | 勤怠報告・日報 | 報告用URL |
+|---|---|---|---|
+| 担当者の差し替え（`PUT /api/admin/shifts/:id` の `staff_id`） | 前の担当者の承認待ちを取り消す（`cancel_reason='staff_changed'`）。申請者に通知 | `staff_id` を新しい担当者に付け替える | 無効にする（`revoked=1`） |
+| 欠勤にする | 承認できない（409「却下してください」）。応答に承認待ちの件数（`pending_corrections`）を返す | 変えない | 使えない（従来どおり） |
+| 削除（`DELETE /api/admin/shifts/:id`。報告のないシフトのみ） | 承認待ちを取り消す（`cancel_reason='shift_deleted'`）。申請者に通知 | — | 削除する |
+- 差し替えの前に、勤怠報告・日報・承認待ちの申請がある場合は確認を求める（409 `need_force` と `warnings`。`force: true` で実行）
+- 自動の取り消しは `attendance_correction_events` に `cancelled`（`detail.auto=true`・`reason`）として残す。スタッフの申請一覧には理由を出す
+- 承認は、シフトの担当者が申請と同じで、状態が勤務（確定・代打）のときだけ行う（承認の条件付き更新にも同じ条件を入れる。#101 #70 #559）
+- 担当者・時間が変わったら、スタッフの返事（`staff_reply`・`staff_reply_note`・`staff_reply_at`）を消す
+- 報告用URLの有効期限は、使うときのシフトの稼働日から決める（稼働日の翌日 23:59。#68）。`shift_report_tokens.expires_at` は発行時の記録。報告状況・発行は、今の担当者に発行したURLだけを有効として扱う（#81）
+- 移行（0044）: 削除済みのシフトの承認待ちと、担当者が変わったシフトに残る前の担当者の承認待ちを取り消す。既存の承認済みの修正に印を付ける。処理済みの申請の承認依頼を既読にする。承認依頼を申請ごとに既読にするため user_notifications(related_id, kind) にインデックスを付ける
+
 ## 5. 通知
 
 ### 5.1 アプリ内通知（`user_notifications`）
@@ -227,7 +249,10 @@
 | 出来事 | 宛先 |
 |---|---|
 | 申請（再申請を含む） | 自社の管理者全員（`ADMIN_ROLES`、`status='active'`）+ 申請者本人（受付の通知） |
-| 承認・却下 | 申請者本人 + 処理した管理者 |
+| 承認・却下 | 申請者本人 + 処理した管理者。管理者が出した申請を承認したときは、記録が変わったスタッフ本人にも（`correction_changed_by_admin`。申請者と同じ人なら送らない。#181） |
+| 取り消し | シフトの削除・担当者の差し替えで自動で取り消したときだけ申請者本人へ（`correction_cancelled`）。本人の取り消しは通知しない |
+- 承認・却下・取り消しの後は、その申請の承認依頼（`correction_submitted`）を全管理者分既読にする。管理画面の通知には「処理済み（承認: ○○）」を出す。処理済み・取り消し済みの申請の承認依頼メールは送らない・再送しない（`already_processed`。#189）
+- スタッフの通知（一覧・未読件数・既読）は、同じ人のすべてのユーザーあてを対象にする（#96）
 - アプリ内通知とメールの両方を送る。メールはメールアドレスが登録されている人だけ
 
 ### 5.3 メールと送信失敗
@@ -306,7 +331,12 @@
 - 退職日から 7 年の定期削除（`retention.ts`）に、`attendance_corrections`・`attendance_correction_events`・`report_setting_logs`（スタッフ別の行）・`project_staff_report_settings`・`notification_emails` を追加する。退職日が NULL のスタッフは削除しない（既存の規則）
 - 案件の標準設定の履歴（staff_id が NULL）は個人情報を含まないため削除しない
 - `user_notifications` は 2 年で削除（§5.1）
-- 定期削除は毎日の cron（`scheduled`）で動く。**現状のビルド設定（`@hono/vite-build/cloudflare-pages`）では `scheduled` がビルド結果に含まれず、cron が動いていない**（既存の不具合。別の PR で修正）。修正されるまで、この章の削除は行われない
+- 退職日から 7 年で、次も削除する（#193 #228）: 従業員データ（`employee_records`。口座・住所・扶養・緊急連絡先・給与・保険番号）と過去の雇用期間（`employment_periods`）、履歴書など（`staff_documents`）・入社時書類（`employee_documents`）と R2（DOCUMENTS）のファイル、企業間チャット（`roster_comments`・`roster_comment_reads`）、連携の同意履歴（`roster_consents`）。チャットのスレッドは稼働先の連携行の単位なので、連携行と所属元の行（`source_staff_id` / `root_staff_id`）のどちらかが対象になったら消す。同意履歴は連携行の単位で、連携行が対象になったら消す（所属元の行だけが対象になっても、連携先の行が残っている間は連携の根拠として残す）。R2 のファイルは写真と同じく D1 の削除の後に消し、失敗したものは `retention_pending_r2`（`bucket` 列で写真と書類を区別）から次回に再試行する
+- 本人情報の匿名化（#480）: `users`・`staff_profiles` の行は請求の集計などから参照されるため残し、氏名を「退職者#staff_id」にして、メール・電話・フリガナ・性別・生年月日・経歴・PR・備考・メモ・現場評価・稼働メモ・最寄駅・未確認のメールなどを消す。パスワードは使えない値にし、セッションと再設定のリンクを消す（`users` はスタッフ本人の行のみ）。済んだ人は `staff_profiles.anonymized_at` を記録し、次の対象に選び直さない
+- 労働者名簿・賃金台帳などの法定の保存期間（退職などから 5 年。当分の間 3 年）は、退職後 7 年の削除で下回らない
+- 実行ログ（`retention_logs`）には実行元（`trigger_source`: cron / manual）と手動で実行した本部ユーザー、失敗の理由（どのスタッフで何が起きたか、R2 の削除の失敗）を残し、本部画面に出す（#234）
+- 毎日の cron の処理（認証の後片付け・応募の削除・定期削除・退職の切り替え・区分変更の予約・既読の記録の削除・既読率レポート）は、`src/index.tsx` の `CRON_JOBS` の順に実行し、処理ごとの結果を `cron_runs` に記録する。本部画面「データ保持・定期処理」に処理ごとの最終実行・成否・エラーを出し、失敗したときと 25 時間以上実行されていないときは本部画面の上部に警告を出す（#192）。個人情報の削除は先に実行し、問い合わせの多い既読率レポートの集計は別の起動（日本時間 3:30）に分けて、1 回あたりの会社数に上限を設ける（#198）
+- 定期削除は毎日の cron（`scheduled`）で動く。ビルドは `@hono/vite-build/cloudflare-workers` で、`scheduled` もビルド結果に含まれる。実際に動いたかは本部画面の定期処理の実行状況で確かめる
 
 ## 8.1 履歴の検索・CSV（第4段階）
 - 管理画面「勤怠管理 > 履歴・CSV」（`#attendance-history`）: 打刻修正の操作履歴（申請・再申請・承認・例外承認・却下・取り消し）と報告設定の変更履歴（全案件）を、期間・案件・スタッフ名・報告の種類・操作で検索し、表示中の条件で CSV を出力する
@@ -318,7 +348,9 @@
 - 追加: `project_report_defaults`、`project_staff_report_settings`、`report_setting_logs`、`attendance_corrections`（一意インデックス含む）、`attendance_correction_events`、`user_notifications`、`notification_emails` とインデックス
 - 移行: §2.4 の初期値の投入と、その履歴（`action='migration'`）
 - 既存の列・データは変更・削除しない
-- 本番への適用は手動: `npx wrangler d1 migrations apply mbsaas-production --remote`。適用前に `npx wrangler d1 export mbsaas-production --remote --output=backup.sql` でバックアップ
+- 本番への適用は手動: `npx wrangler d1 migrations apply mbsaas-production --remote`
+- 適用前の戻し先の確保（#213）: ファイルを作らずに戻せる D1 の Time Travel を使う。適用の直前に `npx wrangler d1 time-travel info mbsaas-production` を実行し、表示されたブックマークを作業記録に控える。戻すときは `npx wrangler d1 time-travel restore mbsaas-production --bookmark=<控えたブックマーク>`
+- どうしてもエクスポートする場合は、出力先を repo の外にする（例: cmd では `--output="%TEMP%\mbsaas-backup.sql"`、PowerShell では `--output="$env:TEMP\mbsaas-backup.sql"`）。ダンプには口座番号・住所・給与などの個人情報が入るため、作業が終わったら削除し、共有フォルダやチャットに置かない。repo の中に作らない（`.gitignore` で `backup*.sql` などを除外しているが、それに頼らない）
 - ロールバック: アプリを前のバージョンに戻せば、旧来の `attendance_mode` の列がそのまま残っているので従来の動作に戻る。ただし新しい設定で行った変更と申請中の内容は旧来の動作に反映されない。新しいテーブルは削除しなくても旧版の動作に影響しない
 
 ## 10. テスト

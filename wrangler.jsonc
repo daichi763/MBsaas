@@ -32,8 +32,9 @@
 			"bucket_name": "mbsaas-client-contracts"
 		}
 	],
+	// 定期処理（src/index.tsx の CRON_JOBS）。0 18 = 日本時間 3:00（削除・退職の適用など）、30 18 = 3:30（既読率レポートの集計）
 	"triggers": {
-		"crons": ["0 18 * * *"]
+		"crons": ["0 18 * * *", "30 18 * * *"]
 	},
 	// ローカルの既定: メールは送らない・定期削除は dry-run・メールのリンクはローカルを指す・デモ案内を出す
 	"vars": {
@@ -69,7 +70,7 @@
 				}
 			],
 			"triggers": {
-				"crons": ["0 18 * * *"]
+				"crons": ["0 18 * * *", "30 18 * * *"]
 			},
 			// MAIL_FROM: Resend で認証した独自ドメインの送信元に変えること（resend.dev のテスト用アドレスはアカウント所有者あてにしか届かない）
 			// RETENTION_ENABLED: 'true' で定期削除を実行する。'true' 以外は dry-run
@@ -80,9 +81,11 @@
 				"RETENTION_ENABLED": "true",
 				"DEMO_MODE": "false"
 			},
-			// Workers Logs。有効にするかは運用で決める（有効にすると送信失敗などのログをダッシュボードで確認できる）
+			// Workers Logs。API の 500（app.onError が参照番号付きで記録する）・cron・メール送信の失敗を、
+			// wrangler tail を開いていなくてもダッシュボードで後から確認できるようにする（#230）
 			"observability": {
-				"enabled": false
+				"enabled": true,
+				"head_sampling_rate": 1
 			}
 		}
 	}

@@ -9,6 +9,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
+import { countUnreadNotices } from './lib/notices'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -481,15 +482,17 @@ rosterApi.get('/:id/links', async (c) => {
   }
   // 所属元が閲覧できるのは: 連携先企業名・連携日・共有追記項目（現場評価/稼働メモ）・稼働実績の件数のみ
   // （稼働先の社内メモ・フォロー履歴・日報本文等は返さない）
-  const month = nowJST().slice(0, 7)
+  const today = nowJST().slice(0, 10); const month = today.slice(0, 7)
+  // 稼働日数・最終稼働は今日以前の分。今後の予定は month_planned_days（予定を含む今月の日数）で分けて返す（#85）
   const links = await db.prepare(`
     SELECT sp.staff_id AS linked_staff_id, co.company_name AS host_company_name, sp.created_at AS linked_at,
       sp.site_evaluation, sp.work_memo, sp.host_note_updated_at,
       (SELECT MIN(rc.created_at) FROM roster_consents rc WHERE rc.staff_id = sp.staff_id) AS consented_at,
-      (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
-      (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.status IN ('confirmed','substitute')) AS last_work_date
+      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS month_days,
+      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_planned_days,
+      (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
-    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', sid).all()
+    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', today, month + '%', today, sid).all()
   // 連携先は「自社から直接連携した企業」のみ（その先の企業は出さない）
   if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: links.results })
   return c.json({ role: 'owner', links: links.results })
@@ -737,15 +740,17 @@ rosterApi.post('/', async (c) => {
   }
 
   const person = await createPerson(db, u.company_id)
-  const userCode = wantsLogin ? String(b.user_code).trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
+  // スタッフ番号はログイン画面と同じく全角を半角にそろえて保存する（#387）
+  const userCode = wantsLogin ? String(b.user_code).normalize('NFKC').trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
   // ログインしない人物は role='roster_only'（お知らせ対象・スタッフ数集計・ログインの対象外）
   const role = wantsLogin ? 'staff' : 'roster_only'
   const pwHash = wantsLogin ? await hashPassword(String(b.password)) : await unusablePasswordHash()
 
   let userId: number
   try {
-    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(u.company_id, userCode, name, role, pwHash, wantsLogin ? (b.email || null) : null, b.phone || null, person.person_id).run()
+    // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
+    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(u.company_id, userCode, name, role, pwHash, wantsLogin ? (b.email || null) : null, b.phone || null, person.person_id, wantsLogin ? 1 : 0).run()
     userId = r.meta.last_row_id as number
   } catch {
     await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
@@ -762,10 +767,10 @@ rosterApi.post('/', async (c) => {
       type === 'own_employee' ? (b.employment_status || 'working') : 'working').run()
   const staffId = sr.meta.last_row_id as number
 
-  // ②では従業員管理（社員名簿）の最小レコードも同時に作成する
-  if (type === 'own_employee' && (b.employee_number || b.hire_date || b.contract_type)) {
-    await db.prepare('INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(staffId, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, nowJST()).run()
+  // ②では従業員管理（社員名簿）の最小レコードも同時に作成する。電話番号は従業員管理の電話番号にも入れる（従業員管理で直したら users.phone にそろえる。#123）
+  if (type === 'own_employee' && (b.employee_number || b.hire_date || b.contract_type || b.phone)) {
+    await db.prepare('INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, phone_main, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(staffId, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, b.phone || null, nowJST()).run()
   }
   return c.json({ ok: true, staff_id: staffId, global_staff_code: person.global_staff_code })
 })
@@ -805,11 +810,12 @@ staffSelfApi.get('/profile', async (c) => {
   return c.json({ profile: pick })
 })
 
-// 所属企業の一覧（統合ログインの企業切替用）
+// 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）
 staffSelfApi.get('/companies', async (c) => {
   const u = c.get('user')
   const rows = await personStaffRows(c.env.DB, u)
-  return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id })) })
+  const unread = rows.length > 1 ? await countUnreadNotices(c.env.DB, rows.map(r => r.user_id)) : new Map<number, number>()
+  return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id, unread_notices: unread.get(r.user_id) || 0 })) })
 })
 // 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）
 staffSelfApi.post('/switch-company', async (c) => {

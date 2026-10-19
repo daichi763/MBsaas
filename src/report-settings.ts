@@ -14,8 +14,8 @@
 // 管理者向け API（/api/admin/report-settings/*）は api.ts から権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
-import { toCsv, csvResponse } from './csv'
-import { NEXT_DAY_TYPES, addDays, reportableWindow, type ShiftTimes } from './lib/shift-time'
+import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
+import { NEXT_DAY_TYPES, addDays, reportableWindow, shiftWindow, type ShiftTimes } from './lib/shift-time'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
 type Bindings = { DB: D1Database }
@@ -85,25 +85,55 @@ export async function attendanceTypesForShifts(db: D1Database, shiftIds: number[
         hasPersonal.add(`${r.project_id}:${r.staff_id}`)
       }
     }
-    for (const s of shifts) {
-      if (s.attendance_mode === 'none') { map.set(s.shift_id, { types: [], source: 'shift' }); continue }
-      if (s.attendance_mode === 'in_out') { map.set(s.shift_id, { types: ['check_in', 'check_out'], source: 'shift' }); continue }
-      const fixed = parseFixedTypes(s.attendance_types_fixed)
-      const legacy = hasPersonal.has(`${s.project_id}:${s.staff_id}`) ? null : legacyStaffFlags(s.legacy_mode)
-      let source: AttendanceSource = legacy ? 'staff' : 'default'
-      const types = REPORT_TYPES.filter(t => {
-        const pv = personal.get(`${s.project_id}:${s.staff_id}:${t}`)
-        if (pv !== undefined) { source = 'staff'; return !!pv }
-        if (legacy) return !!legacy[t]
-        const dv = defaults.get(`${s.project_id}:${t}`)
-        if (dv !== undefined) { if (source === 'default') source = 'project'; return !!dv }
-        return true
-      })
-      // 報告を始めた後に設定が変わったシフトは、変わる前に OFF だった報告を ON にしない（OFF にした報告はすぐ外す。docs 2.7）
-      map.set(s.shift_id, { types: fixed ? types.filter(t => fixed.includes(t)) : types, source })
-    }
+    for (const s of shifts) map.set(s.shift_id, resolveAttendanceTypes(s, defaults, personal, hasPersonal))
   }
   return map
+}
+
+// 1つのシフトの有効な報告を決める（attendanceTypesForShifts・attendanceTypesForRows で共用）。
+// s は shift_id, project_id, staff_id, attendance_mode（シフトの例外）, attendance_types_fixed, legacy_mode（staff_profiles.attendance_mode）
+function resolveAttendanceTypes(s: any, defaults: Map<string, number>, personal: Map<string, number>, hasPersonal: Set<string>): ShiftAttendance {
+  if (s.attendance_mode === 'none') return { types: [], source: 'shift' }
+  if (s.attendance_mode === 'in_out') return { types: ['check_in', 'check_out'], source: 'shift' }
+  const fixed = parseFixedTypes(s.attendance_types_fixed)
+  const legacy = hasPersonal.has(`${s.project_id}:${s.staff_id}`) ? null : legacyStaffFlags(s.legacy_mode)
+  let source: AttendanceSource = legacy ? 'staff' : 'default'
+  const types = REPORT_TYPES.filter(t => {
+    const pv = personal.get(`${s.project_id}:${s.staff_id}:${t}`)
+    if (pv !== undefined) { source = 'staff'; return !!pv }
+    if (legacy) return !!legacy[t]
+    const dv = defaults.get(`${s.project_id}:${t}`)
+    if (dv !== undefined) { if (source === 'default') source = 'project'; return !!dv }
+    return true
+  })
+  // 報告を始めた後に設定が変わったシフトは、変わる前に OFF だった報告を ON にしない（OFF にした報告はすぐ外す。docs 2.7）
+  return { types: fixed ? types.filter(t => fixed.includes(t)) : types, source }
+}
+
+// シフトの行を読み済みのとき（精算の一覧など件数の多い一覧）に、有効な報告をまとめて決める。
+// 規則は attendanceTypesForShifts と同じ。設定は json_each で2回の問い合わせにまとめて読む（シフトの件数で問い合わせが増えない）
+export async function attendanceTypesForRows(db: D1Database, rows: { shift_id: number; project_id: number; staff_id: number; attendance_mode?: any; attendance_types_fixed?: any; legacy_mode?: any }[]) {
+  const map = new Map<number, ShiftAttendance>()
+  if (!rows.length) return map
+  const defaults = new Map<string, number>(), personal = new Map<string, number>(), hasPersonal = new Set<string>()
+  const pset = new Set(rows.map(r => Number(r.project_id)))
+  for (const r of (await db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults WHERE project_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(pset)).all()).results as any[]) defaults.set(`${r.project_id}:${r.report_type}`, r.enabled)
+  for (const r of (await db.prepare(`SELECT project_id, staff_id, report_type, enabled FROM project_staff_report_settings WHERE staff_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(rows.map(x => x.staff_id))).all()).results as any[]) {
+    if (!pset.has(Number(r.project_id))) continue
+    personal.set(`${r.project_id}:${r.staff_id}:${r.report_type}`, r.enabled)
+    hasPersonal.add(`${r.project_id}:${r.staff_id}`)
+  }
+  for (const s of rows) map.set(s.shift_id, resolveAttendanceTypes(s, defaults, personal, hasPersonal))
+  return map
+}
+
+// 日報が必要なシフトか（SQL の式）。シフト → スタッフ → 案件の順に none / required の最初の値、なければ required。
+// staff-lifecycle.ts の resolveModes（modesForShifts）と同じ規則を、集計の SQL の中で使う。引数は shifts・staff_profiles・projects の別名
+export function dailyReportRequiredSql(s: string, sp: string, p: string): string {
+  const v = (a: string) => `CASE WHEN ${a}.daily_report_mode IN ('none','required') THEN ${a}.daily_report_mode END`
+  return `(COALESCE(${v(s)}, ${v(sp)}, ${v(p)}, 'required') = 'required')`
 }
 
 type Ng = { error: string; status: number }
@@ -165,6 +195,51 @@ export async function loadReportState(db: D1Database, shiftId: number): Promise<
 // 報告の記録日時は分の単位にそろえる（打刻修正の申請と同じ精度。#133）
 export function reportedAtMinute(now: string): string {
   return now.slice(0, 16) + ':00'
+}
+
+// ---------- 遅刻・早退の判定（#219 #497） ----------
+// 報告を書き込むとき（アプリ・写真付き・報告用URL・代理入力。打刻修正の承認でも）にこの関数で判定し、
+// attendance_reports の status（'late'）・late_minutes・early_leave_minutes に保存する。集計・画面は保存された値を読む
+//   遅刻: 入店・勤務開始が、シフト開始の絶対日時より後（分単位）。late_minutes に遅れた分数を入れ、
+//         会社設定の猶予（settings_json.late_grace_minutes）を超えたら late。勤務開始だけで運用する案件でも判定する
+//   早退: 勤務終了・退店が、シフト終了の絶対日時より前。early_leave_minutes に早かった分数を入れる（0 なら早退でない。status は変えない）
+//   ほかの報告は、どちらも NULL
+export const LATE_TYPES = ['check_in', 'work_start']
+export const EARLY_LEAVE_TYPES = ['work_end', 'check_out']
+export const MAX_LATE_GRACE_MINUTES = 120
+export type LatenessSettings = { grace_minutes: number }
+export type ReportLateness = { report_type: string; late: boolean; late_minutes: number | null; early_leave_minutes: number | null }
+
+// 会社設定（companies.settings_json）から遅刻の猶予を読む。未設定・不正なら 0 分
+export function latenessSettings(settingsJson: any): LatenessSettings {
+  let g = 0
+  try {
+    const v = JSON.parse(settingsJson || '{}').late_grace_minutes
+    if (Number.isInteger(v) && v >= 0 && v <= MAX_LATE_GRACE_MINUTES) g = v
+  } catch { }
+  return { grace_minutes: g }
+}
+// a から b までの分数（'YYYY-MM-DD HH:MM[:SS]'。秒は切り捨てて分で比べる）
+const minuteOf = (t: string) => Date.parse(String(t).slice(0, 16).replace(' ', 'T') + ':00Z') / 60000
+const minutesFromTo = (a: string, b: string) => Math.round(minuteOf(b) - minuteOf(a))
+
+export function lateness(shift: ShiftTimes, reports: { report_type: string; reported_at: string }[], settings: LatenessSettings): ReportLateness[] {
+  const w = shiftWindow(shift.work_date, shift.start_time, shift.end_time)
+  return reports.map(r => {
+    if (LATE_TYPES.includes(r.report_type)) {
+      const m = Math.max(0, minutesFromTo(w.start, r.reported_at))
+      return { report_type: r.report_type, late: m > settings.grace_minutes, late_minutes: m, early_leave_minutes: null }
+    }
+    if (EARLY_LEAVE_TYPES.includes(r.report_type)) {
+      return { report_type: r.report_type, late: false, late_minutes: null, early_leave_minutes: Math.max(0, minutesFromTo(r.reported_at, w.end)) }
+    }
+    return { report_type: r.report_type, late: false, late_minutes: null, early_leave_minutes: null }
+  })
+}
+// 本人の報告の status。遅刻なら late、位置が取れなかった入店は no_location、それ以外は normal（位置の扱いは従来どおり入店のみ）
+export function reportStatus(j: ReportLateness, latitude: any): 'late' | 'no_location' | 'normal' {
+  if (j.late) return 'late'
+  return j.report_type === 'check_in' && latitude == null ? 'no_location' : 'normal'
 }
 
 // ---------- 設定の読み書き ----------
@@ -448,31 +523,43 @@ function logFilter(companyId: number, q: (k: string) => string | undefined) {
   if (isReportType(q('report_type'))) { w.push('l.report_type = ?'); bind.push(q('report_type')) }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q('from') || '')) { w.push('l.created_at >= ?'); bind.push(q('from') + ' 00:00:00') }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q('to') || '')) { w.push('l.created_at <= ?'); bind.push(q('to') + ' 23:59:59') }
-  if (q('staff_name')) { w.push("us.name LIKE ? ESCAPE '\\'"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%') }
+  // スタッフは氏名の一部か、社員番号（完全一致）で探す
+  if (q('staff_name')) { w.push("(us.name LIKE ? ESCAPE '\\' OR er.employee_number = ?)"); bind.push('%' + String(q('staff_name')).replace(/[\\%_]/g, m => '\\' + m) + '%', String(q('staff_name'))) }
   if (q('action') && ACTION_LABEL[q('action')!]) { w.push('l.action = ?'); bind.push(q('action')) }
+  // 導入時の移行（0027 で一度に作った行）を除く（#102）
+  if (q('exclude_migration') === '1' && q('action') !== 'migration') w.push("l.action != 'migration'")
   return { where: w.join(' AND '), bind }
 }
 const ACTION_LABEL: Record<string, string> = { project_default: '標準設定', individual: '個別変更', bulk: '一括変更', migration: '導入時の移行', merge: 'スタッフ統合' }
 const LOG_FROM = `FROM report_setting_logs l LEFT JOIN projects p ON p.project_id = l.project_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+    LEFT JOIN staff_profiles sp ON sp.staff_id = l.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = l.staff_id AND er.company_id = l.company_id`
 reportSettingsApi.get('/report-settings/logs', async (c) => {
   const u = c.get('user'); const q = (k: string) => c.req.query(k)
   const { where, bind } = logFilter(u.company_id, q)
   const limit = Math.min(500, Math.max(1, Number(q('limit')) || 200))
-  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name ${LOG_FROM}
+  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name, er.employee_number ${LOG_FROM}
     WHERE ${where} ORDER BY l.log_id DESC LIMIT ?`).bind(...bind, limit).all()).results
-  return c.json({ logs: rows, labels: REPORT_LABEL })
+  // 条件に合う全件数（画面で、表示と CSV の上限を超えたかを知らせる #102）
+  const total = Number(((await c.env.DB.prepare(`SELECT COUNT(*) AS n ${LOG_FROM} WHERE ${where}`).bind(...bind).first()) as any)?.n || 0)
+  return c.json({ logs: rows, labels: REPORT_LABEL, total, csv_limit: CSV_LIMIT })
 })
 reportSettingsApi.get('/report-settings/logs/export', async (c) => {
   const u = c.get('user')
   const { where, bind } = logFilter(u.company_id, k => c.req.query(k))
-  const rows = (await c.env.DB.prepare(`SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name ${LOG_FROM}
-    WHERE ${where} ORDER BY l.log_id LIMIT 10000`).bind(...bind).all()).results as any[]
+  // 新しい順に上限まで取り、古い順に出す。上限を超えたら注記を入れる（#102）
+  const { rows, total } = await loadLatestForCsv(c.env.DB,
+    `SELECT l.*, p.project_name, p.status AS project_status, us.name AS staff_name, er.employee_number ${LOG_FROM} WHERE ${where} ORDER BY l.log_id DESC`,
+    `SELECT COUNT(*) AS n ${LOG_FROM} WHERE ${where}`, bind)
   const onoff = (v: any) => v == null ? '' : v ? 'ON' : 'OFF'
-  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール'],
+  // 同姓同名を区別できるよう、対象のスタッフID・社員番号も出す（既存の列の位置を変えないよう末尾に足す）。ロールは日本語にする（#474）
+  const csv = toCsv(['履歴ID', '日時', '案件', '案件の状態', '対象', '報告', '変更前', '変更後', '操作', '一括の識別子', '変更者', '変更者のロール', 'スタッフID', '社員番号'],
     rows.map(l => [l.log_id, l.created_at, l.project_name, (l.project_status || 'active') === 'active' ? '稼働中' : '終了', l.staff_id ? l.staff_name : '標準設定',
-      REPORT_LABEL[l.report_type] || l.report_type, onoff(l.old_enabled), onoff(l.new_enabled), ACTION_LABEL[l.action] || l.action, l.batch_id, l.changed_by_name || (l.action === 'migration' ? 'システム' : ''), l.changed_by_role]))
-  return csvResponse(`報告設定の変更履歴_${nowJST().slice(0, 10)}.csv`, csv)
+      REPORT_LABEL[l.report_type] || l.report_type, onoff(l.old_enabled), onoff(l.new_enabled), ACTION_LABEL[l.action] || l.action, l.batch_id,
+      l.changed_by_name || (l.action === 'migration' ? 'システム' : ''), roleLabel(l.changed_by_role),
+      l.staff_id ?? '', l.employee_number ?? '']),
+    { textCols: ['社員番号'], note: csvLimitNote(total) })
+  return csvResponse(`報告設定の変更履歴_${nowJST().slice(0, 10)}.csv`, csv, csvLimitHeaders(total))
 })
 
 export default reportSettingsApi

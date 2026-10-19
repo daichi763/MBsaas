@@ -5,9 +5,9 @@
 (function () {
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
-  const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下' }
-  const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え' }
-  const ERR = { mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', source_missing: '申請または宛先のユーザーが見つかりません', recipient_suspended: '宛先のアカウントが停止中のため送信しません' }
+  const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下', cancelled: '取り消し' }
+  const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え', correction_changed_by_admin: '管理者による修正', correction_cancelled: '自動の取り消し' }
+  const ERR = { mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー', source_missing: '申請または宛先のユーザーが見つかりません', recipient_suspended: '宛先のアカウントが停止中のため送信しません', already_processed: '申請が処理済み・取り消し済みのため承認依頼は送りません' }
   const fmtAt = (at) => at ? dayjs(at.replace(' ', 'T')).format('YYYY/M/D HH:mm') : '－'
   let busy = false
 
@@ -19,8 +19,10 @@
     } catch (e) { }
     if (window.refreshCorrectionsBadge) refreshCorrectionsBadge()
   }
-  setTimeout(() => window.refreshNotifBadge(), 1000)
-  setInterval(() => { if (!document.hidden) window.refreshNotifBadge() }, 60000)
+  // バッジの定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
+  const pollable = () => !window.sessionUsable || window.sessionUsable()
+  setTimeout(() => { if (pollable()) window.refreshNotifBadge() }, 1000)
+  setInterval(() => { if (!document.hidden && pollable()) window.refreshNotifBadge() }, 60000)
 
   // ---------- 通知（受信箱）----------
   window.renderNotificationsInbox = async function () {
@@ -32,14 +34,19 @@
         ${d.unread ? '<button class="btn btn-outline text-sm" onclick="notifReadAll(this)">すべて既読にする</button>' : ''}
       </div>
       <div class="space-y-2">${d.notifications.map(n => `
-        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" onclick="notifOpen(${n.notification_id}, '${esc(n.link || '')}')">
-          <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>'}<span class="badge badge-gray text-[10px]">${KIND[n.kind] || ''}</span>
+        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" data-action="notifOpen" data-id="${n.notification_id}" data-link="${esc(n.link || '')}">
+          <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>'}<span class="badge badge-gray text-[10px]">${KIND[n.kind] || ''}</span>${processedBadge(n)}
             <span class="text-[11px] text-gray-400 ml-auto">${esc(fmtAt(n.created_at))}</span></div>
           <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
     window.refreshNotifBadge()
   }
+  // 承認依頼のうち、ほかの管理者が処理した・取り消された申請（#189）
+  const DONE = { approved: '承認', rejected: '却下', cancelled: '取り消し' }
+  const processedBadge = (n) => n.kind === 'correction_submitted' && n.correction_status && n.correction_status !== 'pending'
+    ? `<span class="badge badge-green text-[10px]">処理済み（${DONE[n.correction_status] || esc(n.correction_status)}${n.correction_decided_by && n.correction_status !== 'cancelled' ? ': ' + esc(n.correction_decided_by) : ''}）</span>` : ''
+  delegate('notifOpen', el => window.notifOpen(Number(el.dataset.id), el.dataset.link || ''))
   window.notifOpen = async function (id, link) {
     try { await axios.post(`/api/admin/notifications/${id}/read`) } catch (e) { }
     window.refreshNotifBadge()
@@ -62,7 +69,7 @@
     const st = (s) => s === 'sent' ? '<span class="badge badge-green whitespace-nowrap">送信済み</span>' : s === 'failed' ? '<span class="badge badge-red whitespace-nowrap">送信失敗</span>' : '<span class="badge badge-yellow whitespace-nowrap">送信中</span>'
     const rows = d.deliveries
     // 宛先が停止中のものは再送できない（サーバーも受け付けない）
-    const resendable = (r) => r.status === 'failed' && r.error !== 'recipient_suspended'
+    const resendable = (r) => r.status === 'failed' && r.error !== 'recipient_suspended' && r.error !== 'already_processed'
     const action = (r) => resendable(r) ? `<button class="btn btn-outline text-xs whitespace-nowrap" onclick="mailResend(${r.delivery_id}, this)"><i class="fas fa-rotate"></i>再送</button>` : ''
     $app.innerHTML = `
       <a href="#corrections" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>打刻修正承認</a>

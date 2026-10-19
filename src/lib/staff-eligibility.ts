@@ -12,6 +12,7 @@
 //   （多段連携の雇用元や、同じ所属元から連携を受けた別の稼働先の会社名・予定が見えないようにする）
 // =========================================================
 import { JSON_IN, bindJsonArray } from './d1-chunk'
+import { addDays, overlaps, shiftWindow } from './shift-time'
 
 // 割当可能なスタッフの条件。onDate を渡すと、その日より前に退職日がある人を除く（退職日当日は稼働可）
 export function assignableStaffSql(opts: { sp?: string; us?: string; onDate?: string | null } = {}): { sql: string; binds: any[] } {
@@ -119,13 +120,9 @@ export async function ngStaffIds(db: D1Database, projectId: number): Promise<num
 }
 
 // ---------- 重複チェック ----------
-function toMin(t: string): number { const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0) }
-// 終了が開始以前なら翌日とみなす（日をまたぐ重複は w3 で共通の時刻関数に置き換える）
-function spanMinutes(start: string, end: string): number { const s = toMin(start); let e = toMin(end); if (e <= s) e += 1440; return e - s }
-function overlaps(aS: string, aE: string, bS: string, bE: string): boolean {
-  const as = toMin(aS), ae = as + spanMinutes(aS, aE), bs = toMin(bS), be = bs + spanMinutes(bS, bE)
-  return as < be && bs < ae
-}
+// 稼働日＋時刻の絶対日時（lib/shift-time.ts の shiftWindow。終了が開始以前なら翌日）で重なりを判定する。
+// 日をまたぐ勤務（22:00〜06:00）と翌日の早朝の勤務のように、稼働日が違うシフトどうしの重なりも見る（#77）
+const dayDiff = (a: string, b: string) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000)
 
 export type ConflictRow = {
   my_staff_id: number; shift_id: number; slot_role_id: number | null; staff_id: number; company_id: number
@@ -134,6 +131,7 @@ export type ConflictRow = {
 }
 
 // 対象スタッフ（自社の staff_id）ごとに、期間内の重なり候補のシフトを返す。
+// 日をまたぐ勤務と重なるよう、期間の前日・翌日のシフトも返す（どれが重なるかは conflictFor で判定する）。
 // 調べる範囲: 自社の行（同じ人物の自社の別の行を含む）、連携元の行（source_staff_id）、自社の行から連携した先の行。
 // 直接連携していない会社（多段連携の雇用元・同じ所属元から連携を受けた別の稼働先）のシフトは対象にしない。
 export async function findConflicts(db: D1Database, companyId: number, staffIds: number[], from: string, to: string) {
@@ -154,25 +152,30 @@ export async function findConflicts(db: D1Database, companyId: number, staffIds:
     FROM rel JOIN shifts s ON s.staff_id = rel.staff_id
     LEFT JOIN projects p ON p.project_id = s.project_id
     WHERE s.work_date BETWEEN ? AND ? AND s.status IN ('requested','confirmed','substitute')`)
-    .bind(companyId, ids, companyId, from, to).all()).results as ConflictRow[]
+    .bind(companyId, ids, companyId, addDays(from, -1), addDays(to, 1)).all()).results as ConflictRow[]
   for (const r of rows) { const a = map.get(r.my_staff_id) || []; if (!a.some(x => x.shift_id === r.shift_id)) a.push(r); map.set(r.my_staff_id, a) }
   return map
 }
 
-export function conflictFor<T extends { work_date: string; start_time: string; end_time: string; shift_id: number }>(list: T[] | undefined, date: string, start: string, end: string, excludeShiftId?: number) {
-  return (list || []).filter(x => x.work_date === date && x.shift_id !== excludeShiftId && overlaps(x.start_time, x.end_time, start, end))
+// date の start〜end と時間が重なるシフト。day_offset は相手の稼働日のずれ（-1 = 前日、1 = 翌日）
+export function conflictFor<T extends { work_date: string; start_time: string; end_time: string; shift_id: number }>(list: T[] | undefined, date: string, start: string, end: string, excludeShiftId?: number): (T & { day_offset: number })[] {
+  const w = shiftWindow(date, start, end)
+  return (list || []).filter(x => x.shift_id !== excludeShiftId && overlaps(shiftWindow(x.work_date, x.start_time, x.end_time), w))
+    .map(x => ({ ...x, day_offset: dayDiff(date, x.work_date) }))
 }
 
 // 画面・警告に出す文言（他社は会社名・案件名を出さない）
-export function conflictLabel(x: { company_id: number; project_name?: string | null; start_time: string; end_time: string }, companyId: number): string {
-  return (x.company_id === companyId ? (x.project_name || '自社のシフト') : '他社の予定あり') + ' ' + x.start_time + '〜' + x.end_time
+// 稼働日が違うシフト（conflictFor の day_offset）は『前日』『翌日』を付ける
+export function conflictLabel(x: { company_id: number; project_name?: string | null; start_time: string; end_time: string; day_offset?: number }, companyId: number): string {
+  const day = x.day_offset === -1 ? '前日 ' : x.day_offset === 1 ? '翌日 ' : ''
+  return (x.company_id === companyId ? (x.project_name || '自社のシフト') : '他社の予定あり') + ' ' + day + x.start_time + '〜' + x.end_time
 }
 
 // API で返す形（他社は shift_id・案件名を返さない）
-export function conflictView(x: ConflictRow, companyId: number) {
+export function conflictView(x: ConflictRow & { day_offset?: number }, companyId: number) {
   const own = x.company_id === companyId
   return {
     shift_id: own ? x.shift_id : null, work_date: x.work_date, start_time: x.start_time, end_time: x.end_time,
-    project_name: own ? x.project_name : null, other_company: !own, label: conflictLabel(x, companyId),
+    project_name: own ? x.project_name : null, other_company: !own, day_offset: x.day_offset ?? 0, label: conflictLabel(x, companyId),
   }
 }

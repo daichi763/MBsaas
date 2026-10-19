@@ -27,6 +27,41 @@ export function dailyReportView(r: any | null) {
   }
 }
 
+/**
+ * インシデント・クレームの内容（#232）。report_values の incident_note / complaint_note に保存する
+ * （管理画面の日報一覧は incident_ / complaint_ で始まるキーを赤枠に出す）。
+ * - 本文の incident_note / complaint_note（無ければ values の同じキー）を使う。送られていなければ前回の内容を保つ
+ * - 印が付いたままなら内容を残し、requireNote のとき内容が空なら受け付けない。印を外したら内容も消す
+ * - raised: 今回新しく付いた印（管理者へ知らせる）。flags_explicit でない送信は一度付いた印を下げない（saveDailyReport と同じ）
+ */
+export const INCIDENT_NOTE_MAX = 2000
+const INCIDENT_NOTE_KINDS = [
+  { kind: 'incident', flag: 'incident_flag', key: 'incident_note', label: 'インシデント' },
+  { kind: 'complaint', flag: 'complaint_flag', key: 'complaint_note', label: 'クレーム' },
+] as const
+export function mergeIncidentNotes(values: Record<string, number | string>, body: any, prev: ReturnType<typeof dailyReportView>, opts: { requireNote: boolean }):
+  { values: Record<string, number | string>; raised: ('incident' | 'complaint')[] } | { error: string } {
+  const out = { ...values }
+  const raised: ('incident' | 'complaint')[] = []
+  const explicit = !!body && body.flags_explicit === true
+  for (const k of INCIDENT_NOTE_KINDS) {
+    const newFlag = !!(body && body[k.flag])
+    const prevFlag = !!(prev && prev[k.flag])
+    const effective = explicit ? newFlag : (newFlag || prevFlag)
+    if (newFlag && !prevFlag) raised.push(k.kind)
+    let sent: unknown = body ? body[k.key] : undefined
+    if (sent === undefined && body && body.values && typeof body.values === 'object') sent = body.values[k.key]
+    if (sent !== undefined && sent !== null && typeof sent === 'object') return { error: `${k.label}の内容の形式が正しくありません` }
+    const note = (sent !== undefined && sent !== null ? String(sent) : String((prev && prev.values && prev.values[k.key]) ?? '')).trim()
+    if (note.length > INCIDENT_NOTE_MAX) return { error: `${k.label}の内容は${INCIDENT_NOTE_MAX}文字以内で入力してください` }
+    delete out[k.key]
+    if (!effective) continue
+    if (note) out[k.key] = note
+    else if (opts.requireNote) return { error: `${k.label}の内容（何が・いつ・どう対応したか）を入力してください` }
+  }
+  return { values: out, raised }
+}
+
 /** 日報を受け付けないシフト（欠勤・稼働日の前） */
 export function dailyReportBlocked(shift: { work_date: string; status?: string | null }, today: string): string | null {
   if (shift.status === 'absent') return '欠勤のシフトには日報を提出できません'

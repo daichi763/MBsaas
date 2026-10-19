@@ -64,7 +64,7 @@
         : `<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${r ? '修正' : '追加申請'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
-        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'correction' ? ' <span class="text-[10px] text-gray-400">（修正済み）</span>' : ''}</span>
+        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
         ${action}</li>`
     }
     return `<div class="card p-3 mb-2">
@@ -81,7 +81,10 @@
   window.attOpen = function (shiftId, type) {
     const s = TL.shifts.find(x => x.shift_id === shiftId); if (!s) return
     const r = s.reports.find(x => x.report_type === type)
-    const def = r ? toInput(r.reported_at) : `${s.work_date}T${(type === 'work_end' || type === 'check_out') ? s.end_time : s.start_time}`
+    // 未報告の既定値: 勤務終了・退店は予定の終了、それ以外は予定の開始。日をまたぐシフト（終了 <= 開始）の終了は翌日（#52）
+    const isEnd = type === 'work_end' || type === 'check_out'
+    const endDate = s.end_time <= s.start_time ? dayjs(s.work_date).add(1, 'day').format('YYYY-MM-DD') : s.work_date
+    const def = r ? toInput(r.reported_at) : isEnd ? `${endDate}T${s.end_time}` : `${s.work_date}T${s.start_time}`
     form = { mode: 'new', shift_id: shiftId, report_type: type, kind: r ? 'modify' : 'add', before: r ? r.reported_at : null, work_date: s.work_date, title: s.project_name }
     showForm(def, '')
   }
@@ -136,6 +139,7 @@
         ${c.order_warnings.length ? `<p class="text-[11px] text-amber-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${c.order_warnings.map(esc).join(' / ')}</p>` : ''}
         ${c.status === 'approved' ? `<p class="text-xs text-emerald-700 mt-1.5">承認: ${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}</p>` : ''}
         ${c.status === 'rejected' ? `<div class="mt-1.5 p-2 rounded bg-red-50 text-xs text-red-800">却下の理由: ${esc(c.reject_reason || '')}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}<br><span class="text-red-500">${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}</span></div>` : ''}
+        ${c.status === 'cancelled' && c.cancel_reason_label ? `<p class="text-xs text-gray-600 mt-1.5">${esc(c.cancel_reason_label)}、自動で取り消されました。勤怠の記録は変わっていません</p>` : ''}
         ${c.resubmitted_from ? `<p class="text-[11px] text-gray-400 mt-1">再申請（元の申請 #${c.resubmitted_from}）</p>` : ''}
         <div class="flex gap-2 mt-2">
           <button class="btn btn-outline text-xs flex-1" onclick="attDetail(${c.correction_id})">経緯を見る</button>
@@ -165,9 +169,11 @@
     const more = document.getElementById('more-notif-count')
     if (more) { more.textContent = n; more.classList.toggle('hidden', !n) }
   }
+  let NOTIF_LIST = []
   window.renderStaffNotifications = async function () {
     loading()
     let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { $app.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    NOTIF_LIST = d.notifications
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
         ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
@@ -178,8 +184,11 @@
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
   }
+  // お知らせの確認のお願い（再通知 #191）は、そのお知らせを開く。それ以外は打刻修正申請の一覧を開く
   window.notifOpenStaff = async function (id) {
     try { await axios.post(`/api/staff/notifications/${id}/read`) } catch (e) { }
+    const n = NOTIF_LIST.find(x => x.notification_id === id)
+    if (n && /^#notices\/\d+$/.test(n.link || '')) { location.hash = n.link.slice(1); return }
     S.tab = 'requests'; location.hash = 'attendance'
   }
   window.notifReadAllStaff = async function () {
@@ -197,5 +206,12 @@
       <h4 class="text-xs font-bold text-gray-500 mb-1">同じ報告の申請</h4>
       <ul class="space-y-1 mb-4">${d.history.map(h => `<li class="text-xs ${h.correction_id === c.correction_id ? 'font-bold' : ''}">#${h.correction_id} ${(STATUS[h.status] || [h.status])[0]} ・${esc(showAt(h.requested_at, c.work_date))}${h.reject_reason ? ' ・却下の理由: ' + esc(h.reject_reason) : ''}</li>`).join('')}</ul>
       <button class="btn btn-outline w-full" onclick="closeModal()">閉じる</button>`)
+  }
+  // ホームの『報告漏れ』から開く（#483）: 打刻履歴（直近2週間）を出してから、そのシフト・報告の打刻漏れの追加の申請を開く
+  window.attOpenMissed = async function (shiftId, type) {
+    S.tab = 'timeline'; S.to = null
+    if (location.hash !== '#attendance') history.pushState(null, '', '#attendance')
+    await (typeof route === 'function' ? route() : renderStaffAttendance())
+    if (TL && TL.shifts.some(x => x.shift_id === shiftId)) attOpen(shiftId, type)
   }
 })()

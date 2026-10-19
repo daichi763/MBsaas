@@ -1,25 +1,91 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
 import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
+import { runCronJobs, defineCronJobs } from './services/cron'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
 const app = new Hono<{ Bindings: Bindings }>()
+
+// ============ 画面の応答に付けるセキュリティヘッダー（#202） ============
+// 外部のスクリプト・スタイルは jsDelivr（バージョン固定・SRI 付き）と、募集ページの Turnstile だけを許す。
+// 画面に onclick などのイベント属性とインラインの script が残っているため、script-src の 'unsafe-inline' は外せない
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://challenges.cloudflare.com",
+  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+  "font-src 'self' https://cdn.jsdelivr.net data:",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  'frame-src https://challenges.cloudflare.com',
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ')
+app.use('*', async (c, next) => {
+  await next()
+  try {
+    c.res.headers.set('X-Content-Type-Options', 'nosniff')
+    if ((c.res.headers.get('Content-Type') || '').startsWith('text/html')) c.res.headers.set('Content-Security-Policy', CSP)
+  } catch { /* 変更できない応答（外部から取得したものなど）はそのまま返す */ }
+})
+
+// ============ 予期しないエラーの記録（#230） ============
+// Workers Logs（wrangler.jsonc の observability）に、どの API で・誰の操作で起きたかを1行の JSON で残す。
+// 利用者には参照番号を返し、問い合わせのときにログと突き合わせられるようにする。
+// パスに入る報告用URL・募集ページ・再設定のトークンは記録しない
+const maskPath = (p: string) => p.replace(/[A-Za-z0-9_-]{20,}/g, '***')
+app.onError((err, c) => {
+  if (err instanceof HTTPException) return err.getResponse()
+  const ref = crypto.randomUUID().slice(0, 8)
+  const u = (c as any).get('user')
+  console.error(JSON.stringify({
+    level: 'error', event: 'unhandled_error', ref, method: c.req.method, path: maskPath(c.req.path),
+    company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
+    message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
+  }))
+  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
+  const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
+  if (c.req.path.startsWith('/api/')) return c.json({ error: msg, ref }, 500)
+  return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
+<body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
+})
 
 app.route('/api', api)
 
 // ============ 共通レイアウト ============
+// CDN のファイルはバージョンを固定し、integrity（SRI）を付ける。版を上げるときはハッシュも計算し直す
+//   計算: curl -s <URL> | openssl dgst -sha384 -binary | openssl base64 -A
+const CDN = 'https://cdn.jsdelivr.net/npm/'
+const SRI: Record<string, string> = {
+  '@fortawesome/fontawesome-free@6.4.0/css/all.min.css': 'sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0',
+  'axios@1.6.0/dist/axios.min.js': 'sha384-VekiXfVDZuqx75T/YaGfn7/p6+e+D0f/G8UoZ5GBOCMZ89kMW4wTo8PSn6GSzOEl',
+  'dayjs@1.11.10/dayjs.min.js': 'sha384-DpVxUeeBWjUvUV1czyIHJAjh+jYUZFu2lLakbdua5vbwOrBGi1UgaKCHjTC+x3Ky',
+  'chart.js@4.5.1/dist/chart.umd.min.js': 'sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ',
+  'flatpickr@4.6.13/dist/flatpickr.min.css': 'sha384-RkASv+6KfBMW9eknReJIJ6b3UnjKOKC5bOUaNgIY778NFbQ8MtWq9Lr/khUgqtTt',
+  'flatpickr@4.6.13/dist/plugins/monthSelect/style.css': 'sha384-iENKmnGeeAGTWfH/ajxq1dMSwLjASdk1v+taA112fikKow0tdV9cbUJcAiBEfHhG',
+  'flatpickr@4.6.13/dist/flatpickr.min.js': 'sha384-5JqMv4L/Xa0hfvtF06qboNdhvuYXUku9ZrhZh3bSk8VXF0A/RuSLHpLsSV9Zqhl6',
+  'flatpickr@4.6.13/dist/l10n/ja.js': 'sha384-mKor8U8jwukUkfxaFPCsxKF9S62PXq4gG7zcZ5yQ2x3KL1msprJZeFlKFEDeeb5V',
+  'flatpickr@4.6.13/dist/plugins/monthSelect/index.js': 'sha384-6p33UqcS/7ZxiJzlAi3gfOsrVSlBlFNr/6gfN12AC0ETbTmPgMGSfHuN+H0QcWoO',
+  'qrcode-generator@1.4.4/qrcode.min.js': 'sha384-lQXOAyZwHXE55JFyrOMB7nY2Wv+m5ZWNtJcHrd1rceRQXAYNLak8ukN5TjBTcIwz',
+  'jsqr@1.4.0/dist/jsQR.min.js': 'sha384-hStSInNIZ8ljtOVrmrgf7zdHMapaLBWoSnPTtF0nzsybp4+LuhDz6sHuEVpWIX8o',
+  'sortablejs@1.15.2/Sortable.min.js': 'sha384-BSxuMLxX+FCbTdYec3TbXlnMGEEM2QXTFdtDaveen71o+jswm2J36+xFqp8k4VHM',
+}
+const cdnJs = (p: string) => `<script src="${CDN}${p}" integrity="${SRI[p]}" crossorigin="anonymous"></script>`
+const cdnCss = (p: string) => `<link href="${CDN}${p}" rel="stylesheet" integrity="${SRI[p]}" crossorigin="anonymous">`
 const head = (title: string) => `
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} | Field OS</title>
-  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
+  ${cdnJs('axios@1.6.0/dist/axios.min.js')}
+  ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
   <script src="/static/common.js"></script>
   <link href="/static/style.css" rel="stylesheet">
 `
@@ -38,13 +104,25 @@ app.get('/', async (c) => {
 })
 
 // ============ ログイン画面 ============
+// ホーム画面に追加したときのアイコン・名前（public/manifest.webmanifest。#308）。報告用URL・募集ページには付けない（追加すると起動先がログインになるため）
+const APP_META = `
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="apple-mobile-web-app-title" content="Field OS">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">`
+// 未ログインで開いたときは、ログインの後に元の画面へ戻れるよう、元のパスを next に付ける。
+// ハッシュ（#attendance など）はサーバーに届かないが、ブラウザがリダイレクト先に引き継ぐのでログイン画面の JS で付け直す（#206）
+const toLogin = (c: any) => c.redirect('/login?next=' + encodeURIComponent(new URL(c.req.url).pathname))
+// 入力欄の共通のクラス
+const LOGIN_INPUT = 'w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base'
+
 // ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ）
 app.get('/login', async (c) => {
   const u = await currentUser(c)
   if (u) return c.redirect(homePathFor(u.role))
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('ログイン')}</head>
+<head>${head('ログイン')}${APP_META}</head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
@@ -55,21 +133,26 @@ app.get('/login', async (c) => {
       <p class="text-sm text-gray-500 mt-1">通信人材会社向け 運営標準化SaaS</p>
     </header>
     <section id="login-card" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <form id="login-form" class="space-y-4">
+      <form id="login-form" class="space-y-4" novalidate>
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">会社コード</label>
-          <input id="company_code" type="text" autocomplete="organization" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="所属の会社から案内されたコード">
+          <label for="company_code" class="block text-sm font-medium text-gray-600 mb-1">会社コード</label>
+          <!-- 会社名の自動入力・先頭の大文字化・自動修正をさせない（#201） -->
+          <input id="company_code" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" class="${LOGIN_INPUT}" placeholder="所属の会社から案内されたコード">
           <p class="text-[11px] text-gray-400 mt-1">本部の方は空欄のままログインできます</p>
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">スタッフ番号 / ユーザーID</label>
-          <input id="user_code" type="text" autocomplete="username" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" placeholder="スタッフ番号またはID" required>
+          <label for="user_code" class="block text-sm font-medium text-gray-600 mb-1">スタッフ番号 / ユーザーID</label>
+          <input id="user_code" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" class="${LOGIN_INPUT}" placeholder="スタッフ番号またはID" required>
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">パスワード</label>
-          <input id="password" type="password" autocomplete="current-password" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+          <label for="password" class="block text-sm font-medium text-gray-600 mb-1">パスワード</label>
+          <div class="relative">
+            <input id="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" class="${LOGIN_INPUT} pr-12" required>
+            <button type="button" id="pw-toggle" class="absolute inset-y-0 right-0 px-4 text-gray-400 hover:text-gray-600" aria-label="パスワードを表示" aria-pressed="false"><i class="fas fa-eye"></i></button>
+          </div>
         </div>
-        <p id="login-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2"></p>
+        <label class="flex items-center gap-2 text-xs text-gray-500"><input type="checkbox" id="remember" checked>この端末に会社コードとIDを記憶する（共用の端末では外してください）</label>
+        <p id="login-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
         <button type="submit" id="login-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
           ログイン
         </button>
@@ -78,11 +161,11 @@ app.get('/login', async (c) => {
       </form>
 
       <form id="forgot-form" class="space-y-4 hidden">
-        <p class="text-sm text-gray-500">登録済みのメールアドレスを入力してください。パスワード再設定用のリンクをお送りします。</p>
+        <p class="text-sm text-gray-500">登録済みのメールアドレスを入力してください。パスワード再設定用のリンクと、ログインに使う会社コード・IDをお送りします。</p>
         <p class="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">メールアドレスを登録していない方は、所属の会社の担当者にパスワードの再発行を依頼してください（仮パスワードが発行されます）。</p>
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">メールアドレス</label>
-          <input id="forgot-email" type="email" autocomplete="email" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+          <label for="forgot-email" class="block text-sm font-medium text-gray-600 mb-1">メールアドレス</label>
+          <input id="forgot-email" type="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" class="${LOGIN_INPUT}" required>
         </div>
         <p id="forgot-message" class="hidden text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2"></p>
         <button type="submit" id="forgot-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
@@ -101,22 +184,71 @@ app.get('/login', async (c) => {
     </aside>` : ''}
   </main>
   <script>
+    // 会社コード・ID の全角は、サーバーが半角にそろえて照合する（#387）
+    const norm = (v) => String(v || '').normalize('NFKC').trim()
+    const params = new URLSearchParams(location.search)
+    const cc = document.getElementById('company_code'), uc = document.getElementById('user_code'), pw = document.getElementById('password')
+    const remember = document.getElementById('remember')
+    // 前回ログインした会社コードと ID（この端末だけに保存。#308）。/login?c=会社コード&u=ID の指定があればそちらを使う
+    const STORE_KEY = 'fieldos.login'
+    let saved = {}
+    try { saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {} } catch (e) { saved = {} }
+    const qc = params.get('c'), qu = params.get('u')
+    cc.value = qc !== null ? qc : (saved.c || '')
+    uc.value = qu !== null ? qu : (qc === null || qc === saved.c ? (saved.u || '') : '')
+    ;(cc.value && uc.value ? pw : cc.value ? uc : cc).focus()
+
+    // ログインの後に戻る先（#206）。ログインした人のホームと同じ画面のときだけ使う（別のサイトや別のロールの画面へは移らない）
+    function nextUrl(home) {
+      const n = params.get('next')
+      if (!n || n.charAt(0) !== '/' || n.charAt(1) === '/' || n.charAt(1) === '\\\\') return home
+      try {
+        const url = new URL(n, location.origin)
+        if (url.origin !== location.origin || url.pathname !== home) return home
+        return url.pathname + url.search + (url.hash || location.hash || '')
+      } catch (e) { return home }
+    }
+
+    document.getElementById('pw-toggle').addEventListener('click', (e) => {
+      const show = pw.type === 'password'
+      pw.type = show ? 'text' : 'password'
+      const btn = e.currentTarget
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false')
+      btn.setAttribute('aria-label', show ? 'パスワードを隠す' : 'パスワードを表示')
+      btn.innerHTML = show ? '<i class="fas fa-eye-slash"></i>' : '<i class="fas fa-eye"></i>'
+    })
+
+    // 通信の失敗・時間切れと、ID・パスワードの誤りを分けて伝える（#561）
+    const TIMEOUT_MS = 15000
+    const OFFLINE_MSG = '通信できませんでした。電波の良い場所で、もう一度お試しください'
+    function loginErrorMessage(e2) {
+      if (!e2.response) {
+        if (e2.code === 'ECONNABORTED' || e2.code === 'ETIMEDOUT') return '通信に時間がかかっています。電波の良い場所で、もう一度お試しください'
+        return OFFLINE_MSG
+      }
+      if (e2.response.status >= 500) return 'サーバーで問題が起きました。少し時間をおいて、もう一度お試しください'
+      return (e2.response.data && e2.response.data.error) || 'ログインに失敗しました'
+    }
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault()
       const btn = document.getElementById('login-btn')
       const err = document.getElementById('login-error')
-      btn.disabled = true; btn.textContent = 'ログイン中...'
+      const showErr = (msg) => { err.textContent = msg; err.classList.remove('hidden') }
       err.classList.add('hidden')
+      // 送るのは入力どおり（trim のみ）。サーバーが全角・大文字小文字をそろえて照合し、以前に全角のまま登録した ID も入力どおりで照合する
+      cc.value = cc.value.trim(); uc.value = uc.value.trim()
+      if (!norm(uc.value) || !pw.value) return showErr('スタッフ番号（ID）とパスワードを入力してください')
+      if (navigator.onLine === false) return showErr(OFFLINE_MSG)
+      btn.disabled = true; btn.textContent = 'ログイン中...'
       try {
-        const res = await axios.post('/api/auth/login', {
-          company_code: document.getElementById('company_code').value.trim(),
-          user_code: document.getElementById('user_code').value.trim(),
-          password: document.getElementById('password').value
-        })
-        location.href = res.data.redirect
+        const res = await axios.post('/api/auth/login', { company_code: cc.value, user_code: uc.value, password: pw.value }, { timeout: TIMEOUT_MS })
+        try {
+          if (remember.checked) localStorage.setItem(STORE_KEY, JSON.stringify({ c: res.data.company_code || '', u: res.data.user_code || uc.value }))
+          else localStorage.removeItem(STORE_KEY)
+        } catch (e3) { /* 保存できない端末（プライベートブラウズなど）でもログインは続ける */ }
+        location.href = nextUrl(res.data.redirect)
       } catch (e2) {
-        err.textContent = (e2.response && e2.response.data && e2.response.data.error) || 'ログインに失敗しました'
-        err.classList.remove('hidden')
+        showErr(loginErrorMessage(e2))
         btn.disabled = false; btn.textContent = 'ログイン'
       }
     })
@@ -136,12 +268,13 @@ app.get('/login', async (c) => {
       const msg = document.getElementById('forgot-message')
       btn.disabled = true; btn.textContent = '送信中...'
       try {
-        const res = await axios.post('/api/auth/forgot-password', { email: document.getElementById('forgot-email').value.trim() })
+        const res = await axios.post('/api/auth/forgot-password', { email: document.getElementById('forgot-email').value.trim() }, { timeout: TIMEOUT_MS })
         msg.textContent = res.data.message
-        msg.classList.remove('hidden')
-      } catch {
-        msg.textContent = '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
-        msg.classList.remove('hidden')
+        msg.className = 'text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2'
+      } catch (e2) {
+        // 通信できなかったときは送れていないので、そのことを伝える（受け付けた場合の応答は、アカウントの有無によらず同じ文言）
+        msg.textContent = !e2.response ? OFFLINE_MSG : '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
+        msg.className = !e2.response ? 'text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2' : 'text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2'
       }
       btn.disabled = false; btn.textContent = '送信する'
     })
@@ -153,7 +286,7 @@ app.get('/login', async (c) => {
 // パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る）
 app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('パスワード再設定')}</head>
+<head>${head('パスワード再設定')}<meta name="referrer" content="no-referrer"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
@@ -165,28 +298,37 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
     <section id="reset-card" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
       <form id="reset-form" class="space-y-4">
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード</label>
-          <input id="new-password" type="password" autocomplete="new-password" minlength="8" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+          <label for="new-password" class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード</label>
+          <input id="new-password" type="password" autocomplete="new-password" minlength="8" class="${LOGIN_INPUT}" required>
           <p class="text-xs text-gray-400 mt-1">8文字以上で入力してください</p>
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード（確認）</label>
-          <input id="new-password-confirm" type="password" autocomplete="new-password" minlength="8" class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base" required>
+          <label for="new-password-confirm" class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード（確認）</label>
+          <input id="new-password-confirm" type="password" autocomplete="new-password" minlength="8" class="${LOGIN_INPUT}" required>
         </div>
-        <p id="reset-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2"></p>
+        <label class="flex items-center gap-2 text-xs text-gray-500"><input type="checkbox" id="reset-show">パスワードを表示する</label>
+        <p id="reset-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
         <button type="submit" id="reset-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
           パスワードを再設定する
         </button>
       </form>
       <div id="reset-success" class="hidden text-center">
-        <p class="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3 mb-4"><i class="fas fa-check-circle mr-1"></i>パスワードを再設定しました。</p>
-        <a href="/login" class="text-sm text-blue-600 hover:underline">ログイン画面へ</a>
+        <p class="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3 mb-3"><i class="fas fa-check-circle mr-1"></i>パスワードを再設定しました。</p>
+        <!-- ログインに使う会社コードと ID（#208）。ログイン画面には入力した状態で移る -->
+        <dl id="reset-account" class="hidden text-sm text-left bg-gray-50 rounded-lg px-3 py-2 mb-4 space-y-1">
+          <div id="reset-company-row" class="flex gap-2"><dt class="w-24 text-gray-500">会社コード</dt><dd id="reset-company" class="font-bold font-mono"></dd></div>
+          <div class="flex gap-2"><dt class="w-24 text-gray-500">ID</dt><dd id="reset-user" class="font-bold font-mono"></dd></div>
+        </dl>
+        <a id="reset-login-link" href="/login" class="inline-block w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base">ログイン画面へ</a>
       </div>
     </section>
   </main>
   <script>
     const params = new URLSearchParams(location.search)
     const token = params.get('token')
+    document.getElementById('reset-show').addEventListener('change', (e) => {
+      for (const id of ['new-password', 'new-password-confirm']) document.getElementById(id).type = e.target.checked ? 'text' : 'password'
+    })
     document.getElementById('reset-form').addEventListener('submit', async (e) => {
       e.preventDefault()
       const err = document.getElementById('reset-error')
@@ -198,13 +340,71 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
       const btn = document.getElementById('reset-btn')
       btn.disabled = true; btn.textContent = '処理中...'
       try {
-        await axios.post('/api/auth/reset-password', { token, password: p1 })
+        const res = await axios.post('/api/auth/reset-password', { token, password: p1 }, { timeout: 15000 })
+        const d = res.data || {}
         document.getElementById('reset-form').classList.add('hidden')
         document.getElementById('reset-success').classList.remove('hidden')
+        if (d.user_code) {
+          document.getElementById('reset-account').classList.remove('hidden')
+          document.getElementById('reset-user').textContent = d.user_code
+          if (d.company_code) document.getElementById('reset-company').textContent = d.company_code
+          else document.getElementById('reset-company-row').classList.add('hidden')
+          const q = new URLSearchParams({ c: d.company_code || '', u: d.user_code })
+          document.getElementById('reset-login-link').href = '/login?' + q.toString()
+        }
       } catch (e2) {
-        err.textContent = (e2.response && e2.response.data && e2.response.data.error) || '処理に失敗しました'
+        err.textContent = !e2.response ? '通信できませんでした。電波の良い場所で、もう一度お試しください'
+          : (e2.response.data && e2.response.data.error) || '処理に失敗しました'
         err.classList.remove('hidden')
         btn.disabled = false; btn.textContent = 'パスワードを再設定する'
+      }
+    })
+  </script>
+</body>
+</html>`))
+
+// ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。
+// メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する
+app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+  <main class="w-full max-w-sm">
+    <header class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+        <i class="fas fa-envelope-circle-check"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-gray-800">メールアドレスの確認</h1>
+    </header>
+    <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+      <div id="verify-form">
+        <p class="text-sm text-gray-600 mb-4">このメールアドレスを、Field OS のログイン用（パスワード再設定・お知らせなどの宛先）として登録します。</p>
+        <p id="verify-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3" role="alert"></p>
+        <button type="button" id="verify-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認して登録する</button>
+      </div>
+      <div id="verify-success" class="hidden text-center">
+        <p class="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3 mb-3"><i class="fas fa-check-circle mr-1"></i><span id="verify-email"></span> を登録しました。</p>
+        <a id="verify-login-link" href="/login" class="inline-block w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base">ログイン画面へ</a>
+      </div>
+    </section>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('token')
+    document.getElementById('verify-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget, err = document.getElementById('verify-error')
+      err.classList.add('hidden')
+      if (!token) { err.textContent = 'リンクが正しくありません。メールのリンクから開いてください。'; err.classList.remove('hidden'); return }
+      btn.disabled = true; btn.textContent = '処理中...'
+      try {
+        const d = (await axios.post('/api/auth/verify-email', { token }, { timeout: 15000 })).data
+        document.getElementById('verify-form').classList.add('hidden')
+        document.getElementById('verify-success').classList.remove('hidden')
+        document.getElementById('verify-email').textContent = d.email || ''
+        document.getElementById('verify-login-link').href = '/login?' + new URLSearchParams({ c: d.company_code || '', u: d.user_code || '' }).toString()
+      } catch (e2) {
+        err.textContent = !e2.response ? '通信できませんでした。電波の良い場所で、もう一度お試しください' : (e2.response.data && e2.response.data.error) || '確認できませんでした'
+        err.classList.remove('hidden')
+        btn.disabled = false; btn.textContent = '確認して登録する'
       }
     })
   </script>
@@ -242,11 +442,11 @@ app.get('/apply/:token', (c) => c.html(`<!DOCTYPE html>
 // ============ スタッフ画面 (スマホファースト SPA) ============
 app.get('/staff', async (c) => {
   const u = await currentUser(c)
-  if (!u) return c.redirect('/login')
+  if (!u) return toLogin(c)
   if (u.role !== 'staff') return c.redirect('/')
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('スタッフ')}</head>
+<head>${head('スタッフ')}${APP_META}</head>
 <body class="bg-gray-50 min-h-screen pb-20">
   <header id="staff-header" class="bg-white border-b border-gray-100 sticky top-0 z-20">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
@@ -270,7 +470,7 @@ app.get('/staff', async (c) => {
   <div id="modal-root"></div>
   <script src="/static/staff.js"></script>
   <script src="/static/staff-attendance.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   <script src="/static/staff-profile.js"></script>
 </body>
 </html>`)
@@ -279,18 +479,18 @@ app.get('/staff', async (c) => {
 // ============ 管理者画面 (PC向け SPA) ============
 app.get('/admin', async (c) => {
   const u = await currentUser(c)
-  if (!u) return c.redirect('/login')
+  if (!u) return toLogin(c)
   if (u.role === 'staff') return c.redirect('/staff')
   if (u.role === 'system_admin') return c.redirect('/hq')
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('管理画面')}
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/style.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ja.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/index.js"></script>
+  ${cdnJs('chart.js@4.5.1/dist/chart.umd.min.js')}
+  ${cdnCss('flatpickr@4.6.13/dist/flatpickr.min.css')}
+  ${cdnCss('flatpickr@4.6.13/dist/plugins/monthSelect/style.css')}
+  ${cdnJs('flatpickr@4.6.13/dist/flatpickr.min.js')}
+  ${cdnJs('flatpickr@4.6.13/dist/l10n/ja.js')}
+  ${cdnJs('flatpickr@4.6.13/dist/plugins/monthSelect/index.js')}
 </head>
 <body class="bg-gray-50 min-h-screen">
   <div class="flex min-h-screen">
@@ -347,12 +547,12 @@ app.get('/admin', async (c) => {
     </div>
   </div>
   <div id="modal-root"></div>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
+  ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  ${cdnJs('sortablejs@1.15.2/Sortable.min.js')}
   <script src="/static/shift-board.js"></script>
   <script src="/static/staff-lifecycle.js"></script>
   <script src="/static/settlement.js"></script>
@@ -360,7 +560,6 @@ app.get('/admin', async (c) => {
   <script src="/static/corrections.js"></script>
   <script src="/static/notifications.js"></script>
   <script src="/static/attendance-history.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>
 </body>
@@ -370,12 +569,12 @@ app.get('/admin', async (c) => {
 // ============ SaaS本部管理画面 ============
 app.get('/hq', async (c) => {
   const u = await currentUser(c)
-  if (!u) return c.redirect('/login')
+  if (!u) return toLogin(c)
   if (u.role !== 'system_admin') return c.redirect('/')
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('SaaS本部')}
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  ${cdnJs('chart.js@4.5.1/dist/chart.umd.min.js')}
 </head>
 <body class="bg-slate-900 min-h-screen text-gray-100">
   <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-20">
@@ -385,7 +584,7 @@ app.get('/hq', async (c) => {
         <nav class="flex gap-1">
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
-          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持</a>
+          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
@@ -399,67 +598,51 @@ app.get('/hq', async (c) => {
 </html>`)
 })
 
+// ============ 定期処理（Cron Trigger） ============
+// wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
+const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
+const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
+
+// 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
+// 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
+// 個人情報の削除（応募・データ保持）は、問い合わせの上限に当たって止まらないよう先に実行する（#198）
+const CRON_JOBS = defineCronJobs<Bindings>([
+  // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
+  { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
+  // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
+  { name: 'recruit_applications_purge', label: '応募の削除（180日）', cron: CRON_DAILY, run: async env => ({ deleted: await purgeOldApplications(env.DB) }) },
+  // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
+  // RETENTION_ENABLED が 'true' になるまでは dry-run（削除せず対象件数のみログ・記録）で動作する。
+  // 本番投入時は、dry-runの結果を確認してから RETENTION_ENABLED=true に切り替えること。
+  { name: 'retention', label: 'データ保持の定期削除', cron: CRON_DAILY, run: async env => {
+    const dryRun = env.RETENTION_ENABLED !== 'true'
+    const r = await runRetentionCleanup(env.DB, env, { dryRun, trigger: 'cron' })
+    const failedTargets = r.results.filter(x => x.failedCount > 0)
+    return {
+      dry_run: dryRun,
+      target: r.results.reduce((a, x) => a + x.targetCount, 0),
+      deleted: r.results.reduce((a, x) => a + x.deletedCount, 0),
+      failed: failedTargets.reduce((a, x) => a + x.failedCount, 0),
+      error: failedTargets.map(x => `${x.target}: ${x.error || '失敗'}`).join(' / ').slice(0, 1000) || null,
+    }
+  } },
+  // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
+  { name: 'retirements', label: '退職予定日を過ぎたスタッフの退職への切り替え', cron: CRON_DAILY, run: async env => ({ applied: await applyDueRetirements(env.DB) }) },
+  // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
+  { name: 'affiliation_schedules', label: '所属区分の変更の予約の適用', cron: CRON_DAILY, run: async env => {
+    // 状況が変わって適用できなかった予約は、理由をスタッフの画面に出すので定期処理の失敗にはしない
+    const r = await applyDueAffiliationSchedules(env.DB)
+    return { due: r.due, applied: r.applied, not_applied: r.failed }
+  } },
+  { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
+  { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
+])
+
 export default {
   fetch: app.fetch,
-  // Cron Trigger: 毎日3時(UTC) = 日本時間12時 に実行。
-  // 3つの処理は互いに独立させ、一方が失敗しても他方の実行を妨げないようにする。
-  async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
-    try {
-      // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
-      const r = await purgeExpiredAuthRows(env.DB)
-      console.log(`Deleted ${r.sessions} expired sessions, ${r.attempts} old login attempts`)
-    } catch (e) {
-      console.log(`session cleanup failed: ${e}`)
-    }
-
-    try {
-      const r = await generateFiscalYearReportsForAllCompanies(env.DB)
-      console.log(`notice_read_reports generation completed: companies=${r.companies} ok=${r.ok} failed=${r.failed} finalized=${r.finalized}`)
-    } catch (e) {
-      console.log(`notice_read_reports generation failed: ${e}`)
-    }
-
-    try {
-      const r = await purgeOldNoticeReads(env.DB)
-      console.log(`notice_reads cleanup completed: notices=${r.notices} deleted=${r.deleted}${r.error ? ' error=' + r.error : ''}`)
-    } catch (e) {
-      console.log(`notice_reads cleanup failed: ${e}`)
-    }
-
-    // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
-    try {
-      const n = await purgeOldApplications(env.DB)
-      console.log(`recruit applications cleanup completed: deleted=${n}`)
-    } catch (e) {
-      console.log(`recruit applications cleanup failed: ${e}`)
-    }
-
-    // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
-    // RETENTION_ENABLED が 'true' になるまでは dry-run（削除せず対象件数のみログ・記録）で動作する。
-    // 本番投入時は、dry-runの結果を確認してから RETENTION_ENABLED=true に切り替えること。
-    try {
-      const dryRun = env.RETENTION_ENABLED !== 'true'
-      const r = await runRetentionCleanup(env.DB, env.PHOTOS, { dryRun })
-      const summary = r.results.map(x => `${x.target}:${dryRun ? x.targetCount : x.deletedCount}`).join(' ')
-      console.log(`retention cleanup completed (dryRun=${dryRun}): ${summary}`)
-    } catch (e) {
-      console.log(`retention cleanup failed: ${e}`)
-    }
-
-    // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
-    try {
-      const n = await applyDueRetirements(env.DB)
-      console.log(`scheduled retirements applied: ${n}`)
-    } catch (e) {
-      console.log(`scheduled retirements failed: ${e}`)
-    }
-
-    // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
-    try {
-      const r = await applyDueAffiliationSchedules(env.DB)
-      console.log(`affiliation schedules: due=${r.due} applied=${r.applied} failed=${r.failed}`)
-    } catch (e) {
-      console.log(`affiliation schedules failed: ${e}`)
-    }
+  // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
+  // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）
+  async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
+    await runCronJobs(env, CRON_JOBS, event.cron)
   },
 }

@@ -108,7 +108,8 @@ const all2 = await publish(`全員あて2${tag}`)
 ok('#227 登録後のお知らせには入る', all2.staff_total === all1.staff_total + 1, [all1.staff_total, all2.staff_total])
 const eRead = await e.api.post(`/api/staff/notices/${all1.notice_id}/read`)
 const all1c = await noticeByTitle(`全員あて1${tag}`)
-ok('#227 一覧に出ている登録前のお知らせも「確認しました」は失敗しない（数には入らない）', eRead.status === 200 && all1c.read_count === all1b.read_count, [eRead, all1b.read_count, all1c.read_count])
+// w3-notice-ux でスタッフの一覧も配信対象の条件にそろえたため、登録前のお知らせは一覧に出ず、既読にもできない（404）
+ok('#227 登録前のお知らせは既読にできない（数にも入らない）', eRead.status === 404 && all1c.read_count === all1b.read_count, [eRead, all1b.read_count, all1c.read_count])
 const eReads = (await admin.get(`/api/admin/notices/${all1.notice_id}/reads`)).data
 ok('#227 既読状況にも登録前の人は出ない', ![...eReads.read, ...eReads.unread].some(r => r.name === e.name), eReads)
 
@@ -178,6 +179,10 @@ if (!PERSIST) {
   const pr3 = (await admin.get(`/api/admin/notices/${before.notice_id}/reads`)).data
   ok('#245 既読状況は「保存期間外」として削除の直前の人数を返す', pr3.purged === true && pr3.read_count === 1 && pr3.target_count === before.staff_total, pr3)
   // 今年度・前年度のレポートは cron で作られる（今年度は毎日更新 #481）
+  // 既読率レポートの集計は 3:30 の別の起動で行う（w3-retention-a #198）
+  const sc2 = await fetch(`${BASE}/__scheduled?cron=30+18+*+*+*`)
+  ok('（前提）既読率レポートの cron（3:30）を実行', sc2.status === 200, sc2.status)
+  await waitServer()
   const cronRep = (await admin.get(`/api/admin/notice-reports/${fy}`)).data
   ok('#481 cron が今年度のレポートを作り直す', cronRep.summary && cronRep.summary.calculated_at >= rep.summary.calculated_at, cronRep.summary)
 }

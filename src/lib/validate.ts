@@ -70,6 +70,33 @@ export function pickReportValues(fieldsJson: unknown, values: unknown): { values
   return { values: out }
 }
 
+// 日報テンプレートの項目の required（必須）と maxLength（文字数の上限）を確かめる（#349 #525）。
+// 送られた値（pickReportValues の前の値）で見る。数値の必須は空欄・未送信を、テキストの必須は空白だけも未入力とする。
+// アプリと報告用URLで同じものを呼ぶ。問題がなければ null
+export function reportFieldRulesError(fieldsJson: unknown, values: unknown): string | null {
+  let fields: any[] = []
+  try { fields = typeof fieldsJson === 'string' ? JSON.parse(fieldsJson) : [] } catch { fields = [] }
+  if (!Array.isArray(fields)) return null
+  const src = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
+  for (const f of fields) {
+    const key = f && typeof f.key === 'string' ? f.key : ''
+    if (!key) continue
+    const label = String(f.label || key)
+    const v = Object.prototype.hasOwnProperty.call(src, key) ? src[key] : undefined
+    const empty = v === undefined || v === null || (typeof v === 'string' && v.trim() === '')
+    if (isRequiredField(f) && empty) {
+      return f.type === 'number' ? `「${label}」を入力してください（0件の場合は0を入力してください）` : `「${label}」を入力してください`
+    }
+    const max = toInt(f.maxLength ?? f.max_length, 1, REPORT_TEXT_MAX)
+    if (f.type !== 'number' && max && typeof v === 'string' && v.length > max) return `「${label}」は${max}文字以内で入力してください`
+  }
+  return null
+}
+// テンプレートの項目が必須か（true / 1 / "true" を必須とみなす）
+export function isRequiredField(f: any): boolean {
+  return !!f && (f.required === true || f.required === 1 || f.required === 'true')
+}
+
 // アップロードされたファイル名から制御文字を除き、長さを整える（拡張子は残す）
 export function cleanFileName(name: unknown, max = 200): string {
   let s = String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim()

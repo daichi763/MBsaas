@@ -15,9 +15,31 @@ function modal(html) {
 }
 window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
 
+// ---------- API 呼び出しの共通処理（#230 #346） ----------
+let HQ_ME = null
+let SESSION_ENDED = false
+axios.interceptors.request.use(cfg => {
+  // 起動時に読んだ自分と違う人のセッションで操作が記録されないよう、サーバーで照合する
+  if (HQ_ME) cfg.headers['X-Expected-User-Id'] = String(HQ_ME.user_id)
+  return cfg
+})
 axios.interceptors.response.use(r => r, e => {
-  if (e.response && e.response.status === 401) location.href = '/login'
+  const r = e.response
+  if (r && !SESSION_ENDED && r.status === 409 && r.data && r.data.code === 'account_switched') {
+    SESSION_ENDED = true
+    alert('このブラウザで別のアカウントにログインされました。画面を読み直します。')
+    location.reload()
+  } else if (r && !SESSION_ENDED && r.status === 401) {
+    SESSION_ENDED = true
+    location.href = '/login'
+  }
   return Promise.reject(e)
+})
+// 画面の処理で受け止められなかった API のエラー（500 など）を表示する。サーバーの文言には参照番号が入る
+window.addEventListener('unhandledrejection', ev => {
+  const e = ev.reason
+  if (!e || !e.isAxiosError || SESSION_ENDED) return
+  showApiError(e, e.response ? '処理に失敗しました' : '通信できませんでした。接続を確かめて、もう一度お試しください')
 })
 document.getElementById('logout-btn').addEventListener('click', async () => {
   await axios.post('/api/auth/logout'); location.href = '/login'
@@ -377,10 +399,15 @@ window.addTemplate = async function () {
 const RETENTION_TARGET_LABEL = {
   daily_reports: '日報（3年）', attendance_reports: '出退勤記録（退職後7年）', shifts: 'シフト（退職後7年）',
   evaluations: '人事評価（退職後7年）', follow_logs: 'やり取り履歴（退職後7年）', consultations: '相談内容（退職後7年）',
-  r2_photos: 'R2写真（退職後7年）', shift_report_tokens: '報告用URL（退職後7年）', retired_staff: '退職者データ（退職後7年）',
+  r2_photos: 'R2写真（退職後7年）', shift_report_tokens: '報告用URL（退職後7年）', retired_staff: '退職スタッフ（人数・退職後7年）',
   user_notifications: 'アプリ内通知（2年）', attendance_corrections: '打刻修正申請（退職後7年）', attendance_correction_events: '打刻修正の操作履歴（退職後7年）',
   notification_emails: '通知メールの送信状態（退職後7年）', report_setting_logs: '報告設定の変更履歴（退職後7年）', project_staff_report_settings: '報告設定（スタッフ別・退職後7年）',
+  employee_records: '従業員データ（口座・住所・給与・緊急連絡先。退職後7年）', employment_periods: '過去の雇用期間（退職後7年）',
+  staff_documents: '履歴書など（退職後7年）', employee_documents: '入社時書類（退職後7年）', r2_documents: 'R2書類ファイル（退職後7年）',
+  roster_comments: '企業間チャット（退職後7年）', roster_comment_reads: '企業間チャットの既読位置（退職後7年）', roster_consents: '連携の同意履歴（退職後7年）',
+  anonymized_staff: '本人情報の匿名化（退職後7年）',
 }
+const RETENTION_TRIGGER_LABEL = { cron: '定期処理', manual: '手動' }
 // 次回削除予定・対象外の一覧（退職日の入力誤りに気づけるよう、削除前に本部で確認できるようにする）
 function retentionScheduleHtml(sch) {
   const row = (s, note) => `
@@ -428,52 +455,135 @@ function retentionDryRunHtml(data) {
 }
 async function renderRetention(dryRunResult) {
   loading()
-  const [{ data }, sch] = await Promise.all([
+  const [{ data }, sch, cron] = await Promise.all([
     axios.get('/api/hq/retention/logs'),
     axios.get('/api/hq/retention/schedule').then(r => r.data).catch(() => null),
+    axios.get('/api/hq/cron/status').then(r => r.data).catch(() => null),
   ])
+  renderCronAlert(cron)
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>
-        <h2 class="text-xl font-bold">データ保持（定期削除）</h2>
-        <p class="text-sm text-slate-400 mt-1">日報は3年、出退勤記録・シフト・評価・やり取り・相談・R2写真は退職後7年で自動削除されます（毎日Cronで実行）。</p>
+        <h2 class="text-xl font-bold">データ保持・定期処理</h2>
+        <p class="text-sm text-slate-400 mt-1">日報は3年、出退勤記録・シフト・評価・やり取り・相談・R2写真・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴は退職後7年で自動削除し、氏名・連絡先などの本人情報は匿名化します（毎日Cronで実行）。</p>
       </div>
-      <button class="btn btn-outline" onclick="runRetentionDryRun()"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
+      <button class="btn btn-outline" data-action="runRetentionDryRun"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
     </div>
+    ${cron ? cronStatusHtml(cron) : '<p class="text-sm text-red-400 mb-5">定期処理の実行記録の取得に失敗しました</p>'}
     <div id="retention-dryrun-result" class="mb-5">${dryRunResult ? retentionDryRunHtml(dryRunResult) : ''}</div>
     ${sch ? retentionScheduleHtml(sch) : '<p class="text-sm text-red-400 mb-5">次回削除予定の取得に失敗しました</p>'}
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
       <h3 class="font-bold mb-3">直近の実行ログ</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>実行日時</th><th>対象</th><th>種別</th><th>対象件数</th><th>削除件数</th><th>失敗</th></tr></thead>
+          <thead><tr><th>実行日時</th><th>実行元</th><th>対象</th><th>種別</th><th>対象件数</th><th>削除件数</th><th>失敗</th><th>所要時間</th></tr></thead>
           <tbody>
-            ${data.logs.length === 0 ? '<tr><td colspan="6" class="text-center text-slate-500 py-4">実行履歴がありません</td></tr>' : data.logs.map(l => `
+            ${data.logs.length === 0 ? '<tr><td colspan="8" class="text-center text-slate-500 py-4">実行履歴がありません</td></tr>' : data.logs.map(l => `
               <tr>
                 <td class="text-xs">${l.finished_at ? dayjs(l.finished_at).format('YYYY/M/D HH:mm') : '-'}</td>
-                <td>${RETENTION_TARGET_LABEL[l.target] || esc(l.target)}</td>
+                <td class="text-xs">${esc(RETENTION_TRIGGER_LABEL[l.trigger_source] || '-')}${l.triggered_by_name ? `<br><span class="text-slate-500">${esc(l.triggered_by_name)}</span>` : ''}</td>
+                <td>${esc(RETENTION_TARGET_LABEL[l.target] || l.target)}</td>
                 <td><span class="badge ${l.dry_run ? 'badge-gray' : 'badge-blue'}">${l.dry_run ? 'dry-run' : '実削除'}</span></td>
-                <td>${l.target_count}</td>
-                <td>${l.deleted_count}</td>
-                <td>${l.failed_count > 0 ? `<span class="text-red-400" title="${esc(l.error_message || '')}">${l.failed_count}</span>` : '0'}</td>
-              </tr>`).join('')}
+                <td>${esc(l.target_count)}</td>
+                <td>${esc(l.deleted_count)}</td>
+                <td>${l.failed_count > 0 ? `<span class="text-red-400">${esc(l.failed_count)}</span>` : '0'}</td>
+                <td class="text-xs">${l.duration_ms == null ? '-' : esc(formatDuration(l.duration_ms))}</td>
+              </tr>${l.error_message ? `
+              <tr><td colspan="8" class="text-xs text-red-400" style="white-space:pre-wrap;word-break:break-all">失敗の理由: ${esc(l.error_message)}</td></tr>` : ''}`).join('')}
           </tbody>
         </table>
       </div>
     </section>`
 }
-window.runRetentionDryRun = async function () {
+// 二重に実行しないよう、実行中はボタンを無効にする
+delegate('runRetentionDryRun', el => withSubmitLock(el, async () => {
   const box = document.getElementById('retention-dryrun-result')
   box.innerHTML = '<div class="flex justify-center py-6"><span class="spin"></span></div>'
   try {
     const { data } = await axios.post('/api/hq/retention/dry-run')
     toast('dry-runが完了しました')
     // 実行ログも新しくするため描き直す（結果は消さずに残す）
-    renderRetention(data)
-  } catch {
+    await renderRetention(data)
+  } catch (e) {
     box.innerHTML = ''
-    toast('dry-runの実行に失敗しました')
+    showApiError(e, 'dry-runの実行に失敗しました')
   }
+}))
+
+// ============ 定期処理（cron）の実行記録（#192） ============
+function formatDuration(ms) {
+  const n = Number(ms) || 0
+  return n < 1000 ? `${n}ms` : `${(n / 1000).toFixed(1)}秒`
+}
+// 処理の結果（result_json）の項目名
+const CRON_RESULT_LABEL = {
+  deleted: '削除', target: '対象', failed: '失敗', dry_run: 'dry-run', sessions: 'セッション', attempts: 'ログイン試行',
+  applied: '適用', due: '予約', not_applied: '適用できず', notices: 'お知らせ', batches: '回数',
+  companies: '集計した会社', remaining: '残りの会社', ok: '成功', finalized: '確定',
+}
+function cronResultText(json) {
+  let r = null
+  try { r = JSON.parse(json || 'null') } catch { return '' }
+  if (!r || typeof r !== 'object') return ''
+  return Object.entries(r).filter(([k, v]) => k !== 'error' && v !== null && typeof v !== 'object')
+    .map(([k, v]) => `${CRON_RESULT_LABEL[k] || k}: ${v === true ? 'はい' : v === false ? 'いいえ' : v}`).join(' / ')
+}
+function cronStatusBadge(status) {
+  return status === 'ok' ? '<span class="badge badge-green">成功</span>' : '<span class="badge badge-red">失敗</span>'
+}
+function cronRunRow(r) {
+  return `
+    <tr>
+      <td class="text-xs">${r.started_at ? esc(dayjs(r.started_at).format('YYYY/M/D HH:mm')) : '-'}</td>
+      <td>${esc(r.label || r.job)}</td>
+      <td>${cronStatusBadge(r.status)}</td>
+      <td class="text-xs">${r.duration_ms == null ? '-' : esc(formatDuration(r.duration_ms))}</td>
+      <td class="text-xs">${esc(cronResultText(r.result_json))}${r.error_message ? `<div class="text-red-400" style="white-space:pre-wrap;word-break:break-all">${esc(r.error_message)}</div>` : ''}</td>
+    </tr>`
+}
+function cronStatusHtml(cron) {
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-1">定期処理の実行状況</h3>
+      <p class="text-xs text-slate-400 mb-3">毎日 日本時間3:00（削除・退職の適用など）と3:30（既読率レポートの集計）に実行します。処理ごとの最後の実行です。</p>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>最終実行</th><th>処理</th><th>結果</th><th>所要時間</th><th>内容</th></tr></thead>
+          <tbody>${cron.latest.length ? cron.latest.map(cronRunRow).join('') : '<tr><td colspan="5" class="text-center text-slate-500 py-4">実行記録がありません</td></tr>'}</tbody>
+        </table>
+      </div>
+      <details class="mt-3">
+        <summary class="text-xs text-slate-400 cursor-pointer">直近の実行記録（${esc(cron.recent.length)}件）</summary>
+        <div class="overflow-x-auto mt-2">
+          <table class="tbl">
+            <thead><tr><th>実行日時</th><th>処理</th><th>結果</th><th>所要時間</th><th>内容</th></tr></thead>
+            <tbody>${cron.recent.map(cronRunRow).join('')}</tbody>
+          </table>
+        </div>
+      </details>
+    </section>`
+}
+// 定期処理の失敗・停止の警告を、どのタブでも画面の上部に出す
+function renderCronAlert(cron) {
+  let box = document.getElementById('hq-cron-alert')
+  if (!box) {
+    box = document.createElement('div')
+    box.id = 'hq-cron-alert'
+    box.className = 'max-w-7xl mx-auto p-4 md:p-6'
+    box.style.paddingBottom = '0'
+    $app.parentNode.insertBefore(box, $app)
+  }
+  const warnings = (cron && cron.warnings) || []
+  box.innerHTML = warnings.length ? `
+    <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#ef4444">
+      <p class="font-bold text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>定期処理の確認が必要です</p>
+      <ul class="mt-1 text-xs">${warnings.map(w => `<li>・${esc(w.message)}</li>`).join('')}</ul>
+      <a href="#retention" class="text-cyan-400 text-xs hover:underline">データ保持・定期処理を開く →</a>
+    </div>` : ''
+  box.style.display = warnings.length ? '' : 'none'
+}
+async function refreshCronAlert() {
+  try { renderCronAlert((await axios.get('/api/hq/cron/status')).data) } catch { }
 }
 
 // ============ 伴走支援 ============
@@ -532,6 +642,8 @@ function route() {
 window.addEventListener('hashchange', route)
 
 ;(async () => {
-  try { await axios.get('/api/auth/me') } catch (e) { return }
+  try { HQ_ME = (await axios.get('/api/auth/me')).data } catch (e) { return }
   route()
+  // データ保持のタブは自分で警告を描き直すので、それ以外のタブで開いたときに取る
+  if (!/^#retention/.test(location.hash)) refreshCronAlert()
 })()
