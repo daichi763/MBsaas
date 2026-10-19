@@ -240,6 +240,8 @@ if (PERSIST) {
   ok('#140 区分を変えた後も、連携先の一覧（チャット欄のスレッド）が取れる', links.links.length === 1 && links.links[0].linked_staff_id === hostRow, links)
   let unread = must(await admin.get('/api/admin/roster-chat/unread-count'), 'unread').unread
   const msg = await admin.get(`/api/admin/roster-chat/${E.staff_id}?host_staff_id=${hostRow}`)
+  // 取得しただけでは既読にしない（w4-roster-share #462）。画面はチャット欄が見えたときに既読のAPIを呼ぶ
+  must(await admin.post(`/api/admin/roster-chat/${E.staff_id}/read`, { host_staff_id: hostRow }), 'chat read')
   const unread2 = must(await admin.get('/api/admin/roster-chat/unread-count'), 'unread').unread
   ok('#140 所属元でスレッドを開いて読め、未読が減る', msg.status === 200 && msg.data.messages.length === 1 && unread2 === unread - 1, [msg.status, unread, unread2])
 

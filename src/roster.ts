@@ -390,11 +390,45 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
   }
 }
 
-/** 所属元（自社）で基本項目の名前が変わったとき、連携先各社のユーザー表示名も揃える */
+/**
+ * 所属元（自社）で基本項目の名前が変わったとき、連携先各社のユーザー表示名も揃える。
+ * 多段連携の先（2次・3次…）も含め、雇用元の行を参照している全ての連携行。
+ * 列をそのまま比べ、root_staff_id・source_staff_id の索引で対象の人の行だけを引く（#482。COALESCE の式では全件を走査していた）。
+ * root_staff_id が NULL の連携行（他社連携から切り替えた行の先など）は source_staff_id で探す
+ */
 export async function propagateNameToLinked(db: D1Database, sourceStaffId: number | string, name: string) {
-  // 多段連携の先（2次・3次…）も含め、雇用元の行を参照している全ての連携行
-  await db.prepare(`UPDATE users SET name = ? WHERE user_id IN (SELECT user_id FROM staff_profiles WHERE COALESCE(root_staff_id, source_staff_id) = ? AND affiliation_type = 'linked_external')`)
-    .bind(name, Number(sourceStaffId)).run() // 式（COALESCE）との比較では型が変換されないため数値で渡す
+  const sid = Number(sourceStaffId)
+  await db.prepare(`UPDATE users SET name = ? WHERE name IS NOT ? AND user_id IN (SELECT user_id FROM staff_profiles
+      WHERE (root_staff_id = ? OR (root_staff_id IS NULL AND source_staff_id = ?)) AND affiliation_type = 'linked_external')`)
+    .bind(name, name, sid, sid).run()
+}
+
+/**
+ * 稼働先が現場評価・稼働メモ（所属元と共有する追記項目）を保存する文（#538）。
+ * 内容が変わったときだけ保存し、他社連携の行なら履歴（roster_host_note_history）に追記して、
+ * 所属元の管理者に受信箱の通知を作る（同じスタッフの未読の通知が残っていれば重ねて作らない）。
+ * 値が undefined / null の項目は今の値のまま。変わっていなければ空の配列を返す
+ */
+export function hostNoteStmts(db: D1Database, roster: any, siteEvaluation: any, workMemo: any, userId: number): D1PreparedStatement[] {
+  const norm = (v: any) => (v == null ? '' : String(v))
+  const nextEval = siteEvaluation == null ? norm(roster.site_evaluation) : String(siteEvaluation)
+  const nextMemo = workMemo == null ? norm(roster.work_memo) : String(workMemo)
+  if (nextEval === norm(roster.site_evaluation) && nextMemo === norm(roster.work_memo)) return []
+  const now = nowJST()
+  const stmts = [db.prepare('UPDATE staff_profiles SET site_evaluation = ?, work_memo = ?, host_note_updated_at = ? WHERE staff_id = ? AND company_id = ?')
+    .bind(nextEval, nextMemo, now, roster.staff_id, roster.company_id)]
+  if (roster.affiliation_type !== 'linked_external' || !roster.source_staff_id || !roster.owner_company_id) return stmts
+  stmts.push(db.prepare(`INSERT INTO roster_host_note_history (staff_id, company_id, source_staff_id, owner_company_id, site_evaluation, work_memo, written_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(roster.staff_id, roster.company_id, roster.source_staff_id, roster.owner_company_id, nextEval, nextMemo, userId, now))
+  // 通知の本文には評価の内容を入れない（受信箱に評価の写しを残さない）。リンク先の一覧で確かめる
+  stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+    SELECT ou.company_id, ou.user_id, 'roster_host_note',
+      '連携先からの追記: ' || COALESCE((SELECT su.name FROM staff_profiles s JOIN users su ON su.user_id = s.user_id WHERE s.staff_id = ?), '') || '（' || COALESCE((SELECT company_name FROM companies WHERE company_id = ?), '') || '）',
+      '連携先の企業が、現場評価・稼働メモを更新しました。「連携先からの追記」で内容と前の内容を確認できます。', '/admin#roster-notes', ?, ?
+    FROM users ou WHERE ou.company_id = ? AND ou.status = 'active' AND ou.role IN ('company_admin', 'sales_manager', 'field_manager', 'office_staff')
+      AND NOT EXISTS (SELECT 1 FROM user_notifications n WHERE n.user_id = ou.user_id AND n.kind = 'roster_host_note' AND n.related_id = ? AND n.read_at IS NULL)`)
+    .bind(roster.source_staff_id, roster.company_id, roster.source_staff_id, now, roster.owner_company_id, roster.source_staff_id))
+  return stmts
 }
 
 /**
@@ -537,6 +571,57 @@ rosterApi.put('/:id/host-status', async (c) => {
   return c.json({ ok: true })
 })
 
+// ---------- 連携先からの追記（現場評価・稼働メモ）の一覧（#538） ----------
+// 所属元として、自社から直接連携した稼働先が書いた現場評価・稼働メモの変更を新しい順に返す。
+// 連携が続いている行（linked_external）の分だけ。unseen=1 なら、自分がまだ確認していない分だけ
+const HOST_NOTE_HISTORY_PER_LINK = 10
+const HOST_NOTE_PAGE = 50
+async function hostNoteSeenId(db: D1Database, userId: number): Promise<number> {
+  const r = await db.prepare('SELECT last_seen_history_id FROM roster_host_note_seen WHERE user_id = ?').bind(userId).first() as any
+  return r ? Number(r.last_seen_history_id) || 0 : 0
+}
+// 自分のユーザーができる前の追記は未確認に数えない（後から加わった担当者に、過去の分が一斉に未確認で出ないように）
+const HOST_NOTE_FLOOR = `h.created_at >= COALESCE((SELECT datetime(created_at, '+9 hours') FROM users WHERE user_id = ?), '')`
+const HOST_NOTE_FROM = `FROM roster_host_note_history h
+  JOIN staff_profiles l ON l.staff_id = h.staff_id AND l.affiliation_type = 'linked_external' AND l.owner_company_id = h.owner_company_id
+  JOIN staff_profiles o ON o.staff_id = l.source_staff_id AND o.company_id = h.owner_company_id
+  JOIN users ou ON ou.user_id = o.user_id
+  JOIN companies hc ON hc.company_id = h.company_id
+  WHERE h.owner_company_id = ?`
+rosterApi.get('/host-notes', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const seen = await hostNoteSeenId(db, u.user_id)
+  const unseenOnly = c.req.query('unseen') === '1'
+  const offset = Math.max(0, Math.min(10000, Number(c.req.query('offset')) || 0))
+  const cond = unseenOnly ? ` AND h.history_id > ? AND ${HOST_NOTE_FLOOR}` : ''
+  const condBinds = unseenOnly ? [seen, u.user_id] : []
+  const [rows, cnt] = await db.batch([
+    db.prepare(`SELECT h.history_id, h.site_evaluation, h.work_memo, h.created_at, o.staff_id, ou.name AS staff_name, hc.company_name AS host_company_name,
+        CASE WHEN h.history_id > ? AND ${HOST_NOTE_FLOOR} THEN 1 ELSE 0 END AS unseen,
+        (SELECT p.site_evaluation FROM roster_host_note_history p WHERE p.staff_id = h.staff_id AND p.history_id < h.history_id ORDER BY p.history_id DESC LIMIT 1) AS prev_site_evaluation,
+        (SELECT p.work_memo FROM roster_host_note_history p WHERE p.staff_id = h.staff_id AND p.history_id < h.history_id ORDER BY p.history_id DESC LIMIT 1) AS prev_work_memo
+      ${HOST_NOTE_FROM}${cond} ORDER BY h.history_id DESC LIMIT ? OFFSET ?`).bind(seen, u.user_id, u.company_id, ...condBinds, HOST_NOTE_PAGE + 1, offset),
+    db.prepare(`SELECT COUNT(*) AS n ${HOST_NOTE_FROM} AND h.history_id > ? AND ${HOST_NOTE_FLOOR}`).bind(u.company_id, seen, u.user_id),
+  ])
+  const list = rows.results as any[]
+  return c.json({
+    notes: list.slice(0, HOST_NOTE_PAGE).map(r => ({ ...r, unseen: !!r.unseen })),
+    has_more: list.length > HOST_NOTE_PAGE, offset, unseen_count: Number((cnt.results as any[])[0]?.n) || 0,
+  })
+})
+// 確認済みにする（指定した history_id まで。省略時は今ある分すべて）
+rosterApi.post('/host-notes/seen', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const max = Number((await db.prepare('SELECT MAX(history_id) AS m FROM roster_host_note_history WHERE owner_company_id = ?').bind(u.company_id).first() as any)?.m) || 0
+  const want = Number(b.history_id)
+  const upTo = Number.isInteger(want) && want > 0 ? Math.min(want, max) : max
+  await db.prepare(`INSERT INTO roster_host_note_seen (user_id, last_seen_history_id, seen_at) VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET last_seen_history_id = MAX(last_seen_history_id, excluded.last_seen_history_id), seen_at = excluded.seen_at`)
+    .bind(u.user_id, upTo, nowJST()).run()
+  return c.json({ ok: true, last_seen_history_id: upTo })
+})
+
 // ---------- フェーズF: 所属元⇔稼働先の連携状況 ----------
 // 所属元: 自社スタッフの連携先企業一覧 + 稼働先が記入した共有追記項目（閲覧のみ）
 // 稼働先: 自社の連携レコードの同意履歴
@@ -565,9 +650,20 @@ rosterApi.get('/:id/links', async (c) => {
       (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
     WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', today, month + '%', today, sid).all()
+  // 連携先が書いた現場評価・稼働メモの変更履歴（新しい順に各10件。#538）
+  const linkRows = links.results as any[]
+  if (linkRows.length) {
+    const hist = (await db.prepare(`SELECT * FROM (
+        SELECT h.history_id, h.staff_id, h.site_evaluation, h.work_memo, h.created_at,
+          ROW_NUMBER() OVER (PARTITION BY h.staff_id ORDER BY h.history_id DESC) AS rn
+        FROM roster_host_note_history h WHERE h.staff_id IN (SELECT value FROM json_each(?)) AND h.owner_company_id = ?
+      ) WHERE rn <= ${HOST_NOTE_HISTORY_PER_LINK} ORDER BY history_id DESC`)
+      .bind(JSON.stringify(linkRows.map(l => Number(l.linked_staff_id))), u.company_id).all()).results as any[]
+    for (const l of linkRows) l.history = hist.filter(h => h.staff_id === l.linked_staff_id).map(({ rn: _rn, staff_id: _s, ...h }) => h)
+  }
   // 連携先は「自社から直接連携した企業」のみ（その先の企業は出さない）
-  if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: links.results })
-  return c.json({ role: 'owner', links: links.results })
+  if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: linkRows })
+  return c.json({ role: 'owner', links: linkRows })
 })
 
 // 次に使えるスタッフ番号（#424。登録画面の番号欄の既定値）
@@ -603,7 +699,11 @@ rosterApi.get('/lookup', async (c) => {
   const code = normalizeCode(c.req.query('code') || '')
   if (!code) return c.json({ error: 'スタッフIDを入力してください' }, 400)
   const src = await findLinkSource(db, code)
-  if (!src) return c.json({ error: '該当するスタッフが見つかりません（連携できるのは他社で自社雇用として登録されたスタッフのみです）' }, 404)
+  if (!src) {
+    // 書き写しの誤りに気づけるよう、IDの形を案内する（#475）
+    const shape = /^(FS|RL)[0-9A-F]{10}$/.test(code) ? '' : '（スタッフIDは「FS」または「RL」で始まる12文字です。入力した ' + code.length + '文字を確認してください）'
+    return c.json({ error: '該当するスタッフが見つかりません' + (shape || '（連携できるのは他社で自社雇用として登録されたスタッフのみです。1文字ずつ確認してください）') }, 404)
+  }
   if (src.company_id === u.company_id) return c.json({ error: '自社に登録済みのスタッフです' }, 409)
   const already = await db.prepare('SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ? ORDER BY staff_id LIMIT 1').bind(u.company_id, src.person_id).first()
   // 既に自社に登録済みの人なら、コードの持ち主（雇用元など）の企業名は返さない（多段連携の経路が分からないように）
@@ -883,13 +983,51 @@ staffSelfApi.get('/profile', async (c) => {
   if (!u.staff_id) return c.json({ error: 'not found' }, 404)
   const r = await loadRoster(c.env.DB, u.staff_id, u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
+  const db = c.env.DB
   const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
   // PRポイント・備考は企業間で共有する業務情報のため、スタッフ本人向けには返さない
   for (const f of ROSTER_BASE_FIELDS) if (f !== 'pr_points' && f !== 'remarks') pick[f] = r[f]
-  // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示
-  pick.global_staff_code = r.affiliation_type === 'own_employee' && r.link_shareable ? r.global_staff_code : null
+  // 連携用ID（QR）は自社雇用の元データを持つ本人のみ表示。連携先の企業に切り替えていても、
+  // 同じ人の自社雇用の行（今の企業の行 → 恒久IDを採番した企業の行の順）から探して表示する（#337）
+  pick.global_staff_code = null
+  pick.qr_company_name = null
+  const ownRows = r.affiliation_type === 'own_employee' ? [{ staff_id: r.staff_id, company_id: u.company_id, company_name: u.company_name }]
+    : u.person_id ? ((await db.prepare(`SELECT sp.staff_id, sp.company_id, co.company_name FROM staff_profiles sp
+        JOIN users us ON us.user_id = sp.user_id AND us.person_id = sp.person_id JOIN companies co ON co.company_id = sp.company_id
+        LEFT JOIN persons pe ON pe.person_id = sp.person_id
+        WHERE sp.person_id = ? AND sp.affiliation_type = 'own_employee' AND sp.merged_into_staff_id IS NULL AND us.status = 'active'
+        ORDER BY (sp.company_id != COALESCE(pe.created_company_id, sp.company_id)), sp.staff_id LIMIT 3`).bind(u.person_id).all()).results as any[]) : []
+  for (const o of ownRows) {
+    const own = o.staff_id === r.staff_id ? r : await loadRoster(db, o.staff_id, o.company_id)
+    if (own && own.affiliation_type === 'own_employee' && own.link_shareable && own.global_staff_code) {
+      pick.global_staff_code = own.global_staff_code
+      pick.qr_company_name = o.company_name
+      break
+    }
+  }
+  // 共有範囲（連携の同意画面と同じ定数）。QR の画面で、IDを見せると何が共有されるかを示す（#229）
+  pick.share_terms = { version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE }
+  // ログイン情報（#337）。同じ人のログイン（他社連携の行 LK-… は除く）の会社コード・スタッフ番号と、登録済みの電話・メールを伏せ字で返す
+  const logins = (await db.prepare(`SELECT us.user_code, us.phone, us.email, co.company_code, co.company_name FROM users us
+      JOIN companies co ON co.company_id = us.company_id
+      WHERE ${u.person_id ? 'us.person_id = ?' : 'us.user_id = ?'} AND us.role = 'staff' AND us.status = 'active' AND us.user_code NOT LIKE 'LK-%' AND us.user_code NOT LIKE 'TMP-%'
+      ORDER BY (us.company_id != ?), us.user_id LIMIT 5`).bind(u.person_id || u.user_id, u.company_id).all()).results as any[]
+  pick.logins = logins.map(l => ({ company_name: l.company_name, company_code: l.company_code, user_code: l.user_code,
+    phone_masked: maskPhone(l.phone), email_masked: maskEmail(l.email) }))
   return c.json({ profile: pick })
 })
+// 電話番号は下4桁だけ、メールは先頭1文字とドメインだけを見せる（未登録なら null）
+function maskPhone(v: any): string | null {
+  const d = phoneDigits(String(v ?? ''))
+  if (!d) return null
+  return d.length <= 4 ? '****' : '*'.repeat(d.length - 4) + d.slice(-4)
+}
+function maskEmail(v: any): string | null {
+  const s = String(v ?? '').trim()
+  const at = s.lastIndexOf('@')
+  if (!s || at < 1) return s ? '****' : null
+  return s[0] + '***' + s.slice(at)
+}
 
 // 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）
 staffSelfApi.get('/companies', async (c) => {
