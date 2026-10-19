@@ -2786,8 +2786,7 @@ async function renderNoticeReadReport(fy) {
     </section>
 
     <section class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-1">スタッフ別（人事評価の参考資料）</h3>
-      <p class="text-xs text-gray-400 mb-3">退職したスタッフの行は、人事評価と同じく退職後7年で削除します。</p>
+      <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別（人事評価の参考資料）</h3>
       ${data.staff_reports.length === 0 ? '<p class="text-sm text-gray-400">対象となるお知らせがありません。</p>' : `
       <div class="flex items-center gap-3 flex-wrap text-xs text-gray-600 mb-3">
         <label class="flex items-center gap-1">既読率<input type="number" min="0" max="100" step="1" class="inp text-sm w-20" value="${esc(NR_STAFF.rateBelow)}" oninput="setNoticeStaffFilter('rateBelow', this.value)">%未満</label>

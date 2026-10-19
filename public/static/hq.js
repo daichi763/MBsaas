@@ -418,6 +418,8 @@ const RETENTION_STAFF_COLS = [
   ['roster_comments', 'チャット'], ['notice_read_staff_reports', '既読率'],
 ]
 const RETENTION_TRIGGER_LABEL = { cron: '定期処理', manual: '手動' }
+// トークンの削除（API の RETENTION_TOKEN_TARGETS と同じ）
+const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens']
 // dry-run の結果と実行ログの表示状態（dry-run の後に描き直しても結果が消えないよう、ここに残す。#244）
 const retentionState = { dryRun: null, logPage: 1, logTrigger: 'all' }
 
@@ -555,11 +557,13 @@ function retentionRunRow(r) {
       <td>${i.failed_count > 0 ? `<span class="text-red-400">${esc(i.failed_count)}</span>` : '0'}</td>
     </tr>${i.error_message ? `
     <tr><td colspan="4" class="text-xs text-red-400" style="white-space:pre-wrap;word-break:break-all">失敗の理由: ${esc(i.error_message)}</td></tr>` : ''}`).join('')
+  // トークンの削除は動作モードに関係なく毎日実削除で記録されるので、データ保持の実行と見分けられるようにする
+  const isTokenRun = r.items.length > 0 && r.items.every(i => RETENTION_TOKEN_TARGETS.includes(i.target))
   return `
     <tr>
       <td class="text-xs">${r.started_at ? esc(dayjs(r.started_at).format('YYYY/M/D HH:mm')) : '-'}</td>
       <td class="text-xs">${esc(RETENTION_TRIGGER_LABEL[r.trigger_source] || '-')}${r.triggered_by_name ? `<br><span class="text-slate-500">${esc(r.triggered_by_name)}</span>` : ''}</td>
-      <td><span class="badge ${r.dry_run ? 'badge-gray' : 'badge-blue'}">${r.dry_run ? 'dry-run' : '実削除'}</span></td>
+      <td><span class="badge ${r.dry_run ? 'badge-gray' : 'badge-blue'}">${r.dry_run ? 'dry-run' : '実削除'}</span>${isTokenRun ? '<br><span class="text-xs text-slate-500">トークンの削除</span>' : ''}</td>
       <td>${r.staff_count == null ? '-' : esc(r.staff_count) + '人'}</td>
       <td>${esc(r.target_count)}</td>
       <td>${esc(r.deleted_count)}</td>
