@@ -826,28 +826,54 @@ delegate('replyShift', async (el) => {
 })
 
 // ============ 日報入力 ============
-// 対象のシフトは #report/<shift_id> で指定する。指定がなければ、報告が済んで日報が未提出のシフト → ホームのシフトの順に選ぶ
+// 対象のシフトは #report/<shift_id> で指定する。指定がなければ、報告が済んで日報が未提出のシフト → ホームのシフト →
+// 前日以前の未提出の日報（直近7日。/api/staff/pending-daily-reports）の順に選ぶ（#185）
+const REPORT_TEXT_MAX = 2000 // src/lib/validate.ts の REPORT_TEXT_MAX と同じ
+const reportFieldRequired = (f) => !!f && (f.required === true || f.required === 1 || f.required === 'true')
+const reportShiftLabel = (x) => `${fmtDate(x.work_date)} ${x.start_time || ''}〜${x.end_time || ''} ${x.project_name || ''}${x.other_company && x.company_name ? '（' + x.company_name + '）' : ''}`
+
+function reportLoadError(e) {
+  if (typeof showLoadError === 'function') return showLoadError(e)
+  if (e && e.response && e.response.status === 401) return
+  $app.innerHTML = `<div class="card p-6 text-center text-sm text-gray-500 mt-4">
+    <p>${esc(showApiError(e, '日報の画面を読み込めませんでした'))}</p>
+    <button class="btn btn-outline mt-3" data-action="reportReload"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
+}
+delegate('reportReload', () => renderReport())
+
 async function renderReport() {
   loading()
-  // 開いたまま日付が変わっても前日の内容で送らないよう、毎回読み直す
-  const { data: home } = await axios.get('/api/staff/home')
+  const wanted = Number((location.hash || '').slice(1).split('/')[1]) || 0
+  let home, pendingAll
+  try {
+    // 開いたまま日付が変わっても前日の内容で送らないよう、毎回読み直す
+    const [h, p] = await Promise.all([axios.get('/api/staff/home'), axios.get('/api/staff/pending-daily-reports')])
+    home = h.data; pendingAll = p.data.shifts || []
+  } catch (e) { reportLoadError(e); return }
   HOME = home
   HOME_LOADED_DAY = dayjs().format('YYYY-MM-DD')
   const list = home.today_shifts || []
-  const wanted = Number((location.hash || '').slice(1).split('/')[1]) || 0
-  const s = list.find(x => x.shift_id === wanted)
+  // 前日からの日をまたぐシフトは本日の一覧にもあるので、未提出の一覧からは外す
+  const pending = pendingAll.filter(x => !list.some(t => t.shift_id === x.shift_id))
+  const s = list.find(x => x.shift_id === wanted) || pending.find(x => x.shift_id === wanted) || (wanted ? { shift_id: wanted } : null)
     || list.find(x => x.attendance_done && x.daily_report_required && !x.daily_report_done)
-    || list.find(x => home.shift && x.shift_id === home.shift.shift_id) || list[0] || null
+    || list.find(x => home.shift && x.shift_id === home.shift.shift_id) || list[0] || pending[0] || null
   if (!s) {
     $app.innerHTML = `<div class="card p-6 text-center text-gray-500 mt-4">
       <i class="fas fa-circle-info text-2xl text-gray-300 mb-2 block"></i>
-      本日の稼働予定がないため、日報を入力できません。</div>
+      本日の稼働予定と、未提出の日報はありません。</div>
       <h3 class="font-bold text-gray-700 mt-6 mb-2 px-1">過去の日報</h3><div id="past-reports"></div>`
     loadPastReports()
     return
   }
   // 提出済みなら前回の内容を初期値にする（修正して再提出しても、ほかの項目が0や空欄で上書きされないように）
-  const { data } = await axios.get('/api/staff/daily-report/' + Number(s.shift_id))
+  let data
+  try { data = (await axios.get('/api/staff/daily-report/' + Number(s.shift_id))).data } catch (e) {
+    // 指定したシフトが見つからない（担当の変更など）ときは、既定のシフトで開き直す
+    if (wanted && e.response && e.response.status === 404) { toast('指定したシフトが見つかりません'); location.hash = 'report'; return }
+    reportLoadError(e); return
+  }
+  const sh = Object.assign({}, s, data.shift || {})
   const prev = data.report
   const pv = (k) => (prev && prev.values && prev.values[k] != null ? prev.values[k] : '')
   const tplFields = (data.template && data.template.fields) || []
@@ -855,56 +881,115 @@ async function renderReport() {
   const fields = tplFields.length ? tplFields : [{ key: 'free', label: '報告内容', type: 'textarea' }]
   const numFields = fields.filter(f => f.type === 'number')
   const textFields = fields.filter(f => f.type !== 'number')
+  const isPast = sh.work_date < home.today
+  const otherPending = pending.filter(x => x.shift_id !== sh.shift_id)
+  const reqMark = (f) => reportFieldRequired(f) ? '<span class="text-red-500 ml-0.5">*</span>' : ''
+  // 選べるシフト: 本日のシフト・前日以前の未提出・開いているシフト（過去の日報から開いた場合）
+  const extra = !list.some(x => x.shift_id === sh.shift_id) && !pending.some(x => x.shift_id === sh.shift_id) ? [sh] : []
+  const opt = (x, note) => `<option value="${Number(x.shift_id)}" ${x.shift_id === sh.shift_id ? 'selected' : ''}>${esc(reportShiftLabel(x))}${note}</option>`
+  const optCount = list.length + pending.length + extra.length
+  // インシデント・クレームの内容（印を付けたら必須。#232）
+  const flagBox = (kind, label, checked) => `
+    <label class="flex items-center gap-3 py-1"><input id="${kind}-flag" type="checkbox" class="w-5 h-5 rounded rpt-flag" data-kind="${kind}" ${checked ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">${label}があった</span></label>
+    <div id="${kind}-note-box" class="${checked ? '' : 'hidden'} mb-2">
+      <label class="text-xs text-gray-500 block mb-1" for="${kind}-note">${label}の内容<span class="text-red-500 ml-0.5">*</span></label>
+      <textarea id="${kind}-note" rows="3" maxlength="${REPORT_TEXT_MAX}" class="inp rpt-autogrow" placeholder="何が・いつ・どう対応したか（例: 14時ごろ、料金の説明についてお客様から苦情。店長に報告し、説明し直して納得いただいた）">${esc(pv(kind + '_note'))}</textarea>
+    </div>`
 
   $app.innerHTML = `
+    ${otherPending.length ? `<section class="card p-3 mb-3 bg-amber-50 text-amber-800 text-sm">
+      <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>前日以前の未提出の日報が${otherPending.length}件あります</p>
+      <div class="flex flex-wrap gap-1.5 mt-2">${otherPending.slice(0, 5).map(x => `<a href="#report/${Number(x.shift_id)}" class="badge badge-yellow">${esc(fmtDate(x.work_date))} ${esc(x.project_name)}</a>`).join('')}${otherPending.length > 5 ? `<span class="text-xs">ほか${otherPending.length - 5}件</span>` : ''}</div>
+    </section>` : ''}
     <section class="card p-4 mb-4">
-      <h2 class="font-bold text-gray-800">${esc(s.project_name)}</h2>
-      <p class="text-xs text-gray-400">${fmtDate(s.work_date)} ${esc(s.start_time)}〜${esc(s.end_time)} の日報 ${data.template ? '｜' + esc(data.template.template_name) : ''}</p>
-      ${list.length > 1 ? `<select id="report-shift" class="inp text-sm mt-2" aria-label="日報を入力するシフト">
-        ${list.map(x => `<option value="${Number(x.shift_id)}" ${x.shift_id === s.shift_id ? 'selected' : ''}>${esc(fmtDate(x.work_date))} ${esc(x.start_time)}〜${esc(x.end_time)} ${esc(x.project_name)}${x.daily_report_done ? '（提出済み）' : x.daily_report_required ? '' : '（日報不要）'}</option>`).join('')}
+      <h2 class="font-bold text-gray-800">${esc(sh.project_name)}${sh.other_company && sh.company_name ? ` <span class="badge badge-purple">${esc(sh.company_name)}</span>` : ''}</h2>
+      <p class="text-xs text-gray-400">${fmtDate(sh.work_date)} ${esc(sh.start_time)}〜${esc(sh.end_time)} の日報 ${data.template ? '｜' + esc(data.template.template_name) : ''}</p>
+      ${optCount > 1 ? `<select id="report-shift" class="inp text-sm mt-2" aria-label="日報を入力するシフト">
+        ${list.length ? `<optgroup label="本日">${list.map(x => opt(x, x.daily_report_done ? '（提出済み）' : x.daily_report_required ? '' : '（日報不要）')).join('')}</optgroup>` : ''}
+        ${pending.length ? `<optgroup label="前日以前の未提出">${pending.map(x => opt(x, '（未提出）')).join('')}</optgroup>` : ''}
+        ${extra.length ? `<optgroup label="表示中">${extra.map(x => opt(x, prev ? '（提出済み）' : '')).join('')}</optgroup>` : ''}
       </select>` : ''}
-      ${s.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
+      ${isPast && !prev ? `<p class="text-xs text-amber-800 bg-amber-50 rounded p-2 mt-2"><i class="fas fa-clock-rotate-left mr-1"></i>${esc(fmtDate(sh.work_date))}の日報が未提出です。思い出せる範囲で入力してください</p>` : ''}
+      ${sh.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
+      ${sh.blocked ? `<p class="text-xs text-red-700 bg-red-50 rounded p-2 mt-2"><i class="fas fa-ban mr-1"></i>${esc(sh.blocked)}</p>` : ''}
       ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
-      ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots mr-1"></i>${esc(prev.manager_comment)}</p>` : ''}
+      ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2 whitespace-pre-wrap break-words"><i class="fas fa-comment-dots mr-1"></i>${esc(prev.manager_comment)}</p>` : ''}
     </section>
-    <form id="report-form" class="space-y-4 pb-8">
+    <form id="report-form" class="space-y-4 pb-8" novalidate>
       ${numFields.length ? `<section class="card p-4">
-        <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
+        <div class="flex items-center justify-between mb-3 gap-2">
+          <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
+          <button type="button" class="btn btn-outline text-xs" data-action="reportFillZero">空欄を0にする</button>
+        </div>
+        <p class="text-xs text-gray-400 mb-2">0件の項目も「0」を入力してください</p>
         <div class="grid grid-cols-2 gap-3">
           ${numFields.map(f => `
             <div>
-              <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}</label>
-              <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" class="inp rpt-field text-center text-lg font-bold" value="${esc(pv(f.key))}" placeholder="0">
+              <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
+              <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold" value="${esc(pv(f.key))}" placeholder="未入力">
             </div>`).join('')}
         </div>
       </section>` : ''}
       ${textFields.length ? `<section class="card p-4">
         <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-message text-blue-500 mr-1"></i>報告事項</h3>
         <div class="space-y-3">
-          ${textFields.map(f => `
+          ${textFields.map(f => {
+            // テキストの項目は、スマホで書いた内容を見返せるよう、すべて複数行の欄にする（#525）
+            // 文字数の上限はサーバー（reportFieldRulesError）と同じく 1〜REPORT_TEXT_MAX の整数だけを使う
+            const ml = Number(f.maxLength ?? f.max_length)
+            const max = Number.isInteger(ml) && ml >= 1 && ml <= REPORT_TEXT_MAX ? ml : REPORT_TEXT_MAX
+            const v = String(pv(f.key))
+            return `
             <div>
-              <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}</label>
-              ${f.type === 'textarea'
-                ? `<textarea data-key="${esc(f.key)}" rows="3" maxlength="2000" class="inp rpt-field" placeholder="${esc(f.label)}を入力">${esc(pv(f.key))}</textarea>`
-                : `<input type="text" data-key="${esc(f.key)}" maxlength="2000" class="inp rpt-field" placeholder="${esc(f.label)}を入力" value="${esc(pv(f.key))}">`}
-            </div>`).join('')}
+              <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
+              <textarea data-key="${esc(f.key)}" data-label="${esc(f.label)}" data-required="${reportFieldRequired(f) ? '1' : ''}" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp rpt-field rpt-autogrow" placeholder="${esc(f.placeholder || f.label + 'を入力')}">${esc(v)}</textarea>
+              <p class="text-[11px] text-gray-400 text-right mt-0.5" data-counter data-max="${max}">残り ${max - v.length} 文字</p>
+            </div>`
+          }).join('')}
         </div>
       </section>` : ''}
       <section class="card p-4">
-        <label class="flex items-center gap-3 py-1"><input id="incident-flag" type="checkbox" class="w-5 h-5 rounded" ${prev && prev.incident_flag ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">インシデントがあった</span></label>
-        <label class="flex items-center gap-3 py-1"><input id="complaint-flag" type="checkbox" class="w-5 h-5 rounded" ${prev && prev.complaint_flag ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">クレームがあった</span></label>
+        ${flagBox('incident', 'インシデント', prev && prev.incident_flag)}
+        ${flagBox('complaint', 'クレーム', prev && prev.complaint_flag)}
       </section>
-      <button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base">${prev ? '日報を修正して再提出' : '日報を提出する'}</button>
+      <button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base" ${sh.blocked ? 'disabled' : ''}>${prev ? '日報を修正して再提出' : '日報を提出する'}</button>
     </form>`
 
   const sel = document.getElementById('report-shift')
   if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
-  document.getElementById('report-form').addEventListener('submit', (e) => {
+  const form = document.getElementById('report-form')
+  // 複数行の欄は入力に合わせて高さを伸ばし、残りの文字数を出す
+  // 非表示の欄（インシデントの内容など）は高さを測れないので、表示したときに測る
+  const grow = (el) => { if (!el.offsetParent) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 480) + 'px' }
+  form.querySelectorAll('.rpt-autogrow').forEach(el => {
+    if (el.value) grow(el)
+    el.addEventListener('input', () => {
+      grow(el)
+      const c = el.nextElementSibling
+      if (c && c.hasAttribute('data-counter')) c.textContent = `残り ${Number(c.dataset.max) - el.value.length} 文字`
+    })
+  })
+  form.querySelectorAll('.rpt-flag').forEach(el => el.addEventListener('change', () => {
+    const box = document.getElementById(el.dataset.kind + '-note-box')
+    box.classList.toggle('hidden', !el.checked)
+    if (el.checked) { const note = document.getElementById(el.dataset.kind + '-note'); grow(note); note.focus() }
+  }))
+  form.addEventListener('submit', (e) => {
     e.preventDefault()
+    // 入力の確認（空のまま提出して「提出済み」にならないように。#349）。サーバーでもテンプレートの必須を確かめる
+    const stop = (el, msg) => { toast(msg); if (el) el.focus(); return true }
+    const blankNum = [...form.querySelectorAll('.rpt-num')].find(el => el.value.trim() === '')
+    if (blankNum && stop(blankNum, `「${blankNum.dataset.label}」が未入力です。0件の場合は0を入力してください`)) return
+    const blankText = [...form.querySelectorAll('textarea.rpt-field')].find(el => el.dataset.required && !el.value.trim())
+    if (blankText && stop(blankText, `「${blankText.dataset.label}」を入力してください`)) return
+    for (const [kind, label] of [['incident', 'インシデント'], ['complaint', 'クレーム']]) {
+      const note = document.getElementById(kind + '-note')
+      if (document.getElementById(kind + '-flag').checked && !note.value.trim() && stop(note, `${label}の内容（何が・いつ・どう対応したか）を入力してください`)) return
+    }
     const values = {}
-    document.querySelectorAll('.rpt-field').forEach(el => {
+    form.querySelectorAll('.rpt-field').forEach(el => {
       const k = el.dataset.key
-      values[k] = el.type === 'number' ? Number(el.value || 0) : el.value
+      values[k] = el.type === 'number' ? Number(el.value) : el.value
     })
     // 送信中はボタンを押せないようにする（二度押しで同じ日報を送らない）
     withSubmitLock(document.getElementById('report-submit'), async () => {
@@ -912,9 +997,11 @@ async function renderReport() {
         // 案件・稼働日はシフトの値（サーバーでもシフトと一致するかを確かめる）。
         // インシデント・クレームは前回の値を表示したうえで送るので flags_explicit を付ける（外したときだけ印を下げる）
         await axios.post('/api/staff/daily-report', {
-          project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date, values,
+          project_id: sh.project_id, shift_id: sh.shift_id, work_date: sh.work_date, values,
           incident_flag: document.getElementById('incident-flag').checked,
           complaint_flag: document.getElementById('complaint-flag').checked,
+          incident_note: document.getElementById('incident-note').value,
+          complaint_note: document.getElementById('complaint-note').value,
           flags_explicit: true
         })
       } catch (err) {
@@ -924,10 +1011,16 @@ async function renderReport() {
       }
       toast('日報を提出しました。お疲れさまでした！')
       HOME = null
-      location.hash = 'home'
+      // 前日以前の未提出が残っていれば、続けて次の日報を開く
+      const next = otherPending[0]
+      location.hash = next ? 'report/' + Number(next.shift_id) : 'home'
     })
   })
 }
+// 実績件数の空欄を0で埋める（0件をまとめて入力する）
+delegate('reportFillZero', () => {
+  document.querySelectorAll('#report-form .rpt-num').forEach(el => { if (el.value.trim() === '') el.value = '0' })
+})
 
 // 過去の日報（#319 #371）。同一人物の全所属の分。タップすると、提出した内容・確認済みかどうか・コメントを開く
 let PAST_REPORTS = null
