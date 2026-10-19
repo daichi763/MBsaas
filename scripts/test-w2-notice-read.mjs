@@ -178,6 +178,10 @@ if (!PERSIST) {
   const pr3 = (await admin.get(`/api/admin/notices/${before.notice_id}/reads`)).data
   ok('#245 既読状況は「保存期間外」として削除の直前の人数を返す', pr3.purged === true && pr3.read_count === 1 && pr3.target_count === before.staff_total, pr3)
   // 今年度・前年度のレポートは cron で作られる（今年度は毎日更新 #481）
+  // 既読率レポートの集計は 3:30 の別の起動で行う（w3-retention-a #198）
+  const sc2 = await fetch(`${BASE}/__scheduled?cron=30+18+*+*+*`)
+  ok('（前提）既読率レポートの cron（3:30）を実行', sc2.status === 200, sc2.status)
+  await waitServer()
   const cronRep = (await admin.get(`/api/admin/notice-reports/${fy}`)).data
   ok('#481 cron が今年度のレポートを作り直す', cronRep.summary && cronRep.summary.calculated_at >= rep.summary.calculated_at, cronRep.summary)
 }

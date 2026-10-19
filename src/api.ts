@@ -5,6 +5,7 @@ import { sendEmail, sendEmailBatch, mailMode } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective } from './services/retention'
+import { cronStatus } from './services/cron'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { applyPricingToShift, stripMoney } from './shift-board'
@@ -251,25 +252,42 @@ async function generateNoticeReadReport(db: D1Database, companyId: number, fisca
   return { ok: true, calculated_at: now, finalized: !!opts.finalize }
 }
 
+// 1回の起動で集計する会社数の上限（1社あたり数回の問い合わせ。D1 の1回の起動あたりの上限に当たらないように。#198）
+const NOTICE_REPORT_COMPANIES_PER_RUN = 30
+
 // Cron: 全社について、今年度（年度の途中の値を毎日更新する #481）と前年度のレポートを作る（冪等）。
-// 前年度は、年度末から30日たったら最後の集計をして確定し、それ以降は作り直さない（#49）
-export async function generateFiscalYearReportsForAllCompanies(db: D1Database): Promise<{ companies: number; ok: number; failed: number; finalized: number }> {
+// 前年度は、年度末から30日たったら最後の集計をして確定し、それ以降は作り直さない（#49）。
+// 1回の起動では、今日まだ集計していない会社を、前回の集計の古い順に上限まで処理し、残りは次回に回す（#198）。
+// 確定済みの前年度は問い合わせずに飛ばす
+export async function generateFiscalYearReportsForAllCompanies(db: D1Database):
+  Promise<{ companies: number; remaining: number; ok: number; failed: number; finalized: number; error: string | null }> {
   const cur = currentFiscalYear()
   const finalizeLast = todayJST() >= addDays(fiscalYearRange(cur - 1).end, NOTICE_REPORT_FINALIZE_AFTER_DAYS)
-  const companies = await db.prepare('SELECT company_id FROM companies').all()
+  const pending = `FROM companies c
+    LEFT JOIN notice_read_reports cr ON cr.company_id = c.company_id AND cr.fiscal_year = ?
+    LEFT JOIN notice_read_reports pr ON pr.company_id = c.company_id AND pr.fiscal_year = ?
+    WHERE cr.calculated_at IS NULL OR cr.calculated_at < ?`
+  const today = todayJST()
+  const companies = (await db.prepare(`SELECT c.company_id, pr.finalized_at AS prev_finalized_at ${pending}
+    ORDER BY cr.calculated_at IS NOT NULL, cr.calculated_at, c.company_id LIMIT ?`)
+    .bind(cur, cur - 1, today, NOTICE_REPORT_COMPANIES_PER_RUN).all()).results as { company_id: number; prev_finalized_at: string | null }[]
   let ok = 0, failed = 0, finalized = 0
-  for (const row of companies.results as { company_id: number }[]) {
-    for (const fy of [cur - 1, cur]) {
+  const errors: string[] = []
+  for (const row of companies) {
+    for (const fy of row.prev_finalized_at ? [cur] : [cur - 1, cur]) {
       try {
         const r = await generateNoticeReadReport(db, row.company_id, fy, { finalize: fy === cur - 1 && finalizeLast })
         if (r.ok) { ok++; if (r.finalized) finalized++ }
       } catch (e) {
         failed++
+        if (errors.length < 3) errors.push(`company_id=${row.company_id} fiscal_year=${fy}: ${String(e).slice(0, 200)}`)
         console.log(`notice_read_reports generation failed: company_id=${row.company_id} fiscal_year=${fy} error=${e}`)
       }
     }
   }
-  return { companies: companies.results.length, ok, failed, finalized }
+  // 今日の集計が済んでいない会社の残り（失敗した会社も含む。翌日以降に古い順で処理する）
+  const left = await db.prepare(`SELECT COUNT(*) AS n ${pending}`).bind(cur, cur - 1, today).first() as { n: number } | null
+  return { companies: companies.length, remaining: left?.n || 0, ok, failed, finalized, error: errors.length ? errors.join(' / ') : null }
 }
 
 // Cron: 公開から2年（730日）たったお知らせの既読の記録（notice_reads）を削除する。
@@ -2843,7 +2861,7 @@ api.post('/hq/templates', async (c) => {
 // ここではdry-run（削除せず対象件数のみ確認）と、過去の実行ログの閲覧のみ提供する。
 // 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定とする。
 api.post('/hq/retention/dry-run', async (c) => {
-  const result = await runRetentionCleanup(c.env.DB, c.env.PHOTOS, { dryRun: true })
+  const result = await runRetentionCleanup(c.env.DB, c.env, { dryRun: true, trigger: 'manual', triggeredBy: c.get('user').user_id })
   return c.json(result)
 })
 
@@ -2852,9 +2870,16 @@ api.get('/hq/retention/schedule', async (c) => {
   return c.json(await listRetentionSchedule(c.env.DB))
 })
 
+// 実行ログ。実行元（cron / 手動の dry-run）と、手動で実行した本部ユーザーの名前も返す（#234）
 api.get('/hq/retention/logs', async (c) => {
-  const rows = await c.env.DB.prepare('SELECT * FROM retention_logs ORDER BY log_id DESC LIMIT 30').all()
+  const rows = await c.env.DB.prepare(`SELECT l.*, u.name AS triggered_by_name FROM retention_logs l LEFT JOIN users u ON u.user_id = l.triggered_by
+    ORDER BY l.log_id DESC LIMIT 30`).all()
   return c.json({ logs: rows.results })
+})
+
+// 定期処理（cron）の処理ごとの最終実行・直近の実行記録・警告（#192）
+api.get('/hq/cron/status', async (c) => {
+  return c.json(await cronStatus(c.env.DB))
 })
 
 export default api

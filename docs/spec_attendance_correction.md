@@ -35,7 +35,7 @@
 | 権限 | 管理ロール 4 種類が自社の全案件を同じ権限で扱う。案件担当者・案件の所属スタッフを表すデータはない（所属はシフトの有無でのみ表現） | `api.ts` `ADMIN_ROLES` |
 | 通知 | `notices` は管理者からスタッフへのお知らせ。管理者向けの受信箱はない。既読率レポートが全お知らせを集計する | `api.ts`、`migrations/0007` |
 | メール | `sendEmail`（Resend）を `waitUntil` で呼ぶ。`email_logs` に成否を記録。本文は保存しない方針 | `src/services/email.ts` |
-| 保存期間 | 勤怠・シフト等は退職日から 7 年で削除。`notice_reads` は 2 年 | `src/services/retention.ts` |
+| 保存期間 | 勤怠・シフト・従業員データ・書類・企業間チャット等は退職日から 7 年で削除し、本人情報は匿名化。`notice_reads` は 2 年 | `src/services/retention.ts` |
 | CSV | UTF-8（BOM 付き）・CRLF・数式インジェクション対策あり | `settlement.ts` `toCsv` / `csvCell` |
 | テスト | 自動テストなし（`package.json` に test スクリプトなし） | — |
 
@@ -306,7 +306,12 @@
 - 退職日から 7 年の定期削除（`retention.ts`）に、`attendance_corrections`・`attendance_correction_events`・`report_setting_logs`（スタッフ別の行）・`project_staff_report_settings`・`notification_emails` を追加する。退職日が NULL のスタッフは削除しない（既存の規則）
 - 案件の標準設定の履歴（staff_id が NULL）は個人情報を含まないため削除しない
 - `user_notifications` は 2 年で削除（§5.1）
-- 定期削除は毎日の cron（`scheduled`）で動く。**現状のビルド設定（`@hono/vite-build/cloudflare-pages`）では `scheduled` がビルド結果に含まれず、cron が動いていない**（既存の不具合。別の PR で修正）。修正されるまで、この章の削除は行われない
+- 退職日から 7 年で、次も削除する（#193 #228）: 従業員データ（`employee_records`。口座・住所・扶養・緊急連絡先・給与・保険番号）と過去の雇用期間（`employment_periods`）、履歴書など（`staff_documents`）・入社時書類（`employee_documents`）と R2（DOCUMENTS）のファイル、企業間チャット（`roster_comments`・`roster_comment_reads`）、連携の同意履歴（`roster_consents`）。チャットのスレッドは稼働先の連携行の単位なので、連携行と所属元の行（`source_staff_id` / `root_staff_id`）のどちらかが対象になったら消す。同意履歴は連携行の単位で、連携行が対象になったら消す（所属元の行だけが対象になっても、連携先の行が残っている間は連携の根拠として残す）。R2 のファイルは写真と同じく D1 の削除の後に消し、失敗したものは `retention_pending_r2`（`bucket` 列で写真と書類を区別）から次回に再試行する
+- 本人情報の匿名化（#480）: `users`・`staff_profiles` の行は請求の集計などから参照されるため残し、氏名を「退職者#staff_id」にして、メール・電話・フリガナ・性別・生年月日・経歴・PR・備考・メモ・現場評価・稼働メモ・最寄駅・未確認のメールなどを消す。パスワードは使えない値にし、セッションと再設定のリンクを消す（`users` はスタッフ本人の行のみ）。済んだ人は `staff_profiles.anonymized_at` を記録し、次の対象に選び直さない
+- 労働者名簿・賃金台帳などの法定の保存期間（退職などから 5 年。当分の間 3 年）は、退職後 7 年の削除で下回らない
+- 実行ログ（`retention_logs`）には実行元（`trigger_source`: cron / manual）と手動で実行した本部ユーザー、失敗の理由（どのスタッフで何が起きたか、R2 の削除の失敗）を残し、本部画面に出す（#234）
+- 毎日の cron の処理（認証の後片付け・応募の削除・定期削除・退職の切り替え・区分変更の予約・既読の記録の削除・既読率レポート）は、`src/index.tsx` の `CRON_JOBS` の順に実行し、処理ごとの結果を `cron_runs` に記録する。本部画面「データ保持・定期処理」に処理ごとの最終実行・成否・エラーを出し、失敗したときと 25 時間以上実行されていないときは本部画面の上部に警告を出す（#192）。個人情報の削除は先に実行し、問い合わせの多い既読率レポートの集計は別の起動（日本時間 3:30）に分けて、1 回あたりの会社数に上限を設ける（#198）
+- 定期削除は毎日の cron（`scheduled`）で動く。ビルドは `@hono/vite-build/cloudflare-workers` で、`scheduled` もビルド結果に含まれる。実際に動いたかは本部画面の定期処理の実行状況で確かめる
 
 ## 8.1 履歴の検索・CSV（第4段階）
 - 管理画面「勤怠管理 > 履歴・CSV」（`#attendance-history`）: 打刻修正の操作履歴（申請・再申請・承認・例外承認・却下・取り消し）と報告設定の変更履歴（全案件）を、期間・案件・スタッフ名・報告の種類・操作で検索し、表示中の条件で CSV を出力する
