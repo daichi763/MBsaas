@@ -570,12 +570,12 @@ rosterApi.get('/:id/links', async (c) => {
   return c.json({ role: 'owner', links: links.results })
 })
 
-// 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations。
-// 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、
-// 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名前の行は出さない
 // 次に使えるスタッフ番号（#424。登録画面の番号欄の既定値）
 rosterApi.get('/next-code', async (c) => c.json(await nextStaffCode(c.env.DB, c.get('user').company_id)))
 
+// 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations。
+// 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、
+// 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名前の行は出さない
 rosterApi.get('/partners', async (c) => {
   const u = c.get('user')
   const rows = await c.env.DB.prepare(`
