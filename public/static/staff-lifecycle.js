@@ -22,8 +22,11 @@
   // =========================================================
   // 仮登録（氏名・電話のみ）。ctx.slot_role_id があれば、登録後にその枠へ割り当てる
   // =========================================================
+  // 開いている仮登録の画面の枠（重複したときの「この人を割り当てる」に使う。#506）
+  let quickCtx = {}
   window.showQuickRegister = async function (ctx) {
     ctx = ctx || {}
+    quickCtx = ctx
     let partners = []
     try { partners = (await axios.get('/api/admin/roster/partners')).data.partners } catch { }
     modal(`
@@ -65,11 +68,34 @@
     const phone = document.getElementById('qr-phone').value
     const box = document.getElementById('qr-dup'); if (!box) return
     if (phone.replace(/\D/g, '').length < 10) { box.innerHTML = ''; return }
-    const { data } = await axios.get('/api/admin/staff-lookup', { params: { phone } })
-    box.innerHTML = data.matches.length ? `<div class="p-2 rounded-lg bg-amber-50 text-xs text-amber-800"><i class="fas fa-triangle-exclamation mr-1"></i>この電話番号のスタッフが登録済みです:
-      ${data.matches.map(m => `<a class="underline font-bold ml-1" href="#staff/${m.staff_id}" onclick="closeModal()">${esc(m.name)}（${TYPE_LABEL[m.affiliation_type] || ''}）</a>`).join('')}
-      <span class="block mt-1">同じ人の場合は、既存のスタッフをシフトに割り当ててください</span></div>` : ''
+    let data; try { data = (await axios.get('/api/admin/staff-lookup', { params: { phone } })).data } catch { return }
+    box.innerHTML = data.matches.length ? quickMatchesHtml(data.matches, {}) : ''
   }
+  // 電話番号が同じ登録済みのスタッフ（#356 #506）。退職・停止中は印を付けて区別し、割り当てのボタンは出さない。
+  // 枠から開いたときは、在籍中の人に「この人を割り当てる」を出す。登録時の重複（409）では「別の人として登録する」も出す
+  function quickMatchesHtml(matches, opt) {
+    const slot = Number(quickCtx.slot_role_id) || 0
+    const blocked = (m) => m.inactive === '退職' || m.inactive === '停止'
+    const allBlocked = matches.every(blocked)
+    return `<div class="p-2 rounded-lg bg-amber-50 text-xs text-amber-800" id="qr-dup-box"><p><i class="fas fa-triangle-exclamation mr-1"></i>この電話番号のスタッフが登録済みです</p>
+      <ul class="mt-1 space-y-1">${matches.map(m => `<li class="flex items-center gap-2 flex-wrap">
+        <a class="underline font-bold" href="#staff/${Number(m.staff_id)}" onclick="closeModal()">${esc(m.name)}</a>
+        <span>（${esc(TYPE_LABEL[m.affiliation_type] || '')}${m.is_provisional ? '・仮登録' : ''}）</span>
+        ${m.inactive ? `<span class="badge badge-red">${esc(m.inactive)}${m.retired_at && m.inactive === '退職' ? ' ' + esc(String(m.retired_at).slice(0, 10)) : ''}</span>` : ''}
+        ${slot && !blocked(m) ? `<button class="btn btn-primary text-xs" data-action="quickAssignExisting" data-slot-role-id="${slot}" data-staff-id="${Number(m.staff_id)}">この人を割り当てる</button>` : ''}</li>`).join('')}</ul>
+      <p class="mt-1">${allBlocked
+        ? '退職・停止中の人です。同じ人なら、名前からスタッフ詳細を開いて在籍状況を戻してから割り当ててください（別の人として登録すると、評価や勤怠の履歴が分かれます）'
+        : slot ? '同じ人の場合は「この人を割り当てる」で、この枠に割り当ててください' : '同じ人の場合は、既存のスタッフをシフトに割り当ててください'}</p>
+      ${opt.needForce ? `<button class="btn btn-outline text-xs mt-2" data-action="quickForceRegister" data-slot-role-id="${slot || ''}" data-request-key="${esc(opt.requestKey || '')}">別の人として登録する</button>` : ''}</div>`
+  }
+  // 登録済みの人をその枠に割り当てる（#506）
+  delegate('quickAssignExisting', (el) => withSubmitLock(el, async () => {
+    if (!window.boardAssign) return
+    if (window.invalidateBoardMaster) invalidateBoardMaster()
+    await boardAssign(Number(el.dataset.slotRoleId), [Number(el.dataset.staffId)])
+  }))
+  delegate('quickForceRegister', (el) => withSubmitLock(el, () =>
+    submitQuickRegister({ slot_role_id: Number(el.dataset.slotRoleId) || null }, true, el.dataset.requestKey)))
   // 画面を開くたびに作る値。同じ画面からの再送（二度押し・通信の再試行）をサーバーが同じ登録として扱う（#568）
   function newRequestKey() {
     try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID() } catch { }
@@ -91,8 +117,11 @@
       closeModal(); toast('仮登録しました'); location.hash = 'staff/' + data.staff_id
     } catch (e) {
       const d = e.response && e.response.data
+      // 確認のダイアログではなく、その場に登録済みの人を出す（在籍状況の区別と、枠への割り当て。#356 #506）
       if (d && d.need_force) {
-        if (confirm(`この電話番号のスタッフが登録済みです（${d.matches.map(m => m.name).join('、')}）。\n別の人として登録しますか？`)) return submitQuickRegister(ctx, true, requestKey)
+        const box = document.getElementById('qr-dup')
+        if (box) { box.innerHTML = quickMatchesHtml(d.matches || [], { needForce: true, requestKey }); box.scrollIntoView && box.scrollIntoView({ block: 'nearest' }); return }
+        if (confirm(`この電話番号のスタッフが登録済みです（${(d.matches || []).map(m => m.name).join('、')}）。\n別の人として登録しますか？`)) return submitQuickRegister(ctx, true, requestKey)
         return
       }
       toast(errMsg(e))
@@ -113,8 +142,8 @@
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-arrows-rotate text-blue-500 mr-1"></i>区分・登録状態</h3>
           <div class="flex gap-2 flex-wrap justify-end">
             ${data.merged_into_staff_id ? '' : `
-            ${data.is_provisional ? `<button class="btn btn-outline text-xs" onclick="openMerge(${sid})" id="merge-open-btn"><i class="fas fa-code-merge"></i>既存のスタッフに統合</button>` : ''}
-            ${data.is_provisional ? `<button class="btn btn-primary text-xs" onclick="openFinalize(${sid})"><i class="fas fa-user-check"></i>本登録する</button>` : ''}
+            ${data.can_merge ? `<button class="btn btn-outline text-xs" data-action="openMerge" data-id="${Number(sid)}" id="merge-open-btn"><i class="fas fa-code-merge"></i>${data.is_provisional ? '既存のスタッフに統合' : '重複登録を統合'}</button>` : ''}
+            ${data.is_provisional ? `<button class="btn btn-primary text-xs" data-action="openFinalize" data-id="${Number(sid)}"><i class="fas fa-user-check"></i>本登録する</button>` : ''}
             <button class="btn btn-outline text-xs" data-action="openAffiliationChange" data-sid="${Number(sid)}" data-from="${esc(t)}"><i class="fas fa-right-left"></i>区分を変更</button>`}
           </div>
         </div>
@@ -192,25 +221,33 @@
   window.openMerge = async function (sid, q) {
     let d; try { d = (await axios.get(`/api/admin/staff/${sid}/merge-candidates` + (q ? '?q=' + encodeURIComponent(q) : ''))).data } catch (e) { return toast(errMsg(e)) }
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-code-merge text-blue-600 mr-1"></i>既存のスタッフに統合</h3>
-      <p class="text-xs text-gray-500 mb-3">仮登録の「${esc(d.source.name)}」が、すでに登録のある人（他社から連携したスタッフなど）と同じ人の場合に使います。シフト・勤怠・日報・評価などを統合先に移します</p>
-      <div class="flex gap-2 mb-2"><input id="mg-q" class="inp text-sm flex-1" placeholder="氏名・フリガナで探す" value="${esc(q || '')}" onkeydown="if(event.key==='Enter')openMerge(${sid}, this.value)">
-        <button class="btn btn-outline text-xs" onclick="openMerge(${sid}, document.getElementById('mg-q').value)"><i class="fas fa-magnifying-glass"></i></button></div>
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-code-merge text-blue-600 mr-1"></i>${d.source.is_provisional ? '既存のスタッフに統合' : '重複登録を統合'}</h3>
+      <p class="text-xs text-gray-500 mb-3">${d.source.is_provisional
+        ? `仮登録の「${esc(d.source.name)}」が、すでに登録のある人（他社から連携したスタッフなど）と同じ人の場合に使います。シフト・勤怠・日報・評価などを統合先に移します`
+        : `「${esc(d.source.name)}」を誤って二重に登録したときに、同じ区分（${esc(TYPE_LABEL[d.source.affiliation_type] || '')}）の登録済みのスタッフにまとめます。この人は統合済みとして残り、一覧から外れます`}</p>
+      <div class="flex gap-2 mb-2"><input id="mg-q" class="inp text-sm flex-1" placeholder="氏名・フリガナで探す" value="${esc(q || '')}">
+        <button class="btn btn-outline text-xs" data-action="mergeSearch" data-id="${Number(sid)}"><i class="fas fa-magnifying-glass"></i></button></div>
       <div class="space-y-1.5 max-h-72 overflow-y-auto" id="merge-candidates">
-        ${d.candidates.map(r => `<button class="w-full text-left p-2.5 rounded-lg border border-gray-200 hover:border-blue-400 hover:bg-blue-50" onclick="previewMerge(${sid}, ${r.staff_id})">
+        ${d.candidates.map(r => `<button class="w-full text-left p-2.5 rounded-lg border border-gray-200 hover:border-blue-400 hover:bg-blue-50" data-action="previewMerge" data-id="${Number(sid)}" data-target="${Number(r.staff_id)}">
           <div class="flex items-center justify-between gap-2"><p class="font-bold text-sm">${esc(r.name)} <span class="text-xs font-normal text-gray-400">${esc(r.kana || '')}</span>${r.inactive ? ` <span class="badge badge-red">${esc(r.inactive)}</span>` : ''}</p>
             <span class="badge ${r.affiliation_type === 'linked_external' ? 'badge-blue' : 'badge-gray'}">${esc(TYPE_LABEL[r.affiliation_type] || r.affiliation_type)}${r.affiliation_type === 'linked_external' && r.owner_company_name ? '・' + esc(r.owner_company_name) : ''}</span></div>
           <p class="text-[11px] text-gray-500">${r.reasons.map(x => `<span class="text-emerald-700">${esc(x)}</span>`).join('・') || '検索に一致'}${r.global_staff_code ? '・ID ' + esc(r.global_staff_code) : ''}・稼働 ${r.shift_count}件${r.last_work_date ? '（最終 ' + esc(r.last_work_date) + '）' : ''}${r.is_provisional ? '・<span class="text-red-600">仮登録</span>' : ''}</p>
         </button>`).join('') || '<p class="text-xs text-gray-400 p-3 text-center">候補が見つかりません。氏名で検索するか、他社のスタッフなら先に「スタッフマスタ → 新規追加 → QR/ID連携」で連携してください</p>'}
       </div>
       <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
+    const qEl = document.getElementById('mg-q')
+    if (qEl) qEl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') openMerge(sid, qEl.value) })
   }
+  delegate('openMerge', (el) => openMerge(Number(el.dataset.id)))
+  delegate('mergeSearch', (el) => { const q = document.getElementById('mg-q'); openMerge(Number(el.dataset.id), q ? q.value : '') })
+  delegate('previewMerge', (el) => previewMerge(Number(el.dataset.id), Number(el.dataset.target)))
+  delegate('openFinalize', (el) => openFinalize(Number(el.dataset.id)))
   window.previewMerge = async function (sid, targetId) {
     let d; try { d = (await axios.post(`/api/admin/staff/${sid}/merge`, { target_staff_id: targetId, dry_run: true })).data } catch (e) { return toast(errMsg(e)) }
     modal(`
       <h3 class="font-bold text-lg mb-2">統合の確認</h3>
       <div class="flex items-center gap-2 text-sm mb-3" id="merge-preview">
-        <div class="flex-1 p-2 rounded-lg bg-red-50"><p class="text-[11px] text-gray-500">統合元（仮登録）</p><p class="font-bold">${esc(d.source.name)}</p><p class="text-[11px]">${esc(d.source.type_label)}</p></div>
+        <div class="flex-1 p-2 rounded-lg bg-red-50"><p class="text-[11px] text-gray-500">統合元${d.source.is_provisional ? '（仮登録）' : ''}</p><p class="font-bold">${esc(d.source.name)}</p><p class="text-[11px]">${esc(d.source.type_label)}</p></div>
         <i class="fas fa-arrow-right text-gray-400"></i>
         <div class="flex-1 p-2 rounded-lg bg-blue-50"><p class="text-[11px] text-gray-500">統合先</p><p class="font-bold">${esc(d.target.name)}</p><p class="text-[11px]">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
       </div>
@@ -218,7 +255,7 @@
       ${d.warnings.length ? `<div class="text-xs bg-amber-50 text-amber-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
       <label class="block text-xs text-gray-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>
       <div class="flex gap-2">
-        <button class="btn btn-outline flex-1" onclick="openMerge(${sid})">戻る</button>
+        <button class="btn btn-outline flex-1" data-action="openMerge" data-id="${Number(sid)}">戻る</button>
         <button class="btn btn-danger flex-1" data-action="runMerge" data-id="${Number(sid)}" data-target="${Number(targetId)}" data-force="${d.warnings.length ? '1' : ''}">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>
       </div>`)
   }
@@ -243,49 +280,85 @@
   // ログインの入力欄（本登録・後からの発行で共用）。メール欄には今のログイン用のメールを入れ、
   // 応募フォームなどの未確認のメールは初期値に入れず、管理者が本人に確認して選んだときだけ使う（#148）
   const GENDER_LABEL = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
-  const loginFieldsHtml = (d, px) => `
+  // スタッフ番号の欄には、空いている番号（#424）を例として出す。初期パスワードだけ入れたときはその番号を使う
+  const loginFieldsHtml = (d, px, next) => `
     <div class="grid grid-cols-2 gap-3">
-      <input id="${px}-code" class="inp text-sm" placeholder="スタッフ番号" maxlength="50"><input id="${px}-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）" autocomplete="new-password">
+      <input id="${px}-code" class="inp text-sm" placeholder="${esc(next ? 'スタッフ番号（空いている番号: ' + next.code + '）' : 'スタッフ番号')}" data-suggested="${esc(next ? next.code : '')}" maxlength="50"><input id="${px}-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）" autocomplete="new-password">
+      ${next && next.last_code ? `<p class="col-span-2 text-[11px] text-gray-400 -mt-2">スタッフ番号を空欄にすると ${esc(next.code)} を使います（最後の番号: ${esc(next.last_code)}）</p>` : ''}
       <label class="text-xs text-gray-600 col-span-2">メール（ログイン・パスワード再設定の宛先。任意）<input id="${px}-email" class="inp text-sm" type="email" maxlength="254" value="${esc(d.email || '')}" placeholder="メール（任意）"></label>
       ${d.unverified_email ? `<label class="col-span-2 flex items-start gap-2 text-xs p-2 rounded bg-amber-50 text-amber-800"><input type="checkbox" id="${px}-use-unverified" class="mt-0.5">
         <span>応募時などに入力されたメール <b>${esc(d.unverified_email)}</b>（未確認）を使う。本人のものと確認できた場合だけ選んでください</span></label>` : ''}
     </div>`
   const val = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
   const loginBody = (px) => {
-    const body = { user_code: val(px + '-code'), password: val(px + '-pass'), email: val(px + '-email') }
+    const codeEl = document.getElementById(px + '-code')
+    let code = val(px + '-code')
+    if (!code && val(px + '-pass') && codeEl && codeEl.dataset.suggested) { code = codeEl.dataset.suggested; codeEl.value = code }
+    const body = { user_code: code, password: val(px + '-pass'), email: val(px + '-email') }
     const use = document.getElementById(px + '-use-unverified')
     if (use && use.checked) { body.use_unverified_email = true; delete body.email }
     return body
   }
+  const fetchNextCode = async () => { try { return (await axios.get('/api/admin/roster/next-code')).data } catch { return null } }
+  // スタッフ番号が使われていたとき（409）、空いている番号を入れ直す（#424）
+  const applySuggestedCode = (px, e) => {
+    const d = e && e.response && e.response.data
+    const el = document.getElementById(px + '-code')
+    if (!d || !d.suggested_code || !el) return false
+    el.value = d.suggested_code; el.dataset.suggested = d.suggested_code
+    toast(`スタッフ番号が使われています。空いている番号（${d.suggested_code}）を入れました`)
+    return true
+  }
 
   // ---------- 本登録 ----------
   // 今のフリガナ・性別・メールを入力欄に入れて開く（空欄のまま本登録しても応募時のフリガナを消さない。#505）
+  // 企業が必須にした項目（#251）も、今の値を入れて出す（本登録の時点でそろえる）
+  const REQ_INPUT = {
+    date_of_birth: 'type="date"', available_from: 'type="date"', commute_minutes: 'type="number" min="0" max="1440" step="1"',
+    phone: 'type="tel" inputmode="tel"',
+  }
+  const requiredFieldHtml = (f) => f.code === 'career'
+    ? `<label class="text-sm text-gray-600 col-span-2">${esc(f.label)} <span class="text-red-500">*</span><textarea class="inp fz-req" data-code="career" rows="2">${esc(f.value || '')}</textarea></label>`
+    : `<label class="text-sm text-gray-600">${esc(f.label)} <span class="text-red-500">*</span><input class="inp fz-req" data-code="${esc(f.code)}" ${REQ_INPUT[f.code] || ''} value="${esc(f.value ?? '')}"></label>`
   window.openFinalize = async function (sid) {
     let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
+    const next = await fetchNextCode()
+    // フリガナは上の欄で入れる。メールはログインを発行するときだけ必要（ログインの欄で入れる）
+    const req = (d.required_fields || []).filter(f => f.code !== 'kana' && f.code !== 'email')
+    const kanaReq = (d.required_fields || []).some(f => f.code === 'kana')
+    const emailReq = (d.required_fields || []).some(f => f.code === 'email')
     modal(`<h3 class="font-bold text-lg mb-1">本登録</h3>
       <p class="text-xs text-gray-500 mb-3">性別などの必須項目を入力し、仮登録を解除します。ログインの発行は任意です（発行しない場合は報告用URLまたは代理入力で記録します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-2 gap-3">
           <label class="text-sm text-gray-600">性別 <span class="text-red-500">*</span><select id="fz-gender" class="inp"><option value="">選択してください</option>${Object.entries(GENDER_LABEL).map(([k, l]) => `<option value="${k}" ${d.gender === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-          <label class="text-sm text-gray-600">フリガナ<input id="fz-kana" class="inp" maxlength="60" value="${esc(d.kana || '')}"></label>
+          <label class="text-sm text-gray-600">フリガナ${kanaReq ? ' <span class="text-red-500">*</span>' : ''}<input id="fz-kana" class="inp" maxlength="60" value="${esc(d.kana || '')}"></label>
+          ${req.map(requiredFieldHtml).join('')}
         </div>
+        ${req.length ? '<p class="text-[11px] text-gray-400 -mt-1">* の項目は、会社の設定で必須になっています</p>' : ''}
         ${d.unverified_email ? `<p class="text-[11px] text-amber-700"><i class="fas fa-circle-info mr-1"></i>応募時のメール ${esc(d.unverified_email)} は未確認のため、ログイン・パスワード再設定には使っていません</p>` : ''}
         <details class="p-3 rounded-lg border border-gray-200"><summary class="text-sm text-gray-600 cursor-pointer">ログインを発行する（任意）</summary>
-          <div class="mt-3">${loginFieldsHtml(d, 'fz')}</div></details>
-        <p class="text-[11px] text-gray-400">その他の項目（生年月日・スキル等）は本登録後に基本情報欄で入力できます</p>
+          <div class="mt-3">${loginFieldsHtml(d, 'fz', next)}${emailReq ? '<p class="text-[11px] text-red-600 mt-1">ログインを発行する場合、メールは必須です（会社の設定）</p>' : ''}</div></details>
+        <p class="text-[11px] text-gray-400">${req.length || kanaReq ? 'そのほかの項目' : 'その他の項目（生年月日・スキル等）'}は本登録後に基本情報欄で入力できます</p>
         <button class="btn btn-primary w-full" data-action="submitFinalize" data-id="${Number(sid)}">本登録する</button>
       </div>`)
   }
   delegate('submitFinalize', (el) => withSubmitLock(el, async () => {
     const sid = Number(el.dataset.id)
     const body = { gender: val('fz-gender'), kana: val('fz-kana') }
+    const lacks = []
+    document.querySelectorAll('.fz-req').forEach(x => {
+      body[x.dataset.code] = x.value.trim()
+      if (!x.value.trim()) lacks.push(x.parentElement.firstChild.textContent.trim())
+    })
+    if (lacks.length) { toast('次の項目は必須です: ' + lacks.join('・')); return }
     // ログインの欄に入力があるときだけ、ログインの発行とメールを送る
     if (val('fz-code') || val('fz-pass')) Object.assign(body, loginBody('fz'))
     try {
       const { data } = await axios.post(`/api/admin/staff/${sid}/finalize`, body)
       closeModal(); toast('本登録しました'); renderStaffDetail(sid)
       if (data.login) showLoginGuide(data.login)
-    } catch (e) { toast(errMsg(e)) }
+    } catch (e) { if (!applySuggestedCode('fz', e)) toast(errMsg(e)) }
   }))
 
   // ---------- ログインの発行（仮登録ではない、ログインのないスタッフ。#89） ----------
@@ -294,7 +367,7 @@
     let d; try { d = (await axios.get(`/api/admin/staff/${sid}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
     modal(`<h3 class="font-bold text-lg mb-1">ログインを発行</h3>
       <p class="text-xs text-gray-500 mb-3">スタッフ番号と初期パスワードを設定し、スタッフ用のアプリでシフトの確認・勤怠報告ができるようにします。初期パスワードは本人に伝えてください</p>
-      <div class="space-y-3">${loginFieldsHtml(d, 'il')}
+      <div class="space-y-3">${loginFieldsHtml(d, 'il', await fetchNextCode())}
         <button class="btn btn-primary w-full" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div>`)
   })
   delegate('submitIssueLogin', (el) => withSubmitLock(el, async () => {
@@ -303,7 +376,7 @@
       const { data } = await axios.post(`/api/admin/staff/${sid}/issue-login`, loginBody('il'))
       closeModal(); toast('ログインを発行しました'); renderStaffDetail(sid)
       if (data.login) showLoginGuide(data.login)
-    } catch (e) { toast(errMsg(e)) }
+    } catch (e) { if (!applySuggestedCode('il', e)) toast(errMsg(e)) }
   }))
 
   // ---------- ログイン案内（#328）。本人に SMS・LINE などで送れるよう、URL・会社コード・スタッフ番号・初期パスワードをまとめてコピーできるようにする ----------

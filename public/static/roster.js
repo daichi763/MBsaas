@@ -123,6 +123,10 @@ window.showRosterForm = async function (route) {
   if (route === 'partner') {
     try { partners = (await axios.get('/api/admin/roster/partners')).data.partners } catch { partners = [] }
   }
+  // 空いているスタッフ番号（#424）。②は番号欄に入れておき、③（ログインは任意）は例として出す
+  let next = null
+  if (route !== 'skillsheet') { try { next = (await axios.get('/api/admin/roster/next-code')).data } catch { next = null } }
+  const nextHint = next && next.last_code ? `<p class="text-[11px] text-gray-400 sm:col-span-2 -mt-2">空いている番号を入れています（最後の番号: ${esc(next.last_code)}）。変えることもできます</p>` : ''
   const f = (id, label, attrs = '', req = false) =>
     `<div><label class="text-sm text-gray-600 block mb-1">${label}${req ? ' <span class="text-red-500">*</span>' : ''}</label><input id="${id}" class="inp" ${attrs}></div>`
   modal(`
@@ -155,8 +159,9 @@ window.showRosterForm = async function (route) {
         <div class="p-3 rounded-lg bg-emerald-50 space-y-3">
           <p class="text-xs font-bold text-emerald-700"><i class="fas fa-key mr-1"></i>ログインアカウント（勤怠報告・日報用）</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            ${f('rf-code', 'スタッフ番号', 'placeholder="st021"', true)}
+            ${f('rf-code', 'スタッフ番号', `placeholder="st021" value="${esc(next ? next.code : '')}"`, true)}
             ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"', true)}
+            ${route === 'employee' ? nextHint : ''}
             ${f('rf-email', 'メール', 'type="email"')}
             ${f('rf-phone', '電話', 'type="tel"')}
           </div>
@@ -171,7 +176,7 @@ window.showRosterForm = async function (route) {
         <details class="p-3 rounded-lg border border-gray-200">
           <summary class="text-sm text-gray-600 cursor-pointer">ログインアカウントを発行する（任意・勤怠報告を行う場合）</summary>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-            ${f('rf-code', 'スタッフ番号', 'placeholder="pt001"')}
+            ${f('rf-code', 'スタッフ番号', `placeholder="${esc(next ? '空いている番号: ' + next.code : 'pt001')}" data-suggested="${esc(next ? next.code : '')}"`)}
             ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"')}
             ${f('rf-email', 'メール', 'type="email"')}
           </div>
@@ -195,6 +200,7 @@ window.showRosterForm = async function (route) {
         ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0" max="1440" step="1"')}` : ''}
       <p class="text-xs text-gray-400"><span class="text-red-500">*</span> は必須項目です（氏名・性別は全企業共通の必須項目）</p>
     </div>
+    <div id="rf-dup"></div>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline" data-action="showAddRoster"><i class="fas fa-arrow-left"></i></button>
       <button class="btn btn-primary flex-1" data-action="submitRosterForm" data-route="${esc(route)}">登録する</button>
@@ -203,8 +209,29 @@ window.showRosterForm = async function (route) {
 delegate('showAddRoster', () => showAddRoster())
 // 送信中はボタンを無効にして二重登録を防ぐ（submitRosterForm は下で必須確認付きに差し替えるため、呼ぶときに window から引く）
 delegate('submitRosterForm', el => withSubmitLock(el, () => window.submitRosterForm(el.dataset.route)))
+// 同じ人の確認で「別の人として登録する」を選んだとき（#223）
+delegate('submitRosterFormForce', el => withSubmitLock(el, () => window.submitRosterForm(el.dataset.route, true)))
 
-window.submitRosterForm = async function (route) {
+// 同じ人と思われる登録済みのスタッフの一覧（#223 #356）。退職・停止中は印を付ける
+window.samePersonListHtml = function (matches) {
+  return matches.map(m => `<li class="flex items-center gap-2 flex-wrap">
+    <a class="underline font-bold" href="#staff/${Number(m.staff_id)}">${esc(m.name)}</a>
+    <span class="text-gray-500">${esc((typeof AFF_TYPE_LABEL !== 'undefined' && AFF_TYPE_LABEL[m.affiliation_type]) || m.affiliation_type || '')}${m.is_provisional ? '・仮登録' : ''}</span>
+    ${m.inactive ? `<span class="badge badge-red">${esc(m.inactive)}</span>` : ''}
+    <span class="text-gray-400">${(m.reasons || []).map(esc).join('・')}</span></li>`).join('')
+}
+function showRosterDuplicate(route, matches) {
+  const box = document.getElementById('rf-dup'); if (!box) return
+  box.innerHTML = `<div class="mt-3 p-3 rounded-lg bg-amber-50 text-xs text-amber-800" id="rf-dup-box">
+    <p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>同じ人と思われるスタッフが登録済みです</p>
+    <ul class="space-y-1 mb-2">${samePersonListHtml(matches)}</ul>
+    <p class="mb-2">同じ人なら、登録せずに既存のスタッフを開いてください（退職の人は、スタッフ詳細で在籍状況を戻すと再び使えます）。
+      誤って二重に登録したときは、シフトのない側をスタッフ詳細の「既存のスタッフに統合」でまとめられます</p>
+    <button class="btn btn-outline text-xs" data-action="submitRosterFormForce" data-route="${esc(route)}">別の人として登録する</button></div>`
+  box.scrollIntoView && box.scrollIntoView({ block: 'nearest' })
+}
+
+window.submitRosterForm = async function (route, force) {
   const v = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
   const body = {
     route, name: v('rf-name'), kana: v('rf-kana'), gender: v('rf-gender'), date_of_birth: v('rf-dob') || null,
@@ -225,13 +252,23 @@ window.submitRosterForm = async function (route) {
       body.new_partner_phone = v('rf-np-phone'); body.new_partner_email = v('rf-np-email')
       if (!body.new_partner_name) { toast('取引先名を入力してください'); return }
     }
+    // 初期パスワードだけ入れたときは、空いている番号を使う（#424）
+    const codeEl = document.getElementById('rf-code')
+    if (!body.user_code && body.password && codeEl && codeEl.dataset.suggested) { body.user_code = codeEl.dataset.suggested; codeEl.value = body.user_code }
     if ((body.user_code && !body.password) || (!body.user_code && body.password)) { toast('ログインを発行する場合はスタッフ番号と初期パスワードの両方を入力してください'); return }
   }
+  if (force) body.force = true
   try {
     const { data } = await axios.post('/api/admin/roster', body)
     closeModal(); toast('スタッフマスタに登録しました')
     location.hash = (route === 'employee' ? 'employees/' : 'staff/') + data.staff_id
-  } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '登録に失敗しました') }
+  } catch (e) {
+    const d = e.response && e.response.data
+    if (d && d.need_force && d.matches) { showRosterDuplicate(route, d.matches); return }
+    // スタッフ番号が使われていたら、空いている番号を入れ直す（#424）
+    if (d && d.suggested_code) { const el = document.getElementById('rf-code'); if (el) el.value = d.suggested_code; toast(`スタッフ番号が使われています。空いている番号（${d.suggested_code}）を入れました`); return }
+    toast((d && d.error) || '登録に失敗しました')
+  }
 }
 
 // 画面遷移（hash変更）時に開いたままの作成モーダルを閉じる
@@ -354,7 +391,7 @@ window.showRosterForm = async function (route) {
   markRequiredInForm(route)
 }
 const _origSubmitRosterForm = window.submitRosterForm
-window.submitRosterForm = async function (route) {
+window.submitRosterForm = async function (route, force) {
   const req = ROSTER_REQUIRED || {}
   const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
   // ログイン: ②は必ず作る、③はスタッフ番号と初期パスワードを入れたときだけ、④は作らない
@@ -366,7 +403,7 @@ window.submitRosterForm = async function (route) {
     if (el && !el.value.trim()) lacks.push(el.parentElement.querySelector('label').textContent.replace('*', '').trim())
   }
   if (lacks.length) { toast('次の項目は必須です: ' + lacks.join('・')); return }
-  return _origSubmitRosterForm(route)
+  return _origSubmitRosterForm(route, force)
 }
 
 // =========================================================

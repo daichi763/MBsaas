@@ -208,6 +208,78 @@ export async function createPerson(db: D1Database, companyId: number): Promise<{
   throw new Error('person id generation failed')
 }
 
+// ---------- スタッフ番号の自動採番（#424） ----------
+// システムが付ける番号（仮登録・ログインなしの人物・他社連携）は採番の参考にしない
+const SYSTEM_CODE_RE = /^(TMP|PT|SS|LK)-/i
+/**
+ * 次に使えるスタッフ番号を返す。今のスタッフ番号のうち「接頭辞＋数字」の形で最も多い接頭辞を使い、
+ * その最大の番号の次（桁数は既存に合わせる）から、会社の中でまだ使われていない番号を探す。
+ * 該当する番号がなければ st001 から。last_code はその接頭辞で最後の番号（画面の案内用）
+ */
+export async function nextStaffCode(db: D1Database, companyId: number): Promise<{ code: string; last_code: string | null }> {
+  const rows = (await db.prepare('SELECT user_code, role FROM users WHERE company_id = ?').bind(companyId).all()).results as any[]
+  const used = new Set(rows.map(r => String(r.user_code || '').toLowerCase()))
+  const groups = new Map<string, { n: number; max: number; width: number; last: string }>()
+  for (const r of rows) {
+    if (r.role !== 'staff') continue
+    const code = String(r.user_code || '')
+    if (SYSTEM_CODE_RE.test(code)) continue
+    const m = code.match(/^(.*?)(\d+)$/)
+    if (!m) continue
+    const num = Number(m[2])
+    if (!Number.isSafeInteger(num)) continue
+    const g = groups.get(m[1]) || { n: 0, max: -1, width: 0, last: '' }
+    g.n++
+    if (num > g.max) { g.max = num; g.last = code }
+    g.width = Math.max(g.width, m[2].length)
+    groups.set(m[1], g)
+  }
+  let prefix = 'st', g = { n: 0, max: 0, width: 3, last: '' }
+  for (const [p, x] of groups) if (x.n > g.n || (x.n === g.n && x.max > g.max)) { prefix = p; g = x }
+  for (let n = g.max + 1, i = 0; i < 10000; n++, i++) {
+    const code = prefix + String(n).padStart(g.width, '0')
+    if (!used.has(code.toLowerCase())) return { code, last_code: g.last || null }
+  }
+  return { code: prefix + Date.now().toString(36), last_code: g.last || null }
+}
+
+// ---------- 同じ人の確認（#223 #356） ----------
+// 退職・停止中・休職中なら画面に出す印（在籍中は null）。退職日の当日までは在籍
+export function inactiveLabelOf(r: any, today: string): string | null {
+  if (r.employment_status === 'retired' || (r.retired_at && String(r.retired_at).slice(0, 10) < today)) return '退職'
+  if (r.user_status && r.user_status !== 'active') return '停止'
+  if (r.employment_status === 'leave') return '休職'
+  return null
+}
+/**
+ * 自社のスタッフマスタから、同じ人と思われる行を探す（統合済みは除く）。
+ * 電話番号（数字のみで比較）が同じ、または氏名（空白を除いて比較）と生年月日が同じ行。
+ * 他社連携の行は、生年月日を所属元の値で比べる。電話番号は返さない
+ */
+export async function findSamePersonCandidates(db: D1Database, companyId: number, o: { name?: any; phone?: any; date_of_birth?: any }) {
+  const phone = phoneDigits(String(o.phone || ''))
+  const name = String(o.name || '').replace(/[\s　]/g, '')
+  const dob = String(o.date_of_birth || '').trim()
+  if (phone.length < 10 && !(name && dob)) return []
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
+      sp.employment_status, us.status AS user_status, us.retired_at,
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth ELSE sp.date_of_birth END AS dob
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
+  const today = nowJST().slice(0, 10)
+  const out: any[] = []
+  for (const r of rows) {
+    const reasons: string[] = []
+    if (phone.length >= 10 && r.phone && phoneDigits(String(r.phone)) === phone) reasons.push('電話番号が同じ')
+    if (name && dob && r.dob === dob && String(r.name || '').replace(/[\s　]/g, '') === name) reasons.push('氏名と生年月日が同じ')
+    if (!reasons.length) continue
+    out.push({ staff_id: r.staff_id, name: r.name, affiliation_type: r.affiliation_type, is_provisional: r.is_provisional ? 1 : 0,
+      employment_status: r.employment_status || 'working', inactive: inactiveLabelOf(r, today), reasons })
+  }
+  return out.slice(0, 20)
+}
+
 /**
  * 取引先（Field OS未契約の所属元）として登録しようとしている名前が、他の導入企業の会社名と一致するかを確認する。
  * 導入企業のスタッフは取引先ではなく ①QR/ID連携（linked_external）で扱うため、一致した場合はエラーメッセージを返す。
@@ -498,6 +570,9 @@ rosterApi.get('/:id/links', async (c) => {
   return c.json({ role: 'owner', links: links.results })
 })
 
+// 次に使えるスタッフ番号（#424。登録画面の番号欄の既定値）
+rosterApi.get('/next-code', async (c) => c.json(await nextStaffCode(c.env.DB, c.get('user').company_id)))
+
 // 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations。
 // 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、
 // 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名前の行は出さない
@@ -706,6 +781,11 @@ rosterApi.post('/', async (c) => {
     const pwErr = validatePassword(String(b.password))
     if (pwErr) return c.json({ error: pwErr }, 400)
   }
+  // 同じ人の確認（#223）: 電話番号、または氏名と生年月日が同じスタッフがいれば確認を求める（force で登録を続ける）
+  if (!b.force) {
+    const matches = await findSamePersonCandidates(db, u.company_id, { name, phone: b.phone, date_of_birth: b.date_of_birth })
+    if (matches.length) return c.json({ error: '同じ人と思われるスタッフが登録済みです', matches, need_force: true }, 409)
+  }
 
   // 所属会社（取引先）の解決
   const ownName = ((await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first())?.company_name as string) || ''
@@ -754,7 +834,8 @@ rosterApi.post('/', async (c) => {
     userId = r.meta.last_row_id as number
   } catch {
     await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
-    return c.json({ error: 'スタッフ番号が重複しています' }, 409)
+    // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
+    return c.json({ error: 'スタッフ番号が重複しています', suggested_code: wantsLogin ? (await nextStaffCode(db, u.company_id)).code : null }, 409)
   }
 
   const sr = await db.prepare(`INSERT INTO staff_profiles

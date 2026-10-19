@@ -1,5 +1,5 @@
 // =========================================================
-// 仮登録スタッフと既存スタッフ（他社連携・自社雇用など）の統合
+// 仮登録スタッフと既存スタッフ（他社連携・自社雇用など）の統合。シフトのない重複登録の行も、同じ区分のスタッフに統合できる（#223）
 // docs/spec_spot_shift.md 第5段階
 //
 // 統合元（仮登録）のシフト・勤怠・日報・評価・フォロー・相談・書類・単価ルール・応募・報告用URLを統合先へ移す。
@@ -11,11 +11,12 @@
 // メールアドレスは統合先のログイン・再設定用にコピーせず、統合先の「未確認のメール」として残す（#38）。
 // =========================================================
 import { Hono } from 'hono'
-import { applyPricingToShift, conflictFor, findConflicts, loadPricingData } from './shift-board'
-import { TYPE_LABEL, normalizePhone, payeeTypeFor } from './staff-lifecycle'
+import { PRICE_COLUMNS, computeShiftPricing, conflictFor, findConflicts, isSettled, loadPayeeHistory, loadPricingData, payeeOn } from './shift-board'
+import { TYPE_LABEL, mergeSourceCheck, normalizePhone, payeeTypeFor } from './staff-lifecycle'
 import { revokeSessionsStmt } from './lib/auth'
 import { conflictLabel } from './lib/staff-eligibility'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { updateRowsStmts } from './lib/bulk-write'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -56,7 +57,7 @@ staffMergeApi.get('/staff/:id/merge-candidates', async (c) => {
   const q = String(c.req.query('q') || '').trim()
   const rows = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
-      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana, oc.company_name AS owner_company_name, CASE WHEN sp.affiliation_type = 'linked_external' THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana, oc.company_name AS owner_company_name, CASE WHEN sp.affiliation_type = 'linked_external' OR pe.created_company_id != sp.company_id THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
       (SELECT COUNT(*) FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.status IN ('confirmed','substitute')) AS shift_count,
       (SELECT MAX(sh.work_date) FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
@@ -77,10 +78,12 @@ staffMergeApi.get('/staff/:id/merge-candidates', async (c) => {
     return { ...rest, phone: r.affiliation_type === 'linked_external' ? null : r.phone, reasons, score, inactive: inactiveLabel(r, today),
       match_q: !!nq && (normName(r.name).includes(nq) || (r.kana && normKana(r.kana).includes(normKana(q)))) }
   }).filter(r => r.score > 0 || r.match_q)
+    // 本登録の行を統合元にするときは、同じ区分の人だけを候補にする（#223）
+    .filter(r => s.is_provisional || r.affiliation_type === (s.affiliation_type || 'own_employee'))
     // 退職・停止中の人は、一致の度合いが同じでも後ろに並べる（#97）
     .sort((a, b) => (a.inactive ? 1 : 0) - (b.inactive ? 1 : 0) || b.score - a.score || (b.affiliation_type === 'linked_external' ? 1 : 0) - (a.affiliation_type === 'linked_external' ? 1 : 0) || a.name.localeCompare(b.name, 'ja'))
     .slice(0, 30)
-  return c.json({ candidates: out, source: { staff_id: s.staff_id, name: s.name, is_provisional: !!s.is_provisional, merged_into_staff_id: s.merged_into_staff_id } })
+  return c.json({ candidates: out, source: { staff_id: s.staff_id, name: s.name, is_provisional: !!s.is_provisional, affiliation_type: s.affiliation_type || 'own_employee', merged_into_staff_id: s.merged_into_staff_id } })
 })
 
 // 統合の実行（dry_run で影響を確認）
@@ -88,14 +91,17 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const src = await loadStaff(db, u.company_id, c.req.param('id'))
   if (!src) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  if (src.merged_into_staff_id) return c.json({ error: 'このスタッフはすでに統合済みです' }, 409)
-  if (!src.is_provisional) return c.json({ error: '統合できるのは仮登録のスタッフのみです（統合元にしてください）' }, 400)
+  // 統合元にできるのは、仮登録と、シフトのない重複登録の行（#223）
+  const srcErr = await mergeSourceCheck(db, src)
+  if (srcErr) return c.json({ error: srcErr }, src.merged_into_staff_id ? 409 : 400)
   const tgt = await loadStaff(db, u.company_id, b.target_staff_id)
   if (!tgt) return c.json({ error: '統合先のスタッフが見つかりません' }, 404)
   if (tgt.staff_id === src.staff_id) return c.json({ error: '同じスタッフには統合できません' }, 400)
   if (tgt.merged_into_staff_id) return c.json({ error: '統合先のスタッフは統合済みです' }, 409)
   const tType = tgt.affiliation_type || 'own_employee'
   if (tType === 'skillsheet_only') return c.json({ error: 'スキルシートのみのスタッフには統合できません' }, 400)
+  // 本登録の行どうしは、同じ区分の重複登録だけをまとめる（区分を変えるときは「区分を変更」を使う）
+  if (!src.is_provisional && (src.affiliation_type || 'own_employee') !== tType) return c.json({ error: '本登録のスタッフは、同じ区分のスタッフにだけ統合できます（区分が違う場合は、先に「区分を変更」でそろえてください）' }, 400)
   const today = todayJST()
   // 統合先が退職・停止中なら統合しない。今後のシフトが、割り当てできない人に付いてしまうため。
   // 再雇用などで同じ人として使う場合は、統合先の在籍状況を戻してから統合する（#97）
@@ -202,15 +208,30 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     '統合は元に戻せません',
   ]
   if (b.dry_run) return c.json({
-    source: { staff_id: sid, name: src.name, type: srcType, type_label: TYPE_LABEL[srcType] || srcType },
+    source: { staff_id: sid, name: src.name, type: srcType, type_label: TYPE_LABEL[srcType] || srcType, is_provisional: !!src.is_provisional },
     target: { staff_id: tgt.staff_id, name: tgt.name, type: tType, type_label: TYPE_LABEL[tType] || tType, owner_company_name: tgt.owner_company_name },
     counts, future_shifts: future.length, effects, warnings,
   })
   if (warnings.length && !b.force) return c.json({ error: '確認が必要な点があります', warnings, need_force: true }, 409)
 
   // ---- 実行 ----
+  // 付け替え・統合済みにする更新・NGの付け替え・空欄の補完・予定シフトの単価と支払先の置き換え・統合の記録を、
+  // すべて1回の db.batch（トランザクション）で行う。途中で失敗したら何も変わらず、統合済みにもならないので、そのままやり直せる（#461）
   const now = nowJST()
+  const srcLabel = src.is_provisional ? '仮登録' : (TYPE_LABEL[srcType] || srcType)
+  const moved = {
+    ...counts, shift_ids: shifts.map(s => s.shift_id),
+    rate_rule_ids: moveRules.map(r => r.rule_id),
+    dropped_rate_rules: dropRules.map(({ project_name: _pn, ...r }) => r),
+    linked_staff_ids: links.map(l => l.staff_id),
+    employee_record: srcEr ? (moveEr ? 'moved' : 'kept_on_source') : null,
+  }
   const stmts: D1PreparedStatement[] = [
+    // 統合の記録を最初に入れる。source_lock の一意インデックス（0057）で、同じ統合元を同時に2回統合しようとしたら batch 全体が失敗する
+    db.prepare(`INSERT INTO staff_merges (company_id, source_staff_id, target_staff_id, source_name, target_name, moved_json, repriced_shifts, note, merged_by, source_lock)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, T, src.name, tgt.name, JSON.stringify(moved), future.length, String(b.note || '').slice(0, 300) || null, u.user_id, sid),
+    db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, affected_shifts, note, changed_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, T, srcType, tType, today, src.affiliation || null, tgt.affiliation || null, future.length, `${srcLabel}「${src.name}」を統合（シフト${counts.shifts}件）`, u.user_id),
     db.prepare('UPDATE shifts SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
     db.prepare('UPDATE attendance_reports SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
     db.prepare('UPDATE daily_reports SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
@@ -265,47 +286,63 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   stmts.push(db.prepare('UPDATE staff_profiles SET merged_into_staff_id = ?, merged_at = ? WHERE staff_id = ?').bind(T, now, sid))
   stmts.push(db.prepare("UPDATE users SET status = 'inactive' WHERE user_id = ?").bind(src.user_id))
   stmts.push(revokeSessionsStmt(db, src.user_id))
-  await db.batch(stmts)
 
   // クライアントのNGスタッフ（カンマ区切り）の付け替え
   const ngs = ((await db.prepare(`SELECT client_id, ng_staff_ids FROM clients WHERE company_id = ? AND (',' || COALESCE(ng_staff_ids,'') || ',') LIKE ?`).bind(u.company_id, `%,${sid},%`).all()).results as any[])
   for (const cl of ngs) {
     const ids = [...new Set(String(cl.ng_staff_ids || '').split(',').map(x => x.trim()).filter(Boolean).map(x => (x === String(sid) ? String(T) : x)))]
-    await db.prepare('UPDATE clients SET ng_staff_ids = ? WHERE client_id = ?').bind(ids.join(','), cl.client_id).run()
+    stmts.push(db.prepare('UPDATE clients SET ng_staff_ids = ? WHERE client_id = ? AND company_id = ?').bind(ids.join(','), cl.client_id, u.company_id))
   }
   // NGの理由・登録日（client_ng_staff。#204）も統合先へ付け替える。統合先がすでに同じクライアントのNGなら統合先の記録を残す
-  await db.batch([
-    db.prepare('UPDATE OR IGNORE client_ng_staff SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
-    db.prepare('DELETE FROM client_ng_staff WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id),
-  ])
+  stmts.push(db.prepare('UPDATE OR IGNORE client_ng_staff SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id))
+  stmts.push(db.prepare('DELETE FROM client_ng_staff WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id))
   // 統合先の空欄を統合元の値で補う（他社連携の基本情報は所属元が正なので触らない）。メールは補わない（上の未確認のメール）
-  if (!tgt.phone && src.phone) await db.prepare('UPDATE users SET phone = ? WHERE user_id = ?').bind(src.phone, tgt.user_id).run()
+  if (!tgt.phone && src.phone) stmts.push(db.prepare(`UPDATE users SET phone = ? WHERE user_id = ? AND COALESCE(phone, '') = ''`).bind(src.phone, tgt.user_id))
   if (tType !== 'linked_external') {
-    await db.prepare(`UPDATE staff_profiles SET kana = COALESCE(NULLIF(kana,''), ?), gender = COALESCE(NULLIF(gender,''), ?) WHERE staff_id = ?`).bind(src.kana || null, src.gender || null, T).run()
+    stmts.push(db.prepare(`UPDATE staff_profiles SET kana = COALESCE(NULLIF(kana,''), ?), gender = COALESCE(NULLIF(gender,''), ?) WHERE staff_id = ?`).bind(src.kana || null, src.gender || null, T))
   }
-  if (src.memo) await db.prepare(`UPDATE staff_profiles SET memo = TRIM(COALESCE(memo,'') || CASE WHEN COALESCE(memo,'') = '' THEN '' ELSE char(10) END || ?) WHERE staff_id = ?`).bind(`［仮登録「${src.name}」から統合］${src.memo}`, T).run()
+  if (src.memo) stmts.push(db.prepare(`UPDATE staff_profiles SET memo = TRIM(COALESCE(memo,'') || CASE WHEN COALESCE(memo,'') = '' THEN '' ELSE char(10) END || ?) WHERE staff_id = ?`).bind(`［${srcLabel}「${src.name}」から統合］${src.memo}`, T))
 
-  // 今日以降の予定シフトの単価・支払先を統合先の区分で置き換える
-  const data = future.length ? await loadPricingData(db, u.company_id, future.map(s => s.project_id)) : null
-  const payee = { payee_type: payeeTypeFor(tType), payee_affiliation_id: tType === 'partner_manual' ? tgt.partner_affiliation_id ?? null : null, payee_company_id: tType === 'linked_external' ? tgt.owner_company_id ?? null : null }
-  for (const s of future) {
-    if (s.price_locked) await db.prepare('UPDATE shifts SET payee_type = ?, payee_affiliation_id = ?, payee_company_id = ? WHERE shift_id = ?').bind(payee.payee_type, payee.payee_affiliation_id, payee.payee_company_id, s.shift_id).run()
-    else await applyPricingToShift(db, u.company_id, s.shift_id, { data })
+  // 今日以降の予定シフトの単価・支払先を統合先の区分で置き換える。applyPricingToShift と同じ計算を、まとめて読んだ値でメモリ上で行う
+  stmts.push(...await repriceStmts(db, u.company_id, future.map(s => s.shift_id), tgt, moveRules, dropRules))
+
+  try {
+    await db.batch(stmts)
+  } catch (e) {
+    // 同じ統合元を別の操作が先に統合した（source_lock の一意インデックス）
+    const again = await db.prepare('SELECT merged_into_staff_id FROM staff_profiles WHERE staff_id = ?').bind(sid).first() as any
+    if (again?.merged_into_staff_id) return c.json({ error: 'このスタッフはすでに統合済みです' }, 409)
+    console.error('staff merge failed', e)
+    return c.json({ error: '統合に失敗しました。何も変更していないので、もう一度お試しください' }, 500)
   }
-  // 記録（付け替えた・削除した単価ルールも残す）
-  const moved = {
-    ...counts, shift_ids: shifts.map(s => s.shift_id),
-    rate_rule_ids: moveRules.map(r => r.rule_id),
-    dropped_rate_rules: dropRules.map(({ project_name: _pn, ...r }) => r),
-    linked_staff_ids: links.map(l => l.staff_id),
-    employee_record: srcEr ? (moveEr ? 'moved' : 'kept_on_source') : null,
-  }
-  await db.prepare(`INSERT INTO staff_merges (company_id, source_staff_id, target_staff_id, source_name, target_name, moved_json, repriced_shifts, note, merged_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, T, src.name, tgt.name, JSON.stringify(moved), future.length, String(b.note || '').slice(0, 300) || null, u.user_id).run()
-  await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, affected_shifts, note, changed_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, T, srcType, tType, today, src.affiliation || null, tgt.affiliation || null, future.length, `仮登録「${src.name}」を統合（シフト${counts.shifts}件）`, u.user_id).run()
   return c.json({ ok: true, target_staff_id: T, moved: counts, repriced_shifts: future.length })
 })
+
+// 統合で予定シフトの単価・支払先を置き換える文（#461）。applyPricingToShift と同じ規則で、統合後の状態（スタッフは統合先、
+// 統合元のスタッフ別の単価ルールは付け替え・削除の後）を前提にメモリ上で計算する。手動で金額を変えたシフトは支払先だけを変える
+async function repriceStmts(db: D1Database, companyId: number, shiftIds: number[], tgt: any, moveRules: any[], dropRules: any[]): Promise<D1PreparedStatement[]> {
+  const ids = bindJsonArray(shiftIds)
+  if (ids === '[]') return []
+  const T = tgt.staff_id
+  const rows = ((await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[])
+    .filter(s => !isSettled(s)).map(s => ({ ...s, staff_id: T }))
+  const roleIds = bindJsonArray(rows.map(s => s.slot_role_id).filter(Boolean))
+  const roles = new Map((roleIds === '[]' ? [] : (await db.prepare(`SELECT * FROM shift_slot_roles WHERE slot_role_id IN ${JSON_IN}`).bind(roleIds).all()).results as any[]).map(r => [r.slot_role_id, r]))
+  const data = await loadPricingData(db, companyId, rows.map(s => s.project_id))
+  const moveIds = new Set(moveRules.map(r => r.rule_id)), dropIds = new Set(dropRules.map(r => r.rule_id))
+  data.rules = data.rules.filter((r: any) => !dropIds.has(r.rule_id)).map((r: any) => moveIds.has(r.rule_id) ? { ...r, staff_id: T } : r)
+  const hist = (await loadPayeeHistory(db, companyId, [T])).get(T)
+  const tType = tgt.affiliation_type || 'own_employee'
+  const lockedPayee = { payee_type: payeeTypeFor(tType), payee_affiliation_id: tType === 'partner_manual' ? tgt.partner_affiliation_id ?? null : null, payee_company_id: tType === 'linked_external' ? tgt.owner_company_id ?? null : null }
+  const priced: Record<string, any>[] = [], locked: Record<string, any>[] = []
+  for (const s of rows) {
+    if (s.price_locked) { locked.push({ shift_id: s.shift_id, ...lockedPayee }); continue }
+    priced.push({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roles.get(s.slot_role_id) || null : null, payeeOn(tgt, hist, s.work_date), data) })
+  }
+  const where = `shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed'`
+  return [...updateRowsStmts(db, 'shifts', 'shift_id', PRICE_COLUMNS, priced, where, [companyId]),
+    ...updateRowsStmts(db, 'shifts', 'shift_id', ['payee_type', 'payee_affiliation_id', 'payee_company_id'], locked, where, [companyId])]
+}
 
 // 統合の履歴（スタッフ詳細の表示用）
 staffMergeApi.get('/staff/:id/merges', async (c) => {
