@@ -197,6 +197,11 @@ const DASH_SHIFTS = new Map()
 const DASH_RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
 // 経過時間（分）を「n分」「n時間m分」に
 function dashElapsed(min) { min = Math.max(0, Number(min) || 0); return min < 60 ? `${min}分` : `${Math.floor(min / 60)}時間${min % 60 ? (min % 60) + '分' : ''}` }
+// 届いている遅刻・欠勤・体調不良の相談（種類・時刻・本文の先頭）と、相談対応で開くリンク（#498）
+function dashContactLine(co) {
+  return `<a href="#consult/${Number(co.consultation_id)}" class="block px-2 pb-1 text-[11px] text-blue-800 hover:underline">
+    <i class="fas fa-comment-dots mr-1"></i>${esc(co.category_label || '')} ${esc(String(co.created_at || '').slice(11, 16))}${co.urgency === 'high' ? '・緊急' : ''}: ${esc(co.excerpt || '')}</a>`
+}
 
 async function renderDashboard() {
   loading()
@@ -218,18 +223,28 @@ async function renderDashboard() {
       </div>
     </div>`
 
-  // 未報告の一覧: 予定の時刻を過ぎた人だけ。押すとそのシフトの報告状況（代理入力・報告用URL）を開く
-  const alertList = (title, list, color, isEnd) => `
+  // 未報告の一覧: 予定の時刻を過ぎた人だけ（人ごとに1行。#449）。押すとそのシフトの報告状況（代理入力・報告用URL）を開く。
+  // 遅刻・欠勤・体調不良の相談が届いている人は『連絡あり』と本文の先頭を出し、相談を開けるようにする（連絡のない人が上。#498）
+  const alertList = (title, list, color, isEnd) => {
+    const contacted = list.filter(s => s.contact).length
+    return `
     <div class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-2">${title}
-        <span class="badge ${list.length ? 'badge-' + color : 'badge-green'} ml-1">${list.length ? list.length + '件' : 'なし'}</span></h3>
+        <span class="badge ${list.length ? 'badge-' + color : 'badge-green'} ml-1">${list.length ? list.length + '名' : 'なし'}</span>
+        ${contacted ? `<span class="badge badge-blue ml-1">うち連絡あり${contacted}名</span>` : ''}</h3>
       ${list.length ? `<div class="space-y-1 max-h-48 overflow-y-auto">${list.map(s => `
-        <button type="button" class="w-full text-left px-2 py-1 rounded-lg ${color === 'red' ? 'bg-red-50' : 'bg-amber-50'} hover:opacity-80 text-xs" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">
-          <span class="font-bold text-gray-800">${esc(s.name)}</span>${s.work_date !== data.today ? ' <span class="badge badge-gray text-[10px]">前日</span>' : ''}
-          <span class="block text-gray-500">${isEnd ? `${esc(s.end_time)}終了予定・未: ${esc((s.missing || []).map(t => DASH_RS[t] || t).join('・'))}` : `${esc(s.start_time)}開始`}・${dashElapsed(s.overdue_minutes)}経過 ${esc(s.project || '')}</span>
-        </button>`).join('')}</div>`
+        <div class="rounded-lg ${s.contact ? 'bg-blue-50' : color === 'red' ? 'bg-red-50' : 'bg-amber-50'} text-xs">
+          <button type="button" class="w-full text-left px-2 py-1 hover:opacity-80" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">
+            <span class="font-bold text-gray-800">${esc(s.name)}</span>${s.work_date !== data.today ? ' <span class="badge badge-gray text-[10px]">前日</span>' : ''}
+            ${s.other_shifts ? `<span class="badge badge-gray text-[10px]">ほか${Number(s.other_shifts)}シフト</span>` : ''}
+            ${s.contact ? '<span class="badge badge-blue text-[10px]">連絡あり</span>' : ''}
+            <span class="block text-gray-500">${isEnd ? `${esc(s.end_time)}終了予定・未: ${esc((s.missing || []).map(t => DASH_RS[t] || t).join('・'))}` : `${esc(s.start_time)}開始`}・${dashElapsed(s.overdue_minutes)}経過 ${esc(s.project || '')}</span>
+          </button>
+          ${s.contact ? dashContactLine(s.contact) : ''}
+        </div>`).join('')}</div>`
       : '<p class="text-xs text-gray-400">予定の時刻を過ぎた未報告はありません <i class="fas fa-check text-emerald-500"></i></p>'}
     </div>`
+  }
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
@@ -251,9 +266,10 @@ async function renderDashboard() {
     </div>
 
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
-      ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600')}
+      ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
       ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600')}
-      ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400')}
+      ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400',
+        data.unchecked_daily_reports ? `<a href="#reports/unchecked=1" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : '')}
       ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400')}
     </section>
 
@@ -268,14 +284,7 @@ async function renderDashboard() {
     <div class="grid lg:grid-cols-2 gap-4 mb-5">
       <section class="card p-4" id="todo-section">
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-list-check text-blue-600 mr-1"></i>管理者ToDo（運営支援）</h3>
-        <div class="space-y-2 max-h-80 overflow-y-auto">
-          ${data.todos.map(t => `
-            <div class="flex items-start gap-2.5 p-2.5 rounded-lg ${t.level === 'high' ? 'bg-red-50' : 'bg-amber-50'}">
-              <i class="fas ${t.level === 'high' ? 'fa-circle-exclamation text-red-500' : 'fa-triangle-exclamation text-amber-500'} mt-0.5"></i>
-              <p class="text-sm ${t.level === 'high' ? 'text-red-800' : 'text-amber-800'} flex-1">${esc(t.text)}</p>
-              ${t.staff_id ? `<a href="#staff/${Number(t.staff_id)}" class="text-xs text-blue-600 whitespace-nowrap hover:underline">詳細→</a>` : t.href === '#corrections' ? '<a href="#corrections" class="text-xs text-blue-600 whitespace-nowrap hover:underline">確認→</a>' : ''}
-            </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">対応すべきタスクはありません <i class="fas fa-check text-emerald-500"></i></p>'}
-        </div>
+        <div id="dash-todos"></div>
       </section>
 
       <section class="card p-4" id="incident-section">
@@ -287,8 +296,9 @@ async function renderDashboard() {
                 ${i.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
                 ${i.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
                 <span class="text-gray-500">${dayjs(i.work_date).format('M/D')}</span>
-                <a href="#staff/${i.staff_id}" class="text-blue-600 hover:underline">${esc(i.staff_name)}</a>
+                <a href="#staff/${Number(i.staff_id)}" class="text-blue-600 hover:underline">${esc(i.staff_name)}</a>
                 <span class="text-gray-400">${esc(i.project_name)}</span>
+                <a href="#reports/date=${esc(i.work_date)}&project=${Number(i.project_id)}&staff=${Number(i.staff_id)}" class="text-blue-600 hover:underline ml-auto whitespace-nowrap">日報→</a>
               </div>
               <p class="text-xs text-gray-600">${esc((i.values && i.values.free) || '')}</p>
             </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">直近のインシデントはありません</p>'}
@@ -320,17 +330,18 @@ async function renderDashboard() {
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-briefcase text-blue-600 mr-1"></i>今月の案件別実績</h3>
         <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>日報</th><th>MNP</th><th>PI</th><th>新規</th><th>光</th><th>成約</th></tr></thead>
+          <thead><tr><th>案件</th><th>日報</th>${(data.performance_fields || []).map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead>
           <tbody>
             ${data.project_performance.map(p => `
               <tr>
-                <td><a href="#projects/${p.project_id}" class="text-blue-600 hover:underline font-medium">${esc(p.project_name)}</a></td>
-                <td>${p.report_count}</td><td>${p.mnp || 0}</td><td>${p.pi || 0}</td><td>${p.shinki || 0}</td><td>${p.hikari || 0}</td>
-                <td class="font-bold">${p.seiyaku || 0}</td>
+                <td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.project_name)}</a></td>
+                <td>${p.report_count ? `<a href="#reports/from=${esc(data.month)}-01&to=${esc(data.today)}&project=${Number(p.project_id)}" class="text-blue-600 hover:underline">${Number(p.report_count)}</a>` : 0}</td>
+                ${(data.performance_fields || []).map(f => `<td>${Number((p.values || {})[f.key]) || 0}</td>`).join('')}
               </tr>`).join('')}
           </tbody>
         </table>
         </div>
+        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で見られます</p>` : ''}
       </section>
     </div>
 
@@ -350,7 +361,8 @@ async function renderDashboard() {
                 : `<button type="button" class="text-xs text-red-600 hover:underline" data-action="markAbsent" data-id="${Number(s.shift_id)}">欠勤にする</button>`
               return `<tr>
                 <td><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a>
-                  ${s.staff_unavailable ? '<span class="badge badge-red text-[10px]" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}</td>
+                  ${s.staff_unavailable ? '<span class="badge badge-red text-[10px]" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}
+                  ${s.contact ? `<a href="#consult/${Number(s.contact.consultation_id)}" class="badge badge-blue text-[10px]" title="${esc(s.contact.category_label + ': ' + (s.contact.excerpt || ''))}">連絡あり</a>` : ''}</td>
                 <td class="text-xs">${esc(s.project_name)}</td>
                 <td class="text-xs whitespace-nowrap">${s.carried_over ? `<span class="badge badge-purple text-[10px]">前日から継続</span><br>${esc(dayjs(s.work_date).format('M/D'))} ` : ''}${esc(s.start_time)}〜${esc(s.end_time)}</td>
                 <td><div class="flex flex-wrap gap-1 min-w-[10rem]">${chips}</div></td>
@@ -374,8 +386,87 @@ async function renderDashboard() {
           </div>`).join('')}</div>
       </div>` : ''}
     </section>`
+  DASH_TODOS.todos = data.todos || []
+  DASH_TODOS.hidden = data.hidden_todos || []
+  drawDashTodos()
   if (window.renderChatDashboardNotice) renderChatDashboardNotice()
 }
+
+// ---------- ダッシュボード: 管理者ToDo（#487）----------
+// 『対応済み』『あとで（明日まで）』で ToDo を隠す。隠した ToDo は下にたたんで出し、だれがいつ隠したかを示して元に戻せる。
+// サーバーは件数・最新の ID（mark）が増えたら、隠した ToDo をもう一度出す
+const DASH_TODOS = { todos: [], hidden: [] }
+function dashTodoLink(t) {
+  const href = t.href || (t.staff_id ? '#staff/' + Number(t.staff_id) : '')
+  return href ? `<a href="${esc(href)}" class="text-xs text-blue-600 whitespace-nowrap hover:underline">${esc(t.link_label || '詳細→')}</a>` : ''
+}
+function drawDashTodos() {
+  const box = document.getElementById('dash-todos'); if (!box) return
+  const fmt = v => esc(dayjs(String(v || '').replace(' ', 'T')).format('M/D HH:mm'))
+  box.innerHTML = `
+    <div class="space-y-2 max-h-80 overflow-y-auto">
+      ${DASH_TODOS.todos.map(t => `
+        <div class="flex items-start gap-2.5 p-2.5 rounded-lg ${t.level === 'high' ? 'bg-red-50' : 'bg-amber-50'}">
+          <i class="fas ${t.level === 'high' ? 'fa-circle-exclamation text-red-500' : 'fa-triangle-exclamation text-amber-500'} mt-0.5"></i>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm ${t.level === 'high' ? 'text-red-800' : 'text-amber-800'}">${esc(t.text)}</p>
+            <div class="flex gap-3 mt-1">
+              ${(t.actions || []).includes('done') ? `<button type="button" class="text-[11px] text-gray-600 hover:underline" data-action="dashTodoDone" data-key="${esc(t.key)}"><i class="fas fa-check mr-0.5"></i>${t.follow_id ? 'フォローを完了にする' : '対応済み'}</button>` : ''}
+              ${(t.actions || []).includes('snooze') ? `<button type="button" class="text-[11px] text-gray-600 hover:underline" data-action="dashTodoSnooze" data-key="${esc(t.key)}"><i class="fas fa-clock mr-0.5"></i>あとで（明日まで）</button>` : ''}
+            </div>
+          </div>
+          ${dashTodoLink(t)}
+        </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">対応すべきタスクはありません <i class="fas fa-check text-emerald-500"></i></p>'}
+    </div>
+    ${DASH_TODOS.hidden.length ? `<details class="mt-3">
+      <summary class="text-xs text-gray-500 cursor-pointer">対応済み・あとでにした ToDo（${DASH_TODOS.hidden.length}件）</summary>
+      <div class="space-y-1.5 mt-2 max-h-60 overflow-y-auto">
+        ${DASH_TODOS.hidden.map(t => {
+          const d = t.dismissed || {}
+          return `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
+            <div class="flex-1 min-w-0">
+              <p class="text-gray-600">${esc(t.text)}</p>
+              <p class="text-[11px] text-gray-400 mt-0.5">${d.action === 'done' ? '対応済み' : `あとで（${fmt(d.until_at)}まで）`}・${esc(d.user_name || '-')}・${fmt(d.created_at)}</p>
+            </div>
+            ${dashTodoLink(t)}
+            <button type="button" class="text-[11px] text-blue-600 hover:underline whitespace-nowrap" data-action="dashTodoRestore" data-key="${esc(t.key)}">元に戻す</button>
+          </div>`
+        }).join('')}
+      </div>
+    </details>` : ''}`
+}
+// 隠す（action: done / snooze）。フォロー記録の ToDo の『対応済み』は、そのフォロー記録を完了にする（期日の ToDo は記録が完了になれば出なくなる）
+async function dashTodoDismiss(el, action) {
+  const t = DASH_TODOS.todos.find(x => x.key === el.dataset.key); if (!t) return
+  await withSubmitLock(el, async () => {
+    let res
+    try {
+      if (action === 'done' && t.follow_id) {
+        await axios.put('/api/admin/follow-logs/' + Number(t.follow_id), { status: 'done' })
+        DASH_TODOS.todos = DASH_TODOS.todos.filter(x => x !== t)
+        toast('フォロー記録を完了にしました'); drawDashTodos(); return
+      }
+      res = (await axios.post('/api/admin/dashboard/todos', { key: t.key, mark: t.mark, action })).data
+    } catch (e) { showApiError(e, 'ToDo を更新できませんでした'); return }
+    DASH_TODOS.todos = DASH_TODOS.todos.filter(x => x !== t)
+    DASH_TODOS.hidden.unshift({ ...t, dismissed: { action, until_at: res.until_at, user_name: res.user_name, created_at: res.created_at } })
+    toast(action === 'done' ? '対応済みにしました' : '明日まで表示しません')
+    drawDashTodos()
+  })
+}
+delegate('dashTodoDone', el => dashTodoDismiss(el, 'done'))
+delegate('dashTodoSnooze', el => dashTodoDismiss(el, 'snooze'))
+delegate('dashTodoRestore', el => {
+  const t = DASH_TODOS.hidden.find(x => x.key === el.dataset.key); if (!t) return
+  withSubmitLock(el, async () => {
+    try { await axios.delete('/api/admin/dashboard/todos?' + new URLSearchParams({ key: t.key })) } catch (e) { showApiError(e, '元に戻せませんでした'); return }
+    DASH_TODOS.hidden = DASH_TODOS.hidden.filter(x => x !== t)
+    const { dismissed, ...rest } = t
+    DASH_TODOS.todos.push(rest)
+    DASH_TODOS.todos.sort((a, b) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1))
+    toast('ToDo に戻しました'); drawDashTodos()
+  })
+})
 
 // ---------- ダッシュボード: 欠勤・代わりの手配・報告状況 ----------
 // 欠勤にする。押す前に最新の報告を確かめ、入店以降の報告があれば時刻を示して確認する（#221）。成功したら代わりの候補を出す（#216）
@@ -392,10 +483,13 @@ async function markAbsent(shiftId, button) {
     const head = `${s.staff_name}さん（${s.project_name} ${s.start_time}〜${s.end_time}）を欠勤にしますか？\n欠勤のシフトは精算（支払・請求）の対象から外れます。`
     const msg = started ? `${DASH_RS[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(11, 16)} にあります（勤務した記録があります）。\n${head}` : head
     if (!confirm(msg)) return
+    let res
     try {
-      await axios.put('/api/admin/shifts/' + shiftId, { status: 'absent' })
+      res = (await axios.put('/api/admin/shifts/' + shiftId, { status: 'absent' })).data
     } catch (e) { showApiError(e, '欠勤にできませんでした'); return }
     toast('欠勤として登録しました')
+    // 欠勤のシフトの承認待ちの打刻修正は承認できないので、却下が必要なことを知らせる（#70）
+    if (res && res.pending_corrections) alert(`このシフトには承認待ちの打刻修正が${Number(res.pending_corrections)}件あります。\n欠勤のシフトの申請は承認できないため、打刻修正の画面で却下してください。`)
     await renderDashboard()
     // 前日から継続のシフトは再取得後の「本日の欠勤」に入らないので、手元の情報で候補を開く
     if (!DASH_SHIFTS.has(shiftId)) DASH_SHIFTS.set(shiftId, { ...s, status: 'absent' })
@@ -1270,19 +1364,40 @@ window.showFollowModal = function (sid, name) {
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">対応種別</label>
         <select id="fl-type" class="inp">${Object.entries(FOLLOW_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
-      <div><label class="text-sm text-gray-600 block mb-1">内容</label><textarea id="fl-content" rows="3" class="inp"></textarea></div>
-      <div><label class="text-sm text-gray-600 block mb-1">次回対応予定</label><input id="fl-next" class="inp"></div>
-      <button class="btn btn-primary w-full" onclick="addFollowLog(${sid})">記録する</button>
+      <div><label class="text-sm text-gray-600 block mb-1">内容</label><textarea id="fl-content" rows="3" class="inp" maxlength="2000"></textarea></div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div class="sm:col-span-2"><label class="text-sm text-gray-600 block mb-1">次回対応予定</label><input id="fl-next" class="inp" maxlength="200" placeholder="例: 来週電話で体調を確認"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">次回対応日</label><input id="fl-next-date" type="date" class="inp"></div>
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">対応状況</label>
+        <select id="fl-status" class="inp"><option value="done">完了（次の対応なし）</option><option value="open">対応中（次の対応あり）</option></select>
+        <p class="text-[11px] text-gray-400 mt-1">対応中で次回対応日を入れると、その日からダッシュボードの ToDo に出ます</p></div>
+      <button class="btn btn-primary w-full" data-action="addFollowLog" data-id="${Number(sid)}">記録する</button>
     </div>`)
+  // 次回対応を入れたら対応中にする（自分で状態を選んだ後は変えない。#385）
+  const st = document.getElementById('fl-status')
+  st.addEventListener('change', () => { st.dataset.touched = '1' })
+  const syncStatus = () => {
+    if (st.dataset.touched) return
+    st.value = (document.getElementById('fl-next').value.trim() || document.getElementById('fl-next-date').value) ? 'open' : 'done'
+  }
+  document.getElementById('fl-next').addEventListener('input', syncStatus)
+  document.getElementById('fl-next-date').addEventListener('change', syncStatus)
 }
 delegate('showFollowModal', el => showFollowModal(Number(el.dataset.id), el.dataset.name))
-window.addFollowLog = async function (sid) {
-  await axios.post('/api/admin/follow-logs', {
-    staff_id: sid, follow_type: document.getElementById('fl-type').value,
-    content: document.getElementById('fl-content').value, next_action: document.getElementById('fl-next').value
+window.addFollowLog = async function (sid, button) {
+  const val = id => (document.getElementById(id) || {}).value || ''
+  await withSubmitLock(button, async () => {
+    try {
+      await axios.post('/api/admin/follow-logs', {
+        staff_id: sid, follow_type: val('fl-type'), content: val('fl-content'),
+        next_action: val('fl-next'), next_action_date: val('fl-next-date') || null, status: val('fl-status') || undefined,
+      })
+    } catch (e) { showApiError(e, 'フォロー履歴を記録できませんでした'); return }
+    closeModal(); toast('フォロー履歴を記録しました'); renderStaffDetail(sid)
   })
-  closeModal(); toast('フォロー履歴を記録しました'); renderStaffDetail(sid)
 }
+delegate('addFollowLog', el => addFollowLog(Number(el.dataset.id), el))
 
 // ============ 案件 ============
 // 請求の標準単価の単位（時給の案件を日単価に見せない #91。日額・時給以外の古い値は日額として計算している）
@@ -2892,30 +3007,91 @@ delegate('showStaffNoticeReport', el => showStaffNoticeReport(Number(el.dataset.
 
 
 // ============ フォロー履歴 ============
+// 対応中・期日が来たもの・完了で絞り、スタッフ名で探し、ページ送りで古い記録まで見られる（#385 #90）。
+// 対応中は次回対応日の早い順。次回対応日はここで変えられる
+const FOLLOW_TABS = [['open', '対応中'], ['due', '期日が来たもの'], ['done', '完了'], ['all', 'すべて']]
+const FOLLOW_VIEW = { tab: 'open', q: '', page: 1 }
 async function renderFollow() {
+  // #follow/due などで開いたときは、そのタブにする
+  const h = (location.hash.split('/')[1] || '')
+  if (FOLLOW_TABS.some(([k]) => k === h)) FOLLOW_VIEW.tab = h
   loading()
-  const { data } = await axios.get('/api/admin/follow-logs')
+  const params = { page: String(FOLLOW_VIEW.page), status: FOLLOW_VIEW.tab === 'due' ? 'open' : FOLLOW_VIEW.tab }
+  if (FOLLOW_VIEW.tab === 'due') params.due = '1'
+  if (FOLLOW_VIEW.q) params.q = FOLLOW_VIEW.q
+  let data
+  try { data = (await axios.get('/api/admin/follow-logs?' + new URLSearchParams(params))).data } catch (e) {
+    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">フォロー履歴管理</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || 'フォロー履歴を読み込めませんでした')}</p>
+      <button class="btn btn-outline" data-action="followReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
+    return
+  }
+  const counts = data.counts || {}
+  const tabCount = { open: counts.open || 0, due: counts.due || 0, done: counts.done || 0, all: counts.all || 0 }
+  const pages = Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 50)))
+  const day = d => esc(dayjs(d).format('M/D'))
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">フォロー履歴管理</h2>
+    <div class="flex gap-2 flex-wrap items-center mb-4">
+      ${FOLLOW_TABS.map(([k, l]) => `<button class="btn ${FOLLOW_VIEW.tab === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="followTab" data-tab="${esc(k)}">${esc(l)}（${tabCount[k]}）</button>`).join('')}
+      <form class="flex gap-1 ml-auto" id="follow-search"><input id="follow-q" class="inp text-sm w-40" placeholder="スタッフ名で探す" value="${esc(FOLLOW_VIEW.q)}" maxlength="50">
+        <button class="btn btn-outline text-xs" type="submit"><i class="fas fa-magnifying-glass"></i></button></form>
+    </div>
     <div class="space-y-3">
-      ${data.logs.map(f => `
+      ${(data.logs || []).map(f => {
+        const due = f.status === 'open' && f.next_action_date && f.next_action_date <= data.today
+        return `
         <section class="card p-4">
           <div class="flex items-center gap-2 flex-wrap mb-1">
             <span class="badge badge-purple">${esc(FOLLOW_LABELS[f.follow_type] || f.follow_type)}</span>
-            <a href="#staff/${f.staff_id}" class="font-bold text-blue-700 hover:underline">${esc(f.staff_name)}</a>
+            <a href="#staff/${Number(f.staff_id)}" class="font-bold text-blue-700 hover:underline">${esc(f.staff_name)}</a>
             <span class="text-xs text-gray-400">対応者: ${esc(f.manager_name || '-')}</span>
-            <span class="text-xs text-gray-400">${dayjs(f.created_at).format('M/D HH:mm')}</span>
-            ${f.status === 'open' ? `<button class="badge badge-yellow ml-auto" onclick="closeFollow(${f.follow_id})">対応中 → 完了にする</button>` : '<span class="badge badge-green ml-auto">完了</span>'}
+            <span class="text-xs text-gray-400">${esc(dayjs(String(f.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</span>
+            ${f.status === 'open' ? `<button type="button" class="badge badge-yellow ml-auto" data-action="closeFollow" data-id="${Number(f.follow_id)}">対応中 → 完了にする</button>`
+              : `<span class="badge badge-green ml-auto">完了${f.done_at ? ' ' + esc(dayjs(String(f.done_at).replace(' ', 'T')).format('M/D')) : ''}</span>`}
           </div>
-          <p class="text-sm text-gray-700">${esc(f.content)}</p>
-          ${f.next_action ? `<p class="text-xs text-blue-700 mt-1.5 bg-blue-50 rounded-lg px-2.5 py-1.5"><i class="fas fa-arrow-right mr-1"></i>次回対応: ${esc(f.next_action)}</p>` : ''}
-        </section>`).join('') || '<p class="text-center text-gray-400 py-10">フォロー履歴はありません</p>'}
-    </div>`
+          <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(f.content)}</p>
+          ${f.next_action || f.next_action_date ? `<div class="text-xs mt-1.5 rounded-lg px-2.5 py-1.5 flex items-center gap-2 flex-wrap ${due ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}">
+            <span><i class="fas fa-arrow-right mr-1"></i>次回対応: ${esc(f.next_action || '-')}${f.next_action_date ? `（${day(f.next_action_date)}${due ? '・期日が来ています' : ''}）` : ''}</span>
+          </div>` : ''}
+          ${f.status === 'open' ? `<div class="flex items-center gap-1 mt-2 text-xs">
+            <label class="text-gray-500" for="follow-date-${Number(f.follow_id)}">次回対応日</label>
+            <input type="date" id="follow-date-${Number(f.follow_id)}" class="inp text-xs w-36" value="${esc(f.next_action_date || '')}">
+            <button type="button" class="btn btn-outline text-xs" data-action="followSaveDate" data-id="${Number(f.follow_id)}">変更</button>
+          </div>` : ''}
+        </section>`
+      }).join('') || '<p class="text-center text-gray-400 py-10">該当するフォロー履歴はありません</p>'}
+    </div>
+    ${pages > 1 ? `<div class="flex items-center justify-center gap-3 mt-4 text-sm">
+      <button class="btn btn-outline text-xs" data-action="followPage" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
+      <span class="text-gray-600">${data.page} / ${pages}ページ（${data.total}件）</span>
+      <button class="btn btn-outline text-xs" data-action="followPage" data-page="${data.page + 1}" ${data.page >= pages ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
+    </div>` : ''}`
+  document.getElementById('follow-search').addEventListener('submit', ev => {
+    ev.preventDefault()
+    FOLLOW_VIEW.q = document.getElementById('follow-q').value.trim(); FOLLOW_VIEW.page = 1; renderFollow()
+  })
 }
-window.closeFollow = async function (id) {
-  await axios.put('/api/admin/follow-logs/' + id, { status: 'done' })
-  toast('完了にしました'); renderFollow()
+// タブを変えたら URL の指定（#follow/due など）は外す
+function followGo() { if (location.hash !== '#follow') history.replaceState(null, '', '#follow'); renderFollow() }
+delegate('followReload', () => renderFollow())
+delegate('followTab', el => { FOLLOW_VIEW.tab = el.dataset.tab; FOLLOW_VIEW.page = 1; followGo() })
+delegate('followPage', el => { FOLLOW_VIEW.page = Math.max(1, Number(el.dataset.page) || 1); followGo() })
+delegate('followSaveDate', el => {
+  const id = Number(el.dataset.id)
+  const v = (document.getElementById('follow-date-' + id) || {}).value || ''
+  withSubmitLock(el, async () => {
+    try { await axios.put('/api/admin/follow-logs/' + id, { next_action_date: v || null }) } catch (e) { showApiError(e, '次回対応日を変更できませんでした'); return }
+    toast('次回対応日を変更しました'); renderFollow()
+  })
+})
+window.closeFollow = async function (id, btn) {
+  await withSubmitLock(btn, async () => {
+    try { await axios.put('/api/admin/follow-logs/' + id, { status: 'done' }) } catch (e) { showApiError(e, '完了にできませんでした'); return }
+    toast('完了にしました'); renderFollow()
+  })
 }
+delegate('closeFollow', el => closeFollow(Number(el.dataset.id), el))
 
 // ============ 相談対応 ============
 // 状態で絞り、ページ送りで古い相談まで見られる（#90）。対象のシフト（日付・案件）を出し、シフトボードで開ける（#195）。
@@ -2924,11 +3100,13 @@ const CONSULT_ST_BADGE = { open: '<span class="badge badge-red">未対応</span>
 const CONSULT_TABS = [['active', '未完了'], ['open', '未対応'], ['in_progress', '対応中'], ['done', '対応済み'], ['all', 'すべて']]
 const CONSULT_VIEW = { status: 'active', page: 1, list: [] }
 
+// #consult/{id} で開いたときは、その相談だけを出して強調する（ダッシュボードの ToDo・未報告の一覧から。#402 #498）
 async function renderConsult() {
+  const fid = (location.hash.match(/^#consult\/(\d+)$/) || [])[1] || ''
   loading()
   let data
   try {
-    data = (await axios.get('/api/admin/consultations?' + new URLSearchParams({ status: CONSULT_VIEW.status, page: String(CONSULT_VIEW.page) }))).data
+    data = (await axios.get('/api/admin/consultations?' + new URLSearchParams(fid ? { id: fid } : { status: CONSULT_VIEW.status, page: String(CONSULT_VIEW.page) }))).data
   } catch (e) {
     $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">相談対応</h2>
       <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '相談を読み込めませんでした')}</p>
@@ -2942,11 +3120,12 @@ async function renderConsult() {
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">相談対応</h2>
     <div class="flex gap-2 flex-wrap mb-4">
-      ${CONSULT_TABS.map(([k, l]) => `<button class="btn ${data.status === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="consultTab" data-status="${esc(k)}">${esc(l)}（${tabCount[k]}）</button>`).join('')}
+      ${CONSULT_TABS.map(([k, l]) => `<button class="btn ${!fid && data.status === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="consultTab" data-status="${esc(k)}">${esc(l)}（${tabCount[k]}）</button>`).join('')}
     </div>
+    ${fid ? `<p class="text-sm text-gray-600 mb-3"><i class="fas fa-circle-info text-blue-500 mr-1"></i>選んだ相談だけを表示しています。<button type="button" class="text-blue-700 hover:underline" data-action="consultTab" data-status="${esc(CONSULT_VIEW.status)}">一覧に戻る</button></p>` : ''}
     <div class="space-y-3">
       ${CONSULT_VIEW.list.map(co => `
-        <section class="card p-4">
+        <section class="card p-4${fid ? ' ring-2 ring-blue-400' : ''}">
           <div class="flex items-center gap-2 flex-wrap mb-1">
             <span class="badge badge-gray">${esc(CAT_LABELS[co.category] || co.category)}</span>
             ${co.urgency === 'high' ? '<span class="badge badge-red">緊急</span>' : ''}
@@ -2972,8 +3151,10 @@ async function renderConsult() {
     </div>` : ''}`
 }
 delegate('consultReload', () => renderConsult())
-delegate('consultTab', el => { CONSULT_VIEW.status = el.dataset.status; CONSULT_VIEW.page = 1; renderConsult() })
-delegate('consultPage', el => { CONSULT_VIEW.page = Math.max(1, Number(el.dataset.page) || 1); renderConsult() })
+// 1件だけの表示（#consult/{id}）から一覧に戻るときは、URL を #consult にする
+function consultGo() { if (location.hash !== '#consult') history.replaceState(null, '', '#consult'); renderConsult() }
+delegate('consultTab', el => { CONSULT_VIEW.status = el.dataset.status; CONSULT_VIEW.page = 1; consultGo() })
+delegate('consultPage', el => { CONSULT_VIEW.page = Math.max(1, Number(el.dataset.page) || 1); consultGo() })
 // 対象の日を含む週（月曜始まり）と案件でシフトボードを開く
 delegate('consultOpenBoard', el => {
   const d = dayjs(el.dataset.date)

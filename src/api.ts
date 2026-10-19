@@ -1340,6 +1340,8 @@ const CONSULT_TARGET_PAST_DAYS = 1
 const CONSULT_TARGET_FUTURE_DAYS = 7
 // 同じ内容を続けて送ったときに二重登録とみなす秒数（#194）
 const CONSULT_DUP_SECONDS = 120
+// 1人が24時間に送れる相談の数（誤操作・乗っ取りで大量に登録されないように。#510）
+const CONSULT_DAILY_MAX = 20
 
 async function consultPersonRows(db: D1Database, u: any) {
   const rows = await personStaffRows(db, u)
@@ -1421,6 +1423,11 @@ api.post('/staff/consultations', async (c) => {
   const dup = await db.prepare(`SELECT consultation_id FROM consultations WHERE staff_id = ? AND category = ? AND body = ? AND created_at >= ? LIMIT 1`)
     .bind(owner.staff_id, category, body, since).first()
   if (dup) return c.json({ error: '同じ内容の相談をすでに送信しています。相談履歴を確認してください', duplicate: true }, 409)
+  // 送信回数の上限: 本人（全所属企業の分）が直近24時間に送った相談の数（#510）
+  const sids = rows.length ? rows.map(r => r.staff_id) : [owner.staff_id]
+  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const sent = await db.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id IN (${sids.map(() => '?').join(',')}) AND created_at >= ?`).bind(...sids, dayAgo).first() as any
+  if (Number(sent?.n) >= CONSULT_DAILY_MAX) return c.json({ error: `相談・連絡は24時間に${CONSULT_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください` }, 429)
   const r = await db.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(owner.company_id, owner.staff_id, category, body, urgency || 'normal', targetProjectId, targetDate, nowJST()).run()
@@ -1439,10 +1446,24 @@ const DASH_END_GRACE_MIN = 30
 const DASH_END_TYPES = ['work_end', 'check_out']
 // 入店以降の報告（あれば勤務したとみなし、ダッシュボードから欠勤にしない）
 const DASH_STARTED_TYPES = ['check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out']
+// 未報告の一覧に添える相談の本文の長さ（#498）
+const DASH_CONTACT_EXCERPT = 40
+// ToDo に出す相談の上限（本文は返さない。#510）と、返信してから対応中のまま何日たったら ToDo に出すか（#403）
+const DASH_CONSULT_LIMIT = 100
+const DASH_CONSULT_WAIT_DAYS = 2
+// 仮登録のまま本登録を促す目安: 登録からの日数・稼働の回数（#412）
+const DASH_PROVISIONAL_DAYS = 7
+const DASH_PROVISIONAL_SHIFTS = 2
+// 繰り返し登録の終了を何日前から知らせるか（#456）
+const DASH_PATTERN_END_DAYS = 14
+// 今月の案件別実績で画面に出す項目の数（日報テンプレートの数値項目の先頭から。#184）
+const DASH_PERF_FIELDS = 6
+const DASH_WEEKDAY = ['日', '月', '火', '水', '木', '金', '土']
 // 'YYYY-MM-DD HH:MM:SS' どうしの差（分）
 function minutesBetween(from: string, to: string): number {
   return Math.round((Date.parse(to.replace(' ', 'T') + 'Z') - Date.parse(from.replace(' ', 'T') + 'Z')) / 60000)
 }
+const mdLabel = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
 
 // 管理者ダッシュボード
 api.get('/admin/dashboard', async (c) => {
@@ -1485,26 +1506,54 @@ api.get('/admin/dashboard', async (c) => {
   const active = working.filter(s => !s.carried_over || (crossesMidnight(s) && (now < s.window.end || missingOf(s, DASH_END_TYPES).length > 0)))
   const todayOnly = active.filter(s => !s.carried_over)
   const revenue = todayOnly.reduce((a, s) => a + (s.unit_price || 0), 0)
+  // 遅刻・欠勤・体調不良の相談（#498）。対象の日付があればその日（案件があればその案件）のシフト、
+  // なければ送った日か前日（前の晩に送った連絡）のシフトに結び付け、未報告の一覧に『連絡あり』と出す
+  const contacts = (await db.prepare(`
+    SELECT co.consultation_id, co.staff_id, co.category, co.urgency, co.status, co.target_project_id, co.target_date, co.created_at,
+      substr(co.body, 1, ${DASH_CONTACT_EXCERPT}) AS excerpt, length(co.body) > ${DASH_CONTACT_EXCERPT} AS truncated
+    FROM consultations co
+    WHERE co.company_id = ? AND co.category IN ('absence', 'health')
+      AND (co.target_date IN (?, ?) OR (co.target_date IS NULL AND co.created_at >= ?))
+    ORDER BY co.created_at DESC, co.consultation_id DESC LIMIT 200`).bind(cid, yesterday, today, `${addDays(yesterday, -1)} 00:00:00`).all()).results as any[]
+  for (const s of rows) {
+    const co = contacts.find(x => x.staff_id === s.staff_id && (x.target_date
+      ? x.target_date === s.work_date && (!x.target_project_id || x.target_project_id === s.project_id)
+      : [addDays(s.work_date, -1), s.work_date].includes(String(x.created_at).slice(0, 10))))
+    s.contact = co ? { consultation_id: co.consultation_id, category: co.category, category_label: catLabel(co.category), urgency: co.urgency, status: co.status,
+      excerpt: co.excerpt + (co.truncated ? '…' : ''), created_at: co.created_at } : null
+  }
   // 未報告: 予定の時刻を過ぎたものだけ（起床・出発・入店は開始から、勤務終了・退店は終了から。#186）
   const unreportedItem = (s: any, dueAt: string, extra: any = {}) => ({
     shift_id: s.shift_id, staff_id: s.staff_id, name: s.staff_name, project: s.project_name, work_date: s.work_date,
-    start_time: s.start_time, end_time: s.end_time, carried_over: s.carried_over, due_at: dueAt, overdue_minutes: minutesBetween(dueAt, now), ...extra,
+    start_time: s.start_time, end_time: s.end_time, carried_over: s.carried_over, due_at: dueAt, overdue_minutes: minutesBetween(dueAt, now),
+    contact: s.contact, ...extra,
   })
+  // 同じ日に同じ人の別のシフトで起床を報告していれば、起床は済みとする（#449）
+  const wokeUp = new Set(rows.filter(s => s.done_types.includes('wake_up')).map(s => `${s.staff_id}:${s.work_date}`))
+  // 一覧は人ごとにまとめる（同じ人の2つ目以降のシフトは件数だけ添える。#449）。連絡のない人を上にする（#498）
+  const byPerson = (list: any[]) => {
+    const m = new Map<number, any>()
+    for (const x of list.sort((a, b) => b.overdue_minutes - a.overdue_minutes)) {
+      const cur = m.get(x.staff_id)
+      if (!cur) { m.set(x.staff_id, { ...x, other_shifts: 0 }); continue }
+      cur.other_shifts++
+      if (!cur.contact && x.contact) cur.contact = x.contact
+    }
+    return [...m.values()].sort((a, b) => (a.contact ? 1 : 0) - (b.contact ? 1 : 0) || b.overdue_minutes - a.overdue_minutes)
+  }
   const startDue = (s: any, t: string) => {
     const due = addMinutes(s.window.start, DASH_DUE_OFFSET[t])
     const dayStart = `${s.work_date} 00:00:00` // 報告は稼働日の 0:00 から受け付ける（shift-time.ts reportableWindow）
     return due < dayStart ? dayStart : due
   }
   // 前日から継続している勤務（23時台に始まる夜勤など）も対象にする
-  const startList = (t: string) => active
-    .filter(s => missingOf(s, [t]).length && startDue(s, t) <= now)
-    .map(s => unreportedItem(s, startDue(s, t)))
-    .sort((a, b) => b.overdue_minutes - a.overdue_minutes)
+  const startList = (t: string) => byPerson(active
+    .filter(s => missingOf(s, [t]).length && startDue(s, t) <= now && !(t === 'wake_up' && wokeUp.has(`${s.staff_id}:${s.work_date}`)))
+    .map(s => unreportedItem(s, startDue(s, t))))
   // 勤務終了・退店: 本日と前日のシフト（日をまたがない前日分の退店漏れも含む）
-  const endList = working
+  const endList = byPerson(working
     .filter(s => missingOf(s, DASH_END_TYPES).length && addMinutes(s.window.end, DASH_END_GRACE_MIN) <= now)
-    .map(s => unreportedItem(s, s.window.end, { missing: missingOf(s, DASH_END_TYPES) }))
-    .sort((a, b) => b.overdue_minutes - a.overdue_minutes)
+    .map(s => unreportedItem(s, s.window.end, { missing: missingOf(s, DASH_END_TYPES) })))
   // 本日の欠勤（代わりの手配に使う。#216）
   const absentToday = rows.filter(s => s.status === 'absent' && s.work_date === today)
   const unreported = { wake_up: startList('wake_up'), departure: startList('departure'), check_in: startList('check_in'), work_end: endList }
@@ -1528,61 +1577,95 @@ api.get('/admin/dashboard', async (c) => {
 
   // インシデント (直近7日)
   const incidents = await db.prepare(`
-    SELECT dr.work_date, dr.incident_flag, dr.complaint_flag, us.name AS staff_name, dr.staff_id, p.project_name, dr.report_values
+    SELECT dr.daily_report_id, dr.project_id, dr.work_date, dr.incident_flag, dr.complaint_flag, us.name AS staff_name, dr.staff_id, p.project_name, dr.report_values
     FROM daily_reports dr
     JOIN projects p ON dr.project_id = p.project_id
     JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE dr.company_id = ? AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= date(?, '-7 days')
     ORDER BY dr.work_date DESC`).bind(cid, today).all()
 
-  // 要フォロースタッフ
+  // 要フォロースタッフ。退職・統合済み・停止中などは出さない（#314）
   const followStaff = await db.prepare(`
     SELECT sp.staff_id, us.name, sp.retention_risk, sp.memo, sp.evaluation_score
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    WHERE sp.company_id = ? AND (sp.follow_flag = 1 OR sp.retention_risk != 'low')`).bind(cid).all()
+    WHERE sp.company_id = ? AND (sp.follow_flag = 1 OR sp.retention_risk != 'low') AND ${elig.sql}
+    ORDER BY CASE sp.retention_risk WHEN 'high' THEN 0 WHEN 'mid' THEN 1 ELSE 2 END, sp.staff_id`).bind(cid, ...elig.binds).all()
 
-  // 今月の案件別実績
-  const projPerf = await db.prepare(`
-    SELECT p.project_id, p.project_name,
-      COUNT(dr.daily_report_id) AS report_count,
-      SUM(COALESCE(json_extract(dr.report_values, '$.mnp'),0)) AS mnp,
-      SUM(COALESCE(json_extract(dr.report_values, '$.pi'),0)) AS pi,
-      SUM(COALESCE(json_extract(dr.report_values, '$.shinki'),0)) AS shinki,
-      SUM(COALESCE(json_extract(dr.report_values, '$.kishuhen'),0)) AS kishuhen,
-      SUM(COALESCE(json_extract(dr.report_values, '$.hikari'),0)) AS hikari,
-      SUM(COALESCE(json_extract(dr.report_values, '$.seiyaku'),0)) AS seiyaku
-    FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.work_date LIKE ?
-    WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id`).bind(month + '%', cid).all()
+  // 今月の案件別実績。項目は日報テンプレートの数値項目（固定のキーで集計しない。実績分析 loadAnalytics と同じ数え方。#184）
+  const [perfRows, perfVals, perfTpls, unchecked] = (await db.batch([
+    db.prepare(`SELECT p.project_id, p.project_name, COUNT(dr.daily_report_id) AS report_count
+      FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date LIKE ?
+      WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id ORDER BY p.project_id`).bind(month + '%', cid),
+    db.prepare(`SELECT dr.project_id, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
+      FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id AND p.status = 'active', ${ANALYTICS_JE}
+      WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY dr.project_id, je.key`).bind(cid, month + '%'),
+    db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM projects p JOIN report_templates rt ON rt.template_id = p.report_template_id
+      WHERE p.company_id = ? AND p.status = 'active' ORDER BY rt.template_id`).bind(cid),
+    // 未確認の日報の件数（日報一覧の「未確認のみ」と同じ条件。#183）
+    db.prepare(`SELECT COUNT(*) AS n FROM daily_reports dr WHERE dr.company_id = ? AND ${DR_UNCHECKED_SQL}`).bind(cid),
+  ])).map(r => (r.results || []) as any[])
+  const perfFields: { key: string; label: string }[] = []
+  {
+    const seen = new Set<string>(); const textKeys = new Set<string>()
+    for (const t of perfTpls) {
+      let defs: any[] = []
+      try { defs = JSON.parse(t.fields_json) } catch { defs = [] }
+      for (const f of Array.isArray(defs) ? defs : []) {
+        if (!f || typeof f.key !== 'string' || !f.key) continue
+        if (f.type !== 'number') { textKeys.add(f.key); continue }
+        if (!seen.has(f.key)) { seen.add(f.key); perfFields.push({ key: f.key, label: String(f.label || f.key) }) }
+      }
+    }
+    for (const r of perfVals) if (r.isnum && !seen.has(r.k) && !textKeys.has(r.k)) { seen.add(r.k); perfFields.push({ key: r.k, label: r.k }) }
+  }
+  const projectPerformance = perfRows.map(p => ({
+    ...p, values: Object.fromEntries(perfFields.map(f => [f.key, Number(perfVals.find(r => r.project_id === p.project_id && r.k === f.key)?.v) || 0])),
+  }))
 
-  // 未対応の相談
-  const openConsults = await db.prepare(`
-    SELECT co.*, us.name AS staff_name FROM consultations co
-    JOIN staff_profiles sp ON co.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE co.company_id = ? AND co.status = 'open' ORDER BY co.created_at DESC`).bind(cid).all()
+  // 未完了の相談。ToDo の文言に要る列だけを読む（本文は返さない。#510）。
+  // 対応中は、最後に返信した日時（返信の通知の日時。なければ受付日時）から数える（#403）
+  const waitSince = addMinutes(now, -DASH_CONSULT_WAIT_DAYS * 1440)
+  const consults = (await db.prepare(`
+    SELECT * FROM (
+      SELECT co.consultation_id, co.staff_id, co.category, co.urgency, co.status, co.created_at, us.name AS staff_name,
+        (SELECT MAX(n.created_at) FROM user_notifications n WHERE n.related_id = co.consultation_id AND n.kind = '${CONSULT_REPLY_KIND}') AS replied_at
+      FROM consultations co JOIN staff_profiles sp ON co.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      WHERE co.company_id = ? AND co.status IN ('open', 'in_progress')
+    ) WHERE status = 'open' OR COALESCE(replied_at, created_at) <= ?
+    ORDER BY created_at DESC, consultation_id DESC LIMIT ?`).bind(cid, waitSince, DASH_CONSULT_LIMIT).all()).results as any[]
+  const consultCounts = Object.fromEntries((((await db.prepare(`SELECT status, COUNT(*) AS n FROM consultations WHERE company_id = ? AND status IN ('open', 'in_progress') GROUP BY status`)
+    .bind(cid).all()).results) as any[]).map(r => [r.status, Number(r.n) || 0]))
 
   // ===== 管理者ToDo (ルールベース) =====
-  const todos: any[] = []
+  // key: ToDo ごとの安定したキー。mark: 件数・最新の ID など。『対応済み』『あとで』にした後で mark が増えたら、もう一度出す（#487）
+  // actions: 画面に出す操作（done 対応済み / snooze あとで）。相談・打刻修正はそれぞれの画面で片付けるので、あとでだけにする
+  type Todo = { key: string; mark: number; level: 'high' | 'mid'; text: string; staff_id?: number; href?: string; link_label?: string; actions: string[]; follow_id?: number }
+  const todos: Todo[] = []
+  const BOTH = ['done', 'snooze'], LATER = ['snooze']
   // ルール1: 日報未提出。件数はシフトの数、「n日連続」は稼働日の数で数える（直近3日のすべての日に未提出があれば連続）
-  const drCounts: Record<string, { name: string; count: number; dates: Set<string>; staff_id: number }> = {}
+  const drCounts: Record<string, { name: string; count: number; dates: Set<string>; staff_id: number; last: number }> = {}
   for (const m of missingReports.results as any[]) {
     const k = String(m.staff_id)
-    drCounts[k] = drCounts[k] || { name: m.staff_name, count: 0, dates: new Set(), staff_id: m.staff_id }
+    drCounts[k] = drCounts[k] || { name: m.staff_name, count: 0, dates: new Set(), staff_id: m.staff_id, last: 0 }
     drCounts[k].count++
     drCounts[k].dates.add(m.work_date)
+    drCounts[k].last = Math.max(drCounts[k].last, Number(m.shift_id))
   }
   for (const v of Object.values(drCounts)) {
     const days = v.dates.size
-    if (days >= 3) todos.push({ level: 'high', text: `${v.name}さんが${days}日連続で日報未提出です（${v.count}件）。面談してください。`, staff_id: v.staff_id })
-    else if (v.count >= 1) todos.push({ level: 'mid', text: `${v.name}さんの日報が${v.count}件（${days}日分）未提出です。リマインドしてください。`, staff_id: v.staff_id })
+    const base = { key: `daily_report:${v.staff_id}`, mark: v.last, staff_id: v.staff_id, actions: BOTH }
+    if (days >= 3) todos.push({ ...base, level: 'high', text: `${v.name}さんが${days}日連続で日報未提出です（${v.count}件）。面談してください。` })
+    else if (v.count >= 1) todos.push({ ...base, level: 'mid', text: `${v.name}さんの日報が${v.count}件（${days}日分）未提出です。リマインドしてください。` })
   }
-  // ルール2: 入店報告遅れが月2回以上
+  // ルール2: 遅刻が月2回以上。入店・勤務開始のどちらかが遅刻と判定されたシフトの数（同じシフトの入店と勤務開始は1回。#497）
   const lateRows = await db.prepare(`
-    SELECT a.staff_id, us.name, COUNT(*) AS n FROM attendance_reports a
-    JOIN staff_profiles sp ON a.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE a.company_id = ? AND a.report_type = 'check_in' AND a.status = 'late' AND a.reported_at LIKE ?
-    GROUP BY a.staff_id HAVING n >= 2`).bind(cid, month + '%').all()
+    SELECT s.staff_id, us.name, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a
+    JOIN shifts s ON s.shift_id = a.shift_id
+    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    WHERE a.company_id = ? AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')
+    GROUP BY s.staff_id HAVING n >= 2`).bind(cid, month + '%').all()
   for (const r of lateRows.results as any[]) {
-    todos.push({ level: 'mid', text: `${r.name}さんの入店報告が今月${r.n}回遅れています。前日確認を強化してください。`, staff_id: r.staff_id })
+    todos.push({ key: `late:${r.staff_id}:${month}`, mark: Number(r.n), level: 'mid', text: `${r.name}さんが今月${r.n}回遅刻しています（入店・勤務開始の遅れ）。前日確認を強化してください。`, staff_id: r.staff_id, actions: BOTH })
   }
   // ルール3: 欠勤が月2回以上
   const absRows = await db.prepare(`
@@ -1590,40 +1673,149 @@ api.get('/admin/dashboard', async (c) => {
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.status = 'absent' AND s.work_date LIKE ? AND s.work_date <= ? GROUP BY s.staff_id HAVING n >= 2`).bind(cid, month + '%', today).all()
   for (const r of absRows.results as any[]) {
-    todos.push({ level: 'high', text: `${r.name}さんの欠勤が今月${r.n}回です。離職リスク中として体調・状況確認をしてください。`, staff_id: r.staff_id })
+    todos.push({ key: `absent:${r.staff_id}:${month}`, mark: Number(r.n), level: 'high', text: `${r.name}さんの欠勤が今月${r.n}回です。離職リスク中として体調・状況確認をしてください。`, staff_id: r.staff_id, actions: BOTH })
   }
-  // ルール4: インシデント増加案件
-  const incByProj: Record<string, number> = {}
-  for (const i of incidents.results as any[]) incByProj[i.project_name] = (incByProj[i.project_name] || 0) + 1
-  for (const [pname, n] of Object.entries(incByProj)) {
-    if (n >= 1) todos.push({ level: n >= 2 ? 'high' : 'mid', text: `${pname}で直近7日にインシデント/クレームが${n}件発生しています。内容を確認しクライアント共有を検討してください。` })
+  // ルール4: インシデント増加案件。日報一覧をその案件・直近7日・インシデントで絞って開く（#402 #404）
+  const incByProj = new Map<number, { name: string; n: number; last: number }>()
+  for (const i of incidents.results as any[]) {
+    const v = incByProj.get(i.project_id) || { name: i.project_name, n: 0, last: 0 }
+    v.n++; v.last = Math.max(v.last, Number(i.daily_report_id))
+    incByProj.set(i.project_id, v)
   }
-  // ルール5: 未対応相談
-  for (const co of openConsults.results as any[]) {
-    todos.push({ level: co.urgency === 'high' ? 'high' : 'mid', text: `${co.staff_name}さんから相談（${catLabel(co.category)}）が届いています。返信してください。`, staff_id: co.staff_id })
+  for (const [pid, v] of incByProj) {
+    todos.push({ key: `incident:${pid}`, mark: v.last, level: v.n >= 2 ? 'high' : 'mid', actions: BOTH,
+      text: `${v.name}で直近7日にインシデント/クレームが${v.n}件発生しています。内容を確認しクライアント共有を検討してください。`,
+      href: `#reports/from=${addDays(today, -7)}&to=${today}&project=${pid}&flagged=1`, link_label: '日報→' })
+  }
+  // ルール5: 未対応の相談と、返信したまま対応中で止まっている相談。相談対応の画面でその相談を開く（#402 #403）
+  for (const co of consults) {
+    if (co.status === 'open') {
+      todos.push({ key: `consult:${co.consultation_id}`, mark: 0, level: co.urgency === 'high' ? 'high' : 'mid', actions: LATER, staff_id: co.staff_id,
+        text: `${co.staff_name}さんから相談（${catLabel(co.category)}）が届いています。返信してください。`, href: `#consult/${co.consultation_id}`, link_label: '返信→' })
+    } else {
+      const days = Math.max(DASH_CONSULT_WAIT_DAYS, Math.floor(minutesBetween(String(co.replied_at || co.created_at), now) / 1440))
+      todos.push({ key: `consult_wait:${co.consultation_id}`, mark: 0, level: 'mid', actions: LATER, staff_id: co.staff_id,
+        text: `${co.staff_name}さんの相談（${catLabel(co.category)}）が${co.replied_at ? '返信後' : '受付後'}${days}日、対応中のままです。解決したら対応済みにしてください。`,
+        href: `#consult/${co.consultation_id}`, link_label: '確認→' })
+    }
   }
   // ルール6: 承認待ちの打刻修正（#226）。最も古い申請から2日以上たっていれば high
-  const pendCorr = await db.prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(cid).first() as any
+  const pendCorr = await db.prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS oldest, MAX(correction_id) AS last FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(cid).first() as any
   if (pendCorr?.n > 0) {
     const days = pendCorr.oldest ? Math.max(0, Math.floor(minutesBetween(String(pendCorr.oldest), now) / 1440)) : 0
-    todos.push({ level: days >= 2 ? 'high' : 'mid', text: `打刻修正の承認待ちが${pendCorr.n}件あります（最も古いものは${days ? days + '日前' : '24時間以内'}の申請）。確認してください。`, href: '#corrections' })
+    todos.push({ key: 'corrections', mark: Number(pendCorr.last) || 0, level: days >= 2 ? 'high' : 'mid', actions: LATER, href: '#corrections', link_label: '確認→',
+      text: `打刻修正の承認待ちが${pendCorr.n}件あります（最も古いものは${days ? days + '日前' : '24時間以内'}の申請）。確認してください。` })
   }
+  // ルール7: 仮登録のまま、登録から日数がたった人・稼働が続いている人（#412）。電話番号が同じ本登録のスタッフがいれば統合の候補として添える
+  const provisional = (await db.prepare(`
+    SELECT sp.staff_id, us.name, substr(sp.created_at, 1, 10) AS created_date,
+      (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.company_id = sp.company_id AND s.status IN ('confirmed','substitute') AND s.work_date <= ?) AS worked,
+      (SELECT COUNT(*) FROM staff_profiles sp2 JOIN users us2 ON us2.user_id = sp2.user_id
+        WHERE sp2.company_id = sp.company_id AND sp2.staff_id != sp.staff_id AND sp2.merged_into_staff_id IS NULL AND COALESCE(sp2.is_provisional, 0) = 0
+          AND COALESCE(us.phone, '') != '' AND us2.phone = us.phone) AS same_phone
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.company_id = ? AND sp.is_provisional = 1 AND ${elig.sql}
+    ORDER BY sp.staff_id LIMIT 200`).bind(today, cid, ...elig.binds).all()).results as any[]
+  for (const p of provisional) {
+    const days = p.created_date ? Math.max(0, Math.floor(minutesBetween(`${p.created_date} 00:00:00`, `${today} 00:00:00`) / 1440)) : 0
+    if (days < DASH_PROVISIONAL_DAYS && Number(p.worked) < DASH_PROVISIONAL_SHIFTS) continue
+    todos.push({ key: `provisional:${p.staff_id}`, mark: 0, level: 'mid', staff_id: p.staff_id, actions: BOTH, link_label: '本登録→',
+      text: `${p.name}さんが仮登録のままです（登録から${days}日・稼働${Number(p.worked)}回）。本登録してください。`
+        + (Number(p.same_phone) ? `電話番号が同じスタッフが${Number(p.same_phone)}名います。同じ人なら統合してください。` : '') })
+  }
+  // ルール8: 次回対応日が今日までの、対応中のフォロー記録（#385）。担当者の名前を添える
+  const followDue = (await db.prepare(`
+    SELECT f.follow_id, f.staff_id, f.next_action, f.next_action_date, us.name AS staff_name, um.name AS manager_name
+    FROM follow_logs f JOIN staff_profiles sp ON f.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id LEFT JOIN users um ON um.user_id = f.manager_id
+    WHERE f.company_id = ? AND f.status = 'open' AND f.next_action_date IS NOT NULL AND f.next_action_date <= ?
+    ORDER BY f.next_action_date, f.follow_id LIMIT 50`).bind(cid, today).all()).results as any[]
+  for (const f of followDue) {
+    const late = f.next_action_date < today
+    todos.push({ key: `follow:${f.follow_id}`, mark: 0, level: late ? 'high' : 'mid', staff_id: f.staff_id, follow_id: f.follow_id, actions: BOTH,
+      text: `${f.staff_name}さんのフォロー「${f.next_action || '次回対応'}」が${late ? mdLabel(f.next_action_date) + 'の期日を過ぎています' : '今日が期日です'}（担当: ${f.manager_name || '-'}）。` })
+  }
+  // ルール9: 終了日が近い繰り返し登録（#456）。続けるなら案件詳細の一覧から延長する
+  const patterns = (await db.prepare(`
+    SELECT sp.pattern_id, sp.weekdays, sp.date_to, sp.start_time, sp.end_time, p.project_id, p.project_name
+    FROM slot_patterns sp JOIN projects p ON p.project_id = sp.project_id AND p.company_id = sp.company_id
+    WHERE sp.company_id = ? AND p.status = 'active' AND sp.date_to BETWEEN ? AND ? ORDER BY sp.date_to LIMIT 50`)
+    .bind(cid, today, addDays(today, DASH_PATTERN_END_DAYS)).all()).results as any[]
+  for (const p of patterns) {
+    const wd = String(p.weekdays || '').split(',').map(Number).filter(n => n >= 0 && n <= 6).map(n => DASH_WEEKDAY[n]).join('・')
+    const left = Math.round(minutesBetween(`${today} 00:00:00`, `${p.date_to} 00:00:00`) / 1440)
+    todos.push({ key: `pattern_end:${p.pattern_id}:${p.date_to}`, mark: 0, level: 'mid', actions: BOTH, href: `#projects/${p.project_id}`, link_label: '案件→',
+      text: `${p.project_name}の繰り返し登録（${wd} ${p.start_time}〜${p.end_time}）が${mdLabel(p.date_to)}で終わります（${left ? 'あと' + left + '日' : '今日まで'}）。続ける場合は延長してください。` })
+  }
+  // 『対応済み』『あとで』にした ToDo は分けて返す（画面ではたたんで出し、元に戻せる）
+  const dismissals = new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
+    FROM todo_dismissals d LEFT JOIN users um ON um.user_id = d.user_id WHERE d.company_id = ? AND (d.action = 'done' OR d.until_at > ?)`).bind(cid, now).all()).results as any[])
+    .map(d => [String(d.todo_key), d]))
+  const visible: Todo[] = [], hidden: any[] = []
+  for (const t of todos) {
+    const d = dismissals.get(t.key)
+    if (d && Number(d.mark) >= t.mark) hidden.push({ ...t, dismissed: { action: d.action, until_at: d.until_at, user_name: d.user_name, created_at: d.created_at } })
+    else visible.push(t)
+  }
+  const byLevel = (a: Todo, b: Todo) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1)
 
   return c.json({
     today, month, now,
-    working_count: todayOnly.length,
+    // 稼働予定は人数（同じ人の複数のシフトは1名）とシフトの数を分けて返す（#449）
+    working_count: new Set(todayOnly.map(s => s.staff_id)).size,
+    working_shift_count: todayOnly.length,
     revenue_forecast: revenue,
     shifts: active,
     absent_shifts: absentToday,
     unreported,
     missing_daily_reports: missingReports.results,
-    incidents: (incidents.results as any[]).map(i => ({ ...i, values: JSON.parse(i.report_values) })),
+    unchecked_daily_reports: Number(unchecked[0]?.n) || 0,
+    incidents: (incidents.results as any[]).map(({ report_values, ...i }) => {
+      let values: any = {}
+      try { values = JSON.parse(report_values) || {} } catch { values = {} }
+      return { ...i, values }
+    }),
     follow_staff: followStaff.results,
-    project_performance: projPerf.results,
-    open_consultations: openConsults.results,
-    todos: todos.sort((a, b) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1)),
+    performance_fields: perfFields.slice(0, DASH_PERF_FIELDS),
+    performance_field_count: perfFields.length,
+    project_performance: projectPerformance,
+    consultation_counts: { open: consultCounts.open || 0, in_progress: consultCounts.in_progress || 0 },
+    todos: visible.sort(byLevel),
+    hidden_todos: hidden.sort(byLevel),
     photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
   })
+})
+
+// ToDo を『対応済み』『あとで』にする（#487）。キーは GET /admin/dashboard が返した key と mark をそのまま送る。
+// あとでは days 日後の 0:00 まで（既定は明日まで）出さない。mark より大きくなった（新しい遅刻などが増えた）ら、もう一度出す
+const TODO_KEY_RE = /^[a-z_]{1,30}(:[0-9A-Za-z_-]{1,20}){0,3}$/
+api.post('/admin/dashboard/todos', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  if (typeof b.key !== 'string' || !TODO_KEY_RE.test(b.key)) return c.json({ error: 'ToDo の指定が正しくありません' }, 400)
+  if (!oneOf(b.action, ['done', 'snooze'] as const)) return c.json({ error: '操作が正しくありません' }, 400)
+  const mark = b.mark == null ? 0 : toInt(b.mark, 0)
+  if (mark == null) return c.json({ error: 'ToDo の指定が正しくありません' }, 400)
+  const days = b.action === 'snooze' ? (b.days == null ? 1 : toInt(b.days, 1, 30)) : null
+  if (b.action === 'snooze' && days == null) return c.json({ error: '日数は1〜30で指定してください' }, 400)
+  const now = nowJST()
+  const until = days ? `${addDays(todayJST(), days)} 00:00:00` : null
+  await db.batch([
+    db.prepare(`INSERT INTO todo_dismissals (company_id, todo_key, action, mark, until_at, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(company_id, todo_key) DO UPDATE SET action = excluded.action, mark = excluded.mark, until_at = excluded.until_at, user_id = excluded.user_id, created_at = excluded.created_at`)
+      .bind(u.company_id, b.key, b.action, mark, until, u.user_id, now),
+    // 期限の過ぎた『あとで』と、半年より前の『対応済み』は片付ける
+    db.prepare(`DELETE FROM todo_dismissals WHERE company_id = ? AND ((action = 'snooze' AND until_at < ?) OR (action = 'done' AND created_at < ?))`)
+      .bind(u.company_id, addMinutes(now, -7 * 1440), addMinutes(now, -180 * 1440)),
+  ])
+  return c.json({ ok: true, key: b.key, action: b.action, until_at: until, user_name: u.name, created_at: now })
+})
+// 元に戻す（もう一度 ToDo に出す）
+api.delete('/admin/dashboard/todos', async (c) => {
+  const u = c.get('user')
+  const key = c.req.query('key') || ''
+  if (!TODO_KEY_RE.test(key)) return c.json({ error: 'ToDo の指定が正しくありません' }, 400)
+  await c.env.DB.prepare('DELETE FROM todo_dismissals WHERE company_id = ? AND todo_key = ?').bind(u.company_id, key).run()
+  return c.json({ ok: true })
 })
 
 // 入店/退店報告の写真添付必須設定を切り替え
@@ -3634,8 +3826,11 @@ api.get('/admin/consultations', async (c) => {
   const q = c.req.query('status') || 'active'
   const status = q === 'all' || q === 'active' || oneOf(q, CONSULT_STATUSES) ? q : 'active'
   const page = toInt(c.req.query('page'), 1, 100000) ?? 1
-  const cond = status === 'active' ? ` AND co.status != 'done'` : status === 'all' ? '' : ' AND co.status = ?'
-  const binds: any[] = status === 'active' || status === 'all' ? [] : [status]
+  // ?id= で1件だけ返す（ダッシュボードの ToDo から、その相談を開く。#402）
+  const focusId = c.req.query('id') != null ? toInt(c.req.query('id'), 1) : null
+  if (c.req.query('id') != null && focusId == null) return c.json({ error: '相談が見つかりません' }, 404)
+  const cond = focusId != null ? ' AND co.consultation_id = ?' : status === 'active' ? ` AND co.status != 'done'` : status === 'all' ? '' : ' AND co.status = ?'
+  const binds: any[] = focusId != null ? [focusId] : status === 'active' || status === 'all' ? [] : [status]
   const total = ((await db.prepare(`SELECT COUNT(*) AS n FROM consultations co WHERE co.company_id = ?${cond}`).bind(u.company_id, ...binds).first()) as any)?.n || 0
   const rows = await db.prepare(`
     SELECT co.*, us.name AS staff_name, p.project_name AS target_project_name,
@@ -3647,7 +3842,7 @@ api.get('/admin/consultations', async (c) => {
     WHERE co.company_id = ?${cond} ORDER BY co.created_at DESC, co.consultation_id DESC LIMIT ? OFFSET ?`)
     .bind(u.company_id, ...binds, CONSULT_PAGE_SIZE, (page - 1) * CONSULT_PAGE_SIZE).all()
   const counts = (await db.prepare(`SELECT status, COUNT(*) AS n FROM consultations WHERE company_id = ? GROUP BY status`).bind(u.company_id).all()).results as any[]
-  return c.json({ consultations: rows.results, status, page, per_page: CONSULT_PAGE_SIZE, total,
+  return c.json({ consultations: rows.results, status, page, per_page: CONSULT_PAGE_SIZE, total, focus_id: focusId,
     counts: Object.fromEntries(CONSULT_STATUSES.map(s => [s, (counts.find(r => r.status === s)?.n as number) || 0])) })
 })
 
@@ -3679,38 +3874,89 @@ api.put('/admin/consultations/:id', async (c) => {
   return c.json({ ok: true })
 })
 
-// フォロー履歴
+// フォロー履歴（#385）
+// ?status= open（対応中）/ done（完了）/ all（既定）、?q= スタッフ名、?due=1 次回対応日が今日までの対応中、?staff_id=、?page= でページ送り。
+// 対応中は次回対応日の早い順（日付のないものは後ろ）、それ以外は新しい順
+const FOLLOW_PAGE_SIZE = 50
+const FOLLOW_CONTENT_MAX = 2000
+const FOLLOW_NEXT_MAX = 200
 api.get('/admin/follow-logs', async (c) => {
-  const u = c.get('user')
-  const staffId = c.req.query('staff_id')
-  let sql = `SELECT f.*, us.name AS staff_name, um.name AS manager_name
-    FROM follow_logs f JOIN staff_profiles sp ON f.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    LEFT JOIN users um ON f.manager_id = um.user_id WHERE f.company_id = ?`
+  const u = c.get('user'); const db = c.env.DB; const today = todayJST()
+  const qs = c.req.query('status') || 'all'
+  const status = qs === 'all' || FOLLOW_STATUSES.includes(qs) ? qs : 'all'
+  const page = toInt(c.req.query('page'), 1, 100000) ?? 1
+  let where = ' WHERE f.company_id = ?'
   const binds: any[] = [u.company_id]
-  if (staffId) { sql += ' AND f.staff_id = ?'; binds.push(staffId) }
-  sql += ' ORDER BY f.created_at DESC LIMIT 50'
-  const rows = await c.env.DB.prepare(sql).bind(...binds).all()
-  return c.json({ logs: rows.results })
+  const staffId = c.req.query('staff_id')
+  if (staffId) { const sid = toInt(staffId, 1); if (sid == null) return c.json({ error: 'スタッフが見つかりません' }, 404); where += ' AND f.staff_id = ?'; binds.push(sid) }
+  if (status !== 'all') { where += ' AND f.status = ?'; binds.push(status) }
+  if (c.req.query('due') === '1') { where += ` AND f.status = 'open' AND f.next_action_date IS NOT NULL AND f.next_action_date <= ?`; binds.push(today) }
+  const q = (c.req.query('q') || '').trim().slice(0, 50)
+  if (q) { where += ` AND us.name LIKE ? ESCAPE '\\'`; binds.push('%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%') }
+  const from = ` FROM follow_logs f JOIN staff_profiles sp ON f.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    LEFT JOIN users um ON f.manager_id = um.user_id`
+  const order = status === 'open' || c.req.query('due') === '1'
+    ? ' ORDER BY f.next_action_date IS NULL, f.next_action_date, f.created_at DESC, f.follow_id DESC'
+    : ' ORDER BY f.created_at DESC, f.follow_id DESC'
+  const [rows, total, counts] = await db.batch([
+    db.prepare(`SELECT f.*, us.name AS staff_name, um.name AS manager_name${from}${where}${order} LIMIT ? OFFSET ?`).bind(...binds, FOLLOW_PAGE_SIZE, (page - 1) * FOLLOW_PAGE_SIZE),
+    db.prepare(`SELECT COUNT(*) AS n${from}${where}`).bind(...binds),
+    db.prepare(`SELECT COUNT(*) AS all_n, SUM(f.status = 'open') AS open_n, SUM(f.status = 'done') AS done_n,
+      SUM(f.status = 'open' AND f.next_action_date IS NOT NULL AND f.next_action_date <= ?) AS due_n FROM follow_logs f WHERE f.company_id = ?`).bind(today, u.company_id),
+  ])
+  const cn = (counts.results?.[0] || {}) as any
+  return c.json({ logs: rows.results, status, page, per_page: FOLLOW_PAGE_SIZE, total: Number((total.results?.[0] as any)?.n) || 0, today,
+    counts: { all: Number(cn.all_n) || 0, open: Number(cn.open_n) || 0, done: Number(cn.done_n) || 0, due: Number(cn.due_n) || 0 } })
 })
 
+// 次回対応（内容か日付）がなければ、状態の既定は完了。あれば対応中（#385）
+function followFields(b: any): { error?: string; next_action?: string | null; next_action_date?: string | null } {
+  const out: { next_action?: string | null; next_action_date?: string | null } = {}
+  if (b.next_action !== undefined) {
+    if (b.next_action !== null && typeof b.next_action !== 'string') return { error: '次回対応予定が正しくありません' }
+    const v = (b.next_action || '').trim()
+    if (v.length > FOLLOW_NEXT_MAX) return { error: `次回対応予定は${FOLLOW_NEXT_MAX}文字以内で入力してください` }
+    out.next_action = v || null
+  }
+  if (b.next_action_date !== undefined) {
+    if (b.next_action_date !== null && b.next_action_date !== '' && !isISODate(b.next_action_date)) return { error: '次回対応日が正しくありません' }
+    out.next_action_date = b.next_action_date || null
+  }
+  return out
+}
 api.post('/admin/follow-logs', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
   if (!b.staff_id || !b.follow_type) return c.json({ error: 'スタッフと種別は必須です' }, 400)
   if (!FOLLOW_TYPES.includes(b.follow_type)) return c.json({ error: '対応種別が正しくありません' }, 400)
   if (b.status && !FOLLOW_STATUSES.includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
+  if (b.content != null && (typeof b.content !== 'string' || b.content.length > FOLLOW_CONTENT_MAX)) return c.json({ error: `内容は${FOLLOW_CONTENT_MAX}文字以内で入力してください` }, 400)
+  const ff = followFields(b)
+  if (ff.error) return c.json({ error: ff.error }, 400)
   if (!(await assertStaffInCompany(c, String(b.staff_id)))) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (b.related_project_id != null && b.related_project_id !== '' && !(await ownProject(c.env.DB, u.company_id, b.related_project_id))) return c.json({ error: '案件が見つかりません' }, 404)
-  await c.env.DB.prepare(`INSERT INTO follow_logs (company_id, staff_id, manager_id, follow_type, content, next_action, status, related_project_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.staff_id, u.user_id, b.follow_type, b.content ?? '', b.next_action ?? null, b.status || 'open', b.related_project_id ?? null, nowJST()).run()
-  return c.json({ ok: true })
+  const status = b.status || (ff.next_action || ff.next_action_date ? 'open' : 'done')
+  const now = nowJST()
+  const r = await c.env.DB.prepare(`INSERT INTO follow_logs (company_id, staff_id, manager_id, follow_type, content, next_action, next_action_date, status, done_at, related_project_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, b.staff_id, u.user_id, b.follow_type, b.content ?? '', ff.next_action ?? null, ff.next_action_date ?? null, status, status === 'done' ? now : null,
+      b.related_project_id ?? null, now).run()
+  return c.json({ ok: true, follow_id: r.meta.last_row_id, status })
 })
 
 api.put('/admin/follow-logs/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
   if (b.status != null && !FOLLOW_STATUSES.includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
-  await c.env.DB.prepare('UPDATE follow_logs SET status = COALESCE(?, status), next_action = COALESCE(?, next_action) WHERE follow_id = ? AND company_id = ?')
-    .bind(b.status ?? null, b.next_action ?? null, c.req.param('id'), u.company_id).run()
+  const ff = followFields(b)
+  if (ff.error) return c.json({ error: ff.error }, 400)
+  const id = toInt(c.req.param('id'), 1)
+  // 次回対応・次回対応日は送られたものだけを変える（空欄で送れば消す）
+  const sets: string[] = ['status = COALESCE(?, status)', `done_at = CASE WHEN ? = 'done' AND status != 'done' THEN ? WHEN ? = 'open' THEN NULL ELSE done_at END`]
+  const binds: any[] = [b.status ?? null, b.status ?? null, nowJST(), b.status ?? null]
+  if (ff.next_action !== undefined) { sets.push('next_action = ?'); binds.push(ff.next_action) }
+  if (ff.next_action_date !== undefined) { sets.push('next_action_date = ?'); binds.push(ff.next_action_date) }
+  const r = id == null ? null : await c.env.DB.prepare(`UPDATE follow_logs SET ${sets.join(', ')} WHERE follow_id = ? AND company_id = ?`)
+    .bind(...binds, id, u.company_id).run()
+  if (!r || !r.meta.changes) return c.json({ error: 'フォロー記録が見つかりません' }, 404)
   return c.json({ ok: true })
 })
 
