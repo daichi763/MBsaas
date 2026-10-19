@@ -51,8 +51,9 @@ const proxy = (admin, id, types, times) => admin.post(`/api/admin/shifts/${id}/p
   ok('crossesMidnight', crossesMidnight({ work_date: '2026-10-01', start_time: '22:00', end_time: '06:00' }) && !crossesMidnight({ work_date: '2026-10-01', start_time: '09:00', end_time: '18:00' }))
   const sh = { work_date: '2026-10-01', start_time: '22:00', end_time: '06:00' }
   const rc = reportableWindow(sh, 'check_out'), ri = reportableWindow(sh, 'check_in')
-  ok('reportableWindow: 退店は稼働日の翌日 23:59:59 まで', rc.start === '2026-10-01 00:00:00' && rc.end === '2026-10-02 23:59:59', rc)
-  ok('reportableWindow: 入店は稼働日のうち', ri.start === '2026-10-01 00:00:00' && ri.end === '2026-10-01 23:59:59', ri)
+  // w3-night-shift で変更: 退店は予定の終了の12時間後まで（稼働日の翌日 23:59:59 は超えない。#116）、日をまたぐ勤務の入店は予定の終了まで（#134）
+  ok('reportableWindow: 夜勤の退店は終了の12時間後まで', rc.start === '2026-10-01 00:00:00' && rc.end === '2026-10-02 18:00:00', rc)
+  ok('reportableWindow: 日をまたぐ勤務の入店は予定の終了まで', ri.start === '2026-10-01 00:00:00' && ri.end === '2026-10-02 06:00:00', ri)
   ok('overlaps: 夜勤明けと翌朝のシフトが重なる', overlaps(w, shiftWindow('2026-10-02', '05:00', '13:00')))
   ok('overlaps: 端が接するだけなら重ならない', !overlaps(w, shiftWindow('2026-10-02', '06:00', '13:00')))
   ok('addMinutes', addMinutes('2026-10-01 22:00:00', 6 * 60) === '2026-10-02 04:00:00')
@@ -149,7 +150,9 @@ await admin.post('/api/admin/settings/photo-required', { enabled: false }) // �
     ok('前日のシフトの起床報告は受け付けない（受付期間外）', r1.status === 400 && /受付期間/.test(r1.data.error), r1)
     await proxy(admin, old, PRE, { wake_up: '07:00', departure: '08:00' })
     const r2 = await pub.post(`/api/public/report/${tokOld}/attendance`, { report_type: 'break_start' })
-    ok('前日のシフトの休憩入は翌日も受け付ける（従来どおり）', r2.status === 200, r2)
+    // 日をまたがない勤務の休憩・終了・退店は、予定の終了（18:00）の12時間後（今日の 6:00）まで（w3-night-shift #116）
+    if (Number(jstNow().slice(11, 13)) < 6) ok('前日のシフトの休憩入は今日の 6:00 までは受け付ける', r2.status === 200, r2)
+    else ok('前日のシフトの休憩入は、予定の終了の12時間後を過ぎると受け付けない', r2.status === 400 && /受付期間/.test(r2.data.error), r2)
     const r3 = await pub.post(`/api/public/report/${tokFut}/attendance`, { report_type: 'wake_up' })
     ok('翌日のシフトはまだ報告できない', r3.status === 400 && /まだ報告できません/.test(r3.data.error), r3)
   }

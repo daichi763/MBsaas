@@ -46,10 +46,6 @@ function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b
 function weekday(d: string): number { return new Date(d + 'T00:00:00Z').getUTCDay() }
 const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 const isTime = (s: any) => typeof s === 'string' && /^\d{2}:\d{2}$/.test(s)
-function overlaps(aS: string, aE: string, bS: string, bE: string): boolean {
-  const as = toMin(aS), ae = as + spanMinutes(aS, aE), bs = toMin(bS), be = bs + spanMinutes(bS, bE)
-  return as < be && bs < ae
-}
 const intOrNull = (v: any) => (v === '' || v == null || isNaN(Number(v))) ? null : Math.round(Number(v))
 
 // =========================================================
