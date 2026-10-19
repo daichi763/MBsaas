@@ -6,7 +6,10 @@
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const PAYEE_LABEL = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' }
   const UNIT = { daily: '日', hourly: '時' }
-  const PENDING_ISSUE = '承認待ちの打刻修正あり' // src/settlement.ts の確認事項と同じ文言
+  // src/settlement.ts の確認事項と同じ文言
+  const PENDING_ISSUE = '承認待ちの打刻修正あり'
+  const RECALC_ISSUE = '数量・金額が今の計算と違う'
+  const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前のまま）'
   const S = window.__settleState = window.__settleState || {
     from: dayjs().startOf('month').format('YYYY-MM-DD'), to: dayjs().endOf('month').format('YYYY-MM-DD'),
     client_id: '', project_id: '', payee_type: '', settle: '', issues_only: false, tab: 'detail', selected: new Set(),
@@ -75,7 +78,8 @@
         ${[['シフト', t.shifts + '件'], ['確定済み', `${t.confirmed} / ${t.shifts}`], ['請求合計', yen(t.bill)], ['支払合計', yen(t.pay) + (t.pay_unset ? `<span class="text-[10px] text-amber-600 block">単価未設定 ${t.pay_unset}件</span>` : '')],
           ['粗利', (gross == null ? '-' : yen(gross)) + `<span class="text-[10px] text-gray-400 block">${t.profit_bill && gross != null ? Math.round(gross / t.profit_bill * 1000) / 10 + '%' : '-'}</span>`
             + (t.pay_unset ? `<span class="text-[10px] text-amber-600 block">支払未設定 ${t.pay_unset}件・請求 ${yen(t.pay_unset_bill)} を除外</span>` : '')],
-          ['確認が必要', `<span class="${t.issues ? 'text-red-600' : 'text-emerald-600'}">${t.issues}件</span>`]]
+          ['確認が必要（未確定）', `<span class="${t.issues ? 'text-red-600' : 'text-emerald-600'}">${t.issues}件</span>`
+            + (t.settled_issues ? `<span class="text-[10px] text-red-600 block" id="settle-settled-issues">確定後の要対応 ${t.settled_issues}件</span>` : '')]]
           .map(([l, v]) => `<div class="card p-3"><p class="text-[11px] text-gray-500">${l}</p><p class="text-lg font-bold">${v}</p></div>`).join('')}
       </section>
 
@@ -83,6 +87,7 @@
         ${[['detail', 'シフト明細'], ['billing', '請求（クライアント別）'], ['payment', '支払（支払先別）']].map(([k, l]) =>
           `<button class="btn ${S.tab === k ? 'btn-primary' : 'btn-outline'} text-xs" onclick="window.__settleState.tab='${k}';renderSettlementBody()">${l}</button>`).join('')}
       </div>
+      ${tentativeHtml(data.tentative_reported || [])}
       <section class="card p-3" id="settle-body"></section>
       ${data.truncated ? `<p class="text-xs text-amber-600 mt-2" id="settle-truncated">対象が${data.max_rows}件を超えるため、先頭の${data.max_rows}件だけを表示しています（集計もこの件数分です）。CSV出力と正しい集計には、期間や条件を絞ってください</p>` : ''}`
     document.getElementById('st-from').addEventListener('change', settleApply)
@@ -139,6 +144,8 @@
         <div class="flex gap-1.5">
           <button class="btn btn-primary text-xs" onclick="settleConfirm(true, this)"><i class="fas fa-check-double"></i>${sel.size ? '選択したシフトを確定' : '表示中のシフトをすべて確定'}</button>
           <button class="btn btn-outline text-xs" onclick="settleConfirm(false, this)"><i class="fas fa-rotate-left"></i>${sel.size ? '選択の確定を取り消す' : '表示中の確定を取り消す'}</button>
+          <button class="btn btn-outline text-xs" data-action="settleAck" id="settle-ack-btn"><i class="fas fa-check"></i>${sel.size ? '選択の確認事項を確認済みにする' : '表示中の確認事項を確認済みにする'}</button>
+          ${data.rows.some(r => r.issues.includes(RECALC_ISSUE)) ? `<button class="btn btn-outline text-xs" data-action="settleRecalc" id="settle-recalc-btn" title="${esc(RECALC_ISSUE)}のシフトの数量・金額を、今の案件の時間の設定で計算し直します"><i class="fas fa-calculator"></i>金額を再計算（${data.rows.filter(r => r.issues.includes(RECALC_ISSUE)).length}件）</button>` : ''}
         </div>
       </div>
       <div class="overflow-x-auto"><table class="tbl text-xs" id="settle-detail-table"><thead><tr>
@@ -156,9 +163,7 @@
           <td class="text-right whitespace-nowrap">${yen(r.bill_total)}<span class="text-gray-400 block">${r.bill_rate != null ? yen(r.bill_rate) + '/' + UNIT[r.bill_unit_type] : ''}</span></td>
           <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-amber-600">未設定</span>' : yen(r.pay_total)}<span class="text-gray-400 block">${r.pay_rate != null ? yen(r.pay_rate) + '/' + UNIT[r.pay_unit_type] : ''}</span></td>
           <td class="whitespace-nowrap">${esc(PAYEE_LABEL[r.payee_type] || r.payee_type)}${r.payee_type === 'partner' || r.payee_type === 'linked' ? `<span class="text-gray-400 block">${esc(r.payee_name)}</span>` : ''}</td>
-          <td>${r.issues.map(i => i === PENDING_ISSUE
-            ? `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleOpenCorrections" data-date="${esc(r.work_date)}" title="この勤務日の承認待ちの申請を開く">${esc(i)} <i class="fas fa-arrow-up-right-from-square text-[9px]"></i></button>`
-            : `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('') || '<i class="fas fa-check text-emerald-500"></i>'}</td>
+          <td>${issuesCellHtml(r)}</td>
           <td class="whitespace-nowrap">${r.settle_status === 'confirmed' ? '<span class="badge badge-green">確定</span>' : '<span class="badge badge-gray">未確定</span>'}</td>
           <td><button class="text-blue-600 hover:underline whitespace-nowrap" onclick="openSettleEdit(${r.shift_id})">${r.settle_status === 'confirmed' ? '詳細' : '実績・金額'}</button></td>
         </tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400">対象のシフトはありません（確定・代打のシフトが対象です）</td></tr>'}
@@ -225,6 +230,85 @@
     // 打刻修正の画面をまだ開いていないときも絞り込みが効くよう、状態を作っておく（corrections.js は既存の状態を使う）
     window.__corrState = Object.assign(window.__corrState || {}, { status: 'pending', project_id: '', staff_name: '', from: '', to: '', report_type: '', kind: '', work_from: el.dataset.date, work_to: el.dataset.date })
     location.hash = 'corrections'
+  })
+
+  // ---------- 確認事項の表示と確認済み（#563）・再計算（#79）・区分変更の対象外（#233） ----------
+  // 確認が必要な事項は赤、確認済みの事項（確認済みにしたもの・確定したときに確認したもの）は折りたたんで灰色で出す
+  function issuesCellHtml(r) {
+    const confirmed = r.settle_status === 'confirmed'
+    const open = r.issues.map(i => {
+      if (i === PENDING_ISSUE) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleOpenCorrections" data-date="${esc(r.work_date)}" title="この勤務日の承認待ちの申請を開く">${esc(i)} <i class="fas fa-arrow-up-right-from-square text-[9px]"></i></button>`
+      if (i === RECALC_ISSUE && !confirmed) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleRecalcOne" data-id="${r.shift_id}" title="今の案件の時間の設定で数量・金額を計算し直す">${esc(i)} <i class="fas fa-calculator text-[9px]"></i></button>`
+      if (i === PAYEE_EXCLUDED_ISSUE && !confirmed) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleResetPayee" data-id="${r.shift_id}" title="単価ルールを再適用し、今の所属区分の支払先・単価に置き換える">${esc(i)} <i class="fas fa-rotate text-[9px]"></i></button>`
+      return `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(i)}</span>`
+    }).join('')
+    const acked = r.acked_issues || []
+    const ackedHtml = acked.length ? `<details class="text-[11px] text-gray-400 mt-0.5" data-acked="${r.shift_id}"><summary class="cursor-pointer whitespace-nowrap">確認済み ${acked.length}件</summary>
+      ${acked.map(i => `<span class="badge badge-gray block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('')}
+      ${r.acked_at ? `<p class="whitespace-nowrap">${esc(r.acked_by_name || '')} ${esc(dayjs(r.acked_at).format('M/D HH:mm'))}</p>` : ''}</details>` : ''
+    const actions = [
+      r.issues.some(i => i !== PENDING_ISSUE) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="settleAckOne" data-id="${r.shift_id}">確認済みにする</button>` : '',
+      r.acked_at ? `<button type="button" class="text-[11px] text-gray-500 hover:underline" data-action="settleUnackOne" data-id="${r.shift_id}">確認済みを取り消す</button>` : '',
+    ].join('')
+    return (open || '<i class="fas fa-check text-emerald-500"></i>') + ackedHtml + (actions ? `<div class="mt-0.5 whitespace-nowrap">${actions}</div>` : '')
+  }
+
+  // 勤怠報告のある希望（仮）のシフト（精算の対象外。確定・欠勤にするよう知らせる）
+  function tentativeHtml(list) {
+    if (!list.length) return ''
+    return `<section class="card p-3 mb-4 border border-amber-200 bg-amber-50/40" id="settle-tentative">
+      <p class="text-sm font-bold text-amber-700 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>勤怠報告のある希望（仮）のシフト ${list.length}件${list.length >= 200 ? '（先頭の200件）' : ''}</p>
+      <p class="text-[11px] text-gray-500 mb-2">希望（仮）のシフトは精算の対象外です（請求・支払に入りません）。働いた分はシフトボードで確定に、働いていなければ欠勤にしてください</p>
+      <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr><th>日付</th><th>案件</th><th>スタッフ</th><th>予定</th><th class="text-right">報告</th></tr></thead><tbody>
+        ${list.map(s => `<tr data-shift-id="${s.shift_id}"><td class="whitespace-nowrap">${esc(dayjs(s.work_date).format('M/D(dd)'))}</td><td>${esc(s.project_name)}<span class="text-gray-400">${s.client_name ? '・' + esc(s.client_name) : ''}</span></td>
+          <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline" href="#staff/${Number(s.staff_id)}">${esc(s.staff_name)}</a></td><td class="whitespace-nowrap">${esc(s.start_time)}〜${esc(s.end_time)}</td><td class="text-right">${Number(s.report_count)}件</td></tr>`).join('')}
+      </tbody></table></div>
+      <a class="text-xs text-blue-600 hover:underline mt-1 inline-block" href="#shifts">シフトボードを開く</a>
+    </section>`
+  }
+
+  const rowsOf = (ids) => { const set = new Set(ids); return window.__settleData.rows.filter(r => set.has(r.shift_id)) }
+  const ackRun = (ids, undo, btn) => withSubmitLock(btn, async () => {
+    try {
+      const { data } = await axios.post('/api/admin/settlement/acks', { shift_ids: ids, undo: !!undo })
+      toast(undo ? '確認済みを取り消しました' : `${data.shifts}件のシフトの確認事項を確認済みにしました`); renderSettlement()
+    } catch (e) { toast(errMsg(e)) }
+  })
+  delegate('settleAck', el => {
+    const label = S.selected.size ? '選択中' : '表示中'
+    const ids = rowsOf(targetIds()).filter(r => r.issues.some(i => i !== PENDING_ISSUE)).map(r => r.shift_id)
+    if (!ids.length) return toast(`${label}のシフトに、確認済みにできる確認事項はありません（承認待ちの打刻修正は、承認か却下をしてください）`)
+    if (!window.confirm(`${label}のシフトのうち、確認事項のある ${ids.length}件 を確認済みにします。\n確認済みの事項は『確認が必要』の件数と確定前の警告に数えません（内容が変わったときや、確定後に新しい修正・報告があったときは、再び確認が必要になります）。よろしいですか？`)) return
+    ackRun(ids, false, el)
+  })
+  delegate('settleAckOne', el => {
+    const r = rowsOf([Number(el.dataset.id)])[0]; if (!r) return
+    if (!window.confirm(`次の確認事項を確認済みにします。\n・${r.issues.filter(i => i !== PENDING_ISSUE).join('\n・')}`)) return
+    ackRun([r.shift_id], false, el)
+  })
+  delegate('settleUnackOne', el => ackRun([Number(el.dataset.id)], true, el))
+
+  const recalcRun = (ids, btn) => withSubmitLock(btn, async () => {
+    try {
+      const { data } = await axios.post('/api/admin/settlement/recalc', { shift_ids: ids })
+      toast(`${data.updated}件の数量・金額を計算し直しました`); renderSettlement()
+    } catch (e) { toast(errMsg(e)) }
+  })
+  delegate('settleRecalc', el => {
+    const ids = rowsOf(targetIds()).filter(r => r.issues.includes(RECALC_ISSUE)).map(r => r.shift_id)
+    if (!ids.length) return toast('計算し直すシフトはありません')
+    if (!window.confirm(`『${RECALC_ISSUE}』のシフト ${ids.length}件 の時給の数量・金額を、今の案件の時間の設定（数え方・丸め・休憩）で計算し直します。\n単価はそのままです。確定済み・手動で金額を変更したシフトは変えません。よろしいですか？`)) return
+    recalcRun(ids, el)
+  })
+  delegate('settleRecalcOne', el => {
+    if (!window.confirm('このシフトの時給の数量・金額を、今の案件の時間の設定で計算し直します（単価はそのまま）。よろしいですか？')) return
+    recalcRun([Number(el.dataset.id)], el)
+  })
+  delegate('settleResetPayee', el => {
+    if (!window.confirm('このシフトに単価ルールを再適用し、今の所属区分の支払先・単価に置き換えます（手動で変更した金額も単価ルールの値に戻ります）。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      try { await axios.put(`/api/admin/shifts/${Number(el.dataset.id)}/price`, { reset: true }); toast('今の区分の支払先・単価に置き換えました'); renderSettlement() } catch (e) { toast(errMsg(e)) }
+    })
   })
 
   // ---------- 実績・金額の編集 ----------

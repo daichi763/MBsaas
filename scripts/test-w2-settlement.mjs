@@ -46,6 +46,8 @@ async function row(id, date) { return ((await list(date, date)).data.rows || [])
   const A = await createShift(3, d, 'A')            // 報告なし → 「入店報告なし」
   const B = await createShift(4, d, 'B'); await full(B) // 報告あり・支払単価あり → 確認事項なし
   await admin.put(`/api/admin/shifts/${B}/price`, { pay_unit_type: 'daily', pay_rate: 10000 })
+  // 日報の未提出も確認事項になる（w3-settlement-checks #209）ので、B は日報を不要にしておく
+  await admin.put(`/api/admin/shifts/${B}/report-settings`, { attendance_mode: null, daily_report_mode: 'none' })
   const view = await list(d, d, '&issues_only=1')
   const shown = view.data.rows.map(r => r.shift_id)
   ok('#26 確認事項のみの表示に、確認事項のあるシフトだけが出る', shown.includes(A) && view.data.rows.every(r => r.issues.length), shown)
@@ -53,17 +55,17 @@ async function row(id, date) { return ((await list(date, date)).data.rows || [])
   // 条件で送る場合（API の互換）も issues_only を反映する
   const dry = await admin.post('/api/admin/settlement/confirm', { from: d, to: d, issues_only: '1', dry_run: true })
   ok('#26 条件での指定でも issues_only を反映する（dry_run の対象は表示中の件数）', dry.status === 200 && dry.data.target === shown.length, [dry.data, shown.length])
+  // CSV: 確認が必要なもののみ（確定の前に確かめる。確認済みとして確定した事項は、確定済みの行では数えないため。w3-settlement-checks #563）
+  const csv = await admin.get(`/api/admin/settlement/export?kind=detail&from=${d}&to=${d}&issues_only=1`)
+  const ids = csv.text.replace(/^﻿/, '').split(/\r?\n/).slice(1).filter(Boolean).map(l => Number(l.split(',')[0].replace(/"/g, '')))
+  ok('#271 CSV（明細）に絞り込みが反映される', csv.status === 200 && ids.includes(A) && (bRow.issues.length || !ids.includes(B)), ids)
+  const header = csv.text.replace(/^﻿/, '').split(/\r?\n/)[0]
   // 画面は表示中の shift_id を送る
   const cf = await admin.post('/api/admin/settlement/confirm', { shift_ids: shown, force: true })
   ok('#26 表示中の shift_id で確定できる', cf.status === 200 && cf.data.confirmed === shown.length, cf.data)
   const b2 = await row(B, d)
   if (bRow && !bRow.issues.length) ok('#26 表示していない（確認事項のない）シフトは確定されない', b2.settle_status === 'planned', b2.settle_status)
   else skip('#26 表示していないシフトは確定されない', `B に確認事項がある: ${bRow && bRow.issues}`)
-  // CSV: 確認が必要なもののみ
-  const csv = await admin.get(`/api/admin/settlement/export?kind=detail&from=${d}&to=${d}&issues_only=1`)
-  const ids = csv.text.replace(/^﻿/, '').split(/\r?\n/).slice(1).filter(Boolean).map(l => Number(l.split(',')[0].replace(/"/g, '')))
-  ok('#271 CSV（明細）に絞り込みが反映される', csv.status === 200 && ids.includes(A) && (bRow.issues.length || !ids.includes(B)), ids)
-  const header = csv.text.replace(/^﻿/, '').split(/\r?\n/)[0]
   ok('#120 CSV の休憩を予定と実績に分ける', header.includes('予定休憩(分)') && header.includes('実績休憩(分)'), header)
   await admin.post('/api/admin/settlement/unconfirm', { shift_ids: shown })
 }

@@ -15,6 +15,7 @@ import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes } from './staff-lifecycle'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
+import { dailyReportRequiredSql } from './report-settings'
 import { isTentativeShift } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
@@ -2161,7 +2162,7 @@ api.get('/admin/projects', async (c) => {
   const u = c.get('user'); const month = monthJST()
   const rows = await c.env.DB.prepare(`
     SELECT p.*, cl.client_name,
-      (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date LIKE ?) AS staff_count,
+      (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS staff_count,
       (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
       (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date LIKE ?) AS month_seiyaku,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date LIKE ?) AS incidents
@@ -2756,22 +2757,33 @@ api.get('/admin/billing-check', async (c) => {
   }
   for (const s of money) { add(byProject, s.project_id, s); add(byStaff, `${s.staff_id}:${s.project_id}`, s) }
   const zero: Money = { base: 0, transport: 0, adjust: 0, total: 0 }
+  // 稼働人数は確定・代打のシフトの人だけを数える（欠勤・希望（仮）だけの人は数えない）。
+  // 日報は、確定・代打のシフトのうち日報が必要なもの（シフト → スタッフ → 案件の設定）を分母に、そのシフトの日報があるものを分子に数える（#448）。
+  // 日報の照合は shift_id、shift_id の無い古い日報はスタッフ・稼働日・案件（lib/daily-report.ts の findDailyReport と同じ）
+  const working = "s.status IN ('confirmed','substitute')"
+  const dailyReq = dailyReportRequiredSql('s', 'sp', 'p')
+  const hasDaily = `EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id
+    OR (+dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id))`
   const rows = await c.env.DB.prepare(`
     SELECT p.project_id, p.project_name, cl.client_name,
-      COUNT(CASE WHEN s.status IN ('confirmed','substitute') THEN 1 END) AS work_days,
+      COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
       COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
       COUNT(CASE WHEN s.status = 'substitute' THEN 1 END) AS substitute_days,
-      COUNT(DISTINCT s.staff_id) AS staff_count,
-      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date LIKE ?) AS report_count
+      COUNT(DISTINCT CASE WHEN ${working} THEN s.staff_id END) AS staff_count,
+      COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
+      COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     LEFT JOIN shifts s ON s.project_id = p.project_id AND s.work_date LIKE ? AND s.work_date <= ?
-    WHERE p.company_id = ? GROUP BY p.project_id`).bind(month + '%', month + '%', todayJST(), u.company_id).all()
+    LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id
+    WHERE p.company_id = ? GROUP BY p.project_id`).bind(month + '%', todayJST(), u.company_id).all()
 
   // スタッフ別明細
   const detail = await c.env.DB.prepare(`
     SELECT s.staff_id, s.project_id, us.name, p.project_name,
-      COUNT(CASE WHEN s.status IN ('confirmed','substitute') THEN 1 END) AS work_days,
-      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days
+      COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
+      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
+      COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
+      COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
     FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.work_date LIKE ? AND s.work_date <= ?

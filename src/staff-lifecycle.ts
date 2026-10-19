@@ -351,6 +351,9 @@ type AffPlan = {
   from: string; to: string; effective: string; affiliation: string | null; partnerId: number | null; newPartnerName: string | null
   tradeName: string | null; hire: string | null; contractType: string | null; er: any; repair: boolean; scheduled: boolean
   targets: any[]; excluded: number; effects: string[]; warnings: string[]; token: string
+  // 勤務済みのため置き換えないシフト（実行時に affiliation_excluded_shifts へ記録し、支払先が変更後と違うものを精算の確認事項に出す。#233）。
+  // differs = 今の支払先が変更後と違う。同じものも記録し、精算では最後の区分変更の支払先で判定する（元の区分に戻したときに前の記録で確認事項が残らないように）
+  excludedShifts?: { shift_id: number; work_date: string; differs: boolean }[]
 }
 type PlanResult = { ok: true; plan: AffPlan } | { ok: false; error: string; status: 400 | 404 | 409 }
 async function planAffiliationChange(db: D1Database, companyId: number, sp: any, b: any, opts: { today: string; fromSchedule?: boolean }): Promise<PlanResult> {
@@ -426,7 +429,16 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   }
   if (linksOut && !repair) effects.push(`自社から他社への連携 ${linksOut} 件は継続します（企業間チャットもそのまま使えます）`)
   effects.push(`適用日以降の予定シフト ${targets.length} 件の支払先・単価を置き換えます${scheduled ? '（件数は今の時点のものです。適用日に数え直します）' : ''}`)
-  if (excluded) effects.push(`勤務済み（勤怠報告・実績の入力・日報のどれかがある）の ${excluded} 件は置き換えません`)
+  // 置き換えないシフトは実行したときに記録し、支払先が変更後と違うものを精算の確認事項『区分変更の対象外』に出す（#233）
+  const excludedShifts = scheduled ? [] : shifts.filter(s => s.reported || s.has_actual || s.has_daily)
+    .map(s => ({ shift_id: s.shift_id as number, work_date: s.work_date as string, differs: !samePayee(s) }))
+  if (excluded) {
+    const md = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
+    const differ = excludedShifts.filter(s => s.differs)
+    const dates = [...new Set(differ.map(s => md(s.work_date)))]
+    effects.push(`勤務済み（勤怠報告・実績の入力・日報のどれかがある）の ${excluded} 件は置き換えません`
+      + (dates.length ? `。うち支払先が変わる ${differ.length} 件（${dates.slice(0, 10).join('、')}${dates.length > 10 ? ' ほか' : ''}）は精算の確認事項に出します（精算の画面から今の区分の支払先・単価に置き換えられます）` : ''))
+  }
   if (targets.some(s => s.price_locked)) effects.push(`うち手動で金額を変更した ${targets.filter(s => s.price_locked).length} 件は、支払先のみ置き換えます`)
   if (!repair) {
     if (from === 'linked_external') effects.push(sp.user_role === 'staff' ? 'ログインは所属元のアカウントのままです（自社で発行する場合は本登録から）' : 'ログインはありません（報告用URLまたは代理入力で記録します）')
@@ -437,7 +449,7 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
     warnings.push(`適用日（${effective}）が今日より前です。${past.length ? `過去の未確定シフト ${past.length} 件（${past[0].work_date}〜${past[past.length - 1].work_date}）も置き換えの対象です。` : ''}日付に誤りがないか確認してください`)
   }
   const token = await sha256(JSON.stringify([sp.staff_id, from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, repair, scheduled, targets.map(s => s.shift_id)]))
-  return { ok: true, plan: { from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, er, repair, scheduled, targets, excluded, effects, warnings, token } }
+  return { ok: true, plan: { from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, er, repair, scheduled, targets, excluded, effects, warnings, token, excludedShifts } }
 }
 
 // 取引先の新規登録（区分変更の実行・予約のとき）。同じ名前があればそれを使う
@@ -533,6 +545,11 @@ async function executeAffiliationChange(db: D1Database, companyId: number, actor
       from_payee_type, from_payee_affiliation_id, from_payee_company_id, note, changed_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(companyId, sp.staff_id, from, to, effective, sp.affiliation ?? null, affiliation, partnerId, rows.length, p.excluded,
       fromPayee?.payee_type ?? null, fromPayee?.payee_affiliation_id ?? null, fromPayee?.payee_company_id ?? null, histNote, actorId))
+  // 勤務済みのため置き換えなかったシフトと変更後の支払先を、この履歴に結び付けて記録する（精算の確認事項。#233）
+  const excludedIds = bindJsonArray((p.excludedShifts || []).map(s => s.shift_id))
+  if (excludedIds !== '[]') stmts.push(db.prepare(`INSERT OR IGNORE INTO affiliation_excluded_shifts (history_id, company_id, staff_id, shift_id, to_payee_type, to_payee_affiliation_id)
+      SELECT (SELECT MAX(history_id) FROM staff_affiliation_history WHERE staff_id = ? AND company_id = ?), ?, ?, value, ?, ? FROM json_each(?)`)
+    .bind(sp.staff_id, companyId, companyId, sp.staff_id, payee.payee_type, payee.payee_affiliation_id, excludedIds))
   if (scheduleId) stmts.push(db.prepare(`UPDATE staff_affiliation_schedules SET status = 'applied', applied_at = ?, error = NULL,
       history_id = (SELECT MAX(history_id) FROM staff_affiliation_history WHERE staff_id = ? AND company_id = ?) WHERE schedule_id = ? AND status = 'pending'`)
     .bind(now, sp.staff_id, companyId, scheduleId))
