@@ -713,7 +713,9 @@ const CRON_JOBS = defineCronJobs<Bindings>([
 export default {
   fetch: app.fetch,
   // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
-  // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）
+  // 起動は毎日 UTC 18:00（日本時間 3:00）と UTC 18:30（日本時間 3:30）の2回（wrangler.jsonc の triggers.crons）。
+  // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）。
+  // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
     await runCronJobs(env, CRON_JOBS, event.cron)
   },
