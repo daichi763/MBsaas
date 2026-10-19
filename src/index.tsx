@@ -118,7 +118,7 @@ app.get('/login', async (c) => {
     </aside>` : ''}
   </main>
   <script>
-    // 会社コード・ID は全角を半角にそろえる（サーバーでも同じようにそろえて照合する。#387）
+    // 会社コード・ID の全角は、サーバーが半角にそろえて照合する（#387）
     const norm = (v) => String(v || '').normalize('NFKC').trim()
     const params = new URLSearchParams(location.search)
     const cc = document.getElementById('company_code'), uc = document.getElementById('user_code'), pw = document.getElementById('password')
@@ -169,8 +169,9 @@ app.get('/login', async (c) => {
       const err = document.getElementById('login-error')
       const showErr = (msg) => { err.textContent = msg; err.classList.remove('hidden') }
       err.classList.add('hidden')
-      cc.value = norm(cc.value); uc.value = norm(uc.value)
-      if (!uc.value || !pw.value) return showErr('スタッフ番号（ID）とパスワードを入力してください')
+      // 送るのは入力どおり（trim のみ）。サーバーが全角・大文字小文字をそろえて照合し、以前に全角のまま登録した ID も入力どおりで照合する
+      cc.value = cc.value.trim(); uc.value = uc.value.trim()
+      if (!norm(uc.value) || !pw.value) return showErr('スタッフ番号（ID）とパスワードを入力してください')
       if (navigator.onLine === false) return showErr(OFFLINE_MSG)
       btn.disabled = true; btn.textContent = 'ログイン中...'
       try {

@@ -330,23 +330,27 @@ export function normalizeLoginCode(v: unknown): string {
   return String(v ?? '').normalize('NFKC').trim()
 }
 // 完全一致がなければ、大文字・小文字の違いだけのものを探す（スマホの自動大文字化で「Sample」「St001」と入っても通す）。
-// 大文字・小文字だけが違う行が複数あるときは、どれか決められないので一致なしにする
-async function findCompanyByCode(db: D1Database, code: string): Promise<any> {
+// 大文字・小文字だけが違う行が複数あるときは、どれか決められないので一致なしにする。
+// 以前は全角のまま保存できたため、正規化した値で見つからなければ、入力どおり（trim のみ）の値でも完全一致を探す
+async function findCompanyByCode(db: D1Database, code: string, raw: string): Promise<any> {
   const exact = await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(code).first()
   if (exact) return exact
   const rows = (await db.prepare('SELECT * FROM companies WHERE LOWER(company_code) = LOWER(?) LIMIT 2').bind(code).all()).results
-  return rows.length === 1 ? rows[0] : null
+  if (rows.length === 1) return rows[0]
+  return raw && raw !== code ? await db.prepare('SELECT * FROM companies WHERE company_code = ?').bind(raw).first() : null
 }
-async function findUserByCode(db: D1Database, companyId: number, code: string): Promise<any> {
+async function findUserByCode(db: D1Database, companyId: number, code: string, raw: string): Promise<any> {
   const exact = await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(companyId, code).first()
   if (exact) return exact
   const rows = (await db.prepare('SELECT * FROM users WHERE company_id = ? AND LOWER(user_code) = LOWER(?) LIMIT 2').bind(companyId, code).all()).results
-  return rows.length === 1 ? rows[0] : null
+  if (rows.length === 1) return rows[0]
+  return raw && raw !== code ? await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(companyId, raw).first() : null
 }
 api.post('/auth/login', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const company_code = normalizeLoginCode(b.company_code)
   const user_code = normalizeLoginCode(b.user_code)
+  const rawCompanyCode = String(b.company_code ?? '').trim(), rawUserCode = String(b.user_code ?? '').trim()
   const password = typeof b.password === 'string' ? b.password : ''
   // 会社コードは本部ユーザーだけ空欄でよい（#372）
   if (!user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
@@ -357,8 +361,8 @@ api.post('/auth/login', async (c) => {
   let keys = await loginAttemptKeys(company_code, user_code, ip)
   if (await isLoginLocked(db, keys)) return lockedResponse()
 
-  let company = company_code ? await findCompanyByCode(db, company_code) : null
-  let user = company ? await findUserByCode(db, company.company_id, user_code) : null
+  let company = company_code ? await findCompanyByCode(db, company_code, rawCompanyCode) : null
+  let user = company ? await findUserByCode(db, company.company_id, user_code, rawUserCode) : null
   // 本部ユーザー（本部専用の企業行に所属）は会社コードなしでログインする。以前の案内どおり会社コードを入れても、
   // その会社に同じ ID がなければ本部ユーザーとして照合する。失敗回数は会社コードによらず同じ記録で数える
   if (!user) {

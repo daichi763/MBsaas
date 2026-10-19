@@ -66,6 +66,13 @@ const admin = client(await login('sample', 'admin'))
   const hq = await rawLogin('', 'HQ')
   ok('#201 本部ユーザーも大文字の ID でログインでき、会社コードは空で返る', hq.status === 200 && hq.data.redirect === '/hq' && hq.data.company_code === '', hq)
 }
+// 以前に全角のまま保存されたスタッフ番号も、入力どおりでログインできる（既存データの互換。RV）
+if (PERSIST) {
+  sql(`UPDATE users SET user_code = 'ｓｔ００２' WHERE company_id = (SELECT company_id FROM companies WHERE company_code = 'sample') AND user_code = 'st002'`)
+  const fw = await rawLogin('sample', 'ｓｔ００２')
+  ok('#387 全角のまま保存されていた ID は、全角の入力でもログインできる', fw.status === 200 && fw.data.user_code === 'ｓｔ００２', fw)
+  sql(`UPDATE users SET user_code = 'st002' WHERE company_id = (SELECT company_id FROM companies WHERE company_code = 'sample') AND user_code = 'ｓｔ００２'`)
+} else skip('#387 全角のまま保存されていた ID')
 
 // ---------- #206 未ログインで開いたら next を付けてログイン画面へ ----------
 for (const p of ['/staff', '/admin', '/hq']) {
