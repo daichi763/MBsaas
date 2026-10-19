@@ -56,6 +56,12 @@ axios.interceptors.response.use(r => { noteSessionExpires(r); return r }, e => {
   if (r) noteSessionExpires(r)
   if (e.config && e.config.skipSessionCheck) return Promise.reject(e)
   if (r && r.status === 409 && r.data && r.data.code === 'account_switched') { showAccountSwitched(); return Promise.reject(e) }
+  // 開いている間に二段階認証が必須になった（#544）: 登録の画面へ移す
+  if (r && r.status === 403 && r.data && r.data.code === 'mfa_setup_required' && !(e.config && e.config.background)) {
+    if (ME) ME.mfa_setup_required = true
+    if (location.hash !== '#security') location.hash = 'security'
+    return Promise.reject(e)
+  }
   if (r && r.status === 401) {
     if (!ME) { location.href = loginNextUrl(); return Promise.reject(e) }
     showSessionExpired()
@@ -82,6 +88,7 @@ function sessionRoot() {
 function showSessionExpired() {
   if (SESSION_STATE !== 'active') return
   SESSION_STATE = 'expired'
+  RELOGIN_MFA_TOKEN = null
   hideSessionWarning()
   // 入力中のモーダル（#modal-root）は消さずに、その上に重ねて出す
   sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
@@ -90,6 +97,10 @@ function showSessionExpired() {
     <form id="relogin-form">
       <p class="text-xs text-gray-500 mb-1">${ME.company_code ? '会社コード ' + esc(ME.company_code) + ' / ' : ''}ID ${esc(ME.user_code)}（${esc(ME.name)}）</p>
       <input type="password" id="relogin-pw" class="inp" autocomplete="current-password" placeholder="パスワード" required>
+      <div id="relogin-mfa" class="hidden mt-2">
+        <p class="text-xs text-gray-500 mb-1">認証アプリに表示されている6桁を入力してください（使えないときは予備コード）。</p>
+        <input id="relogin-code" class="inp" inputmode="numeric" autocomplete="one-time-code" maxlength="20" placeholder="確認コード">
+      </div>
       <p id="relogin-error" class="hidden text-sm text-red-600 mt-2"></p>
       <div class="flex flex-wrap gap-2 justify-end mt-4">
         <button type="button" class="btn btn-outline" data-action="sessionGoLogin">ログイン画面へ（入力中の内容は消えます）</button>
@@ -99,15 +110,33 @@ function showSessionExpired() {
   document.getElementById('relogin-form').addEventListener('submit', ev => { ev.preventDefault(); relogin(document.getElementById('relogin-btn')) })
   setTimeout(() => { const pw = document.getElementById('relogin-pw'); if (pw) pw.focus() }, 0)
 }
+// 二段階認証を登録している人は、パスワードの後で確認コードを入力する（#544）
+let RELOGIN_MFA_TOKEN = null
 function relogin(btn) {
   return withSubmitLock(btn, async () => {
     const err = document.getElementById('relogin-error')
     err.classList.add('hidden')
     try {
-      const { data } = await axios.post('/api/auth/login', { company_code: ME.company_code || '', user_code: ME.user_code, password: document.getElementById('relogin-pw').value },
-        { skipSessionCheck: true })
+      const { data } = RELOGIN_MFA_TOKEN
+        ? await axios.post('/api/auth/login/mfa', { mfa_token: RELOGIN_MFA_TOKEN, code: document.getElementById('relogin-code').value.trim() }, { skipSessionCheck: true })
+        : await axios.post('/api/auth/login', { company_code: ME.company_code || '', user_code: ME.user_code, password: document.getElementById('relogin-pw').value },
+          { skipSessionCheck: true })
+      if (data.mfa_required) {
+        RELOGIN_MFA_TOKEN = data.mfa_token
+        document.getElementById('relogin-mfa').classList.remove('hidden')
+        document.getElementById('relogin-pw').disabled = true
+        document.getElementById('relogin-code').focus()
+        return
+      }
+      RELOGIN_MFA_TOKEN = null
       if (!data.user || data.user.user_id !== ME.user_id) { SESSION_STATE = 'active'; showAccountSwitched(); return }
     } catch (e) {
+      // 確認コードの時間切れ・失敗の上限なら、パスワードから入力し直してもらう
+      if (e.response && e.response.data && e.response.data.code === 'mfa_expired') {
+        RELOGIN_MFA_TOKEN = null
+        document.getElementById('relogin-mfa').classList.add('hidden')
+        const pw = document.getElementById('relogin-pw'); pw.disabled = false; pw.value = ''
+      }
       err.textContent = (e.response && e.response.data && e.response.data.error) || 'ログインに失敗しました。通信の状況を確かめてください'
       err.classList.remove('hidden')
       return
@@ -3175,6 +3204,11 @@ async function renderAccount() {
         </div>
       </section>
     </div>
+    <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
+      <i class="fas fa-shield-halved text-blue-500"></i>
+      <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${me.role === 'company_admin' ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
+      <a href="#security" class="btn btn-outline text-sm">セキュリティへ</a>
+    </section>
     ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
 }
 
@@ -3336,14 +3370,17 @@ const routes = {
   'report-settings': () => (window.renderReportSettings ? renderReportSettings() : renderDashboard()),
   corrections: () => (window.renderCorrections ? renderCorrections() : renderDashboard()),
   notifications: () => (window.renderNotificationsInbox ? renderNotificationsInbox() : renderDashboard()),
-  'attendance-history': () => (window.renderAttendanceHistory ? renderAttendanceHistory() : renderDashboard())
+  'attendance-history': () => (window.renderAttendanceHistory ? renderAttendanceHistory() : renderDashboard()),
+  security: () => (window.renderSecurity ? renderSecurity() : renderDashboard())
 }
 
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)
   const [tab, id] = hash.split('/')
+  // 二段階認証が必須で未登録の間は、登録の画面だけを使える（#544。API でも同じ判定で止める）
+  if (ME && ME.mfa_setup_required && tab !== 'security') { history.replaceState(null, '', '#security'); toast('二段階認証の登録が必要です'); return route() }
   // 仮パスワードのままの間は、パスワードの変更を先に求める（#43 #44）
-  if (ME && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
+  if (ME && !ME.mfa_setup_required && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab

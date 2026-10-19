@@ -28,6 +28,10 @@ import {
   hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
+import {
+  type LoginEvent, recordLoginEvent, requestMeta, deviceLabel, canUseMfa, ipDenied, mfaSetupPending, securitySettings, saveSecuritySettingsStmt,
+  normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, PERSON_SESSION_WHERE,
+} from './lib/login-security'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
@@ -358,6 +362,32 @@ async function findUserByCode(db: D1Database, companyId: number, code: string, r
   if (rows.length === 1) return rows[0]
   return raw && raw !== code ? await db.prepare('SELECT * FROM users WHERE company_id = ? AND user_code = ?').bind(companyId, raw).first() : null
 }
+// 二段階認証のコードを待つ時間と、1回のログインで受け付ける失敗の回数（#544）
+const MFA_CHALLENGE_MINUTES = 5
+const MFA_MAX_ATTEMPTS = 5
+const IP_DENIED_MESSAGE = `この接続元からはログインできません（会社の設定で、ログインできる接続元が決められています）。${LOGIN_HELP}`
+/**
+ * パスワード（と二段階認証）を確かめた後のセッションの発行。ログインと二段階認証の確認で共用する。
+ * 同じ端末の古いセッション（Cookie で送られてきたもの）と、期限切れのセッションは消してから発行し、接続元と端末を残す（#453）
+ */
+async function issueSession(c: any, user: any, company: any, method: 'password' | 'totp' | 'recovery') {
+  const db = c.env.DB as D1Database
+  const oldToken = getCookie(c, SESSION_COOKIE)
+  if (oldToken) await db.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(oldToken)).run()
+  const nowIso = new Date().toISOString()
+  await db.prepare('DELETE FROM sessions WHERE user_id = ? AND expires_at < ?').bind(user.user_id, nowIso).run()
+  const token = genToken()
+  const expires = new Date(Date.now() + SESSION_HOURS * 3600 * 1000)
+  const meta = requestMeta(c)
+  await db.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(await hashToken(token), user.user_id, user.company_id, expires.toISOString(), meta.ip, meta.ua).run()
+  await db.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
+  setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
+  await recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id, company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result: 'success', method })
+  // 会社コード・ID は登録どおりの表記で返す（ログイン画面が次回の入力欄に入れておく。#308）
+  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name, must_change_password: !!user.must_change_password },
+    company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, redirect: homePathFor(user.role) })
+}
 api.post('/auth/login', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const company_code = normalizeLoginCode(b.company_code)
@@ -368,12 +398,18 @@ api.post('/auth/login', async (c) => {
   if (!user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
   const db = c.env.DB
   const ip = c.req.header('CF-Connecting-IP')
-  const lockedResponse = () => c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
+  // ログインの履歴（#552）。入力された会社コード・ID と、分かれば会社・利用者を残す
+  const logEvent = (result: LoginEvent['result'], companyId?: number | null, userId?: number | null) =>
+    recordLoginEvent(db, c, { company_id: companyId ?? null, user_id: userId ?? null, company_code: rawCompanyCode, user_code: rawUserCode, result })
+  const lockedResponse = async (companyId?: number | null) => {
+    await logEvent('locked', companyId)
+    return c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
+  }
 
   let keys = await loginAttemptKeys(company_code, user_code, ip)
-  if (await isLoginLocked(db, keys)) return lockedResponse()
-
   let company = company_code ? await findCompanyByCode(db, company_code, rawCompanyCode) : null
+  if (await isLoginLocked(db, keys)) return lockedResponse(company?.company_id)
+
   let user = company ? await findUserByCode(db, company.company_id, user_code, rawUserCode) : null
   // 本部ユーザー（本部専用の企業行に所属）は会社コードなしでログインする。以前の案内どおり会社コードを入れても、
   // その会社に同じ ID がなければ本部ユーザーとして照合する。失敗回数は会社コードによらず同じ記録で数える
@@ -383,7 +419,7 @@ api.post('/auth/login', async (c) => {
     if (hq) {
       if (company_code) {
         keys = await loginAttemptKeys('', user_code, ip)
-        if (await isLoginLocked(db, keys)) return lockedResponse()
+        if (await isLoginLocked(db, keys)) return lockedResponse(hq.company_id)
       }
       user = hq
       company = await db.prepare('SELECT * FROM companies WHERE company_id = ?').bind(hq.company_id).first() as any
@@ -395,34 +431,105 @@ api.post('/auth/login', async (c) => {
   else await dummyVerify(password)
   if (!passwordOk) {
     await recordLoginFailure(db, keys)
+    await logEvent('bad_password', user?.company_id ?? company?.company_id, user && canLogin(user.role) ? user.user_id : null)
     return c.json({ error: LOGIN_FAILED_MESSAGE }, 401)
   }
   // パスワードが合ったときだけ、利用できない理由を伝える（アカウントの有無は漏れない）
-  if (user.status !== 'active') return c.json({ error: `このアカウントは現在利用できません。${LOGIN_HELP}` }, 403)
+  if (user.status !== 'active') {
+    await logEvent('inactive', user.company_id, user.user_id)
+    return c.json({ error: `このアカウントは現在利用できません。${LOGIN_HELP}` }, 403)
+  }
   if (user.role !== 'system_admin' && !isCompanyActive(company.active_status)) {
+    await logEvent('company_inactive', user.company_id, user.user_id)
     return c.json({ error: `ご契約が停止中のため、現在ご利用いただけません。${LOGIN_HELP}` }, 403)
   }
-  await clearLoginFailures(db, keys)
+  // 接続元の制限（#544。会社の設定。本部ユーザーは本部の設定）
+  if (ipDenied(user.role, company.settings_json, ip)) {
+    await logEvent('ip_denied', user.company_id, user.user_id)
+    return c.json({ error: IP_DENIED_MESSAGE, code: 'ip_denied' }, 403)
+  }
   // 旧形式（ソルトなし SHA-256）のパスワードは、ここで PBKDF2 に作り直す
   if (needsRehash(user.password_hash)) {
     await db.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').bind(await hashPassword(password), user.user_id).run()
   }
-
-  // 同じ端末の古いセッション（Cookie で送られてきたもの）と、期限切れのセッションは消してから発行する
+  // このブラウザで別の人がログイン中なら、切り替えてよいかを先に確かめる（#346。開いたままの画面が別の人として操作を続けないように）
   const oldToken = getCookie(c, SESSION_COOKIE)
-  if (oldToken) await db.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(oldToken)).run()
-  const nowIso = new Date().toISOString()
-  await db.prepare('DELETE FROM sessions WHERE user_id = ? AND expires_at < ?').bind(user.user_id, nowIso).run()
-  const token = genToken()
-  const expires = new Date(Date.now() + SESSION_HOURS * 3600 * 1000)
-  await db.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at) VALUES (?, ?, ?, ?)')
-    .bind(await hashToken(token), user.user_id, user.company_id, expires.toISOString()).run()
-  await db.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
-  setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
+  if (oldToken && b.confirm_switch !== true) {
+    const cur = await loadSessionUser(db, oldToken)
+    if (cur.ok && cur.user.user_id !== user.user_id && !(cur.user.person_id && cur.user.person_id === user.person_id)) {
+      return c.json({ error: `このブラウザでは ${cur.user.name} さんがログイン中です。ログアウトして切り替えますか？`, code: 'already_logged_in', current_name: cur.user.name }, 409)
+    }
+  }
+  // 二段階認証を登録している人は、認証アプリのコードを確かめてからセッションを発行する（#544）。
+  // 失敗回数の記録はコードを確かめるまで消さない（パスワードを知る人がコードを総当たりできないように）
+  if (canUseMfa(user.role) && user.totp_enabled_at && user.totp_secret) {
+    const mfaToken = genToken()
+    const now = new Date()
+    await db.batch([
+      db.prepare('DELETE FROM mfa_challenges WHERE user_id = ? OR expires_at < ?').bind(user.user_id, now.toISOString()),
+      db.prepare('INSERT INTO mfa_challenges (token_hash, user_id, attempt_key, attempts, expires_at, created_at) VALUES (?, ?, ?, 0, ?, ?)')
+        .bind(await hashToken(mfaToken), user.user_id, keys.account, new Date(now.getTime() + MFA_CHALLENGE_MINUTES * 60000).toISOString(), now.toISOString()),
+    ])
+    return c.json({ ok: true, mfa_required: true, mfa_token: mfaToken, expires_in_minutes: MFA_CHALLENGE_MINUTES })
+  }
+  await clearLoginFailures(db, keys)
+  return issueSession(c, user, company, 'password')
+})
 
-  // 会社コード・ID は登録どおりの表記で返す（ログイン画面が次回の入力欄に入れておく。#308）
-  return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name, must_change_password: !!user.must_change_password },
-    company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, redirect: homePathFor(user.role) })
+// 二段階認証のコード（認証アプリの6桁、または予備コード）を確かめてログインする（#544）
+api.post('/auth/login/mfa', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  const db = c.env.DB
+  const expired = () => c.json({ error: '確認の時間が過ぎたか、失敗が続きました。もう一度、最初からログインしてください', code: 'mfa_expired' }, 401)
+  const token = typeof b.mfa_token === 'string' ? b.mfa_token : ''
+  if (!token) return expired()
+  const tokenHash = await hashToken(token)
+  const ch = await db.prepare('SELECT * FROM mfa_challenges WHERE token_hash = ? AND expires_at > ?').bind(tokenHash, new Date().toISOString()).first() as any
+  if (!ch || ch.attempts >= MFA_MAX_ATTEMPTS) return expired()
+  const ip = c.req.header('CF-Connecting-IP')
+  const keys = { account: String(ch.attempt_key), ip: (await loginAttemptKeys('', '', ip)).ip }
+  const user = await db.prepare('SELECT * FROM users WHERE user_id = ?').bind(ch.user_id).first() as any
+  const company = user ? await db.prepare('SELECT * FROM companies WHERE company_id = ?').bind(user.company_id).first() as any : null
+  // 待っている間に停止・二段階認証の解除などがあれば、最初からやり直してもらう
+  if (!user || !company || user.status !== 'active' || !canLogin(user.role) || !user.totp_secret
+    || (user.role !== 'system_admin' && !isCompanyActive(company.active_status))) {
+    await db.prepare('DELETE FROM mfa_challenges WHERE token_hash = ?').bind(tokenHash).run()
+    return expired()
+  }
+  const logEvent = (result: LoginEvent['result']) => recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id,
+    company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result })
+  if (await isLoginLocked(db, keys)) {
+    await logEvent('locked')
+    return c.json({ error: `失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
+  }
+  if (ipDenied(user.role, company.settings_json, ip)) {
+    await logEvent('ip_denied')
+    return c.json({ error: IP_DENIED_MESSAGE, code: 'ip_denied' }, 403)
+  }
+  // 6桁なら認証アプリのコード、それ以外は予備コードとして確かめる。同じコードを2回使えないよう、条件付きの更新で記録する
+  let method: 'totp' | 'recovery' | null = null
+  const step = await verifyTotp(user.totp_secret, b.code, user.totp_last_step)
+  if (step !== null) {
+    const r = await db.prepare('UPDATE users SET totp_last_step = ? WHERE user_id = ? AND COALESCE(totp_last_step, -1) < ?').bind(step, user.user_id, step).run()
+    if (r.meta.changes) method = 'totp'
+  } else {
+    const rest = await consumeRecoveryCode(user.mfa_recovery_codes, b.code)
+    if (rest !== null) {
+      const r = await db.prepare('UPDATE users SET mfa_recovery_codes = ? WHERE user_id = ? AND mfa_recovery_codes = ?').bind(rest, user.user_id, user.mfa_recovery_codes).run()
+      if (r.meta.changes) method = 'recovery'
+    }
+  }
+  if (!method) {
+    await db.prepare('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE token_hash = ?').bind(tokenHash).run()
+    await recordLoginFailure(db, keys)
+    await logEvent('mfa_failed')
+    const left = MFA_MAX_ATTEMPTS - ch.attempts - 1
+    if (left <= 0) return expired()
+    return c.json({ error: `確認コードが正しくありません（あと${left}回）。認証アプリに表示されている最新の6桁を入力してください`, attempts_left: left }, 401)
+  }
+  await db.prepare('DELETE FROM mfa_challenges WHERE token_hash = ?').bind(tokenHash).run()
+  await clearLoginFailures(db, keys)
+  return issueSession(c, user, company, method)
 })
 
 // パスワード再設定メールの送信リクエスト
@@ -488,7 +595,7 @@ api.post('/auth/reset-password', async (c) => {
   const tokenHash = await hashToken(token)
   // expires_at は ISO 8601 で保存しているので、同じ書式の現在時刻と比べる
   const row = await c.env.DB.prepare(
-    `SELECT t.*, u.status AS user_status, u.role AS user_role, u.user_code, co.company_code FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id
+    `SELECT t.*, u.status AS user_status, u.role AS user_role, u.user_code, u.company_id, co.company_code FROM password_reset_tokens t JOIN users u ON u.user_id = t.user_id
      JOIN companies co ON co.company_id = u.company_id
      WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?`
   ).bind(tokenHash, new Date().toISOString()).first() as any
@@ -500,6 +607,8 @@ api.post('/auth/reset-password', async (c) => {
     .bind(nowJST(), row.user_id).run() // 同一ユーザーの他の未使用トークンも合わせて失効させる
   // 乗っ取られた場合に備え、既存のセッションはすべて切る（再設定後はログインし直す）
   await revokeSessions(c.env.DB, row.user_id)
+  await recordLoginEvent(c.env.DB, c, { company_id: row.company_id ?? null, user_id: row.user_id, company_code: row.user_role === 'system_admin' ? '' : row.company_code,
+    user_code: row.user_code, event_type: 'password_reset', result: 'success' })
 
   // 完了画面からログイン画面へ、会社コードと ID を入れた状態で移れるように返す（#208）
   return c.json({ ok: true, company_code: row.user_role === 'system_admin' ? '' : row.company_code, user_code: row.user_code })
@@ -539,6 +648,9 @@ api.route('/public/report', publicReportApi)
 // 公開の募集ページ（ログイン不要。src/recruit.ts）
 api.route('/public/recruit', recruitPublicApi)
 
+// 二段階認証の登録待ちの間も使える API（#544）
+const MFA_SETUP_PATHS = ['/api/auth/me', '/api/auth/mfa', '/api/auth/mfa/setup', '/api/auth/mfa/enable', '/api/auth/sessions', '/api/auth/change-password', '/api/auth/logout-all']
+
 // 認証ミドルウェア
 // /auth/login・/auth/logout などの公開ルートは、このミドルウェアより前に登録してあるのでここには来ない。
 // 除外はパスの完全一致・前方一致だけで判定する（末尾一致だと /api/xxx/auth/login が認証なしで通るため）
@@ -560,6 +672,15 @@ api.use('/*', async (c, next) => {
   c.header('X-User-Id', String(u.user_id))
   if (expected && expected !== String(u.user_id)) {
     return c.json({ error: '別のアカウントでログインされたため、この画面からは操作できません。画面を読み直してください', code: 'account_switched' }, 409)
+  }
+  // 接続元の制限（#544）: 制限を設定する前からほかの場所で開いていた画面も止める。セッションは消し、ログイン画面で理由を伝える
+  if (ipDenied(u.role, u.settings_json, c.req.header('CF-Connecting-IP'))) {
+    await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(token!)).run()
+    return c.json({ error: IP_DENIED_MESSAGE, code: 'ip_denied' }, 401)
+  }
+  // 二段階認証が必須になったのに未登録の人は、登録を済ませるまで登録の画面（と自分のアカウント・ログアウト）だけを使える
+  if (mfaSetupPending(u, u.settings_json) && !MFA_SETUP_PATHS.includes(c.req.path) && !(c.req.path === '/api/auth/account' && c.req.method === 'GET')) {
+    return c.json({ error: '二段階認証の登録が必要です。「セキュリティ」の画面で認証アプリを登録してください', code: 'mfa_setup_required' }, 403)
   }
   c.header('X-Session-Expires', await extendSession(c, token!, u))
   c.set('user', u)
@@ -597,7 +718,8 @@ api.get('/auth/me', (c) => {
   const u = c.get('user')
   return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
     company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: HR_ROLES.includes(u.role),
-    user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password })
+    user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password,
+    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(u, u.settings_json) })
 })
 
 // 権限チェックミドルウェア
@@ -621,6 +743,340 @@ api.use('/staff/*', async (c, next) => {
   if (c.get('user')?.role !== 'staff') return c.json({ error: 'forbidden' }, 403)
   return next()
 })
+// ============ セキュリティ: 二段階認証・ログイン中の端末・ログインの履歴（作業単位 w4-auth-features: #544 #453 #552） ============
+const LOGIN_HISTORY_PAGE = 50
+// 直近24時間で、この回数以上ログインに失敗した ID を画面の上に出す（総当たり・パスワードの使い回しに気づけるように）
+const LOGIN_FAILURE_ALERT = 5
+/** 本人の現在のパスワードを確かめる（ログインと同じ失敗回数の制限を使う）。問題があればその応答を返す */
+async function confirmPassword(c: any, u: any, password: unknown): Promise<Response | null> {
+  const db = c.env.DB as D1Database
+  const keys = await loginAttemptKeys(u.role === 'system_admin' ? '' : String(u.company_code || ''), String(u.user_code || ''), c.req.header('CF-Connecting-IP'))
+  if (await isLoginLocked(db, keys)) return c.json({ error: `失敗が続いたため、一時的に止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください` }, 429)
+  const cur = await db.prepare('SELECT password_hash FROM users WHERE user_id = ?').bind(u.user_id).first() as any
+  if (!(await verifyPassword(String(password ?? ''), cur?.password_hash))) {
+    await recordLoginFailure(db, keys)
+    return c.json({ error: '現在のパスワードが正しくありません' }, 400)
+  }
+  return null
+}
+/** 二段階認証の登録を消す（本人の解除・管理者や本部による解除） */
+function clearMfaStmt(db: D1Database, userId: number) {
+  return db.prepare('UPDATE users SET totp_secret = NULL, totp_pending_secret = NULL, totp_enabled_at = NULL, totp_last_step = NULL, mfa_recovery_codes = NULL WHERE user_id = ?').bind(userId)
+}
+/** セッションの一覧の表示用（トークンのハッシュは返さない） */
+function sessionView(s: any, currentHash?: string) {
+  return { created_at: s.created_at, expires_at: s.expires_at, ip: s.ip || null, device: s.user_agent ? deviceLabel(s.user_agent) : '不明な端末（この機能の前のログイン）',
+    user_agent: s.user_agent || null, current: !!currentHash && s.token === currentHash, ...(s.company_id !== undefined ? { company_id: s.company_id } : {}) }
+}
+function eventView(e: any) {
+  return { event_id: e.event_id, created_at: e.created_at, event_type: e.event_type, result: e.result, method: e.method, company_code: e.company_code, user_code: e.user_code,
+    user_id: e.user_id, user_name: e.user_name ?? null, company_id: e.company_id, company_name: e.company_name ?? null, ip: e.ip, device: e.user_agent ? deviceLabel(e.user_agent) : '-',
+    actor_name: e.actor_name ?? null }
+}
+/** ログインの履歴の絞り込み（result: failed=失敗だけ / 結果の値。user_id。q: ID・接続元の部分一致）と、ページ送り */
+function loginHistoryFilter(c: any, where: string[], binds: any[]) {
+  const result = c.req.query('result')
+  if (result === 'failed') where.push(`e.result != 'success'`)
+  else if (result && /^[a-z_]{1,30}$/.test(result)) { where.push('e.result = ?'); binds.push(result) }
+  const type = c.req.query('event_type')
+  if (type && /^[a-z_]{1,30}$/.test(type)) { where.push('e.event_type = ?'); binds.push(type) }
+  const uid = c.req.query('user_id')
+  if (uid && /^\d+$/.test(uid)) { where.push('e.user_id = ?'); binds.push(Number(uid)) }
+  const q = String(c.req.query('q') || '').trim().slice(0, 50)
+  if (q) { where.push(`(e.user_code LIKE ? ESCAPE '\\' OR e.ip LIKE ? ESCAPE '\\' OR us.name LIKE ? ESCAPE '\\')`); const like = '%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%'; binds.push(like, like, like) }
+  const page = Math.max(1, Math.min(1000, Number(c.req.query('page')) || 1))
+  return { page, offset: (page - 1) * LOGIN_HISTORY_PAGE }
+}
+async function loadLoginHistory(c: any, where: string[], binds: any[]) {
+  const { page, offset } = loginHistoryFilter(c, where, binds)
+  const rows = (await c.env.DB.prepare(`SELECT e.*, us.name AS user_name, co.company_name, ac.name AS actor_name
+    FROM login_events e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN companies co ON co.company_id = e.company_id
+    LEFT JOIN users ac ON ac.user_id = e.actor_user_id
+    WHERE ${where.join(' AND ') || '1=1'} ORDER BY e.event_id DESC LIMIT ? OFFSET ?`).bind(...binds, LOGIN_HISTORY_PAGE + 1, offset).all()).results as any[]
+  return { events: rows.slice(0, LOGIN_HISTORY_PAGE).map(eventView), page, has_more: rows.length > LOGIN_HISTORY_PAGE }
+}
+/** 直近24時間に失敗が続いている ID（会社で絞るときは companyId） */
+async function loginFailureAlerts(db: D1Database, companyId: number | null) {
+  const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+  return (await db.prepare(`SELECT e.company_id, MAX(co.company_name) AS company_name, e.user_code, MAX(us.name) AS user_name, COUNT(*) AS failures, MAX(e.created_at) AS last_at,
+      COUNT(DISTINCT e.ip) AS ip_count
+    FROM login_events e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN companies co ON co.company_id = e.company_id
+    WHERE e.created_at > ? AND e.result IN ('bad_password', 'mfa_failed', 'locked') ${companyId != null ? 'AND e.company_id = ?' : ''}
+    GROUP BY e.company_id, LOWER(e.user_code) HAVING COUNT(*) >= ? ORDER BY failures DESC LIMIT 20`)
+    .bind(since, ...(companyId != null ? [companyId] : []), LOGIN_FAILURE_ALERT).all()).results
+}
+/** 接続元の制限・二段階認証の必須の設定を検証して保存する（会社管理者と本部で共用） */
+async function saveSecuritySettings(c: any, companyId: number, b: any) {
+  const u = c.get('user')
+  const v: { mfa_required?: boolean; ip_allowlist?: string[] } = {}
+  if (b.mfa_required !== undefined) {
+    if (typeof b.mfa_required !== 'boolean') return c.json({ error: '不正なパラメータです' }, 400)
+    // 自分が登録していないまま必須にすると、自分も含めて使えなくなるため先に登録してもらう
+    if (b.mfa_required && !u.totp_enabled_at) return c.json({ error: '必須にする前に、ご自身の二段階認証を登録してください' }, 400)
+    v.mfa_required = b.mfa_required
+  }
+  if (b.ip_allowlist !== undefined) {
+    const r = normalizeIpList(b.ip_allowlist)
+    if ('error' in r) return c.json({ error: r.error }, 400)
+    const ip = c.req.header('CF-Connecting-IP') || ''
+    // 今の接続元を含まない一覧にすると、保存した直後にこの画面も使えなくなるため止める
+    if (r.list.length && !ipInList(ip, r.list)) return c.json({ error: `今の接続元（${ip || '不明'}）が含まれていません。今の接続元を含めて保存してください` }, 400)
+    v.ip_allowlist = r.list
+  }
+  if (v.mfa_required === undefined && v.ip_allowlist === undefined) return c.json({ ok: true, changed: false })
+  await saveSecuritySettingsStmt(c.env.DB, companyId, v).run()
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(companyId).first() as any
+  return c.json({ ok: true, changed: true, ...securitySettings(row?.settings_json) })
+}
+/** 有効なセッション（同じ人のほかの会社の行の分も含む） */
+async function personSessions(db: D1Database, userId: number) {
+  return (await db.prepare(`SELECT token, user_id, company_id, created_at, expires_at, ip, user_agent FROM sessions WHERE ${PERSON_SESSION_WHERE} AND expires_at > ? ORDER BY created_at DESC`)
+    .bind(userId, userId, new Date().toISOString()).all()).results as any[]
+}
+async function revokePersonSessions(db: D1Database, userId: number): Promise<number> {
+  const r = await db.prepare(`DELETE FROM sessions WHERE ${PERSON_SESSION_WHERE}`).bind(userId, userId).run()
+  return r.meta.changes || 0
+}
+
+// ---------- 自分の二段階認証（本部・管理画面のアカウント） ----------
+api.get('/auth/mfa', (c) => {
+  const u = c.get('user')
+  return c.json({ available: canUseMfa(u.role), enabled: !!u.totp_enabled_at, enabled_at: u.totp_enabled_at || null,
+    required: canUseMfa(u.role) && securitySettings(u.settings_json).mfa_required, setup_required: mfaSetupPending(u, u.settings_json),
+    recovery_codes_left: recoveryCodesLeft(u.mfa_recovery_codes) })
+})
+// 登録の開始: 秘密鍵を作り、認証アプリに登録する URI（QR コード）を返す。コードを確かめるまでは有効にしない
+api.post('/auth/mfa/setup', async (c) => {
+  const u = c.get('user')
+  if (!canUseMfa(u.role)) return c.json({ error: '二段階認証は管理画面・本部のアカウントで使えます' }, 403)
+  if (u.totp_enabled_at) return c.json({ error: 'すでに登録しています。登録し直すときは、先に解除してください' }, 409)
+  const secret = newTotpSecret()
+  await c.env.DB.prepare('UPDATE users SET totp_pending_secret = ? WHERE user_id = ?').bind(secret, u.user_id).run()
+  const account = u.role === 'system_admin' ? `本部/${u.user_code}` : `${u.company_code}/${u.user_code}`
+  return c.json({ ok: true, secret, uri: totpUri(secret, account) })
+})
+// 登録の完了: 認証アプリの6桁と現在のパスワードを確かめて有効にし、予備コードを一度だけ返す
+api.post('/auth/mfa/enable', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  if (!canUseMfa(u.role)) return c.json({ error: '二段階認証は管理画面・本部のアカウントで使えます' }, 403)
+  const b = await c.req.json().catch(() => ({} as any))
+  const row = await db.prepare('SELECT totp_pending_secret, totp_enabled_at FROM users WHERE user_id = ?').bind(u.user_id).first() as any
+  if (row?.totp_enabled_at) return c.json({ error: 'すでに登録しています' }, 409)
+  if (!row?.totp_pending_secret) return c.json({ error: '登録の手続きが見つかりません。最初からやり直してください' }, 400)
+  const bad = await confirmPassword(c, u, b.password)
+  if (bad) return bad
+  const step = await verifyTotp(row.totp_pending_secret, b.code, null)
+  if (step === null) return c.json({ error: '確認コードが正しくありません。認証アプリに表示されている最新の6桁を入力してください（端末の時刻が合っているかもお確かめください）' }, 400)
+  const rc = await newRecoveryCodes()
+  const r = await db.prepare(`UPDATE users SET totp_secret = totp_pending_secret, totp_pending_secret = NULL, totp_enabled_at = ?, totp_last_step = ?, mfa_recovery_codes = ?
+    WHERE user_id = ? AND totp_pending_secret = ? AND totp_enabled_at IS NULL`).bind(new Date().toISOString(), step, rc.stored, u.user_id, row.totp_pending_secret).run()
+  if (!r.meta.changes) return c.json({ error: '登録の手続きが変わりました。画面を読み直して、やり直してください' }, 409)
+  return c.json({ ok: true, recovery_codes: rc.codes })
+})
+// 解除: 現在のパスワードと、認証アプリのコード（または予備コード）を確かめる。必須の設定のときは解除できない
+api.post('/auth/mfa/disable', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  if (!u.totp_enabled_at) return c.json({ ok: true, changed: false })
+  if (securitySettings(u.settings_json).mfa_required) return c.json({ error: '会社の設定で二段階認証が必須のため、解除できません。端末を替えたときは、会社管理者（本部の方は別の本部ユーザー）に解除を依頼してください' }, 409)
+  const b = await c.req.json().catch(() => ({} as any))
+  const bad = await confirmPassword(c, u, b.password)
+  if (bad) return bad
+  const okCode = (await verifyTotp(u.totp_secret, b.code, u.totp_last_step)) !== null || (await consumeRecoveryCode(u.mfa_recovery_codes, b.code)) !== null
+  if (!okCode) return c.json({ error: '確認コードが正しくありません' }, 400)
+  await clearMfaStmt(db, u.user_id).run()
+  return c.json({ ok: true, changed: true })
+})
+// 予備コードを作り直す（以前の予備コードは使えなくなる）
+api.post('/auth/mfa/recovery-codes', async (c) => {
+  const u = c.get('user')
+  if (!u.totp_enabled_at) return c.json({ error: '二段階認証を登録していません' }, 400)
+  const b = await c.req.json().catch(() => ({} as any))
+  const bad = await confirmPassword(c, u, b.password)
+  if (bad) return bad
+  const rc = await newRecoveryCodes()
+  await c.env.DB.prepare('UPDATE users SET mfa_recovery_codes = ? WHERE user_id = ?').bind(rc.stored, u.user_id).run()
+  return c.json({ ok: true, recovery_codes: rc.codes })
+})
+
+// ---------- 自分のログイン中の端末と、すべての端末からのログアウト（#453。全ロール） ----------
+api.get('/auth/sessions', async (c) => {
+  const u = c.get('user')
+  const token = getCookie(c, SESSION_COOKIE)
+  const current = token ? await hashToken(token) : ''
+  return c.json({ sessions: (await personSessions(c.env.DB, u.user_id)).map(s => sessionView({ ...s, company_id: undefined }, current)) })
+})
+api.post('/auth/logout-all', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const n = await revokePersonSessions(db, u.user_id)
+  await recordLoginEvent(db, c, { company_id: u.company_id, user_id: u.user_id, company_code: u.role === 'system_admin' ? '' : u.company_code, user_code: u.user_code,
+    event_type: 'logout_all', result: 'success' })
+  deleteCookie(c, SESSION_COOKIE, { path: '/', secure: new URL(c.req.url).protocol === 'https:' })
+  return c.json({ ok: true, revoked: n })
+})
+
+// ---------- 会社の管理画面（/api/admin/security・/api/admin/login-history・/api/admin/staff/:id/sessions） ----------
+// 設定・管理者アカウントの二段階認証・ログインの履歴は会社管理者だけ。スタッフのログイン中の端末は管理系のロール全員（スマホの紛失にその場で対応できるように）
+const securityAdminOnly = async (c: any, next: any) => {
+  if (c.get('user')?.role !== 'company_admin') return c.json({ error: 'この操作は会社管理者だけが行えます' }, 403)
+  return next()
+}
+api.use('/admin/security/settings', securityAdminOnly)
+api.use('/admin/security/users', securityAdminOnly)
+api.use('/admin/security/users/*', securityAdminOnly)
+api.use('/admin/login-history', securityAdminOnly)
+
+api.get('/admin/security/settings', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ ...securitySettings(row?.settings_json), current_ip: c.req.header('CF-Connecting-IP') || null, my_mfa_enabled: !!u.totp_enabled_at })
+})
+api.put('/admin/security/settings', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  return saveSecuritySettings(c, c.get('user').company_id, b)
+})
+// 管理者アカウントの二段階認証の状態とログイン中の端末の数
+api.get('/admin/security/users', async (c) => {
+  const u = c.get('user')
+  const users = (await c.env.DB.prepare(`SELECT us.user_id, us.user_code, us.name, us.role, us.status, us.last_login_at, us.totp_enabled_at,
+      (SELECT COUNT(*) FROM sessions s WHERE s.user_id = us.user_id AND s.expires_at > ?) AS session_count
+    FROM users us WHERE us.company_id = ? AND us.role IN ('company_admin','sales_manager','field_manager','office_staff')
+    ORDER BY CASE us.status WHEN 'active' THEN 0 ELSE 1 END, us.user_id`).bind(new Date().toISOString(), u.company_id).all()).results
+  return c.json({ users, me: u.user_id })
+})
+async function ownAdminAccount(c: any): Promise<any | null> {
+  const id = c.req.param('id')
+  if (!/^\d+$/.test(String(id))) return null
+  return c.env.DB.prepare(`SELECT user_id, user_code, name, role FROM users WHERE user_id = ? AND company_id = ? AND role IN ('company_admin','sales_manager','field_manager','office_staff')`)
+    .bind(Number(id), c.get('user').company_id).first()
+}
+// 端末を失くした管理者の二段階認証を解除する（次のログインはパスワードだけ。必須の設定なら登録し直しになる）
+api.delete('/admin/security/users/:id/mfa', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const t = await ownAdminAccount(c)
+  if (!t) return c.json({ error: 'アカウントが見つかりません' }, 404)
+  if (t.user_id === u.user_id) return c.json({ error: '自分の二段階認証は、この画面の「自分の二段階認証」から解除してください' }, 400)
+  await db.batch([clearMfaStmt(db, t.user_id), db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(t.user_id)])
+  return c.json({ ok: true })
+})
+api.delete('/admin/security/users/:id/sessions', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const t = await ownAdminAccount(c)
+  if (!t) return c.json({ error: 'アカウントが見つかりません' }, 404)
+  if (t.user_id === u.user_id) return c.json({ error: '自分のログインは「すべての端末からログアウト」で終了してください' }, 400)
+  const n = await revokePersonSessions(db, t.user_id)
+  await recordLoginEvent(db, c, { company_id: u.company_id, user_id: t.user_id, company_code: u.company_code, user_code: t.user_code, event_type: 'forced_logout', result: 'success', actor_user_id: u.user_id })
+  return c.json({ ok: true, revoked: n })
+})
+// 自社のログインの履歴（自社の会社コードで試みられた失敗を含む）と、失敗が続いている ID
+api.get('/admin/login-history', async (c) => {
+  const u = c.get('user')
+  const where = ['e.company_id = ?']; const binds: any[] = [u.company_id]
+  const r = await loadLoginHistory(c, where, binds)
+  const alerts = r.page === 1 ? await loginFailureAlerts(c.env.DB, u.company_id) : []
+  return c.json({ ...r, alerts, alert_threshold: LOGIN_FAILURE_ALERT })
+})
+// ログインを終了させるスタッフを選ぶ: 名前・スタッフ番号で探す。空欄なら、ログイン中の端末があるスタッフを最近のログイン順に出す
+api.get('/admin/security/staff', async (c) => {
+  const u = c.get('user')
+  const q = String(c.req.query('q') || '').normalize('NFKC').trim().slice(0, 50)
+  const now = new Date().toISOString()
+  const like = '%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%'
+  const rows = (await c.env.DB.prepare(`SELECT * FROM (SELECT sp.staff_id, us.name, us.user_code, us.status, us.last_login_at,
+      (SELECT COUNT(*) FROM sessions s WHERE s.expires_at > ? AND (s.user_id = us.user_id
+        OR (us.person_id IS NOT NULL AND s.user_id IN (SELECT u2.user_id FROM users u2 WHERE u2.person_id = us.person_id)))) AS session_count
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.company_id = ? AND us.role = 'staff'
+      ${q ? `AND (us.name LIKE ? ESCAPE '\\' OR us.user_code LIKE ? ESCAPE '\\')` : ''})
+    ${q ? '' : 'WHERE session_count > 0'}
+    ORDER BY session_count > 0 DESC, last_login_at DESC LIMIT 50`).bind(now, u.company_id, ...(q ? [like, like] : [])).all()).results
+  return c.json({ staff: rows })
+})
+async function staffLoginUser(c: any): Promise<any | null> {
+  const sp = await ownStaff(c.env.DB, c.get('user').company_id, c.req.param('id'))
+  if (!sp) return null
+  return c.env.DB.prepare(`SELECT user_id, user_code, name, role FROM users WHERE user_id = ?`).bind(sp.user_id).first()
+}
+// スタッフのログイン中の端末と直近のログインの履歴（企業を切り替えた他社の画面でのログインも数に含める。会社名は出さない）
+api.get('/admin/staff/:id/sessions', async (c) => {
+  const u = c.get('user')
+  const su = await staffLoginUser(c)
+  if (!su) return c.json({ error: 'not found' }, 404)
+  const sessions = (await personSessions(c.env.DB, su.user_id)).map(s => ({ ...sessionView(s), company_id: undefined, other_company: s.company_id !== u.company_id }))
+  const where = ['e.company_id = ?', 'e.user_id = ?']; const binds: any[] = [u.company_id, su.user_id]
+  const history = u.role === 'company_admin' ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
+  return c.json({ staff: { name: su.name, user_code: su.user_code }, sessions, history })
+})
+// スタッフのログインを強制的に終了する（スマホの紛失・共用端末のログアウト忘れ。同じ人の他社の行のセッションも消す）
+api.delete('/admin/staff/:id/sessions', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const su = await staffLoginUser(c)
+  if (!su) return c.json({ error: 'not found' }, 404)
+  const n = await revokePersonSessions(db, su.user_id)
+  await recordLoginEvent(db, c, { company_id: u.company_id, user_id: su.user_id, company_code: u.company_code, user_code: su.user_code, event_type: 'forced_logout', result: 'success', actor_user_id: u.user_id })
+  return c.json({ ok: true, revoked: n })
+})
+
+// ---------- 本部（/api/hq/security・/api/hq/login-history） ----------
+// 本部ユーザーの二段階認証の必須・接続元の制限は、本部専用の企業行の設定に持つ
+api.get('/hq/security', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  const users = (await c.env.DB.prepare(`SELECT user_id, user_code, name, status, last_login_at, totp_enabled_at,
+      (SELECT COUNT(*) FROM sessions s WHERE s.user_id = users.user_id AND s.expires_at > ?) AS session_count
+    FROM users WHERE company_id = ? AND role = 'system_admin' ORDER BY user_id`).bind(new Date().toISOString(), u.company_id).all()).results
+  return c.json({ ...securitySettings(row?.settings_json), current_ip: c.req.header('CF-Connecting-IP') || null, my_mfa_enabled: !!u.totp_enabled_at, users, me: u.user_id })
+})
+api.put('/hq/security/settings', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  return saveSecuritySettings(c, c.get('user').company_id, b)
+})
+// 端末を失くした人の二段階認証の解除（会社コード＋ID で指定。会社コードが空欄なら本部ユーザー）。会社管理者が1人で解除できないときの窓口
+api.post('/hq/security/reset-mfa', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const companyCode = normalizeLoginCode(b.company_code), userCode = normalizeLoginCode(b.user_code)
+  if (!userCode) return c.json({ error: 'ID を入力してください' }, 400)
+  const t = await db.prepare(`SELECT us.user_id, us.name, us.role, us.totp_enabled_at, co.company_name FROM users us JOIN companies co ON co.company_id = us.company_id
+    WHERE ${companyCode ? 'LOWER(co.company_code) = LOWER(?)' : `co.active_status = ? AND us.role = 'system_admin'`} AND LOWER(us.user_code) = LOWER(?)
+      AND us.role IN ('system_admin','company_admin','sales_manager','field_manager','office_staff') LIMIT 2`)
+    .bind(companyCode || HQ_COMPANY_STATUS, userCode).all()
+  if (t.results.length !== 1) return c.json({ error: '該当するアカウントが見つかりません（管理画面・本部のアカウントだけが対象です）' }, 404)
+  const target = t.results[0] as any
+  if (target.user_id === u.user_id) return c.json({ error: '自分の二段階認証は「自分の二段階認証」から解除してください' }, 400)
+  await db.batch([clearMfaStmt(db, target.user_id), db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.user_id)])
+  return c.json({ ok: true, name: target.name, company_name: target.company_name, was_enabled: !!target.totp_enabled_at })
+})
+// 企業の接続元の制限を外す（企業側で設定を誤って管理者が誰も入れなくなったときの窓口）
+api.post('/hq/security/clear-ip', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  const code = normalizeLoginCode(b.company_code)
+  if (!code) return c.json({ error: '会社コードを入力してください' }, 400)
+  const co = await c.env.DB.prepare('SELECT company_id, company_name FROM companies WHERE LOWER(company_code) = LOWER(?) LIMIT 1').bind(code).first() as any
+  if (!co) return c.json({ error: '会社が見つかりません' }, 404)
+  await saveSecuritySettingsStmt(c.env.DB, co.company_id, { ip_allowlist: [] }).run()
+  return c.json({ ok: true, company_name: co.company_name })
+})
+api.delete('/hq/security/users/:id/sessions', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const id = c.req.param('id')
+  const t = /^\d+$/.test(id) ? await db.prepare(`SELECT user_id, user_code FROM users WHERE user_id = ? AND company_id = ? AND role = 'system_admin'`).bind(Number(id), u.company_id).first() as any : null
+  if (!t) return c.json({ error: 'アカウントが見つかりません' }, 404)
+  if (t.user_id === u.user_id) return c.json({ error: '自分のログインは「すべての端末からログアウト」で終了してください' }, 400)
+  const n = await revokePersonSessions(db, t.user_id)
+  await recordLoginEvent(db, c, { company_id: u.company_id, user_id: t.user_id, company_code: '', user_code: t.user_code, event_type: 'forced_logout', result: 'success', actor_user_id: u.user_id })
+  return c.json({ ok: true, revoked: n })
+})
+// 全社のログインの履歴（会社コードの誤りなど、会社が分からない試行も含む）
+api.get('/hq/login-history', async (c) => {
+  const where: string[] = []; const binds: any[] = []
+  const cid = c.req.query('company_id')
+  if (cid && /^\d+$/.test(cid)) { where.push('e.company_id = ?'); binds.push(Number(cid)) }
+  else if (cid === 'unknown') where.push('e.company_id IS NULL')
+  const r = await loadLoginHistory(c, where, binds)
+  const alerts = r.page === 1 ? await loginFailureAlerts(c.env.DB, null) : []
+  return c.json({ ...r, alerts, alert_threshold: LOGIN_FAILURE_ALERT })
+})
+
 // 自分のアカウント（氏名・メール・パスワードの変更）・管理者アカウント・本部からの管理者の管理（src/accounts.ts）
 api.route('/auth', authAccountApi)
 api.route('/admin', adminUsersApi)

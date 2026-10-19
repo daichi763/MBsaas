@@ -75,8 +75,31 @@ window.renderChangePassword = function () {
       <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-lock text-blue-500 mr-1"></i>パスワードの変更</h3>
       ${passwordFormHtml('spw')}
       <p class="text-[11px] text-gray-400 mt-3">変更すると、ほかの端末のログインは終了します。パスワードを忘れたときは、登録したメールアドレスで再設定するか、所属会社の担当者に再発行を依頼してください。</p>
+    </section>
+    <section class="card p-4 mt-3">
+      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-mobile-screen text-blue-500 mr-1"></i>ログイン中の端末</h3>
+      <div id="my-sessions" class="text-sm text-gray-500">読み込み中...</div>
+      <button class="btn btn-outline w-full mt-3" data-action="staffLogoutAll"><i class="fas fa-right-from-bracket"></i>すべての端末からログアウト</button>
+      <p class="text-[11px] text-gray-400 mt-2">機種変更の前の端末や、共用の端末にログインが残っているときに使います。この端末もログアウトします。</p>
     </section>`
+  loadMySessions()
 }
+// 自分のログイン中の端末と、すべての端末からのログアウト（#453。スマホの紛失・機種変更・共用端末のログアウト忘れ）
+async function loadMySessions() {
+  const box = document.getElementById('my-sessions'); if (!box) return
+  try {
+    const { data } = await axios.get('/api/auth/sessions')
+    box.innerHTML = data.sessions.length ? `<ul class="divide-y divide-gray-100">${data.sessions.map(s => `
+      <li class="py-1.5"><span class="text-gray-800">${esc(s.device)}</span>${s.current ? ' <span class="badge badge-blue">この端末</span>' : ''}
+        <span class="block text-[11px] text-gray-400">ログイン ${esc(dayjs(String(s.created_at).replace(' ', 'T') + (/[TZ]/.test(String(s.created_at)) ? '' : 'Z')).format('M/D HH:mm'))}</span></li>`).join('')}</ul>` : 'ログイン中の端末はありません'
+  } catch (e) { box.textContent = '読み込めませんでした' }
+}
+delegate('staffLogoutAll', (el) => {
+  if (!confirm('すべての端末（この端末を含む）からログアウトします。よろしいですか？')) return
+  withSubmitLock(el, async () => {
+    try { await axios.post('/api/auth/logout-all'); location.href = '/login' } catch (e) { showApiError(e, 'ログアウトできませんでした') }
+  })
+})
 delegate('staffChangePassword', (el) => withSubmitLock(el, async () => {
   const p = el.dataset.prefix
   const cur = document.getElementById(p + '-current').value
