@@ -481,15 +481,17 @@ rosterApi.get('/:id/links', async (c) => {
   }
   // 所属元が閲覧できるのは: 連携先企業名・連携日・共有追記項目（現場評価/稼働メモ）・稼働実績の件数のみ
   // （稼働先の社内メモ・フォロー履歴・日報本文等は返さない）
-  const month = nowJST().slice(0, 7)
+  const today = nowJST().slice(0, 10); const month = today.slice(0, 7)
+  // 稼働日数・最終稼働は今日以前の分。今後の予定は month_planned_days（予定を含む今月の日数）で分けて返す（#85）
   const links = await db.prepare(`
     SELECT sp.staff_id AS linked_staff_id, co.company_name AS host_company_name, sp.created_at AS linked_at,
       sp.site_evaluation, sp.work_memo, sp.host_note_updated_at,
       (SELECT MIN(rc.created_at) FROM roster_consents rc WHERE rc.staff_id = sp.staff_id) AS consented_at,
-      (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_days,
-      (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.status IN ('confirmed','substitute')) AS last_work_date
+      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS month_days,
+      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_planned_days,
+      (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
-    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', sid).all()
+    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', today, month + '%', today, sid).all()
   // 連携先は「自社から直接連携した企業」のみ（その先の企業は出さない）
   if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: links.results })
   return c.json({ role: 'owner', links: links.results })

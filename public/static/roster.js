@@ -481,7 +481,7 @@ window.renderRosterPanels = async function (sid, p) {
             <div class="flex items-center gap-2 text-xs">
               <span class="font-bold text-gray-800">${esc(l.host_company_name)}</span>
               <span class="text-gray-400">連携 ${esc((l.consented_at || l.linked_at || '').slice(0, 10))}</span>
-              <span class="ml-auto text-gray-500">今月 ${l.month_days}日 / 最終 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
+              <span class="ml-auto text-gray-500">今月の稼働 ${Number(l.month_days) || 0}日${Number(l.month_planned_days) > Number(l.month_days) ? `（予定を含め ${Number(l.month_planned_days)}日）` : ''} / 最終稼働 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
             </div>
             ${l.site_evaluation || l.work_memo ? `
               <p class="text-xs text-gray-700 mt-1"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
