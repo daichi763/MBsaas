@@ -341,7 +341,7 @@ async function renderTemplates() {
             <span class="badge ${t.template_type === 'hq' ? 'badge-blue' : 'badge-gray'}">${t.template_type === 'hq' ? '本部配信' : '企業独自'}</span>
           </div>
           <div class="flex flex-wrap gap-1.5">
-            ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-cyan-900 text-cyan-300' : 'bg-slate-700 text-slate-300'}">${esc(f.label)}${f.required ? ' *' : ''}</span>`).join('')}
+            ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-cyan-900 text-cyan-300' : 'bg-slate-700 text-slate-300'}">${esc(f.label)}</span>`).join('')}
           </div>
           <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}）</p>
         </section>`).join('')}
@@ -353,12 +353,12 @@ window.showAddTemplate = function () {
     <h3 class="font-bold text-lg mb-4">テンプレート作成</h3>
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tp-name" class="inp" placeholder="コールセンター稼働テンプレート"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">項目定義（1行1項目: キー,ラベル,タイプ,必須）</label>
+      <div><label class="text-sm text-gray-600 block mb-1">項目定義（1行1項目: キー,ラベル,タイプ）</label>
         <textarea id="tp-fields" rows="8" class="inp text-xs font-mono">calls,架電数,number
-connects,接続数,number,必須
-seiyaku,成約数,number,必須
+connects,接続数,number
+seiyaku,成約数,number
 free,自由記述,textarea</textarea>
-        <p class="text-xs text-gray-400 mt-1">タイプ: number / text / textarea。4つ目に「必須」と書いた項目は、空欄のまま日報を提出できません（* 印）</p></div>
+        <p class="text-xs text-gray-400 mt-1">タイプ: number / text / textarea</p></div>
       <button class="btn btn-primary w-full" onclick="addTemplate()">作成して配信する</button>
     </div>`)
 }
@@ -366,10 +366,8 @@ window.addTemplate = async function () {
   const name = document.getElementById('tp-name').value.trim()
   if (!name) { toast('テンプレート名を入力してください'); return }
   const fields = document.getElementById('tp-fields').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-    const [key, label, type, req] = l.split(',').map(s => s.trim())
-    const f = { key, label: label || key, type: type || 'text' }
-    if (req === '必須' || req === 'required') f.required = true
-    return f
+    const [key, label, type] = l.split(',').map(s => s.trim())
+    return { key, label: label || key, type: type || 'text' }
   })
   await axios.post('/api/hq/templates', { template_name: name, fields })
   closeModal(); toast('テンプレートを配信しました'); renderTemplates()

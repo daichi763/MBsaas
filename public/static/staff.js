@@ -776,7 +776,9 @@ async function renderReport() {
         <div class="space-y-3">
           ${textFields.map(f => {
             // テキストの項目は、スマホで書いた内容を見返せるよう、すべて複数行の欄にする（#525）
-            const max = Math.min(Number(f.maxLength || f.max_length) || REPORT_TEXT_MAX, REPORT_TEXT_MAX)
+            // 文字数の上限はサーバー（reportFieldRulesError）と同じく 1〜REPORT_TEXT_MAX の整数だけを使う
+            const ml = Number(f.maxLength ?? f.max_length)
+            const max = Number.isInteger(ml) && ml >= 1 && ml <= REPORT_TEXT_MAX ? ml : REPORT_TEXT_MAX
             const v = String(pv(f.key))
             return `
             <div>
@@ -798,7 +800,8 @@ async function renderReport() {
   if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
   const form = document.getElementById('report-form')
   // 複数行の欄は入力に合わせて高さを伸ばし、残りの文字数を出す
-  const grow = (el) => { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 480) + 'px' }
+  // 非表示の欄（インシデントの内容など）は高さを測れないので、表示したときに測る
+  const grow = (el) => { if (!el.offsetParent) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 480) + 'px' }
   form.querySelectorAll('.rpt-autogrow').forEach(el => {
     if (el.value) grow(el)
     el.addEventListener('input', () => {
@@ -810,7 +813,7 @@ async function renderReport() {
   form.querySelectorAll('.rpt-flag').forEach(el => el.addEventListener('change', () => {
     const box = document.getElementById(el.dataset.kind + '-note-box')
     box.classList.toggle('hidden', !el.checked)
-    if (el.checked) document.getElementById(el.dataset.kind + '-note').focus()
+    if (el.checked) { const note = document.getElementById(el.dataset.kind + '-note'); grow(note); note.focus() }
   }))
   form.addEventListener('submit', (e) => {
     e.preventDefault()
