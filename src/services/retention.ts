@@ -3,8 +3,10 @@
 // 対象と基準:
 //   daily_reports              : work_date から3年
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
+//   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
 //                              : 勤怠と同じく、スタッフの退職日から7年（docs/spec_attendance_correction.md 8章）
+//   notice_read_staff_reports  : スタッフ別の既読率（人事評価の参考資料）も退職後7年（#437）
 //   attendance_reports / shifts
 //   evaluations / follow_logs
 //   consultations / R2写真
@@ -30,6 +32,10 @@
 //   - R2 の写真・書類は D1 の削除が成功してから消す。キーは D1 の削除と同じ batch で retention_pending_r2 に
 //     控えておき、R2 の削除に失敗したものは次回のCronで再試行する。
 //   - 失敗したときは、どのスタッフで何が起きたかを retention_logs.error_message に残す（#234）。
+//   - R2 は最大1000キーずつまとめて消し、1回のCronで消すファイル数に上限を置く。超えた分は retention_pending_r2 に
+//     残して翌日に回し、上限に達したらそれ以降の人も次回に回す（#419）。
+//
+// 期限切れ・使用済みのトークン（パスワード再設定・報告用URL）は、データ保持とは別の定期処理（purgeExpiredTokens）で消す（#397）。
 
 const DAILY_REPORTS_YEARS = 3
 const RETIRED_YEARS = 7
@@ -39,17 +45,26 @@ const STAFF_BATCH = 20 // 1回のCronで処理する退職スタッフの上限�
 const NOTIFICATIONS_YEARS = 2
 const NOTIFICATIONS_BATCH = 500
 const NOTIFICATIONS_MAX_BATCHES = 20
-const R2_RETRY_BATCH = 200 // 1回のCronで再試行する R2 の写真・書類の上限
+const EMAIL_LOGS_YEARS = 1
+const R2_DELETE_CHUNK = 1000 // R2 の delete に1回で渡すキーの数（R2 の上限）
+const R2_DELETE_BUDGET = 5000 // 1回のCronで消す R2 の写真・書類の上限（超えた分は翌日に回す。#419）
+const DRY_RUN_STAFF_LIMIT = 300 // dry-run で一覧に出す対象スタッフの上限
 /** 初めて削除対象になってから実際に削除するまでの猶予日数 */
 export const RETENTION_GRACE_DAYS = 7
 // 退職スタッフに紐づく打刻修正・報告設定のデータ（勤怠と同じ「退職後7年」）
-const RETIRED_EXTRA_TARGETS = ['attendance_corrections', 'attendance_correction_events', 'notification_emails', 'report_setting_logs', 'project_staff_report_settings']
+const RETIRED_EXTRA_TARGETS = ['attendance_corrections', 'attendance_correction_events', 'notification_emails', 'report_setting_logs', 'project_staff_report_settings',
+  'notice_read_staff_reports']
 // 退職スタッフの人事データ・書類・企業間チャット・同意履歴と、本人情報の匿名化（#193 #228 #480）
 const RETIRED_PERSONAL_TARGETS = ['employee_records', 'employment_periods', 'staff_documents', 'employee_documents', 'r2_documents',
   'roster_comments', 'roster_comment_reads', 'roster_consents', 'anonymized_staff']
 // retired_staff は人数（対象の人・処理できた人・失敗した人）。スタッフ単位の失敗の理由はここに残す（#234）
+// retired_staff_deferred・r2_pending は、上限に達して翌日に回した人数と R2 のファイル数（#419）
 const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'shift_report_tokens', 'r2_photos',
-  ...RETIRED_EXTRA_TARGETS, ...RETIRED_PERSONAL_TARGETS]
+  ...RETIRED_EXTRA_TARGETS, ...RETIRED_PERSONAL_TARGETS, 'retired_staff_deferred', 'r2_pending']
+// 件数の単位が行数でない対象（実行ログの合計に含めない）
+export const RETENTION_NON_ROW_TARGETS = ['retired_staff', 'retired_staff_deferred', 'r2_pending']
+// トークンの削除（purgeExpiredTokens）が retention_logs に残す対象。RETENTION_ENABLED に関係なく実削除で記録する
+export const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens'] as const
 const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件数（それ以上は件数だけ）
 // 匿名化で消す staff_profiles の個人情報の列（所属区分・連携の情報・評価の点数は集計に使うので残す）
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
@@ -163,6 +178,7 @@ const HAS_DATA_SQL = `(sp.anonymized_at IS NULL
     OR EXISTS (SELECT 1 FROM attendance_corrections WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM report_setting_logs WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM project_staff_report_settings WHERE staff_id = sp.staff_id)
+    OR EXISTS (SELECT 1 FROM notice_read_staff_reports WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM employee_records WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM employment_periods WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM staff_documents WHERE staff_id = sp.staff_id)
@@ -178,7 +194,8 @@ export type RetentionScheduleRow = {
  * 本部画面の「次回削除予定」と「対象外（退職日より後にシフトあり）」の一覧。
  * delete_on は猶予が明けて削除できるようになる日（まだ猶予が始まっていなければ null）。
  */
-export async function listRetentionSchedule(db: D1Database): Promise<{ scheduled: RetentionScheduleRow[]; excluded: RetentionScheduleRow[]; grace_days: number }> {
+export async function listRetentionSchedule(db: D1Database): Promise<{ scheduled: RetentionScheduleRow[]; excluded: RetentionScheduleRow[]; grace_days: number
+  next_run_date: string; next_run_count: number; next_run_due: number; staff_batch: number }> {
   const cutoff = cutoffDate(RETIRED_YEARS)
   const cols = `sp.staff_id, u.name, c.company_name, ${STAFF_RETIRED_AT_SQL} AS retired_at, sp.retention_flagged_at AS flagged_at,
     (SELECT MAX(work_date) FROM shifts WHERE staff_id = sp.staff_id) AS last_work_date
@@ -190,10 +207,21 @@ export async function listRetentionSchedule(db: D1Database): Promise<{ scheduled
     WHERE x.retired_at IS NOT NULL AND length(x.retired_at) >= 10 AND x.retired_at <= ?
       AND EXISTS (SELECT 1 FROM shifts s WHERE s.staff_id = x.staff_id AND s.work_date > x.retired_at)
     ORDER BY x.retired_at, x.staff_id LIMIT 100`).bind(cutoff).all()).results as any[]
+  // 次の定期削除（毎日 日本時間3:00）で削除する人数（猶予が明けている人。1回の上限は STAFF_BATCH 人。#365）
+  const nowJ = nowJST()
+  const nextRunDate = nowJ.slice(11, 13) < '03' ? nowJ.slice(0, 10) : addDays(nowJ.slice(0, 10), 1)
+  const due = await db.prepare(`SELECT COUNT(*) AS n FROM staff_profiles sp
+    WHERE sp.staff_id IN (${ELIGIBLE_STAFF_SQL}) AND sp.retention_flagged_at IS NOT NULL AND sp.retention_flagged_at <= ? AND ${HAS_DATA_SQL}`)
+    .bind(cutoff, addDays(nextRunDate, -RETENTION_GRACE_DAYS)).first() as { n: number } | null
+  const nextRunDue = Number(due?.n) || 0
   return {
     scheduled: scheduled.map(r => ({ ...r, delete_on: r.flagged_at ? addDays(r.flagged_at, RETENTION_GRACE_DAYS) : null })),
     excluded: excluded.map(r => ({ ...r, delete_on: null })),
     grace_days: RETENTION_GRACE_DAYS,
+    next_run_date: nextRunDate,
+    next_run_due: nextRunDue,
+    next_run_count: Math.min(nextRunDue, STAFF_BATCH),
+    staff_batch: STAFF_BATCH,
   }
 }
 
@@ -210,6 +238,8 @@ export type RetentionRunResult = {
   results: RetentionTargetResult[]
   startedAt: string
   finishedAt: string
+  detail?: Awaited<ReturnType<typeof dryRunRetiredStaffDetail>> // 本部画面の dry-run の内訳（#365）
+  detailError?: string
 }
 
 function cutoffDate(years: number): string {
@@ -243,27 +273,36 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
   }
 }
 
-async function cleanupUserNotifications(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
-  const cutoff = cutoffDate(NOTIFICATIONS_YEARS)
+// 作成日時から一定年数たった行を、件数を区切って消す（user_notifications・email_logs で共用）。
+// created_at は CURRENT_TIMESTAMP（YYYY-MM-DD HH:MM:SS）か ISO 8601 で、どちらも YYYY-MM-DD との文字列比較で判定できる
+async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number }): Promise<RetentionTargetResult> {
+  const cutoff = cutoffDate(t.years)
   if (dryRun) {
-    const row = await db.prepare('SELECT COUNT(*) AS n FROM user_notifications WHERE created_at < ?').bind(cutoff).first()
-    return { target: 'user_notifications', targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
+    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t.table} WHERE created_at < ?`).bind(cutoff).first()
+    return { target: t.target, targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
   }
   let deleted = 0
   try {
     for (let i = 0; i < NOTIFICATIONS_MAX_BATCHES; i++) {
       const result = await db.prepare(
-        `DELETE FROM user_notifications WHERE notification_id IN (SELECT notification_id FROM user_notifications WHERE created_at < ? LIMIT ?)`
+        `DELETE FROM ${t.table} WHERE ${t.idCol} IN (SELECT ${t.idCol} FROM ${t.table} WHERE created_at < ? LIMIT ?)`
       ).bind(cutoff, NOTIFICATIONS_BATCH).run()
       const changes = result.meta.changes || 0
       deleted += changes
       if (changes < NOTIFICATIONS_BATCH) break
     }
-    return { target: 'user_notifications', targetCount: deleted, deletedCount: deleted, failedCount: 0 }
+    return { target: t.target, targetCount: deleted, deletedCount: deleted, failedCount: 0 }
   } catch (e) {
-    console.log(`retention: user_notifications cleanup failed after deleting ${deleted}: ${e}`)
-    return { target: 'user_notifications', targetCount: deleted, deletedCount: deleted, failedCount: 1, error: String(e) }
+    console.log(`retention: ${t.target} cleanup failed after deleting ${deleted}: ${e}`)
+    return { target: t.target, targetCount: deleted, deletedCount: deleted, failedCount: 1, error: String(e) }
   }
+}
+function cleanupUserNotifications(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'user_notifications', table: 'user_notifications', idCol: 'notification_id', years: NOTIFICATIONS_YEARS })
+}
+// メールの送信記録（宛先のメールアドレスを含む）は1年で消す（#240）
+function cleanupEmailLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'email_logs', table: 'email_logs', idCol: 'log_id', years: EMAIL_LOGS_YEARS })
 }
 
 function emptyRetiredAcc(): Record<string, RetentionTargetResult> {
@@ -331,6 +370,7 @@ async function dryRunRetiredStaffData(db: D1Database): Promise<Record<string, Re
     notification_emails: `SELECT COUNT(*) AS n FROM notification_emails WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id IN (${retired}))`,
     report_setting_logs: `SELECT COUNT(*) AS n FROM report_setting_logs WHERE staff_id IN (${retired})`,
     project_staff_report_settings: `SELECT COUNT(*) AS n FROM project_staff_report_settings WHERE staff_id IN (${retired})`,
+    notice_read_staff_reports: `SELECT COUNT(*) AS n FROM notice_read_staff_reports WHERE staff_id IN (${retired})`,
     employee_records: `SELECT COUNT(*) AS n FROM employee_records WHERE staff_id IN (${retired})`,
     employment_periods: `SELECT COUNT(*) AS n FROM employment_periods WHERE staff_id IN (${retired})`,
     staff_documents: `SELECT COUNT(*) AS n FROM staff_documents WHERE staff_id IN (${retired})`,
@@ -341,6 +381,8 @@ async function dryRunRetiredStaffData(db: D1Database): Promise<Record<string, Re
     roster_comment_reads: `${withRetired} SELECT COUNT(*) AS n FROM roster_comment_reads WHERE ${threadsOfRetired}`,
     roster_consents: `${withRetired} SELECT COUNT(*) AS n FROM roster_consents WHERE staff_id IN (SELECT staff_id FROM r) OR (source_staff_id IN (SELECT staff_id FROM r) AND staff_id IS NULL)`,
     anonymized_staff: `SELECT COUNT(*) AS n FROM staff_profiles WHERE staff_id IN (${retired}) AND anonymized_at IS NULL`,
+    // 前回までに消せず、次回に消す R2 のファイル（バインドの数をそろえるため ? を置く）
+    r2_pending: `SELECT COUNT(*) AS n FROM retention_pending_r2 WHERE ? IS NOT NULL`,
   }
   for (const [t, sql] of Object.entries(counts)) {
     try {
@@ -353,31 +395,93 @@ async function dryRunRetiredStaffData(db: D1Database): Promise<Record<string, Re
   return acc
 }
 
+export type RetentionDryRunStaff = {
+  staff_id: number; name: string; company_id: number | null; company_name: string | null; retired_at: string
+  last_work_date: string | null; last_report_date: string | null; flagged_at: string | null; delete_on: string | null
+  report_after_retired: boolean; counts: Record<string, number>
+}
+export type RetentionDryRunCompany = { company_id: number | null; company_name: string | null; staff_count: number; counts: Record<string, number> }
+// 退職者ごとに数える対象（列名 → 数える SQL。sp.staff_id を参照する）
+const DRY_RUN_STAFF_COUNTS: Record<string, string> = {
+  shifts: 'SELECT COUNT(*) FROM shifts WHERE staff_id = sp.staff_id',
+  attendance_reports: 'SELECT COUNT(*) FROM attendance_reports WHERE staff_id = sp.staff_id',
+  r2_photos: 'SELECT COUNT(*) FROM attendance_reports WHERE staff_id = sp.staff_id AND photo_key IS NOT NULL',
+  evaluations: 'SELECT COUNT(*) FROM evaluations WHERE staff_id = sp.staff_id',
+  follow_logs: 'SELECT COUNT(*) FROM follow_logs WHERE staff_id = sp.staff_id',
+  consultations: 'SELECT COUNT(*) FROM consultations WHERE staff_id = sp.staff_id',
+  attendance_corrections: 'SELECT COUNT(*) FROM attendance_corrections WHERE staff_id = sp.staff_id',
+  employee_records: 'SELECT COUNT(*) FROM employee_records WHERE staff_id = sp.staff_id',
+  documents: '(SELECT COUNT(*) FROM staff_documents WHERE staff_id = sp.staff_id) + (SELECT COUNT(*) FROM employee_documents WHERE staff_id = sp.staff_id)',
+  roster_comments: `SELECT COUNT(*) FROM roster_comments WHERE thread_staff_id = sp.staff_id OR thread_staff_id IN (${linkedRowsOf('sp.staff_id')})`,
+  notice_read_staff_reports: 'SELECT COUNT(*) FROM notice_read_staff_reports WHERE staff_id = sp.staff_id',
+}
+
+/**
+ * dry-run の内訳: 次の定期削除の対象になる退職者を、会社別の件数と、人ごとの一覧（会社・氏名・退職日・最終稼働日・
+ * テーブルごとの件数）で返す（#365）。猶予中の人も含む。退職日より後に勤怠の報告がある人には印を付ける
+ * （退職日より後にシフトがある人は、元から対象外）。対象者は IN 句に並べず、サブクエリで選ぶ（バインドは cutoff の1個）
+ */
+export async function dryRunRetiredStaffDetail(db: D1Database): Promise<{ staff: RetentionDryRunStaff[]; staff_total: number; companies: RetentionDryRunCompany[] }> {
+  const cutoff = cutoffDate(RETIRED_YEARS)
+  const countCols = Object.entries(DRY_RUN_STAFF_COUNTS).map(([k, sql]) => `(${sql}) AS c_${k}`).join(',\n      ')
+  const base = `SELECT sp.staff_id, u.name, sp.company_id, c.company_name, ${STAFF_RETIRED_AT_SQL} AS retired_at, sp.retention_flagged_at AS flagged_at,
+      (SELECT MAX(work_date) FROM shifts WHERE staff_id = sp.staff_id) AS last_work_date,
+      (SELECT MAX(substr(reported_at, 1, 10)) FROM attendance_reports WHERE staff_id = sp.staff_id) AS last_report_date,
+      ${countCols}
+    FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id LEFT JOIN companies c ON c.company_id = sp.company_id
+    WHERE sp.staff_id IN (${ELIGIBLE_STAFF_SQL}) AND ${HAS_DATA_SQL}`
+  const rows = (await db.prepare(`SELECT * FROM (${base}) x ORDER BY x.company_id, x.retired_at, x.staff_id LIMIT ?`)
+    .bind(cutoff, DRY_RUN_STAFF_LIMIT).all()).results as any[]
+  const sums = Object.keys(DRY_RUN_STAFF_COUNTS).map(k => `SUM(x.c_${k}) AS c_${k}`).join(', ')
+  const companyRows = (await db.prepare(`SELECT x.company_id, MAX(x.company_name) AS company_name, COUNT(*) AS staff_count, ${sums}
+    FROM (${base}) x GROUP BY x.company_id ORDER BY staff_count DESC, x.company_id`).bind(cutoff).all()).results as any[]
+  const countsOf = (r: any) => Object.fromEntries(Object.keys(DRY_RUN_STAFF_COUNTS).map(k => [k, Number(r[`c_${k}`]) || 0]))
+  return {
+    staff: rows.map(r => ({
+      staff_id: r.staff_id, name: r.name, company_id: r.company_id, company_name: r.company_name, retired_at: r.retired_at,
+      last_work_date: r.last_work_date, last_report_date: r.last_report_date, flagged_at: r.flagged_at,
+      delete_on: r.flagged_at ? addDays(r.flagged_at, RETENTION_GRACE_DAYS) : null,
+      report_after_retired: !!(r.last_report_date && r.retired_at && r.last_report_date > String(r.retired_at).slice(0, 10)),
+      counts: countsOf(r),
+    })),
+    staff_total: companyRows.reduce((a, r) => a + (Number(r.staff_count) || 0), 0),
+    companies: companyRows.map(r => ({ company_id: r.company_id, company_name: r.company_name, staff_count: Number(r.staff_count) || 0, counts: countsOf(r) })),
+  }
+}
+
 export type RetentionBuckets = { PHOTOS: R2Bucket; DOCUMENTS?: R2Bucket }
 type PendingBucket = 'photos' | 'documents'
 
-// R2 のファイルを消し、消せたキーを retention_pending_r2 から外す（消せなかったキーは次回に再試行）
-async function deleteR2Files(db: D1Database, buckets: RetentionBuckets, kind: PendingBucket, keys: string[], acc: Record<string, RetentionTargetResult>): Promise<void> {
+// 1回のCronで R2 から消せる残りのファイル数（#419）
+type R2Budget = { left: number }
+
+// R2 のファイルを消し、消せたキーを retention_pending_r2 から外す（消せなかったキー・上限を超えたキーは
+// retention_pending_r2 に残り、次回に再試行する）。R2 の delete は1回で最大1000キーをまとめて消せるので、
+// 1件ずつ呼ばずに配列で渡す（呼び出し回数の上限に当たらないようにする。#419）
+async function deleteR2Files(db: D1Database, buckets: RetentionBuckets, kind: PendingBucket, keys: string[], acc: Record<string, RetentionTargetResult>, budget: R2Budget): Promise<void> {
   const r = acc[kind === 'documents' ? 'r2_documents' : 'r2_photos']
   const bucket = kind === 'documents' ? buckets.DOCUMENTS : buckets.PHOTOS
-  r.targetCount += keys.length
+  const take = keys.slice(0, Math.max(0, budget.left))
+  if (!take.length) return
+  budget.left -= take.length
+  r.targetCount += take.length
   if (!bucket) {
-    r.failedCount += keys.length
-    noteError(r, `R2 のバケット（${kind === 'documents' ? 'DOCUMENTS' : 'PHOTOS'}）が設定されていないため ${keys.length}件を消せませんでした（次回再試行）`)
+    r.failedCount += take.length
+    noteError(r, `R2 のバケット（${kind === 'documents' ? 'DOCUMENTS' : 'PHOTOS'}）が設定されていないため ${take.length}件を消せませんでした（次回再試行）`)
     return
   }
-  const settled = await Promise.allSettled(keys.map(k => bucket.delete(k)))
-  const done = keys.filter((_, i) => settled[i].status === 'fulfilled')
-  r.deletedCount += done.length
-  const failed = keys.length - done.length
-  if (failed) {
-    r.failedCount += failed
-    const first = settled.find(s => s.status === 'rejected') as PromiseRejectedResult | undefined
-    noteError(r, `R2 の削除に失敗 ${failed}件（次回再試行）: ${first ? String(first.reason) : ''}`)
-  }
-  // 1件ずつ消すとファイルの多い人でクエリ数が膨らむため、json_each で1文にまとめる（バインドは1個）
-  if (done.length) {
-    await db.prepare('DELETE FROM retention_pending_r2 WHERE photo_key IN (SELECT value FROM json_each(?))').bind(JSON.stringify(done)).run()
+  for (let i = 0; i < take.length; i += R2_DELETE_CHUNK) {
+    const chunk = take.slice(i, i + R2_DELETE_CHUNK)
+    try {
+      await bucket.delete(chunk)
+    } catch (e) {
+      r.failedCount += chunk.length
+      noteError(r, `R2 の削除に失敗 ${chunk.length}件（次回再試行）: ${e}`)
+      continue
+    }
+    r.deletedCount += chunk.length
+    // 消せたキーは json_each で1文にまとめて控えから外す（バインドは1個）
+    await db.prepare('DELETE FROM retention_pending_r2 WHERE photo_key IN (SELECT value FROM json_each(?))').bind(JSON.stringify(chunk)).run()
   }
 }
 
@@ -385,13 +489,14 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
   const acc = emptyRetiredAcc()
   const cutoff = cutoffDate(RETIRED_YEARS)
 
-  // 前回までに消せなかった R2 の写真・書類を消し直す
+  const budget: R2Budget = { left: R2_DELETE_BUDGET }
+  // 前回までに消せなかった（上限で翌日に回した）R2 の写真・書類を消し直す
   try {
-    const rows = (await db.prepare('SELECT photo_key, bucket FROM retention_pending_r2 ORDER BY created_at LIMIT ?').bind(R2_RETRY_BATCH).all()).results as { photo_key: string; bucket: string | null }[]
+    const rows = (await db.prepare('SELECT photo_key, bucket FROM retention_pending_r2 ORDER BY created_at LIMIT ?').bind(budget.left).all()).results as { photo_key: string; bucket: string | null }[]
     const docs = rows.filter(r => r.bucket === 'documents').map(r => r.photo_key)
     const photos = rows.filter(r => r.bucket !== 'documents').map(r => r.photo_key)
-    if (photos.length) await deleteR2Files(db, buckets, 'photos', photos, acc)
-    if (docs.length) await deleteR2Files(db, buckets, 'documents', docs, acc)
+    if (photos.length) await deleteR2Files(db, buckets, 'photos', photos, acc, budget)
+    if (docs.length) await deleteR2Files(db, buckets, 'documents', docs, acc, budget)
   } catch (e) {
     console.log(`retention: R2 retry failed: ${e}`)
     acc.r2_photos.failedCount++; noteError(acc.r2_photos, `R2 の再試行に失敗: ${e}`)
@@ -407,7 +512,12 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
   const ofThreads = `(thread_staff_id = ? OR thread_staff_id IN (${linkedRowsOf('?')}))`
   const userOf = '(SELECT user_id FROM staff_profiles WHERE staff_id = ?)'
   const anonymizeCols = ANONYMIZE_PROFILE_COLUMNS.map(col => `${col} = NULL`).join(', ')
-  for (const staffId of staffIds) {
+  for (const [idx, staffId] of staffIds.entries()) {
+    // R2 の上限を使い切ったら、残りの人は処理を試みずに次回へ回す（retention_attempted_at を付けないので次回の先頭に来る）
+    if (budget.left <= 0) {
+      acc.retired_staff_deferred.targetCount = staffIds.length - idx
+      break
+    }
     try {
       await db.prepare('UPDATE staff_profiles SET retention_attempted_at = ? WHERE staff_id = ?').bind(nowJST(), staffId).run()
       const fileRows = (await db.prepare(
@@ -438,6 +548,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         ['attendance_corrections', db.prepare('DELETE FROM attendance_corrections WHERE staff_id = ?').bind(staffId)],
         ['report_setting_logs', db.prepare('DELETE FROM report_setting_logs WHERE staff_id = ?').bind(staffId)],
         ['project_staff_report_settings', db.prepare('DELETE FROM project_staff_report_settings WHERE staff_id = ?').bind(staffId)],
+        // スタッフ別の既読率（人事評価の参考資料。会社全体の notice_read_reports は個人を含まない集計なので残す。#437）
+        ['notice_read_staff_reports', db.prepare('DELETE FROM notice_read_staff_reports WHERE staff_id = ?').bind(staffId)],
         // 従業員データ（口座・住所・給与・緊急連絡先など）・過去の雇用期間・書類（#193）
         ['employee_records', db.prepare('DELETE FROM employee_records WHERE staff_id = ?').bind(staffId)],
         ['employment_periods', db.prepare('DELETE FROM employment_periods WHERE staff_id = ?').bind(staffId)],
@@ -465,14 +577,20 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
       acc.retired_staff.deletedCount++
 
       // 2. D1 の削除が成功してから R2 の写真・書類を消す
-      if (photoKeys.length) await deleteR2Files(db, buckets, 'photos', photoKeys, acc)
-      if (docKeys.length) await deleteR2Files(db, buckets, 'documents', docKeys, acc)
+      //    上限を超えた分は retention_pending_r2 に残り、翌日以降の再試行で消す
+      if (photoKeys.length) await deleteR2Files(db, buckets, 'photos', photoKeys, acc, budget)
+      if (docKeys.length) await deleteR2Files(db, buckets, 'documents', docKeys, acc, budget)
     } catch (e) {
       console.log(`retention: cleanup failed for staff_id=${staffId}: ${e}`)
       acc.retired_staff.failedCount++
       noteError(acc.retired_staff, `staff_id=${staffId}: ${e}`)
     }
   }
+  // 翌日に回した R2 のファイル（上限を超えた分と、消せなかった分）
+  try {
+    const row = await db.prepare('SELECT COUNT(*) AS n FROM retention_pending_r2').first()
+    acc.r2_pending.targetCount = (row?.n as number) || 0
+  } catch (e) { console.log(`retention: pending count failed: ${e}`) }
   return acc
 }
 
@@ -482,7 +600,7 @@ export type RetentionTrigger = 'cron' | 'manual'
 // 各段階の失敗は捕まえて結果（retention_logs）に残し、他の段階は続ける（#436）。
 // trigger・triggeredBy は実行元（毎日の cron か、本部画面の dry-run か）と実行した本部ユーザー（#234）
 export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuckets,
-  opts: { dryRun: boolean; trigger: RetentionTrigger; triggeredBy?: number | null }): Promise<RetentionRunResult> {
+  opts: { dryRun: boolean; trigger: RetentionTrigger; triggeredBy?: number | null; detail?: boolean }): Promise<RetentionRunResult> {
   const startedAt = new Date().toISOString()
 
   const stage = async (target: string, fn: () => Promise<RetentionTargetResult[]>): Promise<RetentionTargetResult[]> => {
@@ -496,6 +614,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
   const results = [
     ...await stage('daily_reports', async () => [await cleanupDailyReports(db, opts.dryRun)]),
     ...await stage('user_notifications', async () => [await cleanupUserNotifications(db, opts.dryRun)]),
+    ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
     ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
   ]
   const finishedAt = new Date().toISOString()
@@ -504,20 +623,87 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
     delete r.errorCount
   }
 
-  // 1回の実行の行はまとめて書く（対象ごとに1文ずつ書くとクエリ数が増えるため）
+  await writeRetentionLogs(db, results, { ...opts, startedAt, finishedAt })
+  const run: RetentionRunResult = { dryRun: opts.dryRun, results, startedAt, finishedAt }
+  // 本部画面の dry-run では、会社別・退職者別の内訳も返す（#365）
+  if (opts.dryRun && opts.detail) {
+    try { run.detail = await dryRunRetiredStaffDetail(db) }
+    catch (e) { console.log(`retention: dry-run detail failed: ${e}`); run.detailError = String(e).slice(0, 300) }
+  }
+  return run
+}
+
+// 1回の実行の行はまとめて書く（対象ごとに1文ずつ書くとクエリ数が増えるため）。
+// 同じ実行の行は started_at が同じになり、本部画面ではこれで1回の実行にまとめて表示する（#305）
+async function writeRetentionLogs(db: D1Database, results: RetentionTargetResult[],
+  o: { dryRun: boolean; trigger: RetentionTrigger; triggeredBy?: number | null; startedAt: string; finishedAt: string }): Promise<void> {
   try {
-    const duration = new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+    const duration = new Date(o.finishedAt).getTime() - new Date(o.startedAt).getTime()
     await db.batch(results.map(r => db.prepare(`
         INSERT INTO retention_logs (target, dry_run, target_count, deleted_count, failed_count, error_message, duration_ms, started_at, finished_at, trigger_source, triggered_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
-        r.target, opts.dryRun ? 1 : 0, r.targetCount, r.deletedCount, r.failedCount, r.error || null,
-        duration, startedAt, finishedAt, opts.trigger, opts.triggeredBy ?? null
+        r.target, o.dryRun ? 1 : 0, r.targetCount, r.deletedCount, r.failedCount, r.error || null,
+        duration, o.startedAt, o.finishedAt, o.trigger, o.triggeredBy ?? null
       )))
   } catch (e) {
     // ログ保存の失敗は削除結果の返却を優先して続ける（cron の実行記録には結果が残る）
     console.log(`retention: log insert failed: ${e}`)
   }
+}
 
-  return { dryRun: opts.dryRun, results, startedAt, finishedAt }
+// ============ 期限切れ・使用済みのトークンの削除（毎日の cron。#397） ============
+// データ保持（RETENTION_ENABLED）とは別に、常に実際に削除する（使えなくなったトークンを消すだけで、記録としての価値はない）
+const PASSWORD_RESET_KEEP_DAYS = 7 // 期限（1時間）が切れてから残す日数（問い合わせの調査用）
+const REPORT_TOKEN_KEEP_DAYS = 30 // 報告用URLの期限（稼働日の翌日 23:59）が切れてから残す日数
+const TOKEN_PURGE_BATCH = 500
+const TOKEN_PURGE_MAX_BATCHES = 20
+
+async function purgeInBatches(db: D1Database, target: string, sql: string, binds: unknown[]): Promise<RetentionTargetResult> {
+  let deleted = 0
+  try {
+    for (let i = 0; i < TOKEN_PURGE_MAX_BATCHES; i++) {
+      const r = await db.prepare(sql).bind(...binds, TOKEN_PURGE_BATCH).run()
+      const n = r.meta.changes || 0
+      deleted += n
+      if (n < TOKEN_PURGE_BATCH) break
+    }
+    return { target, targetCount: deleted, deletedCount: deleted, failedCount: 0 }
+  } catch (e) {
+    console.log(`retention: ${target} purge failed after deleting ${deleted}: ${e}`)
+    return { target, targetCount: deleted, deletedCount: deleted, failedCount: 1, error: String(e).slice(0, 1000) }
+  }
+}
+
+/**
+ * 期限切れ・使用済みのパスワード再設定トークンと、期限切れ・取り消し済みの報告用URLのトークンを消し、
+ * 結果を retention_logs に残す。
+ *  - password_reset_tokens: expires_at（ISO 8601）から7日たった行。使用済みの行は作成から1日たったら消す
+ *    （再設定の回数制限が直近1時間の行を数えるため、すぐには消さない）
+ *  - shift_report_tokens: 有効期限は今のシフトの稼働日から決まる（staff-lifecycle.ts の reportTokenExpiry）ので、
+ *    稼働日から 1+30 日たった行を消す。取り消し済み（revoked=1）の行は作成から30日たったら消す
+ */
+export async function purgeExpiredTokens(db: D1Database): Promise<{ deleted: number; failed: number; error: string | null }> {
+  const startedAt = new Date().toISOString()
+  const resetCutoff = new Date(Date.now() - PASSWORD_RESET_KEEP_DAYS * 86400 * 1000).toISOString()
+  const reportCutoff = addDays(todayJST(), -(1 + REPORT_TOKEN_KEEP_DAYS))
+  const results = [
+    await purgeInBatches(db, RETENTION_TOKEN_TARGETS[0],
+      `DELETE FROM password_reset_tokens WHERE token_id IN (SELECT token_id FROM password_reset_tokens
+        WHERE expires_at < ? OR (used_at IS NOT NULL AND created_at < datetime('now', '-1 day')) LIMIT ?)`, [resetCutoff]),
+    await purgeInBatches(db, RETENTION_TOKEN_TARGETS[1],
+      `DELETE FROM shift_report_tokens WHERE token IN (SELECT t.token FROM shift_report_tokens t LEFT JOIN shifts s ON s.shift_id = t.shift_id
+        WHERE s.work_date < ? OR s.shift_id IS NULL OR (t.revoked = 1 AND t.created_at < datetime('now', '-${REPORT_TOKEN_KEEP_DAYS} days')) LIMIT ?)`, [reportCutoff]),
+  ]
+  for (const r of results) {
+    r.error = errorMessageOf(r) || r.error
+    delete r.errorCount
+  }
+  await writeRetentionLogs(db, results, { dryRun: false, trigger: 'cron', startedAt, finishedAt: new Date().toISOString() })
+  const failed = results.filter(r => r.failedCount > 0)
+  return {
+    deleted: results.reduce((a, r) => a + r.deletedCount, 0),
+    failed: failed.reduce((a, r) => a + r.failedCount, 0),
+    error: failed.map(r => `${r.target}: ${r.error || '失敗'}`).join(' / ').slice(0, 1000) || null,
+  }
 }

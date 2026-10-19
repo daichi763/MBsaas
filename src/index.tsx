@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
-import { runRetentionCleanup, applyDueRetirements } from './services/retention'
+import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
@@ -681,6 +681,8 @@ const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポート�
 const CRON_JOBS = defineCronJobs<Bindings>([
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
+  // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）
+  { name: 'token_purge', label: '期限切れ・使用済みのトークンの削除', cron: CRON_DAILY, run: env => purgeExpiredTokens(env.DB) },
   // 募集の応募（スタッフに紐づかないもの）は180日で削除する（個人情報の保存期間）
   { name: 'recruit_applications_purge', label: '応募の削除（180日）', cron: CRON_DAILY, run: async env => ({ deleted: await purgeOldApplications(env.DB) }) },
   // データ保持ポリシー(日報3年 / 退職後7年)の定期削除。
