@@ -153,11 +153,11 @@
         ${p.is_mine ? `
           <div class="flex gap-2 flex-wrap" id="board-owner-actions">
             <a class="btn btn-outline text-sm" href="#board/${p.post_id}-edit"><i class="fas fa-pen"></i>編集</a>
-            ${p.status === 'draft' ? `<button class="btn btn-primary text-sm" onclick="__boardStatus(${p.post_id},'open')"><i class="fas fa-paper-plane"></i>掲載する</button>
+            ${p.status === 'draft' ? `<button class="btn btn-primary text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="open"><i class="fas fa-paper-plane"></i>掲載する</button>
                <button class="btn btn-outline text-sm text-red-600" onclick="__boardDelete(${p.post_id})"><i class="fas fa-trash"></i>削除</button>` : ''}
-            ${p.status === 'open' ? `<button class="btn btn-outline text-sm" onclick="__boardStatus(${p.post_id},'filled')"><i class="fas fa-check"></i>充足にする</button>
-               <button class="btn btn-outline text-sm" onclick="__boardStatus(${p.post_id},'closed')"><i class="fas fa-ban"></i>締め切る</button>` : ''}
-            ${p.status === 'closed' || p.status === 'filled' ? `<button class="btn btn-outline text-sm" onclick="__boardStatus(${p.post_id},'open')"><i class="fas fa-rotate-right"></i>再掲載</button>` : ''}
+            ${p.status === 'open' ? `<button class="btn btn-outline text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="filled"><i class="fas fa-check"></i>充足にする</button>
+               <button class="btn btn-outline text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="closed"><i class="fas fa-ban"></i>締め切る</button>` : ''}
+            ${p.status === 'closed' || p.status === 'filled' ? `<button class="btn btn-outline text-sm" data-action="boardStatus" data-id="${Number(p.post_id)}" data-status="open" data-republish="1"><i class="fas fa-rotate-right"></i>再掲載</button>` : ''}
             <button class="btn btn-outline text-sm" onclick="__boardDuplicate(${p.post_id})"><i class="fas fa-copy"></i>複製</button>
           </div>` : ''}
       </div>
@@ -226,6 +226,7 @@
   // ---------- やり取り一覧 ----------
   async function renderThreadList() {
     loading()
+    S.propSide = S.propSide || 'sent'
     let data
     try { data = (await axios.get('/api/admin/board/threads')).data } catch (e) { $app.innerHTML = `<div class="card p-6 text-sm text-red-500">${esc(errMsg(e))}</div>`; return }
     $app.innerHTML = `
@@ -248,9 +249,35 @@
             </tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-8">まだやり取りはありません（掲載中の案件の詳細から「問い合わせる」で開始できます）</td></tr>'}
           </tbody>
         </table>
+      </section>
+      <section class="card p-4 mt-4" id="board-proposal-list">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <h3 class="text-sm font-bold text-gray-700 flex-1"><i class="fas fa-id-badge text-blue-600 mr-1"></i>人材提案の状況</h3>
+          ${[['sent', '送った提案'], ['received', '受けた提案']].map(([k, l]) => `<button class="btn ${S.propSide === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="boardPropSide" data-side="${k}">${l}</button>`).join('')}
+        </div>
+        <div id="board-proposal-rows"><div class="flex justify-center py-4"><span class="spin"></span></div></div>
       </section>`
+    loadProposalList()
     window.refreshBoardBadge()
   }
+  // 提案した側も、面談希望・採用・見送りの結果を一覧で追えるようにする（#124）
+  async function loadProposalList() {
+    const box = document.getElementById('board-proposal-rows'); if (!box) return
+    const side = S.propSide || 'sent'
+    try {
+      const { data } = await axios.get('/api/admin/board/proposals', { params: { side } })
+      box.innerHTML = data.proposals.length ? `<div class="overflow-x-auto"><table class="tbl"><thead><tr><th>案件</th><th>${side === 'sent' ? '提案先' : '提案元'}</th><th>人材</th><th>状態</th><th>更新</th></tr></thead><tbody>
+        ${data.proposals.map(p => `<tr class="cursor-pointer" data-action="boardOpenThread" data-id="${Number(p.thread_id)}">
+          <td><span class="badge ${ENG_BADGE[p.engagement_type] || 'badge-gray'}">${ENG[p.engagement_type] || ''}</span> ${esc(p.post_title || '')}</td>
+          <td class="text-sm">${esc(side === 'sent' ? p.receiver_company_name : p.proposer_company_name)}</td>
+          <td class="text-sm">${esc(side === 'sent' ? (p.staff_name || '') : (p.disclosed && p.disclosed.name) || (p.snapshot && p.snapshot.initials) || '候補者No.' + p.proposal_id)}</td>
+          <td><span class="badge ${PSTATUS_BADGE[p.status] || 'badge-gray'}">${esc(p.status_label)}</span></td>
+          <td class="text-xs text-gray-400 whitespace-nowrap">${esc(String(p.decided_at || p.created_at || '').slice(5, 16))}</td>
+        </tr>`).join('')}</tbody></table></div>` : `<p class="text-xs text-gray-400 py-4 text-center">${side === 'sent' ? '送った提案はまだありません' : '受けた提案はまだありません'}</p>`
+    } catch (e) { box.innerHTML = `<p class="text-xs text-red-500">${esc(errMsg(e))}</p>` }
+  }
+  delegate('boardPropSide', (el) => { S.propSide = el.dataset.side; document.querySelectorAll('[data-action="boardPropSide"]').forEach(b => { const on = b.dataset.side === S.propSide; b.classList.toggle('btn-primary', on); b.classList.toggle('btn-outline', !on) }); loadProposalList() })
+  delegate('boardOpenThread', (el) => { location.hash = '#board/t' + Number(el.dataset.id) })
 
   // ---------- やり取り（スレッド） ----------
   let threadTimer = null
@@ -278,7 +305,7 @@
           <h2 class="text-lg font-bold text-gray-900 truncate"><a class="hover:underline" href="#board/${t.post_id}">${esc(t.post_title)}</a></h2>
           <p class="text-sm text-gray-500">相手: <span class="font-bold text-gray-700">${esc(t.partner_company_name)}</span></p>
         </div>
-        <button class="btn btn-outline text-sm" id="board-thread-toggle" onclick="__boardThreadStatus(${t.thread_id}, '${t.status === 'closed' ? 'open' : 'closed'}')">
+        <button class="btn btn-outline text-sm" id="board-thread-toggle" data-action="boardThreadStatus" data-id="${t.thread_id}" data-status="${t.status === 'closed' ? 'open' : 'closed'}">
           <i class="fas ${t.status === 'closed' ? 'fa-rotate-right' : 'fa-circle-xmark'}"></i>${t.status === 'closed' ? 'やり取りを再開' : 'やり取りを終了'}</button>
       </div>
       <section class="card p-4 max-w-4xl" id="board-thread">
@@ -288,11 +315,12 @@
         <div class="flex gap-2 mt-3">
           <textarea id="board-chat-input" rows="3" maxlength="2000" class="inp text-sm flex-1" placeholder="メッセージを入力（Ctrl+Enterで送信）"></textarea>
           <div class="flex flex-col gap-2 self-end">
-            ${t.my_side === 'inquirer' ? `<button class="btn btn-outline text-sm" id="board-propose" onclick="__boardOpenPropose(${t.thread_id})"><i class="fas fa-user-plus"></i>人材を提案</button>` : ''}
+            ${t.my_side === 'inquirer' && t.post_status === 'open' ? `<button class="btn btn-outline text-sm" id="board-propose" onclick="__boardOpenPropose(${t.thread_id})"><i class="fas fa-user-plus"></i>人材を提案</button>` : ''}
             <button class="btn btn-primary" id="board-chat-send" onclick="__boardSend(${t.thread_id})"><i class="fas fa-paper-plane"></i>送信</button>
           </div>
         </div>
-        ${t.my_side === 'inquirer' ? '<p class="text-[11px] text-gray-400 mt-1">「人材を提案」で自社のスタッフマスタから選んだ人材のスキルシートを送れます（提案時は氏名を伏せ、採用されると開示されます）。</p>' : '<p class="text-[11px] text-gray-400 mt-1">届いた提案は「面談希望」「採用」「見送り」で返答できます。採用すると氏名が開示されます。</p>'}`}
+        ${t.my_side === 'inquirer' && t.post_status !== 'open' ? '<p class="text-[11px] text-gray-400 mt-1">この掲載は募集を終了しているため、新しい人材は提案できません（メッセージは送れます）。</p>'
+          : t.my_side === 'inquirer' ? '<p class="text-[11px] text-gray-400 mt-1">「人材を提案」で自社のスタッフマスタから選んだ人材のスキルシートを送れます（提案時は氏名を伏せ、採用されると開示されます）。提案には本人の同意が必要です。</p>' : '<p class="text-[11px] text-gray-400 mt-1">届いた提案は「面談希望」「採用」「見送り」で返答できます。採用すると氏名が開示されます。</p>'}`}
       </section>`
     const log = document.getElementById('board-chat-log'); log.scrollTop = log.scrollHeight
     const inp = document.getElementById('board-chat-input')
@@ -335,17 +363,21 @@
     const t = CUR_THREAD || {}
     const isReceiver = !pr.is_mine
     const actions = []
-    if (isReceiver && ['proposed', 'interview'].includes(pr.status)) {
-      if (pr.status === 'proposed') actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'interview')"><i class="fas fa-handshake"></i>面談希望</button>`)
-      actions.push(`<button class="btn btn-primary text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'adopted')"><i class="fas fa-check"></i>採用</button>`)
-      actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'declined')">見送り</button>`)
+    // 終了したやり取りでは、面談希望・採用・見送りを出さない（#141）
+    if (isReceiver && t.status !== 'closed' && ['proposed', 'interview'].includes(pr.status)) {
+      const st = (to, cls, label) => `<button class="btn ${cls} text-xs" data-action="boardProposalStatus" data-id="${pr.proposal_id}" data-status="${to}">${label}</button>`
+      if (pr.status === 'proposed') actions.push(st('interview', 'btn-outline', '<i class="fas fa-handshake"></i>面談希望'))
+      actions.push(st('adopted', 'btn-primary', '<i class="fas fa-check"></i>採用'))
+      actions.push(st('declined', 'btn-outline', '見送り'))
     }
     if (isReceiver && pr.status === 'adopted') {
       actions.push(pr.imported_staff_id
         ? `<a class="btn btn-outline text-xs" href="#staff/${pr.imported_staff_id}"><i class="fas fa-user-check"></i>スタッフマスタで開く</a>`
-        : `<button class="btn btn-primary text-xs board-import-btn" onclick="__boardImport(${pr.proposal_id})"><i class="fas fa-file-import"></i>スタッフマスタに取り込む</button>`)
+        : `<button class="btn btn-primary text-xs board-import-btn" data-action="boardImport" data-id="${pr.proposal_id}"><i class="fas fa-file-import"></i>スタッフマスタに取り込む</button>`)
     }
-    if (pr.is_mine && ['proposed', 'interview'].includes(pr.status)) actions.push(`<button class="btn btn-outline text-xs" onclick="__boardProposalStatus(${pr.proposal_id},'withdrawn')">取り下げ</button>`)
+    if (pr.is_mine && ['proposed', 'interview'].includes(pr.status)) actions.push(`<button class="btn btn-outline text-xs" data-action="boardProposalStatus" data-id="${pr.proposal_id}" data-status="withdrawn">取り下げ</button>`)
+    const c = pr.consent
+    const consentLine = c ? `<p class="text-[11px] text-gray-500 mt-2"><i class="fas fa-user-shield mr-1 text-emerald-600"></i>本人の同意: ${esc(c.method_label)}（${esc(c.obtained_on || '')}）${pr.is_mine && c.upstream_on ? `・所属元／取引先の承諾: ${esc(c.upstream_on)}${c.upstream_note ? '（' + esc(c.upstream_note) + '）' : ''} <span class="text-gray-400">（承諾は自社のみ表示）</span>` : ''}</p>` : ''
     const nameLine = pr.disclosed && pr.disclosed.name
       ? `<span class="font-bold text-gray-900">${esc(pr.disclosed.name)}</span>${pr.disclosed.kana ? ` <span class="text-[11px] text-gray-400">${esc(pr.disclosed.kana)}</span>` : ''}${pr.is_mine && pr.status !== 'adopted' ? ' <span class="text-[10px] text-gray-400">（相手には採用まで非表示）</span>' : ''}`
       : `<span class="font-bold text-gray-900">${esc(sn.initials && sn.initials !== '—' ? sn.initials : '候補者No.' + pr.proposal_id)}</span> <span class="text-[11px] text-gray-400">（氏名は採用後に開示）</span>`
@@ -358,6 +390,7 @@
         ${skillSheetHtml(sn)}
         ${pr.proposed_price ? `<p class="text-xs mt-2"><span class="text-gray-400">提示単価</span> <span class="font-bold">${esc(UNIT[pr.price_unit] || '')} ${Number(pr.proposed_price).toLocaleString()}円</span></p>` : ''}
         ${pr.comment ? `<p class="text-xs mt-2 bg-gray-50 rounded-lg p-2 whitespace-pre-wrap">${esc(pr.comment)}</p>` : ''}
+        ${consentLine}
         ${actions.length ? `<div class="flex gap-2 mt-3 flex-wrap justify-end">${actions.join('')}</div>` : ''}
       </div>`
   }
@@ -439,26 +472,47 @@
             <input id="bpr-price" type="number" min="1" class="inp text-sm col-span-8" placeholder="金額（円）">
           </div>
           <textarea id="bpr-comment" rows="3" maxlength="1000" class="inp text-sm mt-2" placeholder="提案コメント（例: 光回線の獲得実績が豊富です。土日稼働可能）"></textarea>
-          ${data.warning ? `<label class="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 rounded-lg p-2 mt-2"><input type="checkbox" id="bpr-ack" class="mt-0.5"><span><i class="fas fa-triangle-exclamation mr-1"></i>${esc(data.warning)}（確認しました）</span></label>` : ''}
+          <div class="text-xs bg-emerald-50 rounded-lg p-2 mt-2" id="bpr-consent">
+            <p class="font-bold text-emerald-800 mb-1"><i class="fas fa-user-shield mr-1"></i>本人の同意（必須）</p>
+            <p class="text-[11px] text-gray-600 mb-2">提案すると、スキルシート（経歴・スキル等）が相手企業に渡り、採用されると氏名も開示されます。本人から、この企業への提案について同意を得た方法と日付を記録してください。</p>
+            <div class="grid grid-cols-12 gap-2 items-center">
+              <select id="bpr-consent-method" class="inp text-sm col-span-7"><option value="">取得方法を選択</option>${Object.entries(data.consent_methods || {}).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join('')}</select>
+              <input id="bpr-consent-on" type="date" class="inp text-sm col-span-5" max="${dayjs().format('YYYY-MM-DD')}" value="${dayjs().format('YYYY-MM-DD')}" title="同意を得た日">
+              <input id="bpr-consent-note" class="inp text-sm col-span-12" maxlength="200" placeholder="メモ（任意。例: 10/15 面談時に書面で確認）">
+            </div>
+          </div>
+          ${data.need_upstream_consent ? `<div class="text-xs text-amber-800 bg-amber-50 rounded-lg p-2 mt-2" id="bpr-upstream">
+            <p><i class="fas fa-triangle-exclamation mr-1"></i>${esc(data.warning || '')}</p>
+            ${data.link_consent ? `<p class="text-[11px] mt-1">連携のときに本人が同意した共有先は自社だけです（同意日 ${esc(String(data.link_consent.created_at || '').slice(0, 10))}）。他社への提案には、所属元の承諾が必要です。</p>` : ''}
+            <p class="font-bold mt-2 mb-1">${esc(data.upstream_label || '所属元')}から再提案の承諾を得た日（必須）</p>
+            <div class="grid grid-cols-12 gap-2 items-center">
+              <input id="bpr-upstream-on" type="date" class="inp text-sm col-span-5" max="${dayjs().format('YYYY-MM-DD')}">
+              <input id="bpr-upstream-note" class="inp text-sm col-span-7" maxlength="200" placeholder="承諾の方法・担当者など（任意）">
+            </div>
+          </div>` : ''}
           <div class="flex justify-end gap-2 mt-3">
             <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
-            <button class="btn btn-primary text-sm" id="bpr-send" onclick="__boardSendProposal(${threadId}, ${staffId}, ${data.warning ? 'true' : 'false'})"><i class="fas fa-paper-plane"></i>この内容で提案する</button>
+            <button class="btn btn-primary text-sm" id="bpr-send" data-action="boardSendProposal" data-thread="${threadId}" data-staff="${staffId}" data-upstream="${data.need_upstream_consent ? '1' : ''}"><i class="fas fa-paper-plane"></i>この内容で提案する</button>
           </div>
         </div>`
     } catch (e) { box.innerHTML = `<p class="text-xs text-red-500">${esc(errMsg(e))}</p>` }
   }
-  window.__boardSendProposal = async function (threadId, staffId, needAck) {
-    const ack = document.getElementById('bpr-ack')
-    if (needAck && !(ack && ack.checked)) { toast('注意事項を確認してチェックを入れてください'); return }
-    const price = document.getElementById('bpr-price').value
+  window.__boardSendProposal = async function (threadId, staffId, needUpstream) {
+    const g = (id) => (document.getElementById(id) || {}).value || ''
+    if (!g('bpr-consent-method') || !g('bpr-consent-on')) { toast('本人の同意の取得方法と日付を入力してください'); return }
+    if (needUpstream && !g('bpr-upstream-on')) { toast('所属元（取引先）から再提案の承諾を得た日を入力してください'); return }
+    const price = g('bpr-price')
     try {
       await axios.post(`/api/admin/board/threads/${threadId}/proposals`, {
-        staff_id: staffId, acknowledged: needAck ? true : undefined, comment: document.getElementById('bpr-comment').value,
-        proposed_price: price === '' ? null : Number(price), price_unit: document.getElementById('bpr-unit').value })
+        staff_id: staffId, comment: g('bpr-comment'),
+        proposed_price: price === '' ? null : Number(price), price_unit: g('bpr-unit'),
+        consent_method: g('bpr-consent-method'), consent_obtained_on: g('bpr-consent-on'), consent_note: g('bpr-consent-note'),
+        upstream_consent_on: needUpstream ? g('bpr-upstream-on') : undefined, upstream_consent_note: needUpstream ? g('bpr-upstream-note') : undefined })
       closeModal(); toast('人材を提案しました'); await refreshThreadLog(threadId)
       const log = document.getElementById('board-chat-log'); if (log) log.scrollTop = log.scrollHeight
     } catch (e) { toast(errMsg(e, '提案に失敗しました')) }
   }
+  delegate('boardSendProposal', (el) => withSubmitLock(el, () => window.__boardSendProposal(Number(el.dataset.thread), Number(el.dataset.staff), el.dataset.upstream === '1')))
   window.__boardProposalStatus = async function (proposalId, status) {
     const msg = { adopted: '採用しますか？相手に通知され、氏名が開示されます。採用後は変更できません。', declined: '見送りにしますか？', withdrawn: 'この提案を取り下げますか？', interview: '面談希望にしますか？' }[status]
     if (msg && !confirm(msg)) return
@@ -466,34 +520,53 @@
       await axios.post(`/api/admin/board/proposals/${proposalId}/status`, { status })
       toast({ adopted: '採用しました', declined: '見送りにしました', withdrawn: '取り下げました', interview: '面談希望にしました' }[status] || '更新しました')
       if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id)
-    } catch (e) { toast(errMsg(e, '更新に失敗しました')) }
+    } catch (e) { toast(errMsg(e, '更新に失敗しました')); if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id) }
   }
+  delegate('boardProposalStatus', (el) => withSubmitLock(el, () => window.__boardProposalStatus(Number(el.dataset.id), el.dataset.status)))
+  delegate('boardImport', (el) => withSubmitLock(el, () => window.__boardImport(Number(el.dataset.id))))
 
   // 採用した人材を自社スタッフマスタへ（取引先所属・所属会社名 = 提案企業名）
-  window.__boardImport = async function (proposalId) {
+  // body: 省略（通常）/ { mode: 'link', staff_id }（登録済みのスタッフに紐づける）/ { mode: 'new' }（別の行として仮登録）
+  window.__boardImport = async function (proposalId, body) {
     const pr = PROPS[proposalId]
     const from = pr ? pr.proposer_company_name : '提案企業'
-    if (!confirm(`この人材をスタッフマスタに取り込みますか？\n\n・区分: 取引先所属（所属会社: ${from}）\n・氏名とスキルシートの内容をコピーします（以後は自社で編集でき、提案元とは同期しません）\n・ログインIDは発行しません`)) return
+    if (!body && !confirm(`この人材をスタッフマスタに取り込みますか？\n\n・区分: 取引先所属（所属会社: ${from}）\n・氏名とスキルシートの内容をコピーします（以後は自社で編集でき、提案元とは同期しません）\n・ログインIDは発行しません`)) return
     try {
-      const { data } = await axios.post(`/api/admin/board/proposals/${proposalId}/import`)
+      const { data } = await axios.post(`/api/admin/board/proposals/${proposalId}/import`, body || {})
       if (window.invalidateBoardMaster) window.invalidateBoardMaster()
+      const done = data.linked ? '登録済みのスタッフに紐づけました' : data.provisional ? '仮登録で登録しました（スタッフ詳細の「既存のスタッフに統合」でまとめられます）' : 'スタッフマスタに登録しました'
       if (data.shift) {
         modal(`
-          <h3 class="font-bold text-lg mb-2"><i class="fas fa-circle-check text-emerald-500 mr-1"></i>スタッフマスタに登録しました</h3>
+          <h3 class="font-bold text-lg mb-2"><i class="fas fa-circle-check text-emerald-500 mr-1"></i>${esc(done)}</h3>
           <p class="text-sm text-gray-600 mb-4">このスポット案件は自社の案件と紐づいています。続けてシフトボードで割り当てできます。</p>
           <div class="flex flex-col gap-2">
-            <button class="btn btn-primary" id="board-import-to-shift" onclick="__boardGoShift(${Number(data.shift.project_id)}, '${esc(data.shift.date_from || '')}')"><i class="fas fa-calendar-plus"></i>シフトボードで割り当てる</button>
-            <a class="btn btn-outline" href="#staff/${data.staff_id}" onclick="closeModal()"><i class="fas fa-user"></i>スタッフ詳細を開く</a>
+            <button class="btn btn-primary" id="board-import-to-shift" data-action="boardGoShift" data-project="${Number(data.shift.project_id)}" data-date="${esc(data.shift.date_from || '')}"><i class="fas fa-calendar-plus"></i>シフトボードで割り当てる</button>
+            <a class="btn btn-outline" href="#staff/${Number(data.staff_id)}" onclick="closeModal()"><i class="fas fa-user"></i>スタッフ詳細を開く</a>
             <button class="btn btn-outline" onclick="closeModal()">閉じる</button>
           </div>`)
-      } else toast('スタッフマスタに登録しました')
+      } else { if (body) closeModal(); toast(done) }
       if (CUR_THREAD) await refreshThreadLog(CUR_THREAD.thread_id)
     } catch (e) {
       const d = e && e.response && e.response.data
+      // 同じ人がすでにスタッフマスタにいる（#135）: 紐づけるか、別の行として登録するかを選ぶ
+      if (d && d.need_choice) { openImportChoice(proposalId, d); return }
       if (d && d.staff_id) { toast(d.error); location.hash = '#staff/' + d.staff_id; return }
       toast(errMsg(e, '取り込みに失敗しました'))
     }
   }
+  function openImportChoice(proposalId, d) {
+    modal(`
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-user-group text-blue-600 mr-1"></i>同じ人が登録されています</h3>
+      <p class="text-sm text-gray-600 mb-3">この人材は、すでに自社のスタッフマスタに登録されています。同じ人を2行に分けると、シフトの重複や NG の確認が働かず、実績も分かれます。</p>
+      <div class="space-y-2 mb-3">${(d.existing || []).map(x => `
+        <button class="btn btn-primary w-full text-sm" data-action="boardImportLink" data-id="${proposalId}" data-staff="${Number(x.staff_id)}">
+          <i class="fas fa-link"></i>${esc(x.name)} に紐づける${x.via_board ? '<span class="text-[11px] opacity-80 ml-1">（以前に掲示板から取り込んだ行）</span>' : ''}</button>`).join('')}</div>
+      <button class="btn btn-outline w-full text-sm" data-action="boardImportNew" data-id="${proposalId}"><i class="fas fa-user-plus"></i>別の行として登録する（仮登録。あとで統合できます）</button>
+      <div class="flex justify-end mt-3"><button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button></div>`)
+  }
+  delegate('boardImportLink', (el) => withSubmitLock(el, () => window.__boardImport(Number(el.dataset.id), { mode: 'link', staff_id: Number(el.dataset.staff) })))
+  delegate('boardImportNew', (el) => withSubmitLock(el, () => window.__boardImport(Number(el.dataset.id), { mode: 'new' })))
+  delegate('boardGoShift', (el) => window.__boardGoShift(Number(el.dataset.project), el.dataset.date || ''))
   // シフトボードを該当案件・実施週に絞って開く
   window.__boardGoShift = function (projectId, dateFrom) {
     closeModal()
@@ -505,10 +578,13 @@
   }
 
   window.__boardThreadStatus = async function (threadId, status) {
-    if (status === 'closed' && !confirm('このやり取りを終了しますか？（履歴は残り、あとで再開できます）')) return
+    // 終了すると未決の提案（提案中・面談希望）は取り下げになる（#141）
+    const pending = Object.values(PROPS).filter(x => ['proposed', 'interview'].includes(x.status)).length
+    if (status === 'closed' && !confirm('このやり取りを終了しますか？（履歴は残り、あとで再開できます）' + (pending ? `\n\n未決の提案 ${pending}件は取り下げになります（再開しても戻りません）。` : ''))) return
     try { await axios.post(`/api/admin/board/threads/${threadId}/status`, { status }); toast(status === 'closed' ? 'やり取りを終了しました' : 'やり取りを再開しました'); renderThread(threadId) }
     catch (e) { toast(errMsg(e)) }
   }
+  delegate('boardThreadStatus', (el) => withSubmitLock(el, () => window.__boardThreadStatus(Number(el.dataset.id), el.dataset.status)))
 
   // ---------- 未読バッジ（サイドバー / モバイルメニュー / 一覧のボタン） ----------
   window.refreshBoardBadge = async function () {
@@ -523,12 +599,15 @@
   setInterval(() => { if (!document.hidden && boardPollable()) window.refreshBoardBadge() }, 60 * 1000)
   setTimeout(() => { if (boardPollable()) window.refreshBoardBadge() }, 900)
 
-  window.__boardStatus = async function (id, status) {
-    const msg = { open: 'この案件を掲載しますか？掲載内容と自社名が全利用企業に公開されます。', closed: 'この掲載を締め切りますか？一覧に表示されなくなります。', filled: '充足（募集終了）にしますか？一覧に表示されなくなります。' }[status]
+  // 締切・充足・再掲載は、問い合わせ中の企業にも知らせる（#476）。再掲載は専用の確認を出す（#125）
+  window.__boardStatus = async function (id, status, republish) {
+    const msg = republish ? 'この掲載を再掲載しますか？「掲載中」に戻り、全利用企業の一覧に再び表示され、問い合わせ・人材の提案を受け付けます。問い合わせ中の企業にも知らせます。'
+      : { open: 'この案件を掲載しますか？掲載内容と自社名が全利用企業に公開されます。', closed: 'この掲載を締め切りますか？一覧に表示されなくなり、問い合わせ中の企業に知らせます。', filled: '充足（募集終了）にしますか？一覧に表示されなくなり、問い合わせ中の企業に知らせます。' }[status]
     if (msg && !confirm(msg)) return
-    try { await axios.post(`/api/admin/board/posts/${id}/status`, { status }); toast({ open: '掲載しました', closed: '締め切りました', filled: '充足にしました' }[status] || '更新しました'); renderDetail(id) }
+    try { await axios.post(`/api/admin/board/posts/${id}/status`, { status }); toast(republish ? '再掲載しました' : { open: '掲載しました', closed: '締め切りました', filled: '充足にしました' }[status] || '更新しました'); renderDetail(id) }
     catch (e) { toast(errMsg(e, '更新に失敗しました')) }
   }
+  delegate('boardStatus', (el) => withSubmitLock(el, () => window.__boardStatus(Number(el.dataset.id), el.dataset.status, el.dataset.republish === '1')))
   window.__boardDelete = async function (id) {
     if (!confirm('この下書きを削除しますか？')) return
     try { await axios.delete('/api/admin/board/posts/' + id); toast('削除しました'); S.scope = 'mine'; location.hash = '#board' }
@@ -582,7 +661,7 @@
           <div>${lab('勤務条件')}<input id="bp-schedule-note" class="inp" maxlength="200" value="${v('schedule_note')}" placeholder="例: 週5・土日含む／シフト制"></div>
           <div class="md:col-span-2 border-t pt-4">${lab('単価', true)}
             <div class="grid grid-cols-12 gap-2 items-center">
-              <select id="bp-price-unit" class="inp col-span-3 md:col-span-2">${Object.entries(UNIT).map(([k, l]) => `<option value="${k}" ${p.price_unit === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+              <select id="bp-price-unit" class="inp col-span-3 md:col-span-2"><option value="" ${p.price_unit ? '' : 'selected'}>単位</option>${Object.entries(UNIT).map(([k, l]) => `<option value="${k}" ${p.price_unit === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
               <div class="col-span-9 md:col-span-3 flex items-center gap-1"><input id="bp-price" type="number" min="1" class="inp" value="${v('price_amount')}" placeholder="金額"><span class="text-sm shrink-0">円</span></div>
               <input id="bp-price-note" class="inp col-span-12 md:col-span-7" maxlength="100" list="bp-price-notes" value="${v('price_note')}" placeholder="単価の備考（例: スキルにより交渉可能）">
               <datalist id="bp-price-notes">${PRICE_NOTES.map(x => `<option value="${x}">`).join('')}</datalist>
@@ -595,11 +674,18 @@
         </div>
         <div class="flex gap-2 justify-end mt-5 pt-4 border-t flex-wrap">
           <a class="btn btn-outline" href="${id ? '#board/' + id : '#board'}">キャンセル</a>
-          ${!id || p.status === 'draft' ? `<button class="btn btn-outline" id="bp-save-draft" onclick="__boardSave(${id || 'null'}, 'draft')"><i class="fas fa-floppy-disk"></i>下書き保存</button>` : ''}
-          <button class="btn btn-primary" id="bp-save-open" onclick="__boardSave(${id || 'null'}, 'open')"><i class="fas fa-paper-plane"></i>${id && p.status === 'open' ? '保存（掲載中）' : '掲載する'}</button>
+          ${formButtonsHtml(id, p.status)}
         </div>
       </section>`
   }
+  // 保存ボタン。締切・充足の掲載は今の状態のまま保存するのを基本にし、再掲載は確認してから行う（#125）
+  function formButtonsHtml(id, status) {
+    const b = (cls, mode, icon, label, extra = '') => `<button class="btn ${cls}" data-action="boardSave" data-id="${id || ''}" data-mode="${mode}" ${extra}><i class="fas ${icon}"></i>${label}</button>`
+    if (!id || status === 'draft') return b('btn-outline', 'draft', 'fa-floppy-disk', '下書き保存', 'id="bp-save-draft"') + b('btn-primary', 'open', 'fa-paper-plane', '掲載する', 'id="bp-save-open"')
+    if (status === 'open') return b('btn-primary', 'keep', 'fa-floppy-disk', '保存（掲載中）', 'id="bp-save-open"')
+    return b('btn-outline', 'republish', 'fa-rotate-right', '保存して再掲載', 'id="bp-save-republish"') + b('btn-primary', 'keep', 'fa-floppy-disk', `保存（${STATUS[status] || ''}のまま）`, 'id="bp-save-keep"')
+  }
+  delegate('boardSave', (el) => withSubmitLock(el, () => window.__boardSave(el.dataset.id ? Number(el.dataset.id) : null, el.dataset.mode)))
   window.__boardEngChanged = function () {
     const eng = document.querySelector('input[name=bp-eng]:checked').value
     document.querySelectorAll('#bp-eng label').forEach(l => { const on = l.querySelector('input').checked; l.classList.toggle('btn-primary', on); l.classList.toggle('btn-outline', !on) })
@@ -618,13 +704,17 @@
       const t = (await axios.get('/api/admin/board/project-template/' + pid)).data.template
       const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null && val !== '') el.value = val }
       set('bp-title', t.title); set('bp-area', t.area); set('bp-skills', t.required_skills); set('bp-desc', t.description)
-      set('bp-price', t.price_amount); set('bp-price-unit', t.price_unit)
+      // 単価は案件の支払単価と支払の単位。未設定なら単価・単位とも空にして選んでもらう（#540）
+      document.getElementById('bp-price').value = t.price_amount || ''
+      document.getElementById('bp-price-unit').value = t.price_unit || ''
       document.getElementById('bp-source-project').value = t.source_project_id
       const r = document.querySelector(`input[name=bp-eng][value=${t.engagement_type}]`); if (r) { r.checked = true; window.__boardEngChanged() }
-      toast('案件の内容を反映しました。公開してよい内容か確認してください')
+      toast(t.price_amount ? '案件の内容を反映しました。単価（支払単価）と単位、公開してよい内容か確認してください' : '案件の内容を反映しました。支払単価が未設定のため、単価と単位を入力してください')
     } catch (e) { toast(errMsg(e)) }
   }
-  window.__boardSave = async function (id, status) {
+  // mode: draft（下書き）/ open（掲載する）/ keep（今の状態のまま）/ republish（締切・充足から再掲載）
+  window.__boardSave = async function (id, mode) {
+    const status = mode === 'draft' ? 'draft' : mode === 'keep' ? undefined : 'open'
     const g = (k) => document.getElementById(k).value
     const body = {
       engagement_type: (document.querySelector('input[name=bp-eng]:checked') || {}).value,
@@ -634,9 +724,14 @@
       price_unit: g('bp-price-unit'), price_amount: g('bp-price') === '' ? null : Number(g('bp-price')), price_note: g('bp-price-note'),
       required_skills: g('bp-skills'), description: g('bp-desc'), deadline: g('bp-deadline'), source_project_id: g('bp-source-project') || null, status,
     }
-    if (status === 'open' && !(id && document.getElementById('bp-save-draft') === null) && !confirm('この内容で掲載しますか？掲載内容と自社名が全利用企業に公開されます。')) return
+    if (mode === 'open' && !confirm('この内容で掲載しますか？掲載内容と自社名が全利用企業に公開されます。')) return
+    if (mode === 'republish') {
+      if (!confirm('この掲載を再掲載しますか？「掲載中」に戻り、全利用企業の一覧に再び表示され、問い合わせ・人材の提案を受け付けます。')) return
+      body.republish = true
+    }
+    if (status === undefined) delete body.status
     try {
-      if (id) { await axios.put('/api/admin/board/posts/' + id, body); toast('保存しました'); location.hash = '#board/' + id }
+      if (id) { await axios.put('/api/admin/board/posts/' + id, body); toast(mode === 'republish' ? '保存して再掲載しました' : '保存しました'); location.hash = '#board/' + id }
       else { const { data } = await axios.post('/api/admin/board/posts', body); toast(status === 'open' ? '掲載しました' : '下書きを保存しました'); location.hash = '#board/' + data.post_id }
     } catch (e) { toast(errMsg(e, '保存に失敗しました')) }
   }
