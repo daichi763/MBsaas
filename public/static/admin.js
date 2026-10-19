@@ -1117,6 +1117,7 @@ document.addEventListener('change', async (ev) => {
   sel.disabled = true
   try {
     await axios.put('/api/admin/staff/' + sid, { retention_risk: sel.value })
+    sel.dataset.orig = sel.value
     toast('離職リスクを「' + ({ low: '低', mid: '中', high: '高' }[sel.value]) + '」にしました')
     if (staffDetailState && String(staffDetailState.sid) === String(sid)) await refreshStaffProfile(sid)
   } catch (e) {
@@ -1536,7 +1537,7 @@ function drawProjectRows() {
   }).map(x => x[1])
   document.getElementById('proj-count').textContent = list.length === all.length ? `${all.length}件` : `${list.length}件（全${all.length}件）`
   document.getElementById('proj-rows').innerHTML = list.map(p => `
-            <tr class="cursor-pointer" onclick="location.hash='projects/${Number(p.project_id)}'">
+            <tr class="cursor-pointer" data-action="openProject" data-id="${Number(p.project_id)}">
               <td class="font-medium text-blue-700">${esc(p.project_name)}</td>
               <td class="text-xs">${esc(p.client_name || '-')}</td>
               <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
@@ -1548,6 +1549,8 @@ function drawProjectRows() {
               <td>${p.status === 'active' ? '<span class="badge badge-green">稼働中</span>' : '<span class="badge badge-gray">終了</span>'}</td>
             </tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-6">条件に合う案件はありません</td></tr>'
 }
+delegate('openProject', el => { location.hash = 'projects/' + Number(el.dataset.id) })
+delegate('openEmployee', el => { location.hash = 'employees/' + Number(el.dataset.id) })
 delegate('projectsMonth', el => { PROJ_LIST.month = el.dataset.month; renderProjects() })
 delegate('sortProjects', el => {
   const k = el.dataset.key
@@ -2175,7 +2178,7 @@ async function renderEmployees() {
           <thead><tr><th>社員番号</th><th>氏名</th><th>フリガナ</th><th>在籍確認</th><th>所属</th><th>役職</th><th>拠点</th><th>契約形態</th></tr></thead>
           <tbody>
             ${data.employees.length === 0 ? '<tr><td colspan="8" class="text-center text-gray-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
-              <tr class="cursor-pointer" onclick="location.hash='employees/${Number(e.staff_id)}'" data-search="${escAttr([e.employee_number, e.name, e.kana, e.department, e.job_title, e.base_location].filter(Boolean).join(' '))}">
+              <tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}" data-search="${escAttr([e.employee_number, e.name, e.kana, e.department, e.job_title, e.base_location].filter(Boolean).join(' '))}">
                 <td>${esc(e.employee_number || '-')}</td>
                 <td class="text-blue-600 hover:underline">${esc(e.name)}</td>
                 <td>${esc(e.kana || '-')}</td>
@@ -2193,7 +2196,7 @@ async function renderEmployees() {
       <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-box-archive text-gray-400 mr-1"></i>雇用終了（他の区分へ移行・統合したスタッフ）</h3>
       <p class="text-xs text-gray-400 mb-2">従業員管理のデータは閲覧のみで保持しています（7年保存）。スタッフとしての稼働はスタッフマスタで管理します</p>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>社員番号</th><th>氏名</th><th>現在の区分</th><th>雇用終了日</th><th>理由</th></tr></thead><tbody>
-        ${data.ended.map(e => `<tr class="cursor-pointer" onclick="location.hash='employees/${e.staff_id}'"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
+        ${data.ended.map(e => `<tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
           <td>${e.merged_into_staff_id ? '<span class="badge badge-gray">統合済み</span>' : affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-gray-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
       </tbody></table></div>
     </section>` : ''}`
