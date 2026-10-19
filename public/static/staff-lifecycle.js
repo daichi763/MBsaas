@@ -279,8 +279,9 @@
     // ログインの欄に入力があるときだけ、ログインの発行とメールを送る
     if (val('fz-code') || val('fz-pass')) Object.assign(body, loginBody('fz'))
     try {
-      await axios.post(`/api/admin/staff/${sid}/finalize`, body)
+      const { data } = await axios.post(`/api/admin/staff/${sid}/finalize`, body)
       closeModal(); toast('本登録しました'); renderStaffDetail(sid)
+      if (data.login) showLoginGuide(data.login)
     } catch (e) { toast(errMsg(e)) }
   }))
 
@@ -296,10 +297,36 @@
   delegate('submitIssueLogin', (el) => withSubmitLock(el, async () => {
     const sid = Number(el.dataset.id)
     try {
-      await axios.post(`/api/admin/staff/${sid}/issue-login`, loginBody('il'))
+      const { data } = await axios.post(`/api/admin/staff/${sid}/issue-login`, loginBody('il'))
       closeModal(); toast('ログインを発行しました'); renderStaffDetail(sid)
+      if (data.login) showLoginGuide(data.login)
     } catch (e) { toast(errMsg(e)) }
   }))
+
+  // ---------- ログイン案内（#328）。本人に SMS・LINE などで送れるよう、URL・会社コード・スタッフ番号・初期パスワードをまとめてコピーできるようにする ----------
+  window.showLoginGuide = function (g) {
+    const text = [
+      `【Field OS ログインのご案内】${g.company_name ? '（' + g.company_name + '）' : ''}`,
+      `ログインURL: ${g.login_url}`,
+      `会社コード: ${g.company_code}`,
+      `スタッフ番号: ${g.user_code}`,
+      g.password ? `初期パスワード: ${g.password}` : '',
+      '※ 初回のログインで、ご自身のパスワードへの変更をお願いします。',
+      '※ ログインの後に「ホーム画面に追加」すると、次から1回で開けます。',
+    ].filter(Boolean).join('\n')
+    modal(`<h3 class="font-bold text-lg mb-1"><i class="fas fa-paper-plane text-blue-600 mr-1"></i>ログイン案内</h3>
+      <p class="text-xs text-gray-500 mb-2">コピーして、SMS・LINE などで本人に送ってください。初期パスワードは、この画面を閉じると二度と表示できません。</p>
+      <textarea id="login-guide-text" class="inp font-mono text-sm" rows="8" readonly>${esc(text)}</textarea>
+      <div class="flex gap-2 mt-3">
+        <button class="btn btn-outline flex-1" data-action="copyLoginGuide"><i class="fas fa-copy"></i>コピー</button>
+        <button class="btn btn-primary flex-1" onclick="closeModal()">閉じる</button>
+      </div>`)
+  }
+  delegate('copyLoginGuide', async () => {
+    const el = document.getElementById('login-guide-text'); if (!el) return
+    try { await navigator.clipboard.writeText(el.value) } catch { el.select(); document.execCommand && document.execCommand('copy') }
+    toast('コピーしました')
+  })
 
   // ---------- 未確認のメール（本人に確認したら設定する／不要なら消す。#38 #148） ----------
   delegate('confirmUnverifiedEmail', (el) => {
@@ -428,7 +455,7 @@
     const url = d.token ? location.origin + '/r/' + d.token.token : ''
     host.innerHTML = `<div class="rounded-lg border border-gray-100 p-3 text-xs space-y-2" id="shift-report-box">
       <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
-        <span class="text-gray-400">${d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
+        <span class="text-gray-400">${d.login_via_owner ? '所属元のアカウントで報告' : d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
         ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? 'badge-green' : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : r && r.entry_method === 'correction' ? '・修正' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
@@ -529,7 +556,8 @@
     await orig(sid, p)
     if (!p || p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return
     let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch { return }
-    if (!d.has_login || d.merged_into_staff_id) return
+    // 他社連携から区分を変えた行（LK- のまま）は自社のログインではないので出さない（#569）
+    if (!d.has_own_login || d.merged_into_staff_id) return
     const dl = document.querySelector('#staff-lifecycle dl')
     if (!dl || document.getElementById('staff-reset-password-btn')) return
     dl.insertAdjacentHTML('beforeend', `<div class="flex gap-2 items-center"><dt class="w-24 text-gray-400">パスワード</dt><dd>

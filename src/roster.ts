@@ -737,15 +737,17 @@ rosterApi.post('/', async (c) => {
   }
 
   const person = await createPerson(db, u.company_id)
-  const userCode = wantsLogin ? String(b.user_code).trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
+  // スタッフ番号はログイン画面と同じく全角を半角にそろえて保存する（#387）
+  const userCode = wantsLogin ? String(b.user_code).normalize('NFKC').trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
   // ログインしない人物は role='roster_only'（お知らせ対象・スタッフ数集計・ログインの対象外）
   const role = wantsLogin ? 'staff' : 'roster_only'
   const pwHash = wantsLogin ? await hashPassword(String(b.password)) : await unusablePasswordHash()
 
   let userId: number
   try {
-    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(u.company_id, userCode, name, role, pwHash, wantsLogin ? (b.email || null) : null, b.phone || null, person.person_id).run()
+    // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
+    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(u.company_id, userCode, name, role, pwHash, wantsLogin ? (b.email || null) : null, b.phone || null, person.person_id, wantsLogin ? 1 : 0).run()
     userId = r.meta.last_row_id as number
   } catch {
     await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
@@ -762,10 +764,10 @@ rosterApi.post('/', async (c) => {
       type === 'own_employee' ? (b.employment_status || 'working') : 'working').run()
   const staffId = sr.meta.last_row_id as number
 
-  // ②では従業員管理（社員名簿）の最小レコードも同時に作成する
-  if (type === 'own_employee' && (b.employee_number || b.hire_date || b.contract_type)) {
-    await db.prepare('INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(staffId, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, nowJST()).run()
+  // ②では従業員管理（社員名簿）の最小レコードも同時に作成する。電話番号は従業員管理の電話番号にも入れる（従業員管理で直したら users.phone にそろえる。#123）
+  if (type === 'own_employee' && (b.employee_number || b.hire_date || b.contract_type || b.phone)) {
+    await db.prepare('INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, phone_main, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(staffId, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, b.phone || null, nowJST()).run()
   }
   return c.json({ ok: true, staff_id: staffId, global_staff_code: person.global_staff_code })
 })

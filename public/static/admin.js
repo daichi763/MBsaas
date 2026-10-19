@@ -27,7 +27,8 @@ function modal(html) {
 window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
 
 axios.interceptors.response.use(r => r, e => {
-  if (e.response && e.response.status === 401) location.href = '/login'
+  // ログインの後に今の画面へ戻れるよう、パスとハッシュを next に付ける（#206）
+  if (e.response && e.response.status === 401) location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
   return Promise.reject(e)
 })
 
@@ -258,7 +259,7 @@ function drawStaffTable(filter) {
         <tbody>
           ${list.map(s => `
             <tr class="cursor-pointer" onclick="location.hash='staff/${s.staff_id}'">
-              <td class="text-gray-400">${esc(s.user_code)}</td>
+              <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
               <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}</td>
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
@@ -419,6 +420,8 @@ function staffBusinessSectionHtml(p, edBiz) {
     </div>`
 }
 
+// 他社連携の行の LK- コードは、連携のために作った内部のコードで、自社ではログインに使えないためスタッフ番号として出さない（#569）
+function staffCodeLabel(s) { return String(s.user_code || '').startsWith('LK-') ? '' : (s.user_code || '') }
 // ---------- スタッフ詳細: ヘッダー・基本情報カード（編集/保存時はここだけ差し替えて、画面全体を再読み込みしない） ----------
 const STAFF_EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
 function staffDetailHeaderHtml(sid, p) {
@@ -427,7 +430,7 @@ function staffDetailHeaderHtml(sid, p) {
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#staff" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : p.user_code)}</span></h2>
+        <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : staffCodeLabel(p))}</span></h2>
         <div class="flex gap-2 mt-1 flex-wrap">
           ${affTypeBadge(p.affiliation_type)}
           ${p.board_source ? `<a href="#board/t${p.board_source.thread_id}" class="badge badge-purple" title="案件掲示板のやり取りを開く"><i class="fas fa-clipboard-list mr-1"></i>掲示板経由（提案: ${esc(p.board_source.proposer_company_name)}）</a>` : ''}
@@ -480,7 +483,10 @@ function staffBasicCardHtml(sid, p, affData, editing) {
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
           ${bi('所属先担当者名', ed ? `<input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}">` : esc(p.affiliation_contact || '-'))}
           ${p.affiliation_type === 'own_employee' ? bi('社員番号 / 所属', esc([p.employee_number, p.department, p.job_title].filter(Boolean).join(' / ') || '-')) : ''}
-          ${bi('連絡先', `<span class="text-xs">${esc(p.affiliation_type === 'own_employee' ? (p.emp_phone || p.phone || '-') : (p.phone || '-'))}<br>${esc(p.affiliation_type === 'own_employee' ? (p.emp_email || p.email || '') : (p.email || ''))}</span>`)}
+          ${bi('電話番号', ed ? `<input id="staff-phone" class="inp text-xs" type="tel" inputmode="tel" maxlength="20" value="${esc(p.phone || '')}" data-orig="${esc(p.phone || '')}" placeholder="09012345678">`
+              : `<span class="text-xs">${esc(p.affiliation_type === 'own_employee' ? (p.emp_phone || p.phone || '-') : (p.phone || '-'))}</span>${p.affiliation_type === 'own_employee' && editing ? '<span class="block text-[11px] text-gray-400">従業員管理の電話番号から変更します</span>' : ''}`)}
+          ${p.affiliation_type === 'own_employee' ? bi('個人メール', `<span class="text-xs">${esc(p.emp_email || '-')}</span> <span class="text-[11px] text-gray-400">（従業員管理。通知には使いません）</span>`) : ''}
+          ${staffLoginEmailHtml(p, editing)}
           ${bi('最寄駅', ed ? `<div class="flex gap-1"><input id="staff-station-line" placeholder="路線" class="inp text-xs" value="${esc(p.nearest_station_line || '')}"><input id="staff-station" placeholder="駅" class="inp text-xs" value="${esc(p.nearest_station || '')}"></div>`
               : esc([p.nearest_station_line, p.nearest_station].filter(Boolean).join(' ') || '-'))}
           ${bi('通勤可能時間', edBiz ? `<input type="number" min="0" max="1440" id="staff-commute" class="inp text-xs" value="${esc(p.commute_minutes ?? '')}" placeholder="分">` : (p.commute_minutes != null ? esc(p.commute_minutes) + '分' : '-'))}
@@ -520,6 +526,19 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           </div>` : ''}
         </div>
 `
+}
+// ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。変更は確認メールを送り、本人が確認したときに切り替わる
+function staffLoginEmailHtml(p, editing) {
+  if (p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return ''
+  const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">ログイン用メール</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
+  if (!p.has_own_login) return row('<span class="text-xs text-gray-400">ログインなし</span>')
+  const pend = p.login_email_pending
+  const pendHtml = pend ? `<span class="block text-xs mt-0.5"><span class="badge badge-yellow">確認待ち</span> ${esc(pend.email)} <span class="text-[11px] text-gray-400">（本人が確認メールのリンクを開くと切り替わります。期限 ${esc(dayjs(pend.expires_at).format('M/D HH:mm'))}）</span></span>` : ''
+  if (editing && !p.merged_into_staff_id) {
+    return row(`<input id="staff-login-email" class="inp text-xs" type="email" maxlength="254" autocomplete="off" value="${esc(p.email || '')}" data-orig="${esc(p.email || '')}" placeholder="例: taro@example.com">
+      <span class="block text-[11px] text-gray-400">変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります。空欄で保存すると削除します</span>${pendHtml}`)
+  }
+  return row((p.email ? `<span class="text-xs">${esc(p.email)}</span>` : '<span class="text-xs text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>未登録（通知メール・パスワード再設定が使えません）</span>') + pendHtml)
 }
 // 直近に表示したスタッフ詳細のデータ（編集切替・保存後の部分再描画に使う）
 let staffDetailState = null
@@ -798,6 +817,25 @@ window.saveStaffBasicInfo = async function (sid) {
         Object.assign(body, r.body)
       }
     }
+    // 電話番号・ログイン用メールは、変えたときだけ送る（#123 #207）
+    const ph = document.getElementById('staff-phone')
+    if (ph && ph.value.trim() !== (ph.dataset.orig || '')) {
+      body.phone = ph.value.trim()
+      // ほかのスタッフと同じ番号なら、同じ人ではないか確かめてから保存する
+      if (body.phone.replace(/\D/g, '').length >= 10) {
+        const { data } = await axios.get('/api/admin/staff-lookup', { params: { phone: body.phone } })
+        const others = (data.matches || []).filter(m => String(m.staff_id) !== String(sid))
+        if (others.length) {
+          if (!confirm(`この電話番号のスタッフが登録済みです（${others.map(m => m.name).join('、')}）。\n同じ人の場合は統合を検討してください。このまま保存しますか？`)) return
+          body.phone_confirmed = true
+        }
+      }
+    }
+    const le = document.getElementById('staff-login-email')
+    if (le && le.value.trim() !== (le.dataset.orig || '')) {
+      body.login_email = le.value.trim()
+      if (!body.login_email && !confirm('ログイン用メールアドレスを削除します。打刻修正の結果・お知らせのメールと、パスワード再設定のメールが届かなくなります。よろしいですか？')) return
+    }
     if (document.getElementById('staff-career-rows')) {
       const commute = val('staff-commute')
       Object.assign(body, {
@@ -806,13 +844,16 @@ window.saveStaffBasicInfo = async function (sid) {
         career_rows: collectCareerRows(), pr_points: val('staff-pr-points'), remarks: val('staff-remarks'),
       })
     }
-    if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, body))) return
+    const res = await putConfirmingRetiredAt('/api/admin/staff/' + sid, body)
+    if (!res) return
     // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）。
     // 取引先マスタに入るため、取引先所属のスタッフだけにする（屋号・自社名・スキルシートの所属を取引先にしない。#262）
     const aff = (val('staff-affiliation') || '').trim()
     const isPartner = staffDetailState && staffDetailState.p && staffDetailState.p.affiliation_type === 'partner_manual'
     if (aff && isPartner) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
-    toast('保存しました')
+    const le2 = res.data && res.data.login_email
+    if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました' : '保存しました。確認メールを送れませんでした（メールの設定を確認してください）')
+    else toast('保存しました')
     staffEditingSid = null
     await refreshStaffProfile(sid)
   } catch (e) {

@@ -34,7 +34,8 @@ window.closeModal = () => {
 }
 
 axios.interceptors.response.use(r => r, e => {
-  if (e.response && e.response.status === 401) location.href = '/login'
+  // ログインの後に今の画面（日報・打刻履歴など）へ戻れるよう、パスとハッシュを next に付ける（#206）
+  if (e.response && e.response.status === 401) location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
   return Promise.reject(e)
 })
 
