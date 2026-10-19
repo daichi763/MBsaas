@@ -61,7 +61,7 @@
     const row = (t) => {
       const r = rep[t], p = pend[t]
       const action = locked ? '' : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
-        : `<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${r ? '修正' : '追加申請'}</button>`
+        : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '追加申請'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
         <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
@@ -76,88 +76,245 @@
     </div>`
   }
 
-  // ---------- 申請（時刻修正・打刻漏れの追加） ----------
+  // ---------- 申請（時刻修正・打刻漏れの追加。同じシフトのほかの報告もまとめて直せる #214） ----------
+  const NEXT_DAY = ['break_start', 'break_end', 'work_end', 'check_out']
+  const ARRIVAL = ['check_in', 'work_start']
+  // 理由の定型文（タップで理由欄に足す。#401）
+  const REASONS = ['電波が悪く送れなかった', '押し忘れた', '端末の不具合で送れなかった', '時刻を押し間違えた']
+  const SETTLED = '精算が確定済みのシフトです。承認されると勤怠の記録は変わりますが、支払額は自動では変わりません（必要な対応は管理者が行います）'
+  const toMin = (t) => { const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0) }
+  const atMin = (workDate, m) => dayjs(workDate).add(m, 'minute')
+  const fmtIn = (d) => d.format('YYYY-MM-DDTHH:mm')
+  const toAt = (v) => v ? v.replace('T', ' ').slice(0, 16) : ''
+  const dj = (at) => dayjs(String(at).slice(0, 16).replace(' ', 'T'))
+  function rejectedOf(s, t) { return (s.rejected || []).find(x => x.report_type === t) }
+  // 打刻履歴の行の『却下』の印（最新の申請が却下のまま。#399）
+  function rejectedTag(s, t) { return rejectedOf(s, t) ? '<span class="badge badge-red">却下</span>' : '' }
+  // 予定の開始・終了（稼働日 0:00 からの分。終了が開始以前なら翌日）
+  function span(s) { const st = toMin(s.start_time); let en = toMin(s.end_time); if (en <= st) en += 1440; return { st, en } }
+  // 入力できる日時の範囲（#312）。サーバー（lib/shift-time.ts の reportableWindow）と同じ終わりと、今の時刻の早いほう。始まりは稼働日の前日 0:00
+  function maxFor(s, type) {
+    const { en } = span(s)
+    const m = NEXT_DAY.includes(type) ? Math.min(Math.max(1439, en + 720), 2879) : ARRIVAL.includes(type) ? Math.max(1439, en) : 1439
+    const lim = atMin(s.work_date, m), now = dayjs()
+    return lim.isBefore(now) ? lim : now
+  }
+  const minFor = (s) => fmtIn(dayjs(s.work_date).subtract(1, 'day'))
+  // 未報告の既定の時刻（#342）: 予定から推定し、前後の報告の間に収める。起床・出発は開始より前、休憩は予定の休憩を勤務の中ほどに置く
+  function defaultFor(s, type) {
+    const { st, en } = span(s)
+    const brk = s.break_minutes != null ? Number(s.break_minutes) : (en - st >= 360 ? 60 : 0)
+    const mid = st + Math.max(0, Math.round((en - st - brk) / 10) * 5)
+    const base = { wake_up: st - 120, departure: st - 60, check_in: st - 10, work_start: st, break_start: mid, break_end: mid + brk, work_end: en, check_out: en + 5 }[type]
+    let d = atMin(s.work_date, base)
+    const rep = Object.fromEntries(s.reports.map(r => [r.report_type, dj(r.reported_at)]))
+    const i = TYPES.indexOf(type)
+    const prev = TYPES.slice(0, i).reverse().map(t => rep[t]).find(Boolean)
+    const next = TYPES.slice(i + 1).map(t => rep[t]).find(Boolean)
+    if (prev && next && prev.isBefore(next)) { if (!d.isAfter(prev) || !d.isBefore(next)) d = prev.add(Math.floor(next.diff(prev, 'minute') / 2), 'minute') }
+    else if (prev && !d.isAfter(prev)) d = prev.add(1, 'minute')
+    else if (next && !d.isBefore(next)) d = next.subtract(1, 'minute')
+    const max = maxFor(s, type)
+    return fmtIn(d.isAfter(max) ? max : d)
+  }
+  // 報告の順序の矛盾（サーバーの orderConflicts と同じく分の単位で比べる。同じ分は矛盾にしない）
+  function orderIssues(map, type, at, skip) {
+    const idx = TYPES.indexOf(type), out = []
+    for (const t of TYPES) {
+      if (t === type || !map[t] || (skip && skip.has(t))) continue
+      const j = TYPES.indexOf(t)
+      if (j < idx && map[t] > at) out.push(`${LABEL[type]}が${LABEL[t]}（${showAt(map[t], form.work_date)}）より前です`)
+      if (j > idx && map[t] < at) out.push(`${LABEL[type]}が${LABEL[t]}（${showAt(map[t], form.work_date)}）より後です`)
+    }
+    return out
+  }
+
   let form = null
   window.attOpen = function (shiftId, type) {
-    const s = TL.shifts.find(x => x.shift_id === shiftId); if (!s) return
+    const s = TL && TL.shifts.find(x => x.shift_id === shiftId); if (!s) return
     const r = s.reports.find(x => x.report_type === type)
-    // 未報告の既定値: 勤務終了・退店は予定の終了、それ以外は予定の開始。日をまたぐシフト（終了 <= 開始）の終了は翌日（#52）
-    const isEnd = type === 'work_end' || type === 'check_out'
-    const endDate = s.end_time <= s.start_time ? dayjs(s.work_date).add(1, 'day').format('YYYY-MM-DD') : s.work_date
-    const def = r ? toInput(r.reported_at) : isEnd ? `${endDate}T${s.end_time}` : `${s.work_date}T${s.start_time}`
-    form = { mode: 'new', shift_id: shiftId, report_type: type, kind: r ? 'modify' : 'add', before: r ? r.reported_at : null, work_date: s.work_date, title: s.project_name }
-    showForm(def, '')
+    const rj = rejectedOf(s, type)
+    form = { mode: 'new', shift: s, shift_id: shiftId, report_type: type, kind: r ? 'modify' : 'add', before: r ? r.reported_at : null, work_date: s.work_date, title: s.project_name, rejected: rj || null }
+    // 却下された申請があれば、その日時から直せるようにする（新しい申請は再申請としてつながる。#399）
+    showForm(rj ? toInput(rj.requested_at) : r ? toInput(r.reported_at) : defaultFor(s, type), '')
   }
-  function showForm(value, reason, warnings) {
-    modal(`<h3 class="font-bold text-gray-800 mb-1">${form.mode === 'resubmit' ? '再申請' : KIND[form.kind]}の申請</h3>
+  function showForm(value, reason) {
+    const s = form.shift
+    const rep = Object.fromEntries(s.reports.map(r => [r.report_type, r]))
+    const pend = Object.fromEntries((s.pending || []).map(p => [p.report_type, p]))
+    const types = TYPES.filter(t => t === form.report_type || (s.enabled || []).includes(t) || rep[t])
+    // 同じシフトの報告の一覧（#401）。新規の申請では、ほかの報告も『一緒に直す』でまとめて申請できる（#214）
+    const row = (t) => {
+      const me = t === form.report_type, r = rep[t], p = pend[t]
+      const tail = me ? '<span class="text-[11px] text-blue-700">この報告</span>'
+        : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
+        : form.mode === 'new' ? `<button type="button" class="text-[11px] text-blue-600 underline" data-action="attExtraToggle" data-type="${t}">一緒に直す</button>` : ''
+      return `<li class="py-1 ${me ? 'bg-blue-50 rounded px-1 font-bold' : ''}">
+        <div class="flex items-center gap-2 text-xs"><span class="w-16 shrink-0 text-gray-600">${LABEL[t]}</span><span class="flex-1 ${r ? 'text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}</span>${tail}</div>
+        ${!me && !p && form.mode === 'new' ? `<div class="hidden mt-1" id="att-x-${t}"><input type="datetime-local" class="inp text-sm" data-extra="${t}" min="${minFor(s)}" max="${fmtIn(maxFor(s, t))}"></div>` : ''}</li>`
+    }
+    const title = form.mode === 'resubmit' ? `再申請（${KIND[form.kind]}）` : `${KIND[form.kind]}の申請`
+    modal(`<div id="att-form"><h3 class="font-bold text-gray-800 mb-1">${title}</h3>
       <p class="text-sm text-gray-600">${esc(fmtDate(form.work_date))} ${esc(form.title)} ・<b>${LABEL[form.report_type]}</b></p>
-      ${form.before ? `<p class="text-xs text-gray-500 mt-1">今の記録: ${esc(showAt(form.before, form.work_date))}</p>` : '<p class="text-xs text-gray-500 mt-1">未報告の打刻を追加します</p>'}
-      <label class="block text-sm text-gray-700 mt-3">${form.kind === 'modify' ? '正しい日時' : '日時'}<input type="datetime-local" id="att-at" class="inp mt-1" value="${esc(value)}"></label>
-      <label class="block text-sm text-gray-700 mt-3">修正理由（必須）<textarea id="att-reason" rows="3" maxlength="500" class="inp mt-1" placeholder="例: 店舗の電波が悪く、入店報告を送れなかったため">${esc(reason)}</textarea></label>
-      <div id="att-msg" class="mt-2">${warnings ? warnBox(warnings) : ''}</div>
+      ${s.settled ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-2"><i class="fas fa-lock mr-1"></i>${esc(SETTLED)}</p>` : ''}
+      ${s.request_until ? `<p class="text-[11px] text-gray-500 mt-1">申請の期限: ${esc(fmtDate(s.request_until))}まで</p>` : ''}
+      ${form.changed ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-2">却下の後に記録が変わりました（今の記録: ${form.before ? esc(showAt(form.before, form.work_date)) : '未報告'}）。今の記録をもとに申請し直します</p>` : ''}
+      ${form.rejected ? `<div class="mt-2 p-2 rounded bg-red-50 text-xs text-red-800">前回の申請（${esc(showAt(form.rejected.requested_at, form.work_date))}）は却下されました。<br>理由: ${esc(form.rejected.reject_reason || '')}<br><span class="text-red-500">この申請は再申請として管理者に届きます</span></div>` : ''}
+      ${form.before ? `<p class="text-xs text-gray-500 mt-2">今の記録: ${esc(showAt(form.before, form.work_date))}</p>` : '<p class="text-xs text-gray-500 mt-2">未報告の打刻を追加します</p>'}
+      <label class="block text-sm text-gray-700 mt-2">${form.kind === 'modify' ? '正しい日時' : '日時'}<input type="datetime-local" id="att-at" class="inp mt-1" value="${esc(value)}" min="${minFor(s)}" max="${fmtIn(maxFor(s, form.report_type))}"></label>
+      <div id="att-order" class="mt-1"></div>
+      <h4 class="text-xs font-bold text-gray-500 mt-3 mb-0.5">このシフトの報告</h4>
+      <ul class="border-t border-b border-gray-100">${types.map(row).join('')}</ul>
+      ${form.mode === 'new' ? '<p class="text-[11px] text-gray-500 mt-1">前後の報告も違っている場合は『一緒に直す』で、まとめて申請できます（理由は共通）</p>' : ''}
+      <p class="text-sm text-gray-700 mt-3">修正理由（必須）</p>
+      <div class="flex flex-wrap gap-1 mt-1">${REASONS.map(t => `<button type="button" class="badge badge-gray" data-action="attReasonPreset" data-text="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+      <textarea id="att-reason" rows="3" maxlength="500" class="inp mt-1" placeholder="例: 店舗の電波が悪く、入店報告を送れなかったため">${esc(reason)}</textarea>
+      <div id="att-msg" class="mt-2"></div>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
-        <button class="btn btn-primary flex-1" id="att-submit" onclick="attSubmit(${warnings ? 'true' : 'false'})">${warnings ? '警告を確認して申請する' : '申請する'}</button></div>`)
+        <button class="btn btn-primary flex-1" id="att-submit" data-action="attSubmit">申請する</button></div></div>`)
+    form.confirmed = null
+    // 日時を変えたら、前に出した警告を消して確認からやり直す（#261）。前後の報告との順序はその場で示す（#401）
+    document.getElementById('att-form').addEventListener('input', (e) => { if (e.target && e.target.type === 'datetime-local') { resetConfirm(); showOrder() } })
+    showOrder()
   }
+  // 入力中の日時（対象と『一緒に直す』の報告）
+  function collect() {
+    const items = [{ report_type: form.report_type, requested_at: toAt(document.getElementById('att-at').value) }]
+    document.querySelectorAll('#att-form [data-extra]').forEach(el => { if (!el.closest('.hidden')) items.push({ report_type: el.dataset.extra, requested_at: toAt(el.value) }) })
+    return items
+  }
+  function showOrder() {
+    const box = document.getElementById('att-order'); if (!box) return
+    const items = collect().filter(i => i.requested_at)
+    const map = Object.fromEntries(form.shift.reports.map(r => [r.report_type, String(r.reported_at).slice(0, 16)]))
+    for (const i of items) map[i.report_type] = i.requested_at
+    // 一緒に直す報告どうしの矛盾は1回だけ出す
+    const done = new Set(), issues = []
+    for (const i of items) { issues.push(...orderIssues(map, i.report_type, i.requested_at, done)); done.add(i.report_type) }
+    box.innerHTML = issues.length ? `<p class="text-xs text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>${issues.map(esc).join(' / ')}</p>` : ''
+  }
+  function resetConfirm() {
+    if (!form || !form.confirmed) return
+    form.confirmed = null
+    document.getElementById('att-msg').innerHTML = ''
+    document.getElementById('att-submit').textContent = '申請する'
+  }
+  delegate('attExtraToggle', (el) => {
+    const t = el.dataset.type, box = document.getElementById(`att-x-${t}`); if (!box) return
+    const open = box.classList.toggle('hidden') === false
+    const input = box.querySelector('input')
+    if (open && !input.value) { const r = form.shift.reports.find(x => x.report_type === t); input.value = r ? toInput(r.reported_at) : defaultFor(form.shift, t) }
+    el.textContent = open ? '直さない' : '一緒に直す'
+    resetConfirm(); showOrder()
+  })
+  delegate('attReasonPreset', (el) => {
+    const ta = document.getElementById('att-reason'); if (!ta) return
+    ta.value = ta.value.trim() ? `${ta.value.trim()}。${el.dataset.text}` : el.dataset.text
+    ta.focus()
+  })
   const warnBox = (ws) => `<div class="p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>報告の順序に矛盾があります</p>
     <ul class="list-disc pl-4 space-y-0.5">${ws.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="mt-1">打刻漏れの追加は、このまま申請できます（管理者が確認して承認します）</p></div>`
-  window.attSubmit = async function (confirmed) {
-    if (busy) return
-    const at = (document.getElementById('att-at').value || '').replace('T', ' ')
+  const noticeBox = (ns) => `<div class="p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800 mt-1">${ns.map(n => `<p><i class="fas fa-circle-info mr-1"></i>${esc(n)}</p>`).join('')}</div>`
+  async function submitForm(btn) {
+    const items = collect()
     const reason = document.getElementById('att-reason').value.trim()
     const msg = document.getElementById('att-msg')
-    if (!at) { msg.innerHTML = '<p class="text-xs text-red-600">日時を入力してください</p>'; return }
+    if (items.some(i => !i.requested_at)) { msg.innerHTML = '<p class="text-xs text-red-600">日時を入力してください</p>'; return }
     if (!reason) { msg.innerHTML = '<p class="text-xs text-red-600">修正理由を入力してください</p>'; return }
-    const url = form.mode === 'resubmit' ? `/api/staff/corrections/${form.from_id}/resubmit` : '/api/staff/corrections'
-    const body = { shift_id: form.shift_id, report_type: form.report_type, kind: form.kind, requested_at: at, reason }
-    const btn = document.getElementById('att-submit')
-    busy = true; btn.disabled = true
-    try {
-      if (!confirmed) {
-        const { data } = await axios.post(url, { ...body, dry_run: true })
-        if (data.warnings && data.warnings.length) { busy = false; return showForm(at.replace(' ', 'T'), reason, data.warnings) }
+    const bulk = items.length > 1
+    const url = form.mode === 'resubmit' ? `/api/staff/corrections/${form.from_id}/resubmit` : bulk ? '/api/staff/corrections/bulk' : '/api/staff/corrections'
+    const body = bulk ? { shift_id: form.shift_id, reason, items } : { shift_id: form.shift_id, report_type: form.report_type, kind: form.kind, requested_at: items[0].requested_at, reason }
+    const key = JSON.stringify(items)
+    await withSubmitLock(btn, async () => {
+      try {
+        // 警告を出したときと同じ日時なら、確認済みとして申請する。日時を変えていたら確認からやり直す（#261）
+        if (form.confirmed !== key) {
+          const { data } = await axios.post(url, { ...body, dry_run: true })
+          const ws = data.warnings || [], ns = data.notices || []
+          if (ws.length || ns.length) {
+            form.confirmed = key
+            msg.innerHTML = (ws.length ? warnBox(ws) : '') + (ns.length ? noticeBox(ns) : '')
+            btn.textContent = '内容を確認して申請する'
+            return
+          }
+        }
+        await axios.post(url, body)
+        closeModal(); toast(bulk ? `${items.length}件をまとめて申請しました。承認されると記録が変わります` : '申請しました。承認されると記録が変わります')
+        S.tab === 'requests' ? renderRequests() : renderTimeline()
+      } catch (e) {
+        msg.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e))}</p>`
       }
-      await axios.post(url, body)
-      closeModal(); toast('申請しました。承認されると記録が変わります')
-      S.tab === 'requests' ? renderRequests() : renderTimeline()
-    } catch (e) {
-      msg.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e))}</p>`; btn.disabled = false
-    } finally { busy = false }
+    })
   }
+  delegate('attSubmit', (el) => submitForm(el))
+  window.attSubmit = function () { const b = document.getElementById('att-submit'); if (b) submitForm(b) }
 
   // ---------- 自分の申請 ----------
   let LIST = []
+  // 通知・メールのリンク（#attendance/request/:id）で開いた申請（#306）
+  const requestIdFromHash = () => { const m = (location.hash || '').match(/^#attendance\/request\/(\d+)/); return m ? Number(m[1]) : null }
+  // メールのリンクから開いたときは『修正申請』のタブで開く
+  if (requestIdFromHash()) S.tab = 'requests'
   async function renderRequests() {
     const host = document.getElementById('att-body')
     try { LIST = (await axios.get('/api/staff/corrections')).data.corrections } catch (e) { host.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
     host.innerHTML = `<div class="space-y-2">${LIST.map(c => `
-      <div class="card p-3">
+      <div class="card p-3" id="att-req-${c.correction_id}">
         <div class="flex items-center justify-between gap-2">${statusBadge(c.status)}<span class="text-[11px] text-gray-400">申請 ${esc(dayjs(c.created_at).format('M/D HH:mm'))}</span></div>
         <p class="font-bold text-gray-800 mt-1.5">${esc(fmtDate(c.work_date))} ${LABEL[c.report_type] || ''} <span class="text-xs font-normal text-gray-500">${KIND[c.kind]}</span></p>
         <p class="text-xs text-gray-500 truncate">${esc(c.project_name || '')}</p>
+        ${c.by_admin ? `<p class="text-[11px] text-blue-700 bg-blue-50 rounded px-2 py-1 mt-1"><i class="fas fa-user-tie mr-1"></i>管理者（${esc(c.requested_by_name || '')}）が代わりに申請しました${c.status === 'pending' ? '。取り消しは管理者が行います' : ''}</p>` : ''}
         <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b></p>
         <p class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">理由: ${esc(c.reason)}</p>
         ${c.order_warnings.length ? `<p class="text-[11px] text-amber-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${c.order_warnings.map(esc).join(' / ')}</p>` : ''}
         ${c.status === 'approved' ? `<p class="text-xs text-emerald-700 mt-1.5">承認: ${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}</p>` : ''}
+        ${c.status === 'approved' && c.applied_while_settled ? '<p class="text-[11px] text-amber-800 mt-1">精算が確定済みのシフトのため、支払額は変わっていません（管理者が別途対応します）</p>' : ''}
+        ${c.status === 'pending' && c.settled ? '<p class="text-[11px] text-amber-800 mt-1">精算が確定済みのシフトです。承認されても支払額は自動では変わりません</p>' : ''}
         ${c.status === 'rejected' ? `<div class="mt-1.5 p-2 rounded bg-red-50 text-xs text-red-800">却下の理由: ${esc(c.reject_reason || '')}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}<br><span class="text-red-500">${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}</span></div>` : ''}
+        ${c.status === 'rejected' && c.superseded_by ? `<p class="text-[11px] text-gray-500 mt-1">この報告は、後の申請 #${Number(c.superseded_by)} で申請し直しています</p>` : ''}
         ${c.status === 'cancelled' && c.cancel_reason_label ? `<p class="text-xs text-gray-600 mt-1.5">${esc(c.cancel_reason_label)}、自動で取り消されました。勤怠の記録は変わっていません</p>` : ''}
-        ${c.resubmitted_from ? `<p class="text-[11px] text-gray-400 mt-1">再申請（元の申請 #${c.resubmitted_from}）</p>` : ''}
+        ${c.resubmitted_from ? `<p class="text-[11px] text-gray-400 mt-1">再申請（元の申請 #${Number(c.resubmitted_from)}）</p>` : ''}
         <div class="flex gap-2 mt-2">
-          <button class="btn btn-outline text-xs flex-1" onclick="attDetail(${c.correction_id})">経緯を見る</button>
-          ${c.status === 'pending' && c.mine ? `<button class="btn btn-danger text-xs flex-1" onclick="attCancel(${c.correction_id})">取り消す</button>` : ''}
-          ${c.status === 'rejected' && c.mine && !c.resubmitted_count ? `<button class="btn btn-primary text-xs flex-1" onclick="attResubmit(${c.correction_id})">修正して再申請</button>` : ''}
+          <button class="btn btn-outline text-xs flex-1" data-action="attDetail" data-id="${c.correction_id}">経緯を見る</button>
+          ${c.status === 'pending' && c.mine ? `<button class="btn btn-danger text-xs flex-1" data-action="attCancel" data-id="${c.correction_id}">取り消す</button>` : ''}
+          ${c.status === 'rejected' && c.mine && !c.resubmitted_count && !c.superseded_by ? `<button class="btn btn-primary text-xs flex-1" data-action="attResubmit" data-id="${c.correction_id}">修正して再申請</button>` : ''}
+          ${c.by_admin ? '<a href="#consult" class="btn btn-outline text-xs flex-1">管理者に相談する</a>' : ''}
         </div>
       </div>`).join('') || '<p class="text-center text-gray-400 py-10">申請はありません</p>'}</div>`
+    const focus = requestIdFromHash()
+    if (!focus) return
+    const el = document.getElementById(`att-req-${focus}`)
+    if (el) { el.classList.add('ring-2', 'ring-blue-400'); el.scrollIntoView({ block: 'center' }) }
+    else host.insertAdjacentHTML('afterbegin', '<p class="text-xs text-gray-500 mb-2 px-1">お知らせの申請は一覧にありません（新しい200件まで表示しています）</p>')
   }
-  window.attCancel = async function (id) {
+  // 申請を開く（通知・メールのリンク #306。staff.js の route が #attendance/request/:id のときに呼ぶ）
+  window.attOpenRequest = function (id) {
+    S.tab = 'requests'
+    const h = `attendance/request/${Number(id)}`
+    if (location.hash !== '#' + h) { location.hash = h; return }
+    return renderStaffAttendance()
+  }
+  window.attCancel = async function (id, btn) {
     if (busy || !confirm('この申請を取り消しますか？')) return
     busy = true
-    try { await axios.post(`/api/staff/corrections/${id}/cancel`); toast('取り消しました') } catch (e) { toast(errMsg(e)) } finally { busy = false; renderRequests() }
+    try { await withSubmitLock(btn, () => axios.post(`/api/staff/corrections/${id}/cancel`)); toast('取り消しました') } catch (e) { toast(errMsg(e)) } finally { busy = false; renderRequests() }
   }
-  window.attResubmit = function (id) {
+  // 再申請（#484）: 申請の種類と『今の記録』は、却下された時点ではなく今の記録から決める（サーバーの resubmitCorrection と同じ判定）
+  window.attResubmit = async function (id) {
     const c = LIST.find(x => x.correction_id === id); if (!c) return
-    form = { mode: 'resubmit', from_id: id, shift_id: c.shift_id, report_type: c.report_type, kind: c.kind, before: c.before_at, work_date: c.work_date, title: c.project_name }
+    let d; try { d = (await axios.get(`/api/staff/corrections/${id}`)).data } catch (e) { toast(errMsg(e)); return }
+    const reports = d.reports || []
+    const r = reports.find(x => x.report_type === c.report_type)
+    const kind = r ? 'modify' : 'add'
+    const changed = kind !== c.kind || (r && c.before_at && String(r.reported_at).slice(0, 16) !== String(c.before_at).slice(0, 16))
+    const tl = TL && TL.shifts.find(x => x.shift_id === c.shift_id)
+    const shift = { work_date: c.work_date, start_time: c.start_time, end_time: c.end_time, reports, pending: [], enabled: tl ? tl.enabled : [], settled: !!c.settled, break_minutes: tl ? tl.break_minutes : null }
+    form = { mode: 'resubmit', from_id: id, shift, shift_id: c.shift_id, report_type: c.report_type, kind, before: r ? r.reported_at : null, work_date: c.work_date, title: c.project_name, changed }
     showForm(toInput(c.requested_at), c.reason)
   }
+  delegate('attDetail', (el) => attDetail(Number(el.dataset.id)))
+  delegate('attCancel', (el) => attCancel(Number(el.dataset.id), el))
+  delegate('attResubmit', (el) => attResubmit(Number(el.dataset.id)))
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', approved_exception: '承認（順序の矛盾を確認済み）', rejected: '却下', cancelled: '取り消し' }
   // ---------- 通知（打刻修正申請の受付・承認・却下）----------
   // ホーム・その他を開いたときに未読件数を表示する（staff.js の renderHome / renderMore から呼ぶ）
@@ -178,19 +335,26 @@
       <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
         ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
       <div class="space-y-2">${d.notifications.map(n => `
-        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" onclick="notifOpenStaff(${n.notification_id})">
+        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" data-action="notifOpenStaff" data-id="${n.notification_id}">
           <div class="flex items-center gap-2">${n.read_at ? '<span class="badge badge-gray">既読</span>' : '<span class="badge badge-blue">未読</span>'}<span class="text-[11px] text-gray-400 ml-auto">${esc(dayjs(n.created_at.replace(' ', 'T')).format('M/D HH:mm'))}</span></div>
           <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
   }
-  // お知らせの確認のお願い（再通知 #191）は、そのお知らせを開く。それ以外は打刻修正申請の一覧を開く
+  // 通知の行き先: お知らせの確認のお願い（#191）はそのお知らせ、相談への返信は相談・連絡（#320）、
+  // 打刻修正の通知はその申請（#306。リンクの #attendance/request/:id か、古い通知は related_id）
   window.notifOpenStaff = async function (id) {
     try { await axios.post(`/api/staff/notifications/${id}/read`) } catch (e) { }
     const n = NOTIF_LIST.find(x => x.notification_id === id)
-    if (n && /^#notices\/\d+$/.test(n.link || '')) { location.hash = n.link.slice(1); return }
+    const link = (n && n.link) || ''
+    if (/^#notices\/\d+$/.test(link)) { location.hash = link.slice(1); return }
+    if (n && (n.kind === 'consult_reply' || link === '#consult')) { location.hash = 'consult'; return }
+    const m = link.match(/#attendance\/request\/(\d+)$/)
+    const reqId = m ? Number(m[1]) : n && /^correction_/.test(n.kind || '') && n.related_id ? Number(n.related_id) : null
+    if (reqId) return attOpenRequest(reqId)
     S.tab = 'requests'; location.hash = 'attendance'
   }
+  delegate('notifOpenStaff', (el) => notifOpenStaff(Number(el.dataset.id)))
   window.notifReadAllStaff = async function () {
     try { await axios.post('/api/staff/notifications/read-all') } catch (e) { toast(errMsg(e)) }
     renderStaffNotifications()

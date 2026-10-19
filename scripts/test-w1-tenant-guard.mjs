@@ -147,6 +147,8 @@ await adminB.post('/api/admin/shifts', { staff_id: lk.data.staff_id, project_id:
 const shiftL = (await adminB.get(`/api/admin/shifts?from=${dL}&to=${dL}`)).data.shifts.find(s => s.memo === 'TG-L')
 const cr1 = await st1.post('/api/staff/corrections', { shift_id: shiftL?.shift_id, report_type: 'check_in', kind: 'add', requested_at: `${dL} 09:58`, reason: '連携先の入店を忘れた' })
 ok('（前提）st001 が B 社のシフトに打刻修正を申請', cr1.status === 200, cr1)
+// 申請者本人の受付はメールを送らない（#341）ので、却下して結果のメール（所属元のアドレスあて）を作る
+await adminB.post(`/api/admin/corrections/${cr1.data.correction_id}/reject`, { reason: '連携先の確認のため' })
 let dels = []
 for (let i = 0; i < 20; i++) {
   dels = ((await adminB.get('/api/admin/notification-emails?status=all')).data.deliveries || []).filter(d => d.correction_id === cr1.data.correction_id)

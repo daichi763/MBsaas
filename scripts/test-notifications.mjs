@@ -74,9 +74,10 @@ if (MAIL_DISABLED) {
   ok('申請: 管理者全員にアプリ内通知（承認依頼）', req && req.kind === 'correction_submitted' && nm.notifications.some(n => n.related_id === cid && n.kind === 'correction_submitted'), [req, nm.notifications[0]])
   ok('申請: 通知に案件名・スタッフ名・報告・対象日時・修正理由が入る', req && /佐藤/.test(req.title) && /入店報告/.test(req.title) && /案件: /.test(req.body) && /09:58/.test(req.body) && /入店報告を忘れた/.test(req.body), req)
   ok('申請: リンクは打刻修正承認の詳細', req && req.link === `/admin#corrections/${cid}`, req && req.link)
-  ok('申請: 申請者本人に受付の通知', ns.notifications.some(n => n.related_id === cid && n.kind === 'correction_received' && n.link === '/staff#attendance'), ns.notifications[0])
+  // 自分で出した申請の受付は既読の控え（#341）。リンクはその申請を開く（#306）
+  ok('申請: 申請者本人に受付の控え（既読）', ns.notifications.some(n => n.related_id === cid && n.kind === 'correction_received' && n.read_at && n.link === `/staff#attendance/request/${cid}`), ns.notifications[0])
   ok('申請: 関係のないスタッフには通知しない', n2.notifications.length === before.st2, n2.notifications.length)
-  ok('申請: 未読件数', na.unread > 0 && ns.unread > 0, [na.unread, ns.unread])
+  ok('申請: 未読件数（管理者）', na.unread > 0, [na.unread, ns.unread])
   const ds = await deliveriesOf(cid)
   ok('申請: メールは宛先ごとに記録される（メールアドレスのある人のみ）', ds.length >= 2 && ds.every(d => d.event === 'submitted'), ds.map(d => [d.recipient_name, d.status]))
   ok('メール送信に失敗しても申請は保存されている', ds.every(d => d.status === 'failed' && d.error === 'mail_not_configured') && (await admin.get(`/api/admin/corrections/${cid}`)).data.correction.status === 'pending', ds.map(d => [d.status, d.error]))
@@ -106,7 +107,7 @@ if (MAIL_DISABLED) {
   ok('確認（dry_run）では通知しない', dry.status === 200 && dryN.length === 0, dryN.length)
 
   // ---------- 既読・権限 ----------
-  const mine = (await notes(st1)).notifications[0]
+  const mine = (await notes(st1)).notifications.find(n => !n.read_at)
   const steal = await st2.post(`/api/staff/notifications/${mine.notification_id}/read`)
   ok('他人の通知は既読にできない（404）', steal.status === 404, steal)
   const before1 = (await notes(st1)).unread
