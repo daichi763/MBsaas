@@ -3175,6 +3175,16 @@ api.put('/admin/shifts/:id', async (c) => {
     const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: cur.project_id, slot: null, staffId: cur.staff_id, workDate: cur.work_date, start: cur.start_time, end: cur.end_time })
     if (chk.error) return c.json({ error: chk.error }, chk.status)
   }
+  // 入店以降の勤怠報告があるシフトを欠勤にするときは、確認（force）を求める（勤務した記録のあるシフトが黙って精算から外れないように。#221）
+  if (!staffChanged && b.status === 'absent' && cur.status !== 'absent' && !b.force) {
+    const started = await c.env.DB.prepare(`SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?
+      AND report_type IN ('check_in','work_start','break_start','break_end','work_end','check_out') ORDER BY reported_at LIMIT 1`).bind(cur.shift_id).first() as any
+    if (started) {
+      const label: Record<string, string> = { check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
+      const msg = `${label[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(5, 16).replace('-', '/')} にあります（勤務した記録があります）。欠勤にすると精算の対象から外れます`
+      return c.json({ error: `${msg}。確認のうえ欠勤にしてください`, warnings: [msg], need_force: true }, 409)
+    }
+  }
   // 担当者・時間が変わったら、スタッフの『入れます』などの返事を消す（別の人・別の時間には答えていない。#411 の残り）
   const timeChanged = (b.start_time != null && b.start_time !== cur.start_time) || (b.end_time != null && b.end_time !== cur.end_time)
   const db = c.env.DB, sid = cur.shift_id
