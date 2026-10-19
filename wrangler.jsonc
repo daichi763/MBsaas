@@ -80,9 +80,11 @@
 				"RETENTION_ENABLED": "true",
 				"DEMO_MODE": "false"
 			},
-			// Workers Logs。有効にするかは運用で決める（有効にすると送信失敗などのログをダッシュボードで確認できる）
+			// Workers Logs。API の 500（app.onError が参照番号付きで記録する）・cron・メール送信の失敗を、
+			// wrangler tail を開いていなくてもダッシュボードで後から確認できるようにする（#230）
 			"observability": {
-				"enabled": false
+				"enabled": true,
+				"head_sampling_rate": 1
 			}
 		}
 	}

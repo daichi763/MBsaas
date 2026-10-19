@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
 import { runRetentionCleanup, applyDueRetirements } from './services/retention'
 import { purgeOldApplications } from './recruit'
@@ -10,16 +11,80 @@ type Bindings = { DB: D1Database; PHOTOS: R2Bucket; RETENTION_ENABLED?: string; 
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// ============ 画面の応答に付けるセキュリティヘッダー（#202） ============
+// 外部のスクリプト・スタイルは jsDelivr（バージョン固定・SRI 付き）と、募集ページの Turnstile だけを許す。
+// 画面に onclick などのイベント属性とインラインの script が残っているため、script-src の 'unsafe-inline' は外せない
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://challenges.cloudflare.com",
+  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+  "font-src 'self' https://cdn.jsdelivr.net data:",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  'frame-src https://challenges.cloudflare.com',
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ')
+app.use('*', async (c, next) => {
+  await next()
+  try {
+    c.res.headers.set('X-Content-Type-Options', 'nosniff')
+    if ((c.res.headers.get('Content-Type') || '').startsWith('text/html')) c.res.headers.set('Content-Security-Policy', CSP)
+  } catch { /* 変更できない応答（外部から取得したものなど）はそのまま返す */ }
+})
+
+// ============ 予期しないエラーの記録（#230） ============
+// Workers Logs（wrangler.jsonc の observability）に、どの API で・誰の操作で起きたかを1行の JSON で残す。
+// 利用者には参照番号を返し、問い合わせのときにログと突き合わせられるようにする。
+// パスに入る報告用URL・募集ページ・再設定のトークンは記録しない
+const maskPath = (p: string) => p.replace(/[A-Za-z0-9_-]{20,}/g, '***')
+app.onError((err, c) => {
+  if (err instanceof HTTPException) return err.getResponse()
+  const ref = crypto.randomUUID().slice(0, 8)
+  const u = (c as any).get('user')
+  console.error(JSON.stringify({
+    level: 'error', event: 'unhandled_error', ref, method: c.req.method, path: maskPath(c.req.path),
+    company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
+    message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
+  }))
+  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
+  const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
+  if (c.req.path.startsWith('/api/')) return c.json({ error: msg, ref }, 500)
+  return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
+<body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
+})
+
 app.route('/api', api)
 
 // ============ 共通レイアウト ============
+// CDN のファイルはバージョンを固定し、integrity（SRI）を付ける。版を上げるときはハッシュも計算し直す
+//   計算: curl -s <URL> | openssl dgst -sha384 -binary | openssl base64 -A
+const CDN = 'https://cdn.jsdelivr.net/npm/'
+const SRI: Record<string, string> = {
+  '@fortawesome/fontawesome-free@6.4.0/css/all.min.css': 'sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0',
+  'axios@1.6.0/dist/axios.min.js': 'sha384-VekiXfVDZuqx75T/YaGfn7/p6+e+D0f/G8UoZ5GBOCMZ89kMW4wTo8PSn6GSzOEl',
+  'dayjs@1.11.10/dayjs.min.js': 'sha384-DpVxUeeBWjUvUV1czyIHJAjh+jYUZFu2lLakbdua5vbwOrBGi1UgaKCHjTC+x3Ky',
+  'chart.js@4.5.1/dist/chart.umd.min.js': 'sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ',
+  'flatpickr@4.6.13/dist/flatpickr.min.css': 'sha384-RkASv+6KfBMW9eknReJIJ6b3UnjKOKC5bOUaNgIY778NFbQ8MtWq9Lr/khUgqtTt',
+  'flatpickr@4.6.13/dist/plugins/monthSelect/style.css': 'sha384-iENKmnGeeAGTWfH/ajxq1dMSwLjASdk1v+taA112fikKow0tdV9cbUJcAiBEfHhG',
+  'flatpickr@4.6.13/dist/flatpickr.min.js': 'sha384-5JqMv4L/Xa0hfvtF06qboNdhvuYXUku9ZrhZh3bSk8VXF0A/RuSLHpLsSV9Zqhl6',
+  'flatpickr@4.6.13/dist/l10n/ja.js': 'sha384-mKor8U8jwukUkfxaFPCsxKF9S62PXq4gG7zcZ5yQ2x3KL1msprJZeFlKFEDeeb5V',
+  'flatpickr@4.6.13/dist/plugins/monthSelect/index.js': 'sha384-6p33UqcS/7ZxiJzlAi3gfOsrVSlBlFNr/6gfN12AC0ETbTmPgMGSfHuN+H0QcWoO',
+  'qrcode-generator@1.4.4/qrcode.min.js': 'sha384-lQXOAyZwHXE55JFyrOMB7nY2Wv+m5ZWNtJcHrd1rceRQXAYNLak8ukN5TjBTcIwz',
+  'jsqr@1.4.0/dist/jsQR.min.js': 'sha384-hStSInNIZ8ljtOVrmrgf7zdHMapaLBWoSnPTtF0nzsybp4+LuhDz6sHuEVpWIX8o',
+  'sortablejs@1.15.2/Sortable.min.js': 'sha384-BSxuMLxX+FCbTdYec3TbXlnMGEEM2QXTFdtDaveen71o+jswm2J36+xFqp8k4VHM',
+}
+const cdnJs = (p: string) => `<script src="${CDN}${p}" integrity="${SRI[p]}" crossorigin="anonymous"></script>`
+const cdnCss = (p: string) => `<link href="${CDN}${p}" rel="stylesheet" integrity="${SRI[p]}" crossorigin="anonymous">`
 const head = (title: string) => `
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} | Field OS</title>
-  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+  ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
+  ${cdnJs('axios@1.6.0/dist/axios.min.js')}
+  ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
   <script src="/static/common.js"></script>
   <link href="/static/style.css" rel="stylesheet">
 `
@@ -270,7 +335,7 @@ app.get('/staff', async (c) => {
   <div id="modal-root"></div>
   <script src="/static/staff.js"></script>
   <script src="/static/staff-attendance.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   <script src="/static/staff-profile.js"></script>
 </body>
 </html>`)
@@ -285,12 +350,12 @@ app.get('/admin', async (c) => {
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('管理画面')}
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/style.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ja.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/monthSelect/index.js"></script>
+  ${cdnJs('chart.js@4.5.1/dist/chart.umd.min.js')}
+  ${cdnCss('flatpickr@4.6.13/dist/flatpickr.min.css')}
+  ${cdnCss('flatpickr@4.6.13/dist/plugins/monthSelect/style.css')}
+  ${cdnJs('flatpickr@4.6.13/dist/flatpickr.min.js')}
+  ${cdnJs('flatpickr@4.6.13/dist/l10n/ja.js')}
+  ${cdnJs('flatpickr@4.6.13/dist/plugins/monthSelect/index.js')}
 </head>
 <body class="bg-gray-50 min-h-screen">
   <div class="flex min-h-screen">
@@ -347,12 +412,12 @@ app.get('/admin', async (c) => {
     </div>
   </div>
   <div id="modal-root"></div>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
+  ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  ${cdnJs('sortablejs@1.15.2/Sortable.min.js')}
   <script src="/static/shift-board.js"></script>
   <script src="/static/staff-lifecycle.js"></script>
   <script src="/static/settlement.js"></script>
@@ -360,7 +425,6 @@ app.get('/admin', async (c) => {
   <script src="/static/corrections.js"></script>
   <script src="/static/notifications.js"></script>
   <script src="/static/attendance-history.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>
 </body>
@@ -375,7 +439,7 @@ app.get('/hq', async (c) => {
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('SaaS本部')}
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  ${cdnJs('chart.js@4.5.1/dist/chart.umd.min.js')}
 </head>
 <body class="bg-slate-900 min-h-screen text-gray-100">
   <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-20">

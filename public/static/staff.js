@@ -33,9 +33,33 @@ window.closeModal = () => {
   pendingPhoto = { blob: null, previewUrl: null, type: null, shiftId: null }
 }
 
+// ---------- API 呼び出しの共通処理（#180 #230 #346） ----------
+// ログインは使うたびに延びる（サーバー側）。それでも切れたときは、理由を伝えてから元の画面に戻れるようにログインへ移る
+let SESSION_ENDED = false
+axios.interceptors.request.use(cfg => {
+  // 起動時に読んだ自分と違う人のセッションで報告が記録されないよう、サーバーで照合する
+  if (ME) cfg.headers['X-Expected-User-Id'] = String(ME.user_id)
+  return cfg
+})
 axios.interceptors.response.use(r => r, e => {
-  if (e.response && e.response.status === 401) location.href = '/login'
+  const r = e.response
+  if (r && !SESSION_ENDED && r.status === 409 && r.data && r.data.code === 'account_switched') {
+    SESSION_ENDED = true
+    alert('このブラウザで別のアカウントにログインされました。画面を読み直します。')
+    location.reload()
+  } else if (r && !SESSION_ENDED && r.status === 401) {
+    SESSION_ENDED = true
+    if (ME) alert('ログインの期限が切れました。ログインし直すと、この画面に戻ります。')
+    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
+  }
   return Promise.reject(e)
+})
+// 画面の処理で受け止められなかった API のエラー（500 など）を表示する。サーバーの文言には参照番号が入る
+window.addEventListener('unhandledrejection', ev => {
+  const e = ev.reason
+  if (!e || !e.isAxiosError || SESSION_ENDED) return
+  const st = e.response && e.response.status
+  showApiError(e, st ? '処理に失敗しました' : '通信できませんでした。電波の状況を確かめて、もう一度お試しください')
 })
 
 document.getElementById('logout-btn').addEventListener('click', async () => {

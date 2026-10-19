@@ -19,8 +19,10 @@
     } catch (e) { }
     if (window.refreshCorrectionsBadge) refreshCorrectionsBadge()
   }
-  setTimeout(() => window.refreshNotifBadge(), 1000)
-  setInterval(() => { if (!document.hidden) window.refreshNotifBadge() }, 60000)
+  // バッジの定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
+  const pollable = () => !window.sessionUsable || window.sessionUsable()
+  setTimeout(() => { if (pollable()) window.refreshNotifBadge() }, 1000)
+  setInterval(() => { if (!document.hidden && pollable()) window.refreshNotifBadge() }, 60000)
 
   // ---------- 通知（受信箱）----------
   window.renderNotificationsInbox = async function () {

@@ -302,7 +302,7 @@
     clearInterval(threadTimer)
     threadTimer = setInterval(() => {
       if (location.hash !== '#board/t' + threadId) { clearInterval(threadTimer); return }
-      refreshThreadLog(threadId)
+      if (!document.hidden && boardPollable()) refreshThreadLog(threadId, true)
     }, 30 * 1000)
   }
   let PROPS = {}, CUR_THREAD = null
@@ -378,10 +378,12 @@
           </div>
         </div>`).join('') || '<p class="text-xs text-gray-400 text-center py-6">まだメッセージはありません</p>'
   }
-  async function refreshThreadLog(threadId) {
+  // background: 定期の新着確認（セッションを延長せず、期限切れでも画面を移動しない。#526）
+  async function refreshThreadLog(threadId, background) {
     const log = document.getElementById('board-chat-log'); if (!log) return
     try {
-      const [r1, r2] = await Promise.all([axios.get('/api/admin/board/threads/' + threadId), axios.get(`/api/admin/board/threads/${threadId}/proposals`)])
+      const cfg = { background: !!background }
+      const [r1, r2] = await Promise.all([axios.get('/api/admin/board/threads/' + threadId, cfg), axios.get(`/api/admin/board/threads/${threadId}/proposals`, cfg)])
       const data = r1.data; PROPS = Object.fromEntries(r2.data.proposals.map(x => [x.proposal_id, x]))
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40
       log.innerHTML = messagesHtml(data.messages)
@@ -516,8 +518,10 @@
     const opt = document.querySelector('#mobile-nav option[value="board"]'); if (opt) opt.textContent = '案件掲示板' + (n ? `（${n}）` : '')
     document.querySelectorAll('.board-unread-total').forEach(b => { b.textContent = n; b.classList.toggle('hidden', !n) })
   }
-  setInterval(() => window.refreshBoardBadge(), 60 * 1000)
-  setTimeout(() => window.refreshBoardBadge(), 900)
+  // 定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
+  function boardPollable() { return !window.sessionUsable || window.sessionUsable() }
+  setInterval(() => { if (!document.hidden && boardPollable()) window.refreshBoardBadge() }, 60 * 1000)
+  setTimeout(() => { if (boardPollable()) window.refreshBoardBadge() }, 900)
 
   window.__boardStatus = async function (id, status) {
     const msg = { open: 'この案件を掲載しますか？掲載内容と自社名が全利用企業に公開されます。', closed: 'この掲載を締め切りますか？一覧に表示されなくなります。', filled: '充足（募集終了）にしますか？一覧に表示されなくなります。' }[status]
