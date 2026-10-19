@@ -2068,51 +2068,260 @@ window.deleteShift = async function (id) {
 }
 
 // ============ 日報一覧 ============
-async function renderReports(date) {
-  loading()
-  const q = date ? '?date=' + date : ''
-  const { data } = await axios.get('/api/admin/daily-reports' + q)
+// 絞り込みの条件はハッシュに持つ（例: #reports/from=2026-10-01&to=2026-10-31&project=1&staff=2&unchecked=1&flagged=1&page=2。
+// 1日だけなら date=2026-10-19 でもよい）。ほかの画面・通知からは、この形のリンクで条件付きの一覧を開ける
+const REPORT_PAGE_SIZE = 50
+const REPORT_ROWS = new Map()      // 表示中の日報（コメントの編集で使う）
+let REPORT_OPTIONS = null          // 絞り込みの選択肢（案件・日報のあるスタッフ）
+let REPORT_AS_OF = null            // 一覧を読んだ時刻（その後に出し直された日報を、見ないまま確認済みにしないため）
+// テンプレートの無い案件で受け付ける項目（src/lib/validate.ts の NO_TEMPLATE_FIELDS と同じ）
+const REPORT_NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: 'textarea' }]
+// インシデント・クレームの内容（スタッフの日報画面で入力する）。incident_ / complaint_ で始まるキー（_flag を除く）を、
+// values の項目でも日報の列でも、赤枠の中にまとめて出す
+const REPORT_INCIDENT_KEY = /^(incident|complaint)_(?!flag$)/
+const reportEmpty = v => v === undefined || v === null || v === ''
+const REPORT_TEXT_STYLE = { good_case: 'text-emerald-700 bg-emerald-50', store_share: 'text-blue-700 bg-blue-50' }
+
+function reportFilterFromHash() {
+  const m = (location.hash || '').match(/^#reports\/(.*)$/)
+  const p = new URLSearchParams(m ? m[1] : '')
+  const f = {}
+  const day = v => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '')
+  if (day(p.get('date'))) { f.from = f.to = day(p.get('date')) }
+  if (day(p.get('from'))) f.from = day(p.get('from'))
+  if (day(p.get('to'))) f.to = day(p.get('to'))
+  for (const k of ['project', 'staff', 'page']) { const v = p.get(k); if (v && /^\d+$/.test(v) && Number(v) > 0) f[k] = Number(v) }
+  if (p.get('unchecked') === '1') f.unchecked = 1
+  if (p.get('flagged') === '1') f.flagged = 1
+  return f
+}
+function reportsHash(f) {
+  const p = new URLSearchParams()
+  for (const k of ['from', 'to', 'project', 'staff', 'unchecked', 'flagged', 'page']) if (f[k]) p.set(k, f[k])
+  const s = p.toString()
+  return '#reports' + (s ? '/' + s : '')
+}
+function goReports(f) {
+  const h = reportsHash(f)
+  if (location.hash === h) renderReports(true); else location.hash = h
+}
+window.applyReportFilter = function () {
+  const v = id => (document.getElementById(id) || {}).value || ''
+  const f = { from: v('rp-from'), to: v('rp-to'), project: v('rp-project'), staff: v('rp-staff'),
+    unchecked: document.getElementById('rp-unchecked').checked ? 1 : 0, flagged: document.getElementById('rp-flagged').checked ? 1 : 0 }
+  if (f.from && f.to && f.from > f.to) { toast('期間の開始日が終了日より後になっています'); return }
+  goReports(f)
+}
+
+// テンプレートの項目の順に「ラベル: 値」を出す。数値はバッジ、テキストは本文。テンプレートにないキーは最後にまとめる
+function reportValuesHtml(r, fields) {
+  const vals = r.values || {}
+  const list = fields && fields.length ? fields : REPORT_NO_TEMPLATE_FIELDS
+  const used = new Set(Object.keys(vals).filter(k => REPORT_INCIDENT_KEY.test(k) && typeof vals[k] !== 'number'))
+  const nums = [], texts = []
+  const empty = reportEmpty
+  for (const f of list) {
+    const v = vals[f.key]
+    if (used.has(f.key) || empty(v)) { used.add(f.key); continue }
+    used.add(f.key)
+    if (f.type === 'number') { if (Number(v) > 0) nums.push([f.label, v]) } else texts.push([f.label, v, f.key])
+  }
+  const others = Object.entries(vals).filter(([k, v]) => !used.has(k) && !empty(v) && !(typeof v === 'number' && v === 0))
+  const textHtml = ([label, v, key]) => `<div class="text-xs rounded-lg px-2.5 py-1.5 mb-1 ${REPORT_TEXT_STYLE[key] || 'text-gray-700 bg-gray-50'}">
+      <span class="font-bold">${esc(label)}</span><p class="whitespace-pre-wrap break-words mt-0.5">${esc(v)}</p></div>`
+  return `
+    ${nums.length ? `<div class="flex flex-wrap gap-1.5 mb-2">${nums.map(([l, v]) => `<span class="badge badge-blue">${esc(l)} ${esc(v)}</span>`).join('')}</div>` : ''}
+    ${texts.map(textHtml).join('')}
+    ${others.length ? `<div class="mt-2"><p class="text-[11px] text-gray-400 mb-1">テンプレートにない項目</p>
+      ${others.map(([k, v]) => typeof v === 'number'
+        ? `<span class="badge badge-gray mr-1">${esc(LABELS[k] || k)} ${esc(v)}</span>`
+        : textHtml([LABELS[k] || k, typeof v === 'object' ? JSON.stringify(v) : v, k])).join('')}</div>` : ''}
+    ${!nums.length && !texts.length && !others.length ? '<p class="text-xs text-gray-400">入力された項目はありません</p>' : ''}`
+}
+
+function reportIncidentHtml(r, fields) {
+  const vals = r.values || {}
+  const label = k => ((fields || []).find(f => f.key === k) || {}).label || (k.startsWith('complaint') ? 'クレームの内容' : 'インシデントの内容')
+  const notes = []
+  for (const [k, v] of Object.entries(vals)) if (REPORT_INCIDENT_KEY.test(k) && typeof v !== 'number' && !reportEmpty(v)) notes.push([label(k), v])
+  for (const [k, v] of Object.entries(r)) if (REPORT_INCIDENT_KEY.test(k) && !(k in vals) && typeof v === 'string' && v) notes.push([label(k), v])
+  if (!r.incident_flag && !r.complaint_flag && !notes.length) return ''
+  const kinds = [r.incident_flag ? 'インシデント' : '', r.complaint_flag ? 'クレーム' : ''].filter(Boolean).join('・') || 'インシデント・クレーム'
+  return `<div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 mb-2">
+    <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(kinds)}の報告あり</p>
+    ${notes.length ? notes.map(([l, v]) => `<p class="mt-1"><span class="font-bold">${esc(l)}</span></p><p class="whitespace-pre-wrap break-words">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`).join('')
+      : '<p class="mt-1 text-red-500">内容の記入はありません。スタッフに確認してください。</p>'}
+  </div>`
+}
+
+function reportCardHtml(r, fields) {
+  const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
+  const revised = !r.manager_checked && r.revised_after_check_at
+  return `
+    <section class="card p-4 ${r.incident_flag || r.complaint_flag ? 'ring-1 ring-red-200' : ''}">
+      <div class="flex items-center gap-2 flex-wrap mb-2">
+        <span class="font-bold text-gray-800">${dayjs(r.work_date).format('M/D(dd)')}</span>
+        <a href="#staff/${Number(r.staff_id)}" class="text-blue-600 font-medium hover:underline">${esc(r.staff_name)}</a>
+        <a href="${esc(reportsHash({ ...reportFilterFromHash(), project: r.project_id, page: 0 }))}" class="text-xs text-gray-400 hover:underline" title="この案件の日報で絞り込む">${esc(r.project_name)}</a>
+        ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
+        ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
+        ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
+        ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に修正しました">確認後に修正あり</span>` : ''}
+        <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
+      </div>
+      ${reportIncidentHtml(r, fields)}
+      ${reportValuesHtml(r, fields)}
+      ${r.manager_comment ? `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(r.manager_comment)}</span>
+        ${r.manager_comment_by_name || r.manager_comment_at ? `<span class="block text-[11px] text-gray-400 mt-0.5">${esc(r.manager_comment_by_name || '')} ${esc(fmt(r.manager_comment_at))}</span>` : ''}</div>` : ''}
+      <div class="flex gap-2 mt-3 flex-wrap items-center">
+        ${r.manager_checked
+          ? `<button class="btn btn-outline text-xs" data-action="uncheckReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-rotate-left"></i>未確認に戻す</button>
+             ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
+          : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
+        <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
+      </div>
+    </section>`
+}
+
+// refresh: 確認・コメントの後の読み直し（読み込み中の表示を出さず、スクロール位置を保つ）
+async function renderReports(refresh) {
+  const f = reportFilterFromHash()
+  const page = f.page || 1
+  const scrollY = window.scrollY
+  if (!refresh) loading()
+  const q = new URLSearchParams({ offset: String((page - 1) * REPORT_PAGE_SIZE), limit: String(REPORT_PAGE_SIZE) })
+  if (f.from) q.set('from', f.from)
+  if (f.to) q.set('to', f.to)
+  if (f.project) q.set('project_id', f.project)
+  if (f.staff) q.set('staff_id', f.staff)
+  if (f.unchecked) q.set('unchecked', '1')
+  if (f.flagged) q.set('flagged', '1')
+  if (!refresh || !REPORT_OPTIONS) q.set('options', '1')
+  let data
+  try { data = (await axios.get('/api/admin/daily-reports?' + q.toString())).data } catch (e) {
+    $app.innerHTML = `<div class="card p-6 text-center text-sm text-gray-500">日報を読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button></div>`
+    showApiError(e, '日報を読み込めませんでした'); return
+  }
+  if (data.options) REPORT_OPTIONS = data.options
+  REPORT_AS_OF = data.as_of || null
+  const opts = REPORT_OPTIONS || { projects: [], staff: [] }
+  REPORT_ROWS.clear()
+  data.reports.forEach(r => REPORT_ROWS.set(r.daily_report_id, r))
+  const total = data.total, start = total ? data.offset + 1 : 0, end = data.offset + data.reports.length
+  const lastPage = Math.max(1, Math.ceil(total / REPORT_PAGE_SIZE))
+  const uncheckedShown = data.reports.filter(r => !r.manager_checked).length
+  const filtered = f.from || f.to || f.project || f.staff || f.unchecked || f.flagged
+  const pager = total > REPORT_PAGE_SIZE ? `
+    <div class="flex items-center justify-center gap-2 mt-4">
+      <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
+      <span class="text-xs text-gray-500">${page} / ${lastPage} ページ</span>
+      <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page + 1}" ${page >= lastPage ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
+    </div>` : ''
   $app.innerHTML = `
-    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+    <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">日報一覧</h2>
-      <input type="date" class="inp" style="width:auto" value="${esc(date || '')}" onchange="renderReports(this.value)">
+      <div class="flex gap-2 text-xs">
+        <button class="badge badge-yellow" data-action="reportQuick" data-kind="unchecked">未確認 ${Number(data.counts.unchecked)}件</button>
+        <button class="badge badge-red" data-action="reportQuick" data-kind="flagged">インシデント・クレーム ${Number(data.counts.flagged)}件</button>
+      </div>
+    </div>
+    <section class="card p-3 mb-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <label>開始日<input id="rp-from" type="date" class="inp" value="${esc(f.from || '')}" onchange="applyReportFilter()"></label>
+        <label>終了日<input id="rp-to" type="date" class="inp" value="${esc(f.to || '')}" onchange="applyReportFilter()"></label>
+        <label>案件<select id="rp-project" class="inp" onchange="applyReportFilter()"><option value="">すべて</option>
+          ${opts.projects.map(p => `<option value="${Number(p.project_id)}" ${f.project === p.project_id ? 'selected' : ''}>${esc(p.project_name)}${p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}</select></label>
+        <label>スタッフ<select id="rp-staff" class="inp" onchange="applyReportFilter()"><option value="">すべて</option>
+          ${opts.staff.map(s => `<option value="${Number(s.staff_id)}" ${f.staff === s.staff_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
+      </div>
+      <div class="flex items-center gap-4 flex-wrap mt-2 text-sm">
+        <label class="flex items-center gap-2"><input id="rp-unchecked" type="checkbox" class="w-4 h-4" ${f.unchecked ? 'checked' : ''} onchange="applyReportFilter()">未確認のみ</label>
+        <label class="flex items-center gap-2"><input id="rp-flagged" type="checkbox" class="w-4 h-4" ${f.flagged ? 'checked' : ''} onchange="applyReportFilter()">インシデント・クレームのみ</label>
+        ${filtered ? '<a href="#reports" class="text-xs text-blue-600 hover:underline">条件をクリア</a>' : ''}
+      </div>
+    </section>
+    <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+      <p class="text-xs text-gray-500">全 ${total} 件${total ? `中 ${start}〜${end} 件を表示` : ''}</p>
+      ${uncheckedShown ? `<button class="btn btn-primary text-xs" data-action="checkShownReports"><i class="fas fa-check-double"></i>表示中の未確認 ${uncheckedShown}件をまとめて確認済みにする</button>` : ''}
     </div>
     <div class="space-y-3">
-      ${data.reports.map(r => `
-        <section class="card p-4">
-          <div class="flex items-center gap-2 flex-wrap mb-2">
-            <span class="font-bold text-gray-800">${dayjs(r.work_date).format('M/D(dd)')}</span>
-            <a href="#staff/${r.staff_id}" class="text-blue-600 font-medium hover:underline">${esc(r.staff_name)}</a>
-            <span class="text-xs text-gray-400">${esc(r.project_name)}</span>
-            ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
-            ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
-            ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
-            <span class="text-xs text-gray-400 ml-auto">提出 ${dayjs(r.submitted_at).format('M/D HH:mm')}</span>
-          </div>
-          <div class="flex flex-wrap gap-1.5 mb-2">
-            ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-blue">${esc(LABELS[k] || k)} ${esc(v)}</span>`).join('')}
-          </div>
-          ${r.values.good_case ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5 mb-1"><i class="fas fa-star mr-1"></i>好事例: ${esc(r.values.good_case)}</p>` : ''}
-          ${r.values.store_share ? `<p class="text-xs text-blue-700 bg-blue-50 rounded-lg px-2.5 py-1.5 mb-1"><i class="fas fa-store mr-1"></i>店舗共有: ${esc(r.values.store_share)}</p>` : ''}
-          ${r.values.free ? `<p class="text-xs text-gray-600">${esc(r.values.free)}</p>` : ''}
-          ${r.manager_comment ? `<p class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots text-gray-400 mr-1"></i>${esc(r.manager_comment)}</p>` : ''}
-          <div class="flex gap-2 mt-3">
-            ${!r.manager_checked ? `<button class="btn btn-outline text-xs" onclick="checkReport(${r.daily_report_id}, ${date ? `'${date}'` : 'null'})"><i class="fas fa-check"></i>確認済みにする</button>` : ''}
-            <button class="btn btn-outline text-xs" onclick="commentReport(${r.daily_report_id}, ${date ? `'${date}'` : 'null'})"><i class="fas fa-comment"></i>コメント</button>
-          </div>
-        </section>`).join('') || '<p class="text-center text-gray-400 py-10">日報がありません</p>'}
-    </div>`
+      ${data.reports.map(r => reportCardHtml(r, data.templates[r.report_template_id])).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
+    </div>
+    ${pager}`
+  if (refresh) window.scrollTo(0, scrollY)
+  // ページ送りで最後のページより後を開いた（確認して件数が減ったときなど）ら、最後のページへ
+  if (!data.reports.length && page > 1 && total > 0) goReports({ ...f, page: lastPage })
 }
-window.checkReport = async function (id, date) {
-  await axios.put('/api/admin/daily-reports/' + id, { manager_checked: 1 })
-  toast('確認済みにしました'); renderReports(date)
+delegate('reportPage', (el) => { const f = reportFilterFromHash(); goReports({ ...f, page: Number(el.dataset.page) || 1 }); window.scrollTo(0, 0) })
+delegate('reportQuick', (el) => {
+  const f = reportFilterFromHash()
+  goReports({ ...f, unchecked: el.dataset.kind === 'unchecked' ? 1 : f.unchecked, flagged: el.dataset.kind === 'flagged' ? 1 : f.flagged, page: 0 })
+})
+
+async function updateReport(el, body, msg) {
+  await withSubmitLock(el, async () => {
+    try { await axios.put('/api/admin/daily-reports/' + Number(el.dataset.id), body) } catch (e) {
+      showApiError(e, '更新に失敗しました')
+      // 一覧を開いた後にスタッフが修正していた（409）ときは、今の内容で表示し直す
+      if (e.response && e.response.status === 409) renderReports(true)
+      return
+    }
+    toast(msg); renderReports(true)
+  })
 }
-window.commentReport = async function (id, date) {
-  const comment = prompt('スタッフへのコメントを入力してください')
-  if (!comment) return
-  await axios.put('/api/admin/daily-reports/' + id, { manager_comment: comment })
-  toast('コメントを送信しました'); renderReports(date)
-}
+delegate('checkReport', (el) => updateReport(el, { manager_checked: 1, as_of: REPORT_AS_OF }, '確認済みにしました'))
+delegate('uncheckReport', (el) => {
+  if (!confirm('この日報を未確認に戻しますか？')) return
+  updateReport(el, { manager_checked: 0 }, '未確認に戻しました')
+})
+delegate('checkShownReports', (el) => {
+  const ids = [...REPORT_ROWS.values()].filter(r => !r.manager_checked).map(r => r.daily_report_id)
+  if (!ids.length || !confirm(`表示中の未確認の日報 ${ids.length}件を、まとめて確認済みにしますか？`)) return
+  withSubmitLock(el, async () => {
+    try {
+      const { data } = await axios.post('/api/admin/daily-reports/check', { ids, as_of: REPORT_AS_OF })
+      toast(`${data.checked}件を確認済みにしました` + (data.checked < ids.length ? '（表示の後に修正・確認された日報は除きました）' : '')); renderReports(true)
+    } catch (e) { showApiError(e, '確認済みにできませんでした') }
+  })
+})
+
+// コメントは今の内容を入れて開き、空にして保存すると削除。開いた後に別の管理者が変えていたら保存しない（#360）
+delegate('commentReport', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">スタッフへのコメント</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
+    <p id="rc-meta" class="text-[11px] text-gray-400 mb-1">${r.manager_comment ? `前回: ${esc(r.manager_comment_by_name || '')} ${esc(r.manager_comment_at ? dayjs(r.manager_comment_at).format('M/D HH:mm') : '')}` : ''}</p>
+    <textarea id="rc-text" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="コメントを入力（空にして保存すると削除します）">${esc(r.manager_comment || '')}</textarea>
+    <div class="flex gap-2 justify-end mt-3 flex-wrap">
+      ${r.manager_comment ? `<button class="btn btn-danger text-sm mr-auto" data-action="saveReportComment" data-id="${Number(r.daily_report_id)}" data-mode="delete"><i class="fas fa-trash"></i>削除</button>` : ''}
+      <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary text-sm" data-action="saveReportComment" data-id="${Number(r.daily_report_id)}"><i class="fas fa-paper-plane"></i>保存</button>
+    </div>`)
+  setTimeout(() => { const t = document.getElementById('rc-text'); if (t) t.focus() }, 0)
+})
+delegate('saveReportComment', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const del = el.dataset.mode === 'delete'
+  if (del && !confirm('このコメントを削除しますか？')) return
+  const text = del ? '' : document.getElementById('rc-text').value.trim()
+  if (!del && text === (r.manager_comment || '')) { closeModal(); return }
+  withSubmitLock(el, async () => {
+    try {
+      await axios.put('/api/admin/daily-reports/' + r.daily_report_id, { manager_comment: text || null, expected_comment: r.manager_comment || null })
+    } catch (e) {
+      showApiError(e, 'コメントを保存できませんでした')
+      // 別の管理者が変えていた場合は、今のコメントを表示する（もう一度保存すると、その内容を置き換える）
+      if (e.response && e.response.status === 409 && e.response.data && 'current_comment' in e.response.data) {
+        r.manager_comment = e.response.data.current_comment
+        const meta = document.getElementById('rc-meta')
+        if (meta) meta.textContent = '今のコメント: ' + (r.manager_comment || '（なし）')
+      }
+      return
+    }
+    closeModal(); toast(del || !text ? 'コメントを削除しました' : 'コメントを保存しました'); renderReports(true)
+  })
+})
 
 // ============ 実績分析 ============
 async function renderAnalytics(month) {
