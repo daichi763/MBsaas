@@ -181,8 +181,8 @@
       <h3 class="font-bold text-lg mb-1">締め日の設定</h3>
       <p class="text-xs text-gray-500 mb-3">${esc(c.client_name)}${c.billing_rule ? `（請求条件: ${esc(c.billing_rule)}）` : ''}。精算の前月・今月・翌月のボタンで、この締め日の期間を選べるようになります</p>
       <label class="text-sm">締め日<select id="scd-day" class="inp text-sm"><option value="">未設定（暦月）</option>
-        ${Array.from({ length: 28 }, (_, i) => i + 1).map(n => `<option value="${n}" ${Number(c.billing_closing_day) === n ? 'selected' : ''}>${n}日</option>`).join('')}
-        <option value="31" ${Number(c.billing_closing_day) >= 29 ? 'selected' : ''}>月末</option></select></label>
+        ${Array.from({ length: 30 }, (_, i) => i + 1).map(n => `<option value="${n}" ${Number(c.billing_closing_day) === n ? 'selected' : ''}>${n}日</option>`).join('')}
+        <option value="31" ${Number(c.billing_closing_day) >= 31 ? 'selected' : ''}>月末</option></select></label>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" data-action="settleCloseModal">やめる</button>
         <button class="btn btn-primary flex-1" data-action="settleClosingDaySave" data-id="${esc(c.client_id)}">保存</button></div>`)
   })

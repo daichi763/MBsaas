@@ -161,6 +161,9 @@ let closingId = null
 
 // ---------- #170 解除 ----------
 {
+  const mgr = client(await login('sample', 'mgr01'))
+  const byMgr = await mgr.post(`/api/admin/settlement/closings/${closingId}/reopen`, { reason: '現場管理者による解除' })
+  ok('#170 会社管理者でない管理者は締めを解除できない', byMgr.status === 403, byMgr.status)
   must(await admin.post(`/api/admin/settlement/closings/${closingId}/reopen`, { reason: `${PFX} テストの後片付け` }), 'reopen')
   const logs = must(await admin.get('/api/admin/settlement/closings'), 'closings')
   const k = logs.closings.find(x => x.closing_id === closingId)
