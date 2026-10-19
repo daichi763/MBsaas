@@ -69,7 +69,8 @@ const HQ_FILTERS = {
 const hqMatchFilter = (c, f) => !f ? true : f === 'needs_attention' ? !!(c.usage_drop || c.no_recent_shift) : (f === 'trial' || f === 'inactive') ? c.active_status === f : !!c[f]
 // 増減率（前の30日と比べて）。前の期間が0なら出さない
 const hqRate = r => r == null ? '' : `<span class="block text-[11px] ${r <= -0.3 ? 'text-red-400' : r < 0 ? 'text-amber-300' : 'text-emerald-400'}">${r > 0 ? '+' : ''}${Math.round(r * 100)}%</span>`
-const hqDate = v => v ? dayjs(String(v).replace(' ', 'T')).format('YYYY/M/D') : '<span class="text-slate-500">なし</span>'
+// utc: シフトの登録日時（created_at）は UTC で保存されているので、日本時間に直して出す
+const hqDate = (v, utc) => v ? dayjs(String(v).replace(' ', 'T') + (utc ? 'Z' : '')).format('YYYY/M/D') : '<span class="text-slate-500">なし</span>'
 const hqLimit = c => c.user_limit == null ? '上限なし' : c.user_limit
 // 並べ替えの列（key: 並べ替えに使う値の名前）
 const HQ_COLUMNS = [
@@ -165,7 +166,7 @@ function drawCompanyTable() {
       c.no_recent_shift ? '<span class="badge badge-gray">シフト登録なし</span>' : '',
     ].filter(Boolean).join(' ')
     return `
-    <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer ${c.over_limit ? 'bg-red-900/20' : ''}" onclick="location.hash='companies/${Number(c.company_id)}'">
+    <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer ${c.over_limit ? 'bg-red-900/20' : ''}" data-action="hqOpenCompany" data-cid="${Number(c.company_id)}">
       <td class="px-4 py-3 font-medium">${esc(c.company_name)}</td>
       <td class="px-3 py-3 text-slate-400">${esc(c.company_code)}</td>
       <td class="px-3 py-3">${esc(PLAN_LABELS[c.plan] || c.plan)}</td>
@@ -175,7 +176,7 @@ function drawCompanyTable() {
       <td class="px-3 py-3 text-right">${Number(c.active_users) || 0}名</td>
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.reports_30d) || 0}件${hqRate(c.reports_change)}</td>
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.shifts_30d) || 0}件${hqRate(c.shifts_change)}</td>
-      <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_shift_created_at)}</td>
+      <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_shift_created_at, true)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_admin_login_at)}</td>
       <td class="px-3 py-3 text-right font-bold text-cyan-400">${yen(c.monthly_fee)}</td>
       <td class="px-3 py-3 text-center whitespace-nowrap">${'●'.repeat(c.maturity_level || 1)}${'○'.repeat(5 - (c.maturity_level || 1))}</td>
@@ -186,6 +187,7 @@ function drawCompanyTable() {
   const cnt = document.getElementById('hq-co-count')
   if (cnt) cnt.textContent = `${rows.length}社 / 全${HQ_COMPANIES.length}社`
 }
+delegate('hqOpenCompany', (el) => { location.hash = 'companies/' + Number(el.dataset.cid) })
 delegate('hqSort', (el) => {
   const key = el.dataset.key
   // 同じ列をもう一度押すと向きを変える。数値の列は多い順から始める
