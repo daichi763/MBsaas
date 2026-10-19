@@ -237,6 +237,11 @@
       // 申請の後に打刻が変わった: 今の記録をもとに日時を修正して承認できるようにする（#548）
       const d = e.response && e.response.data
       if (d && d.changed && d.current_at) corrAdjustForm(d.current_at)
+      // 直した日時で順序の矛盾が出た打刻漏れの追加: 例外として承認する確認欄を出す（申請の時点では矛盾がなく、欄がない場合）
+      if (d && d.need_exception && !document.getElementById('corr-exception')) {
+        const box = document.getElementById('corr-adjust')
+        if (box) box.insertAdjacentHTML('beforebegin', '<label class="flex items-start gap-2 text-xs text-amber-800"><input type="checkbox" id="corr-exception" class="mt-0.5 w-4 h-4">順序の矛盾を確認しました。例外として承認します</label>')
+      }
     } finally { busy = false }
   }
   window.corrApprove = function (btn) { return sendApprove(btn, {}) }
