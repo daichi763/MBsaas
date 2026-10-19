@@ -98,7 +98,9 @@ const D = await createShift(admin, 6, 1, yesterday, 'W3D-D', '09:00', '10:00') /
     const d = await dash()
     const s = d.shifts.find(x => x.shift_id === E)
     ok('#107 前日23時に始まった勤務中の夜勤が、本日の一覧に「前日から継続」で出る', s && s.carried_over === true && s.work_date === yesterday, d.shifts.map(x => [x.shift_id, x.work_date]))
-    ok('#107 継続分は本日の稼働人数に数えない', d.working_count === d.shifts.filter(x => !x.carried_over).length, [d.working_count, d.shifts.length])
+    // 稼働予定は人数（同じ人の複数のシフトは1名）とシフトの数を分けて返す（#449）
+    const own = d.shifts.filter(x => !x.carried_over)
+    ok('#107 継続分は本日の稼働人数に数えない', d.working_shift_count === own.length && d.working_count === new Set(own.map(x => x.staff_id)).size, [d.working_count, d.working_shift_count, d.shifts.length])
     ok('#107 継続中で入店していなければ入店の未報告にも出る', ids(d.unreported.check_in).includes(E), d.unreported.check_in)
   } else skip('#107 前日から継続', '1時間後が23時以降のため')
   // 日をまたがない前日のシフトは本日の一覧に出さない
