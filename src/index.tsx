@@ -168,6 +168,19 @@ app.get('/login', async (c) => {
         <p class="text-xs text-gray-400 text-center">ログインできない場合やメールが届かない場合は、所属の会社の担当者にお問い合わせください。</p>
       </form>
 
+      <!-- 二段階認証（#544）: パスワードの後で、認証アプリの6桁（または予備コード）を確かめる -->
+      <form id="mfa-form" class="space-y-4 hidden" novalidate>
+        <p class="text-sm text-gray-600"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>認証アプリ（Google Authenticator など）に表示されている6桁の確認コードを入力してください。</p>
+        <div>
+          <label for="mfa-code" class="block text-sm font-medium text-gray-600 mb-1">確認コード</label>
+          <input id="mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20" class="${LOGIN_INPUT} tracking-widest" placeholder="123456">
+          <p class="text-[11px] text-gray-400 mt-1">スマホを失くしたなどで認証アプリを使えないときは、登録のときに控えた予備コード（xxxxx-xxxxx）を入力できます。</p>
+        </div>
+        <p id="mfa-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+        <button type="submit" id="mfa-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認してログイン</button>
+        <p class="text-center"><button type="button" id="mfa-back" class="text-sm text-gray-500 hover:underline">最初からやり直す</button></p>
+      </form>
+
       <form id="forgot-form" class="space-y-4 hidden">
         <p class="text-sm text-gray-500">登録済みのメールアドレスを入力してください。パスワード再設定用のリンクと、ログインに使う会社コード・IDをお送りします。</p>
         <p class="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">メールアドレスを登録していない方は、所属の会社の担当者にパスワードの再発行を依頼してください（仮パスワードが発行されます）。</p>
@@ -248,16 +261,65 @@ app.get('/login', async (c) => {
       if (!norm(uc.value) || !pw.value) return showErr('スタッフ番号（ID）とパスワードを入力してください')
       if (navigator.onLine === false) return showErr(OFFLINE_MSG)
       btn.disabled = true; btn.textContent = 'ログイン中...'
+      const body = { company_code: cc.value, user_code: uc.value, password: pw.value }
       try {
-        const res = await axios.post('/api/auth/login', { company_code: cc.value, user_code: uc.value, password: pw.value }, { timeout: TIMEOUT_MS })
-        try {
-          if (remember.checked) localStorage.setItem(STORE_KEY, JSON.stringify({ c: res.data.company_code || '', u: res.data.user_code || uc.value }))
-          else localStorage.removeItem(STORE_KEY)
-        } catch (e3) { /* 保存できない端末（プライベートブラウズなど）でもログインは続ける */ }
-        location.href = nextUrl(res.data.redirect)
+        let res
+        try { res = await axios.post('/api/auth/login', body, { timeout: TIMEOUT_MS }) }
+        catch (e4) {
+          // このブラウザで別の人がログイン中なら、切り替えてよいかを確かめる（#346）
+          const d = e4.response && e4.response.data
+          if (!(e4.response && e4.response.status === 409 && d && d.code === 'already_logged_in')) throw e4
+          if (!confirm(d.error)) { btn.disabled = false; btn.textContent = 'ログイン'; return }
+          res = await axios.post('/api/auth/login', Object.assign({ confirm_switch: true }, body), { timeout: TIMEOUT_MS })
+        }
+        if (res.data.mfa_required) { showMfa(res.data.mfa_token); btn.disabled = false; btn.textContent = 'ログイン'; return }
+        finishLogin(res.data)
       } catch (e2) {
         showErr(loginErrorMessage(e2))
         btn.disabled = false; btn.textContent = 'ログイン'
+      }
+    })
+    function finishLogin(data) {
+      try {
+        if (remember.checked) localStorage.setItem(STORE_KEY, JSON.stringify({ c: data.company_code || '', u: data.user_code || uc.value }))
+        else localStorage.removeItem(STORE_KEY)
+      } catch (e3) { /* 保存できない端末（プライベートブラウズなど）でもログインは続ける */ }
+      location.href = nextUrl(data.redirect)
+    }
+    // 二段階認証（#544）。一時トークンはこの画面の変数だけに持つ（5分で期限切れ）
+    let mfaToken = null
+    const mfaForm = document.getElementById('mfa-form'), mfaCode = document.getElementById('mfa-code'), mfaErr = document.getElementById('mfa-error')
+    function showMfa(token) {
+      mfaToken = token
+      document.getElementById('login-form').classList.add('hidden')
+      document.getElementById('demo-account-aside')?.classList.add('hidden')
+      mfaForm.classList.remove('hidden'); mfaErr.classList.add('hidden'); mfaCode.value = ''; mfaCode.focus()
+    }
+    function backToLogin(msg) {
+      mfaToken = null; pw.value = ''
+      mfaForm.classList.add('hidden')
+      document.getElementById('login-form').classList.remove('hidden')
+      document.getElementById('demo-account-aside')?.classList.remove('hidden')
+      const err = document.getElementById('login-error')
+      if (msg) { err.textContent = msg; err.classList.remove('hidden') } else err.classList.add('hidden')
+      pw.focus()
+    }
+    document.getElementById('mfa-back').addEventListener('click', () => backToLogin(''))
+    mfaForm.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const btn = document.getElementById('mfa-btn')
+      mfaErr.classList.add('hidden')
+      const code = norm(mfaCode.value)
+      if (!code) { mfaErr.textContent = '確認コードを入力してください'; mfaErr.classList.remove('hidden'); return }
+      btn.disabled = true; btn.textContent = '確認中...'
+      try {
+        const res = await axios.post('/api/auth/login/mfa', { mfa_token: mfaToken, code }, { timeout: TIMEOUT_MS })
+        finishLogin(res.data)
+      } catch (e2) {
+        const d = e2.response && e2.response.data
+        if (d && d.code === 'mfa_expired') backToLogin(d.error)
+        else { mfaErr.textContent = loginErrorMessage(e2); mfaErr.classList.remove('hidden'); mfaCode.select() }
+        btn.disabled = false; btn.textContent = '確認してログイン'
       }
     })
     document.getElementById('forgot-link').addEventListener('click', () => {
@@ -595,6 +657,7 @@ app.get('/admin', async (c) => {
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
         <a href="#account" class="side-link mt-1" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
+        <a href="#security" class="side-link" data-tab="security"><i class="fas fa-shield-halved w-5"></i>セキュリティ</a>
         <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-50 mt-1"><i class="fas fa-right-from-bracket mr-1"></i>ログアウト</button>
       </div>
     </aside>
@@ -633,6 +696,7 @@ app.get('/admin', async (c) => {
   <script src="/static/attendance-history.js"></script>
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>
+  <script src="/static/security.js"></script>
 </body>
 </html>`)
 })
@@ -658,6 +722,7 @@ app.get('/hq', async (c) => {
           <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
           <a href="#mail" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="mail">メール送信</a>
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
+          <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
       </div>
@@ -666,6 +731,8 @@ app.get('/hq', async (c) => {
   <main id="app" class="max-w-7xl mx-auto p-4 md:p-6"></main>
   <div id="modal-root"></div>
   <script src="/static/hq.js"></script>
+  ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
+  <script src="/static/security.js"></script>
 </body>
 </html>`)
 })

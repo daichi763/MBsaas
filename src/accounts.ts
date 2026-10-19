@@ -87,7 +87,8 @@ const fail = (status: Result['status'], error: string): Result => ({ status, bod
 
 /** 管理者アカウントの追加。password を省くと仮パスワードを作って返す（一度だけ表示する） */
 export async function createAdminAccount(db: D1Database, companyId: number, b: any): Promise<Result> {
-  const userCode = String(b.user_code ?? '').trim()
+  // ID はログインの照合と同じく NFKC で半角にそろえて保存する（#387。全角で入力しても半角で入力してもログインできるように）
+  const userCode = String(b.user_code ?? '').normalize('NFKC').trim()
   const name = String(b.name ?? '').trim()
   const role = ADMIN_ACCOUNT_ROLES.includes(b.role) ? b.role : null
   if (!/^\S{1,40}$/.test(userCode)) return fail(400, 'ID を空白なしの40文字以内で入力してください')
@@ -100,7 +101,8 @@ export async function createAdminAccount(db: D1Database, companyId: number, b: a
   if (generated) password = genTempPassword()
   const pwErr = validatePassword(password)
   if (pwErr) return fail(400, pwErr)
-  const dup = await db.prepare('SELECT 1 FROM users WHERE company_id = ? AND user_code = ?').bind(companyId, userCode).first()
+  // 大文字・小文字だけが違う ID は、ログインで区別できない（どちらか決められず一致なしになる）ため同じ ID として扱う
+  const dup = await db.prepare('SELECT 1 FROM users WHERE company_id = ? AND LOWER(user_code) = LOWER(?)').bind(companyId, userCode).first()
   if (dup) return fail(409, 'この ID はすでに使われています（スタッフ番号と同じ ID も使えません）')
   try {
     const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, status, must_change_password) VALUES (?, ?, ?, ?, ?, ?, 'active', 1)`)

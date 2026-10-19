@@ -29,6 +29,10 @@ axios.interceptors.response.use(r => r, e => {
     SESSION_ENDED = true
     alert('このブラウザで別のアカウントにログインされました。画面を読み直します。')
     location.reload()
+  } else if (r && r.status === 403 && r.data && r.data.code === 'mfa_setup_required') {
+    // 開いている間に二段階認証が必須になった（#544）: 登録の画面へ移す
+    if (HQ_ME) HQ_ME.mfa_setup_required = true
+    if (location.hash !== '#security') location.hash = 'security'
   } else if (r && !SESSION_ENDED && r.status === 401) {
     SESSION_ENDED = true
     location.href = '/login'
@@ -1122,12 +1126,14 @@ async function refreshMailAlert() {
 }
 
 // ============ ルーティング ============
-const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport }
-routes.mail = renderHqMail
+const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport, mail: renderHqMail,
+  security: () => (window.renderHqSecurity ? renderHqSecurity() : renderCompanies()) }
 
 function route() {
   const hash = (location.hash || '#companies').slice(1)
   const [tab, id] = hash.split('/')
+  // 二段階認証が必須で未登録の間は、登録の画面だけを使える（#544。API でも同じ判定で止める）
+  if (HQ_ME && HQ_ME.mfa_setup_required && tab !== 'security') { history.replaceState(null, '', '#security'); return route() }
   document.querySelectorAll('.hq-nav').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   if (tab === 'companies' && id) return renderCompanyDetail(id)
   ;(routes[tab] || renderCompanies)()
@@ -1138,7 +1144,7 @@ window.addEventListener('hashchange', route)
   try { HQ_ME = (await axios.get('/api/auth/me')).data } catch (e) { return }
   route()
   // データ保持のタブは自分で警告を描き直すので、それ以外のタブで開いたときに取る
-  if (!/^#retention/.test(location.hash)) refreshCronAlert()
-  // メールの届かない会社の警告（#438）。メール送信のタブは自分で描き直す
-  if (!/^#mail/.test(location.hash)) refreshMailAlert()
+  if (!/^#retention/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshCronAlert()
+  // メールの届かない会社の警告（#438）。メール送信のタブは自分で描き直す。二段階認証の登録待ちの間は取らない
+  if (!/^#mail/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshMailAlert()
 })()

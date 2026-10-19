@@ -185,13 +185,24 @@ export async function clearLoginFailures(db: D1Database, keys: { account: string
   try { await db.prepare(`DELETE FROM login_attempts WHERE scope = 'account' AND key_hash = ?`).bind(keys.account).run() }
   catch (e) { console.log(`login_attempts clear failed: ${e}`) }
 }
-/** 定期処理: 期限切れのセッションと、古いログイン試行の記録を消す */
-export async function purgeExpiredAuthRows(db: D1Database): Promise<{ sessions: number; attempts: number }> {
+/** ログインの履歴（login_events）の保存期間 */
+export const LOGIN_EVENTS_KEEP_DAYS = 365
+/** 定期処理: 期限切れのセッションと、古いログイン試行・ログインの履歴を消す */
+export async function purgeExpiredAuthRows(db: D1Database): Promise<{ sessions: number; attempts: number; events: number }> {
   const s = await db.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(new Date().toISOString()).run()
   let attempts = 0
   try {
     const a = await db.prepare('DELETE FROM login_attempts WHERE attempted_at < ?').bind(new Date(Date.now() - 24 * 3600 * 1000).toISOString()).run()
     attempts = a.meta.changes || 0
   } catch (e) { console.log(`login_attempts purge failed: ${e}`) }
-  return { sessions: s.meta.changes || 0, attempts }
+  // ログインの履歴は1年で消し、二段階認証の確認待ちは期限が過ぎたら消す（w4-auth-features #552 #544）
+  let events = 0
+  try {
+    const r = await db.batch([
+      db.prepare('DELETE FROM login_events WHERE created_at < ?').bind(new Date(Date.now() - LOGIN_EVENTS_KEEP_DAYS * 24 * 3600 * 1000).toISOString()),
+      db.prepare('DELETE FROM mfa_challenges WHERE expires_at < ?').bind(new Date().toISOString()),
+    ])
+    events = r[0].meta.changes || 0
+  } catch (e) { console.log(`login_events purge failed: ${e}`) }
+  return { sessions: s.meta.changes || 0, attempts, events }
 }
