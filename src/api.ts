@@ -608,9 +608,13 @@ async function homeLoadNotices(db: D1Database, u: any) {
     ORDER BY n.published_at DESC LIMIT 5`).bind(u.user_id, u.company_id, u.staff_id, u.staff_id).all()).results
 }
 
-// 相談: 管理者から返信のある未完了の相談の件数
+// 相談: 管理者からの返信をまだ読んでいない相談の件数（本人の全所属企業の分。#320）。
+// 返信のたびに user_notifications（kind=consult_reply）を作り、相談・連絡の画面を開くと既読にする
 async function homeLoadConsultations(db: D1Database, u: any): Promise<number> {
-  const r = await db.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND status != 'done' AND manager_reply IS NOT NULL`).bind(u.staff_id).first()
+  const uids = (await consultPersonRows(db, u)).map(r => r.user_id)
+  if (!uids.length) return 0
+  const r = await db.prepare(`SELECT COUNT(DISTINCT related_id) AS n FROM user_notifications
+    WHERE kind = '${CONSULT_REPLY_KIND}' AND read_at IS NULL AND user_id IN (${uids.map(() => '?').join(',')})`).bind(...uids).first()
   return (r?.n as number) || 0
 }
 
@@ -1013,22 +1017,101 @@ api.get('/staff/performance', async (c) => {
 })
 
 // 相談・連絡
+// 本人の全所属企業の分を、会社名と対象のシフト（日付・案件）付きで返す（#222 #195）。
+// 管理者の返信は user_notifications（kind=consult_reply）で知らせ、未読の返信がある相談を先頭に出す（#320）
+const CONSULT_BODY_MAX = 2000
+const CONSULT_REPLY_KIND = 'consult_reply'
+// 対象に選べるシフト: 前日〜7日後の自分のシフト（欠勤は除く）
+const CONSULT_TARGET_PAST_DAYS = 1
+const CONSULT_TARGET_FUTURE_DAYS = 7
+// 同じ内容を続けて送ったときに二重登録とみなす秒数（#194）
+const CONSULT_DUP_SECONDS = 120
+
+async function consultPersonRows(db: D1Database, u: any) {
+  const rows = await personStaffRows(db, u)
+  return rows.length ? rows : (u.staff_id ? [{ staff_id: u.staff_id, company_id: u.company_id, user_id: u.user_id, company_name: u.company_name, settings_json: u.settings_json }] : [])
+}
+
 api.get('/staff/consultations', async (c) => {
-  const u = c.get('user')
-  const rows = await c.env.DB.prepare('SELECT * FROM consultations WHERE staff_id = ? ORDER BY created_at DESC LIMIT 30').bind(u.staff_id).all()
-  return c.json({ consultations: rows.results })
+  const u = c.get('user'); const db = c.env.DB
+  const rows = await consultPersonRows(db, u)
+  if (!rows.length) return c.json({ consultations: [], targets: [], companies: [] })
+  const sids = rows.map(r => r.staff_id); const uids = rows.map(r => r.user_id)
+  const list = (await db.prepare(`
+    SELECT co.consultation_id, co.company_id, co.category, co.body, co.urgency, co.target_project_id, co.target_date, co.manager_reply, co.status, co.created_at,
+      cm.company_name, p.project_name AS target_project_name,
+      EXISTS (SELECT 1 FROM user_notifications n WHERE n.kind = '${CONSULT_REPLY_KIND}' AND n.related_id = co.consultation_id AND n.read_at IS NULL
+        AND n.user_id IN (${uids.map(() => '?').join(',')})) AS reply_unread
+    FROM consultations co JOIN companies cm ON cm.company_id = co.company_id
+    LEFT JOIN projects p ON p.project_id = co.target_project_id AND p.company_id = co.company_id
+    WHERE co.staff_id IN (${sids.map(() => '?').join(',')})
+    ORDER BY reply_unread DESC, co.created_at DESC, co.consultation_id DESC LIMIT 30`).bind(...uids, ...sids).all()).results
+  const today = todayJST()
+  const targets = (await db.prepare(`
+    SELECT s.shift_id, s.company_id, s.work_date, s.start_time, s.end_time, s.status, p.project_name, cm.company_name
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN companies cm ON cm.company_id = s.company_id
+    WHERE s.staff_id IN (${sids.map(() => '?').join(',')}) AND s.work_date BETWEEN ? AND ? AND s.status != 'absent'
+    ORDER BY s.work_date, s.start_time LIMIT 50`).bind(...sids, addDays(today, -CONSULT_TARGET_PAST_DAYS), addDays(today, CONSULT_TARGET_FUTURE_DAYS)).all()).results
+  return c.json({ consultations: list, targets, today, current_company_id: u.company_id,
+    companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id })) })
 })
 
+// 管理者の返信を読んだ（相談・連絡の画面を開いた）。本人の全所属企業の分を既読にする（#320）
+api.post('/staff/consultations/read-replies', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const uids = (await consultPersonRows(db, u)).map(r => r.user_id)
+  if (!uids.length) return c.json({ ok: true, updated: 0 })
+  const r = await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE kind = '${CONSULT_REPLY_KIND}' AND read_at IS NULL AND user_id IN (${uids.map(() => '?').join(',')})`)
+    .bind(nowJST(), ...uids).run()
+  return c.json({ ok: true, updated: r.meta.changes || 0 })
+})
+
+// 送り先の会社: 対象のシフトを選んだらそのシフトの会社、なければ選んだ会社（本人の所属に限る）、なければ今の会社（#222）
 api.post('/staff/consultations', async (c) => {
-  const u = c.get('user')
-  const { category, body, urgency, target_project_id, target_date } = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const { category, urgency } = b
+  const body = typeof b.body === 'string' ? b.body.trim() : ''
   if (!category || !body) return c.json({ error: 'カテゴリと内容は必須です' }, 400)
   if (!oneOf(category, CONSULT_CATEGORIES)) return c.json({ error: 'カテゴリが正しくありません' }, 400)
   if (urgency && !oneOf(urgency, CONSULT_URGENCIES)) return c.json({ error: '緊急度が正しくありません' }, 400)
-  await c.env.DB.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at)
+  if (body.length > CONSULT_BODY_MAX) return c.json({ error: `内容は${CONSULT_BODY_MAX}文字以内で入力してください` }, 400)
+  const rows = await consultPersonRows(db, u)
+  let owner: { staff_id: number; company_id: number } | undefined
+  let targetProjectId: number | null = null, targetDate: string | null = null
+  if (b.shift_id != null && b.shift_id !== '') {
+    // 対象のシフト（本人のシフトに限る）。会社・案件・日付はシフトから決める
+    const resolved = toInt(b.shift_id, 1) == null ? null : await resolvePersonShift(c, toInt(b.shift_id, 1))
+    if (!resolved) return c.json({ error: '対象のシフトが見つかりません' }, 404)
+    owner = { staff_id: resolved.staff.staff_id, company_id: resolved.staff.company_id }
+    targetProjectId = resolved.shift.project_id; targetDate = resolved.shift.work_date
+  } else {
+    const cid = b.company_id != null && b.company_id !== '' ? toInt(b.company_id, 1) : u.company_id
+    owner = rows.find(r => r.company_id === cid)
+    if (!owner) return c.json({ error: '送り先の会社が見つかりません' }, 404)
+    if (b.target_date != null && b.target_date !== '') {
+      if (!isISODate(b.target_date)) return c.json({ error: '対象の日付が正しくありません' }, 400)
+      targetDate = b.target_date
+    }
+    if (b.target_project_id != null && b.target_project_id !== '') {
+      // 案件だけを指定する場合も、本人のシフトがある案件に限る
+      const pid = toInt(b.target_project_id, 1)
+      const hit = pid == null ? null : await db.prepare(`SELECT 1 FROM shifts WHERE staff_id = ? AND company_id = ? AND project_id = ?${targetDate ? ' AND work_date = ?' : ''} LIMIT 1`)
+        .bind(owner.staff_id, owner.company_id, pid, ...(targetDate ? [targetDate] : [])).first()
+      if (!hit) return c.json({ error: '対象の案件が見つかりません' }, 404)
+      targetProjectId = pid
+    }
+  }
+  // 二度押し・再送で同じ相談が続けて登録されないようにする（#194）
+  const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dup = await db.prepare(`SELECT consultation_id FROM consultations WHERE staff_id = ? AND category = ? AND body = ? AND created_at >= ? LIMIT 1`)
+    .bind(owner.staff_id, category, body, since).first()
+  if (dup) return c.json({ error: '同じ内容の相談をすでに送信しています。相談履歴を確認してください', duplicate: true }, 409)
+  const r = await db.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, u.staff_id, category, body, urgency || 'normal', target_project_id ?? null, target_date ?? null, nowJST()).run()
-  return c.json({ ok: true })
+    .bind(owner.company_id, owner.staff_id, category, body, urgency || 'normal', targetProjectId, targetDate, nowJST()).run()
+  const co = rows.find(x => x.company_id === owner!.company_id)
+  return c.json({ ok: true, consultation_id: r.meta.last_row_id, company_name: co ? co.company_name : null })
 })
 
 // =========================================================
@@ -2740,19 +2823,57 @@ api.get('/admin/notice-reports/:fiscalYear/csv', async (c) => {
 })
 
 // 相談対応
+// ?status= active（未対応＋対応中。既定）/ open / in_progress / done / all で絞り、?page= でページ送りする（#90）。
+// 未対応・対応中は件数の上限なしで順に見られる。対象のシフト（日付・案件）があれば、そのシフトの ID も返す（#195）
+const CONSULT_STATUSES = ['open', 'in_progress', 'done'] as const
+const CONSULT_PAGE_SIZE = 50
 api.get('/admin/consultations', async (c) => {
-  const u = c.get('user')
-  const rows = await c.env.DB.prepare(`
-    SELECT co.*, us.name AS staff_name FROM consultations co
+  const u = c.get('user'); const db = c.env.DB
+  const q = c.req.query('status') || 'active'
+  const status = q === 'all' || q === 'active' || oneOf(q, CONSULT_STATUSES) ? q : 'active'
+  const page = toInt(c.req.query('page'), 1, 100000) ?? 1
+  const cond = status === 'active' ? ` AND co.status != 'done'` : status === 'all' ? '' : ' AND co.status = ?'
+  const binds: any[] = status === 'active' || status === 'all' ? [] : [status]
+  const total = ((await db.prepare(`SELECT COUNT(*) AS n FROM consultations co WHERE co.company_id = ?${cond}`).bind(u.company_id, ...binds).first()) as any)?.n || 0
+  const rows = await db.prepare(`
+    SELECT co.*, us.name AS staff_name, p.project_name AS target_project_name,
+      (SELECT sh.shift_id FROM shifts sh WHERE sh.company_id = co.company_id AND sh.staff_id = co.staff_id AND sh.project_id = co.target_project_id
+         AND sh.work_date = co.target_date ORDER BY sh.start_time LIMIT 1) AS target_shift_id
+    FROM consultations co
     JOIN staff_profiles sp ON co.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE co.company_id = ? ORDER BY co.created_at DESC LIMIT 50`).bind(u.company_id).all()
-  return c.json({ consultations: rows.results })
+    LEFT JOIN projects p ON p.project_id = co.target_project_id AND p.company_id = co.company_id
+    WHERE co.company_id = ?${cond} ORDER BY co.created_at DESC, co.consultation_id DESC LIMIT ? OFFSET ?`)
+    .bind(u.company_id, ...binds, CONSULT_PAGE_SIZE, (page - 1) * CONSULT_PAGE_SIZE).all()
+  const counts = (await db.prepare(`SELECT status, COUNT(*) AS n FROM consultations WHERE company_id = ? GROUP BY status`).bind(u.company_id).all()).results as any[]
+  return c.json({ consultations: rows.results, status, page, per_page: CONSULT_PAGE_SIZE, total,
+    counts: Object.fromEntries(CONSULT_STATUSES.map(s => [s, (counts.find(r => r.status === s)?.n as number) || 0])) })
 })
 
+// 返信・状態の変更。返信したら、スタッフ本人にアプリ内通知（consult_reply）で知らせ、ホームのバナーに出す（#320）
 api.put('/admin/consultations/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
-  await c.env.DB.prepare('UPDATE consultations SET manager_reply = COALESCE(?, manager_reply), status = COALESCE(?, status) WHERE consultation_id = ? AND company_id = ?')
-    .bind(b.manager_reply ?? null, b.status ?? null, c.req.param('id'), u.company_id).run()
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const id = toInt(c.req.param('id'), 1)
+  if (b.status != null && !oneOf(b.status, CONSULT_STATUSES)) return c.json({ error: '状態が正しくありません' }, 400)
+  let reply: string | null = null
+  if (b.manager_reply != null) {
+    if (typeof b.manager_reply !== 'string' || !b.manager_reply.trim()) return c.json({ error: '返信を入力してください' }, 400)
+    reply = b.manager_reply.trim()
+    if (reply!.length > CONSULT_BODY_MAX) return c.json({ error: `返信は${CONSULT_BODY_MAX}文字以内で入力してください` }, 400)
+  }
+  const co = id == null ? null : await db.prepare(`SELECT co.consultation_id, co.company_id, co.manager_reply, co.category, sp.user_id
+    FROM consultations co JOIN staff_profiles sp ON sp.staff_id = co.staff_id WHERE co.consultation_id = ? AND co.company_id = ?`).bind(id, u.company_id).first() as any
+  if (!co) return c.json({ error: '相談が見つかりません' }, 404)
+  const stmts = [db.prepare('UPDATE consultations SET manager_reply = COALESCE(?, manager_reply), status = COALESCE(?, status) WHERE consultation_id = ? AND company_id = ?')
+    .bind(reply, b.status ?? null, co.consultation_id, u.company_id)]
+  if (reply != null && reply !== co.manager_reply && co.user_id) {
+    // 同じ相談の前の返信の通知は既読にして、未読は最新の1件だけにする
+    const now = nowJST()
+    stmts.push(db.prepare(`UPDATE user_notifications SET read_at = ? WHERE kind = '${CONSULT_REPLY_KIND}' AND related_id = ? AND read_at IS NULL`).bind(now, co.consultation_id))
+    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(co.company_id, co.user_id, CONSULT_REPLY_KIND, '相談・連絡に管理者から返信があります', reply.length > 100 ? reply.slice(0, 100) + '…' : reply, '#consult', co.consultation_id, now))
+  }
+  await db.batch(stmts)
   return c.json({ ok: true })
 })
 
