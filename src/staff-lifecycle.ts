@@ -743,7 +743,9 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
     photo_stale: !!r.has_photo && isPhotoStale(r.photo_taken_at, r.original_reported_at || r.reported_at), device: r.entry_method === 'proxy' ? '' : deviceSummary(device_info) }))
   // 報告用URLで報告した端末の数（端末ID。古い行は user-agent で数える）。2台以上なら画面で知らせる
   const linkRows = rawReports.filter(r => r.entry_method === 'link')
-  const linkDevices = [...new Set(linkRows.map(r => r.device_id || 'ua:' + (r.device_info || '')))]
+  // 端末IDのない行（端末IDを記録する前の報告）は、同じ user-agent の端末IDがあればその端末とみなす（同じ端末を2台と数えない）
+  const idByUa = new Map(linkRows.filter(r => r.device_id).map(r => [r.device_info || '', r.device_id]))
+  const linkDevices = [...new Set(linkRows.map(r => r.device_id || idByUa.get(r.device_info || '') || 'ua:' + (r.device_info || '')))]
   const link_devices = { count: linkDevices.length, summaries: [...new Set(linkRows.map(r => deviceSummary(r.device_info)).filter(Boolean))] }
   const dr = await findDailyReport(db, s)
   const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method } : null

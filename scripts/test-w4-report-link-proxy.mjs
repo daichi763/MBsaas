@@ -117,6 +117,10 @@ const T1 = await issue(S1)
   ok('（前提）別の端末から勤務開始', r5.status === 200, r5)
   const rs2 = await admin.get(`/api/admin/shifts/${S1}/report-status`)
   ok('#532 1つのURLで2台の端末から報告されたら link_devices.count=2 と要約を返す', rs2.data.link_devices.count === 2 && rs2.data.link_devices.summaries.includes('Android・Chrome'), rs2.data.link_devices)
+  // 端末IDのない報告（端末IDを記録する前の画面から）は、同じ user-agent の端末とみなし、3台目と数えない
+  const r6 = await pub.post(T1, { report_type: 'break_start' }, { 'User-Agent': IPHONE_UA })
+  const rs3 = await admin.get(`/api/admin/shifts/${S1}/report-status`)
+  ok('#532 端末IDのない報告は、同じ user-agent の端末IDがあれば同じ端末として数える', r6.status === 200 && rs3.data.link_devices.count === 2, { r6, ld: rs3.data.link_devices })
   await admin.post('/api/admin/settings/photo-skip', { enabled: false })
 }
 
