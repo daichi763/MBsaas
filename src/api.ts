@@ -51,7 +51,7 @@ type Bindings = {
   RETENTION_ENABLED?: string
   TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string
 }
-type Variables = { user: any }
+type Variables = { user: any; hqAudited?: boolean }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -400,7 +400,8 @@ async function issueSession(c: any, user: any, company: any, method: 'password' 
   const meta = requestMeta(c)
   await db.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(await hashToken(token), user.user_id, user.company_id, expires.toISOString(), meta.ip, meta.ua).run()
-  await db.prepare('UPDATE users SET last_login_at = ? WHERE user_id = ?').bind(nowJST(), user.user_id).run()
+  const loginAt = nowJST()
+  await db.prepare('UPDATE users SET last_login_at = ?, last_seen_at = ? WHERE user_id = ?').bind(loginAt, loginAt, user.user_id).run()
   setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
   await recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id, company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result: 'success', method })
   // 会社コード・ID は登録どおりの表記で返す（ログイン画面が次回の入力欄に入れておく。#308）
@@ -704,9 +705,28 @@ api.use('/*', async (c, next) => {
     return c.json({ error: '二段階認証の登録が必要です。「セキュリティ」の画面で認証アプリを登録してください', code: 'mfa_setup_required' }, 403)
   }
   c.header('X-Session-Expires', await extendSession(c, token!, u))
+  await touchLastSeen(c, u)
   c.set('user', u)
   return next()
 })
+
+// 最後にアプリを使った日時（#491）: パスワードでのログインのほか、セッションでの操作でも残す（週次アクティブの集計に使う）。
+// 企業切替の後はセッションの利用者が切替先のユーザー行になるので、切替先の行が更新される。
+// 書き込みを減らすため、前回から LAST_SEEN_STEP_MINUTES 以上たったときだけ更新し、定期の取得（X-Background: 1）では更新しない
+const LAST_SEEN_STEP_MINUTES = 60
+async function touchLastSeen(c: any, u: any) {
+  if (c.req.header('X-Background') === '1') return
+  const now = nowJST()
+  const threshold = new Date(Date.now() + 9 * 3600 * 1000 - LAST_SEEN_STEP_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  if (u.last_seen_at && String(u.last_seen_at) > threshold) return
+  try {
+    await c.env.DB.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ?').bind(now, u.user_id).run()
+    u.last_seen_at = now
+  } catch (e) {
+    // 記録できなくても操作は止めない
+    console.error('last_seen_at の更新に失敗しました', e)
+  }
+}
 
 // セッションの延長（#180）: 利用者の操作による API 呼び出しのたびに、期限を「今から一定時間」に延ばす。
 // ・バッジ更新などの定期の取得（X-Background: 1）では延ばさない（画面を開いたままでも、操作がなければ期限が来る）
@@ -759,6 +779,28 @@ api.use('/hq/*', async (c, next) => {
   if (c.get('user')?.role !== 'system_admin') return c.json({ error: 'forbidden' }, 403)
   return next()
 })
+// 本部の操作の履歴（#542）: 本部の書き込み（GET 以外）が成功したら、だれが・いつ・どのパスを操作したかを残す。
+// 変更前後の値を残すエンドポイントは hqAuditStmt で記録して hqAudited を立てるので、ここでは重ねて記録しない。
+// 送られた内容（パスワードなど）は残さない
+api.use('/hq/*', async (c, next) => {
+  await next()
+  if (c.req.method === 'GET' || c.get('hqAudited') || c.res.status >= 400) return
+  try {
+    const m = c.req.path.match(/^\/api\/hq\/companies\/(\d+)/)
+    await c.env.DB.prepare('INSERT INTO hq_audit_logs (actor_user_id, action, company_id, created_at) VALUES (?, ?, ?, ?)')
+      .bind(c.get('user')?.user_id ?? null, `${c.req.method} ${c.req.path.replace(/^\/api/, '')}`.slice(0, 200), m ? Number(m[1]) : null, nowJST()).run()
+  } catch (e) {
+    console.error('本部の操作の履歴を記録できませんでした', e)
+  }
+})
+// 変更前後の値を残す本部の操作の記録（#542）。更新と同じ batch に入れて使う
+function hqAuditStmt(c: any, e: { action: string; company_id?: number | null; target?: string | null; before?: unknown; after?: unknown; reason?: string | null }) {
+  c.set('hqAudited', true)
+  const j = (v: unknown) => v === undefined || v === null ? null : JSON.stringify(v)
+  return (c.env.DB as D1Database).prepare(`INSERT INTO hq_audit_logs (actor_user_id, action, company_id, target, before_json, after_json, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(c.get('user')?.user_id ?? null, e.action, e.company_id ?? null, e.target ?? null, j(e.before), j(e.after), e.reason ?? null, nowJST())
+}
 // スタッフ本人向け API（/api/staff/*）はスタッフのロールだけ（管理者・本部のセッションでは使えない）
 api.use('/staff/*', async (c, next) => {
   if (c.get('user')?.role !== 'staff') return c.json({ error: 'forbidden' }, 403)
@@ -1061,14 +1103,15 @@ api.post('/hq/security/reset-mfa', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const companyCode = normalizeLoginCode(b.company_code), userCode = normalizeLoginCode(b.user_code)
   if (!userCode) return c.json({ error: 'ID を入力してください' }, 400)
-  const t = await db.prepare(`SELECT us.user_id, us.name, us.role, us.totp_enabled_at, co.company_name FROM users us JOIN companies co ON co.company_id = us.company_id
+  const t = await db.prepare(`SELECT us.user_id, us.user_code, us.name, us.role, us.totp_enabled_at, co.company_id, co.company_name FROM users us JOIN companies co ON co.company_id = us.company_id
     WHERE ${companyCode ? 'LOWER(co.company_code) = LOWER(?)' : `co.active_status = ? AND us.role = 'system_admin'`} AND LOWER(us.user_code) = LOWER(?)
       AND us.role IN ('system_admin','company_admin','sales_manager','field_manager','office_staff') LIMIT 2`)
     .bind(companyCode || HQ_COMPANY_STATUS, userCode).all()
   if (t.results.length !== 1) return c.json({ error: '該当するアカウントが見つかりません（管理画面・本部のアカウントだけが対象です）' }, 404)
   const target = t.results[0] as any
   if (target.user_id === u.user_id) return c.json({ error: '自分の二段階認証は「自分の二段階認証」から解除してください' }, 400)
-  await db.batch([clearMfaStmt(db, target.user_id), db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.user_id)])
+  await db.batch([clearMfaStmt(db, target.user_id), db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.user_id),
+    hqAuditStmt(c, { action: 'security.reset_mfa', company_id: target.role === 'system_admin' ? null : target.company_id, target: `${target.user_code} ${target.name}`, before: { mfa_enabled: !!target.totp_enabled_at } })])
   return c.json({ ok: true, name: target.name, company_name: target.company_name, was_enabled: !!target.totp_enabled_at })
 })
 // 企業の接続元の制限を外す（企業側で設定を誤って管理者が誰も入れなくなったときの窓口）
@@ -1078,7 +1121,8 @@ api.post('/hq/security/clear-ip', async (c) => {
   if (!code) return c.json({ error: '会社コードを入力してください' }, 400)
   const co = await c.env.DB.prepare('SELECT company_id, company_name FROM companies WHERE LOWER(company_code) = LOWER(?) LIMIT 1').bind(code).first() as any
   if (!co) return c.json({ error: '会社が見つかりません' }, 404)
-  await saveSecuritySettingsStmt(c.env.DB, co.company_id, { ip_allowlist: [] }).run()
+  await c.env.DB.batch([saveSecuritySettingsStmt(c.env.DB, co.company_id, { ip_allowlist: [] }),
+    hqAuditStmt(c, { action: 'security.clear_ip', company_id: co.company_id, target: co.company_name })])
   return c.json({ ok: true, company_name: co.company_name })
 })
 api.delete('/hq/security/users/:id/sessions', async (c) => {
@@ -2565,6 +2609,10 @@ api.get('/admin/staff', async (c) => {
            -- 恒久IDを採番した企業以外の行（他社連携・他社連携から切り替えた行）は自社専用のコードのみ（#63 頭超え防止）
            CASE WHEN sp.affiliation_type = 'linked_external' OR pe.created_company_id != sp.company_id THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
            us.user_id, us.user_code, us.name, us.status, us.role AS user_role, sp.link_ended_at,
+           -- 最後にアプリを使った日時（ログイン・操作。#286 #491）。他社から連携したスタッフは所属元のログインで使うので、連携元の行も見る
+           us.last_login_at,
+           NULLIF(MAX(COALESCE(us.last_login_at, ''), COALESCE(us.last_seen_at, ''),
+             CASE WHEN sp.affiliation_type = 'linked_external' THEN MAX(COALESCE(srcu.last_login_at, ''), COALESCE(srcu.last_seen_at, '')) ELSE '' END), '') AS app_last_used_at,
            CASE WHEN ${elig.sql} THEN 1 ELSE 0 END AS assignable,
            (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')) AS month_days,
            (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date,
@@ -2576,6 +2624,7 @@ api.get('/admin/staff', async (c) => {
            (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date >= ? AND s3.work_date < ?) AS projects
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN users srcu ON srcu.user_id = src.user_id
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
     WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, today, mFrom, mTo, mFrom, mTo, u.company_id).all()
@@ -4882,15 +4931,69 @@ function changeRate(cur: number, prev: number): number | null {
   return prev > 0 ? Math.round(((cur - prev) / prev) * 100) / 100 : null
 }
 
+// ---------- プランの料金（#295） ----------
+// 料金 = 基本料金（included_users 人まで）+ 超えた1人ごとの料金。プランごとの値は hq_plan_prices（本部の画面で変更する）
+type PlanPrice = { plan: string; base_fee: number; included_users: number; per_user_fee: number; updated_at?: string | null }
+const DEFAULT_PLAN_PRICE = { base_fee: 990, included_users: 3, per_user_fee: 300 }
+const PLAN_FEE_MAX = 10_000_000
+async function loadPlanPrices(db: D1Database): Promise<Map<string, PlanPrice>> {
+  const rows = (await db.prepare('SELECT plan, base_fee, included_users, per_user_fee, updated_at FROM hq_plan_prices').all()).results as any[]
+  const m = new Map<string, PlanPrice>(rows.map(r => [r.plan, r]))
+  for (const p of HQ_PLANS) if (!m.has(p)) m.set(p, { plan: p, ...DEFAULT_PLAN_PRICE })
+  return m
+}
+function planFee(prices: Map<string, PlanPrice>, plan: unknown, users: number): number {
+  const p = prices.get(String(plan || 'basic')) || prices.get('basic') || { plan: 'basic', ...DEFAULT_PLAN_PRICE }
+  return p.base_fee + Math.max(0, (users || 0) - p.included_users) * p.per_user_fee
+}
+// 月の請求記録の状態（#295）: 請求済み（入金待ち）・入金済み・滞納・請求しない
+const BILLING_MONTH_STATUSES = ['issued', 'paid', 'overdue', 'waived'] as const
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/
+function prevMonth(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
+}
+// 期日が近いとみなす日数（トライアルの終了日・次回レビュー日。#296）
+const HQ_DUE_SOON_DAYS = 7
+// 企業の連絡先・期日の項目（#296 #558）。空欄は NULL にする
+const HQ_DATE_FIELDS = ['trial_ends_at', 'contract_start_at', 'next_review_at'] as const
+const HQ_DATE_LABEL: Record<string, string> = { trial_ends_at: 'トライアルの終了日', contract_start_at: '契約開始日', next_review_at: '次回レビュー日' }
+type Picked = { value: unknown } | { error: string; field: string }
+function pickCompanyContact(b: any, key: string): Picked | null {
+  if (b[key] === undefined) return null
+  const raw = b[key] === null ? '' : b[key]
+  if (typeof raw !== 'string') return { error: '入力の形式が正しくありません', field: key }
+  const v = raw.normalize('NFKC').trim()
+  if (key === 'contact_email') {
+    const e = cleanEmail(v)
+    return e === undefined ? { error: '連絡先のメールアドレスの形式が正しくありません', field: key } : { value: e }
+  }
+  if (key === 'contact_phone') {
+    if (v && !/^[0-9+\-() ]{1,30}$/.test(v)) return { error: '連絡先の電話番号は数字とハイフンで30文字以内にしてください', field: key }
+    return { value: v || null }
+  }
+  const max = key === 'billing_address' ? 200 : 60
+  if (v.length > max) return { error: `${key === 'billing_address' ? '請求先の住所' : '担当者名'}は${max}文字以内にしてください`, field: key }
+  return { value: v || null }
+}
+function pickCompanyDate(b: any, key: string): Picked | null {
+  if (b[key] === undefined) return null
+  if (b[key] === null || b[key] === '') return { value: null }
+  return isISODate(b[key]) ? { value: b[key] } : { error: `${HQ_DATE_LABEL[key]}の日付が正しくありません`, field: key }
+}
+const HQ_CONTACT_FIELDS = ['contact_name', 'contact_phone', 'contact_email', 'billing_address'] as const
+
 api.get('/hq/companies', async (c) => {
   // 本部専用の企業行（internal）は出さない。ユーザー数・週次アクティブに本部ユーザー（system_admin）は数えない（#372）
   // 直近30日と、その前の30日の日報数・シフト数を返して、利用が落ちた企業を見つけられるようにする（#517）
+  const db = c.env.DB
   const today = todayJST()
-  const d7 = addDays(today, -7), d30 = addDays(today, -29), d60 = addDays(today, -59), d90 = addDays(today, -90)
-  const rows = await c.env.DB.prepare(`
+  // 週次アクティブ: 今日を含む直近7日（30日も同じ）。日付は日本時間でそろえる（last_login_at・last_seen_at・reported_at は日本時間）
+  const d7 = addDays(today, -6), d30 = addDays(today, -29), d60 = addDays(today, -59), d90 = addDays(today, -90)
+  const [rows, act, bill] = await db.batch([
+    db.prepare(`
     SELECT co.*,
-      COALESCE(u.user_count, 0) AS user_count, COALESCE(u.linked_count, 0) AS linked_count,
-      COALESCE(u.active_users, 0) AS active_users, COALESCE(u.active_users_30d, 0) AS active_users_30d, u.last_admin_login_at,
+      COALESCE(u.user_count, 0) AS user_count, COALESCE(u.linked_count, 0) AS linked_count, u.last_admin_login_at,
       COALESCE(dr.reports_30d, 0) AS reports_30d, COALESCE(dr.reports_prev_30d, 0) AS reports_prev_30d,
       COALESCE(sh.shifts_30d, 0) AS shifts_30d, COALESCE(sh.shifts_prev_30d, 0) AS shifts_prev_30d,
       (SELECT MAX(s.created_at) FROM shifts s WHERE s.company_id = co.company_id AND s.work_date >= ?) AS last_shift_created_at
@@ -4898,46 +5001,88 @@ api.get('/hq/companies', async (c) => {
     LEFT JOIN (SELECT u.company_id,
         SUM(CASE WHEN ${HQ_BILLABLE_SQL} THEN 1 ELSE 0 END) AS user_count,
         SUM(CASE WHEN ${HQ_BILLABLE_SQL} AND u.role = 'staff' AND u.user_code LIKE 'LK-%' THEN 1 ELSE 0 END) AS linked_count,
-        SUM(CASE WHEN u.role NOT IN ('roster_only', 'system_admin') AND u.last_login_at >= ? THEN 1 ELSE 0 END) AS active_users,
-        SUM(CASE WHEN u.role NOT IN ('roster_only', 'system_admin') AND u.last_login_at >= ? THEN 1 ELSE 0 END) AS active_users_30d,
-        MAX(CASE WHEN u.role IN ('company_admin', 'sales_manager', 'field_manager', 'office_staff') THEN u.last_login_at END) AS last_admin_login_at
+        NULLIF(MAX(CASE WHEN u.status = 'active' AND u.role IN ('company_admin', 'sales_manager', 'field_manager', 'office_staff')
+          THEN MAX(COALESCE(u.last_login_at, ''), COALESCE(u.last_seen_at, '')) ELSE '' END), '') AS last_admin_login_at
       FROM users u GROUP BY u.company_id) u ON u.company_id = co.company_id
     LEFT JOIN (SELECT company_id, SUM(CASE WHEN work_date >= ? THEN 1 ELSE 0 END) AS reports_30d, SUM(CASE WHEN work_date < ? THEN 1 ELSE 0 END) AS reports_prev_30d
       FROM daily_reports WHERE work_date >= ? AND work_date <= ? GROUP BY company_id) dr ON dr.company_id = co.company_id
     LEFT JOIN (SELECT company_id, SUM(CASE WHEN work_date >= ? THEN 1 ELSE 0 END) AS shifts_30d, SUM(CASE WHEN work_date < ? THEN 1 ELSE 0 END) AS shifts_prev_30d
       FROM shifts WHERE work_date >= ? AND work_date <= ? GROUP BY company_id) sh ON sh.company_id = co.company_id
     WHERE COALESCE(co.active_status, 'active') != ? ORDER BY co.company_id`)
-    .bind(d90, d7, d30, d30, d30, d60, today, d30, d30, d60, today, HQ_COMPANY_STATUS).all()
+      .bind(d90, d30, d30, d60, today, d30, d30, d60, today, HQ_COMPANY_STATUS),
+    // 週次アクティブ（#491）: 課金対象の利用者のうち、ログイン・アプリの操作（last_seen_at）か、アプリからの勤怠の報告が期間内にあった人。
+    // 他社から連携したスタッフは所属元のログインのまま稼働先へ報告するので、報告先の企業のスタッフ行で数える
+    db.prepare(`SELECT company_id, SUM(CASE WHEN last_at >= ? THEN 1 ELSE 0 END) AS active_users, COUNT(*) AS active_users_30d
+      FROM (SELECT company_id, user_id, MAX(t) AS last_at FROM (
+          SELECT u.company_id, u.user_id, MAX(COALESCE(u.last_login_at, ''), COALESCE(u.last_seen_at, '')) AS t FROM users u
+            WHERE ${HQ_BILLABLE_SQL} AND MAX(COALESCE(u.last_login_at, ''), COALESCE(u.last_seen_at, '')) >= ?
+          UNION ALL
+          SELECT u.company_id, u.user_id, ar.reported_at AS t FROM attendance_reports ar
+            JOIN staff_profiles sp ON sp.staff_id = ar.staff_id JOIN users u ON u.user_id = sp.user_id
+            WHERE ar.reported_at >= ? AND COALESCE(ar.entry_method, 'app') = 'app' AND ${HQ_BILLABLE_SQL}
+        ) GROUP BY company_id, user_id)
+      GROUP BY company_id`).bind(d7, d30, d30),
+    // 請求記録（#295）: 入金待ち・滞納の月数と、最後に記録した月
+    db.prepare(`SELECT company_id, SUM(CASE WHEN status = 'overdue' THEN 1 ELSE 0 END) AS overdue_months,
+        SUM(CASE WHEN status IN ('issued', 'overdue') THEN 1 ELSE 0 END) AS unpaid_months, MAX(month) AS last_billed_month,
+        SUM(CASE WHEN month = ? THEN 1 ELSE 0 END) AS prev_month_recorded
+      FROM company_billing_months GROUP BY company_id`).bind(prevMonth(today.slice(0, 7))),
+  ])
+  const actBy = new Map((act.results as any[]).map(r => [r.company_id, r]))
+  const billBy = new Map((bill.results as any[]).map(r => [r.company_id, r]))
+  const prices = await loadPlanPrices(db)
   const noShiftSince = addDays(today, -HQ_NO_SHIFT_DAYS)
+  const soon = addDays(today, HQ_DUE_SOON_DAYS)
   const dropped = (cur: number, prev: number) => prev >= HQ_DROP_MIN_BASE && cur <= prev * (1 - HQ_DROP_RATE)
-  // 料金計算: 基本990円(3ユーザー) + 追加1ユーザー300円
-  const companies = (rows.results as any[]).map(co => ({
-    ...co,
-    monthly_fee: 990 + Math.max(0, (co.user_count || 0) - 3) * 300,
-    // 契約ユーザー数（user_limit。NULL は上限なし）を超えているか（#321）
-    over_limit: co.user_limit != null && co.user_count > co.user_limit,
-    reports_change: changeRate(co.reports_30d, co.reports_prev_30d),
-    shifts_change: changeRate(co.shifts_30d, co.shifts_prev_30d),
-    usage_drop: dropped(co.reports_30d, co.reports_prev_30d) || dropped(co.shifts_30d, co.shifts_prev_30d),
-    // シフトの登録日（created_at）は UTC。日単位の目安なので日付だけで比べる
-    no_recent_shift: !co.last_shift_created_at || String(co.last_shift_created_at).slice(0, 10) < noShiftSince,
-  }))
-  return c.json({ companies, rules: { drop_rate: HQ_DROP_RATE, drop_min_base: HQ_DROP_MIN_BASE, no_shift_days: HQ_NO_SHIFT_DAYS } })
+  const companies = (rows.results as any[]).map(co => {
+    const a = actBy.get(co.company_id) || {}
+    const bl = billBy.get(co.company_id) || {}
+    // 次の期日（#296）: トライアル中ならトライアルの終了日と、次回レビュー日のうち早いほう
+    const dues = [co.active_status === 'trial' ? co.trial_ends_at : null, co.next_review_at].filter(Boolean).sort()
+    const nextDue = dues[0] || null
+    return {
+      ...co,
+      active_users: a.active_users || 0, active_users_30d: a.active_users_30d || 0,
+      monthly_fee: planFee(prices, co.plan, co.user_count || 0),
+      // 契約ユーザー数（user_limit。NULL は上限なし）を超えているか（#321）
+      over_limit: co.user_limit != null && co.user_count > co.user_limit,
+      reports_change: changeRate(co.reports_30d, co.reports_prev_30d),
+      shifts_change: changeRate(co.shifts_30d, co.shifts_prev_30d),
+      usage_drop: dropped(co.reports_30d, co.reports_prev_30d) || dropped(co.shifts_30d, co.shifts_prev_30d),
+      // シフトの登録日（created_at）は UTC。日単位の目安なので日付だけで比べる
+      no_recent_shift: !co.last_shift_created_at || String(co.last_shift_created_at).slice(0, 10) < noShiftSince,
+      next_due: nextDue,
+      due_state: !nextDue ? null : nextDue < today ? 'past' : nextDue <= soon ? 'soon' : null,
+      trial_no_end: co.active_status === 'trial' && !co.trial_ends_at,
+      overdue_months: bl.overdue_months || 0, unpaid_months: bl.unpaid_months || 0, last_billed_month: bl.last_billed_month || null,
+      // 未入金が2か月以上か、滞納の月がある
+      payment_alert: (bl.overdue_months || 0) > 0 || (bl.unpaid_months || 0) >= 2,
+    }
+  })
+  const pm = prevMonth(today.slice(0, 7))
+  const billing = {
+    prev_month: pm,
+    prev_month_recorded: (bill.results as any[]).reduce((n, r) => n + (r.prev_month_recorded ? 1 : 0), 0),
+    billable_companies: companies.filter(c => c.active_status === 'active').length,
+  }
+  return c.json({ companies, billing, plan_prices: [...prices.values()],
+    rules: { drop_rate: HQ_DROP_RATE, drop_min_base: HQ_DROP_MIN_BASE, no_shift_days: HQ_NO_SHIFT_DAYS, due_soon_days: HQ_DUE_SOON_DAYS } })
 })
 
 api.get('/hq/companies/:id', async (c) => {
   const cid = c.req.param('id')
-  const company = await c.env.DB.prepare('SELECT * FROM companies WHERE company_id = ? AND COALESCE(active_status, \'active\') != ?').bind(cid, HQ_COMPANY_STATUS).first() as any
+  const db = c.env.DB
+  const company = await db.prepare('SELECT * FROM companies WHERE company_id = ? AND COALESCE(active_status, \'active\') != ?').bind(cid, HQ_COMPANY_STATUS).first() as any
   if (!company) return c.json({ error: 'not found' }, 404)
   // 本部ユーザーは一覧に出さない。メールアドレスは管理者アカウントの分だけ返す（スタッフの連絡先は本部に出さない）
   // billable: 課金対象（企業一覧の利用数・月額と同じ条件）。在籍状況（休職など）はスタッフ行の値（#366）
-  const users = await c.env.DB.prepare(`SELECT u.user_id, u.user_code, u.name, u.role, u.status, u.last_login_at, u.must_change_password,
+  const users = await db.prepare(`SELECT u.user_id, u.user_code, u.name, u.role, u.status, u.last_login_at, u.last_seen_at, u.must_change_password,
       CASE WHEN u.role IN ('company_admin','sales_manager','field_manager','office_staff') THEN u.email END AS email,
       sp.employment_status, (u.role = 'staff' AND u.user_code LIKE 'LK-%') AS linked,
       (${HQ_BILLABLE_SQL}) AS billable
     FROM users u LEFT JOIN staff_profiles sp ON sp.user_id = u.user_id
     WHERE u.company_id = ? AND u.role != 'system_admin' ORDER BY u.user_id`).bind(cid).all()
-  const stats = await c.env.DB.prepare(`
+  const stats = await db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM daily_reports WHERE company_id = ?) AS total_reports,
       (SELECT COUNT(*) FROM shifts WHERE company_id = ?) AS total_shifts,
@@ -4951,30 +5096,55 @@ api.get('/hq/companies/:id', async (c) => {
     months.push(d.toISOString().slice(0, 7))
   }
   const from = months[0] + '-01'
-  const [rep, sh] = await c.env.DB.batch([
-    c.env.DB.prepare(`SELECT substr(work_date, 1, 7) AS ym, COUNT(*) AS n FROM daily_reports WHERE company_id = ? AND work_date >= ? AND work_date <= ? GROUP BY ym`).bind(cid, from, today),
-    c.env.DB.prepare(`SELECT substr(work_date, 1, 7) AS ym, COUNT(*) AS n,
+  const [rep, sh, billing, supportLogs, auditLogs] = await db.batch([
+    db.prepare(`SELECT substr(work_date, 1, 7) AS ym, COUNT(*) AS n FROM daily_reports WHERE company_id = ? AND work_date >= ? AND work_date <= ? GROUP BY ym`).bind(cid, from, today),
+    db.prepare(`SELECT substr(work_date, 1, 7) AS ym, COUNT(*) AS n,
         COUNT(DISTINCT CASE WHEN status IN ('confirmed', 'substitute') THEN staff_id END) AS staff
       FROM shifts WHERE company_id = ? AND work_date >= ? AND work_date <= ? GROUP BY ym`).bind(cid, from, today),
+    // 月ごとの請求記録（#295。新しい月から24か月分）
+    db.prepare(`SELECT month, plan, user_count, amount, status, issued_at, paid_at, note, recorded_at FROM company_billing_months
+      WHERE company_id = ? ORDER BY month DESC LIMIT 24`).bind(cid),
+    // 伴走支援の履歴（#296。新しい順に50件）
+    db.prepare(`SELECT l.log_id, l.body, l.next_action_date, l.created_at, us.name AS actor_name FROM company_support_logs l
+      LEFT JOIN users us ON us.user_id = l.actor_user_id WHERE l.company_id = ? ORDER BY l.created_at DESC, l.log_id DESC LIMIT 50`).bind(cid),
+    // 本部の操作の履歴（#542。新しい順に50件）
+    db.prepare(`SELECT l.log_id, l.action, l.target, l.before_json, l.after_json, l.reason, l.created_at, us.name AS actor_name FROM hq_audit_logs l
+      LEFT JOIN users us ON us.user_id = l.actor_user_id WHERE l.company_id = ? ORDER BY l.log_id DESC LIMIT 50`).bind(cid),
   ])
   const repBy = new Map((rep.results as any[]).map(r => [r.ym, r.n]))
   const shBy = new Map((sh.results as any[]).map(r => [r.ym, r]))
   const monthly = months.map(ym => ({ month: ym, reports: repBy.get(ym) || 0, shifts: (shBy.get(ym) as any)?.n || 0, working_staff: (shBy.get(ym) as any)?.staff || 0 }))
   const list = users.results as any[]
   const userCount = list.filter(u => u.billable).length
+  const prices = await loadPlanPrices(db)
   const usage = {
     user_count: userCount, user_limit: company.user_limit ?? null,
     linked_count: list.filter(u => u.billable && u.linked).length,
     over_limit: company.user_limit != null && userCount > company.user_limit,
+    // 今の人数とプランで計算した今月の見込み額（#295）
+    monthly_fee: planFee(prices, company.plan, userCount),
   }
-  return c.json({ company, users: list, stats, monthly, usage })
+  return c.json({ company, users: list, stats, monthly, usage, billing: billing.results, support_logs: supportLogs.results, audit_logs: auditLogs.results,
+    plan_prices: [...prices.values()] })
 })
 
 api.put('/hq/companies/:id', async (c) => {
   const b = await c.req.json().catch(() => null)
   if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const db = c.env.DB
+  const cid = Number(c.req.param('id'))
+  // 本部専用の企業行（internal）は変更しない
+  const before = await db.prepare(`SELECT * FROM companies WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`).bind(cid, HQ_COMPANY_STATUS).first() as any
+  if (!before) return c.json({ error: 'not found' }, 404)
   // 送られた項目だけを確かめて更新する（#254）。null は従来どおり「変更しない」。ただしユーザー上限の空欄・null は「上限なし」（NULL）
   const set: Record<string, unknown> = {}
+  if (b.company_name != null) {
+    // 会社名の変更（#558）。掲示板・企業間連携の相手にも新しい名前が出る
+    const name = String(b.company_name).trim()
+    if (!name) return c.json({ error: '会社名を入力してください', field: 'company_name' }, 400)
+    if (name.length > 100) return c.json({ error: '会社名は100文字以内にしてください', field: 'company_name' }, 400)
+    set.company_name = name
+  }
   if (b.plan != null) { if (!oneOf(b.plan, HQ_PLANS)) return c.json({ error: 'プランの値が正しくありません' }, 400); set.plan = b.plan }
   if (b.active_status != null) { if (!oneOf(b.active_status, HQ_ACTIVE_STATUSES)) return c.json({ error: '利用状態の値が正しくありません' }, 400); set.active_status = b.active_status }
   if (b.billing_status != null) { if (!oneOf(b.billing_status, HQ_BILLING_STATUSES)) return c.json({ error: '請求状態の値が正しくありません' }, 400); set.billing_status = b.billing_status }
@@ -4993,15 +5163,44 @@ api.put('/hq/companies/:id', async (c) => {
     if (b.support_memo.length > 5000) return c.json({ error: '伴走支援メモは5000文字以内にしてください' }, 400)
     set.support_memo = b.support_memo || null
   }
-  const cols = Object.keys(set)
-  if (!cols.length) return c.json({ error: '変更する項目がありません' }, 400)
-  // 本部専用の企業行（internal）は変更しない
-  const r = await c.env.DB.prepare(`UPDATE companies SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`)
-    .bind(...cols.map(k => set[k] ?? null), c.req.param('id'), HQ_COMPANY_STATUS).run()
-  if (!r.meta.changes) return c.json({ error: 'not found' }, 404)
+  // 契約の期日（#296）と連絡先（#558）。空欄は NULL
+  for (const k of [...HQ_DATE_FIELDS, ...HQ_CONTACT_FIELDS]) {
+    const r = (HQ_DATE_FIELDS as readonly string[]).includes(k) ? pickCompanyDate(b, k) : pickCompanyContact(b, k)
+    if (!r) continue
+    if ('error' in r) return c.json({ error: r.error, field: r.field }, 400)
+    set[k] = r.value
+  }
+  if (!Object.keys(set).length) return c.json({ error: '変更する項目がありません' }, 400)
+  // 変わった項目だけを更新し、変更前と変更後を本部の操作の履歴に残す（#542）
+  const changed = Object.keys(set).filter(k => (before[k] ?? null) !== (set[k] ?? null))
+  // 何も変わらない保存は、操作の履歴にも残さない
+  if (!changed.length) { c.set('hqAudited', true); return c.json({ ok: true, changed: [], revoked_sessions: 0 }) }
+  // 停止・再開の理由（#542）。本部の画面では停止と再開のときに入力を必須にしている（API は理由なしの呼び出しも受け付け、そのまま記録する）
+  const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 500) : ''
+  const stmts: D1PreparedStatement[] = [
+    db.prepare(`UPDATE companies SET ${changed.map(k => `${k} = ?`).join(', ')} WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`)
+      .bind(...changed.map(k => set[k] ?? null), cid, HQ_COMPANY_STATUS),
+  ]
+  if (changed.includes('company_name')) {
+    // 自社名の取引先マスタの行（自社社員の判定の基準。0010）と、自社社員の所属会社名も新しい名前にそろえる（#558）
+    const oldName = before.company_name, newName = set.company_name
+    stmts.push(
+      db.prepare('UPDATE OR IGNORE staff_affiliations SET affiliation_name = ? WHERE company_id = ? AND affiliation_name = ?').bind(newName, cid, oldName),
+      db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(cid, newName),
+      // 新しい名前の行がすでにあって付け替えられなかった古い名前の行は、どこからも使われていなければ消す（取引先の一覧に出ないように）
+      db.prepare(`DELETE FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?
+          AND NOT EXISTS (SELECT 1 FROM staff_profiles sp WHERE sp.partner_affiliation_id = staff_affiliations.affiliation_id)
+          AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.payee_affiliation_id = staff_affiliations.affiliation_id)`).bind(cid, oldName),
+      db.prepare(`UPDATE staff_profiles SET affiliation = ? WHERE company_id = ? AND affiliation = ? AND COALESCE(affiliation_type, 'own_employee') = 'own_employee'`)
+        .bind(newName, cid, oldName),
+    )
+  }
+  const pick = (o: any) => Object.fromEntries(changed.map(k => [k, o[k] ?? null]))
+  stmts.push(hqAuditStmt(c, { action: 'company.update', company_id: cid, target: String(set.company_name ?? before.company_name), before: pick(before), after: pick(set), reason: reason || null }))
+  await db.batch(stmts)
   // 停止にした時点で、その企業の利用者（本部ユーザーを除く）をログアウトさせる
-  const revoked = b.active_status === 'inactive' ? await revokeCompanySessions(c.env.DB, Number(c.req.param('id'))) : 0
-  return c.json({ ok: true, revoked_sessions: revoked })
+  const revoked = b.active_status === 'inactive' ? await revokeCompanySessions(db, cid) : 0
+  return c.json({ ok: true, changed, revoked_sessions: revoked })
 })
 
 api.post('/hq/companies', async (c) => {
@@ -5019,6 +5218,14 @@ api.post('/hq/companies', async (c) => {
   // ユーザー上限: 送られなければ3。空欄は上限なし
   const limit = b.user_limit === undefined ? { value: 3 } : parseUserLimit(b.user_limit)
   if ('error' in limit) return c.json({ error: limit.error, field: 'user_limit' }, 400)
+  // トライアルの終了日・契約開始日（#296）と連絡先（#558）は任意
+  const extra: Record<string, unknown> = {}
+  for (const k of [...HQ_DATE_FIELDS, ...HQ_CONTACT_FIELDS]) {
+    const r = (HQ_DATE_FIELDS as readonly string[]).includes(k) ? pickCompanyDate(b, k) : pickCompanyContact(b, k)
+    if (!r) continue
+    if ('error' in r) return c.json({ error: r.error, field: r.field }, 400)
+    if (r.value != null) extra[k] = r.value
+  }
   const db = c.env.DB
   // ログインは大文字・小文字の違いだけのコードも照合するため、重複も大文字・小文字を区別せずに確かめる
   if (await db.prepare('SELECT 1 FROM companies WHERE LOWER(company_code) = ?').bind(companyCode).first()) return c.json({ error: '会社コードが重複しています', field: 'company_code' }, 409)
@@ -5034,13 +5241,19 @@ api.post('/hq/companies', async (c) => {
   const pwErr = validatePassword(adminPassword)
   if (pwErr) return c.json({ error: '初期管理者の' + pwErr, field: 'admin_password' }, 400)
   // 企業と初期管理者は1つの batch で作る（管理者の作成に失敗して、管理者のいない企業だけが残らないように）
+  const extraCols = Object.keys(extra)
   const stmts = [
-    db.prepare('INSERT INTO companies (company_code, company_name, plan, user_limit, active_status) VALUES (?, ?, ?, ?, ?)')
-      .bind(companyCode, companyName, plan, limit.value, 'trial'),
+    db.prepare(`INSERT INTO companies (company_code, company_name, plan, user_limit, active_status${extraCols.map(k => ', ' + k).join('')}) VALUES (?, ?, ?, ?, ?${extraCols.map(() => ', ?').join('')})`)
+      .bind(companyCode, companyName, plan, limit.value, 'trial', ...extraCols.map(k => extra[k])),
     db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, must_change_password)
       SELECT company_id, ?, ?, 'company_admin', ?, ?, 1 FROM companies WHERE company_code = ?`)
       .bind(adminCode, String(b.admin_name || '').trim().slice(0, 60) || '管理者', await hashPassword(adminPassword), adminEmail, companyCode),
+    // 本部の操作の履歴（#542）。企業の ID は登録した行から引く
+    db.prepare(`INSERT INTO hq_audit_logs (actor_user_id, action, company_id, target, after_json, created_at)
+      SELECT ?, 'company.create', company_id, ?, ?, ? FROM companies WHERE company_code = ?`)
+      .bind(c.get('user').user_id, companyName, JSON.stringify({ company_code: companyCode, company_name: companyName, plan, user_limit: limit.value, admin_code: adminCode, ...extra }), nowJST(), companyCode),
   ]
+  c.set('hqAudited', true)
   try {
     await db.batch(stmts)
   } catch (e) {
@@ -5049,6 +5262,143 @@ api.post('/hq/companies', async (c) => {
     throw e
   }
   return c.json({ ok: true, company_code: companyCode, ...(generated ? { admin_temp_password: adminPassword } : {}) })
+})
+
+// ---------- プランの料金の設定（#295） ----------
+api.get('/hq/plan-prices', async (c) => {
+  return c.json({ prices: [...(await loadPlanPrices(c.env.DB)).values()] })
+})
+api.put('/hq/plan-prices', async (c) => {
+  const b = await c.req.json().catch(() => null)
+  const list = b && Array.isArray(b.prices) ? b.prices : null
+  if (!list || !list.length) return c.json({ error: '料金の内容が正しくありません' }, 400)
+  const db = c.env.DB
+  const before = await loadPlanPrices(db)
+  const next: PlanPrice[] = []
+  for (const p of list) {
+    if (!p || !oneOf(p.plan, HQ_PLANS)) return c.json({ error: 'プランの値が正しくありません' }, 400)
+    const base = toInt(p.base_fee, 0, PLAN_FEE_MAX), inc = toInt(p.included_users, 0, HQ_USER_LIMIT_MAX), per = toInt(p.per_user_fee, 0, PLAN_FEE_MAX)
+    if (base === null || inc === null || per === null) return c.json({ error: `${p.plan} の料金は0以上の整数で入力してください（金額は${PLAN_FEE_MAX.toLocaleString()}円まで）` }, 400)
+    next.push({ plan: p.plan, base_fee: base, included_users: inc, per_user_fee: per })
+  }
+  const changed = next.filter(p => { const o = before.get(p.plan); return !o || o.base_fee !== p.base_fee || o.included_users !== p.included_users || o.per_user_fee !== p.per_user_fee })
+  if (!changed.length) { c.set('hqAudited', true); return c.json({ ok: true, changed: 0 }) }
+  const now = nowJST(), uid = c.get('user').user_id
+  const strip = (p?: PlanPrice) => p ? { base_fee: p.base_fee, included_users: p.included_users, per_user_fee: p.per_user_fee } : null
+  await db.batch([
+    ...changed.map(p => db.prepare(`INSERT INTO hq_plan_prices (plan, base_fee, included_users, per_user_fee, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(plan) DO UPDATE SET base_fee = excluded.base_fee, included_users = excluded.included_users, per_user_fee = excluded.per_user_fee,
+          updated_by = excluded.updated_by, updated_at = excluded.updated_at`).bind(p.plan, p.base_fee, p.included_users, p.per_user_fee, uid, now)),
+    hqAuditStmt(c, { action: 'plan_price.update', target: changed.map(p => p.plan).join(','),
+      before: Object.fromEntries(changed.map(p => [p.plan, strip(before.get(p.plan))])), after: Object.fromEntries(changed.map(p => [p.plan, strip(p)])) }),
+  ])
+  return c.json({ ok: true, changed: changed.length })
+})
+
+// ---------- 月ごとの請求記録（#295） ----------
+// 指定した月の請求を記録する（締める）。利用中（active）の企業ごとに、この時点の課金対象の人数・プラン・金額を残す。
+// すでに記録がある企業は変えない（金額・入金状態は企業詳細で直す）。トライアル・停止中の企業は記録しない
+api.post('/hq/billing/close', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  const month = String(b?.month || '')
+  if (!MONTH_RE.test(month)) return c.json({ error: '締める月を YYYY-MM で指定してください' }, 400)
+  const today = todayJST()
+  if (month > today.slice(0, 7)) return c.json({ error: 'これから先の月は締められません' }, 400)
+  const db = c.env.DB
+  const d = DEFAULT_PLAN_PRICE
+  const now = nowJST()
+  const r = await db.prepare(`INSERT OR IGNORE INTO company_billing_months (company_id, month, plan, user_count, amount, status, issued_at, recorded_at, recorded_by)
+    SELECT co.company_id, ?, COALESCE(co.plan, 'basic'), COALESCE(n.cnt, 0),
+      COALESCE(pp.base_fee, ${d.base_fee}) + MAX(0, COALESCE(n.cnt, 0) - COALESCE(pp.included_users, ${d.included_users})) * COALESCE(pp.per_user_fee, ${d.per_user_fee}),
+      'issued', ?, ?, ?
+    FROM companies co
+    LEFT JOIN (SELECT u.company_id, SUM(CASE WHEN ${HQ_BILLABLE_SQL} THEN 1 ELSE 0 END) AS cnt FROM users u GROUP BY u.company_id) n ON n.company_id = co.company_id
+    LEFT JOIN hq_plan_prices pp ON pp.plan = COALESCE(co.plan, 'basic')
+    WHERE co.active_status = 'active'`).bind(month, today, now, c.get('user').user_id).run()
+  const created = r.meta.changes || 0
+  await hqAuditStmt(c, { action: 'billing.close', target: month, after: { created } }).run()
+  return c.json({ ok: true, month, created })
+})
+// 1か月分の請求記録の修正（入金状態・入金日・金額・メモ）
+api.put('/hq/companies/:id/billing/:month', async (c) => {
+  const cid = Number(c.req.param('id')), month = c.req.param('month')
+  if (!MONTH_RE.test(month)) return c.json({ error: 'not found' }, 404)
+  const b = await c.req.json().catch(() => null)
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const db = c.env.DB
+  const before = await db.prepare('SELECT * FROM company_billing_months WHERE company_id = ? AND month = ?').bind(cid, month).first() as any
+  if (!before) return c.json({ error: 'この月の請求記録がありません' }, 404)
+  const set: Record<string, unknown> = {}
+  if (b.status !== undefined) { if (!oneOf(b.status, BILLING_MONTH_STATUSES)) return c.json({ error: '入金状態の値が正しくありません' }, 400); set.status = b.status }
+  if (b.amount !== undefined) {
+    const n = toInt(b.amount, 0, PLAN_FEE_MAX * 10)
+    if (n === null) return c.json({ error: '金額は0以上の整数で入力してください' }, 400)
+    set.amount = n
+  }
+  if (b.paid_at !== undefined) {
+    if (b.paid_at !== null && b.paid_at !== '' && !isISODate(b.paid_at)) return c.json({ error: '入金日の日付が正しくありません' }, 400)
+    set.paid_at = b.paid_at || null
+  }
+  if (b.note !== undefined) {
+    if (b.note !== null && typeof b.note !== 'string') return c.json({ error: 'メモの形式が正しくありません' }, 400)
+    if (b.note && b.note.length > 500) return c.json({ error: 'メモは500文字以内にしてください' }, 400)
+    set.note = b.note ? b.note.trim() || null : null
+  }
+  // 入金済みにして入金日がなければ今日にする。入金済み以外に戻したら入金日は消す
+  const status = set.status ?? before.status
+  if (status === 'paid' && !(set.paid_at ?? before.paid_at)) set.paid_at = todayJST()
+  if (status !== 'paid' && set.status !== undefined) set.paid_at = null
+  const changed = Object.keys(set).filter(k => (before[k] ?? null) !== (set[k] ?? null))
+  if (!changed.length) { c.set('hqAudited', true); return c.json({ ok: true, changed: [] }) }
+  const pick = (o: any) => Object.fromEntries(changed.map(k => [k, o[k] ?? null]))
+  await db.batch([
+    db.prepare(`UPDATE company_billing_months SET ${changed.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE company_id = ? AND month = ?`)
+      .bind(...changed.map(k => set[k] ?? null), nowJST(), cid, month),
+    hqAuditStmt(c, { action: 'billing.update', company_id: cid, target: month, before: pick(before), after: pick(set) }),
+  ])
+  return c.json({ ok: true, changed })
+})
+
+// ---------- 伴走支援の履歴（#296） ----------
+// 追記で残す。次回の予定日を入れると、企業の次回レビュー日もその日にする
+api.post('/hq/companies/:id/support-logs', async (c) => {
+  const cid = Number(c.req.param('id'))
+  const b = await c.req.json().catch(() => null)
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const body = typeof b.body === 'string' ? b.body.trim() : ''
+  if (!body) return c.json({ error: '支援の内容を入力してください', field: 'body' }, 400)
+  if (body.length > 2000) return c.json({ error: '支援の内容は2000文字以内にしてください', field: 'body' }, 400)
+  const next = b.next_action_date || null
+  if (next !== null && !isISODate(next)) return c.json({ error: '次回の予定日の日付が正しくありません', field: 'next_action_date' }, 400)
+  const db = c.env.DB
+  const co = await db.prepare(`SELECT company_id, company_name, next_review_at FROM companies WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`).bind(cid, HQ_COMPANY_STATUS).first() as any
+  if (!co) return c.json({ error: 'not found' }, 404)
+  const uid = c.get('user').user_id
+  const stmts: D1PreparedStatement[] = [
+    db.prepare('INSERT INTO company_support_logs (company_id, actor_user_id, body, next_action_date, created_at) VALUES (?, ?, ?, ?, ?)').bind(cid, uid, body, next, nowJST()),
+  ]
+  if (next && next !== co.next_review_at) {
+    stmts.push(db.prepare('UPDATE companies SET next_review_at = ? WHERE company_id = ?').bind(next, cid))
+    stmts.push(hqAuditStmt(c, { action: 'company.update', company_id: cid, target: co.company_name, before: { next_review_at: co.next_review_at ?? null }, after: { next_review_at: next }, reason: '伴走支援の記録から' }))
+  } else {
+    // 記録そのものに担当者と日時が残るので、操作の履歴には重ねて残さない
+    c.set('hqAudited', true)
+  }
+  await db.batch(stmts)
+  return c.json({ ok: true })
+})
+
+// ---------- 本部の操作の履歴（#542） ----------
+const HQ_AUDIT_PAGE = 50
+api.get('/hq/audit-logs', async (c) => {
+  const page = toInt(c.req.query('page') || '1', 1, 10000) || 1
+  const cid = c.req.query('company_id')
+  const where = cid && /^\d+$/.test(cid) ? 'WHERE l.company_id = ?' : ''
+  const rows = (await c.env.DB.prepare(`SELECT l.log_id, l.action, l.company_id, l.target, l.before_json, l.after_json, l.reason, l.created_at,
+      us.name AS actor_name, co.company_name
+    FROM hq_audit_logs l LEFT JOIN users us ON us.user_id = l.actor_user_id LEFT JOIN companies co ON co.company_id = l.company_id
+    ${where} ORDER BY l.log_id DESC LIMIT ? OFFSET ?`).bind(...(where ? [Number(cid)] : []), HQ_AUDIT_PAGE + 1, (page - 1) * HQ_AUDIT_PAGE).all()).results as any[]
+  return c.json({ logs: rows.slice(0, HQ_AUDIT_PAGE), page, has_more: rows.length > HQ_AUDIT_PAGE })
 })
 
 // 契約ユーザー数（本部が決めた上限）と今の利用数。企業の管理画面に表示する（#321。登録は止めず、表示のみ）
