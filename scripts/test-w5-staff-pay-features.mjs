@@ -169,6 +169,18 @@ let T1
   ok('#273 存在しない申請は 404', r.status === 404, r.status)
 }
 
+// ---------- 同時に送られた同じ申請（RV で追加） ----------
+{
+  const rs = await Promise.all([1, 2, 3].map(() => st5.post('/api/staff/pay/requests', { shift_id: S2, kind: 'transport', amount: 300, route: 'A〜D' })))
+  const okOnes = rs.filter(r => r.status === 200)
+  ok('#273 同時に送られた同じ申請は1件だけ受け付ける', okOnes.length === 1 && rs.filter(r => r.status === 409).length === 2, rs.map(r => r.status))
+  const list = must(await admin.get('/api/admin/pay-requests'), 'pay-requests')
+  ok('#273 承認待ちの一覧にも1件だけ出る', list.requests.filter(q => q.shift_id === S2 && q.kind === 'transport').length === 1)
+  const q = list.requests.find(x => x.request_id === (okOnes[0] && okOnes[0].data.request_id))
+  ok('#172 一覧に数量の固定（qty_fixed）を返す', q && q.qty_fixed === false, q)
+  if (okOnes[0]) must(await st5.post(`/api/staff/pay/requests/${okOnes[0].data.request_id}/cancel`), 'cleanup cancel')
+}
+
 // ---------- #290 支払額の表示 ----------
 {
   let r = await mgr.put('/api/admin/staff-pay/settings', { staff_pay_visible: true })

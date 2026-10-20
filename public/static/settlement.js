@@ -768,7 +768,7 @@
     }
     const plus = q.start_time && q.end_time && q.new_end_time ? spanMin(q.start_time, q.new_end_time) - spanMin(q.start_time, q.end_time) : null
     return `終了 ${esc(q.end_time || q.before_end_time || '')} → <b>${esc(q.new_end_time)}</b>${plus != null && plus > 0 ? `（+${plus}分）` : ''}
-      <span class="block text-[11px] text-gray-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type === 'hourly' ? '時給（承認すると延びた分も支払に入ります）' : '日給（承認しても金額は変わりません。必要なら調整額を入れてください）'}</span>`
+      <span class="block text-[11px] text-gray-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type !== 'hourly' ? '日給（承認しても金額は変わりません。必要なら調整額を入れてください）' : q.qty_fixed ? '時給・数量を手動で固定中（承認しても金額は変わりません。必要なら数量を直してください）' : '時給（承認すると延びた分も支払に入ります）'}</span>`
   }
   async function loadPayRequests() {
     const host = document.getElementById('settle-payreq'); if (!host) return

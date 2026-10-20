@@ -182,6 +182,7 @@ staffPayStaffApi.post('/pay/requests', async (c) => {
     .bind(bindJsonArray(staffIds), now).first() as any
   if (Number(recent?.n || 0) >= HOURLY_LIMIT) return c.json({ error: '申請が多すぎます。しばらくしてからお試しください' }, 429)
   const reason = cleanText(b.reason, TEXT_MAX)
+  const NO_PENDING = `NOT EXISTS (SELECT 1 FROM staff_pay_requests WHERE shift_id = ? AND staff_id = ? AND kind = ? AND status = 'pending')`
   let lines: string[]
   let ins: D1PreparedStatement
   if (kind === 'transport') {
@@ -191,8 +192,8 @@ staffPayStaffApi.post('/pay/requests', async (c) => {
     if (!route) return c.json({ error: '区間を入力してください（例: 新宿駅〜渋谷駅）' }, 400)
     const roundTrip = b.round_trip ? 1 : 0
     ins = db.prepare(`INSERT INTO staff_pay_requests (company_id, shift_id, staff_id, kind, status, amount, route, round_trip, before_amount, reason, requested_by, created_at)
-      VALUES (?, ?, ?, 'transport', 'pending', ?, ?, ?, ?, ?, ?, ?) RETURNING request_id`)
-      .bind(s.company_id, s.shift_id, s.staff_id, amount, route, roundTrip, Number(s.transportation_fee || 0), reason || null, u.user_id, now)
+      SELECT ?, ?, ?, 'transport', 'pending', ?, ?, ?, ?, ?, ?, ? WHERE ${NO_PENDING} RETURNING request_id`)
+      .bind(s.company_id, s.shift_id, s.staff_id, amount, route, roundTrip, Number(s.transportation_fee || 0), reason || null, u.user_id, now, s.shift_id, s.staff_id, kind)
     lines = [`金額: ${yenText(amount)}（${roundTrip ? '往復' : '片道'}）`, `区間: ${route}`]
   } else {
     if (!isHHMM(b.new_end_time)) return c.json({ error: '延長後の終了時刻を入力してください' }, 400)
@@ -202,11 +203,13 @@ staffPayStaffApi.post('/pay/requests', async (c) => {
     if (!reason) return c.json({ error: '延長の理由を入力してください' }, 400)
     const instructed = cleanText(b.instructed_by, 50)
     ins = db.prepare(`INSERT INTO staff_pay_requests (company_id, shift_id, staff_id, kind, status, new_end_time, before_end_time, instructed_by, reason, requested_by, created_at)
-      VALUES (?, ?, ?, 'overtime', 'pending', ?, ?, ?, ?, ?, ?) RETURNING request_id`)
-      .bind(s.company_id, s.shift_id, s.staff_id, b.new_end_time, s.end_time, instructed || null, reason, u.user_id, now)
+      SELECT ?, ?, ?, 'overtime', 'pending', ?, ?, ?, ?, ?, ? WHERE ${NO_PENDING} RETURNING request_id`)
+      .bind(s.company_id, s.shift_id, s.staff_id, b.new_end_time, s.end_time, instructed || null, reason, u.user_id, now, s.shift_id, s.staff_id, kind)
     lines = [`予定: ${s.start_time}〜${s.end_time} → 終了 ${b.new_end_time}（+${next - cur}分）`, `指示した人: ${instructed || '（記入なし）'}`]
   }
   const row = await ins.first() as any
+  // 同時に送られた同じ申請（別の端末・二重送信）は、先に入った1件だけにする
+  if (!row) return c.json({ error: `このシフトには承認待ちの${PAY_REQUEST_KIND_LABEL[kind]}の申請があります。直す場合は、取り消してから出し直してください` }, 409)
   const label = PAY_REQUEST_KIND_LABEL[kind]
   await notifyCompanyAdmins(db, s.company_id, 'pay_request_submitted', `${label}の申請: ${u.name || ''} ${mdText(s.work_date)} ${s.project_name || ''}`,
     [...lines, ...(reason ? [`理由: ${reason}`] : []), '精算の画面の「スタッフからの申請」で承認・却下してください'].join('\n'), '/admin#settlement', row.request_id)
@@ -236,7 +239,7 @@ staffPayAdminApi.get('/pay-requests', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const all = c.req.query('status') === 'all'
   const rows = (await db.prepare(`SELECT q.*, s.work_date, s.start_time, s.end_time, s.status AS shift_status, s.staff_id AS shift_staff_id, s.settle_status,
-      s.transportation_fee, s.pay_transport_type, s.pay_transport_amount, s.pay_unit_type, s.price_locked, p.project_name, us.name AS staff_name
+      s.transportation_fee, s.pay_transport_type, s.pay_transport_amount, s.pay_unit_type, s.price_locked, s.qty_locked, p.project_name, us.name AS staff_name
     FROM staff_pay_requests q LEFT JOIN shifts s ON s.shift_id = q.shift_id AND s.company_id = q.company_id LEFT JOIN projects p ON p.project_id = s.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = q.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
     WHERE q.company_id = ? ${all ? '' : "AND q.status = 'pending'"} ORDER BY q.request_id DESC LIMIT ${LIST_LIMIT}`).bind(u.company_id).all()).results as any[]
@@ -251,6 +254,8 @@ staffPayAdminApi.get('/pay-requests', async (c) => {
       work_date: r.work_date || null, start_time: r.start_time || null, end_time: r.end_time || null,
       transportation_fee: r.transportation_fee == null ? null : Number(r.transportation_fee), pay_transport_type: r.pay_transport_type || 'actual',
       pay_transport_amount: Number(r.pay_transport_amount || 0), pay_unit_type: r.pay_unit_type || 'daily', price_locked: !!r.price_locked,
+      // 数量を手動で固定したシフト（refreshShiftAmounts が計算し直さない）。延長を承認しても金額は変わらない
+      qty_fixed: !!r.price_locked && r.qty_locked !== 0,
       shift_issue: r.status !== 'pending' ? null : approveBlock(r, !!r.work_date && inClosing(closings, u.company_id, r.work_date)),
     })),
   })
