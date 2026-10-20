@@ -1,3 +1,5 @@
+import { REPORT_TYPES } from '../report-settings'
+
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
 // 対象と基準:
@@ -20,6 +22,22 @@
 //   本人情報（users・staff_profiles）: 退職後7年で匿名化する（#480）。請求の集計などから参照されるため行は残し、
 //                                氏名を「退職者#staff_id」にして連絡先・生年月日・経歴・メモなどを消す。
 //                                済んだ人は anonymized_at を付け、次の対象に選び直さない
+//   スタッフに紐づく応募（recruit_applications と応募した枠）: 退職後7年で削除する（#350）
+//   人材提案（board_proposals）  : 提案したスタッフ・取り込んだスタッフが退職後7年になったら、スナップショット（経歴など）・
+//                                開示した氏名・コメント・上流の経路を消す（行は件数のために残す。#350）
+//
+// 在職中でも保存期間で消すもの（runRetentionCleanup の stages に 'in_service' を渡したとき。期間は本部画面で変えられる）:
+//   入店などの位置情報・端末情報と写真（attendance_reports の緯度経度・住所・端末・photo_key と R2）
+//                              : 報告から1年（#420）。勤怠の時刻・種別の行は残す。写真は retention_pending_r2 に控え、
+//                                退職後7年の処理の再試行（毎日）で R2 から消す
+//   相談（consultations）       : 対応済み（done）のものを相談の日から3年（#511）
+//   フォロー記録（follow_logs）  : 完了（done）したものを完了日（なければ作成日）から3年（#511）
+//   決着した人材提案            : 見送り・取り下げから180日でスナップショットなどを消す（採用に至らなかった応募と同じ。#350）
+//   雇用終了の従業員データ      : 区分変更で雇用終了にした人（自社雇用に戻っていない人）の employee_records・入社時書類（R2 も）を、
+//                                雇用終了日から7年で削除する。過去の雇用期間（employment_periods）も終了日から7年で消す（#425）
+//
+// 削除の保留（#543）: staff_profiles.retention_hold_at・companies.retention_hold_at が入っているスタッフ・企業のデータは、
+//   上のどの削除（日報の3年を含む）でも消さない。本部画面で設定・解除し、解除すると退職後7年の猶予をやり直す
 //
 // 退職者の安全策（#5 #50 #51）:
 //   - 退職日が NULL（未設定・不明）のスタッフのデータは絶対に削除しない。
@@ -56,7 +74,7 @@ const RETIRED_EXTRA_TARGETS = ['attendance_corrections', 'attendance_correction_
   'notice_read_staff_reports']
 // 退職スタッフの人事データ・書類・企業間チャット・同意履歴と、本人情報の匿名化（#193 #228 #480）
 const RETIRED_PERSONAL_TARGETS = ['employee_records', 'employment_periods', 'staff_documents', 'employee_documents', 'r2_documents',
-  'roster_comments', 'roster_comment_reads', 'roster_consents', 'anonymized_staff']
+  'roster_comments', 'roster_comment_reads', 'roster_consents', 'recruit_applications', 'recruit_application_items', 'board_proposals', 'anonymized_staff']
 // retired_staff は人数（対象の人・処理できた人・失敗した人）。スタッフ単位の失敗の理由はここに残す（#234）
 // retired_staff_deferred・r2_pending は、上限に達して翌日に回した人数と R2 のファイル数（#419）
 const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'shift_report_tokens', 'r2_photos',
@@ -65,11 +83,47 @@ const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evalu
 export const RETENTION_NON_ROW_TARGETS = ['retired_staff', 'retired_staff_deferred', 'r2_pending']
 // トークンの削除（purgeExpiredTokens）が retention_logs に残す対象。RETENTION_ENABLED に関係なく実削除で記録する
 export const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens'] as const
+// 本部画面の保守（紐づかない写真の削除。#533）が retention_logs に残す対象。データ保持の直近の実行には数えない
+export const RETENTION_MAINTENANCE_TARGETS = ['orphan_photos'] as const
 const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件数（それ以上は件数だけ）
 // 匿名化で消す staff_profiles の個人情報の列（所属区分・連携の情報・評価の点数は集計に使うので残す）
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'site_evaluation', 'work_memo', 'career_rows', 'pr_points',
   'remarks', 'unverified_email']
+
+// 人材提案の匿名化で消す列（#350）。snapshot は NOT NULL なので空の JSON にする
+const ANONYMIZE_PROPOSAL_SET = `snapshot = '{}', disclosed = NULL, comment = NULL, upstream_chain = NULL, consent_note = NULL, upstream_consent_note = NULL`
+
+// ============ 削除の保留（#543） ============
+// 保留中のスタッフ・企業。どの定期削除でも、この人・企業のデータは消さない
+const HELD_STAFF_SQL = 'SELECT staff_id FROM staff_profiles WHERE retention_hold_at IS NOT NULL'
+const HELD_COMPANY_SQL = 'SELECT company_id FROM companies WHERE retention_hold_at IS NOT NULL'
+/** 保留中でない行の条件（staffCol・companyCol はその表の列。どちらも NULL にならない列を渡す） */
+function notHeldSql(staffCol: string, companyCol: string): string {
+  return `${staffCol} NOT IN (${HELD_STAFF_SQL}) AND ${companyCol} NOT IN (${HELD_COMPANY_SQL})`
+}
+
+// ============ 在職中の保存期間の設定（#420 #511 #350） ============
+// retention_settings に行がなければ既定値を使う。範囲外の値は保存させない（本部画面の PUT で確かめる）
+export const RETENTION_SETTING_DEFS = {
+  location_photo_days: { label: '入店などの位置情報・端末情報と写真（報告から・日）', def: 365, min: 90, max: 2555 },
+  consultation_years: { label: '対応済みの相談（相談の日から・年）', def: 3, min: 1, max: 7 },
+  follow_log_years: { label: '完了したフォロー記録（完了日から・年）', def: 3, min: 1, max: 7 },
+  proposal_days: { label: '見送り・取り下げになった人材提案の経歴・氏名（決着から・日）', def: 180, min: 30, max: 2555 },
+} as const
+export type RetentionSettingKey = keyof typeof RETENTION_SETTING_DEFS
+export type RetentionSettings = Record<RetentionSettingKey, number>
+
+export async function getRetentionSettings(db: D1Database): Promise<RetentionSettings> {
+  const out = Object.fromEntries(Object.entries(RETENTION_SETTING_DEFS).map(([k, d]) => [k, d.def])) as RetentionSettings
+  const rows = (await db.prepare('SELECT key, value FROM retention_settings').all()).results as { key: string; value: number }[]
+  for (const r of rows) {
+    const d = (RETENTION_SETTING_DEFS as Record<string, { min: number; max: number }>)[r.key]
+    const v = Number(r.value)
+    if (d && Number.isInteger(v) && v >= d.min && v <= d.max) out[r.key as RetentionSettingKey] = v
+  }
+  return out
+}
 
 function nowJST(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19)
@@ -158,9 +212,11 @@ export async function applyDueRetirements(db: D1Database): Promise<number> {
 // 連携行には所属元の退職日を伝えている（roster.ts の propagateRetirementStmts・0041 の移行）が、伝わっていない行も対象にする
 const STAFF_RETIRED_AT_SQL = `COALESCE(u.retired_at, CASE WHEN sp.affiliation_type = 'linked_external' THEN (SELECT ru.retired_at FROM staff_profiles r
     JOIN users ru ON ru.user_id = r.user_id WHERE r.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)) END)`
-const ELIGIBLE_STAFF_SQL = `SELECT x.staff_id FROM (SELECT sp.staff_id, ${STAFF_RETIRED_AT_SQL} AS retired_at
+// 削除の保留中（本人か会社。#543）の人は対象にしない（猶予の印も外れ、解除後に猶予をやり直す）
+const ELIGIBLE_STAFF_SQL = `SELECT x.staff_id FROM (SELECT sp.staff_id, sp.company_id, sp.retention_hold_at AS hold_at, ${STAFF_RETIRED_AT_SQL} AS retired_at
     FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id) x
   WHERE x.retired_at IS NOT NULL AND length(x.retired_at) >= 10 AND x.retired_at <= ?
+    AND x.hold_at IS NULL AND NOT EXISTS (SELECT 1 FROM companies hc WHERE hc.company_id = x.company_id AND hc.retention_hold_at IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.staff_id = x.staff_id AND s.work_date > x.retired_at)`
 // その人を所属元とする連携行（企業間チャットのスレッドの単位）。多段連携の先の行も root_staff_id で含める
 function linkedRowsOf(staffIdExpr: string): string {
@@ -184,7 +240,53 @@ const HAS_DATA_SQL = `(sp.anonymized_at IS NULL
     OR EXISTS (SELECT 1 FROM staff_documents WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM employee_documents WHERE staff_id = sp.staff_id)
     OR EXISTS (SELECT 1 FROM roster_comments WHERE thread_staff_id = sp.staff_id OR thread_staff_id IN (${linkedRowsOf('sp.staff_id')}))
-    OR EXISTS (SELECT 1 FROM roster_consents WHERE staff_id = sp.staff_id OR (source_staff_id = sp.staff_id AND staff_id IS NULL)))`
+    OR EXISTS (SELECT 1 FROM roster_consents WHERE staff_id = sp.staff_id OR (source_staff_id = sp.staff_id AND staff_id IS NULL))
+    OR EXISTS (SELECT 1 FROM recruit_applications WHERE staff_id = sp.staff_id)
+    OR EXISTS (SELECT 1 FROM board_proposals WHERE (staff_id = sp.staff_id OR imported_staff_id = sp.staff_id) AND anonymized_at IS NULL))`
+
+export type RetentionHolds = {
+  staff: { staff_id: number; name: string; company_id: number; company_name: string | null; retired_at: string | null
+    hold_at: string; hold_reason: string | null; hold_by_name: string | null }[]
+  companies: { company_id: number; company_name: string; hold_at: string; hold_reason: string | null; hold_by_name: string | null }[]
+}
+/** 削除の保留中のスタッフと企業の一覧（本部画面。#543） */
+export async function listRetentionHolds(db: D1Database): Promise<RetentionHolds> {
+  const [st, co] = await db.batch([
+    db.prepare(`SELECT sp.staff_id, u.name, sp.company_id, c.company_name, ${STAFF_RETIRED_AT_SQL} AS retired_at,
+        sp.retention_hold_at AS hold_at, sp.retention_hold_reason AS hold_reason, hb.name AS hold_by_name
+      FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id LEFT JOIN companies c ON c.company_id = sp.company_id
+      LEFT JOIN users hb ON hb.user_id = sp.retention_hold_by
+      WHERE sp.retention_hold_at IS NOT NULL ORDER BY sp.retention_hold_at DESC, sp.staff_id LIMIT 500`),
+    db.prepare(`SELECT c.company_id, c.company_name, c.retention_hold_at AS hold_at, c.retention_hold_reason AS hold_reason, hb.name AS hold_by_name
+      FROM companies c LEFT JOIN users hb ON hb.user_id = c.retention_hold_by
+      WHERE c.retention_hold_at IS NOT NULL ORDER BY c.retention_hold_at DESC, c.company_id`),
+  ])
+  return { staff: st.results as RetentionHolds['staff'], companies: co.results as RetentionHolds['companies'] }
+}
+
+/**
+ * 削除の保留を設定・解除する（本部画面。#543）。reason は設定のときに必須。
+ * 設定・解除のどちらでも、退職後7年の猶予の印（retention_flagged_at）を外す（解除の後は猶予をやり直してから削除する）。
+ * 対象が見つからなければ null を返す
+ */
+export async function setRetentionHold(db: D1Database, kind: 'staff' | 'company', id: number, hold: { reason: string; by: number } | null): Promise<{ name: string } | null> {
+  const now = nowJST()
+  if (kind === 'staff') {
+    const row = await db.prepare('SELECT u.name FROM staff_profiles sp JOIN users u ON u.user_id = sp.user_id WHERE sp.staff_id = ?').bind(id).first() as { name: string } | null
+    if (!row) return null
+    await db.prepare(`UPDATE staff_profiles SET retention_hold_at = ?, retention_hold_reason = ?, retention_hold_by = ?, retention_flagged_at = NULL WHERE staff_id = ?`)
+      .bind(hold ? now : null, hold ? hold.reason : null, hold ? hold.by : null, id).run()
+    return row
+  }
+  const row = await db.prepare('SELECT company_name AS name FROM companies WHERE company_id = ?').bind(id).first() as { name: string } | null
+  if (!row) return null
+  await db.batch([
+    db.prepare('UPDATE companies SET retention_hold_at = ?, retention_hold_reason = ?, retention_hold_by = ? WHERE company_id = ?')
+      .bind(hold ? now : null, hold ? hold.reason : null, hold ? hold.by : null, id),
+    db.prepare('UPDATE staff_profiles SET retention_flagged_at = NULL WHERE company_id = ? AND retention_flagged_at IS NOT NULL').bind(id),
+  ])
+  return row
+}
 
 export type RetentionScheduleRow = {
   staff_id: number; name: string; company_name: string; retired_at: string
@@ -195,7 +297,7 @@ export type RetentionScheduleRow = {
  * delete_on は猶予が明けて削除できるようになる日（まだ猶予が始まっていなければ null）。
  */
 export async function listRetentionSchedule(db: D1Database): Promise<{ scheduled: RetentionScheduleRow[]; excluded: RetentionScheduleRow[]; grace_days: number
-  next_run_date: string; next_run_count: number; next_run_due: number; staff_batch: number }> {
+  next_run_date: string; next_run_count: number; next_run_due: number; staff_batch: number; holds: RetentionHolds }> {
   const cutoff = cutoffDate(RETIRED_YEARS)
   const cols = `sp.staff_id, u.name, c.company_name, ${STAFF_RETIRED_AT_SQL} AS retired_at, sp.retention_flagged_at AS flagged_at,
     (SELECT MAX(work_date) FROM shifts WHERE staff_id = sp.staff_id) AS last_work_date
@@ -217,6 +319,7 @@ export async function listRetentionSchedule(db: D1Database): Promise<{ scheduled
   return {
     scheduled: scheduled.map(r => ({ ...r, delete_on: r.flagged_at ? addDays(r.flagged_at, RETENTION_GRACE_DAYS) : null })),
     excluded: excluded.map(r => ({ ...r, delete_on: null })),
+    holds: await listRetentionHolds(db),
     grace_days: RETENTION_GRACE_DAYS,
     next_run_date: nextRunDate,
     next_run_due: nextRunDue,
@@ -248,11 +351,27 @@ function cutoffDate(years: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+// 日報の3年: 削除の保留中のスタッフ・企業の日報は消さない（#543）
+const DR_NOT_HELD = notHeldSql('staff_id', 'company_id')
+
+/**
+ * 導入企業向けの日報の保存期間の案内（#417）。今後 days 日のうちに3年を過ぎて定期削除される日報の件数と、
+ * その稼働日の範囲を返す（すでに期限を過ぎて次の定期削除を待っている分も含む。削除の保留中の分は数えない）
+ */
+export async function dailyReportRetentionInfo(db: D1Database, companyId: number, days = 30): Promise<{ years: number; cutoff: string
+  due_count: number; due_from: string | null; due_to: string | null; days: number }> {
+  const cutoff = cutoffDate(DAILY_REPORTS_YEARS)
+  const until = addDays(cutoff, days)
+  const row = await db.prepare(`SELECT COUNT(*) AS n, MIN(work_date) AS f, MAX(work_date) AS t FROM daily_reports
+    WHERE company_id = ? AND work_date < ? AND ${DR_NOT_HELD}`).bind(companyId, until).first() as { n: number; f: string | null; t: string | null } | null
+  return { years: DAILY_REPORTS_YEARS, cutoff, days, due_count: Number(row?.n) || 0, due_from: row?.f || null, due_to: row?.t || null }
+}
+
 async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   const cutoff = cutoffDate(DAILY_REPORTS_YEARS)
 
   if (dryRun) {
-    const row = await db.prepare('SELECT COUNT(*) AS n FROM daily_reports WHERE work_date < ?').bind(cutoff).first()
+    const row = await db.prepare(`SELECT COUNT(*) AS n FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD}`).bind(cutoff).first()
     return { target: 'daily_reports', targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
   }
 
@@ -260,7 +379,7 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
   try {
     for (let i = 0; i < DAILY_REPORTS_MAX_BATCHES; i++) {
       const result = await db.prepare(
-        `DELETE FROM daily_reports WHERE daily_report_id IN (SELECT daily_report_id FROM daily_reports WHERE work_date < ? LIMIT ?)`
+        `DELETE FROM daily_reports WHERE daily_report_id IN (SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} LIMIT ?)`
       ).bind(cutoff, DAILY_REPORTS_BATCH).run()
       const changes = result.meta.changes || 0
       deleted += changes
@@ -380,6 +499,9 @@ async function dryRunRetiredStaffData(db: D1Database): Promise<Record<string, Re
     roster_comments: `${withRetired} SELECT COUNT(*) AS n FROM roster_comments WHERE ${threadsOfRetired}`,
     roster_comment_reads: `${withRetired} SELECT COUNT(*) AS n FROM roster_comment_reads WHERE ${threadsOfRetired}`,
     roster_consents: `${withRetired} SELECT COUNT(*) AS n FROM roster_consents WHERE staff_id IN (SELECT staff_id FROM r) OR (source_staff_id IN (SELECT staff_id FROM r) AND staff_id IS NULL)`,
+    recruit_applications: `SELECT COUNT(*) AS n FROM recruit_applications WHERE staff_id IN (${retired})`,
+    recruit_application_items: `SELECT COUNT(*) AS n FROM recruit_application_items WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id IN (${retired}))`,
+    board_proposals: `${withRetired} SELECT COUNT(*) AS n FROM board_proposals WHERE (staff_id IN (SELECT staff_id FROM r) OR imported_staff_id IN (SELECT staff_id FROM r)) AND anonymized_at IS NULL`,
     anonymized_staff: `SELECT COUNT(*) AS n FROM staff_profiles WHERE staff_id IN (${retired}) AND anonymized_at IS NULL`,
     // 前回までに消せず、次回に消す R2 のファイル（バインドの数をそろえるため ? を置く）
     r2_pending: `SELECT COUNT(*) AS n FROM retention_pending_r2 WHERE ? IS NOT NULL`,
@@ -414,6 +536,8 @@ const DRY_RUN_STAFF_COUNTS: Record<string, string> = {
   documents: '(SELECT COUNT(*) FROM staff_documents WHERE staff_id = sp.staff_id) + (SELECT COUNT(*) FROM employee_documents WHERE staff_id = sp.staff_id)',
   roster_comments: `SELECT COUNT(*) FROM roster_comments WHERE thread_staff_id = sp.staff_id OR thread_staff_id IN (${linkedRowsOf('sp.staff_id')})`,
   notice_read_staff_reports: 'SELECT COUNT(*) FROM notice_read_staff_reports WHERE staff_id = sp.staff_id',
+  recruit_applications: 'SELECT COUNT(*) FROM recruit_applications WHERE staff_id = sp.staff_id',
+  board_proposals: 'SELECT COUNT(*) FROM board_proposals WHERE (staff_id = sp.staff_id OR imported_staff_id = sp.staff_id) AND anonymized_at IS NULL',
 }
 
 /**
@@ -560,6 +684,11 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
         // 同意履歴は連携行（staff_id）の単位で消す。所属元の行が対象になっても、連携先の行が残っている間は連携の根拠として残す
         ['roster_consents', db.prepare('DELETE FROM roster_consents WHERE staff_id = ? OR (source_staff_id = ? AND staff_id IS NULL)').bind(staffId, staffId)],
+        // スタッフに紐づく応募（氏名・電話・メール・メモ）と応募した枠、人材提案のスナップショット・開示した氏名（#350）
+        ['recruit_application_items', db.prepare('DELETE FROM recruit_application_items WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
+        ['recruit_applications', db.prepare('DELETE FROM recruit_applications WHERE staff_id = ?').bind(staffId)],
+        ['board_proposals', db.prepare(`UPDATE board_proposals SET ${ANONYMIZE_PROPOSAL_SET}, anonymized_at = ?
+          WHERE (staff_id = ? OR imported_staff_id = ?) AND anonymized_at IS NULL`).bind(nowJST(), staffId, staffId)],
         // 本人情報の匿名化（#480）。ログインに使えないようにし、セッションと再設定のリンクも消す。
         // users はスタッフ本人の行（staff / roster_only）だけを匿名化する（管理者の行は変えない）
         [null, db.prepare(`DELETE FROM sessions WHERE user_id = ${userOf}`).bind(staffId)],
@@ -594,13 +723,159 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
   return acc
 }
 
+// ============ 在職中の保存期間（#420 #511 #350 #425） ============
+// 1回の Cron で処理する行数を区切る（D1 の問い合わせの数と CPU 時間を抑える。残りは翌日に回す）
+const IN_SERVICE_BATCH = 500
+const IN_SERVICE_MAX_BATCHES = 4
+const ENDED_EMPLOYMENT_BATCH = 50 // 雇用終了の従業員データを1回で消す人数
+// 位置情報・写真が残っている勤怠の行。migrations/0063 の部分索引 idx_attendance_location_photo と同じ式にする
+const LOCATION_PHOTO_SQL = '(latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL)'
+// 在職中の削除の対象（dry-run・実行ログの対象名）
+export const IN_SERVICE_TARGETS = ['attendance_location', 'attendance_photos', 'consultations_done', 'follow_logs_done', 'board_proposals_settled',
+  'ended_employee_records', 'ended_employee_documents', 'ended_employment_periods'] as const
+
+function daysAgo(days: number): string { return addDays(todayJST(), -days) }
+
+// 選んだ ID の行に対して、件数を区切って処理を繰り返す（dry-run は件数を数えるだけ）。
+// select は「binds＋LIMIT ?」で ID を返す SQL、apply は選んだ ID（JSON 配列の文字列）を受けて実行する文の一覧、
+// changesAt はその中で件数に数える文の位置。extra は同じ処理で一緒に消すもの（写真・書類の R2 の控えなど）の件数
+type ExtraCount = { r: RetentionTargetResult; count: string; changesAt: number }
+async function inBatches(db: D1Database, dryRun: boolean, r: RetentionTargetResult, o: {
+  count: string; select: string; binds: unknown[]; apply: (ids: string) => D1PreparedStatement[]; changesAt: number; batch?: number; extra?: ExtraCount
+}): Promise<void> {
+  if (dryRun) {
+    const counts = [o.count, ...(o.extra ? [o.extra.count] : [])]
+    const rows = await db.batch(counts.map(sql => db.prepare(sql).bind(...o.binds)))
+    const n = (i: number) => Number((rows[i].results[0] as { n: number } | undefined)?.n) || 0
+    r.targetCount += n(0)
+    if (o.extra) o.extra.r.targetCount += n(1)
+    return
+  }
+  const size = o.batch || IN_SERVICE_BATCH
+  for (let i = 0; i < IN_SERVICE_MAX_BATCHES; i++) {
+    const ids = ((await db.prepare(o.select).bind(...o.binds, size).all()).results as { id: number }[]).map(x => x.id)
+    if (!ids.length) break
+    const res = await db.batch(o.apply(JSON.stringify(ids)))
+    const n = res[o.changesAt].meta.changes || 0
+    r.targetCount += n; r.deletedCount += n
+    if (o.extra) {
+      const m = res[o.extra.changesAt].meta.changes || 0
+      o.extra.r.targetCount += m; o.extra.r.deletedCount += m
+    }
+    if (ids.length < size) break
+  }
+}
+
+async function runInServiceStage(target: string, fn: (r: RetentionTargetResult) => Promise<void>): Promise<RetentionTargetResult> {
+  const r: RetentionTargetResult = { target, targetCount: 0, deletedCount: 0, failedCount: 0 }
+  try {
+    await fn(r)
+  } catch (e) {
+    console.log(`retention: ${target} failed: ${e}`)
+    r.failedCount++; noteError(r, String(e))
+  }
+  return r
+}
+
+/**
+ * 在職中でも保存期間で消すもの（#420 #511 #350 #425）。削除の保留中のスタッフ・企業の分は消さない（#543）。
+ * R2 の写真・書類は retention_pending_r2 に控え、退職後7年の処理の再試行（毎日の cron の最初）で消す
+ */
+async function cleanupInService(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult[]> {
+  const s = await getRetentionSettings(db)
+  const notHeld = notHeldSql('staff_id', 'company_id')
+  const out: RetentionTargetResult[] = []
+
+  // #420 入店などの位置情報・端末情報と写真。勤怠の時刻・種別は残し、位置・端末・写真のキーを消す
+  const locCutoff = daysAgo(s.location_photo_days)
+  // 写真の件数は、実行時は R2 の削除の控え（retention_pending_r2）に入れた数
+  const photos: RetentionTargetResult = { target: 'attendance_photos', targetCount: 0, deletedCount: 0, failedCount: 0 }
+  out.push(await runInServiceStage('attendance_location', r => inBatches(db, dryRun, r, {
+    count: `SELECT COUNT(*) AS n FROM attendance_reports WHERE ${LOCATION_PHOTO_SQL} AND reported_at < ? AND ${notHeld}`,
+    select: `SELECT attendance_id AS id FROM attendance_reports WHERE ${LOCATION_PHOTO_SQL} AND reported_at < ? AND ${notHeld} LIMIT ?`,
+    binds: [locCutoff],
+    apply: ids => [
+      db.prepare(`INSERT OR IGNORE INTO retention_pending_r2 (photo_key, staff_id, bucket)
+        SELECT photo_key, staff_id, 'photos' FROM attendance_reports WHERE attendance_id IN (SELECT value FROM json_each(?)) AND photo_key IS NOT NULL`).bind(ids),
+      db.prepare(`UPDATE attendance_reports SET latitude = NULL, longitude = NULL, address = NULL, device_info = NULL, device_id = NULL, photo_key = NULL
+        WHERE attendance_id IN (SELECT value FROM json_each(?))`).bind(ids),
+    ],
+    changesAt: 1,
+    extra: { r: photos, changesAt: 0,
+      count: `SELECT COUNT(*) AS n FROM attendance_reports WHERE ${LOCATION_PHOTO_SQL} AND reported_at < ? AND ${notHeld} AND photo_key IS NOT NULL` },
+  })))
+  out.push(photos)
+
+  // #511 対応済みの相談と、完了したフォロー記録
+  out.push(await runInServiceStage('consultations_done', r => inBatches(db, dryRun, r, {
+    count: `SELECT COUNT(*) AS n FROM consultations WHERE status = 'done' AND created_at < ? AND ${notHeld}`,
+    select: `SELECT consultation_id AS id FROM consultations WHERE status = 'done' AND created_at < ? AND ${notHeld} LIMIT ?`,
+    binds: [cutoffDate(s.consultation_years)],
+    apply: ids => [db.prepare('DELETE FROM consultations WHERE consultation_id IN (SELECT value FROM json_each(?))').bind(ids)],
+    changesAt: 0,
+  })))
+  out.push(await runInServiceStage('follow_logs_done', r => inBatches(db, dryRun, r, {
+    count: `SELECT COUNT(*) AS n FROM follow_logs WHERE status = 'done' AND COALESCE(done_at, created_at) < ? AND ${notHeld}`,
+    select: `SELECT follow_id AS id FROM follow_logs WHERE status = 'done' AND COALESCE(done_at, created_at) < ? AND ${notHeld} LIMIT ?`,
+    binds: [cutoffDate(s.follow_log_years)],
+    apply: ids => [db.prepare('DELETE FROM follow_logs WHERE follow_id IN (SELECT value FROM json_each(?))').bind(ids)],
+    changesAt: 0,
+  })))
+
+  // #350 見送り・取り下げになった人材提案のスナップショット（経歴など）・開示した氏名・コメント・上流の経路
+  const propNotHeld = `staff_id NOT IN (${HELD_STAFF_SQL}) AND COALESCE(imported_staff_id, 0) NOT IN (${HELD_STAFF_SQL})
+    AND proposer_company_id NOT IN (${HELD_COMPANY_SQL}) AND receiver_company_id NOT IN (${HELD_COMPANY_SQL})`
+  const propWhere = `status IN ('declined', 'withdrawn') AND anonymized_at IS NULL AND COALESCE(decided_at, updated_at, created_at) < ? AND ${propNotHeld}`
+  out.push(await runInServiceStage('board_proposals_settled', r => inBatches(db, dryRun, r, {
+    count: `SELECT COUNT(*) AS n FROM board_proposals WHERE ${propWhere}`,
+    select: `SELECT proposal_id AS id FROM board_proposals WHERE ${propWhere} LIMIT ?`,
+    binds: [daysAgo(s.proposal_days)],
+    apply: ids => [db.prepare(`UPDATE board_proposals SET ${ANONYMIZE_PROPOSAL_SET}, anonymized_at = ? WHERE proposal_id IN (SELECT value FROM json_each(?)) AND anonymized_at IS NULL`).bind(nowJST(), ids)],
+    changesAt: 0,
+  })))
+
+  // #425 区分変更で雇用終了にした人（自社雇用に戻っていない人・統合済みの行）の従業員データと入社時書類（雇用終了日から7年）
+  const empCutoff = cutoffDate(RETIRED_YEARS)
+  const endedWhere = `er.employment_ended_at IS NOT NULL AND er.employment_ended_at <= ?
+    AND (COALESCE(sp.affiliation_type, 'own_employee') != 'own_employee' OR sp.merged_into_staff_id IS NOT NULL)
+    AND ${notHeldSql('er.staff_id', 'er.company_id')}`
+  const docs: RetentionTargetResult = { target: 'ended_employee_documents', targetCount: 0, deletedCount: 0, failedCount: 0 }
+  out.push(await runInServiceStage('ended_employee_records', r => inBatches(db, dryRun, r, {
+    count: `SELECT COUNT(*) AS n FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id WHERE ${endedWhere}`,
+    select: `SELECT er.staff_id AS id FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id WHERE ${endedWhere} LIMIT ?`,
+    binds: [empCutoff],
+    batch: ENDED_EMPLOYMENT_BATCH,
+    apply: ids => [
+      db.prepare(`INSERT OR IGNORE INTO retention_pending_r2 (photo_key, staff_id, bucket)
+        SELECT storage_key, staff_id, 'documents' FROM employee_documents WHERE staff_id IN (SELECT value FROM json_each(?))`).bind(ids),
+      db.prepare('DELETE FROM employee_records WHERE staff_id IN (SELECT value FROM json_each(?))').bind(ids),
+      db.prepare('DELETE FROM employee_documents WHERE staff_id IN (SELECT value FROM json_each(?))').bind(ids),
+    ],
+    changesAt: 1,
+    extra: { r: docs, changesAt: 2, count: `SELECT COUNT(*) AS n FROM employee_documents WHERE staff_id IN (
+      SELECT er.staff_id FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id WHERE ${endedWhere})` },
+  })))
+  out.push(docs)
+  out.push(await runInServiceStage('ended_employment_periods', r => inBatches(db, dryRun, r, {
+    count: `SELECT COUNT(*) AS n FROM employment_periods WHERE employment_ended_at IS NOT NULL AND employment_ended_at <= ? AND ${notHeld}`,
+    select: `SELECT period_id AS id FROM employment_periods WHERE employment_ended_at IS NOT NULL AND employment_ended_at <= ? AND ${notHeld} LIMIT ?`,
+    binds: [empCutoff],
+    apply: ids => [db.prepare('DELETE FROM employment_periods WHERE period_id IN (SELECT value FROM json_each(?))').bind(ids)],
+    changesAt: 0,
+  })))
+  return out
+}
+
 export type RetentionTrigger = 'cron' | 'manual'
 
 // dryRun=true の場合は一切DELETEを実行せず、対象件数のみを返す（本番投入前の確認用）。
 // 各段階の失敗は捕まえて結果（retention_logs）に残し、他の段階は続ける（#436）。
 // trigger・triggeredBy は実行元（毎日の cron か、本部画面の dry-run か）と実行した本部ユーザー（#234）
+// stages: 'main'（日報3年・通知2年・メール送信ログ1年・退職後7年。既定）と 'in_service'（在職中の保存期間。#420 #511 #350 #425）。
+// 毎日の cron はこの2つを別の起動で実行し（D1 の問い合わせの数を分ける）、本部画面の dry-run は両方をまとめて数える
+export type RetentionStage = 'main' | 'in_service'
 export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuckets,
-  opts: { dryRun: boolean; trigger: RetentionTrigger; triggeredBy?: number | null; detail?: boolean }): Promise<RetentionRunResult> {
+  opts: { dryRun: boolean; trigger: RetentionTrigger; triggeredBy?: number | null; detail?: boolean; stages?: RetentionStage[] }): Promise<RetentionRunResult> {
   const startedAt = new Date().toISOString()
 
   const stage = async (target: string, fn: () => Promise<RetentionTargetResult[]>): Promise<RetentionTargetResult[]> => {
@@ -611,11 +886,15 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       return [{ target, targetCount: 0, deletedCount: 0, failedCount: 1, error: String(e).slice(0, 1000) }]
     }
   }
+  const stages = opts.stages || ['main']
   const results = [
-    ...await stage('daily_reports', async () => [await cleanupDailyReports(db, opts.dryRun)]),
-    ...await stage('user_notifications', async () => [await cleanupUserNotifications(db, opts.dryRun)]),
-    ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
-    ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
+    ...(stages.includes('main') ? [
+      ...await stage('daily_reports', async () => [await cleanupDailyReports(db, opts.dryRun)]),
+      ...await stage('user_notifications', async () => [await cleanupUserNotifications(db, opts.dryRun)]),
+      ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
+      ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
+    ] : []),
+    ...(stages.includes('in_service') ? await stage('in_service', () => cleanupInService(db, opts.dryRun)) : []),
   ]
   const finishedAt = new Date().toISOString()
   for (const r of results) {
@@ -631,6 +910,58 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
     catch (e) { console.log(`retention: dry-run detail failed: ${e}`); run.detailError = String(e).slice(0, 300) }
   }
   return run
+}
+
+/**
+ * 毎日の cron から呼ぶ在職中の保存期間の削除（#420 #511 #350 #425）。RETENTION_ENABLED が 'true' でなければ dry-run。
+ * 戻り値は定期処理の実行記録（cron_runs）の形
+ */
+export async function runInServiceRetentionJob(db: D1Database, buckets: RetentionBuckets, enabled: boolean) {
+  const dryRun = !enabled
+  const r = await runRetentionCleanup(db, buckets, { dryRun, trigger: 'cron', stages: ['in_service'] })
+  const failed = r.results.filter(x => x.failedCount > 0)
+  return {
+    dry_run: dryRun,
+    target: r.results.reduce((a, x) => a + x.targetCount, 0),
+    deleted: r.results.reduce((a, x) => a + x.deletedCount, 0),
+    failed: failed.reduce((a, x) => a + x.failedCount, 0),
+    error: failed.map(x => `${x.target}: ${x.error || '失敗'}`).join(' / ').slice(0, 1000) || null,
+  }
+}
+
+// ============ R2 に残った、どの勤怠にも紐づかない写真（#533 の残り） ============
+// 報告の登録に失敗したときに消し損ねた写真など。本部画面から dry-run で数え、確認してから消す。
+// attendance/ 以下だけを対象にし、アップロードから1日以内のもの（登録の途中かもしれない）は数えない
+const ORPHAN_PREFIX = 'attendance/'
+const ORPHAN_PAGE = 500
+const ORPHAN_MIN_AGE_MS = 24 * 3600 * 1000
+// 勤怠の報告の写真のキーの形（attendance/会社/スタッフ/シフト/報告の種類_時刻.拡張子。api.ts・staff-lifecycle.ts と同じ）。
+// 同じ attendance/ 以下でも、この形でないキー（打刻修正の添付など、別の表から参照される写真）は紐づかない写真として扱わない
+const ORPHAN_KEY_RE = new RegExp(`^attendance/\\d+/\\d+/\\d+/(?:${REPORT_TYPES.join('|')})_\\d+\\.(?:jpg|png)$`)
+export async function scanOrphanPhotos(db: D1Database, bucket: R2Bucket | undefined,
+  o: { dryRun: boolean; cursor?: string | null; triggeredBy?: number | null }): Promise<{ scanned: number; orphans: number; deleted: number
+    samples: string[]; next_cursor: string | null }> {
+  if (!bucket) throw new Error('R2 のバケット（PHOTOS）が設定されていません')
+  const startedAt = new Date().toISOString()
+  const page = await bucket.list({ prefix: ORPHAN_PREFIX, limit: ORPHAN_PAGE, ...(o.cursor ? { cursor: o.cursor } : {}) })
+  const old = page.objects.filter(x => ORPHAN_KEY_RE.test(x.key) && Date.now() - new Date(x.uploaded).getTime() >= ORPHAN_MIN_AGE_MS).map(x => x.key)
+  let orphans: string[] = []
+  if (old.length) {
+    // 勤怠の行・削除の控え・0036 で外した重複の控えのどれにもないキー
+    orphans = ((await db.prepare(`SELECT j.value AS k FROM json_each(?) j
+      WHERE NOT EXISTS (SELECT 1 FROM attendance_reports a WHERE a.photo_key = j.value)
+        AND NOT EXISTS (SELECT 1 FROM retention_pending_r2 p WHERE p.photo_key = j.value)
+        AND NOT EXISTS (SELECT 1 FROM attendance_reports_duplicates_0036 d WHERE d.photo_key = j.value)`).bind(JSON.stringify(old)).all()).results as { k: string }[]).map(x => x.k)
+  }
+  let deleted = 0
+  if (!o.dryRun && orphans.length) {
+    const r: RetentionTargetResult = { target: 'orphan_photos', targetCount: orphans.length, deletedCount: 0, failedCount: 0 }
+    try { await bucket.delete(orphans); deleted = r.deletedCount = orphans.length }
+    catch (e) { r.failedCount = orphans.length; r.error = `R2 の削除に失敗: ${e}`.slice(0, 1000) }
+    await writeRetentionLogs(db, [r], { dryRun: false, trigger: 'manual', triggeredBy: o.triggeredBy ?? null, startedAt, finishedAt: new Date().toISOString() })
+    if (r.failedCount) throw new Error(r.error)
+  }
+  return { scanned: page.objects.length, orphans: orphans.length, deleted, samples: orphans.slice(0, 20), next_cursor: page.truncated ? page.cursor : null }
 }
 
 // 1回の実行の行はまとめて書く（対象ごとに1文ずつ書くとクエリ数が増えるため）。

@@ -646,14 +646,21 @@ const RETENTION_TARGET_LABEL = {
   staff_documents: '履歴書など（退職後7年）', employee_documents: '入社時書類（退職後7年）', r2_documents: 'R2書類ファイル（退職後7年）',
   roster_comments: '企業間チャット（退職後7年）', roster_comment_reads: '企業間チャットの既読位置（退職後7年）', roster_consents: '連携の同意履歴（退職後7年）',
   anonymized_staff: '本人情報の匿名化（退職後7年）',
+  recruit_applications: '応募（スタッフに紐づくもの。退職後7年）', recruit_application_items: '応募した枠（退職後7年）', board_proposals: '人材提案の匿名化（退職後7年）',
   retired_staff_deferred: '上限で翌日に回した退職スタッフ（人数）', r2_pending: '翌日以降に消すR2ファイル（残り）',
   password_reset_tokens: 'パスワード再設定のリンク（期限切れ・使用済み）', expired_report_tokens: '報告用URL（期限から30日・取り消し済み）',
+  // 在職中の保存期間（期間は「保存期間の設定」で変えられる。#420 #511 #350 #425）
+  attendance_location: '入店などの位置情報・端末情報（在職中）', attendance_photos: '入店などの写真（在職中・R2の削除に回す）',
+  consultations_done: '対応済みの相談（在職中）', follow_logs_done: '完了したフォロー記録（在職中）',
+  board_proposals_settled: '見送り・取り下げの人材提案の匿名化', ended_employee_records: '雇用終了の従業員データ（雇用終了から7年）',
+  ended_employee_documents: '雇用終了の入社時書類（雇用終了から7年・R2の削除に回す）', ended_employment_periods: '過去の雇用期間（終了から7年）',
+  orphan_photos: '勤怠に紐づかない写真（本部の手動削除）',
 }
 // 人ごとの dry-run の内訳で出す列（API の DRY_RUN_STAFF_COUNTS と同じキー）
 const RETENTION_STAFF_COLS = [
   ['shifts', 'シフト'], ['attendance_reports', '出退勤'], ['r2_photos', '写真'], ['evaluations', '評価'], ['follow_logs', 'やり取り'],
   ['consultations', '相談'], ['attendance_corrections', '打刻修正'], ['employee_records', '従業員データ'], ['documents', '書類'],
-  ['roster_comments', 'チャット'], ['notice_read_staff_reports', '既読率'],
+  ['roster_comments', 'チャット'], ['notice_read_staff_reports', '既読率'], ['recruit_applications', '応募'], ['board_proposals', '提案'],
 ]
 const RETENTION_TRIGGER_LABEL = { cron: '定期処理', manual: '手動' }
 // トークンの削除（API の RETENTION_TOKEN_TARGETS と同じ）
@@ -685,7 +692,8 @@ function retentionScheduleHtml(sch) {
       <td>${esc(s.name || '-')} <span class="text-xs text-slate-500">#${esc(s.staff_id)}</span></td>
       <td class="text-xs">${esc(s.retired_at || '-')}</td>
       <td class="text-xs">${esc(s.last_work_date || '-')}</td>
-      <td class="text-xs">${note}</td>
+      <td class="text-xs">${note}
+        <button class="btn btn-outline text-xs ml-1" data-action="openRetentionHold" data-kind="staff" data-id="${Number(s.staff_id)}" data-name="${esc(s.name || '')}">削除を保留</button></td>
     </tr>`
   const table = (rows, empty) => `
     <div class="overflow-x-auto">
@@ -774,7 +782,8 @@ async function renderRetention() {
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>
         <h2 class="text-xl font-bold">データ保持・定期処理</h2>
-        <p class="text-sm text-slate-400 mt-1">日報は3年、アプリ内通知は2年、メール送信ログは1年で削除します。出退勤記録・シフト・評価・やり取り・相談・R2写真・打刻修正・報告設定・スタッフ別の既読率・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴は退職後7年で削除し、氏名・連絡先などの本人情報は匿名化します（毎日Cronで実行）。期限切れ・使用済みのパスワード再設定のリンクと報告用URLも毎日削除します。</p>
+        <p class="text-sm text-slate-400 mt-1">日報は3年、アプリ内通知は2年、メール送信ログは1年で削除します。出退勤記録・シフト・評価・やり取り・相談・R2写真・打刻修正・報告設定・スタッフ別の既読率・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴・スタッフに紐づく応募は退職後7年で削除し、氏名・連絡先などの本人情報と人材提案の経歴・氏名は匿名化します（毎日Cronで実行）。期限切れ・使用済みのパスワード再設定のリンクと報告用URLも毎日削除します。</p>
+        <p class="text-sm text-slate-400 mt-1">在職中でも、入店などの位置情報・端末情報と写真、対応済みの相談、完了したフォロー記録、見送り・取り下げになった人材提案の経歴・氏名は「保存期間の設定」の期間で消します。区分変更で雇用終了にした人の従業員データと入社時書類は、雇用終了から7年で削除します（毎日 3:30 の Cron）。削除を保留したスタッフ・企業のデータは、どの削除の対象にもなりません。</p>
       </div>
       <button class="btn btn-outline" data-action="runRetentionDryRun"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
     </div>
@@ -782,9 +791,179 @@ async function renderRetention() {
     ${cron ? cronStatusHtml(cron) : '<p class="text-sm text-red-400 mb-5">定期処理の実行記録の取得に失敗しました</p>'}
     <div id="retention-dryrun-result" class="mb-5">${retentionState.dryRun ? retentionDryRunHtml(retentionState.dryRun) : ''}</div>
     ${sch ? retentionScheduleHtml(sch) : '<p class="text-sm text-red-400 mb-5">次回削除予定の取得に失敗しました</p>'}
+    ${sch ? retentionHoldsHtml(sch.holds, sch.grace_days) : ''}
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5" id="retention-settings"></section>
+    ${retentionOrphanHtml()}
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4" id="retention-logs"></section>`
-  await loadRetentionLogs()
+  await Promise.all([loadRetentionLogs(), loadRetentionSettings()])
 }
+
+// ---------- 削除の保留（#543） ----------
+// 係争中・調査中のスタッフや、解約手続き中などの企業のデータを、どの定期削除の対象からも外す
+function retentionHoldsHtml(holds, graceDays) {
+  if (!holds) return ''
+  const by = (h) => `${esc(h.hold_at || '-')}${h.hold_by_name ? `<br><span class="text-slate-500">${esc(h.hold_by_name)}</span>` : ''}`
+  const staffRows = holds.staff.map(h => `
+    <tr>
+      <td class="text-xs">${esc(h.company_name || '-')}</td>
+      <td>${esc(h.name || '-')} <span class="text-xs text-slate-500">#${esc(h.staff_id)}</span>${h.retired_at ? `<br><span class="text-xs text-slate-500">退職日 ${esc(h.retired_at)}</span>` : ''}</td>
+      <td class="text-xs" style="white-space:pre-wrap;word-break:break-all">${esc(h.hold_reason || '')}</td>
+      <td class="text-xs">${by(h)}</td>
+      <td><button class="btn btn-outline text-xs" data-action="releaseRetentionHold" data-kind="staff" data-id="${Number(h.staff_id)}" data-name="${esc(h.name || '')}">解除</button></td>
+    </tr>`).join('')
+  const companyRows = holds.companies.map(h => `
+    <tr>
+      <td>${esc(h.company_name || '-')} <span class="text-xs text-slate-500">#${esc(h.company_id)}</span></td>
+      <td class="text-xs" style="white-space:pre-wrap;word-break:break-all">${esc(h.hold_reason || '')}</td>
+      <td class="text-xs">${by(h)}</td>
+      <td><button class="btn btn-outline text-xs" data-action="releaseRetentionHold" data-kind="company" data-id="${Number(h.company_id)}" data-name="${esc(h.company_name || '')}">解除</button></td>
+    </tr>`).join('')
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+        <h3 class="font-bold">削除の保留</h3>
+        <div class="flex gap-2">
+          <button class="btn btn-outline text-xs" data-action="openRetentionHold" data-kind="staff">スタッフを保留</button>
+          <button class="btn btn-outline text-xs" data-action="openRetentionHold" data-kind="company">企業を保留</button>
+        </div>
+      </div>
+      <p class="text-xs text-slate-400 mb-3">未払い賃金の請求・労災・調査・請求トラブルなどが続いている間は、保留にすると退職後7年・在職中の保存期間・日報の3年のどの削除でもデータを消しません。解除すると、退職後7年の削除は猶予（${esc(graceDays)}日）からやり直します。</p>
+      <h4 class="text-sm font-bold mt-2 mb-1">スタッフ（${esc(holds.staff.length)}人）</h4>
+      <div class="overflow-x-auto">
+        <table class="tbl"><thead><tr><th>会社</th><th>スタッフ</th><th>理由</th><th>設定</th><th></th></tr></thead>
+        <tbody>${staffRows || '<tr><td colspan="5" class="text-center text-slate-500 py-3">保留中のスタッフはいません</td></tr>'}</tbody></table>
+      </div>
+      <h4 class="text-sm font-bold mt-4 mb-1">企業（${esc(holds.companies.length)}社）</h4>
+      <div class="overflow-x-auto">
+        <table class="tbl"><thead><tr><th>企業</th><th>理由</th><th>設定</th><th></th></tr></thead>
+        <tbody>${companyRows || '<tr><td colspan="4" class="text-center text-slate-500 py-3">保留中の企業はいません</td></tr>'}</tbody></table>
+      </div>
+    </section>`
+}
+delegate('openRetentionHold', async (el) => {
+  const kind = el.dataset.kind === 'company' ? 'company' : 'staff'
+  const id = el.dataset.id ? Number(el.dataset.id) : null
+  let companies = []
+  if (kind === 'company' && !id) {
+    try { companies = (await axios.get('/api/hq/companies')).data.companies || [] } catch (e) { return showApiError(e, '企業の一覧を読み込めませんでした') }
+  }
+  const target = id
+    ? `<p class="text-sm text-gray-700 mb-2">${kind === 'staff' ? 'スタッフ' : '企業'}: <b>${esc(el.dataset.name || '')}</b> <span class="text-xs text-gray-400">#${esc(id)}</span></p><input type="hidden" id="rh-id" value="${esc(id)}">`
+    : kind === 'staff'
+      ? `<div class="mb-2"><label class="text-xs text-gray-600 block mb-1">スタッフID（staff_id。次回削除予定の一覧の # の番号）</label><input id="rh-id" type="number" min="1" class="inp"></div>`
+      : `<div class="mb-2"><label class="text-xs text-gray-600 block mb-1">企業</label><select id="rh-id" class="inp"><option value="">選んでください</option>
+          ${companies.map(c => `<option value="${Number(c.company_id)}">${esc(c.company_name)}（${esc(c.company_code || '')}）</option>`).join('')}</select></div>`
+  modal(`
+    <h3 class="font-bold text-lg mb-2 text-gray-800">削除を保留する</h3>
+    ${target}
+    <div><label class="text-xs text-gray-600 block mb-1">理由（必須。例: 未払い賃金の請求で係争中・2026年10月 顧問弁護士より依頼）</label>
+      <textarea id="rh-reason" class="inp" rows="3" maxlength="500"></textarea></div>
+    <p class="text-[11px] text-gray-400 mt-1">保留中は、この${kind === 'staff' ? 'スタッフ' : '企業'}のデータをどの定期削除でも消しません。不要になったら解除してください。</p>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary flex-1" data-action="saveRetentionHold" data-kind="${kind}">保留にする</button>
+    </div>`)
+})
+delegate('saveRetentionHold', (el) => withSubmitLock(el, async () => {
+  const kind = el.dataset.kind === 'company' ? 'company' : 'staff'
+  const id = Number(document.getElementById('rh-id').value)
+  const reason = document.getElementById('rh-reason').value.trim()
+  if (!Number.isInteger(id) || id <= 0) return toast(kind === 'staff' ? 'スタッフIDを入力してください' : '企業を選んでください')
+  if (!reason) return toast('保留の理由を入力してください')
+  try {
+    const { data } = await axios.put(`/api/hq/retention/holds/${kind}/${id}`, { reason })
+    closeModal(); toast(`${data.name} の削除を保留にしました`); renderRetention()
+  } catch (e) { showApiError(e, '保留にできませんでした') }
+}))
+delegate('releaseRetentionHold', (el) => withSubmitLock(el, async () => {
+  const kind = el.dataset.kind === 'company' ? 'company' : 'staff'
+  if (!confirm(`${el.dataset.name || ''} の削除の保留を解除します。\n保存期間を過ぎたデータは、猶予の後の定期削除で削除されます。よろしいですか？`)) return
+  try {
+    await axios.delete(`/api/hq/retention/holds/${kind}/${Number(el.dataset.id)}`)
+    toast('保留を解除しました'); renderRetention()
+  } catch (e) { showApiError(e, '解除できませんでした') }
+}))
+
+// ---------- 在職中の保存期間の設定（#420 #511 #350） ----------
+async function loadRetentionSettings() {
+  const box = document.getElementById('retention-settings')
+  if (!box) return
+  let data
+  try { data = (await axios.get('/api/hq/retention/settings')).data } catch (e) {
+    box.innerHTML = '<p class="text-sm text-red-400">保存期間の設定を読み込めませんでした</p>'; return
+  }
+  box.innerHTML = `
+    <h3 class="font-bold mb-1">保存期間の設定（在職中）</h3>
+    <p class="text-xs text-slate-400 mb-3">勤怠の時刻・種別は残し、位置情報・写真などだけを消します。期間を短くすると、次の定期処理（3:30）で新しい期間を過ぎた分が削除されます。</p>
+    <div class="grid md:grid-cols-2 gap-3">
+      ${Object.entries(data.defs).map(([k, d]) => `
+        <label class="text-xs text-slate-300">${esc(d.label)}
+          <input type="number" class="inp mt-1" data-retention-key="${esc(k)}" data-orig="${esc(data.settings[k])}" min="${esc(d.min)}" max="${esc(d.max)}" value="${esc(data.settings[k])}">
+          <span class="text-[11px] text-slate-500">既定 ${esc(d.def)}・${esc(d.min)}〜${esc(d.max)}</span>
+        </label>`).join('')}
+    </div>
+    <button class="btn btn-primary text-xs mt-3" data-action="saveRetentionSettings">保存する</button>`
+}
+delegate('saveRetentionSettings', (el) => withSubmitLock(el, async () => {
+  const body = {}
+  let shorter = false
+  document.querySelectorAll('[data-retention-key]').forEach(inp => {
+    if (inp.value === inp.dataset.orig) return
+    body[inp.dataset.retentionKey] = Number(inp.value)
+    if (Number(inp.value) < Number(inp.dataset.orig)) shorter = true
+  })
+  if (!Object.keys(body).length) return toast('変更がありません')
+  if (shorter && !confirm('保存期間を短くします。次の定期処理で、新しい期間を過ぎたデータが元に戻せない形で削除されます。よろしいですか？')) return
+  try {
+    await axios.put('/api/hq/retention/settings', body)
+    toast('保存期間の設定を保存しました'); loadRetentionSettings()
+  } catch (e) { showApiError(e, '保存できませんでした') }
+}))
+
+// ---------- 勤怠に紐づかない写真（#533 の残り） ----------
+// R2 の attendance/ 以下を500件ずつ見て、どの勤怠にも紐づかない写真（報告の登録に失敗したときの残りなど）を数え、確認してから消す
+const retentionOrphanState = { cursor: null, last: null }
+function retentionOrphanHtml() {
+  const r = retentionOrphanState.last
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5" id="retention-orphans">
+      <h3 class="font-bold mb-1">勤怠に紐づかない写真</h3>
+      <p class="text-xs text-slate-400 mb-3">報告の登録に失敗したときなどに R2 に残った写真を探します（アップロードから1日以内のものは対象外）。まず確認し、件数を見てから削除してください。1回に500件ずつ確認します。</p>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn btn-outline text-xs" data-action="scanOrphanPhotos" data-mode="first">最初から確認（削除しない）</button>
+        ${r && r.next_cursor ? '<button class="btn btn-outline text-xs" data-action="scanOrphanPhotos" data-mode="next">次の500件を確認</button>' : ''}
+        ${r && r.orphans > 0 ? '<button class="btn btn-danger text-xs" data-action="deleteOrphanPhotos">このページの紐づかない写真を削除</button>' : ''}
+      </div>
+      ${r ? `<p class="text-xs mt-3">確認した写真 ${esc(r.scanned)}件のうち、紐づかないもの <b class="${r.orphans ? 'text-amber-400' : ''}">${esc(r.orphans)}件</b>${r.deleted ? `（${esc(r.deleted)}件を削除しました）` : ''}${r.next_cursor ? '。続きがあります' : '。最後まで確認しました'}</p>
+        ${r.samples && r.samples.length ? `<details class="mt-1"><summary class="text-xs text-slate-400 cursor-pointer">例（先頭の${esc(r.samples.length)}件）</summary><pre class="text-[11px] text-slate-400 mt-1" style="white-space:pre-wrap;word-break:break-all">${esc(r.samples.join('\n'))}</pre></details>` : ''}` : ''}
+    </section>`
+}
+function redrawOrphan() {
+  const box = document.getElementById('retention-orphans')
+  if (box) box.outerHTML = retentionOrphanHtml()
+}
+delegate('scanOrphanPhotos', (el) => withSubmitLock(el, async () => {
+  const cursor = el.dataset.mode === 'next' && retentionOrphanState.last ? retentionOrphanState.last.next_cursor : null
+  try {
+    const { data } = await axios.post('/api/hq/retention/orphan-photos', { dry_run: true, cursor })
+    retentionOrphanState.cursor = cursor
+    retentionOrphanState.last = data
+    redrawOrphan()
+  } catch (e) { showApiError(e, '写真を確認できませんでした') }
+}))
+delegate('deleteOrphanPhotos', (el) => withSubmitLock(el, async () => {
+  const r = retentionOrphanState.last
+  if (!r || !confirm(`このページの勤怠に紐づかない写真 ${r.orphans}件を R2 から削除します。元に戻せません。よろしいですか？`)) return
+  try {
+    // 削除の直前にもう一度、同じページを確かめてから消す
+    const { data } = await axios.post('/api/hq/retention/orphan-photos', { dry_run: false, cursor: retentionOrphanState.cursor })
+    retentionOrphanState.last = data
+    redrawOrphan()
+    toast(`${data.deleted}件の写真を削除しました`)
+    retentionState.logPage = 1
+    await loadRetentionLogs()
+  } catch (e) { showApiError(e, '写真を削除できませんでした') }
+}))
 
 // 実行ログ（1回の実行を1行にまとめ、開くと対象ごとの内訳。#305）
 function retentionRunRow(r) {

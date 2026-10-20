@@ -6,6 +6,8 @@ import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS, RETENTION_TOKEN_TARGETS } from './services/retention'
 import { cronStatus } from './services/cron'
+import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, scanOrphanPhotos, setRetentionHold } from './services/retention'
+import { csvLimitHeaders, csvLimitNote, loadLatestForCsv } from './csv'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
@@ -5218,7 +5220,8 @@ api.post('/hq/templates', async (c) => {
 // 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定とする。
 // 会社別・退職者別の内訳（detail）も返す（#365）
 api.post('/hq/retention/dry-run', async (c) => {
-  const result = await runRetentionCleanup(c.env.DB, c.env, { dryRun: true, trigger: 'manual', triggeredBy: c.get('user').user_id, detail: true })
+  // 在職中の保存期間（#420 #511 #350 #425。cron では別の起動で実行する）もまとめて数える
+  const result = await runRetentionCleanup(c.env.DB, c.env, { dryRun: true, trigger: 'manual', triggeredBy: c.get('user').user_id, detail: true, stages: ['main', 'in_service'] })
   return c.json(result)
 })
 
@@ -5273,11 +5276,124 @@ api.get('/hq/retention/logs', async (c) => {
     }
   })
   // トークンの削除は RETENTION_ENABLED に関係なく毎日実削除で記録されるので、データ保持の直近の実行には数えない
-  const notToken = `l.target NOT IN (${RETENTION_TOKEN_TARGETS.map(t => `'${t}'`).join(', ')})`
+  // 本部画面の保守（紐づかない写真の削除。#533）も同じく数えない
+  const notToken = `l.target NOT IN (${[...RETENTION_TOKEN_TARGETS, ...RETENTION_MAINTENANCE_TARGETS].map(t => `'${t}'`).join(', ')})`
   const latest = await db.prepare(`SELECT
       (SELECT MAX(l.started_at) FROM retention_logs l WHERE l.dry_run = 0 AND ${notToken}) AS last_real_run,
       (SELECT MAX(l.started_at) FROM retention_logs l WHERE ${RETENTION_TRIGGER_SQL} = 'cron' AND ${notToken}) AS last_cron_run`).first()
   return c.json({ runs: out, page, per_page: RETENTION_RUNS_PER_PAGE, total: Number(total?.n) || 0, trigger, latest })
+})
+
+// 在職中の保存期間の設定（位置情報と写真・相談・フォロー記録・決着した人材提案。#420 #511 #350）
+api.get('/hq/retention/settings', async (c) => {
+  return c.json({ settings: await getRetentionSettings(c.env.DB), defs: RETENTION_SETTING_DEFS })
+})
+api.put('/hq/retention/settings', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!b || typeof b !== 'object') return c.json({ error: '入力が正しくありません' }, 400)
+  const stmts: D1PreparedStatement[] = []
+  for (const [k, d] of Object.entries(RETENTION_SETTING_DEFS)) {
+    if (b[k] === undefined) continue
+    const v = toInt(b[k], d.min, d.max)
+    if (v === null) return c.json({ error: `${d.label}は ${d.min}〜${d.max} の整数で入力してください`, field: k }, 400)
+    stmts.push(db.prepare(`INSERT INTO retention_settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`).bind(k, v, u.user_id, nowJST()))
+  }
+  if (!stmts.length) return c.json({ error: '変更する項目がありません' }, 400)
+  await db.batch(stmts)
+  return c.json({ ok: true, settings: await getRetentionSettings(db) })
+})
+
+// 削除の保留（#543）。kind: staff（スタッフ ID）/ company（企業 ID）。設定には理由が必要。
+// 一覧は GET /hq/retention/schedule の holds で返す
+const RETENTION_HOLD_REASON_MAX = 500
+api.put('/hq/retention/holds/:kind/:id', async (c) => {
+  const kind = c.req.param('kind'); const id = toInt(c.req.param('id'), 1)
+  if (!oneOf(kind, ['staff', 'company'] as const) || id === null) return c.json({ error: '保留の対象が正しくありません' }, 400)
+  const b = await c.req.json().catch(() => ({})) as any
+  const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+  if (!reason) return c.json({ error: '保留の理由を入力してください（例: 未払い賃金の請求で係争中）', field: 'reason' }, 400)
+  if (reason.length > RETENTION_HOLD_REASON_MAX) return c.json({ error: `保留の理由は${RETENTION_HOLD_REASON_MAX}文字以内で入力してください`, field: 'reason' }, 400)
+  const r = await setRetentionHold(c.env.DB, kind, id, { reason, by: c.get('user').user_id })
+  if (!r) return c.json({ error: kind === 'staff' ? 'スタッフが見つかりません' : '企業が見つかりません' }, 404)
+  return c.json({ ok: true, name: r.name })
+})
+api.delete('/hq/retention/holds/:kind/:id', async (c) => {
+  const kind = c.req.param('kind'); const id = toInt(c.req.param('id'), 1)
+  if (!oneOf(kind, ['staff', 'company'] as const) || id === null) return c.json({ error: '保留の対象が正しくありません' }, 400)
+  const r = await setRetentionHold(c.env.DB, kind, id, null)
+  if (!r) return c.json({ error: kind === 'staff' ? 'スタッフが見つかりません' : '企業が見つかりません' }, 404)
+  return c.json({ ok: true, name: r.name })
+})
+
+// R2 に残った、どの勤怠にも紐づかない写真（#533 の残り）。1回に500件ずつ見て、cursor で続きを見る。
+// dry_run=false のときだけ、そのページの紐づかない写真を消す（消した件数は実行ログに残す）
+api.post('/hq/retention/orphan-photos', async (c) => {
+  const b = await c.req.json().catch(() => ({})) as any
+  const cursor = typeof b.cursor === 'string' && b.cursor.length > 0 && b.cursor.length <= 2048 ? b.cursor : null
+  try {
+    return c.json(await scanOrphanPhotos(c.env.DB, c.env.PHOTOS, { dryRun: b.dry_run !== false, cursor, triggeredBy: c.get('user').user_id }))
+  } catch (e) {
+    console.log(`orphan photos failed: ${e}`)
+    return c.json({ error: `写真の確認・削除に失敗しました: ${String(e).slice(0, 200)}` }, 502)
+  }
+})
+
+// ============ 日報の書き出しと保存期間の案内（導入企業向け。#417） ============
+// 日報は稼働日から3年で定期削除される。削除の前に控えを取れるよう、期間（最大62日）・案件・スタッフで絞って CSV で書き出す。
+// 列は 稼働日・案件・スタッフ・提出日時・インシデント・クレーム・確認・コメントと、日報テンプレートの項目（テンプレートにない値はキー名の列）
+const DR_CSV_MAX_DAYS = 62
+const DR_CSV_LIMIT = 2000
+api.get('/admin/daily-reports-csv', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const from = c.req.query('from') || '', to = c.req.query('to') || ''
+  if (!isISODate(from) || !isISODate(to)) return c.json({ error: '開始日と終了日を指定してください' }, 400)
+  if (from > to) return c.json({ error: '期間の開始日が終了日より後になっています' }, 400)
+  if (addDays(from, DR_CSV_MAX_DAYS - 1) < to) return c.json({ error: `書き出す期間は${DR_CSV_MAX_DAYS}日以内にしてください` }, 400)
+  let where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date <= ?'
+  const binds: any[] = [u.company_id, from, to]
+  for (const [k, col] of [['project_id', 'dr.project_id'], ['staff_id', 'dr.staff_id']] as const) {
+    const q = c.req.query(k)
+    if (q === undefined || q === '') continue
+    const v = toInt(q, 1)
+    if (v === null) return c.json({ error: '絞り込みの条件が正しくありません' }, 400)
+    where += ` AND ${col} = ?`; binds.push(v)
+  }
+  const { rows, total } = await loadLatestForCsv(db, `SELECT dr.work_date, dr.submitted_at, dr.report_values, dr.incident_flag, dr.complaint_flag,
+      dr.manager_checked, dr.manager_comment, dr.staff_id, p.project_name, p.report_template_id, us.name AS staff_name
+    FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
+    JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
+    WHERE ${where} ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC`,
+    `SELECT COUNT(*) AS n FROM daily_reports dr WHERE ${where}`, binds, DR_CSV_LIMIT)
+  // テンプレートの項目の順とラベル（複数の案件のテンプレートは、出てきた順に列を足す）
+  const cols = new Map<string, string>()
+  const tplIds = [...new Set(rows.map(r => r.report_template_id).filter(Boolean))]
+  if (tplIds.length) {
+    const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN ${JSON_IN}`).bind(bindJsonArray(tplIds)).all()).results as any[]
+    const byId = new Map(ts.map(t => [t.template_id, t.fields_json]))
+    for (const id of tplIds) {
+      let f: any[] = []
+      try { const v = JSON.parse(byId.get(id) || '[]'); if (Array.isArray(v)) f = v } catch { f = [] }
+      for (const x of f) if (x && typeof x.key === 'string' && !cols.has(x.key)) cols.set(x.key, String(x.label || x.key))
+    }
+  }
+  const values = rows.map(r => {
+    let v: Record<string, unknown> = {}
+    try { const o = JSON.parse(r.report_values || '{}'); if (o && typeof o === 'object' && !Array.isArray(o)) v = o } catch { v = {} }
+    for (const k of Object.keys(v)) if (!cols.has(k)) cols.set(k, k)
+    return v
+  })
+  const cell = (x: unknown) => x == null ? '' : Array.isArray(x) ? x.join('、') : typeof x === 'object' ? JSON.stringify(x) : x
+  const keys = [...cols.keys()]
+  const header = ['稼働日', '案件', 'スタッフ', 'スタッフID', '提出日時', 'インシデント', 'クレーム', '確認', '管理者コメント', ...keys.map(k => cols.get(k) as string)]
+  const body = rows.map((r, i) => [r.work_date, r.project_name, r.staff_name, r.staff_id, r.submitted_at, r.incident_flag ? 'あり' : '', r.complaint_flag ? 'あり' : '',
+    r.manager_checked ? '確認済み' : '未確認', r.manager_comment || '', ...keys.map(k => cell(values[i][k]))])
+  return csvResponse(`日報_${from}_${to}.csv`, toCsv(header, body, { note: csvLimitNote(total, DR_CSV_LIMIT) }), csvLimitHeaders(total, DR_CSV_LIMIT))
+})
+// 日報の保存期間と、今後30日のうちに3年を過ぎて削除される件数（日報一覧の案内に出す）
+api.get('/admin/daily-reports-retention', async (c) => {
+  return c.json({ ...await dailyReportRetentionInfo(c.env.DB, c.get('user').company_id), enabled: c.env.RETENTION_ENABLED === 'true' })
 })
 
 // 定期処理（cron）の処理ごとの最終実行・直近の実行記録・警告（#192）
