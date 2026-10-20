@@ -78,10 +78,11 @@
             ${p.is_open ? '<span class="badge badge-green shrink-0">募集中</span>' : p.status === 'open' && p.expired ? '<span class="badge badge-gray shrink-0">期間終了</span>' : '<span class="badge badge-gray shrink-0">終了</span>'}
           </div>
           <p class="text-xs text-gray-600 mb-2">募集中の枠 ${p.open_roles}件（残り${p.open_remaining}名）・応募 ${p.application_count}件${p.pending_count ? `・<b class="text-red-600">未対応 ${p.pending_count}件</b>` : ''}</p>
+          ${Number(p.blocked_count) > 0 ? `<p class="text-[11px] text-amber-700 bg-amber-50 rounded p-1.5 mb-2 recruit-blocked" title="同じ接続元からの送信が多すぎた・ボット対策で止めた送信の数です。説明会などで同じ Wi-Fi から多くの人が応募すると止まることがあります"><i class="fas fa-shield-halved mr-1"></i>直近${Number(p.blocked_days) || 7}日に送信を止めた応募 ${Number(p.blocked_count)}件${p.blocked_last_at ? `（最後 ${esc(dayjs(String(p.blocked_last_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</p>` : ''}
           <div class="flex gap-1.5 flex-wrap">
             <button class="btn btn-outline text-xs" onclick="showRecruitShare(${p.page_id})"><i class="fas fa-qrcode"></i>URL・QR</button>
             <button class="btn btn-outline text-xs" onclick="openRecruitPage(${p.page_id})"><i class="fas fa-pen"></i>編集</button>
-            ${p.pending_count ? `<button class="btn btn-outline text-xs" onclick="window.__recruitState.tab='applications';window.__recruitState.page_id=${p.page_id};renderRecruit()">応募を見る</button>` : ''}
+            ${p.application_count ? `<button class="btn btn-outline text-xs" data-action="recruitPageApps" data-id="${Number(p.page_id)}" data-pending="${p.pending_count ? '1' : ''}">応募を見る</button>` : ''}
             ${p.is_open ? `<button class="btn btn-outline text-xs" onclick="setRecruitStatus(${p.page_id},'closed')">募集を終了</button>`
               : p.expired ? `<button class="btn btn-outline text-xs" data-action="recruitReopen" data-id="${p.page_id}">期間を延長して再開</button>`
               : `<button class="btn btn-outline text-xs" onclick="setRecruitStatus(${p.page_id},'open')">再開</button>`}
@@ -90,6 +91,11 @@
       </div>`
   }
 
+  // 募集ページの応募の一覧へ（未対応がなくても開ける。未対応があれば未対応、なければすべての状態。#339）
+  delegate('recruitPageApps', (el) => {
+    Object.assign(S, { tab: 'applications', page_id: Number(el.dataset.id), slot_role_id: null, status: el.dataset.pending ? 'pending' : 'all' })
+    window.renderRecruit()
+  })
   // reopen: 期間が切れたページを、期間を延ばして再開する（保存するときに status を open にする。#136）
   window.openRecruitPage = function (id, reopen) {
     const p = id ? (window.__recruitPages || []).find(x => x.page_id === id) : null
@@ -326,7 +332,8 @@
     return `<article class="card p-4" data-application-id="${a.application_id}">
       <div class="flex items-start justify-between gap-2 flex-wrap mb-2">
         <div><p class="font-bold text-gray-800">${who}</p>
-          <p class="text-xs text-gray-500">${a.kana ? esc(a.kana) + '・' : ''}${a.phone ? `<a href="tel:${esc(a.phone)}" class="hover:underline">${esc(a.phone)}</a>` : ''}${a.email ? '・' + esc(a.email) : ''}</p></div>
+          <p class="text-xs text-gray-500">${a.kana ? esc(a.kana) + '・' : ''}${a.phone ? `<a href="tel:${esc(a.phone)}" class="hover:underline">${esc(a.phone)}</a>` : ''}${a.email ? '・' + esc(a.email) : ''}</p>
+          ${a.turnstile_unverified ? '<span class="badge badge-yellow mt-1 recruit-unverified" title="ボット対策（Turnstile）の確認サービスに接続できなかったため、ロボットかどうかを判定せずに受け付けた応募です。氏名・電話番号などがいたずらでないか確かめてから承認してください">要確認（ロボット判定できず）</span>' : ''}</div>
         <p class="text-[11px] text-gray-400 text-right">${esc(a.page_title || '')}<br>${dayjs(a.created_at).format('M/D HH:mm')} 応募</p>
       </div>
       ${a.note ? `<p class="text-xs bg-gray-50 rounded p-2 mb-2 whitespace-pre-wrap">${esc(a.note)}</p>` : ''}

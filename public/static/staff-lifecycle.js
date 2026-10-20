@@ -566,6 +566,11 @@
           ${navigator.share ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="shareReportGuide" data-shift-id="${Number(shiftId)}"><i class="fas fa-share-nodes"></i>LINEなどで送る</button>` : ''}
         </div>
         <p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください（送り先の番号を確かめてください）</p>` : ''}
+      <div class="flex flex-wrap gap-1.5 pt-2 border-t border-gray-100">
+        ${d.proxy_blocked === '欠勤' ? '' : `<button type="button" class="btn btn-outline text-xs" data-action="corrNew" data-shift-id="${Number(shiftId)}" title="このシフトの打刻の修正・打刻漏れの追加を、管理者として申請します（#393）"><i class="fas fa-user-clock"></i>打刻を修正</button>`}
+        <button type="button" class="btn btn-outline text-xs" data-action="opLogShow" data-entity="shift" data-id="${Number(shiftId)}" data-host="shift-op-log-${Number(shiftId)}" title="このシフトの状態・時間・金額・精算の変更を、誰がいつ行ったか（#159）"><i class="fas fa-clock-rotate-left"></i>変更履歴</button>
+      </div>
+      <div id="shift-op-log-${Number(shiftId)}"></div>
     </div>`
   }
   // 報告の確認事項: 写真なしの報告・撮影日時のずれ・報告用URLの端末（#418 #532 #535）
