@@ -1368,11 +1368,15 @@ function staffDetailHeaderHtml(sid, p) {
     </div>
 `
 }
-// アプリの利用状況（#286）。自社でログインできる人だけ、最終ログインか「未ログイン」を出す（他社連携の行は所属元のアカウントで使う）
+// アプリの利用状況（#286）。最後にアプリを使った日時（app_last_used_at。他社連携の行は所属元のログインも見る）か「未ログイン」を出す。
+// app_last_used_at を返さない API では、自社でログインできる人だけ最終ログイン（last_login_at）で出す
 function staffLoginBadge(p) {
-  if (p.user_role !== 'staff' || String(p.user_code || '').startsWith('LK-') || p.merged_into_staff_id) return ''
-  if (!p.last_login_at) return '<span class="badge badge-yellow" id="staff-login-badge" title="ログインを発行してから、まだ一度もアプリにログインしていません。会社コード・スタッフ番号の案内を本人に送ってください">未ログイン</span>'
-  return `<span class="badge badge-gray" id="staff-login-badge" title="スタッフアプリに最後にログインした日時">最終ログイン ${esc(dayjs(String(p.last_login_at).replace(' ', 'T')).format('M/D HH:mm'))}</span>`
+  if (p.user_role !== 'staff' || p.merged_into_staff_id) return ''
+  const hasUsed = p.app_last_used_at !== undefined
+  if (!hasUsed && (p.affiliation_type === 'linked_external' || String(p.user_code || '').startsWith('LK-'))) return ''
+  const at = hasUsed ? p.app_last_used_at : p.last_login_at
+  if (!at) return '<span class="badge badge-yellow" id="staff-login-badge" title="ログインを発行してから、まだ一度もアプリを使っていません。会社コード・スタッフ番号の案内を本人に送ってください">未ログイン</span>'
+  return `<span class="badge badge-gray" id="staff-login-badge" title="スタッフアプリを最後に使った日時">${hasUsed ? '最終利用' : '最終ログイン'} ${esc(dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm'))}</span>`
 }
 // 取引先所属のスタッフの所属会社は、登録済みの取引先から選ぶ（#161。自由入力の名前が別の取引先・支払先にならないように）
 function partnerSelectHtml(affData, current) {
@@ -2265,8 +2269,8 @@ delegate('leaveDecide', el => {
 window.showSkillSheet = async function (sid) {
   const { data } = await axios.get('/api/admin/staff/' + sid + '/skill-sheet')
   const p = data.profile, perf = data.performance, ev = data.evaluation
-  // 推薦コメントをサーバーに保存できるか（API が recommend_comment を返すとき。#447）
-  const saved = data.recommend_comment !== undefined
+  // 推薦コメントをサーバーに保存できるか（API が skill_sheet_comment を返すとき。#447）
+  const saved = data.skill_sheet_comment !== undefined
   modal(`
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h3 class="font-bold text-lg"><i class="fas fa-file-lines text-blue-600 mr-1"></i>スキルシート</h3>
@@ -2288,16 +2292,16 @@ window.showSkillSheet = async function (sid) {
       ${ev ? `<div><p class="text-xs font-bold text-gray-400 mb-1">評価（${esc(ev.evaluation_period)}）</p>
         <p class="text-xs">勤怠 ${ev.attendance_score}/5 ・報告 ${ev.report_score}/5 ・実績 ${ev.performance_score}/5 ・クライアント ${ev.client_score}/5</p></div>` : ''}
       <div id="ss-comment-box"><p class="text-xs font-bold text-gray-400 mb-1">推薦コメント</p>
-        <textarea id="ss-comment" rows="3" maxlength="2000" class="inp text-xs ss-no-print" placeholder="推薦コメントを入力してから印刷してください（任意）"></textarea>
+        <textarea id="ss-comment" rows="3" maxlength="1000" class="inp text-xs ss-no-print" placeholder="推薦コメントを入力してから印刷してください（任意）"></textarea>
         <div class="flex items-center gap-2 mt-1 ss-no-print">
           ${saved ? `<button type="button" class="btn btn-outline text-xs" data-action="saveSkillSheetComment" data-id="${Number(sid)}"><i class="fas fa-floppy-disk"></i>コメントを保存</button>` : ''}
-          <p class="text-[11px] text-gray-400 flex-1" id="ss-comment-note">${saved ? `スキルシート用のコメントです（管理者メモとは別。空欄なら印刷に出しません）${data.recommend_comment_updated_at ? `。最終保存 ${esc(dashDateTime(data.recommend_comment_updated_at))}${data.recommend_comment_updated_by_name ? ' ' + esc(data.recommend_comment_updated_by_name) : ''}` : ''}` : '入力した内容は、この端末にだけ下書きとして残ります（空欄なら印刷に出しません）'}</p>
+          <p class="text-[11px] text-gray-400 flex-1" id="ss-comment-note">${saved ? 'スキルシート用のコメントです（管理者メモとは別。1000文字まで。空欄なら印刷に出しません）' : '入力した内容は、この端末にだけ下書きとして残ります（空欄なら印刷に出しません）'}</p>
         </div>
         <p id="ss-comment-print" class="ss-print-only text-xs whitespace-pre-wrap"></p></div>
     </div>
     <style>.ss-print-only{display:none}@media print{.ss-no-print{display:none!important}.ss-print-only{display:block!important}#ss-comment-box.ss-empty{display:none!important}}</style>`)
   // 推薦コメントは印刷用の段落に写し、長文でも途中で切れないようにする（#447）。下書きはこの端末に残す
-  // サーバーに保存したコメント（recommend_comment。#447）があればそれを出し、未保存の下書きはこの端末に残す
+  // サーバーに保存したコメント（skill_sheet_comment。#447）があればそれを出し、未保存の下書きはこの端末に残す
   const key = 'admin.skillSheetComment.' + Number(sid)
   const ta = document.getElementById('ss-comment'), out = document.getElementById('ss-comment-print'), box = document.getElementById('ss-comment-box')
   const sync = () => {
@@ -2307,8 +2311,8 @@ window.showSkillSheet = async function (sid) {
   }
   let draft = null
   try { draft = localStorage.getItem(key) } catch { }
-  ta.value = draft != null ? draft : (saved ? String(data.recommend_comment || '') : '')
-  if (saved && draft != null && draft !== String(data.recommend_comment || '')) document.getElementById('ss-comment-note').insertAdjacentHTML('afterbegin', '<span class="text-amber-700">保存していない下書きを表示しています。</span>')
+  ta.value = draft != null ? draft : (saved ? String(data.skill_sheet_comment || '') : '')
+  if (saved && draft != null && draft !== String(data.skill_sheet_comment || '')) document.getElementById('ss-comment-note').insertAdjacentHTML('afterbegin', '<span class="text-amber-700">保存していない下書きを表示しています。</span>')
   sync()
   ta.addEventListener('input', () => {
     sync()
@@ -2320,7 +2324,7 @@ delegate('saveSkillSheetComment', el => withSubmitLock(el, async () => {
   try { await axios.put(`/api/admin/staff/${sid}/skill-sheet-comment`, { comment: ta.value }) } catch (e) { showApiError(e, 'コメントを保存できませんでした'); return }
   try { localStorage.removeItem('admin.skillSheetComment.' + sid) } catch { }
   const note = document.getElementById('ss-comment-note')
-  if (note) note.textContent = `スキルシート用のコメントです（管理者メモとは別。空欄なら印刷に出しません）。保存しました ${dayjs().format('M/D HH:mm')}`
+  if (note) note.textContent = `スキルシート用のコメントです（管理者メモとは別。1000文字まで。空欄なら印刷に出しません）。保存しました ${dayjs().format('M/D HH:mm')}`
   toast('推薦コメントを保存しました')
 }))
 
@@ -2748,6 +2752,11 @@ delegate('editProject', el => withSubmitLock(el, async () => {
       <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">現場責任者の電話番号（任意）</label><input id="ep-sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 090-1234-5678" value="${esc(p.site_contact_phone || '')}"></div>
+      </div>
+      <p class="text-[11px] text-gray-400 -mt-2">スタッフアプリ・報告用URLの当日のシフトに、タップで電話をかけられる連絡先として出します（空欄なら会社の緊急連絡先だけ。#173）</p>
       <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
       <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
       <button class="btn btn-primary w-full" data-action="saveProject" data-id="${pid}">保存する</button>
@@ -2762,6 +2771,7 @@ delegate('saveProject', el => withSubmitLock(el, async () => {
       project_name: v('ep-name'), client_id: v('ep-client') || null, project_type: v('ep-type'), location: v('ep-loc'),
       report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'),
       memo: v('ep-memo'), show_performance: document.getElementById('ep-perf').checked,
+      site_contact_name: v('ep-sc-name'), site_contact_phone: v('ep-sc-phone'),
     })
     if (!res) return
     closeModal(); toast('案件を保存しました'); renderProjectDetail(pid)
@@ -4125,11 +4135,11 @@ function reportModeTabsHtml(f) {
 }
 // 日報が未提出のシフト（確定・代打で、勤務日を過ぎた・日報が必要なもの）。API は GET /admin/daily-reports/missing（#344）
 async function renderMissingReports(f, refresh) {
-  const page = f.page || 1
   if (!refresh) loading()
-  // 期間の既定は直近7日（今日を含む）
-  const from = f.from || dayjs().subtract(6, 'day').format('YYYY-MM-DD'), to = f.to || dayjs().format('YYYY-MM-DD')
-  const q = { from, to, offset: (page - 1) * REPORT_PAGE_SIZE, limit: REPORT_PAGE_SIZE }
+  // 期間の既定（昨日までの7日）と上限（62日・昨日まで）はサーバーが決め、使った期間を返す
+  const q = {}
+  if (f.from) q.from = f.from
+  if (f.to) q.to = f.to
   if (f.project) q.project_id = f.project
   if (f.staff) q.staff_id = f.staff
   let data
@@ -4142,15 +4152,8 @@ async function renderMissingReports(f, refresh) {
   }
   const opts = REPORT_OPTIONS || { projects: [], staff: [] }
   const rows = data.missing || []
-  const total = Number(data.total != null ? data.total : rows.length)
-  const lastPage = Math.max(1, Math.ceil(total / REPORT_PAGE_SIZE))
+  const from = data.from || f.from || '', to = data.to || f.to || ''
   for (const r of rows) MISSING_ROWS.set(Number(r.shift_id), r)
-  const pager = total > REPORT_PAGE_SIZE ? `
-    <div class="flex items-center justify-center gap-2 mt-4">
-      <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
-      <span class="text-xs text-gray-500">${page} / ${lastPage} ページ</span>
-      <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page + 1}" ${page >= lastPage ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
-    </div>` : ''
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-3">日報一覧</h2>
     ${reportModeTabsHtml(f)}
@@ -4163,9 +4166,9 @@ async function renderMissingReports(f, refresh) {
         <label>スタッフ<select id="rp-staff" class="inp" onchange="applyReportFilter()"><option value="">すべて</option>
           ${opts.staff.map(s => `<option value="${Number(s.staff_id)}" ${f.staff === s.staff_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
       </div>
-      <p class="text-[11px] text-gray-400 mt-2">確定・代打のシフトのうち、日報が必要で、まだ日報が出ていないものです（日報「不要」の案件・シフトは出しません）。押すと、そのシフトの報告状況から日報を代理入力できます</p>
+      <p class="text-[11px] text-gray-400 mt-2">確定・代打のシフトのうち、日報が必要で、まだ日報が出ていないものです（日報「不要」の案件・シフトは出しません。期間は昨日までの62日以内）。押すと、そのシフトの報告状況から日報を代理入力できます</p>
     </section>
-    <p class="text-xs text-gray-500 mb-2" id="missing-total">未提出 ${total}件</p>
+    <p class="text-xs text-gray-500 mb-2" id="missing-total">未提出 ${rows.length}件${data.has_more ? '（多いため先頭の分だけを表示しています。期間を短くしてください）' : ''}</p>
     <div class="card overflow-x-auto">
       <table class="tbl" id="missing-report-table"><thead><tr><th>勤務日</th><th>時間</th><th>スタッフ</th><th>案件</th><th>電話</th><th></th></tr></thead>
       <tbody>${rows.map(r => {
@@ -4179,9 +4182,7 @@ async function renderMissingReports(f, refresh) {
           <td class="text-right"><button type="button" class="btn btn-outline text-xs whitespace-nowrap" data-action="missingReportOpen" data-id="${Number(r.shift_id)}"><i class="fas fa-file-pen"></i>報告状況・代理入力</button></td>
         </tr>`
       }).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-6">この条件で未提出の日報はありません <i class="fas fa-check text-emerald-500"></i></td></tr>'}</tbody></table>
-    </div>
-    ${pager}`
-  if (!rows.length && page > 1 && total > 0) goReports({ ...f, page: lastPage })
+    </div>`
 }
 const MISSING_ROWS = new Map()
 delegate('missingReportOpen', el => {

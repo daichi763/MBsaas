@@ -1814,9 +1814,9 @@ async function renderHqMail() {
   } catch (e) { $app.innerHTML = `<p class="text-red-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>`; return }
   if (HQ_MAIL.days === 7) renderMailAlert(stats)
   const pct = (r) => `${Math.round(r * 1000) / 10}%`
-  // 会社ごとの今日の送信数（today_total）と1日の目安（alert.daily_limit）。サーバーが返すときだけ列を出す（#392）
-  const hasToday = stats.companies.some(c => c.today_total != null)
-  const dailyLimit = Number(stats.alert && stats.alert.daily_limit) || 0
+  // 会社ごとの直近24時間の送信数（last_24h）と目安（alert.daily_warn）。サーバーが返すときだけ列を出す（#392）
+  const hasToday = stats.companies.some(c => c.last_24h != null)
+  const dailyLimit = Number(stats.alert && stats.alert.daily_warn) || 0
   $app.innerHTML = `
     <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
       <h2 class="text-xl font-bold">メール送信</h2>
@@ -1828,11 +1828,11 @@ async function renderHqMail() {
     </div>
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
       <h3 class="font-bold mb-2"><i class="fas fa-building text-cyan-400 mr-1"></i>会社別</h3>
-      <p class="text-[11px] text-slate-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。${dailyLimit ? `今日の送信数が1日の目安（${dailyLimit}件）の8割を超えた会社も警告します。` : ''}</p>
+      <p class="text-[11px] text-slate-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。${dailyLimit ? `直近24時間の送信が${dailyLimit}通以上の会社も警告します（申請・通知の繰り返しや設定の誤りの目安）。` : ''}</p>
       <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">企業</th>${hasToday ? `<th class="text-right px-2" title="今日（日本時間）の送信数${dailyLimit ? `。1日の目安 ${dailyLimit}件` : ''}">今日</th>` : ''}<th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">企業</th>${hasToday ? `<th class="text-right px-2" title="直近24時間の送信数${dailyLimit ? `（目安 ${dailyLimit}通を超えると警告）` : ''}">24時間</th>` : ''}<th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
         <tbody>${stats.companies.map(c => `<tr class="border-b border-slate-700/40">
-          <td class="px-2 py-2">${esc(c.company_name)}</td>${hasToday ? `<td class="px-2 text-right ${dailyLimit && Number(c.today_total) >= dailyLimit * 0.8 ? 'text-amber-400 font-bold' : ''}">${Number(c.today_total) || 0}</td>` : ''}<td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
+          <td class="px-2 py-2">${esc(c.company_name)}</td>${hasToday ? `<td class="px-2 text-right ${dailyLimit && Number(c.last_24h) >= dailyLimit ? 'text-amber-400 font-bold' : ''}">${Number(c.last_24h) || 0}</td>` : ''}<td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
           <td class="px-2 text-right ${c.failed ? 'text-red-400' : ''}">${c.failed}</td><td class="px-2 text-right ${c.failure_rate >= stats.alert.rate ? 'text-red-400 font-bold' : ''}">${pct(c.failure_rate)}</td>
           <td class="px-2 text-xs text-slate-400">${c.types.map(t => `${esc(MAIL_TYPE_LABEL[t.type] || t.type)} ${t.ok}/${t.total}`).join('、')}</td>
           <td class="px-2 text-xs">${esc(c.last_success_at || '－')}</td>
@@ -1916,8 +1916,8 @@ function renderMailAlert(stats) {
     $app.parentNode.insertBefore(box, $app)
   }
   const warnings = (stats && stats.warnings) || []
-  // 送信量の警告（kind: 'volume'。1日の送信数が上限に近い会社。#392）と、届いていない警告を見出しで分ける
-  const volumeOnly = warnings.length && warnings.every(w => w.kind === 'volume')
+  // 送信量の警告（kind: 'daily_volume'。直近24時間の送信数が目安を超えた会社。#392）と、届いていない警告を見出しで分ける
+  const volumeOnly = warnings.length && warnings.every(w => w.kind === 'daily_volume')
   box.innerHTML = warnings.length ? `
     <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#f59e0b">
       <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>${volumeOnly ? 'メールの送信数が多い会社があります' : 'メールの送信で確認が必要な会社があります'}</p>
