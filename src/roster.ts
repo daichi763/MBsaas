@@ -10,6 +10,7 @@ import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -265,7 +266,7 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
       sp.employment_status, us.status AS user_status, us.retired_at,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth ELSE sp.date_of_birth END AS dob
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
   const today = nowJST().slice(0, 10)
   const out: any[] = []
@@ -322,7 +323,7 @@ export async function ensureRosterIdentity(db: D1Database, companyId: number): P
     ])
     if (type === 'partner_manual' && r.affiliation) {
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(companyId, r.affiliation).run()
-      await db.prepare(`UPDATE staff_profiles SET partner_affiliation_id = (SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?) WHERE staff_id = ?`)
+      await db.prepare(`UPDATE staff_profiles SET partner_affiliation_id = (SELECT COALESCE(merged_into_id, affiliation_id) FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?) WHERE staff_id = ?`)
         .bind(companyId, r.affiliation, r.staff_id).run()
     }
   }
@@ -359,7 +360,8 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
            CASE WHEN ${inServiceSql('sp', 'us')} AND (COALESCE(sp.affiliation_type, 'own_employee') != 'linked_external'
              OR (srcu.user_id IS NOT NULL AND ${inServiceSql('src', 'srcu')})) THEN 1 ELSE 0 END AS link_in_service
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    -- 所属元が連携を終了した行（#162）は、所属元の行を参照しない（基本項目は空になり、連携用IDも共有できない）
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     LEFT JOIN users srcu ON srcu.user_id = src.user_id
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
@@ -368,7 +370,8 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
   if (!row) return null
   const type = (row.affiliation_type as string) || 'own_employee'
   // 経路（雇用元の行）は画面・APIに出さない（頭超え防止）
-  const { root_staff_id: _root, relink_code: _rc, person_created_company_id: _pc, link_in_service: _ls, ...rest } = row as any
+  // 連携を終了した所属元のユーザー（link_revoked_by）は他社のユーザーなので出さない
+  const { root_staff_id: _root, relink_code: _rc, person_created_company_id: _pc, link_in_service: _ls, link_revoked_by: _rb, ...rest } = row as any
   const relink = usesRelinkCode(type, row.person_created_company_id, row.company_id)
   const linkable = (type === 'own_employee' || type === 'linked_external') && !row.merged_into_staff_id
   return {
@@ -399,7 +402,7 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
 export async function propagateNameToLinked(db: D1Database, sourceStaffId: number | string, name: string) {
   const sid = Number(sourceStaffId)
   await db.prepare(`UPDATE users SET name = ? WHERE name IS NOT ? AND user_id IN (SELECT user_id FROM staff_profiles
-      WHERE (root_staff_id = ? OR (root_staff_id IS NULL AND source_staff_id = ?)) AND affiliation_type = 'linked_external')`)
+      WHERE (root_staff_id = ? OR (root_staff_id IS NULL AND source_staff_id = ?)) AND affiliation_type = 'linked_external' AND link_revoked_at IS NULL)`)
     .bind(name, name, sid, sid).run()
 }
 
@@ -417,7 +420,8 @@ export function hostNoteStmts(db: D1Database, roster: any, siteEvaluation: any, 
   const now = nowJST()
   const stmts = [db.prepare('UPDATE staff_profiles SET site_evaluation = ?, work_memo = ?, host_note_updated_at = ? WHERE staff_id = ? AND company_id = ?')
     .bind(nextEval, nextMemo, now, roster.staff_id, roster.company_id)]
-  if (roster.affiliation_type !== 'linked_external' || !roster.source_staff_id || !roster.owner_company_id) return stmts
+  // 所属元が連携を終了した行（#162）は、所属元に共有しない（自社の行の値だけを変える）
+  if (roster.affiliation_type !== 'linked_external' || !roster.source_staff_id || !roster.owner_company_id || roster.link_revoked_at) return stmts
   stmts.push(db.prepare(`INSERT INTO roster_host_note_history (staff_id, company_id, source_staff_id, owner_company_id, site_evaluation, work_memo, written_by, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(roster.staff_id, roster.company_id, roster.source_staff_id, roster.owner_company_id, nextEval, nextMemo, userId, now))
   // 通知の本文には評価の内容を入れない（受信箱に評価の写しを残さない）。リンク先の一覧で確かめる
@@ -468,7 +472,7 @@ export async function linkedStaffEmails(db: D1Database, staffIds: number[]): Pro
     SELECT l.staff_id, ou.email FROM staff_profiles l
     JOIN staff_profiles o ON o.staff_id = COALESCE(l.root_staff_id, l.source_staff_id)
     JOIN users ou ON ou.user_id = o.user_id
-    WHERE l.staff_id IN (SELECT value FROM json_each(?)) AND l.affiliation_type = 'linked_external'
+    WHERE l.staff_id IN (SELECT value FROM json_each(?)) AND l.affiliation_type = 'linked_external' AND l.link_revoked_at IS NULL
       AND o.merged_into_staff_id IS NULL AND ou.role = 'staff' AND ou.status = 'active' AND ou.email IS NOT NULL AND ou.email != ''`)
     .bind(JSON.stringify(staffIds.map(Number))).all()).results as any[]
   for (const r of rows) out.set(Number(r.staff_id), String(r.email))
@@ -538,6 +542,7 @@ rosterApi.get('/:id/share-code', async (c) => {
   const u = c.get('user')
   const r = await loadRoster(c.env.DB, c.req.param('id'), u.company_id)
   if (!r) return c.json({ error: 'not found' }, 404)
+  if (r.link_revoked_at) return c.json({ error: '所属元の企業が連携を終了したため、連携用IDを共有できません' }, 400)
   if (!r.link_shareable) {
     return c.json({ error: r.linkable ? '退職・停止中のスタッフ（他社連携の場合は所属元で退職済みの人を含む）は連携用IDを共有できません'
       : '連携用IDを共有できるのは自社雇用スタッフと、他社から連携したスタッフのみです' }, 400)
@@ -563,6 +568,8 @@ rosterApi.put('/:id/host-status', async (c) => {
   if (r.affiliation_type !== 'linked_external') return c.json({ error: '取引状況を設定できるのは、他社から連携したスタッフのみです（自社のスタッフは在籍状況で管理します）' }, 400)
   if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません' }, 409)
   if (!(HOST_STATUSES as readonly string[]).includes(b.status)) return c.json({ error: '取引状況の値が正しくありません' }, 400)
+  // 所属元が連携を終了した行は、稼働先では戻せない（#162。所属元が再開したら戻せる）
+  if (r.link_revoked_at && b.status !== 'ended') return c.json({ error: '所属元の企業が連携を終了したため、取引状況を戻せません（再開は所属元の企業が行います）' }, 409)
   if (b.status === 'ended') {
     await db.prepare('UPDATE staff_profiles SET link_ended_at = COALESCE(link_ended_at, ?) WHERE staff_id = ? AND company_id = ?').bind(nowJST(), r.staff_id, u.company_id).run()
   } else {
@@ -641,15 +648,17 @@ rosterApi.get('/:id/links', async (c) => {
   // （稼働先の社内メモ・フォロー履歴・日報本文等は返さない）
   const today = nowJST().slice(0, 10); const month = today.slice(0, 7)
   // 稼働日数・最終稼働は今日以前の分。今後の予定は month_planned_days（予定を含む今月の日数）で分けて返す（#85）
+  // link_revoked_at: 所属元（自社）が連携を終了した日時（#162）。終了した操作者は自社のユーザーなので名前を返す
   const links = await db.prepare(`
     SELECT sp.staff_id AS linked_staff_id, co.company_name AS host_company_name, sp.created_at AS linked_at,
-      sp.site_evaluation, sp.work_memo, sp.host_note_updated_at,
+      sp.site_evaluation, sp.work_memo, sp.host_note_updated_at, sp.link_revoked_at,
+      (SELECT ru.name FROM users ru WHERE ru.user_id = sp.link_revoked_by AND ru.company_id = ?) AS revoked_by_name,
       (SELECT MIN(rc.created_at) FROM roster_consents rc WHERE rc.staff_id = sp.staff_id) AS consented_at,
       (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS month_days,
       (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_planned_days,
       (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
-    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(month + '%', today, month + '%', today, sid).all()
+    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(u.company_id, month + '%', today, month + '%', today, sid).all()
   // 連携先が書いた現場評価・稼働メモの変更履歴（新しい順に各10件。#538）
   const linkRows = links.results as any[]
   if (linkRows.length) {
@@ -662,8 +671,128 @@ rosterApi.get('/:id/links', async (c) => {
     for (const l of linkRows) l.history = hist.filter(h => h.staff_id === l.linked_staff_id).map(({ rn: _rn, staff_id: _s, ...h }) => h)
   }
   // 連携先は「自社から直接連携した企業」のみ（その先の企業は出さない）
-  if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: linkRows })
+  if (consents) return c.json({ role: 'host', owner_company_name: r.owner_company_name, consents, links: linkRows, link_revoked_at: r.link_revoked_at || null })
   return c.json({ role: 'owner', links: linkRows })
+})
+
+// ---------- 所属元による連携の終了・再開（#162） ----------
+// 所属元（自社の行から直接連携された稼働先がある企業）が、稼働先への共有を止める。
+// 終了した連携行は所属元の基本項目を参照しなくなり（loadRoster ほか）、取引終了（link_ended_at）にしてシフトの候補から外す。
+// 終了した連携行からさらに連携した先の行（多段連携）も同時に終了する。稼働先の管理者には通知し、記録を roster_link_events に残す
+const NOTIFY_ADMIN_ROLES_SQL = `('company_admin', 'sales_manager', 'field_manager', 'office_staff')`
+// 連携行（staff_id の一覧）ごとに、その稼働先の企業の管理者全員へ通知する文
+function hostAdminNotifyStmt(db: D1Database, ids: number[], kind: string, titlePrefix: string, body: string, now: string): D1PreparedStatement {
+  return db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+    SELECT ou.company_id, ou.user_id, ?, ? || COALESCE(lu.name, ''), ?, '/admin#staff/' || l.staff_id, l.staff_id, ?
+    FROM staff_profiles l JOIN users lu ON lu.user_id = l.user_id
+    JOIN users ou ON ou.company_id = l.company_id AND ou.status = 'active' AND ou.role IN ${NOTIFY_ADMIN_ROLES_SQL}
+    WHERE l.staff_id IN ${JSON_IN}`).bind(kind, titlePrefix, body, now, bindJsonArray(ids))
+}
+function linkEventStmt(db: D1Database, ids: number[], event: string, topId: number, u: any, now: string): D1PreparedStatement {
+  return db.prepare(`INSERT INTO roster_link_events (staff_id, company_id, source_staff_id, owner_company_id, event, via_staff_id, actor_user_id, actor_company_id, created_at)
+    SELECT staff_id, company_id, source_staff_id, owner_company_id, ?, CASE WHEN staff_id = ? THEN NULL ELSE source_staff_id END, ?, ?, ?
+    FROM staff_profiles WHERE staff_id IN ${JSON_IN}`).bind(event, topId, u.user_id, u.company_id, now, bindJsonArray(ids))
+}
+rosterApi.post('/:id/links/:linkedId/end', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const r = await loadRoster(db, c.req.param('id'), u.company_id)
+  if (!r) return c.json({ error: 'not found' }, 404)
+  const linkedId = Number(c.req.param('linkedId'))
+  if (!Number.isInteger(linkedId) || linkedId <= 0) return c.json({ error: '連携が見つかりません' }, 404)
+  // 自社の行から直接連携した稼働先の行と、そこからさらに連携した先の行（多段連携。深さは10段まで）
+  const rows = (await db.prepare(`WITH RECURSIVE down(id, depth) AS (
+      SELECT staff_id, 0 FROM staff_profiles WHERE staff_id = ? AND source_staff_id = ? AND affiliation_type = 'linked_external'
+      UNION SELECT sp.staff_id, down.depth + 1 FROM staff_profiles sp JOIN down ON sp.source_staff_id = down.id
+        WHERE sp.affiliation_type = 'linked_external' AND down.depth < 10)
+    SELECT sp.staff_id, sp.link_revoked_at, down.depth FROM down JOIN staff_profiles sp ON sp.staff_id = down.id`).bind(linkedId, r.staff_id).all()).results as any[]
+  const top = rows.find(x => Number(x.depth) === 0)
+  if (!top) return c.json({ error: '連携が見つかりません' }, 404)
+  if (top.link_revoked_at) return c.json({ error: 'この連携はすでに終了しています' }, 409)
+  const ids = rows.filter(x => !x.link_revoked_at).map(x => Number(x.staff_id))
+  const now = nowJST()
+  const upd = await db.prepare(`UPDATE staff_profiles SET link_revoked_at = ?, link_revoked_by = ?, link_ended_at = COALESCE(link_ended_at, ?)
+    WHERE staff_id IN ${JSON_IN} AND link_revoked_at IS NULL`).bind(now, u.user_id, now, bindJsonArray(ids)).run()
+  if (!upd.meta.changes) return c.json({ error: 'この連携はすでに終了しています' }, 409)
+  // 同時に押されたときに重ねて記録しないよう、この操作で終了にした行だけを記録・通知する
+  const done = ((await db.prepare(`SELECT staff_id FROM staff_profiles WHERE staff_id IN ${JSON_IN} AND link_revoked_at = ? AND link_revoked_by = ?`)
+    .bind(bindJsonArray(ids), now, u.user_id).all()).results as any[]).map(x => Number(x.staff_id))
+  await db.batch([
+    linkEventStmt(db, done, 'ended', linkedId, u, now),
+    hostAdminNotifyStmt(db, done, 'roster_link_ended', '連携の終了: ',
+      '所属元の企業が、このスタッフの情報の共有（企業間連携）を終了しました。基本項目は表示されなくなり、新しいシフトには割り当てられません。今後のシフトが入っている場合は、担当を見直してください。', now),
+  ])
+  return c.json({ ok: true, ended: done.length })
+})
+// 終了した連携を再開する（直接連携した行だけ。多段連携の先の行は、その行の所属元が再開する）
+rosterApi.post('/:id/links/:linkedId/resume', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const r = await loadRoster(db, c.req.param('id'), u.company_id)
+  if (!r) return c.json({ error: 'not found' }, 404)
+  if (r.link_revoked_at) return c.json({ error: '自社の連携が所属元の企業で終了しているため、再開できません' }, 409)
+  if (!r.link_shareable) return c.json({ error: '退職・停止中のスタッフの連携は再開できません' }, 400)
+  const linkedId = Number(c.req.param('linkedId'))
+  const now = nowJST()
+  const upd = await db.prepare(`UPDATE staff_profiles SET link_revoked_at = NULL, link_revoked_by = NULL
+    WHERE staff_id = ? AND source_staff_id = ? AND affiliation_type = 'linked_external' AND link_revoked_at IS NOT NULL`).bind(linkedId, r.staff_id).run()
+  if (!upd.meta.changes) return c.json({ error: '終了した連携が見つかりません' }, 404)
+  await db.batch([
+    linkEventStmt(db, [linkedId], 'resumed', linkedId, u, now),
+    hostAdminNotifyStmt(db, [linkedId], 'roster_link_resumed', '連携の再開: ',
+      '所属元の企業が、このスタッフの企業間連携を再開しました。基本項目がふたたび表示されます。取引状況は「取引終了」のままなので、シフトに割り当てるときはスタッフ詳細の「取引状況」を戻してください。', now),
+  ])
+  return c.json({ ok: true })
+})
+
+// ---------- 連携用IDの一覧（#539 所属元: 複数のスタッフのIDをまとめて出す） ----------
+// 連携用IDを今共有できる人（loadRoster の link_shareable と同じ条件）。ids を渡すとその人だけ。バインド: 会社・今日2個（・ids）
+function shareCodeListSql(withIds: boolean): string {
+  const relink = `(sp.affiliation_type = 'linked_external' OR (pe.created_company_id IS NOT NULL AND pe.created_company_id != sp.company_id))`
+  return `SELECT sp.staff_id, us.name, us.user_code, COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type,
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
+      CASE WHEN ${relink} THEN 1 ELSE 0 END AS relink,
+      CASE WHEN ${relink} THEN sp.relink_code ELSE pe.global_staff_code END AS code
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
+    LEFT JOIN users srcu ON srcu.user_id = src.user_id
+    LEFT JOIN persons pe ON pe.person_id = sp.person_id
+    WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type, 'own_employee') IN ('own_employee', 'linked_external')
+      AND sp.merged_into_staff_id IS NULL AND sp.link_revoked_at IS NULL AND ${inServiceSql('sp', 'us')}
+      AND (COALESCE(sp.affiliation_type, 'own_employee') != 'linked_external' OR (srcu.user_id IS NOT NULL AND ${inServiceSql('src', 'srcu')}))
+      ${withIds ? `AND sp.staff_id IN ${JSON_IN}` : ''}
+    ORDER BY us.name, sp.staff_id LIMIT 3000`
+}
+// 一覧（自社専用コードをまだ発行していない人は code が null）
+rosterApi.get('/share-codes', async (c) => {
+  const u = c.get('user'); const today = nowJST().slice(0, 10)
+  const rows = (await c.env.DB.prepare(shareCodeListSql(false)).bind(u.company_id, today, today).all()).results as any[]
+  return c.json({ staff: rows.map(r => ({ ...r, relink: !!r.relink })) })
+})
+// 選んだ人のIDを返す。自社専用コード（RL…）が未発行の人には、ここでまとめて発行する（1文で発行し、コードが重なったときだけやり直す）
+const SHARE_CODES_MAX = 300
+rosterApi.post('/share-codes', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const ids = JSON.parse(bindJsonArray(Array.isArray(b.staff_ids) ? b.staff_ids : [])) as number[]
+  if (!ids.length) return c.json({ error: 'スタッフを選んでください' }, 400)
+  if (ids.length > SHARE_CODES_MAX) return c.json({ error: `一度に出力できるのは${SHARE_CODES_MAX}人までです` }, 400)
+  const today = nowJST().slice(0, 10)
+  const list = async () => (await db.prepare(shareCodeListSql(true)).bind(u.company_id, today, today, JSON.stringify(ids)).all()).results as any[]
+  let rows = await list()
+  const missing = rows.filter(r => r.relink && !r.code).map(r => Number(r.staff_id))
+  for (let i = 0; missing.length && i < 3; i++) {
+    try {
+      await db.prepare(`UPDATE staff_profiles SET relink_code = 'RL' || upper(hex(randomblob(5))) WHERE staff_id IN ${JSON_IN} AND company_id = ? AND relink_code IS NULL`)
+        .bind(JSON.stringify(missing), u.company_id).run()
+      break
+    } catch { /* コード衝突時は再採番 */ }
+  }
+  if (missing.length) rows = await list()
+  const found = new Set(rows.map(r => Number(r.staff_id)))
+  return c.json({
+    staff: rows.filter(r => r.code).map(r => ({ staff_id: r.staff_id, name: r.name, kana: r.kana, code: r.code, relink: !!r.relink })),
+    // 退職・停止中・連携の対象外などで出せなかった人の数
+    skipped: ids.filter(id => !found.has(id)).length + rows.filter(r => !r.code).length,
+  })
 })
 
 // 次に使えるスタッフ番号（#424。登録画面の番号欄の既定値）
@@ -672,22 +801,132 @@ rosterApi.get('/next-code', async (c) => c.json(await nextStaffCode(c.env.DB, c.
 // 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations。
 // 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、
 // 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名前の行は出さない
+// 統合済み（#161）の取引先は出さない。取引先の画面用に、在籍中の所属スタッフ数・今月の稼働（支払先がこの取引先のシフト）・
+// 削除できるか（所属スタッフ・支払先のシフト・予約中の区分変更がない）も返す
 rosterApi.get('/partners', async (c) => {
   const u = c.get('user')
+  const month = nowJST().slice(0, 7)
   const rows = await c.env.DB.prepare(`
     SELECT * FROM (
-      SELECT sa.affiliation_id, sa.affiliation_name, sa.contact_name, sa.phone, sa.email, sa.memo,
+      SELECT sa.affiliation_id, sa.affiliation_name, sa.contact_name, sa.phone, sa.email, sa.memo, sa.updated_at,
         (SELECT COUNT(*) FROM staff_profiles sp WHERE sp.partner_affiliation_id = sa.affiliation_id AND sp.company_id = sa.company_id) AS staff_count,
+        (SELECT COUNT(*) FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.partner_affiliation_id = sa.affiliation_id AND sp.company_id = sa.company_id
+          AND sp.merged_into_staff_id IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired' AND us.status = 'active') AS active_staff_count,
+        (SELECT COUNT(*) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
+        (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_staff,
+        CASE WHEN ${PARTNER_IN_USE_SQL} THEN 1 ELSE 0 END AS in_use,
         CASE WHEN COALESCE(sa.contact_name, '') = '' AND COALESCE(sa.phone, '') = '' AND COALESCE(sa.email, '') = '' AND COALESCE(sa.memo, '') = ''
           AND EXISTS (SELECT 1 FROM staff_profiles np WHERE np.company_id = sa.company_id AND np.affiliation = sa.affiliation_name
             AND COALESCE(np.affiliation_type, 'own_employee') IN ('freelance', 'skillsheet_only', 'daily_worker', 'own_employee'))
           AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id)
         THEN 1 ELSE 0 END AS not_partner
       FROM staff_affiliations sa
-      WHERE sa.company_id = ? AND sa.affiliation_name != (SELECT company_name FROM companies WHERE company_id = ?)
+      WHERE sa.company_id = ? AND sa.merged_into_id IS NULL AND sa.affiliation_name != (SELECT company_name FROM companies WHERE company_id = ?)
     ) WHERE NOT (staff_count = 0 AND not_partner = 1)
-    ORDER BY affiliation_name`).bind(u.company_id, u.company_id).all()
-  return c.json({ partners: (rows.results as any[]).map(({ not_partner: _n, ...r }) => r) })
+    ORDER BY affiliation_name`).bind(month + '%', month + '%', u.company_id, u.company_id).all()
+  return c.json({ partners: (rows.results as any[]).map(({ not_partner: _n, in_use, ...r }) => ({ ...r, can_delete: !in_use })) })
+})
+
+// ---------- 取引先の登録・編集・統合・削除（#161） ----------
+// 取引先がどこかで使われているか（sa = staff_affiliations）。所属スタッフ・支払先のシフト・予約中の区分変更・精算の対象外の記録
+const PARTNER_IN_USE_SQL = `(EXISTS (SELECT 1 FROM staff_profiles x WHERE x.company_id = sa.company_id AND x.partner_affiliation_id = sa.affiliation_id)
+  OR EXISTS (SELECT 1 FROM shifts x WHERE x.company_id = sa.company_id AND x.payee_affiliation_id = sa.affiliation_id)
+  OR EXISTS (SELECT 1 FROM staff_affiliation_schedules x WHERE x.company_id = sa.company_id AND x.partner_affiliation_id = sa.affiliation_id AND x.status = 'pending')
+  OR EXISTS (SELECT 1 FROM affiliation_excluded_shifts x WHERE x.company_id = sa.company_id AND x.to_payee_affiliation_id = sa.affiliation_id))`
+const PARTNER_FIELD_MAX: Record<string, number> = { affiliation_name: 100, contact_name: 100, phone: 30, email: 254, memo: 2000 }
+/** 取引先の入力を確かめて正規化する。送られた項目だけを返す（空欄は null。名前は空にできない） */
+function partnerValues(b: any): { values?: Record<string, string | null>; error?: string } {
+  const out: Record<string, string | null> = {}
+  for (const [k, max] of Object.entries(PARTNER_FIELD_MAX)) {
+    if (b[k] === undefined) continue
+    const v = String(b[k] ?? '').trim()
+    if (v.length > max) return { error: '入力が長すぎます' }
+    out[k] = v || null
+  }
+  if ('affiliation_name' in out && !out.affiliation_name) return { error: '取引先名を入力してください' }
+  if (out.phone && !/^\d{10,11}$/.test(phoneDigits(out.phone))) return { error: '電話番号は10〜11桁の数字で入力してください' }
+  if (out.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(out.email)) return { error: 'メールアドレスの形式が正しくありません' }
+  return { values: out }
+}
+async function partnerNameError(db: D1Database, companyId: number, name: string): Promise<string | null> {
+  const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first() as any
+  if (own && own.company_name === name) return '自社名は取引先として登録できません'
+  return partnerNameConflict(db, companyId, name)
+}
+// 自社名の行（所属会社名の選択肢の初期値。0010）は取引先ではないので、編集・統合・削除の対象にしない
+async function loadPartner(db: D1Database, companyId: number, id: any): Promise<any | null> {
+  return db.prepare(`SELECT * FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ? AND merged_into_id IS NULL
+    AND affiliation_name IS NOT (SELECT company_name FROM companies WHERE company_id = ?)`).bind(Number(id) || 0, companyId, companyId).first()
+}
+rosterApi.post('/partners', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const { values, error } = partnerValues(await c.req.json().catch(() => ({})))
+  if (error || !values) return c.json({ error }, 400)
+  if (!values.affiliation_name) return c.json({ error: '取引先名を入力してください' }, 400)
+  const nameErr = await partnerNameError(db, u.company_id, values.affiliation_name)
+  if (nameErr) return c.json({ error: nameErr }, 400)
+  const r = await db.prepare(`INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, contact_name, phone, email, memo, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, values.affiliation_name, values.contact_name ?? null, values.phone ?? null, values.email ?? null, values.memo ?? null, nowJST()).run()
+  if (!r.meta.changes) return c.json({ error: '同じ名前の取引先が登録済みです（統合済みの取引先を含む）' }, 409)
+  return c.json({ ok: true, affiliation_id: r.meta.last_row_id })
+})
+// 編集。名前を変えたら、所属スタッフの所属会社名もそろえる
+rosterApi.put('/partners/:pid', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await loadPartner(db, u.company_id, c.req.param('pid'))
+  if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
+  const { values, error } = partnerValues(await c.req.json().catch(() => ({})))
+  if (error || !values) return c.json({ error }, 400)
+  const keys = Object.keys(values)
+  if (!keys.length) return c.json({ ok: true })
+  const renamed = !!values.affiliation_name && values.affiliation_name !== p.affiliation_name
+  if (renamed) {
+    const nameErr = await partnerNameError(db, u.company_id, values.affiliation_name!)
+    if (nameErr) return c.json({ error: nameErr }, 400)
+  }
+  const stmts = [db.prepare(`UPDATE staff_affiliations SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE affiliation_id = ? AND company_id = ?`)
+    .bind(...keys.map(k => values[k]), nowJST(), p.affiliation_id, u.company_id)]
+  if (renamed) stmts.push(
+    db.prepare('UPDATE staff_profiles SET affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ?').bind(values.affiliation_name, u.company_id, p.affiliation_id),
+    // 予約中の区分変更の表示名もそろえる（適用時は partner_affiliation_id から名前を読む）
+    db.prepare(`UPDATE staff_affiliation_schedules SET to_affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ? AND status = 'pending'`).bind(values.affiliation_name, u.company_id, p.affiliation_id))
+  try { await db.batch(stmts) } catch {
+    return c.json({ error: '同じ名前の取引先が登録済みです（統合済みの取引先を含む）。同じ会社なら「統合」を使ってください' }, 409)
+  }
+  return c.json({ ok: true })
+})
+// 統合: 表記ゆれなどで分かれた取引先（pid）を、統合先（into_id）にまとめる。
+// 所属スタッフ・未確定のシフトの支払先・予約中の区分変更を統合先に付け替え、統合先の空欄の連絡先は統合元の値で埋める。
+// 確定済みの精算のシフトは支払先を変えない（統合元の行は、使われていなければ削除し、使われていれば統合済みとして残す）
+rosterApi.post('/partners/:pid/merge', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const from = await loadPartner(db, u.company_id, c.req.param('pid'))
+  const into = await loadPartner(db, u.company_id, b.into_id)
+  if (!from || !into) return c.json({ error: '取引先が見つかりません' }, 404)
+  if (from.affiliation_id === into.affiliation_id) return c.json({ error: '同じ取引先には統合できません' }, 400)
+  const now = nowJST(); const cid = u.company_id; const f = from.affiliation_id, t = into.affiliation_id
+  const res = await db.batch([
+    db.prepare('UPDATE staff_profiles SET partner_affiliation_id = ?, affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ?').bind(t, into.affiliation_name, cid, f),
+    db.prepare(`UPDATE shifts SET payee_affiliation_id = ? WHERE company_id = ? AND payee_affiliation_id = ? AND COALESCE(settle_status, 'planned') != 'confirmed'`).bind(t, cid, f),
+    db.prepare(`UPDATE staff_affiliation_schedules SET partner_affiliation_id = ?, to_affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ? AND status = 'pending'`).bind(t, into.affiliation_name, cid, f),
+    db.prepare(`UPDATE staff_affiliations SET contact_name = COALESCE(NULLIF(contact_name, ''), ?), phone = COALESCE(NULLIF(phone, ''), ?), email = COALESCE(NULLIF(email, ''), ?),
+        memo = CASE WHEN COALESCE(?, '') = '' THEN memo WHEN COALESCE(memo, '') = '' THEN ? ELSE memo || char(10) || ? END, updated_at = ?
+      WHERE affiliation_id = ? AND company_id = ?`).bind(from.contact_name, from.phone, from.email, from.memo, from.memo, from.memo, now, t, cid),
+    // 統合元に以前統合した取引先も、統合先を付け替える
+    db.prepare(`UPDATE staff_affiliations SET merged_into_id = ?, updated_at = ? WHERE company_id = ? AND (affiliation_id = ? OR merged_into_id = ?)`).bind(t, now, cid, f, f),
+    db.prepare(`DELETE FROM staff_affiliations AS sa WHERE sa.affiliation_id = ? AND sa.company_id = ? AND NOT ${PARTNER_IN_USE_SQL}`).bind(f, cid),
+  ])
+  return c.json({ ok: true, moved_staff: res[0].meta.changes || 0, moved_shifts: res[1].meta.changes || 0, removed: !!res[5].meta.changes })
+})
+// 削除: 所属スタッフ・支払先のシフト・予約中の区分変更がない取引先だけ
+rosterApi.delete('/partners/:pid', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await loadPartner(db, u.company_id, c.req.param('pid'))
+  if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
+  const r = await db.prepare(`DELETE FROM staff_affiliations AS sa WHERE sa.affiliation_id = ? AND sa.company_id = ? AND NOT ${PARTNER_IN_USE_SQL}`).bind(p.affiliation_id, u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '所属スタッフ・支払先のシフト（精算済みを含む）・予約中の区分変更がある取引先は削除できません。表記ゆれなら「統合」を使ってください' }, 409)
+  return c.json({ ok: true })
 })
 
 // 連携元が退職・停止中のときの文言（#41）
@@ -743,7 +982,7 @@ async function findLinkSource(db: D1Database, code: string): Promise<any | null>
       JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id, sp.staff_id)
       JOIN users rus ON rus.user_id = src.user_id
       LEFT JOIN companies rco ON rco.company_id = src.company_id
-      WHERE sp.relink_code = ? AND sp.affiliation_type IN ('linked_external', 'own_employee') AND sp.merged_into_staff_id IS NULL LIMIT 1`)
+      WHERE sp.relink_code = ? AND sp.affiliation_type IN ('linked_external', 'own_employee') AND sp.merged_into_staff_id IS NULL AND sp.link_revoked_at IS NULL LIMIT 1`)
       .bind(today, today, code).first()
   }
   return db.prepare(`
@@ -833,8 +1072,33 @@ rosterApi.post('/link', async (c) => {
     return c.json({ error: 'このスタッフは既に連携済みです', staff_id: dup?.staff_id ?? null }, 409)
   }
   const created = await db.prepare(`SELECT staff_id FROM staff_profiles WHERE user_id = (${newUser})`).bind(u.company_id, userCode).first()
+  // 連携の記録と、所属元の管理者（#162）・スタッフ本人（#285）への通知。通知に失敗しても連携は取り消さない
+  if (created?.staff_id) {
+    try { await db.batch(linkedNoticeStmts(db, u, src, Number(created.staff_id), now)) } catch (e) { console.log(`roster link notice failed: staff=${created.staff_id}`) }
+  }
   return c.json({ ok: true, staff_id: created?.staff_id })
 })
+// 連携が成立したときの記録と通知の文。所属元（コードの行の企業。多段連携では直前の企業）の管理者と、雇用元の行の本人（ログインのある人）に知らせる。
+// 所属元の管理者には連携先の企業名を、本人には共有した先と連携元の企業名を出す（本人の情報なので、多段連携の先も本人には見せる）
+function linkedNoticeStmts(db: D1Database, u: any, src: any, newStaffId: number, now: string): D1PreparedStatement[] {
+  const host = String(u.company_name || '')
+  const name = String(src.name || '')
+  return [
+    linkEventStmt(db, [newStaffId], 'linked', newStaffId, u, now),
+    db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+      SELECT ou.company_id, ou.user_id, 'roster_linked', ?, ?, ?, ?, ? FROM users ou
+      WHERE ou.company_id = ? AND ou.status = 'active' AND ou.role IN ${NOTIFY_ADMIN_ROLES_SQL}`)
+      .bind(`自社スタッフの連携: ${name}（${host}）`,
+        `「${host}」が、自社のスタッフ ${name} さんを企業間連携で登録しました。連携先は基本項目（氏名・生年月日・最寄駅・スキル・経歴など）を参照できます。心当たりがない場合は、スタッフ詳細の「連携先企業」から連携を終了できます。`,
+        `/admin#staff/${Number(src.staff_id)}`, src.staff_id, now, src.company_id),
+    db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+      SELECT ru.company_id, ru.user_id, 'roster_linked_staff', ?, ?, '#profile', r.staff_id, ? FROM staff_profiles r JOIN users ru ON ru.user_id = r.user_id
+      WHERE r.staff_id = ? AND ru.role = 'staff' AND ru.status = 'active'`)
+      .bind(`あなたの情報が「${host}」と共有されました`,
+        `「${host}」が、あなたのスタッフ情報（氏名・生年月日・最寄駅・スキル・経歴など）を企業間連携で登録しました（連携元: ${src.owner_company_name || ''}）。共有中の会社は「その他 → プロフィール」で確認できます。心当たりがない場合は、所属会社の担当者に連絡してください。`,
+        now, src.root_staff_id),
+  ]
+}
 
 // 同意履歴（自社が行った連携の同意記録）
 rosterApi.get('/consents', async (c) => {
@@ -894,7 +1158,7 @@ rosterApi.post('/', async (c) => {
   if (type === 'own_employee') affiliation = ownName
   if (type === 'partner_manual') {
     if (b.partner_affiliation_id) {
-      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?')
+      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ? AND merged_into_id IS NULL')
         .bind(b.partner_affiliation_id, u.company_id).first()
       if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
       partnerId = p.affiliation_id as number; affiliation = p.affiliation_name as string
@@ -905,8 +1169,10 @@ rosterApi.post('/', async (c) => {
       if (conflict) return c.json({ error: conflict }, 400)
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, contact_name, phone, email) VALUES (?, ?, ?, ?, ?)')
         .bind(u.company_id, pname, b.new_partner_contact ?? null, b.new_partner_phone ?? null, b.new_partner_email ?? null).run()
-      const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, pname).first()
-      partnerId = p?.affiliation_id as number; affiliation = pname
+      // 統合済み（#161）の取引先と同じ名前なら、統合先を使う
+      const p = await db.prepare(`SELECT t.affiliation_id, t.affiliation_name FROM staff_affiliations sa
+        JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?`).bind(u.company_id, pname).first()
+      partnerId = p?.affiliation_id as number; affiliation = (p?.affiliation_name as string) || pname
     } else {
       return c.json({ error: '取引先を選択または新規登録してください' }, 400)
     }
@@ -1007,6 +1273,13 @@ staffSelfApi.get('/profile', async (c) => {
   }
   // 共有範囲（連携の同意画面と同じ定数）。QR の画面で、IDを見せると何が共有されるかを示す（#229）
   pick.share_terms = { version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE }
+  // 共有中の会社（#285）: 本人のスタッフ情報を企業間連携で参照している会社と連携日（多段連携の先も含む。本人の情報なので本人には出す）。
+  // 所属元が連携を終了した会社は ended で返す
+  pick.shared_with = u.person_id ? ((await db.prepare(`SELECT co.company_name, sp.created_at AS linked_at, sp.link_revoked_at
+      FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
+      WHERE sp.person_id = ? AND sp.affiliation_type = 'linked_external' AND sp.merged_into_staff_id IS NULL AND sp.anonymized_at IS NULL
+      ORDER BY sp.created_at, sp.staff_id LIMIT 100`).bind(u.person_id).all()).results as any[])
+    .map(x => ({ company_name: x.company_name, linked_at: x.linked_at, ended: !!x.link_revoked_at, ended_at: x.link_revoked_at || null })) : []
   // ログイン情報（#337）。同じ人のログイン（他社連携の行 LK-… は除く）の会社コード・スタッフ番号と、登録済みの電話・メールを伏せ字で返す
   const logins = (await db.prepare(`SELECT us.user_code, us.phone, us.email, co.company_code, co.company_name FROM users us
       JOIN companies co ON co.company_id = us.company_id
