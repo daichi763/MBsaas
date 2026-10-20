@@ -2575,7 +2575,7 @@ api.get('/admin/staff', async (c) => {
            (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id AND dr.work_date >= ? AND dr.work_date < ?) AS month_seiyaku,
            (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date >= ? AND s3.work_date < ?) AS projects
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
     WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, today, mFrom, mTo, mFrom, mTo, u.company_id).all()
@@ -2594,7 +2594,7 @@ api.get('/admin/staff/options', async (c) => {
            COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, COALESCE(sp.employment_status, 'working') AS employment_status, us.status,
            CASE WHEN ${elig.sql} THEN 1 ELSE 0 END AS assignable
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
       ${all ? '' : `AND ${elig.sql}`}
     ORDER BY us.name, sp.staff_id`).bind(...elig.binds, u.company_id, ...(all ? [] : elig.binds)).all()
@@ -2738,7 +2738,13 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
   if (missing.length) return `次の項目は必須です: ${missing.join('・')}`
   // 取引先所属スタッフの所属会社名を変えるときは、導入企業名を受け付けない（取引先マスタに登録されるため）。
   // 変えていない場合は確認しない（案件掲示板から取り込んだスタッフは、提案企業＝導入企業を所属会社として持つ: board.ts）
-  if (roster.affiliation_type === 'partner_manual' && body.affiliation && body.affiliation !== roster.affiliation) return partnerNameConflict(c.env.DB, u.company_id, body.affiliation)
+  if (roster.affiliation_type === 'partner_manual' && body.affiliation && body.affiliation !== roster.affiliation) {
+    const conflict = await partnerNameConflict(c.env.DB, u.company_id, body.affiliation)
+    if (conflict) return conflict
+    // 所属会社は登録済みの取引先から選ぶ（#161。自由入力の名前を取引先として自動で登録すると、表記ゆれが別の支払先になるため）
+    const known = await c.env.DB.prepare('SELECT 1 FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ? AND merged_into_id IS NULL').bind(u.company_id, body.affiliation).first()
+    if (!known) return `取引先「${body.affiliation}」は登録されていません。スタッフマスタの「取引先の管理」で登録してから選んでください`
+  }
   return null
 }
 // 基本情報・追記項目・在籍状況を保存する（権限チェックは呼び出し側で実施済みであること）
@@ -2776,10 +2782,10 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
     if (stmts.length) await c.env.DB.batch(stmts)
   }
 
-  // 取引先所属スタッフの所属会社名を変更した場合は、取引先マスタ（staff_affiliations）のIDも追従させる
+  // 取引先所属スタッフの所属会社名を変更した場合は、取引先マスタ（staff_affiliations）のIDも追従させる。
+  // 取引先は登録済みのものだけ（validateProfileBase で確認済み。#161 以降は自由入力の名前を自動で登録しない）
   if (roster.affiliation_type === 'partner_manual' && affiliation) {
-    await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, affiliation).run()
-    const partner = `(SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)`
+    const partner = `(SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ? AND merged_into_id IS NULL)`
     // 今日以降の未確定の予定シフトの支払先も新しい取引先にそろえる（#28。精算はシフトの payee_affiliation_id で支払先を決めるため）
     await c.env.DB.batch([
       c.env.DB.prepare(`UPDATE staff_profiles SET partner_affiliation_id = ${partner} WHERE staff_id = ? AND company_id = ?`).bind(u.company_id, affiliation, sid, u.company_id),
@@ -3418,7 +3424,8 @@ api.delete('/admin/clients/contacts/:contactId', async (c) => {
 // ============ 所属会社マスタ（スタッフの「所属会社名」選択肢） ============
 api.get('/admin/staff-affiliations', async (c) => {
   const u = c.get('user')
-  const rows = await c.env.DB.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE company_id = ? ORDER BY affiliation_name')
+  // 統合済みの取引先（#161）は選択肢に出さない
+  const rows = await c.env.DB.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE company_id = ? AND merged_into_id IS NULL ORDER BY affiliation_name')
     .bind(u.company_id).all()
   return c.json({ affiliations: rows.results })
 })

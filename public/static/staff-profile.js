@@ -23,6 +23,20 @@ function skillsHtml(v) {
   return list.length ? `<span class="flex flex-wrap gap-1">${list.map(s => `<span class="badge badge-gray">${esc(s)}</span>`).join('')}</span>` : '-'
 }
 
+// 共有中の会社（#285）: あなたのスタッフ情報を企業間連携で参照している会社と連携日。所属会社が連携を終了した会社は「終了」と出す
+function sharedWithHtml(list) {
+  const rows = Array.isArray(list) ? list : []
+  const day = (v) => String(v || '').slice(0, 10)
+  return `<section class="card p-4 mb-3">
+      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-share-nodes text-blue-500 mr-1"></i>あなたの情報を共有中の会社</h3>
+      ${rows.length ? `<ul class="text-sm divide-y divide-gray-50">${rows.map(r => `<li class="flex items-center gap-2 py-2">
+          <span class="flex-1 min-w-0 break-words ${r.ended ? 'text-gray-400' : 'text-gray-800'}">${esc(r.company_name)}</span>
+          <span class="text-[11px] text-gray-400 whitespace-nowrap">連携 ${esc(day(r.linked_at))}</span>
+          ${r.ended ? `<span class="badge badge-gray">終了 ${esc(day(r.ended_at))}</span>` : '<span class="badge badge-blue">共有中</span>'}</li>`).join('')}</ul>`
+        : '<p class="text-sm text-gray-400">他の会社とは共有していません</p>'}
+      <p class="text-[11px] text-gray-400 mt-2">スタッフIDを使って他の会社に連携されると、通知でお知らせします。心当たりのない会社があるときは、所属会社の担当者に連絡してください（所属会社が連携を終了できます）。</p>
+    </section>`
+}
 window.renderMyProfile = async function () {
   loading()
   let p
@@ -64,6 +78,7 @@ window.renderMyProfile = async function () {
           <button class="btn btn-primary w-full" data-action="showMyStaffId"><i class="fas fa-qrcode"></i>共有範囲を確認してIDを表示する</button>
         </div>
       </section>` : ''}
+    ${sharedWithHtml(p.shared_with)}
     <section class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-2">登録情報</h3>
       <dl class="text-sm">

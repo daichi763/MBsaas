@@ -1045,6 +1045,14 @@ function staffDetailHeaderHtml(sid, p) {
     </div>
 `
 }
+// 取引先所属のスタッフの所属会社は、登録済みの取引先から選ぶ（#161。自由入力の名前が別の取引先・支払先にならないように）
+function partnerSelectHtml(affData, current) {
+  const own = ME && ME.company_name
+  const names = (affData.affiliations || []).map(a => a.affiliation_name).filter(n => n && n !== own)
+  if (current && !names.includes(current)) names.unshift(current)
+  return `<select id="staff-affiliation" class="inp text-xs">${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">取引先の管理（登録・連絡先の編集・統合）</a>`
+}
 function staffBasicCardHtml(sid, p, affData, editing) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
   // 編集できる範囲（APIでも同じ判定で制御している）
@@ -1075,7 +1083,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}">` : esc(p.date_of_birth || '-'))}
           ${bi('年齢', p.age != null ? p.age + '歳' : '-')}
           ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-gray-500' : 'text-amber-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
-          ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? `<input list="affiliation-list" id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">`
+          ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? partnerSelectHtml(affData, p.affiliation)
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
           ${bi('所属先担当者名', ed ? `<input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}">` : esc(p.affiliation_contact || '-'))}
           ${p.affiliation_type === 'own_employee' ? bi('社員番号 / 所属', esc([p.employee_number, p.department, p.job_title].filter(Boolean).join(' / ') || '-')) : ''}
@@ -1091,7 +1099,6 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           <div class="md:col-span-2">${bi('スキル', edBiz ? `<input id="staff-skills" class="inp text-xs" value="${esc(p.skills || '')}" placeholder="カンマ区切り（例: MNP,接客,クロージング）">`
               : `<span class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(x => `<span class="badge badge-blue">${esc(x)}</span>`).join('') || '-'}</span>`)}</div>
         </dl>
-        <datalist id="affiliation-list">${affData.affiliations.map(a => `<option value="${esc(a.affiliation_name)}">`).join('')}</datalist>
 
         ${staffBusinessSectionHtml(p, edBiz)}
 
@@ -1466,11 +1473,6 @@ window.saveStaffBasicInfo = async function (sid) {
     }
     const res = await putConfirmingRetiredAt('/api/admin/staff/' + sid, body)
     if (!res) return
-    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）。
-    // 取引先マスタに入るため、取引先所属のスタッフだけにする（屋号・自社名・スキルシートの所属を取引先にしない。#262）
-    const aff = (val('staff-affiliation') || '').trim()
-    const isPartner = staffDetailState && staffDetailState.p && staffDetailState.p.affiliation_type === 'partner_manual'
-    if (aff && isPartner) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     const le2 = res.data && res.data.login_email
     if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました' : '保存しました。確認メールを送れませんでした（メールの設定を確認してください）')
     else toast('保存しました')
