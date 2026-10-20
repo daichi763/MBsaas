@@ -249,6 +249,27 @@ const keys = { p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg
   ok('#178 この端末で受け取らないようにできる（購読を消す）', u.status === 200 && u.data.removed === 1 && c2.devices === 0, [u.data, c2])
 }
 {
+  // 1回で送る端末の上限（20台）を超えたときは、送れなかった分を消さずに次の送信に回す（RV）
+  const many = [await newStaff('C'), await newStaff('D'), await newStaff('E')]
+  const eps = []
+  for (const [k, st] of many.entries()) for (let i = 0; i < 8; i++) {
+    const p = `/push/${tag}-m${k}-${i}`; eps.push(p)
+    must(await st.api.post('/api/staff/push/subscribe', { endpoint: EP(p), keys }), 'subscribe many')
+  }
+  const since = received.length
+  const d = addDays(today, 10)
+  must(await admin.post('/api/admin/shifts/bulk', { project_id: pid, staff_ids: many.map(s => s.staff_id), date_from: d, date_to: d, weekdays: [0, 1, 2, 3, 4, 5, 6], start_time: '10:00', end_time: '18:00' }), 'bulk shifts')
+  await sleep(2500)
+  const first = new Set(received.slice(since).map(x => x.path).filter(p => eps.includes(p)))
+  // 次の書き込み（応答の後の送信）で残りを送る
+  await A.api.put('/api/staff/notification-prefs', { prefs: { recruit_result: { push: true } } })
+  const end = Date.now() + 6000
+  let all = new Set()
+  while (Date.now() < end) { all = new Set(received.slice(since).map(x => x.path).filter(p => eps.includes(p))); if (all.size === eps.length) break; await sleep(200) }
+  ok('#178 1回の送信で 20 台までにとどめ、残りの端末にも次の送信で届く', first.size > 0 && first.size <= 20 && all.size === eps.length, { first: first.size, all: all.size, total: eps.length })
+  for (const [i, p] of eps.entries()) await many[Math.floor(i / 8)].api.post('/api/staff/push/unsubscribe', { endpoint: EP(p) })
+}
+{
   // 解約企業の削除の対象（未対応の表がないこと）
   const hqLogin = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_code: '', user_code: 'hq', password: 'pass1234' }) })
   if (hqLogin.ok) {

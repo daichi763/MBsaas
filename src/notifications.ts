@@ -1580,38 +1580,54 @@ export async function flushPushQueue(env: PushEnv, limit = PUSH_FLUSH_LIMIT): Pr
     RETURNING queue_id, user_id, kind`).bind(nowJST(), limit).all()).results as any[]
   res.claimed = rows.length
   if (!rows.length) return res
+  // 送る端末が PUSH_SEND_LIMIT 台を超えた分の行は、消さずに取り消して次の送信（次の書き込みの応答の後か cron）に回す
+  const deferred: number[] = []
   try {
     const userIds = [...new Set(rows.map(r => Number(r.user_id)))]
     const users = new Map(((await db.prepare(`SELECT user_id, role, status, person_id FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray(userIds)).all()).results as any[])
       .map(u => [Number(u.user_id), u]))
     const prefs = await loadNotifyPrefs(db, userIds)
-    const targets = new Set<number>()
-    for (const r of rows) {
+    const wanted = rows.filter(r => {
       const u = users.get(Number(r.user_id))
-      if (u && u.status === 'active' && pushWanted(prefs, u.user_id, u.role, String(r.kind || ''))) targets.add(Number(u.user_id))
-    }
-    if (targets.size) {
-      const persons = [...new Set([...targets].map(id => users.get(id)?.person_id).filter(Boolean))] as string[]
-      // 同じ端末への複数の通知は、1回のプッシュにまとめる（端末は最新の未読を取りに来る）
-      const subs = (await db.prepare(`SELECT subscription_id, endpoint FROM push_subscriptions
-        WHERE user_id IN ${JSON_IN} OR person_id IN (SELECT value FROM json_each(?)) ORDER BY subscription_id`).bind(bindJsonArray([...targets]), JSON.stringify(persons)).all()).results as any[]
+      return u && u.status === 'active' && pushWanted(prefs, u.user_id, u.role, String(r.kind || ''))
+    })
+    if (wanted.length) {
+      const targets = [...new Set(wanted.map(r => Number(r.user_id)))]
+      const persons = [...new Set(targets.map(id => users.get(id)?.person_id).filter(Boolean))] as string[]
+      const subs = (await db.prepare(`SELECT subscription_id, endpoint, user_id, person_id FROM push_subscriptions
+        WHERE user_id IN ${JSON_IN} OR person_id IN (SELECT value FROM json_each(?)) ORDER BY subscription_id`).bind(bindJsonArray(targets), JSON.stringify(persons)).all()).results as any[]
+      // 同じ端末への複数の通知は、1回のプッシュにまとめる（端末は最新の未読を取りに来る）。行の順に PUSH_SEND_LIMIT 台まで選ぶ
+      const chosen = new Map<number, any>()
+      for (const r of wanted) {
+        const u = users.get(Number(r.user_id))
+        const add = subs.filter(s => !chosen.has(s.subscription_id) && (Number(s.user_id) === Number(u.user_id) || (!!u.person_id && s.person_id === u.person_id)))
+        if (chosen.size && chosen.size + add.length > PUSH_SEND_LIMIT) { deferred.push(r.queue_id); continue }
+        for (const s of add.slice(0, PUSH_SEND_LIMIT)) chosen.set(s.subscription_id, s)
+      }
       const allowLocal = allowLocalPush(env)
+      const list = [...chosen.values()]
+      // 送信は外部の応答待ちなので並べて送る（CPU 時間は変わらない）
+      const results = await Promise.all(list.map(s => isAllowedPushEndpoint(s.endpoint, allowLocal) ? sendWebPush(env, s.endpoint) : Promise.resolve(null)))
       const updates: D1PreparedStatement[] = []
-      for (const s of subs.slice(0, PUSH_SEND_LIMIT)) {
-        if (!isAllowedPushEndpoint(s.endpoint, allowLocal)) { updates.push(db.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id)); res.removed++; continue }
-        const r = await sendWebPush(env, s.endpoint)
-        if (r.ok) { res.sent++; updates.push(db.prepare('UPDATE push_subscriptions SET last_success_at = ?, failures = 0, last_error = NULL WHERE subscription_id = ?').bind(nowJST(), s.subscription_id)) }
-        else if (r.gone) { res.removed++; updates.push(db.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id)) }
+      list.forEach((s, i) => {
+        const r = results[i]
+        if (!r || r.gone) { res.removed++; updates.push(db.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id)) }
+        else if (r.ok) { res.sent++; updates.push(db.prepare('UPDATE push_subscriptions SET last_success_at = ?, failures = 0, last_error = NULL WHERE subscription_id = ?').bind(nowJST(), s.subscription_id)) }
         else {
           res.failed++
           updates.push(db.prepare('UPDATE push_subscriptions SET failures = failures + 1, last_error = ? WHERE subscription_id = ?').bind(r.error || 'unknown', s.subscription_id))
           updates.push(db.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ? AND failures >= ?').bind(s.subscription_id, PUSH_MAX_FAILURES))
         }
-      }
+      })
       if (updates.length) await db.batch(updates)
     }
   } finally {
-    await db.prepare(`DELETE FROM push_queue WHERE queue_id IN ${JSON_IN}`).bind(bindJsonArray(rows.map(r => r.queue_id))).run()
+    const later = new Set(deferred)
+    const done = rows.map(r => r.queue_id).filter(id => !later.has(id))
+    const fin: D1PreparedStatement[] = []
+    if (done.length) fin.push(db.prepare(`DELETE FROM push_queue WHERE queue_id IN ${JSON_IN}`).bind(bindJsonArray(done)))
+    if (deferred.length) fin.push(db.prepare(`UPDATE push_queue SET claimed_at = NULL WHERE queue_id IN ${JSON_IN}`).bind(bindJsonArray(deferred)))
+    if (fin.length) await db.batch(fin)
   }
   return res
 }
