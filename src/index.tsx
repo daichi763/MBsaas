@@ -10,6 +10,7 @@ import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
 import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
+import { flushPushQueue, runPushQueueJob, runNotificationDigests } from './notifications'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -60,7 +61,48 @@ app.onError((err, c) => {
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
 })
 
+// ============ プッシュ通知の送信（#178） ============
+// API の書き込み（GET 以外）の応答の後に、積まれたプッシュ（push_queue。アプリ内の通知が入るとトリガーで積まれる）を送る。
+// 積まれていなければ問い合わせ1回で終わる。送れなかった分は15分おきの cron（push_queue）で送る
+app.use('/api/*', async (c, next) => {
+  await next()
+  if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') return
+  try { c.executionCtx.waitUntil(flushPushQueue(c.env as any).catch(e => console.log(`push flush failed: ${e}`))) } catch { /* waitUntil が使えないとき（テストなど）は cron に任せる */ }
+})
+
 app.route('/api', api)
+
+// ============ Service Worker（スタッフ画面のプッシュ通知の表示。#178） ============
+// プッシュには本文を載せないので、受けたら /api/staff/push/latest から最新の未読を取りに来て表示する。
+// 取れないとき（ログインの期限切れ・別の人のログインなど）は、中身を出さない決まった文面にする。画面やデータの保存（オフライン）はしない
+const SERVICE_WORKER_JS = `'use strict'
+self.addEventListener('install', function () { self.skipWaiting() })
+self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()) })
+self.addEventListener('push', function (e) { e.waitUntil(showLatest()) })
+async function showLatest() {
+  var n = { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: '/staff#notifications', tag: 'fieldos' }
+  try {
+    var sub = await self.registration.pushManager.getSubscription()
+    var r = await fetch('/api/staff/push/latest?endpoint=' + encodeURIComponent(sub ? sub.endpoint : ''), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Background': '1' } })
+    if (r.ok) { var d = await r.json(); if (d && d.title) n = { title: String(d.title), body: String(d.body || ''), link: String(d.link || n.link), tag: String(d.tag || n.tag) } }
+  } catch (err) { }
+  if (!/^\\/staff(#[^\\s]*)?$/.test(n.link)) n.link = '/staff#notifications'
+  return self.registration.showNotification(n.title, { body: n.body, tag: n.tag, renotify: true, icon: '/static/icon-192.png', badge: '/static/icon-192.png', data: { link: n.link } })
+}
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close()
+  var link = (e.notification.data && e.notification.data.link) || '/staff#notifications'
+  e.waitUntil((async function () {
+    var list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i]
+      if (new URL(c.url).pathname === '/staff') { c.postMessage({ type: 'fos-open', hash: link.slice(6) }); return c.focus() }
+    }
+    return self.clients.openWindow(link)
+  })())
+})
+`
+app.get('/sw.js', (c) => c.body(SERVICE_WORKER_JS, 200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' }))
 
 // ============ Resend の Webhook（不達・迷惑メールの報告・配信済み。#541） ============
 // ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts）
@@ -765,6 +807,10 @@ const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リ�
 const CRON_JOBS = defineCronJobs<Bindings>([
   // 起床・出発・入店の未報告と日報の未提出を本人に知らせる（会社の設定で ON にした会社だけ。#160）。メールの設定は wrangler.jsonc の vars と Secret
   { name: 'reminders', label: '本人あての自動リマインド（未報告・日報未提出）', cron: CRON_REMINDERS, run: env => runReminders(env as any) },
+  // アプリ内の通知のプッシュ（#178）のうち、応答の後に送れなかった分を送る。リマインドの通知もここで送る
+  { name: 'push_queue', label: 'プッシュ通知の送信（残り）', cron: CRON_REMINDERS, run: env => runPushQueueJob(env as any) },
+  // 打刻修正の承認依頼を「1日1回まとめて」受け取る管理者へのまとめメール（#284。毎朝8時以降の最初の起動で1回）
+  { name: 'notification_digest', label: '承認依頼のまとめメール', cron: CRON_REMINDERS, run: env => runNotificationDigests(env as any) },
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
   // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）

@@ -1769,6 +1769,7 @@ function renderMore() {
       ${item('notices', 'fa-bullhorn', 'お知らせ', '会社からのお知らせを確認', 'more-notice-count')}
       ${item('consult', 'fa-comments', '相談・連絡', '管理者への相談・連絡')}
       ${item('notifications', 'fa-bell', '通知', '打刻修正申請の受付・承認・却下、お知らせの確認のお願い', 'more-notif-count')}
+      ${item('notify-settings', 'fa-sliders', '通知の設定', 'プッシュ通知・メールの受け取り')}
       ${item('attendance', 'fa-user-clock', '打刻履歴・修正申請', '打刻の確認・時刻の修正・打刻漏れの追加')}
       ${item('manual', 'fa-book-open', '研修・マニュアル', '案件マニュアル・研修資料')}
     </div>
@@ -2666,6 +2667,129 @@ function applyBadges() {
   if (nav) nav.setAttribute('aria-label', `未読のお知らせ ${notices}件・通知 ${notifs}件`)
   const banner = document.getElementById('home-unread-banner')
   if (banner) banner.innerHTML = homeUnreadBannerInner(notices, notifs, Number(BADGES.notices_other) || 0)
+}
+
+// ============ 通知の設定（プッシュ通知 #178・受け取り設定 #284）。『その他』の #notify-settings ============
+// プッシュ通知: この端末（ブラウザ）で受け取るかを選ぶ。Service Worker（/sw.js）は、プッシュを受けたら最新の未読を取りに来て表示する。
+// 受け取り設定: 通知のまとまりごとに、プッシュとメールの ON/OFF（アプリ内の通知は必ず届く）。同じ人のすべての会社に同じ設定を保存する
+routes['notify-settings'] = () => renderNotifySettings()
+titles['notify-settings'] = '通知の設定'
+MORE_SUB_TABS.push('notify-settings')
+const PUSH_SUPPORTED = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+const PUSH_SCOPE = '/staff'
+function b64urlToBytes(s) {
+  const t = String(s).replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(t + '='.repeat((4 - t.length % 4) % 4))
+  return Uint8Array.from(bin, ch => ch.charCodeAt(0))
+}
+function bytesToB64url(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+async function currentPushSubscription() {
+  if (!PUSH_SUPPORTED) return null
+  try {
+    const reg = await navigator.serviceWorker.getRegistration(PUSH_SCOPE)
+    return reg ? await reg.pushManager.getSubscription() : null
+  } catch (e) { return null }
+}
+async function renderNotifySettings() {
+  loading()
+  const sub = await currentPushSubscription()
+  const [cfg, prefs] = await Promise.all([
+    axios.get('/api/staff/push/config', { params: sub ? { endpoint: sub.endpoint } : {} }).then(r => r.data),
+    axios.get('/api/staff/notification-prefs').then(r => r.data),
+  ])
+  if (location.hash.slice(1).split('/')[0] !== 'notify-settings') return // 読み込み中にほかの画面へ移った
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
+  const standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true
+  const note = (cls, icon, text) => `<p class="text-sm ${cls} rounded-lg px-3 py-2"><i class="fas ${icon} mr-1"></i>${text}</p>`
+  let pushBox
+  if (!PUSH_SUPPORTED) {
+    pushBox = note('text-gray-600 bg-gray-50', 'fa-circle-info', ios && !standalone
+      ? 'iPhone・iPad では、Safari の共有ボタンから「ホーム画面に追加」したアプリで開くと、プッシュ通知を受け取れます（iOS 16.4 以降）。'
+      : 'このブラウザはプッシュ通知に対応していません。通知はアプリを開いたときに「通知」で確認できます。')
+  } else if (!cfg.available) {
+    pushBox = note('text-amber-800 bg-amber-50', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
+  } else if (Notification.permission === 'denied') {
+    pushBox = note('text-red-700 bg-red-50', 'fa-ban', '通知がブロックされています。端末の設定（またはブラウザのサイトの設定）で、このアプリの通知を許可してから開き直してください。')
+  } else if (sub && cfg.subscribed) {
+    pushBox = `${note('text-green-700 bg-green-50', 'fa-circle-check', 'この端末でプッシュ通知を受け取ります')}
+      ${cfg.last_error ? `<p class="text-xs text-amber-700 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
+      <div class="flex gap-2 mt-2">
+        <button class="btn btn-outline flex-1 text-sm" data-action="pushTest"><i class="fas fa-paper-plane"></i>テスト通知を送る</button>
+        <button class="btn btn-outline flex-1 text-sm" data-action="pushDisable"><i class="fas fa-bell-slash"></i>受け取らない</button>
+      </div>`
+  } else {
+    pushBox = `<p class="text-xs text-gray-500 mb-2">シフトの変更・リマインド・申請の結果などを、アプリを開いていなくても端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
+      <button class="btn btn-primary w-full" data-action="pushEnable"><i class="fas fa-bell"></i>この端末でプッシュ通知を受け取る</button>`
+  }
+  const groups = prefs.groups || []
+  const toggle = (g, field, label) => `<label class="flex items-center gap-1 text-xs text-gray-600 whitespace-nowrap">
+      <input type="checkbox" class="w-5 h-5 rounded notify-pref" data-key="${esc(g.key)}" data-field="${field}" ${g[field] ? 'checked' : ''}>${label}</label>`
+  $app.innerHTML = `
+    ${MORE_BACK}
+    <section class="card p-4 mb-3">
+      <h2 class="font-bold text-gray-800 mb-2"><i class="fas fa-mobile-screen text-blue-600 mr-1"></i>プッシュ通知（この端末）</h2>
+      ${pushBox}
+    </section>
+    <section class="card p-4">
+      <h2 class="font-bold text-gray-800 mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>受け取る通知</h2>
+      <p class="text-xs text-gray-500 mb-3">アプリ内の「通知」には、設定によらずすべて届きます。${prefs.has_email ? '' : 'メールアドレスが登録されていないため、メールは届きません。'}</p>
+      <div class="divide-y divide-gray-100">${groups.map(g => `
+        <div class="py-2.5 flex items-start gap-3">
+          <div class="flex-1 min-w-0"><p class="text-sm font-bold text-gray-800">${esc(g.label)}</p><p class="text-[11px] text-gray-400">${esc(g.desc)}</p></div>
+          <div class="flex flex-col gap-1.5">${g.push_supported ? toggle(g, 'push', 'プッシュ') : ''}${g.email_supported && prefs.has_email ? toggle(g, 'email', 'メール') : ''}</div>
+        </div>`).join('')}</div>
+      <button class="btn btn-primary w-full mt-3" data-action="notifyPrefsSave"><i class="fas fa-check"></i>保存する</button>
+    </section>`
+}
+delegate('pushEnable', (el) => withSubmitLock(el, async () => {
+  try {
+    const perm = await Notification.requestPermission()
+    if (perm !== 'granted') { toast('通知が許可されませんでした。端末の設定で許可できます', 4000); return renderNotifySettings() }
+    await navigator.serviceWorker.register('/sw.js', { scope: PUSH_SCOPE })
+    const reg = await navigator.serviceWorker.ready
+    const cfg = (await axios.get('/api/staff/push/config')).data
+    if (!cfg.available) { toast(cfg.error || 'プッシュ通知の準備ができていません'); return }
+    let sub = await reg.pushManager.getSubscription()
+    // サーバーの鍵が変わっていたら購読し直す
+    const key = sub && sub.options && sub.options.applicationServerKey
+    if (sub && key && bytesToB64url(key) !== cfg.public_key) { await sub.unsubscribe(); sub = null }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(cfg.public_key) })
+    const j = sub.toJSON()
+    await axios.post('/api/staff/push/subscribe', { endpoint: j.endpoint, keys: j.keys })
+    toast('この端末でプッシュ通知を受け取ります')
+  } catch (e) {
+    if (e && e.isAxiosError) showApiError(e, '登録できませんでした')
+    else toast('この端末ではプッシュ通知を登録できませんでした', 4000)
+  }
+  renderNotifySettings()
+}))
+delegate('pushDisable', (el) => withSubmitLock(el, async () => {
+  const sub = await currentPushSubscription()
+  if (sub) {
+    try { await axios.post('/api/staff/push/unsubscribe', { endpoint: sub.endpoint }) } catch (e) { showApiError(e, '解除できませんでした'); return }
+    try { await sub.unsubscribe() } catch (e) { }
+  }
+  toast('この端末ではプッシュ通知を受け取りません')
+  renderNotifySettings()
+}))
+delegate('pushTest', (el) => withSubmitLock(el, async () => {
+  const sub = await currentPushSubscription()
+  if (!sub) return renderNotifySettings()
+  try { await axios.post('/api/staff/push/test', { endpoint: sub.endpoint }); toast('テスト通知を送りました。数秒で届きます') } catch (e) { showApiError(e, 'テスト通知を送れませんでした'); renderNotifySettings() }
+}))
+delegate('notifyPrefsSave', (el) => withSubmitLock(el, async () => {
+  const prefs = {}
+  document.querySelectorAll('.notify-pref').forEach(cb => { (prefs[cb.dataset.key] = prefs[cb.dataset.key] || {})[cb.dataset.field] = cb.checked })
+  try { await axios.put('/api/staff/notification-prefs', { prefs }); toast('保存しました') } catch (e) { showApiError(e, '保存できませんでした') }
+}))
+// 通知を押したときに、開いているスタッフ画面を通知の行き先へ移す（Service Worker からの知らせ。#178）
+if (PUSH_SUPPORTED) {
+  navigator.serviceWorker.addEventListener('message', (ev) => {
+    const d = ev.data || {}
+    if (d.type === 'fos-open' && /^#[A-Za-z0-9_\-/=&.]{1,200}$/.test(String(d.hash || ''))) location.hash = String(d.hash).slice(1)
+  })
 }
 
 // 起動: ログインを確かめてから画面を描く。401 以外の失敗（電波が弱いなど）では、白い画面のままにせず再試行を出す（#465）
