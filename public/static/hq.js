@@ -533,10 +533,11 @@ delegate('hqToggleAdmin', (el) => {
 
 // ============ テンプレート配信 ============
 const TPL_TYPE_LABEL = { number: '数値（件数の集計に使う）', text: '1行のテキスト', textarea: '複数行のテキスト' }
+let HQ_TPLS = []
 async function renderTemplates() {
   loading()
   let data
-  try { data = (await axios.get('/api/hq/templates')).data } catch (e) {
+  try { data = (await axios.get('/api/hq/templates')).data; HQ_TPLS = data.templates } catch (e) {
     $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">テンプレートを読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:#334155;color:#67e8f9" onclick="renderTemplates()">再試行</button></div>`
     return
   }
@@ -545,18 +546,26 @@ async function renderTemplates() {
       <h2 class="text-xl font-bold">テンプレート配信管理</h2>
       <button class="btn btn-primary" style="background:#0e7490" onclick="showAddTemplate()"><i class="fas fa-plus"></i>テンプレート作成</button>
     </div>
-    <p class="text-sm text-slate-400 mb-4">本部テンプレートは全導入企業の案件設定で選択可能になります。</p>
+    <p class="text-sm text-slate-400 mb-4">本部テンプレートは全導入企業の案件設定で選択可能になります。配信停止にすると、新しい案件では選べなくなります（使っている案件はそのまま使えます）。</p>
     <div class="grid md:grid-cols-2 gap-4">
       ${data.templates.map(t => `
-        <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-          <div class="flex items-center justify-between mb-2">
+        <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 ${t.status === 'stopped' ? 'opacity-70' : ''}">
+          <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
             <h3 class="font-bold">${esc(t.template_name)}</h3>
-            <span class="badge ${t.template_type === 'hq' ? 'badge-blue' : 'badge-gray'}">${t.template_type === 'hq' ? '本部配信' : '企業独自'}</span>
+            <span class="flex gap-1 items-center">
+              ${t.status === 'stopped' ? '<span class="badge badge-gray">配信停止</span>' : ''}
+              <span class="badge ${t.template_type === 'hq' ? 'badge-blue' : 'badge-gray'}">${t.template_type === 'hq' ? '本部配信' : '企業独自'}</span>
+            </span>
           </div>
+          ${t.company_name ? `<p class="text-xs text-slate-400 mb-2">${esc(t.company_name)}</p>` : ''}
           <div class="flex flex-wrap gap-1.5">
             ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-cyan-900 text-cyan-300' : 'bg-slate-700 text-slate-300'}" title="${esc(f.key)}">${esc(f.label)}</span>`).join('')}
           </div>
-          <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}）</p>
+          <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}）・使用中の案件 ${Number(t.project_count || 0)}件${t.has_reports ? '・日報あり' : ''}</p>
+          <div class="flex gap-2 mt-3">
+            <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="editHqTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>修正</button>
+            <button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="toggleHqTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '配信を再開' : '配信停止'}</button>
+          </div>
         </section>`).join('')}
     </div>`
 }
@@ -631,6 +640,58 @@ delegate('addTemplate', (el) => withSubmitLock(el, async () => {
   } catch (e) {
     hqErr(e, e.response ? '配信に失敗しました' : '通信できませんでした。接続を確かめて、もう一度お試しください')
   }
+}))
+
+// テンプレートの修正・配信停止（#165）。値が入った日報がある項目は、削除・キーの変更・
+// 数値とテキストの切り替えができない（サーバーで確かめる）。入力例・文字数の上限は、同じキーの項目の元の値を引き継ぐ
+const hqTplById = id => HQ_TPLS.find(t => Number(t.template_id) === Number(id))
+delegate('editHqTemplate', el => {
+  const t = hqTplById(el.dataset.id); if (!t) return
+  const lines = t.fields.map(f => [f.key, f.label, f.type || 'text'].concat(f.required ? ['必須'] : []).join(',')).join('\n')
+  modal(`
+    <h3 class="font-bold text-lg mb-4 text-gray-800">テンプレートの修正</h3>
+    <div class="space-y-3">
+      ${t.company_name ? `<p class="text-xs text-gray-500">企業独自: ${esc(t.company_name)}</p>` : ''}
+      <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tp-name" class="inp" maxlength="60" value="${esc(t.template_name)}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">項目定義（1行1項目: キー,表示名,タイプ[,必須]）</label>
+        <textarea id="tp-fields" rows="8" class="inp text-xs font-mono">${esc(lines)}</textarea>
+        ${t.has_reports ? '<p class="text-xs text-amber-700 mt-1">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます</p>' : ''}</div>
+      <div id="tp-preview" class="border rounded-lg p-2 max-h-56 overflow-y-auto"></div>
+      <button class="btn btn-primary w-full" data-action="saveHqTemplate" data-id="${Number(t.template_id)}">保存する</button>
+    </div>`)
+  document.getElementById('tp-fields').addEventListener('input', renderTemplatePreview)
+  renderTemplatePreview()
+})
+delegate('saveHqTemplate', (el) => withSubmitLock(el, async () => {
+  const t = hqTplById(el.dataset.id); if (!t) return
+  const name = document.getElementById('tp-name').value.trim()
+  if (!name) { hqMarkField('tp-name', 'テンプレート名を入力してください'); return }
+  const rows = parseTemplateLines(document.getElementById('tp-fields').value)
+  if (!rows.length) { hqMarkField('tp-fields', '項目を1つ以上入力してください'); return }
+  const bad = rows.find(r => r.errors.length)
+  if (bad) { renderTemplatePreview(); hqMarkField('tp-fields', `${bad.line}行目: ${bad.errors[0]}`); return }
+  const prev = new Map(t.fields.map(f => [f.key, f]))
+  const fields = rows.map(r => {
+    const f = { ...r.field }, o = prev.get(f.key)
+    if (o && o.placeholder) f.placeholder = o.placeholder
+    if (o && o.maxLength && f.type !== 'number') f.maxLength = o.maxLength
+    return f
+  })
+  try {
+    await axios.put('/api/hq/templates/' + Number(t.template_id), { template_name: name, fields })
+    closeModal(); toast('テンプレートを修正しました'); renderTemplates()
+  } catch (e) {
+    hqErr(e, e.response ? '修正に失敗しました' : '通信できませんでした。接続を確かめて、もう一度お試しください')
+  }
+}))
+delegate('toggleHqTemplateStatus', (el) => withSubmitLock(el, async () => {
+  const t = hqTplById(el.dataset.id); if (!t) return
+  const stop = el.dataset.status === 'stopped'
+  if (stop && !confirm(`「${t.template_name}」を配信停止にしますか？\n新しい案件では選べなくなります。使っている案件（${Number(t.project_count || 0)}件）はそのまま使えます。`)) return
+  try {
+    await axios.put('/api/hq/templates/' + Number(t.template_id), { status: el.dataset.status })
+    toast(stop ? '配信停止にしました' : '配信を再開しました'); renderTemplates()
+  } catch (e) { hqErr(e, '変更に失敗しました') }
 }))
 
 // ============ データ保持（定期削除） ============

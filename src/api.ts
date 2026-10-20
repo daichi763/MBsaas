@@ -2901,7 +2901,8 @@ api.get('/admin/staff/:id', async (c) => {
   const [attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT a.*, s.work_date FROM attendance_reports a JOIN shifts s ON a.shift_id = s.shift_id WHERE a.staff_id = ? ORDER BY a.reported_at DESC LIMIT 40`).bind(sid).all(),
     db.prepare(`SELECT dr.*, p.project_name FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id WHERE dr.staff_id = ? ORDER BY dr.work_date DESC LIMIT 20`).bind(sid).all(),
-    db.prepare(`SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 6`).bind(sid).all(),
+    db.prepare(`SELECT e.*, ev.name AS evaluator_name FROM evaluations e LEFT JOIN users ev ON ev.user_id = e.evaluator_id
+      WHERE e.staff_id = ? AND e.company_id = ? ORDER BY e.evaluation_period DESC, e.evaluation_id DESC LIMIT 6`).bind(sid, u.company_id).all(),
     db.prepare(`SELECT f.*, um.name AS manager_name FROM follow_logs f LEFT JOIN users um ON f.manager_id = um.user_id WHERE f.staff_id = ? ORDER BY f.created_at DESC LIMIT 20`).bind(sid).all(),
   ])
   // 月次実績推移: 今月と前の2か月を新しい順に、日報のない月も0の行として返す（#550）
@@ -2929,6 +2930,64 @@ api.get('/admin/staff/:id', async (c) => {
     follow_logs: follows.results,
     performance: perf,
   })
+})
+
+// ---------- スタッフ評価（#164） ----------
+// 期間（YYYY-MM）ごとに6項目（1〜5）とコメントを登録する。同じ期間は上書き。
+// 登録・削除のたびに、最新の期間の6項目の平均を総合評価（staff_profiles.evaluation_score）に入れる（評価がなくなれば 0 = 未評価）
+const EVAL_SCORE_KEYS = ['attendance_score', 'report_score', 'performance_score', 'client_score', 'growth_score', 'retention_score'] as const
+function evaluationScoreStmt(db: D1Database, companyId: number, staffId: number) {
+  return db.prepare(`UPDATE staff_profiles SET evaluation_score = COALESCE((SELECT ROUND((${EVAL_SCORE_KEYS.join(' + ')}) / 6.0, 1) FROM evaluations
+      WHERE company_id = ?1 AND staff_id = ?2 ORDER BY evaluation_period DESC, evaluation_id DESC LIMIT 1), 0)
+    WHERE staff_id = ?2 AND company_id = ?1`).bind(companyId, staffId)
+}
+api.post('/admin/staff/:id/evaluations', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sp = await ownStaff(db, u.company_id, c.req.param('id')) as any
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.merged_into_staff_id) return c.json({ error: '統合済みのスタッフです。統合先のスタッフで評価を登録してください' }, 400)
+  const b = await c.req.json().catch(() => null) as any
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const period = String(b.evaluation_period ?? '')
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) return c.json({ error: '評価の期間（年月）を選んでください' }, 400)
+  // 先の月の評価は付けない（来月まで。月末に翌月分を準備する運用を考えて1か月先までは受け付ける）
+  const [ny, nm] = monthJST().split('-').map(Number)
+  const maxMonth = nm === 12 ? `${ny + 1}-01` : `${ny}-${String(nm + 1).padStart(2, '0')}`
+  if (period > maxMonth || period < '2000-01') return c.json({ error: '評価の期間が正しくありません' }, 400)
+  const scores: number[] = []
+  for (const k of EVAL_SCORE_KEYS) {
+    const n = toInt(b[k], 1, 5)
+    if (n === null) return c.json({ error: '評価の各項目は1〜5で選んでください' }, 400)
+    scores.push(n)
+  }
+  const comment = b.comment == null || String(b.comment).trim() === '' ? null : String(b.comment).trim()
+  if (comment && comment.length > 1000) return c.json({ error: 'コメントは1000文字以内で入力してください' }, 400)
+  const now = nowJST(); const sid = Number(sp.staff_id)
+  const setSql = EVAL_SCORE_KEYS.map(k => `${k} = ?`).join(', ')
+  // 同じ期間の行があれば上書きし、なければ作る（1回の batch で行い、途中で失敗しても片方だけにならないようにする）
+  const res = await db.batch([
+    db.prepare(`UPDATE evaluations SET ${setSql}, comment = ?, evaluator_id = ?, updated_at = ? WHERE company_id = ? AND staff_id = ? AND evaluation_period = ?`)
+      .bind(...scores, comment, u.user_id, now, u.company_id, sid, period),
+    db.prepare(`INSERT INTO evaluations (company_id, staff_id, evaluator_id, evaluation_period, ${EVAL_SCORE_KEYS.join(', ')}, comment, updated_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM evaluations WHERE company_id = ? AND staff_id = ? AND evaluation_period = ?)`)
+      .bind(u.company_id, sid, u.user_id, period, ...scores, comment, now, u.company_id, sid, period),
+    evaluationScoreStmt(db, u.company_id, sid),
+  ])
+  const score = await db.prepare('SELECT evaluation_score FROM staff_profiles WHERE staff_id = ?').bind(sid).first() as any
+  return c.json({ ok: true, updated: Number(res[0].meta?.changes || 0) > 0, evaluation_score: Number(score?.evaluation_score || 0) })
+})
+api.delete('/admin/staff/:id/evaluations/:eid', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sp = await ownStaff(db, u.company_id, c.req.param('id')) as any
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const sid = Number(sp.staff_id)
+  const res = await db.batch([
+    db.prepare('DELETE FROM evaluations WHERE evaluation_id = ? AND staff_id = ? AND company_id = ?').bind(c.req.param('eid'), sid, u.company_id),
+    evaluationScoreStmt(db, u.company_id, sid),
+  ])
+  if (!Number(res[0].meta?.changes || 0)) return c.json({ error: '評価が見つかりません' }, 404)
+  const score = await db.prepare('SELECT evaluation_score FROM staff_profiles WHERE staff_id = ?').bind(sid).first() as any
+  return c.json({ ok: true, evaluation_score: Number(score?.evaluation_score || 0) })
 })
 
 // スタッフ更新 (メモ・フォローフラグ・リスク)
@@ -4090,13 +4149,16 @@ api.post('/admin/projects', async (c) => {
   const clientId = blank(b.client_id) ? null : b.client_id
   if (clientId !== null && !(await ownClient(c.env.DB, u.company_id, clientId))) return c.json({ error: 'クライアントが見つかりません' }, 400)
   // 日報テンプレートは自社または本部のものだけ。未指定なら、項目のあるテンプレートのうち最初のもの（画面の既定と同じ）
+  const textErr = projectTextError(b)
+  if (textErr) return c.json({ error: textErr }, 400)
   let templateId: any = null
   if (!blank(b.report_template_id)) {
-    if (!(await c.env.DB.prepare('SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?)').bind(b.report_template_id, u.company_id).first()))
-      return c.json({ error: '日報テンプレートが見つかりません' }, 400)
+    // 配信停止のテンプレートは新しい案件では選べない（#165）
+    if (!(await c.env.DB.prepare(`SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?) AND COALESCE(status, 'active') = 'active'`).bind(b.report_template_id, u.company_id).first()))
+      return c.json({ error: '日報テンプレートが見つかりません（配信停止のテンプレートは選べません）' }, 400)
     templateId = b.report_template_id
   } else {
-    const t = await c.env.DB.prepare(`SELECT template_id FROM report_templates WHERE (company_id IS NULL OR company_id = ?)
+    const t = await c.env.DB.prepare(`SELECT template_id FROM report_templates WHERE (company_id IS NULL OR company_id = ?) AND COALESCE(status, 'active') = 'active'
       AND json_valid(fields_json) AND json_array_length(fields_json) > 0 ORDER BY template_id LIMIT 1`).bind(u.company_id).first()
     if (!t) return c.json({ error: '日報テンプレートが登録されていません。本部に登録を依頼してください' }, 400)
     templateId = t.template_id
@@ -4135,6 +4197,102 @@ api.put('/admin/projects/:id/photo-required', async (c) => {
 
   await c.env.DB.prepare('UPDATE projects SET photo_required_override = ? WHERE project_id = ?').bind(value, pid).run()
   return c.json({ ok: true })
+})
+
+// 案件の文字の項目の長さ（登録・編集で共通）
+const PROJECT_TEXT_LIMITS: [string, string, number][] = [
+  ['project_name', '案件名', 100], ['location', '稼働場所', 200], ['requirements', '求められる内容', 2000],
+  ['manual_text', '案件マニュアル・注意事項', 5000], ['memo', 'メモ', 2000],
+]
+function projectTextError(b: any): string | null {
+  for (const [k, label, max] of PROJECT_TEXT_LIMITS) {
+    const v = b[k]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'string') return `${label}の形式が正しくありません`
+    if (v.length > max) return `${label}は${max}文字以内で入力してください`
+  }
+  return null
+}
+
+// 案件の編集・終了（#153）。送られた項目だけを変える。単価・区分は単価パネル（PUT /admin/projects/:id/pricing）で変える。
+//  - status: active（稼働中）/ closed（終了）。終了した案件には新しいシフトを入れられない（lib/staff-eligibility.ts の assertAssignable）
+//  - 確認が要る変更は 409 で理由を返し、確認の印を付けて送り直すと保存する
+//      confirm_duplicate       : 稼働中の別の案件と同じ名前（allow_duplicate）
+//      confirm_close           : 今日以降のシフトが残っている案件を終了する（confirm_close。シフトは取り消さない）
+//      confirm_template_change : 日報がある案件の日報テンプレートを変える（confirm_template_change。過去の日報の項目が表示されなくなることがある）
+api.put('/admin/projects/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => null) as any
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return c.json({ error: '入力内容が正しくありません' }, 400)
+  const cur = await db.prepare('SELECT * FROM projects WHERE project_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!cur) return c.json({ error: '案件が見つかりません' }, 404)
+  const textErr = projectTextError(b)
+  if (textErr) return c.json({ error: textErr }, 400)
+  const blank = (v: any) => v === undefined || v === null || String(v).trim() === ''
+  const set: Record<string, any> = {}
+  if (b.project_name !== undefined) {
+    const name = String(b.project_name ?? '').trim()
+    if (!name) return c.json({ error: '案件名は必須です' }, 400)
+    set.project_name = name
+  }
+  if (b.client_id !== undefined) {
+    const clientId = blank(b.client_id) ? null : Number(b.client_id)
+    if (clientId !== null && !(await ownClient(db, u.company_id, clientId))) return c.json({ error: 'クライアントが見つかりません' }, 400)
+    set.client_id = clientId
+  }
+  if (b.project_type !== undefined) {
+    if (!PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
+    set.project_type = b.project_type
+  }
+  for (const k of ['location', 'requirements', 'manual_text', 'memo']) if (b[k] !== undefined) set[k] = blank(b[k]) ? null : String(b[k]).trim()
+  if (b.required_skills !== undefined) {
+    if (b.required_skills !== null && typeof b.required_skills !== 'string') return c.json({ error: '必要スキルの形式が正しくありません' }, 400)
+    const skills = normalizeSkills(b.required_skills)
+    if (skills && skills.length > 500) return c.json({ error: '必要スキルは500文字以内で入力してください' }, 400)
+    set.required_skills = skills
+  }
+  if (b.show_performance !== undefined) set.show_performance = b.show_performance === true || b.show_performance === 1 || b.show_performance === '1' ? 1 : 0
+  if (b.report_template_id !== undefined && Number(b.report_template_id) !== Number(cur.report_template_id)) {
+    // 自社または本部のテンプレートで、配信停止でないもの（いま使っているものはそのまま残せる）
+    if (!(await db.prepare(`SELECT 1 FROM report_templates WHERE template_id = ? AND (company_id IS NULL OR company_id = ?) AND COALESCE(status, 'active') = 'active'
+      AND json_valid(fields_json) AND json_array_length(fields_json) > 0`).bind(b.report_template_id, u.company_id).first()))
+      return c.json({ error: '日報テンプレートが見つかりません（配信停止のテンプレートは選べません）' }, 400)
+    set.report_template_id = Number(b.report_template_id)
+  }
+  let nextStatus = cur.status || 'active'
+  if (b.status !== undefined) {
+    if (!['active', 'closed'].includes(b.status)) return c.json({ error: '状態が正しくありません' }, 400)
+    nextStatus = b.status
+  }
+  const nextName = set.project_name ?? cur.project_name
+  // 稼働中の同名案件（登録と同じ確認。名前を変えたときと、稼働中に戻すとき）
+  if (nextStatus === 'active' && b.allow_duplicate !== true && (set.project_name !== undefined || (cur.status || 'active') !== 'active')
+    && await db.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active' AND project_id != ? LIMIT 1`).bind(u.company_id, nextName, cur.project_id).first())
+    return c.json({ error: `同じ名前の稼働中の案件「${nextName}」が既に登録されています`, confirm_duplicate: true }, 409)
+  if (set.report_template_id !== undefined && b.confirm_template_change !== true) {
+    const used = await db.prepare('SELECT COUNT(*) AS n FROM daily_reports WHERE project_id = ?').bind(cur.project_id).first() as any
+    if (Number(used?.n || 0) > 0) return c.json({
+      error: `この案件には日報が${Number(used.n)}件あります。日報テンプレートを変えると、新しいテンプレートにない項目は過去の日報の一覧・集計に表示されなくなります（保存された値は消えません）`,
+      confirm_template_change: true }, 409)
+  }
+  if (nextStatus === 'closed' && (cur.status || 'active') === 'active' && b.confirm_close !== true) {
+    const fut = await db.prepare(`SELECT COUNT(*) AS n FROM shifts WHERE project_id = ? AND company_id = ? AND work_date >= ? AND status IN ('requested','confirmed','substitute')`)
+      .bind(cur.project_id, u.company_id, todayJST()).first() as any
+    if (Number(fut?.n || 0) > 0) return c.json({
+      error: `この案件には今日以降のシフトが${Number(fut.n)}件あります。終了しても、これらのシフトは取り消されません（必要ならシフト管理で取り消してください）。終了した案件には新しいシフトを登録できません`,
+      confirm_close: true, future_shifts: Number(fut.n) }, 409)
+  }
+  const now = nowJST()
+  if (nextStatus !== (cur.status || 'active')) {
+    set.status = nextStatus
+    set.closed_at = nextStatus === 'closed' ? now : null
+    set.closed_by = nextStatus === 'closed' ? u.user_id : null
+  }
+  const cols = Object.keys(set)
+  if (!cols.length) return c.json({ ok: true, changed: false })
+  await db.prepare(`UPDATE projects SET ${cols.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE project_id = ? AND company_id = ?`)
+    .bind(...cols.map(k => set[k]), now, cur.project_id, u.company_id).run()
+  return c.json({ ok: true, changed: true, status: nextStatus })
 })
 
 // シフト管理
@@ -5150,10 +5308,98 @@ api.get('/admin/billing-check', async (c) => {
 })
 
 // テンプレート一覧 (企業側から参照)
+// project_count: そのテンプレートを使う自社の案件の数。has_reports: 自社のテンプレートで日報が出ているか（項目の削除・タイプの変更を止める）
 api.get('/admin/templates', async (c) => {
   const u = c.get('user')
-  const rows = await c.env.DB.prepare('SELECT * FROM report_templates WHERE company_id IS NULL OR company_id = ? ORDER BY template_id').bind(u.company_id).all()
-  return c.json({ templates: (rows.results as any[]).map(t => ({ ...t, fields: JSON.parse(t.fields_json) })) })
+  const rows = await c.env.DB.prepare(`SELECT t.*, COALESCE(t.status, 'active') AS status,
+      (SELECT COUNT(*) FROM projects p WHERE p.report_template_id = t.template_id AND p.company_id = ?1) AS project_count,
+      CASE WHEN t.company_id = ?1 THEN EXISTS (SELECT 1 FROM projects p JOIN daily_reports dr ON dr.project_id = p.project_id WHERE p.report_template_id = t.template_id) ELSE 0 END AS has_reports
+    FROM report_templates t WHERE t.company_id IS NULL OR t.company_id = ?1 ORDER BY t.template_id`).bind(u.company_id).all()
+  return c.json({ templates: (rows.results as any[]).map(t => ({ ...t, fields: safeJsonArray(t.fields_json), editable: t.company_id === u.company_id })) })
+})
+
+// ---------- 日報テンプレートの作成・編集（#165） ----------
+// 企業は自社のテンプレート（template_type='custom'）を作成・編集・配信停止できる。本部のテンプレートは複製して使う（画面で項目を写して作成する）。
+// 本部は PUT /hq/templates/:id で、どのテンプレートも直せる。
+// 日報の値（report_values のキー）と食い違わないよう、値が入った日報がある項目は、削除・キーの変更・
+// 数値とテキストの切り替えができない（表示名・順序・必須・入力例の変更と、項目の追加はできる。値の入っていない項目は消せる）
+const TEMPLATE_STATUSES = ['active', 'stopped']
+const COMPANY_TEMPLATES_MAX = 100
+async function templateEditError(db: D1Database, templateId: number, oldFields: any[], newFields: { key: string; type: string }[]): Promise<string | null> {
+  const next = new Map(newFields.map(f => [f.key, f]))
+  const changed = oldFields.filter(o => o && typeof o.key === 'string' && o.key && (!next.has(o.key) || (o.type === 'number') !== (next.get(o.key)!.type === 'number')))
+  if (!changed.length) return null
+  // 消す・切り替える項目ごとに、このテンプレートを使う案件の日報に値があるかを確かめる
+  const rs = await db.batch(changed.map(o => db.prepare(`SELECT 1 AS hit FROM projects p JOIN daily_reports dr ON dr.project_id = p.project_id
+    WHERE p.report_template_id = ? AND json_valid(dr.report_values) AND json_extract(dr.report_values, ?) IS NOT NULL LIMIT 1`)
+    .bind(templateId, '$."' + String(o.key).replace(/"/g, '') + '"')))
+  for (let i = 0; i < changed.length; i++) {
+    if (!(rs[i].results || []).length) continue
+    const o = changed[i]; const label = String(o.label || o.key)
+    return next.has(o.key)
+      ? `「${label}」（キー: ${o.key}）は日報に値が入っているため、数値とテキストを切り替えられません`
+      : `「${label}」（キー: ${o.key}）は日報に値が入っているため、削除・キーの変更はできません`
+  }
+  return null
+}
+// テンプレートの更新（企業・本部で共通）。cur は更新前の行。送られた項目（名前・項目・状態）だけを変える
+async function updateTemplate(db: D1Database, cur: any, b: any, userId: number): Promise<{ error: string; status: 400 | 409 } | { ok: true }> {
+  const set: Record<string, any> = {}
+  if (b.template_name !== undefined) {
+    const name = String(b.template_name ?? '').trim()
+    if (!name) return { error: 'テンプレート名を入力してください', status: 400 }
+    if (name.length > TEMPLATE_NAME_MAX) return { error: `テンプレート名は${TEMPLATE_NAME_MAX}文字以内にしてください`, status: 400 }
+    const dup = cur.company_id == null
+      ? await db.prepare('SELECT 1 FROM report_templates WHERE company_id IS NULL AND template_name = ? AND template_id != ?').bind(name, cur.template_id).first()
+      : await db.prepare('SELECT 1 FROM report_templates WHERE company_id = ? AND template_name = ? AND template_id != ?').bind(cur.company_id, name, cur.template_id).first()
+    if (dup) return { error: '同じ名前のテンプレートがあります', status: 409 }
+    set.template_name = name
+  }
+  if (b.fields !== undefined) {
+    const v = validateTemplateFields(b.fields)
+    if ('error' in v) return { error: v.error, status: 400 }
+    const err = await templateEditError(db, cur.template_id, safeJsonArray(cur.fields_json), v.fields)
+    if (err) return { error: err, status: 400 }
+    set.fields_json = JSON.stringify(v.fields)
+  }
+  if (b.status !== undefined) {
+    if (!TEMPLATE_STATUSES.includes(b.status)) return { error: '状態が正しくありません', status: 400 }
+    set.status = b.status
+  }
+  const cols = Object.keys(set)
+  if (!cols.length) return { ok: true }
+  await db.prepare(`UPDATE report_templates SET ${cols.map(k => `${k} = ?`).join(', ')}, updated_at = ?, updated_by = ? WHERE template_id = ?`)
+    .bind(...cols.map(k => set[k]), nowJST(), userId, cur.template_id).run()
+  return { ok: true }
+}
+
+api.post('/admin/templates', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => null) as any
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const name = String(b.template_name ?? '').trim()
+  if (!name) return c.json({ error: 'テンプレート名を入力してください' }, 400)
+  if (name.length > TEMPLATE_NAME_MAX) return c.json({ error: `テンプレート名は${TEMPLATE_NAME_MAX}文字以内にしてください` }, 400)
+  const v = validateTemplateFields(b.fields)
+  if ('error' in v) return c.json({ error: v.error }, 400)
+  const cnt = await db.prepare('SELECT COUNT(*) AS n FROM report_templates WHERE company_id = ?').bind(u.company_id).first() as any
+  if (Number(cnt?.n || 0) >= COMPANY_TEMPLATES_MAX) return c.json({ error: `自社のテンプレートは${COMPANY_TEMPLATES_MAX}件までです。使わないものを配信停止にして、編集して使ってください` }, 400)
+  if (await db.prepare('SELECT 1 FROM report_templates WHERE company_id = ? AND template_name = ?').bind(u.company_id, name).first())
+    return c.json({ error: '同じ名前のテンプレートがあります' }, 409)
+  const r = await db.prepare(`INSERT INTO report_templates (company_id, template_name, template_type, fields_json, status, updated_at, updated_by) VALUES (?, ?, 'custom', ?, 'active', ?, ?)`)
+    .bind(u.company_id, name, JSON.stringify(v.fields), nowJST(), u.user_id).run()
+  return c.json({ ok: true, template_id: r.meta.last_row_id })
+})
+
+api.put('/admin/templates/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => null) as any
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const cur = await db.prepare('SELECT * FROM report_templates WHERE template_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first()
+  if (!cur) return c.json({ error: 'テンプレートが見つかりません（本部のテンプレートは複製して編集してください）' }, 404)
+  const r = await updateTemplate(db, cur, b, u.user_id)
+  if ('error' in r) return c.json({ error: r.error }, r.status)
+  return c.json({ ok: true })
 })
 
 // =========================================================
@@ -5366,8 +5612,12 @@ api.get('/admin/contract-usage', async (c) => {
 function safeJsonArray(json: any): any[] {
   try { const v = JSON.parse(json || '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
 }
+// 企業独自のテンプレートは会社名、どれも使っている案件の数と日報の有無（編集できる範囲の表示に使う。#165）を付ける
 api.get('/hq/templates', async (c) => {
-  const rows = await c.env.DB.prepare('SELECT * FROM report_templates ORDER BY template_id').all()
+  const rows = await c.env.DB.prepare(`SELECT t.*, COALESCE(t.status, 'active') AS status, co.company_name,
+      (SELECT COUNT(*) FROM projects p WHERE p.report_template_id = t.template_id) AS project_count,
+      EXISTS (SELECT 1 FROM projects p JOIN daily_reports dr ON dr.project_id = p.project_id WHERE p.report_template_id = t.template_id) AS has_reports
+    FROM report_templates t LEFT JOIN companies co ON co.company_id = t.company_id ORDER BY t.company_id IS NOT NULL, t.template_id`).all()
   return c.json({ templates: (rows.results as any[]).map(t => ({ ...t, fields: safeJsonArray(t.fields_json) })) })
 })
 
@@ -5385,6 +5635,17 @@ api.post('/hq/templates', async (c) => {
   }
   await c.env.DB.prepare(`INSERT INTO report_templates (company_id, template_name, template_type, fields_json) VALUES (NULL, ?, 'hq', ?)`)
     .bind(name, JSON.stringify(v.fields)).run()
+  return c.json({ ok: true })
+})
+
+// テンプレートの修正・配信停止（#165）。本部のテンプレートのほか、企業独自のテンプレートも直せる（規則は企業と同じ）
+api.put('/hq/templates/:id', async (c) => {
+  const b = await c.req.json().catch(() => null) as any
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  const cur = await c.env.DB.prepare('SELECT * FROM report_templates WHERE template_id = ?').bind(c.req.param('id')).first()
+  if (!cur) return c.json({ error: 'テンプレートが見つかりません' }, 404)
+  const r = await updateTemplate(c.env.DB, cur, b, c.get('user').user_id)
+  if ('error' in r) return c.json({ error: r.error }, r.status)
   return c.json({ ok: true })
 })
 

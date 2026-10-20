@@ -858,7 +858,7 @@ function matchesKeyword(q, values) {
 const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
-  noreport: s => s.today_shift && !s.today_checkin, lowscore: s => s.evaluation_score < 3,
+  noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
 }
 // 最終稼働からの日数で休眠の人を探す（#433。最終稼働は、確定・代打のシフトの今日までの日付）
 const STAFF_DORMANT = [['', '最終稼働: すべて'], ['30', '30日以上稼働なし'], ['60', '60日以上稼働なし'], ['90', '90日以上稼働なし'], ['never', '稼働したことがない']]
@@ -1202,7 +1202,7 @@ function staffDetailHeaderHtml(sid, p) {
           <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
           ${RISK_BADGE[p.retention_risk]}
           ${p.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : ''}
-          <span class="badge badge-blue">評価 ${Number(p.evaluation_score).toFixed(1)}</span>
+          <span class="badge ${Number(p.evaluation_score) > 0 ? 'badge-blue' : 'badge-gray'}">${Number(p.evaluation_score) > 0 ? '評価 ' + Number(p.evaluation_score).toFixed(1) : '未評価'}</span>
         </div>
       </div>
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
@@ -1338,6 +1338,7 @@ async function renderStaffDetail(sid, opts = {}) {
   ])
   const p = data.profile
   const evalRadar = data.evaluations[0]
+  STAFF_EVALS = data.evaluations || []
   staffDetailState = { sid, p, affData }
   const edBiz = editing && !!p.can_edit_business
   $app.innerHTML = `
@@ -1358,8 +1359,12 @@ async function renderStaffDetail(sid, opts = {}) {
         </section>
 
         <section class="card p-4" id="staff-evaluation">
-          <h3 class="text-sm font-bold text-gray-700 mb-3">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
-          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>` : '<p class="text-sm text-gray-400">評価データがありません</p>'}
+          <div class="flex items-center gap-2 mb-3">
+            <h3 class="text-sm font-bold text-gray-700">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
+            <button class="btn btn-outline text-xs ml-auto" data-action="showEvaluationModal" data-id="${Number(sid)}"><i class="fas fa-plus"></i>評価を登録</button>
+          </div>
+          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>${evalRadar.comment ? `<p class="text-xs text-gray-600 mt-2 whitespace-pre-wrap">${esc(evalRadar.comment)}</p>` : ''}` : '<p class="text-sm text-gray-400">評価データがありません</p>'}
+          ${evaluationHistoryHtml(sid, data.evaluations)}
         </section>
       </div>
     </div>
@@ -1463,6 +1468,63 @@ async function renderStaffDetail(sid, opts = {}) {
     })
   }
 }
+
+// ---------- スタッフ評価（#164）: 期間（年月）ごとに6項目（1〜5）とコメント。同じ期間は上書き ----------
+const EVAL_ITEMS = [['attendance_score', '勤怠安定性'], ['report_score', '報告正確性'], ['performance_score', '実績'], ['client_score', 'クライアント評価'], ['growth_score', '成長意欲'], ['retention_score', '継続見込み']]
+let STAFF_EVALS = []
+const evalAvg = e => Math.round(EVAL_ITEMS.reduce((s, [k]) => s + Number(e[k] || 0), 0) / EVAL_ITEMS.length * 10) / 10
+function evaluationHistoryHtml(sid, list) {
+  if (!list || !list.length) return ''
+  return `<div class="mt-3 pt-3 border-t border-gray-100">
+    <p class="text-xs font-bold text-gray-500 mb-1">推移（直近${list.length}件）</p>
+    <table class="w-full text-xs">${list.map(e => `
+      <tr class="border-b border-gray-50">
+        <td class="py-1">${esc(e.evaluation_period || '-')}</td>
+        <td class="py-1 font-bold">${evalAvg(e).toFixed(1)}</td>
+        <td class="py-1 text-gray-400 truncate max-w-[80px]" title="${esc(e.evaluator_name || '')}">${esc(e.evaluator_name || '')}</td>
+        <td class="py-1 text-right whitespace-nowrap">
+          <button class="text-blue-600 hover:underline" data-action="showEvaluationModal" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}">編集</button>
+          <button class="text-red-500 hover:underline ml-1" data-action="deleteEvaluation" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}" data-period="${esc(e.evaluation_period || '')}">削除</button></td>
+      </tr>`).join('')}</table>
+    <p class="text-[11px] text-gray-400 mt-1">総合評価は最新の期間の6項目の平均です</p>
+  </div>`
+}
+delegate('showEvaluationModal', el => {
+  const sid = Number(el.dataset.id)
+  const cur = el.dataset.eid ? STAFF_EVALS.find(e => Number(e.evaluation_id) === Number(el.dataset.eid)) : null
+  const period = cur ? cur.evaluation_period : dayjs().format('YYYY-MM')
+  modal(`
+    <h3 class="font-bold text-lg mb-3">${cur ? '評価の編集' : '評価を登録'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">評価の期間（年月） *</label><input type="month" id="ev-period" class="inp" value="${esc(period)}" ${cur ? 'readonly' : ''}></div>
+      <div class="grid grid-cols-2 gap-2">${EVAL_ITEMS.map(([k, label]) => `
+        <label class="text-sm text-gray-600">${label}
+          <select id="ev-${k}" class="inp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Number(cur ? cur[k] : 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`).join('')}</div>
+      <p class="text-[11px] text-gray-400">5: とても良い 〜 1: 課題が大きい。同じ期間の評価は上書きします</p>
+      <div><label class="text-sm text-gray-600 block mb-1">コメント</label><textarea id="ev-comment" rows="3" class="inp" maxlength="1000">${esc(cur ? cur.comment || '' : '')}</textarea></div>
+      <button class="btn btn-primary w-full" data-action="saveEvaluation" data-id="${sid}" data-edit="${cur ? '1' : ''}">保存する</button>
+    </div>`)
+})
+delegate('saveEvaluation', el => withSubmitLock(el, async () => {
+  const sid = Number(el.dataset.id)
+  const period = document.getElementById('ev-period').value
+  if (!/^\d{4}-\d{2}$/.test(period)) { toast('評価の期間（年月）を選んでください'); return }
+  if (!el.dataset.edit && STAFF_EVALS.some(e => e.evaluation_period === period) && !confirm(`${period} の評価はすでにあります。上書きしますか？`)) return
+  const body = { evaluation_period: period, comment: document.getElementById('ev-comment').value }
+  for (const [k] of EVAL_ITEMS) body[k] = Number(document.getElementById('ev-' + k).value)
+  try {
+    await axios.post(`/api/admin/staff/${sid}/evaluations`, body)
+    closeModal(); toast('評価を保存しました'); renderStaffDetail(sid)
+  } catch (e) { showApiError(e, '評価を保存できませんでした') }
+}))
+delegate('deleteEvaluation', el => withSubmitLock(el, async () => {
+  const sid = Number(el.dataset.id)
+  if (!confirm(`${el.dataset.period} の評価を削除しますか？`)) return
+  try {
+    await axios.delete(`/api/admin/staff/${sid}/evaluations/${Number(el.dataset.eid)}`)
+    toast('評価を削除しました'); renderStaffDetail(sid)
+  } catch (e) { showApiError(e, '評価を削除できませんでした') }
+}))
 
 window.saveStaffMemo = async function (sid) {
   await axios.put('/api/admin/staff/' + sid, { memo: document.getElementById('staff-memo').value })
@@ -1876,6 +1938,7 @@ async function renderProjects() {
       <div class="flex gap-2 items-center flex-wrap">
         ${monthNavHtml('projectsMonth', L.month)}
         <button class="btn btn-outline" data-action="showLatenessSetting" title="入店・勤務開始を何分まで遅刻にしないか（会社全体の設定）"><i class="fas fa-stopwatch"></i>遅刻の猶予</button>
+        <a class="btn btn-outline" href="#projects/templates" title="日報の入力項目を自社で作成・編集する"><i class="fas fa-list-check"></i>日報テンプレート</a>
         <button class="btn btn-primary" onclick="showAddProject()"><i class="fas fa-plus"></i>案件登録</button>
       </div>
     </div>
@@ -1965,7 +2028,9 @@ delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
 }))
 
 window.showAddProject = async function () {
-  const [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  const [{ data: cl }, { data: tp0 }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  // 配信停止のテンプレートは選べない（#165）
+  const tp = { templates: tp0.templates.filter(t => t.status !== 'stopped') }
   // 既定は先頭の有効なテンプレート（項目が1つ以上あるもの）。固定のIDは前提にしない
   const usable = tp.templates.find(t => { try { const f = JSON.parse(t.fields_json || '[]'); return Array.isArray(f) && f.length > 0 } catch { return false } })
   const defaultTpl = usable ? usable.template_id : null
@@ -1991,7 +2056,8 @@ window.showAddProject = async function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="np-skills" class="inp" maxlength="500" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）">
         <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
-      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp"></textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
       <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
 }
@@ -2016,7 +2082,7 @@ window.addProject = async function () {
       project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
       unit_price: Number(document.getElementById('np-price').value || 0), unit_price_type: document.getElementById('np-price-unit').value,
       report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value,
-      required_skills: document.getElementById('np-skills').value
+      manual_text: document.getElementById('np-manual').value, required_skills: document.getElementById('np-skills').value
     })
     if (!res) return
     closeModal(); toast('案件を登録しました'); renderProjects()
@@ -2064,14 +2130,20 @@ async function renderProjectDetail(pid) {
       </div>
       ${monthNavHtml('projectDetailMonth', month)}
       <span class="badge ${p.status === 'active' ? 'badge-green' : 'badge-gray'}">${p.status === 'active' ? '稼働中' : '終了'}</span>
+      <button class="btn btn-outline" data-action="editProject" data-id="${Number(p.project_id)}"><i class="fas fa-pen"></i>編集</button>
+      ${p.status === 'active'
+        ? `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="closed" data-name="${esc(p.project_name)}"><i class="fas fa-flag-checkered"></i>案件を終了する</button>`
+        : `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="active" data-name="${esc(p.project_name)}"><i class="fas fa-rotate-left"></i>稼働中に戻す</button>`}
     </div>
+    ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-gray-50 text-sm text-gray-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
       <div class="card p-4"><p class="text-xs text-gray-500">請求単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-gray-400">件</span></p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
-        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a></div>
+        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a>
+        <a href="#projects/templates" class="text-xs text-blue-600 hover:underline ml-2">テンプレートの管理</a></div>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-4">
@@ -2118,7 +2190,7 @@ async function renderProjectDetail(pid) {
         <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
         <div class="mt-4 pt-3 border-t border-gray-100">
           <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
-          <select class="inp text-sm" onchange="updateProjectPhotoRequired(${Number(p.project_id)}, this.value)">
+          <select class="inp text-sm" data-project-photo="${Number(p.project_id)}">
             <option value="inherit" ${p.photo_required_override == null ? 'selected' : ''}>会社設定に従う（現在: ${data.company_photo_default ? '必須' : '不要'}）</option>
             <option value="on" ${p.photo_required_override === 1 ? 'selected' : ''}>この案件は必須にする</option>
             <option value="off" ${p.photo_required_override === 0 ? 'selected' : ''}>この案件は不要にする</option>
@@ -2131,6 +2203,217 @@ async function renderProjectDetail(pid) {
   // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
   if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
 }
+// 写真添付の設定（イベント属性に値を埋め込まない）
+document.addEventListener('change', ev => {
+  const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-project-photo]') : null
+  if (sel) updateProjectPhotoRequired(Number(sel.dataset.projectPhoto), sel.value)
+})
+// 案件の更新。確認が要る変更（サーバーが 409 で confirm_* を返す）は、確認できたら印を付けて送り直す。取りやめたら null を返す
+const PROJECT_CONFIRM_FLAGS = [['confirm_duplicate', 'allow_duplicate'], ['confirm_close', 'confirm_close'], ['confirm_template_change', 'confirm_template_change']]
+async function putProjectConfirming(pid, body) {
+  let b = { ...body }
+  for (let i = 0; i <= PROJECT_CONFIRM_FLAGS.length; i++) {
+    try { return await axios.put('/api/admin/projects/' + pid, b) } catch (e) {
+      const d = e.response && e.response.data
+      const hit = e.response && e.response.status === 409 && d && PROJECT_CONFIRM_FLAGS.find(([k]) => d[k])
+      if (!hit) throw e
+      if (!confirm(d.error + '\n\nこのまま保存しますか？')) return null
+      b = { ...b, [hit[1]]: true }
+    }
+  }
+  return null
+}
+// 案件の編集（#153）。単価・区分は下の「区分・標準単価」で変える
+delegate('editProject', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id)
+  if (!PROJECT_DETAIL || PROJECT_DETAIL.pid !== pid) return
+  const p = PROJECT_DETAIL.data.project
+  let cl, tp
+  try {
+    [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  } catch (e) { showApiError(e, '読み込めませんでした'); return }
+  // 配信停止・項目のないテンプレートは選べない（いま使っているものは残す）
+  const tpls = tp.templates.filter(t => Number(t.template_id) === Number(p.report_template_id) || (t.status !== 'stopped' && (t.fields || []).length > 0))
+  modal(`
+    <h3 class="font-bold text-lg mb-4">案件の編集</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">案件名 *</label><input id="ep-name" class="inp" maxlength="100" value="${esc(p.project_name)}"></div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">クライアント</label>
+          <select id="ep-client" class="inp"><option value="">（クライアントなし）</option>${cl.clients.map(c => `<option value="${Number(c.client_id)}" ${Number(c.client_id) === Number(p.client_id) ? 'selected' : ''}>${esc(c.client_name)}</option>`).join('')}</select></div>
+        <div><label class="text-sm text-gray-600 block mb-1">業務種別</label>
+          <select id="ep-type" class="inp">${Object.entries(PTYPE_LABELS).map(([k, v]) => `<option value="${k}" ${p.project_type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="ep-loc" class="inp" maxlength="200" value="${esc(p.location || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
+        <select id="ep-tpl" class="inp">${tpls.map(t => `<option value="${Number(t.template_id)}" ${Number(t.template_id) === Number(p.report_template_id) ? 'selected' : ''}>${esc(t.template_name)}${t.editable ? '（自社）' : ''}${t.status === 'stopped' ? '（配信停止）' : ''}</option>`).join('')}</select>
+        <p class="text-[11px] text-gray-400 mt-1">日報がある案件のテンプレートを変えると、新しいテンプレートにない項目は過去の日報に表示されなくなります</p></div>
+      <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
+      <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
+      <button class="btn btn-primary w-full" data-action="saveProject" data-id="${pid}">保存する</button>
+    </div>`)
+}))
+delegate('saveProject', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id)
+  const v = id => document.getElementById(id).value
+  if (!v('ep-name').trim()) { toast('案件名を入力してください'); return }
+  try {
+    const res = await putProjectConfirming(pid, {
+      project_name: v('ep-name'), client_id: v('ep-client') || null, project_type: v('ep-type'), location: v('ep-loc'),
+      report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'),
+      memo: v('ep-memo'), show_performance: document.getElementById('ep-perf').checked,
+    })
+    if (!res) return
+    closeModal(); toast('案件を保存しました'); renderProjectDetail(pid)
+  } catch (e) { showApiError(e, '案件を保存できませんでした') }
+}))
+// 案件の終了・稼働中に戻す（#153）
+delegate('setProjectStatus', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id); const closing = el.dataset.status === 'closed'
+  if (closing && !confirm(`案件「${el.dataset.name}」を終了しますか？\n終了すると、シフト登録・シフトボードの選択肢に出なくなり、新しいシフトを登録できなくなります（あとで稼働中に戻せます）。`)) return
+  try {
+    const res = await putProjectConfirming(pid, { status: closing ? 'closed' : 'active' })
+    if (!res) return
+    toast(closing ? '案件を終了しました' : '案件を稼働中に戻しました'); renderProjectDetail(pid)
+  } catch (e) { showApiError(e, '案件の状態を変更できませんでした') }
+}))
+
+// ============ 日報テンプレート（自社で作成・編集。#165） ============
+// 本部のテンプレートは編集できないため、複製して自社のテンプレートとして編集する。
+// 値が入った日報がある項目は、削除・数値とテキストの切り替えができない（サーバーで確かめる）。日報がある既存の項目のキーは画面でも変えさせない
+const TPL_TYPES = [['number', '数値（件数の集計に使う）'], ['text', '1行のテキスト'], ['textarea', '複数行のテキスト']]
+let ADMIN_TPLS = []
+let TPL_EDIT = null
+async function renderAdminTemplates() {
+  loading()
+  try { ADMIN_TPLS = (await axios.get('/api/admin/templates')).data.templates } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'テンプレートを読み込めませんでした'))}</p>`; return }
+  const card = t => `
+    <section class="card p-4 ${t.status === 'stopped' ? 'opacity-70' : ''}">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        <h3 class="font-bold text-gray-800">${esc(t.template_name)}</h3>
+        <span class="badge ${t.editable ? 'badge-purple' : 'badge-blue'}">${t.editable ? '自社' : '本部配信'}</span>
+        ${t.status === 'stopped' ? '<span class="badge badge-gray">配信停止</span>' : ''}
+        <span class="text-xs text-gray-400 ml-auto">使用中の案件 ${Number(t.project_count || 0)}件</span>
+      </div>
+      <div class="flex flex-wrap gap-1.5 mb-3">${(t.fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}" title="${esc(f.key)}">${esc(f.label)}${f.required ? ' *' : ''}</span>`).join('') || '<span class="text-xs text-gray-400">項目がありません</span>'}</div>
+      <div class="flex gap-2 flex-wrap">
+        ${t.editable ? `<button class="btn btn-outline text-xs" data-action="editAdminTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>編集</button>
+          <button class="btn btn-outline text-xs" data-action="toggleAdminTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '使用を再開' : '配信停止'}</button>` : ''}
+        <button class="btn btn-outline text-xs" data-action="copyAdminTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-copy"></i>複製して作成</button>
+      </div>
+    </section>`
+  const own = ADMIN_TPLS.filter(t => t.editable), hq = ADMIN_TPLS.filter(t => !t.editable)
+  $app.innerHTML = `
+    <div class="flex items-center gap-3 mb-4 flex-wrap">
+      <a href="#projects" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+      <h2 class="text-xl font-bold text-gray-900 flex-1">日報テンプレート</h2>
+      <button class="btn btn-primary" data-action="newAdminTemplate"><i class="fas fa-plus"></i>テンプレートを作成</button>
+    </div>
+    <p class="text-sm text-gray-500 mb-4">案件ごとにスタッフが日報で入力する項目です。案件の登録・編集で選びます。配信停止にしたテンプレートは新しい案件では選べません（使っている案件はそのまま使えます）。</p>
+    <h3 class="text-sm font-bold text-gray-700 mb-2">自社のテンプレート</h3>
+    <div class="grid md:grid-cols-2 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
+    <h3 class="text-sm font-bold text-gray-700 mb-2">本部配信のテンプレート</h3>
+    <div class="grid md:grid-cols-2 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
+}
+const tplById = id => ADMIN_TPLS.find(t => Number(t.template_id) === Number(id))
+delegate('newAdminTemplate', () => openTemplateEditor(null, { name: '', fields: [{ key: 'item1', label: '', type: 'number' }, { key: 'free', label: '自由記述', type: 'textarea' }] }))
+delegate('editAdminTemplate', el => { const t = tplById(el.dataset.id); if (t) openTemplateEditor(t, { name: t.template_name, fields: t.fields }) })
+delegate('copyAdminTemplate', el => { const t = tplById(el.dataset.id); if (t) openTemplateEditor(null, { name: (t.template_name + '（自社）').slice(0, 60), fields: t.fields }) })
+delegate('toggleAdminTemplateStatus', el => withSubmitLock(el, async () => {
+  const t = tplById(el.dataset.id); if (!t) return
+  const stop = el.dataset.status === 'stopped'
+  if (stop && !confirm(`「${t.template_name}」を配信停止にしますか？\n新しい案件では選べなくなります。使っている案件（${Number(t.project_count || 0)}件）はそのまま使えます。`)) return
+  try {
+    await axios.put('/api/admin/templates/' + Number(t.template_id), { status: el.dataset.status })
+    toast(stop ? '配信停止にしました' : '使用を再開しました'); renderAdminTemplates()
+  } catch (e) { showApiError(e, '変更できませんでした') }
+}))
+// t: 編集するテンプレート（新規・複製は null）。init: 名前と項目の初期値
+function openTemplateEditor(t, init) {
+  const locked = new Set(t && t.has_reports ? (t.fields || []).map(f => f.key) : [])
+  TPL_EDIT = { id: t ? Number(t.template_id) : null, locked, rows: (init.fields || []).map(f => ({ ...f, origKey: f.key })) }
+  modal(`
+    <h3 class="font-bold text-lg mb-3">${t ? 'テンプレートの編集' : 'テンプレートの作成'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
+      ${locked.size ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
+      <div>
+        <div class="text-[11px] text-gray-400 grid grid-cols-12 gap-1 mb-1"><span class="col-span-3">キー（半角英数字）</span><span class="col-span-4">表示名</span><span class="col-span-3">入力欄</span><span class="col-span-2"></span></div>
+        <div id="tpl-rows" class="space-y-1.5"></div>
+        <button type="button" class="btn btn-outline text-xs mt-2" data-action="tplAddRow"><i class="fas fa-plus"></i>項目を追加</button>
+        <p class="text-[11px] text-gray-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
+      </div>
+      <button class="btn btn-primary w-full" data-action="saveAdminTemplate">保存する</button>
+    </div>`)
+  drawTplRows()
+}
+function drawTplRows() {
+  const box = document.getElementById('tpl-rows'); if (!box || !TPL_EDIT) return
+  const n = TPL_EDIT.rows.length
+  box.innerHTML = TPL_EDIT.rows.map((f, i) => {
+    const lk = !!f.origKey && TPL_EDIT.locked.has(f.origKey)
+    const types = TPL_TYPES
+    return `<div class="grid grid-cols-12 gap-1 items-center">
+      <input class="inp text-xs font-mono col-span-3" data-tpl-field="key" data-i="${i}" value="${esc(f.key || '')}" maxlength="40" ${lk ? 'readonly title="日報があるテンプレートの既存の項目のキーは変えられません"' : ''}>
+      <input class="inp text-xs col-span-4" data-tpl-field="label" data-i="${i}" value="${esc(f.label || '')}" maxlength="40" placeholder="表示名">
+      <select class="inp text-xs col-span-3" data-tpl-field="type" data-i="${i}">${types.map(([k, v]) => `<option value="${k}" ${f.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <span class="col-span-2 flex items-center gap-0.5 text-[11px] text-gray-500">
+        <label class="flex items-center gap-0.5" title="必須"><input type="checkbox" data-tpl-field="required" data-i="${i}" ${f.required ? 'checked' : ''}>必須</label>
+        <button type="button" class="px-1 text-gray-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="上へ"><i class="fas fa-arrow-up"></i></button>
+        <button type="button" class="px-1 text-gray-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="1" ${i === n - 1 ? 'disabled' : ''} title="下へ"><i class="fas fa-arrow-down"></i></button>
+        <button type="button" class="px-1 text-red-500 disabled:opacity-30" data-action="tplRemoveRow" data-i="${i}" title="削除"><i class="fas fa-xmark"></i></button>
+      </span>
+    </div>`
+  }).join('') || '<p class="text-xs text-red-600">項目を1つ以上追加してください</p>'
+}
+// 入力のたびに TPL_EDIT に写す（並べ替え・削除で描き直しても入力が消えないように）
+function syncTplField(ev) {
+  const el = ev.target && ev.target.closest ? ev.target.closest('[data-tpl-field]') : null
+  if (!el || !TPL_EDIT) return
+  const row = TPL_EDIT.rows[Number(el.dataset.i)]; if (!row) return
+  const k = el.dataset.tplField
+  if (k === 'required') { if (el.checked) row.required = true; else delete row.required }
+  else row[k] = el.value
+  // 数値の項目には文字数の上限を付けない（サーバーの検証と同じ）
+  if (k === 'type' && row.type === 'number') delete row.maxLength
+}
+document.addEventListener('input', syncTplField)
+document.addEventListener('change', syncTplField)
+delegate('tplAddRow', () => {
+  if (!TPL_EDIT) return
+  const used = new Set(TPL_EDIT.rows.map(r => String(r.key || '').toLowerCase()))
+  let n = TPL_EDIT.rows.length + 1; while (used.has('item' + n)) n++
+  TPL_EDIT.rows.push({ key: 'item' + n, label: '', type: 'number' })
+  drawTplRows()
+})
+delegate('tplMoveRow', el => {
+  const i = Number(el.dataset.i), j = i + Number(el.dataset.dir); const r = TPL_EDIT && TPL_EDIT.rows
+  if (!r || j < 0 || j >= r.length) return
+  ;[r[i], r[j]] = [r[j], r[i]]; drawTplRows()
+})
+delegate('tplRemoveRow', el => { if (TPL_EDIT) { TPL_EDIT.rows.splice(Number(el.dataset.i), 1); drawTplRows() } })
+delegate('saveAdminTemplate', el => withSubmitLock(el, async () => {
+  if (!TPL_EDIT) return
+  const name = document.getElementById('tpl-name').value.trim()
+  if (!name) { toast('テンプレート名を入力してください'); return }
+  if (!TPL_EDIT.rows.length) { toast('項目を1つ以上追加してください'); return }
+  const fields = TPL_EDIT.rows.map(r => {
+    const f = { key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), type: r.type || 'text' }
+    if (r.required) f.required = true
+    if (r.placeholder) f.placeholder = r.placeholder
+    if (r.maxLength && f.type !== 'number') f.maxLength = r.maxLength
+    return f
+  })
+  try {
+    if (TPL_EDIT.id) await axios.put('/api/admin/templates/' + TPL_EDIT.id, { template_name: name, fields })
+    else await axios.post('/api/admin/templates', { template_name: name, fields })
+    closeModal(); toast('テンプレートを保存しました'); TPL_EDIT = null; renderAdminTemplates()
+  } catch (e) { showApiError(e, 'テンプレートを保存できませんでした') }
+}))
+
 function projectSkillBadges(v) {
   return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-gray-400">-</span>'
 }
@@ -4438,6 +4721,8 @@ function route() {
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
+  // 自社の日報テンプレートの作成・編集（#165）
+  if (tab === 'projects' && id === 'templates') return renderAdminTemplates()
   // 詳細画面の ID は onclick などに埋め込まれるため、数字以外（細工したリンク）は一覧へ戻す
   if (['staff', 'projects', 'clients', 'employees'].includes(tab) && id && !/^\d+$/.test(id)) { location.hash = tab; return }
   // 従業員管理（労務情報）は会社管理者・事務担当のみ（#205。API でも同じ判定で止める）
