@@ -15,9 +15,11 @@ import { assertAssignable, conflictLabel, isUniqueViolation } from './lib/staff-
 import { personStaffRows } from './roster'
 import { shiftWindow } from './lib/shift-time'
 import { isCompanyActive } from './lib/auth'
+import { notifyRecruitNew, notifyRecruitResult, notifyRecruitResults } from './notifications'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
-type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string }
+type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
+  RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
 
 // ---------- 定数 ----------
@@ -429,6 +431,8 @@ recruitStaffApi.get('/summary', async (c) => {
   if (!u.staff_id) return c.json({ pages: 0, open: 0, pending: 0, applications: 0, pending_items: [], other_companies: [] })
   const scope = await myAppScope(db, u)
   const n = await staffRecruitCounts(db, u.company_id, u.staff_id, scope)
+  // counts=1: 件数だけ（ホームの『募集中のお仕事』のカード。#156）
+  if (c.req.query('counts') === '1') return c.json(n)
   const pending = n.pending ? ((await db.prepare(`SELECT i.item_id, i.slot_role_id, a.page_id, rp.title AS page_title, sl.work_date, sl.start_time, sl.end_time, r.role_name,
       COALESCE(si.site_name, sl.location, p.location, '') AS place
     FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
@@ -639,8 +643,13 @@ recruitAdminApi.post('/recruit-pages', async (c) => {
   const token = randToken(18)
   const r = await db.prepare(`INSERT INTO recruit_pages (company_id, token, title, description, pay_note, contact_note, project_ids, date_from, date_to, show_remaining, allow_staff, status, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`).bind(u.company_id, token, v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, u.user_id).run()
-  return c.json({ ok: true, page_id: r.meta.last_row_id, token })
+  const pageId = Number(r.meta.last_row_id)
+  // スタッフアプリから応募できる募集は、スタッフに知らせる（#156。notify_staff: false で知らせない。notify_staff_email: true でメールも送る）
+  const staffNotice = v.allow_staff && b.notify_staff !== false ? await notifyRecruitNew(c, u.company_id, pageId, { email: b.notify_staff_email === true }) : null
+  return c.json({ ok: true, page_id: pageId, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed } : {}) })
 })
+// 募集がスタッフアプリに出ている（公開中・アプリから応募できる・期間内）か
+const visibleToStaff = (p: any) => p.status === 'open' && !!Number(p.allow_staff) && p.date_to >= todayJST()
 
 recruitAdminApi.put('/recruit-pages/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
@@ -655,7 +664,10 @@ recruitAdminApi.put('/recruit-pages/:id', async (c) => {
   await db.prepare(`UPDATE recruit_pages SET title = ?, description = ?, pay_note = ?, contact_note = ?, project_ids = ?, date_from = ?, date_to = ?, show_remaining = ?, allow_staff = ?,
       status = ?, token = ?, closed_at = CASE WHEN ? = 'closed' AND status != 'closed' THEN ? WHEN ? = 'open' THEN NULL ELSE closed_at END WHERE page_id = ?`)
     .bind(v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, v.status, token, v.status, nowJST(), v.status, cur.page_id).run()
-  return c.json({ ok: true, token })
+  // 再開・延長・アプリからの応募の許可で、スタッフアプリに出るようになったら知らせる（#156。同じ募集は1日1回まで）
+  const staffNotice = !visibleToStaff(cur) && visibleToStaff(v) && b.notify_staff !== false
+    ? await notifyRecruitNew(c, u.company_id, cur.page_id, { email: b.notify_staff_email === true }) : null
+  return c.json({ ok: true, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed, staff_notice_skipped: !!staffNotice.skipped_recent } : {}) })
 })
 
 recruitAdminApi.delete('/recruit-pages/:id', async (c) => {
@@ -794,7 +806,7 @@ async function slotSummary(db: D1Database, companyId: number, slotRoleId: number
 
 // 枠（役割）に残っている未対応の応募をまとめて見送る（定員に達した枠の残り。#303）。承認の処理中（processing）の明細は対象にしない
 recruitAdminApi.post('/recruit-slots/:id/reject-pending', async (c) => {
-  const u = c.get('user'); const db = c.env.DB
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const slot = await slotSummary(db, u.company_id, Number(c.req.param('id')))
   if (!slot) return c.json({ error: '枠が見つかりません' }, 404)
   const rows = (await db.prepare(`SELECT i.item_id, i.application_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
@@ -803,7 +815,27 @@ recruitAdminApi.post('/recruit-slots/:id/reject-pending', async (c) => {
   const r = await db.prepare(`UPDATE recruit_application_items SET status = 'rejected', decided_at = ? WHERE status = 'pending' AND item_id IN ${JSON_IN}`)
     .bind(nowJST(), bindJsonArray(rows.map(x => x.item_id))).run()
   for (const id of new Set(rows.map(x => x.application_id as number))) await closeIfDone(db, id, u.user_id)
-  return c.json({ ok: true, rejected: Number(r.meta.changes || 0) })
+  // 見送った応募者に知らせる（#151。notify_applicant: false で知らせない）。人数が多くなり得るので、メールは応答の後に送る
+  let notified = 0
+  if (b.notify_applicant !== false) {
+    const byApp = new Map<number, number[]>()
+    for (const x of rows) byApp.set(x.application_id, [...(byApp.get(x.application_id) || []), x.item_id])
+    const res = await notifyRecruitResults(c, u.company_id, [...byApp].map(([applicationId, rejected]) => ({ applicationId, approved: [], rejected })))
+    for (const n of res.values()) if (n.app || n.email !== 'none') notified++
+  }
+  return c.json({ ok: true, rejected: Number(r.meta.changes || 0), applicants_notified: notified })
+})
+
+// 応募の結果のメールを送り直す（#151。メールが届かなかった・送らずに処理したとき）。承認・見送りにした日時をまとめて1通で送る
+recruitAdminApi.post('/recruit-applications/:id/notify-result', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const a = await db.prepare('SELECT application_id FROM recruit_applications WHERE application_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!a) return c.json({ error: '応募が見つかりません' }, 404)
+  const items = (await db.prepare(`SELECT item_id, status FROM recruit_application_items WHERE application_id = ? AND status IN ('approved', 'rejected')`).bind(a.application_id).all()).results as any[]
+  if (!items.length) return c.json({ error: '承認・見送りにした日時がありません' }, 409)
+  const r = await notifyRecruitResult(c, u.company_id, a.application_id, { approved: items.filter(i => i.status === 'approved').map(i => i.item_id), rejected: items.filter(i => i.status === 'rejected').map(i => i.item_id) }, { wait: true })
+  if (!r.app && r.email === 'none') return c.json({ error: '応募者のメールアドレスがなく、アプリにもログインしていないため、知らせられません。電話などで連絡してください' }, 409)
+  return c.json({ ok: true, applicant_notice: r })
 })
 
 // 未登録の応募者を紐づける既存スタッフの候補（#395）。電話番号が一致しなくても、氏名・フリガナ・スタッフ番号・電話番号で探せる。
@@ -969,8 +1001,10 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
     const s = await slotSummary(db, u.company_id, rid)
     if (s && s.full && s.pending) filled.push(s)
   }
+  // 結果を応募者に知らせる（#151。notify_applicant: false で知らせない）。メールは送れたかを画面に出すため、送り終わるまで待つ
+  const applicant = b.notify_applicant === false ? null : await notifyRecruitResult(c, u.company_id, a.application_id, { approved: approveIds, rejected: rejectIds }, { wait: true })
   return c.json({ ok: true, staff_id: staffId, created_staff: createdStaff, created_shifts: createdShifts.length, rejected: rejectIds.length,
-    promoted: toApprove.filter(i => i.status === 'rejected').length, filled_slots: filled })
+    promoted: toApprove.filter(i => i.status === 'rejected').length, filled_slots: filled, ...(applicant ? { applicant_notice: applicant } : {}) })
 })
 
 async function approvalWarnings(db: D1Database, companyId: number, staffId: number | null, items: any[]) {

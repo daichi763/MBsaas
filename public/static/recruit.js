@@ -108,6 +108,11 @@
         <label class="block text-gray-600">問い合わせ先の表示（任意）<input id="rp-contact" class="inp" maxlength="200" value="${esc(p?.contact_note || '')}" placeholder="例: 採用担当 03-0000-0000（平日10〜18時）"></label>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-remaining" ${p ? (p.show_remaining ? 'checked' : '') : 'checked'}>残り人数を表示する</label>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-staff" ${p ? (p.allow_staff ? 'checked' : '') : 'checked'}>登録済みのスタッフがアプリから応募できるようにする</label>
+        <div class="text-xs pl-6 space-y-1" id="rp-notify-box">
+          <label class="flex items-center gap-2"><input type="checkbox" id="rp-notify" checked>${p ? '公開・再開でスタッフアプリに出るようになったら、' : ''}スタッフにアプリで知らせる</label>
+          <label class="flex items-center gap-2"><input type="checkbox" id="rp-notify-mail">メールでも知らせる（メールアドレスを登録しているスタッフ）</label>
+          <p class="text-[11px] text-gray-400">知らせるのは、自社の在籍中のスタッフでアプリにログインできる人です。同じ募集の通知は1日1回までです</p>
+        </div>
         ${p ? '<label class="flex items-center gap-2 text-xs text-red-600"><input type="checkbox" id="rp-regen">URLを再発行する（今のURL・QRは使えなくなります）</label>' : ''}
       </div>
       <div class="flex gap-2 mt-4">
@@ -116,6 +121,10 @@
         <button class="btn btn-primary flex-1" data-action="recruitSavePage" data-id="${p ? p.page_id : ''}" data-reopen="${reopen ? '1' : ''}">${p ? (reopen ? '保存して再開' : '保存') : '作成してURLを発行'}</button>
       </div>`)
   }
+  // 新しい募集をスタッフに知らせた結果（#156）
+  const staffNoticeText = (d) => !d || d.staff_notified == null ? ''
+    : d.staff_notice_skipped ? '（今日すでにスタッフに知らせた募集のため、通知は送っていません）'
+    : d.staff_notified ? `（スタッフ${Number(d.staff_notified)}人にアプリで知らせました${d.staff_emailed ? `・メール${Number(d.staff_emailed)}通` : ''}）` : '（知らせるスタッフがいませんでした）'
   delegate('recruitReopen', (el) => openRecruitPage(Number(el.dataset.id), true))
   delegate('recruitSavePage', (el) => withSubmitLock(el, () => saveRecruitPage(Number(el.dataset.id) || null, el.dataset.reopen === '1')))
   async function saveRecruitPage(id, reopen) {
@@ -124,20 +133,21 @@
       title: v('rp-title'), project_ids: [...document.querySelectorAll('.rp-proj:checked')].map(x => Number(x.value)),
       date_from: v('rp-from'), date_to: v('rp-to'), description: v('rp-desc'), pay_note: v('rp-pay'), contact_note: v('rp-contact'),
       show_remaining: document.getElementById('rp-remaining').checked, allow_staff: document.getElementById('rp-staff').checked,
+      notify_staff: document.getElementById('rp-notify').checked, notify_staff_email: document.getElementById('rp-notify-mail').checked,
       ...(id && document.getElementById('rp-regen')?.checked ? { regenerate_token: true } : {}),
       ...(id && reopen ? { status: 'open' } : {}),
     }
     if (body.project_ids.length > MAX_PAGE_PROJECTS) return toast(`対象の案件は${MAX_PAGE_PROJECTS}件までです（${body.project_ids.length}件選択中）`)
     try {
       const { data } = id ? await axios.put('/api/admin/recruit-pages/' + id, body) : await axios.post('/api/admin/recruit-pages', body)
-      closeModal(); toast(id ? (reopen ? '募集を再開しました' : '保存しました') : '募集ページを作成しました')
+      closeModal(); toast((id ? (reopen ? '募集を再開しました' : '保存しました') : '募集ページを作成しました') + staffNoticeText(data))
       S.tab = 'pages'; await renderRecruit()
       showRecruitShare(id || data.page_id)
     } catch (e) { toast(errMsg(e)) }
   }
   window.setRecruitStatus = async function (id, status) {
     if (status === 'closed' && !confirm('募集を終了します。公開ページでは応募できなくなります（未対応の応募はそのまま残ります）')) return
-    try { await axios.put('/api/admin/recruit-pages/' + id, { status }); toast(status === 'closed' ? '募集を終了しました' : '募集を再開しました'); renderRecruit() } catch (e) {
+    try { const { data } = await axios.put('/api/admin/recruit-pages/' + id, { status }); toast(status === 'closed' ? '募集を終了しました' : '募集を再開しました' + staffNoticeText(data)); renderRecruit() } catch (e) {
       toast(errMsg(e))
       // 期間が切れていて再開できないときは、期間を延ばす画面を開く
       if (e.response && e.response.data && e.response.data.need_extend) openRecruitPage(id, true)
@@ -225,12 +235,23 @@
     document.getElementById('recruit-app-list').insertAdjacentHTML('beforeend', add.map(appCard).join(''))
     el.outerHTML = moreButton(data)
   }))
+  // 結果の知らせ（#151）。メールアドレスのある応募者にはメール、アプリにログインできるスタッフにはアプリの通知が届く
+  const REJECT_NOTIFY_NOTE = '見送った応募者には、メール（アドレスのある人）とアプリで結果を知らせます。アドレスのない人には電話などで連絡してください'
+  const notifyNote = (on) => on ? '応募者には結果をメール（アドレスのある人）とアプリで知らせます' : '応募者への連絡は各自で行ってください'
+  function applicantNoticeText(n) {
+    if (!n) return ''
+    const app = n.app ? 'アプリで知らせました' : ''
+    if (n.email === 'sent' || n.email === 'queued') return `（応募者にメール${n.app ? '・アプリ' : ''}で知らせました）`
+    if (n.email === 'disabled') return `（メールの送信を止めている環境のため、メールは送っていません${app ? '。' + app : ''}）`
+    if (n.email === 'failed') return `（結果のメールを送れませんでした${app ? '。' + app : ''}。応募の「結果のお知らせを送り直す」で再送するか、電話などで連絡してください）`
+    return app ? `（${app}）` : '（応募者のメールアドレスがないため、電話などで結果を連絡してください）'
+  }
   // 定員に達した枠の残りの未対応の応募をまとめて見送る（#303）
   delegate('recruitRejectSlot', (el) => withSubmitLock(el, async () => {
-    if (!confirm(`この枠に残っている未対応の応募 ${Number(el.dataset.count)}件をまとめて見送ります。応募者への連絡は各自で行ってください`)) return
+    if (!confirm(`この枠に残っている未対応の応募 ${Number(el.dataset.count)}件をまとめて見送ります。${REJECT_NOTIFY_NOTE}`)) return
     try {
       const { data } = await axios.post(`/api/admin/recruit-slots/${Number(el.dataset.id)}/reject-pending`)
-      toast(`${data.rejected}件を見送りにしました`); renderRecruit()
+      toast(`${data.rejected}件を見送りにしました${data.applicants_notified ? `（${Number(data.applicants_notified)}人に結果を知らせました）` : ''}`); renderRecruit()
     } catch (e) { toast(errMsg(e)) }
   }))
 
@@ -240,6 +261,9 @@
     const pending = a.items.filter(i => i.status === 'pending')
     const promo = a.staff_inactive ? [] : a.items.filter(promotable)
     const hasCheck = pending.length || promo.length
+    const decided = a.items.filter(i => i.status === 'approved' || i.status === 'rejected')
+    // 結果が届く方法（#151）。アプリの通知は、ログインできるスタッフだけに届く
+    const notifyHow = a.email ? (a.staff_id ? 'メール・アプリ' : 'メール') : a.staff_id ? 'アプリ（ログインできる人のみ）' : 'メールアドレスがないため届きません。電話などで連絡してください'
     const who = a.staff_id
       ? `<a class="text-blue-600 hover:underline" href="#staff/${Number(a.staff_id)}">${esc(a.staff_name || a.name)}</a>${a.is_provisional ? '<span class="badge badge-yellow ml-1">仮</span>' : ''}<span class="badge badge-blue ml-1">${a.source === 'staff' ? 'アプリから応募' : '登録済み'}</span>${a.staff_inactive ? '<span class="badge badge-red ml-1">退職・停止中</span>' : ''}`
       : `${esc(a.name)}<span class="badge badge-gray ml-1">新規（未登録）</span>`
@@ -272,9 +296,19 @@
         ${pending.length ? `<button class="btn btn-primary text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="1"><i class="fas fa-check"></i>選択した日時を承認（シフト確定）</button>
         <button class="btn btn-outline text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="0">選択した日時を見送る</button>` : ''}
         ${promo.length ? `<button class="btn btn-outline text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="1" data-promote="1"><i class="fas fa-arrow-up"></i>選択した見送りを繰り上げて承認</button>` : ''}
+        <label class="flex items-center gap-1.5 text-[11px] text-gray-600 w-full"><input type="checkbox" class="ri-notify" checked>結果を応募者に知らせる（${notifyHow}）</label>
       </div>` : ''}
+      ${decided.length && (a.email || a.staff_id) ? `<button class="text-[11px] text-blue-600 underline mt-2" data-action="recruitNotifyResult" data-id="${a.application_id}"><i class="fas fa-envelope mr-0.5"></i>結果のお知らせを送り直す</button>` : ''}
     </article>`
   }
+  // 結果のお知らせを送り直す（#151。メールが届かなかったとき・知らせずに処理したとき）
+  delegate('recruitNotifyResult', (el) => withSubmitLock(el, async () => {
+    if (!confirm('承認・見送りにした日時の結果を、応募者にもう一度知らせます（メールとアプリの通知）')) return
+    try {
+      const { data } = await axios.post(`/api/admin/recruit-applications/${Number(el.dataset.id)}/notify-result`)
+      toast('結果を送り直しました' + applicantNoticeText(data.applicant_notice))
+    } catch (e) { toast(errMsg(e)) }
+  }))
   delegate('recruitCheckAll', (el) => {
     document.querySelectorAll(`[data-application-id="${Number(el.dataset.id)}"] .ri-check`).forEach(x => { x.checked = el.checked })
   })
@@ -285,13 +319,20 @@
     const a = window.__recruitApps.find(x => x.application_id === id); if (!a) return
     const ids = [...document.querySelectorAll(`[data-application-id="${id}"] ${promote ? '.ri-promote' : '.ri-check'}:checked`)].map(x => Number(x.value))
     if (!ids.length) return toast(promote ? '繰り上げる日時を選択してください' : '日時を選択してください')
+    // 結果を応募者に知らせるか（#151。初期値は知らせる）
+    const box = document.querySelector(`[data-application-id="${id}"] .ri-notify`)
+    const notify = !box || box.checked
+    window.__recruitNotify = notify
     if (!approve) {
-      if (!confirm(`${ids.length}件を見送ります。応募者への連絡は各自で行ってください`)) return
-      try { await axios.post(`/api/admin/recruit-applications/${id}/decide`, { reject: ids }); toast('見送りにしました'); renderRecruit() } catch (e) { toast(errMsg(e)) }
+      if (!confirm(`${ids.length}件を見送ります。${notifyNote(notify)}`)) return
+      try {
+        const { data } = await axios.post(`/api/admin/recruit-applications/${id}/decide`, { reject: ids, notify_applicant: notify })
+        toast('見送りにしました' + applicantNoticeText(data.applicant_notice)); renderRecruit()
+      } catch (e) { toast(errMsg(e)) }
       return
     }
-    if (promote && !confirm(`見送りにした${ids.length}件を繰り上げて承認します（シフトを確定します）。応募者への連絡は各自で行ってください`)) return
-    if (a.staff_id) return runDecide(id, { approve: ids })
+    if (promote && !confirm(`見送りにした${ids.length}件を繰り上げて承認します（シフトを確定します）。${notifyNote(notify)}`)) return
+    if (a.staff_id) return runDecide(id, { approve: ids, notify_applicant: notify })
     // 未登録の応募者: 既存スタッフに紐づけるか、仮登録を作成する（退職・停止中のスタッフには紐づけられない）。
     // 電話番号が一致しなくても、氏名・フリガナ・スタッフ番号・電話番号で探して紐づけられる（#395）
     let partners = [], cands = []
@@ -336,7 +377,7 @@
   delegate('recruitApproveUnregistered', (el) => withSubmitLock(el, () => approveUnregistered(Number(el.dataset.id), window.__recruitApproveIds || [])))
   function approveUnregistered(id, ids) {
     const mode = (document.querySelector('input[name="ra-mode"]:checked') || {}).value
-    const body = { approve: ids }
+    const body = { approve: ids, notify_applicant: window.__recruitNotify !== false }
     if (!mode) return toast('紐づけるか、仮登録を作成するかを選んでください')
     if (mode === 'link') {
       body.staff_id = Number(document.getElementById('ra-staff').value)
@@ -347,11 +388,11 @@
   async function runDecide(id, body) {
     try {
       const { data } = await axios.post(`/api/admin/recruit-applications/${id}/decide`, body)
-      closeModal(); toast(`${data.created_shifts}件のシフトを確定しました${data.promoted ? '（繰り上げ）' : ''}${data.created_staff ? '（仮登録を作成）' : ''}`)
+      closeModal(); toast(`${data.created_shifts}件のシフトを確定しました${data.promoted ? '（繰り上げ）' : ''}${data.created_staff ? '（仮登録を作成）' : ''}${applicantNoticeText(data.applicant_notice)}`)
       if (window.invalidateBoardMaster) window.invalidateBoardMaster()
       // 承認で定員に達した枠に、ほかの人の未対応の応募が残っていれば、まとめて見送るかを確かめる（#303）
       const filled = data.filled_slots || []
-      if (filled.length && confirm('定員に達した枠に、ほかの人の未対応の応募が残っています:\n・' + filled.map(s => `${fmt(s.work_date)} ${s.start_time}〜${s.end_time} ${s.role_name}（${s.pending}件）`).join('\n・') + '\n\nまとめて見送りますか？（応募者への連絡は各自で行ってください）')) {
+      if (filled.length && confirm('定員に達した枠に、ほかの人の未対応の応募が残っています:\n・' + filled.map(s => `${fmt(s.work_date)} ${s.start_time}〜${s.end_time} ${s.role_name}（${s.pending}件）`).join('\n・') + '\n\nまとめて見送りますか？（' + REJECT_NOTIFY_NOTE + '）')) {
         let n = 0
         for (const s of filled) { try { n += (await axios.post(`/api/admin/recruit-slots/${Number(s.slot_role_id)}/reject-pending`)).data.rejected || 0 } catch (e) { toast(errMsg(e)) } }
         toast(`${n}件を見送りにしました`)

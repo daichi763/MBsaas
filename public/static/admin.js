@@ -3117,8 +3117,9 @@ delegate('saveReportComment', (el) => {
   const text = del ? '' : document.getElementById('rc-text').value.trim()
   if (!del && text === (r.manager_comment || '')) { closeModal(); return }
   withSubmitLock(el, async () => {
+    let res
     try {
-      await axios.put('/api/admin/daily-reports/' + r.daily_report_id, { manager_comment: text || null, expected_comment: r.manager_comment || null })
+      res = (await axios.put('/api/admin/daily-reports/' + r.daily_report_id, { manager_comment: text || null, expected_comment: r.manager_comment || null })).data
     } catch (e) {
       showApiError(e, 'コメントを保存できませんでした')
       // 別の管理者が変えていた場合は、今のコメントを表示する（もう一度保存すると、その内容を置き換える）
@@ -3129,7 +3130,9 @@ delegate('saveReportComment', (el) => {
       }
       return
     }
-    closeModal(); toast(del || !text ? 'コメントを削除しました' : 'コメントを保存しました'); renderReports(true)
+    // コメントはスタッフのアプリに通知する。ログインのない人には届かない（#158）
+    const notice = !res || res.staff_notified == null ? '' : res.staff_notified ? '（スタッフのアプリに通知しました）' : '（このスタッフはアプリにログインしないため、通知は届きません）'
+    closeModal(); toast(del || !text ? 'コメントを削除しました' : 'コメントを保存しました' + notice); renderReports(true)
   })
 })
 

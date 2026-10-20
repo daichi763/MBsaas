@@ -97,7 +97,8 @@
           <label class="block text-sm text-gray-600">お名前 <span class="text-red-500">*</span><input id="ap-name" class="inp" autocomplete="name" maxlength="60" placeholder="山田 太郎"></label>
           <label class="block text-sm text-gray-600">フリガナ<input id="ap-kana" class="inp" maxlength="60" placeholder="ヤマダ タロウ"></label>
           <label class="block text-sm text-gray-600">電話番号 <span class="text-red-500">*</span><input id="ap-phone" class="inp" type="tel" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="09012345678"></label>
-          <label class="block text-sm text-gray-600">メールアドレス<input id="ap-email" class="inp" type="email" inputmode="email" autocomplete="email" maxlength="120"></label>
+          <label class="block text-sm text-gray-600">メールアドレス<input id="ap-email" class="inp" type="email" inputmode="email" autocomplete="email" maxlength="120">
+            <span class="block text-[11px] text-gray-400 mt-0.5">選考の結果（確定・見送り）をこのアドレスにお知らせします。入力がない場合は、担当者からお電話などでご連絡します</span></label>
           <label class="block text-sm text-gray-600">ご質問・ご要望<textarea id="ap-note" class="inp" rows="3" maxlength="500" placeholder="経験・希望の時間など"></textarea></label>
           <div class="hidden" aria-hidden="true"><label>Website<input id="ap-website" tabindex="-1" autocomplete="off"></label></div>
           <div class="text-[11px] text-gray-500 bg-gray-50 rounded-lg p-2.5 leading-relaxed" id="ap-privacy">
@@ -113,7 +114,7 @@
         </div>
       </section>` : ''}
       ${d.contact_note ? `<p class="text-xs text-gray-500 text-center mb-4"><i class="fas fa-phone mr-1"></i>${esc(d.contact_note)}</p>` : ''}
-      <p class="text-[11px] text-gray-400 text-center mb-4">応募内容を確認のうえ、担当者からご連絡します。応募の時点ではシフトは確定していません</p>
+      <p class="text-[11px] text-gray-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします（メールアドレスを入れた場合はメールで届きます）。応募の時点ではシフトは確定していません</p>
 
       ${dates.length ? `<div class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-3 z-30" id="apply-submit-bar">
         <div class="max-w-lg mx-auto flex items-center gap-3">
@@ -240,7 +241,7 @@
         agree: true, slot_role_ids: [...picked], issued_at: DATA.issued_at, turnstile_token: tsToken,
       })
       document.getElementById('apply-submit-bar')?.remove()
-      renderDone(data)
+      renderDone(data, !!email)
     } catch (e) {
       const d = e && e.response && e.response.data
       btn.disabled = !picked.size; btn.textContent = '応募する'
@@ -257,7 +258,8 @@
   }
 
   // 完了画面: 受け付けた日時の控えと受付日時を出す（#317）。控えはサーバーが受け付けた日時だけで作る（#242）
-  function renderDone(data) {
+  // byEmail: メールアドレスを入れて応募した（結果はメールで届く。#151）
+  function renderDone(data, byEmail) {
     const accepted = data.accepted || [], already = data.already_applied || []
     const at = data.applied_at ? dayjs(data.applied_at) : null
     const list = (rows, waitlist) => `<ul class="space-y-1.5">${rows.map(r => `<li class="border border-gray-100 rounded-lg p-2 text-sm">${slotLabel(r)}${waitlist && r.full ? '<span class="block text-[11px] text-amber-600">定員に達しているため、キャンセル待ちとして受け付けました</span>' : ''}</li>`).join('')}</ul>`
@@ -271,7 +273,7 @@
       ${already.length ? `<div class="mt-3" id="apply-done-already"><p class="text-xs font-bold text-gray-600 mb-1.5">すでに応募済みの日時（今回は受け付けていません）</p>${list(already, false)}</div>` : ''}
       <div class="text-xs text-gray-600 bg-gray-50 rounded-lg p-3 mt-4 leading-relaxed">
         <p>この画面をスクリーンショットなどで保存してください。</p>
-        <p>内容を確認のうえ、担当者からご連絡します。応募の時点ではシフトは確定していません。</p>
+        <p>${byEmail ? '内容を確認のうえ、結果（確定・見送り）を入力いただいたメールアドレスにお知らせします。' : '内容を確認のうえ、担当者からご連絡します。'}応募の時点ではシフトは確定していません。</p>
         <p>応募の取り下げ・変更は、お問い合わせ先へご連絡ください。</p>
       </div>
       ${DATA.contact_note ? `<p class="text-xs text-gray-500 mt-3 text-center"><i class="fas fa-phone mr-1"></i>${esc(DATA.contact_note)}</p>` : ''}

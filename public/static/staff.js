@@ -152,9 +152,32 @@ async function renderHome() {
     ${homeConsultBannerHtml(data)}
     ${homeMissedHtml(data)}
     ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) : homeNoShiftHtml()}
+    ${homeRecruitHtml()}
     ${homeNoticesHtml(data)}
     ${homeMenuHtml()}`
   applyBadges() // 先に取れていた通知の件数を案内に足す
+  loadHomeRecruit()
+}
+
+// 募集中のお仕事（#156）。件数だけを後から取り、応募できる日時か承認待ちがあるときだけカードを出す（取れなければ何も出さない）
+function homeRecruitHtml() { return '<div id="home-recruit"></div>' }
+async function loadHomeRecruit() {
+  let s
+  try { s = (await axios.get('/api/staff/recruit/summary', { params: { counts: 1 } })).data } catch (e) { return }
+  const host = document.getElementById('home-recruit')
+  if (!host || !(s.open || s.pending)) return
+  host.innerHTML = `<button class="report-btn mb-4" data-action="homeOpenRecruit">
+      <span class="w-11 h-11 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-lg"><i class="fas fa-bullhorn"></i></span>
+      <span class="flex-1 text-left"><span class="block font-bold text-gray-800">募集中のお仕事${s.open ? ` ${Number(s.open)}件` : ''}</span>
+        <span class="block text-xs text-gray-500">${s.open ? '応募できる日時があります' : '応募できる日時はありません'}${s.pending ? `・承認待ち ${Number(s.pending)}件` : ''}</span></span>
+      <i class="fas fa-chevron-right text-gray-300"></i></button>`
+}
+delegate('homeOpenRecruit', () => openRecruitFromAnywhere())
+// シフト画面の『募集中のお仕事』の一覧を開く（ホーム・通知から）。シフト画面を描いた後に loadRecruitOpen が一覧を開く
+let RC_OPEN_NEXT = false
+function openRecruitFromAnywhere() {
+  RC_OPEN_NEXT = true
+  if ((location.hash || '').slice(1) === 'shift') route(); else location.hash = 'shift'
 }
 
 // ホームのシフトを切り替える（本日のシフトの一覧から）
@@ -946,6 +969,9 @@ let RECRUIT = null
 const RC_OPEN_AFTER_SWITCH = 'rc-open-after-switch'
 async function loadRecruitOpen() {
   const host = document.getElementById('recruit-open'); if (!host) return
+  // ホームのカード・通知から来たときは、そのまま一覧を開く（#156）
+  const openNext = RC_OPEN_NEXT; RC_OPEN_NEXT = false
+  if (openNext) return openRecruitList()
   let s
   try { s = (await axios.get('/api/staff/recruit/summary')).data } catch (e) { host.innerHTML = ''; return }
   // 承認待ちの日時など（シフト一覧で使えるように残す）
@@ -1519,7 +1545,13 @@ async function loadPastReports() {
         ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレーム</span>' : ''}</span>
       ${r.manager_comment ? `<span class="block text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-1.5 whitespace-pre-wrap"><i class="fas fa-comment-dots mr-1"></i>${esc(r.manager_comment)}</span>` : ''}
     </button>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
+  // 日報のコメントの通知から来たときは、その日報を開く（#158）
+  const openId = OPEN_PAST_REPORT_ID; OPEN_PAST_REPORT_ID = null
+  const idx = openId ? PAST_REPORTS.reports.findIndex(r => Number(r.daily_report_id) === openId) : -1
+  const btn = idx >= 0 ? el.querySelector(`[data-action="openPastReport"][data-index="${idx}"]`) : null
+  if (btn) { btn.scrollIntoView({ block: 'center' }); btn.click() }
 }
+let OPEN_PAST_REPORT_ID = null
 delegate('reloadPastReports', () => loadPastReports())
 // 管理者の確認（確認済み／未確認。確認の後に直した日報は、もう一度確認してもらう）
 function pastReportCheckBadge(r) {
@@ -1981,7 +2013,8 @@ window.renderManual = async function () {
 }
 
 // ============ ルーティング ============
-const routes = { home: renderHome, shift: () => renderShifts(), report: renderReportWithHistory, perf: () => renderPerf(), more: renderMore,
+// #shift/YYYY-MM-DD は、その日から表示する（シフトの変更の通知から開く。#155）
+const routes = { home: renderHome, shift: () => renderShifts(location.hash.split('/')[1]), report: renderReportWithHistory, perf: () => renderPerf(), more: renderMore,
   attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()),
   notifications: () => (window.renderStaffNotifications ? renderStaffNotifications() : renderHome()),
   notices: () => { const id = Number((location.hash.split('/')[1]) || 0); return id ? renderNoticeDetail(id) : renderNotices() },
@@ -2014,6 +2047,30 @@ document.addEventListener('click', (ev) => {
   if (!a || a.getAttribute('href') !== (location.hash || '#home')) return
   ev.preventDefault()
   route()
+})
+
+// ---------- スタッフあての通知の行き先（#155 #151 #156 #158） ----------
+// 通知の一覧（staff-attendance.js の notifOpenStaff）を開いたとき、シフト・募集・日報コメントの通知だけは、ここで行き先を決める。
+// それ以外の通知（打刻修正・お知らせ・相談）は元の処理に渡す。staff-attendance.js は staff.js の後に読み込むので、読み込みが済んでから差し替える
+const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment']
+function openStaffNotification(n) {
+  const go = (hash) => { if ((location.hash || '').slice(1) === hash) route(); else location.hash = hash }
+  if (n.kind === 'daily_report_comment') { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; return go('report') }
+  if (n.kind === 'recruit_new') return openRecruitFromAnywhere()
+  const link = String(n.link || '')
+  go(/^#shift(\/\d{4}-\d{2}-\d{2})?$/.test(link) ? link.slice(1) : 'shift')
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const orig = window.notifOpenStaff
+  if (typeof orig !== 'function') return
+  window.notifOpenStaff = async function (id) {
+    let n = null
+    // 一覧の中身は staff-attendance.js が持っているので、その1件だけを取り直す（before は「この ID より前」）
+    try { n = ((await axios.get('/api/staff/notifications', { params: { before: Number(id) + 1, limit: 1 } })).data.notifications || [])[0] } catch (e) { }
+    if (!n || n.notification_id !== Number(id) || !STAFF_NOTIFY_KINDS.includes(n.kind)) return orig(id)
+    try { await axios.post(`/api/staff/notifications/${Number(id)}/read`) } catch (e) { }
+    openStaffNotification(n)
+  }
 })
 
 // ---------- 未読の印（下のタブの『その他』・メニュー・ホームの案内。#383） ----------
