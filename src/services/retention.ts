@@ -1,3 +1,5 @@
+import { REPORT_TYPES } from '../report-settings'
+
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
 // 対象と基準:
@@ -933,13 +935,16 @@ export async function runInServiceRetentionJob(db: D1Database, buckets: Retentio
 const ORPHAN_PREFIX = 'attendance/'
 const ORPHAN_PAGE = 500
 const ORPHAN_MIN_AGE_MS = 24 * 3600 * 1000
+// 勤怠の報告の写真のキーの形（attendance/会社/スタッフ/シフト/報告の種類_時刻.拡張子。api.ts・staff-lifecycle.ts と同じ）。
+// 同じ attendance/ 以下でも、この形でないキー（打刻修正の添付など、別の表から参照される写真）は紐づかない写真として扱わない
+const ORPHAN_KEY_RE = new RegExp(`^attendance/\\d+/\\d+/\\d+/(?:${REPORT_TYPES.join('|')})_\\d+\\.(?:jpg|png)$`)
 export async function scanOrphanPhotos(db: D1Database, bucket: R2Bucket | undefined,
   o: { dryRun: boolean; cursor?: string | null; triggeredBy?: number | null }): Promise<{ scanned: number; orphans: number; deleted: number
     samples: string[]; next_cursor: string | null }> {
   if (!bucket) throw new Error('R2 のバケット（PHOTOS）が設定されていません')
   const startedAt = new Date().toISOString()
   const page = await bucket.list({ prefix: ORPHAN_PREFIX, limit: ORPHAN_PAGE, ...(o.cursor ? { cursor: o.cursor } : {}) })
-  const old = page.objects.filter(x => Date.now() - new Date(x.uploaded).getTime() >= ORPHAN_MIN_AGE_MS).map(x => x.key)
+  const old = page.objects.filter(x => ORPHAN_KEY_RE.test(x.key) && Date.now() - new Date(x.uploaded).getTime() >= ORPHAN_MIN_AGE_MS).map(x => x.key)
   let orphans: string[] = []
   if (old.length) {
     // 勤怠の行・削除の控え・0036 で外した重複の控えのどれにもないキー
