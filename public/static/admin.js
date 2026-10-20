@@ -2705,11 +2705,11 @@ document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-project-photo]') : null
   if (sel) updateProjectPhotoRequired(Number(sel.dataset.projectPhoto), sel.value)
 })
-// 案件の更新。確認が要る変更（サーバーが 409 で confirm_* を返す）は、確認できたら印を付けて送り直す。取りやめたら null を返す
 // 案件詳細のインシデント欄は、対応済みでないものを先に出す（#169。API が incident_status を返すとき。同じ状態の中は新しい順のまま）
 function projectIncidentsSorted(list) {
   return (list || []).map((x, i) => [x, i]).sort((a, b) => ((a[0].incident_status === 'done') - (b[0].incident_status === 'done')) || a[1] - b[1]).map(x => x[0])
 }
+// 案件の更新。確認が要る変更（サーバーが 409 で confirm_* を返す）は、確認できたら印を付けて送り直す。取りやめたら null を返す
 const PROJECT_CONFIRM_FLAGS = [['confirm_duplicate', 'allow_duplicate'], ['confirm_close', 'confirm_close'], ['confirm_template_change', 'confirm_template_change']]
 async function putProjectConfirming(pid, body) {
   let b = { ...body }
@@ -4147,7 +4147,7 @@ async function renderMissingReports(f, refresh) {
     if (!REPORT_OPTIONS) REPORT_OPTIONS = (await axios.get('/api/admin/daily-reports', { params: { limit: 1, options: 1 } })).data.options || null
     data = (await axios.get('/api/admin/daily-reports/missing', { params: q })).data
   } catch (e) {
-    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-3">日報一覧</h2>${reportModeTabsHtml(f)}<div class="card p-6 text-center text-sm text-gray-500">未提出のシフトを読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button></div>`
+    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-3">日報一覧</h2>${reportModeTabsHtml(f)}<div class="card p-6 text-center text-sm text-gray-500">未提出のシフトを読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button><a class="btn btn-outline text-xs ml-2" href="#reports/missing=1">期間を既定に戻す</a></div>`
     showApiError(e, '未提出のシフトを読み込めませんでした'); return
   }
   const opts = REPORT_OPTIONS || { projects: [], staff: [] }
