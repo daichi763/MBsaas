@@ -1,7 +1,7 @@
 -- Field OS シードデータ (generated 2026-07-06)
 
 INSERT OR IGNORE INTO companies (company_id, company_code, company_name, plan, user_limit, active_status, maturity_level, support_memo, settings_json) VALUES
- (1, 'sample', '株式会社サンプルモバイル人材', 'standard', 30, 'active', 3, '日報テンプレート設計支援を実施中。次回月次レビュー7/15予定。', '{"ranking_visible":true,"ranking_anonymous":false}'),
+ (1, 'sample', '株式会社サンプルモバイル人材', 'standard', 30, 'active', 3, '日報テンプレート設計支援を実施中。次回月次レビュー7/15予定。', '{"ranking_visible":true,"ranking_anonymous":false,"show_coworkers":true}'),
  (2, 'demo2', '株式会社テレコムスタッフ東海', 'basic', 10, 'trial', 1, 'トライアル中。初期設定代行を提案予定。', '{}'),
  (3, 'demo3', '合同会社ネクストコネクト', 'basic', 15, 'active', 2, '', '{}');
 

@@ -3374,11 +3374,12 @@ function reportFilterFromHash() {
   for (const k of ['project', 'staff', 'page']) { const v = p.get(k); if (v && /^\d+$/.test(v) && Number(v) > 0) f[k] = Number(v) }
   if (p.get('unchecked') === '1') f.unchecked = 1
   if (p.get('flagged') === '1') f.flagged = 1
+  if (p.get('open') === '1') f.open = 1
   return f
 }
 function reportsHash(f) {
   const p = new URLSearchParams()
-  for (const k of ['from', 'to', 'project', 'staff', 'unchecked', 'flagged', 'page']) if (f[k]) p.set(k, f[k])
+  for (const k of ['from', 'to', 'project', 'staff', 'unchecked', 'flagged', 'open', 'page']) if (f[k]) p.set(k, f[k])
   const s = p.toString()
   return '#reports' + (s ? '/' + s : '')
 }
@@ -3389,7 +3390,7 @@ function goReports(f) {
 window.applyReportFilter = function () {
   const v = id => (document.getElementById(id) || {}).value || ''
   const f = { from: v('rp-from'), to: v('rp-to'), project: v('rp-project'), staff: v('rp-staff'),
-    unchecked: document.getElementById('rp-unchecked').checked ? 1 : 0, flagged: document.getElementById('rp-flagged').checked ? 1 : 0 }
+    unchecked: document.getElementById('rp-unchecked').checked ? 1 : 0, flagged: document.getElementById('rp-flagged').checked ? 1 : 0, open: document.getElementById('rp-open').checked ? 1 : 0 }
   if (f.from && f.to && f.from > f.to) { toast('期間の開始日が終了日より後になっています'); return }
   goReports(f)
 }
@@ -3425,15 +3426,69 @@ function reportIncidentHtml(r, fields) {
   const label = k => ((fields || []).find(f => f.key === k) || {}).label || (k.startsWith('complaint') ? 'クレームの内容' : 'インシデントの内容')
   const notes = []
   for (const [k, v] of Object.entries(vals)) if (REPORT_INCIDENT_KEY.test(k) && typeof v !== 'number' && !reportEmpty(v)) notes.push([label(k), v])
-  for (const [k, v] of Object.entries(r)) if (REPORT_INCIDENT_KEY.test(k) && !(k in vals) && typeof v === 'string' && v) notes.push([label(k), v])
+  for (const [k, v] of Object.entries(r)) if (REPORT_INCIDENT_KEY.test(k) && !REPORT_INCIDENT_META.has(k) && !(k in vals) && typeof v === 'string' && v) notes.push([label(k), v])
   if (!r.incident_flag && !r.complaint_flag && !notes.length) return ''
   const kinds = [r.incident_flag ? 'インシデント' : '', r.complaint_flag ? 'クレーム' : ''].filter(Boolean).join('・') || 'インシデント・クレーム'
   return `<div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 mb-2">
     <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(kinds)}の報告あり</p>
     ${notes.length ? notes.map(([l, v]) => `<p class="mt-1"><span class="font-bold">${esc(l)}</span></p><p class="whitespace-pre-wrap break-words">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`).join('')
       : '<p class="mt-1 text-red-500">内容の記入はありません。スタッフに確認してください。</p>'}
+    ${r.incident_flag || r.complaint_flag ? reportIncidentStatusHtml(r) : ''}
   </div>`
 }
+
+// インシデント・クレームの対応状況（#169）。対応中・対応済み・クライアント共有と対応メモを、誰がいつ記録したかと一緒に出す
+const REPORT_INCIDENT_META = new Set(['incident_status', 'incident_memo', 'incident_updated_by', 'incident_updated_at', 'incident_client_shared_at', 'incident_updated_by_name'])
+const INCIDENT_STATUS_LABEL = { open: '未対応', in_progress: '対応中', done: '対応済み' }
+const INCIDENT_STATUS_BADGE = { open: 'badge-red', in_progress: 'badge-yellow', done: 'badge-green' }
+function reportIncidentStatusHtml(r) {
+  const st = r.incident_status || 'open'
+  const fmt = d => (d ? dayjs(String(d).replace(' ', 'T')).format('M/D HH:mm') : '')
+  return `<div class="mt-2 pt-2 border-t border-red-200 text-gray-700">
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="font-bold text-red-700">対応状況</span>
+      <span class="badge ${INCIDENT_STATUS_BADGE[st] || 'badge-gray'}">${INCIDENT_STATUS_LABEL[st] || ''}</span>
+      ${r.incident_client_shared_at ? `<span class="badge badge-blue">クライアント共有済み ${esc(fmt(r.incident_client_shared_at))}</span>` : ''}
+      <button class="btn btn-outline text-xs ml-auto" data-action="editIncident" data-id="${Number(r.daily_report_id)}"><i class="fas fa-pen-to-square"></i>対応を記録</button>
+    </div>
+    ${r.incident_memo ? `<p class="whitespace-pre-wrap break-words mt-1">${esc(r.incident_memo)}</p>` : ''}
+    ${r.incident_updated_at ? `<p class="text-[11px] text-gray-400 mt-0.5">更新: ${esc(r.incident_updated_by_name || '')} ${esc(fmt(r.incident_updated_at))}</p>` : ''}
+  </div>`
+}
+delegate('editIncident', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const st = r.incident_status || 'open'
+  modal(`
+    <h3 class="font-bold text-lg mb-1">インシデント・クレームの対応</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
+    <div class="flex gap-2 flex-wrap mb-3">
+      ${Object.entries(INCIDENT_STATUS_LABEL).map(([k, l]) => `<label class="flex items-center gap-1.5 text-sm border rounded-lg px-3 py-2 cursor-pointer"><input type="radio" name="inc-status" value="${k}" ${k === st ? 'checked' : ''}>${l}</label>`).join('')}
+    </div>
+    <label class="flex items-center gap-2 text-sm mb-3"><input id="inc-shared" type="checkbox" class="w-4 h-4" ${r.incident_client_shared_at ? 'checked' : ''}>クライアントに共有した${r.incident_client_shared_at ? `（${esc(dayjs(String(r.incident_client_shared_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</label>
+    <label class="text-sm text-gray-600 block mb-1" for="inc-memo">対応メモ</label>
+    <textarea id="inc-memo" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="だれに・いつ・何を連絡したか、再発防止の内容など">${esc(r.incident_memo || '')}</textarea>
+    <div class="flex gap-2 justify-end mt-3">
+      <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary text-sm" data-action="saveIncident" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>保存</button>
+    </div>`)
+})
+delegate('saveIncident', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const picked = document.querySelector('input[name="inc-status"]:checked')
+  const body = {
+    status: picked ? picked.value : 'open', memo: document.getElementById('inc-memo').value.trim() || null,
+    client_shared: document.getElementById('inc-shared').checked, expected_updated_at: r.incident_updated_at || null,
+  }
+  withSubmitLock(el, async () => {
+    try { await axios.put('/api/admin/daily-reports/' + Number(r.daily_report_id) + '/incident', body) } catch (e) {
+      showApiError(e, '対応状況を保存できませんでした')
+      // ほかの管理者が更新していた（409）ときは、今の内容で表示し直す
+      if (e.response && e.response.status === 409) { closeModal(); renderReports(true) }
+      return
+    }
+    closeModal(); toast('対応状況を保存しました'); renderReports(true)
+  })
+})
 
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
@@ -3477,6 +3532,7 @@ async function renderReports(refresh) {
   if (f.staff) q.set('staff_id', f.staff)
   if (f.unchecked) q.set('unchecked', '1')
   if (f.flagged) q.set('flagged', '1')
+  if (f.open) q.set('incident_open', '1')
   if (!refresh || !REPORT_OPTIONS) q.set('options', '1')
   let data
   try { data = (await axios.get('/api/admin/daily-reports?' + q.toString())).data } catch (e) {
@@ -3491,7 +3547,7 @@ async function renderReports(refresh) {
   const total = data.total, start = total ? data.offset + 1 : 0, end = data.offset + data.reports.length
   const lastPage = Math.max(1, Math.ceil(total / REPORT_PAGE_SIZE))
   const uncheckedShown = data.reports.filter(r => !r.manager_checked).length
-  const filtered = f.from || f.to || f.project || f.staff || f.unchecked || f.flagged
+  const filtered = f.from || f.to || f.project || f.staff || f.unchecked || f.flagged || f.open
   const pager = total > REPORT_PAGE_SIZE ? `
     <div class="flex items-center justify-center gap-2 mt-4">
       <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
@@ -3504,6 +3560,7 @@ async function renderReports(refresh) {
       <div class="flex gap-2 text-xs">
         <button class="badge badge-yellow" data-action="reportQuick" data-kind="unchecked">未確認 ${Number(data.counts.unchecked)}件</button>
         <button class="badge badge-red" data-action="reportQuick" data-kind="flagged">インシデント・クレーム ${Number(data.counts.flagged)}件</button>
+        <button class="badge badge-red" data-action="reportQuick" data-kind="open">うち未対応 ${Number(data.counts.incident_open || 0)}件</button>
       </div>
     </div>
     <section class="card p-3 mb-4">
@@ -3518,6 +3575,7 @@ async function renderReports(refresh) {
       <div class="flex items-center gap-4 flex-wrap mt-2 text-sm">
         <label class="flex items-center gap-2"><input id="rp-unchecked" type="checkbox" class="w-4 h-4" ${f.unchecked ? 'checked' : ''} onchange="applyReportFilter()">未確認のみ</label>
         <label class="flex items-center gap-2"><input id="rp-flagged" type="checkbox" class="w-4 h-4" ${f.flagged ? 'checked' : ''} onchange="applyReportFilter()">インシデント・クレームのみ</label>
+        <label class="flex items-center gap-2"><input id="rp-open" type="checkbox" class="w-4 h-4" ${f.open ? 'checked' : ''} onchange="applyReportFilter()">対応済みでないインシデント・クレームのみ</label>
         ${filtered ? '<a href="#reports" class="text-xs text-blue-600 hover:underline">条件をクリア</a>' : ''}
       </div>
     </section>
@@ -3611,7 +3669,7 @@ delegate('downloadReportCsv', (el) => withSubmitLock(el, async () => {
 delegate('reportPage', (el) => { const f = reportFilterFromHash(); goReports({ ...f, page: Number(el.dataset.page) || 1 }); window.scrollTo(0, 0) })
 delegate('reportQuick', (el) => {
   const f = reportFilterFromHash()
-  goReports({ ...f, unchecked: el.dataset.kind === 'unchecked' ? 1 : f.unchecked, flagged: el.dataset.kind === 'flagged' ? 1 : f.flagged, page: 0 })
+  goReports({ ...f, unchecked: el.dataset.kind === 'unchecked' ? 1 : f.unchecked, flagged: el.dataset.kind === 'flagged' ? 1 : f.flagged, open: el.dataset.kind === 'open' ? 1 : f.open, page: 0 })
 })
 
 async function updateReport(el, body, msg) {
@@ -3697,6 +3755,72 @@ async function renderAnalytics(month) {
   drawAnalytics()
 }
 delegate('analyticsMonth', el => renderAnalytics(el.dataset.month))
+
+// 案件の月間目標（#292）。日報テンプレートの数値項目ごとに、スタッフ1人あたりの件数を決める。スタッフの実績画面に進み具合が出る
+let GOAL_PROJECTS = []
+delegate('showProjectGoals', async () => {
+  try { GOAL_PROJECTS = (await axios.get('/api/admin/project-goals')).data.projects || [] } catch (e) { showApiError(e, '目標を読み込めませんでした'); return }
+  const summary = p => {
+    const set = p.fields.filter(f => p.goals[f.key])
+    return set.length ? set.map(f => `${esc(f.label)} ${Number(p.goals[f.key])}件`).join('、') : '<span class="text-gray-400">目標なし</span>'
+  }
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-bullseye text-emerald-600 mr-1"></i>案件の月間目標</h3>
+    <p class="text-xs text-gray-500 mb-3">スタッフ1人あたりの今月の目標件数です。スタッフの実績画面に、目標・実績・あと何件かが出ます（実績を見せない案件では出ません）。</p>
+    <div class="space-y-2 max-h-[60vh] overflow-y-auto">
+      ${GOAL_PROJECTS.map(p => `<div class="border rounded-lg p-2.5 flex items-center gap-2">
+        <div class="min-w-0 flex-1"><p class="text-sm font-medium text-gray-800">${esc(p.project_name)}${p.show_performance ? '' : ' <span class="badge badge-gray">実績を見せない</span>'}</p>
+          <p class="text-xs text-gray-600 mt-0.5">${p.fields.length ? summary(p) : '<span class="text-gray-400">日報テンプレートに数値の項目がありません</span>'}</p></div>
+        ${p.fields.length ? `<button class="btn btn-outline text-xs shrink-0" data-action="editProjectGoals" data-id="${Number(p.project_id)}">設定</button>` : ''}
+      </div>`).join('') || '<p class="text-sm text-gray-400">稼働中の案件がありません</p>'}
+    </div>
+    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+})
+delegate('editProjectGoals', (el) => {
+  const p = GOAL_PROJECTS.find(x => x.project_id === Number(el.dataset.id)); if (!p) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">月間目標（1人あたり）</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(p.project_name)}。空欄・0 の項目は目標なしになります。</p>
+    <div class="grid grid-cols-2 gap-3">
+      ${p.fields.map(f => `<label class="text-xs text-gray-600">${esc(f.label)}<input type="number" min="0" max="99999" step="1" inputmode="numeric" class="inp goal-inp" data-key="${esc(f.key)}" value="${p.goals[f.key] ? Number(p.goals[f.key]) : ''}"></label>`).join('')}
+    </div>
+    <div class="flex gap-2 justify-end mt-4">
+      <button class="btn btn-outline text-sm" data-action="showProjectGoals">戻る</button>
+      <button class="btn btn-primary text-sm" data-action="saveProjectGoals" data-id="${Number(p.project_id)}"><i class="fas fa-check"></i>保存</button>
+    </div>`)
+})
+delegate('saveProjectGoals', (el) => {
+  const goals = {}
+  for (const inp of document.querySelectorAll('.goal-inp')) {
+    const v = inp.value.trim()
+    if (v !== '' && !/^\d+$/.test(v)) { toast('目標は0以上の整数で入力してください'); inp.focus(); return }
+    goals[inp.dataset.key] = v === '' ? null : Number(v)
+  }
+  withSubmitLock(el, async () => {
+    try { await axios.put('/api/admin/projects/' + Number(el.dataset.id) + '/goals', { goals }) } catch (e) { showApiError(e, '目標を保存できませんでした'); return }
+    toast('目標を保存しました')
+    delegate.handlers.showProjectGoals()
+  })
+})
+
+// スタッフアプリに出す社内の情報（#496 #523）。実績画面の順位（匿名にもできる）と、同じ日・同じ案件に入るほかのスタッフ。変更は会社管理者だけ
+delegate('showStaffViewSetting', async () => {
+  let s
+  try { s = (await axios.get('/api/admin/settings/staff-view')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  const row = (id, checked, title, note) => `<label class="flex items-start gap-2 py-2 border-b last:border-b-0">
+    <input id="${id}" type="checkbox" class="w-4 h-4 mt-0.5" ${checked ? 'checked' : ''} ${s.can_edit ? '' : 'disabled'}>
+    <span><span class="text-sm font-medium text-gray-800">${title}</span><span class="block text-xs text-gray-500">${note}</span></span></label>`
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-mobile-screen text-blue-600 mr-1"></i>スタッフアプリへの表示</h3>
+    ${row('sv-ranking', s.ranking_visible, '実績画面に、案件の中での順位を出す', '同じ月・同じ案件の日報の合計で、本人の順位・人数・平均との差と上位の件数を出します')}
+    ${row('sv-anon', s.ranking_anonymous, '順位はほかの人の名前を出さない（匿名）', 'オフにすると、上位の人の姓も出します')}
+    ${row('sv-cowork', s.show_coworkers, '一緒に入る人を出す', 'シフト画面で、同じ日・同じ現場に入るほかのスタッフの姓と時刻を出します（電話番号などは出しません）')}
+    ${s.can_edit ? '<button class="btn btn-primary w-full mt-4" data-action="saveStaffViewSetting">保存する</button>' : '<p class="text-xs text-gray-500 mt-3">この設定は会社管理者だけが変更できます</p>'}`)
+})
+delegate('saveStaffViewSetting', el => withSubmitLock(el, async () => {
+  const body = { ranking_visible: document.getElementById('sv-ranking').checked, ranking_anonymous: document.getElementById('sv-anon').checked, show_coworkers: document.getElementById('sv-cowork').checked }
+  try { await axios.put('/api/admin/settings/staff-view', body); closeModal(); toast('スタッフアプリへの表示を保存しました') } catch (e) { showApiError(e, '保存できませんでした') }
+}))
 window.setAnalyticsKey = function (key) { ANALYTICS.key = key; drawAnalytics() }
 delegate('rankAnalytics', el => { RANK_STATE.mode = el.dataset.mode; drawAnalytics() })
 function drawAnalytics() {
@@ -3725,6 +3849,8 @@ function drawAnalytics() {
         <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
         ${fields.length ? `<label class="text-xs text-gray-500 flex items-center gap-1 ml-2">指標
           <select class="inp text-sm w-auto" onchange="setAnalyticsKey(this.value)">${fields.map(f => `<option value="${esc(f.key)}" ${f.key === key ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select></label>` : ''}
+        <button class="btn btn-outline text-sm" data-action="showProjectGoals" title="スタッフの実績画面に出す、案件ごとの月間目標"><i class="fas fa-bullseye"></i>案件の目標</button>
+        <button class="btn btn-outline text-sm" data-action="showStaffViewSetting" title="スタッフアプリに出す順位・一緒に入る人の設定"><i class="fas fa-mobile-screen"></i>スタッフへの表示</button>
       </div>
     </div>
     <p class="text-xs text-gray-500 mb-3">集計する項目は、この月に日報のある案件の日報テンプレートの数値項目です。</p>

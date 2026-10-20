@@ -955,6 +955,7 @@ function shiftListHtml(data, apps, today) {
             <p class="text-xs text-gray-400">${esc(formatShiftTime(s.start_time, s.end_time))}</p>
             ${shiftPlaceHtml(s, true)}
             ${attLink(s)}
+            ${shiftTeamLinkHtml(s, today)}
           </div>
           <span class="shrink-0">${SHIFT_STATUS_BADGE[s.status] || ''}</span>
         </div>${replyBox(s)}`).join('')}
@@ -962,6 +963,31 @@ function shiftListHtml(data, apps, today) {
       ${byDate[d].apps.map(appRow).join('')}
     </div>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'
 }
+
+// 一緒に入る人（#523。会社の設定で出すときだけ）と、この現場の申し送り（#522）。確定・代打のシフトで、1週間前より後のものに出す
+function shiftTeamLinkHtml(s, today) {
+  if (!['confirmed', 'substitute'].includes(s.status) || s.work_date < dayjs(today).subtract(7, 'day').format('YYYY-MM-DD')) return ''
+  return `<button type="button" class="block text-xs text-blue-600 mt-1" data-action="openShiftTeam" data-id="${Number(s.shift_id)}"><i class="fas fa-users mr-0.5"></i>一緒に入る人・申し送り<i class="fas fa-chevron-right text-[10px] ml-0.5"></i></button>`
+}
+delegate('openShiftTeam', async (el) => {
+  const id = Number(el.dataset.id)
+  let team, ho
+  try {
+    [team, ho] = await Promise.all([axios.get(`/api/staff/shifts/${id}/coworkers`), axios.get('/api/staff/handover/' + id)]).then(r => r.map(x => x.data))
+  } catch (e) { showApiError(e, '読み込めませんでした'); return }
+  const people = team.coworkers || []
+  modal(`
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="font-bold text-gray-800">一緒に入る人・申し送り</h3>
+      <button class="text-gray-400" onclick="closeModal()" aria-label="閉じる"><i class="fas fa-xmark"></i></button>
+    </div>
+    ${team.enabled ? `<h4 class="text-sm font-bold text-gray-700 mt-2 mb-1"><i class="fas fa-users text-blue-500 mr-1"></i>同じ日・同じ現場のメンバー</h4>
+      ${people.length ? `<ul class="text-sm text-gray-700 space-y-1">${people.map(p => `<li>${esc(p.name)}さん <span class="text-xs text-gray-400">${esc(formatShiftTime(p.start_time, p.end_time))}</span>${p.same_slot ? ' <span class="badge badge-blue">同じ枠</span>' : ''}</li>`).join('')}</ul>`
+        : '<p class="text-xs text-gray-400">ほかに入る人はいません</p>'}` : ''}
+    <h4 class="text-sm font-bold text-gray-700 mt-4 mb-1"><i class="fas fa-clipboard-list text-blue-500 mr-1"></i>この現場の申し送り${(ho.notes || []).length ? `（直近${Number(ho.days)}日）` : ''}</h4>
+    ${(ho.notes || []).length ? handoverNotesHtml(ho) : '<p class="text-xs text-gray-400">申し送りはありません</p>'}
+    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+})
 
 // ============ 募集中のお仕事（管理者の承認で確定。/api/staff/recruit） ============
 // シフト画面の入口は件数だけの API（/summary）で描き、枠の一覧は『募集中のお仕事』を開いたときにだけ取得する（#410）
@@ -1395,18 +1421,23 @@ async function renderReport() {
       ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
       ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2 whitespace-pre-wrap break-words"><i class="fas fa-comment-dots mr-1"></i>${linkify(esc(prev.manager_comment))}</p>` : ''}
     </section>
+    <div id="report-handover"></div>
     <form id="report-form" class="space-y-4 pb-8" novalidate>
       ${numFields.length ? `<section class="card p-4">
         <div class="flex items-center justify-between mb-3 gap-2">
           <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
           <button type="button" class="btn btn-outline text-xs" data-action="reportFillZero">空欄を0にする</button>
         </div>
-        <p class="text-xs text-gray-400 mb-2">0件の項目も「0」を入力してください</p>
+        <p class="text-xs text-gray-400 mb-2">0件の項目も「0」を入力してください。稼働中も −／＋ で数えられます（数えた件数はこの端末に残り、提出するまで消えません）</p>
         <div class="grid grid-cols-2 gap-3">
           ${numFields.map(f => `
             <div>
               <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
-              <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold" value="${esc(pv(f.key))}" placeholder="未入力">
+              <div class="flex items-stretch gap-1">
+                <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="-1" aria-label="${esc(f.label)}を1減らす">−</button>
+                <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold min-w-0 px-1" value="${esc(pv(f.key))}" placeholder="未入力">
+                <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="1" aria-label="${esc(f.label)}を1増やす">＋</button>
+              </div>
             </div>`).join('')}
         </div>
       </section>` : ''}
@@ -1437,6 +1468,7 @@ async function renderReport() {
 
   const sel = document.getElementById('report-shift')
   if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
+  loadReportHandover(sh.shift_id)
   const form = document.getElementById('report-form')
   // 複数行の欄は入力に合わせて高さを伸ばし、残りの文字数を出す
   // 非表示の欄（インシデントの内容など）は高さを測れないので、表示したときに測る
@@ -1523,7 +1555,38 @@ async function renderReport() {
 // 実績件数の空欄を0で埋める（0件をまとめて入力する）
 delegate('reportFillZero', () => {
   document.querySelectorAll('#report-form .rpt-num').forEach(el => { if (el.value.trim() === '') el.value = '0' })
+  const form = document.getElementById('report-form'); if (form) form.dispatchEvent(new Event('input'))
 })
+// 稼働中のカウント（#279）。−／＋ で1件ずつ増減し、入力のイベントで下書き（端末）に保存する
+delegate('reportCount', (el) => {
+  const inp = el.parentElement && el.parentElement.querySelector('.rpt-num')
+  if (!inp) return
+  const v = Math.min(99999, Math.max(0, (Math.floor(Number(inp.value)) || 0) + Number(el.dataset.step || 0)))
+  inp.value = String(v)
+  inp.dispatchEvent(new Event('input', { bubbles: true }))
+})
+
+// 店舗の申し送り（#522）。同じ案件のほかのスタッフの直近の日報から、共有の項目（店舗共有事項・好事例など）を出す
+function handoverNotesHtml(d) {
+  const labelOf = Object.fromEntries((d.fields || []).map(f => [f.key, f.label]))
+  return (d.notes || []).map(n => `
+    <div class="border-t first:border-t-0 border-gray-100 pt-2 first:pt-0 mt-2 first:mt-0">
+      <p class="text-[11px] text-gray-400">${esc(fmtDate(n.work_date))}${n.name ? ` ${esc(n.name)}さん` : ''}</p>
+      ${Object.entries(n.values).map(([k, v]) => `<p class="text-xs mt-0.5"><span class="font-bold text-gray-600">${esc(labelOf[k] || k)}：</span><span class="text-gray-800 whitespace-pre-wrap break-words">${linkify(esc(v))}</span></p>`).join('')}
+    </div>`).join('')
+}
+async function loadReportHandover(shiftId) {
+  const box = document.getElementById('report-handover')
+  if (!box) return
+  let d
+  try { d = (await axios.get('/api/staff/handover/' + Number(shiftId))).data } catch (e) { return }
+  // 読み込み中にほかのシフトの日報へ移った
+  if (document.getElementById('report-handover') !== box || !(d.notes || []).length) return
+  box.innerHTML = `<details class="card p-4 mb-4">
+    <summary class="font-bold text-gray-700 text-sm cursor-pointer"><i class="fas fa-clipboard-list text-blue-500 mr-1"></i>この現場の申し送り（直近${Number(d.days)}日・${d.notes.length}件）</summary>
+    <div class="mt-2">${handoverNotesHtml(d)}</div>
+  </details>`
+}
 
 // 過去の日報（#319 #371）。同一人物の全所属の分。タップすると、提出した内容・確認済みかどうか・コメントを開く
 let PAST_REPORTS = null
@@ -1595,6 +1658,45 @@ async function renderReportWithHistory() {
 }
 
 // ============ 実績 ============
+delegate('perfMonth', (el) => renderPerf(el.dataset.month))
+// 案件の月間目標（#292）。目標・実績・あと何件と、月の経過に合わせた今日までの目安を出す
+function perfGoalsHtml(p, period) {
+  if (!(p.goals || []).length) return ''
+  const dim = Number(period && period.days_in_month) || 0, elapsed = Number(period && period.days_elapsed) || 0
+  return `<div class="mt-3 pt-3 border-t border-gray-100">
+    <p class="text-xs font-bold text-gray-600 mb-1.5"><i class="fas fa-bullseye text-emerald-500 mr-1"></i>今月の目標（1人あたり）</p>
+    ${p.goals.map(g => {
+      const pct = g.target ? Math.min(100, Math.round(g.actual / g.target * 100)) : 0
+      const left = Math.max(0, g.target - g.actual)
+      const pace = dim && elapsed > 0 && elapsed < dim ? Math.ceil(g.target * elapsed / dim) : null
+      return `<div class="mb-2">
+        <div class="flex justify-between text-xs"><span class="text-gray-700">${esc(g.label)}</span>
+          <span class="${left ? 'text-gray-500' : 'text-emerald-700 font-bold'}">${Number(g.actual)} / ${Number(g.target)}件${left ? `（あと${left}件）` : '（達成）'}</span></div>
+        <div class="h-2 bg-gray-100 rounded-full mt-1 overflow-hidden"><div class="h-2 rounded-full ${left ? 'bg-blue-500' : 'bg-emerald-500'}" style="width:${pct}%"></div></div>
+        ${pace != null && left ? `<p class="text-[11px] mt-0.5 ${g.actual >= pace ? 'text-emerald-700' : 'text-amber-700'}">今日までの目安 ${pace}件${g.actual >= pace ? '（順調です）' : `（目安まであと${pace - g.actual}件）`}</p>` : ''}
+      </div>`
+    }).join('')}
+  </div>`
+}
+// 案件の中での順位（#496。会社の設定で出すときだけ）。匿名のときは、ほかの人の名前を出さない
+function perfRankingHtml(p) {
+  const r = p.ranking
+  if (!r || !r.members) return ''
+  const rows = p.fields.filter(f => r.by_key[f.key] && r.by_key[f.key].top.length && r.by_key[f.key].top[0].value > 0)
+  if (!rows.length) return ''
+  return `<details class="mt-3 pt-3 border-t border-gray-100">
+    <summary class="text-xs font-bold text-gray-600 cursor-pointer"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>案件の中での順位（今月・${Number(r.members)}人中）</summary>
+    <div class="mt-2 space-y-2">${rows.map(f => {
+      const k = r.by_key[f.key]
+      const diff = Math.round((k.value - k.average) * 10) / 10
+      return `<div class="text-xs">
+        <p><span class="font-bold text-gray-700">${esc(f.label)}</span> <span class="text-blue-700 font-bold">${Number(k.rank)}位</span> / ${Number(r.members)}人
+          <span class="text-gray-500">（平均 ${esc(k.average)}件、平均との差 ${diff >= 0 ? '+' : ''}${esc(diff)}件）</span></p>
+        <p class="text-[11px] text-gray-400 mt-0.5">上位: ${k.top.map(t => `${Number(t.rank)}位 ${t.me ? 'あなた' : t.name ? esc(t.name) + 'さん' : ''} ${Number(t.value)}件`).join('、')}</p>
+      </div>`
+    }).join('')}</div>
+  </details>`
+}
 // 案件ごとに、日報テンプレートの数値項目（表示名・並び順）で集計して出す（#76）。連携先の案件も含む（#75）
 async function renderPerf(month) {
   loading()
@@ -1613,13 +1715,15 @@ async function renderPerf(month) {
           <p class="text-xl font-bold text-blue-600">${esc(p.totals[f.key])}</p>
           <p class="text-[11px] text-gray-500 mt-0.5 break-words">${esc(f.label)}</p>
         </div>`).join('')}</div>` : '<p class="text-xs text-gray-400">数値の実績はありません</p>'}
+      ${perfGoalsHtml(p, data.goal_period)}
+      ${perfRankingHtml(p)}
     </section>`
   }
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4">
-      <button class="btn btn-outline" onclick="renderPerf('${dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM')}')" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+      <button class="btn btn-outline" data-action="perfMonth" data-month="${esc(dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
       <h2 class="font-bold text-gray-800">${dayjs(month + '-01').format('YYYY年M月')}の実績</h2>
-      <button class="btn btn-outline" onclick="renderPerf('${dayjs(month + '-01').add(1, 'month').format('YYYY-MM')}')" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+      <button class="btn btn-outline" data-action="perfMonth" data-month="${esc(dayjs(month + '-01').add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
     </div>
     ${data.daily.length ? projects.map(card).join('') : '<p class="text-center text-gray-400 py-8">この月の実績データはありません</p>'}
     ${data.daily.length ? `<h3 class="font-bold text-gray-700 mb-2 px-1">日別実績</h3>
