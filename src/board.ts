@@ -10,8 +10,11 @@ import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
 import { notifyCompanyAdmins, markAdminNotificationsRead } from './notifications'
+import { sendEmailBatch } from './services/email'
+import type { SendEmailInput } from './services/email'
+import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 
-type Bindings = { DB: D1Database }
+type Bindings = { DB: D1Database; RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
 const boardApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -443,6 +446,7 @@ boardApi.get('/threads', async (c) => {
 // 未読件数のみ（サイドバーのバッジ用・軽量）
 boardApi.get('/unread-count', async (c) => {
   const u = c.get('user')
+  await checkSavedSearchesOnPoll(c, u.user_id) // #479
   const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM board_messages m JOIN board_threads t ON t.thread_id = m.thread_id
     WHERE (t.poster_company_id = ? OR t.inquirer_company_id = ?) AND m.author_company_id != ? AND ${UNREAD_KIND}
       AND m.message_id > ${READ_POS}`)
@@ -951,6 +955,176 @@ async function sameProposedPerson(db: D1Database, p: any, companyId: number): Pr
   const list = (await db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL AND sp.staff_id IN ${JSON_IN} ORDER BY sp.staff_id`).bind(companyId, bindJsonArray(ids)).all()).results as any[]
   return list.map(r => ({ staff_id: r.staff_id, name: r.name, via_board: viaBoard.has(r.staff_id) }))
+}
+
+// =========================================================
+// 保存した検索条件と、条件に合う新しい掲載の知らせ（#479）
+// - 条件は利用者ごと。一覧の検索と同じ項目（種別・都道府県・エリア・稼働日・スキル・キーワード）
+// - 1日1回、前回の確認より後に掲載された他社の案件を条件と照らし合わせ、合うものがあればアプリ内通知（と、選んだ人にはメール）で知らせる。
+//   定期処理（notifySavedSearchMatches を CRON_DAILY に登録）と、その日はじめての未読件数の確認（GET /unread-count）のどちらか早い方で行う。
+//   確認は条件の行を「確認済み」に書き換えて押さえてから行うので、同時に動いても二重に知らせない
+// =========================================================
+const MAX_SAVED_SEARCHES = 10
+const SAVED_SEARCH_BATCH = 500   // 1回で確かめる条件の数
+const SAVED_SEARCH_MAX_ROUNDS = 4
+const SAVED_SEARCH_MATCH_LIMIT = 2000
+const SAVED_SEARCH_NOTIFY_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+const SAVED_SEARCH_PREVIEW = 3   // 通知の本文に出す案件名の数（条件ごと）
+
+function savedSearchValues(b: any) {
+  return {
+    engagement_type: (ENGAGEMENT_TYPES as readonly string[]).includes(b.engagement_type) ? b.engagement_type as string : null,
+    prefecture: str(b.prefecture, 10) || null,
+    area: str(b.area, 100) || null,
+    work_date: isDate(b.date) ? b.date as string : null,
+    skill: str(b.skill, 60) || null,
+    keyword: str(b.q, 100) || null,
+  }
+}
+const ENG_LABEL: Record<string, string> = { regular: '常勤', spot: 'スポット' }
+function savedSearchLabel(v: ReturnType<typeof savedSearchValues>) {
+  return [v.engagement_type ? ENG_LABEL[v.engagement_type] : '', v.prefecture, v.area, v.work_date, v.skill, v.keyword].filter(Boolean).join('・') || 'すべての掲載'
+}
+const shapeSearch = (r: any) => ({ search_id: r.search_id, name: r.name, notify: !!r.notify, notify_email: !!r.notify_email, last_checked_at: r.last_checked_at,
+  conditions: { engagement_type: r.engagement_type || '', prefecture: r.prefecture || '', area: r.area || '', date: r.work_date || '', skill: r.skill || '', q: r.keyword || '' } })
+
+boardApi.get('/saved-searches', async (c) => {
+  const u = c.get('user')
+  const rows = (await c.env.DB.prepare('SELECT * FROM board_saved_searches WHERE user_id = ? AND company_id = ? ORDER BY search_id').bind(u.user_id, u.company_id).all()).results as any[]
+  return c.json({ searches: rows.map(shapeSearch), max: MAX_SAVED_SEARCHES })
+})
+boardApi.post('/saved-searches', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const v = savedSearchValues(b)
+  const rows = (await db.prepare('SELECT * FROM board_saved_searches WHERE user_id = ? AND company_id = ?').bind(u.user_id, u.company_id).all()).results as any[]
+  const same = rows.find(r => (Object.keys(v) as (keyof typeof v)[]).every(k => (r[k] ?? null) === v[k]))
+  if (same) return c.json({ error: `同じ条件を「${same.name}」として保存しています`, search_id: same.search_id }, 409)
+  if (rows.length >= MAX_SAVED_SEARCHES) return c.json({ error: `保存できる条件は${MAX_SAVED_SEARCHES}件までです。使わない条件を削除してください` }, 409)
+  const name = str(b.name, 60) || savedSearchLabel(v)
+  const now = nowJST()
+  // 保存した時点より後に掲載された案件から知らせる
+  const r = await db.prepare(`INSERT INTO board_saved_searches (company_id, user_id, name, engagement_type, prefecture, area, work_date, skill, keyword, notify, notify_email, last_checked_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, u.user_id, name, v.engagement_type, v.prefecture, v.area, v.work_date, v.skill, v.keyword,
+    b.notify === false ? 0 : 1, b.notify_email === true ? 1 : 0, now, now).run()
+  return c.json({ ok: true, search_id: r.meta.last_row_id, name })
+})
+// 名前・知らせ方の変更（条件そのものは変えない。変えるときは保存し直す）
+boardApi.put('/saved-searches/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const cur = await db.prepare('SELECT * FROM board_saved_searches WHERE search_id = ? AND user_id = ? AND company_id = ?').bind(c.req.param('id'), u.user_id, u.company_id).first() as any
+  if (!cur) return c.json({ error: '保存した条件が見つかりません' }, 404)
+  const b = await c.req.json().catch(() => ({} as any))
+  const name = b.name !== undefined ? str(b.name, 60) : cur.name
+  if (!name) return c.json({ error: '名前を入力してください' }, 400)
+  const notify = b.notify !== undefined ? (b.notify ? 1 : 0) : cur.notify
+  const email = b.notify_email !== undefined ? (b.notify_email ? 1 : 0) : cur.notify_email
+  // 知らせを止めていた間の掲載は、再開したときにまとめて知らせない（再開した時点から数える）
+  const resumed = !cur.notify && notify
+  await db.prepare(`UPDATE board_saved_searches SET name = ?, notify = ?, notify_email = ?, last_checked_at = CASE WHEN ? THEN ? ELSE last_checked_at END WHERE search_id = ?`)
+    .bind(name, notify, email, resumed ? 1 : 0, nowJST(), cur.search_id).run()
+  return c.json({ ok: true })
+})
+boardApi.delete('/saved-searches/:id', async (c) => {
+  const u = c.get('user')
+  const r = await c.env.DB.prepare('DELETE FROM board_saved_searches WHERE search_id = ? AND user_id = ? AND company_id = ?').bind(c.req.param('id'), u.user_id, u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '保存した条件が見つかりません' }, 404)
+  return c.json({ ok: true })
+})
+
+// 条件（s）と掲載（bp）・掲載企業（co）が合うか。一覧の検索（GET /posts）と同じ判定。自社の掲載・停止中の企業の掲載は知らせない（掲載日時の範囲は JOIN の条件で絞る）
+const SEARCH_MATCH_SQL = `bp.company_id != s.company_id
+  AND COALESCE(co.active_status, 'active') != 'inactive'
+  AND (s.engagement_type IS NULL OR bp.engagement_type = s.engagement_type)
+  AND (s.prefecture IS NULL OR bp.prefecture = s.prefecture)
+  AND (s.area IS NULL OR bp.area LIKE '%' || s.area || '%' OR bp.nearest_station LIKE '%' || s.area || '%')
+  AND (s.work_date IS NULL OR ((bp.date_from IS NULL OR bp.date_from <= s.work_date)
+    AND (CASE WHEN bp.date_to IS NOT NULL THEN bp.date_to >= s.work_date WHEN bp.engagement_type = 'spot' THEN bp.date_from >= s.work_date ELSE 1 END)))
+  AND (s.skill IS NULL OR (',' || COALESCE(bp.required_skills, '') || ',') LIKE '%,' || s.skill || ',%')
+  AND (s.keyword IS NULL OR bp.title LIKE '%' || s.keyword || '%' OR bp.description LIKE '%' || s.keyword || '%'
+    OR co.company_name LIKE '%' || s.keyword || '%' OR bp.required_skills LIKE '%' || s.keyword || '%')`
+
+type SavedSearchEnv = { DB: D1Database; RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
+/** 保存した条件の新着を知らせる（#479）。userId を付けるとその利用者の分だけ。
+ *  defer を渡すとメールは応答の後に送る（画面からの呼び出し）。戻り値は定期処理の記録に使う */
+export async function notifySavedSearchMatches(env: SavedSearchEnv, opts: { userId?: number; defer?: (p: Promise<unknown>) => void } = {}) {
+  const db = env.DB
+  let checked = 0, notified = 0, emailed = 0
+  for (let round = 0; round < SAVED_SEARCH_MAX_ROUNDS; round++) {
+    const now = nowJST(), dayStart = now.slice(0, 10) + ' 00:00:00'
+    // 今日まだ確かめていない条件を押さえる（確認の日時を進め、前回の日時を prev_checked_at に移す）
+    const claimed = ((await db.prepare(`UPDATE board_saved_searches SET prev_checked_at = last_checked_at, last_checked_at = ?
+      WHERE last_checked_at < ? AND search_id IN (SELECT s.search_id FROM board_saved_searches s
+        JOIN users us ON us.user_id = s.user_id AND us.company_id = s.company_id AND us.status = 'active' AND us.role IN ${JSON_IN}
+        JOIN companies sc ON sc.company_id = s.company_id AND COALESCE(sc.active_status, 'active') != 'inactive'
+        WHERE s.notify = 1 AND s.last_checked_at < ? ${opts.userId ? 'AND s.user_id = ?' : ''} ORDER BY s.last_checked_at LIMIT ?)
+      RETURNING search_id`).bind(now, dayStart, JSON.stringify(SAVED_SEARCH_NOTIFY_ROLES), dayStart, ...(opts.userId ? [opts.userId] : []), SAVED_SEARCH_BATCH).all()).results as any[])
+      .map(r => Number(r.search_id))
+    if (!claimed.length) break
+    checked += claimed.length
+    const rows = (await db.prepare(`SELECT s.search_id, s.user_id, s.company_id, s.name, s.notify_email, bp.post_id, bp.title
+      FROM board_saved_searches s JOIN board_posts bp ON bp.status = 'open' AND bp.published_at > s.prev_checked_at AND bp.published_at <= s.last_checked_at
+      JOIN companies co ON co.company_id = bp.company_id
+      WHERE s.search_id IN ${JSON_IN} AND ${SEARCH_MATCH_SQL} ORDER BY s.user_id, s.search_id, bp.published_at DESC LIMIT ?`)
+      .bind(bindJsonArray(claimed), SAVED_SEARCH_MATCH_LIMIT).all()).results as any[]
+    if (rows.length) {
+      const r = await deliverSavedSearchNotices(env, rows, now, opts.defer)
+      notified += r.notified; emailed += r.emailed
+    }
+    if (opts.userId || claimed.length < SAVED_SEARCH_BATCH) break
+  }
+  return { checked, notified, emailed, idle: checked === 0 }
+}
+
+// 利用者ごとに1件の通知（と1通のメール）にまとめる
+async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], now: string, defer?: (p: Promise<unknown>) => void) {
+  const db = env.DB
+  const byUser = new Map<number, { company_id: number; email: boolean; posts: Set<number>; searches: Map<number, { name: string; titles: string[]; n: number }> }>()
+  for (const r of rows) {
+    const u = byUser.get(r.user_id) || { company_id: r.company_id, email: false, posts: new Set<number>(), searches: new Map() }
+    const s = u.searches.get(r.search_id) || { name: r.name, titles: [], n: 0 }
+    s.n++; if (s.titles.length < SAVED_SEARCH_PREVIEW) s.titles.push(r.title)
+    u.searches.set(r.search_id, s); u.posts.add(r.post_id); u.email = u.email || !!r.notify_email
+    byUser.set(r.user_id, u)
+  }
+  const users = new Map(((await db.prepare(`SELECT user_id, name, email FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray([...byUser.keys()])).all()).results as any[])
+    .map(x => [Number(x.user_id), x]))
+  const stmts: D1PreparedStatement[] = []
+  const mails: SendEmailInput[] = []
+  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  for (const [userId, x] of byUser) {
+    const ids = [...x.searches.keys()]
+    const title = `案件掲示板の新着 ${x.posts.size}件（保存した検索条件）`
+    const lines: [string, string][] = [...x.searches.values()].map(s => [`「${s.name}」`, `${s.n}件: ${s.titles.join('、')}${s.n > s.titles.length ? ' ほか' : ''}`])
+    // 条件が1つなら、その条件で一覧を開く
+    const link = ids.length === 1 ? `/admin#board/search-${ids[0]}` : '/admin#board'
+    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES (?, ?, 'board_saved_search', ?, ?, ?, ?, ?)`)
+      .bind(x.company_id, userId, title, lines.map(([k, v]) => `${k} ${v}`).join('\n'), link, ids.length === 1 ? ids[0] : null, now))
+    const us = users.get(userId)
+    if (x.email && us?.email) {
+      const tpl = attendanceCorrectionEmail({ name: us.name, title, headline: '保存した検索条件に合う案件が、案件掲示板に新しく掲載されました。', lines, url: base + link, button: '掲示板で確認する' })
+      mails.push({ to: us.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'board_saved_search', company_id: x.company_id })
+    }
+  }
+  if (stmts.length) await db.batch(stmts)
+  if (mails.length) {
+    // メールの失敗は email_logs に残る。通知の行は作り直さない
+    const job = sendEmailBatch(env as any, mails).catch(e => console.log(`saved search mail failed: ${e}`))
+    if (defer) defer(job); else await job
+  }
+  return { notified: stmts.length, emailed: mails.length }
+}
+
+// その日はじめての未読件数の確認で、保存した条件の新着を確かめる（同じ isolate では1日1回まで問い合わせる）
+const savedSearchCheckedOn = new Map<number, string>()
+async function checkSavedSearchesOnPoll(c: any, userId: number) {
+  const today = todayJST()
+  if (savedSearchCheckedOn.get(userId) === today) return
+  savedSearchCheckedOn.set(userId, today)
+  if (savedSearchCheckedOn.size > 5000) savedSearchCheckedOn.clear()
+  try {
+    await notifySavedSearchMatches(c.env, { userId, defer: (p) => { try { c.executionCtx.waitUntil(p) } catch { /* waitUntil が使えないときは待たない */ } } })
+  } catch (e) { console.log(`saved search check failed: user=${userId} ${e}`) }
 }
 
 export default boardApi

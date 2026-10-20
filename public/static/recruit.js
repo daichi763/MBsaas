@@ -112,6 +112,10 @@
         <label class="block text-gray-600">仕事内容・条件<textarea id="rp-desc" class="inp" rows="4" maxlength="2000" placeholder="仕事内容、服装、持ち物、集合場所など">${esc(p?.description || '')}</textarea></label>
         <label class="block text-gray-600">給与の表示（任意）<input id="rp-pay" class="inp" maxlength="200" value="${esc(p?.pay_note || '')}" placeholder="例: 日給 12,000円〜・交通費支給"></label>
         <label class="block text-gray-600">問い合わせ先の表示（任意）<input id="rp-contact" class="inp" maxlength="200" value="${esc(p?.contact_note || '')}" placeholder="例: 採用担当 03-0000-0000（平日10〜18時）"></label>
+        <div class="text-gray-600">応募フォームの質問（任意・${MAX_QUESTIONS}問まで）
+          <div id="rp-questions" class="space-y-2 mt-1">${(p?.questions || []).map(questionRow).join('')}</div>
+          <button type="button" class="btn btn-outline text-xs mt-1" data-action="recruitAddQuestion"><i class="fas fa-plus"></i>質問を追加</button>
+          <p class="text-[11px] text-gray-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。スタッフアプリからの応募では質問しません</p></div>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-remaining" ${p ? (p.show_remaining ? 'checked' : '') : 'checked'}>残り人数を表示する</label>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-staff" ${p ? (p.allow_staff ? 'checked' : '') : 'checked'}>登録済みのスタッフがアプリから応募できるようにする</label>
         <div class="text-xs pl-6 space-y-1" id="rp-notify-box">
@@ -126,6 +130,38 @@
         ${p && !p.application_count ? `<button class="btn btn-danger" onclick="deleteRecruitPage(${p.page_id})"><i class="fas fa-trash"></i></button>` : ''}
         <button class="btn btn-primary flex-1" data-action="recruitSavePage" data-id="${p ? p.page_id : ''}" data-reopen="${reopen ? '1' : ''}">${p ? (reopen ? '保存して再開' : '保存') : '作成してURLを発行'}</button>
       </div>`)
+    // 回答の形式が「選択肢」のときだけ、選択肢の入力欄を出す
+    document.getElementById('rp-questions').addEventListener('change', (ev) => {
+      if (!ev.target.classList.contains('rp-q-type')) return
+      ev.target.closest('.rp-q').querySelector('.rp-q-opts').classList.toggle('hidden', ev.target.value !== 'select')
+    })
+  }
+  // ---------- 応募フォームの独自の質問（#300） ----------
+  const MAX_QUESTIONS = 5 // src/recruit.ts と同じ上限
+  const Q_TYPES = [['text', '自由記述'], ['select', '選択肢から選ぶ'], ['yesno', 'はい・いいえ']]
+  function questionRow(q) {
+    q = q || { type: 'yesno' }
+    return `<div class="rp-q border border-gray-200 rounded-lg p-2 space-y-1" data-key="${esc(q.key || '')}">
+      <div class="flex gap-1"><input class="inp text-sm flex-1 rp-q-label" maxlength="100" placeholder="質問（例: 携帯販売の経験はありますか）" value="${esc(q.label || '')}">
+        <button type="button" class="btn btn-outline text-xs" data-action="recruitRemoveQuestion" title="この質問を削除"><i class="fas fa-trash"></i></button></div>
+      <div class="flex gap-2 items-center flex-wrap text-xs">
+        <select class="inp text-xs w-auto rp-q-type">${Q_TYPES.map(([k, l]) => `<option value="${k}" ${q.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <label class="flex items-center gap-1"><input type="checkbox" class="rp-q-req" ${q.required ? 'checked' : ''}>回答を必須にする</label></div>
+      <input class="inp text-xs rp-q-opts ${q.type === 'select' ? '' : 'hidden'}" maxlength="400" placeholder="選択肢をカンマ区切りで（例: なし, 1年未満, 1年以上）" value="${esc((q.options || []).join(', '))}">
+    </div>`
+  }
+  delegate('recruitAddQuestion', () => {
+    const box = document.getElementById('rp-questions'); if (!box) return
+    if (box.querySelectorAll('.rp-q').length >= MAX_QUESTIONS) return toast(`質問は${MAX_QUESTIONS}問までです`)
+    box.insertAdjacentHTML('beforeend', questionRow(null))
+    box.lastElementChild.querySelector('.rp-q-label').focus()
+  })
+  delegate('recruitRemoveQuestion', (el) => { const row = el.closest('.rp-q'); if (row) row.remove() })
+  function readQuestions() {
+    return [...document.querySelectorAll('#rp-questions .rp-q')].map(row => ({
+      key: row.dataset.key || undefined, label: row.querySelector('.rp-q-label').value.trim(), type: row.querySelector('.rp-q-type').value,
+      required: row.querySelector('.rp-q-req').checked, options: row.querySelector('.rp-q-opts').value.split(/[,、，\n]/).map(s => s.trim()).filter(Boolean),
+    })).filter(q => q.label)
   }
   // 新しい募集をスタッフに知らせた結果（#156）
   const staffNoticeText = (d) => !d || d.staff_notified == null ? ''
@@ -140,6 +176,7 @@
       date_from: v('rp-from'), date_to: v('rp-to'), description: v('rp-desc'), pay_note: v('rp-pay'), contact_note: v('rp-contact'),
       show_remaining: document.getElementById('rp-remaining').checked, allow_staff: document.getElementById('rp-staff').checked,
       notify_staff: document.getElementById('rp-notify').checked, notify_staff_email: document.getElementById('rp-notify-mail').checked,
+      questions: readQuestions(),
       ...(id && document.getElementById('rp-regen')?.checked ? { regenerate_token: true } : {}),
       ...(id && reopen ? { status: 'open' } : {}),
     }
@@ -185,6 +222,7 @@
   function appQuery(offset) {
     const q = { status: S.status }
     for (const k of ['page_id', 'slot_role_id', 'q', 'from', 'to']) if (S[k]) q[k] = S[k]
+    if (S.no_note) q.no_note = '1'
     if (offset) q.offset = offset
     return new URLSearchParams(q)
   }
@@ -207,8 +245,9 @@
         <label class="text-gray-500">募集ページ<select id="rc-page" class="inp text-sm max-w-[14rem]"><option value="">すべて</option>
           ${(data.pages || []).map(p => `<option value="${p.page_id}" ${Number(S.page_id) === p.page_id ? 'selected' : ''}>${esc(p.title)}${p.status === 'open' ? '' : '（終了）'}</option>`).join('')}</select></label>
         <label class="text-gray-500">勤務日<span class="flex items-center gap-1"><input id="rc-from" type="date" class="inp text-sm" value="${esc(S.from || '')}">〜<input id="rc-to" type="date" class="inp text-sm" value="${esc(S.to || '')}"></span></label>
+        <label class="flex items-center gap-1 text-gray-600 pb-2" title="だれも対応メモを残していない応募"><input type="checkbox" id="rc-no-note" ${S.no_note ? 'checked' : ''}>対応メモなしのみ</label>
         <button type="submit" class="btn btn-primary text-xs"><i class="fas fa-magnifying-glass"></i>検索</button>
-        ${S.q || S.page_id || S.from || S.to ? '<button type="button" class="btn btn-outline text-xs" data-action="recruitClearFilter">条件をクリア</button>' : ''}
+        ${S.q || S.page_id || S.from || S.to || S.no_note ? '<button type="button" class="btn btn-outline text-xs" data-action="recruitClearFilter">条件をクリア</button>' : ''}
       </form>
       ${S.slot_role_id ? `<div class="text-xs bg-blue-50 border border-blue-100 rounded-lg p-3 mb-3 flex items-center gap-2 flex-wrap" id="recruit-slot-filter">
         <span class="badge badge-blue">枠で絞り込み中</span>
@@ -220,6 +259,9 @@
       ${S.status === 'pending' && data.counts.pending_inactive ? `<p class="text-[11px] text-gray-500 mb-2">退職・停止中のスタッフの応募（${data.counts.pending_inactive}件）は承認できないため、未対応の件数に含めていません。見送りにしてください</p>` : ''}
       ${S.status === 'waitlist' ? '<p class="text-[11px] text-gray-500 mb-2">見送りにした日時のうち、開始前のものです。キャンセルが出たときは「繰り上げて承認」でシフトを確定できます</p>' : ''}
       <p class="text-xs text-gray-500 mb-2" id="recruit-app-total">${data.total}件${pageTitle ? `（${esc(pageTitle)}）` : ''}</p>
+      ${S.status === 'pending' && data.applications.some(bulkable) ? `<div class="flex items-center gap-2 mb-2 flex-wrap text-xs bg-white border border-gray-100 rounded-lg p-2" id="recruit-bulk-bar">
+        <button class="btn btn-primary text-xs" data-action="recruitBulkApprove"><i class="fas fa-check-double"></i>選択をまとめて承認</button>
+        <span class="text-[11px] text-gray-500 flex-1 min-w-[12rem]">登録済みのスタッフの応募で、チェックした日時をまとめて承認します。定員超過・時間の重複などの確認が必要な日時は承認せずに残します。未登録の応募者は、カードごとに承認してください</span></div>` : ''}
       <div class="space-y-3" id="recruit-app-list">
         ${data.applications.map(appCard).join('') || '<p class="card p-6 text-center text-sm text-gray-400">応募はありません</p>'}
       </div>
@@ -227,14 +269,14 @@
     document.getElementById('recruit-filter').addEventListener('submit', (ev) => {
       ev.preventDefault()
       const v = (id) => document.getElementById(id).value.trim()
-      Object.assign(S, { q: v('rc-q'), page_id: v('rc-page') ? Number(v('rc-page')) : null, from: v('rc-from'), to: v('rc-to') })
+      Object.assign(S, { q: v('rc-q'), page_id: v('rc-page') ? Number(v('rc-page')) : null, from: v('rc-from'), to: v('rc-to'), no_note: document.getElementById('rc-no-note').checked })
       renderApplications()
     })
   }
   const moreButton = (data) => data.next_offset != null
     ? `<button class="btn btn-outline w-full mt-3 text-xs" id="recruit-app-more" data-action="recruitMore" data-offset="${Number(data.next_offset)}">さらに読み込む（残り${data.total - data.next_offset}件）</button>` : ''
   delegate('recruitStatus', (el) => { S.status = el.dataset.status; renderApplications() })
-  delegate('recruitClearFilter', () => { Object.assign(S, { q: '', page_id: null, from: '', to: '' }); renderApplications() })
+  delegate('recruitClearFilter', () => { Object.assign(S, { q: '', page_id: null, from: '', to: '', no_note: false }); renderApplications() })
   delegate('recruitClearSlot', () => { S.slot_role_id = null; renderApplications() })
   delegate('recruitMore', (el) => withSubmitLock(el, async () => {
     let data; try { data = (await axios.get('/api/admin/recruit-applications?' + appQuery(Number(el.dataset.offset)))).data } catch (e) { toast(errMsg(e)); return }
@@ -288,6 +330,7 @@
         <p class="text-[11px] text-gray-400 text-right">${esc(a.page_title || '')}<br>${dayjs(a.created_at).format('M/D HH:mm')} 応募</p>
       </div>
       ${a.note ? `<p class="text-xs bg-gray-50 rounded p-2 mb-2 whitespace-pre-wrap">${esc(a.note)}</p>` : ''}
+      ${(a.answers || []).length ? `<div class="text-xs bg-blue-50 rounded p-2 mb-2 space-y-0.5 rc-answers">${a.answers.map(x => `<p><span class="text-gray-500">${esc(x.label)}:</span> <b class="font-medium">${esc(x.value)}</b></p>`).join('')}</div>` : ''}
       ${a.staff_inactive && pending.length ? '<p class="text-xs text-red-700 bg-red-50 rounded p-2 mb-2"><i class="fas fa-user-slash mr-1"></i>このスタッフは退職・停止中のため、承認できません。見送りにしてください</p>' : ''}
       ${!a.staff_id && a.phone_matches.length ? `<p class="text-xs text-amber-700 bg-amber-50 rounded p-2 mb-2"><i class="fas fa-user-check mr-1"></i>電話番号が一致するスタッフがいます: ${a.phone_matches.map(matchName).join('、')}</p>` : ''}
       <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr>${hasCheck ? `<th>${pending.length ? `<input type="checkbox" checked data-action="recruitCheckAll" data-id="${a.application_id}" title="未対応をすべて選ぶ">` : ''}</th>` : ''}<th>日時</th><th>案件・場所・役割</th><th>充足</th><th>確認</th><th>状態</th></tr></thead><tbody>
@@ -308,7 +351,111 @@
         <label class="flex items-center gap-1.5 text-[11px] text-gray-600 w-full"><input type="checkbox" class="ri-notify" checked>結果を応募者に知らせる（${notifyHow}）</label>
       </div>` : ''}
       ${decided.length && (a.email || a.staff_id) ? `<button class="text-[11px] text-blue-600 underline mt-2" data-action="recruitNotifyResult" data-id="${a.application_id}"><i class="fas fa-envelope mr-0.5"></i>結果のお知らせを送り直す</button>` : ''}
+      ${decidedByText(a, decided)}
+      ${notesBlock(a)}
     </article>`
+  }
+  // 対応済みの応募に「〇〇が承認 10/15 14:00」を出す（#478）
+  function decidedByText(a, decided) {
+    if (a.status !== 'done' || !a.decided_by_name || !a.decided_at) return ''
+    const ap = decided.some(i => i.status === 'approved'), rj = decided.some(i => i.status === 'rejected')
+    return `<p class="text-[11px] text-gray-500 mt-2 rc-decided-by"><i class="fas fa-user-check mr-1"></i>${esc(a.decided_by_name)}が${ap && !rj ? '承認' : rj && !ap ? '見送り' : '対応'} ${esc(dayjs(a.decided_at).format('M/D HH:mm'))}</p>`
+  }
+
+  // ---------- 対応メモ（#478）。電話済み・不在・面談予定などを、書いた人・日時と一緒に残す ----------
+  const QUICK_NOTES = ['電話済み', '不在（折り返し待ち）', '面談予定', '結果を連絡済み']
+  function notesList(notes) {
+    return (notes || []).map(n => `<li class="flex items-start gap-1.5"><span class="text-gray-400 whitespace-nowrap">${esc(dayjs(n.created_at).format('M/D HH:mm'))} ${esc(n.author_name || '（削除された利用者）')}</span>
+      <span class="flex-1 whitespace-pre-wrap break-words">${esc(n.body)}</span>
+      ${n.mine ? `<button class="text-gray-400 hover:text-red-600" data-action="recruitDeleteNote" data-id="${Number(n.application_id)}" data-note="${Number(n.note_id)}" title="このメモを削除"><i class="fas fa-xmark"></i></button>` : ''}</li>`).join('')
+      || '<li class="text-gray-400">まだメモはありません</li>'
+  }
+  function notesBlock(a) {
+    const id = Number(a.application_id)
+    return `<div class="mt-3 border-t border-gray-100 pt-2 text-xs" data-notes-for="${id}">
+      <p class="text-[11px] font-bold text-gray-500 mb-1"><i class="far fa-comment-dots mr-1"></i>対応メモ</p>
+      <ul class="space-y-1 rc-notes">${notesList(a.notes)}</ul>
+      <div class="flex gap-1 mt-1.5 flex-wrap">${QUICK_NOTES.map(t => `<button class="btn btn-outline text-[11px] py-0.5" data-action="recruitAddNote" data-id="${id}" data-body="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+      <div class="flex gap-1 mt-1"><input class="inp text-xs flex-1 rc-note-input" maxlength="500" placeholder="例: 10/20 14時に折り返し予定"><button class="btn btn-outline text-xs" data-action="recruitAddNote" data-id="${id}">記録</button></div>
+    </div>`
+  }
+  function updateNotes(id, notes) {
+    const a = (window.__recruitApps || []).find(x => x.application_id === id); if (a) a.notes = notes
+    const ul = document.querySelector(`[data-notes-for="${id}"] .rc-notes`); if (ul) ul.innerHTML = notesList(notes)
+  }
+  delegate('recruitAddNote', (el) => withSubmitLock(el, async () => {
+    const id = Number(el.dataset.id)
+    const input = document.querySelector(`[data-notes-for="${id}"] .rc-note-input`)
+    const body = (el.dataset.body || (input ? input.value : '')).trim()
+    if (!body) return toast('メモを入力してください')
+    try {
+      const { data } = await axios.post(`/api/admin/recruit-applications/${id}/notes`, { body })
+      updateNotes(id, data.notes); if (input && !el.dataset.body) input.value = ''
+      toast('メモを残しました')
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('recruitDeleteNote', (el) => withSubmitLock(el, async () => {
+    if (!confirm('このメモを削除しますか？')) return
+    const id = Number(el.dataset.id)
+    try { const { data } = await axios.delete(`/api/admin/recruit-applications/${id}/notes/${Number(el.dataset.note)}`); updateNotes(id, data.notes) } catch (e) { toast(errMsg(e)) }
+  }))
+
+  // ---------- まとめて承認（#287） ----------
+  // 登録済みのスタッフ（退職・停止中を除く）の応募の、チェックした日時を応募ごとに承認する（既存の承認の API を順に呼ぶ）。
+  // 確認が必要な日時（定員超過・時間の重複・NG など）は承認せずに理由を出して残す。複数の日時を選んだ応募で確認が出たときは、
+  // 1件ずつ承認し直して、確認のない日時だけを承認する。未登録の応募者は、紐づけ・仮登録の選択が要るので対象にしない
+  const bulkable = (a) => !!a.staff_id && !a.staff_inactive && a.items.some(i => i.status === 'pending')
+  delegate('recruitBulkApprove', (el) => withSubmitLock(el, () => bulkApprove(el)))
+  async function bulkApprove(btn) {
+    const checked = (a) => [...document.querySelectorAll(`[data-application-id="${Number(a.application_id)}"] .ri-check:checked`)].map(x => Number(x.value))
+    const targets = (window.__recruitApps || []).filter(bulkable).map(a => {
+      const box = document.querySelector(`[data-application-id="${Number(a.application_id)}"] .ri-notify`)
+      return { a, ids: checked(a), notify: !box || box.checked }
+    }).filter(t => t.ids.length)
+    const unregistered = (window.__recruitApps || []).filter(a => !a.staff_id && checked(a).length).length
+    if (!targets.length) return toast('まとめて承認できる日時が選ばれていません（登録済みのスタッフの応募が対象です）')
+    const total = targets.reduce((n, t) => n + t.ids.length, 0)
+    if (!confirm(`${targets.length}人の応募の${total}件の日時を承認します（シフトを確定します）。確認が必要な日時は承認せずに残します。${unregistered ? `\n未登録の応募者（${unregistered}人）は対象にしません。` : ''}\n結果は、各応募の「結果を応募者に知らせる」のチェックに従って知らせます`)) return
+    const res = { approved: 0, held: [], errors: [], filled: new Map() }
+    const label = (a, id) => { const i = a.items.find(x => x.item_id === id); return i ? `${fmt(i.work_date)} ${i.start_time}〜${i.end_time} ${i.role_name || ''}` : '' }
+    const decide = async (t, ids) => {
+      try {
+        const { data } = await axios.post(`/api/admin/recruit-applications/${Number(t.a.application_id)}/decide`, { approve: ids, notify_applicant: t.notify })
+        res.approved += ids.length
+        for (const s of data.filled_slots || []) res.filled.set(s.slot_role_id, s)
+        return null
+      } catch (e) {
+        const d = e.response && e.response.data
+        if (d && d.need_force) return d.warnings || []
+        res.errors.push({ name: t.a.staff_name || t.a.name, text: errMsg(e) })
+        return null
+      }
+    }
+    let done = 0
+    for (const t of targets) {
+      btn.innerHTML = `<span class="spin"></span>承認中 ${++done}/${targets.length}`
+      const warn = await decide(t, t.ids)
+      if (!warn) continue
+      if (t.ids.length === 1) { res.held.push({ name: t.a.staff_name || t.a.name, slot: label(t.a, t.ids[0]), reasons: warn }); continue }
+      for (const id of t.ids) {
+        const w = await decide(t, [id])
+        if (w) res.held.push({ name: t.a.staff_name || t.a.name, slot: label(t.a, id), reasons: w })
+      }
+    }
+    btn.innerHTML = '<i class="fas fa-check-double"></i>選択をまとめて承認'
+    if (window.invalidateBoardMaster) window.invalidateBoardMaster()
+    await renderRecruit()
+    const filled = [...res.filled.values()].filter(s => s.pending)
+    modal(`
+      <h3 class="font-bold text-lg mb-2">まとめて承認の結果</h3>
+      <p class="text-sm mb-2" id="recruit-bulk-result">${res.approved}件の日時を承認しました${res.held.length ? `。<b class="text-amber-700">${res.held.length}件</b>は確認が必要なため承認していません` : ''}${res.errors.length ? `。<b class="text-red-600">${res.errors.length}人</b>の応募は承認できませんでした` : ''}</p>
+      ${res.held.length ? `<div class="text-xs bg-amber-50 rounded p-2 mb-2"><p class="font-bold text-amber-800 mb-1">確認が必要な日時（応募のカードで内容を確かめて承認してください）</p>
+        <ul class="list-disc pl-4 space-y-1">${res.held.map(h => `<li>${esc(h.name)} ${esc(h.slot)}<br><span class="text-gray-600">${h.reasons.map(esc).join(' / ')}</span></li>`).join('')}</ul></div>` : ''}
+      ${res.errors.length ? `<div class="text-xs bg-red-50 rounded p-2 mb-2"><ul class="list-disc pl-4 space-y-1">${res.errors.map(x => `<li>${esc(x.name)}: ${esc(x.text)}</li>`).join('')}</ul></div>` : ''}
+      ${filled.length ? `<div class="text-xs bg-blue-50 rounded p-2 mb-2"><p class="font-bold mb-1">定員に達した枠に、ほかの人の未対応の応募が残っています</p>
+        <ul class="space-y-1">${filled.map(s => `<li><a class="text-blue-600 underline" href="#recruit/slot-${Number(s.slot_role_id)}" onclick="closeModal()">${esc(fmt(s.work_date))} ${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.role_name)}（${Number(s.pending)}件）</a></li>`).join('')}</ul>
+        <p class="text-[11px] text-gray-500 mt-1">開くと、その枠の残りの応募をまとめて見送れます</p></div>` : ''}
+      <button class="btn btn-primary w-full mt-2" onclick="closeModal()">閉じる</button>`)
   }
   // 結果のお知らせを送り直す（#151。メールが届かなかったとき・知らせずに処理したとき）
   delegate('recruitNotifyResult', (el) => withSubmitLock(el, async () => {

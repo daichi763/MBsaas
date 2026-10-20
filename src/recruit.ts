@@ -59,6 +59,60 @@ function parseIds(v: any): number[] {
 }
 const isEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
 
+// ---------- 募集ページの独自の質問（#300） ----------
+const MAX_QUESTIONS = 5
+const MAX_QUESTION_OPTIONS = 10
+const MAX_ANSWER_LEN = 200
+const QUESTION_TYPES = ['text', 'select', 'yesno']
+const YESNO: Record<string, string> = { yes: 'はい', no: 'いいえ' }
+type Question = { key: string; label: string; type: string; required: boolean; options: string[] }
+function parseJsonArray(v: any): any[] { try { const a = JSON.parse(String(v || '[]')); return Array.isArray(a) ? a : [] } catch { return [] } }
+const parseQuestions = (v: any): Question[] => parseJsonArray(v)
+const parseAnswers = (v: any): { key: string; label: string; type: string; value: string }[] => parseJsonArray(v)
+// 管理画面から受け取った質問を検証して保存の形にする。key（q1, q2 …）は既存の質問のものを保ち、新しい質問には
+// 今の質問（prevKeys）・送られた質問のどれとも重ならない番号を振る（入力中の応募フォームの回答が別の質問に付かないように）
+function normalizeQuestions(input: any, prevKeys: string[] = []): { questions?: Question[]; error?: string } {
+  if (input == null || input === '') return { questions: [] }
+  if (!Array.isArray(input)) return { error: '質問の形式が正しくありません' }
+  const list = input.filter((q: any) => q && str(q.label, 100))
+  if (list.length > MAX_QUESTIONS) return { error: `質問は${MAX_QUESTIONS}問までです` }
+  const used = new Set<string>()
+  for (const q of list) if (/^q\d{1,3}$/.test(q.key) && !used.has(q.key)) used.add(q.key); else q.key = ''
+  let n = Math.max(0, ...[...used, ...prevKeys.filter(k => /^q\d{1,3}$/.test(k))].map(k => Number(k.slice(1))))
+  const out: Question[] = []
+  for (const q of list) {
+    const label = str(q.label, 100)
+    const type = QUESTION_TYPES.includes(q.type) ? q.type : 'text'
+    const raw = Array.isArray(q.options) ? q.options : String(q.options ?? '').split(/[\n,、，]/)
+    const options = type === 'select' ? [...new Set(raw.map((x: any) => str(x, 40)).filter(Boolean))] as string[] : []
+    if (type === 'select' && options.length < 2) return { error: `「${label}」の選択肢を2つ以上入力してください` }
+    if (options.length > MAX_QUESTION_OPTIONS) return { error: `「${label}」の選択肢は${MAX_QUESTION_OPTIONS}個までです` }
+    out.push({ key: q.key || `q${++n}`, label, type, required: !!q.required, options })
+  }
+  return { questions: out }
+}
+// 応募の回答を検証し、質問の文言と合わせて控えにする。誤りは field（q_ + key）で返す
+function readAnswers(questions: Question[], input: any): { answers: any[]; error?: string; field?: string } {
+  const src = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  const answers: any[] = []
+  for (const q of questions) {
+    let value = str(src[q.key], MAX_ANSWER_LEN)
+    if (q.type === 'select' && value && !q.options.includes(value)) return { answers, error: `「${q.label}」は選択肢から選んでください`, field: `q_${q.key}` }
+    if (q.type === 'yesno') value = YESNO[value] || (Object.values(YESNO).includes(value) ? value : '')
+    if (q.required && !value) return { answers, error: `「${q.label}」に回答してください`, field: `q_${q.key}` }
+    if (value) answers.push({ key: q.key, label: q.label, type: q.type, value })
+  }
+  return { answers }
+}
+// 仮登録のスタッフのメモに引き継ぐ内容（応募時のメモと質問への回答）
+function applicantMemo(a: any): string | null {
+  const parts: string[] = []
+  if (a.note) parts.push(`応募時のメモ: ${a.note}`)
+  const ans = parseAnswers(a.answers)
+  if (ans.length) parts.push('応募時の回答:\n' + ans.map(x => `・${x.label}: ${x.value}`).join('\n'))
+  return parts.join('\n') || null
+}
+
 // 募集ページの対象となる枠（役割）の条件。開始時刻を過ぎた当日の枠は締め切る（#190）
 function openRolesWhere(page: any, opts: { fromDate?: string; roleIds?: number[] } = {}): { sql: string; bind: any[] } | null {
   const pids = parseIds(page.project_ids)
@@ -204,6 +258,7 @@ recruitPublicApi.get('/:token', async (c) => {
     date_from: page.date_from, date_to: page.date_to, roles: roles.map(r => publicRole(r, !!page.show_remaining)), next_from,
     turnstile_site_key: turnstileEnabled(c.env) ? c.env.TURNSTILE_SITE_KEY : null, issued_at: Date.now(),
     retention_days: RETENTION_DAYS, // 同意文に書く保存期間（#351）
+    questions: parseQuestions(page.questions).map(q => ({ key: q.key, label: q.label, type: q.type, required: !!q.required, options: q.options || [] })), // #300
   })
 })
 
@@ -252,6 +307,9 @@ recruitPublicApi.post('/:token/apply', async (c) => {
   if (!name) return c.json({ error: 'お名前を入力してください', field: 'name' }, 400)
   if (phone.length < 10 || phone.length > 11) return c.json({ error: '電話番号は10〜11桁の数字で入力してください（ハイフンはあってもなくても構いません）', field: 'phone' }, 400)
   if (email && !isEmail(email)) return c.json({ error: 'メールアドレスの形式が正しくありません', field: 'email' }, 400)
+  // 募集ページの独自の質問への回答（#300）
+  const qa = readAnswers(parseQuestions(page.questions), b.answers)
+  if (qa.error) return c.json({ error: qa.error, field: qa.field }, 400)
   if (!b.agree) return c.json({ error: '個人情報の取り扱いに同意してください', field: 'agree' }, 400)
   const roleIds = parseIds(b.slot_role_ids)
   if (!roleIds.length) return c.json({ error: '希望する日時を選択してください', field: 'slots' }, 400)
@@ -288,8 +346,9 @@ recruitPublicApi.post('/:token/apply', async (c) => {
   const appliedAt = nowJST()
   if (!targets.length) return c.json({ ok: true, count: 0, message: '選択した日時はすでに応募済みです', accepted: [], already_applied: already, applied_at: appliedAt })
 
-  const app = await db.prepare(`INSERT INTO recruit_applications (company_id, page_id, source, name, kana, phone, email, note, ip_hash, created_at)
-    VALUES (?, ?, 'public', ?, ?, ?, ?, ?, ?, ?)`).bind(page.company_id, page.page_id, name, kana || null, phone, email || null, note || null, ipHash, appliedAt).run()
+  const app = await db.prepare(`INSERT INTO recruit_applications (company_id, page_id, source, name, kana, phone, email, note, ip_hash, created_at, answers)
+    VALUES (?, ?, 'public', ?, ?, ?, ?, ?, ?, ?, ?)`).bind(page.company_id, page.page_id, name, kana || null, phone, email || null, note || null, ipHash, appliedAt,
+    qa.answers.length ? JSON.stringify(qa.answers) : null).run()
   const appId = app.meta.last_row_id
   await db.batch(targets.map(r => db.prepare('INSERT OR IGNORE INTO recruit_application_items (application_id, slot_role_id) VALUES (?, ?)').bind(appId, r.slot_role_id)))
   // 管理者に新しい応募を知らせる（#150。失敗しても応募は受け付ける）
@@ -632,7 +691,7 @@ recruitAdminApi.get('/recruit-pages', async (c) => {
   for (const r of rows) {
     const sum = (pageIsOpen(r) && sums.get(r.page_id)) || { roles: 0, remaining: 0 }
     // expired: 期間の終了日を過ぎている（再開するには期間の延長が必要。#136）
-    out.push({ ...r, project_names: parseIds(r.project_ids).map(id => pname.get(id) || `#${id}`), open_roles: sum.roles,
+    out.push({ ...r, questions: parseQuestions(r.questions), project_names: parseIds(r.project_ids).map(id => pname.get(id) || `#${id}`), open_roles: sum.roles,
       open_remaining: sum.remaining, is_open: pageIsOpen(r), expired: r.date_to < todayJST() })
   }
   const turnstile = turnstileState(c.env)
@@ -644,15 +703,22 @@ recruitAdminApi.post('/recruit-pages', async (c) => {
   const { v, error } = pageValues(b)
   if (error) return c.json({ error }, 400)
   if (v.date_to < todayJST()) return c.json({ error: '期間の終了日が過ぎています。今日以降の日付を指定してください' }, 400)
+  const qs = normalizeQuestions(b.questions)
+  if (qs.error) return c.json({ error: qs.error }, 400)
   if (!(await checkProjects(db, u.company_id, v.project_ids))) return c.json({ error: '案件が見つかりません' }, 404)
   const token = randToken(18)
   const r = await db.prepare(`INSERT INTO recruit_pages (company_id, token, title, description, pay_note, contact_note, project_ids, date_from, date_to, show_remaining, allow_staff, status, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`).bind(u.company_id, token, v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, u.user_id).run()
   const pageId = Number(r.meta.last_row_id)
+  await saveQuestions(db, pageId, qs.questions!)
   // スタッフアプリから応募できる募集は、スタッフに知らせる（#156。notify_staff: false で知らせない。notify_staff_email: true でメールも送る）
   const staffNotice = v.allow_staff && b.notify_staff !== false ? await notifyRecruitNew(c, u.company_id, pageId, { email: b.notify_staff_email === true }) : null
   return c.json({ ok: true, page_id: pageId, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed } : {}) })
 })
+// 独自の質問（#300）は、ページの作成・更新の後に別の文で保存する（質問を送らない更新では変えない）
+async function saveQuestions(db: D1Database, pageId: number, questions: Question[]) {
+  await db.prepare('UPDATE recruit_pages SET questions = ? WHERE page_id = ?').bind(questions.length ? JSON.stringify(questions) : null, pageId).run()
+}
 // 募集がスタッフアプリに出ている（公開中・アプリから応募できる・期間内）か
 const visibleToStaff = (p: any) => p.status === 'open' && !!Number(p.allow_staff) && p.date_to >= todayJST()
 
@@ -664,11 +730,14 @@ recruitAdminApi.put('/recruit-pages/:id', async (c) => {
   if (error) return c.json({ error }, 400)
   // 期間を過ぎたまま再開しても公開されないため、終了日を延ばすよう求める（#136）
   if (b.status === 'open' && v.date_to < todayJST()) return c.json({ error: '期間の終了日が過ぎています。期間を延ばしてから再開してください', need_extend: true }, 400)
+  const qs = b.questions !== undefined ? normalizeQuestions(b.questions, parseQuestions(cur.questions).map(q => q.key)) : null
+  if (qs?.error) return c.json({ error: qs.error }, 400)
   if (!(await checkProjects(db, u.company_id, v.project_ids))) return c.json({ error: '案件が見つかりません' }, 404)
   const token = b.regenerate_token ? randToken(18) : cur.token // URLを再発行すると、以前のURL・QRは使えなくなる
   await db.prepare(`UPDATE recruit_pages SET title = ?, description = ?, pay_note = ?, contact_note = ?, project_ids = ?, date_from = ?, date_to = ?, show_remaining = ?, allow_staff = ?,
       status = ?, token = ?, closed_at = CASE WHEN ? = 'closed' AND status != 'closed' THEN ? WHEN ? = 'open' THEN NULL ELSE closed_at END WHERE page_id = ?`)
     .bind(v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, v.status, token, v.status, nowJST(), v.status, cur.page_id).run()
+  if (qs) await saveQuestions(db, cur.page_id, qs.questions!)
   // 再開・延長・アプリからの応募の許可で、スタッフアプリに出るようになったら知らせる（#156。同じ募集は1日1回まで）
   const staffNotice = !visibleToStaff(cur) && visibleToStaff(v) && b.notify_staff !== false
     ? await notifyRecruitNew(c, u.company_id, cur.page_id, { email: b.notify_staff_email === true }) : null
@@ -707,6 +776,8 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
       WHERE wi.application_id = a.application_id AND wi.status = 'rejected' AND ws.work_date >= ?)`); bind.push(todayJST())
   }
   if (c.req.query('page_id')) { w.push('a.page_id = ?'); bind.push(Number(c.req.query('page_id'))) }
+  // 対応メモのない応募だけ（#478。だれも連絡していない応募を見つける）
+  if (c.req.query('no_note') === '1') w.push('NOT EXISTS (SELECT 1 FROM recruit_application_notes nn WHERE nn.application_id = a.application_id)')
   const slotRoleId = Number(c.req.query('slot_role_id')) || 0
   if (slotRoleId) { w.push('EXISTS (SELECT 1 FROM recruit_application_items fi WHERE fi.application_id = a.application_id AND fi.slot_role_id = ?)'); bind.push(slotRoleId) }
   const from = c.req.query('from'), to = c.req.query('to')
@@ -729,7 +800,7 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
     LEFT JOIN staff_profiles sp ON sp.staff_id = a.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE ${w.join(' AND ')}`
   const total = Number(((await db.prepare(`SELECT COUNT(*) AS n ${FROM}`).bind(...bind).first()) as any)?.n || 0)
   const apps = ((await db.prepare(`SELECT a.*, rp.title AS page_title, us.name AS staff_name, sp.is_provisional, COALESCE(sp.affiliation_type,'own_employee') AS staff_affiliation_type,
-      CASE WHEN ${STAFF_INACTIVE_SQL} THEN 1 ELSE 0 END AS staff_inactive
+      CASE WHEN ${STAFF_INACTIVE_SQL} THEN 1 ELSE 0 END AS staff_inactive, (SELECT du.name FROM users du WHERE du.user_id = a.decided_by) AS decided_by_name
     ${FROM} ORDER BY a.created_at ${status === 'pending' ? 'ASC' : 'DESC'}, a.application_id LIMIT ${MAX_APPLICATIONS_LIST} OFFSET ${offset}`).bind(...bind).all()).results as any[])
   const nextOffset = offset + apps.length < total ? offset + apps.length : null
   // 絞り込みの選択肢（募集ページ）と、枠で絞り込んだときの枠の情報（まとめて見送るボタンに使う）
@@ -757,15 +828,49 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
   const now = nowJST()
   const itemsByApp = new Map<number, any[]>()
   for (const i of items) itemsByApp.set(i.application_id, [...(itemsByApp.get(i.application_id) || []), i])
+  const notesByApp = await loadAppNotes(db, apps.map(a => a.application_id), u.user_id)
   const out = apps.map(a => {
     const its = (itemsByApp.get(a.application_id) || []).map(i => ({
       ...i, remaining: Math.max(0, Number(i.headcount || 0) - Number(i.assigned || 0)), past: !!i.work_date && hasStarted(i, now),
       conflicts: a.staff_id && ['pending', 'rejected'].includes(i.status) && i.work_date ? conflictFor(conflicts.get(a.staff_id), i.work_date, i.start_time, i.end_time).map((x: any) => conflictLabel(x, u.company_id)) : [],
     }))
     const matches = !a.staff_id && a.phone ? (byPhone.get(normalizePhone(a.phone)) || []).map(m => ({ ...m, inactive: inactive.has(Number(m.staff_id)) })) : []
-    return { ...a, ip_hash: undefined, items: its, phone_matches: matches }
+    return { ...a, ip_hash: undefined, items: its, phone_matches: matches, answers: parseAnswers(a.answers), notes: notesByApp.get(a.application_id) || [] }
   })
   return c.json({ applications: out, ...meta })
+})
+
+// ---------- 応募の対応メモ（#478）。電話済み・不在・面談予定などを、書いた人・日時と一緒に残して管理者どうしで共有する ----------
+const MAX_NOTE_LEN = 500
+const MAX_NOTES_PER_APP = 50
+async function loadAppNotes(db: D1Database, appIds: number[], userId: number) {
+  const map = new Map<number, any[]>()
+  if (!appIds.length) return map
+  const rows = (await db.prepare(`SELECT n.note_id, n.application_id, n.body, n.created_by, n.created_at, us.name AS author_name
+    FROM recruit_application_notes n LEFT JOIN users us ON us.user_id = n.created_by
+    WHERE n.application_id IN ${JSON_IN} ORDER BY n.note_id`).bind(bindJsonArray(appIds)).all()).results as any[]
+  for (const r of rows) map.set(r.application_id, [...(map.get(r.application_id) || []), { ...r, mine: Number(r.created_by) === Number(userId) }])
+  return map
+}
+recruitAdminApi.post('/recruit-applications/:id/notes', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const a = await db.prepare('SELECT application_id FROM recruit_applications WHERE application_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!a) return c.json({ error: '応募が見つかりません' }, 404)
+  const body = str(b.body, MAX_NOTE_LEN)
+  if (!body) return c.json({ error: 'メモを入力してください' }, 400)
+  const n = await db.prepare('SELECT COUNT(*) AS n FROM recruit_application_notes WHERE application_id = ?').bind(a.application_id).first() as any
+  if (Number(n?.n || 0) >= MAX_NOTES_PER_APP) return c.json({ error: `1件の応募に残せるメモは${MAX_NOTES_PER_APP}件までです` }, 409)
+  await db.prepare('INSERT INTO recruit_application_notes (company_id, application_id, body, created_by, created_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(u.company_id, a.application_id, body, u.user_id, nowJST()).run()
+  return c.json({ ok: true, notes: (await loadAppNotes(db, [a.application_id], u.user_id)).get(a.application_id) || [] })
+})
+// 自分が書いたメモだけ消せる（書き間違いの訂正用）
+recruitAdminApi.delete('/recruit-applications/:id/notes/:noteId', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const r = await db.prepare('DELETE FROM recruit_application_notes WHERE note_id = ? AND application_id = ? AND company_id = ? AND created_by = ?')
+    .bind(c.req.param('noteId'), c.req.param('id'), u.company_id, u.user_id).run()
+  if (!r.meta.changes) return c.json({ error: 'メモが見つかりません（消せるのは自分が書いたメモだけです）' }, 404)
+  return c.json({ ok: true, notes: (await loadAppNotes(db, [Number(c.req.param('id'))], u.user_id)).get(Number(c.req.param('id'))) || [] })
 })
 // 枠の開始時刻を過ぎているか（日付だけでなく開始時刻で判定する。#190）
 function hasStarted(i: { work_date: string; start_time: string; end_time: string }, now = nowJST()) {
@@ -974,7 +1079,7 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
   try {
     if (toApprove.length && newStaff) {
       // 応募フォームのメールは本人確認をしていないため、ログイン・再設定の宛先（users.email）には入れず未確認のメールとして持つ（#38 #148）
-      const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name: a.name, phone: a.phone || '', type: newStaff.type, affiliation: newStaff.affiliation, partnerId: newStaff.partnerId, kana: a.kana, unverified_email: a.email, memo: a.note ? `応募時のメモ: ${a.note}` : null, note: '募集から仮登録' })
+      const created = await insertProvisionalStaff(db, u.company_id, u.user_id, { name: a.name, phone: a.phone || '', type: newStaff.type, affiliation: newStaff.affiliation, partnerId: newStaff.partnerId, kana: a.kana, unverified_email: a.email, memo: applicantMemo(a), note: '募集から仮登録' })
       staffId = created.staff_id; createdStaff = true
     }
     // シフトの作成（確定）
@@ -1049,6 +1154,7 @@ export async function purgeOldApplications(db: D1Database) {
     const chunk = olds.slice(i, i + 90); const q = chunk.map(() => '?').join(',')
     await db.batch([
       db.prepare(`DELETE FROM recruit_application_items WHERE application_id IN (${q})`).bind(...chunk),
+      db.prepare(`DELETE FROM recruit_application_notes WHERE application_id IN (${q})`).bind(...chunk),
       db.prepare(`DELETE FROM recruit_applications WHERE application_id IN (${q})`).bind(...chunk),
     ])
   }

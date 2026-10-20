@@ -701,6 +701,7 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         // 同意履歴は連携行（staff_id）の単位で消す。所属元の行が対象になっても、連携先の行が残っている間は連携の根拠として残す
         ['roster_consents', db.prepare('DELETE FROM roster_consents WHERE staff_id = ? OR (source_staff_id = ? AND staff_id IS NULL)').bind(staffId, staffId)],
         // スタッフに紐づく応募（氏名・電話・メール・メモ）と応募した枠、人材提案のスナップショット・開示した氏名（#350）
+        [null, db.prepare('DELETE FROM recruit_application_notes WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
         ['recruit_application_items', db.prepare('DELETE FROM recruit_application_items WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
         ['recruit_applications', db.prepare('DELETE FROM recruit_applications WHERE staff_id = ?').bind(staffId)],
         ['board_proposals', db.prepare(`UPDATE board_proposals SET ${ANONYMIZE_PROPOSAL_SET}, anonymized_at = ?
@@ -1107,6 +1108,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
+  { target: 'recruit_application_notes', label: '応募の対応メモ', table: 'recruit_application_notes', where: OB_CO },
   { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
     where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },
   { target: 'recruit_applications', label: '応募', table: 'recruit_applications', where: OB_CO },
@@ -1175,6 +1177,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'roster_comment_user_reads', label: '企業間チャットの既読（利用者）', table: 'roster_comment_user_reads', where: OB_CO, noExport: true },
   { target: 'roster_host_note_seen', label: '稼働先メモの既読', table: 'roster_host_note_seen', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'board_thread_reads', label: '掲示板の既読（会社）', table: 'board_thread_reads', where: OB_CO, noExport: true },
+  { target: 'board_saved_searches', label: '掲示板の保存した検索条件', table: 'board_saved_searches', where: OB_CO },
   { target: 'board_thread_user_reads', label: '掲示板の既読（利用者）', table: 'board_thread_user_reads', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'support_requests', label: '本部への支援の依頼', table: 'support_requests', where: OB_CO },
   { target: 'hq_announcement_reads', label: '本部のお知らせの既読', table: 'hq_announcement_reads', where: OB_CO, noExport: true },
@@ -1218,13 +1221,18 @@ function obWhere(where: string, companyId: number): { sql: string; binds: number
  * 企業のデータの件数（表ごと・R2 のファイルの元の表ごと）。問い合わせの回数を抑えるため1文で数える（企業 ID は WITH で1回だけ渡す）。
  * あわせて、企業の行（company_id 列）を持つのに OFFBOARDING_TABLES にない表（未対応の表）を返す
  */
+const OFFBOARDING_COUNT_COLS = 80
 export async function countOffboardingData(db: D1Database, companyId: number): Promise<{ counts: Record<string, number>; files: Record<string, number>; unknown_tables: string[] | null }> {
   const cid = '(SELECT cid FROM k)'
   const cols = [
     ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
     ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
   ]
-  const row = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  // D1 は1つの結果の列を100までしか返せないため、列を分けて数える（表が増えても止まらないように）
+  const row: Record<string, number> = {}
+  for (let i = 0; i < cols.length; i += OFFBOARDING_COUNT_COLS) {
+    Object.assign(row, await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.slice(i, i + OFFBOARDING_COUNT_COLS).join(', ')}`).bind(companyId).first() || {})
+  }
   const counts: Record<string, number> = {}
   OFFBOARDING_TABLES.forEach((t, i) => { counts[t.target] = Number(row?.[`t${i}`]) || 0 })
   const files: Record<string, number> = {}
