@@ -1728,6 +1728,8 @@ api.post('/staff/daily-report', async (c) => {
     values_json: JSON.stringify(merged.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
     flags_explicit: b.flags_explicit === true, entry_method: 'app', now: nowJST(),
   })
+  // 対応済みにした日報に新しく印が付いたら、未対応に戻す（#169。新しい事故が対応済みのまま埋もれないように）
+  if (merged.raised.length) await reopenIncidentStmt(c.env.DB, shift.shift_id).run()
   await notifyDailyReportIncident(c, shift.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
 })
@@ -1773,6 +1775,82 @@ api.get('/staff/my-reports', async (c) => {
         manager_checked: !!r.manager_checked, values: parseReportValues(report_values) }
     }),
     templates,
+  })
+})
+
+// スタッフアプリに出す社内の情報の設定（#496 #523。companies.settings_json）。既定はランキングもメンバーも出さず、ランキングは匿名
+function staffViewSettings(json: any): { ranking_visible: boolean; ranking_anonymous: boolean; show_coworkers: boolean } {
+  let s: any = {}
+  try { s = JSON.parse(json || '{}') || {} } catch { s = {} }
+  return { ranking_visible: s.ranking_visible === true, ranking_anonymous: s.ranking_anonymous !== false, show_coworkers: s.show_coworkers === true }
+}
+// ほかのスタッフの名前は姓だけを出す（姓と名の間に空白が無い名前はそのまま）
+const familyName = (name: any) => String(name || '').trim().split(/[\s　]+/)[0] || ''
+
+// 店舗の申し送り（#522）。同じ案件（開催場所が決まっていれば同じ場所）の、ほかのスタッフの直近の日報から、
+// 共有する項目（テンプレートの項目に share: true。無ければ store_share・good_case）が書かれたものを新しい順に返す。
+// 稼働日の前後にだけ見られるよう、直近 DAILY_REPORT_PENDING_DAYS 日より前のシフトでは返さない
+const HANDOVER_DAYS = 14
+const HANDOVER_MAX = 20
+const HANDOVER_DEFAULT_KEYS = ['store_share', 'good_case']
+api.get('/staff/handover/:shiftId', async (c) => {
+  const db = c.env.DB
+  const resolved = await resolvePersonShift(c, c.req.param('shiftId'))
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const { shift } = resolved
+  const empty = { days: HANDOVER_DAYS, fields: [], notes: [] }
+  if (shift.work_date < addDays(todayJST(), -DAILY_REPORT_PENDING_DAYS)) return c.json(empty)
+  const pt = await shiftReportTemplate(db, shift)
+  if (!pt) return c.json(empty)
+  let raw: any[] = []
+  try { const v = JSON.parse(pt.template?.fields_json || '[]'); if (Array.isArray(v)) raw = v } catch { raw = [] }
+  const textFields = raw.filter(f => f && typeof f.key === 'string' && f.type !== 'number')
+  const marked = textFields.filter(f => f.share === true)
+  const fields = (marked.length ? marked : textFields.filter(f => HANDOVER_DEFAULT_KEYS.includes(f.key))).map(f => ({ key: f.key as string, label: String(f.label || f.key) }))
+  if (!fields.length) return c.json(empty)
+  const personIds = await personStaffIds(db, c.get('user'))
+  const rows = (await db.prepare(`
+    SELECT dr.work_date, dr.report_values, us.name
+    FROM daily_reports dr JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id
+    WHERE dr.company_id = ? AND dr.project_id = ? AND dr.work_date <= ? AND dr.work_date >= ?
+      AND dr.staff_id NOT IN (SELECT value FROM json_each(?))
+      ${shift.site_id ? 'AND (sh.site_id IS NULL OR sh.site_id = ?)' : ''}
+      AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je
+        WHERE je.key IN (SELECT value FROM json_each(?)) AND je.type = 'text' AND trim(je.value) != '')
+    ORDER BY dr.work_date DESC, dr.submitted_at DESC LIMIT ?`)
+    .bind(shift.company_id, shift.project_id, shift.work_date, addDays(shift.work_date, -HANDOVER_DAYS), bindJsonArray(personIds),
+      ...(shift.site_id ? [shift.site_id] : []), JSON.stringify(fields.map(f => f.key)), HANDOVER_MAX).all()).results as any[]
+  const notes = rows.map(r => {
+    const v = parseReportValues(r.report_values)
+    const values: Record<string, string> = {}
+    for (const f of fields) if (typeof v[f.key] === 'string' && (v[f.key] as string).trim()) values[f.key] = (v[f.key] as string).trim()
+    return { work_date: r.work_date, name: familyName(r.name), values }
+  }).filter(n => Object.keys(n.values).length)
+  return c.json({ days: HANDOVER_DAYS, fields, notes })
+})
+
+// 同じ日・同じ案件に入るほかのスタッフ（#523）。会社の設定（show_coworkers）で出すときだけ、姓と時刻だけを返す（電話番号・金額は返さない）。
+// 開催場所が決まっていれば同じ場所の人に限り、同じ枠の人には same_slot を付ける
+const COWORKERS_MAX = 30
+api.get('/staff/shifts/:id/coworkers', async (c) => {
+  const db = c.env.DB
+  const resolved = await resolvePersonShift(c, c.req.param('id'))
+  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const { shift, staff } = resolved
+  if (!staffViewSettings(staff.settings_json).show_coworkers) return c.json({ enabled: false, coworkers: [] })
+  const personIds = await personStaffIds(db, c.get('user'))
+  const rows = (await db.prepare(`
+    SELECT o.start_time, o.end_time, o.slot_id, us.name
+    FROM shifts o JOIN staff_profiles sp ON sp.staff_id = o.staff_id JOIN users us ON us.user_id = sp.user_id
+    WHERE o.company_id = ? AND o.project_id = ? AND o.work_date = ? AND o.status IN ('confirmed', 'substitute') AND o.shift_id != ?
+      AND o.staff_id NOT IN (SELECT value FROM json_each(?))
+      ${shift.site_id ? 'AND (o.site_id IS NULL OR o.site_id = ?)' : ''}
+    ORDER BY o.start_time, o.end_time, o.shift_id LIMIT ?`)
+    .bind(shift.company_id, shift.project_id, shift.work_date, shift.shift_id, bindJsonArray(personIds), ...(shift.site_id ? [shift.site_id] : []), COWORKERS_MAX).all()).results as any[]
+  return c.json({
+    enabled: true,
+    coworkers: rows.map(r => ({ name: familyName(r.name), start_time: r.start_time, end_time: r.end_time, same_slot: !!shift.slot_id && r.slot_id === shift.slot_id })),
   })
 })
 
@@ -1969,27 +2047,35 @@ api.post('/staff/notices/read-all', async (c) => {
 })
 
 // 自分の実績（#75 #76）。同一人物の全所属の日報を、案件ごとにテンプレートの数値項目（表示名・並び順）で集計する。
-// 実績を見せない設定（show_performance）の案件は出さない。テンプレートに無い数値（項目を変える前の日報）は、キーを表示名にして後ろに足す
+// 実績を見せない設定（show_performance）の案件は出さない。テンプレートに無い数値（項目を変える前の日報）は、キーを表示名にして後ろに足す。
+// 案件の月間目標（#292。スタッフ1人あたり）があれば goals に、会社がランキングを出す設定（#496）なら ranking に、同じ月・同じ案件の順位を付ける
+const RANKING_TOP = 3
 api.get('/staff/performance', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const q = c.req.query('month') || ''
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST()
-  const ids = await personStaffIds(db, u)
+  const personRows = await personStaffRows(db, u)
+  const ids = personRows.length ? personRows.map(r => r.staff_id) : (u.staff_id ? [u.staff_id] : [])
   if (!ids.length) return c.json({ month, projects: [], daily: [], totals: {} })
+  const [from, to] = monthBounds(month)
   const rows = (await db.prepare(`
-    SELECT dr.work_date, dr.report_values, dr.manager_comment, dr.project_id, p.project_name, p.show_performance, co.company_name, (dr.company_id != ?) AS other_company, t.fields_json
+    SELECT dr.work_date, dr.report_values, dr.manager_comment, dr.project_id, dr.staff_id, dr.company_id, p.project_name, p.show_performance, p.performance_goals_json,
+      co.company_name, (dr.company_id != ?) AS other_company, t.fields_json
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
     LEFT JOIN report_templates t ON t.template_id = p.report_template_id
-    WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) AND dr.work_date LIKE ? ORDER BY dr.work_date, dr.submitted_at`).bind(u.company_id, ...ids, month + '%').all()).results as any[]
+    WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) AND dr.work_date >= ? AND dr.work_date < ? ORDER BY dr.work_date, dr.submitted_at`).bind(u.company_id, ...ids, from, to).all()).results as any[]
   const totals: Record<string, number> = {}
-  const projects = new Map<number, { project_id: number; project_name: string; company_name: string; other_company: boolean; fields: { key: string; label: string }[]; totals: Record<string, number>; days: number }>()
+  type PerfProject = { project_id: number; project_name: string; company_name: string; other_company: boolean; fields: { key: string; label: string }[]; totals: Record<string, number>; days: number;
+    goals: { key: string; label: string; target: number; actual: number }[]; ranking?: any; _staff: number; _company: number; _goals: Record<string, number> }
+  const projects = new Map<number, PerfProject>()
   const daily: any[] = []
   for (const r of rows) {
     if (!r.show_performance) continue
     let pj = projects.get(r.project_id)
     if (!pj) {
       const fields = parseTemplateFields(r.fields_json).filter(f => f.type === 'number').map(f => ({ key: f.key, label: f.label }))
-      pj = { project_id: r.project_id, project_name: r.project_name, company_name: r.company_name, other_company: !!r.other_company, fields, totals: {}, days: 0 }
+      pj = { project_id: r.project_id, project_name: r.project_name, company_name: r.company_name, other_company: !!r.other_company, fields, totals: {}, days: 0,
+        goals: [], _staff: r.staff_id, _company: r.company_id, _goals: parseGoals(r.performance_goals_json, fields) }
       projects.set(r.project_id, pj)
     }
     pj.days++
@@ -2003,8 +2089,62 @@ api.get('/staff/performance', async (c) => {
     }
     daily.push({ date: r.work_date, project_id: r.project_id, project: r.project_name, company_name: r.company_name, other_company: !!r.other_company, comment: r.manager_comment, values })
   }
-  return c.json({ month, projects: [...projects.values()], daily, totals })
+  for (const pj of projects.values()) {
+    pj.goals = pj.fields.filter(f => pj._goals[f.key] > 0).map(f => ({ key: f.key, label: f.label, target: pj._goals[f.key], actual: pj.totals[f.key] || 0 }))
+  }
+  // ランキング: 会社の設定で出す案件だけ、同じ月・同じ案件の日報をスタッフ・項目ごとに合計する（値の取り出しは D1 側で行う）
+  const settingsOf = (cid: number) => staffViewSettings((personRows.find(r => r.company_id === cid) || u).settings_json)
+  const ranked = [...projects.values()].filter(pj => settingsOf(pj._company).ranking_visible)
+  if (ranked.length) {
+    const sums = (await db.prepare(`
+      SELECT dr.project_id, dr.staff_id, MAX(us.name) AS name, je.key AS k, SUM(je.value) AS v
+      FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id
+      LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id,
+        json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je
+      WHERE dr.project_id IN ${JSON_IN} AND dr.work_date >= ? AND dr.work_date < ? AND je.type IN ('integer', 'real')
+      GROUP BY dr.project_id, dr.staff_id, je.key`).bind(bindJsonArray(ranked.map(pj => pj.project_id)), from, to).all()).results as any[]
+    for (const pj of ranked) {
+      const mine = sums.filter(s => s.project_id === pj.project_id)
+      const members = new Map<number, string>()
+      for (const s of mine) members.set(s.staff_id, s.name || '')
+      if (!members.size) continue
+      const anonymous = settingsOf(pj._company).ranking_anonymous
+      const byKey: Record<string, any> = {}
+      for (const f of pj.fields) {
+        const val = new Map<number, number>()
+        for (const s of mine) if (s.k === f.key) val.set(s.staff_id, Number(s.v) || 0)
+        const list = [...members.keys()].map(id => ({ id, v: val.get(id) || 0 })).sort((a, b) => b.v - a.v)
+        const me = val.get(pj._staff) || 0
+        byKey[f.key] = {
+          rank: 1 + list.filter(x => x.v > me).length, value: me,
+          average: round1(list.reduce((n, x) => n + x.v, 0) / list.length),
+          // 匿名のときは、ほかの人の名前を出さず件数だけにする。自分の行には me を付ける
+          top: list.slice(0, RANKING_TOP).map(x => ({ rank: 1 + list.filter(y => y.v > x.v).length, value: x.v, me: x.id === pj._staff, ...(anonymous || x.id === pj._staff ? {} : { name: familyName(members.get(x.id)) }) })),
+        }
+      }
+      pj.ranking = { anonymous, members: members.size, by_key: byKey }
+    }
+  }
+  // 目標の進み具合の目安（月の日数と、今日までに過ぎた日数）
+  const dim = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate()
+  const today = todayJST()
+  const elapsed = month < today.slice(0, 7) ? dim : month > today.slice(0, 7) ? 0 : Number(today.slice(8, 10))
+  return c.json({
+    month, daily, totals, goal_period: { days_in_month: dim, days_elapsed: elapsed },
+    projects: [...projects.values()].map(({ _staff, _company, _goals, ...pj }) => pj),
+  })
 })
+
+// 案件の月間目標（#292）。日報テンプレートの数値項目のキーごとの、スタッフ1人あたりの件数。テンプレートに無いキー・0以下は使わない
+const GOAL_MAX = 99999
+function parseGoals(json: any, fields: { key: string }[]): Record<string, number> {
+  let g: any = {}
+  try { g = JSON.parse(json || '{}') || {} } catch { g = {} }
+  const out: Record<string, number> = {}
+  if (!g || typeof g !== 'object' || Array.isArray(g)) return out
+  for (const f of fields) { const n = Number(g[f.key]); if (Number.isInteger(n) && n > 0 && n <= GOAL_MAX) out[f.key] = n }
+  return out
+}
 
 // 研修・マニュアル（#74）: 本人がシフトに入っている案件（直近30日〜今後。同一人物の全所属。欠勤を除く）の、案件マニュアル・注意事項と求められる内容
 api.get('/staff/manuals', async (c) => {
@@ -4047,12 +4187,16 @@ api.delete('/admin/shifts/:id', async (c) => {
 })
 
 // 日報一覧（#113 ページ送り、#183 未確認のみ、#404 案件・スタッフ・期間、#106 テンプレートの項目、#521 生の report_values は返さない）
-// 条件: date（1日）または from〜to、project_id、staff_id、unchecked=1（未確認のみ）、flagged=1（インシデント・クレームのみ）、offset、limit（既定50・最大200）
+// 条件: date（1日）または from〜to、project_id、staff_id、unchecked=1（未確認のみ）、flagged=1（インシデント・クレームのみ）、
+// incident_open=1（対応済みでないインシデント・クレームのみ。#169）、offset、limit（既定50・最大200）
 // options=1 のときは、絞り込みの選択肢（案件・日報のあるスタッフ）も返す
 const DAILY_REPORT_PAGE_MAX = 200
 // 未確認の条件。migrations/0050_report_admin.sql の部分索引と同じ式にする（同じ式でないと索引が使われない）
 const DR_UNCHECKED_SQL = 'COALESCE(dr.manager_checked, 0) = 0'
 const DR_FLAGGED_SQL = '(dr.incident_flag = 1 OR dr.complaint_flag = 1)'
+// 対応済みでないインシデント・クレーム（#169）。migrations/0067_report_features.sql の部分索引と同じ式にする。
+// ダッシュボードの ToDo・案件詳細のインシデント欄で未対応だけを数えるときも、この式を使う
+const DR_INCIDENT_OPEN_SQL = "(dr.incident_flag = 1 OR dr.complaint_flag = 1) AND COALESCE(dr.incident_status, 'open') != 'done'"
 api.get('/admin/daily-reports', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const q = (k: string) => { const v = c.req.query(k); return v === undefined || v === '' ? null : v }
@@ -4066,7 +4210,7 @@ api.get('/admin/daily-reports', async (c) => {
   if ((q('project_id') !== null && projectId === null) || (q('staff_id') !== null && staffId === null)) return c.json({ error: '絞り込みの条件が正しくありません' }, 400)
   const limit = Math.min(toInt(q('limit') ?? 50, 1) ?? 50, DAILY_REPORT_PAGE_MAX)
   const offset = toInt(q('offset') ?? 0, 0) ?? 0
-  const unchecked = q('unchecked') === '1', flagged = q('flagged') === '1'
+  const unchecked = q('unchecked') === '1', flagged = q('flagged') === '1', incidentOpen = q('incident_open') === '1'
   // 一覧を読んだ時刻。確認済みにするときに送り返してもらい、その後に出し直された日報を確認済みにしないために使う
   const asOf = nowJST()
 
@@ -4078,20 +4222,22 @@ api.get('/admin/daily-reports', async (c) => {
   if (to) { base += ' AND dr.work_date <= ?'; binds.push(to) }
   if (projectId) { base += ' AND dr.project_id = ?'; binds.push(projectId) }
   if (staffId) { base += ' AND dr.staff_id = ?'; binds.push(staffId) }
-  const extra = (unchecked ? ` AND ${DR_UNCHECKED_SQL}` : '') + (flagged ? ` AND ${DR_FLAGGED_SQL}` : '')
+  const extra = (unchecked ? ` AND ${DR_UNCHECKED_SQL}` : '') + (flagged ? ` AND ${DR_FLAGGED_SQL}` : '') + (incidentOpen ? ` AND ${DR_INCIDENT_OPEN_SQL}` : '')
   const [rowsRes, countRes] = await db.batch([
     db.prepare(`
       SELECT dr.*, p.project_name, p.report_template_id, us.name AS staff_name,
-        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name
+        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name
       FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
       JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
       LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
       LEFT JOIN users ku ON ku.user_id = dr.manager_checked_by
+      LEFT JOIN users iu ON iu.user_id = dr.incident_updated_by
       ${base}${extra}
       ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset),
     db.prepare(`SELECT COUNT(*) AS total_all,
         SUM(CASE WHEN ${DR_UNCHECKED_SQL} THEN 1 ELSE 0 END) AS unchecked,
         SUM(CASE WHEN ${DR_FLAGGED_SQL} THEN 1 ELSE 0 END) AS flagged,
+        SUM(CASE WHEN ${DR_INCIDENT_OPEN_SQL} THEN 1 ELSE 0 END) AS incident_open,
         SUM(CASE WHEN 1${extra} THEN 1 ELSE 0 END) AS total
       FROM daily_reports dr${base}`).bind(...binds),
   ])
@@ -4125,7 +4271,7 @@ api.get('/admin/daily-reports', async (c) => {
   }
   return c.json({
     reports, templates, offset, limit, total: Number(cnt.total || 0), as_of: asOf,
-    counts: { all: Number(cnt.total_all || 0), unchecked: Number(cnt.unchecked || 0), flagged: Number(cnt.flagged || 0) },
+    counts: { all: Number(cnt.total_all || 0), unchecked: Number(cnt.unchecked || 0), flagged: Number(cnt.flagged || 0), incident_open: Number(cnt.incident_open || 0) },
     ...(options ? { options } : {}),
   })
 })
@@ -4197,6 +4343,111 @@ api.put('/admin/daily-reports/:id', async (c) => {
     return c.json({ error: COMMENT_CONFLICT }, 409)
   }
   return c.json({ ok: true })
+})
+
+// インシデント・クレームの対応状況（#169）。status: open（未対応）/ in_progress（対応中）/ done（対応済み）、memo: 対応メモ（空欄で削除）、
+// client_shared: true でクライアントに共有した日時を残す（false で外す）。送らなかった項目は変えない。
+// expected_updated_at（開いたときの incident_updated_at）を送ると、その後にほかの管理者が更新していたら 409 を返して書かない
+const INCIDENT_STATUSES = ['open', 'in_progress', 'done'] as const
+const INCIDENT_MEMO_MAX = 2000
+const INCIDENT_CONFLICT = '開いている間に、ほかの管理者が対応状況を更新しました。内容を確かめてから保存してください'
+api.put('/admin/daily-reports/:id/incident', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({})) as any
+  const has = (k: string) => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k)
+  const id = toInt(c.req.param('id'), 1)
+  const cur = id ? await db.prepare(`SELECT daily_report_id, incident_flag, complaint_flag, incident_status, incident_memo, incident_updated_at, incident_client_shared_at
+    FROM daily_reports WHERE daily_report_id = ? AND company_id = ?`).bind(id, u.company_id).first() as any : null
+  if (!cur) return c.json({ error: '日報が見つかりません' }, 404)
+  if (!cur.incident_flag && !cur.complaint_flag) return c.json({ error: 'この日報にはインシデント・クレームの報告がありません' }, 400)
+  const sets: string[] = []; const vals: any[] = []
+  const now = nowJST()
+  if (has('status')) {
+    if (!oneOf(b.status, INCIDENT_STATUSES)) return c.json({ error: '対応状況が正しくありません' }, 400)
+    sets.push('incident_status = ?'); vals.push(b.status === 'open' ? null : b.status)
+  }
+  if (has('memo')) {
+    if (b.memo !== null && typeof b.memo !== 'string') return c.json({ error: '対応メモの形式が正しくありません' }, 400)
+    const memo = typeof b.memo === 'string' && b.memo.trim() ? b.memo.trim() : null
+    if (memo && memo.length > INCIDENT_MEMO_MAX) return c.json({ error: `対応メモは${INCIDENT_MEMO_MAX}文字以内で入力してください` }, 400)
+    sets.push('incident_memo = ?'); vals.push(memo)
+  }
+  if (has('client_shared')) {
+    if (typeof b.client_shared !== 'boolean') return c.json({ error: 'クライアントへの共有の指定が正しくありません' }, 400)
+    // 共有済みのまま保存したときは、最初に共有した日時を保つ
+    sets.push('incident_client_shared_at = ?'); vals.push(b.client_shared ? (cur.incident_client_shared_at || now) : null)
+  }
+  if (!sets.length) return c.json({ error: '変更する項目がありません' }, 400)
+  sets.push('incident_updated_by = ?', 'incident_updated_at = ?'); vals.push(u.user_id, now)
+  const guard = has('expected_updated_at')
+  if (guard && (b.expected_updated_at || null) !== (cur.incident_updated_at || null)) return c.json({ error: INCIDENT_CONFLICT }, 409)
+  const r = await db.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${guard ? " AND COALESCE(incident_updated_at, '') = ?" : ''}`)
+    .bind(...vals, id, u.company_id, ...(guard ? [cur.incident_updated_at || ''] : [])).run()
+  if (guard && !(r.meta?.changes ?? 0)) return c.json({ error: INCIDENT_CONFLICT }, 409)
+  return c.json({ ok: true, incident_updated_at: now })
+})
+// スタッフが新しく印を付けた日報を、対応済みから未対応に戻す（POST /staff/daily-report から呼ぶ）
+function reopenIncidentStmt(db: D1Database, shiftId: number) {
+  return db.prepare(`UPDATE daily_reports SET incident_status = NULL WHERE shift_id = ? AND incident_status = 'done'`).bind(shiftId)
+}
+
+// スタッフアプリに出す社内の情報（#496 #523）。ranking_visible: 実績画面に案件内の順位を出す、ranking_anonymous: ほかの人の名前を出さない、
+// show_coworkers: 同じ日・同じ案件に入るほかのスタッフ（姓と時刻）を出す。送った項目だけを書き換える（ほかの設定は上書きしない）
+const STAFF_VIEW_KEYS = ['ranking_visible', 'ranking_anonymous', 'show_coworkers'] as const
+api.get('/admin/settings/staff-view', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ ...staffViewSettings(row?.settings_json), can_edit: u.role === 'company_admin' })
+})
+api.put('/admin/settings/staff-view', async (c) => {
+  const u = c.get('user')
+  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
+  const b = await c.req.json().catch(() => ({})) as any
+  const keys = STAFF_VIEW_KEYS.filter(k => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k))
+  if (!keys.length) return c.json({ error: '変更する項目がありません' }, 400)
+  if (keys.some(k => typeof b[k] !== 'boolean')) return c.json({ error: '設定の値が正しくありません' }, 400)
+  // 真偽値は json('true') で入れる（1/0 の数値にしない。staffViewSettings は true/false だけを読む）
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END,
+    ${keys.map(() => '?, json(?)').join(', ')}) WHERE company_id = ?`)
+    .bind(...keys.flatMap(k => [`$.${k}`, b[k] ? 'true' : 'false']), u.company_id).run()
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ ok: true, ...staffViewSettings(row?.settings_json) })
+})
+
+// 案件の月間目標（#292）。稼働中の案件と、日報テンプレートの数値項目・設定済みの目標
+api.get('/admin/project-goals', async (c) => {
+  const u = c.get('user')
+  const rows = (await c.env.DB.prepare(`SELECT p.project_id, p.project_name, p.show_performance, p.performance_goals_json, t.fields_json
+    FROM projects p LEFT JOIN report_templates t ON t.template_id = p.report_template_id
+    WHERE p.company_id = ? AND COALESCE(p.status, 'active') = 'active' ORDER BY p.project_name, p.project_id`).bind(u.company_id).all()).results as any[]
+  return c.json({
+    projects: rows.map(r => {
+      const fields = parseTemplateFields(r.fields_json).filter(f => f.type === 'number').map(f => ({ key: f.key, label: f.label }))
+      return { project_id: r.project_id, project_name: r.project_name, show_performance: !!r.show_performance, fields, goals: parseGoals(r.performance_goals_json, fields) }
+    }),
+  })
+})
+// goals: { 項目のキー: 件数 }。空欄・0 の項目は目標なしにする。テンプレートの数値項目に無いキーは受け付けない
+api.put('/admin/projects/:id/goals', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await ownProject(db, u.company_id, c.req.param('id')) as any
+  if (!p) return c.json({ error: '案件が見つかりません' }, 404)
+  const b = await c.req.json().catch(() => ({})) as any
+  if (!b || typeof b.goals !== 'object' || b.goals === null || Array.isArray(b.goals)) return c.json({ error: '目標の形式が正しくありません' }, 400)
+  const t = p.report_template_id ? await db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(p.report_template_id).first() as any : null
+  const fields = parseTemplateFields(t?.fields_json).filter(f => f.type === 'number')
+  const goals: Record<string, number> = {}
+  for (const [k, v] of Object.entries(b.goals)) {
+    const f = fields.find(x => x.key === k)
+    if (!f) return c.json({ error: '日報テンプレートに無い項目には目標を設定できません' }, 400)
+    if (v === null || v === '' || v === 0) continue
+    const n = Number(v)
+    if (typeof v === 'boolean' || !Number.isInteger(n) || n < 0 || n > GOAL_MAX) return c.json({ error: `「${f.label}」の目標は0〜${GOAL_MAX}の整数で入力してください` }, 400)
+    if (n > 0) goals[k] = n
+  }
+  await db.prepare('UPDATE projects SET performance_goals_json = ? WHERE project_id = ? AND company_id = ?')
+    .bind(Object.keys(goals).length ? JSON.stringify(goals) : null, p.project_id, u.company_id).run()
+  return c.json({ ok: true, goals })
 })
 
 // 実績分析（#184）。集計する項目は決め打ちにせず、その月に日報のある案件の日報テンプレートの数値項目（type: number）から決める。
