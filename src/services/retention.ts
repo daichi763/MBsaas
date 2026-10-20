@@ -91,7 +91,7 @@ const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件�
 // 匿名化で消す staff_profiles の個人情報の列（所属区分・連携の情報・評価の点数は集計に使うので残す）
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'site_evaluation', 'work_memo', 'career_rows', 'pr_points',
-  'remarks', 'unverified_email']
+  'remarks', 'unverified_email', 'skill_sheet_comment']
 
 // 人材提案の匿名化で消す列（#350）。snapshot は NOT NULL なので空の JSON にする
 const ANONYMIZE_PROPOSAL_SET = `snapshot = '{}', disclosed = NULL, comment = NULL, upstream_chain = NULL, consent_note = NULL, upstream_consent_note = NULL`
@@ -829,8 +829,11 @@ async function cleanupInService(db: D1Database, dryRun: boolean): Promise<Retent
     select: `SELECT attendance_id AS id FROM attendance_reports WHERE ${LOCATION_PHOTO_SQL} AND reported_at < ? AND ${notHeld} LIMIT ?`,
     binds: [locCutoff],
     apply: ids => [
+      // 打刻修正の承認で添付の1枚目を報告の写真にしたもの（#485）は、同じ R2 のオブジェクトを添付からも見るので消さない（キーだけ外す。
+      // オブジェクトは打刻修正の申請と一緒に、退職後7年の削除で消す）
       db.prepare(`INSERT OR IGNORE INTO retention_pending_r2 (photo_key, staff_id, bucket)
-        SELECT photo_key, staff_id, 'photos' FROM attendance_reports WHERE attendance_id IN (SELECT value FROM json_each(?)) AND photo_key IS NOT NULL`).bind(ids),
+        SELECT photo_key, staff_id, 'photos' FROM attendance_reports WHERE attendance_id IN (SELECT value FROM json_each(?)) AND photo_key IS NOT NULL
+          AND photo_key NOT IN (SELECT photo_key FROM attendance_correction_attachments)`).bind(ids),
       db.prepare(`UPDATE attendance_reports SET latitude = NULL, longitude = NULL, address = NULL, device_info = NULL, device_id = NULL, photo_key = NULL
         WHERE attendance_id IN (SELECT value FROM json_each(?))`).bind(ids),
     ],

@@ -18,6 +18,7 @@ import { shiftWindow } from './lib/shift-time'
 import { isCompanyActive } from './lib/auth'
 import { notifyRecruitApplied } from './notifications'
 import { notifyRecruitNew, notifyRecruitResult, notifyRecruitResults } from './notifications'
+import { opLog, logShifts, finishLog } from './lib/operation-log'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
@@ -286,11 +287,14 @@ function turnstileState(env: Bindings): 'enabled' | 'off' | 'site_key_only' | 's
   return 'off'
 }
 
+const TURNSTILE_TIMEOUT_MS = 5000
 // 'ok' / 'fail'（確認できなかった） / 'error'（Cloudflare に問い合わせできなかった）
 async function verifyTurnstile(secret: string, token: string, ip: string | undefined): Promise<'ok' | 'fail' | 'error'> {
   try {
     const fd = new FormData(); fd.append('secret', secret); fd.append('response', token || ''); if (ip) fd.append('remoteip', ip)
-    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: fd })
+    // 応答が遅いとき（タイムアウト）も接続できなかったものとして扱う（#501）
+    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: fd, signal: AbortSignal.timeout(TURNSTILE_TIMEOUT_MS) })
+    if (!r.ok) return 'error'
     const j = await r.json() as any
     return j.success ? 'ok' : 'fail'
   } catch (e) {
@@ -309,11 +313,14 @@ recruitPublicApi.post('/:token/apply', async (c) => {
   const issued = Number(b.issued_at || 0)
   if (str(b.website, 200) || !issued || Date.now() - issued < MIN_FILL_MS) return c.json({ ok: true })
   const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || ''
+  // 確認サービス（siteverify）に接続できなかったとき（障害・タイムアウト）は、応募を止めずに「要確認」の印を付けて受け付ける（#501。利用者の判断）。
+  // 判定に落ちた（success=false）応募はこれまでどおり受け付けない。IP ごと・電話番号ごとの回数の制限は、印の有無にかかわらず効かせる
+  let turnstileUnverified = false
   if (turnstileEnabled(c.env)) {
     const v = await verifyTurnstile(c.env.TURNSTILE_SECRET_KEY!, str(b.turnstile_token, 2048), ip)
-    if (v === 'error') return c.json({ error: '確認サービスに接続できませんでした。時間をおいてもう一度お試しいただくか、お問い合わせ先へご連絡ください' }, 503)
+    if (v === 'error') turnstileUnverified = true
     // 入力した内容は画面に残したまま、確認だけをやり直してもらう（#515）
-    if (v !== 'ok') return c.json({ error: '「人間であることの確認」をもう一度行ってから、送信してください', field: 'turnstile' }, 400)
+    else if (v !== 'ok') return c.json({ error: '「人間であることの確認」をもう一度行ってから、送信してください', field: 'turnstile' }, 400)
   }
   // 入力の誤りは、どの欄かを field で返す（画面でその欄へ移動して強調する。#416）
   const name = str(b.name, 60), kana = str(b.kana, 60), email = str(b.email, 120).normalize('NFKC'), note = str(b.note, 500)
@@ -364,9 +371,9 @@ recruitPublicApi.post('/:token/apply', async (c) => {
   const appliedAt = nowJST()
   if (!targets.length) return c.json({ ok: true, count: 0, message: '選択した日時はすでに応募済みです', accepted: [], already_applied: already, applied_at: appliedAt })
 
-  const app = await db.prepare(`INSERT INTO recruit_applications (company_id, page_id, source, name, kana, phone, email, note, ip_hash, created_at, answers)
-    VALUES (?, ?, 'public', ?, ?, ?, ?, ?, ?, ?, ?)`).bind(page.company_id, page.page_id, name, kana || null, phone, email || null, note || null, ipHash, appliedAt,
-    qa.answers.length ? JSON.stringify(qa.answers) : null).run()
+  const app = await db.prepare(`INSERT INTO recruit_applications (company_id, page_id, source, name, kana, phone, email, note, ip_hash, created_at, answers, turnstile_unverified)
+    VALUES (?, ?, 'public', ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(page.company_id, page.page_id, name, kana || null, phone, email || null, note || null, ipHash, appliedAt,
+    qa.answers.length ? JSON.stringify(qa.answers) : null, turnstileUnverified ? 1 : null).run()
   const appId = app.meta.last_row_id
   await db.batch(targets.map(r => db.prepare('INSERT OR IGNORE INTO recruit_application_items (application_id, slot_role_id) VALUES (?, ?)').bind(appId, r.slot_role_id)))
   // 管理者に新しい応募を知らせる（#150。失敗しても応募は受け付ける）
@@ -812,6 +819,8 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
   if (c.req.query('page_id')) { w.push('a.page_id = ?'); bind.push(Number(c.req.query('page_id'))) }
   // 対応メモのない応募だけ（#478。だれも連絡していない応募を見つける）
   if (c.req.query('no_note') === '1') w.push('NOT EXISTS (SELECT 1 FROM recruit_application_notes nn WHERE nn.application_id = a.application_id)')
+  // ロボット判定をできずに受け付けた応募だけ（#501。turnstile_unverified = 1 は一覧の各行にも入る）
+  if (c.req.query('unverified') === '1') w.push('a.turnstile_unverified = 1')
   const slotRoleId = Number(c.req.query('slot_role_id')) || 0
   if (slotRoleId) { w.push('EXISTS (SELECT 1 FROM recruit_application_items fi WHERE fi.application_id = a.application_id AND fi.slot_role_id = ?)'); bind.push(slotRoleId) }
   const from = c.req.query('from'), to = c.req.query('to')
@@ -1007,7 +1016,9 @@ recruitAdminApi.get('/recruit-applications/:id/staff-candidates', async (c) => {
   const all = [...byPhone.filter(m => !seen.has(m.staff_id)), ...rows]
   const inactive = await inactiveStaffIds(db, all.map(m => m.staff_id))
   const phone = normalizePhone(a.phone)
-  const phoneMatch = (m: any) => phone.length >= 10 && normalizePhone(m.phone) === phone
+  // 他社連携の行は所属元の番号で照合し、番号を返さない（#123）ため、応募の番号で見つかった行は一致として扱う
+  const phoneHit = new Set(q ? [] : byPhone.map(m => Number(m.staff_id)))
+  const phoneMatch = (m: any) => phoneHit.has(Number(m.staff_id)) || (phone.length >= 10 && normalizePhone(m.phone) === phone)
   const nameMatch = (m: any) => !!squash(a.name) && squash(m.name) === squash(a.name)
   const kanaMatch = (m: any) => !!squash(a.kana) && squash(m.kana) === squash(a.kana)
   const score = (m: any) => (phoneMatch(m) ? 4 : 0) + (nameMatch(m) ? 2 : 0) + (kanaMatch(m) ? 1 : 0)
@@ -1139,6 +1150,14 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
     // 途中で失敗したときは、まだ承認・見送りにしていない明細を未対応に戻す（作ったシフト・仮登録は残るので、画面で確認する）
     await release()
     throw e
+  }
+  // 承認で作ったシフトの操作履歴（#159）。承認は済んでいるので、記録に失敗しても応募者への連絡などは続ける
+  if (createdShifts.length) {
+    try {
+      const op = opLog(db, u, 'recruit_approve')
+      await db.batch(logShifts(op, createdShifts, { created: true }))
+      await finishLog(op)
+    } catch (e) { console.error('recruit_approve operation log failed', e) }
   }
   await closeIfDone(db, a.application_id, u.user_id)
   // 承認で定員に達した枠に、ほかの人の未対応の応募が残っていれば知らせる（画面からまとめて見送れる。#303）

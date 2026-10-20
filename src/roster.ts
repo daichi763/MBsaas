@@ -306,11 +306,15 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
  * 他社連携の行（linked = 1）は生年月日を返さない（所属元だけの項目。#9001）
  */
 export async function samePersonRows(db: D1Database, companyId: number): Promise<any[]> {
-  return (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
+  // 他社連携の行の電話番号は、所属元の今の番号で比べる（#123。staff-lifecycle.ts の MATCH_PHONE_SQL と同じ。呼び出し側は番号を返さない）
+  return (await db.prepare(`SELECT sp.staff_id, us.name, CASE WHEN sp.affiliation_type = 'linked_external' THEN srcu.phone ELSE us.phone END AS phone,
+      COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN 1 ELSE 0 END AS linked,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN NULL ELSE sp.date_of_birth END AS dob
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
+    LEFT JOIN users srcu ON srcu.user_id = src.user_id
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
 }
 

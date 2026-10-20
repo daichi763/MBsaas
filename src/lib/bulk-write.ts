@@ -21,10 +21,11 @@ function pick(row: Record<string, any>, cols: string[]) {
   return o
 }
 
-export function insertRowsStmts(db: D1Database, table: string, cols: string[], rows: Record<string, any>[], opts: { orIgnore?: boolean } = {}): D1PreparedStatement[] {
-  assertNames([table, ...cols])
+// returning: 登録した行の列（例: 'shift_id'）。結果の results に登録できた行だけが入る（OR IGNORE で飛ばした行は入らない）
+export function insertRowsStmts(db: D1Database, table: string, cols: string[], rows: Record<string, any>[], opts: { orIgnore?: boolean; returning?: string } = {}): D1PreparedStatement[] {
+  assertNames([table, ...cols, ...(opts.returning ? [opts.returning] : [])])
   const sql = `INSERT ${opts.orIgnore ? 'OR IGNORE ' : ''}INTO ${table} (${cols.join(', ')})
-    SELECT ${cols.map(c => `json_extract(value, '$.${c}')`).join(', ')} FROM json_each(?) ORDER BY key`
+    SELECT ${cols.map(c => `json_extract(value, '$.${c}')`).join(', ')} FROM json_each(?) ORDER BY key${opts.returning ? ` RETURNING ${opts.returning}` : ''}`
   return chunk(rows, ROWS_PER_STATEMENT).map(part => db.prepare(sql).bind(JSON.stringify(part.map(r => pick(r, cols)))))
 }
 
@@ -37,6 +38,11 @@ export function updateRowsStmts(db: D1Database, table: string, key: string, cols
     FROM (SELECT json_extract(value, '$.${key}') AS k, ${cols.map((c, i) => `json_extract(value, '$.${c}') AS v${i}`).join(', ')} FROM json_each(?)) AS j
     WHERE ${table}.${key} = j.k${where ? ` AND +(${where})` : ''}`
   return chunk(rows, ROWS_PER_STATEMENT).map(part => db.prepare(sql).bind(JSON.stringify(part.map(r => pick(r, [key, ...cols]))), ...binds))
+}
+
+// RETURNING で返った列の値をまとめる（insertRowsStmts の returning）
+export function returnedIds(results: D1Result[], col: string): number[] {
+  return results.flatMap(r => ((r?.results || []) as any[]).map(x => Number(x[col])).filter(n => Number.isInteger(n) && n > 0))
 }
 
 // batch の結果から変更行数の合計を返す

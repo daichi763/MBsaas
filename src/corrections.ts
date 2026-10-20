@@ -121,8 +121,8 @@ const ATTACHMENT_TYPES = ['image/jpeg', 'image/png']
 async function loadAttachments(db: D1Database, c: any) {
   return (await db.prepare(`SELECT a.attachment_id, a.correction_id, a.content_type, a.size_bytes, a.photo_taken_at, a.photo_source, a.uploaded_by_name, a.created_at
     FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
-    WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ?) ORDER BY a.attachment_id`)
-    .bind(c.correction_id, c.shift_id, c.requested_by, c.created_at).all()).results as any[]
+    WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ? AND x.batch_key IS ?) ORDER BY a.attachment_id`)
+    .bind(c.correction_id, c.shift_id, c.requested_by, c.created_at, c.batch_key ?? null).all()).results as any[]
 }
 async function attachmentResponse(c: any, key: string | undefined) {
   const obj = key ? await c.env.PHOTOS.get(key) : null
@@ -219,18 +219,21 @@ function nextDayHint(shift: any, type: string, at: string): string | null {
   return `日をまたぐシフトです。${REPORT_LABEL[type]}の日付が稼働日（${fmtDay(shift.work_date)}）のままです。翌日（${fmtDay(addDays(shift.work_date, 1))}）ではありませんか？`
 }
 
-// 申請の登録（申請と操作履歴を 1 トランザクションで）。まとめて申請（#214）は同じ created_at で全件を1つの batch に入れる（全件成功か全件失敗）。
-// 同じシフト・申請者・created_at の承認待ちを「まとめて出した申請」として扱い、承認依頼のメールを1通にまとめる（notifications.ts。#392）
+// 申請の登録（申請と操作履歴を 1 トランザクションで）。まとめて申請（#214）は同じ created_at・batch_key で全件を1つの batch に入れる（全件成功か全件失敗）。
+// 同じシフト・申請者・created_at・batch_key の承認待ちを「まとめて出した申請」として扱い、承認依頼のメールを1通にまとめる（notifications.ts。#392）。
+// batch_key は申請の操作ごとに作る（同じ秒に別々に出した申請を1つにまとめない。0087 より前の行は NULL で、created_at だけで束ねる）
 type NewRequest = { p: Prepared; from: number | null }
+const newBatchKey = () => { const x = new Uint8Array(9); crypto.getRandomValues(x); return [...x].map(v => v.toString(16).padStart(2, '0')).join('') }
 async function insertCorrections(db: D1Database, shift: any, items: NewRequest[], a: Actor) {
   const at = nowJST()
+  const batchKey = newBatchKey()
   try {
     await db.batch(items.flatMap(({ p, from }) => [
       db.prepare(`INSERT INTO attendance_corrections (company_id, project_id, shift_id, staff_id, attendance_id, kind, report_type, before_at, requested_at, reason, order_warnings,
-          status, requested_by, requested_by_name, requested_by_role, resubmitted_from, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`)
+          status, requested_by, requested_by_name, requested_by_role, resubmitted_from, created_at, updated_at, batch_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
         .bind(shift.company_id, shift.project_id, shift.shift_id, shift.staff_id, p.attendance_id, p.kind, p.report_type, p.before_at, p.requested_at, p.reason,
-          p.warnings.length ? JSON.stringify(p.warnings) : null, a.user_id, a.name, a.role, from, at, at),
+          p.warnings.length ? JSON.stringify(p.warnings) : null, a.user_id, a.name, a.role, from, at, at, batchKey),
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
         SELECT correction_id, company_id, ?, ?, ?, ?, ?, ? FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND status = 'pending'`)
         .bind(from ? 'resubmitted' : 'submitted', a.user_id, a.name, a.role,
@@ -651,7 +654,7 @@ correctionsAdminApi.get('/corrections', async (c) => {
       c.requested_by_name, c.created_at, c.decided_by_name, c.decided_at, c.resubmitted_from, c.shift_id, s.work_date, p.project_name, p.status AS project_status, us.name AS staff_name,
       s.settle_status, s.actual_source, p.photo_required_override,
       (SELECT COUNT(*) FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
-        WHERE x.correction_id = c.correction_id OR (x.shift_id = c.shift_id AND x.requested_by = c.requested_by AND x.created_at = c.created_at)) AS attachment_count
+        WHERE x.correction_id = c.correction_id OR (x.shift_id = c.shift_id AND x.requested_by = c.requested_by AND x.created_at = c.created_at AND x.batch_key IS c.batch_key)) AS attachment_count
     ${CORRECTION_FROM}
     WHERE ${where} ORDER BY CASE WHEN c.status = 'pending' THEN 0 ELSE 1 END,
       ${byWorkDate ? "CASE WHEN c.status = 'pending' THEN s.work_date END ASC," : ''}
@@ -832,7 +835,7 @@ correctionsAdminApi.post('/corrections/bulk-approve', async (c) => {
     if (row.status !== 'pending') { failed.push({ correction_id: id, reason: DONE_MESSAGE[row.status] || '承認できない状態です' }); continue }
     const s = await db.prepare(`SELECT s.actual_source, p.photo_required_override FROM shifts s JOIN projects p ON p.project_id = s.project_id WHERE s.shift_id = ?`).bind(row.shift_id).first() as any
     const att = Number(((await db.prepare(`SELECT COUNT(*) AS n FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
-      WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ?)`).bind(row.correction_id, row.shift_id, row.requested_by, row.created_at).first()) as any)?.n || 0)
+      WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ? AND x.batch_key IS ?)`).bind(row.correction_id, row.shift_id, row.requested_by, row.created_at, row.batch_key ?? null).first()) as any)?.n || 0)
     const block = bulkBlockReason({ ...row, order_warnings: parseWarnings(row) }, { settle_status: row.settle_status, actual_source: s?.actual_source }, photoRequiredFor(co?.settings_json, s?.photo_required_override), att)
     if (block) { skipped.push({ correction_id: id, reason: block }); continue }
     const r: any = await approveCorrection(db, row, actorOf(u), { comment: b.comment })
@@ -881,12 +884,14 @@ correctionsAdminApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
 // 欠勤のシフトも出す（希望（仮）のシフトは勤務ではないので出さない）。位置は有無だけを出し、座標は出さない
 // =========================================================
 const PUNCH_METHOD_LABEL: Record<string, string> = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '打刻修正で追加' }
-// 報告ごとの印（f）: 1 = 打刻修正で変更・追加、2 = 写真あり、4 = 位置あり、8 = 写真なしの理由あり
+// 報告ごとの印（f）: 1 = 打刻修正で変更・追加、2 = 写真あり、4 = 位置あり、8 = 写真なしの理由あり、
+// 16 = 押した時刻（端末時刻）で記録（#427。電波がない場所で押して後から送った報告。打刻修正で直したものは付けない）
 const PUNCH_COLS = REPORT_TYPES.map(t => `
     MAX(CASE WHEN a.report_type = '${t}' THEN a.reported_at END) AS ${t}_at,
     MAX(CASE WHEN a.report_type = '${t}' THEN COALESCE(a.entry_method, 'app') END) AS ${t}_m,
     MAX(CASE WHEN a.report_type = '${t}' THEN (CASE WHEN a.corrected_by_correction_id IS NOT NULL OR a.entry_method = 'correction' THEN 1 ELSE 0 END)
-      + (CASE WHEN a.photo_key IS NOT NULL THEN 2 ELSE 0 END) + (CASE WHEN a.latitude IS NOT NULL THEN 4 ELSE 0 END) + (CASE WHEN a.no_photo_reason IS NOT NULL THEN 8 ELSE 0 END) END) AS ${t}_f`).join(',')
+      + (CASE WHEN a.photo_key IS NOT NULL THEN 2 ELSE 0 END) + (CASE WHEN a.latitude IS NOT NULL THEN 4 ELSE 0 END) + (CASE WHEN a.no_photo_reason IS NOT NULL THEN 8 ELSE 0 END)
+      + (CASE WHEN a.time_source = 'device' AND a.corrected_by_correction_id IS NULL THEN 16 ELSE 0 END) END) AS ${t}_f`).join(',')
 const PUNCH_FROM = `FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = s.staff_id AND er.company_id = s.company_id ${CLIENT_JOIN}`
 const PUNCH_SELECT = `SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.staff_id, p.project_name, cl.client_name, us.name AS staff_name, er.employee_number,
@@ -916,7 +921,7 @@ function punchFilter(companyId: number, q: (k: string) => string | undefined): {
 function punchMethodText(r: any, t: string): string {
   if (!r[`${t}_at`]) return ''
   const m = r[`${t}_m`], f = Number(r[`${t}_f`] || 0)
-  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
+  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 16 ? '端末時刻で記録' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
 }
 const PUNCH_LIST_LIMIT = 500
 correctionsAdminApi.get('/attendance-punches', async (c) => {
@@ -927,13 +932,14 @@ correctionsAdminApi.get('/attendance-punches', async (c) => {
     .bind(...f.bind).all()).results as any[]
   const list = rows.slice(0, PUNCH_LIST_LIMIT)
   // 記録方法の件数（表示している行のうち。代理入力・報告用URL・打刻修正がどれくらいあるか）
-  const counts = { shifts: list.length, proxy: 0, link: 0, corrected: 0, no_photo: 0 }
+  const counts = { shifts: list.length, proxy: 0, link: 0, corrected: 0, no_photo: 0, device_time: 0 }
   for (const r of list) for (const t of REPORT_TYPES) {
     if (!r[`${t}_at`]) continue
     if (r[`${t}_m`] === 'proxy') counts.proxy++
     if (r[`${t}_m`] === 'link') counts.link++
     if (Number(r[`${t}_f`]) & 1) counts.corrected++
     if (Number(r[`${t}_f`]) & 8) counts.no_photo++
+    if (Number(r[`${t}_f`]) & 16) counts.device_time++
   }
   return c.json({ from: f.from, to: f.to, report_types: REPORT_TYPES, labels: REPORT_LABEL, rows: list, counts, truncated: rows.length > PUNCH_LIST_LIMIT, limit: PUNCH_LIST_LIMIT })
 })

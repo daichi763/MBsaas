@@ -47,10 +47,17 @@ async function loadInfo(db: D1Database, correctionId: number) {
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id = ?`).bind(correctionId).first() as any
   if (!c) return c
-  // まとめて出した申請（同じシフト・申請者・申請日時。corrections.ts の insertCorrections）。承認依頼のメールは先頭の1件にまとめる（#392 #214）
+  // まとめて出した申請（同じシフト・申請者・申請日時・batch_key。corrections.ts の insertCorrections）。承認依頼のメールは先頭の1件にまとめる（#392 #214）。
+  // batch_key のない行（0087 より前の申請）は、これまでどおり申請日時で束ねる
   const group = (await db.prepare(`SELECT correction_id, kind, report_type, before_at, requested_at FROM attendance_corrections
-    WHERE shift_id = ? AND requested_by = ? AND created_at = ? ORDER BY correction_id`).bind(c.shift_id, c.requested_by, c.created_at).all()).results as any[]
+    WHERE shift_id = ? AND requested_by = ? AND created_at = ? AND batch_key IS ? ORDER BY correction_id`).bind(c.shift_id, c.requested_by, c.created_at, c.batch_key ?? null).all()).results as any[]
   c.group = group.length > 1 ? group : null
+  // 承認者が日時を直して承認した（#548）: 申請の日時（requested_at_original）。承認後の requested_at は承認した日時
+  if (c.status === 'approved') {
+    const ev = await db.prepare(`SELECT detail FROM attendance_correction_events WHERE correction_id = ? AND event IN ('approved', 'approved_exception') ORDER BY event_id DESC LIMIT 1`)
+      .bind(correctionId).first() as any
+    try { const d = ev?.detail ? JSON.parse(ev.detail) : null; c.adjusted_from = d?.adjusted ? d.requested_at_original || null : null } catch { c.adjusted_from = null }
+  }
   return c
 }
 
@@ -86,9 +93,13 @@ function content(c: any, kind: string, isAdmin: boolean) {
     headline = '管理者が次のとおり、あなたの打刻の修正を申請しました。承認されると勤怠の記録が変わります。内容に心当たりがない場合は、管理者に確認してください。'
     lines.push(['修正理由', c.reason || ''], ['申請者', c.requested_by_name || ''])
   } else if (kind === 'correction_approved') {
-    title = `打刻修正が承認されました: ${what}`
-    headline = c.applied_while_settled ? `打刻修正の申請が承認されました。${settledNote}` : '打刻修正の申請が承認され、勤怠の記録を変更しました。'
-    lines.push(['結果', '承認'], ['承認者', c.decided_by_name || ''])
+    title = `打刻修正が${c.adjusted_from ? '時刻を修正して' : ''}承認されました: ${what}`
+    headline = c.applied_while_settled ? `打刻修正の申請が承認されました。${settledNote}`
+      : c.adjusted_from ? '打刻修正の申請が、承認者が時刻を修正したうえで承認され、勤怠の記録を変更しました。修正の内容と理由を確認してください。'
+      : '打刻修正の申請が承認され、勤怠の記録を変更しました。'
+    lines.push(['結果', c.adjusted_from ? '時刻を修正して承認' : '承認'], ['承認者', c.decided_by_name || ''])
+    // 申請の時刻と承認した時刻（#548。例: 申請 18:30 → 承認 18:15）
+    if (c.adjusted_from) lines.push(['修正', `申請 ${fmtAt(c.adjusted_from)} → 承認 ${fmtAt(c.requested_at)}`])
     if (c.applied_while_settled) lines.push(['支払額', '確定済みのため変わりません（管理者が別途対応します）'])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_rejected') {
@@ -100,6 +111,7 @@ function content(c: any, kind: string, isAdmin: boolean) {
     title = `管理者があなたの打刻を修正しました: ${what}`
     headline = '管理者が次のとおり、あなたの勤怠の記録を修正しました。内容に心当たりがない場合は、管理者に確認してください。' + (c.applied_while_settled ? settledNote : '')
     lines.push(['修正理由', c.reason || ''], ['処理した人', c.decided_by_name || ''])
+    if (c.adjusted_from) lines.push(['修正', `申請 ${fmtAt(c.adjusted_from)} → 承認 ${fmtAt(c.requested_at)}`])
     if (c.applied_while_settled) lines.push(['支払額', '確定済みのため変わりません（管理者が別途対応します）'])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_cancelled') {
@@ -111,6 +123,7 @@ function content(c: any, kind: string, isAdmin: boolean) {
     title = `打刻修正を${approved ? '承認' : '却下'}しました: ${c.staff_name || ''} ${what}`
     headline = `次の打刻修正の申請を${approved ? '承認' : '却下'}しました。`
     lines.push(['結果', approved ? (c.is_exception ? '承認（例外承認）' : '承認') : '却下'])
+    if (approved && c.adjusted_from) lines.push(['修正', `申請 ${fmtAt(c.adjusted_from)} → 承認 ${fmtAt(c.requested_at)}`])
     if (!approved) lines.push(['却下の理由', c.reject_reason || ''])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   }
@@ -805,11 +818,13 @@ const MAIL_ALERT_MIN = 5
 const MAIL_ALERT_RATE = 0.2
 // 届かなかったもの（企業の画面の「届かなかったもの」の絞り込みと同じ。一時的な不達も含める）
 const FAILED_STATUSES = `('failed', 'bounced', 'bounced_soft', 'complained')`
+// 企業ごとの直近24時間の送信数の目安（#392）。これを超えたら本部の画面に警告を出す（申請・通知の繰り返しや設定の誤りで、送信サービスの上限に近づいていないか）
+export const MAIL_DAILY_WARN = 500
 mailHqApi.get('/email-stats', async (c) => {
   const days = Math.min(90, Math.max(1, Number.parseInt(c.req.query('days') || '', 10) || 7))
   const since = `-${days} days`
   const db = c.env.DB
-  const [byCompany, reasons, lastOk, suppressed] = await Promise.all([
+  const [byCompany, reasons, lastOk, suppressed, daily] = await Promise.all([
     db.prepare(`SELECT l.company_id, co.company_name, l.type, COUNT(*) AS total, SUM(l.status IN ('sent', 'delivered')) AS ok,
         SUM(l.status IN ${FAILED_STATUSES}) AS failed, SUM(l.status = 'skipped') AS skipped
       FROM email_logs l LEFT JOIN companies co ON co.company_id = l.company_id
@@ -819,22 +834,33 @@ mailHqApi.get('/email-stats', async (c) => {
       FROM email_logs WHERE created_at >= datetime('now', ?) AND status IN ${FAILED_STATUSES} GROUP BY code ORDER BY n DESC LIMIT 10`).bind(since).all(),
     db.prepare(`SELECT company_id, datetime(MAX(created_at), '+9 hours') AS at FROM email_logs WHERE status IN ('sent', 'delivered') GROUP BY company_id`).all(),
     db.prepare('SELECT COUNT(*) AS n FROM email_suppressions').first(),
+    // 直近24時間の送信数（送信停止・対応不要で送らなかったものは数えない）。email_logs.created_at は UTC
+    db.prepare(`SELECT l.company_id, co.company_name, COUNT(*) AS n FROM email_logs l LEFT JOIN companies co ON co.company_id = l.company_id
+      WHERE l.created_at >= datetime('now', '-1 day') AND l.status != 'skipped' GROUP BY l.company_id`).all(),
   ])
   const last = new Map(((lastOk.results || []) as any[]).map(r => [r.company_id, r.at]))
+  const last24 = new Map(((daily.results || []) as any[]).map(r => [r.company_id ?? 0, Number(r.n) || 0]))
   const companies = new Map<any, any>()
   for (const r of (byCompany.results || []) as any[]) {
     const k = r.company_id ?? 0
-    const e = companies.get(k) || { company_id: r.company_id, company_name: r.company_name || (r.company_id ? `#${r.company_id}` : '（企業なし）'), total: 0, ok: 0, failed: 0, skipped: 0, types: [] as any[], last_success_at: last.get(r.company_id) || null }
+    const e = companies.get(k) || { company_id: r.company_id, company_name: r.company_name || (r.company_id ? `#${r.company_id}` : '（企業なし）'), total: 0, ok: 0, failed: 0, skipped: 0, types: [] as any[], last_success_at: last.get(r.company_id) || null,
+      last_24h: last24.get(k) || 0 }
     e.total += r.total; e.ok += r.ok || 0; e.failed += r.failed || 0; e.skipped += r.skipped || 0
     e.types.push({ type: r.type, total: r.total, ok: r.ok || 0, failed: r.failed || 0, skipped: r.skipped || 0 })
     companies.set(k, e)
   }
   const list = [...companies.values()].map(e => ({ ...e, failure_rate: e.total - e.skipped > 0 ? e.failed / (e.total - e.skipped) : 0 }))
   const warnings = list.filter(e => e.total - e.skipped >= MAIL_ALERT_MIN && e.failure_rate >= MAIL_ALERT_RATE)
-    .map(e => ({ company_id: e.company_id, message: `${e.company_name}: 直近${days}日のメールの${Math.round(e.failure_rate * 100)}%（${e.failed}/${e.total - e.skipped}件）が届いていません` }))
+    .map(e => ({ company_id: e.company_id, kind: 'failure_rate', message: `${e.company_name}: 直近${days}日のメールの${Math.round(e.failure_rate * 100)}%（${e.failed}/${e.total - e.skipped}件）が届いていません` }))
+  // 直近24時間の送信数が目安を超えた企業（#392。集計の期間 days に関係なく出す）
+  for (const r of (daily.results || []) as any[]) {
+    if (Number(r.n) < MAIL_DAILY_WARN) continue
+    const name = r.company_name || (r.company_id ? `#${r.company_id}` : '（企業なし）')
+    warnings.push({ company_id: r.company_id, kind: 'daily_volume', message: `${name}: 直近24時間に${Number(r.n)}通のメールを送っています（目安 ${MAIL_DAILY_WARN}通）。申請・通知の繰り返しや設定を確認してください` })
+  }
   const totals = list.reduce((a, e) => ({ total: a.total + e.total, ok: a.ok + e.ok, failed: a.failed + e.failed }), { total: 0, ok: 0, failed: 0 })
   return c.json({ days, totals, companies: list, reasons: ((reasons.results || []) as any[]).map(r => ({ ...r, sample: r.sample ? maskEmailsIn(r.sample) : null })),
-    warnings, suppressed_count: Number((suppressed as any)?.n || 0), alert: { min: MAIL_ALERT_MIN, rate: MAIL_ALERT_RATE } })
+    warnings, suppressed_count: Number((suppressed as any)?.n || 0), alert: { min: MAIL_ALERT_MIN, rate: MAIL_ALERT_RATE, daily_warn: MAIL_DAILY_WARN } })
 })
 mailHqApi.get('/email-logs', async (c) => {
   const where = ['1 = 1']; const binds: any[] = []
