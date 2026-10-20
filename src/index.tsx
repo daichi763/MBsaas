@@ -8,6 +8,7 @@ import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
+import { runReminders } from './services/reminders'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -741,11 +742,14 @@ app.get('/hq', async (c) => {
 // wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
 const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
 const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
+const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）
 
 // 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
 // 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
 // 個人情報の削除（応募・データ保持）は、問い合わせの上限に当たって止まらないよう先に実行する（#198）
 const CRON_JOBS = defineCronJobs<Bindings>([
+  // 起床・出発・入店の未報告と日報の未提出を本人に知らせる（会社の設定で ON にした会社だけ。#160）。メールの設定は wrangler.jsonc の vars と Secret
+  { name: 'reminders', label: '本人あての自動リマインド（未報告・日報未提出）', cron: CRON_REMINDERS, run: env => runReminders(env as any) },
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
   // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）
@@ -786,7 +790,7 @@ const CRON_JOBS = defineCronJobs<Bindings>([
 export default {
   fetch: app.fetch,
   // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
-  // 起動は毎日 UTC 18:00（日本時間 3:00）と UTC 18:30（日本時間 3:30）の2回（wrangler.jsonc の triggers.crons）。
+  // 起動は毎日 UTC 18:00（日本時間 3:00）と UTC 18:30（日本時間 3:30）の2回と、15分おき（リマインド）（wrangler.jsonc の triggers.crons）。
   // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）。
   // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {

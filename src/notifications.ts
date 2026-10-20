@@ -25,6 +25,7 @@ import { shareableEmail, HIDDEN_EMAIL_LABEL } from './lib/tenant'
 import { loadStaffNotices } from './lib/notices'
 import { sha256Hex } from './lib/auth'
 import { personStaffRows } from './roster'
+import * as emailService from './services/email'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -846,6 +847,137 @@ mailHqApi.post('/email-suppressions/release', async (c) => {
   if (!r.meta.changes) return c.json({ error: '送信を止めているアドレスが見つかりません' }, 404)
   return c.json({ ok: true })
 })
+
+// =========================================================
+// 本人あての自動リマインド（#160）。対象の選び方と送る時点の判定は services/reminders.ts（15分おきの cron）
+// 会社の設定: companies.settings_json の reminders（既定は送らない）
+//   enabled: 送るか / email: メールも送るか（アプリ内の通知は ON の間は必ず作る）
+//   wake_up・departure: 開始の何分前に、check_in: 開始の何分後に、daily_report: 予定の終了の何分後に送るか。null はその種類を送らない
+// 種類（user_notifications.kind）: report_reminder（起床・出発・入店）/ daily_report_reminder（日報）
+// 1回の起動の分は、本人ごと・種類ごとに1件の通知・1通のメールにまとめる。メールの送信結果は email_logs（type = reminder）に残す
+// =========================================================
+export const REMINDER_TYPES = ['wake_up', 'departure', 'check_in', 'daily_report'] as const
+export type ReminderType = typeof REMINDER_TYPES[number]
+export type ReminderSettings = { enabled: boolean; email: boolean } & Record<ReminderType, number | null>
+export const REMINDER_DEFAULTS: ReminderSettings = { enabled: false, email: true, wake_up: 120, departure: 60, check_in: 0, daily_report: 60 }
+// 設定できる分の上限（起床・出発は開始の6時間前まで。報告の受付は開始の6時間前から。lib/shift-time.ts の PRE_START_HOURS）
+export const REMINDER_LIMITS: Record<ReminderType, number> = { wake_up: 360, departure: 360, check_in: 120, daily_report: 720 }
+export const REMINDER_KIND = { attendance: 'report_reminder', daily_report: 'daily_report_reminder' } as const
+MAIL_TYPES.push('reminder')
+
+export function reminderSettings(settingsJson: unknown): ReminderSettings {
+  let r: any = null
+  try { const s = typeof settingsJson === 'string' ? JSON.parse(settingsJson) : settingsJson; r = s && typeof s === 'object' ? s.reminders : null } catch { r = null }
+  const out: ReminderSettings = { ...REMINDER_DEFAULTS }
+  if (!r || typeof r !== 'object') return out
+  out.enabled = r.enabled === true
+  out.email = r.email !== false
+  for (const t of REMINDER_TYPES) {
+    if (r[t] === null) out[t] = null
+    else if (Number.isInteger(r[t]) && r[t] >= 0 && r[t] <= REMINDER_LIMITS[t]) out[t] = r[t]
+  }
+  return out
+}
+
+notificationsAdminApi.get('/settings/reminders', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ ...reminderSettings(row?.settings_json), limits: REMINDER_LIMITS, can_edit: u.role === 'company_admin' })
+})
+notificationsAdminApi.put('/settings/reminders', async (c) => {
+  const u = c.get('user')
+  if (u.role !== 'company_admin') return c.json({ error: 'リマインドの設定は会社管理者だけが変更できます' }, 403)
+  const b = await c.req.json().catch(() => ({} as any))
+  if (typeof b.enabled !== 'boolean') return c.json({ error: '送るかどうか（enabled）を指定してください' }, 400)
+  if (b.email !== undefined && typeof b.email !== 'boolean') return c.json({ error: 'メールを送るかどうかの指定が正しくありません' }, 400)
+  const LABEL: Record<ReminderType, string> = { wake_up: '起床報告（開始の何分前）', departure: '出発報告（開始の何分前）', check_in: '入店報告（開始の何分後）', daily_report: '日報（終了の何分後）' }
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  const next = reminderSettings(row?.settings_json)
+  next.enabled = b.enabled
+  if (b.email !== undefined) next.email = b.email
+  for (const t of REMINDER_TYPES) {
+    if (b[t] === undefined) continue
+    if (b[t] !== null && !(Number.isInteger(b[t]) && b[t] >= 0 && b[t] <= REMINDER_LIMITS[t])) return c.json({ error: `${LABEL[t]}は 0〜${REMINDER_LIMITS[t]} 分の整数か、送らない（null）で指定してください` }, 400)
+    next[t] = b[t]
+  }
+  // ほかの設定を上書きしないよう、この項目だけを書き換える。次の定期処理（15分おき）から効く
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.reminders', json(?)) WHERE company_id = ?`)
+    .bind(JSON.stringify(next), u.company_id).run()
+  return c.json({ ok: true, ...next })
+})
+
+export type ReminderItem = {
+  company_id: number; shift_id: number; staff_id: number; user_id: number; user_name: string; email: string | null; email_on: boolean
+  type: ReminderType; work_date: string; start_time: string; end_time: string; project_name: string | null
+}
+const REMINDER_LABEL: Record<ReminderType, string> = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', daily_report: '日報' }
+const fmtShiftLine = (x: ReminderItem) => `${fmtDate(x.work_date)} ${x.start_time}〜${x.end_time <= x.start_time ? '翌' : ''}${x.end_time} ${x.project_name || ''}`.trim()
+
+// 送ると決めたリマインド（reminder_sends に記録済みのもの）を、アプリ内通知とメールで本人に送る。
+// 戻り値の emailed は、メールを送った（送信を試みた）リマインドの shift_id:type
+export async function deliverReminders(env: NotifyEnv, items: ReminderItem[]) {
+  const db = env.DB
+  const groups = new Map<string, ReminderItem[]>()
+  for (const x of items) {
+    const key = `${x.user_id}:${x.type === 'daily_report' ? 'daily_report' : 'attendance'}`
+    const g = groups.get(key) || []
+    g.push(x); groups.set(key, g)
+  }
+  const at = nowJST()
+  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const rows: any[] = []
+  const mails: emailService.SendEmailInput[] = []
+  const emailed: string[] = []
+  const contacts = new Map<number, MailContact>()
+  for (const list of groups.values()) {
+    list.sort((a, b) => (a.work_date + a.start_time).localeCompare(b.work_date + b.start_time) || REMINDER_TYPES.indexOf(a.type) - REMINDER_TYPES.indexOf(b.type))
+    const first = list[0]
+    const daily = first.type === 'daily_report'
+    // シフトごとに、まだの報告をまとめる
+    const byShift = new Map<number, ReminderItem[]>()
+    for (const x of list) byShift.set(x.shift_id, [...(byShift.get(x.shift_id) || []), x])
+    const shifts = [...byShift.values()]
+    const what = (xs: ReminderItem[]) => xs.map(x => REMINDER_LABEL[x.type]).join('・')
+    const title = daily
+      ? `日報がまだ提出されていません: ${fmtShiftLine(first)}${shifts.length > 1 ? ` ほか${shifts.length - 1}件` : ''}`
+      : `${what(shifts[0])}がまだです: ${fmtShiftLine(first)}${shifts.length > 1 ? ` ほか${shifts.length - 1}件` : ''}`
+    const headline = daily ? '稼働の日報がまだ提出されていません。日報・実績入力から提出してください。'
+      : '勤怠の報告がまだ届いていません。報告を忘れていたら、アプリのホームから報告してください。遅れる・休む場合は、相談・連絡から会社に連絡してください。'
+    const lines: [string, string][] = shifts.map((xs, i) => [shifts.length > 1 ? `シフト${i + 1}` : 'シフト', `${fmtShiftLine(xs[0])}${daily ? '' : `（${what(xs)}）`}`])
+    const link = daily ? `#report/${Number(first.shift_id)}` : '#home'
+    rows.push({ c: first.company_id, u: first.user_id, k: daily ? REMINDER_KIND.daily_report : REMINDER_KIND.attendance, t: title,
+      b: [headline, ...lines.map(([k, v]) => `${k}: ${v}`)].join('\n'), l: link, r: first.shift_id })
+    const to = String(first.email || '').trim()
+    if (first.email_on && to) {
+      if (!contacts.has(first.company_id)) contacts.set(first.company_id, await loadMailContact(db, first.company_id))
+      const contact = contacts.get(first.company_id)!
+      const tpl = attendanceCorrectionEmail({ name: first.user_name, title, headline, lines: [...lines, ...(contact.company_name ? [['会社', contact.company_name] as [string, string]] : [])],
+        url: `${base}/staff${link}`, button: daily ? '日報を入力する' : 'アプリを開く' })
+      mails.push({ to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'reminder', company_id: first.company_id, reply_to: contact.reply_to })
+      for (const x of list) emailed.push(`${x.shift_id}:${x.type}`)
+    }
+  }
+  // 通知は 200 件ずつ1文で入れる
+  const stmts: D1PreparedStatement[] = []
+  for (let i = 0; i < rows.length; i += 200) {
+    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+      SELECT json_extract(value, '$.c'), json_extract(value, '$.u'), json_extract(value, '$.k'), json_extract(value, '$.t'), json_extract(value, '$.b'),
+        json_extract(value, '$.l'), json_extract(value, '$.r'), ? FROM json_each(?)`).bind(at, JSON.stringify(rows.slice(i, i + 200))))
+  }
+  if (stmts.length) await db.batch(stmts)
+  let mailFailed = 0
+  if (mails.length) {
+    try {
+      // 二度送らないことは reminder_sends の記録で守る（送る前に記録を取る）
+      const results = await emailService.sendEmailBatch(env, mails)
+      mailFailed = results.filter(r => !r.ok).length
+    } catch (e) {
+      mailFailed = mails.length
+      console.log(`reminder mail failed: ${e}`)
+    }
+  }
+  return { notified: rows.length, mails: mails.length, mail_failed: mailFailed, emailed }
+}
 
 // =========================================================
 // お知らせメールの「確認しました」のリンク（#454）

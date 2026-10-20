@@ -5,9 +5,11 @@
 // - 処理は、指定した cron の式で起動したときに実行する（重い処理を別の起動に分け、1回の起動あたりの
 //   D1 の問い合わせ数の上限で後ろの処理が止まらないようにする）。一覧にない式で起動したとき（手動の確認など）は全部を実行する。
 // - 処理が例外を投げた、または結果に failed（1以上）・error があれば「失敗」として記録する。1つが失敗しても次の処理は続ける。
+// - 結果に idle: true を返した（何もしなかった）実行は、同じ処理の直前の記録も idle なら、その行を消してから記録する
+//   （15分おきのリマインドなど回数の多い処理で、記録と本部画面の直近の一覧が埋まらないようにする。最後の実行の日時は残る）
 // - 本部画面には、処理ごとの最終実行・成否・エラーと、失敗・24時間以上実行されていないときの警告を出す（cronStatus）。
 
-export type CronJobResult = Record<string, unknown> & { failed?: number; error?: string | null }
+export type CronJobResult = Record<string, unknown> & { failed?: number; error?: string | null; idle?: boolean }
 export type CronJob<E> = {
   name: string   // 記録に使う処理名（変えると別の処理として扱われる）
   label: string  // 本部画面に出す名前
@@ -51,6 +53,10 @@ export async function runCronJobs<E extends { DB: D1Database }>(env: E, jobs: Cr
     const finished = Date.now()
     console.log(`cron ${job.name}: ${status}${result ? ' ' + JSON.stringify(result) : ''}${error ? ' error=' + error : ''}`)
     try {
+      if (status === 'ok' && result?.idle === true) {
+        await env.DB.prepare(`DELETE FROM cron_runs WHERE run_id = (SELECT MAX(run_id) FROM cron_runs WHERE job = ?) AND status = 'ok'
+          AND (CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.idle') END) = 1`).bind(job.name).run()
+      }
       await env.DB.prepare(`INSERT INTO cron_runs (cron, job, label, status, result_json, error_message, duration_ms, started_at, finished_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
         cron || null, job.name, job.label, status, result ? JSON.stringify(result).slice(0, 2000) : null,
