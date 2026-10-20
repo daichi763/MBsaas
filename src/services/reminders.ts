@@ -71,7 +71,8 @@ async function attendanceReminders(db: D1Database, now: string): Promise<(Remind
       AND NOT EXISTS (SELECT 1 FROM reminder_sends r WHERE r.shift_id = s.shift_id AND r.reminder_type = 'check_in')
       -- 開始を過ぎたシフトで、もう送るものがないもの（入店のリマインドを使っていない・送る時点から遅れの上限を過ぎた）は読まない（#160。
       -- 起床・出発は開始を過ぎたら送らない）。上限の件数がこうしたシフトで埋まり、送るべきシフトが読まれなくならないように
-      AND NOT (datetime(s.work_date || ' ' || s.start_time) <= ? AND (${CHECK_IN_TYPE_SQL} = 'null'
+      -- 設定に check_in がない会社（既定値を使う）は型が NULL になるので COALESCE で比べる（NULL のままだと NOT (...) が NULL になり、送るべきシフトまで外れる）
+      AND NOT (datetime(s.work_date || ' ' || s.start_time) <= ? AND (COALESCE(${CHECK_IN_TYPE_SQL}, '') = 'null'
         OR datetime(s.work_date || ' ' || s.start_time, '+' || (${CHECK_IN_MINUTES_SQL} + ${REMIND_LATE_MINUTES.attendance}) || ' minutes') < ?))
     ORDER BY datetime(s.work_date || ' ' || s.start_time), s.shift_id LIMIT ?`).bind(addDays(today, -1), addDays(today, 1), from, to, now, now, MAX_CANDIDATES).all()).results as any[]
   if (!rows.length) return []

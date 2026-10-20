@@ -1543,12 +1543,15 @@ app.post('/shifts/bulk', async (c) => {
   return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next })
 })
 
-// まとめて作ったシフトの操作履歴（#159）。作成の後の値だけを残す
+// まとめて作ったシフトの操作履歴（#159）。作成の後の値だけを残す。
+// シフトはもう登録してあるので、記録に失敗しても本人への知らせと結果の応答は続ける（500 で返すと、画面で登録できなかったと誤解される）
 async function logCreatedShifts(db: D1Database, u: any, action: string, ids: number[]) {
   if (!ids.length) return
-  const op = opLog(db, u, action)
-  await batchInChunks(db, logShifts(op, ids, { created: true }))
-  await finishLog(op)
+  try {
+    const op = opLog(db, u, action)
+    await batchInChunks(db, logShifts(op, ids, { created: true }))
+    await finishLog(op)
+  } catch (e) { console.error(`${action} operation log failed`, e) }
 }
 
 // 前週（任意の期間）のコピー: 枠と役割、割り当て（confirmed/substitute は confirmed として）をコピーする。

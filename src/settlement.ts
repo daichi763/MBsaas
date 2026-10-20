@@ -262,8 +262,11 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       (SELECT x.to_payee_type || ':' || COALESCE(x.to_payee_affiliation_id, '') FROM affiliation_excluded_shifts x
         WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id ORDER BY x.history_id DESC LIMIT 1) AS aff_excluded_payee,
       (SELECT COUNT(*) FROM staff_pay_requests q WHERE q.shift_id = s.shift_id AND q.company_id = s.company_id AND q.status = 'pending') AS pending_pay_requests,
-      -- 報告用URLで報告した端末の数（#532。端末IDのない古い行は user-agent で数える）
-      (SELECT COUNT(DISTINCT COALESCE(a.device_id, 'ua:' || COALESCE(a.device_info, ''))) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.entry_method = 'link') AS link_devices,
+      -- 報告用URLで報告した端末の数（#532。報告状況（staff-lifecycle.ts の report-status）と同じ数え方: 端末IDのない古い行は、
+      -- 同じ user-agent の端末IDがあればその端末とみなし、なければ user-agent で数える）
+      (SELECT COUNT(DISTINCT COALESCE(a.device_id, (SELECT b.device_id FROM attendance_reports b WHERE b.shift_id = a.shift_id AND b.entry_method = 'link'
+          AND b.device_id IS NOT NULL AND COALESCE(b.device_info, '') = COALESCE(a.device_info, '') LIMIT 1), 'ua:' || COALESCE(a.device_info, '')))
+        FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.entry_method = 'link') AS link_devices,
       sc.reason AS cx_reason, sc.notified_on AS cx_notified_on, sc.bill_amount AS cx_bill, sc.pay_amount AS cx_pay, sc.note AS cx_note
     FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
     LEFT JOIN shift_cancellations sc ON sc.shift_id = s.shift_id AND sc.company_id = s.company_id

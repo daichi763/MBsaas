@@ -91,7 +91,7 @@ const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件�
 // 匿名化で消す staff_profiles の個人情報の列（所属区分・連携の情報・評価の点数は集計に使うので残す）
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'site_evaluation', 'work_memo', 'career_rows', 'pr_points',
-  'remarks', 'unverified_email']
+  'remarks', 'unverified_email', 'skill_sheet_comment']
 
 // 人材提案の匿名化で消す列（#350）。snapshot は NOT NULL なので空の JSON にする
 const ANONYMIZE_PROPOSAL_SET = `snapshot = '{}', disclosed = NULL, comment = NULL, upstream_chain = NULL, consent_note = NULL, upstream_consent_note = NULL`

@@ -983,7 +983,9 @@ recruitAdminApi.get('/recruit-applications/:id/staff-candidates', async (c) => {
   const all = [...byPhone.filter(m => !seen.has(m.staff_id)), ...rows]
   const inactive = await inactiveStaffIds(db, all.map(m => m.staff_id))
   const phone = normalizePhone(a.phone)
-  const phoneMatch = (m: any) => phone.length >= 10 && normalizePhone(m.phone) === phone
+  // 他社連携の行は所属元の番号で照合し、番号を返さない（#123）ため、応募の番号で見つかった行は一致として扱う
+  const phoneHit = new Set(q ? [] : byPhone.map(m => Number(m.staff_id)))
+  const phoneMatch = (m: any) => phoneHit.has(Number(m.staff_id)) || (phone.length >= 10 && normalizePhone(m.phone) === phone)
   const nameMatch = (m: any) => !!squash(a.name) && squash(m.name) === squash(a.name)
   const kanaMatch = (m: any) => !!squash(a.kana) && squash(m.kana) === squash(a.kana)
   const score = (m: any) => (phoneMatch(m) ? 4 : 0) + (nameMatch(m) ? 2 : 0) + (kanaMatch(m) ? 1 : 0)
@@ -1111,16 +1113,18 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
     }
     for (const id of rejectIds) await db.prepare("UPDATE recruit_application_items SET status = 'rejected', decided_at = ? WHERE item_id = ? AND status = 'processing'").bind(now, id).run()
     if (staffId && !a.staff_id) await db.prepare('UPDATE recruit_applications SET staff_id = ? WHERE application_id = ? AND staff_id IS NULL').bind(staffId, a.application_id).run()
-    // 承認で作ったシフトの操作履歴（#159）
-    if (createdShifts.length) {
-      const op = opLog(db, u, 'recruit_approve')
-      await db.batch(logShifts(op, createdShifts, { created: true }))
-      await finishLog(op)
-    }
   } catch (e) {
     // 途中で失敗したときは、まだ承認・見送りにしていない明細を未対応に戻す（作ったシフト・仮登録は残るので、画面で確認する）
     await release()
     throw e
+  }
+  // 承認で作ったシフトの操作履歴（#159）。承認は済んでいるので、記録に失敗しても応募者への連絡などは続ける
+  if (createdShifts.length) {
+    try {
+      const op = opLog(db, u, 'recruit_approve')
+      await db.batch(logShifts(op, createdShifts, { created: true }))
+      await finishLog(op)
+    } catch (e) { console.error('recruit_approve operation log failed', e) }
   }
   await closeIfDone(db, a.application_id, u.user_id)
   // 承認で定員に達した枠に、ほかの人の未対応の応募が残っていれば知らせる（画面からまとめて見送れる。#303）
