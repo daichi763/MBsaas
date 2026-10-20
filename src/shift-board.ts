@@ -16,6 +16,7 @@ import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
 import { loadShiftSnaps, notifyShiftChanges } from './notifications'
 import type { ShiftSnap } from './notifications'
+import { opLog, logShifts, logShiftsOfSlot, logSlot, finishLog } from './lib/operation-log'
 import { csvResponse, toCsv } from './csv'
 
 type Bindings = { DB: D1Database }
@@ -1004,7 +1005,9 @@ app.put('/shift-slots/:id', async (c) => {
   }
 
   // ---- 書き込み（枠・役割・シフトをまとめて） ----
+  const op = opLog(db, u, 'slot_update') // 操作履歴（#159）。枠と割り当て済みシフトの変更の前の値を残す
   const stmts: D1PreparedStatement[] = [
+    logSlot(op, slot.slot_id), logShiftsOfSlot(op, slot.slot_id),
     db.prepare(`UPDATE shift_slots SET site_id = ?, location = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, memo = ?, status = ? WHERE slot_id = ? AND company_id = ?`)
       .bind(next.site_id, next.location, next.work_date, next.start_time, next.end_time, next.break_minutes, next.memo, next.status, slot.slot_id, u.company_id),
     ...roleStmts,
@@ -1064,6 +1067,7 @@ app.put('/shift-slots/:id', async (c) => {
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE slot_id = ? AND company_id = ? AND COALESCE(price_locked,0) = 0 AND COALESCE(settle_status,'planned') != 'confirmed'`)
     .bind(slot.slot_id, u.company_id).all()).results as any[]
   await repriceRows(db, u.company_id, rows)
+  await finishLog(op)
   if (notifyIds.length) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, notifyIds))
   return c.json({ ok: true, detached: detach.length, locked_kept: lockedKept, warnings })
 })
@@ -1075,11 +1079,14 @@ app.delete('/shift-slots/:id', async (c) => {
   const used = await db.prepare('SELECT COUNT(*) AS n FROM shifts WHERE slot_id = ?').bind(slot.slot_id).first() as any
   if (used.n > 0 && c.req.query('force') !== '1') return c.json({ error: `この枠には ${used.n} 件のシフトがあります`, assigned: used.n, need_force: true }, 409)
   // force: 割り当て済みシフトは削除せず「枠なし」に戻す（勤怠・日報が紐づいている可能性があるため）
+  const op = opLog(db, u, 'slot_delete') // 操作履歴（#159）
   await db.batch([
+    logSlot(op, slot.slot_id), logShiftsOfSlot(op, slot.slot_id),
     db.prepare('UPDATE shifts SET slot_id = NULL, slot_role_id = NULL WHERE slot_id = ? AND company_id = ?').bind(slot.slot_id, u.company_id),
     db.prepare('DELETE FROM shift_slot_roles WHERE slot_id = ?').bind(slot.slot_id),
     db.prepare('DELETE FROM shift_slots WHERE slot_id = ?').bind(slot.slot_id),
   ])
+  await finishLog(op)
   await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
   return c.json({ ok: true })
 })
@@ -1122,6 +1129,11 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     await applyPricingToShift(db, u.company_id, res.meta.last_row_id as number, { data })
     created.push(res.meta.last_row_id as number)
   }
+  if (created.length) { // 操作履歴（#159）
+    const op = opLog(db, u, 'assign')
+    await db.batch(logShifts(op, created, { created: true }))
+    await finishLog(op)
+  }
   await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(db, u.company_id, created)) // 本人に知らせる（#155）
   return c.json({ ok: true, shift_ids: created, warnings })
 })
@@ -1149,15 +1161,17 @@ app.post('/shifts/:id/move', async (c) => {
     ? ', staff_reply = NULL, staff_reply_note = NULL, staff_reply_at = NULL' : ''
   const notifyBefore = await loadShiftSnaps(db, u.company_id, [s.shift_id]) // 移動の前の内容（本人への通知に使う。#155）
   // 移動したシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
+  const op = opLog(db, u, 'move') // 操作履歴（#159）
   try {
-    await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ?, legacy_duplicate = NULL${replyReset} WHERE shift_id = ?`)
-      .bind(role.project_id, role.slot_id, role.slot_role_id, role.site_id ?? null, role.work_date, role.start_time, role.end_time, role.break_minutes ?? null, role.role_name, role.location || s.location || '', s.shift_id).run()
+    await db.batch([...logShifts(op, [s.shift_id]), db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ?, legacy_duplicate = NULL${replyReset} WHERE shift_id = ?`)
+      .bind(role.project_id, role.slot_id, role.slot_role_id, role.site_id ?? null, role.work_date, role.start_time, role.end_time, role.break_minutes ?? null, role.role_name, role.location || s.location || '', s.shift_id)])
   } catch (e) {
     if (isUniqueViolation(e)) return c.json({ error: 'このスタッフはすでに移動先の枠に割り当て済みです' }, 409)
     throw e
   }
   // 手動変更した金額でも、案件が変わった場合は移動先の単価に置き換える
   await applyPricingToShift(db, u.company_id, s.shift_id, { force: projectChanged })
+  await finishLog(op)
   await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [s.shift_id])) // 本人に知らせる（#155）
   return c.json({ ok: true, warnings })
 })
@@ -1207,8 +1221,10 @@ app.post('/shifts/confirm-requested', async (c) => {
   // 確認の後に状態が変わったもの（別の画面で確定・削除した等）は変えない
   const targetIds = targets.map(r => r.shift_id)
   const notifyBefore = await loadShiftSnaps(db, u.company_id, targetIds)
-  const res = await db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
-    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targetIds)).run()
+  const op = opLog(db, u, 'confirm_requested') // 操作履歴（#159）
+  const res = (await db.batch([...logShifts(op, targetIds), db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
+    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targetIds))])).at(-1)!
+  await finishLog(op)
   // 確定にしたことを本人に知らせる（スタッフごとにまとめる。#155）
   await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, targetIds))
   return c.json({ ok: true, confirmed: res.meta.changes || 0, skipped })
@@ -1270,7 +1286,8 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
       removed++
     }
   }
-  await batchInChunks(db, stmts)
+  const op = opLog(db, u, 'release') // 操作履歴（#159）。外す前の値を先に残す
+  try { await batchInChunks(db, [...logShifts(op, shifts.map(s => s.shift_id)), ...stmts]) } finally { await finishLog(op) }
   return c.json({ ok: true, removed, absent })
 })
 
@@ -1280,7 +1297,12 @@ app.put('/shifts/:id/price', async (c) => {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトの金額は変更できません。精算画面で確定を取り消してください' }, 409)
-  if (b.reset) { await applyPricingToShift(db, u.company_id, s.shift_id, { force: true }); return c.json({ ok: true }) }
+  if (b.reset) {
+    const op = opLog(db, u, 'price_reset') // 操作履歴（#159）
+    await db.batch(logShifts(op, [s.shift_id]))
+    try { await applyPricingToShift(db, u.company_id, s.shift_id, { force: true }) } finally { await finishLog(op) }
+    return c.json({ ok: true })
+  }
   // 負の単価・休憩、範囲外の数量は受け付けない（#218）。調整額は控除に使うため負の値も認める
   const err = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX], ['請求の数量', b.bill_qty, 0, QTY_MAX], ['支払の数量', b.pay_qty, 0, QTY_MAX],
     ['休憩', b.break_minutes, 0, BREAK_MAX], ['交通費の実費', b.transportation_fee, 0, MONEY_MAX], ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX], ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX],
@@ -1320,13 +1342,15 @@ app.put('/shifts/:id/price', async (c) => {
     pay_adjust: b.pay_adjust === undefined ? undefined : (intOrNull(b.pay_adjust) ?? ''),
     adjust_note: b.adjust_note,
   }, ['bill_adjust', 'pay_adjust', 'adjust_note'])
-  await db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
+  const op = opLog(db, u, 'price') // 操作履歴（#159）
+  await db.batch([...logShifts(op, [s.shift_id]), db.prepare(`UPDATE shifts SET bill_unit_type = ?, bill_rate = ?, bill_qty = ?, unit_price = ?, pay_unit_type = ?, pay_rate = ?, pay_qty = ?, pay_amount = ?,
       break_minutes = ?, transportation_fee = ?, bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?,
       ${adj.clause ? adj.clause + ', ' : ''}price_locked = ?, qty_locked = ?, price_source = ? WHERE shift_id = ?`)
     .bind(billUnit, billRate, billQty, billAmount, payUnit, payRate, payQty, payAmount,
       brk, b.transportation_fee !== undefined ? (intOrNull(b.transportation_fee) ?? 0) : s.transportation_fee,
       bt, btAmt, pt, ptAmt,
-      ...adj.values, locked, qtyLocked ? 1 : 0, locked ? JSON.stringify({ manual: '手動変更' }) : s.price_source, s.shift_id).run()
+      ...adj.values, locked, qtyLocked ? 1 : 0, locked ? JSON.stringify({ manual: '手動変更' }) : s.price_source, s.shift_id)])
+  await finishLog(op)
   return c.json({ ok: true, price_locked: !!locked, qty_locked: qtyLocked })
 })
 
@@ -1400,7 +1424,11 @@ app.post('/shifts/reprice', async (c) => {
   const after = Math.max(0, Math.floor(Number(b.cursor) || 0))
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE ${f.join(' AND ')} AND shift_id > ? ORDER BY shift_id LIMIT ?`).bind(...bind, after, limit + 1).all()).results as any[]
   const part = rows.slice(0, limit)
-  const updated = await repriceRows(db, u.company_id, part)
+  // 操作履歴（#159）。再適用の対象（手動変更・確定済みを除く）の前の値を残し、金額が変わったものだけを残す
+  const op = opLog(db, u, 'reprice')
+  let updated = 0
+  await batchInChunks(db, logShifts(op, part.map(s => s.shift_id), { where: "COALESCE(s.price_locked,0) = 0 AND COALESCE(s.settle_status,'planned') != 'confirmed'" }))
+  try { updated = await repriceRows(db, u.company_id, part) } finally { await finishLog(op) }
   return c.json({ ok: true, count: part.length, updated, next_cursor: rows.length > limit ? part[part.length - 1].shift_id : null })
 })
 

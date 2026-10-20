@@ -54,6 +54,7 @@ import { staffPayAdminApi, staffPayStaffApi } from './staff-pay'
 import { staffSelfServiceApi, staffRequestsAdminApi, parseDocMeta } from './staff-self-service'
 import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, checkInDistance, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
 import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
+import { opLog, logShifts, finishLog, opChanges, OP_ACTION_LABELS } from './lib/operation-log'
 import rosterImportApi from './roster-import'
 import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_READONLY_MESSAGE } from './hq-support'
@@ -4848,6 +4849,10 @@ api.post('/admin/shifts', async (c) => {
   if (sid) {
     await applyPricingToShift(c.env.DB, u.company_id, sid)
     if (b.unit_price != null) await c.env.DB.prepare("UPDATE shifts SET unit_price = ?, bill_rate = ?, bill_unit_type = 'daily', bill_qty = 1, price_locked = 1 WHERE shift_id = ?").bind(b.unit_price, b.unit_price, sid).run()
+    // 操作履歴（#159）
+    const op = opLog(c.env.DB, u, 'create')
+    await c.env.DB.batch(logShifts(op, [sid], { created: true }))
+    await finishLog(op)
     // 本人に知らせる（#155）
     await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(c.env.DB, u.company_id, [sid]))
   }
@@ -4907,7 +4912,9 @@ api.put('/admin/shifts/:id', async (c) => {
   const db = c.env.DB, sid = cur.shift_id
   // 担当者・時間・状態が変わるときは、変更の前の内容を取っておき、保存の後に本人に知らせる（#155）
   const notifyBefore = staffChanged || timeChanged || (b.status != null && b.status !== cur.status) ? await loadShiftSnaps(db, u.company_id, [sid]) : null
-  const stmts: D1PreparedStatement[] = [db.prepare(`UPDATE shifts SET
+  // 操作履歴（#159）: 変更の前の値を同じ batch の先頭で残し、単価の再計算の後に変更の後の値を入れる
+  const op = opLog(db, u, 'update')
+  const stmts: D1PreparedStatement[] = [...logShifts(op, [sid]), db.prepare(`UPDATE shifts SET
         status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
         staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo),
         legacy_duplicate = CASE WHEN ? = 1 THEN NULL ELSE legacy_duplicate END,
@@ -4948,6 +4955,7 @@ api.put('/admin/shifts/:id', async (c) => {
   const cancelled = staffChanged ? await notifyAutoCancelled(c, sid, cancelToken) : 0
   // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
   if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
+  await finishLog(op)
   // 欠勤にしたシフトの承認待ちは承認できない（却下が必要）ので、件数を返す（#70）
   const pendingAbsent = b.status === 'absent' && cur.status !== 'absent' ? await pendingCorrectionCount(db, sid) : 0
   if (notifyBefore) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [sid]))
@@ -4968,15 +4976,65 @@ api.delete('/admin/shifts/:id', async (c) => {
   // 承認待ちの打刻修正申請（打刻漏れの追加）は、処理できなくなるので『取り消し（シフト削除）』にして申請者に知らせる（#70）
   const db = c.env.DB, cancelToken = newCancelToken()
   const notifyBefore = await loadShiftSnaps(db, u.company_id, [cur.shift_id])
+  const op = opLog(db, u, 'delete') // 操作履歴（#159）。削除の前の値を残す
   await db.batch([
+    ...logShifts(op, [cur.shift_id]),
     ...autoCancelStatements(db, cur.shift_id, 'shift_deleted', actorOf(u), cancelToken),
     db.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
     db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
     db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
   ])
+  await finishLog(op)
   const cancelled = await notifyAutoCancelled(c, cur.shift_id, cancelToken)
   await notifyShiftChanges(c, u.company_id, notifyBefore, []) // 本人に取消を知らせる（#155）
   return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}) })
+})
+
+// シフト・募集枠・精算の操作履歴（#159）。新しい順に50件ずつ（before に前のページの最後の log_id を渡す）。
+// 条件: entity（shift / slot）と entity_id（1件の履歴）、staff_id（担当スタッフ）、from〜to（操作した日）、action
+// 値の ID（スタッフ・案件・確定した人）は名前も返す（names）。削除したシフトの履歴も見られる
+const OP_LOG_PAGE = 50
+api.get('/admin/operation-logs', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const q = (k: string) => { const v = c.req.query(k); return v === undefined || v === '' ? null : v }
+  const entity = q('entity'), entityId = toInt(q('entity_id'), 1), staffId = toInt(q('staff_id'), 1), before = toInt(q('before'), 1)
+  const from = q('from'), to = q('to'), action = q('action')
+  if (entity !== null && !['shift', 'slot'].includes(entity)) return c.json({ error: '対象の種類が正しくありません' }, 400)
+  if (entityId !== null && entity === null) return c.json({ error: '対象の種類（entity）も指定してください' }, 400)
+  for (const [v, name] of [[from, '開始日'], [to, '終了日']] as const) if (v !== null && !isISODate(v)) return c.json({ error: `${name}の形式が正しくありません` }, 400)
+  if (action !== null && !OP_ACTION_LABELS[action]) return c.json({ error: '操作の種類が正しくありません' }, 400)
+  const where = ['l.company_id = ?'], binds: unknown[] = [u.company_id]
+  if (entity !== null) { where.push('l.entity = ?'); binds.push(entity) }
+  if (entityId !== null) { where.push('l.entity_id = ?'); binds.push(entityId) }
+  if (staffId !== null) { where.push('l.staff_id = ?'); binds.push(staffId) }
+  if (from !== null) { where.push('l.created_at >= ?'); binds.push(from) }
+  if (to !== null) { where.push('l.created_at < ?'); binds.push(addDays(to, 1)) }
+  if (action !== null) { where.push('l.action = ?'); binds.push(action) }
+  if (before !== null) { where.push('l.log_id < ?'); binds.push(before) }
+  const rows = (await db.prepare(`SELECT l.log_id, l.entity, l.entity_id, l.staff_id, l.action, l.before_json, l.after_json, l.op_key, l.created_at, l.actor_user_id, au.name AS actor_name
+    FROM operation_logs l LEFT JOIN users au ON au.user_id = l.actor_user_id
+    WHERE ${where.join(' AND ')} ORDER BY l.log_id DESC LIMIT ?`).bind(...binds, OP_LOG_PAGE + 1).all()).results as any[]
+  const logs = rows.slice(0, OP_LOG_PAGE).map(r => {
+    const d = opChanges(r.entity, r.before_json, r.after_json)
+    const cur = d.after || d.before || {}
+    return { log_id: r.log_id, entity: r.entity, entity_id: r.entity_id, staff_id: r.staff_id, action: r.action, action_label: OP_ACTION_LABELS[r.action] || r.action,
+      op_key: r.op_key, created_at: r.created_at, actor_name: r.actor_name || null,
+      summary: { work_date: cur.work_date ?? null, start_time: cur.start_time ?? null, end_time: cur.end_time ?? null, staff_id: cur.staff_id ?? null, project_id: cur.project_id ?? null },
+      changes: d.changes }
+  })
+  // 値の ID を名前にする（自社のものだけ）
+  const ids = (k: string) => {
+    const out = new Set<number>()
+    for (const l of logs) for (const v of [l.summary[k as keyof typeof l.summary], ...l.changes.filter(x => x.field === k).flatMap(x => [x.before, x.after])]) if (Number(v) > 0) out.add(Number(v))
+    return [...out]
+  }
+  const [staffRows, projectRows, userRows] = logs.length ? await db.batch([
+    db.prepare(`SELECT sp.staff_id AS id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND sp.staff_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(ids('staff_id'))),
+    db.prepare(`SELECT project_id AS id, project_name AS name FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(ids('project_id'))),
+    db.prepare(`SELECT user_id AS id, name FROM users WHERE company_id = ? AND user_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(ids('settled_by'))),
+  ]) : [{ results: [] }, { results: [] }, { results: [] }]
+  const toMap = (r: any) => Object.fromEntries((r.results as any[]).map(x => [x.id, x.name]))
+  return c.json({ logs, has_more: rows.length > OP_LOG_PAGE, names: { staff: toMap(staffRows), project: toMap(projectRows), user: toMap(userRows) } })
 })
 
 // 日報一覧（#113 ページ送り、#183 未確認のみ、#404 案件・スタッフ・期間、#106 テンプレートの項目、#521 生の report_values は返さない）

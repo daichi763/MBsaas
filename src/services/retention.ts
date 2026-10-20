@@ -6,6 +6,7 @@ import { REPORT_TYPES } from '../report-settings'
 //   daily_reports              : work_date から3年
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
+//   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
 //                              : 勤怠と同じく、スタッフの退職日から7年（docs/spec_attendance_correction.md 8章）
 //   notice_read_staff_reports  : スタッフ別の既読率（人事評価の参考資料）も退職後7年（#437）
@@ -64,6 +65,7 @@ const NOTIFICATIONS_YEARS = 2
 const NOTIFICATIONS_BATCH = 500
 const NOTIFICATIONS_MAX_BATCHES = 20
 const EMAIL_LOGS_YEARS = 1
+const OPERATION_LOGS_YEARS = 7
 const R2_DELETE_CHUNK = 1000 // R2 の delete に1回で渡すキーの数（R2 の上限）
 const R2_DELETE_BUDGET = 5000 // 1回のCronで消す R2 の写真・書類の上限（超えた分は翌日に回す。#419）
 const DRY_RUN_STAFF_LIMIT = 300 // dry-run で一覧に出す対象スタッフの上限
@@ -394,17 +396,19 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 
 // 作成日時から一定年数たった行を、件数を区切って消す（user_notifications・email_logs で共用）。
 // created_at は CURRENT_TIMESTAMP（YYYY-MM-DD HH:MM:SS）か ISO 8601 で、どちらも YYYY-MM-DD との文字列比較で判定できる
-async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number }): Promise<RetentionTargetResult> {
+// where は追加の条件（削除の保留中の企業を除くときなど）
+async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number; where?: string }): Promise<RetentionTargetResult> {
   const cutoff = cutoffDate(t.years)
+  const extra = t.where ? ` AND ${t.where}` : ''
   if (dryRun) {
-    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t.table} WHERE created_at < ?`).bind(cutoff).first()
+    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t.table} WHERE created_at < ?${extra}`).bind(cutoff).first()
     return { target: t.target, targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
   }
   let deleted = 0
   try {
     for (let i = 0; i < NOTIFICATIONS_MAX_BATCHES; i++) {
       const result = await db.prepare(
-        `DELETE FROM ${t.table} WHERE ${t.idCol} IN (SELECT ${t.idCol} FROM ${t.table} WHERE created_at < ? LIMIT ?)`
+        `DELETE FROM ${t.table} WHERE ${t.idCol} IN (SELECT ${t.idCol} FROM ${t.table} WHERE created_at < ?${extra} LIMIT ?)`
       ).bind(cutoff, NOTIFICATIONS_BATCH).run()
       const changes = result.meta.changes || 0
       deleted += changes
@@ -422,6 +426,11 @@ function cleanupUserNotifications(db: D1Database, dryRun: boolean): Promise<Rete
 // メールの送信記録（宛先のメールアドレスを含む）は1年で消す（#240）
 function cleanupEmailLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'email_logs', table: 'email_logs', idCol: 'log_id', years: EMAIL_LOGS_YEARS })
+}
+// シフト・精算の操作履歴（#159）は操作から7年で消す（精算・請求の帳簿と同じ期間）。削除の保留中の企業の分は消さない
+function cleanupOperationLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'operation_logs', table: 'operation_logs', idCol: 'log_id', years: OPERATION_LOGS_YEARS,
+    where: `company_id NOT IN (${HELD_COMPANY_SQL})` })
 }
 
 function emptyRetiredAcc(): Record<string, RetentionTargetResult> {
@@ -665,6 +674,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         // Sprint 5 で足した、シフトを参照する表（リマインドの送信記録・交通費や延長の申請）。shifts より先に消す
         [null, db.prepare(`DELETE FROM reminder_sends WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
+        // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
+        [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
         ['shifts', db.prepare('DELETE FROM shifts WHERE staff_id = ?').bind(staffId)],
         ['evaluations', db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId)],
         ['follow_logs', db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId)],
@@ -908,6 +919,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('daily_reports', async () => [await cleanupDailyReports(db, opts.dryRun)]),
       ...await stage('user_notifications', async () => [await cleanupUserNotifications(db, opts.dryRun)]),
       ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
+      ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
     ] : []),
     ...(stages.includes('in_service') ? await stage('in_service', () => cleanupInService(db, opts.dryRun)) : []),
@@ -1107,6 +1119,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
+  { target: 'operation_logs', label: 'シフト・精算の操作履歴', table: 'operation_logs', where: OB_CO },
   { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
     where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },
   { target: 'recruit_applications', label: '応募', table: 'recruit_applications', where: OB_CO },
@@ -1224,7 +1237,11 @@ export async function countOffboardingData(db: D1Database, companyId: number): P
     ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
     ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
   ]
-  const row = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  // D1 は1行の列数が100までなので、列を分けて数える（表を足していくと超えるため）
+  const parts: string[][] = []
+  for (let i = 0; i < cols.length; i += 90) parts.push(cols.slice(i, i + 90))
+  const res = await db.batch(parts.map(part => db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${part.join(', ')}`).bind(companyId)))
+  const row = Object.assign({}, ...res.map(r => (r.results[0] || {}) as Record<string, number>)) as Record<string, number>
   const counts: Record<string, number> = {}
   OFFBOARDING_TABLES.forEach((t, i) => { counts[t.target] = Number(row?.[`t${i}`]) || 0 })
   const files: Record<string, number> = {}
