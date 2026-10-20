@@ -89,7 +89,8 @@ window.renderMyProfile = async function () {
         ${row('稼働開始可能日', p.available_from)}
         ${row('稼働エリア', p.work_area)}${rowHtml('スキル', skillsHtml(p.skills))}${rowHtml('経歴', careerHtml(p))}
       </dl>
-      <p class="text-[11px] text-gray-400 mt-2">内容の変更は所属会社の担当者にご連絡ください。</p>
+      <a href="#profile-request" class="btn btn-outline w-full mt-3"><i class="fas fa-pen"></i>最寄駅・稼働エリアなどの変更を申請する</a>
+      <p class="text-[11px] text-gray-400 mt-2">氏名・生年月日などほかの項目の変更は、所属会社の担当者にご連絡ください。</p>
     </section>`
 }
 // 確認してから QR とIDを出す（うっかり見せないように。#229）。コピー・共有のボタンも出す（#475）
@@ -142,11 +143,22 @@ if (_origRenderMore) {
         <span class="flex-1"><span class="block font-bold text-gray-800">マイプロフィール / スタッフID</span><span class="block text-xs text-gray-400">登録情報と企業間連携用QRコード</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </a>
+      <a href="#my-docs" class="report-btn">
+        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-file-arrow-up"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">書類の提出</span><span class="block text-xs text-gray-400">資格証・身分証・入社書類などを写真やPDFで提出</span></span>
+        <i class="fas fa-chevron-right text-gray-300"></i>
+      </a>
+      <a href="#my-leave" class="report-btn hidden" id="more-leave-link">
+        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-umbrella-beach"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">有給・休暇</span><span class="block text-xs text-gray-400">有給の残日数の確認と休暇の申請</span></span>
+        <i class="fas fa-chevron-right text-gray-300"></i>
+      </a>
       <a href="#password" class="report-btn">
         <span class="w-11 h-11 rounded-xl bg-gray-100 text-gray-600 flex items-center justify-center text-lg"><i class="fas fa-lock"></i></span>
         <span class="flex-1"><span class="block font-bold text-gray-800">パスワードの変更</span><span class="block text-xs text-gray-400">ログインのパスワードを変更します</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </a>`)
+    showLeaveMenuIfEligible()
   }
   // routes テーブルは staff.js 内の const のため直接差し替える
   if (typeof routes === 'object') {
@@ -268,3 +280,251 @@ async function renderCompanySwitcher() {
 setTimeout(renderCompanySwitcher, 300)
 
 // ホーム・シフト一覧の会社名（他社のシフト）と、同じ日の複数のシフトの一覧は staff.js が描く（#503 #504）
+
+// =========================================================
+// スタッフ本人の手続き（作業単位 w5-staff-self-service）
+//   #profile-request 登録情報の変更申請（#272）/ #my-docs 書類の提出（#288 #297）/ #my-leave 有給の残日数と休暇の申請（#289）
+// 結果は通知（#notifications）にも届く。API は /api/staff/self/*（src/staff-self-service.ts）
+// =========================================================
+const SELF_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['見送り', 'badge-red'], cancelled: ['取り消し', 'badge-gray'] }
+const selfStatusBadge = (s) => { const [l, cls] = SELF_STATUS[s] || [s, 'badge-gray']; return `<span class="badge ${cls}">${esc(l)}</span>` }
+const selfDate = (at) => esc(String(at || '').slice(0, 16).replace(/^(\d{4})-(\d{2})-(\d{2})/, (m, y, mo, d) => `${Number(mo)}/${Number(d)}`))
+const selfLoadFailed = (back) => { $app.innerHTML = `${back}<p class="text-center text-gray-400 py-10">読み込めませんでした。通信状況を確かめて、もう一度開いてください</p>` }
+const SELF_WEEKDAY = ['日', '月', '火', '水', '木', '金', '土']
+
+// 『その他』の「有給・休暇」は自社雇用の社員だけに出す（企業を切り替えると画面ごと読み直すので、1回だけ問い合わせる）
+let SELF_SUMMARY = null
+async function showLeaveMenuIfEligible() {
+  try { if (!SELF_SUMMARY) SELF_SUMMARY = (await axios.get('/api/staff/self/summary')).data } catch { return }
+  const el = document.getElementById('more-leave-link')
+  if (el && SELF_SUMMARY.leave_eligible) el.classList.remove('hidden')
+}
+
+// ---------- 登録情報の変更申請（#272） ----------
+const PROFILE_BACK = '<a href="#profile" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>マイプロフィールへ戻る</a>'
+window.renderProfileRequest = async function () {
+  loading()
+  let d
+  try { d = (await axios.get('/api/staff/self/profile-requests')).data } catch { selfLoadFailed(PROFILE_BACK); return }
+  const L = d.labels, cur = d.current || {}
+  const show = (v) => v == null || v === '' ? '（空欄）' : String(v)
+  const inp = (k, type, ph) => `<div><label class="text-sm text-gray-600 block mb-1" for="pr-${k}">${esc(L[k])}</label>
+    <input id="pr-${k}" type="${type}" class="inp" value="${esc(cur[k] ?? '')}" ${ph ? `placeholder="${esc(ph)}"` : ''} ${type === 'number' ? 'min="0" max="1440" inputmode="numeric"' : ''}></div>`
+  let form
+  if (!d.available) form = `<p class="text-sm text-gray-600">${esc(d.reason)}</p>`
+  else if (d.pending) form = '<p class="text-sm bg-amber-50 text-amber-800 rounded-lg p-3">承認待ちの申請があります。内容を変えるときは、下の申請を取り消してから出し直してください。</p>'
+  else form = `
+    <p class="text-xs text-gray-500 mb-3">変えたい項目だけ書き換えて送ってください。${esc(d.target_company_name)} の担当者が確認して、承認されたら登録が変わります。</p>
+    <div class="space-y-3">
+      ${inp('nearest_station_line', 'text', '例: JR山手線')}${inp('nearest_station', 'text', '例: 渋谷')}
+      ${inp('commute_minutes', 'number', '例: 60')}${inp('available_from', 'date')}${inp('work_area', 'text', '例: 東京都23区・神奈川県東部')}
+      <div><label class="text-sm text-gray-600 block mb-1" for="pr-skills">${esc(L.skills)}（読点か改行で区切る）</label><textarea id="pr-skills" class="inp" rows="3" maxlength="1000">${esc(cur.skills ?? '')}</textarea></div>
+      ${d.email_allowed ? `<div><label class="text-sm text-gray-600 block mb-1" for="pr-login_email">${esc(L.login_email)}（変えるときだけ入力）</label>
+        <input id="pr-login_email" type="email" class="inp" autocomplete="email" placeholder="今: ${esc(cur.login_email || '未登録')}">
+        <p class="text-[11px] text-gray-400 mt-1">承認されると確認用のメールが届きます。メールのリンクを開くと切り替わります。</p></div>` : ''}
+      <div><label class="text-sm text-gray-600 block mb-1" for="pr-note">補足（任意）</label><textarea id="pr-note" class="inp" rows="2" maxlength="500" placeholder="例: 引っ越しのため"></textarea></div>
+      <button class="btn btn-primary w-full" data-action="submitProfileRequest"><i class="fas fa-paper-plane"></i>変更を申請する</button>
+    </div>`
+  $app.innerHTML = `${PROFILE_BACK}
+    <section class="card p-4 mb-3"><h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-pen text-blue-500 mr-1"></i>登録情報の変更申請</h3>${form}</section>
+    ${d.requests.length ? `<section class="card p-4"><h3 class="text-sm font-bold text-gray-700 mb-2">これまでの申請</h3><div class="space-y-3">${d.requests.map(r => `
+      <div class="border-b border-gray-100 pb-2 last:border-0">
+        <div class="flex items-center gap-2 flex-wrap text-xs text-gray-500">${selfStatusBadge(r.status)}<span>${selfDate(r.created_at)} 申請</span>${r.company_name ? `<span>${esc(r.company_name)}</span>` : ''}</div>
+        <ul class="text-sm mt-1 space-y-0.5">${Object.keys(r.changes || {}).map(k => `<li class="break-words"><span class="text-gray-400">${esc(L[k] || k)}:</span> ${esc(show(r.before && r.before[k]))} → <b>${esc(show(r.changes[k]))}</b></li>`).join('')}</ul>
+        ${r.review_comment ? `<p class="text-xs text-gray-600 mt-1">担当者のコメント: ${esc(r.review_comment)}</p>` : ''}
+        ${r.status === 'pending' ? `<button class="btn btn-outline text-xs mt-1" data-action="cancelProfileRequest" data-id="${Number(r.request_id)}">この申請を取り消す</button>` : ''}
+      </div>`).join('')}</div></section>` : ''}`
+}
+delegate('submitProfileRequest', el => withSubmitLock(el, async () => {
+  const changes = {}
+  for (const k of ['nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'work_area', 'skills', 'login_email']) {
+    const f = document.getElementById('pr-' + k)
+    if (!f) continue
+    if (k === 'login_email' && !f.value.trim()) continue
+    changes[k] = f.value
+  }
+  try {
+    const { data } = await axios.post('/api/staff/self/profile-requests', { changes, note: (document.getElementById('pr-note') || {}).value || '' })
+    toast(`${data.target_company_name || '所属会社'} に変更を申請しました`)
+    renderProfileRequest()
+  } catch (e) { showApiError(e, '申請できませんでした') }
+}))
+delegate('cancelProfileRequest', el => {
+  if (!confirm('この変更申請を取り消しますか？')) return
+  withSubmitLock(el, async () => {
+    try { await axios.post(`/api/staff/self/profile-requests/${Number(el.dataset.id)}/cancel`); toast('申請を取り消しました'); renderProfileRequest() } catch (e) { showApiError(e, '取り消せませんでした') }
+  })
+})
+
+// ---------- 書類の提出（#288 #297） ----------
+const MY_DOC_LABEL = { resume: '履歴書', qualification: '資格証', id_card: '身分証', residence_card: '在留カード', bank: '口座の確認書類', onboarding: '入社書類', other: 'その他' }
+function myDocExpiryBadge(v) {
+  if (!v) return ''
+  const days = dayjs(v).diff(dayjs().startOf('day'), 'day')
+  if (days < 0) return `<span class="badge badge-red">期限切れ ${esc(v)}</span>`
+  if (days <= 30) return `<span class="badge badge-yellow">期限まで${days}日</span>`
+  return `<span class="badge badge-gray">期限 ${esc(v)}</span>`
+}
+window.renderMyDocs = async function () {
+  loading()
+  let d
+  try { d = (await axios.get('/api/staff/self/documents')).data } catch { selfLoadFailed(MORE_BACK); return }
+  const types = d.types || Object.keys(MY_DOC_LABEL)
+  $app.innerHTML = `${MORE_BACK}
+    <section class="card p-4 mb-3">
+      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-file-arrow-up text-blue-500 mr-1"></i>書類を提出する</h3>
+      <p class="text-xs text-gray-500 mb-3">提出先: ${esc(d.company_name || '')}。担当者だけが見られます。文字が読めるように、明るい所で全体を写してください。</p>
+      <div class="space-y-3">
+        <div><label class="text-sm text-gray-600 block mb-1" for="md-type">書類の種類</label>
+          <select id="md-type" class="inp"><option value="">選んでください</option>${types.map(t => `<option value="${esc(t)}">${esc(MY_DOC_LABEL[t] || t)}</option>`).join('')}</select></div>
+        <div><label class="text-sm text-gray-600 block mb-1" for="md-valid">有効期限（資格証・在留カードなど。ない場合は空欄）</label><input id="md-valid" type="date" class="inp"></div>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="btn btn-primary w-full cursor-pointer"><i class="fas fa-camera"></i>撮影して提出<input type="file" accept="image/*" capture="environment" class="hidden" data-doc-input="1"></label>
+          <label class="btn btn-outline w-full cursor-pointer"><i class="fas fa-folder-open"></i>写真・PDFを選ぶ<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" class="hidden" data-doc-input="1"></label>
+        </div>
+        <p id="md-msg" class="text-xs text-gray-500" role="status"></p>
+      </div>
+    </section>
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-2">提出した書類</h3>
+      ${d.documents.length ? `<div class="space-y-2">${d.documents.map(x => `
+        <div class="flex items-center gap-2 p-2 rounded-lg bg-gray-50">
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-gray-800 truncate">${esc(x.original_file_name)}</p>
+            <div class="flex flex-wrap gap-1 mt-0.5">${x.doc_type ? `<span class="badge badge-blue">${esc(MY_DOC_LABEL[x.doc_type] || x.doc_type)}</span>` : ''}${myDocExpiryBadge(x.valid_until)}
+              ${x.confirmed_at ? '<span class="badge badge-green">担当者が確認済み</span>' : '<span class="badge badge-yellow">確認待ち</span>'}
+              <span class="text-[11px] text-gray-400">${selfDate(x.uploaded_at)} 提出</span></div>
+          </div>
+          <a class="btn btn-outline text-xs" href="/api/staff/self/documents/${Number(x.document_id)}/download" target="_blank" rel="noopener" aria-label="開く"><i class="fas fa-download"></i></a>
+          ${x.confirmed_at ? '' : `<button class="btn btn-danger text-xs" data-action="deleteMyDoc" data-id="${Number(x.document_id)}" data-name="${esc(x.original_file_name)}" aria-label="削除"><i class="fas fa-trash"></i></button>`}
+        </div>`).join('')}</div>
+        <p class="text-[11px] text-gray-400 mt-2">担当者が確認した書類は削除できません。期限が切れたら新しい書類を提出してください。</p>` : '<p class="text-sm text-gray-400">まだ提出した書類はありません</p>'}
+    </section>`
+  $app.querySelectorAll('input[data-doc-input]').forEach(inp => inp.addEventListener('change', () => uploadMyDoc(inp)))
+}
+async function uploadMyDoc(inp) {
+  const file = inp.files && inp.files[0]
+  inp.value = ''
+  const msg = document.getElementById('md-msg')
+  const type = document.getElementById('md-type').value
+  if (!file) return
+  if (!type) { toast('書類の種類を選んでください'); return }
+  const labels = $app.querySelectorAll('label.btn')
+  labels.forEach(l => l.classList.add('opacity-50', 'pointer-events-none'))
+  msg.textContent = '送信しています…'
+  try {
+    let upload = file
+    // 写真は入店報告と同じ方法で小さくしてから送る（小さくできなくても、JPEG・PNG・WebP ならそのまま送る）
+    if (/^image\//.test(file.type)) {
+      try {
+        const blob = await compressImage(file)
+        upload = new File([blob], String(file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
+      } catch (e) {
+        if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { msg.textContent = ''; toast(e.message || '画像を読み込めませんでした'); return }
+      }
+    }
+    const form = new FormData()
+    form.append('file', upload); form.append('doc_type', type)
+    const valid = document.getElementById('md-valid').value
+    if (valid) form.append('valid_until', valid)
+    await axios.post('/api/staff/self/documents', form)
+    toast('書類を提出しました')
+    renderMyDocs()
+  } catch (e) {
+    msg.textContent = ''
+    showApiError(e, '提出できませんでした。通信状況を確かめて、もう一度お試しください')
+  } finally { labels.forEach(l => l.classList.remove('opacity-50', 'pointer-events-none')) }
+}
+delegate('deleteMyDoc', el => {
+  if (!confirm(`${el.dataset.name} を削除しますか？`)) return
+  withSubmitLock(el, async () => {
+    try { await axios.delete(`/api/staff/self/documents/${Number(el.dataset.id)}`); toast('削除しました'); renderMyDocs() } catch (e) { showApiError(e, '削除できませんでした') }
+  })
+})
+
+// ---------- 有給の残日数と休暇の申請（#289） ----------
+const MY_LEAVE_TYPE = { paid: '有給休暇', other: 'その他の休暇（無給・特別休暇など）' }
+const MY_LEAVE_UNIT = { full: '全日', am: '午前半休', pm: '午後半休' }
+window.renderMyLeave = async function () {
+  loading()
+  let d
+  try { d = (await axios.get('/api/staff/self/leave')).data } catch { selfLoadFailed(MORE_BACK); return }
+  if (!d.eligible) { $app.innerHTML = `${MORE_BACK}<section class="card p-4 text-sm text-gray-600">有給・休暇の申請は、所属会社に雇用されている社員のみ利用できます。休みの連絡は「相談・連絡」から担当者に伝えてください。</section>`; return }
+  const b = d.balance || {}
+  const num = (v, unit) => v == null || v === '' ? '<span class="text-gray-400">未登録</span>' : `<b class="text-lg">${esc(v)}</b>${unit}`
+  $app.innerHTML = `${MORE_BACK}
+    <section class="card p-4 mb-3">
+      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-umbrella-beach text-blue-500 mr-1"></i>有給の残日数</h3>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <div class="p-2 rounded-lg bg-blue-50"><p class="text-xs text-gray-500">有給の残り</p><p>${num(b.paid_leave_remaining, '日')}</p>
+          ${b.pending_paid_days ? `<p class="text-[11px] text-amber-700">承認待ち ${esc(b.pending_paid_days)}日</p>` : ''}</div>
+        <div class="p-2 rounded-lg bg-gray-50"><p class="text-xs text-gray-500">今月のテレワーク残り</p><p>${num(b.telework_remaining_this_month, '回')}</p></div>
+      </div>
+      <p class="text-[11px] text-gray-400 mt-2">付与日: ${esc(b.paid_leave_granted_at || '未登録')}。残日数は担当者が登録した値です。違っている場合は担当者に確認してください。</p>
+    </section>
+    <section class="card p-4 mb-3">
+      <h3 class="text-sm font-bold text-gray-700 mb-2">休暇を申請する</h3>
+      <div class="space-y-3">
+        <div><label class="text-sm text-gray-600 block mb-1" for="lv-date">日付</label><input id="lv-date" type="date" class="inp" min="${esc(dayjs().subtract(31, 'day').format('YYYY-MM-DD'))}"></div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-sm text-gray-600 block mb-1" for="lv-type">種類</label><select id="lv-type" class="inp">${Object.entries(MY_LEAVE_TYPE).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></div>
+          <div><label class="text-sm text-gray-600 block mb-1" for="lv-unit">全日・半休</label><select id="lv-unit" class="inp">${Object.entries(MY_LEAVE_UNIT).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></div>
+        </div>
+        <div><label class="text-sm text-gray-600 block mb-1" for="lv-reason">理由（任意）</label><textarea id="lv-reason" class="inp" rows="2" maxlength="500"></textarea></div>
+        <button class="btn btn-primary w-full" data-action="submitLeave"><i class="fas fa-paper-plane"></i>申請する</button>
+        <p class="text-[11px] text-gray-400">その日にシフトが入っている場合は、承認の後に担当者がシフトを調整します。</p>
+      </div>
+    </section>
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-2">申請の一覧</h3>
+      ${d.requests.length ? `<div class="space-y-2">${d.requests.map(l => `
+        <div class="border-b border-gray-100 pb-2 last:border-0 text-sm">
+          <div class="flex items-center gap-2 flex-wrap"><b>${esc(dayjs(l.leave_date).format('M/D'))}（${SELF_WEEKDAY[dayjs(l.leave_date).day()]}）</b>
+            <span class="text-xs text-gray-600">${esc((MY_LEAVE_TYPE[l.leave_type] || l.leave_type).replace(/（.*）/, ''))}・${esc(MY_LEAVE_UNIT[l.leave_unit] || l.leave_unit)}</span>${selfStatusBadge(l.status)}</div>
+          ${l.reason ? `<p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(l.reason)}</p>` : ''}
+          ${l.review_comment ? `<p class="text-xs text-gray-600 mt-0.5">担当者のコメント: ${esc(l.review_comment)}</p>` : ''}
+          ${l.status === 'pending' ? `<button class="btn btn-outline text-xs mt-1" data-action="cancelLeave" data-id="${Number(l.leave_id)}">取り消す</button>` : ''}
+        </div>`).join('')}</div>` : '<p class="text-sm text-gray-400">まだ申請はありません</p>'}
+    </section>`
+}
+delegate('submitLeave', el => withSubmitLock(el, async () => {
+  const date = document.getElementById('lv-date').value
+  if (!date) { toast('日付を選んでください'); return }
+  try {
+    await axios.post('/api/staff/self/leave', { leave_date: date, leave_type: document.getElementById('lv-type').value, leave_unit: document.getElementById('lv-unit').value,
+      reason: document.getElementById('lv-reason').value })
+    toast('休暇を申請しました'); renderMyLeave()
+  } catch (e) { showApiError(e, '申請できませんでした') }
+}))
+delegate('cancelLeave', el => {
+  if (!confirm('この休暇の申請を取り消しますか？')) return
+  withSubmitLock(el, async () => {
+    try { await axios.post(`/api/staff/self/leave/${Number(el.dataset.id)}/cancel`); toast('取り消しました'); renderMyLeave() } catch (e) { showApiError(e, '取り消せませんでした') }
+  })
+})
+
+// 通知の行き先: この作業単位の通知（変更申請・休暇の結果）は、それぞれの画面を開く。
+// 通知の一覧（staff-attendance.js）は知らない種類を打刻修正の申請へ送るので、その前に振り分ける
+const SELF_NOTIF_LINK = /^#(profile-request|my-leave|my-docs)$/
+const _origNotifOpenStaff = window.notifOpenStaff
+if (typeof _origNotifOpenStaff === 'function') {
+  window.notifOpenStaff = async function (id) {
+    let n = null
+    try { n = (await axios.get('/api/staff/notifications?limit=100')).data.notifications.find(x => x.notification_id === id) } catch { /* 元の処理に任せる */ }
+    if (n && SELF_NOTIF_LINK.test(n.link || '') && /^(profile_change_|leave_)/.test(n.kind || '')) {
+      try { await axios.post(`/api/staff/notifications/${id}/read`) } catch { /* 既読にできなくても画面は開く */ }
+      location.hash = n.link.slice(1)
+      return
+    }
+    return _origNotifOpenStaff(id)
+  }
+}
+
+// 画面の URL（staff.js の routes・titles・MORE_SUB_TABS に足す。下のタブは『その他』を選んだ表示にする）
+if (typeof routes === 'object') {
+  routes['profile-request'] = () => window.renderProfileRequest()
+  routes['my-docs'] = () => window.renderMyDocs()
+  routes['my-leave'] = () => window.renderMyLeave()
+  if (typeof titles === 'object') Object.assign(titles, { 'profile-request': '登録情報の変更申請', 'my-docs': '書類の提出', 'my-leave': '有給・休暇' })
+  if (typeof MORE_SUB_TABS === 'object') MORE_SUB_TABS.push('profile-request', 'my-docs', 'my-leave')
+}

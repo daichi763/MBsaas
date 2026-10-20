@@ -49,6 +49,7 @@ import { NOTICE_TARGET_SQL, NOTICE_LIVE_SQL, NOTICE_EXPIRED_SQL, loadStaffNotice
 import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
 import { staffPayAdminApi, staffPayStaffApi } from './staff-pay'
+import { staffSelfServiceApi, staffRequestsAdminApi, parseDocMeta } from './staff-self-service'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -1118,6 +1119,9 @@ api.route('/hq', hqUsersApi)
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
 api.route('/admin/roster', rosterApi)
 api.route('/staff/me', staffSelfApi)
+// スタッフ本人の手続き（登録情報の変更申請・書類の提出・休暇の申請）と、管理者の承認（#272 #288 #289 #297。src/staff-self-service.ts）
+api.route('/staff/self', staffSelfServiceApi)
+api.route('/admin/staff-requests', staffRequestsAdminApi((c, sid, changes) => applyApprovedProfileChange(c, String(sid), changes)))
 // 企業間チャット（所属元⇔稼働先担当者）。/admin/* 配下のみ。スタッフ本人向けAPIには公開しない（src/roster-chat.ts）
 api.route('/admin/roster-chat', chatApi)
 // 常勤/スポットのシフトボード・募集枠・単価（請求/支払）。金額は /api/admin/* のみで返す（src/shift-board.ts）
@@ -3397,6 +3401,38 @@ async function applyContactUpdate(c: any, body: any, roster: any): Promise<{ log
   out.login_email = { pending: email, mail_sent: !!sent.ok, mail_skipped: !!sent.skipped }
   return out
 }
+/**
+ * 登録情報の変更申請（#272）を承認したときに反映する（src/staff-self-service.ts から呼ぶ）。
+ * スタッフマスタ・従業員管理の保存と同じ確認（値の形・必須項目・メールの重複）と保存（applyProfileUpdate・applyContactUpdate）を通す。
+ * 申請先は所属元の行なので、自社雇用の最寄駅もここで反映する（従業員管理で直すのと同じ扱い）
+ */
+async function applyApprovedProfileChange(c: any, sid: string, changes: Record<string, any>): Promise<{ error: string; status: 400 | 403 | 404 | 409 } | { ok: true; login_email?: any }> {
+  const u = c.get('user')
+  const roster = await loadRoster(c.env.DB, sid, u.company_id)
+  if (!roster) return { error: 'スタッフが見つかりません', status: 404 }
+  if (roster.merged_into_staff_id) return { error: '統合済みのスタッフのため反映できません（統合先のスタッフで編集してください）', status: 409 }
+  if (roster.affiliation_type === 'linked_external' || !roster.can_edit_base) return { error: '基本項目は所属元企業のみ編集できます', status: 403 }
+  // 自社雇用の最寄駅は従業員管理（会社管理者・事務担当のみ）で直す項目なので、承認も同じロールに限る
+  if (roster.affiliation_type === 'own_employee' && !HR_ROLES.includes(u.role) && (changes.nearest_station_line !== undefined || changes.nearest_station !== undefined)) {
+    return { error: '自社雇用スタッフの最寄駅の変更は、会社管理者・事務担当が承認してください', status: 403 }
+  }
+  const body: Record<string, any> = {}
+  for (const k of ['nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'work_area', 'skills']) if (changes[k] !== undefined) body[k] = changes[k]
+  const bizErr = normalizeBusinessBody(body)
+  if (bizErr) return { error: bizErr, status: 400 }
+  if (Object.keys(body).length) {
+    const err = await validateProfileBase(c, body, roster)
+    if (err) return { error: err, status: 400 }
+  }
+  if (changes.login_email !== undefined) {
+    body.login_email = changes.login_email
+    const contactErr = await checkContactUpdate(c, sid, body, roster)
+    if (contactErr) return { error: contactErr.body?.error || 'ログイン用メールを変更できません', status: contactErr.status }
+  }
+  await applyProfileUpdate(c, sid, body, roster)
+  const contact = await applyContactUpdate(c, body, roster)
+  return { ok: true, login_email: contact.login_email }
+}
 // 従業員管理で電話番号（phone_main）を変えたら、照合（仮登録・応募の重複確認、統合候補）に使う users.phone にもそろえる（#123）
 async function syncUserPhoneFromEmployee(db: D1Database, sid: string, companyId: number, phoneMain: unknown) {
   const raw = String(phoneMain ?? '').trim()
@@ -3595,14 +3631,15 @@ async function assertStaffInCompany(c: any, sid: string) {
 }
 
 // 書類の一覧の列。uploaded_at は既定値の CURRENT_TIMESTAMP（UTC）で保存されているので、日本時間にして返す（#257。保存の形は変えない）
-const DOC_LIST_COLS = "SELECT document_id, original_file_name, mime_type, file_size, datetime(uploaded_at, '+9 hours') AS uploaded_at"
-// ファイル一覧
+// doc_type・valid_until は書類の種類と有効期限（#297）
+const DOC_LIST_COLS = "SELECT document_id, original_file_name, mime_type, file_size, datetime(uploaded_at, '+9 hours') AS uploaded_at, doc_type, valid_until"
+// ファイル一覧（本人がスマホから提出した書類には submitted_by_staff・確認の印が付く。#288）
 api.get('/admin/staff/:id/documents', async (c) => {
   const sid = c.req.param('id')
   const staff = await assertStaffInCompany(c, sid)
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const docs = await c.env.DB.prepare(
-    DOC_LIST_COLS + ' FROM staff_documents WHERE staff_id = ? ORDER BY document_id DESC'
+    DOC_LIST_COLS + ', submitted_by_staff, confirmed_at FROM staff_documents WHERE staff_id = ? ORDER BY document_id DESC'
   ).bind(sid).all()
   return c.json({ documents: docs.results })
 })
@@ -3621,6 +3658,9 @@ api.post('/admin/staff/:id/documents', async (c) => {
   }
   const files = form.getAll('files').filter(f => f instanceof File) as File[]
   if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
+  // 書類の種類と有効期限（#297。同じ送信のファイルすべてに付ける）
+  const meta = parseDocMeta('staff', form.get('doc_type'), form.get('valid_until'))
+  if ('error' in meta) return c.json({ error: meta.error }, 400)
 
   const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
 
@@ -3654,9 +3694,9 @@ api.post('/admin/staff/:id/documents', async (c) => {
     }
 
     try {
-      const r = await c.env.DB.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+      const r = await c.env.DB.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id, meta.doc_type, meta.valid_until).run()
       results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
     } catch {
       // D1登録に失敗した場合はアップロード済みのR2オブジェクトを掃除する
@@ -4133,6 +4173,8 @@ api.post('/admin/employees/:staffId/documents', async (c) => {
   try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
   const files = form.getAll('files').filter(f => f instanceof File) as File[]
   if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
+  const meta = parseDocMeta('employee', form.get('doc_type'), form.get('valid_until')) // 書類の種類と有効期限（#297）
+  if ('error' in meta) return c.json({ error: meta.error }, 400)
 
   const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
   for (const file of files) {
@@ -4150,8 +4192,8 @@ api.post('/admin/employees/:staffId/documents', async (c) => {
       await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
     } catch { results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' }); continue }
     try {
-      const r = await c.env.DB.prepare(`INSERT INTO employee_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+      const r = await c.env.DB.prepare(`INSERT INTO employee_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id, meta.doc_type, meta.valid_until).run()
       results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
     } catch {
       await c.env.DOCUMENTS.delete(key).catch(() => {})
@@ -4219,6 +4261,9 @@ api.post('/admin/clients/:id/documents', async (c) => {
   }
   const files = form.getAll('files').filter(f => f instanceof File) as File[]
   if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
+  // 契約書の種類と契約終了日（#297）
+  const meta = parseDocMeta('client', form.get('doc_type'), form.get('valid_until'))
+  if ('error' in meta) return c.json({ error: meta.error }, 400)
 
   const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
 
@@ -4249,9 +4294,9 @@ api.post('/admin/clients/:id/documents', async (c) => {
     }
 
     try {
-      const r = await c.env.DB.prepare(`INSERT INTO client_documents (company_id, client_id, original_file_name, storage_key, mime_type, file_size, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, cid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id).run()
+      const r = await c.env.DB.prepare(`INSERT INTO client_documents (company_id, client_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(u.company_id, cid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id, meta.doc_type, meta.valid_until).run()
       results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
     } catch {
       await c.env.CONTRACTS.delete(key).catch(() => {})
