@@ -122,14 +122,17 @@ async function attendanceReminders(db: D1Database, now: string): Promise<(Remind
 async function dailyReportReminders(db: D1Database, now: string): Promise<(ReminderItem & { due_at: string })[]> {
   const today = now.slice(0, 10)
   // 予定の終了は稼働日の翌日まで。送る時点は終了の12時間後まで、遅れの上限を足しても稼働日の2日後まで
+  // 予定の終了でも絞る（送る時点を過ぎて送らなかったシフトや、まだ終わっていないシフトで MAX_CANDIDATES 件が埋まり、送るべきものが読まれなくならないように）
+  const endFrom = addMinutes(now, -(REMINDER_LIMITS.daily_report + REMIND_LATE_MINUTES.daily_report))
   const rows = (await db.prepare(`SELECT ${BASE_COLS}
     ${BASE_FROM}
     WHERE s.work_date BETWEEN ? AND ? AND ${BASE_WHERE}
+      AND datetime(s.work_date || ' ' || s.end_time, CASE WHEN substr(s.end_time, 1, 5) <= substr(s.start_time, 1, 5) THEN '+1 day' ELSE '+0 days' END) BETWEEN ? AND ?
       AND ${dailyReportRequiredSql('s', 'sp', 'p')}
       AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
       AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
       AND NOT EXISTS (SELECT 1 FROM reminder_sends r WHERE r.shift_id = s.shift_id AND r.reminder_type = 'daily_report')
-    ORDER BY s.shift_id LIMIT ?`).bind(addDays(today, -2), today, MAX_CANDIDATES).all()).results as any[]
+    ORDER BY s.shift_id LIMIT ?`).bind(addDays(today, -2), today, endFrom, now, MAX_CANDIDATES).all()).results as any[]
   const settingsOf = settingsCache()
   const out: (ReminderItem & { due_at: string })[] = []
   for (const s of rows) {
@@ -147,6 +150,10 @@ export async function runReminders(env: NotifyEnv, now: string = nowJST()) {
   const db = env.DB
   // 重複を防ぐための記録なので、古い行は消す
   await db.prepare('DELETE FROM reminder_sends WHERE created_at < ?').bind(`${addDays(now.slice(0, 10), -KEEP_DAYS)} 00:00:00`).run()
+  // ON にした会社がなければ、シフトを読まずに終える（15分おきに全社のシフトを読む分の D1 の読み取りを減らす）
+  const anyOn = await db.prepare(`SELECT 1 AS x FROM companies co WHERE (CASE WHEN json_valid(co.settings_json) THEN json_extract(co.settings_json, '$.reminders.enabled') END) = 1
+    AND COALESCE(co.active_status, 'active') != 'inactive' LIMIT 1`).first()
+  if (!anyOn) return { idle: true, sent: 0 }
   const candidates = [...await attendanceReminders(db, now), ...await dailyReportReminders(db, now)]
   // 何もなかった実行は idle を返す（cron_runs の記録を1行にまとめる。services/cron.ts）
   if (!candidates.length) return { idle: true, sent: 0 }
