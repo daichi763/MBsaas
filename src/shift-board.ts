@@ -1643,13 +1643,17 @@ app.post('/shifts/copy-week', async (c) => {
   if (shiftPlans.length) {
     const pdata = await loadPricingData(db, cid, usedProjectIds)
     const hist = await loadPayeeHistory(db, cid, shiftPlans.map(p => p.src.staff_id))
+    // コピー元の交通費が 0 のときは、スタッフの標準（開催場所 → スタッフ）を入れる（#564）
+    const tdefs = await loadTransportDefaults(db, cid, shiftPlans.filter(p => !Number(p.src.transportation_fee || 0)).map(p => p.src.staff_id))
     const rows = shiftPlans.map(p => {
       const s = p.src, role = p.role?.target || null, slot = p.role?.slot.target || null
+      const siteId = slot ? slot.site_id ?? null : s.site_id ?? null
       const row: any = {
         company_id: cid, staff_id: s.staff_id, project_id: slot ? slot.project_id : s.project_id, work_date: p.date, start_time: p.start, end_time: p.end,
-        location: (slot ? slot.location : null) || s.location || '', role: role ? role.role_name : (s.role || '販売スタッフ'), transportation_fee: s.transportation_fee || 0,
+        location: (slot ? slot.location : null) || s.location || '', role: role ? role.role_name : (s.role || '販売スタッフ'),
+        transportation_fee: Number(s.transportation_fee || 0) || transportDefaultFor(tdefs, s.staff_id, siteId) || 0,
         status: 'confirmed', registered_by: u.user_id, slot_id: slot?.slot_id ?? null, slot_role_id: role?.slot_role_id ?? null,
-        site_id: slot ? slot.site_id ?? null : s.site_id ?? null, break_minutes: slot ? slot.break_minutes ?? null : s.break_minutes ?? null, source_shift_id: s.shift_id,
+        site_id: siteId, break_minutes: slot ? slot.break_minutes ?? null : s.break_minutes ?? null, source_shift_id: s.shift_id,
       }
       return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })

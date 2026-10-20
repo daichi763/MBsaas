@@ -192,6 +192,19 @@ const site = { site_id: must(await admin.post('/api/admin/sites', { site_name: `
   ok('#564 一括登録で交通費が空欄なら、スタッフの標準を入れる', r.created === 2 && s.find(x => x.staff_id === sA)?.transportation_fee === 820 && s.find(x => x.staff_id === sB)?.transportation_fee === 0, s.map(x => [x.staff_id, x.transportation_fee]))
 }
 {
+  // コピー: コピー元の交通費が 0 円なら標準を入れ、入力済みならその金額のまま
+  const cp = await newProject(`${PFX}-コピー`, { pay_unit_type: 'hourly', pay_rate: 1000, hours_basis: 'scheduled' })
+  const src = addDays(FUT, 30)
+  await newShift(sA, cp, src, '09:00', '10:00', 'copy0')
+  await newShift(sC, cp, src, '11:00', '12:00', 'copy1', { transportation_fee: 450 })
+  must(await admin.put('/api/admin/transport-defaults', { staff_id: sC, site_id: 0, amount: 990 }), 'td C')
+  const tgt = addDays(src, 7)
+  const r = must(await admin.post('/api/admin/shifts/copy-week', { source_from: src, target_from: tgt, days: 1, project_ids: [cp], include_assignments: true }), 'copy')
+  const s = must(await admin.get(`/api/admin/shifts?from=${tgt}&to=${tgt}`), 'copy shifts').shifts.filter(x => x.project_id === cp)
+  ok('#564 コピーでは、コピー元の交通費が 0 円ならスタッフの標準を入れ、入力済みの金額はそのまま', r.shifts === 2 && s.find(x => x.staff_id === sA)?.transportation_fee === 820 && s.find(x => x.staff_id === sC)?.transportation_fee === 450,
+    { r, s: s.map(x => [x.staff_id, x.transportation_fee]) })
+}
+{
   // 精算: 表示中の未確定シフトの交通費（実費 0 円）を標準で埋める
   const zero = await newShift(sA, hourly, D0, '06:00', '07:00', 'fill0')
   const paid = await newShift(sA, hourly, D0, '07:30', '08:00', 'fill1', { transportation_fee: 300 })

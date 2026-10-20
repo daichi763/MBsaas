@@ -523,7 +523,7 @@
           <label>支払の調整<input id="sp-pay-adj" type="number" class="inp text-xs" value="${a.pay_adjust || ''}" placeholder="0"></label>
           <label>調整の内容<input id="sp-adj-note" class="inp text-xs" value="${esc(a.adjust_note || '')}" placeholder="手当・控除など"></label>
         </div>
-        <p class="text-[11px] text-gray-400">深夜（22〜5時）・時間外（1日8時間超）・休日の割増は、精算の画面の「割増の設定」を ON にすると自動で計算します（調整に入れる必要はありません。下の支払には含みません）</p>
+        <p class="text-[11px] text-gray-400">深夜（22〜5時）・時間外（1日8時間超）・休日の割増は、精算の画面の「割増の設定」を ON にすると自動で計算します（調整に入れる必要はありません。下の支払には、確定するまで含みません）</p>
         <div class="grid grid-cols-3 gap-2 bg-gray-50 rounded p-2">
           <p>請求 <b>${yen(a.bill_total)}</b><span class="block text-gray-400">基本${yen(a.unit_price)}＋交通費${yen(a.bill_transport)}</span></p>
           <p>支払 <b>${a.pay_total == null ? '未設定' : yen(a.pay_total)}</b><span class="block text-gray-400">基本${a.pay_amount == null ? '-' : yen(a.pay_amount)}＋交通費${yen(a.pay_transport)}</span></p>
