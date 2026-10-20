@@ -531,7 +531,7 @@ async function renderDashboard() {
 // 状態の絞り込み: 予定の時刻を過ぎた未報告あり・遅刻・位置不明・休憩中・ログインなし
 const DASH_ONLY = {
   unreported: { label: '未報告あり', test: s => (s.overdue_types || []).length > 0 },
-  late: { label: '遅刻', test: s => s.late_minutes > 0 },
+  late: { label: '遅刻', test: s => s.late_minutes > 0 || ['check_in', 'work_start'].some(t => (s.reports || {})[t]?.status === 'late') },
   no_location: { label: '位置不明', test: s => !!s.no_location },
   on_break: { label: '休憩中', test: s => !!s.on_break },
   no_login: { label: 'ログインなし', test: s => s.has_login === false },
@@ -799,8 +799,8 @@ delegate('openBoardAt', el => {
     window.__boardState.from = d.subtract((d.day() + 6) % 7, 'day').format('YYYY-MM-DD')
     window.__boardState.projectIds = [Number(el.dataset.projectId)]
     window.__boardState.clientId = ''
-    // 人員不足の枠から開いたときは『不足のみ』で開く（#299）
-    if (el.dataset.short === '1') window.__boardState.onlyShort = true
+    // 人員不足の枠から開いたときは『不足のみ』で開く。それ以外（希望（仮）のシフトなど）は絞り込みを外す（#299）
+    window.__boardState.onlyShort = el.dataset.short === '1'
   }
   closeModal()
   if (location.hash === '#shifts') route(); else location.hash = 'shifts'
