@@ -52,6 +52,8 @@ export const STAFF_SHIFT_COLUMNS = [
   'site_id', 'slot_id', 'staff_reply', 'staff_reply_note', 'staff_reply_at',
   'project_name', 'company_name', 'other_company', 'tentative',
   'site_name', 'site_address', 'site_lat', 'site_lng', 'slot_memo', 'slot_break_minutes', 'project_break_minutes',
+  // 日時・場所・案件・状態が最後に変わった日時（0086 のトリガーで記録。スタッフのシフト一覧の「変更」の印に使う。#155）
+  'staff_changed_at',
 ] as const
 export function staffShiftView(row: Record<string, any> | null | undefined): Record<string, any> | null {
   if (!row) return null
@@ -771,7 +773,7 @@ app.get('/shift-board/candidates', async (c) => {
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.site_id = ? AND s.site_id IS NOT NULL AND s.status IN ('confirmed','substitute')) AS site_count,
       (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute')) AS week_days
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     WHERE sp.company_id = ? AND ${elig.sql}
     ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, weekStart(role.work_date), addDays(weekStart(role.work_date), 6), u.company_id, ...elig.binds).all()).results as any[]
   const conflicts = await findConflicts(db, u.company_id, staff.map(s => s.staff_id), role.work_date, role.work_date)
@@ -1297,7 +1299,10 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
     }
   }
   const op = opLog(db, u, 'release') // 操作履歴（#159）。外す前の値を先に残す
+  const before = await loadShiftSnaps(db, u.company_id, shifts.map(s => s.shift_id))
   try { await batchInChunks(db, [...logShifts(op, shifts.map(s => s.shift_id)), ...stmts]) } finally { await finishLog(op) }
+  // 外したシフトを本人に知らせる（#155。削除は取消、欠勤にした分は状態の変更として、本人ごとに1件にまとめる。ログインが止まっている人には届かない）
+  await notifyShiftChanges(c, u.company_id, before, await loadShiftSnaps(db, u.company_id, shifts.filter(s => s.records > 0).map(s => s.shift_id)))
   return c.json({ ok: true, removed, absent })
 })
 
@@ -1495,9 +1500,17 @@ app.post('/shifts/bulk', async (c) => {
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
   const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows))
-  // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）
-  await notifyShiftChanges(c, u.company_id, [], rows.map((r): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time,
-    status: r.status, location: r.location, project_name: project.project_name, site_name: site?.site_name ?? null })))
+  // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。件数が多く何回かに分けて呼ばれるときは、
+  // 最後の回で、この操作で登録したシフト（同じ案件・期間・時刻・登録した人で、2時間以内に作ったもの）をまとめて知らせる（分けた回ごとに届かないように）
+  if (next == null) {
+    const made = start === 0 ? rows.map((r): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time,
+        status: r.status, location: r.location, project_name: project.project_name, site_name: site?.site_name ?? null }))
+      : await loadShiftSnaps(db, u.company_id, ((await db.prepare(`SELECT shift_id FROM shifts WHERE company_id = ? AND project_id = ? AND work_date BETWEEN ? AND ?
+          AND start_time = ? AND end_time = ? AND registered_by = ? AND slot_id IS NULL AND status = 'confirmed' AND created_at >= datetime('now', '-2 hours')
+          AND staff_id IN (SELECT value FROM json_each(?)) LIMIT 5000`).bind(u.company_id, project.project_id, b.date_from, b.date_to, b.start_time, b.end_time, u.user_id,
+          JSON.stringify(staffIds)).all()).results as any[]).map(r => r.shift_id))
+    await notifyShiftChanges(c, u.company_id, [], made)
+  }
   return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next })
 })
 

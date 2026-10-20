@@ -44,7 +44,7 @@ async function loadStaff(db: D1Database, companyId: number, staffId: any) {
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.gender ELSE sp.gender END AS gender_resolved,
       oc.company_name AS owner_company_name
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(staffId, companyId).first() as Promise<any>
 }
@@ -61,7 +61,7 @@ staffMergeApi.get('/staff/:id/merge-candidates', async (c) => {
       (SELECT COUNT(*) FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.status IN ('confirmed','substitute')) AS shift_count,
       (SELECT MAX(sh.work_date) FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
     WHERE sp.company_id = ? AND sp.staff_id != ? AND sp.merged_into_staff_id IS NULL

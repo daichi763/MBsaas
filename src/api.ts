@@ -2056,32 +2056,67 @@ async function personStaffIds(db: D1Database, u: any): Promise<number[]> {
   return ids.length ? ids : (u.staff_id ? [u.staff_id] : [])
 }
 
-// 自分の日報一覧（過去の日報。#319 #371）。同一人物の全所属の分を新しい順に。項目の表示名は案件のテンプレートから付ける
-api.get('/staff/my-reports', async (c) => {
-  const u = c.get('user'); const db = c.env.DB
-  const ids = await personStaffIds(db, u)
-  if (!ids.length) return c.json({ reports: [], templates: {} })
-  const rows = (await db.prepare(`
-    SELECT dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_comment, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at,
+// comment_read_at: 本人が管理者のコメントを開いた日時（#158。コメントが変わると空に戻る）。unread_comment: まだ開いていないコメントがある
+const MY_REPORT_COLS = `dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
+      dr.manager_comment, dr.manager_comment_at, dr.comment_read_at, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at,
       p.project_name, p.report_template_id, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
-    LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id
-    WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) ORDER BY dr.work_date DESC, dr.submitted_at DESC LIMIT 30`).bind(u.company_id, ...ids).all()).results as any[]
+    LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id`
+async function myReportsView(db: D1Database, rows: any[]) {
   const tplIds = [...new Set(rows.map(r => r.report_template_id).filter((x: any) => x != null))]
   const templates: Record<string, any[]> = {}
   if (tplIds.length) {
     const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN (${tplIds.map(() => '?').join(',')})`).bind(...tplIds).all()).results as any[]
     for (const t of ts) templates[t.template_id] = parseTemplateFields(t.fields_json)
   }
-  return c.json({
+  return {
     reports: rows.map(r => {
       const { report_values, ...rest } = r
       return { ...rest, template_id: r.report_template_id, other_company: !!r.other_company, incident_flag: !!r.incident_flag, complaint_flag: !!r.complaint_flag,
-        manager_checked: !!r.manager_checked, values: parseReportValues(report_values) }
+        manager_checked: !!r.manager_checked, values: parseReportValues(report_values), unread_comment: !!r.manager_comment && !r.comment_read_at }
     }),
     templates,
-  })
+  }
+}
+// 自分の日報1件（#158。通知から開く・一覧の先頭30件より前の日報も開けるように）。開いたら管理者のコメントを既読にする
+api.get('/staff/my-reports/:id{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const ids = await personStaffIds(db, u)
+  if (!ids.length) return c.json({ error: '日報が見つかりません' }, 404)
+  const row = await db.prepare(`SELECT ${MY_REPORT_COLS} WHERE dr.daily_report_id = ? AND dr.staff_id IN (SELECT value FROM json_each(?))`)
+    .bind(u.company_id, c.req.param('id'), JSON.stringify(ids)).first() as any
+  if (!row) return c.json({ error: '日報が見つかりません' }, 404)
+  if (row.manager_comment && !row.comment_read_at) {
+    row.comment_read_at = nowJST()
+    await db.prepare('UPDATE daily_reports SET comment_read_at = ? WHERE daily_report_id = ? AND comment_read_at IS NULL AND manager_comment IS NOT NULL')
+      .bind(row.comment_read_at, row.daily_report_id).run()
+    // 同じ日報のコメントの通知も既読にする
+    await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE user_id = ? AND kind = 'daily_report_comment' AND related_id = ? AND read_at IS NULL`)
+      .bind(row.comment_read_at, u.user_id, row.daily_report_id).run()
+  }
+  const v = await myReportsView(db, [row])
+  return c.json({ report: v.reports[0], templates: v.templates })
+})
+// 管理者のコメントを既読にする（#158。一覧でコメントを開いたとき）
+api.post('/staff/my-reports/:id{[0-9]+}/comment-read', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const ids = await personStaffIds(db, u)
+  const now = nowJST()
+  const r = ids.length ? await db.prepare(`UPDATE daily_reports SET comment_read_at = ? WHERE daily_report_id = ? AND staff_id IN (SELECT value FROM json_each(?))
+      AND manager_comment IS NOT NULL AND comment_read_at IS NULL`).bind(now, c.req.param('id'), JSON.stringify(ids)).run() : null
+  if (r?.meta.changes) await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE user_id = ? AND kind = 'daily_report_comment' AND related_id = ? AND read_at IS NULL`)
+    .bind(now, u.user_id, Number(c.req.param('id'))).run()
+  return c.json({ ok: true, updated: r?.meta.changes || 0 })
+})
+// 自分の日報一覧（過去の日報。#319 #371）。同一人物の全所属の分を新しい順に。項目の表示名は案件のテンプレートから付ける
+api.get('/staff/my-reports', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const ids = await personStaffIds(db, u)
+  if (!ids.length) return c.json({ reports: [], templates: {} })
+  const rows = (await db.prepare(`
+    SELECT ${MY_REPORT_COLS}
+    WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) ORDER BY dr.work_date DESC, dr.submitted_at DESC LIMIT 30`).bind(u.company_id, ...ids).all()).results as any[]
+  return c.json(await myReportsView(db, rows))
 })
 
 // スタッフアプリに出す社内の情報の設定（#496 #523。companies.settings_json）。既定はランキングもメンバーも出さず、ランキングは匿名
@@ -3290,12 +3325,12 @@ api.post('/admin/settings/photo-required', async (c) => {
   try { settings = JSON.parse((row?.settings_json as string) || '{}') } catch { settings = {} }
   const before = typeof settings.photo_required_attendance === 'boolean' ? settings.photo_required_attendance : true
   if (before === body.enabled) return c.json({ ok: true, photo_required_attendance: body.enabled, unchanged: true })
-  settings.photo_required_attendance = body.enabled
   const entry = { enabled: body.enabled, at: nowJST(), user_id: u.user_id, name: u.name }
-  settings.photo_required_history = [entry, ...photoRequiredHistory(row?.settings_json)].slice(0, PHOTO_REQUIRED_HISTORY_MAX)
-
-  await c.env.DB.prepare('UPDATE companies SET settings_json = ? WHERE company_id = ?')
-    .bind(JSON.stringify(settings), u.company_id).run()
+  const history = [entry, ...photoRequiredHistory(row?.settings_json)].slice(0, PHOTO_REQUIRED_HISTORY_MAX)
+  // この2項目だけを書き換える（同じ時に保存されたほかの設定（遅刻の猶予など）を古い内容で上書きしないように。#405）
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END,
+      '$.photo_required_attendance', json(?), '$.photo_required_history', json(?)) WHERE company_id = ?`)
+    .bind(JSON.stringify(body.enabled), JSON.stringify(history), u.company_id).run()
 
   return c.json({ ok: true, photo_required_attendance: body.enabled, changed: { enabled: entry.enabled, at: entry.at, name: entry.name } })
 })
@@ -5231,6 +5266,36 @@ const DR_FLAGGED_SQL = '(dr.incident_flag = 1 OR dr.complaint_flag = 1)'
 // 対応済みでないインシデント・クレーム（#169）。migrations/0067_report_features.sql の部分索引と同じ式にする。
 // ダッシュボードの ToDo・案件詳細のインシデント欄で未対応だけを数えるときも、この式を使う
 const DR_INCIDENT_OPEN_SQL = "(dr.incident_flag = 1 OR dr.complaint_flag = 1) AND COALESCE(dr.incident_status, 'open') != 'done'"
+// 日報の未提出（#344。日報一覧の「未提出」タブ）。期間（既定は昨日までの7日。最長62日・今日より前）・案件・スタッフで絞り、
+// 日報が必要な確定・代打のシフトのうち日報のないものを返す（ダッシュボードの「日報未提出」と同じ判定）
+const MISSING_DR_MAX_DAYS = 62
+const MISSING_DR_LIMIT = 500
+api.get('/admin/daily-reports/missing', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const today = todayJST()
+  const to = isISODate(c.req.query('to')) && c.req.query('to')! < today ? c.req.query('to')! : addDays(today, -1)
+  const from = isISODate(c.req.query('from')) && c.req.query('from')! <= to ? c.req.query('from')! : addDays(to, -6)
+  if ((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000 > MISSING_DR_MAX_DAYS - 1) return c.json({ error: `期間は${MISSING_DR_MAX_DAYS}日以内で指定してください` }, 400)
+  const projectId = toInt(c.req.query('project_id'), 1), staffId = toInt(c.req.query('staff_id'), 1)
+  const rows = (await db.prepare(`
+    SELECT s.shift_id, s.work_date, s.start_time, s.end_time, us.name AS staff_name, s.staff_id, p.project_id, p.project_name,
+      us.phone AS staff_phone, us.role = 'staff' AS has_login
+    FROM shifts s
+    JOIN projects p ON s.project_id = p.project_id
+    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date BETWEEN ? AND ?
+      ${projectId ? 'AND s.project_id = ?' : ''} ${staffId ? 'AND s.staff_id = ?' : ''}
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
+    ORDER BY s.work_date DESC, s.start_time, p.project_name, us.name LIMIT ?`)
+    .bind(u.company_id, from, to, ...(projectId ? [projectId] : []), ...(staffId ? [staffId] : []), MISSING_DR_LIMIT + 1).all()).results as any[]
+  const more = rows.length > MISSING_DR_LIMIT
+  const list = rows.slice(0, MISSING_DR_LIMIT)
+  // 日報「不要」のシフトは未提出の対象外
+  const m = await modesForShifts(db, list.map(r => r.shift_id))
+  const missing = list.filter(r => m.get(r.shift_id)?.daily_report_required !== false).map(r => ({ ...r, has_login: !!r.has_login }))
+  return c.json({ from, to, missing, has_more: more })
+})
 api.get('/admin/daily-reports', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const q = (k: string) => { const v = c.req.query(k); return v === undefined || v === '' ? null : v }
@@ -5356,6 +5421,8 @@ api.put('/admin/daily-reports/:id', async (c) => {
     sets.push('manager_comment = ?', 'manager_comment_by = ?', 'manager_comment_at = ?')
     vals.push(comment, comment ? u.user_id : null, comment ? now : null)
     commentChanged = !!comment && comment !== (cur.manager_comment || '')
+    // コメントが変わったら、スタッフの既読（#158）を外す（管理画面の「スタッフ既読」は新しいコメントを開いてから付く）
+    if (comment !== (cur.manager_comment || null)) sets.push('comment_read_at = NULL')
   }
   if (has('manager_checked')) {
     const m = b.manager_checked
@@ -7128,9 +7195,13 @@ api.post('/hq/billing/close', async (c) => {
   if (!MONTH_RE.test(month)) return c.json({ error: '締める月を YYYY-MM で指定してください' }, 400)
   const today = todayJST()
   if (month > today.slice(0, 7)) return c.json({ error: 'これから先の月は締められません' }, 400)
-  const db = c.env.DB
+  const created = await closeBillingMonth(c.env.DB, month, c.get('user').user_id)
+  await hqAuditStmt(c, { action: 'billing.close', target: month, after: { created } }).run()
+  return c.json({ ok: true, month, created })
+})
+/** 月の請求を記録する（記録済みの企業は変えない）。recordedBy が null なら定期処理の記録。記録した企業の数を返す */
+export async function closeBillingMonth(db: D1Database, month: string, recordedBy: number | null): Promise<number> {
   const d = DEFAULT_PLAN_PRICE
-  const now = nowJST()
   const r = await db.prepare(`INSERT OR IGNORE INTO company_billing_months (company_id, month, plan, user_count, amount, status, issued_at, recorded_at, recorded_by)
     SELECT co.company_id, ?, COALESCE(co.plan, 'basic'), COALESCE(n.cnt, 0),
       COALESCE(pp.base_fee, ${d.base_fee}) + MAX(0, COALESCE(n.cnt, 0) - COALESCE(pp.included_users, ${d.included_users})) * COALESCE(pp.per_user_fee, ${d.per_user_fee}),
@@ -7138,11 +7209,17 @@ api.post('/hq/billing/close', async (c) => {
     FROM companies co
     LEFT JOIN (SELECT u.company_id, SUM(CASE WHEN ${HQ_BILLABLE_SQL} THEN 1 ELSE 0 END) AS cnt FROM users u GROUP BY u.company_id) n ON n.company_id = co.company_id
     LEFT JOIN hq_plan_prices pp ON pp.plan = COALESCE(co.plan, 'basic')
-    WHERE co.active_status = 'active'`).bind(month, today, now, c.get('user').user_id).run()
-  const created = r.meta.changes || 0
-  await hqAuditStmt(c, { action: 'billing.close', target: month, after: { created } }).run()
-  return c.json({ ok: true, month, created })
-})
+    WHERE co.active_status = 'active'`).bind(month, todayJST(), nowJST(), recordedBy).run()
+  return r.meta.changes || 0
+}
+// 毎月1日の定期処理（#295）: 前月の請求を自動で記録する。1日の起動が失敗したときのため、3日までは記録のない企業の分を足す。
+// 人数は記録した時点の課金対象の人数（本部の「締める」ボタンと同じ）。手で締めた企業はそのまま
+export async function autoCloseBillingMonth(db: D1Database): Promise<{ idle?: boolean; month?: string; created: number }> {
+  const today = todayJST()
+  if (Number(today.slice(8, 10)) > 3) return { idle: true, created: 0 }
+  const month = prevMonth(today.slice(0, 7))
+  return { month, created: await closeBillingMonth(db, month, null) }
+}
 // 1か月分の請求記録の修正（入金状態・入金日・金額・メモ）
 api.put('/hq/companies/:id/billing/:month', async (c) => {
   const cid = Number(c.req.param('id')), month = c.req.param('month')

@@ -10,6 +10,7 @@ import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
+import { recordLoginEvent } from './lib/login-security'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 
 type Bindings = { DB: D1Database }
@@ -29,7 +30,7 @@ export const ROSTER_BASE_FIELDS = [
 ] as const
 // スタッフマスタ画面で扱う「業務側」の項目（社員名簿=労務側 / スタッフマスタ=業務側）。
 // linked_external（他社連携）以外の全区分（自社雇用を含む）でスタッフマスタ画面から編集できる。
-// pr_points / remarks も基本項目として連携先に共有する（その会社独自の情報は「管理者メモ」に書く運用）
+// pr_points は基本項目として連携先に共有する。remarks（備考）は所属元だけの項目で、連携先には返さない（同意 v3。#9001）
 export const ROSTER_BUSINESS_FIELDS = ['commute_minutes', 'available_from', 'work_area', 'skills', 'career', 'career_rows', 'pr_points', 'remarks'] as const
 export type CareerRow = { from: string; to: string; company: string; work: string; note: string }
 const CAREER_MAX_ROWS = 50
@@ -168,16 +169,36 @@ function phoneDigits(p: string): string {
 }
 
 // 連携時の同意ポップアップで明示する共有範囲（フロント表示と同意履歴の双方で同じ文言を使う）
-export const CONSENT_VERSION = 'v2' // v2: 共有範囲に「経験・スキル・人柄・PRポイント等」「備考」を追加
+// v2: 共有範囲に「経験・スキル・人柄・PRポイント等」「備考」を追加
+// v3: 生年月日は渡さず年代（20代など）だけにし、備考は所属元だけの項目にする（#9001。共有を減らす変更なので、既存の連携の取り直しは不要。
+//     同意履歴（roster_consents）には同意したときの版と範囲が残る）
+export const CONSENT_VERSION = 'v3'
 export const SHARED_SCOPE = [
-  '氏名', 'フリガナ', '性別', '生年月日・年齢', '年代', '所属会社名・所属先担当者名',
+  '氏名', 'フリガナ', '性別', '年代（生年月日から計算。生年月日そのものは共有しません）', '所属会社名・所属先担当者名',
   '最寄駅', '通勤可能時間', '稼働開始可能日', '稼働可能エリア', 'スキル', '経歴',
-  '経験・スキル・人柄・PRポイント等', '備考',
+  '経験・スキル・人柄・PRポイント等',
 ]
 export const NOT_SHARED_SCOPE = [
   '従業員管理の情報（雇用形態・給与・手当・口座・社会保険/雇用保険番号・緊急連絡先 等）',
-  '連絡先（電話・メール）', '履歴書・入社時書類ファイル', '所属元の社内メモ・評価・フォロー履歴',
+  '連絡先（電話・メール）', '生年月日', '備考（所属元だけの項目）', '履歴書・入社時書類ファイル', '所属元の社内メモ・評価・フォロー履歴',
 ]
+// 連携先（linked_external の行）に返さない基本項目（#9001）。年代は所属元の生年月日から計算して返す
+export const ROSTER_OWNER_ONLY_FIELDS: readonly string[] = ['date_of_birth', 'remarks']
+/** 生年月日（YYYY-MM-DD）から年代（20代など）を返す。計算できなければ fallback（手入力の年代） */
+export function ageGroupOf(dob: string | null | undefined, fallback?: string | null, today = nowJST().slice(0, 10)): string {
+  if (dob && /^\d{4}-\d{2}-\d{2}/.test(dob)) {
+    const [ty, tm, td] = today.split('-').map(Number); const [by, bm, bd] = dob.slice(0, 10).split('-').map(Number)
+    let age = ty - by; if (tm < bm || (tm === bm && td < bd)) age--
+    if (age >= 10 && age < 100) return `${Math.floor(age / 10) * 10}代`
+  }
+  return fallback || ''
+}
+// 年代を SQL で計算する式（ageGroupOf と同じ規則）。dob = 生年月日の列、fallback = 手入力の年代の列
+function ageGroupSql(dob: string, fallback: string): string {
+  const today = `date('now', '+9 hours')`
+  const age = `(CAST(strftime('%Y', ${today}) AS INTEGER) - CAST(substr(${dob}, 1, 4) AS INTEGER) - (strftime('%m-%d', ${today}) < substr(${dob}, 6, 5)))`
+  return `CASE WHEN ${dob} GLOB '[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*' AND ${age} BETWEEN 10 AND 99 THEN (${age} / 10 * 10) || '代' ELSE ${fallback} END`
+}
 
 // ---------- ユーティリティ ----------
 async function sha256(text: string): Promise<string> {
@@ -256,8 +277,8 @@ export function inactiveLabelOf(r: any, today: string): string | null {
 }
 /**
  * 自社のスタッフマスタから、同じ人と思われる行を探す（統合済みは除く）。
- * 電話番号（数字のみで比較）が同じ、または氏名（空白を除いて比較）と生年月日が同じ行。
- * 他社連携の行は、生年月日を所属元の値で比べる。電話番号は返さない
+ * 電話番号（数字のみで比較）が同じ、または氏名（空白を除いて比較）と生年月日が同じ行。電話番号は返さない。
+ * 他社連携の行は生年月日を比べず、氏名が同じなら候補にする（入力した日付との一致で、所属元の生年月日を確かめられないように。#9001）
  */
 export async function findSamePersonCandidates(db: D1Database, companyId: number, o: { name?: any; phone?: any; date_of_birth?: any }) {
   const phone = phoneDigits(String(o.phone || ''))
@@ -270,7 +291,9 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
   for (const r of rows) {
     const reasons: string[] = []
     if (phone.length >= 10 && r.phone && phoneDigits(String(r.phone)) === phone) reasons.push('電話番号が同じ')
-    if (name && dob && r.dob === dob && String(r.name || '').replace(/[\s　]/g, '') === name) reasons.push('氏名と生年月日が同じ')
+    const sameName = !!name && !!dob && String(r.name || '').replace(/[\s　]/g, '') === name
+    if (sameName && r.linked) reasons.push('氏名が同じ（他社連携のスタッフ）')
+    else if (sameName && r.dob === dob) reasons.push('氏名と生年月日が同じ')
     if (!reasons.length) continue
     out.push({ staff_id: r.staff_id, name: r.name, affiliation_type: r.affiliation_type, is_provisional: r.is_provisional ? 1 : 0,
       employment_status: r.employment_status || 'working', inactive: inactiveLabelOf(r, today), reasons })
@@ -278,13 +301,16 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
   return out.slice(0, 20)
 }
 
-/** 同じ人の確認に使う自社のスタッフの一覧（統合済みは除く。他社連携の行の生年月日は所属元の値。CSV 一括登録（roster-import.ts）でも使う） */
+/**
+ * 同じ人の確認に使う自社のスタッフの一覧（統合済みは除く。CSV 一括登録（roster-import.ts）でも使う）。
+ * 他社連携の行（linked = 1）は生年月日を返さない（所属元だけの項目。#9001）
+ */
 export async function samePersonRows(db: D1Database, companyId: number): Promise<any[]> {
   return (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
-      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth ELSE sp.date_of_birth END AS dob
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN 1 ELSE 0 END AS linked,
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN NULL ELSE sp.date_of_birth END AS dob
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
 }
 
@@ -305,9 +331,13 @@ export async function partnerNameConflict(db: D1Database, companyId: number, nam
  */
 // 所属会社名・所属先担当者名は「直接連携した1つ前の企業」を表す自社の行の値を使う（多段連携で雇用元の企業名・担当者が見えないように）
 const ROSTER_LOCAL_FIELDS = ['affiliation', 'affiliation_contact']
+// 生年月日・備考は所属元だけの項目（連携先の行では NULL）。年代は所属元の生年月日から計算する（#9001）
 export function rosterBaseSelect(local = 'sp', src = 'src'): string {
+  const linked = `${local}.affiliation_type = 'linked_external'`
   return ROSTER_BASE_FIELDS.map(f => ROSTER_LOCAL_FIELDS.includes(f) ? `${local}.${f} AS ${f}` :
-    `CASE WHEN ${local}.affiliation_type = 'linked_external' THEN ${src}.${f} ELSE ${local}.${f} END AS ${f}`
+    ROSTER_OWNER_ONLY_FIELDS.includes(f) ? `CASE WHEN ${linked} THEN NULL ELSE ${local}.${f} END AS ${f}` :
+    f === 'age_group' ? `CASE WHEN ${linked} THEN ${ageGroupSql(`${src}.date_of_birth`, `${src}.age_group`)} ELSE ${local}.${f} END AS ${f}` :
+    `CASE WHEN ${linked} THEN ${src}.${f} ELSE ${local}.${f} END AS ${f}`
   ).join(', ')
 }
 
@@ -353,12 +383,19 @@ export function usesRelinkCode(type: string | null | undefined, personCompanyId:
   return personCompanyId != null && Number(personCompanyId) !== Number(rowCompanyId)
 }
 
-/** スタッフマスタ1件を取得（基本項目は所属元の値で解決済み）。自社の行でなければ null */
-export async function loadRoster(db: D1Database, staffId: string | number, companyId: number): Promise<any | null> {
+/**
+ * スタッフマスタ1件を取得（基本項目は所属元の値で解決済み）。自社の行でなければ null。
+ * 他社連携の行では生年月日・備考を返さない（#9001）。opts.self: スタッフ本人が自分の情報を見るとき（生年月日も所属元の値を返す）
+ */
+export async function loadRoster(db: D1Database, staffId: string | number, companyId: number, opts: { self?: boolean } = {}): Promise<any | null> {
   const today = nowJST().slice(0, 10)
   const row = await db.prepare(`
     SELECT sp.*, ${rosterBaseSelect()},
+           CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth END AS self_source_dob,
            us.user_code, us.name, us.email, us.phone, us.status, us.last_login_at, us.retired_at, us.role AS user_role,
+           -- 最後にアプリを使った日時（ログイン・操作。#286）。他社連携の行は所属元のログインで使うので、所属元の行も見る（スタッフ一覧と同じ）
+           NULLIF(MAX(COALESCE(us.last_login_at, ''), COALESCE(us.last_seen_at, ''),
+             CASE WHEN sp.affiliation_type = 'linked_external' THEN MAX(COALESCE(srcu.last_login_at, ''), COALESCE(srcu.last_seen_at, '')) ELSE '' END), '') AS app_last_used_at,
            oc.company_name AS owner_company_name, pe.global_staff_code, pe.created_company_id AS person_created_company_id,
            pa.affiliation_name AS partner_name,
            -- 他社連携の行: 所属元（雇用元）で退職・ログイン停止になっているか（日付は出さない #187）
@@ -378,7 +415,8 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
   const type = (row.affiliation_type as string) || 'own_employee'
   // 経路（雇用元の行）は画面・APIに出さない（頭超え防止）
   // 連携を終了した所属元のユーザー（link_revoked_by）は他社のユーザーなので出さない
-  const { root_staff_id: _root, relink_code: _rc, person_created_company_id: _pc, link_in_service: _ls, link_revoked_by: _rb, ...rest } = row as any
+  const { root_staff_id: _root, relink_code: _rc, person_created_company_id: _pc, link_in_service: _ls, link_revoked_by: _rb, self_source_dob: selfDob, ...rest } = row as any
+  if (opts.self && type === 'linked_external') rest.date_of_birth = selfDob ?? null
   const relink = usesRelinkCode(type, row.person_created_company_id, row.company_id)
   const linkable = (type === 'own_employee' || type === 'linked_external') && !row.merged_into_staff_id
   return {
@@ -1096,13 +1134,13 @@ function linkedNoticeStmts(db: D1Database, u: any, src: any, newStaffId: number,
       SELECT ou.company_id, ou.user_id, 'roster_linked', ?, ?, ?, ?, ? FROM users ou
       WHERE ou.company_id = ? AND ou.status = 'active' AND ou.role IN ${NOTIFY_ADMIN_ROLES_SQL}`)
       .bind(`自社スタッフの連携: ${name}（${host}）`,
-        `「${host}」が、自社のスタッフ ${name} さんを企業間連携で登録しました。連携先は基本項目（氏名・生年月日・最寄駅・スキル・経歴など）を参照できます。心当たりがない場合は、スタッフ詳細の「連携先企業」から連携を終了できます。`,
+        `「${host}」が、自社のスタッフ ${name} さんを企業間連携で登録しました。連携先は基本項目（氏名・年代・最寄駅・スキル・経歴など。生年月日・備考は共有しません）を参照できます。心当たりがない場合は、スタッフ詳細の「連携先企業」から連携を終了できます。`,
         `/admin#staff/${Number(src.staff_id)}`, src.staff_id, now, src.company_id),
     db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
       SELECT ru.company_id, ru.user_id, 'roster_linked_staff', ?, ?, '#profile', r.staff_id, ? FROM staff_profiles r JOIN users ru ON ru.user_id = r.user_id
       WHERE r.staff_id = ? AND ru.role = 'staff' AND ru.status = 'active'`)
       .bind(`あなたの情報が「${host}」と共有されました`,
-        `「${host}」が、あなたのスタッフ情報（氏名・生年月日・最寄駅・スキル・経歴など）を企業間連携で登録しました（連携元: ${src.owner_company_name || ''}）。共有中の会社は「その他 → プロフィール」で確認できます。心当たりがない場合は、所属会社の担当者に連絡してください。`,
+        `「${host}」が、あなたのスタッフ情報（氏名・年代・最寄駅・スキル・経歴など。生年月日・備考は共有しません）を企業間連携で登録しました（連携元: ${src.owner_company_name || ''}）。共有中の会社は「その他 → プロフィール」で確認できます。心当たりがない場合は、所属会社の担当者に連絡してください。`,
         now, src.root_staff_id),
   ]
 }
@@ -1254,7 +1292,7 @@ export const staffSelfApi = new Hono<{ Bindings: Bindings; Variables: Variables 
 staffSelfApi.get('/profile', async (c) => {
   const u = c.get('user')
   if (!u.staff_id) return c.json({ error: 'not found' }, 404)
-  const r = await loadRoster(c.env.DB, u.staff_id, u.company_id)
+  const r = await loadRoster(c.env.DB, u.staff_id, u.company_id, { self: true })
   if (!r) return c.json({ error: 'not found' }, 404)
   const db = c.env.DB
   const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
@@ -1324,11 +1362,14 @@ staffSelfApi.post('/switch-company', async (c) => {
   if (!target) return c.json({ error: '切り替え先の企業が見つかりません' }, 404)
   // 本部で停止にした企業へは切り替えない
   const co = await db.prepare('SELECT active_status FROM companies WHERE company_id = ?').bind(target.company_id).first()
-  if (!co || !isCompanyActive(co.active_status)) return c.json({ error: 'この企業は現在ご利用いただけません' }, 403)
+  // 企業の切り替えもログインの履歴に残す（#552。切り替え先の企業の行として記録し、actor は切り替える前の利用者）
+  const logSwitch = (result: 'success' | 'company_inactive') => recordLoginEvent(db, c as any, { company_id: target.company_id, user_id: target.user_id, event_type: 'switch_company', result, actor_user_id: u.user_id })
+  if (!co || !isCompanyActive(co.active_status)) { await logSwitch('company_inactive'); return c.json({ error: 'この企業は現在ご利用いただけません' }, 403) }
   const token = getCookie(c, 'session')
   if (!token) return c.json({ error: 'unauthorized' }, 401)
   // sessions.token にはトークンのハッシュを保存している（src/lib/auth.ts）
   await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, await hashToken(token)).run()
+  await logSwitch('success')
   return c.json({ ok: true, company_name: target.company_name })
 })
 

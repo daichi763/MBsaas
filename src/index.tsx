@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
-import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads, publishDueNotices } from './api'
+import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads, publishDueNotices, autoCloseBillingMonth } from './api'
 import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServiceRetentionJob } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
@@ -11,6 +11,7 @@ import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
 import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests } from './notifications'
+import { notifySavedSearchMatches } from './board'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -686,6 +687,7 @@ app.get('/admin', async (c) => {
         <a href="#employees" class="side-link" data-tab="employees"><i class="fas fa-id-card w-5"></i>従業員管理</a>
         <a href="#projects" class="side-link" data-tab="projects"><i class="fas fa-briefcase w-5"></i>案件管理</a>
         <a href="#clients" class="side-link" data-tab="clients"><i class="fas fa-building w-5"></i>クライアント</a>
+        <a href="#partners" class="side-link" data-tab="partners"><i class="fas fa-handshake w-5"></i>取引先</a>
         <a href="#shifts" class="side-link" data-tab="shifts"><i class="fas fa-calendar-days w-5"></i>シフト管理</a>
         <a href="#reports" class="side-link" data-tab="reports"><i class="fas fa-file-lines w-5"></i>日報一覧</a>
         <p class="px-3 pt-3 pb-1 text-[11px] font-bold text-gray-400">勤怠管理</p>
@@ -845,7 +847,15 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'retention_in_service', label: 'データ保持の定期削除（在職中の位置情報・写真・相談など）', cron: CRON_REPORTS, run: env => runInServiceRetentionJob(env.DB, env, env.RETENTION_ENABLED === 'true') },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
   // 予約配信のお知らせのメール（#291。画面には時刻どおりに出る。管理者・スタッフがお知らせを開いたときにもその会社の分を送る）
-  { name: 'notice_scheduled_publish', label: 'お知らせの予約配信（メール）', cron: CRON_DAILY, run: env => publishDueNotices(env as any) },
+  // 予約の時刻から遅れないよう15分おきに確かめる。予約がなければ問い合わせ1回で終わる
+  { name: 'notice_scheduled_publish', label: 'お知らせの予約配信（メール）', cron: CRON_REMINDERS, run: async env => {
+    const r = await publishDueNotices(env as any)
+    return r.due ? r : { ...r, idle: true }
+  } },
+  // 案件掲示板の保存した検索条件の新着の知らせ（#479。ログインしない利用者にも1日1回届ける。画面を開いたときにもその人の分を確かめる）
+  { name: 'board_saved_search', label: '掲示板の保存した検索条件の新着の知らせ', cron: CRON_DAILY, run: env => notifySavedSearchMatches(env as any) },
+  // 前月の請求の記録（#295。毎月1〜3日。記録済みの企業はそのまま）
+  { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
 ])
 
 export default {

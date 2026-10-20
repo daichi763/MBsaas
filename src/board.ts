@@ -9,7 +9,7 @@ import { loadRoster, createPerson, unusablePasswordHash } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
-import { notifyCompanyAdmins, markAdminNotificationsRead } from './notifications'
+import { notifyCompanyAdmins, markAdminNotificationsRead, loadNotifyPrefs, emailWanted } from './notifications'
 import { sendEmailBatch } from './services/email'
 import type { SendEmailInput } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
@@ -627,7 +627,9 @@ boardApi.get('/threads/:id/proposal-candidates', async (c) => {
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
   if (t.my_side !== 'inquirer') return c.json({ error: '人材の提案は問い合わせた企業から掲載企業へ行います' }, 403)
   const q = String(c.req.query('q') || '').trim()
-  const w = ['sp.company_id = ?', 'sp.merged_into_staff_id IS NULL', `COALESCE(sp.affiliation_type,'own_employee') IN (${PROPOSABLE_KINDS.map(() => '?').join(',')})`, `COALESCE(sp.employment_status,'working') != 'retired'`]
+  const w = ['sp.company_id = ?', 'sp.merged_into_staff_id IS NULL', `COALESCE(sp.affiliation_type,'own_employee') IN (${PROPOSABLE_KINDS.map(() => '?').join(',')})`, `COALESCE(sp.employment_status,'working') != 'retired'`,
+    // 所属元が連携を終了した他社連携の行は提案できない（#162）
+    `NOT (sp.affiliation_type = 'linked_external' AND sp.link_revoked_at IS NOT NULL)`]
   const bind: any[] = [u.company_id, ...PROPOSABLE_KINDS]
   if (q) { w.push(`(us.name LIKE ? OR COALESCE(CASE WHEN sp.affiliation_type='linked_external' THEN src.skills ELSE sp.skills END,'') LIKE ? OR COALESCE(CASE WHEN sp.affiliation_type='linked_external' THEN src.kana ELSE sp.kana END,'') LIKE ?)`); bind.push(`%${q}%`, `%${q}%`, `%${q}%`) }
   const rows = (await db.prepare(`SELECT sp.staff_id, us.name, COALESCE(sp.affiliation_type,'own_employee') AS kind, sp.affiliation,
@@ -636,7 +638,7 @@ boardApi.get('/threads/:id/proposal-candidates', async (c) => {
       (SELECT COUNT(*) FROM board_proposals bp WHERE bp.staff_id = sp.staff_id AND bp.thread_id = ? AND bp.status NOT IN ('withdrawn','declined')) AS already,
       ${ELSEWHERE_COLS}
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     WHERE ${w.join(' AND ')} ORDER BY us.name LIMIT 200`).bind(t.thread_id, t.thread_id, t.thread_id, t.thread_id, ...bind).all()).results as any[]
   return c.json({ candidates: rows.map(r => ({ ...r, warning: PROPOSAL_WARNINGS[r.kind] || null })) })
 })
@@ -658,6 +660,7 @@ boardApi.get('/threads/:id/proposal-preview', async (c) => {
   if (!r) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは提案できません（統合先のスタッフで提案してください）' }, 400)
   if (!PROPOSABLE_KINDS.includes(r.affiliation_type)) return c.json({ error: 'このスタッフは提案できません' }, 400)
+  if (r.affiliation_type === 'linked_external' && r.link_revoked_at) return c.json({ error: '所属元の企業が連携を終了したスタッフは提案できません' }, 400)
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
   // 他社連携の人材は、連携のときに本人が同意した範囲（自社への共有）を示し、所属元の承諾を求める（#502。roster_consents は参照のみ）
   const link = r.affiliation_type === 'linked_external'
@@ -703,6 +706,7 @@ boardApi.post('/threads/:id/proposals', async (c) => {
   if (!r) return c.json({ error: 'スタッフが見つかりません' }, 404)
   if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは提案できません（統合先のスタッフで提案してください）' }, 400)
   if (!PROPOSABLE_KINDS.includes(r.affiliation_type)) return c.json({ error: 'このスタッフは提案できません' }, 400)
+  if (r.affiliation_type === 'linked_external' && r.link_revoked_at) return c.json({ error: '所属元の企業が連携を終了したスタッフは提案できません' }, 400)
   if (r.employment_status === 'retired') return c.json({ error: '退職したスタッフは提案できません' }, 400)
   // 本人の同意（と所属元・取引先の承諾）の記録がなければ提案しない（#502）
   const consent = validateConsent(b, r.affiliation_type)
@@ -899,7 +903,7 @@ boardApi.post('/proposals/:id/import', async (c) => {
   const partnerName = String(p.proposer_company_name || '').trim()
   // 取引先マスタ（提案企業名）
   await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, partnerName).run()
-  const pa = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, partnerName).first() as any
+  const pa = await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(u.company_id, partnerName).first() as any
   const person = await createPerson(db, u.company_id)
   let userId: number
   try {
@@ -1095,8 +1099,10 @@ async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], userT
     u.searches.set(r.search_id, s); u.posts.add(r.post_id); u.email = u.email || !!r.notify_email
     byUser.set(r.user_id, u)
   }
-  const users = new Map(((await db.prepare(`SELECT user_id, name, email FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray([...byUser.keys()])).all()).results as any[])
+  const users = new Map(((await db.prepare(`SELECT user_id, name, email, role FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray([...byUser.keys()])).all()).results as any[])
     .map(x => [Number(x.user_id), x]))
+  // 通知の受け取り設定でこの種類のメールを止めた人には送らない（#479 #284）
+  const prefs = await loadNotifyPrefs(db, [...byUser.keys()])
   const stmts: D1PreparedStatement[] = []
   const mails: SendEmailInput[] = []
   const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
@@ -1109,7 +1115,7 @@ async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], userT
     stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES (?, ?, 'board_saved_search', ?, ?, ?, ?, ?)`)
       .bind(x.company_id, userId, title, lines.map(([k, v]) => `${k} ${v}`).join('\n'), link, ids.length === 1 ? ids[0] : null, now))
     const us = users.get(userId)
-    if (x.email && us?.email) {
+    if (x.email && us?.email && emailWanted(prefs, userId, us.role, 'board_saved_search')) {
       const tpl = attendanceCorrectionEmail({ name: us.name, title, headline: '保存した検索条件に合う案件が、案件掲示板に新しく掲載されました。', lines, url: base + link, button: '掲示板で確認する' })
       mails.push({ to: us.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'board_saved_search', company_id: x.company_id })
     }
