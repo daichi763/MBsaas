@@ -19,6 +19,7 @@ import { isWorkingShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, overlaps, shiftWindow, toMin } from './lib/shift-time'
 import { isHHMM, oneOf, toInt } from './lib/validate'
 import { mdText, notifyCompanyAdmins, notifyShiftStaff, nowJST } from './lib/staff-pay-notify'
+import { attachPremiums } from './lib/premium-pay'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -96,6 +97,7 @@ staffPayStaffApi.get('/pay', async (c) => {
       s.actual_start, s.actual_end, s.actual_break_minutes, s.actual_source, s.settle_status, s.transportation_fee,
       s.unit_price, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust,
       s.pay_unit_type, s.pay_rate, s.pay_qty, s.pay_amount, s.pay_transport_type, s.pay_transport_amount, s.pay_adjust, s.payee_type,
+      s.pay_premium, s.premium_night_minutes, s.premium_overtime_minutes, s.premium_holiday_minutes,
       p.project_name, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, co.company_name, co.settings_json,
       sc.shift_id AS cx_shift_id, sc.pay_amount AS cx_pay
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN companies co ON co.company_id = s.company_id
@@ -109,6 +111,8 @@ staffPayStaffApi.get('/pay', async (c) => {
   const visibleOf = new Map<number, boolean>()
   for (const r of rows) if (!visibleOf.has(r.company_id)) visibleOf.set(r.company_id, staffPayVisible(r.settings_json))
   const anyVisible = [...visibleOf.values()].some(Boolean)
+  // 深夜・時間外・休日の割増（#167。精算と同じ計算）を、支払額を見せる会社のシフトに付ける（支払額の合計に含む）
+  for (const [cid, visible] of visibleOf) if (visible) await attachPremiums(db, cid, rows.filter(r => r.company_id === cid))
 
   let workedDays = new Set<string>(), workedHours = 0, schedDays = new Set<string>(), schedHours = 0
   let confirmedTotal = 0, estimateTotal = 0, payUnset = 0, payShifts = 0
@@ -128,7 +132,8 @@ staffPayStaffApi.get('/pay', async (c) => {
       else {
         const t = shiftTotals(s)
         pay = { unit_type: s.pay_unit_type || 'daily', rate: s.pay_rate ?? null, qty: s.pay_qty ?? null, base: s.pay_amount == null ? null : Number(s.pay_amount),
-          transport: t.pay_transport, adjust: Number(s.pay_adjust || 0), total: t.pay_total }
+          transport: t.pay_transport, adjust: Number(s.pay_adjust || 0), premium: t.pay_premium,
+          premium_minutes: { night: s.premium_night_minutes ?? null, overtime: s.premium_overtime_minutes ?? null, holiday: s.premium_holiday_minutes ?? null }, total: t.pay_total }
       }
       payShifts++
       if (pay.total == null) payUnset++

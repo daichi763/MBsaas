@@ -147,7 +147,7 @@ let closingId = null
   const none = await admin.get(`/api/admin/settlement/statement?kind=billing&client_id=999999&from=${FROM}&to=${TO}`)
   ok('#168 対象のないクライアントは 404', none.status === 404, none.status)
   const csv = await admin.get(`/api/admin/settlement/export?kind=detail&from=${FROM}&to=${TO}&client_id=${cl.client_id}`)
-  ok('#283 シフト明細CSVの『実績の入力』にキャンセルの理由を出す（列の並びは変えない）', csv.status === 200 && csv.text.split('\r\n')[0].endsWith('スタッフID') && csv.text.includes('キャンセル（クライアント都合の中止）'), csv.text.slice(0, 200))
+  ok('#283 シフト明細CSVの『実績の入力』にキャンセルの理由を出す（列の並びは変えない）', csv.status === 200 && csv.text.split('\r\n')[0].includes(',確認事項,スタッフID') && csv.text.includes('キャンセル（クライアント都合の中止）'), csv.text.slice(0, 200))
   const logs = must(await admin.get('/api/admin/settlement/closings'), 'closings')
   ok('#170 CSV・明細書の出力を記録する', ['detail', 'statement_payment', 'statement_billing'].every(k => logs.exports.some(x => x.kind === k && x.period_from === FROM)), logs.exports.slice(0, 5))
   ok('#170 締めの記録を返す（会社管理者は解除できる）', logs.closings.some(k => k.closing_id === closingId && !k.reopened_at) && logs.can_reopen === true)

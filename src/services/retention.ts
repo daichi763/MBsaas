@@ -688,6 +688,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         ['employee_documents', db.prepare('DELETE FROM employee_documents WHERE staff_id = ?').bind(staffId)],
         // Sprint 5 で足した本人の記録（振込先の口座・変更申請・休暇・出勤可能日・従業員データの変更履歴・予定確認やカレンダーのトークン）
         [null, db.prepare('DELETE FROM payout_accounts WHERE staff_id = ?').bind(staffId)],
+        // Sprint 6（w6-premium-pay）: スタッフの交通費の標準
+        [null, db.prepare('DELETE FROM staff_transport_defaults WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM profile_change_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM leave_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM staff_availability WHERE staff_id = ?').bind(staffId)],
@@ -1130,6 +1132,9 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'employee_change_logs', label: '従業員データの変更履歴', table: 'employee_change_logs', where: OB_CO },
   { target: 'payout_accounts', label: '振込先の口座', table: 'payout_accounts', where: OB_CO },
   { target: 'payout_settings', label: '振込元（依頼人）の設定', table: 'payout_settings', where: OB_CO },
+  // Sprint 6（w6-premium-pay）: 交通費の標準・割増の設定
+  { target: 'staff_transport_defaults', label: '交通費の標準（スタッフ・開催場所）', table: 'staff_transport_defaults', where: OB_CO },
+  { target: 'premium_pay_settings', label: '深夜・時間外・休日の割増の設定', table: 'premium_pay_settings', where: OB_CO },
   { target: 'profile_change_requests', label: '登録情報の変更申請', table: 'profile_change_requests', where: OB_CO },
   { target: 'leave_requests', label: '休暇の申請', table: 'leave_requests', where: OB_CO },
   { target: 'staff_availability', label: '出勤可能日', table: 'staff_availability', where: OB_CO },
