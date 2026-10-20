@@ -215,14 +215,19 @@ const role1 = s1.roles[0].slot_role_id
 
   if (PERSIST) {
     // 前日に確認した状態にしてから、その日はじめての未読件数の確認を行う
-    sql(`UPDATE board_saved_searches SET last_checked_at = '${addDays(today, -1)} 00:00:00' WHERE search_id = ${Number(sv.data.search_id)}`)
+    // 同じ掲載に合う2つ目の条件（キーワードでこの回の掲載だけに絞る）。新着の件数は、複数の条件に合う掲載を1件と数える
+    const sv2 = must(await B.post('/api/admin/board/saved-searches', { ...cond, skill: '', q: `合う${PFX}`, name: '2つ目' }), 'saved 2')
+    sql(`UPDATE board_saved_searches SET last_checked_at = '${addDays(today, -1)} 00:00:00' WHERE search_id IN (${Number(sv.data.search_id)}, ${Number(sv2.search_id)})`)
     must(await B.get('/api/admin/board/unread-count'), 'unread-count')
     const ns = must(await B.get('/api/admin/notifications?kind=board_saved_search'), 'notifications').notifications
     const n = ns[0]
     // 同じ DB でテストを繰り返したときは、前の回の掲載も新着に入るため、この回の掲載（PFX）で確かめる
     ok('#479 条件に合う他社の新しい掲載だけを1件の通知にまとめて知らせる', ns.length === 1 && /新着 \d+件/.test(n.title) && n.body.includes(`W6RF 合う${PFX}`)
       && !n.body.includes(`大阪${PFX}`) && !n.body.includes(`自社${PFX}`) && !n.body.includes(`スキル違い${PFX}`), ns)
-    ok('#479 通知のリンクはその条件の一覧（#board/search-ID）', n && n.link === `/admin#board/search-${sv.data.search_id}`, n?.link)
+    const first = n && (n.body.split('\n').find(l => l.startsWith('「東京のMNP」')) || '').match(/ (\d+)件:/)
+    ok('#479 条件ごとの件数を出し、全体の件数は重なる掲載を1件と数える', n && n.body.split('\n').length === 2 && /「2つ目」 1件: /.test(n.body) && first && n.title.includes(`新着 ${first[1]}件`), n)
+    ok('#479 条件が複数のときの通知のリンクは掲示板の一覧', n && n.link === '/admin#board', n?.link)
+    must(await B.del(`/api/admin/board/saved-searches/${sv2.search_id}`), 'del 2')
     const row = sql(`SELECT last_checked_at, prev_checked_at FROM board_saved_searches WHERE search_id = ${Number(sv.data.search_id)}`)[0]
     ok('#479 確認の日時を進める（同じ日に二重に知らせない）', row && row.last_checked_at.slice(0, 10) === today && row.prev_checked_at.startsWith(addDays(today, -1)), row)
     const mail = sql(`SELECT COUNT(*) AS n FROM email_logs WHERE type = 'board_saved_search' AND company_id = (SELECT company_id FROM users WHERE user_id = (SELECT user_id FROM board_saved_searches WHERE search_id = ${Number(sv.data.search_id)}))`)[0]

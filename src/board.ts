@@ -967,7 +967,6 @@ async function sameProposedPerson(db: D1Database, p: any, companyId: number): Pr
 const MAX_SAVED_SEARCHES = 10
 const SAVED_SEARCH_BATCH = 500   // 1回で確かめる条件の数
 const SAVED_SEARCH_MAX_ROUNDS = 4
-const SAVED_SEARCH_MATCH_LIMIT = 2000
 const SAVED_SEARCH_NOTIFY_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 const SAVED_SEARCH_PREVIEW = 3   // 通知の本文に出す案件名の数（条件ごと）
 
@@ -1062,13 +1061,22 @@ export async function notifySavedSearchMatches(env: SavedSearchEnv, opts: { user
       .map(r => Number(r.search_id))
     if (!claimed.length) break
     checked += claimed.length
-    const rows = (await db.prepare(`SELECT s.search_id, s.user_id, s.company_id, s.name, s.notify_email, bp.post_id, bp.title
-      FROM board_saved_searches s JOIN board_posts bp ON bp.status = 'open' AND bp.published_at > s.prev_checked_at AND bp.published_at <= s.last_checked_at
+    // 条件ごとに新しい順の先頭 SAVED_SEARCH_PREVIEW 件と件数（cnt）だけを返す（全体に上限を掛けると、後ろの利用者の知らせが丸ごと抜けるため）
+    const MATCH_FROM = `FROM board_saved_searches s JOIN board_posts bp ON bp.status = 'open' AND bp.published_at > s.prev_checked_at AND bp.published_at <= s.last_checked_at
       JOIN companies co ON co.company_id = bp.company_id
-      WHERE s.search_id IN ${JSON_IN} AND ${SEARCH_MATCH_SQL} ORDER BY s.user_id, s.search_id, bp.published_at DESC LIMIT ?`)
-      .bind(bindJsonArray(claimed), SAVED_SEARCH_MATCH_LIMIT).all()).results as any[]
+      WHERE s.search_id IN ${JSON_IN} AND ${SEARCH_MATCH_SQL}`
+    const ids = bindJsonArray(claimed)
+    const [matched, totals] = await db.batch([
+      db.prepare(`SELECT * FROM (SELECT s.search_id, s.user_id, s.company_id, s.name, s.notify_email, bp.post_id, bp.title,
+          ROW_NUMBER() OVER (PARTITION BY s.search_id ORDER BY bp.published_at DESC, bp.post_id DESC) AS rn, COUNT(*) OVER (PARTITION BY s.search_id) AS cnt
+        ${MATCH_FROM}) WHERE rn <= ? ORDER BY user_id, search_id, rn`).bind(ids, SAVED_SEARCH_PREVIEW),
+      // 利用者ごとの新着の件数（複数の条件に合う掲載は1件と数える）
+      db.prepare(`SELECT s.user_id, COUNT(DISTINCT bp.post_id) AS n ${MATCH_FROM} GROUP BY s.user_id`).bind(ids),
+    ])
+    const rows = matched.results as any[]
     if (rows.length) {
-      const r = await deliverSavedSearchNotices(env, rows, now, opts.defer)
+      const userTotals = new Map((totals.results as any[]).map(x => [Number(x.user_id), Number(x.n)]))
+      const r = await deliverSavedSearchNotices(env, rows, userTotals, now, opts.defer)
       notified += r.notified; emailed += r.emailed
     }
     if (opts.userId || claimed.length < SAVED_SEARCH_BATCH) break
@@ -1077,13 +1085,13 @@ export async function notifySavedSearchMatches(env: SavedSearchEnv, opts: { user
 }
 
 // 利用者ごとに1件の通知（と1通のメール）にまとめる
-async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], now: string, defer?: (p: Promise<unknown>) => void) {
+async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], userTotals: Map<number, number>, now: string, defer?: (p: Promise<unknown>) => void) {
   const db = env.DB
   const byUser = new Map<number, { company_id: number; email: boolean; posts: Set<number>; searches: Map<number, { name: string; titles: string[]; n: number }> }>()
   for (const r of rows) {
     const u = byUser.get(r.user_id) || { company_id: r.company_id, email: false, posts: new Set<number>(), searches: new Map() }
-    const s = u.searches.get(r.search_id) || { name: r.name, titles: [], n: 0 }
-    s.n++; if (s.titles.length < SAVED_SEARCH_PREVIEW) s.titles.push(r.title)
+    const s = u.searches.get(r.search_id) || { name: r.name, titles: [], n: Number(r.cnt) || 0 }
+    if (s.titles.length < SAVED_SEARCH_PREVIEW) s.titles.push(r.title)
     u.searches.set(r.search_id, s); u.posts.add(r.post_id); u.email = u.email || !!r.notify_email
     byUser.set(r.user_id, u)
   }
@@ -1094,7 +1102,7 @@ async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], now: 
   const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
   for (const [userId, x] of byUser) {
     const ids = [...x.searches.keys()]
-    const title = `案件掲示板の新着 ${x.posts.size}件（保存した検索条件）`
+    const title = `案件掲示板の新着 ${userTotals.get(userId) || x.posts.size}件（保存した検索条件）`
     const lines: [string, string][] = [...x.searches.values()].map(s => [`「${s.name}」`, `${s.n}件: ${s.titles.join('、')}${s.n > s.titles.length ? ' ほか' : ''}`])
     // 条件が1つなら、その条件で一覧を開く
     const link = ids.length === 1 ? `/admin#board/search-${ids[0]}` : '/admin#board'
