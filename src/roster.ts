@@ -261,12 +261,7 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
   const name = String(o.name || '').replace(/[\s　]/g, '')
   const dob = String(o.date_of_birth || '').trim()
   if (phone.length < 10 && !(name && dob)) return []
-  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
-      sp.employment_status, us.status AS user_status, us.retired_at,
-      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth ELSE sp.date_of_birth END AS dob
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
-    WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
+  const rows = await samePersonRows(db, companyId)
   const today = nowJST().slice(0, 10)
   const out: any[] = []
   for (const r of rows) {
@@ -278,6 +273,16 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
       employment_status: r.employment_status || 'working', inactive: inactiveLabelOf(r, today), reasons })
   }
   return out.slice(0, 20)
+}
+
+/** 同じ人の確認に使う自社のスタッフの一覧（統合済みは除く。他社連携の行の生年月日は所属元の値。CSV 一括登録（roster-import.ts）でも使う） */
+export async function samePersonRows(db: D1Database, companyId: number): Promise<any[]> {
+  return (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
+      sp.employment_status, us.status AS user_status, us.retired_at,
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth ELSE sp.date_of_birth END AS dob
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+    WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
 }
 
 /**

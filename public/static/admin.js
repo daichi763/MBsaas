@@ -2566,6 +2566,9 @@ async function renderEmployeeDetail(sid) {
         </dl>
       </section>
     </div>`
+  // 変更履歴（#464）は別の部分として、画面の下に読み込む
+  $app.insertAdjacentHTML('beforeend', `<section class="card p-4 mt-4" id="employee-change-log" data-sid="${Number(sid)}"></section>`)
+  loadEmployeeChangeLog(sid)
   // 雇用終了（他の区分へ移行）した従業員は閲覧のみ（第2段階）
   if (data.read_only) {
     $app.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true })
@@ -2576,6 +2579,46 @@ async function renderEmployeeDetail(sid) {
       自社雇用に戻す場合はスタッフ詳細の「区分を変更」から行ってください。</div>`)
   }
 }
+
+// ---------- 従業員データ・スタッフ基本情報の変更履歴（#464） ----------
+// 口座番号・保険番号は下4桁だけが残っている（サーバー側で伏せて保存）
+function changeLogValue(field, v) {
+  if (v == null || v === '') return '<span class="text-gray-300">（空欄）</span>'
+  if (field === 'gender') return esc(GENDER_LABEL_ADMIN[v] || v)
+  if (field === 'employment_status') return esc(EMP_STATUS_LABEL[v] || v)
+  return esc(v)
+}
+function changeLogRowsHtml(logs) {
+  return logs.map(l => `<tr class="border-t border-gray-100 align-top">
+    <td class="py-1.5 pr-2 whitespace-nowrap text-gray-500">${esc(String(l.changed_at || '').slice(0, 16))}</td>
+    <td class="py-1.5 pr-2 whitespace-nowrap">${esc(l.label)}${l.source === 'profile' ? ' <span class="badge badge-gray text-[10px]">基本情報</span>' : ''}</td>
+    <td class="py-1.5 pr-2 break-all">${changeLogValue(l.field, l.old_value)} <i class="fas fa-arrow-right text-gray-300 mx-1"></i> ${changeLogValue(l.field, l.new_value)}</td>
+    <td class="py-1.5 whitespace-nowrap text-gray-500">${esc(l.changed_by_name || '-')}</td></tr>`).join('')
+}
+async function loadEmployeeChangeLog(sid, before) {
+  const box = document.getElementById('employee-change-log')
+  if (!box || Number(box.dataset.sid) !== Number(sid)) return
+  let data
+  try { data = (await axios.get('/api/admin/employees/' + Number(sid) + '/history', { params: before ? { before } : {} })).data }
+  catch (e) { if (!before) box.innerHTML = '<p class="text-xs text-red-500">変更履歴を読み込めませんでした</p>'; else showApiError(e, '変更履歴を読み込めませんでした'); return }
+  const logs = data.logs || []
+  const more = data.has_more && logs.length
+    ? `<button class="btn btn-outline text-xs w-full mt-2" data-action="moreEmployeeChangeLog" data-sid="${Number(sid)}" data-before="${Number(logs[logs.length - 1].log_id)}">さらに表示</button>` : ''
+  if (before) {
+    const tbody = document.getElementById('employee-change-log-rows')
+    if (tbody) tbody.insertAdjacentHTML('beforeend', changeLogRowsHtml(logs))
+    const old = box.querySelector('[data-action="moreEmployeeChangeLog"]'); if (old) old.remove()
+    if (more) box.insertAdjacentHTML('beforeend', more)
+    return
+  }
+  box.innerHTML = `<h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
+    <p class="text-xs text-gray-400 mb-2">従業員管理とスタッフ基本情報で変わった項目を、変更した人・日時とともに残しています。口座番号・保険番号は下4桁だけを残します。</p>
+    ${logs.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-left text-gray-400">
+      <th class="py-1 pr-2 font-normal">日時</th><th class="py-1 pr-2 font-normal">項目</th><th class="py-1 pr-2 font-normal">変更前 → 変更後</th><th class="py-1 font-normal">変更した人</th></tr></thead>
+      <tbody id="employee-change-log-rows">${changeLogRowsHtml(logs)}</tbody></table></div>${more}`
+      : '<p class="text-xs text-gray-400">まだ変更の記録はありません</p>'}`
+}
+delegate('moreEmployeeChangeLog', el => withSubmitLock(el, () => loadEmployeeChangeLog(Number(el.dataset.sid), Number(el.dataset.before))))
 
 window.saveEmployeeRecord = async function (sid) {
   const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }

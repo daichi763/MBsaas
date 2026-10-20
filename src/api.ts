@@ -44,6 +44,8 @@ import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/s
 import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
 import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
+import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
+import rosterImportApi from './roster-import'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -1108,6 +1110,8 @@ api.route('/admin', adminUsersApi)
 api.route('/hq', hqUsersApi)
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
 api.route('/admin/roster', rosterApi)
+// スタッフマスタ・従業員の CSV 一括登録（#430。src/roster-import.ts）
+api.route('/admin/roster/import', rosterImportApi)
 api.route('/staff/me', staffSelfApi)
 // 企業間チャット（所属元⇔稼働先担当者）。/admin/* 配下のみ。スタッフ本人向けAPIには公開しない（src/roster-chat.ts）
 api.route('/admin/roster-chat', chatApi)
@@ -2790,6 +2794,27 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
   }
 
   if (retired_at !== undefined || employment_status !== undefined) await applyRetirement(c.env.DB, sid, u.company_id, roster, retired_at, employment_status)
+  await logProfileChanges(c, sid, body, roster)
+}
+// スタッフ基本情報の変更履歴（#464）。送られてきた項目だけを、保存した後の値と保存前（roster）の値で比べる
+// （退職日・在籍状況は applyRetirement で決まった値を残すため、保存した後に読み直す）。履歴の失敗で保存は取り消さない
+async function logProfileChanges(c: any, sid: string, body: any, roster: any) {
+  // 退職日・在籍状況はどちらかを送ると、もう一方も変わることがあるので両方を比べる
+  const retire = body.retired_at !== undefined || body.employment_status !== undefined
+  const fields = PROFILE_LOG_FIELDS.filter(k => body[k] !== undefined || (retire && (k === 'retired_at' || k === 'employment_status')))
+  if (!fields.length) return
+  const u = c.get('user')
+  try {
+    const after = await c.env.DB.prepare(`SELECT sp.*, us.name, us.retired_at FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+      WHERE sp.staff_id = ? AND sp.company_id = ?`).bind(sid, u.company_id).first() as any
+    if (!after) return
+    const saved: Record<string, any> = {}
+    for (const k of fields) saved[k] = after[k] ?? null
+    // 在籍状況の NULL は在職中として扱う
+    if (fields.includes('employment_status')) saved.employment_status = saved.employment_status || 'working'
+    const changes = diffFields({ ...roster, employment_status: roster.employment_status || 'working' }, saved, fields)
+    if (changes.length) await c.env.DB.batch(changeLogStmts(c.env.DB, { companyId: u.company_id, staffId: sid, source: 'profile', changedBy: u.user_id, at: nowJST(), changes }))
+  } catch (e) { console.log(`profile change log failed: staff=${sid}: ${e}`) }
 }
 
 // ============ 電話番号・ログイン用メール（#123 #207） ============
@@ -3537,22 +3562,46 @@ api.put('/admin/employees/:staffId', async (c) => {
     'employment_insurance_no', 'social_insurance_no',
     'paid_leave_granted_at', 'paid_leave_remaining', 'telework_remaining_this_month',
   ]
-  const exists = await c.env.DB.prepare('SELECT employee_record_id, phone_main FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
+  const exists = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
   // 電話番号が変わったときだけ users.phone にそろえる（従業員管理を初めて保存したときに、登録時の電話番号を空欄で消さないように比べる。#123）
   const phoneChanged = b.phone_main !== undefined && normalizePhone(b.phone_main) !== normalizePhone(exists?.phone_main)
+  // 変わった項目を変更履歴に残し、口座・給与の変更は会社管理者に知らせる（#464 #205。保存と同じ batch で入れる）
+  const now = nowJST()
+  const changes = diffFields(exists, b, cols)
+  const logStmts = [
+    ...changeLogStmts(c.env.DB, { companyId: u.company_id, staffId: sid, source: 'employee', changedBy: u.user_id, at: now, changes }),
+    ...payrollAlertStmts(c.env.DB, { companyId: u.company_id, staffId: sid, actorId: u.user_id, actorName: u.name, at: now, changes }),
+  ]
   if (exists) {
     // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#18）
     const upd = buildUpdate(b, cols)
-    await c.env.DB.prepare(`UPDATE employee_records SET ${upd.clause ? upd.clause + ', ' : ''}updated_at = ? WHERE staff_id = ? AND company_id = ?`)
-      .bind(...upd.values, nowJST(), sid, u.company_id).run()
+    await c.env.DB.batch([c.env.DB.prepare(`UPDATE employee_records SET ${upd.clause ? upd.clause + ', ' : ''}updated_at = ? WHERE staff_id = ? AND company_id = ?`)
+      .bind(...upd.values, now, sid, u.company_id), ...logStmts])
   } else {
     const placeholders = cols.map(() => '?').join(', ')
-    await c.env.DB.prepare(`INSERT INTO employee_records (staff_id, company_id, ${cols.join(', ')}) VALUES (?, ?, ${placeholders})`)
-      .bind(sid, u.company_id, ...cols.map(k => b[k] === '' ? null : (b[k] ?? null))).run()
+    await c.env.DB.batch([c.env.DB.prepare(`INSERT INTO employee_records (staff_id, company_id, ${cols.join(', ')}) VALUES (?, ?, ${placeholders})`)
+      .bind(sid, u.company_id, ...cols.map(k => b[k] === '' ? null : (b[k] ?? null))), ...logStmts])
   }
   if (roster) await applyProfileUpdate(c, sid, profile, roster)
   if (phoneChanged) await syncUserPhoneFromEmployee(c.env.DB, sid, u.company_id, b.phone_main)
   return c.json({ ok: true })
+})
+
+// 従業員データとスタッフ基本情報の変更履歴（#464）。新しい順に50件ずつ（before に前のページの最後の log_id を渡す）。
+// 雇用終了した従業員（他の区分へ移行）も閲覧できる（従業員データと同じく7年保存）
+const CHANGE_LOG_PAGE = 50
+api.get('/admin/employees/:staffId/history', async (c) => {
+  const u = c.get('user'); const sid = c.req.param('staffId')
+  const staff = (await assertOwnEmployee(c, sid)) || (await c.env.DB.prepare(
+    'SELECT staff_id FROM employee_records WHERE staff_id = ? AND company_id = ? AND employment_ended_at IS NOT NULL').bind(sid, u.company_id).first())
+  if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
+  const before = toInt(c.req.query('before'))
+  const rows = (await c.env.DB.prepare(`SELECT l.log_id, l.source, l.field, l.old_value, l.new_value, l.changed_at, cu.name AS changed_by_name
+    FROM employee_change_logs l LEFT JOIN users cu ON cu.user_id = l.changed_by
+    WHERE l.staff_id = ? AND l.company_id = ? ${before ? 'AND l.log_id < ?' : ''}
+    ORDER BY l.log_id DESC LIMIT ?`).bind(...[sid, u.company_id, ...(before ? [before] : []), CHANGE_LOG_PAGE + 1]).all()).results as any[]
+  const has_more = rows.length > CHANGE_LOG_PAGE
+  return c.json({ logs: rows.slice(0, CHANGE_LOG_PAGE).map(r => ({ ...r, label: CHANGE_FIELD_LABELS[r.field] || r.field })), has_more })
 })
 
 // ============ 入社時書類（履歴書と同一パターン。既存DOCUMENTSバケットを別キー接頭辞で再利用） ============

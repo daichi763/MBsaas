@@ -23,6 +23,10 @@ window.showAddRoster = function () {
           <p class="font-bold text-sm text-gray-800"><i class="fas ${r.icon} ${r.color} w-5"></i>${r.title}</p>
           <p class="text-xs text-gray-500 mt-1 ml-5">${r.desc}</p>
         </button>`).join('')}
+      <button class="w-full text-left p-3 rounded-xl border border-dashed border-gray-300 hover:border-orange-400 hover:bg-orange-50 transition" data-action="showRosterImport">
+        <p class="font-bold text-sm text-gray-800"><i class="fas fa-file-csv text-orange-600 w-5"></i>CSV でまとめて登録（②③④）</p>
+        <p class="text-xs text-gray-500 mt-1 ml-5">導入時の名簿の移行や、まとめて受け入れるときに。テンプレートに記入して取り込み、重複などを確かめてから登録します。</p>
+      </button>
     </div>`)
 }
 
@@ -273,6 +277,173 @@ window.submitRosterForm = async function (route, force) {
 
 // 画面遷移（hash変更）時に開いたままの作成モーダルを閉じる
 window.addEventListener('hashchange', () => { if (typeof closeModal === 'function') closeModal() })
+
+// =========================================================
+// CSV でまとめて登録（#430）。②自社雇用・③取引先・④スキルシートのみ を1つのファイルで登録する
+// 1. テンプレートに記入した CSV を選ぶ → 2. サーバーで確かめた結果（エラー・警告）を見る → 3. 登録する
+// 登録は、サーバーの CPU 時間の上限があるため数行ずつ（ログインを作る行は1行ずつ）に分けて送る。
+// 自動で作った初期パスワードはこの画面でしか分からないので、ログイン案内の CSV を保存してもらう
+// =========================================================
+const ROSTER_IMPORT_MAX_ROWS = 500
+const ROSTER_IMPORT = { header: null, rows: [], preview: null, created: [], failed: [], downloaded: true }
+function parseCsvText(text) {
+  const rows = []; let row = [], f = '', q = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { f += '"'; i++ } else q = false } else f += ch
+      continue
+    }
+    if (ch === '"') q = true
+    else if (ch === ',') { row.push(f); f = '' }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      row.push(f); rows.push(row); row = []; f = ''
+    } else f += ch
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row) }
+  return rows
+}
+// UTF-8 で読めなければ Shift_JIS（Excel で保存した CSV）として読む
+function decodeCsvBuffer(buf) {
+  let text
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf) } catch { text = new TextDecoder('shift_jis').decode(buf) }
+  return text.replace(/^﻿/, '')
+}
+function rosterImportResultHtml() {
+  const created = ROSTER_IMPORT.created, failed = ROSTER_IMPORT.failed
+  if (!created.length && !failed.length) return ''
+  const withPw = created.filter(r => r.password)
+  return `<div class="p-3 rounded-lg ${failed.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'} text-xs space-y-2" id="ri-result">
+    <p class="font-bold"><i class="fas fa-circle-check mr-1"></i>${created.length}人を登録しました${failed.length ? `（登録しなかった行: ${failed.length}）` : ''}</p>
+    ${withPw.length ? `<p>ログインを作った ${withPw.length}人の初期パスワードは、この画面でしか確認できません。ログイン案内（CSV）を保存して、本人に伝えてください（初回のログインでパスワードの変更を求めます）。</p>
+      <button class="btn btn-primary text-xs" data-action="downloadRosterImportLogins"><i class="fas fa-download"></i>ログイン案内をダウンロード（CSV）</button>` : ''}
+    ${failed.length ? `<ul class="space-y-0.5">${failed.map(r => `<li>${Number(r.line)}行目 ${esc(r.name || '')}: ${esc(r.status === 'skipped' ? '警告があるため登録しませんでした' : (r.errors || []).join(' / ') || '登録できませんでした')}</li>`).join('')}</ul>` : ''}
+  </div>`
+}
+window.showRosterImport = function () {
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-file-csv text-orange-600 mr-1"></i>CSV でまとめて登録</h3>
+    <p class="text-xs text-gray-500 mb-3">テンプレートの CSV に1行1人で記入して選んでください。登録の前に、必須項目の不足・スタッフ番号や社員番号の重複・同じ人と思われる登録済みのスタッフを確かめます。
+      区分は「自社雇用」「取引先」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。</p>
+    ${ROSTER_IMPORT.downloaded ? '' : rosterImportResultHtml()}
+    <div class="flex gap-2 flex-wrap items-center mt-3">
+      <a class="btn btn-outline text-xs" href="/api/admin/roster/import/template"><i class="fas fa-download"></i>テンプレートをダウンロード</a>
+      <input type="file" id="ri-file" accept=".csv,text/csv" class="text-xs flex-1 min-w-0">
+    </div>
+    <p class="text-[11px] text-gray-400 mt-1">文字コードは UTF-8 と Shift_JIS（Excel で保存した CSV）に対応しています。1回に${ROSTER_IMPORT_MAX_ROWS}行まで。</p>
+    <div id="ri-preview" class="mt-3"></div>
+    <button class="btn btn-outline w-full mt-4 text-xs" data-action="showAddRoster"><i class="fas fa-arrow-left"></i>作成方法の選択に戻る</button>`)
+  const input = document.getElementById('ri-file')
+  if (input) input.addEventListener('change', () => { if (input.files && input.files[0]) previewRosterImport(input.files[0]) })
+}
+delegate('showRosterImport', () => showRosterImport())
+async function previewRosterImport(file) {
+  const box = document.getElementById('ri-preview'); if (!box) return
+  box.innerHTML = '<div class="flex justify-center py-4"><span class="spin"></span></div>'
+  let records
+  try { records = parseCsvText(decodeCsvBuffer(await file.arrayBuffer())) } catch { box.innerHTML = '<p class="text-xs text-red-500">ファイルを読めませんでした</p>'; return }
+  const header = records[0] || []
+  // 空の行は読み飛ばす。行番号は CSV の何行目か（見出しが1行目）
+  const rows = records.slice(1).map((cells, i) => ({ line: i + 2, cells })).filter(r => r.cells.some(v => String(v).trim()))
+  if (!rows.length) { box.innerHTML = '<p class="text-xs text-red-500">登録する行がありません</p>'; return }
+  if (rows.length > ROSTER_IMPORT_MAX_ROWS) { box.innerHTML = `<p class="text-xs text-red-500">${rows.length}行あります。1回に${ROSTER_IMPORT_MAX_ROWS}行までにして、ファイルを分けてください</p>`; return }
+  Object.assign(ROSTER_IMPORT, { header, rows, preview: null })
+  try {
+    ROSTER_IMPORT.preview = (await axios.post('/api/admin/roster/import/preview', { header, rows })).data
+  } catch (e) {
+    const d = e.response && e.response.data
+    box.innerHTML = `<p class="text-xs text-red-500">${esc((d && d.error) || '確かめられませんでした')}</p>`
+    return
+  }
+  renderRosterImportPreview()
+}
+function renderRosterImportPreview() {
+  const box = document.getElementById('ri-preview'); const p = ROSTER_IMPORT.preview
+  if (!box || !p) return
+  const s = p.summary
+  const msg = (list, cls) => (list || []).map(m => `<p class="${cls}">${esc(m)}</p>`).join('')
+  box.innerHTML = `
+    <div class="flex gap-2 flex-wrap text-xs mb-2">
+      <span class="badge badge-gray">${Number(s.total)}行</span>
+      <span class="badge badge-green">登録できる ${Number(s.ok)}</span>
+      <span class="badge badge-yellow">警告 ${Number(s.warning)}</span>
+      <span class="badge badge-red">エラー ${Number(s.error)}</span>
+    </div>
+    ${p.unknown_columns && p.unknown_columns.length ? `<p class="text-xs text-amber-700 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>読まない列: ${p.unknown_columns.map(esc).join('・')}（見出しがテンプレートと違います）</p>` : ''}
+    <div class="max-h-[40vh] overflow-auto border border-gray-100 rounded-lg">
+      <table class="w-full text-xs"><thead class="sticky top-0 bg-gray-50"><tr class="text-left text-gray-500">
+        <th class="p-1.5">行</th><th class="p-1.5">区分</th><th class="p-1.5">氏名</th><th class="p-1.5">スタッフ番号</th><th class="p-1.5">確認の結果</th></tr></thead>
+        <tbody>${p.rows.map(r => `<tr class="border-t border-gray-100 align-top ${r.errors.length ? 'bg-red-50' : r.warnings.length ? 'bg-amber-50' : ''}">
+          <td class="p-1.5">${Number(r.line)}</td><td class="p-1.5 whitespace-nowrap">${esc(r.type_label || '')}</td><td class="p-1.5 whitespace-nowrap">${esc(r.name || '')}</td>
+          <td class="p-1.5 whitespace-nowrap">${r.login ? esc(r.user_code || '自動') : '<span class="text-gray-400">ログインなし</span>'}</td>
+          <td class="p-1.5">${r.errors.length || r.warnings.length || r.notes.length ? msg(r.errors, 'text-red-600') + msg(r.warnings, 'text-amber-700') + msg(r.notes, 'text-gray-500') : '<span class="text-emerald-600">登録できます</span>'}</td></tr>`).join('')}</tbody></table>
+    </div>
+    ${s.warning ? `<label class="flex items-start gap-2 text-xs mt-3"><input type="checkbox" id="ri-accept" class="mt-0.5">
+      <span>警告のある行も登録する（同じ人と思われるスタッフがいる行は、別の人であることを確かめてから登録してください）</span></label>` : ''}
+    <p class="text-xs text-gray-500 mt-2">エラーの行は登録しません。CSV を直して、もう一度選び直すこともできます。</p>
+    <div id="ri-progress" class="text-xs text-gray-500 mt-2"></div>
+    <button class="btn btn-primary w-full mt-2" data-action="commitRosterImport" ${s.ok + s.warning ? '' : 'disabled'}><i class="fas fa-user-plus"></i>登録する</button>`
+}
+delegate('commitRosterImport', el => withSubmitLock(el, () => commitRosterImport()))
+async function commitRosterImport() {
+  const p = ROSTER_IMPORT.preview; if (!p) return
+  const acceptEl = document.getElementById('ri-accept')
+  const accept = !!(acceptEl && acceptEl.checked)
+  const ok = new Map(p.rows.filter(r => !r.errors.length && (!r.warnings.length || accept)).map(r => [r.line, r]))
+  const targets = ROSTER_IMPORT.rows.filter(r => ok.has(r.line))
+  if (!targets.length) { toast('登録できる行がありません'); return }
+  if (!confirm(`${targets.length}人を登録します。よろしいですか？`)) return
+  // 1回に送る行数とログインを作る行数の上限（preview が返す値）
+  const maxRows = (p.limits && p.limits.commit_rows) || 5, maxLogins = (p.limits && p.limits.commit_logins) || 1
+  const chunks = []; let cur = [], logins = 0
+  for (const r of targets) {
+    const login = ok.get(r.line).login ? 1 : 0
+    if (cur.length && (cur.length >= maxRows || logins + login > maxLogins)) { chunks.push(cur); cur = []; logins = 0 }
+    cur.push(r); logins += login
+  }
+  if (cur.length) chunks.push(cur)
+  const created = []
+  const failed = p.rows.filter(r => r.errors.length || (r.warnings.length && !accept))
+    .map(r => ({ line: r.line, name: r.name, status: r.errors.length ? 'error' : 'skipped', errors: r.errors }))
+  const progress = document.getElementById('ri-progress')
+  let stopped = null
+  for (const part of chunks) {
+    if (progress) progress.textContent = `登録しています… ${created.length} / ${targets.length}`
+    try {
+      const { data } = await axios.post('/api/admin/roster/import/commit', { header: ROSTER_IMPORT.header, rows: part, accept_warnings: accept })
+      for (const r of data.results) (r.status === 'created' ? created : failed).push(r)
+    } catch (e) {
+      stopped = (e.response && e.response.data && e.response.data.error) || '通信に失敗しました'
+      const done = new Set([...created, ...failed].map(r => r.line))
+      for (const r of targets) if (!done.has(r.line)) failed.push({ line: r.line, name: (ok.get(r.line) || {}).name, status: 'error', errors: [`登録を中断しました（${stopped}）`] })
+      break
+    }
+  }
+  failed.sort((a, b) => a.line - b.line)
+  Object.assign(ROSTER_IMPORT, { created, failed, downloaded: !created.some(r => r.password), preview: null })
+  const box = document.getElementById('ri-preview')
+  if (box) box.innerHTML = rosterImportResultHtml() + `<button class="btn btn-outline w-full mt-3 text-xs" data-action="closeRosterImport"><i class="fas fa-users"></i>スタッフマスタを開く</button>`
+  toast(stopped ? `${created.length}人を登録し、途中で中断しました` : `${created.length}人を登録しました`)
+}
+delegate('closeRosterImport', () => {
+  if (!ROSTER_IMPORT.downloaded && !confirm('ログイン案内をまだダウンロードしていません。閉じると初期パスワードを確認できなくなります。閉じますか？')) return
+  ROSTER_IMPORT.downloaded = true
+  closeModal()
+  if (location.hash === '#staff' && typeof renderStaff === 'function') renderStaff()
+  else location.hash = 'staff'
+})
+delegate('downloadRosterImportLogins', () => {
+  const rows = ROSTER_IMPORT.created.filter(r => r.password)
+  if (!rows.length) return
+  const q = v => { const s = String(v == null ? '' : v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
+  const code = (typeof ME !== 'undefined' && ME && ME.company_code) || ''
+  const lines = [['会社コード', 'スタッフ番号', '氏名', '初期パスワード'], ...rows.map(r => [code, r.user_code, r.name, r.password])].map(r => r.map(q).join(','))
+  const blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ログイン案内.csv'
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  ROSTER_IMPORT.downloaded = true
+})
 
 // =========================================================
 // フェーズD: 必須項目の企業別設定
