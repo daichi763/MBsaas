@@ -74,12 +74,13 @@ async function createShift(staff_id, project_id, work_date, memo) {
   ok('#2 報告用URL: テンプレートにないキーは保存されない', rep2 && !(IMG in rep2.values) && rep2.values.pi === 2, rep2 && rep2.values)
 }
 
-// ---------- #2 既存の使い方を壊さない（日本語のキーのテンプレート・テンプレートの無い案件） ----------
+// ---------- #2 既存の使い方を壊さない（日本語の表示名のテンプレート・テンプレートの無い案件） ----------
+// 項目のキーは半角英数字だけ（Sprint 4 の KEY_RE。#378）。表示名は日本語のまま
 {
   const hq = client(await login('sample', 'hq'))
   const tname = 'XSS-JP-TPL-' + Date.now()
-  const ct = await hq.post('/api/hq/templates', { template_name: tname, fields: [{ key: '架電数', label: '架電数', type: 'number' }, { key: 'メモ', label: 'メモ', type: 'textarea' }] })
-  ok('#2 日本語のキーのテンプレートを作成', ct.status === 200, ct)
+  const ct = await hq.post('/api/hq/templates', { template_name: tname, fields: [{ key: 'calls', label: '架電数', type: 'number' }, { key: 'memo', label: 'メモ', type: 'textarea' }] })
+  ok('#2 日本語の表示名のテンプレートを作成', ct.status === 200, ct)
   const tpl = ((await hq.get('/api/hq/templates')).data.templates || []).find(t => t.template_name === tname)
   const pj = async (name, report_template_id) => {
     const r = await admin.post('/api/admin/projects', { project_name: name, client_id: 1, report_template_id })
@@ -91,9 +92,9 @@ async function createShift(staff_id, project_id, work_date, memo) {
   const pNone = await pj('XSS-NO-TPL-' + Date.now(), '')
   const d = addDays(today, -2)
   const s1 = await createShift(1, pJp, d, 'XSS-JP')
-  const r1 = await st1.post('/api/staff/daily-report', { project_id: pJp, shift_id: s1, work_date: d, values: { '架電数': 12, 'メモ': 'テスト' } })
+  const r1 = await st1.post('/api/staff/daily-report', { project_id: pJp, shift_id: s1, work_date: d, values: { calls: 12, memo: 'テスト' } })
   const rep1 = ((await admin.get(`/api/admin/daily-reports?date=${d}`)).data.reports || []).find(x => x.shift_id === s1)
-  ok('#2 日本語のキーの項目も保存される', r1.status === 200 && rep1 && rep1.values['架電数'] === 12 && rep1.values['メモ'] === 'テスト', rep1 && rep1.values)
+  ok('#2 日本語の表示名の項目も保存される', r1.status === 200 && rep1 && rep1.values.calls === 12 && rep1.values.memo === 'テスト', rep1 && rep1.values)
   const d2 = addDays(today, -1) // 報告用URLは稼働日の翌日まで
   const s2 = await createShift(1, pNone, d2, 'XSS-NOTPL')
   const link = await admin.post(`/api/admin/shifts/${s2}/report-link`)

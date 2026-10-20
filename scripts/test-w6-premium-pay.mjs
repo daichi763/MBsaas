@@ -206,7 +206,8 @@ const site = { site_id: must(await admin.post('/api/admin/sites', { site_name: `
 }
 {
   // 精算: 表示中の未確定シフトの交通費（実費 0 円）を標準で埋める
-  const zero = await newShift(sA, hourly, D0, '06:00', '07:00', 'fill0')
+  // 単体の登録は交通費が空欄ならスタッフの標準を入れる（w7-followup-server-b #564）ので、0 円を明示して作る
+  const zero = await newShift(sA, hourly, D0, '06:00', '07:00', 'fill0', { transportation_fee: 0 })
   const paid = await newShift(sA, hourly, D0, '07:30', '08:00', 'fill1', { transportation_fee: 300 })
   const dry = must(await admin.post('/api/admin/settlement/transport-fill', { shift_ids: [zero.shift_id, paid.shift_id, night.shift_id], dry_run: true }), 'fill dry')
   ok('#564 交通費を埋める対象は、未確定で実費が 0 円・標準のあるシフトだけ（dry_run）', dry.count === 2 && dry.total === 1640, dry)
