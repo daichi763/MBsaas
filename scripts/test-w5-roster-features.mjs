@@ -107,7 +107,7 @@ const detailA = async () => must(await A.get(`/api/admin/staff/${inA}`), 'A deta
   const r = await admin.post(`/api/admin/roster/${X.staff_id}/links/${inA}/resume`, {})
   ok('#162 所属元は終了した連携を再開できる', r.status === 200, r)
   const p = await detailA()
-  ok('#162 再開すると、基本項目がふたたび見える（取引状況は取引終了のまま）', p.date_of_birth === '1990-04-01' && !p.link_revoked_at && !!p.link_ended_at, p)
+  ok('#162 再開すると、基本項目（フリガナ・年代）がふたたび見える（取引状況は取引終了のまま）', p.kana === 'レンケイ エックス' && /^[0-9]0代$/.test(p.age_group || '') && !p.link_revoked_at && !!p.link_ended_at, p)
   const pB = must(await B.get(`/api/admin/staff/${inB}`), 'B detail').profile
   ok('#162 その先の連携（B）は終了のまま（B の所属元の A が再開する）', !pB.date_of_birth && pB.link_revoked_at, pB)
   const hs = await A.put(`/api/admin/roster/${inA}/host-status`, { status: 'working' })

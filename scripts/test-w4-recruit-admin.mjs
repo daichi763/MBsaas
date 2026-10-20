@@ -220,9 +220,10 @@ let fullSlot = null
   const before = must(await admin.get('/api/admin/recruit-applications/summary'), 'summary')
   must(await admin.put(`/api/admin/employees/${st.staff_id}`, { profile: { retired_at: addDays(today, -1), employment_status: 'retired', retired_at_confirmed: true } }), 'retire')
   const after = must(await admin.get('/api/admin/recruit-applications/summary'), 'summary 2')
-  ok('#87 退職したスタッフの応募は未対応の件数から外し、別に数える', after.pending === before.pending - 1 && after.pending_inactive === (before.pending_inactive || 0) + 1, { before, after })
-  const l = (await listApps({ status: 'pending', q: `${PFX} R87` })).applications
-  ok('#87 一覧には退職・停止中の印を付けて残す（見送れる）', l.length === 1 && l[0].staff_inactive === 1, l)
+  // w7-followup-server-a（#87 の残り）: 退職したスタッフの未対応の応募は、取り下げ（cancelled）にする
+  ok('#87 退職したスタッフの応募は未対応の件数から外す', after.pending === before.pending - 1 && after.pending_inactive === (before.pending_inactive || 0), { before, after })
+  const l = (await listApps({ status: 'cancelled', q: `${PFX} R87` })).applications
+  ok('#87 退職したスタッフの未対応の応募は取り下げ（cancelled）になる', l.length === 1 && l[0].items.every(i => i.status === 'cancelled'), l)
 }
 
 // ---------- #302 勤務日を過ぎた未対応は期限切れにして件数から外す ----------
