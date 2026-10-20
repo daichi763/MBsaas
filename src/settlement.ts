@@ -23,6 +23,7 @@ import { ownClient, ownProject } from './lib/tenant'
 import { notifyShiftStaff } from './lib/staff-pay-notify'
 import { PREMIUM_COLUMNS, PREMIUM_RATE_MAX, attachPremiums, loadPremiumSettings } from './lib/premium-pay'
 import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
+import { opLog, logShifts, finishLog } from './lib/operation-log'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -558,19 +559,23 @@ app.put('/shifts/:id/actual', async (c) => {
   const closed = await closedMessage(db, u.company_id, s.work_date)
   if (closed) return c.json({ error: closed }, 409)
   if (s.status === 'absent') return c.json({ error: '欠勤のシフトには実績を入力できません（キャンセル料・補償は欠勤の欄から入力してください）' }, 400)
+  const op = opLog(db, u, b.reset ? 'actual_reset' : 'actual') // 操作履歴（#159）
   if (b.reset) {
     // 報告の時刻に戻す
-    await db.prepare('UPDATE shifts SET actual_start = NULL, actual_end = NULL, actual_break_minutes = NULL, actual_source = NULL, actual_note = NULL WHERE shift_id = ?').bind(s.shift_id).run()
-    await syncActualFromReports(db, u.company_id, s.shift_id)
-    await refreshShiftAmounts(db, u.company_id, s.shift_id)
+    await db.batch([...logShifts(op, [s.shift_id]),
+      db.prepare('UPDATE shifts SET actual_start = NULL, actual_end = NULL, actual_break_minutes = NULL, actual_source = NULL, actual_note = NULL WHERE shift_id = ?').bind(s.shift_id)])
+    try {
+      await syncActualFromReports(db, u.company_id, s.shift_id)
+      await refreshShiftAmounts(db, u.company_id, s.shift_id)
+    } finally { await finishLog(op) }
     return c.json({ ok: true })
   }
   if (!isTime(b.actual_start) || !isTime(b.actual_end)) return c.json({ error: '開始・終了の時刻を入力してください' }, 400)
   const brk = b.actual_break_minutes === '' || b.actual_break_minutes == null ? null : intOrNull(b.actual_break_minutes)
   if (brk != null && (brk < 0 || brk > 600)) return c.json({ error: '休憩は0〜600分で入力してください' }, 400)
-  await db.prepare("UPDATE shifts SET actual_start = ?, actual_end = ?, actual_break_minutes = ?, actual_source = 'manual', actual_note = ? WHERE shift_id = ?")
-    .bind(b.actual_start, b.actual_end, brk, (b.actual_note || '').slice(0, 200) || null, s.shift_id).run()
-  await refreshShiftAmounts(db, u.company_id, s.shift_id)
+  await db.batch([...logShifts(op, [s.shift_id]), db.prepare("UPDATE shifts SET actual_start = ?, actual_end = ?, actual_break_minutes = ?, actual_source = 'manual', actual_note = ? WHERE shift_id = ?")
+    .bind(b.actual_start, b.actual_end, brk, (b.actual_note || '').slice(0, 200) || null, s.shift_id)])
+  try { await refreshShiftAmounts(db, u.company_id, s.shift_id) } finally { await finishLog(op) }
   // 実績の時刻・休憩が変わったら、本人に知らせる（#274。メモは社内の記録のため通知に入れない）
   if (b.actual_start !== s.actual_start || b.actual_end !== s.actual_end || brk !== (s.actual_break_minutes ?? null)) {
     await notifyShiftStaff(db, s, 'actual_entered', `管理者が勤務の実績を入力しました: ${mdText(s.work_date)}`,
@@ -627,15 +632,22 @@ app.post('/settlement/confirm', async (c) => {
   // 確定する時点の割増（#167）を記録する（確定済みのシフトは以後この値を使う）。割増の対象のシフトだけを書く
   const premiums = ok.filter(r => r.premium_night_minutes != null).map(r => ({ shift_id: r.shift_id, pay_premium: r.pay_premium,
     premium_night_minutes: r.premium_night_minutes, premium_overtime_minutes: r.premium_overtime_minutes, premium_holiday_minutes: r.premium_holiday_minutes }))
-  if (premiums.length) await batchInChunks(db, updateRowsStmts(db, 'shifts', 'shift_id', [...PREMIUM_COLUMNS], premiums,
-    "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed'", [u.company_id]))
+  const premiumOf = new Map(premiums.map(p => [p.shift_id, p]))
   let confirmed = 0
+  // 操作履歴（#159）。確定するシフトごとに、だれがいつ確定したかを残す（取り消しで settled_by が消えても残る）。
+  // 割増の記録は確定と同じ batch で、履歴の前の値を残した後に書く（確定で記録した割増も履歴の差分に出るように）
+  const op = opLog(db, u, 'settle_confirm')
   for (const part of chunk(ok.map(r => r.shift_id), 500)) {
-    const r = await db.prepare(`UPDATE shifts SET settle_status = 'confirmed', settled_at = ?, settled_by = ?
+    const prem = part.map(id => premiumOf.get(id)).filter((p): p is (typeof premiums)[number] => !!p)
+    const r = (await db.batch([...logShifts(op, part, { where: "COALESCE(s.settle_status,'planned') != 'confirmed'" }),
+      ...(prem.length ? updateRowsStmts(db, 'shifts', 'shift_id', [...PREMIUM_COLUMNS], prem,
+        "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed'", [u.company_id]) : []),
+      db.prepare(`UPDATE shifts SET settle_status = 'confirmed', settled_at = ?, settled_by = ?
       WHERE company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed' AND shift_id IN ${JSON_IN}`)
-      .bind(now, u.user_id, u.company_id, bindJsonArray(part)).run()
+      .bind(now, u.user_id, u.company_id, bindJsonArray(part))])).at(-1)!
     confirmed += r.meta.changes || 0
   }
+  await finishLog(op)
   // 『確認済みとして確定する』で確定した確認事項は、確認済みとして記録する（確定を取り消した後も、同じ事項なら確認済みのまま。#563）
   if (withIssues.length) await saveAcks(db, u.company_id, u.user_id, withIssues, now)
   return c.json({ ok: true, confirmed, skipped_future: future.length, skipped_in_progress: inProgress.length, skipped_closed: closed.length })
@@ -648,16 +660,20 @@ app.post('/settlement/unconfirm', async (c) => {
   const closedRows = t.rows.filter(r => r.settle_status === 'confirmed' && r.closed)
   if (closedRows.length) return c.json({ error: `締めた期間のシフトが ${closedRows.length}件 含まれているため、確定を取り消せません。取り消すには、先に締めを解除してください`, closed: closedRows.length }, 409)
   const ids: number[] = []
+  // 操作履歴（#159）。取り消す前の確定日時・確定した人を残す
+  const op = opLog(db, u, 'settle_unconfirm')
   for (const part of chunk(t.rows.filter(r => r.settle_status === 'confirmed').map(r => r.shift_id), 500)) {
     // 確定したときに記録した割増（#167）は消す（未確定の間は表示のたびに計算する）
-    const r = await db.prepare(`UPDATE shifts SET settle_status = 'planned', settled_at = NULL, settled_by = NULL,
+    const r = (await db.batch([...logShifts(op, part, { where: "s.settle_status = 'confirmed'" }),
+      db.prepare(`UPDATE shifts SET settle_status = 'planned', settled_at = NULL, settled_by = NULL,
         pay_premium = 0, premium_night_minutes = NULL, premium_overtime_minutes = NULL, premium_holiday_minutes = NULL
       WHERE company_id = ? AND settle_status = 'confirmed' AND shift_id IN ${JSON_IN} RETURNING shift_id`)
-      .bind(u.company_id, bindJsonArray(part)).all()
+      .bind(u.company_id, bindJsonArray(part))])).at(-1)!
     ids.push(...(r.results as any[]).map(x => Number(x.shift_id)))
   }
   // 確定中に承認した打刻修正や、確定の後の報告を、取り消しと同時に実績・金額へ反映する（手入力の実績は変えない）
-  const synced = ids.length ? await syncActualsForShifts(db, u.company_id, ids) : 0
+  let synced = 0
+  try { synced = ids.length ? await syncActualsForShifts(db, u.company_id, ids) : 0 } finally { await finishLog(op) }
   return c.json({ ok: true, unconfirmed: ids.length, synced })
 })
 async function loadRowsByIds(db: D1Database, companyId: number, ids: number[]) {
@@ -718,9 +734,13 @@ app.post('/settlement/recalc', async (c) => {
       changed.push({ shift_id: s.shift_id, ...amt })
     }
   }
-  const res = await batchInChunks(db, updateRowsStmts(db, 'shifts', 'shift_id', ['bill_qty', 'unit_price', 'pay_qty', 'pay_amount'], changed,
-    "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND (COALESCE(shifts.price_locked, 0) = 0 OR shifts.qty_locked = 0)", [u.company_id]))
-  return c.json({ ok: true, checked, updated: changesOf(res) })
+  const op = opLog(db, u, 'recalc') // 操作履歴（#159）
+  const logStmts = logShifts(op, changed.map(x => x.shift_id))
+  const res = await batchInChunks(db, [...logStmts,
+    ...updateRowsStmts(db, 'shifts', 'shift_id', ['bill_qty', 'unit_price', 'pay_qty', 'pay_amount'], changed,
+    "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND (COALESCE(shifts.price_locked, 0) = 0 OR shifts.qty_locked = 0)", [u.company_id])])
+    .finally(() => finishLog(op))
+  return c.json({ ok: true, checked, updated: changesOf(res.slice(logStmts.length)) })
 })
 
 // ---------- CSV ----------
@@ -1111,8 +1131,10 @@ app.put('/settlement/cancellations/:id', async (c) => {
   if (isSettled(s)) return c.json({ error: '確定済みです。確定を取り消してから変更してください' }, 409)
   const closed = await closedMessage(db, u.company_id, s.work_date)
   if (closed) return c.json({ error: closed }, 409)
+  const op = opLog(db, u, b.remove ? 'cancellation_remove' : 'cancellation') // 操作履歴（#159）
   if (b.remove) {
-    await db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id).run()
+    await db.batch([...logShifts(op, [s.shift_id]), db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id)])
+    await finishLog(op)
     return c.json({ ok: true, removed: true })
   }
   if (!CANCEL_REASON_LABEL[b.reason]) return c.json({ error: '理由を選んでください' }, 400)
@@ -1123,11 +1145,12 @@ app.put('/settlement/cancellations/:id', async (c) => {
     if (v != null && (v < MONEY_MIN || v > MONEY_MAX)) return c.json({ error: `${name}は${MONEY_MIN}〜${MONEY_MAX}で入力してください` }, 400)
   }
   // 別の画面で確定・欠勤の取り消しをされていても上書きしないよう、欠勤かつ未確定を条件にする
-  const r = await db.prepare(`INSERT INTO shift_cancellations (shift_id, company_id, reason, notified_on, bill_amount, pay_amount, note, updated_by, updated_at)
+  const r = (await db.batch([...logShifts(op, [s.shift_id]), db.prepare(`INSERT INTO shift_cancellations (shift_id, company_id, reason, notified_on, bill_amount, pay_amount, note, updated_by, updated_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM shifts WHERE shift_id = ? AND company_id = ? AND status = 'absent' AND COALESCE(settle_status,'planned') != 'confirmed')
     ON CONFLICT(shift_id) DO UPDATE SET reason = excluded.reason, notified_on = excluded.notified_on, bill_amount = excluded.bill_amount, pay_amount = excluded.pay_amount,
       note = excluded.note, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
-    .bind(s.shift_id, u.company_id, b.reason, b.notified_on || null, bill, pay, String(b.note || '').trim().slice(0, 200) || null, u.user_id, nowJST(), s.shift_id, u.company_id).run()
+    .bind(s.shift_id, u.company_id, b.reason, b.notified_on || null, bill, pay, String(b.note || '').trim().slice(0, 200) || null, u.user_id, nowJST(), s.shift_id, u.company_id)])).at(-1)!
+  await finishLog(op)
   if (!r.meta.changes) return c.json({ error: 'シフトの状態が変わったため保存できませんでした。画面を読み直してください' }, 409)
   return c.json({ ok: true })
 })
