@@ -11,7 +11,7 @@ import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
 import boardApi from './board'
 import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
-import { shiftTotals } from './shift-board'
+import { shiftTotals, staffingGaps } from './shift-board'
 import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
@@ -2151,6 +2151,13 @@ const DASH_PATTERN_END_DAYS = 14
 // 今月の案件別実績で画面に出す項目の数（日報テンプレートの数値項目の先頭から。#184）
 const DASH_PERF_FIELDS = 6
 const DASH_WEEKDAY = ['日', '月', '火', '水', '木', '金', '土']
+// 人員不足の枠・希望（仮）のシフトを、今日から何日先まで見るか（#299）
+const DASH_AHEAD_DAYS = 3
+// 契約終了を何日前から知らせるか（30日前と14日前の2段階）と、有給の次回付与日を何日前から・過ぎて何日まで知らせるか（#282）
+const DASH_CONTRACT_DAYS = 30
+const DASH_CONTRACT_SOON_DAYS = 14
+const DASH_LEAVE_DAYS = 14
+const DASH_LEAVE_OVERDUE_DAYS = 30
 // 'YYYY-MM-DD HH:MM:SS' どうしの差（分）
 function minutesBetween(from: string, to: string): number {
   return Math.round((Date.parse(to.replace(' ', 'T') + 'Z') - Date.parse(from.replace(' ', 'T') + 'Z')) / 60000)
@@ -2167,24 +2174,42 @@ api.get('/admin/dashboard', async (c) => {
   const elig = assignableStaffSql({ sp: 'sp', us: 'us', onDate: today })
   const shifts = await db.prepare(`
     SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.unit_price, s.location, s.slot_role_id, s.settle_status,
-           p.project_id, p.project_name, us.name AS staff_name,
+           s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust,
+           p.project_id, p.project_name, us.name AS staff_name, us.phone AS staff_phone, us.role = 'staff' AS has_login,
            CASE WHEN ${elig.sql} THEN 0 ELSE 1 END AS staff_unavailable,
-           (SELECT GROUP_CONCAT(a.report_type) FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS done_types,
+           EXISTS (SELECT 1 FROM shift_report_tokens t WHERE t.shift_id = s.shift_id AND t.staff_id = s.staff_id AND t.revoked = 0) AS has_report_link,
            (SELECT GROUP_CONCAT(ac.report_type) FROM attendance_corrections ac WHERE ac.shift_id = s.shift_id AND ac.status = 'pending') AS pending_types
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id
     JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.work_date IN (?, ?) AND s.status IN ('confirmed','substitute','absent')
-    ORDER BY s.work_date, s.start_time, s.shift_id`).bind(...elig.binds, cid, yesterday, today).all()
+    ORDER BY s.work_date, s.start_time, p.project_name, us.name, s.shift_id`).bind(...elig.binds, cid, yesterday, today).all()
 
   const rows = shifts.results as any[]
   // 提出設定で「不要」の報告は未報告アラートの対象外（第2段階）
   const todayModes = await modesForShifts(db, rows.filter(s => s.status !== 'absent').map(s => s.shift_id))
+  // 報告ごとの時刻・遅延・位置不明・遅刻と早退の分数（#348）。報告はシフトと種類で1件（uq_attendance_shift_type）
+  const reportRows = rows.length ? (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes
+    FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(rows.map(s => s.shift_id))).all()).results as any[] : []
+  const reportsByShift = new Map<number, Record<string, any>>()
+  for (const r of reportRows) {
+    const m = reportsByShift.get(r.shift_id) || {}
+    m[r.report_type] = { at: String(r.reported_at || '').slice(0, 16), status: r.status, late_minutes: Number(r.late_minutes) || 0, early_leave_minutes: Number(r.early_leave_minutes) || 0 }
+    reportsByShift.set(r.shift_id, m)
+  }
   // 画面の報告状況の列: シフトごとの有効な報告と報告済みの種類
   for (const s of rows) {
     s.required_types = todayModes.get(s.shift_id)?.required_attendance ?? [...REPORT_TYPES]
-    s.done_types = String(s.done_types || '').split(',').filter(Boolean)
+    s.reports = reportsByShift.get(s.shift_id) || {}
+    s.done_types = Object.keys(s.reports)
+    s.has_login = !!s.has_login; s.has_report_link = !!s.has_report_link
+    // 遅刻（入店・勤務開始のどちらか）・早退（勤務終了・退店の長い方）の分数と、休憩中（休憩入があり、休憩出・勤務終了・退店がない）
+    const lateRep = ['check_in', 'work_start'].map(t => s.reports[t]).find((r: any) => r && r.status === 'late')
+    s.late_minutes = lateRep ? lateRep.late_minutes : 0
+    s.early_leave_minutes = Math.max(0, ...['work_end', 'check_out'].map(t => Number(s.reports[t]?.early_leave_minutes) || 0))
+    s.no_location = s.reports.check_in?.status === 'no_location'
+    s.on_break = !!s.reports.break_start && !s.reports.break_end && !s.reports.work_end && !s.reports.check_out
     s.pending_types = String(s.pending_types || '').split(',').filter(Boolean)
     s.window = shiftWindow(s.work_date, s.start_time, s.end_time)
     s.carried_over = s.work_date !== today
@@ -2197,7 +2222,8 @@ api.get('/admin/dashboard', async (c) => {
   // 前日に始まった日をまたぐ勤務は、勤務中か、勤務終了・退店が未報告の間は「前日から継続」として本日の一覧に出す（#107）
   const active = working.filter(s => !s.carried_over || (crossesMidnight(s) && (now < s.window.end || missingOf(s, DASH_END_TYPES).length > 0)))
   const todayOnly = active.filter(s => !s.carried_over)
-  const revenue = todayOnly.reduce((a, s) => a + (s.unit_price || 0), 0)
+  // 売上予定は精算と同じ式（基本額＋請求交通費＋請求の調整額。shiftTotals）で数える（#414）
+  const revenue = todayOnly.reduce((a, s) => a + shiftTotals(s).bill_total, 0)
   // 遅刻・欠勤・体調不良の相談（#498）。対象の日付があればその日（案件があればその案件）のシフト、
   // なければ送った日か前日（前の晩に送った連絡）のシフトに結び付け、未報告の一覧に『連絡あり』と出す
   const contacts = (await db.prepare(`
@@ -2215,9 +2241,11 @@ api.get('/admin/dashboard', async (c) => {
       excerpt: co.excerpt + (co.truncated ? '…' : ''), created_at: co.created_at } : null
   }
   // 未報告: 予定の時刻を過ぎたものだけ（起床・出発・入店は開始から、勤務終了・退店は終了から。#186）
+  // 電話番号・ログインの有無・報告用URLの有無も添える（その場で電話・代理入力・URLの発行に進めるように。#343 #355）
   const unreportedItem = (s: any, dueAt: string, extra: any = {}) => ({
-    shift_id: s.shift_id, staff_id: s.staff_id, name: s.staff_name, project: s.project_name, work_date: s.work_date,
+    shift_id: s.shift_id, staff_id: s.staff_id, name: s.staff_name, project: s.project_name, project_id: s.project_id, work_date: s.work_date,
     start_time: s.start_time, end_time: s.end_time, carried_over: s.carried_over, due_at: dueAt, overdue_minutes: minutesBetween(dueAt, now),
+    phone: s.staff_phone || '', has_login: s.has_login, has_report_link: s.has_report_link,
     contact: s.contact, ...extra,
   })
   // 同じ日に同じ人の別のシフトで起床を報告していれば、起床は済みとする（#449）
@@ -2231,7 +2259,9 @@ api.get('/admin/dashboard', async (c) => {
       cur.other_shifts++
       if (!cur.contact && x.contact) cur.contact = x.contact
     }
-    return [...m.values()].sort((a, b) => (a.contact ? 1 : 0) - (b.contact ? 1 : 0) || b.overdue_minutes - a.overdue_minutes)
+    // 経過時間が同じなら、開始時刻・案件・氏名の順（本日のシフトの表と同じ並び。#488）
+    return [...m.values()].sort((a, b) => (a.contact ? 1 : 0) - (b.contact ? 1 : 0) || b.overdue_minutes - a.overdue_minutes
+      || String(a.start_time).localeCompare(String(b.start_time)) || String(a.project).localeCompare(String(b.project), 'ja') || String(a.name).localeCompare(String(b.name), 'ja'))
   }
   const startDue = (s: any, t: string) => {
     const due = addMinutes(s.window.start, DASH_DUE_OFFSET[t])
@@ -2249,18 +2279,27 @@ api.get('/admin/dashboard', async (c) => {
   // 本日の欠勤（代わりの手配に使う。#216）
   const absentToday = rows.filter(s => s.status === 'absent' && s.work_date === today)
   const unreported = { wake_up: startList('wake_up'), departure: startList('departure'), check_in: startList('check_in'), work_end: endList }
+  // 本日の表の『未報告あり』の絞り込みと強調に使う、予定の時刻を過ぎた未報告の種類（未報告の一覧と同じ判定。#488）
+  for (const s of active) {
+    s.overdue_types = [
+      ...['wake_up', 'departure', 'check_in'].filter(t => missingOf(s, [t]).length && startDue(s, t) <= now && !(t === 'wake_up' && wokeUp.has(`${s.staff_id}:${s.work_date}`))),
+      ...(addMinutes(s.window.end, DASH_END_GRACE_MIN) <= now ? missingOf(s, DASH_END_TYPES) : []),
+    ]
+  }
   for (const s of rows) delete s.window
 
   // 昨日までの日報未提出 (直近3日)。代打も含め、シフトごとに判定する（shift_id の無い古い日報だけは稼働日・案件で照合）
+  // 画面の一覧（日付・スタッフ・案件・電話。#344）に使う列も返す
   const missingReports = await db.prepare(`
-    SELECT s.shift_id, s.work_date, us.name AS staff_name, s.staff_id, p.project_name
+    SELECT s.shift_id, s.work_date, s.start_time, s.end_time, us.name AS staff_name, s.staff_id, p.project_id, p.project_name,
+      us.phone AS staff_phone, us.role = 'staff' AS has_login
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
       AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
       AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
-    ORDER BY s.work_date DESC, s.start_time`).bind(cid, today, today).all()
+    ORDER BY s.work_date DESC, s.start_time, p.project_name, us.name`).bind(cid, today, today).all()
   // 日報「不要」のシフトは未提出の対象外（第2段階）
   {
     const m = await modesForShifts(db, (missingReports.results as any[]).map(r => r.shift_id))
@@ -2438,6 +2477,46 @@ api.get('/admin/dashboard', async (c) => {
     todos.push({ key: `pattern_end:${p.pattern_id}:${p.date_to}`, mark: 0, level: 'mid', actions: BOTH, href: `#projects/${p.project_id}`, link_label: '案件→',
       text: `${p.project_name}の繰り返し登録（${wd} ${p.start_time}〜${p.end_time}）が${mdLabel(p.date_to)}で終わります（${left ? 'あと' + left + '日' : '今日まで'}）。続ける場合は延長してください。` })
   }
+  // ルール10・11: 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト（#299）。mark は件数・最新のシフトID（増えたらもう一度出す）
+  const ahead = await staffingGaps(db, cid, today, addDays(today, DASH_AHEAD_DAYS))
+  if (ahead.short_role_count) {
+    const soon = ahead.short_roles.some(r => r.work_date <= addDays(today, 1))
+    todos.push({ key: `staffing_short:${today}`, mark: ahead.short_headcount, level: soon ? 'high' : 'mid', actions: LATER, href: '#dash-ahead', link_label: '一覧→',
+      text: `${mdLabel(today)}〜${mdLabel(ahead.to)}に人員不足の枠が${ahead.short_role_count}件（${ahead.short_headcount}名分）あります。シフトボードで補充してください。` })
+  }
+  if (ahead.requested_shifts.length) {
+    todos.push({ key: `requested:${today}`, mark: Math.max(...ahead.requested_shifts.map(s => Number(s.shift_id))), level: 'mid', actions: LATER, href: '#dash-ahead', link_label: '一覧→',
+      text: `${mdLabel(today)}〜${mdLabel(ahead.to)}に希望（仮）のままのシフトが${ahead.requested_shifts.length}${ahead.requested_more ? '件以上' : '件'}あります。確定するか見送ってください。` })
+  }
+  // ルール12・13: 契約終了が近い社員（30日前・14日前）と、有給の次回付与日が近い社員（#282）。従業員管理を使えるロールだけに出す
+  let hrAlerts: any[] = []
+  if (HR_ROLES.includes(u.role)) {
+    hrAlerts = (await db.prepare(`
+      SELECT sp.staff_id, us.name, er.contract_end, er.paid_leave_granted_at,
+        CASE WHEN er.paid_leave_granted_at > ? THEN er.paid_leave_granted_at ELSE date(er.paid_leave_granted_at, '+1 year') END AS next_leave_grant
+      FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id AND sp.company_id = er.company_id JOIN users us ON us.user_id = sp.user_id
+      WHERE er.company_id = ? AND ${OWN_EMPLOYEE_COND} AND COALESCE(sp.employment_status, 'working') != 'retired' AND (us.retired_at IS NULL OR us.retired_at >= ?)
+        AND ((er.contract_end IS NOT NULL AND er.contract_end <= ?)
+          OR (er.paid_leave_granted_at IS NOT NULL AND (CASE WHEN er.paid_leave_granted_at > ? THEN er.paid_leave_granted_at ELSE date(er.paid_leave_granted_at, '+1 year') END) BETWEEN ? AND ?))
+      ORDER BY er.contract_end, us.name LIMIT 100`).bind(today, cid, today, addDays(today, DASH_CONTRACT_DAYS), today, addDays(today, -DASH_LEAVE_OVERDUE_DAYS), addDays(today, DASH_LEAVE_DAYS)).all()).results as any[]
+    for (const e of hrAlerts) {
+      const href = `#employees/${Number(e.staff_id)}`
+      if (e.contract_end && e.contract_end <= addDays(today, DASH_CONTRACT_DAYS)) {
+        const left = Math.round(minutesBetween(`${today} 00:00:00`, `${e.contract_end} 00:00:00`) / 1440)
+        // 30日前に『対応済み』にしても、14日前・期限切れでもう一度出す
+        const stage = left < 0 ? 3 : left <= DASH_CONTRACT_SOON_DAYS ? 2 : 1
+        todos.push({ key: `contract_end:${e.staff_id}:${e.contract_end}`, mark: stage, level: stage >= 2 ? 'high' : 'mid', actions: BOTH, href, link_label: '従業員→',
+          text: left < 0 ? `${e.name}さんの契約終了日（${mdLabel(e.contract_end)}）を過ぎていますが、在職中のままです。契約の更新か退職の手続きを確認してください。`
+            : `${e.name}さんの契約が${mdLabel(e.contract_end)}に終了します（${left ? 'あと' + left + '日' : '今日まで'}）。更新の確認をしてください。` })
+      }
+      if (e.next_leave_grant && e.next_leave_grant >= addDays(today, -DASH_LEAVE_OVERDUE_DAYS) && e.next_leave_grant <= addDays(today, DASH_LEAVE_DAYS)) {
+        const past = e.next_leave_grant < today
+        todos.push({ key: `paid_leave:${e.staff_id}:${e.next_leave_grant}`, mark: past ? 2 : 1, level: past ? 'high' : 'mid', actions: BOTH, href, link_label: '従業員→',
+          text: past ? `${e.name}さんの有給の付与日（${mdLabel(e.next_leave_grant)}）を過ぎています。付与日数と残日数を従業員管理で更新してください。`
+            : `${e.name}さんの有給の付与日（${mdLabel(e.next_leave_grant)}）が近づいています。付与日数を確認してください。` })
+      }
+    }
+  }
   // 『対応済み』『あとで』にした ToDo は分けて返す（画面ではたたんで出し、元に戻せる）
   const dismissals = new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
     FROM todo_dismissals d LEFT JOIN users um ON um.user_id = d.user_id WHERE d.company_id = ? AND (d.action = 'done' OR d.until_at > ?)`).bind(cid, now).all()).results as any[])
@@ -2459,8 +2538,9 @@ api.get('/admin/dashboard', async (c) => {
     shifts: active,
     absent_shifts: absentToday,
     unreported,
-    missing_daily_reports: missingReports.results,
+    missing_daily_reports: (missingReports.results as any[]).map(r => ({ ...r, has_login: !!r.has_login })),
     unchecked_daily_reports: Number(unchecked[0]?.n) || 0,
+    staffing_ahead: ahead,
     incidents: (incidents.results as any[]).map(({ report_values, ...i }) => {
       let values: any = {}
       try { values = JSON.parse(report_values) || {} } catch { values = {} }
@@ -2474,6 +2554,7 @@ api.get('/admin/dashboard', async (c) => {
     todos: visible.sort(byLevel),
     hidden_todos: hidden.sort(byLevel),
     photo_required_attendance: getCompanySetting(u, 'photo_required_attendance', true),
+    photo_required_changed: photoRequiredLastChange(u),
   })
 })
 
@@ -2510,7 +2591,30 @@ api.delete('/admin/dashboard/todos', async (c) => {
   return c.json({ ok: true })
 })
 
-// 入店/退店報告の写真添付必須設定を切り替え
+// 入店/退店報告の写真添付必須設定（会社全体）。変更した人・日時を settings_json の photo_required_history に残す（新しい順に最大10件。#405）
+const PHOTO_REQUIRED_HISTORY_MAX = 10
+function photoRequiredHistory(settingsJson: any): any[] {
+  try {
+    const h = JSON.parse(settingsJson || '{}').photo_required_history
+    return Array.isArray(h) ? h.slice(0, PHOTO_REQUIRED_HISTORY_MAX) : []
+  } catch { return [] }
+}
+function photoRequiredLastChange(u: any) {
+  const h = photoRequiredHistory(u.settings_json)[0]
+  return h ? { enabled: !!h.enabled, at: String(h.at || ''), name: String(h.name || '') } : null
+}
+// 現在の設定・変更の記録と、変更の影響範囲（会社の設定に従う案件の数・案件ごとに上書きしている案件の数）
+api.get('/admin/settings/photo-required', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  const cnt = await c.env.DB.prepare(`SELECT SUM(photo_required_override IS NULL) AS follow, SUM(photo_required_override = 1) AS on_count, SUM(photo_required_override = 0) AS off_count
+    FROM projects WHERE company_id = ? AND status = 'active'`).bind(u.company_id).first() as any
+  return c.json({
+    enabled: getCompanySetting({ settings_json: row?.settings_json }, 'photo_required_attendance', true),
+    history: photoRequiredHistory(row?.settings_json).map(h => ({ enabled: !!h.enabled, at: String(h.at || ''), name: String(h.name || '') })),
+    projects: { follow: Number(cnt?.follow) || 0, required: Number(cnt?.on_count) || 0, not_required: Number(cnt?.off_count) || 0 },
+  })
+})
 api.post('/admin/settings/photo-required', async (c) => {
   const u = c.get('user')
   const body = await c.req.json().catch(() => ({}))
@@ -2519,12 +2623,16 @@ api.post('/admin/settings/photo-required', async (c) => {
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
   let settings: Record<string, any> = {}
   try { settings = JSON.parse((row?.settings_json as string) || '{}') } catch { settings = {} }
+  const before = typeof settings.photo_required_attendance === 'boolean' ? settings.photo_required_attendance : true
+  if (before === body.enabled) return c.json({ ok: true, photo_required_attendance: body.enabled, unchanged: true })
   settings.photo_required_attendance = body.enabled
+  const entry = { enabled: body.enabled, at: nowJST(), user_id: u.user_id, name: u.name }
+  settings.photo_required_history = [entry, ...photoRequiredHistory(row?.settings_json)].slice(0, PHOTO_REQUIRED_HISTORY_MAX)
 
   await c.env.DB.prepare('UPDATE companies SET settings_json = ? WHERE company_id = ?')
     .bind(JSON.stringify(settings), u.company_id).run()
 
-  return c.json({ ok: true, photo_required_attendance: body.enabled })
+  return c.json({ ok: true, photo_required_attendance: body.enabled, changed: { enabled: entry.enabled, at: entry.at, name: entry.name } })
 })
 
 // 遅刻の猶予（分）。入店・勤務開始が開始時刻から何分以内なら遅刻にしないか（report-settings.ts の lateness。#497）
@@ -3454,7 +3562,8 @@ api.get('/admin/employees', async (c) => {
   const u = c.get('user')
   await ensureRosterIdentity(c.env.DB, u.company_id)
   const rows = await c.env.DB.prepare(`
-    SELECT sp.staff_id, us.name, sp.kana, sp.employment_status, er.employee_number, er.department, er.job_title, er.base_location, er.contract_type
+    SELECT sp.staff_id, us.name, sp.kana, sp.employment_status, er.employee_number, er.department, er.job_title, er.base_location, er.contract_type,
+      er.contract_end, er.paid_leave_granted_at
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = sp.staff_id
     WHERE sp.company_id = ? AND ${OWN_EMPLOYEE_COND}
@@ -3782,7 +3891,23 @@ api.get('/admin/projects/:id', async (c) => {
     FROM daily_reports dr JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE dr.project_id = ? AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) ORDER BY dr.work_date DESC LIMIT 10`).bind(pid).all()
 
-  const monthShifts = await db.prepare(`SELECT COUNT(*) AS n, SUM(unit_price) AS revenue FROM shifts WHERE project_id = ? AND work_date >= ? AND work_date < ? AND status IN ('confirmed','substitute')`).bind(pid, mFrom, mTo).first()
+  // 今月の売上（概算）は精算と同じ shiftTotals で数える（基本額＋請求交通費＋請求の調整額。#414）。
+  // 支払見込みと粗利は、支払が決まっているシフトだけで計算する（シフトボードの合計と同じ。未設定の件数は pay_missing）
+  const monthRows = (await db.prepare(`SELECT unit_price, transportation_fee, bill_transport_type, bill_transport_amount, bill_adjust,
+      pay_amount, pay_transport_type, pay_transport_amount, pay_adjust
+    FROM shifts WHERE project_id = ? AND company_id = ? AND work_date >= ? AND work_date < ? AND status IN ('confirmed','substitute')`).bind(pid, u.company_id, mFrom, mTo).all()).results as any[]
+  const monthShifts = { n: monthRows.length, revenue: 0, bill_total: 0, pay_total: 0, profit: 0, pay_missing: 0 }
+  {
+    let profitBill = 0
+    for (const s of monthRows) {
+      const t = shiftTotals(s)
+      monthShifts.bill_total += t.bill_total
+      if (t.pay_total == null) monthShifts.pay_missing++
+      else { monthShifts.pay_total += t.pay_total; profitBill += t.bill_total }
+    }
+    monthShifts.revenue = monthShifts.bill_total
+    monthShifts.profit = profitBill - monthShifts.pay_total
+  }
 
   return c.json({
     project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [] },
