@@ -956,9 +956,23 @@ async function refreshCronAlert() {
 }
 
 // ============ 伴走支援 ============
+// #179 管理画面から届いた依頼の受付一覧（未対応・対応中・完了）と、#293 企業の管理画面の閲覧（読み取り専用・期限付き・記録あり）
+const HQ_SUPPORT = { status: '' }
+const SUPPORT_STATUS_BADGE = { open: '<span class="badge badge-red">未対応</span>', in_progress: '<span class="badge badge-yellow">対応中</span>', done: '<span class="badge badge-green">完了</span>' }
+const VIEW_END_LABEL = { hq: '終了', replaced: '別の企業へ', revoked: '企業が取消', logout: 'ログアウト' }
+const hqTime = (v, utc) => v ? dayjs(String(v).replace(' ', 'T') + (utc && !/Z$/.test(String(v)) ? 'Z' : '')).format('YYYY/M/D HH:mm') : ''
+let HQ_SUPPORT_REQS = new Map()
+let HQ_VIEW_DATA = null
 async function renderSupport() {
   loading()
-  const { data } = await axios.get('/api/hq/companies')
+  const [{ data }, reqs, views] = await Promise.all([
+    axios.get('/api/hq/companies'),
+    axios.get('/api/hq/support-requests', { params: { status: HQ_SUPPORT.status } }).then(r => r.data),
+    axios.get('/api/hq/view-sessions').then(r => r.data),
+  ])
+  HQ_SUPPORT_REQS = new Map(reqs.requests.map(r => [r.request_id, r]))
+  HQ_VIEW_DATA = views
+  updateSupportBadge(reqs.counts)
   const MENU = [
     ['初期設定代行', 'fa-wrench', '導入時の各種マスタ・テンプレート設定を代行'],
     ['日報項目設計', 'fa-list-check', '案件特性に合わせた日報・実績項目の設計'],
@@ -969,8 +983,66 @@ async function renderSupport() {
     ['スタッフ定着支援', 'fa-heart', '離職防止・定着率向上の仕組みづくり'],
     ['KPI設計', 'fa-bullseye', '案件・スタッフ別のKPI設計支援'],
   ]
+  const counts = reqs.counts || {}
+  const tab = (key, label) => `<button class="text-xs px-2 py-1 rounded-lg border ${HQ_SUPPORT.status === key ? 'border-cyan-500 text-cyan-300' : 'border-slate-600 text-slate-400'}" data-action="hqSupportFilter" data-status="${key}">${label}${key ? `（${Number(counts[key]) || 0}）` : ''}</button>`
+  const cur = views.current
   $app.innerHTML = `
     <h2 class="text-xl font-bold mb-5">伴走支援管理</h2>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <h3 class="font-bold mr-2"><i class="fas fa-inbox text-cyan-400 mr-1"></i>依頼の受付</h3>
+        ${tab('', 'すべて')}${tab('open', '未対応')}${tab('in_progress', '対応中')}${tab('done', '完了')}
+      </div>
+      <p class="text-[11px] text-slate-400 mb-2">管理画面の「伴走支援を依頼する」から届いた依頼です。届いたときは、メールアドレスのある本部ユーザーにメールでも知らせます。</p>
+      <div class="overflow-x-auto"><table class="w-full text-xs">
+        <thead><tr class="text-slate-400 border-b border-slate-700">
+          <th class="text-left px-2 py-2">No.</th><th class="text-left px-2 py-2">受付</th><th class="text-left px-2 py-2">企業・依頼者</th><th class="text-left px-2 py-2">メニュー</th><th class="text-left px-2 py-2">内容</th><th class="text-left px-2 py-2">希望日時・連絡先</th><th class="text-left px-2 py-2">状況</th><th></th>
+        </tr></thead>
+        <tbody>${reqs.requests.map(r => `
+          <tr class="border-b border-slate-700/40 align-top">
+            <td class="px-2 py-2 text-slate-400">${Number(r.request_id)}</td>
+            <td class="px-2 py-2 whitespace-nowrap">${esc(hqTime(r.created_at, true))}</td>
+            <td class="px-2 py-2"><a href="#companies/${Number(r.company_id)}" class="text-cyan-400 hover:underline">${esc(r.company_name)}</a><span class="block text-slate-400">${esc(r.requester_name || '')}</span></td>
+            <td class="px-2 py-2 whitespace-nowrap">${esc((reqs.menus || {})[r.menu] || r.menu)}</td>
+            <td class="px-2 py-2 max-w-xs"><p class="whitespace-pre-wrap">${esc(r.detail)}</p>${r.hq_note ? `<p class="text-slate-400 mt-1 whitespace-pre-wrap">対応メモ: ${esc(r.hq_note)}</p>` : ''}</td>
+            <td class="px-2 py-2 text-slate-300">${esc(r.preferred_at || '-')}<span class="block text-slate-400">${esc(r.contact || '')}</span></td>
+            <td class="px-2 py-2 whitespace-nowrap">${SUPPORT_STATUS_BADGE[r.status] || esc(r.status)}${r.handled_by_name ? `<span class="block text-slate-500 mt-1">${esc(r.handled_by_name)}</span>` : ''}</td>
+            <td class="px-2 py-2"><button class="text-cyan-400 hover:underline whitespace-nowrap" data-action="hqEditSupport" data-id="${Number(r.request_id)}">対応</button></td>
+          </tr>`).join('') || '<tr><td colspan="8" class="text-center text-slate-500 py-4">依頼はありません</td></tr>'}</tbody>
+      </table></div>
+    </section>
+
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-1"><i class="fas fa-eye text-cyan-400 mr-1"></i>管理画面の閲覧（読み取り専用）</h3>
+      <p class="text-[11px] text-slate-400 mb-3">企業が管理画面で許可している場合だけ、期限付きで閲覧できます。登録・変更はできず、従業員管理（労務情報）とセキュリティの画面は開けません。開始・終了と開いた画面は記録され、企業の管理者も確認できます。同時に開けるのは1社だけです。</p>
+      ${cur ? `<div class="bg-cyan-900/30 border border-cyan-700 rounded-lg p-3 mb-3 text-sm flex flex-wrap items-center gap-3">
+        <span class="flex-1">閲覧中: <b>${esc(cur.company_name)}</b>（${esc(hqTime(cur.expires_at))} まで）</span>
+        <a href="/admin" target="_blank" rel="noopener" class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9"><i class="fas fa-arrow-up-right-from-square"></i>管理画面を開く</a>
+        <button class="btn btn-outline text-xs" style="border-color:#334155;color:#fca5a5" data-action="hqEndView">閲覧を終了</button></div>` : ''}
+      <div class="overflow-x-auto max-h-72 overflow-y-auto mb-4"><table class="w-full text-xs">
+        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">閲覧の許可</th><th></th></tr></thead>
+        <tbody>${views.companies.map(c => `
+          <tr class="border-b border-slate-700/40">
+            <td class="px-2 py-2">${esc(c.company_name)} <span class="text-slate-500">${esc(c.company_code)}</span>${c.active_status === 'inactive' ? ' <span class="badge badge-gray">停止</span>' : ''}</td>
+            <td class="px-2 py-2">${c.allowed ? '<span class="badge badge-green">許可あり</span>' : '<span class="text-slate-500">許可なし</span>'}</td>
+            <td class="px-2 py-2 text-right">${c.allowed ? `<button class="text-cyan-400 hover:underline" data-action="hqStartView" data-cid="${Number(c.company_id)}" data-name="${esc(c.company_name)}">閲覧する</button>` : ''}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+      <h4 class="font-bold text-sm mb-2">閲覧の記録（直近50件）</h4>
+      <div class="overflow-x-auto"><table class="w-full text-xs">
+        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-2">開始</th><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">本部の担当</th><th class="text-left px-2 py-2">目的</th><th class="text-left px-2 py-2">終了</th><th class="text-right px-2 py-2">画面</th></tr></thead>
+        <tbody>${views.sessions.map(v => `
+          <tr class="border-b border-slate-700/40">
+            <td class="px-2 py-2 whitespace-nowrap">${esc(hqTime(v.started_at))}</td>
+            <td class="px-2 py-2">${esc(v.company_name)}</td>
+            <td class="px-2 py-2">${esc(v.hq_name || '')}</td>
+            <td class="px-2 py-2">${esc(v.reason)}${v.support_request_id ? ` <span class="text-slate-500">（依頼 No.${Number(v.support_request_id)}）</span>` : ''}</td>
+            <td class="px-2 py-2 whitespace-nowrap">${v.ended_at ? `${esc(hqTime(v.ended_at))} ${esc(VIEW_END_LABEL[v.end_reason] || '')}` : Date.parse(v.expires_at) > Date.parse(views.now) ? '<span class="badge badge-blue">閲覧中</span>' : `${esc(hqTime(v.expires_at))} 期限`}</td>
+            <td class="px-2 py-2 text-right">${Number(v.pages) ? `<button class="text-cyan-400 hover:underline" data-action="hqViewLogs" data-id="${Number(v.view_id)}">${Number(v.pages)}件</button>` : '0件'}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">記録はありません</td></tr>'}</tbody>
+      </table></div>
+    </section>
+
     <div class="grid md:grid-cols-4 gap-3 mb-6">
       ${MENU.map(([t, i, d]) => `
         <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
@@ -991,12 +1063,173 @@ async function renderSupport() {
               <td class="px-3 py-3 font-medium">${esc(c.company_name)}</td>
               <td class="px-3 py-3 text-center">${'●'.repeat(c.maturity_level || 1)}${'○'.repeat(5 - (c.maturity_level || 1))}</td>
               <td class="px-3 py-3 text-slate-400 text-xs">${esc(c.support_memo || '-')}</td>
-              <td class="px-3 py-3"><a href="#companies/${c.company_id}" class="text-cyan-400 text-xs hover:underline">編集 →</a></td>
+              <td class="px-3 py-3"><a href="#companies/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline">編集 →</a></td>
             </tr>`).join('')}
         </tbody>
       </table>
     </section>`
 }
+function updateSupportBadge(counts) {
+  const b = document.getElementById('hq-support-badge')
+  if (!b) return
+  const n = Number((counts || {}).open) || 0
+  b.textContent = n
+  b.classList.toggle('hidden', !n)
+}
+async function refreshSupportBadge() {
+  try { updateSupportBadge((await axios.get('/api/hq/support-requests', { params: { status: 'open' } })).data.counts) } catch { }
+}
+delegate('hqSupportFilter', (el) => { HQ_SUPPORT.status = el.dataset.status || ''; renderSupport() })
+delegate('hqEditSupport', (el) => {
+  const r = HQ_SUPPORT_REQS.get(Number(el.dataset.id))
+  if (!r) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1 text-gray-800">依頼 No.${Number(r.request_id)} の対応</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(r.company_name)}・${esc(r.requester_name || '')}</p>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">対応状況</label>
+        <select id="sr-status" class="inp">${Object.entries({ open: '未対応', in_progress: '対応中', done: '完了' }).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div><label class="text-sm text-gray-600 block mb-1">対応メモ（本部のみ）</label>
+        <textarea id="sr-note" rows="4" maxlength="2000" class="inp">${esc(r.hq_note || '')}</textarea></div>
+      <button class="btn btn-primary w-full" data-action="hqSaveSupport" data-id="${Number(r.request_id)}">保存する</button>
+    </div>`)
+})
+delegate('hqSaveSupport', (el) => withSubmitLock(el, async () => {
+  try {
+    await axios.put('/api/hq/support-requests/' + Number(el.dataset.id), { status: document.getElementById('sr-status').value, hq_note: document.getElementById('sr-note').value })
+    closeModal(); toast('保存しました'); renderSupport()
+  } catch (e) { hqErr(e, '保存に失敗しました') }
+}))
+delegate('hqStartView', (el) => {
+  const cid = Number(el.dataset.cid)
+  const minutes = (HQ_VIEW_DATA && HQ_VIEW_DATA.minutes) || [15, 30, 60]
+  const openReqs = [...HQ_SUPPORT_REQS.values()].filter(r => r.company_id === cid && r.status !== 'done')
+  modal(`
+    <h3 class="font-bold text-lg mb-1 text-gray-800">管理画面を閲覧する</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(el.dataset.name)} の管理画面を、読み取り専用で開きます。目的は企業の管理者にも表示されます。</p>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">目的 *（問い合わせの内容など）</label><input id="vw-reason" class="inp" maxlength="200" placeholder="例: シフトが表示されないとの問い合わせの確認"></div>
+      ${openReqs.length ? `<div><label class="text-sm text-gray-600 block mb-1">対応する依頼</label><select id="vw-request" class="inp"><option value="">なし</option>${openReqs.map(r => `<option value="${Number(r.request_id)}">No.${Number(r.request_id)} ${esc(String(r.detail).slice(0, 30))}</option>`).join('')}</select></div>` : ''}
+      <div><label class="text-sm text-gray-600 block mb-1">閲覧の時間</label><select id="vw-minutes" class="inp">${minutes.map(m => `<option value="${Number(m)}" ${m === 30 ? 'selected' : ''}>${Number(m)}分</option>`).join('')}</select></div>
+      <p class="text-[11px] text-gray-400">別の企業を閲覧中なら、そちらは終了します。</p>
+      <button class="btn btn-primary w-full" data-action="hqDoStartView" data-cid="${cid}">閲覧を開始する（新しいタブで開きます）</button>
+    </div>`)
+})
+delegate('hqDoStartView', (el) => withSubmitLock(el, async () => {
+  const reqEl = document.getElementById('vw-request')
+  const body = { company_id: Number(el.dataset.cid), reason: document.getElementById('vw-reason').value.trim(), minutes: Number(document.getElementById('vw-minutes').value), support_request_id: reqEl && reqEl.value ? Number(reqEl.value) : null }
+  if (!body.reason) { toast('目的を入力してください'); return }
+  // ポップアップのブロックを避けるため、クリックの処理の中で先にタブを開いておく
+  const w = window.open('', '_blank')
+  try {
+    const { data } = await axios.post('/api/hq/view-sessions', body)
+    if (w) w.location.href = data.redirect || '/admin'
+    else location.href = data.redirect || '/admin'
+    closeModal(); renderSupport()
+  } catch (e) { if (w) w.close(); hqErr(e, '閲覧を開始できませんでした') }
+}))
+delegate('hqEndView', (el) => withSubmitLock(el, async () => {
+  try { await axios.delete('/api/hq/view-sessions/current'); toast('閲覧を終了しました'); renderSupport() } catch (e) { hqErr(e, '終了できませんでした') }
+}))
+delegate('hqViewLogs', (el) => withSubmitLock(el, async () => {
+  try {
+    const { data } = await axios.get(`/api/hq/view-sessions/${Number(el.dataset.id)}/logs`)
+    modal(`<h3 class="font-bold text-lg mb-3 text-gray-800">開いた画面（API）</h3>
+      <div class="max-h-96 overflow-y-auto text-xs text-gray-700 divide-y divide-gray-100">${data.logs.map(l => `<div class="py-1 flex gap-3"><span class="text-gray-400 whitespace-nowrap">${esc(hqTime(l.created_at))}</span><span class="break-all">${esc(l.method)} ${esc(l.path)}</span></div>`).join('')}</div>`)
+  } catch (e) { hqErr(e, '読み込めませんでした') }
+}))
+
+// ============ 導入企業へのお知らせ（#516） ============
+// 本部から導入企業の管理者へ（全企業・選んだ企業・プラン別）。管理画面の上部に出し、管理者が「確認しました」を押すと既読になる
+const ANN_IMPORTANCE_LABEL = { normal: '通常', important: '重要', maintenance: 'メンテナンス' }
+const ANN_IMPORTANCE_BADGE = { normal: 'badge-blue', important: 'badge-red', maintenance: 'badge-yellow' }
+const ANN_STATE_LABEL = { active: '<span class="badge badge-green">掲載中</span>', scheduled: '<span class="badge badge-blue">予約</span>', ended: '<span class="badge badge-gray">掲載終了</span>', withdrawn: '<span class="badge badge-gray">取消</span>' }
+let HQ_ANN = { list: [], companies: [] }
+const annLocal = v => v ? String(v).replace(' ', 'T') : ''
+async function renderAnnouncements() {
+  loading()
+  const { data } = await axios.get('/api/hq/announcements')
+  HQ_ANN = { list: data.announcements, companies: data.companies }
+  const target = a => a.target === 'all' ? '全企業' : a.target === 'plan' ? `${esc(PLAN_LABELS[a.target_plan] || a.target_plan)}プラン` : `選んだ企業（${(a.company_ids || []).length}社）`
+  $app.innerHTML = `
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-xl font-bold">導入企業へのお知らせ</h2>
+      <button class="btn btn-primary" style="background:#0e7490" data-action="hqAnnEdit"><i class="fas fa-plus"></i>お知らせを作る</button>
+    </div>
+    <p class="text-xs text-slate-400 mb-3">メンテナンス・仕様変更・新機能の案内などを、導入企業の管理画面の上部に出します。管理者が「確認しました」を押すと既読になります。掲載期間を過ぎたものは自動で出なくなります（メンテナンスは掲載終了が必須）。</p>
+    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700">
+          <th class="text-left px-3 py-2">状態</th><th class="text-left px-3 py-2">タイトル</th><th class="text-left px-3 py-2">配信先</th><th class="text-left px-3 py-2">掲載期間</th><th class="text-right px-3 py-2">確認した企業</th><th></th>
+        </tr></thead>
+        <tbody>${data.announcements.map(a => `
+          <tr class="border-b border-slate-700/40 align-top">
+            <td class="px-3 py-2 whitespace-nowrap">${ANN_STATE_LABEL[a.state] || ''}</td>
+            <td class="px-3 py-2"><span class="badge ${ANN_IMPORTANCE_BADGE[a.importance] || 'badge-gray'}">${esc(ANN_IMPORTANCE_LABEL[a.importance] || a.importance)}</span> ${esc(a.title)}<span class="block text-[11px] text-slate-500">${esc(a.created_by_name || '')}</span></td>
+            <td class="px-3 py-2 text-xs">${target(a)}</td>
+            <td class="px-3 py-2 text-xs whitespace-nowrap">${esc(a.starts_at)} 〜 ${esc(a.ends_at || '期限なし')}</td>
+            <td class="px-3 py-2 text-right whitespace-nowrap"><button class="text-cyan-400 hover:underline" data-action="hqAnnReads" data-id="${Number(a.announcement_id)}">${Number(a.read_companies) || 0} / ${Number(a.target_count) || 0}社</button></td>
+            <td class="px-3 py-2 text-right whitespace-nowrap">${a.state === 'withdrawn' ? '' : `<button class="text-cyan-400 text-xs hover:underline mr-2" data-action="hqAnnEdit" data-id="${Number(a.announcement_id)}">修正</button><button class="text-red-400 text-xs hover:underline" data-action="hqAnnWithdraw" data-id="${Number(a.announcement_id)}">取消</button>`}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-6">お知らせはまだありません</td></tr>'}</tbody>
+      </table>
+    </div>`
+}
+delegate('hqAnnEdit', (el) => {
+  const a = el.dataset.id ? HQ_ANN.list.find(x => x.announcement_id === Number(el.dataset.id)) : null
+  const sel = new Set(a ? a.company_ids || [] : [])
+  const t = a ? a.target : 'all'
+  modal(`
+    <h3 class="font-bold text-lg mb-3 text-gray-800">${a ? 'お知らせを修正' : 'お知らせを作る'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="an-title" class="inp" maxlength="100" value="${esc(a ? a.title : '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">本文 *</label><textarea id="an-body" rows="5" maxlength="3000" class="inp">${esc(a ? a.body : '')}</textarea></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">重要度</label><select id="an-importance" class="inp">${Object.entries(ANN_IMPORTANCE_LABEL).map(([k, v]) => `<option value="${k}" ${(a ? a.importance : 'normal') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div><label class="text-sm text-gray-600 block mb-1">配信先</label><select id="an-target" class="inp">
+          <option value="all" ${t === 'all' ? 'selected' : ''}>全企業</option><option value="plan" ${t === 'plan' ? 'selected' : ''}>プラン別</option><option value="companies" ${t === 'companies' ? 'selected' : ''}>企業を選ぶ</option></select></div>
+      </div>
+      <div id="an-plan-box" class="${t === 'plan' ? '' : 'hidden'}"><label class="text-sm text-gray-600 block mb-1">プラン</label><select id="an-plan" class="inp">${Object.entries(PLAN_LABELS).map(([k, v]) => `<option value="${k}" ${a && a.target_plan === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div id="an-companies-box" class="${t === 'companies' ? '' : 'hidden'}"><label class="text-sm text-gray-600 block mb-1">企業</label>
+        <div class="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 text-sm text-gray-700 space-y-1">${HQ_ANN.companies.map(c => `<label class="flex items-center gap-2"><input type="checkbox" class="an-company" value="${Number(c.company_id)}" ${sel.has(c.company_id) ? 'checked' : ''}>${esc(c.company_name)}${c.active_status === 'inactive' ? '（停止）' : ''}</label>`).join('')}</div></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">掲載開始（空欄なら今から）</label><input id="an-starts" type="datetime-local" class="inp" value="${esc(annLocal(a && a.starts_at))}"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">掲載終了</label><input id="an-ends" type="datetime-local" class="inp" value="${esc(annLocal(a && a.ends_at))}"></div>
+      </div>
+      <p class="text-[11px] text-gray-400">日時は日本時間です。${a ? '修正しても、確認済みの記録はそのまま残ります。' : ''}</p>
+      <button class="btn btn-primary w-full" data-action="hqAnnSave" data-id="${a ? Number(a.announcement_id) : ''}">${a ? '保存する' : '配信する'}</button>
+    </div>`)
+  document.getElementById('an-target').addEventListener('change', e => {
+    document.getElementById('an-plan-box').classList.toggle('hidden', e.target.value !== 'plan')
+    document.getElementById('an-companies-box').classList.toggle('hidden', e.target.value !== 'companies')
+  })
+})
+delegate('hqAnnSave', (el) => withSubmitLock(el, async () => {
+  const body = {
+    title: document.getElementById('an-title').value.trim(), body: document.getElementById('an-body').value.trim(),
+    importance: document.getElementById('an-importance').value, target: document.getElementById('an-target').value,
+    target_plan: document.getElementById('an-plan').value,
+    company_ids: [...document.querySelectorAll('.an-company:checked')].map(x => Number(x.value)),
+    starts_at: document.getElementById('an-starts').value, ends_at: document.getElementById('an-ends').value,
+  }
+  try {
+    if (el.dataset.id) await axios.put('/api/hq/announcements/' + Number(el.dataset.id), body)
+    else await axios.post('/api/hq/announcements', body)
+    closeModal(); toast(el.dataset.id ? '保存しました' : '配信しました'); renderAnnouncements()
+  } catch (e) { hqErr(e, '保存に失敗しました') }
+}))
+delegate('hqAnnWithdraw', (el) => withSubmitLock(el, async () => {
+  if (!confirm('このお知らせを取り消しますか？管理画面に出なくなります')) return
+  try { await axios.post(`/api/hq/announcements/${Number(el.dataset.id)}/withdraw`); toast('取り消しました'); renderAnnouncements() } catch (e) { hqErr(e, '取り消せませんでした') }
+}))
+delegate('hqAnnReads', (el) => withSubmitLock(el, async () => {
+  try {
+    const { data } = await axios.get(`/api/hq/announcements/${Number(el.dataset.id)}/reads`)
+    const unread = data.companies.filter(c => !Number(c.read_users)).length
+    modal(`<h3 class="font-bold text-lg mb-1 text-gray-800">企業別の確認状況</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(data.announcement.title)}｜未確認 ${unread}社 / ${data.companies.length}社</p>
+      <div class="max-h-96 overflow-y-auto text-sm text-gray-700 divide-y divide-gray-100">${data.companies.map(c => `<div class="py-1.5 flex items-center gap-2"><span class="flex-1">${esc(c.company_name)}</span>${Number(c.read_users) ? `<span class="badge badge-green">確認済み ${Number(c.read_users)}名</span><span class="text-xs text-gray-400">${esc(hqTime(c.first_read_at, true))}</span>` : '<span class="badge badge-red">未確認</span>'}</div>`).join('') || '<p class="text-gray-400 py-2">配信先の企業がありません</p>'}</div>`)
+  } catch (e) { hqErr(e, '読み込めませんでした') }
+}))
 
 // ============ メール送信（#438 #541） ============
 // 直近の期間の会社別・種類別の送信数と、届かなかった割合・理由の上位・最後に成功した日時。宛先は伏せて表示する
@@ -1128,6 +1361,8 @@ async function refreshMailAlert() {
 // ============ ルーティング ============
 const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport, mail: renderHqMail,
   security: () => (window.renderHqSecurity ? renderHqSecurity() : renderCompanies()) }
+// 導入企業へのお知らせ（#516）
+routes.announcements = renderAnnouncements
 
 function route() {
   const hash = (location.hash || '#companies').slice(1)
@@ -1147,4 +1382,6 @@ window.addEventListener('hashchange', route)
   if (!/^#retention/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshCronAlert()
   // メールの届かない会社の警告（#438）。メール送信のタブは自分で描き直す。二段階認証の登録待ちの間は取らない
   if (!/^#mail/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshMailAlert()
+  // 未対応の伴走支援の依頼の件数（#179）。伴走支援のタブは自分で描き直す
+  if (!/^#support/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshSupportBadge()
 })()

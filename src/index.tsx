@@ -8,6 +8,7 @@ import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
+import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -609,7 +610,15 @@ app.get('/admin', async (c) => {
   const u = await currentUser(c)
   if (!u) return toLogin(c)
   if (u.role === 'staff') return c.redirect('/staff')
-  if (u.role === 'system_admin') return c.redirect('/hq')
+  // 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用。#293）のときだけ、その企業の管理画面を開ける
+  let hqView: any = null
+  if (u.role === 'system_admin') {
+    const v = await loadHqView(c.env.DB, getCookie(c, HQ_VIEW_COOKIE), u.user_id)
+    if (!v) return c.redirect('/hq#support')
+    hqView = { company_name: v.company_name, expires_at: v.expires_at }
+  }
+  // script の中に置くので、< を逃がして </script> で閉じられないようにする
+  const hqViewJson = JSON.stringify(hqView).replace(/</g, '\\u003c')
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('管理画面')}
@@ -653,7 +662,7 @@ app.get('/admin', async (c) => {
         <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>
       </nav>
       <div class="p-3 border-t border-gray-100">
-        <button class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" onclick="alert('伴走支援メニュー:\\n・初期設定代行\\n・日報項目設計\\n・スタッフ研修\\n・管理者教育\\n・月次運営レビュー\\n\\nお問い合わせ: support@dissectra.example.jp')">
+        <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" data-action="hqsOpenSupport">
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
         <a href="#account" class="side-link mt-1" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
@@ -675,14 +684,19 @@ app.get('/admin', async (c) => {
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
           <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option>
         </select>
+        <button type="button" class="text-blue-600 shrink-0 px-1 py-1" data-action="hqsOpenSupport" title="伴走支援を依頼する" aria-label="伴走支援を依頼する"><i class="fas fa-hands-holding-circle"></i></button>
         <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
+      <!-- 本部の閲覧中の表示・本部からのお知らせ（#293 #516。public/static/hq-support.js が描く） -->
+      <div id="hq-support-bar" class="px-4 md:px-6 pt-4 max-w-7xl space-y-2 hidden"></div>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
     </div>
   </div>
   <div id="modal-root"></div>
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
+  <script>window.HQ_VIEW = ${hqViewJson}</script>
+  <script src="/static/hq-support.js"></script>
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>
@@ -721,7 +735,8 @@ app.get('/hq', async (c) => {
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
           <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
           <a href="#mail" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="mail">メール送信</a>
-          <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
+          <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援<span id="hq-support-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
+          <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="announcements">企業へのお知らせ</a>
           <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
