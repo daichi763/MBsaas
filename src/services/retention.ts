@@ -707,3 +707,279 @@ export async function purgeExpiredTokens(db: D1Database): Promise<{ deleted: num
     error: failed.map(r => `${r.target}: ${r.error || '失敗'}`).join(' / ').slice(0, 1000) || null,
   }
 }
+
+// ============ 解約・停止した企業のデータの書き出しと削除（#177） ============
+// 本部が「契約終了」を登録した企業（停止中のものに限る）について、
+//   - 書き出し: 企業の表ごとの CSV（区切って取得し、画面でつなぐ）と、R2 の写真・書類の一覧と取得
+//   - 削除: 契約終了日＋猶予日数を過ぎてから、本部の二重の確認のうえで、1回の要求で処理できる量ずつ進める。
+//       1. R2 のキーを offboarding_pending_r2 に控える
+//       2. 企業の行を、参照される側より先に参照する側から消す（OFFBOARDING_TABLES の順）
+//       3. 利用者（users）とスタッフ（staff_profiles）の行は、他社の連携行・企業間チャット・掲示板などから参照されるため残し、
+//          退職後7年の匿名化（#480）と同じく氏名・連絡先・ログイン情報などを消す
+//       4. D1 の削除が済んでから R2 のファイルを消す（消せたものから控えを消し、失敗したものは次の要求で再試行）
+// 他社と共有する記録（掲示板の投稿・やり取り・提案、企業間チャット、連携の同意の記録、本人の共通 ID（persons））と、
+// ログインの履歴（login_events。1年で自動削除）は残す。companies の行も解約の記録として残す。
+// 企業の行を持つ表を足したときは OFFBOARDING_TABLES にも足す（足していない表は、確認の画面に「未対応の表」として出る）。
+export const OFFBOARDING_GRACE_DAYS = 90 // 猶予日数の既定
+export const OFFBOARDING_GRACE_MIN = 30
+export const OFFBOARDING_GRACE_MAX = 365
+export const OFFBOARDING_EXPORT_PAGE = 500 // CSV の1回の取得の行数（Free プランの CPU 時間に収める）
+const OFFBOARDING_DELETE_LIMIT = 500       // 1文で消す行数
+const OFFBOARDING_QUERY_BUDGET = 25        // 1回の要求で実行する削除の問い合わせ・R2 の削除の上限
+const OFFBOARDING_R2_CHUNK = 1000          // R2 の delete に1回で渡すキーの数
+
+export type OffboardingBuckets = { PHOTOS?: R2Bucket; DOCUMENTS?: R2Bucket; CONTRACTS?: R2Bucket }
+export type OffboardingTable = {
+  target: string; label: string
+  table: string
+  where: string        // $C を企業 ID に置き換える
+  noExport?: boolean   // 書き出さない（トークン・セッション・既読の印など）
+  noDelete?: boolean   // 削除しない（companies の行と、匿名化する users・staff_profiles）
+}
+const OB_USERS = `(SELECT user_id FROM users WHERE company_id = $C AND role != 'system_admin')`
+const OB_STAFF = '(SELECT staff_id FROM staff_profiles WHERE company_id = $C)'
+const OB_CO = 'company_id = $C'
+const OB_NOTICES = 'notice_id IN (SELECT notice_id FROM notices WHERE company_id = $C)'
+// 削除の順（参照する側が先）。書き出しにもこの一覧を使う
+export const OFFBOARDING_TABLES: OffboardingTable[] = [
+  { target: 'companies', label: '企業', table: 'companies', where: OB_CO, noDelete: true },
+  { target: 'users', label: '利用者（パスワード・二段階認証の情報を除く）', table: 'users', where: `${OB_CO} AND role != 'system_admin'`, noDelete: true },
+  { target: 'staff_profiles', label: 'スタッフ', table: 'staff_profiles', where: OB_CO, noDelete: true },
+  { target: 'shift_report_tokens', label: '報告用URLのトークン', table: 'shift_report_tokens', where: OB_CO, noExport: true },
+  { target: 'attendance_correction_events', label: '打刻修正の操作履歴', table: 'attendance_correction_events', where: OB_CO },
+  { target: 'notification_emails', label: '打刻修正の通知メール', table: 'notification_emails', where: OB_CO },
+  { target: 'attendance_corrections', label: '打刻修正の申請', table: 'attendance_corrections', where: OB_CO },
+  { target: 'attendance_reports_duplicates_0036', label: '出退勤記録（重複の控え）', table: 'attendance_reports_duplicates_0036', where: OB_CO },
+  { target: 'attendance_reports', label: '出退勤記録', table: 'attendance_reports', where: OB_CO },
+  { target: 'daily_report_duplicates', label: '日報（重複の控え）', table: 'daily_report_duplicates', where: OB_CO },
+  { target: 'daily_reports', label: '日報', table: 'daily_reports', where: OB_CO },
+  { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
+  { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
+  { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
+  { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
+    where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },
+  { target: 'recruit_applications', label: '応募', table: 'recruit_applications', where: OB_CO },
+  { target: 'recruit_pages', label: '募集ページ', table: 'recruit_pages', where: OB_CO },
+  { target: 'shift_requests', label: 'シフト希望', table: 'shift_requests', where: OB_CO },
+  { target: 'report_setting_logs', label: '報告設定の変更履歴', table: 'report_setting_logs', where: OB_CO },
+  { target: 'project_staff_report_settings', label: '報告設定（スタッフ別）', table: 'project_staff_report_settings', where: OB_CO },
+  { target: 'project_report_defaults', label: '報告設定（案件）', table: 'project_report_defaults', where: OB_CO },
+  { target: 'project_cancel_policies', label: '案件のキャンセル規定', table: 'project_cancel_policies', where: OB_CO },
+  { target: 'project_price_history', label: '案件の単価の履歴', table: 'project_price_history', where: OB_CO },
+  { target: 'rate_rules', label: '単価ルール', table: 'rate_rules', where: OB_CO },
+  { target: 'slot_patterns', label: '募集枠のパターン', table: 'slot_patterns', where: OB_CO },
+  { target: 'shifts', label: 'シフト', table: 'shifts', where: OB_CO },
+  { target: 'shift_slot_roles', label: '募集枠の役割', table: 'shift_slot_roles', where: 'slot_id IN (SELECT slot_id FROM shift_slots WHERE company_id = $C)' },
+  { target: 'shift_slots', label: '募集枠', table: 'shift_slots', where: OB_CO },
+  { target: 'evaluations', label: '評価', table: 'evaluations', where: OB_CO },
+  { target: 'follow_logs', label: 'フォロー記録', table: 'follow_logs', where: OB_CO },
+  { target: 'consultations', label: '相談', table: 'consultations', where: OB_CO },
+  { target: 'employee_records', label: '従業員データ（口座・住所・給与・保険番号など）', table: 'employee_records', where: OB_CO },
+  { target: 'employment_periods', label: '雇用期間', table: 'employment_periods', where: OB_CO },
+  { target: 'staff_documents', label: 'スタッフの書類', table: 'staff_documents', where: OB_CO },
+  { target: 'employee_documents', label: '入社時書類', table: 'employee_documents', where: OB_CO },
+  { target: 'staff_affiliation_history', label: '所属区分の変更履歴', table: 'staff_affiliation_history', where: OB_CO },
+  { target: 'staff_affiliation_schedules', label: '所属区分の変更の予約', table: 'staff_affiliation_schedules', where: OB_CO },
+  { target: 'staff_quick_locks', label: 'スタッフ登録の重複防止', table: 'staff_quick_locks', where: OB_CO, noExport: true },
+  { target: 'staff_merges', label: 'スタッフの統合の記録', table: 'staff_merges', where: OB_CO },
+  { target: 'roster_value_fixes', label: '名簿の値の補正', table: 'roster_value_fixes', where: `staff_id IN ${OB_STAFF}` },
+  { target: 'notice_read_staff_reports', label: '既読率（スタッフ別）', table: 'notice_read_staff_reports', where: OB_CO },
+  { target: 'notice_read_reports', label: '既読率レポート', table: 'notice_read_reports', where: OB_CO },
+  { target: 'notice_reads', label: 'お知らせの既読', table: 'notice_reads', where: OB_NOTICES },
+  { target: 'notice_targets', label: 'お知らせの配信対象', table: 'notice_targets', where: OB_NOTICES },
+  { target: 'notice_ack_tokens', label: 'お知らせの確認用トークン', table: 'notice_ack_tokens', where: OB_CO, noExport: true },
+  { target: 'notice_email_deliveries', label: 'お知らせのメール送信', table: 'notice_email_deliveries', where: OB_CO },
+  { target: 'notices', label: 'お知らせ', table: 'notices', where: OB_CO },
+  { target: 'user_notifications', label: 'アプリ内の通知', table: 'user_notifications', where: OB_CO },
+  { target: 'todo_dismissals', label: 'ToDo の非表示', table: 'todo_dismissals', where: OB_CO, noExport: true },
+  { target: 'client_ng_staff', label: 'クライアントの NG スタッフ', table: 'client_ng_staff', where: OB_CO },
+  { target: 'client_contacts', label: 'クライアントの担当者', table: 'client_contacts', where: OB_CO },
+  { target: 'client_documents', label: 'クライアントの契約書類', table: 'client_documents', where: OB_CO },
+  { target: 'sites', label: '開催場所', table: 'sites', where: OB_CO },
+  { target: 'projects', label: '案件', table: 'projects', where: OB_CO },
+  { target: 'clients', label: 'クライアント', table: 'clients', where: OB_CO },
+  { target: 'settlement_closings', label: '精算の締め', table: 'settlement_closings', where: OB_CO },
+  { target: 'settlement_export_logs', label: '精算の出力の記録', table: 'settlement_export_logs', where: OB_CO },
+  { target: 'staff_affiliations', label: '所属先（取引先）', table: 'staff_affiliations', where: OB_CO },
+  { target: 'roster_field_requirements', label: '名簿の必須項目', table: 'roster_field_requirements', where: OB_CO },
+  { target: 'report_templates', label: '日報テンプレート（企業）', table: 'report_templates', where: OB_CO },
+  { target: 'roster_host_note_history', label: '稼働先メモの履歴', table: 'roster_host_note_history', where: OB_CO },
+  { target: 'roster_comment_reads', label: '企業間チャットの既読（会社）', table: 'roster_comment_reads', where: OB_CO, noExport: true },
+  { target: 'roster_comment_user_reads', label: '企業間チャットの既読（利用者）', table: 'roster_comment_user_reads', where: OB_CO, noExport: true },
+  { target: 'roster_host_note_seen', label: '稼働先メモの既読', table: 'roster_host_note_seen', where: `user_id IN ${OB_USERS}`, noExport: true },
+  { target: 'board_thread_reads', label: '掲示板の既読（会社）', table: 'board_thread_reads', where: OB_CO, noExport: true },
+  { target: 'board_thread_user_reads', label: '掲示板の既読（利用者）', table: 'board_thread_user_reads', where: `user_id IN ${OB_USERS}`, noExport: true },
+  { target: 'email_logs', label: 'メールの送信記録', table: 'email_logs', where: OB_CO },
+  { target: 'sessions', label: 'ログイン中のセッション', table: 'sessions', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
+  { target: 'password_reset_tokens', label: 'パスワード再設定のトークン', table: 'password_reset_tokens', where: `user_id IN ${OB_USERS}`, noExport: true },
+  { target: 'login_email_verifications', label: 'メールアドレスの確認', table: 'login_email_verifications', where: OB_CO, noExport: true },
+  { target: 'mfa_challenges', label: '二段階認証の確認中', table: 'mfa_challenges', where: `user_id IN ${OB_USERS}`, noExport: true },
+]
+// 企業の行を持つが削除しない表（他社と共有する記録・ログインの履歴・解約の記録）。「未対応の表」の判定から外す
+const OFFBOARDING_KEPT_TABLES = ['login_events', 'roster_consents', 'board_posts', 'company_offboardings', 'company_offboarding_events']
+// 書き出しで出さない列（ログインの秘密の情報と、他社との連携に使う鍵）
+const OFFBOARDING_SECRET_COL_RE = /password|secret|token|recovery|totp|link_key|relink_code/i
+
+// R2 のファイル（写真・書類）。source は元の表（ファイルの取得は表と行の ID で行う）
+type ObFileSource = { source: string; bucket: 'photos' | 'documents' | 'contracts'; idCol: string; keyCol: string; nameCol: string | null; whenCol: string; refCol: string }
+export const OFFBOARDING_FILE_SOURCES: ObFileSource[] = [
+  { source: 'attendance_reports', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
+  { source: 'staff_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
+  { source: 'employee_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
+  { source: 'client_documents', bucket: 'contracts', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'client_id' },
+]
+export function offboardingBucket(buckets: OffboardingBuckets, bucket: string): R2Bucket | undefined {
+  return bucket === 'documents' ? buckets.DOCUMENTS : bucket === 'contracts' ? buckets.CONTRACTS : buckets.PHOTOS
+}
+
+// $C を ? にした条件（括弧で囲む）と、バインドする値（企業 ID を $C の数だけ）
+function obWhere(where: string, companyId: number): { sql: string; binds: number[] } {
+  const parts = where.split('$C')
+  return { sql: `(${parts.join('?')})`, binds: Array(parts.length - 1).fill(companyId) }
+}
+
+/**
+ * 企業のデータの件数（表ごと・R2 のファイルの元の表ごと）。問い合わせの回数を抑えるため1文で数える（企業 ID は WITH で1回だけ渡す）。
+ * あわせて、企業の行（company_id 列）を持つのに OFFBOARDING_TABLES にない表（未対応の表）を返す
+ */
+export async function countOffboardingData(db: D1Database, companyId: number): Promise<{ counts: Record<string, number>; files: Record<string, number>; unknown_tables: string[] | null }> {
+  const cid = '(SELECT cid FROM k)'
+  const cols = [
+    ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
+    ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
+  ]
+  const row = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  const counts: Record<string, number> = {}
+  OFFBOARDING_TABLES.forEach((t, i) => { counts[t.target] = Number(row?.[`t${i}`]) || 0 })
+  const files: Record<string, number> = {}
+  OFFBOARDING_FILE_SOURCES.forEach((f, i) => { files[f.source] = Number(row?.[`f${i}`]) || 0 })
+  return { counts, files, unknown_tables: await findUnknownOffboardingTables(db) }
+}
+
+/** 企業の行（company_id 列）を持つのに OFFBOARDING_TABLES にない表（未対応の表）。確かめられなかったときは null */
+export async function findUnknownOffboardingTables(db: D1Database): Promise<string[] | null> {
+  try {
+    const known = new Set([...OFFBOARDING_TABLES.map(t => t.table), ...OFFBOARDING_KEPT_TABLES])
+    // D1 では pragma_table_info を問い合わせの中で使えないため、表の定義（ALTER TABLE で足した列も含む）の文字列で判定する。
+    // 列の定義（company_id INTEGER など）だけを見て、外部キーの参照（REFERENCES companies(company_id)）は数えない
+    const rows = (await db.prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name`).all()).results as { name: string; sql: string | null }[]
+    return rows.filter(r => /(?:^|[(,])\s*"?company_id"?\s+\w/m.test(r.sql || ''))
+      .map(r => r.name).filter(n => !known.has(n) && !/^(sqlite_|_cf_|d1_)/.test(n))
+  } catch (e) {
+    console.log(`offboarding: table check failed: ${e}`)
+    return null
+  }
+}
+
+/** 書き出し: 表の行を rowid の順に offset から OFFBOARDING_EXPORT_PAGE 行まで返す（秘密の列は除く）。書き出さない表は null */
+export async function exportOffboardingTablePage(db: D1Database, companyId: number, target: string, offset: number): Promise<{ header: string[]; rows: unknown[][]; label: string } | null> {
+  const t = OFFBOARDING_TABLES.find(x => x.target === target && !x.noExport)
+  if (!t) return null
+  const w = obWhere(t.where, companyId)
+  const got = (await db.prepare(`SELECT * FROM ${t.table} WHERE ${w.sql} ORDER BY rowid LIMIT ? OFFSET ?`)
+    .bind(...w.binds, OFFBOARDING_EXPORT_PAGE, offset).all()).results as Record<string, unknown>[]
+  const header = got.length ? Object.keys(got[0]).filter(k => !OFFBOARDING_SECRET_COL_RE.test(k)) : []
+  return { header, rows: got.map(r => header.map(h => r[h])), label: t.label }
+}
+
+export type OffboardingFile = { source: string; bucket: string; id: number; r2_key: string; file_name: string | null; created_at: string | null; ref_id: number | null }
+/** R2 のファイルの一覧（offset から limit 件） */
+export async function listOffboardingFiles(db: D1Database, companyId: number, offset: number, limit: number): Promise<OffboardingFile[]> {
+  const sql = OFFBOARDING_FILE_SOURCES.map(f => `SELECT '${f.source}' AS source, '${f.bucket}' AS bucket, ${f.idCol} AS id, ${f.keyCol} AS r2_key,
+      ${f.nameCol || 'NULL'} AS file_name, ${f.whenCol} AS created_at, ${f.refCol} AS ref_id
+    FROM ${f.source} WHERE company_id = ? AND ${f.keyCol} IS NOT NULL`).join(' UNION ALL ')
+  return (await db.prepare(`SELECT * FROM (${sql}) ORDER BY source, id LIMIT ? OFFSET ?`)
+    .bind(...OFFBOARDING_FILE_SOURCES.map(() => companyId), limit, offset).all()).results as OffboardingFile[]
+}
+
+/** R2 のファイル1件（元の表と行の ID で、その企業のものだけ） */
+export async function findOffboardingFile(db: D1Database, companyId: number, source: string, id: number): Promise<OffboardingFile | null> {
+  const f = OFFBOARDING_FILE_SOURCES.find(x => x.source === source)
+  if (!f) return null
+  return await db.prepare(`SELECT '${f.source}' AS source, '${f.bucket}' AS bucket, ${f.idCol} AS id, ${f.keyCol} AS r2_key,
+      ${f.nameCol || 'NULL'} AS file_name, ${f.whenCol} AS created_at, ${f.refCol} AS ref_id
+    FROM ${f.source} WHERE company_id = ? AND ${f.idCol} = ? AND ${f.keyCol} IS NOT NULL`).bind(companyId, id).first() as OffboardingFile | null
+}
+
+// 削除の段階: 0 = R2 のキーを控える、1..N = 表の削除（noDelete を除く）、N+1 = 匿名化、N+2 = R2 の削除、N+3 = 完了
+const OB_DELETE_TABLES = OFFBOARDING_TABLES.filter(t => !t.noDelete)
+export const OFFBOARDING_TOTAL_STEPS = OB_DELETE_TABLES.length + 3
+
+export type OffboardingProgress = { done: boolean; step: number; total_steps: number; deleted: Record<string, number>; r2_left: number; error: string | null }
+
+/**
+ * 企業のデータの削除を1回の要求で処理できる量だけ進め、進み具合を company_offboardings に保存する。
+ * 呼び出し側で、状態（deleting）・猶予・企業の停止・二重の確認を確かめてから呼ぶ。
+ * 同時に呼ばれても段階を二重に進めないよう、保存は読んだときの段階のままのときだけ行う。
+ */
+export async function runOffboardingDeletion(db: D1Database, buckets: OffboardingBuckets,
+  ob: { offboarding_id: number; company_id: number; delete_step: number; deleted_json: string | null }): Promise<OffboardingProgress> {
+  const cid = Number(ob.company_id)
+  const oid = Number(ob.offboarding_id)
+  const startStep = Number(ob.delete_step) || 0
+  let step = startStep
+  let deleted: Record<string, number> = {}
+  try { deleted = JSON.parse(ob.deleted_json || '{}') || {} } catch { deleted = {} }
+  const add = (k: string, n: number) => { deleted[k] = (deleted[k] || 0) + n }
+  const N = OB_DELETE_TABLES.length
+  let used = 0
+  let error: string | null = null
+  try {
+    while (used < OFFBOARDING_QUERY_BUDGET && step < N + 3) {
+      if (step === 0) {
+        // R2 のキーを控える（D1 の行を消すとキーが分からなくなるため、最初にまとめて控える）
+        await db.batch(OFFBOARDING_FILE_SOURCES.map(f => db.prepare(`INSERT OR IGNORE INTO offboarding_pending_r2 (bucket, r2_key, offboarding_id)
+          SELECT '${f.bucket}', ${f.keyCol}, ? FROM ${f.source} WHERE company_id = ? AND ${f.keyCol} IS NOT NULL`).bind(oid, cid)))
+        used++; step++
+      } else if (step <= N) {
+        const t = OB_DELETE_TABLES[step - 1]
+        const w = obWhere(t.where, cid)
+        const r = await db.prepare(`DELETE FROM ${t.table} WHERE rowid IN (SELECT rowid FROM ${t.table} WHERE ${w.sql} LIMIT ${OFFBOARDING_DELETE_LIMIT})`)
+          .bind(...w.binds).run()
+        used++
+        const n = r.meta.changes || 0
+        add(t.target, n)
+        if (n < OFFBOARDING_DELETE_LIMIT) step++
+      } else if (step === N + 1) {
+        // 利用者とスタッフの匿名化（行は他社の連携行・企業間チャット・掲示板などから参照されるため残す）
+        const anonymizeCols = ANONYMIZE_PROFILE_COLUMNS.map(col => `${col} = NULL`).join(', ')
+        const r = await db.batch([
+          db.prepare(`UPDATE users SET name = '解約企業の利用者#' || user_id, email = NULL, phone = NULL, password_hash = '!anonymized', status = 'suspended',
+              totp_secret = NULL, totp_pending_secret = NULL, totp_enabled_at = NULL, mfa_recovery_codes = NULL
+            WHERE company_id = ? AND role != 'system_admin' AND password_hash != '!anonymized'`).bind(cid),
+          db.prepare(`UPDATE staff_profiles SET ${anonymizeCols}, anonymized_at = COALESCE(anonymized_at, ?) WHERE company_id = ?`).bind(nowJST(), cid),
+        ])
+        used++
+        add('anonymized_users', r[0].meta.changes || 0)
+        add('anonymized_staff', r[1].meta.changes || 0)
+        step++
+      } else {
+        // D1 の削除が済んでから R2 のファイルを消す。消せたものから控えを消す
+        const rows = (await db.prepare('SELECT bucket, r2_key FROM offboarding_pending_r2 WHERE offboarding_id = ? ORDER BY bucket, r2_key LIMIT ?')
+          .bind(oid, OFFBOARDING_R2_CHUNK).all()).results as { bucket: string; r2_key: string }[]
+        used++
+        if (!rows.length) { step++; break }
+        for (const b of ['photos', 'documents', 'contracts']) {
+          const keys = rows.filter(r => r.bucket === b).map(r => r.r2_key)
+          if (!keys.length) continue
+          const bucket = offboardingBucket(buckets, b)
+          if (!bucket) throw new Error(`R2 のバケット（${b}）が設定されていません`)
+          await bucket.delete(keys)
+          await db.prepare('DELETE FROM offboarding_pending_r2 WHERE bucket = ? AND r2_key IN (SELECT value FROM json_each(?))').bind(b, JSON.stringify(keys)).run()
+          used += 2
+          add(`r2_${b}`, keys.length)
+        }
+      }
+    }
+  } catch (e) {
+    error = `段階 ${step}: ${String(e)}`.slice(0, 1000)
+    console.log(`offboarding: company_id=${cid} failed at step ${step}: ${e}`)
+  }
+  const done = step >= N + 3
+  const left = await db.prepare('SELECT COUNT(*) AS n FROM offboarding_pending_r2 WHERE offboarding_id = ?').bind(oid).first() as { n: number } | null
+  await db.prepare(`UPDATE company_offboardings SET delete_step = ?, deleted_json = ?, last_error = ?,
+      status = CASE WHEN ? = 1 THEN 'completed' ELSE status END, completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END
+    WHERE offboarding_id = ? AND delete_step = ? AND status = 'deleting'`)
+    .bind(step, JSON.stringify(deleted), error, done ? 1 : 0, done ? 1 : 0, new Date().toISOString(), oid, startStep).run()
+  return { done, step, total_steps: OFFBOARDING_TOTAL_STEPS, deleted, r2_left: Number(left?.n) || 0, error }
+}
