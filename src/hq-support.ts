@@ -208,7 +208,37 @@ export async function hqViewAdminGuard(c: any, next: () => Promise<void>) {
   }
   c.set('user', hqViewUser(u, v))
   c.env = readOnlyEnv(c.env)
-  return next()
+  await next()
+  // 応答に入る生きたトークン（報告用URL・カレンダー購読など）は閲覧中には返さない（#293。公開の API は閲覧の制限の外にあるため）
+  if (!String(c.res?.headers?.get('content-type') || '').includes('application/json')) return
+  const body = await c.res.clone().json().catch(() => undefined)
+  if (body === undefined) return
+  const masked = maskTokens(body)
+  if (masked.changed) {
+    const headers = new Headers(c.res.headers); headers.delete('content-length')
+    c.res = new Response(JSON.stringify(masked.value), { status: c.res.status, headers })
+  }
+}
+// キーが token / 〜_token の値と、文字列の中の公開URLのトークン（/r/… /api/public/report/… /api/public/calendar/…）を伏せる
+const TOKEN_KEY_RE = /(^|_)token$/i
+const TOKEN_URL_RE = /(\/r\/|\/api\/public\/(?:report|calendar|schedule)\/)[A-Za-z0-9_-]{16,}/g
+export function maskTokens(v: any): { value: any; changed: boolean } {
+  let changed = false
+  const walk = (x: any, depth: number): any => {
+    if (depth > 20) return x
+    if (typeof x === 'string') { const y = x.replace(TOKEN_URL_RE, '$1***'); if (y !== x) changed = true; return y }
+    if (Array.isArray(x)) return x.map(e => walk(e, depth + 1))
+    if (x && typeof x === 'object') {
+      const out: any = {}
+      for (const [k, val] of Object.entries(x)) {
+        if (TOKEN_KEY_RE.test(k) && typeof val === 'string' && val) { out[k] = null; changed = true } else out[k] = walk(val, depth + 1)
+      }
+      return out
+    }
+    return x
+  }
+  const value = walk(v, 0)
+  return { value, changed }
 }
 
 // ============ 管理画面の API（/api/admin に登録する） ============

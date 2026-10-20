@@ -6,7 +6,7 @@
 // api.ts から認証ミドルウェアの前後に分けて登録する。金額は返さない（報告用URLはスタッフ本人向け）。
 // =========================================================
 import { Hono } from 'hono'
-import { createPerson, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode } from './roster'
+import { createPerson, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode, ageGroupOf } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk, batchInChunks } from './lib/d1-chunk'
 import { insertRowsStmts, changesOf } from './lib/bulk-write'
@@ -204,7 +204,7 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
   if (type === 'freelance') affiliation = String(b.trade_name || '').trim() || '個人事業主'
   if (type === 'partner_manual') {
     if (b.partner_affiliation_id) {
-      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any
+      const p = await db.prepare('SELECT t.affiliation_id, t.affiliation_name FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.affiliation_id = ? AND sa.company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any
       if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
       partnerId = p.affiliation_id; affiliation = p.affiliation_name
     } else if (String(b.new_partner_name || '').trim()) {
@@ -213,7 +213,7 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
       const conflict = await partnerNameConflict(db, u.company_id, pname)
       if (conflict) return c.json({ error: conflict }, 400)
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, pname).run()
-      const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(u.company_id, pname).first() as any
+      const p = await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(u.company_id, pname).first() as any
       partnerId = p?.affiliation_id ?? null; affiliation = pname
     } else return c.json({ error: '取引先を選択または入力してください' }, 400)
   }
@@ -473,7 +473,7 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   if (to === 'freelance') affiliation = tradeName || '個人事業主'
   if (to === 'partner_manual') {
     if (b.partner_affiliation_id) {
-      const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, companyId).first() as any
+      const p = await db.prepare('SELECT t.affiliation_id, t.affiliation_name FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.affiliation_id = ? AND sa.company_id = ?').bind(b.partner_affiliation_id, companyId).first() as any
       if (!p) return fail('取引先が見つかりません', 404)
       partnerId = p.affiliation_id; affiliation = p.affiliation_name
     } else if (String(b.new_partner_name || '').trim()) {
@@ -482,7 +482,7 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
       const conflict = await partnerNameConflict(db, companyId, affiliation)
       if (conflict) return fail(conflict)
       // 同じ名前の取引先が登録済みならそれを使う
-      const p = await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(companyId, affiliation).first() as any
+      const p = await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(companyId, affiliation).first() as any
       if (p) partnerId = p.affiliation_id
       else newPartnerName = affiliation
     } else return fail('取引先を選択または入力してください')
@@ -545,10 +545,10 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   return { ok: true, plan: { from, to, effective, affiliation, partnerId, newPartnerName, tradeName, hire, contractType, er, repair, scheduled, targets, excluded, effects, warnings, token, excludedShifts } }
 }
 
-// 取引先の新規登録（区分変更の実行・予約のとき）。同じ名前があればそれを使う
+// 取引先の新規登録（区分変更の実行・予約のとき）。同じ名前があればそれを使う（統合した取引先なら統合先。#161）
 async function ensurePartner(db: D1Database, companyId: number, name: string): Promise<number | null> {
   await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(companyId, name).run()
-  return ((await db.prepare('SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?').bind(companyId, name).first()) as any)?.affiliation_id ?? null
+  return ((await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(companyId, name).first()) as any)?.affiliation_id ?? null
 }
 
 // シフトの更新を JSON 1 つにまとめた UPDATE 文（1 文あたり 100 件）。確定済みのシフトは書き換えない
@@ -576,13 +576,15 @@ async function executeAffiliationChange(db: D1Database, companyId: number, actor
       // 基本項目は雇用元の行（多段連携なら root_staff_id）からコピーする。
       // 所属先担当者名は雇用元の値をコピーしない（多段連携で隠している雇用元の担当者が見えるため。roster.ts の ROSTER_LOCAL_FIELDS）。
       // 取引先所属に切り替える場合は自社の行の値を残し、自社雇用・日雇い・個人事業主では前の会社の担当者なので空にする
-      const src = await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
+      // 所属元が連携を終了した行（#162）は、所属元の値をコピーしない（共有をやめた情報を切り替えで取れないように）。
+      // 生年月日・備考は所属元だけの項目なのでコピーせず、年代だけを入れる（#9001。連携先に共有する範囲と同じ）
+      const src = sp.link_revoked_at ? null : await db.prepare('SELECT * FROM staff_profiles WHERE staff_id = ?').bind(sp.root_staff_id || sp.source_staff_id).first() as any
       if (src) {
-        stmts.push(db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, date_of_birth = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, remarks = ?, work_area = ?, age_group = ?,
+        stmts.push(db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, work_area = ?, age_group = ?,
             nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
             affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
-          .bind(src.kana, src.gender, src.date_of_birth, src.skills, src.career, src.career_rows, src.pr_points, src.remarks, src.work_area, src.age_group, src.nearest_station_line, src.nearest_station,
-            src.commute_minutes, src.available_from, to, sp.staff_id))
+          .bind(src.kana, src.gender, src.skills, src.career, src.career_rows, src.pr_points, src.work_area, ageGroupOf(src.date_of_birth, src.age_group) || null,
+            src.nearest_station_line, src.nearest_station, src.commute_minutes, src.available_from, to, sp.staff_id))
       }
       // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
     }
