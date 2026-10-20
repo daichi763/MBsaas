@@ -1261,12 +1261,17 @@ app.post('/shifts/confirm-requested', async (c) => {
   const targetIds = targets.map(r => r.shift_id)
   const notifyBefore = await loadShiftSnaps(db, u.company_id, targetIds)
   const op = opLog(db, u, 'confirm_requested') // 操作履歴（#159）
-  const res = (await db.batch([...logShifts(op, targetIds), db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
-    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targetIds))])).at(-1)!
+  await db.batch([...logShifts(op, targetIds), db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
+    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targetIds))])
   await finishLog(op)
+  // 確定にした件数は前後の状態から数える。D1 の meta.changes はトリガー（0086 の trg_shifts_staff_changed_at）の中の更新も数えるため、
+  // 状態・日時・場所などを変える shifts の UPDATE では実際の行数の2倍になる
+  const notifyAfter = await loadShiftSnaps(db, u.company_id, targetIds)
+  const wasRequested = new Set(notifyBefore.filter(s => s.status === 'requested').map(s => s.shift_id))
+  const confirmed = notifyAfter.filter(s => s.status === 'confirmed' && wasRequested.has(s.shift_id)).length
   // 確定にしたことを本人に知らせる（スタッフごとにまとめる。#155）
-  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, targetIds))
-  return c.json({ ok: true, confirmed: res.meta.changes || 0, skipped })
+  await notifyShiftChanges(c, u.company_id, notifyBefore, notifyAfter)
+  return c.json({ ok: true, confirmed, skipped })
 })
 
 // =========================================================
