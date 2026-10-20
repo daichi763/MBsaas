@@ -393,6 +393,8 @@
     const n = NOTIF_LIST.find(x => x.notification_id === id)
     const link = (n && n.link) || ''
     if (/^#notices\/\d+$/.test(link)) { location.hash = link.slice(1); return }
+    // 交通費・延長の申請の結果と、管理者の実績の入力（#pay/月。w5-staff-pay-features）
+    if (/^#pay(\/\d{4}-\d{2})?$/.test(link)) { location.hash = link.slice(1); return }
     if (n && (n.kind === 'consult_reply' || link === '#consult')) { location.hash = 'consult'; return }
     const m = link.match(/#attendance\/request\/(\d+)$/)
     const reqId = m ? Number(m[1]) : n && /^correction_/.test(n.kind || '') && n.related_id ? Number(n.related_id) : null
@@ -423,4 +425,198 @@
     await (typeof route === 'function' ? route() : renderStaffAttendance())
     if (TL && TL.shifts.some(x => x.shift_id === shiftId)) attOpen(shiftId, type)
   }
+})()
+
+// =========================================================
+// スタッフ: 勤務時間・支払（#pay・#pay/YYYY-MM。w5-staff-pay-features: #172 #273 #274 #290）
+// 月ごとの実働時間（管理者が入力した実績を含む）・勤務日数と、会社が表示を ON にしている場合は支払額（見込み・確定）。
+// シフトごとに交通費（実費）と延長（残業）を申請できる。管理者が承認すると、交通費・予定の終了時刻に反映される
+// =========================================================
+(function () {
+  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
+  const REQ_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
+  const KIND_LABEL = { transport: '交通費', overtime: '延長' }
+  const UNIT_LABEL = { daily: '日給', hourly: '時給' }
+  const yenText = (n) => (n == null ? '未設定' : Number(n).toLocaleString('ja-JP') + '円')
+  const hrsText = (h) => (h == null ? '-' : (Math.round(h * 100) / 100) + '時間')
+  const reqBadge = (s) => `<span class="badge ${(REQ_STATUS[s] || [])[1] || 'badge-gray'}">${esc((REQ_STATUS[s] || [s])[0])}</span>`
+  const toMin = (t) => { const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0) }
+  const hhmm = (m) => { m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0') }
+  const hashMonth = () => (location.hash || '').slice(1).split('/')[1] || ''
+  let PAY = null
+
+  window.renderStaffPay = async function () {
+    const m = hashMonth()
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(m) ? m : dayjs().format('YYYY-MM')
+    loading()
+    let data
+    try { data = (await axios.get('/api/staff/pay', { params: { month } })).data } catch (e) {
+      if ((location.hash || '').slice(1).split('/')[0] !== 'pay') return
+      $app.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-red-600 mb-3">${esc(e && e.response ? errMsg(e, '読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
+        <button class="btn btn-outline" data-action="payReload"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
+      return
+    }
+    // 読み込み中にほかの画面・ほかの月へ移った
+    if ((location.hash || '').slice(1).split('/')[0] !== 'pay' || (hashMonth() || dayjs().format('YYYY-MM')) !== month) return
+    PAY = data
+    render()
+  }
+  delegate('payReload', () => renderStaffPay())
+  delegate('payMonth', (el) => { location.hash = 'pay/' + el.dataset.month })
+
+  function render() {
+    const d = PAY, sm = d.summary, pay = sm.pay
+    const prev = dayjs(d.month + '-01').subtract(1, 'month').format('YYYY-MM'), next = dayjs(d.month + '-01').add(1, 'month').format('YYYY-MM')
+    $app.innerHTML = `
+      <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
+      <div class="flex items-center justify-between gap-2 mb-3">
+        <button class="btn btn-outline" data-action="payMonth" data-month="${esc(prev)}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+        <h2 class="font-bold text-gray-800">${esc(dayjs(d.month + '-01').format('YYYY年M月'))}</h2>
+        <button class="btn btn-outline" data-action="payMonth" data-month="${esc(next)}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+      </div>
+      <section class="card p-4 mb-4" id="pay-summary">
+        <div class="grid grid-cols-2 gap-3 text-center">
+          <div><p class="text-[11px] text-gray-500">勤務した日数</p><p class="text-xl font-bold text-gray-800">${Number(sm.worked_days)}日</p></div>
+          <div><p class="text-[11px] text-gray-500">実働時間の合計</p><p class="text-xl font-bold text-gray-800">${esc(hrsText(sm.worked_hours))}</p></div>
+        </div>
+        ${sm.scheduled_days ? `<p class="text-xs text-gray-500 text-center mt-2">これからの予定: ${Number(sm.scheduled_days)}日・${esc(hrsText(sm.scheduled_hours))}</p>` : ''}
+        ${pay ? `<div class="grid grid-cols-2 gap-3 text-center mt-3 pt-3 border-t border-gray-100">
+          <div><p class="text-[11px] text-gray-500">支払の見込み（月の合計）</p><p class="text-lg font-bold text-gray-800">${esc(yenText(pay.estimate_total))}</p></div>
+          <div><p class="text-[11px] text-gray-500">うち確定済み</p><p class="text-lg font-bold text-emerald-700">${esc(yenText(pay.confirmed_total))}</p></div>
+        </div>
+        ${pay.unset ? `<p class="text-[11px] text-amber-700 mt-1 text-center">単価が決まっていないシフトが ${Number(pay.unset)}件 あります（合計に含みません）</p>` : ''}
+        <p class="text-[11px] text-gray-400 mt-1">見込みは今の予定・実績での計算です。確定済みは、会社が精算で確定した金額です（税・社会保険などを差し引く前）</p>` : ''}
+        <p class="text-[11px] text-gray-400 mt-2">実働は、時給の計算に使う時間です（休憩を除く）。予定の時間の範囲で数える案件では、予定より長く働いた分は「延長を申請」から申請してください</p>
+      </section>
+      <div class="space-y-2" id="pay-list">${d.shifts.map(shiftCard).join('') || '<p class="text-center text-gray-400 py-10">この月の勤務はありません</p>'}</div>`
+  }
+
+  function requestRow(q) {
+    const what = q.kind === 'transport'
+      ? `${esc(yenText(q.status === 'approved' && q.approved_amount != null ? q.approved_amount : q.amount))}（${q.round_trip ? '往復' : '片道'}・${esc(q.route || '')}）`
+      : `終了 ${esc(q.before_end_time || '')} → ${esc(q.status === 'approved' && q.approved_end_time ? q.approved_end_time : q.new_end_time)}`
+    const note = q.decision_note && q.status !== 'pending' ? `<span class="block text-gray-500">管理者より: ${esc(q.decision_note)}</span>` : ''
+    const cancel = q.status === 'pending' ? `<button class="text-[11px] text-gray-500 underline shrink-0" data-action="payReqCancel" data-id="${Number(q.request_id)}">取り消す</button>` : ''
+    return `<li class="flex items-start gap-2 py-1 text-xs"><span class="shrink-0">${reqBadge(q.status)}</span>
+      <span class="flex-1 text-gray-700">${esc(KIND_LABEL[q.kind] || q.kind)}: ${what}${note}</span>${cancel}</li>`
+  }
+
+  function payBox(s) {
+    const p = s.pay
+    if (!p) return ''
+    const state = s.settled ? '<span class="badge badge-green font-normal">確定</span>' : '<span class="badge badge-gray font-normal">見込み</span>'
+    let parts
+    if (s.kind === 'cancel') parts = `補償 ${esc(yenText(p.total))}`
+    else {
+      parts = p.rate != null
+        ? `${esc(UNIT_LABEL[p.unit_type] || '')} ${esc(yenText(p.rate))}${p.unit_type === 'hourly' && p.qty != null ? ` × ${esc(p.qty)}時間` : ''} = ${esc(yenText(p.base))}`
+        : '単価未設定'
+      if (p.transport) parts += ` ＋ 交通費 ${esc(yenText(p.transport))}`
+      if (p.adjust) parts += ` ${p.adjust > 0 ? '＋' : '−'} 調整 ${esc(yenText(Math.abs(p.adjust)))}`
+    }
+    return `<div class="mt-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700">${parts}
+      <span class="block font-bold mt-0.5">合計 ${esc(yenText(p.total))} ${state}</span></div>`
+  }
+
+  function shiftCard(s) {
+    const cancel = s.kind === 'cancel'
+    const src = s.actual_source === 'manual' ? '<span class="badge badge-purple">管理者が入力</span>' : s.actual_source === 'report' ? '<span class="badge badge-gray">報告から</span>' : ''
+    let actual
+    if (cancel) actual = '<p class="text-xs text-gray-500">欠勤（補償の対象）</p>'
+    else if (s.actual_start && s.actual_end) actual = `<p class="text-sm text-gray-800">実働 <b>${esc(formatShiftTime(s.actual_start, s.actual_end))}</b>${s.break_minutes ? `（休憩${Number(s.break_minutes)}分）` : ''}・<b>${esc(hrsText(s.hours))}</b> ${src}</p>`
+    else if (s.started) actual = `<p class="text-sm text-gray-500">実績なし（予定の時間で計算: ${esc(hrsText(s.hours))}）</p>`
+    else actual = `<p class="text-xs text-gray-400">予定: ${esc(hrsText(s.hours))}</p>`
+    const reqs = (s.requests || []).filter(q => q.status !== 'cancelled')
+    const canReq = !cancel && s.started && !s.request_block
+    const actions = canReq ? `<div class="flex gap-2 mt-2">
+        <button class="btn btn-outline flex-1 text-xs" data-action="payReqOpen" data-kind="transport" data-id="${Number(s.shift_id)}"><i class="fas fa-train-subway"></i>交通費を申請</button>
+        <button class="btn btn-outline flex-1 text-xs" data-action="payReqOpen" data-kind="overtime" data-id="${Number(s.shift_id)}"><i class="fas fa-clock"></i>延長を申請</button>
+      </div>` : !cancel && s.started && s.request_block ? `<p class="text-[11px] text-gray-400 mt-1">${esc(s.request_block)}</p>` : ''
+    return `<div class="card p-3" data-shift-id="${Number(s.shift_id)}">
+      <div class="flex items-center justify-between gap-2">
+        <p class="font-bold text-gray-800 truncate">${esc(fmtDate(s.work_date))} ${esc(s.project_name)}</p>
+        ${s.settled ? '<span class="badge badge-green shrink-0">精算確定</span>' : ''}</div>
+      <p class="text-xs text-gray-500">予定 ${esc(formatShiftTime(s.start_time, s.end_time))}${!cancel && s.planned_break_minutes ? `（休憩${Number(s.planned_break_minutes)}分）` : ''}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
+      ${actual}
+      ${s.actual_source === 'manual' ? '<p class="text-[11px] text-gray-500">管理者が実績を入力しました。違っている場合は「相談・連絡」から伝えてください</p>' : ''}
+      ${payBox(s)}
+      ${reqs.length ? `<ul class="mt-1.5 border-t border-gray-100 pt-1">${reqs.map(requestRow).join('')}</ul>` : ''}
+      ${actions}
+    </div>`
+  }
+
+  // ---------- 申請（交通費・延長） ----------
+  delegate('payReqOpen', (el) => {
+    const s = PAY && PAY.shifts.find(x => x.shift_id === Number(el.dataset.id)); if (!s) return
+    const transport = el.dataset.kind === 'transport'
+    const head = `<h3 class="font-bold text-gray-800 mb-1">${transport ? '交通費（実費）の申請' : '延長（残業）の申請'}</h3>
+      <p class="text-sm text-gray-600 mb-3">${esc(fmtDate(s.work_date))} ${esc(s.project_name)}・予定 ${esc(formatShiftTime(s.start_time, s.end_time))}</p>`
+    const foot = `<p id="pay-req-msg" class="hidden text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2 mt-2" role="alert"></p>
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+      <button class="btn btn-primary flex-1" data-action="payReqSubmit" data-kind="${transport ? 'transport' : 'overtime'}" data-id="${Number(s.shift_id)}">申請する</button></div>`
+    if (transport) {
+      const max = (PAY.limits && PAY.limits.transport_max) || 100000
+      modal(`${head}
+        <label class="text-sm text-gray-600 block mb-1">区間</label><input id="pay-route" class="inp mb-2" maxlength="100" placeholder="例: 新宿駅〜渋谷駅">
+        <label class="text-sm text-gray-600 block mb-1">金額（円）</label><input id="pay-amount" type="number" inputmode="numeric" min="1" max="${Number(max)}" class="inp mb-1">
+        <label class="flex items-center gap-2 text-sm text-gray-700 mb-2"><input type="checkbox" id="pay-round" checked>往復（金額は往復の合計で入力）</label>
+        <label class="text-sm text-gray-600 block mb-1">メモ（任意）</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 電車が止まりバスで移動"></textarea>
+        <p class="text-[11px] text-gray-500 mt-2">${s.transportation_fee ? `今の交通費（実費）は ${esc(yenText(s.transportation_fee))} です。` : ''}承認されると、このシフトの交通費（実費）が申請の金額になります。支払われる額は会社の交通費の決まり（定額・上限など）で決まります</p>
+        ${foot}`)
+      return
+    }
+    // 既定の終了: 実績の終了が予定より後ならその時刻、なければ予定の30分後
+    const st = toMin(s.start_time); let en = toMin(s.end_time); if (en <= st) en += 1440
+    let ae = s.actual_end ? toMin(s.actual_end) : null
+    if (ae != null) { while (ae <= st) ae += 1440 }
+    const def = hhmm(ae != null && ae > en ? ae : en + 30)
+    modal(`${head}
+      <label class="text-sm text-gray-600 block mb-1">延長後の終了時刻</label><input id="pay-end" type="time" class="inp mb-2" value="${esc(def)}">
+      <label class="text-sm text-gray-600 block mb-1">延長を指示した人（任意）</label><input id="pay-instructed" class="inp mb-2" maxlength="50" placeholder="例: 店長 山田さん">
+      <label class="text-sm text-gray-600 block mb-1">理由</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 閉店作業が長引いたため"></textarea>
+      <p class="text-[11px] text-gray-500 mt-2">承認されると予定の終了時刻が延び、延びた分も時給の計算に入ります（日給の案件では金額は変わりません。必要な場合は管理者が調整します）</p>
+      ${foot}`)
+  })
+  delegate('payReqSubmit', (el) => withSubmitLock(el, async () => {
+    const kind = el.dataset.kind, shiftId = Number(el.dataset.id)
+    const val = (id) => { const x = document.getElementById(id); return x ? x.value.trim() : '' }
+    const round = document.getElementById('pay-round')
+    const body = kind === 'transport'
+      ? { shift_id: shiftId, kind, route: val('pay-route'), amount: val('pay-amount'), round_trip: !!(round && round.checked), reason: val('pay-reason') }
+      : { shift_id: shiftId, kind, new_end_time: val('pay-end'), instructed_by: val('pay-instructed'), reason: val('pay-reason') }
+    const msg = document.getElementById('pay-req-msg')
+    try {
+      await axios.post('/api/staff/pay/requests', body)
+    } catch (e) {
+      if (msg) { msg.textContent = errMsg(e, '申請できませんでした'); msg.classList.remove('hidden') } else toast(errMsg(e))
+      return
+    }
+    closeModal(); toast('申請しました。管理者の承認を待ってください')
+    renderStaffPay()
+  }))
+  delegate('payReqCancel', (el) => withSubmitLock(el, async () => {
+    if (!window.confirm('この申請を取り消しますか？')) return
+    try { await axios.post(`/api/staff/pay/requests/${Number(el.dataset.id)}/cancel`) } catch (e) { toast(errMsg(e)); return }
+    toast('申請を取り消しました')
+    renderStaffPay()
+  }))
+
+  // 「その他」メニューに項目を足し、画面を登録する（staff.js の routes・titles・MORE_SUB_TABS）
+  const origMore = window.renderMore
+  if (origMore) {
+    window.renderMore = function () {
+      if (origMore() === false) return false // URL を #more に変えて描き直す途中
+      const html = `<a href="#pay" class="report-btn">
+        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-yen-sign"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">勤務時間・支払</span><span class="block text-xs text-gray-400">月の勤務日数・実働時間の確認、交通費・延長の申請</span></span>
+        <i class="fas fa-chevron-right text-gray-300"></i>
+      </a>`
+      const at = $app.querySelector('a[href="#attendance"]')
+      if (at) at.insertAdjacentHTML('afterend', html)
+      else { const wrap = $app.querySelector('.space-y-3'); if (wrap) wrap.insertAdjacentHTML('beforeend', html) }
+    }
+  }
+  if (typeof routes === 'object') { routes.pay = () => window.renderStaffPay(); if (origMore) routes.more = window.renderMore }
+  if (typeof titles === 'object') titles.pay = '勤務時間・支払'
+  if (typeof MORE_SUB_TABS !== 'undefined' && !MORE_SUB_TABS.includes('pay')) MORE_SUB_TABS.push('pay')
 })()

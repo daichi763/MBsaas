@@ -20,6 +20,7 @@ import { changesOf, updateRowsStmts } from './lib/bulk-write'
 import { isWorkingShift } from './lib/shift-status'
 import { REPORT_TYPES, attendanceTypesForRows } from './report-settings'
 import { ownClient, ownProject } from './lib/tenant'
+import { notifyShiftStaff } from './lib/staff-pay-notify'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -166,10 +167,24 @@ const REPORTED_AFTER_SETTLE = '確定後に報告あり（実績に未反映）'
 export const RECALC_ISSUE = '数量・金額が今の計算と違う'
 const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前のまま）'
 const CANCEL_UNSET_ISSUE = 'キャンセル料・補償が未入力'
+// スタッフからの交通費・延長の申請（src/staff-pay.ts。#172 #273）が承認待ち
+export const PAY_REQUEST_ISSUE = '承認待ちの交通費・延長の申請あり'
 // 確定の後に起きる項目。確定済みの行では、これだけを確認が必要として数える（それ以外は確定したときに確認したものとして扱う。#563）
-const AFTER_SETTLE_ISSUES = new Set([PENDING_ISSUE, CORRECTED_AFTER_SETTLE, REPORTED_AFTER_SETTLE])
-// 承認待ちの打刻修正は、承認・却下で片づけるものなので確認済みにはできない
-const ackable = (issue: string) => issue !== PENDING_ISSUE
+const AFTER_SETTLE_ISSUES = new Set([PENDING_ISSUE, CORRECTED_AFTER_SETTLE, REPORTED_AFTER_SETTLE, PAY_REQUEST_ISSUE])
+// 承認待ちの打刻修正・交通費と延長の申請は、承認・却下で片づけるものなので確認済みにはできない
+const ackable = (issue: string) => issue !== PENDING_ISSUE && issue !== PAY_REQUEST_ISSUE
+// 時間の数え方が『実績（予定の範囲内）』のシフトで、予定の終了より後まで勤務した分（分。延長が承認されていない分は支払われない。#172）
+function overrunMinutes(r: any, basis: string): number {
+  if (basis !== 'clipped' || !r.actual_start || !r.actual_end || !r.start_time || !r.end_time) return 0
+  const m = (t: string) => { const [h, mm] = String(t).split(':').map(Number); return (h || 0) * 60 + (mm || 0) }
+  // workHours と同じく、実績の開始は予定の開始に最も近い日の時刻とみなす
+  const ps = m(r.start_time); let pe = m(r.end_time); if (pe <= ps) pe += 1440
+  let as = m(r.actual_start); if (as - ps > 720) as -= 1440; else if (ps - as > 720) as += 1440
+  let ae = m(r.actual_end); while (ae <= as) ae += 1440
+  return Math.max(0, ae - pe)
+}
+// 予定の終了の後の勤務を確認事項にする最小の分（案件の丸め単位がこれより大きければ丸め単位）
+const OVERRUN_MIN_MINUTES = 15
 const numDiff = (a: any, b: any) => (a == null ? null : Number(a)) !== (b == null ? null : Number(b))
 // 日報の提出設定（シフト → スタッフ → 案件の順。staff-lifecycle.ts の resolveModes と同じ規則）
 const pickDailyMode = (...vals: any[]) => vals.find(v => v === 'none' || v === 'required') || 'required'
@@ -238,6 +253,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       sp.attendance_mode AS legacy_mode, sp.daily_report_mode AS sp_daily_mode, p.daily_report_mode AS p_daily_mode,
       (SELECT x.to_payee_type || ':' || COALESCE(x.to_payee_affiliation_id, '') FROM affiliation_excluded_shifts x
         WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id ORDER BY x.history_id DESC LIMIT 1) AS aff_excluded_payee,
+      (SELECT COUNT(*) FROM staff_pay_requests q WHERE q.shift_id = s.shift_id AND q.company_id = s.company_id AND q.status = 'pending') AS pending_pay_requests,
       sc.reason AS cx_reason, sc.notified_on AS cx_notified_on, sc.bill_amount AS cx_bill, sc.pay_amount AS cx_pay, sc.note AS cx_note
     FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
     LEFT JOIN shift_cancellations sc ON sc.shift_id = s.shift_id AND sc.company_id = s.company_id
@@ -279,10 +295,16 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       else if (startOn && endOn) issues.push(unsynced && !settled ? '報告が実績に未反映' : '実績未入力')
       else missing = false
     }
-    if (h.actual_hours != null && Math.abs(h.actual_hours - h.planned_hours) >= 0.5) issues.push(`実働が予定と${h.actual_hours > h.planned_hours ? '+' : ''}${Math.round((h.actual_hours - h.planned_hours) * 100) / 100}h 違う`)
+    const hoursDiff = h.actual_hours != null && Math.abs(h.actual_hours - h.planned_hours) >= 0.5
+    if (hoursDiff) issues.push(`実働が予定と${h.actual_hours! > h.planned_hours ? '+' : ''}${Math.round((h.actual_hours! - h.planned_hours) * 100) / 100}h 違う`)
+    // 『実績（予定の範囲内）』で予定の終了より後まで勤務し、延長の申請がない（0.5h 未満の延長も、丸め単位以上なら出す。#172）
+    const over = overrunMinutes(r, h.basis)
+    if (!hoursDiff && !r.pending_pay_requests && over >= Math.max(OVERRUN_MIN_MINUTES, Number(r.time_round_minutes || 0))) issues.push(`予定の終了より${over}分後まで勤務（延長の申請・承認なし）`)
     if (r.pay_amount == null) issues.push('支払単価未設定')
     // 承認待ちの打刻修正。確定すると、後で承認したときに確定の取り消しと再確定が必要になる
     if (r.pending_corrections) issues.push(PENDING_ISSUE)
+    // 承認待ちの交通費・延長の申請（#172 #273）。確定すると承認できない（確定の取り消しが必要）
+    if (r.pending_pay_requests) issues.push(PAY_REQUEST_ISSUE)
     // 確定の後に打刻修正を承認した、または報告があった（報告は記録済み・実績と金額は確定時のまま）。確定を取り消すと実績に反映される
     if (settled && r.last_correction_at && (!r.settled_at || r.last_correction_at >= r.settled_at)) issues.push(CORRECTED_AFTER_SETTLE)
     else if (settled && (unsynced || (r.settled_at && lastReportAt && lastReportAt > r.settled_at))) issues.push(REPORTED_AFTER_SETTLE)
@@ -341,7 +363,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       // attendance_off: 入店・退店などの報告を使わない設定のシフト（実績は予定の時間で計算する）。daily_required: 日報が必要なシフト
       attendance_off: !startOn && !endOn, daily_required: dailyRequired,
       // issues = 確認が必要な事項、acked_issues = 確認済みの事項（件数・確定前の警告に数えない）
-      pending_corrections: Number(r.pending_corrections || 0), issues: open, acked_issues: acked,
+      pending_corrections: Number(r.pending_corrections || 0), pending_pay_requests: Number(r.pending_pay_requests || 0), issues: open, acked_issues: acked,
       acked_at: lastAck ? lastAck.acked_at as string : null, acked_by_name: lastAck ? (lastAck.acked_by_name || '') as string : null,
       // kind: work = 勤務、cancel = 欠勤・中止のキャンセル料・補償（#283）。closed: 締めた期間のシフト（#170）
       kind: (cancel ? 'cancel' : 'work') as 'cancel' | 'work', cancel_reason: cancel ? String(r.cx_reason) : null, cancel_notified_on: cancel ? (r.cx_notified_on as string | null) : null,
@@ -538,6 +560,12 @@ app.put('/shifts/:id/actual', async (c) => {
   await db.prepare("UPDATE shifts SET actual_start = ?, actual_end = ?, actual_break_minutes = ?, actual_source = 'manual', actual_note = ? WHERE shift_id = ?")
     .bind(b.actual_start, b.actual_end, brk, (b.actual_note || '').slice(0, 200) || null, s.shift_id).run()
   await refreshShiftAmounts(db, u.company_id, s.shift_id)
+  // 実績の時刻・休憩が変わったら、本人に知らせる（#274。メモは社内の記録のため通知に入れない）
+  if (b.actual_start !== s.actual_start || b.actual_end !== s.actual_end || brk !== (s.actual_break_minutes ?? null)) {
+    await notifyShiftStaff(db, s, 'actual_entered', `管理者が勤務の実績を入力しました: ${mdText(s.work_date)}`,
+      [`実績: ${b.actual_start}〜${b.actual_end}${brk != null ? `（休憩${brk}分）` : ''}`, `入力した人: ${u.name || '管理者'}`,
+        '時給の計算にはこの時刻を使います。違っている場合は、相談・連絡から管理者に伝えてください'].join('\n'), `#pay/${String(s.work_date).slice(0, 7)}`, s.shift_id)
+  }
   return c.json({ ok: true })
 })
 
