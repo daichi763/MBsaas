@@ -3469,6 +3469,42 @@ api.get('/admin/employees', async (c) => {
   return c.json({ employees: rows.results, ended: ended.results })
 })
 
+// 従業員名簿の CSV（#431）。労働者名簿の整備や、給与ソフト・社会保険の手続きへの受け渡しに使う（従業員管理と同じく会社管理者・事務担当のみ）。
+// status: 空欄 = 自社雇用のすべて / working・leave・preboarding・retired = 在籍状況で絞る / ended = 雇用終了（他の区分へ移行・統合）。
+// 口座・給与の列は、会社管理者が include_pay=1 を付けたときだけ含める。出力した記録を settlement_export_logs（kind = employees）に残す
+const GENDER_LABEL: Record<string, string> = { male: '男性', female: '女性', other: 'その他', unspecified: '未回答' }
+api.get('/admin/employees/export', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const status = String(c.req.query('status') || '')
+  if (status && !['working', 'leave', 'preboarding', 'retired', 'ended'].includes(status)) return c.json({ error: '在籍状況の指定が正しくありません' }, 400)
+  const includePay = c.req.query('include_pay') === '1'
+  if (includePay && u.role !== 'company_admin') return c.json({ error: '口座・給与を含めた出力は、会社管理者のみ行えます' }, 403)
+  await ensureRosterIdentity(db, u.company_id)
+  const where = status === 'ended'
+    ? `er.company_id = ? AND er.employment_ended_at IS NOT NULL AND (COALESCE(sp.affiliation_type,'own_employee') != 'own_employee' OR sp.merged_into_staff_id IS NOT NULL)`
+    : `sp.company_id = ? AND ${OWN_EMPLOYEE_COND}${status ? ` AND COALESCE(sp.employment_status,'working') = ?` : ''}`
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.email, us.phone, us.retired_at, sp.kana, sp.gender, sp.date_of_birth, COALESCE(sp.employment_status,'working') AS employment_status, er.*
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id LEFT JOIN employee_records er ON er.staff_id = sp.staff_id AND er.company_id = sp.company_id
+    WHERE ${where} ORDER BY COALESCE(er.employee_number, ''), us.name`).bind(u.company_id, ...(status && status !== 'ended' ? [status] : [])).all()).results as any[]
+  const statusLabel = (r: any) => (status === 'ended' ? '雇用終了' : ({ working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' } as Record<string, string>)[r.employment_status] || '在職中')
+  const address = (r: any) => [r.prefecture, r.city, r.town, r.address_detail].filter(Boolean).join('')
+  const header = ['社員番号', '氏名', 'フリガナ', '性別', '生年月日', '入社日', '在籍状況', '退職日', '雇用終了日', '契約形態', '契約開始', '契約終了', '所属', '役職', '拠点', '勤務形態',
+    '郵便番号', '住所', '電話番号', 'メールアドレス', '雇用保険番号', '社会保険番号', 'スタッフID']
+  const payHeader = ['金融機関コード', '金融機関名', '支店コード', '支店名', '預金種目', '口座番号', '基本給種別', '基本給', '固定残業時間', '固定残業代', '総支給額', '役職手当', '営業手当', 'その他控除']
+  const csvRows = rows.map(r => [
+    r.employee_number, r.name, r.kana, GENDER_LABEL[r.gender] || r.gender || '', r.date_of_birth, r.hire_date, statusLabel(r), r.retired_at ? String(r.retired_at).slice(0, 10) : '',
+    r.employment_ended_at, r.contract_type, r.contract_start, r.contract_end, r.department, r.job_title, r.base_location, r.work_style,
+    r.postal_code, address(r), r.phone_main || r.phone, r.personal_email || r.email, r.employment_insurance_no, r.social_insurance_no, r.staff_id,
+    ...(includePay ? [r.bank_code, r.bank_name, r.branch_code, r.branch_name, r.account_type, r.account_number, r.base_salary_type, r.base_salary, r.fixed_overtime_hours,
+      r.fixed_overtime_pay, r.gross_pay, r.position_allowance, r.sales_allowance, r.other_deduction] : []),
+  ])
+  const csv = toCsv(includePay ? [...header, ...payHeader] : header, csvRows,
+    { textCols: ['社員番号', '郵便番号', '電話番号', '雇用保険番号', '社会保険番号', '金融機関コード', '支店コード', '口座番号'] })
+  await db.prepare('INSERT INTO settlement_export_logs (company_id, kind, filters_json, row_count, exported_by, exported_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(u.company_id, 'employees', JSON.stringify({ status: status || null, include_pay: includePay || null }), rows.length, u.user_id, nowJST()).run().catch(() => {})
+  return csvResponse(`従業員名簿_${status ? statusLabel({ employment_status: status }) + '_' : ''}${todayJST()}${includePay ? '_口座給与あり' : ''}.csv`, csv)
+})
+
 api.get('/admin/employees/:staffId', async (c) => {
   const u = c.get('user'); const sid = c.req.param('staffId')
   // 自社雇用者（own_employee）でなければ従業員管理としては閲覧不可にする
