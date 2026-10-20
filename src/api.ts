@@ -4952,10 +4952,12 @@ api.put('/admin/shifts/:id', async (c) => {
     if (isUniqueViolation(e)) return c.json({ error: '同じ枠に、このスタッフの有効なシフトがすでにあります' }, 409)
     throw e
   }
-  const cancelled = staffChanged ? await notifyAutoCancelled(c, sid, cancelToken) : 0
-  // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
-  if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
-  await finishLog(op)
+  let cancelled = 0
+  try {
+    cancelled = staffChanged ? await notifyAutoCancelled(c, sid, cancelToken) : 0
+    // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
+    if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
+  } finally { await finishLog(op) } // 途中で失敗しても変更の後の値を入れる（入れないと削除の履歴に見える）
   // 欠勤にしたシフトの承認待ちは承認できない（却下が必要）ので、件数を返す（#70）
   const pendingAbsent = b.status === 'absent' && cur.status !== 'absent' ? await pendingCorrectionCount(db, sid) : 0
   if (notifyBefore) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [sid]))

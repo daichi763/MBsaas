@@ -11,7 +11,8 @@ export type OpEntity = 'shift' | 'slot'
 export type OpCtx = { db: D1Database; companyId: number; actorId: number | null; action: string; key: string; at: string }
 
 // 残す項目と画面に出す名前（シフト。s = shifts、cx = shift_cancellations）。
-// json_object の引数の上限（127）に収まるよう、項目は 60 個までにする
+// D1 の SQL 関数の引数の上限（本番は 32。ローカルの wrangler dev は 127 まで通る）に収まるよう、
+// json_object は 16 項目ずつに分けて作り、文字列としてつなぐ（snapSql）
 const SHIFT_FIELDS: [string, string, string][] = [
   ['staff_id', 's.staff_id', 'スタッフ'], ['project_id', 's.project_id', '案件'], ['work_date', 's.work_date', '日付'],
   ['start_time', 's.start_time', '開始'], ['end_time', 's.end_time', '終了'], ['break_minutes', 's.break_minutes', '休憩（分）'],
@@ -39,7 +40,14 @@ const SLOT_FIELDS: [string, string, string][] = [
     'bill_unit_type', r.bill_unit_type, 'bill_rate', r.bill_rate, 'pay_unit_type', r.pay_unit_type, 'pay_rate', r.pay_rate))
     FROM (SELECT * FROM shift_slot_roles WHERE slot_id = sl.slot_id ORDER BY sort_order, slot_role_id) r))`, '役割'],
 ]
-const snapSql = (fields: [string, string, string][]) => `json_object(${fields.map(([k, expr]) => `'${k}', ${expr}`).join(', ')})`
+const SNAP_GROUP = 16
+const snapSql = (fields: [string, string, string][]) => {
+  const groups: string[] = []
+  for (let i = 0; i < fields.length; i += SNAP_GROUP) groups.push(`json_object(${fields.slice(i, i + SNAP_GROUP).map(([k, expr]) => `'${k}', ${expr}`).join(', ')})`)
+  if (groups.length === 1) return groups[0]
+  // 各組の外側の括弧を外してつなぐ（値に入れ子のオブジェクトはないので、各組は '{' で始まり '}' で終わる）
+  return groups.map((g, i) => i === 0 ? `substr(${g}, 1, length(${g}) - 1)` : i === groups.length - 1 ? `substr(${g}, 2)` : `substr(${g}, 2, length(${g}) - 2)`).join(" || ',' || ")
+}
 const SHIFT_SNAP = snapSql(SHIFT_FIELDS)
 const SLOT_SNAP = snapSql(SLOT_FIELDS)
 const SHIFT_FROM = 'shifts s LEFT JOIN shift_cancellations cx ON cx.shift_id = s.shift_id'
