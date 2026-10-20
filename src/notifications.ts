@@ -26,8 +26,10 @@ import { loadStaffNotices } from './lib/notices'
 import { sha256Hex } from './lib/auth'
 import { personStaffRows } from './roster'
 import * as emailService from './services/email'
+import { loadVapid, sendWebPush, isAllowedPushEndpoint, allowLocalPush, type VapidEnv } from './lib/web-push'
 
-export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
+export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
+  VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
 type Variables = { user: any }
 export type CorrectionEvent = 'submitted' | 'resubmitted' | 'approved' | 'rejected' | 'cancelled'
 // 通知を受け取る管理ロール（本部 system_admin は各社の通知を受け取らない）
@@ -181,8 +183,10 @@ export async function createCorrectionNotifications(db: D1Database, correctionId
   }
   if (stmts.length) await db.batch(stmts)
   const deliveries: number[] = []
+  // 受け取り設定でメールを止めた・まとめて受け取る人には、すぐのメールを送らない（#284。アプリ内の通知は作る）
+  const prefs = await loadNotifyPrefs(db, rows.filter(({ r }) => r.email && !r.noEmail).map(({ r }) => r.user_id))
   for (const { r } of rows) {
-    if (!r.email || r.noEmail) continue
+    if (!r.email || r.noEmail || !emailWanted(prefs, r.user_id, r.role, r.kind)) continue
     const d = await db.prepare(`INSERT INTO notification_emails (company_id, correction_id, event, kind, user_id, to_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING delivery_id`)
       .bind(c.company_id, c.correction_id, event, r.kind, r.user_id, r.email, at).first() as any
     if (d) deliveries.push(d.delivery_id)
@@ -512,7 +516,7 @@ export async function notifyDailyReportIncident(c: any, shiftId: number, raised:
     const headline = `スタッフの日報で${kinds}の報告がありました。内容を確認し、必要な対応をしてください。`
     const body = lines.map(([k, v]) => `${k}: ${v}`).join('\n')
     const link = `/admin#reports/date=${encodeURIComponent(r.work_date)}&flagged=1`
-    const admins = (await db.prepare(`SELECT user_id, name, email FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+    const admins = (await db.prepare(`SELECT user_id, name, email, role FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
       .bind(r.company_id, ...NOTIFY_ADMIN_ROLES).all()).results as any[]
     if (!admins.length) return
     const at = nowJST()
@@ -525,7 +529,9 @@ export async function notifyDailyReportIncident(c: any, shiftId: number, raised:
     }
     await db.batch(stmts)
     const base = String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')
-    const mails = admins.filter(a => a.email).map(a => {
+    // 受け取り設定でこの種類のメールを止めた人には送らない（#284）
+    const prefs = await loadNotifyPrefs(db, admins.map(a => a.user_id))
+    const mails = admins.filter(a => a.email && emailWanted(prefs, a.user_id, a.role, 'incident_reported')).map(a => {
       const tpl = attendanceCorrectionEmail({ name: a.name, headline, lines, url: base + link, button: '日報を確認する' })
       return { to: a.email as string, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'incident_report', company_id: r.company_id }
     })
@@ -570,9 +576,11 @@ export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ not
   try {
     const db: D1Database = c.env.DB
     const exclude = new Set((n.excludeUserIds || []).map(Number))
-    const admins = ((await db.prepare(`SELECT user_id, name, email FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+    const admins = ((await db.prepare(`SELECT user_id, name, email, role FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
       .bind(n.companyId, ...NOTIFY_ADMIN_ROLES).all()).results as any[]).filter(a => !exclude.has(Number(a.user_id)))
     if (!admins.length) return { notified: 0, emailed: 0 }
+    // 受け取り設定でこの種類のメールを止めた人には送らない（#284）
+    const prefs = n.email === 'never' ? new Map() : await loadNotifyPrefs(db, admins.map(a => a.user_id))
     const now = nowJST()
     const quietSince = minutesAgoJST(ADMIN_MAIL_QUIET_MINUTES)
     // まとめる先: 宛先ごとの、同じ kind・related_id の未読の最新の通知
@@ -589,7 +597,7 @@ export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ not
       const cur = open.get(Number(a.user_id))
       const count = cur ? Number(cur.merged_count || 1) + 1 : 1
       const title = n.title(count)
-      const sendMail = !!a.email && (n.email === 'always' || (n.email === 'throttle' && (!cur || !cur.emailed_at || cur.emailed_at < quietSince)))
+      const sendMail = !!a.email && emailWanted(prefs, a.user_id, a.role, n.kind) && (n.email === 'always' || (n.email === 'throttle' && (!cur || !cur.emailed_at || cur.emailed_at < quietSince)))
       if (sendMail) mailTo.push({ name: a.name, email: a.email, title })
       // まとめるときは前の未読の行を消して新しく入れ直す（受信箱は新しい順なので、まとめた通知を先頭に出す）
       if (cur) stmts.push(db.prepare('DELETE FROM user_notifications WHERE notification_id = ? AND read_at IS NULL').bind(cur.notification_id))
@@ -929,6 +937,8 @@ export async function deliverReminders(env: NotifyEnv, items: ReminderItem[]) {
   const mails: emailService.SendEmailInput[] = []
   const emailed: string[] = []
   const contacts = new Map<number, MailContact>()
+  // 受け取り設定でリマインドのメールを止めた人には送らない（アプリ内の通知は送る。#284）
+  const prefs = await loadNotifyPrefs(db, items.filter(x => x.email_on && x.email).map(x => x.user_id))
   for (const list of groups.values()) {
     list.sort((a, b) => (a.work_date + a.start_time).localeCompare(b.work_date + b.start_time) || REMINDER_TYPES.indexOf(a.type) - REMINDER_TYPES.indexOf(b.type))
     const first = list[0]
@@ -948,7 +958,7 @@ export async function deliverReminders(env: NotifyEnv, items: ReminderItem[]) {
     rows.push({ c: first.company_id, u: first.user_id, k: daily ? REMINDER_KIND.daily_report : REMINDER_KIND.attendance, t: title,
       b: [headline, ...lines.map(([k, v]) => `${k}: ${v}`)].join('\n'), l: link, r: first.shift_id })
     const to = String(first.email || '').trim()
-    if (first.email_on && to) {
+    if (first.email_on && to && emailWanted(prefs, first.user_id, 'staff', daily ? REMINDER_KIND.daily_report : REMINDER_KIND.attendance)) {
       if (!contacts.has(first.company_id)) contacts.set(first.company_id, await loadMailContact(db, first.company_id))
       const contact = contacts.get(first.company_id)!
       const tpl = attendanceCorrectionEmail({ name: first.user_name, title, headline, lines: [...lines, ...(contact.company_name ? [['会社', contact.company_name] as [string, string]] : [])],
@@ -1088,6 +1098,9 @@ async function insertStaffNotifications(db: D1Database, rows: StaffNotifyRow[]) 
 }
 // メールは応答の後に送る（waitUntil。使えないときはその場で送る）。送信の結果は email_logs に残る
 async function queueStaffMails(c: any, mails: SendEmailInput[]) {
+  if (!mails.length) return
+  // 受け取り設定でその種類のメールを止めた人には送らない（#284 #178）
+  mails = await filterStaffMails(c.env.DB, mails)
   if (!mails.length) return
   const job = (async () => {
     try { if (mails.length === 1) await sendEmail(c.env, mails[0]); else await sendEmailBatch(c.env, mails) } catch { /* 送信の失敗は email_logs に残る */ }
@@ -1340,3 +1353,379 @@ export async function notifyReportComment(c: any, companyId: number, dailyReport
     return false
   }
 }
+
+// =========================================================
+// 通知の受け取り設定（#284）とプッシュ通知（#178）（作業単位 w6-push）
+// 受け取り設定: ユーザーごと・通知のまとまり（NOTIFY_PREF_GROUPS）ごとに、メールとプッシュの ON/OFF を持つ（user_notification_prefs）。
+//   未設定（NULL）のときは既定（defaultEmail）。アプリ内の通知は設定によらず必ず作る（受信箱・ToDo から漏れないように）。
+//   打刻修正の承認依頼は、既定でメールを会社管理者と現場管理者だけに送り、「1日1回まとめて」（digest）も選べる。
+//   自分が処理した打刻修正の控えは、既定でメールを送らない（アプリ内の控えだけ）。
+//   スタッフの設定は、同じ人のすべての会社のユーザーに同じ値を保存する。
+// プッシュ: アプリ内の通知（未読）が登録されると、購読のある人の分をトリガーで push_queue に積む（migrations/0081_push.sql）。
+//   API の書き込みの応答の後（index.tsx の waitUntil）と15分おきの cron で flushPushQueue が送る。本文は送らず、
+//   端末の Service Worker（/sw.js）が GET /api/staff/push/latest で最新の未読を取りに来る（src/lib/web-push.ts）
+// =========================================================
+type PrefGroup = {
+  key: string; label: string; desc: string; audience: 'admin' | 'staff'; kinds: string[]
+  // メールの既定（ロールごと）。ないまとまりはメールの ON/OFF を選べない（送るものは今までどおり送る）
+  defaultEmail?: (role: string) => boolean
+  push?: boolean
+  digest?: boolean
+  // スタッフあてのメールの種類（email_logs の type）。queueStaffMails で、このまとまりのメールを止めた人に送らない
+  mailTypes?: string[]
+}
+const always = () => true
+export const NOTIFY_PREF_GROUPS: PrefGroup[] = [
+  // ---- 管理者 ----
+  { key: 'correction_request', audience: 'admin', label: '打刻修正の承認依頼', desc: 'スタッフからの打刻修正の申請・再申請', kinds: ['correction_submitted'],
+    defaultEmail: (role) => role === 'company_admin' || role === 'field_manager', digest: true },
+  { key: 'correction_processed', audience: 'admin', label: '自分が処理した打刻修正の控え', desc: '自分が承認・却下した申請の控え（既定はアプリ内の通知だけ）', kinds: ['correction_processed'],
+    defaultEmail: () => false },
+  { key: 'correction_result_admin', audience: 'admin', label: '自分が出した打刻修正の結果', desc: '代わりに出した申請が承認・却下・取り消しになったとき',
+    kinds: ['correction_approved', 'correction_rejected', 'correction_cancelled'], defaultEmail: always },
+  { key: 'incident', audience: 'admin', label: 'インシデント・クレームの報告', desc: 'スタッフの日報でのインシデント・クレームの報告', kinds: ['incident_reported'], defaultEmail: always },
+  { key: 'recruit_applied', audience: 'admin', label: '新しい応募', desc: '募集ページへの応募（30分に1通まで）', kinds: ['recruit_applied'], defaultEmail: always },
+  { key: 'board_message', audience: 'admin', label: '案件掲示板のやり取り', desc: '掲載への問い合わせ・提案・返信', kinds: ['board_message'], defaultEmail: always },
+  { key: 'roster_chat', audience: 'admin', label: '企業間チャット', desc: '連携先の企業とのチャット', kinds: ['roster_chat'], defaultEmail: always },
+  { key: 'consult', audience: 'admin', label: 'スタッフからの相談・連絡', desc: '緊急度の高い相談・体調不良・遅刻欠勤のメール', kinds: ['consult_received', 'consult_message'], defaultEmail: always },
+  // ---- スタッフ ----
+  { key: 'shift', audience: 'staff', label: 'シフトの登録・変更・取消', desc: 'メールは今日・明日のシフトの変更のときだけ', kinds: ['shift_assigned', 'shift_changed', 'shift_cancelled'],
+    defaultEmail: always, push: true, mailTypes: ['shift_change'] },
+  { key: 'reminder', audience: 'staff', label: '報告・日報のリマインド', desc: '起床・出発・入店の報告や日報がまだのとき', kinds: ['report_reminder', 'daily_report_reminder'],
+    defaultEmail: always, push: true, mailTypes: ['reminder'] },
+  { key: 'recruit_new', audience: 'staff', label: '新しい募集', desc: 'スタッフアプリから応募できる募集が始まったとき', kinds: ['recruit_new'], defaultEmail: always, push: true, mailTypes: ['recruit_new'] },
+  { key: 'recruit_result', audience: 'staff', label: '応募の結果', desc: '応募したお仕事の確定・見送り', kinds: ['recruit_result'], push: true },
+  { key: 'correction_staff', audience: 'staff', label: '打刻の修正・代理入力', desc: '打刻修正の申請の結果、管理者による修正・代理入力',
+    kinds: ['correction_approved', 'correction_rejected', 'correction_changed_by_admin', 'correction_cancelled', 'correction_proxy_submitted', 'attendance_proxy'], push: true },
+  { key: 'daily_report_comment', audience: 'staff', label: '日報へのコメント', desc: '管理者が日報にコメントしたとき', kinds: ['daily_report_comment'], push: true },
+  { key: 'staff_other', audience: 'staff', label: 'そのほかの通知', desc: '相談への返信・申請の結果・お知らせの確認のお願いなど', kinds: [], push: true },
+]
+const audienceOf = (role: string): 'admin' | 'staff' => (role === 'staff' ? 'staff' : 'admin')
+function prefGroupFor(kind: string, audience: 'admin' | 'staff'): PrefGroup | undefined {
+  return NOTIFY_PREF_GROUPS.find(g => g.audience === audience && g.kinds.includes(kind)) || (audience === 'staff' ? NOTIFY_PREF_GROUPS.find(g => g.key === 'staff_other') : undefined)
+}
+type PrefRow = { email: number | null; push: number | null; digest: number }
+type PrefMap = Map<number, Map<string, PrefRow>>
+export async function loadNotifyPrefs(db: D1Database, userIds: number[]): Promise<PrefMap> {
+  const out: PrefMap = new Map()
+  const ids = [...new Set(userIds.map(Number).filter(n => Number.isInteger(n) && n > 0))]
+  if (!ids.length) return out
+  const rows = (await db.prepare(`SELECT user_id, pref_key, email, push, digest FROM user_notification_prefs WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray(ids)).all()).results as any[]
+  for (const r of rows) {
+    const m = out.get(Number(r.user_id)) || new Map<string, PrefRow>()
+    m.set(r.pref_key, { email: r.email, push: r.push, digest: Number(r.digest || 0) })
+    out.set(Number(r.user_id), m)
+  }
+  return out
+}
+/** この通知をメールですぐに送るか（設定がないまとまりは送る。まとめて送る設定のときは送らない） */
+export function emailWanted(prefs: PrefMap, userId: number, role: string, kind: string): boolean {
+  const g = prefGroupFor(kind, audienceOf(role))
+  if (!g || !g.defaultEmail) return true
+  const p = prefs.get(Number(userId))?.get(g.key)
+  if (g.digest && p?.digest) return false
+  return p && p.email != null ? !!p.email : g.defaultEmail(role)
+}
+/** この通知をプッシュで送るか（スタッフのみ。既定は送る） */
+function pushWanted(prefs: PrefMap, userId: number, role: string, kind: string): boolean {
+  if (role !== 'staff') return false
+  const g = prefGroupFor(kind, 'staff')
+  const p = g ? prefs.get(Number(userId))?.get(g.key) : undefined
+  return p && p.push != null ? !!p.push : true
+}
+// スタッフあてのメールのうち、そのまとまりのメールを止めた人（メールアドレスで照合する）あてのものを除く
+async function filterStaffMails(db: D1Database, mails: SendEmailInput[]): Promise<SendEmailInput[]> {
+  const keyOf = (type: string) => NOTIFY_PREF_GROUPS.find(g => g.mailTypes?.includes(type))?.key
+  const keys = [...new Set(mails.map(m => keyOf(m.type)).filter(Boolean))] as string[]
+  if (!keys.length) return mails
+  try {
+    const addrs = [...new Set(mails.map(m => String(m.to || '').trim().toLowerCase()).filter(Boolean))]
+    const rows = (await db.prepare(`SELECT DISTINCT p.pref_key, LOWER(TRIM(u.email)) AS email FROM user_notification_prefs p JOIN users u ON u.user_id = p.user_id
+      WHERE p.email = 0 AND p.pref_key IN (SELECT value FROM json_each(?)) AND u.role = 'staff' AND LOWER(TRIM(u.email)) IN (SELECT value FROM json_each(?))`)
+      .bind(JSON.stringify(keys), JSON.stringify(addrs)).all()).results as any[]
+    if (!rows.length) return mails
+    const off = new Set(rows.map(r => `${r.pref_key} ${r.email}`))
+    return mails.filter(m => !off.has(`${keyOf(m.type)} ${String(m.to || '').trim().toLowerCase()}`))
+  } catch (e) {
+    // 設定を読めないときは今までどおり送る
+    return mails
+  }
+}
+
+// ---------- 受け取り設定の API ----------
+function prefView(groups: PrefGroup[], role: string, mine: Map<string, PrefRow> | undefined) {
+  return groups.map(g => {
+    const p = mine?.get(g.key)
+    const emailDefault = g.defaultEmail ? g.defaultEmail(role) : null
+    return {
+      key: g.key, label: g.label, desc: g.desc,
+      email_supported: !!g.defaultEmail, email: g.defaultEmail ? (p && p.email != null ? !!p.email : !!emailDefault) : null, email_default: emailDefault,
+      digest_supported: !!g.digest, digest: !!(g.digest && p?.digest),
+      push_supported: !!g.push, push: g.push ? (p && p.push != null ? !!p.push : true) : null,
+    }
+  })
+}
+// 受け取った設定を検証して保存する。userIds のすべてに同じ値を入れる。送られなかったまとまりは変えない
+async function savePrefs(db: D1Database, companyId: number, userIds: number[], groups: PrefGroup[], body: any): Promise<string | null> {
+  const prefs = body && typeof body.prefs === 'object' && body.prefs ? body.prefs : null
+  if (!prefs) return '設定がありません'
+  const at = nowJST()
+  const stmts: D1PreparedStatement[] = []
+  const bool = (x: unknown) => (x === true ? 1 : x === false ? 0 : null)
+  for (const [key, v] of Object.entries(prefs as Record<string, any>)) {
+    const g = groups.find(x => x.key === key)
+    if (!g || !v || typeof v !== 'object') return `設定の種類が正しくありません: ${key}`
+    const email = g.defaultEmail ? bool(v.email) : null
+    const push = g.push ? bool(v.push) : null
+    const digest = g.digest && v.digest === true && email !== 0 ? 1 : 0
+    // 送られなかった項目（メールアドレスがなく画面に出さなかったメールなど）は、今の値のままにする
+    const has = (f: string) => (Object.prototype.hasOwnProperty.call(v, f) ? 1 : 0)
+    const setDigest = has('digest') || email === 0 ? 1 : 0
+    for (const uid of userIds) {
+      stmts.push(db.prepare(`INSERT INTO user_notification_prefs (user_id, company_id, pref_key, email, push, digest, updated_at) VALUES (?, COALESCE((SELECT company_id FROM users WHERE user_id = ?), ?), ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, pref_key) DO UPDATE SET email = CASE WHEN ? = 1 THEN excluded.email ELSE email END, push = CASE WHEN ? = 1 THEN excluded.push ELSE push END,
+          digest = CASE WHEN ? = 1 THEN excluded.digest ELSE digest END, updated_at = excluded.updated_at`)
+        .bind(uid, uid, companyId, key, email, push, digest, at, has('email'), has('push'), setDigest))
+    }
+  }
+  if (stmts.length) await db.batch(stmts)
+  return null
+}
+const ADMIN_GROUPS = NOTIFY_PREF_GROUPS.filter(g => g.audience === 'admin')
+const STAFF_GROUPS = NOTIFY_PREF_GROUPS.filter(g => g.audience === 'staff')
+notificationsAdminApi.get('/notification-prefs', async (c) => {
+  const u = c.get('user')
+  const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
+  return c.json({ groups: prefView(ADMIN_GROUPS, u.role, prefs.get(Number(u.user_id))), digest_hour: DIGEST_HOUR, has_email: !!u.email })
+})
+notificationsAdminApi.put('/notification-prefs', async (c) => {
+  const u = c.get('user')
+  if (!NOTIFY_ADMIN_ROLES.includes(u.role)) return c.json({ error: 'この設定は、会社の管理者のアカウントで行ってください' }, 403)
+  const err = await savePrefs(c.env.DB, u.company_id, [u.user_id], ADMIN_GROUPS, await c.req.json().catch(() => null))
+  if (err) return c.json({ error: err }, 400)
+  const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
+  return c.json({ ok: true, groups: prefView(ADMIN_GROUPS, u.role, prefs.get(Number(u.user_id))) })
+})
+// スタッフは同じ人のすべての会社のユーザーに保存する（どの会社の通知も同じ設定で受け取る）
+const staffUserIds = async (c: any): Promise<number[]> => {
+  const u = c.get('user')
+  const ids = (await personStaffRows(c.env.DB, u)).map(r => Number(r.user_id))
+  return [...new Set([Number(u.user_id), ...ids])]
+}
+notificationsStaffApi.get('/notification-prefs', async (c) => {
+  const u = c.get('user')
+  const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
+  return c.json({ groups: prefView(STAFF_GROUPS, 'staff', prefs.get(Number(u.user_id))), has_email: !!u.email })
+})
+notificationsStaffApi.put('/notification-prefs', async (c) => {
+  const u = c.get('user')
+  const err = await savePrefs(c.env.DB, u.company_id, await staffUserIds(c), STAFF_GROUPS, await c.req.json().catch(() => null))
+  if (err) return c.json({ error: err }, 400)
+  const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
+  return c.json({ ok: true, groups: prefView(STAFF_GROUPS, 'staff', prefs.get(Number(u.user_id))) })
+})
+
+// ---------- 承認依頼のまとめメール（#284。digest）----------
+// 「1日1回まとめて」を選んだ管理者に、毎朝 DIGEST_HOUR 時以降の最初の cron（15分おき）で、自社の承認待ちの件数を1通で知らせる。
+// 承認待ちがなければ送らない。送る前に digest_sent_on を今日にして、同じ日に二度送らない。1回の起動で DIGEST_BATCH 人まで
+export const DIGEST_HOUR = 8
+const DIGEST_BATCH = 50
+MAIL_TYPES.push('notification_digest')
+export async function runNotificationDigests(env: NotifyEnv): Promise<{ due: number; sent: number; idle?: boolean }> {
+  const now = nowJST()
+  if (Number(now.slice(11, 13)) < DIGEST_HOUR) return { idle: true, due: 0, sent: 0 }
+  const db = env.DB
+  const today = now.slice(0, 10)
+  const due = (await db.prepare(`SELECT p.user_id, u.company_id, u.name, u.email FROM user_notification_prefs p JOIN users u ON u.user_id = p.user_id
+    WHERE p.pref_key = 'correction_request' AND p.digest = 1 AND COALESCE(p.email, 1) = 1 AND (p.digest_sent_on IS NULL OR p.digest_sent_on < ?)
+      AND u.status = 'active' AND u.role IN (SELECT value FROM json_each(?)) ORDER BY p.user_id LIMIT ?`)
+    .bind(today, JSON.stringify(NOTIFY_ADMIN_ROLES), DIGEST_BATCH).all()).results as any[]
+  if (!due.length) return { idle: true, due: 0, sent: 0 }
+  await db.prepare(`UPDATE user_notification_prefs SET digest_sent_on = ? WHERE pref_key = 'correction_request' AND user_id IN ${JSON_IN}`).bind(today, bindJsonArray(due.map(d => d.user_id))).run()
+  const counts = new Map(((await db.prepare(`SELECT company_id, COUNT(*) AS n, MIN(created_at) AS oldest FROM attendance_corrections WHERE status = 'pending' AND company_id IN ${JSON_IN} GROUP BY company_id`)
+    .bind(bindJsonArray(due.map(d => d.company_id))).all()).results as any[]).map(r => [Number(r.company_id), r]))
+  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const mails: SendEmailInput[] = []
+  for (const d of due) {
+    const cnt = counts.get(Number(d.company_id))
+    const to = String(d.email || '').trim()
+    if (!cnt || !Number(cnt.n) || !to) continue
+    const title = `承認待ちの打刻修正が${Number(cnt.n)}件あります`
+    const tpl = attendanceCorrectionEmail({ name: d.name, title, headline: '承認待ちの打刻修正の申請があります（1日1回のまとめのお知らせ）。内容を確認し、承認または却下してください。',
+      lines: [['承認待ち', `${Number(cnt.n)}件`], ['いちばん古い申請', fmtAt(cnt.oldest)]], url: `${base}/admin#corrections`, button: '打刻修正承認を開く' })
+    mails.push({ to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'notification_digest', company_id: d.company_id })
+  }
+  if (mails.length) {
+    try { await sendEmailBatch(env, mails) } catch (e) { console.log(`digest mail failed: ${e}`) }
+  }
+  return { due: due.length, sent: mails.length }
+}
+
+// ---------- プッシュ通知（#178）----------
+const PUSH_FLUSH_LIMIT = 30      // 1回に取る push_queue の行数
+const PUSH_SEND_LIMIT = 20       // 1回に送るプッシュの数（Free プランの CPU 時間・外部への fetch の数に収める）
+const PUSH_MAX_FAILURES = 20     // 続けて失敗したら購読を消す
+const PUSH_MAX_PER_USER = 10     // 1人の購読の上限（古いものから消す）
+const PUSH_TEST_MINUTES = 10
+const PUSH_STALE_CLAIM_MINUTES = 30
+type PushEnv = NotifyEnv & VapidEnv
+/** 積まれたプッシュを送る。送る分がなければ、問い合わせ1回で終わる */
+export async function flushPushQueue(env: PushEnv, limit = PUSH_FLUSH_LIMIT): Promise<{ claimed: number; sent: number; failed: number; removed: number }> {
+  const db = env.DB
+  const res = { claimed: 0, sent: 0, failed: 0, removed: 0 }
+  const has = await db.prepare('SELECT 1 FROM push_queue WHERE claimed_at IS NULL LIMIT 1').first()
+  if (!has) return res
+  // 取った行は、ほかの同時の送信では送らない（claimed_at）
+  const rows = (await db.prepare(`UPDATE push_queue SET claimed_at = ? WHERE queue_id IN (SELECT queue_id FROM push_queue WHERE claimed_at IS NULL ORDER BY queue_id LIMIT ?)
+    RETURNING queue_id, user_id, kind`).bind(nowJST(), limit).all()).results as any[]
+  res.claimed = rows.length
+  if (!rows.length) return res
+  // 送る端末が PUSH_SEND_LIMIT 台を超えた分の行は、消さずに取り消して次の送信（次の書き込みの応答の後か cron）に回す
+  const deferred: number[] = []
+  try {
+    const userIds = [...new Set(rows.map(r => Number(r.user_id)))]
+    const users = new Map(((await db.prepare(`SELECT user_id, role, status, person_id FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray(userIds)).all()).results as any[])
+      .map(u => [Number(u.user_id), u]))
+    const prefs = await loadNotifyPrefs(db, userIds)
+    const wanted = rows.filter(r => {
+      const u = users.get(Number(r.user_id))
+      return u && u.status === 'active' && pushWanted(prefs, u.user_id, u.role, String(r.kind || ''))
+    })
+    if (wanted.length) {
+      const targets = [...new Set(wanted.map(r => Number(r.user_id)))]
+      const persons = [...new Set(targets.map(id => users.get(id)?.person_id).filter(Boolean))] as string[]
+      const subs = (await db.prepare(`SELECT subscription_id, endpoint, user_id, person_id FROM push_subscriptions
+        WHERE user_id IN ${JSON_IN} OR person_id IN (SELECT value FROM json_each(?)) ORDER BY subscription_id`).bind(bindJsonArray(targets), JSON.stringify(persons)).all()).results as any[]
+      // 同じ端末への複数の通知は、1回のプッシュにまとめる（端末は最新の未読を取りに来る）。行の順に PUSH_SEND_LIMIT 台まで選ぶ
+      const chosen = new Map<number, any>()
+      for (const r of wanted) {
+        const u = users.get(Number(r.user_id))
+        const add = subs.filter(s => !chosen.has(s.subscription_id) && (Number(s.user_id) === Number(u.user_id) || (!!u.person_id && s.person_id === u.person_id)))
+        if (chosen.size && chosen.size + add.length > PUSH_SEND_LIMIT) { deferred.push(r.queue_id); continue }
+        for (const s of add.slice(0, PUSH_SEND_LIMIT)) chosen.set(s.subscription_id, s)
+      }
+      const allowLocal = allowLocalPush(env)
+      const list = [...chosen.values()]
+      // 送信は外部の応答待ちなので並べて送る（CPU 時間は変わらない）
+      const results = await Promise.all(list.map(s => isAllowedPushEndpoint(s.endpoint, allowLocal) ? sendWebPush(env, s.endpoint) : Promise.resolve(null)))
+      const updates: D1PreparedStatement[] = []
+      list.forEach((s, i) => {
+        const r = results[i]
+        if (!r || r.gone) { res.removed++; updates.push(db.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id)) }
+        else if (r.ok) { res.sent++; updates.push(db.prepare('UPDATE push_subscriptions SET last_success_at = ?, failures = 0, last_error = NULL WHERE subscription_id = ?').bind(nowJST(), s.subscription_id)) }
+        else {
+          res.failed++
+          updates.push(db.prepare('UPDATE push_subscriptions SET failures = failures + 1, last_error = ? WHERE subscription_id = ?').bind(r.error || 'unknown', s.subscription_id))
+          updates.push(db.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ? AND failures >= ?').bind(s.subscription_id, PUSH_MAX_FAILURES))
+        }
+      })
+      if (updates.length) await db.batch(updates)
+    }
+  } finally {
+    const later = new Set(deferred)
+    const done = rows.map(r => r.queue_id).filter(id => !later.has(id))
+    const fin: D1PreparedStatement[] = []
+    if (done.length) fin.push(db.prepare(`DELETE FROM push_queue WHERE queue_id IN ${JSON_IN}`).bind(bindJsonArray(done)))
+    if (deferred.length) fin.push(db.prepare(`UPDATE push_queue SET claimed_at = NULL WHERE queue_id IN ${JSON_IN}`).bind(bindJsonArray(deferred)))
+    if (fin.length) await db.batch(fin)
+  }
+  return res
+}
+/** 15分おきの cron: 残っているプッシュを送り、送れずに残った古い行を消す。端末側の失敗（push_failed）は定期処理の失敗にしない */
+export async function runPushQueueJob(env: PushEnv) {
+  const r = await flushPushQueue(env, PUSH_FLUSH_LIMIT * 2)
+  const stale = await env.DB.prepare('DELETE FROM push_queue WHERE (claimed_at IS NOT NULL AND claimed_at < ?) OR created_at < ?')
+    .bind(minutesAgoJST(PUSH_STALE_CLAIM_MINUTES), minutesAgoJST(24 * 60)).run()
+  const purged = stale.meta.changes || 0
+  // 何もなかった実行は idle を返す（cron_runs の記録を1行にまとめる。services/cron.ts）
+  if (!r.claimed && !purged) return { idle: true, sent: 0 }
+  return { claimed: r.claimed, sent: r.sent, push_failed: r.failed, removed: r.removed, purged }
+}
+
+// 購読の API（スタッフ本人）。購読はこの人（同じ人のほかの会社のユーザーを含む）のもの
+const ownsSub = (u: any) => ({ sql: '(user_id = ? OR (person_id IS NOT NULL AND person_id = ?))', binds: [u.user_id, u.person_id || ''] })
+notificationsStaffApi.get('/push/config', async (c) => {
+  const u = c.get('user')
+  let publicKey: string
+  try { publicKey = (await loadVapid(c.env)).publicKey } catch (e) {
+    console.log(`push: vapid load failed: ${e}`)
+    return c.json({ available: false, error: 'プッシュ通知の準備ができていません' })
+  }
+  const o = ownsSub(u)
+  const endpoint = c.req.query('endpoint') || ''
+  const row = endpoint ? await c.env.DB.prepare(`SELECT subscription_id, last_success_at, last_error FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(endpoint, ...o.binds).first() as any : null
+  const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM push_subscriptions WHERE ${o.sql}`).bind(...o.binds).first() as any
+  return c.json({ available: true, public_key: publicKey, subscribed: !!row, last_success_at: row?.last_success_at || null, last_error: row?.last_error || null, devices: Number(n?.n || 0) })
+})
+notificationsStaffApi.post('/push/subscribe', async (c) => {
+  const u = c.get('user')
+  const b = await c.req.json().catch(() => ({} as any))
+  const endpoint = String(b?.endpoint || '')
+  const keys = b?.keys && typeof b.keys === 'object' ? b.keys : {}
+  const key = (v: unknown) => (typeof v === 'string' && /^[A-Za-z0-9_-]{8,200}={0,2}$/.test(v) ? v : null)
+  if (!isAllowedPushEndpoint(endpoint, allowLocalPush(c.env))) return c.json({ error: 'この端末のプッシュ通知の宛先は登録できません' }, 400)
+  const p256dh = key(keys.p256dh), auth = key(keys.auth)
+  if (!p256dh || !auth) return c.json({ error: '購読の情報が正しくありません' }, 400)
+  const at = nowJST()
+  const ua = String(c.req.header('User-Agent') || '').slice(0, 200)
+  await c.env.DB.batch([
+    // 同じ端末で別の人がログインし直して登録したときは、その端末の宛先を今の人に付け替える
+    c.env.DB.prepare(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET company_id = excluded.company_id, user_id = excluded.user_id, person_id = excluded.person_id, p256dh = excluded.p256dh, auth = excluded.auth,
+        user_agent = excluded.user_agent, updated_at = excluded.updated_at, failures = 0, last_error = NULL, test_requested_at = NULL`)
+      .bind(u.company_id, u.user_id, u.person_id || null, endpoint, p256dh, auth, ua, at, at),
+    c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE user_id = ? AND subscription_id NOT IN (SELECT subscription_id FROM push_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, subscription_id DESC LIMIT ?)`)
+      .bind(u.user_id, u.user_id, PUSH_MAX_PER_USER),
+  ])
+  return c.json({ ok: true })
+})
+notificationsStaffApi.post('/push/unsubscribe', async (c) => {
+  const u = c.get('user')
+  const b = await c.req.json().catch(() => ({} as any))
+  const o = ownsSub(u)
+  const r = await c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(String(b?.endpoint || ''), ...o.binds).run()
+  return c.json({ ok: true, removed: r.meta.changes || 0 })
+})
+// テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す）
+notificationsStaffApi.post('/push/test', async (c) => {
+  const u = c.get('user')
+  const b = await c.req.json().catch(() => ({} as any))
+  const o = ownsSub(u)
+  const s = await c.env.DB.prepare(`SELECT subscription_id, endpoint FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(String(b?.endpoint || ''), ...o.binds).first() as any
+  if (!s) return c.json({ error: 'この端末はプッシュ通知を受け取る設定になっていません' }, 404)
+  if (!isAllowedPushEndpoint(s.endpoint, allowLocalPush(c.env))) return c.json({ error: 'この端末のプッシュ通知の宛先には送れません' }, 400)
+  await c.env.DB.prepare('UPDATE push_subscriptions SET test_requested_at = ? WHERE subscription_id = ?').bind(nowJST(), s.subscription_id).run()
+  const r = await sendWebPush(c.env, s.endpoint)
+  if (r.gone) await c.env.DB.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id).run()
+  else if (r.ok) await c.env.DB.prepare('UPDATE push_subscriptions SET last_success_at = ?, failures = 0, last_error = NULL WHERE subscription_id = ?').bind(nowJST(), s.subscription_id).run()
+  else await c.env.DB.prepare('UPDATE push_subscriptions SET last_error = ? WHERE subscription_id = ?').bind(r.error || 'unknown', s.subscription_id).run()
+  if (!r.ok) return c.json({ error: r.gone ? 'この端末の購読は無効になっていました。もう一度「受け取る」を押してください' : 'プッシュ通知を送れませんでした。時間をおいてお試しください', reason: r.error }, 502)
+  return c.json({ ok: true })
+})
+// 端末の Service Worker が、プッシュを受けたときに表示する内容を取りに来る（本文はプッシュに載せない）。
+// 端末の購読が今ログインしている人のものでなければ（同じ端末で別の人がログインした後など）、中身を出さない
+const PUSH_BODY_MAX = 120
+notificationsStaffApi.get('/push/latest', async (c) => {
+  const u = c.get('user')
+  const generic = { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: '/staff#notifications', tag: 'fieldos' }
+  const o = ownsSub(u)
+  const s = await c.env.DB.prepare(`SELECT subscription_id, test_requested_at FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(c.req.query('endpoint') || '', ...o.binds).first() as any
+  if (!s) return c.json({ ...generic, generic: true })
+  if (s.test_requested_at && s.test_requested_at >= minutesAgoJST(PUSH_TEST_MINUTES)) {
+    await c.env.DB.prepare('UPDATE push_subscriptions SET test_requested_at = NULL WHERE subscription_id = ?').bind(s.subscription_id).run()
+    return c.json({ title: 'テスト通知', body: 'この端末でプッシュ通知を受け取れます', link: '/staff#notify-settings', tag: 'fieldos-test', test: true })
+  }
+  const ids = await staffUserIds(c)
+  const rows = (await c.env.DB.prepare(`SELECT notification_id, user_id, kind, title, body, link FROM user_notifications WHERE user_id IN ${JSON_IN} AND read_at IS NULL
+    ORDER BY notification_id DESC LIMIT 20`).bind(bindJsonArray(ids)).all()).results as any[]
+  const prefs = await loadNotifyPrefs(c.env.DB, ids)
+  const shown = rows.filter(r => pushWanted(prefs, r.user_id, 'staff', r.kind))
+  if (!shown.length) return c.json({ ...generic, generic: true })
+  const n = shown[0]
+  // 開く先はスタッフ画面の中だけ（#shift/... など）。それ以外の通知は通知の一覧を開く
+  const link = String(n.link || '')
+  const hash = /^#[A-Za-z0-9_\-/=&.]{0,200}$/.test(link) ? link : /^\/staff#[A-Za-z0-9_\-/=&.]{0,200}$/.test(link) ? link.slice(6) : '#notifications'
+  const body = String(n.body || '').replace(/\s+/g, ' ').trim()
+  return c.json({ title: n.title, body: (body.length > PUSH_BODY_MAX ? body.slice(0, PUSH_BODY_MAX) + '…' : body) + (shown.length > 1 ? `（ほか${shown.length - 1}件の未読）` : ''),
+    link: '/staff' + hash, tag: 'fieldos', notification_id: n.notification_id })
+})

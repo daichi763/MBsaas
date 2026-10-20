@@ -63,6 +63,7 @@
     const filtered = INBOX.unread || INBOX.kind
     const unreadInView = INBOX.kind ? (INBOX.unread_by_kind[INBOX.kind] || 0) : INBOX.unread_total
     $app.innerHTML = `
+      ${notifTabs('inbox')}
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
         <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知 ${INBOX.unread_total ? `<span class="badge badge-red">${INBOX.unread_total}件 未読</span>` : ''}</h2>
         ${INBOX.unread_total ? '<button class="btn btn-outline text-sm" data-action="notifReadAll">すべて既読にする</button>' : ''}
@@ -104,6 +105,43 @@
     const hash = (link.split('#')[1] || '')
     if (hash) location.hash = hash; else renderNotificationsInbox()
   }
+  // ---------- 受け取り設定（#284）----------
+  // 受信箱と同じ画面のタブ。自分あてのメールを、通知のまとまりごとに選ぶ（アプリ内の通知は設定によらず届く）。
+  // 打刻修正の承認依頼は「すぐに」「1日1回まとめて」「送らない」から選ぶ
+  const notifTabs = (cur) => `<div class="flex gap-1 mb-3" role="tablist">${[['inbox', '受信箱'], ['prefs', '受け取り設定']].map(([k, l]) =>
+    `<button class="btn ${cur === k ? 'btn-primary' : 'btn-outline'} text-xs" role="tab" aria-selected="${cur === k}" data-action="notifTab" data-tab="${k}">${l}</button>`).join('')}</div>`
+  delegate('notifTab', el => (el.dataset.tab === 'prefs' ? renderNotifyPrefs() : renderNotificationsInbox()))
+  async function renderNotifyPrefs() {
+    loading()
+    let d
+    try { d = (await axios.get('/api/admin/notification-prefs')).data } catch (e) { $app.innerHTML = `${notifTabs('prefs')}<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    const row = (g) => {
+      const mode = !g.email ? 'off' : g.digest ? 'digest' : 'now'
+      const opt = (v, l) => `<option value="${v}" ${mode === v ? 'selected' : ''}>${l}</option>`
+      const ctl = g.digest_supported
+        ? `<select class="notify-pref text-sm border border-gray-200 rounded-lg px-2 py-1.5" data-key="${esc(g.key)}" aria-label="${esc(g.label)}のメール">
+            ${opt('now', 'メールですぐに知らせる')}${opt('digest', `メールは1日1回まとめて（${Number(d.digest_hour)}時ごろ・承認待ちの件数）`)}${opt('off', 'メールは送らない')}</select>`
+        : `<label class="flex items-center gap-2 text-sm text-gray-700 whitespace-nowrap"><input type="checkbox" class="notify-pref w-4 h-4" data-key="${esc(g.key)}" ${g.email ? 'checked' : ''}>メールでも知らせる</label>`
+      return `<div class="py-3 flex flex-wrap items-center gap-3">
+          <div class="flex-1 min-w-[16rem]"><p class="font-bold text-gray-800 text-sm">${esc(g.label)}</p>
+            <p class="text-xs text-gray-400">${esc(g.desc)}${g.email_default != null ? `（既定: ${g.email_default ? 'メールあり' : 'メールなし'}）` : ''}</p></div>
+          <div>${ctl}</div></div>`
+    }
+    $app.innerHTML = `
+      ${notifTabs('prefs')}
+      <h2 class="text-xl font-bold text-gray-800 mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>通知の受け取り設定</h2>
+      <p class="text-xs text-gray-500 mb-3">アプリ内の通知（受信箱）には、設定によらずすべて届きます。ここでは自分あてのメールを選べます。
+        ${d.has_email ? '' : '<span class="text-amber-700">メールアドレスが登録されていないため、メールは届きません（アカウントの設定で登録できます）。</span>'}</p>
+      <div class="card p-4"><div class="divide-y divide-gray-100">${(d.groups || []).map(row).join('')}</div>
+        <button class="btn btn-primary mt-3" data-action="notifyPrefsSave"><i class="fas fa-check"></i>保存する</button></div>`
+  }
+  delegate('notifyPrefsSave', el => withSubmitLock(el, async () => {
+    const prefs = {}
+    document.querySelectorAll('.notify-pref').forEach(x => {
+      prefs[x.dataset.key] = x.tagName === 'SELECT' ? { email: x.value !== 'off', digest: x.value === 'digest' } : { email: x.checked }
+    })
+    try { await axios.put('/api/admin/notification-prefs', { prefs }); toast('保存しました') } catch (e) { toast(errMsg(e, '保存できませんでした')) }
+  }))
   delegate('notifReadAll', el => withSubmitLock(el, async () => {
     try { await axios.post('/api/admin/notifications/read-all') } catch (e) { toast(errMsg(e)) }
     renderNotificationsInbox()
@@ -116,7 +154,7 @@
   const MAIL = { view: 'corrections', status: 'failed', logStatus: '', logType: '' }
   const VIEWS = [['corrections', '打刻修正の通知'], ['logs', 'メールの記録'], ['settings', '問い合わせ先・送信停止']]
   const TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認',
-    recruit_applied: '新しい応募の通知', board_message: '案件掲示板の通知', roster_chat: '企業間チャットの通知', consultation: '相談・連絡の通知' }
+    recruit_applied: '新しい応募の通知', board_message: '案件掲示板の通知', roster_chat: '企業間チャットの通知', consultation: '相談・連絡の通知', notification_digest: '承認依頼のまとめ' }
   const LOG_STATUS = { sent: ['送信済み', 'badge-green'], delivered: ['配信済み', 'badge-green'], failed: ['送信失敗', 'badge-red'], bounced: ['不達', 'badge-red'], bounced_soft: ['一時的な不達', 'badge-yellow'], complained: ['迷惑メール報告', 'badge-red'], skipped: ['送信無効の環境', 'badge-gray'] }
   let ROWS = [], HAS_MORE = false
 

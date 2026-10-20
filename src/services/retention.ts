@@ -695,6 +695,10 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare('DELETE FROM employee_change_logs WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM staff_schedule_tokens WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare(`DELETE FROM staff_calendar_tokens WHERE user_id = ${userOf}`).bind(staffId)],
+        // Sprint 6 で足した、本人の端末のプッシュの購読・送信待ちと通知の受け取り設定（w6-push）
+        [null, db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ${userOf}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM push_queue WHERE user_id = ${userOf}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM user_notification_prefs WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
         ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
@@ -1074,6 +1078,7 @@ export const OFFBOARDING_EXPORT_PAGE = 500 // CSV の1回の取得の行数（Fr
 const OFFBOARDING_DELETE_LIMIT = 500       // 1文で消す行数
 const OFFBOARDING_QUERY_BUDGET = 25        // 1回の要求で実行する削除の問い合わせ・R2 の削除の上限
 const OFFBOARDING_R2_CHUNK = 1000          // R2 の delete に1回で渡すキーの数
+const OFFBOARDING_COUNT_COLS = 90          // 件数を数える1文の列の数（D1 の結果の列の上限 100 の内側）
 
 export type OffboardingBuckets = { PHOTOS?: R2Bucket; DOCUMENTS?: R2Bucket; CONTRACTS?: R2Bucket }
 export type OffboardingTable = {
@@ -1157,6 +1162,10 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'notice_ack_tokens', label: 'お知らせの確認用トークン', table: 'notice_ack_tokens', where: OB_CO, noExport: true },
   { target: 'notice_email_deliveries', label: 'お知らせのメール送信', table: 'notice_email_deliveries', where: OB_CO },
   { target: 'notices', label: 'お知らせ', table: 'notices', where: OB_CO },
+  // Sprint 6 で足した表（w6-push）。購読の宛先（endpoint）は端末に送るための鍵なので書き出さない
+  { target: 'push_queue', label: 'プッシュ通知の送信待ち', table: 'push_queue', where: OB_CO, noExport: true },
+  { target: 'push_subscriptions', label: 'プッシュ通知の購読（端末）', table: 'push_subscriptions', where: OB_CO, noExport: true },
+  { target: 'user_notification_prefs', label: '通知の受け取り設定', table: 'user_notification_prefs', where: OB_CO },
   { target: 'user_notifications', label: 'アプリ内の通知', table: 'user_notifications', where: OB_CO },
   { target: 'todo_dismissals', label: 'ToDo の非表示', table: 'todo_dismissals', where: OB_CO, noExport: true },
   { target: 'client_ng_staff', label: 'クライアントの NG スタッフ', table: 'client_ng_staff', where: OB_CO },
@@ -1224,7 +1233,11 @@ export async function countOffboardingData(db: D1Database, companyId: number): P
     ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
     ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
   ]
-  const row = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  // D1 は1つの結果の列を 100 までしか返せないので、OFFBOARDING_COUNT_COLS 列ずつの文に分けて1回の batch で数える（表を足して 100 を超えたため。w6-push）
+  const parts: string[][] = []
+  for (let i = 0; i < cols.length; i += OFFBOARDING_COUNT_COLS) parts.push(cols.slice(i, i + OFFBOARDING_COUNT_COLS))
+  const got = await db.batch(parts.map(part => db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${part.join(', ')}`).bind(companyId)))
+  const row = Object.assign({}, ...got.map(r => ((r.results || [])[0] || {}) as Record<string, number>)) as Record<string, number>
   const counts: Record<string, number> = {}
   OFFBOARDING_TABLES.forEach((t, i) => { counts[t.target] = Number(row?.[`t${i}`]) || 0 })
   const files: Record<string, number> = {}
