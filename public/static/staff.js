@@ -317,9 +317,57 @@ function homeShiftCardHtml(data) {
       ${shiftPlaceHtml(s, false)}
       ${company}
       ${data.carryover ? '<p class="text-xs mt-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-moon mr-1"></i>日付をまたぐ勤務です。勤務終了・退店などは、このまま報告できます。</p>' : ''}
+      ${homeLateButtonHtml(data)}
       ${homeDayShiftsHtml(data, cur)}
     </section>`
 }
+
+// 『遅れます』の連絡（#498）。今日のシフトで、入店・勤務開始をまだ報告していない間だけ出す。
+// 到着見込みの時刻と理由を、そのシフトの遅刻・欠勤相談（緊急度『高』）として送る。管理者のダッシュボードの未入店の一覧に『連絡あり』と出る
+const LATE_REASONS = ['電車・バスの遅延', '道路の渋滞', '体調不良', '寝坊', 'その他']
+function homeLateButtonHtml(data) {
+  const s = data.shift
+  if (!s || data.carryover || s.work_date !== data.today || data.tentative) return ''
+  const r = homeReportsWithQueued(data)
+  if (r.check_in || r.work_start) return ''
+  return `<button type="button" class="btn btn-outline w-full mt-3 text-sm" data-action="homeLateOpen" data-shift-id="${Number(s.shift_id)}" data-start="${esc(String(s.start_time || '').slice(0, 5))}">
+      <i class="fas fa-person-running text-amber-500"></i>遅れそうなとき（到着の見込みを連絡）</button>`
+}
+delegate('homeLateOpen', (el) => {
+  const start = /^\d{2}:\d{2}$/.test(el.dataset.start || '') ? el.dataset.start : ''
+  // 到着見込みの初期値: 今から15分後（開始より前なら開始の時刻）を5分単位に切り上げる
+  let eta = dayjs().add(15, 'minute')
+  eta = eta.minute(Math.ceil(eta.minute() / 5) * 5)
+  const etaStr = start && eta.format('HH:mm') < start && dayjs().format('HH:mm') < start ? start : eta.format('HH:mm')
+  modal(`<h3 class="font-bold text-gray-800 mb-1"><i class="fas fa-person-running text-amber-500 mr-1"></i>遅れることを連絡する</h3>
+    <p class="text-sm text-gray-600 mb-3">管理者に「遅刻・欠勤相談」として届きます。${start ? `開始は ${esc(start)} です。` : ''}</p>
+    <label class="text-sm text-gray-600 block mb-1" for="late-eta">到着の見込み</label>
+    <input type="time" id="late-eta" class="inp mb-3" value="${esc(etaStr)}">
+    <p class="text-sm text-gray-600 mb-1">理由</p>
+    <div class="grid grid-cols-2 gap-2 mb-2">${LATE_REASONS.map((x, i) => `<label class="flex items-center gap-2 rounded-lg border p-2 text-sm"><input type="radio" name="late-reason" value="${esc(x)}" ${i === 0 ? 'checked' : ''}>${esc(x)}</label>`).join('')}</div>
+    <textarea id="late-note" class="inp" rows="2" maxlength="300" placeholder="補足（任意。「その他」のときは必須）"></textarea>
+    <p class="text-[11px] text-gray-500 mt-2">行けなくなった場合は、「相談・連絡」から欠勤の連絡をしてください。急ぎの場合は電話でも連絡してください</p>
+    <div id="late-msg" class="text-sm text-red-600 mt-2" role="alert"></div>
+    <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary flex-1" data-action="homeLateSend" data-shift-id="${Number(el.dataset.shiftId)}"><i class="fas fa-paper-plane"></i>送信する</button></div>`)
+})
+delegate('homeLateSend', (el) => withSubmitLock(el, async () => {
+  const msg = document.getElementById('late-msg')
+  const eta = (document.getElementById('late-eta') || {}).value || ''
+  const reason = (document.querySelector('input[name="late-reason"]:checked') || {}).value || ''
+  const note = ((document.getElementById('late-note') || {}).value || '').trim()
+  if (!/^\d{2}:\d{2}$/.test(eta)) { msg.textContent = '到着の見込みの時刻を入力してください'; return }
+  if (reason === 'その他' && !note) { msg.textContent = '「その他」の場合は、理由を入力してください'; return }
+  const body = `【遅れます】到着の見込み ${eta}\n理由: ${reason}${note ? '\n' + note : ''}`
+  try {
+    await axios.post('/api/staff/consultations', { category: 'absence', urgency: 'high', shift_id: Number(el.dataset.shiftId), body })
+  } catch (e) {
+    msg.textContent = (e && e.response && e.response.data && e.response.data.error) || (e && e.response ? '送信できませんでした' : CONSULT_NET_ERROR)
+    return
+  }
+  closeModal()
+  toast(`到着の見込み（${eta}）を管理者に連絡しました。着いたら入店報告をしてください`, 5000)
+}))
 
 // 本日の予定（同じ日に複数のシフトがある場合。#504）。時刻順に並べ、タップでそのシフトの報告に切り替える
 function homeDayShiftsHtml(data, cur) {
@@ -434,8 +482,9 @@ function outboxSend(it) {
     form.append('pressed_at', String(it.pressed_at))
     return axios.post('/api/staff/attendance-photo', form, { timeout: ATTENDANCE_PHOTO_TIMEOUT_MS })
   }
+  // 写真なしの入店・退店（理由つき。#535）も同じ API で送る
   return axios.post('/api/staff/attendance', { shift_id: it.shift_id, report_type: it.report_type, latitude: it.latitude, longitude: it.longitude, address: null,
-    client_request_id: it.id, pressed_at: it.pressed_at }, { timeout: ATTENDANCE_TIMEOUT_MS })
+    client_request_id: it.id, pressed_at: it.pressed_at, ...(it.no_photo_reason ? { no_photo_reason: it.no_photo_reason, no_photo_note: it.no_photo_note || '' } : {}) }, { timeout: ATTENDANCE_TIMEOUT_MS })
 }
 const homeTabActive = () => { const t = (location.hash || '#home').slice(1).split('/')[0]; return !t || t === 'home' }
 // 保存中の報告を押した順に送る。通信できない・サーバーの障害の間は、順序を保つため後の報告も送らない。
@@ -774,6 +823,15 @@ function getPositionOrNull() {
   })
 }
 
+// 位置情報（取れなければ null）。知らせは出さない（写真の画面の中で、取れたかどうかを表示する。#347）
+function getPositionQuiet() {
+  if (!navigator.geolocation) return Promise.resolve(null)
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), 10000)
+    navigator.geolocation.getCurrentPosition(pos => { clearTimeout(timer); resolve(pos) }, () => { clearTimeout(timer); resolve(null) }, { timeout: 8000 })
+  })
+}
+
 // 勤怠報告の失敗の文言。すでに報告済み（前の送信が届いていた・別の端末で報告した・管理者が記録した）なら、エラーではなく報告済みと伝える（#182 #426）
 function attendanceErrorMessage(e, type) {
   const msg = e && e.response && e.response.data && e.response.data.error
@@ -792,14 +850,15 @@ function attendanceNeedsReload(e) {
 }
 // 報告の結果の知らせ（#347）。遅延・位置情報なし・予定より早い終了で記録されたら、その旨と連絡の方法を長めに出す。
 // noPos: 入店で位置情報を送れなかった（遅延のときは status が late になり no_location が付かないため、画面側で分かる値も使う）
-function showAttendanceResult(type, d, noPos) {
+// sent: 『送信しました』の文言（写真なしの報告など。省略で『を送信しました』）
+function showAttendanceResult(type, d, noPos, sent) {
   const notes = []
   if (d && d.status === 'late') notes.push(`開始時刻を過ぎていたため「遅延」${Number(d.late_minutes) > 0 ? `（${Number(d.late_minutes)}分）` : ''}として記録しました。遅れた理由は「相談・連絡」から管理者に伝えてください`)
   if ((d && d.status === 'no_location') || (type === 'check_in' && noPos)) notes.push('位置情報が取れなかったため「位置情報なし」として記録しました。端末の設定で、このサイトの位置情報を許可してください')
   if (d && Number(d.early_leave_minutes) > 0) notes.push(`予定の終了より${Number(d.early_leave_minutes)}分早い報告として記録しました`)
   // 入店の位置が現場から離れていた（#277）
   if (d && d.far) notes.push(`現場から約${Number(d.distance_m) >= 1000 ? (Number(d.distance_m) / 1000).toFixed(1) + 'km' : Number(d.distance_m) + 'm'}離れた位置で記録されました。現場に着いていない場合は、着いてから管理者に連絡してください`)
-  toast(REPORT_LABELS[type] + 'を送信しました' + (notes.length ? '。' + notes.join('。') : ''), notes.length ? 7000 : 2500)
+  toast(REPORT_LABELS[type] + (sent || 'を送信しました') + (notes.length ? '。' + notes.join('。') : ''), notes.length ? 7000 : 2500)
 }
 
 // 勤怠報告送信（送信中は押せない。位置情報を待つ間も含む）。成功しても失敗しても、ホームを読み直して今の状態を出す（#426）
@@ -842,8 +901,42 @@ window.submitAttendance = async function (type, shiftId, button) {
 window.openPhotoAttendance = function (type, shiftId) {
   if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
   // takenAt・source: 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
-  pendingPhoto = { blob: null, previewUrl: null, type, shiftId, takenAt: null, source: null }
+  pendingPhoto = { blob: null, previewUrl: null, type, shiftId, takenAt: null, source: null, pos: null, posState: null, posPromise: null }
   modal(photoModalHtml())
+  // 入店は、写真を選んでいる間に位置情報を取っておき、取れたかどうかを画面に出す（取れなければ『もう一度取得する』。#347）
+  if (type === 'check_in') photoFetchPosition()
+}
+
+// ---------- 写真の画面の位置情報（入店。#347） ----------
+// posState: 'loading' 取得中 / 'ok' 取得済み / 'fail' 取れなかった
+function photoFetchPosition() {
+  const cur = pendingPhoto
+  cur.posState = 'loading'; cur.pos = null
+  photoPosRefresh()
+  cur.posPromise = getPositionQuiet().then(pos => {
+    cur.pos = pos; cur.posState = pos ? 'ok' : 'fail'; cur.posPromise = null
+    if (pendingPhoto === cur) photoPosRefresh()
+    return pos
+  })
+  return cur.posPromise
+}
+function photoPosHtml() {
+  const st = pendingPhoto.posState
+  if (pendingPhoto.type !== 'check_in' || !st) return ''
+  if (st === 'loading') return '<p class="text-xs text-gray-500 mt-2"><span class="spin" style="width:12px;height:12px;border-width:2px;vertical-align:-1px"></span> 位置情報を取得しています...</p>'
+  if (st === 'ok') return '<p class="text-xs text-emerald-700 mt-2"><i class="fas fa-location-dot mr-1"></i>位置情報を取得しました</p>'
+  return `<div class="text-xs text-amber-800 bg-amber-50 rounded-lg px-2.5 py-2 mt-2" role="alert">
+      <p><i class="fas fa-location-crosshairs mr-1"></i>位置情報を取得できませんでした。このまま送ると「位置情報なし」として記録されます。端末の設定でこのサイトの位置情報を許可してから、もう一度取得してください</p>
+      <button type="button" class="btn btn-outline text-xs mt-2" data-action="photoRetryPosition"><i class="fas fa-rotate-right"></i>もう一度取得する</button></div>`
+}
+function photoPosRefresh() { const el = document.getElementById('photo-pos'); if (el) el.innerHTML = photoPosHtml() }
+delegate('photoRetryPosition', () => { if (pendingPhoto.type === 'check_in' && pendingPhoto.posState !== 'loading') photoFetchPosition() })
+// 送るときの位置: 取得済みならそれ、取得中なら待つ、取れていなければもう一度だけ試す
+function photoPosition() {
+  if (pendingPhoto.type !== 'check_in') return Promise.resolve(null)
+  if (pendingPhoto.posState === 'ok') return Promise.resolve(pendingPhoto.pos)
+  if (pendingPhoto.posState === 'loading' && pendingPhoto.posPromise) return pendingPhoto.posPromise
+  return photoFetchPosition()
 }
 
 function photoModalHtml() {
@@ -855,6 +948,7 @@ function photoModalHtml() {
     </div>
     <p class="text-sm text-gray-500 mb-3">店舗の様子が分かる写真を1枚添付してください（必須）</p>
     <div id="photo-area">${photoAreaHtml()}</div>
+    <div id="photo-pos">${photoPosHtml()}</div>
     <input type="file" id="photo-input-camera" accept="image/*" capture="environment" class="hidden" onchange="onPhotoSelected(this.files[0], 'camera'); this.value = ''">
     <input type="file" id="photo-input-album" accept="image/*" class="hidden" onchange="onPhotoSelected(this.files[0], 'album'); this.value = ''">
     <div id="photo-error" class="text-sm text-red-600 mt-2"></div>
@@ -971,13 +1065,22 @@ delegate('photoSkipSubmit', async (el) => {
   const note = ((document.getElementById('photo-skip-note') || {}).value || '').trim()
   if (reason === 'other' && !note) { setPhotoError('「その他」の場合は理由を入力してください'); return }
   PHOTO_SKIP_SENDING = true
+  // 押した時刻と一意キー。通信できなければ、写真なしの報告も押した時刻で端末に保存して、通信が戻ってから送る（#427）
+  const pressedAt = Date.now(), reqId = newRequestId()
   try {
     await withSubmitLock(el, async () => {
-      const pos = type === 'check_in' ? await getPositionOrNull() : null
+      const pos = await photoPosition()
+      if (outboxQueued().length) await outboxFlush(false, true) // 前に保存した報告を先に送る（submitAttendance と同じ）
+      const body = { shift_id: shiftId, report_type: type, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, address: null, no_photo_reason: reason, no_photo_note: note, client_request_id: reqId }
       try {
-        await axios.post('/api/staff/attendance', { shift_id: shiftId, report_type: type, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, address: null, no_photo_reason: reason, no_photo_note: note })
-        closeModal(); toast(REPORT_LABELS[type] + 'を写真なしで送信しました'); renderHome()
+        const res = await axios.post('/api/staff/attendance', body, { timeout: ATTENDANCE_TIMEOUT_MS })
+        closeModal(); showAttendanceResult(type, res.data, type === 'check_in' && !pos, 'を写真なしで送信しました'); renderHome()
       } catch (e) {
+        if (e && !e.response && await outboxAdd({ id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: body.latitude, longitude: body.longitude, photo: null, no_photo_reason: reason, no_photo_note: note })) {
+          closeModal(); outboxQueuedNotice(type, pressedAt)
+          if (HOME) drawHome(HOME, true)
+          return
+        }
         if (e.response && e.response.status === 409 && e.response.data && e.response.data.error === 'すでに報告済みです') { closeModal(); toast(attendanceErrorMessage(e, type)); renderHome(); return }
         setPhotoError(attendanceErrorMessage(e, type))
       }
@@ -1071,9 +1174,9 @@ window.submitPhotoAttendance = async function () {
     }
   }
 
-  // 端末が位置情報に応答しないときも送信中のまま止まらないよう、getPositionOrNull（10秒で諦める）を使う
+  // 入店は写真の画面を開いたときに取った位置を使う（取れていなければもう一度試す。端末が応答しなくても10秒で諦める）
   if (type === 'check_in') {
-    getPositionOrNull().then(send)
+    photoPosition().then(send)
   } else {
     send(null)
   }
@@ -1199,7 +1302,7 @@ function shiftListHtml(data, apps, today) {
       ${byDate[d].shifts.map(s => `
         <div class="mt-1.5 flex items-start justify-between gap-2 text-sm shift-row" data-shift-id="${Number(s.shift_id)}">
           <div class="min-w-0">
-            <p class="font-medium text-gray-700">${esc(s.project_name)}${companyTag(s)}</p>
+            <p class="font-medium text-gray-700">${esc(s.project_name)}${companyTag(s)}${shiftChangedBadge(s, today)}</p>
             <p class="text-xs text-gray-400">${esc(formatShiftTime(s.start_time, s.end_time))}</p>
             ${shiftPlaceHtml(s, true)}
             ${attLink(s)}
@@ -1210,6 +1313,18 @@ function shiftListHtml(data, apps, today) {
       ${byDate[d].requests.map(requestRow).join('')}
       ${byDate[d].apps.map(appRow).join('')}
     </div>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'
+}
+
+// 直近に管理者が変えたシフトの印（#155）。サーバーが返す changed_at（時刻・場所・枠などを変えた日時）か、
+// 作った日時（created_at）より後の updated_at が、SHIFT_CHANGED_DAYS 日以内なら『変更あり』を出す。今日より前のシフトには出さない
+const SHIFT_CHANGED_DAYS = 3
+function shiftChangedBadge(s, today) {
+  if (s.work_date < today) return ''
+  const at = s.changed_at || (s.updated_at && s.created_at && String(s.updated_at) > String(s.created_at) ? s.updated_at : null)
+  if (!at) return ''
+  const t = dayjs(String(at).replace(' ', 'T'))
+  if (!t.isValid() || dayjs().diff(t, 'day', true) > SHIFT_CHANGED_DAYS) return ''
+  return ` <span class="badge badge-yellow" title="管理者がこのシフトを変更しました"><i class="fas fa-pen mr-0.5"></i>変更あり ${esc(t.format('M/D HH:mm'))}</span>`
 }
 
 // 一緒に入る人（#523。会社の設定で出すときだけ）と、この現場の申し送り（#522）。確定・代打のシフトで、1週間前より後のものに出す
@@ -1666,6 +1781,7 @@ async function renderReport() {
       ${isPast && !prev ? `<p class="text-xs text-amber-800 bg-amber-50 rounded p-2 mt-2"><i class="fas fa-clock-rotate-left mr-1"></i>${esc(fmtDate(sh.work_date))}の日報が未提出です。思い出せる範囲で入力してください</p>` : ''}
       ${sh.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
       ${sh.blocked ? `<p class="text-xs text-red-700 bg-red-50 rounded p-2 mt-2"><i class="fas fa-ban mr-1"></i>${esc(sh.blocked)}</p>` : ''}
+      ${!tplFields.length ? '<p class="text-xs text-gray-600 bg-gray-50 rounded p-2 mt-2" id="report-no-template"><i class="fas fa-circle-info mr-1"></i>この案件には日報の項目（件数など）が設定されていません。下の「報告内容」に、その日の実績・報告をまとめて書いてください。項目があるはずの場合は、管理者に連絡してください</p>' : ''}
       ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
       ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2 whitespace-pre-wrap break-words"><i class="fas fa-comment-dots mr-1"></i>${linkify(esc(prev.manager_comment))}</p>` : ''}
     </section>
@@ -1858,9 +1974,27 @@ async function loadPastReports() {
     </button>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
   // 日報のコメントの通知から来たときは、その日報を開く（#158）
   const openId = OPEN_PAST_REPORT_ID; OPEN_PAST_REPORT_ID = null
-  const idx = openId ? PAST_REPORTS.reports.findIndex(r => Number(r.daily_report_id) === openId) : -1
-  const btn = idx >= 0 ? el.querySelector(`[data-action="openPastReport"][data-index="${idx}"]`) : null
-  if (btn) { btn.scrollIntoView({ block: 'center' }); btn.click() }
+  if (openId) openPastReportById(el, openId)
+}
+// 一覧（新しい30件）にない古い日報は、その1件を取り直して一覧の後ろに足してから開く。
+// サーバーが daily_report_id の指定に応えない・見つからないときは、そのことを知らせる
+async function openPastReportById(el, id) {
+  let idx = PAST_REPORTS.reports.findIndex(r => Number(r.daily_report_id) === id)
+  if (idx < 0) {
+    let one = null
+    try {
+      const d = (await axios.get('/api/staff/my-reports', { params: { daily_report_id: id } })).data
+      one = (d.reports || []).find(r => Number(r.daily_report_id) === id) || null
+      if (one) Object.assign(PAST_REPORTS.templates = PAST_REPORTS.templates || {}, d.templates || {})
+    } catch (e) { one = null }
+    if (!document.getElementById('past-reports') || !PAST_REPORTS) return
+    if (!one) { toast('コメントの付いた日報は、過去の日報の一覧（新しい30件）にないため開けませんでした。管理者に内容を確かめてください', 6000); return }
+    PAST_REPORTS.reports.push(one)
+    idx = PAST_REPORTS.reports.length - 1
+  }
+  const btn = el.querySelector(`[data-action="openPastReport"][data-index="${idx}"]`)
+  if (btn) btn.scrollIntoView({ block: 'center' })
+  delegate.handlers.openPastReport({ dataset: { index: String(idx) } })
 }
 let OPEN_PAST_REPORT_ID = null
 delegate('reloadPastReports', () => loadPastReports())
@@ -2442,11 +2576,11 @@ window.renderConsult = async function () {
   const syncCompany = () => {
     const s = targets.find(x => String(x.shift_id) === shiftSel.value)
     if (companySel) {
-      if (s) companySel.value = String(s.company_id)
+      if (s && s.company_id != null) companySel.value = String(s.company_id)
       companySel.disabled = !!s
     }
     const note = document.getElementById('c-company-note')
-    if (note && multi) note.textContent = s ? `このシフトの会社（${s.company_name}）の管理者に届きます` : '選んだ会社の管理者に届きます。シフトを選ぶと、そのシフトの会社に届きます'
+    if (note && multi) note.textContent = s ? (s.company_name ? `このシフトの会社（${s.company_name}）の管理者に届きます` : 'このシフトの会社の管理者に届きます') : '選んだ会社の管理者に届きます。シフトを選ぶと、そのシフトの会社に届きます'
   }
   shiftSel.addEventListener('change', syncCompany)
   syncCompany()
@@ -2457,6 +2591,12 @@ window.renderConsult = async function () {
   if (cdraft) {
     if (cdraft.category && CAT_LABELS[cdraft.category]) document.getElementById('c-cat').value = cdraft.category
     if (cdraft.shift_id && targets.some(x => String(x.shift_id) === String(cdraft.shift_id))) { shiftSel.value = String(cdraft.shift_id); syncCompany() }
+    else if (Number(cdraft.shift_id) > 0 && cdraft.shift_label) {
+      // 一覧の期間（前日〜7日後）にない自分のシフト（打刻修正の申請から開いた場合など。#486）。送り先はサーバーがそのシフトの会社にする
+      targets.push({ shift_id: Number(cdraft.shift_id), company_id: null, company_name: '' })
+      const o = document.createElement('option'); o.value = String(Number(cdraft.shift_id)); o.textContent = String(cdraft.shift_label)
+      shiftSel.appendChild(o); shiftSel.value = o.value; syncCompany()
+    }
     if (cdraft.body) document.getElementById('c-body').value = cdraft.body
     const ur = ['low', 'normal', 'high'].includes(cdraft.urgency) && cform.querySelector(`input[name=urgency][value="${esc(cdraft.urgency)}"]`)
     if (ur) ur.checked = true
@@ -2465,7 +2605,8 @@ window.renderConsult = async function () {
   const saveConsultDraft = () => {
     const body = document.getElementById('c-body').value
     if (!body.trim()) { draftClear('consult'); return }
-    draftSave('consult', { category: document.getElementById('c-cat').value, shift_id: shiftSel.value, body,
+    const opt = shiftSel.selectedIndex > 0 ? shiftSel.options[shiftSel.selectedIndex] : null
+    draftSave('consult', { category: document.getElementById('c-cat').value, shift_id: shiftSel.value, shift_label: opt ? opt.textContent : '', body,
       urgency: (cform.querySelector('input[name=urgency]:checked') || {}).value || 'normal' })
   }
   cform.addEventListener('input', saveConsultDraft)
