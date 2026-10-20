@@ -221,7 +221,8 @@
       return
     }
     if (S.tab === 'payment') {
-      host.innerHTML = `<div class="overflow-x-auto"><table class="tbl" id="settle-payment-table"><thead><tr><th>支払区分</th><th>支払先</th><th>スタッフ</th><th>社員番号</th><th class="text-right">日数</th><th class="text-right">シフト</th><th class="text-right">時間</th>
+      host.innerHTML = `${canPayout() ? `<div class="flex justify-end mb-2"><button type="button" class="btn btn-outline text-xs" data-action="settlePayout" title="確定済みの支払を、スタッフの口座への振込データ（全銀形式・CSV）にします"><i class="fas fa-building-columns"></i>振込データを作成</button></div>` : ''}
+        <div class="overflow-x-auto"><table class="tbl" id="settle-payment-table"><thead><tr><th>支払区分</th><th>支払先</th><th>スタッフ</th><th>社員番号</th><th class="text-right">日数</th><th class="text-right">シフト</th><th class="text-right">時間</th>
         <th class="text-right">支払基本額</th><th class="text-right">交通費</th><th class="text-right">調整</th><th class="text-right">支払合計</th><th>確定</th><th></th></tr></thead><tbody>
         ${data.by_payee.map(g => `<tr><td><span class="badge badge-gray">${esc(g.payee_label)}</span></td><td class="font-medium">${esc(g.payee_name)}</td>
           <td class="text-xs">${g.staff_id ? `<a class="text-blue-600 hover:underline" href="#staff/${Number(g.staff_id)}">${esc(g.staff_name)}</a>` : esc(g.staff_name)}</td><td class="text-xs">${esc(g.employee_number || '')}</td>
@@ -705,7 +706,7 @@
   })
 
   // ---------- 締めと出力の記録（#170） ----------
-  const EXPORT_LABEL = { detail: 'シフト明細CSV', billing: '請求集計CSV', payment: '支払集計CSV', statement_billing: '請求明細書', statement_payment: '支払明細書' }
+  const EXPORT_LABEL = { detail: 'シフト明細CSV', billing: '請求集計CSV', payment: '支払集計CSV', statement_billing: '請求明細書', statement_payment: '支払明細書', payout_zengin: '振込データ（全銀）', payout_csv: '振込一覧CSV', employees: '従業員名簿CSV' }
   delegate('settleClosings', el => withSubmitLock(el, openClosings))
   async function openClosings() {
     let d
@@ -846,4 +847,131 @@
       try { await axios.put('/api/admin/staff-pay/settings', { staff_pay_visible: on }); toast(on ? '支払額を表示するようにしました' : '支払額の表示をやめました'); loadPayRequests() } catch (e) { toast(errMsg(e)) }
     })
   })
+  // ---------- 振込データ（#471）。会社管理者・事務担当のみ ----------
+  const canPayout = () => typeof ME !== 'undefined' && ME && ME.can_manage_hr
+  const PAYOUT_TYPE_LABEL = { payroll_daily: '日雇い給与', freelance: '個人事業主', payroll: '自社給与' }
+  const ACCOUNT_TYPES = { 1: '普通', 2: '当座', 4: '貯蓄' }
+  const P = window.__payoutState = window.__payoutState || { transfer_date: dayjs().add(1, 'day').format('YYYY-MM-DD'), types: ['payroll_daily', 'freelance'], data: null }
+  const payoutQs = () => `${period()}&types=${encodeURIComponent(P.types.join(','))}`
+  function payoutHtml() {
+    const d = P.data
+    const list = d ? d.items.map(x => {
+      const a = x.account
+      return `<tr class="${x.exportable ? '' : 'bg-red-50'}"><td class="whitespace-nowrap">${esc(x.staff_name)}${x.employee_number ? `<span class="block text-[10px] text-gray-400">${esc(x.employee_number)}</span>` : ''}</td>
+        <td class="text-xs">${esc(x.payee_label)}</td><td class="text-right whitespace-nowrap font-bold">${yen(x.amount)}<span class="block text-[10px] font-normal text-gray-400">確定 ${Number(x.shifts)}件</span></td>
+        <td class="text-xs">${a ? `${esc(a.bank_code)}-${esc(a.branch_code)} ${esc(a.account_type_label)} ${esc(a.account_number_masked)}<span class="block text-gray-500">${esc(a.holder_zengin || a.holder_kana || '')}</span>` : '<span class="text-gray-400">未登録</span>'}</td>
+        <td class="text-[11px]">${x.problems.map(p => `<span class="block text-red-600">${esc(p)}</span>`).join('')}${x.notes.map(n => `<span class="block text-gray-500">${esc(n)}</span>`).join('')}</td>
+        <td><button type="button" class="text-xs text-blue-600 hover:underline whitespace-nowrap" data-action="payoutAccount" data-id="${Number(x.staff_id)}">口座${a && a.source === 'payout' ? 'を編集' : 'を登録'}</button></td></tr>`
+    }).join('') : ''
+    const stOk = d && !d.settings_problems.length
+    return `<h3 class="font-bold text-lg mb-1">振込データ</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(S.from)}〜${esc(S.to)} の確定済みのシフトの支払合計を、スタッフごとの振込にします（未確定・単価未設定のシフトは含みません）。
+        金額は源泉徴収などの控除の前です。控除がある場合は、出力した後に金額を直してください。取引先・他社（連携元）への支払は対象外です</p>
+      <div class="flex flex-wrap items-end gap-3 text-xs mb-3">
+        <label>振込日（取組日）<input type="date" id="po-date" class="inp text-sm w-auto" value="${esc(P.transfer_date)}"></label>
+        <div><p class="mb-1">支払区分</p><div class="flex gap-3">${Object.entries(PAYOUT_TYPE_LABEL).map(([k, l]) => `<label class="flex items-center gap-1"><input type="checkbox" class="po-type" value="${k}" ${P.types.includes(k) ? 'checked' : ''}>${l}</label>`).join('')}</div></div>
+        <button type="button" class="btn btn-outline text-xs" data-action="payoutLoad"><i class="fas fa-magnifying-glass"></i>一覧を確認</button>
+      </div>
+      ${d ? `<div class="text-xs mb-2 p-2 rounded ${stOk ? 'bg-gray-50' : 'bg-amber-50 text-amber-800'}" id="po-settings">
+          振込元（依頼人）: ${d.settings ? `${esc(d.settings.requester_kana || '')}（委託者コード ${esc(d.settings.requester_code || '未設定')}）${esc(d.settings.bank_code || '')}-${esc(d.settings.branch_code || '')} ${esc(d.settings.account_number_masked || '')}` : '未設定'}
+          ${stOk ? '' : `<span class="block">全銀形式で出すには、次の設定が必要です: ${esc(d.settings_problems.join('、'))}</span>`}
+          <button type="button" class="text-blue-600 hover:underline ml-1" data-action="payoutSettings">振込元を設定</button></div>
+        <p class="text-sm mb-2">振込できる人 <b>${Number(d.exportable)}人</b>・合計 <b>${yen(d.total)}</b>${d.skipped ? `<span class="text-red-600 ml-2">口座の未登録などで出力しない人 ${Number(d.skipped)}人</span>` : ''}</p>
+        <div class="max-h-80 overflow-y-auto border border-gray-100 rounded-lg mb-3"><table class="tbl text-xs" id="po-table"><thead><tr><th>スタッフ</th><th>区分</th><th class="text-right">金額</th><th>口座</th><th>確認</th><th></th></tr></thead>
+          <tbody>${list || '<tr><td colspan="6" class="text-center text-gray-400">対象の支払はありません</td></tr>'}</tbody></table></div>
+        <div class="flex gap-2 flex-wrap">
+          ${d.exportable ? `${stOk ? `<a class="btn btn-primary text-sm" id="po-zengin" href="/api/admin/settlement/payout/export?format=zengin&transfer_date=${encodeURIComponent(P.transfer_date)}&${payoutQs()}"><i class="fas fa-building-columns"></i>全銀形式（総合振込）を出力</a>` : ''}
+            <a class="btn btn-outline text-sm" id="po-csv" href="/api/admin/settlement/payout/export?format=csv&${payoutQs()}"><i class="fas fa-file-csv"></i>振込一覧のCSV</a>` : ''}
+          <button type="button" class="btn btn-outline text-sm" data-action="settleCloseModal">閉じる</button>
+        </div>
+        <p class="text-[11px] text-gray-400 mt-2">全銀形式は Shift_JIS・120バイト固定長（改行あり）のファイルです。ネットバンクの「総合振込」のファイル受付に取り込めます。出力した記録は「締め・出力の記録」に残ります</p>` : ''}`
+  }
+  async function loadPayout() {
+    try { P.data = (await axios.get('/api/admin/settlement/payout?' + payoutQs())).data } catch (e) { P.data = null; toast(errMsg(e)) }
+    modal(payoutHtml())
+  }
+  function readPayoutForm() {
+    const d = document.getElementById('po-date'); if (d) P.transfer_date = d.value
+    const t = [...document.querySelectorAll('.po-type:checked')].map(x => x.value)
+    if (document.querySelector('.po-type')) P.types = t
+  }
+  delegate('settlePayout', () => { P.data = null; loadPayout() })
+  delegate('payoutLoad', el => withSubmitLock(el, async () => {
+    readPayoutForm()
+    if (!P.types.length) { toast('支払区分を1つ以上選んでください'); return }
+    await loadPayout()
+  }))
+  document.addEventListener('change', (ev) => {
+    // 振込日を変えたら、出力のリンクに入れ直す
+    if (ev.target && ev.target.id === 'po-date') { P.transfer_date = ev.target.value; const a = document.getElementById('po-zengin'); if (a) a.href = `/api/admin/settlement/payout/export?format=zengin&transfer_date=${encodeURIComponent(P.transfer_date)}&${payoutQs()}` }
+  })
+  // 振込先の口座（スタッフごと）
+  delegate('payoutAccount', el => withSubmitLock(el, async () => {
+    readPayoutForm()
+    let d
+    try { d = (await axios.get('/api/admin/settlement/payout/accounts/' + Number(el.dataset.id))).data } catch (e) { toast(errMsg(e)); return }
+    const a = d.account || d.employee_account || {}
+    const v = (k) => esc(a[k] == null ? '' : a[k])
+    const type = String(a.account_type || '').match(/当座|^2$/) ? '2' : String(a.account_type || '').match(/貯蓄|^4$/) ? '4' : '1'
+    modal(`<h3 class="font-bold text-lg mb-1">振込先の口座</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(d.staff.name)}${d.staff.kana ? `（${esc(d.staff.kana)}）` : ''}。${d.account ? '' : d.employee_account ? '従業員管理の口座を入れています。保存すると、振込データにはこの口座を使います。' : ''}口座名義は通帳どおりにカナで入力します</p>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <label>金融機関コード（4桁）<input id="pa-bank-code" class="inp text-sm" inputmode="numeric" maxlength="4" value="${v('bank_code')}"></label>
+        <label>金融機関名<input id="pa-bank-name" class="inp text-sm" value="${v('bank_name')}"></label>
+        <label>支店コード（3桁）<input id="pa-branch-code" class="inp text-sm" inputmode="numeric" maxlength="3" value="${v('branch_code')}"></label>
+        <label>支店名<input id="pa-branch-name" class="inp text-sm" value="${v('branch_name')}"></label>
+        <label>預金種目<select id="pa-type" class="inp text-sm">${Object.entries(ACCOUNT_TYPES).map(([k, l]) => `<option value="${k}" ${type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>口座番号（7桁まで）<input id="pa-number" class="inp text-sm" inputmode="numeric" maxlength="7" value="${v('account_number')}"></label>
+        <label class="col-span-2">口座名義（カナ）<input id="pa-holder" class="inp text-sm" placeholder="例: ヤマダ タロウ" value="${esc(d.account ? d.account.holder_kana : (d.staff.kana || ''))}"></label>
+      </div>
+      <div class="flex gap-2 mt-4">
+        <button type="button" class="btn btn-outline flex-1" data-action="payoutBack">戻る</button>
+        ${d.account ? `<button type="button" class="btn btn-outline" data-action="payoutAccountDelete" data-id="${Number(d.staff.staff_id)}">登録を消す</button>` : ''}
+        <button type="button" class="btn btn-primary flex-1" data-action="payoutAccountSave" data-id="${Number(d.staff.staff_id)}">保存</button>
+      </div>`)
+  }))
+  delegate('payoutBack', () => modal(payoutHtml()))
+  delegate('payoutAccountSave', el => withSubmitLock(el, async () => {
+    const val = (id) => document.getElementById(id).value
+    try {
+      await axios.put('/api/admin/settlement/payout/accounts/' + Number(el.dataset.id), {
+        bank_code: val('pa-bank-code'), bank_name: val('pa-bank-name'), branch_code: val('pa-branch-code'), branch_name: val('pa-branch-name'),
+        account_type: val('pa-type'), account_number: val('pa-number'), holder_kana: val('pa-holder') })
+    } catch (e) { toast(errMsg(e)); return }
+    toast('口座を保存しました'); await loadPayout()
+  }))
+  delegate('payoutAccountDelete', el => withSubmitLock(el, async () => {
+    if (!confirm('この口座の登録を消しますか？（従業員管理の口座は消えません）')) return
+    try { await axios.delete('/api/admin/settlement/payout/accounts/' + Number(el.dataset.id)) } catch (e) { toast(errMsg(e)); return }
+    toast('口座の登録を消しました'); await loadPayout()
+  }))
+  // 振込元（依頼人）の設定
+  delegate('payoutSettings', el => withSubmitLock(el, async () => {
+    readPayoutForm()
+    let st
+    try { st = (await axios.get('/api/admin/settlement/payout/settings')).data.settings || {} } catch (e) { toast(errMsg(e)); return }
+    const v = (k) => esc(st[k] == null ? '' : st[k])
+    modal(`<h3 class="font-bold text-lg mb-1">振込元（依頼人）の設定</h3>
+      <p class="text-xs text-gray-500 mb-3">全銀形式のファイルの先頭（ヘッダー）に入れる、会社の振込元の情報です。委託者コードは、取引銀行から通知された10桁のコードです</p>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <label>委託者コード（10桁）<input id="ps-code" class="inp text-sm" inputmode="numeric" maxlength="10" value="${v('requester_code')}"></label>
+        <label>委託者名（カナ）<input id="ps-kana" class="inp text-sm" placeholder="例: カ）フィールド" value="${v('requester_kana')}"></label>
+        <label>金融機関コード（4桁）<input id="ps-bank-code" class="inp text-sm" inputmode="numeric" maxlength="4" value="${v('bank_code')}"></label>
+        <label>金融機関名（カナ）<input id="ps-bank-name" class="inp text-sm" value="${v('bank_name')}"></label>
+        <label>支店コード（3桁）<input id="ps-branch-code" class="inp text-sm" inputmode="numeric" maxlength="3" value="${v('branch_code')}"></label>
+        <label>支店名（カナ）<input id="ps-branch-name" class="inp text-sm" value="${v('branch_name')}"></label>
+        <label>預金種目<select id="ps-type" class="inp text-sm">${Object.entries(ACCOUNT_TYPES).map(([k, l]) => `<option value="${k}" ${String(st.account_type || '1') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>口座番号（7桁まで）<input id="ps-number" class="inp text-sm" inputmode="numeric" maxlength="7" value="${v('account_number')}"></label>
+      </div>
+      <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-action="payoutBack">戻る</button>
+        <button type="button" class="btn btn-primary flex-1" data-action="payoutSettingsSave">保存</button></div>`)
+  }))
+  delegate('payoutSettingsSave', el => withSubmitLock(el, async () => {
+    const val = (id) => document.getElementById(id).value
+    try {
+      await axios.put('/api/admin/settlement/payout/settings', { requester_code: val('ps-code'), requester_kana: val('ps-kana'), bank_code: val('ps-bank-code'), bank_name: val('ps-bank-name'),
+        branch_code: val('ps-branch-code'), branch_name: val('ps-branch-name'), account_type: val('ps-type'), account_number: val('ps-number') })
+    } catch (e) { toast(errMsg(e)); return }
+    toast('振込元を保存しました'); await loadPayout()
+  }))
 })()

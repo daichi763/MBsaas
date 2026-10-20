@@ -2853,6 +2853,15 @@ async function renderEmployees() {
         <button class="btn btn-primary" onclick="showRosterForm('employee')"><i class="fas fa-user-plus"></i>従業員を登録</button>
       </div>
     </div>
+    <section class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-sm" id="emp-export">
+      <span class="text-xs font-bold text-gray-600"><i class="fas fa-file-csv text-blue-500 mr-1"></i>従業員名簿のCSV</span>
+      <select id="emp-export-status" class="inp text-sm w-auto">
+        <option value="">自社雇用のすべて</option>${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}<option value="ended">雇用終了（他の区分へ移行・統合）</option>
+      </select>
+      ${ME && ME.role === 'company_admin' ? '<label class="flex items-center gap-1 text-xs"><input type="checkbox" id="emp-export-pay">口座・給与を含める（会社管理者のみ）</label>' : ''}
+      <button class="btn btn-outline text-sm" data-action="exportEmployees"><i class="fas fa-download"></i>出力</button>
+      <span class="text-[11px] text-gray-400">社員番号・氏名・入社日・契約・住所・連絡先・保険番号を出します。出力した記録が残ります</span>
+    </section>
     <section class="card p-4">
       <input id="emp-q" class="inp text-sm mb-3" placeholder="社員番号・氏名・フリガナ・所属・役職・拠点で検索">
       <div class="overflow-x-auto">
@@ -2889,6 +2898,17 @@ async function renderEmployees() {
     document.querySelectorAll('tr[data-search]').forEach(tr => { tr.hidden = !matchesKeyword(q, [tr.dataset.search]) })
   })
 }
+
+// 従業員名簿の CSV（#431）
+delegate('exportEmployees', () => {
+  const status = document.getElementById('emp-export-status').value
+  const pay = document.getElementById('emp-export-pay')
+  if (pay && pay.checked && !confirm('口座番号・給与を含めた名簿を出力します。ファイルの扱い（保存場所・共有先）に注意してください。よろしいですか？')) return
+  const q = new URLSearchParams()
+  if (status) q.set('status', status)
+  if (pay && pay.checked) q.set('include_pay', '1')
+  location.href = '/api/admin/employees/export' + (q.toString() ? '?' + q : '')
+})
 
 async function renderEmployeeDetail(sid) {
   loading()

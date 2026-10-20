@@ -13,7 +13,7 @@
 import { Hono } from 'hono'
 import { MONEY_MAX, calcAmounts, hoursForAmounts, isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
 import { isHHMM } from './lib/validate'
-import { toCsv } from './csv'
+import { accountTypeCode, csvResponse, toCsv, toZenginKana, zenginTransferFile } from './csv'
 import { JSON_IN, batchInChunks, bindJsonArray, chunk } from './lib/d1-chunk'
 import { addDays, overlaps, shiftWindow } from './lib/shift-time'
 import { changesOf, updateRowsStmts } from './lib/bulk-write'
@@ -759,6 +759,228 @@ async function logExport(db: D1Database, u: any, kind: string, f: Filters, rowCo
   await db.prepare(`INSERT INTO settlement_export_logs (company_id, kind, period_from, period_to, filters_json, row_count, exported_by, exported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, kind, f.from, f.to, JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([, v]) => v != null))), rowCount, u.user_id, nowJST()).run().catch(() => {})
 }
+
+// ---------- 振込データ（#471） ----------
+// 日雇い・個人事業主（と自社給与）の支払合計を、振込先の口座と合わせて全銀形式・CSV で出す。
+// 口座は payout_accounts（精算の画面で登録）を使い、なければ従業員管理（employee_records）の口座を使う。名義カナがなければ氏名のフリガナを使う。
+// 口座・依頼人の情報は労務情報のため、会社管理者・事務担当だけが扱える（従業員管理と同じ #205 の方針）。
+// 金額は確定済みのシフトの支払合計（源泉徴収などの控除の前）。未確定のシフト・単価未設定のシフトは含めず、件数を知らせる
+const PAYOUT_ROLES = ['company_admin', 'office_staff']
+const PAYOUT_TYPES = ['payroll_daily', 'freelance', 'payroll'] as const
+const PAYOUT_DEFAULT_TYPES = ['payroll_daily', 'freelance']
+const payoutForbidden = (u: any) => !PAYOUT_ROLES.includes(u?.role)
+const PAYOUT_FORBIDDEN = '振込データと口座情報は、会社管理者と事務担当のみ利用できます'
+const ACCOUNT_TYPE_LABEL: Record<string, string> = { '1': '普通', '2': '当座', '4': '貯蓄' }
+const digits = (v: any) => String(v ?? '').normalize('NFKC').replace(/[\s-]/g, '')
+const maskAccount = (v: any) => { const s = String(v || ''); return s ? '*'.repeat(Math.max(0, Math.max(7, s.length) - 3)) + s.slice(-3) : '' }
+type PayoutAccount = { source: 'payout' | 'employee'; bank_code: string; bank_name: string; branch_code: string; branch_name: string; account_type: string | null; account_number: string; holder_kana: string }
+// 口座の値を確かめる。問題があれば文言を返す
+function accountProblems(a: PayoutAccount | null): string[] {
+  if (!a) return ['口座が未登録']
+  const p: string[] = []
+  if (!/^\d{4}$/.test(a.bank_code)) p.push('金融機関コード（4桁）がない')
+  if (!/^\d{3}$/.test(a.branch_code)) p.push('支店コード（3桁）がない')
+  if (!a.account_type) p.push('預金種目が分からない')
+  if (!/^\d{1,7}$/.test(a.account_number)) p.push('口座番号（7桁まで）がない')
+  const kana = toZenginKana(a.holder_kana)
+  if (!kana) p.push(a.holder_kana ? '名義に全銀で使えない文字がある（カナで登録してください）' : '口座名義（カナ）がない')
+  else if (kana.length > 30) p.push('口座名義が30文字を超える')
+  return p
+}
+async function loadPayoutAccounts(db: D1Database, companyId: number, staffIds: number[]) {
+  const map = new Map<number, PayoutAccount>()
+  if (!staffIds.length) return map
+  const rows = (await db.prepare(`SELECT sp.staff_id, sp.kana, pa.bank_code AS p_bank_code, pa.bank_name AS p_bank_name, pa.branch_code AS p_branch_code, pa.branch_name AS p_branch_name,
+      pa.account_type AS p_account_type, pa.account_number AS p_account_number, pa.holder_kana AS p_holder_kana,
+      er.bank_code, er.bank_name, er.branch_code, er.branch_name, er.account_type, er.account_number
+    FROM staff_profiles sp LEFT JOIN payout_accounts pa ON pa.staff_id = sp.staff_id AND pa.company_id = sp.company_id
+    LEFT JOIN employee_records er ON er.staff_id = sp.staff_id AND er.company_id = sp.company_id
+    WHERE sp.company_id = ? AND sp.staff_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(staffIds)).all()).results as any[]
+  for (const r of rows) {
+    if (r.p_account_number) {
+      map.set(r.staff_id, { source: 'payout', bank_code: digits(r.p_bank_code), bank_name: r.p_bank_name || '', branch_code: digits(r.p_branch_code), branch_name: r.p_branch_name || '',
+        account_type: accountTypeCode(r.p_account_type), account_number: digits(r.p_account_number), holder_kana: r.p_holder_kana || '' })
+    } else if (r.account_number) {
+      map.set(r.staff_id, { source: 'employee', bank_code: digits(r.bank_code), bank_name: r.bank_name || '', branch_code: digits(r.branch_code), branch_name: r.branch_name || '',
+        account_type: accountTypeCode(r.account_type), account_number: digits(r.account_number), holder_kana: r.kana || '' })
+    }
+  }
+  return map
+}
+const SETTING_COLS = ['requester_code', 'requester_kana', 'bank_code', 'bank_name', 'branch_code', 'branch_name', 'account_type', 'account_number'] as const
+function settingsProblems(st: any): string[] {
+  const p: string[] = []
+  if (!st || !/^\d{10}$/.test(digits(st.requester_code))) p.push('委託者コード（10桁）')
+  if (!st || !toZenginKana(st.requester_kana)) p.push('委託者名（カナ）')
+  if (!st || !/^\d{4}$/.test(digits(st.bank_code))) p.push('振込元の金融機関コード（4桁）')
+  if (!st || !/^\d{3}$/.test(digits(st.branch_code))) p.push('振込元の支店コード（3桁）')
+  if (!st || !accountTypeCode(st.account_type)) p.push('振込元の預金種目')
+  if (!st || !/^\d{1,7}$/.test(digits(st.account_number))) p.push('振込元の口座番号')
+  return p
+}
+// 期間の支払先（個人）ごとの振込の一覧。確定済みのシフトの支払合計
+async function buildPayout(db: D1Database, companyId: number, f: Filters, types: string[]) {
+  const all = await loadRows(db, companyId, { ...f, payee_type: '', settle: '', issues_only: false })
+  if (all.length > MAX_ROWS) return { error: `対象が${MAX_ROWS}件を超えるため作成できません。期間を絞ってください` }
+  const rows = all.filter(r => types.includes(r.payee_type))
+  const groups = new Map<number, Row[]>()
+  for (const r of rows) { const a = groups.get(r.staff_id) || []; a.push(r); groups.set(r.staff_id, a) }
+  const accounts = await loadPayoutAccounts(db, companyId, [...groups.keys()])
+  const items = [...groups.entries()].map(([staffId, a]) => {
+    const done = a.filter(r => r.settle_status === 'confirmed')
+    const unset = done.filter(r => r.pay_total == null).length
+    const amount = Math.round(done.reduce((n, r) => n + Number(r.pay_total || 0), 0))
+    const acc = accounts.get(staffId) || null
+    const problems = accountProblems(acc)
+    if (amount <= 0) problems.push(done.length ? '振込金額が0円以下' : '確定済みのシフトがない')
+    const notes: string[] = []
+    if (a.length > done.length) notes.push(`未確定のシフト ${a.length - done.length}件は含みません`)
+    if (unset) notes.push(`支払単価が未設定のシフト ${unset}件は0円として集計しています`)
+    if (acc?.source === 'employee') notes.push('従業員管理の口座を使用（名義は氏名のフリガナ）')
+    // 支払区分が期間の途中で変わった人は、区分ごとに分けずにまとめる
+    const labels = [...new Set(a.map(r => r.payee_label))]
+    return {
+      staff_id: staffId, staff_name: a[0].staff_name, employee_number: a[0].employee_number, payee_label: labels.join('・'),
+      shifts: done.length, unconfirmed: a.length - done.length, pay_unset: unset, amount,
+      account: acc ? { source: acc.source, bank_code: acc.bank_code, bank_name: acc.bank_name, branch_code: acc.branch_code, branch_name: acc.branch_name,
+        account_type: acc.account_type, account_type_label: ACCOUNT_TYPE_LABEL[acc.account_type || ''] || '', account_number_masked: maskAccount(acc.account_number),
+        holder_kana: acc.holder_kana, holder_zengin: toZenginKana(acc.holder_kana) } : null,
+      problems, notes, exportable: !problems.length, _acc: acc,
+    }
+  }).sort((x, y) => (x.employee_number || '').localeCompare(y.employee_number || '') || x.staff_name.localeCompare(y.staff_name, 'ja'))
+  return { items }
+}
+function payoutTypes(v: any): string[] {
+  const t = String(v || '').split(',').filter(x => (PAYOUT_TYPES as readonly string[]).includes(x))
+  return t.length ? t : PAYOUT_DEFAULT_TYPES
+}
+async function loadPayoutSettings(db: D1Database, companyId: number) {
+  return await db.prepare(`SELECT ${SETTING_COLS.join(', ')}, updated_at FROM payout_settings WHERE company_id = ?`).bind(companyId).first() as any
+}
+app.get('/settlement/payout', async (c) => {
+  const u = c.get('user')
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  const f = parseFilters(k => (k === 'from' || k === 'to' ? c.req.query(k) : undefined))
+  if ('error' in f) return c.json({ error: f.error }, 400)
+  const types = payoutTypes(c.req.query('types'))
+  const res = await buildPayout(c.env.DB, u.company_id, f, types)
+  if ('error' in res) return c.json({ error: res.error }, 400)
+  const st = await loadPayoutSettings(c.env.DB, u.company_id)
+  const items = res.items.map(({ _acc, ...x }) => x)
+  return c.json({ from: f.from, to: f.to, types, items, total: items.filter(x => x.exportable).reduce((n, x) => n + x.amount, 0),
+    exportable: items.filter(x => x.exportable).length, skipped: items.filter(x => !x.exportable).length,
+    settings: st ? { ...st, account_number_masked: maskAccount(st.account_number), account_number: undefined } : null, settings_problems: settingsProblems(st) })
+})
+app.get('/settlement/payout/export', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  const f = parseFilters(k => (k === 'from' || k === 'to' ? c.req.query(k) : undefined))
+  if ('error' in f) return c.json({ error: f.error }, 400)
+  const types = payoutTypes(c.req.query('types'))
+  const format = c.req.query('format') === 'csv' ? 'csv' : 'zengin'
+  const transferDate = c.req.query('transfer_date') || ''
+  if (format === 'zengin' && !isDate(transferDate)) return c.json({ error: '振込日（取組日）を指定してください' }, 400)
+  const st = await loadPayoutSettings(db, u.company_id)
+  const stProblems = settingsProblems(st)
+  if (format === 'zengin' && stProblems.length) return c.json({ error: `振込元（依頼人）の設定が足りません: ${stProblems.join('、')}` }, 400)
+  const res = await buildPayout(db, u.company_id, f, types)
+  if ('error' in res) return c.json({ error: res.error }, 400)
+  const ok = res.items.filter(x => x.exportable)
+  if (!ok.length) return c.json({ error: '振込できる支払先がありません（口座の未登録・確定済みのシフトがない人は出力しません）' }, 400)
+  const skipped = res.items.length - ok.length
+  const headers = { 'X-Payout-Count': String(ok.length), 'X-Payout-Skipped': String(skipped), 'Cache-Control': 'no-store' }
+  await logExport(db, u, 'payout_' + format, f, ok.length, { types: types.join(','), transfer_date: transferDate || null, skipped })
+  if (format === 'csv') {
+    // 確認用・ネットバンクの一括振込の取り込み用。コードと口座番号は先頭の0が消えないよう文字として出す
+    const csv = toCsv(['金融機関コード', '金融機関名', '支店コード', '支店名', '預金種目', '口座番号', '受取人名（カナ）', '振込金額', '支払区分', 'スタッフ', '社員番号', 'スタッフID', '確定シフト数', '備考'],
+      ok.map(x => { const a = x._acc!; return [a.bank_code, a.bank_name, a.branch_code, a.branch_name, ACCOUNT_TYPE_LABEL[a.account_type || ''] || '', a.account_number.padStart(7, '0'),
+        toZenginKana(a.holder_kana), x.amount, x.payee_label, x.staff_name, x.employee_number, x.staff_id, x.shifts, x.notes.join(' / ')] }),
+      { textCols: ['金融機関コード', '支店コード', '口座番号', '社員番号'] })
+    return csvResponse(`振込一覧_${f.from}_${f.to}.csv`, csv, headers)
+  }
+  const bytes = zenginTransferFile({ requester_code: digits(st.requester_code), requester_kana: st.requester_kana, transfer_date: transferDate, bank_code: digits(st.bank_code),
+    bank_name: st.bank_name, branch_code: digits(st.branch_code), branch_name: st.branch_name, account_type: st.account_type, account_number: digits(st.account_number) },
+  ok.map(x => { const a = x._acc!; return { bank_code: a.bank_code, bank_name: a.bank_name, branch_code: a.branch_code, branch_name: a.branch_name, account_type: a.account_type || '1',
+    account_number: a.account_number, holder_kana: a.holder_kana, amount: x.amount, customer_code: x.staff_id } }))
+  const name = `総合振込_${transferDate}_${f.from}_${f.to}.txt`
+  return new Response(bytes, { headers: { ...headers, 'Content-Type': 'text/plain; charset=Shift_JIS',
+    'Content-Disposition': `attachment; filename="zengin.txt"; filename*=UTF-8''${encodeURIComponent(name)}` } })
+})
+// 振込元（依頼人）の設定
+app.get('/settlement/payout/settings', async (c) => {
+  const u = c.get('user')
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  const st = await loadPayoutSettings(c.env.DB, u.company_id)
+  return c.json({ settings: st || null, problems: settingsProblems(st) })
+})
+app.put('/settlement/payout/settings', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  const v: Record<string, string | null> = {}
+  for (const k of SETTING_COLS) v[k] = String(b[k] ?? '').trim() || null
+  for (const k of ['requester_code', 'bank_code', 'branch_code', 'account_number'] as const) if (v[k]) v[k] = digits(v[k])
+  if (v.account_type) v.account_type = accountTypeCode(v.account_type)
+  if (v.requester_code && !/^\d{10}$/.test(v.requester_code)) return c.json({ error: '委託者コードは10桁の数字で入力してください（取引銀行から通知されたコード）' }, 400)
+  if (v.requester_kana && !toZenginKana(v.requester_kana)) return c.json({ error: '委託者名はカナ・英数字で入力してください' }, 400)
+  const err = bankFieldsError(v)
+  if (err) return c.json({ error: err }, 400)
+  await c.env.DB.prepare(`INSERT INTO payout_settings (company_id, ${SETTING_COLS.join(', ')}, updated_by, updated_at) VALUES (?, ${SETTING_COLS.map(() => '?').join(', ')}, ?, ?)
+    ON CONFLICT(company_id) DO UPDATE SET ${SETTING_COLS.map(k => `${k} = excluded.${k}`).join(', ')}, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .bind(u.company_id, ...SETTING_COLS.map(k => v[k]), u.user_id, nowJST()).run()
+  return c.json({ ok: true, problems: settingsProblems(v) })
+})
+function bankFieldsError(v: Record<string, any>): string | null {
+  if (v.bank_code && !/^\d{4}$/.test(v.bank_code)) return '金融機関コードは4桁の数字で入力してください'
+  if (v.branch_code && !/^\d{3}$/.test(v.branch_code)) return '支店コードは3桁の数字で入力してください'
+  if (v.account_type === null && v._account_type_given) return '預金種目は普通・当座・貯蓄から選んでください'
+  if (v.account_number && !/^\d{1,7}$/.test(v.account_number)) return '口座番号は7桁までの数字で入力してください'
+  return null
+}
+// スタッフの振込先の口座（日雇い・個人事業主を含む）
+async function ownStaffForPayout(db: D1Database, companyId: number, sid: any) {
+  return await db.prepare(`SELECT sp.staff_id, sp.kana, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ? AND sp.company_id = ?`)
+    .bind(sid, companyId).first() as any
+}
+app.get('/settlement/payout/accounts/:staffId', async (c) => {
+  const u = c.get('user')
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  const sp = await ownStaffForPayout(c.env.DB, u.company_id, c.req.param('staffId'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const [own, emp] = await c.env.DB.batch([
+    c.env.DB.prepare('SELECT bank_code, bank_name, branch_code, branch_name, account_type, account_number, holder_kana, updated_at FROM payout_accounts WHERE company_id = ? AND staff_id = ?').bind(u.company_id, sp.staff_id),
+    c.env.DB.prepare('SELECT bank_code, bank_name, branch_code, branch_name, account_type, account_number FROM employee_records WHERE company_id = ? AND staff_id = ?').bind(u.company_id, sp.staff_id),
+  ])
+  return c.json({ staff: { staff_id: sp.staff_id, name: sp.name, kana: sp.kana || '' }, account: own.results[0] || null, employee_account: emp.results[0] || null })
+})
+app.put('/settlement/payout/accounts/:staffId', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  const sp = await ownStaffForPayout(c.env.DB, u.company_id, c.req.param('staffId'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const v: Record<string, any> = {
+    bank_code: digits(b.bank_code), bank_name: String(b.bank_name ?? '').trim() || null, branch_code: digits(b.branch_code), branch_name: String(b.branch_name ?? '').trim() || null,
+    account_type: accountTypeCode(b.account_type), account_number: digits(b.account_number), holder_kana: String(b.holder_kana ?? '').trim(), _account_type_given: true,
+  }
+  if (!v.bank_code || !v.branch_code || !v.account_number || !v.holder_kana) return c.json({ error: '金融機関コード・支店コード・口座番号・口座名義（カナ）を入力してください' }, 400)
+  const err = bankFieldsError(v)
+  if (err) return c.json({ error: err }, 400)
+  const kana = toZenginKana(v.holder_kana)
+  if (!kana) return c.json({ error: '口座名義はカナで入力してください（漢字は振込データに使えません）' }, 400)
+  if (kana.length > 30) return c.json({ error: '口座名義は半角30文字までです（銀行の登録どおりに略してください）' }, 400)
+  const now = nowJST()
+  await c.env.DB.prepare(`INSERT INTO payout_accounts (company_id, staff_id, bank_code, bank_name, branch_code, branch_name, account_type, account_number, holder_kana, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(company_id, staff_id) DO UPDATE SET bank_code = excluded.bank_code, bank_name = excluded.bank_name,
+      branch_code = excluded.branch_code, branch_name = excluded.branch_name, account_type = excluded.account_type, account_number = excluded.account_number,
+      holder_kana = excluded.holder_kana, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .bind(u.company_id, sp.staff_id, v.bank_code, v.bank_name, v.branch_code, v.branch_name, v.account_type, v.account_number, v.holder_kana, u.user_id, now).run()
+  return c.json({ ok: true, holder_zengin: kana })
+})
+app.delete('/settlement/payout/accounts/:staffId', async (c) => {
+  const u = c.get('user')
+  if (payoutForbidden(u)) return c.json({ error: PAYOUT_FORBIDDEN }, 403)
+  await c.env.DB.prepare('DELETE FROM payout_accounts WHERE company_id = ? AND staff_id = ?').bind(u.company_id, c.req.param('staffId')).run()
+  return c.json({ ok: true })
+})
 
 // ---------- 絞り込みの選択肢（#494） ----------
 // 精算画面を開くたびに取り直す（後から登録した案件・クライアントも選べるように）。締め日（#168）も返す
