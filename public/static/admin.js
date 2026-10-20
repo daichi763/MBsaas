@@ -640,7 +640,7 @@ function dashDayBeforeHtml(data) {
         <span class="text-gray-500 whitespace-nowrap">${esc(formatShiftTime(s.start_time, s.end_time))}</span>
         <a href="#staff/${Number(s.staff_id)}" class="font-bold text-gray-800 hover:underline">${esc(s.staff_name)}</a>
         ${s.has_login ? '' : '<span class="badge badge-gray text-[10px]" title="アプリのログインがないため、アプリでは確認できません">ログインなし</span>'}
-        ${s.changed ? '<span class="badge badge-yellow text-[10px]" title="確認の後にシフトの日時・案件が変わりました">確認後に変更</span>' : ''}
+        ${s.changed ? '<span class="badge badge-yellow text-[10px]" title="確認の後にシフトの日時・案件・場所が変わりました">確認後に変更</span>' : ''}
         <span class="text-gray-500">${esc(s.project_name)}</span>
         ${s.confirmed_at ? `<span class="ml-auto text-emerald-700 whitespace-nowrap"><i class="fas fa-check mr-0.5"></i>${esc(String(s.confirmed_at).slice(11, 16))} ${s.confirmed_by_name ? esc(s.confirmed_by_name) + 'が記録' : '本人が確認'}</span>`
           : `<button type="button" class="ml-auto text-blue-600 hover:underline whitespace-nowrap" data-action="dashDayBeforeConfirm" data-id="${Number(s.shift_id)}" title="電話などで本人に確かめたときに使います">確認済みにする</button>`}

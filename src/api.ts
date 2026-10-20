@@ -1338,7 +1338,7 @@ async function homeLoadReports(db: D1Database, shifts: any[]) {
     const o = out.get(r.shift_id)
     if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status, late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
       entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null,
-      device_time: r.time_source === 'device', received_at: r.time_source === 'device' ? r.received_at : null }
+      ...deviceTimeMark(r) }
   }
   const pend = (await db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND status = 'pending'`).bind(...ids).all()).results as any[]
   for (const r of pend) { const o = out.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
@@ -1492,7 +1492,7 @@ api.post('/staff/day-before-confirm', async (c) => {
   const personRows = await personStaffRows(db, u)
   if (!personRows.length) return c.json({ error: 'シフトが見つかりません' }, 404)
   const staffIds = personRows.map(r => r.staff_id)
-  const rows = (await db.prepare(`SELECT shift_id, staff_id, company_id, project_id, work_date, start_time, end_time, status FROM shifts
+  const rows = (await db.prepare(`SELECT shift_id, staff_id, company_id, project_id, work_date, start_time, end_time, status, site_id, location FROM shifts
     WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND staff_id IN (${staffIds.map(() => '?').join(',')})`).bind(...ids, ...staffIds).all()).results as any[]
   if (rows.length !== ids.length) return c.json({ error: 'シフトが見つかりません' }, 404)
   const tomorrow = addDays(todayJST(), 1)
@@ -1509,8 +1509,8 @@ api.post('/staff/day-before-confirm', async (c) => {
       day_before_confirmed_at = CASE WHEN day_before_confirmed_at IS NOT NULL AND day_before_confirmed_key = ?1 THEN day_before_confirmed_at ELSE ?2 END,
       day_before_confirmed_by = CASE WHEN day_before_confirmed_at IS NOT NULL AND day_before_confirmed_key = ?1 THEN day_before_confirmed_by ELSE NULL END,
       day_before_confirmed_key = ?1
-    WHERE shift_id = ?3 AND staff_id = ?4 AND project_id = ?5 AND work_date = ?6 AND start_time = ?7 AND end_time = ?8 AND status IN ('confirmed', 'substitute')`)
-    .bind(dayBeforeKey(s), now, s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time)))
+    WHERE shift_id = ?3 AND staff_id = ?4 AND project_id = ?5 AND work_date = ?6 AND start_time = ?7 AND end_time = ?8 AND site_id IS ?9 AND location IS ?10 AND status IN ('confirmed', 'substitute')`)
+    .bind(dayBeforeKey(s), now, s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.site_id ?? null, s.location ?? null)))
   if (res.some(r => !r.meta.changes)) return c.json({ error: 'シフトが変更されました。画面を読み直してください' }, 409)
   return c.json({ ok: true, shift_ids: ids, confirmed_at: now })
 })
@@ -1526,8 +1526,8 @@ api.post('/admin/shifts/:id/day-before-confirm', async (c) => {
   if (dayBeforeState(s).confirmed_at) return c.json({ ok: true, confirmed_at: s.day_before_confirmed_at, already: true })
   const now = nowJST()
   const r = await db.prepare(`UPDATE shifts SET day_before_confirmed_at = ?, day_before_confirmed_key = ?, day_before_confirmed_by = ?
-    WHERE shift_id = ? AND company_id = ? AND staff_id = ? AND project_id = ? AND work_date = ? AND start_time = ? AND end_time = ?`)
-    .bind(now, dayBeforeKey(s), u.user_id, s.shift_id, u.company_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time).run()
+    WHERE shift_id = ? AND company_id = ? AND staff_id = ? AND project_id = ? AND work_date = ? AND start_time = ? AND end_time = ? AND site_id IS ? AND location IS ?`)
+    .bind(now, dayBeforeKey(s), u.user_id, s.shift_id, u.company_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.site_id ?? null, s.location ?? null).run()
   if (!r.meta.changes) return c.json({ error: 'シフトが変更されました。画面を読み直してください' }, 409)
   return c.json({ ok: true, confirmed_at: now, confirmed_by_name: u.name })
 })
@@ -1699,6 +1699,12 @@ async function staffReportTime(db: D1Database, shiftId: number, type: string, no
     }
   }
   return { at, checkAt: dev.pressed, pressed: dev.pressed, adopt: true }
+}
+
+// 押した時刻で記録した印（打刻修正で直した報告には付けない。修正の後の時刻は承認した内容のため）
+function deviceTimeMark(r: any) {
+  const dev = r.time_source === 'device' && r.corrected_by_correction_id == null
+  return { device_time: dev, received_at: dev ? r.received_at : null }
 }
 
 // 勤怠報告
@@ -2815,13 +2821,13 @@ api.get('/admin/dashboard', async (c) => {
   const todayModes = await modesForShifts(db, rows.filter(s => s.status !== 'absent').map(s => s.shift_id))
   // 報告ごとの時刻・遅延・位置不明・遅刻と早退の分数（#348）。報告はシフトと種類で1件（uq_attendance_shift_type）
   // 電波がない場所で押して後から届いた報告は、押した時刻で記録したことと受け取った時刻も出す（#427）
-  const reportRows = rows.length ? (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, time_source, received_at
+  const reportRows = rows.length ? (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, time_source, received_at, corrected_by_correction_id
     FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(rows.map(s => s.shift_id))).all()).results as any[] : []
   const reportsByShift = new Map<number, Record<string, any>>()
   for (const r of reportRows) {
     const m = reportsByShift.get(r.shift_id) || {}
     m[r.report_type] = { at: String(r.reported_at || '').slice(0, 16), status: r.status, late_minutes: Number(r.late_minutes) || 0, early_leave_minutes: Number(r.early_leave_minutes) || 0,
-      ...(r.time_source === 'device' ? { device_time: true, received_at: String(r.received_at || '').slice(0, 16) } : {}) }
+      ...(deviceTimeMark(r).device_time ? { device_time: true, received_at: String(r.received_at || '').slice(0, 16) } : {}) }
     reportsByShift.set(r.shift_id, m)
   }
   // 画面の報告状況の列: シフトごとの有効な報告と報告済みの種類
@@ -3152,7 +3158,7 @@ api.get('/admin/dashboard', async (c) => {
   if (dayBefore.enabled) {
     const tomorrow = addDays(today, 1)
     const list = ((await db.prepare(`
-      SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.day_before_confirmed_at, s.day_before_confirmed_key, s.day_before_confirmed_by,
+      SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.site_id, s.location, s.day_before_confirmed_at, s.day_before_confirmed_key, s.day_before_confirmed_by,
         p.project_name, us.name AS staff_name, us.phone AS staff_phone, us.role = 'staff' AS has_login, cu.name AS confirmed_by_name
       FROM shifts s JOIN projects p ON s.project_id = p.project_id
       JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
@@ -3174,7 +3180,7 @@ api.get('/admin/dashboard', async (c) => {
     }
   }
   // 『対応済み』『あとで』にした ToDo は分けて返す（画面ではたたんで出し、元に戻せる）
-  const dismissals =new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
+  const dismissals = new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
     FROM todo_dismissals d LEFT JOIN users um ON um.user_id = d.user_id WHERE d.company_id = ? AND (d.action = 'done' OR d.until_at > ?)`).bind(cid, now).all()).results as any[])
     .map(d => [String(d.todo_key), d]))
   const visible: Todo[] = [], hidden: any[] = []
@@ -3199,7 +3205,7 @@ api.get('/admin/dashboard', async (c) => {
     staffing_ahead: ahead,
     // 明日のシフトの前日確認（#176。使っていない会社は enabled: false だけ）
     day_before: dayBeforeOut,
-    incidents:(incidents.results as any[]).map(({ report_values, ...i }) => {
+    incidents: (incidents.results as any[]).map(({ report_values, ...i }) => {
       let values: any = {}
       try { values = JSON.parse(report_values) || {} } catch { values = {} }
       return { ...i, values }

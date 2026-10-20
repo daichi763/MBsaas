@@ -319,11 +319,11 @@
 - 次回の稼働（#278）: `GET /staff/home` の `next_shifts` に、今日より後の最初の稼働日の確定・代打のシフト（同一人物の全所属企業。同じ日は最大5件）を返し、ホームに「次回の稼働」を出す
 - 前日確認（#176）: 会社の設定 `settings_json.day_before_check`（`{ enabled, deadline: 'HH:MM' }`。既定は使わない・18:00。`GET/PUT /admin/report-settings/day-before-check`）
   - スタッフ: 明日のシフトに「確認しました」（`POST /staff/day-before-confirm`。`shift_ids`）と「行けなくなった」（相談・連絡を遅刻・欠勤相談で開く）
-  - 記録は `shifts.day_before_confirmed_at`・`_key`（確認したときの稼働日・時刻・案件・担当。変わったら未確認に戻る）・`_by`（管理者が電話などで記録したとき。`POST /admin/shifts/:id/day-before-confirm`）
+  - 記録は `shifts.day_before_confirmed_at`・`_key`（確認したときの稼働日・時刻・案件・担当・場所。変わったら未確認に戻る）・`_by`（管理者が電話などで記録したとき。`POST /admin/shifts/:id/day-before-confirm`）
   - ダッシュボード: 明日のシフトの確認状況（未確認を上に、電話番号と「確認済みにする」）。締切を過ぎても未確認の人がいれば ToDo（`day_before:<日付>`）。遅刻の ToDo からこの一覧へ移れる
 - 電波がない場所での報告（#427）: アプリは通信に失敗した報告を、押した時刻・位置・写真ごと端末（IndexedDB）に保存し、通信が戻ったら押した順に送る
   - 送るときは `pressed_at`（端末の時計のエポックミリ秒）と `client_request_id`（押すたびに作る一意キー）を付ける。同じキーの再送は記録済みの内容を返す（409 にしない）
-  - サーバーは、受け取った時刻より2分を超えて先・12時間より前の時刻を断り、受付の時間帯と記録済みの前の報告との順序は押した時刻で確かめる。押した時刻を使ったときは `attendance_reports.time_source = 'device'`（受け取った時刻は `received_at`、押した時刻は `pressed_at`）。遅刻の判定も押した時刻で行う
+  - サーバーは、受け取った時刻より2分を超えて先・12時間より前の時刻を断り、受付の時間帯と記録済みの前の報告との順序は押した時刻で確かめる。押した時刻を使ったときは `attendance_reports.time_source = 'device'`（受け取った時刻は `received_at`、押した時刻は `pressed_at`）。打刻修正で直した報告には印を出さない。遅刻の判定も押した時刻で行う
   - スタッフのホームとダッシュボードの報告状況に「押した時刻で記録」「端末時刻」の印と受け取った時刻を出す。断られた報告はホームに「送れなかった報告」として出し、打刻履歴からの申請を案内する
 
 ## 7. API（案）

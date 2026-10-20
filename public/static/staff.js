@@ -227,7 +227,9 @@ delegate('homeDayBeforeConfirm', (el) => withSubmitLock(el, async () => {
   renderHome()
 }))
 delegate('homeDayBeforeCannot', (el) => {
-  draftSave('consult', { category: 'absence', shift_id: String(Number(el.dataset.id)), body: '', urgency: 'high' })
+  // 書きかけの相談の本文は残す
+  const old = draftLoad('consult') || {}
+  draftSave('consult', { category: 'absence', shift_id: String(Number(el.dataset.id)), body: typeof old.body === 'string' ? old.body : '', urgency: 'high' })
   location.hash = 'consult'
   toast('遅刻・欠勤相談として、明日のシフトを選びました。理由を書いて送信してください', 5000)
 })

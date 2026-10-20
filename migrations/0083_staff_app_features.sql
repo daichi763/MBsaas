@@ -1,9 +1,9 @@
 -- スタッフアプリの機能追加（作業単位 w6-staff-app-features: #176 #427。#278 はマイグレーション不要）
 --
 -- #176 前日確認: スタッフが前日に『明日の稼働を確認しました』を押した日時（JST 'YYYY-MM-DD HH:MM:SS'）。
---   day_before_confirmed_key は確認したときのシフトの内容（稼働日・開始・終了・案件・スタッフ）。
+--   day_before_confirmed_key は確認したときのシフトの内容（稼働日・開始・終了・案件・スタッフ・場所）。
 --   day_before_confirmed_by は管理者が電話などで確かめて記録したときの管理者（users.user_id）。本人がアプリで押したときは NULL。
---   確認の後にシフトの日時・案件・担当が変わったら、キーが合わなくなるので未確認として扱う（シフトを変える処理には手を入れない）。
+--   確認の後にシフトの日時・案件・担当・場所が変わったら、キーが合わなくなるので未確認として扱う（シフトを変える処理には手を入れない）。
 --   会社の設定は companies.settings_json の day_before_check（{ enabled, deadline: 'HH:MM' }。既定は使わない。
 --   GET/PUT /api/admin/report-settings/day-before-check）
 ALTER TABLE shifts ADD COLUMN day_before_confirmed_at TEXT;

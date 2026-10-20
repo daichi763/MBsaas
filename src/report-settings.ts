@@ -247,9 +247,12 @@ export function dayBeforeSettings(settingsJson: any): DayBeforeSettings {
   try { v = JSON.parse(settingsJson || '{}').day_before_check } catch { }
   return { enabled: !!(v && v.enabled === true), deadline: v && isHm(v.deadline) ? v.deadline : DAY_BEFORE_DEFAULT_DEADLINE }
 }
-// 確認したときのシフトの内容。確認の後に日時・案件・担当が変わったら合わなくなる（未確認に戻る）
-export function dayBeforeKey(s: { work_date: any; start_time: any; end_time: any; project_id: any; staff_id: any }): string {
-  return `${s.work_date} ${String(s.start_time).slice(0, 5)}-${String(s.end_time).slice(0, 5)} p${s.project_id} s${s.staff_id}`
+// 確認したときのシフトの内容。確認の後に日時・案件・担当・場所（開催場所・場所の入力）が変わったら合わなくなる（未確認に戻る）。
+// 場所は画面と同じく開催場所（site_id）、なければ場所の入力（長さが決まっていないので、短い値（FNV-1a）にして入れる）。
+// 開催場所の名前の変更（shift-board.ts が location も書き換える）では未確認に戻さない
+const shortHash = (v: string) => { let h = 0x811c9dc5; for (let i = 0; i < v.length; i++) h = Math.imul(h ^ v.charCodeAt(i), 0x01000193); return (h >>> 0).toString(36) }
+export function dayBeforeKey(s: { work_date: any; start_time: any; end_time: any; project_id: any; staff_id: any; site_id?: any; location?: any }): string {
+  return `${s.work_date} ${String(s.start_time).slice(0, 5)}-${String(s.end_time).slice(0, 5)} p${s.project_id} s${s.staff_id} ${s.site_id != null ? 'site' + s.site_id : 'loc' + shortHash(String(s.location ?? ''))}`
 }
 // 確認済みの日時（確認の後にシフトが変わったものは null）と、確認の後に変わったか
 export function dayBeforeState(s: any): { confirmed_at: string | null; changed: boolean } {
@@ -648,7 +651,7 @@ reportSettingsApi.put('/report-settings/day-before-check', async (c) => {
   return c.json({ ok: true, ...v })
 })
 
-const TOO_MANY ='保存に失敗しました。設定は変更されていません。対象が多い場合は、スタッフを分けて実行してください'
+const TOO_MANY = '保存に失敗しました。設定は変更されていません。対象が多い場合は、スタッフを分けて実行してください'
 
 // 案件一覧（終了した案件は include_closed=1 で表示）。
 // 個別設定のある人数と、OFF の報告がある在籍中の所属スタッフの人数も返す（#446）
