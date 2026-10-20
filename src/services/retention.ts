@@ -718,6 +718,7 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         // 同意履歴は連携行（staff_id）の単位で消す。所属元の行が対象になっても、連携先の行が残っている間は連携の根拠として残す
         ['roster_consents', db.prepare('DELETE FROM roster_consents WHERE staff_id = ? OR (source_staff_id = ? AND staff_id IS NULL)').bind(staffId, staffId)],
         // スタッフに紐づく応募（氏名・電話・メール・メモ）と応募した枠、人材提案のスナップショット・開示した氏名（#350）
+        [null, db.prepare('DELETE FROM recruit_application_notes WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
         ['recruit_application_items', db.prepare('DELETE FROM recruit_application_items WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
         ['recruit_applications', db.prepare('DELETE FROM recruit_applications WHERE staff_id = ?').bind(staffId)],
         ['board_proposals', db.prepare(`UPDATE board_proposals SET ${ANONYMIZE_PROPOSAL_SET}, anonymized_at = ?
@@ -1127,6 +1128,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
   { target: 'operation_logs', label: 'シフト・精算の操作履歴', table: 'operation_logs', where: OB_CO },
+  { target: 'recruit_application_notes', label: '応募の対応メモ', table: 'recruit_application_notes', where: OB_CO },
   { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
     where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },
   { target: 'recruit_applications', label: '応募', table: 'recruit_applications', where: OB_CO },
@@ -1202,6 +1204,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'roster_comment_user_reads', label: '企業間チャットの既読（利用者）', table: 'roster_comment_user_reads', where: OB_CO, noExport: true },
   { target: 'roster_host_note_seen', label: '稼働先メモの既読', table: 'roster_host_note_seen', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'board_thread_reads', label: '掲示板の既読（会社）', table: 'board_thread_reads', where: OB_CO, noExport: true },
+  { target: 'board_saved_searches', label: '掲示板の保存した検索条件', table: 'board_saved_searches', where: OB_CO },
   { target: 'board_thread_user_reads', label: '掲示板の既読（利用者）', table: 'board_thread_user_reads', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'support_requests', label: '本部への支援の依頼', table: 'support_requests', where: OB_CO },
   { target: 'hq_announcement_reads', label: '本部のお知らせの既読', table: 'hq_announcement_reads', where: OB_CO, noExport: true },
