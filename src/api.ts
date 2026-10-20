@@ -44,6 +44,7 @@ import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/s
 import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
 import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
+import { staffPayAdminApi, staffPayStaffApi } from './staff-pay'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -1132,6 +1133,9 @@ api.route('/staff', notificationsStaffApi)
 api.route('/admin/board', boardApi)
 // スタッフアプリからの応募（src/recruit.ts）
 api.route('/staff/recruit', recruitStaffApi)
+// スタッフの勤務時間・支払額の確認と、交通費・延長の申請（src/staff-pay.ts。w5-staff-pay-features）
+api.route('/staff', staffPayStaffApi)
+api.route('/admin', staffPayAdminApi)
 
 // =========================================================
 // スタッフ側 API

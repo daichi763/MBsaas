@@ -8,6 +8,9 @@
   const UNIT = { daily: '日', hourly: '時' }
   // src/settlement.ts の確認事項と同じ文言
   const PENDING_ISSUE = '承認待ちの打刻修正あり'
+  const PAY_REQUEST_ISSUE = '承認待ちの交通費・延長の申請あり'
+  // 承認・却下で片づける確認事項（確認済みにはできない）
+  const ackable = (i) => i !== PENDING_ISSUE && i !== PAY_REQUEST_ISSUE
   const RECALC_ISSUE = '数量・金額が今の計算と違う'
   const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前のまま）'
   // 欠勤・中止の理由（src/settlement.ts の CANCEL_REASON_LABEL と同じ）
@@ -102,6 +105,7 @@
           <button type="button" class="text-blue-600 hover:underline ml-1" data-action="settleClosingDay" data-id="${esc(client.client_id)}">締め日を設定</button></p>` : ''}
       </section>
       ${closingBannerHtml(data.closings || [])}
+      <div id="settle-payreq"></div>
 
       <section class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4" id="settle-totals">
         ${[['シフト', t.shifts + '件' + (t.cancel_shifts ? `<span class="text-[10px] text-gray-400 block">うち欠勤・中止 ${t.cancel_shifts}件</span>` : '')], ['確定済み', `${t.confirmed} / ${t.shifts}`],
@@ -128,6 +132,7 @@
     for (const id of ['st-project', 'st-payee', 'st-settle', 'st-issues']) document.getElementById(id).addEventListener('change', settleApply)
     document.getElementById('st-staff').addEventListener('change', settleApply)
     renderSettlementBody()
+    loadPayRequests()
   }
 
   const selectedClient = () => (S.client_id && master ? master.clients.find(c => String(c.client_id) === String(S.client_id)) : null)
@@ -376,6 +381,7 @@
     const confirmed = r.settle_status === 'confirmed'
     const open = r.issues.map(i => {
       if (i === PENDING_ISSUE) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleOpenCorrections" data-date="${esc(r.work_date)}" title="この勤務日の承認待ちの申請を開く">${esc(i)} <i class="fas fa-arrow-up-right-from-square text-[9px]"></i></button>`
+      if (i === PAY_REQUEST_ISSUE) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settlePayReqJump" title="スタッフからの申請の一覧へ">${esc(i)} <i class="fas fa-arrow-up text-[9px]"></i></button>`
       if (i === RECALC_ISSUE && !confirmed) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleRecalcOne" data-id="${r.shift_id}" title="今の案件の時間の設定で数量・金額を計算し直す">${esc(i)} <i class="fas fa-calculator text-[9px]"></i></button>`
       if (i === PAYEE_EXCLUDED_ISSUE && !confirmed) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleResetPayee" data-id="${r.shift_id}" title="単価ルールを再適用し、今の所属区分の支払先・単価に置き換える">${esc(i)} <i class="fas fa-rotate text-[9px]"></i></button>`
       return `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(i)}</span>`
@@ -385,7 +391,7 @@
       ${acked.map(i => `<span class="badge badge-gray block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('')}
       ${r.acked_at ? `<p class="whitespace-nowrap">${esc(r.acked_by_name || '')} ${esc(dayjs(r.acked_at).format('M/D HH:mm'))}</p>` : ''}</details>` : ''
     const actions = [
-      r.issues.some(i => i !== PENDING_ISSUE) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="settleAckOne" data-id="${r.shift_id}">確認済みにする</button>` : '',
+      r.issues.some(ackable) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="settleAckOne" data-id="${r.shift_id}">確認済みにする</button>` : '',
       r.acked_at ? `<button type="button" class="text-[11px] text-gray-500 hover:underline" data-action="settleUnackOne" data-id="${r.shift_id}">確認済みを取り消す</button>` : '',
     ].join('')
     return (open || '<i class="fas fa-check text-emerald-500"></i>') + ackedHtml + (actions ? `<div class="mt-0.5 whitespace-nowrap">${actions}</div>` : '')
@@ -434,14 +440,14 @@
   })
   delegate('settleAck', el => {
     const label = S.selected.size ? '選択中' : '表示中'
-    const ids = rowsOf(targetIds()).filter(r => r.issues.some(i => i !== PENDING_ISSUE)).map(r => r.shift_id)
-    if (!ids.length) return toast(`${label}のシフトに、確認済みにできる確認事項はありません（承認待ちの打刻修正は、承認か却下をしてください）`)
+    const ids = rowsOf(targetIds()).filter(r => r.issues.some(ackable)).map(r => r.shift_id)
+    if (!ids.length) return toast(`${label}のシフトに、確認済みにできる確認事項はありません（承認待ちの打刻修正・交通費と延長の申請は、承認か却下をしてください）`)
     if (!window.confirm(`${label}のシフトのうち、確認事項のある ${ids.length}件 を確認済みにします。\n確認済みの事項は『確認が必要』の件数と確定前の警告に数えません（内容が変わったときや、確定後に新しい修正・報告があったときは、再び確認が必要になります）。よろしいですか？`)) return
     ackRun(ids, false, el)
   })
   delegate('settleAckOne', el => {
     const r = rowsOf([Number(el.dataset.id)])[0]; if (!r) return
-    if (!window.confirm(`次の確認事項を確認済みにします。\n・${r.issues.filter(i => i !== PENDING_ISSUE).join('\n・')}`)) return
+    if (!window.confirm(`次の確認事項を確認済みにします。\n・${r.issues.filter(ackable).join('\n・')}`)) return
     ackRun([r.shift_id], false, el)
   })
   delegate('settleUnackOne', el => ackRun([Number(el.dataset.id)], true, el))
@@ -748,6 +754,96 @@
     if (!reason.trim()) return toast('解除の理由を入力してください')
     withSubmitLock(el, async () => {
       try { await axios.post(`/api/admin/settlement/closings/${Number(el.dataset.id)}/reopen`, { reason }); toast('締めを解除しました'); await openClosings(); reload() } catch (e) { toast(errMsg(e)) }
+    })
+  })
+  // ---------- スタッフからの交通費・延長の申請（#172 #273）と、スタッフアプリでの支払額の表示（#290）。w5-staff-pay-features ----------
+  // 承認待ちの申請は、期間の絞り込みに関係なくすべて出す（確定・締めの前に片づけられるように）
+  const PAY_KIND = { transport: '交通費（実費）', overtime: '延長' }
+  let PAYREQ = []
+  const spanMin = (s, e) => { const m = (t) => { const [h, mm] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (mm || 0) }; let x = m(e) - m(s); if (x <= 0) x += 1440; return x }
+  function payReqContent(q) {
+    if (q.kind === 'transport') {
+      return `<b>${esc(yen(q.amount))}</b>（${q.round_trip ? '往復' : '片道'}）${esc(q.route || '')}
+        <span class="block text-[11px] text-gray-500">今の実費 ${esc(yen(q.transportation_fee))}・支払の交通費: ${esc(PT_LABEL[q.pay_transport_type] || q.pay_transport_type)}${q.pay_transport_type === 'capped' || q.pay_transport_type === 'fixed' ? ' ' + esc(yen(q.pay_transport_amount)) : ''}</span>`
+    }
+    const plus = q.start_time && q.end_time && q.new_end_time ? spanMin(q.start_time, q.new_end_time) - spanMin(q.start_time, q.end_time) : null
+    return `終了 ${esc(q.end_time || q.before_end_time || '')} → <b>${esc(q.new_end_time)}</b>${plus != null && plus > 0 ? `（+${plus}分）` : ''}
+      <span class="block text-[11px] text-gray-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type === 'hourly' ? '時給（承認すると延びた分も支払に入ります）' : '日給（承認しても金額は変わりません。必要なら調整額を入れてください）'}</span>`
+  }
+  async function loadPayRequests() {
+    const host = document.getElementById('settle-payreq'); if (!host) return
+    let d, st
+    try {
+      const rs = await Promise.all([axios.get('/api/admin/pay-requests'), axios.get('/api/admin/staff-pay/settings')])
+      d = rs[0].data; st = rs[1].data
+    } catch (e) {
+      if (host.isConnected) host.innerHTML = `<p class="text-xs text-red-600 mb-4">スタッフからの交通費・延長の申請を読み込めませんでした: ${esc(errMsg(e))}</p>`
+      return
+    }
+    if (!host.isConnected) return
+    PAYREQ = d.requests || []
+    const rows = PAYREQ.map(q => `<tr data-request-id="${Number(q.request_id)}">
+        <td class="whitespace-nowrap">${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : '-'}</td>
+        <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline" href="#staff/${Number(q.staff_id)}">${esc(q.staff_name)}</a></td>
+        <td>${esc(q.project_name)}</td>
+        <td class="whitespace-nowrap">${esc(PAY_KIND[q.kind] || q.kind)}</td>
+        <td>${payReqContent(q)}</td>
+        <td class="max-w-xs">${esc(q.reason || '')}</td>
+        <td class="whitespace-nowrap text-gray-400">${esc(dayjs(q.created_at).format('M/D HH:mm'))}</td>
+        <td class="whitespace-nowrap">${q.shift_issue ? `<p class="text-[11px] text-amber-700 mb-1 whitespace-normal">${esc(q.shift_issue)}</p>` : ''}
+          <button type="button" class="btn btn-primary text-xs py-1" data-action="settlePayReqApprove" data-id="${Number(q.request_id)}" ${q.shift_issue ? 'disabled' : ''}>承認</button>
+          <button type="button" class="btn btn-outline text-xs py-1" data-action="settlePayReqReject" data-id="${Number(q.request_id)}">却下</button></td></tr>`).join('')
+    const visible = `<p class="text-[11px] text-gray-500 mt-2">スタッフアプリでの支払額の表示: <b>${st.staff_pay_visible ? '表示する' : '表示しない'}</b>
+      ${st.can_edit ? `<button type="button" class="text-blue-600 hover:underline ml-1" data-action="settleStaffPayToggle" data-on="${st.staff_pay_visible ? '0' : '1'}">${st.staff_pay_visible ? '表示をやめる' : '表示する'}</button>` : '（変更は会社管理者のみ）'}
+      <span class="block text-gray-400">表示すると、支払先が本人（自社給与・日雇い給与・個人事業主）のシフトの支払額（単価・交通費・調整・合計）と、月の見込み・確定の合計を本人が見られます。請求額・取引先や他社への支払・調整のメモは見せません</span></p>`
+    host.innerHTML = `<section class="card p-3 mb-4 ${PAYREQ.length ? 'border border-amber-200 bg-amber-50/40' : ''}" id="settle-payreq-card">
+      <p class="text-sm font-bold ${PAYREQ.length ? 'text-amber-700' : 'text-gray-700'}"><i class="fas fa-train-subway mr-1"></i>スタッフからの交通費・延長の申請（承認待ち ${PAYREQ.length}件）</p>
+      ${PAYREQ.length ? `<p class="text-[11px] text-gray-500 my-1">承認すると、交通費はシフトの交通費（実費）に、延長はシフトの予定の終了時刻に反映します。確定済み・締めた期間のシフトは承認できません</p>
+      <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>案件</th><th>種類</th><th>内容</th><th>理由・メモ</th><th>申請</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="text-xs text-gray-400 mt-1">承認待ちの申請はありません</p>'}
+      ${visible}</section>`
+  }
+  delegate('settlePayReqJump', () => { const el = document.getElementById('settle-payreq'); if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }) })
+  delegate('settlePayReqApprove', el => {
+    const q = PAYREQ.find(x => x.request_id === Number(el.dataset.id)); if (!q) return
+    const field = q.kind === 'transport'
+      ? `<label class="text-sm text-gray-600 block mb-1">承認する金額（円。交通費の実費として記録します）</label><input id="pr-amount" type="number" min="0" class="inp mb-2" value="${esc(q.amount)}">`
+      : `<label class="text-sm text-gray-600 block mb-1">延長後の終了時刻（シフトの予定の終了時刻を変えます）</label><input id="pr-end" type="time" class="inp mb-2" value="${esc(q.new_end_time)}">`
+    modal(`<h3 class="font-bold text-gray-800 mb-1">${esc(PAY_KIND[q.kind] || q.kind)}の申請を承認</h3>
+      <p class="text-sm text-gray-600 mb-3">${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}</p>
+      ${field}
+      <label class="text-sm text-gray-600 block mb-1">スタッフへのコメント（任意）</label><textarea id="pr-note" class="inp" rows="2" maxlength="500"></textarea>
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-primary flex-1" data-action="settlePayReqApproveRun" data-id="${Number(q.request_id)}">承認する</button></div>`)
+  })
+  delegate('settlePayReqApproveRun', el => withSubmitLock(el, async () => {
+    const v = (id) => { const x = document.getElementById(id); return x ? x.value.trim() : undefined }
+    try {
+      await axios.post(`/api/admin/pay-requests/${Number(el.dataset.id)}/approve`, { amount: v('pr-amount'), end_time: v('pr-end'), note: v('pr-note') })
+      closeModal(); toast('承認しました'); reload()
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('settlePayReqReject', el => {
+    const q = PAYREQ.find(x => x.request_id === Number(el.dataset.id)); if (!q) return
+    modal(`<h3 class="font-bold text-gray-800 mb-1">${esc(PAY_KIND[q.kind] || q.kind)}の申請を却下</h3>
+      <p class="text-sm text-gray-600 mb-3">${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}</p>
+      <label class="text-sm text-gray-600 block mb-1">却下の理由（スタッフに伝わります）</label><textarea id="pr-reject-note" class="inp" rows="3" maxlength="500"></textarea>
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-danger flex-1" data-action="settlePayReqRejectRun" data-id="${Number(q.request_id)}">却下する</button></div>`)
+  })
+  delegate('settlePayReqRejectRun', el => withSubmitLock(el, async () => {
+    const note = (document.getElementById('pr-reject-note') || {}).value || ''
+    if (!note.trim()) return toast('却下の理由を入力してください')
+    try {
+      await axios.post(`/api/admin/pay-requests/${Number(el.dataset.id)}/reject`, { note })
+      closeModal(); toast('却下しました'); reload()
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('settleStaffPayToggle', el => {
+    const on = el.dataset.on === '1'
+    if (!window.confirm(on ? 'スタッフアプリに、本人あての支払額（単価・交通費・調整・合計と、月の見込み・確定額）を表示します。よろしいですか？' : 'スタッフアプリでの支払額の表示をやめます。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      try { await axios.put('/api/admin/staff-pay/settings', { staff_pay_visible: on }); toast(on ? '支払額を表示するようにしました' : '支払額の表示をやめました'); loadPayRequests() } catch (e) { toast(errMsg(e)) }
     })
   })
 })()
