@@ -56,7 +56,9 @@
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
         <div><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-list-check text-blue-600 mr-1"></i>案件報告管理</h2>
           <p class="text-xs text-gray-500 mt-1">案件ごと・スタッフごとに、勤怠報告 8 種類（起床〜退店）の ON/OFF を設定します。案件を選んでください</p></div>
-        <label class="flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" ${S.includeClosed ? 'checked' : ''} data-rs-change="toggleClosed">終了した案件も表示</label>
+        <div class="flex items-center gap-3 flex-wrap">
+          <button type="button" class="btn btn-outline text-sm" data-action="rsReminders"><i class="fas fa-bell"></i>未報告のリマインド</button>
+          <label class="flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" ${S.includeClosed ? 'checked' : ''} data-rs-change="toggleClosed">終了した案件も表示</label></div>
       </div>
       ${tabs('list')}
       <div class="hidden md:block card overflow-x-auto">
@@ -543,6 +545,36 @@
         <p class="text-[11px] text-gray-500 mb-2">シフトごとに「勤怠報告なし」「入店・退店のみ」にしているシフトです。案件・スタッフ別の設定より優先します</p>
         ${exceptionList(d.exceptions || [])}</section>`
   }
+  // ---------- 本人あての自動リマインド（#160。API は GET/PUT /admin/settings/reminders。15分おきの定期処理で送る） ----------
+  const REM = [['wake_up', '起床報告', '開始の', '分前'], ['departure', '出発報告', '開始の', '分前'], ['check_in', '入店報告', '開始の', '分後'], ['daily_report', '日報', '予定の終了の', '分後']]
+  delegate('rsReminders', async () => {
+    let s
+    try { s = (await axios.get('/api/admin/settings/reminders')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+    const dis = s.can_edit ? '' : 'disabled'
+    modal(`
+      <h3 class="font-bold text-lg mb-2"><i class="fas fa-bell text-blue-600 mr-1"></i>未報告のリマインド</h3>
+      <p class="text-xs text-gray-500 mb-3">起床・出発・入店の報告がない人と、日報を出していない人に、本人あての通知（とメール）を自動で1回だけ送ります（会社全体）。OFF にしている報告、遅刻・欠勤・体調不良の連絡があったシフト、ログインのない人には送りません。変更は次の定期処理（15分おき）から効きます。</p>
+      <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" id="rem-enabled" ${s.enabled ? 'checked' : ''} ${dis}>リマインドを送る</label>
+      <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" id="rem-email" ${s.email ? 'checked' : ''} ${dis}>メールも送る（メールアドレスを登録している人だけ）</label>
+      <div class="space-y-2">${REM.map(([k, label, pre, post]) => `<div class="flex items-center gap-2 text-sm flex-wrap">
+        <span class="w-20 shrink-0 text-gray-600">${label}</span><span class="text-gray-500">${pre}</span>
+        <input id="rem-${k}" type="number" min="0" max="${Number(s.limits && s.limits[k]) || 0}" step="1" class="inp w-24" value="${s[k] === null ? '' : Number(s[k])}" placeholder="送らない" ${dis}><span class="text-gray-500">${post}</span></div>`).join('')}</div>
+      <p class="text-[11px] text-gray-400 mt-2">空欄にした報告は送りません。報告の受付が始まる前（開始の6時間より前）の時点は、受付の開始に送ります</p>
+      ${s.can_edit ? '<button class="btn btn-primary w-full mt-4" data-action="rsSaveReminders">保存する</button>' : '<p class="text-xs text-gray-500 mt-4">設定を変更できるのは会社管理者だけです</p>'}`)
+  })
+  delegate('rsSaveReminders', el => withSubmitLock(el, async () => {
+    const body = { enabled: document.getElementById('rem-enabled').checked, email: document.getElementById('rem-email').checked }
+    for (const [k, label] of REM) {
+      const v = document.getElementById('rem-' + k).value.trim()
+      if (v !== '' && !/^\d+$/.test(v)) { toast(`${label}の時点は0以上の整数で入力してください`); return }
+      body[k] = v === '' ? null : Number(v)
+    }
+    try {
+      await axios.put('/api/admin/settings/reminders', body)
+      closeModal(); toast(body.enabled ? 'リマインドを送る設定にしました' : 'リマインドを送らない設定にしました')
+    } catch (e) { showApiError(e, '保存できませんでした') }
+  }))
+
   ON_CHANGE.offSel = (el) => { S.off = { ...S.off, [el.dataset.key]: el.value }; renderOffList() }
   ON_CHANGE.offFlag = (el) => { S.off = { ...S.off, [el.dataset.key]: el.checked ? '1' : '' }; renderOffList() }
 })()
