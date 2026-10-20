@@ -877,12 +877,15 @@ async function renderShifts(from) {
       ${from !== today ? `<button class="text-blue-600 underline" data-action="shiftWeek" data-from="${esc(today)}">今日から表示</button>` : '<span class="text-gray-400">今日から2週間の予定</span>'}
       <label class="flex items-center gap-1 text-gray-500">開始日<input type="date" id="shift-from" class="inp py-1 text-xs w-36" value="${esc(from)}"></label>
     </div>
+    <div id="av-banner"></div>
     <div id="recruit-open" class="mb-3"></div>
-    <button class="btn btn-primary w-full mb-4" onclick="showShiftRequest()"><i class="fas fa-plus"></i>シフト希望を提出する</button>
+    <button class="btn btn-primary w-full mb-2" onclick="showShiftRequest()"><i class="fas fa-plus"></i>シフト希望を提出する</button>
+    <div class="grid grid-cols-2 gap-2 mb-4"><a href="#availability" class="btn btn-outline text-xs"><i class="fas fa-calendar-check"></i>出勤可能日を提出</a><a href="#calendar" class="btn btn-outline text-xs"><i class="fas fa-calendar-plus"></i>カレンダーに追加</a></div>
     <div class="space-y-2" id="shift-list">${shiftListHtml(data, [], today)}</div>
     <div id="shift-modal"></div>`
   const picker = document.getElementById('shift-from')
   if (picker) picker.addEventListener('change', () => { if (/^\d{4}-\d{2}-\d{2}$/.test(picker.value)) renderShifts(picker.value) })
+  availabilityBanner()
   // 募集の読み込みが済んだら、期間内の承認待ちの応募を一覧に足す（募集の取得は loadRecruitOpen の1回だけ）
   Promise.resolve(loadRecruitOpen()).then(() => {
     const rc = typeof RECRUIT !== 'undefined' ? RECRUIT : null
@@ -2383,6 +2386,265 @@ document.addEventListener('DOMContentLoaded', () => {
     openStaffNotification(n)
   }
 })
+// ============ 出勤可能日の提出（#171 #availability）と、シフトのカレンダー追加（#301 #calendar） ============
+// どちらもシフト画面のボタンから開く。API は src/staff-schedule.ts
+routes.availability = () => renderAvailability()
+routes.calendar = () => renderShiftCalendar()
+titles.availability = '出勤可能日の提出'
+titles.calendar = 'カレンダーに追加'
+const SCHEDULE_BACK = '<a href="#shift" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>シフトへ戻る</a>'
+const AV_MARK = { ok: '○', partial: '△', ng: '×' }
+const AV_CELL = { ok: 'bg-emerald-50 border-emerald-300 text-emerald-700', partial: 'bg-amber-50 border-amber-300 text-amber-700', ng: 'bg-gray-100 border-gray-300 text-gray-500' }
+const AV_TOOLS = [['ok', '○ 終日OK'], ['partial', '△ 時間帯'], ['ng', '× 不可'], ['clear', '消す'], ['note', 'メモ']]
+const AV_WEEK = ['日', '月', '火', '水', '木', '金', '土']
+// AV: 表示中の月の入力。days は日付 → { status, start_time, end_time, note }。tool は日付を押したときに付けるもの
+let AV = null
+const avMonthLabel = (m) => `${Number(String(m).slice(0, 4))}年${Number(String(m).slice(5, 7))}月`
+const avFmtAt = (at) => at ? dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm') : ''
+const avEditable = (d) => !!(AV && AV.data.editable && d >= AV.data.editable_from)
+
+async function renderAvailability(month) {
+  const hashMonth = (location.hash.split('/')[1] || '')
+  month = month || (/^\d{4}-\d{2}$/.test(hashMonth) ? hashMonth : '')
+  loading()
+  let data
+  try { data = (await axios.get('/api/staff/availability', { params: month ? { month } : {} })).data } catch (e) { showLoadError(e); return }
+  if ((location.hash || '').slice(1).split('/')[0] !== 'availability') return
+  const days = {}
+  for (const d of data.days || []) days[d.work_date] = { status: d.status, start_time: d.start_time, end_time: d.end_time, note: d.note }
+  AV = { data, month: data.month, days, tool: (AV && AV.tool) || 'ok', st: (AV && AV.st) || '10:00', et: (AV && AV.et) || '19:00', dirty: false }
+  drawAvailability()
+}
+
+function drawAvailability() {
+  const d = AV.data
+  const overdue = !d.submitted_at && d.deadline && d.today > d.deadline
+  const status = d.submitted_at
+    ? `<span class="badge badge-green">提出済み</span><span class="text-xs text-gray-500">${esc(avFmtAt(d.updated_at || d.submitted_at))}${d.late ? '（締切後に提出）' : ''}</span>`
+    : '<span class="badge badge-yellow">未提出</span>'
+  $app.innerHTML = `
+    ${SCHEDULE_BACK}
+    <div class="flex gap-1.5 mb-3 overflow-x-auto">${d.months.map(m => `<button class="btn ${m === AV.month ? 'btn-primary' : 'btn-outline'} text-xs shrink-0" data-action="avMonth" data-month="${esc(m)}">${esc(avMonthLabel(m))}</button>`).join('')}</div>
+    <section class="card p-4 mb-3">
+      <div class="flex items-center gap-2 flex-wrap"><h2 class="font-bold text-gray-800">${esc(avMonthLabel(AV.month))}の出勤可能日</h2>${status}</div>
+      ${d.deadline ? `<p class="text-sm mt-1 ${overdue ? 'text-red-600 font-bold' : 'text-gray-600'}"><i class="far fa-clock mr-1"></i>締切: ${esc(fmtDate(d.deadline))}${overdue ? '（締切を過ぎています。できるだけ早く提出してください）' : ''}</p>` : ''}
+      ${d.note ? `<p class="text-xs text-gray-600 bg-gray-50 rounded-lg px-2.5 py-2 mt-2 whitespace-pre-wrap">${linkify(esc(d.note))}</p>` : ''}
+      <p class="text-xs text-gray-400 mt-2">下の記号を選んでから日付を押すと付きます。提出した後も出し直せます。シフトの確定は管理者が行います</p>
+    </section>
+    ${d.editable ? `<section class="card p-3 mb-3">
+      <div class="grid grid-cols-5 gap-1">${AV_TOOLS.map(([k, l]) => `<button class="btn ${AV.tool === k ? 'btn-primary' : 'btn-outline'} text-xs px-1" data-action="avTool" data-tool="${k}">${l}</button>`).join('')}</div>
+      <div id="av-time" class="${AV.tool === 'partial' ? '' : 'hidden'} flex items-center gap-2 mt-2 text-sm">
+        <span class="text-gray-500 text-xs">△の時間帯</span><input type="time" id="av-st" class="inp py-1 w-28" value="${esc(AV.st)}"><span>〜</span><input type="time" id="av-et" class="inp py-1 w-28" value="${esc(AV.et)}">
+      </div>
+      <div class="flex gap-3 flex-wrap mt-2 text-xs">
+        <button class="text-blue-600 underline" data-action="avFill" data-fill="ok">未入力の日をすべて○</button>
+        <button class="text-blue-600 underline" data-action="avFill" data-fill="weekend">土日を×</button>
+        <button class="text-gray-500 underline" data-action="avFill" data-fill="clear">すべて消す</button>
+      </div>
+    </section>` : '<p class="text-sm text-gray-500 mb-3">この月は提出の受付が終わっています（表示のみ）</p>'}
+    <div id="av-grid">${avGridHtml()}</div>
+    <p id="av-summary" class="text-xs text-gray-500 text-center my-3">${esc(avSummaryText())}</p>
+    ${d.editable ? `<button class="btn btn-primary w-full mb-6" data-action="avSubmit"><i class="fas fa-paper-plane"></i>${d.submitted_at ? '出し直す' : '提出する'}</button>` : ''}`
+  const st = document.getElementById('av-st'), et = document.getElementById('av-et')
+  if (st) st.addEventListener('change', () => { AV.st = st.value })
+  if (et) et.addEventListener('change', () => { AV.et = et.value })
+}
+
+// 月のカレンダー（日曜はじまり）。過ぎた日は押せない。シフトの入っている日は印を出す
+function avGridHtml() {
+  const first = dayjs(AV.month + '-01')
+  const n = first.daysInMonth()
+  const shiftsOf = {}
+  for (const s of AV.data.shifts || []) (shiftsOf[s.work_date] = shiftsOf[s.work_date] || []).push(s)
+  const cells = []
+  for (let i = 0; i < first.day(); i++) cells.push('<div></div>')
+  for (let i = 1; i <= n; i++) {
+    const day = first.date(i), date = day.format('YYYY-MM-DD'), wd = day.day()
+    const v = AV.days[date]
+    const sh = shiftsOf[date] || []
+    const can = avEditable(date)
+    cells.push(`<button type="button" class="border rounded-lg min-h-[3.6rem] p-1 flex flex-col items-center ${v ? AV_CELL[v.status] : 'bg-white border-gray-200'} ${can ? '' : 'opacity-50'}"
+        data-action="avDay" data-date="${esc(date)}" ${can ? '' : 'disabled'} aria-label="${esc(fmtDate(date))}">
+      <span class="text-[11px] self-start ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : 'text-gray-500'}">${i}</span>
+      <span class="text-base font-bold leading-none">${v ? AV_MARK[v.status] : ''}</span>
+      ${v && v.status === 'partial' ? `<span class="text-[9px] leading-tight">${esc(String(v.start_time).slice(0, 5))}-${esc(String(v.end_time).slice(0, 5))}</span>` : ''}
+      ${v && v.note ? '<span class="text-[9px] leading-tight"><i class="fas fa-note-sticky"></i></span>' : ''}
+      ${sh.length ? `<span class="text-[9px] leading-tight text-blue-600 font-bold">${sh.some(s => s.status !== 'requested') ? 'シフト' : '仮'}</span>` : ''}
+    </button>`)
+  }
+  return `<div class="grid grid-cols-7 gap-1 text-center text-[11px] text-gray-500 mb-1">${AV_WEEK.map(w => `<div>${w}</div>`).join('')}</div>
+    <div class="grid grid-cols-7 gap-1">${cells.join('')}</div>
+    <p class="text-[11px] text-gray-400 mt-2"><span class="text-blue-600 font-bold">シフト</span>: すでに入っているシフト（<span class="text-blue-600 font-bold">仮</span>は確定前）。<i class="fas fa-note-sticky"></i>: メモあり</p>`
+}
+function avSummaryText() {
+  const c = { ok: 0, partial: 0, ng: 0 }
+  for (const v of Object.values(AV.days)) c[v.status] = (c[v.status] || 0) + 1
+  const n = dayjs(AV.month + '-01').daysInMonth()
+  return `○ ${c.ok}日・△ ${c.partial}日・× ${c.ng}日・未入力 ${n - c.ok - c.partial - c.ng}日`
+}
+function avRedraw() {
+  const g = document.getElementById('av-grid'); if (g) g.innerHTML = avGridHtml()
+  const s = document.getElementById('av-summary'); if (s) s.textContent = avSummaryText()
+}
+function avPartialTimes() {
+  const st = (document.getElementById('av-st') || {}).value || AV.st, et = (document.getElementById('av-et') || {}).value || AV.et
+  if (!st || !et) { toast('△の時間帯の開始と終了を入力してください'); return null }
+  if (st === et) { toast('△の時間帯の開始と終了が同じです'); return null }
+  AV.st = st; AV.et = et
+  return { start_time: st, end_time: et }
+}
+
+delegate('avMonth', (el) => {
+  if (AV && AV.dirty && !confirm('提出していない変更があります。破棄してほかの月を開きますか？')) return
+  if (AV) AV.dirty = false
+  history.replaceState(null, '', '#availability/' + el.dataset.month)
+  renderAvailability(el.dataset.month)
+})
+delegate('avTool', (el) => {
+  AV.tool = el.dataset.tool
+  document.querySelectorAll('[data-action="avTool"]').forEach(b => { b.classList.toggle('btn-primary', b.dataset.tool === AV.tool); b.classList.toggle('btn-outline', b.dataset.tool !== AV.tool) })
+  const t = document.getElementById('av-time'); if (t) t.classList.toggle('hidden', AV.tool !== 'partial')
+})
+delegate('avDay', (el) => {
+  const date = el.dataset.date
+  if (!avEditable(date)) return
+  const cur = AV.days[date]
+  if (AV.tool === 'clear') delete AV.days[date]
+  else if (AV.tool === 'note') {
+    if (!cur) { toast('先に ○△× を付けてからメモを入れてください'); return }
+    const note = prompt(`${fmtDate(date)} のメモ（100文字まで。空欄で消す）`, cur.note || '')
+    if (note === null) return
+    cur.note = note.trim().slice(0, 100) || null
+  } else if (AV.tool === 'partial') {
+    const t = avPartialTimes(); if (!t) return
+    AV.days[date] = { status: 'partial', ...t, note: cur ? cur.note : null }
+  } else AV.days[date] = { status: AV.tool, start_time: null, end_time: null, note: cur ? cur.note : null }
+  AV.dirty = true
+  avRedraw()
+})
+delegate('avFill', (el) => {
+  const first = dayjs(AV.month + '-01')
+  for (let i = 1; i <= first.daysInMonth(); i++) {
+    const day = first.date(i), date = day.format('YYYY-MM-DD')
+    if (!avEditable(date)) continue
+    if (el.dataset.fill === 'clear') delete AV.days[date]
+    else if (el.dataset.fill === 'ok' && !AV.days[date]) AV.days[date] = { status: 'ok', start_time: null, end_time: null, note: null }
+    else if (el.dataset.fill === 'weekend' && (day.day() === 0 || day.day() === 6)) AV.days[date] = { status: 'ng', start_time: null, end_time: null, note: AV.days[date] ? AV.days[date].note : null }
+  }
+  AV.dirty = true
+  avRedraw()
+})
+delegate('avSubmit', (el) => withSubmitLock(el, async () => {
+  const days = Object.keys(AV.days).filter(avEditable).sort().map(date => ({ date, ...AV.days[date] }))
+  if (!days.length) { toast('1日以上、○△×を付けてください'); return }
+  let r
+  try { r = (await axios.put('/api/staff/availability', { month: AV.month, days })).data } catch (e) { showApiError(e, '提出できませんでした。電波の良い場所で再度お試しください'); return }
+  AV.dirty = false
+  toast(`${avMonthLabel(AV.month)}の出勤可能日を提出しました${r.late ? '（締切後の提出です）' : ''}`)
+  renderAvailability(AV.month)
+}))
+
+// シフト画面の案内: 翌月の出勤可能日が未提出なら知らせる
+async function availabilityBanner() {
+  if (!document.getElementById('av-banner')) return
+  let d
+  try { d = (await axios.get('/api/staff/availability/summary')).data } catch (e) { return }
+  const box = document.getElementById('av-banner')
+  if (!box || !d.month || d.submitted) return
+  box.innerHTML = `<a href="#availability/${esc(d.month)}" class="block bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3 text-sm text-amber-800">
+    <i class="fas fa-calendar-check mr-1"></i>${esc(avMonthLabel(d.month))}の出勤可能日がまだ提出されていません${d.deadline ? `（締切 ${esc(fmtDate(d.deadline))}）` : ''}
+    <span class="underline font-bold ml-1">提出する</span></a>`
+}
+
+// ---------- カレンダーに追加（#301） ----------
+const CAL_WORKING = ['confirmed', 'substitute']
+// Google カレンダーの予定の作成画面（1件）。時刻は日本時間で渡す
+function googleCalendarUrl(s) {
+  const st = String(s.start_time).slice(0, 5), et = String(s.end_time).slice(0, 5)
+  const start = dayjs(`${s.work_date}T${st}`)
+  let end = dayjs(`${s.work_date}T${et}`)
+  if (et <= st) end = end.add(1, 'day')
+  const f = (x) => x.format('YYYYMMDDTHHmmss')
+  const place = s.site_name || s.location || ''
+  const brk = shiftBreakMinutes(s)
+  const details = [s.other_company ? `会社: ${s.company_name}` : '', `時間: ${formatShiftTime(s.start_time, s.end_time)}${brk ? `（休憩 ${brk}分）` : ''}`,
+    s.role ? `役割: ${s.role}` : '', s.slot_memo ? `メモ: ${s.slot_memo}` : '', `シフトの確認・報告: ${location.origin}/staff#shift`].filter(Boolean).join('\n')
+  const q = new URLSearchParams({ action: 'TEMPLATE', text: s.project_name + (s.other_company ? `（${s.company_name}）` : ''), dates: `${f(start)}/${f(end)}`, ctz: 'Asia/Tokyo', details, location: [place, s.site_address].filter(Boolean).join(' ') })
+  return 'https://calendar.google.com/calendar/render?' + q.toString()
+}
+let CAL_URL = null // 発行した直後の購読 URL（サーバーはハッシュしか持たないため、この画面を離れると表示できない）
+async function renderShiftCalendar() {
+  loading()
+  const today = dayjs().format('YYYY-MM-DD')
+  let tk, sh
+  try {
+    [tk, sh] = await Promise.all([axios.get('/api/staff/calendar-token'), axios.get('/api/staff/shifts', { params: { from: today, to: dayjs().add(41, 'day').format('YYYY-MM-DD') } })])
+  } catch (e) { showLoadError(e); return }
+  if ((location.hash || '').slice(1).split('/')[0] !== 'calendar') return
+  const t = tk.data
+  const shifts = (sh.data.shifts || []).filter(s => CAL_WORKING.includes(s.status))
+  const webcal = CAL_URL ? CAL_URL.replace(/^https?:/, 'webcal:') : ''
+  $app.innerHTML = `
+    ${SCHEDULE_BACK}
+    <section class="card p-4 mb-4">
+      <h2 class="font-bold text-gray-800 mb-1"><i class="fas fa-rotate text-blue-600 mr-1"></i>カレンダーで購読する（おすすめ）</h2>
+      <p class="text-xs text-gray-500">確定したシフトが、スマホのカレンダー（iPhone・Google カレンダーなど）に自動で入ります。時間の変更や欠勤・取り消しも反映されます（反映まで数時間かかることがあります）。金額は入りません。</p>
+      ${CAL_URL ? `
+        <div class="mt-3 rounded-lg bg-blue-50 p-3">
+          <p class="text-xs text-blue-800 font-bold mb-1">購読用の URL を発行しました。この画面を離れると再表示できません</p>
+          <div class="flex gap-1"><input id="cal-url" class="inp text-xs flex-1" readonly value="${esc(CAL_URL)}"><button class="btn btn-outline text-xs" data-action="calCopy"><i class="fas fa-copy"></i>コピー</button></div>
+          <div class="grid grid-cols-2 gap-2 mt-2">
+            <a class="btn btn-primary text-xs" href="${esc(webcal)}"><i class="fab fa-apple"></i>iPhone のカレンダーに登録</a>
+            <a class="btn btn-outline text-xs" href="${esc('https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(webcal))}" target="_blank" rel="noopener noreferrer"><i class="fab fa-google"></i>Google カレンダーに登録</a>
+          </div>
+          <p class="text-[11px] text-gray-500 mt-2">URL を知っている人は、あなたのシフト（日時・場所）を見られます。ほかの人に教えないでください</p>
+        </div>` : t.active
+        ? `<p class="text-sm text-gray-700 mt-3"><span class="badge badge-green">購読中</span> <span class="text-xs text-gray-500">発行 ${esc(avFmtAt(t.created_at))}${t.last_accessed_at ? `・最後の読み込み ${esc(avFmtAt(t.last_accessed_at))}` : '・まだ読み込まれていません'}</span></p>
+           <p class="text-[11px] text-gray-500 mt-1">別の端末で登録するときや URL が分からなくなったときは、発行し直してください（前の URL は使えなくなります）</p>`
+        : ''}
+      <div class="flex gap-2 mt-3">
+        <button class="btn ${t.active ? 'btn-outline' : 'btn-primary'} flex-1 text-sm" data-action="calIssue" data-reissue="${t.active ? '1' : ''}"><i class="fas fa-link"></i>${t.active ? 'URL を発行し直す' : '購読用の URL を発行する'}</button>
+        ${t.active ? '<button class="btn btn-outline text-sm text-red-600" data-action="calRevoke">購読を止める</button>' : ''}
+      </div>
+    </section>
+    <section class="card p-4 mb-6">
+      <h2 class="font-bold text-gray-800 mb-1"><i class="fas fa-calendar-plus text-blue-600 mr-1"></i>1件ずつ追加する</h2>
+      <p class="text-xs text-gray-500 mb-2">今日から6週間の確定したシフトです。1件ずつ追加した予定は、シフトが変わっても自動では変わりません</p>
+      <div class="divide-y divide-gray-100">${shifts.map(s => `
+        <div class="py-2.5">
+          <p class="text-sm font-medium text-gray-800">${esc(fmtDate(s.work_date))} ${esc(formatShiftTime(s.start_time, s.end_time))} ${s.status === 'substitute' ? '<span class="badge badge-purple">代打</span>' : ''}</p>
+          <p class="text-xs text-gray-500">${esc(s.project_name)}${s.other_company ? `（${esc(s.company_name)}）` : ''}${s.site_name || s.location ? '・' + esc(s.site_name || s.location) : ''}</p>
+          <div class="flex gap-2 mt-1.5">
+            <a class="btn btn-outline text-xs" href="/api/staff/shifts/${Number(s.shift_id)}/ics" download><i class="fas fa-file-arrow-down"></i>iPhone など（.ics）</a>
+            <a class="btn btn-outline text-xs" href="${esc(googleCalendarUrl(s))}" target="_blank" rel="noopener noreferrer"><i class="fab fa-google"></i>Google カレンダー</a>
+          </div>
+        </div>`).join('') || '<p class="text-center text-gray-400 py-6 text-sm">この期間の確定したシフトはありません</p>'}</div>
+    </section>`
+}
+delegate('calIssue', (el) => {
+  if (el.dataset.reissue && !confirm('URL を発行し直します。今の URL で登録したカレンダーには、シフトが入らなくなります。よろしいですか？')) return
+  withSubmitLock(el, async () => {
+    try { CAL_URL = (await axios.post('/api/staff/calendar-token')).data.url } catch (e) { showApiError(e, '発行できませんでした'); return }
+    toast('購読用の URL を発行しました')
+    await renderShiftCalendar()
+  })
+})
+delegate('calRevoke', (el) => {
+  if (!confirm('購読を止めます。登録したカレンダーには、シフトが入らなくなります。よろしいですか？')) return
+  withSubmitLock(el, async () => {
+    try { await axios.delete('/api/staff/calendar-token') } catch (e) { showApiError(e, '止められませんでした'); return }
+    CAL_URL = null
+    toast('購読を止めました')
+    await renderShiftCalendar()
+  })
+})
+delegate('calCopy', async () => {
+  const el = document.getElementById('cal-url'); if (!el) return
+  try { await navigator.clipboard.writeText(el.value) } catch { el.select(); document.execCommand && document.execCommand('copy') }
+  toast('URL をコピーしました')
+})
+// 画面を離れたら、発行した URL の表示を消す
+window.addEventListener('hashchange', () => { if ((location.hash || '').slice(1).split('/')[0] !== 'calendar') CAL_URL = null })
 
 // ---------- 未読の印（下のタブの『その他』・メニュー・ホームの案内。#383） ----------
 // 画面を切り替えるたびに件数だけを取り直す（同時に1本だけ）。取れなかったときは前の表示のままにする

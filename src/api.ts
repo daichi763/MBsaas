@@ -53,6 +53,7 @@ import { staffSelfServiceApi, staffRequestsAdminApi, parseDocMeta } from './staf
 import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, checkInDistance, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
 import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
 import rosterImportApi from './roster-import'
+import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -691,6 +692,8 @@ api.get('/public/report/:token/contact', async (c) => {
 api.route('/public/recruit', recruitPublicApi)
 // お知らせメールの「確認しました」（ログイン不要。メールのワンタイムのトークンで既読にする #454。src/notifications.ts）
 api.route('/public/notice-ack', noticeAckPublicApi)
+// シフトのカレンダー購読（ログイン不要。本人ごとのトークンの URL。#301 src/staff-schedule.ts）
+api.route('/public/calendar', calendarPublicApi)
 
 // 二段階認証の登録待ちの間も使える API（#544）
 const MFA_SETUP_PATHS = ['/api/auth/me', '/api/auth/mfa', '/api/auth/mfa/setup', '/api/auth/mfa/enable', '/api/auth/sessions', '/api/auth/change-password', '/api/auth/logout-all']
@@ -1163,6 +1166,9 @@ api.route('/staff/recruit', recruitStaffApi)
 // スタッフの勤務時間・支払額の確認と、交通費・延長の申請（src/staff-pay.ts。w5-staff-pay-features）
 api.route('/staff', staffPayStaffApi)
 api.route('/admin', staffPayAdminApi)
+// 出勤可能日の提出・一覧（#171）と、シフトのカレンダー追加（#301）（src/staff-schedule.ts）
+api.route('/staff', scheduleStaffApi)
+api.route('/admin', scheduleAdminApi)
 
 // =========================================================
 // スタッフ側 API
