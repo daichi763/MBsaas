@@ -3243,33 +3243,75 @@ function drawAnalytics() {
 }
 
 // ============ お知らせ配信 ============
-// 一覧は50件ずつ（もっと見る）。キーワード・配信先の案件・期間で絞り込める。配信先の案件名・配信した人も出す（#368）
-let NOTICE_ADMIN = { list: [], offset: 0, has_more: false, q: '', project_id: '', from: '', to: '' }
+// 一覧は50件ずつ（もっと見る）。キーワード・配信先の案件・期間・状態で絞り込める。配信先の案件名・配信した人も出す（#368）。
+// 下書き・予約（#291）、配信後の修正・取消（#157）、掲載期限（#294）、回答（#554）、添付（#555）
+let NOTICE_ADMIN = { list: [], offset: 0, has_more: false, q: '', project_id: '', from: '', to: '', status: '' }
+// 配信先の選択肢（案件・個人あての候補）。renderNotices で読み込み、作成と修正のフォームで使う
+let NOTICE_FORM_DATA = { projects: [], staff: [] }
+const NOTICE_ATTACH_ACCEPT = '.pdf,.jpg,.jpeg,.png,.gif,.webp,application/pdf,image/jpeg,image/png,image/gif,image/webp'
+const NOTICE_RESPONSE_PRESETS = [['参加する', '参加しない', '未定'], ['はい', 'いいえ']]
 function noticeAdminImportanceBadge(n) {
   return n.importance === 'urgent' ? '<span class="badge badge-red"><i class="fas fa-triangle-exclamation"></i>緊急</span>'
     : n.importance === 'important' ? '<span class="badge badge-yellow">重要</span>' : ''
 }
+function noticeFmt(t, f) { return t ? esc(dayjs(String(t).replace(' ', 'T')).format(f || 'YYYY/M/D HH:mm')) : '' }
+function noticeStateBadge(n) {
+  if (n.state === 'draft') return '<span class="badge badge-gray"><i class="fas fa-pen"></i>下書き</span>'
+  if (n.state === 'scheduled') return `<span class="badge badge-blue"><i class="fas fa-clock"></i>予約 ${noticeFmt(n.published_at, 'M/D HH:mm')}</span>`
+  if (n.state === 'withdrawn') return '<span class="badge badge-red">取消済み</span>'
+  return n.expired ? '<span class="badge badge-gray">掲載終了</span>' : ''
+}
+function noticeAttachmentLinks(n, base) {
+  const files = n.attachments || []
+  if (!files.length) return ''
+  return `<div class="flex flex-wrap gap-2 mt-2">${files.map(a => `
+    <a class="text-xs text-blue-600 hover:underline inline-flex items-center gap-1" target="_blank" rel="noopener" href="${base}/${Number(a.attachment_id)}">
+      <i class="fas ${a.content_type === 'application/pdf' ? 'fa-file-pdf' : 'fa-image'}"></i>${esc(a.file_name)}</a>`).join('')}</div>`
+}
 function noticeAdminCardHtml(n) {
   const read = Number(n.read_count) || 0, total = Number(n.staff_total) || 0
+  const pending = n.state === 'draft' || n.state === 'scheduled'
+  const withdrawn = n.state === 'withdrawn'
   const target = n.target_type === 'all' ? '全体'
     : n.target_type === 'project' ? `案件: ${esc(n.target_names || '（削除された案件）')}`
     : `個人: ${esc(n.target_names || '-')}`
+  const options = n.response_options || []
+  const id = Number(n.notice_id)
   return `
-    <div class="card p-4">
+    <div class="card p-4 ${withdrawn ? 'opacity-70' : ''}">
       <div class="flex items-center gap-2 mb-1 flex-wrap">
+        ${noticeStateBadge(n)}
         ${noticeAdminImportanceBadge(n)}
         ${n.read_required ? '<span class="badge badge-purple">既読確認必須</span>' : ''}
         <span class="badge badge-gray">${target}</span>
-        <span class="text-xs text-gray-400">${esc(dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}</span>
-        <span class="text-xs text-gray-400">配信: ${esc(n.created_by_name || '-')}</span>
-        <button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${Number(n.notice_id)}"
+        ${pending ? '' : `<span class="text-xs text-gray-400">${noticeFmt(n.published_at)}</span>`}
+        <span class="text-xs text-gray-400">作成: ${esc(n.created_by_name || '-')}</span>
+        ${pending ? `<span class="text-xs text-gray-500 ml-auto">配信予定 ${total}名</span>`
+          : `<button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${id}"
           ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
-          既読 ${read}/${total}名${!n.reads_purged_at && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-red-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>
+          既読 ${read}/${total}名${!n.reads_purged_at && !withdrawn && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-red-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>`}
       </div>
-      <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
+      <h3 class="font-bold text-gray-800 ${withdrawn ? 'line-through' : ''}">${esc(n.title)}</h3>
       <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
-      ${n.remind_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${esc(dayjs(String(n.reminded_at).replace(' ', 'T')).format('M/D HH:mm'))}）</p>` : ''}
+      ${noticeAttachmentLinks(n, `/api/admin/notices/${id}/attachments`)}
+      <div class="text-xs text-gray-500 mt-2 space-y-0.5">
+        ${n.expires_at ? `<p><i class="fas fa-calendar-xmark mr-1"></i>掲載期限 ${noticeFmt(n.expires_at, 'YYYY/M/D')} まで${n.expired ? '（終了）' : ''}</p>` : ''}
+        ${options.length || n.response_comment ? `<p><i class="fas fa-reply mr-1"></i>回答: ${options.length ? esc(options.join('／')) : ''}${n.response_comment ? `${options.length ? '・' : ''}自由記入` : ''}
+          ${pending ? '' : `<button class="text-blue-600 hover:underline ml-1" data-action="showReads" data-id="${id}">回答 ${Number(n.response_count) || 0}件を見る</button>`}</p>` : ''}
+        ${pending && n.send_email ? '<p><i class="fas fa-envelope mr-1"></i>配信のときにメールでも送ります</p>' : ''}
+        ${n.updated_at ? `<p><i class="fas fa-pen mr-1"></i>${noticeFmt(n.updated_at, 'M/D HH:mm')} に修正（${esc(n.updated_by_name || '-')}）
+          <button class="text-blue-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
+        ${withdrawn ? `<p class="text-red-600"><i class="fas fa-ban mr-1"></i>${noticeFmt(n.withdrawn_at, 'M/D HH:mm')} に取消（${esc(n.withdrawn_by_name || '-')}）${n.withdraw_reason ? `: ${esc(n.withdraw_reason)}` : ''}
+          <button class="text-blue-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
+      </div>
+      ${n.remind_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${noticeFmt(n.reminded_at, 'M/D HH:mm')}）</p>` : ''}
       ${noticeEmailSummary(n)}
+      ${withdrawn ? '' : `<div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+        <button class="btn btn-outline text-xs" data-action="noticeEdit" data-id="${id}"><i class="fas fa-pen"></i>${pending ? '編集' : '修正'}</button>
+        ${pending ? `<button class="btn btn-primary text-xs" data-action="noticePublishNow" data-id="${id}"><i class="fas fa-paper-plane"></i>今すぐ配信</button>
+          <button class="btn btn-outline text-xs text-red-600" data-action="noticeDelete" data-id="${id}"><i class="fas fa-trash"></i>削除</button>`
+          : `<button class="btn btn-outline text-xs text-red-600" data-action="noticeWithdraw" data-id="${id}"><i class="fas fa-ban"></i>取り消す</button>`}
+      </div>`}
     </div>`
 }
 async function loadAdminNotices(more) {
@@ -3279,6 +3321,7 @@ async function loadAdminNotices(more) {
   if (f.project_id) params.project_id = f.project_id
   if (f.from) params.from = f.from
   if (f.to) params.to = f.to
+  if (f.status) params.status = f.status
   const { data } = await axios.get('/api/admin/notices', { params })
   if (!more) f.list = []
   const seen = new Set(f.list.map(n => n.notice_id))
@@ -3286,60 +3329,170 @@ async function loadAdminNotices(more) {
   f.offset = Number(data.offset || 0) + data.notices.length
   f.has_more = !!data.has_more
 }
+function noticeAdminFiltered() { const f = NOTICE_ADMIN; return !!(f.q || f.project_id || f.from || f.to || f.status) }
 function drawAdminNoticeList() {
   const el = document.getElementById('notice-admin-list')
   if (!el) return
   const f = NOTICE_ADMIN
-  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-gray-400 text-center py-8">${f.q || f.project_id || f.from || f.to ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
+  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-gray-400 text-center py-8">${noticeAdminFiltered() ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
     + (f.has_more ? '<button class="btn btn-outline w-full" data-action="noticeAdminMore">もっと見る</button>' : '')
 }
+
+// 作成・修正のフォーム。p は入力欄の id の頭（nt: 新規、ne: 修正）、n は修正するお知らせ（新規は null）
+function noticeFormHtml(p, n) {
+  const d = NOTICE_FORM_DATA
+  const tt = n ? n.target_type : 'all'
+  const ids = new Set(n && n.target_type !== 'all' ? String(n.target_ids || '').split(',').filter(Boolean).map(Number) : [])
+  const options = n ? (n.response_options || []) : []
+  const wantResponse = !!(options.length || (n && n.response_comment))
+  const pending = !n || n.state === 'draft' || n.state === 'scheduled'
+  const scheduled = n && n.state === 'scheduled' ? dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY-MM-DDTHH:mm') : ''
+  return `
+    <div class="space-y-3" id="${p}-form">
+      <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="${p}-title" class="inp" maxlength="200" value="${esc(n ? n.title : '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">本文</label><textarea id="${p}-body" rows="4" class="inp">${esc(n ? n.body : '')}</textarea></div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">配信対象</label>
+          <select id="${p}-target" class="inp" data-notice-target="${p}">
+            <option value="all" ${tt === 'all' ? 'selected' : ''}>全スタッフ</option>
+            <option value="project" ${tt === 'project' ? 'selected' : ''}>案件を選ぶ（複数可）</option>
+            <option value="staff" ${tt === 'staff' ? 'selected' : ''}>スタッフを選ぶ（複数可）</option>
+          </select></div>
+        <div><label class="text-sm text-gray-600 block mb-1">重要度</label>
+          <select id="${p}-importance" class="inp">${[['normal', '通常'], ['important', '重要'], ['urgent', '緊急']].map(([v, l]) => `<option value="${v}" ${(n ? n.importance : 'normal') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div id="${p}-project-wrap" style="display:${tt === 'project' ? 'block' : 'none'}">
+        <label class="text-sm text-gray-600 block mb-1">対象案件 <span class="text-xs text-gray-400" id="${p}-project-count"></span></label>
+        <div class="border border-gray-200 rounded-lg p-2 max-h-40 overflow-y-auto space-y-1">
+          ${d.projects.map(pj => `<label class="flex items-center gap-2 text-sm"><input type="checkbox" class="w-4 h-4" name="${p}-project" value="${Number(pj.project_id)}" ${tt === 'project' && ids.has(Number(pj.project_id)) ? 'checked' : ''}>${esc(pj.project_name)}</label>`).join('') || '<p class="text-xs text-gray-400">案件がありません</p>'}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">公開日の30日前以降に、選んだ案件で確定・代打のシフトがあるスタッフに届きます</p>
+      </div>
+      <div id="${p}-staff-wrap" style="display:${tt === 'staff' ? 'block' : 'none'}">
+        <label class="text-sm text-gray-600 block mb-1">対象スタッフ <span class="text-xs text-gray-400" id="${p}-staff-count"></span></label>
+        <input class="inp text-sm mb-1" placeholder="氏名・かなで絞り込む" data-notice-staff-filter="${p}">
+        <div class="border border-gray-200 rounded-lg p-2 max-h-48 overflow-y-auto space-y-1" id="${p}-staff-list">
+          ${d.staff.map(s => `<label class="flex items-center gap-2 text-sm" data-q="${esc(String((s.name || '') + ' ' + (s.kana || '')).toLowerCase())}"><input type="checkbox" class="w-4 h-4" name="${p}-staff" value="${Number(s.staff_id)}" ${tt === 'staff' && ids.has(Number(s.staff_id)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('') || '<p class="text-xs text-gray-400">ログインのある在籍中のスタッフがいません</p>'}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">ログインのある在籍中のスタッフから選べます</p>
+      </div>
+      <label class="flex items-center gap-2 text-sm"><input id="${p}-required" type="checkbox" class="w-4 h-4" ${n && n.read_required ? 'checked' : ''}>既読確認を必須にする</label>
+      <p class="text-[11px] text-gray-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
+      <div><label class="text-sm text-gray-600 block mb-1">掲載期限（任意）</label>
+        <input id="${p}-expires" type="date" class="inp" value="${esc(n && n.expires_at ? String(n.expires_at).slice(0, 10) : '')}">
+        <p class="text-[11px] text-gray-400 mt-1">この日を過ぎると、スタッフのホームと一覧から外れ「掲載終了」に移ります</p></div>
+      <div class="border border-gray-100 rounded-lg p-3">
+        <label class="flex items-center gap-2 text-sm"><input id="${p}-response" type="checkbox" class="w-4 h-4" data-notice-response="${p}" ${wantResponse ? 'checked' : ''}>回答を求める（出欠・質問など）</label>
+        <div id="${p}-response-wrap" class="mt-2 space-y-2" style="display:${wantResponse ? 'block' : 'none'}">
+          <div><label class="text-xs text-gray-500 block mb-1">選択肢（1行に1つ。空なら自由記入だけ）</label>
+            <textarea id="${p}-options" rows="3" class="inp text-sm">${esc(options.join('\n'))}</textarea>
+            <div class="flex flex-wrap gap-2 mt-1">${NOTICE_RESPONSE_PRESETS.map((set, i) => `<button type="button" class="text-xs text-blue-600 hover:underline" data-action="noticeResponsePreset" data-prefix="${p}" data-i="${i}">「${esc(set.join('／'))}」を入れる</button>`).join('')}</div></div>
+          <label class="flex items-center gap-2 text-sm"><input id="${p}-comment" type="checkbox" class="w-4 h-4" ${n && n.response_comment ? 'checked' : ''}>自由記入欄を付ける（コメント・質問への回答）</label>
+        </div>
+      </div>
+      ${n ? '' : `<div><label class="text-sm text-gray-600 block mb-1">添付（画像・PDF。5件まで、1件10MBまで）</label>
+        <input id="${p}-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm"></div>`}
+      ${pending ? `<div class="border border-gray-100 rounded-lg p-3 space-y-1">
+        <p class="text-sm text-gray-600">配信のしかた</p>
+        ${n ? '' : `<label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="publish" checked data-notice-mode="${p}">すぐに配信する</label>`}
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="schedule" ${n && n.state === 'scheduled' ? 'checked' : ''} data-notice-mode="${p}">日時を指定して配信する（予約）</label>
+        <div id="${p}-schedule-wrap" class="ml-6" style="display:${n && n.state === 'scheduled' ? 'block' : 'none'}"><input id="${p}-scheduled" type="datetime-local" class="inp text-sm" value="${esc(scheduled)}"></div>
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="draft" ${n && n.state === 'draft' ? 'checked' : ''} data-notice-mode="${p}">下書きとして保存する（スタッフには出ません）</label>
+      </div>
+      <label class="flex items-center gap-2 text-sm"><input id="${p}-send-email" type="checkbox" class="w-4 h-4" ${n && n.send_email ? 'checked' : ''}>メールでも通知する${n ? '（配信するときに送ります）' : ''}</label>`
+      : `<label class="flex items-center gap-2 text-sm"><input id="${p}-notify" type="checkbox" class="w-4 h-4">修正したことを配信先のスタッフにアプリで知らせる</label>
+      <label class="flex items-center gap-2 text-sm"><input id="${p}-send-email" type="checkbox" class="w-4 h-4">新しく配信先に加えた人にメールを送る</label>`}
+    </div>`
+}
+function noticeFormCounts(p) {
+  const pc = document.querySelectorAll(`input[name="${p}-project"]:checked`).length
+  const sc = document.querySelectorAll(`input[name="${p}-staff"]:checked`).length
+  const a = document.getElementById(`${p}-project-count`), b = document.getElementById(`${p}-staff-count`)
+  if (a) a.textContent = pc ? `${pc}件を選択中` : ''
+  if (b) b.textContent = sc ? `${sc}名を選択中` : ''
+}
+// フォームの切り替え（配信対象・回答・配信のしかた）と、スタッフの絞り込み
+document.addEventListener('change', (ev) => {
+  const el = ev.target
+  if (!el || !el.dataset) return
+  if (el.dataset.noticeTarget) {
+    const p = el.dataset.noticeTarget
+    document.getElementById(`${p}-project-wrap`).style.display = el.value === 'project' ? 'block' : 'none'
+    document.getElementById(`${p}-staff-wrap`).style.display = el.value === 'staff' ? 'block' : 'none'
+  } else if (el.dataset.noticeResponse) {
+    document.getElementById(`${el.dataset.noticeResponse}-response-wrap`).style.display = el.checked ? 'block' : 'none'
+  } else if (el.dataset.noticeMode) {
+    document.getElementById(`${el.dataset.noticeMode}-schedule-wrap`).style.display = el.value === 'schedule' ? 'block' : 'none'
+  } else if (/-(project|staff)$/.test(el.name || '')) {
+    noticeFormCounts(el.name.replace(/-(project|staff)$/, ''))
+  }
+})
+document.addEventListener('input', (ev) => {
+  const el = ev.target
+  if (!el || !el.dataset || !el.dataset.noticeStaffFilter) return
+  const q = el.value.trim().toLowerCase()
+  document.querySelectorAll(`#${el.dataset.noticeStaffFilter}-staff-list label`).forEach(l => { l.style.display = !q || l.dataset.q.includes(q) ? '' : 'none' })
+})
+delegate('noticeResponsePreset', el => {
+  const t = document.getElementById(`${el.dataset.prefix}-options`)
+  if (t) t.value = NOTICE_RESPONSE_PRESETS[Number(el.dataset.i)].join('\n')
+})
+// フォームの値。足りない入力があれば error を返す
+function collectNoticeForm(p) {
+  const v = (id) => { const e = document.getElementById(`${p}-${id}`); return e ? e.value : '' }
+  const checked = (id) => !!(document.getElementById(`${p}-${id}`) || {}).checked
+  const title = v('title').trim()
+  if (!title) return { error: 'タイトルを入力してください' }
+  const target_type = v('target')
+  let target_ids = ''
+  if (target_type === 'project' || target_type === 'staff') {
+    target_ids = [...document.querySelectorAll(`input[name="${p}-${target_type}"]:checked`)].map(e => e.value).join(',')
+    if (!target_ids) return { error: target_type === 'project' ? '対象の案件を選んでください' : '対象のスタッフを選んでください' }
+  }
+  const respond = checked('response')
+  const body = {
+    title, body: v('body'), target_type, target_ids, importance: v('importance'), read_required: checked('required'),
+    expires_at: v('expires') || null,
+    response_options: respond ? v('options').split('\n').map(s => s.trim()).filter(Boolean) : [],
+    response_comment: respond && checked('comment'),
+  }
+  if (respond && !body.response_options.length && !body.response_comment) return { error: '回答の選択肢を入れるか、自由記入欄を付けてください' }
+  const modeEl = document.querySelector(`input[name="${p}-mode"]:checked`)
+  const mode = modeEl ? modeEl.value : null
+  if (mode === 'schedule' && !v('scheduled')) return { error: '配信日時を入力してください' }
+  return { body, mode, scheduled_at: mode === 'schedule' ? v('scheduled') : null, send_email: checked('send-email'), notify: checked('notify') }
+}
+
 async function renderNotices() {
   loading()
-  let pj
   try {
-    const [, p] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects')])
-    pj = p.data
+    const [, p, s] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects'), axios.get('/api/admin/notices/recipients')])
+    NOTICE_FORM_DATA = { projects: p.data.projects || [], staff: s.data.staff || [] }
   } catch (e) {
     $app.innerHTML = `<div class="card p-4 text-sm text-gray-600">お知らせを読み込めませんでした。<button class="btn btn-outline ml-2" onclick="renderNotices()">再読み込み</button></div>`
     return
   }
   const f = NOTICE_ADMIN
+  const pj = NOTICE_FORM_DATA.projects
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">お知らせ配信</h2>
     <div class="grid lg:grid-cols-5 gap-4">
       <section class="card p-4 lg:col-span-2 h-fit">
         <h3 class="font-bold text-gray-700 mb-3"><i class="fas fa-paper-plane text-blue-600 mr-1"></i>新規配信</h3>
-        <div class="space-y-3">
-          <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="nt-title" class="inp"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">本文</label><textarea id="nt-body" rows="4" class="inp"></textarea></div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="text-sm text-gray-600 block mb-1">配信対象</label>
-              <select id="nt-target" class="inp" onchange="document.getElementById('nt-project-wrap').style.display = this.value === 'project' ? 'block' : 'none'">
-                <option value="all">全スタッフ</option><option value="project">案件別</option>
-              </select></div>
-            <div><label class="text-sm text-gray-600 block mb-1">重要度</label>
-              <select id="nt-importance" class="inp"><option value="normal">通常</option><option value="important">重要</option><option value="urgent">緊急</option></select></div>
-          </div>
-          <div id="nt-project-wrap" style="display:none">
-            <label class="text-sm text-gray-600 block mb-1">対象案件</label>
-            <select id="nt-project" class="inp">${pj.projects.map(p => `<option value="${Number(p.project_id)}">${esc(p.project_name)}</option>`).join('')}</select>
-            <p class="text-[11px] text-gray-400 mt-1">公開日の30日前以降に、この案件で確定・代打のシフトがあるスタッフに届きます</p>
-          </div>
-          <label class="flex items-center gap-2 text-sm"><input id="nt-required" type="checkbox" class="w-4 h-4">既読確認を必須にする</label>
-          <p class="text-[11px] text-gray-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
-          <label class="flex items-center gap-2 text-sm"><input id="nt-send-email" type="checkbox" class="w-4 h-4">メールでも通知する</label>
-          <button class="btn btn-primary w-full" onclick="sendNotice(this)">配信する</button>
-        </div>
+        ${noticeFormHtml('nt', null)}
+        <button class="btn btn-primary w-full mt-3" data-action="sendNotice">配信する／保存する</button>
       </section>
       <section class="lg:col-span-3 space-y-3">
         <div class="card p-3 flex flex-wrap items-end gap-2">
           <div class="flex-1 min-w-[10rem]"><label class="text-xs text-gray-500 block mb-1">キーワード（タイトル・本文）</label><input id="nf-q" class="inp text-sm" value="${esc(f.q)}"></div>
           <div><label class="text-xs text-gray-500 block mb-1">配信先の案件</label>
-            <select id="nf-project" class="inp text-sm"><option value="">すべて</option>${pj.projects.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === String(f.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></div>
+            <select id="nf-project" class="inp text-sm"><option value="">すべて</option>${pj.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === String(f.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></div>
+          <div><label class="text-xs text-gray-500 block mb-1">状態</label>
+            <select id="nf-status" class="inp text-sm">${[['', 'すべて'], ['pending', '下書き・予約'], ['expired', '掲載終了'], ['withdrawn', '取消']].map(([v, l]) => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
           <div><label class="text-xs text-gray-500 block mb-1">配信日</label>
             <div class="flex items-center gap-1"><input id="nf-from" type="date" class="inp text-sm" value="${esc(f.from)}"><span class="text-xs">〜</span><input id="nf-to" type="date" class="inp text-sm" value="${esc(f.to)}"></div></div>
           <button class="btn btn-outline text-sm" data-action="noticeAdminSearch"><i class="fas fa-magnifying-glass"></i>絞り込む</button>
-          ${f.q || f.project_id || f.from || f.to ? '<button class="text-xs text-gray-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
+          ${noticeAdminFiltered() ? '<button class="text-xs text-gray-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
         </div>
         <div id="notice-admin-list" class="space-y-3"></div>
       </section>
@@ -3349,16 +3502,19 @@ async function renderNotices() {
 delegate('noticeAdminSearch', el => withSubmitLock(el, async () => {
   Object.assign(NOTICE_ADMIN, {
     q: document.getElementById('nf-q').value.trim(), project_id: document.getElementById('nf-project').value,
-    from: document.getElementById('nf-from').value, to: document.getElementById('nf-to').value,
+    from: document.getElementById('nf-from').value, to: document.getElementById('nf-to').value, status: document.getElementById('nf-status').value,
   })
   try { await loadAdminNotices(false) } catch (e) { showApiError(e, 'お知らせを読み込めませんでした'); return }
   drawAdminNoticeList()
 }))
-delegate('noticeAdminClear', () => { Object.assign(NOTICE_ADMIN, { q: '', project_id: '', from: '', to: '' }); renderNotices() })
+delegate('noticeAdminClear', () => { Object.assign(NOTICE_ADMIN, { q: '', project_id: '', from: '', to: '', status: '' }); renderNotices() })
 delegate('noticeAdminMore', el => withSubmitLock(el, async () => {
   try { await loadAdminNotices(true) } catch (e) { showApiError(e, 'お知らせを読み込めませんでした'); return }
   drawAdminNoticeList()
 }))
+async function refreshAdminNotices() {
+  try { await loadAdminNotices(false); drawAdminNoticeList() } catch (_) { }
+}
 // お知らせメールの送信結果（状態ごとの人数）。押すと1人ずつの結果を出す
 const NOTICE_MAIL_STATUS = { sent: '送信済み', failed: '送信失敗', no_email: 'メール未登録', pending: '送信中', skipped: '送信停止中' }
 function noticeEmailSummary(n) {
@@ -3387,65 +3543,227 @@ window.showNoticeEmails = async function (id) {
       ${d.error ? `<span class="text-xs text-red-600">${esc(errText(d.error))}</span>` : ''}</div>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div>
     <p class="text-xs text-gray-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。届かなかったアドレスは<a href="#corrections/emails" class="text-blue-600 hover:underline" onclick="closeModal()">メール送信状況</a>で確認できます。</p>`)
 }
+function noticeEmailMessage(e) {
+  if (!e) return ''
+  return e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
+    : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
+    : `（メール送信対象 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
+}
 // 二重配信の防止用キー（配信が成功するまで同じキーを使う。サーバーは同じキーの配信を受け付けない）
 let NOTICE_REQUEST_ID = null
 function newNoticeRequestId() {
   return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)
 }
-window.sendNotice = async function (btn) {
-  const title = document.getElementById('nt-title').value.trim()
-  if (!title) { toast('タイトルを入力してください'); return }
-  if (btn && btn.disabled) return
-  const target = document.getElementById('nt-target').value
+// 添付を上げる。失敗したファイルの名前と理由を返す
+async function uploadNoticeFiles(noticeId, files) {
+  if (!files.length) return []
+  const fd = new FormData()
+  for (const f of files) fd.append('files', f)
+  const { data } = await axios.post(`/api/admin/notices/${Number(noticeId)}/attachments`, fd)
+  return (data.results || []).filter(r => !r.ok).map(r => `${r.filename}: ${r.error}`)
+}
+// 新規配信。添付があるときは、まず下書きで作って添付を上げ、すべて上がってから配信・予約する
+// （添付の失敗した状態でスタッフに届かないように。失敗したら下書きのまま残す）
+delegate('sendNotice', el => withSubmitLock(el, async () => {
+  const f = collectNoticeForm('nt')
+  if (f.error) { toast(f.error); return }
+  const fileInput = document.getElementById('nt-files')
+  const files = fileInput ? [...fileInput.files] : []
+  if (files.length > 5) { toast('添付は5件までです'); return }
+  if (files.some(x => x.size > 10 * 1024 * 1024)) { toast('添付は1件10MB以下にしてください'); return }
+  const mode = f.mode || 'publish'
   if (!NOTICE_REQUEST_ID) NOTICE_REQUEST_ID = newNoticeRequestId()
-  const label = btn ? btn.innerHTML : ''
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>送信中…' }
+  let data
   try {
-    const { data } = await axios.post('/api/admin/notices', {
-      title, body: document.getElementById('nt-body').value,
-      target_type: target, target_ids: target === 'project' ? document.getElementById('nt-project').value : '',
-      importance: document.getElementById('nt-importance').value,
-      read_required: document.getElementById('nt-required').checked,
-      send_email: document.getElementById('nt-send-email').checked,
-      client_request_id: NOTICE_REQUEST_ID
-    })
-    NOTICE_REQUEST_ID = null
-    const e = data.email
-    let msg = 'お知らせを配信しました'
-    if (e) {
-      msg += e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
-        : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
-        : `（メール送信対象 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
-    }
-    toast(msg); renderNotices()
+    data = (await axios.post('/api/admin/notices', {
+      ...f.body, mode: files.length ? 'draft' : mode, scheduled_at: files.length ? null : f.scheduled_at,
+      send_email: f.send_email, client_request_id: NOTICE_REQUEST_ID,
+    })).data
   } catch (err) {
     const r = err.response
     if (r && r.status === 409 && r.data && r.data.duplicate) { NOTICE_REQUEST_ID = null; toast(r.data.error); renderNotices(); return }
-    toast((r && r.data && r.data.error) || 'お知らせを配信できませんでした。通信状況を確認してください')
-    if (btn) { btn.disabled = false; btn.innerHTML = label }
+    showApiError(err, 'お知らせを配信できませんでした。通信状況を確認してください')
+    return
   }
+  NOTICE_REQUEST_ID = null
+  if (files.length) {
+    let failed
+    try { failed = await uploadNoticeFiles(data.notice_id, files) } catch (e) { failed = ['通信に失敗しました'] }
+    if (failed.length) {
+      alert(`添付できなかったファイルがあるため、下書きとして保存しました。一覧の「編集」から添付を直して配信してください。\n${failed.join('\n')}`)
+      renderNotices(); return
+    }
+    if (mode !== 'draft') {
+      try {
+        data = (await axios.post(`/api/admin/notices/${Number(data.notice_id)}/publish`, { scheduled_at: mode === 'schedule' ? f.scheduled_at : null, send_email: f.send_email })).data
+        data.status = data.state
+      } catch (e) { showApiError(e, '配信できませんでした。下書きとして保存しています'); renderNotices(); return }
+    }
+  }
+  const msg = data.status === 'draft' ? '下書きとして保存しました'
+    : data.status === 'scheduled' ? `${dayjs(String(data.published_at).replace(' ', 'T')).format('M/D HH:mm')} に配信するよう予約しました`
+    : 'お知らせを配信しました' + noticeEmailMessage(data.email)
+  toast(msg); renderNotices()
+}))
+
+// 修正（#157）・下書きと予約の編集（#291）。添付の追加・削除もここで行う
+function noticeEditAttachmentsHtml(n) {
+  const files = n.attachments || []
+  return `
+    <div class="border-t border-gray-100 pt-3 mt-3" id="ne-attachments">
+      <p class="text-sm text-gray-600 mb-1">添付（画像・PDF。5件まで、1件10MBまで）</p>
+      <div class="space-y-1 mb-2">${files.map(a => `<div class="flex items-center gap-2 text-sm">
+        <a class="text-blue-600 hover:underline truncate" target="_blank" rel="noopener" href="/api/admin/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}">${esc(a.file_name)}</a>
+        <button class="text-xs text-red-600 hover:underline ml-auto" data-action="noticeAttachmentDelete" data-id="${Number(n.notice_id)}" data-aid="${Number(a.attachment_id)}" data-name="${esc(a.file_name)}">削除</button></div>`).join('') || '<p class="text-xs text-gray-400">なし</p>'}</div>
+      ${files.length < 5 ? `<div class="flex items-center gap-2"><input id="ne-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm flex-1">
+        <button class="btn btn-outline text-xs" data-action="noticeAttachmentAdd" data-id="${Number(n.notice_id)}"><i class="fas fa-paperclip"></i>添付する</button></div>` : ''}
+      ${n.state === 'published' ? '<p class="text-[11px] text-gray-400 mt-1">配信済みのお知らせの添付を変えると、スタッフの画面に「更新」の印が付きます</p>' : ''}
+    </div>`
 }
-// 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）
+function openNoticeEdit(id) {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  if (!n) { toast('お知らせが見つかりません。画面を読み直してください'); return }
+  const pending = n.state === 'draft' || n.state === 'scheduled'
+  modal(`
+    <h3 class="font-bold text-lg mb-1">${pending ? 'お知らせの編集' : 'お知らせの修正'}</h3>
+    ${pending ? '' : '<p class="text-xs text-gray-500 mb-3">配信済みのお知らせを直します。直す前の内容は履歴に残ります。タイトル・本文を直すと、スタッフの画面に「更新」の印が付きます</p>'}
+    ${noticeFormHtml('ne', n)}
+    ${noticeEditAttachmentsHtml(n)}
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
+      <button class="btn btn-primary flex-1" data-action="noticeSave" data-id="${Number(id)}">保存する</button>
+    </div>`)
+  noticeFormCounts('ne')
+}
+delegate('noticeEdit', el => openNoticeEdit(Number(el.dataset.id)))
+delegate('noticeSave', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  const f = collectNoticeForm('ne')
+  if (f.error) { toast(f.error); return }
+  const pending = n && (n.state === 'draft' || n.state === 'scheduled')
+  const body = { ...f.body, send_email: f.send_email }
+  if (pending) { body.mode = f.mode || 'draft'; body.scheduled_at = f.scheduled_at } else body.notify = f.notify
+  let data
+  try { data = (await axios.put(`/api/admin/notices/${id}`, body)).data } catch (e) { showApiError(e, '保存できませんでした'); return }
+  closeModal()
+  toast((data.state === 'scheduled' ? '予約を保存しました' : data.state === 'draft' ? '下書きを保存しました' : '修正しました')
+    + (data.notified ? `（${Number(data.notified)}名に知らせました）` : '') + noticeEmailMessage(data.email))
+  refreshAdminNotices()
+}))
+delegate('noticeAttachmentAdd', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const input = document.getElementById('ne-files')
+  const files = input ? [...input.files] : []
+  if (!files.length) { toast('ファイルを選んでください'); return }
+  let failed
+  try { failed = await uploadNoticeFiles(id, files) } catch (e) { showApiError(e, '添付できませんでした'); return }
+  if (failed.length) alert(`添付できなかったファイルがあります。\n${failed.join('\n')}`)
+  else toast('添付しました')
+  await refreshAdminNotices()
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  const box = document.getElementById('ne-attachments')
+  if (n && box) box.outerHTML = noticeEditAttachmentsHtml(n)
+}))
+delegate('noticeAttachmentDelete', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  if (!confirm(`添付「${el.dataset.name}」を削除しますか？`)) return
+  try { await axios.delete(`/api/admin/notices/${id}/attachments/${Number(el.dataset.aid)}`) } catch (e) { showApiError(e, '削除できませんでした'); return }
+  toast('添付を削除しました')
+  await refreshAdminNotices()
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  const box = document.getElementById('ne-attachments')
+  if (n && box) box.outerHTML = noticeEditAttachmentsHtml(n)
+}))
+delegate('noticePublishNow', el => withSubmitLock(el, async () => {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === Number(el.dataset.id))
+  if (!n || !confirm(`「${n.title}」を今すぐ配信しますか？${n.send_email ? '（メールも送ります）' : ''}`)) return
+  let data
+  try { data = (await axios.post(`/api/admin/notices/${Number(n.notice_id)}/publish`, {})).data } catch (e) { showApiError(e, '配信できませんでした'); return }
+  toast('お知らせを配信しました' + noticeEmailMessage(data.email))
+  refreshAdminNotices()
+}))
+delegate('noticeDelete', el => withSubmitLock(el, async () => {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === Number(el.dataset.id))
+  if (!n || !confirm(`${n.state === 'scheduled' ? '予約' : '下書き'}「${n.title}」を削除しますか？（元に戻せません）`)) return
+  try { await axios.delete(`/api/admin/notices/${Number(n.notice_id)}`) } catch (e) { showApiError(e, '削除できませんでした'); return }
+  toast('削除しました')
+  refreshAdminNotices()
+}))
+// 取消（#157）。スタッフの画面から消える。理由と、配信先への知らせを選べる
+delegate('noticeWithdraw', el => {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === Number(el.dataset.id))
+  if (!n) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">お知らせを取り消す</h3>
+    <p class="text-sm text-gray-600 mb-3">「${esc(n.title)}」をスタッフの画面から消します。既読・回答の記録は残ります。取り消した後は元に戻せません。</p>
+    <label class="text-sm text-gray-600 block mb-1">取消の理由（任意・200文字まで）</label>
+    <input id="nw-reason" class="inp mb-2" maxlength="200" placeholder="例: 日時に誤りがあったため">
+    <label class="flex items-center gap-2 text-sm"><input id="nw-notify" type="checkbox" class="w-4 h-4" checked>取り消したことを配信先のスタッフにアプリで知らせる</label>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+      <button class="btn btn-danger flex-1" data-action="noticeWithdrawDo" data-id="${Number(n.notice_id)}">取り消す</button>
+    </div>`)
+})
+delegate('noticeWithdrawDo', el => withSubmitLock(el, async () => {
+  let data
+  try {
+    data = (await axios.post(`/api/admin/notices/${Number(el.dataset.id)}/withdraw`, {
+      reason: document.getElementById('nw-reason').value.trim(), notify: document.getElementById('nw-notify').checked,
+    })).data
+  } catch (e) { showApiError(e, '取り消せませんでした'); return }
+  closeModal()
+  toast('お知らせを取り消しました' + (data.notified ? `（${Number(data.notified)}名に知らせました）` : ''))
+  refreshAdminNotices()
+}))
+delegate('noticeRevisions', async el => {
+  let data
+  try { data = (await axios.get(`/api/admin/notices/${Number(el.dataset.id)}/revisions`)).data } catch (e) { showApiError(e, '履歴を読み込めませんでした'); return }
+  const label = { edit: '修正', withdraw: '取消' }
+  modal(`
+    <h3 class="font-bold text-lg mb-1">修正・取消の履歴</h3>
+    <p class="text-xs text-gray-500 mb-3">それぞれの操作の前の内容です（新しい順）</p>
+    <div class="space-y-3 max-h-96 overflow-y-auto">${data.revisions.map(r => `
+      <div class="border border-gray-100 rounded-lg p-3 text-sm">
+        <p class="text-xs text-gray-500 mb-1"><span class="badge ${r.action === 'withdraw' ? 'badge-red' : 'badge-gray'}">${label[r.action] || esc(r.action)}</span>
+          ${noticeFmt(r.edited_at)}（${esc(r.edited_by_name || '-')}）</p>
+        <p class="font-bold">${esc(r.title)}</p>
+        <p class="text-gray-600 whitespace-pre-wrap">${esc(r.body)}</p>
+        ${r.expires_at ? `<p class="text-xs text-gray-500 mt-1">掲載期限 ${noticeFmt(r.expires_at, 'YYYY/M/D')}</p>` : ''}
+      </div>`).join('') || '<p class="text-sm text-gray-400">履歴はありません</p>'}</div>`)
+})
+// 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）。
+// 回答を求めるお知らせは、選択肢ごとの人数・回答・未回答の人も出す（#554）
 window.showReads = async function (id) {
   let data
   try { data = (await axios.get(`/api/admin/notices/${Number(id)}/reads`)).data } catch (e) { showApiError(e, '既読状況を読み込めませんでした'); return }
   if (data.purged) {
     modal(`
       <h3 class="font-bold text-lg mb-4">既読状況</h3>
-      <p class="text-sm text-gray-600">公開から2年たったため、既読の記録は削除済みです。</p>
+      <p class="text-sm text-gray-600">公開から2年たったため、既読・回答の記録は削除済みです。</p>
       <p class="text-sm text-gray-600 mt-2">削除の直前の既読: ${Number(data.read_count) || 0}/${Number(data.target_count) || 0}名</p>`)
     return
   }
+  const rs = data.responses
+  const canRemind = data.state === 'published' && data.unread.length
   modal(`
-    <h3 class="font-bold text-lg mb-1">既読状況</h3>
-    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）</p>
+    <h3 class="font-bold text-lg mb-1">既読状況${rs ? '・回答' : ''}</h3>
+    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）${data.state === 'withdrawn' ? '・取消済み' : ''}</p>
+    ${rs ? `<div class="border border-gray-100 rounded-lg p-3 mb-4">
+      <div class="flex items-center mb-2"><h4 class="text-sm font-bold text-gray-700">回答 ${rs.answered.length}名・未回答 ${rs.unanswered.length}名</h4>
+        <a class="text-xs text-blue-600 hover:underline ml-auto" href="/api/admin/notices/${Number(id)}/responses.csv"><i class="fas fa-file-csv mr-1"></i>CSV</a></div>
+      ${rs.options.length ? `<div class="flex flex-wrap gap-2 mb-2">${rs.options.map(o => `<span class="badge badge-blue">${esc(o)} ${Number(rs.counts[o]) || 0}名</span>`).join('')}</div>` : ''}
+      <div class="space-y-1 text-sm max-h-48 overflow-y-auto">${rs.answered.map(a => `<p>${esc(a.name)}${a.choice != null ? ` <span class="badge badge-gray">${esc(a.choice)}</span>` : ''}
+        ${a.comment ? `<span class="text-gray-600">「${esc(a.comment)}」</span>` : ''} <span class="text-xs text-gray-400">${noticeFmt(a.answered_at, 'M/D HH:mm')}</span></p>`).join('') || '<p class="text-gray-400 text-xs">まだ回答はありません</p>'}</div>
+      ${rs.unanswered.length ? `<p class="text-xs text-gray-500 mt-2">未回答: ${rs.unanswered.map(u => esc(u.name)).join('、')}</p>` : ''}
+    </div>` : ''}
     <div class="grid grid-cols-2 gap-4">
       <div><h4 class="text-sm font-bold text-emerald-700 mb-2">既読 ${data.read.length}名</h4>
         <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
       <div><h4 class="text-sm font-bold text-red-700 mb-2">未読 ${data.unread.length}名</h4>
         <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
     </div>
-    ${data.unread.length ? `<div class="border-t border-gray-100 mt-4 pt-3">
+    ${canRemind ? `<div class="border-t border-gray-100 mt-4 pt-3">
       <label class="flex items-center gap-2 text-sm mb-2"><input id="remind-email" type="checkbox" class="w-4 h-4">メールでも送る</label>
       <button class="btn btn-primary w-full" data-action="remindNotice" data-id="${Number(id)}"><i class="fas fa-bell"></i>未読の ${data.unread.length}名に再通知する</button>
       <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に確認のお願いが届きます（押すとこのお知らせが開きます）</p>
@@ -3466,7 +3784,7 @@ delegate('remindNotice', el => withSubmitLock(el, async () => {
       : `（メール送信 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
   }
   toast(msg); closeModal()
-  try { await loadAdminNotices(false); drawAdminNoticeList() } catch (_) { }
+  refreshAdminNotices()
 }))
 
 // ============ お知らせ既読率レポート ============

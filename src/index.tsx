@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
-import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
+import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads, publishDueNotices } from './api'
 import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
@@ -777,6 +777,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   } },
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
+  // 予約配信のお知らせのメール（#291。画面には時刻どおりに出る。管理者・スタッフがお知らせを開いたときにもその会社の分を送る）
+  { name: 'notice_scheduled_publish', label: 'お知らせの予約配信（メール）', cron: CRON_DAILY, run: env => publishDueNotices(env as any) },
 ])
 
 export default {
