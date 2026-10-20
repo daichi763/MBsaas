@@ -182,8 +182,9 @@
     const host = document.getElementById('recruit-body')
     let data; try { data = (await axios.get('/api/admin/recruit-applications?' + appQuery(0))).data } catch (e) { host.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
     window.__recruitApps = data.applications
-    // 応募の一覧を開いたので、新しい応募の通知は既読にする（#150）
-    axios.post('/api/admin/notifications/read-related', { kind: 'recruit_applied' }).then(() => window.refreshNotifBadge && window.refreshNotifBadge()).catch(() => { })
+    // 応募の一覧を開いたので、新しい応募の通知は既読にする（#150）。募集ページで絞り込んでいるときはそのページの分だけ、枠で絞り込んでいるときは既読にしない
+    if (!S.slot_role_id) axios.post('/api/admin/notifications/read-related', { kind: 'recruit_applied', ...(S.page_id ? { related_id: Number(S.page_id) } : {}) })
+      .then(() => window.refreshNotifBadge && window.refreshNotifBadge()).catch(() => { })
     const sl = data.slot
     const pageTitle = S.page_id ? ((data.pages || []).find(p => p.page_id === Number(S.page_id)) || {}).title : ''
     host.innerHTML = `
