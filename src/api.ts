@@ -313,7 +313,8 @@ export async function generateFiscalYearReportsForAllCompanies(db: D1Database):
 // お知らせごとに、削除の直前の既読数・対象人数を notices に残してから、そのお知らせの記録をまとめて消す（#245。
 // 管理画面の「既読 x/y名」が0名に戻らないように。1件のお知らせの記録が一部だけ消えた状態も作らない）。
 // そのあとで、締めた後に付いた既読などの残りを、既読の日時から2年で削除する（1回のCronでそれぞれ上限まで。続きは翌日以降）。
-// お知らせへの回答（notice_responses #554）も、既読の記録と同じく公開から2年で削除する
+// お知らせへの回答（notice_responses #554）も、既読の記録と同じく公開から2年で削除する。
+// 下書き（#291）は配信していないので対象にしない（published_at は作成日時のため。古い下書きを後で配信したときに「確認不要」にならないように）
 export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; notices: number; batches: number; error?: string }> {
   const keepMs = NOTICE_READS_KEEP_DAYS * 24 * 3600 * 1000
   const cutoffJst = new Date(Date.now() + 9 * 3600 * 1000 - keepMs).toISOString().slice(0, 19).replace('T', ' ')
@@ -324,7 +325,7 @@ export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: nu
   let deleted = 0, notices = 0, batches = 0
   try {
     for (let i = 0; i < MAX_BATCHES; i++) {
-      const ids = ((await db.prepare(`SELECT notice_id FROM notices WHERE reads_purged_at IS NULL AND published_at < ? ORDER BY published_at LIMIT ?`)
+      const ids = ((await db.prepare(`SELECT notice_id FROM notices WHERE reads_purged_at IS NULL AND published_at < ? AND status != 'draft' ORDER BY published_at LIMIT ?`)
         .bind(cutoffJst, NOTICE_BATCH).all()).results as { notice_id: number }[]).map(r => r.notice_id)
       if (!ids.length) break
       const json = bindJsonArray(ids)
@@ -4536,11 +4537,12 @@ api.post('/admin/notices', async (c) => {
   const status = mode === 'draft' ? 'draft' : mode === 'schedule' ? 'scheduled' : 'published'
   // 二重送信の防止（#105）: 画面が発行した一意キー（client_request_id）が同じなら受け付けない。
   // キーが無い呼び出しも、同じ人が同じ内容を直前に配信していれば重複として扱う
+  // （予約中のものは published_at が先の日時なので比べない。同じ文面を別の日時に予約できるように #291）
   const requestId = typeof b.client_request_id === 'string' && b.client_request_id.trim() ? b.client_request_id.trim().slice(0, 64) : null
   const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_DUP_WINDOW_SEC * 1000).toISOString().slice(0, 19).replace('T', ' ')
   const dup = await c.env.DB.prepare(`SELECT notice_id FROM notices WHERE company_id = ? AND created_by = ? AND title = ? AND COALESCE(body, '') = ?
-    AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? LIMIT 1`)
-    .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since).first() as any
+    AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? AND published_at <= ? LIMIT 1`)
+    .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since, nowJST()).first() as any
   if (dup) return c.json({ error: '同じお知らせを配信したばかりです。一覧を確認してください', duplicate: true, notice_id: dup.notice_id }, 409)
   // 配信先（notice_targets）は notices のトリガーで展開する（0052）
   const ins = await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by, client_request_id,
