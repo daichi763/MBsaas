@@ -880,9 +880,9 @@ async function renderTemplates() {
           </div>
           ${t.company_name ? `<p class="text-xs text-slate-400 mb-2">${esc(t.company_name)}</p>` : ''}
           <div class="flex flex-wrap gap-1.5">
-            ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-cyan-900 text-cyan-300' : 'bg-slate-700 text-slate-300'}" title="${esc(f.key)}">${esc(f.label)}</span>`).join('')}
+            ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-cyan-900 text-cyan-300' : 'bg-slate-700 text-slate-300'}" title="${esc(f.key)}${f.required ? '（必須）' : ''}">${esc(f.label)}${f.required ? ' <span class="text-amber-300">*</span>' : ''}</span>`).join('')}
           </div>
-          <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}）・使用中の案件 ${Number(t.project_count || 0)}件${t.has_reports ? '・日報あり' : ''}</p>
+          <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}${t.fields.some(f => f.required) ? ` / 必須 ${t.fields.filter(f => f.required).length}` : ''}）・使用中の案件 ${Number(t.project_count || 0)}件${t.has_reports ? '・日報あり' : ''}</p>
           <div class="flex gap-2 mt-3">
             <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="editHqTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>修正</button>
             <button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="toggleHqTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '配信を再開' : '配信停止'}</button>
@@ -894,6 +894,8 @@ async function renderTemplates() {
 // 項目の定義（1行1項目: キー,表示名,タイプ[,必須]）を読み、問題を行ごとに返す。
 // サーバー（src/lib/report-template.ts）と同じ規則。保存の前にプレビューで示す（#378）
 const TPL_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/
+// 修正中のテンプレートにすでにあるキー。規則ができる前のキー（日本語など）でも、そのまま残すなら通す（#165。日報の値はこのキーで保存されているため）
+let TPL_KEEP_KEYS = new Set()
 const TPL_RESERVED = ['incident_note', 'complaint_note', 'incident_flag', 'complaint_flag', 'constructor', 'prototype', 'toString', 'hasOwnProperty']
 function parseTemplateLines(text) {
   const seen = new Set()
@@ -903,7 +905,7 @@ function parseTemplateLines(text) {
     if (['必須', 'required', '*'].includes(req)) f.required = true
     const errors = []
     if (!key) errors.push('キーが空欄です')
-    else if (!TPL_KEY_RE.test(key)) errors.push('キーは半角英字で始まる英数字と _ の40文字以内にしてください')
+    else if (!TPL_KEY_RE.test(key) && !TPL_KEEP_KEYS.has(key)) errors.push('キーは半角英字で始まる英数字と _ の40文字以内にしてください')
     else if (TPL_RESERVED.includes(key)) errors.push('このキーは日報の別の用途で使っているため使えません')
     else if (seen.has(key.toLowerCase())) errors.push('キーが重複しています')
     if (key) seen.add(key.toLowerCase())
@@ -932,6 +934,7 @@ function renderTemplatePreview() {
 }
 
 window.showAddTemplate = function () {
+  TPL_KEEP_KEYS = new Set()
   modal(`
     <h3 class="font-bold text-lg mb-4 text-gray-800">テンプレート作成</h3>
     <div class="space-y-3">
@@ -968,6 +971,7 @@ delegate('addTemplate', (el) => withSubmitLock(el, async () => {
 const hqTplById = id => HQ_TPLS.find(t => Number(t.template_id) === Number(id))
 delegate('editHqTemplate', el => {
   const t = hqTplById(el.dataset.id); if (!t) return
+  TPL_KEEP_KEYS = new Set(t.fields.map(f => f.key))
   const lines = t.fields.map(f => [f.key, f.label, f.type || 'text'].concat(f.required ? ['必須'] : []).join(',')).join('\n')
   modal(`
     <h3 class="font-bold text-lg mb-4 text-gray-800">テンプレートの修正</h3>
@@ -1794,7 +1798,9 @@ delegate('hqAnnReads', (el) => withSubmitLock(el, async () => {
 
 // ============ メール送信（#438 #541） ============
 // 直近の期間の会社別・種類別の送信数と、届かなかった割合・理由の上位・最後に成功した日時。宛先は伏せて表示する
-const MAIL_TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認' }
+const MAIL_TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認',
+  recruit_applied: '新しい応募', board_message: '案件掲示板', roster_chat: '企業間チャット', consultation: '相談・連絡', reminder: '報告の催促',
+  shift_change: 'シフトの変更', recruit_result: '応募の結果', recruit_new: '新しい募集', notification_digest: '通知のまとめ' }
 const MAIL_STATUS_LABEL = { sent: '送信済み', delivered: '配信済み', failed: '送信失敗', bounced: '不達', bounced_soft: '一時的な不達', complained: '迷惑メール報告', skipped: '送信無効' }
 const MAIL_ERR_LABEL = { mail_not_configured: '送信設定なし（RESEND_API_KEY / MAIL_FROM）', resend_error: '送信サービスのエラー', network_error: '通信エラー', invalid_address: 'アドレスの形式の誤り',
   bounced: '不達', bounced_soft: '一時的な不達', complained: '迷惑メール報告', suppressed_bounced: '不達のアドレスのため停止', suppressed_complained: '迷惑メール報告のアドレスのため停止', company_inactive: '契約停止中の企業' }
@@ -1808,6 +1814,9 @@ async function renderHqMail() {
   } catch (e) { $app.innerHTML = `<p class="text-red-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>`; return }
   if (HQ_MAIL.days === 7) renderMailAlert(stats)
   const pct = (r) => `${Math.round(r * 1000) / 10}%`
+  // 会社ごとの直近24時間の送信数（last_24h）と目安（alert.daily_warn）。サーバーが返すときだけ列を出す（#392）
+  const hasToday = stats.companies.some(c => c.last_24h != null)
+  const dailyLimit = Number(stats.alert && stats.alert.daily_warn) || 0
   $app.innerHTML = `
     <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
       <h2 class="text-xl font-bold">メール送信</h2>
@@ -1819,11 +1828,11 @@ async function renderHqMail() {
     </div>
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
       <h3 class="font-bold mb-2"><i class="fas fa-building text-cyan-400 mr-1"></i>会社別</h3>
-      <p class="text-[11px] text-slate-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。</p>
+      <p class="text-[11px] text-slate-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。${dailyLimit ? `直近24時間の送信が${dailyLimit}通以上の会社も警告します（申請・通知の繰り返しや設定の誤りの目安）。` : ''}</p>
       <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">企業</th><th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">企業</th>${hasToday ? `<th class="text-right px-2" title="直近24時間の送信数${dailyLimit ? `（目安 ${dailyLimit}通を超えると警告）` : ''}">24時間</th>` : ''}<th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
         <tbody>${stats.companies.map(c => `<tr class="border-b border-slate-700/40">
-          <td class="px-2 py-2">${esc(c.company_name)}</td><td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
+          <td class="px-2 py-2">${esc(c.company_name)}</td>${hasToday ? `<td class="px-2 text-right ${dailyLimit && Number(c.last_24h) >= dailyLimit ? 'text-amber-400 font-bold' : ''}">${Number(c.last_24h) || 0}</td>` : ''}<td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
           <td class="px-2 text-right ${c.failed ? 'text-red-400' : ''}">${c.failed}</td><td class="px-2 text-right ${c.failure_rate >= stats.alert.rate ? 'text-red-400 font-bold' : ''}">${pct(c.failure_rate)}</td>
           <td class="px-2 text-xs text-slate-400">${c.types.map(t => `${esc(MAIL_TYPE_LABEL[t.type] || t.type)} ${t.ok}/${t.total}`).join('、')}</td>
           <td class="px-2 text-xs">${esc(c.last_success_at || '－')}</td>
@@ -1907,9 +1916,12 @@ function renderMailAlert(stats) {
     $app.parentNode.insertBefore(box, $app)
   }
   const warnings = (stats && stats.warnings) || []
+  // 送信量の警告（kind: 'daily_volume'。直近24時間の送信数が目安を超えた会社。#392）と、届いていない警告を見出しで分ける
+  const volumeN = warnings.filter(w => w.kind === 'daily_volume').length
+  const title = !volumeN ? 'メールが届いていない会社があります' : volumeN === warnings.length ? 'メールの送信数が多い会社があります' : 'メールの送信で確認が必要な会社があります'
   box.innerHTML = warnings.length ? `
     <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#f59e0b">
-      <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>メールが届いていない会社があります</p>
+      <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>${title}</p>
       <ul class="mt-1 text-xs">${warnings.map(w => `<li>・${esc(w.message)}</li>`).join('')}</ul>
       <a href="#mail" class="text-cyan-400 text-xs hover:underline">メール送信を開く →</a>
     </div>` : ''

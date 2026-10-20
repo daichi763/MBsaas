@@ -78,10 +78,11 @@
             ${p.is_open ? '<span class="badge badge-green shrink-0">募集中</span>' : p.status === 'open' && p.expired ? '<span class="badge badge-gray shrink-0">期間終了</span>' : '<span class="badge badge-gray shrink-0">終了</span>'}
           </div>
           <p class="text-xs text-gray-600 mb-2">募集中の枠 ${p.open_roles}件（残り${p.open_remaining}名）・応募 ${p.application_count}件${p.pending_count ? `・<b class="text-red-600">未対応 ${p.pending_count}件</b>` : ''}</p>
+          ${Number(p.blocked_count) > 0 ? `<p class="text-[11px] text-amber-700 bg-amber-50 rounded p-1.5 mb-2 recruit-blocked" title="同じ接続元・同じ電話番号からの送信が多すぎたため止めた応募の数（これまでの合計）です。説明会などで同じ Wi-Fi から多くの人が応募すると止まることがあります"><i class="fas fa-shield-halved mr-1"></i>送信回数の制限で止めた応募 ${Number(p.blocked_count)}件${p.blocked_last_at ? `（最後 ${esc(dayjs(String(p.blocked_last_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</p>` : ''}
           <div class="flex gap-1.5 flex-wrap">
             <button class="btn btn-outline text-xs" onclick="showRecruitShare(${p.page_id})"><i class="fas fa-qrcode"></i>URL・QR</button>
             <button class="btn btn-outline text-xs" onclick="openRecruitPage(${p.page_id})"><i class="fas fa-pen"></i>編集</button>
-            ${p.pending_count ? `<button class="btn btn-outline text-xs" onclick="window.__recruitState.tab='applications';window.__recruitState.page_id=${p.page_id};renderRecruit()">応募を見る</button>` : ''}
+            ${p.application_count ? `<button class="btn btn-outline text-xs" data-action="recruitPageApps" data-id="${Number(p.page_id)}" data-pending="${p.pending_count ? '1' : ''}">応募を見る</button>` : ''}
             ${p.is_open ? `<button class="btn btn-outline text-xs" onclick="setRecruitStatus(${p.page_id},'closed')">募集を終了</button>`
               : p.expired ? `<button class="btn btn-outline text-xs" data-action="recruitReopen" data-id="${p.page_id}">期間を延長して再開</button>`
               : `<button class="btn btn-outline text-xs" onclick="setRecruitStatus(${p.page_id},'open')">再開</button>`}
@@ -90,6 +91,11 @@
       </div>`
   }
 
+  // 募集ページの応募の一覧へ（未対応がなくても開ける。未対応があれば未対応、なければすべての状態。#339）
+  delegate('recruitPageApps', (el) => {
+    Object.assign(S, { tab: 'applications', page_id: Number(el.dataset.id), slot_role_id: null, status: el.dataset.pending ? 'pending' : 'all' })
+    window.renderRecruit()
+  })
   // reopen: 期間が切れたページを、期間を延ばして再開する（保存するときに status を open にする。#136）
   window.openRecruitPage = function (id, reopen) {
     const p = id ? (window.__recruitPages || []).find(x => x.page_id === id) : null
@@ -223,6 +229,7 @@
     const q = { status: S.status }
     for (const k of ['page_id', 'slot_role_id', 'q', 'from', 'to']) if (S[k]) q[k] = S[k]
     if (S.no_note) q.no_note = '1'
+    if (S.unverified) q.unverified = '1'
     if (offset) q.offset = offset
     return new URLSearchParams(q)
   }
@@ -246,8 +253,9 @@
           ${(data.pages || []).map(p => `<option value="${p.page_id}" ${Number(S.page_id) === p.page_id ? 'selected' : ''}>${esc(p.title)}${p.status === 'open' ? '' : '（終了）'}</option>`).join('')}</select></label>
         <label class="text-gray-500">勤務日<span class="flex items-center gap-1"><input id="rc-from" type="date" class="inp text-sm" value="${esc(S.from || '')}">〜<input id="rc-to" type="date" class="inp text-sm" value="${esc(S.to || '')}"></span></label>
         <label class="flex items-center gap-1 text-gray-600 pb-2" title="だれも対応メモを残していない応募"><input type="checkbox" id="rc-no-note" ${S.no_note ? 'checked' : ''}>対応メモなしのみ</label>
+        <label class="flex items-center gap-1 text-gray-600 pb-2" title="ボット対策の確認サービスに接続できず、ロボットかどうかを判定せずに受け付けた応募（#501）"><input type="checkbox" id="rc-unverified" ${S.unverified ? 'checked' : ''}>要確認のみ</label>
         <button type="submit" class="btn btn-primary text-xs"><i class="fas fa-magnifying-glass"></i>検索</button>
-        ${S.q || S.page_id || S.from || S.to || S.no_note ? '<button type="button" class="btn btn-outline text-xs" data-action="recruitClearFilter">条件をクリア</button>' : ''}
+        ${S.q || S.page_id || S.from || S.to || S.no_note || S.unverified ? '<button type="button" class="btn btn-outline text-xs" data-action="recruitClearFilter">条件をクリア</button>' : ''}
       </form>
       ${S.slot_role_id ? `<div class="text-xs bg-blue-50 border border-blue-100 rounded-lg p-3 mb-3 flex items-center gap-2 flex-wrap" id="recruit-slot-filter">
         <span class="badge badge-blue">枠で絞り込み中</span>
@@ -269,14 +277,14 @@
     document.getElementById('recruit-filter').addEventListener('submit', (ev) => {
       ev.preventDefault()
       const v = (id) => document.getElementById(id).value.trim()
-      Object.assign(S, { q: v('rc-q'), page_id: v('rc-page') ? Number(v('rc-page')) : null, from: v('rc-from'), to: v('rc-to'), no_note: document.getElementById('rc-no-note').checked })
+      Object.assign(S, { q: v('rc-q'), page_id: v('rc-page') ? Number(v('rc-page')) : null, from: v('rc-from'), to: v('rc-to'), no_note: document.getElementById('rc-no-note').checked, unverified: document.getElementById('rc-unverified').checked })
       renderApplications()
     })
   }
   const moreButton = (data) => data.next_offset != null
     ? `<button class="btn btn-outline w-full mt-3 text-xs" id="recruit-app-more" data-action="recruitMore" data-offset="${Number(data.next_offset)}">さらに読み込む（残り${data.total - data.next_offset}件）</button>` : ''
   delegate('recruitStatus', (el) => { S.status = el.dataset.status; renderApplications() })
-  delegate('recruitClearFilter', () => { Object.assign(S, { q: '', page_id: null, from: '', to: '', no_note: false }); renderApplications() })
+  delegate('recruitClearFilter', () => { Object.assign(S, { q: '', page_id: null, from: '', to: '', no_note: false, unverified: false }); renderApplications() })
   delegate('recruitClearSlot', () => { S.slot_role_id = null; renderApplications() })
   delegate('recruitMore', (el) => withSubmitLock(el, async () => {
     let data; try { data = (await axios.get('/api/admin/recruit-applications?' + appQuery(Number(el.dataset.offset)))).data } catch (e) { toast(errMsg(e)); return }
@@ -326,7 +334,8 @@
     return `<article class="card p-4" data-application-id="${a.application_id}">
       <div class="flex items-start justify-between gap-2 flex-wrap mb-2">
         <div><p class="font-bold text-gray-800">${who}</p>
-          <p class="text-xs text-gray-500">${a.kana ? esc(a.kana) + '・' : ''}${a.phone ? `<a href="tel:${esc(a.phone)}" class="hover:underline">${esc(a.phone)}</a>` : ''}${a.email ? '・' + esc(a.email) : ''}</p></div>
+          <p class="text-xs text-gray-500">${a.kana ? esc(a.kana) + '・' : ''}${a.phone ? `<a href="tel:${esc(a.phone)}" class="hover:underline">${esc(a.phone)}</a>` : ''}${a.email ? '・' + esc(a.email) : ''}</p>
+          ${a.turnstile_unverified ? '<span class="badge badge-yellow mt-1 recruit-unverified" title="ボット対策（Turnstile）の確認サービスに接続できなかったため、ロボットかどうかを判定せずに受け付けた応募です。氏名・電話番号などがいたずらでないか確かめてから承認してください">要確認（ロボット判定できず）</span>' : ''}</div>
         <p class="text-[11px] text-gray-400 text-right">${esc(a.page_title || '')}<br>${dayjs(a.created_at).format('M/D HH:mm')} 応募</p>
       </div>
       ${a.note ? `<p class="text-xs bg-gray-50 rounded p-2 mb-2 whitespace-pre-wrap">${esc(a.note)}</p>` : ''}

@@ -8,7 +8,10 @@
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下', cancelled: '取り消し' }
   const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え', correction_changed_by_admin: '管理者による修正', correction_cancelled: '自動の取り消し', incident_reported: 'インシデント・クレーム',
     recruit_applied: '新しい応募', board_message: '案件掲示板', roster_chat: '企業間チャット', consult_received: '相談・連絡', consult_message: '相談への追加の連絡',
-    roster_source_retired: '所属元での退職', roster_host_note: '連携先からの追記' }
+    roster_source_retired: '所属元での退職', roster_host_note: '連携先からの追記',
+    // #464 #479 #162: 従業員の口座・給与の変更、掲示板の保存した検索条件の新着、他社への連携・連携の終了と再開
+    employee_payroll_changed: '従業員の口座・給与', board_saved_search: '掲示板の新着（保存した条件）',
+    roster_linked: '他社への連携', roster_link_ended: '連携の終了', roster_link_resumed: '連携の再開' }
   // 送信の失敗・停止の理由。送信サービスの理由は「コード: 内容」の形で、コロンの後をそのまま添える（#438）
   const ERR = {
     mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー',
