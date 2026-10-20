@@ -91,7 +91,8 @@ if (MAIL_DISABLED) {
   ok('承認: 処理した管理者に控えの通知', nm2.notifications.some(n => n.related_id === cid && n.kind === 'correction_processed'), nm2.notifications[0])
   ok('承認: 処理していない管理者には結果を通知しない', !na2.notifications.some(n => n.related_id === cid && n.kind !== 'correction_submitted'), na2.notifications.filter(n => n.related_id === cid).map(n => n.kind))
   const dsA = (await deliveriesOf(cid)).filter(d => d.event === 'approved')
-  ok('承認: メールの送信状態が記録される', dsA.length === 2, dsA.map(d => [d.recipient_name, d.kind, d.status]))
+  // 処理した管理者の控えは、既定ではメールを送らない（アプリ内の控えだけ。#284）
+  ok('承認: メールの送信状態が記録される（申請者あて。処理した管理者の控えのメールは既定で送らない）', dsA.length === 1 && dsA[0].kind === 'correction_approved', dsA.map(d => [d.recipient_name, d.kind, d.status]))
 
   // ---------- 却下・再申請 ----------
   const r2 = await st1.post('/api/staff/corrections', { shift_id: A, report_type: 'check_out', kind: 'add', requested_at: `${dA} 19:10`, reason: '退店報告を忘れた' })

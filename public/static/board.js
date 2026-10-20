@@ -36,6 +36,8 @@
     if (id === 'new') return renderForm(null)
     if (id === 'threads') return renderThreadList()
     if (id === 'proposals') return renderProposalPage()
+    const sm = String(id).match(/^search-(\d+)$/)
+    if (sm) return openSavedSearch(Number(sm[1]))
     const tm = String(id).match(/^t(\d+)$/)
     if (tm) return renderThread(Number(tm[1]))
     const m = String(id).match(/^(\d+)(-edit)?$/)
@@ -73,12 +75,94 @@
             <button class="btn btn-outline text-xs" title="条件をクリア" onclick="__boardClear()"><i class="fas fa-xmark"></i></button>
           </div>
         </div>
-        ${S.scope === 'open' ? `<label class="text-xs text-gray-500 mt-2 inline-flex items-center gap-1"><input type="checkbox" id="bf-hide-mine" ${S.filters.hide_mine ? 'checked' : ''} onchange="__boardSearch()">自社の掲載を除く</label>` : ''}
+        ${S.scope === 'open' ? `<label class="text-xs text-gray-500 mt-2 inline-flex items-center gap-1"><input type="checkbox" id="bf-hide-mine" ${S.filters.hide_mine ? 'checked' : ''} onchange="__boardSearch()">自社の掲載を除く</label>
+        <div class="flex items-center gap-1.5 mt-2 flex-wrap text-xs" id="board-saved-bar"><span class="spin"></span></div>` : ''}
       </section>
       <section id="board-list"><div class="flex justify-center py-10"><span class="spin"></span></div></section>`
     $app.querySelectorAll('#board-filters input').forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') window.__boardSearch() }))
+    if (S.scope === 'open') loadSavedBar()
     await loadList()
   }
+
+  // ---------- 保存した検索条件（#479）。条件に合う新しい掲載は、1日1回アプリ内通知（選んだ人にはメールも）で知らせる ----------
+  let savedSearches = []
+  const condText = (c) => [ENG[c.engagement_type], c.prefecture, c.area, c.date ? `稼働日 ${fmtD(c.date)}` : '', c.skill ? `スキル ${c.skill}` : '', c.q ? `「${c.q}」` : ''].filter(Boolean).join('・') || 'すべての掲載'
+  async function fetchSaved() {
+    try { savedSearches = (await axios.get('/api/admin/board/saved-searches')).data.searches || [] } catch { savedSearches = [] }
+    return savedSearches
+  }
+  async function loadSavedBar() {
+    await fetchSaved()
+    const bar = document.getElementById('board-saved-bar'); if (!bar) return
+    bar.innerHTML = `
+      <select id="bf-saved" class="inp text-xs w-auto max-w-[16rem]"><option value="">保存した条件（${savedSearches.length}件）</option>
+        ${savedSearches.map(s => `<option value="${Number(s.search_id)}">${esc(s.name)}${s.notify ? '' : '（通知なし）'}</option>`).join('')}</select>
+      <button class="btn btn-outline text-xs" data-action="boardSaveSearch"><i class="fas fa-bookmark"></i>この条件を保存</button>
+      ${savedSearches.length ? '<button class="btn btn-outline text-xs" data-action="boardManageSearches"><i class="fas fa-gear"></i>保存した条件の管理</button>' : ''}
+      <span class="text-[11px] text-gray-400">保存した条件に合う他社の新しい掲載を、1日1回お知らせします</span>`
+    document.getElementById('bf-saved').addEventListener('change', (ev) => { if (ev.target.value) applySavedSearch(Number(ev.target.value)) })
+  }
+  function applySavedSearch(id) {
+    const s = savedSearches.find(x => x.search_id === id)
+    if (!s) { toast('保存した条件が見つかりません'); return renderList() }
+    const c = s.conditions
+    if (c.engagement_type) S.eng = c.engagement_type
+    S.scope = 'open'
+    S.filters = { prefecture: c.prefecture, area: c.area, date: c.date, skill: c.skill, q: c.q, hide_mine: true }
+    renderList()
+  }
+  // 通知から開いたとき（#board/search-ID）は、その条件で一覧を出す
+  async function openSavedSearch(id) {
+    await fetchSaved()
+    history.replaceState(null, '', '#board')
+    applySavedSearch(id)
+  }
+  delegate('boardSaveSearch', (el) => withSubmitLock(el, async () => {
+    window.__boardSearch()
+    const f = S.filters
+    const cond = { engagement_type: S.eng, prefecture: f.prefecture || '', area: f.area || '', date: f.date || '', skill: f.skill || '', q: f.q || '' }
+    const name = prompt('保存する名前（空欄なら条件から付けます）', condText(cond))
+    if (name === null) return
+    try {
+      const { data } = await axios.post('/api/admin/board/saved-searches', { ...cond, name: name.trim(), notify: true })
+      toast(`「${data.name}」を保存しました。新しい掲載があれば、1日1回お知らせします`)
+      loadSavedBar()
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('boardManageSearches', () => renderSavedModal())
+  function renderSavedModal() {
+    modal(`
+      <h3 class="font-bold text-lg mb-1">保存した検索条件</h3>
+      <p class="text-xs text-gray-500 mb-3">条件に合う他社の新しい掲載を、1日1回まとめてお知らせします（アプリ内の通知。メールも選べます）</p>
+      <div class="space-y-2 text-sm" id="board-saved-list">
+        ${savedSearches.map(s => `<div class="border border-gray-200 rounded-lg p-2.5" data-search="${Number(s.search_id)}">
+          <div class="flex items-start gap-2"><div class="flex-1 min-w-0"><p class="font-bold text-gray-800 truncate">${esc(s.name)}</p><p class="text-[11px] text-gray-500">${esc(condText(s.conditions))}</p></div>
+            <button class="btn btn-outline text-xs" data-action="boardApplySearch" data-id="${Number(s.search_id)}">この条件で表示</button>
+            <button class="btn btn-danger text-xs" data-action="boardDeleteSearch" data-id="${Number(s.search_id)}" title="削除"><i class="fas fa-trash"></i></button></div>
+          <div class="flex gap-3 mt-1.5 text-xs">
+            <label class="flex items-center gap-1"><input type="checkbox" data-action="boardSearchNotify" data-id="${Number(s.search_id)}" data-field="notify" ${s.notify ? 'checked' : ''}>新着を通知する</label>
+            <label class="flex items-center gap-1"><input type="checkbox" data-action="boardSearchNotify" data-id="${Number(s.search_id)}" data-field="notify_email" ${s.notify_email ? 'checked' : ''}>メールでも知らせる</label></div>
+        </div>`).join('') || '<p class="text-xs text-gray-400">保存した条件はありません</p>'}
+      </div>
+      <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
+  }
+  delegate('boardApplySearch', (el) => { closeModal(); applySavedSearch(Number(el.dataset.id)) })
+  delegate('boardSearchNotify', (el) => withSubmitLock(el, async () => {
+    const id = Number(el.dataset.id), field = el.dataset.field === 'notify_email' ? 'notify_email' : 'notify', on = el.checked
+    try {
+      await axios.put(`/api/admin/board/saved-searches/${id}`, { [field]: on })
+      const s = savedSearches.find(x => x.search_id === id); if (s) s[field] = on
+      toast(on ? (field === 'notify' ? '新着を通知します' : 'メールでも知らせます') : (field === 'notify' ? '新着の通知を止めました' : 'メールは送りません'))
+      loadSavedBar()
+    } catch (e) { el.checked = !on; toast(errMsg(e)) }
+  }))
+  delegate('boardDeleteSearch', (el) => withSubmitLock(el, async () => {
+    if (!confirm('この保存した条件を削除しますか？')) return
+    try {
+      await axios.delete(`/api/admin/board/saved-searches/${Number(el.dataset.id)}`)
+      await loadSavedBar(); renderSavedModal(); toast('削除しました')
+    } catch (e) { toast(errMsg(e)) }
+  }))
   window.__boardSet = function (k, v) { S[k] = v; renderList() }
   window.__boardSearch = function () {
     const g = id => (document.getElementById(id) || {}).value || ''

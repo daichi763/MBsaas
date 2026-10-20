@@ -6,6 +6,7 @@ import { REPORT_TYPES } from '../report-settings'
 //   daily_reports              : work_date から3年
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
+//   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
 //                              : 勤怠と同じく、スタッフの退職日から7年（docs/spec_attendance_correction.md 8章）
 //   notice_read_staff_reports  : スタッフ別の既読率（人事評価の参考資料）も退職後7年（#437）
@@ -64,6 +65,7 @@ const NOTIFICATIONS_YEARS = 2
 const NOTIFICATIONS_BATCH = 500
 const NOTIFICATIONS_MAX_BATCHES = 20
 const EMAIL_LOGS_YEARS = 1
+const OPERATION_LOGS_YEARS = 7
 const R2_DELETE_CHUNK = 1000 // R2 の delete に1回で渡すキーの数（R2 の上限）
 const R2_DELETE_BUDGET = 5000 // 1回のCronで消す R2 の写真・書類の上限（超えた分は翌日に回す。#419）
 const DRY_RUN_STAFF_LIMIT = 300 // dry-run で一覧に出す対象スタッフの上限
@@ -394,17 +396,19 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 
 // 作成日時から一定年数たった行を、件数を区切って消す（user_notifications・email_logs で共用）。
 // created_at は CURRENT_TIMESTAMP（YYYY-MM-DD HH:MM:SS）か ISO 8601 で、どちらも YYYY-MM-DD との文字列比較で判定できる
-async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number }): Promise<RetentionTargetResult> {
+// where は追加の条件（削除の保留中の企業を除くときなど）
+async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number; where?: string }): Promise<RetentionTargetResult> {
   const cutoff = cutoffDate(t.years)
+  const extra = t.where ? ` AND ${t.where}` : ''
   if (dryRun) {
-    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t.table} WHERE created_at < ?`).bind(cutoff).first()
+    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t.table} WHERE created_at < ?${extra}`).bind(cutoff).first()
     return { target: t.target, targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
   }
   let deleted = 0
   try {
     for (let i = 0; i < NOTIFICATIONS_MAX_BATCHES; i++) {
       const result = await db.prepare(
-        `DELETE FROM ${t.table} WHERE ${t.idCol} IN (SELECT ${t.idCol} FROM ${t.table} WHERE created_at < ? LIMIT ?)`
+        `DELETE FROM ${t.table} WHERE ${t.idCol} IN (SELECT ${t.idCol} FROM ${t.table} WHERE created_at < ?${extra} LIMIT ?)`
       ).bind(cutoff, NOTIFICATIONS_BATCH).run()
       const changes = result.meta.changes || 0
       deleted += changes
@@ -422,6 +426,11 @@ function cleanupUserNotifications(db: D1Database, dryRun: boolean): Promise<Rete
 // メールの送信記録（宛先のメールアドレスを含む）は1年で消す（#240）
 function cleanupEmailLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'email_logs', table: 'email_logs', idCol: 'log_id', years: EMAIL_LOGS_YEARS })
+}
+// シフト・精算の操作履歴（#159）は操作から7年で消す（精算・請求の帳簿と同じ期間）。削除の保留中の企業の分は消さない
+function cleanupOperationLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'operation_logs', table: 'operation_logs', idCol: 'log_id', years: OPERATION_LOGS_YEARS,
+    where: `company_id NOT IN (${HELD_COMPANY_SQL})` })
 }
 
 function emptyRetiredAcc(): Record<string, RetentionTargetResult> {
@@ -665,6 +674,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         // Sprint 5 で足した、シフトを参照する表（リマインドの送信記録・交通費や延長の申請）。shifts より先に消す
         [null, db.prepare(`DELETE FROM reminder_sends WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
+        // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
+        [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
         ['shifts', db.prepare('DELETE FROM shifts WHERE staff_id = ?').bind(staffId)],
         ['evaluations', db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId)],
         ['follow_logs', db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId)],
@@ -688,6 +699,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         ['employee_documents', db.prepare('DELETE FROM employee_documents WHERE staff_id = ?').bind(staffId)],
         // Sprint 5 で足した本人の記録（振込先の口座・変更申請・休暇・出勤可能日・従業員データの変更履歴・予定確認やカレンダーのトークン）
         [null, db.prepare('DELETE FROM payout_accounts WHERE staff_id = ?').bind(staffId)],
+        // Sprint 6（w6-premium-pay）: スタッフの交通費の標準
+        [null, db.prepare('DELETE FROM staff_transport_defaults WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM profile_change_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM leave_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM staff_availability WHERE staff_id = ?').bind(staffId)],
@@ -695,12 +708,17 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare('DELETE FROM employee_change_logs WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM staff_schedule_tokens WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare(`DELETE FROM staff_calendar_tokens WHERE user_id = ${userOf}`).bind(staffId)],
+        // Sprint 6 で足した、本人の端末のプッシュの購読・送信待ちと通知の受け取り設定（w6-push）
+        [null, db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ${userOf}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM push_queue WHERE user_id = ${userOf}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM user_notification_prefs WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
         ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
         // 同意履歴は連携行（staff_id）の単位で消す。所属元の行が対象になっても、連携先の行が残っている間は連携の根拠として残す
         ['roster_consents', db.prepare('DELETE FROM roster_consents WHERE staff_id = ? OR (source_staff_id = ? AND staff_id IS NULL)').bind(staffId, staffId)],
         // スタッフに紐づく応募（氏名・電話・メール・メモ）と応募した枠、人材提案のスナップショット・開示した氏名（#350）
+        [null, db.prepare('DELETE FROM recruit_application_notes WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
         ['recruit_application_items', db.prepare('DELETE FROM recruit_application_items WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE staff_id = ?)').bind(staffId)],
         ['recruit_applications', db.prepare('DELETE FROM recruit_applications WHERE staff_id = ?').bind(staffId)],
         ['board_proposals', db.prepare(`UPDATE board_proposals SET ${ANONYMIZE_PROPOSAL_SET}, anonymized_at = ?
@@ -908,6 +926,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('daily_reports', async () => [await cleanupDailyReports(db, opts.dryRun)]),
       ...await stage('user_notifications', async () => [await cleanupUserNotifications(db, opts.dryRun)]),
       ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
+      ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
     ] : []),
     ...(stages.includes('in_service') ? await stage('in_service', () => cleanupInService(db, opts.dryRun)) : []),
@@ -1074,6 +1093,7 @@ export const OFFBOARDING_EXPORT_PAGE = 500 // CSV の1回の取得の行数（Fr
 const OFFBOARDING_DELETE_LIMIT = 500       // 1文で消す行数
 const OFFBOARDING_QUERY_BUDGET = 25        // 1回の要求で実行する削除の問い合わせ・R2 の削除の上限
 const OFFBOARDING_R2_CHUNK = 1000          // R2 の delete に1回で渡すキーの数
+const OFFBOARDING_COUNT_COLS = 90          // 件数を数える1文の列の数（D1 の結果の列の上限 100 の内側）
 
 export type OffboardingBuckets = { PHOTOS?: R2Bucket; DOCUMENTS?: R2Bucket; CONTRACTS?: R2Bucket }
 export type OffboardingTable = {
@@ -1107,6 +1127,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
+  { target: 'operation_logs', label: 'シフト・精算の操作履歴', table: 'operation_logs', where: OB_CO },
+  { target: 'recruit_application_notes', label: '応募の対応メモ', table: 'recruit_application_notes', where: OB_CO },
   { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
     where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },
   { target: 'recruit_applications', label: '応募', table: 'recruit_applications', where: OB_CO },
@@ -1130,6 +1152,9 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'employee_change_logs', label: '従業員データの変更履歴', table: 'employee_change_logs', where: OB_CO },
   { target: 'payout_accounts', label: '振込先の口座', table: 'payout_accounts', where: OB_CO },
   { target: 'payout_settings', label: '振込元（依頼人）の設定', table: 'payout_settings', where: OB_CO },
+  // Sprint 6（w6-premium-pay）: 交通費の標準・割増の設定
+  { target: 'staff_transport_defaults', label: '交通費の標準（スタッフ・開催場所）', table: 'staff_transport_defaults', where: OB_CO },
+  { target: 'premium_pay_settings', label: '深夜・時間外・休日の割増の設定', table: 'premium_pay_settings', where: OB_CO },
   { target: 'profile_change_requests', label: '登録情報の変更申請', table: 'profile_change_requests', where: OB_CO },
   { target: 'leave_requests', label: '休暇の申請', table: 'leave_requests', where: OB_CO },
   { target: 'staff_availability', label: '出勤可能日', table: 'staff_availability', where: OB_CO },
@@ -1157,6 +1182,10 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'notice_ack_tokens', label: 'お知らせの確認用トークン', table: 'notice_ack_tokens', where: OB_CO, noExport: true },
   { target: 'notice_email_deliveries', label: 'お知らせのメール送信', table: 'notice_email_deliveries', where: OB_CO },
   { target: 'notices', label: 'お知らせ', table: 'notices', where: OB_CO },
+  // Sprint 6 で足した表（w6-push）。購読の宛先（endpoint）は端末に送るための鍵なので書き出さない
+  { target: 'push_queue', label: 'プッシュ通知の送信待ち', table: 'push_queue', where: OB_CO, noExport: true },
+  { target: 'push_subscriptions', label: 'プッシュ通知の購読（端末）', table: 'push_subscriptions', where: OB_CO, noExport: true },
+  { target: 'user_notification_prefs', label: '通知の受け取り設定', table: 'user_notification_prefs', where: OB_CO },
   { target: 'user_notifications', label: 'アプリ内の通知', table: 'user_notifications', where: OB_CO },
   { target: 'todo_dismissals', label: 'ToDo の非表示', table: 'todo_dismissals', where: OB_CO, noExport: true },
   { target: 'client_ng_staff', label: 'クライアントの NG スタッフ', table: 'client_ng_staff', where: OB_CO },
@@ -1175,6 +1204,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'roster_comment_user_reads', label: '企業間チャットの既読（利用者）', table: 'roster_comment_user_reads', where: OB_CO, noExport: true },
   { target: 'roster_host_note_seen', label: '稼働先メモの既読', table: 'roster_host_note_seen', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'board_thread_reads', label: '掲示板の既読（会社）', table: 'board_thread_reads', where: OB_CO, noExport: true },
+  { target: 'board_saved_searches', label: '掲示板の保存した検索条件', table: 'board_saved_searches', where: OB_CO },
   { target: 'board_thread_user_reads', label: '掲示板の既読（利用者）', table: 'board_thread_user_reads', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'support_requests', label: '本部への支援の依頼', table: 'support_requests', where: OB_CO },
   { target: 'hq_announcement_reads', label: '本部のお知らせの既読', table: 'hq_announcement_reads', where: OB_CO, noExport: true },
@@ -1224,7 +1254,11 @@ export async function countOffboardingData(db: D1Database, companyId: number): P
     ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
     ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
   ]
-  const row = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  // D1 は1つの結果の列を 100 までしか返せないので、OFFBOARDING_COUNT_COLS 列ずつの文に分けて1回の batch で数える（表を足して 100 を超えたため。w6-push）
+  const parts: string[][] = []
+  for (let i = 0; i < cols.length; i += OFFBOARDING_COUNT_COLS) parts.push(cols.slice(i, i + OFFBOARDING_COUNT_COLS))
+  const got = await db.batch(parts.map(part => db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${part.join(', ')}`).bind(companyId)))
+  const row = Object.assign({}, ...got.map(r => ((r.results || [])[0] || {}) as Record<string, number>)) as Record<string, number>
   const counts: Record<string, number> = {}
   OFFBOARDING_TABLES.forEach((t, i) => { counts[t.target] = Number(row?.[`t${i}`]) || 0 })
   const files: Record<string, number> = {}

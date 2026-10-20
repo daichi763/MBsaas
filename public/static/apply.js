@@ -55,6 +55,7 @@
     // 入力中の内容は描き直しても保つ
     const keep = {}
     for (const id of ['ap-name', 'ap-kana', 'ap-phone', 'ap-email', 'ap-note', 'ap-website']) { const el = document.getElementById(id); if (el) keep[id] = el.value }
+    const keepAnswers = document.getElementById('apply-form') ? readAnswers() : {}
     const agreed = !!(document.getElementById('ap-agree') || {}).checked
     const d = DATA
     const byDate = {}
@@ -99,12 +100,13 @@
           <label class="block text-sm text-gray-600">電話番号 <span class="text-red-500">*</span><input id="ap-phone" class="inp" type="tel" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="09012345678"></label>
           <label class="block text-sm text-gray-600">メールアドレス<input id="ap-email" class="inp" type="email" inputmode="email" autocomplete="email" maxlength="120">
             <span class="block text-[11px] text-gray-400 mt-0.5">選考の結果（確定・見送り）をこのアドレスにお知らせします。入力がない場合は、担当者からお電話などでご連絡します</span></label>
+          ${questions().map(questionHtml).join('')}
           <label class="block text-sm text-gray-600">ご質問・ご要望<textarea id="ap-note" class="inp" rows="3" maxlength="500" placeholder="経験・希望の時間など"></textarea></label>
           <div class="hidden" aria-hidden="true"><label>Website<input id="ap-website" tabindex="-1" autocomplete="off"></label></div>
           <div class="text-[11px] text-gray-500 bg-gray-50 rounded-lg p-2.5 leading-relaxed" id="ap-privacy">
             <p class="font-bold text-gray-600 mb-0.5">個人情報の取り扱い</p>
             <p>取得する者: ${esc(d.company_name)}</p>
-            <p>利用目的: このお仕事の選考・ご連絡・シフトの調整に使います。採用となった場合は、${esc(d.company_name)}のスタッフとして登録し（氏名・フリガナ・電話番号・メールアドレス・ご質問欄の内容）、勤務の連絡・勤怠の記録に使います</p>
+            <p>利用目的: このお仕事の選考・ご連絡・シフトの調整に使います。採用となった場合は、${esc(d.company_name)}のスタッフとして登録し（氏名・フリガナ・電話番号・メールアドレス・${questions().length ? '質問へのご回答・' : ''}ご質問欄の内容）、勤務の連絡・勤怠の記録に使います</p>
             <p>保存期間: 採用に至らなかった応募は、応募から${Number(d.retention_days) || 180}日で削除します</p>
             <p>開示・訂正・削除のご希望: ${d.contact_note ? esc(d.contact_note) : esc(d.company_name) + 'へご連絡ください'}</p>
           </div>
@@ -123,6 +125,7 @@
         </div>
         <p class="max-w-lg mx-auto text-[11px] text-amber-700 mt-1 hidden" id="ap-hint"></p></div>` : ''}`
     for (const [id, v] of Object.entries(keep)) { const el = document.getElementById(id); if (el) el.value = v }
+    restoreAnswers(keepAnswers)
     if (agreed && document.getElementById('ap-agree')) document.getElementById('ap-agree').checked = true
     if (tsWidget !== null && window.turnstile) renderTurnstile()
     const form = document.getElementById('apply-form')
@@ -145,6 +148,35 @@
     if (picked.size) clearFieldError(document.getElementById('apply-slots'))
     updateHint()
   }
+  // ---------- 募集ページの独自の質問（#300） ----------
+  // type: text（自由記述）/ select（選択肢）/ yesno（はい・いいえ）。回答は { key: 値 } で送る（yesno は yes / no）
+  const questions = () => (DATA && Array.isArray(DATA.questions) ? DATA.questions : [])
+  const qid = (q) => 'ap-q-' + q.key
+  function questionHtml(q) {
+    const mark = q.required ? ' <span class="text-red-500">*</span>' : ''
+    const input = q.type === 'select'
+      ? `<select id="${esc(qid(q))}" class="inp"><option value="">選択してください</option>${(q.options || []).map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`
+      : q.type === 'yesno'
+        ? `<span class="flex gap-4 mt-1">${[['yes', 'はい'], ['no', 'いいえ']].map(([v, l]) => `<label class="inline-flex items-center gap-1.5 text-sm"><input type="radio" class="w-4 h-4" name="${esc(qid(q))}" value="${v}">${l}</label>`).join('')}</span>`
+        : `<input id="${esc(qid(q))}" class="inp" maxlength="200">`
+    return `<div class="block text-sm text-gray-600 rounded-lg" id="ap-qbox-${esc(q.key)}" data-question="${esc(q.key)}">${esc(q.label)}${mark}${input}</div>`
+  }
+  function readAnswers() {
+    const out = {}
+    for (const q of questions()) {
+      out[q.key] = q.type === 'yesno' ? ((document.querySelector(`input[name="${qid(q)}"]:checked`) || {}).value || '')
+        : ((document.getElementById(qid(q)) || {}).value || '').trim()
+    }
+    return out
+  }
+  function restoreAnswers(saved) {
+    for (const q of questions()) {
+      const v = saved[q.key]; if (!v) continue
+      if (q.type === 'yesno') { const r = document.querySelector(`input[name="${qid(q)}"][value="${v === 'no' ? 'no' : 'yes'}"]`); if (r) r.checked = true }
+      else { const el = document.getElementById(qid(q)); if (el) el.value = v }
+    }
+  }
+
   // 日時の表示（締め切りのお知らせ・完了画面の控え）
   function slotLabel(r) {
     return `${fmt(r.work_date)} ${esc(r.start_time)}〜${esc(r.end_time)}${r.role_name ? '・' + esc(r.role_name) : ''}${r.place ? '・' + esc(r.place) : ''}`
@@ -154,8 +186,10 @@
   // 誤りのある欄を赤い枠で囲み、その下に理由を残して、その欄へ移動する（トーストだけでは画面の外の欄に気づけないため）
   const FIELD_EL = { name: 'ap-name', phone: 'ap-phone', email: 'ap-email', agree: 'ap-agree-box', turnstile: 'ap-turnstile', slots: 'apply-slots' }
   const INVALID = ['border-red-500', 'ring-2', 'ring-red-200', 'ap-invalid']
+  // 質問の欄は q_ + key（サーバーの field と同じ）
+  const fieldId = (key) => FIELD_EL[key] || (/^q_q\d+$/.test(key || '') ? 'ap-qbox-' + key.slice(2) : '')
   function fieldError(key, msg) {
-    const el = document.getElementById(FIELD_EL[key])
+    const el = document.getElementById(fieldId(key))
     toast(msg)
     if (!el) return
     clearFieldError(el)
@@ -164,8 +198,8 @@
     if (key === 'slots') el.querySelector('h3').insertAdjacentElement('afterend', p)
     else el.insertAdjacentElement('afterend', p)
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    const focusEl = key === 'agree' ? document.getElementById('ap-agree') : el
-    if (['name', 'phone', 'email', 'agree'].includes(key)) try { focusEl.focus({ preventScroll: true }) } catch (e) { }
+    const focusEl = key === 'agree' ? document.getElementById('ap-agree') : key.startsWith('q_') ? el.querySelector('input, select') : el
+    if (['name', 'phone', 'email', 'agree'].includes(key) || key.startsWith('q_')) try { focusEl.focus({ preventScroll: true }) } catch (e) { }
   }
   function clearFieldError(target) {
     if (!target) return
@@ -232,13 +266,16 @@
     if (digits.length < 10 || digits.length > 11) return fieldError('phone', '電話番号は10〜11桁の数字で入力してください（ハイフンはあってもなくても構いません）')
     const email = v('ap-email').normalize('NFKC').trim()
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fieldError('email', 'メールアドレスの形式が正しくありません')
+    const answers = readAnswers()
+    const missing = questions().find(q => q.required && !answers[q.key])
+    if (missing) return fieldError('q_' + missing.key, `「${missing.label}」に回答してください`)
     if (!document.getElementById('ap-agree').checked) return fieldError('agree', '個人情報の取り扱いに同意してください')
     if (DATA.turnstile_site_key && !tsToken) return fieldError('turnstile', '「人間であることの確認」を完了してください')
     const btn = document.getElementById('ap-submit'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'
     try {
       const { data } = await axios.post(API + '/apply', {
         name: v('ap-name'), kana: v('ap-kana'), phone: v('ap-phone').normalize('NFKC'), email, note: v('ap-note'), website: v('ap-website'),
-        agree: true, slot_role_ids: [...picked], issued_at: DATA.issued_at, turnstile_token: tsToken,
+        agree: true, slot_role_ids: [...picked], issued_at: DATA.issued_at, turnstile_token: tsToken, answers,
       })
       document.getElementById('apply-submit-bar')?.remove()
       renderDone(data, !!email)
@@ -251,7 +288,7 @@
         try { await reloadSlots(d.closed_role_ids || []) } catch (x) { (d.closed_role_ids || []).forEach(id => picked.delete(id)); render() }
         return fieldError('slots', d.error)
       }
-      if (d && d.field && FIELD_EL[d.field]) return fieldError(d.field, d.error)
+      if (d && d.field && fieldId(d.field)) return fieldError(d.field, d.error)
       // 応答があった失敗（サーバー側のエラー）は通信環境の問題と区別して案内する
       toast(errMsg(e, e && e.response ? '送信に失敗しました。時間をおいてもう一度お試しいただくか、お問い合わせ先へご連絡ください' : '送信に失敗しました。通信環境を確認してもう一度お試しください'))
     }

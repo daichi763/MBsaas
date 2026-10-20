@@ -141,10 +141,12 @@ await waitServer()
   const r = await admin.get(`/api/admin/settlement/export?from=${from}&to=${shift.work_date}&kind=detail&staff_id=${shift.staff_id}`)
   const rows = parseCsv(r.text); const h = rows[0]
   const line = rows.find(x => x[0] === String(shift.shift_id))
-  ok('#571 シフト明細: 社員番号が文字として出て、末尾にスタッフID', r.status === 200 && line && line[h.indexOf('社員番号')] === `="${EMP}"` && h[h.length - 1] === 'スタッフID' && line[h.length - 1] === String(shift.staff_id), { status: r.status, h: h.slice(-2), line })
+  // スタッフID の後ろには割増の列（#167）を足したため、位置（39列目）で確かめる
+  const sidAt = h.indexOf('スタッフID')
+  ok('#571 シフト明細: 社員番号が文字として出て、既存の列の末尾（39列目）にスタッフID', r.status === 200 && line && line[h.indexOf('社員番号')] === `="${EMP}"` && sidAt === 38 && line[sidAt] === String(shift.staff_id), { status: r.status, sidAt, line })
   const p = await admin.get(`/api/admin/settlement/export?from=${from}&to=${shift.work_date}&kind=payment&staff_id=${shift.staff_id}`)
   const prow = parseCsv(p.text)
-  ok('#571 支払集計: 末尾にスタッフID', prow[0][prow[0].length - 1] === 'スタッフID', prow[0])
+  ok('#571 支払集計: 既存の列の末尾（14列目）にスタッフID', prow[0].indexOf('スタッフID') === 13, prow[0])
 }
 // ---------- #184 実績分析 ----------
 {
