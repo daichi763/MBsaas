@@ -45,7 +45,7 @@ import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tena
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
-import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
+import { NOTICE_TARGET_SQL, NOTICE_LIVE_SQL, NOTICE_EXPIRED_SQL, loadStaffNotices, countUnreadNotices, parseResponseOptions } from './lib/notices'
 import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
 
@@ -196,14 +196,15 @@ type NoticeReadReport = {
 
 async function computeNoticeReadReport(db: D1Database, companyId: number, fiscalYear: number): Promise<NoticeReadReport> {
   const { start, end } = fiscalYearRange(fiscalYear)
-  const cnt = await db.prepare(`SELECT COUNT(*) AS n FROM notices WHERE company_id = ? AND published_at >= ? AND published_at < ?`)
+  // 下書き・予約前・取り消したお知らせは数えない（#291 #157。NOTICE_LIVE_SQL）
+  const cnt = await db.prepare(`SELECT COUNT(*) AS n FROM notices n WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ? AND ${NOTICE_LIVE_SQL}`)
     .bind(companyId, start, end).first() as { n: number } | null
   // お知らせ×対象者の組を、スタッフごとにまとめて1回で数える（在籍者を IN に並べない。D1 のバインド上限を超えないように）
   const rows = (await db.prepare(`
     SELECT sp.staff_id, COUNT(*) AS target_n,
       SUM(EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = us.user_id)) AS read_n
     FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
-    WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
+    WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ? AND ${NOTICE_LIVE_SQL}
       AND ${NOTICE_MEMBER_AT_PUBLISH_SQL} AND ${NOTICE_TARGET_SQL}
     GROUP BY sp.staff_id`).bind(companyId, start, end).all()).results as { staff_id: number; target_n: number; read_n: number }[]
 
@@ -315,7 +316,9 @@ export async function generateFiscalYearReportsForAllCompanies(db: D1Database):
 // Cron: 公開から2年（730日）たったお知らせの既読の記録（notice_reads）を削除する。
 // お知らせごとに、削除の直前の既読数・対象人数を notices に残してから、そのお知らせの記録をまとめて消す（#245。
 // 管理画面の「既読 x/y名」が0名に戻らないように。1件のお知らせの記録が一部だけ消えた状態も作らない）。
-// そのあとで、締めた後に付いた既読などの残りを、既読の日時から2年で削除する（1回のCronでそれぞれ上限まで。続きは翌日以降）
+// そのあとで、締めた後に付いた既読などの残りを、既読の日時から2年で削除する（1回のCronでそれぞれ上限まで。続きは翌日以降）。
+// お知らせへの回答（notice_responses #554）も、既読の記録と同じく公開から2年で削除する。
+// 下書き（#291）は配信していないので対象にしない（published_at は作成日時のため。古い下書きを後で配信したときに「確認不要」にならないように）
 export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; notices: number; batches: number; error?: string }> {
   const keepMs = NOTICE_READS_KEEP_DAYS * 24 * 3600 * 1000
   const cutoffJst = new Date(Date.now() + 9 * 3600 * 1000 - keepMs).toISOString().slice(0, 19).replace('T', ' ')
@@ -326,7 +329,7 @@ export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: nu
   let deleted = 0, notices = 0, batches = 0
   try {
     for (let i = 0; i < MAX_BATCHES; i++) {
-      const ids = ((await db.prepare(`SELECT notice_id FROM notices WHERE reads_purged_at IS NULL AND published_at < ? ORDER BY published_at LIMIT ?`)
+      const ids = ((await db.prepare(`SELECT notice_id FROM notices WHERE reads_purged_at IS NULL AND published_at < ? AND status != 'draft' ORDER BY published_at LIMIT ?`)
         .bind(cutoffJst, NOTICE_BATCH).all()).results as { notice_id: number }[]).map(r => r.notice_id)
       if (!ids.length) break
       const json = bindJsonArray(ids)
@@ -334,6 +337,7 @@ export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: nu
         db.prepare(`UPDATE notices AS n SET final_target_count = ${NOTICE_TARGET_COUNT_NOW_SQL}, final_read_count = ${NOTICE_READ_COUNT_NOW_SQL},
             reads_purged_at = ? WHERE n.notice_id IN ${JSON_IN} AND n.reads_purged_at IS NULL`).bind(nowJST(), json),
         db.prepare(`DELETE FROM notice_reads WHERE notice_id IN ${JSON_IN}`).bind(json),
+        db.prepare(`DELETE FROM notice_responses WHERE notice_id IN ${JSON_IN}`).bind(json),
       ])
       notices += ids.length
       deleted += res[1].meta.changes || 0
@@ -1906,14 +1910,21 @@ api.post('/staff/shifts/:id/reply', async (c) => {
 
 // お知らせ一覧。未読（既読確認が必須・緊急のものを先）→ 既読の順に、1回に50件ずつ（offset でページ送り #553）。
 // 配信対象の判定は管理画面の既読数・メールの宛先と同じ（#227 #335 #370）。公開から2年たって既読の記録を削除した
-// お知らせは「確認不要」（no_confirm）として既読の扱いにする（#245）
+// お知らせは「確認不要」（no_confirm）として既読の扱いにする（#245）。
+// 掲載期限を過ぎたものは出さず、filter=past で「掲載終了」として新しい順に出す（#294）。添付の一覧も返す（#555）
 const STAFF_NOTICE_PAGE = 50
 api.get('/staff/notices', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const offset = toInt(c.req.query('offset'), 0, 100000) ?? 0
-  const unreadOnly = c.req.query('filter') === 'unread'
-  const rows = await loadStaffNotices(db, u.user_id, { unreadOnly, limit: STAFF_NOTICE_PAGE + 1, offset })
-  const res: any = { notices: rows.slice(0, STAFF_NOTICE_PAGE), has_more: rows.length > STAFF_NOTICE_PAGE, offset }
+  const filter = c.req.query('filter')
+  const unreadOnly = filter === 'unread'
+  if (offset === 0) c.executionCtx.waitUntil(publishDueNotices(c.env, u.company_id).catch(() => {}))
+  const rows = await loadStaffNotices(db, u.user_id, filter === 'past'
+    ? { expired: 'only', order: 'recent', limit: STAFF_NOTICE_PAGE + 1, offset }
+    : { unreadOnly, limit: STAFF_NOTICE_PAGE + 1, offset })
+  const page = rows.slice(0, STAFF_NOTICE_PAGE)
+  const files = await loadNoticeAttachments(db, page.filter(n => n.attachment_count > 0).map(n => n.notice_id))
+  const res: any = { notices: page.map(n => ({ ...n, attachments: files.get(n.notice_id) || [] })), has_more: rows.length > STAFF_NOTICE_PAGE, offset }
   if (offset === 0) {
     // 未読の件数と、ほかの所属企業（切り替えていない企業）の未読（#203）
     const persons = (await personStaffRows(db, u)).filter(r => r.user_id && r.company_id !== u.company_id)
@@ -1948,7 +1959,10 @@ api.get('/staff/notices/:id{[0-9]+}', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const id = Number(c.req.param('id'))
   const [n] = await loadStaffNotices(db, u.user_id, { id, limit: 1 })
-  if (n) return c.json({ notice: n })
+  if (n) return c.json({ notice: { ...n, attachments: (await loadNoticeAttachments(db, [n.notice_id])).get(n.notice_id) || [] } })
+  // 取り消したお知らせ（#157）は、通知やメールのリンクから開かれたときに取り消したことを伝える（内容は出さない）
+  const gone = await db.prepare(`SELECT status FROM notices WHERE notice_id = ? AND company_id = ?`).bind(id, u.company_id).first() as any
+  if (gone?.status === 'withdrawn') return c.json({ error: 'このお知らせは取り消されました', withdrawn: true }, 404)
   for (const r of await personStaffRows(db, u)) {
     if (!r.user_id || r.company_id === u.company_id) continue
     const [o] = await loadStaffNotices(db, r.user_id, { id, limit: 1 })
@@ -1965,6 +1979,42 @@ api.post('/staff/notices/:id{[0-9]+}/read', async (c) => {
   if (n.no_confirm) return c.json({ ok: true, no_confirm: true })
   await c.env.DB.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(n.notice_id, u.user_id).run()
   return c.json({ ok: true })
+})
+
+// お知らせへの回答（#554）。選択肢を1つ選び（選択肢があるとき）、自由記入欄があればコメントを添える。
+// 答え直すと上書きする。掲載期限を過ぎたものには答えられない。答えたら既読にもする
+const NOTICE_RESPONSE_COMMENT_MAX = 500
+api.post('/staff/notices/:id{[0-9]+}/response', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const [n] = await loadStaffNotices(db, u.user_id, { id: Number(c.req.param('id')), limit: 1 })
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  const options: string[] = n.response_options
+  if (!options.length && !n.response_comment) return c.json({ error: 'このお知らせには回答できません' }, 400)
+  if (n.expired) return c.json({ error: '掲載期限を過ぎたため、回答できません' }, 400)
+  if (n.no_confirm) return c.json({ error: '公開から2年以上たったお知らせには回答できません' }, 400)
+  const choice = b.choice == null || b.choice === '' ? null : String(b.choice)
+  if (options.length && (choice == null || !options.includes(choice))) return c.json({ error: '回答を選んでください' }, 400)
+  if (!options.length && choice != null) return c.json({ error: '回答の指定が正しくありません' }, 400)
+  const comment = n.response_comment ? String(b.comment ?? '').trim() : ''
+  if (comment.length > NOTICE_RESPONSE_COMMENT_MAX) return c.json({ error: `コメントは${NOTICE_RESPONSE_COMMENT_MAX}文字以内にしてください` }, 400)
+  if (!options.length && !comment) return c.json({ error: '回答を入力してください' }, 400)
+  const now = nowJST()
+  await db.batch([
+    db.prepare(`INSERT INTO notice_responses (notice_id, user_id, company_id, choice, comment, answered_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(notice_id, user_id) DO UPDATE SET choice = excluded.choice, comment = excluded.comment, updated_at = excluded.answered_at`)
+      .bind(n.notice_id, u.user_id, u.company_id, choice, comment || null, now),
+    db.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(n.notice_id, u.user_id),
+  ])
+  return c.json({ ok: true, my_response: { choice, comment: comment || null, answered_at: now } })
+})
+
+// お知らせの添付（#555）。配信先の本人だけが取得できる（一覧に出す条件と同じ。掲載期限を過ぎたものも取得できる）
+api.get('/staff/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}', async (c) => {
+  const u = c.get('user')
+  const [n] = await loadStaffNotices(c.env.DB, u.user_id, { id: Number(c.req.param('id')), limit: 1 })
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  return noticeAttachmentResponse(c, n.notice_id, u.company_id, c.req.param('aid'))
 })
 
 // まとめて確認（#553）。画面に出ていた未読（ids）のうち、既読確認が必須・緊急でないものだけを既読にする
@@ -4734,13 +4784,22 @@ api.get('/admin/analytics/csv', async (c) => {
 // お知らせ配信
 // 「既読 x/y名」は配信対象の人だけで数える（#7）。既読の記録を削除したお知らせは、削除の直前の人数を出す（#245）
 // 1回に50件ずつ（offset でページ送り）。キーワード（タイトル・本文）・配信先の案件・期間で絞り込める（#368）。
-// 配信先の案件名・スタッフ名と、配信した人の名前も返す
+// 配信先の案件名・スタッフ名と、配信した人の名前も返す。
+// 状態（state）: draft（下書き）/ scheduled（予約。配信予定日時の前）/ published（配信済み。予約の時刻を過ぎたものを含む）/ withdrawn（取消）（#291 #157）。
+// status=pending で下書き・予約、withdrawn で取り消したもの、expired で掲載終了のものに絞る。下書き・予約は先頭に出す
 const ADMIN_NOTICE_PAGE = 50
+const NOTICE_STATE_SQL = `CASE WHEN n.status = 'scheduled' AND ${NOTICE_LIVE_SQL} THEN 'published' ELSE n.status END`
+const NOTICE_PENDING_SQL = `(n.status = 'draft' OR (n.status = 'scheduled' AND NOT ${NOTICE_LIVE_SQL}))`
 api.get('/admin/notices', async (c) => {
   const u = c.get('user')
   const offset = toInt(c.req.query('offset'), 0, 100000) ?? 0
+  if (offset === 0) c.executionCtx.waitUntil(publishDueNotices(c.env, u.company_id).catch(() => {}))
   const where: string[] = ['n.company_id = ?']
   const binds: any[] = [u.company_id]
+  const status = c.req.query('status')
+  if (status === 'pending') where.push(NOTICE_PENDING_SQL)
+  else if (status === 'withdrawn') where.push(`n.status = 'withdrawn'`)
+  else if (status === 'expired') where.push(`n.status != 'withdrawn' AND ${NOTICE_EXPIRED_SQL}`)
   const q = String(c.req.query('q') || '').trim().slice(0, 100)
   if (q) {
     const like = '%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%'
@@ -4757,6 +4816,10 @@ api.get('/admin/notices', async (c) => {
   const rows = (await c.env.DB.prepare(`
     SELECT n.notice_id, n.title, n.body, n.target_type, n.target_ids, n.importance, n.read_required, n.published_at, n.created_by,
       n.reads_purged_at, n.reminded_at, n.remind_count, cu.name AS created_by_name,
+      ${NOTICE_STATE_SQL} AS state, n.expires_at, ${NOTICE_EXPIRED_SQL} AS expired, n.send_email,
+      n.updated_at, upu.name AS updated_by_name, n.withdrawn_at, n.withdraw_reason, wdu.name AS withdrawn_by_name,
+      n.response_options, n.response_comment, (SELECT COUNT(*) FROM notice_responses nr WHERE nr.notice_id = n.notice_id) AS response_count,
+      (SELECT COUNT(*) FROM notice_attachments a WHERE a.notice_id = n.notice_id) AS attachment_count,
       CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_READ_COUNT_NOW_SQL} ELSE n.final_read_count END AS read_count,
       CASE WHEN n.reads_purged_at IS NULL THEN ${NOTICE_TARGET_COUNT_NOW_SQL} ELSE n.final_target_count END AS staff_total,
       CASE n.target_type
@@ -4766,16 +4829,29 @@ api.get('/admin/notices', async (c) => {
           JOIN users su ON su.user_id = tsp.user_id WHERE nt.notice_id = n.notice_id AND nt.target_type = 'staff')
       END AS target_names
     FROM notices n LEFT JOIN users cu ON cu.user_id = n.created_by AND cu.company_id = n.company_id
+    LEFT JOIN users upu ON upu.user_id = n.updated_by AND upu.company_id = n.company_id
+    LEFT JOIN users wdu ON wdu.user_id = n.withdrawn_by AND wdu.company_id = n.company_id
     WHERE ${where.join(' AND ')}
-    ORDER BY n.published_at DESC, n.notice_id DESC LIMIT ? OFFSET ?`).bind(...binds).all()).results as any[]
-  const page = rows.slice(0, ADMIN_NOTICE_PAGE)
+    ORDER BY CASE WHEN ${NOTICE_PENDING_SQL} THEN 0 ELSE 1 END, n.published_at DESC, n.notice_id DESC LIMIT ? OFFSET ?`).bind(...binds).all()).results as any[]
+  const page = rows.slice(0, ADMIN_NOTICE_PAGE).map(n => ({ ...n, expired: n.expired ? 1 : 0, response_options: parseResponseOptions(n.response_options) }))
   // メールの送信結果（状態ごとの人数）。メールを送らなかったお知らせは email_counts = null
   const ids = page.map(n => n.notice_id)
   const counts = ids.length ? (await c.env.DB.prepare(`SELECT notice_id, status, COUNT(*) AS n FROM notice_email_deliveries
     WHERE company_id = ? AND notice_id IN (SELECT value FROM json_each(?)) GROUP BY notice_id, status`).bind(u.company_id, JSON.stringify(ids)).all()).results as any[] : []
   const byNotice = new Map<number, Record<string, number>>()
   for (const r of counts) { const m = byNotice.get(r.notice_id) || {}; m[r.status] = r.n; byNotice.set(r.notice_id, m) }
-  return c.json({ notices: page.map(n => ({ ...n, email_counts: byNotice.get(n.notice_id) || null })), has_more: rows.length > ADMIN_NOTICE_PAGE, offset })
+  const files = await loadNoticeAttachments(c.env.DB, page.filter(n => n.attachment_count > 0).map(n => n.notice_id))
+  return c.json({ notices: page.map(n => ({ ...n, email_counts: byNotice.get(n.notice_id) || null, attachments: files.get(n.notice_id) || [] })),
+    has_more: rows.length > ADMIN_NOTICE_PAGE, offset })
+})
+
+// 個人あての配信先の候補（#157）。いま在籍中で、ログインのあるスタッフ（お知らせが届く人。NOTICE_MEMBER_NOW_SQL と同じ条件）
+api.get('/admin/notices/recipients', async (c) => {
+  const u = c.get('user')
+  const rows = (await c.env.DB.prepare(`SELECT sp.staff_id, us.name, sp.kana FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.company_id = ? AND us.company_id = sp.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL
+    ORDER BY COALESCE(NULLIF(sp.kana, ''), us.name), sp.staff_id LIMIT 3000`).bind(u.company_id).all()).results
+  return c.json({ staff: rows })
 })
 
 // お知らせの今の対象者（メールの宛先など）。条件は NOTICE_MEMBER_NOW_SQL と NOTICE_TARGET_SQL（一覧の既読数・既読状況と同じ）
@@ -4864,61 +4940,68 @@ async function noticeMailRecipients(db: D1Database, targets: { staff_id: number;
   return { withEmail, rows }
 }
 
-// メールの本文。案件あてなら、どの案件あてかを先頭に書く（#455）
+// メールの本文。案件あてなら、どの案件あてかを先頭に書く（#455）。
+// 添付・回答・掲載期限があれば、末尾にアプリで確認・回答するよう書き添える（#555 #554 #294。添付そのものはメールに付けない）
 async function noticeMailBody(db: D1Database, n: { notice_id: number; company_id: number; target_type: string; body: string | null }) {
-  if (n.target_type !== 'project') return String(n.body ?? '')
-  const r = await db.prepare(`SELECT group_concat(p.project_name, '、') AS names FROM notice_targets nt JOIN projects p ON p.project_id = nt.target_id AND p.company_id = ?
-    WHERE nt.notice_id = ? AND nt.target_type = 'project'`).bind(n.company_id, n.notice_id).first() as any
-  return r?.names ? `対象の案件: ${r.names}\n\n${n.body ?? ''}` : String(n.body ?? '')
+  const [r, extra] = await Promise.all([
+    n.target_type === 'project' ? db.prepare(`SELECT group_concat(p.project_name, '、') AS names FROM notice_targets nt JOIN projects p ON p.project_id = nt.target_id AND p.company_id = ?
+      WHERE nt.notice_id = ? AND nt.target_type = 'project'`).bind(n.company_id, n.notice_id).first() as Promise<any> : Promise.resolve(null),
+    db.prepare(`SELECT (SELECT COUNT(*) FROM notice_attachments a WHERE a.notice_id = n.notice_id) AS files, n.response_options, n.response_comment, n.expires_at
+      FROM notices n WHERE n.notice_id = ? AND n.company_id = ?`).bind(n.notice_id, n.company_id).first() as Promise<any>,
+  ])
+  const notes: string[] = []
+  if (Number(extra?.files) > 0) notes.push(`※ 添付ファイルがあります（${Number(extra.files)}件）。アプリのお知らせで確認してください。`)
+  if (parseResponseOptions(extra?.response_options).length || extra?.response_comment) notes.push('※ 回答をお願いします。アプリのお知らせから回答してください。')
+  if (extra?.expires_at) notes.push(`※ 掲載期限: ${String(extra.expires_at).slice(0, 10)}`)
+  const body = r?.names ? `対象の案件: ${r.names}\n\n${n.body ?? ''}` : String(n.body ?? '')
+  return notes.length ? `${body}\n\n${notes.join('\n')}` : body
 }
 
 const NOTICE_IMPORTANCE = ['normal', 'important', 'urgent'] as const
 const NOTICE_TARGET_TYPES = ['all', 'project', 'staff'] as const
 
+// 配信のしかた（#291）: publish = すぐに配信 / draft = 下書き（スタッフには出さない）/ schedule = 予約（scheduled_at に配信）
+const NOTICE_MODES = ['publish', 'draft', 'schedule'] as const
 api.post('/admin/notices', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
-  const title = String(b.title ?? '').trim()
-  if (!title) return c.json({ error: 'タイトルは必須です' }, 400)
-  const body = String(b.body ?? '')
-  const target_type = b.target_type || 'all'
-  if (!oneOf(target_type, NOTICE_TARGET_TYPES)) return c.json({ error: '配信対象の指定が正しくありません' }, 400)
-  const importance = b.importance || 'normal'
-  if (!oneOf(importance, NOTICE_IMPORTANCE)) return c.json({ error: '重要度の指定が正しくありません' }, 400)
-  const target_ids = await normalizeNoticeTargetIds(c.env.DB, u.company_id, target_type, b.target_ids)
-  if (target_ids == null) return c.json({ error: target_type === 'project' ? '対象の案件を選んでください' : '対象のスタッフを選んでください' }, 400)
+  const mode = b.mode || 'publish'
+  if (!oneOf(mode, NOTICE_MODES)) return c.json({ error: '配信のしかたの指定が正しくありません' }, 400)
+  const p = await parseNoticeInput(c.env.DB, u.company_id, b)
+  if ('error' in p) return c.json({ error: p.error }, 400)
+  const { title, body, target_type, target_ids, importance } = p.v
+  let publishedAt = nowJST()
+  if (mode === 'schedule') {
+    const at = parseNoticeScheduleAt(b.scheduled_at)
+    if ('error' in at) return c.json({ error: at.error }, 400)
+    publishedAt = at.at
+  }
+  const expErr = noticeExpiryError(p.v.expires_at, publishedAt)
+  if (expErr) return c.json({ error: expErr }, 400)
+  const status = mode === 'draft' ? 'draft' : mode === 'schedule' ? 'scheduled' : 'published'
   // 二重送信の防止（#105）: 画面が発行した一意キー（client_request_id）が同じなら受け付けない。
   // キーが無い呼び出しも、同じ人が同じ内容を直前に配信していれば重複として扱う
+  // （予約中のものは published_at が先の日時なので比べない。同じ文面を別の日時に予約できるように #291）
   const requestId = typeof b.client_request_id === 'string' && b.client_request_id.trim() ? b.client_request_id.trim().slice(0, 64) : null
   const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_DUP_WINDOW_SEC * 1000).toISOString().slice(0, 19).replace('T', ' ')
   const dup = await c.env.DB.prepare(`SELECT notice_id FROM notices WHERE company_id = ? AND created_by = ? AND title = ? AND COALESCE(body, '') = ?
-    AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? LIMIT 1`)
-    .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since).first() as any
+    AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? AND published_at <= ? LIMIT 1`)
+    .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since, nowJST()).first() as any
   if (dup) return c.json({ error: '同じお知らせを配信したばかりです。一覧を確認してください', duplicate: true, notice_id: dup.notice_id }, 409)
   // 配信先（notice_targets）は notices のトリガーで展開する（0052）
-  const ins = await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by, client_request_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING notice_id`)
-    .bind(u.company_id, title, body, target_type, target_ids, importance, b.read_required ? 1 : 0, nowJST(), u.user_id, requestId).first() as any
+  const ins = await c.env.DB.prepare(`INSERT INTO notices (company_id, title, body, target_type, target_ids, importance, read_required, published_at, created_by, client_request_id,
+      status, expires_at, send_email, response_options, response_comment)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING notice_id`)
+    .bind(u.company_id, title, body, target_type, target_ids, importance, p.v.read_required, publishedAt, u.user_id, requestId,
+      status, p.v.expires_at, b.send_email ? 1 : 0, p.v.response_options, p.v.response_comment).first() as any
   if (!ins) return c.json({ error: 'このお知らせは配信済みです。一覧を確認してください', duplicate: true }, 409)
   const noticeId = Number(ins.notice_id)
 
   // メール通知（対象者判定ロジックは既存のnotice表示ロジックを再利用。既読状態には一切影響しない）
-  // 送信対象・メール未登録の人数を返し、1人ずつの結果を記録する（#24）。連携スタッフは雇用元の本人のアドレスに送る（#128）
-  let email: { mode: string; targets: number; with_email: number; no_email: number } | null = null
-  if (b.send_email) {
-    const targets = await resolveNoticeTargets(c.env.DB, u.company_id, noticeId)
-    const { withEmail, rows } = await noticeMailRecipients(c.env.DB, targets)
-    if (rows.length) {
-      await c.env.DB.prepare(`INSERT OR IGNORE INTO notice_email_deliveries (notice_id, company_id, user_id, status, created_at)
-        SELECT ?, ?, json_extract(value, '$.u'), json_extract(value, '$.s'), ? FROM json_each(?)`)
-        .bind(noticeId, u.company_id, nowJST(), JSON.stringify(rows)).run()
-    }
-    if (withEmail.length) {
-      const mailBody = await noticeMailBody(c.env.DB, { notice_id: noticeId, company_id: u.company_id, target_type, body })
-      c.executionCtx.waitUntil(sendNoticeEmails(c.env, noticeId, u.company_id, title, mailBody, withEmail))
-    }
-    email = { mode: mailMode(c.env), targets: rows.length, with_email: withEmail.length, no_email: rows.length - withEmail.length }
-  }
-  return c.json({ ok: true, notice_id: noticeId, email })
+  // 送信対象・メール未登録の人数を返し、1人ずつの結果を記録する（#24）。連携スタッフは雇用元の本人のアドレスに送る（#128）。
+  // 下書き・予約のメールは、配信するとき（publish・予約の時刻の定期処理）に送る
+  const email = status === 'published' && b.send_email
+    ? await deliverNoticeEmails(c.env, u.company_id, noticeId, p => c.executionCtx.waitUntil(p)) : null
+  return c.json({ ok: true, notice_id: noticeId, status, published_at: publishedAt, email })
 })
 
 // 未読者への再通知（#191）。今の配信対象で未読の人に、アプリ内通知（押すとそのお知らせを開く）を送る。
@@ -4930,6 +5013,7 @@ api.post('/admin/notices/:id{[0-9]+}/remind', async (c) => {
   const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
   if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
   if (n.reads_purged_at) return c.json({ error: '公開から2年たったお知らせは再通知できません' }, 400)
+  if (!noticeIsLive(n)) return c.json({ error: n.status === 'withdrawn' ? '取り消したお知らせは再通知できません' : '配信前のお知らせは再通知できません' }, 400)
   const unread = (await db.prepare(`SELECT sp.staff_id, us.user_id, us.name, us.email
     FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
     WHERE n.notice_id = ? AND n.company_id = ? AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL}
@@ -4980,16 +5064,459 @@ api.get('/admin/notices/:id/reads', async (c) => {
     // 公開から2年たって既読の記録を削除したお知らせ（#245）。削除の直前の人数だけを返す
     return c.json({ read: [], unread: [], purged: true, read_count: n.final_read_count, target_count: n.final_target_count })
   }
-  const rows = (await c.env.DB.prepare(`
-    SELECT DISTINCT us.user_id, us.name, CASE WHEN r.read_at IS NULL THEN NULL ELSE datetime(r.read_at, '+9 hours') END AS read_at, r.user_id IS NOT NULL AS is_read
-    FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
-    LEFT JOIN notice_reads r ON r.notice_id = n.notice_id AND r.user_id = us.user_id
-    WHERE n.notice_id = ? AND n.company_id = ? AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL}
-    ORDER BY us.name`).bind(n.notice_id, u.company_id).all()).results as any[]
+  const rows = await noticeReadRows(c.env.DB, n.notice_id, u.company_id)
   const read = rows.filter(r => r.is_read).map(r => ({ name: r.name, read_at: r.read_at }))
     .sort((a, b) => String(a.read_at || '').localeCompare(String(b.read_at || '')))
   const unread = rows.filter(r => !r.is_read).map(r => ({ name: r.name }))
-  return c.json({ read, unread, purged: false, read_count: read.length, target_count: rows.length })
+  // 回答（#554）。選択肢ごとの人数・回答した人・まだの人（今の配信対象の人だけ）
+  const options = parseResponseOptions(n.response_options)
+  let responses: any = null
+  if (options.length || n.response_comment) {
+    const answered = rows.filter(r => r.answered_at)
+    const counts: Record<string, number> = Object.fromEntries(options.map(o => [o, 0]))
+    for (const r of answered) if (r.choice != null) counts[r.choice] = (counts[r.choice] || 0) + 1
+    responses = { options, comment: !!n.response_comment, counts,
+      answered: answered.map(r => ({ name: r.name, choice: r.choice, comment: r.comment, answered_at: r.answered_at })),
+      unanswered: rows.filter(r => !r.answered_at).map(r => ({ name: r.name })) }
+  }
+  return c.json({ read, unread, purged: false, read_count: read.length, target_count: rows.length, state: noticeState(n), responses })
+})
+
+// 今の配信対象の人ごとの既読・回答（既読状況と回答の CSV で共用）
+async function noticeReadRows(db: D1Database, noticeId: number, companyId: number) {
+  return (await db.prepare(`
+    SELECT DISTINCT us.user_id, us.name, sp.staff_id, er.employee_number,
+      CASE WHEN r.read_at IS NULL THEN NULL ELSE datetime(r.read_at, '+9 hours') END AS read_at, r.user_id IS NOT NULL AS is_read,
+      nr.choice, nr.comment, COALESCE(nr.updated_at, nr.answered_at) AS answered_at
+    FROM notices n JOIN users us ON us.company_id = n.company_id JOIN staff_profiles sp ON sp.user_id = us.user_id
+    LEFT JOIN notice_reads r ON r.notice_id = n.notice_id AND r.user_id = us.user_id
+    LEFT JOIN notice_responses nr ON nr.notice_id = n.notice_id AND nr.user_id = us.user_id
+    LEFT JOIN employee_records er ON er.staff_id = sp.staff_id AND er.company_id = n.company_id
+    WHERE n.notice_id = ? AND n.company_id = ? AND ${NOTICE_MEMBER_NOW_SQL} AND ${NOTICE_TARGET_SQL}
+    ORDER BY us.name`).bind(noticeId, companyId).all()).results as any[]
+}
+
+// 回答の CSV（#554。出欠の集計などに使う）。今の配信対象の人を全員出し、まだ答えていない人は回答の列を空にする
+api.get('/admin/notices/:id{[0-9]+}/responses.csv', async (c) => {
+  const u = c.get('user')
+  const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  const rows = await noticeReadRows(c.env.DB, n.notice_id, u.company_id)
+  const csv = toCsv(['スタッフID', '社員番号', '氏名', '回答', 'コメント', '回答日時', '既読', '既読日時'],
+    rows.map(r => [r.staff_id, r.employee_number, r.name, r.choice ?? (r.answered_at ? '（記入のみ）' : '未回答'), r.comment, r.answered_at, r.is_read ? '既読' : '未読', r.read_at]),
+    { textCols: ['社員番号'] })
+  return csvResponse(`お知らせ回答_${n.notice_id}.csv`, csv)
+})
+
+// ============ お知らせの下書き・予約・修正・取消・掲載期限・回答・添付（w5-notice-features: #157 #291 #294 #554 #555） ============
+// 公開中か（NOTICE_LIVE_SQL と同じ判定。配信済みと、配信予定日時を過ぎた予約）。published_at は日本時間
+function noticeIsLive(n: { status?: string | null; published_at?: string | null }): boolean {
+  const st = n.status || 'published'
+  return st === 'published' || (st === 'scheduled' && String(n.published_at || '') <= nowJST())
+}
+function noticeState(n: any): string { return noticeIsLive(n) ? 'published' : String(n.status || 'published') }
+
+const NOTICE_TITLE_MAX = 200
+const NOTICE_BODY_MAX = 10000
+const NOTICE_RESPONSE_OPTIONS_MAX = 8
+const NOTICE_RESPONSE_OPTION_LEN = 30
+const NOTICE_SCHEDULE_MAX_DAYS = 180
+const NOTICE_WITHDRAW_REASON_MAX = 200
+
+// 回答の選択肢（配列か、1行に1つの文字列）を JSON の文字列にそろえる。空なら null（#554）
+function normalizeResponseOptions(raw: unknown): { value: string | null } | { error: string } {
+  const list = Array.isArray(raw) ? raw : String(raw ?? '').split(/\r?\n/)
+  const opts = [...new Set(list.map(x => String(x ?? '').trim()).filter(Boolean))]
+  if (opts.length > NOTICE_RESPONSE_OPTIONS_MAX) return { error: `回答の選択肢は${NOTICE_RESPONSE_OPTIONS_MAX}個までにしてください` }
+  if (opts.some(o => o.length > NOTICE_RESPONSE_OPTION_LEN)) return { error: `回答の選択肢は1つ${NOTICE_RESPONSE_OPTION_LEN}文字以内にしてください` }
+  return { value: opts.length ? JSON.stringify(opts) : null }
+}
+
+type NoticeInput = {
+  title: string; body: string; target_type: string; target_ids: string; importance: string; read_required: number
+  expires_at: string | null; response_options: string | null; response_comment: number
+}
+// 作成・修正の入力の検証。cur（今の行）を渡したときは、送られた項目だけを変える
+async function parseNoticeInput(db: D1Database, companyId: number, b: any, cur?: any): Promise<{ v: NoticeInput } | { error: string }> {
+  const has = (k: string) => !cur || Object.prototype.hasOwnProperty.call(b, k)
+  const title = has('title') ? String(b.title ?? '').trim() : String(cur.title ?? '')
+  if (!title) return { error: 'タイトルは必須です' }
+  if (title.length > NOTICE_TITLE_MAX) return { error: `タイトルは${NOTICE_TITLE_MAX}文字以内にしてください` }
+  const body = has('body') ? String(b.body ?? '') : String(cur.body ?? '')
+  if (body.length > NOTICE_BODY_MAX) return { error: `本文は${NOTICE_BODY_MAX}文字以内にしてください` }
+  const target_type = has('target_type') ? (b.target_type || 'all') : (cur.target_type || 'all')
+  if (!oneOf(target_type, NOTICE_TARGET_TYPES)) return { error: '配信対象の指定が正しくありません' }
+  const importance = has('importance') ? (b.importance || 'normal') : (cur.importance || 'normal')
+  if (!oneOf(importance, NOTICE_IMPORTANCE)) return { error: '重要度の指定が正しくありません' }
+  let target_ids = cur ? String(cur.target_ids ?? '') : ''
+  if (has('target_type') || has('target_ids')) {
+    const ids = await normalizeNoticeTargetIds(db, companyId, target_type, b.target_ids)
+    if (ids == null) return { error: target_type === 'project' ? '対象の案件を選んでください' : '対象のスタッフを選んでください' }
+    target_ids = ids
+  }
+  const read_required = (has('read_required') ? !!b.read_required : !!cur.read_required) ? 1 : 0
+  // 掲載期限（#294）は日付で受け取り、その日の終わりまで出す
+  let expires_at: string | null = cur ? (cur.expires_at ?? null) : null
+  if (has('expires_at')) {
+    const d = b.expires_at == null ? '' : String(b.expires_at).trim().slice(0, 10)
+    if (d && !isISODate(d)) return { error: '掲載期限の日付が正しくありません' }
+    expires_at = d ? `${d} 23:59:59` : null
+  }
+  let response_options: string | null = cur ? (cur.response_options ?? null) : null
+  if (has('response_options')) {
+    const r = normalizeResponseOptions(b.response_options)
+    if ('error' in r) return r
+    response_options = r.value
+  }
+  const response_comment = (has('response_comment') ? !!b.response_comment : !!cur.response_comment) ? 1 : 0
+  return { v: { title, body, target_type, target_ids, importance, read_required, expires_at, response_options, response_comment } }
+}
+
+// 予約の配信日時（'YYYY-MM-DDTHH:MM' か 'YYYY-MM-DD HH:MM'。日本時間）。今より後で、180日以内
+function parseNoticeScheduleAt(raw: unknown): { at: string } | { error: string } {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::\d{2})?$/.exec(String(raw ?? '').trim())
+  if (!m || !isISODate(m[1]) || Number(m[2]) > 23 || Number(m[3]) > 59) return { error: '配信日時を正しく入力してください' }
+  const at = `${m[1]} ${m[2]}:${m[3]}:00`
+  if (at <= nowJST()) return { error: '配信日時は今より後にしてください' }
+  if (m[1] > addDays(todayJST(), NOTICE_SCHEDULE_MAX_DAYS)) return { error: `配信日時は${NOTICE_SCHEDULE_MAX_DAYS}日以内にしてください` }
+  return { at }
+}
+function noticeExpiryError(expiresAt: string | null, publishedAt: string): string | null {
+  if (!expiresAt) return null
+  return expiresAt.slice(0, 10) < String(publishedAt).slice(0, 10) ? '掲載期限は配信日以降の日付にしてください' : null
+}
+
+// 対象者へのお知らせメール（#24 #128）。1人ずつの記録（notice_email_deliveries）を作り、送信は wait に渡す
+// （画面からは waitUntil、定期処理では終わるまで待つ）。onlyNew: まだ送っていない人だけに送る（配信の後に配信先を足したとき #157）
+async function deliverNoticeEmails(env: Bindings, companyId: number, noticeId: number, wait: (p: Promise<unknown>) => void, opts: { onlyNew?: boolean } = {}) {
+  const db = env.DB
+  let targets = await resolveNoticeTargets(db, companyId, noticeId)
+  if (opts.onlyNew && targets.length) {
+    const done = new Set(((await db.prepare('SELECT user_id FROM notice_email_deliveries WHERE notice_id = ?').bind(noticeId).all()).results as any[]).map(r => Number(r.user_id)))
+    targets = targets.filter(t => !done.has(Number(t.user_id)))
+  }
+  const { withEmail, rows } = await noticeMailRecipients(db, targets)
+  if (rows.length) {
+    await db.prepare(`INSERT OR IGNORE INTO notice_email_deliveries (notice_id, company_id, user_id, status, created_at)
+      SELECT ?, ?, json_extract(value, '$.u'), json_extract(value, '$.s'), ? FROM json_each(?)`)
+      .bind(noticeId, companyId, nowJST(), JSON.stringify(rows)).run()
+  }
+  if (withEmail.length) {
+    const n = await db.prepare('SELECT title, body, target_type FROM notices WHERE notice_id = ? AND company_id = ?').bind(noticeId, companyId).first() as any
+    const mailBody = await noticeMailBody(db, { notice_id: noticeId, company_id: companyId, target_type: n.target_type, body: n.body })
+    // 足した配信先への送信は、最初の配信と別の冪等キーにする（同じキーだと送信サービスが送らない）
+    wait(sendNoticeEmails(env, noticeId, companyId, n.title, mailBody, withEmail,
+      opts.onlyNew ? { idempotencyKey: `notice-${noticeId}-add-${withEmail.map(r => r.user_id).join('.').slice(0, 100)}` } : {}))
+  }
+  return { mode: mailMode(env), targets: rows.length, with_email: withEmail.length, no_email: rows.length - withEmail.length }
+}
+
+// 今の配信対象の人へのアプリ内通知（修正・取消の知らせ #157）。送った人数を返す
+async function notifyNoticeTargets(db: D1Database, companyId: number, noticeId: number, kind: string, title: string, body: string, link: string) {
+  const targets = await resolveNoticeTargets(db, companyId, noticeId)
+  const ids = [...new Set(targets.map(t => Number(t.user_id)))]
+  if (!ids.length) return 0
+  await db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+    SELECT ?, value, ?, ?, ?, ?, ?, ? FROM json_each(?)`).bind(companyId, kind, title, body, link, noticeId, nowJST(), bindJsonArray(ids)).run()
+  return ids.length
+}
+
+// 予約配信（#291）: 配信予定日時を過ぎた予約を published にし、メールを送る設定ならメールを送る。
+// スタッフの画面に出るかは時刻で決まる（NOTICE_LIVE_SQL）ので、ここが遅れても画面には時刻どおりに出る（遅れるのはメールだけ）。
+// 定期処理（index.tsx の CRON_JOBS）と、お知らせの画面を開いたとき（その会社の分だけ）に呼ぶ。
+// 先に published にできた行だけを扱い、同時に動いても二重に送らない。1回の呼び出しで上限まで（続きは次回）
+const NOTICE_PUBLISH_BATCH = 20
+export async function publishDueNotices(env: Bindings, companyId?: number) {
+  const db = env.DB
+  const binds: any[] = [nowJST()]
+  if (companyId != null) binds.push(companyId)
+  binds.push(NOTICE_PUBLISH_BATCH)
+  const rows = (await db.prepare(`SELECT notice_id, company_id FROM notices WHERE status = 'scheduled' AND published_at <= ?
+    ${companyId != null ? 'AND company_id = ?' : ''} ORDER BY published_at LIMIT ?`).bind(...binds).all()).results as { notice_id: number; company_id: number }[]
+  let published = 0, mailed = 0, failed = 0
+  const errors: string[] = []
+  for (const r of rows) {
+    const claim = await db.prepare(`UPDATE notices SET status = 'published' WHERE notice_id = ? AND status = 'scheduled' RETURNING send_email`).bind(r.notice_id).first() as any
+    if (!claim) continue
+    published++
+    if (!claim.send_email) continue
+    try {
+      const pending: Promise<unknown>[] = []
+      await deliverNoticeEmails(env, r.company_id, r.notice_id, p => { pending.push(p) })
+      await Promise.all(pending)
+      mailed++
+    } catch (e) {
+      failed++
+      if (errors.length < 3) errors.push(`notice_id=${r.notice_id}: ${String(e).slice(0, 200)}`)
+      console.log(`scheduled notice mail failed: notice=${r.notice_id} error=${e}`)
+    }
+  }
+  return { due: rows.length, published, mailed, failed, error: errors.length ? errors.join(' / ') : null }
+}
+
+// 修正・取消の前の内容を残す（同じ条件の UPDATE と同じ batch で使う。条件が合わなければ何も残らない）
+function noticeRevisionStmt(db: D1Database, n: any, action: string, userId: number, now: string) {
+  return db.prepare(`INSERT INTO notice_revisions (notice_id, company_id, action, title, body, target_type, target_ids, importance, read_required, expires_at, edited_by, edited_at)
+    SELECT notice_id, company_id, ?, title, body, target_type, target_ids, importance, read_required, expires_at, ?, ?
+    FROM notices WHERE notice_id = ? AND company_id = ? AND status = ? AND published_at = ?`)
+    .bind(action, userId, now, n.notice_id, n.company_id, n.status, n.published_at)
+}
+
+// 修正（#157）。配信した後も、タイトル・本文・配信先・重要度・確認必須・掲載期限・回答の設定を直せる。
+// 配信済みのものは修正の前の内容を notice_revisions に残し、タイトル・本文を変えたらスタッフの画面に「更新」の印を出す（updated_at）。
+// notify: 今の配信対象の人に、修正したことをアプリ内通知で知らせる。send_email: 足した配信先の人（まだメールを送っていない人）にメールを送る。
+// 下書き・予約は、mode（draft / schedule）と scheduled_at・send_email も変えられる
+api.put('/admin/notices/:id{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.status === 'withdrawn') return c.json({ error: '取り消したお知らせは修正できません' }, 400)
+  if (n.reads_purged_at) return c.json({ error: '公開から2年たったお知らせは修正できません' }, 400)
+  const live = noticeIsLive(n)
+  const p = await parseNoticeInput(db, u.company_id, b, n)
+  if ('error' in p) return c.json({ error: p.error }, 400)
+  // 回答が届いた選択肢は消せない（集計がずれないように。足すことはできる）
+  if (p.v.response_options !== (n.response_options ?? null)) {
+    const used = ((await db.prepare('SELECT DISTINCT choice FROM notice_responses WHERE notice_id = ? AND choice IS NOT NULL').bind(n.notice_id).all()).results as any[]).map(r => String(r.choice))
+    const next = parseResponseOptions(p.v.response_options)
+    const lost = used.filter(x => !next.includes(x))
+    if (lost.length) return c.json({ error: `回答が届いている選択肢（${lost.join('、')}）は消せません` }, 400)
+  }
+  let status = n.status as string, publishedAt = n.published_at as string, sendEmail = n.send_email ? 1 : 0
+  if (!live) {
+    if (b.mode != null) {
+      if (b.mode === 'draft') status = 'draft'
+      else if (b.mode === 'schedule') {
+        const at = parseNoticeScheduleAt(b.scheduled_at)
+        if ('error' in at) return c.json({ error: at.error }, 400)
+        status = 'scheduled'; publishedAt = at.at
+      } else return c.json({ error: '配信のしかたの指定が正しくありません' }, 400)
+    }
+    if (b.send_email !== undefined) sendEmail = b.send_email ? 1 : 0
+  }
+  const expErr = noticeExpiryError(p.v.expires_at, live || status === 'scheduled' ? publishedAt : nowJST())
+  if (expErr) return c.json({ error: expErr }, 400)
+  const now = nowJST()
+  const contentChanged = live && (p.v.title !== n.title || p.v.body !== String(n.body ?? ''))
+  const stmts: D1PreparedStatement[] = []
+  if (live) stmts.push(noticeRevisionStmt(db, n, 'edit', u.user_id, now))
+  stmts.push(db.prepare(`UPDATE notices SET title = ?, body = ?, target_type = ?, target_ids = ?, importance = ?, read_required = ?, expires_at = ?,
+      response_options = ?, response_comment = ?, status = ?, published_at = ?, send_email = ?,
+      updated_at = CASE WHEN ? THEN ? ELSE updated_at END, updated_by = CASE WHEN ? THEN ? ELSE updated_by END
+    WHERE notice_id = ? AND company_id = ? AND status = ? AND published_at = ?`)
+    .bind(p.v.title, p.v.body, p.v.target_type, p.v.target_ids, p.v.importance, p.v.read_required, p.v.expires_at,
+      p.v.response_options, p.v.response_comment, status, publishedAt, sendEmail,
+      contentChanged ? 1 : 0, now, contentChanged ? 1 : 0, u.user_id, n.notice_id, u.company_id, n.status, n.published_at))
+  const res = await db.batch(stmts)
+  if (!res[res.length - 1].meta.changes) return c.json({ error: 'ほかの操作で状態が変わりました。画面を読み直してください' }, 409)
+  let notified = 0
+  let email: Awaited<ReturnType<typeof deliverNoticeEmails>> | null = null
+  if (live) {
+    if (b.notify) notified = await notifyNoticeTargets(db, u.company_id, n.notice_id, 'notice_updated', 'お知らせが修正されました',
+      `「${p.v.title}」の内容が修正されました。開いて確認してください。`, `#notices/${n.notice_id}`)
+    if (b.send_email) email = await deliverNoticeEmails(c.env, u.company_id, n.notice_id, q => c.executionCtx.waitUntil(q), { onlyNew: true })
+  }
+  return c.json({ ok: true, state: noticeState({ status, published_at: publishedAt }), notified, email })
+})
+
+// 下書き・予約を配信する（#291）。scheduled_at があれば予約にし、無ければすぐに配信する
+api.post('/admin/notices/:id{[0-9]+}/publish', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.status === 'withdrawn') return c.json({ error: '取り消したお知らせは配信できません' }, 400)
+  if (noticeIsLive(n)) return c.json({ error: 'このお知らせは配信済みです' }, 400)
+  let status = 'published', publishedAt = nowJST()
+  if (b.scheduled_at) {
+    const at = parseNoticeScheduleAt(b.scheduled_at)
+    if ('error' in at) return c.json({ error: at.error }, 400)
+    status = 'scheduled'; publishedAt = at.at
+  }
+  const sendEmail = b.send_email !== undefined ? (b.send_email ? 1 : 0) : (n.send_email ? 1 : 0)
+  const expErr = noticeExpiryError(n.expires_at, publishedAt)
+  if (expErr) return c.json({ error: expErr }, 400)
+  const r = await db.prepare(`UPDATE notices SET status = ?, published_at = ?, send_email = ? WHERE notice_id = ? AND company_id = ? AND status = ? AND published_at = ? RETURNING notice_id`)
+    .bind(status, publishedAt, sendEmail, n.notice_id, u.company_id, n.status, n.published_at).first()
+  if (!r) return c.json({ error: 'ほかの操作で状態が変わりました。画面を読み直してください' }, 409)
+  const email = status === 'published' && sendEmail ? await deliverNoticeEmails(c.env, u.company_id, n.notice_id, q => c.executionCtx.waitUntil(q)) : null
+  return c.json({ ok: true, state: status, published_at: publishedAt, email })
+})
+
+// 取消（#157。論理削除）。スタッフの一覧・ホーム・未読の数から外し、個別画面には「取り消されました」と出す。
+// 内容・既読・回答の記録は残す（管理画面では「取消」として見える）。notify なら、今の配信対象の人にアプリ内通知で知らせる
+api.post('/admin/notices/:id{[0-9]+}/withdraw', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.status === 'withdrawn') return c.json({ error: 'すでに取り消しています' }, 400)
+  if (!noticeIsLive(n)) return c.json({ error: '配信前のお知らせは、取り消しではなく削除してください' }, 400)
+  const reason = String(b.reason ?? '').trim()
+  if (reason.length > NOTICE_WITHDRAW_REASON_MAX) return c.json({ error: `取消の理由は${NOTICE_WITHDRAW_REASON_MAX}文字以内にしてください` }, 400)
+  const now = nowJST()
+  const res = await db.batch([
+    noticeRevisionStmt(db, n, 'withdraw', u.user_id, now),
+    db.prepare(`UPDATE notices SET status = 'withdrawn', withdrawn_at = ?, withdrawn_by = ?, withdraw_reason = ?
+      WHERE notice_id = ? AND company_id = ? AND status = ? AND published_at = ?`).bind(now, u.user_id, reason || null, n.notice_id, u.company_id, n.status, n.published_at),
+    // メールの「確認しました」のリンクは使えなくする
+    db.prepare('DELETE FROM notice_ack_tokens WHERE notice_id = ? AND used_at IS NULL').bind(n.notice_id),
+  ])
+  if (!res[1].meta.changes) return c.json({ error: 'ほかの操作で状態が変わりました。画面を読み直してください' }, 409)
+  const notified = b.notify ? await notifyNoticeTargets(db, u.company_id, n.notice_id, 'notice_withdrawn', 'お知らせが取り消されました',
+    `「${n.title}」は取り消されました。${reason ? `（理由: ${reason}）` : ''}`, '#notices') : 0
+  return c.json({ ok: true, notified })
+})
+
+// 下書き・予約（配信前）の削除。配信したものは取り消す（記録を残すため削除しない）
+api.delete('/admin/notices/:id{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.status === 'withdrawn' || noticeIsLive(n)) return c.json({ error: '配信したお知らせは削除できません。取り消してください' }, 400)
+  const files = ((await db.prepare('SELECT storage_key FROM notice_attachments WHERE notice_id = ?').bind(n.notice_id).all()).results as any[]).map(r => String(r.storage_key))
+  // 削除の直前に配信の時刻を過ぎた予約は消さない（条件を UPDATE と同じにする）。子の行はお知らせを消せたときだけ消す
+  const res = await db.batch([
+    db.prepare(`DELETE FROM notices WHERE notice_id = ? AND company_id = ? AND status = ? AND published_at = ?
+      AND (status = 'draft' OR published_at > ?)`).bind(n.notice_id, u.company_id, n.status, n.published_at, nowJST()),
+    ...['notice_attachments', 'notice_revisions', 'notice_email_deliveries', 'notice_responses', 'notice_reads'].map(t =>
+      db.prepare(`DELETE FROM ${t} WHERE notice_id = ? AND NOT EXISTS (SELECT 1 FROM notices WHERE notice_id = ?)`).bind(n.notice_id, n.notice_id)),
+  ])
+  if (!res[0].meta.changes) return c.json({ error: 'ほかの操作で状態が変わりました。画面を読み直してください' }, 409)
+  // R2 は D1 の後で消す（失敗しても D1 から参照されないので実害はない）
+  for (const k of files) await c.env.DOCUMENTS.delete(k).catch(() => {})
+  return c.json({ ok: true })
+})
+
+// 修正・取消の履歴（#157）
+api.get('/admin/notices/:id{[0-9]+}/revisions', async (c) => {
+  const u = c.get('user')
+  const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  const rows = (await c.env.DB.prepare(`SELECT r.revision_id, r.action, r.title, r.body, r.target_type, r.importance, r.read_required, r.expires_at, r.edited_at, us.name AS edited_by_name
+    FROM notice_revisions r LEFT JOIN users us ON us.user_id = r.edited_by AND us.company_id = r.company_id
+    WHERE r.notice_id = ? AND r.company_id = ? ORDER BY r.revision_id DESC LIMIT 50`).bind(n.notice_id, u.company_id).all()).results
+  return c.json({ notice: { notice_id: n.notice_id, title: n.title, body: n.body, updated_at: n.updated_at, withdrawn_at: n.withdrawn_at, withdraw_reason: n.withdraw_reason }, revisions: rows })
+})
+
+// ---- 添付（#555）: 画像・PDF を R2（DOCUMENTS）に置き、配信先の本人と自社の管理者だけが取得できる ----
+const NOTICE_ATTACH_MAX_FILES = 5
+const NOTICE_ATTACH_MAX_BYTES = 10 * 1024 * 1024
+// 拡張子で種類を決め、保存・返すときの Content-Type はここから取る（送られた type は使わない）
+const NOTICE_ATTACH_TYPES: Record<string, string> = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' }
+// 先頭のバイトが拡張子の形式と合うか（画像・PDF に見せかけた HTML などを、そのまま表示する形で返さないように）
+function noticeAttachmentMagicOk(ext: string, b: Uint8Array): boolean {
+  const starts = (sig: number[], at = 0) => sig.every((v, i) => b[at + i] === v)
+  switch (ext) {
+    case 'pdf': return starts([0x25, 0x50, 0x44, 0x46]) // %PDF
+    case 'jpg': case 'jpeg': return starts([0xff, 0xd8, 0xff])
+    case 'png': return starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    case 'gif': return starts([0x47, 0x49, 0x46, 0x38]) // GIF8
+    case 'webp': return starts([0x52, 0x49, 0x46, 0x46]) && starts([0x57, 0x45, 0x42, 0x50], 8) // RIFF....WEBP
+  }
+  return false
+}
+
+// お知らせごとの添付の一覧（保存場所のキーは返さない）
+async function loadNoticeAttachments(db: D1Database, ids: number[]): Promise<Map<number, any[]>> {
+  const out = new Map<number, any[]>()
+  if (!ids.length) return out
+  const rows = (await db.prepare(`SELECT attachment_id, notice_id, file_name, content_type, file_size FROM notice_attachments
+    WHERE notice_id IN ${JSON_IN} ORDER BY attachment_id`).bind(bindJsonArray(ids)).all()).results as any[]
+  for (const r of rows) {
+    const list = out.get(r.notice_id) || []
+    list.push({ attachment_id: r.attachment_id, file_name: r.file_name, content_type: r.content_type, file_size: r.file_size })
+    out.set(r.notice_id, list)
+  }
+  return out
+}
+
+// 添付を返す。画像・PDF はその場で表示し（inline）、download=1 なら保存する形にする
+async function noticeAttachmentResponse(c: any, noticeId: number, companyId: number, attachmentId: string) {
+  const a = await c.env.DB.prepare('SELECT * FROM notice_attachments WHERE attachment_id = ? AND notice_id = ? AND company_id = ?')
+    .bind(attachmentId, noticeId, companyId).first() as any
+  if (!a) return c.json({ error: '添付ファイルが見つかりません' }, 404)
+  const obj = await c.env.DOCUMENTS.get(String(a.storage_key))
+  if (!obj) return c.json({ error: '添付ファイルが見つかりません' }, 404)
+  // filename= には ASCII だけを入れる（日本語は filename* で渡す）
+  const ascii = String(a.file_name).replace(/[^\x20-\x7e]|["\\]/g, '_')
+  const disp = c.req.query('download') === '1' ? 'attachment' : 'inline'
+  return c.body(obj.body, 200, {
+    'Content-Type': String(a.content_type),
+    'Content-Disposition': `${disp}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(String(a.file_name))}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=300',
+  })
+}
+
+// 添付の追加（複数可。1ファイルずつ検証し、成功した分だけ保存する）。配信済みのものに足したら「更新」の印を付ける
+api.post('/admin/notices/:id{[0-9]+}/attachments', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.status === 'withdrawn') return c.json({ error: '取り消したお知らせには添付できません' }, 400)
+  let form: FormData
+  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
+  const files = form.getAll('files').filter(f => f instanceof File) as File[]
+  if (!files.length) return c.json({ error: 'ファイルが選択されていません' }, 400)
+  const results: { filename: string; ok: boolean; attachment_id?: number; error?: string }[] = []
+  for (const file of files) {
+    const ext = docExt(file.name)
+    const type = NOTICE_ATTACH_TYPES[ext]
+    if (!type) { results.push({ filename: file.name, ok: false, error: 'PDF か画像（JPEG・PNG・GIF・WebP）を選んでください' }); continue }
+    if (!file.size) { results.push({ filename: file.name, ok: false, error: '空のファイルです' }); continue }
+    if (file.size > NOTICE_ATTACH_MAX_BYTES) { results.push({ filename: file.name, ok: false, error: '1つ10MB以下にしてください' }); continue }
+    const buf = await file.arrayBuffer()
+    if (!noticeAttachmentMagicOk(ext, new Uint8Array(buf, 0, Math.min(16, buf.byteLength)))) {
+      results.push({ filename: file.name, ok: false, error: 'ファイルの中身が拡張子の形式と合いません' }); continue
+    }
+    const key = `notice-attachments/${u.company_id}/${n.notice_id}/${crypto.randomUUID()}/${sanitizeForKey(file.name)}`
+    try {
+      await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: type } })
+    } catch {
+      results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました' }); continue
+    }
+    try {
+      // 件数の上限は INSERT の条件で確かめる（同時に追加されても上限を超えないように）
+      const r = await db.prepare(`INSERT INTO notice_attachments (notice_id, company_id, storage_key, file_name, content_type, file_size, uploaded_by, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM notice_attachments WHERE notice_id = ?) < ?`)
+        .bind(n.notice_id, u.company_id, key, cleanFileName(file.name), type, file.size, u.user_id, nowJST(), n.notice_id, NOTICE_ATTACH_MAX_FILES).run()
+      if (!r.meta.changes) {
+        await c.env.DOCUMENTS.delete(key).catch(() => {})
+        results.push({ filename: file.name, ok: false, error: `添付は1つのお知らせに${NOTICE_ATTACH_MAX_FILES}件までです` }); continue
+      }
+      results.push({ filename: file.name, ok: true, attachment_id: Number(r.meta.last_row_id) })
+    } catch {
+      await c.env.DOCUMENTS.delete(key).catch(() => {})
+      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました' })
+    }
+  }
+  if (results.some(r => r.ok) && noticeIsLive(n)) {
+    await db.prepare('UPDATE notices SET updated_at = ?, updated_by = ? WHERE notice_id = ?').bind(nowJST(), u.user_id, n.notice_id).run()
+  }
+  return c.json({ results })
+})
+
+api.get('/admin/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}', async (c) => {
+  const u = c.get('user')
+  const n = await ownNotice(c.env.DB, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  return noticeAttachmentResponse(c, n.notice_id, u.company_id, c.req.param('aid'))
+})
+
+// 添付の削除（D1 を先に消し、R2 は後で消す）
+api.delete('/admin/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
+  if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
+  if (n.status === 'withdrawn') return c.json({ error: '取り消したお知らせの添付は変えられません' }, 400)
+  const a = await db.prepare('DELETE FROM notice_attachments WHERE attachment_id = ? AND notice_id = ? AND company_id = ? RETURNING storage_key')
+    .bind(c.req.param('aid'), n.notice_id, u.company_id).first() as any
+  if (!a) return c.json({ error: '添付ファイルが見つかりません' }, 404)
+  await c.env.DOCUMENTS.delete(String(a.storage_key)).catch(() => {})
+  if (noticeIsLive(n)) await db.prepare('UPDATE notices SET updated_at = ?, updated_by = ? WHERE notice_id = ?').bind(nowJST(), u.user_id, n.notice_id).run()
+  return c.json({ ok: true })
 })
 
 // ============ お知らせ既読率レポート ============
@@ -5057,7 +5584,7 @@ api.get('/admin/notice-reports/:fiscalYear/staff/:staffId', async (c) => {
     SELECT n.notice_id, n.title, n.published_at, n.reads_purged_at, n.importance, n.read_required,
       EXISTS(SELECT 1 FROM notice_reads r WHERE r.notice_id = n.notice_id AND r.user_id = us.user_id) AS is_read
     FROM notices n JOIN staff_profiles sp ON sp.staff_id = ? JOIN users us ON us.user_id = sp.user_id
-    WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ?
+    WHERE n.company_id = ? AND n.published_at >= ? AND n.published_at < ? AND ${NOTICE_LIVE_SQL}
       AND ${NOTICE_MEMBER_AT_PUBLISH_SQL} AND ${NOTICE_TARGET_SQL}
     ORDER BY n.published_at DESC`).bind(staff.staff_id, u.company_id, start, end).all()
 

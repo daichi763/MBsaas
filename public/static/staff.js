@@ -1688,6 +1688,8 @@ function noticeImportanceBadge(n) {
 function noticeBadgesHtml(n) {
   return noticeImportanceBadge(n)
     + (n.read_required && !n.is_read ? '<span class="badge badge-purple">確認必須</span>' : '')
+    + (n.updated_at ? '<span class="badge badge-yellow">更新</span>' : '')
+    + (n.expired ? '<span class="badge badge-gray">掲載終了</span>' : '')
     + (n.target_type === 'project' ? `<span class="badge badge-gray">案件: ${esc(n.project_names || '-')}</span>`
       : n.target_type === 'staff' ? '<span class="badge badge-gray">あなたあて</span>' : '<span class="badge badge-gray">全体</span>')
 }
@@ -1710,8 +1712,44 @@ function noticeCardHtml(n, detail) {
       <h3 class="font-bold text-gray-800">${detail ? esc(n.title) : `<a href="#notices/${Number(n.notice_id)}" class="hover:underline">${esc(n.title)}</a>`}</h3>
       <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap ${collapsed && long ? 'line-clamp-3' : ''}" id="notice-body-${Number(n.notice_id)}">${linkify(esc(body))}</p>
       ${collapsed && long ? `<button class="text-xs text-blue-600 mt-1" data-action="noticeExpand" data-id="${Number(n.notice_id)}">続きを読む</button>` : ''}
+      ${noticeAttachmentsHtml(n)}
+      ${n.updated_at || n.expires_at ? `<p class="text-[11px] text-gray-400 mt-2">${n.updated_at ? `${esc(dayjs(String(n.updated_at).replace(' ', 'T')).format('M/D HH:mm'))} に内容が更新されました` : ''}${n.updated_at && n.expires_at ? '・' : ''}${n.expires_at ? `掲載は ${esc(dayjs(String(n.expires_at).slice(0, 10)).format('M/D'))} まで` : ''}</p>` : ''}
       ${n.no_confirm ? '<p class="text-[11px] text-gray-400 mt-2">公開から2年以上たったお知らせのため、確認は不要です</p>' : ''}
+      ${noticeResponseHtml(n)}
       ${!n.is_read ? `<button class="btn btn-primary w-full mt-3" data-action="noticeMarkRead" data-id="${Number(n.notice_id)}"><i class="fas fa-check"></i>確認しました</button>` : ''}
+    </div>`
+}
+
+// 添付（#555）。画像は小さく並べ、押すと別のタブで大きく開く。PDF はリンク
+function noticeAttachmentsHtml(n) {
+  const files = n.attachments || []
+  if (!files.length) return n.attachment_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-paperclip mr-1"></i>添付 ${Number(n.attachment_count)}件（開いて確認してください）</p>` : ''
+  const url = (a) => `/api/staff/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}`
+  const imgs = files.filter(a => a.content_type !== 'application/pdf'), pdfs = files.filter(a => a.content_type === 'application/pdf')
+  return `
+    ${imgs.length ? `<div class="flex flex-wrap gap-2 mt-2">${imgs.map(a => `<a href="${url(a)}" target="_blank" rel="noopener" class="block w-20 h-20 rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
+      <img src="${url(a)}" alt="${esc(a.file_name)}" loading="lazy" class="w-full h-full object-cover"></a>`).join('')}</div>` : ''}
+    ${pdfs.map(a => `<a href="${url(a)}" target="_blank" rel="noopener" class="flex items-center gap-2 text-sm text-blue-600 mt-2"><i class="fas fa-file-pdf text-red-500"></i><span class="underline truncate">${esc(a.file_name)}</span></a>`).join('')}`
+}
+
+// 回答（#554）。選択肢だけなら押すとすぐ送る。自由記入欄があるときは、選んで書いてから「回答を送る」。答え直せる
+function noticeResponseHtml(n) {
+  const options = n.response_options || []
+  if (!options.length && !n.response_comment) return ''
+  const id = Number(n.notice_id)
+  const mine = n.my_response
+  const picked = n._choice != null ? n._choice : mine ? mine.choice : null
+  const closed = n.expired || n.no_confirm
+  const answered = mine ? `<p class="text-xs text-emerald-700 mb-2"><i class="fas fa-circle-check mr-1"></i>回答済み${mine.choice != null ? `: <b>${esc(mine.choice)}</b>` : ''}${mine.comment ? `（${esc(mine.comment)}）` : ''}</p>` : ''
+  if (closed) return `<div class="mt-3 border-t border-gray-100 pt-3">${answered}<p class="text-xs text-gray-400">回答の受付は終わりました</p></div>`
+  return `
+    <div class="mt-3 border-t border-gray-100 pt-3" id="notice-response-${id}">
+      <p class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-reply text-blue-600 mr-1"></i>回答してください</p>
+      ${answered}
+      ${options.length ? `<div class="flex flex-wrap gap-2">${options.map((o, i) => `<button class="px-3 py-2 rounded-lg text-sm font-bold border ${picked === o ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}"
+        data-action="${n.response_comment ? 'noticeChoose' : 'noticeRespond'}" data-id="${id}" data-i="${i}">${esc(o)}</button>`).join('')}</div>` : ''}
+      ${n.response_comment ? `<textarea id="notice-comment-${id}" rows="2" maxlength="500" class="inp mt-2 text-sm" placeholder="コメント・回答を入力">${esc(n._comment != null ? n._comment : mine && mine.comment ? mine.comment : '')}</textarea>
+        <button class="btn btn-primary w-full mt-2" data-action="noticeRespond" data-id="${id}">${mine ? '回答を送り直す' : '回答を送る'}</button>` : ''}
     </div>`
 }
 
@@ -1719,7 +1757,7 @@ function noticeToolbarHtml() {
   const bulk = NOTICES.list.filter(noticeBulkReadable).length
   const tab = (f, label) => `<button class="px-3 py-1.5 rounded-lg text-xs font-bold ${NOTICES.filter === f ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" data-action="noticeFilter" data-filter="${f}">${label}</button>`
   return `
-    ${tab('all', 'すべて')}${tab('unread', `未読のみ（${Number(NOTICES.unread_count) || 0}）`)}
+    ${tab('all', 'すべて')}${tab('unread', `未読のみ（${Number(NOTICES.unread_count) || 0}）`)}${tab('past', '掲載終了')}
     ${bulk >= 2 ? `<button class="text-xs text-blue-600 font-bold ml-auto" data-action="noticeReadAll"><i class="fas fa-check-double mr-1"></i>すべて確認しました（${bulk}件）</button>` : ''}`
 }
 
@@ -1735,7 +1773,8 @@ function drawNotices() {
     ${other}
     <div class="flex items-center gap-2 mb-3 px-1" id="notice-toolbar">${noticeToolbarHtml()}</div>
     <div class="space-y-2">
-      ${NOTICES.list.map(n => noticeCardHtml(n, false)).join('') || `<p class="text-center text-gray-400 py-10">${NOTICES.filter === 'unread' ? '未読のお知らせはありません' : 'お知らせはありません'}</p>`}
+      ${NOTICES.filter === 'past' ? '<p class="text-xs text-gray-500 px-1">掲載期限を過ぎたお知らせです（新しい順）</p>' : ''}
+      ${NOTICES.list.map(n => noticeCardHtml(n, false)).join('') || `<p class="text-center text-gray-400 py-10">${NOTICES.filter === 'unread' ? '未読のお知らせはありません' : NOTICES.filter === 'past' ? '掲載が終わったお知らせはありません' : 'お知らせはありません'}</p>`}
     </div>
     ${NOTICES.has_more ? '<button class="btn btn-outline w-full mt-3" data-action="noticeMore">もっと見る</button>' : ''}`
 }
@@ -1772,7 +1811,7 @@ async function renderNoticeDetail(id) {
   try { d = (await axios.get(`/api/staff/notices/${Number(id)}`)).data } catch (e) {
     const r = e.response && e.response.data
     $app.innerHTML = `${back}<div class="card p-4 text-sm text-gray-600">
-      ${esc(e.response ? (r && r.error) || 'お知らせが見つかりません' : 'お知らせを読み込めませんでした。通信状況を確認してください')}
+      ${r && r.withdrawn ? '<i class="fas fa-ban text-gray-400 mr-1"></i>' : ''}${esc(e.response ? (r && r.error) || 'お知らせが見つかりません' : 'お知らせを読み込めませんでした。通信状況を確認してください')}
       ${r && r.other_company ? `<button class="btn btn-primary w-full mt-3" data-action="noticeSwitchCompany" data-id="${Number(r.other_company.company_id)}">${esc(r.other_company.company_name)} に切り替えて開く</button>`
         : !e.response ? '<button class="btn btn-outline w-full mt-3" data-action="noticeRetry">再読み込み</button>' : ''}</div>`
     return
@@ -1813,7 +1852,47 @@ delegate('noticeExpand', el => {
   if (p) p.classList.remove('line-clamp-3')
   el.remove()
 })
-delegate('noticeFilter', el => { NOTICES.filter = el.dataset.filter === 'unread' ? 'unread' : 'all'; renderNotices() })
+delegate('noticeFilter', el => { NOTICES.filter = ['unread', 'past'].includes(el.dataset.filter) ? el.dataset.filter : 'all'; renderNotices() })
+// 回答（#554）。一覧と個別画面の両方の行を更新して、そのカードだけを描き直す
+function noticeRowsById(id) {
+  const inDetail = /^#notices\/\d+/.test(location.hash) && NOTICE_DETAIL && NOTICE_DETAIL.notice_id === id
+  return { inDetail, rows: [NOTICES.list.find(x => x.notice_id === id), inDetail ? NOTICE_DETAIL : null].filter(Boolean) }
+}
+function redrawNoticeCard(id) {
+  const { inDetail, rows } = noticeRowsById(id)
+  const card = document.getElementById('notice-' + id)
+  if (card && rows.length) card.outerHTML = noticeCardHtml(inDetail ? NOTICE_DETAIL : rows[0], !!inDetail)
+}
+delegate('noticeChoose', el => {
+  const id = Number(el.dataset.id)
+  const { rows } = noticeRowsById(id)
+  if (!rows.length) return
+  const t = document.getElementById('notice-comment-' + id)
+  rows.forEach(n => { n._choice = (n.response_options || [])[Number(el.dataset.i)]; if (t) n._comment = t.value })
+  redrawNoticeCard(id)
+})
+delegate('noticeRespond', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const { rows } = noticeRowsById(id)
+  const n = rows[0]
+  if (!n) return
+  const options = n.response_options || []
+  const choice = el.dataset.i != null ? options[Number(el.dataset.i)] : (n._choice != null ? n._choice : n.my_response ? n.my_response.choice : null)
+  const t = document.getElementById('notice-comment-' + id)
+  const comment = t ? t.value.trim() : ''
+  if (options.length && choice == null) { toast('回答を選んでください'); return }
+  if (!options.length && !comment) { toast('回答を入力してください'); return }
+  let d
+  try { d = (await axios.post(`/api/staff/notices/${id}/response`, { choice, comment })).data } catch (e) { showApiError(e, NOTICE_SEND_ERROR); return }
+  if (rows.some(x => !x.is_read)) NOTICES.unread_count = Math.max(0, (Number(NOTICES.unread_count) || 0) - 1)
+  if (rows[0] !== NOTICE_DETAIL && !rows[0].is_read) NOTICES.moved++
+  rows.forEach(x => { x.my_response = d.my_response; x._choice = null; x._comment = null; x.is_read = 1; x._open = true })
+  redrawNoticeCard(id)
+  const bar = document.getElementById('notice-toolbar')
+  if (bar) bar.innerHTML = noticeToolbarHtml()
+  toast('回答しました')
+  refreshBadges()
+}))
 delegate('noticeMore', el => withSubmitLock(el, () => renderNotices(true)))
 delegate('noticeRetry', () => route())
 delegate('noticeSwitchCompany', el => withSubmitLock(el, async () => {
