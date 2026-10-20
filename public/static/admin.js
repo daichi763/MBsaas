@@ -855,10 +855,18 @@ function matchesKeyword(q, values) {
   const digits = text.replace(/[^0-9]/g, '')
   return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
 }
-const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']]
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
   noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
+  // ログインを発行したのに一度もアプリを使っていない人（#286。ログインなしの名簿のみの人は除く）
+  noapp: s => s.user_role === 'staff' && !s.app_last_used_at,
+}
+// 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
+function staffLastLoginCell(s) {
+  if (s.user_role !== 'staff') return '<span class="text-gray-300" title="ログインなし（名簿のみ）">-</span>'
+  if (!s.app_last_used_at) return '<span class="badge badge-yellow" title="ログインを発行してから、まだ一度もアプリを使っていません">未ログイン</span>'
+  return esc(dayjs(String(s.app_last_used_at).replace(' ', 'T')).format('YY/M/D HH:mm'))
 }
 // 最終稼働からの日数で休眠の人を探す（#433。最終稼働は、確定・代打のシフトの今日までの日付）
 const STAFF_DORMANT = [['', '最終稼働: すべて'], ['30', '30日以上稼働なし'], ['60', '60日以上稼働なし'], ['90', '90日以上稼働なし'], ['never', '稼働したことがない']]
@@ -867,6 +875,7 @@ const STAFF_SORT = {
   staff_id: s => Number(s.staff_id), code: s => staffCodeLabel(s) || null, name: s => searchNorm(s.kana || s.name),
   month_days: s => Number(s.month_days || 0), month_seiyaku: s => Number(s.month_seiyaku || 0), evaluation_score: s => Number(s.evaluation_score || 0),
   retention_risk: s => RISK_ORDER[s.retention_risk] ?? 0, last_work_date: s => s.last_work_date || null, last_report_date: s => s.last_report_date || null,
+  last_login: s => s.app_last_used_at || null,
 }
 const isRetiredStaff = s => s.employment_status === 'retired'
 function staffEmpBadge(s) {
@@ -948,7 +957,7 @@ function drawStaffTable(filter) {
     </div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}</tr></thead>
+        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
         <tbody id="staff-rows"></tbody>
       </table>
     </div>`
@@ -983,7 +992,8 @@ function drawStaffRows() {
               <td>${s.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : '<span class="text-gray-300">-</span>'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
-            </tr>`).join('') || '<tr><td colspan="12" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+              <td class="text-xs text-gray-500 whitespace-nowrap">${staffLastLoginCell(s)}</td>
+            </tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
 }
 delegate('toggleStaffFilter', el => {
   const arr = STAFF_LIST[el.dataset.group]; const k = el.dataset.key

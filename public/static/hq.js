@@ -65,12 +65,21 @@ const BILLING_BADGE = {
 // 並べ替え・絞り込み・検索の状態（企業詳細から戻っても保つ。#517）
 const HQ_LIST = { sort: 'company_id', dir: 'asc', q: '', filter: '' }
 let HQ_COMPANIES = []
-let HQ_RULES = { drop_rate: 0.3, drop_min_base: 10, no_shift_days: 14 }
+let HQ_RULES = { drop_rate: 0.3, drop_min_base: 10, no_shift_days: 14, due_soon_days: 7 }
+let HQ_PLAN_PRICES = []
 const HQ_FILTERS = {
   '': 'すべて', over_limit: '契約ユーザー数の超過', needs_attention: '利用が減った・止まっている', usage_drop: '利用が減った', no_recent_shift: 'シフト登録が止まっている',
-  trial: 'トライアル', inactive: '停止'
+  due: '期日が過ぎた・近い', trial_no_end: 'トライアル期限の未設定', payment_alert: '未入金・滞納', trial: 'トライアル', inactive: '停止'
 }
-const hqMatchFilter = (c, f) => !f ? true : f === 'needs_attention' ? !!(c.usage_drop || c.no_recent_shift) : (f === 'trial' || f === 'inactive') ? c.active_status === f : !!c[f]
+const hqMatchFilter = (c, f) => !f ? true : f === 'needs_attention' ? !!(c.usage_drop || c.no_recent_shift) : f === 'due' ? !!c.due_state
+  : (f === 'trial' || f === 'inactive') ? c.active_status === f : !!c[f]
+// 料金の説明（プランごとの料金。#295）
+const hqPriceText = p => `${yen(p.base_fee)}（${Number(p.included_users)}ユーザーまで）+ 追加1ユーザーごとに${yen(p.per_user_fee)}/月`
+// 期日（YYYY-MM-DD）の表示。過ぎたものは赤、近いものは黄（#296）
+const hqDue = (v, state) => !v ? '<span class="text-slate-500">-</span>'
+  : `<span class="${state === 'past' ? 'text-red-400 font-bold' : state === 'soon' ? 'text-amber-300 font-bold' : ''}">${esc(dayjs(v).format('YYYY/M/D'))}</span>`
+const BILLING_MONTH_LABEL = { issued: '請求済み（入金待ち）', paid: '入金済み', overdue: '滞納', waived: '請求しない' }
+const BILLING_MONTH_BADGE = { issued: 'badge-yellow', paid: 'badge-green', overdue: 'badge-red', waived: 'badge-gray' }
 // 増減率（前の30日と比べて）。前の期間が0なら出さない
 const hqRate = r => r == null ? '' : `<span class="block text-[11px] ${r <= -0.3 ? 'text-red-400' : r < 0 ? 'text-amber-300' : 'text-emerald-400'}">${r > 0 ? '+' : ''}${Math.round(r * 100)}%</span>`
 // utc: シフトの登録日時（created_at）は UTC で保存されているので、日本時間に直して出す
@@ -88,7 +97,8 @@ const HQ_COLUMNS = [
   { key: 'reports_30d', label: '日報(30日)', num: true },
   { key: 'shifts_30d', label: 'シフト(30日)', num: true },
   { key: 'last_shift_created_at', label: '最終シフト登録' },
-  { key: 'last_admin_login_at', label: '管理者の最終ログイン' },
+  { key: 'last_admin_login_at', label: '管理者の最終利用' },
+  { key: 'next_due', label: '次の期日' },
   { key: 'monthly_fee', label: '月額', num: true },
   { key: 'maturity_level', label: '成熟度', num: true },
 ]
@@ -102,7 +112,15 @@ async function renderCompanies() {
   }
   HQ_COMPANIES = data.companies
   if (data.rules) HQ_RULES = data.rules
+  HQ_PLAN_PRICES = data.plan_prices || []
   const list = data.companies
+  const bill = data.billing
+  // 前の月の請求をまだ記録していない企業があれば知らせる（#295）
+  const billBanner = bill && bill.billable_companies && bill.prev_month_recorded < bill.billable_companies ? `
+    <div class="bg-amber-900/30 border border-amber-700 text-amber-100 rounded-xl p-3 mb-4 text-sm flex flex-wrap items-center gap-2">
+      <i class="fas fa-file-invoice-dollar"></i><span class="flex-1">${esc(dayjs(bill.prev_month + '-01').format('YYYY年M月'))}分の請求を記録していない企業があります（記録済み ${Number(bill.prev_month_recorded)}社 / 利用中 ${Number(bill.billable_companies)}社）。</span>
+      <button class="btn btn-outline text-xs" style="border-color:#b45309;color:#fde68a" data-action="hqCloseBilling" data-month="${esc(bill.prev_month)}">今の人数で記録する</button>
+    </div>` : ''
   const totalMRR = list.filter(c => c.active_status === 'active').reduce((a, c) => a + c.monthly_fee, 0)
   const kpi = (label, value, icon, filter) => `
     <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 ${filter ? 'cursor-pointer hover:border-cyan-700' : ''}" ${filter ? `data-action="hqFilter" data-filter="${filter}"` : ''}>
@@ -113,15 +131,23 @@ async function renderCompanies() {
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5">
       <h2 class="text-xl font-bold">導入企業管理</h2>
-      <button class="btn btn-primary" style="background:#0e7490" onclick="showAddCompany()"><i class="fas fa-plus"></i>企業登録</button>
+      <div class="flex flex-wrap gap-2">
+        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqAuditLogs"><i class="fas fa-clock-rotate-left"></i>本部の操作の履歴</button>
+        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqBillingMenu"><i class="fas fa-file-invoice-dollar"></i>請求の記録</button>
+        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqPlanPrices"><i class="fas fa-tags"></i>プランの料金</button>
+        <button class="btn btn-primary" style="background:#0e7490" onclick="showAddCompany()"><i class="fas fa-plus"></i>企業登録</button>
+      </div>
     </div>
-    <section class="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+    ${billBanner}
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       ${kpi('導入企業数', list.length + '社', 'fa-building')}
       ${kpi('課金対象企業', list.filter(c => c.active_status === 'active').length + '社', 'fa-circle-check')}
       ${kpi('月間収益(MRR)', yen(totalMRR), 'fa-yen-sign')}
       ${kpi('総ユーザー数', list.reduce((a, c) => a + (c.user_count || 0), 0) + '名', 'fa-users')}
       ${kpi('契約ユーザー数の超過', list.filter(c => c.over_limit).length + '社', 'fa-user-plus', 'over_limit')}
       ${kpi('利用が減った・止まっている', list.filter(c => c.usage_drop || c.no_recent_shift).length + '社', 'fa-arrow-trend-down', 'needs_attention')}
+      ${kpi('期日が過ぎた・近い', list.filter(c => c.due_state).length + '社', 'fa-calendar-day', 'due')}
+      ${kpi('未入金・滞納', list.filter(c => c.payment_alert).length + '社', 'fa-triangle-exclamation', 'payment_alert')}
     </section>
     <div class="flex flex-wrap items-center gap-2 mb-3">
       <input id="hq-co-q" class="inp" style="max-width:16rem;background:#1e293b;border-color:#334155;color:#fff" placeholder="企業名・会社コードで検索" value="${esc(HQ_LIST.q)}">
@@ -136,7 +162,8 @@ async function renderCompanies() {
         <tbody id="hq-co-body"></tbody>
       </table>
     </section>
-    <p class="text-xs text-slate-500 mt-3"><i class="fas fa-circle-info mr-1"></i>料金 = 基本990円（3ユーザーまで）+ 追加1ユーザーごとに300円/月。ユーザー数は課金対象（利用中で、ログインできる人）の人数です</p>
+    <p class="text-xs text-slate-500 mt-3"><i class="fas fa-circle-info mr-1"></i>料金: ${HQ_PLAN_PRICES.map(p => `${esc(PLAN_LABELS[p.plan] || p.plan)} ${hqPriceText(p)}`).join('、') || '-'}。ユーザー数は課金対象（利用中で、ログインできる人）の人数です。月額は今の人数で計算した見込みで、確定した額は企業詳細の請求の記録で確かめます</p>
+    <p class="text-xs text-slate-500 mt-1"><i class="fas fa-circle-info mr-1"></i>週次アクティブは、課金対象の人のうち今日を含む直近7日にログイン・アプリの操作・アプリからの勤怠の報告があった人数です（他社から連携したスタッフは、報告した稼働先の企業で数えます）。次の期日は、トライアルの終了日（トライアル中のみ）と次回レビュー日の早いほうで、過ぎたものを赤、${Number(HQ_RULES.due_soon_days) || 7}日以内のものを黄で示します</p>
     <p class="text-xs text-slate-500 mt-1"><i class="fas fa-circle-info mr-1"></i>増減率は直近30日と、その前の30日の比較です。「利用減」は日報かシフトが前の30日（${HQ_RULES.drop_min_base}件以上）から${Math.round(HQ_RULES.drop_rate * 100)}%以上減った企業、「シフト登録なし」は${HQ_RULES.no_shift_days}日以上シフトを登録していない企業です</p>`
   document.getElementById('hq-co-q').addEventListener('input', ev => { HQ_LIST.q = ev.target.value; drawCompanyTable() })
   document.getElementById('hq-co-filter').addEventListener('change', ev => { HQ_LIST.filter = ev.target.value; drawCompanyTable() })
@@ -168,6 +195,9 @@ function drawCompanyTable() {
       c.over_limit ? '<span class="badge badge-red">上限超過</span>' : '',
       c.usage_drop ? '<span class="badge badge-yellow">利用減</span>' : '',
       c.no_recent_shift ? '<span class="badge badge-gray">シフト登録なし</span>' : '',
+      c.due_state === 'past' ? '<span class="badge badge-red">期日超過</span>' : c.due_state === 'soon' ? '<span class="badge badge-yellow">期日が近い</span>' : '',
+      c.trial_no_end ? '<span class="badge badge-gray">トライアル期限なし</span>' : '',
+      c.overdue_months ? `<span class="badge badge-red">滞納${Number(c.overdue_months)}か月</span>` : c.payment_alert ? `<span class="badge badge-yellow">未入金${Number(c.unpaid_months)}か月</span>` : '',
     ].filter(Boolean).join(' ')
     return `
     <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer ${c.over_limit ? 'bg-red-900/20' : ''}" data-action="hqOpenCompany" data-cid="${Number(c.company_id)}">
@@ -182,6 +212,7 @@ function drawCompanyTable() {
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.shifts_30d) || 0}件${hqRate(c.shifts_change)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_shift_created_at, true)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_admin_login_at)}</td>
+      <td class="px-3 py-3 whitespace-nowrap">${hqDue(c.next_due, c.due_state)}</td>
       <td class="px-3 py-3 text-right font-bold text-cyan-400">${yen(c.monthly_fee)}</td>
       <td class="px-3 py-3 text-center whitespace-nowrap">${'●'.repeat(c.maturity_level || 1)}${'○'.repeat(5 - (c.maturity_level || 1))}</td>
       <td class="px-3 py-3 whitespace-nowrap">${flags}</td>
@@ -204,6 +235,132 @@ delegate('hqFilter', (el) => {
   const sel = document.getElementById('hq-co-filter'); if (sel) sel.value = HQ_LIST.filter
   drawCompanyTable()
 })
+
+// ---------- 請求の記録（#295） ----------
+// 月を締めると、利用中の企業ごとに、その時点の課金対象の人数・プラン・金額を記録する（記録済みの企業は変えない）
+delegate('hqBillingMenu', () => {
+  const last = dayjs().subtract(1, 'month').format('YYYY-MM')
+  modal(`
+    <h3 class="font-bold text-lg mb-2 text-gray-800">請求の記録</h3>
+    <p class="text-xs text-gray-500 mb-3">指定した月の請求を、利用中の企業ごとに記録します。人数は記録する時点の課金対象の人数で、金額はプランの料金で計算します。すでに記録のある企業は変えません（金額・入金状態は企業詳細で直します）。トライアル・停止中の企業は記録しません。</p>
+    <label class="text-xs text-gray-600 block mb-1">記録する月</label>
+    <input id="bill-month" type="month" class="inp mb-3" value="${esc(last)}" max="${esc(dayjs().format('YYYY-MM'))}">
+    <div class="flex gap-2">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+      <button class="btn btn-primary flex-1" data-action="hqCloseBilling">記録する</button>
+    </div>`)
+})
+delegate('hqCloseBilling', (el) => {
+  const input = document.getElementById('bill-month')
+  const month = el.dataset.month || (input && input.value)
+  if (!/^\d{4}-\d{2}$/.test(month || '')) { toast('月を選んでください'); return }
+  if (!confirm(`${dayjs(month + '-01').format('YYYY年M月')}分の請求を、今の課金対象の人数で記録します。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    try {
+      const { data } = await axios.post('/api/hq/billing/close', { month })
+      closeModal(); toast(data.created ? `${data.created}社の請求を記録しました` : '新しく記録する企業はありませんでした（すべて記録済み）')
+      renderCompanies()
+    } catch (e) { hqErr(e, '記録できませんでした') }
+  })
+})
+
+// ---------- プランの料金（#295） ----------
+delegate('hqPlanPrices', async () => {
+  let prices = HQ_PLAN_PRICES
+  try { prices = (await axios.get('/api/hq/plan-prices')).data.prices } catch { }
+  modal(`
+    <h3 class="font-bold text-lg mb-2 text-gray-800">プランの料金</h3>
+    <p class="text-xs text-gray-500 mb-3">月額 = 基本料金（含む人数まで）+ 超えた1人ごとの料金。変更すると、企業一覧の月額と、これから記録する請求に使います（記録済みの請求は変わりません）。</p>
+    <table class="w-full text-sm text-gray-800">
+      <thead><tr class="text-xs text-gray-500"><th class="text-left py-1">プラン</th><th class="text-left">基本料金（円）</th><th class="text-left">含む人数</th><th class="text-left">追加1人（円）</th></tr></thead>
+      <tbody>${prices.map(p => `
+        <tr data-plan="${esc(p.plan)}">
+          <td class="py-1 pr-2 whitespace-nowrap">${esc(PLAN_LABELS[p.plan] || p.plan)}</td>
+          <td class="pr-2"><input class="inp pp-base" type="number" min="0" step="1" value="${Number(p.base_fee)}"></td>
+          <td class="pr-2"><input class="inp pp-inc" type="number" min="0" step="1" value="${Number(p.included_users)}"></td>
+          <td><input class="inp pp-per" type="number" min="0" step="1" value="${Number(p.per_user_fee)}"></td>
+        </tr>`).join('')}</tbody>
+    </table>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+      <button class="btn btn-primary flex-1" data-action="hqSavePlanPrices">保存する</button>
+    </div>`)
+})
+delegate('hqSavePlanPrices', (el) => withSubmitLock(el, async () => {
+  const prices = [...document.querySelectorAll('tr[data-plan]')].map(tr => ({
+    plan: tr.dataset.plan,
+    base_fee: Number(tr.querySelector('.pp-base').value), included_users: Number(tr.querySelector('.pp-inc').value), per_user_fee: Number(tr.querySelector('.pp-per').value),
+  }))
+  if (prices.some(p => [p.base_fee, p.included_users, p.per_user_fee].some(v => !Number.isInteger(v) || v < 0))) { toast('料金と人数は0以上の整数で入力してください'); return }
+  try {
+    const { data } = await axios.put('/api/hq/plan-prices', { prices })
+    closeModal(); toast(data.changed ? '料金を保存しました' : '変更はありませんでした'); renderCompanies()
+  } catch (e) { hqErr(e, '保存できませんでした') }
+}))
+
+// ---------- 本部の操作の履歴（#542） ----------
+const HQ_AUDIT_ACTION = {
+  'company.create': '企業の登録', 'company.update': '企業の変更', 'plan_price.update': 'プランの料金の変更', 'billing.close': '請求の記録（月の締め）',
+  'billing.update': '請求の記録の修正', 'support_log.add': '伴走支援の記録', 'security.reset_mfa': '二段階認証の解除', 'security.clear_ip': '接続元の制限の解除',
+}
+const HQ_AUDIT_FIELD = {
+  company_name: '会社名', plan: 'プラン', user_limit: 'ユーザー上限', active_status: '利用状態', billing_status: '請求状態', maturity_level: '運営成熟度',
+  support_memo: '伴走支援メモ', trial_ends_at: 'トライアルの終了日', contract_start_at: '契約開始日', next_review_at: '次回レビュー日',
+  contact_name: '担当者', contact_phone: '電話', contact_email: 'メール', billing_address: '請求先の住所',
+  status: '入金状態', amount: '金額', paid_at: '入金日', note: 'メモ', created: '記録した企業数', mfa_enabled: '二段階認証',
+  base_fee: '基本料金', included_users: '含む人数', per_user_fee: '追加1人',
+}
+const HQ_AUDIT_VALUE = {
+  plan: PLAN_LABELS, active_status: { active: '利用中', trial: 'トライアル', inactive: '停止' }, billing_status: { active: '正常', overdue: '滞納', suspended: '停止' },
+  status: BILLING_MONTH_LABEL,
+}
+function hqAuditValue(k, v) {
+  if (v == null || v === '') return '（なし）'
+  if (typeof v === 'boolean') return v ? 'あり' : 'なし'
+  if (typeof v === 'object') return Object.entries(v).map(([kk, vv]) => `${HQ_AUDIT_FIELD[kk] || kk}: ${vv == null ? '（なし）' : vv}`).join('・')
+  const s = (HQ_AUDIT_VALUE[k] && HQ_AUDIT_VALUE[k][v]) || String(v)
+  return s.length > 80 ? s.slice(0, 80) + '…' : s
+}
+// 変更前 → 変更後 を項目ごとに1行で出す
+function hqAuditDiff(l) {
+  let before = {}, after = {}
+  try { before = JSON.parse(l.before_json || '{}') || {} } catch { }
+  try { after = JSON.parse(l.after_json || '{}') || {} } catch { }
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+  return keys.map(k => `<div><span class="text-gray-500">${esc(HQ_AUDIT_FIELD[k] || PLAN_LABELS[k] || k)}:</span> ${l.before_json ? `${esc(hqAuditValue(k, before[k]))} → ` : ''}${esc(hqAuditValue(k, after[k]))}</div>`).join('')
+}
+function hqAuditRow(l, withCompany) {
+  return `<tr class="border-b border-gray-100 align-top">
+    <td class="py-2 pr-2 whitespace-nowrap text-gray-500">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}</td>
+    <td class="py-2 pr-2 whitespace-nowrap">${esc(l.actor_name || '-')}</td>
+    ${withCompany ? `<td class="py-2 pr-2">${esc(l.company_name || '')}</td>` : ''}
+    <td class="py-2 pr-2">${esc(HQ_AUDIT_ACTION[l.action] || l.action)}${l.target ? `<div class="text-[11px] text-gray-400">${esc(l.target)}</div>` : ''}</td>
+    <td class="py-2">${hqAuditDiff(l)}${l.reason ? `<div class="text-amber-700">理由: ${esc(l.reason)}</div>` : ''}</td>
+  </tr>`
+}
+const HQ_AUDIT = { page: 1, logs: [] }
+delegate('hqAuditLogs', async () => {
+  HQ_AUDIT.page = 1; HQ_AUDIT.logs = []
+  modal(`<h3 class="font-bold text-lg mb-2 text-gray-800">本部の操作の履歴</h3>
+    <div class="max-h-[70vh] overflow-y-auto"><table class="w-full text-xs text-gray-800"><thead><tr class="text-gray-500 border-b"><th class="text-left py-1">日時</th><th class="text-left">操作した人</th><th class="text-left">企業</th><th class="text-left">操作</th><th class="text-left">内容</th></tr></thead>
+    <tbody id="hq-audit-body"><tr><td colspan="5" class="py-4 text-center text-gray-400">読み込み中…</td></tr></tbody></table>
+    <div id="hq-audit-more" class="text-center mt-2"></div></div>
+    <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
+  await loadHqAuditLogs()
+})
+delegate('hqAuditMore', (el) => withSubmitLock(el, async () => { HQ_AUDIT.page++; await loadHqAuditLogs() }))
+async function loadHqAuditLogs() {
+  const body = document.getElementById('hq-audit-body'), more = document.getElementById('hq-audit-more')
+  try {
+    const { data } = await axios.get('/api/hq/audit-logs', { params: { page: HQ_AUDIT.page } })
+    HQ_AUDIT.logs = HQ_AUDIT.logs.concat(data.logs)
+    if (!body) return
+    body.innerHTML = HQ_AUDIT.logs.map(l => hqAuditRow(l, true)).join('') || '<tr><td colspan="5" class="py-4 text-center text-gray-400">記録はまだありません</td></tr>'
+    if (more) more.innerHTML = data.has_more ? '<button class="btn btn-outline text-xs" data-action="hqAuditMore">さらに読み込む</button>' : ''
+  } catch (e) {
+    if (body) body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-red-500">読み込めませんでした</td></tr>'
+  }
+}
 
 // 会社コード: ログインの照合に合わせて全角を半角に、大文字を小文字にそろえる（サーバーでも同じ確認をする。#398）
 const HQ_COMPANY_CODE_RE = /^[a-z0-9][a-z0-9-]{1,39}$/
@@ -230,6 +387,15 @@ window.showAddCompany = function () {
           <select id="co-plan" class="inp"><option value="basic">ベーシック</option><option value="standard">スタンダード</option><option value="premium">プレミアム</option></select></div>
         <div><label class="text-sm text-gray-600 block mb-1">ユーザー上限</label><input id="co-limit" type="number" min="1" step="1" value="3" class="inp" placeholder="空欄 = 上限なし"></div>
       </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-gray-600 block mb-1">トライアルの終了日</label><input id="co-trial-ends" type="date" class="inp"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">契約開始日</label><input id="co-contract-start" type="date" class="inp"></div>
+      </div>
+      <div class="grid grid-cols-3 gap-3">
+        <div><label class="text-xs text-gray-600 block mb-1">企業の担当者</label><input id="co-contact-name" class="inp" maxlength="60"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">電話</label><input id="co-contact-phone" type="tel" class="inp" maxlength="30"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">メール</label><input id="co-contact-email" type="email" class="inp"></div>
+      </div>
       <hr>
       <p class="text-xs text-gray-500">初期管理者アカウント（必須）</p>
       <div class="grid grid-cols-3 gap-3">
@@ -243,7 +409,8 @@ window.showAddCompany = function () {
     </div>`)
 }
 // API が返す入力欄の名前 → 画面の入力欄
-const HQ_ADD_FIELDS = { company_code: 'co-code', company_name: 'co-name', plan: 'co-plan', user_limit: 'co-limit', admin_code: 'co-admin-code', admin_password: 'co-admin-pass', admin_email: 'co-admin-email' }
+const HQ_ADD_FIELDS = { company_code: 'co-code', company_name: 'co-name', plan: 'co-plan', user_limit: 'co-limit', admin_code: 'co-admin-code', admin_password: 'co-admin-pass', admin_email: 'co-admin-email',
+  trial_ends_at: 'co-trial-ends', contract_start_at: 'co-contract-start', contact_name: 'co-contact-name', contact_phone: 'co-contact-phone', contact_email: 'co-contact-email' }
 delegate('addCompany', (el) => withSubmitLock(el, async () => {
   const v = id => document.getElementById(id).value.trim()
   const code = hqNormCode(v('co-code'))
@@ -259,6 +426,8 @@ delegate('addCompany', (el) => withSubmitLock(el, async () => {
     const { data } = await axios.post('/api/hq/companies', {
       company_code: code,
       company_name: v('co-name'),
+      trial_ends_at: v('co-trial-ends'), contract_start_at: v('co-contract-start'),
+      contact_name: v('co-contact-name'), contact_phone: v('co-contact-phone'), contact_email: v('co-contact-email'),
       plan: v('co-plan'),
       user_limit: limitRaw === '' ? null : Number(limitRaw),
       admin_code: adminCode,
@@ -302,6 +471,7 @@ function hqUserState(u) {
 }
 const HQ_USER_FILTERS = { '': 'すべて', billable: '課金対象', stopped: '退職・停止', no_login: 'ログインなし' }
 let HQ_USER_FILTER = ''
+let HQ_BILLING_ROWS = []
 
 async function renderCompanyDetail(cid) {
   loading()
@@ -313,6 +483,7 @@ async function renderCompanyDetail(cid) {
   const c = data.company
   const usage = data.usage || { user_count: data.users.filter(u => u.billable).length, user_limit: c.user_limit, linked_count: 0, over_limit: false }
   HQ_USERS = new Map(data.users.map(u => [u.user_id, u]))
+  HQ_BILLING_ROWS = data.billing || []
   const darkInp = 'style="background:#1e293b;border-color:#334155;color:#fff"'
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5">
@@ -350,6 +521,16 @@ async function renderCompanyDetail(cid) {
       <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
         <h3 class="font-bold mb-3"><i class="fas fa-gear text-cyan-400 mr-1"></i>契約・設定</h3>
         <div class="space-y-3 text-sm">
+          <div><label class="text-xs text-slate-400 block mb-1">会社名（掲示板・企業間連携の相手にもこの名前が出ます）</label>
+            <input id="cd-name" class="inp" maxlength="100" value="${esc(c.company_name)}" data-current="${esc(c.company_name)}" ${darkInp}></div>
+          <div class="grid grid-cols-3 gap-3">
+            <div><label class="text-xs text-slate-400 block mb-1">トライアルの終了日</label>
+              <input id="cd-trial-ends" type="date" class="inp" value="${esc(c.trial_ends_at || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-slate-400 block mb-1">契約開始日</label>
+              <input id="cd-contract-start" type="date" class="inp" value="${esc(c.contract_start_at || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-slate-400 block mb-1">次回レビュー日</label>
+              <input id="cd-next-review" type="date" class="inp" value="${esc(c.next_review_at || '')}" ${darkInp}></div>
+          </div>
           <div class="grid grid-cols-2 gap-3">
             <div><label class="text-xs text-slate-400 block mb-1">プラン</label>
               <select id="cd-plan" class="inp" ${darkInp}>
@@ -370,7 +551,14 @@ async function renderCompanyDetail(cid) {
           </div>
           <div><label class="text-xs text-slate-400 block mb-1">運営成熟度 (1-5)</label>
             <input id="cd-maturity" type="range" min="1" max="5" value="${Number(c.maturity_level) || 1}" class="w-full"></div>
-          <div><label class="text-xs text-slate-400 block mb-1">伴走支援メモ</label>
+          <p class="text-xs text-slate-400 pt-1">企業の連絡先（請求・契約・障害の連絡用）</p>
+          <div class="grid grid-cols-3 gap-3">
+            <div><label class="text-xs text-slate-400 block mb-1">担当者</label><input id="cd-contact-name" class="inp" maxlength="60" value="${esc(c.contact_name || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-slate-400 block mb-1">電話</label><input id="cd-contact-phone" type="tel" class="inp" maxlength="30" value="${esc(c.contact_phone || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-slate-400 block mb-1">メール</label><input id="cd-contact-email" type="email" class="inp" value="${esc(c.contact_email || '')}" ${darkInp}></div>
+          </div>
+          <div><label class="text-xs text-slate-400 block mb-1">請求先の住所</label><input id="cd-billing-address" class="inp" maxlength="200" value="${esc(c.billing_address || '')}" ${darkInp}></div>
+          <div><label class="text-xs text-slate-400 block mb-1">伴走支援メモ（いまの状況のまとめ。経緯は下の「伴走支援の履歴」に追記します）</label>
             <textarea id="cd-memo" rows="3" maxlength="5000" class="inp" ${darkInp}>${esc(c.support_memo || '')}</textarea></div>
           <button class="btn btn-primary w-full" style="background:#0e7490" data-action="hqSaveCompany" data-cid="${Number(cid)}">保存する</button>
         </div>
@@ -388,13 +576,125 @@ async function renderCompanyDetail(cid) {
         <div class="max-h-96 overflow-y-auto">
           <table class="w-full text-xs">
             <thead><tr class="text-slate-400 border-b border-slate-700">
-              <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">メール</th><th class="text-left py-2">最終ログイン</th><th></th>
+              <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">メール</th><th class="text-left py-2" title="ログインした日時。下の段は最後にアプリを使った日時">最終ログイン</th><th></th>
             </tr></thead>
             <tbody id="hq-user-body">${hqUserRows(data.users, cid)}</tbody>
           </table>
         </div>
       </section>
-    </div>`
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-4 mt-4">
+      ${hqBillingSection(data, cid)}
+      ${hqSupportLogSection(data, cid)}
+    </div>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mt-4 overflow-x-auto">
+      <h3 class="font-bold mb-3"><i class="fas fa-clock-rotate-left text-cyan-400 mr-1"></i>変更履歴（本部の操作）</h3>
+      <div class="bg-white rounded-lg p-2 max-h-80 overflow-y-auto">
+        <table class="w-full text-xs text-gray-800"><thead><tr class="text-gray-500 border-b"><th class="text-left py-1">日時</th><th class="text-left">操作した人</th><th class="text-left">操作</th><th class="text-left">内容</th></tr></thead>
+        <tbody>${(data.audit_logs || []).map(l => hqAuditRow(l, false)).join('') || '<tr><td colspan="4" class="py-4 text-center text-gray-400">記録はまだありません</td></tr>'}</tbody></table>
+      </div>
+      <p class="text-[11px] text-slate-500 mt-2">新しい順に50件まで表示します。すべての企業の履歴は、企業一覧の「本部の操作の履歴」から見られます。</p>
+    </section>`
+}
+// 月ごとの請求記録（#295）
+function hqBillingSection(data, cid) {
+  const rows = data.billing || []
+  const price = (data.plan_prices || []).find(p => p.plan === data.company.plan)
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <h3 class="font-bold mb-1"><i class="fas fa-file-invoice-dollar text-cyan-400 mr-1"></i>請求の記録</h3>
+      <p class="text-[11px] text-slate-400 mb-2">今月の見込み: ${yen(data.usage && data.usage.monthly_fee)}（課金対象 ${Number(data.usage && data.usage.user_count) || 0}名${price ? `・${esc(PLAN_LABELS[price.plan] || price.plan)} ${esc(hqPriceText(price))}` : ''}）。記録は企業一覧の「請求の記録」で月ごとに作ります。</p>
+      <div class="max-h-80 overflow-y-auto">
+        <table class="w-full text-xs">
+          <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left py-2">月</th><th class="text-left">プラン</th><th class="text-right">人数</th><th class="text-right">金額</th><th class="text-left pl-3">入金状態</th><th></th></tr></thead>
+          <tbody>${rows.map(r => `
+            <tr class="border-b border-slate-700/40 ${r.status === 'overdue' ? 'bg-red-900/20' : ''}">
+              <td class="py-2 whitespace-nowrap">${esc(String(r.month).replace('-', '/'))}</td>
+              <td>${esc(PLAN_LABELS[r.plan] || r.plan || '')}</td>
+              <td class="text-right">${Number(r.user_count) || 0}名</td>
+              <td class="text-right font-bold">${yen(r.amount)}</td>
+              <td class="pl-3 whitespace-nowrap"><span class="badge ${BILLING_MONTH_BADGE[r.status] || 'badge-gray'}">${esc(BILLING_MONTH_LABEL[r.status] || r.status)}</span>${r.paid_at ? `<span class="text-slate-400 ml-1">${esc(dayjs(r.paid_at).format('M/D'))}</span>` : ''}${r.note ? `<div class="text-[11px] text-slate-400">${esc(r.note)}</div>` : ''}</td>
+              <td class="text-right"><button class="text-cyan-400 hover:underline" data-action="hqEditBilling" data-cid="${Number(cid)}" data-month="${esc(r.month)}">編集</button></td>
+            </tr>`).join('') || '<tr><td colspan="6" class="py-6 text-center text-slate-400">請求の記録はまだありません</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>`
+}
+// 伴走支援の履歴（#296）。追記で残す
+function hqSupportLogSection(data, cid) {
+  const darkInp = 'style="background:#1e293b;border-color:#334155;color:#fff"'
+  const logs = data.support_logs || []
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <h3 class="font-bold mb-2"><i class="fas fa-handshake text-cyan-400 mr-1"></i>伴走支援の履歴</h3>
+      <div class="space-y-2 mb-3">
+        <textarea id="sl-body" rows="2" maxlength="2000" class="inp" placeholder="実施した支援・打ち合わせの内容" ${darkInp}></textarea>
+        <div class="flex flex-wrap items-end gap-2">
+          <div><label class="text-[11px] text-slate-400 block mb-1">次回の予定日（入れると次回レビュー日も更新します）</label><input id="sl-next" type="date" class="inp" ${darkInp}></div>
+          <button class="btn btn-primary" style="background:#0e7490" data-action="hqAddSupportLog" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>記録する</button>
+        </div>
+      </div>
+      <div class="max-h-80 overflow-y-auto space-y-2">
+        ${logs.map(l => `
+          <div class="border-l-2 border-cyan-700 pl-2 text-xs">
+            <div class="text-slate-400">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}・${esc(l.actor_name || '（担当者の記録なし）')}${l.next_action_date ? `<span class="ml-2 text-amber-300">次回 ${esc(dayjs(l.next_action_date).format('YYYY/M/D'))}</span>` : ''}</div>
+            <div class="whitespace-pre-wrap break-words">${esc(l.body)}</div>
+          </div>`).join('') || '<p class="text-xs text-slate-400">記録はまだありません</p>'}
+      </div>
+    </section>`
+}
+delegate('hqAddSupportLog', (el) => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid)
+  const body = document.getElementById('sl-body').value.trim()
+  if (!body) { hqMarkField('sl-body', '支援の内容を入力してください'); return }
+  try {
+    await axios.post(`/api/hq/companies/${cid}/support-logs`, { body, next_action_date: document.getElementById('sl-next').value || null })
+    toast('記録しました'); renderCompanyDetail(cid)
+  } catch (e) { hqErr(e, '記録できませんでした') }
+}))
+delegate('hqEditBilling', (el) => {
+  const cid = Number(el.dataset.cid), month = el.dataset.month
+  const r = (HQ_BILLING_ROWS || []).find(x => x.month === month)
+  if (!r) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1 text-gray-800">${esc(dayjs(month + '-01').format('YYYY年M月'))}分の請求</h3>
+    <p class="text-xs text-gray-500 mb-3">記録した時点: ${esc(PLAN_LABELS[r.plan] || r.plan || '')}・${Number(r.user_count) || 0}名${r.recorded_at ? `（${esc(dayjs(String(r.recorded_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}に記録）` : ''}</p>
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-gray-600 block mb-1">入金状態</label>
+          <select id="bm-status" class="inp">${Object.entries(BILLING_MONTH_LABEL).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div><label class="text-xs text-gray-600 block mb-1">入金日（入金済みのとき。空欄なら今日）</label><input id="bm-paid" type="date" class="inp" value="${esc(r.paid_at || '')}"></div>
+      </div>
+      <div><label class="text-xs text-gray-600 block mb-1">金額（円）</label><input id="bm-amount" type="number" min="0" step="1" class="inp" value="${Number(r.amount) || 0}"></div>
+      <div><label class="text-xs text-gray-600 block mb-1">メモ（値引き・日割りの理由など）</label><input id="bm-note" class="inp" maxlength="500" value="${esc(r.note || '')}"></div>
+      <div class="flex gap-2">
+        <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-primary flex-1" data-action="hqSaveBilling" data-cid="${cid}" data-month="${esc(month)}">保存する</button>
+      </div>
+    </div>`)
+})
+delegate('hqSaveBilling', (el) => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid), month = el.dataset.month
+  const amount = Number(document.getElementById('bm-amount').value)
+  if (!Number.isInteger(amount) || amount < 0) { toast('金額は0以上の整数で入力してください'); return }
+  try {
+    await axios.put(`/api/hq/companies/${cid}/billing/${encodeURIComponent(month)}`, {
+      status: document.getElementById('bm-status').value, paid_at: document.getElementById('bm-paid').value || null,
+      amount, note: document.getElementById('bm-note').value,
+    })
+    closeModal(); toast('保存しました'); renderCompanyDetail(cid)
+  } catch (e) { hqErr(e, '保存できませんでした') }
+}))
+// 最終ログインと、最後にアプリを使った日時（#286 #491）。ログインできる人で一度もログインしていなければ「未ログイン」。
+// 他社から連携したスタッフ（LK-）は所属元のログインで使うので、この企業の行にはログインが残らない
+function hqLoginCell(u) {
+  const fmt = v => dayjs(String(v).replace(' ', 'T')).format('M/D HH:mm')
+  if (u.role === 'roster_only') return '-'
+  const seen = u.last_seen_at && u.last_seen_at !== u.last_login_at ? `<div class="text-[11px] text-slate-500">利用 ${esc(fmt(u.last_seen_at))}</div>` : ''
+  if (u.last_login_at) return esc(fmt(u.last_login_at)) + seen
+  if (u.linked) return (seen || '<span class="text-slate-500">所属元でログイン</span>')
+  return '<span class="badge badge-yellow">未ログイン</span>' + seen
 }
 function hqUserRows(users, cid) {
   const rows = users.filter(u => !HQ_USER_FILTER || hqUserState(u).key === HQ_USER_FILTER)
@@ -407,7 +707,7 @@ function hqUserRows(users, cid) {
       <td class="py-2"><span class="badge ${u.role === 'staff' || u.role === 'roster_only' ? 'badge-gray' : 'badge-blue'}">${esc(ROLE_LABELS[u.role] || u.role)}</span></td>
       <td class="py-2 whitespace-nowrap"><span class="badge ${st.cls}">${st.label}</span>${u.linked ? ' <span class="badge badge-blue">他社連携</span>' : ''}</td>
       <td class="py-2 text-slate-400">${HQ_ADMIN_ROLES.includes(u.role) ? (u.email ? esc(u.email) : '<span class="text-amber-400">未登録</span>') : ''}</td>
-      <td class="py-2 text-slate-400">${u.last_login_at ? dayjs(String(u.last_login_at).replace(' ', 'T')).format('M/D HH:mm') : '-'}</td>
+      <td class="py-2 text-slate-400 whitespace-nowrap">${hqLoginCell(u)}</td>
       <td class="py-2 text-right whitespace-nowrap">${HQ_ADMIN_ROLES.includes(u.role) ? `<button class="text-cyan-400 hover:underline" data-action="hqManageAdmin" data-cid="${Number(cid)}" data-id="${Number(u.user_id)}">管理</button>` : ''}</td>
     </tr>`
   }).join('') || '<tr><td colspan="7" class="py-6 text-center text-slate-400">該当する利用者はいません</td></tr>'
@@ -428,12 +728,29 @@ delegate('hqSaveCompany', (el) => {
   const status = document.getElementById('cd-status')
   const limitRaw = document.getElementById('cd-limit').value.trim()
   if (limitRaw && !(Number.isInteger(Number(limitRaw)) && Number(limitRaw) >= 1)) { hqMarkField('cd-limit', 'ユーザー上限は1以上の整数で入力してください（空欄にすると上限なし）'); return }
+  const nameEl = document.getElementById('cd-name')
+  const name = nameEl.value.trim()
+  if (!name) { hqMarkField('cd-name', '会社名を入力してください'); return }
+  // 会社名を変えると、掲示板・企業間連携の相手の画面の表示も変わる（#558）
+  if (name !== nameEl.dataset.current
+    && !confirm(`会社名を「${nameEl.dataset.current}」から「${name}」に変えます。\n掲示板や企業間連携の相手の画面にも新しい名前が表示されます。よろしいですか？`)) return
   // 停止にすると、その企業の利用者は全員ログアウトされ、ログインと報告用URLも使えなくなる
   if (status.value === 'inactive' && status.dataset.current !== 'inactive'
     && !confirm('この企業を「停止」にします。\nこの企業の管理者・スタッフは全員ログアウトされ、ログインも報告用URLも使えなくなります。よろしいですか？')) return
+  // 停止と再開には理由を残す（#542）
+  let reason = ''
+  if ((status.value === 'inactive') !== (status.dataset.current === 'inactive')) {
+    reason = (prompt(status.value === 'inactive' ? '停止する理由を入力してください（変更履歴に残ります）' : '再開する理由を入力してください（変更履歴に残ります）') || '').trim()
+    if (!reason) { toast('理由を入力しなかったため、保存しませんでした'); return }
+  }
+  const val = id => document.getElementById(id).value
   withSubmitLock(el, async () => {
     try {
       const { data } = await axios.put('/api/hq/companies/' + cid, {
+        company_name: name,
+        trial_ends_at: val('cd-trial-ends'), contract_start_at: val('cd-contract-start'), next_review_at: val('cd-next-review'),
+        contact_name: val('cd-contact-name'), contact_phone: val('cd-contact-phone'), contact_email: val('cd-contact-email'), billing_address: val('cd-billing-address'),
+        reason,
         plan: document.getElementById('cd-plan').value,
         // 空欄は上限なし（null）。0 として保存しない（#254）
         user_limit: limitRaw === '' ? null : Number(limitRaw),
@@ -442,11 +759,15 @@ delegate('hqSaveCompany', (el) => {
         maturity_level: Number(document.getElementById('cd-maturity').value),
         support_memo: document.getElementById('cd-memo').value
       })
-      toast(data.revoked_sessions ? `保存しました（${data.revoked_sessions}件のログインを終了しました）` : '保存しました')
+      toast(data.revoked_sessions ? `保存しました（${data.revoked_sessions}件のログインを終了しました）` : data.changed && !data.changed.length ? '変更はありませんでした' : '保存しました')
       // 保存した内容（上限超過の表示など）を読み直す
       renderCompanyDetail(cid)
     } catch (e) {
-      hqErr(e, e.response ? '保存に失敗しました。もう一度お試しください' : '通信できませんでした。保存されていない可能性があります')
+      const d = e.response && e.response.data
+      const field = d && { company_name: 'cd-name', trial_ends_at: 'cd-trial-ends', contract_start_at: 'cd-contract-start', next_review_at: 'cd-next-review',
+        contact_name: 'cd-contact-name', contact_phone: 'cd-contact-phone', contact_email: 'cd-contact-email', billing_address: 'cd-billing-address' }[d.field]
+      if (field) hqMarkField(field, d.error)
+      else hqErr(e, e.response ? '保存に失敗しました。もう一度お試しください' : '通信できませんでした。保存されていない可能性があります')
     }
   })
 })
