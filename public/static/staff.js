@@ -139,25 +139,98 @@ delegate('retryLoad', () => { ME ? route() : boot() })
 let HOME_SHIFT_ID = null   // ホームで選んだシフト（未選択ならサーバーが選ぶ）
 let HOME_LOADED_DAY = null // ホームを読んだ日（端末の日付）
 
+const HOME_TIMEOUT_MS = 25000
 async function renderHome() {
   loading()
-  let data
-  // 通信に失敗したら、読み込み中のまま止めずに再読み込みのボタンを出す（#182）
-  try { data = (await axios.get('/api/staff/home' + (HOME_SHIFT_ID ? '?shift_id=' + encodeURIComponent(HOME_SHIFT_ID) : ''))).data }
-  catch (e) { showLoadError(e); return }
+  let data, offline = false
+  // 通信に失敗したら、読み込み中のまま止めずに再読み込みのボタンを出す（#182）。
+  // 電波がない場所では、同じ日に読んだホームを出す（押した報告は端末に保存し、通信が戻ってから送る。#427）
+  try { data = (await axios.get('/api/staff/home' + (HOME_SHIFT_ID ? '?shift_id=' + encodeURIComponent(HOME_SHIFT_ID) : ''), { timeout: HOME_TIMEOUT_MS })).data }
+  catch (e) {
+    if (e && !e.response && HOME && HOME_LOADED_DAY === dayjs().format('YYYY-MM-DD')) { data = HOME; offline = true }
+    else { showLoadError(e); return }
+  }
   HOME = data
-  HOME_LOADED_DAY = dayjs().format('YYYY-MM-DD')
+  if (!offline) HOME_LOADED_DAY = dayjs().format('YYYY-MM-DD')
+  await outboxLoad()
+  drawHome(data, offline)
+  if (!offline && outboxQueued().length) outboxFlush()
+}
+// offline: 通信できず、前に読んだホームを出している
+function drawHome(data, offline) {
   $app.innerHTML = `
+    ${offline ? homeOfflineHtml() : ''}
+    <div id="home-outbox">${homeOutboxHtml()}</div>
     ${homeNoticeBannerHtml(data)}
     ${homeConsultBannerHtml(data)}
     ${homeMissedHtml(data)}
-    ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) : homeNoShiftHtml()}
+    ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) + homeNextShiftHtml(data) : homeNoShiftHtml() + homeNextShiftHtml(data)}
     ${homeRecruitHtml()}
     ${homeNoticesHtml(data)}
     ${homeMenuHtml()}`
   applyBadges() // 先に取れていた通知の件数を案内に足す
-  loadHomeRecruit()
+  if (!offline) loadHomeRecruit()
 }
+function homeOfflineHtml() {
+  return `<div class="bg-gray-100 border border-gray-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-gray-700" role="status">
+      <i class="fas fa-plane mr-1"></i>通信できないため、前に読み込んだ内容を表示しています。報告を押すと、押した時刻で端末に保存し、電波が戻ってから送ります
+      <button type="button" class="underline font-bold ml-1" data-action="retryLoad">読み直す</button></div>`
+}
+
+// ---------- 次回の稼働（#278）と前日確認（#176） ----------
+// 今日より後の最初の稼働日のシフト（同じ日に複数あればすべて）。明日のシフトで、会社が前日確認を使っていれば確認のボタンを出す。
+// 『行けなくなった』は相談・連絡を、遅刻・欠勤相談・そのシフト・緊急度『高』を選んだ状態で開く（下書きに入れて開く）
+function homeNextShiftHtml(data) {
+  const list = data.next_shifts || []
+  if (!list.length) return ''
+  const d = list[0].work_date
+  const days = dayjs(d).diff(dayjs(data.today), 'day')
+  const rel = days === 1 ? '明日' : days === 2 ? 'あさって' : days > 0 ? days + '日後' : ''
+  const checks = list.filter(x => x.day_before)
+  const un = checks.filter(x => !x.day_before.confirmed_at)
+  const changed = un.some(x => x.day_before.changed)
+  const lastAt = checks.map(x => x.day_before.confirmed_at).filter(Boolean).sort().pop()
+  const check = !checks.length ? ''
+    : un.length ? `<div class="mt-3 pt-3 border-t border-gray-100" id="day-before-check">
+        <p class="text-sm font-bold text-gray-800"><i class="fas fa-user-check text-blue-600 mr-1"></i>明日の稼働を確認してください</p>
+        <p class="text-xs text-gray-500 mt-0.5">日時・場所を確かめて、${esc(un[0].day_before.deadline)}までに「確認しました」を押してください</p>
+        ${changed ? '<p class="text-xs text-amber-800 bg-amber-50 rounded-lg px-2 py-1 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認の後にシフトが変わりました。もう一度確認してください</p>' : ''}
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          <button type="button" class="btn btn-primary" data-action="homeDayBeforeConfirm" data-ids="${un.map(x => Number(x.shift_id)).join(',')}"><i class="fas fa-check"></i>確認しました</button>
+          <button type="button" class="btn btn-outline" data-action="homeDayBeforeCannot" data-id="${Number(un[0].shift_id)}">行けなくなった</button>
+        </div></div>`
+    : `<p class="text-xs mt-3 text-emerald-700 bg-emerald-50 rounded-lg px-2 py-1.5"><i class="fas fa-check mr-1"></i>明日の稼働を確認済みです${lastAt ? '（' + esc(dayjs(String(lastAt).replace(' ', 'T')).format('M/D HH:mm')) + '）' : ''}
+        <button type="button" class="underline ml-1" data-action="homeDayBeforeCannot" data-id="${Number(checks[0].shift_id)}">行けなくなった場合</button></p>`
+  return `
+    <section class="card p-4 mb-4" id="next-shift">
+      <div class="flex items-center justify-between mb-1">
+        <h2 class="font-bold text-gray-800"><i class="fas fa-calendar-day text-blue-600 mr-1"></i>次回の稼働</h2>
+        <span class="badge badge-blue">${esc(rel ? rel + ' ' : '')}${esc(fmtDate(d))}</span>
+      </div>
+      ${list.map((x, i) => `<div class="${i ? 'mt-2 pt-2 border-t border-gray-100' : ''}">
+        <p class="font-bold text-gray-900">${esc(formatShiftTime(x.start_time, x.end_time))} ${esc(x.project_name)}</p>
+        ${data.multi_company ? `<p class="text-xs ${x.other_company ? 'text-blue-700' : 'text-gray-500'}"><i class="fas fa-building mr-1"></i>${esc(x.company_name)} のシフト</p>` : ''}
+        ${shiftPlaceHtml(x, true)}
+      </div>`).join('')}
+      ${check}
+    </section>`
+}
+delegate('homeDayBeforeConfirm', (el) => withSubmitLock(el, async () => {
+  const ids = String(el.dataset.ids || '').split(',').map(Number).filter(n => n > 0)
+  try {
+    await axios.post('/api/staff/day-before-confirm', { shift_ids: ids })
+    toast('明日の稼働を確認しました。当日は気をつけてお越しください', 3500)
+  } catch (e) {
+    showApiError(e, e && e.response ? '確認できませんでした' : '通信できませんでした。電波の良い場所で、もう一度押してください')
+    if (!e || !e.response) return
+  }
+  renderHome()
+}))
+delegate('homeDayBeforeCannot', (el) => {
+  draftSave('consult', { category: 'absence', shift_id: String(Number(el.dataset.id)), body: '', urgency: 'high' })
+  location.hash = 'consult'
+  toast('遅刻・欠勤相談として、明日のシフトを選びました。理由を書いて送信してください', 5000)
+})
 
 // 募集中のお仕事（#156）。件数だけを後から取り、応募できる日時か承認待ちがあるときだけカードを出す（取れなければ何も出さない）
 function homeRecruitHtml() { return '<div id="home-recruit"></div>' }
@@ -288,6 +361,148 @@ delegate('openMissedReport', (el) => {
   else location.hash = 'attendance'
 })
 
+// ---------- 電波がない場所での報告（#427） ----------
+// 通信できずに送れなかった報告は、押した時刻・位置・写真を端末（IndexedDB）に保存し、通信が戻ったら押した順に送る。
+// 送るときは押した時刻（pressed_at）と押したときに作った一意キー（client_request_id）を付ける。サーバーは時刻の範囲を確かめ、
+// 押した時刻で記録したことを管理者に示す。同じキーの再送は記録済みとして受け付けられる（応答だけが届かなかった場合も二重にならない）。
+// 断られた報告（受付の時間帯を過ぎた・管理者が記録済みなど）は『送れなかった報告』としてホームに出し、打刻履歴からの申請を案内する。
+// 端末に保存できない（プライベートモードなど）ときは、これまでどおりエラーを出す
+const OUTBOX_DB = 'fos-outbox', OUTBOX_STORE = 'reports'
+const OUTBOX_KEEP_DAYS = 7
+const ATTENDANCE_TIMEOUT_MS = 20000, ATTENDANCE_PHOTO_TIMEOUT_MS = 60000
+let OUTBOX = [] // この人の保存中の報告（画面の表示用。outboxLoad で読み直す）
+function newRequestId() {
+  try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID() } catch (e) { }
+  const a = new Uint8Array(16); crypto.getRandomValues(a)
+  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('')
+}
+function outboxOpen() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error('indexedDB なし')); return }
+    const req = indexedDB.open(OUTBOX_DB, 1)
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(OUTBOX_STORE)) req.result.createObjectStore(OUTBOX_STORE, { keyPath: 'id' }) }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+async function outboxTx(mode, fn) {
+  const db = await outboxOpen()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OUTBOX_STORE, mode)
+    const r = fn(tx.objectStore(OUTBOX_STORE))
+    tx.oncomplete = () => { db.close(); resolve(r ? r.result : undefined) }
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error) }
+  })
+}
+// この人の保存中の報告（押した順）。古いもの（ほかの人の分を含む）は消す
+async function outboxAll() {
+  let all = []
+  try { all = (await outboxTx('readonly', st => st.getAll())) || [] } catch (e) { return [] }
+  const old = all.filter(x => !x.pressed_at || Date.now() - x.pressed_at > OUTBOX_KEEP_DAYS * 86400000)
+  for (const x of old) await outboxDelete(x.id)
+  return all.filter(x => !old.includes(x) && ME && x.user_id === ME.user_id).sort((a, b) => a.pressed_at - b.pressed_at)
+}
+async function outboxLoad() { OUTBOX = await outboxAll(); return OUTBOX }
+async function outboxDelete(id) { try { await outboxTx('readwrite', st => st.delete(id)) } catch (e) { } }
+// 保存できたら true
+async function outboxAdd(item) {
+  if (!ME) return false
+  const s = HOME && HOME.shift && HOME.shift.shift_id === item.shift_id ? HOME.shift : null
+  try {
+    await outboxTx('readwrite', st => st.put({ ...item, user_id: ME.user_id, state: 'queued', work_date: s ? s.work_date : null, project_name: s ? s.project_name : '' }))
+  } catch (e) { return false }
+  await outboxLoad()
+  return true
+}
+const outboxQueued = () => OUTBOX.filter(x => x.state === 'queued')
+const outboxLabel = (x) => `${REPORT_LABELS[x.report_type] || x.report_type}（${dayjs(x.pressed_at).format('M/D HH:mm')} に押した${x.project_name ? '・' + x.project_name : ''}）`
+function outboxQueuedNotice(type, pressedAt) {
+  toast(`電波がないため、${REPORT_LABELS[type]}を押した時刻（${dayjs(pressedAt).format('HH:mm')}）で端末に保存しました。電波が戻ると自動で送ります`, 6000)
+}
+function outboxSend(it) {
+  if (it.photo) {
+    const form = new FormData()
+    form.append('shift_id', String(it.shift_id))
+    form.append('report_type', it.report_type)
+    if (it.latitude != null) { form.append('latitude', String(it.latitude)); form.append('longitude', String(it.longitude)) }
+    form.append('photo', new Blob([it.photo.buf], { type: it.photo.type || 'image/jpeg' }), 'attendance.jpg')
+    if (it.photo.taken_at) form.append('photo_taken_at', String(it.photo.taken_at))
+    if (it.photo.source) form.append('photo_source', it.photo.source)
+    form.append('client_request_id', it.id)
+    form.append('pressed_at', String(it.pressed_at))
+    return axios.post('/api/staff/attendance-photo', form, { timeout: ATTENDANCE_PHOTO_TIMEOUT_MS })
+  }
+  return axios.post('/api/staff/attendance', { shift_id: it.shift_id, report_type: it.report_type, latitude: it.latitude, longitude: it.longitude, address: null,
+    client_request_id: it.id, pressed_at: it.pressed_at }, { timeout: ATTENDANCE_TIMEOUT_MS })
+}
+const homeTabActive = () => { const t = (location.hash || '#home').slice(1).split('/')[0]; return !t || t === 'home' }
+// 保存中の報告を押した順に送る。通信できない・サーバーの障害の間は、順序を保つため後の報告も送らない。
+// noRedraw: 新しい報告を送る前に呼ぶとき（送った後にホームを読み直すので、ここでは読み直さない）
+let OUTBOX_FLUSHING = null
+function outboxFlush(manual, noRedraw) {
+  if (OUTBOX_FLUSHING) return OUTBOX_FLUSHING
+  if (!ME) return Promise.resolve()
+  OUTBOX_FLUSHING = (async () => {
+    const sent = [], failed = []
+    let waiting = false
+    for (const it of (await outboxAll()).filter(x => x.state === 'queued')) {
+      try { await outboxSend(it); await outboxDelete(it.id); sent.push(it) }
+      catch (e) {
+        const st = e && e.response && e.response.status
+        if (!st || st >= 500 || st === 401) { waiting = true; break }
+        try { await outboxTx('readwrite', x => x.put({ ...it, state: 'failed', error: attendanceErrorMessage(e, it.report_type), photo: null })) } catch (e2) { }
+        failed.push(it)
+      }
+    }
+    await outboxLoad()
+    if (sent.length) toast(`通信が戻ったので、端末に保存した報告を送信しました（${sent.map(x => REPORT_LABELS[x.report_type]).join('・')}）`, 5000)
+    if (failed.length) toast('端末に保存した報告のうち、送れなかったものがあります。ホームで理由を確かめてください', 6000)
+    else if (manual && waiting) toast('まだ通信できません。電波の良い場所で、もう一度お試しください')
+    if ((sent.length || failed.length) && homeTabActive() && !noRedraw) renderHome()
+    else { const box = document.getElementById('home-outbox'); if (box) box.innerHTML = homeOutboxHtml() }
+  })().finally(() => { OUTBOX_FLUSHING = null })
+  return OUTBOX_FLUSHING
+}
+window.addEventListener('online', () => { if (ME) outboxFlush() })
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && outboxQueued().length) outboxFlush() })
+setInterval(() => { if (ME && !OUTBOX_FLUSHING) outboxLoad().then(() => { if (outboxQueued().length && navigator.onLine !== false) outboxFlush() }) }, 60 * 1000)
+// 保存中・送れなかった報告の案内（ホームの先頭）
+function homeOutboxHtml() {
+  const q = outboxQueued(), f = OUTBOX.filter(x => x.state === 'failed')
+  if (!q.length && !f.length) return ''
+  return `
+    ${q.length ? `<section class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="status">
+      <p class="font-bold"><i class="fas fa-cloud-arrow-up mr-1"></i>まだ送れていない報告が${q.length}件あります</p>
+      <p class="text-xs mt-0.5">押した時刻で端末に保存しています。電波が戻ると自動で送ります（アプリを閉じても、次に開いたときに送ります）</p>
+      <ul class="text-xs mt-1 list-disc ml-5">${q.map(x => `<li>${esc(outboxLabel(x))}</li>`).join('')}</ul>
+      <button type="button" class="btn btn-outline text-xs mt-2" data-action="outboxSendNow"><i class="fas fa-rotate-right"></i>今すぐ送る</button>
+    </section>` : ''}
+    ${f.length ? `<section class="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-800" role="alert">
+      <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>端末に保存した報告を送れませんでした</p>
+      ${f.map(x => `<div class="mt-2 pt-2 border-t border-red-100">
+        <p class="text-xs font-bold">${esc(outboxLabel(x))}</p>
+        <p class="text-xs">${esc(x.error || '')}</p>
+        <div class="flex gap-3 mt-1"><a href="#attendance" class="text-xs underline">打刻履歴から申請する</a>
+          <button type="button" class="text-xs underline" data-action="outboxDismiss" data-id="${esc(x.id)}">閉じる</button></div>
+      </div>`).join('')}
+    </section>` : ''}`
+}
+delegate('outboxSendNow', (el) => withSubmitLock(el, () => outboxFlush(true)))
+delegate('outboxDismiss', async (el) => {
+  await outboxDelete(el.dataset.id)
+  await outboxLoad()
+  const box = document.getElementById('home-outbox'); if (box) box.innerHTML = homeOutboxHtml()
+})
+// ホームの報告に、保存中（未送信）の報告を足す（押した報告は押せないようにし、後の報告を押せるようにする）
+function homeReportsWithQueued(data) {
+  const r = { ...((data && data.reports) || {}) }
+  if (!data || !data.shift) return r
+  for (const x of outboxQueued()) {
+    if (x.shift_id === data.shift.shift_id && !r[x.report_type]) r[x.report_type] = { report_type: x.report_type, reported_at: dayjs(x.pressed_at).format('YYYY-MM-DD HH:mm:ss'), queued: true }
+  }
+  return r
+}
+
 // 報告の状態（サーバーの checkReportable と同じ考え方）
 //   done: 報告済み / pending: 打刻修正を申請中（承認待ち。押せない）/ skipped: 後の報告が済んでいて押せない（打刻修正の申請で追加する）
 //   open: 押せる（前の報告を飛ばして押すこともできる）。open の先頭が『次の報告』
@@ -329,13 +544,17 @@ function homeDoneSubHtml(x, workDate, noBreak) {
   if (Number(x.early_leave_minutes) > 0) marks.push(`<span class="badge badge-yellow">予定より${Number(x.early_leave_minutes)}分早い</span>`)
   if (x.entry_method === 'proxy') marks.push('<span class="badge badge-purple">管理者が入力</span>')
   if (x.corrected) marks.push('<span class="badge badge-gray">修正済み</span>')
+  // 電波がない場所で押して、後から送った報告（#427）
+  if (x.device_time) marks.push(`<span class="badge badge-gray">押した時刻で記録${x.received_at ? '（送信 ' + esc(formatReportedTime(x.received_at, workDate)) + '）' : ''}</span>`)
   return `報告済み ${esc(formatReportedTime(x.reported_at, workDate))}${marks.length ? ' ' + marks.join(' ') : ''}`
 }
 
 // 報告ボタン（勤怠報告と日報）
 function homeReportButtonsHtml(data) {
   const s = data.shift
-  const r = data.reports
+  // 端末に保存中（未送信）の報告も、押した報告として扱う（#427）
+  const r = homeReportsWithQueued(data)
+  const queuedAny = Object.values(r).some(x => x && x.queued)
   const pend = data.pending_corrections || {}
   // 提出設定（案件・スタッフ・シフトごと）で必要な報告だけを表示する
   const order = (data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out'])
@@ -344,7 +563,7 @@ function homeReportButtonsHtml(data) {
   const nextType = order.find(t => states[t] === 'open')
   const nextIdx = nextType ? order.indexOf(nextType) : -1
   const skipped = order.filter(t => states[t] === 'skipped')
-  const allDone = nextIdx === -1 && !skipped.length && !order.some(t => states[t] === 'pending') && (!dailyRequired || data.daily_report_done)
+  const allDone = nextIdx === -1 && !skipped.length && !queuedAny && !order.some(t => states[t] === 'pending') && (!dailyRequired || data.daily_report_done)
   // ほかのシフトで、報告は済んだが日報が未提出のもの（1日に複数のシフトがある場合）
   const pendingDaily = (data.today_shifts || []).filter(x => x.shift_id !== s.shift_id && x.attendance_done && x.daily_report_required && !x.daily_report_done)
   const noBreak = isNoBreak(r)
@@ -364,21 +583,23 @@ function homeReportButtonsHtml(data) {
       <div class="space-y-2.5">
         ${order.map((t, i) => {
           const st = states[t]
-          const done = st === 'done'
+          const queued = st === 'done' && !!r[t].queued
+          const done = st === 'done' && !queued
           const isNext = i === nextIdx
           const open = st === 'open'
           const photoOn = data.photo_required_attendance !== false
-          const sub = done ? homeDoneSubHtml(r[t], s.work_date, noBreak && (t === 'break_start' || t === 'break_end'))
+          const sub = queued ? esc(`未送信（${formatReportedTime(r[t].reported_at, s.work_date)} に押した報告を端末に保存しています。電波が戻ると自動で送ります）`)
+            : done ? homeDoneSubHtml(r[t], s.work_date, noBreak && (t === 'break_start' || t === 'break_end'))
             : esc(st === 'pending' ? `打刻修正を申請中 ${formatReportedTime(pend[t], s.work_date)}（承認待ち）`
               : st === 'skipped' ? '未報告（打刻履歴から追加を申請してください）'
               : isNext ? 'タップして報告' : 'タップして報告（前の報告を飛ばします）')
           return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${open ? '' : 'disabled'} data-action="homeReport" data-type="${esc(t)}" data-shift-id="${Number(s.shift_id)}">
-            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : st === 'pending' ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400'}">
-              <i class="fas ${done ? 'fa-check' : st === 'pending' ? 'fa-hourglass-half' : REPORT_ICONS[t]}"></i>
+            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : st === 'pending' || queued ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400'}">
+              <i class="fas ${done ? 'fa-check' : queued ? 'fa-cloud-arrow-up' : st === 'pending' ? 'fa-hourglass-half' : REPORT_ICONS[t]}"></i>
             </span>
             <span class="flex-1">
-              <span class="block font-bold ${done ? 'text-emerald-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
-              <span class="block text-xs ${done ? 'text-emerald-600' : st === 'pending' ? 'text-amber-700' : 'text-gray-400'}">
+              <span class="block font-bold ${done ? 'text-emerald-700' : queued ? 'text-amber-700' : isNext ? 'text-blue-700' : 'text-gray-500'}">${REPORT_LABELS[t]}</span>
+              <span class="block text-xs ${done ? 'text-emerald-600' : st === 'pending' || queued ? 'text-amber-700' : 'text-gray-400'}">
                 ${sub}
                 ${t === 'check_in' && open ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
                 ${t === 'check_out' && open && photoOn ? ' (写真が必要です)' : ''}
@@ -478,7 +699,7 @@ delegate('homeReport', (el) => {
   const type = el.dataset.type, shiftId = Number(el.dataset.shiftId)
   if (HOME.tentative && !confirm(TENTATIVE_CONFIRM)) return
   const order = HOME.required_attendance || []
-  const reports = HOME.reports || {}
+  const reports = homeReportsWithQueued(HOME)
   const states = homeReportStates(order, reports, HOME.pending_corrections || {}, HOME.carryover, HOME.report_window_open)
   const skipping = order.filter(t => states[t] === 'open' && REPORT_ORDER.indexOf(t) < REPORT_ORDER.indexOf(type))
   if (skipping.length && !confirm(`${skipping.map(t => REPORT_LABELS[t]).join('・')} が未報告です。\n飛ばして${REPORT_LABELS[type]}を報告すると、飛ばした報告はこの画面から押せなくなります（打刻履歴から打刻漏れの追加を申請してください）。\n報告しますか？`)) return
@@ -588,25 +809,30 @@ window.submitAttendance = async function (type, shiftId, button) {
   // 送信中はボタンに『送信中』を出す（#182）
   const sub = button && button.querySelector('.flex-1 .text-xs')
   if (sub) sub.textContent = '送信中...'
+  // 押した時刻と一意キー。通信できずに送れなかったら、押した時刻で端末に保存して、通信が戻ってから送る（#427）
+  const pressedAt = Date.now(), reqId = newRequestId()
+  let queued = false
   try {
     await withSubmitLock(button, async () => {
       let pos = null
       if (type === 'check_in') { toast('位置情報を取得しています...'); pos = await getPositionOrNull() }
+      // 前に保存した報告があれば先に送る（後の報告が先に記録されて、前の報告が順序の確認で断られないように）
+      if (outboxQueued().length) await outboxFlush(false, true)
+      const body = { shift_id: shiftId, report_type: type, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, address: null, client_request_id: reqId }
       try {
-        const res = await axios.post('/api/staff/attendance', {
-          shift_id: shiftId, report_type: type,
-          latitude: pos ? pos.coords.latitude : null,
-          longitude: pos ? pos.coords.longitude : null,
-          address: null
-        })
+        const res = await axios.post('/api/staff/attendance', body, { timeout: ATTENDANCE_TIMEOUT_MS })
         showAttendanceResult(type, res.data, !pos)
       } catch (e) {
+        if (e && !e.response && await outboxAdd({ id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: body.latitude, longitude: body.longitude, photo: null })) {
+          queued = true; outboxQueuedNotice(type, pressedAt); return
+        }
         toast(attendanceErrorMessage(e, type), 5000)
       }
     })
   } finally {
     ATTENDANCE_SENDING = false
   }
+  if (queued && HOME) { drawHome(HOME, true); return }
   renderHome()
 }
 
@@ -801,25 +1027,39 @@ async function compressImage(file) {
 
 window.submitPhotoAttendance = async function () {
   if (!pendingPhoto.blob) { setPhotoError('写真を選択してください'); return }
-  const { type, shiftId, blob } = pendingPhoto
+  const { type, shiftId, blob, takenAt, source } = pendingPhoto
+  // 押した時刻と一意キー（#427。通信できなければ写真ごと端末に保存して、通信が戻ってから送る）
+  const pressedAt = Date.now(), reqId = newRequestId()
   const btn = document.getElementById('photo-submit-btn')
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:1rem;height:1rem;border-width:2px"></span> 送信中...' }
 
   const send = async (pos) => {
+    if (outboxQueued().length) await outboxFlush(false, true) // 前に保存した報告を先に送る（submitAttendance と同じ）
     const form = new FormData()
     form.append('shift_id', String(shiftId))
     form.append('report_type', type)
     if (pos) { form.append('latitude', String(pos.coords.latitude)); form.append('longitude', String(pos.coords.longitude)) }
     form.append('photo', blob, 'attendance.jpg')
     // 写真のファイルの日時・選び方（#418）
-    if (pendingPhoto.takenAt) form.append('photo_taken_at', String(pendingPhoto.takenAt))
-    if (pendingPhoto.source) form.append('photo_source', pendingPhoto.source)
+    if (takenAt) form.append('photo_taken_at', String(takenAt))
+    if (source) form.append('photo_source', source)
+    form.append('client_request_id', reqId)
     try {
-      const res = await axios.post('/api/staff/attendance-photo', form)
+      const res = await axios.post('/api/staff/attendance-photo', form, { timeout: ATTENDANCE_PHOTO_TIMEOUT_MS })
       closeModal()
       showAttendanceResult(type, res.data, !pos)
       renderHome()
     } catch (e) {
+      if (e && !e.response) {
+        let buf = null
+        try { buf = await blob.arrayBuffer() } catch (e2) { buf = null }
+        if (buf && await outboxAdd({ id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null,
+          photo: { buf, type: blob.type || 'image/jpeg', taken_at: takenAt || null, source: source || null } })) {
+          closeModal(); outboxQueuedNotice(type, pressedAt)
+          if (HOME) drawHome(HOME, true)
+          return
+        }
+      }
       // すでに報告済み（前の送信が届いていた・管理者が記録した）・設定の変更などで断られたら、閉じて最新の状態を出す（#182 #426）
       if (attendanceNeedsReload(e)) {
         closeModal(); toast(attendanceErrorMessage(e, type), 5000); renderHome(); return

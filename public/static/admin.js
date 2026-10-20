@@ -273,7 +273,7 @@ window.updateProjectPhotoRequired = async function (pid, override) {
 const DASH_SHIFTS = new Map()
 const DASH_RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
 // 電話の記録（フォロー履歴）に書く、何の未報告で電話したか（#343）
-const DASH_CALL_LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_end: '勤務終了・退店の報告', daily_report: '日報' }
+const DASH_CALL_LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_end: '勤務終了・退店の報告', daily_report: '日報', day_before: '前日確認' }
 // 本日のシフトの表の絞り込み（案件・状態）。再読み込みしても保つ（#488 #348）
 const DASH_FILTER = { project: '', only: '' }
 let DASH_DATA = null
@@ -309,6 +309,8 @@ async function renderDashboard() {
   // 未報告の一覧・日報未提出の一覧には、本日の一覧にないシフトも入る
   for (const u of Object.values(un).flat()) if (!DASH_SHIFTS.has(u.shift_id)) DASH_SHIFTS.set(u.shift_id, { shift_id: u.shift_id, staff_id: u.staff_id, staff_name: u.name, project_id: u.project_id, project_name: u.project, work_date: u.work_date, start_time: u.start_time, end_time: u.end_time })
   for (const r of data.missing_daily_reports || []) if (!DASH_SHIFTS.has(r.shift_id)) DASH_SHIFTS.set(r.shift_id, { shift_id: r.shift_id, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time })
+  // 明日のシフト（前日確認の一覧。#176）
+  for (const r of (data.day_before && data.day_before.shifts) || []) if (!DASH_SHIFTS.has(r.shift_id)) DASH_SHIFTS.set(r.shift_id, { shift_id: r.shift_id, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time })
   if (DASH_FILTER.project && !data.shifts.some(s => String(s.project_id) === DASH_FILTER.project)) DASH_FILTER.project = ''
   const kpi = (label, value, icon, color, sub) => `
     <div class="card p-4 min-w-0">
@@ -447,6 +449,8 @@ async function renderDashboard() {
       </section>
     </div>
 
+    ${dashDayBeforeHtml(data)}
+
     <div class="grid lg:grid-cols-2 gap-4 mb-5">
       <section class="card p-4">
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-hand-holding-heart text-amber-500 mr-1"></i>要フォロースタッフ</h3>
@@ -547,7 +551,9 @@ function dashReportChip(s, t) {
     if (r.status === 'late') { cls = 'badge-red'; note = r.late_minutes ? ` 遅刻${Number(r.late_minutes)}分` : ' 遅刻' }
     else if (r.status === 'no_location') { cls = 'bg-orange-100 text-orange-700'; note = ' 位置なし' }
     else if (Number(r.early_leave_minutes) > 0) { cls = 'badge-yellow'; note = ` 早退${Number(r.early_leave_minutes)}分` }
-    return `<span class="badge ${cls} text-[10px]">${label} ${esc(nextDay + time)}${esc(note)}</span>`
+    // 電波がない場所で押した時刻で記録した報告（#427）。受け取った時刻を添える
+    const dev = r.device_time ? ` title="端末で押した時刻で記録（受信 ${esc(String(r.received_at || '').slice(5, 16).replace('-', '/'))}）"` : ''
+    return `<span class="badge ${cls} text-[10px]"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-mobile-screen-button"></i>端末時刻' : ''}</span>`
   }
   if ((s.pending_types || []).includes(t)) return `<span class="badge badge-yellow text-[10px]" title="打刻修正の申請中">${label} 申請中</span>`
   if ((s.overdue_types || []).includes(t)) return `<span class="badge bg-white text-red-600 border border-red-300 text-[10px]" title="予定の時刻を過ぎても報告がありません">${label} 未報告</span>`
@@ -614,6 +620,71 @@ delegate('dashCallLog', el => {
     toast('フォロー履歴に電話の記録を追加しました')
   })
 })
+
+// ---------- ダッシュボード: 明日のシフトの前日確認（#176）----------
+// スタッフがアプリで『明日の稼働を確認しました』を押したかを、明日のシフトごとに出す。未確認の人を上にし、電話番号と、
+// 電話で確かめたときに管理者が確認済みにするボタンを置く。確認の後にシフトが変わったものは未確認に戻る（『確認後に変更』）
+function dashDayBeforeHtml(data) {
+  const d = data.day_before || {}
+  if (!d.enabled) return `<section class="card p-3 mb-5 flex items-center justify-between flex-wrap gap-2" id="dash-day-before">
+      <p class="text-sm text-gray-700"><i class="fas fa-user-check text-blue-600 mr-1"></i>前日確認: <span class="badge badge-gray">使っていません</span>
+        <span class="text-[11px] text-gray-500 ml-1">スタッフアプリで前日に『明日の稼働を確認しました』を押してもらい、未確認の人だけに連絡できます</span></p>
+      <button type="button" class="text-xs text-blue-600 underline" data-action="showDayBeforeSetting">設定を変更…</button>
+    </section>`
+  const list = d.shifts || []
+  const un = list.filter(s => !s.confirmed_at), done = list.filter(s => s.confirmed_at)
+  const md = dayjs(d.date).format('M/D') + `（${'日月火水木金土'[dayjs(d.date).day()]}）`
+  const row = (s) => `
+    <div class="rounded-lg ${s.confirmed_at ? 'bg-gray-50' : d.past_deadline ? 'bg-red-50' : 'bg-amber-50'} text-xs">
+      <div class="flex items-center gap-2 px-2 py-1 flex-wrap">
+        <span class="text-gray-500 whitespace-nowrap">${esc(formatShiftTime(s.start_time, s.end_time))}</span>
+        <a href="#staff/${Number(s.staff_id)}" class="font-bold text-gray-800 hover:underline">${esc(s.staff_name)}</a>
+        ${s.has_login ? '' : '<span class="badge badge-gray text-[10px]" title="アプリのログインがないため、アプリでは確認できません">ログインなし</span>'}
+        ${s.changed ? '<span class="badge badge-yellow text-[10px]" title="確認の後にシフトの日時・案件が変わりました">確認後に変更</span>' : ''}
+        <span class="text-gray-500">${esc(s.project_name)}</span>
+        ${s.confirmed_at ? `<span class="ml-auto text-emerald-700 whitespace-nowrap"><i class="fas fa-check mr-0.5"></i>${esc(String(s.confirmed_at).slice(11, 16))} ${s.confirmed_by_name ? esc(s.confirmed_by_name) + 'が記録' : '本人が確認'}</span>`
+          : `<button type="button" class="ml-auto text-blue-600 hover:underline whitespace-nowrap" data-action="dashDayBeforeConfirm" data-id="${Number(s.shift_id)}" title="電話などで本人に確かめたときに使います">確認済みにする</button>`}
+      </div>
+      ${s.confirmed_at ? '' : dashPhoneLine(s.shift_id, s.staff_phone, 'day_before')}
+    </div>`
+  return `<section class="card p-4 mb-5" id="dash-day-before">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h3 class="font-bold text-gray-800"><i class="fas fa-user-check text-blue-600 mr-1"></i>明日 ${esc(md)} のシフトの前日確認
+          <span class="badge ${d.unconfirmed_staff_count ? (d.past_deadline ? 'badge-red' : 'badge-yellow') : 'badge-green'} ml-1">${d.unconfirmed_staff_count ? '未確認 ' + Number(d.unconfirmed_staff_count) + '名' : list.length ? '全員確認済み' : 'シフトなし'}</span>
+          <span class="text-xs font-normal text-gray-500 ml-1">${Number(d.staff_count) || 0}名・締切 ${esc(d.deadline)}${d.past_deadline ? '（過ぎています）' : ''}</span></h3>
+        <button type="button" class="text-xs text-blue-600 underline" data-action="showDayBeforeSetting">設定を変更…</button>
+      </div>
+      ${un.length ? `<div class="space-y-1 max-h-72 overflow-y-auto">${un.map(row).join('')}</div>` : list.length ? '<p class="text-xs text-gray-400">明日のシフトの人は全員確認済みです <i class="fas fa-check text-emerald-500"></i></p>' : '<p class="text-xs text-gray-400">明日のシフトはありません</p>'}
+      ${done.length ? `<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">確認済み（${done.length}件）</summary>
+        <div class="space-y-1 mt-1 max-h-60 overflow-y-auto">${done.map(row).join('')}</div></details>` : ''}
+      <p class="text-[11px] text-gray-400 mt-2">スタッフはアプリのホームで、前日に『明日の稼働を確認しました』を押します。締切を過ぎても未確認の人がいると、ToDo に出ます</p>
+    </section>`
+}
+delegate('dashDayBeforeConfirm', el => withSubmitLock(el, async () => {
+  const s = DASH_SHIFTS.get(Number(el.dataset.id)) || {}
+  if (!confirm(`${s.staff_name || ''}さんの明日のシフトを、確認済みにしますか？\n電話などで本人に稼働を確かめたときに使います`)) return
+  try { await axios.post(`/api/admin/shifts/${Number(el.dataset.id)}/day-before-confirm`) } catch (e) { showApiError(e, '確認済みにできませんでした'); return }
+  toast('確認済みにしました'); renderDashboard()
+}))
+// 前日確認の設定（会社全体。API は GET/PUT /admin/report-settings/day-before-check）
+delegate('showDayBeforeSetting', async () => {
+  let s
+  try { s = (await axios.get('/api/admin/report-settings/day-before-check')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-user-check text-blue-600 mr-1"></i>前日確認</h3>
+    <p class="text-xs text-gray-500 mb-3">使うと、スタッフアプリのホームに明日のシフトの『明日の稼働を確認しました』のボタンを出し、ダッシュボードに明日のシフトの確認状況を出します。締切を過ぎても未確認の人がいると、ToDo に出します。</p>
+    <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" id="dbc-enabled" class="w-4 h-4" ${s.enabled ? 'checked' : ''}>前日確認を使う</label>
+    <label class="text-sm text-gray-600 block mb-1" for="dbc-deadline">確認の締切（前日の時刻）</label>
+    <input id="dbc-deadline" type="time" class="inp" value="${esc(s.deadline || '18:00')}">
+    <button class="btn btn-primary w-full mt-4" data-action="saveDayBeforeSetting">保存する</button>`)
+})
+delegate('saveDayBeforeSetting', el => withSubmitLock(el, async () => {
+  const enabled = document.getElementById('dbc-enabled').checked
+  const deadline = String(document.getElementById('dbc-deadline').value || '').slice(0, 5)
+  if (!/^\d{2}:\d{2}$/.test(deadline)) { toast('締切の時刻を入力してください'); return }
+  try { await axios.put('/api/admin/report-settings/day-before-check', { enabled, deadline }) } catch (e) { showApiError(e, '保存できませんでした'); return }
+  closeModal(); toast(enabled ? `前日確認を使います（締切 ${deadline}）` : '前日確認を使わないようにしました'); renderDashboard()
+}))
 
 // ---------- ダッシュボード: 管理者ToDo（#487）----------
 // 『対応済み』『あとで（明日まで）』で ToDo を隠す。隠した ToDo は下にたたんで出し、だれがいつ隠したかを示して元に戻せる。

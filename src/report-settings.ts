@@ -205,6 +205,59 @@ export function reportedAtMinute(now: string): string {
   return now.slice(0, 16) + ':00'
 }
 
+// ---------- 電波がない場所で押した報告（#427） ----------
+// アプリは通信に失敗した報告を端末に保存し、通信が戻ってから押した時刻（pressed_at。端末の時計のエポックミリ秒）を付けて送る。
+// 端末の時計は本人が変えられるので、次の範囲だけを受け付け、記録には time_source='device' の印と受け取った時刻を残す:
+//   ・受け取った時刻より DEVICE_TIME_MAX_AHEAD_MINUTES 分を超えて先の時刻は受け付けない（端末の時計が進んでいる）
+//   ・受け取った時刻から DEVICE_TIME_MAX_DELAY_MINUTES 分より前に押したものは受け付けない（打刻修正の申請で直す）
+//   ・報告の受付時間帯（reportableWindow）と、記録済みの前の報告との順序は、押した時刻で確かめる（api.ts の staffReportTime）
+// 押した時刻が受け取った時刻と同じ分（か少し先）なら、これまでどおり受け取った時刻で記録する
+export const DEVICE_TIME_MAX_AHEAD_MINUTES = 2
+export const DEVICE_TIME_MAX_DELAY_MINUTES = 12 * 60
+const CLIENT_REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/
+// 画面が押すたびに作る一意キー（形が正しくなければ使わない）
+export function clientRequestId(v: any): string | null {
+  return typeof v === 'string' && CLIENT_REQUEST_ID_RE.test(v) ? v : null
+}
+const jstOfEpoch = (ms: number) => new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+// pressed: 端末で押した時刻（JST。送られていなければ null）、adopt: 記録の時刻に使うか
+export function deviceReportTime(raw: any, now: string): { pressed: string | null; adopt: boolean } | Ng {
+  if (raw == null || raw === '') return { pressed: null, adopt: false }
+  const ms = Number(raw)
+  if (!Number.isFinite(ms) || ms <= 0 || ms > 8.64e15) return { error: '押した時刻が正しくありません', status: 400 }
+  const pressed = jstOfEpoch(Math.floor(ms / 1000) * 1000)
+  if (minutesFromTo(now, pressed) > DEVICE_TIME_MAX_AHEAD_MINUTES) {
+    return { error: '端末の時計が進んでいるため、押した時刻で記録できません。端末の日時の設定を確かめてから、もう一度報告してください', status: 400 }
+  }
+  if (minutesFromTo(pressed, now) > DEVICE_TIME_MAX_DELAY_MINUTES) {
+    return { error: `押してから${DEVICE_TIME_MAX_DELAY_MINUTES / 60}時間を過ぎたため、押した時刻では記録できません。打刻履歴から打刻漏れの追加を申請してください`, status: 400 }
+  }
+  return { pressed, adopt: reportedAtMinute(pressed) < reportedAtMinute(now) }
+}
+
+// ---------- 前日確認（#176） ----------
+// スタッフが前日に『明日の稼働を確認しました』を押す（shifts.day_before_confirmed_at）。会社の設定（companies.settings_json の day_before_check）:
+//   enabled: 使うか（既定は使わない。使うとスタッフのホームに確認のボタン、ダッシュボードに明日のシフトの確認状況を出す）
+//   deadline: 確認の締切（前日の 'HH:MM'。既定 18:00）。過ぎても未確認の人がいれば、ダッシュボードの ToDo に出す
+export type DayBeforeSettings = { enabled: boolean; deadline: string }
+export const DAY_BEFORE_DEFAULT_DEADLINE = '18:00'
+const isHm = (v: any) => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v)
+export function dayBeforeSettings(settingsJson: any): DayBeforeSettings {
+  let v: any = null
+  try { v = JSON.parse(settingsJson || '{}').day_before_check } catch { }
+  return { enabled: !!(v && v.enabled === true), deadline: v && isHm(v.deadline) ? v.deadline : DAY_BEFORE_DEFAULT_DEADLINE }
+}
+// 確認したときのシフトの内容。確認の後に日時・案件・担当が変わったら合わなくなる（未確認に戻る）
+export function dayBeforeKey(s: { work_date: any; start_time: any; end_time: any; project_id: any; staff_id: any }): string {
+  return `${s.work_date} ${String(s.start_time).slice(0, 5)}-${String(s.end_time).slice(0, 5)} p${s.project_id} s${s.staff_id}`
+}
+// 確認済みの日時（確認の後にシフトが変わったものは null）と、確認の後に変わったか
+export function dayBeforeState(s: any): { confirmed_at: string | null; changed: boolean } {
+  if (!s.day_before_confirmed_at) return { confirmed_at: null, changed: false }
+  const same = s.day_before_confirmed_key === dayBeforeKey(s)
+  return { confirmed_at: same ? s.day_before_confirmed_at : null, changed: !same }
+}
+
 // ---------- 遅刻・早退の判定（#219 #497） ----------
 // 報告を書き込むとき（アプリ・写真付き・報告用URL・代理入力。打刻修正の承認でも）にこの関数で判定し、
 // attendance_reports の status（'late'）・late_minutes・early_leave_minutes に保存する。集計・画面は保存された値を読む
@@ -577,7 +630,25 @@ function parseIdList(v: any): number[] | null {
   return [...new Set(v.map(Number))].filter(n => Number.isInteger(n) && n > 0)
 }
 function todayJST(): string { return nowJST().slice(0, 10) }
-const TOO_MANY = '保存に失敗しました。設定は変更されていません。対象が多い場合は、スタッフを分けて実行してください'
+
+// 前日確認の設定（#176）。ほかの会社設定を上書きしないよう、この項目だけを書き換える
+reportSettingsApi.get('/report-settings/day-before-check', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json(dayBeforeSettings(row?.settings_json))
+})
+reportSettingsApi.put('/report-settings/day-before-check', async (c) => {
+  const u = c.get('user')
+  const b = await c.req.json().catch(() => ({} as any))
+  if (typeof b.enabled !== 'boolean') return c.json({ error: '使うかどうかを指定してください' }, 400)
+  if (!isHm(b.deadline)) return c.json({ error: '締切の時刻は 00:00〜23:59 で入力してください' }, 400)
+  const v = { enabled: b.enabled, deadline: b.deadline }
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.day_before_check', json(?)) WHERE company_id = ?`)
+    .bind(JSON.stringify(v), u.company_id).run()
+  return c.json({ ok: true, ...v })
+})
+
+const TOO_MANY ='保存に失敗しました。設定は変更されていません。対象が多い場合は、スタッフを分けて実行してください'
 
 // 案件一覧（終了した案件は include_closed=1 で表示）。
 // 個別設定のある人数と、OFF の報告がある在籍中の所属スタッフの人数も返す（#446）

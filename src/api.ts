@@ -23,6 +23,8 @@ import { loginEmailVerifyEmail } from './email-templates/login-email'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { dailyReportRequiredSql } from './report-settings'
 import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-settings'
+// 前日確認（#176）と、電波がない場所で押した報告の時刻（#427）
+import { clientRequestId, dayBeforeKey, dayBeforeSettings, dayBeforeState, deviceReportTime } from './report-settings'
 import { chunk } from './lib/d1-chunk'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
@@ -1258,6 +1260,30 @@ const STAFF_SHIFT_PLACE_COLUMNS = `si.site_name, si.address AS site_address, si.
 const STAFF_SHIFT_PLACE_JOINS = `LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     LEFT JOIN shift_slots sl ON sl.slot_id = s.slot_id AND sl.company_id = s.company_id`
 
+// 次回の稼働（#278）: 今日より後の最初の稼働日の勤務（確定・代打。同一人物の全所属企業）。同じ日に複数あれば開始時刻順に HOME_NEXT_MAX 件まで。
+// 前日確認（#176）: シフトの会社が前日確認を使っていれば、明日のシフトに確認の状態を付ける（確認の後にシフトが変わったものは未確認）
+const HOME_NEXT_MAX = 5
+async function homeLoadNextShifts(db: D1Database, u: any, personRows: any[], personIds: number[], today: string) {
+  const inIds = personIds.map(() => '?').join(','), inSt = WORKING_SHIFT_STATUSES.map(() => '?').join(',')
+  const rows = (await db.prepare(`
+    SELECT s.*, p.project_name, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
+    FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
+    ${STAFF_SHIFT_PLACE_JOINS}
+    WHERE s.staff_id IN (${inIds}) AND s.status IN (${inSt})
+      AND s.work_date = (SELECT MIN(work_date) FROM shifts WHERE staff_id IN (${inIds}) AND status IN (${inSt}) AND work_date > ?)
+    ORDER BY s.start_time, s.shift_id LIMIT ${HOME_NEXT_MAX}`).bind(...personIds, ...WORKING_SHIFT_STATUSES, ...personIds, ...WORKING_SHIFT_STATUSES, today).all()).results as any[]
+  const tomorrow = addDays(today, 1)
+  return rows.map(s => {
+    const owner = personRows.find(r => r.staff_id === s.staff_id)
+    const cfg = dayBeforeSettings(owner ? owner.settings_json : u.settings_json)
+    const st = dayBeforeState(s)
+    return {
+      ...staffShiftView({ ...s, company_name: s.shift_company_name, other_company: s.company_id !== u.company_id }),
+      day_before: cfg.enabled && s.work_date === tomorrow ? { deadline: cfg.deadline, confirmed_at: st.confirmed_at, changed: st.changed } : null,
+    }
+  })
+}
+
 // シフト: 本日のシフトと、前日に始まった日をまたぐシフト（同一人物の全所属企業。欠勤を除く）
 async function homeLoadShifts(db: D1Database, personIds: number[], today: string): Promise<any[]> {
   const rows = (await db.prepare(`
@@ -1304,12 +1330,15 @@ async function homeLoadReports(db: D1Database, shifts: any[]) {
     out.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {}, pending_corrections: {} })
   }
   // 遅延・位置不明（status・late_minutes）、早退の分数、打刻の方法（代理入力の区別・押し間違いの取消の可否）もボタンに出す（#347 #327 #323）
-  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id
+  // 電波がない場所で押して後から送った報告は、押した時刻で記録したこと（device_time）と受け取った時刻も出す（#427）
+  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id,
+      time_source, received_at
     FROM attendance_reports WHERE shift_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results as any[]
   for (const r of rows) {
     const o = out.get(r.shift_id)
     if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status, late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
-      entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null }
+      entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null,
+      device_time: r.time_source === 'device', received_at: r.time_source === 'device' ? r.received_at : null }
   }
   const pend = (await db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND status = 'pending'`).bind(...ids).all()).results as any[]
   for (const r of pend) { const o = out.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
@@ -1421,6 +1450,7 @@ api.get('/staff/home', async (c) => {
 
   const noticeInfo = await homeLoadNotices(db, u, personRows)
   const replied = await homeLoadConsultations(db, u)
+  const nextShifts = await homeLoadNextShifts(db, u, personRows, personIds, today)
 
   return c.json({
     today, shift: staffShiftView(shift), carryover: !!picked?.carryover,
@@ -1446,7 +1476,60 @@ api.get('/staff/home', async (c) => {
     // 2社以上に所属しているか（シフトにどの会社のものかを出す。#503）と、前日以前の報告漏れ（#483）
     multi_company: new Set(personRows.map(r => r.company_id)).size > 1,
     missed_reports: missed,
+    // 次回（明日以降）の稼働と、明日のシフトの前日確認の状態（#278 #176）
+    next_shifts: nextShifts,
   })
+})
+
+// 前日確認（#176）: 明日のシフトを本人が『確認しました』にする。shift_ids で同じ日の複数のシフトをまとめて確認できる。
+// シフトの会社が前日確認を使っていて、稼働日が明日の確定・代打のシフトだけ。確認したときのシフトの内容を残す（後で変わったら未確認に戻る）
+const DAY_BEFORE_MAX_SHIFTS = 10
+api.post('/staff/day-before-confirm', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const ids = [...new Set<number>((Array.isArray(b.shift_ids) ? b.shift_ids : [b.shift_id]).map(Number))].filter(n => Number.isInteger(n) && n > 0)
+  if (!ids.length || ids.length > DAY_BEFORE_MAX_SHIFTS) return c.json({ error: 'シフトを指定してください' }, 400)
+  const personRows = await personStaffRows(db, u)
+  if (!personRows.length) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const staffIds = personRows.map(r => r.staff_id)
+  const rows = (await db.prepare(`SELECT shift_id, staff_id, company_id, project_id, work_date, start_time, end_time, status FROM shifts
+    WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND staff_id IN (${staffIds.map(() => '?').join(',')})`).bind(...ids, ...staffIds).all()).results as any[]
+  if (rows.length !== ids.length) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const tomorrow = addDays(todayJST(), 1)
+  for (const s of rows) {
+    const owner = personRows.find(r => r.staff_id === s.staff_id)
+    if (!owner || owner.company_id !== s.company_id) return c.json({ error: 'シフトが見つかりません' }, 404)
+    if (!dayBeforeSettings(owner.settings_json).enabled) return c.json({ error: 'このシフトの会社では、前日確認を使っていません' }, 400)
+    if (s.work_date !== tomorrow) return c.json({ error: '前日確認は、稼働日の前日にできます。画面を読み直してください' }, 400)
+    if (!(WORKING_SHIFT_STATUSES as readonly string[]).includes(s.status)) return c.json({ error: '確定していないシフトは確認できません' }, 400)
+  }
+  const now = nowJST()
+  // 読んだ後にシフトが変わっていたら記録しない（確認したときの内容と合わなくなるため）。確認済みのものは最初の確認の日時を残す
+  const res = await db.batch(rows.map(s => db.prepare(`UPDATE shifts SET
+      day_before_confirmed_at = CASE WHEN day_before_confirmed_at IS NOT NULL AND day_before_confirmed_key = ?1 THEN day_before_confirmed_at ELSE ?2 END,
+      day_before_confirmed_by = CASE WHEN day_before_confirmed_at IS NOT NULL AND day_before_confirmed_key = ?1 THEN day_before_confirmed_by ELSE NULL END,
+      day_before_confirmed_key = ?1
+    WHERE shift_id = ?3 AND staff_id = ?4 AND project_id = ?5 AND work_date = ?6 AND start_time = ?7 AND end_time = ?8 AND status IN ('confirmed', 'substitute')`)
+    .bind(dayBeforeKey(s), now, s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time)))
+  if (res.some(r => !r.meta.changes)) return c.json({ error: 'シフトが変更されました。画面を読み直してください' }, 409)
+  return c.json({ ok: true, shift_ids: ids, confirmed_at: now })
+})
+
+// 前日確認を管理者が記録する（電話などで本人に確かめたとき。#176）。ダッシュボードの明日のシフトの一覧から使う
+api.post('/admin/shifts/:id/day-before-confirm', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  if (!dayBeforeSettings(u.settings_json).enabled) return c.json({ error: '前日確認を使っていません（ダッシュボードの設定から使えます）' }, 400)
+  const s = await ownShift(db, u.company_id, c.req.param('id')) as any
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (!(WORKING_SHIFT_STATUSES as readonly string[]).includes(s.status)) return c.json({ error: '確定していないシフトは確認済みにできません' }, 400)
+  if (s.work_date < todayJST()) return c.json({ error: '過ぎたシフトは確認済みにできません' }, 400)
+  if (dayBeforeState(s).confirmed_at) return c.json({ ok: true, confirmed_at: s.day_before_confirmed_at, already: true })
+  const now = nowJST()
+  const r = await db.prepare(`UPDATE shifts SET day_before_confirmed_at = ?, day_before_confirmed_key = ?, day_before_confirmed_by = ?
+    WHERE shift_id = ? AND company_id = ? AND staff_id = ? AND project_id = ? AND work_date = ? AND start_time = ? AND end_time = ?`)
+    .bind(now, dayBeforeKey(s), u.user_id, s.shift_id, u.company_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time).run()
+  if (!r.meta.changes) return c.json({ error: 'シフトが変更されました。画面を読み直してください' }, 409)
+  return c.json({ ok: true, confirmed_at: now, confirmed_by_name: u.name })
 })
 
 // ---------- 勤怠報告の『休憩なし』と、押し間違いの取消（#324 #323） ----------
@@ -1586,20 +1669,59 @@ api.get('/admin/shifts/:id/check-in-location', async (c) => {
   })
 })
 
+// ---------- 電波がない場所で押した報告（#427） ----------
+// アプリは通信に失敗した報告を端末に保存し、通信が戻ってから押した時刻（pressed_at）と一意キー（client_request_id）を付けて送り直す。
+// 同じキーの報告が記録済みなら、記録済みの内容をそのまま返す（応答だけが届かなかった送信の再送で 409 にしない）
+async function duplicateStaffReport(db: D1Database, shiftId: number, type: string, key: string | null) {
+  if (!key) return null
+  return db.prepare(`SELECT reported_at, status, late_minutes, early_leave_minutes, distance_m, photo_key, time_source FROM attendance_reports
+    WHERE shift_id = ? AND report_type = ? AND client_request_id = ?`).bind(shiftId, type, key).first() as Promise<any>
+}
+function duplicateStaffReportResult(r: any, settingsJson: any) {
+  return { ok: true, duplicate: true, status: r.status, reported_at: r.reported_at, device_time: r.time_source === 'device', late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
+    ...(r.photo_key ? { photo_key: r.photo_key } : {}), ...distanceResult(r.distance_m ?? null, settingsJson) }
+}
+// 記録の時刻。押した時刻が送られたら、範囲（report-settings.ts の deviceReportTime）を確かめ、受け取った時刻より前の分なら押した時刻で記録する。
+//   checkAt: 受付の時間帯を確かめる時刻（押した時刻で記録するときは押した時刻）
+//   押した時刻で記録するときは、記録済みの前の報告より前の時刻にならないことも確かめる（順序が逆の記録を作らない）
+async function staffReportTime(db: D1Database, shiftId: number, type: string, now: string, pressedRaw: any):
+  Promise<{ at: string; checkAt: string; pressed: string | null; adopt: boolean } | { error: string; status: number }> {
+  const dev = deviceReportTime(pressedRaw, now)
+  if ('error' in dev) return dev
+  if (!dev.adopt || !dev.pressed) return { at: reportedAtMinute(now), checkAt: now, pressed: dev.pressed, adopt: false }
+  const at = reportedAtMinute(dev.pressed)
+  const earlier = REPORT_TYPES.slice(0, REPORT_TYPES.indexOf(type as any))
+  if (earlier.length) {
+    const r = await db.prepare(`SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ? AND report_type IN (${earlier.map(() => '?').join(',')})
+      ORDER BY reported_at DESC LIMIT 1`).bind(shiftId, ...earlier).first() as any
+    if (r && String(r.reported_at) > at) {
+      return { error: `${REPORT_LABEL[r.report_type]}（${fmtMdHm(r.reported_at)}）より前の時刻になるため、押した時刻（${fmtMdHm(at)}）では記録できません。打刻履歴から修正を申請してください`, status: 400 }
+    }
+  }
+  return { at, checkAt: dev.pressed, pressed: dev.pressed, adopt: true }
+}
+
 // 勤怠報告
 api.post('/staff/attendance', async (c) => {
   const u = c.get('user')
-  const { shift_id, report_type, latitude, longitude, address, no_photo_reason, no_photo_note } = await c.req.json()
+  const { shift_id, report_type, latitude, longitude, address, no_photo_reason, no_photo_note, client_request_id, pressed_at } = await c.req.json()
   if (!REPORT_TYPES.includes(report_type)) return c.json({ error: '不正な報告種別です' }, 400)
   // 勤怠の自動振り分け: シフトの所有企業・スタッフ行に記録する（同一人物の他社シフトも可）
   const resolved = await resolvePersonShift(c, shift_id)
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
+  // 同じ送信の再送（#427）
+  const reqId = clientRequestId(client_request_id)
+  const dup = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
+  if (dup) return c.json(duplicateStaffReportResult(dup, owner.settings_json))
   const now = nowJST()
+  const time = await staffReportTime(c.env.DB, shift.shift_id, report_type, now, pressed_at)
+  if ('error' in time) return c.json({ error: time.error, code: 'device_time' }, time.status as 400)
   const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
   // 欠勤・確定済みでないか・受付の時間帯か（稼働日。休憩・勤務終了・退店は翌日も）・有効か・報告済みや申請中でないか・順序（#116 #84 #122 #47）
+  // 受付の時間帯は、押した時刻で記録するときは押した時刻で確かめる（#427）
   const state = await loadReportState(c.env.DB, shift.shift_id)
-  const ng = checkStaffReport(shift, report_type, now, modes ? modes.required_attendance : [...REPORT_TYPES], state)
+  const ng = checkStaffReport(shift, report_type, time.checkAt, modes ? modes.required_attendance : [...REPORT_TYPES], state)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
   // 写真が必須の入店・退店は写真付きの API で送る。写真を送れないときは、会社が許可していれば理由つきで写真なしで受け付ける（#535）
   let noPhotoReason: string | null = null
@@ -1614,21 +1736,29 @@ api.post('/staff/attendance', async (c) => {
   }
 
   // 遅刻・早退の判定（入店・勤務開始は開始の絶対日時と比べ、会社設定の猶予を超えたら late。勤務終了・退店は早退の分数。#134 #219 #497）
-  const at = reportedAtMinute(now)
+  // 記録の時刻は受け取った時刻か、電波がない場所で押した時刻（#427。staffReportTime）
+  const at = time.at
   const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
   const status = reportStatus(judged, latitude)
   // 入店の位置と現場（開催場所、なければ案件）の距離（#277）
   const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, latitude, longitude) : null
   // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
   // 住所・user-agent は長さを切って保存する（報告用URLと同じ。#521）
-  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason, distance_m)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason, distance_m,
+      client_request_id, pressed_at, received_at, time_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
     .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, typeof address === 'string' && address ? address.slice(0, 200) : null,
-      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason, distance).run()
-  if (!ins.meta.changes) return c.json({ error: 'すでに報告済みです' }, 409)
+      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason, distance,
+      reqId, time.pressed, now, time.adopt ? 'device' : null).run()
+  if (!ins.meta.changes) {
+    // 同じキーの送信が同時に届いて先に記録された場合は、記録済みの内容を返す
+    const again = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
+    if (again) return c.json(duplicateStaffReportResult(again, owner.settings_json))
+    return c.json({ error: 'すでに報告済みです' }, 409)
+  }
   // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
   if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
-  return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
+  return c.json({ ok: true, status, reported_at: at, device_time: time.adopt, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
 })
 
 // 勤怠報告（写真必須：入店報告・退店報告専用）
@@ -1663,17 +1793,24 @@ api.post('/staff/attendance-photo', async (c) => {
   const resolved = await resolvePersonShift(c, shift_id)
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff: owner } = resolved
+  // 同じ送信の再送と、電波がない場所で押した時刻（#427。POST /staff/attendance と同じ）。再送なら写真は保存しない
+  const rawReqId = form.get('client_request_id'), rawPressed = form.get('pressed_at')
+  const reqId = clientRequestId(typeof rawReqId === 'string' ? rawReqId : null)
+  const dup = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
+  if (dup) return c.json(duplicateStaffReportResult(dup, owner.settings_json))
   const now = nowJST()
+  const time = await staffReportTime(c.env.DB, shift.shift_id, report_type, now, typeof rawPressed === 'string' ? rawPressed : null)
+  if ('error' in time) return c.json({ error: time.error, code: 'device_time' }, time.status as 400)
   const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
   // POST /staff/attendance と同じ確認（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序）
   const state = await loadReportState(c.env.DB, shift.shift_id)
-  const ng = checkStaffReport(shift, report_type, now, modes ? modes.required_attendance : [...REPORT_TYPES], state)
+  const ng = checkStaffReport(shift, report_type, time.checkAt, modes ? modes.required_attendance : [...REPORT_TYPES], state)
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
 
   const lat = latitude != null && latitude !== '' ? Number(latitude) : null
   const lng = longitude != null && longitude !== '' ? Number(longitude) : null
   // 遅刻・早退の判定（POST /staff/attendance と同じ）
-  const at = reportedAtMinute(now)
+  const at = time.at
   const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
   const status = reportStatus(judged, lat)
   // 入店の位置と現場の距離（#277。POST /staff/attendance と同じ）
@@ -1692,12 +1829,14 @@ api.post('/staff/attendance-photo', async (c) => {
   try {
     // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
     const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes,
-        photo_taken_at, photo_source, distance_m)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+        photo_taken_at, photo_source, distance_m, client_request_id, pressed_at, received_at, time_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
       .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, (c.req.header('user-agent') || '').slice(0, 300), status, key,
-        judged.late_minutes, judged.early_leave_minutes, takenAt, source, distance).run()
+        judged.late_minutes, judged.early_leave_minutes, takenAt, source, distance, reqId, time.pressed, now, time.adopt ? 'device' : null).run()
     if (!ins.meta.changes) {
       await c.env.PHOTOS.delete(key).catch(() => {})
+      const again = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
+      if (again) return c.json(duplicateStaffReportResult(again, owner.settings_json))
       return c.json({ error: 'すでに報告済みです' }, 409)
     }
   } catch {
@@ -1707,7 +1846,7 @@ api.post('/staff/attendance-photo', async (c) => {
   }
   await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
 
-  return c.json({ ok: true, status, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
+  return c.json({ ok: true, status, reported_at: at, device_time: time.adopt, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
 })
 
 // 写真（R2）をそのまま返す。見つからなければ 404
@@ -2636,6 +2775,8 @@ const DASH_PERF_FIELDS = 6
 const DASH_WEEKDAY = ['日', '月', '火', '水', '木', '金', '土']
 // 人員不足の枠・希望（仮）のシフトを、今日から何日先まで見るか（#299）
 const DASH_AHEAD_DAYS = 3
+// 明日のシフトの前日確認の一覧に出す最大件数（#176）
+const DASH_DAY_BEFORE_MAX = 300
 // 契約終了を何日前から知らせるか（30日前と14日前の2段階）と、有給の次回付与日を何日前から・過ぎて何日まで知らせるか（#282）
 const DASH_CONTRACT_DAYS = 30
 const DASH_CONTRACT_SOON_DAYS = 14
@@ -2673,12 +2814,14 @@ api.get('/admin/dashboard', async (c) => {
   // 提出設定で「不要」の報告は未報告アラートの対象外（第2段階）
   const todayModes = await modesForShifts(db, rows.filter(s => s.status !== 'absent').map(s => s.shift_id))
   // 報告ごとの時刻・遅延・位置不明・遅刻と早退の分数（#348）。報告はシフトと種類で1件（uq_attendance_shift_type）
-  const reportRows = rows.length ? (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes
+  // 電波がない場所で押して後から届いた報告は、押した時刻で記録したことと受け取った時刻も出す（#427）
+  const reportRows = rows.length ? (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, time_source, received_at
     FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(rows.map(s => s.shift_id))).all()).results as any[] : []
   const reportsByShift = new Map<number, Record<string, any>>()
   for (const r of reportRows) {
     const m = reportsByShift.get(r.shift_id) || {}
-    m[r.report_type] = { at: String(r.reported_at || '').slice(0, 16), status: r.status, late_minutes: Number(r.late_minutes) || 0, early_leave_minutes: Number(r.early_leave_minutes) || 0 }
+    m[r.report_type] = { at: String(r.reported_at || '').slice(0, 16), status: r.status, late_minutes: Number(r.late_minutes) || 0, early_leave_minutes: Number(r.early_leave_minutes) || 0,
+      ...(r.time_source === 'device' ? { device_time: true, received_at: String(r.received_at || '').slice(0, 16) } : {}) }
     reportsByShift.set(r.shift_id, m)
   }
   // 画面の報告状況の列: シフトごとの有効な報告と報告済みの種類
@@ -2878,8 +3021,11 @@ api.get('/admin/dashboard', async (c) => {
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE a.company_id = ? AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')
     GROUP BY s.staff_id HAVING n >= 2`).bind(cid, month + '%').all()
+  // 前日確認を使っている会社は、明日のシフトの確認状況の一覧へ移れるようにする（#176）
+  const dayBefore = dayBeforeSettings(u.settings_json)
   for (const r of lateRows.results as any[]) {
-    todos.push({ key: `late:${r.staff_id}:${month}`, mark: Number(r.n), level: 'mid', text: `${r.name}さんが今月${r.n}回遅刻しています（入店・勤務開始の遅れ）。前日確認を強化してください。`, staff_id: r.staff_id, actions: BOTH })
+    todos.push({ key: `late:${r.staff_id}:${month}`, mark: Number(r.n), level: 'mid', text: `${r.name}さんが今月${r.n}回遅刻しています（入店・勤務開始の遅れ）。前日確認を強化してください。`, staff_id: r.staff_id, actions: BOTH,
+      ...(dayBefore.enabled ? { href: '#dash-day-before', link_label: '前日確認→' } : {}) })
   }
   // ルール3: 欠勤が月2回以上
   const absRows = await db.prepare(`
@@ -3000,8 +3146,35 @@ api.get('/admin/dashboard', async (c) => {
       }
     }
   }
+  // ルール14: 前日確認（#176）。明日のシフト（確定・代打）の確認状況を返し、締切を過ぎても未確認の人がいれば ToDo に出す。
+  // 確認の後にシフトが変わったものは未確認として数える（report-settings.ts の dayBeforeState）
+  let dayBeforeOut: any = { enabled: false, deadline: dayBefore.deadline }
+  if (dayBefore.enabled) {
+    const tomorrow = addDays(today, 1)
+    const list = ((await db.prepare(`
+      SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.day_before_confirmed_at, s.day_before_confirmed_key, s.day_before_confirmed_by,
+        p.project_name, us.name AS staff_name, us.phone AS staff_phone, us.role = 'staff' AS has_login, cu.name AS confirmed_by_name
+      FROM shifts s JOIN projects p ON s.project_id = p.project_id
+      JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      LEFT JOIN users cu ON cu.user_id = s.day_before_confirmed_by AND cu.company_id = s.company_id
+      WHERE s.company_id = ? AND s.work_date = ? AND s.status IN ('confirmed', 'substitute')
+      ORDER BY s.start_time, p.project_name, us.name, s.shift_id LIMIT ${DASH_DAY_BEFORE_MAX}`).bind(cid, tomorrow).all()).results as any[])
+      .map(({ day_before_confirmed_at, day_before_confirmed_key, day_before_confirmed_by, ...s }) => {
+        const st = dayBeforeState({ ...s, day_before_confirmed_at, day_before_confirmed_key })
+        return { ...s, has_login: !!s.has_login, confirmed_at: st.confirmed_at, changed: st.changed,
+          confirmed_by_name: st.confirmed_at && day_before_confirmed_by ? (s.confirmed_by_name || '管理者') : null }
+      })
+    const unconfirmedStaff = new Set(list.filter(s => !s.confirmed_at).map(s => s.staff_id))
+    const pastDeadline = now >= `${today} ${dayBefore.deadline}:00`
+    dayBeforeOut = { enabled: true, deadline: dayBefore.deadline, date: tomorrow, past_deadline: pastDeadline, shifts: list,
+      unconfirmed_staff_count: unconfirmedStaff.size, staff_count: new Set(list.map(s => s.staff_id)).size }
+    if (pastDeadline && unconfirmedStaff.size) {
+      todos.push({ key: `day_before:${tomorrow}`, mark: unconfirmedStaff.size, level: 'high', actions: LATER, href: '#dash-day-before', link_label: '一覧→',
+        text: `明日（${mdLabel(tomorrow)}）のシフトで、前日確認がまだの人が${unconfirmedStaff.size}名います（締切 ${dayBefore.deadline}）。電話などで稼働を確認してください。` })
+    }
+  }
   // 『対応済み』『あとで』にした ToDo は分けて返す（画面ではたたんで出し、元に戻せる）
-  const dismissals = new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
+  const dismissals =new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
     FROM todo_dismissals d LEFT JOIN users um ON um.user_id = d.user_id WHERE d.company_id = ? AND (d.action = 'done' OR d.until_at > ?)`).bind(cid, now).all()).results as any[])
     .map(d => [String(d.todo_key), d]))
   const visible: Todo[] = [], hidden: any[] = []
@@ -3024,7 +3197,9 @@ api.get('/admin/dashboard', async (c) => {
     missing_daily_reports: (missingReports.results as any[]).map(r => ({ ...r, has_login: !!r.has_login })),
     unchecked_daily_reports: Number(unchecked[0]?.n) || 0,
     staffing_ahead: ahead,
-    incidents: (incidents.results as any[]).map(({ report_values, ...i }) => {
+    // 明日のシフトの前日確認（#176。使っていない会社は enabled: false だけ）
+    day_before: dayBeforeOut,
+    incidents:(incidents.results as any[]).map(({ report_values, ...i }) => {
       let values: any = {}
       try { values = JSON.parse(report_values) || {} } catch { values = {} }
       return { ...i, values }
