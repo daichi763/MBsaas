@@ -1917,10 +1917,11 @@ function renderMailAlert(stats) {
   }
   const warnings = (stats && stats.warnings) || []
   // 送信量の警告（kind: 'daily_volume'。直近24時間の送信数が目安を超えた会社。#392）と、届いていない警告を見出しで分ける
-  const volumeOnly = warnings.length && warnings.every(w => w.kind === 'daily_volume')
+  const volumeN = warnings.filter(w => w.kind === 'daily_volume').length
+  const title = !volumeN ? 'メールが届いていない会社があります' : volumeN === warnings.length ? 'メールの送信数が多い会社があります' : 'メールの送信で確認が必要な会社があります'
   box.innerHTML = warnings.length ? `
     <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#f59e0b">
-      <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>${volumeOnly ? 'メールの送信数が多い会社があります' : 'メールの送信で確認が必要な会社があります'}</p>
+      <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>${title}</p>
       <ul class="mt-1 text-xs">${warnings.map(w => `<li>・${esc(w.message)}</li>`).join('')}</ul>
       <a href="#mail" class="text-cyan-400 text-xs hover:underline">メール送信を開く →</a>
     </div>` : ''
