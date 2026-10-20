@@ -54,6 +54,7 @@ import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, checkInDistance, dist
 import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
 import rosterImportApi from './roster-import'
 import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
+import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_READONLY_MESSAGE } from './hq-support'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -674,6 +675,12 @@ api.post('/auth/logout', async (c) => {
   const token = getCookie(c, SESSION_COOKIE)
   if (token) await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(token)).run()
   deleteCookie(c, SESSION_COOKIE, { path: '/', secure: new URL(c.req.url).protocol === 'https:' })
+  // 本部の管理画面の閲覧（#293）もここで終える
+  const viewToken = getCookie(c, HQ_VIEW_COOKIE)
+  if (viewToken) {
+    await c.env.DB.prepare(`UPDATE hq_view_sessions SET ended_at = ?, end_reason = 'logout' WHERE token_hash = ? AND ended_at IS NULL`).bind(new Date().toISOString(), await hashToken(viewToken)).run()
+    deleteCookie(c, HQ_VIEW_COOKIE, { path: '/', secure: new URL(c.req.url).protocol === 'https:' })
+  }
   return c.json({ ok: true })
 })
 
@@ -781,15 +788,31 @@ async function extendSession(c: any, token: string, u: any): Promise<string> {
   return String(row.expires_at)
 }
 
-api.get('/auth/me', (c) => {
-  const u = c.get('user')
+// 本部の管理画面の閲覧中（#293。閲覧の画面は X-HQ-View: 1 を付けて呼ぶ）は、本部ユーザー自身のアカウントの変更も通さない
+api.use('/auth/*', async (c, next) => {
+  if (c.get('user')?.role === 'system_admin' && c.req.header('X-HQ-View') === '1' && c.req.method !== 'GET') {
+    return c.json({ error: HQ_VIEW_READONLY_MESSAGE, code: 'hq_view_readonly' }, 403)
+  }
+  return next()
+})
+api.get('/auth/me', async (c) => {
+  const self = c.get('user')
+  let u = self
+  // 閲覧の画面（/admin）からの呼び出しでは、閲覧先の企業・閲覧用のロールを返す（user_id は本部ユーザーのまま）
+  if (u.role === 'system_admin' && c.req.header('X-HQ-View') === '1') {
+    const v = await loadHqView(c.env.DB, getCookie(c, HQ_VIEW_COOKIE), u.user_id)
+    if (v) u = hqViewUser(u, v)
+  }
   return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
     company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: HR_ROLES.includes(u.role),
     user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password,
-    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(u, u.settings_json) })
+    // 二段階認証の登録待ちは、本人（本部ユーザー）のアカウントと会社の設定で判定する（閲覧先の企業の設定で、閲覧の画面が登録の画面へ移らないように）
+    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(self, self.settings_json), hq_view: u.hq_view || null })
 })
 
 // 権限チェックミドルウェア
+// 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用）のときだけ /admin/* の GET を使える（#293。src/hq-support.ts）
+api.use('/admin/*', hqViewAdminGuard)
 api.use('/admin/*', async (c, next) => {
   if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: 'forbidden' }, 403)
   return next()
@@ -1202,6 +1225,9 @@ api.route('/staff', correctionsStaffApi)
 api.route('/admin', notificationsAdminApi)
 // メールの送信記録・送信を止めているアドレス（本部。#438 #541）
 api.route('/hq', mailHqApi)
+// 伴走支援の依頼・本部からのお知らせ・管理画面の閲覧（#179 #516 #293。src/hq-support.ts）
+api.route('/admin', hqSupportAdminApi)
+api.route('/hq', hqSupportHqApi)
 api.route('/staff', notificationsStaffApi)
 // 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
 api.route('/admin/board', boardApi)
