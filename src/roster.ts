@@ -853,8 +853,10 @@ async function partnerNameError(db: D1Database, companyId: number, name: string)
   if (own && own.company_name === name) return '自社名は取引先として登録できません'
   return partnerNameConflict(db, companyId, name)
 }
+// 自社名の行（所属会社名の選択肢の初期値。0010）は取引先ではないので、編集・統合・削除の対象にしない
 async function loadPartner(db: D1Database, companyId: number, id: any): Promise<any | null> {
-  return db.prepare('SELECT * FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ? AND merged_into_id IS NULL').bind(Number(id) || 0, companyId).first()
+  return db.prepare(`SELECT * FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ? AND merged_into_id IS NULL
+    AND affiliation_name IS NOT (SELECT company_name FROM companies WHERE company_id = ?)`).bind(Number(id) || 0, companyId, companyId).first()
 }
 rosterApi.post('/partners', async (c) => {
   const u = c.get('user'); const db = c.env.DB
@@ -884,7 +886,10 @@ rosterApi.put('/partners/:pid', async (c) => {
   }
   const stmts = [db.prepare(`UPDATE staff_affiliations SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE affiliation_id = ? AND company_id = ?`)
     .bind(...keys.map(k => values[k]), nowJST(), p.affiliation_id, u.company_id)]
-  if (renamed) stmts.push(db.prepare('UPDATE staff_profiles SET affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ?').bind(values.affiliation_name, u.company_id, p.affiliation_id))
+  if (renamed) stmts.push(
+    db.prepare('UPDATE staff_profiles SET affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ?').bind(values.affiliation_name, u.company_id, p.affiliation_id),
+    // 予約中の区分変更の表示名もそろえる（適用時は partner_affiliation_id から名前を読む）
+    db.prepare(`UPDATE staff_affiliation_schedules SET to_affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ? AND status = 'pending'`).bind(values.affiliation_name, u.company_id, p.affiliation_id))
   try { await db.batch(stmts) } catch {
     return c.json({ error: '同じ名前の取引先が登録済みです（統合済みの取引先を含む）。同じ会社なら「統合」を使ってください' }, 409)
   }

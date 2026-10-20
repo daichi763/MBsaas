@@ -1050,7 +1050,8 @@ function partnerSelectHtml(affData, current) {
   const own = ME && ME.company_name
   const names = (affData.affiliations || []).map(a => a.affiliation_name).filter(n => n && n !== own)
   if (current && !names.includes(current)) names.unshift(current)
-  return `<select id="staff-affiliation" class="inp text-xs">${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+  // 所属会社が空のときは空欄を選んだままにする（保存で先頭の取引先に変わらないように）
+  return `<select id="staff-affiliation" class="inp text-xs">${current ? '' : '<option value="" selected>（選択してください）</option>'}${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
     <a href="#partners" class="text-[11px] text-blue-600 hover:underline">取引先の管理（登録・連絡先の編集・統合）</a>`
 }
 function staffBasicCardHtml(sid, p, affData, editing) {

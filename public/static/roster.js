@@ -993,7 +993,7 @@ window.showAddRoster = function () {
     <div class="border-t border-gray-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
       <button class="btn btn-outline text-xs" data-action="rosterOpenBulkLink"><i class="fas fa-users-line"></i>IDをまとめて連携</button>
       <button class="btn btn-outline text-xs" data-action="rosterOpenShareList"><i class="fas fa-id-badge"></i>連携用IDの一覧（出力）</button>
-      <a class="btn btn-outline text-xs" href="#partners"><i class="fas fa-building"></i>取引先の管理</a>
+      <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>取引先の管理</a>
     </div>`)
 }
 delegate('rosterOpenBulkLink', () => showRosterBulkLink())
