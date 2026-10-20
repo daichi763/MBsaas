@@ -750,7 +750,8 @@ api.use('/auth/*', async (c, next) => {
   return next()
 })
 api.get('/auth/me', async (c) => {
-  let u = c.get('user')
+  const self = c.get('user')
+  let u = self
   // 閲覧の画面（/admin）からの呼び出しでは、閲覧先の企業・閲覧用のロールを返す（user_id は本部ユーザーのまま）
   if (u.role === 'system_admin' && c.req.header('X-HQ-View') === '1') {
     const v = await loadHqView(c.env.DB, getCookie(c, HQ_VIEW_COOKIE), u.user_id)
@@ -759,7 +760,8 @@ api.get('/auth/me', async (c) => {
   return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
     company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: HR_ROLES.includes(u.role),
     user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password,
-    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(u, u.settings_json), hq_view: u.hq_view || null })
+    // 二段階認証の登録待ちは、本人（本部ユーザー）のアカウントと会社の設定で判定する（閲覧先の企業の設定で、閲覧の画面が登録の画面へ移らないように）
+    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(self, self.settings_json), hq_view: u.hq_view || null })
 })
 
 // 権限チェックミドルウェア
