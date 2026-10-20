@@ -15,6 +15,10 @@
   const nl2br = (s) => esc(s).replace(/\n/g, '<br>')
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d
   const fmt = (d) => { const x = dayjs(d); return `${x.format('M/D')}(${WD[x.day()]})` }
+  // 問い合わせ先の表示。電話番号の形の部分は tel: のリンクにする（#513。esc した後の文字列に使う）
+  const contactHtml = (note) => esc(note).replace(/(^|[^\d])(0\d{1,4}-\d{1,4}-\d{3,4}|0[5789]0\d{8}|0\d{9})(?![\d-])/g, (m, pre, tel) => `${pre}<a href="tel:${tel.replace(/-/g, '')}" class="text-blue-600 underline whitespace-nowrap">${tel}</a>`)
+  // 会場の住所（返されたときだけ。#362）と地図のリンク
+  const mapUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr)
   function toast(msg) {
     let root = document.getElementById('toast'); if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
     const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg; root.appendChild(el); setTimeout(() => el.remove(), 3000)
@@ -24,9 +28,11 @@
     $app.innerHTML = '<div class="flex justify-center py-16"><span class="spin"></span></div>'
     try { DATA = (await axios.get(API)).data } catch (e) {
       const d = e.response && e.response.data
+      // 終了した募集でも、問い合わせ先が返されたら出す（応募の後に開き直した人が連絡できるように。#513）
       $app.innerHTML = `<section class="card p-6 text-center mt-6" id="apply-closed"><i class="fas fa-calendar-xmark text-3xl text-gray-300 mb-2 block"></i>
         ${d && d.title ? `<p class="text-xs text-gray-400 mb-1">${esc(d.company_name)}・${esc(d.title)}</p>` : ''}
-        <p class="font-bold text-gray-700">${esc(errMsg(e, 'この募集ページは利用できません'))}</p></section>`
+        <p class="font-bold text-gray-700">${esc(errMsg(e, 'この募集ページは利用できません'))}</p>
+        ${d && d.contact_note ? `<div class="mt-4 pt-3 border-t text-sm text-gray-600" id="apply-closed-contact"><p class="text-xs text-gray-400 mb-1">応募の内容・取り下げのお問い合わせ</p><p class="whitespace-pre-wrap break-words"><i class="fas fa-phone mr-1 text-gray-400"></i>${contactHtml(d.contact_note)}</p></div>` : ''}</section>`
       return
     }
     document.title = DATA.title + ' | ' + DATA.company_name
@@ -83,7 +89,8 @@
               <input type="checkbox" class="w-5 h-5" data-role-id="${Number(r.slot_role_id)}" ${picked.has(r.slot_role_id) ? 'checked' : ''} onchange="applyPick(${r.slot_role_id}, this.checked)">
               <span class="flex-1 min-w-0">
                 <span class="block font-medium text-sm">${esc(formatShiftTime(r.start_time, r.end_time))}${r.role_name ? `<span class="text-gray-500 font-normal">・${esc(r.role_name)}</span>` : ''}</span>
-                <span class="block text-xs text-gray-500 truncate">${r.place ? '<i class="fas fa-location-dot mr-1"></i>' + esc(r.place) : ''}</span>
+                <span class="block text-xs text-gray-500 truncate">${r.place ? '<i class="fas fa-location-dot mr-1"></i>' + esc(r.place) : ''}${Number(r.break_minutes) > 0 ? `<span class="ml-1">・休憩${Number(r.break_minutes)}分</span>` : ''}</span>
+                ${r.site_address ? `<span class="block text-[11px] text-gray-500">${esc(r.site_address)} <a href="${esc(mapUrl(r.site_address))}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap">地図</a></span>` : ''}
               </span>
               <span class="text-xs whitespace-nowrap ${r.full ? 'text-gray-500' : 'text-emerald-600'}">${r.full ? '定員に達しています<br><span class="text-[10px]">（キャンセル待ち）</span>' : r.remaining != null ? `残り${r.remaining}名` : '募集中'}</span>
             </label>`).join('')}</div></div>`).join('') || '<p class="card p-6 text-center text-gray-400 text-sm">現在、募集中の日時はありません</p>'}
@@ -115,7 +122,7 @@
           <div id="ap-turnstile"></div>
         </div>
       </section>` : ''}
-      ${d.contact_note ? `<p class="text-xs text-gray-500 text-center mb-4"><i class="fas fa-phone mr-1"></i>${esc(d.contact_note)}</p>` : ''}
+      ${d.contact_note ? `<p class="text-xs text-gray-500 text-center mb-4 whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(d.contact_note)}</p>` : ''}
       <p class="text-[11px] text-gray-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします（メールアドレスを入れた場合はメールで届きます）。応募の時点ではシフトは確定していません</p>
 
       ${dates.length ? `<div class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-3 z-30" id="apply-submit-bar">
@@ -313,7 +320,7 @@
         <p>${byEmail ? '内容を確認のうえ、結果（確定・見送り）を入力いただいたメールアドレスにお知らせします。' : '内容を確認のうえ、担当者からご連絡します。'}応募の時点ではシフトは確定していません。</p>
         <p>応募の取り下げ・変更は、お問い合わせ先へご連絡ください。</p>
       </div>
-      ${DATA.contact_note ? `<p class="text-xs text-gray-500 mt-3 text-center"><i class="fas fa-phone mr-1"></i>${esc(DATA.contact_note)}</p>` : ''}
+      ${DATA.contact_note ? `<p class="text-xs text-gray-500 mt-3 text-center whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(DATA.contact_note)}</p>` : ''}
     </section>`
     window.scrollTo(0, 0)
   }

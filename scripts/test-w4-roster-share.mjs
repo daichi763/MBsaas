@@ -117,7 +117,8 @@ ok('（前提）A に連携できた', !!inA)
   const l = (p.logins || [])[0]
   ok('#337 ログイン情報（会社コード・スタッフ番号）を返す', l && l.company_code === 'sample' && l.user_code === `${PFX}X`, p.logins)
   ok('#337 電話・メールは伏せ字で返す', l && l.phone_masked === '*******5678' && /^x\*\*\*@example\.com$/.test(l.email_masked || ''), l)
-  ok('#229 共有範囲（PRポイント・備考を含む）を返す', p.share_terms && p.share_terms.shared.includes('備考') && p.share_terms.shared.some(s => /PRポイント/.test(s)) && p.share_terms.not_shared.length > 0, p.share_terms)
+  // 同意 v3（#9001）からは、備考は共有しない項目（所属元だけ）
+  ok('#229 共有範囲（PRポイントを含み、備考は共有しない）を返す', p.share_terms && !p.share_terms.shared.includes('備考') && p.share_terms.not_shared.some(s => /備考/.test(s)) && p.share_terms.shared.some(s => /PRポイント/.test(s)), p.share_terms)
   ok('#229 本人向けには PRポイント・備考の内容は返さない', !('pr_points' in p) && !('remarks' in p), Object.keys(p))
   ok('#337 自社雇用の画面では QR（恒久ID）を返す', p.global_staff_code === X.global_staff_code, p.global_staff_code)
   const cos = must(await st.get('/api/staff/me/companies'), 'companies')

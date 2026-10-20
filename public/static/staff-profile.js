@@ -40,7 +40,12 @@ function sharedWithHtml(list) {
 window.renderMyProfile = async function () {
   loading()
   let p
-  try { p = (await axios.get('/api/staff/me/profile')).data.profile } catch { $app.innerHTML = '<p class="text-center text-gray-400 py-10">プロフィールを取得できませんでした</p>'; return }
+  // 読み込めなかったら、再読み込みのボタンを出す（#524。staff.js の showLoadError）
+  try { p = (await axios.get('/api/staff/me/profile')).data.profile } catch (e) {
+    if (typeof showLoadError === 'function') showLoadError(e)
+    else $app.innerHTML = '<p class="text-center text-gray-400 py-10">プロフィールを取得できませんでした</p>'
+    return
+  }
   // 値は esc 済みの HTML で渡す（経歴・スキルは複数行・バッジで出すため）
   const rowHtml = (k, html) => `<div class="flex py-2 border-b border-gray-50 last:border-0"><dt class="w-28 text-gray-400 shrink-0">${k}</dt><dd class="flex-1 min-w-0 text-gray-800 whitespace-pre-wrap break-words">${html}</dd></div>`
   const row = (k, v) => rowHtml(k, esc(v == null || v === '' ? '-' : v))
@@ -289,7 +294,8 @@ setTimeout(renderCompanySwitcher, 300)
 const SELF_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['見送り', 'badge-red'], cancelled: ['取り消し', 'badge-gray'] }
 const selfStatusBadge = (s) => { const [l, cls] = SELF_STATUS[s] || [s, 'badge-gray']; return `<span class="badge ${cls}">${esc(l)}</span>` }
 const selfDate = (at) => esc(String(at || '').slice(0, 16).replace(/^(\d{4})-(\d{2})-(\d{2})/, (m, y, mo, d) => `${Number(mo)}/${Number(d)}`))
-const selfLoadFailed = (back) => { $app.innerHTML = `${back}<p class="text-center text-gray-400 py-10">読み込めませんでした。通信状況を確かめて、もう一度開いてください</p>` }
+const selfLoadFailed = (back) => { $app.innerHTML = `${back}<div class="card p-6 text-center mt-2" role="alert"><p class="text-sm text-gray-500">読み込めませんでした。通信状況を確かめて、もう一度開いてください</p>
+  <button class="btn btn-primary mt-4" data-action="retryLoad"><i class="fas fa-rotate-right"></i>再読み込み</button></div>` }
 const SELF_WEEKDAY = ['日', '月', '火', '水', '木', '金', '土']
 
 // 『その他』の「有給・休暇」は自社雇用の社員だけに出す（企業を切り替えると画面ごと読み直すので、1回だけ問い合わせる）

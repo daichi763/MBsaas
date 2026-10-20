@@ -249,7 +249,7 @@ const hiddenBy = (d, key) => (d.hidden_todos || []).find(t => t.key === key)
   const t = todoBy(d, `pattern_end:${pt.data.pattern_id}:${to}`)
   ok('#456 終了日が14日以内の繰り返し登録が ToDo に出る（案件詳細へ）', t && t.href === '#projects/1' && /あと6日/.test(t.text), d.todos.filter(x => x.key.startsWith('pattern_end')))
   const inc = d.todos.filter(x => x.key.startsWith('incident:'))
-  if (inc.length) ok('#402 #404 インシデントの ToDo は日報一覧（案件・直近7日・インシデント）へ', inc.every(x => /^#reports\/from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}&project=\d+&flagged=1$/.test(x.href)), inc)
+  if (inc.length) ok('#402 #404 インシデントの ToDo は日報一覧（案件・直近7日・インシデント）へ', inc.every(x => /^#reports\/from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}&project=\d+&flagged=1(&open=1)?$/.test(x.href)), inc) // 未対応だけに絞る open=1（#169）
   else skip('#402 インシデントの ToDo のリンク', '直近7日のインシデントがない')
   ok('#183 未確認の日報の件数を返す', Number.isInteger(d.unchecked_daily_reports), d.unchecked_daily_reports)
   ok('#184 案件別実績は日報テンプレートの数値項目で返す', Array.isArray(d.performance_fields) && d.project_performance.every(p => p.values && typeof p.values === 'object')

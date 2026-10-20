@@ -47,10 +47,17 @@ async function loadInfo(db: D1Database, correctionId: number) {
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id = ?`).bind(correctionId).first() as any
   if (!c) return c
-  // まとめて出した申請（同じシフト・申請者・申請日時。corrections.ts の insertCorrections）。承認依頼のメールは先頭の1件にまとめる（#392 #214）
+  // まとめて出した申請（同じシフト・申請者・申請日時・batch_key。corrections.ts の insertCorrections）。承認依頼のメールは先頭の1件にまとめる（#392 #214）。
+  // batch_key のない行（0087 より前の申請）は、これまでどおり申請日時で束ねる
   const group = (await db.prepare(`SELECT correction_id, kind, report_type, before_at, requested_at FROM attendance_corrections
-    WHERE shift_id = ? AND requested_by = ? AND created_at = ? ORDER BY correction_id`).bind(c.shift_id, c.requested_by, c.created_at).all()).results as any[]
+    WHERE shift_id = ? AND requested_by = ? AND created_at = ? AND batch_key IS ? ORDER BY correction_id`).bind(c.shift_id, c.requested_by, c.created_at, c.batch_key ?? null).all()).results as any[]
   c.group = group.length > 1 ? group : null
+  // 承認者が日時を直して承認した（#548）: 申請の日時（requested_at_original）。承認後の requested_at は承認した日時
+  if (c.status === 'approved') {
+    const ev = await db.prepare(`SELECT detail FROM attendance_correction_events WHERE correction_id = ? AND event IN ('approved', 'approved_exception') ORDER BY event_id DESC LIMIT 1`)
+      .bind(correctionId).first() as any
+    try { const d = ev?.detail ? JSON.parse(ev.detail) : null; c.adjusted_from = d?.adjusted ? d.requested_at_original || null : null } catch { c.adjusted_from = null }
+  }
   return c
 }
 
@@ -86,9 +93,13 @@ function content(c: any, kind: string, isAdmin: boolean) {
     headline = '管理者が次のとおり、あなたの打刻の修正を申請しました。承認されると勤怠の記録が変わります。内容に心当たりがない場合は、管理者に確認してください。'
     lines.push(['修正理由', c.reason || ''], ['申請者', c.requested_by_name || ''])
   } else if (kind === 'correction_approved') {
-    title = `打刻修正が承認されました: ${what}`
-    headline = c.applied_while_settled ? `打刻修正の申請が承認されました。${settledNote}` : '打刻修正の申請が承認され、勤怠の記録を変更しました。'
-    lines.push(['結果', '承認'], ['承認者', c.decided_by_name || ''])
+    title = `打刻修正が${c.adjusted_from ? '時刻を修正して' : ''}承認されました: ${what}`
+    headline = c.applied_while_settled ? `打刻修正の申請が承認されました。${settledNote}`
+      : c.adjusted_from ? '打刻修正の申請が、承認者が時刻を修正したうえで承認され、勤怠の記録を変更しました。修正の内容と理由を確認してください。'
+      : '打刻修正の申請が承認され、勤怠の記録を変更しました。'
+    lines.push(['結果', c.adjusted_from ? '時刻を修正して承認' : '承認'], ['承認者', c.decided_by_name || ''])
+    // 申請の時刻と承認した時刻（#548。例: 申請 18:30 → 承認 18:15）
+    if (c.adjusted_from) lines.push(['修正', `申請 ${fmtAt(c.adjusted_from)} → 承認 ${fmtAt(c.requested_at)}`])
     if (c.applied_while_settled) lines.push(['支払額', '確定済みのため変わりません（管理者が別途対応します）'])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_rejected') {
@@ -100,6 +111,7 @@ function content(c: any, kind: string, isAdmin: boolean) {
     title = `管理者があなたの打刻を修正しました: ${what}`
     headline = '管理者が次のとおり、あなたの勤怠の記録を修正しました。内容に心当たりがない場合は、管理者に確認してください。' + (c.applied_while_settled ? settledNote : '')
     lines.push(['修正理由', c.reason || ''], ['処理した人', c.decided_by_name || ''])
+    if (c.adjusted_from) lines.push(['修正', `申請 ${fmtAt(c.adjusted_from)} → 承認 ${fmtAt(c.requested_at)}`])
     if (c.applied_while_settled) lines.push(['支払額', '確定済みのため変わりません（管理者が別途対応します）'])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   } else if (kind === 'correction_cancelled') {
@@ -111,6 +123,7 @@ function content(c: any, kind: string, isAdmin: boolean) {
     title = `打刻修正を${approved ? '承認' : '却下'}しました: ${c.staff_name || ''} ${what}`
     headline = `次の打刻修正の申請を${approved ? '承認' : '却下'}しました。`
     lines.push(['結果', approved ? (c.is_exception ? '承認（例外承認）' : '承認') : '却下'])
+    if (approved && c.adjusted_from) lines.push(['修正', `申請 ${fmtAt(c.adjusted_from)} → 承認 ${fmtAt(c.requested_at)}`])
     if (!approved) lines.push(['却下の理由', c.reject_reason || ''])
     if (c.decision_comment) lines.push(['コメント', c.decision_comment])
   }
@@ -121,19 +134,19 @@ function content(c: any, kind: string, isAdmin: boolean) {
 }
 
 // read: 既読で登録する（自分の操作の控え）。noEmail: メールを送らない
-type Recipient = { user_id: number; name: string; email: string | null; role: string; kind: string; read?: boolean; noEmail?: boolean }
+type Recipient = { user_id: number; company_id: number | null; name: string; email: string | null; role: string; kind: string; read?: boolean; noEmail?: boolean }
 // 本人が取り消してから、この時間内に同じ報告を申請し直したときは、管理者へのメールを送らない（アプリ内通知だけ。#392）
 const RESUBMIT_QUIET_MINUTES = 30
 // quietProcessor: 処理した管理者の控えを既読・メールなしにする（まとめて承認 #280。自分の操作の控えが件数分のメールにならないように）
 type NotifyOpts = { quietProcessor?: boolean }
 async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent, opts: NotifyOpts = {}): Promise<Recipient[]> {
-  const user = async (id: number | null) => id ? await db.prepare('SELECT user_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
+  const user = async (id: number | null) => id ? await db.prepare('SELECT user_id, company_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
   const out = new Map<number, Recipient>()
   const add = (u: any, kind: string, opt: { read?: boolean; noEmail?: boolean } = {}) => {
-    if (u && u.status !== 'suspended' && !out.has(u.user_id)) out.set(u.user_id, { user_id: u.user_id, name: u.name, email: u.email || null, role: u.role, kind, ...opt })
+    if (u && u.status !== 'suspended' && !out.has(u.user_id)) out.set(u.user_id, { user_id: u.user_id, company_id: u.company_id ?? null, name: u.name, email: u.email || null, role: u.role, kind, ...opt })
   }
   const requester = await user(c.requested_by)
-  const owner = async () => await db.prepare(`SELECT us.user_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+  const owner = async () => await db.prepare(`SELECT us.user_id, us.company_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.staff_id = ? AND us.role = 'staff' AND us.status = 'active'`).bind(c.staff_id).first() as any
   const samePerson = (a: any, b: any) => !!a && !!b && (a.user_id === b.user_id || (!!a.person_id && a.person_id === b.person_id))
   if (event === 'submitted' || event === 'resubmitted') {
@@ -187,8 +200,10 @@ export async function createCorrectionNotifications(db: D1Database, correctionId
   const prefs = await loadNotifyPrefs(db, rows.filter(({ r }) => r.email && !r.noEmail).map(({ r }) => r.user_id))
   for (const { r } of rows) {
     if (!r.email || r.noEmail || !emailWanted(prefs, r.user_id, r.role, r.kind)) continue
+    // 宛先が他社のユーザー（連携スタッフの所属元）なら、送る前からこの会社の記録にアドレスを残さない（#570。送るときは users.email を読む）
+    const toEmail = r.company_id != null && Number(r.company_id) !== Number(c.company_id) ? '' : r.email
     const d = await db.prepare(`INSERT INTO notification_emails (company_id, correction_id, event, kind, user_id, to_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?) RETURNING delivery_id`)
-      .bind(c.company_id, c.correction_id, event, r.kind, r.user_id, r.email, at).first() as any
+      .bind(c.company_id, c.correction_id, event, r.kind, r.user_id, toEmail, at).first() as any
     if (d) deliveries.push(d.delivery_id)
   }
   return { notified: rows.length, deliveries }
@@ -603,6 +618,10 @@ export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ not
       if (cur) stmts.push(db.prepare('DELETE FROM user_notifications WHERE notification_id = ? AND read_at IS NULL').bind(cur.notification_id))
       stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at, merged_count, emailed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(n.companyId, a.user_id, n.kind, title, body, n.link, n.relatedId, now, count, sendMail ? now : (cur?.emailed_at ?? null)))
+      // ほぼ同時の2回の書き込みが、どちらも同じ古い通知を読んで未読を2件作らないよう、最新の1件より前の未読を消す（#152。#150 #166 も同じ処理）
+      if (n.merge) stmts.push(db.prepare(`DELETE FROM user_notifications WHERE user_id = ? AND kind = ? AND related_id = ? AND read_at IS NULL
+          AND notification_id < (SELECT MAX(notification_id) FROM user_notifications WHERE user_id = ? AND kind = ? AND related_id = ? AND read_at IS NULL)`)
+        .bind(a.user_id, n.kind, n.relatedId, a.user_id, n.kind, n.relatedId))
     }
     await db.batch(stmts)
     if (mailTo.length) {
@@ -799,11 +818,13 @@ const MAIL_ALERT_MIN = 5
 const MAIL_ALERT_RATE = 0.2
 // 届かなかったもの（企業の画面の「届かなかったもの」の絞り込みと同じ。一時的な不達も含める）
 const FAILED_STATUSES = `('failed', 'bounced', 'bounced_soft', 'complained')`
+// 企業ごとの直近24時間の送信数の目安（#392）。これを超えたら本部の画面に警告を出す（申請・通知の繰り返しや設定の誤りで、送信サービスの上限に近づいていないか）
+export const MAIL_DAILY_WARN = 500
 mailHqApi.get('/email-stats', async (c) => {
   const days = Math.min(90, Math.max(1, Number.parseInt(c.req.query('days') || '', 10) || 7))
   const since = `-${days} days`
   const db = c.env.DB
-  const [byCompany, reasons, lastOk, suppressed] = await Promise.all([
+  const [byCompany, reasons, lastOk, suppressed, daily] = await Promise.all([
     db.prepare(`SELECT l.company_id, co.company_name, l.type, COUNT(*) AS total, SUM(l.status IN ('sent', 'delivered')) AS ok,
         SUM(l.status IN ${FAILED_STATUSES}) AS failed, SUM(l.status = 'skipped') AS skipped
       FROM email_logs l LEFT JOIN companies co ON co.company_id = l.company_id
@@ -813,22 +834,33 @@ mailHqApi.get('/email-stats', async (c) => {
       FROM email_logs WHERE created_at >= datetime('now', ?) AND status IN ${FAILED_STATUSES} GROUP BY code ORDER BY n DESC LIMIT 10`).bind(since).all(),
     db.prepare(`SELECT company_id, datetime(MAX(created_at), '+9 hours') AS at FROM email_logs WHERE status IN ('sent', 'delivered') GROUP BY company_id`).all(),
     db.prepare('SELECT COUNT(*) AS n FROM email_suppressions').first(),
+    // 直近24時間の送信数（送信停止・対応不要で送らなかったものは数えない）。email_logs.created_at は UTC
+    db.prepare(`SELECT l.company_id, co.company_name, COUNT(*) AS n FROM email_logs l LEFT JOIN companies co ON co.company_id = l.company_id
+      WHERE l.created_at >= datetime('now', '-1 day') AND l.status != 'skipped' GROUP BY l.company_id`).all(),
   ])
   const last = new Map(((lastOk.results || []) as any[]).map(r => [r.company_id, r.at]))
+  const last24 = new Map(((daily.results || []) as any[]).map(r => [r.company_id ?? 0, Number(r.n) || 0]))
   const companies = new Map<any, any>()
   for (const r of (byCompany.results || []) as any[]) {
     const k = r.company_id ?? 0
-    const e = companies.get(k) || { company_id: r.company_id, company_name: r.company_name || (r.company_id ? `#${r.company_id}` : '（企業なし）'), total: 0, ok: 0, failed: 0, skipped: 0, types: [] as any[], last_success_at: last.get(r.company_id) || null }
+    const e = companies.get(k) || { company_id: r.company_id, company_name: r.company_name || (r.company_id ? `#${r.company_id}` : '（企業なし）'), total: 0, ok: 0, failed: 0, skipped: 0, types: [] as any[], last_success_at: last.get(r.company_id) || null,
+      last_24h: last24.get(k) || 0 }
     e.total += r.total; e.ok += r.ok || 0; e.failed += r.failed || 0; e.skipped += r.skipped || 0
     e.types.push({ type: r.type, total: r.total, ok: r.ok || 0, failed: r.failed || 0, skipped: r.skipped || 0 })
     companies.set(k, e)
   }
   const list = [...companies.values()].map(e => ({ ...e, failure_rate: e.total - e.skipped > 0 ? e.failed / (e.total - e.skipped) : 0 }))
   const warnings = list.filter(e => e.total - e.skipped >= MAIL_ALERT_MIN && e.failure_rate >= MAIL_ALERT_RATE)
-    .map(e => ({ company_id: e.company_id, message: `${e.company_name}: 直近${days}日のメールの${Math.round(e.failure_rate * 100)}%（${e.failed}/${e.total - e.skipped}件）が届いていません` }))
+    .map(e => ({ company_id: e.company_id, kind: 'failure_rate', message: `${e.company_name}: 直近${days}日のメールの${Math.round(e.failure_rate * 100)}%（${e.failed}/${e.total - e.skipped}件）が届いていません` }))
+  // 直近24時間の送信数が目安を超えた企業（#392。集計の期間 days に関係なく出す）
+  for (const r of (daily.results || []) as any[]) {
+    if (Number(r.n) < MAIL_DAILY_WARN) continue
+    const name = r.company_name || (r.company_id ? `#${r.company_id}` : '（企業なし）')
+    warnings.push({ company_id: r.company_id, kind: 'daily_volume', message: `${name}: 直近24時間に${Number(r.n)}通のメールを送っています（目安 ${MAIL_DAILY_WARN}通）。申請・通知の繰り返しや設定を確認してください` })
+  }
   const totals = list.reduce((a, e) => ({ total: a.total + e.total, ok: a.ok + e.ok, failed: a.failed + e.failed }), { total: 0, ok: 0, failed: 0 })
   return c.json({ days, totals, companies: list, reasons: ((reasons.results || []) as any[]).map(r => ({ ...r, sample: r.sample ? maskEmailsIn(r.sample) : null })),
-    warnings, suppressed_count: Number((suppressed as any)?.n || 0), alert: { min: MAIL_ALERT_MIN, rate: MAIL_ALERT_RATE } })
+    warnings, suppressed_count: Number((suppressed as any)?.n || 0), alert: { min: MAIL_ALERT_MIN, rate: MAIL_ALERT_RATE, daily_warn: MAIL_DAILY_WARN } })
 })
 mailHqApi.get('/email-logs', async (c) => {
   const where = ['1 = 1']; const binds: any[] = []
@@ -1237,6 +1269,7 @@ export async function notifyRecruitResults(c: any, companyId: number, targets: R
     const when = (i: any) => `${fmtDay(i.work_date)} ${fmtTimes(i.start_time, i.end_time)}`
     const rows: StaffNotifyRow[] = []
     const mails: { appId: number; mail: SendEmailInput }[] = []
+    const noMail: number[] = []
     for (const a of apps) {
       const t = targets.find(x => x.applicationId === a.application_id)!
       const mine = items.filter(i => i.application_id === a.application_id)
@@ -1264,30 +1297,54 @@ export async function notifyRecruitResults(c: any, companyId: number, targets: R
       }
       // メール: 公開ページからの応募は応募フォームのアドレス（本人が結果の連絡先として入れたもの）。アプリからの応募はログインのアドレス
       const to = String((a.source === 'public' ? a.email : u?.email) || '').trim()
-      if (!to) continue
+      if (!to) { noMail.push(a.application_id); continue }
       const url = a.source === 'public' ? appUrl(c.env, a.token ? `/apply/${a.token}` : '/') : appUrl(c.env, '/staff#shift')
       const tpl = attendanceCorrectionEmail({ name: a.name || u?.name || '', title: `${contact.company_name ? contact.company_name + ' ' : ''}${title}`, headline, lines, url,
         button: a.source === 'public' ? '募集ページを開く' : 'シフトを確認する' })
       mails.push({ appId: a.application_id, mail: { to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'recruit_result', company_id: companyId, reply_to: contact.reply_to } })
     }
     await insertStaffNotifications(db, rows)
+    // 宛先のない応募も「メールなし」として記録する（応募一覧で、送れていない応募を見分けて送り直せるように）
+    if (noMail.length) await saveResultMailStates(db, companyId, noMail.map(id => ({ id, s: 'none' })))
     if (!mails.length) return out
+    // 送った結果（sent / failed / disabled / off（本人が受け取りを止めている））を応募ごとに残す（#151。notification_emails と同じく再送の判断に使う）
+    const sendAll = async () => {
+      const wanted = new Set(await filterStaffMails(db, mails.map(m => m.mail)))
+      const list = mails.filter(m => wanted.has(m.mail))
+      const results = !list.length ? [] : list.length === 1 ? [await sendEmail(c.env, list[0].mail)] : await sendEmailBatch(c.env, list.map(m => m.mail))
+      const states: ResultMailState[] = mails.filter(m => !wanted.has(m.mail)).map(m => ({ id: m.appId, s: 'off' }))
+      list.forEach((m, k) => {
+        const r = results[k], res = out.get(m.appId)!
+        res.email = r.ok ? (r.skipped ? 'disabled' : 'sent') : 'failed'
+        if (!r.ok) res.error = maskEmailsIn(r.error || 'unknown')
+        states.push({ id: m.appId, s: res.email, e: res.error ?? null })
+      })
+      await saveResultMailStates(db, companyId, states)
+    }
     if (!opts.wait) {
-      await queueStaffMails(c, mails.map(m => m.mail))
+      await saveResultMailStates(db, companyId, mails.map(m => ({ id: m.appId, s: 'queued' })))
+      const job = sendAll().catch(e => console.log(`recruit result mail failed: ${e}`))
+      try { c.executionCtx.waitUntil(job) } catch { await job }
       for (const m of mails) out.get(m.appId)!.email = 'queued'
       return out
     }
-    const results = mails.length === 1 ? [await sendEmail(c.env, mails[0].mail)] : await sendEmailBatch(c.env, mails.map(m => m.mail))
-    mails.forEach((m, k) => {
-      const r = results[k], res = out.get(m.appId)!
-      res.email = r.ok ? (r.skipped ? 'disabled' : 'sent') : 'failed'
-      if (!r.ok) res.error = maskEmailsIn(r.error || 'unknown')
-    })
+    await sendAll()
     return out
   } catch (e) {
     console.log(`recruit result notify failed: applications=${targets.length}`)
     return out
   }
+}
+// 応募ごとの結果のメールの状態（recruit_applications.result_mail_*。0086）を1文でまとめて書く
+type ResultMailState = { id: number; s: string; e?: string | null }
+async function saveResultMailStates(db: D1Database, companyId: number, states: ResultMailState[]) {
+  if (!states.length) return
+  try {
+    await db.prepare(`UPDATE recruit_applications SET result_mail_status = j.s, result_mail_error = j.e, result_mail_at = ?
+      FROM (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.s') AS s, json_extract(value, '$.e') AS e FROM json_each(?)) AS j
+      WHERE recruit_applications.application_id = j.id AND recruit_applications.company_id = ?`)
+      .bind(nowJST(), JSON.stringify(states.map(x => ({ id: x.id, s: x.s, e: x.e ? String(x.e).slice(0, 200) : null }))), companyId).run()
+  } catch (e) { console.log(`recruit result mail state failed: ${e}`) }
 }
 export async function notifyRecruitResult(c: any, companyId: number, applicationId: number, itemIds: { approved: number[]; rejected: number[] }, opts: { wait?: boolean } = {}): Promise<RecruitResultNotice> {
   return (await notifyRecruitResults(c, companyId, [{ applicationId, ...itemIds }], opts)).get(applicationId)!
@@ -1388,6 +1445,8 @@ export const NOTIFY_PREF_GROUPS: PrefGroup[] = [
   { key: 'board_message', audience: 'admin', label: '案件掲示板のやり取り', desc: '掲載への問い合わせ・提案・返信', kinds: ['board_message'], defaultEmail: always },
   { key: 'roster_chat', audience: 'admin', label: '企業間チャット', desc: '連携先の企業とのチャット', kinds: ['roster_chat'], defaultEmail: always },
   { key: 'consult', audience: 'admin', label: 'スタッフからの相談・連絡', desc: '緊急度の高い相談・体調不良・遅刻欠勤のメール', kinds: ['consult_received', 'consult_message'], defaultEmail: always },
+  // 掲示板の保存した検索条件の新着（#479）。条件ごとの「メールでも知らせる」に加えて、この設定で止められる
+  { key: 'board_saved_search', audience: 'admin', label: '案件掲示板の新着（保存した検索条件）', desc: '保存した検索条件に合う掲載（1日1通まで）', kinds: ['board_saved_search'], defaultEmail: always },
   // ---- スタッフ ----
   { key: 'shift', audience: 'staff', label: 'シフトの登録・変更・取消', desc: 'メールは今日・明日のシフトの変更のときだけ', kinds: ['shift_assigned', 'shift_changed', 'shift_cancelled'],
     defaultEmail: always, push: true, mailTypes: ['shift_change'] },
@@ -1530,15 +1589,16 @@ notificationsStaffApi.put('/notification-prefs', async (c) => {
 // 承認待ちがなければ送らない。送る前に digest_sent_on を今日にして、同じ日に二度送らない。1回の起動で DIGEST_BATCH 人まで
 export const DIGEST_HOUR = 8
 const DIGEST_BATCH = 50
-MAIL_TYPES.push('notification_digest')
+MAIL_TYPES.push('notification_digest', 'board_saved_search')
 export async function runNotificationDigests(env: NotifyEnv): Promise<{ due: number; sent: number; idle?: boolean }> {
   const now = nowJST()
   if (Number(now.slice(11, 13)) < DIGEST_HOUR) return { idle: true, due: 0, sent: 0 }
   const db = env.DB
   const today = now.slice(0, 10)
+  // 本部で停止にした企業（#13）の管理者には送らない
   const due = (await db.prepare(`SELECT p.user_id, u.company_id, u.name, u.email FROM user_notification_prefs p JOIN users u ON u.user_id = p.user_id
     WHERE p.pref_key = 'correction_request' AND p.digest = 1 AND COALESCE(p.email, 1) = 1 AND (p.digest_sent_on IS NULL OR p.digest_sent_on < ?)
-      AND u.status = 'active' AND u.role IN (SELECT value FROM json_each(?)) ORDER BY p.user_id LIMIT ?`)
+      AND u.status = 'active' AND u.company_id NOT IN (SELECT company_id FROM companies WHERE active_status = 'inactive') AND u.role IN (SELECT value FROM json_each(?)) ORDER BY p.user_id LIMIT ?`)
     .bind(today, JSON.stringify(NOTIFY_ADMIN_ROLES), DIGEST_BATCH).all()).results as any[]
   if (!due.length) return { idle: true, due: 0, sent: 0 }
   await db.prepare(`UPDATE user_notification_prefs SET digest_sent_on = ? WHERE pref_key = 'correction_request' AND user_id IN ${JSON_IN}`).bind(today, bindJsonArray(due.map(d => d.user_id))).run()
@@ -1584,7 +1644,9 @@ export async function flushPushQueue(env: PushEnv, limit = PUSH_FLUSH_LIMIT): Pr
   const deferred: number[] = []
   try {
     const userIds = [...new Set(rows.map(r => Number(r.user_id)))]
-    const users = new Map(((await db.prepare(`SELECT user_id, role, status, person_id FROM users WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray(userIds)).all()).results as any[])
+    // 本部で停止にした企業（#13）の利用者の端末には送らない（status を止めた扱いにする）
+    const users = new Map(((await db.prepare(`SELECT u.user_id, u.role, CASE WHEN co.active_status = 'inactive' THEN 'company_inactive' ELSE u.status END AS status, u.person_id
+      FROM users u LEFT JOIN companies co ON co.company_id = u.company_id WHERE u.user_id IN ${JSON_IN}`).bind(bindJsonArray(userIds)).all()).results as any[])
       .map(u => [Number(u.user_id), u]))
     const prefs = await loadNotifyPrefs(db, userIds)
     const wanted = rows.filter(r => {

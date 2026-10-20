@@ -539,8 +539,16 @@
     // 勤怠・日報の報告状況 / 報告用URL / 代理入力（public/static/staff-lifecycle.js）
     if (window.renderShiftReportPanel) renderShiftReportPanel(id)
   }
+  // 状態の変更は admin.js の putShiftStatus を使う（入店などの報告があるシフトを欠勤にするときは、報告の時刻を示して確認する。#221）
   window.boardShiftStatus = async function (id, status) {
-    try { await axios.put('/api/admin/shifts/' + id, { status }); closeModal(); toast('更新しました'); renderShiftBoard() } catch (e) { toast(errMsg(e)) }
+    let res
+    try {
+      res = window.putShiftStatus ? await window.putShiftStatus(id, status) : (await axios.put('/api/admin/shifts/' + id, { status })).data
+      if (!res) return // 確認でやめた
+    } catch (e) { toast(errMsg(e)); return }
+    closeModal(); toast('更新しました'); renderShiftBoard()
+    // 欠勤のシフトの承認待ちの打刻修正は承認できないので、却下が必要なことを知らせる（ダッシュボードの欠勤と同じ）
+    if (res.pending_corrections) alert(`このシフトには承認待ちの打刻修正が${Number(res.pending_corrections)}件あります。\n欠勤のシフトの申請は承認できないため、打刻修正の画面で却下してください。`)
   }
   window.boardDeleteShift = async function (id) {
     if (!confirm('このシフトを削除しますか？')) return
@@ -1267,7 +1275,8 @@
       <h3 class="font-bold text-lg mb-1">繰り返し登録を削除</h3>
       <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.start_time)}〜${esc(x.end_time)}（作成済みの枠 ${Number(x.slot_count)}件・今日以降 ${Number(x.future_slot_count || 0)}件）</p>
       <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 mb-2"><input type="radio" name="pd-mode" value="keep" checked><span>作成済みの枠は残し、繰り返し登録だけを削除する</span></label>
-      <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-[11px] text-gray-400">割り当てのある枠は残ります</span></span></label>
+      <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-[11px] text-gray-400">割り当てのある枠は残ります</span>
+        <span class="block text-[11px] text-amber-700">${x.future_pending_applications != null ? `削除する枠への未対応の応募 ${Number(x.future_pending_applications)}件` : '削除する枠に未対応の応募があれば、その応募'}は「枠の削除」で処理済みになり、承認できなくなります（#65）</span></span></label>
       <button class="btn btn-danger w-full mt-4" data-action="deletePatternRun" data-id="${Number(x.pattern_id)}"><i class="fas fa-trash"></i>削除する</button>`)
   })
   delegate('deletePatternRun', el => withSubmitLock(el, async () => {
@@ -1407,13 +1416,16 @@
     const host = document.getElementById('staff-shift-panel'); if (!host) return
     if (data.profile && data.profile.affiliation_type === 'skillsheet_only') { host.innerHTML = ''; return }
     const up = data.upcoming_shifts || [], past = data.past_shifts || [], ng = data.ng_clients || []
+    const today = data.today || dayjs().format('YYYY-MM-DD')
     const rows = (list) => list.map(s => `<tr>
       <td class="whitespace-nowrap">${esc(dayjs(s.work_date).format('M/D'))}(${WD[dayjs(s.work_date).day()]})</td>
       <td><span class="font-bold">${esc(s.project_name || '')}</span>${s.client_name ? `<span class="block text-[11px] text-gray-400">${esc(s.client_name)}</span>` : ''}</td>
       <td class="whitespace-nowrap">${esc(s.start_time)}〜${esc(s.end_time)}</td>
       <td class="text-xs text-gray-500">${esc([s.site_name || s.location, s.role].filter(Boolean).join('・') || '-')}</td>
       <td class="whitespace-nowrap"><span class="badge ${ST_BADGE[s.status] || 'badge-gray'}">${esc(ST_LABEL[s.status] || s.status)}</span>${s.settle_status === 'confirmed' ? '<span class="badge badge-green ml-1">実績確定</span>' : ''}</td>
-      <td class="text-right"><button class="text-xs text-blue-600 hover:underline whitespace-nowrap" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button></td></tr>`).join('')
+      <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button>
+        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します（#393）">打刻を修正</button>` : ''}
+        <button class="text-xs text-gray-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか（#159）">履歴</button></td></tr>`).join('')
     const table = (list, empty) => `<div class="overflow-x-auto max-h-80 overflow-y-auto"><table class="tbl"><thead><tr><th>日付</th><th>案件</th><th>時間</th><th>開催場所・役割</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows(list) || `<tr><td colspan="6" class="text-center text-gray-400">${empty}</td></tr>`}</tbody></table></div>`
     const absent = past.filter(s => s.status === 'absent').length

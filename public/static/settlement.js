@@ -13,6 +13,8 @@
   const ackable = (i) => i !== PENDING_ISSUE && i !== PAY_REQUEST_ISSUE
   const RECALC_ISSUE = '数量・金額が今の計算と違う'
   const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前のまま）'
+  // 勤怠の報告に関わる確認事項（src/settlement.ts の文言。打刻修正で直せるもの）
+  const ATTENDANCE_ISSUE_RE = /報告なし|実績未入力|報告が実績に未反映|実働が予定と|予定の終了より/
   // 欠勤・中止の理由（src/settlement.ts の CANCEL_REASON_LABEL と同じ）
   const CANCEL_REASON_LABEL = { staff: 'スタッフ都合の欠勤', client: 'クライアント都合の中止' }
   const S = window.__settleState = window.__settleState || {
@@ -399,6 +401,8 @@
       ${acked.map(i => `<span class="badge badge-gray block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('')}
       ${r.acked_at ? `<p class="whitespace-nowrap">${esc(r.acked_by_name || '')} ${esc(dayjs(r.acked_at).format('M/D HH:mm'))}</p>` : ''}</details>` : ''
     const actions = [
+      // 報告の漏れ・実働の差は、打刻修正（管理者として申請）で直せる（#393）
+      r.kind !== 'cancel' && r.issues.some(i => ATTENDANCE_ISSUE_RE.test(i)) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="corrNew" data-shift-id="${Number(r.shift_id)}">打刻を修正</button>` : '',
       r.issues.some(ackable) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="settleAckOne" data-id="${r.shift_id}">確認済みにする</button>` : '',
       r.acked_at ? `<button type="button" class="text-[11px] text-gray-500 hover:underline" data-action="settleUnackOne" data-id="${r.shift_id}">確認済みを取り消す</button>` : '',
     ].join('')
@@ -528,6 +532,11 @@
         ${r.price_locked ? `<p class="text-amber-600 mt-1">${r.qty_locked ? '手動で金額を変更したシフトです（単価・数量とも固定。実働が変わっても金額は変わりません）' : '手動で単価を変更したシフトです（単価はそのまま、時給の数量は実働に合わせます）'}</p>` : ''}
         ${locked ? '' : `<button class="btn btn-outline text-xs w-full mt-2" data-action="settleOpenPrice" data-id="${r.shift_id}"><i class="fas fa-pen"></i>単価・交通費・調整を変更</button>`}
       </section>
+      <div class="flex gap-2 flex-wrap mb-2 text-xs">
+        <button type="button" class="btn btn-outline text-xs" data-action="opLogShow" data-entity="shift" data-id="${Number(r.shift_id)}" data-host="settle-op-log" title="このシフトの金額・実績・確定の変更を、誰がいつ行ったか（#159）"><i class="fas fa-clock-rotate-left"></i>変更履歴</button>
+        ${r.status === 'absent' ? '' : `<button type="button" class="btn btn-outline text-xs" data-action="corrNew" data-shift-id="${Number(r.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します（#393）"><i class="fas fa-user-clock"></i>打刻を修正</button>`}
+      </div>
+      <div id="settle-op-log" class="mb-3"></div>
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" data-action="settleCloseModal">閉じる</button>
         ${r.closed ? '' : r.settle_status === 'confirmed' ? `<button class="btn btn-outline flex-1" data-action="settleToggleOne" data-id="${r.shift_id}" data-mode="unconfirm"><i class="fas fa-rotate-left"></i>確定を取り消す</button>`
@@ -672,6 +681,8 @@
         </div>
         <p class="text-[11px] text-gray-400 mt-1">請求 = 予定の請求基本額 × 前日（または当日）の率、支払 = 予定の支払基本額 × 補償率。2日前より前の連絡は 0 円です。スタッフ都合の欠勤は、規定から入れると 0 円になります（必要なら手で入れてください）</p>
       </section>
+      <div class="mt-3"><button type="button" class="btn btn-outline text-xs" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-host="settle-cancel-op-log" title="このシフトの欠勤・キャンセル料・確定の変更を、誰がいつ行ったか（#159）"><i class="fas fa-clock-rotate-left"></i>変更履歴</button></div>
+      <div id="settle-cancel-op-log" class="mt-2"></div>
       <div class="flex gap-2 mt-4">
         <button class="btn btn-outline flex-1" data-action="settleCloseModal">閉じる</button>
         ${!locked && d.cancellation ? `<button class="btn btn-outline flex-1" data-action="settleCancelRemove" data-id="${s.shift_id}">精算の対象から外す</button>` : ''}

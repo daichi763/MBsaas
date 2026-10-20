@@ -124,6 +124,8 @@ async function loadCtx(db: D1Database, companyId: number, partnerNames: string[]
     const p = normalizePhone(r.phone)
     if (p.length >= 10) push(byPhone, p, r)
     if (r.dob && nameKey(r.name)) push(byNameDob, `${nameKey(r.name)}|${r.dob}`, r)
+    // 他社連携の行は生年月日を持たない（所属元だけの項目。#9001）ので、氏名だけで照らす
+    else if (r.linked && nameKey(r.name)) push(byNameDob, `${nameKey(r.name)}|linked`, r)
   }
   // 取引先名が他の導入企業の会社名と同じか（partnerNameConflict と同じ確認を、名前の一覧でまとめて行う）
   const names = [...new Set(partnerNames.filter(Boolean))]
@@ -218,6 +220,7 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
   if (phone.length >= 10) for (const r of ctx.byPhone.get(phone) || []) addSame(r, '電話番号が同じ')
   const nd = name && data.date_of_birth ? `${nameKey(name)}|${data.date_of_birth}` : ''
   if (nd) for (const r of ctx.byNameDob.get(nd) || []) addSame(r, '氏名と生年月日が同じ')
+  if (nd) for (const r of ctx.byNameDob.get(`${nameKey(name)}|linked`) || []) addSame(r, '氏名が同じ（他社連携のスタッフ）')
   for (const { r, reasons } of [...same.values()].slice(0, 5)) {
     const inactive = inactiveLabelOf(r, ctx.today)
     warnings.push(`同じ人と思われるスタッフが登録済みです: ${r.name}（${reasons.join('・')}${inactive ? `・${inactive}` : ''}）`)

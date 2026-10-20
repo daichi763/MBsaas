@@ -611,7 +611,7 @@ window.showShareQr = async function (sid) {
       </div>
       <ul class="text-xs text-gray-500 mt-4 space-y-1">
         <li>・このQRコード / スタッフIDは${data.relink ? '自社から連携するための専用コードで、固定です' : '恒久固定です（再発行・有効期限・取り消しはありません）'}。IDを渡した企業はいつでも連携できるため、渡す相手を確かめてください。</li>
-        <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目（氏名・生年月日・最寄駅・スキル・経歴のほか、「経験・スキル・人柄・PRポイント等」「備考」を含む）が共有されます。</li>
+        <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目（氏名・年代・最寄駅・スキル・経歴・「経験・スキル・人柄・PRポイント等」など）が共有されます。生年月日は年代（20代など）だけを渡し、備考は共有しません。</li>
         <li>・連携先から見える所属元は${data.relink ? '自社（' + esc(data.company_name) + '）のみです。自社の所属元の企業名は連携先には表示されません' : '自社のみです。連携先がさらに別の企業へ連携しても、その先の企業から見える所属元は直前の企業だけです'}。</li>
         <li>・従業員管理の情報（給与・口座・社会保険等）は共有されません。</li>
       </ul>`)
@@ -805,7 +805,7 @@ let ROSTER_PANEL_LINKS = []
 const rosterLinkHost = (id) => { const l = ROSTER_PANEL_LINKS.find(x => Number(x.linked_staff_id) === Number(id)); return l ? l.host_company_name : '' }
 delegate('rosterEndLink', (el) => withSubmitLock(el, async () => {
   const sid = Number(el.dataset.sid), linked = Number(el.dataset.linked)
-  if (!confirm(`「${rosterLinkHost(linked)}」との連携を終了します。\n\n・連携先は、このスタッフの基本項目（生年月日・最寄駅・スキル・経歴など）を見られなくなります\n・連携先では新しいシフトに割り当てられなくなります（入っているシフトは連携先が見直します）\n・連携先がさらに別の企業へ連携していた場合は、その連携も終了します\n・連携先の管理者に通知されます\n\nよろしいですか？`)) return
+  if (!confirm(`「${rosterLinkHost(linked)}」との連携を終了します。\n\n・連携先は、このスタッフの基本項目（年代・最寄駅・スキル・経歴など）を見られなくなります\n・連携先では新しいシフトに割り当てられなくなります（入っているシフトは連携先が見直します）\n・連携先がさらに別の企業へ連携していた場合は、その連携も終了します\n・連携先の管理者に通知されます\n\nよろしいですか？`)) return
   try {
     const { data } = await axios.post(`/api/admin/roster/${sid}/links/${linked}/end`, {})
     toast(data.ended > 1 ? `連携を終了しました（その先の連携 ${data.ended - 1}件も終了）` : '連携を終了しました')

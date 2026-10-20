@@ -64,7 +64,8 @@ const inB = must(await link(B, rlA), 'link B').staff_id
 const detailA = async () => must(await A.get(`/api/admin/staff/${inA}`), 'A detail').profile
 {
   const p = await detailA()
-  ok('（前提）連携中は、連携先で所属元の基本項目（生年月日）が見える', p.date_of_birth === '1990-04-01' && p.kana === 'レンケイ エックス', p)
+  // 同意 v3（#9001）からは、連携先には生年月日を渡さず年代を渡す
+  ok('（前提）連携中は、連携先で所属元の基本項目（フリガナ・年代）が見える', !p.date_of_birth && /^[0-9]0代$/.test(p.age_group || '') && p.kana === 'レンケイ エックス', p)
 }
 
 // ---------- #162 所属元が連携を終了する ----------
@@ -78,7 +79,7 @@ const detailA = async () => must(await A.get(`/api/admin/staff/${inA}`), 'A deta
   const again = await admin.post(`/api/admin/roster/${X.staff_id}/links/${inA}/end`, {})
   ok('#162 終了済みの連携をもう一度終了すると 409', again.status === 409, again)
   const p = await detailA()
-  ok('#162 終了すると、連携先で所属元の基本項目（生年月日・フリガナ）が見えなくなる', !p.date_of_birth && !p.kana && p.link_revoked_at, p)
+  ok('#162 終了すると、連携先で所属元の基本項目（年代・フリガナ）が見えなくなる', !p.date_of_birth && !p.age_group && !p.kana && p.link_revoked_at, p)
   ok('#162 終了した連携行は取引終了になる', !!p.link_ended_at, p)
   const listA = must(await A.get('/api/admin/staff'), 'A staff').staff.find(s => s.staff_id === inA)
   ok('#162 スタッフ一覧でも基本項目（フリガナ）を出さない', listA && !listA.kana && listA.assignable === 0, listA)
@@ -106,7 +107,7 @@ const detailA = async () => must(await A.get(`/api/admin/staff/${inA}`), 'A deta
   const r = await admin.post(`/api/admin/roster/${X.staff_id}/links/${inA}/resume`, {})
   ok('#162 所属元は終了した連携を再開できる', r.status === 200, r)
   const p = await detailA()
-  ok('#162 再開すると、基本項目がふたたび見える（取引状況は取引終了のまま）', p.date_of_birth === '1990-04-01' && !p.link_revoked_at && !!p.link_ended_at, p)
+  ok('#162 再開すると、基本項目（フリガナ・年代）がふたたび見える（取引状況は取引終了のまま）', p.kana === 'レンケイ エックス' && /^[0-9]0代$/.test(p.age_group || '') && !p.link_revoked_at && !!p.link_ended_at, p)
   const pB = must(await B.get(`/api/admin/staff/${inB}`), 'B detail').profile
   ok('#162 その先の連携（B）は終了のまま（B の所属元の A が再開する）', !pB.date_of_birth && pB.link_revoked_at, pB)
   const hs = await A.put(`/api/admin/roster/${inA}/host-status`, { status: 'working' })

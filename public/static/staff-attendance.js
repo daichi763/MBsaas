@@ -388,7 +388,14 @@
   if (requestIdFromHash()) S.tab = 'requests'
   async function renderRequests() {
     const host = document.getElementById('att-body')
-    try { LIST = (await axios.get('/api/staff/corrections')).data.corrections } catch (e) { host.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    // 読み込めなかったら、理由と再読み込みのボタンを出す（#524）
+    try { LIST = (await axios.get('/api/staff/corrections')).data.corrections } catch (e) {
+      if (!host.isConnected) return
+      host.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-red-600 mb-3">${esc(e && e.response ? errMsg(e, '修正申請を読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
+        <button class="btn btn-outline" data-action="attReloadRequests"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
+      return
+    }
+    if (!host.isConnected) return
     host.innerHTML = `<div class="space-y-2">${LIST.map(c => `
       <div class="card p-3" id="att-req-${c.correction_id}">
         <div class="flex items-center justify-between gap-2">${statusBadge(c.status)}<span class="text-[11px] text-gray-400">申請 ${esc(dayjs(c.created_at).format('M/D HH:mm'))}</span></div>
@@ -411,7 +418,7 @@
           ${c.status === 'pending' && c.mine && Number(c.attachment_count) < ATTACH_MAX ? `<button class="btn btn-outline text-xs flex-1" data-action="attAttach" data-id="${Number(c.correction_id)}" data-count="${Number(c.attachment_count) || 0}"><i class="fas fa-paperclip"></i>写真を添付</button>` : ''}
           ${c.status === 'pending' && c.mine ? `<button class="btn btn-danger text-xs flex-1" data-action="attCancel" data-id="${c.correction_id}">取り消す</button>` : ''}
           ${c.status === 'rejected' && c.mine && !c.resubmitted_count && !c.superseded_by ? `<button class="btn btn-primary text-xs flex-1" data-action="attResubmit" data-id="${c.correction_id}">修正して再申請</button>` : ''}
-          ${c.by_admin ? '<a href="#consult" class="btn btn-outline text-xs flex-1">管理者に相談する</a>' : ''}
+          ${c.by_admin ? `<button class="btn btn-outline text-xs flex-1" data-action="attConsult" data-id="${Number(c.correction_id)}">管理者に相談する</button>` : ''}
         </div>
       </div>`).join('') || '<p class="text-center text-gray-400 py-10">申請はありません</p>'}</div>`
     const focus = requestIdFromHash()
@@ -445,6 +452,20 @@
     form = { mode: 'resubmit', from_id: id, shift, shift_id: c.shift_id, report_type: c.report_type, kind, before: r ? r.reported_at : null, work_date: c.work_date, title: c.project_name, changed }
     showForm(toInput(c.requested_at), c.reason)
   }
+  delegate('attReloadRequests', () => renderRequests())
+  // 管理者が代わりに出した申請について相談する（#486）。相談・連絡を、対象のシフトと申請の内容を入れた状態で開く（下書きに入れて開く）
+  delegate('attConsult', (el) => {
+    const c = LIST.find(x => x.correction_id === Number(el.dataset.id)); if (!c) { location.hash = 'consult'; return }
+    const old = typeof draftLoad === 'function' ? draftLoad('consult') : null
+    if (old && old.body && String(old.body).trim() && !confirm('書きかけの相談があります。この申請についての相談に書き換えますか？\n（「キャンセル」を押すと、書きかけの相談を開きます）')) { location.hash = 'consult'; return }
+    const what = `${fmtDate(c.work_date)} ${c.project_name || ''} の${LABEL[c.report_type] || ''}（${KIND[c.kind] || ''}）`
+    const time = `${c.before_at ? showAt(c.before_at, c.work_date) + ' → ' : ''}${showAt(c.requested_at, c.work_date)}`
+    const body = `管理者（${c.requested_by_name || ''}）が代わりに申請した打刻修正（申請 #${Number(c.correction_id)}）について連絡します。\n対象: ${what} ${time}\n\n`
+    const label = `${fmtDate(c.work_date)} ${c.start_time && c.end_time ? formatShiftTime(c.start_time, c.end_time) + ' ' : ''}${c.project_name || ''}`
+    if (typeof draftSave === 'function') draftSave('consult', { category: 'other', shift_id: String(Number(c.shift_id) || ''), shift_label: label, body, urgency: 'normal' })
+    location.hash = 'consult'
+    toast('申請の内容を入れて相談・連絡を開きました。伝えたいことを書いて送信してください', 5000)
+  })
   delegate('attDetail', (el) => attDetail(Number(el.dataset.id)))
   delegate('attCancel', (el) => attCancel(Number(el.dataset.id), el))
   delegate('attResubmit', (el) => attResubmit(Number(el.dataset.id)))
@@ -462,9 +483,12 @@
   let NOTIF_LIST = []
   window.renderStaffNotifications = async function () {
     loading()
-    let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { $app.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    // 読み込めなかったら、再読み込みのボタンを出す（#524。staff.js の showLoadError）
+    let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { if (typeof showLoadError === 'function') showLoadError(e); else $app.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    if ((location.hash || '').slice(1).split('/')[0] !== 'notifications') return // 読み込み中にほかの画面へ移った
     NOTIF_LIST = d.notifications
     $app.innerHTML = `
+      <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
       <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
         ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
       <div class="space-y-2">${d.notifications.map(n => `
@@ -487,6 +511,9 @@
     const m = link.match(/#attendance\/request\/(\d+)$/)
     const reqId = m ? Number(m[1]) : n && /^correction_/.test(n.kind || '') && n.related_id ? Number(n.related_id) : null
     if (reqId) return attOpenRequest(reqId)
+    // そのほかの画面へのリンク（出勤可能日の提出 #availability/YYYY-MM など。#171）は、その画面を開く。知らない画面・リンクのない通知は修正申請の一覧へ
+    const tab = (link.match(/^#([a-z][a-z-]*)(\/[\w-]+)*$/) || [])[1]
+    if (tab && typeof routes === 'object' && routes[tab]) { if (location.hash === link) route(); else location.hash = link.slice(1); return }
     S.tab = 'requests'; location.hash = 'attendance'
   }
   delegate('notifOpenStaff', (el) => notifOpenStaff(Number(el.dataset.id)))

@@ -15,7 +15,7 @@ const nowIso = () => new Date().toISOString()
 // ---------- ログインの履歴 ----------
 export type LoginEvent = {
   company_id?: number | null; user_id?: number | null; company_code?: string | null; user_code?: string | null
-  event_type?: 'login' | 'password_reset' | 'logout_all' | 'forced_logout'
+  event_type?: 'login' | 'password_reset' | 'logout_all' | 'forced_logout' | 'switch_company'
   result: 'success' | 'bad_password' | 'locked' | 'inactive' | 'company_inactive' | 'ip_denied' | 'mfa_failed'
   method?: 'password' | 'totp' | 'recovery' | null; actor_user_id?: number | null
 }
