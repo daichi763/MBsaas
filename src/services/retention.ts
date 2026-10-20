@@ -1077,6 +1077,10 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'users', label: '利用者（パスワード・二段階認証の情報を除く）', table: 'users', where: `${OB_CO} AND role != 'system_admin'`, noDelete: true },
   { target: 'staff_profiles', label: 'スタッフ', table: 'staff_profiles', where: OB_CO, noDelete: true },
   { target: 'shift_report_tokens', label: '報告用URLのトークン', table: 'shift_report_tokens', where: OB_CO, noExport: true },
+  // Sprint 5 で足した表（統合のときに追加）。参照する側を先に消す
+  { target: 'attendance_correction_attachments', label: '打刻修正の添付写真', table: 'attendance_correction_attachments', where: OB_CO },
+  { target: 'reminder_sends', label: '報告のリマインドの送信記録', table: 'reminder_sends', where: OB_CO, noExport: true },
+  { target: 'staff_pay_requests', label: 'スタッフからの交通費・延長の申請', table: 'staff_pay_requests', where: OB_CO },
   { target: 'attendance_correction_events', label: '打刻修正の操作履歴', table: 'attendance_correction_events', where: OB_CO },
   { target: 'notification_emails', label: '打刻修正の通知メール', table: 'notification_emails', where: OB_CO },
   { target: 'attendance_corrections', label: '打刻修正の申請', table: 'attendance_corrections', where: OB_CO },
@@ -1104,7 +1108,20 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'shift_slots', label: '募集枠', table: 'shift_slots', where: OB_CO },
   { target: 'evaluations', label: '評価', table: 'evaluations', where: OB_CO },
   { target: 'follow_logs', label: 'フォロー記録', table: 'follow_logs', where: OB_CO },
+  { target: 'consultation_attachments', label: '相談の添付', table: 'consultation_attachments', where: OB_CO },
+  { target: 'consultation_messages', label: '相談のやり取り', table: 'consultation_messages', where: OB_CO },
   { target: 'consultations', label: '相談', table: 'consultations', where: OB_CO },
+  { target: 'employee_change_logs', label: '従業員データの変更履歴', table: 'employee_change_logs', where: OB_CO },
+  { target: 'payout_accounts', label: '振込先の口座', table: 'payout_accounts', where: OB_CO },
+  { target: 'payout_settings', label: '振込元（依頼人）の設定', table: 'payout_settings', where: OB_CO },
+  { target: 'profile_change_requests', label: '登録情報の変更申請', table: 'profile_change_requests', where: OB_CO },
+  { target: 'leave_requests', label: '休暇の申請', table: 'leave_requests', where: OB_CO },
+  { target: 'staff_availability', label: '出勤可能日', table: 'staff_availability', where: OB_CO },
+  { target: 'availability_submissions', label: '出勤可能日の提出', table: 'availability_submissions', where: OB_CO },
+  { target: 'availability_periods', label: '出勤可能日の締切', table: 'availability_periods', where: OB_CO },
+  { target: 'staff_calendar_tokens', label: 'カレンダー購読のトークン', table: 'staff_calendar_tokens', where: OB_CO, noExport: true },
+  { target: 'staff_schedule_tokens', label: 'シフト確認用URLのトークン', table: 'staff_schedule_tokens', where: OB_CO, noExport: true },
+  { target: 'roster_link_events', label: '連携の成立・終了の記録（稼働先）', table: 'roster_link_events', where: OB_CO },
   { target: 'employee_records', label: '従業員データ（口座・住所・給与・保険番号など）', table: 'employee_records', where: OB_CO },
   { target: 'employment_periods', label: '雇用期間', table: 'employment_periods', where: OB_CO },
   { target: 'staff_documents', label: 'スタッフの書類', table: 'staff_documents', where: OB_CO },
@@ -1116,6 +1133,9 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'roster_value_fixes', label: '名簿の値の補正', table: 'roster_value_fixes', where: `staff_id IN ${OB_STAFF}` },
   { target: 'notice_read_staff_reports', label: '既読率（スタッフ別）', table: 'notice_read_staff_reports', where: OB_CO },
   { target: 'notice_read_reports', label: '既読率レポート', table: 'notice_read_reports', where: OB_CO },
+  { target: 'notice_responses', label: 'お知らせへの回答', table: 'notice_responses', where: OB_CO },
+  { target: 'notice_attachments', label: 'お知らせの添付', table: 'notice_attachments', where: OB_CO },
+  { target: 'notice_revisions', label: 'お知らせの変更履歴', table: 'notice_revisions', where: OB_CO },
   { target: 'notice_reads', label: 'お知らせの既読', table: 'notice_reads', where: OB_NOTICES },
   { target: 'notice_targets', label: 'お知らせの配信対象', table: 'notice_targets', where: OB_NOTICES },
   { target: 'notice_ack_tokens', label: 'お知らせの確認用トークン', table: 'notice_ack_tokens', where: OB_CO, noExport: true },
@@ -1140,6 +1160,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'roster_host_note_seen', label: '稼働先メモの既読', table: 'roster_host_note_seen', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'board_thread_reads', label: '掲示板の既読（会社）', table: 'board_thread_reads', where: OB_CO, noExport: true },
   { target: 'board_thread_user_reads', label: '掲示板の既読（利用者）', table: 'board_thread_user_reads', where: `user_id IN ${OB_USERS}`, noExport: true },
+  { target: 'support_requests', label: '本部への支援の依頼', table: 'support_requests', where: OB_CO },
+  { target: 'hq_announcement_reads', label: '本部のお知らせの既読', table: 'hq_announcement_reads', where: OB_CO, noExport: true },
   { target: 'email_logs', label: 'メールの送信記録', table: 'email_logs', where: OB_CO },
   { target: 'sessions', label: 'ログイン中のセッション', table: 'sessions', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'password_reset_tokens', label: 'パスワード再設定のトークン', table: 'password_reset_tokens', where: `user_id IN ${OB_USERS}`, noExport: true },
@@ -1147,7 +1169,9 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'mfa_challenges', label: '二段階認証の確認中', table: 'mfa_challenges', where: `user_id IN ${OB_USERS}`, noExport: true },
 ]
 // 企業の行を持つが削除しない表（他社と共有する記録・ログインの履歴・解約の記録）。「未対応の表」の判定から外す
-const OFFBOARDING_KEPT_TABLES = ['login_events', 'roster_consents', 'board_posts', 'company_offboardings', 'company_offboarding_events']
+// 本部の記録（請求・対応の記録・操作の監査・閲覧の記録・お知らせの配信先）も、解約の後の確認のために残す（Sprint 5 の統合で追加）
+const OFFBOARDING_KEPT_TABLES = ['login_events', 'roster_consents', 'board_posts', 'company_offboardings', 'company_offboarding_events',
+  'company_billing_months', 'company_support_logs', 'hq_audit_logs', 'hq_view_sessions', 'hq_announcement_companies']
 // 書き出しで出さない列（ログインの秘密の情報と、他社との連携に使う鍵）
 const OFFBOARDING_SECRET_COL_RE = /password|secret|token|recovery|totp|link_key|relink_code/i
 
@@ -1159,6 +1183,9 @@ export const OFFBOARDING_FILE_SOURCES: ObFileSource[] = [
   { source: 'attendance_reports_duplicates_0036', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
   { source: 'staff_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'employee_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
+  { source: 'attendance_correction_attachments', bucket: 'photos', idCol: 'attachment_id', keyCol: 'photo_key', nameCol: null, whenCol: 'created_at', refCol: 'staff_id' },
+  { source: 'consultation_attachments', bucket: 'photos', idCol: 'attachment_id', keyCol: 'storage_key', nameCol: null, whenCol: 'created_at', refCol: 'consultation_id' },
+  { source: 'notice_attachments', bucket: 'documents', idCol: 'attachment_id', keyCol: 'storage_key', nameCol: 'file_name', whenCol: 'created_at', refCol: 'notice_id' },
   { source: 'client_documents', bucket: 'contracts', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'client_id' },
 ]
 export function offboardingBucket(buckets: OffboardingBuckets, bucket: string): R2Bucket | undefined {
