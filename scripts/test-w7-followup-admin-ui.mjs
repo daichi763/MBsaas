@@ -133,7 +133,9 @@ must(await admin.put(`/api/admin/shifts/${s1}`, { start_time: '10:30' }), 'updat
   const linked = lk.status === 200 ? must(await adminB.get(`/api/admin/staff/${lk.data.staff_id}`), 'linked staff').profile : {}
   const ready = terms.version === 'v3'
   pend('9001 連携先のスタッフ詳細に生年月日・備考がなく、年代がある', ready, !linked.date_of_birth && !linked.remarks && linked.age_group === '30代' && linked.age == null, linked)
-  pend('9001 同意文面 v3 の共有範囲に生年月日・備考がない', ready, !terms.shared.some(s => /生年月日|備考/.test(s)) && terms.shared.includes('年代'), terms)
+  // 年代の項目は「年代（生年月日から計算。生年月日そのものは共有しません）」の形（server-a の SHARED_SCOPE）。生年月日・備考は not_shared に入る
+  pend('9001 同意文面 v3 の共有範囲に生年月日・備考がない', ready, !terms.shared.some(s => /備考/.test(s) || (/生年月日/.test(s) && !/^年代/.test(s))) && terms.shared.some(s => /^年代/.test(s))
+    && terms.not_shared.some(s => /生年月日/.test(s)) && terms.not_shared.some(s => /備考/.test(s)), terms)
   ok('9001 所属元では今までどおり生年月日・備考を見られる', own.date_of_birth === '1995-06-15' && own.remarks === `${PFX} 所属元だけの備考`, [own.date_of_birth, own.remarks])
 
   // #344 日報の未提出の一覧
