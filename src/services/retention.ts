@@ -662,6 +662,9 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
           UNION ALL SELECT storage_key, ?, 'documents' FROM employee_documents WHERE staff_id = ?`).bind(staffId, staffId, staffId, staffId)],
         ['shift_report_tokens', db.prepare(`DELETE FROM shift_report_tokens WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         ['attendance_reports', db.prepare(`DELETE FROM attendance_reports WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
+        // Sprint 5 で足した、シフトを参照する表（リマインドの送信記録・交通費や延長の申請）。shifts より先に消す
+        [null, db.prepare(`DELETE FROM reminder_sends WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
+        [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         ['shifts', db.prepare('DELETE FROM shifts WHERE staff_id = ?').bind(staffId)],
         ['evaluations', db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId)],
         ['follow_logs', db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId)],
@@ -669,6 +672,10 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         // 打刻修正の操作履歴・通知メールは申請より先に消す（申請 ID で対象を特定するため）
         ['attendance_correction_events', db.prepare('DELETE FROM attendance_correction_events WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId)],
         ['notification_emails', db.prepare('DELETE FROM notification_emails WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId)],
+        // 打刻修正の添付写真（Sprint 5 の w5-corrections-features）。写真のキーは控えて、R2 の再試行の処理で消す
+        [null, db.prepare(`INSERT OR IGNORE INTO retention_pending_r2 (photo_key, staff_id, bucket)
+          SELECT photo_key, ?, 'photos' FROM attendance_correction_attachments WHERE staff_id = ? OR correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)`).bind(staffId, staffId, staffId)],
+        [null, db.prepare('DELETE FROM attendance_correction_attachments WHERE staff_id = ? OR correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId, staffId)],
         ['attendance_corrections', db.prepare('DELETE FROM attendance_corrections WHERE staff_id = ?').bind(staffId)],
         ['report_setting_logs', db.prepare('DELETE FROM report_setting_logs WHERE staff_id = ?').bind(staffId)],
         ['project_staff_report_settings', db.prepare('DELETE FROM project_staff_report_settings WHERE staff_id = ?').bind(staffId)],
@@ -679,6 +686,15 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         ['employment_periods', db.prepare('DELETE FROM employment_periods WHERE staff_id = ?').bind(staffId)],
         ['staff_documents', db.prepare('DELETE FROM staff_documents WHERE staff_id = ?').bind(staffId)],
         ['employee_documents', db.prepare('DELETE FROM employee_documents WHERE staff_id = ?').bind(staffId)],
+        // Sprint 5 で足した本人の記録（振込先の口座・変更申請・休暇・出勤可能日・従業員データの変更履歴・予定確認やカレンダーのトークン）
+        [null, db.prepare('DELETE FROM payout_accounts WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare('DELETE FROM profile_change_requests WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare('DELETE FROM leave_requests WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare('DELETE FROM staff_availability WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare('DELETE FROM availability_submissions WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare('DELETE FROM employee_change_logs WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare('DELETE FROM staff_schedule_tokens WHERE staff_id = ?').bind(staffId)],
+        [null, db.prepare(`DELETE FROM staff_calendar_tokens WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
         ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
