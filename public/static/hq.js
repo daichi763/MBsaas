@@ -1159,7 +1159,7 @@ const OB_STATUS_BADGE = {
 }
 const OB_EVENT_LABEL = { start: '契約終了の登録', cancel: '契約終了の取消', export: 'CSV の書き出し', file: 'ファイルの取得',
   delete_start: '削除の開始', delete_error: '削除の失敗', complete: '削除の完了' }
-const OB_FILE_LABEL = { attendance_reports: '出退勤の写真', staff_documents: 'スタッフの書類', employee_documents: '入社時書類', client_documents: 'クライアントの契約書類' }
+const OB_FILE_LABEL = { attendance_reports: '出退勤の写真', attendance_reports_duplicates_0036: '出退勤の写真（重複の控え）', staff_documents: 'スタッフの書類', employee_documents: '入社時書類', client_documents: 'クライアントの契約書類' }
 const OB_DARK_INP = 'style="background:#1e293b;border-color:#334155;color:#fff"'
 let OB_DETAIL = null
 

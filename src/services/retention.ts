@@ -824,6 +824,8 @@ const OFFBOARDING_SECRET_COL_RE = /password|secret|token|recovery|totp|link_key|
 type ObFileSource = { source: string; bucket: 'photos' | 'documents' | 'contracts'; idCol: string; keyCol: string; nameCol: string | null; whenCol: string; refCol: string }
 export const OFFBOARDING_FILE_SOURCES: ObFileSource[] = [
   { source: 'attendance_reports', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
+  // 0036 で重複として退避した出退勤の行にも写真のキーが残っている
+  { source: 'attendance_reports_duplicates_0036', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
   { source: 'staff_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'employee_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'client_documents', bucket: 'contracts', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'client_id' },
