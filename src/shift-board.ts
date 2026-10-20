@@ -14,6 +14,8 @@ import type { ConflictRow } from './lib/staff-eligibility'
 import { changesOf, insertRowsStmts, updateRowsStmts } from './lib/bulk-write'
 import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
+import { loadShiftSnaps, notifyShiftChanges } from './notifications'
+import type { ShiftSnap } from './notifications'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -917,6 +919,9 @@ app.put('/shift-slots/:id', async (c) => {
     stmts.push(db.prepare(`UPDATE shifts SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE shift_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'`)
       .bind(...cols.map(k => set[k]), s.shift_id, u.company_id))
   }
+  // 日時・場所を変えるときは、枠に付いて動くシフトの変更の前の内容を取っておき、保存の後に本人に知らせる（#155）
+  const notifyIds = dateTimeChanged || siteChanged || locationChanged ? follow.map(s => s.shift_id) : []
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, notifyIds)
   try {
     await db.batch(stmts)
   } catch (e) {
@@ -928,6 +933,7 @@ app.put('/shift-slots/:id', async (c) => {
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE slot_id = ? AND company_id = ? AND COALESCE(price_locked,0) = 0 AND COALESCE(settle_status,'planned') != 'confirmed'`)
     .bind(slot.slot_id, u.company_id).all()).results as any[]
   await repriceRows(db, u.company_id, rows)
+  if (notifyIds.length) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, notifyIds))
   return c.json({ ok: true, detached: detach.length, locked_kept: lockedKept, warnings })
 })
 
@@ -985,6 +991,7 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     await applyPricingToShift(db, u.company_id, res.meta.last_row_id as number, { data })
     created.push(res.meta.last_row_id as number)
   }
+  await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(db, u.company_id, created)) // 本人に知らせる（#155）
   return c.json({ ok: true, shift_ids: created, warnings })
 })
 
@@ -1009,6 +1016,7 @@ app.post('/shifts/:id/move', async (c) => {
   // 日時が変わるときは、本人の「入れます／入れません」の返事（前の日時に対するもの）を消す（#411）
   const replyReset = role.work_date !== s.work_date || role.start_time !== s.start_time || role.end_time !== s.end_time
     ? ', staff_reply = NULL, staff_reply_note = NULL, staff_reply_at = NULL' : ''
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, [s.shift_id]) // 移動の前の内容（本人への通知に使う。#155）
   // 移動したシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
   try {
     await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ?, legacy_duplicate = NULL${replyReset} WHERE shift_id = ?`)
@@ -1019,6 +1027,7 @@ app.post('/shifts/:id/move', async (c) => {
   }
   // 手動変更した金額でも、案件が変わった場合は移動先の単価に置き換える
   await applyPricingToShift(db, u.company_id, s.shift_id, { force: projectChanged })
+  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [s.shift_id])) // 本人に知らせる（#155）
   return c.json({ ok: true, warnings })
 })
 
@@ -1065,8 +1074,12 @@ app.post('/shifts/confirm-requested', async (c) => {
     if (warnings.length) return c.json({ need_force: true, warnings, skipped, count: targets.length }, 409)
   }
   // 確認の後に状態が変わったもの（別の画面で確定・削除した等）は変えない
+  const targetIds = targets.map(r => r.shift_id)
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, targetIds)
   const res = await db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
-    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targets.map(r => r.shift_id))).run()
+    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targetIds)).run()
+  // 確定にしたことを本人に知らせる（スタッフごとにまとめる。#155）
+  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, targetIds))
   return c.json({ ok: true, confirmed: res.meta.changes || 0, skipped })
 })
 
@@ -1308,6 +1321,9 @@ app.post('/shifts/bulk', async (c) => {
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
   const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows))
+  // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）
+  await notifyShiftChanges(c, u.company_id, [], rows.map((r): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time,
+    status: r.status, location: r.location, project_name: project.project_name, site_name: site?.site_name ?? null })))
   return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next })
 })
 
@@ -1492,6 +1508,10 @@ app.post('/shifts/copy-week', async (c) => {
       return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })
     shiftsCreated = changesOf(await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true })))
+    // コピーで登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。
+    // 同時に実行されて一部が作られなかったとき（どの行を作ったか分からない）は、作った側の呼び出しが知らせるので、ここでは送らない
+    if (shiftsCreated === rows.length) await notifyShiftChanges(c, cid, [], rows.map((r: any): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date,
+      start_time: r.start_time, end_time: r.end_time, status: r.status, location: r.location, project_name: projectName(r.project_id) })))
   }
   return c.json({ ok: true, ...summary, slots: slotsCreated, slots_reused: slotPlans.filter(p => p.reused).length, roles: rolesCreated,
     shifts: shiftsCreated, already, skipped: view(), next_cursor: nextCursor })

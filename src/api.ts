@@ -28,6 +28,7 @@ import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, no
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
+import { loadShiftSnaps, notifyShiftChanges, notifyReportComment } from './notifications'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -4195,6 +4196,8 @@ api.post('/admin/shifts', async (c) => {
   if (sid) {
     await applyPricingToShift(c.env.DB, u.company_id, sid)
     if (b.unit_price != null) await c.env.DB.prepare("UPDATE shifts SET unit_price = ?, bill_rate = ?, bill_unit_type = 'daily', bill_qty = 1, price_locked = 1 WHERE shift_id = ?").bind(b.unit_price, b.unit_price, sid).run()
+    // 本人に知らせる（#155）
+    await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(c.env.DB, u.company_id, [sid]))
   }
   return c.json({ ok: true, shift_id: sid, warnings: chk.warnings })
 })
@@ -4250,6 +4253,8 @@ api.put('/admin/shifts/:id', async (c) => {
   // 担当者・時間が変わったら、スタッフの『入れます』などの返事を消す（別の人・別の時間には答えていない。#411 の残り）
   const timeChanged = (b.start_time != null && b.start_time !== cur.start_time) || (b.end_time != null && b.end_time !== cur.end_time)
   const db = c.env.DB, sid = cur.shift_id
+  // 担当者・時間・状態が変わるときは、変更の前の内容を取っておき、保存の後に本人に知らせる（#155）
+  const notifyBefore = staffChanged || timeChanged || (b.status != null && b.status !== cur.status) ? await loadShiftSnaps(db, u.company_id, [sid]) : null
   const stmts: D1PreparedStatement[] = [db.prepare(`UPDATE shifts SET
         status = COALESCE(?, status), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
         staff_id = COALESCE(?, staff_id), memo = COALESCE(?, memo),
@@ -4293,6 +4298,7 @@ api.put('/admin/shifts/:id', async (c) => {
   if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
   // 欠勤にしたシフトの承認待ちは承認できない（却下が必要）ので、件数を返す（#70）
   const pendingAbsent = b.status === 'absent' && cur.status !== 'absent' ? await pendingCorrectionCount(db, sid) : 0
+  if (notifyBefore) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [sid]))
   return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}), ...(pendingAbsent ? { pending_corrections: pendingAbsent } : {}) })
 })
 
@@ -4309,6 +4315,7 @@ api.delete('/admin/shifts/:id', async (c) => {
   if (rep?.n > 0) return c.json({ error: '勤怠・日報の報告があるシフトは削除できません。状態を「欠勤」などに変更してください' }, 409)
   // 承認待ちの打刻修正申請（打刻漏れの追加）は、処理できなくなるので『取り消し（シフト削除）』にして申請者に知らせる（#70）
   const db = c.env.DB, cancelToken = newCancelToken()
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, [cur.shift_id])
   await db.batch([
     ...autoCancelStatements(db, cur.shift_id, 'shift_deleted', actorOf(u), cancelToken),
     db.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
@@ -4316,6 +4323,7 @@ api.delete('/admin/shifts/:id', async (c) => {
     db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
   ])
   const cancelled = await notifyAutoCancelled(c, cur.shift_id, cancelToken)
+  await notifyShiftChanges(c, u.company_id, notifyBefore, []) // 本人に取消を知らせる（#155）
   return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}) })
 })
 
@@ -4437,6 +4445,7 @@ api.put('/admin/daily-reports/:id', async (c) => {
   const now = nowJST()
   let guard = false
   let asOf: string | null = null
+  let commentChanged = false
   if (has('manager_comment')) {
     if (b.manager_comment !== null && typeof b.manager_comment !== 'string') return c.json({ error: 'コメントの形式が正しくありません' }, 400)
     const comment = typeof b.manager_comment === 'string' && b.manager_comment.trim() ? b.manager_comment.trim() : null
@@ -4447,6 +4456,7 @@ api.put('/admin/daily-reports/:id', async (c) => {
     }
     sets.push('manager_comment = ?', 'manager_comment_by = ?', 'manager_comment_at = ?')
     vals.push(comment, comment ? u.user_id : null, comment ? now : null)
+    commentChanged = !!comment && comment !== (cur.manager_comment || '')
   }
   if (has('manager_checked')) {
     const m = b.manager_checked
@@ -4469,6 +4479,8 @@ api.put('/admin/daily-reports/:id', async (c) => {
     if (asOf && latest && String(latest.submitted_at) > asOf) return c.json({ error: REPORT_REVISED }, 409)
     return c.json({ error: COMMENT_CONFLICT }, 409)
   }
+  // コメントを新しく付けた・書き換えたときは、スタッフに知らせる（#158。ログインのない人には送らない）
+  if (commentChanged && (r.meta?.changes ?? 0)) return c.json({ ok: true, staff_notified: await notifyReportComment(c, u.company_id, id!, u.name) })
   return c.json({ ok: true })
 })
 
