@@ -1229,7 +1229,11 @@ export async function countOffboardingData(db: D1Database, companyId: number): P
     ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
     ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
   ]
-  const row = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${cols.join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  // D1 は1つの結果の列を100までしか返せないため、80列ずつの問い合わせに分けて1回の batch で読む（表を足しても上限を超えないように）
+  const parts: string[][] = []
+  for (let i = 0; i < cols.length; i += 80) parts.push(cols.slice(i, i + 80))
+  const res = await db.batch(parts.map(p => db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${p.join(', ')}`).bind(companyId)))
+  const row = Object.assign({}, ...res.map(r => (r.results?.[0] || {}) as Record<string, number>)) as Record<string, number>
   const counts: Record<string, number> = {}
   OFFBOARDING_TABLES.forEach((t, i) => { counts[t.target] = Number(row?.[`t${i}`]) || 0 })
   const files: Record<string, number> = {}
