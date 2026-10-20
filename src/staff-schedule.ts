@@ -396,21 +396,30 @@ scheduleAdminApi.post('/availability/remind', async (c) => {
   if (!isMonth(b.month) || !submittableMonths(today).includes(b.month)) return c.json({ error: '提出を頼めるのは今月から先の月です' }, 400)
   const period = await loadPeriod(db, u.company_id, b.month)
   const since = new Date(Date.now() + 9 * 3600 * 1000 - REMIND_INTERVAL_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-  if (period?.last_reminded_at && period.last_reminded_at > since) return c.json({ error: `さきほど通知しました。続けて送る場合は${REMIND_INTERVAL_MINUTES}分ほど待ってください` }, 409)
+  const now = nowJST()
+  // 送る権利を先に1回の書き込みで取る（ほかの管理者・別のタブから同時に押されても、通知は1回分だけにする）
+  const claimed = await db.prepare(`INSERT INTO availability_periods (company_id, month, last_reminded_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (company_id, month) DO UPDATE SET last_reminded_at = excluded.last_reminded_at
+      WHERE availability_periods.last_reminded_at IS NULL OR availability_periods.last_reminded_at <= ?
+    RETURNING month`).bind(u.company_id, b.month, now, u.user_id, now, since).first()
+  if (!claimed) return c.json({ error: `さきほど通知しました。続けて送る場合は${REMIND_INTERVAL_MINUTES}分ほど待ってください` }, 409)
   const m = Number(b.month.slice(5, 7))
   const title = `${m}月の出勤可能日を提出してください`
   const body = [period?.deadline ? `締切: ${fmtMD(period.deadline)}` : '', 'アプリの「シフト」→「出勤可能日を提出」から、日ごとに ○△× を付けて提出してください', period?.note || ''].filter(Boolean).join('\n')
   const w = availabilityStaffWhere(b.month)
-  const now = nowJST()
-  const r = await db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
-    SELECT sp.company_id, us.user_id, ?, ?, ?, ?, NULL, ? FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    WHERE ${w.sql} AND us.role = 'staff'
-      AND NOT EXISTS (SELECT 1 FROM availability_submissions sub WHERE sub.staff_id = sp.staff_id AND sub.month = ?)`)
-    .bind(AVAILABILITY_REQUEST_KIND, title, body, `#availability/${b.month}`, now, u.company_id, ...w.binds, b.month).run()
-  const sent = r.meta.changes || 0
-  await db.prepare(`INSERT INTO availability_periods (company_id, month, last_reminded_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT (company_id, month) DO UPDATE SET last_reminded_at = excluded.last_reminded_at`).bind(u.company_id, b.month, now, u.user_id, now).run()
-  return c.json({ ok: true, sent })
+  try {
+    const r = await db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+      SELECT sp.company_id, us.user_id, ?, ?, ?, ?, NULL, ? FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+      WHERE ${w.sql} AND us.role = 'staff'
+        AND NOT EXISTS (SELECT 1 FROM availability_submissions sub WHERE sub.staff_id = sp.staff_id AND sub.month = ?)`)
+      .bind(AVAILABILITY_REQUEST_KIND, title, body, `#availability/${b.month}`, now, u.company_id, ...w.binds, b.month).run()
+    return c.json({ ok: true, sent: r.meta.changes || 0 })
+  } catch (e) {
+    // 送れなかったときは、すぐに押し直せるよう前回の通知日時に戻す
+    await db.prepare('UPDATE availability_periods SET last_reminded_at = ? WHERE company_id = ? AND month = ? AND last_reminded_at = ?')
+      .bind(period?.last_reminded_at ?? null, u.company_id, b.month, now).run()
+    throw e
+  }
 })
 
 // ある日の出勤可能日（シフトを組むときの参考。staff_id ごと）

@@ -103,6 +103,16 @@ const rm = await admin.post('/api/admin/availability/remind', { month: nextMonth
 ok('#171 未提出の人に通知できる', rm.status === 200 && rm.data.sent >= 1, rm)
 const rm2 = await admin.post('/api/admin/availability/remind', { month: nextMonth })
 ok('#171 続けて通知を押しても二重に送らない（409）', rm2.status === 409, rm2)
+// 同時に2回押されても、送るのは1回だけ（まだ通知していないほかの月で確かめる）
+let otherMonth = null
+for (const m of [1, 2, 3].map(n => addMonths(thisMonth, n)).filter(m => m !== nextMonth)) {
+  const a = (await admin.get('/api/admin/availability?month=' + m)).data
+  if (!a.last_reminded_at) { otherMonth = m; break }
+}
+if (otherMonth) {
+  const both = await Promise.all([admin.post('/api/admin/availability/remind', { month: otherMonth }), admin.post('/api/admin/availability/remind', { month: otherMonth })])
+  ok('#171 同時に2回押しても通知は1回分（200 と 409）', both.map(r => r.status).sort().join(',') === '200,409', both.map(r => [r.status, r.data]))
+}
 const n2 = (await st2.get('/api/staff/notifications')).data.notifications || []
 ok('#171 未提出の人の通知に提出のお願いが届く', n2.some(x => x.kind === 'availability_request' && x.link === '#availability/' + nextMonth), n2.slice(0, 3))
 const n1 = (await st1.get('/api/staff/notifications')).data.notifications || []
