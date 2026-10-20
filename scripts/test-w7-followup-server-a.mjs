@@ -108,10 +108,18 @@ const inA = must(await A.post('/api/admin/roster/link', { code: X.code, agreed: 
   ok('#9001 連携先のスキルシートにも生年月日・年齢・備考がなく、年代がある', sheet.date_of_birth == null && sheet.age == null && sheet.remarks == null && sheet.age_group === ageGroup(DOB), sheet)
   const list = must(await A.get('/api/admin/staff'), 'A list').staff.find(s => s.staff_id === inA)
   ok('#9001 連携先のスタッフ一覧に生年月日・備考を返さない', list && list.date_of_birth === undefined && list.remarks === undefined, list)
+  // 登録時の同じ人の確認で、入力した生年月日が所属元の値と合うかどうかが分からないこと（生年月日を確かめる手段にしない）
+  const dup = async (dob) => { const r = await A.post('/api/admin/roster', { route: 'skillsheet', name: `${PFX} 連携X`, gender: 'male', date_of_birth: dob }); return (r.data?.matches || []).find(m => m.staff_id === inA) }
+  const [hit, miss] = [await dup(DOB), await dup('1971-02-03')]
+  ok('#9001 連携先の行の同じ人の確認は氏名だけで照らし、所属元の生年月日と合うかは返さない',
+    hit && miss && JSON.stringify(hit.reasons) === JSON.stringify(miss.reasons) && hit.reasons.includes('氏名が同じ（他社連携のスタッフ）'), { hit, miss })
   const own = must(await admin.get(`/api/admin/staff/${X.staff_id}`), 'own detail').profile
   ok('#9001 所属元では今までどおり生年月日・年齢・備考が見える', own.date_of_birth === DOB && own.age > 0 && own.remarks === `${PFX}の備考（所属元だけ）`, own)
   const rec = must(await A.get(`/api/admin/roster/${inA}/links`), 'consents')
   ok('#9001 連携先の同意履歴には v3 の版が残る', (rec.consents || []).some(x => x.consent_version === 'v3'), rec)
+  // 所属元への連携の知らせも、共有する範囲（年代。生年月日は共有しない）を正しく書く
+  const ln = (must(await admin.get('/api/admin/notifications?kind=roster_linked&limit=100'), 'notifications').notifications || []).find(n => String(n.title || '').includes(`${PFX}連携先A`))
+  ok('#9001 所属元への連携の知らせは「生年月日も参照できる」と書かない', ln && !String(ln.body).includes('氏名・生年月日') && String(ln.body).includes('年代'), ln)
 }
 // 本人（スタッフ X）が連携先の企業に切り替えても、自分の生年月日は見える。切り替えはログインの履歴に残る（#552）
 {

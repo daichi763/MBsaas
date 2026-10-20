@@ -277,8 +277,8 @@ export function inactiveLabelOf(r: any, today: string): string | null {
 }
 /**
  * 自社のスタッフマスタから、同じ人と思われる行を探す（統合済みは除く）。
- * 電話番号（数字のみで比較）が同じ、または氏名（空白を除いて比較）と生年月日が同じ行。
- * 他社連携の行は、生年月日を所属元の値で比べる。電話番号は返さない
+ * 電話番号（数字のみで比較）が同じ、または氏名（空白を除いて比較）と生年月日が同じ行。電話番号は返さない。
+ * 他社連携の行は生年月日を比べず、氏名が同じなら候補にする（入力した日付との一致で、所属元の生年月日を確かめられないように。#9001）
  */
 export async function findSamePersonCandidates(db: D1Database, companyId: number, o: { name?: any; phone?: any; date_of_birth?: any }) {
   const phone = phoneDigits(String(o.phone || ''))
@@ -291,7 +291,9 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
   for (const r of rows) {
     const reasons: string[] = []
     if (phone.length >= 10 && r.phone && phoneDigits(String(r.phone)) === phone) reasons.push('電話番号が同じ')
-    if (name && dob && r.dob === dob && String(r.name || '').replace(/[\s　]/g, '') === name) reasons.push('氏名と生年月日が同じ')
+    const sameName = !!name && !!dob && String(r.name || '').replace(/[\s　]/g, '') === name
+    if (sameName && r.linked) reasons.push('氏名が同じ（他社連携のスタッフ）')
+    else if (sameName && r.dob === dob) reasons.push('氏名と生年月日が同じ')
     if (!reasons.length) continue
     out.push({ staff_id: r.staff_id, name: r.name, affiliation_type: r.affiliation_type, is_provisional: r.is_provisional ? 1 : 0,
       employment_status: r.employment_status || 'working', inactive: inactiveLabelOf(r, today), reasons })
@@ -299,13 +301,16 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
   return out.slice(0, 20)
 }
 
-/** 同じ人の確認に使う自社のスタッフの一覧（統合済みは除く。他社連携の行の生年月日は所属元の値。CSV 一括登録（roster-import.ts）でも使う） */
+/**
+ * 同じ人の確認に使う自社のスタッフの一覧（統合済みは除く。CSV 一括登録（roster-import.ts）でも使う）。
+ * 他社連携の行（linked = 1）は生年月日を返さない（所属元だけの項目。#9001）
+ */
 export async function samePersonRows(db: D1Database, companyId: number): Promise<any[]> {
   return (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
-      CASE WHEN sp.affiliation_type = 'linked_external' THEN src.date_of_birth ELSE sp.date_of_birth END AS dob
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN 1 ELSE 0 END AS linked,
+      CASE WHEN sp.affiliation_type = 'linked_external' THEN NULL ELSE sp.date_of_birth END AS dob
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
 }
 
@@ -1129,13 +1134,13 @@ function linkedNoticeStmts(db: D1Database, u: any, src: any, newStaffId: number,
       SELECT ou.company_id, ou.user_id, 'roster_linked', ?, ?, ?, ?, ? FROM users ou
       WHERE ou.company_id = ? AND ou.status = 'active' AND ou.role IN ${NOTIFY_ADMIN_ROLES_SQL}`)
       .bind(`自社スタッフの連携: ${name}（${host}）`,
-        `「${host}」が、自社のスタッフ ${name} さんを企業間連携で登録しました。連携先は基本項目（氏名・生年月日・最寄駅・スキル・経歴など）を参照できます。心当たりがない場合は、スタッフ詳細の「連携先企業」から連携を終了できます。`,
+        `「${host}」が、自社のスタッフ ${name} さんを企業間連携で登録しました。連携先は基本項目（氏名・年代・最寄駅・スキル・経歴など。生年月日・備考は共有しません）を参照できます。心当たりがない場合は、スタッフ詳細の「連携先企業」から連携を終了できます。`,
         `/admin#staff/${Number(src.staff_id)}`, src.staff_id, now, src.company_id),
     db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
       SELECT ru.company_id, ru.user_id, 'roster_linked_staff', ?, ?, '#profile', r.staff_id, ? FROM staff_profiles r JOIN users ru ON ru.user_id = r.user_id
       WHERE r.staff_id = ? AND ru.role = 'staff' AND ru.status = 'active'`)
       .bind(`あなたの情報が「${host}」と共有されました`,
-        `「${host}」が、あなたのスタッフ情報（氏名・生年月日・最寄駅・スキル・経歴など）を企業間連携で登録しました（連携元: ${src.owner_company_name || ''}）。共有中の会社は「その他 → プロフィール」で確認できます。心当たりがない場合は、所属会社の担当者に連絡してください。`,
+        `「${host}」が、あなたのスタッフ情報（氏名・年代・最寄駅・スキル・経歴など。生年月日・備考は共有しません）を企業間連携で登録しました（連携元: ${src.owner_company_name || ''}）。共有中の会社は「その他 → プロフィール」で確認できます。心当たりがない場合は、所属会社の担当者に連絡してください。`,
         now, src.root_staff_id),
   ]
 }
