@@ -922,8 +922,9 @@ export async function notifyRecruitResults(c: any, companyId: number, targets: R
       const ng = mine.filter(i => i.status === 'rejected' && t.rejected.includes(i.item_id))
       if (!ok.length && !ng.length) continue
       const lines: [string, string][] = [['募集', a.page_title || '（スタッフアプリからの応募）']]
-      ok.forEach((i, k) => lines.push([k ? '' : '確定した日時', `${when(i)} ${i.role_name || ''}\n場所: ${i.place || '（担当者から連絡します）'}${i.site_address ? `（${i.site_address}）` : ''}`]))
-      ng.forEach((i, k) => lines.push([k ? '' : '見送りの日時', `${when(i)} ${i.role_name || ''}`]))
+      // 複数の日時は1つの項目にまとめる（メールのテキスト版に見出しのない「: 」の行ができないように）
+      if (ok.length) lines.push(['確定した日時', ok.map(i => `${when(i)} ${i.role_name || ''}\n場所: ${i.place || '（担当者から連絡します）'}${i.site_address ? `（${i.site_address}）` : ''}`).join('\n')])
+      if (ng.length) lines.push(['見送りの日時', ng.map(i => `${when(i)} ${i.role_name || ''}`).join('\n')])
       if (ok.length && a.description) lines.push(['仕事内容・集合の案内', clip(String(a.description), 1000)])
       const contactText = [a.contact_note, contact.phone ? `電話 ${contact.phone}` : ''].filter(Boolean).join(' / ')
       if (contactText) lines.push(['問い合わせ先', contactText])
@@ -936,7 +937,7 @@ export async function notifyRecruitResults(c: any, companyId: number, targets: R
       const u = a.staff_id ? users.get(Number(a.staff_id)) : undefined
       if (u) {
         rows.push({ company_id: companyId, user_id: u.user_id, kind: 'recruit_result', title,
-          body: lines.map(([k, v]) => (k ? `${k}: ${v}` : v)).join('\n'), link: ok.length ? `#shift/${ok[0].work_date}` : '#shift', related_id: a.application_id })
+          body: lines.map(([k, v]) => `${k}: ${v}`).join('\n'), link: ok.length ? `#shift/${ok[0].work_date}` : '#shift', related_id: a.application_id })
         res.app = true
       }
       // メール: 公開ページからの応募は応募フォームのアドレス（本人が結果の連絡先として入れたもの）。アプリからの応募はログインのアドレス

@@ -970,8 +970,8 @@ app.post('/shifts/:id/move', async (c) => {
   // 日時が変わるときは、本人の「入れます／入れません」の返事（前の日時に対するもの）を消す（#411）
   const replyReset = role.work_date !== s.work_date || role.start_time !== s.start_time || role.end_time !== s.end_time
     ? ', staff_reply = NULL, staff_reply_note = NULL, staff_reply_at = NULL' : ''
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, [s.shift_id]) // 移動の前の内容（本人への通知に使う。#155）
   // 移動したシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
-  const notifyBefore = await loadShiftSnaps(db, u.company_id, [s.shift_id])
   try {
     await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ?, legacy_duplicate = NULL${replyReset} WHERE shift_id = ?`)
       .bind(role.project_id, role.slot_id, role.slot_role_id, role.site_id ?? null, role.work_date, role.start_time, role.end_time, role.break_minutes ?? null, role.role_name, role.location || s.location || '', s.shift_id).run()

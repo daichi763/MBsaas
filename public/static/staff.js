@@ -174,9 +174,9 @@ async function loadHomeRecruit() {
 }
 delegate('homeOpenRecruit', () => openRecruitFromAnywhere())
 // シフト画面の『募集中のお仕事』の一覧を開く（ホーム・通知から）。シフト画面を描いた後に loadRecruitOpen が一覧を開く
-let RC_OPEN_NEXT = false
+let RC_OPEN_NEXT = 0 // 一覧を開くよう頼んだ時刻（シフト画面の読み込みに失敗して残っても、後で別の操作から開いたときには開かない）
 function openRecruitFromAnywhere() {
-  RC_OPEN_NEXT = true
+  RC_OPEN_NEXT = Date.now()
   if ((location.hash || '').slice(1) === 'shift') route(); else location.hash = 'shift'
 }
 
@@ -970,7 +970,7 @@ const RC_OPEN_AFTER_SWITCH = 'rc-open-after-switch'
 async function loadRecruitOpen() {
   const host = document.getElementById('recruit-open'); if (!host) return
   // ホームのカード・通知から来たときは、そのまま一覧を開く（#156）
-  const openNext = RC_OPEN_NEXT; RC_OPEN_NEXT = false
+  const openNext = RC_OPEN_NEXT > 0 && Date.now() - RC_OPEN_NEXT < 30000; RC_OPEN_NEXT = 0
   if (openNext) return openRecruitList()
   let s
   try { s = (await axios.get('/api/staff/recruit/summary')).data } catch (e) { host.innerHTML = ''; return }
