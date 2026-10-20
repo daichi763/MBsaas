@@ -1798,6 +1798,73 @@ const CONSULT_ST_BADGE = { open: '<span class="badge badge-yellow">未対応</sp
 // 対象のシフトを選ばないと送れないカテゴリ（選べるシフトがある場合だけ）
 const CONSULT_SHIFT_REQUIRED = ['absence']
 
+// 相談に付ける写真（#429）。端末で縮小（compressImage）してから送る。1回の送信に3枚まで
+const CONSULT_PHOTO_LIMIT = 3
+const CONSULT_PICKS = { form: [], follow: [] }
+function consultPicksHtml(which) {
+  const list = CONSULT_PICKS[which]
+  return list.map((p, i) => `<div class="relative"><img src="${esc(p.url)}" alt="選んだ写真" class="w-16 h-16 object-cover rounded-lg border border-gray-200">
+    <button type="button" class="absolute -top-2 -right-2 bg-white rounded-full w-6 h-6 text-xs text-gray-600 border border-gray-300" data-action="consultPhotoRemove" data-which="${which}" data-idx="${i}" aria-label="写真を外す"><i class="fas fa-xmark"></i></button></div>`).join('')
+}
+function consultPhotoInputHtml(which) {
+  return `<div>
+    <label class="text-sm text-gray-600 block mb-1">写真（任意・${CONSULT_PHOTO_LIMIT}枚まで）</label>
+    <div class="flex gap-3 flex-wrap items-center" id="c-picks-${which}">${consultPicksHtml(which)}</div>
+    <label class="btn btn-outline text-xs mt-2 inline-flex"><i class="fas fa-camera"></i>写真を選ぶ<input type="file" accept="image/*" multiple class="hidden" data-consult-photo="${which}"></label>
+    <p class="text-xs text-gray-400 mt-1">店舗の状況や受け取った書面などを送れます。管理者だけが見られます</p>
+  </div>`
+}
+function consultPicksClear(which) { CONSULT_PICKS[which].forEach(p => URL.revokeObjectURL(p.url)); CONSULT_PICKS[which] = [] }
+function consultPicksRefresh(which) { const box = document.getElementById('c-picks-' + which); if (box) box.innerHTML = consultPicksHtml(which) }
+document.addEventListener('change', async (e) => {
+  const input = e.target
+  const which = input && input.dataset && input.dataset.consultPhoto
+  if (!which) return
+  const files = [...(input.files || [])]
+  input.value = ''
+  for (const f of files) {
+    if (CONSULT_PICKS[which].length >= CONSULT_PHOTO_LIMIT) { toast(`写真は${CONSULT_PHOTO_LIMIT}枚までです`); break }
+    if (!/^image\//.test(f.type) && !/\.(heic|heif)$/i.test(f.name || '')) { toast('画像ファイルを選んでください'); continue }
+    if (f.size > PHOTO_MAX_UPLOAD_BYTES) { toast('写真のファイルが大きすぎます（50MBまで）'); continue }
+    try {
+      const blob = await compressImage(f)
+      CONSULT_PICKS[which].push({ blob, url: URL.createObjectURL(blob) })
+    } catch (err) { toast(err && err.message ? err.message : '画像の処理に失敗しました') }
+  }
+  consultPicksRefresh(which)
+})
+delegate('consultPhotoRemove', el => {
+  const list = CONSULT_PICKS[el.dataset.which]; if (!list) return
+  const [p] = list.splice(Number(el.dataset.idx), 1)
+  if (p) URL.revokeObjectURL(p.url)
+  consultPicksRefresh(el.dataset.which)
+})
+// 写真を順に送る。送れなかった枚数を返す（相談・追加の連絡そのものは送信済み）
+async function consultUploadPhotos(consultationId, messageId, picks) {
+  let failed = 0
+  for (const p of picks) {
+    const fd = new FormData()
+    fd.append('photo', p.blob, 'photo.jpg')
+    if (messageId) fd.append('message_id', String(messageId))
+    try { await axios.post(`/api/staff/consultations/${Number(consultationId)}/photos`, fd) } catch (e) { failed++ }
+  }
+  return failed
+}
+function consultPhotosView(co, messageId) {
+  const list = (co.photos || []).filter(p => (p.message_id || null) === (messageId || null))
+  return list.length ? `<div class="flex gap-2 flex-wrap mt-2">${list.map(p => `<a href="/api/staff/consultation-photo/${Number(p.attachment_id)}" target="_blank" rel="noopener">
+    <img src="/api/staff/consultation-photo/${Number(p.attachment_id)}" alt="添付の写真" loading="lazy" class="w-16 h-16 object-cover rounded-lg border border-gray-200"></a>`).join('')}</div>` : ''
+}
+// 管理者の返信と自分の追加の連絡を時系列で出す（#154）
+function consultThreadView(co) {
+  const msgs = co.messages || []
+  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信</p><p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${linkify(esc(co.manager_reply))}</p></div>`
+  const at = (x) => esc(dayjs(String(x || '').replace(' ', 'T')).format('M/D HH:mm'))
+  return msgs.map(m => m.author_side === 'admin'
+    ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信<span class="font-normal text-blue-500 ml-1">${at(m.created_at)}</span></p><p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${linkify(esc(m.body))}</p></div>`
+    : `<div class="mt-2 bg-gray-50 rounded-lg px-3 py-2"><p class="text-xs text-gray-500 mb-0.5"><i class="fas fa-user mr-1"></i>追加の連絡<span class="ml-1">${at(m.created_at)}</span></p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosView(co, m.message_id)}</div>`).join('')
+}
+
 function consultShiftLabel(s, multi) {
   return `${fmtDate(s.work_date)} ${formatShiftTime(s.start_time, s.end_time)} ${s.project_name || ''}${multi ? `（${s.company_name}）` : ''}${s.status === 'requested' ? '［希望（仮）］' : ''}`
 }
@@ -1855,6 +1922,7 @@ window.renderConsult = async function () {
           <label class="text-sm text-gray-600 block mb-1" for="c-body">内容</label>
           <textarea id="c-body" rows="4" class="inp" maxlength="2000" placeholder="相談内容を入力してください" required></textarea>
         </div>
+        ${consultPhotoInputHtml('form')}
         <div>
           <label class="text-sm text-gray-600 block mb-1">緊急度</label>
           <div class="grid grid-cols-3 gap-2">
@@ -1879,7 +1947,9 @@ window.renderConsult = async function () {
           </div>
           ${multi || co.target_date ? `<p class="text-xs text-gray-500 mb-1">${multi ? `<i class="fas fa-building mr-1"></i>${esc(co.company_name)}` : ''}${multi && co.target_date ? '・' : ''}${co.target_date ? `対象: ${esc(fmtDate(co.target_date))} ${esc(co.target_project_name || '')}` : ''}</p>` : ''}
           <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
-          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信</p><p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${linkify(esc(co.manager_reply))}</p></div>` : ''}
+          ${consultPhotosView(co, null)}
+          ${consultThreadView(co)}
+          <button type="button" class="btn btn-outline text-xs mt-3" data-action="consultFollowOpen" data-id="${Number(co.consultation_id)}"><i class="fas fa-comment-dots"></i>この相談に追加で連絡する</button>
         </div>`).join('') || '<p class="text-center text-gray-400 py-6">相談履歴はありません</p>'}
     </div>`
 
@@ -1943,12 +2013,48 @@ window.renderConsult = async function () {
       }
       draftClear('consult')
       const to = res.company_name || coName(payload.company_id)
-      toast(`${to ? to + 'に' : ''}送信しました。管理者からの返信をお待ちください`)
+      // 写真は相談を登録した後に1枚ずつ送る（#429）
+      const picks = CONSULT_PICKS.form.slice()
+      let failed = 0
+      if (picks.length) { btn.textContent = '写真を送信中…'; failed = await consultUploadPhotos(res.consultation_id, null, picks) }
+      consultPicksClear('form')
+      toast(failed ? `${to ? to + 'に' : ''}相談は送信しましたが、写真${failed}枚を送れませんでした。追加の連絡から送り直してください` : `${to ? to + 'に' : ''}送信しました。管理者からの返信をお待ちください`)
       renderConsult()
     })
   })
 }
 delegate('consultReload', () => renderConsult())
+
+// 追加の連絡（#154）。管理者に知らせ、対応済みの相談なら未対応に戻る。写真も付けられる（#429）
+delegate('consultFollowOpen', el => {
+  consultPicksClear('follow')
+  modal(`<h3 class="font-bold text-lg mb-3">この相談に追加で連絡する</h3>
+    <form id="consult-follow-form" class="space-y-3">
+      <textarea id="c-follow-body" rows="4" class="inp" maxlength="2000" placeholder="追加で伝えたいことを入力してください" required></textarea>
+      ${consultPhotoInputHtml('follow')}
+      <div class="flex gap-2"><button type="button" class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button type="submit" id="c-follow-submit" class="btn btn-primary flex-1" data-id="${Number(el.dataset.id)}">送信する</button></div>
+    </form>`)
+  document.getElementById('consult-follow-form').addEventListener('submit', (e) => {
+    e.preventDefault()
+    const btn = document.getElementById('c-follow-submit')
+    const body = document.getElementById('c-follow-body').value.trim()
+    if (!body) { toast('内容を入力してください'); return }
+    const id = Number(btn.dataset.id)
+    withSubmitLock(btn, async () => {
+      let res
+      try { res = (await axios.post(`/api/staff/consultations/${id}/messages`, { body })).data } catch (err) {
+        consultApiError(err, '送信に失敗しました。時間をおいてもう一度お試しください'); return
+      }
+      const picks = CONSULT_PICKS.follow.slice()
+      const failed = picks.length ? await consultUploadPhotos(id, res.message_id, picks) : 0
+      consultPicksClear('follow')
+      closeModal()
+      toast(failed ? `送信しましたが、写真${failed}枚を送れませんでした` : '送信しました。管理者に通知されます')
+      renderConsult()
+    })
+  })
+})
 
 // 研修・マニュアル（#74）: シフトに入っている案件の『案件マニュアル・注意事項』と『求められる内容』（管理画面の案件に登録したもの）
 window.renderManual = async function () {

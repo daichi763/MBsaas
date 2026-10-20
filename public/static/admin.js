@@ -3980,6 +3980,23 @@ delegate('closeFollow', el => closeFollow(Number(el.dataset.id), el))
 const CONSULT_ST_BADGE = { open: '<span class="badge badge-red">未対応</span>', in_progress: '<span class="badge badge-blue">対応中</span>', done: '<span class="badge badge-green">対応済</span>' }
 const CONSULT_TABS = [['active', '未完了'], ['open', '未対応'], ['in_progress', '対応中'], ['done', '対応済み'], ['all', 'すべて']]
 const CONSULT_VIEW = { status: 'active', page: 1, list: [] }
+// 相談の写真（#429）とやり取り（#154）。返信は上書きせず、スタッフの追加の連絡と時系列で並べる
+const consultTime = (at) => esc(dayjs(String(at || '').replace(' ', 'T')).format('M/D HH:mm'))
+function consultPhotosHtml(co, messageId) {
+  const list = (co.photos || []).filter(p => (p.message_id || null) === (messageId || null))
+  return list.length ? `<div class="flex gap-2 flex-wrap mt-2">${list.map(p => `<a href="/api/admin/consultation-photo/${Number(p.attachment_id)}" target="_blank" rel="noopener">
+    <img src="/api/admin/consultation-photo/${Number(p.attachment_id)}" alt="添付の写真" loading="lazy" class="w-20 h-20 object-cover rounded-lg border border-gray-200"></a>`).join('')}</div>` : ''
+}
+function consultThreadHtml(co) {
+  const msgs = co.messages || []
+  // これまでの返信（やり取りに移す前の1件）だけがある場合
+  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>`
+  return msgs.map(m => m.author_side === 'admin'
+    ? `<div class="mt-2 ml-6 bg-blue-50 rounded-lg px-3 py-2"><p class="text-[11px] text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>${esc(m.author_name || '管理者')}・${consultTime(m.created_at)}</p>
+        <p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${esc(m.body)}</p></div>`
+    : `<div class="mt-2 mr-6 bg-gray-50 rounded-lg px-3 py-2"><p class="text-[11px] text-gray-500 mb-0.5"><i class="fas fa-user mr-1"></i>${esc(co.staff_name)}（追加の連絡）・${consultTime(m.created_at)}</p>
+        <p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosHtml(co, m.message_id)}</div>`).join('')
+}
 
 // #consult/{id} で開いたときは、その相談だけを出して強調する（ダッシュボードの ToDo・未報告の一覧から。#402 #498）
 async function renderConsult() {
@@ -4018,9 +4035,10 @@ async function renderConsult() {
             <button class="text-blue-700 hover:underline ml-1" data-action="consultOpenBoard" data-date="${esc(co.target_date)}" data-project-id="${esc(co.target_project_id || '')}">シフトボードで見る</button>
             ${co.target_project_id && !co.target_shift_id ? '<span class="text-gray-400 ml-1">（該当のシフトは見つかりません）</span>' : ''}</p>` : ''}
           <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
-          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>` : ''}
+          ${consultPhotosHtml(co, null)}
+          ${consultThreadHtml(co)}
           <div class="flex gap-2 mt-3">
-            <button class="btn btn-outline text-xs" data-action="consultReply" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>${co.manager_reply ? '返信を書き直す' : '返信する'}</button>
+            <button class="btn btn-outline text-xs" data-action="consultReply" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>返信する</button>
             ${co.status !== 'done' ? `<button class="btn btn-outline text-xs" data-action="consultClose" data-id="${Number(co.consultation_id)}"><i class="fas fa-check"></i>対応済みにする</button>` : ''}
           </div>
         </section>`).join('') || '<p class="text-center text-gray-400 py-10">該当する相談はありません</p>'}
@@ -4050,16 +4068,16 @@ delegate('consultOpenBoard', el => {
 delegate('consultReply', el => replyConsult(Number(el.dataset.id)))
 delegate('consultClose', el => closeConsult(Number(el.dataset.id), el))
 
-// 返信は相談の本文を見ながら複数行で書く（#422）。未対応の相談は返信で『対応中』にする
+// 返信は相談の本文とこれまでのやり取りを見ながら複数行で書く（#422）。返信は前の返信を消さずに足す（#154）。未対応の相談は返信で『対応中』にする
 window.replyConsult = function (id) {
   const co = CONSULT_VIEW.list.find(x => x.consultation_id === id)
   if (!co) return
   modal(`
     <h3 class="font-bold text-lg mb-1">相談への返信</h3>
     <p class="text-xs text-gray-500 mb-2">${esc(co.staff_name)}・${esc(CAT_LABELS[co.category] || co.category)}・${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</p>
-    <div class="bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-700 whitespace-pre-wrap break-words max-h-48 overflow-y-auto mb-3">${esc(co.body)}</div>
+    <div class="bg-gray-50 rounded-lg px-3 py-2 max-h-64 overflow-y-auto mb-3"><p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>${consultThreadHtml(co)}</div>
     <label class="text-sm text-gray-600 block mb-1" for="consult-reply">返信</label>
-    <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください">${esc(co.manager_reply || '')}</textarea>
+    <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください"></textarea>
     <p class="text-xs text-gray-400 mt-1">スタッフのアプリに通知され、ホームに『返信があります』と表示されます</p>
     <div class="flex justify-end gap-2 mt-4">
       <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>

@@ -6,7 +6,9 @@
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下', cancelled: '取り消し' }
-  const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え', correction_changed_by_admin: '管理者による修正', correction_cancelled: '自動の取り消し', incident_reported: 'インシデント・クレーム' }
+  const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え', correction_changed_by_admin: '管理者による修正', correction_cancelled: '自動の取り消し', incident_reported: 'インシデント・クレーム',
+    recruit_applied: '新しい応募', board_message: '案件掲示板', roster_chat: '企業間チャット', consult_received: '相談・連絡', consult_message: '相談への追加の連絡',
+    roster_source_retired: '所属元での退職', roster_host_note: '連携先からの追記' }
   // 送信の失敗・停止の理由。送信サービスの理由は「コード: 内容」の形で、コロンの後をそのまま添える（#438）
   const ERR = {
     mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー',
@@ -113,7 +115,8 @@
   // 設定: お知らせメールの問い合わせ先（#367）と、送信を止めているアドレス（#541）
   const MAIL = { view: 'corrections', status: 'failed', logStatus: '', logType: '' }
   const VIEWS = [['corrections', '打刻修正の通知'], ['logs', 'メールの記録'], ['settings', '問い合わせ先・送信停止']]
-  const TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認' }
+  const TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認',
+    recruit_applied: '新しい応募の通知', board_message: '案件掲示板の通知', roster_chat: '企業間チャットの通知', consultation: '相談・連絡の通知' }
   const LOG_STATUS = { sent: ['送信済み', 'badge-green'], delivered: ['配信済み', 'badge-green'], failed: ['送信失敗', 'badge-red'], bounced: ['不達', 'badge-red'], bounced_soft: ['一時的な不達', 'badge-yellow'], complained: ['迷惑メール報告', 'badge-red'], skipped: ['送信無効の環境', 'badge-gray'] }
   let ROWS = [], HAS_MORE = false
 

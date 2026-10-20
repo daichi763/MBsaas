@@ -40,6 +40,12 @@
       Object.assign(S, { tab: 'applications', status: 'pending', slot_role_id: Number(m[1]), page_id: null, q: '', from: '', to: '' })
       history.replaceState(null, '', '#recruit')
     }
+    // 新しい応募の通知（#recruit/page-募集ページID）から開いたときは、その募集ページの未対応の応募に絞り込む（#150）
+    const pm = (location.hash || '').match(/^#recruit\/page-(\d+)$/)
+    if (pm) {
+      Object.assign(S, { tab: 'applications', status: 'pending', slot_role_id: null, page_id: Number(pm[1]), q: '', from: '', to: '' })
+      history.replaceState(null, '', '#recruit')
+    }
     loading()
     if (!projects) projects = (await axios.get('/api/admin/projects')).data.projects || []
     $app.innerHTML = `
@@ -176,6 +182,9 @@
     const host = document.getElementById('recruit-body')
     let data; try { data = (await axios.get('/api/admin/recruit-applications?' + appQuery(0))).data } catch (e) { host.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
     window.__recruitApps = data.applications
+    // 応募の一覧を開いたので、新しい応募の通知は既読にする（#150）。募集ページで絞り込んでいるときはそのページの分だけ、枠で絞り込んでいるときは既読にしない
+    if (!S.slot_role_id) axios.post('/api/admin/notifications/read-related', { kind: 'recruit_applied', ...(S.page_id ? { related_id: Number(S.page_id) } : {}) })
+      .then(() => window.refreshNotifBadge && window.refreshNotifBadge()).catch(() => { })
     const sl = data.slot
     const pageTitle = S.page_id ? ((data.pages || []).find(p => p.page_id === Number(S.page_id)) || {}).title : ''
     host.innerHTML = `
