@@ -1797,6 +1797,34 @@ delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
   } catch (e) { showApiError(e, '保存できませんでした') }
 }))
 
+// 会社の緊急連絡先（#173）と、入店の位置が現場から離れているとみなす距離（#277）。API は GET/PUT /admin/settings/site-contact
+delegate('showSiteContactSetting', async () => {
+  let s
+  try { s = (await axios.get('/api/admin/settings/site-contact')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-phone text-blue-600 mr-1"></i>緊急連絡先・入店の位置</h3>
+    <p class="text-xs text-gray-500 mb-3">緊急連絡先は、スタッフアプリの「その他」と報告用URLに、タップで電話をかけられるボタンとして表示します。当日の欠勤・遅刻・体調不良・現場のトラブルの連絡先です。</p>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">緊急連絡先の電話番号</label>
+        <input id="sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 03-1234-5678" value="${esc(s.emergency_phone || '')}">
+        <p class="text-[11px] text-gray-400 mt-1">空欄にすると表示しません</p></div>
+      <div><label class="text-sm text-gray-600 block mb-1">受付時間などの補足</label>
+        <input id="sc-note" class="inp" maxlength="100" placeholder="例: 7:00〜22:00（時間外は相談・連絡へ）" value="${esc(s.emergency_note || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">入店の位置が現場から離れているとみなす距離（m）</label>
+        <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}">
+        <p class="text-[11px] text-gray-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（クライアント詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
+    </div>
+    <button class="btn btn-primary w-full mt-4" data-action="saveSiteContactSetting">保存する</button>`)
+})
+delegate('saveSiteContactSetting', el => withSubmitLock(el, async () => {
+  const far = document.getElementById('sc-far').value.trim()
+  if (!/^\d+$/.test(far)) { toast('距離は0以上の整数で入力してください'); return }
+  try {
+    await axios.put('/api/admin/settings/site-contact', { emergency_phone: document.getElementById('sc-phone').value, emergency_note: document.getElementById('sc-note').value, far_threshold_m: Number(far) })
+    closeModal(); toast('緊急連絡先・入店の位置の設定を保存しました')
+  } catch (e) { showApiError(e, '保存できませんでした') }
+}))
+
 window.showAddProject = async function () {
   const [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
   // 既定は先頭の有効なテンプレート（項目が1つ以上あるもの）。固定のIDは前提にしない
@@ -2799,10 +2827,31 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
+    <div id="edit-shift-location"></div>
     <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
     <div id="edit-shift-withdrawals"></div>`)
+  loadCheckInLocation(document.getElementById('edit-shift-location'), shiftId)
   loadAttendancePhotos(document.getElementById('edit-shift-photos'), shiftId)
   loadAttendanceWithdrawals(document.getElementById('edit-shift-withdrawals'), shiftId)
+}
+// 入店の位置と現場の距離（#277）。入店の報告がなければ何も出さない
+const fmtDistance = (m) => Number(m) >= 1000 ? (Number(m) / 1000).toFixed(1) + 'km' : Number(m) + 'm'
+async function loadCheckInLocation(box, shiftId) {
+  if (!box) return
+  let d
+  try { d = (await axios.get('/api/admin/shifts/' + Number(shiftId) + '/check-in-location')).data } catch (e) { return }
+  const ci = d.check_in
+  if (!ci) return
+  const hasPos = ci.latitude != null && ci.longitude != null
+  const map = hasPos ? ` <a class="text-blue-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(Number(ci.latitude) + ',' + Number(ci.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : ''
+  const msg = !hasPos ? '<span class="badge badge-yellow">位置なし</span> 入店の報告に位置情報がありません'
+    : ci.distance_m == null ? `<span class="badge badge-gray">判定なし</span> 開催場所の位置が未登録のため、現場との距離を判定できません（クライアント詳細の「開催場所」で位置を登録できます）${map}`
+      : ci.far ? `<span class="badge badge-red">位置ずれ</span> 現場から約${fmtDistance(ci.distance_m)}離れた位置で入店を報告しています（基準 ${fmtDistance(d.threshold_m)}）${map}`
+        : Number(d.threshold_m) > 0 ? `<span class="badge badge-green">現場付近</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
+          : `<span class="badge badge-gray">判定しない設定</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
+  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">入店の位置</p>
+    <p class="text-xs text-gray-600 ${ci.far ? 'bg-red-50 rounded p-2' : ''}">${msg}</p>
+    ${d.site_position === 'project' ? '<p class="text-[11px] text-gray-400 mt-1">開催場所の位置がないため、案件の位置と比べています</p>' : ''}</div>`
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 // スタッフ本人が押し間違いで取り消した勤怠報告の記録（#323）。無ければ何も出さない
@@ -3978,6 +4027,11 @@ async function renderAccount() {
       <i class="fas fa-shield-halved text-blue-500"></i>
       <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${me.role === 'company_admin' ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
       <a href="#security" class="btn btn-outline text-sm">セキュリティへ</a>
+    </section>
+    <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
+      <i class="fas fa-phone text-blue-500"></i>
+      <span class="text-sm flex-1">スタッフ向けの緊急連絡先（アプリと報告用URLに出す電話番号）と、入店の位置が現場から離れているとみなす距離を設定します。</span>
+      <button class="btn btn-outline text-sm" data-action="showSiteContactSetting">緊急連絡先・入店の位置</button>
     </section>
     ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
 }

@@ -44,6 +44,7 @@ import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/s
 import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
 import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
+import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, checkInDistance, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -664,6 +665,16 @@ api.post('/auth/logout', async (c) => {
 
 // ログイン不要のシフト専用報告用URL（トークンで1シフトのみ操作可。src/staff-lifecycle.ts）。認証ミドルウェアより前に登録する
 api.route('/public/report', publicReportApi)
+// 報告用URLに出す会社の緊急連絡先（#173）。期限切れ・取り消し後の画面でも連絡できるよう、発行済みのURLなら返す（停止中の企業は返さない）。
+// 返すのは会社名と連絡先だけ（シフト・スタッフの情報は返さない）
+api.get('/public/report/:token/contact', async (c) => {
+  const token = c.req.param('token')
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return c.json({ error: '連絡先が見つかりません' }, 404)
+  const row = await c.env.DB.prepare(`SELECT co.company_name, co.emergency_phone, co.emergency_note, co.active_status FROM shift_report_tokens t
+    JOIN companies co ON co.company_id = t.company_id WHERE t.token = ?`).bind(token).first() as any
+  if (!row || !isCompanyActive(row.active_status)) return c.json({ error: '連絡先が見つかりません' }, 404)
+  return c.json({ company_name: row.company_name, phone: row.emergency_phone || '', note: row.emergency_note || '' })
+})
 // 公開の募集ページ（ログイン不要。src/recruit.ts）
 api.route('/public/recruit', recruitPublicApi)
 // お知らせメールの「確認しました」（ログイン不要。メールのワンタイムのトークンで既読にする #454。src/notifications.ts）
@@ -1451,6 +1462,32 @@ api.get('/admin/shifts/:id/attendance-withdrawals', async (c) => {
   return c.json({ withdrawals: rows })
 })
 
+// 入店の位置と現場の距離（シフト操作のモーダルに出す。#277）。
+// アプリの入店は報告のときに保存した距離、報告用URLなど距離のない報告は、いまの現場の位置で計算する。基準は会社設定（0 は判定しない）
+api.get('/admin/shifts/:id/check-in-location', async (c) => {
+  const u = c.get('user')
+  const db = c.env.DB
+  const s = await ownShift(db, u.company_id, c.req.param('id')) as any
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const [r, pos, co] = await Promise.all([
+    db.prepare("SELECT reported_at, latitude, longitude, distance_m, entry_method FROM attendance_reports WHERE shift_id = ? AND report_type = 'check_in' AND company_id = ?")
+      .bind(s.shift_id, u.company_id).first() as Promise<any>,
+    sitePosition(db, s),
+    db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as Promise<any>,
+  ])
+  const threshold = farThresholdMeters(co?.settings_json)
+  let distance: number | null = r?.distance_m ?? null
+  if (r && distance == null && pos && r.latitude != null && r.longitude != null && Number.isFinite(Number(r.latitude)) && Number.isFinite(Number(r.longitude))) {
+    distance = Math.round(haversineMeters(Number(r.latitude), Number(r.longitude), pos.lat, pos.lng))
+  }
+  return c.json({
+    threshold_m: threshold,
+    site_position: pos ? pos.source : null,
+    check_in: r ? { reported_at: r.reported_at, latitude: r.latitude ?? null, longitude: r.longitude ?? null, entry_method: r.entry_method || 'app',
+      distance_m: distance, far: distance != null && threshold > 0 && distance > threshold } : null,
+  })
+})
+
 // 勤怠報告
 api.post('/staff/attendance', async (c) => {
   const u = c.get('user')
@@ -1482,16 +1519,18 @@ api.post('/staff/attendance', async (c) => {
   const at = reportedAtMinute(now)
   const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
   const status = reportStatus(judged, latitude)
+  // 入店の位置と現場（開催場所、なければ案件）の距離（#277）
+  const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, latitude, longitude) : null
   // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
   // 住所・user-agent は長さを切って保存する（報告用URLと同じ。#521）
-  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason, distance_m)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
     .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, typeof address === 'string' && address ? address.slice(0, 200) : null,
-      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason).run()
+      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason, distance).run()
   if (!ins.meta.changes) return c.json({ error: 'すでに報告済みです' }, 409)
   // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
   if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
-  return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes })
+  return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
 })
 
 // 勤怠報告（写真必須：入店報告・退店報告専用）
@@ -1539,6 +1578,8 @@ api.post('/staff/attendance-photo', async (c) => {
   const at = reportedAtMinute(now)
   const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
   const status = reportStatus(judged, lat)
+  // 入店の位置と現場の距離（#277。POST /staff/attendance と同じ）
+  const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, lat, lng) : null
 
   const ext = photo.type === 'image/png' ? 'png' : 'jpg'
   const key = `attendance/${owner.company_id}/${owner.staff_id}/${shift_id}/${report_type}_${Date.now()}.${ext}`
@@ -1553,10 +1594,10 @@ api.post('/staff/attendance-photo', async (c) => {
   try {
     // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
     const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes,
-        photo_taken_at, photo_source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
+        photo_taken_at, photo_source, distance_m)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
       .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, (c.req.header('user-agent') || '').slice(0, 300), status, key,
-        judged.late_minutes, judged.early_leave_minutes, takenAt, source).run()
+        judged.late_minutes, judged.early_leave_minutes, takenAt, source, distance).run()
     if (!ins.meta.changes) {
       await c.env.PHOTOS.delete(key).catch(() => {})
       return c.json({ error: 'すでに報告済みです' }, 409)
@@ -1568,7 +1609,7 @@ api.post('/staff/attendance-photo', async (c) => {
   }
   await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
 
-  return c.json({ ok: true, status, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes })
+  return c.json({ ok: true, status, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
 })
 
 // 写真（R2）をそのまま返す。見つからなければ 404
@@ -1606,6 +1647,17 @@ api.get('/staff/photo-options', async (c) => {
   const resolved = await resolvePersonShift(c, c.req.query('shift_id'))
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   return c.json({ skip_allowed: photoSkipAllowed(resolved.staff.settings_json), reasons: NO_PHOTO_REASONS })
+})
+
+// スタッフ: 所属・連携している会社の緊急連絡先（#173）。ログイン中の会社を先に、登録のある会社だけを返す
+api.get('/staff/emergency-contacts', async (c) => {
+  const rows = await personStaffRows(c.env.DB, c.get('user'))
+  const ids = [...new Set(rows.map(r => Number(r.company_id)))]
+  if (!ids.length) return c.json({ contacts: [] })
+  const list = (await c.env.DB.prepare(`SELECT company_id, company_name, emergency_phone, emergency_note FROM companies
+    WHERE company_id IN (${ids.map(() => '?').join(',')}) AND emergency_phone IS NOT NULL AND emergency_phone != ''`).bind(...ids).all()).results as any[]
+  list.sort((a, b) => ids.indexOf(Number(a.company_id)) - ids.indexOf(Number(b.company_id)))
+  return c.json({ contacts: list.map(r => ({ company_name: r.company_name, phone: r.emergency_phone, note: r.emergency_note || '' })) })
 })
 // 管理者: 写真なしの報告を許可するか（companies.settings_json の photo_skip_allowed。既定は許可しない）
 api.get('/admin/settings/photo-skip', async (c) => {
@@ -2542,6 +2594,30 @@ api.put('/admin/settings/lateness', async (c) => {
   await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.late_grace_minutes', ?) WHERE company_id = ?`)
     .bind(g, u.company_id).run()
   return c.json({ ok: true, grace_minutes: g })
+})
+
+// 会社の緊急連絡先（#173）と、入店の位置が現場から離れているとみなす距離（m。0 は判定しない。#277）
+api.get('/admin/settings/site-contact', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT emergency_phone, emergency_note, settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ emergency_phone: row?.emergency_phone || '', emergency_note: row?.emergency_note || '', far_threshold_m: farThresholdMeters(row?.settings_json),
+    min_threshold_m: CHECK_IN_FAR_MIN_METERS, max_threshold_m: CHECK_IN_FAR_MAX_METERS })
+})
+api.put('/admin/settings/site-contact', async (c) => {
+  const u = c.get('user')
+  const body = await c.req.json().catch(() => ({} as any))
+  const phone = emergencyPhone(body.emergency_phone), note = emergencyNote(body.emergency_note)
+  if (phone && typeof phone === 'object') return c.json({ error: phone.error }, 400)
+  if (note && typeof note === 'object') return c.json({ error: note.error }, 400)
+  const th = body.far_threshold_m
+  if (!Number.isInteger(th) || (th !== 0 && (th < CHECK_IN_FAR_MIN_METERS || th > CHECK_IN_FAR_MAX_METERS))) {
+    return c.json({ error: `現場から離れているとみなす距離は 0（判定しない）か ${CHECK_IN_FAR_MIN_METERS}〜${CHECK_IN_FAR_MAX_METERS} m の整数で入力してください` }, 400)
+  }
+  // ほかの設定を上書きしないよう、settings_json はこの項目だけを書き換える
+  await c.env.DB.prepare(`UPDATE companies SET emergency_phone = ?, emergency_note = ?,
+      settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.check_in_far_meters', ?) WHERE company_id = ?`)
+    .bind(phone, note, th, u.company_id).run()
+  return c.json({ ok: true, emergency_phone: phone || '', emergency_note: note || '', far_threshold_m: th })
 })
 
 function catLabel(cat: string): string {
