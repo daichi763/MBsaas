@@ -171,17 +171,29 @@
 - `GET /shifts/:id/report-status` 提出状況
 - `POST /shifts/:id/proxy-attendance`、`DELETE /shifts/:id/proxy-attendance/:type` 管理者の代理入力（代理入力した分のみ削除可）
 - `POST /shifts/:id/report-link`（`regenerate` で再発行）、`DELETE /shifts/:id/report-link` 報告URLの発行・取り消し
+- ログインのない人（`users.role` が `staff` でない人）向け（w5-nologin-features。migrations/0072_nologin_features.sql）
+  - `GET /report-links/bulk?date=&project_id=`、`POST /report-links/bulk`（`date`・`project_id`・任意で `shift_ids`） その日のログインのない人の勤務のシフト（確定・代打）と報告用URLの状態（未発行・発行済み・未使用・最終アクセス）。POST は未発行の分だけをまとめて発行する（発行済みのURLは変えない。#275）
+  - `GET /proxy-attendance/bulk?date=&project_id=`、`POST /proxy-attendance/bulk`（`scope`: `start` = 入店・勤務開始だけ / `all` = 予定どおり全部、`items`: `[{ shift_id, start?, end? }]`。1回 50 件まで） 予定どおりのまとめての代理入力（#508）。時刻は予定から決める（入店・勤務開始 = 開始、勤務終了・退店 = 終了、休憩 = 予定の休憩）。`start`・`end` で人ごとに直せる。1件の代理入力と同じ確認をし、まだ先の時刻・報告済み・予定から決められない報告（起床・出発）は記録しない。記録できないシフトは理由を付けて返す。ログインのある人には、1件の代理入力と同じくアプリ内で知らせる
+  - `POST /shifts/:id/proxy-daily-report` 日報の代理入力（#276。`daily_reports.entry_method = 'proxy'`、`entered_by` = 記録した管理者）。本人が提出した日報は `overwrite: true` のときだけ上書きする。本人が出し直したら `entered_by` は空に戻る
+  - `POST /staff/:id/schedule-link`、`DELETE /staff/:id/schedule-link` 予定確認URL（#442。スタッフ単位）の発行（発行し直すと前のURLは使えない）・無効化。URL は発行の応答でだけ返す（`staff_schedule_tokens` にはハッシュだけを保存）。有効期限は90日。ログインのある人・退職・停止・統合済みの人には発行しない
 
 ### 7.1 公開の報告URL（ログイン不要。`/r/:token`、API は `/api/public/report/:token`）
 - `GET` 名（名字なし）・案件・シフトの時間・提出設定・提出状況・日報テンプレートを返す。金額は返さない
 - `POST /attendance` 提出設定・順序・重複・勤務日（退店は翌日も可）・写真の必須を確認して記録（entry_method = link）
 - `POST /daily-report` 日報の登録・更新
+- `POST /consultation` 遅刻・欠勤・体調不良・現場のトラブル・その他の連絡（#163。`kind`: late / absent / health / trouble / other、`body`）。相談（`consultations`、`entry_method = 'link'`）にそのシフトの案件・日付を付けて登録する。同じ内容の2分以内の再送は 409、URL からの連絡は1人24時間に5件まで
+- `GET` は本人あての重要・緊急のお知らせ（直近30日・5件まで。全員・案件・個人あて。既読は記録しない。#281）と、会社の問い合わせ先の電話番号（`settings_json.mail_contact_phone`）も返す
+- 無効・期限切れのURLは 404。発行されたことのあるURLなら、会社名と電話番号を添える（#163）
+- 予定確認URL（#442）も同じ `/r/:token`・`/api/public/report/:token` で開く（シフトのトークンに当たらなければ予定確認URLとして探す）。`GET` は `kind: 'schedule'` で、前日〜14日先の確定・代打のシフト（日時・案件・場所・役割。金額なし）と、前日〜翌日のシフトの報告用URL（なければ発行する）・お知らせ・電話番号を返す。`POST /consultation` は `shift_id`（本人のシフト）を任意で付けられる。退職（退職日の翌日から）・停止・統合・企業の停止で使えなくなる
 - ページは noindex・no-referrer。URL は管理者がコピーして送る
 
 ## 8. 第2段階 画面
 - スタッフマスタ: 一覧に「仮」バッジ・仮登録ボタン・仮登録の絞り込み。詳細に「区分・登録状態」（履歴・本登録・区分変更）と「勤怠・日報の提出設定」
 - 日雇い・個人事業主はスタッフマスタで基本情報を編集できる
 - シフトボード: 候補一覧から仮登録してそのまま割り当て。シフト詳細に提出状況・提出設定・報告URL・代理入力。案件パネルに提出設定
+- シフト詳細の報告パネル: 日報の代理入力（テンプレートの項目で入力）。ログインのない人のシフトでは「この日のログインのない人をまとめて」から、報告用URLのまとめての発行（案内文の1人ずつ・全員分のコピー、SMS）と、予定どおりのまとめての代理入力を開く（`openNologinBulk(日付, 案件ID, 'links' | 'proxy')`。ほかの画面からも呼べる）
+- スタッフ詳細の「区分・登録状態」: ログインのない人に予定確認URLの発行・発行し直し・無効化
+- 報告用ページ（report-link.js）: 会社からの重要なお知らせ、遅刻・欠勤・トラブルの連絡（フォームと電話）、無効なURLの画面の会社名と電話番号。予定確認URLでは、日ごとのシフトの一覧と、前日〜翌日のシフトの報告画面への入口
 - 従業員管理: 雇用終了した従業員を別の一覧に表示し、詳細は閲覧のみ
 
 ## 9. 第3段階 実績の確定・請求/支払の集計・CSV（migrations/0018_add_settlement.sql, src/settlement.ts）
