@@ -9,15 +9,19 @@ export function noticeEmail(params: {
   name: string; title: string; body: string; url: string
   companyName?: string; importance?: string | null; projectNames?: string | null
   ackUrl?: string | null; contactEmail?: string | null; contactPhone?: string | null
+  // ログインのない人あて（#281）。アプリを開くボタン・「確認しました」を付けず、問い合わせ先を案内する
+  noApp?: boolean
 }) {
-  const { name, title, body, url, companyName, importance, projectNames, ackUrl, contactEmail, contactPhone } = params
+  const { name, title, body, url, companyName, importance, projectNames, ackUrl, contactEmail, contactPhone, noApp } = params
   const from = companyName ? `【${companyName}】` : '【Field OS】'
   const mark = IMPORTANCE_MARK[String(importance || '')] || ''
   const projects = projectNames ? (projectNames.length > SUBJECT_PROJECTS_MAX ? projectNames.slice(0, SUBJECT_PROJECTS_MAX) + '…' : projectNames) : ''
   const subject = `${from}${mark}${title}${projects ? `（${projects}）` : ''}`
   const sender = companyName ? `${companyName}（Field OS から送信しています）` : 'Field OS'
   const contact = [contactPhone ? `電話: ${contactPhone}` : '', contactEmail ? `メール: ${contactEmail}（このメールへの返信も届きます）` : ''].filter(Boolean)
-  const ackNote = ackUrl
+  const ackNote = noApp
+    ? 'このお知らせはメールでお送りしています。ご不明な点は、下のお問い合わせ先へご連絡ください。'
+    : ackUrl
     ? '内容を確認したら、下の「確認しました」を押してください（アプリで押した場合と同じく確認済みになります）。'
     : 'アプリでこのお知らせを開き、「確認しました」を押してください（押すまで未読のままです）。'
   const button = (href: string, label: string, primary: boolean) =>
@@ -31,9 +35,9 @@ export function noticeEmail(params: {
         <p style="white-space:pre-wrap;margin:0;color:#374151;">${escapeHtml(body)}</p>
       </div>
       <p style="font-size:14px;color:#374151;">${escapeHtml(ackNote)}</p>
-      <p style="margin: 16px 0 24px;">
+      ${noApp ? '' : `<p style="margin: 16px 0 24px;">
         ${ackUrl ? button(ackUrl, '確認しました', true) + button(url, 'アプリで開く', false) : button(url, 'お知らせを開く', true)}
-      </p>
+      </p>`}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
       <p style="color:#6b7280;font-size:12px;margin:0;">${escapeHtml(sender)}</p>
       ${contact.length ? `<p style="color:#6b7280;font-size:12px;margin:4px 0 0;">お問い合わせ: ${contact.map(escapeHtml).join(' / ')}</p>` : ''}
@@ -49,7 +53,7 @@ ${mark}${title}
 ${body}
 
 ${ackNote}
-${ackUrl ? `確認しました: ${ackUrl}
+${noApp ? '' : ackUrl ? `確認しました: ${ackUrl}
 アプリで開く: ${url}` : url}
 
 --

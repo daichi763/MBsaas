@@ -17,7 +17,12 @@ const KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/
 // 日報の値に別の用途で保存しているキー（インシデント・クレームの内容。lib/daily-report.ts）と、JS の特別な名前
 const RESERVED_KEYS = new Set(['incident_note', 'complaint_note', 'incident_flag', 'complaint_flag', 'constructor', 'prototype', 'toString', 'hasOwnProperty'])
 
-export function validateTemplateFields(raw: unknown): { fields: TemplateField[] } | { error: string } {
+// キーの規則（KEY_RE。#378）より前に作ったテンプレートには、日本語などの規則に合わないキーがある（#165）。
+// 編集では、そのテンプレートにすでにあるキー（legacyKeys）は規則に合わなくてもそのまま認める（過去の日報の値のキーなので変えられない）。
+// 新しく足す項目のキーには規則を当てる
+const LEGACY_KEY_MAX = 100
+export function validateTemplateFields(raw: unknown, opts: { legacyKeys?: Iterable<unknown> } = {}): { fields: TemplateField[] } | { error: string } {
+  const legacy = new Set([...(opts.legacyKeys || [])].filter((k): k is string => typeof k === 'string' && !!k.trim()).map(k => k.trim()))
   if (!Array.isArray(raw) || raw.length === 0) return { error: '項目を1つ以上入力してください' }
   if (raw.length > TEMPLATE_FIELDS_MAX) return { error: `項目は${TEMPLATE_FIELDS_MAX}個までにしてください` }
   const seen = new Set<string>()
@@ -28,7 +33,8 @@ export function validateTemplateFields(raw: unknown): { fields: TemplateField[] 
     if (!f || typeof f !== 'object' || Array.isArray(f)) return { error: `${at}の形式が正しくありません` }
     const key = typeof f.key === 'string' ? f.key.trim() : ''
     if (!key) return { error: `${at}のキーが空欄です` }
-    if (!KEY_RE.test(key)) return { error: `${at}のキー「${key.slice(0, 40)}」は、半角英字で始まる英数字と _ の40文字以内にしてください` }
+    const legacyOk = legacy.has(key) && key.length <= LEGACY_KEY_MAX && !/[\u0000-\u001f\u007f]/.test(key)
+    if (!legacyOk && !KEY_RE.test(key)) return { error: `${at}のキー「${key.slice(0, 40)}」は、半角英字で始まる英数字と _ の40文字以内にしてください` }
     if (RESERVED_KEYS.has(key)) return { error: `${at}のキー「${key}」は日報の別の用途で使っているため使えません` }
     if (seen.has(key.toLowerCase())) return { error: `${at}のキー「${key}」が重複しています（大文字・小文字の違いだけのキーも重複とみなします）` }
     seen.add(key.toLowerCase())

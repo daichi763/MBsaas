@@ -11,7 +11,7 @@ import { settleRemovedSlotItems } from './recruit'
 import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
 import { assertAssignable, assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, isUniqueViolation, ngStaffIds } from './lib/staff-eligibility'
 import type { ConflictRow } from './lib/staff-eligibility'
-import { changesOf, insertRowsStmts, updateRowsStmts } from './lib/bulk-write'
+import { changesOf, insertRowsStmts, returnedIds, updateRowsStmts } from './lib/bulk-write'
 import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
 import { loadShiftSnaps, notifyShiftChanges } from './notifications'
@@ -19,6 +19,7 @@ import type { ShiftSnap } from './notifications'
 import { opLog, logShifts, logShiftsOfSlot, logSlot, finishLog } from './lib/operation-log'
 import { csvResponse, toCsv } from './csv'
 import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
+import { closedChecker, closedOn } from './lib/closings'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -52,6 +53,8 @@ export const STAFF_SHIFT_COLUMNS = [
   'site_id', 'slot_id', 'staff_reply', 'staff_reply_note', 'staff_reply_at',
   'project_name', 'company_name', 'other_company', 'tentative',
   'site_name', 'site_address', 'site_lat', 'site_lng', 'slot_memo', 'slot_break_minutes', 'project_break_minutes',
+  // 案件の現場責任者の連絡先（#173。api.ts の STAFF_SHIFT_PLACE_COLUMNS で付ける）
+  'site_contact_name', 'site_contact_phone',
 ] as const
 export function staffShiftView(row: Record<string, any> | null | undefined): Record<string, any> | null {
   if (!row) return null
@@ -776,18 +779,23 @@ app.get('/shift-board/candidates', async (c) => {
     ORDER BY us.name`).bind(role.project_id, role.site_id ?? -1, weekStart(role.work_date), addDays(weekStart(role.work_date), 6), u.company_id, ...elig.binds).all()).results as any[]
   const conflicts = await findConflicts(db, u.company_id, staff.map(s => s.staff_id), role.work_date, role.work_date)
   const ng = await ngStaffIds(db, role.project_id)
-  const required = String(proj?.required_skills || '').split(',').map(s => s.trim()).filter(Boolean)
+  // スキルは保存のときと同じく , 、 ， で区切り、前後の空白を除いて比べる（#556。スタッフのスキルが読点区切りでも一致する）
+  const splitSkills = (v: any) => String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean)
+  const required = splitSkills(proj?.required_skills)
   const assigned = new Set(((await db.prepare("SELECT staff_id FROM shifts WHERE slot_role_id = ? AND status != 'absent'").bind(role.slot_role_id).all()).results as any[]).map(r => r.staff_id))
   const tdefs = await loadTransportDefaults(db, u.company_id, staff.map(s => s.staff_id))
   const list = staff.filter(s => !assigned.has(s.staff_id)).map(s => {
-    const skills = String(s.skills || '').split(',').map((x: string) => x.trim())
+    const skills = splitSkills(s.skills)
+    const matched = required.filter(r => skills.includes(r))
     const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time)
     const availableFrom = isDate(s.available_from) ? s.available_from : null
     return {
       staff_id: s.staff_id, name: s.name, affiliation_type: s.affiliation_type, employment_status: s.employment_status,
       work_area: s.work_area || '', available_from: availableFrom,
       project_count: s.project_count, site_count: s.site_count, week_days: s.week_days,
-      skill_match: required.filter(r => skills.includes(r)).length, skill_required: required.length,
+      skill_match: matched.length, skill_required: required.length,
+      // 一致したスキルと足りないスキルの名前（#556）
+      skill_matched: matched, skill_missing: required.filter(r => !skills.includes(r)),
       busy: cf.length > 0, busy_detail: cf.map(x => conflictLabel(x, u.company_id)),
       ng: ng.includes(s.staff_id), on_leave: s.employment_status === 'leave',
       // 入社予定の人と、稼働開始可能日が枠の日付より後の人は注意として出し、空きのある人の後ろに回す（#557）
@@ -838,8 +846,13 @@ async function insertSlot(db: D1Database, u: any, b: any, date: string, roles: a
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(slotId, r.role_name, r.headcount, r.bill_unit_type, r.bill_rate, r.pay_unit_type, r.pay_rate, i)))
   return slotId
 }
+// 終了した案件（#153）には募集枠を作らない（割り当ては assertAssignable で止めている。画面は稼働中の案件だけを出す）
+const CLOSED_PROJECT_SLOT_ERROR = '終了した案件には募集枠を作れません（案件詳細で「稼働中に戻す」と作れます）'
+const projectClosed = (p: any) => !!p && (p.status || 'active') !== 'active'
 async function validateSlotBody(db: D1Database, u: any, b: any): Promise<string | null> {
-  if (!b.project_id || !(await ownProject(db, u.company_id, b.project_id))) return '案件を選択してください'
+  const proj = b.project_id ? await ownProject(db, u.company_id, b.project_id) : null
+  if (!proj) return '案件を選択してください'
+  if (projectClosed(proj)) return CLOSED_PROJECT_SLOT_ERROR
   if (!isTime(b.start_time) || !isTime(b.end_time)) return '開始・終了時刻を入力してください'
   if (b.site_id && !(await ownSite(db, u.company_id, b.site_id))) return '開催場所が見つかりません'
   return rangeError([['休憩', b.break_minutes, 0, BREAK_MAX]]) || rolesRangeError(b.roles)
@@ -978,6 +991,11 @@ app.put('/shift-slots/:id', async (c) => {
   // 日付・時刻を変えるときに動かさないシフト（報告あり・確定済み）。元の日時のまま枠から外す
   const detach = dateTimeChanged ? shifts.filter(s => isSettled(s) || Number(s.report_count) > 0) : []
   const follow = shifts.filter(s => !isSettled(s) && !detach.includes(s))
+  // 割り当て済みのシフトを、精算を締めた期間から・期間へ動かさない（#170）
+  if (dateTimeChanged && follow.length) {
+    const closedSlot = await closedOn(db, u.company_id, slot.work_date) || await closedOn(db, u.company_id, next.work_date)
+    if (closedSlot) return c.json({ error: closedSlot }, 409)
+  }
   const warnings: string[] = []
   if (dateTimeChanged) {
     for (const s of follow) {
@@ -1108,6 +1126,9 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   // substitute: ダッシュボードで欠勤にしたシフトの代わりを割り当てるとき（#216）
   const status = ['confirmed', 'requested', 'substitute'].includes(b.status) ? b.status : 'confirmed'
   // 退職・統合・取引終了などは割り当てない。重複・NG・休職中・割当済みは確認のうえ force で続ける（#119 #354）
+  // 精算を締めた期間にはシフトを足さない（#170）
+  const closedAssign = await closedOn(db, u.company_id, role.work_date)
+  if (closedAssign) return c.json({ error: closedAssign }, 409)
   const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffIds, workDate: role.work_date, start: role.start_time, end: role.end_time })
   if (chk.error) return c.json({ error: chk.error }, chk.status)
   const warnings = chk.warnings
@@ -1156,6 +1177,9 @@ app.post('/shifts/:id/move', async (c) => {
   if (isSettled(s)) return c.json({ error: '確定済みのシフトは移動できません。精算画面で確定を取り消してください' }, 409)
   const role = await ownSlotRole(db, u.company_id, b.slot_role_id)
   if (!role) return c.json({ error: '移動先の枠が見つかりません' }, 404)
+  // 移動元・移動先のどちらかが精算を締めた期間なら移動しない（#170）
+  const closedMove = await closedOn(db, u.company_id, s.work_date) || await closedOn(db, u.company_id, role.work_date)
+  if (closedMove) return c.json({ error: closedMove }, 409)
   const hasReports = await db.prepare('SELECT (SELECT COUNT(*) FROM attendance_reports WHERE shift_id = ?) + (SELECT COUNT(*) FROM daily_reports WHERE shift_id = ?) AS n').bind(s.shift_id, s.shift_id).first().catch(() => ({ n: 0 })) as any
   if (hasReports?.n > 0 && (role.work_date !== s.work_date || role.project_id !== s.project_id)) return c.json({ error: '勤怠・日報の報告があるシフトは、別の日付・案件へ移動できません' }, 409)
   const chk = await assertAssignable(db, { companyId: u.company_id, project: role.project_id, slot: role, staffId: s.staff_id, workDate: role.work_date, start: role.start_time, end: role.end_time, excludeShiftId: s.shift_id })
@@ -1201,10 +1225,13 @@ app.post('/shifts/confirm-requested', async (c) => {
   const staff = await loadStaffForAssign(db, u.company_id, rows.map(r => r.staff_id))
   const skipped: { shift_id: number; staff_name: string; work_date: string; reason: string }[] = []
   const targets: any[] = []
+  // 精算を締めた期間のシフトは確定にしない（#170）
+  const rowDates = rows.map(r => String(r.work_date)).sort()
+  const closedAt = await closedChecker(db, u.company_id, rowDates[0], rowDates[rowDates.length - 1])
   for (const r of rows) {
     const st = staff.get(r.staff_id)
     const name = st?.name || ''
-    const reason = r.status !== 'requested' ? '希望（仮）ではありません' : isSettled(r) ? '実績が確定済みです' : ineligibleReason(st, r.work_date)
+    const reason = r.status !== 'requested' ? '希望（仮）ではありません' : isSettled(r) ? '実績が確定済みです' : closedAt(r.work_date) ? '精算を締めた期間です' : ineligibleReason(st, r.work_date)
     if (reason) skipped.push({ shift_id: r.shift_id, staff_name: name, work_date: r.work_date, reason })
     else targets.push({ ...r, staff_name: name, employment_status: st?.employment_status })
   }
@@ -1286,6 +1313,11 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
   if (!from) return c.json({ error: '日付の形式が正しくありません' }, 400)
   let shifts = await futureShiftsOf(db, u.company_id, st.staff_id, from)
   if (Array.isArray(b.shift_ids)) { const want = new Set(b.shift_ids.map(Number)); shifts = shifts.filter(s => want.has(s.shift_id)) }
+  // 精算を締めた期間のシフトは外さない（#170。外さなかった件数を closed で返す）
+  const sDates = shifts.map(s => String(s.work_date)).sort()
+  const closedAt = await closedChecker(db, u.company_id, sDates[0], sDates[sDates.length - 1])
+  const closed = shifts.filter(s => closedAt(s.work_date)).length
+  shifts = shifts.filter(s => !closedAt(s.work_date))
   const stmts: D1PreparedStatement[] = []
   let removed = 0, absent = 0
   for (const s of shifts) {
@@ -1298,7 +1330,7 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
   }
   const op = opLog(db, u, 'release') // 操作履歴（#159）。外す前の値を先に残す
   try { await batchInChunks(db, [...logShifts(op, shifts.map(s => s.shift_id)), ...stmts]) } finally { await finishLog(op) }
-  return c.json({ ok: true, removed, absent })
+  return c.json({ ok: true, removed, absent, closed })
 })
 
 // 金額の手動変更 / ルールに戻す
@@ -1307,6 +1339,9 @@ app.put('/shifts/:id/price', async (c) => {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトの金額は変更できません。精算画面で確定を取り消してください' }, 409)
+  // 精算を締めた期間のシフトの金額は変えない（#170）
+  const closedPrice = await closedOn(db, u.company_id, s.work_date)
+  if (closedPrice) return c.json({ error: closedPrice }, 409)
   if (b.reset) {
     const op = opLog(db, u, 'price_reset') // 操作履歴（#159）
     await db.batch(logShifts(op, [s.shift_id]))
@@ -1421,7 +1456,10 @@ app.post('/shifts/reprice', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
   if (!isISODate(b.from) || !isISODate(b.to)) return c.json({ error: '期間を指定してください' }, 400)
   if (b.from > b.to) return c.json({ error: '期間の開始日は終了日以前にしてください' }, 400)
-  const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'"]; const bind: any[] = [u.company_id, b.from, b.to]
+  const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'",
+    // 精算を締めた期間のシフトは再適用しない（#170）
+    'NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL AND shifts.work_date BETWEEN k.period_from AND k.period_to)']
+  const bind: any[] = [u.company_id, b.from, b.to]
   if (b.project_id) { f.push('project_id = ?'); bind.push(b.project_id) }
   // クライアント単位の単価ルール（#470）の再適用は、そのクライアントの全案件のシフトが対象
   if (b.client_id) { f.push('project_id IN (SELECT project_id FROM projects WHERE company_id = ? AND client_id = ?)'); bind.push(u.company_id, b.client_id) }
@@ -1470,6 +1508,8 @@ app.post('/shifts/bulk', async (c) => {
   if (!part.length) return c.json({ ok: true, created: 0, skipped: [], total: items.length, next_cursor: null })
 
   const conflicts = await findConflicts(db, u.company_id, staffIds, part[0][0], part[part.length - 1][0])
+  // 精算を締めた期間の日付には登録しない（#170。理由「締め」でスキップ）
+  const closedAt = await closedChecker(db, u.company_id, part[0][0], part[part.length - 1][0])
   const ng = (await ngByProjects(db, u.company_id, [project.project_id])).get(project.project_id) || []
   const data = await loadPricingData(db, u.company_id, [project.project_id])
   // 交通費の入力がなければ、スタッフの標準（開催場所 → スタッフ）を入れる（#564）
@@ -1484,6 +1524,7 @@ app.post('/shifts/bulk', async (c) => {
   for (const [d, sid] of part) {
     const st = staff.get(sid)
     let reason = ineligibleReason(st, d), detail: string | undefined
+    if (!reason && closedAt(d)) { reason = '締め'; detail = closedAt(d)! }
     if (!reason && ng.includes(sid)) reason = 'NG'
     if (!reason) {
       const cf = conflictFor(conflicts.get(sid), d, b.start_time, b.end_time)
@@ -1494,12 +1535,21 @@ app.post('/shifts/bulk', async (c) => {
     rows.push({ ...row, ...computeShiftPricing(u.company_id, row, null, payeeOn(st, hist.get(sid), d), data) })
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
-  const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows))
+  const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { returning: 'shift_id' }))
+  await logCreatedShifts(db, u, 'bulk_create', returnedIds(res, 'shift_id')) // 操作履歴（#159）
   // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）
   await notifyShiftChanges(c, u.company_id, [], rows.map((r): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time,
     status: r.status, location: r.location, project_name: project.project_name, site_name: site?.site_name ?? null })))
   return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next })
 })
+
+// まとめて作ったシフトの操作履歴（#159）。作成の後の値だけを残す
+async function logCreatedShifts(db: D1Database, u: any, action: string, ids: number[]) {
+  if (!ids.length) return
+  const op = opLog(db, u, action)
+  await batchInChunks(db, logShifts(op, ids, { created: true }))
+  await finishLog(op)
+}
 
 // 前週（任意の期間）のコピー: 枠と役割、割り当て（confirmed/substitute は confirmed として）をコピーする。
 // - コピーするのは、シフトボードの絞り込み（クライアント・区分・案件）と同じ条件の案件だけ（#493）
@@ -1572,9 +1622,13 @@ app.post('/shifts/copy-week', async (c) => {
   const skipped: (Skipped & { _role?: RolePlan })[] = []
   let already = 0, used = 0, nextCursor: string | null = null
 
+  // 精算を締めた期間の日付には割り当てをコピーしない（#170。枠はコピーする）
+  const closedAt = await closedChecker(db, cid, b.target_from, targetTo)
   const check = (staffId: number, date: string, projectId: number, start: string, end: string, slotStaff?: Set<number>): { reason: string; detail?: string } | null => {
     const reason = ineligibleReason(staff.get(staffId), date)
     if (reason) return { reason }
+    const closedText = closedAt(date)
+    if (closedText) return { reason: '締め', detail: closedText }
     if ((ng.get(projectId) || []).includes(staffId)) return { reason: 'NG' }
     if (slotStaff && slotStaff.has(staffId)) return { reason: '割当済み', detail: 'コピー先の枠にすでに割り当てられています' }
     const cf = conflictFor(conflicts.get(staffId), date, start, end)
@@ -1685,7 +1739,9 @@ app.post('/shifts/copy-week', async (c) => {
       }
       return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })
-    shiftsCreated = changesOf(await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true })))
+    const insRes = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true, returning: 'shift_id' }))
+    shiftsCreated = changesOf(insRes)
+    await logCreatedShifts(db, u, 'copy_week', returnedIds(insRes, 'shift_id')) // 操作履歴（#159）
     // コピーで登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。
     // 同時に実行されて一部が作られなかったとき（どの行を作ったか分からない）は、作った側の呼び出しが知らせるので、ここでは送らない
     if (shiftsCreated === rows.length) await notifyShiftChanges(c, cid, [], rows.map((r: any): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date,
@@ -1794,6 +1850,7 @@ app.put('/slot-patterns/:id', async (c) => {
   const extendDates: string[] = []
   for (let d = addDays(p.date_to, 1); dayDiff(d, newTo) >= 0; d = addDays(d, 1)) if (d >= today && wds.includes(weekday(d))) extendDates.push(d)
   if (extendDates.length > 160) return c.json({ error: '一度に追加できる枠は160件までです（終了日を手前にしてください）' }, 400)
+  if (extendDates.length && projectClosed(await ownProject(db, u.company_id, p.project_id))) return c.json({ error: CLOSED_PROJECT_SLOT_ERROR }, 400)
 
   // ---- 対象の枠と、除外する枠（報告済み・確定済みのシフトがある） ----
   const slots = (await db.prepare(`SELECT slot_id, work_date, start_time, end_time, break_minutes FROM shift_slots

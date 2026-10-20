@@ -11,7 +11,7 @@
 // 同じシフト・同じ種類は1回だけ（reminder_sends の一意索引で先に記録を取り、記録が取れたものだけを送る。二重起動でも二度送らない）。
 // Workers の CPU 時間の上限があるため、1回の起動で読むシフトは種類ごとに MAX_CANDIDATES 件まで（残りは次の起動で送る）
 // =========================================================
-import { reminderSettings, deliverReminders, REMINDER_LIMITS, type NotifyEnv, type ReminderItem, type ReminderSettings, type ReminderType } from '../notifications'
+import { reminderSettings, deliverReminders, REMINDER_DEFAULTS, REMINDER_LIMITS, type NotifyEnv, type ReminderItem, type ReminderSettings, type ReminderType } from '../notifications'
 import { attendanceTypesForRows, dailyReportRequiredSql, REPORT_TYPES } from '../report-settings'
 import { shiftWindow, reportableWindow, addMinutes, addDays } from '../lib/shift-time'
 import { JSON_IN, bindJsonArray } from '../lib/d1-chunk'
@@ -51,6 +51,11 @@ const toItem = (s: any, type: ReminderType, settings: ReminderSettings): Reminde
   email_on: settings.email, type, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, project_name: s.project_name,
 })
 
+// 入店のリマインドの分（会社の設定。reminderSettings と同じ規則: null は送らない、範囲外・未設定は既定値）。SQL の式（co = companies）
+const CHECK_IN_TYPE_SQL = `(CASE WHEN json_valid(co.settings_json) THEN json_type(co.settings_json, '$.reminders.check_in') END)`
+const CHECK_IN_MINUTES_SQL = `(CASE WHEN ${CHECK_IN_TYPE_SQL} = 'integer' AND json_extract(co.settings_json, '$.reminders.check_in') BETWEEN 0 AND ${REMINDER_LIMITS.check_in}
+  THEN json_extract(co.settings_json, '$.reminders.check_in') ELSE ${REMINDER_DEFAULTS.check_in ?? 0} END)`
+
 // 起床・出発・入店のリマインド（送る時点と、送ると決めたもの）
 async function attendanceReminders(db: D1Database, now: string): Promise<(ReminderItem & { due_at: string })[]> {
   const today = now.slice(0, 10)
@@ -64,7 +69,11 @@ async function attendanceReminders(db: D1Database, now: string): Promise<(Remind
       AND datetime(s.work_date || ' ' || s.start_time) BETWEEN ? AND ?
       AND NOT EXISTS (SELECT 1 FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type NOT IN ('wake_up', 'departure'))
       AND NOT EXISTS (SELECT 1 FROM reminder_sends r WHERE r.shift_id = s.shift_id AND r.reminder_type = 'check_in')
-    ORDER BY s.shift_id LIMIT ?`).bind(addDays(today, -1), addDays(today, 1), from, to, MAX_CANDIDATES).all()).results as any[]
+      -- 開始を過ぎたシフトで、もう送るものがないもの（入店のリマインドを使っていない・送る時点から遅れの上限を過ぎた）は読まない（#160。
+      -- 起床・出発は開始を過ぎたら送らない）。上限の件数がこうしたシフトで埋まり、送るべきシフトが読まれなくならないように
+      AND NOT (datetime(s.work_date || ' ' || s.start_time) <= ? AND (${CHECK_IN_TYPE_SQL} = 'null'
+        OR datetime(s.work_date || ' ' || s.start_time, '+' || (${CHECK_IN_MINUTES_SQL} + ${REMIND_LATE_MINUTES.attendance}) || ' minutes') < ?))
+    ORDER BY datetime(s.work_date || ' ' || s.start_time), s.shift_id LIMIT ?`).bind(addDays(today, -1), addDays(today, 1), from, to, now, now, MAX_CANDIDATES).all()).results as any[]
   if (!rows.length) return []
   const settingsOf = settingsCache()
   const ids = bindJsonArray(rows.map(r => r.shift_id))

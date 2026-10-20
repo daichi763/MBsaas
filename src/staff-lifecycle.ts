@@ -14,7 +14,7 @@ import { syncActualFromReports, syncActualsForShifts, closedMessage } from './se
 import { NOTICE_TARGET_SQL } from './lib/notices'
 import { isHHMM, isISODate, pickReportValues, reportFieldRulesError } from './lib/validate'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
-import { notifyDailyReportIncident } from './notifications'
+import { notifyDailyReportIncident, notifyConsultation } from './notifications'
 import { notifyProxyAttendance, ATTENDANCE_PROXY_KIND, loadMailContact } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
@@ -76,15 +76,22 @@ export async function findStaffByPhones(db: D1Database, companyId: number, phone
   const want = new Set(phones.map(normalizePhone).filter(p => p.length >= 10))
   const out = new Map<string, any[]>()
   if (!want.size) return out
-  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, ${MATCH_PHONE_SQL} AS phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND ${MATCH_PHONE_SQL} IS NOT NULL AND sp.merged_into_staff_id IS NULL`)
     .bind(companyId).all()).results as any[]
   for (const r of rows) {
     const p = normalizePhone(r.phone)
-    if (want.has(p)) out.set(p, [...(out.get(p) || []), r])
+    if (want.has(p)) out.set(p, [...(out.get(p) || []), withSharedPhone(r)])
   }
   return out
 }
+// 照合に使う電話番号（#123。利用者の判断）。他社連携の行（linked_external）は、所属元（雇用元）の行の今の電話番号を使う
+// （所属元で番号を変えても照合に古い番号を使わない）。連携先には連絡先を共有しないので、照合の結果には番号を入れない（withSharedPhone）。
+// 所属元が連携を終了した行（link_revoked_at）は所属元の番号を見ない
+export const MATCH_PHONE_SQL = `(CASE WHEN sp.affiliation_type = 'linked_external' THEN (CASE WHEN sp.link_revoked_at IS NULL THEN
+    (SELECT ru.phone FROM staff_profiles rs JOIN users ru ON ru.user_id = rs.user_id WHERE rs.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)) END)
+  ELSE us.phone END)`
+export const withSharedPhone = <T extends { affiliation_type?: string; phone?: any }>(r: T): T => (r.affiliation_type === 'linked_external' ? { ...r, phone: null } : r)
 
 // ---------- 提出設定（案件 → スタッフ → シフト の順に上書き） ----------
 export const ATTENDANCE_MODES = ['none', 'in_out', 'full'] as const
@@ -165,10 +172,11 @@ export const adminLifecycleApi = new Hono<{ Bindings: Bindings; Variables: Varia
 // 退職・停止中の人には inactive（'退職' / '停止' / '休職'）を付け、画面で在籍中の人と区別する（#356）
 async function phoneMatches(db: D1Database, companyId: number, phone: string) {
   const today = todayJST()
-  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
+  // 他社連携の行は所属元の今の番号で照合し、番号は返さない（#123。findStaffByPhones と同じ）
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, ${MATCH_PHONE_SQL} AS phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       COALESCE(sp.employment_status, 'working') AS employment_status, us.status AS user_status, us.retired_at
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND us.phone IS NOT NULL AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
-  return rows.filter(r => normalizePhone(r.phone) === phone).map(({ user_status: _s, ...r }) => ({
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND ${MATCH_PHONE_SQL} IS NOT NULL AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
+  return rows.filter(r => normalizePhone(r.phone) === phone).map(({ user_status: _s, ...r }) => withSharedPhone({
     ...r, retired_at: r.retired_at || null, inactive: inactiveLabelOf({ ...r, user_status: _s }, today),
   }))
 }
@@ -821,10 +829,15 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
   // 写真の日時・選び方、写真なしの理由（#418 #535）と、報告した端末（#532。device_info の生の値は返さず要約だけ）
   const rawReports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.late_minutes, a.early_leave_minutes, a.entry_method, a.corrected_by_correction_id, a.original_reported_at, um.name AS entered_by_name,
-      a.photo_key IS NOT NULL AS has_photo, a.photo_taken_at, a.photo_source, a.no_photo_reason, a.device_info, a.device_id
+      a.photo_key IS NOT NULL AS has_photo, a.photo_taken_at, a.photo_source, a.no_photo_reason, a.device_info, a.device_id, a.time_source, a.received_at
     FROM attendance_reports a LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results as any[]
-  const reports = rawReports.map(({ device_info, device_id, ...r }) => ({ ...r, has_photo: !!r.has_photo,
-    photo_stale: !!r.has_photo && isPhotoStale(r.photo_taken_at, r.original_reported_at || r.reported_at), device: r.entry_method === 'proxy' ? '' : deviceSummary(device_info) }))
+  // 押した時刻（端末時刻）で記録した報告（#427）は device_time と受け取った時刻を付ける（打刻修正で直した報告は付けない）
+  const reports = rawReports.map(({ device_info, device_id, time_source, received_at, ...r }) => {
+    const dev = time_source === 'device' && r.corrected_by_correction_id == null
+    return { ...r, has_photo: !!r.has_photo,
+      photo_stale: !!r.has_photo && isPhotoStale(r.photo_taken_at, r.original_reported_at || r.reported_at), device: r.entry_method === 'proxy' ? '' : deviceSummary(device_info),
+      device_time: dev, received_at: dev ? received_at : null }
+  })
   // 報告用URLで報告した端末の数（端末ID。古い行は user-agent で数える）。2台以上なら画面で知らせる
   const linkRows = rawReports.filter(r => r.entry_method === 'link')
   // 端末IDのない行（端末IDを記録する前の報告）は、同じ user-agent の端末IDがあればその端末とみなす（同じ端末を2台と数えない）
@@ -1262,6 +1275,11 @@ adminLifecycleApi.post('/report-links/bulk', async (c) => {
   return c.json({ ok: true, issued: targets.length, date, company_name: u.company_name || '', ...after })
 })
 
+// 対応済みにしたインシデント・クレームを未対応に戻す（#169。api.ts の reopenIncidentStmt と同じ）
+async function reopenIncident(db: D1Database, shiftId: number) {
+  await db.prepare(`UPDATE daily_reports SET incident_status = NULL WHERE shift_id = ? AND incident_status = 'done'`).bind(shiftId).run()
+}
+
 // ---------- 日報の代理入力（#276） ----------
 // 電話・口頭で聞いた内容や、報告用URLの期限が過ぎた日報を管理者が記録する（entry_method = 'proxy'、entered_by = 記録した管理者）。
 // 本人が提出した日報があるときは overwrite: true のときだけ上書きする。確認済みの日報を上書きしたら、アプリと同じく確認済みを外す
@@ -1289,6 +1307,7 @@ adminLifecycleApi.post('/shifts/:id/proxy-daily-report', async (c) => {
     values_json: JSON.stringify(merged.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
     flags_explicit: true, entry_method: 'proxy', entered_by: u.user_id, now: nowJST(),
   })
+  if (merged.raised.length) await reopenIncident(db, s.shift_id) // #169
   await notifyDailyReportIncident(c, s.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
 })
@@ -1394,7 +1413,8 @@ async function loadToken(db: D1Database, token: string) {
       s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, p.project_name, p.report_template_id, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
       sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
       co.active_status AS company_active_status, sp.merged_into_staff_id, sp.employment_status, us.retired_at,
-      p.manual_text, si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng
+      p.manual_text, si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng, p.site_contact_name, p.site_contact_phone,
+      co.emergency_phone, co.emergency_note
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
@@ -1438,10 +1458,14 @@ publicReportApi.get('/:token', async (c) => {
   const [notices, contact] = await Promise.all([linkNotices(db, t.company_id, t.staff_id), loadMailContact(db, t.company_id)])
   return c.json({
     kind: 'shift', notices, contact_phone: contact.phone,
+    // 会社の緊急連絡先（#173。GET /:token/contact と同じ値）。画面は contact_phone と同じ番号なら1つだけ出す
+    emergency_phone: t.emergency_phone || null, emergency_note: t.emergency_note || null,
     company_name: t.company_name, staff_name: firstName(t.staff_name), project_name: t.project_name,
     // 役割・案件の注意事項・開催場所（住所と地図の位置）。ログインのない人が現場の情報を得られるように（#326）
+    // 案件の現場責任者の連絡先（#173。任意）
     shift: { work_date: t.work_date, start_time: t.start_time, end_time: t.end_time, location: t.location, role: t.role,
-      site_name: t.site_name || null, site_address: t.site_address || null, site_lat: t.site_lat ?? null, site_lng: t.site_lng ?? null },
+      site_name: t.site_name || null, site_address: t.site_address || null, site_lat: t.site_lat ?? null, site_lng: t.site_lng ?? null,
+      site_contact_name: t.site_contact_name || null, site_contact_phone: t.site_contact_phone || null },
     manual_text: t.manual_text || '',
     today: now.slice(0, 10), now, windows, pending_types: pending.map(r => r.report_type),
     expires_at: reportTokenExpiry(t.work_date), modes, reports, photo_required: photoRequired(t),
@@ -1547,6 +1571,8 @@ publicReportApi.post('/:token/daily-report', async (c) => {
     values_json: JSON.stringify(merged.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
     flags_explicit: b.flags_explicit === true, entry_method: 'link', now: nowJST(),
   })
+  // 新しくインシデント・クレームの印が付いたら、対応済みにしたものを未対応に戻す（#169。アプリの日報と同じ）
+  if (merged.raised.length) await reopenIncident(db, t.shift_id)
   await notifyDailyReportIncident(c, t.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
 })
@@ -1557,7 +1583,7 @@ const PUBLIC_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
 async function loadScheduleToken(db: D1Database, token: string) {
   if (!PUBLIC_TOKEN_RE.test(token || '')) return null
   return db.prepare(`SELECT st.token_id, st.company_id, st.staff_id, st.expires_at, st.revoked_at, us.name AS staff_name, us.status AS user_status, us.retired_at,
-      sp.merged_into_staff_id, sp.employment_status, co.company_name, co.active_status AS company_active_status
+      sp.merged_into_staff_id, sp.employment_status, co.company_name, co.active_status AS company_active_status, co.emergency_phone, co.emergency_note
     FROM staff_schedule_tokens st JOIN staff_profiles sp ON sp.staff_id = st.staff_id AND sp.company_id = st.company_id JOIN users us ON us.user_id = sp.user_id
     JOIN companies co ON co.company_id = st.company_id WHERE st.token_hash = ?`).bind(await sha256(token)).first() as Promise<any>
 }
@@ -1573,7 +1599,7 @@ function scheduleTokenUsable(t: any, now: string): boolean {
 async function scheduleView(db: D1Database, st: any) {
   const now = nowJST(), today = now.slice(0, 10)
   const rows = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.location, s.role, s.status, p.project_name,
-      si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng
+      si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng, p.site_contact_name, p.site_contact_phone
     FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.work_date <= ? AND s.status IN ('confirmed', 'substitute')
     ORDER BY s.work_date, s.start_time, s.shift_id LIMIT 60`).bind(st.staff_id, st.company_id, addDays(today, -1), addDays(today, SCHEDULE_DAYS_AHEAD)).all()).results as any[]
@@ -1596,8 +1622,11 @@ async function scheduleView(db: D1Database, st: any) {
     kind: 'schedule', company_name: st.company_name, staff_name: firstName(st.staff_name), today, now, expires_at: st.expires_at, days_ahead: SCHEDULE_DAYS_AHEAD,
     shifts: shifts.map(s => ({ shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, location: s.location || '', role: s.role || '',
       project_name: s.project_name, site_name: s.site_name || null, site_address: s.site_address || null, site_lat: s.site_lat ?? null, site_lng: s.site_lng ?? null,
+      site_contact_name: s.site_contact_name || null, site_contact_phone: s.site_contact_phone || null,
       report_token: tokens.get(s.shift_id) || null })),
     notices, contact_phone: contact.phone,
+    // 会社の緊急連絡先（#173 #163）
+    emergency_phone: st.emergency_phone || null, emergency_note: st.emergency_note || null,
   }
 }
 // 使えないURLの画面に出す会社名と連絡先（#163）。発行されたことのあるURL（期限切れ・取消を含む）だけ。でたらめなURLには何も返さない
@@ -1659,6 +1688,8 @@ publicReportApi.post('/:token/consultation', async (c) => {
   }
   const r = await db.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at, entry_method)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(companyId, staffId, kind.category, body, kind.urgency, target?.project_id ?? null, target?.work_date ?? null, now).run()
+  // 管理者に知らせる（#163。アプリからの相談と同じく、遅刻・欠勤・体調不良はメールでもすぐに。失敗しても連絡は受け付ける）
+  await notifyConsultation(c, Number(r.meta.last_row_id), 'received')
   return c.json({ ok: true, consultation_id: r.meta.last_row_id, contact_phone: contact.phone })
 })
 

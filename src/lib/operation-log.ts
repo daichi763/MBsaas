@@ -31,6 +31,8 @@ const SHIFT_FIELDS: [string, string, string][] = [
   ['actual_start', 's.actual_start', '実績の開始'], ['actual_end', 's.actual_end', '実績の終了'], ['actual_break_minutes', 's.actual_break_minutes', '実績の休憩（分）'],
   ['actual_source', 's.actual_source', '実績の入力元'], ['actual_note', 's.actual_note', '実績のメモ'],
   ['settle_status', 's.settle_status', '精算'], ['settled_at', 's.settled_at', '確定日時'], ['settled_by', 's.settled_by', '確定した人'],
+  // 前日確認（#176。w6-staff-app-features の 0083）
+  ['day_before_confirmed_at', 's.day_before_confirmed_at', '前日確認'], ['day_before_confirmed_by', 's.day_before_confirmed_by', '前日確認を記録した管理者'],
   ['cancel_reason', 'cx.reason', '欠勤・中止の理由'], ['cancel_notified_on', 'cx.notified_on', '欠勤・中止の連絡日'],
   ['cancel_bill', 'cx.bill_amount', 'キャンセル料（請求）'], ['cancel_pay', 'cx.pay_amount', '補償・控除（支払）'], ['cancel_note', 'cx.note', 'キャンセルのメモ'],
 ]
@@ -65,6 +67,7 @@ export const OP_ACTION_LABELS: Record<string, string> = {
   slot_update: '枠の変更', slot_delete: '枠の削除', actual: '実績の入力', actual_reset: '実績を報告に戻す',
   settle_confirm: '精算の確定', settle_unconfirm: '精算の確定の取り消し', recalc: '金額の再計算', cancellation: 'キャンセル料・補償の入力',
   cancellation_remove: 'キャンセル料・補償の取り消し', transport_fill: '交通費を標準で埋める',
+  bulk_create: '常勤の一括登録', copy_week: '前週のコピー', recruit_approve: '募集の承認',
 }
 
 function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }

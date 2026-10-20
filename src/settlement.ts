@@ -172,6 +172,11 @@ const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前�
 const CANCEL_UNSET_ISSUE = 'キャンセル料・補償が未入力'
 // スタッフからの交通費・延長の申請（src/staff-pay.ts。#172 #273）が承認待ち
 export const PAY_REQUEST_ISSUE = '承認待ちの交通費・延長の申請あり'
+// 休憩入から休憩出までが極端に短い（#324。続けて押した押し間違いなど）。同じ時刻（0分）は『休憩なし』の記録なので出さない
+const SHORT_BREAK_MINUTES = 5
+const SHORT_BREAK_ISSUE = `休憩が極端に短い（${SHORT_BREAK_MINUTES}分未満）`
+// 報告用URLの報告が2台以上の端末から送られた（#532。本人以外が押していないかを確かめる）
+const LINK_MULTI_DEVICE_ISSUE = '報告用URLで2台以上の端末から報告あり'
 // 確定の後に起きる項目。確定済みの行では、これだけを確認が必要として数える（それ以外は確定したときに確認したものとして扱う。#563）
 const AFTER_SETTLE_ISSUES = new Set([PENDING_ISSUE, CORRECTED_AFTER_SETTLE, REPORTED_AFTER_SETTLE, PAY_REQUEST_ISSUE])
 // 承認待ちの打刻修正・交通費と延長の申請は、承認・却下で片づけるものなので確認済みにはできない
@@ -257,6 +262,8 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       (SELECT x.to_payee_type || ':' || COALESCE(x.to_payee_affiliation_id, '') FROM affiliation_excluded_shifts x
         WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id ORDER BY x.history_id DESC LIMIT 1) AS aff_excluded_payee,
       (SELECT COUNT(*) FROM staff_pay_requests q WHERE q.shift_id = s.shift_id AND q.company_id = s.company_id AND q.status = 'pending') AS pending_pay_requests,
+      -- 報告用URLで報告した端末の数（#532。端末IDのない古い行は user-agent で数える）
+      (SELECT COUNT(DISTINCT COALESCE(a.device_id, 'ua:' || COALESCE(a.device_info, ''))) FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.entry_method = 'link') AS link_devices,
       sc.reason AS cx_reason, sc.notified_on AS cx_notified_on, sc.bill_amount AS cx_bill, sc.pay_amount AS cx_pay, sc.note AS cx_note
     FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
     LEFT JOIN shift_cancellations sc ON sc.shift_id = s.shift_id AND sc.company_id = s.company_id
@@ -305,6 +312,13 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     const over = overrunMinutes(r, h.basis)
     if (!hoursDiff && !r.pending_pay_requests && over >= Math.max(OVERRUN_MIN_MINUTES, Number(r.time_round_minutes || 0))) issues.push(`予定の終了より${over}分後まで勤務（延長の申請・承認なし）`)
     if (r.pay_amount == null) issues.push('支払単価未設定')
+    // 休憩入・休憩出の間が極端に短い（#324）
+    const bs = at('break_start'), be = at('break_end')
+    if (bs && be) {
+      const gap = (Date.parse(String(be).replace(' ', 'T') + 'Z') - Date.parse(String(bs).replace(' ', 'T') + 'Z')) / 60000
+      if (gap > 0 && gap < SHORT_BREAK_MINUTES) issues.push(SHORT_BREAK_ISSUE)
+    }
+    if (Number(r.link_devices || 0) >= 2) issues.push(LINK_MULTI_DEVICE_ISSUE)
     // 承認待ちの打刻修正。確定すると、後で承認したときに確定の取り消しと再確定が必要になる
     if (r.pending_corrections) issues.push(PENDING_ISSUE)
     // 承認待ちの交通費・延長の申請（#172 #273）。確定すると承認できない（確定の取り消しが必要）

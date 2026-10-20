@@ -12,7 +12,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { PRICE_COLUMNS, computeShiftPricing, conflictFor, findConflicts, isSettled, loadPayeeHistory, loadPricingData, payeeOn } from './shift-board'
-import { TYPE_LABEL, mergeSourceCheck, normalizePhone, payeeTypeFor } from './staff-lifecycle'
+import { MATCH_PHONE_SQL, TYPE_LABEL, mergeSourceCheck, normalizePhone, payeeTypeFor } from './staff-lifecycle'
 import { revokeSessionsStmt } from './lib/auth'
 import { conflictLabel } from './lib/staff-eligibility'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
@@ -55,7 +55,8 @@ staffMergeApi.get('/staff/:id/merge-candidates', async (c) => {
   const s = await loadStaff(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const q = String(c.req.query('q') || '').trim()
-  const rows = ((await db.prepare(`SELECT sp.staff_id, us.name, us.phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
+  // 他社連携の行の電話番号は、所属元の今の番号で比べる（#123。番号そのものは返さない）
+  const rows = ((await db.prepare(`SELECT sp.staff_id, us.name, ${MATCH_PHONE_SQL} AS phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana, oc.company_name AS owner_company_name, CASE WHEN sp.affiliation_type = 'linked_external' OR pe.created_company_id != sp.company_id THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,
       (SELECT COUNT(*) FROM shifts sh WHERE sh.staff_id = sp.staff_id AND sh.status IN ('confirmed','substitute')) AS shift_count,
@@ -243,6 +244,14 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     db.prepare('UPDATE recruit_applications SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
     // 打刻修正申請（承認すると申請の staff_id で勤怠を作るため、承認待ちも含めて付け替える。#10）
     db.prepare('UPDATE attendance_corrections SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
+    // 打刻修正の添付（#485）。本人がスタッフの画面で自分の添付を見られるように、申請と同じく付け替える
+    db.prepare('UPDATE attendance_correction_attachments SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
+    // 他社連携の現場評価・稼働メモの履歴（#541。0058）。この会社が書いた統合元の連携行の分と、統合元を所属元とする分を付け替える
+    db.prepare('UPDATE roster_host_note_history SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
+    db.prepare('UPDATE roster_host_note_history SET source_staff_id = ? WHERE source_staff_id = ? AND owner_company_id = ?').bind(T, sid, u.company_id),
+    // 交通費の標準（#564）。統合先に同じ開催場所の標準があれば統合先の値を残し、統合元の分は消す
+    db.prepare('UPDATE OR IGNORE staff_transport_defaults SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
+    db.prepare('DELETE FROM staff_transport_defaults WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id),
     // 報告設定: 統合先に行がない案件 × 種類だけを引き継ぎ、履歴に残してから統合元の行を消す（#10）
     db.prepare(`INSERT INTO report_setting_logs (company_id, project_id, staff_id, report_type, old_enabled, new_enabled, action, batch_id, changed_by, changed_by_name, changed_by_role, created_at)
       SELECT s.company_id, s.project_id, ?, s.report_type, NULL, s.enabled, 'merge', ?, ?, ?, ?, ? ${reportSettingsWhere}`)
