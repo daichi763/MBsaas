@@ -931,10 +931,12 @@ function photoPosHtml() {
 }
 function photoPosRefresh() { const el = document.getElementById('photo-pos'); if (el) el.innerHTML = photoPosHtml() }
 delegate('photoRetryPosition', () => { if (pendingPhoto.type === 'check_in' && pendingPhoto.posState !== 'loading') photoFetchPosition() })
-// 送るときの位置: 取得済みならそれ、取得中なら待つ、取れていなければもう一度だけ試す
+// 送るときの位置: 取得済み（2分以内）ならそれ、取得中なら待つ、取れていない・古ければもう一度だけ試す
+// （現場に着く前に写真の画面を開いた場合に、離れた位置で記録しないように）
+const PHOTO_POS_MAX_AGE_MS = 2 * 60 * 1000
 function photoPosition() {
   if (pendingPhoto.type !== 'check_in') return Promise.resolve(null)
-  if (pendingPhoto.posState === 'ok') return Promise.resolve(pendingPhoto.pos)
+  if (pendingPhoto.posState === 'ok' && pendingPhoto.pos && Date.now() - Number(pendingPhoto.pos.timestamp || 0) < PHOTO_POS_MAX_AGE_MS) return Promise.resolve(pendingPhoto.pos)
   if (pendingPhoto.posState === 'loading' && pendingPhoto.posPromise) return pendingPhoto.posPromise
   return photoFetchPosition()
 }
@@ -1315,12 +1317,12 @@ function shiftListHtml(data, apps, today) {
     </div>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'
 }
 
-// 直近に管理者が変えたシフトの印（#155）。サーバーが返す changed_at（時刻・場所・枠などを変えた日時）か、
+// 直近に管理者が変えたシフトの印（#155）。サーバーが返す changed_at・staff_changed_at（時刻・場所・状態などを変えた日時。日本時間）か、
 // 作った日時（created_at）より後の updated_at が、SHIFT_CHANGED_DAYS 日以内なら『変更あり』を出す。今日より前のシフトには出さない
 const SHIFT_CHANGED_DAYS = 3
 function shiftChangedBadge(s, today) {
   if (s.work_date < today) return ''
-  const at = s.changed_at || (s.updated_at && s.created_at && String(s.updated_at) > String(s.created_at) ? s.updated_at : null)
+  const at = s.changed_at || s.staff_changed_at || (s.updated_at && s.created_at && String(s.updated_at) > String(s.created_at) ? s.updated_at : null)
   if (!at) return ''
   const t = dayjs(String(at).replace(' ', 'T'))
   if (!t.isValid() || dayjs().diff(t, 'day', true) > SHIFT_CHANGED_DAYS) return ''
@@ -1981,12 +1983,17 @@ async function loadPastReports() {
 async function openPastReportById(el, id) {
   let idx = PAST_REPORTS.reports.findIndex(r => Number(r.daily_report_id) === id)
   if (idx < 0) {
-    let one = null
-    try {
-      const d = (await axios.get('/api/staff/my-reports', { params: { daily_report_id: id } })).data
-      one = (d.reports || []).find(r => Number(r.daily_report_id) === id) || null
-      if (one) Object.assign(PAST_REPORTS.templates = PAST_REPORTS.templates || {}, d.templates || {})
-    } catch (e) { one = null }
+    // 1件の API（GET /api/staff/my-reports/:id → { report, templates }）を先に使い、無ければ一覧の API に daily_report_id を付けて取り直す
+    let one = null, tpl = {}
+    for (const get of [() => axios.get('/api/staff/my-reports/' + id), () => axios.get('/api/staff/my-reports', { params: { daily_report_id: id } })]) {
+      try {
+        const d = (await get()).data || {}
+        one = [d.report, ...(d.reports || [])].find(r => r && Number(r.daily_report_id) === id) || null
+        tpl = d.templates || {}
+      } catch (e) { one = null }
+      if (one) break
+    }
+    if (one) Object.assign(PAST_REPORTS.templates = PAST_REPORTS.templates || {}, tpl)
     if (!document.getElementById('past-reports') || !PAST_REPORTS) return
     if (!one) { toast('コメントの付いた日報は、過去の日報の一覧（新しい30件）にないため開けませんでした。管理者に内容を確かめてください', 6000); return }
     PAST_REPORTS.reports.push(one)
@@ -2007,6 +2014,8 @@ function pastReportCheckBadge(r) {
 delegate('openPastReport', (el) => {
   const r = PAST_REPORTS && PAST_REPORTS.reports[Number(el.dataset.index)]
   if (!r) return
+  // 未読の管理者のコメントを開いたら既読にする（#158。サーバーが unread_comment を返すときだけ。失敗しても表示はそのまま）
+  if (r.unread_comment) { r.unread_comment = false; axios.post('/api/staff/my-reports/' + Number(r.daily_report_id) + '/comment-read').catch(() => { }) }
   // 項目はテンプレートの並び・表示名で出す。テンプレートに無い値（項目を変える前の日報）はキーを表示名にして後ろに出す
   const fields = ((PAST_REPORTS.templates || {})[r.template_id] || []).slice()
   for (const k of Object.keys(r.values || {})) if (!fields.some(f => f.key === k)) fields.push({ key: k, label: k === 'free' ? '報告内容' : k, type: typeof r.values[k] === 'number' ? 'number' : 'text' })
