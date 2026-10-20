@@ -1317,7 +1317,8 @@ function shiftListHtml(data, apps, today) {
     </div>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'
 }
 
-// 直近に管理者が変えたシフトの印（#155）。サーバーが返す changed_at・staff_changed_at（時刻・場所・状態などを変えた日時。日本時間）か、
+// 直近に内容が変わったシフトの印（#155）。staff_changed_at はトリガーで、本人の申請の承認（終了時刻の変更など）も含めて記録されるため、文言は「管理者が変えた」とせず「変わった」にする。
+// サーバーが返す changed_at・staff_changed_at（時刻・場所・状態などが変わった日時。日本時間）か、
 // 作った日時（created_at）より後の updated_at が、SHIFT_CHANGED_DAYS 日以内なら『変更あり』を出す。今日より前のシフトには出さない
 const SHIFT_CHANGED_DAYS = 3
 function shiftChangedBadge(s, today) {
@@ -1326,7 +1327,7 @@ function shiftChangedBadge(s, today) {
   if (!at) return ''
   const t = dayjs(String(at).replace(' ', 'T'))
   if (!t.isValid() || dayjs().diff(t, 'day', true) > SHIFT_CHANGED_DAYS) return ''
-  return ` <span class="badge badge-yellow" title="管理者がこのシフトを変更しました"><i class="fas fa-pen mr-0.5"></i>変更あり ${esc(t.format('M/D HH:mm'))}</span>`
+  return ` <span class="badge badge-yellow" title="このシフトの日時・場所・状態などが変わりました。内容を確かめてください"><i class="fas fa-pen mr-0.5"></i>変更あり ${esc(t.format('M/D HH:mm'))}</span>`
 }
 
 // 一緒に入る人（#523。会社の設定で出すときだけ）と、この現場の申し送り（#522）。確定・代打のシフトで、1週間前より後のものに出す
