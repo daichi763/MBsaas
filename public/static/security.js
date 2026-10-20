@@ -17,7 +17,7 @@
     success: ['成功', 'badge-green'], bad_password: ['ID・パスワードの誤り', 'badge-red'], locked: ['失敗が続き一時停止', 'badge-red'],
     inactive: ['停止中のアカウント', 'badge-yellow'], company_inactive: ['契約停止中', 'badge-yellow'], ip_denied: ['接続元の制限', 'badge-red'], mfa_failed: ['確認コードの誤り', 'badge-red'],
   }
-  const EVENT_LABEL = { login: 'ログイン', password_reset: 'パスワード再設定', logout_all: '本人がすべての端末からログアウト', forced_logout: '管理者がログインを終了' }
+  const EVENT_LABEL = { login: 'ログイン', password_reset: 'パスワード再設定', logout_all: '本人がすべての端末からログアウト', forced_logout: '管理者がログインを終了', switch_company: '企業の切り替え' }
   const METHOD_LABEL = { password: 'パスワード', totp: 'パスワード＋認証アプリ', recovery: 'パスワード＋予備コード' }
   const ROLE_LABEL = { company_admin: '会社管理者', sales_manager: '営業管理者', field_manager: '現場管理者', office_staff: '事務担当', system_admin: '本部' }
 

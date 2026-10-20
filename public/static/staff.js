@@ -1465,10 +1465,57 @@ function rcRolesHtml(p, picked) {
         <span class="text-xs whitespace-nowrap text-right">${right}</span></label>`
     }).join('')}</div></div>`).join('')
 }
+// 募集ページの独自の質問（#300）。公開ページ（apply.js）と同じ type: text / select / yesno（yes・no で送る）。
+// 欄の id は募集ページと質問の順番から作る（key を id に入れない）。必須の確認は日時を選んだ募集の質問だけ
+const rcQuestions = (p) => (p && Array.isArray(p.questions) ? p.questions : [])
+const rcQid = (pid, i) => `rc-q-${Number(pid)}-${Number(i)}`
+function rcQuestionsHtml(p) {
+  const qs = rcQuestions(p)
+  if (!qs.length) return ''
+  return `<div class="mt-2 pt-2 border-t border-gray-100 space-y-2"><p class="text-xs font-bold text-gray-600">応募するときの質問<span class="font-normal text-gray-400">（<span class="text-red-500">*</span> は必須）</span></p>
+    ${qs.map((q, i) => {
+      const id = rcQid(p.page_id, i), mark = q.required ? ' <span class="text-red-500">*</span>' : ''
+      const input = q.type === 'select'
+        ? `<select id="${id}" class="inp mt-1"><option value="">選択してください</option>${(q.options || []).map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`
+        : q.type === 'yesno'
+          ? `<span class="flex gap-4 mt-1">${[['yes', 'はい'], ['no', 'いいえ']].map(([v, l]) => `<label class="inline-flex items-center gap-1.5 text-sm"><input type="radio" class="w-4 h-4" name="${id}" value="${v}">${l}</label>`).join('')}</span>`
+          : `<input id="${id}" class="inp mt-1" maxlength="200">`
+      return `<div class="block text-sm text-gray-700 rounded-lg" id="${id}-box">${esc(q.label)}${mark}${input}</div>`
+    }).join('')}</div>`
+}
+// 画面の回答を { key: 値 } で読む
+function rcReadAnswers(p) {
+  const out = {}
+  rcQuestions(p).forEach((q, i) => {
+    const id = rcQid(p.page_id, i)
+    out[q.key] = q.type === 'yesno' ? ((document.querySelector(`input[name="${id}"]:checked`) || {}).value || '')
+      : ((document.getElementById(id) || {}).value || '').trim()
+  })
+  return out
+}
+function rcRestoreAnswers(p, saved) {
+  if (!saved) return
+  rcQuestions(p).forEach((q, i) => {
+    const v = saved[q.key], id = rcQid(p.page_id, i); if (!v) return
+    if (q.type === 'yesno') { const r = document.querySelector(`input[name="${id}"][value="${v === 'no' ? 'no' : 'yes'}"]`); if (r) r.checked = true }
+    else { const el = document.getElementById(id); if (el) el.value = v }
+  })
+}
+// 答えていない質問の欄を赤い枠で示して、その欄へ移動する
+function rcMarkQuestion(pageId, key) {
+  const p = RECRUIT && RECRUIT.pages.find(x => x.page_id === Number(pageId)); if (!p) return
+  const i = rcQuestions(p).findIndex(q => q.key === key); if (i < 0) return
+  const box = document.getElementById(rcQid(p.page_id, i) + '-box'); if (!box) return
+  box.classList.add('ring-2', 'ring-red-300', 'p-1')
+  try { box.scrollIntoView({ block: 'center' }) } catch (e) { }
+}
 // keep: 続きの日時を読み込んだとき・応募に失敗したときなど、選んだ日時とメモを保ったまま描き直す
 window.renderRecruitList = function (keep) {
   const d = RECRUIT; if (!d) return
   const note = keep ? ((document.getElementById('rc-note') || {}).value || '') : ''
+  // 質問への回答も保つ（#300。描き直す前の画面から読む）
+  const prevAnswers = new Map()
+  if (keep) for (const p of d.pages) if (rcQuestions(p).length && document.getElementById(rcQid(p.page_id, 0) + '-box')) prevAnswers.set(p.page_id, rcReadAnswers(p))
   // 選べなくなった日時（応募済み・募集終了）は選択から外す
   const selectable = new Set(d.pages.flatMap(p => p.roles.filter(rcSelectable).map(r => rcKey(p.page_id, r.slot_role_id))))
   const picked = new Set(keep && window.__rcPicked ? [...window.__rcPicked].filter(k => selectable.has(k)) : [])
@@ -1487,6 +1534,7 @@ window.renderRecruitList = function (keep) {
       ${p.contact_note ? `<p class="text-xs text-gray-600 mb-1"><i class="fas fa-phone text-blue-500 mr-1"></i>問い合わせ先: ${rcContactHtml(p.contact_note)}</p>` : ''}
       <div class="mt-2">${rcRolesHtml(p, picked)}</div>
       ${p.next_from ? `<button class="btn btn-outline w-full text-xs mt-2" data-action="recruitMoreRoles" data-id="${Number(p.page_id)}">さらに後の日時を表示</button>` : ''}
+      ${rcQuestionsHtml(p)}
     </section>`).join('')}
     ${d.pages.length ? `<textarea id="rc-note" class="inp mb-2" rows="2" maxlength="500" placeholder="メモ（任意）"></textarea>
       <p class="text-[11px] text-gray-400 text-center mb-2">管理者が承認するとシフトが確定します。定員に達している日時はキャンセル待ちになります</p>
@@ -1498,6 +1546,9 @@ window.renderRecruitList = function (keep) {
         </div>
       </div>` : ''}`
   if (note && document.getElementById('rc-note')) document.getElementById('rc-note').value = note
+  for (const p of d.pages) rcRestoreAnswers(p, prevAnswers.get(p.page_id))
+  const qerr = window.__rcQuestionError; window.__rcQuestionError = null
+  if (qerr) rcMarkQuestion(qerr.page_id, qerr.key)
   // 応募ボタンは下のメニューのすぐ上に固定する
   const bar = document.getElementById('rc-bar'), nav = document.getElementById('bottom-nav')
   if (bar && nav) bar.style.bottom = nav.offsetHeight + 'px'
@@ -1554,7 +1605,18 @@ async function submitRecruitApply(btn) {
   if (cf.length && !confirm(`次の日時は、同じ時間帯にほかのシフトがあります。\n${cf.map(x => '・' + rcRoleLabel(x.role) + '（' + x.role.conflicts.join('、') + '）').join('\n')}\n\nこのまま応募しますか？`)) return
   const byPage = new Map()
   for (const x of picked) byPage.set(x.page_id, (byPage.get(x.page_id) || []).concat(x.role.slot_role_id))
-  const body = { pages: [...byPage].map(([page_id, slot_role_ids]) => ({ page_id, slot_role_ids })), note: (document.getElementById('rc-note') || {}).value || '', force: cf.length > 0 }
+  // 募集ページの質問への回答（#300）。必須に答えていなければ送らずに、その欄を示す
+  const answersBy = new Map()
+  for (const pid of byPage.keys()) {
+    const p = RECRUIT.pages.find(x => x.page_id === pid)
+    const ans = rcReadAnswers(p)
+    const missing = rcQuestions(p).find(q => q.required && !ans[q.key])
+    if (missing) { toast(`「${p.title}」の「${missing.label}」に回答してください`); rcMarkQuestion(pid, missing.key); return }
+    answersBy.set(pid, ans)
+  }
+  // answers_supported: 質問の欄を出している画面からの応募（サーバーが必須の回答を確かめる）
+  const body = { pages: [...byPage].map(([page_id, slot_role_ids]) => ({ page_id, slot_role_ids, answers: answersBy.get(page_id) || {} })),
+    note: (document.getElementById('rc-note') || {}).value || '', force: cf.length > 0, answers_supported: true }
   let done = false
   await withSubmitLock(btn, async () => {
     btn.textContent = '送信中…'
@@ -1578,6 +1640,7 @@ async function submitRecruitApply(btn) {
           window.__rcResult = { ok: false, text: '通信に失敗しました。下の「応募した日時」に出ていない日時は応募されていません。もう一度お試しください' }
         } else {
           window.__rcResult = { ok: false, text: (d && d.error) || '応募に失敗しました。応募は送られていません' }
+          if (d && d.page_id && /^q_/.test(d.field || '')) window.__rcQuestionError = { page_id: d.page_id, key: String(d.field).slice(2) }
         }
       }
       break
