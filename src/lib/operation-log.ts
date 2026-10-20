@@ -25,6 +25,9 @@ const SHIFT_FIELDS: [string, string, string][] = [
   ['pay_transport_type', 's.pay_transport_type', '交通費の支払の方法'], ['pay_transport_amount', 's.pay_transport_amount', '交通費の支払額'],
   ['bill_adjust', 's.bill_adjust', '請求の調整'], ['pay_adjust', 's.pay_adjust', '支払の調整'], ['adjust_note', 's.adjust_note', '調整の内容'],
   ['payee_type', 's.payee_type', '支払先'], ['price_locked', 's.price_locked', '金額の手動変更'],
+  // 確定の時点で記録する割増（#167。w6-premium-pay の 0082）
+  ['pay_premium', 's.pay_premium', '割増額'], ['premium_night_minutes', 's.premium_night_minutes', '深夜の時間（分）'],
+  ['premium_overtime_minutes', 's.premium_overtime_minutes', '時間外の時間（分）'], ['premium_holiday_minutes', 's.premium_holiday_minutes', '休日の時間（分）'],
   ['actual_start', 's.actual_start', '実績の開始'], ['actual_end', 's.actual_end', '実績の終了'], ['actual_break_minutes', 's.actual_break_minutes', '実績の休憩（分）'],
   ['actual_source', 's.actual_source', '実績の入力元'], ['actual_note', 's.actual_note', '実績のメモ'],
   ['settle_status', 's.settle_status', '精算'], ['settled_at', 's.settled_at', '確定日時'], ['settled_by', 's.settled_by', '確定した人'],
@@ -61,7 +64,7 @@ export const OP_ACTION_LABELS: Record<string, string> = {
   release: '今後のシフトの取り外し', price: '金額の変更', price_reset: '金額をルールに戻す', reprice: '単価ルールの再適用',
   slot_update: '枠の変更', slot_delete: '枠の削除', actual: '実績の入力', actual_reset: '実績を報告に戻す',
   settle_confirm: '精算の確定', settle_unconfirm: '精算の確定の取り消し', recalc: '金額の再計算', cancellation: 'キャンセル料・補償の入力',
-  cancellation_remove: 'キャンセル料・補償の取り消し',
+  cancellation_remove: 'キャンセル料・補償の取り消し', transport_fill: '交通費を標準で埋める',
 }
 
 function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }

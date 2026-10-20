@@ -1295,9 +1295,13 @@ app.post('/settlement/transport-fill', async (c) => {
     }
   }
   if (b.dry_run) return c.json({ count: fill.length, total: fill.reduce((n, x) => n + x.transportation_fee, 0) })
-  const res = await batchInChunks(db, updateRowsStmts(db, 'shifts', 'shift_id', ['transportation_fee'], fill,
-    "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.transportation_fee, 0) = 0", [u.company_id]))
-  return c.json({ ok: true, updated: changesOf(res) })
+  const op = opLog(db, u, 'transport_fill') // 操作履歴（#159）
+  const logStmts = logShifts(op, fill.map(x => x.shift_id))
+  const res = await batchInChunks(db, [...logStmts,
+    ...updateRowsStmts(db, 'shifts', 'shift_id', ['transportation_fee'], fill,
+    "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.transportation_fee, 0) = 0", [u.company_id])])
+    .finally(() => finishLog(op))
+  return c.json({ ok: true, updated: changesOf(res.slice(logStmts.length)) })
 })
 
 export default app
