@@ -1649,13 +1649,14 @@ api.get('/staff/photo-options', async (c) => {
   return c.json({ skip_allowed: photoSkipAllowed(resolved.staff.settings_json), reasons: NO_PHOTO_REASONS })
 })
 
-// スタッフ: 所属・連携している会社の緊急連絡先（#173）。ログイン中の会社を先に、登録のある会社だけを返す
+// スタッフ: 所属・連携している会社の緊急連絡先（#173）。ログイン中の会社を先に、登録のある会社だけを返す（停止中の企業は返さない）
 api.get('/staff/emergency-contacts', async (c) => {
   const rows = await personStaffRows(c.env.DB, c.get('user'))
   const ids = [...new Set(rows.map(r => Number(r.company_id)))]
   if (!ids.length) return c.json({ contacts: [] })
-  const list = (await c.env.DB.prepare(`SELECT company_id, company_name, emergency_phone, emergency_note FROM companies
-    WHERE company_id IN (${ids.map(() => '?').join(',')}) AND emergency_phone IS NOT NULL AND emergency_phone != ''`).bind(...ids).all()).results as any[]
+  const list = ((await c.env.DB.prepare(`SELECT company_id, company_name, emergency_phone, emergency_note, active_status FROM companies
+    WHERE company_id IN (${ids.map(() => '?').join(',')}) AND emergency_phone IS NOT NULL AND emergency_phone != ''`).bind(...ids).all()).results as any[])
+    .filter(r => isCompanyActive(r.active_status))
   list.sort((a, b) => ids.indexOf(Number(a.company_id)) - ids.indexOf(Number(b.company_id)))
   return c.json({ contacts: list.map(r => ({ company_name: r.company_name, phone: r.emergency_phone, note: r.emergency_note || '' })) })
 })
