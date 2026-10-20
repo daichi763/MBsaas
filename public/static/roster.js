@@ -406,12 +406,14 @@ async function commitRosterImport() {
   const created = []
   const failed = p.rows.filter(r => r.errors.length || (r.warnings.length && !accept))
     .map(r => ({ line: r.line, name: r.name, status: r.errors.length ? 'error' : 'skipped', errors: r.errors }))
+  // ファイルで指定されたスタッフ番号（空欄の行に自動で付ける番号がこれと重ならないように送る）
+  const reservedCodes = p.rows.filter(r => !r.errors.length && r.login && r.user_code).map(r => r.user_code)
   const progress = document.getElementById('ri-progress')
   let stopped = null
   for (const part of chunks) {
     if (progress) progress.textContent = `登録しています… ${created.length} / ${targets.length}`
     try {
-      const { data } = await axios.post('/api/admin/roster/import/commit', { header: ROSTER_IMPORT.header, rows: part, accept_warnings: accept })
+      const { data } = await axios.post('/api/admin/roster/import/commit', { header: ROSTER_IMPORT.header, rows: part, accept_warnings: accept, reserved_codes: reservedCodes })
       for (const r of data.results) (r.status === 'created' ? created : failed).push(r)
     } catch (e) {
       stopped = (e.response && e.response.data && e.response.data.error) || '通信に失敗しました'

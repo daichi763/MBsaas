@@ -168,6 +168,11 @@ const mgr = client(await login('sample', 'mgr01'))
   ok('#430 管理系のロール（現場担当）も 1件ずつの登録と同じく使える', mgrPv.status === 200, mgrPv)
   const noHead = await admin.post('/api/admin/roster/import/preview', { header: ['氏名', '性別'], rows: [rows[2]] })
   ok('#430 区分の列がなければ 400', noHead.status === 400 && String(noHead.data.error).includes('区分'), noHead)
+  // 空欄の行に自動で付ける番号は、ファイルの後の行が指定している番号（reserved_codes）を避ける
+  const nextCode = must(await admin.get('/api/admin/roster/next-code'), 'next-code').code
+  const c4 = await admin.post('/api/admin/roster/import/commit', { header, rows: [{ line: 20, cells: ['自社雇用', `${PFX} 取込 二十`, '', '男性', '', '', '', '', '', '', ''] }], reserved_codes: [nextCode] })
+  const r4 = c4.data && c4.data.results && c4.data.results[0]
+  ok('#430 自動の番号はファイルで指定された番号（reserved_codes）を避ける', c4.status === 200 && r4.status === 'created' && r4.user_code && r4.user_code.toLowerCase() !== nextCode.toLowerCase(), { nextCode, c4: c4.data })
   const staffApi = client((await tryLogin('sample', 'st001')).cookie)
   const forbidden = await staffApi.post('/api/admin/roster/import/preview', { header, rows: [rows[2]] })
   ok('#430 スタッフは使えない', forbidden.status === 403 || forbidden.status === 401, forbidden.status)

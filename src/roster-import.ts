@@ -234,7 +234,7 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
   return out
 }
 
-type ImportBody = { header?: unknown; rows?: unknown; accept_warnings?: unknown }
+type ImportBody = { header?: unknown; rows?: unknown; accept_warnings?: unknown; reserved_codes?: unknown }
 type InputRow = { line: number; cells: unknown[] }
 function parseBody(b: ImportBody, max: number): { header: unknown[]; rows: InputRow[] } | { error: string } {
   if (!Array.isArray(b.header) || !b.header.length || b.header.length > 100) return { error: 'CSV の見出しの行を読めませんでした' }
@@ -254,12 +254,12 @@ function partnerNamesOf(keys: (string | null)[], rows: InputRow[]): string[] {
 }
 
 /** 1人を登録する。persons を先に作り、ユーザー・スタッフマスタ・取引先・従業員管理は1つの batch で入れる（途中で失敗したら persons を消す） */
-async function insertRow(db: D1Database, u: any, ctx: ImportCtx, row: RowResult): Promise<{ staff_id: number; user_code: string; password: string | null } | { error: string }> {
+async function insertRow(db: D1Database, u: any, ctx: ImportCtx, row: RowResult, reserved: Set<string>): Promise<{ staff_id: number; user_code: string; password: string | null } | { error: string }> {
   const d = row.data!; const type = row.type as AffiliationType
   const person = await createPerson(db, u.company_id)
   let userCode = row.user_code
   let password: string | null = null
-  if (row.login && !userCode) userCode = (await nextStaffCode(db, u.company_id)).code
+  if (row.login && !userCode) userCode = (await nextStaffCode(db, u.company_id, reserved)).code
   if (!row.login) userCode = (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
   if (row.login) password = genTempPassword(10)
   const pwHash = password ? await hashPassword(password) : await unusablePasswordHash()
@@ -351,12 +351,17 @@ importApi.post('/commit', async (c) => {
     return c.json({ error: `ログインを作る行は、1回に ${COMMIT_MAX_LOGINS} 行までにしてください` }, 400)
   }
   const accept = b.accept_warnings === true
+  // 空欄の行に自動で付ける番号は、ファイルの中で指定されている番号（後で送る行の分を含む）と重ならないようにする
+  const reserved = new Set<string>(checked.map(r => r.user_code).filter((x): x is string => !!x))
+  if (Array.isArray(b.reserved_codes)) {
+    for (const x of b.reserved_codes.slice(0, PREVIEW_MAX_ROWS)) if (typeof x === 'string' && x.trim()) reserved.add(x.normalize('NFKC').trim().slice(0, 64))
+  }
   const results: any[] = []
   for (const r of checked) {
     const base = { line: r.line, name: r.name, type_label: r.type_label, errors: r.errors, warnings: r.warnings }
     if (r.errors.length) { results.push({ ...base, status: 'error' }); continue }
     if (r.warnings.length && !accept) { results.push({ ...base, status: 'skipped' }); continue }
-    const ins = await insertRow(db, u, ctx, r)
+    const ins = await insertRow(db, u, ctx, r, reserved)
     if ('error' in ins) { results.push({ ...base, status: 'error', errors: [ins.error] }); continue }
     results.push({ ...base, status: 'created', staff_id: ins.staff_id, user_code: ins.user_code, login: r.login, password: ins.password })
   }

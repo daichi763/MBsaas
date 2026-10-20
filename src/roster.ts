@@ -216,9 +216,11 @@ const SYSTEM_CODE_RE = /^(TMP|PT|SS|LK)-/i
  * その最大の番号の次（桁数は既存に合わせる）から、会社の中でまだ使われていない番号を探す。
  * 該当する番号がなければ st001 から。last_code はその接頭辞で最後の番号（画面の案内用）
  */
-export async function nextStaffCode(db: D1Database, companyId: number): Promise<{ code: string; last_code: string | null }> {
+export async function nextStaffCode(db: D1Database, companyId: number, exclude: Iterable<string> = []): Promise<{ code: string; last_code: string | null }> {
   const rows = (await db.prepare('SELECT user_code, role FROM users WHERE company_id = ?').bind(companyId).all()).results as any[]
   const used = new Set(rows.map(r => String(r.user_code || '').toLowerCase()))
+  // exclude: まだ登録していないが使う予定の番号（CSV 一括登録で、ファイルの後の行が指定している番号）
+  for (const x of exclude) used.add(String(x).toLowerCase())
   const groups = new Map<string, { n: number; max: number; width: number; last: string }>()
   for (const r of rows) {
     if (r.role !== 'staff') continue
