@@ -819,7 +819,9 @@ export const BULK_APPROVE_MAX = 20
 correctionsAdminApi.post('/corrections/bulk-approve', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))
-  const ids = Array.isArray(b.ids) ? [...new Set(b.ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] as number[] : []
+  if (Array.isArray(b.ids) && b.ids.length > BULK_APPROVE_MAX * 2) return c.json({ error: `まとめて承認できるのは${BULK_APPROVE_MAX}件までです` }, 400)
+  // まとめて出した申請は ID の小さい順に承認すれば途中で矛盾しない（insertCorrections）ので、選んだ順ではなく ID の順に処理する
+  const ids = Array.isArray(b.ids) ? ([...new Set(b.ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] as number[]).sort((x, y) => x - y) : []
   if (!ids.length) return c.json({ error: '承認する申請を選択してください' }, 400)
   if (ids.length > BULK_APPROVE_MAX) return c.json({ error: `まとめて承認できるのは${BULK_APPROVE_MAX}件までです` }, 400)
   const co = await db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
@@ -836,7 +838,8 @@ correctionsAdminApi.post('/corrections/bulk-approve', async (c) => {
     const r: any = await approveCorrection(db, row, actorOf(u), { comment: b.comment })
     if ('error' in r) { failed.push({ correction_id: id, reason: r.error }); continue }
     approved.push(id)
-    await notifyCorrection(c, id, 'approved')
+    // 承認した管理者の控えは既読・メールなしにする（件数分のメールを自分に送らない。外部への送信を1回のリクエストの上限に収める）
+    await notifyCorrection(c, id, 'approved', { quietProcessor: true })
   }
   return c.json({ ok: true, approved, skipped, failed, counts: { approved: approved.length, skipped: skipped.length, failed: failed.length } })
 })

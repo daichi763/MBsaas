@@ -97,7 +97,7 @@ const staffNotes = async (cl) => (await cl.get('/api/staff/notifications')).data
 }
 
 // ---------- #485 申請に写真・画像を添付する ----------
-let photoShift, photoCid
+let photoShift, photoCid, photoAid
 {
   must(await admin.put('/api/admin/projects/1/photo-required', { override: 'on' }), 'photo required on')
   const d = addDays(today, -3)
@@ -130,6 +130,7 @@ let photoShift, photoCid
   det = (await admin.get(`/api/admin/corrections/${photoCid}`)).data
   ok('#485 管理者の詳細に添付が出る（3枚）', det.attachments.length === 3, det.attachments)
   const aid = det.attachments[0].attachment_id
+  photoAid = aid
   const img = await admin.raw(`/api/admin/corrections/attachments/${aid}`)
   ok('#485 管理者が添付の画像を取得できる', img.status === 200 && /image\/jpeg/.test(img.type), [img.status, img.type])
   const mine = await st3.raw(`/api/staff/corrections/attachments/${aid}`)
@@ -180,6 +181,8 @@ let photoShift, photoCid
   ok('#280 承認した申請は打刻に反映される', (await reportOf(A, 'check_in')).reported_at.startsWith(`${d1} 09:58`) && (await reportOf(B, 'check_in')).reported_at.startsWith(`${d2} 09:58`))
   ok('#280 対象外の申請は承認待ちのまま', (await admin.get(`/api/admin/corrections/${rc}`)).data.correction.status === 'pending')
   const sn = (await staffNotes(st3)).filter(n => n.related_id === ra || n.related_id === rb)
+  const pn = (await adminNotes(admin)).filter(n => (n.related_id === ra || n.related_id === rb) && n.kind === 'correction_processed')
+  ok('#280 まとめて承認した管理者の控えは既読（件数分の未読・メールを作らない）', pn.length === 2 && pn.every(n => n.kind === 'correction_processed' && n.read_at), pn)
   ok('#280 まとめて承認した申請も、申請者に結果を知らせる', sn.filter(n => n.kind === 'correction_approved').length === 2, sn.map(n => n.kind))
   const again = await admin.post('/api/admin/corrections/bulk-approve', { ids: [ra] })
   ok('#280 承認済みの申請をもう一度送っても二重に承認しない（failed）', again.status === 200 && again.data.approved.length === 0 && again.data.failed.length === 1, again.data)
@@ -212,6 +215,10 @@ let photoShift, photoCid
   if (other) {
     const o = await other.get(`/api/admin/attendance-punches?from=${from}&to=${to}`)
     ok('#175 他社の管理者には自社のシフトだけが出る', o.status === 200 && !o.data.rows.some(x => x.shift_id === photoShift), o.status)
+    const oi = await other.raw(`/api/admin/corrections/attachments/${photoAid}`)
+    ok('#485 他社の管理者は添付の画像を取得できない（404）', oi.status === 404, oi.status)
+    const ob = await other.post('/api/admin/corrections/bulk-approve', { ids: [photoCid] })
+    ok('#280 他社の申請はまとめて承認できない（failed）', ob.status === 200 && ob.data.approved.length === 0 && ob.data.failed.length === 1, ob.data)
   }
 }
 

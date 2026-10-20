@@ -139,7 +139,7 @@
     syncPicks()
   })
   delegate('corrBulkApprove', (el) => withSubmitLock(el, async () => {
-    const ids = [...PICKED]
+    const ids = [...PICKED].sort((a, b) => a - b) // サーバーと同じく申請の ID の順（まとめて出した申請を登録した順に承認する）
     if (!ids.length || !confirm(`選んだ${ids.length}件の申請を承認しますか？\n承認すると勤怠の記録と実績に反映し、スタッフに知らせます`)) return
     const res = { approved: [], skipped: [], failed: [] }
     for (let i = 0; i < ids.length; i += BULK_CHUNK) {
@@ -494,8 +494,9 @@
   }
 
   // ---------- 打刻データの一覧（#175。#corrections/punches） ----------
-  // 勤務日の期間（31日まで）・案件・スタッフ・記録方法で絞り、1シフト1行で8種類の報告の時刻と記録方法を出す。同じ条件で CSV を出せる
-  const P = window.__punchState = window.__punchState || { from: '', to: '', project_id: '', staff_name: '', method: '' }
+  // 勤務日の期間（31日まで）・案件・クライアント・スタッフ・記録方法で絞り、1シフト1行で8種類の報告の時刻と記録方法を出す。同じ条件で CSV を出せる
+  const P = window.__punchState = window.__punchState || { from: '', to: '', project_id: '', client_id: '', staff_name: '', method: '' }
+  let punchClients = null
   // 報告ごとの印（サーバーの f: 1 = 打刻修正、2 = 写真、4 = 位置、8 = 写真なしの理由）
   const MARK = (r, t) => {
     const m = r[t + '_m'], f = Number(r[t + '_f'] || 0), out = []
@@ -510,6 +511,7 @@
   async function renderPunches() {
     loading()
     if (!projects) { try { projects = (await axios.get('/api/admin/projects')).data.projects || [] } catch { projects = [] } }
+    if (!punchClients) { try { punchClients = (await axios.get('/api/admin/clients')).data.clients || [] } catch { punchClients = [] } }
     const params = Object.fromEntries(Object.entries(P).filter(([, v]) => v !== '' && v != null))
     let data
     try { data = (await axios.get('/api/admin/attendance-punches', { params })).data } catch (e) {
@@ -527,10 +529,11 @@
           <p class="text-xs text-gray-500 mt-1">シフトごとに8種類の報告の時刻と、記録の方法（アプリ・報告用URL・代理入力・打刻修正）を一覧します。期間は31日まで</p></div>
         <a href="/api/admin/attendance-punches/export?${esc(q)}" class="btn btn-outline text-sm"><i class="fas fa-file-csv"></i>CSV 出力</a>
       </div>
-      <div class="card p-3 mb-3 grid grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+      <div class="card p-3 mb-3 grid grid-cols-2 lg:grid-cols-6 gap-2 text-xs">
         <label>勤務日（から）<input type="date" class="inp text-sm" id="pn-from" value="${esc(P.from)}"></label>
         <label>勤務日（まで）<input type="date" class="inp text-sm" id="pn-to" value="${esc(P.to)}"></label>
         <label>案件<select class="inp text-sm" id="pn-project"><option value="">すべて</option>${projects.map(p => `<option value="${Number(p.project_id)}" ${String(P.project_id) === String(p.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></label>
+        <label>クライアント<select class="inp text-sm" id="pn-client"><option value="">すべて</option>${punchClients.map(x => `<option value="${Number(x.client_id)}" ${String(P.client_id) === String(x.client_id) ? 'selected' : ''}>${esc(x.client_name)}</option>`).join('')}</select></label>
         <label>スタッフ名・社員番号<input class="inp text-sm" id="pn-staff" value="${esc(P.staff_name)}" placeholder="一部でも可"></label>
         <label>記録の方法<select class="inp text-sm" id="pn-method"><option value="">すべて</option>${[['proxy', '代理入力を含む'], ['link', '報告用URLを含む'], ['corrected', '打刻修正を含む']].map(([k, l]) => `<option value="${k}" ${P.method === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       </div>
@@ -548,10 +551,10 @@
       </div>
       <p class="text-[11px] text-gray-500 mt-2"><span class="badge badge-purple text-[10px]">代理</span> 管理者の代理入力 ・<span class="badge badge-blue text-[10px]">URL</span> 報告用URL ・<span class="badge badge-yellow text-[10px]">修正</span> 打刻修正で変更・追加 ・<i class="fas fa-camera"></i> 写真あり ・<i class="fas fa-ban"></i> 写真なし（理由あり） ・<i class="fas fa-location-dot"></i> 位置あり</p>`
     const reload = () => {
-      Object.assign(P, { from: document.getElementById('pn-from').value, to: document.getElementById('pn-to').value, project_id: document.getElementById('pn-project').value,
+      Object.assign(P, { from: document.getElementById('pn-from').value, to: document.getElementById('pn-to').value, project_id: document.getElementById('pn-project').value, client_id: document.getElementById('pn-client').value,
         staff_name: document.getElementById('pn-staff').value.trim(), method: document.getElementById('pn-method').value })
       renderPunches()
     }
-    ;['pn-from', 'pn-to', 'pn-project', 'pn-staff', 'pn-method'].forEach(id => { document.getElementById(id).onchange = reload })
+    ;['pn-from', 'pn-to', 'pn-project', 'pn-client', 'pn-staff', 'pn-method'].forEach(id => { document.getElementById(id).onchange = reload })
   }
 })()

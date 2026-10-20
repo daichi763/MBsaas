@@ -118,7 +118,9 @@ function content(c: any, kind: string, isAdmin: boolean) {
 type Recipient = { user_id: number; name: string; email: string | null; role: string; kind: string; read?: boolean; noEmail?: boolean }
 // 本人が取り消してから、この時間内に同じ報告を申請し直したときは、管理者へのメールを送らない（アプリ内通知だけ。#392）
 const RESUBMIT_QUIET_MINUTES = 30
-async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Promise<Recipient[]> {
+// quietProcessor: 処理した管理者の控えを既読・メールなしにする（まとめて承認 #280。自分の操作の控えが件数分のメールにならないように）
+type NotifyOpts = { quietProcessor?: boolean }
+async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent, opts: NotifyOpts = {}): Promise<Recipient[]> {
   const user = async (id: number | null) => id ? await db.prepare('SELECT user_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
   const out = new Map<number, Recipient>()
   const add = (u: any, kind: string, opt: { read?: boolean; noEmail?: boolean } = {}) => {
@@ -149,7 +151,7 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Pr
     // 管理者が自分で出した申請を自分で処理した（申請と同時に承認 #174 を含む）ときは、本人には既読の控えだけを残す（結果の通知・メールは送らない）
     if (requester && requester.user_id === c.decided_by) add(requester, 'correction_processed', { read: true, noEmail: true })
     add(requester, event === 'approved' ? 'correction_approved' : 'correction_rejected')
-    add(await user(c.decided_by), 'correction_processed')
+    add(await user(c.decided_by), 'correction_processed', opts.quietProcessor ? { read: true, noEmail: true } : {})
     // 管理者が出した申請を承認したときは、記録が変わったスタッフ本人にも知らせる（申請者と同じ人なら送らない。#181）
     if (event === 'approved') {
       const o = await owner()
@@ -160,10 +162,10 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Pr
 }
 
 // アプリ内通知を登録し、送るメールの送信状態（pending）を作る。戻り値の delivery_id を sendDeliveries で送る
-export async function createCorrectionNotifications(db: D1Database, correctionId: number, event: CorrectionEvent) {
+export async function createCorrectionNotifications(db: D1Database, correctionId: number, event: CorrectionEvent, opts: NotifyOpts = {}) {
   const c = await loadInfo(db, correctionId)
   if (!c) return { notified: 0, deliveries: [] as number[] }
-  const rcpts = await recipientsFor(db, c, event)
+  const rcpts = await recipientsFor(db, c, event, opts)
   const at = nowJST()
   const rows = rcpts.map(r => ({ r, m: content(c, r.kind, NOTIFY_ADMIN_ROLES.includes(r.role) || r.role === 'system_admin') }))
   const stmts: D1PreparedStatement[] = []
@@ -232,11 +234,11 @@ export async function markRequestNotificationsRead(db: D1Database, correctionId:
 }
 
 // 申請・承認・却下・取り消しの後に呼ぶ。通知の失敗は申請・承認の結果に影響させない
-export async function notifyCorrection(c: any, correctionId: number, event: CorrectionEvent) {
+export async function notifyCorrection(c: any, correctionId: number, event: CorrectionEvent, opts: NotifyOpts = {}) {
   try {
     // 処理済み・取り消し済みになった申請の承認依頼は、ほかの管理者の分も既読にする（#189）
     if (event !== 'submitted' && event !== 'resubmitted') await markRequestNotificationsRead(c.env.DB, correctionId)
-    const r = await createCorrectionNotifications(c.env.DB, correctionId, event)
+    const r = await createCorrectionNotifications(c.env.DB, correctionId, event, opts)
     if (r.deliveries.length) {
       const job = sendDeliveries(c.env, r.deliveries)
       try { c.executionCtx.waitUntil(job) } catch { await job }
