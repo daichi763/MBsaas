@@ -218,16 +218,16 @@ if (PERSIST) {
   const page = await newPage([pid], today, addDays(today, 20))
   must(await sc.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [s.roles[0].slot_role_id] }), 'staff apply')
   must(await admin.put(`/api/admin/employees/${st.staff_id}`, { profile: { retired_at: addDays(today, -1), employment_status: 'retired', retired_at_confirmed: true } }), 'retire')
-  const app = (await appsOf(page.page_id)).find(a => a.staff_id === st.staff_id)
-  ok('#87 応募一覧: 退職・停止中の印が付く', app && app.staff_inactive === 1, app)
-  const dec = await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { approve: app.items.map(i => i.item_id), force: true })
-  ok('#87 退職者の応募は承認できない（force でも）', dec.status === 400 && /退職/.test(dec.data.error), dec)
+  // w7-followup-server-a（#87 の残り）から、退職したスタッフの未対応の応募は、一覧を開いたときに取り下げ（cancelled）にする
+  ok('#87 退職者の応募は未対応の一覧に残らない', !(await appsOf(page.page_id)).some(a => a.staff_id === st.staff_id))
+  const app = (await appsOf(page.page_id, 'cancelled')).find(a => a.staff_id === st.staff_id)
+  ok('#87 退職者の未対応の応募は取り下げ（cancelled）になり、退職・停止中の印が付く', app && app.items.every(i => i.status === 'cancelled') && app.staff_inactive === 1, app)
+  const dec = app ? await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { approve: app.items.map(i => i.item_id), force: true }) : { status: 0 }
+  ok('#87 退職者の応募は承認できない（force でも）', dec.status >= 400 && dec.status < 500, dec)
   const n = must(await admin.get(`/api/admin/shifts?from=${addDays(D, 3)}&to=${addDays(D, 3)}`), 'shifts').shifts.filter(x => x.staff_id === st.staff_id).length
   ok('#87 シフトは作られない', n === 0, n)
-  const after = (await appsOf(page.page_id)).find(a => a.application_id === app.application_id)
-  ok('#87 明細は未対応のまま（処理中のまま残らない）', after && after.items.every(i => i.status === 'pending'), after?.items)
-  const rej = await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { reject: app.items.map(i => i.item_id) })
-  ok('#87 見送りはできる', rej.status === 200, rej)
+  const after = app && (await appsOf(page.page_id, 'cancelled')).find(a => a.application_id === app.application_id)
+  ok('#87 明細は取り下げのまま（処理中のまま残らない）', after && after.items.every(i => i.status === 'cancelled'), after?.items)
   // 電話番号が一致する退職者には印が付く
   const phone = newPhone()
   const st2 = await newStaff('S87B', phone)

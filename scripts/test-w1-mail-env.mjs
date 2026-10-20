@@ -115,15 +115,27 @@ if (mode === 'not_configured') {
   ok('（前提）シフト作成', sr.status === 200 && shift, sr)
   const cr = await st3.post('/api/staff/corrections', { shift_id: shift.shift_id, report_type: 'check_in', kind: 'add', requested_at: `${dA} 09:58`, reason: 'テスト' })
   ok('（前提）スタッフが打刻修正を申請', cr.status === 200, cr)
-  let ds = []
-  for (let i = 0; i < 30; i++) {
-    ds = (await admin.get('/api/admin/notification-emails?status=all')).data.deliveries.filter(x => x.correction_id === cr.data.correction_id)
-    if (ds.length && ds.every(x => x.status !== 'pending')) break
-    await sleep(300)
+  // 自分で出した申請の受付（correction_received）は、w4-corrections-staff（#341）から既読の控えだけでメールを送らない。
+  // そのため申請者あてのメールは、管理者が却下した結果の通知（correction_rejected）で確かめる。
+  // 管理者あての承認依頼（correction_submitted）は、処理した後は再送しない（already_processed）ので、却下の前に再送を確かめる
+  const deliveriesOf = async (kind) => {
+    let ds = []
+    for (let i = 0; i < 30; i++) {
+      ds = (await admin.get('/api/admin/notification-emails?status=all')).data.deliveries.filter(x => x.correction_id === cr.data.correction_id)
+      if (ds.some(x => x.kind === kind) && ds.every(x => x.status !== 'pending')) break
+      await sleep(300)
+    }
+    return ds
   }
-  const mine = ds.find(x => x.kind === 'correction_received')
-  const toAdmin = ds.find(x => x.kind === 'correction_submitted')
-  ok('（前提）申請者あての通知メールが送信失敗になっている', mine && mine.status === 'failed' && toAdmin && toAdmin.status === 'failed', ds)
+  const toAdmin = (await deliveriesOf('correction_submitted')).find(x => x.kind === 'correction_submitted')
+  ok('（前提）管理者あての承認依頼のメールが送信失敗になっている', toAdmin && toAdmin.status === 'failed', toAdmin)
+  const r2 = toAdmin ? await admin.post(`/api/admin/notification-emails/${toAdmin.delivery_id}/resend`) : { status: 0 }
+  ok('#260 在籍中の宛先へは再送する', r2.status === 200 && r2.data.ok === true, r2)
+  const rj = await admin.post(`/api/admin/corrections/${cr.data.correction_id}/reject`, { reason: 'テスト' })
+  ok('（前提）管理者が申請を却下', rj.status === 200, rj)
+  const mine = (await deliveriesOf('correction_rejected')).find(x => x.kind === 'correction_rejected')
+  ok('（前提）申請者あての通知メール（却下の結果）が送信失敗になっている', mine && mine.status === 'failed', mine)
+  if (!mine) { console.log(`\n${results.filter(r => r.pass).length}/${results.length} passed`); process.exit(1) }
   // 自社雇用スタッフの退職は従業員管理から設定する
   const put = await admin.put('/api/admin/employees/3', { profile: { retired_at: addDays(today, -1) } })
   ok('（前提）申請者を退職（停止中）にする', put.status === 200, put)
@@ -132,8 +144,6 @@ if (mode === 'not_configured') {
   const after = (await admin.get('/api/admin/notification-emails?status=all')).data.deliveries.find(x => x.delivery_id === mine.delivery_id)
   // w4-notifications-mail（#357）から、送る必要のなくなった行は「対応不要」（skipped）にする
   ok('#260 一覧の理由が「宛先が停止中」になり、試行回数は増えない', after.status === 'skipped' && after.error === 'recipient_suspended' && after.attempts === mine.attempts, after)
-  const r2 = await admin.post(`/api/admin/notification-emails/${toAdmin.delivery_id}/resend`)
-  ok('#260 在籍中の宛先へは再送する', r2.status === 200 && r2.data.ok === true, r2)
   await admin.put('/api/admin/employees/3', { profile: { retired_at: null, employment_status: 'working' } })
 } else {
   console.log(`SKIP  #260 の確認（MAIL_ENABLED:true で起動したときだけ行う。mode=${mode}）`)
