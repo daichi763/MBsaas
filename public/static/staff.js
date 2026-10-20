@@ -574,6 +574,8 @@ function showAttendanceResult(type, d, noPos) {
   if (d && d.status === 'late') notes.push(`開始時刻を過ぎていたため「遅延」${Number(d.late_minutes) > 0 ? `（${Number(d.late_minutes)}分）` : ''}として記録しました。遅れた理由は「相談・連絡」から管理者に伝えてください`)
   if ((d && d.status === 'no_location') || (type === 'check_in' && noPos)) notes.push('位置情報が取れなかったため「位置情報なし」として記録しました。端末の設定で、このサイトの位置情報を許可してください')
   if (d && Number(d.early_leave_minutes) > 0) notes.push(`予定の終了より${Number(d.early_leave_minutes)}分早い報告として記録しました`)
+  // 入店の位置が現場から離れていた（#277）
+  if (d && d.far) notes.push(`現場から約${Number(d.distance_m) >= 1000 ? (Number(d.distance_m) / 1000).toFixed(1) + 'km' : Number(d.distance_m) + 'm'}離れた位置で記録されました。現場に着いていない場合は、着いてから管理者に連絡してください`)
   toast(REPORT_LABELS[type] + 'を送信しました' + (notes.length ? '。' + notes.join('。') : ''), notes.length ? 7000 : 2500)
 }
 
@@ -1759,6 +1761,7 @@ function renderMore() {
         <i class="fas fa-chevron-right text-gray-300"></i>
       </a>`
   $app.innerHTML = `
+    <div id="more-emergency"></div>
     <div class="space-y-3">
       ${item('notices', 'fa-bullhorn', 'お知らせ', '会社からのお知らせを確認', 'more-notice-count')}
       ${item('consult', 'fa-comments', '相談・連絡', '管理者への相談・連絡')}
@@ -1772,6 +1775,24 @@ function renderMore() {
       <p class="text-[11px] text-gray-400 mt-2 text-center">共用の端末では、使い終わったらログアウトしてください</p>
     </section>`
   applyBadges()
+  loadEmergencyContacts()
+}
+
+// 会社の緊急連絡先（#173）。所属・連携している会社のうち、登録のある会社の電話をタップで発信できるボタンにする。取れなければ何も出さない
+async function loadEmergencyContacts() {
+  let d
+  try { d = (await axios.get('/api/staff/emergency-contacts')).data } catch (e) { return }
+  const box = document.getElementById('more-emergency')
+  if (!box || !d.contacts || !d.contacts.length) return
+  const many = d.contacts.length > 1
+  box.innerHTML = `<section class="card p-4 mb-3 border-red-100">
+      <p class="text-sm font-bold text-gray-800 mb-1"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先</p>
+      <p class="text-[11px] text-gray-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください${many ? '（シフトの会社の番号にかけてください）' : ''}</p>
+      <div class="space-y-2">${d.contacts.map(x => `
+        <a href="tel:${esc(String(x.phone).replace(/[^0-9+]/g, ''))}" class="btn btn-outline w-full justify-start">
+          <i class="fas fa-phone text-red-500"></i><span class="flex-1 text-left">${many ? `<span class="block text-[11px] text-gray-500">${esc(x.company_name)}</span>` : ''}<span class="font-bold">${esc(x.phone)}</span>${x.note ? `<span class="block text-[11px] text-gray-400">${esc(x.note)}</span>` : ''}</span>
+        </a>`).join('')}</div>
+    </section>`
 }
 
 // 『その他』の中の画面の上に出す戻るボタン

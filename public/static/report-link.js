@@ -544,5 +544,22 @@
     })
   }
 
+  // ---------- 会社の緊急連絡先（#173） ----------
+  // 画面（#app）の下に別の部分として出す。URL の期限切れ・読み込みの失敗の画面でも出す。登録がなければ何も出さない
+  async function loadEmergencyContact() {
+    let d
+    try { d = (await axios.get(API + '/contact', { timeout: GET_TIMEOUT })).data } catch (e) { return }
+    if (!d || !d.phone) return
+    // #app と同じ幅にそろえる
+    const box = document.createElement('div')
+    box.className = 'max-w-lg mx-auto px-4 pb-6'
+    box.innerHTML = `<section class="card p-4"><p class="text-sm font-bold text-gray-800 mb-1"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先（${esc(d.company_name)}）</p>
+      <p class="text-[11px] text-gray-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください</p>
+      <a href="tel:${esc(String(d.phone).replace(/[^0-9+]/g, ''))}" class="btn btn-outline w-full"><i class="fas fa-phone text-red-500"></i><span class="font-bold">${esc(d.phone)}</span></a>
+      ${d.note ? `<p class="text-[11px] text-gray-400 mt-1">${esc(d.note)}</p>` : ''}</section>`
+    $app.insertAdjacentElement('afterend', box)
+  }
+
   load()
+  loadEmergencyContact()
 })()
