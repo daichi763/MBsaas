@@ -2895,6 +2895,10 @@ async function applyApprovedProfileChange(c: any, sid: string, changes: Record<s
   if (!roster) return { error: 'スタッフが見つかりません', status: 404 }
   if (roster.merged_into_staff_id) return { error: '統合済みのスタッフのため反映できません（統合先のスタッフで編集してください）', status: 409 }
   if (roster.affiliation_type === 'linked_external' || !roster.can_edit_base) return { error: '基本項目は所属元企業のみ編集できます', status: 403 }
+  // 自社雇用の最寄駅は従業員管理（会社管理者・事務担当のみ）で直す項目なので、承認も同じロールに限る
+  if (roster.affiliation_type === 'own_employee' && !HR_ROLES.includes(u.role) && (changes.nearest_station_line !== undefined || changes.nearest_station !== undefined)) {
+    return { error: '自社雇用スタッフの最寄駅の変更は、会社管理者・事務担当が承認してください', status: 403 }
+  }
   const body: Record<string, any> = {}
   for (const k of ['nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'work_area', 'skills']) if (changes[k] !== undefined) body[k] = changes[k]
   const bizErr = normalizeBusinessBody(body)

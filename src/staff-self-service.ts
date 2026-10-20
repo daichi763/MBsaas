@@ -420,14 +420,17 @@ export function staffRequestsAdminApi(applyProfileChange: ApplyProfileChange) {
     const rows = (await db.prepare(`SELECT r.*, us.name AS staff_name, us.user_code, us.email AS cur_email,
         sp.nearest_station_line AS cur_nearest_station_line, sp.nearest_station AS cur_nearest_station, sp.commute_minutes AS cur_commute_minutes,
         sp.available_from AS cur_available_from, sp.work_area AS cur_work_area, sp.skills AS cur_skills, sp.affiliation_type,
-        rq.company_id AS req_company_id, rco.company_name AS requester_company_name
+        rq.company_id AS req_company_id, rco.company_name AS requester_company_name,
+        CASE WHEN rsp.source_staff_id = r.staff_id THEN 1 ELSE 0 END AS direct_link
       FROM profile_change_requests r JOIN staff_profiles sp ON sp.staff_id = r.staff_id AND sp.company_id = r.company_id JOIN users us ON us.user_id = sp.user_id
       LEFT JOIN users rq ON rq.user_id = r.requester_user_id LEFT JOIN companies rco ON rco.company_id = r.requester_company_id
+      LEFT JOIN staff_profiles rsp ON rsp.user_id = r.requester_user_id AND rsp.company_id = r.requester_company_id
       WHERE r.company_id = ? ${status === 'pending' ? `AND r.status = 'pending'` : ''} ORDER BY (r.status = 'pending') DESC, r.request_id DESC LIMIT 100`).bind(u.company_id).all()).results as any[]
     return c.json({ labels: PROFILE_REQUEST_LABEL, requests: rows.map(r => ({
       ...requestView(r, false), staff_id: r.staff_id, staff_name: r.staff_name, user_code: r.user_code,
-      // 他社の稼働先に切り替えて出した申請（連携先の会社名は、本人が見せた会社なので出す）
-      via_company_name: r.requester_company_id !== r.company_id ? r.requester_company_name : null,
+      // 他社の稼働先に切り替えて出した申請。会社名は自社が直接連携した会社のときだけ出す
+      // （多段連携の先の会社名を雇用元に見せると頭超えにつながるため、名前を伏せる）
+      via_company_name: r.requester_company_id !== r.company_id ? (r.direct_link ? r.requester_company_name : '連携先の会社') : null,
       current: Object.fromEntries(PROFILE_REQUEST_FIELDS.map(k => [k, k === 'login_email' ? r.cur_email : r['cur_' + k]])),
     })) })
   })

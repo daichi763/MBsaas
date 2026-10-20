@@ -85,6 +85,15 @@ const notifsOf = async (c) => must(await c.get('/api/staff/notifications'), 'not
   const r5 = must(await sa.post('/api/staff/self/profile-requests', { changes: { login_email: `${PFX.toLowerCase()}a@example.com` } }), 'email request')
   const ap5 = await admin.post(`/api/admin/staff-requests/profile/${r5.request_id}/approve`, {})
   ok('#272 ログイン用メールの申請を承認すると、確認待ちになる（すぐには切り替えない）', ap5.status === 200 && ap5.data.login_email && ap5.data.login_email.pending === `${PFX.toLowerCase()}a@example.com`, ap5)
+  // 自社雇用の最寄駅は従業員管理と同じく、会社管理者・事務担当だけが承認できる
+  const r6 = must(await sa.post('/api/staff/self/profile-requests', { changes: { nearest_station: '品川' } }), 'request 6')
+  const mg6 = await mgr.post(`/api/admin/staff-requests/profile/${r6.request_id}/approve`, {})
+  ok('#272 現場長は自社雇用の最寄駅の変更を承認できない（403）', mg6.status === 403, mg6)
+  ok('#272 承認できなかった申請は承認待ちに戻る', must(await sa.get('/api/staff/self/profile-requests'), 'mine6').requests.some(x => x.request_id === r6.request_id && x.status === 'pending'))
+  ok('#272 現場長の承認では反映されない', must(await sa.get('/api/staff/me/profile'), 'p6').profile.nearest_station === '渋谷')
+  ok('#272 会社管理者は承認できる', (await admin.post(`/api/admin/staff-requests/profile/${r6.request_id}/approve`, {})).status === 200)
+  const r7 = must(await sa.post('/api/staff/self/profile-requests', { changes: { work_area: '東京都・埼玉県' } }), 'request 7')
+  ok('#272 現場長も業務側の項目（稼働エリアなど）は承認できる', (await mgr.post(`/api/admin/staff-requests/profile/${r7.request_id}/approve`, {})).status === 200)
 }
 
 // ---------- #288 書類の提出 ----------
