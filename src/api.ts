@@ -1793,13 +1793,15 @@ const familyName = (name: any) => String(name || '').trim().split(/[\s　]+/)[0]
 const HANDOVER_DAYS = 14
 const HANDOVER_MAX = 20
 const HANDOVER_DEFAULT_KEYS = ['store_share', 'good_case']
+// 申し送り・一緒に入る人を返すのは、本人の確定・代打のシフトだけ（希望（仮）・欠勤などのシフトでは返さない。画面の表示条件と同じ）
+const TEAM_VIEW_STATUSES = ['confirmed', 'substitute']
 api.get('/staff/handover/:shiftId', async (c) => {
   const db = c.env.DB
   const resolved = await resolvePersonShift(c, c.req.param('shiftId'))
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift } = resolved
   const empty = { days: HANDOVER_DAYS, fields: [], notes: [] }
-  if (shift.work_date < addDays(todayJST(), -DAILY_REPORT_PENDING_DAYS)) return c.json(empty)
+  if (!TEAM_VIEW_STATUSES.includes(shift.status) || shift.work_date < addDays(todayJST(), -DAILY_REPORT_PENDING_DAYS)) return c.json(empty)
   const pt = await shiftReportTemplate(db, shift)
   if (!pt) return c.json(empty)
   let raw: any[] = []
@@ -1839,6 +1841,7 @@ api.get('/staff/shifts/:id/coworkers', async (c) => {
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift, staff } = resolved
   if (!staffViewSettings(staff.settings_json).show_coworkers) return c.json({ enabled: false, coworkers: [] })
+  if (!TEAM_VIEW_STATUSES.includes(shift.status) || shift.work_date < addDays(todayJST(), -DAILY_REPORT_PENDING_DAYS)) return c.json({ enabled: true, coworkers: [] })
   const personIds = await personStaffIds(db, c.get('user'))
   const rows = (await db.prepare(`
     SELECT o.start_time, o.end_time, o.slot_id, us.name
