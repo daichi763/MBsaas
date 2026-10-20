@@ -306,6 +306,7 @@
         <button class="btn btn-outline text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="0">選択した日時を見送る</button>` : ''}
         ${promo.length ? `<button class="btn btn-outline text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="1" data-promote="1"><i class="fas fa-arrow-up"></i>選択した見送りを繰り上げて承認</button>` : ''}
         <label class="flex items-center gap-1.5 text-[11px] text-gray-600 w-full"><input type="checkbox" class="ri-notify" checked>結果を応募者に知らせる（${notifyHow}）</label>
+        ${pending.length || promo.length ? '<p class="text-[11px] text-gray-400 w-full">承認で作るシフトの交通費（実費）には、スタッフの交通費の標準（精算の画面の「交通費の標準」で登録）を入れます。登録がなければ 0 円です</p>' : ''}
       </div>` : ''}
       ${decided.length && (a.email || a.staff_id) ? `<button class="text-[11px] text-blue-600 underline mt-2" data-action="recruitNotifyResult" data-id="${a.application_id}"><i class="fas fa-envelope mr-0.5"></i>結果のお知らせを送り直す</button>` : ''}
     </article>`

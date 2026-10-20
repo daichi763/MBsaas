@@ -11,6 +11,7 @@ import { Hono } from 'hono'
 import { applyPricingToShift, conflictFor, findConflicts, loadPricingData, ngStaffIds } from './shift-board'
 import { findStaffByPhone, findStaffByPhones, insertProvisionalStaff, normalizePhone } from './staff-lifecycle'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { assertAssignable, conflictLabel, isUniqueViolation } from './lib/staff-eligibility'
 import { personStaffRows } from './roster'
 import { shiftWindow } from './lib/shift-time'
@@ -979,13 +980,15 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
     }
     // シフトの作成（確定）
     const pdata = toApprove.length ? await loadPricingData(db, u.company_id, toApprove.map(i => i.project_id)) : null
+    // 交通費はスタッフの標準（開催場所 → スタッフ。#564）。標準がなければ 0（仮登録で作った人には標準がない）
+    const tdefs = toApprove.length && staffId && !createdStaff ? await loadTransportDefaults(db, u.company_id, [staffId]) : null
     for (const it of toApprove) {
       const already = await db.prepare("SELECT shift_id FROM shifts WHERE slot_role_id = ? AND staff_id = ? AND status != 'absent'").bind(it.slot_role_id, staffId).first() as any
       let shiftId = already?.shift_id
       if (!shiftId) {
         const res = await db.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo, slot_id, slot_role_id, site_id, break_minutes)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'confirmed', ?, ?, ?, ?, ?, ?)`)
-          .bind(u.company_id, staffId, it.project_id, it.work_date, it.start_time, it.end_time, it.location || '', it.role_name, u.user_id, '募集から承認', it.slot_id, it.slot_role_id, it.site_id ?? null, it.break_minutes ?? null).run()
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'confirmed', ?, ?, ?, ?, ?, ?)`)
+          .bind(u.company_id, staffId, it.project_id, it.work_date, it.start_time, it.end_time, it.location || '', it.role_name, transportDefaultFor(tdefs, staffId, it.site_id) ?? 0, u.user_id, '募集から承認', it.slot_id, it.slot_role_id, it.site_id ?? null, it.break_minutes ?? null).run()
         shiftId = res.meta.last_row_id
         await applyPricingToShift(db, u.company_id, shiftId, { data: pdata })
         createdShifts.push(shiftId)

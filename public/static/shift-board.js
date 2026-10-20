@@ -457,12 +457,12 @@
             <span class="block text-[11px] text-gray-500">
               ${c.busy ? `<span class="text-red-600"><i class="fas fa-clock mr-0.5"></i>${esc(c.busy_detail.join('、'))}</span>` : '<span class="text-emerald-600">空き</span>'}
               ${c.ng ? '<span class="text-red-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-amber-600 ml-1">休職中</span>' : ''}${c.preboarding ? '<span class="text-amber-600 ml-1">入社予定</span>' : ''}${c.not_yet_available ? `<span class="text-amber-600 ml-1">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : ''}
-              ・この場所 ${c.site_count}回・この案件 ${c.project_count}回${c.skill_required ? `・スキル ${c.skill_match}/${c.skill_required}` : ''}・今週（月〜日）${c.week_days}日</span></span>
+              ・この場所 ${c.site_count}回・この案件 ${c.project_count}回${c.skill_required ? `・スキル ${c.skill_match}/${c.skill_required}` : ''}・今週（月〜日）${c.week_days}日${c.transport_default != null ? `・交通費の標準 ¥${Number(c.transport_default).toLocaleString()}` : ''}</span></span>
         </label>`).join('') || '<p class="p-3 text-sm text-gray-400">候補がいません</p>'}
       </div>
       <div class="grid grid-cols-2 gap-2 mt-3">
         <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録（本人が可否を返事）</option></select>
-        <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（任意）">
+        <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（空欄でスタッフの標準）" title="空欄のときは、スタッフごとの交通費の標準（精算の画面で登録）を入れます。入力すると選んだ全員に同じ金額を入れます">
       </div>
       <button class="btn btn-primary w-full mt-3" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button>
       <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
@@ -521,8 +521,9 @@
           <label>上限/定額<input id="sp-pt-amt" type="number" class="inp text-xs" value="${a.pay_transport_amount ?? 0}"></label>
           <label>請求の調整<input id="sp-bill-adj" type="number" class="inp text-xs" value="${a.bill_adjust || ''}" placeholder="0"></label>
           <label>支払の調整<input id="sp-pay-adj" type="number" class="inp text-xs" value="${a.pay_adjust || ''}" placeholder="0"></label>
-          <label>調整の内容<input id="sp-adj-note" class="inp text-xs" value="${esc(a.adjust_note || '')}" placeholder="残業・手当など"></label>
+          <label>調整の内容<input id="sp-adj-note" class="inp text-xs" value="${esc(a.adjust_note || '')}" placeholder="手当・控除など"></label>
         </div>
+        <p class="text-[11px] text-gray-400">深夜（22〜5時）・時間外（1日8時間超）・休日の割増は、精算の画面の「割増の設定」を ON にすると自動で計算します（調整に入れる必要はありません。下の支払には、確定するまで含みません）</p>
         <div class="grid grid-cols-3 gap-2 bg-gray-50 rounded p-2">
           <p>請求 <b>${yen(a.bill_total)}</b><span class="block text-gray-400">基本${yen(a.unit_price)}＋交通費${yen(a.bill_transport)}</span></p>
           <p>支払 <b>${a.pay_total == null ? '未設定' : yen(a.pay_total)}</b><span class="block text-gray-400">基本${a.pay_amount == null ? '-' : yen(a.pay_amount)}＋交通費${yen(a.pay_transport)}</span></p>
@@ -902,7 +903,7 @@
           <label class="text-sm text-gray-600">終了日<input id="bk-to" type="date" class="inp" value="${dayjs(BS.from).endOf('month').format('YYYY-MM-DD')}"></label>
           <label class="text-sm text-gray-600">開始<input id="bk-start" type="time" class="inp" value="09:30"></label>
           <label class="text-sm text-gray-600">終了<input id="bk-end" type="time" class="inp" value="19:00"></label>
-          <label class="text-sm text-gray-600">交通費の実費<input id="bk-fee" type="number" class="inp" value="0"></label>
+          <label class="text-sm text-gray-600">交通費の実費<input id="bk-fee" type="number" class="inp" placeholder="空欄でスタッフの標準"></label>
         </div>
         <datalist id="role-suggest"><option value="販売スタッフ"><option value="リーダー"></datalist>
         <button class="btn btn-primary w-full" data-action="saveBulk">登録する</button>

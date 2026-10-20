@@ -25,6 +25,9 @@
   // 範囲選択（Shift キー）の起点にする、最後にチェックを変えた行
   let lastPicked = null
   const hrs = (h) => (h == null ? '-' : (Math.round(h * 100) / 100).toFixed(2).replace(/\.?0+$/, '') + 'h')
+  // 深夜・時間外・休日の割増の時間（#167。分 → 「深夜 1.5h・時間外 0.5h」）
+  const premiumText = (r) => [['深夜', r.premium_night_minutes], ['時間外', r.premium_overtime_minutes], ['休日', r.premium_holiday_minutes]]
+    .filter(([, m]) => m).map(([l, m]) => `${l} ${hrs(m / 60)}`).join('・') || '該当なし'
   const qs = () => new URLSearchParams(Object.fromEntries(Object.entries({
     from: S.from, to: S.to, client_id: S.client_id, project_id: S.project_id, staff_id: S.staff_id, payee_type: S.payee_type, settle: S.settle, issues_only: S.issues_only ? '1' : '',
   }).filter(([, v]) => v !== '' && v != null))).toString()
@@ -65,6 +68,8 @@
         <div class="flex gap-2 flex-wrap">
           <button class="btn btn-outline text-sm" data-action="settleSync"><i class="fas fa-rotate"></i>入店・退店報告から実績を反映</button>
           <button class="btn btn-outline text-sm" data-action="settleClosings" id="settle-closings-btn"><i class="fas fa-lock"></i>締め・出力の記録</button>
+          <button class="btn btn-outline text-sm" data-action="settlePremium" id="settle-premium-btn" title="深夜（22〜5時）・時間外（1日8時間超）・休日の割増を自動で計算します"><i class="fas fa-moon"></i>割増の設定</button>
+          <button class="btn btn-outline text-sm" data-action="settleTransportDefaults" id="settle-transport-btn" title="スタッフごと（開催場所ごと）の交通費の標準。シフトを作るときに入れます"><i class="fas fa-train"></i>交通費の標準</button>
           <div class="relative" id="settle-export">
             <button class="btn btn-primary text-sm" data-action="settleExportMenu"><i class="fas fa-file-csv"></i>CSV出力 <i class="fas fa-caret-down"></i></button>
             <div id="settle-export-menu" class="hidden absolute right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-30 w-64 text-sm">
@@ -223,16 +228,17 @@
     if (S.tab === 'payment') {
       host.innerHTML = `${canPayout() ? `<div class="flex justify-end mb-2"><button type="button" class="btn btn-outline text-xs" data-action="settlePayout" title="確定済みの支払を、スタッフの口座への振込データ（全銀形式・CSV）にします"><i class="fas fa-building-columns"></i>振込データを作成</button></div>` : ''}
         <div class="overflow-x-auto"><table class="tbl" id="settle-payment-table"><thead><tr><th>支払区分</th><th>支払先</th><th>スタッフ</th><th>社員番号</th><th class="text-right">日数</th><th class="text-right">シフト</th><th class="text-right">時間</th>
-        <th class="text-right">支払基本額</th><th class="text-right">交通費</th><th class="text-right">調整</th><th class="text-right">支払合計</th><th>確定</th><th></th></tr></thead><tbody>
+        <th class="text-right">支払基本額</th><th class="text-right">交通費</th><th class="text-right">調整</th><th class="text-right">割増</th><th class="text-right">支払合計</th><th>確定</th><th></th></tr></thead><tbody>
         ${data.by_payee.map(g => `<tr><td><span class="badge badge-gray">${esc(g.payee_label)}</span></td><td class="font-medium">${esc(g.payee_name)}</td>
           <td class="text-xs">${g.staff_id ? `<a class="text-blue-600 hover:underline" href="#staff/${Number(g.staff_id)}">${esc(g.staff_name)}</a>` : esc(g.staff_name)}</td><td class="text-xs">${esc(g.employee_number || '')}</td>
           <td class="text-right">${g.days}</td><td class="text-right">${g.shifts}</td><td class="text-right">${hrs(g.hours)}</td>
           <td class="text-right">${yen(g.pay_base)}</td><td class="text-right">${yen(g.pay_transport)}</td><td class="text-right">${g.pay_adjust ? yen(g.pay_adjust) : '-'}</td>
+          <td class="text-right">${g.pay_premium ? `${yen(g.pay_premium)}<span class="block text-[10px] text-gray-400">${esc(premiumText({ premium_night_minutes: g.night_hours * 60, premium_overtime_minutes: g.overtime_hours * 60, premium_holiday_minutes: g.holiday_hours * 60 }))}</span>` : '-'}</td>
           <td class="text-right font-bold">${yen(g.pay_total)}${g.pay_unset ? `<span class="block text-[10px] text-amber-600">単価未設定 ${g.pay_unset}件</span>` : ''}</td>
           <td>${g.confirmed === g.shifts ? '<span class="badge badge-green">確定</span>' : `<span class="badge badge-gray">${g.confirmed}/${g.shifts}</span>`}</td>
-          <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline text-xs" target="_blank" rel="noopener" href="/api/admin/settlement/statement?kind=payment&group=${encodeURIComponent(g.group_key)}&${period()}" title="この支払先の確定済みのシフトの支払明細書（印刷・PDF保存）"><i class="fas fa-file-invoice"></i> 支払明細書</a></td></tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400">対象のシフトはありません</td></tr>'}
+          <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline text-xs" target="_blank" rel="noopener" href="/api/admin/settlement/statement?kind=payment&group=${encodeURIComponent(g.group_key)}&${period()}" title="この支払先の確定済みのシフトの支払明細書（印刷・PDF保存）"><i class="fas fa-file-invoice"></i> 支払明細書</a></td></tr>`).join('') || '<tr><td colspan="14" class="text-center text-gray-400">対象のシフトはありません</td></tr>'}
         </tbody></table></div>
-        <p class="text-[11px] text-gray-400 mt-2">自社給与・日雇い給与はスタッフごと、取引先・他社はその会社ごとにまとめています。給与ソフトへの取り込みは「支払集計」のCSVを使ってください。支払明細書は、表示中の期間のその支払先の確定済みのシフトを載せます</p>`
+        <p class="text-[11px] text-gray-400 mt-2">自社給与・日雇い給与はスタッフごと、取引先・他社はその会社ごとにまとめています。給与ソフトへの取り込みは「支払集計」のCSVを使ってください（深夜・時間外・休日の時間と割増額は末尾の列）。割増は「割増の設定」が ON のとき、自社給与・日雇い給与のシフトに自動で計算し、支払合計に含みます。支払明細書は、表示中の期間のその支払先の確定済みのシフトを載せます</p>`
       return
     }
     const sel = S.selected
@@ -244,6 +250,7 @@
           <button class="btn btn-primary text-xs" data-action="settleConfirm" data-mode="confirm"><i class="fas fa-check-double"></i><span data-sel-label="選択したシフトを確定|表示中のシフトをすべて確定">${sel.size ? '選択したシフトを確定' : '表示中のシフトをすべて確定'}</span></button>
           <button class="btn btn-outline text-xs" data-action="settleConfirm" data-mode="unconfirm"><i class="fas fa-rotate-left"></i><span data-sel-label="選択の確定を取り消す|表示中の確定を取り消す">${sel.size ? '選択の確定を取り消す' : '表示中の確定を取り消す'}</span></button>
           <button class="btn btn-outline text-xs" data-action="settleAck" id="settle-ack-btn"><i class="fas fa-check"></i><span data-sel-label="選択の確認事項を確認済みにする|表示中の確認事項を確認済みにする">${sel.size ? '選択の確認事項を確認済みにする' : '表示中の確認事項を確認済みにする'}</span></button>
+          <button class="btn btn-outline text-xs" data-action="settleTransportFill" id="settle-transport-fill-btn" title="未確定で交通費の実費が 0 のシフトに、スタッフの交通費の標準を入れます"><i class="fas fa-train"></i><span data-sel-label="選択の交通費を標準で埋める|表示中の交通費を標準で埋める">${sel.size ? '選択の交通費を標準で埋める' : '表示中の交通費を標準で埋める'}</span></button>
           ${data.rows.some(r => r.issues.includes(RECALC_ISSUE)) ? `<button class="btn btn-outline text-xs" data-action="settleRecalc" id="settle-recalc-btn" title="${esc(RECALC_ISSUE)}のシフトの数量・金額を、今の案件の時間の設定で計算し直します"><i class="fas fa-calculator"></i>金額を再計算（${data.rows.filter(r => r.issues.includes(RECALC_ISSUE)).length}件）</button>` : ''}
         </div>
       </div>
@@ -268,7 +275,7 @@
             : r.actual_start ? `${esc(r.actual_start)}〜${esc(r.actual_end)}<span class="text-gray-400 block">${r.actual_source === 'manual' ? '手入力' : '報告'}・休憩${r.used_break_minutes}分・${hrs(r.actual_hours)}</span>` : '<span class="text-gray-400">-</span>'}</td>
           <td class="text-right whitespace-nowrap">${cancel ? '<span class="text-gray-400">-</span>' : r.bill_unit_type === 'hourly' || r.pay_unit_type === 'hourly' ? hrs(r.hours) : '<span class="text-gray-400">日額</span>'}</td>
           <td class="text-right whitespace-nowrap">${yen(r.bill_total)}<span class="text-gray-400 block">${cancel ? 'キャンセル料' : r.bill_rate != null ? yen(r.bill_rate) + '/' + UNIT[r.bill_unit_type] : ''}</span></td>
-          <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-amber-600">未設定</span>' : yen(r.pay_total)}<span class="text-gray-400 block">${cancel ? '補償・控除' : r.pay_rate != null ? yen(r.pay_rate) + '/' + UNIT[r.pay_unit_type] : ''}</span></td>
+          <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-amber-600">未設定</span>' : yen(r.pay_total)}<span class="text-gray-400 block">${cancel ? '補償・控除' : r.pay_rate != null ? yen(r.pay_rate) + '/' + UNIT[r.pay_unit_type] : ''}</span>${r.pay_premium ? `<span class="text-[10px] text-indigo-600 block" title="${esc(premiumText(r))}">うち割増 ${yen(r.pay_premium)}</span>` : ''}</td>
           <td class="whitespace-nowrap">${esc(PAYEE_LABEL[r.payee_type] || r.payee_type)}${r.payee_type === 'partner' || r.payee_type === 'linked' ? `<span class="text-gray-400 block">${esc(r.payee_name)}</span>` : ''}</td>
           <td>${issuesCellHtml(r)}</td>
           <td class="whitespace-nowrap">${r.settle_status === 'confirmed' ? '<span class="badge badge-green">確定</span>' : '<span class="badge badge-gray">未確定</span>'}${lock}</td>
@@ -514,7 +521,8 @@
             <p>交通費 ${yen(r.bill_transport)}${r.bill_adjust ? `・調整 ${yen(r.bill_adjust)}` : ''}</p><p class="font-bold">合計 ${yen(r.bill_total)}</p></div>
           <div><p class="font-bold text-gray-700 mb-1">支払（${esc(PAYEE_LABEL[r.payee_type] || r.payee_type)}${r.payee_type === 'partner' || r.payee_type === 'linked' ? '・' + esc(r.payee_name) : ''}）</p>
             <p>基本 ${r.pay_base == null ? '未設定' : yen(r.pay_base)}（${r.pay_rate != null ? yen(r.pay_rate) : '-'} × ${r.pay_qty ?? '-'}${UNIT[r.pay_unit_type]}）</p>
-            <p>交通費 ${yen(r.pay_transport)}（実費 ${yen(r.transportation_fee)}）${r.pay_adjust ? `・調整 ${yen(r.pay_adjust)}` : ''}</p><p class="font-bold">合計 ${r.pay_total == null ? '-' : yen(r.pay_total)}</p></div>
+            <p>交通費 ${yen(r.pay_transport)}（実費 ${yen(r.transportation_fee)}）${r.pay_adjust ? `・調整 ${yen(r.pay_adjust)}` : ''}</p>
+            ${r.premium_night_minutes != null ? `<p id="settle-premium-line">割増 ${yen(r.pay_premium)}（${esc(premiumText(r))}）${r.settle_status === 'confirmed' ? '' : '<span class="text-gray-400">・確定するまで実績に合わせて計算し直します</span>'}</p>` : ''}<p class="font-bold">合計 ${r.pay_total == null ? '-' : yen(r.pay_total)}</p></div>
         </div>
         ${r.adjust_note ? `<p class="text-gray-500 mt-1">調整メモ: ${esc(r.adjust_note)}</p>` : ''}
         ${r.price_locked ? `<p class="text-amber-600 mt-1">${r.qty_locked ? '手動で金額を変更したシフトです（単価・数量とも固定。実働が変わっても金額は変わりません）' : '手動で単価を変更したシフトです（単価はそのまま、時給の数量は実働に合わせます）'}</p>` : ''}
@@ -600,7 +608,7 @@
         <label>上限/定額<input id="spx-pt-amt" type="number" class="inp text-xs" value="${r.pay_transport_amount}"></label>
         <label>請求の調整<input id="spx-bill-adj" type="number" class="inp text-xs" value="${r.bill_adjust || ''}" placeholder="0"></label>
         <label>支払の調整<input id="spx-pay-adj" type="number" class="inp text-xs" value="${r.pay_adjust || ''}" placeholder="0"></label>
-        <label>調整の内容<input id="spx-adj-note" class="inp text-xs" value="${esc(r.adjust_note)}" placeholder="残業・手当など"></label>
+        <label>調整の内容<input id="spx-adj-note" class="inp text-xs" value="${esc(r.adjust_note)}" placeholder="手当・控除など（割増は自動）"></label>
       </div>
       <div class="flex gap-2 mt-4">
         <button class="btn btn-outline flex-1" data-action="settleEdit" data-id="${r.shift_id}">戻る</button>
@@ -973,5 +981,98 @@
         branch_code: val('ps-branch-code'), branch_name: val('ps-branch-name'), account_type: val('ps-type'), account_number: val('ps-number') })
     } catch (e) { toast(errMsg(e)); return }
     toast('振込元を保存しました'); await loadPayout()
+  }))
+
+  // ---------- 深夜・時間外・休日の割増の設定（#167） ----------
+  const WD_LABEL = ['日', '月', '火', '水', '木', '金', '土']
+  delegate('settlePremium', el => withSubmitLock(el, async () => {
+    let d
+    try { d = (await axios.get('/api/admin/settlement/premium-settings')).data } catch (e) { toast(errMsg(e)); return }
+    const st = d.settings, dis = d.can_edit ? '' : 'disabled'
+    modal(`
+      <h3 class="font-bold text-lg mb-1">深夜・時間外・休日の割増</h3>
+      <p class="text-xs text-gray-500 mb-3">支払先が自社給与・日雇い給与のシフトの割増を自動で計算し、精算の支払合計・CSV・支払明細書に入れます。未確定のシフトは実績に合わせて計算し直し、確定したときの額で固定します（確定済みのシフトは変わりません）。
+        これまで「支払の調整」に割増を入れていた場合は、二重にならないよう調整を見直してください</p>
+      <div class="space-y-3 text-sm" id="premium-form">
+        <label class="flex items-center gap-2 font-bold"><input type="checkbox" id="pp-enabled" ${st.enabled ? 'checked' : ''} ${dis}>割増を自動で計算する</label>
+        <div class="grid grid-cols-3 gap-2 text-xs">
+          <label>深夜（22〜5時）%<input id="pp-night" type="number" min="0" max="200" class="inp text-sm" value="${Number(st.night_rate)}" ${dis}></label>
+          <label>時間外 %<input id="pp-ot" type="number" min="0" max="200" class="inp text-sm" value="${Number(st.overtime_rate)}" ${dis}></label>
+          <label>休日 %<input id="pp-hol" type="number" min="0" max="200" class="inp text-sm" value="${Number(st.holiday_rate)}" ${dis}></label>
+        </div>
+        <label class="text-xs block">時間外の基準（分。同じ日の勤務の合計がこれを超えた分を時間外にします）<input id="pp-limit" type="number" min="60" max="1440" step="15" class="inp text-sm" value="${Number(st.daily_limit_minutes)}" ${dis}></label>
+        <div class="text-xs"><p class="mb-1">休日の曜日（この曜日の勤務はすべて休日の割増にし、時間外は付けません）</p>
+          <div class="flex gap-1">${WD_LABEL.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1 cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden pp-wd" value="${i}" ${st.holiday_weekdays.includes(i) ? 'checked' : ''} ${dis}>${w}</label>`).join('')}</div></div>
+        <p class="text-[11px] text-gray-400">割増額 = 1時間あたりの賃金 × 時間 × 割増率（割増の部分だけ）。1時間あたりの賃金は、時給はその単価、日額は単価を予定の実働時間で割った額です。
+          深夜の時間は、休憩を深夜以外の時間に取ったものとして数えます。週40時間を超えた分の時間外は計算しません</p>
+      </div>
+      <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-action="settleCloseModal">閉じる</button>
+        ${d.can_edit ? '<button type="button" class="btn btn-primary flex-1" data-action="settlePremiumSave">保存</button>' : '<p class="flex-1 text-xs text-gray-500 self-center">変更は会社管理者・事務担当のみできます</p>'}</div>`)
+  }))
+  delegate('settlePremiumSave', el => withSubmitLock(el, async () => {
+    const v = (id) => document.getElementById(id).value
+    const body = { enabled: document.getElementById('pp-enabled').checked, night_rate: v('pp-night'), overtime_rate: v('pp-ot'), holiday_rate: v('pp-hol'),
+      daily_limit_minutes: v('pp-limit'), holiday_weekdays: [...document.querySelectorAll('.pp-wd:checked')].map(x => Number(x.value)) }
+    try { await axios.put('/api/admin/settlement/premium-settings', body) } catch (e) { toast(errMsg(e)); return }
+    closeModal(); toast('割増の設定を保存しました'); reload()
+  }))
+
+  // ---------- 交通費の標準（#564） ----------
+  let TD = null
+  const tdStaffLabel = (s) => `${s.name}（ID ${s.staff_id}）`
+  async function openTransportDefaults() {
+    try { TD = (await axios.get('/api/admin/transport-defaults')).data } catch (e) { toast(errMsg(e)); return }
+    modal(`
+      <h3 class="font-bold text-lg mb-1">交通費の標準</h3>
+      <p class="text-xs text-gray-500 mb-3">スタッフごとの交通費（往復・円）を登録すると、シフトボードの割り当て・一括登録と募集の承認で、交通費の入力がないときに実費として入れます。
+        開催場所ごとの金額があればそれを、なければ「すべての開催場所」の金額を使います。作成済みのシフトは、精算の明細の「交通費を標準で埋める」で入れられます</p>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs items-end mb-3" id="td-form">
+        <label class="col-span-2 md:col-span-1">スタッフ<input id="td-staff" class="inp text-sm" list="td-staff-list" placeholder="名前で検索" autocomplete="off">
+          <datalist id="td-staff-list">${TD.staff.map(s => `<option value="${esc(tdStaffLabel(s))}"></option>`).join('')}</datalist></label>
+        <label>開催場所<select id="td-site" class="inp text-sm"><option value="0">すべての開催場所</option>${TD.sites.map(s => `<option value="${Number(s.site_id)}">${esc(s.site_name)}</option>`).join('')}</select></label>
+        <label>金額（往復・円）<input id="td-amount" type="number" min="0" class="inp text-sm"></label>
+        <label class="col-span-2 md:col-span-3">メモ<input id="td-note" class="inp text-sm" maxlength="100" placeholder="例: 自宅の最寄り駅〜会場（往復）"></label>
+        <button type="button" class="btn btn-primary text-xs" data-action="settleTdSave">登録・変更</button>
+      </div>
+      <div class="max-h-80 overflow-y-auto"><table class="tbl text-xs" id="td-table"><thead><tr><th>スタッフ</th><th>開催場所</th><th class="text-right">金額</th><th>メモ</th><th>更新</th><th></th></tr></thead><tbody>
+        ${TD.defaults.map(d => `<tr><td>${esc(d.staff_name)}</td><td>${d.site_id ? esc(d.site_name || '（削除された開催場所）') : 'すべての開催場所'}</td><td class="text-right">${yen(d.amount)}</td>
+          <td>${esc(d.note || '')}</td><td class="text-gray-400 whitespace-nowrap">${esc(d.updated_at || '')}${d.updated_by_name ? '・' + esc(d.updated_by_name) : ''}</td>
+          <td class="whitespace-nowrap"><button type="button" class="text-blue-600 hover:underline" data-action="settleTdEdit" data-id="${Number(d.default_id)}">変更</button>
+            <button type="button" class="text-red-600 hover:underline ml-1" data-action="settleTdDelete" data-id="${Number(d.default_id)}">削除</button></td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400">登録はまだありません</td></tr>'}
+      </tbody></table></div>
+      <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-action="settleCloseModal">閉じる</button></div>`)
+  }
+  delegate('settleTransportDefaults', el => withSubmitLock(el, openTransportDefaults))
+  delegate('settleTdEdit', el => {
+    const d = TD && TD.defaults.find(x => x.default_id === Number(el.dataset.id)); if (!d) return
+    document.getElementById('td-staff').value = tdStaffLabel({ name: d.staff_name, staff_id: d.staff_id })
+    document.getElementById('td-site').value = String(d.site_id || 0)
+    document.getElementById('td-amount').value = d.amount
+    document.getElementById('td-note').value = d.note || ''
+  })
+  delegate('settleTdSave', el => withSubmitLock(el, async () => {
+    const m = document.getElementById('td-staff').value.trim().match(/（ID (\d+)）$/)
+    if (!m) { toast('スタッフを候補から選んでください'); return }
+    try {
+      await axios.put('/api/admin/transport-defaults', { staff_id: Number(m[1]), site_id: Number(document.getElementById('td-site').value),
+        amount: document.getElementById('td-amount').value, note: document.getElementById('td-note').value })
+    } catch (e) { toast(errMsg(e)); return }
+    toast('交通費の標準を保存しました'); await openTransportDefaults()
+  }))
+  delegate('settleTdDelete', el => withSubmitLock(el, async () => {
+    if (!window.confirm('この交通費の標準を削除します（作成済みのシフトの交通費は変わりません）。よろしいですか？')) return
+    try { await axios.delete('/api/admin/transport-defaults/' + Number(el.dataset.id)) } catch (e) { toast(errMsg(e)); return }
+    toast('削除しました'); await openTransportDefaults()
+  }))
+  // 表示中（選択中）の未確定のシフトのうち、交通費の実費が 0 円のものに、スタッフの標準を入れる
+  delegate('settleTransportFill', el => withSubmitLock(el, async () => {
+    const ids = targetIds()
+    if (!ids.length) { toast('対象のシフトがありません'); return }
+    let d
+    try { d = (await axios.post('/api/admin/settlement/transport-fill', { shift_ids: ids, dry_run: true })).data } catch (e) { toast(errMsg(e)); return }
+    if (!d.count) { toast('交通費を入れられるシフトはありません（未確定で実費が0円の、交通費の標準を登録したスタッフのシフトが対象です）'); return }
+    if (!window.confirm(`${S.selected.size ? '選択中' : '表示中'}のシフトのうち、未確定で交通費の実費が0円の ${d.count}件 に、スタッフの交通費の標準（合計 ${yen(d.total)}）を入れます。よろしいですか？`)) return
+    try { const r = (await axios.post('/api/admin/settlement/transport-fill', { shift_ids: ids })).data; toast(`${r.updated}件の交通費を入れました`) } catch (e) { toast(errMsg(e)); return }
+    reload()
   }))
 })()

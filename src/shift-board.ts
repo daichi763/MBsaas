@@ -17,6 +17,7 @@ import { isHHMM, isISODate } from './lib/validate'
 import { loadShiftSnaps, notifyShiftChanges } from './notifications'
 import type { ShiftSnap } from './notifications'
 import { csvResponse, toCsv } from './csv'
+import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -34,7 +35,7 @@ export const MONEY_COLUMNS = [
   'unit_price', 'bill_unit_type', 'bill_rate', 'bill_qty', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
   'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount',
   'bill_adjust', 'pay_adjust', 'adjust_note', 'payee_type', 'payee_affiliation_id', 'payee_company_id',
-  'price_locked', 'price_source',
+  'price_locked', 'price_source', 'pay_premium', 'premium_night_minutes', 'premium_overtime_minutes', 'premium_holiday_minutes',
 ]
 export function stripMoney<T extends Record<string, any>>(row: T | null): T | null {
   if (!row) return row
@@ -243,11 +244,14 @@ export function transportAmounts(s: any) {
     : pt === 'capped' ? Math.min(actual, Number(s.pay_transport_amount || 0)) : actual
   return { bill_transport: bill, pay_transport: pay }
 }
+// 支払には深夜・時間外・休日の割増（pay_premium。#167）を足す。未確定のシフトの割増は lib/premium-pay の attachPremiums で行に付けてから呼ぶ
+// （付けていない行は、確定したときに記録した値。未確定なら 0）
 export function shiftTotals(s: any) {
   const t = transportAmounts(s)
   const bill = Number(s.unit_price || 0) + t.bill_transport + Number(s.bill_adjust || 0)
-  const pay = s.pay_amount == null ? null : Number(s.pay_amount || 0) + t.pay_transport + Number(s.pay_adjust || 0)
-  return { bill_total: bill, pay_total: pay, ...t }
+  const premium = Number(s.pay_premium || 0)
+  const pay = s.pay_amount == null ? null : Number(s.pay_amount || 0) + t.pay_transport + Number(s.pay_adjust || 0) + premium
+  return { bill_total: bill, pay_total: pay, pay_premium: premium, ...t }
 }
 
 // 支払先（第2段階の区分変更で置き換える。第1段階は現在の所属区分から決める）
@@ -773,6 +777,7 @@ app.get('/shift-board/candidates', async (c) => {
   const ng = await ngStaffIds(db, role.project_id)
   const required = String(proj?.required_skills || '').split(',').map(s => s.trim()).filter(Boolean)
   const assigned = new Set(((await db.prepare("SELECT staff_id FROM shifts WHERE slot_role_id = ? AND status != 'absent'").bind(role.slot_role_id).all()).results as any[]).map(r => r.staff_id))
+  const tdefs = await loadTransportDefaults(db, u.company_id, staff.map(s => s.staff_id))
   const list = staff.filter(s => !assigned.has(s.staff_id)).map(s => {
     const skills = String(s.skills || '').split(',').map((x: string) => x.trim())
     const cf = conflictFor(conflicts.get(s.staff_id), role.work_date, role.start_time, role.end_time)
@@ -786,6 +791,8 @@ app.get('/shift-board/candidates', async (c) => {
       ng: ng.includes(s.staff_id), on_leave: s.employment_status === 'leave',
       // 入社予定の人と、稼働開始可能日が枠の日付より後の人は注意として出し、空きのある人の後ろに回す（#557）
       preboarding: s.employment_status === 'preboarding', not_yet_available: !!availableFrom && availableFrom > role.work_date,
+      // 交通費の標準（#564。この枠の開催場所 → スタッフの標準。なければ null）
+      transport_default: transportDefaultFor(tdefs, s.staff_id, role.site_id),
     }
   })
   // 並び: 空きあり → NGでない → 休職中・入社予定・稼働開始前でない → 同じ開催場所の経験 → 案件の経験 → スキル一致 → 週（月〜日）の稼働日数が少ない
@@ -1105,6 +1112,9 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
 
   const data = await loadPricingData(db, u.company_id, [role.project_id])
+  // 交通費の入力がなければ、スタッフの標準（開催場所 → スタッフ）を入れる（#564）
+  const fee = feeInput(b.transportation_fee)
+  const tdefs = fee == null ? await loadTransportDefaults(db, u.company_id, chk.staff.map((s: any) => s.staff_id)) : null
   const created: number[] = []
   for (const s of chk.staff) {
     if (chk.already.has(s.staff_id)) continue
@@ -1113,7 +1123,7 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
       res = await db.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo, slot_id, slot_role_id, site_id, break_minutes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(u.company_id, s.staff_id, role.project_id, role.work_date, role.start_time, role.end_time, role.location || '', role.role_name,
-          intOrNull(b.transportation_fee) ?? 0, status, u.user_id, b.memo ?? null, role.slot_id, role.slot_role_id, role.site_id ?? null, role.break_minutes ?? null).run()
+          fee ?? transportDefaultFor(tdefs, s.staff_id, role.site_id) ?? 0, status, u.user_id, b.memo ?? null, role.slot_id, role.slot_role_id, role.site_id ?? null, role.break_minutes ?? null).run()
     } catch (e) {
       // 同時に届いた別のリクエストが先に割り当てた（一意インデックス）。二重には作らない（#530）
       if (isUniqueViolation(e)) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
@@ -1434,9 +1444,12 @@ app.post('/shifts/bulk', async (c) => {
   const conflicts = await findConflicts(db, u.company_id, staffIds, part[0][0], part[part.length - 1][0])
   const ng = (await ngByProjects(db, u.company_id, [project.project_id])).get(project.project_id) || []
   const data = await loadPricingData(db, u.company_id, [project.project_id])
+  // 交通費の入力がなければ、スタッフの標準（開催場所 → スタッフ）を入れる（#564）
+  const fee = feeInput(b.transportation_fee)
+  const tdefs = fee == null ? await loadTransportDefaults(db, u.company_id, staffIds) : null
   const base = {
     company_id: u.company_id, project_id: project.project_id, start_time: b.start_time, end_time: b.end_time,
-    location: b.location || site?.site_name || '', role: String(b.role || '').trim() || '販売スタッフ', transportation_fee: intOrNull(b.transportation_fee) ?? 0,
+    location: b.location || site?.site_name || '', role: String(b.role || '').trim() || '販売スタッフ', transportation_fee: fee ?? 0,
     status: 'confirmed', registered_by: u.user_id, slot_id: null, slot_role_id: null, site_id: site?.site_id ?? null, break_minutes: intOrNull(b.break_minutes), source_shift_id: null,
   }
   const rows: any[] = []; const skipped: Skipped[] = []
@@ -1449,7 +1462,7 @@ app.post('/shifts/bulk', async (c) => {
       if (cf.length) { reason = '重複'; detail = cf.map(x => conflictLabel(x, u.company_id)).join('、') }
     }
     if (reason) { skipped.push({ date: d, staff_id: sid, staff_name: st?.name || '', reason, detail, project_name: project.project_name, start_time: b.start_time, end_time: b.end_time }); continue }
-    const row: any = { ...base, staff_id: sid, work_date: d }
+    const row: any = { ...base, staff_id: sid, work_date: d, transportation_fee: fee ?? transportDefaultFor(tdefs, sid, base.site_id) ?? 0 }
     rows.push({ ...row, ...computeShiftPricing(u.company_id, row, null, payeeOn(st, hist.get(sid), d), data) })
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
@@ -1630,13 +1643,17 @@ app.post('/shifts/copy-week', async (c) => {
   if (shiftPlans.length) {
     const pdata = await loadPricingData(db, cid, usedProjectIds)
     const hist = await loadPayeeHistory(db, cid, shiftPlans.map(p => p.src.staff_id))
+    // コピー元の交通費が 0 のときは、スタッフの標準（開催場所 → スタッフ）を入れる（#564）
+    const tdefs = await loadTransportDefaults(db, cid, shiftPlans.filter(p => !Number(p.src.transportation_fee || 0)).map(p => p.src.staff_id))
     const rows = shiftPlans.map(p => {
       const s = p.src, role = p.role?.target || null, slot = p.role?.slot.target || null
+      const siteId = slot ? slot.site_id ?? null : s.site_id ?? null
       const row: any = {
         company_id: cid, staff_id: s.staff_id, project_id: slot ? slot.project_id : s.project_id, work_date: p.date, start_time: p.start, end_time: p.end,
-        location: (slot ? slot.location : null) || s.location || '', role: role ? role.role_name : (s.role || '販売スタッフ'), transportation_fee: s.transportation_fee || 0,
+        location: (slot ? slot.location : null) || s.location || '', role: role ? role.role_name : (s.role || '販売スタッフ'),
+        transportation_fee: Number(s.transportation_fee || 0) || transportDefaultFor(tdefs, s.staff_id, siteId) || 0,
         status: 'confirmed', registered_by: u.user_id, slot_id: slot?.slot_id ?? null, slot_role_id: role?.slot_role_id ?? null,
-        site_id: slot ? slot.site_id ?? null : s.site_id ?? null, break_minutes: slot ? slot.break_minutes ?? null : s.break_minutes ?? null, source_shift_id: s.shift_id,
+        site_id: siteId, break_minutes: slot ? slot.break_minutes ?? null : s.break_minutes ?? null, source_shift_id: s.shift_id,
       }
       return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })
@@ -2122,6 +2139,49 @@ app.put('/projects/:id/pricing', async (c) => {
       payRound, priceFrom, p.project_id, u.company_id))
   await db.batch(stmts)
   return c.json({ ok: true, price_valid_from: priceFrom, price_changed: priceChanged })
+})
+
+// =========================================================
+// 交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準
+// 割り当て・一括登録・募集の承認で、交通費の入力がなければ使う（lib/transport-defaults）
+// =========================================================
+app.get('/transport-defaults', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const elig = assignableStaffSql({ sp: 'sp', us: 'us' })
+  const [defaults, staff, sites] = await Promise.all([
+    db.prepare(`SELECT d.default_id, d.staff_id, d.site_id, d.amount, d.note, d.updated_at, us.name AS staff_name, si.site_name, ub.name AS updated_by_name
+      FROM staff_transport_defaults d JOIN staff_profiles sp ON sp.staff_id = d.staff_id JOIN users us ON us.user_id = sp.user_id
+      LEFT JOIN sites si ON si.site_id = d.site_id AND si.company_id = d.company_id LEFT JOIN users ub ON ub.user_id = d.updated_by
+      WHERE d.company_id = ? ORDER BY us.name, d.staff_id, d.site_id LIMIT 5000`).bind(u.company_id).all(),
+    db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND ${elig.sql} ORDER BY us.name LIMIT 5000`)
+      .bind(u.company_id, ...elig.binds).all(),
+    db.prepare('SELECT site_id, site_name FROM sites WHERE company_id = ? ORDER BY site_name LIMIT 2000').bind(u.company_id).all(),
+  ])
+  return c.json({ defaults: defaults.results, staff: staff.results, sites: sites.results })
+})
+// 登録・変更（同じスタッフ × 開催場所の標準は1つ。あれば金額を置き換える）
+app.put('/transport-defaults', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const staffId = Number(b.staff_id), siteId = b.site_id === '' || b.site_id == null ? 0 : Number(b.site_id)
+  if (!Number.isInteger(staffId) || staffId <= 0) return c.json({ error: 'スタッフを選択してください' }, 400)
+  if (!Number.isInteger(siteId) || siteId < 0) return c.json({ error: '開催場所が正しくありません' }, 400)
+  if (b.amount === '' || b.amount == null) return c.json({ error: '金額を入力してください' }, 400)
+  const err = rangeError([['交通費の標準', b.amount, 0, MONEY_MAX]])
+  if (err) return c.json({ error: err }, 400)
+  const sp = await db.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(staffId, u.company_id).first()
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (siteId && !(await ownSite(db, u.company_id, siteId))) return c.json({ error: '開催場所が見つかりません' }, 404)
+  const note = String(b.note ?? '').trim().slice(0, 100) || null
+  await db.prepare(`INSERT INTO staff_transport_defaults (company_id, staff_id, site_id, amount, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+9 hours'))
+    ON CONFLICT(company_id, staff_id, site_id) DO UPDATE SET amount = excluded.amount, note = excluded.note, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .bind(u.company_id, staffId, siteId, Math.round(Number(b.amount)), note, u.user_id).run()
+  return c.json({ ok: true })
+})
+app.delete('/transport-defaults/:id', async (c) => {
+  const u = c.get('user')
+  const r = await c.env.DB.prepare('DELETE FROM staff_transport_defaults WHERE default_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '交通費の標準が見つかりません' }, 404)
+  return c.json({ ok: true })
 })
 
 export default app
