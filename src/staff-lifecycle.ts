@@ -1173,6 +1173,17 @@ adminLifecycleApi.post('/proxy-attendance/bulk', async (c) => {
     // 本人の報告と同時になった分（attendance_reports の一意制約）は記録しない
     created = changesOf(await batchInChunks(db, insertRowsStmts(db, 'attendance_reports',
       ['company_id', 'staff_id', 'shift_id', 'report_type', 'reported_at', 'status', 'device_info', 'entry_method', 'entered_by', 'late_minutes', 'early_leave_minutes'], insertRows, { orIgnore: true })))
+    // 一部が記録されなかったときは、実際に記録した報告だけを結果と通知に使う（本人の報告を代理入力として知らせない）
+    if (created < insertRows.length) {
+      const saved = (await db.prepare(`SELECT shift_id, report_type FROM attendance_reports WHERE shift_id IN ${JSON_IN} AND entry_method = 'proxy' AND entered_by = ?`)
+        .bind(bindJsonArray(recorded.map(r => r.shift_id)), u.user_id).all()).results as any[]
+      const has = new Set(saved.map(x => `${x.shift_id}:${x.report_type}`))
+      for (let i = recorded.length - 1; i >= 0; i--) {
+        const r = recorded[i]
+        r.rows = r.rows.filter(x => has.has(`${r.shift_id}:${x.report_type}`))
+        if (!r.rows.length) { recorded.splice(i, 1); skipped.push({ shift_id: r.shift_id, staff_name: r.staff_name, reason: '同時に本人の報告があったため記録しませんでした' }) }
+      }
+    }
     // 実績への反映（入店・退店などがあるシフト。締めた月のシフトは反映しない。1件の代理入力の syncActualFromReports と同じ）
     const syncIds: number[] = []
     const closed = new Map<string, boolean>()
@@ -1212,12 +1223,14 @@ async function reportLinkRows(db: D1Database, companyId: number, date: string, p
     rows: rows.map(s => {
       // 差し替え前の担当者に発行したURLは使えないので出さない（currentReportToken と同じ）
       const expired = reportTokenExpiry(s.work_date) <= now
-      const t = expired ? null : toks.find(x => x.shift_id === s.shift_id && x.staff_id === s.staff_id)
+      // 退職日より後・統合済みのシフトのURLは開けない（loadToken）ので、発行済みでも出さない
+      const gone = staffGoneForShift(s)
+      const t = expired || gone ? null : toks.find(x => x.shift_id === s.shift_id && x.staff_id === s.staff_id)
       return {
         shift_id: s.shift_id, staff_id: s.staff_id, staff_name: s.staff_name, staff_phone: s.staff_phone || '', project_id: s.project_id, project_name: s.project_name,
         work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, place: s.site_name || s.location || '',
         token: t ? t.token : null, last_used_at: t ? t.last_used_at : null, expires_at: reportTokenExpiry(s.work_date),
-        unavailable: staffGoneForShift(s) || (expired ? '稼働日の翌日を過ぎたため発行できません' : null), notice_count: counts.get(s.staff_id) || 0,
+        unavailable: gone || (expired ? '稼働日の翌日を過ぎたため発行できません' : null), notice_count: counts.get(s.staff_id) || 0,
       }
     }),
   }
