@@ -8,6 +8,8 @@ import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetire
 import { cronStatus } from './services/cron'
 import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, scanOrphanPhotos, setRetentionHold } from './services/retention'
 import { csvLimitHeaders, csvLimitNote, loadLatestForCsv } from './csv'
+import { OFFBOARDING_TABLES, OFFBOARDING_GRACE_DAYS, OFFBOARDING_GRACE_MIN, OFFBOARDING_GRACE_MAX, OFFBOARDING_EXPORT_PAGE, OFFBOARDING_TOTAL_STEPS,
+  countOffboardingData, findUnknownOffboardingTables, exportOffboardingTablePage, listOffboardingFiles, findOffboardingFile, offboardingBucket, runOffboardingDeletion } from './services/retention'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
@@ -7218,6 +7220,248 @@ api.get('/admin/daily-reports-retention', async (c) => {
 // 定期処理（cron）の処理ごとの最終実行・直近の実行記録・警告（#192）
 api.get('/hq/cron/status', async (c) => {
   return c.json(await cronStatus(c.env.DB))
+})
+
+// ============ 解約・停止した企業のデータの書き出しと削除（system_admin限定。作業単位 w5-hq-offboarding: #177） ============
+// 停止中の企業に「契約終了」を登録すると猶予中になり、契約終了日＋猶予日数を過ぎてから削除できる。
+// 削除は、会社コードの入力と「削除する」の入力（二重の確認）のうえで、1回の要求で処理できる量ずつ進める（画面が続けて呼ぶ）。
+// 書き出し（CSV・ファイルの取得）・登録・取消・削除は company_offboarding_events に記録し、削除の記録は CSV で出せる。
+const OFFBOARDING_FILES_PAGE = 100
+const OFFBOARDING_CONFIRM_TEXT = '削除する'
+const OFFBOARDING_STATUSES_OPEN = ['scheduled', 'deleting']
+
+async function offboardingCompany(db: D1Database, cid: number): Promise<any | null> {
+  return await db.prepare(`SELECT company_id, company_code, company_name, active_status, created_at FROM companies
+    WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`).bind(cid, HQ_COMPANY_STATUS).first()
+}
+async function latestOffboarding(db: D1Database, cid: number): Promise<any | null> {
+  return await db.prepare('SELECT * FROM company_offboardings WHERE company_id = ? ORDER BY offboarding_id DESC LIMIT 1').bind(cid).first()
+}
+function offboardingEventStmt(db: D1Database, e: { offboarding_id?: number | null; company_id: number; action: string; actor: number; detail?: unknown }) {
+  return db.prepare(`INSERT INTO company_offboarding_events (offboarding_id, company_id, action, actor_user_id, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(e.offboarding_id ?? null, e.company_id, e.action, e.actor, e.detail === undefined ? null : JSON.stringify(e.detail).slice(0, 4000), new Date().toISOString())
+}
+// 会社コードの照合（大文字・小文字と全角・半角の違いは問わない）
+function sameCompanyCode(input: unknown, code: string): boolean {
+  return normalizeLoginCode(input).toLowerCase() === String(code || '').toLowerCase()
+}
+// 削除の前に書き出したか（契約終了の登録の前の書き出しも数える）
+async function offboardingExported(db: D1Database, cid: number): Promise<boolean> {
+  return !!(await db.prepare(`SELECT 1 FROM company_offboarding_events WHERE company_id = ? AND action = 'export' LIMIT 1`).bind(cid).first())
+}
+
+// 一覧: 停止中の企業と、解約の処理の記録がある企業
+api.get('/hq/offboarding', async (c) => {
+  const rows = (await c.env.DB.prepare(`SELECT co.company_id, co.company_code, co.company_name, co.active_status,
+      o.offboarding_id, o.status, o.contract_end_date, o.delete_after, o.completed_at, o.last_error,
+      (SELECT MAX(e.created_at) FROM company_offboarding_events e WHERE e.company_id = co.company_id AND e.action = 'export') AS last_export_at
+    FROM companies co
+    LEFT JOIN company_offboardings o ON o.offboarding_id = (SELECT MAX(x.offboarding_id) FROM company_offboardings x WHERE x.company_id = co.company_id)
+    WHERE COALESCE(co.active_status, 'active') != ? AND (co.active_status = 'inactive' OR o.offboarding_id IS NOT NULL)
+    ORDER BY CASE o.status WHEN 'deleting' THEN 0 WHEN 'scheduled' THEN 1 WHEN 'completed' THEN 3 ELSE 2 END, o.delete_after, co.company_id`)
+    .bind(HQ_COMPANY_STATUS).all()).results
+  return c.json({ companies: rows, today: todayJST(), grace_days: OFFBOARDING_GRACE_DAYS })
+})
+
+// 詳細: 解約の処理・操作の記録・表ごとの件数（削除の dry-run を兼ねる）・R2 のファイルの件数
+api.get('/hq/offboarding/:cid', async (c) => {
+  const db = c.env.DB
+  const cid = toInt(c.req.param('cid'), 1)
+  const company = cid ? await offboardingCompany(db, cid) : null
+  if (!cid || !company) return c.json({ error: '企業が見つかりません' }, 404)
+  const ob = await latestOffboarding(db, cid)
+  const events = (await db.prepare(`SELECT e.event_id, e.offboarding_id, e.action, e.detail, e.created_at, u.name AS actor_name
+    FROM company_offboarding_events e LEFT JOIN users u ON u.user_id = e.actor_user_id
+    WHERE e.company_id = ? ORDER BY e.event_id DESC LIMIT 100`).bind(cid).all()).results
+  const data = await countOffboardingData(db, cid)
+  const tables = OFFBOARDING_TABLES.map(t => ({ target: t.target, label: t.label, count: data.counts[t.target] || 0, export: !t.noExport, delete: !t.noDelete }))
+  const today = todayJST()
+  return c.json({
+    company, offboarding: ob, events, tables, files: data.files, unknown_tables: data.unknown_tables,
+    exported: await offboardingExported(db, cid), today,
+    can_delete: !!ob && ob.status === 'scheduled' && company.active_status === 'inactive' && today >= ob.delete_after,
+    settings: { grace_days: OFFBOARDING_GRACE_DAYS, grace_min: OFFBOARDING_GRACE_MIN, grace_max: OFFBOARDING_GRACE_MAX,
+      export_page: OFFBOARDING_EXPORT_PAGE, files_page: OFFBOARDING_FILES_PAGE, confirm_text: OFFBOARDING_CONFIRM_TEXT, total_steps: OFFBOARDING_TOTAL_STEPS },
+  })
+})
+
+// 契約終了の登録（停止中の企業だけ）。会社コードの入力で確かめる
+api.post('/hq/offboarding/:cid/start', async (c) => {
+  const db = c.env.DB
+  const u = c.get('user')
+  const cid = toInt(c.req.param('cid'), 1)
+  const company = cid ? await offboardingCompany(db, cid) : null
+  if (!cid || !company) return c.json({ error: '企業が見つかりません' }, 404)
+  const b = await c.req.json().catch(() => null)
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  if (company.active_status !== 'inactive') return c.json({ error: '契約終了を登録できるのは、利用状態が「停止」の企業だけです。先に企業の利用状態を停止にしてください' }, 409)
+  if (!isISODate(b.contract_end_date)) return c.json({ error: '契約終了日を YYYY-MM-DD 形式の正しい日付で入力してください', field: 'contract_end_date' }, 400)
+  const grace = b.grace_days === undefined || b.grace_days === '' ? OFFBOARDING_GRACE_DAYS : toInt(b.grace_days, OFFBOARDING_GRACE_MIN, OFFBOARDING_GRACE_MAX)
+  if (grace === null) return c.json({ error: `猶予日数は${OFFBOARDING_GRACE_MIN}〜${OFFBOARDING_GRACE_MAX}日で指定してください`, field: 'grace_days' }, 400)
+  const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 1000) : ''
+  if (!sameCompanyCode(b.confirm_company_code, company.company_code)) return c.json({ error: '確認のための会社コードが一致しません', field: 'confirm_company_code' }, 400)
+  const deleteAfter = addDays(b.contract_end_date, grace)
+  try {
+    const r = await db.prepare(`INSERT INTO company_offboardings (company_id, status, contract_end_date, grace_days, delete_after, reason, requested_by, requested_at)
+      VALUES (?, 'scheduled', ?, ?, ?, ?, ?, ?)`).bind(cid, b.contract_end_date, grace, deleteAfter, reason || null, u.user_id, new Date().toISOString()).run()
+    await offboardingEventStmt(db, { offboarding_id: Number(r.meta.last_row_id), company_id: cid, action: 'start', actor: u.user_id,
+      detail: { contract_end_date: b.contract_end_date, grace_days: grace, delete_after: deleteAfter, reason: reason || null } }).run()
+  } catch (e) {
+    if (isUniqueViolation(e)) return c.json({ error: 'この企業には進行中の解約の処理があります' }, 409)
+    throw e
+  }
+  return c.json({ ok: true, delete_after: deleteAfter })
+})
+
+// 契約終了の取消（猶予中だけ。削除を始めた後は取り消せない）
+api.post('/hq/offboarding/:cid/cancel', async (c) => {
+  const db = c.env.DB
+  const u = c.get('user')
+  const cid = toInt(c.req.param('cid'), 1)
+  if (!cid) return c.json({ error: '企業が見つかりません' }, 404)
+  const b = await c.req.json().catch(() => ({})) as any
+  const reason = typeof b?.reason === 'string' ? b.reason.trim().slice(0, 1000) : ''
+  const ob = await latestOffboarding(db, cid)
+  if (!ob || ob.status !== 'scheduled') return c.json({ error: ob?.status === 'deleting' ? '削除を始めた後は取り消せません' : '取り消せる契約終了の登録がありません' }, 409)
+  const r = await db.prepare(`UPDATE company_offboardings SET status = 'cancelled', cancelled_by = ?, cancelled_at = ? WHERE offboarding_id = ? AND status = 'scheduled'`)
+    .bind(u.user_id, new Date().toISOString(), ob.offboarding_id).run()
+  if (!r.meta.changes) return c.json({ error: '状態が変わったため取り消せませんでした。画面を読み直してください' }, 409)
+  await offboardingEventStmt(db, { offboarding_id: ob.offboarding_id, company_id: cid, action: 'cancel', actor: u.user_id, detail: { reason: reason || null } }).run()
+  return c.json({ ok: true })
+})
+
+// 書き出しができるか（停止中で、削除が済んでいない企業）
+async function offboardingExportable(db: D1Database, cid: number | null): Promise<{ company: any; ob: any } | { error: string; status: 404 | 409 }> {
+  const company = cid ? await offboardingCompany(db, cid) : null
+  if (!cid || !company) return { error: '企業が見つかりません', status: 404 }
+  if (company.active_status !== 'inactive') return { error: '書き出しができるのは、利用状態が「停止」の企業だけです', status: 409 }
+  const ob = await latestOffboarding(db, cid)
+  if (ob && (ob.status === 'completed' || ob.status === 'deleting')) return { error: '削除を始めた企業のデータは書き出せません', status: 409 }
+  return { company, ob }
+}
+
+// 表ごとの CSV（offset から OFFBOARDING_EXPORT_PAGE 行。次があれば X-Export-Next に次の offset を入れる）。最初の取得を記録する
+api.get('/hq/offboarding/:cid/export/:target', async (c) => {
+  const db = c.env.DB
+  const cid = toInt(c.req.param('cid'), 1)
+  const ok = await offboardingExportable(db, cid)
+  if ('error' in ok) return c.json({ error: ok.error }, ok.status)
+  const offset = toInt(c.req.query('offset') ?? '0', 0, 100000000)
+  if (offset === null) return c.json({ error: 'offset が正しくありません' }, 400)
+  const page = await exportOffboardingTablePage(db, cid!, c.req.param('target'), offset)
+  if (!page) return c.json({ error: '書き出せない表です' }, 404)
+  if (offset === 0) {
+    await offboardingEventStmt(db, { offboarding_id: ok.ob?.status === 'scheduled' ? ok.ob.offboarding_id : null, company_id: cid!, action: 'export', actor: c.get('user').user_id,
+      detail: { target: c.req.param('target') } }).run()
+  }
+  const next = page.rows.length >= OFFBOARDING_EXPORT_PAGE ? String(offset + page.rows.length) : ''
+  return csvResponse(`${ok.company.company_code}_${c.req.param('target')}_${offset}.csv`, toCsv(page.header, page.rows),
+    { 'X-Export-Rows': String(page.rows.length), 'X-Export-Next': next })
+})
+
+// R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件）
+api.get('/hq/offboarding/:cid/files', async (c) => {
+  const db = c.env.DB
+  const cid = toInt(c.req.param('cid'), 1)
+  const ok = await offboardingExportable(db, cid)
+  if ('error' in ok) return c.json({ error: ok.error }, ok.status)
+  const offset = toInt(c.req.query('offset') ?? '0', 0, 100000000)
+  if (offset === null) return c.json({ error: 'offset が正しくありません' }, 400)
+  const files = await listOffboardingFiles(db, cid!, offset, OFFBOARDING_FILES_PAGE + 1)
+  return c.json({ files: files.slice(0, OFFBOARDING_FILES_PAGE), offset, next: files.length > OFFBOARDING_FILES_PAGE ? offset + OFFBOARDING_FILES_PAGE : null })
+})
+
+// R2 のファイル1件の取得（元の表と行の ID で。その企業のものだけ）。取得を記録する
+api.get('/hq/offboarding/:cid/files/:source/:id', async (c) => {
+  const db = c.env.DB
+  const cid = toInt(c.req.param('cid'), 1)
+  const ok = await offboardingExportable(db, cid)
+  if ('error' in ok) return c.json({ error: ok.error }, ok.status)
+  const id = toInt(c.req.param('id'), 1)
+  const f = id ? await findOffboardingFile(db, cid!, c.req.param('source'), id) : null
+  if (!f) return c.json({ error: 'ファイルが見つかりません' }, 404)
+  const bucket = offboardingBucket(c.env, f.bucket)
+  const obj = bucket ? await bucket.get(f.r2_key) : null
+  if (!obj) return c.json({ error: 'ファイルが見つかりません（R2 にありません）' }, 404)
+  await offboardingEventStmt(db, { offboarding_id: ok.ob?.status === 'scheduled' ? ok.ob.offboarding_id : null, company_id: cid!, action: 'file', actor: c.get('user').user_id,
+    detail: { source: f.source, id: f.id } }).run()
+  const name = f.file_name || `${f.source}_${f.id}${/png/.test(obj.httpMetadata?.contentType || '') ? '.png' : '.jpg'}`
+  return c.body(obj.body, 200, {
+    'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${name.replace(/["\\\r\n]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=0',
+  })
+})
+
+// 削除（猶予を過ぎた企業だけ。会社コードと「削除する」の入力で確かめる）。1回の要求で処理できる量だけ進め、進み具合を返す。
+// 書き出しをしていない場合は、書き出しをしない理由（企業が不要と回答した など）を求める
+api.post('/hq/offboarding/:cid/delete', async (c) => {
+  const db = c.env.DB
+  const u = c.get('user')
+  const cid = toInt(c.req.param('cid'), 1)
+  const company = cid ? await offboardingCompany(db, cid) : null
+  if (!cid || !company) return c.json({ error: '企業が見つかりません' }, 404)
+  const b = await c.req.json().catch(() => null)
+  if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
+  let ob = await latestOffboarding(db, cid)
+  if (!ob || !OFFBOARDING_STATUSES_OPEN.includes(ob.status)) return c.json({ error: '契約終了が登録されていません' }, 409)
+  if (company.active_status !== 'inactive') return c.json({ error: '企業の利用状態が「停止」ではないため削除できません。再開した企業は、契約終了の登録を取り消してください' }, 409)
+  if (!sameCompanyCode(b.confirm_company_code, company.company_code)) return c.json({ error: '確認のための会社コードが一致しません', field: 'confirm_company_code' }, 400)
+  if (ob.status === 'scheduled') {
+    const today = todayJST()
+    if (today < ob.delete_after) return c.json({ error: `猶予期間中です。${ob.delete_after} から削除できます` }, 409)
+    if (String(b.confirm_text ?? '').trim() !== OFFBOARDING_CONFIRM_TEXT) return c.json({ error: `確認のため「${OFFBOARDING_CONFIRM_TEXT}」と入力してください`, field: 'confirm_text' }, 400)
+    const skipReason = typeof b.export_skip_reason === 'string' ? b.export_skip_reason.trim().slice(0, 500) : ''
+    if (!skipReason && !await offboardingExported(db, cid)) {
+      return c.json({ error: 'データを書き出していません。書き出してから削除するか、書き出しをしない理由を入力してください', field: 'export_skip_reason', code: 'not_exported' }, 409)
+    }
+    // 削除の一覧にない表が残っていると、削除の記録が実際と合わなくなるため始めない
+    const unknown = await findUnknownOffboardingTables(db)
+    if (unknown === null || unknown.length) {
+      return c.json({ error: unknown === null ? '削除の対象に入っていない表があるかを確かめられませんでした。時間をおいて再度お試しください'
+        : `削除の対象に入っていない、企業の行を持つ表があるため削除を始められません（開発者に確認してください）: ${unknown.join(', ')}`, code: 'unknown_tables' }, 409)
+    }
+    const now = new Date().toISOString()
+    const r = await db.prepare(`UPDATE company_offboardings SET status = 'deleting', delete_started_by = ?, delete_started_at = ?, export_skip_reason = ?
+      WHERE offboarding_id = ? AND status = 'scheduled'`).bind(u.user_id, now, skipReason || null, ob.offboarding_id).run()
+    if (r.meta.changes) {
+      await offboardingEventStmt(db, { offboarding_id: ob.offboarding_id, company_id: cid, action: 'delete_start', actor: u.user_id,
+        detail: { export_skip_reason: skipReason || null } }).run()
+    }
+    ob = await latestOffboarding(db, cid)
+    if (!ob || ob.status !== 'deleting') return c.json({ error: '状態が変わったため削除を始められませんでした。画面を読み直してください' }, 409)
+  }
+  const p = await runOffboardingDeletion(db, c.env, ob)
+  if (p.error) await offboardingEventStmt(db, { offboarding_id: ob.offboarding_id, company_id: cid, action: 'delete_error', actor: u.user_id, detail: { step: p.step, error: p.error } }).run()
+  if (p.done) await offboardingEventStmt(db, { offboarding_id: ob.offboarding_id, company_id: cid, action: 'complete', actor: u.user_id, detail: { deleted: p.deleted } }).run()
+  return c.json(p)
+})
+
+// 削除の記録（削除の証明として企業に渡せる CSV）: 企業・契約終了・削除の日時と、対象ごとの削除・匿名化の件数と、操作の記録
+const OFFBOARDING_EVENT_LABEL: Record<string, string> = { start: '契約終了の登録', cancel: '契約終了の取消', export: 'CSV の書き出し', file: 'ファイルの取得',
+  delete_start: '削除の開始', delete_error: '削除の失敗', complete: '削除の完了' }
+api.get('/hq/offboarding/:cid/record.csv', async (c) => {
+  const db = c.env.DB
+  const cid = toInt(c.req.param('cid'), 1)
+  const company = cid ? await offboardingCompany(db, cid) : null
+  if (!cid || !company) return c.json({ error: '企業が見つかりません' }, 404)
+  const ob = await latestOffboarding(db, cid)
+  if (!ob) return c.json({ error: '解約の処理の記録がありません' }, 404)
+  const events = (await db.prepare(`SELECT e.action, e.detail, e.created_at, u.name AS actor_name FROM company_offboarding_events e
+    LEFT JOIN users u ON u.user_id = e.actor_user_id WHERE e.offboarding_id = ? ORDER BY e.event_id`).bind(ob.offboarding_id).all()).results as any[]
+  let deleted: Record<string, number> = {}
+  try { deleted = JSON.parse(ob.deleted_json || '{}') || {} } catch { deleted = {} }
+  const label = new Map(OFFBOARDING_TABLES.map(t => [t.target, t.label]))
+  const extra: Record<string, string> = { anonymized_users: '利用者の匿名化', anonymized_staff: 'スタッフの匿名化', r2_photos: '写真（R2）', r2_documents: '書類（R2）', r2_contracts: '契約書類（R2）' }
+  const rows: any[][] = [
+    ['企業', '会社コード', company.company_code], ['企業', '会社名', company.company_name],
+    ['契約終了', '状態', ob.status], ['契約終了', '契約終了日', ob.contract_end_date], ['契約終了', '猶予日数', ob.grace_days], ['契約終了', '削除できる日', ob.delete_after],
+    ['削除', '開始', ob.delete_started_at], ['削除', '完了', ob.completed_at], ['削除', '書き出しをしない理由', ob.export_skip_reason],
+    ...Object.entries(deleted).map(([k, n]) => ['件数', label.get(k) || extra[k] || k, n]),
+    ...events.map(e => ['操作', `${e.created_at} ${OFFBOARDING_EVENT_LABEL[e.action] || e.action}（${e.actor_name || ''}）`, e.detail || '']),
+  ]
+  return csvResponse(`${company.company_code}_解約の記録.csv`, toCsv(['区分', '項目', '値'], rows))
 })
 
 export default api

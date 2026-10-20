@@ -1946,3 +1946,285 @@ window.addEventListener('hashchange', route)
   // 未対応の伴走支援の依頼の件数（#179）。伴走支援のタブは自分で描き直す
   if (!/^#support/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshSupportBadge()
 })()
+
+// ============ 解約・データ（解約・停止した企業のデータの書き出しと削除。作業単位 w5-hq-offboarding: #177） ============
+// 停止中の企業に契約終了を登録し、猶予（既定90日）のあいだにデータを書き出して渡し、猶予の後に二重の確認のうえで削除する。
+const OB_STATUS_BADGE = {
+  scheduled: '<span class="badge badge-yellow">猶予中</span>',
+  deleting: '<span class="badge badge-red">削除中</span>',
+  completed: '<span class="badge badge-gray">削除済み</span>',
+  cancelled: '<span class="badge badge-gray">取消</span>',
+}
+const OB_EVENT_LABEL = { start: '契約終了の登録', cancel: '契約終了の取消', export: 'CSV の書き出し', file: 'ファイルの取得',
+  delete_start: '削除の開始', delete_error: '削除の失敗', complete: '削除の完了' }
+const OB_FILE_LABEL = { attendance_reports: '出退勤の写真', attendance_reports_duplicates_0036: '出退勤の写真（重複の控え）', staff_documents: 'スタッフの書類', employee_documents: '入社時書類', client_documents: 'クライアントの契約書類' }
+const OB_DARK_INP = 'style="background:#1e293b;border-color:#334155;color:#fff"'
+let OB_DETAIL = null
+
+// 本部画面のナビ（index.tsx）にタブを足す
+;(function addOffboardingNav() {
+  const first = document.querySelector('.hq-nav')
+  if (!first || document.querySelector('.hq-nav[data-tab="offboarding"]')) return
+  const a = document.createElement('a')
+  a.href = '#offboarding'; a.className = first.className.replace(/\bactive\b/, '').trim(); a.dataset.tab = 'offboarding'; a.textContent = '解約・データ'
+  first.parentNode.appendChild(a)
+})()
+routes.offboarding = () => {
+  const id = (location.hash.slice(1).split('/')[1] || '')
+  return id ? renderOffboardingDetail(id) : renderOffboardingList()
+}
+
+async function renderOffboardingList() {
+  loading()
+  let data
+  try { data = (await axios.get('/api/hq/offboarding')).data } catch (e) {
+    $app.innerHTML = '<p class="text-sm text-red-400">解約・停止した企業の一覧を読み込めませんでした</p>'
+    return
+  }
+  const rows = data.companies.map(c => `
+    <tr class="border-b border-slate-700/40">
+      <td class="px-3 py-3"><p class="font-medium">${esc(c.company_name)}</p><p class="text-xs text-slate-400">${esc(c.company_code)} ${STATUS_BADGE[c.active_status] || ''}</p></td>
+      <td class="px-3 py-3">${c.status ? OB_STATUS_BADGE[c.status] || esc(c.status) : '<span class="text-slate-500 text-xs">未登録</span>'}${c.last_error ? '<span class="block text-xs text-red-400">失敗あり</span>' : ''}</td>
+      <td class="px-3 py-3 text-xs">${c.contract_end_date ? esc(c.contract_end_date) : '-'}</td>
+      <td class="px-3 py-3 text-xs">${c.status === 'scheduled' ? `${esc(c.delete_after)}${c.delete_after <= data.today ? ' <span class="text-amber-300">削除できます</span>' : ''}` : c.completed_at ? '削除済み ' + hqDate(c.completed_at, false) : '-'}</td>
+      <td class="px-3 py-3 text-xs">${c.last_export_at ? hqDate(c.last_export_at, false) : '<span class="text-slate-500">なし</span>'}</td>
+      <td class="px-3 py-3"><a href="#offboarding/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline">開く →</a></td>
+    </tr>`).join('')
+  $app.innerHTML = `
+    <h2 class="text-xl font-bold">解約・データ</h2>
+    <p class="text-sm text-slate-400 mt-1 mb-5">利用状態が「停止」の企業に契約終了を登録すると、猶予期間（既定${Number(data.grace_days)}日）のあいだにデータ（CSV・写真・書類）を書き出して渡せます。猶予の後に、会社コードと確認の入力のうえで、スタッフ・勤怠・写真・書類などを削除し、利用者とスタッフの氏名・連絡先を匿名化します。</p>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700">
+          <th class="text-left px-3 py-2">企業</th><th class="text-left px-3 py-2">解約の処理</th><th class="text-left px-3 py-2">契約終了日</th><th class="text-left px-3 py-2">削除できる日</th><th class="text-left px-3 py-2">最後の書き出し</th><th></th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="text-center text-slate-500 py-6">停止中の企業はありません。企業を停止にすると、ここに出ます</td></tr>'}</tbody>
+      </table>
+    </section>`
+}
+
+function obStatusHtml(d) {
+  const ob = d.offboarding, c = d.company
+  const open = ob && (ob.status === 'scheduled' || ob.status === 'deleting')
+  if (!open && c.active_status !== 'inactive') {
+    return `<p class="text-sm text-slate-300">この企業は「停止」ではないため、契約終了を登録できません。企業の画面で利用状態を停止にしてから登録してください。</p>`
+  }
+  if (!open && ob && ob.status === 'completed') {
+    return `<p class="text-sm">削除が完了しています（${hqDate(ob.completed_at, false)}）。<a href="/api/hq/offboarding/${Number(c.company_id)}/record.csv" class="text-cyan-400 hover:underline ml-1"><i class="fas fa-file-csv mr-1"></i>削除の記録（CSV）</a></p>`
+  }
+  if (!open) {
+    return `
+      <p class="text-sm text-slate-300 mb-3">契約終了日を登録すると、猶予期間の後に削除できるようになります。猶予中は取り消せます。</p>
+      <div class="grid md:grid-cols-4 gap-3 text-sm">
+        <label class="block"><span class="text-xs text-slate-400">契約終了日</span><input type="date" id="ob-end" class="inp mt-1" ${OB_DARK_INP} value="${esc(d.today)}"></label>
+        <label class="block"><span class="text-xs text-slate-400">猶予日数（${Number(d.settings.grace_min)}〜${Number(d.settings.grace_max)}日）</span><input type="number" id="ob-grace" class="inp mt-1" ${OB_DARK_INP} min="${Number(d.settings.grace_min)}" max="${Number(d.settings.grace_max)}" value="${Number(d.settings.grace_days)}"></label>
+        <label class="block md:col-span-2"><span class="text-xs text-slate-400">理由・メモ（任意）</span><input type="text" id="ob-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
+        <label class="block md:col-span-2"><span class="text-xs text-slate-400">確認のため会社コード（${esc(c.company_code)}）を入力</span><input type="text" id="ob-start-code" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
+      </div>
+      <button class="btn btn-primary mt-3" data-action="obStart" data-cid="${Number(c.company_id)}"><i class="fas fa-flag-checkered"></i>契約終了を登録する</button>`
+  }
+  const head = `<p class="text-sm mb-3">${OB_STATUS_BADGE[ob.status] || ''} 契約終了日 ${esc(ob.contract_end_date)} ／ 猶予 ${Number(ob.grace_days)}日 ／ <b>${esc(ob.delete_after)}</b> から削除できます${ob.reason ? `<span class="block text-xs text-slate-400 mt-1">理由: ${esc(ob.reason)}</span>` : ''}</p>
+    ${ob.last_error ? `<div class="bg-red-900/40 border border-red-700 text-red-200 rounded-xl p-3 mb-3 text-xs break-all">前回の削除で失敗しました: ${esc(ob.last_error)}</div>` : ''}`
+  const delForm = `
+    <div class="border border-red-700 rounded-xl p-3 mt-2">
+      <p class="text-sm text-red-200 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>削除すると元に戻せません。下の件数（dry-run）を確かめてから実行してください。</p>
+      <div class="grid md:grid-cols-3 gap-3 text-sm">
+        <label class="block"><span class="text-xs text-slate-400">会社コード（${esc(c.company_code)}）を入力</span><input type="text" id="ob-del-code" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
+        ${ob.status === 'scheduled' ? `
+        <label class="block"><span class="text-xs text-slate-400">「${esc(d.settings.confirm_text)}」と入力</span><input type="text" id="ob-del-text" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
+        ${d.exported ? '' : `<label class="block"><span class="text-xs text-slate-400">書き出しをしない理由（まだ書き出していません）</span><input type="text" id="ob-del-skip" class="inp mt-1" ${OB_DARK_INP} maxlength="500" placeholder="例: 企業から不要と回答があった"></label>`}` : ''}
+      </div>
+      <button class="btn btn-danger mt-3" data-action="obDelete" data-cid="${Number(c.company_id)}"><i class="fas fa-trash"></i>${ob.status === 'deleting' ? '削除を続ける' : 'データを削除する'}</button>
+      <div id="ob-progress" class="text-xs text-slate-300 mt-2"></div>
+    </div>`
+  if (ob.status === 'deleting') return head + delForm
+  return head + `
+    <div class="flex flex-wrap gap-2 items-end">
+      <label class="block text-sm"><span class="text-xs text-slate-400">取消の理由（任意）</span><input type="text" id="ob-cancel-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
+      <button class="btn btn-outline" style="border-color:#334155;color:#cbd5e1" data-action="obCancel" data-cid="${Number(c.company_id)}">契約終了を取り消す</button>
+    </div>
+    ${d.can_delete ? delForm : `<p class="text-xs text-slate-400 mt-2">猶予期間中のため、まだ削除できません。${c.active_status !== 'inactive' ? '企業の利用状態が「停止」ではないため削除できません。' : ''}</p>`}`
+}
+
+function obTablesHtml(d) {
+  const canExport = d.company.active_status === 'inactive' && !(d.offboarding && (d.offboarding.status === 'deleting' || d.offboarding.status === 'completed'))
+  const cid = Number(d.company.company_id)
+  const rows = d.tables.map(t => `
+    <tr class="border-b border-slate-700/40">
+      <td class="px-3 py-2">${esc(t.label)}<span class="block text-[11px] text-slate-500">${esc(t.target)}</span></td>
+      <td class="px-3 py-2 text-right">${Number(t.count).toLocaleString()}</td>
+      <td class="px-3 py-2 text-xs">${t.delete ? '削除' : t.target === 'companies' ? '<span class="text-slate-400">残す（解約の記録）</span>' : '<span class="text-amber-300">匿名化</span>'}</td>
+      <td class="px-3 py-2">${canExport && t.export && t.count > 0 ? `<button class="text-cyan-400 text-xs hover:underline" data-action="obExport" data-cid="${cid}" data-target="${esc(t.target)}"><i class="fas fa-file-csv mr-1"></i>CSV</button>` : ''}</td>
+    </tr>`).join('')
+  const files = Object.entries(d.files).map(([k, n]) => `${esc(OB_FILE_LABEL[k] || k)} ${Number(n).toLocaleString()}件`).join(' ／ ')
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <h3 class="font-bold"><i class="fas fa-database text-cyan-400 mr-1"></i>データの件数と書き出し（削除の dry-run）</h3>
+        ${canExport ? `<button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="obExportAll" data-cid="${cid}"><i class="fas fa-download"></i>すべての表を CSV で書き出す</button>` : ''}
+      </div>
+      <p class="text-xs text-slate-400 mb-3">CSV は表ごとに ${Number(d.settings.export_page)} 行ずつ取得して1つのファイルにまとめます。パスワード・二段階認証・トークンの列は出しません。掲示板の投稿とやり取り・企業間チャット・連携の同意の記録は相手の企業と共有する記録のため、ログインの履歴は1年で自動で消えるため、削除の対象にしていません。</p>
+      ${d.unknown_tables === null ? `<p class="text-xs text-amber-300 mb-3">削除の対象に入っていない表があるかを確かめられませんでした</p>` : ''}
+      ${d.unknown_tables && d.unknown_tables.length ? `<div class="bg-red-900/40 border border-red-700 text-red-200 rounded-xl p-3 mb-3 text-xs">削除の対象に入っていない、企業の行を持つ表があります（開発者に確認してください）: ${d.unknown_tables.map(esc).join(', ')}</div>` : ''}
+      <div class="overflow-x-auto max-h-96 overflow-y-auto"><table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-3 py-2">表</th><th class="text-right px-3 py-2">件数</th><th class="text-left px-3 py-2">削除の扱い</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="mt-4 text-sm">
+        <p><i class="fas fa-images text-cyan-400 mr-1"></i>写真・書類（R2）: ${files}</p>
+        ${canExport ? `<button class="text-cyan-400 text-xs hover:underline mt-1" data-action="obFiles" data-cid="${cid}" data-offset="0">ファイルの一覧を表示して取得する</button>` : ''}
+        <div id="ob-files" class="mt-2"></div>
+      </div>
+    </section>`
+}
+
+function obEventsHtml(d) {
+  const rows = d.events.map(e => {
+    let detail = ''
+    try { const o = JSON.parse(e.detail || 'null'); detail = o ? Object.entries(o).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => `${k}: ${v}`).join(' ／ ') : '' } catch { detail = '' }
+    return `<tr class="border-b border-slate-700/40"><td class="px-3 py-2 text-xs whitespace-nowrap">${esc(dayjs(e.created_at).format('YYYY/M/D HH:mm'))}</td>
+      <td class="px-3 py-2 text-xs">${esc(OB_EVENT_LABEL[e.action] || e.action)}</td><td class="px-3 py-2 text-xs">${esc(e.actor_name || '')}</td>
+      <td class="px-3 py-2 text-xs text-slate-400 break-all">${esc(detail)}</td></tr>`
+  }).join('')
+  return `
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="font-bold"><i class="fas fa-clock-rotate-left text-cyan-400 mr-1"></i>操作の記録</h3>
+        ${d.offboarding ? `<a href="/api/hq/offboarding/${Number(d.company.company_id)}/record.csv" class="text-cyan-400 text-xs hover:underline"><i class="fas fa-file-csv mr-1"></i>解約の記録（CSV）</a>` : ''}
+      </div>
+      <div class="overflow-x-auto"><table class="w-full text-sm"><tbody>${rows || '<tr><td class="text-center text-slate-500 py-4 text-xs">記録はありません</td></tr>'}</tbody></table></div>
+    </section>`
+}
+
+async function renderOffboardingDetail(cid) {
+  loading()
+  try { OB_DETAIL = (await axios.get('/api/hq/offboarding/' + Number(cid))).data } catch (e) {
+    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">${e.response && e.response.status === 404 ? '企業が見つかりません。' : '読み込めませんでした。'}<a href="#offboarding" class="text-cyan-400 ml-2 hover:underline">一覧へ戻る</a></div>`
+    return
+  }
+  const d = OB_DETAIL, c = d.company
+  $app.innerHTML = `
+    <div class="flex items-center gap-3 mb-5">
+      <a href="#offboarding" class="btn btn-outline" style="border-color:#334155;color:#94a3b8"><i class="fas fa-arrow-left"></i></a>
+      <div class="flex-1">
+        <h2 class="text-xl font-bold">${esc(c.company_name)}</h2>
+        <p class="text-sm text-slate-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} <a href="#companies/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline ml-2">企業の画面へ</a></p>
+      </div>
+    </div>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-3"><i class="fas fa-file-contract text-cyan-400 mr-1"></i>契約終了と削除</h3>
+      ${obStatusHtml(d)}
+    </section>
+    ${obTablesHtml(d)}
+    ${obEventsHtml(d)}`
+}
+
+const obVal = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
+
+delegate('obStart', el => {
+  const cid = Number(el.dataset.cid)
+  if (!obVal('ob-end')) { toast('契約終了日を入力してください'); return }
+  if (!confirm(`契約終了を登録します。猶予の ${obVal('ob-grace') || OB_DETAIL.settings.grace_days} 日を過ぎると、この企業のデータを削除できるようになります。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    try {
+      const { data } = await axios.post(`/api/hq/offboarding/${cid}/start`, { contract_end_date: obVal('ob-end'), grace_days: obVal('ob-grace'), reason: obVal('ob-reason'), confirm_company_code: obVal('ob-start-code') })
+      toast(`登録しました。${data.delete_after} から削除できます`)
+      renderOffboardingDetail(cid)
+    } catch (e) { showApiError(e, '登録に失敗しました') }
+  })
+})
+
+delegate('obCancel', el => {
+  const cid = Number(el.dataset.cid)
+  if (!confirm('契約終了の登録を取り消します。よろしいですか？')) return
+  withSubmitLock(el, async () => {
+    try {
+      await axios.post(`/api/hq/offboarding/${cid}/cancel`, { reason: obVal('ob-cancel-reason') })
+      toast('取り消しました')
+      renderOffboardingDetail(cid)
+    } catch (e) { showApiError(e, '取り消せませんでした') }
+  })
+})
+
+// 削除は1回の要求で処理できる量ずつ進むので、終わるか失敗するまで続けて呼ぶ
+delegate('obDelete', el => {
+  const cid = Number(el.dataset.cid)
+  const body = { confirm_company_code: obVal('ob-del-code'), confirm_text: obVal('ob-del-text'), export_skip_reason: obVal('ob-del-skip') }
+  if (!body.confirm_company_code) { toast('会社コードを入力してください'); return }
+  if (!confirm(`「${OB_DETAIL.company.company_name}」のデータを削除します。\nスタッフ・勤怠・日報・写真・書類・従業員データなどは元に戻せません。利用者とスタッフの氏名・連絡先は匿名化します。\n本当に実行しますか？`)) return
+  withSubmitLock(el, async () => {
+    const box = document.getElementById('ob-progress')
+    let p = null
+    try {
+      for (let i = 0; i < 1000; i++) {
+        p = (await axios.post(`/api/hq/offboarding/${cid}/delete`, body)).data
+        if (box) box.textContent = `処理中… 段階 ${p.step} / ${p.total_steps}${p.r2_left ? `（残りのファイル ${p.r2_left}件）` : ''}`
+        if (p.done || p.error) break
+      }
+      if (p && p.error) toast('削除の途中で失敗しました。内容を確かめて「削除を続ける」で再開してください')
+      else if (p && p.done) toast('削除が完了しました')
+    } catch (e) { showApiError(e, '削除に失敗しました') }
+    renderOffboardingDetail(cid)
+  })
+})
+
+// 表の CSV を区切って取得し、1つのファイルにまとめる（2つ目以降の見出しの行は除く）
+async function obFetchTableCsv(cid, target) {
+  let offset = 0, out = ''
+  for (let i = 0; i < 100000; i++) {
+    const r = await axios.get(`/api/hq/offboarding/${cid}/export/${encodeURIComponent(target)}`, { params: { offset }, responseType: 'text', transformResponse: x => x })
+    let text = String(r.data).replace(/^﻿/, '')
+    if (offset > 0) text = text.slice(text.indexOf('\r\n') + 2)
+    out += text
+    const next = r.headers['x-export-next']
+    if (!next) break
+    offset = Number(next)
+  }
+  return '﻿' + out
+}
+function obSaveFile(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a'); a.href = url; a.download = name
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+delegate('obExport', el => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid), target = el.dataset.target
+  try {
+    obSaveFile(`${OB_DETAIL.company.company_code}_${target}.csv`, await obFetchTableCsv(cid, target))
+  } catch (e) { showApiError(e, '書き出しに失敗しました') }
+}))
+delegate('obExportAll', el => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid)
+  const targets = OB_DETAIL.tables.filter(t => t.export && t.count > 0)
+  try {
+    for (const [i, t] of targets.entries()) {
+      el.textContent = `書き出し中… ${i + 1} / ${targets.length}`
+      obSaveFile(`${OB_DETAIL.company.company_code}_${t.target}.csv`, await obFetchTableCsv(cid, t.target))
+    }
+    toast(`${targets.length}個の CSV を書き出しました`)
+  } catch (e) { showApiError(e, '書き出しに失敗しました') }
+  renderOffboardingDetail(cid)
+}))
+
+// 写真・書類の一覧（100件ずつ）。ファイルは1件ずつ取得する
+delegate('obFiles', el => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.cid), offset = Number(el.dataset.offset) || 0
+  const box = document.getElementById('ob-files')
+  try {
+    const { data } = await axios.get(`/api/hq/offboarding/${cid}/files`, { params: { offset } })
+    box.innerHTML = `
+      <div class="overflow-x-auto"><table class="w-full text-xs">
+        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-1">種類</th><th class="text-left px-2 py-1">ファイル</th><th class="text-left px-2 py-1">日時</th><th></th></tr></thead>
+        <tbody>${data.files.map(f => `<tr class="border-b border-slate-700/40">
+          <td class="px-2 py-1">${esc(OB_FILE_LABEL[f.source] || f.source)}</td>
+          <td class="px-2 py-1 break-all">${esc(f.file_name || f.r2_key)}</td>
+          <td class="px-2 py-1 whitespace-nowrap">${esc(f.created_at || '')}</td>
+          <td class="px-2 py-1"><a class="text-cyan-400 hover:underline" href="/api/hq/offboarding/${cid}/files/${encodeURIComponent(f.source)}/${Number(f.id)}">取得</a></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-slate-500 py-3">ファイルはありません</td></tr>'}</tbody>
+      </table></div>
+      <div class="flex gap-2 mt-2">
+        ${offset > 0 ? `<button class="text-cyan-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Math.max(0, offset - 100)}">← 前へ</button>` : ''}
+        ${data.next != null ? `<button class="text-cyan-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Number(data.next)}">次へ →</button>` : ''}
+      </div>`
+  } catch (e) { showApiError(e, 'ファイルの一覧を読み込めませんでした') }
+}))
