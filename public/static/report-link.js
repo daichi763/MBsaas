@@ -242,14 +242,18 @@
         <p class="text-sm text-gray-700 whitespace-pre-wrap break-words mt-2">${esc(n.body || '')}</p></details>`).join('')}</div></section>`
   }
   // 遅刻・欠勤・トラブルの連絡（#163）。ボタンからフォームを開いて送る。会社の電話番号があれば発信のリンクも出す
+  // 電話は、会社の緊急連絡先（GET /:token/contact。#173）があればそれを、なければ問い合わせの電話番号（contact_phone）を出す（同じ番号を2回出さない）
   function contactHtml(d) {
-    const tel = telHref(d.contact_phone)
+    const em = EMERGENCY && telHref(EMERGENCY.phone) ? EMERGENCY : null
+    const phone = em ? em.phone : d.contact_phone
+    const tel = telHref(phone)
     return `<section class="card p-4 mb-4" id="report-link-contact">
       <h2 class="font-bold text-gray-800 mb-1"><i class="fas fa-headset text-blue-500 mr-1"></i>遅刻・欠勤・トラブルの連絡</h2>
       <p class="text-xs text-gray-400 mb-2">遅れそう・行けない・現場で困ったときは、担当者に連絡してください</p>
       <button class="btn btn-outline w-full" data-action="linkOpenContact"><i class="fas fa-paper-plane"></i>担当者に連絡する</button>
-      ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone"></i>${esc(d.contact_phone)} に電話する</a>
-        <p class="text-[11px] text-gray-400 mt-1">急ぎの場合（出勤の直前など）は電話してください</p>` : ''}
+      ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone ${em ? 'text-red-500' : ''}"></i>${em ? '緊急連絡先 ' : ''}${esc(phone)} に電話する</a>
+        <p class="text-[11px] text-gray-400 mt-1">急ぎの場合（出勤の直前・当日の欠勤・体調不良など）は電話してください</p>
+        ${em && em.note ? `<p class="text-[11px] text-gray-400">${esc(em.note)}</p>` : ''}` : ''}
     </section>`
   }
   const CONTACT_KINDS = [['late', '遅刻しそう'], ['absent', '欠勤したい'], ['health', '体調が悪い'], ['trouble', '現場でトラブル'], ['other', 'その他']]
@@ -276,11 +280,12 @@
     if (['trouble', 'other'].includes(kind) && !body) { err.textContent = '内容を入力してください'; return }
     try {
       const { data } = await axios.post(API + '/consultation', { kind, body, shift_id: shiftSel && shiftSel.value ? Number(shiftSel.value) : undefined }, { timeout: POST_TIMEOUT })
-      const tel = telHref(data.contact_phone || DATA.contact_phone)
+      const ph = (EMERGENCY && telHref(EMERGENCY.phone) && EMERGENCY.phone) || data.contact_phone || DATA.contact_phone
+      const tel = telHref(ph)
       modal(`<div class="text-center"><i class="fas fa-circle-check text-3xl text-emerald-500 mb-2 block"></i>
         <p class="font-bold text-gray-800">担当者に送信しました</p>
         <p class="text-sm text-gray-500 mt-1">担当者が確認します。急ぎの場合は電話でも連絡してください</p>
-        ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-3"><i class="fas fa-phone"></i>${esc(data.contact_phone || DATA.contact_phone)} に電話する</a>` : ''}
+        ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-3"><i class="fas fa-phone"></i>${esc(ph)} に電話する</a>` : ''}
         <button class="btn btn-primary w-full mt-2" onclick="closeModal()">閉じる</button></div>`)
     } catch (e) {
       err.textContent = e && e.response ? errMsg(e, '送信に失敗しました') : '通信できませんでした。電波の良い場所で、もう一度お試しください'
@@ -545,13 +550,28 @@
   }
 
   // ---------- 会社の緊急連絡先（#173） ----------
-  // 画面（#app）の下に別の部分として出す。URL の期限切れ・読み込みの失敗の画面でも出す。登録がなければ何も出さない
+  // 報告・予定の画面では『遅刻・欠勤・トラブルの連絡』の欄（contactHtml）に電話を出す。
+  // URL の期限切れ・読み込みの失敗の画面（その欄がない）では、画面（#app）の下に別の部分として出す（同じ番号がすでに出ていれば出さない。#163）。登録がなければ何も出さない
+  let EMERGENCY = null
   async function loadEmergencyContact() {
     let d
     try { d = (await axios.get(API + '/contact', { timeout: GET_TIMEOUT })).data } catch (e) { return }
     if (!d || !d.phone) return
+    EMERGENCY = d
+    syncEmergency()
+  }
+  function syncEmergency() {
+    const old = document.getElementById('link-emergency'); if (old) old.remove()
+    if (!EMERGENCY) return
+    const sec = document.getElementById('report-link-contact')
+    if (sec) { if (DATA) sec.outerHTML = contactHtml(DATA); return }
+    const digits = (p) => String(p || '').replace(/[^\d]/g, '')
+    const shown = [...$app.querySelectorAll('a[href^="tel:"]')].some(a => digits(a.getAttribute('href')) === digits(EMERGENCY.phone))
+    if (shown) return
+    const d = EMERGENCY
     // #app と同じ幅にそろえる
     const box = document.createElement('div')
+    box.id = 'link-emergency'
     box.className = 'max-w-lg mx-auto px-4 pb-6'
     box.innerHTML = `<section class="card p-4"><p class="text-sm font-bold text-gray-800 mb-1"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先（${esc(d.company_name)}）</p>
       <p class="text-[11px] text-gray-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください</p>
@@ -559,6 +579,11 @@
       ${d.note ? `<p class="text-[11px] text-gray-400 mt-1">${esc(d.note)}</p>` : ''}</section>`
     $app.insertAdjacentElement('afterend', box)
   }
+  // 画面を描き直したら、緊急連絡先の出し方も合わせる
+  const _render = render, _renderSchedule = renderSchedule, _showLoadError = showLoadError
+  render = function () { const r = _render.apply(this, arguments); syncEmergency(); return r }
+  renderSchedule = function () { const r = _renderSchedule.apply(this, arguments); syncEmergency(); return r }
+  showLoadError = function () { const r = _showLoadError.apply(this, arguments); syncEmergency(); return r }
 
   load()
   loadEmergencyContact()
