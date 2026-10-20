@@ -3483,7 +3483,7 @@ api.get('/admin/employees/export', async (c) => {
   const where = status === 'ended'
     ? `er.company_id = ? AND er.employment_ended_at IS NOT NULL AND (COALESCE(sp.affiliation_type,'own_employee') != 'own_employee' OR sp.merged_into_staff_id IS NOT NULL)`
     : `sp.company_id = ? AND ${OWN_EMPLOYEE_COND}${status ? ` AND COALESCE(sp.employment_status,'working') = ?` : ''}`
-  const rows = (await db.prepare(`SELECT sp.staff_id, us.name, us.email, us.phone, us.retired_at, sp.kana, sp.gender, sp.date_of_birth, COALESCE(sp.employment_status,'working') AS employment_status, er.*
+  const rows = (await db.prepare(`SELECT er.*, sp.staff_id AS sp_staff_id, us.name, us.email, us.phone, us.retired_at, sp.kana, sp.gender, sp.date_of_birth, COALESCE(sp.employment_status,'working') AS employment_status
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id LEFT JOIN employee_records er ON er.staff_id = sp.staff_id AND er.company_id = sp.company_id
     WHERE ${where} ORDER BY COALESCE(er.employee_number, ''), us.name`).bind(u.company_id, ...(status && status !== 'ended' ? [status] : [])).all()).results as any[]
   const statusLabel = (r: any) => (status === 'ended' ? '雇用終了' : ({ working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' } as Record<string, string>)[r.employment_status] || '在職中')
@@ -3494,7 +3494,7 @@ api.get('/admin/employees/export', async (c) => {
   const csvRows = rows.map(r => [
     r.employee_number, r.name, r.kana, GENDER_LABEL[r.gender] || r.gender || '', r.date_of_birth, r.hire_date, statusLabel(r), r.retired_at ? String(r.retired_at).slice(0, 10) : '',
     r.employment_ended_at, r.contract_type, r.contract_start, r.contract_end, r.department, r.job_title, r.base_location, r.work_style,
-    r.postal_code, address(r), r.phone_main || r.phone, r.personal_email || r.email, r.employment_insurance_no, r.social_insurance_no, r.staff_id,
+    r.postal_code, address(r), r.phone_main || r.phone, r.personal_email || r.email, r.employment_insurance_no, r.social_insurance_no, r.sp_staff_id,
     ...(includePay ? [r.bank_code, r.bank_name, r.branch_code, r.branch_name, r.account_type, r.account_number, r.base_salary_type, r.base_salary, r.fixed_overtime_hours,
       r.fixed_overtime_pay, r.gross_pay, r.position_allowance, r.sales_allowance, r.other_deduction] : []),
   ])

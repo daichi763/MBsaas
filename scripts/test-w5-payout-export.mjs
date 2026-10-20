@@ -112,6 +112,12 @@ for (const pid of [PA, PB]) must(await admin.put(`/api/admin/projects/${pid}/pri
   const head = r.text.replace(/^﻿/, '').split('\r\n')[0]
   ok('#431 従業員名簿の CSV を出せる', r.status === 200 && /text\/csv/.test(r.type) && head.includes('社員番号') && head.includes('入社日') && head.includes('雇用保険番号'), head)
   ok('#431 既定では口座・給与の列を含めない', !head.includes('口座番号') && !head.includes('基本給'), head)
+  // 従業員データ（employee_records）がない人でも、スタッフIDが空にならない（er.* の staff_id で上書きしない）
+  must(await admin.post('/api/admin/staff-quick', { name: `${PFX} 名簿`, phone: phone(7), affiliation_type: 'own_employee' }), 'own employee')
+  const r2 = await admin.get('/api/admin/employees/export')
+  const body = r2.text.replace(/^﻿/, '').trim().split('\r\n').slice(1)
+  const mine = body.find(l => l.includes(`${PFX} 名簿`))
+  ok('#431 すべての行にスタッフIDが入る', body.length > 0 && body.every(l => /,"?\d+"?$/.test(l)) && !!mine, { mine, bad: body.filter(l => !/,"?\d+"?$/.test(l)).slice(0, 3) })
   const pay = await admin.get('/api/admin/employees/export?include_pay=1')
   ok('#431 会社管理者は口座・給与を含めて出せる', pay.status === 200 && pay.text.includes('口座番号') && pay.text.includes('基本給'), pay.status)
   const st = await admin.get('/api/admin/employees/export?status=retired')
