@@ -44,6 +44,7 @@ import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/s
 import { NOTICE_TARGET_SQL, loadStaffNotices, countUnreadNotices } from './lib/notices'
 import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
+import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -668,6 +669,8 @@ api.route('/public/report', publicReportApi)
 api.route('/public/recruit', recruitPublicApi)
 // お知らせメールの「確認しました」（ログイン不要。メールのワンタイムのトークンで既読にする #454。src/notifications.ts）
 api.route('/public/notice-ack', noticeAckPublicApi)
+// シフトのカレンダー購読（ログイン不要。本人ごとのトークンの URL。#301 src/staff-schedule.ts）
+api.route('/public/calendar', calendarPublicApi)
 
 // 二段階認証の登録待ちの間も使える API（#544）
 const MFA_SETUP_PATHS = ['/api/auth/me', '/api/auth/mfa', '/api/auth/mfa/setup', '/api/auth/mfa/enable', '/api/auth/sessions', '/api/auth/change-password', '/api/auth/logout-all']
@@ -1132,6 +1135,9 @@ api.route('/staff', notificationsStaffApi)
 api.route('/admin/board', boardApi)
 // スタッフアプリからの応募（src/recruit.ts）
 api.route('/staff/recruit', recruitStaffApi)
+// 出勤可能日の提出・一覧（#171）と、シフトのカレンダー追加（#301）（src/staff-schedule.ts）
+api.route('/staff', scheduleStaffApi)
+api.route('/admin', scheduleAdminApi)
 
 // =========================================================
 // スタッフ側 API

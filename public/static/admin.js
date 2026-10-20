@@ -4177,6 +4177,130 @@ function route() {
 window.addEventListener('hashchange', route)
 document.getElementById('mobile-nav').addEventListener('change', e => { location.hash = e.target.value })
 
+// ============ 出勤可能日（#171 #availability）: 締切・未提出の人への通知・日付×スタッフの一覧。API は src/staff-schedule.ts ============
+// メニューは index.tsx を変えずに、ここで『シフト管理』の下へ足す
+;(function addAvailabilityMenu() {
+  const side = document.querySelector('#side-nav a[data-tab="shifts"]')
+  if (side && !document.querySelector('#side-nav a[data-tab="availability"]')) side.insertAdjacentHTML('afterend', '<a href="#availability" class="side-link" data-tab="availability"><i class="fas fa-calendar-check w-5"></i>出勤可能日</a>')
+  const opt = document.querySelector('#mobile-nav option[value="shifts"]')
+  if (opt && !document.querySelector('#mobile-nav option[value="availability"]')) opt.insertAdjacentHTML('afterend', '<option value="availability">出勤可能日</option>')
+})()
+routes.availability = () => renderAvailabilityBoard()
+const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
+const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み']]
+let AVB = { month: null, data: null, filter: 'all' }
+const avbMonthLabel = (m) => `${Number(String(m).slice(0, 4))}年${Number(String(m).slice(5, 7))}月`
+const avbAt = (at) => at ? dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm') : ''
+
+async function renderAvailabilityBoard(month) {
+  const h = location.hash.split('/')[1] || ''
+  month = month || (/^\d{4}-\d{2}$/.test(h) ? h : AVB.month)
+  loading()
+  let data
+  try { data = (await axios.get('/api/admin/availability', { params: month ? { month } : {} })).data } catch (e) {
+    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">出勤可能日</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '出勤可能日を読み込めませんでした')}</p>
+      <button class="btn btn-outline" data-action="avbReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
+    return
+  }
+  if ((location.hash || '').slice(1).split('/')[0] !== 'availability') return
+  AVB.month = data.month; AVB.data = data
+  drawAvailabilityBoard()
+}
+
+function drawAvailabilityBoard() {
+  const d = AVB.data
+  const first = dayjs(d.month + '-01')
+  const loginStaff = d.staff.filter(s => s.has_login)
+  const unsubmitted = loginStaff.filter(s => !s.submitted_at)
+  const lateCount = d.staff.filter(s => s.late).length
+  const rows = d.staff.filter(s => AVB.filter === 'all' || (AVB.filter === 'submitted' ? !!s.submitted_at : !s.submitted_at && s.has_login))
+  // △の時間帯・メモ（セルの title に出す）
+  const detail = {}
+  for (const x of d.details || []) detail[`${x.staff_id}:${Number(String(x.work_date).slice(8, 10))}`] = [x.status === 'partial' ? `${String(x.start_time).slice(0, 5)}〜${String(x.end_time).slice(0, 5)}` : '', x.note || ''].filter(Boolean).join(' ')
+  const dayHead = Array.from({ length: d.days }, (_, i) => {
+    const wd = first.date(i + 1).day()
+    return `<th class="px-1 py-1 text-center font-normal ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : 'text-gray-500'}">${i + 1}<br><span class="text-[10px]">${'日月火水木金土'[wd]}</span></th>`
+  }).join('')
+  // 日ごとの ○・△ の人数
+  const avail = Array(d.days).fill(0)
+  for (const s of d.staff) for (let i = 0; i < d.days; i++) if (s.marks[i] === 'o' || s.marks[i] === 'p') avail[i]++
+  const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>'
+    : s.submitted_at ? `<span class="badge ${s.late ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>`
+    : '<span class="badge badge-red">未提出</span>'
+  const cell = (s, i) => {
+    const m = AVB_MARK[s.marks[i]]
+    const hasShift = s.shift_days.includes(String(i + 1).padStart(2, '0'))
+    const tip = [detail[`${s.staff_id}:${i + 1}`] || '', hasShift ? 'シフトあり' : ''].filter(Boolean).join(' / ')
+    return `<td class="px-1 py-1 text-center ${hasShift ? 'bg-blue-50' : ''}"${tip ? ` title="${escAttr(tip)}"` : ''}><span class="font-bold ${m ? m[1] : ''}">${m ? m[0] : ''}</span>${tip && !hasShift ? '<sup class="text-[9px] text-gray-400">*</sup>' : ''}</td>`
+  }
+  $app.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      <h2 class="text-xl font-bold text-gray-900">出勤可能日</h2>
+      <div class="flex items-center gap-1 ml-auto">
+        <button class="btn btn-outline text-xs" data-action="avbMonth" data-month="${esc(first.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+        <span class="font-bold text-gray-800 px-2">${esc(avbMonthLabel(d.month))}</span>
+        <button class="btn btn-outline text-xs" data-action="avbMonth" data-month="${esc(first.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+      </div>
+    </div>
+    <div class="grid md:grid-cols-2 gap-4 mb-4">
+      <section class="card p-4">
+        <h3 class="font-bold text-gray-800 mb-2">提出の締切と案内</h3>
+        <div class="space-y-2 text-sm">
+          <label class="flex items-center gap-2"><span class="text-gray-600 w-16 shrink-0">締切日</span><input type="date" id="avb-deadline" class="inp w-44" value="${esc(d.deadline || '')}"><span class="text-xs text-gray-400">空欄で締切なし</span></label>
+          <label class="block"><span class="text-gray-600 text-xs">スタッフへの案内（提出画面に出ます）</span><textarea id="avb-note" class="inp" rows="2" maxlength="300" placeholder="例: 土日に入れる方は特に歓迎です">${esc(d.note || '')}</textarea></label>
+          <button class="btn btn-primary text-sm" data-action="avbSavePeriod"><i class="fas fa-floppy-disk"></i>保存</button>
+        </div>
+      </section>
+      <section class="card p-4">
+        <h3 class="font-bold text-gray-800 mb-2">提出状況</h3>
+        <p class="text-sm text-gray-700">提出済み <b>${loginStaff.length - unsubmitted.length}</b> / ${loginStaff.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
+        ${d.staff.length > loginStaff.length ? `<p class="text-xs text-gray-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
+        ${unsubmitted.length ? `<div class="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">${unsubmitted.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>` : ''}
+        <div class="flex items-center gap-2 flex-wrap mt-3">
+          <button class="btn btn-outline text-sm" data-action="avbRemind" ${unsubmitted.length ? '' : 'disabled'}><i class="fas fa-bell"></i>未提出の人に通知する（${unsubmitted.length}人）</button>
+          ${d.last_reminded_at ? `<span class="text-xs text-gray-400">前回の通知 ${esc(avbAt(d.last_reminded_at))}</span>` : ''}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に届きます</p>
+      </section>
+    </div>
+    <div class="flex gap-2 flex-wrap items-center mb-2">
+      ${AVB_FILTERS.map(([k, l]) => `<button class="btn ${AVB.filter === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="avbFilter" data-filter="${k}">${l}</button>`).join('')}
+      <span class="text-xs text-gray-500 ml-auto"><span class="text-emerald-600 font-bold">○</span> 終日OK <span class="text-amber-600 font-bold ml-1">△</span> 時間帯 <span class="text-gray-400 font-bold ml-1">×</span> 不可 <span class="inline-block w-3 h-3 bg-blue-50 border border-blue-200 align-middle ml-1"></span> シフトあり <sup>*</sup> 時間帯・メモあり（セルに合わせると表示）</span>
+    </div>
+    <div class="card overflow-x-auto">
+      <table class="text-xs whitespace-nowrap">
+        <thead class="bg-gray-50"><tr><th class="px-2 py-1 text-left sticky left-0 bg-gray-50">スタッフ</th><th class="px-2 py-1 text-left">提出</th>${dayHead}</tr></thead>
+        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr>
+          <td class="px-2 py-1 sticky left-0 bg-white"><a href="#staff/${Number(s.staff_id)}" class="text-blue-700 hover:underline">${esc(s.name)}</a></td>
+          <td class="px-2 py-1">${statusCell(s)}</td>
+          ${Array.from({ length: d.days }, (_, i) => cell(s, i)).join('')}</tr>`).join('') || `<tr><td colspan="${d.days + 2}" class="text-center text-gray-400 py-8">該当するスタッフはいません</td></tr>`}</tbody>
+        <tfoot class="bg-gray-50"><tr><td class="px-2 py-1 sticky left-0 bg-gray-50 font-bold" colspan="2">○・△ の人数</td>${avail.map(n => `<td class="px-1 py-1 text-center font-bold ${n ? 'text-emerald-700' : 'text-gray-300'}">${n}</td>`).join('')}</tr></tfoot>
+      </table>
+    </div>`
+}
+
+delegate('avbReload', () => renderAvailabilityBoard())
+delegate('avbMonth', (el) => { history.replaceState(null, '', '#availability/' + el.dataset.month); renderAvailabilityBoard(el.dataset.month) })
+delegate('avbFilter', (el) => { AVB.filter = el.dataset.filter; drawAvailabilityBoard() })
+delegate('avbSavePeriod', (el) => withSubmitLock(el, async () => {
+  try {
+    await axios.put('/api/admin/availability/period', { month: AVB.month, deadline: document.getElementById('avb-deadline').value || null, note: document.getElementById('avb-note').value })
+  } catch (e) { showApiError(e, '保存に失敗しました'); return }
+  toast('締切と案内を保存しました')
+  renderAvailabilityBoard(AVB.month)
+}))
+delegate('avbRemind', (el) => {
+  const n = AVB.data.staff.filter(s => s.has_login && !s.submitted_at).length
+  if (!confirm(`${avbMonthLabel(AVB.month)}の出勤可能日を提出していない ${n}人に、提出のお願いを通知します。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    let r
+    try { r = (await axios.post('/api/admin/availability/remind', { month: AVB.month })).data } catch (e) { showApiError(e, '通知できませんでした'); return }
+    toast(`${r.sent}人に通知しました`)
+    renderAvailabilityBoard(AVB.month)
+  })
+})
+
 ;(async () => {
   try {
     const { data } = await axios.get('/api/auth/me')
