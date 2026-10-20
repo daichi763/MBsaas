@@ -308,6 +308,7 @@ const HQ_AUDIT_FIELD = {
   support_memo: '伴走支援メモ', trial_ends_at: 'トライアルの終了日', contract_start_at: '契約開始日', next_review_at: '次回レビュー日',
   contact_name: '担当者', contact_phone: '電話', contact_email: 'メール', billing_address: '請求先の住所',
   status: '入金状態', amount: '金額', paid_at: '入金日', note: 'メモ', created: '記録した企業数', mfa_enabled: '二段階認証',
+  base_fee: '基本料金', included_users: '含む人数', per_user_fee: '追加1人',
 }
 const HQ_AUDIT_VALUE = {
   plan: PLAN_LABELS, active_status: { active: '利用中', trial: 'トライアル', inactive: '停止' }, billing_status: { active: '正常', overdue: '滞納', suspended: '停止' },
@@ -315,6 +316,7 @@ const HQ_AUDIT_VALUE = {
 }
 function hqAuditValue(k, v) {
   if (v == null || v === '') return '（なし）'
+  if (typeof v === 'boolean') return v ? 'あり' : 'なし'
   if (typeof v === 'object') return Object.entries(v).map(([kk, vv]) => `${HQ_AUDIT_FIELD[kk] || kk}: ${vv == null ? '（なし）' : vv}`).join('・')
   const s = (HQ_AUDIT_VALUE[k] && HQ_AUDIT_VALUE[k][v]) || String(v)
   return s.length > 80 ? s.slice(0, 80) + '…' : s

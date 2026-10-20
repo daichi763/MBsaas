@@ -5062,7 +5062,8 @@ api.get('/hq/companies', async (c) => {
   const pm = prevMonth(today.slice(0, 7))
   const billing = {
     prev_month: pm,
-    prev_month_recorded: (bill.results as any[]).reduce((n, r) => n + (r.prev_month_recorded ? 1 : 0), 0),
+    // 利用中の企業のうち前の月を記録済みの数（記録の後に停止・トライアルにした企業は数えない。利用中の数と比べるため）
+    prev_month_recorded: companies.filter(c => c.active_status === 'active' && (billBy.get(c.company_id) as any)?.prev_month_recorded).length,
     billable_companies: companies.filter(c => c.active_status === 'active').length,
   }
   return c.json({ companies, billing, plan_prices: [...prices.values()],
@@ -5190,7 +5191,9 @@ api.put('/hq/companies/:id', async (c) => {
       // 新しい名前の行がすでにあって付け替えられなかった古い名前の行は、どこからも使われていなければ消す（取引先の一覧に出ないように）
       db.prepare(`DELETE FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?
           AND NOT EXISTS (SELECT 1 FROM staff_profiles sp WHERE sp.partner_affiliation_id = staff_affiliations.affiliation_id)
-          AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.payee_affiliation_id = staff_affiliations.affiliation_id)`).bind(cid, oldName),
+          AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.payee_affiliation_id = staff_affiliations.affiliation_id)
+          AND NOT EXISTS (SELECT 1 FROM affiliation_excluded_shifts x WHERE x.to_payee_affiliation_id = staff_affiliations.affiliation_id)
+          AND NOT EXISTS (SELECT 1 FROM staff_affiliation_schedules sc WHERE sc.partner_affiliation_id = staff_affiliations.affiliation_id AND sc.status = 'pending')`).bind(cid, oldName),
       db.prepare(`UPDATE staff_profiles SET affiliation = ? WHERE company_id = ? AND affiliation = ? AND COALESCE(affiliation_type, 'own_employee') = 'own_employee'`)
         .bind(newName, cid, oldName),
     )
