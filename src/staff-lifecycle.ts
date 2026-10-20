@@ -8,12 +8,14 @@
 import { Hono } from 'hono'
 import { createPerson, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
-import { JSON_IN, bindJsonArray, chunk } from './lib/d1-chunk'
-import { syncActualFromReports } from './settlement'
-import { isHHMM, pickReportValues, reportFieldRulesError } from './lib/validate'
+import { JSON_IN, bindJsonArray, chunk, batchInChunks } from './lib/d1-chunk'
+import { insertRowsStmts, changesOf } from './lib/bulk-write'
+import { syncActualFromReports, syncActualsForShifts, closedMessage } from './settlement'
+import { NOTICE_TARGET_SQL } from './lib/notices'
+import { isHHMM, isISODate, pickReportValues, reportFieldRulesError } from './lib/validate'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
 import { notifyDailyReportIncident } from './notifications'
-import { notifyProxyAttendance } from './notifications'
+import { notifyProxyAttendance, ATTENDANCE_PROXY_KIND, loadMailContact } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
 import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
@@ -744,6 +746,8 @@ adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
     required_fields: sp.is_provisional && !sp.merged_into_staff_id ? finalizeRequiredFields(await getRequiredFields(db, u.company_id), sp) : [],
     // 「既存のスタッフに統合」を出すか（#223。仮登録と、シフトのない重複登録）
     can_merge: !(await mergeSourceCheck(db, sp)),
+    // 予定確認URL（#442）: 発行済みのものの期限・最終アクセス（URL そのものは発行のときだけ返す）と、発行できない理由
+    schedule_link: await currentScheduleLink(db, u.company_id, sp.staff_id), schedule_link_blocked: scheduleLinkBlocked(sp),
   })
 })
 
@@ -828,7 +832,13 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const linkDevices = [...new Set(linkRows.map(r => r.device_id || idByUa.get(r.device_info || '') || 'ua:' + (r.device_info || '')))]
   const link_devices = { count: linkDevices.length, summaries: [...new Set(linkRows.map(r => deviceSummary(r.device_info)).filter(Boolean))] }
   const dr = await findDailyReport(db, s)
-  const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method } : null
+  // 日報の代理入力（#276）: 入力欄の初期値（今の内容）と、代理入力した管理者
+  const drView = dailyReportView(dr)
+  const enteredBy = dr?.entered_by ? ((await db.prepare('SELECT name FROM users WHERE user_id = ? AND company_id = ?').bind(dr.entered_by, u.company_id).first()) as any)?.name ?? null : null
+  const daily = dr ? { daily_report_id: dr.daily_report_id, submitted_at: dr.submitted_at, entry_method: dr.entry_method, entered_by_name: enteredBy,
+    values: drView?.values ?? {}, incident_flag: !!drView?.incident_flag, complaint_flag: !!drView?.complaint_flag } : null
+  const tpl = modes.daily_report_required ? await db.prepare('SELECT t.template_name, t.fields_json FROM projects p JOIN report_templates t ON t.template_id = p.report_template_id WHERE p.project_id = ?')
+    .bind(s.project_id).first() as any : null
   const token = await currentReportToken(db, s)
   // 代理入力: 受け付けない理由（確定済み・欠勤・稼働日より前）と、時刻が空欄のときの既定値
   const now = nowJST()
@@ -842,8 +852,12 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   return c.json({ shift_id: s.shift_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', login_via_owner: viaOwner,shift_attendance_mode: s.attendance_mode, shift_daily_report_mode: s.daily_report_mode, modes, reports, daily_report: daily, token,
     work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, now, proxy_blocked: proxyBlocked, proxy_defaults,
     inherited_daily_report_mode: inherited.daily_report_mode, settled: isSettled(s), link_devices,
-    // 報告用URLを送るための情報（案内文・SMS。#441 #507）
-    company_name: u.company_name || '', project_name: s.project_name, place: s.site_name || s.location || '', staff_phone: s.staff_phone || '' })
+    // 報告用URLを送るための情報（案内文・SMS。#441 #507）。notice_count は報告用ページに出す重要なお知らせの数（#281。案内文に一言添える）
+    company_name: u.company_name || '', project_name: s.project_name, place: s.site_name || s.location || '', staff_phone: s.staff_phone || '',
+    project_id: s.project_id, notice_count: s.user_role === 'staff' ? 0 : (await linkNotices(db, u.company_id, s.staff_id)).length,
+    // 日報の代理入力（#276）: テンプレートの項目と、受け付けない理由（欠勤・稼働日の前）
+    daily_template: tpl ? { name: tpl.template_name, fields: parseFields(tpl.fields_json) } : null,
+    daily_blocked: dailyReportBlocked({ work_date: s.work_date, status: s.status }, now.slice(0, 10)) })
 })
 adminLifecycleApi.put('/shifts/:id/report-settings', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
@@ -893,6 +907,50 @@ function proxyDefaultTimes(s: ShiftTimes, breakMinutes: number): Record<string, 
 // 同じ時刻を許さない組（後の種類 → 前の種類）。実働・休憩が0分になるのを防ぐ
 const PROXY_STRICT_AFTER: Record<string, string[]> = { break_end: ['break_start'], work_end: ['check_in', 'work_start'], check_out: ['check_in', 'work_start'] }
 
+// 代理入力の確認（1件の代理入力・まとめての代理入力 #508 で共用）。記録する種類ごとの日時を返す。
+// times は種類ごとの 'HH:MM'（空欄の種類は予定から決める）。
+// 必要な種類か・報告済みでないか（checkReportable と同じ文言）。順序は時刻の前後関係として確かめる。
+// 前の報告が欠けていても記録できる（起床・出発などを管理者が知らないことがあるため。欠けた報告も後から代理入力できる）
+type ProxyPlan = { ok: true; atOf: Map<string, string> } | { ok: false; error: string; status: 400 | 409 }
+function planProxyAttendance(s: any, required: string[], existing: { report_type: string; reported_at: string }[], types: string[], times: Record<string, any>, now: string): ProxyPlan {
+  const fail = (error: string, status: 400 | 409 = 400): ProxyPlan => ({ ok: false, error, status })
+  const done = new Set(existing.map(r => r.report_type))
+  for (const t of types) {
+    if (!required.includes(t)) return fail(`${REPORT_LABEL[t]}: このシフトでは不要な報告です`)
+    if (done.has(t)) return fail(`${REPORT_LABEL[t]}: すでに報告済みです`, 409)
+  }
+  // 記録する日時
+  const defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
+  const atOf = new Map<string, string>()
+  for (const t of types) {
+    const v = times[t]
+    if (v !== undefined && v !== null && v !== '' && !isHHMM(v)) return fail(`${REPORT_LABEL[t]}の時刻が正しくありません`)
+    const at = v ? proxyDateTime(s, t, v) : defaults[t]
+    if (!at) return fail(`${REPORT_LABEL[t]}の時刻を入力してください（予定から決められません）`)
+    if (at > now) return fail(`${REPORT_LABEL[t]}（${fmtAt(at)}）はまだ先の日時です。実際の時刻を入力してください`)
+    atOf.set(t, at)
+  }
+  // 時刻の前後関係（すでにある報告も含めて、報告の順に並んでいるか）
+  const all = new Map<string, string>(existing.map(r => [r.report_type, r.reported_at]))
+  for (const [t, at] of atOf) all.set(t, at)
+  const ordered = REPORT_TYPES.filter(t => all.has(t)) as string[]
+  for (let j = 0; j < ordered.length; j++) for (let i = 0; i < j; i++) {
+    const ti = ordered[i], tj = ordered[j]
+    if (!atOf.has(ti) && !atOf.has(tj)) continue
+    const ai = all.get(ti)!, aj = all.get(tj)!
+    if (aj < ai) return fail(`${REPORT_LABEL[tj]}（${fmtAt(aj)}）が${REPORT_LABEL[ti]}（${fmtAt(ai)}）より前になっています`)
+    if (aj === ai && PROXY_STRICT_AFTER[tj]?.includes(ti)) return fail(`${REPORT_LABEL[tj]}と${REPORT_LABEL[ti]}が同じ時刻（${fmtAt(aj)}）です`)
+  }
+  return { ok: true, atOf }
+}
+// 記録する行。遅刻・早退は、アプリ・報告用URLと同じ判定（report-settings.ts の lateness。入店・勤務開始の遅刻と猶予、勤務終了・退店の早退）
+function proxyRowsOf(s: any, atOf: Map<string, string>, settingsJson: any) {
+  const types = [...atOf.keys()]
+  return lateness(s, types.map(t => ({ report_type: t, reported_at: atOf.get(t)! })), latenessSettings(settingsJson))
+    .map(j => ({ report_type: j.report_type, reported_at: atOf.get(j.report_type)!, status: j.late ? 'late' : 'normal',
+      late_minutes: j.late_minutes, early_leave_minutes: j.early_leave_minutes }))
+}
+
 adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
   const s = await ownShift(db, u.company_id, c.req.param('id'))
@@ -913,39 +971,9 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
   }
   const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
   const existing = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(s.shift_id).all()).results as any[]
-  // 必要な種類か・報告済みでないか（checkReportable と同じ文言）。順序は下で時刻の前後関係として確かめる。
-  // 前の報告が欠けていても記録できる（起床・出発などを管理者が知らないことがあるため。欠けた報告も後から代理入力できる）
-  const done = new Set(existing.map(r => r.report_type as string))
-  for (const t of types) {
-    if (!modes.required_attendance.includes(t)) return c.json({ error: `${REPORT_LABEL[t]}: このシフトでは不要な報告です` }, 400)
-    if (done.has(t)) return c.json({ error: `${REPORT_LABEL[t]}: すでに報告済みです` }, 409)
-  }
-  // 記録する日時
-  const defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
-  const atOf = new Map<string, string>()
-  for (const t of types) {
-    const v = times[t]
-    if (v !== undefined && v !== null && v !== '' && !isHHMM(v)) return c.json({ error: `${REPORT_LABEL[t]}の時刻が正しくありません` }, 400)
-    const at = v ? proxyDateTime(s, t, v) : defaults[t]
-    if (!at) return c.json({ error: `${REPORT_LABEL[t]}の時刻を入力してください（予定から決められません）` }, 400)
-    if (at > now) return c.json({ error: `${REPORT_LABEL[t]}（${fmtAt(at)}）はまだ先の日時です。実際の時刻を入力してください` }, 400)
-    atOf.set(t, at)
-  }
-  // 時刻の前後関係（すでにある報告も含めて、報告の順に並んでいるか）
-  const all = new Map<string, string>(existing.map(r => [r.report_type, r.reported_at]))
-  for (const [t, at] of atOf) all.set(t, at)
-  const ordered = REPORT_TYPES.filter(t => all.has(t)) as string[]
-  for (let j = 0; j < ordered.length; j++) for (let i = 0; i < j; i++) {
-    const ti = ordered[i], tj = ordered[j]
-    if (!atOf.has(ti) && !atOf.has(tj)) continue
-    const ai = all.get(ti)!, aj = all.get(tj)!
-    if (aj < ai) return c.json({ error: `${REPORT_LABEL[tj]}（${fmtAt(aj)}）が${REPORT_LABEL[ti]}（${fmtAt(ai)}）より前になっています` }, 400)
-    if (aj === ai && PROXY_STRICT_AFTER[tj]?.includes(ti)) return c.json({ error: `${REPORT_LABEL[tj]}と${REPORT_LABEL[ti]}が同じ時刻（${fmtAt(aj)}）です` }, 400)
-  }
-  // 遅刻・早退は、アプリ・報告用URLと同じ判定（report-settings.ts の lateness。入店・勤務開始の遅刻と猶予、勤務終了・退店の早退）
-  const judged = lateness(s, types.map(t => ({ report_type: t, reported_at: atOf.get(t)! })), latenessSettings(u.settings_json))
-  const rows = judged.map(j => ({ report_type: j.report_type, reported_at: atOf.get(j.report_type)!, status: j.late ? 'late' : 'normal',
-    late_minutes: j.late_minutes, early_leave_minutes: j.early_leave_minutes }))
+  const plan = planProxyAttendance(s, modes.required_attendance, existing, types, times, now)
+  if (!plan.ok) return c.json({ error: plan.error }, plan.status)
+  const rows = proxyRowsOf(s, plan.atOf, u.settings_json)
   try {
     await db.batch(rows.map(r => db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, device_info, entry_method, entered_by, late_minutes, early_leave_minutes)
       VALUES (?, ?, ?, ?, ?, ?, 'proxy', 'proxy', ?, ?, ?)`).bind(u.company_id, s.staff_id, s.shift_id, r.report_type, r.reported_at, r.status, u.user_id, r.late_minutes, r.early_leave_minutes)))
@@ -1011,6 +1039,342 @@ adminLifecycleApi.delete('/shifts/:id/report-link', async (c) => {
 })
 
 // =========================================================
+// ログインのないスタッフ向けの機能（w5-nologin-features）
+//  - まとめての代理入力（#508）・報告用URLのまとめての発行（#275）・日報の代理入力（#276）
+//  - 予定確認URL（#442。スタッフ単位）、報告用ページのお知らせ（#281）
+// 「ログインのない人」は users.role が staff でない人（仮登録・ログインなしで登録した人。roster_only）
+// =========================================================
+const parseFields = (raw: any): any[] => { try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v : [] } catch { return [] } }
+// 一覧に出すシフトの上限（1日・1社で、これを超えたら案件で絞り込んでもらう）
+const BULK_SHIFT_LIMIT = 300
+// まとめての代理入力で、1回に送れるシフトの数（画面は超えた分を分けて送る）
+const BULK_PROXY_MAX = 50
+const START_TYPES = ['check_in', 'work_start'], END_TYPES = ['work_end', 'check_out']
+const optProjectId = (v: any): number | null | undefined => {
+  if (v === undefined || v === null || v === '') return null
+  const n = Number(v)
+  return Number.isInteger(n) && n > 0 ? n : undefined
+}
+
+// 1日分（または指定したID）の勤務のシフト（確定・代打）。ログインのない人を先に、開始時刻・案件の順に並べる
+async function shiftsOfDay(db: D1Database, companyId: number, q: { date?: string; projectId?: number | null; ids?: number[]; nologinOnly?: boolean }) {
+  const where = ['s.company_id = ?', "s.status IN ('confirmed', 'substitute')"]
+  const binds: any[] = [companyId]
+  if (q.ids) { where.push(`s.shift_id IN ${JSON_IN}`); binds.push(bindJsonArray(q.ids)) } else { where.push('s.work_date = ?'); binds.push(q.date) }
+  if (q.projectId) { where.push('s.project_id = ?'); binds.push(q.projectId) }
+  if (q.nologinOnly) where.push("us.role != 'staff'")
+  return (await db.prepare(`SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.break_minutes, s.location,
+      p.project_name, p.default_break_minutes AS p_break_minutes, us.user_id, us.name AS staff_name, us.phone AS staff_phone, us.role AS user_role, us.status AS user_status,
+      us.retired_at, sp.merged_into_staff_id, sp.employment_status, si.site_name
+    FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id JOIN projects p ON p.project_id = s.project_id
+    LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY CASE WHEN us.role = 'staff' THEN 1 ELSE 0 END, s.start_time, p.project_name, us.name, s.shift_id LIMIT ${BULK_SHIFT_LIMIT + 1}`).bind(...binds).all()).results as any[]
+}
+// 絞り込みに出す案件（その日に勤務のシフトがある案件）
+async function projectsOfDay(db: D1Database, companyId: number, date: string) {
+  return (await db.prepare(`SELECT DISTINCT p.project_id, p.project_name FROM shifts s JOIN projects p ON p.project_id = s.project_id
+    WHERE s.company_id = ? AND s.work_date = ? AND s.status IN ('confirmed', 'substitute') ORDER BY p.project_name`).bind(companyId, date).all()).results as any[]
+}
+async function reportsByShift(db: D1Database, ids: number[]) {
+  const out = new Map<number, { report_type: string; reported_at: string; entry_method: string | null }[]>()
+  if (!ids.length) return out
+  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, entry_method FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(ids)).all()).results as any[]
+  for (const r of rows) out.set(r.shift_id, [...(out.get(r.shift_id) || []), r])
+  return out
+}
+
+// ---------- まとめての代理入力（#508） ----------
+// 日付（と案件）を選ぶと、勤務のシフトと報告の状況を返す。ログインのない人を先頭に並べる
+adminLifecycleApi.get('/proxy-attendance/bulk', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const date = c.req.query('date') || todayJST()
+  if (!isISODate(date)) return c.json({ error: '日付を正しく指定してください' }, 400)
+  const projectId = optProjectId(c.req.query('project_id'))
+  if (projectId === undefined) return c.json({ error: '案件の指定が正しくありません' }, 400)
+  const rows = await shiftsOfDay(db, u.company_id, { date, projectId })
+  const list = rows.slice(0, BULK_SHIFT_LIMIT)
+  const ids = list.map(r => r.shift_id as number)
+  const [modes, reps, projects] = await Promise.all([modesForShifts(db, ids), reportsByShift(db, ids), projectsOfDay(db, u.company_id, date)])
+  const drs = ids.length ? (await db.prepare(`SELECT shift_id, entry_method FROM daily_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(ids)).all()).results as any[] : []
+  const drOf = new Map(drs.map(r => [r.shift_id as number, r]))
+  const now = nowJST()
+  return c.json({
+    date, now, projects, truncated: rows.length > BULK_SHIFT_LIMIT,
+    shifts: list.map(s => {
+      const m = modes.get(s.shift_id)
+      const done: Record<string, { at: string; entry_method: string | null }> = {}
+      for (const r of reps.get(s.shift_id) || []) done[r.report_type] = { at: r.reported_at, entry_method: r.entry_method }
+      const dr = drOf.get(s.shift_id)
+      return {
+        shift_id: s.shift_id, staff_id: s.staff_id, staff_name: s.staff_name, has_login: s.user_role === 'staff', project_id: s.project_id, project_name: s.project_name,
+        work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, place: s.site_name || s.location || '',
+        required: m ? m.required_attendance : [], done, defaults: proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0),
+        blocked: proxyBlockedReason(s, now),
+        daily: { required: m ? m.daily_report_required : false, submitted: !!dr, entry_method: dr?.entry_method ?? null },
+      }
+    }),
+  })
+})
+// チェックしたシフトに「予定どおり」で記録する。scope: start = 入店・勤務開始だけ / all = 予定どおり全部（休憩・勤務終了・退店も）。
+// 人ごとに start・end（'HH:MM'）で開始・終了の時刻を直せる。1件の代理入力と同じ確認（確定済み・欠勤・稼働日より前・報告済み・順序）をして、
+// 記録できないシフトは理由を付けて返す（ほかのシフトは記録する）。まだ先の時刻と、予定から決められない報告（起床・出発など）は記録しない
+adminLifecycleApi.post('/proxy-attendance/bulk', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const scope = b.scope === 'start' || b.scope === 'all' ? b.scope as 'start' | 'all' : null
+  if (!scope) return c.json({ error: '記録する範囲を選んでください' }, 400)
+  const items: any[] = Array.isArray(b.items) ? b.items : []
+  if (!items.length) return c.json({ error: '記録するシフトを選んでください' }, 400)
+  if (items.length > BULK_PROXY_MAX) return c.json({ error: `一度に記録できるのは${BULK_PROXY_MAX}件までです` }, 400)
+  const want = new Map<number, { start: string | null; end: string | null }>()
+  for (const it of items) {
+    const id = Number(it?.shift_id)
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'シフトの指定が正しくありません' }, 400)
+    for (const k of ['start', 'end']) {
+      const v = it[k]
+      if (v !== undefined && v !== null && v !== '' && !isHHMM(v)) return c.json({ error: '時刻は「時:分」（例 09:30）で入力してください' }, 400)
+    }
+    want.set(id, { start: it.start || null, end: it.end || null })
+  }
+  const shifts = await shiftsOfDay(db, u.company_id, { ids: [...want.keys()] })
+  const byId = new Map(shifts.map(s => [s.shift_id as number, s]))
+  const ids = shifts.map(s => s.shift_id as number)
+  const [modes, reps] = await Promise.all([modesForShifts(db, ids), reportsByShift(db, ids)])
+  const now = nowJST()
+  const recorded: { shift_id: number; staff_name: string; rows: ReturnType<typeof proxyRowsOf> }[] = []
+  const skipped: { shift_id: number; staff_name: string | null; reason: string }[] = []
+  const insertRows: Record<string, any>[] = []
+  for (const [id, o] of want) {
+    const s = byId.get(id)
+    if (!s) { skipped.push({ shift_id: id, staff_name: null, reason: 'シフトが見つかりません（欠勤・希望（仮）のシフトは対象外です）' }); continue }
+    const blocked = proxyBlockedReason(s, now)
+    if (blocked) { skipped.push({ shift_id: id, staff_name: s.staff_name, reason: `${blocked}のシフトです` }); continue }
+    const m = modes.get(id)
+    const existing = reps.get(id) || []
+    const done = new Set(existing.map(r => r.report_type))
+    const defaults = proxyDefaultTimes(s, Number(s.break_minutes ?? s.p_break_minutes ?? 0) || 0)
+    const types: string[] = [], times: Record<string, string> = {}
+    for (const t of (m ? m.required_attendance : []).filter(t => !done.has(t) && (scope === 'all' || START_TYPES.includes(t)))) {
+      const v = START_TYPES.includes(t) ? o.start : END_TYPES.includes(t) ? o.end : null
+      const at = v ? proxyDateTime(s, t, v) : defaults[t]
+      if (!at || at > now) continue
+      if (v) times[t] = v
+      types.push(t)
+    }
+    if (!m || !types.length) { skipped.push({ shift_id: id, staff_name: s.staff_name, reason: '記録できる報告がありません（報告済み・まだ先の時刻・予定から時刻を決められない報告のみ）' }); continue }
+    const plan = planProxyAttendance(s, m.required_attendance, existing, types, times, now)
+    if (!plan.ok) { skipped.push({ shift_id: id, staff_name: s.staff_name, reason: plan.error }); continue }
+    const rows = proxyRowsOf(s, plan.atOf, u.settings_json)
+    for (const r of rows) insertRows.push({ company_id: u.company_id, staff_id: s.staff_id, shift_id: s.shift_id, ...r, device_info: 'proxy', entry_method: 'proxy', entered_by: u.user_id })
+    recorded.push({ shift_id: id, staff_name: s.staff_name, rows })
+  }
+  let created = 0
+  if (insertRows.length) {
+    // 本人の報告と同時になった分（attendance_reports の一意制約）は記録しない
+    created = changesOf(await batchInChunks(db, insertRowsStmts(db, 'attendance_reports',
+      ['company_id', 'staff_id', 'shift_id', 'report_type', 'reported_at', 'status', 'device_info', 'entry_method', 'entered_by', 'late_minutes', 'early_leave_minutes'], insertRows, { orIgnore: true })))
+    // 一部が記録されなかったときは、実際に記録した報告だけを結果と通知に使う（本人の報告を代理入力として知らせない）
+    if (created < insertRows.length) {
+      const saved = (await db.prepare(`SELECT shift_id, report_type FROM attendance_reports WHERE shift_id IN ${JSON_IN} AND entry_method = 'proxy' AND entered_by = ?`)
+        .bind(bindJsonArray(recorded.map(r => r.shift_id)), u.user_id).all()).results as any[]
+      const has = new Set(saved.map(x => `${x.shift_id}:${x.report_type}`))
+      for (let i = recorded.length - 1; i >= 0; i--) {
+        const r = recorded[i]
+        r.rows = r.rows.filter(x => has.has(`${r.shift_id}:${x.report_type}`))
+        if (!r.rows.length) { recorded.splice(i, 1); skipped.push({ shift_id: r.shift_id, staff_name: r.staff_name, reason: '同時に本人の報告があったため記録しませんでした' }) }
+      }
+    }
+    // 実績への反映（入店・退店などがあるシフト。締めた月のシフトは反映しない。1件の代理入力の syncActualFromReports と同じ）
+    const syncIds: number[] = []
+    const closed = new Map<string, boolean>()
+    for (const r of recorded) {
+      if (!r.rows.some(x => ACTUAL_SYNC_TYPES.includes(x.report_type))) continue
+      const wd = byId.get(r.shift_id).work_date
+      if (!closed.has(wd)) closed.set(wd, !!(await closedMessage(db, u.company_id, wd)))
+      if (!closed.get(wd)) syncIds.push(r.shift_id)
+    }
+    if (syncIds.length) await syncActualsForShifts(db, u.company_id, syncIds).catch(() => 0)
+    // ログインのある人には、管理者が記録したことをアプリ内で知らせる（1件の代理入力の notifyProxyAttendance と同じ文面。#327）
+    try {
+      const notes = recorded.filter(r => { const s = byId.get(r.shift_id); return s.user_role === 'staff' && s.user_status === 'active' }).map(r => {
+        const s = byId.get(r.shift_id)
+        return { company_id: u.company_id, user_id: s.user_id, kind: ATTENDANCE_PROXY_KIND, related_id: s.shift_id, created_at: now, link: '#attendance',
+          title: `管理者があなたの勤怠を記録しました: ${Number(s.work_date.slice(5, 7))}/${Number(s.work_date.slice(8, 10))} ${r.rows.map(x => REPORT_LABEL[x.report_type] || x.report_type).join('・')}`,
+          body: [...r.rows.map(x => `${REPORT_LABEL[x.report_type] || x.report_type}: ${fmtAt(x.reported_at)}`), `記録した人: ${u.name || '管理者'}`, '時刻が違う場合は、打刻履歴から修正を申請してください'].join('\n') }
+      })
+      if (notes.length) await batchInChunks(db, insertRowsStmts(db, 'user_notifications', ['company_id', 'user_id', 'kind', 'title', 'body', 'link', 'related_id', 'created_at'], notes))
+    } catch { console.log('bulk proxy notify failed') }
+  }
+  return c.json({ ok: true, created, recorded: recorded.map(r => ({ shift_id: r.shift_id, staff_name: r.staff_name, types: r.rows.map(x => x.report_type), late: r.rows.some(x => x.status === 'late') })), skipped })
+})
+
+// ---------- 報告用URLのまとめての発行（#275） ----------
+// 日付（と案件）の、ログインのない人の勤務のシフトと、報告用URLの状態（未発行・発行済み・未使用・最終アクセス）
+async function reportLinkRows(db: D1Database, companyId: number, date: string, projectId: number | null) {
+  const all = await shiftsOfDay(db, companyId, { date, projectId, nologinOnly: true })
+  const rows = all.slice(0, BULK_SHIFT_LIMIT)
+  const ids = rows.map(r => r.shift_id as number)
+  const toks = ids.length ? (await db.prepare(`SELECT token, shift_id, staff_id, last_used_at FROM shift_report_tokens WHERE shift_id IN ${JSON_IN} AND revoked = 0
+    ORDER BY created_at DESC`).bind(bindJsonArray(ids)).all()).results as any[] : []
+  const now = nowJST()
+  const counts = await linkNoticeCounts(db, companyId, [...new Set(rows.map(r => r.staff_id as number))])
+  return {
+    truncated: all.length > BULK_SHIFT_LIMIT,
+    rows: rows.map(s => {
+      // 差し替え前の担当者に発行したURLは使えないので出さない（currentReportToken と同じ）
+      const expired = reportTokenExpiry(s.work_date) <= now
+      // 退職日より後・統合済みのシフトのURLは開けない（loadToken）ので、発行済みでも出さない
+      const gone = staffGoneForShift(s)
+      const t = expired || gone ? null : toks.find(x => x.shift_id === s.shift_id && x.staff_id === s.staff_id)
+      return {
+        shift_id: s.shift_id, staff_id: s.staff_id, staff_name: s.staff_name, staff_phone: s.staff_phone || '', project_id: s.project_id, project_name: s.project_name,
+        work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, place: s.site_name || s.location || '',
+        token: t ? t.token : null, last_used_at: t ? t.last_used_at : null, expires_at: reportTokenExpiry(s.work_date),
+        unavailable: gone || (expired ? '稼働日の翌日を過ぎたため発行できません' : null), notice_count: counts.get(s.staff_id) || 0,
+      }
+    }),
+  }
+}
+adminLifecycleApi.get('/report-links/bulk', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const date = c.req.query('date') || todayJST()
+  if (!isISODate(date)) return c.json({ error: '日付を正しく指定してください' }, 400)
+  const projectId = optProjectId(c.req.query('project_id'))
+  if (projectId === undefined) return c.json({ error: '案件の指定が正しくありません' }, 400)
+  const [r, projects] = await Promise.all([reportLinkRows(db, u.company_id, date, projectId), projectsOfDay(db, u.company_id, date)])
+  return c.json({ date, company_name: u.company_name || '', projects, ...r })
+})
+// 未発行のシフトにまとめて発行する（発行済みのURLはそのまま）。shift_ids を送ったときは、その中の未発行のものだけ
+adminLifecycleApi.post('/report-links/bulk', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const date = String(b.date || '')
+  if (!isISODate(date)) return c.json({ error: '日付を正しく指定してください' }, 400)
+  const projectId = optProjectId(b.project_id)
+  if (projectId === undefined) return c.json({ error: '案件の指定が正しくありません' }, 400)
+  const only = Array.isArray(b.shift_ids) ? new Set(b.shift_ids.map((x: any) => Number(x))) : null
+  const cur = await reportLinkRows(db, u.company_id, date, projectId)
+  const targets = cur.rows.filter(r => !r.token && !r.unavailable && (!only || only.has(r.shift_id)))
+  if (targets.length) {
+    await batchInChunks(db, insertRowsStmts(db, 'shift_report_tokens', ['token', 'shift_id', 'company_id', 'staff_id', 'expires_at', 'created_by'],
+      targets.map(r => ({ token: randToken(24), shift_id: r.shift_id, company_id: u.company_id, staff_id: r.staff_id, expires_at: r.expires_at, created_by: u.user_id }))))
+  }
+  const after = await reportLinkRows(db, u.company_id, date, projectId)
+  return c.json({ ok: true, issued: targets.length, date, company_name: u.company_name || '', ...after })
+})
+
+// ---------- 日報の代理入力（#276） ----------
+// 電話・口頭で聞いた内容や、報告用URLの期限が過ぎた日報を管理者が記録する（entry_method = 'proxy'、entered_by = 記録した管理者）。
+// 本人が提出した日報があるときは overwrite: true のときだけ上書きする。確認済みの日報を上書きしたら、アプリと同じく確認済みを外す
+adminLifecycleApi.post('/shifts/:id/proxy-daily-report', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const s = await ownShift(db, u.company_id, c.req.param('id'))
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  const modes = (await modesForShifts(db, [s.shift_id])).get(s.shift_id)!
+  if (!modes.daily_report_required) return c.json({ error: 'このシフトは日報の提出が不要です（必要なら、このシフトの日報を「日報あり」にしてください）' }, 400)
+  const blocked = dailyReportBlocked({ work_date: s.work_date, status: s.status }, todayJST())
+  if (blocked) return c.json({ error: blocked }, 400)
+  const prevRow = await findDailyReport(db, s)
+  if (prevRow && prevRow.entry_method !== 'proxy' && b.overwrite !== true) {
+    return c.json({ error: '本人が提出した日報があります。上書きしてよいか確認してください', need_overwrite: true }, 409)
+  }
+  const tpl = await db.prepare('SELECT t.fields_json FROM projects p JOIN report_templates t ON t.template_id = p.report_template_id WHERE p.project_id = ?').bind(s.project_id).first() as any
+  const rulesError = reportFieldRulesError(tpl?.fields_json, b.values)
+  if (rulesError) return c.json({ error: rulesError }, 400)
+  const picked = pickReportValues(tpl?.fields_json, b.values)
+  if ('error' in picked) return c.json({ error: picked.error }, 400)
+  const merged = mergeIncidentNotes(picked.values, { ...b, flags_explicit: true }, dailyReportView(prevRow), { requireNote: false })
+  if ('error' in merged) return c.json({ error: merged.error }, 400)
+  const r = await saveDailyReport(db, {
+    company_id: u.company_id, staff_id: s.staff_id, project_id: s.project_id, shift_id: s.shift_id, work_date: s.work_date,
+    values_json: JSON.stringify(merged.values), incident: !!b.incident_flag, complaint: !!b.complaint_flag,
+    flags_explicit: true, entry_method: 'proxy', entered_by: u.user_id, now: nowJST(),
+  })
+  await notifyDailyReportIncident(c, s.shift_id, merged.raised)
+  return c.json({ ok: true, updated: r.updated })
+})
+
+// ---------- 予定確認URL（#442。スタッフ単位） ----------
+// ログインのない人が、今日から2週間の確定シフト（日付・時間・案件・場所）を見られるURL。金額は返さない。
+// 有効期限つき（SCHEDULE_LINK_DAYS 日）で、管理者が無効にできる。退職・統合・停止の人は開いたときの確認で使えなくする
+const SCHEDULE_LINK_DAYS = 90
+const SCHEDULE_DAYS_AHEAD = 14
+function scheduleLinkBlocked(sp: any): string | null {
+  if (sp.merged_into_staff_id) return '統合済みのスタッフです'
+  if ((sp.affiliation_type || 'own_employee') === 'skillsheet_only') return 'スキルシートのみのスタッフには発行できません'
+  if (sp.user_role === 'staff') return 'ログインのあるスタッフは、アプリでシフトを確認できます'
+  if (sp.user_status !== 'active' || sp.employment_status === 'retired' || (sp.retired_at && sp.retired_at < todayJST())) return '退職・停止中のスタッフには発行できません'
+  return null
+}
+async function currentScheduleLink(db: D1Database, companyId: number, staffId: number) {
+  return db.prepare(`SELECT created_at, expires_at, last_used_at FROM staff_schedule_tokens WHERE staff_id = ? AND company_id = ? AND revoked_at IS NULL
+    ORDER BY token_id DESC LIMIT 1`).bind(staffId, companyId).first() as Promise<any>
+}
+// 発行（発行し直すと前のURLは使えなくなる）。URL はこの応答で一度だけ返す（保存するのはハッシュだけ）
+adminLifecycleApi.post('/staff/:id/schedule-link', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const blocked = scheduleLinkBlocked(sp)
+  if (blocked) return c.json({ error: `${blocked}。予定確認URLは発行できません` }, 400)
+  const token = randToken(24)
+  const now = nowJST()
+  const expires = `${addDays(now.slice(0, 10), SCHEDULE_LINK_DAYS)} 23:59:59`
+  await db.batch([
+    db.prepare('UPDATE staff_schedule_tokens SET revoked_at = ? WHERE staff_id = ? AND company_id = ? AND revoked_at IS NULL').bind(now, sp.staff_id, u.company_id),
+    db.prepare(`INSERT INTO staff_schedule_tokens (token_hash, company_id, staff_id, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(await sha256(token), u.company_id, sp.staff_id, expires, u.user_id, now),
+  ])
+  return c.json({ ok: true, token, expires_at: expires, staff_name: sp.name, staff_phone: sp.phone || '', company_name: u.company_name || '' })
+})
+adminLifecycleApi.delete('/staff/:id/schedule-link', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sp = await loadStaffRow(db, u.company_id, c.req.param('id'))
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const r = await db.prepare('UPDATE staff_schedule_tokens SET revoked_at = ? WHERE staff_id = ? AND company_id = ? AND revoked_at IS NULL').bind(nowJST(), sp.staff_id, u.company_id).run()
+  return c.json({ ok: true, revoked: r.meta.changes || 0 })
+})
+
+// ---------- 報告用ページ・予定確認ページのお知らせ（#281） ----------
+// ログインのない人は、お知らせの一覧・既読率の対象ではない（api.ts の NOTICE_MEMBER_NOW_SQL）。
+// そのため、本人あて（全員・案件・個人。lib/notices.ts の NOTICE_TARGET_SQL）の重要・緊急のお知らせのうち、
+// 直近 LINK_NOTICE_DAYS 日に公開したものを、報告用ページと予定確認ページに出す（既読は記録しない）
+const LINK_NOTICE_DAYS = 30
+const LINK_NOTICE_LIMIT = 5
+// 公開中のものだけを出す（下書き・予約前・取消・掲載期限切れを除く）。これらの列は w5-notice-features（0066）で足すため、
+// 列がまだ無いデータベースでは条件を外して読み直す（統合後は lib/notices.ts の NOTICE_LIVE_SQL と NOT NOTICE_EXPIRED_SQL にそろえてよい）
+const LINK_NOTICE_LIVE_SQL = `(n.status = 'published' OR (n.status = 'scheduled' AND n.published_at <= datetime('now', '+9 hours')))
+  AND (n.expires_at IS NULL OR n.expires_at >= datetime('now', '+9 hours'))`
+async function withNoticeLiveFilter<T>(run: (live: string) => Promise<T>): Promise<T> {
+  try { return await run(`AND ${LINK_NOTICE_LIVE_SQL}`) } catch (e: any) {
+    if (!/no such column/i.test(String(e?.message || e))) throw e
+    return run('')
+  }
+}
+function linkNoticeWhere(live: string) {
+  return `n.company_id = sp.company_id AND n.importance IN ('important', 'urgent') AND n.published_at >= ? AND n.published_at <= ? ${live} AND ${NOTICE_TARGET_SQL}`
+}
+async function linkNotices(db: D1Database, companyId: number, staffId: number) {
+  const now = nowJST()
+  return withNoticeLiveFilter(async (live) => (await db.prepare(`SELECT n.notice_id, n.title, n.body, n.importance, n.published_at
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN notices n ON n.company_id = sp.company_id
+    WHERE sp.staff_id = ? AND sp.company_id = ? AND ${linkNoticeWhere(live)}
+    ORDER BY CASE n.importance WHEN 'urgent' THEN 0 ELSE 1 END, n.published_at DESC, n.notice_id DESC LIMIT ${LINK_NOTICE_LIMIT}`)
+    .bind(staffId, companyId, addDays(now.slice(0, 10), -LINK_NOTICE_DAYS), now).all()).results as any[])
+}
+// スタッフごとの件数（報告用URLのまとめての発行で、案内文に一言添えるため）
+async function linkNoticeCounts(db: D1Database, companyId: number, staffIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  if (!staffIds.length) return out
+  const now = nowJST()
+  const rows = await withNoticeLiveFilter(async (live) => (await db.prepare(`SELECT sp.staff_id, COUNT(n.notice_id) AS n
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN notices n ON n.company_id = sp.company_id
+    WHERE sp.staff_id IN ${JSON_IN} AND sp.company_id = ? AND ${linkNoticeWhere(live)} GROUP BY sp.staff_id`)
+    .bind(bindJsonArray(staffIds), companyId, addDays(now.slice(0, 10), -LINK_NOTICE_DAYS), now).all()).results as any[])
+  for (const r of rows) out.set(r.staff_id, Math.min(Number(r.n) || 0, LINK_NOTICE_LIMIT))
+  return out
+}
+
+// =========================================================
 // ログイン不要の報告用URL（/api/public/report/:token）
 // 対象はトークンに紐づく1シフトのみ。金額・他のシフト・スタッフ情報は返さない
 // =========================================================
@@ -1053,7 +1417,13 @@ function photoRequired(t: any): boolean {
 publicReportApi.get('/:token', async (c) => {
   const db = c.env.DB
   const t = await loadToken(db, c.req.param('token'))
-  if (!t) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
+  if (!t) {
+    // シフトの報告用URLでなければ、スタッフ単位の予定確認URL（#442）として探す
+    const st = await loadScheduleToken(db, c.req.param('token'))
+    if (st && scheduleTokenUsable(st, nowJST())) return c.json(await scheduleView(db, st))
+    // 使えないURLの画面にも、会社名と連絡先を出す（#163）
+    return c.json({ error: 'このURLは無効か、有効期限が切れています', ...(await invalidTokenInfo(db, c.req.param('token'))) }, 404)
+  }
   const modes = (await modesForShifts(db, [t.shift_id])).get(t.shift_id)!
   const reports = (await db.prepare('SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ?').bind(t.shift_id).all()).results
   const daily = dailyReportView(await findDailyReport(db, t))
@@ -1064,7 +1434,10 @@ publicReportApi.get('/:token', async (c) => {
   const windows: Record<string, { start: string; end: string }> = {}
   for (const type of modes.required_attendance) windows[type] = reportableWindow(t, type)
   const pending = (await db.prepare("SELECT report_type FROM attendance_corrections WHERE shift_id = ? AND status = 'pending'").bind(t.shift_id).all()).results as any[]
+  // 本人あての重要なお知らせ（#281）と、遅刻・欠勤などを連絡するときの会社の電話番号（#163）
+  const [notices, contact] = await Promise.all([linkNotices(db, t.company_id, t.staff_id), loadMailContact(db, t.company_id)])
   return c.json({
+    kind: 'shift', notices, contact_phone: contact.phone,
     company_name: t.company_name, staff_name: firstName(t.staff_name), project_name: t.project_name,
     // 役割・案件の注意事項・開催場所（住所と地図の位置）。ログインのない人が現場の情報を得られるように（#326）
     shift: { work_date: t.work_date, start_time: t.start_time, end_time: t.end_time, location: t.location, role: t.role,
@@ -1176,6 +1549,117 @@ publicReportApi.post('/:token/daily-report', async (c) => {
   })
   await notifyDailyReportIncident(c, t.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
+})
+
+// ---------- 予定確認URL（#442）の読み込み ----------
+// 報告用URLと同じ /r/:token・/api/public/report/:token で開く（シフトのトークンに当たらなければ、予定確認URLとして探す）
+const PUBLIC_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
+async function loadScheduleToken(db: D1Database, token: string) {
+  if (!PUBLIC_TOKEN_RE.test(token || '')) return null
+  return db.prepare(`SELECT st.token_id, st.company_id, st.staff_id, st.expires_at, st.revoked_at, us.name AS staff_name, us.status AS user_status, us.retired_at,
+      sp.merged_into_staff_id, sp.employment_status, co.company_name, co.active_status AS company_active_status
+    FROM staff_schedule_tokens st JOIN staff_profiles sp ON sp.staff_id = st.staff_id AND sp.company_id = st.company_id JOIN users us ON us.user_id = sp.user_id
+    JOIN companies co ON co.company_id = st.company_id WHERE st.token_hash = ?`).bind(await sha256(token)).first() as Promise<any>
+}
+// 使える予定確認URLか（取消・期限切れ・企業の停止・統合・退職・停止の人は使えない。退職日当日までは使える）
+function scheduleTokenUsable(t: any, now: string): boolean {
+  if (!t || t.revoked_at || t.expires_at <= now || !isCompanyActive(t.company_active_status)) return false
+  if (t.merged_into_staff_id || t.user_status !== 'active') return false
+  if (t.retired_at ? t.retired_at < now.slice(0, 10) : t.employment_status === 'retired') return false
+  return true
+}
+// 予定確認ページの内容: 前日〜SCHEDULE_DAYS_AHEAD 日先の確定・代打のシフト（金額なし）と、
+// 前日・当日・翌日のシフトの報告用URL（なければ発行する。発行者は空 = 予定確認URLから）・重要なお知らせ・会社の連絡先
+async function scheduleView(db: D1Database, st: any) {
+  const now = nowJST(), today = now.slice(0, 10)
+  const rows = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.location, s.role, s.status, p.project_name,
+      si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
+    WHERE s.staff_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.work_date <= ? AND s.status IN ('confirmed', 'substitute')
+    ORDER BY s.work_date, s.start_time, s.shift_id LIMIT 60`).bind(st.staff_id, st.company_id, addDays(today, -1), addDays(today, SCHEDULE_DAYS_AHEAD)).all()).results as any[]
+  const shifts = rows.filter(s => !(st.retired_at && s.work_date > st.retired_at))
+  const near = shifts.filter(s => s.work_date <= addDays(today, 1) && reportTokenExpiry(s.work_date) > now)
+  const tokens = new Map<number, string>()
+  if (near.length) {
+    const cur = (await db.prepare(`SELECT token, shift_id FROM shift_report_tokens WHERE shift_id IN ${JSON_IN} AND staff_id = ? AND revoked = 0 ORDER BY created_at`)
+      .bind(bindJsonArray(near.map(s => s.shift_id)), st.staff_id).all()).results as any[]
+    for (const t of cur) tokens.set(t.shift_id, t.token)
+  }
+  const fresh = near.filter(s => !tokens.has(s.shift_id)).map(s => ({ token: randToken(24), shift_id: s.shift_id, company_id: st.company_id, staff_id: st.staff_id, expires_at: reportTokenExpiry(s.work_date) }))
+  for (const f of fresh) tokens.set(f.shift_id, f.token)
+  await db.batch([
+    ...insertRowsStmts(db, 'shift_report_tokens', ['token', 'shift_id', 'company_id', 'staff_id', 'expires_at'], fresh),
+    db.prepare('UPDATE staff_schedule_tokens SET last_used_at = ? WHERE token_id = ?').bind(now, st.token_id),
+  ])
+  const [notices, contact] = await Promise.all([linkNotices(db, st.company_id, st.staff_id), loadMailContact(db, st.company_id)])
+  return {
+    kind: 'schedule', company_name: st.company_name, staff_name: firstName(st.staff_name), today, now, expires_at: st.expires_at, days_ahead: SCHEDULE_DAYS_AHEAD,
+    shifts: shifts.map(s => ({ shift_id: s.shift_id, work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, location: s.location || '', role: s.role || '',
+      project_name: s.project_name, site_name: s.site_name || null, site_address: s.site_address || null, site_lat: s.site_lat ?? null, site_lng: s.site_lng ?? null,
+      report_token: tokens.get(s.shift_id) || null })),
+    notices, contact_phone: contact.phone,
+  }
+}
+// 使えないURLの画面に出す会社名と連絡先（#163）。発行されたことのあるURL（期限切れ・取消を含む）だけ。でたらめなURLには何も返さない
+async function invalidTokenInfo(db: D1Database, token: string): Promise<{ company_name?: string; contact_phone?: string | null }> {
+  if (!PUBLIC_TOKEN_RE.test(token || '')) return {}
+  const r = await db.prepare(`SELECT company_id FROM shift_report_tokens WHERE token = ?
+    UNION ALL SELECT company_id FROM staff_schedule_tokens WHERE token_hash = ? LIMIT 1`).bind(token, await sha256(token)).first() as any
+  if (!r) return {}
+  const ct = await loadMailContact(db, r.company_id)
+  return { company_name: ct.company_name, contact_phone: ct.phone }
+}
+
+// ---------- 報告用URL・予定確認URLからの連絡（#163） ----------
+// 遅刻・欠勤・体調不良・現場のトラブルを、ログインのない人が担当者に送る。相談（consultations）に entry_method = 'link' で登録し、
+// 管理画面の相談・ダッシュボードに出す。報告用URLからはそのシフトの案件・日付を付ける。予定確認URLからは選んだシフト（任意）の案件・日付を付ける
+const LINK_CONTACT_KINDS: Record<string, { category: string; label: string; urgency: 'high' | 'normal'; bodyRequired: boolean }> = {
+  late: { category: 'absence', label: '遅刻', urgency: 'high', bodyRequired: false },
+  absent: { category: 'absence', label: '欠勤', urgency: 'high', bodyRequired: false },
+  health: { category: 'health', label: '体調不良', urgency: 'high', bodyRequired: false },
+  trouble: { category: 'store_trouble', label: '現場のトラブル', urgency: 'high', bodyRequired: true },
+  other: { category: 'other', label: 'その他', urgency: 'normal', bodyRequired: true },
+}
+const LINK_CONTACT_BODY_MAX = 1000
+// 同じ内容の再送を受け付けない時間（秒）と、URL からの1人あたりの1日の上限
+const LINK_CONTACT_DUP_SECONDS = 120
+const LINK_CONTACT_DAILY_MAX = 5
+publicReportApi.post('/:token/consultation', async (c) => {
+  const db = c.env.DB; const token = c.req.param('token'); const b = await c.req.json().catch(() => ({} as any))
+  const kind = LINK_CONTACT_KINDS[String(b.kind || '')]
+  if (!kind) return c.json({ error: '連絡の種類を選んでください' }, 400)
+  const text = typeof b.body === 'string' ? b.body.trim() : ''
+  if (text.length > LINK_CONTACT_BODY_MAX) return c.json({ error: `内容は${LINK_CONTACT_BODY_MAX}文字以内で入力してください` }, 400)
+  if (kind.bodyRequired && !text) return c.json({ error: '内容を入力してください' }, 400)
+  const now = nowJST()
+  let staffId: number, companyId: number, target: { project_id: number; work_date: string } | null = null
+  const t = await loadToken(db, token)
+  if (t) {
+    staffId = t.staff_id; companyId = t.company_id; target = { project_id: t.project_id, work_date: t.work_date }
+  } else {
+    const st = await loadScheduleToken(db, token)
+    if (!scheduleTokenUsable(st, now)) return c.json({ error: 'このURLは無効か、有効期限が切れています' }, 404)
+    staffId = st.staff_id; companyId = st.company_id
+    if (b.shift_id != null && b.shift_id !== '') {
+      const s = await db.prepare(`SELECT project_id, work_date FROM shifts WHERE shift_id = ? AND staff_id = ? AND company_id = ? AND work_date >= ?`)
+        .bind(Number(b.shift_id) || 0, staffId, companyId, addDays(now.slice(0, 10), -1)).first() as any
+      if (!s) return c.json({ error: '対象のシフトが見つかりません' }, 404)
+      target = s
+    }
+  }
+  const body = `【${kind.label}】${text || '（報告用のページから連絡がありました。本人に確認してください）'}`
+  const since = new Date(Date.now() + 9 * 3600 * 1000 - LINK_CONTACT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dup = await db.prepare('SELECT 1 FROM consultations WHERE staff_id = ? AND body = ? AND created_at >= ? LIMIT 1').bind(staffId, body, since).first()
+  if (dup) return c.json({ error: '同じ内容の連絡を送信済みです', duplicate: true }, 409)
+  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const sent = await db.prepare("SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND entry_method = 'link' AND created_at >= ?").bind(staffId, dayAgo).first() as any
+  const contact = await loadMailContact(db, companyId)
+  if (Number(sent?.n) >= LINK_CONTACT_DAILY_MAX) {
+    return c.json({ error: `このページからの連絡は24時間に${LINK_CONTACT_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください`, contact_phone: contact.phone }, 429)
+  }
+  const r = await db.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at, entry_method)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'link')`).bind(companyId, staffId, kind.category, body, kind.urgency, target?.project_id ?? null, target?.work_date ?? null, now).run()
+  return c.json({ ok: true, consultation_id: r.meta.last_row_id, contact_phone: contact.phone })
 })
 
 export { stripMoney }
