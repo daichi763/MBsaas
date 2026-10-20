@@ -18,8 +18,9 @@ import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifi
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
 import { isTentativeShift, isWorkingShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { crossesMidnight, toMin, NEXT_DAY_TYPES, reportableWindow } from './lib/shift-time'
+import { photoTakenAt, photoSource } from './lib/attendance-photo'
 
-type Bindings = NotifyEnv
+type Bindings = NotifyEnv & { PHOTOS: R2Bucket }
 type Variables = { user: any }
 type Actor = { user_id: number; name: string; role: string }
 export const actorOf = (u: any): Actor => ({ user_id: u.user_id, name: u.name, role: u.role })
@@ -71,7 +72,7 @@ export function orderConflicts(reports: Map<string, string>, type: string, at: s
 // ---------- 読み込み ----------
 async function loadShift(db: D1Database, shiftId: any) {
   return db.prepare(`SELECT s.shift_id, s.company_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.settled_at, s.actual_source,
-      p.project_name, us.name AS staff_name, co.company_name, co.settings_json
+      p.project_name, p.photo_required_override, us.name AS staff_name, co.company_name, co.settings_json
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
     JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = s.company_id WHERE s.shift_id = ?`).bind(shiftId).first() as Promise<any>
 }
@@ -92,6 +93,42 @@ async function loadCorrection(db: D1Database, id: any) {
     LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id = ?`).bind(id).first() as Promise<any>
 }
 const parseWarnings = (c: any) => { try { return c.order_warnings ? JSON.parse(c.order_warnings) : [] } catch { return [] } }
+
+// ---------- 申請の添付（#485） ----------
+// 写真が必須になりうる報告（api.ts の PHOTO_REQUIRED_TYPES と同じ）
+const PHOTO_TYPES = ['check_in', 'check_out']
+// 案件の photo_required_override（NULL = 会社設定に従う / 1 = 必須 / 0 = 不要）を加味した、入店・退店の写真が必須か（api.ts の resolvePhotoRequired と同じ規則。
+// api.ts がこのファイルを読み込むため、ここでは複製する）
+export function photoRequiredFor(settingsJson: any, override: any): boolean {
+  if (override !== null && override !== undefined) return !!Number(override)
+  try { const v = JSON.parse(settingsJson || '{}').photo_required_attendance; return typeof v === 'boolean' ? v : true } catch { return true }
+}
+// 写真が必須の案件で、写真の添付がない入店・退店の打刻漏れの追加か（承認の前に確かめるよう、まとめて承認の対象から外す）
+const needsPhotoReview = (c: { kind: string; report_type: string }, required: boolean, attachments: number) =>
+  required && c.kind === 'add' && PHOTO_TYPES.includes(c.report_type) && attachments === 0
+// まとめて承認の対象から外す申請（順序の矛盾・確定済み・手入力の実績・写真が必須で添付なし。#280 #485）。外す理由を返す
+function bulkBlockReason(c: { kind: string; report_type: string; order_warnings: string[] }, s: { settle_status: any; actual_source: any }, photoRequired: boolean, attachments: number): string | null {
+  if (c.order_warnings.length) return '報告の順序に矛盾があります'
+  if (s.settle_status === 'confirmed') return '精算が確定済みのシフトです'
+  if (s.actual_source === 'manual') return '実績が手入力のシフトです'
+  if (needsPhotoReview(c, photoRequired, attachments)) return '写真が必須の案件で、写真の添付がありません'
+  return null
+}
+export const ATTACHMENT_MAX = 3
+const ATTACHMENT_MAX_BYTES = 500 * 1024 // 画面で圧縮した後の上限（入店・退店の写真と同じ）
+const ATTACHMENT_TYPES = ['image/jpeg', 'image/png']
+// 申請の添付。まとめて出した申請（同じシフト・申請者・申請日時。insertCorrections）の添付も、同じ申請の根拠として返す（画面はまとめて申請の先頭の申請に添付する）
+async function loadAttachments(db: D1Database, c: any) {
+  return (await db.prepare(`SELECT a.attachment_id, a.correction_id, a.content_type, a.size_bytes, a.photo_taken_at, a.photo_source, a.uploaded_by_name, a.created_at
+    FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
+    WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ?) ORDER BY a.attachment_id`)
+    .bind(c.correction_id, c.shift_id, c.requested_by, c.created_at).all()).results as any[]
+}
+async function attachmentResponse(c: any, key: string | undefined) {
+  const obj = key ? await c.env.PHOTOS.get(key) : null
+  if (!obj) return c.json({ error: '画像が見つかりません' }, 404)
+  return c.body(obj.body, 200, { 'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
+}
 
 // シフトの報告・有効な報告・承認待ちの申請（申請画面・タイムライン用）
 async function shiftContext(db: D1Database, shift: any) {
@@ -323,7 +360,8 @@ async function approvalPreview(db: D1Database, c: any, reports: any[], at: strin
 // 承認。requested_at を渡すと、承認者が日時を直して承認する（#548。直した理由のコメントは必須。申請の日時は操作履歴に残す）。
 // 申請の後に打刻が変わった時刻修正は、承認者が今の記録を確かめた（base_at = 今の記録の日時）ときだけ、今の記録をもとに承認する。
 // dry_run は書き込まずに、承認した場合の遅刻の判定と実績・金額を返す
-type ApproveOpts = { comment?: any; exception?: any; requested_at?: any; base_at?: any; dry_run?: any }
+// with_request: 管理者が申請と同時に承認した（#174。操作履歴の detail に残す）
+type ApproveOpts = { comment?: any; exception?: any; requested_at?: any; base_at?: any; dry_run?: any; with_request?: boolean }
 async function approveCorrection(db: D1Database, c: any, a: Actor, opts: ApproveOpts) {
   if (c.status !== 'pending') return { error: DONE_MESSAGE[c.status] || '承認できない状態です', status: 409 }
   const comment = String(opts.comment ?? '').trim().slice(0, REASON_MAX) || null
@@ -396,18 +434,24 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: Approve
     : db.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, device_info, entry_method, entered_by, corrected_by_correction_id, corrected_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'correction', 'correction', ?, ?, ? WHERE ${applied}`)
       .bind(c.company_id, c.staff_id, c.shift_id, c.report_type, at, j.status, j.judged.late_minutes, j.judged.early_leave_minutes, a.user_id, c.correction_id, nowAt, c.correction_id, token)
+  // 入店・退店の報告に写真がなければ、申請に添付した1枚目を報告の写真にする（#485。同じ R2 のオブジェクトを指す）
+  const photo = PHOTO_TYPES.includes(c.report_type)
+    ? [db.prepare(`UPDATE attendance_reports SET photo_key = (SELECT photo_key FROM attendance_correction_attachments WHERE correction_id = ? ORDER BY attachment_id LIMIT 1)
+        WHERE shift_id = ? AND report_type = ? AND photo_key IS NULL AND ${applied}`).bind(c.correction_id, c.shift_id, c.report_type, c.correction_id, token)]
+    : []
   const event = exception ? 'approved_exception' : 'approved'
   const detail = {
     comment, before_at: before, requested_at: at, exception: !!exception, conflicts, applied_while_settled: !!settled, ...(manual ? { applied_while_manual: true } : {}),
     // 承認者が日時を直した（#548）・申請の後に変わった今の記録をもとに承認した
     ...(adjusted ? { adjusted: true, requested_at_original: c.requested_at } : {}),
     ...(rebased ? { rebased: true, before_at_original: c.before_at } : {}),
+    ...(opts.with_request ? { with_request: true } : {}),
     // 遅刻の判定の変化（#69）
     before_status: j.prev ? j.prev.status : null, report_status: j.status, late_minutes: j.judged.late_minutes, early_leave_minutes: j.judged.early_leave_minutes,
   }
   try {
     await db.batch([
-      guard, apply,
+      guard, apply, ...photo,
       db.prepare(`UPDATE attendance_corrections SET applied_attendance_id = (SELECT attendance_id FROM attendance_reports WHERE shift_id = ? AND report_type = ?) WHERE correction_id = ? AND decision_token = ?`)
         .bind(c.shift_id, c.report_type, c.correction_id, token),
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
@@ -530,6 +574,13 @@ async function correctionDetail(db: D1Database, c: any, viewer: 'admin' | 'staff
     correction: { ...c, decision_token: undefined, order_warnings: parseWarnings(c), status_label: STATUS_LABEL[c.status], kind_label: KIND_LABEL[c.kind], report_label: REPORT_LABEL[c.report_type] },
     events: events.map(e => ({ ...e, detail: (() => { try { return e.detail ? JSON.parse(e.detail) : null } catch { return null } })() })),
     history: related, reports, current_conflicts: current,
+    // 添付した写真・画像（#485）。画像は管理者 GET /api/admin/corrections/attachments/:id、本人 GET /api/staff/corrections/attachments/:id で取る
+    attachments: await loadAttachments(db, c), attachment_max: ATTACHMENT_MAX,
+  }
+  if (viewer === 'admin') {
+    const s = await db.prepare(`SELECT p.photo_required_override, co.settings_json FROM projects p JOIN companies co ON co.company_id = p.company_id WHERE p.project_id = ?`).bind(c.project_id).first() as any
+    // 写真が必須の案件の入店・退店か（承認の前に、添付の有無を確かめてもらう）
+    out.photo_required = !!s && PHOTO_TYPES.includes(c.report_type) && photoRequiredFor(s.settings_json, s.photo_required_override)
   }
   if (viewer === 'admin' && c.status === 'pending') {
     // 承認した場合の遅刻の判定と実績・金額（変更前 → 変更後）。計算できなくても詳細は返す
@@ -594,18 +645,30 @@ correctionsAdminApi.get('/corrections', async (c) => {
   const u = c.get('user')
   const { where, bind } = correctionFilter(u.company_id, k => c.req.query(k))
   // 承認待ちは待っている時間の長い順（申請の古い順）、それ以外は新しい順。上限を超えたら truncated で知らせる（#226）
+  // sort=work_date は、承認待ちを勤務日の古い順にする（締めの前に古い勤務日から処理する。#280）
+  const byWorkDate = c.req.query('sort') === 'work_date'
   const rows = (await c.env.DB.prepare(`SELECT c.correction_id, c.kind, c.report_type, c.status, c.before_at, c.requested_at, c.reason, c.order_warnings, c.is_exception,
-      c.requested_by_name, c.created_at, c.decided_by_name, c.decided_at, c.resubmitted_from, c.shift_id, s.work_date, p.project_name, p.status AS project_status, us.name AS staff_name
+      c.requested_by_name, c.created_at, c.decided_by_name, c.decided_at, c.resubmitted_from, c.shift_id, s.work_date, p.project_name, p.status AS project_status, us.name AS staff_name,
+      s.settle_status, s.actual_source, p.photo_required_override,
+      (SELECT COUNT(*) FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
+        WHERE x.correction_id = c.correction_id OR (x.shift_id = c.shift_id AND x.requested_by = c.requested_by AND x.created_at = c.created_at)) AS attachment_count
     ${CORRECTION_FROM}
     WHERE ${where} ORDER BY CASE WHEN c.status = 'pending' THEN 0 ELSE 1 END,
+      ${byWorkDate ? "CASE WHEN c.status = 'pending' THEN s.work_date END ASC," : ''}
       CASE WHEN c.status = 'pending' THEN c.created_at END ASC, CASE WHEN c.status = 'pending' THEN c.correction_id END ASC, c.correction_id DESC
     LIMIT ${LIST_LIMIT + 1}`).bind(...bind).all()).results as any[]
   const truncated = rows.length > LIST_LIMIT
+  const co = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
   // タブの件数は、状態以外の絞り込みを反映して数える
   const f = correctionFilter(u.company_id, k => (k === 'status' ? undefined : c.req.query(k)))
   const counts = (await c.env.DB.prepare(`SELECT c.status, COUNT(*) AS n ${CORRECTION_FROM} WHERE ${f.where} GROUP BY c.status`).bind(...f.bind).all()).results as any[]
   return c.json({
-    corrections: rows.slice(0, LIST_LIMIT).map(r => ({ ...r, order_warnings: parseWarnings(r) })),
+    corrections: rows.slice(0, LIST_LIMIT).map(({ settle_status, actual_source, photo_required_override, ...r }) => {
+      const x = { ...r, order_warnings: parseWarnings(r) }
+      // まとめて承認できない理由（承認待ちのみ。個別に開いて確かめる。#280）
+      const block = r.status !== 'pending' ? null : bulkBlockReason(x, { settle_status, actual_source }, photoRequiredFor(co?.settings_json, photo_required_override), Number(r.attachment_count))
+      return { ...x, bulk_block: block }
+    }),
     counts: Object.fromEntries(counts.map(r => [r.status, r.n])), labels: REPORT_LABEL, truncated, limit: LIST_LIMIT,
   })
 })
@@ -658,7 +721,7 @@ const eventSummary = (e: any) => {
   if (!d) return ''
   if (e.event === 'submitted' || e.event === 'resubmitted') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at} 理由: ${d.reason || ''}${d.warnings && d.warnings.length ? ' 矛盾: ' + d.warnings.join(' / ') : ''}`
   if (e.event === 'rejected') return `却下理由: ${d.reason || ''}${d.comment ? ' コメント: ' + d.comment : ''}`
-  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.adjusted ? `（申請 ${d.requested_at_original} を修正して承認）` : ''}${d.rebased ? `（申請後に変わった記録 ${d.before_at} をもとに承認）` : ''}${d.report_status === 'late' ? ` 遅刻${d.late_minutes != null ? d.late_minutes + '分' : ''}` : d.before_status === 'late' ? ' 遅刻を解消' : ''}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}${d.applied_while_manual ? '（実績は手入力のまま）' : ''}`
+  if (e.event === 'approved' || e.event === 'approved_exception') return `${d.before_at ? d.before_at + ' → ' : ''}${d.requested_at}${d.adjusted ? `（申請 ${d.requested_at_original} を修正して承認）` : ''}${d.rebased ? `（申請後に変わった記録 ${d.before_at} をもとに承認）` : ''}${d.with_request ? '（申請と同時に承認）' : ''}${d.report_status === 'late' ? ` 遅刻${d.late_minutes != null ? d.late_minutes + '分' : ''}` : d.before_status === 'late' ? ' 遅刻を解消' : ''}${d.comment ? ' コメント: ' + d.comment : ''}${d.conflicts && d.conflicts.length ? ' 矛盾: ' + d.conflicts.join(' / ') : ''}${d.applied_while_settled ? '（確定済みのシフト）' : ''}${d.applied_while_manual ? '（実績は手入力のまま）' : ''}`
   if (e.event === 'cancelled' && d.auto) return `自動で取り消し（${CANCEL_REASON_LABEL[d.reason] || d.reason}）`
   return ''
 }
@@ -730,8 +793,62 @@ correctionsAdminApi.post('/corrections', async (c) => {
   const p = await prepareRequest(c.env.DB, s, b)
   if ('error' in p) return c.json(p, p.status)
   if (b.dry_run) return c.json({ ok: true, dry_run: true, ...p })
-  const r = await insertCorrection(c.env.DB, s, p, actorOf(u), null)
-  return sendAndNotify(c, r, (r as any).correction_id, 'submitted')
+  // 申請と同時に承認する（#174）。順序の矛盾がある打刻漏れの追加は、例外として承認する確認（exception: true）を必須にする（確認の dry_run で矛盾を見せてから送る）
+  const approveNow = b.approve_now === true
+  if (approveNow && p.kind === 'add' && p.warnings.length && b.exception !== true)
+    return c.json({ error: '報告の順序に矛盾があります。内容を確認し、例外として承認する確認欄にチェックを入れてください', status: 409, conflicts: p.warnings, need_exception: true }, 409)
+  const r: any = await insertCorrection(c.env.DB, s, p, actorOf(u), null)
+  if (!approveNow || 'error' in r) return sendAndNotify(c, r, r.correction_id, 'submitted')
+  // 申請の後に続けて承認する。操作履歴には申請（submitted）と承認（approved）の両方が残る。
+  // 承認依頼の通知は出さず、承認の通知（スタッフ本人へ）だけを送る。承認できなかったときは承認待ちのまま残し、ふだんの申請と同じく承認依頼を出す
+  const row = await loadCorrection(c.env.DB, r.correction_id)
+  const ar: any = row ? await approveCorrection(c.env.DB, row, actorOf(u), { comment: b.comment, exception: b.exception, with_request: true }) : { error: '申請が見つかりません', status: 409 }
+  if ('error' in ar) {
+    await notifyCorrection(c, r.correction_id, 'submitted')
+    return c.json({ ...ar, error: `申請は登録しましたが、承認できませんでした（承認待ちとして残っています）: ${ar.error}`, correction_id: r.correction_id, submitted: true }, ar.status)
+  }
+  await notifyCorrection(c, r.correction_id, 'approved')
+  return c.json({ ...ar, correction_id: r.correction_id, warnings: r.warnings, notices: r.notices, approved: true })
+})
+
+// まとめて承認（#280）: { ids: [申請ID]（1〜BULK_APPROVE_MAX件）, comment }。1件ずつ approveCorrection で承認し、成功・対象外・失敗を返す。
+// 順序の矛盾・確定済み・手入力の実績・写真が必須で添付なしの申請は承認せず、個別の承認に回す（skipped）。
+// 申請の後に打刻が変わった・今の記録と矛盾するなどで承認できなかったものは failed に理由を入れる。日時の修正・例外の承認は個別の画面で行う
+// 件数の上限は、承認ごとに送るメール（外部への送信）と D1 の問い合わせの数を、1回のリクエストの上限に収めるため。画面は上限ごとに分けて送る
+export const BULK_APPROVE_MAX = 20
+correctionsAdminApi.post('/corrections/bulk-approve', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  if (Array.isArray(b.ids) && b.ids.length > BULK_APPROVE_MAX * 2) return c.json({ error: `まとめて承認できるのは${BULK_APPROVE_MAX}件までです` }, 400)
+  // まとめて出した申請は ID の小さい順に承認すれば途中で矛盾しない（insertCorrections）ので、選んだ順ではなく ID の順に処理する
+  const ids = Array.isArray(b.ids) ? ([...new Set(b.ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] as number[]).sort((x, y) => x - y) : []
+  if (!ids.length) return c.json({ error: '承認する申請を選択してください' }, 400)
+  if (ids.length > BULK_APPROVE_MAX) return c.json({ error: `まとめて承認できるのは${BULK_APPROVE_MAX}件までです` }, 400)
+  const co = await db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  const approved: number[] = [], skipped: { correction_id: number; reason: string }[] = [], failed: { correction_id: number; reason: string }[] = []
+  for (const id of ids) {
+    const row = await loadCorrection(db, id)
+    if (!row || row.company_id !== u.company_id) { failed.push({ correction_id: id, reason: '申請が見つかりません' }); continue }
+    if (row.status !== 'pending') { failed.push({ correction_id: id, reason: DONE_MESSAGE[row.status] || '承認できない状態です' }); continue }
+    const s = await db.prepare(`SELECT s.actual_source, p.photo_required_override FROM shifts s JOIN projects p ON p.project_id = s.project_id WHERE s.shift_id = ?`).bind(row.shift_id).first() as any
+    const att = Number(((await db.prepare(`SELECT COUNT(*) AS n FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
+      WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ?)`).bind(row.correction_id, row.shift_id, row.requested_by, row.created_at).first()) as any)?.n || 0)
+    const block = bulkBlockReason({ ...row, order_warnings: parseWarnings(row) }, { settle_status: row.settle_status, actual_source: s?.actual_source }, photoRequiredFor(co?.settings_json, s?.photo_required_override), att)
+    if (block) { skipped.push({ correction_id: id, reason: block }); continue }
+    const r: any = await approveCorrection(db, row, actorOf(u), { comment: b.comment })
+    if ('error' in r) { failed.push({ correction_id: id, reason: r.error }); continue }
+    approved.push(id)
+    // 承認した管理者の控えは既読・メールなしにする（件数分のメールを自分に送らない。外部への送信を1回のリクエストの上限に収める）
+    await notifyCorrection(c, id, 'approved', { quietProcessor: true })
+  }
+  return c.json({ ok: true, approved, skipped, failed, counts: { approved: approved.length, skipped: skipped.length, failed: failed.length } })
+})
+
+// 申請に添付した画像（自社の申請のみ。R2 のキーは画面に出さない。#485）
+correctionsAdminApi.get('/corrections/attachments/:aid{[0-9]+}', async (c) => {
+  const row = await c.env.DB.prepare('SELECT photo_key FROM attendance_correction_attachments WHERE attachment_id = ? AND company_id = ?')
+    .bind(c.req.param('aid'), c.get('user').company_id).first() as any
+  return attachmentResponse(c, row?.photo_key)
 })
 correctionsAdminApi.post('/corrections/:id{[0-9]+}/approve', async (c) => {
   const row = await ownCorrection(c)
@@ -756,6 +873,84 @@ correctionsAdminApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
   if (!row) return c.json({ error: '申請が見つかりません' }, 404)
   const r: any = await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), await c.req.json().catch(() => ({} as any)))
   return sendAndNotify(c, r, r.dry_run ? undefined : r.correction_id, 'resubmitted')
+})
+
+// =========================================================
+// 打刻データの一覧と CSV（#175）: 勤務日の期間（31日まで）・案件・クライアント・スタッフ・記録方法で絞り、1シフト1行で8種類の報告の日時と記録方法を出す。
+// 報告は D1 の側で1シフト1行にまとめて返す（Worker で大量の行を組み立てない）。シフトID を IN 句に積まず、期間と company_id で JOIN する。
+// 欠勤のシフトも出す（希望（仮）のシフトは勤務ではないので出さない）。位置は有無だけを出し、座標は出さない
+// =========================================================
+const PUNCH_METHOD_LABEL: Record<string, string> = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '打刻修正で追加' }
+// 報告ごとの印（f）: 1 = 打刻修正で変更・追加、2 = 写真あり、4 = 位置あり、8 = 写真なしの理由あり
+const PUNCH_COLS = REPORT_TYPES.map(t => `
+    MAX(CASE WHEN a.report_type = '${t}' THEN a.reported_at END) AS ${t}_at,
+    MAX(CASE WHEN a.report_type = '${t}' THEN COALESCE(a.entry_method, 'app') END) AS ${t}_m,
+    MAX(CASE WHEN a.report_type = '${t}' THEN (CASE WHEN a.corrected_by_correction_id IS NOT NULL OR a.entry_method = 'correction' THEN 1 ELSE 0 END)
+      + (CASE WHEN a.photo_key IS NOT NULL THEN 2 ELSE 0 END) + (CASE WHEN a.latitude IS NOT NULL THEN 4 ELSE 0 END) + (CASE WHEN a.no_photo_reason IS NOT NULL THEN 8 ELSE 0 END) END) AS ${t}_f`).join(',')
+const PUNCH_FROM = `FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN employee_records er ON er.staff_id = s.staff_id AND er.company_id = s.company_id ${CLIENT_JOIN}`
+const PUNCH_SELECT = `SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.staff_id, p.project_name, cl.client_name, us.name AS staff_name, er.employee_number,
+    ${PUNCH_COLS},
+    MAX(CASE WHEN a.report_type IN ('check_in', 'work_start') AND a.status = 'late' THEN a.late_minutes END) AS late_minutes,
+    MAX(CASE WHEN a.report_type IN ('work_end', 'check_out') THEN a.early_leave_minutes END) AS early_leave_minutes,
+    (SELECT COUNT(*) FROM attendance_corrections x WHERE x.shift_id = s.shift_id AND x.status = 'pending') AS pending_corrections
+  ${PUNCH_FROM} LEFT JOIN attendance_reports a ON a.shift_id = s.shift_id`
+function punchFilter(companyId: number, q: (k: string) => string | undefined): { where: string; bind: any[]; from: string; to: string } | { error: string } {
+  const today = nowJST().slice(0, 10)
+  const to = isDate(q('to')) ? q('to')! : today
+  const from = isDate(q('from')) ? q('from')! : addDays(to, -6)
+  if (to < from) return { error: '期間の終わりは始まり以降の日付にしてください' }
+  if (addDays(from, 30) < to) return { error: '期間は31日以内で指定してください' }
+  const w = ['s.company_id = ?', 's.work_date BETWEEN ? AND ?', `(s.status IN ${WORKING_IN} OR s.status = 'absent')`]; const bind: any[] = [companyId, from, to]
+  if (Number(q('project_id')) > 0) { w.push('s.project_id = ?'); bind.push(Number(q('project_id'))) }
+  if (Number(q('client_id')) > 0) { w.push('p.client_id = ?'); bind.push(Number(q('client_id'))) }
+  if (Number(q('staff_id')) > 0) { w.push('s.staff_id = ?'); bind.push(Number(q('staff_id'))) }
+  staffNameFilter(q('staff_name'), w, bind)
+  // 記録方法: 代理入力・報告用URL・打刻修正（変更・追加）を含むシフトだけ
+  const m = q('method')
+  if (m === 'proxy' || m === 'link') { w.push(`EXISTS (SELECT 1 FROM attendance_reports y WHERE y.shift_id = s.shift_id AND y.entry_method = ?)`); bind.push(m) }
+  if (m === 'corrected') w.push(`EXISTS (SELECT 1 FROM attendance_reports y WHERE y.shift_id = s.shift_id AND (y.corrected_by_correction_id IS NOT NULL OR y.entry_method = 'correction'))`)
+  return { where: w.join(' AND '), bind, from, to }
+}
+// 報告1件の記録方法の文言（アプリ・写真・位置・打刻修正で変更 など）
+function punchMethodText(r: any, t: string): string {
+  if (!r[`${t}_at`]) return ''
+  const m = r[`${t}_m`], f = Number(r[`${t}_f`] || 0)
+  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
+}
+const PUNCH_LIST_LIMIT = 500
+correctionsAdminApi.get('/attendance-punches', async (c) => {
+  const u = c.get('user')
+  const f = punchFilter(u.company_id, k => c.req.query(k))
+  if ('error' in f) return c.json({ error: f.error }, 400)
+  const rows = (await c.env.DB.prepare(`${PUNCH_SELECT} WHERE ${f.where} GROUP BY s.shift_id ORDER BY s.work_date, s.start_time, us.name, s.shift_id LIMIT ${PUNCH_LIST_LIMIT + 1}`)
+    .bind(...f.bind).all()).results as any[]
+  const list = rows.slice(0, PUNCH_LIST_LIMIT)
+  // 記録方法の件数（表示している行のうち。代理入力・報告用URL・打刻修正がどれくらいあるか）
+  const counts = { shifts: list.length, proxy: 0, link: 0, corrected: 0, no_photo: 0 }
+  for (const r of list) for (const t of REPORT_TYPES) {
+    if (!r[`${t}_at`]) continue
+    if (r[`${t}_m`] === 'proxy') counts.proxy++
+    if (r[`${t}_m`] === 'link') counts.link++
+    if (Number(r[`${t}_f`]) & 1) counts.corrected++
+    if (Number(r[`${t}_f`]) & 8) counts.no_photo++
+  }
+  return c.json({ from: f.from, to: f.to, report_types: REPORT_TYPES, labels: REPORT_LABEL, rows: list, counts, truncated: rows.length > PUNCH_LIST_LIMIT, limit: PUNCH_LIST_LIMIT })
+})
+correctionsAdminApi.get('/attendance-punches/export', async (c) => {
+  const u = c.get('user')
+  const f = punchFilter(u.company_id, k => c.req.query(k))
+  if ('error' in f) return c.json({ error: f.error }, 400)
+  const { rows, total } = await loadLatestForCsv(c.env.DB, `${PUNCH_SELECT} WHERE ${f.where} GROUP BY s.shift_id ORDER BY s.work_date DESC, s.start_time DESC, us.name DESC, s.shift_id DESC`,
+    `SELECT COUNT(*) AS n ${PUNCH_FROM} WHERE ${f.where}`, f.bind)
+  const STATUS: Record<string, string> = { confirmed: '確定', substitute: '代打', absent: '欠勤' }
+  const csv = toCsv(['シフトID', '勤務日', '社員番号', 'スタッフ', 'クライアント', '案件', '予定開始', '予定終了', 'シフトの状態',
+    ...REPORT_TYPES.flatMap(t => [REPORT_LABEL[t], `${REPORT_LABEL[t]}の記録方法`]), '遅刻（分）', '早退（分）', '承認待ちの打刻修正'],
+    rows.map(r => [r.shift_id, r.work_date, r.employee_number, r.staff_name, r.client_name, r.project_name, r.start_time, r.end_time, STATUS[r.status] || r.status,
+      ...REPORT_TYPES.flatMap(t => [r[`${t}_at`] ? String(r[`${t}_at`]).slice(0, 16) : '', punchMethodText(r, t)]),
+      r.late_minutes || '', r.early_leave_minutes || '', r.pending_corrections || '']),
+    { textCols: ['社員番号'], note: csvLimitNote(total) })
+  return csvResponse(`打刻データ_${f.from}_${f.to}.csv`, csv, csvLimitHeaders(total))
 })
 
 // =========================================================
@@ -792,7 +987,7 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
   let from = isDate(c.req.query('from')) ? c.req.query('from')! : addDays(to, -13)
   if (from > to) from = to
   if (addDays(from, 61) < to) from = addDays(to, -61)
-  const shifts = (await c.env.DB.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.break_minutes, p.project_name, co.company_name, co.settings_json, s.company_id
+  const shifts = (await c.env.DB.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.break_minutes, p.project_name, p.photo_required_override, co.company_name, co.settings_json, s.company_id
     FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN companies co ON co.company_id = s.company_id
     WHERE s.staff_id IN (${ids.map(() => '?').join(',')}) AND s.work_date BETWEEN ? AND ? ORDER BY s.work_date DESC, s.start_time`).bind(...ids, from, to).all()).results as any[]
   const shiftIds = shifts.map(s => s.shift_id)
@@ -830,6 +1025,8 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
       // 申請画面の注意（精算が確定済み・会社の受付期限 #215）と、既定の時刻の推定（予定の休憩 #342）に使う
       settled: s.settle_status === 'confirmed', request_until: (d => d ? addDays(s.work_date, d) : null)(correctionDeadlineDays(s.settings_json)),
       break_minutes: s.break_minutes ?? null, rejected: rejected.get(s.shift_id) || [],
+      // 入店・退店の写真が必須の案件か（打刻漏れの追加の申請で、写真の添付を案内する。#485）
+      photo_required: photoRequiredFor(s.settings_json, s.photo_required_override),
     })),
     settled_notice: SETTLED_NOTICE,
   })
@@ -842,6 +1039,7 @@ correctionsStaffApi.get('/corrections', async (c) => {
       c.decided_by_name, c.decided_at, c.decision_comment, c.reject_reason, c.cancelled_at, c.cancel_reason, c.resubmitted_from, c.requested_by, c.requested_by_name, c.requested_by_role,
       c.applied_while_settled, c.shift_id, s.work_date, s.start_time, s.end_time, CASE WHEN s.settle_status = 'confirmed' THEN 1 ELSE 0 END AS settled, p.project_name,
       (SELECT COUNT(*) FROM attendance_corrections x WHERE x.resubmitted_from = c.correction_id) AS resubmitted_count,
+      (SELECT COUNT(*) FROM attendance_correction_attachments a WHERE a.correction_id = c.correction_id) AS attachment_count,
       (SELECT MAX(x.correction_id) FROM attendance_corrections x WHERE x.shift_id = c.shift_id AND x.staff_id = c.staff_id AND x.report_type = c.report_type AND x.correction_id > c.correction_id) AS superseded_by
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
     WHERE c.staff_id IN (${ids.map(() => '?').join(',')}) ORDER BY c.correction_id DESC LIMIT 200`).bind(...ids).all()).results as any[]
@@ -905,4 +1103,46 @@ correctionsStaffApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
   }
   const r: any = await resubmitCorrection(c.env.DB, row, actorOf(c.get('user')), b, self, staffIds)
   return sendAndNotify(c, r, r.dry_run ? undefined : r.correction_id, 'resubmitted')
+})
+
+// 申請に写真・画像（店舗の入退館記録・画面の写しなど）を添付する（#485）。multipart/form-data: photo（画面で圧縮した JPEG/PNG）、photo_taken_at、photo_source。
+// 申請者本人が、承認待ちの申請に1枚ずつ送る（1申請に ATTACHMENT_MAX 枚まで）。画像は入店・退店の写真と同じ R2（PHOTOS）に置く
+correctionsStaffApi.post('/corrections/:id{[0-9]+}/attachments', async (c) => {
+  const row = await myCorrection(c)
+  if (!row) return c.json({ error: '申請が見つかりません' }, 404)
+  if (!(await myUserIds(c)).includes(row.requested_by)) return c.json({ error: '添付できるのは申請者本人のみです' }, 403)
+  if (row.status !== 'pending') return c.json({ error: '承認待ちの申請にだけ添付できます' }, 409)
+  let form: FormData
+  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
+  const photo = form.get('photo')
+  if (!(photo instanceof File) || photo.size === 0) return c.json({ error: '画像が添付されていません' }, 400)
+  if (!ATTACHMENT_TYPES.includes(photo.type)) return c.json({ error: '対応していない画像形式です（JPEG/PNGのみ）' }, 400)
+  if (photo.size > ATTACHMENT_MAX_BYTES) return c.json({ error: '画像サイズが大きすぎます。圧縮に失敗している可能性があります' }, 400)
+  const db = c.env.DB
+  const n = Number(((await db.prepare('SELECT COUNT(*) AS n FROM attendance_correction_attachments WHERE correction_id = ?').bind(row.correction_id).first()) as any)?.n || 0)
+  if (n >= ATTACHMENT_MAX) return c.json({ error: `添付できるのは1つの申請に${ATTACHMENT_MAX}枚までです` }, 409)
+  const key = `attendance/${row.company_id}/${row.staff_id}/${row.shift_id}/correction_${row.correction_id}_${Date.now()}.${photo.type === 'image/png' ? 'png' : 'jpg'}`
+  try { await c.env.PHOTOS.put(key, await photo.arrayBuffer(), { httpMetadata: { contentType: photo.type } }) } catch {
+    return c.json({ error: '画像のアップロードに失敗しました。通信環境を確認して再度お試しください' }, 502)
+  }
+  const u = c.get('user')
+  // 同時に送られた分で上限を超えた・その間に承認や取り消しがあった場合は登録しない（画像を消して 409）
+  const ins = await db.prepare(`INSERT INTO attendance_correction_attachments (correction_id, company_id, staff_id, shift_id, photo_key, content_type, size_bytes, photo_taken_at, photo_source, uploaded_by, uploaded_by_name, created_at)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM attendance_correction_attachments WHERE correction_id = ?) < ?
+      AND EXISTS (SELECT 1 FROM attendance_corrections WHERE correction_id = ? AND status = 'pending')`)
+    .bind(row.correction_id, row.company_id, row.staff_id, row.shift_id, key, photo.type, photo.size, photoTakenAt(form.get('photo_taken_at')), photoSource(form.get('photo_source')),
+      u.user_id, u.name, nowJST(), row.correction_id, ATTACHMENT_MAX, row.correction_id).run().catch(() => null)
+  if (!ins || !ins.meta.changes) {
+    await c.env.PHOTOS.delete(key).catch(() => {})
+    return c.json({ error: '添付できませんでした（上限に達したか、申請の状態が変わりました）' }, 409)
+  }
+  return c.json({ ok: true, attachment_id: ins.meta.last_row_id })
+})
+// 自分の申請に添付した画像
+correctionsStaffApi.get('/corrections/attachments/:aid{[0-9]+}', async (c) => {
+  const ids = await myStaffIds(c)
+  if (!ids.length) return c.json({ error: '画像が見つかりません' }, 404)
+  const row = await c.env.DB.prepare(`SELECT photo_key FROM attendance_correction_attachments WHERE attachment_id = ? AND staff_id IN (${ids.map(() => '?').join(',')})`)
+    .bind(c.req.param('aid'), ...ids).first() as any
+  return attachmentResponse(c, row?.photo_key)
 })

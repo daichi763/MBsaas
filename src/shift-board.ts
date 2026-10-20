@@ -14,6 +14,9 @@ import type { ConflictRow } from './lib/staff-eligibility'
 import { changesOf, insertRowsStmts, updateRowsStmts } from './lib/bulk-write'
 import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
+import { loadShiftSnaps, notifyShiftChanges } from './notifications'
+import type { ShiftSnap } from './notifications'
+import { csvResponse, toCsv } from './csv'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -87,7 +90,7 @@ const unitOf = (v: any): 'daily' | 'hourly' => (v === 'hourly' ? 'hourly' : 'dai
 
 // =========================================================
 // 単価の解決
-// 優先順: シフトの手動変更 ＞ 枠の役割の単価 ＞ 単価ルール（具体度: スタッフ8 役割4 開催場所2 案件1）＞ 案件の標準
+// 優先順: シフトの手動変更 ＞ 枠の役割の単価 ＞ 単価ルール（具体度: スタッフ8 役割4 開催場所2 案件1 クライアント0.5。#470）＞ 案件の標準
 // 項目ごとに（請求単価 / 支払単価 / 交通費の請求 / 交通費の支払）最も具体的な値を採用する
 // 単価ルールと案件の標準単価は、シフトの稼働日（work_date）に適用期間が含まれるものを使う（#210）
 // =========================================================
@@ -99,9 +102,11 @@ export type ResolvedPrice = {
   sources: Record<string, string>
 }
 
-function ruleScore(r: any) { return (r.staff_id ? 8 : 0) + (r.role_name ? 4 : 0) + (r.site_id ? 2 : 0) + (r.project_id ? 1 : 0) }
+// クライアント単位のルール（#470）は案件より弱い 0.5（同じ条件なら案件のルールが勝つ）
+function ruleScore(r: any) { return (r.staff_id ? 8 : 0) + (r.role_name ? 4 : 0) + (r.site_id ? 2 : 0) + (r.project_id ? 1 : 0) + (r.client_id && !r.project_id ? 0.5 : 0) }
 function ruleLabel(r: any) {
   const p: string[] = []
+  if (r.client_id && !r.project_id) p.push('クライアント')
   if (r.project_id) p.push('案件'); if (r.site_id) p.push('開催場所'); if (r.role_name) p.push('役割'); if (r.staff_id) p.push('スタッフ')
   return 'ルール#' + r.rule_id + '（' + (p.join('×') || '全体') + '）'
 }
@@ -111,10 +116,12 @@ export async function loadPricingData(db: D1Database, companyId: number, project
   const ids = bindJsonArray(projectIds)
   const projects = ids !== '[]' ? (await db.prepare(`SELECT project_id, unit_price_type, unit_price, pay_unit_type, pay_rate,
       bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes, hours_basis, time_round_minutes,
-      pay_time_round, price_valid_from
+      pay_time_round, price_valid_from, client_id
       FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[] : []
-  const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL OR project_id IN ${JSON_IN})`)
-    .bind(companyId, ids).all()).results as any[]
+  // クライアント単位のルール（#470）は、対象の案件のクライアントのものだけを読む
+  const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL OR project_id IN ${JSON_IN})
+      AND (client_id IS NULL OR project_id IS NOT NULL OR client_id IN (SELECT p.client_id FROM projects p WHERE p.company_id = ? AND p.project_id IN ${JSON_IN}))`)
+    .bind(companyId, ids, companyId, ids).all()).results as any[]
   // 改定前の案件の標準単価（#210）
   const history = new Map<number, any[]>()
   if (ids !== '[]') {
@@ -139,7 +146,8 @@ export function projectPriceOn(p: any, history: any[] | undefined, workDate?: st
 export const ruleActiveOn = (r: any, workDate?: string | null) => !workDate || ((!r.valid_from || r.valid_from <= workDate) && (!r.valid_to || r.valid_to >= workDate))
 
 export function resolvePrice(ctx: PriceContext, data: PricingData): ResolvedPrice {
-  const p = projectPriceOn(data.projects.get(Number(ctx.project_id)), data.history?.get(Number(ctx.project_id)), ctx.work_date)
+  const proj = data.projects.get(Number(ctx.project_id))
+  const p = projectPriceOn(proj, data.history?.get(Number(ctx.project_id)), ctx.work_date)
   const unit = unitOf
   const out: ResolvedPrice = {
     bill_unit_type: unit(p.unit_price_type), bill_rate: p.unit_price ?? null,
@@ -150,6 +158,7 @@ export function resolvePrice(ctx: PriceContext, data: PricingData): ResolvedPric
   }
   const matches = data.rules.filter(r => ruleActiveOn(r, ctx.work_date) &&
     (!r.project_id || Number(r.project_id) === Number(ctx.project_id)) &&
+    (!r.client_id || r.project_id || (proj?.client_id != null && Number(r.client_id) === Number(proj.client_id))) &&
     (!r.site_id || (ctx.site_id && Number(r.site_id) === Number(ctx.site_id))) &&
     (!r.role_name || (ctx.role_name && r.role_name === ctx.role_name)) &&
     (!r.staff_id || (ctx.staff_id && Number(r.staff_id) === Number(ctx.staff_id))))
@@ -473,6 +482,52 @@ function unavailableOn(workDate: string, affiliationType: string, st: StaffState
   if (st.link_ended_at) return '取引終了'
   return retiredOn(workDate, st)
 }
+
+/**
+ * 期間内の人員不足の枠（役割ごとの確定・代打が必要人数に満たないもの）と、希望（仮）のままのシフト（ダッシュボード #299）。
+ * 充足の数え方はシフトボードと同じ（退職などで稼働できない人は数えない）。返す行数には上限を設ける
+ */
+export const STAFFING_GAP_LIMIT = 100
+export async function staffingGaps(db: D1Database, companyId: number, from: string, to: string) {
+  const [roleRows, assignedRows, requestedRows] = (await db.batch([
+    db.prepare(`SELECT r.slot_role_id, r.role_name, r.headcount, sl.slot_id, sl.work_date, sl.start_time, sl.end_time, p.project_id, p.project_name,
+        (SELECT COUNT(*) FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+          WHERE i.slot_role_id = r.slot_role_id AND i.status = 'pending' AND a.status = 'pending') AS applicants
+      FROM shift_slots sl JOIN shift_slot_roles r ON r.slot_id = sl.slot_id JOIN projects p ON p.project_id = sl.project_id AND p.company_id = sl.company_id
+      WHERE sl.company_id = ? AND sl.work_date BETWEEN ? AND ?
+      ORDER BY sl.work_date, sl.start_time, p.project_name, r.sort_order, r.slot_role_id`).bind(companyId, from, to),
+    db.prepare(`SELECT s.slot_role_id, s.work_date, s.status, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type,
+        COALESCE(sp.employment_status,'working') AS employment_status, us.status AS user_status, us.retired_at, sp.link_ended_at,
+        COALESCE(emp_sp.employment_status,'working') AS emp_status, emp_us.status AS emp_user_status, emp_us.retired_at AS emp_retired_at
+      FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+      LEFT JOIN staff_profiles emp_sp ON sp.affiliation_type = 'linked_external' AND emp_sp.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+      LEFT JOIN users emp_us ON emp_us.user_id = emp_sp.user_id
+      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.slot_role_id IS NOT NULL AND s.status IN ('confirmed','substitute','requested')`).bind(companyId, from, to),
+    db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.slot_role_id, p.project_id, p.project_name, us.name AS staff_name
+      FROM shifts s JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id
+      JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.status = 'requested'
+      ORDER BY s.work_date, s.start_time, p.project_name, us.name LIMIT ?`).bind(companyId, from, to, STAFFING_GAP_LIMIT + 1),
+  ])).map(r => (r.results || []) as any[])
+  const count = new Map<number, { filled: number; requested: number }>()
+  for (const a of assignedRows) {
+    const c = count.get(a.slot_role_id) || { filled: 0, requested: 0 }
+    if (a.status === 'requested') c.requested++
+    else if (!unavailableOn(a.work_date, a.affiliation_type, { employment_status: a.employment_status, user_status: a.user_status, retired_at: a.retired_at, link_ended_at: a.link_ended_at },
+      { employment_status: a.emp_status, user_status: a.emp_user_status, retired_at: a.emp_retired_at })) c.filled++
+    count.set(a.slot_role_id, c)
+  }
+  const short = roleRows.map(r => {
+    const c = count.get(r.slot_role_id) || { filled: 0, requested: 0 }
+    return { ...r, filled: c.filled, requested: c.requested, applicants: Number(r.applicants) || 0, shortage: Number(r.headcount) - c.filled }
+  }).filter(r => r.shortage > 0)
+  return {
+    from, to,
+    short_roles: short.slice(0, STAFFING_GAP_LIMIT), short_role_count: short.length,
+    short_headcount: short.reduce((a, r) => a + r.shortage, 0),
+    requested_shifts: requestedRows.slice(0, STAFFING_GAP_LIMIT), requested_more: requestedRows.length > STAFFING_GAP_LIMIT,
+  }
+}
 app.get('/shift-board', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const from = c.req.query('from'); let to = c.req.query('to')
@@ -570,6 +625,129 @@ app.get('/shift-board', async (c) => {
   for (const [rid, list] of byRole) if (!knownRoles.has(rid)) unslotted.push(...list)
   totals.profit = totals.profit_bill - totals.pay
   return c.json({ from, to, projects, slots, unslotted, totals })
+})
+
+// ---------- クライアントに出す配置表（#298） ----------
+// ボードの絞り込み（期間・クライアント・案件・区分・開催場所）のまま、金額を含めずに出す。未充足の枠（あと何名）と希望（仮）も載せる。
+// format=csv: 1人1行の CSV（未充足は1枠1行）/ format=print: 案件ごとに改ページする印刷用の画面。
+// 欠勤のシフトと、退職などで稼働できない人は載せない（不足に数える）
+const PLACEMENT_STATUS: Record<string, string> = { confirmed: '確定', substitute: '代打', requested: '希望（仮）' }
+const WD_JA = ['日', '月', '火', '水', '木', '金', '土']
+const htmlEsc = (v: any) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!))
+type PlacementLine = {
+  work_date: string; client_name: string; project_id: number; project_name: string; site: string; start_time: string; end_time: string; role: string
+  headcount: number | null; filled: number; staff: { name: string; status: string; start_time: string; end_time: string }[]
+}
+app.get('/shift-board/export', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const print = c.req.query('format') === 'print'
+  const from = c.req.query('from'); let to = c.req.query('to')
+  if (!isDate(from)) return c.json({ error: '開始日を指定してください' }, 400)
+  if (!isDate(to) || dayDiff(from!, to!) < 0) to = addDays(from!, 6)
+  if (dayDiff(from!, to!) > MAX_RANGE_DAYS - 1) to = addDays(from!, MAX_RANGE_DAYS - 1)
+  const clientId = intOrNull(c.req.query('client_id')), projectIds = parseIds(c.req.query('project_ids')), siteId = intOrNull(c.req.query('site_id'))
+  const engagement = c.req.query('engagement')
+  // 希望（仮）を載せるか（既定は載せる。include_requested=0 で確定・代打だけ）
+  const withRequested = c.req.query('include_requested') !== '0'
+  const pf: string[] = ['p.company_id = ?']; const pb: any[] = [u.company_id]
+  if (clientId) { pf.push('p.client_id = ?'); pb.push(clientId) }
+  if (projectIds.length) { pf.push(`p.project_id IN ${JSON_IN}`); pb.push(bindJsonArray(projectIds)) }
+  if (engagement === 'regular' || engagement === 'spot') { pf.push("COALESCE(p.engagement_type,'regular') = ?"); pb.push(engagement) }
+  const inP = `(SELECT p.project_id FROM projects p WHERE ${pf.join(' AND ')})`
+  const siteCond = siteId ? 'AND x.site_id = ?' : ''
+  const siteBind = siteId ? [siteId] : []
+  const [projRes, slotRes, roleRes, shiftRes] = await db.batch([
+    db.prepare(`SELECT p.project_id, p.project_name, cl.client_name FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+      WHERE ${pf.join(' AND ')}`).bind(...pb),
+    db.prepare(`SELECT x.slot_id, x.project_id, x.work_date, x.start_time, x.end_time, x.location, si.site_name FROM shift_slots x LEFT JOIN sites si ON si.site_id = x.site_id
+      WHERE x.company_id = ? AND x.project_id IN ${inP} AND x.work_date BETWEEN ? AND ? ${siteCond}`).bind(u.company_id, ...pb, from, to, ...siteBind),
+    db.prepare(`SELECT r.slot_role_id, r.slot_id, r.role_name, r.headcount FROM shift_slot_roles r JOIN shift_slots x ON x.slot_id = r.slot_id
+      WHERE x.company_id = ? AND x.project_id IN ${inP} AND x.work_date BETWEEN ? AND ? ${siteCond} ORDER BY r.sort_order, r.slot_role_id`).bind(u.company_id, ...pb, from, to, ...siteBind),
+    db.prepare(`SELECT x.shift_id, x.project_id, x.slot_role_id, x.work_date, x.start_time, x.end_time, x.role, x.location, x.status, si.site_name, us.name AS staff_name,
+        COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, COALESCE(sp.employment_status,'working') AS st_employment_status, us.status AS st_user_status,
+        us.retired_at AS st_retired_at, sp.link_ended_at AS st_link_ended_at,
+        COALESCE(emp_sp.employment_status,'working') AS st_emp_status, emp_us.status AS st_emp_user_status, emp_us.retired_at AS st_emp_retired_at
+      FROM shifts x JOIN staff_profiles sp ON sp.staff_id = x.staff_id JOIN users us ON us.user_id = sp.user_id
+      LEFT JOIN staff_profiles emp_sp ON sp.affiliation_type = 'linked_external' AND emp_sp.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)
+      LEFT JOIN users emp_us ON emp_us.user_id = emp_sp.user_id
+      LEFT JOIN sites si ON si.site_id = x.site_id
+      WHERE x.company_id = ? AND x.project_id IN ${inP} AND x.work_date BETWEEN ? AND ? ${siteCond} AND x.status IN ('confirmed','substitute','requested')
+      ORDER BY x.start_time, us.name`).bind(u.company_id, ...pb, from, to, ...siteBind),
+  ])
+  const projects = new Map((projRes.results as any[]).map(p => [p.project_id, p]))
+  const shifts = (shiftRes.results as any[]).filter(x => x.status !== 'requested' || withRequested)
+    .filter(x => !unavailableOn(x.work_date, x.affiliation_type,
+      { employment_status: x.st_employment_status, user_status: x.st_user_status, retired_at: x.st_retired_at, link_ended_at: x.st_link_ended_at },
+      { employment_status: x.st_emp_status, user_status: x.st_emp_user_status, retired_at: x.st_emp_retired_at }))
+  const byRole = new Map<number, any[]>()
+  for (const x of shifts) if (x.slot_role_id) { const a = byRole.get(x.slot_role_id) || []; a.push(x); byRole.set(x.slot_role_id, a) }
+  const rolesBySlot = new Map<number, any[]>()
+  for (const r of roleRes.results as any[]) { const a = rolesBySlot.get(r.slot_id) || []; a.push(r); rolesBySlot.set(r.slot_id, a) }
+  const staffOf = (a: any) => ({ name: a.staff_name, status: PLACEMENT_STATUS[a.status] || a.status, start_time: a.start_time, end_time: a.end_time })
+  // 枠の役割ごとに1行（印刷用。CSV ではこれを1人1行に広げる）
+  const lines: PlacementLine[] = []
+  const knownRoles = new Set<number>()
+  for (const sl of slotRes.results as any[]) {
+    const p = projects.get(sl.project_id); if (!p) continue
+    for (const r of rolesBySlot.get(sl.slot_id) || []) {
+      knownRoles.add(r.slot_role_id)
+      const assigned = byRole.get(r.slot_role_id) || []
+      lines.push({ work_date: sl.work_date, client_name: p.client_name || '', project_id: p.project_id, project_name: p.project_name, site: sl.site_name || sl.location || '',
+        start_time: sl.start_time, end_time: sl.end_time, role: r.role_name, headcount: Number(r.headcount || 0),
+        filled: assigned.filter(a => a.status !== 'requested').length, staff: assigned.map(staffOf) })
+    }
+  }
+  // 枠のないシフト（常勤の一括登録など）と、役割が消えた枠のシフトは1人1行で載せる（必要人数は空欄）
+  for (const x of shifts) {
+    if (x.slot_role_id && knownRoles.has(x.slot_role_id)) continue
+    const p = projects.get(x.project_id); if (!p) continue
+    lines.push({ work_date: x.work_date, client_name: p.client_name || '', project_id: p.project_id, project_name: p.project_name, site: x.site_name || x.location || '',
+      start_time: x.start_time, end_time: x.end_time, role: x.role || '', headcount: null, filled: x.status !== 'requested' ? 1 : 0, staff: [staffOf(x)] })
+  }
+  lines.sort((a, b) => a.work_date.localeCompare(b.work_date) || a.client_name.localeCompare(b.client_name, 'ja') || a.project_name.localeCompare(b.project_name, 'ja')
+    || a.start_time.localeCompare(b.start_time) || a.site.localeCompare(b.site, 'ja') || a.role.localeCompare(b.role, 'ja'))
+  const short = (l: PlacementLine) => (l.headcount == null ? 0 : Math.max(0, l.headcount - l.filled))
+  const wd = (d: string) => WD_JA[weekday(d)]
+  const title = `配置表_${from}_${to}`
+  if (!print) {
+    const rows: any[][] = []
+    for (const l of lines) {
+      const base = [l.work_date, wd(l.work_date), l.client_name, l.project_name, l.site]
+      const counts = [l.headcount ?? '', l.headcount == null ? '' : Math.min(l.filled, l.headcount), l.headcount == null ? '' : short(l)]
+      for (const st of l.staff) rows.push([...base, st.start_time, st.end_time, l.role, ...counts, st.name, st.status])
+      if (short(l)) rows.push([...base, l.start_time, l.end_time, l.role, ...counts, `（未充足 あと${short(l)}名）`, '未充足'])
+    }
+    return csvResponse(`${title}.csv`, toCsv(['日付', '曜日', 'クライアント', '案件', '開催場所', '開始', '終了', '役割', '必要人数', '充足', '不足', 'スタッフ', '状態'], rows))
+  }
+  // 印刷: 案件ごとに改ページし、枠の役割を1行にする（スタッフの時間が枠と違うときは名前の後ろに添える）
+  const groups = new Map<number, PlacementLine[]>()
+  for (const l of lines) { const a = groups.get(l.project_id) || []; a.push(l); groups.set(l.project_id, a) }
+  const md = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}(${wd(d)})`
+  const sections = [...groups.values()].map(ls => {
+    const req = ls.reduce((n, l) => n + (l.headcount || 0), 0), shortTotal = ls.reduce((n, l) => n + short(l), 0)
+    const body = ls.map(l => {
+      const names = l.staff.map(st => htmlEsc(st.name) + (st.status === '確定' ? '' : `<small>（${htmlEsc(st.status)}）</small>`)
+        + (st.start_time !== l.start_time || st.end_time !== l.end_time ? `<small> ${htmlEsc(st.start_time)}〜${htmlEsc(st.end_time)}</small>` : '')).join('、')
+      const shortHtml = short(l) ? `${names ? '、' : ''}<span class="short">未充足 あと${short(l)}名</span>` : ''
+      return `<tr><td>${htmlEsc(md(l.work_date))}</td><td>${htmlEsc(l.start_time)}〜${htmlEsc(l.end_time)}</td><td>${htmlEsc(l.site)}</td><td>${htmlEsc(l.role)}</td>
+        <td class="n">${l.headcount == null ? '' : `${Math.min(l.filled, l.headcount)}/${l.headcount}`}</td><td>${names}${shortHtml}</td></tr>`
+    }).join('')
+    return `<section><h2>${htmlEsc(ls[0].client_name ? ls[0].client_name + ' ／ ' : '')}${htmlEsc(ls[0].project_name)}</h2>
+<p class="meta">期間: ${htmlEsc(from)} 〜 ${htmlEsc(to)}${req ? `・必要 ${req}名` : ''}${shortTotal ? `・<span class="short">未充足 ${shortTotal}名</span>` : ''}</p>
+<table><thead><tr><th>日付</th><th>時間</th><th>開催場所</th><th>役割</th><th>充足</th><th>スタッフ</th></tr></thead><tbody>${body}</tbody></table></section>`
+  }).join('')
+  const co = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${htmlEsc(title)}</title>
+<style>
+body{font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif;color:#111;margin:24px;font-size:12px}
+h1{font-size:18px;margin:0 0 4px}h2{font-size:15px;margin:0 0 4px}.meta{color:#444;margin:0 0 8px}
+section{margin-bottom:24px}section+section{break-before:page;page-break-before:always}
+table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:3px 5px;vertical-align:top;text-align:left}th{background:#f2f2f2}
+td.n{text-align:right;white-space:nowrap}.short{color:#c00;font-weight:bold}small{color:#555}
+.bar{margin-bottom:12px}.bar button{padding:6px 14px;font-size:13px}@media print{.bar{display:none}body{margin:0}}@page{size:A4;margin:12mm}
+</style></head><body><div class="bar"><button type="button" onclick="window.print()">印刷・PDFに保存</button></div>
+<h1>配置表</h1><p class="meta">${htmlEsc(co?.company_name || '')}・作成日 ${htmlEsc(todayJST())}${withRequested ? '・（仮）は希望の段階で未確定です' : ''}</p>
+${sections || '<p>この期間・条件のシフト枠はありません</p>'}</body></html>`)
 })
 
 // 候補スタッフ（枠の役割に対して）
@@ -673,7 +851,8 @@ async function planRoleRename(db: D1Database, companyId: number, slot: any, b: a
     const from = c.rate_role_name || c.role_name
     if (to === from) { map.set(c.slot_role_id, null); continue }
     const n = await db.prepare(`SELECT SUM(role_name = ?) AS f, SUM(role_name = ?) AS t FROM rate_rules
-      WHERE company_id = ? AND role_name IN (?, ?) AND (project_id IS NULL OR project_id = ?)`).bind(from, to, companyId, from, to, slot.project_id).first() as any
+      WHERE company_id = ? AND role_name IN (?, ?) AND (project_id IS NULL OR project_id = ?)
+        AND (client_id IS NULL OR project_id IS NOT NULL OR client_id = (SELECT client_id FROM projects WHERE project_id = ?))`).bind(from, to, companyId, from, to, slot.project_id, slot.project_id).first() as any
     const rf = Number(n?.f || 0), rt = Number(n?.t || 0)
     if (!rf && !rt) { map.set(c.slot_role_id, null); continue }
     if (b.role_rate === 'follow') map.set(c.slot_role_id, null)
@@ -871,6 +1050,9 @@ app.put('/shift-slots/:id', async (c) => {
     stmts.push(db.prepare(`UPDATE shifts SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE shift_id = ? AND company_id = ? AND COALESCE(settle_status,'planned') != 'confirmed'`)
       .bind(...cols.map(k => set[k]), s.shift_id, u.company_id))
   }
+  // 日時・場所を変えるときは、枠に付いて動くシフトの変更の前の内容を取っておき、保存の後に本人に知らせる（#155）
+  const notifyIds = dateTimeChanged || siteChanged || locationChanged ? follow.map(s => s.shift_id) : []
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, notifyIds)
   try {
     await db.batch(stmts)
   } catch (e) {
@@ -882,6 +1064,7 @@ app.put('/shift-slots/:id', async (c) => {
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE slot_id = ? AND company_id = ? AND COALESCE(price_locked,0) = 0 AND COALESCE(settle_status,'planned') != 'confirmed'`)
     .bind(slot.slot_id, u.company_id).all()).results as any[]
   await repriceRows(db, u.company_id, rows)
+  if (notifyIds.length) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, notifyIds))
   return c.json({ ok: true, detached: detach.length, locked_kept: lockedKept, warnings })
 })
 
@@ -939,6 +1122,7 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     await applyPricingToShift(db, u.company_id, res.meta.last_row_id as number, { data })
     created.push(res.meta.last_row_id as number)
   }
+  await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(db, u.company_id, created)) // 本人に知らせる（#155）
   return c.json({ ok: true, shift_ids: created, warnings })
 })
 
@@ -963,6 +1147,7 @@ app.post('/shifts/:id/move', async (c) => {
   // 日時が変わるときは、本人の「入れます／入れません」の返事（前の日時に対するもの）を消す（#411）
   const replyReset = role.work_date !== s.work_date || role.start_time !== s.start_time || role.end_time !== s.end_time
     ? ', staff_reply = NULL, staff_reply_note = NULL, staff_reply_at = NULL' : ''
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, [s.shift_id]) // 移動の前の内容（本人への通知に使う。#155）
   // 移動したシフトは、移行時の重複の印（legacy_duplicate）を外して一意インデックスの対象に戻す
   try {
     await db.prepare(`UPDATE shifts SET project_id = ?, slot_id = ?, slot_role_id = ?, site_id = ?, work_date = ?, start_time = ?, end_time = ?, break_minutes = ?, role = ?, location = ?, legacy_duplicate = NULL${replyReset} WHERE shift_id = ?`)
@@ -973,6 +1158,7 @@ app.post('/shifts/:id/move', async (c) => {
   }
   // 手動変更した金額でも、案件が変わった場合は移動先の単価に置き換える
   await applyPricingToShift(db, u.company_id, s.shift_id, { force: projectChanged })
+  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [s.shift_id])) // 本人に知らせる（#155）
   return c.json({ ok: true, warnings })
 })
 
@@ -1019,8 +1205,12 @@ app.post('/shifts/confirm-requested', async (c) => {
     if (warnings.length) return c.json({ need_force: true, warnings, skipped, count: targets.length }, 409)
   }
   // 確認の後に状態が変わったもの（別の画面で確定・削除した等）は変えない
+  const targetIds = targets.map(r => r.shift_id)
+  const notifyBefore = await loadShiftSnaps(db, u.company_id, targetIds)
   const res = await db.prepare(`UPDATE shifts SET status = 'confirmed' WHERE company_id = ? AND status = 'requested' AND COALESCE(settle_status,'planned') != 'confirmed'
-    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targets.map(r => r.shift_id))).run()
+    AND shift_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray(targetIds)).run()
+  // 確定にしたことを本人に知らせる（スタッフごとにまとめる。#155）
+  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, targetIds))
   return c.json({ ok: true, confirmed: res.meta.changes || 0, skipped })
 })
 
@@ -1199,6 +1389,8 @@ app.post('/shifts/reprice', async (c) => {
   if (b.from > b.to) return c.json({ error: '期間の開始日は終了日以前にしてください' }, 400)
   const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'"]; const bind: any[] = [u.company_id, b.from, b.to]
   if (b.project_id) { f.push('project_id = ?'); bind.push(b.project_id) }
+  // クライアント単位の単価ルール（#470）の再適用は、そのクライアントの全案件のシフトが対象
+  if (b.client_id) { f.push('project_id IN (SELECT project_id FROM projects WHERE company_id = ? AND client_id = ?)'); bind.push(u.company_id, b.client_id) }
   if (b.staff_id) { f.push('staff_id = ?'); bind.push(b.staff_id) }
   if (b.dry_run) {
     const r = await db.prepare(`SELECT COUNT(*) AS n FROM shifts WHERE ${f.join(' AND ')}`).bind(...bind).first() as any
@@ -1262,6 +1454,9 @@ app.post('/shifts/bulk', async (c) => {
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
   const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows))
+  // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）
+  await notifyShiftChanges(c, u.company_id, [], rows.map((r): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time,
+    status: r.status, location: r.location, project_name: project.project_name, site_name: site?.site_name ?? null })))
   return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next })
 })
 
@@ -1446,6 +1641,10 @@ app.post('/shifts/copy-week', async (c) => {
       return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })
     shiftsCreated = changesOf(await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true })))
+    // コピーで登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。
+    // 同時に実行されて一部が作られなかったとき（どの行を作ったか分からない）は、作った側の呼び出しが知らせるので、ここでは送らない
+    if (shiftsCreated === rows.length) await notifyShiftChanges(c, cid, [], rows.map((r: any): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date,
+      start_time: r.start_time, end_time: r.end_time, status: r.status, location: r.location, project_name: projectName(r.project_id) })))
   }
   return c.json({ ok: true, ...summary, slots: slotsCreated, slots_reused: slotPlans.filter(p => p.reused).length, roles: rolesCreated,
     shifts: shiftsCreated, already, skipped: view(), next_cursor: nextCursor })
@@ -1761,21 +1960,49 @@ function ruleValues(b: any) {
 const optDate = (v: any) => (v === undefined || v === null || v === '' ? null : v)
 app.get('/rate-rules', async (c) => {
   const u = c.get('user')
-  const pid = intOrNull(c.req.query('project_id')), sid = intOrNull(c.req.query('staff_id'))
+  const pid = intOrNull(c.req.query('project_id')), sid = intOrNull(c.req.query('staff_id')), cid = intOrNull(c.req.query('client_id'))
   const f: string[] = ['r.company_id = ?']; const b: any[] = [u.company_id]
   if (pid) { f.push('(r.project_id = ? OR (r.project_id IS NULL AND r.staff_id IS NOT NULL))'); b.push(pid) }
   if (sid) { f.push('r.staff_id = ?'); b.push(sid) }
-  const rows = (await c.env.DB.prepare(`SELECT r.*, p.project_name, si.site_name, us.name AS staff_name
+  // クライアント単位のルール（#470）: 案件を指定しないもの
+  if (cid) { f.push('r.client_id = ? AND r.project_id IS NULL'); b.push(cid) }
+  const rows = (await c.env.DB.prepare(`SELECT r.*, p.project_name, si.site_name, us.name AS staff_name, cl.client_name
     FROM rate_rules r LEFT JOIN projects p ON p.project_id = r.project_id LEFT JOIN sites si ON si.site_id = r.site_id
+    LEFT JOIN clients cl ON cl.client_id = r.client_id AND cl.company_id = r.company_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = r.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
     WHERE ${f.join(' AND ')} ORDER BY r.project_id, r.site_id, r.role_name, r.staff_id, COALESCE(r.valid_from, '')`).bind(...b).all()).results
   return c.json({ rules: rows })
 })
-async function validateRuleScope(db: D1Database, u: any, b: any): Promise<string | null> {
-  if (!b.project_id && !b.staff_id) return '案件またはスタッフを指定してください'
-  if (b.project_id && !(await ownProject(db, u.company_id, b.project_id))) return '案件が見つかりません'
-  if (b.site_id && !(await ownSite(db, u.company_id, b.site_id))) return '開催場所が見つかりません'
-  if (b.staff_id && !(await db.prepare('SELECT 1 FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(b.staff_id, u.company_id).first())) return 'スタッフが見つかりません'
+// ルールの範囲（案件・クライアント・開催場所・役割・スタッフ）を確かめて、保存する値にそろえる。
+// 案件を指定したら、クライアントは持たない（案件のクライアントで決まる）。案件もスタッフも指定しないルールはクライアント単位（#470）で、
+// 開催場所だけを指定したら、その開催場所のクライアントの範囲にする。クライアント単位のルールにはスタッフを付けない
+// （スタッフ別の単価は案件を選んで登録する。staff-merge.ts の同じ範囲の判定がクライアントを見ないため）
+type RuleScope = { project_id: number | null; client_id: number | null; site_id: number | null; role_name: string | null; staff_id: number | null }
+async function ruleScopeOf(db: D1Database, u: any, b: any): Promise<{ scope?: RuleScope; error?: string }> {
+  const projectId = intOrNull(b.project_id), staffId = intOrNull(b.staff_id), siteId = intOrNull(b.site_id)
+  let clientId = projectId ? null : intOrNull(b.client_id)
+  if (projectId && !(await ownProject(db, u.company_id, projectId))) return { error: '案件が見つかりません' }
+  const site = siteId ? await ownSite(db, u.company_id, siteId) : null
+  if (siteId && !site) return { error: '開催場所が見つかりません' }
+  if (staffId && !(await db.prepare('SELECT 1 FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(staffId, u.company_id).first())) return { error: 'スタッフが見つかりません' }
+  if (!projectId && !staffId) {
+    if (!clientId && site?.client_id) clientId = Number(site.client_id)
+    if (!clientId && !site) return { error: '案件・クライアント・スタッフのいずれかを指定してください' }
+  }
+  if (clientId) {
+    if (staffId) return { error: 'クライアント単位のルールにはスタッフを指定できません（スタッフ別の単価は、スタッフ詳細で案件を選んで登録してください）' }
+    if (!(await db.prepare('SELECT 1 FROM clients WHERE client_id = ? AND company_id = ?').bind(clientId, u.company_id).first())) return { error: 'クライアントが見つかりません' }
+    if (site && site.client_id != null && Number(site.client_id) !== clientId) return { error: '開催場所は、そのクライアントのものを選んでください' }
+  }
+  return { scope: { project_id: projectId, client_id: clientId, site_id: siteId, role_name: String(b.role_name || '').trim() || null, staff_id: staffId } }
+}
+async function validateRuleScope(db: D1Database, u: any, b: any): Promise<{ error?: string; scope?: RuleScope }> {
+  const sc = await ruleScopeOf(db, u, b)
+  if (sc.error) return sc
+  const err = ruleValuesError(b)
+  return err ? { error: err } : sc
+}
+function ruleValuesError(b: any): string | null {
   const range = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX],
     ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX], ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX]])
   if (range) return range
@@ -1788,25 +2015,25 @@ async function validateRuleScope(db: D1Database, u: any, b: any): Promise<string
 }
 app.post('/rate-rules', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
-  const err = await validateRuleScope(c.env.DB, u, b); if (err) return c.json({ error: err }, 400)
-  const v = ruleValues(b)
-  const res = await c.env.DB.prepare(`INSERT INTO rate_rules (company_id, project_id, site_id, role_name, staff_id, bill_unit_type, bill_rate, pay_unit_type, pay_rate,
-      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, memo, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, b.project_id || null, b.site_id || null, String(b.role_name || '').trim() || null, b.staff_id || null,
+  const vr = await validateRuleScope(c.env.DB, u, b); if (vr.error) return c.json({ error: vr.error }, 400)
+  const v = ruleValues(b), s = vr.scope!
+  const res = await c.env.DB.prepare(`INSERT INTO rate_rules (company_id, project_id, client_id, site_id, role_name, staff_id, bill_unit_type, bill_rate, pay_unit_type, pay_rate,
+      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, memo, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, s.project_id, s.client_id, s.site_id, s.role_name, s.staff_id,
       v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, b.memo || null,
       optDate(b.valid_from), optDate(b.valid_to)).run()
-  return c.json({ ok: true, rule_id: res.meta.last_row_id })
+  return c.json({ ok: true, rule_id: res.meta.last_row_id, client_id: s.client_id })
 })
 app.put('/rate-rules/:id', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   const r = await c.env.DB.prepare('SELECT * FROM rate_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!r) return c.json({ error: 'ルールが見つかりません' }, 404)
   const merged = { ...r, ...b }
-  const err = await validateRuleScope(c.env.DB, u, merged); if (err) return c.json({ error: err }, 400)
-  const v = ruleValues(merged)
-  await c.env.DB.prepare(`UPDATE rate_rules SET project_id = ?, site_id = ?, role_name = ?, staff_id = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?,
+  const vr = await validateRuleScope(c.env.DB, u, merged); if (vr.error) return c.json({ error: vr.error }, 400)
+  const v = ruleValues(merged), s = vr.scope!
+  await c.env.DB.prepare(`UPDATE rate_rules SET project_id = ?, client_id = ?, site_id = ?, role_name = ?, staff_id = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?,
       bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, memo = ?, valid_from = ?, valid_to = ? WHERE rule_id = ?`)
-    .bind(merged.project_id || null, merged.site_id || null, String(merged.role_name || '').trim() || null, merged.staff_id || null,
+    .bind(s.project_id, s.client_id, s.site_id, s.role_name, s.staff_id,
       v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, merged.memo || null,
       optDate(merged.valid_from), optDate(merged.valid_to), r.rule_id).run()
   return c.json({ ok: true })

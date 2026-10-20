@@ -232,15 +232,32 @@ window.setNavCount = function (tab, n) {
 }
 
 // ============ ダッシュボード ============
-window.togglePhotoRequired = async function (enabled) {
-  try {
-    await axios.post('/api/admin/settings/photo-required', { enabled })
-    toast(enabled ? '写真添付を必須にしました' : '写真添付を無効にしました')
-    renderDashboard()
-  } catch {
-    toast('設定の更新に失敗しました')
-  }
-}
+// 入店/退店報告の写真添付（会社全体の設定）。ダッシュボードには現在の状態だけを出し、
+// 変更は影響する案件の数と変更の記録を見てから、確認して行う（#405）
+const dashDateTime = v => dayjs(String(v || '').replace(' ', 'T')).format('YYYY/M/D HH:mm')
+delegate('photoRequiredSetting', async () => {
+  let d
+  try { d = (await axios.get('/api/admin/settings/photo-required')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  const p = d.projects || {}
+  const next = !d.enabled
+  modal(`<h3 class="font-bold text-lg mb-2">入店/退店報告の写真添付（会社全体）</h3>
+    <p class="text-sm mb-2">現在: <span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span></p>
+    <p class="text-xs text-gray-600 mb-3">変更すると、写真の設定を案件ごとに決めていない進行中の案件 <b>${Number(p.follow) || 0}件</b> のすべてのスタッフに、次の報告から反映されます。
+      案件ごとに「必須」（${Number(p.required) || 0}件）・「不要」（${Number(p.not_required) || 0}件）にしている案件は変わりません。無効にすると、写真での入店確認ができなくなります。</p>
+    <div class="mb-4">
+      <p class="text-xs font-bold text-gray-600 mb-1">変更の記録</p>
+      ${(d.history || []).length ? `<ul class="text-xs text-gray-500 space-y-0.5">${d.history.map(h => `<li>${esc(dashDateTime(h.at))} ${esc(h.name || '-')}: ${h.enabled ? '必須に変更' : '無効に変更'}</li>`).join('')}</ul>`
+        : '<p class="text-xs text-gray-400">記録はありません</p>'}
+    </div>
+    <div class="flex gap-2"><button type="button" class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
+      <button type="button" class="btn ${next ? 'btn-primary' : 'btn-danger'} flex-1" data-action="savePhotoRequired" data-enabled="${next ? '1' : '0'}" data-follow="${Number(p.follow) || 0}">${next ? '必須にする' : '無効にする'}</button></div>`)
+})
+delegate('savePhotoRequired', el => withSubmitLock(el, async () => {
+  const enabled = el.dataset.enabled === '1'
+  if (!confirm(`会社全体の写真添付を「${enabled ? '必須' : '無効'}」に変更します。\n会社の設定に従う進行中の案件 ${Number(el.dataset.follow) || 0}件に反映されます。よろしいですか？`)) return
+  try { await axios.post('/api/admin/settings/photo-required', { enabled }) } catch (e) { showApiError(e, '設定の更新に失敗しました'); return }
+  closeModal(); toast(enabled ? '写真添付を必須にしました' : '写真添付を無効にしました'); renderDashboard()
+}))
 
 window.updateProjectPhotoRequired = async function (pid, override) {
   try {
@@ -255,6 +272,11 @@ window.updateProjectPhotoRequired = async function (pid, override) {
 // ダッシュボードの最後の取得結果（シフトID → シフト）。欠勤・代わりの手配・報告状況のモーダルで使う
 const DASH_SHIFTS = new Map()
 const DASH_RS = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
+// 電話の記録（フォロー履歴）に書く、何の未報告で電話したか（#343）
+const DASH_CALL_LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_end: '勤務終了・退店の報告', daily_report: '日報' }
+// 本日のシフトの表の絞り込み（案件・状態）。再読み込みしても保つ（#488 #348）
+const DASH_FILTER = { project: '', only: '' }
+let DASH_DATA = null
 // 経過時間（分）を「n分」「n時間m分」に
 function dashElapsed(min) { min = Math.max(0, Number(min) || 0); return min < 60 ? `${min}分` : `${Math.floor(min / 60)}時間${min % 60 ? (min % 60) + '分' : ''}` }
 // 届いている遅刻・欠勤・体調不良の相談（種類・時刻・本文の先頭）と、相談対応で開くリンク（#498）
@@ -262,15 +284,32 @@ function dashContactLine(co) {
   return `<a href="#consult/${Number(co.consultation_id)}" class="block px-2 pb-1 text-[11px] text-blue-800 hover:underline">
     <i class="fas fa-comment-dots mr-1"></i>${esc(co.category_label || '')} ${esc(String(co.created_at || '').slice(11, 16))}${co.urgency === 'high' ? '・緊急' : ''}: ${esc(co.excerpt || '')}</a>`
 }
+// 電話の発信リンク（スマホではそのまま発信できる）と、電話したことをフォロー履歴に残すボタン（#343）
+function dashPhoneLine(shiftId, phone, kind) {
+  const tel = String(phone || '').replace(/[^0-9+]/g, '')
+  return `<div class="flex items-center gap-3 px-2 pb-1 text-[11px]">
+    ${tel ? `<a href="tel:${esc(tel)}" class="text-blue-700 hover:underline whitespace-nowrap"><i class="fas fa-phone mr-0.5"></i>${esc(phone)}</a>` : '<span class="text-gray-400">電話番号なし</span>'}
+    <button type="button" class="text-gray-600 hover:underline whitespace-nowrap" data-action="dashCallLog" data-id="${Number(shiftId)}" data-kind="${esc(kind)}" title="フォロー履歴に『電話』として記録します"><i class="fas fa-pen mr-0.5"></i>電話したと記録</button>
+  </div>`
+}
+// ログインのない人（報告用URLか代理入力で報告する人）と、報告用URLを発行していないことの印（#355）
+function dashLoginBadges(s) {
+  if (s.has_login !== false || s.status === 'absent') return ''
+  return '<span class="badge badge-gray text-[10px]" title="アプリのログインがありません。報告用URLか代理入力で報告します">ログインなし</span>'
+    + (s.has_report_link ? '' : ' <span class="badge badge-yellow text-[10px]" title="このシフトの報告用URLをまだ発行していません">URL未発行</span>')
+}
 
 async function renderDashboard() {
   loading()
   const { data } = await axios.get('/api/admin/dashboard')
+  DASH_DATA = data
   const un = data.unreported
   DASH_SHIFTS.clear()
   for (const s of [...data.shifts, ...(data.absent_shifts || [])]) DASH_SHIFTS.set(s.shift_id, s)
-  // 未報告の一覧には、本日の一覧にない前日のシフトも入る
-  for (const u of Object.values(un).flat()) if (!DASH_SHIFTS.has(u.shift_id)) DASH_SHIFTS.set(u.shift_id, { shift_id: u.shift_id, staff_id: u.staff_id, staff_name: u.name, project_name: u.project, work_date: u.work_date, start_time: u.start_time, end_time: u.end_time })
+  // 未報告の一覧・日報未提出の一覧には、本日の一覧にないシフトも入る
+  for (const u of Object.values(un).flat()) if (!DASH_SHIFTS.has(u.shift_id)) DASH_SHIFTS.set(u.shift_id, { shift_id: u.shift_id, staff_id: u.staff_id, staff_name: u.name, project_id: u.project_id, project_name: u.project, work_date: u.work_date, start_time: u.start_time, end_time: u.end_time })
+  for (const r of data.missing_daily_reports || []) if (!DASH_SHIFTS.has(r.shift_id)) DASH_SHIFTS.set(r.shift_id, { shift_id: r.shift_id, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time })
+  if (DASH_FILTER.project && !data.shifts.some(s => String(s.project_id) === DASH_FILTER.project)) DASH_FILTER.project = ''
   const kpi = (label, value, icon, color, sub) => `
     <div class="card p-4 min-w-0">
       <div class="flex items-center justify-between">
@@ -282,30 +321,67 @@ async function renderDashboard() {
         <span class="w-10 h-10 rounded-xl ${color} flex items-center justify-center"><i class="fas ${icon}"></i></span>
       </div>
     </div>`
+  const md = d => esc(dayjs(d).format('M/D')) + `（${'日月火水木金土'[dayjs(d).day()]}）`
 
   // 未報告の一覧: 予定の時刻を過ぎた人だけ（人ごとに1行。#449）。押すとそのシフトの報告状況（代理入力・報告用URL）を開く。
-  // 遅刻・欠勤・体調不良の相談が届いている人は『連絡あり』と本文の先頭を出し、相談を開けるようにする（連絡のない人が上。#498）
-  const alertList = (title, list, color, isEnd) => {
+  // 遅刻・欠勤・体調不良の相談が届いている人は『連絡あり』と本文の先頭を出し、相談を開けるようにする（連絡のない人が上。#498）。
+  // 電話番号（すぐ発信）と、ログインのない人・報告用URLを発行していない人の印を出す（#343 #355）
+  const alertList = (title, list, color, kind) => {
     const contacted = list.filter(s => s.contact).length
+    const isEnd = kind === 'work_end'
     return `
     <div class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-2">${title}
         <span class="badge ${list.length ? 'badge-' + color : 'badge-green'} ml-1">${list.length ? list.length + '名' : 'なし'}</span>
         ${contacted ? `<span class="badge badge-blue ml-1">うち連絡あり${contacted}名</span>` : ''}</h3>
-      ${list.length ? `<div class="space-y-1 max-h-48 overflow-y-auto">${list.map(s => `
+      ${list.length ? `<div class="space-y-1 max-h-60 overflow-y-auto">${list.map(s => `
         <div class="rounded-lg ${s.contact ? 'bg-blue-50' : color === 'red' ? 'bg-red-50' : 'bg-amber-50'} text-xs">
           <button type="button" class="w-full text-left px-2 py-1 hover:opacity-80" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">
             <span class="font-bold text-gray-800">${esc(s.name)}</span>${s.work_date !== data.today ? ' <span class="badge badge-gray text-[10px]">前日</span>' : ''}
             ${s.other_shifts ? `<span class="badge badge-gray text-[10px]">ほか${Number(s.other_shifts)}シフト</span>` : ''}
             ${s.contact ? '<span class="badge badge-blue text-[10px]">連絡あり</span>' : ''}
+            ${dashLoginBadges(s)}
             <span class="block text-gray-500">${isEnd ? `${esc(s.end_time)}終了予定・未: ${esc((s.missing || []).map(t => DASH_RS[t] || t).join('・'))}` : `${esc(s.start_time)}開始`}・${dashElapsed(s.overdue_minutes)}経過 ${esc(s.project || '')}</span>
           </button>
+          ${dashPhoneLine(s.shift_id, s.phone, kind)}
           ${s.contact ? dashContactLine(s.contact) : ''}
         </div>`).join('')}</div>`
       : '<p class="text-xs text-gray-400">予定の時刻を過ぎた未報告はありません <i class="fas fa-check text-emerald-500"></i></p>'}
     </div>`
   }
 
+  // 日報未提出（直近3日）の一覧: 日付・スタッフ・案件・電話。押すとそのシフトの報告状況（日報の代理入力を含む）を開く（#344）
+  const missing = data.missing_daily_reports || []
+  const missingHtml = missing.length ? `<div class="space-y-1 max-h-72 overflow-y-auto">${missing.map(r => `
+    <div class="rounded-lg bg-red-50 text-xs">
+      <button type="button" class="w-full text-left px-2 py-1 hover:opacity-80" data-action="dashShiftReport" data-id="${Number(r.shift_id)}">
+        <span class="text-gray-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
+        <span class="font-bold text-gray-800 ml-1">${esc(r.staff_name)}</span>
+        ${r.has_login ? '' : '<span class="badge badge-gray text-[10px]">ログインなし</span>'}
+        <span class="block text-gray-500">${esc(r.project_name)}</span>
+      </button>
+      ${dashPhoneLine(r.shift_id, r.staff_phone, 'daily_report')}
+    </div>`).join('')}</div>`
+    : '<p class="text-xs text-gray-400">直近3日の日報はすべて提出されています <i class="fas fa-check text-emerald-500"></i></p>'
+
+  // 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト。押すとシフトボードのその週・その案件を開く（#299）
+  const ahead = data.staffing_ahead || { short_roles: [], requested_shifts: [] }
+  const aheadHtml = `
+    <h4 class="text-xs font-bold text-gray-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
+    ${ahead.short_roles.length ? `<div class="space-y-1 max-h-48 overflow-y-auto mb-3">${ahead.short_roles.map(r => `
+      <button type="button" class="w-full text-left rounded-lg bg-red-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(r.work_date)}" data-project-id="${Number(r.project_id)}" data-short="1">
+        <span class="text-gray-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
+        <span class="font-bold text-gray-800 ml-1">${esc(r.project_name)}</span> ${esc(r.role_name)}
+        <span class="block text-gray-600">確定 ${Number(r.filled)}/${Number(r.headcount)}名（<span class="text-red-600 font-bold">${Number(r.shortage)}名不足</span>）${r.requested ? `・希望（仮）${Number(r.requested)}名` : ''}${r.applicants ? `・<span class="text-blue-700">未対応の応募 ${Number(r.applicants)}件</span>` : ''}</span>
+      </button>`).join('')}</div>` : '<p class="text-xs text-gray-400 mb-3">必要人数に足りない枠はありません</p>'}
+    <h4 class="text-xs font-bold text-gray-600 mb-1">希望（仮）のままのシフト <span class="badge ${ahead.requested_shifts.length ? 'badge-yellow' : 'badge-green'}">${ahead.requested_shifts.length ? ahead.requested_shifts.length + (ahead.requested_more ? '件以上' : '件') : 'なし'}</span></h4>
+    ${ahead.requested_shifts.length ? `<div class="space-y-1 max-h-40 overflow-y-auto">${ahead.requested_shifts.map(s => `
+      <button type="button" class="w-full text-left rounded-lg bg-amber-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(s.work_date)}" data-project-id="${Number(s.project_id)}">
+        <span class="text-gray-500">${md(s.work_date)} ${esc(formatShiftTime(s.start_time, s.end_time))}</span>
+        <span class="font-bold text-gray-800 ml-1">${esc(s.staff_name)}</span> <span class="text-gray-500">${esc(s.project_name)}</span>
+      </button>`).join('')}</div>` : '<p class="text-xs text-gray-400">確定を待っているシフトはありません</p>'}`
+
+  const photoChanged = data.photo_required_changed
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>
@@ -315,29 +391,20 @@ async function renderDashboard() {
       <button class="btn btn-outline" onclick="renderDashboard()"><i class="fas fa-rotate"></i>更新</button>
     </div>
 
-    <div class="card p-4 mb-5 flex items-center justify-between flex-wrap gap-3">
-      <div>
-        <p class="font-bold text-gray-800 text-sm"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
-        <p class="text-xs text-gray-400 mt-0.5">無効にすると写真添付欄は表示されず、スタッフはボタンひとつで報告できます。<button type="button" class="text-blue-600 underline" data-action="photoSkipSetting">写真を送れないときの扱い</button></p>
-      </div>
-      <button class="btn ${data.photo_required_attendance ? 'btn-primary' : 'btn-outline'}" onclick="togglePhotoRequired(${!data.photo_required_attendance})">
-        <i class="fas ${data.photo_required_attendance ? 'fa-toggle-on' : 'fa-toggle-off'}"></i>${data.photo_required_attendance ? '有効' : '無効'}
-      </button>
-    </div>
-
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
       ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
-      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600')}
+      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）')}
       ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400',
-        data.unchecked_daily_reports ? `<a href="#reports/unchecked=1" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : '')}
+        (data.missing_daily_reports.length ? '<button type="button" class="text-blue-600 hover:underline mr-2" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
+        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
       ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400')}
     </section>
 
     <section class="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mb-1" id="unreported-section">
-      ${alertList('<i class="fas fa-sun text-amber-500 mr-1"></i>未起床報告', un.wake_up, 'red')}
-      ${alertList('<i class="fas fa-person-walking-luggage text-blue-500 mr-1"></i>未出発報告', un.departure, 'yellow')}
-      ${alertList('<i class="fas fa-store text-purple-500 mr-1"></i>未入店報告', un.check_in, 'red')}
-      ${alertList('<i class="fas fa-door-open text-gray-500 mr-1"></i>勤務終了・退店の未報告', un.work_end || [], 'yellow', true)}
+      ${alertList('<i class="fas fa-sun text-amber-500 mr-1"></i>未起床報告', un.wake_up, 'red', 'wake_up')}
+      ${alertList('<i class="fas fa-person-walking-luggage text-blue-500 mr-1"></i>未出発報告', un.departure, 'yellow', 'departure')}
+      ${alertList('<i class="fas fa-store text-purple-500 mr-1"></i>未入店報告', un.check_in, 'red', 'check_in')}
+      ${alertList('<i class="fas fa-door-open text-gray-500 mr-1"></i>勤務終了・退店の未報告', un.work_end || [], 'yellow', 'work_end')}
     </section>
     <p class="text-[11px] text-gray-400 mb-5">予定の時刻を過ぎた人だけを出します（起床は開始の2時間前、出発は1時間前、入店は開始時刻、勤務終了・退店は終了の30分後。前日分を含む）。名前を押すと代理入力・報告用URLの発行ができます</p>
 
@@ -363,6 +430,20 @@ async function renderDashboard() {
               <p class="text-xs text-gray-600">${esc((i.values && i.values.free) || '')}</p>
             </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">直近のインシデントはありません</p>'}
         </div>
+      </section>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-4 mb-5">
+      <section class="card p-4" id="dash-missing-reports">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-file-circle-exclamation text-red-500 mr-1"></i>日報未提出（直近3日）
+          <span class="badge ${missing.length ? 'badge-red' : 'badge-green'} ml-1">${missing.length ? missing.length + '件' : 'なし'}</span></h3>
+        ${missingHtml}
+        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます</p>
+      </section>
+      <section class="card p-4" id="dash-ahead">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-week text-blue-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
+        ${aheadHtml}
+        <p class="text-[11px] text-gray-400 mt-2">押すとシフトボードでその週・その案件を開きます</p>
       </section>
     </div>
 
@@ -405,36 +486,19 @@ async function renderDashboard() {
       </section>
     </div>
 
-    <section class="card p-4" id="today-shifts">
-      <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-day text-blue-600 mr-1"></i>本日のシフト・報告状況</h3>
+    <section class="card p-4 mb-5" id="today-shifts">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h3 class="font-bold text-gray-800"><i class="fas fa-calendar-day text-blue-600 mr-1"></i>本日のシフト・報告状況</h3>
+        <select id="dash-shift-project" class="inp w-auto text-xs" aria-label="案件で絞り込む"></select>
+      </div>
+      <div id="dash-shift-filters" class="flex flex-wrap gap-1.5 mb-3"></div>
       <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>スタッフ</th><th>案件</th><th>時間</th><th>報告状況</th><th>操作</th></tr></thead>
-          <tbody>
-            ${data.shifts.map(s => {
-              // 有効な報告（案件報告管理の設定）だけを順に表示。緑 = 報告済み / 黄 = 修正の申請中 / 灰 = 未報告
-              const done = new Set(s.done_types || []), pend = new Set(s.pending_types || [])
-              const chips = (s.required_types || []).map(t => `<span class="badge ${done.has(t) ? 'badge-green' : pend.has(t) ? 'badge-yellow' : 'badge-gray'} text-[10px]" ${pend.has(t) && !done.has(t) ? 'title="打刻修正の申請中"' : ''}>${esc(DASH_RS[t] || t)}</span>`).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
-              // 入店以降の報告があるシフト・確定済みのシフトは、ここから欠勤にしない（#221）
-              const absentBtn = s.started ? '<span class="text-[11px] text-gray-400" title="入店以降の報告があるため、欠勤にできません">勤務の報告あり</span>'
-                : s.settle_status === 'confirmed' ? '<span class="text-[11px] text-gray-400">確定済み</span>'
-                : `<button type="button" class="text-xs text-red-600 hover:underline" data-action="markAbsent" data-id="${Number(s.shift_id)}">欠勤にする</button>`
-              return `<tr>
-                <td><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a>
-                  ${s.staff_unavailable ? '<span class="badge badge-red text-[10px]" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}
-                  ${s.contact ? `<a href="#consult/${Number(s.contact.consultation_id)}" class="badge badge-blue text-[10px]" title="${esc(s.contact.category_label + ': ' + (s.contact.excerpt || ''))}">連絡あり</a>` : ''}</td>
-                <td class="text-xs">${esc(s.project_name)}</td>
-                <td class="text-xs whitespace-nowrap">${s.carried_over ? `<span class="badge badge-purple text-[10px]">前日から継続</span><br>${esc(dayjs(s.work_date).format('M/D'))} ` : ''}${esc(s.start_time)}〜${esc(s.end_time)}</td>
-                <td><div class="flex flex-wrap gap-1 min-w-[10rem]">${chips}</div></td>
-                <td class="whitespace-nowrap">
-                  <button type="button" class="text-xs text-blue-600 hover:underline mr-2" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">報告</button>
-                  ${absentBtn}
-                </td>
-              </tr>`
-            }).join('') || '<tr><td colspan="5" class="text-center text-gray-400 py-4">本日のシフトはありません</td></tr>'}
-          </tbody>
+          <tbody id="dash-shift-rows"></tbody>
         </table>
       </div>
+      <p class="text-[11px] text-gray-400 mt-2">開始時刻・案件・氏名の順。報告の時刻を出し、遅刻は赤、位置情報のない入店は橙、予定の時刻を過ぎた未報告は赤枠で示します</p>
       ${(data.absent_shifts || []).length ? `
       <div class="mt-4" id="today-absent">
         <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-user-xmark text-red-500 mr-1"></i>本日の欠勤（${data.absent_shifts.length}件）</h4>
@@ -445,12 +509,111 @@ async function renderDashboard() {
             <button type="button" class="btn btn-outline text-xs ml-auto" data-action="findSubstitute" data-id="${Number(s.shift_id)}"><i class="fas fa-user-plus"></i>代わりを探す</button>
           </div>`).join('')}</div>
       </div>` : ''}
+    </section>
+
+    <section class="card p-3 flex items-center justify-between flex-wrap gap-2" id="dash-photo-setting">
+      <p class="text-sm text-gray-700"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付（会社全体）:
+        <span class="badge ${data.photo_required_attendance ? 'badge-green' : 'badge-gray'}">${data.photo_required_attendance ? '必須' : '無効'}</span>
+        ${photoChanged ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
+      <div class="flex gap-3 text-xs">
+        <button type="button" class="text-blue-600 underline" data-action="photoSkipSetting">写真を送れないときの扱い</button>
+        <button type="button" class="text-blue-600 underline" data-action="photoRequiredSetting">設定を変更…</button>
+      </div>
     </section>`
+  drawDashShifts()
   DASH_TODOS.todos = data.todos || []
   DASH_TODOS.hidden = data.hidden_todos || []
   drawDashTodos()
   if (window.renderChatDashboardNotice) renderChatDashboardNotice()
 }
+
+// ---------- ダッシュボード: 本日のシフトの表（#348 #355 #488）----------
+// 状態の絞り込み: 予定の時刻を過ぎた未報告あり・遅刻・位置不明・休憩中・ログインなし
+const DASH_ONLY = {
+  unreported: { label: '未報告あり', test: s => (s.overdue_types || []).length > 0 },
+  late: { label: '遅刻', test: s => s.late_minutes > 0 || ['check_in', 'work_start'].some(t => (s.reports || {})[t]?.status === 'late') },
+  no_location: { label: '位置不明', test: s => !!s.no_location },
+  on_break: { label: '休憩中', test: s => !!s.on_break },
+  no_login: { label: 'ログインなし', test: s => s.has_login === false },
+}
+// 報告ごとのチップ: 報告の時刻（日をまたいだら『翌』）と、遅刻・早退・位置不明・修正の申請中・予定を過ぎた未報告
+function dashReportChip(s, t) {
+  const r = (s.reports || {})[t]
+  const label = esc(DASH_RS[t] || t)
+  if (r) {
+    const time = String(r.at || '').slice(11, 16)
+    const nextDay = String(r.at || '').slice(0, 10) > String(s.work_date) ? '翌' : ''
+    let cls = 'badge-green', note = ''
+    if (r.status === 'late') { cls = 'badge-red'; note = r.late_minutes ? ` 遅刻${Number(r.late_minutes)}分` : ' 遅刻' }
+    else if (r.status === 'no_location') { cls = 'bg-orange-100 text-orange-700'; note = ' 位置なし' }
+    else if (Number(r.early_leave_minutes) > 0) { cls = 'badge-yellow'; note = ` 早退${Number(r.early_leave_minutes)}分` }
+    return `<span class="badge ${cls} text-[10px]">${label} ${esc(nextDay + time)}${esc(note)}</span>`
+  }
+  if ((s.pending_types || []).includes(t)) return `<span class="badge badge-yellow text-[10px]" title="打刻修正の申請中">${label} 申請中</span>`
+  if ((s.overdue_types || []).includes(t)) return `<span class="badge bg-white text-red-600 border border-red-300 text-[10px]" title="予定の時刻を過ぎても報告がありません">${label} 未報告</span>`
+  return `<span class="badge badge-gray text-[10px]">${label}</span>`
+}
+function drawDashShifts() {
+  const data = DASH_DATA; if (!data) return
+  const body = document.getElementById('dash-shift-rows'); if (!body) return
+  const all = data.shifts || []
+  // 案件の選択肢（名前順）
+  const projects = [...new Map(all.map(s => [String(s.project_id), s.project_name])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ja'))
+  const sel = document.getElementById('dash-shift-project')
+  sel.innerHTML = `<option value="">すべての案件（${all.length}件）</option>` + projects.map(([id, name]) => `<option value="${esc(id)}" ${DASH_FILTER.project === id ? 'selected' : ''}>${esc(name)}</option>`).join('')
+  sel.onchange = () => { DASH_FILTER.project = sel.value; drawDashShifts() }
+  const byProject = all.filter(s => !DASH_FILTER.project || String(s.project_id) === DASH_FILTER.project)
+  const chip = (key, label, n) => `<button type="button" class="badge ${DASH_FILTER.only === key ? 'badge-blue ring-1 ring-blue-400' : 'badge-gray'} text-xs" data-action="dashShiftFilter" data-only="${esc(key)}">${esc(label)} ${Number(n)}</button>`
+  document.getElementById('dash-shift-filters').innerHTML = chip('', 'すべて', byProject.length)
+    + Object.entries(DASH_ONLY).map(([k, v]) => chip(k, v.label, byProject.filter(v.test).length)).join('')
+  const only = DASH_ONLY[DASH_FILTER.only]
+  const list = only ? byProject.filter(only.test) : byProject
+  body.innerHTML = list.map(s => {
+    const chips = (s.required_types || []).map(t => dashReportChip(s, t)).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
+    // 入店以降の報告があるシフト・確定済みのシフトは、ここから欠勤にしない（#221）
+    const absentBtn = s.started ? '<span class="text-[11px] text-gray-400" title="入店以降の報告があるため、欠勤にできません">勤務の報告あり</span>'
+      : s.settle_status === 'confirmed' ? '<span class="text-[11px] text-gray-400">確定済み</span>'
+      : `<button type="button" class="text-xs text-red-600 hover:underline" data-action="markAbsent" data-id="${Number(s.shift_id)}">欠勤にする</button>`
+    const tel = String(s.staff_phone || '').replace(/[^0-9+]/g, '')
+    return `<tr>
+      <td><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a>
+        ${tel ? `<a href="tel:${esc(tel)}" class="text-gray-400 hover:text-blue-600 ml-0.5" title="${esc(s.staff_phone)} に電話"><i class="fas fa-phone text-[11px]"></i></a>` : ''}
+        ${s.staff_unavailable ? '<span class="badge badge-red text-[10px]" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}
+        ${s.contact ? `<a href="#consult/${Number(s.contact.consultation_id)}" class="badge badge-blue text-[10px]" title="${esc(s.contact.category_label + ': ' + (s.contact.excerpt || ''))}">連絡あり</a>` : ''}
+        ${s.late_minutes > 0 ? `<span class="badge badge-red text-[10px]">遅刻 ${Number(s.late_minutes)}分</span>` : ''}
+        ${s.early_leave_minutes > 0 ? `<span class="badge badge-yellow text-[10px]">早退 ${Number(s.early_leave_minutes)}分</span>` : ''}
+        ${s.on_break ? '<span class="badge badge-purple text-[10px]">休憩中</span>' : ''}
+        ${dashLoginBadges(s)}</td>
+      <td class="text-xs">${esc(s.project_name)}</td>
+      <td class="text-xs whitespace-nowrap">${s.carried_over ? `<span class="badge badge-purple text-[10px]">前日から継続</span><br>${esc(dayjs(s.work_date).format('M/D'))} ` : ''}${esc(formatShiftTime(s.start_time, s.end_time))}</td>
+      <td><div class="flex flex-wrap gap-1 min-w-[12rem]">${chips}</div></td>
+      <td class="whitespace-nowrap">
+        <button type="button" class="text-xs text-blue-600 hover:underline mr-2" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">${s.has_login === false ? '代理入力・URL' : '報告状況'}</button>
+        ${absentBtn}
+      </td>
+    </tr>`
+  }).join('') || `<tr><td colspan="5" class="text-center text-gray-400 py-4">${all.length ? '条件に合うシフトはありません' : '本日のシフトはありません'}</td></tr>`
+}
+delegate('dashShiftFilter', el => { DASH_FILTER.only = el.dataset.only || ''; drawDashShifts() })
+// KPI カードなどから、ダッシュボードの中の一覧へ移る
+delegate('dashScrollTo', el => {
+  const t = document.getElementById(el.dataset.target || '')
+  if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' })
+})
+// 電話したことをフォロー履歴（種別: 電話・完了）に残す（#343）
+delegate('dashCallLog', el => {
+  const s = DASH_SHIFTS.get(Number(el.dataset.id)); if (!s || !s.staff_id) return
+  const what = DASH_CALL_LABEL[el.dataset.kind] || '報告'
+  withSubmitLock(el, async () => {
+    try {
+      await axios.post('/api/admin/follow-logs', { staff_id: s.staff_id, follow_type: 'phone', status: 'done', related_project_id: s.project_id || null,
+        content: `${what}がないため電話（${dayjs(s.work_date).format('M/D')} ${formatShiftTime(s.start_time, s.end_time)} ${s.project_name || ''}）` })
+    } catch (e) { showApiError(e, '記録できませんでした'); return }
+    el.removeAttribute('data-action')
+    el.innerHTML = '<i class="fas fa-check mr-0.5"></i>記録しました'
+    toast('フォロー履歴に電話の記録を追加しました')
+  })
+})
 
 // ---------- ダッシュボード: 管理者ToDo（#487）----------
 // 『対応済み』『あとで（明日まで）』で ToDo を隠す。隠した ToDo は下にたたんで出し、だれがいつ隠したかを示して元に戻せる。
@@ -458,6 +621,8 @@ async function renderDashboard() {
 const DASH_TODOS = { todos: [], hidden: [] }
 function dashTodoLink(t) {
   const href = t.href || (t.staff_id ? '#staff/' + Number(t.staff_id) : '')
+  // #dash-〜 はダッシュボードの中の一覧（人員不足など）。画面を移らずにそこへ移る
+  if (/^#dash-[a-z-]+$/.test(href)) return `<button type="button" class="text-xs text-blue-600 whitespace-nowrap hover:underline" data-action="dashScrollTo" data-target="${esc(href.slice(1))}">${esc(t.link_label || '詳細→')}</button>`
   return href ? `<a href="${esc(href)}" class="text-xs text-blue-600 whitespace-nowrap hover:underline">${esc(t.link_label || '詳細→')}</a>` : ''
 }
 function drawDashTodos() {
@@ -634,6 +799,8 @@ delegate('openBoardAt', el => {
     window.__boardState.from = d.subtract((d.day() + 6) % 7, 'day').format('YYYY-MM-DD')
     window.__boardState.projectIds = [Number(el.dataset.projectId)]
     window.__boardState.clientId = ''
+    // 人員不足の枠から開いたときは『不足のみ』で開く。それ以外（希望（仮）のシフトなど）は絞り込みを外す（#299）
+    window.__boardState.onlyShort = el.dataset.short === '1'
   }
   closeModal()
   if (location.hash === '#shifts') route(); else location.hash = 'shifts'
@@ -688,10 +855,18 @@ function matchesKeyword(q, values) {
   const digits = text.replace(/[^0-9]/g, '')
   return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
 }
-const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満']]
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
-  noreport: s => s.today_shift && !s.today_checkin, lowscore: s => s.evaluation_score < 3,
+  noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
+  // ログインを発行したのに一度もアプリを使っていない人（#286。ログインなしの名簿のみの人は除く）
+  noapp: s => s.user_role === 'staff' && !s.app_last_used_at,
+}
+// 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
+function staffLastLoginCell(s) {
+  if (s.user_role !== 'staff') return '<span class="text-gray-300" title="ログインなし（名簿のみ）">-</span>'
+  if (!s.app_last_used_at) return '<span class="badge badge-yellow" title="ログインを発行してから、まだ一度もアプリを使っていません">未ログイン</span>'
+  return esc(dayjs(String(s.app_last_used_at).replace(' ', 'T')).format('YY/M/D HH:mm'))
 }
 // 最終稼働からの日数で休眠の人を探す（#433。最終稼働は、確定・代打のシフトの今日までの日付）
 const STAFF_DORMANT = [['', '最終稼働: すべて'], ['30', '30日以上稼働なし'], ['60', '60日以上稼働なし'], ['90', '90日以上稼働なし'], ['never', '稼働したことがない']]
@@ -700,6 +875,7 @@ const STAFF_SORT = {
   staff_id: s => Number(s.staff_id), code: s => staffCodeLabel(s) || null, name: s => searchNorm(s.kana || s.name),
   month_days: s => Number(s.month_days || 0), month_seiyaku: s => Number(s.month_seiyaku || 0), evaluation_score: s => Number(s.evaluation_score || 0),
   retention_risk: s => RISK_ORDER[s.retention_risk] ?? 0, last_work_date: s => s.last_work_date || null, last_report_date: s => s.last_report_date || null,
+  last_login: s => s.app_last_used_at || null,
 }
 const isRetiredStaff = s => s.employment_status === 'retired'
 function staffEmpBadge(s) {
@@ -781,7 +957,7 @@ function drawStaffTable(filter) {
     </div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}</tr></thead>
+        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
         <tbody id="staff-rows"></tbody>
       </table>
     </div>`
@@ -816,7 +992,8 @@ function drawStaffRows() {
               <td>${s.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : '<span class="text-gray-300">-</span>'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
-            </tr>`).join('') || '<tr><td colspan="12" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+              <td class="text-xs text-gray-500 whitespace-nowrap">${staffLastLoginCell(s)}</td>
+            </tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
 }
 delegate('toggleStaffFilter', el => {
   const arr = STAFF_LIST[el.dataset.group]; const k = el.dataset.key
@@ -1035,7 +1212,7 @@ function staffDetailHeaderHtml(sid, p) {
           <span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>
           ${RISK_BADGE[p.retention_risk]}
           ${p.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : ''}
-          <span class="badge badge-blue">評価 ${Number(p.evaluation_score).toFixed(1)}</span>
+          <span class="badge ${Number(p.evaluation_score) > 0 ? 'badge-blue' : 'badge-gray'}">${Number(p.evaluation_score) > 0 ? '評価 ' + Number(p.evaluation_score).toFixed(1) : '未評価'}</span>
         </div>
       </div>
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
@@ -1044,6 +1221,15 @@ function staffDetailHeaderHtml(sid, p) {
       <button class="btn btn-primary" data-action="showFollowModal" data-id="${sid}" data-name="${esc(p.name)}"><i class="fas fa-plus"></i>フォロー記録</button>
     </div>
 `
+}
+// 取引先所属のスタッフの所属会社は、登録済みの取引先から選ぶ（#161。自由入力の名前が別の取引先・支払先にならないように）
+function partnerSelectHtml(affData, current) {
+  const own = ME && ME.company_name
+  const names = (affData.affiliations || []).map(a => a.affiliation_name).filter(n => n && n !== own)
+  if (current && !names.includes(current)) names.unshift(current)
+  // 所属会社が空のときは空欄を選んだままにする（保存で先頭の取引先に変わらないように）
+  return `<select id="staff-affiliation" class="inp text-xs">${current ? '' : '<option value="" selected>（選択してください）</option>'}${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">取引先の管理（登録・連絡先の編集・統合）</a>`
 }
 function staffBasicCardHtml(sid, p, affData, editing) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
@@ -1075,7 +1261,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}">` : esc(p.date_of_birth || '-'))}
           ${bi('年齢', p.age != null ? p.age + '歳' : '-')}
           ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-gray-500' : 'text-amber-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
-          ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? `<input list="affiliation-list" id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">`
+          ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? partnerSelectHtml(affData, p.affiliation)
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
           ${bi('所属先担当者名', ed ? `<input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}">` : esc(p.affiliation_contact || '-'))}
           ${p.affiliation_type === 'own_employee' ? bi('社員番号 / 所属', esc([p.employee_number, p.department, p.job_title].filter(Boolean).join(' / ') || '-')) : ''}
@@ -1091,7 +1277,6 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           <div class="md:col-span-2">${bi('スキル', edBiz ? `<input id="staff-skills" class="inp text-xs" value="${esc(p.skills || '')}" placeholder="カンマ区切り（例: MNP,接客,クロージング）">`
               : `<span class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(x => `<span class="badge badge-blue">${esc(x)}</span>`).join('') || '-'}</span>`)}</div>
         </dl>
-        <datalist id="affiliation-list">${affData.affiliations.map(a => `<option value="${esc(a.affiliation_name)}">`).join('')}</datalist>
 
         ${staffBusinessSectionHtml(p, edBiz)}
 
@@ -1171,6 +1356,7 @@ async function renderStaffDetail(sid, opts = {}) {
   ])
   const p = data.profile
   const evalRadar = data.evaluations[0]
+  STAFF_EVALS = data.evaluations || []
   staffDetailState = { sid, p, affData }
   const edBiz = editing && !!p.can_edit_business
   $app.innerHTML = `
@@ -1191,8 +1377,12 @@ async function renderStaffDetail(sid, opts = {}) {
         </section>
 
         <section class="card p-4" id="staff-evaluation">
-          <h3 class="text-sm font-bold text-gray-700 mb-3">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
-          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>` : '<p class="text-sm text-gray-400">評価データがありません</p>'}
+          <div class="flex items-center gap-2 mb-3">
+            <h3 class="text-sm font-bold text-gray-700">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
+            <button class="btn btn-outline text-xs ml-auto" data-action="showEvaluationModal" data-id="${Number(sid)}"><i class="fas fa-plus"></i>評価を登録</button>
+          </div>
+          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>${evalRadar.comment ? `<p class="text-xs text-gray-600 mt-2 whitespace-pre-wrap">${esc(evalRadar.comment)}</p>` : ''}` : '<p class="text-sm text-gray-400">評価データがありません</p>'}
+          ${evaluationHistoryHtml(sid, data.evaluations)}
         </section>
       </div>
     </div>
@@ -1296,6 +1486,63 @@ async function renderStaffDetail(sid, opts = {}) {
     })
   }
 }
+
+// ---------- スタッフ評価（#164）: 期間（年月）ごとに6項目（1〜5）とコメント。同じ期間は上書き ----------
+const EVAL_ITEMS = [['attendance_score', '勤怠安定性'], ['report_score', '報告正確性'], ['performance_score', '実績'], ['client_score', 'クライアント評価'], ['growth_score', '成長意欲'], ['retention_score', '継続見込み']]
+let STAFF_EVALS = []
+const evalAvg = e => Math.round(EVAL_ITEMS.reduce((s, [k]) => s + Number(e[k] || 0), 0) / EVAL_ITEMS.length * 10) / 10
+function evaluationHistoryHtml(sid, list) {
+  if (!list || !list.length) return ''
+  return `<div class="mt-3 pt-3 border-t border-gray-100">
+    <p class="text-xs font-bold text-gray-500 mb-1">推移（直近${list.length}件）</p>
+    <table class="w-full text-xs">${list.map(e => `
+      <tr class="border-b border-gray-50">
+        <td class="py-1">${esc(e.evaluation_period || '-')}</td>
+        <td class="py-1 font-bold">${evalAvg(e).toFixed(1)}</td>
+        <td class="py-1 text-gray-400 truncate max-w-[80px]" title="${esc(e.evaluator_name || '')}">${esc(e.evaluator_name || '')}</td>
+        <td class="py-1 text-right whitespace-nowrap">
+          <button class="text-blue-600 hover:underline" data-action="showEvaluationModal" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}">編集</button>
+          <button class="text-red-500 hover:underline ml-1" data-action="deleteEvaluation" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}" data-period="${esc(e.evaluation_period || '')}">削除</button></td>
+      </tr>`).join('')}</table>
+    <p class="text-[11px] text-gray-400 mt-1">総合評価は最新の期間の6項目の平均です</p>
+  </div>`
+}
+delegate('showEvaluationModal', el => {
+  const sid = Number(el.dataset.id)
+  const cur = el.dataset.eid ? STAFF_EVALS.find(e => Number(e.evaluation_id) === Number(el.dataset.eid)) : null
+  const period = cur ? cur.evaluation_period : dayjs().format('YYYY-MM')
+  modal(`
+    <h3 class="font-bold text-lg mb-3">${cur ? '評価の編集' : '評価を登録'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">評価の期間（年月） *</label><input type="month" id="ev-period" class="inp" value="${esc(period)}" ${cur ? 'readonly' : ''}></div>
+      <div class="grid grid-cols-2 gap-2">${EVAL_ITEMS.map(([k, label]) => `
+        <label class="text-sm text-gray-600">${label}
+          <select id="ev-${k}" class="inp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Number(cur ? cur[k] : 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`).join('')}</div>
+      <p class="text-[11px] text-gray-400">5: とても良い 〜 1: 課題が大きい。同じ期間の評価は上書きします</p>
+      <div><label class="text-sm text-gray-600 block mb-1">コメント</label><textarea id="ev-comment" rows="3" class="inp" maxlength="1000">${esc(cur ? cur.comment || '' : '')}</textarea></div>
+      <button class="btn btn-primary w-full" data-action="saveEvaluation" data-id="${sid}" data-edit="${cur ? '1' : ''}">保存する</button>
+    </div>`)
+})
+delegate('saveEvaluation', el => withSubmitLock(el, async () => {
+  const sid = Number(el.dataset.id)
+  const period = document.getElementById('ev-period').value
+  if (!/^\d{4}-\d{2}$/.test(period)) { toast('評価の期間（年月）を選んでください'); return }
+  if (!el.dataset.edit && STAFF_EVALS.some(e => e.evaluation_period === period) && !confirm(`${period} の評価はすでにあります。上書きしますか？`)) return
+  const body = { evaluation_period: period, comment: document.getElementById('ev-comment').value }
+  for (const [k] of EVAL_ITEMS) body[k] = Number(document.getElementById('ev-' + k).value)
+  try {
+    await axios.post(`/api/admin/staff/${sid}/evaluations`, body)
+    closeModal(); toast('評価を保存しました'); renderStaffDetail(sid)
+  } catch (e) { showApiError(e, '評価を保存できませんでした') }
+}))
+delegate('deleteEvaluation', el => withSubmitLock(el, async () => {
+  const sid = Number(el.dataset.id)
+  if (!confirm(`${el.dataset.period} の評価を削除しますか？`)) return
+  try {
+    await axios.delete(`/api/admin/staff/${sid}/evaluations/${Number(el.dataset.eid)}`)
+    toast('評価を削除しました'); renderStaffDetail(sid)
+  } catch (e) { showApiError(e, '評価を削除できませんでした') }
+}))
 
 window.saveStaffMemo = async function (sid) {
   await axios.put('/api/admin/staff/' + sid, { memo: document.getElementById('staff-memo').value })
@@ -1466,11 +1713,6 @@ window.saveStaffBasicInfo = async function (sid) {
     }
     const res = await putConfirmingRetiredAt('/api/admin/staff/' + sid, body)
     if (!res) return
-    // 所属会社名が新規入力なら候補にも追加しておく（表記ゆれ防止の候補リストを育てる）。
-    // 取引先マスタに入るため、取引先所属のスタッフだけにする（屋号・自社名・スキルシートの所属を取引先にしない。#262）
-    const aff = (val('staff-affiliation') || '').trim()
-    const isPartner = staffDetailState && staffDetailState.p && staffDetailState.p.affiliation_type === 'partner_manual'
-    if (aff && isPartner) await axios.post('/api/admin/staff-affiliations', { affiliation_name: aff }).catch(() => {})
     const le2 = res.data && res.data.login_email
     if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました' : '保存しました。確認メールを送れませんでした（メールの設定を確認してください）')
     else toast('保存しました')
@@ -1503,19 +1745,45 @@ const DOC_ENTITY = {
   client: { collectionUrl: id => `/api/admin/clients/${id}/documents`, itemUrl: docId => `/api/admin/clients/documents/${docId}`, containerId: 'client-documents-list', emptyText: '契約書ファイルはありません', title: '契約書アップロード' },
   employee: { collectionUrl: id => `/api/admin/employees/${id}/documents`, itemUrl: docId => `/api/admin/employees/documents/${docId}`, containerId: 'employee-documents-list', emptyText: '入社時書類はありません', title: '入社時書類アップロード' },
 }
+// 書類の種類と有効期限（#297。src/staff-self-service.ts の DOC_TYPE_LABEL・DOC_TYPES_BY_KIND・DOC_EXPIRY_WARN_DAYS と同じ）
+const DOC_TYPE_LABEL = { resume: '履歴書', qualification: '資格証', id_card: '身分証', residence_card: '在留カード', bank: '口座の確認書類',
+  onboarding: '入社書類', contract_basic: '基本契約書', contract_individual: '個別契約書', other: 'その他' }
+const DOC_TYPES_BY_KIND = { staff: ['resume', 'qualification', 'id_card', 'residence_card', 'bank', 'onboarding', 'other'],
+  employee: ['resume', 'qualification', 'id_card', 'residence_card', 'bank', 'onboarding', 'other'], client: ['contract_basic', 'contract_individual', 'other'] }
+const DOC_EXPIRY_WARN_DAYS = 30
+function docTypeOptions(kind, selected) {
+  return `<option value="">（未設定）</option>${(DOC_TYPES_BY_KIND[kind] || []).map(t => `<option value="${t}" ${t === selected ? 'selected' : ''}>${DOC_TYPE_LABEL[t]}</option>`).join('')}`
+}
+// 期限切れは赤、30日以内は黄色、それより先は灰色
+function docExpiryBadge(validUntil, kind) {
+  if (!validUntil) return ''
+  const days = dayjs(validUntil).diff(dayjs().startOf('day'), 'day')
+  const what = kind === 'client' ? '契約終了' : '期限'
+  if (days < 0) return `<span class="badge badge-red">${what}切れ ${esc(validUntil)}</span>`
+  if (days <= DOC_EXPIRY_WARN_DAYS) return `<span class="badge badge-yellow">${what}まで${days}日（${esc(validUntil)}）</span>`
+  return `<span class="badge badge-gray">${what} ${esc(validUntil)}</span>`
+}
 function documentListHtml(docs, kind, id) {
   const cfg = DOC_ENTITY[kind]
   if (!docs || docs.length === 0) return `<p class="text-sm text-gray-400">${cfg.emptyText}</p>`
-  return `<div class="space-y-1.5">${docs.map(d => `
-    <div class="flex items-center gap-2 p-2 rounded-lg bg-gray-50">
+  return `<div class="space-y-1.5">${docs.map(d => {
+    const unconfirmed = kind === 'staff' && d.submitted_by_staff && !d.confirmed_at
+    const badges = (d.doc_type ? `<span class="badge badge-blue">${esc(DOC_TYPE_LABEL[d.doc_type] || d.doc_type)}</span>` : '') + docExpiryBadge(d.valid_until, kind)
+      + (kind === 'staff' && d.submitted_by_staff ? '<span class="badge badge-purple">本人提出</span>' : '') + (unconfirmed ? '<span class="badge badge-yellow">未確認</span>' : '')
+    return `
+    <div class="flex items-center gap-2 p-2 rounded-lg ${unconfirmed ? 'bg-amber-50' : 'bg-gray-50'} flex-wrap">
       <i class="fas ${docIconClass(d.original_file_name)}"></i>
       <div class="flex-1 min-w-0">
         <p class="text-sm text-gray-800 truncate">${esc(d.original_file_name)}</p>
         <p class="text-xs text-gray-400">${dayjs(d.uploaded_at).format('YYYY/M/D HH:mm')} ・ ${formatFileSize(d.file_size)}</p>
+        ${badges ? `<div class="flex flex-wrap gap-1 mt-0.5">${badges}</div>` : ''}
       </div>
+      ${unconfirmed ? `<button class="btn btn-outline text-xs" data-action="confirmDocument" data-kind="${esc(kind)}" data-id="${esc(id)}" data-doc-id="${d.document_id}"><i class="fas fa-check"></i>確認済みにする</button>` : ''}
+      <button class="btn btn-outline text-xs" title="種類・有効期限" data-action="editDocumentMeta" data-kind="${esc(kind)}" data-id="${esc(id)}" data-doc-id="${d.document_id}" data-type="${esc(d.doc_type || '')}" data-valid="${esc(d.valid_until || '')}" data-name="${esc(d.original_file_name)}"><i class="fas fa-tag"></i></button>
       <a class="btn btn-outline text-xs" href="${cfg.itemUrl(d.document_id)}/download" target="_blank" rel="noopener"><i class="fas fa-download"></i></a>
       <button class="btn btn-danger text-xs" data-action="deleteDocument" data-kind="${esc(kind)}" data-id="${esc(id)}" data-doc-id="${d.document_id}" data-name="${esc(d.original_file_name)}"><i class="fas fa-trash"></i></button>
-    </div>`).join('')}</div>`
+    </div>`
+  }).join('')}</div>`
 }
 
 window.openDocumentUpload = function (kind, id) {
@@ -1524,6 +1792,11 @@ window.openDocumentUpload = function (kind, id) {
     <div class="flex items-center justify-between mb-3">
       <h3 class="font-bold text-gray-800"><i class="fas fa-file-lines text-blue-600 mr-1"></i>${cfg.title}</h3>
       <button class="text-gray-400" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      <div><label class="text-xs text-gray-500 block mb-1">書類の種類</label><select id="doc-type" class="inp text-sm">${docTypeOptions(kind, '')}</select></div>
+      <div><label class="text-xs text-gray-500 block mb-1">${kind === 'client' ? '契約終了日' : '有効期限'}（任意）</label><input type="date" id="doc-valid" class="inp text-sm"></div>
+      <p class="col-span-2 text-[11px] text-gray-400">同時に選んだファイルすべてに付きます。期限が${DOC_EXPIRY_WARN_DAYS}日以内・期限切れの書類は「スタッフの申請」の画面に出ます。</p>
     </div>
     <div id="doc-dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center text-gray-500 cursor-pointer"
          ondragover="event.preventDefault(); this.classList.add('border-blue-400','bg-blue-50')"
@@ -1556,6 +1829,9 @@ window.onDocFilesSelected = async function (fileList, kind, id) {
 
   const form = new FormData()
   files.forEach(f => form.append('files', f))
+  const typeEl = document.getElementById('doc-type'), validEl = document.getElementById('doc-valid')
+  if (typeEl && typeEl.value) form.append('doc_type', typeEl.value)
+  if (validEl && validEl.value) form.append('valid_until', validEl.value)
 
   try {
     const { data } = await axios.post(cfg.collectionUrl(id), form)
@@ -1567,8 +1843,8 @@ window.onDocFilesSelected = async function (fileList, kind, id) {
     if (successCount > 0) toast(`${successCount}件のファイルをアップロードしました`)
     const { data: docData } = await axios.get(cfg.collectionUrl(id))
     document.getElementById(cfg.containerId).innerHTML = documentListHtml(docData.documents, kind, id)
-  } catch {
-    progress.innerHTML = '<div class="text-xs text-red-600">ファイルのアップロードに失敗しました。</div>'
+  } catch (e) {
+    progress.innerHTML = `<div class="text-xs text-red-600">${esc((e && e.response && e.response.data && e.response.data.error) || 'ファイルのアップロードに失敗しました。')}</div>`
   }
 }
 
@@ -1586,6 +1862,243 @@ window.deleteDocument = async function (kind, id, docId, filename) {
 }
 // ファイル名は onclick に埋め込まず、ボタンの data-* から読む（documentListHtml）
 delegate('deleteDocument', el => deleteDocument(el.dataset.kind, Number(el.dataset.id), Number(el.dataset.docId), el.dataset.name))
+
+// 書類の一覧を読み直す（スタッフ・クライアント・社員の詳細の欄。スタッフの申請の画面から操作したときはその画面）
+async function reloadDocumentList(kind, id) {
+  if ((location.hash || '').startsWith('#staff-requests')) return renderStaffRequests()
+  const cfg = DOC_ENTITY[kind]; const box = document.getElementById(cfg.containerId)
+  if (!box || !id) return
+  const { data } = await axios.get(cfg.collectionUrl(id))
+  box.innerHTML = documentListHtml(data.documents, kind, id)
+}
+// 書類の種類・有効期限の変更（#297）
+delegate('editDocumentMeta', el => {
+  const { kind, id, docId } = el.dataset
+  modal(`
+    <h3 class="font-bold text-lg mb-1">書類の種類・${kind === 'client' ? '契約終了日' : '有効期限'}</h3>
+    <p class="text-xs text-gray-500 mb-3 truncate">${esc(el.dataset.name || '')}</p>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">書類の種類</label><select id="dm-type" class="inp">${docTypeOptions(kind, el.dataset.type || '')}</select></div>
+      <div><label class="text-sm text-gray-600 block mb-1">${kind === 'client' ? '契約終了日' : '有効期限'}（空欄で期限なし）</label><input type="date" id="dm-valid" class="inp" value="${esc(el.dataset.valid || '')}"></div>
+      <div class="flex gap-2 justify-end"><button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
+        <button class="btn btn-primary" data-action="saveDocumentMeta" data-kind="${esc(kind)}" data-id="${esc(id || '')}" data-doc-id="${esc(docId)}">保存</button></div>
+    </div>`)
+})
+delegate('saveDocumentMeta', el => withSubmitLock(el, async () => {
+  const { kind, id, docId } = el.dataset
+  try {
+    await axios.put(`/api/admin/staff-requests/documents/${kind}/${Number(docId)}`, { doc_type: document.getElementById('dm-type').value, valid_until: document.getElementById('dm-valid').value })
+    closeModal(); toast('書類の種類・期限を保存しました')
+    await reloadDocumentList(kind, Number(id) || 0)
+    refreshStaffRequestsBadge()
+  } catch (e) { showApiError(e, '保存に失敗しました') }
+}))
+// 本人が提出した書類を確認済みにする（#288。確認済みにすると本人は削除できなくなる）
+delegate('confirmDocument', el => withSubmitLock(el, async () => {
+  const { kind, id, docId } = el.dataset
+  try {
+    await axios.put(`/api/admin/staff-requests/documents/${kind}/${Number(docId)}`, { confirmed: true })
+    toast('確認済みにしました')
+    await reloadDocumentList(kind, Number(id) || 0)
+    refreshStaffRequestsBadge()
+  } catch (e) { showApiError(e, '確認済みにできませんでした') }
+}))
+
+// ============ スタッフの申請（登録情報の変更 #272・提出書類と期限 #288 #297・休暇 #289） ============
+// メニューは index.tsx を変えずにここで足す（打刻修正承認の下）。件数はメニューのバッジに出す
+;(function addStaffRequestsNav() {
+  const after = document.querySelector('.side-link[data-tab="corrections"]')
+  if (after && !document.querySelector('.side-link[data-tab="staff-requests"]')) {
+    after.insertAdjacentHTML('afterend', `<a href="#staff-requests" class="side-link flex items-center" data-tab="staff-requests"><i class="fas fa-file-signature w-5"></i>スタッフの申請<span id="staff-requests-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>`)
+  }
+  const opt = document.querySelector('#mobile-nav option[value="corrections"]')
+  if (opt && !document.querySelector('#mobile-nav option[value="staff-requests"]')) opt.insertAdjacentHTML('afterend', '<option value="staff-requests">スタッフの申請</option>')
+  setTimeout(() => refreshStaffRequestsBadge(), 800)
+})()
+function applyStaffRequestsBadge(sum) {
+  const b = document.getElementById('staff-requests-badge')
+  if (!b || !sum) return
+  const n = Number(sum.total) || 0
+  b.textContent = n > 99 ? '99+' : String(n); b.classList.toggle('hidden', !n)
+}
+async function refreshStaffRequestsBadge() {
+  try { applyStaffRequestsBadge((await axios.get('/api/admin/staff-requests/summary')).data) } catch (e) { /* 件数が取れなくても画面は使える */ }
+}
+const SR_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['見送り', 'badge-red'], cancelled: ['取り消し', 'badge-gray'] }
+const srStatusBadge = (s) => { const [l, cls] = SR_STATUS[s] || [s, 'badge-gray']; return `<span class="badge ${cls}">${esc(l)}</span>` }
+const SR_STATE = { profileAll: false, leaveAll: false }
+
+async function renderStaffRequests() {
+  const tab = (location.hash || '').split('/')[1] || 'profile'
+  loading()
+  let sum = {}
+  try { sum = (await axios.get('/api/admin/staff-requests/summary')).data } catch (e) { /* 件数なしで表示する */ }
+  applyStaffRequestsBadge(sum)
+  const tabs = [['profile', '登録情報の変更', sum.profile_pending], ['docs', '提出書類・期限', (sum.documents_unconfirmed || 0) + (sum.documents_expiring || 0)]]
+  if (sum.can_manage_leave) tabs.push(['leave', '休暇', sum.leave_pending])
+  $app.innerHTML = `
+    <div class="mb-4"><h2 class="text-xl font-bold text-gray-900">スタッフの申請</h2>
+      <p class="text-xs text-gray-500 mt-1">スタッフがアプリから出した登録情報の変更・書類・休暇の申請を確認します。承認・見送りの結果は本人のアプリの通知に届きます。</p></div>
+    <div class="flex gap-2 mb-4 flex-wrap">${tabs.map(([k, l, n]) => `<a href="#staff-requests/${k}" class="btn ${k === tab ? 'btn-primary' : 'btn-outline'} text-xs">${l}${n ? ` <span class="badge badge-red">${Number(n)}</span>` : ''}</a>`).join('')}</div>
+    <div id="sr-body"><p class="text-sm text-gray-400">読み込み中...</p></div>`
+  try {
+    if (tab === 'docs') await srDocs()
+    else if (tab === 'leave' && sum.can_manage_leave) await srLeave()
+    else await srProfile()
+  } catch (e) { document.getElementById('sr-body').innerHTML = `<p class="text-sm text-red-600">${esc(showApiError(e, '読み込めませんでした'))}</p>` }
+}
+
+// ---------- 登録情報の変更 ----------
+async function srProfile() {
+  const { data } = await axios.get('/api/admin/staff-requests/profile' + (SR_STATE.profileAll ? '?status=all' : ''))
+  const L = data.labels
+  const show = (v) => v == null || v === '' ? '（空欄）' : String(v)
+  document.getElementById('sr-body').innerHTML = `
+    <label class="text-xs text-gray-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srProfileAll" ${SR_STATE.profileAll ? 'checked' : ''}>処理済みも表示</label>
+    ${data.requests.length ? data.requests.map(r => `
+      <section class="card p-4 mb-3">
+        <div class="flex items-center gap-2 flex-wrap mb-2">
+          <a href="#staff/${Number(r.staff_id)}" class="font-bold text-blue-700">${esc(r.staff_name)}</a>${srStatusBadge(r.status)}
+          <span class="text-xs text-gray-400">申請 ${esc(r.created_at || '')}</span>
+          ${r.via_company_name ? `<span class="badge badge-gray">${esc(r.via_company_name)} の画面から申請</span>` : ''}
+        </div>
+        <div class="overflow-x-auto"><table class="w-full text-sm">
+          <thead><tr class="text-xs text-gray-400"><th class="text-left py-1 pr-2">項目</th><th class="text-left pr-2">今の登録</th><th class="text-left">変更後</th></tr></thead>
+          <tbody>${Object.keys(r.changes).map(k => {
+            const changedSince = r.status === 'pending' && String(r.before[k] ?? '') !== String(r.current[k] ?? '')
+            return `<tr class="border-t border-gray-100 align-top"><td class="py-1 pr-2 text-gray-500 whitespace-nowrap">${esc(L[k] || k)}</td>
+              <td class="pr-2 whitespace-pre-wrap break-words">${esc(show(r.current[k]))}${changedSince ? ' <span class="badge badge-yellow">申請の後に変更あり</span>' : ''}</td>
+              <td class="font-bold whitespace-pre-wrap break-words">${esc(show(r.changes[k]))}${k === 'login_email' ? '<span class="block text-[11px] font-normal text-gray-400">承認すると確認用のメールを送り、本人が開いたときに切り替わります</span>' : ''}</td></tr>`
+          }).join('')}</tbody></table></div>
+        ${r.note ? `<p class="text-xs text-gray-600 mt-2 whitespace-pre-wrap">補足: ${esc(r.note)}</p>` : ''}
+        ${r.status === 'pending' ? `
+          <div class="flex gap-2 mt-3 flex-wrap">
+            <input id="sr-pc-${Number(r.request_id)}" class="inp text-xs flex-1 min-w-[12rem]" maxlength="500" placeholder="コメント（見送るときは理由を入力。本人に伝わります）">
+            <button class="btn btn-primary text-xs" data-action="srProfileApprove" data-id="${Number(r.request_id)}"><i class="fas fa-check"></i>承認して反映</button>
+            <button class="btn btn-outline text-xs" data-action="srProfileReject" data-id="${Number(r.request_id)}">見送る</button>
+          </div>` : r.review_comment ? `<p class="text-xs text-gray-500 mt-2">コメント: ${esc(r.review_comment)}${r.reviewed_by_name ? `（${esc(r.reviewed_by_name)}）` : ''}</p>` : ''}
+      </section>`).join('') : '<p class="text-sm text-gray-400">承認待ちの申請はありません</p>'}`
+}
+delegate('srProfileAll', el => { SR_STATE.profileAll = el.checked; srProfile().catch(e => showApiError(e, '読み込めませんでした')) })
+delegate('srProfileApprove', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const comment = (document.getElementById('sr-pc-' + id) || {}).value || ''
+  try {
+    const { data } = await axios.post(`/api/admin/staff-requests/profile/${id}/approve`, { comment })
+    toast(data.login_email && data.login_email.pending ? '反映しました。ログイン用メールは本人が確認用のメールを開いたときに切り替わります' : '承認して登録情報に反映しました')
+    renderStaffRequests()
+  } catch (e) { showApiError(e, '承認できませんでした') }
+}))
+delegate('srProfileReject', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const comment = ((document.getElementById('sr-pc-' + id) || {}).value || '').trim()
+  if (!comment) { toast('見送る理由をコメントに入力してください（本人に伝わります）'); return }
+  try {
+    await axios.post(`/api/admin/staff-requests/profile/${id}/reject`, { comment })
+    toast('見送りました'); renderStaffRequests()
+  } catch (e) { showApiError(e, '処理できませんでした') }
+}))
+
+// ---------- 提出書類と期限 ----------
+const SR_DOC_KIND = {
+  staff: { label: 'スタッフ', link: id => `#staff/${id}`, dl: d => `/api/admin/staff/documents/${d}/download` },
+  employee: { label: '入社時書類', link: id => `#employees/${id}`, dl: d => `/api/admin/employees/documents/${d}/download` },
+  client: { label: 'クライアント', link: id => `#clients/${id}`, dl: d => `/api/admin/clients/documents/${d}/download` },
+}
+async function srDocs() {
+  const { data } = await axios.get('/api/admin/staff-requests/documents')
+  const typeBadge = (t) => t ? `<span class="badge badge-blue">${esc(DOC_TYPE_LABEL[t] || t)}</span>` : ''
+  const metaBtn = (kind, d) => `<button class="btn btn-outline text-xs" title="種類・有効期限" data-action="editDocumentMeta" data-kind="${kind}" data-doc-id="${Number(d.document_id)}" data-type="${esc(d.doc_type || '')}" data-valid="${esc(d.valid_until || '')}" data-name="${esc(d.original_file_name)}"><i class="fas fa-tag"></i></button>`
+  document.getElementById('sr-body').innerHTML = `
+    <section class="card p-4 mb-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-mobile-screen text-blue-500 mr-1"></i>本人が提出した未確認の書類（${data.unconfirmed.length}件）</h3>
+      ${data.unconfirmed.length ? `<div class="space-y-1.5">${data.unconfirmed.map(d => `
+        <div class="flex items-center gap-2 p-2 rounded-lg bg-amber-50 flex-wrap">
+          <div class="flex-1 min-w-0">
+            <p class="text-sm"><a href="#staff/${Number(d.staff_id)}" class="font-bold text-blue-700">${esc(d.staff_name)}</a> <span class="text-gray-700">${esc(d.original_file_name)}</span></p>
+            <div class="flex flex-wrap gap-1 mt-0.5">${typeBadge(d.doc_type)}${docExpiryBadge(d.valid_until, 'staff')}<span class="text-xs text-gray-400">${esc(dayjs(d.uploaded_at).format('YYYY/M/D HH:mm'))}・${formatFileSize(d.file_size)}</span></div>
+          </div>
+          <a class="btn btn-outline text-xs" href="${SR_DOC_KIND.staff.dl(Number(d.document_id))}" target="_blank" rel="noopener"><i class="fas fa-download"></i>開く</a>
+          ${metaBtn('staff', d)}
+          <button class="btn btn-primary text-xs" data-action="confirmDocument" data-kind="staff" data-doc-id="${Number(d.document_id)}"><i class="fas fa-check"></i>確認済みにする</button>
+        </div>`).join('')}</div>` : '<p class="text-sm text-gray-400">未確認の書類はありません</p>'}
+    </section>
+    <section class="card p-4">
+      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-hourglass-half text-amber-500 mr-1"></i>期限切れ・${data.warn_days}日以内に期限が来る書類（${data.expiring.length}件）</h3>
+      <p class="text-xs text-gray-400 mb-2">在籍中のスタッフの書類・クライアントの契約書${ME && ME.can_manage_hr ? '・入社時書類' : ''}が対象です。新しい書類を受け取ったら、古い書類の期限を消すか削除してください。</p>
+      ${data.expiring.length ? `<div class="overflow-x-auto"><table class="w-full text-sm"><tbody>${data.expiring.map(d => {
+        const k = SR_DOC_KIND[d.kind] || SR_DOC_KIND.staff
+        return `<tr class="border-t border-gray-100"><td class="py-1.5 pr-2 whitespace-nowrap">${docExpiryBadge(d.valid_until, d.kind)}</td>
+          <td class="pr-2"><span class="text-xs text-gray-400">${esc(k.label)}</span> <a href="${k.link(Number(d.owner_id))}" class="text-blue-700">${esc(d.owner_name || '')}</a></td>
+          <td class="pr-2">${typeBadge(d.doc_type)} <span class="text-gray-700">${esc(d.original_file_name)}</span></td>
+          <td class="whitespace-nowrap text-right"><a class="btn btn-outline text-xs" href="${k.dl(Number(d.document_id))}" target="_blank" rel="noopener"><i class="fas fa-download"></i></a> ${metaBtn(d.kind, d)}</td></tr>`
+      }).join('')}</tbody></table></div>` : '<p class="text-sm text-gray-400">期限の近い書類はありません</p>'}
+    </section>`
+}
+
+// ---------- 休暇（会社管理者・事務担当のみ。社員の詳細の有給欄からも使う） ----------
+const SR_LEAVE_TYPE = { paid: '有給', other: 'その他の休暇' }
+const SR_LEAVE_UNIT = { full: '全日', am: '午前半休', pm: '午後半休' }
+// ctx: 'list'（スタッフの申請の画面）/ 'employee'（社員の詳細）。readOnly は雇用終了した社員の閲覧
+function leaveRowsHtml(rows, ctx, sid, readOnly) {
+  if (!rows.length) return '<p class="text-sm text-gray-400">休暇の申請はありません</p>'
+  return `<div class="space-y-2">${rows.map(l => `
+    <div class="p-2 rounded-lg ${l.status === 'pending' ? 'bg-amber-50' : 'bg-gray-50'} text-sm">
+      <div class="flex items-center gap-2 flex-wrap">
+        ${ctx === 'list' ? `<a href="#employees/${Number(l.staff_id)}" class="font-bold text-blue-700">${esc(l.staff_name)}</a>` : ''}
+        <span class="font-bold">${esc(dayjs(l.leave_date).format('YYYY/M/D'))}（${['日', '月', '火', '水', '木', '金', '土'][dayjs(l.leave_date).day()]}）</span>
+        <span class="badge ${l.leave_type === 'paid' ? 'badge-blue' : 'badge-gray'}">${esc(SR_LEAVE_TYPE[l.leave_type] || l.leave_type)}・${esc(SR_LEAVE_UNIT[l.leave_unit] || l.leave_unit)}</span>
+        ${srStatusBadge(l.status)}
+        ${ctx === 'list' && l.leave_type === 'paid' ? `<span class="text-xs text-gray-500">有給残 ${l.paid_leave_remaining == null ? '未入力' : esc(l.paid_leave_remaining) + '日'}</span>` : ''}
+        ${l.shift_count && l.status !== 'rejected' && l.status !== 'cancelled' ? `<a href="#shifts" class="badge badge-red">この日にシフト ${Number(l.shift_count)}件（欠勤の処理・代わりの手配をしてください）</a>` : ''}
+      </div>
+      ${l.reason ? `<p class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">理由: ${esc(l.reason)}</p>` : ''}
+      ${l.review_comment ? `<p class="text-xs text-gray-500 mt-1">コメント: ${esc(l.review_comment)}${l.reviewed_by_name ? `（${esc(l.reviewed_by_name)}）` : ''}</p>` : ''}
+      ${readOnly ? '' : l.status === 'pending' ? `
+        <div class="flex gap-2 mt-2 flex-wrap">
+          <input id="lv-c-${Number(l.leave_id)}" class="inp text-xs flex-1 min-w-[10rem]" maxlength="500" placeholder="コメント（見送るときは理由。本人に伝わります）">
+          <button class="btn btn-primary text-xs" data-action="leaveDecide" data-op="approve" data-id="${Number(l.leave_id)}" data-ctx="${ctx}" data-sid="${Number(sid) || ''}"><i class="fas fa-check"></i>承認${l.leave_type === 'paid' ? `（有給残から${esc(l.days)}日引く）` : ''}</button>
+          <button class="btn btn-outline text-xs" data-action="leaveDecide" data-op="reject" data-id="${Number(l.leave_id)}" data-ctx="${ctx}" data-sid="${Number(sid) || ''}">見送る</button>
+        </div>` : l.status === 'approved' ? `
+        <div class="mt-2"><button class="btn btn-outline text-xs" data-action="leaveDecide" data-op="revoke" data-id="${Number(l.leave_id)}" data-ctx="${ctx}" data-sid="${Number(sid) || ''}">承認を取り消す${Number(l.deducted_days) ? `（有給 ${esc(l.deducted_days)}日を戻す）` : ''}</button></div>` : ''}
+    </div>`).join('')}</div>`
+}
+async function srLeave() {
+  const { data } = await axios.get('/api/admin/staff-requests/leave' + (SR_STATE.leaveAll ? '?status=all' : ''))
+  document.getElementById('sr-body').innerHTML = `
+    <label class="text-xs text-gray-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srLeaveAll" ${SR_STATE.leaveAll ? 'checked' : ''}>処理済みも表示</label>
+    <p class="text-xs text-gray-400 mb-2">有給を承認すると、従業員管理の有給残数から引きます。その日のシフトは自動では変わらないので、欠勤の処理・代わりの手配はシフト管理で行ってください。</p>
+    ${leaveRowsHtml(data.requests, 'list', 0, false)}`
+}
+delegate('srLeaveAll', el => { SR_STATE.leaveAll = el.checked; srLeave().catch(e => showApiError(e, '読み込めませんでした')) })
+// 社員の詳細の有給欄（renderEmployeeDetail から呼ぶ）
+async function loadEmployeeLeave(sid, readOnly) {
+  const box = document.getElementById('employee-leave'); if (!box) return
+  try {
+    const { data } = await axios.get(`/api/admin/staff-requests/leave?status=all&staff_id=${Number(sid)}`)
+    box.innerHTML = `<h4 class="text-xs font-bold text-gray-500 mb-2"><i class="fas fa-umbrella-beach text-blue-500 mr-1"></i>休暇の申請（本人のアプリから）</h4>${leaveRowsHtml(data.requests.slice(0, 20), 'employee', sid, readOnly)}`
+  } catch (e) { box.innerHTML = '<p class="text-xs text-gray-400">休暇の申請を読み込めませんでした</p>' }
+}
+delegate('leaveDecide', el => {
+  const { op, id, ctx, sid } = el.dataset
+  const comment = ((document.getElementById('lv-c-' + id) || {}).value || '').trim()
+  if (op === 'reject' && !comment) { toast('見送る理由をコメントに入力してください（本人に伝わります）'); return }
+  let revokeReason = ''
+  if (op === 'revoke') {
+    revokeReason = (prompt('承認を取り消す理由（本人に伝わります）') || '').trim()
+    if (!revokeReason) return
+  }
+  withSubmitLock(el, async () => {
+    try {
+      const { data } = await axios.post(`/api/admin/staff-requests/leave/${Number(id)}/${op}`, { comment: op === 'revoke' ? revokeReason : comment })
+      toast(op === 'approve' ? (data.shift_count ? `承認しました。この日にシフトが${data.shift_count}件あります。欠勤の処理をしてください` : '承認しました')
+        : op === 'reject' ? '見送りました' : '承認を取り消しました')
+      refreshStaffRequestsBadge()
+      // 社員の詳細では有給残数の欄も変わるので、画面ごと描き直す
+      if (ctx === 'employee' && sid) renderEmployeeDetail(Number(sid)); else renderStaffRequests()
+    } catch (e) { showApiError(e, '処理できませんでした') }
+  })
+})
 
 window.showSkillSheet = async function (sid) {
   const { data } = await axios.get('/api/admin/staff/' + sid + '/skill-sheet')
@@ -1709,6 +2222,7 @@ async function renderProjects() {
       <div class="flex gap-2 items-center flex-wrap">
         ${monthNavHtml('projectsMonth', L.month)}
         <button class="btn btn-outline" data-action="showLatenessSetting" title="入店・勤務開始を何分まで遅刻にしないか（会社全体の設定）"><i class="fas fa-stopwatch"></i>遅刻の猶予</button>
+        <a class="btn btn-outline" href="#projects/templates" title="日報の入力項目を自社で作成・編集する"><i class="fas fa-list-check"></i>日報テンプレート</a>
         <button class="btn btn-primary" onclick="showAddProject()"><i class="fas fa-plus"></i>案件登録</button>
       </div>
     </div>
@@ -1797,8 +2311,38 @@ delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
   } catch (e) { showApiError(e, '保存できませんでした') }
 }))
 
+// 会社の緊急連絡先（#173）と、入店の位置が現場から離れているとみなす距離（#277）。API は GET/PUT /admin/settings/site-contact
+delegate('showSiteContactSetting', async () => {
+  let s
+  try { s = (await axios.get('/api/admin/settings/site-contact')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-phone text-blue-600 mr-1"></i>緊急連絡先・入店の位置</h3>
+    <p class="text-xs text-gray-500 mb-3">緊急連絡先は、スタッフアプリの「その他」と報告用URLに、タップで電話をかけられるボタンとして表示します。当日の欠勤・遅刻・体調不良・現場のトラブルの連絡先です。</p>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">緊急連絡先の電話番号</label>
+        <input id="sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 03-1234-5678" value="${esc(s.emergency_phone || '')}">
+        <p class="text-[11px] text-gray-400 mt-1">空欄にすると表示しません</p></div>
+      <div><label class="text-sm text-gray-600 block mb-1">受付時間などの補足</label>
+        <input id="sc-note" class="inp" maxlength="100" placeholder="例: 7:00〜22:00（時間外は相談・連絡へ）" value="${esc(s.emergency_note || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">入店の位置が現場から離れているとみなす距離（m）</label>
+        <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}">
+        <p class="text-[11px] text-gray-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（クライアント詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
+    </div>
+    <button class="btn btn-primary w-full mt-4" data-action="saveSiteContactSetting">保存する</button>`)
+})
+delegate('saveSiteContactSetting', el => withSubmitLock(el, async () => {
+  const far = document.getElementById('sc-far').value.trim()
+  if (!/^\d+$/.test(far)) { toast('距離は0以上の整数で入力してください'); return }
+  try {
+    await axios.put('/api/admin/settings/site-contact', { emergency_phone: document.getElementById('sc-phone').value, emergency_note: document.getElementById('sc-note').value, far_threshold_m: Number(far) })
+    closeModal(); toast('緊急連絡先・入店の位置の設定を保存しました')
+  } catch (e) { showApiError(e, '保存できませんでした') }
+}))
+
 window.showAddProject = async function () {
-  const [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  const [{ data: cl }, { data: tp0 }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  // 配信停止のテンプレートは選べない（#165）
+  const tp = { templates: tp0.templates.filter(t => t.status !== 'stopped') }
   // 既定は先頭の有効なテンプレート（項目が1つ以上あるもの）。固定のIDは前提にしない
   const usable = tp.templates.find(t => { try { const f = JSON.parse(t.fields_json || '[]'); return Array.isArray(f) && f.length > 0 } catch { return false } })
   const defaultTpl = usable ? usable.template_id : null
@@ -1824,7 +2368,8 @@ window.showAddProject = async function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="np-skills" class="inp" maxlength="500" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）">
         <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
-      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp"></textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
       <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
 }
@@ -1849,7 +2394,7 @@ window.addProject = async function () {
       project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
       unit_price: Number(document.getElementById('np-price').value || 0), unit_price_type: document.getElementById('np-price-unit').value,
       report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value,
-      required_skills: document.getElementById('np-skills').value
+      manual_text: document.getElementById('np-manual').value, required_skills: document.getElementById('np-skills').value
     })
     if (!res) return
     closeModal(); toast('案件を登録しました'); renderProjects()
@@ -1897,14 +2442,20 @@ async function renderProjectDetail(pid) {
       </div>
       ${monthNavHtml('projectDetailMonth', month)}
       <span class="badge ${p.status === 'active' ? 'badge-green' : 'badge-gray'}">${p.status === 'active' ? '稼働中' : '終了'}</span>
+      <button class="btn btn-outline" data-action="editProject" data-id="${Number(p.project_id)}"><i class="fas fa-pen"></i>編集</button>
+      ${p.status === 'active'
+        ? `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="closed" data-name="${esc(p.project_name)}"><i class="fas fa-flag-checkered"></i>案件を終了する</button>`
+        : `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="active" data-name="${esc(p.project_name)}"><i class="fas fa-rotate-left"></i>稼働中に戻す</button>`}
     </div>
+    ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-gray-50 text-sm text-gray-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
       <div class="card p-4"><p class="text-xs text-gray-500">請求単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-gray-400">件</span></p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
       <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
-        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a></div>
+        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a>
+        <a href="#projects/templates" class="text-xs text-blue-600 hover:underline ml-2">テンプレートの管理</a></div>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-4">
@@ -1951,7 +2502,7 @@ async function renderProjectDetail(pid) {
         <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
         <div class="mt-4 pt-3 border-t border-gray-100">
           <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
-          <select class="inp text-sm" onchange="updateProjectPhotoRequired(${Number(p.project_id)}, this.value)">
+          <select class="inp text-sm" data-project-photo="${Number(p.project_id)}">
             <option value="inherit" ${p.photo_required_override == null ? 'selected' : ''}>会社設定に従う（現在: ${data.company_photo_default ? '必須' : '不要'}）</option>
             <option value="on" ${p.photo_required_override === 1 ? 'selected' : ''}>この案件は必須にする</option>
             <option value="off" ${p.photo_required_override === 0 ? 'selected' : ''}>この案件は不要にする</option>
@@ -1964,6 +2515,217 @@ async function renderProjectDetail(pid) {
   // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
   if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
 }
+// 写真添付の設定（イベント属性に値を埋め込まない）
+document.addEventListener('change', ev => {
+  const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-project-photo]') : null
+  if (sel) updateProjectPhotoRequired(Number(sel.dataset.projectPhoto), sel.value)
+})
+// 案件の更新。確認が要る変更（サーバーが 409 で confirm_* を返す）は、確認できたら印を付けて送り直す。取りやめたら null を返す
+const PROJECT_CONFIRM_FLAGS = [['confirm_duplicate', 'allow_duplicate'], ['confirm_close', 'confirm_close'], ['confirm_template_change', 'confirm_template_change']]
+async function putProjectConfirming(pid, body) {
+  let b = { ...body }
+  for (let i = 0; i <= PROJECT_CONFIRM_FLAGS.length; i++) {
+    try { return await axios.put('/api/admin/projects/' + pid, b) } catch (e) {
+      const d = e.response && e.response.data
+      const hit = e.response && e.response.status === 409 && d && PROJECT_CONFIRM_FLAGS.find(([k]) => d[k])
+      if (!hit) throw e
+      if (!confirm(d.error + '\n\nこのまま保存しますか？')) return null
+      b = { ...b, [hit[1]]: true }
+    }
+  }
+  return null
+}
+// 案件の編集（#153）。単価・区分は下の「区分・標準単価」で変える
+delegate('editProject', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id)
+  if (!PROJECT_DETAIL || PROJECT_DETAIL.pid !== pid) return
+  const p = PROJECT_DETAIL.data.project
+  let cl, tp
+  try {
+    [{ data: cl }, { data: tp }] = await Promise.all([axios.get('/api/admin/clients'), axios.get('/api/admin/templates')])
+  } catch (e) { showApiError(e, '読み込めませんでした'); return }
+  // 配信停止・項目のないテンプレートは選べない（いま使っているものは残す）
+  const tpls = tp.templates.filter(t => Number(t.template_id) === Number(p.report_template_id) || (t.status !== 'stopped' && (t.fields || []).length > 0))
+  modal(`
+    <h3 class="font-bold text-lg mb-4">案件の編集</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">案件名 *</label><input id="ep-name" class="inp" maxlength="100" value="${esc(p.project_name)}"></div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">クライアント</label>
+          <select id="ep-client" class="inp"><option value="">（クライアントなし）</option>${cl.clients.map(c => `<option value="${Number(c.client_id)}" ${Number(c.client_id) === Number(p.client_id) ? 'selected' : ''}>${esc(c.client_name)}</option>`).join('')}</select></div>
+        <div><label class="text-sm text-gray-600 block mb-1">業務種別</label>
+          <select id="ep-type" class="inp">${Object.entries(PTYPE_LABELS).map(([k, v]) => `<option value="${k}" ${p.project_type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="ep-loc" class="inp" maxlength="200" value="${esc(p.location || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
+        <select id="ep-tpl" class="inp">${tpls.map(t => `<option value="${Number(t.template_id)}" ${Number(t.template_id) === Number(p.report_template_id) ? 'selected' : ''}>${esc(t.template_name)}${t.editable ? '（自社）' : ''}${t.status === 'stopped' ? '（配信停止）' : ''}</option>`).join('')}</select>
+        <p class="text-[11px] text-gray-400 mt-1">日報がある案件のテンプレートを変えると、新しいテンプレートにない項目は過去の日報に表示されなくなります</p></div>
+      <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
+      <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
+      <button class="btn btn-primary w-full" data-action="saveProject" data-id="${pid}">保存する</button>
+    </div>`)
+}))
+delegate('saveProject', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id)
+  const v = id => document.getElementById(id).value
+  if (!v('ep-name').trim()) { toast('案件名を入力してください'); return }
+  try {
+    const res = await putProjectConfirming(pid, {
+      project_name: v('ep-name'), client_id: v('ep-client') || null, project_type: v('ep-type'), location: v('ep-loc'),
+      report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'),
+      memo: v('ep-memo'), show_performance: document.getElementById('ep-perf').checked,
+    })
+    if (!res) return
+    closeModal(); toast('案件を保存しました'); renderProjectDetail(pid)
+  } catch (e) { showApiError(e, '案件を保存できませんでした') }
+}))
+// 案件の終了・稼働中に戻す（#153）
+delegate('setProjectStatus', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id); const closing = el.dataset.status === 'closed'
+  if (closing && !confirm(`案件「${el.dataset.name}」を終了しますか？\n終了すると、シフト登録・シフトボードの選択肢に出なくなり、新しいシフトを登録できなくなります（あとで稼働中に戻せます）。`)) return
+  try {
+    const res = await putProjectConfirming(pid, { status: closing ? 'closed' : 'active' })
+    if (!res) return
+    toast(closing ? '案件を終了しました' : '案件を稼働中に戻しました'); renderProjectDetail(pid)
+  } catch (e) { showApiError(e, '案件の状態を変更できませんでした') }
+}))
+
+// ============ 日報テンプレート（自社で作成・編集。#165） ============
+// 本部のテンプレートは編集できないため、複製して自社のテンプレートとして編集する。
+// 値が入った日報がある項目は、削除・数値とテキストの切り替えができない（サーバーで確かめる）。日報がある既存の項目のキーは画面でも変えさせない
+const TPL_TYPES = [['number', '数値（件数の集計に使う）'], ['text', '1行のテキスト'], ['textarea', '複数行のテキスト']]
+let ADMIN_TPLS = []
+let TPL_EDIT = null
+async function renderAdminTemplates() {
+  loading()
+  try { ADMIN_TPLS = (await axios.get('/api/admin/templates')).data.templates } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'テンプレートを読み込めませんでした'))}</p>`; return }
+  const card = t => `
+    <section class="card p-4 ${t.status === 'stopped' ? 'opacity-70' : ''}">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        <h3 class="font-bold text-gray-800">${esc(t.template_name)}</h3>
+        <span class="badge ${t.editable ? 'badge-purple' : 'badge-blue'}">${t.editable ? '自社' : '本部配信'}</span>
+        ${t.status === 'stopped' ? '<span class="badge badge-gray">配信停止</span>' : ''}
+        <span class="text-xs text-gray-400 ml-auto">使用中の案件 ${Number(t.project_count || 0)}件</span>
+      </div>
+      <div class="flex flex-wrap gap-1.5 mb-3">${(t.fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}" title="${esc(f.key)}">${esc(f.label)}${f.required ? ' *' : ''}</span>`).join('') || '<span class="text-xs text-gray-400">項目がありません</span>'}</div>
+      <div class="flex gap-2 flex-wrap">
+        ${t.editable ? `<button class="btn btn-outline text-xs" data-action="editAdminTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>編集</button>
+          <button class="btn btn-outline text-xs" data-action="toggleAdminTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '使用を再開' : '配信停止'}</button>` : ''}
+        <button class="btn btn-outline text-xs" data-action="copyAdminTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-copy"></i>複製して作成</button>
+      </div>
+    </section>`
+  const own = ADMIN_TPLS.filter(t => t.editable), hq = ADMIN_TPLS.filter(t => !t.editable)
+  $app.innerHTML = `
+    <div class="flex items-center gap-3 mb-4 flex-wrap">
+      <a href="#projects" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
+      <h2 class="text-xl font-bold text-gray-900 flex-1">日報テンプレート</h2>
+      <button class="btn btn-primary" data-action="newAdminTemplate"><i class="fas fa-plus"></i>テンプレートを作成</button>
+    </div>
+    <p class="text-sm text-gray-500 mb-4">案件ごとにスタッフが日報で入力する項目です。案件の登録・編集で選びます。配信停止にしたテンプレートは新しい案件では選べません（使っている案件はそのまま使えます）。</p>
+    <h3 class="text-sm font-bold text-gray-700 mb-2">自社のテンプレート</h3>
+    <div class="grid md:grid-cols-2 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
+    <h3 class="text-sm font-bold text-gray-700 mb-2">本部配信のテンプレート</h3>
+    <div class="grid md:grid-cols-2 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
+}
+const tplById = id => ADMIN_TPLS.find(t => Number(t.template_id) === Number(id))
+delegate('newAdminTemplate', () => openTemplateEditor(null, { name: '', fields: [{ key: 'item1', label: '', type: 'number' }, { key: 'free', label: '自由記述', type: 'textarea' }] }))
+delegate('editAdminTemplate', el => { const t = tplById(el.dataset.id); if (t) openTemplateEditor(t, { name: t.template_name, fields: t.fields }) })
+delegate('copyAdminTemplate', el => { const t = tplById(el.dataset.id); if (t) openTemplateEditor(null, { name: (t.template_name + '（自社）').slice(0, 60), fields: t.fields }) })
+delegate('toggleAdminTemplateStatus', el => withSubmitLock(el, async () => {
+  const t = tplById(el.dataset.id); if (!t) return
+  const stop = el.dataset.status === 'stopped'
+  if (stop && !confirm(`「${t.template_name}」を配信停止にしますか？\n新しい案件では選べなくなります。使っている案件（${Number(t.project_count || 0)}件）はそのまま使えます。`)) return
+  try {
+    await axios.put('/api/admin/templates/' + Number(t.template_id), { status: el.dataset.status })
+    toast(stop ? '配信停止にしました' : '使用を再開しました'); renderAdminTemplates()
+  } catch (e) { showApiError(e, '変更できませんでした') }
+}))
+// t: 編集するテンプレート（新規・複製は null）。init: 名前と項目の初期値
+function openTemplateEditor(t, init) {
+  const locked = new Set(t && t.has_reports ? (t.fields || []).map(f => f.key) : [])
+  TPL_EDIT = { id: t ? Number(t.template_id) : null, locked, rows: (init.fields || []).map(f => ({ ...f, origKey: f.key })) }
+  modal(`
+    <h3 class="font-bold text-lg mb-3">${t ? 'テンプレートの編集' : 'テンプレートの作成'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
+      ${locked.size ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
+      <div>
+        <div class="text-[11px] text-gray-400 grid grid-cols-12 gap-1 mb-1"><span class="col-span-3">キー（半角英数字）</span><span class="col-span-4">表示名</span><span class="col-span-3">入力欄</span><span class="col-span-2"></span></div>
+        <div id="tpl-rows" class="space-y-1.5"></div>
+        <button type="button" class="btn btn-outline text-xs mt-2" data-action="tplAddRow"><i class="fas fa-plus"></i>項目を追加</button>
+        <p class="text-[11px] text-gray-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
+      </div>
+      <button class="btn btn-primary w-full" data-action="saveAdminTemplate">保存する</button>
+    </div>`)
+  drawTplRows()
+}
+function drawTplRows() {
+  const box = document.getElementById('tpl-rows'); if (!box || !TPL_EDIT) return
+  const n = TPL_EDIT.rows.length
+  box.innerHTML = TPL_EDIT.rows.map((f, i) => {
+    const lk = !!f.origKey && TPL_EDIT.locked.has(f.origKey)
+    const types = TPL_TYPES
+    return `<div class="grid grid-cols-12 gap-1 items-center">
+      <input class="inp text-xs font-mono col-span-3" data-tpl-field="key" data-i="${i}" value="${esc(f.key || '')}" maxlength="40" ${lk ? 'readonly title="日報があるテンプレートの既存の項目のキーは変えられません"' : ''}>
+      <input class="inp text-xs col-span-4" data-tpl-field="label" data-i="${i}" value="${esc(f.label || '')}" maxlength="40" placeholder="表示名">
+      <select class="inp text-xs col-span-3" data-tpl-field="type" data-i="${i}">${types.map(([k, v]) => `<option value="${k}" ${f.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <span class="col-span-2 flex items-center gap-0.5 text-[11px] text-gray-500">
+        <label class="flex items-center gap-0.5" title="必須"><input type="checkbox" data-tpl-field="required" data-i="${i}" ${f.required ? 'checked' : ''}>必須</label>
+        <button type="button" class="px-1 text-gray-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="上へ"><i class="fas fa-arrow-up"></i></button>
+        <button type="button" class="px-1 text-gray-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="1" ${i === n - 1 ? 'disabled' : ''} title="下へ"><i class="fas fa-arrow-down"></i></button>
+        <button type="button" class="px-1 text-red-500 disabled:opacity-30" data-action="tplRemoveRow" data-i="${i}" title="削除"><i class="fas fa-xmark"></i></button>
+      </span>
+    </div>`
+  }).join('') || '<p class="text-xs text-red-600">項目を1つ以上追加してください</p>'
+}
+// 入力のたびに TPL_EDIT に写す（並べ替え・削除で描き直しても入力が消えないように）
+function syncTplField(ev) {
+  const el = ev.target && ev.target.closest ? ev.target.closest('[data-tpl-field]') : null
+  if (!el || !TPL_EDIT) return
+  const row = TPL_EDIT.rows[Number(el.dataset.i)]; if (!row) return
+  const k = el.dataset.tplField
+  if (k === 'required') { if (el.checked) row.required = true; else delete row.required }
+  else row[k] = el.value
+  // 数値の項目には文字数の上限を付けない（サーバーの検証と同じ）
+  if (k === 'type' && row.type === 'number') delete row.maxLength
+}
+document.addEventListener('input', syncTplField)
+document.addEventListener('change', syncTplField)
+delegate('tplAddRow', () => {
+  if (!TPL_EDIT) return
+  const used = new Set(TPL_EDIT.rows.map(r => String(r.key || '').toLowerCase()))
+  let n = TPL_EDIT.rows.length + 1; while (used.has('item' + n)) n++
+  TPL_EDIT.rows.push({ key: 'item' + n, label: '', type: 'number' })
+  drawTplRows()
+})
+delegate('tplMoveRow', el => {
+  const i = Number(el.dataset.i), j = i + Number(el.dataset.dir); const r = TPL_EDIT && TPL_EDIT.rows
+  if (!r || j < 0 || j >= r.length) return
+  ;[r[i], r[j]] = [r[j], r[i]]; drawTplRows()
+})
+delegate('tplRemoveRow', el => { if (TPL_EDIT) { TPL_EDIT.rows.splice(Number(el.dataset.i), 1); drawTplRows() } })
+delegate('saveAdminTemplate', el => withSubmitLock(el, async () => {
+  if (!TPL_EDIT) return
+  const name = document.getElementById('tpl-name').value.trim()
+  if (!name) { toast('テンプレート名を入力してください'); return }
+  if (!TPL_EDIT.rows.length) { toast('項目を1つ以上追加してください'); return }
+  const fields = TPL_EDIT.rows.map(r => {
+    const f = { key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), type: r.type || 'text' }
+    if (r.required) f.required = true
+    if (r.placeholder) f.placeholder = r.placeholder
+    if (r.maxLength && f.type !== 'number') f.maxLength = r.maxLength
+    return f
+  })
+  try {
+    if (TPL_EDIT.id) await axios.put('/api/admin/templates/' + TPL_EDIT.id, { template_name: name, fields })
+    else await axios.post('/api/admin/templates', { template_name: name, fields })
+    closeModal(); toast('テンプレートを保存しました'); TPL_EDIT = null; renderAdminTemplates()
+  } catch (e) { showApiError(e, 'テンプレートを保存できませんでした') }
+}))
+
 function projectSkillBadges(v) {
   return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-gray-400">-</span>'
 }
@@ -2373,6 +3135,25 @@ window.saveClientBasicInfo = async function (cid) {
 
 // ============ 社員名簿（自社社員のみ表示） ============
 const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
+// 契約終了日（30日以内は強調し、過ぎても在職中なら『終了日超過』）と、有給の付与日（前回の付与日と、1年後の次回の付与日）。#282
+const EMP_CONTRACT_WARN_DAYS = 30
+function empContractEndCell(e) {
+  if (!e.contract_end) return '<span class="text-gray-300">-</span>'
+  const left = dayjs(e.contract_end).diff(dayjs().format('YYYY-MM-DD'), 'day')
+  const retired = e.employment_status === 'retired'
+  const badge = retired ? '' : left < 0 ? ' <span class="badge badge-red text-[10px]">終了日超過</span>'
+    : left <= EMP_CONTRACT_WARN_DAYS ? ` <span class="badge badge-yellow text-[10px]">${left ? 'あと' + left + '日' : '今日まで'}</span>` : ''
+  return `<span class="${!retired && left <= EMP_CONTRACT_WARN_DAYS ? 'font-bold text-red-700' : ''}">${esc(e.contract_end)}</span>${badge}`
+}
+function empLeaveGrantCell(e) {
+  if (!e.paid_leave_granted_at) return '<span class="text-gray-300">-</span>'
+  const today = dayjs().format('YYYY-MM-DD')
+  const next = e.paid_leave_granted_at > today ? dayjs(e.paid_leave_granted_at) : dayjs(e.paid_leave_granted_at).add(1, 'year')
+  const left = next.diff(today, 'day')
+  const warn = e.employment_status !== 'retired' && left <= 14
+  return `${esc(e.paid_leave_granted_at)}<span class="block text-[11px] ${warn ? 'text-red-700 font-bold' : 'text-gray-400'}">次回 ${esc(next.format('YYYY-MM-DD'))}${warn ? (left < 0 ? '（過ぎています）' : `（あと${left}日）`) : ''}</span>`
+}
+
 async function renderEmployees() {
   loading()
   const { data } = await axios.get('/api/admin/employees')
@@ -2384,13 +3165,22 @@ async function renderEmployees() {
         <button class="btn btn-primary" onclick="showRosterForm('employee')"><i class="fas fa-user-plus"></i>従業員を登録</button>
       </div>
     </div>
+    <section class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-sm" id="emp-export">
+      <span class="text-xs font-bold text-gray-600"><i class="fas fa-file-csv text-blue-500 mr-1"></i>従業員名簿のCSV</span>
+      <select id="emp-export-status" class="inp text-sm w-auto">
+        <option value="">自社雇用のすべて</option>${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}<option value="ended">雇用終了（他の区分へ移行・統合）</option>
+      </select>
+      ${ME && ME.role === 'company_admin' ? '<label class="flex items-center gap-1 text-xs"><input type="checkbox" id="emp-export-pay">口座・給与を含める（会社管理者のみ）</label>' : ''}
+      <button class="btn btn-outline text-sm" data-action="exportEmployees"><i class="fas fa-download"></i>出力</button>
+      <span class="text-[11px] text-gray-400">社員番号・氏名・入社日・契約・住所・連絡先・保険番号を出します。出力した記録が残ります</span>
+    </section>
     <section class="card p-4">
       <input id="emp-q" class="inp text-sm mb-3" placeholder="社員番号・氏名・フリガナ・所属・役職・拠点で検索">
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>社員番号</th><th>氏名</th><th>フリガナ</th><th>在籍確認</th><th>所属</th><th>役職</th><th>拠点</th><th>契約形態</th></tr></thead>
+          <thead><tr><th>社員番号</th><th>氏名</th><th>フリガナ</th><th>在籍確認</th><th>所属</th><th>役職</th><th>拠点</th><th>契約形態</th><th>契約終了</th><th>有給付与日</th></tr></thead>
           <tbody>
-            ${data.employees.length === 0 ? '<tr><td colspan="8" class="text-center text-gray-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
+            ${data.employees.length === 0 ? '<tr><td colspan="10" class="text-center text-gray-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
               <tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}" data-search="${escAttr([e.employee_number, e.name, e.kana, e.department, e.job_title, e.base_location].filter(Boolean).join(' '))}">
                 <td>${esc(e.employee_number || '-')}</td>
                 <td class="text-blue-600 hover:underline">${esc(e.name)}</td>
@@ -2400,6 +3190,8 @@ async function renderEmployees() {
                 <td>${esc(e.job_title || '-')}</td>
                 <td>${esc(e.base_location || '-')}</td>
                 <td>${esc(e.contract_type || '-')}</td>
+                <td class="whitespace-nowrap">${empContractEndCell(e)}</td>
+                <td class="whitespace-nowrap">${empLeaveGrantCell(e)}</td>
               </tr>`).join('')}
           </tbody>
         </table>
@@ -2418,6 +3210,17 @@ async function renderEmployees() {
     document.querySelectorAll('tr[data-search]').forEach(tr => { tr.hidden = !matchesKeyword(q, [tr.dataset.search]) })
   })
 }
+
+// 従業員名簿の CSV（#431）
+delegate('exportEmployees', () => {
+  const status = document.getElementById('emp-export-status').value
+  const pay = document.getElementById('emp-export-pay')
+  if (pay && pay.checked && !confirm('口座番号・給与を含めた名簿を出力します。ファイルの扱い（保存場所・共有先）に注意してください。よろしいですか？')) return
+  const q = new URLSearchParams()
+  if (status) q.set('status', status)
+  if (pay && pay.checked) q.set('include_pay', '1')
+  location.href = '/api/admin/employees/export' + (q.toString() ? '?' + q : '')
+})
 
 async function renderEmployeeDetail(sid) {
   loading()
@@ -2564,8 +3367,14 @@ async function renderEmployeeDetail(sid) {
           ${field('emp-leave-remaining', '有給残数', r.paid_leave_remaining, 'number')}
           ${field('emp-telework', '今月テレワーク残数', r.telework_remaining_this_month, 'number')}
         </dl>
+        <p class="text-[11px] text-gray-400 mt-1">有給残数・付与日・テレワーク残数は本人のアプリ（その他 → 有給・休暇）にも表示されます。有給の休暇を承認すると残数から引きます。</p>
+        <div id="employee-leave" class="mt-3 pt-3 border-t border-gray-100"></div>
       </section>
     </div>`
+  loadEmployeeLeave(sid, !!data.read_only) // 休暇の申請（#289）
+  // 変更履歴（#464）は別の部分として、画面の下に読み込む
+  $app.insertAdjacentHTML('beforeend', `<section class="card p-4 mt-4" id="employee-change-log" data-sid="${Number(sid)}"></section>`)
+  loadEmployeeChangeLog(sid)
   // 雇用終了（他の区分へ移行）した従業員は閲覧のみ（第2段階）
   if (data.read_only) {
     $app.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true })
@@ -2576,6 +3385,46 @@ async function renderEmployeeDetail(sid) {
       自社雇用に戻す場合はスタッフ詳細の「区分を変更」から行ってください。</div>`)
   }
 }
+
+// ---------- 従業員データ・スタッフ基本情報の変更履歴（#464） ----------
+// 口座番号・保険番号は下4桁だけが残っている（サーバー側で伏せて保存）
+function changeLogValue(field, v) {
+  if (v == null || v === '') return '<span class="text-gray-300">（空欄）</span>'
+  if (field === 'gender') return esc(GENDER_LABEL_ADMIN[v] || v)
+  if (field === 'employment_status') return esc(EMP_STATUS_LABEL[v] || v)
+  return esc(v)
+}
+function changeLogRowsHtml(logs) {
+  return logs.map(l => `<tr class="border-t border-gray-100 align-top">
+    <td class="py-1.5 pr-2 whitespace-nowrap text-gray-500">${esc(String(l.changed_at || '').slice(0, 16))}</td>
+    <td class="py-1.5 pr-2 whitespace-nowrap">${esc(l.label)}${l.source === 'profile' ? ' <span class="badge badge-gray text-[10px]">基本情報</span>' : ''}</td>
+    <td class="py-1.5 pr-2 break-all">${changeLogValue(l.field, l.old_value)} <i class="fas fa-arrow-right text-gray-300 mx-1"></i> ${changeLogValue(l.field, l.new_value)}</td>
+    <td class="py-1.5 whitespace-nowrap text-gray-500">${esc(l.changed_by_name || '-')}</td></tr>`).join('')
+}
+async function loadEmployeeChangeLog(sid, before) {
+  const box = document.getElementById('employee-change-log')
+  if (!box || Number(box.dataset.sid) !== Number(sid)) return
+  let data
+  try { data = (await axios.get('/api/admin/employees/' + Number(sid) + '/history', { params: before ? { before } : {} })).data }
+  catch (e) { if (!before) box.innerHTML = '<p class="text-xs text-red-500">変更履歴を読み込めませんでした</p>'; else showApiError(e, '変更履歴を読み込めませんでした'); return }
+  const logs = data.logs || []
+  const more = data.has_more && logs.length
+    ? `<button class="btn btn-outline text-xs w-full mt-2" data-action="moreEmployeeChangeLog" data-sid="${Number(sid)}" data-before="${Number(logs[logs.length - 1].log_id)}">さらに表示</button>` : ''
+  if (before) {
+    const tbody = document.getElementById('employee-change-log-rows')
+    if (tbody) tbody.insertAdjacentHTML('beforeend', changeLogRowsHtml(logs))
+    const old = box.querySelector('[data-action="moreEmployeeChangeLog"]'); if (old) old.remove()
+    if (more) box.insertAdjacentHTML('beforeend', more)
+    return
+  }
+  box.innerHTML = `<h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
+    <p class="text-xs text-gray-400 mb-2">従業員管理とスタッフ基本情報で変わった項目を、変更した人・日時とともに残しています。口座番号・保険番号は下4桁だけを残します。</p>
+    ${logs.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-left text-gray-400">
+      <th class="py-1 pr-2 font-normal">日時</th><th class="py-1 pr-2 font-normal">項目</th><th class="py-1 pr-2 font-normal">変更前 → 変更後</th><th class="py-1 font-normal">変更した人</th></tr></thead>
+      <tbody id="employee-change-log-rows">${changeLogRowsHtml(logs)}</tbody></table></div>${more}`
+      : '<p class="text-xs text-gray-400">まだ変更の記録はありません</p>'}`
+}
+delegate('moreEmployeeChangeLog', el => withSubmitLock(el, () => loadEmployeeChangeLog(Number(el.dataset.sid), Number(el.dataset.before))))
 
 window.saveEmployeeRecord = async function (sid) {
   const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }
@@ -2799,10 +3648,31 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
+    <div id="edit-shift-location"></div>
     <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
     <div id="edit-shift-withdrawals"></div>`)
+  loadCheckInLocation(document.getElementById('edit-shift-location'), shiftId)
   loadAttendancePhotos(document.getElementById('edit-shift-photos'), shiftId)
   loadAttendanceWithdrawals(document.getElementById('edit-shift-withdrawals'), shiftId)
+}
+// 入店の位置と現場の距離（#277）。入店の報告がなければ何も出さない
+const fmtDistance = (m) => Number(m) >= 1000 ? (Number(m) / 1000).toFixed(1) + 'km' : Number(m) + 'm'
+async function loadCheckInLocation(box, shiftId) {
+  if (!box) return
+  let d
+  try { d = (await axios.get('/api/admin/shifts/' + Number(shiftId) + '/check-in-location')).data } catch (e) { return }
+  const ci = d.check_in
+  if (!ci) return
+  const hasPos = ci.latitude != null && ci.longitude != null
+  const map = hasPos ? ` <a class="text-blue-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(Number(ci.latitude) + ',' + Number(ci.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : ''
+  const msg = !hasPos ? '<span class="badge badge-yellow">位置なし</span> 入店の報告に位置情報がありません'
+    : ci.distance_m == null ? `<span class="badge badge-gray">判定なし</span> 開催場所の位置が未登録のため、現場との距離を判定できません（クライアント詳細の「開催場所」で位置を登録できます）${map}`
+      : ci.far ? `<span class="badge badge-red">位置ずれ</span> 現場から約${fmtDistance(ci.distance_m)}離れた位置で入店を報告しています（基準 ${fmtDistance(d.threshold_m)}）${map}`
+        : Number(d.threshold_m) > 0 ? `<span class="badge badge-green">現場付近</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
+          : `<span class="badge badge-gray">判定しない設定</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
+  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">入店の位置</p>
+    <p class="text-xs text-gray-600 ${ci.far ? 'bg-red-50 rounded p-2' : ''}">${msg}</p>
+    ${d.site_position === 'project' ? '<p class="text-[11px] text-gray-400 mt-1">開催場所の位置がないため、案件の位置と比べています</p>' : ''}</div>`
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 // スタッフ本人が押し間違いで取り消した勤怠報告の記録（#323）。無ければ何も出さない
@@ -2903,11 +3773,12 @@ function reportFilterFromHash() {
   for (const k of ['project', 'staff', 'page']) { const v = p.get(k); if (v && /^\d+$/.test(v) && Number(v) > 0) f[k] = Number(v) }
   if (p.get('unchecked') === '1') f.unchecked = 1
   if (p.get('flagged') === '1') f.flagged = 1
+  if (p.get('open') === '1') f.open = 1
   return f
 }
 function reportsHash(f) {
   const p = new URLSearchParams()
-  for (const k of ['from', 'to', 'project', 'staff', 'unchecked', 'flagged', 'page']) if (f[k]) p.set(k, f[k])
+  for (const k of ['from', 'to', 'project', 'staff', 'unchecked', 'flagged', 'open', 'page']) if (f[k]) p.set(k, f[k])
   const s = p.toString()
   return '#reports' + (s ? '/' + s : '')
 }
@@ -2918,7 +3789,7 @@ function goReports(f) {
 window.applyReportFilter = function () {
   const v = id => (document.getElementById(id) || {}).value || ''
   const f = { from: v('rp-from'), to: v('rp-to'), project: v('rp-project'), staff: v('rp-staff'),
-    unchecked: document.getElementById('rp-unchecked').checked ? 1 : 0, flagged: document.getElementById('rp-flagged').checked ? 1 : 0 }
+    unchecked: document.getElementById('rp-unchecked').checked ? 1 : 0, flagged: document.getElementById('rp-flagged').checked ? 1 : 0, open: document.getElementById('rp-open').checked ? 1 : 0 }
   if (f.from && f.to && f.from > f.to) { toast('期間の開始日が終了日より後になっています'); return }
   goReports(f)
 }
@@ -2954,15 +3825,69 @@ function reportIncidentHtml(r, fields) {
   const label = k => ((fields || []).find(f => f.key === k) || {}).label || (k.startsWith('complaint') ? 'クレームの内容' : 'インシデントの内容')
   const notes = []
   for (const [k, v] of Object.entries(vals)) if (REPORT_INCIDENT_KEY.test(k) && typeof v !== 'number' && !reportEmpty(v)) notes.push([label(k), v])
-  for (const [k, v] of Object.entries(r)) if (REPORT_INCIDENT_KEY.test(k) && !(k in vals) && typeof v === 'string' && v) notes.push([label(k), v])
+  for (const [k, v] of Object.entries(r)) if (REPORT_INCIDENT_KEY.test(k) && !REPORT_INCIDENT_META.has(k) && !(k in vals) && typeof v === 'string' && v) notes.push([label(k), v])
   if (!r.incident_flag && !r.complaint_flag && !notes.length) return ''
   const kinds = [r.incident_flag ? 'インシデント' : '', r.complaint_flag ? 'クレーム' : ''].filter(Boolean).join('・') || 'インシデント・クレーム'
   return `<div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 mb-2">
     <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(kinds)}の報告あり</p>
     ${notes.length ? notes.map(([l, v]) => `<p class="mt-1"><span class="font-bold">${esc(l)}</span></p><p class="whitespace-pre-wrap break-words">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`).join('')
       : '<p class="mt-1 text-red-500">内容の記入はありません。スタッフに確認してください。</p>'}
+    ${r.incident_flag || r.complaint_flag ? reportIncidentStatusHtml(r) : ''}
   </div>`
 }
+
+// インシデント・クレームの対応状況（#169）。対応中・対応済み・クライアント共有と対応メモを、誰がいつ記録したかと一緒に出す
+const REPORT_INCIDENT_META = new Set(['incident_status', 'incident_memo', 'incident_updated_by', 'incident_updated_at', 'incident_client_shared_at', 'incident_updated_by_name'])
+const INCIDENT_STATUS_LABEL = { open: '未対応', in_progress: '対応中', done: '対応済み' }
+const INCIDENT_STATUS_BADGE = { open: 'badge-red', in_progress: 'badge-yellow', done: 'badge-green' }
+function reportIncidentStatusHtml(r) {
+  const st = r.incident_status || 'open'
+  const fmt = d => (d ? dayjs(String(d).replace(' ', 'T')).format('M/D HH:mm') : '')
+  return `<div class="mt-2 pt-2 border-t border-red-200 text-gray-700">
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="font-bold text-red-700">対応状況</span>
+      <span class="badge ${INCIDENT_STATUS_BADGE[st] || 'badge-gray'}">${INCIDENT_STATUS_LABEL[st] || ''}</span>
+      ${r.incident_client_shared_at ? `<span class="badge badge-blue">クライアント共有済み ${esc(fmt(r.incident_client_shared_at))}</span>` : ''}
+      <button class="btn btn-outline text-xs ml-auto" data-action="editIncident" data-id="${Number(r.daily_report_id)}"><i class="fas fa-pen-to-square"></i>対応を記録</button>
+    </div>
+    ${r.incident_memo ? `<p class="whitespace-pre-wrap break-words mt-1">${esc(r.incident_memo)}</p>` : ''}
+    ${r.incident_updated_at ? `<p class="text-[11px] text-gray-400 mt-0.5">更新: ${esc(r.incident_updated_by_name || '')} ${esc(fmt(r.incident_updated_at))}</p>` : ''}
+  </div>`
+}
+delegate('editIncident', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const st = r.incident_status || 'open'
+  modal(`
+    <h3 class="font-bold text-lg mb-1">インシデント・クレームの対応</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
+    <div class="flex gap-2 flex-wrap mb-3">
+      ${Object.entries(INCIDENT_STATUS_LABEL).map(([k, l]) => `<label class="flex items-center gap-1.5 text-sm border rounded-lg px-3 py-2 cursor-pointer"><input type="radio" name="inc-status" value="${k}" ${k === st ? 'checked' : ''}>${l}</label>`).join('')}
+    </div>
+    <label class="flex items-center gap-2 text-sm mb-3"><input id="inc-shared" type="checkbox" class="w-4 h-4" ${r.incident_client_shared_at ? 'checked' : ''}>クライアントに共有した${r.incident_client_shared_at ? `（${esc(dayjs(String(r.incident_client_shared_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</label>
+    <label class="text-sm text-gray-600 block mb-1" for="inc-memo">対応メモ</label>
+    <textarea id="inc-memo" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="だれに・いつ・何を連絡したか、再発防止の内容など">${esc(r.incident_memo || '')}</textarea>
+    <div class="flex gap-2 justify-end mt-3">
+      <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary text-sm" data-action="saveIncident" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>保存</button>
+    </div>`)
+})
+delegate('saveIncident', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const picked = document.querySelector('input[name="inc-status"]:checked')
+  const body = {
+    status: picked ? picked.value : 'open', memo: document.getElementById('inc-memo').value.trim() || null,
+    client_shared: document.getElementById('inc-shared').checked, expected_updated_at: r.incident_updated_at || null,
+  }
+  withSubmitLock(el, async () => {
+    try { await axios.put('/api/admin/daily-reports/' + Number(r.daily_report_id) + '/incident', body) } catch (e) {
+      showApiError(e, '対応状況を保存できませんでした')
+      // ほかの管理者が更新していた（409）ときは、今の内容で表示し直す
+      if (e.response && e.response.status === 409) { closeModal(); renderReports(true) }
+      return
+    }
+    closeModal(); toast('対応状況を保存しました'); renderReports(true)
+  })
+})
 
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
@@ -3006,6 +3931,7 @@ async function renderReports(refresh) {
   if (f.staff) q.set('staff_id', f.staff)
   if (f.unchecked) q.set('unchecked', '1')
   if (f.flagged) q.set('flagged', '1')
+  if (f.open) q.set('incident_open', '1')
   if (!refresh || !REPORT_OPTIONS) q.set('options', '1')
   let data
   try { data = (await axios.get('/api/admin/daily-reports?' + q.toString())).data } catch (e) {
@@ -3020,7 +3946,7 @@ async function renderReports(refresh) {
   const total = data.total, start = total ? data.offset + 1 : 0, end = data.offset + data.reports.length
   const lastPage = Math.max(1, Math.ceil(total / REPORT_PAGE_SIZE))
   const uncheckedShown = data.reports.filter(r => !r.manager_checked).length
-  const filtered = f.from || f.to || f.project || f.staff || f.unchecked || f.flagged
+  const filtered = f.from || f.to || f.project || f.staff || f.unchecked || f.flagged || f.open
   const pager = total > REPORT_PAGE_SIZE ? `
     <div class="flex items-center justify-center gap-2 mt-4">
       <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
@@ -3033,6 +3959,7 @@ async function renderReports(refresh) {
       <div class="flex gap-2 text-xs">
         <button class="badge badge-yellow" data-action="reportQuick" data-kind="unchecked">未確認 ${Number(data.counts.unchecked)}件</button>
         <button class="badge badge-red" data-action="reportQuick" data-kind="flagged">インシデント・クレーム ${Number(data.counts.flagged)}件</button>
+        <button class="badge badge-red" data-action="reportQuick" data-kind="open">うち未対応 ${Number(data.counts.incident_open || 0)}件</button>
       </div>
     </div>
     <section class="card p-3 mb-4">
@@ -3047,9 +3974,11 @@ async function renderReports(refresh) {
       <div class="flex items-center gap-4 flex-wrap mt-2 text-sm">
         <label class="flex items-center gap-2"><input id="rp-unchecked" type="checkbox" class="w-4 h-4" ${f.unchecked ? 'checked' : ''} onchange="applyReportFilter()">未確認のみ</label>
         <label class="flex items-center gap-2"><input id="rp-flagged" type="checkbox" class="w-4 h-4" ${f.flagged ? 'checked' : ''} onchange="applyReportFilter()">インシデント・クレームのみ</label>
+        <label class="flex items-center gap-2"><input id="rp-open" type="checkbox" class="w-4 h-4" ${f.open ? 'checked' : ''} onchange="applyReportFilter()">対応済みでないインシデント・クレームのみ</label>
         ${filtered ? '<a href="#reports" class="text-xs text-blue-600 hover:underline">条件をクリア</a>' : ''}
       </div>
     </section>
+    ${reportArchiveBarHtml()}
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
       <p class="text-xs text-gray-500">全 ${total} 件${total ? `中 ${start}〜${end} 件を表示` : ''}</p>
       ${uncheckedShown ? `<button class="btn btn-primary text-xs" data-action="checkShownReports"><i class="fas fa-check-double"></i>表示中の未確認 ${uncheckedShown}件をまとめて確認済みにする</button>` : ''}
@@ -3058,14 +3987,88 @@ async function renderReports(refresh) {
       ${data.reports.map(r => reportCardHtml(r, data.templates[r.report_template_id])).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
     </div>
     ${pager}`
+  loadReportRetentionNote()
   if (refresh) window.scrollTo(0, scrollY)
   // ページ送りで最後のページより後を開いた（確認して件数が減ったときなど）ら、最後のページへ
   if (!data.reports.length && page > 1 && total > 0) goReports({ ...f, page: lastPage })
 }
+// ---------- 日報の書き出しと保存期間の案内（#417） ----------
+// 日報は稼働日から3年で定期削除される。削除の前に控えを取れるよう、期間・案件・スタッフで絞って CSV で書き出す
+let REPORT_RETENTION = null // 保存期間と、今後30日で削除される件数（画面を開いた最初の1回だけ読む）
+function reportArchiveBarHtml() {
+  return `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-3 text-xs text-gray-500">
+      <p id="rp-retention"><i class="fas fa-box-archive mr-1"></i>日報は稼働日から3年で自動削除されます。必要な日報は CSV で控えを保存してください。</p>
+      <button class="btn btn-outline text-xs" data-action="openReportCsv"><i class="fas fa-file-csv"></i>CSVで書き出す</button>
+    </div>`
+}
+async function loadReportRetentionNote() {
+  if (!REPORT_RETENTION) {
+    try { REPORT_RETENTION = (await axios.get('/api/admin/daily-reports-retention')).data } catch (e) { return }
+  }
+  const el = document.getElementById('rp-retention')
+  const r = REPORT_RETENTION
+  if (!el || !r) return
+  const due = r.due_count > 0
+    ? `今後${Number(r.days)}日のうちに <b class="text-red-600">${Number(r.due_count)}件</b>（稼働日 ${esc(r.due_from)}〜${esc(r.due_to)}）が削除されます。`
+    : `今後${Number(r.days)}日のうちに削除される日報はありません。`
+  el.innerHTML = `<i class="fas fa-box-archive mr-1"></i>日報は稼働日から${Number(r.years)}年で自動削除されます。${due}必要な日報は CSV で控えを保存してください。`
+}
+delegate('openReportCsv', () => {
+  const f = reportFilterFromHash()
+  const r = REPORT_RETENTION
+  // 期間の既定: 絞り込みの期間。なければ、今後削除される日報の範囲（最大62日）か、先月
+  const today = dayjs()
+  let from = f.from || '', to = f.to || ''
+  if (!from || !to) {
+    if (r && r.due_count > 0 && r.due_from) { from = r.due_from; to = dayjs(r.due_from).add(61, 'day').format('YYYY-MM-DD'); if (r.due_to < to) to = r.due_to }
+    else { from = today.subtract(1, 'month').startOf('month').format('YYYY-MM-DD'); to = today.subtract(1, 'month').endOf('month').format('YYYY-MM-DD') }
+  }
+  const opts = REPORT_OPTIONS || { projects: [], staff: [] }
+  modal(`
+    <h3 class="font-bold text-lg mb-2">日報をCSVで書き出す</h3>
+    <p class="text-xs text-gray-500 mb-3">日報は稼働日から3年で自動削除されます。1回に書き出せる期間は62日まで（2,000件まで）です。項目ごとの列と、インシデント・コメントを含みます。</p>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <label>開始日<input id="rpc-from" type="date" class="inp" value="${esc(from)}"></label>
+      <label>終了日<input id="rpc-to" type="date" class="inp" value="${esc(to)}"></label>
+      <label class="col-span-2">案件<select id="rpc-project" class="inp"><option value="">すべて</option>
+        ${opts.projects.map(p => `<option value="${Number(p.project_id)}" ${f.project === p.project_id ? 'selected' : ''}>${esc(p.project_name)}${p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}</select></label>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary flex-1" data-action="downloadReportCsv"><i class="fas fa-download"></i>書き出す</button>
+    </div>`)
+})
+delegate('downloadReportCsv', (el) => withSubmitLock(el, async () => {
+  const from = document.getElementById('rpc-from').value, to = document.getElementById('rpc-to').value
+  const project = document.getElementById('rpc-project').value
+  if (!from || !to) return toast('開始日と終了日を入力してください')
+  if (from > to) return toast('開始日は終了日より前にしてください')
+  if (dayjs(to).diff(dayjs(from), 'day') >= 62) return toast('書き出す期間は62日以内にしてください')
+  const f = reportFilterFromHash()
+  const params = { from, to }
+  if (project) params.project_id = project
+  if (f.staff) params.staff_id = f.staff
+  try {
+    const res = await axios.get('/api/admin/daily-reports-csv', { params, responseType: 'blob' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(res.data)
+    a.download = `daily_reports_${from}_${to}.csv`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000)
+    closeModal()
+    toast(res.headers['x-csv-truncated'] === '1' ? `上限の2,000件までを書き出しました（全${Number(res.headers['x-csv-total'])}件）。期間を分けて書き出してください` : 'CSVをダウンロードしました')
+  } catch (e) {
+    // blob で受けたエラーの本文（JSON）を読んでから出す
+    let msg = null
+    try { msg = JSON.parse(await e.response.data.text()).error } catch { }
+    toast(msg || 'CSVを書き出せませんでした')
+  }
+}))
 delegate('reportPage', (el) => { const f = reportFilterFromHash(); goReports({ ...f, page: Number(el.dataset.page) || 1 }); window.scrollTo(0, 0) })
 delegate('reportQuick', (el) => {
   const f = reportFilterFromHash()
-  goReports({ ...f, unchecked: el.dataset.kind === 'unchecked' ? 1 : f.unchecked, flagged: el.dataset.kind === 'flagged' ? 1 : f.flagged, page: 0 })
+  goReports({ ...f, unchecked: el.dataset.kind === 'unchecked' ? 1 : f.unchecked, flagged: el.dataset.kind === 'flagged' ? 1 : f.flagged, open: el.dataset.kind === 'open' ? 1 : f.open, page: 0 })
 })
 
 async function updateReport(el, body, msg) {
@@ -3117,8 +4120,9 @@ delegate('saveReportComment', (el) => {
   const text = del ? '' : document.getElementById('rc-text').value.trim()
   if (!del && text === (r.manager_comment || '')) { closeModal(); return }
   withSubmitLock(el, async () => {
+    let res
     try {
-      await axios.put('/api/admin/daily-reports/' + r.daily_report_id, { manager_comment: text || null, expected_comment: r.manager_comment || null })
+      res = (await axios.put('/api/admin/daily-reports/' + r.daily_report_id, { manager_comment: text || null, expected_comment: r.manager_comment || null })).data
     } catch (e) {
       showApiError(e, 'コメントを保存できませんでした')
       // 別の管理者が変えていた場合は、今のコメントを表示する（もう一度保存すると、その内容を置き換える）
@@ -3129,7 +4133,9 @@ delegate('saveReportComment', (el) => {
       }
       return
     }
-    closeModal(); toast(del || !text ? 'コメントを削除しました' : 'コメントを保存しました'); renderReports(true)
+    // コメントはスタッフのアプリに通知する。ログインのない人には届かない（#158）
+    const notice = !res || res.staff_notified == null ? '' : res.staff_notified ? '（スタッフのアプリに通知しました）' : '（このスタッフはアプリにログインしないため、通知は届きません）'
+    closeModal(); toast(del || !text ? 'コメントを削除しました' : 'コメントを保存しました' + notice); renderReports(true)
   })
 })
 
@@ -3148,6 +4154,72 @@ async function renderAnalytics(month) {
   drawAnalytics()
 }
 delegate('analyticsMonth', el => renderAnalytics(el.dataset.month))
+
+// 案件の月間目標（#292）。日報テンプレートの数値項目ごとに、スタッフ1人あたりの件数を決める。スタッフの実績画面に進み具合が出る
+let GOAL_PROJECTS = []
+delegate('showProjectGoals', async () => {
+  try { GOAL_PROJECTS = (await axios.get('/api/admin/project-goals')).data.projects || [] } catch (e) { showApiError(e, '目標を読み込めませんでした'); return }
+  const summary = p => {
+    const set = p.fields.filter(f => p.goals[f.key])
+    return set.length ? set.map(f => `${esc(f.label)} ${Number(p.goals[f.key])}件`).join('、') : '<span class="text-gray-400">目標なし</span>'
+  }
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-bullseye text-emerald-600 mr-1"></i>案件の月間目標</h3>
+    <p class="text-xs text-gray-500 mb-3">スタッフ1人あたりの今月の目標件数です。スタッフの実績画面に、目標・実績・あと何件かが出ます（実績を見せない案件では出ません）。</p>
+    <div class="space-y-2 max-h-[60vh] overflow-y-auto">
+      ${GOAL_PROJECTS.map(p => `<div class="border rounded-lg p-2.5 flex items-center gap-2">
+        <div class="min-w-0 flex-1"><p class="text-sm font-medium text-gray-800">${esc(p.project_name)}${p.show_performance ? '' : ' <span class="badge badge-gray">実績を見せない</span>'}</p>
+          <p class="text-xs text-gray-600 mt-0.5">${p.fields.length ? summary(p) : '<span class="text-gray-400">日報テンプレートに数値の項目がありません</span>'}</p></div>
+        ${p.fields.length ? `<button class="btn btn-outline text-xs shrink-0" data-action="editProjectGoals" data-id="${Number(p.project_id)}">設定</button>` : ''}
+      </div>`).join('') || '<p class="text-sm text-gray-400">稼働中の案件がありません</p>'}
+    </div>
+    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+})
+delegate('editProjectGoals', (el) => {
+  const p = GOAL_PROJECTS.find(x => x.project_id === Number(el.dataset.id)); if (!p) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">月間目標（1人あたり）</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(p.project_name)}。空欄・0 の項目は目標なしになります。</p>
+    <div class="grid grid-cols-2 gap-3">
+      ${p.fields.map(f => `<label class="text-xs text-gray-600">${esc(f.label)}<input type="number" min="0" max="99999" step="1" inputmode="numeric" class="inp goal-inp" data-key="${esc(f.key)}" value="${p.goals[f.key] ? Number(p.goals[f.key]) : ''}"></label>`).join('')}
+    </div>
+    <div class="flex gap-2 justify-end mt-4">
+      <button class="btn btn-outline text-sm" data-action="showProjectGoals">戻る</button>
+      <button class="btn btn-primary text-sm" data-action="saveProjectGoals" data-id="${Number(p.project_id)}"><i class="fas fa-check"></i>保存</button>
+    </div>`)
+})
+delegate('saveProjectGoals', (el) => {
+  const goals = {}
+  for (const inp of document.querySelectorAll('.goal-inp')) {
+    const v = inp.value.trim()
+    if (v !== '' && !/^\d+$/.test(v)) { toast('目標は0以上の整数で入力してください'); inp.focus(); return }
+    goals[inp.dataset.key] = v === '' ? null : Number(v)
+  }
+  withSubmitLock(el, async () => {
+    try { await axios.put('/api/admin/projects/' + Number(el.dataset.id) + '/goals', { goals }) } catch (e) { showApiError(e, '目標を保存できませんでした'); return }
+    toast('目標を保存しました')
+    delegate.handlers.showProjectGoals()
+  })
+})
+
+// スタッフアプリに出す社内の情報（#496 #523）。実績画面の順位（匿名にもできる）と、同じ日・同じ案件に入るほかのスタッフ。変更は会社管理者だけ
+delegate('showStaffViewSetting', async () => {
+  let s
+  try { s = (await axios.get('/api/admin/settings/staff-view')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  const row = (id, checked, title, note) => `<label class="flex items-start gap-2 py-2 border-b last:border-b-0">
+    <input id="${id}" type="checkbox" class="w-4 h-4 mt-0.5" ${checked ? 'checked' : ''} ${s.can_edit ? '' : 'disabled'}>
+    <span><span class="text-sm font-medium text-gray-800">${title}</span><span class="block text-xs text-gray-500">${note}</span></span></label>`
+  modal(`
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-mobile-screen text-blue-600 mr-1"></i>スタッフアプリへの表示</h3>
+    ${row('sv-ranking', s.ranking_visible, '実績画面に、案件の中での順位を出す', '同じ月・同じ案件の日報の合計で、本人の順位・人数・平均との差と上位の件数を出します')}
+    ${row('sv-anon', s.ranking_anonymous, '順位はほかの人の名前を出さない（匿名）', 'オフにすると、上位の人の姓も出します')}
+    ${row('sv-cowork', s.show_coworkers, '一緒に入る人を出す', 'シフト画面で、同じ日・同じ現場に入るほかのスタッフの姓と時刻を出します（電話番号などは出しません）')}
+    ${s.can_edit ? '<button class="btn btn-primary w-full mt-4" data-action="saveStaffViewSetting">保存する</button>' : '<p class="text-xs text-gray-500 mt-3">この設定は会社管理者だけが変更できます</p>'}`)
+})
+delegate('saveStaffViewSetting', el => withSubmitLock(el, async () => {
+  const body = { ranking_visible: document.getElementById('sv-ranking').checked, ranking_anonymous: document.getElementById('sv-anon').checked, show_coworkers: document.getElementById('sv-cowork').checked }
+  try { await axios.put('/api/admin/settings/staff-view', body); closeModal(); toast('スタッフアプリへの表示を保存しました') } catch (e) { showApiError(e, '保存できませんでした') }
+}))
 window.setAnalyticsKey = function (key) { ANALYTICS.key = key; drawAnalytics() }
 delegate('rankAnalytics', el => { RANK_STATE.mode = el.dataset.mode; drawAnalytics() })
 function drawAnalytics() {
@@ -3176,6 +4248,8 @@ function drawAnalytics() {
         <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
         ${fields.length ? `<label class="text-xs text-gray-500 flex items-center gap-1 ml-2">指標
           <select class="inp text-sm w-auto" onchange="setAnalyticsKey(this.value)">${fields.map(f => `<option value="${esc(f.key)}" ${f.key === key ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select></label>` : ''}
+        <button class="btn btn-outline text-sm" data-action="showProjectGoals" title="スタッフの実績画面に出す、案件ごとの月間目標"><i class="fas fa-bullseye"></i>案件の目標</button>
+        <button class="btn btn-outline text-sm" data-action="showStaffViewSetting" title="スタッフアプリに出す順位・一緒に入る人の設定"><i class="fas fa-mobile-screen"></i>スタッフへの表示</button>
       </div>
     </div>
     <p class="text-xs text-gray-500 mb-3">集計する項目は、この月に日報のある案件の日報テンプレートの数値項目です。</p>
@@ -3243,33 +4317,75 @@ function drawAnalytics() {
 }
 
 // ============ お知らせ配信 ============
-// 一覧は50件ずつ（もっと見る）。キーワード・配信先の案件・期間で絞り込める。配信先の案件名・配信した人も出す（#368）
-let NOTICE_ADMIN = { list: [], offset: 0, has_more: false, q: '', project_id: '', from: '', to: '' }
+// 一覧は50件ずつ（もっと見る）。キーワード・配信先の案件・期間・状態で絞り込める。配信先の案件名・配信した人も出す（#368）。
+// 下書き・予約（#291）、配信後の修正・取消（#157）、掲載期限（#294）、回答（#554）、添付（#555）
+let NOTICE_ADMIN = { list: [], offset: 0, has_more: false, q: '', project_id: '', from: '', to: '', status: '' }
+// 配信先の選択肢（案件・個人あての候補）。renderNotices で読み込み、作成と修正のフォームで使う
+let NOTICE_FORM_DATA = { projects: [], staff: [] }
+const NOTICE_ATTACH_ACCEPT = '.pdf,.jpg,.jpeg,.png,.gif,.webp,application/pdf,image/jpeg,image/png,image/gif,image/webp'
+const NOTICE_RESPONSE_PRESETS = [['参加する', '参加しない', '未定'], ['はい', 'いいえ']]
 function noticeAdminImportanceBadge(n) {
   return n.importance === 'urgent' ? '<span class="badge badge-red"><i class="fas fa-triangle-exclamation"></i>緊急</span>'
     : n.importance === 'important' ? '<span class="badge badge-yellow">重要</span>' : ''
 }
+function noticeFmt(t, f) { return t ? esc(dayjs(String(t).replace(' ', 'T')).format(f || 'YYYY/M/D HH:mm')) : '' }
+function noticeStateBadge(n) {
+  if (n.state === 'draft') return '<span class="badge badge-gray"><i class="fas fa-pen"></i>下書き</span>'
+  if (n.state === 'scheduled') return `<span class="badge badge-blue"><i class="fas fa-clock"></i>予約 ${noticeFmt(n.published_at, 'M/D HH:mm')}</span>`
+  if (n.state === 'withdrawn') return '<span class="badge badge-red">取消済み</span>'
+  return n.expired ? '<span class="badge badge-gray">掲載終了</span>' : ''
+}
+function noticeAttachmentLinks(n, base) {
+  const files = n.attachments || []
+  if (!files.length) return ''
+  return `<div class="flex flex-wrap gap-2 mt-2">${files.map(a => `
+    <a class="text-xs text-blue-600 hover:underline inline-flex items-center gap-1" target="_blank" rel="noopener" href="${base}/${Number(a.attachment_id)}">
+      <i class="fas ${a.content_type === 'application/pdf' ? 'fa-file-pdf' : 'fa-image'}"></i>${esc(a.file_name)}</a>`).join('')}</div>`
+}
 function noticeAdminCardHtml(n) {
   const read = Number(n.read_count) || 0, total = Number(n.staff_total) || 0
+  const pending = n.state === 'draft' || n.state === 'scheduled'
+  const withdrawn = n.state === 'withdrawn'
   const target = n.target_type === 'all' ? '全体'
     : n.target_type === 'project' ? `案件: ${esc(n.target_names || '（削除された案件）')}`
     : `個人: ${esc(n.target_names || '-')}`
+  const options = n.response_options || []
+  const id = Number(n.notice_id)
   return `
-    <div class="card p-4">
+    <div class="card p-4 ${withdrawn ? 'opacity-70' : ''}">
       <div class="flex items-center gap-2 mb-1 flex-wrap">
+        ${noticeStateBadge(n)}
         ${noticeAdminImportanceBadge(n)}
         ${n.read_required ? '<span class="badge badge-purple">既読確認必須</span>' : ''}
         <span class="badge badge-gray">${target}</span>
-        <span class="text-xs text-gray-400">${esc(dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}</span>
-        <span class="text-xs text-gray-400">配信: ${esc(n.created_by_name || '-')}</span>
-        <button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${Number(n.notice_id)}"
+        ${pending ? '' : `<span class="text-xs text-gray-400">${noticeFmt(n.published_at)}</span>`}
+        <span class="text-xs text-gray-400">作成: ${esc(n.created_by_name || '-')}</span>
+        ${pending ? `<span class="text-xs text-gray-500 ml-auto">配信予定 ${total}名</span>`
+          : `<button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${id}"
           ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
-          既読 ${read}/${total}名${!n.reads_purged_at && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-red-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>
+          既読 ${read}/${total}名${!n.reads_purged_at && !withdrawn && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-red-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>`}
       </div>
-      <h3 class="font-bold text-gray-800">${esc(n.title)}</h3>
+      <h3 class="font-bold text-gray-800 ${withdrawn ? 'line-through' : ''}">${esc(n.title)}</h3>
       <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
-      ${n.remind_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${esc(dayjs(String(n.reminded_at).replace(' ', 'T')).format('M/D HH:mm'))}）</p>` : ''}
+      ${noticeAttachmentLinks(n, `/api/admin/notices/${id}/attachments`)}
+      <div class="text-xs text-gray-500 mt-2 space-y-0.5">
+        ${n.expires_at ? `<p><i class="fas fa-calendar-xmark mr-1"></i>掲載期限 ${noticeFmt(n.expires_at, 'YYYY/M/D')} まで${n.expired ? '（終了）' : ''}</p>` : ''}
+        ${options.length || n.response_comment ? `<p><i class="fas fa-reply mr-1"></i>回答: ${options.length ? esc(options.join('／')) : ''}${n.response_comment ? `${options.length ? '・' : ''}自由記入` : ''}
+          ${pending ? '' : `<button class="text-blue-600 hover:underline ml-1" data-action="showReads" data-id="${id}">回答 ${Number(n.response_count) || 0}件を見る</button>`}</p>` : ''}
+        ${pending && n.send_email ? '<p><i class="fas fa-envelope mr-1"></i>配信のときにメールでも送ります</p>' : ''}
+        ${n.updated_at ? `<p><i class="fas fa-pen mr-1"></i>${noticeFmt(n.updated_at, 'M/D HH:mm')} に修正（${esc(n.updated_by_name || '-')}）
+          <button class="text-blue-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
+        ${withdrawn ? `<p class="text-red-600"><i class="fas fa-ban mr-1"></i>${noticeFmt(n.withdrawn_at, 'M/D HH:mm')} に取消（${esc(n.withdrawn_by_name || '-')}）${n.withdraw_reason ? `: ${esc(n.withdraw_reason)}` : ''}
+          <button class="text-blue-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
+      </div>
+      ${n.remind_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${noticeFmt(n.reminded_at, 'M/D HH:mm')}）</p>` : ''}
       ${noticeEmailSummary(n)}
+      ${withdrawn ? '' : `<div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+        <button class="btn btn-outline text-xs" data-action="noticeEdit" data-id="${id}"><i class="fas fa-pen"></i>${pending ? '編集' : '修正'}</button>
+        ${pending ? `<button class="btn btn-primary text-xs" data-action="noticePublishNow" data-id="${id}"><i class="fas fa-paper-plane"></i>今すぐ配信</button>
+          <button class="btn btn-outline text-xs text-red-600" data-action="noticeDelete" data-id="${id}"><i class="fas fa-trash"></i>削除</button>`
+          : `<button class="btn btn-outline text-xs text-red-600" data-action="noticeWithdraw" data-id="${id}"><i class="fas fa-ban"></i>取り消す</button>`}
+      </div>`}
     </div>`
 }
 async function loadAdminNotices(more) {
@@ -3279,6 +4395,7 @@ async function loadAdminNotices(more) {
   if (f.project_id) params.project_id = f.project_id
   if (f.from) params.from = f.from
   if (f.to) params.to = f.to
+  if (f.status) params.status = f.status
   const { data } = await axios.get('/api/admin/notices', { params })
   if (!more) f.list = []
   const seen = new Set(f.list.map(n => n.notice_id))
@@ -3286,60 +4403,170 @@ async function loadAdminNotices(more) {
   f.offset = Number(data.offset || 0) + data.notices.length
   f.has_more = !!data.has_more
 }
+function noticeAdminFiltered() { const f = NOTICE_ADMIN; return !!(f.q || f.project_id || f.from || f.to || f.status) }
 function drawAdminNoticeList() {
   const el = document.getElementById('notice-admin-list')
   if (!el) return
   const f = NOTICE_ADMIN
-  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-gray-400 text-center py-8">${f.q || f.project_id || f.from || f.to ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
+  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-gray-400 text-center py-8">${noticeAdminFiltered() ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
     + (f.has_more ? '<button class="btn btn-outline w-full" data-action="noticeAdminMore">もっと見る</button>' : '')
 }
+
+// 作成・修正のフォーム。p は入力欄の id の頭（nt: 新規、ne: 修正）、n は修正するお知らせ（新規は null）
+function noticeFormHtml(p, n) {
+  const d = NOTICE_FORM_DATA
+  const tt = n ? n.target_type : 'all'
+  const ids = new Set(n && n.target_type !== 'all' ? String(n.target_ids || '').split(',').filter(Boolean).map(Number) : [])
+  const options = n ? (n.response_options || []) : []
+  const wantResponse = !!(options.length || (n && n.response_comment))
+  const pending = !n || n.state === 'draft' || n.state === 'scheduled'
+  const scheduled = n && n.state === 'scheduled' ? dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY-MM-DDTHH:mm') : ''
+  return `
+    <div class="space-y-3" id="${p}-form">
+      <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="${p}-title" class="inp" maxlength="200" value="${esc(n ? n.title : '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">本文</label><textarea id="${p}-body" rows="4" class="inp">${esc(n ? n.body : '')}</textarea></div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">配信対象</label>
+          <select id="${p}-target" class="inp" data-notice-target="${p}">
+            <option value="all" ${tt === 'all' ? 'selected' : ''}>全スタッフ</option>
+            <option value="project" ${tt === 'project' ? 'selected' : ''}>案件を選ぶ（複数可）</option>
+            <option value="staff" ${tt === 'staff' ? 'selected' : ''}>スタッフを選ぶ（複数可）</option>
+          </select></div>
+        <div><label class="text-sm text-gray-600 block mb-1">重要度</label>
+          <select id="${p}-importance" class="inp">${[['normal', '通常'], ['important', '重要'], ['urgent', '緊急']].map(([v, l]) => `<option value="${v}" ${(n ? n.importance : 'normal') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div id="${p}-project-wrap" style="display:${tt === 'project' ? 'block' : 'none'}">
+        <label class="text-sm text-gray-600 block mb-1">対象案件 <span class="text-xs text-gray-400" id="${p}-project-count"></span></label>
+        <div class="border border-gray-200 rounded-lg p-2 max-h-40 overflow-y-auto space-y-1">
+          ${d.projects.map(pj => `<label class="flex items-center gap-2 text-sm"><input type="checkbox" class="w-4 h-4" name="${p}-project" value="${Number(pj.project_id)}" ${tt === 'project' && ids.has(Number(pj.project_id)) ? 'checked' : ''}>${esc(pj.project_name)}</label>`).join('') || '<p class="text-xs text-gray-400">案件がありません</p>'}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">公開日の30日前以降に、選んだ案件で確定・代打のシフトがあるスタッフに届きます</p>
+      </div>
+      <div id="${p}-staff-wrap" style="display:${tt === 'staff' ? 'block' : 'none'}">
+        <label class="text-sm text-gray-600 block mb-1">対象スタッフ <span class="text-xs text-gray-400" id="${p}-staff-count"></span></label>
+        <input class="inp text-sm mb-1" placeholder="氏名・かなで絞り込む" data-notice-staff-filter="${p}">
+        <div class="border border-gray-200 rounded-lg p-2 max-h-48 overflow-y-auto space-y-1" id="${p}-staff-list">
+          ${d.staff.map(s => `<label class="flex items-center gap-2 text-sm" data-q="${esc(String((s.name || '') + ' ' + (s.kana || '')).toLowerCase())}"><input type="checkbox" class="w-4 h-4" name="${p}-staff" value="${Number(s.staff_id)}" ${tt === 'staff' && ids.has(Number(s.staff_id)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('') || '<p class="text-xs text-gray-400">ログインのある在籍中のスタッフがいません</p>'}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">ログインのある在籍中のスタッフから選べます</p>
+      </div>
+      <label class="flex items-center gap-2 text-sm"><input id="${p}-required" type="checkbox" class="w-4 h-4" ${n && n.read_required ? 'checked' : ''}>既読確認を必須にする</label>
+      <p class="text-[11px] text-gray-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
+      <div><label class="text-sm text-gray-600 block mb-1">掲載期限（任意）</label>
+        <input id="${p}-expires" type="date" class="inp" value="${esc(n && n.expires_at ? String(n.expires_at).slice(0, 10) : '')}">
+        <p class="text-[11px] text-gray-400 mt-1">この日を過ぎると、スタッフのホームと一覧から外れ「掲載終了」に移ります</p></div>
+      <div class="border border-gray-100 rounded-lg p-3">
+        <label class="flex items-center gap-2 text-sm"><input id="${p}-response" type="checkbox" class="w-4 h-4" data-notice-response="${p}" ${wantResponse ? 'checked' : ''}>回答を求める（出欠・質問など）</label>
+        <div id="${p}-response-wrap" class="mt-2 space-y-2" style="display:${wantResponse ? 'block' : 'none'}">
+          <div><label class="text-xs text-gray-500 block mb-1">選択肢（1行に1つ。空なら自由記入だけ）</label>
+            <textarea id="${p}-options" rows="3" class="inp text-sm">${esc(options.join('\n'))}</textarea>
+            <div class="flex flex-wrap gap-2 mt-1">${NOTICE_RESPONSE_PRESETS.map((set, i) => `<button type="button" class="text-xs text-blue-600 hover:underline" data-action="noticeResponsePreset" data-prefix="${p}" data-i="${i}">「${esc(set.join('／'))}」を入れる</button>`).join('')}</div></div>
+          <label class="flex items-center gap-2 text-sm"><input id="${p}-comment" type="checkbox" class="w-4 h-4" ${n && n.response_comment ? 'checked' : ''}>自由記入欄を付ける（コメント・質問への回答）</label>
+        </div>
+      </div>
+      ${n ? '' : `<div><label class="text-sm text-gray-600 block mb-1">添付（画像・PDF。5件まで、1件10MBまで）</label>
+        <input id="${p}-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm"></div>`}
+      ${pending ? `<div class="border border-gray-100 rounded-lg p-3 space-y-1">
+        <p class="text-sm text-gray-600">配信のしかた</p>
+        ${n ? '' : `<label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="publish" checked data-notice-mode="${p}">すぐに配信する</label>`}
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="schedule" ${n && n.state === 'scheduled' ? 'checked' : ''} data-notice-mode="${p}">日時を指定して配信する（予約）</label>
+        <div id="${p}-schedule-wrap" class="ml-6" style="display:${n && n.state === 'scheduled' ? 'block' : 'none'}"><input id="${p}-scheduled" type="datetime-local" class="inp text-sm" value="${esc(scheduled)}"></div>
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="draft" ${n && n.state === 'draft' ? 'checked' : ''} data-notice-mode="${p}">下書きとして保存する（スタッフには出ません）</label>
+      </div>
+      <label class="flex items-center gap-2 text-sm"><input id="${p}-send-email" type="checkbox" class="w-4 h-4" ${n && n.send_email ? 'checked' : ''}>メールでも通知する${n ? '（配信するときに送ります）' : ''}</label>`
+      : `<label class="flex items-center gap-2 text-sm"><input id="${p}-notify" type="checkbox" class="w-4 h-4">修正したことを配信先のスタッフにアプリで知らせる</label>
+      <label class="flex items-center gap-2 text-sm"><input id="${p}-send-email" type="checkbox" class="w-4 h-4">新しく配信先に加えた人にメールを送る</label>`}
+    </div>`
+}
+function noticeFormCounts(p) {
+  const pc = document.querySelectorAll(`input[name="${p}-project"]:checked`).length
+  const sc = document.querySelectorAll(`input[name="${p}-staff"]:checked`).length
+  const a = document.getElementById(`${p}-project-count`), b = document.getElementById(`${p}-staff-count`)
+  if (a) a.textContent = pc ? `${pc}件を選択中` : ''
+  if (b) b.textContent = sc ? `${sc}名を選択中` : ''
+}
+// フォームの切り替え（配信対象・回答・配信のしかた）と、スタッフの絞り込み
+document.addEventListener('change', (ev) => {
+  const el = ev.target
+  if (!el || !el.dataset) return
+  if (el.dataset.noticeTarget) {
+    const p = el.dataset.noticeTarget
+    document.getElementById(`${p}-project-wrap`).style.display = el.value === 'project' ? 'block' : 'none'
+    document.getElementById(`${p}-staff-wrap`).style.display = el.value === 'staff' ? 'block' : 'none'
+  } else if (el.dataset.noticeResponse) {
+    document.getElementById(`${el.dataset.noticeResponse}-response-wrap`).style.display = el.checked ? 'block' : 'none'
+  } else if (el.dataset.noticeMode) {
+    document.getElementById(`${el.dataset.noticeMode}-schedule-wrap`).style.display = el.value === 'schedule' ? 'block' : 'none'
+  } else if (/-(project|staff)$/.test(el.name || '')) {
+    noticeFormCounts(el.name.replace(/-(project|staff)$/, ''))
+  }
+})
+document.addEventListener('input', (ev) => {
+  const el = ev.target
+  if (!el || !el.dataset || !el.dataset.noticeStaffFilter) return
+  const q = el.value.trim().toLowerCase()
+  document.querySelectorAll(`#${el.dataset.noticeStaffFilter}-staff-list label`).forEach(l => { l.style.display = !q || l.dataset.q.includes(q) ? '' : 'none' })
+})
+delegate('noticeResponsePreset', el => {
+  const t = document.getElementById(`${el.dataset.prefix}-options`)
+  if (t) t.value = NOTICE_RESPONSE_PRESETS[Number(el.dataset.i)].join('\n')
+})
+// フォームの値。足りない入力があれば error を返す
+function collectNoticeForm(p) {
+  const v = (id) => { const e = document.getElementById(`${p}-${id}`); return e ? e.value : '' }
+  const checked = (id) => !!(document.getElementById(`${p}-${id}`) || {}).checked
+  const title = v('title').trim()
+  if (!title) return { error: 'タイトルを入力してください' }
+  const target_type = v('target')
+  let target_ids = ''
+  if (target_type === 'project' || target_type === 'staff') {
+    target_ids = [...document.querySelectorAll(`input[name="${p}-${target_type}"]:checked`)].map(e => e.value).join(',')
+    if (!target_ids) return { error: target_type === 'project' ? '対象の案件を選んでください' : '対象のスタッフを選んでください' }
+  }
+  const respond = checked('response')
+  const body = {
+    title, body: v('body'), target_type, target_ids, importance: v('importance'), read_required: checked('required'),
+    expires_at: v('expires') || null,
+    response_options: respond ? v('options').split('\n').map(s => s.trim()).filter(Boolean) : [],
+    response_comment: respond && checked('comment'),
+  }
+  if (respond && !body.response_options.length && !body.response_comment) return { error: '回答の選択肢を入れるか、自由記入欄を付けてください' }
+  const modeEl = document.querySelector(`input[name="${p}-mode"]:checked`)
+  const mode = modeEl ? modeEl.value : null
+  if (mode === 'schedule' && !v('scheduled')) return { error: '配信日時を入力してください' }
+  return { body, mode, scheduled_at: mode === 'schedule' ? v('scheduled') : null, send_email: checked('send-email'), notify: checked('notify') }
+}
+
 async function renderNotices() {
   loading()
-  let pj
   try {
-    const [, p] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects')])
-    pj = p.data
+    const [, p, s] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects'), axios.get('/api/admin/notices/recipients')])
+    NOTICE_FORM_DATA = { projects: p.data.projects || [], staff: s.data.staff || [] }
   } catch (e) {
     $app.innerHTML = `<div class="card p-4 text-sm text-gray-600">お知らせを読み込めませんでした。<button class="btn btn-outline ml-2" onclick="renderNotices()">再読み込み</button></div>`
     return
   }
   const f = NOTICE_ADMIN
+  const pj = NOTICE_FORM_DATA.projects
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">お知らせ配信</h2>
     <div class="grid lg:grid-cols-5 gap-4">
       <section class="card p-4 lg:col-span-2 h-fit">
         <h3 class="font-bold text-gray-700 mb-3"><i class="fas fa-paper-plane text-blue-600 mr-1"></i>新規配信</h3>
-        <div class="space-y-3">
-          <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="nt-title" class="inp"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">本文</label><textarea id="nt-body" rows="4" class="inp"></textarea></div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="text-sm text-gray-600 block mb-1">配信対象</label>
-              <select id="nt-target" class="inp" onchange="document.getElementById('nt-project-wrap').style.display = this.value === 'project' ? 'block' : 'none'">
-                <option value="all">全スタッフ</option><option value="project">案件別</option>
-              </select></div>
-            <div><label class="text-sm text-gray-600 block mb-1">重要度</label>
-              <select id="nt-importance" class="inp"><option value="normal">通常</option><option value="important">重要</option><option value="urgent">緊急</option></select></div>
-          </div>
-          <div id="nt-project-wrap" style="display:none">
-            <label class="text-sm text-gray-600 block mb-1">対象案件</label>
-            <select id="nt-project" class="inp">${pj.projects.map(p => `<option value="${Number(p.project_id)}">${esc(p.project_name)}</option>`).join('')}</select>
-            <p class="text-[11px] text-gray-400 mt-1">公開日の30日前以降に、この案件で確定・代打のシフトがあるスタッフに届きます</p>
-          </div>
-          <label class="flex items-center gap-2 text-sm"><input id="nt-required" type="checkbox" class="w-4 h-4">既読確認を必須にする</label>
-          <p class="text-[11px] text-gray-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
-          <label class="flex items-center gap-2 text-sm"><input id="nt-send-email" type="checkbox" class="w-4 h-4">メールでも通知する</label>
-          <button class="btn btn-primary w-full" onclick="sendNotice(this)">配信する</button>
-        </div>
+        ${noticeFormHtml('nt', null)}
+        <button class="btn btn-primary w-full mt-3" data-action="sendNotice">配信する／保存する</button>
       </section>
       <section class="lg:col-span-3 space-y-3">
         <div class="card p-3 flex flex-wrap items-end gap-2">
           <div class="flex-1 min-w-[10rem]"><label class="text-xs text-gray-500 block mb-1">キーワード（タイトル・本文）</label><input id="nf-q" class="inp text-sm" value="${esc(f.q)}"></div>
           <div><label class="text-xs text-gray-500 block mb-1">配信先の案件</label>
-            <select id="nf-project" class="inp text-sm"><option value="">すべて</option>${pj.projects.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === String(f.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></div>
+            <select id="nf-project" class="inp text-sm"><option value="">すべて</option>${pj.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === String(f.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></div>
+          <div><label class="text-xs text-gray-500 block mb-1">状態</label>
+            <select id="nf-status" class="inp text-sm">${[['', 'すべて'], ['pending', '下書き・予約'], ['expired', '掲載終了'], ['withdrawn', '取消']].map(([v, l]) => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
           <div><label class="text-xs text-gray-500 block mb-1">配信日</label>
             <div class="flex items-center gap-1"><input id="nf-from" type="date" class="inp text-sm" value="${esc(f.from)}"><span class="text-xs">〜</span><input id="nf-to" type="date" class="inp text-sm" value="${esc(f.to)}"></div></div>
           <button class="btn btn-outline text-sm" data-action="noticeAdminSearch"><i class="fas fa-magnifying-glass"></i>絞り込む</button>
-          ${f.q || f.project_id || f.from || f.to ? '<button class="text-xs text-gray-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
+          ${noticeAdminFiltered() ? '<button class="text-xs text-gray-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
         </div>
         <div id="notice-admin-list" class="space-y-3"></div>
       </section>
@@ -3349,16 +4576,19 @@ async function renderNotices() {
 delegate('noticeAdminSearch', el => withSubmitLock(el, async () => {
   Object.assign(NOTICE_ADMIN, {
     q: document.getElementById('nf-q').value.trim(), project_id: document.getElementById('nf-project').value,
-    from: document.getElementById('nf-from').value, to: document.getElementById('nf-to').value,
+    from: document.getElementById('nf-from').value, to: document.getElementById('nf-to').value, status: document.getElementById('nf-status').value,
   })
   try { await loadAdminNotices(false) } catch (e) { showApiError(e, 'お知らせを読み込めませんでした'); return }
   drawAdminNoticeList()
 }))
-delegate('noticeAdminClear', () => { Object.assign(NOTICE_ADMIN, { q: '', project_id: '', from: '', to: '' }); renderNotices() })
+delegate('noticeAdminClear', () => { Object.assign(NOTICE_ADMIN, { q: '', project_id: '', from: '', to: '', status: '' }); renderNotices() })
 delegate('noticeAdminMore', el => withSubmitLock(el, async () => {
   try { await loadAdminNotices(true) } catch (e) { showApiError(e, 'お知らせを読み込めませんでした'); return }
   drawAdminNoticeList()
 }))
+async function refreshAdminNotices() {
+  try { await loadAdminNotices(false); drawAdminNoticeList() } catch (_) { }
+}
 // お知らせメールの送信結果（状態ごとの人数）。押すと1人ずつの結果を出す
 const NOTICE_MAIL_STATUS = { sent: '送信済み', failed: '送信失敗', no_email: 'メール未登録', pending: '送信中', skipped: '送信停止中' }
 function noticeEmailSummary(n) {
@@ -3387,65 +4617,227 @@ window.showNoticeEmails = async function (id) {
       ${d.error ? `<span class="text-xs text-red-600">${esc(errText(d.error))}</span>` : ''}</div>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div>
     <p class="text-xs text-gray-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。届かなかったアドレスは<a href="#corrections/emails" class="text-blue-600 hover:underline" onclick="closeModal()">メール送信状況</a>で確認できます。</p>`)
 }
+function noticeEmailMessage(e) {
+  if (!e) return ''
+  return e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
+    : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
+    : `（メール送信対象 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
+}
 // 二重配信の防止用キー（配信が成功するまで同じキーを使う。サーバーは同じキーの配信を受け付けない）
 let NOTICE_REQUEST_ID = null
 function newNoticeRequestId() {
   return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)
 }
-window.sendNotice = async function (btn) {
-  const title = document.getElementById('nt-title').value.trim()
-  if (!title) { toast('タイトルを入力してください'); return }
-  if (btn && btn.disabled) return
-  const target = document.getElementById('nt-target').value
+// 添付を上げる。失敗したファイルの名前と理由を返す
+async function uploadNoticeFiles(noticeId, files) {
+  if (!files.length) return []
+  const fd = new FormData()
+  for (const f of files) fd.append('files', f)
+  const { data } = await axios.post(`/api/admin/notices/${Number(noticeId)}/attachments`, fd)
+  return (data.results || []).filter(r => !r.ok).map(r => `${r.filename}: ${r.error}`)
+}
+// 新規配信。添付があるときは、まず下書きで作って添付を上げ、すべて上がってから配信・予約する
+// （添付の失敗した状態でスタッフに届かないように。失敗したら下書きのまま残す）
+delegate('sendNotice', el => withSubmitLock(el, async () => {
+  const f = collectNoticeForm('nt')
+  if (f.error) { toast(f.error); return }
+  const fileInput = document.getElementById('nt-files')
+  const files = fileInput ? [...fileInput.files] : []
+  if (files.length > 5) { toast('添付は5件までです'); return }
+  if (files.some(x => x.size > 10 * 1024 * 1024)) { toast('添付は1件10MB以下にしてください'); return }
+  const mode = f.mode || 'publish'
   if (!NOTICE_REQUEST_ID) NOTICE_REQUEST_ID = newNoticeRequestId()
-  const label = btn ? btn.innerHTML : ''
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>送信中…' }
+  let data
   try {
-    const { data } = await axios.post('/api/admin/notices', {
-      title, body: document.getElementById('nt-body').value,
-      target_type: target, target_ids: target === 'project' ? document.getElementById('nt-project').value : '',
-      importance: document.getElementById('nt-importance').value,
-      read_required: document.getElementById('nt-required').checked,
-      send_email: document.getElementById('nt-send-email').checked,
-      client_request_id: NOTICE_REQUEST_ID
-    })
-    NOTICE_REQUEST_ID = null
-    const e = data.email
-    let msg = 'お知らせを配信しました'
-    if (e) {
-      msg += e.mode === 'disabled' ? '（メール送信は停止中のため、メールは送っていません）'
-        : e.mode === 'not_configured' ? '（メールの送信設定がないため、メールは送れません）'
-        : `（メール送信対象 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
-    }
-    toast(msg); renderNotices()
+    data = (await axios.post('/api/admin/notices', {
+      ...f.body, mode: files.length ? 'draft' : mode, scheduled_at: files.length ? null : f.scheduled_at,
+      send_email: f.send_email, client_request_id: NOTICE_REQUEST_ID,
+    })).data
   } catch (err) {
     const r = err.response
     if (r && r.status === 409 && r.data && r.data.duplicate) { NOTICE_REQUEST_ID = null; toast(r.data.error); renderNotices(); return }
-    toast((r && r.data && r.data.error) || 'お知らせを配信できませんでした。通信状況を確認してください')
-    if (btn) { btn.disabled = false; btn.innerHTML = label }
+    showApiError(err, 'お知らせを配信できませんでした。通信状況を確認してください')
+    return
   }
+  NOTICE_REQUEST_ID = null
+  if (files.length) {
+    let failed
+    try { failed = await uploadNoticeFiles(data.notice_id, files) } catch (e) { failed = ['通信に失敗しました'] }
+    if (failed.length) {
+      alert(`添付できなかったファイルがあるため、下書きとして保存しました。一覧の「編集」から添付を直して配信してください。\n${failed.join('\n')}`)
+      renderNotices(); return
+    }
+    if (mode !== 'draft') {
+      try {
+        data = (await axios.post(`/api/admin/notices/${Number(data.notice_id)}/publish`, { scheduled_at: mode === 'schedule' ? f.scheduled_at : null, send_email: f.send_email })).data
+        data.status = data.state
+      } catch (e) { showApiError(e, '配信できませんでした。下書きとして保存しています'); renderNotices(); return }
+    }
+  }
+  const msg = data.status === 'draft' ? '下書きとして保存しました'
+    : data.status === 'scheduled' ? `${dayjs(String(data.published_at).replace(' ', 'T')).format('M/D HH:mm')} に配信するよう予約しました`
+    : 'お知らせを配信しました' + noticeEmailMessage(data.email)
+  toast(msg); renderNotices()
+}))
+
+// 修正（#157）・下書きと予約の編集（#291）。添付の追加・削除もここで行う
+function noticeEditAttachmentsHtml(n) {
+  const files = n.attachments || []
+  return `
+    <div class="border-t border-gray-100 pt-3 mt-3" id="ne-attachments">
+      <p class="text-sm text-gray-600 mb-1">添付（画像・PDF。5件まで、1件10MBまで）</p>
+      <div class="space-y-1 mb-2">${files.map(a => `<div class="flex items-center gap-2 text-sm">
+        <a class="text-blue-600 hover:underline truncate" target="_blank" rel="noopener" href="/api/admin/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}">${esc(a.file_name)}</a>
+        <button class="text-xs text-red-600 hover:underline ml-auto" data-action="noticeAttachmentDelete" data-id="${Number(n.notice_id)}" data-aid="${Number(a.attachment_id)}" data-name="${esc(a.file_name)}">削除</button></div>`).join('') || '<p class="text-xs text-gray-400">なし</p>'}</div>
+      ${files.length < 5 ? `<div class="flex items-center gap-2"><input id="ne-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm flex-1">
+        <button class="btn btn-outline text-xs" data-action="noticeAttachmentAdd" data-id="${Number(n.notice_id)}"><i class="fas fa-paperclip"></i>添付する</button></div>` : ''}
+      ${n.state === 'published' ? '<p class="text-[11px] text-gray-400 mt-1">配信済みのお知らせの添付を変えると、スタッフの画面に「更新」の印が付きます</p>' : ''}
+    </div>`
 }
-// 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）
+function openNoticeEdit(id) {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  if (!n) { toast('お知らせが見つかりません。画面を読み直してください'); return }
+  const pending = n.state === 'draft' || n.state === 'scheduled'
+  modal(`
+    <h3 class="font-bold text-lg mb-1">${pending ? 'お知らせの編集' : 'お知らせの修正'}</h3>
+    ${pending ? '' : '<p class="text-xs text-gray-500 mb-3">配信済みのお知らせを直します。直す前の内容は履歴に残ります。タイトル・本文を直すと、スタッフの画面に「更新」の印が付きます</p>'}
+    ${noticeFormHtml('ne', n)}
+    ${noticeEditAttachmentsHtml(n)}
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
+      <button class="btn btn-primary flex-1" data-action="noticeSave" data-id="${Number(id)}">保存する</button>
+    </div>`)
+  noticeFormCounts('ne')
+}
+delegate('noticeEdit', el => openNoticeEdit(Number(el.dataset.id)))
+delegate('noticeSave', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  const f = collectNoticeForm('ne')
+  if (f.error) { toast(f.error); return }
+  const pending = n && (n.state === 'draft' || n.state === 'scheduled')
+  const body = { ...f.body, send_email: f.send_email }
+  if (pending) { body.mode = f.mode || 'draft'; body.scheduled_at = f.scheduled_at } else body.notify = f.notify
+  let data
+  try { data = (await axios.put(`/api/admin/notices/${id}`, body)).data } catch (e) { showApiError(e, '保存できませんでした'); return }
+  closeModal()
+  toast((data.state === 'scheduled' ? '予約を保存しました' : data.state === 'draft' ? '下書きを保存しました' : '修正しました')
+    + (data.notified ? `（${Number(data.notified)}名に知らせました）` : '') + noticeEmailMessage(data.email))
+  refreshAdminNotices()
+}))
+delegate('noticeAttachmentAdd', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  const input = document.getElementById('ne-files')
+  const files = input ? [...input.files] : []
+  if (!files.length) { toast('ファイルを選んでください'); return }
+  let failed
+  try { failed = await uploadNoticeFiles(id, files) } catch (e) { showApiError(e, '添付できませんでした'); return }
+  if (failed.length) alert(`添付できなかったファイルがあります。\n${failed.join('\n')}`)
+  else toast('添付しました')
+  await refreshAdminNotices()
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  const box = document.getElementById('ne-attachments')
+  if (n && box) box.outerHTML = noticeEditAttachmentsHtml(n)
+}))
+delegate('noticeAttachmentDelete', el => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  if (!confirm(`添付「${el.dataset.name}」を削除しますか？`)) return
+  try { await axios.delete(`/api/admin/notices/${id}/attachments/${Number(el.dataset.aid)}`) } catch (e) { showApiError(e, '削除できませんでした'); return }
+  toast('添付を削除しました')
+  await refreshAdminNotices()
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === id)
+  const box = document.getElementById('ne-attachments')
+  if (n && box) box.outerHTML = noticeEditAttachmentsHtml(n)
+}))
+delegate('noticePublishNow', el => withSubmitLock(el, async () => {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === Number(el.dataset.id))
+  if (!n || !confirm(`「${n.title}」を今すぐ配信しますか？${n.send_email ? '（メールも送ります）' : ''}`)) return
+  let data
+  try { data = (await axios.post(`/api/admin/notices/${Number(n.notice_id)}/publish`, {})).data } catch (e) { showApiError(e, '配信できませんでした'); return }
+  toast('お知らせを配信しました' + noticeEmailMessage(data.email))
+  refreshAdminNotices()
+}))
+delegate('noticeDelete', el => withSubmitLock(el, async () => {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === Number(el.dataset.id))
+  if (!n || !confirm(`${n.state === 'scheduled' ? '予約' : '下書き'}「${n.title}」を削除しますか？（元に戻せません）`)) return
+  try { await axios.delete(`/api/admin/notices/${Number(n.notice_id)}`) } catch (e) { showApiError(e, '削除できませんでした'); return }
+  toast('削除しました')
+  refreshAdminNotices()
+}))
+// 取消（#157）。スタッフの画面から消える。理由と、配信先への知らせを選べる
+delegate('noticeWithdraw', el => {
+  const n = NOTICE_ADMIN.list.find(x => x.notice_id === Number(el.dataset.id))
+  if (!n) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">お知らせを取り消す</h3>
+    <p class="text-sm text-gray-600 mb-3">「${esc(n.title)}」をスタッフの画面から消します。既読・回答の記録は残ります。取り消した後は元に戻せません。</p>
+    <label class="text-sm text-gray-600 block mb-1">取消の理由（任意・200文字まで）</label>
+    <input id="nw-reason" class="inp mb-2" maxlength="200" placeholder="例: 日時に誤りがあったため">
+    <label class="flex items-center gap-2 text-sm"><input id="nw-notify" type="checkbox" class="w-4 h-4" checked>取り消したことを配信先のスタッフにアプリで知らせる</label>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+      <button class="btn btn-danger flex-1" data-action="noticeWithdrawDo" data-id="${Number(n.notice_id)}">取り消す</button>
+    </div>`)
+})
+delegate('noticeWithdrawDo', el => withSubmitLock(el, async () => {
+  let data
+  try {
+    data = (await axios.post(`/api/admin/notices/${Number(el.dataset.id)}/withdraw`, {
+      reason: document.getElementById('nw-reason').value.trim(), notify: document.getElementById('nw-notify').checked,
+    })).data
+  } catch (e) { showApiError(e, '取り消せませんでした'); return }
+  closeModal()
+  toast('お知らせを取り消しました' + (data.notified ? `（${Number(data.notified)}名に知らせました）` : ''))
+  refreshAdminNotices()
+}))
+delegate('noticeRevisions', async el => {
+  let data
+  try { data = (await axios.get(`/api/admin/notices/${Number(el.dataset.id)}/revisions`)).data } catch (e) { showApiError(e, '履歴を読み込めませんでした'); return }
+  const label = { edit: '修正', withdraw: '取消' }
+  modal(`
+    <h3 class="font-bold text-lg mb-1">修正・取消の履歴</h3>
+    <p class="text-xs text-gray-500 mb-3">それぞれの操作の前の内容です（新しい順）</p>
+    <div class="space-y-3 max-h-96 overflow-y-auto">${data.revisions.map(r => `
+      <div class="border border-gray-100 rounded-lg p-3 text-sm">
+        <p class="text-xs text-gray-500 mb-1"><span class="badge ${r.action === 'withdraw' ? 'badge-red' : 'badge-gray'}">${label[r.action] || esc(r.action)}</span>
+          ${noticeFmt(r.edited_at)}（${esc(r.edited_by_name || '-')}）</p>
+        <p class="font-bold">${esc(r.title)}</p>
+        <p class="text-gray-600 whitespace-pre-wrap">${esc(r.body)}</p>
+        ${r.expires_at ? `<p class="text-xs text-gray-500 mt-1">掲載期限 ${noticeFmt(r.expires_at, 'YYYY/M/D')}</p>` : ''}
+      </div>`).join('') || '<p class="text-sm text-gray-400">履歴はありません</p>'}</div>`)
+})
+// 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）。
+// 回答を求めるお知らせは、選択肢ごとの人数・回答・未回答の人も出す（#554）
 window.showReads = async function (id) {
   let data
   try { data = (await axios.get(`/api/admin/notices/${Number(id)}/reads`)).data } catch (e) { showApiError(e, '既読状況を読み込めませんでした'); return }
   if (data.purged) {
     modal(`
       <h3 class="font-bold text-lg mb-4">既読状況</h3>
-      <p class="text-sm text-gray-600">公開から2年たったため、既読の記録は削除済みです。</p>
+      <p class="text-sm text-gray-600">公開から2年たったため、既読・回答の記録は削除済みです。</p>
       <p class="text-sm text-gray-600 mt-2">削除の直前の既読: ${Number(data.read_count) || 0}/${Number(data.target_count) || 0}名</p>`)
     return
   }
+  const rs = data.responses
+  const canRemind = data.state === 'published' && data.unread.length
   modal(`
-    <h3 class="font-bold text-lg mb-1">既読状況</h3>
-    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）</p>
+    <h3 class="font-bold text-lg mb-1">既読状況${rs ? '・回答' : ''}</h3>
+    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）${data.state === 'withdrawn' ? '・取消済み' : ''}</p>
+    ${rs ? `<div class="border border-gray-100 rounded-lg p-3 mb-4">
+      <div class="flex items-center mb-2"><h4 class="text-sm font-bold text-gray-700">回答 ${rs.answered.length}名・未回答 ${rs.unanswered.length}名</h4>
+        <a class="text-xs text-blue-600 hover:underline ml-auto" href="/api/admin/notices/${Number(id)}/responses.csv"><i class="fas fa-file-csv mr-1"></i>CSV</a></div>
+      ${rs.options.length ? `<div class="flex flex-wrap gap-2 mb-2">${rs.options.map(o => `<span class="badge badge-blue">${esc(o)} ${Number(rs.counts[o]) || 0}名</span>`).join('')}</div>` : ''}
+      <div class="space-y-1 text-sm max-h-48 overflow-y-auto">${rs.answered.map(a => `<p>${esc(a.name)}${a.choice != null ? ` <span class="badge badge-gray">${esc(a.choice)}</span>` : ''}
+        ${a.comment ? `<span class="text-gray-600">「${esc(a.comment)}」</span>` : ''} <span class="text-xs text-gray-400">${noticeFmt(a.answered_at, 'M/D HH:mm')}</span></p>`).join('') || '<p class="text-gray-400 text-xs">まだ回答はありません</p>'}</div>
+      ${rs.unanswered.length ? `<p class="text-xs text-gray-500 mt-2">未回答: ${rs.unanswered.map(u => esc(u.name)).join('、')}</p>` : ''}
+    </div>` : ''}
     <div class="grid grid-cols-2 gap-4">
       <div><h4 class="text-sm font-bold text-emerald-700 mb-2">既読 ${data.read.length}名</h4>
         <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
       <div><h4 class="text-sm font-bold text-red-700 mb-2">未読 ${data.unread.length}名</h4>
         <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
     </div>
-    ${data.unread.length ? `<div class="border-t border-gray-100 mt-4 pt-3">
+    ${canRemind ? `<div class="border-t border-gray-100 mt-4 pt-3">
       <label class="flex items-center gap-2 text-sm mb-2"><input id="remind-email" type="checkbox" class="w-4 h-4">メールでも送る</label>
       <button class="btn btn-primary w-full" data-action="remindNotice" data-id="${Number(id)}"><i class="fas fa-bell"></i>未読の ${data.unread.length}名に再通知する</button>
       <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に確認のお願いが届きます（押すとこのお知らせが開きます）</p>
@@ -3466,7 +4858,7 @@ delegate('remindNotice', el => withSubmitLock(el, async () => {
       : `（メール送信 ${Number(e.with_email)}名・メール未登録 ${Number(e.no_email)}名）`
   }
   toast(msg); closeModal()
-  try { await loadAdminNotices(false); drawAdminNoticeList() } catch (_) { }
+  refreshAdminNotices()
 }))
 
 // ============ お知らせ既読率レポート ============
@@ -3717,6 +5109,23 @@ delegate('closeFollow', el => closeFollow(Number(el.dataset.id), el))
 const CONSULT_ST_BADGE = { open: '<span class="badge badge-red">未対応</span>', in_progress: '<span class="badge badge-blue">対応中</span>', done: '<span class="badge badge-green">対応済</span>' }
 const CONSULT_TABS = [['active', '未完了'], ['open', '未対応'], ['in_progress', '対応中'], ['done', '対応済み'], ['all', 'すべて']]
 const CONSULT_VIEW = { status: 'active', page: 1, list: [] }
+// 相談の写真（#429）とやり取り（#154）。返信は上書きせず、スタッフの追加の連絡と時系列で並べる
+const consultTime = (at) => esc(dayjs(String(at || '').replace(' ', 'T')).format('M/D HH:mm'))
+function consultPhotosHtml(co, messageId) {
+  const list = (co.photos || []).filter(p => (p.message_id || null) === (messageId || null))
+  return list.length ? `<div class="flex gap-2 flex-wrap mt-2">${list.map(p => `<a href="/api/admin/consultation-photo/${Number(p.attachment_id)}" target="_blank" rel="noopener">
+    <img src="/api/admin/consultation-photo/${Number(p.attachment_id)}" alt="添付の写真" loading="lazy" class="w-20 h-20 object-cover rounded-lg border border-gray-200"></a>`).join('')}</div>` : ''
+}
+function consultThreadHtml(co) {
+  const msgs = co.messages || []
+  // これまでの返信（やり取りに移す前の1件）だけがある場合
+  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>`
+  return msgs.map(m => m.author_side === 'admin'
+    ? `<div class="mt-2 ml-6 bg-blue-50 rounded-lg px-3 py-2"><p class="text-[11px] text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>${esc(m.author_name || '管理者')}・${consultTime(m.created_at)}</p>
+        <p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${esc(m.body)}</p></div>`
+    : `<div class="mt-2 mr-6 bg-gray-50 rounded-lg px-3 py-2"><p class="text-[11px] text-gray-500 mb-0.5"><i class="fas fa-user mr-1"></i>${esc(co.staff_name)}（追加の連絡）・${consultTime(m.created_at)}</p>
+        <p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosHtml(co, m.message_id)}</div>`).join('')
+}
 
 // #consult/{id} で開いたときは、その相談だけを出して強調する（ダッシュボードの ToDo・未報告の一覧から。#402 #498）
 async function renderConsult() {
@@ -3755,9 +5164,10 @@ async function renderConsult() {
             <button class="text-blue-700 hover:underline ml-1" data-action="consultOpenBoard" data-date="${esc(co.target_date)}" data-project-id="${esc(co.target_project_id || '')}">シフトボードで見る</button>
             ${co.target_project_id && !co.target_shift_id ? '<span class="text-gray-400 ml-1">（該当のシフトは見つかりません）</span>' : ''}</p>` : ''}
           <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
-          ${co.manager_reply ? `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>` : ''}
+          ${consultPhotosHtml(co, null)}
+          ${consultThreadHtml(co)}
           <div class="flex gap-2 mt-3">
-            <button class="btn btn-outline text-xs" data-action="consultReply" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>${co.manager_reply ? '返信を書き直す' : '返信する'}</button>
+            <button class="btn btn-outline text-xs" data-action="consultReply" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>返信する</button>
             ${co.status !== 'done' ? `<button class="btn btn-outline text-xs" data-action="consultClose" data-id="${Number(co.consultation_id)}"><i class="fas fa-check"></i>対応済みにする</button>` : ''}
           </div>
         </section>`).join('') || '<p class="text-center text-gray-400 py-10">該当する相談はありません</p>'}
@@ -3787,16 +5197,16 @@ delegate('consultOpenBoard', el => {
 delegate('consultReply', el => replyConsult(Number(el.dataset.id)))
 delegate('consultClose', el => closeConsult(Number(el.dataset.id), el))
 
-// 返信は相談の本文を見ながら複数行で書く（#422）。未対応の相談は返信で『対応中』にする
+// 返信は相談の本文とこれまでのやり取りを見ながら複数行で書く（#422）。返信は前の返信を消さずに足す（#154）。未対応の相談は返信で『対応中』にする
 window.replyConsult = function (id) {
   const co = CONSULT_VIEW.list.find(x => x.consultation_id === id)
   if (!co) return
   modal(`
     <h3 class="font-bold text-lg mb-1">相談への返信</h3>
     <p class="text-xs text-gray-500 mb-2">${esc(co.staff_name)}・${esc(CAT_LABELS[co.category] || co.category)}・${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</p>
-    <div class="bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-700 whitespace-pre-wrap break-words max-h-48 overflow-y-auto mb-3">${esc(co.body)}</div>
+    <div class="bg-gray-50 rounded-lg px-3 py-2 max-h-64 overflow-y-auto mb-3"><p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>${consultThreadHtml(co)}</div>
     <label class="text-sm text-gray-600 block mb-1" for="consult-reply">返信</label>
-    <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください">${esc(co.manager_reply || '')}</textarea>
+    <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください"></textarea>
     <p class="text-xs text-gray-400 mt-1">スタッフのアプリに通知され、ホームに『返信があります』と表示されます</p>
     <div class="flex justify-end gap-2 mt-4">
       <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
@@ -3979,6 +5389,11 @@ async function renderAccount() {
       <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${me.role === 'company_admin' ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
       <a href="#security" class="btn btn-outline text-sm">セキュリティへ</a>
     </section>
+    <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
+      <i class="fas fa-phone text-blue-500"></i>
+      <span class="text-sm flex-1">スタッフ向けの緊急連絡先（アプリと報告用URLに出す電話番号）と、入店の位置が現場から離れているとみなす距離を設定します。</span>
+      <button class="btn btn-outline text-sm" data-action="showSiteContactSetting">緊急連絡先・入店の位置</button>
+    </section>
     ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
 }
 
@@ -4143,6 +5558,8 @@ const routes = {
   'attendance-history': () => (window.renderAttendanceHistory ? renderAttendanceHistory() : renderDashboard()),
   security: () => (window.renderSecurity ? renderSecurity() : renderDashboard())
 }
+// スタッフの申請（#272 #288 #289 #297。画面は書類の欄の後に定義）
+routes['staff-requests'] = () => renderStaffRequests()
 
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)
@@ -4154,6 +5571,8 @@ function route() {
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
+  // 自社の日報テンプレートの作成・編集（#165）
+  if (tab === 'projects' && id === 'templates') return renderAdminTemplates()
   // 詳細画面の ID は onclick などに埋め込まれるため、数字以外（細工したリンク）は一覧へ戻す
   if (['staff', 'projects', 'clients', 'employees'].includes(tab) && id && !/^\d+$/.test(id)) { location.hash = tab; return }
   // 従業員管理（労務情報）は会社管理者・事務担当のみ（#205。API でも同じ判定で止める）
@@ -4176,6 +5595,130 @@ function route() {
 
 window.addEventListener('hashchange', route)
 document.getElementById('mobile-nav').addEventListener('change', e => { location.hash = e.target.value })
+
+// ============ 出勤可能日（#171 #availability）: 締切・未提出の人への通知・日付×スタッフの一覧。API は src/staff-schedule.ts ============
+// メニューは index.tsx を変えずに、ここで『シフト管理』の下へ足す
+;(function addAvailabilityMenu() {
+  const side = document.querySelector('#side-nav a[data-tab="shifts"]')
+  if (side && !document.querySelector('#side-nav a[data-tab="availability"]')) side.insertAdjacentHTML('afterend', '<a href="#availability" class="side-link" data-tab="availability"><i class="fas fa-calendar-check w-5"></i>出勤可能日</a>')
+  const opt = document.querySelector('#mobile-nav option[value="shifts"]')
+  if (opt && !document.querySelector('#mobile-nav option[value="availability"]')) opt.insertAdjacentHTML('afterend', '<option value="availability">出勤可能日</option>')
+})()
+routes.availability = () => renderAvailabilityBoard()
+const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
+const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み']]
+let AVB = { month: null, data: null, filter: 'all' }
+const avbMonthLabel = (m) => `${Number(String(m).slice(0, 4))}年${Number(String(m).slice(5, 7))}月`
+const avbAt = (at) => at ? dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm') : ''
+
+async function renderAvailabilityBoard(month) {
+  const h = location.hash.split('/')[1] || ''
+  month = month || (/^\d{4}-\d{2}$/.test(h) ? h : AVB.month)
+  loading()
+  let data
+  try { data = (await axios.get('/api/admin/availability', { params: month ? { month } : {} })).data } catch (e) {
+    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">出勤可能日</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '出勤可能日を読み込めませんでした')}</p>
+      <button class="btn btn-outline" data-action="avbReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
+    return
+  }
+  if ((location.hash || '').slice(1).split('/')[0] !== 'availability') return
+  AVB.month = data.month; AVB.data = data
+  drawAvailabilityBoard()
+}
+
+function drawAvailabilityBoard() {
+  const d = AVB.data
+  const first = dayjs(d.month + '-01')
+  const loginStaff = d.staff.filter(s => s.has_login)
+  const unsubmitted = loginStaff.filter(s => !s.submitted_at)
+  const lateCount = d.staff.filter(s => s.late).length
+  const rows = d.staff.filter(s => AVB.filter === 'all' || (AVB.filter === 'submitted' ? !!s.submitted_at : !s.submitted_at && s.has_login))
+  // △の時間帯・メモ（セルの title に出す）
+  const detail = {}
+  for (const x of d.details || []) detail[`${x.staff_id}:${Number(String(x.work_date).slice(8, 10))}`] = [x.status === 'partial' ? `${String(x.start_time).slice(0, 5)}〜${String(x.end_time).slice(0, 5)}` : '', x.note || ''].filter(Boolean).join(' ')
+  const dayHead = Array.from({ length: d.days }, (_, i) => {
+    const wd = first.date(i + 1).day()
+    return `<th class="px-1 py-1 text-center font-normal ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : 'text-gray-500'}">${i + 1}<br><span class="text-[10px]">${'日月火水木金土'[wd]}</span></th>`
+  }).join('')
+  // 日ごとの ○・△ の人数
+  const avail = Array(d.days).fill(0)
+  for (const s of d.staff) for (let i = 0; i < d.days; i++) if (s.marks[i] === 'o' || s.marks[i] === 'p') avail[i]++
+  const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>'
+    : s.submitted_at ? `<span class="badge ${s.late ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>`
+    : '<span class="badge badge-red">未提出</span>'
+  const cell = (s, i) => {
+    const m = AVB_MARK[s.marks[i]]
+    const hasShift = s.shift_days.includes(String(i + 1).padStart(2, '0'))
+    const tip = [detail[`${s.staff_id}:${i + 1}`] || '', hasShift ? 'シフトあり' : ''].filter(Boolean).join(' / ')
+    return `<td class="px-1 py-1 text-center ${hasShift ? 'bg-blue-50' : ''}"${tip ? ` title="${escAttr(tip)}"` : ''}><span class="font-bold ${m ? m[1] : ''}">${m ? m[0] : ''}</span>${tip && !hasShift ? '<sup class="text-[9px] text-gray-400">*</sup>' : ''}</td>`
+  }
+  $app.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      <h2 class="text-xl font-bold text-gray-900">出勤可能日</h2>
+      <div class="flex items-center gap-1 ml-auto">
+        <button class="btn btn-outline text-xs" data-action="avbMonth" data-month="${esc(first.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+        <span class="font-bold text-gray-800 px-2">${esc(avbMonthLabel(d.month))}</span>
+        <button class="btn btn-outline text-xs" data-action="avbMonth" data-month="${esc(first.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+      </div>
+    </div>
+    <div class="grid md:grid-cols-2 gap-4 mb-4">
+      <section class="card p-4">
+        <h3 class="font-bold text-gray-800 mb-2">提出の締切と案内</h3>
+        <div class="space-y-2 text-sm">
+          <label class="flex items-center gap-2"><span class="text-gray-600 w-16 shrink-0">締切日</span><input type="date" id="avb-deadline" class="inp w-44" value="${esc(d.deadline || '')}"><span class="text-xs text-gray-400">空欄で締切なし</span></label>
+          <label class="block"><span class="text-gray-600 text-xs">スタッフへの案内（提出画面に出ます）</span><textarea id="avb-note" class="inp" rows="2" maxlength="300" placeholder="例: 土日に入れる方は特に歓迎です">${esc(d.note || '')}</textarea></label>
+          <button class="btn btn-primary text-sm" data-action="avbSavePeriod"><i class="fas fa-floppy-disk"></i>保存</button>
+        </div>
+      </section>
+      <section class="card p-4">
+        <h3 class="font-bold text-gray-800 mb-2">提出状況</h3>
+        <p class="text-sm text-gray-700">提出済み <b>${loginStaff.length - unsubmitted.length}</b> / ${loginStaff.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
+        ${d.staff.length > loginStaff.length ? `<p class="text-xs text-gray-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
+        ${unsubmitted.length ? `<div class="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">${unsubmitted.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>` : ''}
+        <div class="flex items-center gap-2 flex-wrap mt-3">
+          <button class="btn btn-outline text-sm" data-action="avbRemind" ${unsubmitted.length ? '' : 'disabled'}><i class="fas fa-bell"></i>未提出の人に通知する（${unsubmitted.length}人）</button>
+          ${d.last_reminded_at ? `<span class="text-xs text-gray-400">前回の通知 ${esc(avbAt(d.last_reminded_at))}</span>` : ''}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に届きます</p>
+      </section>
+    </div>
+    <div class="flex gap-2 flex-wrap items-center mb-2">
+      ${AVB_FILTERS.map(([k, l]) => `<button class="btn ${AVB.filter === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="avbFilter" data-filter="${k}">${l}</button>`).join('')}
+      <span class="text-xs text-gray-500 ml-auto"><span class="text-emerald-600 font-bold">○</span> 終日OK <span class="text-amber-600 font-bold ml-1">△</span> 時間帯 <span class="text-gray-400 font-bold ml-1">×</span> 不可 <span class="inline-block w-3 h-3 bg-blue-50 border border-blue-200 align-middle ml-1"></span> シフトあり <sup>*</sup> 時間帯・メモあり（セルに合わせると表示）</span>
+    </div>
+    <div class="card overflow-x-auto">
+      <table class="text-xs whitespace-nowrap">
+        <thead class="bg-gray-50"><tr><th class="px-2 py-1 text-left sticky left-0 bg-gray-50">スタッフ</th><th class="px-2 py-1 text-left">提出</th>${dayHead}</tr></thead>
+        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr>
+          <td class="px-2 py-1 sticky left-0 bg-white"><a href="#staff/${Number(s.staff_id)}" class="text-blue-700 hover:underline">${esc(s.name)}</a></td>
+          <td class="px-2 py-1">${statusCell(s)}</td>
+          ${Array.from({ length: d.days }, (_, i) => cell(s, i)).join('')}</tr>`).join('') || `<tr><td colspan="${d.days + 2}" class="text-center text-gray-400 py-8">該当するスタッフはいません</td></tr>`}</tbody>
+        <tfoot class="bg-gray-50"><tr><td class="px-2 py-1 sticky left-0 bg-gray-50 font-bold" colspan="2">○・△ の人数</td>${avail.map(n => `<td class="px-1 py-1 text-center font-bold ${n ? 'text-emerald-700' : 'text-gray-300'}">${n}</td>`).join('')}</tr></tfoot>
+      </table>
+    </div>`
+}
+
+delegate('avbReload', () => renderAvailabilityBoard())
+delegate('avbMonth', (el) => { history.replaceState(null, '', '#availability/' + el.dataset.month); renderAvailabilityBoard(el.dataset.month) })
+delegate('avbFilter', (el) => { AVB.filter = el.dataset.filter; drawAvailabilityBoard() })
+delegate('avbSavePeriod', (el) => withSubmitLock(el, async () => {
+  try {
+    await axios.put('/api/admin/availability/period', { month: AVB.month, deadline: document.getElementById('avb-deadline').value || null, note: document.getElementById('avb-note').value })
+  } catch (e) { showApiError(e, '保存に失敗しました'); return }
+  toast('締切と案内を保存しました')
+  renderAvailabilityBoard(AVB.month)
+}))
+delegate('avbRemind', (el) => {
+  const n = AVB.data.staff.filter(s => s.has_login && !s.submitted_at).length
+  if (!confirm(`${avbMonthLabel(AVB.month)}の出勤可能日を提出していない ${n}人に、提出のお願いを通知します。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    let r
+    try { r = (await axios.post('/api/admin/availability/remind', { month: AVB.month })).data } catch (e) { showApiError(e, '通知できませんでした'); return }
+    toast(`${r.sent}人に通知しました`)
+    renderAvailabilityBoard(AVB.month)
+  })
+})
 
 ;(async () => {
   try {

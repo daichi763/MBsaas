@@ -73,8 +73,14 @@
   // 404 は URL が無効・期限切れのときだけ（staff-lifecycle.ts loadToken）。通信できない・サーバーの一時的な失敗は、再読み込みを出す（#129）
   function showLoadError(e) {
     if (e && e.response && e.response.status === 404) {
+      // 発行されたことのあるURLなら、会社名と電話番号が返る（#163。遅刻・欠勤などは電話で連絡してもらう）
+      const d = e.response.data || {}
+      const tel = telHref(d.contact_phone)
       $app.innerHTML = `<section class="card p-6 text-center mt-6"><i class="fas fa-link-slash text-3xl text-gray-300 mb-2 block"></i>
-        <p class="font-bold text-gray-700">${esc(errMsg(e, 'このURLは利用できません'))}</p><p class="text-xs text-gray-400 mt-2">担当者に新しいURLを依頼してください</p></section>`
+        <p class="font-bold text-gray-700">${esc(errMsg(e, 'このURLは利用できません'))}</p><p class="text-xs text-gray-400 mt-2">担当者に新しいURLを依頼してください</p>
+        ${d.company_name ? `<div class="mt-4 pt-3 border-t text-sm text-gray-600" id="link-invalid-contact"><p>${esc(d.company_name)}</p>
+          ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone"></i>${esc(d.contact_phone)} に電話する</a>
+            <p class="text-xs text-gray-400 mt-1">遅刻・欠勤・現場のトラブルは、こちらに電話で連絡してください</p>` : '<p class="text-xs text-gray-400 mt-1">遅刻・欠勤・現場のトラブルは、担当者に電話で連絡してください</p>'}</div>` : ''}</section>`
       return
     }
     $app.innerHTML = `<section class="card p-6 text-center mt-6"><i class="fas fa-wifi text-3xl text-gray-300 mb-2 block"></i>
@@ -141,11 +147,12 @@
   let lastSig = ''
   // 受付の時間帯が切り替わったら描き直す（開いたままでも、時刻になればボタンが押せるようになる）
   setInterval(() => {
-    if (!DATA || sending || document.getElementById('modal-root').innerHTML) return
+    if (!DATA || DATA.kind === 'schedule' || sending || document.getElementById('modal-root').innerHTML) return
     if (JSON.stringify(typeStates(DATA)) !== lastSig) render()
   }, 30000)
 
   function render() {
+    if (DATA.kind === 'schedule') return renderSchedule()
     const d = DATA, s = d.shift
     const order = d.modes.required_attendance
     const st = typeStates(d)
@@ -161,6 +168,7 @@
     $app.innerHTML = `
       ${staleNote ? `<p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3"><i class="fas fa-circle-info mr-1"></i>${esc(staleNote)}
         <button class="underline font-bold ml-1" data-action="linkRefresh">再読み込み</button></p>` : ''}
+      ${noticesHtml(d)}
       ${prog.allDone && (order.length || d.modes.daily_report_required) ? `<section class="card p-4 mb-4 bg-emerald-50 border border-emerald-200 text-center" id="report-link-complete">
         <i class="fas fa-circle-check text-3xl text-emerald-500 mb-1 block"></i>
         <p class="font-bold text-emerald-800">本日の報告はすべて完了しました</p><p class="text-sm text-emerald-700 mt-0.5">お疲れさまでした</p></section>`
@@ -206,6 +214,7 @@
         </form>`}
       </section>` : ''}
       ${!order.length && !d.modes.daily_report_required ? '<section class="card p-6 text-center text-sm text-gray-500">このシフトは報告の提出は不要です</section>' : ''}
+      ${contactHtml(d)}
       <p class="text-[11px] text-gray-400 text-center mt-6">このURLは ${dayjs(d.expires_at).format('M/D HH:mm')} まで有効です。${esc(d.staff_name)} さん専用のURLです。他の人に送ったり、代わりに押してもらったりしないでください（報告した端末は記録されます）</p>`
     const form = document.getElementById('link-daily-form')
     if (form) {
@@ -215,6 +224,98 @@
       form.addEventListener('input', saveDraft)
       form.addEventListener('change', saveDraft)
     }
+  }
+
+  // ---------- お知らせ（#281）・連絡（#163）・予定確認の画面（#442） ----------
+  // 電話番号を tel: のリンクにする（数字と + 以外を除く）
+  function telHref(p) { const n = String(p || '').replace(/[^\d+]/g, ''); return n.length >= 6 ? 'tel:' + n : '' }
+  const IMPORTANCE_BADGE = { urgent: '<span class="badge badge-red">緊急</span>', important: '<span class="badge badge-yellow">重要</span>' }
+  // 本人あての重要・緊急のお知らせ（直近のもの。ログインのない人はアプリのお知らせを見られないため、ここに出す）
+  function noticesHtml(d) {
+    const list = d.notices || []
+    if (!list.length) return ''
+    return `<section class="card p-4 mb-4 border border-amber-200" id="report-link-notices">
+      <h2 class="font-bold text-gray-800 mb-2"><i class="fas fa-bullhorn text-amber-500 mr-1"></i>会社からのお知らせ</h2>
+      <div class="space-y-2">${list.map(n => `<details class="rounded-lg bg-gray-50 p-2" ${n.importance === 'urgent' ? 'open' : ''}>
+        <summary class="text-sm font-bold text-gray-800 cursor-pointer">${IMPORTANCE_BADGE[n.importance] || ''} ${esc(n.title)}
+          <span class="text-[11px] font-normal text-gray-400 ml-1">${esc(dayjs(n.published_at).format('M/D'))}</span></summary>
+        <p class="text-sm text-gray-700 whitespace-pre-wrap break-words mt-2">${esc(n.body || '')}</p></details>`).join('')}</div></section>`
+  }
+  // 遅刻・欠勤・トラブルの連絡（#163）。ボタンからフォームを開いて送る。会社の電話番号があれば発信のリンクも出す
+  function contactHtml(d) {
+    const tel = telHref(d.contact_phone)
+    return `<section class="card p-4 mb-4" id="report-link-contact">
+      <h2 class="font-bold text-gray-800 mb-1"><i class="fas fa-headset text-blue-500 mr-1"></i>遅刻・欠勤・トラブルの連絡</h2>
+      <p class="text-xs text-gray-400 mb-2">遅れそう・行けない・現場で困ったときは、担当者に連絡してください</p>
+      <button class="btn btn-outline w-full" data-action="linkOpenContact"><i class="fas fa-paper-plane"></i>担当者に連絡する</button>
+      ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone"></i>${esc(d.contact_phone)} に電話する</a>
+        <p class="text-[11px] text-gray-400 mt-1">急ぎの場合（出勤の直前など）は電話してください</p>` : ''}
+    </section>`
+  }
+  const CONTACT_KINDS = [['late', '遅刻しそう'], ['absent', '欠勤したい'], ['health', '体調が悪い'], ['trouble', '現場でトラブル'], ['other', 'その他']]
+  delegate('linkOpenContact', (el) => {
+    const shifts = DATA.kind === 'schedule' ? (DATA.shifts || []) : []
+    modal(`<h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-headset text-blue-600 mr-1"></i>担当者に連絡する</h3>
+      <div class="grid grid-cols-2 gap-2 mb-3" id="link-contact-kinds">${CONTACT_KINDS.map(([k, l]) => `<label class="flex items-center gap-2 rounded-lg border p-2 text-sm">
+        <input type="radio" name="link-contact-kind" value="${esc(k)}">${esc(l)}</label>`).join('')}</div>
+      ${shifts.length ? `<label class="text-sm text-gray-600 block mb-1">どのシフトについて（任意）</label>
+        <select id="link-contact-shift" class="inp text-sm mb-3"><option value="">選ばない</option>${shifts.map(s => `<option value="${Number(s.shift_id)}" ${String(el.dataset.shiftId || '') === String(s.shift_id) ? 'selected' : ''}>${esc(fmt(s.work_date) + ' ' + formatShiftTime(s.start_time, s.end_time) + ' ' + s.project_name)}</option>`).join('')}</select>` : ''}
+      <label class="text-sm text-gray-600 block mb-1">内容（遅れる時間・理由など）</label>
+      <textarea id="link-contact-body" rows="4" maxlength="1000" class="inp" placeholder="例: 電車の遅延で10分ほど遅れます"></textarea>
+      <p id="link-contact-err" class="text-sm text-red-600 mt-2"></p>
+      <div class="flex gap-2 mt-3"><button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+        <button class="btn btn-primary flex-1" data-action="linkSendContact"><i class="fas fa-paper-plane"></i>送信する</button></div>`)
+    if (el.dataset.kind) { const r = document.querySelector(`input[name="link-contact-kind"][value="${el.dataset.kind}"]`); if (r) r.checked = true }
+  })
+  delegate('linkSendContact', (el) => withSubmitLock(el, async () => {
+    const err = document.getElementById('link-contact-err')
+    const kind = (document.querySelector('input[name="link-contact-kind"]:checked') || {}).value
+    const body = (document.getElementById('link-contact-body').value || '').trim()
+    const shiftSel = document.getElementById('link-contact-shift')
+    if (!kind) { err.textContent = '連絡の種類を選んでください'; return }
+    if (['trouble', 'other'].includes(kind) && !body) { err.textContent = '内容を入力してください'; return }
+    try {
+      const { data } = await axios.post(API + '/consultation', { kind, body, shift_id: shiftSel && shiftSel.value ? Number(shiftSel.value) : undefined }, { timeout: POST_TIMEOUT })
+      const tel = telHref(data.contact_phone || DATA.contact_phone)
+      modal(`<div class="text-center"><i class="fas fa-circle-check text-3xl text-emerald-500 mb-2 block"></i>
+        <p class="font-bold text-gray-800">担当者に送信しました</p>
+        <p class="text-sm text-gray-500 mt-1">担当者が確認します。急ぎの場合は電話でも連絡してください</p>
+        ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-3"><i class="fas fa-phone"></i>${esc(data.contact_phone || DATA.contact_phone)} に電話する</a>` : ''}
+        <button class="btn btn-primary w-full mt-2" onclick="closeModal()">閉じる</button></div>`)
+    } catch (e) {
+      err.textContent = e && e.response ? errMsg(e, '送信に失敗しました') : '通信できませんでした。電波の良い場所で、もう一度お試しください'
+    }
+  }))
+
+  // 予定確認の画面（#442）: 前日〜2週間先の確定シフト。前日・当日・翌日のシフトには報告の画面への入口を出す
+  function renderSchedule() {
+    const d = DATA
+    document.title = '予定の確認'
+    const h1 = document.querySelector('header h1'); if (h1) h1.innerHTML = '<i class="fas fa-calendar-days text-blue-600"></i>予定の確認'
+    const byDate = {}
+    for (const s of d.shifts) (byDate[s.work_date] = byDate[s.work_date] || []).push(s)
+    const dates = Object.keys(byDate).sort()
+    const dayLabel = (x) => x === d.today ? '今日' : x === dayjs(d.today).add(1, 'day').format('YYYY-MM-DD') ? '明日' : x < d.today ? '昨日' : ''
+    $app.innerHTML = `
+      ${noticesHtml(d)}
+      <section class="card p-4 mb-4" id="schedule-head">
+        <p class="text-xs text-gray-400">${esc(d.company_name)}</p>
+        <p class="text-sm text-gray-600 mt-1">${esc(d.staff_name)} さんの予定</p>
+        <p class="text-xs text-gray-400 mt-1">今日から${Number(d.days_ahead)}日先までの確定したシフトです。変更があればこのページに反映されます</p>
+      </section>
+      <section class="space-y-3 mb-4" id="schedule-list">
+        ${dates.length ? dates.map(x => `<div><p class="text-sm font-bold text-gray-700 px-1 mb-1">${esc(fmt(x))}${dayLabel(x) ? ` <span class="badge ${x === d.today ? 'badge-blue' : 'badge-gray'}">${dayLabel(x)}</span>` : ''}</p>
+          ${byDate[x].map(s => { const map = mapUrl(s); return `<div class="card p-3 mb-2" data-shift-id="${Number(s.shift_id)}">
+            <p class="font-bold text-gray-900">${esc(s.project_name)}</p>
+            <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}${s.role ? ` <span class="text-gray-400 ml-1">役割: ${esc(s.role)}</span>` : ''}</p>
+            ${s.location || s.site_name ? `<p class="text-sm text-gray-600"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.site_name || s.location)}</p>` : ''}
+            ${s.site_address || map ? `<p class="text-xs text-gray-500">${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
+            ${s.report_token ? `<a href="/r/${encodeURIComponent(s.report_token)}" class="btn btn-primary w-full mt-2"><i class="fas fa-clipboard-check"></i>このシフトの勤怠・日報を報告する</a>` : ''}
+          </div>` }).join('')}</div>`).join('')
+        : '<div class="card p-6 text-center text-sm text-gray-500">この期間の確定したシフトはありません</div>'}
+      </section>
+      ${contactHtml(d)}
+      <p class="text-[11px] text-gray-400 text-center mt-6">このURLは ${esc(dayjs(d.expires_at).format('M/D'))} まで使えます。${esc(d.staff_name)} さん専用のURLです。他の人に送らないでください</p>`
   }
 
   // ---------- 勤怠報告 ----------
@@ -443,5 +544,22 @@
     })
   }
 
+  // ---------- 会社の緊急連絡先（#173） ----------
+  // 画面（#app）の下に別の部分として出す。URL の期限切れ・読み込みの失敗の画面でも出す。登録がなければ何も出さない
+  async function loadEmergencyContact() {
+    let d
+    try { d = (await axios.get(API + '/contact', { timeout: GET_TIMEOUT })).data } catch (e) { return }
+    if (!d || !d.phone) return
+    // #app と同じ幅にそろえる
+    const box = document.createElement('div')
+    box.className = 'max-w-lg mx-auto px-4 pb-6'
+    box.innerHTML = `<section class="card p-4"><p class="text-sm font-bold text-gray-800 mb-1"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先（${esc(d.company_name)}）</p>
+      <p class="text-[11px] text-gray-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください</p>
+      <a href="tel:${esc(String(d.phone).replace(/[^0-9+]/g, ''))}" class="btn btn-outline w-full"><i class="fas fa-phone text-red-500"></i><span class="font-bold">${esc(d.phone)}</span></a>
+      ${d.note ? `<p class="text-[11px] text-gray-400 mt-1">${esc(d.note)}</p>` : ''}</section>`
+    $app.insertAdjacentElement('afterend', box)
+  }
+
   load()
+  loadEmergencyContact()
 })()

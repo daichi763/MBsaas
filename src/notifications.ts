@@ -7,13 +7,17 @@
 //                  管理者が代わりに出した申請は、スタッフ本人にも未読で知らせる（メールは送らない）。
 //                  まとめて出した申請の承認依頼メールは1通にまとめ、本人が取り消した直後の申請し直しはメールを送らない（#392）
 //   承認・却下   → 申請者本人 ＋ 処理した管理者。管理者が出した申請の承認は、記録が変わったスタッフ本人にも知らせる（#181）
+//                  申請者と処理した管理者が同じとき（申請と同時に承認 #174 など）は、既読の控えだけでメールは送らない
 //   取り消し     → シフトの削除・担当者の差し替えで自動で取り消した場合だけ申請者本人へ（本人の取り消しは通知しない）
 //   承認・却下・取り消しの後は、その申請の承認依頼（correction_submitted）を全員分既読にする（#189）
 // アプリ内通知は申請・承認の処理の後に登録し、メールはその後に送る（waitUntil）。
 // メールの失敗で申請・承認は取り消さない。送信状態は notification_emails に残し、管理者が再送できる。本文は保存せず、再送時に申請データから作り直す。
 // =========================================================
 import { Hono } from 'hono'
-import { sendEmail, maskEmail, maskEmailsIn, normalizeAddress } from './services/email'
+import { sendEmail, sendEmailBatch, maskEmail, maskEmailsIn, normalizeAddress } from './services/email'
+import type { SendEmailInput } from './services/email'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { assignableStaffSql } from './lib/staff-eligibility'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 import { REPORT_LABEL } from './report-settings'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders } from './csv'
@@ -21,6 +25,7 @@ import { shareableEmail, HIDDEN_EMAIL_LABEL } from './lib/tenant'
 import { loadStaffNotices } from './lib/notices'
 import { sha256Hex } from './lib/auth'
 import { personStaffRows } from './roster'
+import * as emailService from './services/email'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -117,7 +122,9 @@ function content(c: any, kind: string, isAdmin: boolean) {
 type Recipient = { user_id: number; name: string; email: string | null; role: string; kind: string; read?: boolean; noEmail?: boolean }
 // 本人が取り消してから、この時間内に同じ報告を申請し直したときは、管理者へのメールを送らない（アプリ内通知だけ。#392）
 const RESUBMIT_QUIET_MINUTES = 30
-async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Promise<Recipient[]> {
+// quietProcessor: 処理した管理者の控えを既読・メールなしにする（まとめて承認 #280。自分の操作の控えが件数分のメールにならないように）
+type NotifyOpts = { quietProcessor?: boolean }
+async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent, opts: NotifyOpts = {}): Promise<Recipient[]> {
   const user = async (id: number | null) => id ? await db.prepare('SELECT user_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
   const out = new Map<number, Recipient>()
   const add = (u: any, kind: string, opt: { read?: boolean; noEmail?: boolean } = {}) => {
@@ -145,8 +152,10 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Pr
     // 本人の取り消しは誰にも送らない（承認依頼は notifyCorrection で既読にする）
     if (c.cancel_reason) add(requester, 'correction_cancelled')
   } else {
+    // 管理者が自分で出した申請を自分で処理した（申請と同時に承認 #174 を含む）ときは、本人には既読の控えだけを残す（結果の通知・メールは送らない）
+    if (requester && requester.user_id === c.decided_by) add(requester, 'correction_processed', { read: true, noEmail: true })
     add(requester, event === 'approved' ? 'correction_approved' : 'correction_rejected')
-    add(await user(c.decided_by), 'correction_processed')
+    add(await user(c.decided_by), 'correction_processed', opts.quietProcessor ? { read: true, noEmail: true } : {})
     // 管理者が出した申請を承認したときは、記録が変わったスタッフ本人にも知らせる（申請者と同じ人なら送らない。#181）
     if (event === 'approved') {
       const o = await owner()
@@ -157,10 +166,10 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Pr
 }
 
 // アプリ内通知を登録し、送るメールの送信状態（pending）を作る。戻り値の delivery_id を sendDeliveries で送る
-export async function createCorrectionNotifications(db: D1Database, correctionId: number, event: CorrectionEvent) {
+export async function createCorrectionNotifications(db: D1Database, correctionId: number, event: CorrectionEvent, opts: NotifyOpts = {}) {
   const c = await loadInfo(db, correctionId)
   if (!c) return { notified: 0, deliveries: [] as number[] }
-  const rcpts = await recipientsFor(db, c, event)
+  const rcpts = await recipientsFor(db, c, event, opts)
   const at = nowJST()
   const rows = rcpts.map(r => ({ r, m: content(c, r.kind, NOTIFY_ADMIN_ROLES.includes(r.role) || r.role === 'system_admin') }))
   const stmts: D1PreparedStatement[] = []
@@ -229,11 +238,11 @@ export async function markRequestNotificationsRead(db: D1Database, correctionId:
 }
 
 // 申請・承認・却下・取り消しの後に呼ぶ。通知の失敗は申請・承認の結果に影響させない
-export async function notifyCorrection(c: any, correctionId: number, event: CorrectionEvent) {
+export async function notifyCorrection(c: any, correctionId: number, event: CorrectionEvent, opts: NotifyOpts = {}) {
   try {
     // 処理済み・取り消し済みになった申請の承認依頼は、ほかの管理者の分も既読にする（#189）
     if (event !== 'submitted' && event !== 'resubmitted') await markRequestNotificationsRead(c.env.DB, correctionId)
-    const r = await createCorrectionNotifications(c.env.DB, correctionId, event)
+    const r = await createCorrectionNotifications(c.env.DB, correctionId, event, opts)
     if (r.deliveries.length) {
       const job = sendDeliveries(c.env, r.deliveries)
       try { c.executionCtx.waitUntil(job) } catch { await job }
@@ -284,6 +293,17 @@ function notificationRoutes(scope: 'admin' | 'staff') {
   app.post('/notifications/read-all', async (c) => {
     const ids = await userIds(c)
     const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND read_at IS NULL`).bind(nowJST(), ...ids).run()
+    return c.json({ ok: true, updated: r.meta.changes || 0 })
+  })
+  // kind（と related_id）で既読にする（募集の応募一覧を開いたときなど、通知を開かずに対応したとき。#150）
+  app.post('/notifications/read-related', async (c) => {
+    const ids = await userIds(c)
+    const b = await c.req.json().catch(() => ({} as any))
+    const kind = String(b.kind || '')
+    if (!/^[a-z_]{1,40}$/.test(kind)) return c.json({ error: '種類が正しくありません' }, 400)
+    const rid = Number.isInteger(b.related_id) && b.related_id > 0 ? b.related_id : null
+    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND kind = ? AND read_at IS NULL${rid != null ? ' AND related_id = ?' : ''}`)
+      .bind(nowJST(), ...ids, kind, ...(rid != null ? [rid] : [])).run()
     return c.json({ ok: true, updated: r.meta.changes || 0 })
   })
   app.post('/notifications/:id{[0-9]+}/read', async (c) => {
@@ -518,6 +538,167 @@ export async function notifyDailyReportIncident(c: any, shiftId: number, raised:
 }
 
 // =========================================================
+// 管理者・企業あての通知（w5-notify-admin: #150 #152 #154 #166）
+// 宛先の会社の管理ロール（在籍中。本部アカウントは含めない）全員に、アプリ内通知を作り、必要ならメールも送る。
+//   kind: recruit_applied（新しい応募。related_id = 募集ページ）/ board_message（案件掲示板のやり取り。related_id = スレッド）/
+//         roster_chat（企業間チャット。related_id = スレッドの連携行の staff_id）/
+//         consult_received（スタッフからの相談。related_id = 相談）/ consult_message（相談への追加の連絡。related_id = 相談）/
+//         roster_source_retired（連携スタッフの所属元での退職。related_id = 自社の連携行の staff_id）
+// merge: 同じ kind・related_id の未読の通知があれば、新しい行を作らずに最新の内容に書き換えて件数（merged_count）を数える
+// email: always（毎回送る）/ throttle（まとめた通知のメールを送ってから ADMIN_MAIL_QUIET_MINUTES の間は送らない）/ never
+// メールの結果は email_logs に残る（notification_emails は打刻修正の申請に結び付くため使わない）。通知の失敗で元の操作は取り消さない
+// =========================================================
+export const ADMIN_MAIL_QUIET_MINUTES = 30
+export type AdminNotice = {
+  companyId: number
+  kind: string
+  relatedId: number
+  // count: まとめた件数（1 なら新しい通知）
+  title: (count: number) => string
+  headline: string
+  lines: [string, string][]
+  link: string
+  button: string
+  mailType: string
+  email: 'always' | 'throttle' | 'never'
+  merge?: boolean
+  excludeUserIds?: number[]
+  // アプリ内通知の本文だけに足す内容（メールには入れない。相談の本文など）
+  appExtra?: string
+}
+export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ notified: number; emailed: number }> {
+  try {
+    const db: D1Database = c.env.DB
+    const exclude = new Set((n.excludeUserIds || []).map(Number))
+    const admins = ((await db.prepare(`SELECT user_id, name, email FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+      .bind(n.companyId, ...NOTIFY_ADMIN_ROLES).all()).results as any[]).filter(a => !exclude.has(Number(a.user_id)))
+    if (!admins.length) return { notified: 0, emailed: 0 }
+    const now = nowJST()
+    const quietSince = minutesAgoJST(ADMIN_MAIL_QUIET_MINUTES)
+    // まとめる先: 宛先ごとの、同じ kind・related_id の未読の最新の通知
+    const open = new Map<number, any>()
+    if (n.merge) {
+      const rows = (await db.prepare(`SELECT notification_id, user_id, merged_count, emailed_at FROM user_notifications
+        WHERE company_id = ? AND kind = ? AND related_id = ? AND read_at IS NULL ORDER BY notification_id`).bind(n.companyId, n.kind, n.relatedId).all()).results as any[]
+      for (const r of rows) open.set(Number(r.user_id), r)
+    }
+    const body = n.lines.map(([k, v]) => `${k}: ${v}`).join('\n') + (n.appExtra ? '\n' + n.appExtra : '')
+    const stmts: D1PreparedStatement[] = []
+    const mailTo: { name: string; email: string; title: string }[] = []
+    for (const a of admins) {
+      const cur = open.get(Number(a.user_id))
+      const count = cur ? Number(cur.merged_count || 1) + 1 : 1
+      const title = n.title(count)
+      const sendMail = !!a.email && (n.email === 'always' || (n.email === 'throttle' && (!cur || !cur.emailed_at || cur.emailed_at < quietSince)))
+      if (sendMail) mailTo.push({ name: a.name, email: a.email, title })
+      // まとめるときは前の未読の行を消して新しく入れ直す（受信箱は新しい順なので、まとめた通知を先頭に出す）
+      if (cur) stmts.push(db.prepare('DELETE FROM user_notifications WHERE notification_id = ? AND read_at IS NULL').bind(cur.notification_id))
+      stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at, merged_count, emailed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(n.companyId, a.user_id, n.kind, title, body, n.link, n.relatedId, now, count, sendMail ? now : (cur?.emailed_at ?? null)))
+    }
+    await db.batch(stmts)
+    if (mailTo.length) {
+      const base = String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')
+      const mails = mailTo.map(m => {
+        const tpl = attendanceCorrectionEmail({ name: m.name, title: m.title, headline: n.headline, lines: n.lines, url: base + n.link, button: n.button })
+        return { to: m.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: n.mailType, company_id: n.companyId }
+      })
+      const job = (async () => { for (const m of mails) { try { await sendEmail(c.env, m) } catch { /* 送信の失敗は email_logs に残る */ } } })()
+      try { c.executionCtx.waitUntil(job) } catch { await job }
+    }
+    return { notified: admins.length, emailed: mailTo.length }
+  } catch (e) {
+    console.log(`admin notify failed: kind=${n.kind} related=${n.relatedId}`)
+    return { notified: 0, emailed: 0 }
+  }
+}
+// 自分あての通知のうち、kind（と related_id）が合うものを既読にする（やり取りを開いた・処理した後）。userId を省くと宛先全員の分
+export async function markAdminNotificationsRead(db: D1Database, companyId: number, kinds: string[], relatedId: number | null, userId?: number) {
+  if (!kinds.length) return 0
+  try {
+    const r = await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE company_id = ? AND kind IN (${kinds.map(() => '?').join(',')}) AND read_at IS NULL
+      ${relatedId != null ? 'AND related_id = ?' : ''} ${userId != null ? 'AND user_id = ?' : ''}`)
+      .bind(nowJST(), companyId, ...kinds, ...(relatedId != null ? [relatedId] : []), ...(userId != null ? [userId] : [])).run()
+    return r.meta.changes || 0
+  } catch { return 0 }
+}
+
+// ---- スタッフからの相談（#154）----
+// received: 新しい相談 / message: 相談への追加の連絡（同じ相談の未読の通知にまとめる）
+// 緊急度『高』と、体調不良・遅刻欠勤の相談はメールでもすぐに知らせる（追加の連絡は30分に1通まで）。それ以外はアプリ内だけ。
+// メールには相談の本文を入れない（体調など本人の事情が書かれるため）。アプリ内通知の本文には冒頭だけを入れる
+// 相談のカテゴリの表示名（api.ts の catLabel・画面の CAT_LABELS と同じ）
+const CONSULT_LABEL: Record<string, string> = { health: '体調不良', absence: '遅刻・欠勤相談', store_trouble: '店舗トラブル', claim: 'クレーム', relationship: '人間関係', shift: 'シフト相談', question: '業務質問', other: 'その他' }
+export const CONSULT_URGENT_CATEGORIES = ['health', 'absence']
+const CONSULT_EXCERPT = 100
+export async function notifyConsultation(c: any, consultationId: number, event: 'received' | 'message', text?: string) {
+  try {
+    const co = await c.env.DB.prepare(`SELECT co.consultation_id, co.company_id, co.category, co.urgency, co.body, co.target_date, p.project_name, us.name AS staff_name
+      FROM consultations co JOIN staff_profiles sp ON sp.staff_id = co.staff_id JOIN users us ON us.user_id = sp.user_id
+      LEFT JOIN projects p ON p.project_id = co.target_project_id AND p.company_id = co.company_id WHERE co.consultation_id = ?`).bind(consultationId).first() as any
+    if (!co) return
+    const urgent = co.urgency === 'high' || CONSULT_URGENT_CATEGORIES.includes(co.category)
+    const cat = CONSULT_LABEL[co.category] || co.category
+    const staff = String(co.staff_name || '')
+    const lines: [string, string][] = [['スタッフ', staff], ['カテゴリ', cat], ['緊急度', co.urgency === 'high' ? '高' : co.urgency === 'low' ? '低' : '中']]
+    if (co.target_date) lines.push(['対象', `${fmtDate(co.target_date)} ${co.project_name || ''}`.trim()])
+    const src = String(text ?? co.body ?? '')
+    const excerpt = src.length > CONSULT_EXCERPT ? src.slice(0, CONSULT_EXCERPT) + '…' : src
+    const mark = urgent ? '【至急】' : ''
+    await notifyCompanyAdmins(c, {
+      companyId: co.company_id, kind: event === 'received' ? 'consult_received' : 'consult_message', relatedId: co.consultation_id,
+      merge: event === 'message', email: !urgent ? 'never' : event === 'received' ? 'always' : 'throttle', mailType: 'consultation',
+      title: (n) => event === 'received' ? `${mark}相談・連絡: ${staff}さん（${cat}）`
+        : `${mark}相談への追加の連絡: ${staff}さん（${cat}）${n > 1 ? `・${n}件` : ''}`,
+      headline: event === 'received' ? `${staff}さんから相談・連絡（${cat}）が届きました。${urgent ? '急ぎの連絡の可能性があります。' : ''}管理画面で内容を確認し、返信してください。`
+        : `${staff}さんから、相談・連絡（${cat}）に追加の連絡が届きました。管理画面で内容を確認してください。`,
+      lines, appExtra: excerpt ? `内容: ${excerpt}` : '',
+      link: `/admin#consult/${co.consultation_id}`, button: '相談を確認する',
+    })
+  } catch (e) {
+    console.log(`consult notify failed: consultation=${consultationId}`)
+  }
+}
+
+// ---- 新しい応募（#150）。募集ページごとにまとめ、メールは30分に1通まで ----
+export async function notifyRecruitApplied(c: any, a: { company_id: number; page_id: number; applicant: string; count: number; source: 'public' | 'staff' }) {
+  const page = await c.env.DB.prepare('SELECT title FROM recruit_pages WHERE page_id = ? AND company_id = ?').bind(a.page_id, a.company_id).first().catch(() => null) as any
+  const pageTitle = String(page?.title || '募集ページ')
+  await notifyCompanyAdmins(c, {
+    companyId: a.company_id, kind: 'recruit_applied', relatedId: a.page_id, merge: true, email: 'throttle', mailType: 'recruit_applied',
+    title: (n) => n > 1 ? `新しい応募が${n}件あります（${pageTitle}）` : `新しい応募: ${a.applicant}さん（${pageTitle}）`,
+    headline: '募集ページに新しい応募が届きました。内容を確認し、承認または見送りをしてください。',
+    lines: [['募集ページ', pageTitle], ['応募者', `${a.applicant}${a.source === 'staff' ? '（スタッフアプリから）' : ''}`], ['希望の日時', `${a.count}件`]],
+    link: `/admin#recruit/page-${a.page_id}`, button: '応募を確認する',
+  })
+}
+
+// ---- 連携スタッフの所属元での退職（持ち越し #187）。連携先の各社の管理者に知らせる（アプリ内のみ）----
+export async function notifyLinkedRetirement(db: D1Database, rootStaffId: number | string, retiredAt: string | null) {
+  try {
+    const root = Number(rootStaffId)
+    const today = nowJST().slice(0, 10)
+    const rows = (await db.prepare(`SELECT l.staff_id, l.company_id, us.name AS staff_name, oc.company_name AS owner_company_name,
+        (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = l.staff_id AND s.company_id = l.company_id AND s.work_date >= ? AND s.status != 'absent') AS future_shifts
+      FROM staff_profiles l JOIN users us ON us.user_id = l.user_id LEFT JOIN companies oc ON oc.company_id = l.owner_company_id
+      WHERE COALESCE(l.root_staff_id, l.source_staff_id) = ? AND l.affiliation_type = 'linked_external'`).bind(today, root).all()).results as any[]
+    if (!rows.length) return
+    const now = nowJST()
+    const stmts = rows.map(r => {
+      const title = retiredAt ? `所属元で退職になります: ${r.staff_name || ''}（${fmtDate(retiredAt)}付け）` : `所属元が退職日を取り消しました: ${r.staff_name || ''}`
+      const body = [`所属元: ${r.owner_company_name || ''}`, retiredAt ? `退職日: ${retiredAt}` : '退職日: なし（取り消し）',
+        retiredAt ? `今日以降のシフト: ${Number(r.future_shifts) || 0}件（退職日より後のシフトは代わりの人を手配してください）` : ''].filter(Boolean).join('\n')
+      return db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+        SELECT ?, user_id, 'roster_source_retired', ?, ?, ?, ?, ? FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+        .bind(r.company_id, title, body, `/admin#staff/${Number(r.staff_id)}`, r.staff_id, now, r.company_id, ...NOTIFY_ADMIN_ROLES)
+    })
+    await db.batch(stmts)
+  } catch (e) {
+    console.log(`linked retirement notify failed: staff=${rootStaffId}`)
+  }
+}
+
+// =========================================================
 // お知らせメールの差出人の情報（#367）。companies.settings_json の mail_reply_to（返信先）・mail_contact_phone（問い合わせの電話番号）
 // お知らせメールの件名・本文の末尾に会社名と問い合わせ先を入れ、返信先（Reply-To）を企業のアドレスにする
 // =========================================================
@@ -557,7 +738,7 @@ notificationsAdminApi.put('/settings/mail-contact', async (c) => {
 // email_logs.created_at は UTC（CURRENT_TIMESTAMP）なので、日本時間にして返す
 // =========================================================
 const MAIL_LOG_PAGE = 100
-const MAIL_TYPES = ['notice', 'attendance_correction', 'incident_report', 'password_reset', 'account_email']
+const MAIL_TYPES = ['notice', 'attendance_correction', 'incident_report', 'password_reset', 'account_email', 'recruit_applied', 'board_message', 'roster_chat', 'consultation']
 function mailLogFilters(c: any, where: string[], binds: any[]) {
   const status = c.req.query('status') || ''
   if (status === 'failed') where.push(`l.status IN ('failed', 'bounced', 'bounced_soft', 'complained')`)
@@ -668,6 +849,137 @@ mailHqApi.post('/email-suppressions/release', async (c) => {
 })
 
 // =========================================================
+// 本人あての自動リマインド（#160）。対象の選び方と送る時点の判定は services/reminders.ts（15分おきの cron）
+// 会社の設定: companies.settings_json の reminders（既定は送らない）
+//   enabled: 送るか / email: メールも送るか（アプリ内の通知は ON の間は必ず作る）
+//   wake_up・departure: 開始の何分前に、check_in: 開始の何分後に、daily_report: 予定の終了の何分後に送るか。null はその種類を送らない
+// 種類（user_notifications.kind）: report_reminder（起床・出発・入店）/ daily_report_reminder（日報）
+// 1回の起動の分は、本人ごと・種類ごとに1件の通知・1通のメールにまとめる。メールの送信結果は email_logs（type = reminder）に残す
+// =========================================================
+export const REMINDER_TYPES = ['wake_up', 'departure', 'check_in', 'daily_report'] as const
+export type ReminderType = typeof REMINDER_TYPES[number]
+export type ReminderSettings = { enabled: boolean; email: boolean } & Record<ReminderType, number | null>
+export const REMINDER_DEFAULTS: ReminderSettings = { enabled: false, email: true, wake_up: 120, departure: 60, check_in: 0, daily_report: 60 }
+// 設定できる分の上限（起床・出発は開始の6時間前まで。報告の受付は開始の6時間前から。lib/shift-time.ts の PRE_START_HOURS）
+export const REMINDER_LIMITS: Record<ReminderType, number> = { wake_up: 360, departure: 360, check_in: 120, daily_report: 720 }
+export const REMINDER_KIND = { attendance: 'report_reminder', daily_report: 'daily_report_reminder' } as const
+MAIL_TYPES.push('reminder')
+
+export function reminderSettings(settingsJson: unknown): ReminderSettings {
+  let r: any = null
+  try { const s = typeof settingsJson === 'string' ? JSON.parse(settingsJson) : settingsJson; r = s && typeof s === 'object' ? s.reminders : null } catch { r = null }
+  const out: ReminderSettings = { ...REMINDER_DEFAULTS }
+  if (!r || typeof r !== 'object') return out
+  out.enabled = r.enabled === true
+  out.email = r.email !== false
+  for (const t of REMINDER_TYPES) {
+    if (r[t] === null) out[t] = null
+    else if (Number.isInteger(r[t]) && r[t] >= 0 && r[t] <= REMINDER_LIMITS[t]) out[t] = r[t]
+  }
+  return out
+}
+
+notificationsAdminApi.get('/settings/reminders', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ ...reminderSettings(row?.settings_json), limits: REMINDER_LIMITS, can_edit: u.role === 'company_admin' })
+})
+notificationsAdminApi.put('/settings/reminders', async (c) => {
+  const u = c.get('user')
+  if (u.role !== 'company_admin') return c.json({ error: 'リマインドの設定は会社管理者だけが変更できます' }, 403)
+  const b = await c.req.json().catch(() => ({} as any))
+  if (typeof b.enabled !== 'boolean') return c.json({ error: '送るかどうか（enabled）を指定してください' }, 400)
+  if (b.email !== undefined && typeof b.email !== 'boolean') return c.json({ error: 'メールを送るかどうかの指定が正しくありません' }, 400)
+  const LABEL: Record<ReminderType, string> = { wake_up: '起床報告（開始の何分前）', departure: '出発報告（開始の何分前）', check_in: '入店報告（開始の何分後）', daily_report: '日報（終了の何分後）' }
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  const next = reminderSettings(row?.settings_json)
+  next.enabled = b.enabled
+  if (b.email !== undefined) next.email = b.email
+  for (const t of REMINDER_TYPES) {
+    if (b[t] === undefined) continue
+    if (b[t] !== null && !(Number.isInteger(b[t]) && b[t] >= 0 && b[t] <= REMINDER_LIMITS[t])) return c.json({ error: `${LABEL[t]}は 0〜${REMINDER_LIMITS[t]} 分の整数か、送らない（null）で指定してください` }, 400)
+    next[t] = b[t]
+  }
+  // ほかの設定を上書きしないよう、この項目だけを書き換える。次の定期処理（15分おき）から効く
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.reminders', json(?)) WHERE company_id = ?`)
+    .bind(JSON.stringify(next), u.company_id).run()
+  return c.json({ ok: true, ...next })
+})
+
+export type ReminderItem = {
+  company_id: number; shift_id: number; staff_id: number; user_id: number; user_name: string; email: string | null; email_on: boolean
+  type: ReminderType; work_date: string; start_time: string; end_time: string; project_name: string | null
+}
+const REMINDER_LABEL: Record<ReminderType, string> = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', daily_report: '日報' }
+const fmtShiftLine = (x: ReminderItem) => `${fmtDate(x.work_date)} ${x.start_time}〜${x.end_time <= x.start_time ? '翌' : ''}${x.end_time} ${x.project_name || ''}`.trim()
+
+// 送ると決めたリマインド（reminder_sends に記録済みのもの）を、アプリ内通知とメールで本人に送る。
+// 戻り値の emailed は、メールを送った（送信を試みた）リマインドの shift_id:type
+export async function deliverReminders(env: NotifyEnv, items: ReminderItem[]) {
+  const db = env.DB
+  const groups = new Map<string, ReminderItem[]>()
+  for (const x of items) {
+    const key = `${x.user_id}:${x.type === 'daily_report' ? 'daily_report' : 'attendance'}`
+    const g = groups.get(key) || []
+    g.push(x); groups.set(key, g)
+  }
+  const at = nowJST()
+  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const rows: any[] = []
+  const mails: emailService.SendEmailInput[] = []
+  const emailed: string[] = []
+  const contacts = new Map<number, MailContact>()
+  for (const list of groups.values()) {
+    list.sort((a, b) => (a.work_date + a.start_time).localeCompare(b.work_date + b.start_time) || REMINDER_TYPES.indexOf(a.type) - REMINDER_TYPES.indexOf(b.type))
+    const first = list[0]
+    const daily = first.type === 'daily_report'
+    // シフトごとに、まだの報告をまとめる
+    const byShift = new Map<number, ReminderItem[]>()
+    for (const x of list) byShift.set(x.shift_id, [...(byShift.get(x.shift_id) || []), x])
+    const shifts = [...byShift.values()]
+    const what = (xs: ReminderItem[]) => xs.map(x => REMINDER_LABEL[x.type]).join('・')
+    const title = daily
+      ? `日報がまだ提出されていません: ${fmtShiftLine(first)}${shifts.length > 1 ? ` ほか${shifts.length - 1}件` : ''}`
+      : `${what(shifts[0])}がまだです: ${fmtShiftLine(first)}${shifts.length > 1 ? ` ほか${shifts.length - 1}件` : ''}`
+    const headline = daily ? '稼働の日報がまだ提出されていません。日報・実績入力から提出してください。'
+      : '勤怠の報告がまだ届いていません。報告を忘れていたら、アプリのホームから報告してください。遅れる・休む場合は、相談・連絡から会社に連絡してください。'
+    const lines: [string, string][] = shifts.map((xs, i) => [shifts.length > 1 ? `シフト${i + 1}` : 'シフト', `${fmtShiftLine(xs[0])}${daily ? '' : `（${what(xs)}）`}`])
+    const link = daily ? `#report/${Number(first.shift_id)}` : '#home'
+    rows.push({ c: first.company_id, u: first.user_id, k: daily ? REMINDER_KIND.daily_report : REMINDER_KIND.attendance, t: title,
+      b: [headline, ...lines.map(([k, v]) => `${k}: ${v}`)].join('\n'), l: link, r: first.shift_id })
+    const to = String(first.email || '').trim()
+    if (first.email_on && to) {
+      if (!contacts.has(first.company_id)) contacts.set(first.company_id, await loadMailContact(db, first.company_id))
+      const contact = contacts.get(first.company_id)!
+      const tpl = attendanceCorrectionEmail({ name: first.user_name, title, headline, lines: [...lines, ...(contact.company_name ? [['会社', contact.company_name] as [string, string]] : [])],
+        url: `${base}/staff${link}`, button: daily ? '日報を入力する' : 'アプリを開く' })
+      mails.push({ to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'reminder', company_id: first.company_id, reply_to: contact.reply_to })
+      for (const x of list) emailed.push(`${x.shift_id}:${x.type}`)
+    }
+  }
+  // 通知は 200 件ずつ1文で入れる
+  const stmts: D1PreparedStatement[] = []
+  for (let i = 0; i < rows.length; i += 200) {
+    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+      SELECT json_extract(value, '$.c'), json_extract(value, '$.u'), json_extract(value, '$.k'), json_extract(value, '$.t'), json_extract(value, '$.b'),
+        json_extract(value, '$.l'), json_extract(value, '$.r'), ? FROM json_each(?)`).bind(at, JSON.stringify(rows.slice(i, i + 200))))
+  }
+  if (stmts.length) await db.batch(stmts)
+  let mailFailed = 0
+  if (mails.length) {
+    try {
+      // 二度送らないことは reminder_sends の記録で守る（送る前に記録を取る）
+      const results = await emailService.sendEmailBatch(env, mails)
+      mailFailed = results.filter(r => !r.ok).length
+    } catch (e) {
+      mailFailed = mails.length
+      console.log(`reminder mail failed: ${e}`)
+    }
+  }
+  return { notified: rows.length, mails: mails.length, mail_failed: mailFailed, emailed }
+}
+
+// =========================================================
 // お知らせメールの「確認しました」のリンク（#454）
 // 送るときに1人1つのトークンを作り（ハッシュで保存）、メールのボタンは /notice-ack?token=... を開く。
 // メールソフトのリンクの事前読み込みで既読にならないよう、開いたページでボタンを押したときに既読にする（POST /api/public/notice-ack）。
@@ -727,3 +1039,304 @@ noticeAckPublicApi.post('/', async (c) => {
   if (!(n as any).no_confirm) await db.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id) VALUES (?, ?)').bind(t.notice_id, t.user_id).run()
   return c.json({ ok: true, title: t.title, company_name: t.company_name })
 })
+
+// =========================================================
+// スタッフあての通知（#155 #151 #156 #158）。管理者あての通知（承認依頼・インシデントなど）とは種類と関数を分ける
+// 種類（user_notifications.kind）:
+//   shift_assigned / shift_changed / shift_cancelled … シフトの登録・変更（日時・場所・案件・状態）・取消（#155）
+//   recruit_result … 募集への応募の承認・見送りの結果（#151）/ recruit_new … 新しい募集（#156）
+//   daily_report_comment … 日報への管理者のコメント（#158）
+// 宛先は、スタッフマスタ行のユーザーがログインできるスタッフ（role = 'staff'・在籍中）のときだけ。ログインのない人（roster_only）には送らない。
+// メールの送信結果は email_logs に残す（notification_emails は打刻修正の申請に結び付くため使わない）。通知の失敗で元の操作は取り消さない
+// =========================================================
+export const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment'] as const
+MAIL_TYPES.push('shift_change', 'recruit_result', 'recruit_new')
+
+type StaffUser = { staff_id: number; user_id: number; name: string; email: string | null }
+type StaffNotifyRow = { company_id: number; user_id: number; kind: string; title: string; body: string; link: string; related_id: number | null }
+const todayStr = () => nowJST().slice(0, 10)
+const addDaysStr = (d: string, n: number) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
+const WEEKDAY = ['日', '月', '火', '水', '木', '金', '土']
+const fmtDay = (d: string | null | undefined) => {
+  const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${Number(m[2])}/${Number(m[3])}(${WEEKDAY[new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`).getUTCDay()]})` : ''
+}
+// 終了が開始以前なら日をまたぐ勤務（画面の formatShiftTime と同じく『翌』を付ける）
+const fmtTimes = (s: string | null | undefined, e: string | null | undefined) => `${s || ''}〜${e && s && e <= s ? '翌' : ''}${e || ''}`
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s)
+
+// スタッフマスタ行 → ログインできるスタッフのユーザー
+async function staffLoginUsers(db: D1Database, staffIds: number[]): Promise<Map<number, StaffUser>> {
+  const ids = [...new Set(staffIds.map(Number).filter(n => Number.isInteger(n) && n > 0))]
+  if (!ids.length) return new Map()
+  const rows = (await db.prepare(`SELECT sp.staff_id, us.user_id, us.name, us.email FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.staff_id IN ${JSON_IN} AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL`).bind(bindJsonArray(ids)).all()).results as any[]
+  return new Map(rows.map(r => [Number(r.staff_id), { staff_id: Number(r.staff_id), user_id: r.user_id, name: r.name, email: r.email || null }]))
+}
+// 通知の登録（件数が多くても、200 行ずつ1文で入れる）
+async function insertStaffNotifications(db: D1Database, rows: StaffNotifyRow[]) {
+  if (!rows.length) return
+  const at = nowJST()
+  const stmts: D1PreparedStatement[] = []
+  for (let i = 0; i < rows.length; i += 200) {
+    stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+      SELECT json_extract(value, '$.c'), json_extract(value, '$.u'), json_extract(value, '$.k'), json_extract(value, '$.t'), json_extract(value, '$.b'),
+        json_extract(value, '$.l'), json_extract(value, '$.r'), ? FROM json_each(?)`)
+      .bind(at, JSON.stringify(rows.slice(i, i + 200).map(r => ({ c: r.company_id, u: r.user_id, k: r.kind, t: r.title, b: r.body, l: r.link, r: r.related_id })))))
+  }
+  await db.batch(stmts)
+}
+// メールは応答の後に送る（waitUntil。使えないときはその場で送る）。送信の結果は email_logs に残る
+async function queueStaffMails(c: any, mails: SendEmailInput[]) {
+  if (!mails.length) return
+  const job = (async () => {
+    try { if (mails.length === 1) await sendEmail(c.env, mails[0]); else await sendEmailBatch(c.env, mails) } catch { /* 送信の失敗は email_logs に残る */ }
+  })()
+  try { c.executionCtx.waitUntil(job) } catch { await job }
+}
+const appUrl = (env: any, path: string) => String(env?.APP_BASE_URL || '').replace(/\/+$/, '') + path
+
+// ---------- シフトの登録・変更・取消（#155） ----------
+// 変更の前後のシフトを比べて、本人に知らせる。1回の操作の分は、スタッフごとに1件の通知・1通のメールにまとめる。
+// - 今日より前のシフト（精算のための直し）は知らせない。欠勤のシフトの登録・取消は知らせない
+// - メールは、今日・明日のシフトの変更があるときだけ送る（それ以外はアプリ内の通知のみ。数が多くなりすぎないように）
+// shift_id のない行（一括登録で作ったシフト）は、登録として扱う
+export type ShiftSnap = { shift_id: number | null; staff_id: number; work_date: string; start_time: string; end_time: string; status: string;
+  location?: string | null; project_name?: string | null; site_name?: string | null; site_address?: string | null }
+const SHIFT_STATUS_TEXT: Record<string, string> = { requested: '仮（希望）', confirmed: '確定', substitute: '代打', absent: '欠勤' }
+export async function loadShiftSnaps(db: D1Database, companyId: number, shiftIds: (number | null | undefined)[]): Promise<ShiftSnap[]> {
+  const ids = [...new Set(shiftIds.map(Number).filter(n => Number.isInteger(n) && n > 0))]
+  if (!ids.length) return []
+  return (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.location, p.project_name, si.site_name, si.address AS site_address
+    FROM shifts s LEFT JOIN projects p ON p.project_id = s.project_id LEFT JOIN sites si ON si.site_id = s.site_id
+    WHERE s.company_id = ? AND s.shift_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(ids)).all()).results as any[]
+}
+const placeOf = (s: ShiftSnap) => String(s.site_name || s.location || '').trim()
+type ShiftEvent = { type: 'assigned' | 'changed' | 'cancelled'; snap: ShiftSnap; diffs: string[] }
+function shiftDiffs(b: ShiftSnap, a: ShiftSnap): string[] {
+  const out: string[] = []
+  if (b.work_date !== a.work_date) out.push(`日付: ${fmtDay(b.work_date)} → ${fmtDay(a.work_date)}`)
+  if (b.start_time !== a.start_time || b.end_time !== a.end_time) out.push(`時間: ${fmtTimes(b.start_time, b.end_time)} → ${fmtTimes(a.start_time, a.end_time)}`)
+  if ((b.project_name || '') !== (a.project_name || '')) out.push(`案件: ${b.project_name || ''} → ${a.project_name || ''}`)
+  if (placeOf(b) !== placeOf(a)) out.push(`場所: ${placeOf(b) || '（なし）'} → ${placeOf(a) || '（なし）'}`)
+  if (b.status !== a.status) out.push(`状態: ${SHIFT_STATUS_TEXT[b.status] || b.status} → ${SHIFT_STATUS_TEXT[a.status] || a.status}`)
+  return out
+}
+function shiftEventLine(e: ShiftEvent) {
+  const s = e.snap
+  const head = `${fmtDay(s.work_date)} ${fmtTimes(s.start_time, s.end_time)} ${s.project_name || ''}${placeOf(s) ? '・' + placeOf(s) : ''}`
+  if (e.type === 'assigned') return `【登録${s.status === 'requested' ? '（仮）' : ''}】${head}`
+  if (e.type === 'cancelled') return `【取消】${head}`
+  return `【変更】${head}\n  ${e.diffs.join('\n  ')}`
+}
+const SHIFT_EVENT_LABEL = { assigned: '登録', changed: '変更', cancelled: '取消' } as const
+const SHIFT_NOTIFY_MAX_LINES = 20
+export async function notifyShiftChanges(c: any, companyId: number, before: ShiftSnap[], after: ShiftSnap[]) {
+  try {
+    const db: D1Database = c.env.DB
+    const today = todayStr(), tomorrow = addDaysStr(today, 1)
+    const events: ShiftEvent[] = []
+    const prev = new Map(before.filter(s => s.shift_id).map(s => [Number(s.shift_id), s]))
+    const seen = new Set<number>()
+    for (const a of after) {
+      const b = a.shift_id ? prev.get(Number(a.shift_id)) : undefined
+      if (a.shift_id) seen.add(Number(a.shift_id))
+      if (b && b.staff_id === a.staff_id) {
+        if ((b.work_date < today && a.work_date < today) || (b.status === 'absent' && a.status === 'absent')) continue
+        const diffs = shiftDiffs(b, a)
+        if (diffs.length) events.push({ type: 'changed', snap: a, diffs })
+        continue
+      }
+      // 担当者の差し替え: 前の人には取消、新しい人には登録
+      if (b && b.status !== 'absent' && b.work_date >= today) events.push({ type: 'cancelled', snap: b, diffs: [] })
+      if (a.status !== 'absent' && a.work_date >= today) events.push({ type: 'assigned', snap: a, diffs: [] })
+    }
+    for (const b of before) if (b.shift_id && !seen.has(Number(b.shift_id)) && b.status !== 'absent' && b.work_date >= today) events.push({ type: 'cancelled', snap: b, diffs: [] })
+    if (!events.length) return
+    const users = await staffLoginUsers(db, events.map(e => e.snap.staff_id))
+    const byUser = new Map<number, { u: StaffUser; list: ShiftEvent[] }>()
+    for (const e of events) {
+      const u = users.get(Number(e.snap.staff_id)); if (!u) continue
+      const g = byUser.get(u.user_id) || { u, list: [] as ShiftEvent[] }
+      g.list.push(e); byUser.set(u.user_id, g)
+    }
+    const rows: StaffNotifyRow[] = []
+    const mails: SendEmailInput[] = []
+    for (const { u, list } of byUser.values()) {
+      list.sort((x, y) => (x.snap.work_date + x.snap.start_time).localeCompare(y.snap.work_date + y.snap.start_time))
+      const types = new Set(list.map(e => e.type))
+      const kind = types.size === 1 ? `shift_${list[0].type}` : 'shift_changed'
+      const first = list[0].snap
+      const what = `${fmtDay(first.work_date)} ${first.project_name || ''}`
+      let title: string
+      if (list.length === 1) {
+        const t = list[0].type
+        title = t === 'assigned' ? (first.status === 'requested' ? `仮のシフトが入りました（返事をしてください）: ${what}` : `シフトが入りました: ${what}`)
+          : t === 'cancelled' ? `シフトが取り消されました: ${what}` : `シフトが変更されました: ${what}`
+      } else {
+        const counts = (['assigned', 'changed', 'cancelled'] as const).filter(t => types.has(t)).map(t => `${SHIFT_EVENT_LABEL[t]}${list.filter(e => e.type === t).length}件`).join('・')
+        const last = list[list.length - 1].snap
+        title = `シフトの${types.size === 1 ? SHIFT_EVENT_LABEL[list[0].type] : '変更'}があります（${counts}）: ${fmtDay(first.work_date)}${last.work_date !== first.work_date ? '〜' + fmtDay(last.work_date) : ''}`
+      }
+      const lines = list.slice(0, SHIFT_NOTIFY_MAX_LINES).map(shiftEventLine)
+      if (list.length > SHIFT_NOTIFY_MAX_LINES) lines.push(`ほか${list.length - SHIFT_NOTIFY_MAX_LINES}件（シフト画面で確認してください）`)
+      const body = lines.join('\n')
+      // シフト画面のその日から開く（staff.js の route が #shift/YYYY-MM-DD を受ける）
+      const link = `#shift/${first.work_date >= today ? first.work_date : today}`
+      rows.push({ company_id: companyId, user_id: u.user_id, kind, title, body, link, related_id: list.length === 1 ? (first.shift_id ?? null) : null })
+      // メールは今日・明日の分があるときだけ（その日のうちに気づく必要があるため）
+      if (u.email && list.some(e => e.snap.work_date === today || e.snap.work_date === tomorrow)) {
+        const tpl = attendanceCorrectionEmail({ name: u.name, title, headline: '管理者がシフトを登録・変更しました。内容を確認してください。', lines: [['内容', body]], url: appUrl(c.env, '/staff' + link), button: 'シフトを確認する' })
+        mails.push({ to: u.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'shift_change', company_id: companyId })
+      }
+    }
+    await insertStaffNotifications(db, rows)
+    await queueStaffMails(c, mails)
+  } catch (e) {
+    console.log(`shift notify failed: company=${companyId}`)
+  }
+}
+
+// ---------- 募集への応募の結果（#151） ----------
+// 承認・見送りにした日時を、応募者に知らせる。ログインできるスタッフにはアプリ内通知、メールは公開ページからの応募なら応募フォームのアドレス、
+// アプリからの応募ならログインのアドレスへ送る。承認は日時・場所・役割と募集の案内（仕事内容・問い合わせ先）、見送りは定型文。
+// 複数の応募をまとめて知らせても、データベースの読み書きの回数は応募の数によらない（枠の残りをまとめて見送るとき。Free プランの回数の上限のため）。
+// wait: メールの送信を待って結果を返す（承認・見送りの画面に、送れたかを出す）。待たないときは応答の後にまとめて送る。
+// 戻り値: app（アプリ内通知を作ったか）、email（sent / failed / disabled（送信を止めている環境）/ queued / none（宛先なし））
+export type RecruitResultNotice = { app: boolean; email: 'sent' | 'failed' | 'disabled' | 'queued' | 'none'; error?: string }
+type RecruitResultTarget = { applicationId: number; approved: number[]; rejected: number[] }
+export async function notifyRecruitResults(c: any, companyId: number, targets: RecruitResultTarget[], opts: { wait?: boolean } = {}): Promise<Map<number, RecruitResultNotice>> {
+  const out = new Map<number, RecruitResultNotice>(targets.map(t => [t.applicationId, { app: false, email: 'none' }]))
+  try {
+    const db: D1Database = c.env.DB
+    const appIds = targets.filter(t => t.approved.length || t.rejected.length).map(t => t.applicationId)
+    const itemIds = targets.flatMap(t => [...t.approved, ...t.rejected])
+    if (!appIds.length) return out
+    const apps = (await db.prepare(`SELECT a.application_id, a.source, a.staff_id, a.name, a.email, rp.title AS page_title, rp.description, rp.contact_note, rp.token
+      FROM recruit_applications a LEFT JOIN recruit_pages rp ON rp.page_id = a.page_id WHERE a.company_id = ? AND a.application_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(appIds)).all()).results as any[]
+    const items = (await db.prepare(`SELECT i.item_id, i.application_id, i.status, sl.work_date, sl.start_time, sl.end_time, r.role_name, COALESCE(si.site_name, sl.location, p.location, '') AS place, si.address AS site_address
+      FROM recruit_application_items i LEFT JOIN shift_slot_roles r ON r.slot_role_id = i.slot_role_id LEFT JOIN shift_slots sl ON sl.slot_id = r.slot_id
+      LEFT JOIN projects p ON p.project_id = sl.project_id LEFT JOIN sites si ON si.site_id = sl.site_id
+      WHERE i.item_id IN ${JSON_IN} ORDER BY sl.work_date, sl.start_time`).bind(bindJsonArray(itemIds)).all()).results as any[]
+    if (!apps.length) return out
+    const contact = await loadMailContact(db, companyId)
+    const users = await staffLoginUsers(db, apps.map(a => a.staff_id).filter(Boolean))
+    const when = (i: any) => `${fmtDay(i.work_date)} ${fmtTimes(i.start_time, i.end_time)}`
+    const rows: StaffNotifyRow[] = []
+    const mails: { appId: number; mail: SendEmailInput }[] = []
+    for (const a of apps) {
+      const t = targets.find(x => x.applicationId === a.application_id)!
+      const mine = items.filter(i => i.application_id === a.application_id)
+      const ok = mine.filter(i => i.status === 'approved' && t.approved.includes(i.item_id))
+      const ng = mine.filter(i => i.status === 'rejected' && t.rejected.includes(i.item_id))
+      if (!ok.length && !ng.length) continue
+      const lines: [string, string][] = [['募集', a.page_title || '（スタッフアプリからの応募）']]
+      // 複数の日時は1つの項目にまとめる（メールのテキスト版に見出しのない「: 」の行ができないように）
+      if (ok.length) lines.push(['確定した日時', ok.map(i => `${when(i)} ${i.role_name || ''}\n場所: ${i.place || '（担当者から連絡します）'}${i.site_address ? `（${i.site_address}）` : ''}`).join('\n')])
+      if (ng.length) lines.push(['見送りの日時', ng.map(i => `${when(i)} ${i.role_name || ''}`).join('\n')])
+      if (ok.length && a.description) lines.push(['仕事内容・集合の案内', clip(String(a.description), 1000)])
+      const contactText = [a.contact_note, contact.phone ? `電話 ${contact.phone}` : ''].filter(Boolean).join(' / ')
+      if (contactText) lines.push(['問い合わせ先', contactText])
+      const title = ok.length && ng.length ? `応募の結果のお知らせ（確定${ok.length}件・見送り${ng.length}件）` : ok.length ? `応募いただいたお仕事が確定しました（${ok.length}件）` : `応募の結果のお知らせ（見送り${ng.length}件）`
+      const headline = (ok.length ? `ご応募ありがとうございます。次の日時で勤務が確定しました。当日は開始時刻までに集合場所へお越しください。${ng.length ? '一部の日時は、定員などの都合で見送りとなりました。' : ''}`
+        : 'ご応募ありがとうございます。誠に恐れ入りますが、今回は定員などの都合により、次の日時は見送りとさせていただきました。またのご応募をお待ちしています。')
+        + (contactText ? 'ご不明な点は問い合わせ先までご連絡ください。' : '')
+      const res = out.get(a.application_id)!
+      // アプリ内通知（ログインできるスタッフ）
+      const u = a.staff_id ? users.get(Number(a.staff_id)) : undefined
+      if (u) {
+        rows.push({ company_id: companyId, user_id: u.user_id, kind: 'recruit_result', title,
+          body: lines.map(([k, v]) => `${k}: ${v}`).join('\n'), link: ok.length ? `#shift/${ok[0].work_date}` : '#shift', related_id: a.application_id })
+        res.app = true
+      }
+      // メール: 公開ページからの応募は応募フォームのアドレス（本人が結果の連絡先として入れたもの）。アプリからの応募はログインのアドレス
+      const to = String((a.source === 'public' ? a.email : u?.email) || '').trim()
+      if (!to) continue
+      const url = a.source === 'public' ? appUrl(c.env, a.token ? `/apply/${a.token}` : '/') : appUrl(c.env, '/staff#shift')
+      const tpl = attendanceCorrectionEmail({ name: a.name || u?.name || '', title: `${contact.company_name ? contact.company_name + ' ' : ''}${title}`, headline, lines, url,
+        button: a.source === 'public' ? '募集ページを開く' : 'シフトを確認する' })
+      mails.push({ appId: a.application_id, mail: { to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'recruit_result', company_id: companyId, reply_to: contact.reply_to } })
+    }
+    await insertStaffNotifications(db, rows)
+    if (!mails.length) return out
+    if (!opts.wait) {
+      await queueStaffMails(c, mails.map(m => m.mail))
+      for (const m of mails) out.get(m.appId)!.email = 'queued'
+      return out
+    }
+    const results = mails.length === 1 ? [await sendEmail(c.env, mails[0].mail)] : await sendEmailBatch(c.env, mails.map(m => m.mail))
+    mails.forEach((m, k) => {
+      const r = results[k], res = out.get(m.appId)!
+      res.email = r.ok ? (r.skipped ? 'disabled' : 'sent') : 'failed'
+      if (!r.ok) res.error = maskEmailsIn(r.error || 'unknown')
+    })
+    return out
+  } catch (e) {
+    console.log(`recruit result notify failed: applications=${targets.length}`)
+    return out
+  }
+}
+export async function notifyRecruitResult(c: any, companyId: number, applicationId: number, itemIds: { approved: number[]; rejected: number[] }, opts: { wait?: boolean } = {}): Promise<RecruitResultNotice> {
+  return (await notifyRecruitResults(c, companyId, [{ applicationId, ...itemIds }], opts)).get(applicationId)!
+}
+
+// ---------- 新しい募集（#156） ----------
+// スタッフアプリから応募できる募集（allow_staff）を公開・再開したら、自社の割り当てられるスタッフ（ログインできる人）に知らせる。
+// 同じ募集ページの通知は RECRUIT_NEW_QUIET_HOURS に1回まで（終了・再開をくり返しても何度も届かないように）。メールは管理者が選んだときだけ送る
+export const RECRUIT_NEW_QUIET_HOURS = 24
+export async function notifyRecruitNew(c: any, companyId: number, pageId: number, opts: { email?: boolean } = {}): Promise<{ notified: number; emailed: number; skipped_recent?: boolean }> {
+  try {
+    const db: D1Database = c.env.DB
+    const p = await db.prepare(`SELECT page_id, title, date_from, date_to, pay_note, status, allow_staff FROM recruit_pages WHERE page_id = ? AND company_id = ?`).bind(pageId, companyId).first() as any
+    if (!p || p.status !== 'open' || !p.allow_staff || p.date_to < todayStr()) return { notified: 0, emailed: 0 }
+    const since = new Date(Date.now() + 9 * 3600 * 1000 - RECRUIT_NEW_QUIET_HOURS * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const recent = await db.prepare(`SELECT 1 FROM user_notifications WHERE company_id = ? AND kind = 'recruit_new' AND related_id = ? AND created_at >= ? LIMIT 1`).bind(companyId, pageId, since).first()
+    if (recent) return { notified: 0, emailed: 0, skipped_recent: true }
+    const elig = assignableStaffSql({ onDate: todayStr() })
+    const staff = (await db.prepare(`SELECT us.user_id, us.name, us.email FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+      WHERE sp.company_id = ? AND us.role = 'staff' AND ${elig.sql}`).bind(companyId, ...elig.binds).all()).results as any[]
+    if (!staff.length) return { notified: 0, emailed: 0 }
+    const period = `${fmtDay(p.date_from)}〜${fmtDay(p.date_to)}`
+    const title = `新しい募集があります: ${p.title}`
+    const body = [`期間: ${period}`, p.pay_note ? `給与: ${p.pay_note}` : '', 'シフト画面の「募集中のお仕事」から応募できます'].filter(Boolean).join('\n')
+    await insertStaffNotifications(db, staff.map(s => ({ company_id: companyId, user_id: s.user_id, kind: 'recruit_new', title, body, link: '#shift', related_id: pageId })))
+    let emailed = 0
+    if (opts.email) {
+      const contact = await loadMailContact(db, companyId)
+      const lines: [string, string][] = [['募集', p.title], ['期間', period]]
+      if (p.pay_note) lines.push(['給与', p.pay_note])
+      const mails: SendEmailInput[] = staff.filter(s => s.email).map(s => {
+        const tpl = attendanceCorrectionEmail({ name: s.name, title: `${contact.company_name ? contact.company_name + ' ' : ''}${title}`, headline: '新しいお仕事の募集が始まりました。スタッフアプリから応募できます。',
+          lines, url: appUrl(c.env, '/staff#shift'), button: '募集を見る' })
+        return { to: s.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'recruit_new', company_id: companyId, reply_to: contact.reply_to }
+      })
+      emailed = mails.length
+      await queueStaffMails(c, mails)
+    }
+    return { notified: staff.length, emailed }
+  } catch (e) {
+    console.log(`recruit new notify failed: page=${pageId}`)
+    return { notified: 0, emailed: 0 }
+  }
+}
+
+// ---------- 日報へのコメント（#158） ----------
+// コメントを新しく付けた・書き換えたときに、日報を出したスタッフに知らせる（アプリ内のみ）。
+// 同じ日報のまだ読んでいないコメントの通知は、新しい内容の1件に置き換える。戻り値は通知したか
+export async function notifyReportComment(c: any, companyId: number, dailyReportId: number, actorName: string): Promise<boolean> {
+  try {
+    const db: D1Database = c.env.DB
+    const r = await db.prepare(`SELECT dr.daily_report_id, dr.staff_id, dr.work_date, dr.manager_comment, p.project_name FROM daily_reports dr LEFT JOIN projects p ON p.project_id = dr.project_id
+      WHERE dr.daily_report_id = ? AND dr.company_id = ?`).bind(dailyReportId, companyId).first() as any
+    if (!r || !r.manager_comment) return false
+    const u = (await staffLoginUsers(db, [r.staff_id])).get(Number(r.staff_id))
+    if (!u) return false
+    await db.prepare(`DELETE FROM user_notifications WHERE kind = 'daily_report_comment' AND related_id = ? AND company_id = ? AND read_at IS NULL`).bind(dailyReportId, companyId).run()
+    await insertStaffNotifications(db, [{ company_id: companyId, user_id: u.user_id, kind: 'daily_report_comment', title: `日報にコメントがあります: ${fmtDay(r.work_date)} ${r.project_name || ''}`,
+      body: `${clip(String(r.manager_comment), 300)}\nコメントした人: ${actorName || '管理者'}`, link: '#report', related_id: dailyReportId }])
+    return true
+  } catch (e) {
+    console.log(`report comment notify failed: report=${dailyReportId}`)
+    return false
+  }
+}

@@ -152,6 +152,7 @@
           <div class="flex gap-2"><dt class="w-24 text-gray-400">登録状態</dt><dd>${data.merged_into_staff_id ? `<span class="badge badge-gray">統合済み</span> <a class="text-blue-600 hover:underline" href="#staff/${data.merged_into_staff_id}">${esc(data.merged_into_name || '統合先')}</a>（${esc(String(data.merged_at || '').slice(0, 10))}）` : data.is_provisional ? '<span class="badge badge-red">仮登録</span>' : '<span class="badge badge-green">本登録</span>'}</dd></div>
           <div class="flex gap-2"><dt class="w-24 text-gray-400">ログイン</dt><dd>${data.has_own_login ? 'あり（' + esc(data.user_code) + '）' : data.has_login ? '所属元の会社のログインから企業を切り替えて利用' : 'なし（報告用URLまたは代理入力で記録）'}
             ${data.can_issue_login ? `<button class="btn btn-outline text-xs ml-1" id="issue-login-btn" data-action="openIssueLogin" data-id="${Number(sid)}"><i class="fas fa-key"></i>ログインを発行</button>` : ''}</dd></div>
+          ${window.scheduleLinkRowHtml ? scheduleLinkRowHtml(sid, data) : ''}
           ${t !== 'linked_external' && !data.merged_into_staff_id ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">メール</dt><dd>${data.email ? esc(data.email) : '<span class="text-gray-400">なし</span>'}
             ${data.unverified_email ? `<div class="mt-1" id="unverified-email"><span class="badge badge-yellow">未確認</span> ${esc(data.unverified_email)}
               <span class="block text-[11px] text-gray-400">応募フォームなどで入力された、本人確認をしていないメールです。ログイン・パスワード再設定・お知らせには使いません</span>
@@ -537,7 +538,7 @@
         <span class="text-gray-400">${d.login_via_owner ? '所属元のアカウントで報告' : d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
         ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? (r.no_photo_reason || r.photo_stale ? 'badge-yellow' : 'badge-green') : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') + (r.device ? ' ・' + esc(r.device) : '') + correctedNote(r, d.work_date) : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? '・修正' : ''}${r && r.no_photo_reason ? '・写真なし' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
-        ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}">日報 ${d.daily_report ? '提出済み' : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
+        ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}" title="${d.daily_report ? esc(ENTRY_LABEL[d.daily_report.entry_method] || '') + (d.daily_report.entered_by_name ? '（' + esc(d.daily_report.entered_by_name) + '）' : '') : ''}">日報 ${d.daily_report ? '提出済み' + (d.daily_report.entry_method === 'proxy' ? '・代理' : d.daily_report.entry_method === 'link' ? '・URL' : '') : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
       ${reportNotesHtml(d)}
       ${cancellable.length ? `<div class="flex flex-wrap items-center gap-1"><span class="text-gray-500">代理入力の取消:</span>${cancellable.map(r => `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="cancelProxyAttendance" data-shift-id="${Number(shiftId)}" data-type="${esc(r.report_type)}" title="この代理入力を取り消す"><i class="fas fa-xmark"></i>${esc(RT_LABEL[r.report_type] || r.report_type)} ${esc(atLabel(r.reported_at, d.work_date))}</button>`).join('')}</div>` : ''}
@@ -554,7 +555,11 @@
         : `<button class="btn btn-outline text-xs flex-1" onclick="issueReportLink(${shiftId})"><i class="fas fa-link"></i>報告用URLを発行（ログイン不要）</button>`}
         ${pending && !d.proxy_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyAttendance" data-shift-id="${shiftId}"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
         ${pending && d.proxy_blocked ? `<span class="text-[11px] text-gray-400 py-1">${esc(d.proxy_blocked)}のシフトは代理入力できません</span>` : ''}
+        ${d.modes.daily_report_required && !d.daily_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyDaily" data-shift-id="${Number(shiftId)}"><i class="fas fa-file-pen"></i>日報を${d.daily_report ? '代理で修正' : '代理入力'}</button>` : ''}
       </div>
+      ${!d.has_login ? `<p class="text-[11px] text-gray-500">この日のログインのない人をまとめて:
+        <button class="text-blue-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="links">報告用URLを発行</button>・
+        <button class="text-blue-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="proxy">予定どおりで代理入力</button></p>` : ''}
       ${d.token ? `<div class="flex flex-wrap items-center gap-1.5 text-[11px]">
           <span class="text-gray-500"><i class="fas fa-phone mr-0.5"></i>${phone ? `<a href="tel:${esc(phone)}" class="text-blue-600 underline">${esc(d.staff_phone)}</a>` : '電話番号の登録なし'}</span>
           ${phone ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(phone)}?&body=${esc(encodeURIComponent(reportGuideText(d, url)))}"><i class="fas fa-comment-sms"></i>SMSで送る</a>` : ''}
@@ -582,8 +587,12 @@
   function reportGuideText(d, url) {
     const x = dayjs(d.work_date)
     const end = d.end_time <= d.start_time ? '翌' + d.end_time : d.end_time
-    return `【${d.company_name}】${x.format('M/D')}(${GUIDE_WD[x.day()]}) ${d.start_time}〜${end} ${d.project_name}${d.place ? '（' + d.place + '）' : ''}の勤怠・日報は、こちらのURLから報告してください（${dayjs(d.token.expires_at).format('M/D HH:mm')}まで有効。${d.staff_name}さん専用のURLです）\n${url}`
+    return `【${d.company_name}】${x.format('M/D')}(${GUIDE_WD[x.day()]}) ${d.start_time}〜${end} ${d.project_name}${d.place ? '（' + d.place + '）' : ''}の勤怠・日報は、こちらのURLから報告してください（${dayjs(d.token.expires_at).format('M/D HH:mm')}まで有効。${d.staff_name}さん専用のURLです）`
+      // 本人あての重要なお知らせがあれば、報告用のページで読めることを添える（#281）
+      + (d.notice_count ? `\n会社からの重要なお知らせが${Number(d.notice_count)}件あります。URLのページで確認してください` : '')
+      + `\n${url}`
   }
+  window.reportGuideText = reportGuideText
   window.saveShiftReportSettings = async function (shiftId) {
     try { await axios.put(`/api/admin/shifts/${shiftId}/report-settings`, { attendance_mode: document.getElementById('sr-att').value, daily_report_mode: document.getElementById('sr-dr').value }); toast('このシフトの提出設定を保存しました'); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
   }
@@ -664,6 +673,46 @@
       } catch (e) { toast(errMsg(e)) }
     })
   }
+  // 日報の代理入力（#276）: 案件の日報テンプレートの項目で入力する。今の内容があれば初期値にする
+  delegate('openProxyDaily', (el) => {
+    const shiftId = Number(el.dataset.shiftId)
+    const box = document.getElementById('shift-report-box'); const d = reportStatusCache[shiftId]; if (!box || !d) return
+    if (document.getElementById('proxy-daily-form')) return
+    const cur = (d.daily_report && d.daily_report.values) || {}
+    const fields = d.daily_template && d.daily_template.fields && d.daily_template.fields.length ? d.daily_template.fields : [{ key: 'free', label: '報告内容', type: 'textarea' }]
+    const fieldHtml = (f) => {
+      const v = cur[f.key]
+      const label = `${esc(f.label || f.key)}${f.required === true || f.required === 1 || f.required === 'true' ? ' <span class="text-red-500">*</span>' : ''}`
+      if (f.type === 'number') return `<label class="flex items-center gap-2"><span class="flex-1">${label}</span><input type="number" min="0" max="99999" step="1" class="inp text-xs w-24 pdr-field" data-key="${esc(f.key)}" data-type="number" value="${esc(v == null ? '' : v)}"></label>`
+      if (f.type === 'textarea') return `<label class="block">${label}<textarea rows="2" class="inp text-xs pdr-field" data-key="${esc(f.key)}">${esc(v || '')}</textarea></label>`
+      return `<label class="block">${label}<input class="inp text-xs pdr-field" data-key="${esc(f.key)}" value="${esc(v || '')}"></label>`
+    }
+    box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-amber-50 space-y-2" id="proxy-daily-form">
+      <p class="font-bold text-amber-800">日報の代理入力（管理者が記録します。日報の一覧・報告状況に「代理」と表示されます）</p>
+      ${d.daily_report && d.daily_report.entry_method !== 'proxy' ? '<p class="text-[11px] text-red-600">本人が提出した日報があります。記録すると上書きします</p>' : ''}
+      <div class="space-y-1.5">${fields.map(fieldHtml).join('')}</div>
+      <label class="flex items-center gap-2"><input type="checkbox" id="pdr-incident" ${d.daily_report && d.daily_report.incident_flag ? 'checked' : ''}>インシデントがあった</label>
+      <textarea rows="2" class="inp text-xs" id="pdr-incident-note" placeholder="インシデントの内容（任意）">${esc(cur.incident_note || '')}</textarea>
+      <label class="flex items-center gap-2"><input type="checkbox" id="pdr-complaint" ${d.daily_report && d.daily_report.complaint_flag ? 'checked' : ''}>クレームがあった</label>
+      <textarea rows="2" class="inp text-xs" id="pdr-complaint-note" placeholder="クレームの内容（任意）">${esc(cur.complaint_note || '')}</textarea>
+      <button class="btn btn-primary text-xs w-full" data-action="submitProxyDaily" data-shift-id="${shiftId}">日報を記録する</button></div>`)
+    el.remove()
+  })
+  delegate('submitProxyDaily', (el) => withSubmitLock(el, async () => {
+    const shiftId = Number(el.dataset.shiftId); const d = reportStatusCache[shiftId]
+    const values = {}
+    document.querySelectorAll('#proxy-daily-form .pdr-field').forEach(f => { values[f.dataset.key] = f.dataset.type === 'number' ? (f.value === '' ? '' : Number(f.value)) : f.value })
+    const body = { values, incident_flag: document.getElementById('pdr-incident').checked, complaint_flag: document.getElementById('pdr-complaint').checked,
+      incident_note: document.getElementById('pdr-incident-note').value, complaint_note: document.getElementById('pdr-complaint-note').value }
+    if (d && d.daily_report && d.daily_report.entry_method !== 'proxy') {
+      if (!confirm('本人が提出した日報を、入力した内容で上書きします。よろしいですか？')) return
+      body.overwrite = true
+    }
+    try {
+      await axios.post(`/api/admin/shifts/${shiftId}/proxy-daily-report`, body)
+      toast('日報を代理入力しました'); renderShiftReportPanel(shiftId)
+    } catch (e) { toast(errMsg(e)) }
+  }))
   delegate('openProxyAttendance', el => { openProxyAttendance(Number(el.dataset.shiftId)); el.remove() })
   delegate('submitProxyAttendance', el => submitProxyAttendance(Number(el.dataset.shiftId), el))
 
@@ -710,6 +759,203 @@
         const { data } = await axios.post(`/api/admin/staff/${Number(el.dataset.id)}/reset-password`)
         showTempPassword('仮パスワードを発行しました', data.temp_password, [`氏名: ${data.name}`, `会社コード: ${data.company_code}`, `スタッフ番号: ${data.user_code}`, `ログイン: ${data.login_url}`])
       } catch (e) { showApiError(e, '再発行に失敗しました') }
+    })
+  })
+})()
+
+// =========================================================
+// ログインのない人の報告をまとめて扱う画面（#275 報告用URLのまとめての発行、#508 予定どおりでのまとめての代理入力）
+// openNologinBulk(日付, 案件ID, 'links' | 'proxy') で開く（シフト詳細の報告パネル・ほかの画面から呼べる）。
+// 予定確認URL（#442）: スタッフ詳細の「区分・登録状態」に発行・無効化の行を出す
+// =========================================================
+;(function () {
+  const RT = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
+  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
+  const PROXY_CHUNK = 50 // サーバーの1回の上限（staff-lifecycle.ts の BULK_PROXY_MAX）
+  let st = { date: '', projectId: '', tab: 'links', links: null, proxy: null, result: null }
+  async function copyText(text, done) {
+    try { await navigator.clipboard.writeText(text); toast(done) } catch {
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select()
+      try { document.execCommand && document.execCommand('copy'); toast(done) } catch { toast('コピーできませんでした') }
+      ta.remove()
+    }
+  }
+  const telOf = (p) => String(p || '').replace(/[^\d+]/g, '')
+  const hhmm = (at) => at ? dayjs(at).format('HH:mm') : ''
+
+  window.openNologinBulk = async function (date, projectId, tab) {
+    st = { date: date || dayjs().format('YYYY-MM-DD'), projectId: projectId ? String(projectId) : '', tab: tab === 'proxy' ? 'proxy' : 'links', links: null, proxy: null, result: null }
+    modal(`<div id="nl-bulk"><div class="flex justify-center py-10"><span class="spin"></span></div></div>`)
+    await loadBulk()
+  }
+  delegate('openNologinBulk', (el) => openNologinBulk(el.dataset.date, el.dataset.projectId, el.dataset.tab))
+
+  async function loadBulk() {
+    const q = `?date=${encodeURIComponent(st.date)}${st.projectId ? '&project_id=' + encodeURIComponent(st.projectId) : ''}`
+    try {
+      if (st.tab === 'links') st.links = (await axios.get('/api/admin/report-links/bulk' + q)).data
+      else st.proxy = (await axios.get('/api/admin/proxy-attendance/bulk' + q)).data
+    } catch (e) { toast(errMsg(e, '読み込みに失敗しました')); return }
+    drawBulk()
+  }
+  function drawBulk() {
+    const host = document.getElementById('nl-bulk'); if (!host) return
+    const data = st.tab === 'links' ? st.links : st.proxy
+    const projects = (data && data.projects) || []
+    host.innerHTML = `<div class="flex items-center justify-between mb-2"><h3 class="font-bold text-gray-800"><i class="fas fa-users-viewfinder text-blue-600 mr-1"></i>ログインのない人の報告（まとめて）</h3>
+        <button class="text-gray-400" onclick="closeModal()" title="閉じる"><i class="fas fa-xmark"></i></button></div>
+      <div class="flex flex-wrap gap-2 items-end mb-3 text-xs">
+        <label>稼働日<input type="date" id="nl-date" class="inp text-sm" value="${esc(st.date)}"></label>
+        <label class="flex-1 min-w-[10rem]">案件<select id="nl-project" class="inp text-sm"><option value="">すべての案件</option>
+          ${projects.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === st.projectId ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></label>
+        <button class="btn btn-outline text-xs" data-action="nlReload"><i class="fas fa-rotate-right"></i>表示</button>
+      </div>
+      <div class="flex gap-1 mb-3 border-b">
+        <button class="px-3 py-1.5 text-sm ${st.tab === 'links' ? 'border-b-2 border-blue-600 font-bold text-blue-700' : 'text-gray-500'}" data-action="nlTab" data-tab="links"><i class="fas fa-link mr-1"></i>報告用URL</button>
+        <button class="px-3 py-1.5 text-sm ${st.tab === 'proxy' ? 'border-b-2 border-blue-600 font-bold text-blue-700' : 'text-gray-500'}" data-action="nlTab" data-tab="proxy"><i class="fas fa-user-pen mr-1"></i>予定どおりで代理入力</button>
+      </div>
+      <div id="nl-body">${!data ? '' : st.tab === 'links' ? linksHtml(data) : proxyHtml(data)}</div>`
+  }
+  delegate('nlReload', () => {
+    st.date = (document.getElementById('nl-date') || {}).value || st.date
+    st.projectId = (document.getElementById('nl-project') || {}).value || ''
+    st.result = null
+    loadBulk()
+  })
+  delegate('nlTab', (el) => { st.tab = el.dataset.tab === 'proxy' ? 'proxy' : 'links'; st.result = null; loadBulk() })
+
+  // ---------- 報告用URL（#275） ----------
+  const guideOf = (data, r) => reportGuideText({ company_name: data.company_name, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time, project_name: r.project_name,
+    place: r.place, staff_name: r.staff_name, token: { expires_at: r.expires_at }, notice_count: r.notice_count }, location.origin + '/r/' + r.token)
+  function linksHtml(data) {
+    const rows = data.rows || []
+    if (!rows.length) return '<p class="text-sm text-gray-500 py-6 text-center">この日のログインのない人のシフトはありません</p>'
+    const issued = rows.filter(r => r.token), unissued = rows.filter(r => !r.token && !r.unavailable), unused = issued.filter(r => !r.last_used_at)
+    return `<p class="text-xs text-gray-600 mb-2">対象 ${rows.length}件（発行済み ${issued.length}件・うち未使用 ${unused.length}件 / 未発行 ${unissued.length}件）${data.truncated ? '<span class="text-amber-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
+      <div class="flex flex-wrap gap-2 mb-3">
+        ${unissued.length ? `<button class="btn btn-primary text-xs" data-action="nlIssueAll"><i class="fas fa-link"></i>未発行の${unissued.length}件をまとめて発行</button>` : ''}
+        ${issued.length ? `<button class="btn btn-outline text-xs" data-action="nlCopyAll"><i class="fas fa-copy"></i>発行済み${issued.length}件の案内文をまとめてコピー</button>` : ''}
+      </div>
+      <div class="space-y-1.5 max-h-[55vh] overflow-y-auto" id="nl-links">${rows.map(r => {
+        const tel = telOf(r.staff_phone)
+        const status = r.unavailable ? `<span class="badge badge-gray">${esc(r.unavailable)}</span>`
+          : !r.token ? '<span class="badge badge-yellow">未発行</span>'
+          : r.last_used_at ? `<span class="badge badge-green">開いた ${esc(dayjs(r.last_used_at).format('M/D HH:mm'))}</span>` : '<span class="badge badge-blue">発行済み・未使用</span>'
+        return `<div class="rounded border border-gray-100 p-2 text-xs flex flex-wrap items-center gap-2" data-shift-id="${Number(r.shift_id)}">
+          <div class="flex-1 min-w-[12rem]"><p class="font-bold text-gray-800">${esc(r.staff_name)} ${status}</p>
+            <p class="text-gray-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}${r.place ? '（' + esc(r.place) + '）' : ''}
+              ${tel ? ` ・<a href="tel:${esc(tel)}" class="text-blue-600 underline">${esc(r.staff_phone)}</a>` : ' ・電話番号の登録なし'}${r.notice_count ? ` ・お知らせ${Number(r.notice_count)}件` : ''}</p></div>
+          ${r.token ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="nlCopyOne" data-shift-id="${Number(r.shift_id)}"><i class="fas fa-copy"></i>案内文</button>
+            ${tel ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(tel)}?&body=${esc(encodeURIComponent(guideOf(data, r)))}"><i class="fas fa-comment-sms"></i>SMS</a>` : ''}` : ''}
+        </div>` }).join('')}</div>
+      <p class="text-[11px] text-gray-400 mt-2">報告用URLは稼働日の翌日 23:59 まで使えます。送り先の番号を確かめてから送ってください。本人あての重要なお知らせがあれば、案内文に一言添えます（お知らせは報告用のページに出ます）</p>`
+  }
+  delegate('nlIssueAll', (el) => withSubmitLock(el, async () => {
+    try {
+      const { data } = await axios.post('/api/admin/report-links/bulk', { date: st.date, project_id: st.projectId || undefined })
+      st.links = { ...st.links, ...data }
+      toast(`${data.issued}件の報告用URLを発行しました`); drawBulk()
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('nlCopyOne', (el) => {
+    const r = ((st.links && st.links.rows) || []).find(x => x.shift_id === Number(el.dataset.shiftId)); if (!r || !r.token) return
+    copyText(guideOf(st.links, r), `${r.staff_name}さんの案内文をコピーしました`)
+  })
+  delegate('nlCopyAll', () => {
+    const rows = ((st.links && st.links.rows) || []).filter(r => r.token)
+    if (!rows.length) return
+    copyText(rows.map(r => `■ ${r.staff_name}さん${r.staff_phone ? '（' + r.staff_phone + '）' : ''}\n${guideOf(st.links, r)}`).join('\n\n'), `${rows.length}件の案内文をコピーしました`)
+  })
+
+  // ---------- 予定どおりで代理入力（#508） ----------
+  function proxyHtml(data) {
+    const rows = data.shifts || []
+    if (!rows.length) return '<p class="text-sm text-gray-500 py-6 text-center">この日の勤務のシフトはありません</p>'
+    const past = st.date < dayjs().format('YYYY-MM-DD')
+    const res = st.result
+    return `${res ? `<div class="rounded bg-gray-50 p-2 mb-2 text-xs" id="nl-proxy-result"><p class="font-bold">${Number(res.created)}件の報告を記録しました（${res.recorded.length}人）</p>
+        ${res.skipped.length ? `<p class="text-amber-800 mt-1">記録しなかったシフト ${res.skipped.length}件:</p><ul class="list-disc ml-5 text-amber-800">${res.skipped.map(s => `<li>${esc(s.staff_name || 'シフト#' + s.shift_id)}: ${esc(s.reason)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+      <div class="flex flex-wrap items-center gap-3 text-xs mb-2">
+        <span class="text-gray-600">記録する範囲:</span>
+        <label class="flex items-center gap-1"><input type="radio" name="nl-scope" value="start" ${past ? '' : 'checked'}>入店・勤務開始だけ</label>
+        <label class="flex items-center gap-1"><input type="radio" name="nl-scope" value="all" ${past ? 'checked' : ''}>予定どおり全部（休憩・勤務終了・退店も）</label>
+      </div>
+      <p class="text-[11px] text-gray-500 mb-2">チェックした人を、予定の時刻（入店・勤務開始は開始、勤務終了・退店は終了、休憩は予定の休憩）で記録します。違う人は時刻を直してください。まだ来ていない時刻・報告済みの報告・起床と出発は記録しません。ログインのない人を先に並べています${data.truncated ? '<span class="text-amber-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
+      <div class="max-h-[50vh] overflow-y-auto space-y-1" id="nl-proxy-rows">${rows.map(r => {
+        const pending = r.required.filter(t => !r.done[t])
+        const can = !r.blocked && pending.length > 0
+        const check = can && !r.has_login
+        return `<div class="rounded border border-gray-100 p-2 text-xs flex flex-wrap items-center gap-2 ${can ? '' : 'opacity-60'}">
+          <input type="checkbox" class="nl-px" data-shift-id="${Number(r.shift_id)}" ${check ? 'checked' : ''} ${can ? '' : 'disabled'}>
+          <div class="flex-1 min-w-[12rem]"><p class="font-bold text-gray-800">${esc(r.staff_name)} ${r.has_login ? '' : '<span class="badge badge-gray">ログインなし</span>'}</p>
+            <p class="text-gray-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}</p>
+            <p class="text-[11px] text-gray-500">${r.required.map(t => r.done[t] ? `<span class="text-emerald-700">${esc(RT[t] || t)} ${esc(hhmm(r.done[t].at))}${r.done[t].entry_method === 'proxy' ? '（代理）' : ''}</span>` : `<span class="text-gray-400">${esc(RT[t] || t)} 未</span>`).join(' ・ ') || '勤怠報告なし'}
+              ${r.daily.required ? ` ・日報 ${r.daily.submitted ? '提出済み' : '<span class="text-amber-700">未提出</span>'}` : ''}${r.blocked ? ` ・<span class="text-gray-500">${esc(r.blocked)}のため記録できません</span>` : ''}</p></div>
+          ${can ? `<label class="text-[11px] text-gray-500">開始<input type="time" class="inp text-xs w-auto nl-start" data-shift-id="${Number(r.shift_id)}" placeholder="${esc(hhmm(r.defaults.check_in || r.defaults.work_start))}"></label>
+            <label class="text-[11px] text-gray-500">終了<input type="time" class="inp text-xs w-auto nl-end" data-shift-id="${Number(r.shift_id)}" placeholder="${esc(hhmm(r.defaults.check_out || r.defaults.work_end))}"></label>` : ''}
+        </div>` }).join('')}</div>
+      <div class="flex gap-2 mt-3"><button class="btn btn-outline text-xs" data-action="nlCheckAll">記録できる人をすべてチェック</button>
+        <button class="btn btn-primary text-xs flex-1" data-action="nlProxySubmit"><i class="fas fa-user-pen"></i>チェックした人を記録する</button></div>`
+  }
+  delegate('nlCheckAll', () => document.querySelectorAll('#nl-proxy-rows .nl-px:not(:disabled)').forEach(el => { el.checked = true }))
+  delegate('nlProxySubmit', (el) => withSubmitLock(el, async () => {
+    const scope = (document.querySelector('input[name="nl-scope"]:checked') || {}).value
+    const val = (cls, id) => { const x = document.querySelector(`#nl-proxy-rows .${cls}[data-shift-id="${id}"]`); return x && x.value ? x.value : undefined }
+    const items = [...document.querySelectorAll('#nl-proxy-rows .nl-px:checked')].map(x => Number(x.dataset.shiftId)).map(id => ({ shift_id: id, start: val('nl-start', id), end: val('nl-end', id) }))
+    if (!items.length) { toast('記録する人をチェックしてください'); return }
+    if (!confirm(`${items.length}人の勤怠を${scope === 'all' ? '予定どおり（終了まで）' : '入店・勤務開始だけ'}代理入力します。よろしいですか？`)) return
+    const total = { created: 0, recorded: [], skipped: [] }
+    for (let i = 0; i < items.length; i += PROXY_CHUNK) {
+      try {
+        const { data } = await axios.post('/api/admin/proxy-attendance/bulk', { scope, items: items.slice(i, i + PROXY_CHUNK) })
+        total.created += data.created; total.recorded.push(...data.recorded); total.skipped.push(...data.skipped)
+      } catch (e) { toast(errMsg(e)); break }
+    }
+    st.result = total
+    toast(`${total.created}件の報告を記録しました`)
+    await loadBulk()
+  }))
+
+  // ---------- 予定確認URL（#442） ----------
+  // 区分・登録状態のパネルの行（ログインのない人だけ）。URL は発行したときだけ表示できる（保存しているのはハッシュだけのため）
+  window.scheduleLinkRowHtml = function (sid, data) {
+    if (data.has_login || data.merged_into_staff_id || data.affiliation_type === 'skillsheet_only') return ''
+    const l = data.schedule_link
+    const expired = l && l.expires_at < dayjs().format('YYYY-MM-DD HH:mm:ss')
+    return `<div class="flex gap-2" id="schedule-link-row"><dt class="w-24 text-gray-400">予定確認URL</dt><dd>
+      ${l && !expired ? `発行済み（${esc(dayjs(l.expires_at).format('M/D'))}まで有効・${l.last_used_at ? '最終アクセス ' + esc(dayjs(l.last_used_at).format('M/D HH:mm')) : '未使用'}）
+        <button class="btn btn-outline text-xs ml-1" data-action="issueScheduleLink" data-id="${Number(sid)}" data-reissue="1"><i class="fas fa-rotate"></i>発行し直す</button>
+        <button class="btn btn-outline text-xs" data-action="revokeScheduleLink" data-id="${Number(sid)}"><i class="fas fa-ban"></i>無効にする</button>`
+      : data.schedule_link_blocked ? `<span class="text-gray-400">${esc(data.schedule_link_blocked)}</span>`
+      : `${expired ? '<span class="text-gray-400">期限切れ</span> ' : ''}<button class="btn btn-outline text-xs" data-action="issueScheduleLink" data-id="${Number(sid)}"><i class="fas fa-calendar-days"></i>発行する</button>`}
+      <span class="block text-[11px] text-gray-400">本人が、今日から2週間の確定シフト（日時・案件・場所）を見られるURLです。前日〜翌日のシフトは、そのページから勤怠・日報を報告できます。金額は表示しません</span></dd></div>`
+  }
+  delegate('issueScheduleLink', (el) => {
+    if (el.dataset.reissue && !confirm('予定確認URLを発行し直します。今のURLは使えなくなります。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      const sid = Number(el.dataset.id)
+      try {
+        const { data } = await axios.post(`/api/admin/staff/${sid}/schedule-link`, {})
+        const url = location.origin + '/r/' + data.token
+        const text = `【${data.company_name}】${data.staff_name}さんの今後2週間のシフトは、こちらのURLで確認できます。当日の勤怠・日報の報告や、遅刻・欠勤の連絡もこのページからできます（${dayjs(data.expires_at).format('M/D')}まで有効。${data.staff_name}さん専用のURLです）\n${url}`
+        const tel = telOf(data.staff_phone)
+        window.__scheduleGuide = text
+        modal(`<h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-calendar-days text-blue-600 mr-1"></i>予定確認URLを発行しました</h3>
+          <p class="text-xs text-red-600 mb-2">このURLはこの画面でだけ表示します。閉じる前に本人に送ってください（あとから確かめることはできません。必要なら発行し直してください）</p>
+          <input class="inp text-xs w-full" readonly value="${esc(url)}" id="schedule-link-url">
+          <textarea class="inp text-xs w-full mt-2" rows="4" readonly id="schedule-link-guide">${esc(text)}</textarea>
+          <div class="flex flex-wrap gap-2 mt-3">
+            <button class="btn btn-primary text-xs" data-action="copyScheduleGuide"><i class="fas fa-copy"></i>案内文をコピー</button>
+            ${tel ? `<a class="btn btn-outline text-xs" href="sms:${esc(tel)}?&body=${esc(encodeURIComponent(text))}"><i class="fas fa-comment-sms"></i>SMSで送る</a>` : ''}
+            <button class="btn btn-outline text-xs" onclick="closeModal()">閉じる</button></div>`, { onClose: () => { window.__scheduleGuide = ''; if (window.renderStaffDetail) renderStaffDetail(sid) } })
+      } catch (e) { toast(errMsg(e)) }
+    })
+  })
+  delegate('copyScheduleGuide', () => { if (window.__scheduleGuide) copyText(window.__scheduleGuide, '案内文をコピーしました') })
+  delegate('revokeScheduleLink', (el) => {
+    if (!confirm('予定確認URLを無効にしますか？本人はこのURLを開けなくなります')) return
+    withSubmitLock(el, async () => {
+      try { await axios.delete(`/api/admin/staff/${Number(el.dataset.id)}/schedule-link`); toast('無効にしました'); if (window.renderStaffDetail) renderStaffDetail(Number(el.dataset.id)) } catch (e) { toast(errMsg(e)) }
     })
   })
 })()

@@ -116,6 +116,7 @@ ok('（前提）毎日の cron（3:00）を実行（1回目: 猶予の開始）'
   ok('#234 cron の実行は実行元「cron」で記録する', logs[0] && logs[0].trigger_source === 'cron' && logs[0].dry_run === 0, logs[0])
 }
 ok('（前提）既読率レポートの cron（3:30）を実行', await cron(REPORTS) === 200)
+ok('（前提）15分おきのリマインドの cron を実行（一覧の処理をすべて一度は実行しておく。w5-reminders）', await cron('*/15 * * * *') === 200)
 {
   const rep = d1(`SELECT status, cron, result_json FROM cron_runs WHERE job = 'notice_read_reports' ORDER BY run_id DESC LIMIT 1`)[0][0]
   await waitServer()

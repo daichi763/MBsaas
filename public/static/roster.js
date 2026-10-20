@@ -23,6 +23,10 @@ window.showAddRoster = function () {
           <p class="font-bold text-sm text-gray-800"><i class="fas ${r.icon} ${r.color} w-5"></i>${r.title}</p>
           <p class="text-xs text-gray-500 mt-1 ml-5">${r.desc}</p>
         </button>`).join('')}
+      <button class="w-full text-left p-3 rounded-xl border border-dashed border-gray-300 hover:border-orange-400 hover:bg-orange-50 transition" data-action="showRosterImport">
+        <p class="font-bold text-sm text-gray-800"><i class="fas fa-file-csv text-orange-600 w-5"></i>CSV でまとめて登録（②③④）</p>
+        <p class="text-xs text-gray-500 mt-1 ml-5">導入時の名簿の移行や、まとめて受け入れるときに。テンプレートに記入して取り込み、重複などを確かめてから登録します。</p>
+      </button>
     </div>`)
 }
 
@@ -275,6 +279,175 @@ window.submitRosterForm = async function (route, force) {
 window.addEventListener('hashchange', () => { if (typeof closeModal === 'function') closeModal() })
 
 // =========================================================
+// CSV でまとめて登録（#430）。②自社雇用・③取引先・④スキルシートのみ を1つのファイルで登録する
+// 1. テンプレートに記入した CSV を選ぶ → 2. サーバーで確かめた結果（エラー・警告）を見る → 3. 登録する
+// 登録は、サーバーの CPU 時間の上限があるため数行ずつ（ログインを作る行は1行ずつ）に分けて送る。
+// 自動で作った初期パスワードはこの画面でしか分からないので、ログイン案内の CSV を保存してもらう
+// =========================================================
+const ROSTER_IMPORT_MAX_ROWS = 500
+const ROSTER_IMPORT = { header: null, rows: [], preview: null, created: [], failed: [], downloaded: true }
+function parseCsvText(text) {
+  const rows = []; let row = [], f = '', q = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { f += '"'; i++ } else q = false } else f += ch
+      continue
+    }
+    if (ch === '"') q = true
+    else if (ch === ',') { row.push(f); f = '' }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      row.push(f); rows.push(row); row = []; f = ''
+    } else f += ch
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row) }
+  return rows
+}
+// UTF-8 で読めなければ Shift_JIS（Excel で保存した CSV）として読む
+function decodeCsvBuffer(buf) {
+  let text
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf) } catch { text = new TextDecoder('shift_jis').decode(buf) }
+  return text.replace(/^﻿/, '')
+}
+function rosterImportResultHtml() {
+  const created = ROSTER_IMPORT.created, failed = ROSTER_IMPORT.failed
+  if (!created.length && !failed.length) return ''
+  const withPw = created.filter(r => r.password)
+  return `<div class="p-3 rounded-lg ${failed.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'} text-xs space-y-2" id="ri-result">
+    <p class="font-bold"><i class="fas fa-circle-check mr-1"></i>${created.length}人を登録しました${failed.length ? `（登録しなかった行: ${failed.length}）` : ''}</p>
+    ${withPw.length ? `<p>ログインを作った ${withPw.length}人の初期パスワードは、この画面でしか確認できません。ログイン案内（CSV）を保存して、本人に伝えてください（初回のログインでパスワードの変更を求めます）。</p>
+      <button class="btn btn-primary text-xs" data-action="downloadRosterImportLogins"><i class="fas fa-download"></i>ログイン案内をダウンロード（CSV）</button>` : ''}
+    ${failed.length ? `<ul class="space-y-0.5">${failed.map(r => `<li>${Number(r.line)}行目 ${esc(r.name || '')}: ${esc(r.status === 'skipped' ? '警告があるため登録しませんでした' : (r.errors || []).join(' / ') || '登録できませんでした')}</li>`).join('')}</ul>` : ''}
+  </div>`
+}
+window.showRosterImport = function () {
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-file-csv text-orange-600 mr-1"></i>CSV でまとめて登録</h3>
+    <p class="text-xs text-gray-500 mb-3">テンプレートの CSV に1行1人で記入して選んでください。登録の前に、必須項目の不足・スタッフ番号や社員番号の重複・同じ人と思われる登録済みのスタッフを確かめます。
+      区分は「自社雇用」「取引先」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。</p>
+    ${ROSTER_IMPORT.downloaded ? '' : rosterImportResultHtml()}
+    <div class="flex gap-2 flex-wrap items-center mt-3">
+      <a class="btn btn-outline text-xs" href="/api/admin/roster/import/template"><i class="fas fa-download"></i>テンプレートをダウンロード</a>
+      <input type="file" id="ri-file" accept=".csv,text/csv" class="text-xs flex-1 min-w-0">
+    </div>
+    <p class="text-[11px] text-gray-400 mt-1">文字コードは UTF-8 と Shift_JIS（Excel で保存した CSV）に対応しています。1回に${ROSTER_IMPORT_MAX_ROWS}行まで。</p>
+    <div id="ri-preview" class="mt-3"></div>
+    <button class="btn btn-outline w-full mt-4 text-xs" data-action="showAddRoster"><i class="fas fa-arrow-left"></i>作成方法の選択に戻る</button>`)
+  const input = document.getElementById('ri-file')
+  if (input) input.addEventListener('change', () => { if (input.files && input.files[0]) previewRosterImport(input.files[0]) })
+}
+delegate('showRosterImport', () => showRosterImport())
+async function previewRosterImport(file) {
+  const box = document.getElementById('ri-preview'); if (!box) return
+  box.innerHTML = '<div class="flex justify-center py-4"><span class="spin"></span></div>'
+  let records
+  try { records = parseCsvText(decodeCsvBuffer(await file.arrayBuffer())) } catch { box.innerHTML = '<p class="text-xs text-red-500">ファイルを読めませんでした</p>'; return }
+  const header = records[0] || []
+  // 空の行は読み飛ばす。行番号は CSV の何行目か（見出しが1行目）
+  const rows = records.slice(1).map((cells, i) => ({ line: i + 2, cells })).filter(r => r.cells.some(v => String(v).trim()))
+  if (!rows.length) { box.innerHTML = '<p class="text-xs text-red-500">登録する行がありません</p>'; return }
+  if (rows.length > ROSTER_IMPORT_MAX_ROWS) { box.innerHTML = `<p class="text-xs text-red-500">${rows.length}行あります。1回に${ROSTER_IMPORT_MAX_ROWS}行までにして、ファイルを分けてください</p>`; return }
+  Object.assign(ROSTER_IMPORT, { header, rows, preview: null })
+  try {
+    ROSTER_IMPORT.preview = (await axios.post('/api/admin/roster/import/preview', { header, rows })).data
+  } catch (e) {
+    const d = e.response && e.response.data
+    box.innerHTML = `<p class="text-xs text-red-500">${esc((d && d.error) || '確かめられませんでした')}</p>`
+    return
+  }
+  renderRosterImportPreview()
+}
+function renderRosterImportPreview() {
+  const box = document.getElementById('ri-preview'); const p = ROSTER_IMPORT.preview
+  if (!box || !p) return
+  const s = p.summary
+  const msg = (list, cls) => (list || []).map(m => `<p class="${cls}">${esc(m)}</p>`).join('')
+  box.innerHTML = `
+    <div class="flex gap-2 flex-wrap text-xs mb-2">
+      <span class="badge badge-gray">${Number(s.total)}行</span>
+      <span class="badge badge-green">登録できる ${Number(s.ok)}</span>
+      <span class="badge badge-yellow">警告 ${Number(s.warning)}</span>
+      <span class="badge badge-red">エラー ${Number(s.error)}</span>
+    </div>
+    ${p.unknown_columns && p.unknown_columns.length ? `<p class="text-xs text-amber-700 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>読まない列: ${p.unknown_columns.map(esc).join('・')}（見出しがテンプレートと違います）</p>` : ''}
+    <div class="max-h-[40vh] overflow-auto border border-gray-100 rounded-lg">
+      <table class="w-full text-xs"><thead class="sticky top-0 bg-gray-50"><tr class="text-left text-gray-500">
+        <th class="p-1.5">行</th><th class="p-1.5">区分</th><th class="p-1.5">氏名</th><th class="p-1.5">スタッフ番号</th><th class="p-1.5">確認の結果</th></tr></thead>
+        <tbody>${p.rows.map(r => `<tr class="border-t border-gray-100 align-top ${r.errors.length ? 'bg-red-50' : r.warnings.length ? 'bg-amber-50' : ''}">
+          <td class="p-1.5">${Number(r.line)}</td><td class="p-1.5 whitespace-nowrap">${esc(r.type_label || '')}</td><td class="p-1.5 whitespace-nowrap">${esc(r.name || '')}</td>
+          <td class="p-1.5 whitespace-nowrap">${r.login ? esc(r.user_code || '自動') : '<span class="text-gray-400">ログインなし</span>'}</td>
+          <td class="p-1.5">${r.errors.length || r.warnings.length || r.notes.length ? msg(r.errors, 'text-red-600') + msg(r.warnings, 'text-amber-700') + msg(r.notes, 'text-gray-500') : '<span class="text-emerald-600">登録できます</span>'}</td></tr>`).join('')}</tbody></table>
+    </div>
+    ${s.warning ? `<label class="flex items-start gap-2 text-xs mt-3"><input type="checkbox" id="ri-accept" class="mt-0.5">
+      <span>警告のある行も登録する（同じ人と思われるスタッフがいる行は、別の人であることを確かめてから登録してください）</span></label>` : ''}
+    <p class="text-xs text-gray-500 mt-2">エラーの行は登録しません。CSV を直して、もう一度選び直すこともできます。</p>
+    <div id="ri-progress" class="text-xs text-gray-500 mt-2"></div>
+    <button class="btn btn-primary w-full mt-2" data-action="commitRosterImport" ${s.ok + s.warning ? '' : 'disabled'}><i class="fas fa-user-plus"></i>登録する</button>`
+}
+delegate('commitRosterImport', el => withSubmitLock(el, () => commitRosterImport()))
+async function commitRosterImport() {
+  const p = ROSTER_IMPORT.preview; if (!p) return
+  const acceptEl = document.getElementById('ri-accept')
+  const accept = !!(acceptEl && acceptEl.checked)
+  const ok = new Map(p.rows.filter(r => !r.errors.length && (!r.warnings.length || accept)).map(r => [r.line, r]))
+  const targets = ROSTER_IMPORT.rows.filter(r => ok.has(r.line))
+  if (!targets.length) { toast('登録できる行がありません'); return }
+  if (!confirm(`${targets.length}人を登録します。よろしいですか？`)) return
+  // 1回に送る行数とログインを作る行数の上限（preview が返す値）
+  const maxRows = (p.limits && p.limits.commit_rows) || 5, maxLogins = (p.limits && p.limits.commit_logins) || 1
+  const chunks = []; let cur = [], logins = 0
+  for (const r of targets) {
+    const login = ok.get(r.line).login ? 1 : 0
+    if (cur.length && (cur.length >= maxRows || logins + login > maxLogins)) { chunks.push(cur); cur = []; logins = 0 }
+    cur.push(r); logins += login
+  }
+  if (cur.length) chunks.push(cur)
+  const created = []
+  const failed = p.rows.filter(r => r.errors.length || (r.warnings.length && !accept))
+    .map(r => ({ line: r.line, name: r.name, status: r.errors.length ? 'error' : 'skipped', errors: r.errors }))
+  // ファイルで指定されたスタッフ番号（空欄の行に自動で付ける番号がこれと重ならないように送る）
+  const reservedCodes = p.rows.filter(r => !r.errors.length && r.login && r.user_code).map(r => r.user_code)
+  const progress = document.getElementById('ri-progress')
+  let stopped = null
+  for (const part of chunks) {
+    if (progress) progress.textContent = `登録しています… ${created.length} / ${targets.length}`
+    try {
+      const { data } = await axios.post('/api/admin/roster/import/commit', { header: ROSTER_IMPORT.header, rows: part, accept_warnings: accept, reserved_codes: reservedCodes })
+      for (const r of data.results) (r.status === 'created' ? created : failed).push(r)
+    } catch (e) {
+      stopped = (e.response && e.response.data && e.response.data.error) || '通信に失敗しました'
+      const done = new Set([...created, ...failed].map(r => r.line))
+      for (const r of targets) if (!done.has(r.line)) failed.push({ line: r.line, name: (ok.get(r.line) || {}).name, status: 'error', errors: [`登録を中断しました（${stopped}）`] })
+      break
+    }
+  }
+  failed.sort((a, b) => a.line - b.line)
+  Object.assign(ROSTER_IMPORT, { created, failed, downloaded: !created.some(r => r.password), preview: null })
+  const box = document.getElementById('ri-preview')
+  if (box) box.innerHTML = rosterImportResultHtml() + `<button class="btn btn-outline w-full mt-3 text-xs" data-action="closeRosterImport"><i class="fas fa-users"></i>スタッフマスタを開く</button>`
+  toast(stopped ? `${created.length}人を登録し、途中で中断しました` : `${created.length}人を登録しました`)
+}
+delegate('closeRosterImport', () => {
+  if (!ROSTER_IMPORT.downloaded && !confirm('ログイン案内をまだダウンロードしていません。閉じると初期パスワードを確認できなくなります。閉じますか？')) return
+  ROSTER_IMPORT.downloaded = true
+  closeModal()
+  if (location.hash === '#staff' && typeof renderStaff === 'function') renderStaff()
+  else location.hash = 'staff'
+})
+delegate('downloadRosterImportLogins', () => {
+  const rows = ROSTER_IMPORT.created.filter(r => r.password)
+  if (!rows.length) return
+  const q = v => { const s = String(v == null ? '' : v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
+  const code = (typeof ME !== 'undefined' && ME && ME.company_code) || ''
+  const lines = [['会社コード', 'スタッフ番号', '氏名', '初期パスワード'], ...rows.map(r => [code, r.user_code, r.name, r.password])].map(r => r.map(q).join(','))
+  const blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ログイン案内.csv'
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  ROSTER_IMPORT.downloaded = true
+})
+
+// =========================================================
 // フェーズD: 必須項目の企業別設定
 // =========================================================
 let ROSTER_REQUIRED = null // { code: true } のキャッシュ（フォームの * 表示用）
@@ -502,6 +675,8 @@ window.renderRosterPanels = async function (sid, p) {
   if (!host) return
   let links = null
   try { links = (await axios.get(`/api/admin/roster/${sid}/links`)).data } catch { links = null }
+  // 連携の終了・再開の確認に出す企業名（ボタンに埋め込まない）
+  ROSTER_PANEL_LINKS = (links && links.links) || []
   const hostNotes = p.affiliation_type === 'linked_external' ? `
     <section class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-pen-to-square text-emerald-500 mr-1"></i>稼働先追記項目</h3>
@@ -524,10 +699,11 @@ window.renderRosterPanels = async function (sid, p) {
           ${p.link_shareable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
         </div>
         ${links.links.length ? links.links.map(l => `
-          <div class="p-2.5 rounded-lg bg-gray-50 mb-2">
-            <div class="flex items-center gap-2 text-xs">
+          <div class="p-2.5 rounded-lg ${l.link_revoked_at ? 'bg-gray-100 opacity-80' : 'bg-gray-50'} mb-2">
+            <div class="flex items-center gap-2 text-xs flex-wrap">
               <span class="font-bold text-gray-800">${esc(l.host_company_name)}</span>
               <span class="text-gray-400">連携 ${esc((l.consented_at || l.linked_at || '').slice(0, 10))}</span>
+              ${l.link_revoked_at ? `<span class="badge badge-gray">連携終了 ${esc(String(l.link_revoked_at).slice(0, 10))}${l.revoked_by_name ? '（' + esc(l.revoked_by_name) + '）' : ''}</span>` : '<span class="badge badge-green">共有中</span>'}
               <span class="ml-auto text-gray-500">今月の稼働 ${Number(l.month_days) || 0}日${Number(l.month_planned_days) > Number(l.month_days) ? `（予定を含め ${Number(l.month_planned_days)}日）` : ''} / 最終稼働 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
             </div>
             ${l.site_evaluation || l.work_memo ? `
@@ -539,6 +715,9 @@ window.renderRosterPanels = async function (sid, p) {
                 <p class="text-gray-400">${esc(String(h.created_at || '').slice(0, 16))}</p>
                 <p class="whitespace-pre-wrap break-words">現場評価: ${esc(h.site_evaluation || '-')}</p>
                 <p class="whitespace-pre-wrap break-words">稼働メモ: ${esc(h.work_memo || '-')}</p></div>`).join('')}</div></details>` : ''}
+            <div class="flex justify-end mt-1">${l.link_revoked_at
+              ? (p.link_shareable ? `<button class="btn btn-outline text-xs" data-action="rosterResumeLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-rotate-left"></i>連携を再開</button>` : '')
+              : `<button class="btn btn-outline text-xs text-red-600" data-action="rosterEndLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-link-slash"></i>連携を終了</button>`}</div>
           </div>`).join('') : `<p class="text-sm text-gray-400">${!p.linkable ? '連携対象外のスタッフです' : p.link_shareable ? 'まだ他社には連携されていません' : '退職・停止中のため、新しく連携することはできません'}</p>`}
         <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。<a href="#roster-notes" class="text-blue-600 hover:underline">連携先からの追記の一覧</a></p>
       </section>`
@@ -547,6 +726,7 @@ window.renderRosterPanels = async function (sid, p) {
     linkHtml += `
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-shield-halved text-blue-500 mr-1"></i>連携の同意履歴</h3>
+        ${links.link_revoked_at ? `<div class="p-2.5 rounded-lg bg-red-50 text-red-700 text-xs mb-2"><i class="fas fa-link-slash mr-1"></i>所属元の企業が ${esc(String(links.link_revoked_at).slice(0, 16))} に連携を終了しました。基本項目は表示されず、新しいシフトには割り当てられません。</div>` : ''}
         ${links.consents.map(x => `
           <div class="p-2.5 rounded-lg bg-gray-50 mb-2 text-xs">
             <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc((x.created_at || '').slice(0, 16))}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
@@ -617,3 +797,377 @@ delegate('hostNotesSeen', (el) => withSubmitLock(el, async () => {
   try { await axios.post('/api/admin/roster/host-notes/seen', {}); toast('確認済みにしました'); renderRosterHostNotes() } catch (e) { showApiError(e, '更新に失敗しました') }
 }))
 if (typeof routes === 'object') routes['roster-notes'] = () => { HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() }
+
+// =========================================================
+// 所属元による連携の終了・再開（#162）
+// =========================================================
+let ROSTER_PANEL_LINKS = []
+const rosterLinkHost = (id) => { const l = ROSTER_PANEL_LINKS.find(x => Number(x.linked_staff_id) === Number(id)); return l ? l.host_company_name : '' }
+delegate('rosterEndLink', (el) => withSubmitLock(el, async () => {
+  const sid = Number(el.dataset.sid), linked = Number(el.dataset.linked)
+  if (!confirm(`「${rosterLinkHost(linked)}」との連携を終了します。\n\n・連携先は、このスタッフの基本項目（生年月日・最寄駅・スキル・経歴など）を見られなくなります\n・連携先では新しいシフトに割り当てられなくなります（入っているシフトは連携先が見直します）\n・連携先がさらに別の企業へ連携していた場合は、その連携も終了します\n・連携先の管理者に通知されます\n\nよろしいですか？`)) return
+  try {
+    const { data } = await axios.post(`/api/admin/roster/${sid}/links/${linked}/end`, {})
+    toast(data.ended > 1 ? `連携を終了しました（その先の連携 ${data.ended - 1}件も終了）` : '連携を終了しました')
+    renderStaffDetail(sid)
+  } catch (e) { showApiError(e, '連携を終了できませんでした') }
+}))
+delegate('rosterResumeLink', (el) => withSubmitLock(el, async () => {
+  const sid = Number(el.dataset.sid), linked = Number(el.dataset.linked)
+  if (!confirm(`「${rosterLinkHost(linked)}」との連携を再開します。連携先はふたたび基本項目を見られるようになります（連携先の取引状況は「取引終了」のままです）。よろしいですか？`)) return
+  try {
+    await axios.post(`/api/admin/roster/${sid}/links/${linked}/resume`, {})
+    toast('連携を再開しました'); renderStaffDetail(sid)
+  } catch (e) { showApiError(e, '連携を再開できませんでした') }
+}))
+
+// =========================================================
+// 取引先（Field OS 未契約の所属元）の管理（#161）: 一覧・登録・編集・統合・削除
+// =========================================================
+const PARTNERS = { list: [] }
+const partnerById = (id) => PARTNERS.list.find(p => Number(p.affiliation_id) === Number(id))
+window.renderPartners = async function () {
+  loading()
+  try { PARTNERS.list = (await axios.get('/api/admin/roster/partners')).data.partners || [] } catch (e) {
+    $app.innerHTML = `<div class="card p-6 text-center text-sm text-red-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
+  }
+  const contact = (p) => [p.contact_name, p.phone, p.email].filter(Boolean).map(esc).join('<br>') || '<span class="text-gray-300">-</span>'
+  $app.innerHTML = `
+    <a href="#staff" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>スタッフマスタ</a>
+    <div class="flex items-center justify-between mt-2 mb-2 flex-wrap gap-2">
+      <h2 class="text-xl font-bold text-gray-900">取引先の管理 <span class="text-sm font-normal text-gray-400">${PARTNERS.list.length}社</span></h2>
+      <button class="btn btn-primary" data-action="partnerEdit"><i class="fas fa-plus"></i>取引先を登録</button>
+    </div>
+    <p class="text-xs text-gray-500 mb-4">Field OS を使っていない所属元（③取引先から作成したスタッフの所属会社）です。精算では、取引先ごとに支払先がまとまります。
+      同じ会社が別の名前（表記ゆれ）で分かれているときは「統合」でまとめてください（所属スタッフと未確定のシフトの支払先を付け替えます。確定済みの精算は変えません）。</p>
+    <div class="card overflow-x-auto">
+      <table class="tbl">
+        <thead><tr><th>取引先名</th><th>担当者・連絡先</th><th>所属スタッフ</th><th>今月の稼働</th><th>メモ</th><th></th></tr></thead>
+        <tbody>${PARTNERS.list.map(p => `
+          <tr>
+            <td class="font-medium">${esc(p.affiliation_name)}</td>
+            <td class="text-xs">${contact(p)}</td>
+            <td class="whitespace-nowrap">${Number(p.active_staff_count) || 0}名${Number(p.staff_count) > Number(p.active_staff_count) ? `<span class="text-[11px] text-gray-400">（退職等を含め ${Number(p.staff_count)}名）</span>` : ''}</td>
+            <td class="whitespace-nowrap text-xs">${Number(p.month_shifts) || 0}件（${Number(p.month_staff) || 0}名）</td>
+            <td class="text-xs max-w-[240px] whitespace-pre-wrap break-words">${esc(p.memo || '')}</td>
+            <td class="whitespace-nowrap text-right">
+              <button class="btn btn-outline text-xs" data-action="partnerEdit" data-id="${Number(p.affiliation_id)}">編集</button>
+              ${PARTNERS.list.length > 1 ? `<button class="btn btn-outline text-xs" data-action="partnerMerge" data-id="${Number(p.affiliation_id)}">統合</button>` : ''}
+              ${p.can_delete ? `<button class="btn btn-outline text-xs text-red-600" data-action="partnerDelete" data-id="${Number(p.affiliation_id)}">削除</button>` : ''}
+            </td>
+          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-6">取引先はまだありません</td></tr>'}</tbody>
+      </table>
+    </div>`
+}
+delegate('partnerEdit', (el) => {
+  const p = el.dataset.id ? partnerById(el.dataset.id) : null
+  const f = (id, label, v, attrs = '') => `<div><label class="text-sm text-gray-600 block mb-1">${label}</label><input id="${id}" class="inp" value="${esc(v || '')}" ${attrs}></div>`
+  modal(`
+    <h3 class="font-bold text-lg mb-4">${p ? '取引先の編集' : '取引先の登録'}</h3>
+    <div class="space-y-3">
+      ${f('pt-name', '取引先名 <span class="text-red-500">*</span>', p && p.affiliation_name, 'maxlength="100"')}
+      ${p ? '<p class="text-[11px] text-gray-400 -mt-2">名前を変えると、所属スタッフの所属会社名も変わります</p>' : ''}
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        ${f('pt-contact', '担当者名', p && p.contact_name, 'maxlength="100"')}
+        ${f('pt-phone', '電話', p && p.phone, 'type="tel" maxlength="20"')}
+        ${f('pt-email', 'メール', p && p.email, 'type="email" maxlength="254"')}
+      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">メモ</label><textarea id="pt-memo" rows="3" class="inp" maxlength="2000">${esc((p && p.memo) || '')}</textarea></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary flex-1" data-action="partnerSave" data-id="${p ? Number(p.affiliation_id) : ''}">保存する</button>
+    </div>`)
+})
+delegate('partnerSave', (el) => withSubmitLock(el, async () => {
+  const v = (id) => (document.getElementById(id).value || '').trim()
+  const body = { affiliation_name: v('pt-name'), contact_name: v('pt-contact'), phone: v('pt-phone'), email: v('pt-email'), memo: v('pt-memo') }
+  if (!body.affiliation_name) { toast('取引先名を入力してください'); return }
+  try {
+    if (el.dataset.id) await axios.put('/api/admin/roster/partners/' + Number(el.dataset.id), body)
+    else await axios.post('/api/admin/roster/partners', body)
+    closeModal(); toast('保存しました'); renderPartners()
+  } catch (e) { showApiError(e, '保存に失敗しました') }
+}))
+delegate('partnerMerge', (el) => {
+  const p = partnerById(el.dataset.id); if (!p) return
+  const others = PARTNERS.list.filter(x => x.affiliation_id !== p.affiliation_id)
+  modal(`
+    <h3 class="font-bold text-lg mb-1">取引先の統合</h3>
+    <p class="text-sm text-gray-600 mb-3">「${esc(p.affiliation_name)}」を、次の取引先にまとめます（同じ会社が表記ゆれで分かれているとき）。</p>
+    <select id="pt-merge-into" class="inp">${others.map(x => `<option value="${Number(x.affiliation_id)}">${esc(x.affiliation_name)}（${Number(x.staff_count) || 0}名）</option>`).join('')}</select>
+    <ul class="text-xs text-gray-500 mt-3 space-y-1">
+      <li>・所属スタッフ ${Number(p.staff_count) || 0}名の所属会社を、統合先に付け替えます</li>
+      <li>・精算が確定していないシフトの支払先も、統合先に付け替えます（確定済みの精算は変えません）</li>
+      <li>・統合先の担当者・電話・メールが空欄なら、「${esc(p.affiliation_name)}」の値で埋めます。メモは後ろに足します</li>
+      <li>・統合した取引先は一覧と選択肢から消えます（元に戻せません）</li>
+    </ul>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary flex-1" data-action="partnerMergeSubmit" data-id="${Number(p.affiliation_id)}">統合する</button>
+    </div>`)
+})
+delegate('partnerMergeSubmit', (el) => withSubmitLock(el, async () => {
+  const into = Number(document.getElementById('pt-merge-into').value)
+  const from = partnerById(el.dataset.id), to = partnerById(into)
+  if (!from || !to || !confirm(`「${from.affiliation_name}」を「${to.affiliation_name}」に統合します。よろしいですか？`)) return
+  try {
+    const { data } = await axios.post(`/api/admin/roster/partners/${Number(el.dataset.id)}/merge`, { into_id: into })
+    closeModal(); toast(`統合しました（スタッフ ${data.moved_staff}名・シフト ${data.moved_shifts}件を付け替え）`); renderPartners()
+  } catch (e) { showApiError(e, '統合に失敗しました') }
+}))
+delegate('partnerDelete', (el) => withSubmitLock(el, async () => {
+  const p = partnerById(el.dataset.id); if (!p) return
+  if (!confirm(`取引先「${p.affiliation_name}」を削除します。よろしいですか？`)) return
+  try { await axios.delete('/api/admin/roster/partners/' + Number(p.affiliation_id)); toast('削除しました'); renderPartners() } catch (e) { showApiError(e, '削除に失敗しました') }
+}))
+if (typeof routes === 'object') routes['partners'] = () => renderPartners()
+
+// =========================================================
+// 複数のスタッフをまとめて連携する（#539）
+//   所属元: 連携用IDの一覧を選んで CSV・印刷で出す
+//   稼働先: 複数のIDを貼り付けて確認し、1回の同意でまとめて連携する（同意の記録は1人ずつ残る）
+// =========================================================
+// ---------- 所属元: 連携用IDの一覧 ----------
+const SHARE_LIST = { staff: [], q: '' }
+window.showShareCodeList = async function () {
+  try { SHARE_LIST.staff = (await axios.get('/api/admin/roster/share-codes')).data.staff || [] } catch (e) { showApiError(e, '読み込みに失敗しました'); return }
+  SHARE_LIST.q = ''
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-id-badge text-blue-600 mr-1"></i>連携用IDの一覧</h3>
+    <p class="text-xs text-gray-500 mb-2">選んだスタッフの氏名と連携用ID（FS／RL）を、CSV または印刷用の一覧で出します。稼働先は「新規追加 → IDをまとめて連携」で一度に連携できます。</p>
+    <div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mb-3">IDを渡した企業は、いつでもそのスタッフを連携できます。渡す相手を確かめてください。連携されると自社に通知が届き、スタッフ詳細の「連携先企業」から終了できます。</div>
+    <div class="flex gap-2 items-center mb-2">
+      <input id="sc-q" class="inp text-sm flex-1" placeholder="氏名・フリガナ・番号で絞り込み">
+      <label class="text-xs text-gray-600 flex items-center gap-1 whitespace-nowrap"><input type="checkbox" id="sc-all">表示中をすべて選択</label>
+    </div>
+    <div class="max-h-[50vh] overflow-y-auto border border-gray-100 rounded-lg" id="sc-rows"></div>
+    <p class="text-xs text-gray-500 mt-2" id="sc-count"></p>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-outline flex-1" data-action="shareCodesExport" data-kind="csv"><i class="fas fa-file-csv"></i>CSVで保存</button>
+      <button class="btn btn-primary flex-1" data-action="shareCodesExport" data-kind="print"><i class="fas fa-print"></i>印刷用に表示</button>
+    </div>`)
+  SHARE_LIST.picked = new Set()
+  drawShareCodeRows()
+  document.getElementById('sc-q').addEventListener('input', (ev) => { SHARE_LIST.q = ev.target.value; drawShareCodeRows() })
+  document.getElementById('sc-all').addEventListener('change', (ev) => {
+    document.querySelectorAll('#sc-rows .sc-pick').forEach(cb => { cb.checked = ev.target.checked; if (cb.checked) SHARE_LIST.picked.add(Number(cb.value)); else SHARE_LIST.picked.delete(Number(cb.value)) })
+    countShareCodePicks()
+  })
+}
+function drawShareCodeRows() {
+  const box = document.getElementById('sc-rows'); if (!box) return
+  const q = SHARE_LIST.q.trim().toLowerCase()
+  const list = SHARE_LIST.staff.filter(s => !q || [s.name, s.kana, s.user_code].some(v => String(v || '').toLowerCase().includes(q)))
+  box.innerHTML = list.map(s => `<label class="flex items-center gap-2 px-3 py-1.5 border-b border-gray-50 text-sm cursor-pointer">
+      <input type="checkbox" class="sc-pick" value="${Number(s.staff_id)}" ${SHARE_LIST.picked.has(Number(s.staff_id)) ? 'checked' : ''}>
+      <span class="flex-1">${esc(s.name)} <span class="text-[11px] text-gray-400">${esc(s.kana || '')}</span></span>
+      <span class="text-[11px] text-gray-400">${s.affiliation_type === 'linked_external' ? '他社連携' : '自社雇用'}</span></label>`).join('')
+    || '<p class="text-center text-gray-400 text-sm py-6">連携用IDを共有できるスタッフはいません（在籍中の自社雇用・他社連携のスタッフが対象です）</p>'
+  box.querySelectorAll('.sc-pick').forEach(cb => cb.addEventListener('change', () => {
+    if (cb.checked) SHARE_LIST.picked.add(Number(cb.value)); else SHARE_LIST.picked.delete(Number(cb.value))
+    countShareCodePicks()
+  }))
+  countShareCodePicks()
+}
+function countShareCodePicks() {
+  const el = document.getElementById('sc-count')
+  if (el) el.textContent = `${SHARE_LIST.picked.size}人を選択中（対象 ${SHARE_LIST.staff.length}人）`
+}
+// CSV の値（数式として解釈されないように先頭の = + - @ を無効にする）
+const csvCell = (v) => { let s = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"' }
+delegate('shareCodesExport', (el) => withSubmitLock(el, async () => {
+  const ids = [...SHARE_LIST.picked]
+  if (!ids.length) { toast('スタッフを選んでください'); return }
+  // 印刷用の画面は、通信の待ち時間の後に開くとポップアップとして止められるため、先に開いておく
+  const win = el.dataset.kind === 'print' ? window.open('', '_blank') : null
+  if (el.dataset.kind === 'print' && !win) { toast('印刷用の画面を開けませんでした（ポップアップを許可してください）'); return }
+  let data
+  try { data = (await axios.post('/api/admin/roster/share-codes', { staff_ids: ids })).data } catch (e) { if (win) win.close(); showApiError(e, 'IDを取得できませんでした'); return }
+  const company = (ME && ME.company_name) || ''
+  if (el.dataset.kind === 'csv') {
+    const lines = [['氏名', 'フリガナ', 'スタッフID', '連携元'].map(csvCell).join(',')]
+      .concat(data.staff.map(s => [s.name, s.kana || '', s.code, company].map(csvCell).join(',')))
+    const blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `連携用ID_${dayjs().format('YYYYMMDD')}.csv`
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  } else {
+    const fmt = (c) => esc(String(c || '').replace(/(.{4})(?=.)/g, '$1 '))
+    win.document.write(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>連携用IDの一覧</title>
+      <style>body{font-family:sans-serif;margin:24px;color:#111}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;font-size:13px;text-align:left;vertical-align:middle}
+      .id{font-family:monospace;font-size:16px;font-weight:bold;letter-spacing:2px}.qr{width:72px;height:72px}p{font-size:12px;color:#555}</style></head><body>
+      <h2>連携用IDの一覧（${esc(company)}）</h2>
+      <p>稼働先の企業は「スタッフマスタ → 新規追加 → IDをまとめて連携」に、この一覧のIDを貼り付けると、まとめて連携できます。IDを渡した企業はいつでも連携できるため、渡す相手を確かめてください。</p>
+      <table><thead><tr><th>氏名</th><th>スタッフID</th><th>QR</th></tr></thead><tbody>
+      ${data.staff.map(s => `<tr><td>${esc(s.name)}<br><small>${esc(s.kana || '')}</small></td><td class="id">${fmt(s.code)}</td><td><div class="qr">${qrSvg(s.code, 2)}</div></td></tr>`).join('')}
+      </tbody></table><p>出力日 ${esc(dayjs().format('YYYY/M/D'))}</p></body></html>`)
+    win.document.close()
+    setTimeout(() => { try { win.focus(); win.print() } catch { } }, 300)
+  }
+  toast(`${data.staff.length}人のIDを出力しました${data.skipped ? `（退職・停止中などで出せなかった人 ${data.skipped}人）` : ''}`)
+}))
+
+// ---------- 稼働先: IDをまとめて連携 ----------
+const ROSTER_BULK_MAX = 50
+const ROSTER_BULK = { items: [], consent: null, bad: [], picks: [] }
+// 貼り付けた文字からIDを取り出す（1行に1人。CSV の行・空白で区切ったID・氏名との並びでもよい）
+function parseRosterCodes(text) {
+  const codes = [], bad = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.replace(/[\s　]/g, '').toUpperCase()
+    if (!t) continue
+    const m = t.match(/(FS|RL)[0-9A-F]{10}/g)
+    if (m) { for (const c of m) if (!codes.includes(c)) codes.push(c) }
+    else if (!/^"?(氏名|名前|NAME)/i.test(line.trim())) bad.push(line.trim())
+  }
+  return { codes, bad }
+}
+window.showRosterBulkLink = function (prefill) {
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-users-line text-blue-600 mr-1"></i>IDをまとめて連携</h3>
+    <p class="text-xs text-gray-500 mb-3">所属元の企業から受け取ったスタッフID（FS… / RL…）を、1行に1人ずつ貼り付けてください（所属元が出力した CSV の中身をそのまま貼り付けてもかまいません）。一度に ${ROSTER_BULK_MAX}人まで。</p>
+    <textarea id="rb-codes" rows="8" class="inp font-mono text-sm" placeholder="FS1A2B3C4D5E&#10;FS2B3C4D5E6F">${esc(prefill || '')}</textarea>
+    <div id="rb-result" class="mt-3"></div>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-outline" data-action="showAddRoster"><i class="fas fa-arrow-left"></i></button>
+      <button class="btn btn-primary flex-1" data-action="rosterBulkCheck"><i class="fas fa-magnifying-glass"></i>確認する</button>
+    </div>`)
+}
+delegate('rosterBulkCheck', (el) => withSubmitLock(el, async () => {
+  const { codes, bad } = parseRosterCodes(document.getElementById('rb-codes').value)
+  const box = document.getElementById('rb-result')
+  if (!codes.length) { box.innerHTML = '<div class="p-3 rounded-lg bg-red-50 text-red-600 text-sm">スタッフIDが見つかりません（「FS」または「RL」で始まる12文字です）</div>'; return }
+  if (codes.length > ROSTER_BULK_MAX) { box.innerHTML = `<div class="p-3 rounded-lg bg-red-50 text-red-600 text-sm">一度に連携できるのは${ROSTER_BULK_MAX}人までです（${codes.length}人分のIDがあります）</div>`; return }
+  box.innerHTML = `<p class="text-sm text-gray-500"><span class="spin"></span> <span id="rb-checking">確認しています（0/${codes.length}）</span></p>`
+  const items = new Array(codes.length)
+  let next = 0, doneCount = 0
+  // 1件ずつ検索する（同時に3件まで。1回の通信を軽くするため）
+  const worker = async () => {
+    while (next < codes.length) {
+      const i = next++, code = codes[i]
+      try {
+        const { data } = await axios.get('/api/admin/roster/lookup', { params: { code } })
+        const c = data.candidate || {}
+        items[i] = data.already_linked_staff_id
+          ? { code, status: 'already', name: c.name, staff_id: data.already_linked_staff_id }
+          : { code, status: 'ok', name: c.name, kana: c.kana, owner: c.owner_company_name, consent: data.consent }
+      } catch (e) {
+        items[i] = { code, status: 'error', error: (e.response && e.response.data && e.response.data.error) || '確認できませんでした' }
+      }
+      doneCount++
+      const p = document.getElementById('rb-checking'); if (p) p.textContent = `確認しています（${doneCount}/${codes.length}）`
+    }
+  }
+  await Promise.all([worker(), worker(), worker()])
+  ROSTER_BULK.items = items; ROSTER_BULK.bad = bad
+  ROSTER_BULK.consent = (items.find(x => x.status === 'ok') || {}).consent || null
+  drawRosterBulkCandidates()
+}))
+function drawRosterBulkCandidates() {
+  const box = document.getElementById('rb-result'); if (!box) return
+  const items = ROSTER_BULK.items
+  const okCount = items.filter(x => x.status === 'ok').length
+  const label = { ok: '<span class="badge badge-green">連携できます</span>', already: '<span class="badge badge-gray">連携済み</span>' }
+  box.innerHTML = `
+    <div class="max-h-[40vh] overflow-y-auto border border-gray-100 rounded-lg">
+      <table class="tbl"><thead><tr><th></th><th>氏名</th><th>所属元</th><th>ID</th><th>状態</th></tr></thead><tbody>
+      ${items.map((x, i) => `<tr>
+        <td>${x.status === 'ok' ? `<input type="checkbox" class="rb-pick" value="${i}" checked>` : ''}</td>
+        <td>${esc(x.name || '-')}${x.kana ? `<div class="text-[11px] text-gray-400">${esc(x.kana)}</div>` : ''}</td>
+        <td class="text-xs">${esc(x.owner || '')}</td>
+        <td class="font-mono text-xs">${esc(x.code)}</td>
+        <td class="text-xs">${label[x.status] || `<span class="text-red-600">${esc(x.error || '')}</span>`}${x.status === 'already' && x.staff_id ? ` <a class="text-blue-600 underline" href="#staff/${Number(x.staff_id)}" onclick="closeModal()">開く</a>` : ''}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>
+    ${ROSTER_BULK.bad.length ? `<p class="text-xs text-amber-700 mt-2">IDが見つからない行（${ROSTER_BULK.bad.length}行）: ${ROSTER_BULK.bad.slice(0, 5).map(esc).join('、')}${ROSTER_BULK.bad.length > 5 ? ' …' : ''}</p>` : ''}
+    ${okCount ? '<button class="btn btn-primary w-full mt-3" data-action="rosterBulkConsent"><i class="fas fa-link"></i>選んだ人を連携する（同意の確認へ）</button>' : '<p class="text-sm text-gray-500 mt-2">連携できる人はいません</p>'}`
+}
+delegate('rosterBulkConsent', () => {
+  const picks = [...document.querySelectorAll('#rb-result .rb-pick:checked')].map(cb => ROSTER_BULK.items[Number(cb.value)]).filter(Boolean)
+  if (!picks.length) { toast('連携する人を選んでください'); return }
+  const consent = ROSTER_BULK.consent
+  if (!consent) { toast('同意文面を取得できませんでした。もう一度確認してください'); return }
+  ROSTER_BULK.picks = picks
+  const owners = [...new Set(picks.map(x => x.owner).filter(Boolean))]
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>情報共有の同意確認（${picks.length}人）</h3>
+    <p class="text-sm text-gray-600 mb-2">「${owners.map(esc).join('」「')}」に所属する次の <b>${picks.length}人</b> を自社のスタッフマスタに連携します。連携すると、以下の範囲の情報が所属元企業から共有されます。</p>
+    <div class="text-xs text-gray-700 max-h-24 overflow-y-auto p-2 rounded-lg border border-gray-100 mb-3">${picks.map(x => esc(x.name)).join('、')}</div>
+    <div class="grid sm:grid-cols-2 gap-3 text-xs">
+      <div class="p-3 rounded-lg bg-blue-50">
+        <p class="font-bold text-blue-700 mb-1"><i class="fas fa-check mr-1"></i>共有される情報（スタッフマスタ項目のみ）</p>
+        <ul class="list-disc ml-4 text-blue-900 space-y-0.5">${consent.shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      </div>
+      <div class="p-3 rounded-lg bg-gray-50">
+        <p class="font-bold text-gray-600 mb-1"><i class="fas fa-ban mr-1"></i>共有されない情報</p>
+        <ul class="list-disc ml-4 text-gray-600 space-y-0.5">${consent.not_shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      </div>
+    </div>
+    <ul class="text-xs text-gray-500 mt-3 space-y-1">
+      <li>・基本項目（氏名・スキル等）は所属元企業のみが編集でき、自社では閲覧のみとなります。</li>
+      <li>・自社では評価・メモ・フォロー記録などの追記、およびシフト登録ができます。</li>
+      <li>・共有情報は、スタッフの稼働管理の目的の範囲内でのみ利用してください。</li>
+      <li>・同意の記録は1人ずつ保存され、所属元企業とスタッフ本人に連携されたことが通知されます。</li>
+    </ul>
+    <label class="flex items-start gap-2 mt-4 p-3 rounded-lg border border-gray-200 cursor-pointer">
+      <input type="checkbox" id="rb-agree" class="mt-0.5" onchange="document.getElementById('rb-submit').disabled = !this.checked">
+      <span class="text-sm text-gray-700">上記の${picks.length}人について、共有範囲と利用条件を確認し、同意します（同意の記録は保存されます）</span>
+    </label>
+    <p class="text-sm text-gray-600 mt-2 hidden" id="rb-progress"></p>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" data-action="rosterBulkBack">戻る</button>
+      <button id="rb-submit" class="btn btn-primary flex-1" disabled data-action="rosterBulkSubmit">同意して${picks.length}人を連携する</button>
+    </div>`)
+})
+delegate('rosterBulkBack', () => {
+  showRosterBulkLink(ROSTER_BULK.items.map(x => x.code).join('\n'))
+  drawRosterBulkCandidates()
+})
+// 1人ずつ順に連携する（1回の通信を軽くするため。同意の記録はサーバーで1人ずつ残る）。途中で失敗しても残りは続ける
+delegate('rosterBulkSubmit', (el) => withSubmitLock(el, async () => {
+  if (!document.getElementById('rb-agree').checked) { toast('同意が必要です'); return }
+  const picks = ROSTER_BULK.picks || []
+  const prog = document.getElementById('rb-progress'); prog.classList.remove('hidden')
+  const results = []
+  for (const [i, x] of picks.entries()) {
+    prog.textContent = `連携しています（${i + 1}/${picks.length}）`
+    try {
+      const { data } = await axios.post('/api/admin/roster/link', { code: x.code, agreed: true, consent_version: ROSTER_BULK.consent.version })
+      results.push({ ...x, ok: true, staff_id: data.staff_id })
+    } catch (e) {
+      const d = e.response && e.response.data
+      results.push({ ...x, ok: false, error: (d && d.error) || '連携できませんでした', staff_id: d && d.staff_id })
+      // 同意文面が更新されたときは、残りも同じ結果になるため止める
+      if (e.response && e.response.status === 409 && d && /同意文面/.test(d.error || '')) break
+    }
+  }
+  const okN = results.filter(r => r.ok).length
+  modal(`
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-circle-check text-emerald-600 mr-1"></i>まとめて連携の結果</h3>
+    <p class="text-sm text-gray-600 mb-3">${okN}人を連携しました${results.length - okN ? `（連携できなかった人 ${results.length - okN}人）` : ''}。${picks.length > results.length ? `残りの${picks.length - results.length}人は連携していません。` : ''}</p>
+    <div class="max-h-[50vh] overflow-y-auto"><table class="tbl"><thead><tr><th>氏名</th><th>結果</th></tr></thead><tbody>
+      ${results.map(r => `<tr><td>${r.staff_id ? `<a class="text-blue-700 hover:underline" href="#staff/${Number(r.staff_id)}" onclick="closeModal()">${esc(r.name)}</a>` : esc(r.name)}</td>
+        <td class="text-xs">${r.ok ? '<span class="badge badge-green">連携しました</span>' : `<span class="text-red-600">${esc(r.error)}</span>`}</td></tr>`).join('')}
+    </tbody></table></div>
+    <button class="btn btn-outline w-full mt-4" data-action="rosterBulkClose">閉じる</button>`)
+  if (okN) toast(`${okN}人を連携しました`)
+}))
+delegate('rosterBulkClose', () => {
+  closeModal()
+  if ((location.hash || '#dashboard') === '#staff' && typeof renderStaff === 'function') renderStaff({ reload: true })
+})
+
+// 作成方法の選択に、まとめて連携・連携用IDの一覧・取引先の管理への入口を足す
+const _origShowAddRosterW5 = window.showAddRoster
+window.showAddRoster = function () {
+  _origShowAddRosterW5()
+  const box = document.querySelector('#modal-root .modal-box')
+  if (box) box.insertAdjacentHTML('beforeend', `
+    <div class="border-t border-gray-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+      <button class="btn btn-outline text-xs" data-action="rosterOpenBulkLink"><i class="fas fa-users-line"></i>IDをまとめて連携</button>
+      <button class="btn btn-outline text-xs" data-action="rosterOpenShareList"><i class="fas fa-id-badge"></i>連携用IDの一覧（出力）</button>
+      <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>取引先の管理</a>
+    </div>`)
+}
+delegate('rosterOpenBulkLink', () => showRosterBulkLink())
+delegate('rosterOpenShareList', () => showShareCodeList())

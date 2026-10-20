@@ -1,13 +1,15 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
-import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads } from './api'
-import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens } from './services/retention'
+import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads, publishDueNotices } from './api'
+import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServiceRetentionJob } from './services/retention'
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
+import { runReminders } from './services/reminders'
+import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
 
@@ -609,7 +611,15 @@ app.get('/admin', async (c) => {
   const u = await currentUser(c)
   if (!u) return toLogin(c)
   if (u.role === 'staff') return c.redirect('/staff')
-  if (u.role === 'system_admin') return c.redirect('/hq')
+  // 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用。#293）のときだけ、その企業の管理画面を開ける
+  let hqView: any = null
+  if (u.role === 'system_admin') {
+    const v = await loadHqView(c.env.DB, getCookie(c, HQ_VIEW_COOKIE), u.user_id)
+    if (!v) return c.redirect('/hq#support')
+    hqView = { company_name: v.company_name, expires_at: v.expires_at }
+  }
+  // script の中に置くので、< を逃がして </script> で閉じられないようにする
+  const hqViewJson = JSON.stringify(hqView).replace(/</g, '\\u003c')
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('管理画面')}
@@ -653,7 +663,7 @@ app.get('/admin', async (c) => {
         <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>
       </nav>
       <div class="p-3 border-t border-gray-100">
-        <button class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" onclick="alert('伴走支援メニュー:\\n・初期設定代行\\n・日報項目設計\\n・スタッフ研修\\n・管理者教育\\n・月次運営レビュー\\n\\nお問い合わせ: support@dissectra.example.jp')">
+        <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" data-action="hqsOpenSupport">
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
         <a href="#account" class="side-link mt-1" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
@@ -675,14 +685,19 @@ app.get('/admin', async (c) => {
           <option value="analytics">分析</option><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option>
           <option value="follow">フォロー</option><option value="consult">相談</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option><option value="recruit">募集・応募</option><option value="settlement">精算</option><option value="billing">請求前確認</option><option value="account">アカウント設定</option>
         </select>
+        <button type="button" class="text-blue-600 shrink-0 px-1 py-1" data-action="hqsOpenSupport" title="伴走支援を依頼する" aria-label="伴走支援を依頼する"><i class="fas fa-hands-holding-circle"></i></button>
         <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
+      <!-- 本部の閲覧中の表示・本部からのお知らせ（#293 #516。public/static/hq-support.js が描く） -->
+      <div id="hq-support-bar" class="px-4 md:px-6 pt-4 max-w-7xl space-y-2 hidden"></div>
       <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
     </div>
   </div>
   <div id="modal-root"></div>
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
+  <script>window.HQ_VIEW = ${hqViewJson}</script>
+  <script src="/static/hq-support.js"></script>
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>
@@ -721,7 +736,8 @@ app.get('/hq', async (c) => {
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
           <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
           <a href="#mail" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="mail">メール送信</a>
-          <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援</a>
+          <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援<span id="hq-support-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
+          <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="announcements">企業へのお知らせ</a>
           <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
@@ -741,11 +757,14 @@ app.get('/hq', async (c) => {
 // wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
 const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
 const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
+const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）
 
 // 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
 // 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
 // 個人情報の削除（応募・データ保持）は、問い合わせの上限に当たって止まらないよう先に実行する（#198）
 const CRON_JOBS = defineCronJobs<Bindings>([
+  // 起床・出発・入店の未報告と日報の未提出を本人に知らせる（会社の設定で ON にした会社だけ。#160）。メールの設定は wrangler.jsonc の vars と Secret
+  { name: 'reminders', label: '本人あての自動リマインド（未報告・日報未提出）', cron: CRON_REMINDERS, run: env => runReminders(env as any) },
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
   // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）
@@ -776,13 +795,17 @@ const CRON_JOBS = defineCronJobs<Bindings>([
     return { due: r.due, applied: r.applied, not_applied: r.failed }
   } },
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
+  // 在職中の保存期間（位置情報と写真・相談・フォロー記録・決着した人材提案・雇用終了の従業員データ）の削除。D1 の問い合わせの数を分けるため 3:30 の起動で行う（#420 #511 #350 #425）
+  { name: 'retention_in_service', label: 'データ保持の定期削除（在職中の位置情報・写真・相談など）', cron: CRON_REPORTS, run: env => runInServiceRetentionJob(env.DB, env, env.RETENTION_ENABLED === 'true') },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
+  // 予約配信のお知らせのメール（#291。画面には時刻どおりに出る。管理者・スタッフがお知らせを開いたときにもその会社の分を送る）
+  { name: 'notice_scheduled_publish', label: 'お知らせの予約配信（メール）', cron: CRON_DAILY, run: env => publishDueNotices(env as any) },
 ])
 
 export default {
   fetch: app.fetch,
   // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
-  // 起動は毎日 UTC 18:00（日本時間 3:00）と UTC 18:30（日本時間 3:30）の2回（wrangler.jsonc の triggers.crons）。
+  // 起動は毎日 UTC 18:00（日本時間 3:00）と UTC 18:30（日本時間 3:30）の2回と、15分おき（リマインド）（wrangler.jsonc の triggers.crons）。
   // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）。
   // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {

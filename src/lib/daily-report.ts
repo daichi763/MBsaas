@@ -76,7 +76,9 @@ export function dailyReportBlocked(shift: { work_date: string; status?: string |
  *   そうでなければ一度立てた印を保つ。
  */
 export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
-  company_id: number; values_json: string; incident: boolean; complaint: boolean; flags_explicit: boolean; entry_method: 'app' | 'link'; now: string
+  company_id: number; values_json: string; incident: boolean; complaint: boolean; flags_explicit: boolean; entry_method: 'app' | 'link' | 'proxy'; now: string
+  // 代理入力（#276）で記録した管理者。本人が出し直したときは NULL に戻す
+  entered_by?: number | null
 }): Promise<{ updated: boolean }> {
   let existed = !!(await db.prepare('SELECT 1 FROM daily_reports WHERE shift_id = ?').bind(r.shift_id).first())
   if (!existed) {
@@ -91,16 +93,16 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
     existed = (claimed.meta?.changes ?? 0) > 0
   }
   const explicit = r.flags_explicit ? 1 : 0
-  await db.prepare(`INSERT INTO daily_reports (company_id, staff_id, project_id, shift_id, work_date, report_values, incident_flag, complaint_flag, submitted_at, entry_method)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  await db.prepare(`INSERT INTO daily_reports (company_id, staff_id, project_id, shift_id, work_date, report_values, incident_flag, complaint_flag, submitted_at, entry_method, entered_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(shift_id) DO UPDATE SET
       project_id = excluded.project_id, work_date = excluded.work_date, report_values = excluded.report_values,
       incident_flag = CASE WHEN ? = 1 THEN excluded.incident_flag ELSE MAX(COALESCE(daily_reports.incident_flag, 0), excluded.incident_flag) END,
       complaint_flag = CASE WHEN ? = 1 THEN excluded.complaint_flag ELSE MAX(COALESCE(daily_reports.complaint_flag, 0), excluded.complaint_flag) END,
-      submitted_at = excluded.submitted_at, entry_method = excluded.entry_method,
+      submitted_at = excluded.submitted_at, entry_method = excluded.entry_method, entered_by = excluded.entered_by,
       revised_after_check_at = CASE WHEN daily_reports.manager_checked = 1 THEN excluded.submitted_at ELSE daily_reports.revised_after_check_at END,
       manager_checked = 0`)
     .bind(r.company_id, r.staff_id, r.project_id, r.shift_id, r.work_date, r.values_json, r.incident ? 1 : 0, r.complaint ? 1 : 0, r.now, r.entry_method,
-      explicit, explicit).run()
+      r.entered_by ?? null, explicit, explicit).run()
   return { updated: existed }
 }

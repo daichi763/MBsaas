@@ -9,6 +9,7 @@ import { loadRoster, createPerson, unusablePasswordHash } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
+import { notifyCompanyAdmins, markAdminNotificationsRead } from './notifications'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -355,6 +356,25 @@ async function addMessage(db: D1Database, threadId: number, companyId: number, u
   return id
 }
 
+/** 相手企業の管理者に、アプリ内通知（board_message）とメールで知らせる（#152）。
+ *  同じやり取りの未読の通知は1件にまとめ、メールは30分に1通まで（採用・見送りは毎回送る）。本文には掲載名・相手の企業名・出来事だけを入れ、メッセージや提案の詳細は入れない */
+async function notifyBoardPartner(c: any, threadId: number, fromCompanyId: number, what: string, email: 'throttle' | 'always' = 'throttle') {
+  const db: D1Database = c.env.DB
+  const t = await db.prepare(`SELECT t.poster_company_id, t.inquirer_company_id, bp.title, co.company_name AS from_name
+    FROM board_threads t JOIN board_posts bp ON bp.post_id = t.post_id JOIN companies co ON co.company_id = ? WHERE t.thread_id = ?`).bind(fromCompanyId, threadId).first().catch(() => null) as any
+  if (!t) return
+  const to = t.poster_company_id === fromCompanyId ? t.inquirer_company_id : t.poster_company_id
+  if (!to || to === fromCompanyId) return
+  const from = String(t.from_name || ''), title = String(t.title || '')
+  await notifyCompanyAdmins(c, {
+    companyId: to, kind: 'board_message', relatedId: threadId, merge: true, email, mailType: 'board_message',
+    title: (n) => n > 1 ? `案件掲示板: ${from}とのやり取りに新しい動きが${n}件あります（${title}）` : `案件掲示板: ${from}から${what}（${title}）`,
+    headline: `案件掲示板で、${from}から${what}がありました。やり取りを開いて確認してください。`,
+    lines: [['掲載', title], ['相手の企業', from], ['内容', what]],
+    link: `/admin#board/t${threadId}`, button: 'やり取りを開く',
+  })
+}
+
 // 未読は本文・提案と、相手企業に知らせるシステムメッセージ（notify = 1）を数える
 // （「問い合わせが開始されました」のように直後に本文が続くシステムメッセージは数えない。#124）
 const UNREAD_KIND = `(m.kind != 'system' OR m.notify = 1)`
@@ -383,6 +403,7 @@ boardApi.post('/posts/:id/threads', async (c) => {
     if (!body) return c.json({ ok: true, thread_id: exist.thread_id, existed: true, appended: false })
     if (exist.status === 'closed') return c.json({ error: 'この掲載とのやり取りはすでにあり、終了しています。やり取りを開いて再開してから送ってください（本文は送信していません）', thread_id: exist.thread_id, existed: true }, 409)
     await addMessage(db, exist.thread_id, u.company_id, u.user_id, 'text', body)
+    await notifyBoardPartner(c, exist.thread_id, u.company_id, 'メッセージ')
     return c.json({ ok: true, thread_id: exist.thread_id, existed: true, appended: true })
   }
   if (post.status !== 'open' || !(await posterActive(db, post.company_id))) return c.json({ error: 'この掲載は募集を終了しています' }, 409)
@@ -392,6 +413,7 @@ boardApi.post('/posts/:id/threads', async (c) => {
   const t = await db.prepare('SELECT thread_id FROM board_threads WHERE post_id = ? AND inquirer_company_id = ?').bind(post.post_id, u.company_id).first() as any
   if (r.meta.changes) await addMessage(db, t.thread_id, u.company_id, null, 'system', 'この案件への問い合わせが開始されました')
   await addMessage(db, t.thread_id, u.company_id, u.user_id, 'text', body)
+  await notifyBoardPartner(c, t.thread_id, u.company_id, r.meta.changes ? '問い合わせ' : 'メッセージ')
   return c.json({ ok: true, thread_id: t.thread_id })
 })
 
@@ -458,6 +480,8 @@ boardApi.post('/threads/:id/read', async (c) => {
       ON CONFLICT(thread_id, user_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id), read_at = excluded.read_at`)
       .bind(t.thread_id, u.user_id, last, nowJST()).run()
   }
+  // やり取りを読んだので、このやり取りの自分あての通知も既読にする（#152）
+  await markAdminNotificationsRead(db, u.company_id, ['board_message'], t.thread_id, u.user_id)
   return c.json({ ok: true, last_read_message_id: last })
 })
 
@@ -472,6 +496,7 @@ boardApi.post('/threads/:id/messages', async (c) => {
   if (!body) return c.json({ error: 'メッセージを入力してください' }, 400)
   if (body.length > MAX_BODY) return c.json({ error: `メッセージは${MAX_BODY}文字以内で入力してください` }, 400)
   const id = await addMessage(db, t.thread_id, u.company_id, u.user_id, 'text', body)
+  await notifyBoardPartner(c, t.thread_id, u.company_id, 'メッセージ')
   return c.json({ ok: true, message_id: id })
 })
 
@@ -496,6 +521,7 @@ boardApi.post('/threads/:id/status', async (c) => {
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first()
   await addMessage(db, t.thread_id, u.company_id, null, 'system',
     `${own?.company_name || ''}がやり取りを${b.status === 'closed' ? '終了' : '再開'}しました` + (withdrawn ? `（未決の提案 ${withdrawn}件は取り下げになりました）` : ''), true)
+  await notifyBoardPartner(c, t.thread_id, u.company_id, b.status === 'closed' ? 'やり取りの終了' : 'やり取りの再開')
   return c.json({ ok: true, withdrawn })
 })
 
@@ -712,6 +738,7 @@ boardApi.post('/threads/:id/proposals', async (c) => {
   const pid = ins.meta.last_row_id as number
   const mid = await addMessage(db, t.thread_id, u.company_id, u.user_id, 'proposal', `人材を提案しました（${anonLabel(snapshot, pid)}・${snapshot.age_group || '年代不明'}）`)
   await db.prepare('UPDATE board_messages SET proposal_id = ? WHERE message_id = ?').bind(pid, mid).run()
+  await notifyBoardPartner(c, t.thread_id, u.company_id, '人材の提案')
   return c.json({ ok: true, proposal_id: pid })
 })
 
@@ -761,6 +788,8 @@ boardApi.post('/proposals/:id/status', async (c) => {
   const msg = `${own?.company_name || ''}が提案（${anonLabel(snap, p.proposal_id)}${snap.age_group ? '・' + snap.age_group : ''}）を「${PROPOSAL_LABEL[to]}」にしました` + (to === 'adopted' ? '。氏名が開示されました' : '') + (note ? `\n${note}` : '')
   const mid = await addMessage(db, p.thread_id, u.company_id, null, 'system', msg, true)
   await db.prepare('UPDATE board_messages SET proposal_id = ? WHERE message_id = ?').bind(p.proposal_id, mid).run()
+  // 採用・見送りは毎回メールでも知らせる（#152。採用の確認文の「相手に通知され」）
+  await notifyBoardPartner(c, p.thread_id, u.company_id, `提案の「${PROPOSAL_LABEL[to]}」`, to === 'adopted' || to === 'declined' ? 'always' : 'throttle')
   // 採用で募集人数に達したら、掲載を充足にするかを画面で確認する（#304）
   if (to === 'adopted') {
     const post = await db.prepare('SELECT status, headcount FROM board_posts WHERE post_id = ? AND company_id = ?').bind(p.post_id, u.company_id).first() as any

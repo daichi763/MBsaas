@@ -108,6 +108,8 @@ ok('#121 同じ取引先への変更は、置き換えの残りがなければ 4
 
 // ---------- #28 スタッフ詳細で取引先を直すと、今後の未確定シフトの支払先も変わる ----------
 const partnerName2 = `${PFX}取引先2`
+// #161 以降、スタッフ詳細の所属会社は登録済みの取引先から選ぶ（自由入力の名前は取引先として自動で登録しない）
+must(await admin.post('/api/admin/roster/partners', { affiliation_name: partnerName2 }), 'partner 2')
 r = await admin.put(`/api/admin/staff/${A}`, { affiliation: partnerName2 })
 ok('#28 （前提）所属会社名を変えて保存できる', r.status === 200, r)
 const p2 = must(await admin.get('/api/admin/roster/partners'), 'partners').partners.find(p => p.affiliation_name === partnerName2)

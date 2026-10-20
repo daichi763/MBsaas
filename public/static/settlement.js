@@ -8,6 +8,9 @@
   const UNIT = { daily: '日', hourly: '時' }
   // src/settlement.ts の確認事項と同じ文言
   const PENDING_ISSUE = '承認待ちの打刻修正あり'
+  const PAY_REQUEST_ISSUE = '承認待ちの交通費・延長の申請あり'
+  // 承認・却下で片づける確認事項（確認済みにはできない）
+  const ackable = (i) => i !== PENDING_ISSUE && i !== PAY_REQUEST_ISSUE
   const RECALC_ISSUE = '数量・金額が今の計算と違う'
   const PAYEE_EXCLUDED_ISSUE = '区分変更の対象外（支払先が変更前のまま）'
   // 欠勤・中止の理由（src/settlement.ts の CANCEL_REASON_LABEL と同じ）
@@ -102,6 +105,7 @@
           <button type="button" class="text-blue-600 hover:underline ml-1" data-action="settleClosingDay" data-id="${esc(client.client_id)}">締め日を設定</button></p>` : ''}
       </section>
       ${closingBannerHtml(data.closings || [])}
+      <div id="settle-payreq"></div>
 
       <section class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4" id="settle-totals">
         ${[['シフト', t.shifts + '件' + (t.cancel_shifts ? `<span class="text-[10px] text-gray-400 block">うち欠勤・中止 ${t.cancel_shifts}件</span>` : '')], ['確定済み', `${t.confirmed} / ${t.shifts}`],
@@ -128,6 +132,7 @@
     for (const id of ['st-project', 'st-payee', 'st-settle', 'st-issues']) document.getElementById(id).addEventListener('change', settleApply)
     document.getElementById('st-staff').addEventListener('change', settleApply)
     renderSettlementBody()
+    loadPayRequests()
   }
 
   const selectedClient = () => (S.client_id && master ? master.clients.find(c => String(c.client_id) === String(S.client_id)) : null)
@@ -216,7 +221,8 @@
       return
     }
     if (S.tab === 'payment') {
-      host.innerHTML = `<div class="overflow-x-auto"><table class="tbl" id="settle-payment-table"><thead><tr><th>支払区分</th><th>支払先</th><th>スタッフ</th><th>社員番号</th><th class="text-right">日数</th><th class="text-right">シフト</th><th class="text-right">時間</th>
+      host.innerHTML = `${canPayout() ? `<div class="flex justify-end mb-2"><button type="button" class="btn btn-outline text-xs" data-action="settlePayout" title="確定済みの支払を、スタッフの口座への振込データ（全銀形式・CSV）にします"><i class="fas fa-building-columns"></i>振込データを作成</button></div>` : ''}
+        <div class="overflow-x-auto"><table class="tbl" id="settle-payment-table"><thead><tr><th>支払区分</th><th>支払先</th><th>スタッフ</th><th>社員番号</th><th class="text-right">日数</th><th class="text-right">シフト</th><th class="text-right">時間</th>
         <th class="text-right">支払基本額</th><th class="text-right">交通費</th><th class="text-right">調整</th><th class="text-right">支払合計</th><th>確定</th><th></th></tr></thead><tbody>
         ${data.by_payee.map(g => `<tr><td><span class="badge badge-gray">${esc(g.payee_label)}</span></td><td class="font-medium">${esc(g.payee_name)}</td>
           <td class="text-xs">${g.staff_id ? `<a class="text-blue-600 hover:underline" href="#staff/${Number(g.staff_id)}">${esc(g.staff_name)}</a>` : esc(g.staff_name)}</td><td class="text-xs">${esc(g.employee_number || '')}</td>
@@ -376,6 +382,7 @@
     const confirmed = r.settle_status === 'confirmed'
     const open = r.issues.map(i => {
       if (i === PENDING_ISSUE) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleOpenCorrections" data-date="${esc(r.work_date)}" title="この勤務日の承認待ちの申請を開く">${esc(i)} <i class="fas fa-arrow-up-right-from-square text-[9px]"></i></button>`
+      if (i === PAY_REQUEST_ISSUE) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settlePayReqJump" title="スタッフからの申請の一覧へ">${esc(i)} <i class="fas fa-arrow-up text-[9px]"></i></button>`
       if (i === RECALC_ISSUE && !confirmed) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleRecalcOne" data-id="${r.shift_id}" title="今の案件の時間の設定で数量・金額を計算し直す">${esc(i)} <i class="fas fa-calculator text-[9px]"></i></button>`
       if (i === PAYEE_EXCLUDED_ISSUE && !confirmed) return `<button type="button" class="badge badge-red block mb-0.5 whitespace-nowrap" data-action="settleResetPayee" data-id="${r.shift_id}" title="単価ルールを再適用し、今の所属区分の支払先・単価に置き換える">${esc(i)} <i class="fas fa-rotate text-[9px]"></i></button>`
       return `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(i)}</span>`
@@ -385,7 +392,7 @@
       ${acked.map(i => `<span class="badge badge-gray block mb-0.5 whitespace-nowrap">${esc(i)}</span>`).join('')}
       ${r.acked_at ? `<p class="whitespace-nowrap">${esc(r.acked_by_name || '')} ${esc(dayjs(r.acked_at).format('M/D HH:mm'))}</p>` : ''}</details>` : ''
     const actions = [
-      r.issues.some(i => i !== PENDING_ISSUE) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="settleAckOne" data-id="${r.shift_id}">確認済みにする</button>` : '',
+      r.issues.some(ackable) ? `<button type="button" class="text-[11px] text-blue-600 hover:underline mr-2" data-action="settleAckOne" data-id="${r.shift_id}">確認済みにする</button>` : '',
       r.acked_at ? `<button type="button" class="text-[11px] text-gray-500 hover:underline" data-action="settleUnackOne" data-id="${r.shift_id}">確認済みを取り消す</button>` : '',
     ].join('')
     return (open || '<i class="fas fa-check text-emerald-500"></i>') + ackedHtml + (actions ? `<div class="mt-0.5 whitespace-nowrap">${actions}</div>` : '')
@@ -434,14 +441,14 @@
   })
   delegate('settleAck', el => {
     const label = S.selected.size ? '選択中' : '表示中'
-    const ids = rowsOf(targetIds()).filter(r => r.issues.some(i => i !== PENDING_ISSUE)).map(r => r.shift_id)
-    if (!ids.length) return toast(`${label}のシフトに、確認済みにできる確認事項はありません（承認待ちの打刻修正は、承認か却下をしてください）`)
+    const ids = rowsOf(targetIds()).filter(r => r.issues.some(ackable)).map(r => r.shift_id)
+    if (!ids.length) return toast(`${label}のシフトに、確認済みにできる確認事項はありません（承認待ちの打刻修正・交通費と延長の申請は、承認か却下をしてください）`)
     if (!window.confirm(`${label}のシフトのうち、確認事項のある ${ids.length}件 を確認済みにします。\n確認済みの事項は『確認が必要』の件数と確定前の警告に数えません（内容が変わったときや、確定後に新しい修正・報告があったときは、再び確認が必要になります）。よろしいですか？`)) return
     ackRun(ids, false, el)
   })
   delegate('settleAckOne', el => {
     const r = rowsOf([Number(el.dataset.id)])[0]; if (!r) return
-    if (!window.confirm(`次の確認事項を確認済みにします。\n・${r.issues.filter(i => i !== PENDING_ISSUE).join('\n・')}`)) return
+    if (!window.confirm(`次の確認事項を確認済みにします。\n・${r.issues.filter(ackable).join('\n・')}`)) return
     ackRun([r.shift_id], false, el)
   })
   delegate('settleUnackOne', el => ackRun([Number(el.dataset.id)], true, el))
@@ -699,7 +706,7 @@
   })
 
   // ---------- 締めと出力の記録（#170） ----------
-  const EXPORT_LABEL = { detail: 'シフト明細CSV', billing: '請求集計CSV', payment: '支払集計CSV', statement_billing: '請求明細書', statement_payment: '支払明細書' }
+  const EXPORT_LABEL = { detail: 'シフト明細CSV', billing: '請求集計CSV', payment: '支払集計CSV', statement_billing: '請求明細書', statement_payment: '支払明細書', payout_zengin: '振込データ（全銀）', payout_csv: '振込一覧CSV', employees: '従業員名簿CSV' }
   delegate('settleClosings', el => withSubmitLock(el, openClosings))
   async function openClosings() {
     let d
@@ -750,4 +757,221 @@
       try { await axios.post(`/api/admin/settlement/closings/${Number(el.dataset.id)}/reopen`, { reason }); toast('締めを解除しました'); await openClosings(); reload() } catch (e) { toast(errMsg(e)) }
     })
   })
+  // ---------- スタッフからの交通費・延長の申請（#172 #273）と、スタッフアプリでの支払額の表示（#290）。w5-staff-pay-features ----------
+  // 承認待ちの申請は、期間の絞り込みに関係なくすべて出す（確定・締めの前に片づけられるように）
+  const PAY_KIND = { transport: '交通費（実費）', overtime: '延長' }
+  let PAYREQ = []
+  const spanMin = (s, e) => { const m = (t) => { const [h, mm] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (mm || 0) }; let x = m(e) - m(s); if (x <= 0) x += 1440; return x }
+  function payReqContent(q) {
+    if (q.kind === 'transport') {
+      return `<b>${esc(yen(q.amount))}</b>（${q.round_trip ? '往復' : '片道'}）${esc(q.route || '')}
+        <span class="block text-[11px] text-gray-500">今の実費 ${esc(yen(q.transportation_fee))}・支払の交通費: ${esc(PT_LABEL[q.pay_transport_type] || q.pay_transport_type)}${q.pay_transport_type === 'capped' || q.pay_transport_type === 'fixed' ? ' ' + esc(yen(q.pay_transport_amount)) : ''}</span>`
+    }
+    const plus = q.start_time && q.end_time && q.new_end_time ? spanMin(q.start_time, q.new_end_time) - spanMin(q.start_time, q.end_time) : null
+    return `終了 ${esc(q.end_time || q.before_end_time || '')} → <b>${esc(q.new_end_time)}</b>${plus != null && plus > 0 ? `（+${plus}分）` : ''}
+      <span class="block text-[11px] text-gray-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type !== 'hourly' ? '日給（承認しても金額は変わりません。必要なら調整額を入れてください）' : q.qty_fixed ? '時給・数量を手動で固定中（承認しても金額は変わりません。必要なら数量を直してください）' : '時給（承認すると延びた分も支払に入ります）'}</span>`
+  }
+  async function loadPayRequests() {
+    const host = document.getElementById('settle-payreq'); if (!host) return
+    let d, st
+    try {
+      const rs = await Promise.all([axios.get('/api/admin/pay-requests'), axios.get('/api/admin/staff-pay/settings')])
+      d = rs[0].data; st = rs[1].data
+    } catch (e) {
+      if (host.isConnected) host.innerHTML = `<p class="text-xs text-red-600 mb-4">スタッフからの交通費・延長の申請を読み込めませんでした: ${esc(errMsg(e))}</p>`
+      return
+    }
+    if (!host.isConnected) return
+    PAYREQ = d.requests || []
+    const rows = PAYREQ.map(q => `<tr data-request-id="${Number(q.request_id)}">
+        <td class="whitespace-nowrap">${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : '-'}</td>
+        <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline" href="#staff/${Number(q.staff_id)}">${esc(q.staff_name)}</a></td>
+        <td>${esc(q.project_name)}</td>
+        <td class="whitespace-nowrap">${esc(PAY_KIND[q.kind] || q.kind)}</td>
+        <td>${payReqContent(q)}</td>
+        <td class="max-w-xs">${esc(q.reason || '')}</td>
+        <td class="whitespace-nowrap text-gray-400">${esc(dayjs(q.created_at).format('M/D HH:mm'))}</td>
+        <td class="whitespace-nowrap">${q.shift_issue ? `<p class="text-[11px] text-amber-700 mb-1 whitespace-normal">${esc(q.shift_issue)}</p>` : ''}
+          <button type="button" class="btn btn-primary text-xs py-1" data-action="settlePayReqApprove" data-id="${Number(q.request_id)}" ${q.shift_issue ? 'disabled' : ''}>承認</button>
+          <button type="button" class="btn btn-outline text-xs py-1" data-action="settlePayReqReject" data-id="${Number(q.request_id)}">却下</button></td></tr>`).join('')
+    const visible = `<p class="text-[11px] text-gray-500 mt-2">スタッフアプリでの支払額の表示: <b>${st.staff_pay_visible ? '表示する' : '表示しない'}</b>
+      ${st.can_edit ? `<button type="button" class="text-blue-600 hover:underline ml-1" data-action="settleStaffPayToggle" data-on="${st.staff_pay_visible ? '0' : '1'}">${st.staff_pay_visible ? '表示をやめる' : '表示する'}</button>` : '（変更は会社管理者のみ）'}
+      <span class="block text-gray-400">表示すると、支払先が本人（自社給与・日雇い給与・個人事業主）のシフトの支払額（単価・交通費・調整・合計）と、月の見込み・確定の合計を本人が見られます。請求額・取引先や他社への支払・調整のメモは見せません</span></p>`
+    host.innerHTML = `<section class="card p-3 mb-4 ${PAYREQ.length ? 'border border-amber-200 bg-amber-50/40' : ''}" id="settle-payreq-card">
+      <p class="text-sm font-bold ${PAYREQ.length ? 'text-amber-700' : 'text-gray-700'}"><i class="fas fa-train-subway mr-1"></i>スタッフからの交通費・延長の申請（承認待ち ${PAYREQ.length}件）</p>
+      ${PAYREQ.length ? `<p class="text-[11px] text-gray-500 my-1">承認すると、交通費はシフトの交通費（実費）に、延長はシフトの予定の終了時刻に反映します。確定済み・締めた期間のシフトは承認できません</p>
+      <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>案件</th><th>種類</th><th>内容</th><th>理由・メモ</th><th>申請</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="text-xs text-gray-400 mt-1">承認待ちの申請はありません</p>'}
+      ${visible}</section>`
+  }
+  delegate('settlePayReqJump', () => { const el = document.getElementById('settle-payreq'); if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }) })
+  delegate('settlePayReqApprove', el => {
+    const q = PAYREQ.find(x => x.request_id === Number(el.dataset.id)); if (!q) return
+    const field = q.kind === 'transport'
+      ? `<label class="text-sm text-gray-600 block mb-1">承認する金額（円。交通費の実費として記録します）</label><input id="pr-amount" type="number" min="0" class="inp mb-2" value="${esc(q.amount)}">`
+      : `<label class="text-sm text-gray-600 block mb-1">延長後の終了時刻（シフトの予定の終了時刻を変えます）</label><input id="pr-end" type="time" class="inp mb-2" value="${esc(q.new_end_time)}">`
+    modal(`<h3 class="font-bold text-gray-800 mb-1">${esc(PAY_KIND[q.kind] || q.kind)}の申請を承認</h3>
+      <p class="text-sm text-gray-600 mb-3">${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}</p>
+      ${field}
+      <label class="text-sm text-gray-600 block mb-1">スタッフへのコメント（任意）</label><textarea id="pr-note" class="inp" rows="2" maxlength="500"></textarea>
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-primary flex-1" data-action="settlePayReqApproveRun" data-id="${Number(q.request_id)}">承認する</button></div>`)
+  })
+  delegate('settlePayReqApproveRun', el => withSubmitLock(el, async () => {
+    const v = (id) => { const x = document.getElementById(id); return x ? x.value.trim() : undefined }
+    try {
+      await axios.post(`/api/admin/pay-requests/${Number(el.dataset.id)}/approve`, { amount: v('pr-amount'), end_time: v('pr-end'), note: v('pr-note') })
+      closeModal(); toast('承認しました'); reload()
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('settlePayReqReject', el => {
+    const q = PAYREQ.find(x => x.request_id === Number(el.dataset.id)); if (!q) return
+    modal(`<h3 class="font-bold text-gray-800 mb-1">${esc(PAY_KIND[q.kind] || q.kind)}の申請を却下</h3>
+      <p class="text-sm text-gray-600 mb-3">${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}</p>
+      <label class="text-sm text-gray-600 block mb-1">却下の理由（スタッフに伝わります）</label><textarea id="pr-reject-note" class="inp" rows="3" maxlength="500"></textarea>
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-danger flex-1" data-action="settlePayReqRejectRun" data-id="${Number(q.request_id)}">却下する</button></div>`)
+  })
+  delegate('settlePayReqRejectRun', el => withSubmitLock(el, async () => {
+    const note = (document.getElementById('pr-reject-note') || {}).value || ''
+    if (!note.trim()) return toast('却下の理由を入力してください')
+    try {
+      await axios.post(`/api/admin/pay-requests/${Number(el.dataset.id)}/reject`, { note })
+      closeModal(); toast('却下しました'); reload()
+    } catch (e) { toast(errMsg(e)) }
+  }))
+  delegate('settleStaffPayToggle', el => {
+    const on = el.dataset.on === '1'
+    if (!window.confirm(on ? 'スタッフアプリに、本人あての支払額（単価・交通費・調整・合計と、月の見込み・確定額）を表示します。よろしいですか？' : 'スタッフアプリでの支払額の表示をやめます。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      try { await axios.put('/api/admin/staff-pay/settings', { staff_pay_visible: on }); toast(on ? '支払額を表示するようにしました' : '支払額の表示をやめました'); loadPayRequests() } catch (e) { toast(errMsg(e)) }
+    })
+  })
+  // ---------- 振込データ（#471）。会社管理者・事務担当のみ ----------
+  const canPayout = () => typeof ME !== 'undefined' && ME && ME.can_manage_hr
+  const PAYOUT_TYPE_LABEL = { payroll_daily: '日雇い給与', freelance: '個人事業主', payroll: '自社給与' }
+  const ACCOUNT_TYPES = { 1: '普通', 2: '当座', 4: '貯蓄' }
+  const P = window.__payoutState = window.__payoutState || { transfer_date: dayjs().add(1, 'day').format('YYYY-MM-DD'), types: ['payroll_daily', 'freelance'], data: null }
+  const payoutQs = () => `${period()}&types=${encodeURIComponent(P.types.join(','))}`
+  function payoutHtml() {
+    const d = P.data
+    const list = d ? d.items.map(x => {
+      const a = x.account
+      return `<tr class="${x.exportable ? '' : 'bg-red-50'}"><td class="whitespace-nowrap">${esc(x.staff_name)}${x.employee_number ? `<span class="block text-[10px] text-gray-400">${esc(x.employee_number)}</span>` : ''}</td>
+        <td class="text-xs">${esc(x.payee_label)}</td><td class="text-right whitespace-nowrap font-bold">${yen(x.amount)}<span class="block text-[10px] font-normal text-gray-400">確定 ${Number(x.shifts)}件</span></td>
+        <td class="text-xs">${a ? `${esc(a.bank_code)}-${esc(a.branch_code)} ${esc(a.account_type_label)} ${esc(a.account_number_masked)}<span class="block text-gray-500">${esc(a.holder_zengin || a.holder_kana || '')}</span>` : '<span class="text-gray-400">未登録</span>'}</td>
+        <td class="text-[11px]">${x.problems.map(p => `<span class="block text-red-600">${esc(p)}</span>`).join('')}${x.notes.map(n => `<span class="block text-gray-500">${esc(n)}</span>`).join('')}</td>
+        <td><button type="button" class="text-xs text-blue-600 hover:underline whitespace-nowrap" data-action="payoutAccount" data-id="${Number(x.staff_id)}">口座${a && a.source === 'payout' ? 'を編集' : 'を登録'}</button></td></tr>`
+    }).join('') : ''
+    const stOk = d && !d.settings_problems.length
+    return `<h3 class="font-bold text-lg mb-1">振込データ</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(S.from)}〜${esc(S.to)} の確定済みのシフトの支払合計を、スタッフごとの振込にします（未確定・単価未設定のシフトは含みません）。
+        金額は源泉徴収などの控除の前です。控除がある場合は、出力した後に金額を直してください。取引先・他社（連携元）への支払は対象外です</p>
+      <div class="flex flex-wrap items-end gap-3 text-xs mb-3">
+        <label>振込日（取組日）<input type="date" id="po-date" class="inp text-sm w-auto" value="${esc(P.transfer_date)}"></label>
+        <div><p class="mb-1">支払区分</p><div class="flex gap-3">${Object.entries(PAYOUT_TYPE_LABEL).map(([k, l]) => `<label class="flex items-center gap-1"><input type="checkbox" class="po-type" value="${k}" ${P.types.includes(k) ? 'checked' : ''}>${l}</label>`).join('')}</div></div>
+        <button type="button" class="btn btn-outline text-xs" data-action="payoutLoad"><i class="fas fa-magnifying-glass"></i>一覧を確認</button>
+      </div>
+      ${d ? `<div class="text-xs mb-2 p-2 rounded ${stOk ? 'bg-gray-50' : 'bg-amber-50 text-amber-800'}" id="po-settings">
+          振込元（依頼人）: ${d.settings ? `${esc(d.settings.requester_kana || '')}（委託者コード ${esc(d.settings.requester_code || '未設定')}）${esc(d.settings.bank_code || '')}-${esc(d.settings.branch_code || '')} ${esc(d.settings.account_number_masked || '')}` : '未設定'}
+          ${stOk ? '' : `<span class="block">全銀形式で出すには、次の設定が必要です: ${esc(d.settings_problems.join('、'))}</span>`}
+          <button type="button" class="text-blue-600 hover:underline ml-1" data-action="payoutSettings">振込元を設定</button></div>
+        <p class="text-sm mb-2">振込できる人 <b>${Number(d.exportable)}人</b>・合計 <b>${yen(d.total)}</b>${d.skipped ? `<span class="text-red-600 ml-2">口座の未登録などで出力しない人 ${Number(d.skipped)}人</span>` : ''}</p>
+        <div class="max-h-80 overflow-y-auto border border-gray-100 rounded-lg mb-3"><table class="tbl text-xs" id="po-table"><thead><tr><th>スタッフ</th><th>区分</th><th class="text-right">金額</th><th>口座</th><th>確認</th><th></th></tr></thead>
+          <tbody>${list || '<tr><td colspan="6" class="text-center text-gray-400">対象の支払はありません</td></tr>'}</tbody></table></div>
+        <div class="flex gap-2 flex-wrap">
+          ${d.exportable ? `${stOk ? `<a class="btn btn-primary text-sm" id="po-zengin" href="/api/admin/settlement/payout/export?format=zengin&transfer_date=${encodeURIComponent(P.transfer_date)}&${payoutQs()}"><i class="fas fa-building-columns"></i>全銀形式（総合振込）を出力</a>` : ''}
+            <a class="btn btn-outline text-sm" id="po-csv" href="/api/admin/settlement/payout/export?format=csv&${payoutQs()}"><i class="fas fa-file-csv"></i>振込一覧のCSV</a>` : ''}
+          <button type="button" class="btn btn-outline text-sm" data-action="settleCloseModal">閉じる</button>
+        </div>
+        <p class="text-[11px] text-gray-400 mt-2">全銀形式は Shift_JIS・120バイト固定長（改行あり）のファイルです。ネットバンクの「総合振込」のファイル受付に取り込めます。出力した記録は「締め・出力の記録」に残ります</p>` : ''}`
+  }
+  async function loadPayout() {
+    try { P.data = (await axios.get('/api/admin/settlement/payout?' + payoutQs())).data } catch (e) { P.data = null; toast(errMsg(e)) }
+    modal(payoutHtml())
+  }
+  function readPayoutForm() {
+    const d = document.getElementById('po-date'); if (d) P.transfer_date = d.value
+    const t = [...document.querySelectorAll('.po-type:checked')].map(x => x.value)
+    if (document.querySelector('.po-type')) P.types = t
+  }
+  delegate('settlePayout', () => { P.data = null; loadPayout() })
+  delegate('payoutLoad', el => withSubmitLock(el, async () => {
+    readPayoutForm()
+    if (!P.types.length) { toast('支払区分を1つ以上選んでください'); return }
+    await loadPayout()
+  }))
+  document.addEventListener('change', (ev) => {
+    // 振込日を変えたら、出力のリンクに入れ直す
+    if (ev.target && ev.target.id === 'po-date') { P.transfer_date = ev.target.value; const a = document.getElementById('po-zengin'); if (a) a.href = `/api/admin/settlement/payout/export?format=zengin&transfer_date=${encodeURIComponent(P.transfer_date)}&${payoutQs()}` }
+  })
+  // 振込先の口座（スタッフごと）
+  delegate('payoutAccount', el => withSubmitLock(el, async () => {
+    readPayoutForm()
+    let d
+    try { d = (await axios.get('/api/admin/settlement/payout/accounts/' + Number(el.dataset.id))).data } catch (e) { toast(errMsg(e)); return }
+    const a = d.account || d.employee_account || {}
+    const v = (k) => esc(a[k] == null ? '' : a[k])
+    const type = String(a.account_type || '').match(/当座|^2$/) ? '2' : String(a.account_type || '').match(/貯蓄|^4$/) ? '4' : '1'
+    modal(`<h3 class="font-bold text-lg mb-1">振込先の口座</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(d.staff.name)}${d.staff.kana ? `（${esc(d.staff.kana)}）` : ''}。${d.account ? '' : d.employee_account ? '従業員管理の口座を入れています。保存すると、振込データにはこの口座を使います。' : ''}口座名義は通帳どおりにカナで入力します</p>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <label>金融機関コード（4桁）<input id="pa-bank-code" class="inp text-sm" inputmode="numeric" maxlength="4" value="${v('bank_code')}"></label>
+        <label>金融機関名<input id="pa-bank-name" class="inp text-sm" value="${v('bank_name')}"></label>
+        <label>支店コード（3桁）<input id="pa-branch-code" class="inp text-sm" inputmode="numeric" maxlength="3" value="${v('branch_code')}"></label>
+        <label>支店名<input id="pa-branch-name" class="inp text-sm" value="${v('branch_name')}"></label>
+        <label>預金種目<select id="pa-type" class="inp text-sm">${Object.entries(ACCOUNT_TYPES).map(([k, l]) => `<option value="${k}" ${type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>口座番号（7桁まで）<input id="pa-number" class="inp text-sm" inputmode="numeric" maxlength="7" value="${v('account_number')}"></label>
+        <label class="col-span-2">口座名義（カナ）<input id="pa-holder" class="inp text-sm" placeholder="例: ヤマダ タロウ" value="${esc(d.account ? d.account.holder_kana : (d.staff.kana || ''))}"></label>
+      </div>
+      <div class="flex gap-2 mt-4">
+        <button type="button" class="btn btn-outline flex-1" data-action="payoutBack">戻る</button>
+        ${d.account ? `<button type="button" class="btn btn-outline" data-action="payoutAccountDelete" data-id="${Number(d.staff.staff_id)}">登録を消す</button>` : ''}
+        <button type="button" class="btn btn-primary flex-1" data-action="payoutAccountSave" data-id="${Number(d.staff.staff_id)}">保存</button>
+      </div>`)
+  }))
+  delegate('payoutBack', () => modal(payoutHtml()))
+  delegate('payoutAccountSave', el => withSubmitLock(el, async () => {
+    const val = (id) => document.getElementById(id).value
+    try {
+      await axios.put('/api/admin/settlement/payout/accounts/' + Number(el.dataset.id), {
+        bank_code: val('pa-bank-code'), bank_name: val('pa-bank-name'), branch_code: val('pa-branch-code'), branch_name: val('pa-branch-name'),
+        account_type: val('pa-type'), account_number: val('pa-number'), holder_kana: val('pa-holder') })
+    } catch (e) { toast(errMsg(e)); return }
+    toast('口座を保存しました'); await loadPayout()
+  }))
+  delegate('payoutAccountDelete', el => withSubmitLock(el, async () => {
+    if (!confirm('この口座の登録を消しますか？（従業員管理の口座は消えません）')) return
+    try { await axios.delete('/api/admin/settlement/payout/accounts/' + Number(el.dataset.id)) } catch (e) { toast(errMsg(e)); return }
+    toast('口座の登録を消しました'); await loadPayout()
+  }))
+  // 振込元（依頼人）の設定
+  delegate('payoutSettings', el => withSubmitLock(el, async () => {
+    readPayoutForm()
+    let st
+    try { st = (await axios.get('/api/admin/settlement/payout/settings')).data.settings || {} } catch (e) { toast(errMsg(e)); return }
+    const v = (k) => esc(st[k] == null ? '' : st[k])
+    modal(`<h3 class="font-bold text-lg mb-1">振込元（依頼人）の設定</h3>
+      <p class="text-xs text-gray-500 mb-3">全銀形式のファイルの先頭（ヘッダー）に入れる、会社の振込元の情報です。委託者コードは、取引銀行から通知された10桁のコードです</p>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <label>委託者コード（10桁）<input id="ps-code" class="inp text-sm" inputmode="numeric" maxlength="10" value="${v('requester_code')}"></label>
+        <label>委託者名（カナ）<input id="ps-kana" class="inp text-sm" placeholder="例: カ）フィールド" value="${v('requester_kana')}"></label>
+        <label>金融機関コード（4桁）<input id="ps-bank-code" class="inp text-sm" inputmode="numeric" maxlength="4" value="${v('bank_code')}"></label>
+        <label>金融機関名（カナ）<input id="ps-bank-name" class="inp text-sm" value="${v('bank_name')}"></label>
+        <label>支店コード（3桁）<input id="ps-branch-code" class="inp text-sm" inputmode="numeric" maxlength="3" value="${v('branch_code')}"></label>
+        <label>支店名（カナ）<input id="ps-branch-name" class="inp text-sm" value="${v('branch_name')}"></label>
+        <label>預金種目<select id="ps-type" class="inp text-sm">${Object.entries(ACCOUNT_TYPES).map(([k, l]) => `<option value="${k}" ${String(st.account_type || '1') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>口座番号（7桁まで）<input id="ps-number" class="inp text-sm" inputmode="numeric" maxlength="7" value="${v('account_number')}"></label>
+      </div>
+      <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-action="payoutBack">戻る</button>
+        <button type="button" class="btn btn-primary flex-1" data-action="payoutSettingsSave">保存</button></div>`)
+  }))
+  delegate('payoutSettingsSave', el => withSubmitLock(el, async () => {
+    const val = (id) => document.getElementById(id).value
+    try {
+      await axios.put('/api/admin/settlement/payout/settings', { requester_code: val('ps-code'), requester_kana: val('ps-kana'), bank_code: val('ps-bank-code'), bank_name: val('ps-bank-name'),
+        branch_code: val('ps-branch-code'), branch_name: val('ps-branch-name'), account_type: val('ps-type'), account_number: val('ps-number') })
+    } catch (e) { toast(errMsg(e)); return }
+    toast('振込元を保存しました'); await loadPayout()
+  }))
 })()

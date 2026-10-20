@@ -45,6 +45,16 @@
     return res
   })
   window.boardReloadMaster = function () { invalidateMaster(); renderShiftBoard() }
+  // クライアントに出す配置表（#298）。ボードの期間・絞り込みのまま出す（金額は含まない）
+  delegate('boardPlacementExport', (el) => {
+    const q = new URLSearchParams({ from: BS.from, to: dayjs(BS.from).add(BS.days - 1, 'day').format('YYYY-MM-DD'), format: el.dataset.format === 'print' ? 'print' : 'csv' })
+    if (BS.clientId) q.set('client_id', BS.clientId)
+    if (BS.projectIds.length) q.set('project_ids', BS.projectIds.join(','))
+    if (BS.engagement) q.set('engagement', BS.engagement)
+    const url = '/api/admin/shift-board/export?' + q
+    if (el.dataset.format === 'print') window.open(url, '_blank', 'noopener')
+    else location.href = url
+  })
 
   // =========================================================
   // シフトボード
@@ -79,6 +89,8 @@
           <button class="btn btn-outline" onclick="openPatternModal()"><i class="fas fa-repeat"></i>繰り返し登録</button>
           <button class="btn btn-outline" onclick="openBulkModal()"><i class="fas fa-calendar-week"></i>常勤の一括登録</button>
           <button class="btn btn-outline" onclick="openCopyModal()"><i class="fas fa-copy"></i>コピー</button>
+          <button class="btn btn-outline" data-action="boardPlacementExport" data-format="csv" title="表示中の期間・絞り込みの配置表（金額なし・未充足の枠と希望（仮）を含む）を CSV で出します"><i class="fas fa-file-csv"></i>配置表CSV</button>
+          <button class="btn btn-outline" data-action="boardPlacementExport" data-format="print" title="クライアント・現場リーダーに渡す配置表を、案件ごとに改ページして印刷します（金額は載せません）"><i class="fas fa-print"></i>配置表を印刷</button>
           <button class="btn btn-outline" data-action="openShiftRequests"><i class="fas fa-hand"></i>シフト希望<span id="board-req-count"></span></button>
           ${reqShifts.length ? `<button class="btn btn-outline" data-action="boardConfirmRequested" title="表示中の希望（仮）のシフトをまとめて確定にします"><i class="fas fa-check-double"></i>希望（仮）をまとめて確定<span class="badge badge-yellow ml-1">${reqShifts.length}</span></button>` : ''}
           <a class="btn btn-outline" href="#shifts/week"><i class="fas fa-table-columns"></i>週表示（従来）</a>
@@ -1018,7 +1030,7 @@
   // 一覧に出した単価ルール（編集のモーダルで今の値を入れるため）
   const RULES = new Map()
   function ruleScope(r) {
-    return [r.project_name ? esc(r.project_name) : (r.project_id ? '' : '全案件'), r.site_name ? '📍' + esc(r.site_name) : '', r.role_name ? '役割: ' + esc(r.role_name) : '', r.staff_name ? '👤' + esc(r.staff_name) : ''].filter(Boolean).join(' × ')
+    return [r.project_name ? esc(r.project_name) : r.project_id ? '' : r.client_id ? 'クライアント全体' + (r.client_name ? '（' + esc(r.client_name) + '）' : '') : '全案件', r.site_name ? '📍' + esc(r.site_name) : '', r.role_name ? '役割: ' + esc(r.role_name) : '', r.staff_name ? '👤' + esc(r.staff_name) : ''].filter(Boolean).join(' × ')
   }
   window.renderProjectPricingPanel = async function (p) {
     const host = document.getElementById('project-pricing-panel'); if (!host) return
@@ -1065,7 +1077,7 @@
             <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-list-check text-blue-500 mr-1"></i>単価ルール（開催場所・役割・スタッフ別）</h3>
             <button class="btn btn-outline text-xs" onclick="openRuleModal({project_id:${p.project_id}, client_id:${p.client_id || 'null'}})"><i class="fas fa-plus"></i>追加</button>
           </div>
-          <p class="text-[11px] text-gray-400 mb-2">優先順: スタッフ ＞ 役割 ＞ 開催場所 ＞ 案件の標準。項目ごとに最も具体的なルールを使います</p>
+          <p class="text-[11px] text-gray-400 mb-2">優先順: スタッフ ＞ 役割 ＞ 開催場所 ＞ 案件の標準。項目ごとに最も具体的なルールを使います。クライアントの全案件に共通のルールは、クライアント詳細の「単価ルール（クライアント共通）」で設定します（同じ条件なら案件のルールが優先）</p>
           <div class="space-y-1.5 max-h-72 overflow-y-auto">
             ${rr.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
               <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r)}${ruleMemo(r)}</p></div>
@@ -1118,9 +1130,9 @@
     } catch (e) { toast(errMsg(e)) }
   }
   // 単価ルールの再適用（#469）: 期間を選び、金額・支払先が変わるシフトと増減の合計を確かめてから実行する
-  window.repriceProject = function (pid, staffId) {
+  window.repriceProject = function (pid, staffId, clientId) {
     if (BULK_JOB && BULK_JOB.running) { toast('ほかの一括処理を実行中です'); return }
-    window.__repriceCtx = { pid: pid || null, staffId: staffId || null }
+    window.__repriceCtx = { pid: pid || null, staffId: staffId || null, clientId: clientId || null }
     modal(`
       <h3 class="font-bold text-lg mb-1">単価ルールの再適用</h3>
       <p class="text-xs text-gray-500 mb-3">期間内のシフトに、今の単価ルールと案件の標準単価を当て直します（金額を手動で変更したシフト・確定済みのシフトは除きます）。単価ルールの適用期間は、シフトの稼働日で選びます</p>
@@ -1133,7 +1145,7 @@
   }
   function repriceBody() {
     const c = window.__repriceCtx || {}
-    return { from: document.getElementById('rp-from').value, to: document.getElementById('rp-to').value, ...(c.pid ? { project_id: c.pid } : {}), ...(c.staffId ? { staff_id: c.staffId } : {}) }
+    return { from: document.getElementById('rp-from').value, to: document.getElementById('rp-to').value, ...(c.pid ? { project_id: c.pid } : {}), ...(c.staffId ? { staff_id: c.staffId } : {}), ...(c.clientId ? { client_id: c.clientId } : {}) }
   }
   const PAYEE_SHORT = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' }
   const signedYen = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + yen(Math.abs(n))
@@ -1273,7 +1285,8 @@
     const same = (a, b) => a != null && b != null && String(a) === String(b)
     const sel = (a, b) => (same(a, b) ? 'selected' : '')
     // 無効の開催場所・選択肢にない人でも、編集中のルールが使っているものは残す（保存で条件が外れないように）
-    const sites = m.sites.filter(s => same(s.site_id, r.site_id) || (s.status !== 'inactive' && (!ctx.client_id || !s.client_id || String(s.client_id) === String(ctx.client_id))))
+    const sites = m.sites.filter(s => same(s.site_id, r.site_id) || (s.status !== 'inactive' && (ctx.client_scope ? String(s.client_id) === String(ctx.client_id)
+      : (!ctx.client_id || !s.client_id || String(s.client_id) === String(ctx.client_id)))))
     const staff = r.staff_id && !m.staff.some(s => same(s.staff_id, r.staff_id)) ? [...m.staff, { staff_id: r.staff_id, name: r.staff_name || ('ID ' + r.staff_id) }] : m.staff
     const opt = (map, v) => `<option value="">（変更しない）</option>` + Object.entries(map).map(([k, l]) => `<option value="${k}" ${sel(k, v)}>${l}</option>`).join('')
     const unitOpt = (v) => `<option value="daily">日額</option><option value="hourly" ${v === 'hourly' ? 'selected' : ''}>時給</option>`
@@ -1283,9 +1296,9 @@
       <p class="text-xs text-gray-500 mb-3">条件に合うシフトで、入力した項目だけを上書きします（空欄の項目は上書きしません）${rule ? '。保存しても、登録済みのシフトの金額は再適用するまで変わりません' : ''}</p>
       <div class="grid grid-cols-2 gap-2 text-xs">
         ${ctx.staff_id ? `<label class="col-span-2">案件<select id="rl-project" class="inp text-sm"><option value="">すべての案件</option>${m.projects.map(p => `<option value="${p.project_id}" ${sel(p.project_id, r.project_id)}>${esc(p.project_name)}</option>`).join('')}</select></label>` : ''}
-        ${ctx.project_id ? `<label>開催場所<select id="rl-site" class="inp text-sm"><option value="">すべて</option>${sites.map(s => `<option value="${s.site_id}" ${sel(s.site_id, r.site_id)}>${esc(s.site_name)}${s.status === 'inactive' ? '（無効）' : ''}</option>`).join('')}</select></label>
-        <label>役割<input id="rl-role" class="inp text-sm" placeholder="すべて" list="role-suggest" value="${val(r.role_name)}"></label>
-        <label class="col-span-2">スタッフ<select id="rl-staff" class="inp text-sm"><option value="">すべて</option>${staff.map(s => `<option value="${s.staff_id}" ${sel(s.staff_id, r.staff_id)}>${esc(s.name)}</option>`).join('')}</select></label>` : ''}
+        ${ctx.project_id || ctx.client_scope ? `<label>開催場所<select id="rl-site" class="inp text-sm"><option value="">すべて</option>${sites.map(s => `<option value="${s.site_id}" ${sel(s.site_id, r.site_id)}>${esc(s.site_name)}${s.status === 'inactive' ? '（無効）' : ''}</option>`).join('')}</select></label>
+        <label>役割<input id="rl-role" class="inp text-sm" placeholder="すべて" list="role-suggest" value="${val(r.role_name)}"></label>` : ''}
+        ${ctx.project_id ? `<label class="col-span-2">スタッフ<select id="rl-staff" class="inp text-sm"><option value="">すべて</option>${staff.map(s => `<option value="${s.staff_id}" ${sel(s.staff_id, r.staff_id)}>${esc(s.name)}</option>`).join('')}</select></label>` : ''}
         <label>請求の単位<select id="rl-bill-unit" class="inp text-sm">${unitOpt(r.bill_unit_type)}</select></label>
         <label>請求単価<input id="rl-bill" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(r.bill_rate)}"></label>
         <label>支払の単位<select id="rl-pay-unit" class="inp text-sm">${unitOpt(r.pay_unit_type)}</select></label>
@@ -1306,7 +1319,8 @@
   delegate('saveRule', el => withSubmitLock(el, () => saveRule(window.__ruleCtx || {})))
   delegate('editRule', (el) => {
     const r = RULES.get(Number(el.dataset.id)); if (!r) return
-    if (el.dataset.sid) openRuleModal({ staff_id: Number(el.dataset.sid) }, r)
+    if (el.dataset.client) openRuleModal({ client_id: Number(el.dataset.client), client_scope: true }, r)
+    else if (el.dataset.sid) openRuleModal({ staff_id: Number(el.dataset.sid) }, r)
     else openRuleModal({ project_id: Number(el.dataset.pid), client_id: Number(el.dataset.cid) || null }, r)
   })
   // 単価ルールに終了日を付ける（単価の改定で旧ルールを残すとき。#210）
@@ -1316,7 +1330,8 @@
     try {
       await axios.put('/api/admin/rate-rules/' + Number(el.dataset.id), { valid_to: to.trim() })
       toast('終了日を保存しました')
-      if (el.dataset.sid) renderStaffRatePanel(Number(el.dataset.sid)); else renderProjectDetail(Number(el.dataset.pid))
+      if (el.dataset.client) renderClientRatePanel(Number(el.dataset.client))
+      else if (el.dataset.sid) renderStaffRatePanel(Number(el.dataset.sid)); else renderProjectDetail(Number(el.dataset.pid))
     } catch (e) { toast(errMsg(e)) }
   })
   window.saveRule = async function (ctx) {
@@ -1324,6 +1339,8 @@
     const body = {
       project_id: ctx.project_id || (v('rl-project') ? Number(v('rl-project')) : null), site_id: v('rl-site') ? Number(v('rl-site')) : null,
       role_name: v('rl-role'), staff_id: ctx.staff_id || (v('rl-staff') ? Number(v('rl-staff')) : null),
+      // クライアント単位のルール（#470）
+      ...(ctx.client_scope ? { client_id: ctx.client_id } : {}),
       bill_unit_type: v('rl-bill-unit'), bill_rate: v('rl-bill'), pay_unit_type: v('rl-pay-unit'), pay_rate: v('rl-pay'),
       bill_transport_type: v('rl-bt') || null, bill_transport_amount: v('rl-bt-amt'), pay_transport_type: v('rl-pt') || null, pay_transport_amount: v('rl-pt-amt'), memo: v('rl-memo'),
       valid_from: v('rl-from'), valid_to: v('rl-to'),
@@ -1341,6 +1358,12 @@
       else await axios.post('/api/admin/rate-rules', body)
     } catch (e) { toast(errMsg(e)); return }
     closeModal(); toast(ctx.rule_id ? '単価ルールを保存しました' : '単価ルールを追加しました')
+    if (ctx.client_scope) {
+      await renderClientRatePanel(ctx.client_id)
+      if (confirm('登録済みのシフトの金額は、まだ変わっていません。このクライアントの今後のシフトに単価ルールを再適用しますか？（次の画面で、変わる件数と金額を確認できます）'))
+        repriceProject(null, null, ctx.client_id)
+      return
+    }
     if (ctx.staff_id) await renderStaffRatePanel(ctx.staff_id); else await renderProjectDetail(ctx.project_id)
     // 登録済みのシフトは再適用するまで変わらないので、続けて再適用するかを確かめる（変わる件数と金額は次の画面で確認できる）
     if (confirm('登録済みのシフトの金額は、まだ変わっていません。今後のシフトに単価ルールを再適用しますか？（次の画面で、変わる件数と金額を確認できます）'))
@@ -1438,7 +1461,44 @@
       </tbody></table></div>
     </section>`
     SITES = new Map(data.sites.map(s => [s.site_id, s]))
+    renderClientRatePanel(cid)
   }
+
+  // =========================================================
+  // クライアント詳細: クライアント共通の単価ルール（#470）。そのクライアントの全案件に当てる（案件のルールより弱い）
+  // =========================================================
+  window.renderClientRatePanel = async function (cid) {
+    let host = document.getElementById('client-rate-panel')
+    if (!host) {
+      const sites = document.getElementById('client-sites-panel'); if (!sites) return
+      host = document.createElement('div'); host.id = 'client-rate-panel'; host.className = 'mt-4'; sites.after(host)
+    }
+    let data
+    try { data = (await axios.get('/api/admin/rate-rules?client_id=' + Number(cid))).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '単価ルールを読み込めませんでした'))}</p>`; return }
+    for (const r of data.rules) RULES.set(r.rule_id, r)
+    const id = Number(cid)
+    host.innerHTML = `<section class="card p-4" id="client-rate-rules">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>単価ルール（クライアント共通）<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
+        <div class="flex gap-2">
+          <button class="btn btn-outline text-xs" data-action="clientRuleReprice" data-client="${id}"><i class="fas fa-rotate"></i>今後のシフトに再適用</button>
+          <button class="btn btn-outline text-xs" data-action="clientRuleAdd" data-client="${id}"><i class="fas fa-plus"></i>追加</button>
+        </div>
+      </div>
+      <p class="text-[11px] text-gray-400 mb-2">このクライアントの全案件に当てる単価・交通費です（例: リーダー役割は +2,000円、○○店は交通費定額）。開催場所・役割で条件を付けられます。同じ条件なら案件・スタッフのルールが優先します</p>
+      <div class="space-y-1.5">${data.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
+        <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r) + ruleMemo(r)}</p></div>
+        <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-client="${id}">編集</button>
+        <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-client="${id}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
+        <button class="text-gray-400 hover:text-red-500" data-action="clientRuleDelete" data-id="${Number(r.rule_id)}" data-client="${id}" title="削除"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">クライアント共通のルールはありません（案件ごとの単価を使います）</p>'}</div>
+    </section>`
+  }
+  delegate('clientRuleAdd', el => openRuleModal({ client_id: Number(el.dataset.client), client_scope: true }))
+  delegate('clientRuleReprice', el => repriceProject(null, null, Number(el.dataset.client)))
+  delegate('clientRuleDelete', el => withSubmitLock(el, async () => {
+    if (!confirm('この単価ルールを削除しますか？（登録済みのシフトの金額は変わりません）')) return
+    try { await axios.delete('/api/admin/rate-rules/' + Number(el.dataset.id)); toast('削除しました'); renderClientRatePanel(Number(el.dataset.client)) } catch (e) { toast(errMsg(e)) }
+  }))
   // 開催場所の編集（名前・住所・メモ・位置。#406）。名前を変えると、今日以降の枠・シフトの場所名も変わる（#142）
   let SITES = new Map()
   function openSiteEdit(id, cid) {
