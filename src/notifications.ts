@@ -286,6 +286,17 @@ function notificationRoutes(scope: 'admin' | 'staff') {
     const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND read_at IS NULL`).bind(nowJST(), ...ids).run()
     return c.json({ ok: true, updated: r.meta.changes || 0 })
   })
+  // kind（と related_id）で既読にする（募集の応募一覧を開いたときなど、通知を開かずに対応したとき。#150）
+  app.post('/notifications/read-related', async (c) => {
+    const ids = await userIds(c)
+    const b = await c.req.json().catch(() => ({} as any))
+    const kind = String(b.kind || '')
+    if (!/^[a-z_]{1,40}$/.test(kind)) return c.json({ error: '種類が正しくありません' }, 400)
+    const rid = Number.isInteger(b.related_id) && b.related_id > 0 ? b.related_id : null
+    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND kind = ? AND read_at IS NULL${rid != null ? ' AND related_id = ?' : ''}`)
+      .bind(nowJST(), ...ids, kind, ...(rid != null ? [rid] : [])).run()
+    return c.json({ ok: true, updated: r.meta.changes || 0 })
+  })
   app.post('/notifications/:id{[0-9]+}/read', async (c) => {
     const ids = await userIds(c)
     const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = COALESCE(read_at, ?) WHERE notification_id = ? AND ${inIds(ids)}`).bind(nowJST(), c.req.param('id'), ...ids).run()
@@ -518,6 +529,167 @@ export async function notifyDailyReportIncident(c: any, shiftId: number, raised:
 }
 
 // =========================================================
+// 管理者・企業あての通知（w5-notify-admin: #150 #152 #154 #166）
+// 宛先の会社の管理ロール（在籍中。本部アカウントは含めない）全員に、アプリ内通知を作り、必要ならメールも送る。
+//   kind: recruit_applied（新しい応募。related_id = 募集ページ）/ board_message（案件掲示板のやり取り。related_id = スレッド）/
+//         roster_chat（企業間チャット。related_id = スレッドの連携行の staff_id）/
+//         consult_received（スタッフからの相談。related_id = 相談）/ consult_message（相談への追加の連絡。related_id = 相談）/
+//         roster_source_retired（連携スタッフの所属元での退職。related_id = 自社の連携行の staff_id）
+// merge: 同じ kind・related_id の未読の通知があれば、新しい行を作らずに最新の内容に書き換えて件数（merged_count）を数える
+// email: always（毎回送る）/ throttle（まとめた通知のメールを送ってから ADMIN_MAIL_QUIET_MINUTES の間は送らない）/ never
+// メールの結果は email_logs に残る（notification_emails は打刻修正の申請に結び付くため使わない）。通知の失敗で元の操作は取り消さない
+// =========================================================
+export const ADMIN_MAIL_QUIET_MINUTES = 30
+export type AdminNotice = {
+  companyId: number
+  kind: string
+  relatedId: number
+  // count: まとめた件数（1 なら新しい通知）
+  title: (count: number) => string
+  headline: string
+  lines: [string, string][]
+  link: string
+  button: string
+  mailType: string
+  email: 'always' | 'throttle' | 'never'
+  merge?: boolean
+  excludeUserIds?: number[]
+  // アプリ内通知の本文だけに足す内容（メールには入れない。相談の本文など）
+  appExtra?: string
+}
+export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ notified: number; emailed: number }> {
+  try {
+    const db: D1Database = c.env.DB
+    const exclude = new Set((n.excludeUserIds || []).map(Number))
+    const admins = ((await db.prepare(`SELECT user_id, name, email FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+      .bind(n.companyId, ...NOTIFY_ADMIN_ROLES).all()).results as any[]).filter(a => !exclude.has(Number(a.user_id)))
+    if (!admins.length) return { notified: 0, emailed: 0 }
+    const now = nowJST()
+    const quietSince = minutesAgoJST(ADMIN_MAIL_QUIET_MINUTES)
+    // まとめる先: 宛先ごとの、同じ kind・related_id の未読の最新の通知
+    const open = new Map<number, any>()
+    if (n.merge) {
+      const rows = (await db.prepare(`SELECT notification_id, user_id, merged_count, emailed_at FROM user_notifications
+        WHERE company_id = ? AND kind = ? AND related_id = ? AND read_at IS NULL ORDER BY notification_id`).bind(n.companyId, n.kind, n.relatedId).all()).results as any[]
+      for (const r of rows) open.set(Number(r.user_id), r)
+    }
+    const body = n.lines.map(([k, v]) => `${k}: ${v}`).join('\n') + (n.appExtra ? '\n' + n.appExtra : '')
+    const stmts: D1PreparedStatement[] = []
+    const mailTo: { name: string; email: string; title: string }[] = []
+    for (const a of admins) {
+      const cur = open.get(Number(a.user_id))
+      const count = cur ? Number(cur.merged_count || 1) + 1 : 1
+      const title = n.title(count)
+      const sendMail = !!a.email && (n.email === 'always' || (n.email === 'throttle' && (!cur || !cur.emailed_at || cur.emailed_at < quietSince)))
+      if (sendMail) mailTo.push({ name: a.name, email: a.email, title })
+      // まとめるときは前の未読の行を消して新しく入れ直す（受信箱は新しい順なので、まとめた通知を先頭に出す）
+      if (cur) stmts.push(db.prepare('DELETE FROM user_notifications WHERE notification_id = ? AND read_at IS NULL').bind(cur.notification_id))
+      stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at, merged_count, emailed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(n.companyId, a.user_id, n.kind, title, body, n.link, n.relatedId, now, count, sendMail ? now : (cur?.emailed_at ?? null)))
+    }
+    await db.batch(stmts)
+    if (mailTo.length) {
+      const base = String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')
+      const mails = mailTo.map(m => {
+        const tpl = attendanceCorrectionEmail({ name: m.name, title: m.title, headline: n.headline, lines: n.lines, url: base + n.link, button: n.button })
+        return { to: m.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: n.mailType, company_id: n.companyId }
+      })
+      const job = (async () => { for (const m of mails) { try { await sendEmail(c.env, m) } catch { /* 送信の失敗は email_logs に残る */ } } })()
+      try { c.executionCtx.waitUntil(job) } catch { await job }
+    }
+    return { notified: admins.length, emailed: mailTo.length }
+  } catch (e) {
+    console.log(`admin notify failed: kind=${n.kind} related=${n.relatedId}`)
+    return { notified: 0, emailed: 0 }
+  }
+}
+// 自分あての通知のうち、kind（と related_id）が合うものを既読にする（やり取りを開いた・処理した後）。userId を省くと宛先全員の分
+export async function markAdminNotificationsRead(db: D1Database, companyId: number, kinds: string[], relatedId: number | null, userId?: number) {
+  if (!kinds.length) return 0
+  try {
+    const r = await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE company_id = ? AND kind IN (${kinds.map(() => '?').join(',')}) AND read_at IS NULL
+      ${relatedId != null ? 'AND related_id = ?' : ''} ${userId != null ? 'AND user_id = ?' : ''}`)
+      .bind(nowJST(), companyId, ...kinds, ...(relatedId != null ? [relatedId] : []), ...(userId != null ? [userId] : [])).run()
+    return r.meta.changes || 0
+  } catch { return 0 }
+}
+
+// ---- スタッフからの相談（#154）----
+// received: 新しい相談 / message: 相談への追加の連絡（同じ相談の未読の通知にまとめる）
+// 緊急度『高』と、体調不良・遅刻欠勤の相談はメールでもすぐに知らせる（追加の連絡は30分に1通まで）。それ以外はアプリ内だけ。
+// メールには相談の本文を入れない（体調など本人の事情が書かれるため）。アプリ内通知の本文には冒頭だけを入れる
+// 相談のカテゴリの表示名（api.ts の catLabel・画面の CAT_LABELS と同じ）
+const CONSULT_LABEL: Record<string, string> = { health: '体調不良', absence: '遅刻・欠勤相談', store_trouble: '店舗トラブル', claim: 'クレーム', relationship: '人間関係', shift: 'シフト相談', question: '業務質問', other: 'その他' }
+export const CONSULT_URGENT_CATEGORIES = ['health', 'absence']
+const CONSULT_EXCERPT = 100
+export async function notifyConsultation(c: any, consultationId: number, event: 'received' | 'message', text?: string) {
+  try {
+    const co = await c.env.DB.prepare(`SELECT co.consultation_id, co.company_id, co.category, co.urgency, co.body, co.target_date, p.project_name, us.name AS staff_name
+      FROM consultations co JOIN staff_profiles sp ON sp.staff_id = co.staff_id JOIN users us ON us.user_id = sp.user_id
+      LEFT JOIN projects p ON p.project_id = co.target_project_id AND p.company_id = co.company_id WHERE co.consultation_id = ?`).bind(consultationId).first() as any
+    if (!co) return
+    const urgent = co.urgency === 'high' || CONSULT_URGENT_CATEGORIES.includes(co.category)
+    const cat = CONSULT_LABEL[co.category] || co.category
+    const staff = String(co.staff_name || '')
+    const lines: [string, string][] = [['スタッフ', staff], ['カテゴリ', cat], ['緊急度', co.urgency === 'high' ? '高' : co.urgency === 'low' ? '低' : '中']]
+    if (co.target_date) lines.push(['対象', `${fmtDate(co.target_date)} ${co.project_name || ''}`.trim()])
+    const src = String(text ?? co.body ?? '')
+    const excerpt = src.length > CONSULT_EXCERPT ? src.slice(0, CONSULT_EXCERPT) + '…' : src
+    const mark = urgent ? '【至急】' : ''
+    await notifyCompanyAdmins(c, {
+      companyId: co.company_id, kind: event === 'received' ? 'consult_received' : 'consult_message', relatedId: co.consultation_id,
+      merge: event === 'message', email: !urgent ? 'never' : event === 'received' ? 'always' : 'throttle', mailType: 'consultation',
+      title: (n) => event === 'received' ? `${mark}相談・連絡: ${staff}さん（${cat}）`
+        : `${mark}相談への追加の連絡: ${staff}さん（${cat}）${n > 1 ? `・${n}件` : ''}`,
+      headline: event === 'received' ? `${staff}さんから相談・連絡（${cat}）が届きました。${urgent ? '急ぎの連絡の可能性があります。' : ''}管理画面で内容を確認し、返信してください。`
+        : `${staff}さんから、相談・連絡（${cat}）に追加の連絡が届きました。管理画面で内容を確認してください。`,
+      lines, appExtra: excerpt ? `内容: ${excerpt}` : '',
+      link: `/admin#consult/${co.consultation_id}`, button: '相談を確認する',
+    })
+  } catch (e) {
+    console.log(`consult notify failed: consultation=${consultationId}`)
+  }
+}
+
+// ---- 新しい応募（#150）。募集ページごとにまとめ、メールは30分に1通まで ----
+export async function notifyRecruitApplied(c: any, a: { company_id: number; page_id: number; applicant: string; count: number; source: 'public' | 'staff' }) {
+  const page = await c.env.DB.prepare('SELECT title FROM recruit_pages WHERE page_id = ? AND company_id = ?').bind(a.page_id, a.company_id).first().catch(() => null) as any
+  const pageTitle = String(page?.title || '募集ページ')
+  await notifyCompanyAdmins(c, {
+    companyId: a.company_id, kind: 'recruit_applied', relatedId: a.page_id, merge: true, email: 'throttle', mailType: 'recruit_applied',
+    title: (n) => n > 1 ? `新しい応募が${n}件あります（${pageTitle}）` : `新しい応募: ${a.applicant}さん（${pageTitle}）`,
+    headline: '募集ページに新しい応募が届きました。内容を確認し、承認または見送りをしてください。',
+    lines: [['募集ページ', pageTitle], ['応募者', `${a.applicant}${a.source === 'staff' ? '（スタッフアプリから）' : ''}`], ['希望の日時', `${a.count}件`]],
+    link: `/admin#recruit/page-${a.page_id}`, button: '応募を確認する',
+  })
+}
+
+// ---- 連携スタッフの所属元での退職（持ち越し #187）。連携先の各社の管理者に知らせる（アプリ内のみ）----
+export async function notifyLinkedRetirement(db: D1Database, rootStaffId: number | string, retiredAt: string | null) {
+  try {
+    const root = Number(rootStaffId)
+    const today = nowJST().slice(0, 10)
+    const rows = (await db.prepare(`SELECT l.staff_id, l.company_id, us.name AS staff_name, oc.company_name AS owner_company_name,
+        (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = l.staff_id AND s.company_id = l.company_id AND s.work_date >= ? AND s.status != 'absent') AS future_shifts
+      FROM staff_profiles l JOIN users us ON us.user_id = l.user_id LEFT JOIN companies oc ON oc.company_id = l.owner_company_id
+      WHERE COALESCE(l.root_staff_id, l.source_staff_id) = ? AND l.affiliation_type = 'linked_external'`).bind(today, root).all()).results as any[]
+    if (!rows.length) return
+    const now = nowJST()
+    const stmts = rows.map(r => {
+      const title = retiredAt ? `所属元で退職になります: ${r.staff_name || ''}（${fmtDate(retiredAt)}付け）` : `所属元が退職日を取り消しました: ${r.staff_name || ''}`
+      const body = [`所属元: ${r.owner_company_name || ''}`, retiredAt ? `退職日: ${retiredAt}` : '退職日: なし（取り消し）',
+        retiredAt ? `今日以降のシフト: ${Number(r.future_shifts) || 0}件（退職日より後のシフトは代わりの人を手配してください）` : ''].filter(Boolean).join('\n')
+      return db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
+        SELECT ?, user_id, 'roster_source_retired', ?, ?, ?, ?, ? FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
+        .bind(r.company_id, title, body, `/admin#staff/${Number(r.staff_id)}`, r.staff_id, now, r.company_id, ...NOTIFY_ADMIN_ROLES)
+    })
+    await db.batch(stmts)
+  } catch (e) {
+    console.log(`linked retirement notify failed: staff=${rootStaffId}`)
+  }
+}
+
+// =========================================================
 // お知らせメールの差出人の情報（#367）。companies.settings_json の mail_reply_to（返信先）・mail_contact_phone（問い合わせの電話番号）
 // お知らせメールの件名・本文の末尾に会社名と問い合わせ先を入れ、返信先（Reply-To）を企業のアドレスにする
 // =========================================================
@@ -557,7 +729,7 @@ notificationsAdminApi.put('/settings/mail-contact', async (c) => {
 // email_logs.created_at は UTC（CURRENT_TIMESTAMP）なので、日本時間にして返す
 // =========================================================
 const MAIL_LOG_PAGE = 100
-const MAIL_TYPES = ['notice', 'attendance_correction', 'incident_report', 'password_reset', 'account_email']
+const MAIL_TYPES = ['notice', 'attendance_correction', 'incident_report', 'password_reset', 'account_email', 'recruit_applied', 'board_message', 'roster_chat', 'consultation']
 function mailLogFilters(c: any, where: string[], binds: any[]) {
   const status = c.req.query('status') || ''
   if (status === 'failed') where.push(`l.status IN ('failed', 'bounced', 'bounced_soft', 'complained')`)

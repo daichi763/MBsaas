@@ -25,6 +25,7 @@ import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shift
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
+import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -1601,6 +1602,15 @@ api.get('/admin/attendance-photo/:attendanceId', async (c) => {
   return attendancePhotoResponse(c, row.photo_key)
 })
 
+// 管理者: 相談の写真の取得。自社あての相談の写真だけ（#429）
+api.get('/admin/consultation-photo/:id{[0-9]+}', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare(`SELECT a.storage_key FROM consultation_attachments a JOIN consultations co ON co.consultation_id = a.consultation_id
+    WHERE a.attachment_id = ? AND co.company_id = ?`).bind(c.req.param('id'), u.company_id).first() as any
+  if (!row) return c.json({ error: '写真が見つかりません' }, 404)
+  return attendancePhotoResponse(c, row.storage_key)
+})
+
 // 写真が送れないときの扱い（#535）。スタッフ: シフトの所有企業が写真なしの報告を許可しているかと、理由の選択肢
 api.get('/staff/photo-options', async (c) => {
   const resolved = await resolvePersonShift(c, c.req.query('shift_id'))
@@ -2053,7 +2063,8 @@ api.get('/staff/consultations', async (c) => {
     FROM consultations co JOIN companies cm ON cm.company_id = co.company_id
     LEFT JOIN projects p ON p.project_id = co.target_project_id AND p.company_id = co.company_id
     WHERE co.staff_id IN (${sids.map(() => '?').join(',')})
-    ORDER BY reply_unread DESC, co.created_at DESC, co.consultation_id DESC LIMIT 30`).bind(...uids, ...sids).all()).results
+    ORDER BY reply_unread DESC, co.created_at DESC, co.consultation_id DESC LIMIT 30`).bind(...uids, ...sids).all()).results as any[]
+  await withConsultThreads(db, list, 'staff')
   const today = todayJST()
   const targets = (await db.prepare(`
     SELECT s.shift_id, s.company_id, s.work_date, s.start_time, s.end_time, s.status, p.project_name, cm.company_name
@@ -2124,7 +2135,140 @@ api.post('/staff/consultations', async (c) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(owner.company_id, owner.staff_id, category, body, urgency || 'normal', targetProjectId, targetDate, nowJST()).run()
   const co = rows.find(x => x.company_id === owner!.company_id)
+  // 管理者に知らせる（#154。緊急・体調不良・遅刻欠勤はメールでも）
+  await notifyConsultation(c, Number(r.meta.last_row_id), 'received')
   return c.json({ ok: true, consultation_id: r.meta.last_row_id, company_name: co ? co.company_name : null })
+})
+
+// ---------- 相談のやり取り（#154）と写真（#429） ----------
+// やり取り: 最初の相談の本文（consultations.body）の後に、管理者の返信とスタッフの追加の連絡を consultation_messages に時系列で残す。
+// 写真: 1回の送信（最初の相談・追加の連絡）に3枚まで、1つの相談に10枚まで。送信から1時間以内に付ける（画面は送信の直後に続けて送る）。
+// R2 の PHOTOS に consultations/{company_id}/{consultation_id}/... で保存し、本人と相談先の会社の管理者だけが見られる
+const CONSULT_PHOTOS_PER_POST = 3
+const CONSULT_PHOTOS_MAX = 10
+const CONSULT_PHOTO_WINDOW_MIN = 60
+// 1人が24時間に送れる追加の連絡の数
+const CONSULT_MESSAGE_DAILY_MAX = 50
+
+// 相談の一覧（rows）に messages（やり取り）と photos（写真の ID）を付ける。スタッフには管理者の名前を出さない
+async function withConsultThreads(db: D1Database, rows: any[], viewer: 'staff' | 'admin') {
+  const ids = rows.map(r => Number(r.consultation_id))
+  if (!ids.length) return
+  const [m, a] = await db.batch([
+    db.prepare(`SELECT m.message_id, m.consultation_id, m.author_side, m.body, m.created_at, us.name AS author_name
+      FROM consultation_messages m LEFT JOIN users us ON us.user_id = m.author_user_id
+      WHERE m.consultation_id IN (SELECT value FROM json_each(?)) ORDER BY m.message_id`).bind(JSON.stringify(ids)),
+    db.prepare(`SELECT attachment_id, consultation_id, message_id, created_at FROM consultation_attachments
+      WHERE consultation_id IN (SELECT value FROM json_each(?)) ORDER BY attachment_id`).bind(JSON.stringify(ids)),
+  ])
+  const msgs = new Map<number, any[]>(), photos = new Map<number, any[]>()
+  for (const x of m.results as any[]) {
+    const list = msgs.get(x.consultation_id) || []
+    list.push({ message_id: x.message_id, author_side: x.author_side, body: x.body, created_at: x.created_at,
+      author_name: x.author_side === 'admin' ? (viewer === 'admin' ? x.author_name || '管理者' : '管理者') : null })
+    msgs.set(x.consultation_id, list)
+  }
+  for (const x of a.results as any[]) {
+    const list = photos.get(x.consultation_id) || []
+    list.push({ attachment_id: x.attachment_id, message_id: x.message_id, created_at: x.created_at })
+    photos.set(x.consultation_id, list)
+  }
+  for (const r of rows) { r.messages = msgs.get(Number(r.consultation_id)) || []; r.photos = photos.get(Number(r.consultation_id)) || [] }
+}
+
+// 本人（全所属企業の分）の相談
+async function ownConsultation(db: D1Database, u: any, id: number | null) {
+  if (id == null) return null
+  const sids = (await consultPersonRows(db, u)).map(r => r.staff_id)
+  if (!sids.length) return null
+  return await db.prepare(`SELECT consultation_id, company_id, staff_id, status, created_at FROM consultations
+    WHERE consultation_id = ? AND staff_id IN (SELECT value FROM json_each(?))`).bind(id, JSON.stringify(sids)).first() as any
+}
+
+// スタッフの追加の連絡。対応済みの相談に送ったら未対応に戻し、管理者に知らせる
+api.post('/staff/consultations/:id{[0-9]+}/messages', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  const body = typeof b.body === 'string' ? b.body.trim() : ''
+  if (!body) return c.json({ error: '内容を入力してください' }, 400)
+  if (body.length > CONSULT_BODY_MAX) return c.json({ error: `内容は${CONSULT_BODY_MAX}文字以内で入力してください` }, 400)
+  const co = await ownConsultation(db, u, toInt(c.req.param('id'), 1))
+  if (!co) return c.json({ error: '相談が見つかりません' }, 404)
+  const uids = (await consultPersonRows(db, u)).map(r => r.user_id)
+  const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dup = await db.prepare(`SELECT 1 FROM consultation_messages WHERE consultation_id = ? AND author_side = 'staff' AND body = ? AND created_at >= ? LIMIT 1`)
+    .bind(co.consultation_id, body, since).first()
+  if (dup) return c.json({ error: '同じ内容をすでに送信しています', duplicate: true }, 409)
+  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const sent = await db.prepare(`SELECT COUNT(*) AS n FROM consultation_messages WHERE author_side = 'staff' AND author_user_id IN (SELECT value FROM json_each(?)) AND created_at >= ?`)
+    .bind(JSON.stringify(uids.length ? uids : [u.user_id]), dayAgo).first() as any
+  if (Number(sent?.n) >= CONSULT_MESSAGE_DAILY_MAX) return c.json({ error: `追加の連絡は24時間に${CONSULT_MESSAGE_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください` }, 429)
+  const now = nowJST()
+  const [ins] = await db.batch([
+    db.prepare(`INSERT INTO consultation_messages (consultation_id, company_id, author_side, author_user_id, body, created_at) VALUES (?, ?, 'staff', ?, ?, ?)`)
+      .bind(co.consultation_id, co.company_id, u.user_id, body, now),
+    // 返信を待っている状態にする（管理者の返信で『対応中』になる）
+    db.prepare(`UPDATE consultations SET status = 'open' WHERE consultation_id = ? AND status != 'open'`).bind(co.consultation_id),
+  ])
+  await notifyConsultation(c, co.consultation_id, 'message', body)
+  return c.json({ ok: true, message_id: ins.meta.last_row_id })
+})
+
+// 写真を1枚ずつ付ける（multipart/form-data: photo、追加の連絡に付けるときは message_id）
+api.post('/staff/consultations/:id{[0-9]+}/photos', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  let form: FormData
+  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
+  const photo = form.get('photo')
+  if (!(photo instanceof File) || photo.size === 0) return c.json({ error: '写真が添付されていません' }, 400)
+  if (!PHOTO_ALLOWED_TYPES.includes(photo.type)) return c.json({ error: '対応していない画像形式です（JPEG/PNGのみ）' }, 400)
+  if (photo.size > PHOTO_MAX_BYTES) return c.json({ error: '画像サイズが大きすぎます。圧縮に失敗している可能性があります' }, 400)
+  const co = await ownConsultation(db, u, toInt(c.req.param('id'), 1))
+  if (!co) return c.json({ error: '相談が見つかりません' }, 404)
+  const rawMid = form.get('message_id')
+  const messageId = rawMid != null && rawMid !== '' ? toInt(String(rawMid), 1) : null
+  if (rawMid != null && rawMid !== '' && messageId == null) return c.json({ error: '追加の連絡が見つかりません' }, 404)
+  // 付ける先の送信（最初の相談か、本人の追加の連絡）と、送信からの時間
+  const postedAt = messageId == null ? co.created_at
+    : ((await db.prepare(`SELECT created_at FROM consultation_messages WHERE message_id = ? AND consultation_id = ? AND author_side = 'staff'`).bind(messageId, co.consultation_id).first()) as any)?.created_at
+  if (!postedAt) return c.json({ error: '追加の連絡が見つかりません' }, 404)
+  const windowStart = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_PHOTO_WINDOW_MIN * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  if (String(postedAt) < windowStart) return c.json({ error: '写真は送信から1時間以内に付けてください。新しく追加の連絡を送ると、写真を付けられます' }, 409)
+  const ext = photo.type === 'image/png' ? 'png' : 'jpg'
+  const rand = [...crypto.getRandomValues(new Uint8Array(6))].map(x => x.toString(16).padStart(2, '0')).join('')
+  const key = `consultations/${co.company_id}/${co.consultation_id}/${Date.now()}_${rand}.${ext}`
+  try {
+    await c.env.PHOTOS.put(key, await photo.arrayBuffer(), { httpMetadata: { contentType: photo.type } })
+  } catch {
+    return c.json({ error: '写真のアップロードに失敗しました。通信環境を確認して再度お試しください' }, 502)
+  }
+  try {
+    // 枚数の上限は登録と同じ文で確かめる（同時に送られても上限を超えないように）
+    const ins = await db.prepare(`INSERT INTO consultation_attachments (consultation_id, company_id, message_id, storage_key, content_type, size_bytes, uploaded_by, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM consultation_attachments WHERE consultation_id = ? AND message_id IS ?) < ?
+        AND (SELECT COUNT(*) FROM consultation_attachments WHERE consultation_id = ?) < ?`)
+      .bind(co.consultation_id, co.company_id, messageId, key, photo.type, photo.size, u.user_id, nowJST(),
+        co.consultation_id, messageId, CONSULT_PHOTOS_PER_POST, co.consultation_id, CONSULT_PHOTOS_MAX).run()
+    if (!ins.meta.changes) {
+      await c.env.PHOTOS.delete(key).catch(() => {})
+      return c.json({ error: `写真は1回の送信に${CONSULT_PHOTOS_PER_POST}枚、1つの相談に${CONSULT_PHOTOS_MAX}枚までです` }, 409)
+    }
+    return c.json({ ok: true, attachment_id: ins.meta.last_row_id })
+  } catch {
+    await c.env.PHOTOS.delete(key).catch(() => {})
+    return c.json({ error: '写真の登録に失敗しました。もう一度お試しください' }, 500)
+  }
+})
+
+// 相談の写真の取得（本人の相談の写真だけ）
+api.get('/staff/consultation-photo/:id{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const sids = (await consultPersonRows(db, u)).map(r => r.staff_id)
+  const row = sids.length ? await db.prepare(`SELECT a.storage_key FROM consultation_attachments a JOIN consultations co ON co.consultation_id = a.consultation_id
+    WHERE a.attachment_id = ? AND co.staff_id IN (SELECT value FROM json_each(?))`).bind(c.req.param('id'), JSON.stringify(sids)).first() as any : null
+  if (!row) return c.json({ error: '写真が見つかりません' }, 404)
+  return attendancePhotoResponse(c, row.storage_key)
 })
 
 // =========================================================
@@ -2953,6 +3097,8 @@ async function applyRetirement(db: D1Database, sid: string, companyId: number, r
     // 他社に連携した先（連携行）にも退職日を伝える（#127）
     ...(changed ? propagateRetirementStmts(db, sid, roster.retired_at || null, newRetired, userStatus === 'suspended') : []),
   ])
+  // 連携先の各社の管理者に、所属元での退職（退職日の設定・変更・取り消し）を知らせる（持ち越し #187）
+  if (changed) await notifyLinkedRetirement(db, sid, newRetired)
 }
 
 // スタッフ更新（スタッフマスタ画面から）
@@ -4673,6 +4819,9 @@ api.get('/admin/consultations', async (c) => {
     WHERE co.company_id = ?${cond} ORDER BY co.created_at DESC, co.consultation_id DESC LIMIT ? OFFSET ?`)
     .bind(u.company_id, ...binds, CONSULT_PAGE_SIZE, (page - 1) * CONSULT_PAGE_SIZE).all()
   const counts = (await db.prepare(`SELECT status, COUNT(*) AS n FROM consultations WHERE company_id = ? GROUP BY status`).bind(u.company_id).all()).results as any[]
+  // やり取り（#154）と写真（#429）。1件を開いたときは、その相談の自分あての通知を既読にする
+  await withConsultThreads(db, rows.results as any[], 'admin')
+  if (focusId != null && rows.results.length) await markAdminNotificationsRead(db, u.company_id, ['consult_received', 'consult_message'], focusId, u.user_id)
   return c.json({ consultations: rows.results, status, page, per_page: CONSULT_PAGE_SIZE, total, focus_id: focusId,
     counts: Object.fromEntries(CONSULT_STATUSES.map(s => [s, (counts.find(r => r.status === s)?.n as number) || 0])) })
 })
@@ -4692,14 +4841,27 @@ api.put('/admin/consultations/:id', async (c) => {
   const co = id == null ? null : await db.prepare(`SELECT co.consultation_id, co.company_id, co.manager_reply, co.category, sp.user_id
     FROM consultations co JOIN staff_profiles sp ON sp.staff_id = co.staff_id WHERE co.consultation_id = ? AND co.company_id = ?`).bind(id, u.company_id).first() as any
   if (!co) return c.json({ error: '相談が見つかりません' }, 404)
+  // 返信は上書きせず、やり取り（consultation_messages）に足す。manager_reply は最新の返信として残す（#154）。
+  // やり取りの最後が、少し前に送った同じ内容の管理者の返信なら（二度押し・状態だけの変更で同じ返信を送った）足さない
+  const now = nowJST()
+  let newReply = reply != null
+  if (newReply) {
+    const last = await db.prepare(`SELECT author_side, body, created_at FROM consultation_messages WHERE consultation_id = ? ORDER BY message_id DESC LIMIT 1`).bind(co.consultation_id).first() as any
+    const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    if (last && last.author_side === 'admin' && last.body === reply && String(last.created_at) >= since) newReply = false
+  }
   const stmts = [db.prepare('UPDATE consultations SET manager_reply = COALESCE(?, manager_reply), status = COALESCE(?, status) WHERE consultation_id = ? AND company_id = ?')
     .bind(reply, b.status ?? null, co.consultation_id, u.company_id)]
-  if (reply != null && reply !== co.manager_reply && co.user_id) {
+  if (newReply) stmts.push(db.prepare(`INSERT INTO consultation_messages (consultation_id, company_id, author_side, author_user_id, body, created_at) VALUES (?, ?, 'admin', ?, ?, ?)`)
+    .bind(co.consultation_id, co.company_id, u.user_id, reply, now))
+  // 返信した・対応済みにした相談の、管理者全員あての通知を既読にする（ほかの管理者が対応したことが分かるように）
+  if (newReply || b.status === 'done') stmts.push(db.prepare(`UPDATE user_notifications SET read_at = ? WHERE company_id = ? AND kind IN ('consult_received', 'consult_message') AND related_id = ? AND read_at IS NULL`)
+    .bind(now, co.company_id, co.consultation_id))
+  if (newReply && co.user_id) {
     // 同じ相談の前の返信の通知は既読にして、未読は最新の1件だけにする
-    const now = nowJST()
     stmts.push(db.prepare(`UPDATE user_notifications SET read_at = ? WHERE kind = '${CONSULT_REPLY_KIND}' AND related_id = ? AND read_at IS NULL`).bind(now, co.consultation_id))
     stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(co.company_id, co.user_id, CONSULT_REPLY_KIND, '相談・連絡に管理者から返信があります', reply.length > 100 ? reply.slice(0, 100) + '…' : reply, '#consult', co.consultation_id, now))
+      .bind(co.company_id, co.user_id, CONSULT_REPLY_KIND, '相談・連絡に管理者から返信があります', reply!.length > 100 ? reply!.slice(0, 100) + '…' : reply, '#consult', co.consultation_id, now))
   }
   await db.batch(stmts)
   return c.json({ ok: true })

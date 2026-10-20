@@ -4,6 +4,7 @@
 // ・スタッフ本人向けAPI（/api/staff/*）には一切ルートを持たない
 // =========================================================
 import { Hono } from 'hono'
+import { notifyCompanyAdmins, markAdminNotificationsRead } from './notifications'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -174,6 +175,7 @@ chatApi.get('/ended/:threadStaffId', async (c) => {
       (SELECT us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id = ?) AS staff_name`)
     .bind(last.owner_company_id, last.host_company_id, tid).first() as any
   await markRead(db, tid, u.company_id, last.comment_id, u.user_id)
+  await markAdminNotificationsRead(db, u.company_id, ['roster_chat'], tid, u.user_id)
   const mySide = last.host_company_id === u.company_id ? 'host' : 'owner'
   return c.json({
     thread: { thread_staff_id: tid, my_side: mySide, ended: true, staff_name: names?.staff_name || null,
@@ -220,6 +222,8 @@ chatApi.post('/:staffId/read', async (c) => {
   const want = Number(b.last_comment_id)
   if (Number.isInteger(want) && want > 0) upTo = Math.min(upTo, want)
   if (upTo) await markRead(db, t.thread_staff_id, u.company_id, upTo, u.user_id)
+  // チャットを読んだので、このスレッドの自分あての通知も既読にする（#166）
+  if (upTo) await markAdminNotificationsRead(db, u.company_id, ['roster_chat'], t.thread_staff_id, u.user_id)
   return c.json({ ok: true, last_read_comment_id: upTo })
 })
 
@@ -246,7 +250,31 @@ chatApi.post('/:staffId', async (c) => {
   const id = r.meta.last_row_id as number
   // 自分の投稿までは既読として扱う
   await markRead(db, t.thread_staff_id, u.company_id, id, u.user_id)
+  await notifyChatPartner(c, t, u.company_id)
   return c.json({ ok: true, comment_id: id })
 })
+
+/**
+ * 相手企業の管理者に、新しいメッセージがあることを知らせる（#166）。アプリ内通知（roster_chat）とメール。
+ * 同じスレッドの未読の通知は1件にまとめ、メールは30分に1通まで。チャットの本文は通知・メールに入れない
+ * リンク先は相手の画面でのスタッフ詳細（稼働先 = 連携行、所属元 = 元のスタッフの行。所属元は連携先ごとのチャット欄から開く）
+ */
+async function notifyChatPartner(c: any, t: any, fromCompanyId: number) {
+  const db: D1Database = c.env.DB
+  const toHost = t.owner_company_id === fromCompanyId
+  const to = toHost ? t.host_company_id : t.owner_company_id
+  if (!to || to === fromCompanyId) return
+  const sp = await db.prepare('SELECT source_staff_id FROM staff_profiles WHERE staff_id = ?').bind(t.thread_staff_id).first().catch(() => null) as any
+  const openId = toHost ? t.thread_staff_id : sp?.source_staff_id
+  const from = String((toHost ? t.owner_company_name : t.host_company_name) || '')
+  const staff = String(t.staff_name || '')
+  await notifyCompanyAdmins(c, {
+    companyId: to, kind: 'roster_chat', relatedId: Number(t.thread_staff_id), merge: true, email: 'throttle', mailType: 'roster_chat',
+    title: (n) => `企業間チャット: ${from}からメッセージがあります（${staff}さん${n > 1 ? `・${n}件` : ''}）`,
+    headline: `企業間チャットに、${from}からメッセージが届きました。管理画面で確認してください。`,
+    lines: [['相手の企業', from], ['スタッフ', staff], ['立場', toHost ? '自社は稼働先' : '自社は所属元']],
+    link: openId ? `/admin#staff/${Number(openId)}` : '/admin#roster-chat', button: 'チャットを開く',
+  })
+}
 
 export default chatApi

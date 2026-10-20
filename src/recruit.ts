@@ -15,6 +15,7 @@ import { assertAssignable, conflictLabel, isUniqueViolation } from './lib/staff-
 import { personStaffRows } from './roster'
 import { shiftWindow } from './lib/shift-time'
 import { isCompanyActive } from './lib/auth'
+import { notifyRecruitApplied } from './notifications'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string }
@@ -289,6 +290,8 @@ recruitPublicApi.post('/:token/apply', async (c) => {
     VALUES (?, ?, 'public', ?, ?, ?, ?, ?, ?, ?)`).bind(page.company_id, page.page_id, name, kana || null, phone, email || null, note || null, ipHash, appliedAt).run()
   const appId = app.meta.last_row_id
   await db.batch(targets.map(r => db.prepare('INSERT OR IGNORE INTO recruit_application_items (application_id, slot_role_id) VALUES (?, ?)').bind(appId, r.slot_role_id)))
+  // 管理者に新しい応募を知らせる（#150。失敗しても応募は受け付ける）
+  await notifyRecruitApplied(c, { company_id: page.company_id, page_id: page.page_id, applicant: name, count: targets.length, source: 'public' })
   return c.json({ ok: true, count: targets.length, full_count: targets.filter(r => r.remaining <= 0).length, accepted: receipt(targets), already_applied: already, applied_at: appliedAt })
 })
 function addHourJST(h: number) { return new Date(Date.now() + (9 + h) * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
@@ -545,6 +548,8 @@ recruitStaffApi.post('/apply', async (c) => {
     if (isUniqueViolation(e)) return c.json({ error: '選んだ日時はすでに応募済みです。画面を読み直してください', duplicate: true }, 409)
     throw e
   }
+  // 管理者に新しい応募を知らせる（#150。募集ページごと）
+  for (const pp of perPage) await notifyRecruitApplied(c, { company_id: u.company_id, page_id: pp.page_id, applicant: me?.name || u.name, count: pp.count, source: 'staff' })
   // full_count: 定員に達していた日時（キャンセル待ちとして受け付けた件数。#315）
   return c.json({ ok: true, count: targets.length, full_count: targets.filter(r => r.remaining <= 0).length, rejected_count: rejectedCount, pages: perPage })
 })
