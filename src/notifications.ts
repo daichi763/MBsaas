@@ -7,6 +7,7 @@
 //                  管理者が代わりに出した申請は、スタッフ本人にも未読で知らせる（メールは送らない）。
 //                  まとめて出した申請の承認依頼メールは1通にまとめ、本人が取り消した直後の申請し直しはメールを送らない（#392）
 //   承認・却下   → 申請者本人 ＋ 処理した管理者。管理者が出した申請の承認は、記録が変わったスタッフ本人にも知らせる（#181）
+//                  申請者と処理した管理者が同じとき（申請と同時に承認 #174 など）は、既読の控えだけでメールは送らない
 //   取り消し     → シフトの削除・担当者の差し替えで自動で取り消した場合だけ申請者本人へ（本人の取り消しは通知しない）
 //   承認・却下・取り消しの後は、その申請の承認依頼（correction_submitted）を全員分既読にする（#189）
 // アプリ内通知は申請・承認の処理の後に登録し、メールはその後に送る（waitUntil）。
@@ -145,6 +146,8 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent): Pr
     // 本人の取り消しは誰にも送らない（承認依頼は notifyCorrection で既読にする）
     if (c.cancel_reason) add(requester, 'correction_cancelled')
   } else {
+    // 管理者が自分で出した申請を自分で処理した（申請と同時に承認 #174 を含む）ときは、本人には既読の控えだけを残す（結果の通知・メールは送らない）
+    if (requester && requester.user_id === c.decided_by) add(requester, 'correction_processed', { read: true, noEmail: true })
     add(requester, event === 'approved' ? 'correction_approved' : 'correction_rejected')
     add(await user(c.decided_by), 'correction_processed')
     // 管理者が出した申請を承認したときは、記録が変わったスタッフ本人にも知らせる（申請者と同じ人なら送らない。#181）

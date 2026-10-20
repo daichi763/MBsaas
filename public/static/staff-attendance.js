@@ -214,14 +214,93 @@
       <p class="text-sm text-gray-700 mt-3">修正理由（必須）</p>
       <div class="flex flex-wrap gap-1 mt-1">${REASONS.map(t => `<button type="button" class="badge badge-gray" data-action="attReasonPreset" data-text="${esc(t)}">${esc(t)}</button>`).join('')}</div>
       <textarea id="att-reason" rows="3" maxlength="500" class="inp mt-1" placeholder="例: 店舗の電波が悪く、入店報告を送れなかったため">${esc(reason)}</textarea>
+      ${attachFieldHtml(s)}
       <div id="att-msg" class="mt-2"></div>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary flex-1" id="att-submit" data-action="attSubmit">申請する</button></div></div>`)
     form.confirmed = null
+    form.files = []
+    bindAttachInput()
     // 日時を変えたら、前に出した警告を消して確認からやり直す（#261）。前後の報告との順序はその場で示す（#401）
     document.getElementById('att-form').addEventListener('input', (e) => { if (e.target && e.target.type === 'datetime-local') { resetConfirm(); showOrder() } })
     showOrder()
   }
+  // ---------- 申請に添付する写真・画像（#485） ----------
+  // 画像は staff.js の compressImage（入店・退店の写真と同じ圧縮）で小さくしてから、申請の後に1枚ずつ送る
+  const ATTACH_MAX = 3
+  const PHOTO_TYPES = ['check_in', 'check_out']
+  function attachFieldHtml(s) {
+    // 写真が必須の案件で、入店・退店の打刻漏れを追加するときは、写真の添付を案内する（添付がなくても申請はできる。管理者が確かめて承認する）
+    const need = form.kind === 'add' && PHOTO_TYPES.includes(form.report_type) && s.photo_required
+    return `<div class="mt-3">
+      <p class="text-sm text-gray-700">写真・画像（任意・${ATTACH_MAX}枚まで）</p>
+      ${need ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1"><i class="fas fa-camera mr-1"></i>この案件は${LABEL[form.report_type]}の写真が必須です。店舗で撮った写真や入退館の記録などがあれば添付してください（承認されると報告の写真として残ります）</p>`
+        : '<p class="text-[11px] text-gray-500">店舗の入退館の記録や画面の写しなど、裏付けになる画像があれば添付してください</p>'}
+      <div id="att-thumbs" class="flex flex-wrap gap-2 mt-1"></div>
+      <label class="btn btn-outline text-xs mt-1" id="att-file-label"><i class="fas fa-paperclip"></i>画像を選ぶ<input type="file" id="att-file" accept="image/jpeg,image/png,image/*" multiple class="hidden"></label>
+    </div>`
+  }
+  function drawThumbs() {
+    const box = document.getElementById('att-thumbs'); if (!box) return
+    box.innerHTML = form.files.map((f, i) => `<div class="relative"><img src="${esc(f.url)}" alt="添付${i + 1}" class="w-20 h-20 object-cover rounded border">
+      <button type="button" class="absolute -top-1.5 -right-1.5 bg-white rounded-full w-5 h-5 text-xs text-gray-600 border" data-action="attFileRemove" data-idx="${i}" aria-label="添付${i + 1}を外す">×</button></div>`).join('')
+    const label = document.getElementById('att-file-label'); if (label) label.classList.toggle('hidden', form.files.length >= ATTACH_MAX)
+  }
+  // 選んだ画像を圧縮して添付の候補にする（HEIC など読めない画像は理由を出す）
+  async function addFiles(files, onError) {
+    for (const file of files) {
+      if (form.files.length >= ATTACH_MAX) { onError(`添付できるのは${ATTACH_MAX}枚までです`); break }
+      try {
+        const blob = await compressImage(file)
+        form.files.push({ blob, url: URL.createObjectURL(blob), takenAt: file.lastModified || null })
+      } catch (e) { onError(e && e.message ? e.message : '画像の処理に失敗しました') }
+    }
+  }
+  function bindAttachInput() {
+    const input = document.getElementById('att-file'); if (!input) return
+    input.addEventListener('change', async () => {
+      const msg = document.getElementById('att-msg')
+      await addFiles([...input.files], (m) => { if (msg) msg.innerHTML = `<p class="text-xs text-red-600">${esc(m)}</p>` })
+      input.value = ''
+      drawThumbs()
+    })
+  }
+  delegate('attFileRemove', (el) => {
+    const f = form && form.files && form.files[Number(el.dataset.idx)]; if (!f) return
+    URL.revokeObjectURL(f.url); form.files.splice(Number(el.dataset.idx), 1); drawThumbs()
+  })
+  // 申請に画像を送る。送れなかった枚数を返す
+  async function uploadFiles(correctionId, files) {
+    let failed = 0
+    for (const f of files) {
+      const fd = new FormData()
+      fd.append('photo', f.blob, 'attachment.jpg')
+      if (f.takenAt) fd.append('photo_taken_at', String(f.takenAt))
+      try { await axios.post(`/api/staff/corrections/${Number(correctionId)}/attachments`, fd) } catch (e) { failed++ }
+    }
+    return failed
+  }
+  // 申請した後から画像を添付する（申請の一覧の『写真を添付』。送れなかったときのやり直しにも使う）
+  delegate('attAttach', (el) => {
+    const id = Number(el.dataset.id)
+    const input = document.createElement('input')
+    input.type = 'file'; input.accept = 'image/jpeg,image/png,image/*'; input.multiple = true; input.className = 'hidden'
+    document.body.appendChild(input)
+    input.onchange = () => withSubmitLock(el, async () => {
+      input.remove()
+      const holder = { files: [] }, errors = []
+      const left = Math.max(0, ATTACH_MAX - Number(el.dataset.count || 0))
+      for (const file of [...input.files].slice(0, left)) {
+        try { const blob = await compressImage(file); holder.files.push({ blob, takenAt: file.lastModified || null }) } catch (e) { errors.push(e && e.message ? e.message : '画像の処理に失敗しました') }
+      }
+      if (!holder.files.length) { toast(errors[0] || '画像を選んでください'); return }
+      const failed = await uploadFiles(id, holder.files)
+      toast(failed ? `${holder.files.length - failed}枚を添付しました（${failed}枚は送れませんでした）` : `${holder.files.length}枚を添付しました`)
+      renderRequests()
+    })
+    input.click()
+  })
+
   // 入力中の日時（対象と『一緒に直す』の報告）
   function collect() {
     const items = [{ report_type: form.report_type, requested_at: toAt(document.getElementById('att-at').value) }]
@@ -283,8 +362,15 @@
             return
           }
         }
-        await axios.post(url, body)
-        closeModal(); toast(bulk ? `${items.length}件をまとめて申請しました。承認されると記録が変わります` : '申請しました。承認されると記録が変わります')
+        const { data } = await axios.post(url, body)
+        // 添付の画像は、この報告の申請（まとめて申請では、この報告の分）に送る（#485）
+        let failed = 0
+        if (form.files.length) {
+          const cid = bulk ? ((data.corrections || []).find(x => x.report_type === form.report_type) || {}).correction_id : data.correction_id
+          failed = cid ? await uploadFiles(cid, form.files) : form.files.length
+        }
+        closeModal(); toast((bulk ? `${items.length}件をまとめて申請しました。承認されると記録が変わります` : '申請しました。承認されると記録が変わります')
+          + (failed ? `（画像${failed}枚を送れませんでした。修正申請の一覧の『写真を添付』から送り直してください）` : ''))
         S.tab === 'requests' ? renderRequests() : renderTimeline()
       } catch (e) {
         msg.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e))}</p>`
@@ -311,6 +397,7 @@
         ${c.by_admin ? `<p class="text-[11px] text-blue-700 bg-blue-50 rounded px-2 py-1 mt-1"><i class="fas fa-user-tie mr-1"></i>管理者（${esc(c.requested_by_name || '')}）が代わりに申請しました${c.status === 'pending' ? '。取り消しは管理者が行います' : ''}</p>` : ''}
         <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b></p>
         <p class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">理由: ${esc(c.reason)}</p>
+        ${Number(c.attachment_count) ? `<p class="text-[11px] text-gray-500 mt-1"><i class="fas fa-paperclip mr-1"></i>添付 ${Number(c.attachment_count)}枚</p>` : ''}
         ${c.order_warnings.length ? `<p class="text-[11px] text-amber-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${c.order_warnings.map(esc).join(' / ')}</p>` : ''}
         ${c.status === 'approved' ? `<p class="text-xs text-emerald-700 mt-1.5">承認: ${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}</p>` : ''}
         ${c.status === 'approved' && c.applied_while_settled ? '<p class="text-[11px] text-amber-800 mt-1">精算が確定済みのシフトのため、支払額は変わっていません（管理者が別途対応します）</p>' : ''}
@@ -321,6 +408,7 @@
         ${c.resubmitted_from ? `<p class="text-[11px] text-gray-400 mt-1">再申請（元の申請 #${Number(c.resubmitted_from)}）</p>` : ''}
         <div class="flex gap-2 mt-2">
           <button class="btn btn-outline text-xs flex-1" data-action="attDetail" data-id="${c.correction_id}">経緯を見る</button>
+          ${c.status === 'pending' && c.mine && Number(c.attachment_count) < ATTACH_MAX ? `<button class="btn btn-outline text-xs flex-1" data-action="attAttach" data-id="${Number(c.correction_id)}" data-count="${Number(c.attachment_count) || 0}"><i class="fas fa-paperclip"></i>写真を添付</button>` : ''}
           ${c.status === 'pending' && c.mine ? `<button class="btn btn-danger text-xs flex-1" data-action="attCancel" data-id="${c.correction_id}">取り消す</button>` : ''}
           ${c.status === 'rejected' && c.mine && !c.resubmitted_count && !c.superseded_by ? `<button class="btn btn-primary text-xs flex-1" data-action="attResubmit" data-id="${c.correction_id}">修正して再申請</button>` : ''}
           ${c.by_admin ? '<a href="#consult" class="btn btn-outline text-xs flex-1">管理者に相談する</a>' : ''}
@@ -353,7 +441,7 @@
     const kind = r ? 'modify' : 'add'
     const changed = kind !== c.kind || (r && c.before_at && String(r.reported_at).slice(0, 16) !== String(c.before_at).slice(0, 16))
     const tl = TL && TL.shifts.find(x => x.shift_id === c.shift_id)
-    const shift = { work_date: c.work_date, start_time: c.start_time, end_time: c.end_time, reports, pending: [], enabled: tl ? tl.enabled : [], settled: !!c.settled, break_minutes: tl ? tl.break_minutes : null }
+    const shift = { work_date: c.work_date, start_time: c.start_time, end_time: c.end_time, reports, pending: [], enabled: tl ? tl.enabled : [], settled: !!c.settled, break_minutes: tl ? tl.break_minutes : null, photo_required: !!(tl && tl.photo_required) }
     form = { mode: 'resubmit', from_id: id, shift, shift_id: c.shift_id, report_type: c.report_type, kind, before: r ? r.reported_at : null, work_date: c.work_date, title: c.project_name, changed }
     showForm(toInput(c.requested_at), c.reason)
   }
@@ -414,6 +502,7 @@
       <ol class="space-y-1.5 mb-3">${d.events.map(e => `<li class="text-xs"><span class="text-gray-400">${esc(dayjs(e.created_at).format('M/D HH:mm'))}</span> ${EVENT[e.event] || esc(e.event)} ・${esc(e.actor_name || '')}</li>`).join('')}</ol>
       <h4 class="text-xs font-bold text-gray-500 mb-1">同じ報告の申請</h4>
       <ul class="space-y-1 mb-4">${d.history.map(h => `<li class="text-xs ${h.correction_id === c.correction_id ? 'font-bold' : ''}">#${h.correction_id} ${(STATUS[h.status] || [h.status])[0]} ・${esc(showAt(h.requested_at, c.work_date))}${h.reject_reason ? ' ・却下の理由: ' + esc(h.reject_reason) : ''}</li>`).join('')}</ul>
+      ${(d.attachments || []).length ? `<h4 class="text-xs font-bold text-gray-500 mb-1">添付した画像</h4><div class="flex flex-wrap gap-2 mb-4">${d.attachments.map(a => `<a href="/api/staff/corrections/attachments/${Number(a.attachment_id)}" target="_blank" rel="noopener" class="block border rounded overflow-hidden"><img src="/api/staff/corrections/attachments/${Number(a.attachment_id)}" alt="添付の画像" loading="lazy" class="w-20 h-20 object-cover bg-gray-100"></a>`).join('')}</div>` : ''}
       <button class="btn btn-outline w-full" onclick="closeModal()">閉じる</button>`)
   }
   // ホームの『報告漏れ』から開く（#483）: 打刻履歴（直近2週間）を出してから、そのシフト・報告の打刻漏れの追加の申請を開く

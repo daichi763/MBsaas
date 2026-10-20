@@ -700,7 +700,8 @@ delegate('photoSkipOpen', async (el) => {
     try { opt = (await axios.get('/api/staff/photo-options', { params: { shift_id: shiftId } })).data } catch (e) { opt = null }
   })
   if (!document.getElementById('photo-skip-area') || pendingPhoto.shiftId !== shiftId) return
-  const guide = `写真を送れない場合は、<a href="#attendance" class="text-blue-600 underline" onclick="closeModal()">打刻履歴</a>から打刻の追加を申請するか、管理者に連絡してください`
+  // 打刻の追加の申請には、後から撮った写真や店舗の入退館の記録を添付できる（#485）
+  const guide = `写真を送れない場合は、<a href="#attendance" class="text-blue-600 underline" onclick="closeModal()">打刻履歴</a>から打刻の追加を申請するか（写真・画像も添付できます）、管理者に連絡してください`
   box.innerHTML = opt && opt.skip_allowed ? `<div class="space-y-2 text-sm">
       <p class="font-bold text-gray-700">写真なしで報告する</p>
       <select id="photo-skip-reason" class="inp text-sm">${Object.entries(opt.reasons || {}).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join('')}</select>
