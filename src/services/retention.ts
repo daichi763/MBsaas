@@ -1261,11 +1261,23 @@ export async function exportOffboardingTablePage(db: D1Database, companyId: numb
 export type OffboardingFile = { source: string; bucket: string; id: number; r2_key: string; file_name: string | null; created_at: string | null; ref_id: number | null }
 /** R2 のファイルの一覧（offset から limit 件） */
 export async function listOffboardingFiles(db: D1Database, companyId: number, offset: number, limit: number): Promise<OffboardingFile[]> {
-  const sql = OFFBOARDING_FILE_SOURCES.map(f => `SELECT '${f.source}' AS source, '${f.bucket}' AS bucket, ${f.idCol} AS id, ${f.keyCol} AS r2_key,
-      ${f.nameCol || 'NULL'} AS file_name, ${f.whenCol} AS created_at, ${f.refCol} AS ref_id
-    FROM ${f.source} WHERE company_id = ? AND ${f.keyCol} IS NOT NULL`).join(' UNION ALL ')
-  return (await db.prepare(`SELECT * FROM (${sql}) ORDER BY source, id LIMIT ? OFFSET ?`)
-    .bind(...OFFBOARDING_FILE_SOURCES.map(() => companyId), limit, offset).all()).results as OffboardingFile[]
+  // 元の表ごとの件数を1文で数え、ページにかかる表だけを、表の名前・ID の順に取る。
+  // 元の表が増えて UNION ALL でまとめると D1 の上限（too many terms in compound SELECT）に当たるため、表ごとに問い合わせる
+  const sources = [...OFFBOARDING_FILE_SOURCES].sort((x, y) => x.source < y.source ? -1 : x.source > y.source ? 1 : 0)
+  const cnt = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${sources.map((f, i) =>
+    `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = (SELECT cid FROM k) AND ${f.keyCol} IS NOT NULL) AS c${i}`).join(', ')}`).bind(companyId).first() as Record<string, number> | null
+  const out: OffboardingFile[] = []
+  let skip = Math.max(0, offset), want = Math.max(0, limit)
+  for (let i = 0; i < sources.length && want > 0; i++) {
+    const n = Number(cnt?.[`c${i}`]) || 0
+    if (skip >= n) { skip -= n; continue }
+    const f = sources[i]
+    const rows = (await db.prepare(`SELECT '${f.source}' AS source, '${f.bucket}' AS bucket, ${f.idCol} AS id, ${f.keyCol} AS r2_key,
+        ${f.nameCol || 'NULL'} AS file_name, ${f.whenCol} AS created_at, ${f.refCol} AS ref_id
+      FROM ${f.source} WHERE company_id = ? AND ${f.keyCol} IS NOT NULL ORDER BY ${f.idCol} LIMIT ? OFFSET ?`).bind(companyId, want, skip).all()).results as OffboardingFile[]
+    out.push(...rows); want -= rows.length; skip = 0
+  }
+  return out
 }
 
 /** R2 のファイル1件（元の表と行の ID で、その企業のものだけ） */
