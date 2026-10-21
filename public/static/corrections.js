@@ -48,10 +48,12 @@
       <div class="space-y-2 text-sm">
         <label class="flex items-center gap-2"><input type="radio" name="cd-mode" value="none" ${d ? '' : 'checked'}>期限なし</label>
         <label class="flex items-center gap-2 flex-wrap"><input type="radio" name="cd-mode" value="days" ${d ? 'checked' : ''}>勤務日から
-          <input id="cd-days" type="number" min="1" max="${max}" step="1" class="inp text-sm w-24" value="${d || 7}">日後まで</label>
+          <input id="cd-days" type="number" min="1" max="${max}" step="1" class="inp text-sm w-24" value="${d || 7}" ${s.can_edit === false ? 'disabled' : ''}>日後まで</label>
       </div>
       <p class="text-[11px] text-gray-400 mt-2">例: 7日にすると、10/1 の勤務は 10/8 まで申請できます。精算が確定済みのシフトへの打刻修正は、期限内でも「支払額は自動では変わりません」と案内したうえで受け付けます（交通費・延長の申請は確定済み・締めた期間のシフトには出せません）。</p>
-      <button class="btn btn-primary w-full mt-4" data-action="corrDeadlineSave" data-max="${max}">保存する</button>`)
+      ${s.can_edit === false ? '<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">勤怠の設定を変えられるのは会社管理者と現場管理者だけです</p>'
+        : `<button class="btn btn-primary w-full mt-4" data-action="corrDeadlineSave" data-max="${max}">保存する</button>`}`)
+    if (s.can_edit === false) document.querySelectorAll('input[name="cd-mode"]').forEach(r => { r.disabled = true })
     const days = document.getElementById('cd-days')
     if (days) days.addEventListener('focus', () => { const r = document.querySelector('input[name="cd-mode"][value="days"]'); if (r) r.checked = true })
   })

@@ -249,8 +249,9 @@ delegate('photoRequiredSetting', async () => {
       ${(d.history || []).length ? `<ul class="text-xs text-gray-500 space-y-0.5">${d.history.map(h => `<li>${esc(dashDateTime(h.at))} ${esc(h.name || '-')}: ${h.enabled ? '必須に変更' : '無効に変更'}</li>`).join('')}</ul>`
         : '<p class="text-xs text-gray-400">記録はありません</p>'}
     </div>
+    ${d.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>` : ''}
     <div class="flex gap-2"><button type="button" class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
-      <button type="button" class="btn ${next ? 'btn-primary' : 'btn-danger'} flex-1" data-action="savePhotoRequired" data-enabled="${next ? '1' : '0'}" data-follow="${Number(p.follow) || 0}">${next ? '必須にする' : '無効にする'}</button></div>`)
+      ${d.can_edit === false ? '' : `<button type="button" class="btn ${next ? 'btn-primary' : 'btn-danger'} flex-1" data-action="savePhotoRequired" data-enabled="${next ? '1' : '0'}" data-follow="${Number(p.follow) || 0}">${next ? '必須にする' : '無効にする'}</button>`}</div>`)
 })
 delegate('savePhotoRequired', el => withSubmitLock(el, async () => {
   const enabled = el.dataset.enabled === '1'
@@ -1517,6 +1518,7 @@ async function renderStaffDetail(sid, opts = {}) {
   STAFF_EVALS = data.evaluations || []
   staffDetailState = { sid, p, affData }
   const edBiz = editing && !!p.can_edit_business
+  const staffPerfCols = perfColumns(data.performance_fields)
   $app.innerHTML = `
     <div id="staff-detail-header">${staffDetailHeaderHtml(sid, p)}</div>
 
@@ -1551,12 +1553,13 @@ async function renderStaffDetail(sid, opts = {}) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">月次実績推移 <span class="text-xs font-normal text-gray-400">（今月と前の2か月。日報のない月は0）</span></h3>
       <div class="overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>月</th><th>日数</th><th>MNP</th><th>PI</th><th>新規</th><th>光</th><th>成約</th></tr></thead>
+        <thead><tr><th>月</th><th>日数</th>${staffPerfCols.cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}</th>`).join('')}</tr></thead>
         <tbody>${data.performance.map(m => `
-          <tr class="${m.days ? '' : 'text-gray-400'}"><td>${esc(dayjs(m.ym + '-01').format('YYYY年M月'))}</td><td>${m.days}</td><td>${m.mnp}</td><td>${m.pi}</td><td>${m.shinki}</td><td>${m.hikari}</td><td class="font-bold">${m.seiyaku}</td></tr>`).join('') || '<tr><td colspan="7" class="text-gray-400 text-center py-3">データなし</td></tr>'}
+          <tr class="${m.days ? '' : 'text-gray-400'}"><td>${esc(dayjs(m.ym + '-01').format('YYYY年M月'))}</td><td>${Number(m.days) || 0}</td>${staffPerfCols.cols.map(f => `<td class="${f.key === 'seiyaku' ? 'font-bold' : ''}">${perfValue(m, f.key)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${staffPerfCols.cols.length + 2}" class="text-gray-400 text-center py-3">データなし</td></tr>`}
         </tbody>
       </table>
       </div>
+      ${perfMoreNote(staffPerfCols.more)}
     </section>
 
     <div class="grid lg:grid-cols-2 gap-4">
@@ -2286,8 +2289,8 @@ window.showSkillSheet = async function (sid) {
         <div class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(s => `<span class="badge badge-purple">${esc(s)}</span>`).join('') || '-'}</div></div>
       <div><p class="text-xs font-bold text-gray-400 mb-1">通算実績（${perf.total_days || 0}稼働日）</p>
         <div class="grid grid-cols-3 sm:grid-cols-5 gap-2 text-center">
-          ${[['MNP', perf.mnp], ['PI', perf.pi], ['新規', perf.shinki], ['光回線', perf.hikari], ['成約', perf.seiyaku]].map(([l, v]) =>
-            `<div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${v || 0}</p><p class="text-xs text-gray-500">${l}</p></div>`).join('')}
+          ${perfColumns(data.performance_fields).cols.map(f =>
+            `<div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${perfValue(perf, f.key)}</p><p class="text-xs text-gray-500">${esc(f.key === 'hikari' && !(data.performance_fields || []).length ? '光回線' : f.label)}</p></div>`).join('')}
         </div></div>
       ${ev ? `<div><p class="text-xs font-bold text-gray-400 mb-1">評価（${esc(ev.evaluation_period)}）</p>
         <p class="text-xs">勤怠 ${ev.attendance_score}/5 ・報告 ${ev.report_score}/5 ・実績 ${ev.performance_score}/5 ・クライアント ${ev.client_score}/5</p></div>` : ''}
@@ -2488,7 +2491,7 @@ delegate('showLatenessSetting', async () => {
     <h3 class="font-bold text-lg mb-2"><i class="fas fa-stopwatch text-blue-600 mr-1"></i>遅刻の猶予</h3>
     <p class="text-xs text-gray-500 mb-3">入店・勤務開始の報告が、シフトの開始時刻から何分以内なら遅刻にしないかを決めます（会社全体）。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）。</p>
     <label class="text-sm text-gray-600 block mb-1">猶予（分）</label>
-    <input id="late-grace" type="number" min="0" max="${Number(s.max_grace_minutes) || 0}" step="1" class="inp" value="${Number(s.grace_minutes) || 0}">
+    <input id="late-grace" type="number" min="0" max="${Number(s.max_grace_minutes) || 0}" step="1" class="inp" value="${Number(s.grace_minutes) || 0}" ${s.can_edit === false ? 'disabled' : ''}>
     <p class="text-[11px] text-gray-400 mt-1">0〜${Number(s.max_grace_minutes) || 0}分。0 にすると、開始時刻を1分でも過ぎたら遅刻になります</p>
     <div class="mt-4 pt-3 border-t border-gray-100">
       <p class="text-sm font-bold text-gray-700 mb-1">案件ごとの猶予</p>
@@ -2499,7 +2502,8 @@ delegate('showLatenessSetting', async () => {
           <span class="font-bold whitespace-nowrap">${Number(p.late_grace_minutes)}分</span></li>`).join('')}</ul>`
         : '<p class="text-xs text-gray-400">案件ごとに変えている案件はありません</p>'}
     </div>
-    <button class="btn btn-primary w-full mt-4" data-action="saveLatenessSetting">保存する</button>`)
+    ${s.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`
+      : '<button class="btn btn-primary w-full mt-4" data-action="saveLatenessSetting">保存する</button>'}`)
 })
 delegate('closeLatenessToProject', () => closeModal())
 delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
@@ -2619,6 +2623,16 @@ function rankRows(rows, hasRate) {
 }
 const perDay = (v, d) => d ? (Math.round((v / d) * 10) / 10).toLocaleString() : '-'
 const ratePct = (n, d) => d ? Math.round((n / d) * 100) + '%' : '-'
+// 実績の列（#184）。API が日報テンプレートの数値項目（performance_fields と各行の values）を返せばそれを、
+// 返さない・項目がないときは従来の決め打ちの項目を使う。列が多すぎないよう先頭の PERF_COL_MAX 件までにする
+const PERF_FIXED_FIELDS = [{ key: 'mnp', label: 'MNP' }, { key: 'pi', label: 'PI' }, { key: 'shinki', label: '新規' }, { key: 'hikari', label: '光' }, { key: 'seiyaku', label: '成約' }]
+const PERF_COL_MAX = 8
+function perfColumns(fields) {
+  const all = Array.isArray(fields) && fields.length ? fields : PERF_FIXED_FIELDS
+  return { cols: all.slice(0, PERF_COL_MAX), more: Math.max(0, all.length - PERF_COL_MAX) }
+}
+const perfValue = (row, key) => Number(row && row.values && key in row.values ? row.values[key] : row ? row[key] : 0) || 0
+const perfMoreNote = (more) => more ? `<p class="text-[11px] text-gray-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で見られます</p>` : ''
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-rank-min]') : null
   if (!sel) return
@@ -2733,6 +2747,8 @@ document.addEventListener('change', ev => {
 // 案件ごとの遅刻の猶予（#497）。未設定（null）なら会社の猶予（GET/PUT /admin/settings/lateness）を使う。
 // 基準の時刻はシフトの開始時刻のまま（集合時刻は設けない）。保存は PUT /admin/projects/:id/lateness { grace_minutes: 分 | null }
 const LATE_GRACE_MAX_DEFAULT = 120
+// 勤怠の設定（写真添付・写真なしの報告・遅刻の猶予・申請の受付期限）を変えられない役割への案内（サーバーは 403。9004）
+const ATTENDANCE_SETTING_DENIED_TEXT = '勤怠の設定を変えられるのは会社管理者と現場管理者だけです'
 function projectLatenessHtml(p) {
   const own = p.late_grace_minutes != null && p.late_grace_minutes !== ''
   return `<div class="mt-4 pt-3 border-t border-gray-100" id="project-late-box">
@@ -2749,7 +2765,8 @@ function projectLatenessHtml(p) {
           <p class="text-[11px] text-gray-400 mt-1">シフトの開始時刻から何分以内の入店・勤務開始を遅刻にしないか。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）</p>
         </div>`
 }
-// 会社の猶予（と上限）を読んで、「会社の設定に従う（現在: n分）」と入力の上限に出す
+// 会社の猶予（と上限）を読んで、「会社の設定に従う（現在: n分）」と入力の上限に出す。
+// 勤怠の設定を変えられない役割（API の can_edit が false）なら、遅刻の猶予と写真添付の欄を変えられないようにする
 async function fillProjectLatenessCompany() {
   let s
   try { s = (await axios.get('/api/admin/settings/lateness')).data } catch { return }
@@ -2757,6 +2774,11 @@ async function fillProjectLatenessCompany() {
   if (opt) opt.textContent = `会社の設定に従う（現在: ${Number(s.grace_minutes) || 0}分）`
   const inp = document.getElementById('proj-late-grace')
   if (inp && Number(s.max_grace_minutes)) inp.max = String(Number(s.max_grace_minutes))
+  if (s.can_edit === false) {
+    document.querySelectorAll('#proj-late-mode, #proj-late-grace, [data-action="saveProjectLateness"], select[data-project-photo]').forEach(el => { el.disabled = true })
+    const box = document.getElementById('project-late-box')
+    if (box) box.insertAdjacentHTML('beforeend', `<p class="text-[11px] text-amber-700 mt-1">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`)
+  }
 }
 delegate('saveProjectLateness', el => withSubmitLock(el, async () => {
   const pid = Number(el.dataset.id)
@@ -3012,16 +3034,21 @@ function projectSkillBadges(v) {
 function drawProjectStaffPerf() {
   const host = document.getElementById('project-staff-perf'); if (!host || !PROJECT_DETAIL) return
   const { data } = PROJECT_DETAIL; const range = monthRangeOf(data.month)
-  const rows = rankRows(data.staff_performance.map(s => ({ ...s, days: Number(s.days || 0), val: Number(s.seiyaku || 0), num: Number(s.seiyaku || 0), den: Number(s.shodan || 0) })), true)
-  host.innerHTML = `<table class="tbl">
-    <thead><tr><th>スタッフ</th><th>日数</th><th>MNP</th><th>PI</th><th>新規</th><th>光</th><th>成約</th><th class="whitespace-nowrap">成約/日</th><th>成約率</th></tr></thead>
+  // 並べ替えの基準は成約（テンプレートに無ければ先頭の数値項目）。成約率は成約と商談の両方があるときだけ出す
+  const { cols, more } = perfColumns(data.performance_fields)
+  const main = cols.find(f => f.key === 'seiyaku') || cols[0]
+  const hasRate = main.key === 'seiyaku' && (!Array.isArray(data.performance_fields) || !data.performance_fields.length || data.performance_fields.some(f => f.key === 'shodan'))
+  const rows = rankRows(data.staff_performance.map(s => ({ ...s, days: Number(s.days || 0), val: perfValue(s, main.key), num: perfValue(s, 'seiyaku'), den: perfValue(s, 'shodan') })), hasRate)
+  host.innerHTML = `<div class="overflow-x-auto"><table class="tbl">
+    <thead><tr><th>スタッフ</th><th>日数</th>${cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}</th>`).join('')}<th class="whitespace-nowrap">${esc(main.label)}/日</th>${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
     <tbody>${rows.map(s => `
       <tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name)}</a>
         <a href="${esc(reportsLink({ project: data.project.project_id, staff: s.staff_id, ...range }))}" class="text-[11px] text-gray-400 hover:underline ml-1" title="この人の日報を見る"><i class="fas fa-file-lines"></i></a></td>
-      <td>${s.days}</td><td>${Number(s.mnp || 0)}</td><td>${Number(s.pi || 0)}</td><td>${Number(s.shinki || 0)}</td><td>${Number(s.hikari || 0)}</td><td class="font-bold">${s.val}</td>
-      <td>${perDay(s.val, s.days)}</td><td>${ratePct(s.num, s.den)}</td></tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-3">データなし</td></tr>'}
-    </tbody></table>
-    <p class="text-[11px] text-gray-400 mt-1">日数は日報の数。成約率は成約÷商談（商談の入力がない人は -）</p>`
+      <td>${s.days}</td>${cols.map(f => `<td class="${f.key === main.key ? 'font-bold' : ''}">${perfValue(s, f.key)}</td>`).join('')}
+      <td>${perDay(s.val, s.days)}</td>${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 3 + (hasRate ? 1 : 0)}" class="text-center text-gray-400 py-3">データなし</td></tr>`}
+    </tbody></table></div>
+    ${perfMoreNote(more)}
+    <p class="text-[11px] text-gray-400 mt-1">日数は日報の数。${hasRate ? '成約率は成約÷商談（商談の入力がない人は -）' : `並べ替えは「${esc(main.label)}」で行います`}</p>`
 }
 delegate('rankProject', el => { RANK_STATE.mode = el.dataset.mode; renderProjectDetailRankButtons(); drawProjectStaffPerf() })
 function renderProjectDetailRankButtons() {
@@ -3991,8 +4018,9 @@ delegate('photoSkipSetting', async () => {
     <p class="text-sm text-gray-600 mb-3">店舗が撮影禁止・カメラが使えないなどで写真を送れないとき、スタッフが理由を選んで写真なしで入店・退店を報告できるようにします（アプリと報告用URL）。写真なしの報告と理由は、シフトの報告状況と写真の一覧に表示されます。</p>
     <p class="text-xs text-gray-500 mb-3">選べる理由: ${Object.values(d.reasons || {}).map(esc).join('・')}</p>
     <p class="text-sm mb-4">現在: <span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '写真なしの報告を許可' : '許可しない（担当者に連絡してもらう）'}</span></p>
+    ${d.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>` : ''}
     <div class="flex gap-2"><button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
-      <button class="btn btn-primary flex-1" data-action="savePhotoSkip" data-enabled="${d.enabled ? '0' : '1'}">${d.enabled ? '許可をやめる' : '許可する'}</button></div>`)
+      ${d.can_edit === false ? '' : `<button class="btn btn-primary flex-1" data-action="savePhotoSkip" data-enabled="${d.enabled ? '0' : '1'}">${d.enabled ? '許可をやめる' : '許可する'}</button>`}</div>`)
 })
 delegate('savePhotoSkip', (el) => withSubmitLock(el, async () => {
   try {

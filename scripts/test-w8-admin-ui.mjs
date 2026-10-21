@@ -46,6 +46,11 @@ const admin = client(await login('sample', 'admin'))
   const a = await staticJs('admin.js'), sb = await staticJs('shift-board.js'), nt = await staticJs('notifications.js'), co = await staticJs('corrections.js')
   ok('#464 通知の種類の名前（交通費・延長の申請、登録情報の変更申請、書類の提出、休暇の申請、休憩なしの申告）',
     ['pay_request_submitted', 'profile_change_submitted', 'staff_document_submitted', 'leave_submitted', 'attendance_no_break'].every(k => nt.includes(k + ':')))
+  ok('#297 #464 書類の有効期限の通知（docs_expiring）とメールの種類（doc_expiry）の名前', nt.includes('docs_expiring:') && nt.includes('doc_expiry:'))
+  ok('#184 スタッフ詳細・案件詳細・スキルシートの実績は、API の performance_fields（テンプレートの数値項目）で列を組み立てる',
+    a.includes('function perfColumns') && a.split('perfColumns(data.performance_fields)').length - 1 >= 3 && a.includes('const PERF_FIXED_FIELDS'))
+  ok('9004 勤怠の設定を変えられない役割（can_edit が false）には、保存のボタンを出さない',
+    a.includes('ATTENDANCE_SETTING_DENIED_TEXT') && (a.match(/can_edit === false/g) || []).length >= 4 && co.includes("s.can_edit === false"))
   ok('#464 表にない種類は「その他」と出し、生の種類名をそのまま出さない', nt.includes('const kindLabel') && !nt.includes("KIND[n.kind] || n.kind"))
   ok('#276 日報一覧のカードに入力経路（代理入力・報告用URL）のバッジ', a.includes('function reportEntryBadge') && a.includes('${reportEntryBadge(r)}'))
   ok('#275 シフトボードのツールバーと日付の見出しから、報告用URLのまとめての発行を開ける',
@@ -92,6 +97,14 @@ const S1 = await createShift(A, P, Y, '09:00', '18:00')
   pend('#276 日報一覧の行に記録した管理者の名前（entered_by_name）', row && 'entered_by_name' in row, row && row.entered_by_name, row)
 }
 
+// ---------- #184 実績の項目（テンプレートの数値項目） ----------
+{
+  const d = must(await admin.get(`/api/admin/projects/${P}`), 'project')
+  pend('#184 案件詳細が performance_fields と各行の values を返す', 'performance_fields' in d, Array.isArray(d.performance_fields) && d.staff_performance.every(r => r.values && typeof r.values === 'object'), d.performance_fields)
+  const st = must(await admin.get(`/api/admin/staff/${A}`), 'staff')
+  pend('#184 スタッフ詳細が performance_fields と月ごとの values を返す', 'performance_fields' in st, Array.isArray(st.performance_fields) && st.performance.every(m => m.values && typeof m.values === 'object'), st.performance_fields)
+}
+
 // ---------- #464 通知の種類での絞り込み ----------
 {
   const r = await admin.get('/api/admin/notifications?kind=pay_request_submitted&limit=5')
@@ -101,6 +114,8 @@ const S1 = await createShift(A, P, Y, '09:00', '18:00')
 // ---------- #497 案件ごとの遅刻の猶予 ----------
 {
   const company = must(await admin.get('/api/admin/settings/lateness'), 'lateness')
+  pend('#497 会社の猶予の画面に使う projects（案件ごとの late_grace_minutes）と can_edit を返す', 'projects' in company,
+    Array.isArray(company.projects) && company.projects.some(p => p.project_id === P && 'late_grace_minutes' in p) && company.can_edit === true, company)
   const put = await admin.put(`/api/admin/projects/${P}/lateness`, { grace_minutes: 15 })
   const ready = !routeMissing(put)
   pend('#497 案件の猶予を保存できる（PUT /admin/projects/:id/lateness）', ready, put.status === 200, put)
