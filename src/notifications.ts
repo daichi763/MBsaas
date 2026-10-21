@@ -586,13 +586,17 @@ export type AdminNotice = {
   excludeUserIds?: number[]
   // アプリ内通知の本文だけに足す内容（メールには入れない。相談の本文など）
   appExtra?: string
+  // 宛先のロール（省略時は管理ロール全員。入社時書類など従業員管理の内容は会社管理者・事務担当だけ）
+  roles?: string[]
 }
 export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ notified: number; emailed: number }> {
   try {
     const db: D1Database = c.env.DB
     const exclude = new Set((n.excludeUserIds || []).map(Number))
-    const admins = ((await db.prepare(`SELECT user_id, name, email, role FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
-      .bind(n.companyId, ...NOTIFY_ADMIN_ROLES).all()).results as any[]).filter(a => !exclude.has(Number(a.user_id)))
+    const roles = n.roles ? NOTIFY_ADMIN_ROLES.filter(r => n.roles!.includes(r)) : NOTIFY_ADMIN_ROLES
+    if (!roles.length) return { notified: 0, emailed: 0 }
+    const admins = ((await db.prepare(`SELECT user_id, name, email, role FROM users WHERE company_id = ? AND status = 'active' AND role IN (${roles.map(() => '?').join(',')})`)
+      .bind(n.companyId, ...roles).all()).results as any[]).filter(a => !exclude.has(Number(a.user_id)))
     if (!admins.length) return { notified: 0, emailed: 0 }
     // 受け取り設定でこの種類のメールを止めた人には送らない（#284）
     const prefs = n.email === 'never' ? new Map() : await loadNotifyPrefs(db, admins.map(a => a.user_id))
@@ -1447,6 +1451,9 @@ export const NOTIFY_PREF_GROUPS: PrefGroup[] = [
   { key: 'consult', audience: 'admin', label: 'スタッフからの相談・連絡', desc: '緊急度の高い相談・体調不良・遅刻欠勤のメール', kinds: ['consult_received', 'consult_message'], defaultEmail: always },
   // 掲示板の保存した検索条件の新着（#479）。条件ごとの「メールでも知らせる」に加えて、この設定で止められる
   { key: 'board_saved_search', audience: 'admin', label: '案件掲示板の新着（保存した検索条件）', desc: '保存した検索条件に合う掲載（1日1通まで）', kinds: ['board_saved_search'], defaultEmail: always },
+  // 書類の有効期限（#297）。メールの既定は会社管理者・事務担当だけ（ほかのロールはアプリ内の通知だけ）
+  { key: 'docs_expiring', audience: 'admin', label: '書類の有効期限', desc: '資格証・身分証・契約書などの期限が30日以内・期限切れになったとき（朝8時以降、1日1回まで）', kinds: ['docs_expiring'],
+    defaultEmail: (role) => role === 'company_admin' || role === 'office_staff' },
   // ---- スタッフ ----
   { key: 'shift', audience: 'staff', label: 'シフトの登録・変更・取消', desc: 'メールは今日・明日のシフトの変更のときだけ', kinds: ['shift_assigned', 'shift_changed', 'shift_cancelled'],
     defaultEmail: always, push: true, mailTypes: ['shift_change'] },
@@ -1619,6 +1626,68 @@ export async function runNotificationDigests(env: NotifyEnv): Promise<{ due: num
     try { await sendEmailBatch(env, mails) } catch (e) { console.log(`digest mail failed: ${e}`) }
   }
   return { due: due.length, sent: mails.length }
+}
+
+// ---------- 書類の有効期限の知らせ（#297）----------
+// 有効期限（valid_until）が DOC_EXPIRY_NOTICE_DAYS 日以内になった書類と、期限が切れた書類を、会社ごとに1件の通知（とメール）にまとめて管理者に知らせる。
+// 書類ごとに「どの期限のどの段階（soon = 30日以内 / expired = 期限切れ）を知らせたか」を expiry_notified に残し、同じ段階は二度知らせない
+// （期限を更新すれば、新しい期限で改めて知らせる）。毎朝 DIGEST_HOUR 時以降の15分おきの cron で動き、1回に DOC_EXPIRY_BATCH 件ずつ処理する。
+// 知らせるのは会社（とまとまり）ごとに1日1回まで: 今日すでに知らせた会社の書類は、印を付けずに翌日に回す。
+// 対象はダッシュボードの ToDo（docs_expiring）と同じ: 在籍中のスタッフの書類・取引先の書類と、入社時書類（会社管理者・事務担当だけに知らせる）
+export const DOC_EXPIRY_NOTICE_DAYS = 30
+export const DOC_EXPIRY_KIND = 'docs_expiring'
+const DOC_EXPIRY_BATCH = 200
+// 1回に知らせる会社の数（通知・メールの問い合わせと送信の数を Free プランの上限に収める。残りは次の起動で知らせる）
+const DOC_EXPIRY_COMPANIES_PER_RUN = 3
+MAIL_TYPES.push('doc_expiry')
+const DOC_STAGE_SQL = (today: string) => `d.valid_until || ':' || CASE WHEN d.valid_until < '${today}' THEN 'expired' ELSE 'soon' END`
+const DOC_EXPIRY_SOURCES = [
+  { table: 'staff_documents', group: 'staff', join: `JOIN staff_profiles sp ON sp.staff_id = d.staff_id JOIN users us ON us.user_id = sp.user_id`,
+    where: `us.status = 'active' AND COALESCE(sp.employment_status, 'working') != 'retired' AND sp.merged_into_staff_id IS NULL` },
+  { table: 'client_documents', group: 'staff', join: `JOIN clients cl ON cl.client_id = d.client_id AND cl.company_id = d.company_id`, where: '1 = 1' },
+  { table: 'employee_documents', group: 'hr', join: `JOIN staff_profiles sp ON sp.staff_id = d.staff_id LEFT JOIN employee_records er ON er.staff_id = d.staff_id AND er.company_id = d.company_id`,
+    where: `er.employment_ended_at IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired'` },
+] as const
+export async function notifyExpiringDocuments(env: NotifyEnv): Promise<{ checked: number; companies: number; notified: number; emailed: number; idle?: boolean }> {
+  const now = nowJST()
+  if (Number(now.slice(11, 13)) < DIGEST_HOUR) return { idle: true, checked: 0, companies: 0, notified: 0, emailed: 0 }
+  const db = env.DB
+  const today = now.slice(0, 10)
+  const limit = new Date(Date.parse(today + 'T00:00:00Z') + DOC_EXPIRY_NOTICE_DAYS * 86400000).toISOString().slice(0, 10)
+  const stage = DOC_STAGE_SQL(today)
+  const got = await db.batch(DOC_EXPIRY_SOURCES.map(s => db.prepare(`SELECT d.document_id, d.company_id, CASE WHEN d.valid_until < ? THEN 1 ELSE 0 END AS expired
+    FROM ${s.table} d ${s.join} JOIN companies co ON co.company_id = d.company_id
+    WHERE d.valid_until IS NOT NULL AND d.valid_until <= ? AND ${s.where} AND COALESCE(co.active_status, 'active') NOT IN ('inactive', 'internal')
+      AND COALESCE(d.expiry_notified, '') != ${stage}
+      AND d.company_id NOT IN (SELECT n.company_id FROM user_notifications n WHERE n.kind = '${DOC_EXPIRY_KIND}' AND n.related_id = ? AND n.created_at >= ?)
+    ORDER BY d.company_id, d.document_id LIMIT ?`).bind(today, limit, s.group === 'hr' ? 1 : 0, today + ' 00:00:00', DOC_EXPIRY_BATCH)))
+  const found = DOC_EXPIRY_SOURCES.map((s, i) => ((got[i].results || []) as any[]).map(r => ({ ...r, source: s })))
+  if (!found.some(r => r.length)) return { idle: true, checked: 0, companies: 0, notified: 0, emailed: 0 }
+  const companies = [...new Set(found.flat().map(r => Number(r.company_id)))].sort((a, b) => a - b).slice(0, DOC_EXPIRY_COMPANIES_PER_RUN)
+  const rows = found.map(list => list.filter(r => companies.includes(Number(r.company_id))))
+  const all = rows.flat()
+  // 先に知らせた印を付ける（通知に失敗しても、同じ書類を何度も知らせ続けないように）
+  await db.batch(DOC_EXPIRY_SOURCES.map((s, i) => db.prepare(`UPDATE ${s.table} AS d SET expiry_notified = ${stage} WHERE d.document_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(rows[i].map(r => r.document_id)))))
+  const c = { env, executionCtx: undefined as any }
+  let notified = 0, emailed = 0
+  for (const cid of companies) {
+    for (const group of ['staff', 'hr'] as const) {
+      const mine = all.filter(r => Number(r.company_id) === cid && r.source.group === group)
+      if (!mine.length) continue
+      const expired = mine.filter(r => Number(r.expired)).length, soon = mine.length - expired
+      const r = await notifyCompanyAdmins(c, {
+        companyId: cid, kind: DOC_EXPIRY_KIND, relatedId: group === 'hr' ? 1 : 0, merge: true, email: 'throttle',
+        roles: group === 'hr' ? ['company_admin', 'office_staff'] : undefined,
+        title: () => group === 'hr' ? '入社時書類の有効期限が近づいています' : '書類の有効期限が近づいています',
+        headline: `有効期限が${DOC_EXPIRY_NOTICE_DAYS}日以内の書類・期限が切れた書類があります。資格証・身分証・契約書などを更新してください。`,
+        lines: [['期限切れ', `${expired}件`], [`${DOC_EXPIRY_NOTICE_DAYS}日以内に期限`, `${soon}件`]],
+        link: '/admin#staff-requests', button: '書類の一覧を開く', mailType: 'doc_expiry',
+      })
+      notified += r.notified; emailed += r.emailed
+    }
+  }
+  return { checked: all.length, companies: companies.length, notified, emailed }
 }
 
 // ---------- プッシュ通知（#178）----------

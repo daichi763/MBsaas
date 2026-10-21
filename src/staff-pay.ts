@@ -5,6 +5,7 @@
 //   支払額（#290）は、会社設定 staff_pay_visible（companies.settings_json。既定 OFF）が ON の会社のシフトで、
 //   支払先が本人（自社給与・日雇い給与・個人事業主）のものだけを返す。請求額・取引先や他社への支払・調整のメモは返さない。
 // 申請（staff_pay_requests。migrations/0068）: 交通費の実費（#273）と、予定の終了時刻の延長（#172）。
+//   交通費の申請には領収書の写真を1枚付けられる（任意。migrations/0088 の receipt_*。R2 の PHOTOS の pay-receipts/ 以下）。
 //   管理者が承認すると、交通費は shifts.transportation_fee を、延長は shifts.end_time を書き換える（時給の金額は計算し直す）。
 //   確定済み・締めた期間のシフトは申請も承認もできない。承認待ちの申請は精算の確認事項に出す（settlement.ts）。
 // 管理者 API（/api/admin/pay-requests*・/api/admin/staff-pay/settings）は api.ts から権限ミドルウェアの後に登録する。
@@ -21,7 +22,7 @@ import { isHHMM, oneOf, toInt } from './lib/validate'
 import { mdText, notifyCompanyAdmins, notifyShiftStaff, nowJST } from './lib/staff-pay-notify'
 import { attachPremiums } from './lib/premium-pay'
 
-type Bindings = { DB: D1Database }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
 
 export const PAY_REQUEST_KINDS = ['transport', 'overtime'] as const
@@ -74,7 +75,18 @@ function requestView(q: any) {
     amount: q.amount, route: q.route, round_trip: !!q.round_trip, before_amount: q.before_amount,
     new_end_time: q.new_end_time, before_end_time: q.before_end_time, instructed_by: q.instructed_by, reason: q.reason,
     decided_by_name: q.decided_by_name, decided_at: q.decided_at, decision_note: q.decision_note, approved_amount: q.approved_amount, approved_end_time: q.approved_end_time,
+    // 領収書の写真（#273）。画像は本人 GET /api/staff/pay/requests/:id/receipt、管理者 GET /api/admin/pay-requests/:id/receipt で取る（R2 のキーは返さない）
+    has_receipt: !!q.receipt_key, receipt_uploaded_at: q.receipt_uploaded_at || null,
   }
+}
+
+// 領収書の写真（#273）: 画面で圧縮した JPEG/PNG（入店・退店の写真と同じ上限）
+const RECEIPT_MAX_BYTES = 500 * 1024
+const RECEIPT_TYPES = ['image/jpeg', 'image/png']
+async function receiptResponse(c: any, key: string | null | undefined) {
+  const obj = key ? await c.env.PHOTOS.get(key) : null
+  if (!obj) return c.json({ error: '領収書の写真が見つかりません' }, 404)
+  return c.body(obj.body, 200, { 'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
 }
 
 // =========================================================
@@ -221,6 +233,48 @@ staffPayStaffApi.post('/pay/requests', async (c) => {
   return c.json({ ok: true, request_id: row.request_id })
 })
 
+// 領収書の写真を付ける・差し替える（#273。本人の、承認待ちの交通費の申請だけ）。multipart/form-data: photo（画面で圧縮した JPEG/PNG）
+staffPayStaffApi.post('/pay/requests/:id{[0-9]+}/receipt', async (c) => {
+  const db = c.env.DB
+  const staffIds = (await personStaffRows(db, c.get('user'))).map(r => r.staff_id)
+  const q = await db.prepare(`SELECT request_id, company_id, staff_id, kind, status, receipt_key FROM staff_pay_requests WHERE request_id = ? AND staff_id IN ${JSON_IN}`)
+    .bind(Number(c.req.param('id')), bindJsonArray(staffIds)).first() as any
+  if (!q) return c.json({ error: '申請が見つかりません' }, 404)
+  if (q.kind !== 'transport') return c.json({ error: '領収書を付けられるのは交通費の申請だけです' }, 400)
+  if (q.status !== 'pending') return c.json({ error: '承認待ちの申請にだけ付けられます' }, 409)
+  let form: FormData
+  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が正しくありません' }, 400) }
+  const photo = form.get('photo')
+  if (!(photo instanceof File) || photo.size === 0) return c.json({ error: '写真が添付されていません' }, 400)
+  if (!RECEIPT_TYPES.includes(photo.type)) return c.json({ error: '対応していない画像形式です（JPEG/PNGのみ）' }, 400)
+  if (photo.size > RECEIPT_MAX_BYTES) return c.json({ error: '画像サイズが大きすぎます。圧縮に失敗している可能性があります' }, 400)
+  const key = `pay-receipts/${q.company_id}/${q.staff_id}/${q.request_id}_${Date.now()}.${photo.type === 'image/png' ? 'png' : 'jpg'}`
+  try { await c.env.PHOTOS.put(key, await photo.arrayBuffer(), { httpMetadata: { contentType: photo.type } }) } catch {
+    return c.json({ error: '写真のアップロードに失敗しました。通信環境を確認して再度お試しください' }, 502)
+  }
+  // 読んだ後に承認・取り消し・ほかの差し替えがあったら保存しない（写真を消して 409）
+  const r = await db.prepare(`UPDATE staff_pay_requests SET receipt_key = ?, receipt_type = ?, receipt_size = ?, receipt_uploaded_at = ?
+    WHERE request_id = ? AND status = 'pending' AND receipt_key IS ?`).bind(key, photo.type, photo.size, nowJST(), q.request_id, q.receipt_key ?? null).run()
+  if (!r.meta.changes) {
+    await c.env.PHOTOS.delete(key).catch(() => {})
+    return c.json({ error: '申請の状態が変わったため保存できませんでした。画面を読み直してください' }, 409)
+  }
+  // 差し替えた前の写真を消す（消せなければ、データ保持の定期処理の再試行で消す）
+  if (q.receipt_key) {
+    try { await c.env.PHOTOS.delete(q.receipt_key) } catch {
+      await db.prepare(`INSERT OR IGNORE INTO retention_pending_r2 (photo_key, staff_id, bucket) VALUES (?, ?, 'photos')`).bind(q.receipt_key, q.staff_id).run().catch(() => {})
+    }
+  }
+  return c.json({ ok: true, has_receipt: true })
+})
+// 自分の申請の領収書の写真
+staffPayStaffApi.get('/pay/requests/:id{[0-9]+}/receipt', async (c) => {
+  const staffIds = (await personStaffRows(c.env.DB, c.get('user'))).map(r => r.staff_id)
+  const q = await c.env.DB.prepare(`SELECT receipt_key FROM staff_pay_requests WHERE request_id = ? AND staff_id IN ${JSON_IN}`)
+    .bind(Number(c.req.param('id')), bindJsonArray(staffIds)).first() as any
+  return receiptResponse(c, q?.receipt_key)
+})
+
 // 本人の取り消し（承認待ちのものだけ）
 staffPayStaffApi.post('/pay/requests/:id{[0-9]+}/cancel', async (c) => {
   const db = c.env.DB
@@ -264,6 +318,13 @@ staffPayAdminApi.get('/pay-requests', async (c) => {
       shift_issue: r.status !== 'pending' ? null : approveBlock(r, !!r.work_date && inClosing(closings, u.company_id, r.work_date)),
     })),
   })
+})
+
+// 申請の領収書の写真（自社の申請のみ。#273）
+staffPayAdminApi.get('/pay-requests/:id{[0-9]+}/receipt', async (c) => {
+  const q = await c.env.DB.prepare('SELECT receipt_key FROM staff_pay_requests WHERE request_id = ? AND company_id = ?')
+    .bind(Number(c.req.param('id')), c.get('user').company_id).first() as any
+  return receiptResponse(c, q?.receipt_key)
 })
 
 // 承認できない理由（承認できるなら null）。r は申請とシフトの行（shift_status・shift_staff_id・settle_status）

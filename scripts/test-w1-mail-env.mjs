@@ -4,6 +4,8 @@
 //   ローカルでは RESEND_API_KEY が未設定のため、メールは実際には送られず「送信失敗（mail_not_configured）」として記録される。
 //   （MAIL_ENABLED:false の既定で起動した場合は「送信停止中（skipped）」として記録される。#260 の確認は MAIL_ENABLED:true のときだけ行う）
 // 実行: BASE=http://127.0.0.1:8815 node scripts/test-w1-mail-env.mjs
+// 【注意】MAIL_ENABLED を true にせずに起動すると、メールは「送信停止中（skipped）」になり、#260 の確認は SKIP になる（9005）。
+//   npm test（scripts/run-tests.mjs）は上の --var を読んで起動に付けるので、そのままで #260 まで確かめる。手で流すときは必ず付けて起動する
 const BASE = process.env.BASE || 'http://127.0.0.1:8815'
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 400) : ''}`) }
