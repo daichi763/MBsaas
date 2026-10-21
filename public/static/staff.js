@@ -574,14 +574,16 @@ function homeReportStates(order, reports, pending, carryover, windowOpen) {
 }
 
 // 押し間違いの取消（#323）: 最後に済んだ報告が、本人がアプリで送ったもの（修正されていない）で、送ってから WITHDRAW_MINUTES 分以内なら取り消せる。
-// 休憩なし（休憩入・休憩出が同じ時刻）は2つまとめて取り消す。最終的な可否はサーバーが判定する
+// 休憩なし（休憩入・休憩出が同じ時刻）は2つまとめて取り消す。最終的な可否はサーバーが判定する。
+// 押した時刻（端末時刻）で記録した報告は、サーバーと同じく受け取った時刻から数える（#427。後から送った直後でも取り消せる）
 const WITHDRAW_MINUTES = 5
 const isNoBreak = (r) => !!(r.break_start && r.break_end && r.break_start.reported_at === r.break_end.reported_at)
+const withdrawFrom = (x) => (x.device_time && x.received_at ? x.received_at : x.reported_at)
 function homeWithdrawable(r) {
   const last = REPORT_ORDER.slice().reverse().find(t => r[t])
   const x = last && r[last]
   if (!x || x.entry_method !== 'app' || x.corrected) return null
-  if (dayjs().diff(dayjs(x.reported_at), 'minute', true) >= WITHDRAW_MINUTES) return null
+  if (dayjs().diff(dayjs(withdrawFrom(x)), 'minute', true) >= WITHDRAW_MINUTES) return null
   const noBreak = last === 'break_end' && isNoBreak(r) && r.break_start.entry_method === 'app' && !r.break_start.corrected
   return { type: last, noBreak }
 }

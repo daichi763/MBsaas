@@ -94,6 +94,13 @@
   window.attMove = function (n) { S.to = n ? dayjs(S.to || today()).add(n, 'day').format('YYYY-MM-DD') : null; if (S.to && S.to >= today()) S.to = null; renderTimeline() }
   delegate('attReload', () => renderTimeline())
 
+  // 電波がない場所で押して後から送った報告（#427）は、押した時刻で記録したことと送った時刻を出す（打刻修正で直した報告は出さない）
+  function deviceTimeTag(r, workDate) {
+    if (!r || r.corrected_by_correction_id || !(r.device_time || r.time_source === 'device')) return ''
+    const sent = r.received_at ? `・送信 ${esc(showAt(String(r.received_at), workDate))}` : ''
+    return ` <span class="badge badge-gray font-normal">押した時刻で記録${sent}</span>`
+  }
+
   function shiftCard(s) {
     const rep = Object.fromEntries(s.reports.map(r => [r.report_type, r]))
     const pend = Object.fromEntries(s.pending.map(p => [p.report_type, p]))
@@ -108,7 +115,7 @@
         : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '追加申請'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
-        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
+        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${deviceTimeTag(r, s.work_date)}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
         ${action}</li>`
     }
     return `<div class="card p-3 mb-2">
