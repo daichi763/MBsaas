@@ -812,7 +812,7 @@ async function ownShift(db: D1Database, companyId: number, shiftId: any) {
   return db.prepare(`SELECT s.*, us.name AS staff_name, p.project_name, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
       sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, sp.is_provisional, us.role AS user_role,
       p.default_break_minutes AS p_break_minutes, sp.merged_into_staff_id, sp.employment_status, us.retired_at,
-      us.phone AS staff_phone, si.site_name, si.address AS site_address
+      us.phone AS staff_phone, si.site_name, si.address AS site_address, p.late_grace_minutes
     FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id JOIN projects p ON p.project_id = s.project_id
     LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     WHERE s.shift_id = ? AND s.company_id = ?`).bind(shiftId, companyId).first() as Promise<any>
@@ -958,10 +958,11 @@ function planProxyAttendance(s: any, required: string[], existing: { report_type
   }
   return { ok: true, atOf }
 }
-// 記録する行。遅刻・早退は、アプリ・報告用URLと同じ判定（report-settings.ts の lateness。入店・勤務開始の遅刻と猶予、勤務終了・退店の早退）
+// 記録する行。遅刻・早退は、アプリ・報告用URLと同じ判定（report-settings.ts の lateness。入店・勤務開始の遅刻と猶予、勤務終了・退店の早退）。
+// s は案件の猶予の上書き（p.late_grace_minutes。#497）を含めて読んだ行
 function proxyRowsOf(s: any, atOf: Map<string, string>, settingsJson: any) {
   const types = [...atOf.keys()]
-  return lateness(s, types.map(t => ({ report_type: t, reported_at: atOf.get(t)! })), latenessSettings(settingsJson))
+  return lateness(s, types.map(t => ({ report_type: t, reported_at: atOf.get(t)! })), latenessSettings(settingsJson, s.late_grace_minutes))
     .map(j => ({ report_type: j.report_type, reported_at: atOf.get(j.report_type)!, status: j.late ? 'late' : 'normal',
       late_minutes: j.late_minutes, early_leave_minutes: j.early_leave_minutes }))
 }
@@ -1080,7 +1081,7 @@ async function shiftsOfDay(db: D1Database, companyId: number, q: { date?: string
   if (q.nologinOnly) where.push("us.role != 'staff'")
   return (await db.prepare(`SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.break_minutes, s.location,
       p.project_name, p.default_break_minutes AS p_break_minutes, us.user_id, us.name AS staff_name, us.phone AS staff_phone, us.role AS user_role, us.status AS user_status,
-      us.retired_at, sp.merged_into_staff_id, sp.employment_status, si.site_name
+      us.retired_at, sp.merged_into_staff_id, sp.employment_status, si.site_name, p.late_grace_minutes
     FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id JOIN projects p ON p.project_id = s.project_id
     LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     WHERE ${where.join(' AND ')}
@@ -1513,7 +1514,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
   const ng = checkStaffReport({ ...t, status: cur?.status, settle_status: cur?.settle_status }, reportType, now, modes.required_attendance, await loadReportState(db, t.shift_id))
   if (ng) return c.json({ error: ng.error }, ng.status as 400)
   // 遅刻・早退の判定（アプリと同じ。23時台に始まる勤務で 0時を過ぎた入店・勤務開始も、日付を含めて比べる。#134 #219 #497）
-  const judged = lateness(t, [{ report_type: reportType, reported_at: now }], latenessSettings(t.settings_json))[0]
+  const judged = lateness(t, [{ report_type: reportType, reported_at: now }], latenessSettings(t.settings_json, t.late_grace_minutes))[0]
   const status = reportStatus(judged, lat)
   // 写真が必須の入店・退店: 写真がなければ、会社が許可しているときだけ理由つきで受け付ける（#535）
   let noPhotoReason: string | null = null

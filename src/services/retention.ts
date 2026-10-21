@@ -79,6 +79,8 @@ const RETIRED_PERSONAL_TARGETS = ['employee_records', 'employment_periods', 'sta
   'roster_comments', 'roster_comment_reads', 'roster_consents', 'recruit_applications', 'recruit_application_items', 'board_proposals', 'anonymized_staff']
 // retired_staff は人数（対象の人・処理できた人・失敗した人）。スタッフ単位の失敗の理由はここに残す（#234）
 // retired_staff_deferred・r2_pending は、上限に達して翌日に回した人数と R2 のファイル数（#419）
+// D1 の meta.changes はトリガーの中の変更も数えるため、トリガーのある表の件数は RETURNING の行数で数える（9005）
+const RETURNING_COUNTED = new Set(['consultations', 'anonymized_staff'])
 const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'shift_report_tokens', 'r2_photos',
   ...RETIRED_EXTRA_TARGETS, ...RETIRED_PERSONAL_TARGETS, 'retired_staff_deferred', 'r2_pending']
 // 件数の単位が行数でない対象（実行ログの合計に含めない）
@@ -673,13 +675,17 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         ['attendance_reports', db.prepare(`DELETE FROM attendance_reports WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         // Sprint 5 で足した、シフトを参照する表（リマインドの送信記録・交通費や延長の申請）。shifts より先に消す
         [null, db.prepare(`DELETE FROM reminder_sends WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
+        // 交通費の申請の領収書の写真（#273）。キーを控えて、R2 の再試行の処理で消す
+        [null, db.prepare(`INSERT OR IGNORE INTO retention_pending_r2 (photo_key, staff_id, bucket)
+          SELECT receipt_key, ?, 'photos' FROM staff_pay_requests WHERE (staff_id = ? OR ${ofShifts}) AND receipt_key IS NOT NULL`).bind(staffId, staffId, staffId)],
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
         [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
         ['shifts', db.prepare('DELETE FROM shifts WHERE staff_id = ?').bind(staffId)],
         ['evaluations', db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId)],
         ['follow_logs', db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId)],
-        ['consultations', db.prepare('DELETE FROM consultations WHERE staff_id = ?').bind(staffId)],
+        // 相談の削除はトリガー（添付の控え）の行も meta.changes に数えられるため、RETURNING の行数で数える（9005）
+        ['consultations', db.prepare('DELETE FROM consultations WHERE staff_id = ? RETURNING 1').bind(staffId)],
         // 打刻修正の操作履歴・通知メールは申請より先に消す（申請 ID で対象を特定するため）
         ['attendance_correction_events', db.prepare('DELETE FROM attendance_correction_events WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId)],
         ['notification_emails', db.prepare('DELETE FROM notification_emails WHERE correction_id IN (SELECT correction_id FROM attendance_corrections WHERE staff_id = ?)').bind(staffId)],
@@ -729,12 +735,13 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ${userOf}`).bind(staffId)],
         [null, db.prepare(`UPDATE users SET name = ?, email = NULL, phone = NULL, password_hash = '!anonymized', status = 'suspended'
           WHERE user_id = ${userOf} AND role IN ('staff', 'roster_only')`).bind(`退職者#${staffId}`, staffId)],
-        ['anonymized_staff', db.prepare(`UPDATE staff_profiles SET ${anonymizeCols}, anonymized_at = ? WHERE staff_id = ? AND anonymized_at IS NULL`).bind(nowJST(), staffId)],
+        ['anonymized_staff', db.prepare(`UPDATE staff_profiles SET ${anonymizeCols}, anonymized_at = ? WHERE staff_id = ? AND anonymized_at IS NULL RETURNING 1`).bind(nowJST(), staffId)],
       ]
       const del = await db.batch(steps.map(s => s[1]))
       steps.forEach(([t], i) => {
         if (!t) return
-        const n = del[i].meta.changes || 0
+        // トリガーがある表（相談の削除・匿名化）は RETURNING の行数、それ以外は meta.changes で数える（9005）
+        const n = RETURNING_COUNTED.has(t) ? (del[i].results?.length || 0) : (del[i].meta.changes || 0)
         acc[t].targetCount += n; acc[t].deletedCount += n
       })
       acc.retired_staff.deletedCount++
@@ -1236,6 +1243,8 @@ export const OFFBOARDING_FILE_SOURCES: ObFileSource[] = [
   { source: 'consultation_attachments', bucket: 'photos', idCol: 'attachment_id', keyCol: 'storage_key', nameCol: null, whenCol: 'created_at', refCol: 'consultation_id' },
   { source: 'notice_attachments', bucket: 'documents', idCol: 'attachment_id', keyCol: 'storage_key', nameCol: 'file_name', whenCol: 'created_at', refCol: 'notice_id' },
   { source: 'client_documents', bucket: 'contracts', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'client_id' },
+  // 交通費の申請の領収書の写真（#273。migrations/0088）
+  { source: 'staff_pay_requests', bucket: 'photos', idCol: 'request_id', keyCol: 'receipt_key', nameCol: null, whenCol: 'receipt_uploaded_at', refCol: 'staff_id' },
 ]
 export function offboardingBucket(buckets: OffboardingBuckets, bucket: string): R2Bucket | undefined {
   return bucket === 'documents' ? buckets.DOCUMENTS : bucket === 'contracts' ? buckets.CONTRACTS : buckets.PHOTOS
@@ -1359,10 +1368,11 @@ export async function runOffboardingDeletion(db: D1Database, buckets: Offboardin
       } else if (step <= N) {
         const t = OB_DELETE_TABLES[step - 1]
         const w = obWhere(t.where, cid)
-        const r = await db.prepare(`DELETE FROM ${t.table} WHERE rowid IN (SELECT rowid FROM ${t.table} WHERE ${w.sql} LIMIT ${OFFBOARDING_DELETE_LIMIT})`)
-          .bind(...w.binds).run()
+        // 件数は RETURNING の行数で数える（お知らせ・相談などの削除のトリガーの変更を meta.changes が数えるため。9005）
+        const r = await db.prepare(`DELETE FROM ${t.table} WHERE rowid IN (SELECT rowid FROM ${t.table} WHERE ${w.sql} LIMIT ${OFFBOARDING_DELETE_LIMIT}) RETURNING 1`)
+          .bind(...w.binds).all()
         used++
-        const n = r.meta.changes || 0
+        const n = r.results?.length || 0
         add(t.target, n)
         if (n < OFFBOARDING_DELETE_LIMIT) step++
       } else if (step === N + 1) {
@@ -1372,11 +1382,12 @@ export async function runOffboardingDeletion(db: D1Database, buckets: Offboardin
           db.prepare(`UPDATE users SET name = '解約企業の利用者#' || user_id, email = NULL, phone = NULL, password_hash = '!anonymized', status = 'suspended',
               totp_secret = NULL, totp_pending_secret = NULL, totp_enabled_at = NULL, mfa_recovery_codes = NULL
             WHERE company_id = ? AND role != 'system_admin' AND password_hash != '!anonymized'`).bind(cid),
-          db.prepare(`UPDATE staff_profiles SET ${anonymizeCols}, anonymized_at = COALESCE(anonymized_at, ?) WHERE company_id = ?`).bind(nowJST(), cid),
+          // 匿名化のトリガー（連携の記録など）の変更を数えないよう、RETURNING の行数で数える（9005）
+          db.prepare(`UPDATE staff_profiles SET ${anonymizeCols}, anonymized_at = COALESCE(anonymized_at, ?) WHERE company_id = ? RETURNING 1`).bind(nowJST(), cid),
         ])
         used++
         add('anonymized_users', r[0].meta.changes || 0)
-        add('anonymized_staff', r[1].meta.changes || 0)
+        add('anonymized_staff', r[1].results?.length || 0)
         step++
       } else {
         // D1 の削除が済んでから R2 のファイルを消す。消せたものから控えを消す

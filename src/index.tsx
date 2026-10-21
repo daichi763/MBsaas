@@ -10,7 +10,7 @@ import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
 import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
-import { flushPushQueue, runPushQueueJob, runNotificationDigests } from './notifications'
+import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
@@ -854,6 +854,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   } },
   // 案件掲示板の保存した検索条件の新着の知らせ（#479。ログインしない利用者にも1日1回届ける。画面を開いたときにもその人の分を確かめる）
   { name: 'board_saved_search', label: '掲示板の保存した検索条件の新着の知らせ', cron: CRON_DAILY, run: env => notifySavedSearchMatches(env as any) },
+  // 書類の有効期限（30日以内・期限切れ）を会社の管理者に知らせる（#297。毎朝8時以降、会社ごとに1日1回まで。知らせた書類はその段階では二度知らせない）
+  { name: 'doc_expiry_notice', label: '書類の有効期限の知らせ', cron: CRON_REMINDERS, run: env => notifyExpiringDocuments(env as any) },
   // 前月の請求の記録（#295。毎月1〜3日。記録済みの企業はそのまま）
   { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
 ])

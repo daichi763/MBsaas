@@ -10,7 +10,7 @@
 // 管理者 API（/api/admin/corrections*）は api.ts から権限ミドルウェアの後に、スタッフ API（/api/staff/*）は認証の後に登録する。
 // =========================================================
 import { Hono } from 'hono'
-import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts, lateness, latenessSettings, type ReportLateness } from './report-settings'
+import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts, lateness, latenessSettingsFor, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, type ReportLateness } from './report-settings'
 import { syncActualFromReports, actualFromReports, amountsForActual } from './settlement'
 import { isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
 import { personStaffRows } from './roster'
@@ -327,7 +327,7 @@ const inShiftRange = (workDate: string, at: string) => at >= `${addDays(workDate
 // 実績は syncActualFromReports と同じ規則（確定済み・手入力の実績は変えない）で計算する
 async function judgeApproval(db: D1Database, c: any, shift: any, reports: any[], at: string) {
   const co = await db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(c.company_id).first() as any
-  const judged = lateness(shift, [{ report_type: c.report_type, reported_at: at }], latenessSettings(co?.settings_json))[0]
+  const judged = lateness(shift, [{ report_type: c.report_type, reported_at: at }], await latenessSettingsFor(db, co?.settings_json, shift.project_id))[0]
   const prev = reports.find(r => r.report_type === c.report_type) || null
   const status = prev ? correctedStatus(judged, prev) : (judged.late ? 'late' : 'normal')
   return { judged, status, prev }
@@ -603,6 +603,29 @@ async function correctionDetail(db: D1Database, c: any, viewer: 'admin' | 'staff
 // 管理者 API（/api/admin/*。自社のシフトの申請のみ）
 // =========================================================
 export const correctionsAdminApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+// スタッフ本人の申請（打刻修正・交通費や延長の申請）の受付期限（#215）。deadline_days: 勤務日から何日後まで（null は期限なし）。
+// 管理者が代わりに出す申請・承認には期限を当てない。確定済みのシフトへの申請は期限内でも受け付け、承認されても支払額は自動では変わらない（SETTLED_NOTICE）
+export const CORRECTION_DEADLINE_MAX = 366
+correctionsAdminApi.get('/settings/corrections', async (c) => {
+  const u = c.get('user')
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
+  return c.json({ deadline_days: correctionDeadlineDays(row?.settings_json), max_days: CORRECTION_DEADLINE_MAX, can_edit: canEditAttendanceSettings(u) })
+})
+correctionsAdminApi.put('/settings/corrections', async (c) => {
+  const u = c.get('user')
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
+  const b = await c.req.json().catch(() => ({} as any))
+  const d = b.deadline_days
+  if (d !== null && !(Number.isInteger(d) && d >= 1 && d <= CORRECTION_DEADLINE_MAX)) {
+    return c.json({ error: `受付期限は 1〜${CORRECTION_DEADLINE_MAX} 日の整数で入力してください（空欄なら期限なし）` }, 400)
+  }
+  // ほかの設定を上書きしないよう、この項目だけを書き換える（null は項目を消す）
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = ${d === null ? `json_remove(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.correction_deadline_days')`
+    : `json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.correction_deadline_days', ?)`} WHERE company_id = ?`)
+    .bind(...(d === null ? [] : [d]), u.company_id).run()
+  return c.json({ ok: true, deadline_days: d })
+})
 
 async function ownCorrection(c: any) {
   const row = await loadCorrection(c.env.DB, c.req.param('id'))

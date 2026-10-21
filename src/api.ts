@@ -20,7 +20,7 @@ import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
 import { loginEmailVerifyEmail } from './email-templates/login-email'
-import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
+import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, latenessSettingsFor, validGraceMinutes, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { dailyReportRequiredSql } from './report-settings'
 import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-settings'
 // 前日確認（#176）と、電波がない場所で押した報告の時刻（#427）
@@ -1750,7 +1750,7 @@ api.post('/staff/attendance', async (c) => {
   // 遅刻・早退の判定（入店・勤務開始は開始の絶対日時と比べ、会社設定の猶予を超えたら late。勤務終了・退店は早退の分数。#134 #219 #497）
   // 記録の時刻は受け取った時刻か、電波がない場所で押した時刻（#427。staffReportTime）
   const at = time.at
-  const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
+  const judged = lateness(shift, [{ report_type, reported_at: at }], await latenessSettingsFor(c.env.DB, owner.settings_json, shift.project_id))[0]
   const status = reportStatus(judged, latitude)
   // 入店の位置と現場（開催場所、なければ案件）の距離（#277）
   const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, latitude, longitude) : null
@@ -1823,7 +1823,7 @@ api.post('/staff/attendance-photo', async (c) => {
   const lng = longitude != null && longitude !== '' ? Number(longitude) : null
   // 遅刻・早退の判定（POST /staff/attendance と同じ）
   const at = time.at
-  const judged = lateness(shift, [{ report_type, reported_at: at }], latenessSettings(owner.settings_json))[0]
+  const judged = lateness(shift, [{ report_type, reported_at: at }], await latenessSettingsFor(c.env.DB, owner.settings_json, shift.project_id))[0]
   const status = reportStatus(judged, lat)
   // 入店の位置と現場の距離（#277。POST /staff/attendance と同じ）
   const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, lat, lng) : null
@@ -1922,17 +1922,17 @@ api.get('/staff/emergency-contacts', async (c) => {
 api.get('/admin/settings/photo-skip', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  return c.json({ enabled: photoSkipAllowed(row?.settings_json), reasons: NO_PHOTO_REASONS })
+  return c.json({ enabled: photoSkipAllowed(row?.settings_json), reasons: NO_PHOTO_REASONS, can_edit: canEditAttendanceSettings(u) })
 })
 api.post('/admin/settings/photo-skip', async (c) => {
   const u = c.get('user')
+  // 写真必須の設定と同じく、会社管理者・現場管理者だけが変えられる（9004）
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
   const body = await c.req.json().catch(() => ({}))
   if (typeof body.enabled !== 'boolean') return c.json({ error: '不正なパラメータです' }, 400)
-  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
-  let settings: Record<string, any> = {}
-  try { settings = JSON.parse((row?.settings_json as string) || '{}') } catch { settings = {} }
-  settings.photo_skip_allowed = body.enabled
-  await c.env.DB.prepare('UPDATE companies SET settings_json = ? WHERE company_id = ?').bind(JSON.stringify(settings), u.company_id).run()
+  // ほかの設定を古い内容で上書きしないよう、この項目だけを書き換える
+  await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.photo_skip_allowed', json(?)) WHERE company_id = ?`)
+    .bind(JSON.stringify(body.enabled), u.company_id).run()
   return c.json({ ok: true, enabled: body.enabled })
 })
 
@@ -3356,10 +3356,12 @@ api.get('/admin/settings/photo-required', async (c) => {
     enabled: getCompanySetting({ settings_json: row?.settings_json }, 'photo_required_attendance', true),
     history: photoRequiredHistory(row?.settings_json).map(h => ({ enabled: !!h.enabled, at: String(h.at || ''), name: String(h.name || '') })),
     projects: { follow: Number(cnt?.follow) || 0, required: Number(cnt?.on_count) || 0, not_required: Number(cnt?.off_count) || 0 },
+    can_edit: canEditAttendanceSettings(u),
   })
 })
 api.post('/admin/settings/photo-required', async (c) => {
   const u = c.get('user')
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
   const body = await c.req.json().catch(() => ({}))
   if (typeof body.enabled !== 'boolean') return c.json({ error: '不正なパラメータです' }, 400)
 
@@ -3378,14 +3380,33 @@ api.post('/admin/settings/photo-required', async (c) => {
   return c.json({ ok: true, photo_required_attendance: body.enabled, changed: { enabled: entry.enabled, at: entry.at, name: entry.name } })
 })
 
-// 遅刻の猶予（分）。入店・勤務開始が開始時刻から何分以内なら遅刻にしないか（report-settings.ts の lateness。#497）
+// 遅刻の猶予（分）。入店・勤務開始が開始時刻から何分以内なら遅刻にしないか（report-settings.ts の lateness。#497）。
+// 基準はシフトの開始時刻。案件ごとに上書きできる（projects.late_grace_minutes。NULL なら会社の値）。
+// projects は稼働中の案件と、終了した案件のうち上書きしているもの（late_grace_minutes が null なら会社の値に従う）
 api.get('/admin/settings/lateness', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
-  return c.json({ ...latenessSettings(row?.settings_json), max_grace_minutes: MAX_LATE_GRACE_MINUTES })
+  const projects = (await c.env.DB.prepare(`SELECT project_id, project_name, status, late_grace_minutes FROM projects
+    WHERE company_id = ? AND (COALESCE(status, 'active') = 'active' OR late_grace_minutes IS NOT NULL)
+    ORDER BY CASE WHEN COALESCE(status, 'active') = 'active' THEN 0 ELSE 1 END, project_name, project_id`).bind(u.company_id).all()).results as any[]
+  return c.json({ ...latenessSettings(row?.settings_json), max_grace_minutes: MAX_LATE_GRACE_MINUTES, can_edit: canEditAttendanceSettings(u),
+    projects: projects.map(p => ({ project_id: p.project_id, project_name: p.project_name, status: p.status || 'active', late_grace_minutes: p.late_grace_minutes ?? null })) })
+})
+// 案件ごとの遅刻の猶予の上書き（#497）。grace_minutes: 0〜MAX_LATE_GRACE_MINUTES の整数、null なら会社の値に従う。これから記録する報告に効く
+api.put('/admin/projects/:id/lateness', async (c) => {
+  const u = c.get('user')
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
+  const body = await c.req.json().catch(() => ({} as any))
+  const g = body.grace_minutes
+  if (g !== null && !validGraceMinutes(g)) return c.json({ error: `遅刻の猶予は 0〜${MAX_LATE_GRACE_MINUTES} 分の整数で入力してください（空欄なら会社の設定に従います）` }, 400)
+  const r = await c.env.DB.prepare('UPDATE projects SET late_grace_minutes = ? WHERE project_id = ? AND company_id = ?').bind(g, c.req.param('id'), u.company_id).run()
+  if (!r.meta.changes) return c.json({ error: '案件が見つかりません' }, 404)
+  const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first()
+  return c.json({ ok: true, late_grace_minutes: g, effective_grace_minutes: latenessSettings(row?.settings_json, g).grace_minutes })
 })
 api.put('/admin/settings/lateness', async (c) => {
   const u = c.get('user')
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
   const body = await c.req.json().catch(() => ({} as any))
   const g = body.grace_minutes
   if (!Number.isInteger(g) || g < 0 || g > MAX_LATE_GRACE_MINUTES) return c.json({ error: `遅刻の猶予は 0〜${MAX_LATE_GRACE_MINUTES} 分の整数で入力してください` }, 400)
@@ -3544,7 +3565,9 @@ api.get('/admin/staff/:id', async (c) => {
       COUNT(*) AS days
     FROM daily_reports WHERE staff_id = ? AND work_date >= ? AND work_date < ? GROUP BY ym`).bind(sid, months[2] + '-01', monthBounds(months[0])[1]).all()
   const perfBy = new Map((perfRows.results as any[]).map(r => [r.ym, r]))
-  const perf = months.map(ym => perfBy.get(ym) || { ym, mnp: 0, pi: 0, shinki: 0, hikari: 0, seiyaku: 0, days: 0 })
+  // テンプレートの数値項目の合計（#184。values。項目の並びとラベルは performance_fields）。mnp などの固定の列は今の画面のために残す
+  const metrics = await reportMetricSums(db, 'dr.staff_id = ? AND dr.work_date >= ? AND dr.work_date < ?', [sid, months[2] + '-01', monthBounds(months[0])[1]], 'substr(dr.work_date, 1, 7)')
+  const perf = months.map(ym => ({ ...(perfBy.get(ym) || { ym, mnp: 0, pi: 0, shinki: 0, hikari: 0, seiyaku: 0, days: 0 }), values: metrics.valuesOf(ym) }))
 
   return c.json({
     profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
@@ -3555,7 +3578,7 @@ api.get('/admin/staff/:id', async (c) => {
     reports: (reports.results as any[]).map(r => ({ ...r, values: JSON.parse(r.report_values) })),
     evaluations: evals.results,
     follow_logs: follows.results,
-    performance: perf,
+    performance: perf, performance_fields: metrics.fields,
   })
 })
 
@@ -4036,10 +4059,13 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
       SUM(COALESCE(json_extract(report_values,'$.seiyaku'),0)) AS seiyaku,
       COUNT(*) AS total_days
     FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
+  // テンプレートの数値項目の合計（#184。performance.values と performance_fields。固定の列は今の画面のために残す）
+  const metrics = await reportMetricSums(c.env.DB, 'dr.staff_id = ?', [sid], "''")
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
   // 管理者メモは社内用なので、社外に出すスキルシートには返さない。推薦コメントは別の欄（skill_sheet_comment。#447）に保存したものを返す
   const { memo: _memo, ...sheet } = profile
-  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results, performance: perf, evaluation: latestEval,
+  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results,
+    performance: { ...(perf || {}), values: metrics.valuesOf('') }, performance_fields: metrics.fields, evaluation: latestEval,
     skill_sheet_comment: profile.skill_sheet_comment || '' })
 })
 // スキルシートの推薦コメントを保存する（#447）。社内用の管理者メモとは別の欄。空欄なら消す（固定の推薦文は入れない）
@@ -4868,6 +4894,7 @@ api.get('/admin/projects/:id', async (c) => {
       SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) AS seiyaku
     FROM daily_reports dr JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE dr.project_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.staff_id ORDER BY seiyaku DESC`).bind(pid, mFrom, mTo).all()
+  const staffMetrics = await reportMetricSums(db, 'dr.project_id = ? AND dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?', [pid, u.company_id, mFrom, mTo], 'dr.staff_id')
 
   // インシデント・クレーム（#169）: 対応済みでないものを先に、対応状況・メモを付けて返す
   const incidents = await db.prepare(`
@@ -4898,7 +4925,8 @@ api.get('/admin/projects/:id', async (c) => {
 
   return c.json({
     project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [] },
-    staff_performance: staffPerf.results,
+    // テンプレートの数値項目の合計（#184。各行の values と performance_fields。mnp などの固定の列は今の画面のために残す）
+    staff_performance: (staffPerf.results as any[]).map(r => ({ ...r, values: staffMetrics.valuesOf(r.staff_id) })), performance_fields: staffMetrics.fields,
     incidents: (incidents.results as any[]).map(i => ({ ...i, values: JSON.parse(i.report_values) })),
     month_summary: monthShifts, month,
     company_photo_default: getCompanySetting(u, 'photo_required_attendance', true),
@@ -4994,6 +5022,7 @@ api.put('/admin/projects/:id/required-skills', async (c) => {
 // 案件ごとの入店/退店報告 写真添付オーバーライド更新
 api.put('/admin/projects/:id/photo-required', async (c) => {
   const u = c.get('user'); const pid = c.req.param('id')
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
   const { override } = await c.req.json().catch(() => ({ override: undefined }))
   if (!['inherit', 'on', 'off'].includes(override)) return c.json({ error: '不正なパラメータです' }, 400)
   const value = override === 'inherit' ? null : override === 'on' ? 1 : 0
@@ -5104,6 +5133,66 @@ api.put('/admin/projects/:id', async (c) => {
     .bind(...cols.map(k => set[k]), now, cur.project_id, u.company_id).run()
   return c.json({ ok: true, changed: true, status: nextStatus })
 })
+
+// ---------- 使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） ----------
+// どこからも使われていないときだけ消す。使われていれば 409 で使っている所と件数を返す（案件は「終了」、クライアントは名前の変更で対応してもらう）。
+// 確かめと削除は1つの batch で行い、どの文も「まだ使われていない」ときだけ消す（確かめた後にシフトなどが入っても消さない）。
+// SQL の ?1 は案件・クライアントの ID、?2 は会社の ID
+type UsageCheck = [key: string, label: string, sql: string]
+const PROJECT_USAGE: UsageCheck[] = [
+  ['shifts', 'シフト', 'SELECT 1 FROM shifts WHERE project_id = ?1'],
+  ['daily_reports', '日報', 'SELECT 1 FROM daily_reports WHERE project_id = ?1 UNION ALL SELECT 1 FROM daily_report_duplicates WHERE project_id = ?1'],
+  ['shift_slots', '募集枠', 'SELECT 1 FROM shift_slots WHERE project_id = ?1'],
+  ['slot_patterns', '繰り返し登録', 'SELECT 1 FROM slot_patterns WHERE project_id = ?1'],
+  ['shift_requests', 'シフト希望', 'SELECT 1 FROM shift_requests WHERE project_id = ?1'],
+  ['attendance_corrections', '打刻修正の申請', 'SELECT 1 FROM attendance_corrections WHERE project_id = ?1'],
+  ['notices', 'お知らせの配信先', `SELECT 1 FROM notice_targets WHERE target_type = 'project' AND target_id = ?1
+    UNION ALL SELECT 1 FROM notices WHERE company_id = ?2 AND target_type = 'project' AND (',' || REPLACE(COALESCE(target_ids, ''), ' ', '') || ',') LIKE '%,' || ?1 || ',%'`],
+  ['recruit_pages', '募集ページ', `SELECT 1 FROM recruit_pages WHERE company_id = ?2 AND (',' || REPLACE(COALESCE(project_ids, ''), ' ', '') || ',') LIKE '%,' || ?1 || ',%'`],
+  ['board_posts', '案件掲示板の掲載', 'SELECT 1 FROM board_posts WHERE source_project_id = ?1 AND company_id = ?2'],
+  ['consultations', '相談', 'SELECT 1 FROM consultations WHERE target_project_id = ?1 AND company_id = ?2'],
+  ['follow_logs', 'フォロー記録', 'SELECT 1 FROM follow_logs WHERE related_project_id = ?1 AND company_id = ?2'],
+]
+// 案件と一緒に消す設定（単価ルール・単価の履歴・キャンセル料の規定・報告の設定とその変更の記録）
+const PROJECT_OWNED_TABLES = ['rate_rules', 'project_price_history', 'project_cancel_policies', 'project_report_defaults', 'project_staff_report_settings', 'report_setting_logs']
+const CLIENT_USAGE: UsageCheck[] = [
+  ['projects', '案件', 'SELECT 1 FROM projects WHERE client_id = ?1 AND company_id = ?2'],
+  ['sites', '開催場所', 'SELECT 1 FROM sites WHERE client_id = ?1 AND company_id = ?2'],
+  ['rate_rules', '単価ルール', 'SELECT 1 FROM rate_rules WHERE client_id = ?1 AND company_id = ?2'],
+  ['client_documents', '書類', 'SELECT 1 FROM client_documents WHERE client_id = ?1 AND company_id = ?2'],
+]
+// 担当者の連絡先と NG スタッフの理由はクライアントと一緒に消す
+const CLIENT_OWNED_TABLES = ['client_contacts', 'client_ng_staff']
+const usageCountSql = (checks: UsageCheck[]) => `SELECT ${checks.map(([k, , sql]) => `(SELECT COUNT(*) FROM (${sql})) AS ${k}`).join(', ')}`
+const notUsedSql = (checks: UsageCheck[]) => checks.map(([, , sql]) => `NOT EXISTS (${sql})`).join(' AND ')
+async function deleteUnused(c: any, o: { table: 'projects' | 'clients'; idCol: string; id: number; usage: UsageCheck[]; owned: string[]; what: string; hint: string }) {
+  const u = c.get('user'); const db: D1Database = c.env.DB
+  const cur = await db.prepare(`SELECT ${o.idCol} FROM ${o.table} WHERE ${o.idCol} = ? AND company_id = ?`).bind(o.id, u.company_id).first()
+  if (!cur) return c.json({ error: `${o.what}が見つかりません` }, 404)
+  const inUse = async () => {
+    const row = (await db.prepare(usageCountSql(o.usage)).bind(o.id, u.company_id).first() || {}) as Record<string, number>
+    const usage = o.usage.map(([k, label]) => ({ key: k, label, count: Number(row[k]) || 0 })).filter(x => x.count > 0)
+    return c.json({ error: `この${o.what}は使われているため削除できません（${usage.map(x => `${x.label} ${x.count}件`).join('、')}）。${o.hint}`, code: 'in_use', usage }, 409)
+  }
+  const guard = `EXISTS (SELECT 1 FROM ${o.table} WHERE ${o.idCol} = ?1 AND company_id = ?2) AND ${notUsedSql(o.usage)}`
+  let res: D1Result[]
+  try {
+    res = await db.batch([
+      ...o.owned.map(t => db.prepare(`DELETE FROM ${t} WHERE ${o.idCol} = ?1 AND ${guard}`).bind(o.id, u.company_id)),
+      db.prepare(`DELETE FROM ${o.table} WHERE ${o.idCol} = ?1 AND company_id = ?2 AND ${notUsedSql(o.usage)}`).bind(o.id, u.company_id),
+    ])
+  } catch (e) {
+    // ここで数えていない表から参照されている（外部キー）ときは消さない（batch は全体が取り消される）
+    console.log(`delete ${o.table} ${o.id} failed: ${e}`)
+    return c.json({ error: `この${o.what}はほかのデータから参照されているため削除できません。${o.hint}`, code: 'in_use', usage: [] }, 409)
+  }
+  if (!res[res.length - 1].meta.changes) return inUse()
+  return c.json({ ok: true, deleted: o.id })
+}
+api.delete('/admin/projects/:id{[0-9]+}', async (c) => deleteUnused(c, { table: 'projects', idCol: 'project_id', id: Number(c.req.param('id')),
+  usage: PROJECT_USAGE, owned: PROJECT_OWNED_TABLES, what: '案件', hint: '使わなくなった案件は「終了」にしてください' }))
+api.delete('/admin/clients/:id{[0-9]+}', async (c) => deleteUnused(c, { table: 'clients', idCol: 'client_id', id: Number(c.req.param('id')),
+  usage: CLIENT_USAGE, owned: CLIENT_OWNED_TABLES, what: 'クライアント', hint: '重複して登録したクライアントは、名前を変えて区別してください' }))
 
 // シフト管理
 api.get('/admin/shifts', async (c) => {
@@ -5677,6 +5766,46 @@ const ANALYTICS_GROUPS = {
   client: { g: 'COALESCE(p.client_id, 0)', extra: ', MAX(cl.client_name) AS client_name' },
 } as const
 type AnalyticsGroup = keyof typeof ANALYTICS_GROUPS
+// 項目: テンプレートの順に、数値項目を重複なく並べる（同じキーは最初のテンプレートのラベル）。
+// sumRows（je.key AS k・isnum の集計行）から、テンプレートに無い数値のキーも足す（テンプレートで文字の項目のキーは足さない）
+function metricFields(templates: any[], sumRows: any[]): AnalyticsField[] {
+  const fields: AnalyticsField[] = []; const seen = new Set<string>(); const textKeys = new Set<string>()
+  for (const t of templates) {
+    let defs: any[] = []
+    try { defs = JSON.parse(t.fields_json) } catch { defs = [] }
+    for (const f of Array.isArray(defs) ? defs : []) {
+      if (!f || typeof f.key !== 'string' || !f.key) continue
+      if (f.type !== 'number') { textKeys.add(f.key); continue }
+      if (!seen.has(f.key)) { seen.add(f.key); fields.push({ key: f.key, label: String(f.label || f.key) }) }
+    }
+  }
+  for (const r of sumRows) {
+    if (r.isnum && !seen.has(r.k) && !textKeys.has(r.k)) { seen.add(r.k); fields.push({ key: r.k, label: r.k }) }
+  }
+  return fields
+}
+// 日報の数値項目の合計（#184。スタッフ詳細・スキルシート・案件詳細の実績）。where は daily_reports dr の条件、group は GROUP BY の式。
+// 項目は実績分析と同じ規則（metricFields）で決め、group の値ごとに { キー: 合計 } を返す（その組に無い項目は 0）
+async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string) {
+  const [tpl, sums] = await db.batch([
+    db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM daily_reports dr
+      JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id JOIN report_templates rt ON rt.template_id = p.report_template_id
+      WHERE ${where} ORDER BY rt.template_id`).bind(...binds),
+    db.prepare(`SELECT ${group} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
+      FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...binds),
+  ])
+  const sumRows = (sums.results || []) as any[]
+  const fields = metricFields((tpl.results || []) as any[], sumRows)
+  const keys = new Set(fields.map(f => f.key))
+  const values = new Map<string, Record<string, number>>()
+  const valuesOf = (g: unknown) => {
+    const k = String(g ?? '')
+    if (!values.has(k)) values.set(k, Object.fromEntries(fields.map(f => [f.key, 0])))
+    return values.get(k)!
+  }
+  for (const r of sumRows) if (keys.has(r.k)) valuesOf(r.g)[r.k] = Number(r.v) || 0
+  return { fields, valuesOf }
+}
 async function loadAnalytics(db: D1Database, cid: number, month: string) {
   const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?'
   const bind = [cid, ...monthBounds(month)]
@@ -5691,20 +5820,8 @@ async function loadAnalytics(db: D1Database, cid: number, month: string) {
       FROM daily_reports dr ${ANALYTICS_JOINS}, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...bind)),
   ]
   const res = (await db.batch(stmts)).map(r => (r.results || []) as any[])
-  // 項目: テンプレートの順に、数値項目を重複なく並べる（同じキーは最初のテンプレートのラベル）
-  const fields: AnalyticsField[] = []; const seen = new Set<string>(); const textKeys = new Set<string>()
-  for (const t of res[0]) {
-    let defs: any[] = []
-    try { defs = JSON.parse(t.fields_json) } catch { defs = [] }
-    for (const f of Array.isArray(defs) ? defs : []) {
-      if (!f || typeof f.key !== 'string' || !f.key) continue
-      if (f.type !== 'number') { textKeys.add(f.key); continue }
-      if (!seen.has(f.key)) { seen.add(f.key); fields.push({ key: f.key, label: String(f.label || f.key) }) }
-    }
-  }
-  for (const r of res[1 + groups.length]) { // 合計の行から、テンプレートに無い数値項目を拾う
-    if (r.isnum && !seen.has(r.k) && !textKeys.has(r.k)) { seen.add(r.k); fields.push({ key: r.k, label: r.k }) }
-  }
+  const fields = metricFields(res[0], res[1 + groups.length]) // 合計の行から、テンプレートに無い数値項目を拾う
+  const seen = new Set(fields.map(f => f.key))
   const out = {} as Record<AnalyticsGroup, AnalyticsRow[]>
   groups.forEach((k, i) => {
     const rows = new Map<any, AnalyticsRow>()
