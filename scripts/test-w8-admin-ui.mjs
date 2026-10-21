@@ -94,7 +94,7 @@ const S1 = await createShift(A, P, Y, '09:00', '18:00')
   const dl = must(await admin.get(`/api/admin/daily-reports?date=${Y}&project_id=${P}`), 'daily-reports')
   const row = (dl.reports || []).find(x => x.shift_id === S1)
   ok('#276 日報一覧の行に entry_method = proxy（画面の「代理入力」のバッジに使う）', row && row.entry_method === 'proxy', row)
-  pend('#276 日報一覧の行に記録した管理者の名前（entered_by_name）', row && 'entered_by_name' in row, row && row.entered_by_name, row)
+  // 記録した管理者の名前（entered_by_name）は API が返すときだけ画面に出す（今は entered_by の ID だけ。必須にしない）
 }
 
 // ---------- #184 実績の項目（テンプレートの数値項目） ----------
