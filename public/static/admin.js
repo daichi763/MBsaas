@@ -2473,18 +2473,35 @@ delegate('sortProjects', el => {
   })
 })
 
-// 遅刻の猶予（分）。会社全体の設定で、これから記録する入店・勤務開始の報告に効く（#497。API は GET/PUT /admin/settings/lateness）
+// 遅刻の猶予（分）。会社全体の設定で、これから記録する入店・勤務開始の報告に効く（#497。API は GET/PUT /admin/settings/lateness）。
+// 案件ごとの上書き（projects.late_grace_minutes）は案件詳細で設定し、ここには上書きしている案件の一覧を出す
 delegate('showLatenessSetting', async () => {
-  let s
-  try { s = (await axios.get('/api/admin/settings/lateness')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  let s, overrides
+  try {
+    s = (await axios.get('/api/admin/settings/lateness')).data
+    // 上書きの一覧は、API が projects を返せばそれを使い、なければ案件一覧から拾う
+    overrides = Array.isArray(s.projects) ? s.projects
+      : ((await axios.get('/api/admin/projects')).data.projects || [])
+    overrides = overrides.filter(p => p.late_grace_minutes != null && p.late_grace_minutes !== '')
+  } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
   modal(`
     <h3 class="font-bold text-lg mb-2"><i class="fas fa-stopwatch text-blue-600 mr-1"></i>遅刻の猶予</h3>
     <p class="text-xs text-gray-500 mb-3">入店・勤務開始の報告が、シフトの開始時刻から何分以内なら遅刻にしないかを決めます（会社全体）。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）。</p>
     <label class="text-sm text-gray-600 block mb-1">猶予（分）</label>
     <input id="late-grace" type="number" min="0" max="${Number(s.max_grace_minutes) || 0}" step="1" class="inp" value="${Number(s.grace_minutes) || 0}">
     <p class="text-[11px] text-gray-400 mt-1">0〜${Number(s.max_grace_minutes) || 0}分。0 にすると、開始時刻を1分でも過ぎたら遅刻になります</p>
+    <div class="mt-4 pt-3 border-t border-gray-100">
+      <p class="text-sm font-bold text-gray-700 mb-1">案件ごとの猶予</p>
+      <p class="text-[11px] text-gray-400 mb-2">案件詳細の「遅刻の猶予」で、案件ごとに会社の設定と違う値にできます。次の案件は会社の設定ではなく、案件の値を使います</p>
+      ${overrides.length ? `<ul class="text-sm divide-y divide-gray-100 max-h-48 overflow-y-auto">${overrides.map(p => `<li class="flex items-center gap-2 py-1.5">
+          <a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline flex-1 truncate" data-action="closeLatenessToProject">${esc(p.project_name || '')}</a>
+          ${p.status && p.status !== 'active' ? '<span class="badge badge-gray">終了</span>' : ''}
+          <span class="font-bold whitespace-nowrap">${Number(p.late_grace_minutes)}分</span></li>`).join('')}</ul>`
+        : '<p class="text-xs text-gray-400">案件ごとに変えている案件はありません</p>'}
+    </div>
     <button class="btn btn-primary w-full mt-4" data-action="saveLatenessSetting">保存する</button>`)
 })
+delegate('closeLatenessToProject', () => closeModal())
 delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
   const v = document.getElementById('late-grace').value.trim()
   if (!/^\d+$/.test(v)) { toast('猶予は0以上の整数で入力してください'); return }
@@ -2693,10 +2710,12 @@ async function renderProjectDetail(pid) {
             <option value="off" ${p.photo_required_override === 0 ? 'selected' : ''}>この案件は不要にする</option>
           </select>
         </div>
+        ${projectLatenessHtml(p)}
       </section>
     </div>
     <div id="project-pricing-panel" class="mt-4"></div>`
   drawProjectStaffPerf()
+  fillProjectLatenessCompany()
   // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
   if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
 }
@@ -2704,7 +2723,54 @@ async function renderProjectDetail(pid) {
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-project-photo]') : null
   if (sel) updateProjectPhotoRequired(Number(sel.dataset.projectPhoto), sel.value)
+  // 遅刻の猶予: 「会社の設定に従う」のときは分の欄を使わない
+  if (ev.target && ev.target.id === 'proj-late-mode') {
+    const inp = document.getElementById('proj-late-grace')
+    if (inp) { inp.disabled = ev.target.value !== 'custom'; if (!inp.disabled) inp.focus() }
+  }
 })
+
+// 案件ごとの遅刻の猶予（#497）。未設定（null）なら会社の猶予（GET/PUT /admin/settings/lateness）を使う。
+// 基準の時刻はシフトの開始時刻のまま（集合時刻は設けない）。保存は PUT /admin/projects/:id/lateness { grace_minutes: 分 | null }
+const LATE_GRACE_MAX_DEFAULT = 120
+function projectLatenessHtml(p) {
+  const own = p.late_grace_minutes != null && p.late_grace_minutes !== ''
+  return `<div class="mt-4 pt-3 border-t border-gray-100" id="project-late-box">
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-stopwatch text-blue-600 mr-1"></i>遅刻の猶予（入店・勤務開始）</p>
+          <div class="flex gap-2 items-center flex-wrap">
+            <select class="inp text-sm w-auto" id="proj-late-mode" aria-label="遅刻の猶予の決め方">
+              <option value="inherit" ${own ? '' : 'selected'} id="proj-late-inherit">会社の設定に従う</option>
+              <option value="custom" ${own ? 'selected' : ''}>この案件だけ変える</option>
+            </select>
+            <input id="proj-late-grace" type="number" min="0" max="${LATE_GRACE_MAX_DEFAULT}" step="1" class="inp text-sm w-24" value="${own ? Number(p.late_grace_minutes) : ''}" ${own ? '' : 'disabled'} aria-label="この案件の猶予（分）">
+            <span class="text-xs text-gray-500">分</span>
+            <button type="button" class="btn btn-outline text-xs" data-action="saveProjectLateness" data-id="${Number(p.project_id)}">保存</button>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-1">シフトの開始時刻から何分以内の入店・勤務開始を遅刻にしないか。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）</p>
+        </div>`
+}
+// 会社の猶予（と上限）を読んで、「会社の設定に従う（現在: n分）」と入力の上限に出す
+async function fillProjectLatenessCompany() {
+  let s
+  try { s = (await axios.get('/api/admin/settings/lateness')).data } catch { return }
+  const opt = document.getElementById('proj-late-inherit')
+  if (opt) opt.textContent = `会社の設定に従う（現在: ${Number(s.grace_minutes) || 0}分）`
+  const inp = document.getElementById('proj-late-grace')
+  if (inp && Number(s.max_grace_minutes)) inp.max = String(Number(s.max_grace_minutes))
+}
+delegate('saveProjectLateness', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id)
+  const custom = (document.getElementById('proj-late-mode') || {}).value === 'custom'
+  const inp = document.getElementById('proj-late-grace')
+  const v = inp ? inp.value.trim() : ''
+  const max = Number(inp && inp.max) || LATE_GRACE_MAX_DEFAULT
+  if (custom && (!/^d+$/.test(v) || Number(v) > max)) { toast(`猶予は0〜${max}分の整数で入力してください`); return }
+  try {
+    await axios.put(`/api/admin/projects/${pid}/lateness`, { grace_minutes: custom ? Number(v) : null })
+    toast(custom ? `この案件の遅刻の猶予を${Number(v)}分にしました` : '会社の設定に従うようにしました')
+    renderProjectDetail(pid)
+  } catch (e) { showApiError(e, '遅刻の猶予を保存できませんでした') }
+}))
 // 案件詳細のインシデント欄は、対応済みでないものを先に出す（#169。API が incident_status を返すとき。同じ状態の中は新しい順のまま）
 function projectIncidentsSorted(list) {
   return (list || []).map((x, i) => [x, i]).sort((a, b) => ((a[0].incident_status === 'done') - (b[0].incident_status === 'done')) || a[1] - b[1]).map(x => x[0])
@@ -2760,7 +2826,25 @@ delegate('editProject', el => withSubmitLock(el, async () => {
       <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
       <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
       <button class="btn btn-primary w-full" data-action="saveProject" data-id="${pid}">保存する</button>
+      <p class="text-right"><button type="button" class="text-xs text-red-600 hover:underline" data-action="deleteProject" data-id="${pid}" data-name="${esc(p.project_name)}"><i class="fas fa-trash mr-0.5"></i>この案件を削除する</button></p>
+      <p class="text-[11px] text-gray-400 text-right -mt-2">二重登録などで作った、シフト・日報が1件もない案件だけ削除できます。使った案件は「案件を終了する」にしてください</p>
     </div>`)
+}))
+// 空の案件・クライアントの削除（#359）。API は DELETE /admin/projects/:id・/admin/clients/:id。
+// シフト・日報（クライアントは案件）が残っていればサーバーが 409 で理由を返す
+delegate('deleteProject', el => withSubmitLock(el, async () => {
+  if (!confirm(`案件「${el.dataset.name}」を削除します。元に戻せません。よろしいですか？`)) return
+  try {
+    await axios.delete('/api/admin/projects/' + Number(el.dataset.id))
+    closeModal(); toast('案件を削除しました'); location.hash = 'projects'
+  } catch (e) { showApiError(e, '案件を削除できませんでした（シフト・日報がある案件は削除できません）') }
+}))
+delegate('deleteClient', el => withSubmitLock(el, async () => {
+  if (!confirm(`クライアント「${el.dataset.name}」を削除します。元に戻せません。よろしいですか？`)) return
+  try {
+    await axios.delete('/api/admin/clients/' + Number(el.dataset.id))
+    toast('クライアントを削除しました'); location.hash = 'clients'
+  } catch (e) { showApiError(e, 'クライアントを削除できませんでした（案件・シフトがあるクライアントは削除できません）') }
 }))
 delegate('saveProject', el => withSubmitLock(el, async () => {
   const pid = Number(el.dataset.id)
@@ -3073,6 +3157,8 @@ function clientBasicHtml(c, editing) {
             <button type="button" class="btn btn-outline text-xs flex-1" data-action="cancelClientBasic">取り消す</button>
             <button type="button" class="btn btn-primary text-xs flex-1" data-action="saveClientBasic" data-id="${cid}">保存</button>
           </div>
+          <p class="text-right pt-2 border-t border-gray-100"><button type="button" class="text-xs text-red-600 hover:underline" data-action="deleteClient" data-id="${cid}" data-name="${esc(c.client_name)}"><i class="fas fa-trash mr-0.5"></i>このクライアントを削除する</button></p>
+          <p class="text-[11px] text-gray-400 text-right">二重登録などで作った、案件が1件もないクライアントだけ削除できます</p>
         </div>`
 }
 // 取引の実績（#345）: 案件ごとの稼働・売上・日報・インシデントと、6か月の月別推移。終了した案件は折りたたむ
@@ -4097,6 +4183,13 @@ delegate('saveIncident', (el) => {
   })
 })
 
+// 日報の入力経路（#276）。管理者の代理入力と報告用URLからの提出を、本人のアプリからの提出と見分けられるようにする。
+// 記録した人の名前は API が entered_by_name を返すときだけ出す
+function reportEntryBadge(r) {
+  if (r.entry_method === 'proxy') return `<span class="badge badge-blue" title="${esc(r.entered_by_name ? `管理者（${r.entered_by_name}）が代理で入力しました` : '管理者が代理で入力しました')}"><i class="fas fa-user-pen mr-0.5"></i>代理入力${r.entered_by_name ? '・' + esc(r.entered_by_name) : ''}</span>`
+  if (r.entry_method === 'link') return '<span class="badge badge-gray" title="ログインのないスタッフが報告用URLから提出しました"><i class="fas fa-link mr-0.5"></i>報告用URL</span>'
+  return ''
+}
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
   const revised = !r.manager_checked && r.revised_after_check_at
@@ -4110,6 +4203,7 @@ function reportCardHtml(r, fields) {
         ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
         ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
         ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に修正しました">確認後に修正あり</span>` : ''}
+        ${reportEntryBadge(r)}
         <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
       </div>
       ${reportIncidentHtml(r, fields)}

@@ -92,6 +92,7 @@
           <button class="btn btn-outline" data-action="boardPlacementExport" data-format="csv" title="表示中の期間・絞り込みの配置表（金額なし・未充足の枠と希望（仮）を含む）を CSV で出します"><i class="fas fa-file-csv"></i>配置表CSV</button>
           <button class="btn btn-outline" data-action="boardPlacementExport" data-format="print" title="クライアント・現場リーダーに渡す配置表を、案件ごとに改ページして印刷します（金額は載せません）"><i class="fas fa-print"></i>配置表を印刷</button>
           <button class="btn btn-outline" data-action="openShiftRequests"><i class="fas fa-hand"></i>シフト希望<span id="board-req-count"></span></button>
+          <button class="btn btn-outline" data-action="openNologinBulk" data-date="${esc(nologinDefaultDate())}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="ログインのないスタッフの報告用URLを、日付ごとにまとめて発行・コピーします（未発行・発行済み・未使用の別も出します）"><i class="fas fa-link"></i>報告用URL（ログインなし）</button>
           ${reqShifts.length ? `<button class="btn btn-outline" data-action="boardConfirmRequested" title="表示中の希望（仮）のシフトをまとめて確定にします"><i class="fas fa-check-double"></i>希望（仮）をまとめて確定<span class="badge badge-yellow ml-1">${reqShifts.length}</span></button>` : ''}
           <a class="btn btn-outline" href="#shifts/week"><i class="fas fa-table-columns"></i>週表示（従来）</a>
           <button class="btn btn-outline" onclick="boardReloadMaster()" title="案件・スタッフ・開催場所の一覧を読み直します"><i class="fas fa-rotate"></i>一覧を更新</button>
@@ -177,7 +178,7 @@
     const head = `<thead class="sticky top-0 z-10 bg-white"><tr>
       <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:190px">案件 / 開催場所 / 役割</th>
       ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 88 : 108}px;width:${BS.days > 14 ? 88 : 108}px">
-        <button class="hover:underline" onclick="openSlotModal({work_date:'${d}'})" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[w]})</button>${daySummary(d)}</th>` }).join('')}
+        <button class="hover:underline" data-action="boardSlotOnDate" data-date="${esc(d)}" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[w]})</button>${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead>`
     let lastProject = null
     const body = list.map(r => {
@@ -203,6 +204,16 @@
     return `<table class="board-table">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
   }
 
+  delegate('boardSlotOnDate', el => openSlotModal({ work_date: el.dataset.date }))
+  // ログインのない人の報告用URLのまとめての発行（#275。画面は staff-lifecycle.js の openNologinBulk）。
+  // 既定の日付は、表示中の期間に今日があれば今日、なければ期間の初日。案件を1つだけ選んでいればその案件で開く
+  function nologinDefaultDate() {
+    const today = dayjs().format('YYYY-MM-DD'); const r = boardRange()
+    return today >= r.from && today <= r.to ? today : r.from
+  }
+  function nologinDayBtn(d) {
+    return `<button class="ml-1 text-[10px] text-gray-400 hover:text-blue-600" data-action="openNologinBulk" data-date="${esc(d)}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="この日のログインのない人の報告用URLをまとめて発行・コピー" aria-label="${esc(dayjs(d).format('M/D'))}の報告用URL（ログインなし）"><i class="fas fa-link"></i></button>`
+  }
   // 列の見出しの下に出す、その日の充足（#566）。不足のある日は赤くし、押すとその日の不足の枠を一覧で開く
   function daySummary(d) {
     const x = (BOARD.totals.by_date || {})[d]
@@ -298,7 +309,7 @@
     const today = dayjs().format('YYYY-MM-DD')
     return tools + `<table class="board-table"><thead class="sticky top-0 z-10 bg-white"><tr>
       <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:170px">スタッフ</th><th class="board-th">稼働</th>
-      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 86 : 118}px;max-width:${BS.days > 14 ? 86 : 118}px;width:${BS.days > 14 ? 86 : 118}px">${dayjs(d).format('M/D')}(${WD[w]})${daySummary(d)}</th>` }).join('')}
+      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 86 : 118}px;max-width:${BS.days > 14 ? 86 : 118}px;width:${BS.days > 14 ? 86 : 118}px">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead><tbody>${rows.map(([sid, r]) => {
       return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-[10px] text-amber-600 ml-1">休職中</span>' : ''}</td>
         <td class="board-td text-center text-xs ${r.workDays ? 'font-bold' : 'text-gray-400'}">${r.workDays}日${r.workShifts > r.workDays ? `<span class="block text-[10px] font-normal text-gray-500">${r.workShifts}シフト</span>` : ''}</td>
