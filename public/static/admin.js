@@ -2677,7 +2677,7 @@ async function renderProjectDetail(pid) {
       <section class="card p-4">
         <div class="flex items-center gap-2 mb-3 flex-wrap">
           <h3 class="text-sm font-bold text-gray-700">スタッフ別実績（${esc(ml)}）</h3>
-          <span class="ml-auto">${rankControlsHtml('rankProject', true)}</span>
+          <span class="ml-auto">${rankControlsHtml('rankProject', projectPerfColumns(data).hasRate)}</span>
         </div>
         <div class="overflow-x-auto" id="project-staff-perf"></div>
       </section>
@@ -2786,7 +2786,7 @@ delegate('saveProjectLateness', el => withSubmitLock(el, async () => {
   const inp = document.getElementById('proj-late-grace')
   const v = inp ? inp.value.trim() : ''
   const max = Number(inp && inp.max) || LATE_GRACE_MAX_DEFAULT
-  if (custom && (!/^d+$/.test(v) || Number(v) > max)) { toast(`猶予は0〜${max}分の整数で入力してください`); return }
+  if (custom && (!/^[0-9]+$/.test(v) || Number(v) > max)) { toast(`猶予は0〜${max}分の整数で入力してください`); return }
   try {
     await axios.put(`/api/admin/projects/${pid}/lateness`, { grace_minutes: custom ? Number(v) : null })
     toast(custom ? `この案件の遅刻の猶予を${Number(v)}分にしました` : '会社の設定に従うようにしました')
@@ -3031,13 +3031,17 @@ function projectSkillBadges(v) {
   return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-gray-400">-</span>'
 }
 // 案件詳細のスタッフ別実績。成約/日・成約率も出し、並べ方を切り替えられる（#489）
-function drawProjectStaffPerf() {
-  const host = document.getElementById('project-staff-perf'); if (!host || !PROJECT_DETAIL) return
-  const { data } = PROJECT_DETAIL; const range = monthRangeOf(data.month)
-  // 並べ替えの基準は成約（テンプレートに無ければ先頭の数値項目）。成約率は成約と商談の両方があるときだけ出す
+// 案件詳細のスタッフ別実績の列。並べ替えの基準は成約（テンプレートに無ければ先頭の数値項目）。成約率は成約と商談の両方があるときだけ出す
+function projectPerfColumns(data) {
   const { cols, more } = perfColumns(data.performance_fields)
   const main = cols.find(f => f.key === 'seiyaku') || cols[0]
   const hasRate = main.key === 'seiyaku' && (!Array.isArray(data.performance_fields) || !data.performance_fields.length || data.performance_fields.some(f => f.key === 'shodan'))
+  return { cols, more, main, hasRate }
+}
+function drawProjectStaffPerf() {
+  const host = document.getElementById('project-staff-perf'); if (!host || !PROJECT_DETAIL) return
+  const { data } = PROJECT_DETAIL; const range = monthRangeOf(data.month)
+  const { cols, more, main, hasRate } = projectPerfColumns(data)
   const rows = rankRows(data.staff_performance.map(s => ({ ...s, days: Number(s.days || 0), val: perfValue(s, main.key), num: perfValue(s, 'seiyaku'), den: perfValue(s, 'shodan') })), hasRate)
   host.innerHTML = `<div class="overflow-x-auto"><table class="tbl">
     <thead><tr><th>スタッフ</th><th>日数</th>${cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}</th>`).join('')}<th class="whitespace-nowrap">${esc(main.label)}/日</th>${hasRate ? '<th>成約率</th>' : ''}</tr></thead>

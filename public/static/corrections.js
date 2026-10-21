@@ -61,7 +61,7 @@
     const mode = (document.querySelector('input[name="cd-mode"]:checked') || {}).value
     const v = (document.getElementById('cd-days') || {}).value || ''
     const max = Number(el.dataset.max) || DEADLINE_MAX
-    if (mode === 'days' && (!/^d+$/.test(v.trim()) || Number(v) < 1 || Number(v) > max)) { toast(`日数は1〜${max}の整数で入力してください`); return }
+    if (mode === 'days' && (!/^[0-9]+$/.test(v.trim()) || Number(v) < 1 || Number(v) > max)) { toast(`日数は1〜${max}の整数で入力してください`); return }
     const deadline = mode === 'days' ? Number(v) : null
     try {
       await axios.put('/api/admin/settings/corrections', { deadline_days: deadline })

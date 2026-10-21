@@ -61,6 +61,9 @@ const admin = client(await login('sample', 'admin'))
   ok('#215 打刻修正承認に受付期限の設定（GET/PUT /admin/settings/corrections）', co.includes("delegate('corrDeadlineSetting'") && co.includes("axios.put('/api/admin/settings/corrections', { deadline_days: deadline })"))
   ok('#359 案件の編集・クライアントの編集に削除（DELETE /admin/projects/:id・/admin/clients/:id）',
     a.includes("delegate('deleteProject'") && a.includes("delegate('deleteClient'") && a.includes("axios.delete('/api/admin/projects/'") && a.includes("axios.delete('/api/admin/clients/'"))
+  // 入力の確認の正規表現（数字だけ）が壊れていない（/^d+$/ は「d の並び」になり、どの数値も通らない）
+  ok('#497 #215 案件の猶予・受付期限の入力の確認は数字を受け付ける', !a.includes('/^d+$/') && !co.includes('/^d+$/') && a.includes('custom && (!/^[0-9]+$/.test(v)') && co.includes("mode === 'days' && (!/^[0-9]+$/.test(v.trim())"))
+  ok('#184 案件詳細の並べ替えのボタンは、成約率を出さない表では成約率を出さない', a.includes("rankControlsHtml('rankProject', projectPerfColumns(data).hasRate)"))
 }
 
 // ---------- 準備: 案件・ログインのないスタッフ・昨日のシフト ----------
