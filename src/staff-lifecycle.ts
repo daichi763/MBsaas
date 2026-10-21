@@ -1417,7 +1417,7 @@ async function loadToken(db: D1Database, token: string) {
       sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
       co.active_status AS company_active_status, sp.merged_into_staff_id, sp.employment_status, us.retired_at,
       p.manual_text, si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng, p.site_contact_name, p.site_contact_phone,
-      co.emergency_phone, co.emergency_note
+      co.emergency_phone, co.emergency_note, p.late_grace_minutes
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id

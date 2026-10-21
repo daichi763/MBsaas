@@ -142,6 +142,14 @@ must(await admin.put('/api/admin/settings/lateness', { grace_minutes: 0 }), 'com
     await proxy(s.shift_id, { wake_up: hm(mins - 60), departure: hm(mins - 45) })
     const r2 = await stA.post('/api/staff/attendance', { shift_id: s.shift_id, report_type: 'check_in', latitude: 35.68, longitude: 139.76 })
     ok('#497 アプリ: 猶予30分の案件で約15分遅れの入店は遅刻にしない', r2.status === 200 && r2.data.status !== 'late' && r2.data.late_minutes >= 14 && r2.data.late_minutes <= 17, r2.data)
+    // 報告用URL（staff-lifecycle.ts の POST /public/report/:token/attendance）も案件の猶予で判定する
+    const s2 = await newShift(SB, P, today, { start_time: hm(mins - 15), end_time: hm(mins + 180) })
+    await proxy(s2.shift_id, { wake_up: hm(mins - 60), departure: hm(mins - 45) })
+    const link = must(await admin.post(`/api/admin/shifts/${s2.shift_id}/report-link`, {}), 'report link')
+    const rl = await fetch(`${BASE}/api/public/report/${link.token}/attendance`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_type: 'check_in', latitude: 35.68, longitude: 139.76 }) })
+    const rlData = await rl.json().catch(() => null)
+    ok('#497 報告用URL: 猶予30分の案件で約15分遅れの入店は遅刻にしない', rl.status === 200 && rlData && rlData.status !== 'late' && rlData.late_minutes >= 14 && rlData.late_minutes <= 17, rlData)
     must(await admin.put(`/api/admin/projects/${P}/photo-required`, { override: 'inherit' }), 'photo inherit')
   } else console.log('SKIP  #497 アプリの入店（日本時間 1:30〜20:00 以外は、日をまたがないシフトを作れないため省略）')
 

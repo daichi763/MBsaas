@@ -80,7 +80,7 @@ const RETIRED_PERSONAL_TARGETS = ['employee_records', 'employment_periods', 'sta
 // retired_staff は人数（対象の人・処理できた人・失敗した人）。スタッフ単位の失敗の理由はここに残す（#234）
 // retired_staff_deferred・r2_pending は、上限に達して翌日に回した人数と R2 のファイル数（#419）
 // D1 の meta.changes はトリガーの中の変更も数えるため、トリガーのある表の件数は RETURNING の行数で数える（9005）
-const RETURNING_COUNTED = new Set(['consultations', 'anonymized_staff'])
+const RETURNING_COUNTED = new Set(['consultations', 'anonymized_staff', 'roster_comment_reads'])
 const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evaluations', 'follow_logs', 'consultations', 'shift_report_tokens', 'r2_photos',
   ...RETIRED_EXTRA_TARGETS, ...RETIRED_PERSONAL_TARGETS, 'retired_staff_deferred', 'r2_pending']
 // 件数の単位が行数でない対象（実行ログの合計に含めない）
@@ -719,7 +719,7 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM push_queue WHERE user_id = ${userOf}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM user_notification_prefs WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
-        ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
+        ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads} RETURNING 1`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
         // 同意履歴は連携行（staff_id）の単位で消す。所属元の行が対象になっても、連携先の行が残っている間は連携の根拠として残す
         ['roster_consents', db.prepare('DELETE FROM roster_consents WHERE staff_id = ? OR (source_staff_id = ? AND staff_id IS NULL)').bind(staffId, staffId)],
@@ -797,7 +797,8 @@ async function inBatches(db: D1Database, dryRun: boolean, r: RetentionTargetResu
     const ids = ((await db.prepare(o.select).bind(...o.binds, size).all()).results as { id: number }[]).map(x => x.id)
     if (!ids.length) break
     const res = await db.batch(o.apply(JSON.stringify(ids)))
-    const n = res[o.changesAt].meta.changes || 0
+    // RETURNING のある文はその行数で数える（トリガーの中の変更を meta.changes が数えるため。9005）
+    const n = res[o.changesAt].results?.length || res[o.changesAt].meta.changes || 0
     r.targetCount += n; r.deletedCount += n
     if (o.extra) {
       const m = res[o.extra.changesAt].meta.changes || 0
@@ -855,7 +856,7 @@ async function cleanupInService(db: D1Database, dryRun: boolean): Promise<Retent
     count: `SELECT COUNT(*) AS n FROM consultations WHERE status = 'done' AND created_at < ? AND ${notHeld}`,
     select: `SELECT consultation_id AS id FROM consultations WHERE status = 'done' AND created_at < ? AND ${notHeld} LIMIT ?`,
     binds: [cutoffDate(s.consultation_years)],
-    apply: ids => [db.prepare('DELETE FROM consultations WHERE consultation_id IN (SELECT value FROM json_each(?))').bind(ids)],
+    apply: ids => [db.prepare('DELETE FROM consultations WHERE consultation_id IN (SELECT value FROM json_each(?)) RETURNING 1').bind(ids)],
     changesAt: 0,
   })))
   out.push(await runInServiceStage('follow_logs_done', r => inBatches(db, dryRun, r, {
