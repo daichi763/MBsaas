@@ -19,6 +19,8 @@
   const contactHtml = (note) => esc(note).replace(/(^|[^\d])(0\d{1,4}-\d{1,4}-\d{3,4}|0[5789]0\d{8}|0\d{9})(?![\d-])/g, (m, pre, tel) => `${pre}<a href="tel:${tel.replace(/-/g, '')}" class="text-blue-600 underline whitespace-nowrap">${tel}</a>`)
   // 会場の住所（返されたときだけ。#362）と地図のリンク
   const mapUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr)
+  // 結果のメールを送れるか（#151）。サーバーがメールを送れない設定（result_mail: false）のときは、メールで届くと案内しない
+  const mailOk = () => !(DATA && DATA.result_mail === false)
   function toast(msg) {
     let root = document.getElementById('toast'); if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
     const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg; root.appendChild(el); setTimeout(() => el.remove(), 3000)
@@ -106,7 +108,7 @@
           <label class="block text-sm text-gray-600">フリガナ<input id="ap-kana" class="inp" maxlength="60" placeholder="ヤマダ タロウ"></label>
           <label class="block text-sm text-gray-600">電話番号 <span class="text-red-500">*</span><input id="ap-phone" class="inp" type="tel" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="09012345678"></label>
           <label class="block text-sm text-gray-600">メールアドレス<input id="ap-email" class="inp" type="email" inputmode="email" autocomplete="email" maxlength="120">
-            <span class="block text-[11px] text-gray-400 mt-0.5">選考の結果（確定・見送り）をこのアドレスにお知らせします。入力がない場合は、担当者からお電話などでご連絡します</span></label>
+            <span class="block text-[11px] text-gray-400 mt-0.5">${mailOk() ? '選考の結果（確定・見送り）をこのアドレスにお知らせします。入力がない場合は、担当者からお電話などでご連絡します' : '選考の結果は、担当者からお電話などでご連絡します'}</span></label>
           ${questions().map(questionHtml).join('')}
           <label class="block text-sm text-gray-600">ご質問・ご要望<textarea id="ap-note" class="inp" rows="3" maxlength="500" placeholder="経験・希望の時間など"></textarea></label>
           <div class="hidden" aria-hidden="true"><label>Website<input id="ap-website" tabindex="-1" autocomplete="off"></label></div>
@@ -123,7 +125,7 @@
         </div>
       </section>` : ''}
       ${d.contact_note ? `<p class="text-xs text-gray-500 text-center mb-4 whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(d.contact_note)}</p>` : ''}
-      <p class="text-[11px] text-gray-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします（メールアドレスを入れた場合はメールで届きます）。応募の時点ではシフトは確定していません</p>
+      <p class="text-[11px] text-gray-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします${mailOk() ? '（メールアドレスを入れた場合はメールで届きます）' : ''}。応募の時点ではシフトは確定していません</p>
 
       ${dates.length ? `<div class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-3 z-30" id="apply-submit-bar">
         <div class="max-w-lg mx-auto flex items-center gap-3">
@@ -285,7 +287,7 @@
         agree: true, slot_role_ids: [...picked], issued_at: DATA.issued_at, turnstile_token: tsToken, answers,
       })
       document.getElementById('apply-submit-bar')?.remove()
-      renderDone(data, !!email)
+      renderDone(data, !!email && mailOk())
     } catch (e) {
       const d = e && e.response && e.response.data
       btn.disabled = !picked.size; btn.textContent = '応募する'
@@ -302,7 +304,7 @@
   }
 
   // 完了画面: 受け付けた日時の控えと受付日時を出す（#317）。控えはサーバーが受け付けた日時だけで作る（#242）
-  // byEmail: メールアドレスを入れて応募した（結果はメールで届く。#151）
+  // byEmail: メールアドレスを入れて応募し、結果がメールで届く（#151。メールを送れない設定のときは false）
   function renderDone(data, byEmail) {
     const accepted = data.accepted || [], already = data.already_applied || []
     const at = data.applied_at ? dayjs(data.applied_at) : null
