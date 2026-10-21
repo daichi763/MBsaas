@@ -274,14 +274,27 @@ export const MAX_LATE_GRACE_MINUTES = 120
 export type LatenessSettings = { grace_minutes: number }
 export type ReportLateness = { report_type: string; late: boolean; late_minutes: number | null; early_leave_minutes: number | null }
 
-// 会社設定（companies.settings_json）から遅刻の猶予を読む。未設定・不正なら 0 分
-export function latenessSettings(settingsJson: any): LatenessSettings {
+// 勤怠の設定（写真必須・遅刻の猶予・打刻修正の受付期限）を変えられるロール（9004）。営業管理者・事務担当は見るだけ
+export const ATTENDANCE_SETTING_ROLES = ['company_admin', 'field_manager']
+export const ATTENDANCE_SETTING_DENIED = '勤怠の設定を変えられるのは会社管理者と現場管理者だけです'
+export const canEditAttendanceSettings = (u: any) => ATTENDANCE_SETTING_ROLES.includes(u?.role)
+export const validGraceMinutes = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_LATE_GRACE_MINUTES
+// 会社設定（companies.settings_json）から遅刻の猶予を読む。未設定・不正なら 0 分。
+// projectGrace は案件ごとの上書き（projects.late_grace_minutes。#497）。NULL・不正なら会社の値
+export function latenessSettings(settingsJson: any, projectGrace?: unknown): LatenessSettings {
+  const pg = projectGrace == null || projectGrace === '' ? null : Number(projectGrace)
+  if (pg != null && validGraceMinutes(pg)) return { grace_minutes: pg }
   let g = 0
   try {
     const v = JSON.parse(settingsJson || '{}').late_grace_minutes
-    if (Number.isInteger(v) && v >= 0 && v <= MAX_LATE_GRACE_MINUTES) g = v
+    if (validGraceMinutes(v)) g = v
   } catch { }
   return { grace_minutes: g }
+}
+// シフトの案件の上書きを読んで遅刻の猶予を決める（案件の行を読んでいない呼び出し元用。#497）
+export async function latenessSettingsFor(db: D1Database, settingsJson: any, projectId: unknown): Promise<LatenessSettings> {
+  const p = projectId == null ? null : await db.prepare('SELECT late_grace_minutes FROM projects WHERE project_id = ?').bind(projectId).first() as any
+  return latenessSettings(settingsJson, p?.late_grace_minutes)
 }
 // a から b までの分数（'YYYY-MM-DD HH:MM[:SS]'。秒は切り捨てて分で比べる）
 const minuteOf = (t: string) => Date.parse(String(t).slice(0, 16).replace(' ', 'T') + ':00Z') / 60000

@@ -3,6 +3,11 @@
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8821 node scripts/test-w3-recruit.mjs
 //   #501 を確かめるときは、秘密鍵だけを渡して起動し（--var TURNSTILE_SECRET_KEY:dummy）、TURNSTILE=secret_key_only を付けて実行する
+//   【注意】サーバーの起動オプションとテストの環境変数を必ず組で合わせる（合っていないと #501 の確認が FAIL になる。9005）。
+//     - npm test（scripts/run-tests.mjs）は上の --var を起動に付け、同じ値をテストの環境変数にも渡すので、そのままで合う
+//       （TURNSTILE が無くても、渡された TURNSTILE_SECRET_KEY / TURNSTILE_SITE_KEY から期待する状態を決める）
+//     - 手で流すときは、--var を付けずに起動したなら TURNSTILE も付けない（off）。秘密鍵だけを渡して起動したなら
+//       TURNSTILE=secret_key_only（または TURNSTILE_SECRET_KEY=dummy）を付けて実行する
 //   PERSIST=<保存先> を付けると、ローカルの D1 を直接書き換える確認（処理中のまま止まった明細の復旧）も行う
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -288,7 +293,9 @@ if (PERSIST) {
 // ---------- #501 Turnstile の鍵が片方だけ ----------
 {
   const list = must(await admin.get('/api/admin/recruit-pages'), 'pages')
-  const expect = process.env.TURNSTILE || 'off'
+  // 期待する状態: TURNSTILE があればそれ。無ければ、起動に付けた鍵（npm test はテストの環境変数にも渡す）から決める（recruit.ts の turnstileState と同じ）
+  const sk = !!process.env.TURNSTILE_SECRET_KEY, pk = !!process.env.TURNSTILE_SITE_KEY
+  const expect = process.env.TURNSTILE || (sk && pk ? 'enabled' : pk ? 'site_key_only' : sk ? 'secret_key_only' : 'off')
   ok(`#501 管理画面に Turnstile の設定状態（${expect}）を返す`, list.turnstile === expect && list.turnstile_enabled === (expect === 'enabled'), { t: list.turnstile })
   if (expect === 'secret_key_only' || expect === 'site_key_only') {
     const s = await newRoles(pid, addDays(D, 8), '10:00', '12:00')

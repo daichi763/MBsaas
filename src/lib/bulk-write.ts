@@ -45,7 +45,9 @@ export function returnedIds(results: D1Result[], col: string): number[] {
   return results.flatMap(r => ((r?.results || []) as any[]).map(x => Number(x[col])).filter(n => Number.isInteger(n) && n > 0))
 }
 
-// batch の結果から変更行数の合計を返す
+// batch の結果から変更行数の合計を返す。
+// 注意: D1 の meta.changes はトリガーの中の更新も数える。shifts の日時・案件・場所・状態・担当者を変える文（0086 の trg_shifts_staff_changed_at）や
+// 欠勤から戻す文（0087 の trg_shift_cancellations_clear）の件数には使わず、前後の状態から数える（9005。shift-board.ts の希望の確定を参照）
 export function changesOf(results: D1Result[]): number {
   return results.reduce((n, r) => n + Number(r?.meta?.changes || 0), 0)
 }
