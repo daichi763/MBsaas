@@ -19,6 +19,7 @@ import { isCompanyActive } from './lib/auth'
 import { notifyRecruitApplied } from './notifications'
 import { notifyRecruitNew, notifyRecruitResult, notifyRecruitResults } from './notifications'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
+import { mailMode } from './services/email'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
@@ -273,6 +274,7 @@ recruitPublicApi.get('/:token', async (c) => {
     date_from: page.date_from, date_to: page.date_to, roles: roles.map(r => publicRole(r, !!page.show_remaining)), next_from,
     turnstile_site_key: turnstileEnabled(c.env) ? c.env.TURNSTILE_SITE_KEY : null, issued_at: Date.now(),
     retention_days: RETENTION_DAYS, // 同意文に書く保存期間（#351）
+    result_mail: mailMode(c.env as any) === 'enabled', // 結果をメールで送れる設定か（false なら画面はメールで届くと案内しない。#151）
     questions: parseQuestions(page.questions).map(q => ({ key: q.key, label: q.label, type: q.type, required: !!q.required, options: q.options || [] })), // #300
   })
 })

@@ -1025,7 +1025,7 @@ correctionsStaffApi.get('/attendance/timeline', async (c) => {
   const self = await myUserIds(c)
   for (let i = 0; i < shiftIds.length; i += 90) {
     const chunk = shiftIds.slice(i, i + 90), q = chunk.map(() => '?').join(',')
-    for (const r of (await c.env.DB.prepare(`SELECT shift_id, report_type, reported_at, entry_method, corrected_by_correction_id, original_reported_at FROM attendance_reports WHERE shift_id IN (${q})`).bind(...chunk).all()).results as any[]) {
+    for (const r of (await c.env.DB.prepare(`SELECT shift_id, report_type, reported_at, entry_method, corrected_by_correction_id, original_reported_at, time_source, received_at FROM attendance_reports WHERE shift_id IN (${q})`).bind(...chunk).all()).results as any[]) {
       if (!reports.has(r.shift_id)) reports.set(r.shift_id, []); reports.get(r.shift_id)!.push(r)
     }
     // 承認待ちは今の担当者の申請だけ（差し替え前の担当者の申請は出さない。#101）
