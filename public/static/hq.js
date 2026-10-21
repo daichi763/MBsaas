@@ -1800,7 +1800,8 @@ delegate('hqAnnReads', (el) => withSubmitLock(el, async () => {
 // 直近の期間の会社別・種類別の送信数と、届かなかった割合・理由の上位・最後に成功した日時。宛先は伏せて表示する
 const MAIL_TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認',
   recruit_applied: '新しい応募', board_message: '案件掲示板', roster_chat: '企業間チャット', consultation: '相談・連絡', reminder: '報告の催促',
-  shift_change: 'シフトの変更', recruit_result: '応募の結果', recruit_new: '新しい募集', notification_digest: '通知のまとめ' }
+  shift_change: 'シフトの変更', recruit_result: '応募の結果', recruit_new: '新しい募集', notification_digest: '通知のまとめ',
+  board_saved_search: '掲示板の新着（保存した条件）', login_email_verify: 'ログインの確認', support_request: '本部への依頼', doc_expiry: '書類の有効期限' }
 const MAIL_STATUS_LABEL = { sent: '送信済み', delivered: '配信済み', failed: '送信失敗', bounced: '不達', bounced_soft: '一時的な不達', complained: '迷惑メール報告', skipped: '送信無効' }
 const MAIL_ERR_LABEL = { mail_not_configured: '送信設定なし（RESEND_API_KEY / MAIL_FROM）', resend_error: '送信サービスのエラー', network_error: '通信エラー', invalid_address: 'アドレスの形式の誤り',
   bounced: '不達', bounced_soft: '一時的な不達', complained: '迷惑メール報告', suppressed_bounced: '不達のアドレスのため停止', suppressed_complained: '迷惑メール報告のアドレスのため停止', company_inactive: '契約停止中の企業' }

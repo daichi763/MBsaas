@@ -33,6 +33,42 @@
   }
   setTimeout(() => window.refreshCorrectionsBadge(), 900)
 
+  // ---------- スタッフの申請の受付期限（#215。companies.settings_json.correction_deadline_days） ----------
+  // API は GET/PUT /admin/settings/corrections（{ deadline_days: 日数 | null }。null は期限なし）。
+  // 期限はスタッフ本人の打刻修正・交通費と延長の申請に効き、管理者による申請には効かない
+  const DEADLINE_MAX = 366
+  delegate('corrDeadlineSetting', async () => {
+    let s
+    try { s = (await axios.get('/api/admin/settings/corrections')).data } catch (e) { toast(errMsg(e, '設定を読み込めませんでした')); return }
+    const max = Number(s.max_days) || DEADLINE_MAX
+    const d = Number(s.deadline_days) > 0 ? Number(s.deadline_days) : null
+    modal(`
+      <h3 class="font-bold text-lg mb-2"><i class="fas fa-calendar-xmark text-blue-600 mr-1"></i>申請の受付期限</h3>
+      <p class="text-xs text-gray-500 mb-3">スタッフがアプリから打刻修正（と交通費・延長）を申請できる期限です。期限を過ぎた申請は受け付けず、スタッフには「管理者に連絡してください」と出します。管理者による申請（「管理者として申請」）は期限に関係なく出せます。</p>
+      <div class="space-y-2 text-sm">
+        <label class="flex items-center gap-2"><input type="radio" name="cd-mode" value="none" ${d ? '' : 'checked'}>期限なし</label>
+        <label class="flex items-center gap-2 flex-wrap"><input type="radio" name="cd-mode" value="days" ${d ? 'checked' : ''}>勤務日から
+          <input id="cd-days" type="number" min="1" max="${max}" step="1" class="inp text-sm w-24" value="${d || 7}" ${s.can_edit === false ? 'disabled' : ''}>日後まで</label>
+      </div>
+      <p class="text-[11px] text-gray-400 mt-2">例: 7日にすると、10/1 の勤務は 10/8 まで申請できます。精算が確定済みのシフトへの打刻修正は、期限内でも「支払額は自動では変わりません」と案内したうえで受け付けます（交通費・延長の申請は確定済み・締めた期間のシフトには出せません）。</p>
+      ${s.can_edit === false ? '<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">勤怠の設定を変えられるのは会社管理者と現場管理者だけです</p>'
+        : `<button class="btn btn-primary w-full mt-4" data-action="corrDeadlineSave" data-max="${max}">保存する</button>`}`)
+    if (s.can_edit === false) document.querySelectorAll('input[name="cd-mode"]').forEach(r => { r.disabled = true })
+    const days = document.getElementById('cd-days')
+    if (days) days.addEventListener('focus', () => { const r = document.querySelector('input[name="cd-mode"][value="days"]'); if (r) r.checked = true })
+  })
+  delegate('corrDeadlineSave', (el) => withSubmitLock(el, async () => {
+    const mode = (document.querySelector('input[name="cd-mode"]:checked') || {}).value
+    const v = (document.getElementById('cd-days') || {}).value || ''
+    const max = Number(el.dataset.max) || DEADLINE_MAX
+    if (mode === 'days' && (!/^[0-9]+$/.test(v.trim()) || Number(v) < 1 || Number(v) > max)) { toast(`日数は1〜${max}の整数で入力してください`); return }
+    const deadline = mode === 'days' ? Number(v) : null
+    try {
+      await axios.put('/api/admin/settings/corrections', { deadline_days: deadline })
+      closeModal(); toast(deadline ? `受付期限を勤務日から${deadline}日後までにしました` : '受付期限をなしにしました')
+    } catch (e) { toast(errMsg(e, '保存できませんでした')) }
+  }))
+
   window.renderCorrections = async function (id) {
     // #corrections/punches は打刻データの一覧（#175）
     if (id === 'punches') return renderPunches()
@@ -61,6 +97,7 @@
         <div class="flex gap-2 flex-wrap"><a href="/api/admin/corrections/export?${new URLSearchParams(params).toString()}" class="btn btn-outline text-sm"><i class="fas fa-file-csv"></i>CSV 出力</a>
           <a href="#corrections/punches" class="btn btn-outline text-sm"><i class="fas fa-table-list"></i>打刻一覧</a>
           <a href="#corrections/emails" class="btn btn-outline text-sm"><i class="fas fa-envelope"></i>メール送信状況</a>
+          <button class="btn btn-outline text-sm" data-action="corrDeadlineSetting" title="スタッフがアプリから申請できる期限（勤務日から何日後まで）"><i class="fas fa-calendar-xmark"></i>受付期限</button>
           <button class="btn btn-primary text-sm" data-action="corrNew"><i class="fas fa-plus"></i>管理者として申請</button></div>
       </div>
       <div class="flex gap-2 overflow-x-auto pb-1 mb-3">${tab('pending', '承認待ち')}${tab('approved', '承認済み')}${tab('rejected', '却下')}${tab('cancelled', '取り消し済み')}${tab('', 'すべて')}</div>

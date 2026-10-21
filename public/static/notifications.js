@@ -11,7 +11,14 @@
     roster_source_retired: '所属元での退職', roster_host_note: '連携先からの追記',
     // #464 #479 #162: 従業員の口座・給与の変更、掲示板の保存した検索条件の新着、他社への連携・連携の終了と再開
     employee_payroll_changed: '従業員の口座・給与', board_saved_search: '掲示板の新着（保存した条件）',
-    roster_linked: '他社への連携', roster_link_ended: '連携の終了', roster_link_resumed: '連携の再開' }
+    roster_linked: '他社への連携', roster_link_ended: '連携の終了', roster_link_resumed: '連携の再開',
+    // スタッフからの申請・申告（管理者あて。#464 の続き）
+    pay_request_submitted: '交通費・延長の申請', profile_change_submitted: '登録情報の変更申請', staff_document_submitted: '書類の提出',
+    leave_submitted: '休暇の申請', attendance_no_break: '休憩なしの申告',
+    // 書類の有効期限（#297。期限が30日以内・期限切れの書類があるとき）
+    docs_expiring: '書類の有効期限' }
+  // 表にない種類（あとから増えたもの）は「その他」と出し、未読があれば種類の絞り込みにも並べる
+  const kindLabel = (k) => KIND[k] || 'その他'
   // 送信の失敗・停止の理由。送信サービスの理由は「コード: 内容」の形で、コロンの後をそのまま添える（#438）
   const ERR = {
     mail_not_configured: 'メールの送信設定がありません（RESEND_API_KEY / MAIL_FROM）', resend_error: 'メール送信サービスがエラーを返しました', network_error: '通信エラー',
@@ -55,13 +62,14 @@
   }
   const inboxItem = (n) => `
         <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" data-action="notifOpen" data-id="${n.notification_id}" data-link="${esc(n.link || '')}">
-          <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>'}<span class="badge badge-gray text-[10px]">${esc(KIND[n.kind] || n.kind || '')}</span>${processedBadge(n)}
+          <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>'}<span class="badge badge-gray text-[10px]">${esc(kindLabel(n.kind))}</span>${processedBadge(n)}
             <span class="text-[11px] text-gray-400 ml-auto">${esc(fmtAt(n.created_at))}</span></div>
           <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`
   function drawInbox() {
-    const kinds = Object.keys(KIND)
+    const kinds = [...Object.keys(KIND), ...Object.keys(INBOX.unread_by_kind).filter(k => !KIND[k])]
+    if (INBOX.kind && !kinds.includes(INBOX.kind)) kinds.push(INBOX.kind)
     const shown = INBOX.rows.length
     const filtered = INBOX.unread || INBOX.kind
     const unreadInView = INBOX.kind ? (INBOX.unread_by_kind[INBOX.kind] || 0) : INBOX.unread_total
@@ -75,7 +83,7 @@
         <label class="flex items-center gap-1 text-sm text-gray-600"><input type="checkbox" id="inbox-unread" ${INBOX.unread ? 'checked' : ''}>未読のみ</label>
         <select id="inbox-kind" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5" aria-label="種類">
           <option value="">すべての種類</option>
-          ${kinds.map(k => `<option value="${k}" ${INBOX.kind === k ? 'selected' : ''}>${esc(KIND[k])}${INBOX.unread_by_kind[k] ? `（未読${INBOX.unread_by_kind[k]}）` : ''}</option>`).join('')}
+          ${kinds.map(k => `<option value="${esc(k)}" ${INBOX.kind === k ? 'selected' : ''}>${esc(KIND[k] || `その他（${k}）`)}${INBOX.unread_by_kind[k] ? `（未読${Number(INBOX.unread_by_kind[k])}）` : ''}</option>`).join('')}
         </select>
         ${filtered ? '<button class="text-xs text-blue-600 hover:underline" data-action="inboxClear">絞り込みを解除</button>' : ''}
       </div>
@@ -157,7 +165,9 @@
   const MAIL = { view: 'corrections', status: 'failed', logStatus: '', logType: '' }
   const VIEWS = [['corrections', '打刻修正の通知'], ['logs', 'メールの記録'], ['settings', '問い合わせ先・送信停止']]
   const TYPE_LABEL = { notice: 'お知らせ', attendance_correction: '打刻修正の通知', incident_report: 'インシデントの通知', password_reset: 'パスワード再設定', account_email: 'メールアドレスの確認',
-    recruit_applied: '新しい応募の通知', board_message: '案件掲示板の通知', roster_chat: '企業間チャットの通知', consultation: '相談・連絡の通知', notification_digest: '承認依頼のまとめ' }
+    recruit_applied: '新しい応募の通知', board_message: '案件掲示板の通知', roster_chat: '企業間チャットの通知', consultation: '相談・連絡の通知', notification_digest: '承認依頼のまとめ',
+    reminder: '報告の催促', shift_change: 'シフトの変更', recruit_result: '応募の結果', recruit_new: '新しい募集', board_saved_search: '案件掲示板の新着（保存した条件）',
+    login_email_verify: 'ログインの確認', support_request: '本部への依頼', doc_expiry: '書類の有効期限' }
   const LOG_STATUS = { sent: ['送信済み', 'badge-green'], delivered: ['配信済み', 'badge-green'], failed: ['送信失敗', 'badge-red'], bounced: ['不達', 'badge-red'], bounced_soft: ['一時的な不達', 'badge-yellow'], complained: ['迷惑メール報告', 'badge-red'], skipped: ['送信無効の環境', 'badge-gray'] }
   let ROWS = [], HAS_MORE = false
 
