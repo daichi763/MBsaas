@@ -555,7 +555,8 @@
 // 月ごとの実働時間（管理者が入力した実績を含む）・勤務日数と、会社が表示を ON にしている場合は支払額（見込み・確定）。
 // シフトごとに交通費（実費）と延長（残業）を申請できる。管理者が承認すると、交通費・予定の終了時刻に反映される
 // =========================================================
-(function () {
+// 先頭の ; は、前の即時関数の })() とつながって呼び出しにならないようにするため
+;(function () {
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const REQ_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
   const KIND_LABEL = { transport: '交通費', overtime: '延長' }
@@ -621,7 +622,94 @@
     const note = q.decision_note && q.status !== 'pending' ? `<span class="block text-gray-500">管理者より: ${esc(q.decision_note)}</span>` : ''
     const cancel = q.status === 'pending' ? `<button class="text-[11px] text-gray-500 underline shrink-0" data-action="payReqCancel" data-id="${Number(q.request_id)}">取り消す</button>` : ''
     return `<li class="flex items-start gap-2 py-1 text-xs"><span class="shrink-0">${reqBadge(q.status)}</span>
-      <span class="flex-1 text-gray-700">${esc(KIND_LABEL[q.kind] || q.kind)}: ${what}${note}</span>${cancel}</li>`
+      <span class="flex-1 text-gray-700">${esc(KIND_LABEL[q.kind] || q.kind)}: ${what}${note}${receiptLine(q)}</span>${cancel}</li>`
+  }
+
+  // ---------- 領収書の写真（#273。交通費の申請に1枚・任意） ----------
+  // 差し替えた後に古い画像がキャッシュから出ないよう、URL に添付の時刻を付ける
+  const receiptUrl = (q) => `/api/staff/pay/requests/${Number(q.request_id)}/receipt?v=${encodeURIComponent(q.receipt_uploaded_at || '')}`
+  function receiptLine(q) {
+    if (q.kind !== 'transport') return ''
+    const id = Number(q.request_id)
+    if (q.has_receipt) {
+      return `<button type="button" class="mt-1 flex items-center gap-2 text-blue-600" data-action="payReceiptView" data-id="${id}" aria-label="領収書の写真を見る">
+        <img src="${esc(receiptUrl(q))}" alt="" loading="lazy" class="w-10 h-10 object-cover rounded border border-gray-200 bg-gray-100">
+        <span class="underline"><i class="fas fa-receipt mr-1"></i>領収書の写真${q.status === 'pending' ? '（確認・差し替え）' : ''}</span></button>`
+    }
+    if (q.status !== 'pending') return ''
+    return `<button type="button" class="mt-1 block text-blue-600 underline" data-action="payReceiptAttach" data-id="${id}"><i class="fas fa-camera mr-1"></i>領収書の写真を付ける（任意）</button>`
+  }
+  const findRequest = (id) => PAY && PAY.shifts.flatMap(s => s.requests || []).find(q => q.request_id === id)
+  // 端末で縮小（staff.js の compressImage）してから送る。送れなければ理由を返す
+  async function uploadReceipt(requestId, blob) {
+    const fd = new FormData()
+    fd.append('photo', blob, 'receipt.jpg')
+    try { await axios.post(`/api/staff/pay/requests/${Number(requestId)}/receipt`, fd); return null } catch (e) {
+      return errMsg(e, e && e.response ? '領収書の写真を送れませんでした' : '通信できませんでした。電波の良い場所でもう一度お試しください')
+    }
+  }
+  delegate('payReceiptView', (el) => {
+    const q = findRequest(Number(el.dataset.id)); if (!q || !q.has_receipt) return
+    const url = receiptUrl(q)
+    modal(`<h3 class="font-bold text-gray-800 mb-1">領収書の写真</h3>
+      <p class="text-sm text-gray-600 mb-3">交通費 ${esc(yenText(q.amount))}（${q.round_trip ? '往復' : '片道'}・${esc(q.route || '')}）</p>
+      <a href="${esc(url)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden bg-gray-50"><img src="${esc(url)}" alt="領収書の写真" class="w-full max-h-[60vh] object-contain"></a>
+      ${q.receipt_uploaded_at ? `<p class="text-[11px] text-gray-400 mt-1">添付 ${esc(dayjs(q.receipt_uploaded_at).format('M/D HH:mm'))}・タップで大きく表示</p>` : ''}
+      ${q.status === 'pending' ? '<p class="text-[11px] text-gray-500 mt-2">承認されるまでは差し替えられます</p>' : ''}
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
+        ${q.status === 'pending' ? `<button class="btn btn-primary flex-1" data-action="payReceiptAttach" data-id="${Number(q.request_id)}"><i class="fas fa-camera"></i>差し替える</button>` : ''}</div>`)
+  })
+  // 申請した後から付ける・差し替える（写真を選ぶ → 縮小 → 送る）
+  delegate('payReceiptAttach', (el) => {
+    const id = Number(el.dataset.id)
+    const input = document.createElement('input')
+    input.type = 'file'; input.accept = 'image/jpeg,image/png,image/*'; input.className = 'hidden'
+    document.body.appendChild(input)
+    input.onchange = () => withSubmitLock(el, async () => {
+      const file = input.files && input.files[0]
+      input.remove()
+      if (!file) return
+      let blob
+      try { blob = await compressImage(file) } catch (e) { toast(e && e.message ? e.message : '画像の処理に失敗しました'); return }
+      const err = await uploadReceipt(id, blob)
+      if (err) { toast(err); return }
+      if (document.getElementById('modal-root').innerHTML) closeModal()
+      toast('領収書の写真を付けました')
+      renderStaffPay()
+    })
+    input.click()
+  })
+  // 申請の画面で選んだ写真（申請を出した後に送る）
+  let NEW_RECEIPT = null
+  function clearNewReceipt() { if (NEW_RECEIPT && NEW_RECEIPT.url) URL.revokeObjectURL(NEW_RECEIPT.url); NEW_RECEIPT = null }
+  function drawNewReceipt() {
+    const box = document.getElementById('pay-receipt-preview'), label = document.getElementById('pay-receipt-label'); if (!box) return
+    box.innerHTML = NEW_RECEIPT && NEW_RECEIPT.url ? `<div class="relative inline-block"><img src="${esc(NEW_RECEIPT.url)}" alt="選んだ領収書の写真" class="w-24 h-24 object-cover rounded border">
+      <button type="button" class="absolute -top-1.5 -right-1.5 bg-white rounded-full w-5 h-5 text-xs text-gray-600 border" data-action="payReceiptClear" aria-label="選んだ写真を外す">×</button></div>`
+      : NEW_RECEIPT && NEW_RECEIPT.busy ? '<p class="text-xs text-gray-500"><span class="spin"></span> 写真を準備しています…</p>' : ''
+    if (label) label.classList.toggle('hidden', !!NEW_RECEIPT)
+  }
+  delegate('payReceiptClear', () => { clearNewReceipt(); drawNewReceipt() })
+  function bindNewReceipt() {
+    const input = document.getElementById('pay-receipt-file'); if (!input) return
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0]; input.value = ''
+      if (!file) return
+      const msg = document.getElementById('pay-req-msg')
+      clearNewReceipt()
+      const mine = NEW_RECEIPT = { busy: true }
+      drawNewReceipt()
+      try {
+        const blob = await compressImage(file)
+        if (NEW_RECEIPT !== mine) return // 準備中に外された・画面を閉じた
+        NEW_RECEIPT = { blob, url: URL.createObjectURL(blob) }
+        if (msg) msg.classList.add('hidden')
+      } catch (e) {
+        if (NEW_RECEIPT === mine) NEW_RECEIPT = null
+        if (msg) { msg.textContent = e && e.message ? e.message : '画像の処理に失敗しました'; msg.classList.remove('hidden') }
+      }
+      drawNewReceipt()
+    })
   }
 
   function payBox(s) {
@@ -684,8 +772,15 @@
         <label class="text-sm text-gray-600 block mb-1">金額（円）</label><input id="pay-amount" type="number" inputmode="numeric" min="1" max="${Number(max)}" class="inp mb-1">
         <label class="flex items-center gap-2 text-sm text-gray-700 mb-2"><input type="checkbox" id="pay-round" checked>往復（金額は往復の合計で入力）</label>
         <label class="text-sm text-gray-600 block mb-1">メモ（任意）</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 電車が止まりバスで移動"></textarea>
+        <div class="mt-3">
+          <p class="text-sm text-gray-600">領収書の写真（任意・1枚）</p>
+          <p class="text-[11px] text-gray-500">領収書や、ICカードの利用履歴の画面の写しなど。申請した後からでも付けられます</p>
+          <div id="pay-receipt-preview" class="mt-1"></div>
+          <label class="btn btn-outline text-xs mt-1" id="pay-receipt-label"><i class="fas fa-camera"></i>写真を選ぶ<input type="file" id="pay-receipt-file" accept="image/jpeg,image/png,image/*" class="hidden"></label>
+        </div>
         <p class="text-[11px] text-gray-500 mt-2">${s.transportation_fee ? `今の交通費（実費）は ${esc(yenText(s.transportation_fee))} です。` : ''}承認されると、このシフトの交通費（実費）が申請の金額になります。支払われる額は会社の交通費の決まり（定額・上限など）で決まります</p>
         ${foot}`)
+      clearNewReceipt(); drawNewReceipt(); bindNewReceipt()
       return
     }
     // 既定の終了: 実績の終了が予定より後ならその時刻、なければ予定の30分後
@@ -708,13 +803,20 @@
       ? { shift_id: shiftId, kind, route: val('pay-route'), amount: val('pay-amount'), round_trip: !!(round && round.checked), reason: val('pay-reason') }
       : { shift_id: shiftId, kind, new_end_time: val('pay-end'), instructed_by: val('pay-instructed'), reason: val('pay-reason') }
     const msg = document.getElementById('pay-req-msg')
+    const receipt = kind === 'transport' ? NEW_RECEIPT : null
+    if (receipt && receipt.busy) { if (msg) { msg.textContent = '写真を準備しています。少し待ってから申請してください'; msg.classList.remove('hidden') } return }
+    let res
     try {
-      await axios.post('/api/staff/pay/requests', body)
+      res = (await axios.post('/api/staff/pay/requests', body)).data
     } catch (e) {
       if (msg) { msg.textContent = errMsg(e, '申請できませんでした'); msg.classList.remove('hidden') } else toast(errMsg(e))
       return
     }
-    closeModal(); toast('申請しました。管理者の承認を待ってください')
+    // 申請は出せた。写真が送れなくても申請は残るので、一覧の「領収書の写真を付ける」から送り直してもらう
+    const err = receipt && receipt.blob && res && res.request_id ? await uploadReceipt(res.request_id, receipt.blob) : null
+    clearNewReceipt()
+    closeModal()
+    toast(err ? `申請しました。領収書の写真は送れませんでした（${err}）。一覧の「領収書の写真を付ける」からもう一度送ってください` : '申請しました。管理者の承認を待ってください')
     renderStaffPay()
   }))
   delegate('payReqCancel', (el) => withSubmitLock(el, async () => {
