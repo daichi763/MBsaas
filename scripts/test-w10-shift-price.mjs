@@ -170,6 +170,26 @@ const firstRole = async (slotId) => must(await admin.get(`/api/admin/shift-slots
   ok('枠への割り当て: inherit: false と単価の変更（支払 11500）', as2.inherited.length === 0 && sb2?.bill_rate === 10000 && sb2.pay_rate === 11500 && !!sb2.price_locked, sb2)
 }
 
+// ---------- スポットで別のスタッフから引き継ぐとき: その人のスタッフ別ルールと調整は引き継がず、自分のスタッフ別ルールを使う ----------
+{
+  const P = await newProject('spot-staff', { engagement_type: 'spot' })
+  must(await admin.post('/api/admin/rate-rules', { project_id: P, staff_id: S[0], pay_rate: 9500, pay_unit_type: 'daily' }), 'staff rule S0')
+  must(await admin.post('/api/admin/rate-rules', { project_id: P, staff_id: S[2], pay_rate: 9900, pay_unit_type: 'daily' }), 'staff rule S2')
+  const a = await createShift(P, S[0], D(30))
+  must(await admin.put(`/api/admin/shifts/${a.shift_id}/price`, { bill_rate: 15000, pay_rate: 9500, pay_adjust: -500, adjust_note: '個人の控除' }), 'manual+adjust')
+  const b = await createShift(P, S[1], D(25))
+  const bb = await boardShift(b.shift_id, D(25))
+  ok('スポット別スタッフ: 請求は前回（15000）、支払は前回の人のスタッフ別ルール（9500）を使わず設定（8000）、調整は引き継がない',
+    b.inherited?.shift_id === a.shift_id && bb?.bill_rate === 15000 && bb.pay_rate === 8000 && !Number(bb.pay_adjust || 0), bb)
+  const c = await createShift(P, S[2], D(25))
+  const bc = await boardShift(c.shift_id, D(25))
+  ok('スポット別スタッフ: 自分のスタッフ別の支払ルール（9900）は引き継いだ単価より優先', c.inherited != null && bc?.bill_rate === 15000 && bc.pay_rate === 9900, bc)
+  // 時間を変えて計算し直しても同じ
+  must(await admin.put(`/api/admin/shifts/${c.shift_id}`, { start_time: '11:00', force: true }), 'time change')
+  const bc2 = await boardShift(c.shift_id, D(25))
+  ok('スポット別スタッフ: 時間の変更で計算し直しても、請求は前回・支払は自分のルール', bc2?.bill_rate === 15000 && bc2.pay_rate === 9900, bc2)
+}
+
 // ---------- 枠の役割の単価は、引き継いだ単価より優先する ----------
 {
   const P = await newProject('slotrate', { engagement_type: 'spot' })

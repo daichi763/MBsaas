@@ -180,10 +180,12 @@ export function resolvePrice(ctx: PriceContext, data: PricingData): ResolvedPric
   const ih = ctx.inherit
   if (ih) {
     const lb = inheritLabel(ih)
-    if (ih.bill_rate != null) { out.bill_rate = ih.bill_rate; out.bill_unit_type = unit(ih.bill_unit_type || out.bill_unit_type); out.sources.bill = lb }
-    if (ih.pay_rate != null) { out.pay_rate = ih.pay_rate; out.pay_unit_type = unit(ih.pay_unit_type || out.pay_unit_type); out.sources.pay = lb }
-    if (ih.bill_transport_type) { out.bill_transport_type = ih.bill_transport_type; out.bill_transport_amount = ih.bill_transport_amount || 0; out.sources.bill_transport = lb }
-    if (ih.pay_transport_type) { out.pay_transport_type = ih.pay_transport_type; out.pay_transport_amount = ih.pay_transport_amount || 0; out.sources.pay_transport = lb }
+    // 別のスタッフのシフトから引き継ぐとき（スポット）は、このスタッフのスタッフ別ルールがある項目はルールを使う（経験者加算などを活かす）
+    const own = (f: (r: any) => boolean) => !!ih.other_staff && matches.some(r => r.staff_id && f(r))
+    if (ih.bill_rate != null && !own(r => r.bill_rate != null)) { out.bill_rate = ih.bill_rate; out.bill_unit_type = unit(ih.bill_unit_type || out.bill_unit_type); out.sources.bill = lb }
+    if (ih.pay_rate != null && !own(r => r.pay_rate != null)) { out.pay_rate = ih.pay_rate; out.pay_unit_type = unit(ih.pay_unit_type || out.pay_unit_type); out.sources.pay = lb }
+    if (ih.bill_transport_type && !own(r => !!r.bill_transport_type)) { out.bill_transport_type = ih.bill_transport_type; out.bill_transport_amount = ih.bill_transport_amount || 0; out.sources.bill_transport = lb }
+    if (ih.pay_transport_type && !own(r => !!r.pay_transport_type)) { out.pay_transport_type = ih.pay_transport_type; out.pay_transport_amount = ih.pay_transport_amount || 0; out.sources.pay_transport = lb }
   }
   // 枠の役割で単価を指定している場合は最優先（ただしスタッフ別の支払ルールは除く：経験者加算を活かす）
   const sr = ctx.slot_role
@@ -209,6 +211,7 @@ export type InheritSource = {
   bill_unit_type: string | null; bill_rate: number | null; pay_unit_type: string | null; pay_rate: number | null
   bill_transport_type: string | null; bill_transport_amount: number | null; pay_transport_type: string | null; pay_transport_amount: number | null
   bill_adjust?: number | null; pay_adjust?: number | null; adjust_note?: string | null
+  other_staff?: boolean // 別のスタッフのシフトから引き継いだ（スポット）
 }
 export const INHERIT_LABEL = '前回のシフト'
 export const inheritLabel = (ih: { work_date: string }) => `${INHERIT_LABEL}（${Number(ih.work_date.slice(5, 7))}/${Number(ih.work_date.slice(8, 10))}）`
@@ -238,7 +241,8 @@ export function settingsBasis(ctx: PriceContext, data: PricingData): any[] {
   return normBasis(BASIS_KEYS.map(k => p[k]))
 }
 // 引き継ぎ元の候補の行（loadInheritSources の SELECT）から、今回の稼働日に引き継ぐ単価を作る。設定が変わっていれば null
-function inheritFromRow(companyId: number, row: any, workDate: string, data: PricingData): InheritSource | null {
+// otherStaff（スポットで別のスタッフのシフトから引き継ぐ）: 引き継ぎ元のスタッフ別ルールで決まった項目と、調整（その人のもの）は引き継がない
+function inheritFromRow(companyId: number, row: any, workDate: string, data: PricingData, otherStaff = false): InheritSource | null {
   const ctx: PriceContext = { company_id: companyId, project_id: row.project_id, site_id: row.site_id, role_name: row.slot_rate_role || row.role || null, staff_id: row.staff_id, work_date: row.work_date }
   const src = parsePriceSource(row.price_source)
   let then: any[]
@@ -253,13 +257,22 @@ function inheritFromRow(companyId: number, row: any, workDate: string, data: Pri
   }
   const now = settingsBasis({ ...ctx, work_date: workDate }, data)
   if (then.some((v, i) => v !== now[i])) return null
-  return {
+  const out: InheritSource = {
     shift_id: row.shift_id, work_date: row.work_date,
     bill_unit_type: row.bill_unit_type ?? null, bill_rate: row.bill_rate ?? null, pay_unit_type: row.pay_unit_type ?? null, pay_rate: row.pay_rate ?? null,
     bill_transport_type: row.bill_transport_type ?? null, bill_transport_amount: row.bill_transport_amount ?? null,
     pay_transport_type: row.pay_transport_type ?? null, pay_transport_amount: row.pay_transport_amount ?? null,
     bill_adjust: row.bill_adjust ?? null, pay_adjust: row.pay_adjust ?? null, adjust_note: row.adjust_note ?? null,
   }
+  if (!otherStaff) return out
+  // 引き継ぎ元のスタッフにスタッフ別ルールがある項目（スタッフを外すと設定の単価が変わる項目）は、その人の単価なので引き継がない
+  const anon = settingsBasis({ ...ctx, staff_id: null }, data), mine = settingsBasis(ctx, data)
+  const personal = (idx: number[]) => idx.some(i => anon[i] !== mine[i])
+  if (personal([0, 1])) out.bill_rate = null
+  if (personal([2, 3])) out.pay_rate = null
+  if (personal([4, 5])) out.bill_transport_type = null
+  if (personal([6, 7])) out.pay_transport_type = null
+  return { ...out, bill_adjust: null, pay_adjust: null, adjust_note: null, other_staff: true }
 }
 // 計算し直すときに保つ引き継ぎ（price_source に引き継ぎの印がある項目だけ、シフトの今の値を使う）
 function keptInherit(s: any): InheritSource | null {
@@ -268,7 +281,7 @@ function keptInherit(s: any): InheritSource | null {
   if (!ih || typeof ih.work_date !== 'string') return null
   const kept = (k: string) => isInheritLabel(src[k])
   return {
-    shift_id: Number(ih.shift_id) || 0, work_date: ih.work_date,
+    shift_id: Number(ih.shift_id) || 0, work_date: ih.work_date, other_staff: !!ih.other_staff,
     bill_unit_type: s.bill_unit_type ?? null, bill_rate: kept('bill') ? s.bill_rate ?? null : null,
     pay_unit_type: s.pay_unit_type ?? null, pay_rate: kept('pay') ? s.pay_rate ?? null : null,
     bill_transport_type: kept('bill_transport') ? s.bill_transport_type ?? null : null, bill_transport_amount: s.bill_transport_amount ?? null,
@@ -315,8 +328,9 @@ export async function loadInheritSources(db: D1Database, companyId: number, proj
     const cands = [...inRange.filter(fits), ...before.filter(fits)]
     const row = (spot && role ? cands.find(x => roleOf(x) === role) : null) || cands[0]
     if (!row) return null
-    const key = `${row.shift_id}:${it.work_date}`
-    if (!cache.has(key)) cache.set(key, inheritFromRow(companyId, row, it.work_date, data))
+    const other = spot && Number(row.staff_id) !== Number(it.staff_id)
+    const key = `${row.shift_id}:${it.work_date}:${other ? 1 : 0}`
+    if (!cache.has(key)) cache.set(key, inheritFromRow(companyId, row, it.work_date, data, other))
     return cache.get(key)!
   })
 }
@@ -475,7 +489,7 @@ export function computeShiftPricing(companyId: number, s: any, slotRole: any, pa
   const price = resolvePrice(ctx, data)
   // 設定だけで決まる単価（basis）と、引き継いだときは引き継ぎ元を残す（次のシフトの引き継ぎで、設定が変わったかを確かめるため）
   const inherited = !!ih && Object.values(price.sources).some(isInheritLabel)
-  const source = { ...price.sources, basis: settingsBasis(ctx, data), ...(inherited ? { inherit: { shift_id: ih!.shift_id, work_date: ih!.work_date } } : {}) }
+  const source = { ...price.sources, basis: settingsBasis(ctx, data), ...(inherited ? { inherit: { shift_id: ih!.shift_id, work_date: ih!.work_date, ...(ih!.other_staff ? { other_staff: true } : {}) } } : {}) }
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
   const amt = calcAmounts(price, s.start_time, s.end_time, brk, hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj)))
