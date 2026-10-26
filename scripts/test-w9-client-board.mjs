@@ -129,10 +129,10 @@ const admin = client(await login('sample', 'admin'))
   const save = a.slice(a.indexOf('window.saveClientBasicInfo'), a.indexOf('// ============ 社員名簿'))
   ok('#9101 #9102 会社基本情報の保存は代表者氏名・種別を送り、担当者・契約形態は送らない',
     save.includes("representative_name: v('cl-rep-name')") && save.includes("client_kind: v('cl-kind')") && !save.includes('contact_name') && !save.includes('contract_type'))
-  const iBasic = a.indexOf('id="client-basic-info"'), iOrg = a.indexOf('id="client-org-info"'), iDeals = a.indexOf('id="client-deals"')
-  ok('#9103 支店・部門の欄を、会社基本情報と取引の実績の間に置く', iBasic > 0 && iOrg > iBasic && iDeals > iOrg)
-  ok('#9103 支店・部門は「編集」で入力欄に切り替えて保存できる',
-    a.includes("delegate('editClientOrg'") && a.includes("delegate('cancelClientOrg'") && a.includes("delegate('saveClientOrg'") && a.includes("inp('cl-branch', '支店'") && a.includes("inp('cl-department', '部門'"))
+  // #9303 で支店・部門は独立したカードをやめ、会社基本情報の中の項目になった（表示・編集・保存は会社基本情報と一緒）
+  ok('#9103 #9303 支店・部門は会社基本情報の中に出す', basic.includes('${clientOrgHtml(c, false)}') && !a.includes('id="client-org-info"'))
+  ok('#9103 #9303 支店・部門は会社基本情報の「編集」で入力欄に切り替えて保存できる',
+    basic.includes('${clientOrgHtml(c, true)}') && a.includes("inp('cl-branch', '支店'") && a.includes("inp('cl-department', '部門'") && save.includes("branch_name: v('cl-branch')"))
   const add = a.slice(a.indexOf('window.showAddClient'), a.indexOf('// ============ シフト管理'))
   ok('#9101 #9102 クライアント登録のフォームは「代表者氏名」「種別」（担当者・契約形態はなし）',
     add.includes('代表者氏名') && add.includes('id="nc-kind"') && add.includes("client_kind: document.getElementById('nc-kind').value") && !add.includes('nc-contact') && !add.includes('契約形態'))

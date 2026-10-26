@@ -21,6 +21,15 @@
   .side-link { display: flex; align-items: center; gap: .35rem; padding: .55rem .75rem; border-radius: .6rem; color: #4b5563; }
   .side-link:hover { background: #f3f4f6; }
   .side-link.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+  /* 管理サイドバーの見出し（#9305）。押すと閉じたり開いたりし、閉じたときだけ件数の合計を出す */
+  .nav-group-head { display: flex; align-items: center; gap: .35rem; width: 100%; padding: .75rem .75rem .25rem; border-radius: .4rem; font-size: 11px; font-weight: 700; color: #9ca3af; }
+  .nav-group-head:hover { color: #4b5563; }
+  .nav-group-head:focus-visible { outline: 2px solid #93c5fd; outline-offset: 1px; }
+  .nav-group-caret { font-size: 9px; transition: transform .15s; }
+  .nav-group.collapsed .nav-group-caret { transform: rotate(-90deg); }
+  .nav-group.collapsed .nav-group-body { display: none; }
+  .nav-group-count { font-size: 10px; line-height: 1rem; padding: 0 .4rem; border-radius: 999px; background: #ef4444; color: #fff; }
+  .nav-group:not(.collapsed) .nav-group-count { display: none; }
 
   /* 本部ナビ */
   .hq-nav { color: #94a3b8; }
