@@ -806,9 +806,8 @@
         <div class="bg-gray-50 rounded-lg p-3 mb-4 flex gap-2 items-center flex-wrap">
           <span class="text-xs text-gray-600"><i class="fas fa-copy mr-1"></i>自社の案件から内容をコピー</span>
           <select id="bp-copy-src" class="inp text-xs w-auto flex-1 min-w-[200px]"><option value="">案件を選択</option>
-            ${projectsCache.map(x => `<option value="${x.project_id}">${esc(x.project_name)}${x.client_name ? '（' + esc(x.client_name) + '）' : ''}</option>`).join('')}</select>
-          <button class="btn btn-outline text-xs" onclick="__boardCopyProject()">反映</button>
-          <p class="text-[11px] text-gray-400 w-full">クライアント名は掲載されません。コピー後に、公開してよい内容か確認してください。</p>
+            ${projectsCache.map(x => `<option value="${Number(x.project_id)}">${esc(x.project_name)}${x.client_name ? '（' + esc(x.client_name) + '）' : ''}</option>`).join('')}</select>
+          <p class="text-[11px] text-gray-400 w-full">案件を選ぶと、その内容をすぐに下のフォームに入れます。クライアント名は掲載されません。コピー後に、公開してよい内容か確認してください。</p>
         </div>`}
         <input type="hidden" id="bp-source-project" value="${v('source_project_id')}">
         <div class="grid md:grid-cols-2 gap-4">
@@ -842,6 +841,8 @@
           ${formButtonsHtml(id, p.status)}
         </div>
       </section>`
+    const copySrc = document.getElementById('bp-copy-src')
+    if (copySrc) { copySrc.dataset.prev = ''; copySrc.addEventListener('change', () => window.__boardCopyProject()) }
   }
   // 保存ボタン。締切・充足の掲載は今の状態のまま保存するのを基本にし、再掲載は確認してから行う（#125）
   function formButtonsHtml(id, status) {
@@ -862,11 +863,22 @@
     const cur = el.value.trim()
     el.value = !cur ? t : cur.includes(t) ? cur : cur + '・' + t
   }
+  // 自社の案件から内容をコピー。案件を選んだらその場でフォームに入れる（反映ボタンは無い。#9104）。
+  // コピーで書き換わる欄にすでに入力があるときだけ、上書きしてよいか確かめる（やめたら選択を元に戻す）
+  const COPY_TARGETS = ['bp-title', 'bp-area', 'bp-skills', 'bp-desc', 'bp-price']
+  let copySeq = 0
   window.__boardCopyProject = async function () {
-    const pid = document.getElementById('bp-copy-src').value
-    if (!pid) { toast('案件を選択してください'); return }
+    const sel = document.getElementById('bp-copy-src'); if (!sel) return
+    const pid = sel.value
+    if (!pid) { sel.dataset.prev = ''; return }
+    const filled = COPY_TARGETS.some(id => { const el = document.getElementById(id); return el && el.value.trim() !== '' })
+    if (filled && !confirm('入力中の内容（案件名・エリア・スキル・業務内容・単価）を、選んだ案件の内容で上書きします。よろしいですか？')) { sel.value = sel.dataset.prev || ''; return }
+    const seq = ++copySeq
     try {
-      const t = (await axios.get('/api/admin/board/project-template/' + pid)).data.template
+      const t = (await axios.get('/api/admin/board/project-template/' + encodeURIComponent(pid))).data.template
+      // 読み込みの間に別の案件を選び直した・画面を離れたときは、古い結果を入れない
+      if (seq !== copySeq || document.getElementById('bp-copy-src') !== sel) return
+      sel.dataset.prev = pid
       const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null && val !== '') el.value = val }
       set('bp-title', t.title); set('bp-area', t.area); set('bp-skills', t.required_skills); set('bp-desc', t.description)
       // 単価は案件の支払単価と支払の単位。未設定なら単価・単位とも空にして選んでもらう（#540）
@@ -875,7 +887,11 @@
       document.getElementById('bp-source-project').value = t.source_project_id
       const r = document.querySelector(`input[name=bp-eng][value=${t.engagement_type}]`); if (r) { r.checked = true; window.__boardEngChanged() }
       toast(t.price_amount ? '案件の内容を反映しました。単価（支払単価）と単位、公開してよい内容か確認してください' : '案件の内容を反映しました。支払単価が未設定のため、単価と単位を入力してください')
-    } catch (e) { toast(errMsg(e)) }
+    } catch (e) {
+      if (seq !== copySeq || document.getElementById('bp-copy-src') !== sel) return
+      sel.value = sel.dataset.prev || ''
+      toast(errMsg(e))
+    }
   }
   // mode: draft（下書き）/ open（掲載する）/ keep（今の状態のまま）/ republish（締切・充足から再掲載）
   window.__boardSave = async function (id, mode) {

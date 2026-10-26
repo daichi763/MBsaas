@@ -126,7 +126,7 @@
       </section>
 
       <div class="flex gap-1 mb-2" id="settle-tabs">
-        ${[['detail', 'シフト明細'], ['billing', '請求（クライアント別）'], ['payment', '支払（支払先別）']].map(([k, l]) =>
+        ${[['detail', 'シフト明細'], ['billing', '請求（クライアント別）'], ['payment', '支払（支払先別）'], ['pricing', '単価の設定']].map(([k, l]) =>
           `<button class="btn ${S.tab === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="settleTab" data-tab="${k}">${l}</button>`).join('')}
       </div>
       ${tentativeHtml(data.tentative_reported || [])}
@@ -164,6 +164,11 @@
   }
   delegate('settleApply', () => settleApply())
   delegate('settleTab', el => { S.tab = el.dataset.tab; renderSettlementBody() })
+  // 案件詳細の「精算画面の『単価の設定』で変更」から開く（9201）
+  window.openSettlePricing = function (pid) {
+    S.tab = 'pricing'; S.pricing_pid = String(Number(pid) || '')
+    if (location.hash === '#settlement') window.renderSettlement(); else location.hash = '#settlement'
+  }
   delegate('settleExportMenu', () => document.getElementById('settle-export-menu').classList.toggle('hidden'))
 
   // ---------- 期間（暦月、またはクライアントの締め日。#168） ----------
@@ -209,6 +214,7 @@
   window.renderSettlementBody = function () {
     const data = window.__settleData; const host = document.getElementById('settle-body'); if (!host || !data) return
     document.querySelectorAll('#settle-tabs button').forEach(b => { b.className = `btn ${S.tab === b.dataset.tab ? 'btn-primary' : 'btn-outline'} text-xs` })
+    if (S.tab === 'pricing') { renderPricingTab(host); return }
     if (S.tab === 'billing') {
       // 請求明細書はクライアントごと（同じクライアントの最初の行にだけリンクを出す）
       const seen = new Set()
@@ -263,6 +269,26 @@
         ${data.rows.map(r => detailRowHtml(r, sel)).join('') || '<tr><td colspan="13" class="text-center text-gray-400">対象のシフトはありません（確定・代打のシフトと、キャンセル料・補償を入れた欠勤のシフトが対象です）</td></tr>'}
       </tbody></table></div>`
     syncSelectionUi()
+  }
+  // 単価の設定（9203）: 案件を選ぶと、区分・標準単価と単価ルール（開催場所・役割・スタッフ別。インセンティブ・備考）を出す。
+  // 中身は public/static/shift-board.js の renderSettlePricingPanel（計算・API は今までと同じ）
+  function renderPricingTab(host) {
+    const pid = String(S.pricing_pid || S.project_id || '')
+    const clientName = (cid) => { const c = master.clients.find(x => String(x.client_id) === String(cid)); return c ? c.client_name : '' }
+    // クライアントで絞り込んでいるときはそのクライアントの案件だけ（選んでいる案件は残す）
+    const list = master.projects.filter(p => !S.client_id || String(p.client_id) === String(S.client_id) || String(p.project_id) === pid)
+    host.innerHTML = `
+      <div class="flex flex-wrap items-end gap-2 mb-2 text-xs">
+        <label>単価を設定する案件<select id="settle-pricing-project" class="inp w-auto text-sm"><option value="">（案件を選んでください）</option>
+          ${list.map(p => `<option value="${esc(p.project_id)}" ${String(p.project_id) === pid ? 'selected' : ''}>${esc(p.project_name)}${p.client_id ? `（${esc(clientName(p.client_id))}）` : ''}${p.status && p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}</select></label>
+      </div>
+      <p class="text-[11px] text-gray-400 mb-3">区分・標準単価と、開催場所・役割・スタッフ別の単価ルールを設定します。人によって単価を変えるときはスタッフを選んだルールを、インセンティブは加算額を入れます。保存しても登録済みのシフトの金額は変わらず、「単価ルールを再適用」で反映します（確定済みのシフトは変わりません）</p>
+      <div id="settle-pricing-panel"></div>`
+    document.getElementById('settle-pricing-project').addEventListener('change', (ev) => {
+      S.pricing_pid = ev.target.value
+      if (window.renderSettlePricingPanel) window.renderSettlePricingPanel(Number(S.pricing_pid) || null)
+    })
+    if (window.renderSettlePricingPanel) window.renderSettlePricingPanel(Number(pid) || null)
   }
   function detailRowHtml(r, sel) {
     const cancel = r.kind === 'cancel'
@@ -784,12 +810,35 @@
   function payReqContent(q) {
     if (q.kind === 'transport') {
       return `<b>${esc(yen(q.amount))}</b>（${q.round_trip ? '往復' : '片道'}）${esc(q.route || '')}
-        <span class="block text-[11px] text-gray-500">今の実費 ${esc(yen(q.transportation_fee))}・支払の交通費: ${esc(PT_LABEL[q.pay_transport_type] || q.pay_transport_type)}${q.pay_transport_type === 'capped' || q.pay_transport_type === 'fixed' ? ' ' + esc(yen(q.pay_transport_amount)) : ''}</span>`
+        <span class="block text-[11px] text-gray-500">今の実費 ${esc(yen(q.transportation_fee))}・支払の交通費: ${esc(PT_LABEL[q.pay_transport_type] || q.pay_transport_type)}${q.pay_transport_type === 'capped' || q.pay_transport_type === 'fixed' ? ' ' + esc(yen(q.pay_transport_amount)) : ''}</span>
+        ${q.has_receipt ? `<button type="button" class="mt-1 flex items-center gap-1.5 text-blue-600 hover:underline" data-action="settlePayReqReceipt" data-id="${Number(q.request_id)}">
+          <img src="${esc(receiptUrl(q))}" alt="" loading="lazy" class="w-8 h-8 object-cover rounded border border-gray-200 bg-gray-100"><span><i class="fas fa-receipt mr-0.5"></i>領収書の写真</span></button>`
+          : '<span class="block text-[11px] text-gray-400 mt-0.5">領収書の写真なし</span>'}`
     }
     const plus = q.start_time && q.end_time && q.new_end_time ? spanMin(q.start_time, q.new_end_time) - spanMin(q.start_time, q.end_time) : null
     return `終了 ${esc(q.end_time || q.before_end_time || '')} → <b>${esc(q.new_end_time)}</b>${plus != null && plus > 0 ? `（+${plus}分）` : ''}
       <span class="block text-[11px] text-gray-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type !== 'hourly' ? '日給（承認しても金額は変わりません。必要なら調整額を入れてください）' : q.qty_fixed ? '時給・数量を手動で固定中（承認しても金額は変わりません。必要なら数量を直してください）' : '時給（承認すると延びた分も支払に入ります）'}</span>`
   }
+  // 交通費の申請の領収書の写真（#273。スタッフが付けた1枚・任意）。差し替えられた後に古い画像が出ないよう、URL に添付の時刻を付ける
+  const receiptUrl = (q) => `/api/admin/pay-requests/${Number(q.request_id)}/receipt?v=${encodeURIComponent(q.receipt_uploaded_at || '')}`
+  function receiptBox(q) {
+    if (q.kind !== 'transport') return ''
+    if (!q.has_receipt) return '<p class="text-xs text-gray-500 bg-gray-50 rounded px-2 py-1.5 mb-3"><i class="fas fa-receipt mr-1"></i>領収書の写真は付いていません</p>'
+    const url = receiptUrl(q)
+    return `<p class="text-sm text-gray-600 mb-1">領収書の写真</p>
+      <a href="${esc(url)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden bg-gray-50 mb-1"><img src="${esc(url)}" alt="領収書の写真" class="w-full max-h-72 object-contain"></a>
+      <p class="text-[11px] text-gray-400 mb-3">${q.receipt_uploaded_at ? `添付 ${esc(dayjs(q.receipt_uploaded_at).format('M/D HH:mm'))}・` : ''}クリックで別のタブに大きく表示</p>`
+  }
+  const payReqHead = (q) => `${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}${q.kind === 'transport' ? `・申請 <b>${esc(yen(q.amount))}</b>（${q.round_trip ? '往復' : '片道'}）${esc(q.route || '')}` : ''}`
+  delegate('settlePayReqReceipt', el => {
+    const q = PAYREQ.find(x => x.request_id === Number(el.dataset.id)); if (!q) return
+    modal(`<h3 class="font-bold text-gray-800 mb-1">交通費の申請の領収書</h3>
+      <p class="text-sm text-gray-600 mb-3">${payReqHead(q)}</p>
+      ${receiptBox(q)}
+      <div class="flex gap-2"><button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
+        ${q.status === 'pending' ? `<button class="btn btn-outline flex-1" data-action="settlePayReqReject" data-id="${Number(q.request_id)}">却下へ</button>
+        <button class="btn btn-primary flex-1" data-action="settlePayReqApprove" data-id="${Number(q.request_id)}" ${q.shift_issue ? 'disabled' : ''}>承認へ</button>` : ''}</div>`)
+  })
   async function loadPayRequests() {
     const host = document.getElementById('settle-payreq'); if (!host) return
     let d, st
@@ -830,7 +879,8 @@
       ? `<label class="text-sm text-gray-600 block mb-1">承認する金額（円。交通費の実費として記録します）</label><input id="pr-amount" type="number" min="0" class="inp mb-2" value="${esc(q.amount)}">`
       : `<label class="text-sm text-gray-600 block mb-1">延長後の終了時刻（シフトの予定の終了時刻を変えます）</label><input id="pr-end" type="time" class="inp mb-2" value="${esc(q.new_end_time)}">`
     modal(`<h3 class="font-bold text-gray-800 mb-1">${esc(PAY_KIND[q.kind] || q.kind)}の申請を承認</h3>
-      <p class="text-sm text-gray-600 mb-3">${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}</p>
+      <p class="text-sm text-gray-600 mb-3">${payReqHead(q)}</p>
+      ${receiptBox(q)}
       ${field}
       <label class="text-sm text-gray-600 block mb-1">スタッフへのコメント（任意）</label><textarea id="pr-note" class="inp" rows="2" maxlength="500"></textarea>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
@@ -846,7 +896,8 @@
   delegate('settlePayReqReject', el => {
     const q = PAYREQ.find(x => x.request_id === Number(el.dataset.id)); if (!q) return
     modal(`<h3 class="font-bold text-gray-800 mb-1">${esc(PAY_KIND[q.kind] || q.kind)}の申請を却下</h3>
-      <p class="text-sm text-gray-600 mb-3">${esc(q.staff_name)}・${q.work_date ? esc(dayjs(q.work_date).format('M/D(dd)')) : ''} ${esc(q.project_name)}</p>
+      <p class="text-sm text-gray-600 mb-3">${payReqHead(q)}</p>
+      ${receiptBox(q)}
       <label class="text-sm text-gray-600 block mb-1">却下の理由（スタッフに伝わります）</label><textarea id="pr-reject-note" class="inp" rows="3" maxlength="500"></textarea>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
         <button class="btn btn-danger flex-1" data-action="settlePayReqRejectRun" data-id="${Number(q.request_id)}">却下する</button></div>`)

@@ -1603,7 +1603,7 @@ async function renderStaffDetail(sid, opts = {}) {
     <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
     <div id="roster-chat-panel" class="mt-4 hidden"></div>
     <div id="staff-lifecycle-panel" class="mt-4"></div>
-    <div id="staff-rate-panel" class="mt-4"></div>
+    <div id="staff-reference-pay-panel" class="mt-4"></div>
 
     <section class="card p-4 mt-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-clock text-gray-400 mr-1"></i>勤怠報告履歴（直近）</h3>
@@ -1634,8 +1634,8 @@ async function renderStaffDetail(sid, opts = {}) {
   if (window.renderStaffShiftPanel) renderStaffShiftPanel(sid, data)
   if (window.renderRosterPanels) renderRosterPanels(sid, p)
   if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
-  // スタッフ別の単価ルール（public/static/shift-board.js）
-  if (window.renderStaffRatePanel) renderStaffRatePanel(sid, p)
+  // 支払の参考単価（9204。public/static/shift-board.js）。スタッフ別の単価ルールは精算画面の「単価の設定」で管理する
+  if (window.renderStaffReferencePayPanel) renderStaffReferencePayPanel(sid, p)
   // 区分・登録状態・提出設定（public/static/staff-lifecycle.js）
   if (window.renderStaffLifecyclePanel) renderStaffLifecyclePanel(sid, p)
   if (edBiz) initCareerPickers(document.getElementById('staff-career-rows'))
@@ -2566,7 +2566,7 @@ window.showAddProject = async function () {
         <div><label class="text-sm text-gray-600 block mb-1">請求単価（円）</label>
           <div class="flex gap-2"><select id="np-price-unit" class="inp w-24 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option></select>
             <input id="np-price" type="number" min="0" class="inp" value="16000"></div>
-          <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費は、登録後に案件詳細の「区分・標準単価」で設定します</p></div>
+          <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
         <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
           ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
@@ -2575,6 +2575,7 @@ window.showAddProject = async function () {
         <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
       <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
 }
@@ -2599,7 +2600,8 @@ window.addProject = async function () {
       project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
       unit_price: Number(document.getElementById('np-price').value || 0), unit_price_type: document.getElementById('np-price-unit').value,
       report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value,
-      manual_text: document.getElementById('np-manual').value, required_skills: document.getElementById('np-skills').value
+      manual_text: document.getElementById('np-manual').value, required_skills: document.getElementById('np-skills').value,
+      remarks: document.getElementById('np-remarks').value,
     })
     if (!res) return
     closeModal(); toast('案件を登録しました'); renderProjects()
@@ -2700,11 +2702,11 @@ async function renderProjectDetail(pid) {
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4">
-      <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-2">求められる内容</h3>
-        <p class="text-sm text-gray-600 whitespace-pre-wrap">${esc(p.requirements || '-')}</p>
-        <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2">案件マニュアル・注意事項</h3>
-        <p class="text-sm text-gray-600 whitespace-pre-wrap">${esc(p.manual_text || '-')}</p>
+      <section class="card p-4" id="project-texts">
+        ${PROJECT_TEXT_FIELDS.map(([k, label], i) => `
+        <h3 class="text-sm font-bold text-gray-700 ${i ? 'mt-4 ' : ''}mb-2 flex items-center">${esc(label)}
+          <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectText" data-id="${Number(p.project_id)}" data-field="${k}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
+        <p class="text-sm text-gray-600 whitespace-pre-wrap break-words" id="project-text-${k}">${esc(p[k] || '-')}</p>`).join('')}
         <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2 flex items-center">必要スキル
           <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectSkills" data-id="${Number(p.project_id)}" data-skills="${esc(p.required_skills || '')}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
         <div class="flex flex-wrap gap-1" id="project-skills">${projectSkillBadges(p.required_skills)}</div>
@@ -2727,12 +2729,43 @@ async function renderProjectDetail(pid) {
         ${projectLatenessHtml(p)}
       </section>
     </div>
-    <div id="project-pricing-panel" class="mt-4"></div>`
+    <div class="mt-4">${window.projectBasePriceHtml ? projectBasePriceHtml(p) : ''}</div>
+    <div id="project-patterns-panel" class="mt-4"></div>`
   drawProjectStaffPerf()
   fillProjectLatenessCompany()
-  // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
-  if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
+  // 基本単価は表示だけ（設定は精算画面の「単価の設定」。9201）。提出設定・繰り返し登録（public/static/shift-board.js）
+  if (window.renderProjectPatternsPanel) renderProjectPatternsPanel(p)
 }
+// 案件詳細でその場で編集する文の項目（9202）。[項目, 見出し, 文字数の上限, 説明]
+const PROJECT_TEXT_FIELDS = [
+  ['requirements', '求められる内容', 2000, 'スタッフアプリの「研修・マニュアル」にも出ます'],
+  ['manual_text', '案件マニュアル・注意事項', 5000, 'スタッフアプリの「研修・マニュアル」にも出ます（集合場所・服装・持ち物・現場のルールなど）'],
+  ['remarks', '備考', 2000, '管理画面だけに出します（スタッフには出しません）'],
+]
+delegate('editProjectText', el => {
+  const f = PROJECT_TEXT_FIELDS.find(x => x[0] === el.dataset.field)
+  if (!f || !PROJECT_DETAIL || PROJECT_DETAIL.pid !== Number(el.dataset.id)) return
+  const [k, label, max, note] = f
+  modal(`
+    <h3 class="font-bold text-lg mb-1">${esc(label)}</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(note)}。空欄にすると消えます</p>
+    <textarea id="pj-text" rows="${k === 'manual_text' ? 10 : 6}" class="inp" maxlength="${max}">${esc(PROJECT_DETAIL.data.project[k] || '')}</textarea>
+    <p class="text-[11px] text-gray-400 mt-1">${max}文字まで</p>
+    <button class="btn btn-primary w-full mt-3" data-action="saveProjectText" data-id="${Number(el.dataset.id)}" data-field="${k}">保存する</button>`)
+})
+delegate('saveProjectText', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id), k = el.dataset.field
+  const f = PROJECT_TEXT_FIELDS.find(x => x[0] === k); if (!f) return
+  const v = document.getElementById('pj-text').value
+  try {
+    const res = await putProjectConfirming(pid, { [k]: v })
+    if (!res) return
+    closeModal(); toast(`${f[1]}を保存しました`)
+    const saved = v.trim() || null
+    if (PROJECT_DETAIL && PROJECT_DETAIL.pid === pid) PROJECT_DETAIL.data.project[k] = saved
+    const box = document.getElementById('project-text-' + k); if (box) box.textContent = saved || '-'
+  } catch (e) { showApiError(e, `${f[1]}を保存できませんでした`) }
+}))
 // 写真添付の設定（イベント属性に値を埋め込まない）
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-project-photo]') : null
@@ -2812,7 +2845,7 @@ async function putProjectConfirming(pid, body) {
   }
   return null
 }
-// 案件の編集（#153）。単価・区分は下の「区分・標準単価」で変える
+// 案件の編集（#153）。単価・区分は精算画面の「単価の設定」で変える（9201）
 delegate('editProject', el => withSubmitLock(el, async () => {
   const pid = Number(el.dataset.id)
   if (!PROJECT_DETAIL || PROJECT_DETAIL.pid !== pid) return
@@ -2840,6 +2873,7 @@ delegate('editProject', el => withSubmitLock(el, async () => {
       <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="ep-remarks" rows="2" class="inp" maxlength="2000">${esc(p.remarks || '')}</textarea></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>
         <div><label class="text-sm text-gray-600 block mb-1">現場責任者の電話番号（任意）</label><input id="ep-sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 090-1234-5678" value="${esc(p.site_contact_phone || '')}"></div>
@@ -2875,7 +2909,7 @@ delegate('saveProject', el => withSubmitLock(el, async () => {
   try {
     const res = await putProjectConfirming(pid, {
       project_name: v('ep-name'), client_id: v('ep-client') || null, project_type: v('ep-type'), location: v('ep-loc'),
-      report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'),
+      report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'), remarks: v('ep-remarks'),
       memo: v('ep-memo'), show_performance: document.getElementById('ep-perf').checked,
       site_contact_name: v('ep-sc-name'), site_contact_phone: v('ep-sc-phone'),
     })
@@ -3094,7 +3128,7 @@ async function renderClients() {
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
-      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・担当者・稼働案件で検索" value="${esc(L.q)}">
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・稼働案件で検索" value="${esc(L.q)}">
       <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
     </div>
@@ -3107,7 +3141,7 @@ async function renderClients() {
 }
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
-  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && matchesKeyword(L.q, [c.client_name, c.contact_name, c.active_projects, c.phone, c.email]))
+  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
     name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
@@ -3123,8 +3157,8 @@ function drawClientCards() {
             <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           </div>
           <dl class="text-xs text-gray-600 space-y-1.5">
-            <div class="flex"><dt class="w-20 text-gray-400">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
@@ -3138,17 +3172,20 @@ function drawClientCards() {
 // クライアント（発注元企業）詳細画面。会社情報 + 取引の実績 + 契約書ファイル管理を表示する
 // 会社基本情報は「編集」で入力欄に切り替え、表示中の項目をすべて保存できる（#307）
 let CLIENT_DETAIL = { cid: null, month: '' }
-const CLIENT_CONTRACT_TYPES = ['業務委託', '派遣', '請負', '紹介']
+// 種別（#9102）。これまでの契約形態（contract_type）は DB に残すが画面には出さない
+const CLIENT_KIND_LABEL = { corporation: '法人', sole_proprietor: '個人事業主', other: 'その他' }
+const clientKindLabel = k => CLIENT_KIND_LABEL[k] || '-'
+const clientKindOptions = cur => `<option value="">（未設定）</option>${Object.entries(CLIENT_KIND_LABEL).map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`
 function clientBasicHtml(c, editing) {
   const cid = Number(c.client_id)
   if (!editing) return `
         <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center">会社基本情報
           <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientBasic"><i class="fas fa-pen"></i>編集</button></h3>
         <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">担当者</dt><dd>${esc(c.contact_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(c.address || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">契約形態</dt><dd>${esc(c.contract_type || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
@@ -3156,31 +3193,30 @@ function clientBasicHtml(c, editing) {
         <div class="mt-3 pt-3 border-t border-gray-100">
           <p class="text-xs text-gray-500 mb-1"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
           <dl class="text-xs space-y-1.5">
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者</dt><dd>${esc([c.representative_title, c.representative_name].filter(Boolean).join(' ') || '-')}${c.representative_kana ? `<span class="text-gray-400 ml-1">（${esc(c.representative_kana)}）</span>` : ''}</dd></div>
+            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者役職</dt><dd>${esc(c.representative_title || '-')}</dd></div>
+            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者フリガナ</dt><dd>${esc(c.representative_kana || '-')}</dd></div>
             <div class="flex"><dt class="w-28 text-gray-400 shrink-0">インボイス番号</dt><dd>${esc(c.invoice_number || '-')}</dd></div>
           </dl>
         </div>`
   const inp = (id, label, v, extra = '') => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" value="${esc(v || '')}" ${extra}></div>`
-  const contractOpts = CLIENT_CONTRACT_TYPES.includes(c.contract_type || '') || !c.contract_type ? CLIENT_CONTRACT_TYPES : [c.contract_type, ...CLIENT_CONTRACT_TYPES]
   return `
         <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
         <div class="space-y-2">
           ${inp('cl-name', 'クライアント名 *', c.client_name, 'maxlength="200"')}
           <div class="flex items-center gap-2"><label for="cl-stream" class="w-28 text-xs text-gray-400 shrink-0">上流/下流</label>
             <select id="cl-stream" class="inp text-xs flex-1"><option value="upstream" ${c.stream_type === 'upstream' ? 'selected' : ''}>上流</option><option value="downstream" ${c.stream_type === 'downstream' ? 'selected' : ''}>下流</option></select></div>
-          ${inp('cl-contact', '担当者', c.contact_name)}
+          ${inp('cl-rep-name', '代表者氏名', c.representative_name, 'maxlength="100"')}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
           ${inp('cl-email', 'メール', c.email, 'type="email"')}
           ${inp('cl-address', '住所', c.address)}
-          <div class="flex items-center gap-2"><label for="cl-contract" class="w-28 text-xs text-gray-400 shrink-0">契約形態</label>
-            <select id="cl-contract" class="inp text-xs flex-1"><option value="">（未設定）</option>${contractOpts.map(v => `<option ${c.contract_type === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+          <div class="flex items-center gap-2"><label for="cl-kind" class="w-28 text-xs text-gray-400 shrink-0">種別</label>
+            <select id="cl-kind" class="inp text-xs flex-1">${clientKindOptions(c.client_kind)}</select></div>
           ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
           <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
             <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
           <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
           <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
           ${inp('cl-rep-title', '代表者役職', c.representative_title)}
-          ${inp('cl-rep-name', '代表者氏名', c.representative_name)}
           ${inp('cl-rep-kana', '代表者フリガナ', c.representative_kana)}
           ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
           <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
@@ -3190,6 +3226,28 @@ function clientBasicHtml(c, editing) {
           </div>
           <p class="text-right pt-2 border-t border-gray-100"><button type="button" class="text-xs text-red-600 hover:underline" data-action="deleteClient" data-id="${cid}" data-name="${esc(c.client_name)}"><i class="fas fa-trash mr-0.5"></i>このクライアントを削除する</button></p>
           <p class="text-[11px] text-gray-400 text-right">二重登録などで作った、案件が1件もないクライアントだけ削除できます</p>
+        </div>`
+}
+// 支店・部門（#9103）。会社基本情報と取引の実績の間に出し、会社基本情報と同じく「編集」で入力欄に切り替えて保存する
+function clientOrgHtml(c, editing) {
+  if (!editing) return `
+        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-sitemap text-blue-500 mr-1"></i>支店・部門
+          <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientOrg"><i class="fas fa-pen"></i>編集</button></h3>
+        <dl class="text-sm space-y-2">
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>
+        </dl>`
+  const inp = (id, label, v) => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" maxlength="100" value="${esc(v || '')}"></div>`
+  return `
+        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-sitemap text-blue-500 mr-1"></i>支店・部門の編集</h3>
+        <div class="space-y-2">
+          ${inp('cl-branch', '支店', c.branch_name)}
+          ${inp('cl-department', '部門', c.department_name)}
+          <p id="cl-org-error" class="hidden text-xs text-red-600"></p>
+          <div class="flex gap-2">
+            <button type="button" class="btn btn-outline text-xs flex-1" data-action="cancelClientOrg">取り消す</button>
+            <button type="button" class="btn btn-primary text-xs flex-1" data-action="saveClientOrg" data-id="${Number(c.client_id)}">保存</button>
+          </div>
         </div>`
 }
 // 取引の実績（#345）: 案件ごとの稼働・売上・日報・インシデントと、6か月の月別推移。終了した案件は折りたたむ
@@ -3253,7 +3311,10 @@ async function renderClientDetail(cid) {
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4">
-      <section class="card p-4" id="client-basic-info">${clientBasicHtml(c, false)}</section>
+      <div class="space-y-4">
+        <section class="card p-4" id="client-basic-info">${clientBasicHtml(c, false)}</section>
+        <section class="card p-4" id="client-org-info">${clientOrgHtml(c, false)}</section>
+      </div>
 
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
@@ -3290,6 +3351,22 @@ delegate('clientDetailMonth', async el => {
 delegate('editClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true) })
 delegate('cancelClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, false) })
 delegate('saveClientBasic', el => withSubmitLock(el, () => saveClientBasicInfo(Number(el.dataset.id))))
+delegate('editClientOrg', () => { const box = document.getElementById('client-org-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, true) })
+delegate('cancelClientOrg', () => { const box = document.getElementById('client-org-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, false) })
+// 支店・部門の保存（#9103）。空欄は消す。この欄だけを描き直し、会社基本情報の編集中の入力は消さない
+delegate('saveClientOrg', el => withSubmitLock(el, async () => {
+  const cid = Number(el.dataset.id); const err = document.getElementById('cl-org-error')
+  err.classList.add('hidden')
+  const body = { branch_name: document.getElementById('cl-branch').value.trim(), department_name: document.getElementById('cl-department').value.trim() }
+  try { await axios.put('/api/admin/clients/' + cid, body) } catch (e) {
+    err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
+    err.classList.remove('hidden'); return
+  }
+  toast('支店・部門を保存しました')
+  if (!CLIENT_DETAIL.client || Number(CLIENT_DETAIL.client.client_id) !== cid) return
+  Object.assign(CLIENT_DETAIL.client, { branch_name: body.branch_name || null, department_name: body.department_name || null })
+  const box = document.getElementById('client-org-info'); if (box) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, false)
+}))
 
 // クライアントのNGスタッフ（#204）。シフトボードの候補・割当、応募の承認で警告する
 let CLIENT_NG = { cid: null, list: [] }
@@ -3432,17 +3509,22 @@ window.saveClientBasicInfo = async function (cid) {
   if (!v('cl-name')) { err.textContent = 'クライアント名を入力してください'; err.classList.remove('hidden'); return }
   try {
     await axios.put('/api/admin/clients/' + cid, {
-      client_name: v('cl-name'), stream_type: v('cl-stream'), contact_name: v('cl-contact'), phone: v('cl-phone'), email: v('cl-email'),
-      address: v('cl-address'), contract_type: v('cl-contract'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
+      client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
+      address: v('cl-address'), client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
-      representative_title: v('cl-rep-title'), representative_name: v('cl-rep-name'), representative_kana: v('cl-rep-kana'), invoice_number: v('cl-invoice'),
+      representative_title: v('cl-rep-title'), representative_kana: v('cl-rep-kana'), invoice_number: v('cl-invoice'),
     })
-    toast('会社基本情報を保存しました')
-    renderClientDetail(cid)
   } catch (e) {
     err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
     err.classList.remove('hidden')
+    return
   }
+  toast('会社基本情報を保存しました')
+  // 画面を描き直しても、支店・部門の編集中の入力は残す（#9103）
+  const orgDraft = document.getElementById('cl-branch') ? { branch_name: document.getElementById('cl-branch').value, department_name: document.getElementById('cl-department').value } : null
+  try { await renderClientDetail(cid) } catch (e) { showApiError(e, '画面の読み込みに失敗しました'); return }
+  const box = document.getElementById('client-org-info')
+  if (orgDraft && box && CLIENT_DETAIL.client && Number(CLIENT_DETAIL.client.client_id) === Number(cid)) box.innerHTML = clientOrgHtml({ ...CLIENT_DETAIL.client, ...orgDraft }, true)
 }
 
 // ============ 社員名簿（自社社員のみ表示） ============
@@ -3800,11 +3882,11 @@ window.showAddClient = function () {
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">上流/下流</label>
           <select id="nc-stream" class="inp"><option value="upstream">上流</option><option value="downstream">下流</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">契約形態</label>
-          <select id="nc-contract" class="inp"><option>業務委託</option><option>派遣</option><option>請負</option><option>紹介</option></select></div>
+        <div><label class="text-sm text-gray-600 block mb-1">種別</label>
+          <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">担当者</label><input id="nc-contact" class="inp"></div>
+        <div><label class="text-sm text-gray-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
         <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3823,7 +3905,7 @@ window.addClient = async function () {
   try {
     const res = await postConfirmingDuplicate('/api/admin/clients', {
       client_name: name, stream_type: document.getElementById('nc-stream').value,
-      contract_type: document.getElementById('nc-contract').value, contact_name: document.getElementById('nc-contact').value,
+      client_kind: document.getElementById('nc-kind').value, representative_name: document.getElementById('nc-rep-name').value.trim(),
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
       email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
       memo: document.getElementById('nc-memo').value

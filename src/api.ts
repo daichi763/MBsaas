@@ -4236,7 +4236,9 @@ api.get('/admin/clients', async (c) => {
       (SELECT COUNT(*) FROM projects p WHERE p.client_id = cl.client_id AND p.company_id = cl.company_id AND p.status = 'active') AS active_project_count,
       (SELECT COUNT(*) FROM projects p WHERE p.client_id = cl.client_id AND p.company_id = cl.company_id) AS project_count,
       -- 有効期限が30日以内・切れた書類（契約書など）の数（#297。一覧の絞り込みに使う）
-      (SELECT COUNT(*) FROM client_documents d WHERE d.client_id = cl.client_id AND d.company_id = cl.company_id AND d.valid_until IS NOT NULL AND d.valid_until <= ?) AS doc_expiring
+      (SELECT COUNT(*) FROM client_documents d WHERE d.client_id = cl.client_id AND d.company_id = cl.company_id AND d.valid_until IS NOT NULL AND d.valid_until <= ?) AS doc_expiring,
+      -- 顧客担当者の名前（一覧の検索に使う。#9101 で会社基本情報の担当者は担当者一覧へ移した）
+      (SELECT GROUP_CONCAT(cc.contact_name, '、') FROM client_contacts cc WHERE cc.client_id = cl.client_id AND cc.company_id = cl.company_id) AS contact_names
     FROM clients cl WHERE cl.company_id = ? ORDER BY cl.client_id`).bind(addDays(todayJST(), DASH_DOC_EXPIRY_DAYS), u.company_id).all()
   return c.json({ clients: rows.results })
 })
@@ -4247,6 +4249,8 @@ api.post('/admin/clients', async (c) => {
   const name = String(b.client_name ?? '').trim()
   if (!name) return c.json({ error: 'クライアント名は必須です' }, 400)
   if (b.email && !CLIENT_EMAIL_RE.test(String(b.email).trim())) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
+  const fieldErr = normalizeClientFields(b)
+  if (fieldErr) return c.json({ error: fieldErr }, 400)
   let rating = 3
   if (b.client_rating !== undefined && b.client_rating !== null && String(b.client_rating).trim() !== '') {
     const r = toInt(b.client_rating, 1, 5)
@@ -4258,11 +4262,17 @@ api.post('/admin/clients', async (c) => {
   const dupMsg = { error: `同じ名前のクライアント「${name}」が既に登録されています`, confirm_duplicate: true }
   if (b.allow_duplicate !== true && await c.env.DB.prepare('SELECT 1 FROM clients WHERE company_id = ? AND client_name = ? LIMIT 1').bind(u.company_id, name).first())
     return c.json(dupMsg, 409)
-  const r = await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo, client_rating)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM clients WHERE company_id = ? AND client_name = ?)`)
-    .bind(u.company_id, name, b.stream_type || 'upstream', b.contact_name ?? null, b.email ? String(b.email).trim() : null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating,
+  const contactName = typeof b.contact_name === 'string' ? b.contact_name.trim() : ''
+  const r = await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo, client_rating,
+      client_kind, representative_name, branch_name, department_name)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM clients WHERE company_id = ? AND client_name = ?)`)
+    .bind(u.company_id, name, b.stream_type || 'upstream', contactName || null, b.email ? String(b.email).trim() : null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating,
+      b.client_kind || null, b.representative_name || null, b.branch_name || null, b.department_name || null,
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
+  // 担当者の名前が送られてきたら（以前の画面・外部からの登録）、顧客担当者の一覧に1件として入れる（#9101）
+  if (contactName) await c.env.DB.prepare('INSERT INTO client_contacts (company_id, client_id, contact_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(u.company_id, r.meta.last_row_id, contactName, nowJST(), nowJST()).run()
   return c.json({ ok: true, client_id: r.meta.last_row_id })
 })
 
@@ -4312,6 +4322,25 @@ api.get('/admin/clients/:id', async (c) => {
 
 // クライアントのメールは顧客担当者（client_contacts）と同じ形式で確かめる
 const CLIENT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// 種別（#9102。corporation = 法人 / sole_proprietor = 個人事業主 / other = その他）と、文字の項目（代表者氏名・支店・部門。#9101 #9103）の上限
+const CLIENT_KINDS = ['corporation', 'sole_proprietor', 'other']
+const CLIENT_TEXT_FIELDS: Record<string, [string, number]> = { representative_name: ['代表者氏名', 100], branch_name: ['支店', 100], department_name: ['部門', 100] }
+// 種別・代表者氏名・支店・部門を確かめて整える（b を書き換える）。送られていない項目はそのまま。誤りがあれば文言を返す
+function normalizeClientFields(b: any): string | null {
+  if (b.client_kind !== undefined && b.client_kind !== null) {
+    const k = String(b.client_kind).trim()
+    if (k && !CLIENT_KINDS.includes(k)) return '種別は 法人・個人事業主・その他 から選んでください'
+    b.client_kind = k
+  }
+  for (const [key, [label, max]] of Object.entries(CLIENT_TEXT_FIELDS)) {
+    if (b[key] === undefined || b[key] === null) continue
+    if (typeof b[key] !== 'string') return `${label}を正しく入力してください`
+    const v = b[key].replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+    if (v.length > max) return `${label}は${max}文字以内で入力してください`
+    b[key] = v
+  }
+  return null
+}
 // インボイス登録番号: T + 数字13桁のみ許可（前後の空白はトリムする）
 function validateInvoiceNumber(v: string | null | undefined): string | null | 'invalid' {
   if (v == null || v === '') return null
@@ -4338,6 +4367,8 @@ api.put('/admin/clients/:id', async (c) => {
 
   if (b.email != null && String(b.email).trim() !== '' && !CLIENT_EMAIL_RE.test(String(b.email).trim())) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
   if (typeof b.email === 'string') b.email = b.email.trim()
+  const fieldErr = normalizeClientFields(b)
+  if (fieldErr) return c.json({ error: fieldErr }, 400)
   if (b.stream_type !== undefined && b.stream_type !== null && String(b.stream_type).trim() !== '' && !['upstream', 'downstream'].includes(b.stream_type))
     return c.json({ error: '上流・下流の区分が正しくありません' }, 400)
 
@@ -4349,7 +4380,8 @@ api.put('/admin/clients/:id', async (c) => {
   const upd = buildUpdate({ ...b, invoice_number: b.invoice_number === undefined ? undefined : invoiceNumber },
     ['client_name', 'stream_type', 'contract_type', 'billing_rule', 'memo', 'client_rating',
       'contact_name', 'phone', 'email', 'address',
-      'representative_title', 'representative_name', 'representative_kana', 'invoice_number'],
+      'representative_title', 'representative_name', 'representative_kana', 'invoice_number',
+      'client_kind', 'branch_name', 'department_name'],
     { required: ['client_name', 'stream_type', 'client_rating'] })
   if (upd.missing.includes('client_name')) return c.json({ error: 'クライアント名は必須です' }, 400)
   if (upd.clause) {
@@ -4977,10 +5009,10 @@ api.post('/admin/projects', async (c) => {
   const dupMsg = { error: `同じ名前の稼働中の案件「${name}」が既に登録されています`, confirm_duplicate: true }
   if (b.allow_duplicate !== true && await c.env.DB.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active' LIMIT 1`).bind(u.company_id, name).first())
     return c.json(dupMsg, 409)
-  const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
+  const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo, remarks)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
     .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null,
+      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
   const cs = Object.keys(contact.set)
@@ -5037,7 +5069,7 @@ api.put('/admin/projects/:id/photo-required', async (c) => {
 // 案件の文字の項目の長さ（登録・編集で共通）
 const PROJECT_TEXT_LIMITS: [string, string, number][] = [
   ['project_name', '案件名', 100], ['location', '稼働場所', 200], ['requirements', '求められる内容', 2000],
-  ['manual_text', '案件マニュアル・注意事項', 5000], ['memo', 'メモ', 2000],
+  ['manual_text', '案件マニュアル・注意事項', 5000], ['memo', 'メモ', 2000], ['remarks', '備考', 2000],
 ]
 function projectTextError(b: any): string | null {
   for (const [k, label, max] of PROJECT_TEXT_LIMITS) {
@@ -5079,7 +5111,7 @@ api.put('/admin/projects/:id', async (c) => {
     if (!PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
     set.project_type = b.project_type
   }
-  for (const k of ['location', 'requirements', 'manual_text', 'memo']) if (b[k] !== undefined) set[k] = blank(b[k]) ? null : String(b[k]).trim()
+  for (const k of ['location', 'requirements', 'manual_text', 'memo', 'remarks']) if (b[k] !== undefined) set[k] = blank(b[k]) ? null : String(b[k]).trim()
   // 現場責任者の連絡先（#173。任意）。スタッフアプリ・報告用URLの当日のシフトに出す
   const contact = projectSiteContact(b)
   if ('error' in contact) return c.json({ error: contact.error }, 400)

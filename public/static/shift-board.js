@@ -1033,85 +1033,63 @@
   delegate('copyRun', el => withSubmitLock(el, copyRun))
 
   // =========================================================
-  // 案件詳細: 区分・単価・単価ルール・繰り返し登録
+  // 単価の設定（区分・標準単価・単価ルール）は精算画面の「単価の設定」に置く（利用者の要望 9201・9203）。
+  // 案件詳細には基本単価を表示だけし、繰り返し登録と提出設定を出す
   // =========================================================
   function ruleSummary(r) {
     const parts = []
     // 適用期間（#210）
     if (r.valid_from || r.valid_to) parts.push(`期間 ${r.valid_from ? esc(r.valid_from) : ''}〜${r.valid_to ? esc(r.valid_to) : ''}`)
     if (r.bill_rate != null) parts.push(`請求 ${UNIT_LABEL[r.bill_unit_type] || ''}${yen(r.bill_rate)}`)
-    if (r.pay_rate != null) parts.push(`支払 ${UNIT_LABEL[r.pay_unit_type] || ''}${yen(r.pay_rate)}`)
+    // インセンティブ（加算額。9203）は支払単価に含まれている
+    if (r.pay_rate != null) parts.push(`支払 ${UNIT_LABEL[r.pay_unit_type] || ''}${yen(r.pay_rate)}${Number(r.pay_incentive) > 0 ? `（うちインセンティブ ${yen(r.pay_incentive)}）` : ''}`)
     if (r.bill_transport_type) parts.push('交通費請求: ' + BT_LABEL[r.bill_transport_type] + (r.bill_transport_type === 'fixed' ? ' ' + yen(r.bill_transport_amount) : ''))
     if (r.pay_transport_type) parts.push('交通費支払: ' + PT_LABEL[r.pay_transport_type] + (['fixed', 'capped'].includes(r.pay_transport_type) ? ' ' + yen(r.pay_transport_amount) : ''))
     return parts.join(' / ')
   }
-  // 単価ルールのメモ（経験者加算など。同じ条件のルールを見分けるため、案件詳細の一覧にも出す #388）
+  // 単価ルールの備考（経験者加算など。同じ条件のルールを見分けるため、一覧にも出す #388）
   const ruleMemo = (r) => (r.memo ? `<span class="text-gray-400 ml-1">（${esc(r.memo)}）</span>` : '')
   // 一覧に出した単価ルール（編集のモーダルで今の値を入れるため）
   const RULES = new Map()
   function ruleScope(r) {
     return [r.project_name ? esc(r.project_name) : r.project_id ? '' : r.client_id ? 'クライアント全体' + (r.client_name ? '（' + esc(r.client_name) + '）' : '') : '全案件', r.site_name ? '📍' + esc(r.site_name) : '', r.role_name ? '役割: ' + esc(r.role_name) : '', r.staff_name ? '👤' + esc(r.staff_name) : ''].filter(Boolean).join(' × ')
   }
-  window.renderProjectPricingPanel = async function (p) {
-    const host = document.getElementById('project-pricing-panel'); if (!host) return
-    const [{ data: rr }, { data: pt }, { data: si }, ph] = await Promise.all([
-      axios.get('/api/admin/rate-rules?project_id=' + p.project_id), axios.get('/api/admin/slot-patterns?project_id=' + p.project_id),
-      axios.get('/api/admin/sites' + (p.client_id ? '?client_id=' + p.client_id : '')),
-      axios.get(`/api/admin/projects/${p.project_id}/price-history`).then(r => r.data).catch(() => null)])
-    const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
-    const eng = p.engagement_type || 'regular'
+  // 交通費の扱い（基本単価の表示用）
+  function transportText(p) {
+    const bt = p.bill_transport_type || 'actual', pt = p.pay_transport_type || 'actual'
+    return `請求: ${esc(BT_LABEL[bt] || bt)}${bt === 'fixed' ? ' ' + yen(p.bill_transport_amount) : ''}　支払: ${esc(PT_LABEL[pt] || pt)}${['fixed', 'capped'].includes(pt) ? ' ' + yen(p.pay_transport_amount) : ''}`
+  }
+  // 案件詳細の「基本単価」（表示だけ。9201）。変更は精算画面の「単価の設定」で行う
+  window.projectBasePriceHtml = function (p) {
+    const payUnit = UNIT_LABEL[p.pay_unit_type || 'daily'] || ''
+    const billUnit = UNIT_LABEL[p.unit_price_type === 'hourly' ? 'hourly' : 'daily'] || ''
+    return `<section class="card p-4" id="project-base-price">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>基本単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
+        <button type="button" class="btn btn-outline text-xs" data-action="projectOpenPricing" data-id="${Number(p.project_id)}"><i class="fas fa-scale-balanced"></i>精算画面の「単価の設定」で変更</button>
+      </div>
+      <dl class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+        <div class="rounded-lg bg-gray-50 p-2"><dt class="text-[11px] text-gray-500">請求</dt><dd class="font-bold">${esc(billUnit)} ${yen(p.unit_price)}</dd></div>
+        <div class="rounded-lg bg-gray-50 p-2"><dt class="text-[11px] text-gray-500">支払</dt><dd class="font-bold">${p.pay_rate == null ? '<span class="text-amber-600">未設定</span>' : `${esc(payUnit)} ${yen(p.pay_rate)}`}</dd></div>
+        <div class="rounded-lg bg-gray-50 p-2"><dt class="text-[11px] text-gray-500">交通費</dt><dd class="text-xs">${transportText(p)}</dd></div>
+      </dl>
+      <p class="text-[11px] text-gray-400 mt-2">案件の標準の単価です${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}。開催場所・役割・スタッフ別の単価やインセンティブは、精算画面の「単価の設定」で決めます</p>
+    </section>`
+  }
+  delegate('projectOpenPricing', el => { if (window.openSettlePricing) openSettlePricing(Number(el.dataset.id)) })
+
+  // 案件詳細: 提出設定・繰り返し登録
+  window.renderProjectPatternsPanel = async function (p) {
+    const host = document.getElementById('project-patterns-panel'); if (!host) return
+    let pt
+    try { pt = (await axios.get('/api/admin/slot-patterns?project_id=' + p.project_id)).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '繰り返し登録を読み込めませんでした'))}</p>`; return }
     host.innerHTML = `
       <div class="grid lg:grid-cols-2 gap-4">
-        <section class="card p-4" id="project-pricing">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>区分・標準単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
-            <a class="text-xs text-blue-600 hover:underline" href="#shifts" onclick="window.__boardState.projectIds=[${p.project_id}]">シフトボードで開く</a>
-          </div>
-          <div class="grid grid-cols-2 gap-2 text-xs">
-            <label class="col-span-2">区分<select id="pp-eng" class="inp text-sm"><option value="regular" ${eng === 'regular' ? 'selected' : ''}>常勤案件</option><option value="spot" ${eng === 'spot' ? 'selected' : ''}>スポット案件（イベント・週末のみ等）</option></select></label>
-            <label>請求の単位<select id="pp-bill-unit" class="inp text-sm">${opt(UNIT_LABEL, p.unit_price_type === 'hourly' ? 'hourly' : 'daily')}</select></label>
-            <label>請求単価<input id="pp-bill" type="number" min="0" class="inp text-sm" value="${p.unit_price ?? 0}"></label>
-            <label>支払の単位<select id="pp-pay-unit" class="inp text-sm">${opt(UNIT_LABEL, p.pay_unit_type || 'daily')}</select></label>
-            <label>支払単価<input id="pp-pay" type="number" min="0" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
-            <label>交通費の請求<select id="pp-bt" class="inp text-sm">${opt(BT_LABEL, p.bill_transport_type || 'actual')}</select></label>
-            <label>定額の場合の金額<input id="pp-bt-amt" type="number" min="0" class="inp text-sm" value="${p.bill_transport_amount || 0}"></label>
-            <label>交通費の支払<select id="pp-pt" class="inp text-sm">${opt(PT_LABEL, p.pay_transport_type || 'actual')}</select></label>
-            <label>上限 / 定額の金額<input id="pp-pt-amt" type="number" min="0" class="inp text-sm" value="${p.pay_transport_amount || 0}"></label>
-            <label class="col-span-2">単価を変えるときの適用開始日<input id="pp-valid-from" type="date" class="inp text-sm" value="">
-              <span class="block text-[11px] text-gray-400">入れると、その前日までの稼働日は今の単価のまま計算します。空欄なら今の単価${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}を直します</span></label>
-            <label>休憩（時給計算用・分）<input id="pp-break" type="number" min="0" max="600" class="inp text-sm" value="${p.default_break_minutes ?? 60}"></label>
-            <label>時給の時間の数え方<select id="pp-hours-basis" class="inp text-sm">${opt({ clipped: '実働（予定の範囲内）', actual: '実働どおり', scheduled: '予定どおり' }, p.hours_basis || 'clipped')}</select></label>
-            <label>時刻の丸め<select id="pp-round" class="inp text-sm">${opt({ 0: '丸めない', 5: '5分', 10: '10分', 15: '15分', 30: '30分' }, String(p.time_round_minutes || 0))}</select></label>
-            <label>支払の丸め<select id="pp-pay-round" class="inp text-sm">${opt({ none: '支払は丸めない（1分単位）', same: '支払も同じく丸める' }, p.pay_time_round === 'same' ? 'same' : 'none')}</select></label>
-          </div>
-          <p class="text-[11px] text-gray-400 mt-1">時給は入店・退店の実績から計算します。「予定の範囲内」は早く来た・遅く残った分を含めません。丸めは開始を切り上げ、終了を切り捨てます</p>
-          ${p.pay_time_round === 'same' && Number(p.time_round_minutes || 0) > 0 ? '<p class="text-[11px] text-amber-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>支払も丸めています。自社給与・日雇い給与のスタッフの労働時間を日ごとに切り捨てると、賃金の未払いになるおそれがあります（給与は1分単位で計算してください）</p>' : ''}
-          ${priceHistoryHtml(ph)}
-          <button class="btn btn-primary w-full mt-3 text-sm" onclick="saveProjectPricing(${p.project_id})">保存する</button>
-          <p class="text-[11px] text-gray-400 mt-2">保存しても、登録済みのシフトの金額は変わりません。変更を反映するには「単価ルールを再適用」を使ってください</p>
-          <button class="btn btn-outline w-full mt-2 text-xs" onclick="repriceProject(${p.project_id})"><i class="fas fa-rotate"></i>今後のシフトに単価ルールを再適用</button>
-        </section>
-
-        <section class="card p-4" id="project-rate-rules">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-list-check text-blue-500 mr-1"></i>単価ルール（開催場所・役割・スタッフ別）</h3>
-            <button class="btn btn-outline text-xs" onclick="openRuleModal({project_id:${p.project_id}, client_id:${p.client_id || 'null'}})"><i class="fas fa-plus"></i>追加</button>
-          </div>
-          <p class="text-[11px] text-gray-400 mb-2">優先順: スタッフ ＞ 役割 ＞ 開催場所 ＞ 案件の標準。項目ごとに最も具体的なルールを使います。クライアントの全案件に共通のルールは、クライアント詳細の「単価ルール（クライアント共通）」で設定します（同じ条件なら案件のルールが優先）</p>
-          <div class="space-y-1.5 max-h-72 overflow-y-auto">
-            ${rr.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
-              <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r)}${ruleMemo(r)}</p></div>
-              <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-pid="${Number(p.project_id)}" data-cid="${Number(p.client_id) || ''}">編集</button>
-              <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-pid="${Number(p.project_id)}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
-              <button class="text-gray-400 hover:text-red-500" onclick="deleteRule(${r.rule_id}, ${p.project_id})"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">ルールはありません（案件の標準単価を使います）</p>'}
-          </div>
-        </section>
-
         <section class="card p-4 lg:col-span-2" id="project-report-settings"></section>
         <section class="card p-4 lg:col-span-2" id="project-patterns">
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-repeat text-blue-500 mr-1"></i>繰り返し登録</h3>
-            <button class="btn btn-outline text-xs" onclick="openPatternModal({project_id:${p.project_id}})"><i class="fas fa-plus"></i>追加</button>
+            <button class="btn btn-outline text-xs" data-action="projectPatternAdd" data-id="${Number(p.project_id)}"><i class="fas fa-plus"></i>追加</button>
           </div>
           <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>曜日</th><th>期間</th><th>時間</th><th>開催場所</th><th>役割</th><th>枠</th><th></th></tr></thead><tbody>
             ${pt.patterns.map(x => `<tr><td>${x.weekdays.split(',').map(i => WD[i]).join('・')}</td><td class="whitespace-nowrap">${esc(x.date_from)}〜${esc(x.date_to)}${patternEndBadge(x)}</td><td>${esc(x.start_time)}〜${esc(x.end_time)}</td>
@@ -1121,11 +1099,97 @@
         </section>
       </div>`
     window.__projectForPanel = p
-    for (const r of rr.rules) RULES.set(r.rule_id, r)
     PATTERNS = new Map(pt.patterns.map(x => [x.pattern_id, { ...x, project: p }]))
     // 勤怠・日報の提出設定（案件の初期値。public/static/staff-lifecycle.js）
     if (window.renderProjectReportSettings) renderProjectReportSettings(p)
   }
+  delegate('projectPatternAdd', el => openPatternModal({ project_id: Number(el.dataset.id) }))
+
+  // 精算画面の「単価の設定」（9203）: 区分・標準単価と単価ルール（開催場所・役割・スタッフ別、インセンティブ、備考）。
+  // 計算（ルールの優先順・改定履歴・再適用）は今までと同じ API を使う
+  window.renderSettlePricingPanel = async function (pid) {
+    const host = document.getElementById('settle-pricing-panel'); if (!host) return
+    host.dataset.pid = String(Number(pid) || '')
+    if (!pid) { host.innerHTML = '<p class="text-sm text-gray-400 py-6 text-center">案件を選ぶと、その案件の単価の設定が出ます</p>'; return }
+    host.innerHTML = '<p class="text-sm text-gray-400 py-6 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中…</p>'
+    let m, rr, ph
+    try {
+      m = await loadMaster()
+      // 登録したばかりの案件などで選択肢が古いときは取り直す
+      if (!m.projects.some(x => Number(x.project_id) === Number(pid))) { invalidateMaster(); m = await loadMaster() }
+      ;[{ data: rr }, ph] = await Promise.all([axios.get('/api/admin/rate-rules?project_id=' + Number(pid)),
+        axios.get(`/api/admin/projects/${Number(pid)}/price-history`).then(r => r.data).catch(() => null)])
+    } catch (e) { host.innerHTML = `<p class="text-sm text-red-600">${esc(errMsg(e, '単価の設定を読み込めませんでした'))}</p>`; return }
+    // 別の案件に切り替えた後に古い応答が届いたら描かない
+    if (Number(host.dataset.pid || 0) !== Number(pid)) return
+    const p = m.projects.find(x => Number(x.project_id) === Number(pid))
+    if (!p) { host.innerHTML = '<p class="text-sm text-red-600">案件が見つかりません</p>'; return }
+    const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
+    const eng = p.engagement_type || 'regular'
+    const id = Number(p.project_id), cid = Number(p.client_id) || ''
+    host.innerHTML = `
+      <div class="flex items-center gap-2 mb-3 flex-wrap text-sm">
+        <span class="font-bold text-gray-800">${esc(p.project_name)}</span>${p.client_name ? `<span class="text-gray-500">${esc(p.client_name)}</span>` : ''}
+        ${p.status && p.status !== 'active' ? '<span class="badge badge-gray">終了</span>' : ''}
+        <a class="text-xs text-blue-600 hover:underline ml-auto" href="#projects/${id}">案件詳細を開く</a>
+        <a class="text-xs text-blue-600 hover:underline" href="#shifts" data-action="pricingOpenBoard" data-id="${id}">シフトボードで開く</a>
+      </div>
+      <div class="grid lg:grid-cols-2 gap-4">
+        <section class="card p-4" id="project-pricing">
+          <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>区分・標準単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <label class="col-span-2">区分<select id="pp-eng" class="inp text-sm"><option value="regular" ${eng === 'regular' ? 'selected' : ''}>常勤案件</option><option value="spot" ${eng === 'spot' ? 'selected' : ''}>スポット案件（イベント・週末のみ等）</option></select></label>
+            <label>請求の単位<select id="pp-bill-unit" class="inp text-sm">${opt(UNIT_LABEL, p.unit_price_type === 'hourly' ? 'hourly' : 'daily')}</select></label>
+            <label>請求単価<input id="pp-bill" type="number" min="0" class="inp text-sm" value="${Number(p.unit_price ?? 0)}"></label>
+            <label>支払の単位<select id="pp-pay-unit" class="inp text-sm">${opt(UNIT_LABEL, p.pay_unit_type || 'daily')}</select></label>
+            <label>支払単価<input id="pp-pay" type="number" min="0" class="inp text-sm" value="${p.pay_rate == null ? '' : Number(p.pay_rate)}" placeholder="未設定"></label>
+            <label>交通費の請求<select id="pp-bt" class="inp text-sm">${opt(BT_LABEL, p.bill_transport_type || 'actual')}</select></label>
+            <label>定額の場合の金額<input id="pp-bt-amt" type="number" min="0" class="inp text-sm" value="${Number(p.bill_transport_amount || 0)}"></label>
+            <label>交通費の支払<select id="pp-pt" class="inp text-sm">${opt(PT_LABEL, p.pay_transport_type || 'actual')}</select></label>
+            <label>上限 / 定額の金額<input id="pp-pt-amt" type="number" min="0" class="inp text-sm" value="${Number(p.pay_transport_amount || 0)}"></label>
+            <label class="col-span-2">単価を変えるときの適用開始日<input id="pp-valid-from" type="date" class="inp text-sm" value="">
+              <span class="block text-[11px] text-gray-400">入れると、その前日までの稼働日は今の単価のまま計算します。空欄なら今の単価${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}を直します</span></label>
+            <label>休憩（時給計算用・分）<input id="pp-break" type="number" min="0" max="600" class="inp text-sm" value="${Number(p.default_break_minutes ?? 60)}"></label>
+            <label>時給の時間の数え方<select id="pp-hours-basis" class="inp text-sm">${opt({ clipped: '実働（予定の範囲内）', actual: '実働どおり', scheduled: '予定どおり' }, p.hours_basis || 'clipped')}</select></label>
+            <label>時刻の丸め<select id="pp-round" class="inp text-sm">${opt({ 0: '丸めない', 5: '5分', 10: '10分', 15: '15分', 30: '30分' }, String(p.time_round_minutes || 0))}</select></label>
+            <label>支払の丸め<select id="pp-pay-round" class="inp text-sm">${opt({ none: '支払は丸めない（1分単位）', same: '支払も同じく丸める' }, p.pay_time_round === 'same' ? 'same' : 'none')}</select></label>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-1">時給は入店・退店の実績から計算します。「予定の範囲内」は早く来た・遅く残った分を含めません。丸めは開始を切り上げ、終了を切り捨てます</p>
+          ${p.pay_time_round === 'same' && Number(p.time_round_minutes || 0) > 0 ? '<p class="text-[11px] text-amber-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>支払も丸めています。自社給与・日雇い給与のスタッフの労働時間を日ごとに切り捨てると、賃金の未払いになるおそれがあります（給与は1分単位で計算してください）</p>' : ''}
+          ${priceHistoryHtml(ph)}
+          <button class="btn btn-primary w-full mt-3 text-sm" data-action="pricingSave" data-id="${id}">保存する</button>
+          <p class="text-[11px] text-gray-400 mt-2">保存しても、登録済みのシフトの金額は変わりません。変更を反映するには「単価ルールを再適用」を使ってください</p>
+          <button class="btn btn-outline w-full mt-2 text-xs" data-action="pricingReprice" data-id="${id}"><i class="fas fa-rotate"></i>今後のシフトに単価ルールを再適用</button>
+        </section>
+
+        <section class="card p-4" id="project-rate-rules">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-list-check text-blue-500 mr-1"></i>単価ルール（開催場所・役割・スタッフ別）</h3>
+            <button class="btn btn-outline text-xs" data-action="ruleAdd" data-pid="${id}" data-cid="${cid}"><i class="fas fa-plus"></i>追加</button>
+          </div>
+          <p class="text-[11px] text-gray-400 mb-2">人によって単価を変えるときはスタッフを選び、インセンティブ（加算額）・備考も入れられます。優先順: スタッフ ＞ 役割 ＞ 開催場所 ＞ 案件の標準。項目ごとに最も具体的なルールを使います。クライアントの全案件に共通のルールは、クライアント詳細の「単価ルール（クライアント共通）」で設定します（同じ条件なら案件のルールが優先）</p>
+          <div class="space-y-1.5 max-h-96 overflow-y-auto">
+            ${rr.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
+              <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r)}${ruleMemo(r)}</p></div>
+              <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-pid="${id}" data-cid="${cid}">編集</button>
+              <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-pid="${id}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
+              <button class="text-gray-400 hover:text-red-500" data-action="ruleDelete" data-id="${Number(r.rule_id)}" data-pid="${id}" title="削除"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">ルールはありません（案件の標準単価を使います）</p>'}
+          </div>
+        </section>
+      </div>`
+    for (const r of rr.rules) RULES.set(r.rule_id, r)
+  }
+  // 単価の設定を変えた後の描き直し（精算画面の単価の設定を開いていればそこを、そうでなければ案件詳細を描き直す）
+  function refreshPricing(pid) {
+    const host = document.getElementById('settle-pricing-panel')
+    if (host) return window.renderSettlePricingPanel(Number(pid))
+    if (window.renderProjectDetail) return renderProjectDetail(Number(pid))
+  }
+  delegate('pricingSave', el => withSubmitLock(el, () => saveProjectPricing(Number(el.dataset.id))))
+  delegate('pricingReprice', el => repriceProject(Number(el.dataset.id)))
+  delegate('pricingOpenBoard', el => { BS.projectIds = [Number(el.dataset.id)] })
+  delegate('ruleAdd', el => openRuleModal({ project_id: Number(el.dataset.pid), client_id: Number(el.dataset.cid) || null }))
+  delegate('ruleDelete', el => withSubmitLock(el, () => deleteRule(Number(el.dataset.id), Number(el.dataset.pid))))
   // 案件の標準単価の改定履歴（#210）
   const unitShort = (u) => (u === 'hourly' ? '/時' : '/日')
   function priceHistoryHtml(ph) {
@@ -1146,7 +1210,7 @@
       })
       invalidateMaster()
       toast(v('pp-valid-from') && data.price_changed ? `保存しました（${v('pp-valid-from')}以降の稼働日から新しい単価を使います）` : '保存しました')
-      renderProjectDetail(pid)
+      await refreshPricing(pid)
     } catch (e) { toast(errMsg(e)) }
   }
   // 単価ルールの再適用（#469）: 期間を選び、金額・支払先が変わるシフトと増減の合計を確かめてから実行する
@@ -1299,9 +1363,42 @@
   }))
 
   // ---------- 単価ルールの追加・編集（#388） ----------
-  // rule を渡すと、その値を入れて編集として開く（保存は PUT /rate-rules/:id）
+  // rule を渡すと、その値を入れて編集として開く（保存は PUT /rate-rules/:id）。
+  // 案件から開いたとき（精算画面の単価の設定）は、スタッフ別の単価（人によって単価を変える）を入れられ、
+  // スタッフを選ぶとスタッフマスタの支払の参考単価（9204）を目安として出す。インセンティブ（加算額）・備考はどこから開いても入れられる（9203）
+  let REF_PAY = new Map()
+  const REF_UNIT = { daily: '日給', hourly: '時給' }
+  async function loadReferencePay() {
+    try { REF_PAY = new Map((await axios.get('/api/admin/staff-reference-pay')).data.staff.map(s => [Number(s.staff_id), s])) } catch { REF_PAY = new Map() }
+  }
+  function refPayHint() {
+    const box = document.getElementById('rl-staff-ref'); if (!box) return
+    const sid = Number((document.getElementById('rl-staff') || {}).value || 0)
+    const ref = sid ? REF_PAY.get(sid) : null
+    // 他社連携の人の参考単価は所属元だけが持つ（自社では入力できない）
+    const linked = sid && ((MASTER && MASTER.staff) || []).some(s => Number(s.staff_id) === sid && s.affiliation_type === 'linked_external')
+    box.innerHTML = !sid ? '' : linked ? '<i class="fas fa-circle-info mr-1"></i>他社から連携したスタッフのため、参考単価は出ません（所属元の会社が管理します）' : ref
+      ? `<i class="fas fa-circle-info mr-1"></i>参考単価: ${esc(REF_UNIT[ref.reference_pay_unit] || '')} ${yen(ref.reference_pay_amount)}（スタッフマスタで入力した目安。計算には使いません）
+         <button type="button" class="text-blue-600 hover:underline ml-1" data-action="ruleUseReference">支払単価（基本）に入れる</button>`
+      : '<i class="fas fa-circle-info mr-1"></i>この人の参考単価は入力されていません（スタッフマスタのスタッフ詳細で入力できます）'
+    const wrap = document.getElementById('rl-staff-scope-wrap'); if (wrap) wrap.classList.toggle('hidden', !sid)
+  }
+  // 支払単価（基本）＋インセンティブ（加算額）＝ 計算に使う支払単価
+  function payTotalHint() {
+    const box = document.getElementById('rl-pay-total'); if (!box) return
+    const base = document.getElementById('rl-pay').value, inc = document.getElementById('rl-inc').value
+    box.textContent = inc !== '' && Number(inc) > 0
+      ? (base === '' ? 'インセンティブを入れるときは、支払単価（基本）も入力してください' : `計算に使う支払単価: ${yen(Number(base) + Number(inc))}（基本 ${yen(base)} ＋ インセンティブ ${yen(inc)}）`)
+      : ''
+  }
+  delegate('ruleUseReference', () => {
+    const ref = REF_PAY.get(Number((document.getElementById('rl-staff') || {}).value || 0)); if (!ref) return
+    document.getElementById('rl-pay').value = String(Number(ref.reference_pay_amount))
+    document.getElementById('rl-pay-unit').value = ref.reference_pay_unit === 'hourly' ? 'hourly' : 'daily'
+    payTotalHint()
+  })
   window.openRuleModal = async function (ctx, rule) {
-    const m = await loadMaster()
+    const [m] = await Promise.all([loadMaster(), ctx.project_id ? loadReferencePay() : null])
     const r = rule || {}
     const same = (a, b) => a != null && b != null && String(a) === String(b)
     const sel = (a, b) => (same(a, b) ? 'selected' : '')
@@ -1312,18 +1409,26 @@
     const opt = (map, v) => `<option value="">（変更しない）</option>` + Object.entries(map).map(([k, l]) => `<option value="${k}" ${sel(k, v)}>${l}</option>`).join('')
     const unitOpt = (v) => `<option value="daily">日額</option><option value="hourly" ${v === 'hourly' ? 'selected' : ''}>時給</option>`
     const val = (v) => (v == null ? '' : esc(v))
+    // インセンティブは支払単価に含めて保存しているので、入力欄には基本の単価（支払単価 − 加算額）を出す
+    const inc = Number(r.pay_incentive) > 0 && r.pay_rate != null ? Number(r.pay_incentive) : null
+    const payBase = r.pay_rate == null ? null : Number(r.pay_rate) - (inc || 0)
     modal(`
       <h3 class="font-bold text-lg mb-1">${rule ? '単価ルールを編集' : '単価ルールを追加'}</h3>
       <p class="text-xs text-gray-500 mb-3">条件に合うシフトで、入力した項目だけを上書きします（空欄の項目は上書きしません）${rule ? '。保存しても、登録済みのシフトの金額は再適用するまで変わりません' : ''}</p>
       <div class="grid grid-cols-2 gap-2 text-xs">
-        ${ctx.staff_id ? `<label class="col-span-2">案件<select id="rl-project" class="inp text-sm"><option value="">すべての案件</option>${m.projects.map(p => `<option value="${p.project_id}" ${sel(p.project_id, r.project_id)}>${esc(p.project_name)}</option>`).join('')}</select></label>` : ''}
-        ${ctx.project_id || ctx.client_scope ? `<label>開催場所<select id="rl-site" class="inp text-sm"><option value="">すべて</option>${sites.map(s => `<option value="${s.site_id}" ${sel(s.site_id, r.site_id)}>${esc(s.site_name)}${s.status === 'inactive' ? '（無効）' : ''}</option>`).join('')}</select></label>
+        ${ctx.project_id || ctx.client_scope ? `<label>開催場所<select id="rl-site" class="inp text-sm"><option value="">すべて</option>${sites.map(s => `<option value="${Number(s.site_id)}" ${sel(s.site_id, r.site_id)}>${esc(s.site_name)}${s.status === 'inactive' ? '（無効）' : ''}</option>`).join('')}</select></label>
         <label>役割<input id="rl-role" class="inp text-sm" placeholder="すべて" list="role-suggest" value="${val(r.role_name)}"></label>` : ''}
-        ${ctx.project_id ? `<label class="col-span-2">スタッフ<select id="rl-staff" class="inp text-sm"><option value="">すべて</option>${staff.map(s => `<option value="${s.staff_id}" ${sel(s.staff_id, r.staff_id)}>${esc(s.name)}</option>`).join('')}</select></label>` : ''}
+        ${ctx.project_id ? `<label class="col-span-2">スタッフ（人によって単価を変えるとき）<select id="rl-staff" class="inp text-sm"><option value="">すべて</option>${staff.map(s => `<option value="${Number(s.staff_id)}" ${sel(s.staff_id, r.staff_id)}>${esc(s.name)}</option>`).join('')}</select></label>
+        <p class="col-span-2 text-[11px] text-gray-500 -mt-1" id="rl-staff-ref"></p>
+        <label class="col-span-2 ${r.staff_id ? '' : 'hidden'}" id="rl-staff-scope-wrap">このスタッフの単価を使う案件<select id="rl-staff-scope" class="inp text-sm">
+          <option value="project">この案件だけ</option><option value="all" ${r.staff_id && !r.project_id ? 'selected' : ''}>すべての案件（このスタッフの全案件に共通）</option></select></label>` : ''}
         <label>請求の単位<select id="rl-bill-unit" class="inp text-sm">${unitOpt(r.bill_unit_type)}</select></label>
         <label>請求単価<input id="rl-bill" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(r.bill_rate)}"></label>
         <label>支払の単位<select id="rl-pay-unit" class="inp text-sm">${unitOpt(r.pay_unit_type)}</select></label>
-        <label>支払単価<input id="rl-pay" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(r.pay_rate)}"></label>
+        <label>支払単価（基本）<input id="rl-pay" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(payBase)}"></label>
+        <label class="col-span-2">インセンティブ（加算額・任意）<input id="rl-inc" type="number" min="0" class="inp text-sm" placeholder="例: 2000" value="${val(inc)}">
+          <span class="block text-[11px] text-gray-400">支払単価（基本）に足した金額で計算します（時給なら1時間あたりの加算）</span>
+          <span class="block text-[11px] text-blue-700" id="rl-pay-total"></span></label>
         <label>交通費の請求<select id="rl-bt" class="inp text-sm">${opt(BT_LABEL, r.bill_transport_type)}</select></label>
         <label>定額の金額<input id="rl-bt-amt" type="number" class="inp text-sm" value="${val(r.bill_transport_amount)}"></label>
         <label>交通費の支払<select id="rl-pt" class="inp text-sm">${opt(PT_LABEL, r.pay_transport_type)}</select></label>
@@ -1331,17 +1436,19 @@
         <label>適用開始日<input id="rl-from" type="date" class="inp text-sm" value="${val(r.valid_from)}"></label>
         <label>適用終了日<input id="rl-to" type="date" class="inp text-sm" value="${val(r.valid_to)}"></label>
         <p class="col-span-2 text-[11px] text-gray-400">空欄は期限なし。単価を改定するときは、旧ルールに終了日を付けて残し、新しいルールに開始日を入れます（シフトの稼働日で選びます）</p>
-        <label class="col-span-2">メモ<input id="rl-memo" class="inp text-sm" placeholder="例: 経験者加算" value="${val(r.memo)}"></label>
+        <label class="col-span-2">備考<input id="rl-memo" class="inp text-sm" maxlength="200" placeholder="例: 経験者加算・リーダー手当" value="${val(r.memo)}"></label>
       </div>
       <datalist id="role-suggest"><option value="販売"><option value="リーダー"><option value="MC"><option value="設営"></datalist>
       <button class="btn btn-primary w-full mt-4" data-action="saveRule">${rule ? '保存する' : '追加する'}</button>`)
     window.__ruleCtx = { ...ctx, ...(rule ? { rule_id: rule.rule_id } : {}) }
+    const st = document.getElementById('rl-staff'); if (st) st.addEventListener('change', refPayHint)
+    for (const k of ['rl-pay', 'rl-inc']) document.getElementById(k).addEventListener('input', payTotalHint)
+    refPayHint(); payTotalHint()
   }
   delegate('saveRule', el => withSubmitLock(el, () => saveRule(window.__ruleCtx || {})))
   delegate('editRule', (el) => {
     const r = RULES.get(Number(el.dataset.id)); if (!r) return
     if (el.dataset.client) openRuleModal({ client_id: Number(el.dataset.client), client_scope: true }, r)
-    else if (el.dataset.sid) openRuleModal({ staff_id: Number(el.dataset.sid) }, r)
     else openRuleModal({ project_id: Number(el.dataset.pid), client_id: Number(el.dataset.cid) || null }, r)
   })
   // 単価ルールに終了日を付ける（単価の改定で旧ルールを残すとき。#210）
@@ -1351,25 +1458,31 @@
     try {
       await axios.put('/api/admin/rate-rules/' + Number(el.dataset.id), { valid_to: to.trim() })
       toast('終了日を保存しました')
-      if (el.dataset.client) renderClientRatePanel(Number(el.dataset.client))
-      else if (el.dataset.sid) renderStaffRatePanel(Number(el.dataset.sid)); else renderProjectDetail(Number(el.dataset.pid))
+      if (el.dataset.client) renderClientRatePanel(Number(el.dataset.client)); else refreshPricing(Number(el.dataset.pid))
     } catch (e) { toast(errMsg(e)) }
   })
   window.saveRule = async function (ctx) {
     const v = (k) => { const el = document.getElementById(k); return el ? el.value : '' }
+    // インセンティブ（加算額）は支払単価に足して送る（計算は加算後の支払単価で行う。pay_incentive は記録と表示のため）
+    const base = v('rl-pay'), inc = v('rl-inc')
+    const hasInc = inc !== '' && Number(inc) !== 0
+    if (hasInc && base === '') { toast('インセンティブを入れるときは、支払単価（基本）も入力してください'); return }
     const body = {
-      project_id: ctx.project_id || (v('rl-project') ? Number(v('rl-project')) : null), site_id: v('rl-site') ? Number(v('rl-site')) : null,
-      role_name: v('rl-role'), staff_id: ctx.staff_id || (v('rl-staff') ? Number(v('rl-staff')) : null),
+      site_id: v('rl-site') ? Number(v('rl-site')) : null,
+      role_name: v('rl-role'), staff_id: v('rl-staff') ? Number(v('rl-staff')) : null,
       // クライアント単位のルール（#470）
       ...(ctx.client_scope ? { client_id: ctx.client_id } : {}),
-      bill_unit_type: v('rl-bill-unit'), bill_rate: v('rl-bill'), pay_unit_type: v('rl-pay-unit'), pay_rate: v('rl-pay'),
+      bill_unit_type: v('rl-bill-unit'), bill_rate: v('rl-bill'), pay_unit_type: v('rl-pay-unit'),
+      pay_rate: hasInc && Number(inc) > 0 ? String(Number(base) + Number(inc)) : base, pay_incentive: hasInc ? inc : null,
       bill_transport_type: v('rl-bt') || null, bill_transport_amount: v('rl-bt-amt'), pay_transport_type: v('rl-pt') || null, pay_transport_amount: v('rl-pt-amt'), memo: v('rl-memo'),
       valid_from: v('rl-from'), valid_to: v('rl-to'),
     }
-    // 編集では、画面に入力欄のない条件（スタッフ詳細から開いたときの開催場所・役割、案件詳細から開いたときの案件など）は送らず、今の値のままにする
+    // 案件から開いたとき: スタッフ別の単価を「すべての案件」にしたら案件を持たないルールにする
+    if (ctx.project_id) body.project_id = body.staff_id && v('rl-staff-scope') === 'all' ? null : ctx.project_id
+    else if (!ctx.rule_id) body.project_id = null
+    // 編集では、画面に入力欄のない条件は送らず、今の値のままにする
     if (ctx.rule_id) {
       const has = (k) => !!document.getElementById(k)
-      if (!has('rl-project')) delete body.project_id
       if (!has('rl-site')) delete body.site_id
       if (!has('rl-role')) delete body.role_name
       if (!has('rl-staff')) delete body.staff_id
@@ -1385,39 +1498,46 @@
         repriceProject(null, null, ctx.client_id)
       return
     }
-    if (ctx.staff_id) await renderStaffRatePanel(ctx.staff_id); else await renderProjectDetail(ctx.project_id)
+    await refreshPricing(ctx.project_id)
     // 登録済みのシフトは再適用するまで変わらないので、続けて再適用するかを確かめる（変わる件数と金額は次の画面で確認できる）
-    if (confirm('登録済みのシフトの金額は、まだ変わっていません。今後のシフトに単価ルールを再適用しますか？（次の画面で、変わる件数と金額を確認できます）'))
-      repriceProject(ctx.staff_id ? null : ctx.project_id, ctx.staff_id || null)
+    if (confirm('登録済みのシフトの金額は、まだ変わっていません。今後のシフトに単価ルールを再適用しますか？（次の画面で、変わる件数と金額を確認できます）')) {
+      // すべての案件に当てるスタッフ別の単価は、そのスタッフのシフトを再適用する
+      if (body.staff_id && body.project_id === null) repriceProject(null, body.staff_id); else repriceProject(ctx.project_id)
+    }
   }
-  window.deleteRule = async function (id, pid, sid) {
+  window.deleteRule = async function (id, pid) {
     if (!confirm('この単価ルールを削除しますか？（登録済みのシフトの金額は変わりません）')) return
-    try { await axios.delete('/api/admin/rate-rules/' + id); toast('削除しました'); if (sid) renderStaffRatePanel(sid); else renderProjectDetail(pid) } catch (e) { toast(errMsg(e)) }
+    try { await axios.delete('/api/admin/rate-rules/' + Number(id)); toast('削除しました'); await refreshPricing(pid) } catch (e) { toast(errMsg(e)) }
   }
 
   // =========================================================
-  // スタッフ詳細: スタッフ別の単価ルール
+  // スタッフ詳細: 支払の参考単価（9204）。スタッフ別の単価ルールは精算画面の「単価の設定」で管理する
   // =========================================================
-  window.renderStaffRatePanel = async function (sid, p) {
-    const host = document.getElementById('staff-rate-panel'); if (!host) return
-    if (p && p.affiliation_type === 'skillsheet_only') { host.innerHTML = ''; return }
-    const { data } = await axios.get('/api/admin/rate-rules?staff_id=' + sid)
-    for (const r of data.rules) RULES.set(r.rule_id, r)
-    host.innerHTML = `<section class="card p-4" id="staff-rate-rules">
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>スタッフ別の単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ・経験者加算など）</span></h3>
-        <div class="flex gap-2">
-          <button class="btn btn-outline text-xs" onclick="repriceProject(null, ${sid})"><i class="fas fa-rotate"></i>今後のシフトに再適用</button>
-          <button class="btn btn-outline text-xs" onclick="openRuleModal({staff_id:${sid}})"><i class="fas fa-plus"></i>追加</button>
-        </div>
+  window.renderStaffReferencePayPanel = function (sid, p) {
+    const host = document.getElementById('staff-reference-pay-panel'); if (!host) return
+    // 他社連携の行（参考単価は所属元だけが見る）・スキルシートのみ・統合済みの人には出さない
+    if (!p || ['linked_external', 'skillsheet_only'].includes(p.affiliation_type) || p.merged_into_staff_id) { host.innerHTML = ''; return }
+    const amount = p.reference_pay_amount == null ? '' : Number(p.reference_pay_amount)
+    host.innerHTML = `<section class="card p-4" id="staff-reference-pay">
+      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>支払の参考単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ・連携先には共有されません）</span></h3>
+      <p class="text-xs text-gray-500 mb-2">参考価格を入力してください。計算には使いません（精算画面で人ごとの単価を決めるときの目安として表示します）</p>
+      <div class="flex gap-2 items-center flex-wrap">
+        <select id="staff-ref-unit" class="inp text-sm w-28" aria-label="参考単価の単位"><option value="daily">日給</option><option value="hourly" ${p.reference_pay_unit === 'hourly' ? 'selected' : ''}>時給</option></select>
+        <input id="staff-ref-amount" type="number" min="0" step="1" class="inp text-sm w-40" value="${amount}" placeholder="例: 12000" aria-label="参考単価（円）">
+        <span class="text-xs text-gray-500">円</span>
+        <button type="button" class="btn btn-primary text-xs" data-action="staffRefPaySave" data-id="${Number(sid)}"><i class="fas fa-floppy-disk"></i>保存</button>
       </div>
-      <div class="space-y-1.5">${data.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
-        <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r)}${ruleMemo(r)}</p></div>
-        <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-sid="${Number(sid)}">編集</button>
-        <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-sid="${Number(sid)}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
-        <button class="text-gray-400 hover:text-red-500" onclick="deleteRule(${r.rule_id}, null, ${sid})"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">スタッフ別の単価はありません（案件・枠の単価を使います）</p>'}</div>
+      <p class="text-[11px] text-gray-400 mt-1">空欄で保存すると消します。実際の単価は、精算画面の「単価の設定」で案件を選び、スタッフ別の単価ルールとして決めます</p>
     </section>`
   }
+  delegate('staffRefPaySave', el => withSubmitLock(el, async () => {
+    const amount = document.getElementById('staff-ref-amount').value.trim()
+    if (amount !== '' && !/^[0-9]+$/.test(amount)) { toast('参考単価は0以上の整数（円）で入力してください'); return }
+    try {
+      await axios.put(`/api/admin/staff/${Number(el.dataset.id)}/reference-pay`, { unit: document.getElementById('staff-ref-unit').value, amount: amount === '' ? null : Number(amount) })
+      toast(amount === '' ? '参考単価を消しました' : '参考単価を保存しました')
+    } catch (e) { toast(errMsg(e, '参考単価を保存できませんでした')) }
+  }))
 
   // =========================================================
   // スタッフ詳細: 今後のシフト・過去の稼働・NG指定（#224 #204）。data は GET /api/admin/staff/:id の結果
