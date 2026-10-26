@@ -5009,10 +5009,10 @@ api.post('/admin/projects', async (c) => {
   const dupMsg = { error: `同じ名前の稼働中の案件「${name}」が既に登録されています`, confirm_duplicate: true }
   if (b.allow_duplicate !== true && await c.env.DB.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active' LIMIT 1`).bind(u.company_id, name).first())
     return c.json(dupMsg, 409)
-  const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
+  const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo, remarks)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
     .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null,
+      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
   const cs = Object.keys(contact.set)
@@ -5069,7 +5069,7 @@ api.put('/admin/projects/:id/photo-required', async (c) => {
 // 案件の文字の項目の長さ（登録・編集で共通）
 const PROJECT_TEXT_LIMITS: [string, string, number][] = [
   ['project_name', '案件名', 100], ['location', '稼働場所', 200], ['requirements', '求められる内容', 2000],
-  ['manual_text', '案件マニュアル・注意事項', 5000], ['memo', 'メモ', 2000],
+  ['manual_text', '案件マニュアル・注意事項', 5000], ['memo', 'メモ', 2000], ['remarks', '備考', 2000],
 ]
 function projectTextError(b: any): string | null {
   for (const [k, label, max] of PROJECT_TEXT_LIMITS) {
@@ -5111,7 +5111,7 @@ api.put('/admin/projects/:id', async (c) => {
     if (!PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
     set.project_type = b.project_type
   }
-  for (const k of ['location', 'requirements', 'manual_text', 'memo']) if (b[k] !== undefined) set[k] = blank(b[k]) ? null : String(b[k]).trim()
+  for (const k of ['location', 'requirements', 'manual_text', 'memo', 'remarks']) if (b[k] !== undefined) set[k] = blank(b[k]) ? null : String(b[k]).trim()
   // 現場責任者の連絡先（#173。任意）。スタッフアプリ・報告用URLの当日のシフトに出す
   const contact = projectSiteContact(b)
   if ('error' in contact) return c.json({ error: contact.error }, 400)

@@ -2136,15 +2136,28 @@ function ruleValuesError(b: any): string | null {
   if (v.bill_rate == null && v.pay_rate == null && !v.bill_transport_type && !v.pay_transport_type) return '単価または交通費ルールを1つ以上入力してください'
   return null
 }
+// インセンティブ（加算額。9203）。記録と表示のためだけの値で、計算には加算後の支払単価（pay_rate）を使う（resolvePrice は見ない）。
+// 0・空欄は「なし」。加算額は支払単価に含まれるので、支払単価がないとき・支払単価より大きいときは受け付けない
+function ruleIncentive(b: any): { value: number | null; error?: string } {
+  const err = rangeError([['インセンティブ（加算額）', b.pay_incentive, 0, MONEY_MAX]])
+  if (err) return { value: null, error: err }
+  const inc = intOrNull(b.pay_incentive)
+  if (!inc) return { value: null }
+  const pay = intOrNull(b.pay_rate)
+  if (pay == null) return { value: null, error: 'インセンティブ（加算額）を入れるときは、支払単価も入力してください' }
+  if (inc > pay) return { value: null, error: 'インセンティブ（加算額）は支払単価以下にしてください' }
+  return { value: inc }
+}
 app.post('/rate-rules', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   const vr = await validateRuleScope(c.env.DB, u, b); if (vr.error) return c.json({ error: vr.error }, 400)
+  const inc = ruleIncentive(b); if (inc.error) return c.json({ error: inc.error }, 400)
   const v = ruleValues(b), s = vr.scope!
   const res = await c.env.DB.prepare(`INSERT INTO rate_rules (company_id, project_id, client_id, site_id, role_name, staff_id, bill_unit_type, bill_rate, pay_unit_type, pay_rate,
-      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, memo, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, memo, valid_from, valid_to, pay_incentive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, s.project_id, s.client_id, s.site_id, s.role_name, s.staff_id,
       v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, b.memo || null,
-      optDate(b.valid_from), optDate(b.valid_to)).run()
+      optDate(b.valid_from), optDate(b.valid_to), inc.value).run()
   return c.json({ ok: true, rule_id: res.meta.last_row_id, client_id: s.client_id })
 })
 app.put('/rate-rules/:id', async (c) => {
@@ -2152,13 +2165,16 @@ app.put('/rate-rules/:id', async (c) => {
   const r = await c.env.DB.prepare('SELECT * FROM rate_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!r) return c.json({ error: 'ルールが見つかりません' }, 404)
   const merged = { ...r, ...b }
+  // 支払単価だけを変えて加算額を送らないとき（加算額のない画面からの編集）は、加算額を外す（支払単価との食い違いを残さない）
+  if (b.pay_rate !== undefined && b.pay_incentive === undefined && intOrNull(b.pay_rate) !== intOrNull(r.pay_rate)) merged.pay_incentive = null
   const vr = await validateRuleScope(c.env.DB, u, merged); if (vr.error) return c.json({ error: vr.error }, 400)
+  const inc = ruleIncentive(merged); if (inc.error) return c.json({ error: inc.error }, 400)
   const v = ruleValues(merged), s = vr.scope!
   await c.env.DB.prepare(`UPDATE rate_rules SET project_id = ?, client_id = ?, site_id = ?, role_name = ?, staff_id = ?, bill_unit_type = ?, bill_rate = ?, pay_unit_type = ?, pay_rate = ?,
-      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, memo = ?, valid_from = ?, valid_to = ? WHERE rule_id = ?`)
+      bill_transport_type = ?, bill_transport_amount = ?, pay_transport_type = ?, pay_transport_amount = ?, memo = ?, valid_from = ?, valid_to = ?, pay_incentive = ? WHERE rule_id = ?`)
     .bind(s.project_id, s.client_id, s.site_id, s.role_name, s.staff_id,
       v.bill_unit_type, v.bill_rate, v.pay_unit_type, v.pay_rate, v.bill_transport_type, v.bill_transport_amount, v.pay_transport_type, v.pay_transport_amount, merged.memo || null,
-      optDate(merged.valid_from), optDate(merged.valid_to), r.rule_id).run()
+      optDate(merged.valid_from), optDate(merged.valid_to), inc.value, r.rule_id).run()
   return c.json({ ok: true })
 })
 app.delete('/rate-rules/:id', async (c) => {
@@ -2187,6 +2203,31 @@ app.get('/projects/:id/price-history', async (c) => {
   const rows = (await c.env.DB.prepare('SELECT * FROM project_price_history WHERE company_id = ? AND project_id = ? ORDER BY valid_to DESC, history_id DESC')
     .bind(u.company_id, p.project_id).all()).results
   return c.json({ price_valid_from: p.price_valid_from || null, history: rows })
+})
+
+// ---------- スタッフの支払の参考単価（9204） ----------
+// 計算には使わない目安。精算画面の「単価の設定」でスタッフ別の単価を決めるときに出す。
+// 他社連携の行（linked_external）は所属元だけが見るため、稼働先では返さず、入力も受け付けない
+const REFERENCE_PAY_UNITS = ['daily', 'hourly']
+app.get('/staff-reference-pay', async (c) => {
+  const u = c.get('user')
+  const rows = (await c.env.DB.prepare(`SELECT staff_id, reference_pay_unit, reference_pay_amount FROM staff_profiles
+    WHERE company_id = ? AND reference_pay_amount IS NOT NULL AND COALESCE(affiliation_type, 'own_employee') != 'linked_external'`).bind(u.company_id).all()).results
+  return c.json({ staff: rows })
+})
+app.put('/staff/:id/reference-pay', async (c) => {
+  const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
+  const sp = await c.env.DB.prepare('SELECT staff_id, affiliation_type FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  if (sp.affiliation_type === 'linked_external') return c.json({ error: '他社から連携したスタッフの参考単価は入力できません（所属元の会社が管理します）' }, 403)
+  const err = rangeError([['参考単価', b.amount, 0, MONEY_MAX]])
+  if (err) return c.json({ error: err }, 400)
+  const amount = intOrNull(b.amount)
+  if (amount != null && !REFERENCE_PAY_UNITS.includes(b.unit)) return c.json({ error: '参考単価の単位（日給・時給）を選んでください' }, 400)
+  const unit = amount == null ? null : b.unit
+  await c.env.DB.prepare('UPDATE staff_profiles SET reference_pay_unit = ?, reference_pay_amount = ? WHERE staff_id = ? AND company_id = ?')
+    .bind(unit, amount, sp.staff_id, u.company_id).run()
+  return c.json({ ok: true, reference_pay_unit: unit, reference_pay_amount: amount })
 })
 
 // 区分・標準単価・交通費ルール・時間の数え方。
