@@ -229,7 +229,56 @@ window.setNavCount = function (tab, n) {
   const total = NAV_TOTAL_TABS.reduce((a, k) => a + (NAV_COUNTS[k] || 0), 0)
   const b = document.getElementById('mobile-todo-badge')
   if (b) { b.textContent = total; b.classList.toggle('hidden', !total) }
+  updateNavGroupCounts()
 }
+
+// 左側のメニューの見出し（#9305。見出しは src/index.tsx の sideNavGroup）。押すと閉じたり開いたりし、閉じた見出しを localStorage に覚える。
+// 今のページがある見出しは開く（覚えた状態は変えない）。閉じた見出しの横には、中の項目の件数（NAV_COUNTS）の合計を出す
+const NAV_COLLAPSED_KEY = 'admin-nav-collapsed'
+function navCollapsedGroups() {
+  try {
+    const v = JSON.parse(localStorage.getItem(NAV_COLLAPSED_KEY) || '[]')
+    return new Set(Array.isArray(v) ? v.map(String) : [])
+  } catch (e) { return new Set() }
+}
+function saveNavCollapsedGroups(set) {
+  try { localStorage.setItem(NAV_COLLAPSED_KEY, JSON.stringify([...set])) } catch (e) { /* 覚えられなくてもメニューは使える */ }
+}
+function setNavGroupOpen(g, open) {
+  g.classList.toggle('collapsed', !open)
+  const head = g.querySelector('.nav-group-head'); if (head) head.setAttribute('aria-expanded', String(open))
+}
+const navGroups = () => document.querySelectorAll('#side-nav .nav-group')
+function updateNavGroupCounts() {
+  navGroups().forEach(g => {
+    const n = [...g.querySelectorAll('.side-link[data-tab]')].reduce((a, el) => a + (NAV_COUNTS[el.dataset.tab] || 0), 0)
+    const b = g.querySelector('.nav-group-count'); if (!b) return
+    b.textContent = n > 99 ? '99+' : String(n)
+    b.classList.toggle('hidden', !n)
+  })
+}
+function openNavGroupOf(tab) {
+  const link = [...document.querySelectorAll('#side-nav .side-link[data-tab]')].find(el => el.dataset.tab === tab)
+  const g = link && link.closest('.nav-group')
+  if (g && g.classList.contains('collapsed')) setNavGroupOpen(g, true)
+}
+// 役割で項目を外したあと、項目が1つもない見出しは出さない
+function hideEmptyNavGroups() {
+  navGroups().forEach(g => g.classList.toggle('hidden', !g.querySelector('.side-link[data-tab]')))
+  document.querySelectorAll('#mobile-nav optgroup').forEach(og => { og.hidden = !og.querySelector('option') })
+}
+;(function initNavGroups() {
+  const collapsed = navCollapsedGroups()
+  navGroups().forEach(g => setNavGroupOpen(g, !collapsed.has(g.dataset.group)))
+})()
+delegate('navGroupToggle', el => {
+  const g = el.closest('.nav-group'); if (!g) return
+  const open = g.classList.contains('collapsed')
+  setNavGroupOpen(g, open)
+  const set = navCollapsedGroups()
+  if (open) set.delete(g.dataset.group); else set.add(g.dataset.group)
+  saveNavCollapsedGroups(set)
+})
 
 // ============ ダッシュボード ============
 // 入店/退店報告の写真添付（会社全体の設定）。ダッシュボードには現在の状態だけを出し、
@@ -2089,6 +2138,8 @@ function applyStaffRequestsBadge(sum) {
   if (!b || !sum) return
   const n = Number(sum.total) || 0
   b.textContent = n > 99 ? '99+' : String(n); b.classList.toggle('hidden', !n)
+  // 閉じた見出し（シフト・勤怠）の合計とスマホのメニューにも出す（#9305）
+  setNavCount('staff-requests', n)
 }
 async function refreshStaffRequestsBadge() {
   try { applyStaffRequestsBadge((await axios.get('/api/admin/staff-requests/summary')).data) } catch (e) { /* 件数が取れなくても画面は使える */ }
@@ -3183,6 +3234,7 @@ function clientBasicHtml(c, editing) {
           <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientBasic"><i class="fas fa-pen"></i>編集</button></h3>
         <dl class="text-sm space-y-2">
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
+          ${clientOrgHtml(c, false)}
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(c.address || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
@@ -3191,10 +3243,8 @@ function clientBasicHtml(c, editing) {
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
         </dl>
         <div class="mt-3 pt-3 border-t border-gray-100">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
           <dl class="text-xs space-y-1.5">
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者役職</dt><dd>${esc(c.representative_title || '-')}</dd></div>
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者フリガナ</dt><dd>${esc(c.representative_kana || '-')}</dd></div>
             <div class="flex"><dt class="w-28 text-gray-400 shrink-0">インボイス番号</dt><dd>${esc(c.invoice_number || '-')}</dd></div>
           </dl>
         </div>`
@@ -3206,6 +3256,7 @@ function clientBasicHtml(c, editing) {
           <div class="flex items-center gap-2"><label for="cl-stream" class="w-28 text-xs text-gray-400 shrink-0">上流/下流</label>
             <select id="cl-stream" class="inp text-xs flex-1"><option value="upstream" ${c.stream_type === 'upstream' ? 'selected' : ''}>上流</option><option value="downstream" ${c.stream_type === 'downstream' ? 'selected' : ''}>下流</option></select></div>
           ${inp('cl-rep-name', '代表者氏名', c.representative_name, 'maxlength="100"')}
+          ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
           ${inp('cl-email', 'メール', c.email, 'type="email"')}
           ${inp('cl-address', '住所', c.address)}
@@ -3215,9 +3266,7 @@ function clientBasicHtml(c, editing) {
           <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
             <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
           <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
-          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
-          ${inp('cl-rep-title', '代表者役職', c.representative_title)}
-          ${inp('cl-rep-kana', '代表者フリガナ', c.representative_kana)}
+          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
           ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
           <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
           <div class="flex gap-2">
@@ -3228,27 +3277,13 @@ function clientBasicHtml(c, editing) {
           <p class="text-[11px] text-gray-400 text-right">二重登録などで作った、案件が1件もないクライアントだけ削除できます</p>
         </div>`
 }
-// 支店・部門（#9103）。会社基本情報と取引の実績の間に出し、会社基本情報と同じく「編集」で入力欄に切り替えて保存する
+// 支店・部門（#9103 #9303）。独立したカードにせず、会社基本情報の中の項目として表示・編集する（保存も会社基本情報と一緒）
 function clientOrgHtml(c, editing) {
-  if (!editing) return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-sitemap text-blue-500 mr-1"></i>支店・部門
-          <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientOrg"><i class="fas fa-pen"></i>編集</button></h3>
-        <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>
-        </dl>`
+  if (!editing) return `<div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>`
   const inp = (id, label, v) => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" maxlength="100" value="${esc(v || '')}"></div>`
-  return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-sitemap text-blue-500 mr-1"></i>支店・部門の編集</h3>
-        <div class="space-y-2">
-          ${inp('cl-branch', '支店', c.branch_name)}
-          ${inp('cl-department', '部門', c.department_name)}
-          <p id="cl-org-error" class="hidden text-xs text-red-600"></p>
-          <div class="flex gap-2">
-            <button type="button" class="btn btn-outline text-xs flex-1" data-action="cancelClientOrg">取り消す</button>
-            <button type="button" class="btn btn-primary text-xs flex-1" data-action="saveClientOrg" data-id="${Number(c.client_id)}">保存</button>
-          </div>
-        </div>`
+  return `${inp('cl-branch', '支店', c.branch_name)}
+          ${inp('cl-department', '部門', c.department_name)}`
 }
 // 取引の実績（#345）: 案件ごとの稼働・売上・日報・インシデントと、6か月の月別推移。終了した案件は折りたたむ
 function clientDealsHtml(data) {
@@ -3313,7 +3348,6 @@ async function renderClientDetail(cid) {
     <div class="grid lg:grid-cols-2 gap-4">
       <div class="space-y-4">
         <section class="card p-4" id="client-basic-info">${clientBasicHtml(c, false)}</section>
-        <section class="card p-4" id="client-org-info">${clientOrgHtml(c, false)}</section>
       </div>
 
       <section class="card p-4">
@@ -3351,22 +3385,6 @@ delegate('clientDetailMonth', async el => {
 delegate('editClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true) })
 delegate('cancelClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, false) })
 delegate('saveClientBasic', el => withSubmitLock(el, () => saveClientBasicInfo(Number(el.dataset.id))))
-delegate('editClientOrg', () => { const box = document.getElementById('client-org-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, true) })
-delegate('cancelClientOrg', () => { const box = document.getElementById('client-org-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, false) })
-// 支店・部門の保存（#9103）。空欄は消す。この欄だけを描き直し、会社基本情報の編集中の入力は消さない
-delegate('saveClientOrg', el => withSubmitLock(el, async () => {
-  const cid = Number(el.dataset.id); const err = document.getElementById('cl-org-error')
-  err.classList.add('hidden')
-  const body = { branch_name: document.getElementById('cl-branch').value.trim(), department_name: document.getElementById('cl-department').value.trim() }
-  try { await axios.put('/api/admin/clients/' + cid, body) } catch (e) {
-    err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
-    err.classList.remove('hidden'); return
-  }
-  toast('支店・部門を保存しました')
-  if (!CLIENT_DETAIL.client || Number(CLIENT_DETAIL.client.client_id) !== cid) return
-  Object.assign(CLIENT_DETAIL.client, { branch_name: body.branch_name || null, department_name: body.department_name || null })
-  const box = document.getElementById('client-org-info'); if (box) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, false)
-}))
 
 // クライアントのNGスタッフ（#204）。シフトボードの候補・割当、応募の承認で警告する
 let CLIENT_NG = { cid: null, list: [] }
@@ -3512,7 +3530,8 @@ window.saveClientBasicInfo = async function (cid) {
       client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
       address: v('cl-address'), client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
-      representative_title: v('cl-rep-title'), representative_kana: v('cl-rep-kana'), invoice_number: v('cl-invoice'),
+      branch_name: v('cl-branch'), department_name: v('cl-department'), invoice_number: v('cl-invoice'),
+      // 代表者役職・代表者フリガナは画面に出さないので送らない（送らない項目は変わらず、これまでのデータは残る。#9304）
     })
   } catch (e) {
     err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
@@ -3520,11 +3539,7 @@ window.saveClientBasicInfo = async function (cid) {
     return
   }
   toast('会社基本情報を保存しました')
-  // 画面を描き直しても、支店・部門の編集中の入力は残す（#9103）
-  const orgDraft = document.getElementById('cl-branch') ? { branch_name: document.getElementById('cl-branch').value, department_name: document.getElementById('cl-department').value } : null
-  try { await renderClientDetail(cid) } catch (e) { showApiError(e, '画面の読み込みに失敗しました'); return }
-  const box = document.getElementById('client-org-info')
-  if (orgDraft && box && CLIENT_DETAIL.client && Number(CLIENT_DETAIL.client.client_id) === Number(cid)) box.innerHTML = clientOrgHtml({ ...CLIENT_DETAIL.client, ...orgDraft }, true)
+  try { await renderClientDetail(cid) } catch (e) { showApiError(e, '画面の読み込みに失敗しました') }
 }
 
 // ============ 社員名簿（自社社員のみ表示） ============
@@ -6066,6 +6081,7 @@ function route() {
   // 仮パスワードのままの間は、パスワードの変更を先に求める（#43 #44）
   if (ME && !ME.mfa_setup_required && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
+  openNavGroupOf(tab)
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
   // 自社の日報テンプレートの作成・編集（#165）
@@ -6228,5 +6244,6 @@ delegate('avbRemind', (el) => {
     document.querySelectorAll('.side-link[data-tab="employees"], #mobile-nav option[value="employees"]').forEach(el => el.remove())
     const st = document.createElement('style'); st.textContent = 'a.btn[href^="#employees/"]{display:none!important}'; document.head.appendChild(st)
   }
+  hideEmptyNavGroups()
   route()
 })()
