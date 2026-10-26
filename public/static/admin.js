@@ -9,7 +9,7 @@ const PTYPE_LABELS = { mobile_shop: '携帯ショップ', electronics: '家電�
 const RISK_BADGE = { low: '<span class="badge badge-green">低</span>', mid: '<span class="badge badge-yellow">中</span>', high: '<span class="badge badge-red">高</span>' }
 
 // スタッフマスタの所属区分（作成ルート）
-const AFF_TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
+const AFF_TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
 const AFF_TYPE_BADGE = { own_employee: 'badge-green', daily_worker: 'badge-yellow', freelance: 'badge-yellow', linked_external: 'badge-blue', partner_manual: 'badge-purple', skillsheet_only: 'badge-gray' }
 function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${esc(AFF_TYPE_LABEL[t] || t)}</span>` }
 
@@ -904,7 +904,7 @@ const OP_LOG_VALUE = {
   bill_unit_type: { daily: '日額', hourly: '時給' }, pay_unit_type: { daily: '日額', hourly: '時給' },
   bill_transport_type: { actual: '実費', fixed: '定額', included: '単価に含む' },
   pay_transport_type: { actual: '実費', capped: '上限あり', fixed: '定額', none: '支給なし' },
-  payee_type: { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' },
+  payee_type: { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' },
   actual_source: { report: '報告', manual: '手入力' },
   cancel_reason: { staff: 'スタッフ都合の欠勤', client: 'クライアント都合の中止' },
   price_locked: { 0: 'なし', 1: 'あり' },
@@ -1077,7 +1077,7 @@ function drawStaffTable(filter) {
       <div class="flex gap-2 flex-wrap">
         <button class="btn btn-outline" data-action="reloadStaffList" title="最新の情報に読み直す" aria-label="読み直す"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
-        <a class="btn btn-outline" href="#partners" title="取引先（Field OS 未契約の所属元）の一覧・連絡先の編集・統合（#161）"><i class="fas fa-building"></i>取引先</a>
+        <a class="btn btn-outline" href="#partners" title="協力会社（Field OS 未契約の所属元）の一覧・連絡先の編集・統合（#161）"><i class="fas fa-building"></i>協力会社</a>
         <button class="btn btn-outline" onclick="showQuickRegister && showQuickRegister()"><i class="fas fa-bolt"></i>仮登録（氏名・電話のみ）</button>
         <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
       </div>
@@ -1386,7 +1386,7 @@ function partnerSelectHtml(affData, current) {
   if (current && !names.includes(current)) names.unshift(current)
   // 所属会社が空のときは空欄を選んだままにする（保存で先頭の取引先に変わらないように）
   return `<select id="staff-affiliation" class="inp text-xs">${current ? '' : '<option value="" selected>（選択してください）</option>'}${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
-    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">取引先の管理（登録・連絡先の編集・統合）</a>`
+    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">協力会社の管理（登録・連絡先の編集・統合）</a>`
 }
 function staffBasicCardHtml(sid, p, affData, editing) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
@@ -3339,6 +3339,7 @@ async function renderClientDetail(cid) {
   renderClientNgPanel(cid)
   // 開催場所（public/static/shift-board.js）
   if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
+  if (window.renderClientPartnerPanel) renderClientPartnerPanel(cid) // 協力会社としての支払（public/static/roster.js。#9302）
 }
 // 月を切り替えたら、取引の実績の欄だけを取り直す（編集中の入力を消さない）
 delegate('clientDetailMonth', async el => {

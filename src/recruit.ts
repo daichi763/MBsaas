@@ -1079,7 +1079,7 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
       if (type === 'freelance') affiliation = '個人事業主'
       if (type === 'partner_manual') {
         const p = b.partner_affiliation_id ? await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any : null
-        if (!p) return c.json({ error: '取引先を選択してください' }, 400)
+        if (!p) return c.json({ error: '協力会社を選択してください' }, 400)
         partnerId = p.affiliation_id; affiliation = p.affiliation_name
       }
       newStaff = { type, affiliation, partnerId }
