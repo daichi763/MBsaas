@@ -137,6 +137,9 @@ const staticJs = async (name) => (await (await fetch(`${BASE}/static/${name}`)).
   const parses = (code) => { try { new vm.Script(code); return true } catch (e) { return String(e) } }
   ok('staff-attendance.js が構文として正しい', parses(sa) === true, parses(sa))
   ok('settlement.js が構文として正しい', parses(st) === true, parses(st))
+  // 前の即時関数の })() の直後に ( で始まる即時関数が続くと、呼び出しとして扱われて後ろの画面（#pay）が動かない（構文は正しいので上では分からない）
+  const joined = (code) => /\}\)\(\)[ \t]*\n(?:[ \t]*\/\/[^\n]*\n|[ \t]*\n)*[ \t]*\(/.test(code)
+  ok('staff-attendance.js・settlement.js で即時関数どうしが ; なしでつながっていない', !joined(sa) && !joined(st))
   ok('#273 スタッフ: 申請の画面に写真の欄（pay-receipt-file）があり、申請の後に写真を送る', sa.includes('id="pay-receipt-file"') && /uploadReceipt\(res\.request_id/.test(sa) && sa.includes("fd.append('photo', blob, 'receipt.jpg')"))
   ok('#273 スタッフ: 一覧から写真を付ける・見る・差し替える', ['payReceiptAttach', 'payReceiptView', 'payReceiptClear'].every(a => sa.includes(`delegate('${a}'`)) && sa.includes('差し替える'))
   ok('#273 スタッフ: 写真は compressImage で縮小してから送る', /compressImage\(file\)[\s\S]{0,400}uploadReceipt|blob = await compressImage\(file\)/.test(sa))
