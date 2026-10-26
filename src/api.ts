@@ -13,6 +13,7 @@ import { OFFBOARDING_TABLES, OFFBOARDING_GRACE_DAYS, OFFBOARDING_GRACE_MIN, OFFB
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
+import { applyRateOverride, inheritView, inheritedAdjustStmt, loadPricingData, parsePriceSource, rateOverrideOf } from './shift-board'
 import boardApi from './board'
 import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
 import { shiftTotals, staffingGaps } from './shift-board'
@@ -3707,7 +3708,7 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
     if (conflict) return conflict
     // 所属会社は登録済みの取引先から選ぶ（#161。自由入力の名前を取引先として自動で登録すると、表記ゆれが別の支払先になるため）
     const known = await c.env.DB.prepare('SELECT 1 FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ? AND merged_into_id IS NULL').bind(u.company_id, body.affiliation).first()
-    if (!known) return `取引先「${body.affiliation}」は登録されていません。スタッフマスタの「取引先の管理」で登録してから選んでください`
+    if (!known) return `協力会社「${body.affiliation}」は登録されていません。スタッフマスタの「協力会社の管理」で登録してから選んでください`
   }
   return null
 }
@@ -4512,7 +4513,7 @@ api.post('/admin/staff-affiliations', async (c) => {
   const conflict = await partnerNameConflict(c.env.DB, u.company_id, affiliation_name)
   if (conflict) return c.json({ error: conflict }, 400)
   // 自社名は取引先にしない（#262）
-  if (String(affiliation_name).trim() === await ownCompanyName(c.env.DB, u.company_id)) return c.json({ error: '自社名は取引先として登録できません' }, 400)
+  if (String(affiliation_name).trim() === await ownCompanyName(c.env.DB, u.company_id)) return c.json({ error: '自社名は協力会社として登録できません' }, 400)
   await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)')
     .bind(u.company_id, affiliation_name).run()
   return c.json({ ok: true })
@@ -5278,6 +5279,9 @@ api.post('/admin/shifts', async (c) => {
   // 付けずに呼んだ場合は登録し、警告を応答に含める（既存の呼び出しの動きを変えないため）
   const chk = await assertAssignable(c.env.DB, { companyId: u.company_id, project: proj, slot: null, staffId: Number(b.staff_id), workDate: b.work_date, start, end })
   if (chk.error) return c.json({ error: chk.error }, chk.status)
+  // 登録の画面で変えた単価（請求・支払の単位と単価。9306）。計算した単価と違えば手動変更として入れる
+  const ov = rateOverrideOf(b.price)
+  if (ov.error) return c.json({ error: ov.error }, 400)
   if (chk.warnings.length && b.confirm_warnings === true && !b.force) return c.json({ warnings: chk.warnings, need_force: true }, 409)
   const ins = await c.env.DB.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -5285,9 +5289,16 @@ api.post('/admin/shifts', async (c) => {
       b.location || proj?.location || '', b.role || '販売スタッフ', b.unit_price ?? proj?.unit_price ?? 0, fee,
       b.status || 'confirmed', u.user_id, b.memo ?? null).run()
   // 単価ルール（請求/支払/交通費）を適用。単価を明示指定した場合は請求をその値で固定する
+  // 直近のシフトの単価（常勤: 同じスタッフ×同じ案件、スポット: 同じ案件）を引き継ぐ（9306。inherit: false なら単価の設定のまま）
   const sid = ins.meta.last_row_id
+  let inherited: ReturnType<typeof inheritView> = null
   if (sid) {
-    await applyPricingToShift(c.env.DB, u.company_id, sid)
+    const pdata = await loadPricingData(c.env.DB, u.company_id, [Number(proj.project_id)])
+    const used = await applyPricingToShift(c.env.DB, u.company_id, sid, { data: pdata, inherit: b.inherit === false ? null : 'fresh' })
+    const adjStmt = inheritedAdjustStmt(c.env.DB, u.company_id, sid, used)
+    if (adjStmt) await adjStmt.run()
+    inherited = inheritView(used)
+    if (b.unit_price == null) await applyRateOverride(c.env.DB, u.company_id, sid, ov.value, pdata)
     if (b.unit_price != null) await c.env.DB.prepare("UPDATE shifts SET unit_price = ?, bill_rate = ?, bill_unit_type = 'daily', bill_qty = 1, price_locked = 1 WHERE shift_id = ?").bind(b.unit_price, b.unit_price, sid).run()
     // 操作履歴（#159）
     const op = opLog(c.env.DB, u, 'create')
@@ -5296,7 +5307,8 @@ api.post('/admin/shifts', async (c) => {
     // 本人に知らせる（#155）
     await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(c.env.DB, u.company_id, [sid]))
   }
-  return c.json({ ok: true, shift_id: sid, warnings: chk.warnings })
+  // inherited: 引き継いだ単価（引き継ぎ元のシフトの日付と金額）。引き継がなかったときは null
+  return c.json({ ok: true, shift_id: sid, warnings: chk.warnings, inherited })
 })
 
 api.put('/admin/shifts/:id', async (c) => {
@@ -5396,7 +5408,9 @@ api.put('/admin/shifts/:id', async (c) => {
   try {
     cancelled = staffChanged ? await notifyAutoCancelled(c, sid, cancelToken) : 0
     // 時間・スタッフを変えた場合は単価（時給の数量・スタッフ別単価・支払先）を再計算（手動変更したシフトは除く）
-    if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')))
+    // 直近のシフトから単価を引き継いだシフトの担当者を替えたときは、新しい担当者で引き継ぎ元を探し直す（9306）
+    if (b.start_time != null || b.end_time != null || b.staff_id != null) await applyPricingToShift(c.env.DB, u.company_id, Number(c.req.param('id')),
+      { inherit: staffChanged && parsePriceSource(cur.price_source).inherit ? 'fresh' : undefined })
   } finally { await finishLog(op) } // 途中で失敗しても変更の後の値を入れる（入れないと削除の履歴に見える）
   // 欠勤にしたシフトの承認待ちは承認できない（却下が必要）ので、件数を返す（#70）
   const pendingAbsent = b.status === 'absent' && cur.status !== 'absent' ? await pendingCorrectionCount(db, sid) : 0

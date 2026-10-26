@@ -6,7 +6,7 @@
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const WD = ['日', '月', '火', '水', '木', '金', '土']
   const fmt = (d) => { const x = dayjs(d); return `${x.format('M/D')}(${WD[x.day()]})` }
-  const TYPE_LABEL = { daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', own_employee: '自社雇用' }
+  const TYPE_LABEL = { daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属', own_employee: '自社雇用' }
   // released: 承認後にシフトが削除・欠勤・差し替え・移動になった / slot_removed: 応募の後に枠・役割が削除された /
   // expired: 未対応のまま勤務日を過ぎた（src/recruit.ts）
   const ITEM_LABEL = { pending: '未対応', processing: '処理中', approved: '承認', rejected: '見送り', cancelled: '取り下げ', released: 'シフト解除', slot_removed: '枠の削除', expired: '期限切れ' }
@@ -520,7 +520,7 @@
           <span class="flex-1">仮登録を作成する（氏名・電話番号）
             <select id="ra-type" class="inp text-sm mt-1" onchange="document.getElementById('ra-partner-box').classList.toggle('hidden', this.value!=='partner_manual')">
               ${Object.entries(TYPE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
-            <span id="ra-partner-box" class="hidden block mt-1"><select id="ra-partner" class="inp text-sm"><option value="">取引先を選択</option>${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}</select></span>
+            <span id="ra-partner-box" class="hidden block mt-1"><select id="ra-partner" class="inp text-sm"><option value="">協力会社を選択</option>${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}</select></span>
             <span class="block text-[11px] text-gray-400 mt-1">ログインは発行しません。報告用URL・代理入力で勤怠を記録できます。後からスタッフ詳細で本登録できます</span></span></label>
       </div>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>

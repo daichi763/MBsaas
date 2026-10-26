@@ -9,7 +9,7 @@ const PTYPE_LABELS = { mobile_shop: '携帯ショップ', electronics: '家電�
 const RISK_BADGE = { low: '<span class="badge badge-green">低</span>', mid: '<span class="badge badge-yellow">中</span>', high: '<span class="badge badge-red">高</span>' }
 
 // スタッフマスタの所属区分（作成ルート）
-const AFF_TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
+const AFF_TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
 const AFF_TYPE_BADGE = { own_employee: 'badge-green', daily_worker: 'badge-yellow', freelance: 'badge-yellow', linked_external: 'badge-blue', partner_manual: 'badge-purple', skillsheet_only: 'badge-gray' }
 function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${esc(AFF_TYPE_LABEL[t] || t)}</span>` }
 
@@ -229,7 +229,56 @@ window.setNavCount = function (tab, n) {
   const total = NAV_TOTAL_TABS.reduce((a, k) => a + (NAV_COUNTS[k] || 0), 0)
   const b = document.getElementById('mobile-todo-badge')
   if (b) { b.textContent = total; b.classList.toggle('hidden', !total) }
+  updateNavGroupCounts()
 }
+
+// 左側のメニューの見出し（#9305。見出しは src/index.tsx の sideNavGroup）。押すと閉じたり開いたりし、閉じた見出しを localStorage に覚える。
+// 今のページがある見出しは開く（覚えた状態は変えない）。閉じた見出しの横には、中の項目の件数（NAV_COUNTS）の合計を出す
+const NAV_COLLAPSED_KEY = 'admin-nav-collapsed'
+function navCollapsedGroups() {
+  try {
+    const v = JSON.parse(localStorage.getItem(NAV_COLLAPSED_KEY) || '[]')
+    return new Set(Array.isArray(v) ? v.map(String) : [])
+  } catch (e) { return new Set() }
+}
+function saveNavCollapsedGroups(set) {
+  try { localStorage.setItem(NAV_COLLAPSED_KEY, JSON.stringify([...set])) } catch (e) { /* 覚えられなくてもメニューは使える */ }
+}
+function setNavGroupOpen(g, open) {
+  g.classList.toggle('collapsed', !open)
+  const head = g.querySelector('.nav-group-head'); if (head) head.setAttribute('aria-expanded', String(open))
+}
+const navGroups = () => document.querySelectorAll('#side-nav .nav-group')
+function updateNavGroupCounts() {
+  navGroups().forEach(g => {
+    const n = [...g.querySelectorAll('.side-link[data-tab]')].reduce((a, el) => a + (NAV_COUNTS[el.dataset.tab] || 0), 0)
+    const b = g.querySelector('.nav-group-count'); if (!b) return
+    b.textContent = n > 99 ? '99+' : String(n)
+    b.classList.toggle('hidden', !n)
+  })
+}
+function openNavGroupOf(tab) {
+  const link = [...document.querySelectorAll('#side-nav .side-link[data-tab]')].find(el => el.dataset.tab === tab)
+  const g = link && link.closest('.nav-group')
+  if (g && g.classList.contains('collapsed')) setNavGroupOpen(g, true)
+}
+// 役割で項目を外したあと、項目が1つもない見出しは出さない
+function hideEmptyNavGroups() {
+  navGroups().forEach(g => g.classList.toggle('hidden', !g.querySelector('.side-link[data-tab]')))
+  document.querySelectorAll('#mobile-nav optgroup').forEach(og => { og.hidden = !og.querySelector('option') })
+}
+;(function initNavGroups() {
+  const collapsed = navCollapsedGroups()
+  navGroups().forEach(g => setNavGroupOpen(g, !collapsed.has(g.dataset.group)))
+})()
+delegate('navGroupToggle', el => {
+  const g = el.closest('.nav-group'); if (!g) return
+  const open = g.classList.contains('collapsed')
+  setNavGroupOpen(g, open)
+  const set = navCollapsedGroups()
+  if (open) set.delete(g.dataset.group); else set.add(g.dataset.group)
+  saveNavCollapsedGroups(set)
+})
 
 // ============ ダッシュボード ============
 // 入店/退店報告の写真添付（会社全体の設定）。ダッシュボードには現在の状態だけを出し、
@@ -904,7 +953,7 @@ const OP_LOG_VALUE = {
   bill_unit_type: { daily: '日額', hourly: '時給' }, pay_unit_type: { daily: '日額', hourly: '時給' },
   bill_transport_type: { actual: '実費', fixed: '定額', included: '単価に含む' },
   pay_transport_type: { actual: '実費', capped: '上限あり', fixed: '定額', none: '支給なし' },
-  payee_type: { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' },
+  payee_type: { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' },
   actual_source: { report: '報告', manual: '手入力' },
   cancel_reason: { staff: 'スタッフ都合の欠勤', client: 'クライアント都合の中止' },
   price_locked: { 0: 'なし', 1: 'あり' },
@@ -1077,7 +1126,7 @@ function drawStaffTable(filter) {
       <div class="flex gap-2 flex-wrap">
         <button class="btn btn-outline" data-action="reloadStaffList" title="最新の情報に読み直す" aria-label="読み直す"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
-        <a class="btn btn-outline" href="#partners" title="取引先（Field OS 未契約の所属元）の一覧・連絡先の編集・統合（#161）"><i class="fas fa-building"></i>取引先</a>
+        <a class="btn btn-outline" href="#partners" title="協力会社（Field OS 未契約の所属元）の一覧・連絡先の編集・統合（#161）"><i class="fas fa-building"></i>協力会社</a>
         <button class="btn btn-outline" onclick="showQuickRegister && showQuickRegister()"><i class="fas fa-bolt"></i>仮登録（氏名・電話のみ）</button>
         <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
       </div>
@@ -1386,7 +1435,7 @@ function partnerSelectHtml(affData, current) {
   if (current && !names.includes(current)) names.unshift(current)
   // 所属会社が空のときは空欄を選んだままにする（保存で先頭の取引先に変わらないように）
   return `<select id="staff-affiliation" class="inp text-xs">${current ? '' : '<option value="" selected>（選択してください）</option>'}${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
-    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">取引先の管理（登録・連絡先の編集・統合）</a>`
+    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">協力会社の管理（登録・連絡先の編集・統合）</a>`
 }
 function staffBasicCardHtml(sid, p, affData, editing) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
@@ -2089,6 +2138,8 @@ function applyStaffRequestsBadge(sum) {
   if (!b || !sum) return
   const n = Number(sum.total) || 0
   b.textContent = n > 99 ? '99+' : String(n); b.classList.toggle('hidden', !n)
+  // 閉じた見出し（シフト・勤怠）の合計とスマホのメニューにも出す（#9305）
+  setNavCount('staff-requests', n)
 }
 async function refreshStaffRequestsBadge() {
   try { applyStaffRequestsBadge((await axios.get('/api/admin/staff-requests/summary')).data) } catch (e) { /* 件数が取れなくても画面は使える */ }
@@ -3183,6 +3234,7 @@ function clientBasicHtml(c, editing) {
           <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientBasic"><i class="fas fa-pen"></i>編集</button></h3>
         <dl class="text-sm space-y-2">
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
+          ${clientOrgHtml(c, false)}
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(c.address || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
@@ -3191,10 +3243,8 @@ function clientBasicHtml(c, editing) {
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
         </dl>
         <div class="mt-3 pt-3 border-t border-gray-100">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
+          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
           <dl class="text-xs space-y-1.5">
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者役職</dt><dd>${esc(c.representative_title || '-')}</dd></div>
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">代表者フリガナ</dt><dd>${esc(c.representative_kana || '-')}</dd></div>
             <div class="flex"><dt class="w-28 text-gray-400 shrink-0">インボイス番号</dt><dd>${esc(c.invoice_number || '-')}</dd></div>
           </dl>
         </div>`
@@ -3206,6 +3256,7 @@ function clientBasicHtml(c, editing) {
           <div class="flex items-center gap-2"><label for="cl-stream" class="w-28 text-xs text-gray-400 shrink-0">上流/下流</label>
             <select id="cl-stream" class="inp text-xs flex-1"><option value="upstream" ${c.stream_type === 'upstream' ? 'selected' : ''}>上流</option><option value="downstream" ${c.stream_type === 'downstream' ? 'selected' : ''}>下流</option></select></div>
           ${inp('cl-rep-name', '代表者氏名', c.representative_name, 'maxlength="100"')}
+          ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
           ${inp('cl-email', 'メール', c.email, 'type="email"')}
           ${inp('cl-address', '住所', c.address)}
@@ -3215,9 +3266,7 @@ function clientBasicHtml(c, editing) {
           <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
             <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
           <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
-          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-building text-gray-400 mr-1"></i>代表者・インボイス情報</p>
-          ${inp('cl-rep-title', '代表者役職', c.representative_title)}
-          ${inp('cl-rep-kana', '代表者フリガナ', c.representative_kana)}
+          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
           ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
           <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
           <div class="flex gap-2">
@@ -3228,27 +3277,13 @@ function clientBasicHtml(c, editing) {
           <p class="text-[11px] text-gray-400 text-right">二重登録などで作った、案件が1件もないクライアントだけ削除できます</p>
         </div>`
 }
-// 支店・部門（#9103）。会社基本情報と取引の実績の間に出し、会社基本情報と同じく「編集」で入力欄に切り替えて保存する
+// 支店・部門（#9103 #9303）。独立したカードにせず、会社基本情報の中の項目として表示・編集する（保存も会社基本情報と一緒）
 function clientOrgHtml(c, editing) {
-  if (!editing) return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-sitemap text-blue-500 mr-1"></i>支店・部門
-          <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientOrg"><i class="fas fa-pen"></i>編集</button></h3>
-        <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>
-        </dl>`
+  if (!editing) return `<div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>`
   const inp = (id, label, v) => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" maxlength="100" value="${esc(v || '')}"></div>`
-  return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-sitemap text-blue-500 mr-1"></i>支店・部門の編集</h3>
-        <div class="space-y-2">
-          ${inp('cl-branch', '支店', c.branch_name)}
-          ${inp('cl-department', '部門', c.department_name)}
-          <p id="cl-org-error" class="hidden text-xs text-red-600"></p>
-          <div class="flex gap-2">
-            <button type="button" class="btn btn-outline text-xs flex-1" data-action="cancelClientOrg">取り消す</button>
-            <button type="button" class="btn btn-primary text-xs flex-1" data-action="saveClientOrg" data-id="${Number(c.client_id)}">保存</button>
-          </div>
-        </div>`
+  return `${inp('cl-branch', '支店', c.branch_name)}
+          ${inp('cl-department', '部門', c.department_name)}`
 }
 // 取引の実績（#345）: 案件ごとの稼働・売上・日報・インシデントと、6か月の月別推移。終了した案件は折りたたむ
 function clientDealsHtml(data) {
@@ -3313,7 +3348,6 @@ async function renderClientDetail(cid) {
     <div class="grid lg:grid-cols-2 gap-4">
       <div class="space-y-4">
         <section class="card p-4" id="client-basic-info">${clientBasicHtml(c, false)}</section>
-        <section class="card p-4" id="client-org-info">${clientOrgHtml(c, false)}</section>
       </div>
 
       <section class="card p-4">
@@ -3339,6 +3373,7 @@ async function renderClientDetail(cid) {
   renderClientNgPanel(cid)
   // 開催場所（public/static/shift-board.js）
   if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
+  if (window.renderClientPartnerPanel) renderClientPartnerPanel(cid) // 協力会社としての支払（public/static/roster.js。#9302）
 }
 // 月を切り替えたら、取引の実績の欄だけを取り直す（編集中の入力を消さない）
 delegate('clientDetailMonth', async el => {
@@ -3351,22 +3386,6 @@ delegate('clientDetailMonth', async el => {
 delegate('editClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true) })
 delegate('cancelClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, false) })
 delegate('saveClientBasic', el => withSubmitLock(el, () => saveClientBasicInfo(Number(el.dataset.id))))
-delegate('editClientOrg', () => { const box = document.getElementById('client-org-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, true) })
-delegate('cancelClientOrg', () => { const box = document.getElementById('client-org-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, false) })
-// 支店・部門の保存（#9103）。空欄は消す。この欄だけを描き直し、会社基本情報の編集中の入力は消さない
-delegate('saveClientOrg', el => withSubmitLock(el, async () => {
-  const cid = Number(el.dataset.id); const err = document.getElementById('cl-org-error')
-  err.classList.add('hidden')
-  const body = { branch_name: document.getElementById('cl-branch').value.trim(), department_name: document.getElementById('cl-department').value.trim() }
-  try { await axios.put('/api/admin/clients/' + cid, body) } catch (e) {
-    err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
-    err.classList.remove('hidden'); return
-  }
-  toast('支店・部門を保存しました')
-  if (!CLIENT_DETAIL.client || Number(CLIENT_DETAIL.client.client_id) !== cid) return
-  Object.assign(CLIENT_DETAIL.client, { branch_name: body.branch_name || null, department_name: body.department_name || null })
-  const box = document.getElementById('client-org-info'); if (box) box.innerHTML = clientOrgHtml(CLIENT_DETAIL.client, false)
-}))
 
 // クライアントのNGスタッフ（#204）。シフトボードの候補・割当、応募の承認で警告する
 let CLIENT_NG = { cid: null, list: [] }
@@ -3512,7 +3531,8 @@ window.saveClientBasicInfo = async function (cid) {
       client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
       address: v('cl-address'), client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
-      representative_title: v('cl-rep-title'), representative_kana: v('cl-rep-kana'), invoice_number: v('cl-invoice'),
+      branch_name: v('cl-branch'), department_name: v('cl-department'), invoice_number: v('cl-invoice'),
+      // 代表者役職・代表者フリガナは画面に出さないので送らない（送らない項目は変わらず、これまでのデータは残る。#9304）
     })
   } catch (e) {
     err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
@@ -3520,11 +3540,7 @@ window.saveClientBasicInfo = async function (cid) {
     return
   }
   toast('会社基本情報を保存しました')
-  // 画面を描き直しても、支店・部門の編集中の入力は残す（#9103）
-  const orgDraft = document.getElementById('cl-branch') ? { branch_name: document.getElementById('cl-branch').value, department_name: document.getElementById('cl-department').value } : null
-  try { await renderClientDetail(cid) } catch (e) { showApiError(e, '画面の読み込みに失敗しました'); return }
-  const box = document.getElementById('client-org-info')
-  if (orgDraft && box && CLIENT_DETAIL.client && Number(CLIENT_DETAIL.client.client_id) === Number(cid)) box.innerHTML = clientOrgHtml({ ...CLIENT_DETAIL.client, ...orgDraft }, true)
+  try { await renderClientDetail(cid) } catch (e) { showApiError(e, '画面の読み込みに失敗しました') }
 }
 
 // ============ 社員名簿（自社社員のみ表示） ============
@@ -3994,9 +4010,72 @@ window.showAddShift = async function (defaultDate) {
         <div><label class="text-sm text-gray-600 block mb-1">交通費（実費）</label><input id="sh-fee" type="number" min="0" class="inp" placeholder="空欄なら0円">
           <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
+      <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
       <button class="btn btn-primary w-full" data-action="addShift">登録する</button>
     </div>`)
   addShiftFeeHint()
+  // スタッフ・案件・日付・時間を変えたら、単価の見込み（直近のシフトからの引き継ぎ）を読み直す（9306）
+  ADD_SHIFT_PRICE = { inherit: true, base: null, preview: null, seq: 0 }
+  for (const id of ['sh-staff', 'sh-project', 'sh-date', 'sh-start', 'sh-end']) document.getElementById(id).addEventListener('change', () => { ADD_SHIFT_PRICE.inherit = true; addShiftPriceLoad() })
+  addShiftPriceLoad()
+}
+// ---------- シフト登録の単価（9306） ----------
+// 直近のシフト（常勤: 同じスタッフ×同じ案件、スポット: 同じ案件）の単価を引き継ぐ。引き継ぐときはその旨と前回の日付を出し、その場で単価を変えられる
+let ADD_SHIFT_PRICE = { inherit: true, base: null, preview: null, seq: 0 }
+const ADD_SHIFT_UNIT = { daily: '日額', hourly: '時給' }
+async function addShiftPriceLoad() {
+  const box = document.getElementById('sh-price'); if (!box) return
+  const v = (id) => document.getElementById(id).value
+  if (!v('sh-date') || !v('sh-project')) { box.innerHTML = '<p class="text-xs text-gray-400">日付と案件を選ぶと、単価を表示します</p>'; ADD_SHIFT_PRICE.base = null; ADD_SHIFT_PRICE.preview = null; return }
+  const seq = ++ADD_SHIFT_PRICE.seq
+  const qs = new URLSearchParams({ project_id: v('sh-project'), work_date: v('sh-date'), staff_ids: v('sh-staff') || '', start_time: v('sh-start'), end_time: v('sh-end') })
+  try {
+    const { data } = await axios.get('/api/admin/shifts/price-preview?' + qs.toString())
+    if (seq !== ADD_SHIFT_PRICE.seq) return // 後から読み直したものを優先する
+    ADD_SHIFT_PRICE.preview = (data.items || [])[0] || null
+    addShiftPriceRender()
+  } catch (e) {
+    if (seq !== ADD_SHIFT_PRICE.seq) return
+    ADD_SHIFT_PRICE.preview = null; ADD_SHIFT_PRICE.base = null
+    box.innerHTML = '<p class="text-xs text-gray-400">単価を確認できませんでした（登録すると単価の設定から計算します）</p>'
+  }
+}
+function addShiftPriceRender() {
+  const box = document.getElementById('sh-price'); if (!box) return
+  const pv = ADD_SHIFT_PRICE.preview
+  if (!pv) { box.innerHTML = '<p class="text-xs text-gray-400">登録すると単価の設定から計算します</p>'; ADD_SHIFT_PRICE.base = null; return }
+  const ih = ADD_SHIFT_PRICE.inherit ? pv.inherited : null
+  const p = ih ? pv.price : pv.settings
+  ADD_SHIFT_PRICE.base = { bill_unit_type: p.bill_unit_type, bill_rate: p.bill_rate, pay_unit_type: p.pay_unit_type, pay_rate: p.pay_rate }
+  const unitSel = (id, val) => `<select id="${id}" class="inp text-sm">${Object.entries(ADD_SHIFT_UNIT).map(([k, l]) => `<option value="${k}" ${val === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`
+  const tp = (t, a, labels) => `${labels[t] || '実費'}${t === 'fixed' || t === 'capped' ? ' ' + yen(a) : ''}`
+  const adj = ih && (Number(ih.bill_adjust || 0) || Number(ih.pay_adjust || 0))
+    ? `<p class="text-xs text-gray-600 mt-1">調整も引き継ぎます: 請求 ${yen(ih.bill_adjust)} ／ 支払 ${yen(ih.pay_adjust)}${ih.adjust_note ? `（${esc(ih.adjust_note)}）` : ''}</p>` : ''
+  box.innerHTML = `
+    <div class="flex items-center justify-between gap-2 mb-2"><p class="font-bold text-gray-700 text-sm"><i class="fas fa-yen-sign mr-1"></i>単価</p>
+      ${pv.inherited ? (ih ? '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="addShiftUseSettings">単価の設定を使う</button>'
+        : '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="addShiftUseInherit">前回の単価に戻す</button>') : ''}</div>
+    ${ih ? `<p id="sh-price-note" class="text-xs text-blue-700 bg-blue-50 rounded p-2 mb-2"><i class="fas fa-clock-rotate-left mr-1"></i>${esc(ih.label)}の単価を引き継いでいます</p>`
+      : `<p id="sh-price-note" class="text-xs text-gray-500 mb-2">単価の設定（案件の標準・単価ルール）から計算します${pv.inherited ? '（前回の単価は使いません）' : ''}</p>`}
+    <div class="grid grid-cols-2 gap-2">
+      <label class="text-xs text-gray-600">請求${unitSel('sh-bill-unit', p.bill_unit_type)}</label>
+      <label class="text-xs text-gray-600">請求単価<input id="sh-bill-rate" type="number" min="0" class="inp text-sm" value="${p.bill_rate ?? ''}"></label>
+      <label class="text-xs text-gray-600">支払${unitSel('sh-pay-unit', p.pay_unit_type)}</label>
+      <label class="text-xs text-gray-600">支払単価<input id="sh-pay-rate" type="number" min="0" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
+    </div>
+    <p class="text-xs text-gray-500 mt-2">交通費: 請求 ${tp(p.bill_transport_type, p.bill_transport_amount, BILL_TRANSPORT_LABEL)} ／ 支払 ${tp(p.pay_transport_type, p.pay_transport_amount, PAY_TRANSPORT_LABEL)}</p>
+    ${adj}
+    <p class="text-[11px] text-gray-400 mt-1">単価を変えて登録すると、このシフトの金額は手動変更になります（次の登録では、この単価を引き継ぎます）</p>`
+}
+delegate('addShiftUseSettings', () => { ADD_SHIFT_PRICE.inherit = false; addShiftPriceRender() })
+delegate('addShiftUseInherit', () => { ADD_SHIFT_PRICE.inherit = true; addShiftPriceRender() })
+// 画面で変えた単価（見込みと違うときだけ送る）
+function addShiftPriceInput() {
+  const base = ADD_SHIFT_PRICE.base; if (!base || !document.getElementById('sh-bill-rate')) return null
+  const num = (id) => { const x = document.getElementById(id).value; return x === '' ? null : Number(x) }
+  const cur = { bill_unit_type: document.getElementById('sh-bill-unit').value, bill_rate: num('sh-bill-rate'), pay_unit_type: document.getElementById('sh-pay-unit').value, pay_rate: num('sh-pay-rate') }
+  const changed = cur.bill_unit_type !== base.bill_unit_type || cur.pay_unit_type !== base.pay_unit_type || cur.bill_rate !== (base.bill_rate ?? null) || cur.pay_rate !== (base.pay_rate ?? null)
+  return changed ? cur : null
 }
 // 案件の交通費ルール（実費の入力が請求・支払にどう効くか）を入力欄の下に出す（#94）
 let addShiftProjects = []
@@ -4017,19 +4096,24 @@ window.addShift = async function (force) {
   const staffId = document.getElementById('sh-staff').value
   if (!staffId) { toast('スタッフを選択してください'); return }
   const fee = document.getElementById('sh-fee').value
+  const price = addShiftPriceInput()
+  if (price && ((price.bill_rate != null && price.bill_rate < 0) || (price.pay_rate != null && price.pay_rate < 0))) { toast('単価にマイナスの値は入力できません'); return }
+  let res
   try {
-    await axios.post('/api/admin/shifts', {
+    res = await axios.post('/api/admin/shifts', {
       staff_id: Number(staffId), project_id: document.getElementById('sh-project').value,
       work_date: date, start_time: document.getElementById('sh-start').value, end_time: document.getElementById('sh-end').value,
       status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
       confirm_warnings: true, force: !!force,
+      inherit: ADD_SHIFT_PRICE.inherit, ...(price ? { price } : {}),
     })
   } catch (e) {
     const d = e.response && e.response.data
     if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま登録しますか？')) return addShift(true); return }
     showApiError(e, '登録に失敗しました'); return
   }
-  closeModal(); toast('シフトを登録しました'); refreshShiftWeek(date)
+  const ih = res && res.data && res.data.inherited
+  closeModal(); toast(price ? 'シフトを登録しました（単価は入力した値）' : ih ? `シフトを登録しました（${ih.label}の単価を引き継ぎました）` : 'シフトを登録しました'); refreshShiftWeek(date)
 }
 delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
@@ -6066,6 +6150,7 @@ function route() {
   // 仮パスワードのままの間は、パスワードの変更を先に求める（#43 #44）
   if (ME && !ME.mfa_setup_required && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
+  openNavGroupOf(tab)
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
   // 自社の日報テンプレートの作成・編集（#165）
@@ -6228,5 +6313,6 @@ delegate('avbRemind', (el) => {
     document.querySelectorAll('.side-link[data-tab="employees"], #mobile-nav option[value="employees"]').forEach(el => el.remove())
     const st = document.createElement('style'); st.textContent = 'a.btn[href^="#employees/"]{display:none!important}'; document.head.appendChild(st)
   }
+  hideEmptyNavGroups()
   route()
 })()

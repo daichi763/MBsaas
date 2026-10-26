@@ -3,12 +3,12 @@
 // docs/spec_spot_shift.md 第2段階。admin.js・shift-board.js の後に読み込む
 // =========================================================
 (function () {
-  const TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
+  const TYPE_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
   const TYPE_DESC = {
     own_employee: '正社員・契約社員・アルバイト・パート。従業員管理に登録します',
     daily_worker: '自社で日々雇用する人。従業員管理には登録しません',
     freelance: '個人で業務委託する人。支払は本人への業務委託費になります',
-    partner_manual: '取引先（Field OS 未利用の会社）に所属する人。支払は取引先へ',
+    partner_manual: '協力会社（Field OS 未利用の会社）に所属する人。支払は協力会社へ',
   }
   // シフト単位の例外のみ（案件・スタッフ単位の勤怠報告は「案件報告管理」で 8 種類ごとに設定する）
   const ATT_LABEL = { '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ', full: '案件報告管理の設定どおり' }
@@ -45,9 +45,9 @@
         <p id="qr-type-desc" class="text-[11px] text-gray-400 -mt-2">${TYPE_DESC.daily_worker}</p>
         <div id="qr-partner" class="hidden p-3 rounded-lg bg-purple-50 space-y-2">
           <select id="qr-partner-id" class="inp text-sm" onchange="document.getElementById('qr-partner-new').classList.toggle('hidden', this.value !== 'new')">
-            ${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい取引先</option>
+            ${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい協力会社</option>
           </select>
-          <input id="qr-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="取引先名">
+          <input id="qr-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="協力会社名">
         </div>
         <input id="qr-trade" class="inp text-sm hidden" placeholder="屋号（任意）">
         <div class="grid grid-cols-2 gap-3 items-end">
@@ -440,8 +440,8 @@
           <input type="radio" name="ac-type" value="${k}" ${i === 0 ? 'checked' : ''} class="mt-1"><span><b class="text-sm">${TYPE_LABEL[k]}</b><span class="block text-[11px] text-gray-500">${TYPE_DESC[k]}</span></span></label>`).join('')}</div>
         <div id="ac-partner" class="hidden p-3 rounded-lg bg-purple-50 space-y-2">
           <select id="ac-partner-id" class="inp text-sm">
-            ${partners.map(p => `<option value="${Number(p.affiliation_id)}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい取引先</option></select>
-          <input id="ac-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="取引先名">
+            ${partners.map(p => `<option value="${Number(p.affiliation_id)}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい協力会社</option></select>
+          <input id="ac-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="協力会社名">
         </div>
         <input id="ac-trade" class="inp text-sm hidden" placeholder="屋号（任意）">
         <div class="grid grid-cols-2 gap-3">

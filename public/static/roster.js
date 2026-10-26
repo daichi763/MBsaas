@@ -7,8 +7,8 @@ const ROSTER_ROUTES = [
     desc: '他社（Field OS利用企業）に所属する既存スタッフを、スタッフIDで連携登録します。基本項目は所属元が管理し、自社では追記のみ可能です。' },
   { key: 'employee', icon: 'fa-id-card', color: 'text-emerald-600', title: '② 従業員管理から作成（自社雇用）',
     desc: '自社で雇用するスタッフを登録します。ログインアカウントと従業員管理（社員名簿）が作成されます。' },
-  { key: 'partner', icon: 'fa-building', color: 'text-purple-600', title: '③ 取引先から作成',
-    desc: '所属会社がField OSを利用していない場合に、取引先所属のスタッフとして登録します。' },
+  { key: 'partner', icon: 'fa-building', color: 'text-purple-600', title: '③ 協力会社から作成',
+    desc: '所属会社がField OSを利用していない場合に、協力会社所属のスタッフとして登録します。' },
   { key: 'skillsheet', icon: 'fa-file-lines', color: 'text-gray-600', title: '④ スキルシートのみ作成',
     desc: '稼働管理は行わず、スキルシートの発行だけを目的に登録します。ログインアカウントは作成されません。' },
 ]
@@ -120,7 +120,7 @@ window.submitRosterLink = async function (p, button) {
 }
 
 // ---------- ②③④ フォーム ----------
-const ROSTER_FORM_TITLE = { employee: '② 従業員管理から作成（自社雇用）', partner: '③ 取引先から作成', skillsheet: '④ スキルシートのみ作成' }
+const ROSTER_FORM_TITLE = { employee: '② 従業員管理から作成（自社雇用）', partner: '③ 協力会社から作成', skillsheet: '④ スキルシートのみ作成' }
 
 window.showRosterForm = async function (route) {
   let partners = []
@@ -138,14 +138,14 @@ window.showRosterForm = async function (route) {
     <div class="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
       ${route === 'partner' ? `
         <div class="p-3 rounded-lg bg-purple-50 space-y-2">
-          <label class="text-sm text-gray-700 font-bold block">所属会社（取引先） <span class="text-red-500">*</span></label>
+          <label class="text-sm text-gray-700 font-bold block">所属会社（協力会社） <span class="text-red-500">*</span></label>
           <select id="rf-partner" class="inp" onchange="document.getElementById('rf-new-partner').classList.toggle('hidden', this.value !== 'new')">
             ${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}（${p.staff_count}名）</option>`).join('')}
-            <option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい取引先を登録</option>
+            <option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい協力会社を登録</option>
           </select>
           <div id="rf-new-partner" class="${partners.length ? 'hidden' : ''} grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <input id="rf-np-name" class="inp" placeholder="取引先名 *">
-            <input id="rf-np-contact" class="inp" placeholder="取引先担当者名">
+            <input id="rf-np-name" class="inp" placeholder="協力会社名 *">
+            <input id="rf-np-contact" class="inp" placeholder="協力会社担当者名">
             <input id="rf-np-phone" class="inp" placeholder="電話">
             <input id="rf-np-email" class="inp" placeholder="メール">
           </div>
@@ -254,7 +254,7 @@ window.submitRosterForm = async function (route, force) {
     else {
       body.new_partner_name = v('rf-np-name'); body.new_partner_contact = v('rf-np-contact')
       body.new_partner_phone = v('rf-np-phone'); body.new_partner_email = v('rf-np-email')
-      if (!body.new_partner_name) { toast('取引先名を入力してください'); return }
+      if (!body.new_partner_name) { toast('協力会社名を入力してください'); return }
     }
     // 初期パスワードだけ入れたときは、空いている番号を使う（#424）
     const codeEl = document.getElementById('rf-code')
@@ -325,7 +325,7 @@ window.showRosterImport = function () {
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-file-csv text-orange-600 mr-1"></i>CSV でまとめて登録</h3>
     <p class="text-xs text-gray-500 mb-3">テンプレートの CSV に1行1人で記入して選んでください。登録の前に、必須項目の不足・スタッフ番号や社員番号の重複・同じ人と思われる登録済みのスタッフを確かめます。
-      区分は「自社雇用」「取引先」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。</p>
+      区分は「自社雇用」「協力会社」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。</p>
     ${ROSTER_IMPORT.downloaded ? '' : rosterImportResultHtml()}
     <div class="flex gap-2 flex-wrap items-center mt-3">
       <a class="btn btn-outline text-xs" href="/api/admin/roster/import/template"><i class="fas fa-download"></i>テンプレートをダウンロード</a>
@@ -824,9 +824,15 @@ delegate('rosterResumeLink', (el) => withSubmitLock(el, async () => {
 // =========================================================
 // 取引先（Field OS 未契約の所属元）の管理（#161）: 一覧・登録・編集・統合・削除
 // =========================================================
-const PARTNERS = { list: [] }
+// 協力会社（#9301。以前の名前は「取引先」）の詳細（#partners/<id>）とクライアントとのつながり（#9302）
+const PARTNERS = { list: [], detail: null, month: '' }
 const partnerById = (id) => PARTNERS.list.find(p => Number(p.affiliation_id) === Number(id))
+  || (PARTNERS.detail && Number(PARTNERS.detail.partner.affiliation_id) === Number(id) ? PARTNERS.detail.partner : null)
 window.renderPartners = async function () {
+  const id = (location.hash || '').split('/')[1] || ''
+  if (id && /^\d+$/.test(id)) return renderPartnerDetail(Number(id))
+  if (id) { history.replaceState(null, '', '#partners') }
+  PARTNERS.detail = null
   loading()
   try { PARTNERS.list = (await axios.get('/api/admin/roster/partners')).data.partners || [] } catch (e) {
     $app.innerHTML = `<div class="card p-6 text-center text-sm text-red-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
@@ -835,37 +841,139 @@ window.renderPartners = async function () {
   $app.innerHTML = `
     <a href="#staff" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>スタッフマスタ</a>
     <div class="flex items-center justify-between mt-2 mb-2 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">取引先の管理 <span class="text-sm font-normal text-gray-400">${PARTNERS.list.length}社</span></h2>
-      <button class="btn btn-primary" data-action="partnerEdit"><i class="fas fa-plus"></i>取引先を登録</button>
+      <h2 class="text-xl font-bold text-gray-900">協力会社 <span class="text-sm font-normal text-gray-400">${PARTNERS.list.length}社</span></h2>
+      <button class="btn btn-primary" data-action="partnerEdit"><i class="fas fa-plus"></i>協力会社を登録</button>
     </div>
-    <p class="text-xs text-gray-500 mb-4">Field OS を使っていない所属元（③取引先から作成したスタッフの所属会社）です。精算では、取引先ごとに支払先がまとまります。
+    <p class="text-sm text-gray-700 mb-1">スタッフの所属会社・支払先になる会社です（Field OS を使っている会社は企業間連携で扱います）</p>
+    <p class="text-xs text-gray-500 mb-4">精算では、協力会社ごとに支払先がまとまります。クライアントでもある会社は、詳細でクライアントとつなげます。
       同じ会社が別の名前（表記ゆれ）で分かれているときは「統合」でまとめてください（所属スタッフと未確定のシフトの支払先を付け替えます。確定済みの精算は変えません）。</p>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>取引先名</th><th>担当者・連絡先</th><th>所属スタッフ</th><th>今月の稼働</th><th>メモ</th><th></th></tr></thead>
+        <thead><tr><th>協力会社名</th><th>担当者・連絡先</th><th>所属スタッフ</th><th>今月の稼働</th><th>クライアント</th><th>メモ</th><th></th></tr></thead>
         <tbody>${PARTNERS.list.map(p => `
           <tr>
-            <td class="font-medium">${esc(p.affiliation_name)}</td>
+            <td class="font-medium"><a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline">${esc(p.affiliation_name)}</a></td>
             <td class="text-xs">${contact(p)}</td>
             <td class="whitespace-nowrap">${Number(p.active_staff_count) || 0}名${Number(p.staff_count) > Number(p.active_staff_count) ? `<span class="text-[11px] text-gray-400">（退職等を含め ${Number(p.staff_count)}名）</span>` : ''}</td>
             <td class="whitespace-nowrap text-xs">${Number(p.month_shifts) || 0}件（${Number(p.month_staff) || 0}名）</td>
+            <td class="text-xs">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>${esc(p.client_name)}</a>` : '<span class="text-gray-300">-</span>'}</td>
             <td class="text-xs max-w-[240px] whitespace-pre-wrap break-words">${esc(p.memo || '')}</td>
             <td class="whitespace-nowrap text-right">
+              <a class="btn btn-outline text-xs" href="#partners/${Number(p.affiliation_id)}">詳細</a>
               <button class="btn btn-outline text-xs" data-action="partnerEdit" data-id="${Number(p.affiliation_id)}">編集</button>
               ${PARTNERS.list.length > 1 ? `<button class="btn btn-outline text-xs" data-action="partnerMerge" data-id="${Number(p.affiliation_id)}">統合</button>` : ''}
               ${p.can_delete ? `<button class="btn btn-outline text-xs text-red-600" data-action="partnerDelete" data-id="${Number(p.affiliation_id)}">削除</button>` : ''}
             </td>
-          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-6">取引先はまだありません</td></tr>'}</tbody>
+          </tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-6">協力会社はまだありません</td></tr>'}</tbody>
       </table>
     </div>`
 }
+async function renderPartnerDetail(pid) {
+  if (!PARTNERS.detail || Number(PARTNERS.detail.partner.affiliation_id) !== pid) { loading(); PARTNERS.month = '' }
+  PARTNERS.month = PARTNERS.month || dayjs().format('YYYY-MM')
+  let data
+  try { data = (await axios.get('/api/admin/roster/partners/' + pid, { params: { month: PARTNERS.month } })).data } catch (e) {
+    const msg = showApiError(e, '読み込みに失敗しました')
+    $app.innerHTML = `<a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
+      <div class="card p-6 mt-3 text-center text-sm text-red-500">${esc(msg)}</div>`; return
+  }
+  PARTNERS.detail = data
+  const p = data.partner
+  const row = (label, v) => `<div class="flex gap-3 py-1.5 border-b border-gray-100 last:border-0"><span class="text-xs text-gray-500 w-20 shrink-0">${label}</span><span class="text-sm break-words whitespace-pre-wrap min-w-0">${v ? esc(v) : '<span class="text-gray-300">-</span>'}</span></div>`
+  $app.innerHTML = `
+    <a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
+    <div class="flex items-center gap-2 mt-2 mb-4 flex-wrap">
+      <h2 class="text-xl font-bold text-gray-900">${esc(p.affiliation_name)}</h2>
+      <span class="badge badge-purple">協力会社</span>
+      ${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>クライアント「${esc(p.client_name)}」でもあります</a>` : ''}
+    </div>
+    <div class="grid lg:grid-cols-2 gap-4">
+      <section class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-building text-blue-500 mr-1"></i>基本情報</h3>
+          <button class="btn btn-outline text-xs" data-action="partnerEdit" data-id="${Number(p.affiliation_id)}"><i class="fas fa-pen"></i>編集</button>
+        </div>
+        ${row('担当者', p.contact_name)}${row('電話', p.phone)}${row('メール', p.email)}${row('メモ', p.memo)}
+      </section>
+      <section class="card p-4" id="partner-client-link">${partnerClientLinkHtml(data)}</section>
+      <section class="card p-4 lg:col-span-2" id="partner-deals">${partnerDealsHtml(data)}</section>
+      <section class="card p-4 lg:col-span-2">
+        <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-users text-blue-500 mr-1"></i>所属スタッフ（在籍中） <span class="font-normal text-gray-400">${(data.staff || []).length}名</span></h3>
+        ${(data.staff || []).length ? `<div class="flex flex-wrap gap-2">${data.staff.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>`
+          : '<p class="text-sm text-gray-400">在籍中の所属スタッフはいません</p>'}
+      </section>
+    </div>`
+}
+// クライアントとのつながりの欄（協力会社の詳細）
+function partnerClientLinkHtml(data) {
+  const p = data.partner
+  const head = '<h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-link text-blue-500 mr-1"></i>クライアントとのつながり</h3>'
+  if (p.client_id) return `${head}
+    <p class="text-sm text-gray-700">この会社は、クライアント「<a href="#clients/${Number(p.client_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.client_name)}</a>」でもあります。</p>
+    <p class="text-xs text-gray-500 mt-1">クライアントの詳細にも、この協力会社へのリンクと、協力会社としての支払が出ます。</p>
+    <div class="flex gap-2 mt-3 flex-wrap">
+      <a href="#clients/${Number(p.client_id)}" class="btn btn-outline text-xs"><i class="fas fa-arrow-right"></i>クライアントの詳細</a>
+      <button class="btn btn-outline text-xs text-red-600" data-action="partnerUnlinkClient" data-id="${Number(p.affiliation_id)}">つながりを外す</button>
+    </div>`
+  const clients = data.clients || []
+  return `${head}
+    <p class="text-xs text-gray-500 mb-2">この会社がクライアントでもあるときは、クライアントを選んでつなぎます。つなぐと、お互いの詳細に相手へのリンクと、月の請求・支払が出ます（いつでも外せます）。</p>
+    ${clients.length ? `<div class="flex gap-2 flex-wrap">
+      <select id="pt-link-client" class="inp text-sm flex-1 min-w-[12rem]"><option value="">クライアントを選ぶ</option>
+        ${clients.map(c => `<option value="${Number(c.client_id)}" ${c.linked_partner_name ? 'disabled' : ''}>${esc(c.client_name)}${c.linked_partner_name ? `（${esc(c.linked_partner_name)} とつながっています）` : ''}</option>`).join('')}</select>
+      <button class="btn btn-primary text-xs" data-action="partnerLinkClient" data-id="${Number(p.affiliation_id)}"><i class="fas fa-link"></i>つなぐ</button>
+    </div>` : '<p class="text-sm text-gray-400">クライアントがまだ登録されていません（<a href="#clients" class="text-blue-600 hover:underline">クライアント</a>）</p>'}`
+}
+// 月の取引（協力会社の詳細）: この会社への支払と、つながったクライアントへの請求
+function partnerDealsHtml(data) {
+  const p = data.partner, s = data.summary || {}, ml = monthLabel(s.month)
+  const pay = s.pay || { total: 0, shifts: 0, staff: 0, unset: 0 }
+  const box = (title, amount, sub, color) => `<div class="bg-gray-50 rounded-lg p-3"><p class="text-xs text-gray-500">${title}</p><p class="text-lg font-bold ${color}">${amount}</p><p class="text-xs text-gray-500 mt-0.5">${sub}</p></div>`
+  return `
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-chart-column text-blue-500 mr-1"></i>月の取引</h3>
+      <span class="ml-auto">${monthNavHtml('partnerDetailMonth', s.month)}</span>
+    </div>
+    <div class="grid sm:grid-cols-2 gap-3">
+      ${box(`${esc(ml)}の支払（この会社へ）`, yen(pay.total), `${Number(pay.shifts)}件・${Number(pay.staff)}名${pay.unset ? `<span class="text-amber-600">（支払額が未設定 ${Number(pay.unset)}件は含みません）</span>` : ''}`, 'text-purple-700')}
+      ${s.bill ? box(`${esc(ml)}の請求（クライアント「${esc(p.client_name)}」へ）`, yen(s.bill.total), `案件 ${Number(s.bill.projects)}件・シフト ${Number(s.bill.shifts)}件 <a href="#clients/${Number(p.client_id)}" class="text-blue-600 hover:underline ml-1">案件ごとの内訳</a>`, 'text-blue-600')
+        : `<div class="bg-gray-50 rounded-lg p-3 text-xs text-gray-400 flex items-center">クライアントとつながると、この会社への請求も出ます</div>`}
+    </div>
+    <p class="text-[11px] text-gray-400 mt-2">今日までの確定・代打のシフトの合計です（単価・交通費・調整。精算の確定前の概算を含みます）。支払は、支払先がこの協力会社のシフトです</p>`
+}
+delegate('partnerDetailMonth', async (el) => {
+  const d = PARTNERS.detail; if (!d) return
+  PARTNERS.month = el.dataset.month
+  const box = document.getElementById('partner-deals'); if (!box) return
+  try {
+    const data = (await axios.get('/api/admin/roster/partners/' + Number(d.partner.affiliation_id), { params: { month: PARTNERS.month } })).data
+    PARTNERS.detail = data; box.innerHTML = partnerDealsHtml(data)
+  } catch (e) { showApiError(e, '実績を読み込めませんでした') }
+})
+delegate('partnerLinkClient', (el) => withSubmitLock(el, async () => {
+  const sel = document.getElementById('pt-link-client')
+  const cid = Number(sel && sel.value)
+  if (!cid) { toast('クライアントを選んでください'); return }
+  try {
+    await axios.put(`/api/admin/roster/partners/${Number(el.dataset.id)}/client`, { client_id: cid })
+    toast('クライアントとつなぎました'); renderPartners()
+  } catch (e) { showApiError(e, 'つなげませんでした') }
+}))
+delegate('partnerUnlinkClient', (el) => withSubmitLock(el, async () => {
+  const p = partnerById(el.dataset.id); if (!p) return
+  if (!confirm(`「${p.affiliation_name}」とクライアント「${p.client_name}」のつながりを外します。よろしいですか？\n（協力会社・クライアントのデータは消えません）`)) return
+  try {
+    await axios.put(`/api/admin/roster/partners/${Number(el.dataset.id)}/client`, { client_id: null })
+    toast('つながりを外しました'); renderPartners()
+  } catch (e) { showApiError(e, '外せませんでした') }
+}))
 delegate('partnerEdit', (el) => {
   const p = el.dataset.id ? partnerById(el.dataset.id) : null
   const f = (id, label, v, attrs = '') => `<div><label class="text-sm text-gray-600 block mb-1">${label}</label><input id="${id}" class="inp" value="${esc(v || '')}" ${attrs}></div>`
   modal(`
-    <h3 class="font-bold text-lg mb-4">${p ? '取引先の編集' : '取引先の登録'}</h3>
+    <h3 class="font-bold text-lg mb-4">${p ? '協力会社の編集' : '協力会社の登録'}</h3>
     <div class="space-y-3">
-      ${f('pt-name', '取引先名 <span class="text-red-500">*</span>', p && p.affiliation_name, 'maxlength="100"')}
+      ${f('pt-name', '協力会社名 <span class="text-red-500">*</span>', p && p.affiliation_name, 'maxlength="100"')}
       ${p ? '<p class="text-[11px] text-gray-400 -mt-2">名前を変えると、所属スタッフの所属会社名も変わります</p>' : ''}
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         ${f('pt-contact', '担当者名', p && p.contact_name, 'maxlength="100"')}
@@ -882,7 +990,7 @@ delegate('partnerEdit', (el) => {
 delegate('partnerSave', (el) => withSubmitLock(el, async () => {
   const v = (id) => (document.getElementById(id).value || '').trim()
   const body = { affiliation_name: v('pt-name'), contact_name: v('pt-contact'), phone: v('pt-phone'), email: v('pt-email'), memo: v('pt-memo') }
-  if (!body.affiliation_name) { toast('取引先名を入力してください'); return }
+  if (!body.affiliation_name) { toast('協力会社名を入力してください'); return }
   try {
     if (el.dataset.id) await axios.put('/api/admin/roster/partners/' + Number(el.dataset.id), body)
     else await axios.post('/api/admin/roster/partners', body)
@@ -893,14 +1001,15 @@ delegate('partnerMerge', (el) => {
   const p = partnerById(el.dataset.id); if (!p) return
   const others = PARTNERS.list.filter(x => x.affiliation_id !== p.affiliation_id)
   modal(`
-    <h3 class="font-bold text-lg mb-1">取引先の統合</h3>
-    <p class="text-sm text-gray-600 mb-3">「${esc(p.affiliation_name)}」を、次の取引先にまとめます（同じ会社が表記ゆれで分かれているとき）。</p>
+    <h3 class="font-bold text-lg mb-1">協力会社の統合</h3>
+    <p class="text-sm text-gray-600 mb-3">「${esc(p.affiliation_name)}」を、次の協力会社にまとめます（同じ会社が表記ゆれで分かれているとき）。</p>
     <select id="pt-merge-into" class="inp">${others.map(x => `<option value="${Number(x.affiliation_id)}">${esc(x.affiliation_name)}（${Number(x.staff_count) || 0}名）</option>`).join('')}</select>
     <ul class="text-xs text-gray-500 mt-3 space-y-1">
       <li>・所属スタッフ ${Number(p.staff_count) || 0}名の所属会社を、統合先に付け替えます</li>
       <li>・精算が確定していないシフトの支払先も、統合先に付け替えます（確定済みの精算は変えません）</li>
       <li>・統合先の担当者・電話・メールが空欄なら、「${esc(p.affiliation_name)}」の値で埋めます。メモは後ろに足します</li>
-      <li>・統合した取引先は一覧と選択肢から消えます（元に戻せません）</li>
+      ${p.client_id ? `<li>・クライアント「${esc(p.client_name)}」とのつながりは、統合先がほかのクライアントとつながっていなければ統合先に移します</li>` : ''}
+      <li>・統合した協力会社は一覧と選択肢から消えます（元に戻せません）</li>
     </ul>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
@@ -918,10 +1027,67 @@ delegate('partnerMergeSubmit', (el) => withSubmitLock(el, async () => {
 }))
 delegate('partnerDelete', (el) => withSubmitLock(el, async () => {
   const p = partnerById(el.dataset.id); if (!p) return
-  if (!confirm(`取引先「${p.affiliation_name}」を削除します。よろしいですか？`)) return
+  if (!confirm(`協力会社「${p.affiliation_name}」を削除します。よろしいですか？`)) return
   try { await axios.delete('/api/admin/roster/partners/' + Number(p.affiliation_id)); toast('削除しました'); renderPartners() } catch (e) { showApiError(e, '削除に失敗しました') }
 }))
 if (typeof routes === 'object') routes['partners'] = () => renderPartners()
+
+// ---------- クライアント詳細の「協力会社としての支払」の欄（#9302。admin.js の renderClientDetail から呼ぶ） ----------
+// 取引の実績（#client-deals）の下に足す。つながっていなければ、つなげる協力会社を選べるようにする
+const CLIENT_PARTNER = { cid: null, month: '' }
+window.renderClientPartnerPanel = async function (cid, month) {
+  cid = Number(cid)
+  if (CLIENT_PARTNER.cid !== cid) { CLIENT_PARTNER.cid = cid; CLIENT_PARTNER.month = '' }
+  CLIENT_PARTNER.month = month || CLIENT_PARTNER.month || (typeof CLIENT_DETAIL === 'object' && CLIENT_DETAIL.month) || dayjs().format('YYYY-MM')
+  let data
+  try { data = (await axios.get('/api/admin/roster/partners/by-client/' + cid, { params: { month: CLIENT_PARTNER.month } })).data } catch (e) { return }
+  // 読み込みの間に別の画面へ移ったときは描かない
+  if (location.hash !== '#clients/' + cid) return
+  let box = document.getElementById('client-partner-panel')
+  if (!box) {
+    const anchor = document.getElementById('client-deals')
+    if (!anchor) return
+    anchor.insertAdjacentHTML('afterend', '<section class="card p-4 lg:col-span-2" id="client-partner-panel"></section>')
+    box = document.getElementById('client-partner-panel')
+  }
+  const head = '<i class="fas fa-handshake text-purple-500 mr-1"></i>協力会社としての支払'
+  if (data.partner) {
+    const p = data.partner, s = data.summary || {}, pay = s.pay || { total: 0, shifts: 0, staff: 0, unset: 0 }
+    box.innerHTML = `
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        <h3 class="text-sm font-bold text-gray-700">${head}</h3>
+        <span class="ml-auto">${monthNavHtml('clientPartnerMonth', s.month)}</span>
+      </div>
+      <p class="text-sm text-gray-700 mb-3">この会社は、協力会社「<a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.affiliation_name)}</a>」でもあります（スタッフの所属会社・支払先）。</p>
+      <div class="flex items-center gap-3 flex-wrap">
+        <div class="bg-gray-50 rounded-lg p-3 min-w-[14rem]"><p class="text-xs text-gray-500">${esc(monthLabel(s.month))}の支払（この会社へ）</p>
+          <p class="text-lg font-bold text-purple-700">${yen(pay.total)}</p>
+          <p class="text-xs text-gray-500 mt-0.5">${Number(pay.shifts)}件・${Number(pay.staff)}名${pay.unset ? `<span class="text-amber-600">（支払額が未設定 ${Number(pay.unset)}件は含みません）</span>` : ''}</p></div>
+        <a href="#partners/${Number(p.affiliation_id)}" class="btn btn-outline text-xs"><i class="fas fa-arrow-right"></i>協力会社の詳細</a>
+      </div>
+      <p class="text-[11px] text-gray-400 mt-2">今日までの確定・代打のシフトのうち、支払先がこの協力会社のものの合計です（精算の確定前の概算を含みます）</p>`
+    return
+  }
+  const cand = data.candidates || []
+  box.innerHTML = `
+    <h3 class="text-sm font-bold text-gray-700 mb-1">${head}</h3>
+    <p class="text-xs text-gray-500">この会社が協力会社（スタッフの所属会社・支払先）でもあるときは、協力会社とつなぐと、協力会社としての月の支払がここに出ます。</p>
+    ${cand.length ? `<div class="flex gap-2 flex-wrap mt-2">
+      <select id="cl-link-partner" class="inp text-sm flex-1 min-w-[12rem]"><option value="">協力会社を選ぶ</option>
+        ${cand.map(p => `<option value="${Number(p.affiliation_id)}">${esc(p.affiliation_name)}</option>`).join('')}</select>
+      <button class="btn btn-outline text-xs" data-action="clientLinkPartner" data-cid="${cid}"><i class="fas fa-link"></i>つなぐ</button>
+    </div>` : '<p class="text-xs text-gray-400 mt-1">つなげる協力会社がありません（協力会社は <a href="#partners" class="text-blue-600 hover:underline">協力会社</a> で登録します）</p>'}`
+}
+delegate('clientPartnerMonth', (el) => { if (CLIENT_PARTNER.cid) renderClientPartnerPanel(CLIENT_PARTNER.cid, el.dataset.month) })
+delegate('clientLinkPartner', (el) => withSubmitLock(el, async () => {
+  const sel = document.getElementById('cl-link-partner')
+  const pid = Number(sel && sel.value)
+  if (!pid) { toast('協力会社を選んでください'); return }
+  try {
+    await axios.put(`/api/admin/roster/partners/${pid}/client`, { client_id: Number(el.dataset.cid) })
+    toast('協力会社とつなぎました'); renderClientPartnerPanel(Number(el.dataset.cid))
+  } catch (e) { showApiError(e, 'つなげませんでした') }
+}))
 
 // =========================================================
 // 複数のスタッフをまとめて連携する（#539）
@@ -1166,7 +1332,7 @@ window.showAddRoster = function () {
     <div class="border-t border-gray-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
       <button class="btn btn-outline text-xs" data-action="rosterOpenBulkLink"><i class="fas fa-users-line"></i>IDをまとめて連携</button>
       <button class="btn btn-outline text-xs" data-action="rosterOpenShareList"><i class="fas fa-id-badge"></i>連携用IDの一覧（出力）</button>
-      <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>取引先の管理</a>
+      <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>協力会社の管理</a>
     </div>`)
 }
 delegate('rosterOpenBulkLink', () => showRosterBulkLink())

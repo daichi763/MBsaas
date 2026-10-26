@@ -1208,7 +1208,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'clients', label: 'クライアント', table: 'clients', where: OB_CO },
   { target: 'settlement_closings', label: '精算の締め', table: 'settlement_closings', where: OB_CO },
   { target: 'settlement_export_logs', label: '精算の出力の記録', table: 'settlement_export_logs', where: OB_CO },
-  { target: 'staff_affiliations', label: '所属先（取引先）', table: 'staff_affiliations', where: OB_CO },
+  { target: 'staff_affiliations', label: '所属先（協力会社）', table: 'staff_affiliations', where: OB_CO },
   { target: 'roster_field_requirements', label: '名簿の必須項目', table: 'roster_field_requirements', where: OB_CO },
   { target: 'report_templates', label: '日報テンプレート（企業）', table: 'report_templates', where: OB_CO },
   { target: 'roster_host_note_history', label: '稼働先メモの履歴', table: 'roster_host_note_history', where: OB_CO },

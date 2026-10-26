@@ -34,7 +34,7 @@ type Variables = { user: any }
 // freelance: 個人事業主 / partner_manual: 取引先所属 / linked_external: 他社連携 / skillsheet_only: スキルシートのみ
 export const WORKING_TYPES = ['own_employee', 'daily_worker', 'freelance', 'partner_manual'] as const
 export const TYPE_LABEL: Record<string, string> = {
-  own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属',
+  own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属',
   linked_external: '他社連携', skillsheet_only: 'スキルシートのみ',
 }
 // 区分ごとの支払の種類（シフトの payee_type）
@@ -213,17 +213,17 @@ adminLifecycleApi.post('/staff-quick', async (c) => {
   if (type === 'partner_manual') {
     if (b.partner_affiliation_id) {
       const p = await db.prepare('SELECT t.affiliation_id, t.affiliation_name FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.affiliation_id = ? AND sa.company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any
-      if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
+      if (!p) return c.json({ error: '協力会社が見つかりません' }, 404)
       partnerId = p.affiliation_id; affiliation = p.affiliation_name
     } else if (String(b.new_partner_name || '').trim()) {
       const pname = String(b.new_partner_name).trim()
-      if (pname === ownName) return c.json({ error: '自社名は取引先として登録できません' }, 400)
+      if (pname === ownName) return c.json({ error: '自社名は協力会社として登録できません' }, 400)
       const conflict = await partnerNameConflict(db, u.company_id, pname)
       if (conflict) return c.json({ error: conflict }, 400)
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, pname).run()
       const p = await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(u.company_id, pname).first() as any
       partnerId = p?.affiliation_id ?? null; affiliation = pname
-    } else return c.json({ error: '取引先を選択または入力してください' }, 400)
+    } else return c.json({ error: '協力会社を選択または入力してください' }, 400)
   }
 
   // 二度押し・同時送信の防止（#568）: 同じ電話番号の仮登録は、処理中と直後 QUICK_LOCK_MS の間は1件だけにする。
@@ -482,18 +482,18 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   if (to === 'partner_manual') {
     if (b.partner_affiliation_id) {
       const p = await db.prepare('SELECT t.affiliation_id, t.affiliation_name FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.affiliation_id = ? AND sa.company_id = ?').bind(b.partner_affiliation_id, companyId).first() as any
-      if (!p) return fail('取引先が見つかりません', 404)
+      if (!p) return fail('協力会社が見つかりません', 404)
       partnerId = p.affiliation_id; affiliation = p.affiliation_name
     } else if (String(b.new_partner_name || '').trim()) {
       affiliation = String(b.new_partner_name).trim()
-      if (affiliation === ownName) return fail('自社名は取引先として登録できません')
+      if (affiliation === ownName) return fail('自社名は協力会社として登録できません')
       const conflict = await partnerNameConflict(db, companyId, affiliation)
       if (conflict) return fail(conflict)
       // 同じ名前の取引先が登録済みならそれを使う
       const p = await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(companyId, affiliation).first() as any
       if (p) partnerId = p.affiliation_id
       else newPartnerName = affiliation
-    } else return fail('取引先を選択または入力してください')
+    } else return fail('協力会社を選択または入力してください')
   }
   const newPayee: PayeeRow = { payee_type: payeeTypeFor(to), payee_affiliation_id: to === 'partner_manual' ? partnerId : null, payee_company_id: null }
   const repair = to === from && (to !== 'partner_manual' || (partnerId != null && partnerId === sp.partner_affiliation_id))
@@ -512,7 +512,7 @@ async function planAffiliationChange(db: D1Database, companyId: number, sp: any,
   const excluded = shifts.length - unworked.length
   const samePayee = (s: any) => (s.payee_type || 'payroll') === newPayee.payee_type && (newPayee.payee_type !== 'partner' || s.payee_affiliation_id === newPayee.payee_affiliation_id)
   const targets = repair ? unworked.filter(s => !samePayee(s)) : unworked
-  if (repair && !targets.length) return fail(to === 'partner_manual' ? '現在と同じ取引先です' : '現在と同じ区分です')
+  if (repair && !targets.length) return fail(to === 'partner_manual' ? '現在と同じ協力会社です' : '現在と同じ区分です')
 
   const er = await db.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sp.staff_id, companyId).first() as any
   const linksOut = ((await db.prepare(`SELECT COUNT(*) AS n FROM staff_profiles WHERE source_staff_id = ? AND affiliation_type = 'linked_external'`).bind(sp.staff_id).first()) as any)?.n || 0

@@ -8,7 +8,7 @@
   const UNIT_LABEL = { daily: '日額', hourly: '時給' }
   const BT_LABEL = { actual: '実費を請求', fixed: '定額を請求', included: '単価に込み（請求なし）' }
   const PT_LABEL = { actual: '実費を支払', capped: '実費（上限あり）', fixed: '定額を支払', none: '支払なし' }
-  const AFF_SHORT = { own_employee: '自社', linked_external: '他社', partner_manual: '取引先', skillsheet_only: 'シート' }
+  const AFF_SHORT = { own_employee: '自社', linked_external: '他社', partner_manual: '協力会社', skillsheet_only: 'シート' }
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const d0 = (d) => dayjs(d).format('YYYY-MM-DD')
 
@@ -425,7 +425,8 @@
   async function assignStaffOnce(slotRoleId, staffIds, force, extra) {
     try {
       const { data } = await axios.post(`/api/admin/shift-slots/roles/${slotRoleId}/assign`, { staff_ids: staffIds, force: !!force, ...(extra || {}) })
-      toast(data.warnings && data.warnings.length ? '警告を確認のうえ割り当てました' : '割り当てました')
+      const nIh = (data.inherited || []).length // 直近のシフトの単価を引き継いだ人数（9306）
+      toast((data.warnings && data.warnings.length ? '警告を確認のうえ割り当てました' : '割り当てました') + (nIh ? `（${nIh}人は前回のシフトの単価を引き継ぎ）` : ''))
       closeModal(); renderShiftBoard()
     } catch (e) {
       const d = e.response && e.response.data
@@ -475,18 +476,86 @@
         <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録（本人が可否を返事）</option></select>
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（空欄でスタッフの標準）" title="空欄のときは、スタッフごとの交通費の標準（精算の画面で登録）を入れます。入力すると選んだ全員に同じ金額を入れます">
       </div>
+      ${priceBoxHtml('cand', false)}
       <button class="btn btn-primary w-full mt-3" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button>
       <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
     document.getElementById('cand-filter').addEventListener('input', (ev) => {
       const q = ev.target.value.trim()
       document.querySelectorAll('.cand-row').forEach(el => { el.style.display = !q || el.dataset.key.includes(q) ? '' : 'none' })
     })
+    // 選んだスタッフの単価の見込み（直近のシフトからの引き継ぎ。9306）
+    const names = new Map(data.candidates.map(c => [c.staff_id, c.name]))
+    const reload = () => loadPriceBox('cand', { slot_role_id: slotRoleId, staff_ids: [...document.querySelectorAll('.cand-check:checked')].map(el => el.value).join(',') }, names)
+    document.querySelectorAll('.cand-check').forEach(el => el.addEventListener('change', reload))
+    document.getElementById('cand-inherit').addEventListener('change', () => renderPriceBox('cand'))
+    reload()
   }
   window.assignFromCandidates = function (slotRoleId) {
     const ids = [...document.querySelectorAll('.cand-check:checked')].map(el => Number(el.value))
     if (!ids.length) { toast('スタッフを選択してください'); return }
     const fee = document.getElementById('cand-fee').value
-    return assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}) })
+    const px = priceExtra('cand'); if (px.error) { toast(px.error); return }
+    return assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}), ...px.body })
+  }
+
+  // ---------- 割り当て・一括登録の単価（9306） ----------
+  // 直近のシフト（常勤: 同じスタッフ×同じ案件、スポット: 同じ案件）から引き継ぐ単価の見込みを出し、引き継ぐか・単価を変えるかをその場で選べるようにする
+  const PRICE_BOX = {}
+  const PRICE_LIST_MAX = 30
+  function priceBoxHtml(prefix, bulk) {
+    return `<div class="rounded-lg border border-gray-100 p-2 mt-3 text-xs space-y-1.5" id="${prefix}-price">
+      <div class="flex items-center justify-between gap-2 flex-wrap"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>単価</p>
+        <label class="flex items-center gap-1 text-gray-600"><input type="checkbox" id="${prefix}-inherit" checked>前回のシフトの単価を引き継ぐ</label></div>
+      <div id="${prefix}-price-list" class="text-gray-400">スタッフを選ぶと、単価を表示します</div>
+      <div class="grid grid-cols-2 gap-2">
+        <label class="text-gray-600">請求単価を変える<input id="${prefix}-bill-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
+        <label class="text-gray-600">支払単価を変える<input id="${prefix}-pay-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
+      </div>
+      <p class="text-[11px] text-gray-400">単価を入れると、選んだ全員${bulk ? '・全日' : ''}に同じ単価を入れ、金額は手動変更になります${bulk ? '。表示は開始日の時点の見込みです' : ''}</p>
+    </div>`
+  }
+  async function loadPriceBox(prefix, params, names) {
+    const st = PRICE_BOX[prefix] = { ...(PRICE_BOX[prefix] || {}), names, seq: ((PRICE_BOX[prefix] || {}).seq || 0) + 1 }
+    const seq = st.seq
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null).map(([k, v]) => [k, String(v)]))
+    try {
+      const { data } = await axios.get('/api/admin/shifts/price-preview?' + qs.toString())
+      if (seq !== PRICE_BOX[prefix].seq) return // 後から読み直したものを優先する
+      st.data = data
+    } catch (e) {
+      if (seq !== PRICE_BOX[prefix].seq) return
+      st.data = null; st.error = errMsg(e)
+    }
+    renderPriceBox(prefix)
+  }
+  function renderPriceBox(prefix) {
+    const el = document.getElementById(prefix + '-price-list'); if (!el) return
+    const st = PRICE_BOX[prefix] || {}
+    if (!st.data) { el.innerHTML = `<span class="text-gray-400">${esc(st.error || 'スタッフを選ぶと、単価を表示します')}</span>`; return }
+    const items = st.data.items || []
+    if (!items.length) { el.innerHTML = '<span class="text-gray-400">スタッフを選ぶと、単価を表示します</span>'; return }
+    const use = document.getElementById(prefix + '-inherit').checked
+    const rate = (u, r) => (r == null ? '未設定' : `${UNIT_LABEL[u] || ''} ${yen(r)}`)
+    const rows = items.slice(0, PRICE_LIST_MAX).map(it => {
+      const ih = use ? it.inherited : null
+      const p = ih ? it.price : it.settings
+      const who = it.staff_id == null ? 'この案件' : (st.names.get(Number(it.staff_id)) || 'ID ' + it.staff_id)
+      const from = ih ? `<span class="badge badge-blue whitespace-nowrap">${esc(ih.label)}から引き継ぎ</span>`
+        : it.inherited ? '<span class="text-gray-400 whitespace-nowrap">単価の設定（引き継がない）</span>' : '<span class="text-gray-400 whitespace-nowrap">単価の設定</span>'
+      return `<div class="flex items-center justify-between gap-2 py-0.5"><span class="font-bold text-gray-700 truncate">${esc(who)}</span>
+        <span class="text-right text-gray-600">請求 ${rate(p.bill_unit_type, p.bill_rate)} ／ 支払 ${rate(p.pay_unit_type, p.pay_rate)} ${from}</span></div>`
+    }).join('')
+    el.innerHTML = `<div class="max-h-40 overflow-y-auto divide-y divide-gray-50">${rows}</div>${items.length > PRICE_LIST_MAX ? `<p class="text-gray-400">ほか ${items.length - PRICE_LIST_MAX}人</p>` : ''}`
+  }
+  // 送信に足す値（引き継ぐか、変えた単価）。マイナスの単価は送らない
+  function priceExtra(prefix) {
+    const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }
+    const bill = num(prefix + '-bill-rate'), pay = num(prefix + '-pay-rate')
+    if ((bill != null && bill < 0) || (pay != null && pay < 0)) return { error: '単価にマイナスの値は入力できません' }
+    const price = {}
+    if (bill != null) price.bill_rate = bill
+    if (pay != null) price.pay_rate = pay
+    return { body: { inherit: document.getElementById(prefix + '-inherit').checked, ...(Object.keys(price).length ? { price } : {}) } }
   }
   delegate('assignFromCandidates', (el) => withSubmitLock(el, () => assignFromCandidates(Number(el.dataset.slotRoleId))))
   delegate('openQuickRegister', (el) => { if (window.showQuickRegister) showQuickRegister({ slot_role_id: Number(el.dataset.slotRoleId) }) })
@@ -925,19 +994,30 @@
           <label class="text-sm text-gray-600">交通費の実費<input id="bk-fee" type="number" class="inp" placeholder="空欄でスタッフの標準"></label>
         </div>
         <datalist id="role-suggest"><option value="販売スタッフ"><option value="リーダー"></datalist>
+        ${priceBoxHtml('bk', true)}
         <button class="btn btn-primary w-full" data-action="saveBulk">登録する</button>
       </div>`)
+    // 選んだスタッフの単価の見込み（開始日の時点。直近のシフトからの引き継ぎ。9306）
+    const names = new Map(m.staff.map(s => [s.staff_id, s.name]))
+    const v = (k) => document.getElementById(k).value
+    const reload = () => loadPriceBox('bk', { project_id: v('bk-project'), work_date: v('bk-from'), role: v('bk-role'), start_time: v('bk-start'), end_time: v('bk-end'),
+      staff_ids: [...document.querySelectorAll('.bk-staff:checked')].map(el => el.value).join(',') }, names)
+    for (const id of ['bk-project', 'bk-from', 'bk-role', 'bk-start', 'bk-end']) document.getElementById(id).addEventListener('change', reload)
+    document.querySelectorAll('.bk-staff').forEach(el => el.addEventListener('change', reload))
+    document.getElementById('bk-inherit').addEventListener('change', () => renderPriceBox('bk'))
+    reload()
   }
   async function saveBulk() {
     const v = (k) => document.getElementById(k).value
+    const px = priceExtra('bk'); if (px.error) { toast(px.error); return }
     const body = {
       project_id: Number(v('bk-project')), role: v('bk-role'), staff_ids: [...document.querySelectorAll('.bk-staff:checked')].map(el => Number(el.value)),
       weekdays: [...document.querySelectorAll('.bk-wd:checked')].map(el => Number(el.value)), date_from: v('bk-from'), date_to: v('bk-to'),
-      start_time: v('bk-start'), end_time: v('bk-end'), transportation_fee: v('bk-fee'),
+      start_time: v('bk-start'), end_time: v('bk-end'), transportation_fee: v('bk-fee'), ...px.body,
     }
     await runJob(newJob({
-      title: '常勤の一括登録', url: '/api/admin/shifts/bulk', body, keys: ['created'],
-      summary: (n) => `${n.created}件登録しました`, done: () => renderShiftBoard(),
+      title: '常勤の一括登録', url: '/api/admin/shifts/bulk', body, keys: ['created', 'inherited'],
+      summary: (n) => `${n.created}件登録しました${n.inherited ? `（${n.inherited}件は前回のシフトの単価を引き継ぎ）` : ''}`, done: () => renderShiftBoard(),
     }))
   }
   delegate('saveBulk', el => withSubmitLock(el, saveBulk))
@@ -1231,7 +1311,7 @@
     const c = window.__repriceCtx || {}
     return { from: document.getElementById('rp-from').value, to: document.getElementById('rp-to').value, ...(c.pid ? { project_id: c.pid } : {}), ...(c.staffId ? { staff_id: c.staffId } : {}), ...(c.clientId ? { client_id: c.clientId } : {}) }
   }
-  const PAYEE_SHORT = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' }
+  const PAYEE_SHORT = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' }
   const signedYen = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + yen(Math.abs(n))
   delegate('repricePreview', el => withSubmitLock(el, async () => {
     const box = document.getElementById('rp-result'); const body = repriceBody()

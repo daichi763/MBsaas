@@ -97,11 +97,11 @@ const unitOf = (v: any): 'daily' | 'hourly' => (v === 'hourly' ? 'hourly' : 'dai
 
 // =========================================================
 // 単価の解決
-// 優先順: シフトの手動変更 ＞ 枠の役割の単価 ＞ 単価ルール（具体度: スタッフ8 役割4 開催場所2 案件1 クライアント0.5。#470）＞ 案件の標準
+// 優先順: シフトの手動変更 ＞ 枠の役割の単価 ＞ 直近のシフトからの引き継ぎ（9306）＞ 単価ルール（具体度: スタッフ8 役割4 開催場所2 案件1 クライアント0.5。#470）＞ 案件の標準
 // 項目ごとに（請求単価 / 支払単価 / 交通費の請求 / 交通費の支払）最も具体的な値を採用する
 // 単価ルールと案件の標準単価は、シフトの稼働日（work_date）に適用期間が含まれるものを使う（#210）
 // =========================================================
-export type PriceContext = { company_id: number; project_id: number; site_id?: number | null; role_name?: string | null; staff_id?: number | null; slot_role?: any; work_date?: string | null }
+export type PriceContext = { company_id: number; project_id: number; site_id?: number | null; role_name?: string | null; staff_id?: number | null; slot_role?: any; work_date?: string | null; inherit?: InheritSource | null }
 export type PricingData = { projects: Map<number, any>; rules: any[]; history?: Map<number, any[]> }
 export type ResolvedPrice = {
   bill_unit_type: string; bill_rate: number | null; pay_unit_type: string; pay_rate: number | null
@@ -123,7 +123,7 @@ export async function loadPricingData(db: D1Database, companyId: number, project
   const ids = bindJsonArray(projectIds)
   const projects = ids !== '[]' ? (await db.prepare(`SELECT project_id, unit_price_type, unit_price, pay_unit_type, pay_rate,
       bill_transport_type, bill_transport_amount, pay_transport_type, pay_transport_amount, default_break_minutes, hours_basis, time_round_minutes,
-      pay_time_round, price_valid_from, client_id
+      pay_time_round, price_valid_from, client_id, COALESCE(engagement_type,'regular') AS engagement_type
       FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, ids).all()).results as any[] : []
   // クライアント単位のルール（#470）は、対象の案件のクライアントのものだけを読む
   const rules = (await db.prepare(`SELECT * FROM rate_rules WHERE company_id = ? AND (project_id IS NULL OR project_id IN ${JSON_IN})
@@ -176,6 +176,17 @@ export function resolvePrice(ctx: PriceContext, data: PricingData): ResolvedPric
     if (r.bill_transport_type) { out.bill_transport_type = r.bill_transport_type; out.bill_transport_amount = r.bill_transport_amount || 0; out.sources.bill_transport = ruleLabel(r) }
     if (r.pay_transport_type) { out.pay_transport_type = r.pay_transport_type; out.pay_transport_amount = r.pay_transport_amount || 0; out.sources.pay_transport = ruleLabel(r) }
   }
+  // 直近のシフトから引き継いだ単価（9306）は、単価の設定（案件の標準・単価ルール）より優先する。値のない項目は設定のまま
+  const ih = ctx.inherit
+  if (ih) {
+    const lb = inheritLabel(ih)
+    // 別のスタッフのシフトから引き継ぐとき（スポット）は、このスタッフのスタッフ別ルールがある項目はルールを使う（経験者加算などを活かす）
+    const own = (f: (r: any) => boolean) => !!ih.other_staff && matches.some(r => r.staff_id && f(r))
+    if (ih.bill_rate != null && !own(r => r.bill_rate != null)) { out.bill_rate = ih.bill_rate; out.bill_unit_type = unit(ih.bill_unit_type || out.bill_unit_type); out.sources.bill = lb }
+    if (ih.pay_rate != null && !own(r => r.pay_rate != null)) { out.pay_rate = ih.pay_rate; out.pay_unit_type = unit(ih.pay_unit_type || out.pay_unit_type); out.sources.pay = lb }
+    if (ih.bill_transport_type && !own(r => !!r.bill_transport_type)) { out.bill_transport_type = ih.bill_transport_type; out.bill_transport_amount = ih.bill_transport_amount || 0; out.sources.bill_transport = lb }
+    if (ih.pay_transport_type && !own(r => !!r.pay_transport_type)) { out.pay_transport_type = ih.pay_transport_type; out.pay_transport_amount = ih.pay_transport_amount || 0; out.sources.pay_transport = lb }
+  }
   // 枠の役割で単価を指定している場合は最優先（ただしスタッフ別の支払ルールは除く：経験者加算を活かす）
   const sr = ctx.slot_role
   if (sr) {
@@ -184,6 +195,165 @@ export function resolvePrice(ctx: PriceContext, data: PricingData): ResolvedPric
     if (sr.pay_rate != null && !staffPay) { out.pay_rate = sr.pay_rate; out.pay_unit_type = unit(sr.pay_unit_type || out.pay_unit_type); out.sources.pay = '枠の単価' }
   }
   return out
+}
+
+// =========================================================
+// 直近のシフトからの単価の引き継ぎ（9306）
+// 新しくシフトを作るとき（シフト登録・枠への割り当て・一括登録）に、直近のシフトの単価（請求・支払の単位と単価、交通費のルール、調整）を使う。
+//   常勤: 同じスタッフ × 同じ案件で、稼働日が今回より前のいちばん新しいシフト
+//   スポット: 同じ案件で、稼働日が今回以前のいちばん新しいシフト（人は見ない。同じ役割のものを優先）
+// 引き継ぎ元のあとに単価の設定（案件の標準・単価ルール）が変わったときは引き継がない。シフトには、作ったときの設定だけで決まる単価
+// （basis）を price_source に残しておき、引き継ぎ元の basis と、今の設定で引き継ぎ元と同じ条件・今回の稼働日の単価が違えば「変わった」とみなす。
+// 引き継いだ項目は、時間・休憩の変更などで計算し直しても保つ（computeShiftPricing の keep）。単価ルールの再適用・「単価ルールに戻す」では設定の単価にする
+// =========================================================
+export type InheritSource = {
+  shift_id: number; work_date: string
+  bill_unit_type: string | null; bill_rate: number | null; pay_unit_type: string | null; pay_rate: number | null
+  bill_transport_type: string | null; bill_transport_amount: number | null; pay_transport_type: string | null; pay_transport_amount: number | null
+  bill_adjust?: number | null; pay_adjust?: number | null; adjust_note?: string | null
+  other_staff?: boolean // 別のスタッフのシフトから引き継いだ（スポット）
+}
+export const INHERIT_LABEL = '前回のシフト'
+export const inheritLabel = (ih: { work_date: string }) => `${INHERIT_LABEL}（${Number(ih.work_date.slice(5, 7))}/${Number(ih.work_date.slice(8, 10))}）`
+const isInheritLabel = (v: any) => typeof v === 'string' && v.startsWith(INHERIT_LABEL)
+// 設定（案件の標準・単価ルール）から来た単価の印。これ以外（手動変更・枠の単価・引き継ぎ）は設定の値ではない
+const isSettingsLabel = (v: any) => typeof v === 'string' && (v === '案件の標準' || v === '未設定' || v.startsWith('ルール#'))
+const BASIS_KEYS = ['bill_unit_type', 'bill_rate', 'pay_unit_type', 'pay_rate', 'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount'] as const
+// price_source の項目と、basis の位置
+const BASIS_GROUPS: [string, number[]][] = [['bill', [0, 1]], ['pay', [2, 3]], ['bill_transport', [4, 5]], ['pay_transport', [6, 7]]]
+export function parsePriceSource(v: any): Record<string, any> {
+  if (!v) return {}
+  try { const o = JSON.parse(String(v)); return o && typeof o === 'object' && !Array.isArray(o) ? o : {} } catch { return {} }
+}
+// 比べるためにそろえる（単位は daily/hourly、交通費の方法は空なら実費、金額は数値）
+function normBasis(vals: any[]): any[] {
+  return BASIS_KEYS.map((k, i) => {
+    const v = vals[i]
+    if (k === 'bill_unit_type' || k === 'pay_unit_type') return unitOf(v)
+    if (k === 'bill_transport_type' || k === 'pay_transport_type') return v || 'actual'
+    if (k === 'bill_transport_amount' || k === 'pay_transport_amount') return Number(v || 0)
+    return v == null || v === '' ? null : Number(v)
+  })
+}
+// 単価の設定だけで決まる単価（枠の役割の単価・引き継ぎを除く）
+export function settingsBasis(ctx: PriceContext, data: PricingData): any[] {
+  const p = resolvePrice({ ...ctx, slot_role: null, inherit: null }, data) as any
+  return normBasis(BASIS_KEYS.map(k => p[k]))
+}
+// 引き継ぎ元の候補の行（loadInheritSources の SELECT）から、今回の稼働日に引き継ぐ単価を作る。設定が変わっていれば null
+// otherStaff（スポットで別のスタッフのシフトから引き継ぐ）: 引き継ぎ元のスタッフ別ルールで決まった項目と、調整（その人のもの）は引き継がない
+function inheritFromRow(companyId: number, row: any, workDate: string, data: PricingData, otherStaff = false): InheritSource | null {
+  const ctx: PriceContext = { company_id: companyId, project_id: row.project_id, site_id: row.site_id, role_name: row.slot_rate_role || row.role || null, staff_id: row.staff_id, work_date: row.work_date }
+  const src = parsePriceSource(row.price_source)
+  let then: any[]
+  if (Array.isArray(src.basis) && src.basis.length === BASIS_KEYS.length) then = normBasis(src.basis)
+  else {
+    // basis を残す前のシフト: 設定から来た項目（手動変更でない）はシフトの値、それ以外は今の設定で引き継ぎ元の稼働日の単価とみなす
+    then = settingsBasis(ctx, data)
+    if (!row.price_locked) {
+      const stored = normBasis(BASIS_KEYS.map(k => row[k]))
+      for (const [key, idx] of BASIS_GROUPS) if (isSettingsLabel(src[key])) for (const i of idx) then[i] = stored[i]
+    }
+  }
+  const now = settingsBasis({ ...ctx, work_date: workDate }, data)
+  if (then.some((v, i) => v !== now[i])) return null
+  const out: InheritSource = {
+    shift_id: row.shift_id, work_date: row.work_date,
+    bill_unit_type: row.bill_unit_type ?? null, bill_rate: row.bill_rate ?? null, pay_unit_type: row.pay_unit_type ?? null, pay_rate: row.pay_rate ?? null,
+    bill_transport_type: row.bill_transport_type ?? null, bill_transport_amount: row.bill_transport_amount ?? null,
+    pay_transport_type: row.pay_transport_type ?? null, pay_transport_amount: row.pay_transport_amount ?? null,
+    bill_adjust: row.bill_adjust ?? null, pay_adjust: row.pay_adjust ?? null, adjust_note: row.adjust_note ?? null,
+  }
+  if (!otherStaff) return out
+  // 引き継ぎ元のスタッフにスタッフ別ルールがある項目（スタッフを外すと設定の単価が変わる項目）は、その人の単価なので引き継がない
+  const anon = settingsBasis({ ...ctx, staff_id: null }, data), mine = settingsBasis(ctx, data)
+  const personal = (idx: number[]) => idx.some(i => anon[i] !== mine[i])
+  if (personal([0, 1])) out.bill_rate = null
+  if (personal([2, 3])) out.pay_rate = null
+  if (personal([4, 5])) out.bill_transport_type = null
+  if (personal([6, 7])) out.pay_transport_type = null
+  return { ...out, bill_adjust: null, pay_adjust: null, adjust_note: null, other_staff: true }
+}
+// 計算し直すときに保つ引き継ぎ（price_source に引き継ぎの印がある項目だけ、シフトの今の値を使う）
+function keptInherit(s: any): InheritSource | null {
+  const src = parsePriceSource(s?.price_source)
+  const ih = src.inherit
+  if (!ih || typeof ih.work_date !== 'string') return null
+  const kept = (k: string) => isInheritLabel(src[k])
+  return {
+    shift_id: Number(ih.shift_id) || 0, work_date: ih.work_date, other_staff: !!ih.other_staff,
+    bill_unit_type: s.bill_unit_type ?? null, bill_rate: kept('bill') ? s.bill_rate ?? null : null,
+    pay_unit_type: s.pay_unit_type ?? null, pay_rate: kept('pay') ? s.pay_rate ?? null : null,
+    bill_transport_type: kept('bill_transport') ? s.bill_transport_type ?? null : null, bill_transport_amount: s.bill_transport_amount ?? null,
+    pay_transport_type: kept('pay_transport') ? s.pay_transport_type ?? null : null, pay_transport_amount: s.pay_transport_amount ?? null,
+  }
+}
+// 引き継ぎ元を探す（items の順に結果を返す。見つからない・設定が変わったものは null）。
+// 一括登録のように日付が並ぶときも、問い合わせは 2〜3 回にまとめる（期間より前のいちばん新しいシフトと、期間の中のシフト）
+const INHERIT_COLS = `s.shift_id, s.project_id, s.staff_id, s.work_date, s.start_time, s.site_id, s.role, s.price_source, s.price_locked,
+  s.bill_unit_type, s.bill_rate, s.pay_unit_type, s.pay_rate, s.bill_transport_type, s.bill_transport_amount, s.pay_transport_type, s.pay_transport_amount,
+  s.bill_adjust, s.pay_adjust, s.adjust_note, COALESCE(r.rate_role_name, r.role_name) AS slot_rate_role`
+const INHERIT_ORDER = 's.work_date DESC, s.start_time DESC, s.shift_id DESC'
+const INHERIT_RANGE_MAX = 5000
+export async function loadInheritSources(db: D1Database, companyId: number, project: { project_id: number; engagement_type?: string | null },
+  items: { staff_id: number; work_date: string }[], data: PricingData, opts: { role_name?: string | null; exclude_shift_ids?: number[] } = {}): Promise<(InheritSource | null)[]> {
+  if (!items.length) return []
+  const spot = project.engagement_type === 'spot'
+  const dates = items.map(i => i.work_date).sort()
+  const minD = dates[0], maxD = dates[dates.length - 1]
+  const excl = bindJsonArray(opts.exclude_shift_ids || [])
+  const role = opts.role_name || null
+  const roleOf = (x: any) => x.slot_rate_role || x.role || null
+  const base = `FROM shifts s LEFT JOIN shift_slot_roles r ON r.slot_role_id = s.slot_role_id WHERE s.company_id = ? AND s.project_id = ? AND s.shift_id NOT IN ${JSON_IN}`
+  let before: any[] = [], inRange: any[] = []
+  if (spot) {
+    // スポット: 期間より前のいちばん新しいシフトと、同じ役割のいちばん新しいシフト
+    before = (await db.prepare(`SELECT ${INHERIT_COLS} ${base} AND s.work_date < ? ORDER BY ${INHERIT_ORDER} LIMIT 1`).bind(companyId, project.project_id, excl, minD).all()).results as any[]
+    if (role && !(before[0] && roleOf(before[0]) === role))
+      before.push(...(await db.prepare(`SELECT ${INHERIT_COLS} ${base} AND s.work_date < ? AND COALESCE(r.rate_role_name, r.role_name, s.role) = ? ORDER BY ${INHERIT_ORDER} LIMIT 1`)
+        .bind(companyId, project.project_id, excl, minD, role).all()).results as any[])
+    inRange = (await db.prepare(`SELECT ${INHERIT_COLS} ${base} AND s.work_date BETWEEN ? AND ? ORDER BY ${INHERIT_ORDER} LIMIT ${INHERIT_RANGE_MAX}`)
+      .bind(companyId, project.project_id, excl, minD, maxD).all()).results as any[]
+  } else {
+    // 常勤: スタッフごとに、期間より前のいちばん新しいシフトと、期間の中のシフト
+    const sids = bindJsonArray(items.map(i => i.staff_id))
+    before = (await db.prepare(`SELECT * FROM (SELECT ${INHERIT_COLS}, ROW_NUMBER() OVER (PARTITION BY s.staff_id ORDER BY ${INHERIT_ORDER}) AS rn
+      ${base} AND s.staff_id IN ${JSON_IN} AND s.work_date < ?) WHERE rn = 1`).bind(companyId, project.project_id, excl, sids, minD).all()).results as any[]
+    if (maxD > minD) inRange = (await db.prepare(`SELECT ${INHERIT_COLS} ${base} AND s.staff_id IN ${JSON_IN} AND s.work_date >= ? AND s.work_date < ? ORDER BY ${INHERIT_ORDER} LIMIT ${INHERIT_RANGE_MAX}`)
+      .bind(companyId, project.project_id, excl, sids, minD, maxD).all()).results as any[]
+  }
+  const cache = new Map<string, InheritSource | null>()
+  return items.map(it => {
+    const fits = (x: any) => (spot ? x.work_date <= it.work_date : x.work_date < it.work_date && Number(x.staff_id) === Number(it.staff_id))
+    const cands = [...inRange.filter(fits), ...before.filter(fits)]
+    const row = (spot && role ? cands.find(x => roleOf(x) === role) : null) || cands[0]
+    if (!row) return null
+    const other = spot && Number(row.staff_id) !== Number(it.staff_id)
+    const key = `${row.shift_id}:${it.work_date}:${other ? 1 : 0}`
+    if (!cache.has(key)) cache.set(key, inheritFromRow(companyId, row, it.work_date, data, other))
+    return cache.get(key)!
+  })
+}
+// 1件のシフト（これから作るもの・付け替えるもの）の引き継ぎ元
+export async function findInheritSource(db: D1Database, companyId: number, s: { project_id: number; staff_id: number; work_date: string; role_name?: string | null; exclude_shift_id?: number | null },
+  data: PricingData): Promise<InheritSource | null> {
+  const proj = data.projects.get(Number(s.project_id))
+  if (!proj) return null
+  return (await loadInheritSources(db, companyId, proj, [{ staff_id: s.staff_id, work_date: s.work_date }], data,
+    { role_name: s.role_name, exclude_shift_ids: s.exclude_shift_id ? [s.exclude_shift_id] : [] }))[0]
+}
+// 引き継いだ調整（請求・支払の調整と内容）。引き継ぎ元に調整がなければ空
+export function inheritedAdjust(ih: InheritSource | null | undefined): { bill_adjust: number; pay_adjust: number; adjust_note: string | null } | null {
+  if (!ih || (!Number(ih.bill_adjust || 0) && !Number(ih.pay_adjust || 0))) return null
+  return { bill_adjust: Number(ih.bill_adjust || 0), pay_adjust: Number(ih.pay_adjust || 0), adjust_note: ih.adjust_note ?? null }
+}
+// 画面に返す引き継ぎの内容（引き継ぎ元のシフトの日付と金額）
+export function inheritView(ih: InheritSource | null | undefined) {
+  if (!ih) return null
+  return { shift_id: ih.shift_id, work_date: ih.work_date, label: inheritLabel(ih), bill_unit_type: unitOf(ih.bill_unit_type), bill_rate: ih.bill_rate,
+    pay_unit_type: unitOf(ih.pay_unit_type), pay_rate: ih.pay_rate, bill_transport_type: ih.bill_transport_type, bill_transport_amount: ih.bill_transport_amount,
+    pay_transport_type: ih.pay_transport_type, pay_transport_amount: ih.pay_transport_amount,
+    bill_adjust: ih.bill_adjust ?? null, pay_adjust: ih.pay_adjust ?? null, adjust_note: ih.adjust_note ?? null }
 }
 
 // 数量（日額=1、時給=拘束時間−休憩）と金額の計算。hoursOverride を渡すとその時間で計算する（実働時間）
@@ -312,8 +482,14 @@ export const PRICE_COLUMNS = ['bill_unit_type', 'bill_rate', 'bill_qty', 'unit_p
 export function rateRoleName(s: any, slotRole: any): string | null {
   return (slotRole ? (slotRole.rate_role_name || slotRole.role_name) : null) || s.role || null
 }
-export function computeShiftPricing(companyId: number, s: any, slotRole: any, payee: Payee, data: PricingData) {
-  const price = resolvePrice({ company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: rateRoleName(s, slotRole), staff_id: s.staff_id, slot_role: slotRole, work_date: s.work_date }, data)
+// inherit: 引き継ぐ単価（9306）。省略したら、シフトがすでに引き継いでいる項目を保つ（新しい行・引き継いでいない行は設定どおり）。null なら引き継がない
+export function computeShiftPricing(companyId: number, s: any, slotRole: any, payee: Payee, data: PricingData, inherit?: InheritSource | null) {
+  const ih = inherit === undefined ? keptInherit(s) : inherit
+  const ctx: PriceContext = { company_id: companyId, project_id: s.project_id, site_id: s.site_id, role_name: rateRoleName(s, slotRole), staff_id: s.staff_id, slot_role: slotRole, work_date: s.work_date, inherit: ih }
+  const price = resolvePrice(ctx, data)
+  // 設定だけで決まる単価（basis）と、引き継いだときは引き継ぎ元を残す（次のシフトの引き継ぎで、設定が変わったかを確かめるため）
+  const inherited = !!ih && Object.values(price.sources).some(isInheritLabel)
+  const source = { ...price.sources, basis: settingsBasis(ctx, data), ...(inherited ? { inherit: { shift_id: ih!.shift_id, work_date: ih!.work_date, ...(ih!.other_staff ? { other_staff: true } : {}) } } : {}) }
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
   const amt = calcAmounts(price, s.start_time, s.end_time, brk, hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj)))
@@ -323,22 +499,75 @@ export function computeShiftPricing(companyId: number, s: any, slotRole: any, pa
     bill_transport_type: price.bill_transport_type, bill_transport_amount: price.bill_transport_amount,
     pay_transport_type: price.pay_transport_type, pay_transport_amount: price.pay_transport_amount,
     payee_type: payee.payee_type, payee_affiliation_id: payee.payee_affiliation_id, payee_company_id: payee.payee_company_id,
-    price_source: JSON.stringify(price.sources), price_locked: 0,
+    price_source: JSON.stringify(source), price_locked: 0,
   } as Record<string, any>
 }
 
 // シフトの単価・金額・支払先を計算して書き込む（price_locked のシフトは金額を変えない）。
 // 1件ごとに問い合わせるため、多くのシフトをまとめて処理するとき（再適用・一括登録・コピー）は computeShiftPricing で計算し、まとめて書き込む
-export async function applyPricingToShift(db: D1Database, companyId: number, shiftId: number, opts: { force?: boolean; data?: any } = {}) {
+// inherit（9306）: 省略したら、引き継いでいる項目を保つ（force のとき＝「単価ルールに戻す」・案件の変更は引き継がない）。
+// 'fresh' は引き継ぎ元を探し直す（新しく作ったシフト、担当者を替えたシフト）。null は引き継がない。
+// 戻り値は使った引き継ぎ（画面に返すため）
+export async function applyPricingToShift(db: D1Database, companyId: number, shiftId: number, opts: { force?: boolean; data?: any; inherit?: InheritSource | null | 'fresh' } = {}): Promise<InheritSource | null> {
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
-  if (!s) return
-  if (isSettled(s)) return // 確定済みは変更しない
-  if (s.price_locked && !opts.force) return
+  if (!s) return null
+  if (isSettled(s)) return null // 確定済みは変更しない
+  if (s.price_locked && !opts.force) return null
   const data = opts.data || await loadPricingData(db, companyId, [s.project_id])
   const slotRole = s.slot_role_id ? await db.prepare('SELECT * FROM shift_slot_roles WHERE slot_role_id = ?').bind(s.slot_role_id).first() : null
-  const v = computeShiftPricing(companyId, s, slotRole, await resolvePayee(db, companyId, s.staff_id, s.work_date), data)
+  const ih = opts.inherit === 'fresh'
+    ? await findInheritSource(db, companyId, { project_id: s.project_id, staff_id: s.staff_id, work_date: s.work_date, role_name: rateRoleName(s, slotRole), exclude_shift_id: s.shift_id }, data)
+    : opts.inherit !== undefined ? opts.inherit : opts.force ? null : undefined
+  const v = computeShiftPricing(companyId, s, slotRole, await resolvePayee(db, companyId, s.staff_id, s.work_date), data, ih)
   await db.prepare(`UPDATE shifts SET ${PRICE_COLUMNS.map(k => `${k} = ?`).join(', ')} WHERE shift_id = ? AND company_id = ?`)
     .bind(...PRICE_COLUMNS.map(k => v[k]), shiftId, companyId).run()
+  return parsePriceSource(v.price_source).inherit ? (ih || keptInherit(s)) : null
+}
+// 手動変更の印。設定だけで決まる単価（basis）は残す（手動で決めた単価を次のシフトに引き継ぐとき、設定が変わったかを確かめるため。9306）
+export function manualSource(prev: any) {
+  const b = parsePriceSource(prev).basis
+  return JSON.stringify({ manual: '手動変更', ...(Array.isArray(b) ? { basis: b } : {}) })
+}
+// 登録の画面で変えた単価（9306）。請求・支払の単位と単価のうち、送られてきたものだけ。空欄は変えない
+export type RateOverride = { bill_unit_type?: string; bill_rate?: number; pay_unit_type?: string; pay_rate?: number }
+export function rateOverrideOf(b: any): { error?: string; value: RateOverride | null } {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return { value: null }
+  const err = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX]])
+  if (err) return { error: err, value: null }
+  const v: RateOverride = {}
+  const has = (x: any) => x !== undefined && x !== null && x !== ''
+  if (has(b.bill_rate)) { v.bill_rate = Math.round(Number(b.bill_rate)); if (has(b.bill_unit_type)) v.bill_unit_type = unitOf(b.bill_unit_type) }
+  if (has(b.pay_rate)) { v.pay_rate = Math.round(Number(b.pay_rate)); if (has(b.pay_unit_type)) v.pay_unit_type = unitOf(b.pay_unit_type) }
+  return { value: Object.keys(v).length ? v : null }
+}
+// 計算した単価と違えば、手動変更（price_locked）として単価・金額を置き換える列を返す（同じなら null）。数量は固定しない（時給は実働に合わせる。#196）
+export function overridePricing(s: any, ov: RateOverride | null, proj: any): Record<string, any> | null {
+  if (!ov) return null
+  const next = {
+    bill_unit_type: ov.bill_unit_type ?? unitOf(s.bill_unit_type), bill_rate: ov.bill_rate ?? s.bill_rate ?? null,
+    pay_unit_type: ov.pay_unit_type ?? unitOf(s.pay_unit_type), pay_rate: ov.pay_rate ?? s.pay_rate ?? null,
+  }
+  if (next.bill_unit_type === unitOf(s.bill_unit_type) && next.pay_unit_type === unitOf(s.pay_unit_type)
+    && (next.bill_rate ?? null) === (s.bill_rate ?? null) && (next.pay_rate ?? null) === (s.pay_rate ?? null)) return null
+  const brk = s.break_minutes ?? proj?.default_break_minutes ?? 0
+  const amt = calcAmounts(next, s.start_time, s.end_time, brk, hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj || {})))
+  return { ...next, bill_qty: amt.bill_qty, unit_price: amt.unit_price, pay_qty: amt.pay_qty, pay_amount: amt.pay_amount, price_locked: 1, qty_locked: 0, price_source: manualSource(s.price_source) }
+}
+export async function applyRateOverride(db: D1Database, companyId: number, shiftId: number, ov: RateOverride | null, data: PricingData): Promise<boolean> {
+  if (!ov) return false
+  const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(shiftId, companyId).first() as any
+  if (!s || isSettled(s)) return false
+  const set = overridePricing(s, ov, data.projects.get(Number(s.project_id)))
+  if (!set) return false
+  const cols = Object.keys(set)
+  await db.prepare(`UPDATE shifts SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE shift_id = ? AND company_id = ?`).bind(...cols.map(k => set[k]), shiftId, companyId).run()
+  return true
+}
+// 作ったシフトに、引き継いだ調整（請求・支払の調整と内容）を入れる（9306。調整は単価の計算では変えない列なので、作るときだけ）
+export function inheritedAdjustStmt(db: D1Database, companyId: number, shiftId: number, ih: InheritSource | null | undefined): D1PreparedStatement | null {
+  const adj = inheritedAdjust(ih)
+  if (!adj) return null
+  return db.prepare('UPDATE shifts SET bill_adjust = ?, pay_adjust = ?, adjust_note = ? WHERE shift_id = ? AND company_id = ?').bind(adj.bill_adjust, adj.pay_adjust, adj.adjust_note, shiftId, companyId)
 }
 
 // ---------- 一括処理（再適用・一括登録・コピー）の共通部分 ----------
@@ -1093,7 +1322,7 @@ app.put('/shift-slots/:id', async (c) => {
   // 単価の再計算（手動変更・確定済みは対象外。役割の単価・開催場所・時間の変更を反映する）
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE slot_id = ? AND company_id = ? AND COALESCE(price_locked,0) = 0 AND COALESCE(settle_status,'planned') != 'confirmed'`)
     .bind(slot.slot_id, u.company_id).all()).results as any[]
-  await repriceRows(db, u.company_id, rows)
+  await repriceRows(db, u.company_id, rows, true)
   await finishLog(op)
   if (notifyIds.length) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, notifyIds))
   return c.json({ ok: true, detached: detach.length, locked_kept: lockedKept, warnings })
@@ -1139,12 +1368,22 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     const adding = chk.staff.filter(s => !chk.already.has(s.staff_id)).length
     warnings.push(...await capacityWarnings(db, u.company_id, new Map([[Number(role.slot_role_id), adding]])))
   }
+  // 画面で変えた単価（9306。選んだ全員に同じ単価を入れる）
+  const ov = rateOverrideOf(b.price)
+  if (ov.error) return c.json({ error: ov.error }, 400)
   if (warnings.length && !b.force) return c.json({ warnings, need_force: true }, 409)
 
   const data = await loadPricingData(db, u.company_id, [role.project_id])
   // 交通費の入力がなければ、スタッフの標準（開催場所 → スタッフ）を入れる（#564）
   const fee = feeInput(b.transportation_fee)
   const tdefs = fee == null ? await loadTransportDefaults(db, u.company_id, chk.staff.map((s: any) => s.staff_id)) : null
+  // 直近のシフトの単価を引き継ぐ（9306。inherit: false なら単価の設定のまま）
+  const toAdd = chk.staff.filter((s: any) => !chk.already.has(s.staff_id))
+  const proj = data.projects.get(Number(role.project_id))
+  const ihs = b.inherit === false || !proj ? [] : await loadInheritSources(db, u.company_id, proj, toAdd.map((s: any) => ({ staff_id: s.staff_id, work_date: role.work_date })), data,
+    { role_name: rateRoleName({ role: role.role_name }, role) })
+  const ihOf = new Map<number, InheritSource | null>(toAdd.map((s: any, i: number) => [s.staff_id, ihs[i] ?? null]))
+  const inherited: any[] = []
   const created: number[] = []
   for (const s of chk.staff) {
     if (chk.already.has(s.staff_id)) continue
@@ -1159,8 +1398,13 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
       if (isUniqueViolation(e)) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
       throw e
     }
-    await applyPricingToShift(db, u.company_id, res.meta.last_row_id as number, { data })
-    created.push(res.meta.last_row_id as number)
+    const newId = res.meta.last_row_id as number
+    const used = await applyPricingToShift(db, u.company_id, newId, { data, inherit: ihOf.get(s.staff_id) ?? null })
+    const adjStmt = inheritedAdjustStmt(db, u.company_id, newId, used)
+    if (adjStmt) await adjStmt.run()
+    await applyRateOverride(db, u.company_id, newId, ov.value, data)
+    if (used) inherited.push({ staff_id: s.staff_id, staff_name: s.name, new_shift_id: newId, ...inheritView(used) })
+    created.push(newId)
   }
   if (created.length) { // 操作履歴（#159）
     const op = opLog(db, u, 'assign')
@@ -1168,7 +1412,8 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     await finishLog(op)
   }
   await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(db, u.company_id, created)) // 本人に知らせる（#155）
-  return c.json({ ok: true, shift_ids: created, warnings })
+  // inherited: 直近のシフトの単価を引き継いだもの（引き継ぎ元のシフトの日付と金額。9306）
+  return c.json({ ok: true, shift_ids: created, warnings, inherited })
 })
 
 // シフトを別の枠・役割へ移動（案件が変われば単価を再計算）。slot_role_id=null なら枠から外す
@@ -1404,7 +1649,7 @@ app.put('/shifts/:id/price', async (c) => {
     .bind(billUnit, billRate, billQty, billAmount, payUnit, payRate, payQty, payAmount,
       brk, b.transportation_fee !== undefined ? (intOrNull(b.transportation_fee) ?? 0) : s.transportation_fee,
       bt, btAmt, pt, ptAmt,
-      ...adj.values, locked, qtyLocked ? 1 : 0, locked ? JSON.stringify({ manual: '手動変更' }) : s.price_source, s.shift_id)])
+      ...adj.values, locked, qtyLocked ? 1 : 0, locked ? manualSource(s.price_source) : s.price_source, s.shift_id)])
   await finishLog(op)
   return c.json({ ok: true, price_locked: !!locked, qty_locked: qtyLocked })
 })
@@ -1412,7 +1657,8 @@ app.put('/shifts/:id/price', async (c) => {
 // 単価ルールの再適用（手動変更・確定済みのシフトは対象外）。
 // 必要な行をまとめて読み、メモリ上で計算して、まとめて書き込む。1回に BULK_LIMIT 件まで処理し、残りがあれば next_cursor（最後に処理した shift_id）を返す
 // 再適用した後の単価・金額・支払先を計算する（書き込みはしない）。staff はスタッフ名の表示にも使う
-async function planReprice(db: D1Database, companyId: number, rows: any[]) {
+// keepInherited: 直近のシフトから引き継いだ単価（9306）を保つ（枠・パターンの時間の変更）。単価ルールの再適用では保たず、設定の単価にする
+async function planReprice(db: D1Database, companyId: number, rows: any[], keepInherited = false) {
   const data = await loadPricingData(db, companyId, rows.map(r => r.project_id))
   const staff = await loadStaffForAssign(db, companyId, rows.map(r => r.staff_id))
   const hist = await loadPayeeHistory(db, companyId, rows.map(r => r.staff_id))
@@ -1420,12 +1666,12 @@ async function planReprice(db: D1Database, companyId: number, rows: any[]) {
   const roles = roleIds === '[]' ? [] : (await db.prepare(`SELECT r.* FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id
     WHERE sl.company_id = ? AND r.slot_role_id IN ${JSON_IN}`).bind(companyId, roleIds).all()).results as any[]
   const roleMap = new Map(roles.map(r => [r.slot_role_id, r]))
-  const upd = rows.map(s => ({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roleMap.get(s.slot_role_id) || null : null, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), s.work_date), data) }))
+  const upd = rows.map(s => ({ shift_id: s.shift_id, ...computeShiftPricing(companyId, s, s.slot_role_id ? roleMap.get(s.slot_role_id) || null : null, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), s.work_date), data, keepInherited ? undefined : null) }))
   return { upd, staff }
 }
-async function repriceRows(db: D1Database, companyId: number, rows: any[]): Promise<number> {
+async function repriceRows(db: D1Database, companyId: number, rows: any[], keepInherited = false): Promise<number> {
   if (!rows.length) return 0
-  const { upd } = await planReprice(db, companyId, rows)
+  const { upd } = await planReprice(db, companyId, rows, keepInherited)
   // 読み込みの後に確定・手動変更されたシフトは書き換えない
   const res = await batchInChunks(db, updateRowsStmts(db, 'shifts', 'shift_id', PRICE_COLUMNS, upd,
     "shifts.company_id = ? AND COALESCE(shifts.price_locked,0) = 0 AND COALESCE(shifts.settle_status,'planned') != 'confirmed'", [companyId]))
@@ -1504,6 +1750,8 @@ app.post('/shifts/bulk', async (c) => {
   const wds = new Set(((b.weekdays || []) as any[]).map(Number))
   if (!wds.size) return c.json({ error: '曜日を選択してください' }, 400)
   if (!isTime(b.start_time) || !isTime(b.end_time)) return c.json({ error: '開始・終了時刻を入力してください' }, 400)
+  const ov = rateOverrideOf(b.price) // 画面で変えた単価（9306。全員・全日に同じ単価を入れる）
+  if (ov.error) return c.json({ error: ov.error }, 400)
   const staff = await loadStaffForAssign(db, u.company_id, staffIds)
   if (staff.size !== staffIds.length) return c.json({ error: 'スタッフが見つかりません' }, 400)
   const hist = await loadPayeeHistory(db, u.company_id, staffIds)
@@ -1531,7 +1779,14 @@ app.post('/shifts/bulk', async (c) => {
     status: 'confirmed', registered_by: u.user_id, slot_id: null, slot_role_id: null, site_id: site?.site_id ?? null, break_minutes: intOrNull(b.break_minutes), source_shift_id: null,
   }
   const rows: any[] = []; const skipped: Skipped[] = []
+  // 直近のシフトの単価を引き継ぐ（9306）。引き継ぎ元は、すでにあるシフトから日付ごとに選ぶ（今回まとめて作る分は、同じ引き継ぎ元から作るので見ない）
+  const bproj = data.projects.get(Number(project.project_id))
+  const ihs = b.inherit === false || !bproj ? [] : await loadInheritSources(db, u.company_id, bproj, part.map(([d, sid]) => ({ staff_id: sid, work_date: d })), data, { role_name: base.role })
+  const inheritedFrom = new Map<number, any>() // スタッフごとの、いちばん後の日付の引き継ぎ（画面に返す）
+  let inheritedCount = 0
+  let pi = -1
   for (const [d, sid] of part) {
+    pi++
     const st = staff.get(sid)
     let reason = ineligibleReason(st, d), detail: string | undefined
     if (!reason && closedAt(d)) { reason = '締め'; detail = closedAt(d)! }
@@ -1542,10 +1797,16 @@ app.post('/shifts/bulk', async (c) => {
     }
     if (reason) { skipped.push({ date: d, staff_id: sid, staff_name: st?.name || '', reason, detail, project_name: project.project_name, start_time: b.start_time, end_time: b.end_time }); continue }
     const row: any = { ...base, staff_id: sid, work_date: d, transportation_fee: fee ?? transportDefaultFor(tdefs, sid, base.site_id) ?? 0 }
-    rows.push({ ...row, ...computeShiftPricing(u.company_id, row, null, payeeOn(st, hist.get(sid), d), data) })
+    const ih = ihs[pi] ?? null
+    const priced: any = { ...row, ...computeShiftPricing(u.company_id, row, null, payeeOn(st, hist.get(sid), d), data, ih) }
+    const used = parsePriceSource(priced.price_source).inherit ? ih : null
+    Object.assign(priced, { qty_locked: null, bill_adjust: 0, pay_adjust: 0, adjust_note: null }, inheritedAdjust(used) || {})
+    Object.assign(priced, overridePricing(priced, ov.value, bproj) || {})
+    if (used) { inheritedCount++; inheritedFrom.set(sid, { staff_id: sid, staff_name: st?.name || '', ...inheritView(used) }) }
+    rows.push(priced)
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
-  const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { returning: 'shift_id' }))
+  const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', [...SHIFT_INSERT_COLUMNS, 'qty_locked', 'bill_adjust', 'pay_adjust', 'adjust_note'], rows, { returning: 'shift_id' }))
   await logCreatedShifts(db, u, 'bulk_create', returnedIds(res, 'shift_id')) // 操作履歴（#159）
   // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。件数が多く何回かに分けて呼ばれるときは、
   // 最後の回で、この操作で登録したシフト（同じ案件・期間・時刻・登録した人で、2時間以内に作ったもの）をまとめて知らせる（分けた回ごとに届かないように）
@@ -1558,7 +1819,9 @@ app.post('/shifts/bulk', async (c) => {
           JSON.stringify(staffIds)).all()).results as any[]).map(r => r.shift_id))
     await notifyShiftChanges(c, u.company_id, [], made)
   }
-  return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next })
+  // inherited: 直近のシフトの単価を引き継いだ件数、inherited_from: スタッフごとの引き継ぎ元（日付と金額。9306）
+  return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next,
+    inherited: inheritedCount, inherited_from: [...inheritedFrom.values()] })
 })
 
 // まとめて作ったシフトの操作履歴（#159）。作成の後の値だけを残す。
@@ -1962,7 +2225,7 @@ app.put('/slot-patterns/:id', async (c) => {
   }
   // 時刻・休憩を変えたシフトの単価を計算し直す（時給の時間が変わるため）
   const repriced = moving.length ? await repriceRows(db, u.company_id, ((await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`)
-    .bind(u.company_id, bindJsonArray(moving.map(x => x.s.shift_id))).all()).results as any[])) : 0
+    .bind(u.company_id, bindJsonArray(moving.map(x => x.s.shift_id))).all()).results as any[]), true) : 0
   return c.json({ ok: true, ...summary, extend_slots: createdSlots, repriced })
 })
 // パターンの削除: remove_future=1 なら、今日以降で割り当てのない枠も削除
@@ -2193,6 +2456,44 @@ app.get('/rate-rules/resolve', async (c) => {
   const start = isTime(c.req.query('start_time')) ? c.req.query('start_time')! : '10:00', end = isTime(c.req.query('end_time')) ? c.req.query('end_time')! : '19:00'
   const brk = intOrNull(c.req.query('break_minutes')) ?? data.projects.get(pid)?.default_break_minutes ?? 60
   return c.json({ work_date: workDate, price, amounts: calcAmounts(price, start, end, brk) })
+})
+
+// 登録する前の単価の見込み（9306）。シフト登録・枠への割り当て・一括登録の画面で、直近のシフトから引き継ぐ単価と、単価の設定の単価を出す。
+// project_id と work_date（または slot_role_id）、staff_ids（カンマ区切り。最大200人）。スポットはスタッフを選ばなくても引き継ぎ元を返す
+const PREVIEW_STAFF_MAX = 200
+app.get('/shifts/price-preview', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const q = (k: string) => c.req.query(k)
+  const role = q('slot_role_id') ? await ownSlotRole(db, u.company_id, q('slot_role_id')) : null
+  if (q('slot_role_id') && !role) return c.json({ error: '枠が見つかりません' }, 404)
+  const pid = role ? Number(role.project_id) : intOrNull(q('project_id'))
+  if (!pid || !(await ownProject(db, u.company_id, pid))) return c.json({ error: '案件を指定してください' }, 400)
+  const workDate: string | null = role ? role.work_date : isISODate(q('work_date')) ? q('work_date')! : null
+  if (!workDate) return c.json({ error: '日付を指定してください' }, 400)
+  const start = role ? role.start_time : isTime(q('start_time')) ? q('start_time')! : '09:30'
+  const end = role ? role.end_time : isTime(q('end_time')) ? q('end_time')! : '19:00'
+  const siteId = role ? role.site_id ?? null : intOrNull(q('site_id'))
+  const data = await loadPricingData(db, u.company_id, [pid])
+  const proj = data.projects.get(pid) || {}
+  const brk = role ? role.break_minutes ?? proj.default_break_minutes ?? 0 : intOrNull(q('break_minutes')) ?? proj.default_break_minutes ?? 0
+  const roleName = role ? rateRoleName({ role: role.role_name }, role) : (String(q('role') || '').trim() || '販売スタッフ')
+  const staffIds = [...new Set(String(q('staff_ids') || '').split(',').map(Number).filter(n => Number.isInteger(n) && n > 0))].slice(0, PREVIEW_STAFF_MAX)
+  // 自社のスタッフだけ
+  const own = staffIds.length ? new Set(((await db.prepare(`SELECT staff_id FROM staff_profiles WHERE company_id = ? AND staff_id IN ${JSON_IN}`)
+    .bind(u.company_id, bindJsonArray(staffIds)).all()).results as any[]).map(r => r.staff_id)) : new Set<number>()
+  const targets: (number | null)[] = staffIds.filter(id => own.has(id))
+  if (!targets.length && proj.engagement_type === 'spot') targets.push(null)
+  const ihs = await loadInheritSources(db, u.company_id, proj, targets.map(id => ({ staff_id: id ?? 0, work_date: workDate })), data, { role_name: roleName })
+  const view = (p: ResolvedPrice) => ({ bill_unit_type: p.bill_unit_type, bill_rate: p.bill_rate, pay_unit_type: p.pay_unit_type, pay_rate: p.pay_rate,
+    bill_transport_type: p.bill_transport_type, bill_transport_amount: p.bill_transport_amount, pay_transport_type: p.pay_transport_type, pay_transport_amount: p.pay_transport_amount,
+    sources: p.sources, amounts: calcAmounts(p, start, end, brk) })
+  const items = targets.map((sid, i) => {
+    const ctx: PriceContext = { company_id: u.company_id, project_id: pid, site_id: siteId, role_name: roleName, staff_id: sid, slot_role: role, work_date: workDate }
+    const settings = resolvePrice(ctx, data)
+    const price = resolvePrice({ ...ctx, inherit: ihs[i] }, data)
+    const used = Object.values(price.sources).some(isInheritLabel) ? ihs[i] : null
+    return { staff_id: sid, inherited: inheritView(used), price: view(price), settings: view(settings) }
+  })
+  return c.json({ project_id: pid, engagement_type: proj.engagement_type || 'regular', work_date: workDate, items })
 })
 
 // 案件の標準単価の改定履歴（#210）
