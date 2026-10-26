@@ -3707,7 +3707,7 @@ async function validateProfileBase(c: any, body: any, roster: any): Promise<stri
     if (conflict) return conflict
     // 所属会社は登録済みの取引先から選ぶ（#161。自由入力の名前を取引先として自動で登録すると、表記ゆれが別の支払先になるため）
     const known = await c.env.DB.prepare('SELECT 1 FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ? AND merged_into_id IS NULL').bind(u.company_id, body.affiliation).first()
-    if (!known) return `取引先「${body.affiliation}」は登録されていません。スタッフマスタの「取引先の管理」で登録してから選んでください`
+    if (!known) return `協力会社「${body.affiliation}」は登録されていません。スタッフマスタの「協力会社の管理」で登録してから選んでください`
   }
   return null
 }
@@ -4512,7 +4512,7 @@ api.post('/admin/staff-affiliations', async (c) => {
   const conflict = await partnerNameConflict(c.env.DB, u.company_id, affiliation_name)
   if (conflict) return c.json({ error: conflict }, 400)
   // 自社名は取引先にしない（#262）
-  if (String(affiliation_name).trim() === await ownCompanyName(c.env.DB, u.company_id)) return c.json({ error: '自社名は取引先として登録できません' }, 400)
+  if (String(affiliation_name).trim() === await ownCompanyName(c.env.DB, u.company_id)) return c.json({ error: '自社名は協力会社として登録できません' }, 400)
   await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)')
     .bind(u.company_id, affiliation_name).run()
   return c.json({ ok: true })

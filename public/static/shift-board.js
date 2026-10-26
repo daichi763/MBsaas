@@ -8,7 +8,7 @@
   const UNIT_LABEL = { daily: '日額', hourly: '時給' }
   const BT_LABEL = { actual: '実費を請求', fixed: '定額を請求', included: '単価に込み（請求なし）' }
   const PT_LABEL = { actual: '実費を支払', capped: '実費（上限あり）', fixed: '定額を支払', none: '支払なし' }
-  const AFF_SHORT = { own_employee: '自社', linked_external: '他社', partner_manual: '取引先', skillsheet_only: 'シート' }
+  const AFF_SHORT = { own_employee: '自社', linked_external: '他社', partner_manual: '協力会社', skillsheet_only: 'シート' }
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const d0 = (d) => dayjs(d).format('YYYY-MM-DD')
 
@@ -1231,7 +1231,7 @@
     const c = window.__repriceCtx || {}
     return { from: document.getElementById('rp-from').value, to: document.getElementById('rp-to').value, ...(c.pid ? { project_id: c.pid } : {}), ...(c.staffId ? { staff_id: c.staffId } : {}), ...(c.clientId ? { client_id: c.clientId } : {}) }
   }
-  const PAYEE_SHORT = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' }
+  const PAYEE_SHORT = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' }
   const signedYen = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + yen(Math.abs(n))
   delegate('repricePreview', el => withSubmitLock(el, async () => {
     const box = document.getElementById('rp-result'); const body = repriceBody()

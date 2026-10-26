@@ -30,15 +30,15 @@ const SYSTEM_CODE_RE = /^(TMP|PT|SS|LK)-/i
 
 // CSV の列（見出し）。aliases は別の書き方の見出し（全角・半角、空白、* は無視して比べる）
 const COLUMNS: { key: string; label: string; aliases?: string[]; example: string; note?: string }[] = [
-  { key: 'type', label: '区分', aliases: ['affiliation_type'], example: '自社雇用', note: '自社雇用 / 取引先 / スキルシートのみ' },
+  { key: 'type', label: '区分', aliases: ['affiliation_type'], example: '自社雇用', note: '自社雇用 / 協力会社 / スキルシートのみ' },
   { key: 'name', label: '氏名', example: '山田 太郎' },
   { key: 'kana', label: 'フリガナ', example: 'ヤマダ タロウ' },
   { key: 'gender', label: '性別', example: '男性', note: '男性 / 女性 / その他 / 回答しない' },
   { key: 'date_of_birth', label: '生年月日', example: '1995-04-01' },
   { key: 'phone', label: '電話番号', aliases: ['電話'], example: '09012345678' },
   { key: 'email', label: 'メール', aliases: ['メールアドレス'], example: '' },
-  { key: 'user_code', label: 'スタッフ番号', example: '', note: '自社雇用で空欄なら空いている番号を使う。取引先は入れたときだけログインを作る' },
-  { key: 'partner_name', label: '取引先名', example: '', note: '取引先の人のみ（必須）' },
+  { key: 'user_code', label: 'スタッフ番号', example: '', note: '自社雇用で空欄なら空いている番号を使う。協力会社は入れたときだけログインを作る' },
+  { key: 'partner_name', label: '協力会社名', aliases: ['取引先名'], example: '', note: '協力会社の人のみ（必須）' },
   { key: 'affiliation_contact', label: '所属先担当者名', example: '' },
   { key: 'affiliation', label: '所属会社名', example: '', note: 'スキルシートのみの人の表示用' },
   { key: 'skills', label: 'スキル', example: 'MNP,接客' },
@@ -54,10 +54,10 @@ const COLUMNS: { key: string; label: string; aliases?: string[]; example: string
 ]
 const TYPE_VALUES: Record<string, AffiliationType> = {
   自社雇用: 'own_employee', 自社: 'own_employee', 従業員: 'own_employee', own_employee: 'own_employee', employee: 'own_employee',
-  取引先: 'partner_manual', partner_manual: 'partner_manual', partner: 'partner_manual',
+  協力会社: 'partner_manual', 取引先: 'partner_manual', partner_manual: 'partner_manual', partner: 'partner_manual',
   スキルシートのみ: 'skillsheet_only', スキルシート: 'skillsheet_only', skillsheet_only: 'skillsheet_only', skillsheet: 'skillsheet_only',
 }
-const IMPORT_TYPE_LABEL: Record<string, string> = { own_employee: '自社雇用', partner_manual: '取引先', skillsheet_only: 'スキルシートのみ' }
+const IMPORT_TYPE_LABEL: Record<string, string> = { own_employee: '自社雇用', partner_manual: '協力会社', skillsheet_only: 'スキルシートのみ' }
 const GENDER_VALUES: Record<string, string> = {
   男性: 'male', 男: 'male', male: 'male', m: 'male', 女性: 'female', 女: 'female', female: 'female', f: 'female',
   その他: 'other', other: 'other', 回答しない: 'unspecified', 無回答: 'unspecified', unspecified: 'unspecified',
@@ -151,7 +151,7 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
   const type = TYPE_VALUES[raw.type] || TYPE_VALUES[(raw.type || '').toLowerCase()] || null
   const name = raw.name || ''
   const out: RowResult = { line, type, type_label: type ? IMPORT_TYPE_LABEL[type] : (raw.type || ''), name, user_code: null, login: false, errors, warnings, notes }
-  if (!type) errors.push(raw.type ? `区分「${raw.type}」は使えません（自社雇用 / 取引先 / スキルシートのみ）` : '区分を入れてください')
+  if (!type) errors.push(raw.type ? `区分「${raw.type}」は使えません（自社雇用 / 協力会社 / スキルシートのみ）` : '区分を入れてください')
   if (!name) errors.push('氏名を入れてください')
   const gender = GENDER_VALUES[raw.gender] || GENDER_VALUES[(raw.gender || '').toLowerCase()] || null
   if (!raw.gender) errors.push('性別を入れてください')
@@ -194,12 +194,12 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
   // 所属会社（取引先）
   if (type === 'partner_manual') {
     const pname = raw.partner_name || ''
-    if (!pname) errors.push('取引先の人は取引先名を入れてください')
-    else if (pname === ctx.ownName) errors.push('自社名は取引先として登録できません（区分を「自社雇用」にしてください）')
-    else if (ctx.otherCompanyNames.has(pname)) errors.push(`「${pname}」はField OSの導入企業のため、取引先として登録できません（①QR/ID連携で登録してください）`)
-    else if (!ctx.partners.has(pname)) notes.push(`取引先「${pname}」を新しく登録します`)
+    if (!pname) errors.push('協力会社の人は協力会社名を入れてください')
+    else if (pname === ctx.ownName) errors.push('自社名は協力会社として登録できません（区分を「自社雇用」にしてください）')
+    else if (ctx.otherCompanyNames.has(pname)) errors.push(`「${pname}」はField OSの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）`)
+    else if (!ctx.partners.has(pname)) notes.push(`協力会社「${pname}」を新しく登録します`)
     data.partner_name = pname
-  } else if (raw.partner_name) warnings.push('取引先名は、区分が取引先の人だけに使います')
+  } else if (raw.partner_name) warnings.push('協力会社名は、区分が協力会社の人だけに使います')
 
   // 自社雇用の従業員管理の項目
   if (type === 'own_employee') {
@@ -310,7 +310,7 @@ importApi.get('/template', (c) => {
   const header = COLUMNS.map(col => col.label)
   const rows = [
     COLUMNS.map(col => col.example),
-    COLUMNS.map(col => ({ type: '取引先', name: '佐藤 花子', kana: 'サトウ ハナコ', gender: '女性', partner_name: '株式会社サンプル', affiliation_contact: '鈴木' } as Record<string, string>)[col.key] || ''),
+    COLUMNS.map(col => ({ type: '協力会社', name: '佐藤 花子', kana: 'サトウ ハナコ', gender: '女性', partner_name: '株式会社サンプル', affiliation_contact: '鈴木' } as Record<string, string>)[col.key] || ''),
   ]
   return csvResponse('スタッフ一括登録テンプレート.csv', toCsv(header, rows, { textCols: ['電話番号', 'スタッフ番号', '社員番号'] }))
 })

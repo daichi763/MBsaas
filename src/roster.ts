@@ -12,6 +12,8 @@ import { isISODate } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
 import { recordLoginEvent } from './lib/login-security'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { isUniqueViolation } from './lib/staff-eligibility'
+import { shiftTotals } from './shift-board'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -89,7 +91,7 @@ export type RosterConfigurableField = { code: string; label: string; skillsheet:
 export const ROSTER_CONFIGURABLE_FIELDS: RosterConfigurableField[] = [
   { code: 'kana', label: 'フリガナ', skillsheet: true },
   { code: 'date_of_birth', label: '生年月日', skillsheet: true },
-  { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false, only: ['partner_manual'], note: '③取引先のみ' },
+  { code: 'affiliation_contact', label: '所属先担当者名', skillsheet: false, only: ['partner_manual'], note: '③協力会社のみ' },
   { code: 'phone', label: '電話番号', skillsheet: false },
   { code: 'email', label: 'メール', skillsheet: false, login_only: true, note: 'ログインのある人のみ' },
   { code: 'skills', label: 'スキル', skillsheet: true },
@@ -326,7 +328,7 @@ export async function partnerNameConflict(db: D1Database, companyId: number, nam
   const n = String(name || '').trim()
   if (!n) return null
   const hit = await db.prepare('SELECT 1 FROM companies WHERE company_name = ? AND company_id != ? LIMIT 1').bind(n, companyId).first()
-  return hit ? `「${n}」はField OSの導入企業のため、取引先として登録できません（①QR/ID連携で登録してください）` : null
+  return hit ? `「${n}」はField OSの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）` : null
 }
 
 /**
@@ -865,6 +867,7 @@ rosterApi.get('/partners', async (c) => {
           AND sp.merged_into_staff_id IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired' AND us.status = 'active') AS active_staff_count,
         (SELECT COUNT(*) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
         (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_staff,
+        cl.client_id AS client_id, cl.client_name AS client_name,
         CASE WHEN ${PARTNER_IN_USE_SQL} THEN 1 ELSE 0 END AS in_use,
         CASE WHEN COALESCE(sa.contact_name, '') = '' AND COALESCE(sa.phone, '') = '' AND COALESCE(sa.email, '') = '' AND COALESCE(sa.memo, '') = ''
           AND EXISTS (SELECT 1 FROM staff_profiles np WHERE np.company_id = sa.company_id AND np.affiliation = sa.affiliation_name
@@ -872,10 +875,122 @@ rosterApi.get('/partners', async (c) => {
           AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id)
         THEN 1 ELSE 0 END AS not_partner
       FROM staff_affiliations sa
+      LEFT JOIN clients cl ON cl.client_id = sa.client_id AND cl.company_id = sa.company_id
       WHERE sa.company_id = ? AND sa.merged_into_id IS NULL AND sa.affiliation_name != (SELECT company_name FROM companies WHERE company_id = ?)
-    ) WHERE NOT (staff_count = 0 AND not_partner = 1)
+    ) WHERE NOT (staff_count = 0 AND not_partner = 1 AND client_id IS NULL)
     ORDER BY affiliation_name`).bind(month + '%', month + '%', u.company_id, u.company_id).all()
   return c.json({ partners: (rows.results as any[]).map(({ not_partner: _n, in_use, ...r }) => ({ ...r, can_delete: !in_use })) })
+})
+
+// ---------- 協力会社とクライアントのつながり（#9302） ----------
+// staff_affiliations.client_id（0091）。1対1。消したクライアントにつながった行は、つながりなしとして扱う（JOIN で落とす）
+const monthOf = (q: string | undefined) => (q && /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : nowJST().slice(0, 7))
+function monthRange(month: string): [string, string] {
+  const [y, m] = month.split('-').map(Number)
+  return [month + '-01', new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10)]
+}
+// 月の支払（この協力会社が支払先のシフト）と、つながったクライアントへの月の請求（そのクライアントの案件のシフト）。
+// クライアント詳細の取引の実績と同じく、今日までの確定・代打のシフトを shiftTotals で合計する（精算の確定前の概算を含む）。
+// 協力会社への支払には割増（pay_premium）はつかない（自社給与・日雇い給与だけ。lib/premium-pay）
+async function partnerMonthSummary(db: D1Database, companyId: number, affiliationId: number | null, clientId: number | null, month: string) {
+  const [from, to] = monthRange(month); const today = nowJST().slice(0, 10)
+  const cols = `s.staff_id, s.project_id, s.unit_price, s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust,
+    s.pay_amount, s.pay_transport_type, s.pay_transport_amount, s.pay_adjust, s.pay_premium`
+  const stmts: D1PreparedStatement[] = []
+  if (affiliationId) stmts.push(db.prepare(`SELECT ${cols} FROM shifts s WHERE s.company_id = ? AND s.payee_type = 'partner' AND s.payee_affiliation_id = ?
+    AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`).bind(companyId, affiliationId, from, to, today))
+  if (clientId) stmts.push(db.prepare(`SELECT ${cols} FROM shifts s JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id
+    WHERE p.client_id = ? AND s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`).bind(clientId, companyId, from, to, today))
+  const res = stmts.length ? await db.batch(stmts) : []
+  let i = 0
+  let pay: any = null, bill: any = null
+  if (affiliationId) {
+    const rows = (res[i++].results || []) as any[]
+    pay = { total: 0, shifts: rows.length, staff: new Set(rows.map(r => r.staff_id)).size, unset: 0 }
+    for (const r of rows) { const t = shiftTotals(r).pay_total; if (t == null) pay.unset++; else pay.total += t }
+  }
+  if (clientId) {
+    const rows = (res[i++].results || []) as any[]
+    bill = { total: rows.reduce((a, r) => a + shiftTotals(r).bill_total, 0), shifts: rows.length, projects: new Set(rows.map(r => r.project_id)).size }
+  }
+  return { month, pay, bill }
+}
+// 協力会社の詳細: 連絡先・つながったクライアント・在籍中の所属スタッフ・月の支払と請求の要約・つなぐときのクライアントの選択肢
+rosterApi.get('/partners/:pid{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await loadPartner(db, u.company_id, c.req.param('pid'))
+  if (!p) return c.json({ error: '協力会社が見つかりません' }, 404)
+  const month = monthOf(c.req.query('month'))
+  const [clientRows, staffRows] = await db.batch([
+    // 自社のクライアントと、それぞれがつながっている協力会社（統合済みの行は統合先にまとめられているので見ない）
+    db.prepare(`SELECT cl.client_id, cl.client_name, sa.affiliation_id AS partner_id, sa.affiliation_name AS partner_name
+      FROM clients cl LEFT JOIN staff_affiliations sa ON sa.client_id = cl.client_id AND sa.company_id = cl.company_id
+      WHERE cl.company_id = ? ORDER BY cl.client_name`).bind(u.company_id),
+    db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+      WHERE sp.company_id = ? AND sp.partner_affiliation_id = ? AND sp.merged_into_staff_id IS NULL
+        AND COALESCE(sp.employment_status, 'working') != 'retired' AND us.status = 'active' ORDER BY us.name`).bind(u.company_id, p.affiliation_id),
+  ])
+  const clients = (clientRows.results || []) as any[]
+  const linked = p.client_id ? clients.find(x => Number(x.client_id) === Number(p.client_id)) : null
+  return c.json({
+    partner: { affiliation_id: p.affiliation_id, affiliation_name: p.affiliation_name, contact_name: p.contact_name, phone: p.phone, email: p.email, memo: p.memo,
+      client_id: linked ? linked.client_id : null, client_name: linked ? linked.client_name : null },
+    staff: staffRows.results || [],
+    summary: await partnerMonthSummary(db, u.company_id, p.affiliation_id, linked ? linked.client_id : null, month),
+    clients: clients.map(x => ({ client_id: x.client_id, client_name: x.client_name,
+      linked_partner_name: x.partner_id && Number(x.partner_id) !== Number(p.affiliation_id) ? x.partner_name : null })),
+  })
+})
+// クライアント詳細の「協力会社としての支払」の欄: つながった協力会社と、その会社への月の支払。つながっていなければ、つなげる協力会社の選択肢
+rosterApi.get('/partners/by-client/:cid{[0-9]+}', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const cl = await db.prepare('SELECT client_id, client_name FROM clients WHERE client_id = ? AND company_id = ?').bind(Number(c.req.param('cid')), u.company_id).first() as any
+  if (!cl) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const month = monthOf(c.req.query('month'))
+  const p = await db.prepare(`SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE company_id = ? AND client_id = ? AND merged_into_id IS NULL`)
+    .bind(u.company_id, cl.client_id).first() as any
+  if (p) return c.json({ partner: p, summary: await partnerMonthSummary(db, u.company_id, p.affiliation_id, null, month), candidates: [] })
+  // 選択肢: まだクライアントとつながっていない協力会社（一覧と同じく自社名・統合済みは出さない）
+  const cand = await db.prepare(`SELECT sa.affiliation_id, sa.affiliation_name FROM staff_affiliations sa
+    WHERE sa.company_id = ? AND sa.merged_into_id IS NULL AND sa.affiliation_name != (SELECT company_name FROM companies WHERE company_id = ?)
+      AND (sa.client_id IS NULL OR NOT EXISTS (SELECT 1 FROM clients x WHERE x.client_id = sa.client_id AND x.company_id = sa.company_id))
+      AND (EXISTS (SELECT 1 FROM staff_profiles sp WHERE sp.company_id = sa.company_id AND sp.partner_affiliation_id = sa.affiliation_id)
+        OR EXISTS (SELECT 1 FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id)
+        OR COALESCE(sa.contact_name, '') != '' OR COALESCE(sa.phone, '') != '' OR COALESCE(sa.email, '') != '' OR COALESCE(sa.memo, '') != ''
+        OR NOT EXISTS (SELECT 1 FROM staff_profiles np WHERE np.company_id = sa.company_id AND np.affiliation = sa.affiliation_name
+          AND COALESCE(np.affiliation_type, 'own_employee') IN ('freelance', 'skillsheet_only', 'daily_worker', 'own_employee')))
+    ORDER BY sa.affiliation_name`).bind(u.company_id, u.company_id).all()
+  return c.json({ partner: null, summary: null, candidates: cand.results || [] })
+})
+// つなぐ・外す。body: { client_id: number | null }。同じクライアントを2つの協力会社につなげない
+rosterApi.put('/partners/:pid{[0-9]+}/client', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await loadPartner(db, u.company_id, c.req.param('pid'))
+  if (!p) return c.json({ error: '協力会社が見つかりません' }, 404)
+  const b = await c.req.json().catch(() => ({} as any))
+  // 外すときは client_id: null を明示する（送り忘れで外さない）
+  if (!b || typeof b !== 'object' || !('client_id' in b)) return c.json({ error: 'クライアントを選んでください' }, 400)
+  const raw = b.client_id
+  if (raw === null || raw === '') {
+    await db.prepare('UPDATE staff_affiliations SET client_id = NULL, updated_at = ? WHERE affiliation_id = ? AND company_id = ?').bind(nowJST(), p.affiliation_id, u.company_id).run()
+    return c.json({ ok: true, client_id: null })
+  }
+  const cid = Number(raw)
+  if (!Number.isInteger(cid) || cid <= 0) return c.json({ error: 'クライアントを選んでください' }, 400)
+  const cl = await db.prepare('SELECT client_id, client_name FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first() as any
+  if (!cl) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  const taken = await db.prepare('SELECT affiliation_name FROM staff_affiliations WHERE company_id = ? AND client_id = ? AND affiliation_id != ?')
+    .bind(u.company_id, cid, p.affiliation_id).first() as any
+  const takenMsg = (name: string) => `「${cl.client_name}」は、すでに協力会社「${name}」とつながっています。先にそちらのつながりを外してください`
+  if (taken) return c.json({ error: takenMsg(taken.affiliation_name) }, 409)
+  try {
+    await db.prepare('UPDATE staff_affiliations SET client_id = ?, updated_at = ? WHERE affiliation_id = ? AND company_id = ?').bind(cid, nowJST(), p.affiliation_id, u.company_id).run()
+  } catch (e) {
+    // 同時に別の協力会社からつないだとき（一意の索引で止まる）
+    if (isUniqueViolation(e)) return c.json({ error: takenMsg('ほかの協力会社') }, 409)
+    throw e
+  }
+  return c.json({ ok: true, client_id: cid, client_name: cl.client_name })
 })
 
 // ---------- 取引先の登録・編集・統合・削除（#161） ----------
@@ -894,14 +1009,14 @@ function partnerValues(b: any): { values?: Record<string, string | null>; error?
     if (v.length > max) return { error: '入力が長すぎます' }
     out[k] = v || null
   }
-  if ('affiliation_name' in out && !out.affiliation_name) return { error: '取引先名を入力してください' }
+  if ('affiliation_name' in out && !out.affiliation_name) return { error: '協力会社名を入力してください' }
   if (out.phone && !/^\d{10,11}$/.test(phoneDigits(out.phone))) return { error: '電話番号は10〜11桁の数字で入力してください' }
   if (out.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(out.email)) return { error: 'メールアドレスの形式が正しくありません' }
   return { values: out }
 }
 async function partnerNameError(db: D1Database, companyId: number, name: string): Promise<string | null> {
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first() as any
-  if (own && own.company_name === name) return '自社名は取引先として登録できません'
+  if (own && own.company_name === name) return '自社名は協力会社として登録できません'
   return partnerNameConflict(db, companyId, name)
 }
 // 自社名の行（所属会社名の選択肢の初期値。0010）は取引先ではないので、編集・統合・削除の対象にしない
@@ -913,19 +1028,19 @@ rosterApi.post('/partners', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const { values, error } = partnerValues(await c.req.json().catch(() => ({})))
   if (error || !values) return c.json({ error }, 400)
-  if (!values.affiliation_name) return c.json({ error: '取引先名を入力してください' }, 400)
+  if (!values.affiliation_name) return c.json({ error: '協力会社名を入力してください' }, 400)
   const nameErr = await partnerNameError(db, u.company_id, values.affiliation_name)
   if (nameErr) return c.json({ error: nameErr }, 400)
   const r = await db.prepare(`INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, contact_name, phone, email, memo, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind(u.company_id, values.affiliation_name, values.contact_name ?? null, values.phone ?? null, values.email ?? null, values.memo ?? null, nowJST()).run()
-  if (!r.meta.changes) return c.json({ error: '同じ名前の取引先が登録済みです（統合済みの取引先を含む）' }, 409)
+  if (!r.meta.changes) return c.json({ error: '同じ名前の協力会社が登録済みです（統合済みの協力会社を含む）' }, 409)
   return c.json({ ok: true, affiliation_id: r.meta.last_row_id })
 })
 // 編集。名前を変えたら、所属スタッフの所属会社名もそろえる
 rosterApi.put('/partners/:pid', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const p = await loadPartner(db, u.company_id, c.req.param('pid'))
-  if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
+  if (!p) return c.json({ error: '協力会社が見つかりません' }, 404)
   const { values, error } = partnerValues(await c.req.json().catch(() => ({})))
   if (error || !values) return c.json({ error }, 400)
   const keys = Object.keys(values)
@@ -942,7 +1057,7 @@ rosterApi.put('/partners/:pid', async (c) => {
     // 予約中の区分変更の表示名もそろえる（適用時は partner_affiliation_id から名前を読む）
     db.prepare(`UPDATE staff_affiliation_schedules SET to_affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ? AND status = 'pending'`).bind(values.affiliation_name, u.company_id, p.affiliation_id))
   try { await db.batch(stmts) } catch {
-    return c.json({ error: '同じ名前の取引先が登録済みです（統合済みの取引先を含む）。同じ会社なら「統合」を使ってください' }, 409)
+    return c.json({ error: '同じ名前の協力会社が登録済みです（統合済みの協力会社を含む）。同じ会社なら「統合」を使ってください' }, 409)
   }
   return c.json({ ok: true })
 })
@@ -954,8 +1069,8 @@ rosterApi.post('/partners/:pid/merge', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const from = await loadPartner(db, u.company_id, c.req.param('pid'))
   const into = await loadPartner(db, u.company_id, b.into_id)
-  if (!from || !into) return c.json({ error: '取引先が見つかりません' }, 404)
-  if (from.affiliation_id === into.affiliation_id) return c.json({ error: '同じ取引先には統合できません' }, 400)
+  if (!from || !into) return c.json({ error: '協力会社が見つかりません' }, 404)
+  if (from.affiliation_id === into.affiliation_id) return c.json({ error: '同じ協力会社には統合できません' }, 400)
   const now = nowJST(); const cid = u.company_id; const f = from.affiliation_id, t = into.affiliation_id
   const res = await db.batch([
     db.prepare('UPDATE staff_profiles SET partner_affiliation_id = ?, affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ?').bind(t, into.affiliation_name, cid, f),
@@ -967,6 +1082,9 @@ rosterApi.post('/partners/:pid/merge', async (c) => {
     // 統合元に以前統合した取引先も、統合先を付け替える
     db.prepare(`UPDATE staff_affiliations SET merged_into_id = ?, updated_at = ? WHERE company_id = ? AND (affiliation_id = ? OR merged_into_id = ?)`).bind(t, now, cid, f, f),
     db.prepare(`DELETE FROM staff_affiliations AS sa WHERE sa.affiliation_id = ? AND sa.company_id = ? AND NOT ${PARTNER_IN_USE_SQL}`).bind(f, cid),
+    // クライアントとのつながり（#9302）: 統合元のつながりは外し、統合先がつながっていなければ統合先に移す（1対1なので外してから移す）
+    db.prepare('UPDATE staff_affiliations SET client_id = NULL WHERE affiliation_id = ? AND company_id = ?').bind(f, cid),
+    db.prepare('UPDATE staff_affiliations SET client_id = COALESCE(client_id, ?) WHERE affiliation_id = ? AND company_id = ?').bind(from.client_id ?? null, t, cid),
   ])
   return c.json({ ok: true, moved_staff: res[0].meta.changes || 0, moved_shifts: res[1].meta.changes || 0, removed: !!res[5].meta.changes })
 })
@@ -974,9 +1092,9 @@ rosterApi.post('/partners/:pid/merge', async (c) => {
 rosterApi.delete('/partners/:pid', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const p = await loadPartner(db, u.company_id, c.req.param('pid'))
-  if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
+  if (!p) return c.json({ error: '協力会社が見つかりません' }, 404)
   const r = await db.prepare(`DELETE FROM staff_affiliations AS sa WHERE sa.affiliation_id = ? AND sa.company_id = ? AND NOT ${PARTNER_IN_USE_SQL}`).bind(p.affiliation_id, u.company_id).run()
-  if (!r.meta.changes) return c.json({ error: '所属スタッフ・支払先のシフト（精算済みを含む）・予約中の区分変更がある取引先は削除できません。表記ゆれなら「統合」を使ってください' }, 409)
+  if (!r.meta.changes) return c.json({ error: '所属スタッフ・支払先のシフト（精算済みを含む）・予約中の区分変更がある協力会社は削除できません。表記ゆれなら「統合」を使ってください' }, 409)
   return c.json({ ok: true })
 })
 
@@ -1211,11 +1329,11 @@ rosterApi.post('/', async (c) => {
     if (b.partner_affiliation_id) {
       const p = await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ? AND merged_into_id IS NULL')
         .bind(b.partner_affiliation_id, u.company_id).first()
-      if (!p) return c.json({ error: '取引先が見つかりません' }, 404)
+      if (!p) return c.json({ error: '協力会社が見つかりません' }, 404)
       partnerId = p.affiliation_id as number; affiliation = p.affiliation_name as string
     } else if (b.new_partner_name && String(b.new_partner_name).trim()) {
       const pname = String(b.new_partner_name).trim()
-      if (pname === ownName) return c.json({ error: '自社名は取引先として登録できません（②従業員管理から作成を選択してください）' }, 400)
+      if (pname === ownName) return c.json({ error: '自社名は協力会社として登録できません（②従業員管理から作成を選択してください）' }, 400)
       const conflict = await partnerNameConflict(db, u.company_id, pname)
       if (conflict) return c.json({ error: conflict }, 400)
       await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, contact_name, phone, email) VALUES (?, ?, ?, ?, ?)')
@@ -1225,7 +1343,7 @@ rosterApi.post('/', async (c) => {
         JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?`).bind(u.company_id, pname).first()
       partnerId = p?.affiliation_id as number; affiliation = (p?.affiliation_name as string) || pname
     } else {
-      return c.json({ error: '取引先を選択または新規登録してください' }, 400)
+      return c.json({ error: '協力会社を選択または新規登録してください' }, 400)
     }
   }
   if (type === 'skillsheet_only') affiliation = b.affiliation ? String(b.affiliation) : null

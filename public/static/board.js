@@ -520,7 +520,7 @@
     }
     if (pr.is_mine && ['proposed', 'interview'].includes(pr.status)) actions.push(`<button class="btn btn-outline text-xs" data-action="boardProposalStatus" data-id="${pr.proposal_id}" data-status="withdrawn">取り下げ</button>`)
     const c = pr.consent
-    const consentLine = c ? `<p class="text-[11px] text-gray-500 mt-2"><i class="fas fa-user-shield mr-1 text-emerald-600"></i>本人の同意: ${esc(c.method_label)}（${esc(c.obtained_on || '')}）${pr.is_mine && c.upstream_on ? `・所属元／取引先の承諾: ${esc(c.upstream_on)}${c.upstream_note ? '（' + esc(c.upstream_note) + '）' : ''} <span class="text-gray-400">（承諾は自社のみ表示）</span>` : ''}</p>` : ''
+    const consentLine = c ? `<p class="text-[11px] text-gray-500 mt-2"><i class="fas fa-user-shield mr-1 text-emerald-600"></i>本人の同意: ${esc(c.method_label)}（${esc(c.obtained_on || '')}）${pr.is_mine && c.upstream_on ? `・所属元／協力会社の承諾: ${esc(c.upstream_on)}${c.upstream_note ? '（' + esc(c.upstream_note) + '）' : ''} <span class="text-gray-400">（承諾は自社のみ表示）</span>` : ''}</p>` : ''
     const nameLine = pr.disclosed && pr.disclosed.name
       ? `<span class="font-bold text-gray-900">${esc(pr.disclosed.name)}</span>${pr.disclosed.kana ? ` <span class="text-[11px] text-gray-400">${esc(pr.disclosed.kana)}</span>` : ''}${pr.is_mine && pr.status !== 'adopted' ? ' <span class="text-[10px] text-gray-400">（相手には採用まで非表示）</span>' : ''}`
       : `<span class="font-bold text-gray-900">${esc(sn.initials && sn.initials !== '—' ? sn.initials : '候補者No.' + pr.proposal_id)}</span> <span class="text-[11px] text-gray-400">（氏名は採用後に開示）</span>`
@@ -579,7 +579,7 @@
     catch (e) { toast(errMsg(e, '送信に失敗しました')) } finally { btn.disabled = false; el.focus() }
   }
   // ---------- 人材提案 ----------
-  const KIND_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', skillsheet_only: 'スキルシートのみ', partner_manual: '取引先所属', linked_external: '他社連携' }
+  const KIND_LABEL = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', skillsheet_only: 'スキルシートのみ', partner_manual: '協力会社所属', linked_external: '他社連携' }
   window.__boardOpenPropose = function (threadId) {
     modal(`
       <h3 class="font-bold text-lg mb-1"><i class="fas fa-user-plus text-blue-600 mr-1"></i>人材を提案</h3>
@@ -659,7 +659,7 @@
   window.__boardSendProposal = async function (threadId, staffId, needUpstream) {
     const g = (id) => (document.getElementById(id) || {}).value || ''
     if (!g('bpr-consent-method') || !g('bpr-consent-on')) { toast('本人の同意の取得方法と日付を入力してください'); return }
-    if (needUpstream && !g('bpr-upstream-on')) { toast('所属元（取引先）から再提案の承諾を得た日を入力してください'); return }
+    if (needUpstream && !g('bpr-upstream-on')) { toast('所属元（協力会社）から再提案の承諾を得た日を入力してください'); return }
     const price = g('bpr-price')
     try {
       await axios.post(`/api/admin/board/threads/${threadId}/proposals`, {
@@ -694,7 +694,7 @@
   window.__boardImport = async function (proposalId, body) {
     const pr = PROPS[proposalId]
     const from = pr ? pr.proposer_company_name : '提案企業'
-    if (!body && !confirm(`この人材をスタッフマスタに取り込みますか？\n\n・区分: 取引先所属（所属会社: ${from}）\n・氏名とスキルシートの内容をコピーします（以後は自社で編集でき、提案元とは同期しません）\n・ログインIDは発行しません`)) return
+    if (!body && !confirm(`この人材をスタッフマスタに取り込みますか？\n\n・区分: 協力会社所属（所属会社: ${from}）\n・氏名とスキルシートの内容をコピーします（以後は自社で編集でき、提案元とは同期しません）\n・ログインIDは発行しません`)) return
     try {
       const { data } = await axios.post(`/api/admin/board/proposals/${proposalId}/import`, body || {})
       if (window.invalidateBoardMaster) window.invalidateBoardMaster()

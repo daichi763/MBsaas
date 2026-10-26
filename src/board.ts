@@ -540,7 +540,7 @@ const PROPOSAL_LABEL: Record<string, string> = { proposed: '提案中', intervie
 const PROPOSABLE_KINDS = ['own_employee', 'daily_worker', 'freelance', 'skillsheet_only', 'partner_manual', 'linked_external']
 // 提案者への注意文（区分ごと）
 const PROPOSAL_WARNINGS: Record<string, string> = {
-  partner_manual: '取引先から預かっている人材です。再提案が可能か取引先との契約をご確認ください。',
+  partner_manual: '協力会社から預かっている人材です。再提案が可能か協力会社との契約をご確認ください。',
   linked_external: '他社から連携されている人材です。所属元との契約上、再提案が可能かご確認ください。',
 }
 const MAX_PROPOSALS_PER_THREAD = 50
@@ -670,7 +670,7 @@ boardApi.get('/threads/:id/proposal-preview', async (c) => {
   const elsewhere = await db.prepare(`SELECT ${ELSEWHERE_COLS} FROM staff_profiles sp WHERE sp.staff_id = ?`).bind(t.thread_id, t.thread_id, t.thread_id, r.staff_id).first() as any
   return c.json({ snapshot: buildSnapshot(r, own?.company_name || ''), name: r.name, warning: PROPOSAL_WARNINGS[r.affiliation_type] || null,
     elsewhere: elsewhere ? { pending: elsewhere.other_pending || 0, adopted: elsewhere.other_adopted || 0, adopted_label: elsewhere.adopted_label || null } : null,
-    need_upstream_consent: !!PROPOSAL_WARNINGS[r.affiliation_type], upstream_label: r.affiliation_type === 'linked_external' ? '所属元' : '取引先', link_consent: link ? { version: link.consent_version, created_at: link.created_at } : null,
+    need_upstream_consent: !!PROPOSAL_WARNINGS[r.affiliation_type], upstream_label: r.affiliation_type === 'linked_external' ? '所属元' : '協力会社', link_consent: link ? { version: link.consent_version, created_at: link.created_at } : null,
     consent_methods: CONSENT_METHODS })
 })
 
@@ -684,7 +684,7 @@ function validateConsent(b: any, kind: string): { v?: any; error?: string } {
   const v: any = { consent_method: b.consent_method, consent_obtained_on: b.consent_obtained_on, consent_note: str(b.consent_note, 200) || null,
     upstream_consent_on: null, upstream_consent_note: null }
   if (PROPOSAL_WARNINGS[kind]) {
-    if (!isISODate(b.upstream_consent_on) || b.upstream_consent_on > today) return { error: `${kind === 'linked_external' ? '所属元' : '取引先'}から再提案の承諾を得た日を入力してください（今日以前）` }
+    if (!isISODate(b.upstream_consent_on) || b.upstream_consent_on > today) return { error: `${kind === 'linked_external' ? '所属元' : '協力会社'}から再提案の承諾を得た日を入力してください（今日以前）` }
     v.upstream_consent_on = b.upstream_consent_on; v.upstream_consent_note = str(b.upstream_consent_note, 200) || null
   }
   return { v }

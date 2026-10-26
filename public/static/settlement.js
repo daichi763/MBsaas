@@ -4,7 +4,7 @@
 // =========================================================
 (function () {
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
-  const PAYEE_LABEL = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '取引先', linked: '他社（連携元）' }
+  const PAYEE_LABEL = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' }
   const UNIT = { daily: '日', hourly: '時' }
   // src/settlement.ts の確認事項と同じ文言
   const PENDING_ISSUE = '承認待ちの打刻修正あり'
@@ -246,7 +246,7 @@
           <td>${g.confirmed === g.shifts ? '<span class="badge badge-green">確定</span>' : `<span class="badge badge-gray">${g.confirmed}/${g.shifts}</span>`}</td>
           <td class="whitespace-nowrap"><a class="text-blue-600 hover:underline text-xs" target="_blank" rel="noopener" href="/api/admin/settlement/statement?kind=payment&group=${encodeURIComponent(g.group_key)}&${period()}" title="この支払先の確定済みのシフトの支払明細書（印刷・PDF保存）"><i class="fas fa-file-invoice"></i> 支払明細書</a></td></tr>`).join('') || '<tr><td colspan="14" class="text-center text-gray-400">対象のシフトはありません</td></tr>'}
         </tbody></table></div>
-        <p class="text-[11px] text-gray-400 mt-2">自社給与・日雇い給与はスタッフごと、取引先・他社はその会社ごとにまとめています。給与ソフトへの取り込みは「支払集計」のCSVを使ってください（深夜・時間外・休日の時間と割増額は末尾の列）。割増は「割増の設定」が ON のとき、自社給与・日雇い給与のシフトに自動で計算し、支払合計に含みます。支払明細書は、表示中の期間のその支払先の確定済みのシフトを載せます</p>`
+        <p class="text-[11px] text-gray-400 mt-2">自社給与・日雇い給与はスタッフごと、協力会社・他社はその会社ごとにまとめています。給与ソフトへの取り込みは「支払集計」のCSVを使ってください（深夜・時間外・休日の時間と割増額は末尾の列）。割増は「割増の設定」が ON のとき、自社給与・日雇い給与のシフトに自動で計算し、支払合計に含みます。支払明細書は、表示中の期間のその支払先の確定済みのシフトを載せます</p>`
       return
     }
     const sel = S.selected
@@ -864,7 +864,7 @@
           <button type="button" class="btn btn-outline text-xs py-1" data-action="settlePayReqReject" data-id="${Number(q.request_id)}">却下</button></td></tr>`).join('')
     const visible = `<p class="text-[11px] text-gray-500 mt-2">スタッフアプリでの支払額の表示: <b>${st.staff_pay_visible ? '表示する' : '表示しない'}</b>
       ${st.can_edit ? `<button type="button" class="text-blue-600 hover:underline ml-1" data-action="settleStaffPayToggle" data-on="${st.staff_pay_visible ? '0' : '1'}">${st.staff_pay_visible ? '表示をやめる' : '表示する'}</button>` : '（変更は会社管理者のみ）'}
-      <span class="block text-gray-400">表示すると、支払先が本人（自社給与・日雇い給与・個人事業主）のシフトの支払額（単価・交通費・調整・合計）と、月の見込み・確定の合計を本人が見られます。請求額・取引先や他社への支払・調整のメモは見せません</span></p>`
+      <span class="block text-gray-400">表示すると、支払先が本人（自社給与・日雇い給与・個人事業主）のシフトの支払額（単価・交通費・調整・合計）と、月の見込み・確定の合計を本人が見られます。請求額・協力会社や他社への支払・調整のメモは見せません</span></p>`
     host.innerHTML = `<section class="card p-3 mb-4 ${PAYREQ.length ? 'border border-amber-200 bg-amber-50/40' : ''}" id="settle-payreq-card">
       <p class="text-sm font-bold ${PAYREQ.length ? 'text-amber-700' : 'text-gray-700'}"><i class="fas fa-train-subway mr-1"></i>スタッフからの交通費・延長の申請（承認待ち ${PAYREQ.length}件）</p>
       ${PAYREQ.length ? `<p class="text-[11px] text-gray-500 my-1">承認すると、交通費はシフトの交通費（実費）に、延長はシフトの予定の終了時刻に反映します。確定済み・締めた期間のシフトは承認できません</p>
@@ -936,7 +936,7 @@
     const stOk = d && !d.settings_problems.length
     return `<h3 class="font-bold text-lg mb-1">振込データ</h3>
       <p class="text-xs text-gray-500 mb-3">${esc(S.from)}〜${esc(S.to)} の確定済みのシフトの支払合計を、スタッフごとの振込にします（未確定・単価未設定のシフトは含みません）。
-        金額は源泉徴収などの控除の前です。控除がある場合は、出力した後に金額を直してください。取引先・他社（連携元）への支払は対象外です</p>
+        金額は源泉徴収などの控除の前です。控除がある場合は、出力した後に金額を直してください。協力会社・他社（連携元）への支払は対象外です</p>
       <div class="flex flex-wrap items-end gap-3 text-xs mb-3">
         <label>振込日（取組日）<input type="date" id="po-date" class="inp text-sm w-auto" value="${esc(P.transfer_date)}"></label>
         <div><p class="mb-1">支払区分</p><div class="flex gap-3">${Object.entries(PAYOUT_TYPE_LABEL).map(([k, l]) => `<label class="flex items-center gap-1"><input type="checkbox" class="po-type" value="${k}" ${P.types.includes(k) ? 'checked' : ''}>${l}</label>`).join('')}</div></div>

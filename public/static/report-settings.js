@@ -12,7 +12,7 @@
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
   const SHORT = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '開始', break_start: '休入', break_end: '休出', work_end: '終了', check_out: '退店' }
   const ACTION = { project_default: '標準設定', default_apply: '標準設定の適用', individual: '個別変更', bulk: '一括変更', staff_reset: '標準に戻す', shift_override: 'シフト単位の例外', migration: '導入時の移行', merge: 'スタッフ統合' }
-  const AFF = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '取引先所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
+  const AFF = { own_employee: '自社雇用', daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属', linked_external: '他社連携', skillsheet_only: 'スキルシートのみ' }
   const STATUS = { leave: ['休職', 'badge-yellow'], retired: ['退職', 'badge-gray'], merged: ['統合済み', 'badge-gray'], ended: ['取引終了', 'badge-gray'] }
   const SOURCE = { individual: '個別変更', bulk: '一括変更', default: '標準設定から引き継ぎ', migration: '導入時の移行' }
   const EXC = { none: '勤怠報告なし', in_out: '入店・退店のみ' }

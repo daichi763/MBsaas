@@ -41,7 +41,7 @@ function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b
 function intOrNull(v: any): number | null { if (v === '' || v == null) return null; const n = Math.round(Number(v)); return Number.isFinite(n) ? n : null }
 
 export const PAYEE_LABEL: Record<string, string> = {
-  payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主（業務委託）', partner: '取引先', linked: '他社（連携元）',
+  payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主（業務委託）', partner: '協力会社', linked: '他社（連携元）',
 }
 // 欠勤・中止の理由（#283）
 export const CANCEL_REASON_LABEL: Record<string, string> = { staff: 'スタッフ都合の欠勤', client: 'クライアント都合の中止' }
@@ -363,7 +363,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       else open.push(i)
     }
     const payeeType = r.payee_type || 'payroll'
-    const payeeName = payeeType === 'partner' ? (r.payee_affiliation_name || r.affiliation || '取引先') : payeeType === 'linked' ? (r.payee_company_name || '連携元')
+    const payeeName = payeeType === 'partner' ? (r.payee_affiliation_name || r.affiliation || '協力会社') : payeeType === 'linked' ? (r.payee_company_name || '連携元')
       : payeeType === 'freelance' ? r.staff_name : PAYEE_LABEL[payeeType] || payeeType
     const closing = closingOf(closings, String(r.work_date))
     const row = {
