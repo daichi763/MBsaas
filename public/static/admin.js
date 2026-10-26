@@ -4010,9 +4010,72 @@ window.showAddShift = async function (defaultDate) {
         <div><label class="text-sm text-gray-600 block mb-1">交通費（実費）</label><input id="sh-fee" type="number" min="0" class="inp" placeholder="空欄なら0円">
           <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
+      <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
       <button class="btn btn-primary w-full" data-action="addShift">登録する</button>
     </div>`)
   addShiftFeeHint()
+  // スタッフ・案件・日付・時間を変えたら、単価の見込み（直近のシフトからの引き継ぎ）を読み直す（9306）
+  ADD_SHIFT_PRICE = { inherit: true, base: null, preview: null, seq: 0 }
+  for (const id of ['sh-staff', 'sh-project', 'sh-date', 'sh-start', 'sh-end']) document.getElementById(id).addEventListener('change', () => { ADD_SHIFT_PRICE.inherit = true; addShiftPriceLoad() })
+  addShiftPriceLoad()
+}
+// ---------- シフト登録の単価（9306） ----------
+// 直近のシフト（常勤: 同じスタッフ×同じ案件、スポット: 同じ案件）の単価を引き継ぐ。引き継ぐときはその旨と前回の日付を出し、その場で単価を変えられる
+let ADD_SHIFT_PRICE = { inherit: true, base: null, preview: null, seq: 0 }
+const ADD_SHIFT_UNIT = { daily: '日額', hourly: '時給' }
+async function addShiftPriceLoad() {
+  const box = document.getElementById('sh-price'); if (!box) return
+  const v = (id) => document.getElementById(id).value
+  if (!v('sh-date') || !v('sh-project')) { box.innerHTML = '<p class="text-xs text-gray-400">日付と案件を選ぶと、単価を表示します</p>'; ADD_SHIFT_PRICE.base = null; ADD_SHIFT_PRICE.preview = null; return }
+  const seq = ++ADD_SHIFT_PRICE.seq
+  const qs = new URLSearchParams({ project_id: v('sh-project'), work_date: v('sh-date'), staff_ids: v('sh-staff') || '', start_time: v('sh-start'), end_time: v('sh-end') })
+  try {
+    const { data } = await axios.get('/api/admin/shifts/price-preview?' + qs.toString())
+    if (seq !== ADD_SHIFT_PRICE.seq) return // 後から読み直したものを優先する
+    ADD_SHIFT_PRICE.preview = (data.items || [])[0] || null
+    addShiftPriceRender()
+  } catch (e) {
+    if (seq !== ADD_SHIFT_PRICE.seq) return
+    ADD_SHIFT_PRICE.preview = null; ADD_SHIFT_PRICE.base = null
+    box.innerHTML = '<p class="text-xs text-gray-400">単価を確認できませんでした（登録すると単価の設定から計算します）</p>'
+  }
+}
+function addShiftPriceRender() {
+  const box = document.getElementById('sh-price'); if (!box) return
+  const pv = ADD_SHIFT_PRICE.preview
+  if (!pv) { box.innerHTML = '<p class="text-xs text-gray-400">登録すると単価の設定から計算します</p>'; ADD_SHIFT_PRICE.base = null; return }
+  const ih = ADD_SHIFT_PRICE.inherit ? pv.inherited : null
+  const p = ih ? pv.price : pv.settings
+  ADD_SHIFT_PRICE.base = { bill_unit_type: p.bill_unit_type, bill_rate: p.bill_rate, pay_unit_type: p.pay_unit_type, pay_rate: p.pay_rate }
+  const unitSel = (id, val) => `<select id="${id}" class="inp text-sm">${Object.entries(ADD_SHIFT_UNIT).map(([k, l]) => `<option value="${k}" ${val === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`
+  const tp = (t, a, labels) => `${labels[t] || '実費'}${t === 'fixed' || t === 'capped' ? ' ' + yen(a) : ''}`
+  const adj = ih && (Number(ih.bill_adjust || 0) || Number(ih.pay_adjust || 0))
+    ? `<p class="text-xs text-gray-600 mt-1">調整も引き継ぎます: 請求 ${yen(ih.bill_adjust)} ／ 支払 ${yen(ih.pay_adjust)}${ih.adjust_note ? `（${esc(ih.adjust_note)}）` : ''}</p>` : ''
+  box.innerHTML = `
+    <div class="flex items-center justify-between gap-2 mb-2"><p class="font-bold text-gray-700 text-sm"><i class="fas fa-yen-sign mr-1"></i>単価</p>
+      ${pv.inherited ? (ih ? '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="addShiftUseSettings">単価の設定を使う</button>'
+        : '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="addShiftUseInherit">前回の単価に戻す</button>') : ''}</div>
+    ${ih ? `<p id="sh-price-note" class="text-xs text-blue-700 bg-blue-50 rounded p-2 mb-2"><i class="fas fa-clock-rotate-left mr-1"></i>${esc(ih.label)}の単価を引き継いでいます</p>`
+      : `<p id="sh-price-note" class="text-xs text-gray-500 mb-2">単価の設定（案件の標準・単価ルール）から計算します${pv.inherited ? '（前回の単価は使いません）' : ''}</p>`}
+    <div class="grid grid-cols-2 gap-2">
+      <label class="text-xs text-gray-600">請求${unitSel('sh-bill-unit', p.bill_unit_type)}</label>
+      <label class="text-xs text-gray-600">請求単価<input id="sh-bill-rate" type="number" min="0" class="inp text-sm" value="${p.bill_rate ?? ''}"></label>
+      <label class="text-xs text-gray-600">支払${unitSel('sh-pay-unit', p.pay_unit_type)}</label>
+      <label class="text-xs text-gray-600">支払単価<input id="sh-pay-rate" type="number" min="0" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
+    </div>
+    <p class="text-xs text-gray-500 mt-2">交通費: 請求 ${tp(p.bill_transport_type, p.bill_transport_amount, BILL_TRANSPORT_LABEL)} ／ 支払 ${tp(p.pay_transport_type, p.pay_transport_amount, PAY_TRANSPORT_LABEL)}</p>
+    ${adj}
+    <p class="text-[11px] text-gray-400 mt-1">単価を変えて登録すると、このシフトの金額は手動変更になります（次の登録では、この単価を引き継ぎます）</p>`
+}
+delegate('addShiftUseSettings', () => { ADD_SHIFT_PRICE.inherit = false; addShiftPriceRender() })
+delegate('addShiftUseInherit', () => { ADD_SHIFT_PRICE.inherit = true; addShiftPriceRender() })
+// 画面で変えた単価（見込みと違うときだけ送る）
+function addShiftPriceInput() {
+  const base = ADD_SHIFT_PRICE.base; if (!base || !document.getElementById('sh-bill-rate')) return null
+  const num = (id) => { const x = document.getElementById(id).value; return x === '' ? null : Number(x) }
+  const cur = { bill_unit_type: document.getElementById('sh-bill-unit').value, bill_rate: num('sh-bill-rate'), pay_unit_type: document.getElementById('sh-pay-unit').value, pay_rate: num('sh-pay-rate') }
+  const changed = cur.bill_unit_type !== base.bill_unit_type || cur.pay_unit_type !== base.pay_unit_type || cur.bill_rate !== (base.bill_rate ?? null) || cur.pay_rate !== (base.pay_rate ?? null)
+  return changed ? cur : null
 }
 // 案件の交通費ルール（実費の入力が請求・支払にどう効くか）を入力欄の下に出す（#94）
 let addShiftProjects = []
@@ -4033,19 +4096,24 @@ window.addShift = async function (force) {
   const staffId = document.getElementById('sh-staff').value
   if (!staffId) { toast('スタッフを選択してください'); return }
   const fee = document.getElementById('sh-fee').value
+  const price = addShiftPriceInput()
+  if (price && ((price.bill_rate != null && price.bill_rate < 0) || (price.pay_rate != null && price.pay_rate < 0))) { toast('単価にマイナスの値は入力できません'); return }
+  let res
   try {
-    await axios.post('/api/admin/shifts', {
+    res = await axios.post('/api/admin/shifts', {
       staff_id: Number(staffId), project_id: document.getElementById('sh-project').value,
       work_date: date, start_time: document.getElementById('sh-start').value, end_time: document.getElementById('sh-end').value,
       status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
       confirm_warnings: true, force: !!force,
+      inherit: ADD_SHIFT_PRICE.inherit, ...(price ? { price } : {}),
     })
   } catch (e) {
     const d = e.response && e.response.data
     if (d && d.need_force) { if (confirm(d.warnings.join('\n') + '\n\nこのまま登録しますか？')) return addShift(true); return }
     showApiError(e, '登録に失敗しました'); return
   }
-  closeModal(); toast('シフトを登録しました'); refreshShiftWeek(date)
+  const ih = res && res.data && res.data.inherited
+  closeModal(); toast(price ? 'シフトを登録しました（単価は入力した値）' : ih ? `シフトを登録しました（${ih.label}の単価を引き継ぎました）` : 'シフトを登録しました'); refreshShiftWeek(date)
 }
 delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
