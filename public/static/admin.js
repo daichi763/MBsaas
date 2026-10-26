@@ -3480,12 +3480,17 @@ window.saveClientBasicInfo = async function (cid) {
       memo: document.getElementById('cl-memo').value,
       representative_title: v('cl-rep-title'), representative_kana: v('cl-rep-kana'), invoice_number: v('cl-invoice'),
     })
-    toast('会社基本情報を保存しました')
-    renderClientDetail(cid)
   } catch (e) {
     err.textContent = (e.response && e.response.data && e.response.data.error) || '保存に失敗しました'
     err.classList.remove('hidden')
+    return
   }
+  toast('会社基本情報を保存しました')
+  // 画面を描き直しても、支店・部門の編集中の入力は残す（#9103）
+  const orgDraft = document.getElementById('cl-branch') ? { branch_name: document.getElementById('cl-branch').value, department_name: document.getElementById('cl-department').value } : null
+  try { await renderClientDetail(cid) } catch (e) { showApiError(e, '画面の読み込みに失敗しました'); return }
+  const box = document.getElementById('client-org-info')
+  if (orgDraft && box && CLIENT_DETAIL.client && Number(CLIENT_DETAIL.client.client_id) === Number(cid)) box.innerHTML = clientOrgHtml({ ...CLIENT_DETAIL.client, ...orgDraft }, true)
 }
 
 // ============ 社員名簿（自社社員のみ表示） ============
