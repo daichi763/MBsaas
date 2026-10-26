@@ -159,6 +159,23 @@ const list = async () => must(await admin.get('/api/admin/roster/partners'), 'pa
   ok('クライアントを消しても協力会社は残り、つながりなしとして出る', z && z.client_id == null, z)
   const dz = must(await admin.get(`/api/admin/roster/partners/${Z}`), 'detail Z')
   ok('消したクライアントは詳細でもつながりなし（請求は出ない）', dz.partner.client_id === null && dz.summary.bill === null, dz.partner)
+  // 統合先が消したクライアントを指したままでも、統合元のつながりを移す（RV）
+  const C4 = must(await admin.post('/api/admin/clients', { client_name: `${PFX}移す客`, allow_duplicate: true }), 'client 4').client_id
+  const W = must(await admin.post('/api/admin/roster/partners', { affiliation_name: `${PFX}移す客`, memo: '統合元' }), 'partner W').affiliation_id
+  must(await admin.put(`/api/admin/roster/partners/${W}/client`, { client_id: C4 }), 'link W')
+  must(await admin.post(`/api/admin/roster/partners/${W}/merge`, { into_id: Z }), 'merge W into Z')
+  const dz2 = must(await admin.get(`/api/admin/roster/partners/${Z}`), 'detail Z after merge')
+  ok('統合先のつながりが消したクライアントなら、統合元のつながりを移す', dz2.partner.client_id === C4, dz2.partner)
+  // 統合元が消したクライアントを指しているときは、統合先につながりを移さない
+  const C5 = must(await admin.post('/api/admin/clients', { client_name: `${PFX}消す客2`, allow_duplicate: true }), 'client 5').client_id
+  const V = must(await admin.post('/api/admin/roster/partners', { affiliation_name: `${PFX}消す客2`, memo: '統合元2' }), 'partner V').affiliation_id
+  const T = must(await admin.post('/api/admin/roster/partners', { affiliation_name: `${PFX}統合先2`, memo: '統合先2' }), 'partner T').affiliation_id
+  must(await admin.put(`/api/admin/roster/partners/${V}/client`, { client_id: C5 }), 'link V')
+  must(await admin.del(`/api/admin/clients/${C5}`), 'delete C5')
+  must(await admin.post(`/api/admin/roster/partners/${V}/merge`, { into_id: T }), 'merge V into T')
+  const dt = must(await admin.get(`/api/admin/roster/partners/${T}`), 'detail T')
+  const tb = must(await admin.get(`/api/admin/roster/partners/by-client/${C4}`), 'by-client C4')
+  ok('統合元が消したクライアントを指していれば、統合先はつながりなしのまま', dt.partner.client_id === null && tb.partner && tb.partner.affiliation_id === Z, { t: dt.partner, c4: tb.partner })
 }
 
 const failed = results.filter(r => !r.pass)

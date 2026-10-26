@@ -1084,7 +1084,11 @@ rosterApi.post('/partners/:pid/merge', async (c) => {
     db.prepare(`DELETE FROM staff_affiliations AS sa WHERE sa.affiliation_id = ? AND sa.company_id = ? AND NOT ${PARTNER_IN_USE_SQL}`).bind(f, cid),
     // クライアントとのつながり（#9302）: 統合元のつながりは外し、統合先がつながっていなければ統合先に移す（1対1なので外してから移す）
     db.prepare('UPDATE staff_affiliations SET client_id = NULL WHERE affiliation_id = ? AND company_id = ?').bind(f, cid),
-    db.prepare('UPDATE staff_affiliations SET client_id = COALESCE(client_id, ?) WHERE affiliation_id = ? AND company_id = ?').bind(from.client_id ?? null, t, cid),
+    //   統合先が消したクライアントを指しているときは、つながりなしとして移す。統合元が消したクライアントを指しているなら移さない
+    db.prepare(`UPDATE staff_affiliations SET client_id = ? WHERE affiliation_id = ? AND company_id = ?
+      AND EXISTS (SELECT 1 FROM clients y WHERE y.client_id = ? AND y.company_id = ?)
+      AND (client_id IS NULL OR NOT EXISTS (SELECT 1 FROM clients x WHERE x.client_id = staff_affiliations.client_id AND x.company_id = staff_affiliations.company_id))`)
+      .bind(from.client_id ?? null, t, cid, from.client_id ?? null, cid),
   ])
   return c.json({ ok: true, moved_staff: res[0].meta.changes || 0, moved_shifts: res[1].meta.changes || 0, removed: !!res[5].meta.changes })
 })
