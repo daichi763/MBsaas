@@ -1375,7 +1375,9 @@
     const box = document.getElementById('rl-staff-ref'); if (!box) return
     const sid = Number((document.getElementById('rl-staff') || {}).value || 0)
     const ref = sid ? REF_PAY.get(sid) : null
-    box.innerHTML = !sid ? '' : ref
+    // 他社連携の人の参考単価は所属元だけが持つ（自社では入力できない）
+    const linked = sid && ((MASTER && MASTER.staff) || []).some(s => Number(s.staff_id) === sid && s.affiliation_type === 'linked_external')
+    box.innerHTML = !sid ? '' : linked ? '<i class="fas fa-circle-info mr-1"></i>他社から連携したスタッフのため、参考単価は出ません（所属元の会社が管理します）' : ref
       ? `<i class="fas fa-circle-info mr-1"></i>参考単価: ${esc(REF_UNIT[ref.reference_pay_unit] || '')} ${yen(ref.reference_pay_amount)}（スタッフマスタで入力した目安。計算には使いません）
          <button type="button" class="text-blue-600 hover:underline ml-1" data-action="ruleUseReference">支払単価（基本）に入れる</button>`
       : '<i class="fas fa-circle-info mr-1"></i>この人の参考単価は入力されていません（スタッフマスタのスタッフ詳細で入力できます）'
