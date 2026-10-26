@@ -1603,7 +1603,7 @@ async function renderStaffDetail(sid, opts = {}) {
     <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
     <div id="roster-chat-panel" class="mt-4 hidden"></div>
     <div id="staff-lifecycle-panel" class="mt-4"></div>
-    <div id="staff-rate-panel" class="mt-4"></div>
+    <div id="staff-reference-pay-panel" class="mt-4"></div>
 
     <section class="card p-4 mt-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-clock text-gray-400 mr-1"></i>勤怠報告履歴（直近）</h3>
@@ -1634,8 +1634,8 @@ async function renderStaffDetail(sid, opts = {}) {
   if (window.renderStaffShiftPanel) renderStaffShiftPanel(sid, data)
   if (window.renderRosterPanels) renderRosterPanels(sid, p)
   if (window.renderRosterChatPanel) renderRosterChatPanel(sid, p)
-  // スタッフ別の単価ルール（public/static/shift-board.js）
-  if (window.renderStaffRatePanel) renderStaffRatePanel(sid, p)
+  // 支払の参考単価（9204。public/static/shift-board.js）。スタッフ別の単価ルールは精算画面の「単価の設定」で管理する
+  if (window.renderStaffReferencePayPanel) renderStaffReferencePayPanel(sid, p)
   // 区分・登録状態・提出設定（public/static/staff-lifecycle.js）
   if (window.renderStaffLifecyclePanel) renderStaffLifecyclePanel(sid, p)
   if (edBiz) initCareerPickers(document.getElementById('staff-career-rows'))
@@ -2566,7 +2566,7 @@ window.showAddProject = async function () {
         <div><label class="text-sm text-gray-600 block mb-1">請求単価（円）</label>
           <div class="flex gap-2"><select id="np-price-unit" class="inp w-24 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option></select>
             <input id="np-price" type="number" min="0" class="inp" value="16000"></div>
-          <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費は、登録後に案件詳細の「区分・標準単価」で設定します</p></div>
+          <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
         <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
           ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
@@ -2575,6 +2575,7 @@ window.showAddProject = async function () {
         <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
       <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
     </div>`)
 }
@@ -2599,7 +2600,8 @@ window.addProject = async function () {
       project_type: document.getElementById('np-type').value, location: document.getElementById('np-loc').value,
       unit_price: Number(document.getElementById('np-price').value || 0), unit_price_type: document.getElementById('np-price-unit').value,
       report_template_id: document.getElementById('np-tpl').value || null, requirements: document.getElementById('np-req').value,
-      manual_text: document.getElementById('np-manual').value, required_skills: document.getElementById('np-skills').value
+      manual_text: document.getElementById('np-manual').value, required_skills: document.getElementById('np-skills').value,
+      remarks: document.getElementById('np-remarks').value,
     })
     if (!res) return
     closeModal(); toast('案件を登録しました'); renderProjects()
@@ -2700,11 +2702,11 @@ async function renderProjectDetail(pid) {
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4">
-      <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-2">求められる内容</h3>
-        <p class="text-sm text-gray-600 whitespace-pre-wrap">${esc(p.requirements || '-')}</p>
-        <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2">案件マニュアル・注意事項</h3>
-        <p class="text-sm text-gray-600 whitespace-pre-wrap">${esc(p.manual_text || '-')}</p>
+      <section class="card p-4" id="project-texts">
+        ${PROJECT_TEXT_FIELDS.map(([k, label], i) => `
+        <h3 class="text-sm font-bold text-gray-700 ${i ? 'mt-4 ' : ''}mb-2 flex items-center">${esc(label)}
+          <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectText" data-id="${Number(p.project_id)}" data-field="${k}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
+        <p class="text-sm text-gray-600 whitespace-pre-wrap break-words" id="project-text-${k}">${esc(p[k] || '-')}</p>`).join('')}
         <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2 flex items-center">必要スキル
           <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectSkills" data-id="${Number(p.project_id)}" data-skills="${esc(p.required_skills || '')}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
         <div class="flex flex-wrap gap-1" id="project-skills">${projectSkillBadges(p.required_skills)}</div>
@@ -2727,12 +2729,43 @@ async function renderProjectDetail(pid) {
         ${projectLatenessHtml(p)}
       </section>
     </div>
-    <div id="project-pricing-panel" class="mt-4"></div>`
+    <div class="mt-4">${window.projectBasePriceHtml ? projectBasePriceHtml(p) : ''}</div>
+    <div id="project-patterns-panel" class="mt-4"></div>`
   drawProjectStaffPerf()
   fillProjectLatenessCompany()
-  // 常勤/スポット・単価（請求/支払）・単価ルール・繰り返し登録（public/static/shift-board.js）
-  if (window.renderProjectPricingPanel) renderProjectPricingPanel(p)
+  // 基本単価は表示だけ（設定は精算画面の「単価の設定」。9201）。提出設定・繰り返し登録（public/static/shift-board.js）
+  if (window.renderProjectPatternsPanel) renderProjectPatternsPanel(p)
 }
+// 案件詳細でその場で編集する文の項目（9202）。[項目, 見出し, 文字数の上限, 説明]
+const PROJECT_TEXT_FIELDS = [
+  ['requirements', '求められる内容', 2000, 'スタッフアプリの「研修・マニュアル」にも出ます'],
+  ['manual_text', '案件マニュアル・注意事項', 5000, 'スタッフアプリの「研修・マニュアル」にも出ます（集合場所・服装・持ち物・現場のルールなど）'],
+  ['remarks', '備考', 2000, '管理画面だけに出します（スタッフには出しません）'],
+]
+delegate('editProjectText', el => {
+  const f = PROJECT_TEXT_FIELDS.find(x => x[0] === el.dataset.field)
+  if (!f || !PROJECT_DETAIL || PROJECT_DETAIL.pid !== Number(el.dataset.id)) return
+  const [k, label, max, note] = f
+  modal(`
+    <h3 class="font-bold text-lg mb-1">${esc(label)}</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(note)}。空欄にすると消えます</p>
+    <textarea id="pj-text" rows="${k === 'manual_text' ? 10 : 6}" class="inp" maxlength="${max}">${esc(PROJECT_DETAIL.data.project[k] || '')}</textarea>
+    <p class="text-[11px] text-gray-400 mt-1">${max}文字まで</p>
+    <button class="btn btn-primary w-full mt-3" data-action="saveProjectText" data-id="${Number(el.dataset.id)}" data-field="${k}">保存する</button>`)
+})
+delegate('saveProjectText', el => withSubmitLock(el, async () => {
+  const pid = Number(el.dataset.id), k = el.dataset.field
+  const f = PROJECT_TEXT_FIELDS.find(x => x[0] === k); if (!f) return
+  const v = document.getElementById('pj-text').value
+  try {
+    const res = await putProjectConfirming(pid, { [k]: v })
+    if (!res) return
+    closeModal(); toast(`${f[1]}を保存しました`)
+    const saved = v.trim() || null
+    if (PROJECT_DETAIL && PROJECT_DETAIL.pid === pid) PROJECT_DETAIL.data.project[k] = saved
+    const box = document.getElementById('project-text-' + k); if (box) box.textContent = saved || '-'
+  } catch (e) { showApiError(e, `${f[1]}を保存できませんでした`) }
+}))
 // 写真添付の設定（イベント属性に値を埋め込まない）
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-project-photo]') : null
@@ -2812,7 +2845,7 @@ async function putProjectConfirming(pid, body) {
   }
   return null
 }
-// 案件の編集（#153）。単価・区分は下の「区分・標準単価」で変える
+// 案件の編集（#153）。単価・区分は精算画面の「単価の設定」で変える（9201）
 delegate('editProject', el => withSubmitLock(el, async () => {
   const pid = Number(el.dataset.id)
   if (!PROJECT_DETAIL || PROJECT_DETAIL.pid !== pid) return
@@ -2840,6 +2873,7 @@ delegate('editProject', el => withSubmitLock(el, async () => {
       <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="ep-remarks" rows="2" class="inp" maxlength="2000">${esc(p.remarks || '')}</textarea></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>
         <div><label class="text-sm text-gray-600 block mb-1">現場責任者の電話番号（任意）</label><input id="ep-sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 090-1234-5678" value="${esc(p.site_contact_phone || '')}"></div>
@@ -2875,7 +2909,7 @@ delegate('saveProject', el => withSubmitLock(el, async () => {
   try {
     const res = await putProjectConfirming(pid, {
       project_name: v('ep-name'), client_id: v('ep-client') || null, project_type: v('ep-type'), location: v('ep-loc'),
-      report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'),
+      report_template_id: Number(v('ep-tpl')), required_skills: v('ep-skills'), requirements: v('ep-req'), manual_text: v('ep-manual'), remarks: v('ep-remarks'),
       memo: v('ep-memo'), show_performance: document.getElementById('ep-perf').checked,
       site_contact_name: v('ep-sc-name'), site_contact_phone: v('ep-sc-phone'),
     })

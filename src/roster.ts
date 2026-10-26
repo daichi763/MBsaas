@@ -421,6 +421,8 @@ export async function loadRoster(db: D1Database, staffId: string | number, compa
   // 連携を終了した所属元のユーザー（link_revoked_by）は他社のユーザーなので出さない
   const { root_staff_id: _root, relink_code: _rc, person_created_company_id: _pc, link_in_service: _ls, link_revoked_by: _rb, self_source_dob: selfDob, ...rest } = row as any
   if (opts.self && type === 'linked_external') rest.date_of_birth = selfDob ?? null
+  // 支払の参考単価（9204）は所属元だけが見る。他社連携の行（稼働先）には出さない
+  if (type === 'linked_external') { delete rest.reference_pay_unit; delete rest.reference_pay_amount }
   const relink = usesRelinkCode(type, row.person_created_company_id, row.company_id)
   const linkable = (type === 'own_employee' || type === 'linked_external') && !row.merged_into_staff_id
   return {

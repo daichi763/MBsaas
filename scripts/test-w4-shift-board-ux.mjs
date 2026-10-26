@@ -183,7 +183,7 @@ const D = addDays(today, 12)
   ok('#258 人ごと表示の稼働は、確定・代打のある日数で数える', /r\.workDays = cs\.filter\(list => list\.some\(isActive\)\)\.length/.test(sb))
   ok('#468 人ごと表示に、割り当てられるスタッフ全員を行として出す', /for \(const s of \(MASTER && MASTER\.staff\) \|\| \[\]\) byStaff\.set/.test(sb) && /personIdleOnly/.test(sb) && /personSort === 'fewest'/.test(sb))
   ok('#390 希望（仮）のまとめて確定は data-action で開く', /data-action="boardConfirmRequested"/.test(sb) && /\/api\/admin\/shifts\/confirm-requested/.test(sb))
-  ok('#388 単価ルールの編集ボタンと PUT、案件詳細のメモ', /data-action="editRule"/.test(sb) && /axios\.put\('\/api\/admin\/rate-rules\/' \+ Number\(ctx\.rule_id\)/.test(sb) && (sb.match(/\$\{ruleMemo\(r\)\}/g) || []).length === 2)
+  ok('#388 単価ルールの編集ボタンと PUT、案件詳細のメモ', /data-action="editRule"/.test(sb) && /axios\.put\('\/api\/admin\/rate-rules\/' \+ Number\(ctx\.rule_id\)/.test(sb) && (sb.match(/\$\{ruleMemo\(r\)\}/g) || []).length >= 1) // スタッフ詳細の単価の欄は精算画面の単価の設定へ移した（9204）
   ok('#406 開催場所の編集は data-action で開き、位置・メモを送る', /data-action="editSite"/.test(sb) && /memo: document\.getElementById\('se-memo'\)\.value, lat, lng/.test(sb))
   ok('#65 枠の削除の確認に、未対応の応募の件数を出す', /未対応の応募が\$\{applicants\}件あります/.test(sb))
   ok('#551 シフト管理の操作の後は、表示中の週を出し直す', /refreshShiftWeek\(\)/.test(adm) && /refreshShiftWeek\(date\)/.test(adm) && !/toast\('シフトを(更新|削除)しました'\); renderShifts\(\)/.test(adm))
