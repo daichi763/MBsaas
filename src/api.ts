@@ -3900,7 +3900,7 @@ async function applyApprovedProfileChange(c: any, sid: string, changes: Record<s
   if (changes.login_email !== undefined) {
     body.login_email = changes.login_email
     const contactErr = await checkContactUpdate(c, sid, body, roster)
-    if (contactErr) return { error: contactErr.body?.error || 'ログイン用メールを変更できません', status: contactErr.status }
+    if (contactErr) return { error: contactErr.body?.error || 'メールアドレスを変更できません', status: contactErr.status }
   }
   await applyProfileUpdate(c, sid, body, roster)
   const contact = await applyContactUpdate(c, body, roster)

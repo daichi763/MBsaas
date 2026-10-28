@@ -1523,7 +1523,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
 // ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。変更は確認メールを送り、本人が確認したときに切り替わる
 function staffLoginEmailHtml(p, editing) {
   if (p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return ''
-  const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">ログイン用メール</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
+  const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">メール（通知・パスワード再設定）</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
   if (!p.has_own_login) return row('<span class="text-xs text-gray-400">ログインなし</span>')
   const pend = p.login_email_pending
   const pendHtml = pend ? `<span class="block text-xs mt-0.5"><span class="badge badge-yellow">確認待ち</span> ${esc(pend.email)} <span class="text-[11px] text-gray-400">（本人が確認メールのリンクを開くと切り替わります。期限 ${esc(dayjs(pend.expires_at).format('M/D HH:mm'))}）</span></span>` : ''
@@ -1917,7 +1917,7 @@ window.saveStaffBasicInfo = async function (sid) {
     const le = document.getElementById('staff-login-email')
     if (le && le.value.trim() !== (le.dataset.orig || '')) {
       body.login_email = le.value.trim()
-      if (!body.login_email && !confirm('ログイン用メールアドレスを削除します。打刻修正の結果・お知らせのメールと、パスワード再設定のメールが届かなくなります。よろしいですか？')) return
+      if (!body.login_email && !confirm('メールアドレス（通知・パスワード再設定の宛先）を削除します。打刻修正の結果・お知らせのメールと、パスワード再設定のメールが届かなくなります。よろしいですか？')) return
     }
     if (document.getElementById('staff-career-rows')) {
       const commute = val('staff-commute')
@@ -2205,7 +2205,7 @@ delegate('srProfileApprove', el => withSubmitLock(el, async () => {
   const comment = (document.getElementById('sr-pc-' + id) || {}).value || ''
   try {
     const { data } = await axios.post(`/api/admin/staff-requests/profile/${id}/approve`, { comment })
-    toast(data.login_email && data.login_email.pending ? '反映しました。ログイン用メールは本人が確認用のメールを開いたときに切り替わります' : '承認して登録情報に反映しました')
+    toast(data.login_email && data.login_email.pending ? '反映しました。メールアドレスは本人が確認用のメールを開いたときに切り替わります' : '承認して登録情報に反映しました')
     renderStaffRequests()
   } catch (e) { showApiError(e, '承認できませんでした') }
 }))
