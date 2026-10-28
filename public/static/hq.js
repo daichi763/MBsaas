@@ -391,24 +391,31 @@ window.showAddCompany = function () {
         <div><label class="text-xs text-gray-600 block mb-1">トライアルの終了日</label><input id="co-trial-ends" type="date" class="inp"></div>
         <div><label class="text-xs text-gray-600 block mb-1">契約開始日</label><input id="co-contract-start" type="date" class="inp"></div>
       </div>
-      <div class="grid grid-cols-3 gap-3">
+      <hr>
+      <p class="text-xs text-gray-500">初期管理者（必須）: 最初にログインして、会社の設定やスタッフの登録をする人です</p>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-gray-600 block mb-1">氏名 *</label><input id="co-admin-name" class="inp" maxlength="60" placeholder="山田 太郎"></div>
+        <div><label class="text-xs text-gray-600 block mb-1">管理者ID *</label><input id="co-admin-code" class="inp" placeholder="admin" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40"></div>
+      </div>
+      <div><label class="text-xs text-gray-600 block mb-1">メールアドレス *（承認依頼の通知・パスワード再設定の宛先）</label><input id="co-admin-email" type="email" class="inp" autocapitalize="none" spellcheck="false" maxlength="254"></div>
+      <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="空欄なら自動で作成"></div>
+      <p class="text-[11px] text-gray-400">初回ログインで、管理者本人にパスワードの変更を求めます。</p>
+      <label class="flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" id="co-contact-same" checked onchange="document.getElementById('co-contact-box').classList.toggle('hidden', this.checked)">企業の担当者（請求などの連絡先）は管理者と同じ</label>
+      <div id="co-contact-box" class="hidden grid grid-cols-3 gap-3">
         <div><label class="text-xs text-gray-600 block mb-1">企業の担当者</label><input id="co-contact-name" class="inp" maxlength="60"></div>
         <div><label class="text-xs text-gray-600 block mb-1">電話</label><input id="co-contact-phone" type="tel" class="inp" maxlength="30"></div>
         <div><label class="text-xs text-gray-600 block mb-1">メール</label><input id="co-contact-email" type="email" class="inp"></div>
       </div>
-      <hr>
-      <p class="text-xs text-gray-500">初期管理者アカウント（必須）</p>
-      <div class="grid grid-cols-3 gap-3">
-        <div><label class="text-xs text-gray-600 block mb-1">管理者ID *</label><input id="co-admin-code" class="inp" placeholder="admin" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">氏名</label><input id="co-admin-name" class="inp" maxlength="60"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="空欄なら自動で作成"></div>
+      <p class="text-[11px] text-gray-400">企業の担当者は、登録の後に企業詳細で別の人に変えられます。</p>
+      <div class="flex gap-2">
+        <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+        <button class="btn btn-primary flex-1" data-action="addCompany">登録する</button>
       </div>
-      <div><label class="text-xs text-gray-600 block mb-1">管理者のメールアドレス（承認依頼の通知・パスワード再設定の宛先）</label><input id="co-admin-email" type="email" class="inp"></div>
-      <p class="text-[11px] text-gray-400">初回ログインで、管理者本人にパスワードの変更を求めます。</p>
-      <button class="btn btn-primary w-full" data-action="addCompany">登録する</button>
     </div>`)
 }
 // API が返す入力欄の名前 → 画面の入力欄
+// メールアドレスの形式（src/accounts.ts の VALID_EMAIL と同じ）
+const HQ_EMAIL_RE = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/
 const HQ_ADD_FIELDS = { company_code: 'co-code', company_name: 'co-name', plan: 'co-plan', user_limit: 'co-limit', admin_code: 'co-admin-code', admin_password: 'co-admin-pass', admin_email: 'co-admin-email',
   trial_ends_at: 'co-trial-ends', contract_start_at: 'co-contract-start', contact_name: 'co-contact-name', contact_phone: 'co-contact-phone', contact_email: 'co-contact-email' }
 delegate('addCompany', (el) => withSubmitLock(el, async () => {
@@ -420,14 +427,20 @@ delegate('addCompany', (el) => withSubmitLock(el, async () => {
   if (!HQ_COMPANY_CODE_RE.test(code)) return hqMarkField('co-code', '会社コードは半角の英小文字・数字・ハイフンで2〜40文字にしてください（先頭は英数字）')
   if (!v('co-name')) return hqMarkField('co-name', '会社名を入力してください')
   if (limitRaw && !(Number.isInteger(Number(limitRaw)) && Number(limitRaw) >= 1)) return hqMarkField('co-limit', 'ユーザー上限は1以上の整数で入力してください（空欄にすると上限なし）')
+  if (!v('co-admin-name')) return hqMarkField('co-admin-name', '初期管理者の氏名を入力してください')
   if (!adminCode) return hqMarkField('co-admin-code', '初期管理者のIDを入力してください')
+  if (!v('co-admin-email')) return hqMarkField('co-admin-email', '初期管理者のメールアドレスを入力してください')
+  if (!HQ_EMAIL_RE.test(v('co-admin-email'))) return hqMarkField('co-admin-email', '初期管理者のメールアドレスの形式が正しくありません')
+  // 企業の担当者は、「管理者と同じ」なら送らない（サーバーで管理者の氏名・メールにする。#9424）
+  const sameContact = document.getElementById('co-contact-same').checked
   document.getElementById('co-code').value = code
   try {
     const { data } = await axios.post('/api/hq/companies', {
       company_code: code,
       company_name: v('co-name'),
       trial_ends_at: v('co-trial-ends'), contract_start_at: v('co-contract-start'),
-      contact_name: v('co-contact-name'), contact_phone: v('co-contact-phone'), contact_email: v('co-contact-email'),
+      ...(sameContact ? { contact_same_as_admin: true }
+        : { contact_name: v('co-contact-name'), contact_phone: v('co-contact-phone'), contact_email: v('co-contact-email') }),
       plan: v('co-plan'),
       user_limit: limitRaw === '' ? null : Number(limitRaw),
       admin_code: adminCode,
@@ -1973,6 +1986,7 @@ const OB_EVENT_LABEL = { start: '契約終了の登録', cancel: '契約終了�
 const OB_FILE_LABEL = { attendance_reports: '出退勤の写真', attendance_reports_duplicates_0036: '出退勤の写真（重複の控え）', staff_documents: 'スタッフの書類', employee_documents: '入社時書類', client_documents: 'クライアントの契約書類' }
 const OB_DARK_INP = 'style="background:#1e293b;border-color:#334155;color:#fff"'
 let OB_DETAIL = null
+let OB_ACTIVE = [] // 停止していない企業（「企業を停止する」の選択肢。#9423）
 
 // 本部画面のナビ（index.tsx）にタブを足す
 ;(function addOffboardingNav() {
@@ -2003,9 +2017,19 @@ async function renderOffboardingList() {
       <td class="px-3 py-3 text-xs">${c.last_export_at ? hqDate(c.last_export_at, false) : '<span class="text-slate-500">なし</span>'}</td>
       <td class="px-3 py-3"><a href="#offboarding/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline">開く →</a></td>
     </tr>`).join('')
+  OB_ACTIVE = data.active_companies || []
   $app.innerHTML = `
     <h2 class="text-xl font-bold">解約・データ</h2>
     <p class="text-sm text-slate-400 mt-1 mb-5">利用状態が「停止」の企業に契約終了を登録すると、猶予期間（既定${Number(data.grace_days)}日）のあいだにデータ（CSV・写真・書類）を書き出して渡せます。猶予の後に、会社コードと確認の入力のうえで、スタッフ・勤怠・写真・書類などを削除し、利用者とスタッフの氏名・連絡先を匿名化します。</p>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5" id="ob-stop-box">
+      <h3 class="font-bold mb-1"><i class="fas fa-ban text-cyan-400 mr-1"></i>企業を停止する</h3>
+      <p class="text-xs text-slate-400 mb-3">解約する企業は、まず停止にします。停止すると、そのまま下の一覧からデータの書き出しと契約終了の登録に進めます（企業の画面の「利用状態」でも停止・再開できます）。</p>
+      ${OB_ACTIVE.length ? `<div class="flex flex-wrap gap-2 items-end">
+        <label class="block text-sm flex-1" style="min-width:14rem"><span class="text-xs text-slate-400">停止する企業</span>
+          <select id="ob-stop-company" class="inp mt-1" ${OB_DARK_INP}><option value="">選んでください</option>${OB_ACTIVE.map(c => `<option value="${Number(c.company_id)}">${esc(c.company_name)}（${esc(c.company_code)}）${c.active_status === 'trial' ? '・トライアル' : ''}</option>`).join('')}</select></label>
+        <button class="btn btn-danger" data-action="obStopPick"><i class="fas fa-ban"></i>この企業を停止する</button>
+      </div>` : '<p class="text-xs text-slate-500">停止していない企業はありません</p>'}
+    </section>
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 overflow-x-auto">
       <table class="w-full text-sm">
         <thead><tr class="text-slate-400 text-xs border-b border-slate-700">
@@ -2020,7 +2044,10 @@ function obStatusHtml(d) {
   const ob = d.offboarding, c = d.company
   const open = ob && (ob.status === 'scheduled' || ob.status === 'deleting')
   if (!open && c.active_status !== 'inactive') {
-    return `<p class="text-sm text-slate-300">この企業は「停止」ではないため、契約終了を登録できません。企業の画面で利用状態を停止にしてから登録してください。</p>`
+    // 停止していない企業は、ここで停止してから進める（#9423）
+    return `<p class="text-sm text-slate-300 mb-3">この企業は「停止」ではないため、まだ契約終了を登録できません。停止すると、データの書き出しと契約終了の登録に進めます。</p>
+      <button class="btn btn-danger" data-action="obStop" data-cid="${Number(c.company_id)}"><i class="fas fa-ban"></i>この企業を停止する</button>
+      <p class="text-[11px] text-slate-400 mt-2">企業の画面の「利用状態」でも停止・再開できます。</p>`
   }
   if (!open && ob && ob.status === 'completed') {
     return `<p class="text-sm">削除が完了しています（${hqDate(ob.completed_at, false)}）。<a href="/api/hq/offboarding/${Number(c.company_id)}/record.csv" class="text-cyan-400 hover:underline ml-1"><i class="fas fa-file-csv mr-1"></i>削除の記録（CSV）</a></p>`
@@ -2133,6 +2160,47 @@ async function renderOffboardingDetail(cid) {
 }
 
 const obVal = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
+
+// 企業の停止（#9423）。確認と理由の入力のうえで利用状態を「停止」にし、その企業の解約・データの画面へ進む
+function showObStop(c) {
+  modal(`
+    <h3 class="font-bold text-lg mb-2 text-gray-800"><i class="fas fa-ban text-red-600 mr-1"></i>この企業を停止する</h3>
+    <p class="text-sm text-gray-700 mb-2">「${esc(c.company_name)}」（${esc(c.company_code)}）を停止にします。</p>
+    <ul class="text-xs text-gray-600 list-disc pl-5 mb-3 space-y-1">
+      <li>この企業の管理者・スタッフは全員ログアウトされ、ログインも報告用URLも使えなくなります</li>
+      <li>データは消えません。停止の後に、データの書き出しと契約終了の登録に進めます</li>
+      <li>企業の画面の「利用状態」で、利用中に戻せます</li>
+    </ul>
+    <label class="block text-xs text-gray-600 mb-1">停止する理由 *（変更履歴に残ります）</label>
+    <input id="ob-stop-reason" class="inp" maxlength="500" placeholder="例: 契約終了のため">
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-danger flex-1" data-action="obStopConfirm" data-cid="${Number(c.company_id)}"><i class="fas fa-ban"></i>停止する</button>
+    </div>`)
+  const r = document.getElementById('ob-stop-reason'); if (r) r.focus()
+}
+
+delegate('obStopPick', () => {
+  const id = Number(obVal('ob-stop-company'))
+  const c = OB_ACTIVE.find(x => Number(x.company_id) === id)
+  if (!c) { toast('停止する企業を選んでください'); return }
+  showObStop(c)
+})
+delegate('obStop', () => { if (OB_DETAIL) showObStop(OB_DETAIL.company) })
+delegate('obStopConfirm', el => {
+  const cid = Number(el.dataset.cid)
+  const reason = obVal('ob-stop-reason')
+  if (!reason) { toast('停止する理由を入力してください'); const r = document.getElementById('ob-stop-reason'); if (r) r.focus(); return }
+  withSubmitLock(el, async () => {
+    try {
+      const { data } = await axios.put('/api/hq/companies/' + cid, { active_status: 'inactive', reason })
+      closeModal()
+      toast(data.revoked_sessions ? `停止しました（${data.revoked_sessions}件のログインを終了しました）` : '停止しました')
+      const next = '#offboarding/' + cid
+      if (location.hash === next) renderOffboardingDetail(cid); else location.hash = next
+    } catch (e) { showApiError(e, '停止できませんでした') }
+  })
+})
 
 delegate('obStart', el => {
   const cid = Number(el.dataset.cid)

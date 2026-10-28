@@ -28,7 +28,7 @@ const sales = client(await login('sample', 'sales01'))
 const hq = client(await login('sample', 'hq'))
 const coCode = `${PFX.toLowerCase()}a`
 const coName = `${PFX}連携先A株式会社`
-must(await hq.post('/api/hq/companies', { company_code: coCode, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company A')
+must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: coCode, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company A')
 const A = client(await login(coCode, 'admin'))
 
 // 自社雇用のスタッフ（ログイン・メール・電話あり）を作り、A に連携する

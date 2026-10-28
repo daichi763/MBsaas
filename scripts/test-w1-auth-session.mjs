@@ -199,9 +199,9 @@ if (PERSIST) {
 {
   const hq = client(await login('sample', 'hq'))
   const code = 'w1co' + Date.now().toString(36)
-  const weak = await hq.post('/api/hq/companies', { company_code: code, company_name: 'W1 停止テスト', admin_code: 'admin', admin_password: 'abc' })
+  const weak = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: 'W1 停止テスト', admin_code: 'admin', admin_password: 'abc' })
   ok('#331 初期管理者のパスワードも8文字未満を拒否', weak.status === 400, weak)
-  const created = await hq.post('/api/hq/companies', { company_code: ' ' + code + ' ', company_name: 'W1 停止テスト', admin_code: 'admin', admin_password: 'adminpass1' })
+  const created = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: ' ' + code + ' ', company_name: 'W1 停止テスト', admin_code: 'admin', admin_password: 'adminpass1' })
   ok('企業を作成できる（会社コードは前後の空白を除く）', created.status === 200, created)
   const list = (await hq.get('/api/hq/companies')).data.companies
   const co = list.find(x => x.company_code === code)

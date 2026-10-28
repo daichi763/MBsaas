@@ -92,7 +92,7 @@ let mode = null
 {
   const hq = client(await login('sample', 'hq'))
   const code = 'mt' + uid().slice(0, 6)
-  const cr = await hq.post('/api/hq/companies', { company_code: code, company_name: `連携テスト${code}`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' })
+  const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `連携テスト${code}`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' })
   ok('（前提）連携先の会社を作成', cr.status === 200, cr)
   const admin2 = client(await login(code, 'admin'))
   const share = await admin.get('/api/admin/roster/1/share-code')

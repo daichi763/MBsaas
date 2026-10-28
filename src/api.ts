@@ -7421,6 +7421,14 @@ api.post('/hq/companies', async (c) => {
   if (!adminCode) return c.json({ error: '初期管理者のIDを入力してください', field: 'admin_code' }, 400)
   if (!/^\S{1,40}$/.test(adminCode)) return c.json({ error: '初期管理者の ID は空白なしの40文字以内で入力してください', field: 'admin_code' }, 400)
   if (adminEmail === undefined) return c.json({ error: '初期管理者のメールアドレスの形式が正しくありません', field: 'admin_email' }, 400)
+  // 初期管理者のメールアドレスは必須（#9425。パスワード再設定と承認依頼の通知が届かない管理者を作らない）
+  if (!adminEmail) return c.json({ error: '初期管理者のメールアドレスを入力してください', field: 'admin_email' }, 400)
+  const adminName = String(b.admin_name || '').trim().slice(0, 60)
+  // 企業の担当者（請求などの連絡先）は、指定がなければ初期管理者と同じにする（#9424。登録の後に企業詳細で別の人に変えられる）
+  if (b.contact_same_as_admin === true || (!extra.contact_name && !extra.contact_phone && !extra.contact_email)) {
+    if (adminName) extra.contact_name = adminName; else delete extra.contact_name
+    extra.contact_email = adminEmail
+  }
   if (!adminPassword) { adminPassword = genTempPassword(); generated = true }
   const pwErr = validatePassword(adminPassword)
   if (pwErr) return c.json({ error: '初期管理者の' + pwErr, field: 'admin_password' }, 400)
@@ -7431,7 +7439,7 @@ api.post('/hq/companies', async (c) => {
       .bind(companyCode, companyName, plan, limit.value, 'trial', ...extraCols.map(k => extra[k])),
     db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, must_change_password)
       SELECT company_id, ?, ?, 'company_admin', ?, ?, 1 FROM companies WHERE company_code = ?`)
-      .bind(adminCode, String(b.admin_name || '').trim().slice(0, 60) || '管理者', await hashPassword(adminPassword), adminEmail, companyCode),
+      .bind(adminCode, adminName || '管理者', await hashPassword(adminPassword), adminEmail, companyCode),
     // 本部の操作の履歴（#542）。企業の ID は登録した行から引く
     db.prepare(`INSERT INTO hq_audit_logs (actor_user_id, action, company_id, target, after_json, created_at)
       SELECT ?, 'company.create', company_id, ?, ?, ? FROM companies WHERE company_code = ?`)
@@ -7871,7 +7879,10 @@ api.get('/hq/offboarding', async (c) => {
     WHERE COALESCE(co.active_status, 'active') != ? AND (co.active_status = 'inactive' OR o.offboarding_id IS NOT NULL)
     ORDER BY CASE o.status WHEN 'deleting' THEN 0 WHEN 'scheduled' THEN 1 WHEN 'completed' THEN 3 ELSE 2 END, o.delete_after, co.company_id`)
     .bind(HQ_COMPANY_STATUS).all()).results
-  return c.json({ companies: rows, today: todayJST(), grace_days: OFFBOARDING_GRACE_DAYS })
+  // 停止していない企業（#9423。この画面から停止して、そのまま書き出し・削除へ進めるように）
+  const active = (await c.env.DB.prepare(`SELECT company_id, company_code, company_name, COALESCE(active_status, 'active') AS active_status FROM companies
+    WHERE COALESCE(active_status, 'active') NOT IN (?, 'inactive') ORDER BY company_name, company_id`).bind(HQ_COMPANY_STATUS).all()).results
+  return c.json({ companies: rows, active_companies: active, today: todayJST(), grace_days: OFFBOARDING_GRACE_DAYS })
 })
 
 // 詳細: 解約の処理・操作の記録・表ごとの件数（削除の dry-run を兼ねる）・R2 のファイルの件数

@@ -111,7 +111,7 @@ const list = async () => must(await admin.get('/api/admin/roster/partners'), 'pa
 // ---------- 他社からは触れない ----------
 {
   const code = `${PFX.toLowerCase()}o`
-  const created = await hq.post('/api/hq/companies', { company_code: code, company_name: `${PFX}他社株式会社`, admin_code: 'admin', admin_password: 'pass1234' })
+  const created = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}他社株式会社`, admin_code: 'admin', admin_password: 'pass1234' })
   if (created.status === 200) {
     const other = client(await login(code, 'admin'))
     const r1 = await other.get(`/api/admin/roster/partners/${X}`)

@@ -215,7 +215,7 @@ if (PERSIST) {
   ok('#359 案件のあるクライアントは削除できない（409）', r.status === 409 && r.data.usage.some(u => u.key === 'projects'), r.data)
   // ほかの会社からは消せない
   const tag = Date.now().toString(36).slice(-5)
-  const cr = await hq.post('/api/hq/companies', { company_code: 'w8' + tag, company_name: `w8削除確認${tag}`, admin_code: 'adminb', admin_password: 'W8-Passw0rd-' + tag, admin_name: 'B社 管理者' })
+  const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: 'w8' + tag, company_name: `w8削除確認${tag}`, admin_code: 'adminb', admin_password: 'W8-Passw0rd-' + tag, admin_name: 'B社 管理者' })
   if (cr.status === 200) {
     const adminB = client(await login('w8' + tag, 'adminb', 'W8-Passw0rd-' + tag))
     const dup2 = await newProject(`${PFX}-他社確認`)

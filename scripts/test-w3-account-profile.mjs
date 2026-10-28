@@ -233,7 +233,7 @@ if (PERSIST) {
 {
   const hq = client(await login('', 'hq'))
   const code = `w3ap${SUF}`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: `W3AP 連携先${SUF}`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `W3AP 連携先${SUF}`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
   const A = client(await login(code, 'admin'))
   const share = must(await admin.get(`/api/admin/roster/${EMP_SID}/share-code`), 'share-code')
   const terms = must(await A.get('/api/admin/roster/consent-terms'), 'terms')
