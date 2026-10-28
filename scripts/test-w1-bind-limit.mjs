@@ -1,4 +1,5 @@
 // D1 のバインド上限（100）と、他社の会社名を出さない重複チェック（w1-bind-limit: #14 #29 #30 #35 #264 #560）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8799 node scripts/test-w1-bind-limit.mjs
@@ -128,7 +129,7 @@ const hq = client(await login('sample', 'hq'))
 const companies = {}
 for (const k of ['A', 'B', 'C']) {
   const code = `${PFX.toLowerCase()}${k.toLowerCase()}`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: `${PFX}連携先${k}株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company ' + k)
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}連携先${k}株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company ' + k)
   companies[k] = { code, name: `${PFX}連携先${k}株式会社`, api: client(await login(code, 'admin')) }
 }
 const C1NAME = '株式会社サンプルモバイル人材'

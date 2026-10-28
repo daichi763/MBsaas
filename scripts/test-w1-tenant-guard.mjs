@@ -27,7 +27,7 @@ const tag = Date.now().toString(36).slice(-5)
 // ---------- 2 社目（B 社）を用意する ----------
 const hq = client(await login('sample', 'hq'))
 const codeB = 'tg' + tag, pwB = 'Tg-Passw0rd-' + tag
-const cr = await hq.post('/api/hq/companies', { company_code: codeB, company_name: `テナント確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
+const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeB, company_name: `テナント確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
 ok('（前提）B 社を作成', cr.status === 200, cr)
 const adminB = client(await login(codeB, 'adminb', pwB))
 const admin = client(await login('sample', 'admin'))
@@ -155,7 +155,9 @@ for (let i = 0; i < 20; i++) {
   if (dels.length && dels.every(d => d.status !== 'pending')) break
   await new Promise(r => setTimeout(r, 300))
 }
-ok('#570 連携先の送信状況に所属元のメールアドレスが出ない', dels.length > 0 && dels.every(d => !String(d.to_email).includes('@') && d.to_email_hidden === true), dels)
+// B 社の管理者あての申請の通知（#9425 で初期管理者のメールアドレスが必須になったため届く）は自社のアドレスなので、スタッフあてだけを見る
+const staffDels = dels.filter(d => d.recipient_name !== 'B社 管理者')
+ok('#570 連携先の送信状況に所属元のメールアドレスが出ない', staffDels.length > 0 && staffDels.every(d => !String(d.to_email).includes('@') && d.to_email_hidden === true), dels)
 const csv = await adminB.get('/api/admin/notification-emails/export')
 ok('#570 連携先の CSV に所属元のメールアドレスが出ない', csv.status === 200 && !String(csv.data).includes('staff1@example.com'), String(csv.data).slice(0, 300))
 const aOwn = ((await admin.get('/api/admin/notification-emails?status=all')).data.deliveries || [])

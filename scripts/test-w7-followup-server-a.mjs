@@ -1,4 +1,5 @@
 // 持ち越しの仕上げ（作業単位 w7-followup-server-a）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //   #9001 企業間連携の共有範囲（生年月日・備考を渡さず年代を渡す・同意 v3）/ #162 連携を終了した行 / #552 企業の切り替えの履歴 / #286 最後の利用
 //   #293 本部の閲覧中はトークンを返さない / #513 終了した募集の問い合わせ先 / #225 止めた応募の件数 / #300 スタッフアプリの応募の質問
 //   #87 退職者の未対応の応募 / #151 応募の結果のメールの状態 / #155 シフトの変更日時・まとめて外したときの知らせ / #158 日報コメントの既読
@@ -79,9 +80,9 @@ const pub = client('')
 const codeA = `${pfx}a`
 {
   const typed = codeA.toUpperCase().replace(/[A-Z0-9]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0xFEE0)) // 全角の大文字で入力
-  const r = await hq.post('/api/hq/companies', { company_code: typed, company_name: `${PFX}連携先A`, admin_code: 'admin', admin_password: 'pass1234' })
+  const r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: typed, company_name: `${PFX}連携先A`, admin_code: 'admin', admin_password: 'pass1234' })
   ok('#387 全角・大文字で入力した会社コードは、半角の小文字で保存される（そのコードでログインできる）', r.status === 200 && (await rawLogin(codeA, 'admin')).status === 200, r)
-  const dup = await hq.post('/api/hq/companies', { company_code: codeA.toUpperCase(), company_name: '重複', admin_code: 'admin', admin_password: 'pass1234' })
+  const dup = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeA.toUpperCase(), company_name: '重複', admin_code: 'admin', admin_password: 'pass1234' })
   ok('#387 大文字・小文字の違いだけの会社コードは重複として 409', dup.status === 409, dup)
 }
 const A = client(await login(codeA, 'admin'))
@@ -374,7 +375,7 @@ if (PERSIST) {
 
   // 解約した企業の削除（停止 → 契約終了の登録（猶予を過ぎた日付）→ 書き出しを省いた理由を付けて削除）
   const codeD = `${pfx}d`
-  must(await hq.post('/api/hq/companies', { company_code: codeD, company_name: `${PFX}解約企業`, admin_code: 'admin', admin_password: 'pass1234' }), 'company D')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeD, company_name: `${PFX}解約企業`, admin_code: 'admin', admin_password: 'pass1234' }), 'company D')
   const [cd] = sql(`SELECT company_id FROM companies WHERE company_code = '${codeD}'`)
   const cid = cd[0].company_id
   sql(`INSERT INTO users (company_id, user_code, name, role, password_hash) VALUES (${cid}, 's1', '解約 スタッフ', 'staff', 'x');

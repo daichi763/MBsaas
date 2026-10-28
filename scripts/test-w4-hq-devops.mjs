@@ -64,24 +64,24 @@ ok('企業の管理者は本部の企業一覧を使えない（403）', (await 
 // ---------- #398 企業登録の検証 ----------
 const code = `w4hq${SUF}`
 {
-  let r = await hq.post('/api/hq/companies', { company_code: code, company_name: 'テスト企業A' })
+  let r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: 'テスト企業A' })
   ok('#398 初期管理者のIDがないと登録できない（400）', r.status === 400 && r.data?.field === 'admin_code', r)
-  r = await hq.post('/api/hq/companies', { company_code: 'ab c!', company_name: 'テスト', admin_code: 'admin' })
+  r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: 'ab c!', company_name: 'テスト', admin_code: 'admin' })
   ok('#398 空白・記号を含む会社コードは登録できない（400）', r.status === 400 && r.data?.field === 'company_code', r)
-  r = await hq.post('/api/hq/companies', { company_code: 'x', company_name: 'テスト', admin_code: 'admin' })
+  r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: 'x', company_name: 'テスト', admin_code: 'admin' })
   ok('#398 1文字の会社コードは登録できない（400）', r.status === 400, r)
-  r = await hq.post('/api/hq/companies', { company_code: code + 'z', company_name: 'テスト', admin_code: 'admin', user_limit: 0 })
+  r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code + 'z', company_name: 'テスト', admin_code: 'admin', user_limit: 0 })
   ok('#254 ユーザー上限 0 は登録できない（400）', r.status === 400 && r.data?.field === 'user_limit', r)
-  r = await hq.post('/api/hq/companies', { company_code: code + 'z', company_name: 'テスト', admin_code: 'admin', plan: 'gold' })
+  r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code + 'z', company_name: 'テスト', admin_code: 'admin', plan: 'gold' })
   ok('#254 決められていないプランは登録できない（400）', r.status === 400, r)
   // 全角・大文字で入力しても、半角の小文字にそろえて保存する
   const wide = code.toUpperCase().replace(/[A-Z0-9]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0xFEE0))
-  r = await hq.post('/api/hq/companies', { company_code: wide, company_name: 'テスト企業A', admin_code: 'ａｄｍｉｎ', user_limit: '' })
+  r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: wide, company_name: 'テスト企業A', admin_code: 'ａｄｍｉｎ', user_limit: '' })
   ok('#398 全角・大文字の会社コードは半角の小文字にそろえて登録する', r.status === 200 && r.data?.company_code === code && !!r.data?.admin_temp_password, r)
   const pw = r.data?.admin_temp_password
   const login = await rawLogin(code, 'admin', pw)
   ok('#398 登録した会社コード・管理者ID（全角で入力→半角で保存）と仮パスワードでログインできる', login.status === 200, login)
-  r = await hq.post('/api/hq/companies', { company_code: code.toUpperCase(), company_name: '重複', admin_code: 'admin' })
+  r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code.toUpperCase(), company_name: '重複', admin_code: 'admin' })
   ok('#398 大文字・小文字だけが違う会社コードは重複として 409', r.status === 409 && r.data?.error === '会社コードが重複しています', r)
 }
 const list1 = (await hq.get('/api/hq/companies')).data?.companies || []

@@ -135,7 +135,7 @@ const daA = await createShift(A.staff_id, pid, dayAfter, '10:00', '15:00')
   const hq = client(await login('sample', 'hq'))
   const tag = Date.now().toString(36).slice(-5)
   const codeB = 'w6s' + tag, pwB = 'W6s-Passw0rd-' + tag
-  const cr = await hq.post('/api/hq/companies', { company_code: codeB, company_name: `前日確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
+  const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeB, company_name: `前日確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
   if (cr.status === 200) {
     const adminB = client(await login(codeB, 'adminb', pwB))
     must(await adminB.put('/api/admin/report-settings/day-before-check', { enabled: true, deadline: '18:00' }), 'B setting')

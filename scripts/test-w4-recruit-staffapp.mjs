@@ -1,4 +1,5 @@
 // スタッフアプリの募集・応募（w4-recruit-staffapp: #239 #270 #310 #315 #316 #362 #364 #410 #513 #514）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8811 node scripts/test-w4-recruit-staffapp.mjs
@@ -208,7 +209,7 @@ const S1 = await newStaff('S1')
   const hq = client(await login('sample', 'hq'))
   const code = `rs${PFX.toLowerCase()}co`
   const coName = `${PFX} 連携先株式会社`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
   const coAdmin = client(await login(code, 'admin'))
   const S7 = await newStaff('S7')
   const terms = must(await coAdmin.get('/api/admin/roster/consent-terms'), 'terms')

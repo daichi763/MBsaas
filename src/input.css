@@ -110,6 +110,64 @@
 /* SortableJS がドラッグ中に付ける */
 .sortable-ghost { opacity: .45; }
 
+/* シフト管理（D 案。Sprint 11 #9401〜#9403）: 左に案件 × 日付の表、右に選んだ枠と候補。
+   名前を組み立てて付けるクラス（cand-badge av-○○ など）があるので @layer の外に書く */
+.board-d { display: grid; grid-template-columns: minmax(0, 1fr); gap: .75rem; align-items: start; }
+@media (min-width: 1100px) { .board-d { grid-template-columns: minmax(0, 1fr) 340px; } }
+.board-d.board-d-full { grid-template-columns: minmax(0, 1fr); }
+.board-side { position: sticky; top: 1rem; max-height: calc(100vh - 6rem); overflow-y: auto; font-size: .82rem; }
+.board-segs { display: inline-flex; border: 1px solid #e5e7eb; border-radius: .6rem; overflow: hidden; }
+.board-seg { padding: .4rem .7rem; font-size: .78rem; background: #fff; color: #4b5563; border-left: 1px solid #e5e7eb; }
+.board-seg:first-child { border-left: 0; }
+.board-seg:hover { background: #f9fafb; }
+.board-seg.on { background: #2563eb; color: #fff; font-weight: 700; }
+.board-toggle { padding: .38rem .7rem; font-size: .78rem; border: 1px solid #e5e7eb; border-radius: .6rem; background: #fff; color: #4b5563; }
+.board-toggle.sm { padding: .2rem .5rem; font-size: .72rem; }
+.board-toggle:hover { background: #f9fafb; }
+.board-toggle.on { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; font-weight: 700; }
+.board-seg:focus-visible, .board-toggle:focus-visible, .board-cell:focus-visible, .board-cal-day:focus-visible, .cand-item:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+.board-save-btn { background: #059669; color: #fff; }
+.board-save-btn:hover:not(:disabled) { background: #047857; }
+.board-menu > summary { list-style: none; }
+.board-menu > summary::-webkit-details-marker { display: none; }
+.board-menu-list { position: absolute; right: 0; z-index: 30; margin-top: .25rem; width: 17rem; background: #fff; border: 1px solid #e5e7eb; border-radius: .75rem; box-shadow: 0 10px 25px rgba(0,0,0,.12); padding: .3rem; }
+.board-menu-item { display: flex; align-items: center; gap: .5rem; width: 100%; text-align: left; padding: .5rem .6rem; border-radius: .5rem; font-size: .82rem; color: #374151; }
+.board-menu-item:hover { background: #f3f4f6; }
+.board-cell { cursor: pointer; }
+.board-cell.is-sel { outline: 2px solid #2563eb; outline-offset: -1px; box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
+.board-need { display: inline-block; font-size: .68rem; font-weight: 700; border-radius: .3rem; padding: 0 .35rem; }
+.board-need.short { background: #fee2e2; color: #b91c1c; }
+.board-need.full { background: #d1fae5; color: #047857; }
+.board-need.over { background: #fef3c7; color: #b45309; }
+.cell-tool { width: 1.15rem; height: 1.15rem; border-radius: .3rem; font-size: .58rem; color: #9ca3af; display: inline-flex; align-items: center; justify-content: center; }
+.cell-tool:hover { background: #fff; color: #2563eb; }
+.cell-tool.danger:hover { color: #dc2626; }
+.board-chip.chip-draft { background: #ecfdf5; border: 1px dashed #059669; color: #065f46; cursor: default; }
+.board-chip.chip-draft-bad { background: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; }
+.board-savebar { position: fixed; right: 1rem; bottom: 1rem; z-index: 35; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; background: #fff; border: 1px solid #a7f3d0; border-radius: .9rem; padding: .5rem .75rem; box-shadow: 0 10px 25px rgba(0,0,0,.15); max-width: calc(100vw - 2rem); }
+.board-savebar[hidden] { display: none; }
+.board-inherit { background: #eff6ff; border-radius: .6rem; padding: .5rem .6rem; font-size: .75rem; color: #374151; }
+.board-cand { display: flex; flex-direction: column; gap: .3rem; }
+.cand-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .1rem .5rem; text-align: left; border: 1px solid #e5e7eb; border-radius: .55rem; padding: .35rem .5rem; background: #fff; font-size: .8rem; }
+.cand-item:hover { border-color: #2563eb; background: #f8fbff; }
+.cand-item.is-warn { background: #fffafa; }
+.cand-item.is-drafted { border-color: #059669; background: #f0fdf4; }
+.cand-why { grid-column: 1 / -1; font-size: .7rem; color: #6b7280; line-height: 1.35; }
+.cand-badge { font-size: .68rem; font-weight: 700; border-radius: .3rem; padding: 0 .35rem; white-space: nowrap; align-self: start; }
+.cand-badge.ok, .cand-badge.av-ok { background: #d1fae5; color: #047857; }
+.cand-badge.av-partial, .cand-badge.warn { background: #fef3c7; color: #b45309; }
+.cand-badge.av-ng { background: #f3f4f6; color: #6b7280; }
+.cand-badge.bad { background: #fee2e2; color: #b91c1c; }
+.cand-badge.draft { background: #059669; color: #fff; }
+.board-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .3rem; min-width: 640px; }
+.board-cal-dow { font-size: .72rem; font-weight: 700; color: #6b7280; text-align: center; }
+.board-cal-day { border: 1px solid #e5e7eb; border-radius: .5rem; min-height: 6.2rem; padding: .3rem .4rem; background: #fff; cursor: pointer; display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
+.board-cal-day:hover { border-color: #93c5fd; background: #f8fbff; }
+.board-cal-day.out { background: #f9fafb; border-style: dashed; cursor: default; }
+.board-cal-day.is-today { box-shadow: inset 0 0 0 2px #93c5fd; }
+.board-cal-line { display: flex; justify-content: space-between; gap: .25rem; font-size: .68rem; white-space: nowrap; overflow: hidden; color: #374151; }
+.board-cal-line.short { color: #b91c1c; font-weight: 700; }
+
 /* スマホ幅では入力欄の文字を16px以上にする（iOS の Safari は16px未満の入力欄にフォーカスすると画面を拡大し、戻らないため。#231）。
    スタッフ画面・報告用URL・募集ページの .inp すべてに効かせる。拡大そのもの（maximum-scale）は禁止しない */
 @media (max-width: 640px) {

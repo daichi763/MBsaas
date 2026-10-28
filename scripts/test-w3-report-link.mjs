@@ -78,7 +78,7 @@ const key = up.data && up.data.photo_key
   // 他社の管理者は取得できない
   const hq = client(await login('sample', 'hq'))
   const codeB = 'rl' + tag, pwB = 'Rl-Passw0rd-' + tag
-  const cr = await hq.post('/api/hq/companies', { company_code: codeB, company_name: `報告URL確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
+  const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeB, company_name: `報告URL確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
   ok('（前提）B 社を作成', cr.status === 200, cr)
   const adminB = client(await login(codeB, 'adminb', pwB))
   const imgB = await adminB.raw(`/api/admin/attendance-photo/${ci.attendance_id}`)

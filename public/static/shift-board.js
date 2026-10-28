@@ -57,10 +57,29 @@
   })
 
   // =========================================================
-  // シフトボード
+  // シフト管理（D 案。Sprint 11 #9401〜#9403）
+  // 上: 期間（週・2週間・月）と絞り込み、左: 案件 × 日付の表（月はカレンダー）、右: 選んだマスの案件・単価・候補。
+  // 候補を押すと下書きにし（その場では保存しない）、「まとめて保存」で1回で登録する（POST /api/admin/shift-slots/assign-batch）
   // =========================================================
+  const RANGE_DAYS = { week: 7, '2w': 14 }
+  if (!BS.range) BS.range = BS.days >= 28 ? 'month' : BS.days === 14 ? '2w' : 'week'
+  if (!BS.cf) BS.cf = { free: true, skill: '', prev: false, q: '' }
+  if (!BS.draftStatus) BS.draftStatus = 'confirmed'
+  if (!BS.noInherit) BS.noInherit = {}
+  // 期間の初日と日数を、表示の単位（週・2週間は月曜始まり、月は1日から月末）にそろえる
+  function normalizeRange() {
+    if (BS.range === 'month') { BS.from = dayjs(BS.from).startOf('month').format('YYYY-MM-DD'); BS.days = dayjs(BS.from).daysInMonth() }
+    else { BS.from = weekStart(BS.from); BS.days = RANGE_DAYS[BS.range] || 7 }
+  }
+  const boardDays = () => { const a = []; for (let i = 0; i < BS.days; i++) a.push(dayjs(BS.from).add(i, 'day').format('YYYY-MM-DD')); return a }
+  // 枠の役割の索引（slot_role_id → 枠・役割）
+  let ROLE_IX = new Map()
+  function indexRoles() { ROLE_IX = new Map(); for (const s of BOARD.slots) for (const r of s.roles) ROLE_IX.set(r.slot_role_id, { slot: s, role: r }) }
+  const projectOf = (pid) => (BOARD && BOARD.projects.find(p => p.project_id === pid)) || (MASTER && MASTER.projects.find(p => p.project_id === pid)) || {}
+
   window.renderShiftBoard = async function () {
     loading()
+    normalizeRange()
     const m = await loadMaster()
     const to = dayjs(BS.from).add(BS.days - 1, 'day').format('YYYY-MM-DD')
     const q = new URLSearchParams({ from: BS.from, to })
@@ -69,87 +88,101 @@
     if (BS.engagement) q.set('engagement', BS.engagement)
     const { data } = await axios.get('/api/admin/shift-board?' + q)
     BOARD = data
-    const days = []; for (let i = 0; i < BS.days; i++) days.push(dayjs(BS.from).add(i, 'day').format('YYYY-MM-DD'))
+    indexRoles()
+    pruneDrafts()
+    const days = boardDays()
     const t = data.totals
     const fillRate = t.required ? Math.round(t.filled / t.required * 100) : null
     const projOpts = m.projects.filter(p => !BS.clientId || String(p.client_id) === String(BS.clientId))
     const reqShifts = requestedShifts()
+    const seg = (key, val, label) => `<button type="button" class="board-seg ${String(BS[key] || '') === val ? 'on' : ''}" data-action="boardSeg" data-key="${key}" data-val="${esc(val)}" aria-pressed="${String(BS[key] || '') === val}">${label}</button>`
+    const periodLabel = BS.range === 'month' ? dayjs(BS.from).format('YYYY年M月') : `${fmtDay(BS.from)}〜${fmtDay(to)}`
+    const menuItem = (attrs, icon, label) => `<button type="button" class="board-menu-item" ${attrs}><i class="fas ${icon} w-4 text-gray-400"></i>${label}</button>`
 
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <h2 class="text-xl font-bold text-gray-900">シフトボード</h2>
-        <div class="flex gap-2 flex-wrap">
-          <button class="btn btn-outline" onclick="boardShift(-1)"><i class="fas fa-chevron-left"></i></button>
-          <button class="btn btn-outline" onclick="boardToday()">今週</button>
-          <button class="btn btn-outline" onclick="boardShift(1)"><i class="fas fa-chevron-right"></i></button>
-          <select class="inp text-sm w-auto" onchange="boardSet('days', Number(this.value))">
-            ${[[7, '1週'], [14, '2週'], [31, '1か月']].map(([v, l]) => `<option value="${v}" ${BS.days === v ? 'selected' : ''}>${l}</option>`).join('')}
-          </select>
-          <button class="btn btn-primary" onclick="openSlotModal()"><i class="fas fa-plus"></i>枠を作成</button>
-          <button class="btn btn-outline" onclick="openPatternModal()"><i class="fas fa-repeat"></i>繰り返し登録</button>
-          <button class="btn btn-outline" onclick="openBulkModal()"><i class="fas fa-calendar-week"></i>常勤の一括登録</button>
-          <button class="btn btn-outline" onclick="openCopyModal()"><i class="fas fa-copy"></i>コピー</button>
-          <button class="btn btn-outline" data-action="boardPlacementExport" data-format="csv" title="表示中の期間・絞り込みの配置表（金額なし・未充足の枠と希望（仮）を含む）を CSV で出します"><i class="fas fa-file-csv"></i>配置表CSV</button>
-          <button class="btn btn-outline" data-action="boardPlacementExport" data-format="print" title="クライアント・現場リーダーに渡す配置表を、案件ごとに改ページして印刷します（金額は載せません）"><i class="fas fa-print"></i>配置表を印刷</button>
-          <button class="btn btn-outline" data-action="openShiftRequests"><i class="fas fa-hand"></i>シフト希望<span id="board-req-count"></span></button>
-          <button class="btn btn-outline" data-action="openNologinBulk" data-date="${esc(nologinDefaultDate())}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="ログインのないスタッフの報告用URLを、日付ごとにまとめて発行・コピーします（未発行・発行済み・未使用の別も出します）"><i class="fas fa-link"></i>報告用URL（ログインなし）</button>
-          ${reqShifts.length ? `<button class="btn btn-outline" data-action="boardConfirmRequested" title="表示中の希望（仮）のシフトをまとめて確定にします"><i class="fas fa-check-double"></i>希望（仮）をまとめて確定<span class="badge badge-yellow ml-1">${reqShifts.length}</span></button>` : ''}
-          <a class="btn btn-outline" href="#shifts/week"><i class="fas fa-table-columns"></i>週表示（従来）</a>
-          <button class="btn btn-outline" onclick="boardReloadMaster()" title="案件・スタッフ・開催場所の一覧を読み直します"><i class="fas fa-rotate"></i>一覧を更新</button>
+        <h2 class="text-xl font-bold text-gray-900">シフト管理</h2>
+        <div class="flex gap-2 flex-wrap items-center">
+          <button class="btn btn-outline" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button>
+          <button class="btn btn-primary" data-action="boardOpenBulk" title="スタッフ × 曜日 × 期間で、常勤のシフトをまとめて登録します"><i class="fas fa-repeat"></i>常勤の繰り返し登録</button>
+          <button class="btn board-save-btn" id="board-save-top" data-action="boardSaveDrafts" ${DRAFTS.size ? '' : 'disabled'} title="下書きの割り当てをまとめて登録します"><i class="fas fa-floppy-disk"></i><span>まとめて保存（<span class="board-draft-count">${DRAFTS.size}</span>件）</span></button>
+          <details class="relative board-menu">
+            <summary class="btn btn-outline cursor-pointer select-none"><i class="fas fa-ellipsis"></i>その他の操作<span id="board-req-count"></span></summary>
+            <div class="board-menu-list">
+              ${menuItem('data-action="boardOpenPattern"', 'fa-calendar-plus', '枠の繰り返し登録（毎週の枠を作る）')}
+              ${menuItem('data-action="boardOpenCopy"', 'fa-copy', '前の週の枠・シフトをコピー')}
+              ${menuItem('data-action="openShiftRequests"', 'fa-hand', 'シフト希望')}
+              ${reqShifts.length ? menuItem('data-action="boardConfirmRequested" title="表示中の希望（仮）のシフトをまとめて確定にします"', 'fa-check-double', `希望（仮）をまとめて確定<span class="badge badge-yellow ml-1">${reqShifts.length}</span>`) : ''}
+              ${menuItem('data-action="boardPlacementExport" data-format="csv" title="表示中の期間・絞り込みの配置表（金額なし・未充足の枠と希望（仮）を含む）を CSV で出します"', 'fa-file-csv', '配置表CSV')}
+              ${menuItem('data-action="boardPlacementExport" data-format="print" title="クライアント・現場リーダーに渡す配置表を、案件ごとに改ページして印刷します（金額は載せません）"', 'fa-print', '配置表を印刷')}
+              ${menuItem(`data-action="openNologinBulk" data-date="${esc(nologinDefaultDate())}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="ログインのないスタッフの報告用URLを、日付ごとにまとめて発行・コピーします（未発行・発行済み・未使用の別も出します）"`, 'fa-link', '報告用URL（ログインなし）')}
+              ${menuItem('data-action="boardReloadMaster" title="案件・スタッフ・開催場所の一覧を読み直します"', 'fa-rotate', '一覧を更新')}
+              <a class="board-menu-item" href="#shifts/week"><i class="fas fa-table-columns w-4 text-gray-400"></i>週表示（従来）</a>
+            </div>
+          </details>
         </div>
       </div>
 
       <section class="card p-3 mb-3 flex flex-wrap gap-2 items-center text-sm" id="board-filters">
-        <input type="date" class="inp w-auto text-sm" value="${BS.from}" onchange="boardSet('from', this.value)">
-        <select class="inp w-auto text-sm" onchange="boardSet('clientId', this.value); window.__boardState.projectIds = []">
+        <div class="flex items-center gap-1 flex-wrap">
+          <button class="btn btn-outline px-2.5" data-action="boardShiftPeriod" data-dir="-1" title="前の期間" aria-label="前の期間"><i class="fas fa-chevron-left"></i></button>
+          <button class="btn btn-outline" data-action="boardToday">${BS.range === 'month' ? '今月' : '今週'}</button>
+          <button class="btn btn-outline px-2.5" data-action="boardShiftPeriod" data-dir="1" title="次の期間" aria-label="次の期間"><i class="fas fa-chevron-right"></i></button>
+          <input type="date" class="inp w-auto text-sm" value="${esc(BS.from)}" data-board-input="from" aria-label="表示する日">
+          <span class="font-bold text-gray-700 ml-1 whitespace-nowrap">${esc(periodLabel)}</span>
+        </div>
+        <div class="board-segs" role="group" aria-label="期間">${seg('range', 'week', '週')}${seg('range', '2w', '2週間')}${seg('range', 'month', '月（カレンダー）')}</div>
+        <div class="board-segs" role="group" aria-label="常勤・スポット">${seg('engagement', '', 'すべて')}${seg('engagement', 'regular', '常勤のみ')}${seg('engagement', 'spot', 'スポットのみ')}</div>
+        <button type="button" class="board-toggle ${BS.onlyShort ? 'on' : ''}" data-action="boardToggleShort" aria-pressed="${!!BS.onlyShort}"><i class="fas fa-filter mr-1"></i>不足のみ</button>
+        <select class="inp w-auto text-sm" data-board-input="clientId" aria-label="クライアント">
           <option value="">すべてのクライアント</option>
-          ${m.clients.map(c => `<option value="${c.client_id}" ${String(BS.clientId) === String(c.client_id) ? 'selected' : ''}>${esc(c.client_name)}</option>`).join('')}
-        </select>
-        <select class="inp w-auto text-sm" onchange="boardSet('engagement', this.value)">
-          <option value="">常勤・スポット</option>
-          <option value="regular" ${BS.engagement === 'regular' ? 'selected' : ''}>常勤のみ</option>
-          <option value="spot" ${BS.engagement === 'spot' ? 'selected' : ''}>スポットのみ</option>
+          ${m.clients.map(c => `<option value="${Number(c.client_id)}" ${String(BS.clientId) === String(c.client_id) ? 'selected' : ''}>${esc(c.client_name)}</option>`).join('')}
         </select>
         <details class="relative">
           <summary class="inp w-auto text-sm cursor-pointer select-none">案件 ${BS.projectIds.length ? `（${BS.projectIds.length}件選択）` : '（すべて）'}</summary>
           <div class="absolute z-20 bg-white border border-gray-200 rounded-lg shadow-lg p-2 mt-1 max-h-72 overflow-y-auto w-72">
-            ${projOpts.map(p => `<label class="flex items-center gap-2 py-1 text-xs"><input type="checkbox" value="${p.project_id}" ${BS.projectIds.includes(p.project_id) ? 'checked' : ''} onchange="boardToggleProject(${p.project_id}, this.checked)">
+            ${projOpts.map(p => `<label class="flex items-center gap-2 py-1 text-xs"><input type="checkbox" value="${Number(p.project_id)}" data-board-project ${BS.projectIds.includes(p.project_id) ? 'checked' : ''}>
               <span class="badge ${p.engagement_type === 'spot' ? 'badge-purple' : 'badge-blue'}">${p.engagement_type === 'spot' ? 'スポット' : '常勤'}</span>${esc(p.project_name)}</label>`).join('') || '<p class="text-xs text-gray-400">案件がありません</p>'}
-            <button class="btn btn-primary w-full text-xs mt-2" onclick="renderShiftBoard()">絞り込む</button>
+            <button class="btn btn-primary w-full text-xs mt-2" data-action="boardApplyProjects">絞り込む</button>
           </div>
         </details>
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" ${BS.onlyShort ? 'checked' : ''} onchange="boardSet('onlyShort', this.checked)">不足のみ</label>
-        <div class="flex rounded-lg border border-gray-200 overflow-hidden text-xs ml-auto">
-          <button class="px-3 py-1.5 ${BS.view === 'slot' ? 'bg-blue-600 text-white' : 'bg-white'}" onclick="boardSet('view','slot')">枠ごと</button>
-          <button class="px-3 py-1.5 ${BS.view === 'person' ? 'bg-blue-600 text-white' : 'bg-white'}" onclick="boardSet('view','person')">人ごと</button>
-        </div>
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" ${BS.showMoney ? 'checked' : ''} onchange="boardSet('showMoney', this.checked)">金額を表示</label>
+        <span class="flex-1"></span>
+        <div class="board-segs" role="group" aria-label="表示">${seg('view', 'slot', '案件ごと')}${seg('view', 'person', '人ごと')}</div>
+        <label class="flex items-center gap-1 text-xs"><input type="checkbox" data-board-input="showMoney" ${BS.showMoney ? 'checked' : ''}>金額を表示</label>
       </section>
 
       <section class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3" id="board-totals">
-        <div class="card p-3"><p class="text-xs text-gray-500">充足</p><p class="text-lg font-bold ${fillRate != null && fillRate < 100 ? 'text-red-600' : ''}">${t.filled}/${t.required}${fillRate != null ? `<span class="text-xs font-normal text-gray-400 ml-1">${fillRate}%</span>` : ''}</p></div>
-        <div class="card p-3"><p class="text-xs text-gray-500">請求合計</p><p class="text-lg font-bold">${yen(t.bill)}</p></div>
-        <div class="card p-3"><p class="text-xs text-gray-500">支払合計</p><p class="text-lg font-bold">${yen(t.pay)}${t.pay_missing ? `<span class="text-xs text-amber-600 ml-1" title="支払単価が未設定のシフト">未設定${t.pay_missing}件</span>` : ''}</p></div>
-        <div class="card p-3"><p class="text-xs text-gray-500">粗利</p><p class="text-lg font-bold ${t.profit < 0 ? 'text-red-600' : 'text-emerald-700'}">${yen(t.profit)}</p>${t.pay_missing ? `<p class="text-[10px] text-amber-600" title="支払単価が未設定のシフトは粗利に含めていません">支払未設定 ${Number(t.pay_missing)}件・請求 ${yen(t.pay_missing_bill)} を除外</p>` : ''}</div>
-        <div class="card p-3"><p class="text-xs text-gray-500">粗利率</p><p class="text-lg font-bold">${t.profit_bill ? Math.round(t.profit / t.profit_bill * 1000) / 10 + '%' : '-'}</p>${t.pay_missing ? '<p class="text-[10px] text-gray-400">支払が決まっているシフトだけで計算</p>' : ''}</div>
+        <div class="card px-3 py-2"><p class="text-xs text-gray-500">充足</p><p class="text-lg font-bold ${fillRate != null && fillRate < 100 ? 'text-red-600' : ''}">${t.filled}/${t.required}${fillRate != null ? `<span class="text-xs font-normal text-gray-400 ml-1">${fillRate}%</span>` : ''}</p></div>
+        ${BS.showMoney ? `
+        <div class="card px-3 py-2"><p class="text-xs text-gray-500">請求合計</p><p class="text-lg font-bold">${yen(t.bill)}</p></div>
+        <div class="card px-3 py-2"><p class="text-xs text-gray-500">支払合計</p><p class="text-lg font-bold">${yen(t.pay)}${t.pay_missing ? `<span class="text-xs text-amber-600 ml-1" title="支払単価が未設定のシフト">未設定${t.pay_missing}件</span>` : ''}</p></div>
+        <div class="card px-3 py-2"><p class="text-xs text-gray-500">粗利</p><p class="text-lg font-bold ${t.profit < 0 ? 'text-red-600' : 'text-emerald-700'}">${yen(t.profit)}</p>${t.pay_missing ? `<p class="text-[10px] text-amber-600" title="支払単価が未設定のシフトは粗利に含めていません">支払未設定 ${Number(t.pay_missing)}件・請求 ${yen(t.pay_missing_bill)} を除外</p>` : ''}</div>
+        <div class="card px-3 py-2"><p class="text-xs text-gray-500">粗利率</p><p class="text-lg font-bold">${t.profit_bill ? Math.round(t.profit / t.profit_bill * 1000) / 10 + '%' : '-'}</p>${t.pay_missing ? '<p class="text-[10px] text-gray-400">支払が決まっているシフトだけで計算</p>' : ''}</div>` : ''}
       </section>
 
-      <div class="flex gap-3 items-start">
-        <section class="card p-0 overflow-auto flex-1 min-w-0" id="board-grid" style="max-height: calc(100vh - 290px)">
-          ${BS.view === 'person' ? personGrid(days) : slotGrid(days)}
-        </section>
-        <aside class="card p-3 w-56 shrink-0 hidden xl:block sticky top-4" id="board-staff-panel" style="max-height: calc(100vh - 290px); overflow-y:auto">
-          <p class="text-xs font-bold text-gray-700 mb-1"><i class="fas fa-user-plus text-blue-500 mr-1"></i>スタッフ</p>
-          <p class="text-[11px] text-gray-400 mb-2">枠へドラッグして割り当て。枠の「＋」から候補（空き・経験・スキル）を表示できます</p>
-          <input class="inp text-xs mb-2" placeholder="名前で絞り込み" oninput="boardFilterStaff(this.value)">
-          <div id="board-staff-list" class="space-y-1">
-            ${m.staff.map(s => `<div class="board-chip staff-src" data-staff-id="${s.staff_id}" data-name="${esc(s.name)}">
-              <span class="truncate">${esc(s.name)}</span>${s.employment_status === 'leave' ? '<span class="text-[10px] text-amber-600">休職中</span>' : s.employment_status === 'preboarding' ? '<span class="text-[10px] text-amber-600">入社予定</span>' : ''}<span class="text-[10px] text-gray-400">${AFF_SHORT[s.affiliation_type] || ''}</span></div>`).join('')}
-          </div>
-        </aside>
-      </div>`
+      <div class="board-d ${BS.view === 'person' || BS.range === 'month' ? 'board-d-full' : ''}">
+        <section class="card p-0 overflow-auto min-w-0" id="board-grid" style="max-height: calc(100vh - 250px)">${gridHtml(days)}</section>
+        ${BS.view === 'person' || BS.range === 'month' ? '' : '<aside class="card p-3 board-side" id="board-side" aria-label="選んだ枠と候補のスタッフ"></aside>'}
+      </div>
+      <div id="board-savebar" class="board-savebar" hidden></div>`
     enableDnD()
     loadRequestCount()
+    SIDE_PRICE.key = null
+    renderSide()
+    updateSaveBar()
+    if (BS.sel && ROLE_IX.has(BS.sel)) loadCandidates(BS.sel)
+  }
+  function gridHtml(days) {
+    if (BS.view === 'person') return personGrid(days)
+    if (BS.range === 'month') return monthGrid(days)
+    return slotGrid(days)
+  }
+  // 表と右の欄だけを描き直す（下書きの追加・取り消し。スクロールの位置を保つ）
+  function redraw() {
+    const g = document.getElementById('board-grid'); if (!g || !BOARD) return
+    const st = g.scrollTop, sl = g.scrollLeft
+    g.innerHTML = gridHtml(boardDays()); g.scrollTop = st; g.scrollLeft = sl
+    enableDnD(); renderSide(); updateSaveBar()
   }
 
   function slotGrid(days) {
@@ -167,7 +200,8 @@
       const pa = proj.get(a.project_id) || {}, pc = proj.get(c.project_id) || {}
       return String(pa.client_name || '').localeCompare(pc.client_name || '') || String(pa.project_name).localeCompare(pc.project_name) || a.site.localeCompare(c.site) || a.start.localeCompare(c.start) || a.role.localeCompare(c.role)
     })
-    if (BS.onlyShort) list = list.filter(r => Object.values(r.cells).some(cs => cs.some(c => c.role.filled < c.role.headcount)))
+    // 不足のみ: 下書きを入れても足りない枠のある行だけ
+    if (BS.onlyShort) list = list.filter(r => Object.values(r.cells).some(cs => cs.some(c => leftOf(c.role) > 0)))
     // 枠なし（常勤の従来登録）: 案件ごとに1行
     const plain = new Map()
     for (const s of b.unslotted) {
@@ -175,34 +209,67 @@
       if (!plain.has(k)) plain.set(k, { project_id: s.project_id, site: s.site_name || s.location || '', cells: {} })
       const r = plain.get(k); (r.cells[s.work_date] = r.cells[s.work_date] || []).push(s)
     }
+    const w = BS.days > 7 ? 104 : 128
     const head = `<thead class="sticky top-0 z-10 bg-white"><tr>
       <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:190px">案件 / 開催場所 / 役割</th>
-      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 88 : 108}px;width:${BS.days > 14 ? 88 : 108}px">
-        <button class="hover:underline" data-action="boardSlotOnDate" data-date="${esc(d)}" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[w]})</button>${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
+      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : ''}" style="min-width:${w}px;width:${w}px">
+        <button class="hover:underline" data-action="boardSlotOnDate" data-date="${esc(d)}" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[wd]})</button>${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead>`
     let lastProject = null
     const body = list.map(r => {
       const p = proj.get(r.project_id) || {}
       const header = lastProject !== r.project_id ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0">
         <span class="badge ${p.engagement_type === 'spot' ? 'badge-purple' : 'badge-blue'}">${p.engagement_type === 'spot' ? 'スポット' : '常勤'}</span>
-        <a href="#projects/${p.project_id}" class="font-bold hover:underline ml-1">${esc(p.project_name)}</a><span class="text-gray-400 ml-2">${esc(p.client_name || '')}</span></td></tr>` : ''
+        <a href="#projects/${Number(p.project_id)}" class="font-bold hover:underline ml-1">${esc(p.project_name)}</a><span class="text-gray-400 ml-2">${esc(p.client_name || '')}</span></td></tr>` : ''
       lastProject = r.project_id
       return header + `<tr>
         <td class="board-rowhead sticky left-0 bg-white z-10"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
-          <p class="text-[11px] text-gray-500">${r.start}〜${r.end}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${BS.days > 14 ? 88 : 108}px">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
+          <p class="text-[11px] text-gray-500">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
+        ${days.map(d => `<td class="board-td align-top" style="max-width:${w}px">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
       </tr>`
     }).join('')
-    const plainRows = [...plain.values()].map(r => {
+    const plainRows = BS.onlyShort ? '' : [...plain.values()].map(r => {
       const p = proj.get(r.project_id) || {}
       return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
         <p class="text-[11px] text-gray-500 truncate">${esc(r.site)}</p></td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${BS.days > 14 ? 88 : 108}px">${(r.cells[d] || []).map(s => staffChip(s)).join('')}</td>`).join('')}</tr>`
+        ${days.map(d => `<td class="board-td align-top" style="max-width:${w}px">${(r.cells[d] || []).map(s => staffChip(s)).join('')}</td>`).join('')}</tr>`
     }).join('')
     if (!list.length && !plainRows) return `<div class="p-10 text-center text-sm text-gray-400">
-      この期間の枠・シフトはありません<br><button class="btn btn-primary mt-3" onclick="openSlotModal()"><i class="fas fa-plus"></i>枠を作成</button></div>`
+      ${BS.onlyShort ? 'この期間に不足の枠はありません' : 'この期間の枠・シフトはありません'}<br><button class="btn btn-primary mt-3" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button></div>`
     return `<table class="board-table">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
   }
+
+  // 月のカレンダー（月曜始まり）。日ごとに案件の充足を出し、不足は赤くする。日付を押すとその週の表に切り替える
+  function monthGrid(days) {
+    const proj = new Map(BOARD.projects.map(p => [p.project_id, p]))
+    const byDate = {}
+    for (const s of BOARD.slots) for (const r of s.roles) {
+      const m = byDate[s.work_date] = byDate[s.work_date] || new Map()
+      const x = m.get(s.project_id) || { req: 0, fill: 0 }
+      x.req += Number(r.headcount); x.fill += Math.min(Number(r.filled), Number(r.headcount)); m.set(s.project_id, x)
+    }
+    const plain = {}
+    for (const a of BOARD.unslotted) if (a.status !== 'absent') plain[a.work_date] = (plain[a.work_date] || 0) + 1
+    const today = dayjs().format('YYYY-MM-DD')
+    let h = ['月', '火', '水', '木', '金', '土', '日'].map((x, i) => `<div class="board-cal-dow ${i === 5 ? 'text-blue-500' : i === 6 ? 'text-red-500' : ''}">${x}</div>`).join('')
+    for (let i = 0; i < (dayjs(days[0]).day() + 6) % 7; i++) h += '<div class="board-cal-day out" aria-hidden="true"></div>'
+    for (const d of days) {
+      let lines = [...(byDate[d] || new Map()).entries()].map(([pid, x]) => ({ p: proj.get(pid) || {}, ...x, short: x.req - x.fill }))
+      if (BS.onlyShort) lines = lines.filter(l => l.short > 0)
+      lines.sort((a, b) => b.short - a.short || String(a.p.project_name || '').localeCompare(b.p.project_name || ''))
+      const tot = (BOARD.totals.by_date || {})[d]
+      const wd = dayjs(d).day()
+      h += `<div class="board-cal-day ${d === today ? 'is-today' : ''}" data-action="boardCalDay" data-date="${esc(d)}" tabindex="0" role="button" aria-label="${esc(fmtDay(d))}を含む週を表示">
+        <div class="flex items-center justify-between gap-1"><span class="text-xs font-bold ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : 'text-gray-700'}">${dayjs(d).format('M/D')}</span>
+          ${tot && tot.required ? `<span class="text-[10px] font-bold ${tot.filled < tot.required ? 'text-red-600' : 'text-emerald-700'}">${Number(tot.filled)}/${Number(tot.required)}</span>` : ''}</div>
+        ${lines.slice(0, 4).map(l => `<div class="board-cal-line ${l.short > 0 ? 'short' : ''}" title="${esc(l.p.project_name || '')} ${l.fill}/${l.req}${l.short > 0 ? `（${l.short}人不足）` : ''}"><span class="truncate">${l.p.engagement_type === 'spot' ? 'ス' : '常'} ${esc(l.p.project_name || '')}</span><span class="shrink-0">${l.fill}/${l.req}</span></div>`).join('')}
+        ${lines.length > 4 ? `<div class="text-[10px] text-gray-400">ほか${lines.length - 4}件</div>` : ''}
+        ${plain[d] && !BS.onlyShort ? `<div class="text-[10px] text-gray-400">枠なしのシフト ${plain[d]}件</div>` : ''}
+      </div>`
+    }
+    return `<div class="board-cal p-2">${h}</div><p class="text-[11px] text-gray-400 px-3 pb-2">日付を押すと、その日を含む週の表に切り替わります（割り当てはそこで行います）。「常」は常勤、「ス」はスポットの案件です</p>`
+  }
+
 
   delegate('boardSlotOnDate', el => openSlotModal({ work_date: el.dataset.date }))
   // ログインのない人の報告用URLのまとめての発行（#275。画面は staff-lifecycle.js の openNologinBulk）。
@@ -230,34 +297,64 @@
     rows.sort((a, b) => String(a.s.start_time).localeCompare(b.s.start_time))
     modal(`
       <h3 class="font-bold text-lg mb-1">${dayjs(d).format('M/D')}(${WD[dayjs(d).day()]}) の不足</h3>
-      <p class="text-xs text-gray-500 mb-2">必要人数に足りない枠です（表示中の絞り込みの範囲）。「候補」から割り当てられます</p>
+      <p class="text-xs text-gray-500 mb-2">必要人数に足りない枠です（表示中の絞り込みの範囲）。「選ぶ」を押すと、その枠の候補を右の欄に出します</p>
       <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100">
         ${rows.map(({ s, r }) => `<div class="flex items-center gap-2 py-2 text-sm">
           <div class="flex-1 min-w-0"><p class="font-bold truncate">${esc((proj.get(s.project_id) || {}).project_name || '')}</p>
             <p class="text-xs text-gray-500">${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.site_name || s.location || '')}・${esc(r.role_name)}</p></div>
           <span class="text-xs font-bold text-red-600 whitespace-nowrap">${Number(r.filled)}/${Number(r.headcount)}${r.requested ? `<span class="text-amber-600 ml-1">希望${Number(r.requested)}</span>` : ''}</span>
-          <button class="btn btn-outline text-xs" data-action="bulkSkipCandidates" data-id="${Number(r.slot_role_id)}">候補</button></div>`).join('') || '<p class="p-3 text-sm text-gray-400">不足の枠はありません</p>'}
+          <button class="btn btn-outline text-xs" data-action="boardPickRole" data-id="${Number(r.slot_role_id)}">選ぶ</button></div>`).join('') || '<p class="p-3 text-sm text-gray-400">不足の枠はありません</p>'}
       </div>`)
   }
   delegate('boardDayShort', el => openDayShort(el.dataset.date))
+  // 不足の一覧から枠を選ぶ（表の案件ごとの表示に切り替えて、右の欄に候補を出す）
+  delegate('boardPickRole', (el) => {
+    const rid = Number(el.dataset.id)
+    closeModal()
+    if (BS.view !== 'slot') { BS.view = 'slot'; BS.sel = rid; renderShiftBoard(); return }
+    selectRole(rid)
+    const cell = document.querySelector(`.board-cell[data-id="${rid}"]`)
+    if (cell) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  })
 
+  // 枠の役割のマス。割り当て済みの人・下書き（色を変える）・「n人不足／充足 n/n」を出す。マスを押すと右の欄に候補を出す
+  // 下書きは、問題（保存のときの確認で止まったもの）のないものを充足の見込みに数える（希望（仮）は数えない）
+  const plannedOf = (rid) => draftsOf(rid).filter(d => d.status !== 'requested' && !d.problem).length
+  const leftOf = (role) => Number(role.headcount) - Number(role.filled) - plannedOf(role.slot_role_id)
   function slotCell(slot, role) {
-    const short = role.filled < role.headcount
-    const over = role.filled > role.headcount
+    const drafts = draftsOf(role.slot_role_id)
+    const left = leftOf(role)
+    const over = left < 0
+    const sel = BS.sel === role.slot_role_id
     const money = BS.showMoney ? role.assigned.filter(a => ['confirmed', 'substitute'].includes(a.status)).reduce((x, a) => x + (a.bill_total || 0), 0) : 0
-    // 『不足のみ』では、同じ行の不足していない日のセルを薄く出す
-    return `<div class="board-cell ${short ? 'board-short' : over ? 'board-over' : 'board-ok'} ${BS.onlyShort && !short ? 'opacity-40' : ''}" data-slot-role-id="${role.slot_role_id}">
+    const need = left > 0 ? `<span class="board-need short">${left}人不足</span>`
+      : `<span class="board-need ${over ? 'over' : 'full'}">${over ? '定員超過' : '充足'} ${Number(role.filled) + plannedOf(role.slot_role_id)}/${Number(role.headcount)}</span>`
+    // 『不足のみ』では、同じ行の不足していない日のマスを薄く出す
+    return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''}" data-action="boardSelect" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
+      tabindex="0" role="button" aria-pressed="${sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
       <div class="flex items-center justify-between gap-1 mb-1">
-        <button class="text-[11px] font-bold ${short ? 'text-red-600' : 'text-emerald-700'}" onclick="openSlotModal(null, ${slot.slot_id})" title="枠を編集">${role.filled}/${role.headcount}${role.requested ? `<span class="text-amber-600 ml-1">希望${role.requested}</span>` : ''}</button>${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${role.applicants}</a>` : ''}
-        <span class="flex items-center gap-1">
+        <span class="text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
+        <span class="flex items-center gap-0.5">
           ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400">${yen(money)}</span>` : ''}
-          <button class="board-add" onclick="openCandidates(${role.slot_role_id})" title="候補から割り当て"><i class="fas fa-plus"></i></button>
+          <button type="button" class="cell-tool" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}" title="枠を編集" aria-label="枠を編集"><i class="fas fa-pen"></i></button>
+          <button type="button" class="cell-tool danger" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}" title="枠を削除" aria-label="枠を削除"><i class="fas fa-trash"></i></button>
         </span>
       </div>
-      <div class="board-drop space-y-0.5" data-slot-role-id="${role.slot_role_id}">${role.assigned.map(a => staffChip(a)).join('')}</div>
+      <div class="board-drop space-y-0.5" data-slot-role-id="${Number(role.slot_role_id)}">${role.assigned.map(a => staffChip(a)).join('')}</div>
+      ${drafts.length ? `<div class="space-y-0.5 mt-0.5">${drafts.map(draftChip).join('')}</div>` : ''}
+      <div class="mt-1">${need}</div>
       ${role.requested ? `<button class="block w-full text-[10px] text-amber-700 hover:underline mt-0.5" data-action="boardConfirmRequested" data-slot-role-id="${Number(role.slot_role_id)}" title="この役割の希望（仮）を確定にします">希望${Number(role.requested)}件を確定</button>` : ''}
     </div>`
   }
+  // 下書きの人。保存のときに止まった行は赤くし、理由を出す
+  function draftChip(d) {
+    const bad = d.problem
+    return `<div class="board-chip chip-draft ${bad ? 'chip-draft-bad' : ''}" title="${esc(bad ? bad.reasons.join('\n') : '下書き（まだ保存していません）' + (d.status === 'requested' ? '・希望（仮）で登録' : ''))}">
+      <span class="truncate">${bad ? '<i class="fas fa-triangle-exclamation mr-0.5"></i>' : '<i class="fas fa-pen-to-square mr-0.5"></i>'}${esc(d.staff_name)}${d.status === 'requested' ? '<span class="text-[10px] text-amber-700 ml-0.5">仮</span>' : ''}</span>
+      <button type="button" class="shrink-0 text-[11px] text-gray-500 hover:text-red-600 px-0.5" data-action="boardDraftRemove" data-id="${Number(d.slot_role_id)}" data-staff-id="${Number(d.staff_id)}" title="下書きを取り消す" aria-label="${esc(d.staff_name)}の下書きを取り消す"><i class="fas fa-xmark"></i></button>
+    </div>${bad ? `<p class="text-[10px] text-red-600 leading-tight mb-0.5">${esc(bad.reasons[0])}${bad.reasons.length > 1 ? ` ほか${bad.reasons.length - 1}件` : ''}</p>` : ''}`
+  }
+
 
   // 重複の表示。他社のシフトは会社名・案件名を出さず「他社の予定あり」と時間帯だけにする（呼び出し側で esc する）
   function conflictText(x) {
@@ -277,7 +374,7 @@
       replyText(a),
       BS.showMoney ? `請求 ${yen(a.bill_total)} / 支払 ${a.pay_total == null ? '未設定' : yen(a.pay_total)}` : '',
     ].filter(Boolean).join('\n')
-    return `<div class="board-chip shift-chip st-${a.status} ${warn ? 'chip-warn' : ''}" data-shift-id="${a.shift_id}" title="${esc(title)}" onclick="openShiftDetail(${a.shift_id})">
+    return `<div class="board-chip shift-chip st-${a.status} ${warn ? 'chip-warn' : ''}" data-shift-id="${a.shift_id}" title="${esc(title)}" data-action="boardShiftDetail" data-id="${Number(a.shift_id)}">
       <span class="truncate">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(a.staff_name)}</span>
       <span class="text-[10px] shrink-0">${unavailableMark(a)}${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${replyMark(a)}${a.price_locked ? '<i class="fas fa-pen text-gray-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-amber-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
     </div>`
@@ -323,9 +420,22 @@
   }
 
   // ---------- ボード操作 ----------
-  window.boardSet = function (k, v) { BS[k] = v; renderShiftBoard() }
-  window.boardShift = function (dir) { BS.from = dayjs(BS.from).add(dir * (BS.days >= 28 ? 28 : BS.days), 'day').format('YYYY-MM-DD'); renderShiftBoard() }
-  window.boardToday = function () { BS.from = weekStart(dayjs()); renderShiftBoard() }
+  const PERIOD_KEYS = ['from', 'days', 'range']
+  window.boardSet = function (k, v) {
+    if (PERIOD_KEYS.includes(k) && String(BS[k]) !== String(v) && !confirmDiscardDrafts('表示する期間を切り替える')) return
+    if (PERIOD_KEYS.includes(k)) BS.sel = null
+    BS[k] = v; renderShiftBoard()
+  }
+  window.boardShift = function (dir) {
+    if (!confirmDiscardDrafts('表示する期間を切り替える')) return
+    BS.from = BS.range === 'month' ? dayjs(BS.from).add(dir, 'month').startOf('month').format('YYYY-MM-DD') : dayjs(BS.from).add(dir * BS.days, 'day').format('YYYY-MM-DD')
+    BS.sel = null; renderShiftBoard()
+  }
+  window.boardToday = function () {
+    if (!confirmDiscardDrafts('表示する期間を切り替える')) return
+    BS.from = BS.range === 'month' ? dayjs().startOf('month').format('YYYY-MM-DD') : weekStart(dayjs())
+    BS.sel = null; renderShiftBoard()
+  }
   window.boardToggleProject = function (id, on) { BS.projectIds = on ? [...new Set([...BS.projectIds, id])] : BS.projectIds.filter(x => x !== id) }
   window.boardFilterStaff = function (q) {
     document.querySelectorAll('#board-staff-list .staff-src').forEach(el => { el.style.display = !q || el.dataset.name.includes(q) ? '' : 'none' })
@@ -335,6 +445,521 @@
     const el = ev.target && ev.target.closest ? ev.target.closest('[data-person-opt]') : null
     if (el) boardSet(el.dataset.personOpt, el.type === 'checkbox' ? el.checked : el.value)
   })
+  const closeBoardMenu = () => document.querySelectorAll('.board-menu[open]').forEach(d => { d.open = false })
+  delegate('boardShiftPeriod', el => boardShift(Number(el.dataset.dir) || 1))
+  delegate('boardToday', () => boardToday())
+  delegate('boardSeg', (el) => {
+    const k = el.dataset.key, v = el.dataset.val
+    if (!['range', 'engagement', 'view'].includes(k) || String(BS[k] || '') === v) return
+    if (k === 'range') return boardSet('range', v)
+    BS[k] = v; renderShiftBoard()
+  })
+  delegate('boardToggleShort', () => { BS.onlyShort = !BS.onlyShort; renderShiftBoard() })
+  delegate('boardApplyProjects', () => renderShiftBoard())
+  delegate('boardNewSlot', () => openSlotModal())
+  delegate('boardOpenBulk', () => openBulkModal())
+  delegate('boardOpenPattern', () => { closeBoardMenu(); openPatternModal() })
+  delegate('boardOpenCopy', () => { closeBoardMenu(); openCopyModal() })
+  delegate('boardReloadMaster', () => { closeBoardMenu(); boardReloadMaster() })
+  delegate('boardShiftDetail', el => openShiftDetail(Number(el.dataset.id)))
+  delegate('boardEditSlot', async (el) => {
+    await openSlotModal(null, Number(el.dataset.id))
+    // 右の欄の「この枠だけ単価を変える」から開いたときは、単価の欄へ移る
+    if (el.dataset.focus === 'price') { const f = document.querySelector('.rr-bill'); if (f) { f.scrollIntoView({ block: 'center' }); f.focus() } }
+  })
+  delegate('boardCalDay', (el) => {
+    if (!confirmDiscardDrafts('週の表に切り替える')) return
+    BS.range = 'week'; BS.from = weekStart(el.dataset.date); BS.sel = null; renderShiftBoard()
+  })
+  document.addEventListener('change', (ev) => {
+    const el = ev.target && ev.target.closest ? ev.target.closest('[data-board-input], [data-board-project]') : null
+    if (!el) return
+    if (el.hasAttribute('data-board-project')) { boardToggleProject(Number(el.value), el.checked); return }
+    const k = el.dataset.boardInput
+    if (k === 'from') {
+      if (!el.value) return
+      if (el.value !== BS.from && !confirmDiscardDrafts('表示する期間を切り替える')) { el.value = BS.from; return }
+      BS.from = el.value; BS.sel = null; renderShiftBoard()
+    } else if (k === 'clientId') { BS.clientId = el.value; BS.projectIds = []; renderShiftBoard() }
+    else if (k === 'showMoney') { BS.showMoney = el.checked; renderShiftBoard() }
+    else if (k === 'draftStatus') BS.draftStatus = el.value === 'requested' ? 'requested' : 'confirmed'
+    else if (k === 'candSkill') { BS.cf.skill = el.value; drawCand() }
+    else if (k === 'inherit') {
+      // 前回のシフトの単価を引き継ぐか（この枠の下書きと、これから入れる下書きに当てる）
+      const rid = BS.sel; if (!rid) return
+      if (el.checked) delete BS.noInherit[rid]; else BS.noInherit[rid] = true
+      for (const d of draftsOf(rid)) d.inherit = el.checked
+      const x = ROLE_IX.get(rid); const box = document.getElementById('side-price')
+      if (x && box) box.innerHTML = sidePriceHtml(x)
+    }
+  })
+  document.addEventListener('input', (ev) => {
+    if (!ev.target || ev.target.id !== 'cand-q') return
+    BS.cf.q = ev.target.value
+    const l = document.getElementById('cand-list'); if (l) l.innerHTML = candListHtml()
+  })
+  // 表のマス・カレンダーの日は、Enter・スペースでも選べる
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return
+    const el = ev.target
+    if (!el || !el.matches || !el.matches('.board-cell[data-action], .board-cal-day[data-action]')) return
+    ev.preventDefault(); el.click()
+  })
+  // メニューの項目を押したら閉じる
+  document.addEventListener('click', (ev) => {
+    const it = ev.target && ev.target.closest ? ev.target.closest('.board-menu-item') : null
+    if (it) setTimeout(closeBoardMenu, 0)
+  })
+
+  // =========================================================
+  // 下書き（#9402）: 候補を押すと、保存せずに表へ下書きとして入れる。「まとめて保存」で1回で登録する
+  // =========================================================
+  const DRAFTS = window.__boardDrafts = window.__boardDrafts || new Map()
+  const dKey = (rid, sid) => `${Number(rid)}:${Number(sid)}`
+  function draftsOf(rid) { const out = []; for (const d of DRAFTS.values()) if (d.slot_role_id === Number(rid)) out.push(d); return out }
+  // 期間の切り替え・画面の移動の前に、保存していない下書きを確かめる。続けるときは下書きを消す
+  function confirmDiscardDrafts(what) {
+    if (!DRAFTS.size) return true
+    if (!confirm(`保存していない下書きが${DRAFTS.size}件あります。\n${what}と、下書きは消えます。よろしいですか？\n（残すときは「キャンセル」を押し、「まとめて保存」で保存してください）`)) return false
+    DRAFTS.clear(); return true
+  }
+  window.boardHasDrafts = () => DRAFTS.size > 0
+  // ページを閉じる・再読み込みするとき
+  window.addEventListener('beforeunload', (ev) => { if (DRAFTS.size) { ev.preventDefault(); ev.returnValue = '' } })
+  // 画面の移動（メニュー・リンク・戻る）。やめたときは元の URL に戻し、画面を切り替えない（true = 切り替えてよい）
+  function leaveGuard(ev) {
+    if (!DRAFTS.size) return true
+    const tabOf = (u) => { try { return decodeURIComponent((new URL(u).hash || '').slice(1)) } catch (e) { return '' } }
+    if (tabOf(ev.oldURL) !== 'shifts' || tabOf(ev.newURL) === 'shifts') return true
+    if (confirmDiscardDrafts('この画面を離れる')) return true
+    history.replaceState(null, '', ev.oldURL)
+    const mob = document.getElementById('mobile-nav'); if (mob) mob.value = 'shifts'
+    return false
+  }
+  // admin.js（先に読み込む）が登録した route の hashchange を、確認を挟んだものに差し替える
+  if (typeof window.route === 'function') {
+    const route0 = window.route
+    window.removeEventListener('hashchange', route0)
+    window.addEventListener('hashchange', (ev) => { if (leaveGuard(ev)) route0() })
+  } else {
+    window.addEventListener('hashchange', (ev) => { if (!leaveGuard(ev)) ev.stopImmediatePropagation() }, true)
+  }
+  // 読み直したら、ほかの経路ですでに割り当てた人の下書きを外す（同じ人を二重に送らない）
+  function pruneDrafts() {
+    for (const [k, d] of DRAFTS) {
+      const x = ROLE_IX.get(d.slot_role_id)
+      if (x && x.role.assigned.some(a => a.staff_id === d.staff_id && a.status !== 'absent')) DRAFTS.delete(k)
+    }
+  }
+  const toMin = (t) => { const [h, mm] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (mm || 0) }
+  const spanOf = (s, e) => { const a = toMin(s); let b = toMin(e); if (b <= a) b += 1440; return [a, b] }
+  // 同じ日の、時間が重なるほかの枠の下書き（スタッフ → 案件名）
+  function draftsOverlapping(slot, rid) {
+    const out = new Map(); const [a, b] = spanOf(slot.start_time, slot.end_time)
+    for (const d of DRAFTS.values()) {
+      if (d.slot_role_id === rid || d.work_date !== slot.work_date) continue
+      const [c, e] = spanOf(d.start_time, d.end_time)
+      if (c < b && a < e) out.set(d.staff_id, (projectOf(d.project_id).project_name || '') + ' ' + d.start_time + '〜' + d.end_time)
+    }
+    return out
+  }
+  delegate('boardDraftAdd', (el) => {
+    const x = ROLE_IX.get(BS.sel); if (!x || !CAND.data || CAND.rid !== BS.sel) return
+    const sid = Number(el.dataset.staffId)
+    const c = CAND.data.candidates.find(y => y.staff_id === sid); if (!c) return
+    const rid = x.role.slot_role_id, k = dKey(rid, sid)
+    if (DRAFTS.has(k)) { toast(`${c.name} さんはすでに下書きにあります`); return }
+    if (BS.draftStatus !== 'requested' && leftOf(x.role) <= 0 && !confirm('この枠は必要人数に達しています。定員を超えて下書きに入れますか？')) return
+    DRAFTS.set(k, {
+      slot_role_id: rid, staff_id: sid, staff_name: c.name, project_id: x.slot.project_id, role_name: x.role.role_name,
+      work_date: x.slot.work_date, start_time: x.slot.start_time, end_time: x.slot.end_time,
+      status: BS.draftStatus, inherit: !BS.noInherit[rid], force: false, problem: null,
+    })
+    toast(`${c.name} さんを下書きに入れました（まだ保存していません）`)
+    redraw()
+  })
+  delegate('boardDraftRemove', (el) => { DRAFTS.delete(dKey(el.dataset.id, el.dataset.staffId)); redraw() })
+  delegate('boardDiscardDrafts', () => {
+    if (!DRAFTS.size || !confirm(`保存していない下書き${DRAFTS.size}件をすべて取り消しますか？`)) return
+    DRAFTS.clear(); redraw()
+  })
+  function updateSaveBar() {
+    const n = DRAFTS.size
+    let bad = 0; for (const d of DRAFTS.values()) if (d.problem) bad++
+    document.querySelectorAll('.board-draft-count').forEach(el => { el.textContent = String(n) })
+    const top = document.getElementById('board-save-top'); if (top && top.dataset.busy !== '1') top.disabled = !n
+    const bar = document.getElementById('board-savebar'); if (!bar) return
+    bar.hidden = !n
+    bar.innerHTML = n ? `<span class="text-sm"><i class="fas fa-pen-to-square mr-1 text-emerald-600"></i>下書き <b>${n}</b>件（まだ保存していません）${bad ? `<span class="text-red-600 font-bold ml-1">要確認 ${bad}件</span>` : ''}</span>
+      <button class="btn btn-outline text-xs py-1.5" data-action="boardDiscardDrafts">下書きを取り消す</button>
+      <button class="btn board-save-btn text-xs py-1.5" data-action="boardSaveDrafts"><i class="fas fa-floppy-disk"></i>まとめて保存（${n}件）</button>` : ''
+  }
+
+  // ---------- まとめて保存 ----------
+  // 案件 × 役割の種類が多いときは分けて送る（サーバーは1回に8種類まで。ここでは余裕をみて6種類・200件ずつ）
+  const SAVE_GROUPS = 6, SAVE_ITEMS = 200
+  let SAVING = false
+  async function saveDrafts(only) {
+    if (SAVING) return
+    const list = only || [...DRAFTS.values()]
+    if (!list.length) { toast('保存する下書きがありません'); return }
+    SAVING = true
+    const chunks = []; let cur = [], groups = new Set()
+    for (const d of list) {
+      const g = d.project_id + '|' + d.role_name
+      if (cur.length && ((!groups.has(g) && groups.size >= SAVE_GROUPS) || cur.length >= SAVE_ITEMS)) { chunks.push(cur); cur = []; groups = new Set() }
+      cur.push(d); groups.add(g)
+    }
+    if (cur.length) chunks.push(cur)
+    let created = 0, inherited = 0, error = null
+    const problems = []
+    try {
+      for (const part of chunks) {
+        let data
+        try {
+          data = (await axios.post('/api/admin/shift-slots/assign-batch', { items: part.map(d => ({ slot_role_id: d.slot_role_id, staff_id: d.staff_id, status: d.status, inherit: d.inherit !== false, force: !!d.force })) })).data
+        } catch (e) {
+          error = e.response ? errMsg(e) : '通信できませんでした。接続を確かめて、もう一度「まとめて保存」を押してください'
+          break
+        }
+        for (const x of data.created || []) { DRAFTS.delete(dKey(x.slot_role_id, x.staff_id)); created++ }
+        inherited += Number(data.inherited || 0)
+        for (const pr of data.problems || []) {
+          const d = DRAFTS.get(dKey(pr.slot_role_id, pr.staff_id))
+          if (d) { d.problem = { reasons: pr.reasons || [], can_force: !!pr.can_force }; d.force = false; problems.push(d) }
+        }
+      }
+    } finally { SAVING = false }
+    await renderShiftBoard()
+    const okText = `${created}件を登録しました` + (inherited ? `（${inherited}件は前回のシフトの単価を引き継ぎ）` : '')
+    if (error) { alert(`${created ? okText + '。' : ''}残りの下書きは保存できませんでした。\n${error}\n\n保存できなかった下書きは表に残っています。`); return }
+    if (problems.length) showSaveProblems(problems, created, inherited)
+    else toast(okText)
+  }
+  let LAST_SAVE = { created: 0, inherited: 0 }
+  function showSaveProblems(problems, created, inherited) {
+    LAST_SAVE = { created, inherited }
+    const forceable = problems.filter(d => d.problem.can_force)
+    modal(`
+      <h3 class="font-bold text-lg mb-1">まとめて保存</h3>
+      <p class="text-sm text-gray-700 mb-2">${created ? `${Number(created)}件を登録しました${inherited ? `（${Number(inherited)}件は前回のシフトの単価を引き継ぎ）` : ''}。` : ''}次の${problems.length}件は登録していません（表に<span class="text-red-600 font-bold">赤い下書き</span>として残しています）</p>
+      <div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>枠</th><th>スタッフ</th><th>理由</th></tr></thead><tbody>
+        ${problems.map(d => `<tr class="${d.problem.can_force ? '' : 'bg-red-50'}"><td class="whitespace-nowrap">${esc(fmtDay(d.work_date))}</td>
+          <td>${esc(projectOf(d.project_id).project_name || '')}<span class="block text-gray-400">${esc(d.start_time)}〜${esc(d.end_time)}・${esc(d.role_name)}</span></td>
+          <td class="whitespace-nowrap">${esc(d.staff_name)}</td><td>${d.problem.reasons.map(r => `<span class="block">${esc(r)}</span>`).join('')}${d.problem.can_force ? '<span class="badge badge-yellow mt-0.5">確認すれば登録できます</span>' : '<span class="badge badge-red mt-0.5">登録できません</span>'}
+            <button type="button" class="block text-[11px] text-gray-500 hover:text-red-600 underline mt-0.5" data-action="boardProblemRemove" data-id="${Number(d.slot_role_id)}" data-staff-id="${Number(d.staff_id)}">この下書きを取り消す</button></td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="text-[11px] text-gray-400 mt-2">登録できない下書きは、ここの「この下書きを取り消す」か表の下書きの「×」で取り消し、ほかの人を選んでください（表に出ていない枠の下書きも、ここで取り消せます）</p>
+      ${forceable.length ? `<button class="btn btn-primary w-full mt-3" data-action="boardSaveForce"><i class="fas fa-check"></i>警告を確認しました。このまま登録する（${forceable.length}件）</button>` : ''}
+      <button class="btn btn-outline w-full mt-2" onclick="closeModal()">閉じる</button>`)
+  }
+  // 保存の結果の一覧から下書きを取り消す（削除された枠・絞り込みで表に出ていない枠の下書きは、表の「×」が出ないため）
+  delegate('boardProblemRemove', (el) => {
+    DRAFTS.delete(dKey(el.dataset.id, el.dataset.staffId)); redraw()
+    const rest = [...DRAFTS.values()].filter(d => d.problem)
+    if (rest.length) showSaveProblems(rest, LAST_SAVE.created, LAST_SAVE.inherited); else closeModal()
+  })
+  delegate('boardSaveDrafts', el => withSubmitLock(el, () => saveDrafts()))
+  delegate('boardSaveForce', el => withSubmitLock(el, async () => {
+    const list = [...DRAFTS.values()].filter(d => d.problem && d.problem.can_force)
+    for (const d of list) d.force = true
+    closeModal()
+    await saveDrafts(list)
+  }))
+
+  // =========================================================
+  // 右の欄（#9401）: 選んだマスの案件・日付・常勤/スポット・残り人数、引き継ぐ単価、候補のスタッフ
+  // =========================================================
+  let CAND = { rid: null, data: null, error: null, seq: 0 }
+  let SIDE_PRICE = { key: null, data: null, error: null }
+  const CAND_MAX = 60
+  delegate('boardSelect', el => selectRole(Number(el.dataset.id)))
+  function selectRole(rid) {
+    if (!ROLE_IX.has(rid)) return
+    BS.sel = rid
+    document.querySelectorAll('.board-cell.is-sel').forEach(x => { x.classList.remove('is-sel'); x.setAttribute('aria-pressed', 'false') })
+    document.querySelectorAll(`.board-cell[data-id="${Number(rid)}"]`).forEach(x => { x.classList.add('is-sel'); x.setAttribute('aria-pressed', 'true') })
+    renderSide()
+    loadCandidates(rid)
+  }
+  async function loadCandidates(rid) {
+    const seq = ++CAND.seq
+    CAND.rid = rid; CAND.data = null; CAND.error = null
+    drawCand()
+    try {
+      const { data } = await axios.get('/api/admin/shift-board/candidates?slot_role_id=' + Number(rid))
+      if (seq !== CAND.seq) return
+      CAND.data = data
+    } catch (e) {
+      if (seq !== CAND.seq) return
+      CAND.error = errMsg(e, '候補を読み込めませんでした')
+    }
+    drawCand()
+  }
+  function renderSide() {
+    const el = document.getElementById('board-side'); if (!el) return
+    const x = BS.sel ? ROLE_IX.get(BS.sel) : null
+    if (!x || BS.range === 'month') {
+      el.innerHTML = `<p class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-user-plus text-blue-500 mr-1"></i>候補のスタッフ</p>
+        <p class="text-xs text-gray-500">${BS.range === 'month' ? '月の表示です。日付を押すと、その日を含む週の表に切り替わります。' : '左の表で、赤い「不足」のマスを押してください。その日に空いている人が、ここに出ます。'}</p>
+        <p class="text-[11px] text-gray-400 mt-2">候補を押すと<b class="text-emerald-700">下書き</b>として表に入ります（まだ保存しません）。組み終わったら「まとめて保存」を押すと、まとめて登録します。</p>`
+      return
+    }
+    const { slot, role } = x
+    const p = projectOf(slot.project_id)
+    const spot = p.engagement_type === 'spot'
+    const drafts = draftsOf(role.slot_role_id)
+    const left = leftOf(role)
+    const assigned = role.assigned.filter(a => a.status !== 'absent')
+    el.innerHTML = `
+      <div class="mb-2">
+        <p class="font-bold text-gray-900 leading-snug"><a href="#projects/${Number(slot.project_id)}" class="hover:underline">${esc(p.project_name || '')}</a>${p.client_name ? `<span class="block text-[11px] font-normal text-gray-400">${esc(p.client_name)}</span>` : ''}</p>
+        <p class="text-xs text-gray-600 mt-0.5">${esc(fmtDay(slot.work_date))} ${esc(slot.start_time)}〜${esc(slot.end_time)}・${esc(slot.site_name || slot.location || '場所未設定')}・<b>${esc(role.role_name)}</b></p>
+        <p class="text-xs mt-1 flex items-center gap-1 flex-wrap"><span class="badge ${spot ? 'badge-purple' : 'badge-blue'}">${spot ? 'スポット' : '常勤'}</span>
+          ${left > 0 ? `<span class="font-bold text-red-600">あと${left}人</span>` : `<span class="font-bold text-emerald-700">${left < 0 ? '定員を超えています' : '充足しています'}</span>`}
+          <span class="text-gray-400">必要 ${Number(role.headcount)}名・確定 ${Number(role.filled)}名${drafts.length ? `・下書き ${drafts.length}名` : ''}</span></p>
+        <div class="flex gap-1.5 mt-2 flex-wrap">
+          <button class="btn btn-outline text-xs py-1 px-2" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}"><i class="fas fa-pen"></i>枠を編集</button>
+          <button class="btn btn-danger text-xs py-1 px-2" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}"><i class="fas fa-trash"></i>枠を削除</button>
+        </div>
+      </div>
+      ${assigned.length ? `<div class="mb-2"><p class="text-[11px] font-bold text-gray-500 mb-0.5">割り当て済み ${assigned.length}人（押すと確定・欠勤・金額）</p><div class="space-y-0.5">${assigned.map(a => staffChip(a)).join('')}</div></div>` : ''}
+      ${drafts.length ? `<div class="mb-2"><p class="text-[11px] font-bold text-emerald-700 mb-0.5">下書き ${drafts.length}人（まだ保存していません）</p><div class="space-y-0.5">${drafts.map(draftChip).join('')}</div></div>` : ''}
+      <div id="side-price" class="board-inherit mb-2">${sidePriceHtml(x)}</div>
+      <label class="flex items-center gap-1 text-xs text-gray-600 mb-2">下書きにするときの状態
+        <select class="inp text-xs w-auto py-1" data-board-input="draftStatus"><option value="confirmed" ${BS.draftStatus !== 'requested' ? 'selected' : ''}>確定</option><option value="requested" ${BS.draftStatus === 'requested' ? 'selected' : ''}>希望（仮）（本人が可否を返事）</option></select></label>
+      <p class="text-xs font-bold text-gray-700 mb-1"><i class="fas fa-user-plus text-blue-500 mr-1"></i>候補のスタッフ<span class="font-normal text-gray-400 ml-1">押すと下書きに入ります</span></p>
+      <input class="inp text-xs mb-1.5" id="cand-q" placeholder="名前で検索" value="${esc(BS.cf.q)}" aria-label="候補を名前で検索" autocomplete="off">
+      <div id="cand-box">${candBoxHtml()}</div>
+      <div class="mt-2 space-y-1.5">
+        ${spot ? '' : `<button class="btn btn-outline w-full text-xs" data-action="boardRepeat" data-id="${Number(role.slot_role_id)}"><i class="fas fa-repeat"></i>この人で毎週の繰り返し登録を作る</button>`}
+        <button class="btn btn-outline w-full text-xs" data-action="boardCandModal" data-id="${Number(role.slot_role_id)}" title="候補の一覧から複数人を選び、交通費を入れてすぐに登録します。一覧にいない人の仮登録もここから"><i class="fas fa-list-check"></i>一覧から選んですぐ登録・一覧にいない人</button>
+      </div>`
+  }
+  function drawCand() {
+    const box = document.getElementById('cand-box'); if (box) box.innerHTML = candBoxHtml()
+  }
+  function candBoxHtml() {
+    const all = CAND.data && CAND.rid === BS.sel ? CAND.data.candidates : []
+    const req = CAND.data && CAND.rid === BS.sel && all.length ? Number(all[0].skill_required || 0) : 0
+    const skills = [...new Set(all.flatMap(c => c.skills || []))].sort()
+    const tg = (key, label, title) => `<button type="button" class="board-toggle sm ${BS.cf[key] ? 'on' : ''}" data-action="boardCandFilter" data-key="${key}" aria-pressed="${!!BS.cf[key]}" title="${esc(title)}">${label}</button>`
+    return `<div class="flex flex-wrap gap-1 mb-1.5 items-center">
+        ${tg('free', '空いている人', 'この日の同じ時間に別のシフト・下書きがなく、出勤可能日で×を付けていない人')}
+        ${tg('prev', '前回この案件', 'この案件で前に働いたことがある人')}
+        <select class="inp text-xs w-auto py-1" data-board-input="candSkill" aria-label="スキルで絞り込み">
+          <option value="">スキル: すべて</option>
+          ${req ? `<option value="__req" ${BS.cf.skill === '__req' ? 'selected' : ''}>必要なスキルを満たす人</option>` : ''}
+          ${skills.map(s => `<option value="${esc(s)}" ${BS.cf.skill === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div id="cand-list" class="board-cand">${candListHtml()}</div>`
+  }
+  delegate('boardCandFilter', (el) => { const k = el.dataset.key; if (k !== 'free' && k !== 'prev') return; BS.cf[k] = !BS.cf[k]; drawCand() })
+  const AV_LABEL = { ok: '○ 出勤可', partial: '△ 時間帯なら可', ng: '× 出勤不可' }
+  function availText(av) {
+    if (!av) return ''
+    return (AV_LABEL[av.status] || '') + (av.status === 'partial' && av.start_time ? ` ${av.start_time}〜${av.end_time || ''}` : '')
+  }
+  function candListHtml() {
+    const x = ROLE_IX.get(BS.sel)
+    if (!x) return ''
+    if (CAND.error && CAND.rid === BS.sel) return `<p class="text-xs text-red-600 p-2">${esc(CAND.error)}</p>`
+    if (!CAND.data || CAND.rid !== BS.sel) return '<p class="text-xs text-gray-400 p-2"><i class="fas fa-spinner fa-spin mr-1"></i>候補を読み込んでいます…</p>'
+    const all = CAND.data.candidates
+    const other = draftsOverlapping(x.slot, x.role.slot_role_id)
+    const mine = new Set(draftsOf(x.role.slot_role_id).map(d => d.staff_id))
+    const q = String(BS.cf.q || '').trim()
+    const list = all.filter(c => {
+      if (q && !String(c.name).includes(q)) return false
+      if (BS.cf.free && (c.busy || other.has(c.staff_id) || (c.availability && c.availability.status === 'ng'))) return false
+      if (BS.cf.prev && !c.last_project_date) return false
+      if (BS.cf.skill === '__req' && !(c.skill_required && c.skill_match === c.skill_required)) return false
+      if (BS.cf.skill && BS.cf.skill !== '__req' && !(c.skills || []).includes(BS.cf.skill)) return false
+      return true
+    })
+    const head = `<p class="text-[11px] text-gray-400 mb-1">候補 ${list.length}人（割り当てられる ${all.length}人中）・出勤可能日を出している人 → 前回この案件の人の順</p>`
+    if (!list.length) return head + '<p class="text-xs text-gray-400 p-2">条件に合う人がいません。上の絞り込みを外してください</p>'
+    return head + list.slice(0, CAND_MAX).map(c => candItem(c, mine.has(c.staff_id), other.get(c.staff_id))).join('')
+      + (list.length > CAND_MAX ? `<p class="text-[11px] text-gray-400 p-1">ほか ${list.length - CAND_MAX}人（名前で検索してください）</p>` : '')
+  }
+  function candItem(c, drafted, otherDraft) {
+    const av = c.availability
+    const badge = c.busy ? '<span class="cand-badge bad">重複</span>'
+      : drafted ? '<span class="cand-badge draft">下書き済み</span>'
+      : otherDraft ? '<span class="cand-badge warn">下書きと重複</span>'
+      : av ? `<span class="cand-badge av-${esc(av.status)}">${esc(availText(av))}</span>` : '<span class="cand-badge ok">空き</span>'
+    const why = [
+      av && (c.busy || drafted || otherDraft) ? esc(availText(av)) : '',
+      !av ? '出勤可能日 未提出' : '',
+      av && av.note ? esc('メモ: ' + av.note) : '',
+      c.last_project_date ? `前回この案件 ${esc(dayjs(c.last_project_date).format('M/D'))}` : '',
+      Number(c.run_days) >= 2 ? `<span class="${Number(c.run_days) >= 6 ? 'text-amber-700 font-bold' : ''}">入ると${Number(c.run_days)}連勤</span>` : '',
+      `今週 ${Number(c.week_days)}日`,
+      c.skill_required ? `スキル ${Number(c.skill_match)}/${Number(c.skill_required)}` : (c.skills && c.skills.length ? esc(c.skills.slice(0, 3).join('・')) : ''),
+      c.ng ? '<span class="text-red-600 font-bold">NG</span>' : '',
+      c.on_leave ? '<span class="text-amber-700">休職中</span>' : '',
+      c.preboarding ? '<span class="text-amber-700">入社予定</span>' : '',
+      c.not_yet_available ? `<span class="text-amber-700">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : '',
+      c.busy ? `<span class="text-red-600">${esc(c.busy_detail.join('、'))}</span>` : '',
+      otherDraft ? `<span class="text-amber-700">下書き: ${esc(otherDraft)}</span>` : '',
+    ].filter(Boolean)
+    return `<button type="button" class="cand-item ${c.busy || c.ng ? 'is-warn' : ''} ${drafted ? 'is-drafted' : ''}" data-action="boardDraftAdd" data-staff-id="${Number(c.staff_id)}" title="押すと下書きに入れます">
+      <span class="font-bold truncate">${esc(c.name)} <span class="text-[10px] font-normal text-gray-400">${AFF_SHORT[c.affiliation_type] || ''}</span></span>${badge}
+      <span class="cand-why">${why.join('・')}</span></button>`
+  }
+
+  // ---------- 引き継ぐ単価（Sprint 10 の 9306 をこの画面に出す） ----------
+  const priceKey = (x) => x.role.slot_role_id + ':' + draftsOf(x.role.slot_role_id).map(d => d.staff_id).sort((a, b) => a - b).join(',')
+  async function loadSidePrice(x, key) {
+    SIDE_PRICE = { key, data: null, error: null }
+    const ids = draftsOf(x.role.slot_role_id).map(d => d.staff_id)
+    try {
+      const { data } = await axios.get('/api/admin/shifts/price-preview?' + new URLSearchParams({ slot_role_id: String(x.role.slot_role_id), staff_ids: ids.join(',') }))
+      if (SIDE_PRICE.key !== key) return
+      SIDE_PRICE.data = data
+    } catch (e) {
+      if (SIDE_PRICE.key !== key) return
+      SIDE_PRICE.error = errMsg(e, '単価を確認できませんでした')
+    }
+    const el = document.getElementById('side-price'); const cur = BS.sel ? ROLE_IX.get(BS.sel) : null
+    if (el && cur && priceKey(cur) === key) el.innerHTML = sidePriceHtml(cur)
+  }
+  function sidePriceHtml(x) {
+    const key = priceKey(x)
+    if (SIDE_PRICE.key !== key) { loadSidePrice(x, key); return '<p class="text-gray-400"><i class="fas fa-yen-sign mr-1"></i>単価を確認しています…</p>' }
+    const spot = projectOf(x.slot.project_id).engagement_type === 'spot'
+    const use = !BS.noInherit[x.role.slot_role_id]
+    const rate = (u, r) => (r == null ? '未設定' : `${UNIT_LABEL[u] || ''} ${yen(r)}`)
+    const names = new Map(draftsOf(x.role.slot_role_id).map(d => [d.staff_id, d.staff_name]))
+    let body
+    if (SIDE_PRICE.error) body = `<p class="text-gray-500">${esc(SIDE_PRICE.error)}</p>`
+    else if (!SIDE_PRICE.data) body = '<p class="text-gray-400">単価を確認しています…</p>'
+    else {
+      const items = SIDE_PRICE.data.items || []
+      body = items.length ? items.slice(0, 5).map(it => {
+        const ih = use ? it.inherited : null
+        const pr = ih ? it.price : it.settings
+        const who = it.staff_id == null ? '' : `<b class="text-gray-700">${esc(names.get(Number(it.staff_id)) || '')}</b> `
+        return `<p class="mt-0.5">${who}請求 <b>${rate(pr.bill_unit_type, pr.bill_rate)}</b> ／ 支払 <b>${rate(pr.pay_unit_type, pr.pay_rate)}</b><span class="block text-[11px] ${ih ? 'text-blue-700' : 'text-gray-500'}">${ih ? `${esc(ih.label)}の単価を引き継ぎ` : it.inherited ? '単価の設定（前回の単価は引き継がない）' : '単価の設定（案件の標準・単価ルール）'}</span></p>`
+      }).join('') + (items.length > 5 ? `<p class="text-[11px] text-gray-400">ほか ${items.length - 5}人</p>` : '')
+        : '<p class="text-gray-500">常勤は、同じスタッフのこの案件の前回のシフトの単価を引き継ぎます。候補を下書きに入れると、その人の単価をここに出します。</p>'
+    }
+    const own = x.role.bill_rate != null || x.role.pay_rate != null
+    return `<div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>単価</p><span class="text-[10px] text-gray-500">${spot ? 'この案件の前回のシフトから' : '同じスタッフのこの案件の前回から'}</span></div>
+      ${body}
+      ${own ? `<p class="text-[11px] text-amber-700 mt-1">この枠だけの単価: 請求 ${rate(x.role.bill_unit_type || 'daily', x.role.bill_rate)} ／ 支払 ${rate(x.role.pay_unit_type || 'daily', x.role.pay_rate)}</p>` : ''}
+      <div class="flex items-center justify-between gap-2 mt-1.5 flex-wrap">
+        <label class="flex items-center gap-1 text-[11px] text-gray-600"><input type="checkbox" data-board-input="inherit" ${use ? 'checked' : ''}>前回のシフトの単価を引き継ぐ</label>
+        <button type="button" class="text-[11px] text-blue-700 hover:underline" data-action="boardEditSlot" data-id="${Number(x.slot.slot_id)}" data-focus="price">この枠だけ単価を変える</button>
+      </div>`
+  }
+  delegate('boardCandModal', el => openCandidates(Number(el.dataset.id)))
+
+  // ---------- 常勤: この人で毎週の繰り返し登録（#9401） ----------
+  // 同じ曜日の、同じ案件・開催場所・時間・役割の枠に、選んだ人を割り当てる（POST /shifts/bulk の slot_match）
+  delegate('boardRepeat', (el) => {
+    const x = ROLE_IX.get(Number(el.dataset.id)); if (!x) return
+    const { slot, role } = x
+    const people = new Map()
+    for (const d of draftsOf(role.slot_role_id).reverse()) people.set(d.staff_id, d.staff_name + '（下書き）')
+    for (const a of role.assigned) if (a.status !== 'absent' && !people.has(a.staff_id)) people.set(a.staff_id, a.staff_name)
+    const others = ((MASTER && MASTER.staff) || []).filter(s => !people.has(s.staff_id))
+    const wd = dayjs(slot.work_date).day()
+    modal(`
+      <h3 class="font-bold text-lg mb-1">毎週の繰り返し登録</h3>
+      <p class="text-xs text-gray-500 mb-3">${esc(projectOf(slot.project_id).project_name || '')}・${esc(slot.site_name || slot.location || '場所未設定')}・${esc(slot.start_time)}〜${esc(slot.end_time)}・<b>${esc(role.role_name)}</b></p>
+      <div class="space-y-3">
+        <label class="text-sm text-gray-600 block">スタッフ
+          <select id="rp-staff" class="inp">${[...people].map(([id, n]) => `<option value="${Number(id)}">${esc(n)}</option>`).join('')}
+            ${others.length ? `<optgroup label="ほかのスタッフ">${others.map(s => `<option value="${Number(s.staff_id)}">${esc(s.name)}</option>`).join('')}</optgroup>` : ''}</select></label>
+        <div><p class="text-sm text-gray-600 mb-1">曜日</p>
+          <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden rp-wd" value="${i}" ${i === wd ? 'checked' : ''}>${w}</label>`).join('')}</div></div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="text-sm text-gray-600">開始日<input id="rp-from" type="date" class="inp" value="${esc(slot.work_date)}"></label>
+          <label class="text-sm text-gray-600">終了日<input id="rp-to" type="date" class="inp" value="${esc(dayjs(slot.work_date).add(1, 'month').endOf('month').format('YYYY-MM-DD'))}"></label>
+        </div>
+        <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="rp-inherit" ${BS.noInherit[role.slot_role_id] ? '' : 'checked'}>前回のシフトの単価を引き継ぐ</label>
+        <p class="text-[11px] text-gray-500 bg-gray-50 rounded p-2">選んだ曜日の、同じ時間・役割・開催場所の枠に<b>確定</b>で割り当てます（すぐに登録します）。枠のない日・定員に達した日・割り当て済みの日・重複・NG・退職などの日はスキップし、一覧で表示します。枠がまだない期間は、先に「その他の操作」→「枠の繰り返し登録」で枠を作ってください。</p>
+        <button class="btn btn-primary w-full" data-action="boardRepeatRun" data-id="${Number(role.slot_role_id)}"><i class="fas fa-repeat"></i>毎週の割り当てを登録する</button>
+      </div>`)
+  })
+  delegate('boardRepeatRun', el => withSubmitLock(el, async () => {
+    const x = ROLE_IX.get(Number(el.dataset.id)); if (!x) return
+    const { slot, role } = x
+    const sid = Number(document.getElementById('rp-staff').value)
+    const weekdays = [...document.querySelectorAll('.rp-wd:checked')].map(c => Number(c.value))
+    const from = document.getElementById('rp-from').value, to = document.getElementById('rp-to').value
+    if (!sid) { toast('スタッフを選んでください'); return }
+    if (!weekdays.length) { toast('曜日を選んでください'); return }
+    if (!from || !to || to < from) { toast('期間を正しく入力してください'); return }
+    // この人のこの枠の行の下書きは、繰り返し登録で入るので外す
+    for (const [k, d] of DRAFTS) if (d.staff_id === sid && d.project_id === slot.project_id && d.role_name === role.role_name && d.start_time === slot.start_time && d.end_time === slot.end_time && d.work_date >= from && d.work_date <= to) DRAFTS.delete(k)
+    await runJob(newJob({
+      title: '毎週の繰り返し登録', url: '/api/admin/shifts/bulk',
+      body: { project_id: slot.project_id, staff_ids: [sid], weekdays, date_from: from, date_to: to, start_time: slot.start_time, end_time: slot.end_time,
+        role: role.role_name, site_id: slot.site_id || null, location: slot.location || '', slot_match: true, inherit: document.getElementById('rp-inherit').checked },
+      keys: ['created', 'inherited'],
+      summary: (n) => `${n.created}件を枠に割り当てました${n.inherited ? `（${n.inherited}件は前回のシフトの単価を引き継ぎ）` : ''}`, done: () => renderShiftBoard(),
+    }))
+  }))
+
+  // ---------- 枠の削除（#9403） ----------
+  // 表のマス・右の欄・枠の編集から開く。割り当て済みの人・未対応の応募・下書きの件数を出して確かめる
+  delegate('boardDeleteSlot', el => openDeleteSlot(Number(el.dataset.id)))
+  function slotDeleteError(e) {
+    if (!e.response) return '通信できなかったため、枠を削除できませんでした。接続を確かめて、もう一度お試しください'
+    if (e.response.status === 403) return errMsg(e, '枠を削除する権限がありません（会社の管理者に依頼してください）')
+    return errMsg(e, '枠を削除できませんでした。時間をおいてもう一度お試しください')
+  }
+  async function openDeleteSlot(slotId) {
+    const slot = BOARD && BOARD.slots.find(s => s.slot_id === slotId)
+    if (!slot) {
+      // 表に出ていない枠（ほかの画面から開いたときなど）は、件数をサーバーに確かめてもらう
+      if (!confirm('この枠を削除しますか？')) return
+      return deleteSlotRun(slotId, false)
+    }
+    const people = slot.roles.flatMap(r => r.assigned.filter(a => a.status !== 'absent'))
+    const anyShift = slot.roles.some(r => r.assigned.length)
+    const applicants = slot.roles.reduce((n, r) => n + Number(r.applicants || 0), 0)
+    const drafts = [...DRAFTS.values()].filter(d => slot.roles.some(r => r.slot_role_id === d.slot_role_id))
+    const names = people.slice(0, 8).map(a => a.staff_name).join('、') + (people.length > 8 ? ` ほか${people.length - 8}人` : '')
+    modal(`
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-red-500 mr-1"></i>枠を削除</h3>
+      <p class="text-sm text-gray-800 font-bold">${esc(fmtDay(slot.work_date))} ${esc(slot.start_time)}〜${esc(slot.end_time)}・${esc(projectOf(slot.project_id).project_name || '')}</p>
+      <p class="text-xs text-gray-500 mb-3">${esc(slot.site_name || slot.location || '場所未設定')}・役割: ${esc(slot.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}（この日の枠を役割ごとまとめて削除します）</p>
+      <ul class="text-sm space-y-1.5 mb-3">
+        ${people.length ? `<li class="bg-amber-50 text-amber-900 rounded p-2"><b>割り当て済みの人が${people.length}人います</b>（${esc(names)}）。シフトは削除せず、「枠を使わないシフト」として残します（勤怠・日報が付いていることがあるため）。シフトも要らないときは、残ったシフトを開いて削除してください。</li>`
+          : anyShift ? '<li class="text-gray-600">欠勤のシフトは「枠を使わないシフト」として残します。</li>' : '<li class="text-gray-600">割り当て済みの人はいません。</li>'}
+        ${applicants ? `<li class="bg-red-50 text-red-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
+        ${drafts.length ? `<li class="bg-emerald-50 text-emerald-800 rounded p-2">この枠の保存していない下書き${drafts.length}件も消えます。</li>` : ''}
+      </ul>
+      <div class="flex gap-2">
+        <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-danger flex-1" data-action="deleteSlotRun" data-id="${Number(slotId)}" data-force="${anyShift ? 1 : 0}"><i class="fas fa-trash"></i>枠を削除する</button>
+      </div>`)
+  }
+  async function deleteSlotRun(slotId, force) {
+    try { await axios.delete('/api/admin/shift-slots/' + Number(slotId) + (force ? '?force=1' : '')) } catch (e) {
+      const d = e.response && e.response.data
+      if (d && d.need_force) {
+        // 確かめた後に割り当てが入った（または表に出ていない枠）。件数を出して、もう一度確かめる
+        if (!confirm(`この枠には ${Number(d.assigned)} 件のシフトがあります。\n枠だけを削除し、シフトは「枠を使わないシフト」として残しますか？`)) return
+        return deleteSlotRun(slotId, true)
+      }
+      toast(slotDeleteError(e))
+      if (e.response && e.response.status === 404) { closeModal(); renderShiftBoard() }
+      return
+    }
+    const slot = BOARD && BOARD.slots.find(s => s.slot_id === slotId)
+    const rids = new Set(slot ? slot.roles.map(r => r.slot_role_id) : [])
+    let kept = 0
+    if (slot) for (const r of slot.roles) kept += r.assigned.length
+    for (const [k, d] of DRAFTS) if (rids.has(d.slot_role_id)) DRAFTS.delete(k)
+    if (rids.has(BS.sel)) BS.sel = null
+    closeModal(); toast('枠を削除しました' + (kept ? `（シフト${kept}件は「枠を使わないシフト」として残しています）` : '')); renderShiftBoard()
+  }
+  delegate('deleteSlotRun', el => withSubmitLock(el, () => deleteSlotRun(Number(el.dataset.id), el.dataset.force === '1')))
 
   // ---------- 希望（仮）のまとめて確定（#390） ----------
   // 表示中のボードの希望（仮）のシフト。slotRoleId を渡すとその役割だけ
@@ -880,17 +1505,8 @@
   }
   delegate('saveSlot', el => withSubmitLock(el, () => saveSlot(Number(el.dataset.id) || 0)))
   delegate('deleteSlot', el => withSubmitLock(el, () => deleteSlot(Number(el.dataset.id))))
-  window.deleteSlot = async function (slotId, force) {
-    // 未対応の応募がある枠は、その件数も出して確かめる（削除すると応募は「枠の削除」で処理済みになる。#65 の残り）
-    const slot = BOARD && BOARD.slots.find(s => s.slot_id === slotId)
-    const applicants = slot ? slot.roles.reduce((n, r) => n + Number(r.applicants || 0), 0) : 0
-    if (!force && !confirm(applicants ? `この枠には未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。\n\nこの枠を削除しますか？` : 'この枠を削除しますか？')) return
-    try { await axios.delete('/api/admin/shift-slots/' + slotId + (force ? '?force=1' : '')); closeModal(); toast('枠を削除しました'); renderShiftBoard() } catch (e) {
-      const d = e.response && e.response.data
-      if (d && d.need_force) { if (confirm(`この枠には ${d.assigned} 件のシフトがあります。\n枠だけを削除し、シフトは「枠なし」として残しますか？`)) return deleteSlot(slotId, true); return }
-      toast(errMsg(e))
-    }
-  }
+  // 枠の編集のモーダルの削除ボタンからも、件数を出して確かめる（#9403）
+  window.deleteSlot = function (slotId) { return openDeleteSlot(Number(slotId)) }
 
   // ---------- 繰り返し登録 ----------
   window.openPatternModal = async function (preset) {
@@ -1660,7 +2276,7 @@
   })
   // シフトボードをその日の週で開く（絞り込みは外す）
   delegate('boardOpenDate', (el) => {
-    Object.assign(BS, { from: weekStart(el.dataset.date), clientId: '', projectIds: [], engagement: '', onlyShort: false })
+    Object.assign(BS, { from: weekStart(el.dataset.date), range: BS.range === 'month' ? 'week' : BS.range, clientId: '', projectIds: [], engagement: '', onlyShort: false, sel: null })
     location.hash = '#shifts'
   })
 

@@ -98,8 +98,6 @@
             </label>`).join('')}</div></div>`).join('') || '<p class="card p-6 text-center text-gray-400 text-sm">現在、募集中の日時はありません</p>'}
         ${d.next_from ? `<button class="btn btn-outline w-full" id="apply-more" data-action="applyLoadMore">さらに後の日時を表示</button>` : ''}
       </section>
-      ${dates.length ? `<p class="text-xs text-gray-500 bg-white border border-gray-100 rounded-lg p-3 mb-3" id="apply-staff-note"><i class="fas fa-mobile-screen mr-1 text-blue-500"></i>
-        すでにスタッフ登録をしている方は、<a href="/login" class="text-blue-600 underline">スタッフアプリ</a>の「シフト」→「募集中のお仕事」からも応募できます。アプリから応募すると、応募の状況の確認や取り下げができます</p>` : ''}
 
       ${dates.length ? `<section class="card p-4 mb-3" id="apply-form">
         <h3 class="text-sm font-bold text-gray-700 mb-3">② ご連絡先</h3>

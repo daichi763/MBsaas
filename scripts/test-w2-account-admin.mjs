@@ -76,7 +76,7 @@ const coCode = `w2aa${SUF}`
 }
 const created = await hq.post('/api/hq/companies', { company_code: coCode, company_name: `W2AA テスト${SUF}`, admin_code: 'boss', admin_name: '社長 太郎', admin_email: `boss${SUF}@example.com` })
 ok('#25 #44 企業と初期管理者（メールあり・パスワード空欄）を登録でき、仮パスワードが返る', created.status === 200 && typeof created.data.admin_temp_password === 'string' && created.data.admin_temp_password.length >= 8, created)
-ok('#25 同じ会社コードは 409', (await hq.post('/api/hq/companies', { company_code: coCode, company_name: 'dup' })).status === 409)
+ok('#25 同じ会社コードは 409', (await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: coCode, company_name: 'dup' })).status === 409)
 const coId = (await hq.get('/api/hq/companies')).data.companies.find(c => c.company_code === coCode)?.company_id
 let boss = client(await login(coCode, 'boss', created.data.admin_temp_password))
 let boss2Pw = ''

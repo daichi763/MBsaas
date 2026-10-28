@@ -224,7 +224,7 @@ if (PERSIST) {
 {
   const hq = client(await login('sample', 'hq'))
   const code = PFX.toLowerCase() + 'h'
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: `${PFX}稼働先株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}稼働先株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
   const host = client(await login(code, 'admin'))
   // 所属元（sample）の自社雇用スタッフを稼働先に連携する
   must(await admin.post('/api/admin/staff', { user_code: `${PFX}E1`, name: `${PFX} 連携`, password: 'pass1234' }), 'staff')

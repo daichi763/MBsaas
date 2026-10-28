@@ -1,4 +1,5 @@
 // シフトボードの使い勝手（w4-shift-board-ux: #258 #388 #390 #406 #407 #468 #551、持ち越し #65 #142 #456）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8825 node scripts/test-w4-shift-board-ux.mjs

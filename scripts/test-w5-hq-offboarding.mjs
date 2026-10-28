@@ -57,7 +57,7 @@ ok('企業の管理者は解約の API を使えない（403）', (await admin.g
 
 // ---------- テスト用の企業とデータ ----------
 const code = `w5ob${SUF}`
-let r = await hq.post('/api/hq/companies', { company_code: code, company_name: '解約テスト企業', admin_code: 'admin', admin_password: 'Passw0rd!Long' })
+let r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: '解約テスト企業', admin_code: 'admin', admin_password: 'Passw0rd!Long' })
 ok('テスト用の企業を作る', r.status === 200, r.data)
 const cid = Number(sql(`SELECT company_id FROM companies WHERE company_code = '${code}'`)[0].company_id)
 const photoKey = `w5ob/${SUF}/photo.jpg`, docKey = `w5ob/${SUF}/doc.pdf`, contractKey = `w5ob/${SUF}/contract.pdf`

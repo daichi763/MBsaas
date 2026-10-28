@@ -155,7 +155,8 @@ async function createShift(staff_id, project_id, work_date, memo) {
 
   const src = await fetch(`${BASE}/static/common.js`).then(r => r.text())
   let listener = null
-  const ctx = { document: { addEventListener: (type, fn) => { if (type === 'click') listener = fn } }, alert: () => { } }
+  // delegate の listener を受け取る（#9422 で足した、モーダルの背景をキャプチャで受ける listener は除く）
+  const ctx = { document: { addEventListener: (type, fn, capture) => { if (type === 'click' && capture !== true) listener = fn } }, alert: () => { } }
   vm.createContext(ctx)
   vm.runInContext(src, ctx)
   ok('esc は & < > " \' ` を実体参照にする', ctx.esc(`&<>"'\``) === '&amp;&lt;&gt;&quot;&#39;&#96;', ctx.esc(`&<>"'\``))
