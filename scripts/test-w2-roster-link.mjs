@@ -34,7 +34,7 @@ const ownName = '株式会社サンプルモバイル人材'
 const co = {}
 for (const k of ['A', 'B', 'C']) {
   const code = `${PFX.toLowerCase()}${k.toLowerCase()}`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: `${PFX}連携先${k}株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company ' + k)
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}連携先${k}株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company ' + k)
   co[k] = { name: `${PFX}連携先${k}株式会社`, api: client(await login(code, 'admin')) }
 }
 // 自社雇用のスタッフを作る

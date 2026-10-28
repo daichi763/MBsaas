@@ -80,9 +80,9 @@ const pub = client('')
 const codeA = `${pfx}a`
 {
   const typed = codeA.toUpperCase().replace(/[A-Z0-9]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0xFEE0)) // 全角の大文字で入力
-  const r = await hq.post('/api/hq/companies', { company_code: typed, company_name: `${PFX}連携先A`, admin_code: 'admin', admin_password: 'pass1234' })
+  const r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: typed, company_name: `${PFX}連携先A`, admin_code: 'admin', admin_password: 'pass1234' })
   ok('#387 全角・大文字で入力した会社コードは、半角の小文字で保存される（そのコードでログインできる）', r.status === 200 && (await rawLogin(codeA, 'admin')).status === 200, r)
-  const dup = await hq.post('/api/hq/companies', { company_code: codeA.toUpperCase(), company_name: '重複', admin_code: 'admin', admin_password: 'pass1234' })
+  const dup = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeA.toUpperCase(), company_name: '重複', admin_code: 'admin', admin_password: 'pass1234' })
   ok('#387 大文字・小文字の違いだけの会社コードは重複として 409', dup.status === 409, dup)
 }
 const A = client(await login(codeA, 'admin'))
@@ -375,7 +375,7 @@ if (PERSIST) {
 
   // 解約した企業の削除（停止 → 契約終了の登録（猶予を過ぎた日付）→ 書き出しを省いた理由を付けて削除）
   const codeD = `${pfx}d`
-  must(await hq.post('/api/hq/companies', { company_code: codeD, company_name: `${PFX}解約企業`, admin_code: 'admin', admin_password: 'pass1234' }), 'company D')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeD, company_name: `${PFX}解約企業`, admin_code: 'admin', admin_password: 'pass1234' }), 'company D')
   const [cd] = sql(`SELECT company_id FROM companies WHERE company_code = '${codeD}'`)
   const cid = cd[0].company_id
   sql(`INSERT INTO users (company_id, user_code, name, role, password_hash) VALUES (${cid}, 's1', '解約 スタッフ', 'staff', 'x');

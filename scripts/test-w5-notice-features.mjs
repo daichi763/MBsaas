@@ -264,7 +264,7 @@ must(await admin.post('/api/admin/shifts', { staff_id: a.staff_id, project_id: p
 {
   const hq = client(await login('sample', 'hq'))
   const coCode = `nf${tag}co`
-  must(await hq.post('/api/hq/companies', { company_code: coCode, company_name: `お知らせ他社${tag}`, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: coCode, company_name: `お知らせ他社${tag}`, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
   const other = client(await login(coCode, 'admin'))
   const mine = must(await create(`他社確認${tag}`, { mode: 'draft' }), 'draft for tenant')
   const r = await Promise.all([

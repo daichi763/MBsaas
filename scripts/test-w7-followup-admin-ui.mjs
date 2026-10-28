@@ -118,7 +118,7 @@ must(await admin.put(`/api/admin/shifts/${s1}`, { start_time: '10:30' }), 'updat
   // 9001: 連携先には生年月日・備考を返さず、年代を返す
   const hq = client(await login('sample', 'hq'))
   const code = 'w7u' + Date.now().toString(36).slice(-5), pw = 'W7u-Passw0rd-' + code
-  const cr = await hq.post('/api/hq/companies', { company_code: code, company_name: `${PFX}連携先`, admin_code: 'adminb', admin_password: pw, admin_name: 'B社 管理者' })
+  const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}連携先`, admin_code: 'adminb', admin_password: pw, admin_name: 'B社 管理者' })
   ok('（前提）連携先の会社を作成', cr.status === 200, cr)
   const adminB = client(await login(code, 'adminb', pw))
   await admin.get('/api/admin/staff')

@@ -41,6 +41,62 @@ async function withSubmitLock(button, fn) {
   }
 }
 
+// モーダルの閉じ方（#9422）。入力欄のあるモーダルは、背景のタップ（入力欄から背景へのドラッグも含む）では閉じず、
+// 右上の ✕ と「キャンセル」でだけ閉じる（入力が消えないように）。入力欄のない確認・表示だけのモーダルは、今までどおり背景のタップでも閉じる。
+// 各画面の modal()（背景に onclick="…closeModal()" を付ける作り）はそのままで、ここで全画面分をまとめて扱う。Esc で閉じるモーダルはない
+const MODAL_INPUT_SEL = 'input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=reset]):not([readonly]):not([disabled]), select:not([disabled]), textarea:not([readonly]):not([disabled]), [contenteditable=""], [contenteditable="true"]'
+function modalHasInputs(bg) {
+  const box = bg.querySelector('.modal-box')
+  return !!(box && box.querySelector(MODAL_INPUT_SEL))
+}
+// 背景のタップで閉じる作りのモーダル（背景に onclick がある）だけを対象にする。ログインし直しなど、もともと背景で閉じないものは触らない
+const modalClosesOnBackdrop = (bg) => typeof bg.onclick === 'function'
+// 背景のクリックは、各画面の onclick より先に（キャプチャで）受けて止める
+document.addEventListener('click', (ev) => {
+  const bg = ev.target
+  if (!bg || !bg.classList || !bg.classList.contains('modal-bg') || !modalClosesOnBackdrop(bg) || !modalHasInputs(bg)) return
+  ev.stopImmediatePropagation()
+  ev.preventDefault()
+  const x = bg.querySelector('.modal-x')
+  if (x && x.animate) x.animate([{ scale: '1' }, { scale: '1.35' }, { scale: '1' }], { duration: 400 })
+  // 閉じない理由は、モーダルごとに1回だけ伝える
+  if (!bg.dataset.backdropNoted) {
+    bg.dataset.backdropNoted = '1'
+    // 「キャンセル」のボタンが無いモーダル（スタッフの登録など）では ✕ だけを案内する
+    const hasCancel = [...bg.querySelectorAll('button')].some(b => b.textContent.trim() === 'キャンセル')
+    if (typeof toast === 'function') toast(hasCancel ? '入力中の内容を閉じるときは、右上の ✕ か「キャンセル」を押してください' : '入力中の内容を閉じるときは、右上の ✕ を押してください')
+  }
+}, true)
+// 入力欄のあるモーダルに、閉じるボタン（✕）が無ければ右上に足す（スクロールしても右上に残る）
+const MODAL_X_SEL = '.modal-x, [onclick*="closeModal"] .fa-xmark, [onclick*="closeModal"] .fa-times, [data-modal-close]'
+function addModalCloseButtons() {
+  document.querySelectorAll('.modal-bg').forEach(bg => {
+    const box = bg.querySelector('.modal-box')
+    if (!box || box.querySelector(MODAL_X_SEL) || !modalClosesOnBackdrop(bg) || !modalHasInputs(bg)) return
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'modal-x text-gray-400 hover:text-gray-600'
+    b.dataset.action = 'modalX'
+    b.setAttribute('aria-label', '閉じる'); b.title = '閉じる'
+    b.style.cssText = 'position:sticky;top:0;float:right;z-index:1;width:2rem;height:2rem;margin:-.75rem -.75rem .25rem .5rem;border-radius:9999px;background:rgba(255,255,255,.9);font-size:1.1rem;line-height:2rem;text-align:center'
+    b.innerHTML = '<i class="fas fa-xmark"></i>'
+    box.insertBefore(b, box.firstChild)
+  })
+}
+delegate('modalX', (el) => {
+  const bg = el.closest('.modal-bg')
+  if (!bg) return
+  // #modal-root のモーダルは各画面の closeModal で閉じる（閉じたときの後片付けがあるため）。それ以外は背景ごと外す
+  if (bg.closest('#modal-root') && typeof window.closeModal === 'function') window.closeModal()
+  else bg.remove()
+})
+let modalScanQueued = false
+new MutationObserver(() => {
+  if (modalScanQueued) return
+  modalScanQueued = true
+  queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons() })
+}).observe(document.documentElement, { childList: true, subtree: true })
+
 // API のエラー文言（無ければ fallback）を toast で出す。toast の無い画面では alert で出す
 function showApiError(e, fallback) {
   const msg = (e && e.response && e.response.data && e.response.data.error) || fallback || 'エラーが発生しました'

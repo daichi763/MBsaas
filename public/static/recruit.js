@@ -115,6 +115,11 @@
           <label class="text-gray-600">期間（開始）<input id="rp-from" type="date" class="inp" value="${p?.date_from || dayjs().format('YYYY-MM-DD')}"></label>
           <label class="text-gray-600">期間（終了）<input id="rp-to" type="date" class="inp" value="${p?.date_to || dayjs().add(1, 'month').format('YYYY-MM-DD')}"></label>
         </div>
+        <div class="text-gray-600" id="rp-slot-box">募集する枠（日付・時間・役割・募集人数）
+          <div id="rp-slots-existing" class="mt-1"></div>
+          <div id="rp-slots-new" class="space-y-2 mt-2"></div>
+          <button type="button" class="btn btn-outline text-xs mt-2" data-action="recruitAddSlotRow"><i class="fas fa-plus"></i>枠を追加</button>
+          <p class="text-[11px] text-gray-400 mt-1">追加した枠は、保存するとシフトボードの募集枠になります（開催場所・単価は、シフトボードの枠の編集で変えられます）。募集人数は1名以上です</p></div>
         <label class="block text-gray-600">仕事内容・条件<textarea id="rp-desc" class="inp" rows="4" maxlength="2000" placeholder="仕事内容、服装、持ち物、集合場所など">${esc(p?.description || '')}</textarea></label>
         <label class="block text-gray-600">給与の表示（任意）<input id="rp-pay" class="inp" maxlength="200" value="${esc(p?.pay_note || '')}" placeholder="例: 日給 12,000円〜・交通費支給"></label>
         <label class="block text-gray-600">問い合わせ先の表示（任意）<input id="rp-contact" class="inp" maxlength="200" value="${esc(p?.contact_note || '')}" placeholder="例: 採用担当 03-0000-0000（平日10〜18時）"></label>
@@ -132,7 +137,7 @@
         ${p ? '<label class="flex items-center gap-2 text-xs text-red-600"><input type="checkbox" id="rp-regen">URLを再発行する（今のURL・QRは使えなくなります）</label>' : ''}
       </div>
       <div class="flex gap-2 mt-4">
-        <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         ${p && !p.application_count ? `<button class="btn btn-danger" onclick="deleteRecruitPage(${p.page_id})"><i class="fas fa-trash"></i></button>` : ''}
         <button class="btn btn-primary flex-1" data-action="recruitSavePage" data-id="${p ? p.page_id : ''}" data-reopen="${reopen ? '1' : ''}">${p ? (reopen ? '保存して再開' : '保存') : '作成してURLを発行'}</button>
       </div>`)
@@ -141,6 +146,133 @@
       if (!ev.target.classList.contains('rp-q-type')) return
       ev.target.closest('.rp-q').querySelector('.rp-q-opts').classList.toggle('hidden', ev.target.value !== 'select')
     })
+    // 募集する枠（#9421）: 対象の案件・期間を変えたら、既存の枠の一覧と、追加する行の案件の選択肢を出し直す
+    SLOT_EDITS = new Map()
+    const form = document.getElementById('recruit-page-form')
+    form.addEventListener('change', (ev) => {
+      const t = ev.target
+      if (t.classList.contains('rp-proj') || t.id === 'rp-from' || t.id === 'rp-to') { refreshSlotRows(); loadPageSlots() }
+      if (t.classList.contains('rp-hc')) noteHeadcount(t)
+    })
+    form.addEventListener('input', (ev) => { if (ev.target.classList.contains('rp-hc')) noteHeadcount(ev.target) })
+    loadPageSlots()
+  }
+
+  // ---------- 募集する枠（#9421）: 既存の枠の人数の変更と、枠の追加 ----------
+  const SLOT_MAX_ROWS = 100 // src/recruit.ts と同じ上限
+  let SLOT_EDITS = new Map() // slot_role_id → 入力中の人数（一覧を出し直しても残す）
+  let SLOT_SEQ = 0
+  const checkedProjects = () => [...document.querySelectorAll('.rp-proj:checked')].map(x => ({ id: Number(x.value), name: (projects.find(p => p.project_id === Number(x.value)) || {}).project_name || '' }))
+  const slotMinDate = () => { const from = document.getElementById('rp-from').value, today = dayjs().format('YYYY-MM-DD'); return from > today ? from : today }
+  function noteHeadcount(el) {
+    const id = Number(el.dataset.id)
+    if (String(el.value) === String(el.dataset.orig)) SLOT_EDITS.delete(id); else SLOT_EDITS.set(id, el.value)
+    el.classList.toggle('border-blue-500', SLOT_EDITS.has(id))
+  }
+  async function loadPageSlots() {
+    const box = document.getElementById('rp-slots-existing'); if (!box) return
+    const pids = checkedProjects().map(x => x.id)
+    const from = document.getElementById('rp-from').value, to = document.getElementById('rp-to').value
+    const seq = ++SLOT_SEQ
+    if (!pids.length) { box.innerHTML = '<p class="text-[11px] text-gray-400">対象の案件を選ぶと、期間内の枠が出ます</p>'; return }
+    box.innerHTML = '<p class="text-[11px] text-gray-400">枠を読み込んでいます…</p>'
+    let data
+    try { data = (await axios.get('/api/admin/recruit-slots', { params: { project_ids: pids.join(','), from, to } })).data } catch (e) {
+      if (seq === SLOT_SEQ && document.getElementById('rp-slots-existing')) box.innerHTML = `<p class="text-[11px] text-red-600">${esc(errMsg(e, '枠を読み込めませんでした'))}</p>`
+      return
+    }
+    // 読み込みの間に案件・期間を変えた、またはモーダルを閉じたときは出さない
+    if (seq !== SLOT_SEQ || !document.getElementById('rp-slots-existing')) return
+    const multi = pids.length > 1
+    box.innerHTML = data.roles.length ? `
+      <p class="text-[11px] text-gray-500 mb-1">期間内の枠 ${data.roles.length}件${data.truncated ? '（多いため先頭から表示）' : ''}。募集人数はここで直せます（割り当て済みの人数より少なくはできません）</p>
+      <div class="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-56 overflow-y-auto" id="rp-slot-list">
+        ${data.roles.map(r => {
+          const id = Number(r.slot_role_id), val = SLOT_EDITS.has(id) ? SLOT_EDITS.get(id) : Number(r.headcount)
+          const past = r.work_date < data.today
+          const detail = [multi ? r.project_name : '', r.place].filter(Boolean)
+          return `<div class="flex items-center gap-2 px-2 py-1.5 text-xs rp-slot-row" data-id="${id}">
+            <span class="whitespace-nowrap shrink-0">${fmt(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
+            <span class="flex-1 min-w-0 truncate" title="${esc([r.role_name, ...detail].join('・'))}"><b class="text-gray-800">${esc(r.role_name)}</b>${detail.map(x => `<span class="text-gray-400">・${esc(x)}</span>`).join('')}${r.slot_status === 'closed' ? ' <span class="badge badge-gray">締切</span>' : ''}</span>
+            <span class="text-gray-500 whitespace-nowrap">割当 ${Number(r.assigned)}</span>
+            <span class="whitespace-nowrap"><input type="number" class="inp text-xs w-16 rp-hc ${SLOT_EDITS.has(id) ? 'border-blue-500' : ''}" min="${Math.max(1, Number(r.assigned))}" max="200" step="1" data-id="${id}" data-orig="${Number(r.headcount)}" value="${esc(val)}" ${past ? 'disabled title="過ぎた日の枠"' : ''} aria-label="募集人数">名</span>
+          </div>`
+        }).join('')}
+      </div>` : '<p class="text-[11px] text-gray-400">期間内に、対象の案件の枠はまだありません。「枠を追加」で作れます</p>'
+  }
+  function slotProjectOptions(selected) {
+    return checkedProjects().map(x => `<option value="${x.id}" ${x.id === Number(selected) ? 'selected' : ''}>${esc(x.name)}</option>`).join('')
+  }
+  // 対象の案件が2つ以上のときだけ、行ごとに案件を選ぶ。日付の範囲も期間に合わせる
+  function refreshSlotRows() {
+    const multi = checkedProjects().length > 1
+    const min = slotMinDate(), max = document.getElementById('rp-to').value
+    document.querySelectorAll('#rp-slots-new .rp-slot').forEach(row => {
+      const sel = row.querySelector('.rp-s-proj')
+      sel.innerHTML = slotProjectOptions(sel.value)
+      sel.closest('label').classList.toggle('hidden', !multi)
+      const d = row.querySelector('.rp-s-date'); d.min = min; d.max = max
+    })
+  }
+  function slotRow(prev) {
+    const min = slotMinDate(), to = document.getElementById('rp-to').value
+    const v = prev || { work_date: min <= to ? min : '', start_time: '10:00', end_time: '19:00', role_name: '', headcount: 1 }
+    const multi = checkedProjects().length > 1
+    return `<div class="rp-slot border border-gray-200 rounded-lg p-2 text-xs">
+      <label class="block mb-1.5 ${multi ? '' : 'hidden'}">案件<select class="inp text-xs rp-s-proj">${slotProjectOptions(v.project_id)}</select></label>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+        <label>日付<input type="date" class="inp text-xs rp-s-date" min="${esc(min)}" max="${esc(to)}" value="${esc(v.work_date)}"></label>
+        <label>開始<input type="time" class="inp text-xs rp-s-start" value="${esc(v.start_time)}"></label>
+        <label>終了<input type="time" class="inp text-xs rp-s-end" value="${esc(v.end_time)}"></label>
+        <label>役割<input class="inp text-xs rp-s-role" maxlength="40" placeholder="例: 販売" value="${esc(v.role_name)}"></label>
+        <label>募集人数<input type="number" class="inp text-xs rp-s-count" min="1" max="200" step="1" value="${esc(v.headcount)}"></label>
+        <div class="flex items-end"><button type="button" class="btn btn-outline text-xs w-full" data-action="recruitRemoveSlotRow" title="この行を削除"><i class="fas fa-trash"></i>行を削除</button></div>
+      </div></div>`
+  }
+  function readSlotRow(row) {
+    return {
+      project_id: Number(row.querySelector('.rp-s-proj').value) || null, work_date: row.querySelector('.rp-s-date').value,
+      start_time: row.querySelector('.rp-s-start').value, end_time: row.querySelector('.rp-s-end').value,
+      role_name: row.querySelector('.rp-s-role').value.trim(), headcount: row.querySelector('.rp-s-count').value.trim(),
+    }
+  }
+  delegate('recruitAddSlotRow', () => {
+    const box = document.getElementById('rp-slots-new'); if (!box) return
+    if (!checkedProjects().length) return toast('先に対象の案件を選んでください')
+    const rows = box.querySelectorAll('.rp-slot')
+    if (rows.length >= SLOT_MAX_ROWS) return toast(`一度に追加できる枠は${SLOT_MAX_ROWS}行までです`)
+    // 前の行の内容を写す（日付だけ変えて続けて入れられるように）
+    box.insertAdjacentHTML('beforeend', slotRow(rows.length ? readSlotRow(rows[rows.length - 1]) : null))
+    const added = box.lastElementChild
+    ;(rows.length ? added.querySelector('.rp-s-date') : added.querySelector('.rp-s-role')).focus()
+  })
+  delegate('recruitRemoveSlotRow', (el) => { const row = el.closest('.rp-slot'); if (row) row.remove() })
+  // 保存の前に画面で確かめる（サーバーでも同じ検証をする）。問題があれば、その入力欄に移って null を返す
+  function collectSlots(from, to) {
+    const today = dayjs().format('YYYY-MM-DD')
+    const fail = (el, msg) => { toast(msg); el.focus(); return null }
+    const new_slots = []
+    for (const [i, row] of [...document.querySelectorAll('#rp-slots-new .rp-slot')].entries()) {
+      const r = readSlotRow(row), at = `${i + 1}行目の枠: `
+      if (!r.work_date) return fail(row.querySelector('.rp-s-date'), at + '日付を入力してください')
+      if (r.work_date < from || r.work_date > to) return fail(row.querySelector('.rp-s-date'), at + '日付は募集の期間内にしてください')
+      if (r.work_date < today) return fail(row.querySelector('.rp-s-date'), at + '過ぎた日には枠を作れません')
+      if (!r.start_time || !r.end_time) return fail(row.querySelector(r.start_time ? '.rp-s-end' : '.rp-s-start'), at + '開始・終了の時刻を入力してください')
+      if (r.start_time === r.end_time) return fail(row.querySelector('.rp-s-end'), at + '開始と終了が同じ時刻です')
+      if (!r.role_name) return fail(row.querySelector('.rp-s-role'), at + '役割を入力してください')
+      if (!/^\d+$/.test(r.headcount) || Number(r.headcount) < 1 || Number(r.headcount) > 200) return fail(row.querySelector('.rp-s-count'), at + '募集人数は1〜200の整数で入力してください')
+      new_slots.push({ ...r, headcount: Number(r.headcount) })
+    }
+    const slot_headcounts = []
+    for (const [id, val] of SLOT_EDITS) {
+      const el = document.querySelector(`#rp-slot-list .rp-hc[data-id="${Number(id)}"]`)
+      if (!el) continue // 対象の案件・期間から外れた枠は変えない
+      const s = String(val).trim()
+      if (!/^\d+$/.test(s) || Number(s) < 1 || Number(s) > 200) return fail(el, '募集人数は1〜200の整数で入力してください')
+      if (Number(s) < Number(el.min)) return fail(el, `割り当て済みが${Number(el.min)}名のため、${Number(el.min)}名より少なくできません`)
+      slot_headcounts.push({ slot_role_id: Number(id), headcount: Number(s) })
+    }
+    return { new_slots, slot_headcounts }
   }
   // ---------- 応募フォームの独自の質問（#300） ----------
   const MAX_QUESTIONS = 5 // src/recruit.ts と同じ上限
@@ -187,9 +319,16 @@
       ...(id && reopen ? { status: 'open' } : {}),
     }
     if (body.project_ids.length > MAX_PAGE_PROJECTS) return toast(`対象の案件は${MAX_PAGE_PROJECTS}件までです（${body.project_ids.length}件選択中）`)
+    // 募集する枠（#9421）。行があるときだけ送る
+    const slots = collectSlots(body.date_from, body.date_to)
+    if (!slots) return
+    if (slots.new_slots.length) body.new_slots = slots.new_slots
+    if (slots.slot_headcounts.length) body.slot_headcounts = slots.slot_headcounts
     try {
       const { data } = id ? await axios.put('/api/admin/recruit-pages/' + id, body) : await axios.post('/api/admin/recruit-pages', body)
-      closeModal(); toast((id ? (reopen ? '募集を再開しました' : '保存しました') : '募集ページを作成しました') + staffNoticeText(data))
+      const slotText = data.slots_created || data.headcounts_updated
+        ? `（${[data.slots_created ? `枠を${Number(data.slots_created)}件追加` : '', data.headcounts_updated ? `人数を${Number(data.headcounts_updated)}件変更` : ''].filter(Boolean).join('・')}）` : ''
+      closeModal(); toast((id ? (reopen ? '募集を再開しました' : '保存しました') : '募集ページを作成しました') + slotText + staffNoticeText(data))
       S.tab = 'pages'; await renderRecruit()
       showRecruitShare(id || data.page_id)
     } catch (e) { toast(errMsg(e)) }

@@ -32,7 +32,7 @@ const admin = client(await login('sample', 'admin'))
 const hq = client(await login('sample', 'hq'))
 // 2 社目（B 社）
 const codeB = 'pf' + PFX.toLowerCase(), pwB = 'Pf-Passw0rd-' + PFX
-must(await hq.post('/api/hq/companies', { company_code: codeB, company_name: `案件機能B社${PFX}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' }), 'company B')
+must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeB, company_name: `案件機能B社${PFX}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' }), 'company B')
 const adminB = client(await login(codeB, 'adminb', pwB))
 
 const projectsOf = async (api) => must(await api.get('/api/admin/projects'), 'projects').projects

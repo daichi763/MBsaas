@@ -217,7 +217,7 @@ if (PERSIST) {
 // ---------- #123 連携先での電話番号の照合（所属元の今の番号。番号は出さない） ----------
 {
   const coCode = `${PFX.toLowerCase()}a`
-  must(await hq.post('/api/hq/companies', { company_code: coCode, company_name: `${PFX}連携先株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company A')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: coCode, company_name: `${PFX}連携先株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company A')
   const A = client(await login(coCode, 'admin'))
   const ph1 = phoneOf(), ph2 = phoneOf()
   const X = await newStaff('X', { phone: ph1 })

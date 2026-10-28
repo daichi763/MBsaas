@@ -130,7 +130,7 @@ const st1 = client(await login('sample', `${PFX}HOME`))
 {
   const code = `${PFX.toLowerCase()}a`
   const coName = `${PFX}連携先株式会社`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
   const A = client(await login(code, 'admin'))
   const X = await newStaff(admin, 'LINKX')
   const share = must(await admin.get(`/api/admin/roster/${X.staff_id}/share-code`), 'share-code')

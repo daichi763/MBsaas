@@ -157,7 +157,7 @@ const list = async (q) => (await admin.get('/api/admin/daily-reports' + (q ? '?'
   const tag = Date.now().toString(36).slice(-5)
   const hq = client(await login('sample', 'hq'))
   const codeB = 'ra' + tag, pwB = 'Ra-Passw0rd-' + tag
-  const cr = await hq.post('/api/hq/companies', { company_code: codeB, company_name: `日報確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
+  const cr = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeB, company_name: `日報確認B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
   if (cr.status !== 200) ok('（前提）B 社を作成', false, cr)
   else {
     const adminB = client(await login(codeB, 'adminb', pwB))

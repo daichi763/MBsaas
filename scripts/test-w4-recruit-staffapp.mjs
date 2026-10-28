@@ -209,7 +209,7 @@ const S1 = await newStaff('S1')
   const hq = client(await login('sample', 'hq'))
   const code = `rs${PFX.toLowerCase()}co`
   const coName = `${PFX} 連携先株式会社`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
   const coAdmin = client(await login(code, 'admin'))
   const S7 = await newStaff('S7')
   const terms = must(await coAdmin.get('/api/admin/roster/consent-terms'), 'terms')

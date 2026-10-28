@@ -20,6 +20,7 @@ import { notifyRecruitApplied } from './notifications'
 import { notifyRecruitNew, notifyRecruitResult, notifyRecruitResults, staffAppRecruitEnabled } from './notifications'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { mailMode } from './services/email'
+import { isHHMM, isISODate, toInt } from './lib/validate'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
@@ -695,9 +696,9 @@ export const recruitAdminApi = new Hono<{ Bindings: Bindings; Variables: Variabl
 function pageValues(b: any, cur: any = {}) {
   const v = {
     title: b.title !== undefined ? str(b.title, 80) : cur.title,
-    description: b.description !== undefined ? str(b.description, 2000) || null : cur.description,
-    pay_note: b.pay_note !== undefined ? str(b.pay_note, 200) || null : cur.pay_note,
-    contact_note: b.contact_note !== undefined ? str(b.contact_note, 200) || null : cur.contact_note,
+    description: b.description !== undefined ? str(b.description, 2000) || null : cur.description ?? null,
+    pay_note: b.pay_note !== undefined ? str(b.pay_note, 200) || null : cur.pay_note ?? null,
+    contact_note: b.contact_note !== undefined ? str(b.contact_note, 200) || null : cur.contact_note ?? null,
     project_ids: b.project_ids !== undefined ? parseIds(b.project_ids).join(',') : cur.project_ids,
     date_from: b.date_from !== undefined ? b.date_from : cur.date_from,
     date_to: b.date_to !== undefined ? b.date_to : cur.date_to,
@@ -719,6 +720,120 @@ async function checkProjects(db: D1Database, companyId: number, ids: string) {
   const n = await db.prepare(`SELECT COUNT(*) AS n FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(list)).first() as any
   return n?.n === list.length
 }
+
+// ---------- 募集ページの画面で作る枠と、枠の人数の変更（#9421） ----------
+// 行（日付・開始・終了・役割・募集人数）は、そのままシフトボードの募集枠（shift_slots）と役割（shift_slot_roles）になる。
+// 同じ案件・日付・時刻の行は1つの枠の役割にまとめる。検証をすべて済ませてから、募集ページの保存と同じ batch で書く
+const MAX_PAGE_SLOT_ROWS = 100 // 一度に追加できる行の数
+const SLOT_HEADCOUNT_MAX = 200 // シフトボードの必要人数の上限と同じ
+const SLOT_ROLE_NAME_MAX = 40
+const PAGE_SLOT_LIST_LIMIT = 500 // 募集ページの画面に出す既存の枠（役割）の数
+const slotDateLabel = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
+type SlotPlan = { error?: string; stmts: D1PreparedStatement[]; created: number; updated: number }
+async function planPageSlots(db: D1Database, u: any, page: { project_ids: string; date_from: string; date_to: string }, b: any): Promise<SlotPlan> {
+  const none: SlotPlan = { stmts: [], created: 0, updated: 0 }
+  const fail = (error: string): SlotPlan => ({ ...none, error })
+  const rows = b.new_slots == null ? [] : b.new_slots
+  const hcs = b.slot_headcounts == null ? [] : b.slot_headcounts
+  if (!Array.isArray(rows) || !Array.isArray(hcs)) return fail('枠の内容が正しくありません')
+  if (!rows.length && !hcs.length) return none
+  if (rows.length > MAX_PAGE_SLOT_ROWS) return fail(`一度に追加できる枠は${MAX_PAGE_SLOT_ROWS}行までです`)
+  const pids = parseIds(page.project_ids)
+  const today = todayJST()
+  // ---- 追加する行 ----
+  type SlotGroup = { project_id: number; work_date: string; start_time: string; end_time: string; roles: { role_name: string; headcount: number }[] }
+  const groups = new Map<string, SlotGroup>()
+  if (rows.length) {
+    const projs = new Map(((await db.prepare(`SELECT project_id, project_name, COALESCE(status, 'active') AS status FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`)
+      .bind(u.company_id, bindJsonArray(pids)).all()).results as any[]).map(p => [Number(p.project_id), p]))
+    for (const [i, r] of rows.entries()) {
+      const at = `${i + 1}行目の枠: `
+      if (!r || typeof r !== 'object') return fail(at + '内容が正しくありません')
+      // 対象の案件が1つなら、案件を省略できる
+      const pid = pids.length === 1 && (r.project_id == null || r.project_id === '') ? pids[0] : Number(r.project_id)
+      const proj = pids.includes(pid) ? projs.get(pid) : null
+      if (!proj) return fail(at + '案件は、この募集ページの対象の案件から選んでください')
+      if (proj.status !== 'active') return fail(at + `案件「${proj.project_name}」は終了しているため、枠を作れません`)
+      if (!isISODate(r.work_date)) return fail(at + '日付を入力してください')
+      if (r.work_date < page.date_from || r.work_date > page.date_to) return fail(at + '日付は募集の期間内にしてください')
+      if (r.work_date < today) return fail(at + '過ぎた日には枠を作れません')
+      if (!isHHMM(r.start_time) || !isHHMM(r.end_time)) return fail(at + '開始・終了の時刻を入力してください')
+      if (r.start_time === r.end_time) return fail(at + '開始と終了が同じ時刻です')
+      const role = String(r.role_name ?? '').normalize('NFKC').trim()
+      if (!role) return fail(at + '役割を入力してください')
+      if (role.length > SLOT_ROLE_NAME_MAX) return fail(at + `役割は${SLOT_ROLE_NAME_MAX}文字以内にしてください`)
+      const n = toInt(r.headcount, 1, SLOT_HEADCOUNT_MAX)
+      if (n === null) return fail(at + `募集人数は1〜${SLOT_HEADCOUNT_MAX}の整数で入力してください`)
+      const key = [pid, r.work_date, r.start_time, r.end_time].join('|')
+      const g: SlotGroup = groups.get(key) || { project_id: pid, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time, roles: [] }
+      if (g.roles.some(x => x.role_name === role)) return fail(at + `同じ日時に役割「${role}」の行が2つあります。1行にまとめて人数を入れてください`)
+      g.roles.push({ role_name: role, headcount: n })
+      groups.set(key, g)
+    }
+  }
+  // ---- 既存の枠の人数の変更（割り当て済みの人数より少なくはできない） ----
+  const updates: { id: number; headcount: number }[] = []
+  if (hcs.length) {
+    const want = new Map<number, number>()
+    for (const h of hcs) {
+      const id = toInt(h && h.slot_role_id, 1)
+      if (id === null) return fail('人数を変える枠が正しくありません')
+      const n = toInt(h.headcount, 1, SLOT_HEADCOUNT_MAX)
+      if (n === null) return fail(`募集人数は1〜${SLOT_HEADCOUNT_MAX}の整数で入力してください`)
+      want.set(id, n)
+    }
+    if (want.size > PAGE_SLOT_LIST_LIMIT) return fail(`一度に人数を変えられる枠は${PAGE_SLOT_LIST_LIMIT}件までです`)
+    const cur = (await db.prepare(`SELECT r.slot_role_id, r.role_name, r.headcount, sl.project_id, sl.work_date, ${ASSIGNED_SQL} AS assigned
+      FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id
+      WHERE sl.company_id = ? AND r.slot_role_id IN ${JSON_IN}`).bind(u.company_id, bindJsonArray([...want.keys()])).all()).results as any[]
+    if (cur.length !== want.size) return fail('人数を変える枠が見つかりません（シフトボードで削除された可能性があります。画面を開き直してください）')
+    for (const r of cur) {
+      const n = want.get(Number(r.slot_role_id))!
+      if (!pids.includes(Number(r.project_id))) return fail('対象の案件から外した案件の枠の人数は変えられません')
+      if (n < Number(r.assigned)) return fail(`${slotDateLabel(r.work_date)} の「${r.role_name}」は割り当て済みが${Number(r.assigned)}名のため、${Number(r.assigned)}名より少なくできません（シフトボードで割り当てを外してから変えてください）`)
+      if (n !== Number(r.headcount)) updates.push({ id: Number(r.slot_role_id), headcount: n })
+    }
+  }
+  const stmts: D1PreparedStatement[] = []
+  let created = 0
+  for (const g of groups.values()) {
+    stmts.push(db.prepare(`INSERT INTO shift_slots (company_id, project_id, work_date, start_time, end_time, created_by) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(u.company_id, g.project_id, g.work_date, g.start_time, g.end_time, u.user_id))
+    // batch は1つのトランザクションで順に動くので、直前に作った枠は最も新しい枠（slot_id は AUTOINCREMENT）になる。
+    // 念のため会社も確かめ、違えば slot_id が NULL になって batch ごと失敗する
+    for (const [i, r] of g.roles.entries()) {
+      stmts.push(db.prepare(`INSERT INTO shift_slot_roles (slot_id, role_name, headcount, sort_order)
+        VALUES ((SELECT slot_id FROM shift_slots WHERE slot_id = (SELECT MAX(slot_id) FROM shift_slots) AND company_id = ?), ?, ?, ?)`)
+        .bind(u.company_id, r.role_name, r.headcount, i))
+      created++
+    }
+  }
+  for (const x of updates) {
+    stmts.push(db.prepare(`UPDATE shift_slot_roles SET headcount = ? WHERE slot_role_id = ? AND slot_id IN (SELECT slot_id FROM shift_slots WHERE company_id = ?)`)
+      .bind(x.headcount, x.id, u.company_id))
+  }
+  return { stmts, created, updated: updates.length }
+}
+const slotResult = (p: SlotPlan) => (p.created || p.updated ? { slots_created: p.created, headcounts_updated: p.updated } : {})
+
+// 募集ページの画面に出す、対象の案件・期間の既存の枠（役割ごと）。人数をこの画面で直せるようにする（#9421）
+recruitAdminApi.get('/recruit-slots', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const pids = parseIds(c.req.query('project_ids'))
+  const from = c.req.query('from'), to = c.req.query('to')
+  if (!pids.length) return c.json({ roles: [], truncated: false, today: todayJST() })
+  if (!isISODate(from) || !isISODate(to) || to < from) return c.json({ error: '期間を正しく入力してください' }, 400)
+  if (dayDiff(from, to) > MAX_PAGE_DAYS - 1) return c.json({ error: `期間は${MAX_PAGE_DAYS}日以内で指定してください` }, 400)
+  if (pids.length > MAX_PAGE_PROJECTS) return c.json({ error: `対象の案件は${MAX_PAGE_PROJECTS}件までです` }, 400)
+  const rows = (await db.prepare(`SELECT r.slot_role_id, r.slot_id, r.role_name, r.headcount, sl.project_id, p.project_name, sl.work_date, sl.start_time, sl.end_time,
+      COALESCE(sl.status, 'open') AS slot_status, COALESCE(si.site_name, sl.location, p.location, '') AS place, ${ASSIGNED_SQL} AS assigned
+    FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id JOIN projects p ON p.project_id = sl.project_id
+    LEFT JOIN sites si ON si.site_id = sl.site_id
+    WHERE sl.company_id = ? AND sl.project_id IN ${JSON_IN} AND sl.work_date BETWEEN ? AND ?
+    ORDER BY sl.work_date, sl.start_time, sl.slot_id, r.sort_order, r.slot_role_id LIMIT ${PAGE_SLOT_LIST_LIMIT + 1}`)
+    .bind(u.company_id, bindJsonArray(pids), from, to).all()).results as any[]
+  return c.json({ roles: rows.slice(0, PAGE_SLOT_LIST_LIMIT), truncated: rows.length > PAGE_SLOT_LIST_LIMIT, today: todayJST() })
+})
 
 recruitAdminApi.get('/recruit-pages', async (c) => {
   const u = c.get('user'); const db = c.env.DB
@@ -751,14 +866,18 @@ recruitAdminApi.post('/recruit-pages', async (c) => {
   const qs = normalizeQuestions(b.questions)
   if (qs.error) return c.json({ error: qs.error }, 400)
   if (!(await checkProjects(db, u.company_id, v.project_ids))) return c.json({ error: '案件が見つかりません' }, 404)
+  // この画面で追加した枠（#9421）は、ページの作成と同じ batch で作る
+  const slots = await planPageSlots(db, u, v, b)
+  if (slots.error) return c.json({ error: slots.error }, 400)
   const token = randToken(18)
-  const r = await db.prepare(`INSERT INTO recruit_pages (company_id, token, title, description, pay_note, contact_note, project_ids, date_from, date_to, show_remaining, allow_staff, status, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`).bind(u.company_id, token, v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, u.user_id).run()
+  const [r] = await db.batch([db.prepare(`INSERT INTO recruit_pages (company_id, token, title, description, pay_note, contact_note, project_ids, date_from, date_to, show_remaining, allow_staff, status, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`).bind(u.company_id, token, v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, u.user_id),
+    ...slots.stmts])
   const pageId = Number(r.meta.last_row_id)
   await saveQuestions(db, pageId, qs.questions!)
   // スタッフアプリから応募できる募集は、スタッフに知らせる（#156。notify_staff: false で知らせない。notify_staff_email: true でメールも送る）
   const staffNotice = staffAppRecruitEnabled(c.env) && v.allow_staff && b.notify_staff !== false ? await notifyRecruitNew(c, u.company_id, pageId, { email: b.notify_staff_email === true }) : null
-  return c.json({ ok: true, page_id: pageId, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed } : {}) })
+  return c.json({ ok: true, page_id: pageId, token, ...slotResult(slots), ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed } : {}) })
 })
 // 独自の質問（#300）は、ページの作成・更新の後に別の文で保存する（質問を送らない更新では変えない）
 async function saveQuestions(db: D1Database, pageId: number, questions: Question[]) {
@@ -778,15 +897,19 @@ recruitAdminApi.put('/recruit-pages/:id', async (c) => {
   const qs = b.questions !== undefined ? normalizeQuestions(b.questions, parseQuestions(cur.questions).map(q => q.key)) : null
   if (qs?.error) return c.json({ error: qs.error }, 400)
   if (!(await checkProjects(db, u.company_id, v.project_ids))) return c.json({ error: '案件が見つかりません' }, 404)
+  // この画面で追加した枠と、直した人数（#9421）は、ページの更新と同じ batch で書く
+  const slots = await planPageSlots(db, u, v, b)
+  if (slots.error) return c.json({ error: slots.error }, 400)
   const token = b.regenerate_token ? randToken(18) : cur.token // URLを再発行すると、以前のURL・QRは使えなくなる
-  await db.prepare(`UPDATE recruit_pages SET title = ?, description = ?, pay_note = ?, contact_note = ?, project_ids = ?, date_from = ?, date_to = ?, show_remaining = ?, allow_staff = ?,
+  await db.batch([db.prepare(`UPDATE recruit_pages SET title = ?, description = ?, pay_note = ?, contact_note = ?, project_ids = ?, date_from = ?, date_to = ?, show_remaining = ?, allow_staff = ?,
       status = ?, token = ?, closed_at = CASE WHEN ? = 'closed' AND status != 'closed' THEN ? WHEN ? = 'open' THEN NULL ELSE closed_at END WHERE page_id = ?`)
-    .bind(v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, v.status, token, v.status, nowJST(), v.status, cur.page_id).run()
+    .bind(v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, v.status, token, v.status, nowJST(), v.status, cur.page_id),
+    ...slots.stmts])
   if (qs) await saveQuestions(db, cur.page_id, qs.questions!)
   // 再開・延長・アプリからの応募の許可で、スタッフアプリに出るようになったら知らせる（#156。同じ募集は1日1回まで）
   const staffNotice = staffAppRecruitEnabled(c.env) && !visibleToStaff(cur) && visibleToStaff(v) && b.notify_staff !== false
     ? await notifyRecruitNew(c, u.company_id, cur.page_id, { email: b.notify_staff_email === true }) : null
-  return c.json({ ok: true, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed, staff_notice_skipped: !!staffNotice.skipped_recent } : {}) })
+  return c.json({ ok: true, token, ...slotResult(slots), ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed, staff_notice_skipped: !!staffNotice.skipped_recent } : {}) })
 })
 
 recruitAdminApi.delete('/recruit-pages/:id', async (c) => {

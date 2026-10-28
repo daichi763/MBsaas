@@ -102,11 +102,11 @@ const SUF = String(Date.now()).slice(-6)
 const code = `w5hq${SUF}`
 let newId = null
 {
-  const bad = await hq.post('/api/hq/companies', { company_code: code, company_name: 'テスト契約', admin_code: 'admin', trial_ends_at: '2026-02-30' })
+  const bad = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: 'テスト契約', admin_code: 'admin', trial_ends_at: '2026-02-30' })
   ok('#296 登録で日付の形式が違うと 400（項目名を返す）', bad.status === 400 && bad.data?.field === 'trial_ends_at', bad)
-  const badMail = await hq.post('/api/hq/companies', { company_code: code, company_name: 'テスト契約', admin_code: 'admin', contact_email: 'abc' })
+  const badMail = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: 'テスト契約', admin_code: 'admin', contact_email: 'abc' })
   ok('#558 登録で連絡先のメールの形式が違うと 400', badMail.status === 400 && badMail.data?.field === 'contact_email', badMail)
-  const r = await hq.post('/api/hq/companies', { company_code: code, company_name: 'テスト契約', admin_code: 'admin', admin_password: 'Passw0rd!x',
+  const r = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: 'テスト契約', admin_code: 'admin', admin_password: 'Passw0rd!x',
     contact_name: '契約 太郎', contact_phone: '03-1234-5678' })
   ok('#296 #558 登録で連絡先を入れられる（トライアル期限は任意）', r.status === 200, r)
   const co = ((await hq.get('/api/hq/companies')).data?.companies || []).find(c => c.company_code === code)

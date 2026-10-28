@@ -29,7 +29,7 @@ const hq = client(await login('sample', 'hq'))
 const companies = {}
 for (const k of ['a', 'b', 'c']) {
   const code = `${PFX.toLowerCase()}${k}`, name = `${PFX}連携先${k.toUpperCase()}株式会社`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: name, admin_code: 'admin', admin_password: 'pass1234' }), 'company ' + k)
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: name, admin_code: 'admin', admin_password: 'pass1234' }), 'company ' + k)
   companies[k] = { name, api: client(await login(code, 'admin')) }
 }
 const A = companies.a.api, B = companies.b.api, C = companies.c.api

@@ -204,7 +204,7 @@ const merge = (src, tgt, extra = {}) => admin.post(`/api/admin/staff/${src}/merg
 {
   const hq = client(await login('sample', 'hq'))
   const bCode = `${PFX.toLowerCase()}b`
-  must(await hq.post('/api/hq/companies', { company_code: bCode, company_name: `${PFX}連携先B株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company B')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: bCode, company_name: `${PFX}連携先B株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company B')
   const B = client(await login(bCode, 'admin'))
   const linkTo = async (api, code) => {
     const terms = await api.get('/api/admin/roster/consent-terms')

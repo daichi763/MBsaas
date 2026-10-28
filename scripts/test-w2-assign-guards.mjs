@@ -141,7 +141,7 @@ const busy = await newStaff(admin, 'BUSY')
 {
   const hq = client(await login('sample', 'hq'))
   const code = `${PFX.toLowerCase()}a`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: `${PFX}連携先株式会社`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}連携先株式会社`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
   const A = client(await login(code, 'admin'))
   const link = async (staff) => {
     const share = must(await admin.get(`/api/admin/roster/${staff.staff_id}/share-code`), 'share-code')

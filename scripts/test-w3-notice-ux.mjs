@@ -191,7 +191,7 @@ if (PERSIST) {
   const hq = client(await login('sample', 'hq'))
   const code = `nu${tag}co`
   const coName = `お知らせUX連携先${tag}株式会社`
-  must(await hq.post('/api/hq/companies', { company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
+  must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
   const coAdmin = client(await login(code, 'admin'))
   const terms = must(await coAdmin.get('/api/admin/roster/consent-terms'), 'terms')
   const aRow = (await admin.get('/api/admin/staff')).data.staff.find(s => s.staff_id === a.staff_id)
