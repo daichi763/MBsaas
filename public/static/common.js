@@ -91,11 +91,14 @@ delegate('modalX', (el) => {
   else bg.remove()
 })
 let modalScanQueued = false
-new MutationObserver(() => {
-  if (modalScanQueued) return
-  modalScanQueued = true
-  queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons() })
-}).observe(document.documentElement, { childList: true, subtree: true })
+// MutationObserver の無い環境（テストで common.js だけを読み込むときなど）では、✕ を足す処理だけを省く
+if (typeof MutationObserver === 'function' && document.documentElement) {
+  new MutationObserver(() => {
+    if (modalScanQueued) return
+    modalScanQueued = true
+    queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons() })
+  }).observe(document.documentElement, { childList: true, subtree: true })
+}
 
 // API のエラー文言（無ければ fallback）を toast で出す。toast の無い画面では alert で出す
 function showApiError(e, fallback) {
