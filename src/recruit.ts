@@ -17,13 +17,13 @@ import { personStaffRows } from './roster'
 import { shiftWindow } from './lib/shift-time'
 import { isCompanyActive } from './lib/auth'
 import { notifyRecruitApplied } from './notifications'
-import { notifyRecruitNew, notifyRecruitResult, notifyRecruitResults } from './notifications'
+import { notifyRecruitNew, notifyRecruitResult, notifyRecruitResults, staffAppRecruitEnabled } from './notifications'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { mailMode } from './services/email'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
-  RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
+  RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string; STAFF_APP_RECRUIT?: string }
 type Variables = { user: any }
 
 // ---------- 定数 ----------
@@ -400,10 +400,12 @@ async function ipHashFor(env: Bindings, ip: string) {
 // スタッフアプリ（登録済みスタッフの応募）
 // =========================================================
 export const recruitStaffApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
-// スタッフ（ログインできるスタッフ）のみ。管理者アカウントなどは応募できない
+// スタッフ（ログインできるスタッフ）のみ。管理者アカウントなどは応募できない。
+// スタッフアプリの募集は止めている（#9411。STAFF_APP_RECRUIT=1 のときだけ動かす）。募集は公開ページからの応募と管理者の募集ページで扱う
 recruitStaffApi.use('/*', async (c, next) => {
   const u = c.get('user')
   if (!u || u.role !== 'staff' || !u.staff_id) return c.json({ error: 'forbidden' }, 403)
+  if (!staffAppRecruitEnabled(c.env)) return c.json({ error: 'スタッフアプリでは募集を扱っていません' }, 404)
   return next()
 })
 
@@ -755,7 +757,7 @@ recruitAdminApi.post('/recruit-pages', async (c) => {
   const pageId = Number(r.meta.last_row_id)
   await saveQuestions(db, pageId, qs.questions!)
   // スタッフアプリから応募できる募集は、スタッフに知らせる（#156。notify_staff: false で知らせない。notify_staff_email: true でメールも送る）
-  const staffNotice = v.allow_staff && b.notify_staff !== false ? await notifyRecruitNew(c, u.company_id, pageId, { email: b.notify_staff_email === true }) : null
+  const staffNotice = staffAppRecruitEnabled(c.env) && v.allow_staff && b.notify_staff !== false ? await notifyRecruitNew(c, u.company_id, pageId, { email: b.notify_staff_email === true }) : null
   return c.json({ ok: true, page_id: pageId, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed } : {}) })
 })
 // 独自の質問（#300）は、ページの作成・更新の後に別の文で保存する（質問を送らない更新では変えない）
@@ -782,7 +784,7 @@ recruitAdminApi.put('/recruit-pages/:id', async (c) => {
     .bind(v.title, v.description, v.pay_note, v.contact_note, v.project_ids, v.date_from, v.date_to, v.show_remaining, v.allow_staff, v.status, token, v.status, nowJST(), v.status, cur.page_id).run()
   if (qs) await saveQuestions(db, cur.page_id, qs.questions!)
   // 再開・延長・アプリからの応募の許可で、スタッフアプリに出るようになったら知らせる（#156。同じ募集は1日1回まで）
-  const staffNotice = !visibleToStaff(cur) && visibleToStaff(v) && b.notify_staff !== false
+  const staffNotice = staffAppRecruitEnabled(c.env) && !visibleToStaff(cur) && visibleToStaff(v) && b.notify_staff !== false
     ? await notifyRecruitNew(c, u.company_id, cur.page_id, { email: b.notify_staff_email === true }) : null
   return c.json({ ok: true, token, ...(staffNotice ? { staff_notified: staffNotice.notified, staff_emailed: staffNotice.emailed, staff_notice_skipped: !!staffNotice.skipped_recent } : {}) })
 })

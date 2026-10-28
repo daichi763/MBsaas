@@ -1355,10 +1355,14 @@ export async function notifyRecruitResult(c: any, companyId: number, application
 }
 
 // ---------- 新しい募集（#156） ----------
+// スタッフアプリの募集は Sprint 11 で止めた（#9411。利用者の決定）。環境変数 STAFF_APP_RECRUIT=1 のときだけ、
+// スタッフアプリの募集の API（src/recruit.ts の recruitStaffApi）と、この「新しい募集」の通知を動かす（再開の判断と既存の試験のために残す）
+export const staffAppRecruitEnabled = (env: any) => String(env?.STAFF_APP_RECRUIT || '') === '1'
 // スタッフアプリから応募できる募集（allow_staff）を公開・再開したら、自社の割り当てられるスタッフ（ログインできる人）に知らせる。
 // 同じ募集ページの通知は RECRUIT_NEW_QUIET_HOURS に1回まで（終了・再開をくり返しても何度も届かないように）。メールは管理者が選んだときだけ送る
 export const RECRUIT_NEW_QUIET_HOURS = 24
 export async function notifyRecruitNew(c: any, companyId: number, pageId: number, opts: { email?: boolean } = {}): Promise<{ notified: number; emailed: number; skipped_recent?: boolean }> {
+  if (!staffAppRecruitEnabled(c.env)) return { notified: 0, emailed: 0 }
   try {
     const db: D1Database = c.env.DB
     const p = await db.prepare(`SELECT page_id, title, date_from, date_to, pay_note, status, allow_staff FROM recruit_pages WHERE page_id = ? AND company_id = ?`).bind(pageId, companyId).first() as any
@@ -1559,6 +1563,8 @@ async function savePrefs(db: D1Database, companyId: number, userIds: number[], g
 }
 const ADMIN_GROUPS = NOTIFY_PREF_GROUPS.filter(g => g.audience === 'admin')
 const STAFF_GROUPS = NOTIFY_PREF_GROUPS.filter(g => g.audience === 'staff')
+// スタッフアプリの募集を止めている間は、「新しい募集」の受け取り設定を出さない（#9411）
+const staffPrefGroups = (env: any) => staffAppRecruitEnabled(env) ? STAFF_GROUPS : STAFF_GROUPS.filter(g => g.key !== 'recruit_new')
 notificationsAdminApi.get('/notification-prefs', async (c) => {
   const u = c.get('user')
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
@@ -1581,14 +1587,14 @@ const staffUserIds = async (c: any): Promise<number[]> => {
 notificationsStaffApi.get('/notification-prefs', async (c) => {
   const u = c.get('user')
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
-  return c.json({ groups: prefView(STAFF_GROUPS, 'staff', prefs.get(Number(u.user_id))), has_email: !!u.email })
+  return c.json({ groups: prefView(staffPrefGroups(c.env), 'staff', prefs.get(Number(u.user_id))), has_email: !!u.email })
 })
 notificationsStaffApi.put('/notification-prefs', async (c) => {
   const u = c.get('user')
   const err = await savePrefs(c.env.DB, u.company_id, await staffUserIds(c), STAFF_GROUPS, await c.req.json().catch(() => null))
   if (err) return c.json({ error: err }, 400)
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
-  return c.json({ ok: true, groups: prefView(STAFF_GROUPS, 'staff', prefs.get(Number(u.user_id))) })
+  return c.json({ ok: true, groups: prefView(staffPrefGroups(c.env), 'staff', prefs.get(Number(u.user_id))) })
 })
 
 // ---------- 承認依頼のまとめメール（#284。digest）----------

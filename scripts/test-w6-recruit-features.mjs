@@ -1,4 +1,5 @@
 // 募集・掲示板の機能追加（w6-recruit-features: #287 #300 #478 #479）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npx wrangler dev --local --port 8814 --persist-to <保存先> で起動していること。

@@ -165,11 +165,9 @@ function drawHome(data, offline) {
     ${homeConsultBannerHtml(data)}
     ${homeMissedHtml(data)}
     ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) + homeNextShiftHtml(data) : homeNoShiftHtml() + homeNextShiftHtml(data)}
-    ${homeRecruitHtml()}
     ${homeNoticesHtml(data)}
     ${homeMenuHtml()}`
   applyBadges() // 先に取れていた通知の件数を案内に足す
-  if (!offline) loadHomeRecruit()
 }
 function homeOfflineHtml() {
   return `<div class="bg-gray-100 border border-gray-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-gray-700" role="status">
@@ -233,27 +231,6 @@ delegate('homeDayBeforeCannot', (el) => {
   location.hash = 'consult'
   toast('遅刻・欠勤相談として、明日のシフトを選びました。理由を書いて送信してください', 5000)
 })
-
-// 募集中のお仕事（#156）。件数だけを後から取り、応募できる日時か承認待ちがあるときだけカードを出す（取れなければ何も出さない）
-function homeRecruitHtml() { return '<div id="home-recruit"></div>' }
-async function loadHomeRecruit() {
-  let s
-  try { s = (await axios.get('/api/staff/recruit/summary', { params: { counts: 1 } })).data } catch (e) { return }
-  const host = document.getElementById('home-recruit')
-  if (!host || !(s.open || s.pending)) return
-  host.innerHTML = `<button class="report-btn mb-4" data-action="homeOpenRecruit">
-      <span class="w-11 h-11 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-lg"><i class="fas fa-bullhorn"></i></span>
-      <span class="flex-1 text-left"><span class="block font-bold text-gray-800">募集中のお仕事${s.open ? ` ${Number(s.open)}件` : ''}</span>
-        <span class="block text-xs text-gray-500">${s.open ? '応募できる日時があります' : '応募できる日時はありません'}${s.pending ? `・承認待ち ${Number(s.pending)}件` : ''}</span></span>
-      <i class="fas fa-chevron-right text-gray-300"></i></button>`
-}
-delegate('homeOpenRecruit', () => openRecruitFromAnywhere())
-// シフト画面の『募集中のお仕事』の一覧を開く（ホーム・通知から）。シフト画面を描いた後に loadRecruitOpen が一覧を開く
-let RC_OPEN_NEXT = 0 // 一覧を開くよう頼んだ時刻（シフト画面の読み込みに失敗して残っても、後で別の操作から開いたときには開かない）
-function openRecruitFromAnywhere() {
-  RC_OPEN_NEXT = Date.now()
-  if ((location.hash || '').slice(1) === 'shift') route(); else location.hash = 'shift'
-}
 
 // ホームのシフトを切り替える（本日のシフトの一覧から）
 window.selectHomeShift = function (shiftId) {
@@ -1188,9 +1165,9 @@ window.submitPhotoAttendance = async function () {
 
 // ============ シフト ============
 // shifts: 確定・代打・欠勤と、会社が仮で押さえた枠（status='requested'。本人が可否を返事する）
-// requests: 本人が出したシフト希望（返事待ち・採用・見送り。返事待ちは取り下げできる）
-// 表示は今日から2週間（月をまたいで続けて出す）で、週ごとに前後へ送る（#428）。承認待ちの応募も同じ一覧に出す（#363）
-let SHIFT_REQ_PROJECTS = []
+// requests: 以前に本人が出したシフト希望（表示だけ）。シフトの希望は出勤可能日（#availability）に一本化した（#9412）。
+//   スタッフアプリの募集・応募の画面も外した（#9411。募集は公開ページから応募する）
+// 表示は今日から2週間（月をまたいで続けて出す）で、週ごとに前後へ送る（#428）
 let SHIFTS_FROM = null // 表示中の期間の初日（YYYY-MM-DD）
 const SHIFT_VIEW_DAYS = 14
 const SHIFT_REQ_BADGE = {
@@ -1214,7 +1191,6 @@ async function renderShifts(from) {
   try { data = (await axios.get('/api/staff/shifts', { params: { from, to } })).data } catch (e) { showLoadError(e); return }
   // 読み込み中にほかの期間・ほかの画面へ移った
   if (SHIFTS_FROM !== from || (location.hash || '#home').slice(1).split('/')[0] !== 'shift') return
-  SHIFT_REQ_PROJECTS = data.request_projects || []
   const day = (n) => dayjs(from).add(n, 'day').format('YYYY-MM-DD')
   $app.innerHTML = `
     <div class="flex items-center justify-between gap-2 mb-1">
@@ -1227,32 +1203,23 @@ async function renderShifts(from) {
       <label class="flex items-center gap-1 text-gray-500">開始日<input type="date" id="shift-from" class="inp py-1 text-xs w-36" value="${esc(from)}"></label>
     </div>
     <div id="av-banner"></div>
-    <div id="recruit-open" class="mb-3"></div>
-    <button class="btn btn-primary w-full mb-2" onclick="showShiftRequest()"><i class="fas fa-plus"></i>シフト希望を提出する</button>
-    <div class="grid grid-cols-2 gap-2 mb-4"><a href="#availability" class="btn btn-outline text-xs"><i class="fas fa-calendar-check"></i>出勤可能日を提出</a><a href="#calendar" class="btn btn-outline text-xs"><i class="fas fa-calendar-plus"></i>カレンダーに追加</a></div>
-    <div class="space-y-2" id="shift-list">${shiftListHtml(data, [], today)}</div>
-    <div id="shift-modal"></div>`
+    <a href="#availability" class="btn btn-primary w-full" id="shift-availability-btn"><i class="fas fa-calendar-check"></i>出勤可能日を提出する</a>
+    <p class="text-[11px] text-gray-500 text-center mt-1 mb-2">シフトの希望は、出勤可能日（○△×）で出してください。管理者がそれを見てシフトを組みます</p>
+    <a href="#calendar" class="btn btn-outline w-full text-xs mb-4"><i class="fas fa-calendar-plus"></i>カレンダーに追加</a>
+    <div class="space-y-2" id="shift-list">${shiftListHtml(data, today)}</div>`
   const picker = document.getElementById('shift-from')
   if (picker) picker.addEventListener('change', () => { if (/^\d{4}-\d{2}-\d{2}$/.test(picker.value)) renderShifts(picker.value) })
   availabilityBanner()
-  // 募集の読み込みが済んだら、期間内の承認待ちの応募を一覧に足す（募集の取得は loadRecruitOpen の1回だけ）
-  Promise.resolve(loadRecruitOpen()).then(() => {
-    const rc = typeof RECRUIT !== 'undefined' ? RECRUIT : null
-    const apps = ((rc && rc.applications) || []).filter(a => a.status === 'pending' && a.work_date >= from && a.work_date <= to)
-    const list = document.getElementById('shift-list')
-    if (apps.length && list && SHIFTS_FROM === from) list.innerHTML = shiftListHtml(data, apps, today)
-  }).catch(() => { })
 }
 delegate('shiftWeek', (el) => renderShifts(el.dataset.from))
-delegate('openRecruitFromShift', () => { if (window.renderRecruitList) renderRecruitList() })
 
-// 日付ごとのカード（確定・仮押さえのシフト、本人のシフト希望、承認待ちの応募）
-function shiftListHtml(data, apps, today) {
+// 日付ごとのカード（確定・仮押さえのシフトと、以前に出したシフト希望）
+function shiftListHtml(data, today) {
   const byDate = {}
-  const day = (d) => (byDate[d] = byDate[d] || { shifts: [], requests: [], apps: [] })
+  const day = (d) => (byDate[d] = byDate[d] || { shifts: [], requests: [] })
   for (const s of data.shifts || []) day(s.work_date).shifts.push(s)
-  for (const r of data.requests || []) day(r.work_date).requests.push(r)
-  for (const a of apps) day(a.work_date).apps.push(a)
+  // 以前に出したシフト希望（提出・取り下げの入口は外した。#9412）。返事待ちと採用だけを出す
+  for (const r of data.requests || []) if (r.status === 'pending' || r.status === 'accepted') day(r.work_date).requests.push(r)
   // 会社の仮押さえへの返事（入れます／入れません）。過ぎた日は返事できない
   const replyBox = (s) => {
     if (s.status !== 'requested') return ''
@@ -1273,27 +1240,14 @@ function shiftListHtml(data, apps, today) {
     <div class="mt-2 pt-2 border-t border-dashed border-gray-200 text-sm shift-request-row" data-request-id="${Number(r.request_id)}">
       <div class="flex items-center justify-between gap-2">
         <div class="min-w-0">
-          <p class="font-medium text-gray-700"><i class="fas fa-hand text-amber-500 mr-1"></i>シフト希望・${r.project_name ? esc(r.project_name) : '案件の指定なし'}</p>
+          <p class="font-medium text-gray-700"><i class="fas fa-hand text-amber-500 mr-1"></i>以前に出したシフト希望・${r.project_name ? esc(r.project_name) : '案件の指定なし'}</p>
           <p class="text-xs text-gray-400">${esc(formatShiftTime(r.start_time, r.end_time))}${r.memo ? ' ' + esc(r.memo) : ''}</p>
         </div>
-        <div class="text-right shrink-0">${SHIFT_REQ_BADGE[r.status] || ''}
-          ${r.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1 ml-auto" data-action="withdrawShiftRequest" data-id="${Number(r.request_id)}">取り下げ</button>` : ''}</div>
+        <div class="text-right shrink-0">${SHIFT_REQ_BADGE[r.status] || ''}</div>
       </div>
-      ${r.status === 'pending' ? '<p class="text-[11px] text-gray-400 mt-0.5">管理者の返事を待っています</p>' : ''}
+      ${r.status === 'pending' ? '<p class="text-[11px] text-gray-400 mt-0.5">管理者の返事を待っています。取り下げるときは、相談・連絡からお知らせください</p>' : ''}
       ${r.status === 'accepted' ? '<p class="text-[11px] text-gray-500 mt-0.5">シフトが登録されると、この日に「確定」のシフトとして表示されます</p>' : ''}
       ${r.status !== 'pending' && r.response_note ? `<p class="text-xs text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1">管理者より：${esc(r.response_note)}</p>` : ''}
-    </div>`
-  // 承認待ちの応募（まだシフトではない。確定シフトと区別して出す）
-  const appRow = (a) => `
-    <div class="mt-2 pt-2 border-t border-dashed border-amber-200 text-sm shift-app-row" data-item-id="${Number(a.item_id)}">
-      <div class="flex items-center justify-between gap-2">
-        <div class="min-w-0">
-          <p class="font-medium text-gray-700"><i class="fas fa-bullhorn text-amber-500 mr-1"></i>応募中・${esc(a.place || '')}${a.role_name ? '・' + esc(a.role_name) : ''}</p>
-          <p class="text-xs text-gray-400">${esc(formatShiftTime(a.start_time, a.end_time))}</p>
-        </div>
-        <span class="badge badge-yellow shrink-0">応募中（承認待ち）</span>
-      </div>
-      <button class="text-[11px] text-blue-600 underline mt-1" data-action="openRecruitFromShift">募集の画面で確認・取り下げ</button>
     </div>`
   // どの会社のシフトか（2社以上に所属している人だけ。他社のシフトは目立たせる。#503）
   const companyTag = (s) => !data.multi_company ? ''
@@ -1315,7 +1269,6 @@ function shiftListHtml(data, apps, today) {
           <span class="shrink-0">${SHIFT_STATUS_BADGE[s.status] || ''}</span>
         </div>${replyBox(s)}`).join('')}
       ${byDate[d].requests.map(requestRow).join('')}
-      ${byDate[d].apps.map(appRow).join('')}
     </div>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'
 }
 
@@ -1332,7 +1285,8 @@ function shiftChangedBadge(s, today) {
   return ` <span class="badge badge-yellow" title="このシフトの日時・場所・状態などが変わりました。内容を確かめてください"><i class="fas fa-pen mr-0.5"></i>変更あり ${esc(t.format('M/D HH:mm'))}</span>`
 }
 
-// 一緒に入る人（#523。会社の設定で出すときだけ）と、この現場の申し送り（#522）。確定・代打のシフトで、1週間前より後のものに出す
+// 一緒に入る人（#523。会社の設定で出すときだけ）と、この現場の申し送り（#522）。確定・代打のシフトで、1週間前より後のものに出す。
+// どちらも無いときは、どこから出る情報か（同じ日・同じ案件のシフト／前のシフトの日報の共有事項）を案内する（#9413）
 function shiftTeamLinkHtml(s, today) {
   if (!['confirmed', 'substitute'].includes(s.status) || s.work_date < dayjs(today).subtract(7, 'day').format('YYYY-MM-DD')) return ''
   return `<button type="button" class="block text-xs text-blue-600 mt-1" data-action="openShiftTeam" data-id="${Number(s.shift_id)}"><i class="fas fa-users mr-0.5"></i>一緒に入る人・申し送り<i class="fas fa-chevron-right text-[10px] ml-0.5"></i></button>`
@@ -1344,407 +1298,26 @@ delegate('openShiftTeam', async (el) => {
     [team, ho] = await Promise.all([axios.get(`/api/staff/shifts/${id}/coworkers`), axios.get('/api/staff/handover/' + id)]).then(r => r.map(x => x.data))
   } catch (e) { showApiError(e, '読み込めませんでした'); return }
   const people = team.coworkers || []
+  const notes = ho.notes || []
+  // 申し送りに使う日報の項目の名前（無ければ『共有事項』と案内する）
+  const fieldNames = (ho.fields || []).map(f => `『${f.label}』`).join('・') || '『共有事項』'
+  const emptyNote = (text) => `<p class="text-xs text-gray-500 bg-gray-50 rounded-lg px-2.5 py-2">${esc(text)}</p>`
   modal(`
     <div class="flex items-center justify-between mb-2">
       <h3 class="font-bold text-gray-800">一緒に入る人・申し送り</h3>
-      <button class="text-gray-400" onclick="closeModal()" aria-label="閉じる"><i class="fas fa-xmark"></i></button>
+      <button class="text-gray-400" data-action="closeShiftTeam" aria-label="閉じる"><i class="fas fa-xmark"></i></button>
     </div>
-    ${team.enabled ? `<h4 class="text-sm font-bold text-gray-700 mt-2 mb-1"><i class="fas fa-users text-blue-500 mr-1"></i>同じ日・同じ現場のメンバー</h4>
-      ${people.length ? `<ul class="text-sm text-gray-700 space-y-1">${people.map(p => `<li>${esc(p.name)}さん <span class="text-xs text-gray-400">${esc(formatShiftTime(p.start_time, p.end_time))}</span>${p.same_slot ? ' <span class="badge badge-blue">同じ枠</span>' : ''}</li>`).join('')}</ul>`
-        : '<p class="text-xs text-gray-400">ほかに入る人はいません</p>'}` : ''}
-    <h4 class="text-sm font-bold text-gray-700 mt-4 mb-1"><i class="fas fa-clipboard-list text-blue-500 mr-1"></i>この現場の申し送り${(ho.notes || []).length ? `（直近${Number(ho.days)}日）` : ''}</h4>
-    ${(ho.notes || []).length ? handoverNotesHtml(ho) : '<p class="text-xs text-gray-400">申し送りはありません</p>'}
-    <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
+    <h4 class="text-sm font-bold text-gray-700 mt-2 mb-1"><i class="fas fa-users text-blue-500 mr-1"></i>同じ日・同じ案件に入る人</h4>
+    ${!team.enabled ? emptyNote('一緒に入る人は、所属の会社の設定で表示しないことになっています')
+      : people.length ? `<ul class="text-sm text-gray-700 space-y-1" id="shift-team-people">${people.map(p => `<li>${esc(p.name)}さん <span class="text-xs text-gray-400">${esc(formatShiftTime(p.start_time, p.end_time))}</span>${p.same_slot ? ' <span class="badge badge-blue">同じ枠</span>' : ''}</li>`).join('')}</ul>`
+      : emptyNote('同じ日・同じ案件にほかの人のシフトがないため表示がありません')}
+    <h4 class="text-sm font-bold text-gray-700 mt-4 mb-1"><i class="fas fa-clipboard-list text-blue-500 mr-1"></i>この現場の申し送り${notes.length ? `（直近${Number(ho.days)}日）` : ''}</h4>
+    ${notes.length ? `<p class="text-[11px] text-gray-400 mb-1">同じ案件の前のシフトで、ほかの人が日報の${esc(fieldNames)}に書いた内容です</p>${handoverNotesHtml(ho)}`
+      : ho.reason === 'no_share_field' ? emptyNote('この案件の日報には共有事項の項目がないため表示がありません（日報の項目に共有事項があると、前のシフトの人が書いた内容がここに出ます）')
+      : emptyNote(`前のシフトの日報に共有事項が書かれていないため表示がありません（日報の${fieldNames}に書くとここに出ます。直近${Number(ho.days) || 14}日分）`)}
+    <button class="btn btn-outline w-full mt-4" data-action="closeShiftTeam">閉じる</button>`)
 })
-
-// ============ 募集中のお仕事（管理者の承認で確定。/api/staff/recruit） ============
-// シフト画面の入口は件数だけの API（/summary）で描き、枠の一覧は『募集中のお仕事』を開いたときにだけ取得する（#410）
-let RECRUIT = null
-const RC_OPEN_AFTER_SWITCH = 'rc-open-after-switch'
-async function loadRecruitOpen() {
-  const host = document.getElementById('recruit-open'); if (!host) return
-  // ホームのカード・通知から来たときは、そのまま一覧を開く（#156）
-  const openNext = RC_OPEN_NEXT > 0 && Date.now() - RC_OPEN_NEXT < 30000; RC_OPEN_NEXT = 0
-  if (openNext) return openRecruitList()
-  let s
-  try { s = (await axios.get('/api/staff/recruit/summary')).data } catch (e) { host.innerHTML = ''; return }
-  // 承認待ちの日時など（シフト一覧で使えるように残す）
-  window.__recruitSummary = s
-  // 所属企業を切り替えて募集を見ようとしていたら、切り替えた後にそのまま一覧を開く（#364）
-  let reopen = false
-  // （切り替えから1分以内だけ。後で別の操作からシフト画面を開いたときには開かない）
-  try { const t = Number(sessionStorage.getItem(RC_OPEN_AFTER_SWITCH)); sessionStorage.removeItem(RC_OPEN_AFTER_SWITCH); reopen = t > 0 && Date.now() - t < 60000 } catch (e) { }
-  if (reopen) return openRecruitList()
-  const others = s.other_companies || []
-  if (!s.pages && !s.applications && !others.length) { host.innerHTML = ''; return }
-  host.innerHTML = `${s.pages || s.applications ? `<button class="report-btn" data-action="rcOpen" id="recruit-open-btn">
-    <span class="w-11 h-11 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center text-lg"><i class="fas fa-bullhorn"></i></span>
-    <span class="flex-1"><span class="block font-bold text-gray-800">募集中のお仕事</span>
-      <span class="block text-xs text-gray-500">${s.open ? `応募できる日時 ${Number(s.open)}件` : '応募できる日時はありません'}${s.pending ? `・承認待ち ${Number(s.pending)}件` : ''}</span></span>
-    <i class="fas fa-chevron-right text-gray-300"></i></button>` : ''}
-    ${rcOtherCompaniesHtml(others)}`
-}
-// 切り替えていない所属企業の募集（#364）。押すとその企業に切り替えて一覧を開く
-function rcOtherCompaniesHtml(others) {
-  if (!others || !others.length) return ''
-  return `<div class="mt-2 space-y-1.5" id="rc-other-companies">${others.map(o => `
-    <button class="w-full flex items-center gap-2 text-left text-xs bg-white border border-amber-200 rounded-lg px-3 py-2" data-action="rcSwitchCompany" data-id="${Number(o.company_id)}">
-      <i class="fas fa-building text-amber-500"></i>
-      <span class="flex-1 min-w-0"><b class="text-gray-800">${esc(o.company_name)}</b> の募集${o.open ? ` 応募できる日時 ${Number(o.open)}件` : ''}${o.pending ? `・承認待ち ${Number(o.pending)}件` : ''}</span>
-      <span class="text-blue-600 whitespace-nowrap">切り替えて見る</span></button>`).join('')}</div>`
-}
-delegate('rcOpen', () => openRecruitList())
-delegate('rcBack', () => renderShifts())
-delegate('rcSwitchCompany', async (el) => {
-  if (typeof switchStaffCompany !== 'function') return
-  await withSubmitLock(el, async () => {
-    try { sessionStorage.setItem(RC_OPEN_AFTER_SWITCH, String(Date.now())) } catch (e) { }
-    try { await switchStaffCompany(Number(el.dataset.id)) } catch (e) {
-      try { sessionStorage.removeItem(RC_OPEN_AFTER_SWITCH) } catch (x) { }
-      toast((e.response && e.response.data && e.response.data.error) || '切り替えに失敗しました')
-    }
-  })
-})
-async function openRecruitList() {
-  loading()
-  try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) {
-    $app.innerHTML = `<button class="text-sm text-blue-600 mb-3" data-action="rcBack"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
-      <div class="card p-6 text-center text-sm text-gray-500">募集の読み込みに失敗しました<button class="btn btn-outline w-full mt-3" data-action="rcOpen">もう一度読み込む</button></div>`
-    return
-  }
-  renderRecruitList()
-}
-// released: 承認の後にシフトから外れた（削除・欠勤・差し替え・移動）。同じ枠にもう一度応募できる / slot_removed: 応募の後に枠が削除された
-const RC_STATUS = { pending: '<span class="badge badge-yellow">承認待ち</span>', approved: '<span class="badge badge-green">確定</span>', rejected: '<span class="badge badge-gray">見送り</span>', cancelled: '<span class="badge badge-gray">取り下げ</span>', released: '<span class="badge badge-red">シフト解除</span>', slot_removed: '<span class="badge badge-gray">募集終了</span>' }
-// 問い合わせ先の表示。電話番号・メールアドレスはリンクにする（esc した後で数字・記号だけの部分を置き換える。#513）
-function rcContactHtml(note) {
-  return esc(note)
-    .replace(/\+?\d[\d-]{8,}\d/g, m => { const tel = m.replace(/[^\d+]/g, ''); return tel.length >= 10 && tel.length <= 13 ? `<a href="tel:${tel}" class="text-blue-600 underline">${m}</a>` : m })
-    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, m => `<a href="mailto:${m}" class="text-blue-600 underline">${m}</a>`)
-}
-// 枠の場所・住所（地図）・休憩（#362）
-function rcPlaceHtml(r) {
-  const map = r.site_address ? shiftMapUrl({ site_address: r.site_address }) : ''
-  return `${r.place ? `<span class="block text-xs text-gray-500"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(r.place)}</span>` : ''}
-    ${r.site_address ? `<span class="block text-[11px] text-gray-500">${esc(r.site_address)}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図</a>` : ''}</span>` : ''}`
-}
-const rcKey = (pageId, roleId) => `${Number(pageId)}:${Number(roleId)}`
-const rcSelectable = (r) => !r.my_status
-// 応募した日時を、募集ごとにまとめて出す（#514）
-function rcApplicationsHtml(apps) {
-  if (!apps.length) return ''
-  const groups = []
-  for (const a of apps) {
-    const k = a.page_id || 0
-    let g = groups.find(x => x.k === k)
-    if (!g) { g = { k, title: a.page_title || '募集', rows: [] }; groups.push(g) }
-    g.rows.push(a)
-  }
-  return `<section class="card p-3 mb-3" id="recruit-my-apps"><h3 class="text-sm font-bold text-gray-700 mb-2">応募した日時</h3>
-    ${groups.map(g => `<div class="mb-2 last:mb-0"><p class="text-xs font-bold text-gray-600 mb-1"><i class="fas fa-bullhorn text-amber-500 mr-1"></i>${esc(g.title)}</p>
-      ${g.rows.map(a => `<div class="flex items-center justify-between gap-2 text-sm py-1.5 border-b border-gray-50 last:border-0" data-item-id="${Number(a.item_id)}">
-        <div class="min-w-0"><p class="font-medium">${fmtDate(a.work_date)} ${esc(formatShiftTime(a.start_time, a.end_time))}</p>
-          <p class="text-xs text-gray-400">${esc(a.place)}${a.role_name ? '・' + esc(a.role_name) : ''}${Number(a.break_minutes) > 0 ? `・休憩${Number(a.break_minutes)}分` : ''}</p></div>
-        <div class="text-right shrink-0">${RC_STATUS[a.status] || ''}
-          ${a.status === 'pending' ? `<button class="block text-[11px] text-gray-500 underline mt-1 ml-auto" data-action="rcCancel" data-id="${Number(a.item_id)}">取り下げ</button>` : ''}
-          ${a.status === 'approved' ? `<button class="block text-[11px] text-blue-600 underline mt-1 ml-auto" data-action="rcContact" data-id="${Number(a.item_id)}">担当者に連絡</button>` : ''}</div></div>`).join('')}</div>`).join('')}</section>`
-}
-// 募集の枠を日付ごとにまとめて出す（#361）
-function rcRolesHtml(p, picked) {
-  if (!p.roles.length) return '<p class="text-xs text-gray-400">募集中の日時はありません</p>'
-  const dates = [...new Set(p.roles.map(r => r.work_date))]
-  return dates.map(d => `<div class="mb-2"><p class="text-xs font-bold text-gray-700 mb-1">${fmtDate(d)}</p><div class="space-y-1.5">
-    ${p.roles.filter(r => r.work_date === d).map(r => {
-      const key = rcKey(p.page_id, r.slot_role_id), on = picked.has(key)
-      const right = r.my_status === 'assigned' ? '<span class="badge badge-green">シフトあり</span>' : r.my_status ? RC_STATUS[r.my_status] || ''
-        : r.full ? '<span class="text-gray-500">定員<br><span class="text-[10px]">（キャンセル待ちで応募）</span></span>' : r.remaining != null ? `<span class="text-emerald-600">残り${Number(r.remaining)}名</span>` : ''
-      return `<label class="rc-role flex items-center gap-3 p-2.5 rounded-lg border ${on ? 'border-blue-500 bg-blue-50' : 'border-gray-200'} ${r.my_status ? 'opacity-60' : ''}" data-key="${key}">
-        ${rcSelectable(r) ? `<input type="checkbox" class="w-5 h-5" data-action="rcPick" data-key="${key}" data-full="${r.full ? 1 : 0}" ${on ? 'checked' : ''}>` : '<span class="w-5"></span>'}
-        <span class="flex-1 min-w-0"><span class="block text-sm font-medium">${esc(formatShiftTime(r.start_time, r.end_time))}${r.role_name ? `<span class="text-gray-500 font-normal">・${esc(r.role_name)}</span>` : ''}${Number(r.break_minutes) > 0 ? `<span class="text-xs text-gray-500 font-normal ml-1">休憩${Number(r.break_minutes)}分</span>` : ''}</span>
-          ${rcPlaceHtml(r)}
-          ${r.my_status === 'rejected' ? '<span class="block text-[11px] text-gray-500">この日時は見送りになりました</span>' : ''}
-          ${r.conflicts && r.conflicts.length ? `<span class="block text-[11px] text-amber-700"><i class="fas fa-triangle-exclamation mr-1"></i>この時間は別のシフトあり（${r.conflicts.map(esc).join('、')}）</span>` : ''}</span>
-        <span class="text-xs whitespace-nowrap text-right">${right}</span></label>`
-    }).join('')}</div></div>`).join('')
-}
-// 募集ページの独自の質問（#300）。公開ページ（apply.js）と同じ type: text / select / yesno（yes・no で送る）。
-// 欄の id は募集ページと質問の順番から作る（key を id に入れない）。必須の確認は日時を選んだ募集の質問だけ
-const rcQuestions = (p) => (p && Array.isArray(p.questions) ? p.questions : [])
-const rcQid = (pid, i) => `rc-q-${Number(pid)}-${Number(i)}`
-function rcQuestionsHtml(p) {
-  const qs = rcQuestions(p)
-  if (!qs.length) return ''
-  return `<div class="mt-2 pt-2 border-t border-gray-100 space-y-2"><p class="text-xs font-bold text-gray-600">応募するときの質問<span class="font-normal text-gray-400">（<span class="text-red-500">*</span> は必須）</span></p>
-    ${qs.map((q, i) => {
-      const id = rcQid(p.page_id, i), mark = q.required ? ' <span class="text-red-500">*</span>' : ''
-      const input = q.type === 'select'
-        ? `<select id="${id}" class="inp mt-1"><option value="">選択してください</option>${(q.options || []).map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`
-        : q.type === 'yesno'
-          ? `<span class="flex gap-4 mt-1">${[['yes', 'はい'], ['no', 'いいえ']].map(([v, l]) => `<label class="inline-flex items-center gap-1.5 text-sm"><input type="radio" class="w-4 h-4" name="${id}" value="${v}">${l}</label>`).join('')}</span>`
-          : `<input id="${id}" class="inp mt-1" maxlength="200">`
-      return `<div class="block text-sm text-gray-700 rounded-lg" id="${id}-box">${esc(q.label)}${mark}${input}</div>`
-    }).join('')}</div>`
-}
-// 画面の回答を { key: 値 } で読む
-function rcReadAnswers(p) {
-  const out = {}
-  rcQuestions(p).forEach((q, i) => {
-    const id = rcQid(p.page_id, i)
-    out[q.key] = q.type === 'yesno' ? ((document.querySelector(`input[name="${id}"]:checked`) || {}).value || '')
-      : ((document.getElementById(id) || {}).value || '').trim()
-  })
-  return out
-}
-function rcRestoreAnswers(p, saved) {
-  if (!saved) return
-  rcQuestions(p).forEach((q, i) => {
-    const v = saved[q.key], id = rcQid(p.page_id, i); if (!v) return
-    if (q.type === 'yesno') { const r = document.querySelector(`input[name="${id}"][value="${v === 'no' ? 'no' : 'yes'}"]`); if (r) r.checked = true }
-    else { const el = document.getElementById(id); if (el) el.value = v }
-  })
-}
-// 答えていない質問の欄を赤い枠で示して、その欄へ移動する
-function rcMarkQuestion(pageId, key) {
-  const p = RECRUIT && RECRUIT.pages.find(x => x.page_id === Number(pageId)); if (!p) return
-  const i = rcQuestions(p).findIndex(q => q.key === key); if (i < 0) return
-  const box = document.getElementById(rcQid(p.page_id, i) + '-box'); if (!box) return
-  box.classList.add('ring-2', 'ring-red-300', 'p-1')
-  try { box.scrollIntoView({ block: 'center' }) } catch (e) { }
-}
-// keep: 続きの日時を読み込んだとき・応募に失敗したときなど、選んだ日時とメモを保ったまま描き直す
-window.renderRecruitList = function (keep) {
-  const d = RECRUIT; if (!d) return
-  const note = keep ? ((document.getElementById('rc-note') || {}).value || '') : ''
-  // 質問への回答も保つ（#300。描き直す前の画面から読む）
-  const prevAnswers = new Map()
-  if (keep) for (const p of d.pages) if (rcQuestions(p).length && document.getElementById(rcQid(p.page_id, 0) + '-box')) prevAnswers.set(p.page_id, rcReadAnswers(p))
-  // 選べなくなった日時（応募済み・募集終了）は選択から外す
-  const selectable = new Set(d.pages.flatMap(p => p.roles.filter(rcSelectable).map(r => rcKey(p.page_id, r.slot_role_id))))
-  const picked = new Set(keep && window.__rcPicked ? [...window.__rcPicked].filter(k => selectable.has(k)) : [])
-  window.__rcPicked = picked
-  const result = window.__rcResult; window.__rcResult = null
-  $app.innerHTML = `
-    <button class="text-sm text-blue-600 mb-3" data-action="rcBack"><i class="fas fa-chevron-left mr-1"></i>シフトに戻る</button>
-    ${result ? `<div class="rounded-lg px-3 py-2 mb-3 text-sm ${result.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}" id="rc-result" role="status">${esc(result.text)}</div>` : ''}
-    ${(d.other_companies || []).length ? `<section class="mb-3"><h3 class="text-xs font-bold text-gray-600 mb-1">ほかの所属企業の募集</h3>${rcOtherCompaniesHtml(d.other_companies)}</section>` : ''}
-    ${rcApplicationsHtml(d.applications)}
-    ${d.pages.map(p => `<section class="card p-3 mb-3" data-page-id="${Number(p.page_id)}">
-      <h3 class="font-bold text-gray-800">${esc(p.title)}</h3>
-      <p class="text-xs text-gray-500 mb-1">${fmtDate(p.date_from)}〜${fmtDate(p.date_to)}</p>
-      ${p.description ? `<p class="text-xs text-gray-600 mb-1 whitespace-pre-wrap">${esc(p.description)}</p>` : ''}
-      ${p.pay_note ? `<p class="text-xs mb-1"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>${esc(p.pay_note)}</p>` : ''}
-      ${p.contact_note ? `<p class="text-xs text-gray-600 mb-1"><i class="fas fa-phone text-blue-500 mr-1"></i>問い合わせ先: ${rcContactHtml(p.contact_note)}</p>` : ''}
-      <div class="mt-2">${rcRolesHtml(p, picked)}</div>
-      ${p.next_from ? `<button class="btn btn-outline w-full text-xs mt-2" data-action="recruitMoreRoles" data-id="${Number(p.page_id)}">さらに後の日時を表示</button>` : ''}
-      ${rcQuestionsHtml(p)}
-    </section>`).join('')}
-    ${d.pages.length ? `<textarea id="rc-note" class="inp mb-2" rows="2" maxlength="500" placeholder="メモ（任意）"></textarea>
-      <p class="text-[11px] text-gray-400 text-center mb-2">管理者が承認するとシフトが確定します。定員に達している日時はキャンセル待ちになります</p>
-      <div style="height:5rem"></div>
-      <div id="rc-bar" class="fixed inset-x-0 z-30 bg-white border-t border-gray-200 shadow-lg" style="bottom:0">
-        <div class="max-w-lg mx-auto px-4 py-2 flex items-center gap-3">
-          <span class="text-sm text-gray-600 whitespace-nowrap" id="rc-count"></span>
-          <button class="btn btn-primary flex-1 py-3" id="rc-submit" data-action="rcSubmit">選んだ日時に応募する</button>
-        </div>
-      </div>` : ''}`
-  if (note && document.getElementById('rc-note')) document.getElementById('rc-note').value = note
-  for (const p of d.pages) rcRestoreAnswers(p, prevAnswers.get(p.page_id))
-  const qerr = window.__rcQuestionError; window.__rcQuestionError = null
-  if (qerr) rcMarkQuestion(qerr.page_id, qerr.key)
-  // 応募ボタンは下のメニューのすぐ上に固定する
-  const bar = document.getElementById('rc-bar'), nav = document.getElementById('bottom-nav')
-  if (bar && nav) bar.style.bottom = nav.offsetHeight + 'px'
-  rcSyncPicked()
-}
-// 選んだ件数とボタンの状態
-function rcSyncPicked() {
-  const n = window.__rcPicked ? window.__rcPicked.size : 0
-  const cnt = document.getElementById('rc-count'); if (cnt) cnt.innerHTML = n ? `<b class="text-blue-700">${n}件</b> 選択中` : '日時を選んでください'
-  const btn = document.getElementById('rc-submit'); if (btn && btn.dataset.busy !== '1') btn.disabled = !n
-}
-// チェックした枠を強調し、定員の枠はキャンセル待ちになることを伝える（#315 #361）
-delegate('rcPick', (el) => {
-  const key = el.dataset.key
-  if (el.checked) window.__rcPicked.add(key); else window.__rcPicked.delete(key)
-  const label = el.closest('.rc-role')
-  if (label) { label.classList.toggle('border-blue-500', el.checked); label.classList.toggle('bg-blue-50', el.checked); label.classList.toggle('border-gray-200', !el.checked) }
-  if (el.checked && el.dataset.full === '1') toast('定員に達しているため、キャンセル待ちとして応募します')
-  rcSyncPicked()
-})
-// 募集ページの続きの日時（枠が多いページは日付の順に分けて取得する）
-delegate('recruitMoreRoles', (el) => loadMoreRecruitRoles(Number(el.dataset.id), el))
-async function loadMoreRecruitRoles(pageId, btn) {
-  const p = RECRUIT && RECRUIT.pages.find(x => x.page_id === pageId); if (!p || !p.next_from) return
-  await withSubmitLock(btn, async () => {
-    try {
-      const { data } = await axios.get(`/api/staff/recruit/pages/${pageId}/roles?from=${encodeURIComponent(p.next_from)}`)
-      const seen = new Set(p.roles.map(r => r.slot_role_id))
-      p.roles = p.roles.concat(data.roles.filter(r => !seen.has(r.slot_role_id)))
-      p.next_from = data.next_from
-    } catch (e) { toast((e.response && e.response.data && e.response.data.error) || '読み込みに失敗しました'); return }
-    renderRecruitList(true)
-  })
-}
-// 応募。選んだ日時を募集ごとにまとめて1回で送る（すべて登録されるか、どれも登録されない。#239）。
-// 送信中はボタンを止め（#270）、成否にかかわらず一覧を読み直して今の状態を出す
-function rcPickedRoles() {
-  const out = []
-  for (const k of window.__rcPicked || []) {
-    const [pid, rid] = k.split(':').map(Number)
-    const p = RECRUIT && RECRUIT.pages.find(x => x.page_id === pid)
-    const r = p && p.roles.find(x => x.slot_role_id === rid)
-    if (r) out.push({ page_id: pid, role: r })
-  }
-  return out
-}
-const rcRoleLabel = (r) => `${fmtDate(r.work_date)} ${r.start_time}〜${r.end_time}`
-delegate('rcSubmit', (el) => submitRecruitApply(el))
-async function submitRecruitApply(btn) {
-  const picked = rcPickedRoles()
-  if (!picked.length) return toast('日時を選択してください')
-  // 自分のほかのシフトと重なる日時を選んでいたら、確かめてから送る（#310）
-  const cf = picked.filter(x => x.role.conflicts && x.role.conflicts.length)
-  if (cf.length && !confirm(`次の日時は、同じ時間帯にほかのシフトがあります。\n${cf.map(x => '・' + rcRoleLabel(x.role) + '（' + x.role.conflicts.join('、') + '）').join('\n')}\n\nこのまま応募しますか？`)) return
-  const byPage = new Map()
-  for (const x of picked) byPage.set(x.page_id, (byPage.get(x.page_id) || []).concat(x.role.slot_role_id))
-  // 募集ページの質問への回答（#300）。必須に答えていなければ送らずに、その欄を示す
-  const answersBy = new Map()
-  for (const pid of byPage.keys()) {
-    const p = RECRUIT.pages.find(x => x.page_id === pid)
-    const ans = rcReadAnswers(p)
-    const missing = rcQuestions(p).find(q => q.required && !ans[q.key])
-    if (missing) { toast(`「${p.title}」の「${missing.label}」に回答してください`); rcMarkQuestion(pid, missing.key); return }
-    answersBy.set(pid, ans)
-  }
-  // answers_supported: 質問の欄を出している画面からの応募（サーバーが必須の回答を確かめる）
-  const body = { pages: [...byPage].map(([page_id, slot_role_ids]) => ({ page_id, slot_role_ids, answers: answersBy.get(page_id) || {} })),
-    note: (document.getElementById('rc-note') || {}).value || '', force: cf.length > 0, answers_supported: true }
-  let done = false
-  await withSubmitLock(btn, async () => {
-    btn.textContent = '送信中…'
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const { data } = await axios.post('/api/staff/recruit/apply', body)
-        const n = data.count || 0
-        const text = n ? `${n}件応募しました。承認をお待ちください${data.full_count ? `（うち${data.full_count}件は定員に達しているため、キャンセル待ちです）` : ''}${data.rejected_count ? `。見送りになった日時（${data.rejected_count}件）は応募していません` : ''}`
-          : (data.message || 'すでに応募済みです')
-        window.__rcResult = { ok: true, text }; toast(n ? `${n}件応募しました` : text)
-        done = true
-      } catch (e) {
-        const d = e.response && e.response.data
-        // 選んだ後にほかのシフトが入ったときは、確かめてから送り直す
-        if (d && d.need_force && !body.force) {
-          const ok = confirm(`${d.error}\n${(d.conflicts || []).map(x => '・' + rcRoleLabel(x) + '（' + (x.conflicts || []).join('、') + '）').join('\n')}\n\nこのまま応募しますか？`)
-          if (ok) { body.force = true; continue }
-          window.__rcResult = null
-        } else if (!e.response) {
-          // 通信が切れたときは、届いたかどうか分からないため、読み直した一覧で確かめてもらう
-          window.__rcResult = { ok: false, text: '通信に失敗しました。下の「応募した日時」に出ていない日時は応募されていません。もう一度お試しください' }
-        } else {
-          window.__rcResult = { ok: false, text: (d && d.error) || '応募に失敗しました。応募は送られていません' }
-          if (d && d.page_id && /^q_/.test(d.field || '')) window.__rcQuestionError = { page_id: d.page_id, key: String(d.field).slice(2) }
-        }
-      }
-      break
-    }
-    try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) { }
-  })
-  btn.textContent = '選んだ日時に応募する'
-  if (done) window.__rcPicked = new Set()
-  renderRecruitList(!done)
-  window.scrollTo(0, 0)
-}
-delegate('rcCancel', (el) => cancelRecruitItem(Number(el.dataset.id), el))
-async function cancelRecruitItem(id, btn) {
-  if (!confirm('この応募を取り下げますか？')) return
-  await withSubmitLock(btn, async () => {
-    try {
-      await axios.post(`/api/staff/recruit/items/${id}/cancel`); toast('取り下げました')
-    } catch (e) {
-      const d = e.response && e.response.data
-      if (d && d.contact_note !== undefined) return rcContactModal(d.contact_note, d.error)
-      toast((d && d.error) || '取り下げに失敗しました'); return
-    }
-    try { RECRUIT = (await axios.get('/api/staff/recruit')).data } catch (e) { }
-    renderRecruitList(true)
-  })
-}
-// 確定した応募の『担当者に連絡』。募集の問い合わせ先と、相談・連絡の画面への入口を出す（#513）
-delegate('rcContact', (el) => {
-  const a = RECRUIT && RECRUIT.applications.find(x => x.item_id === Number(el.dataset.id))
-  rcContactModal(a ? a.contact_note : '', a ? `${a.page_title ? a.page_title + '・' : ''}${rcRoleLabel(a)}` : '')
-})
-function rcContactModal(note, lead) {
-  modal(`<h3 class="font-bold text-lg mb-2">担当者に連絡</h3>
-    ${lead ? `<p class="text-xs text-gray-500 mb-2">${esc(lead)}</p>` : ''}
-    ${note ? `<p class="text-sm text-gray-700 bg-gray-50 rounded-lg p-3 mb-3 whitespace-pre-wrap">${rcContactHtml(note)}</p>`
-      : '<p class="text-sm text-gray-500 mb-3">この募集の問い合わせ先は登録されていません。相談・連絡からお知らせください</p>'}
-    <a href="#consult" class="btn btn-outline w-full mb-2" data-action="rcCloseModal"><i class="fas fa-comments"></i>相談・連絡を開く</a>
-    <button class="btn btn-primary w-full" data-action="rcCloseModal">閉じる</button>`)
-}
-delegate('rcCloseModal', () => closeModal())
-
-window.showShiftRequest = function () {
-  const projects = SHIFT_REQ_PROJECTS || []
-  document.getElementById('shift-modal').innerHTML = `
-    <div class="modal-bg" onclick="if(event.target===this)this.remove()">
-      <div class="modal-box p-5">
-        <h3 class="font-bold text-lg mb-1">シフト希望提出</h3>
-        <p class="text-xs text-gray-500 mb-4">管理者が確認して返事をします。返事があるまでは取り下げできます</p>
-        <div class="space-y-3">
-          <div><label class="text-sm text-gray-600 block mb-1">日付</label><input id="req-date" type="date" class="inp" min="${dayjs().format('YYYY-MM-DD')}"></div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-sm text-gray-600 block mb-1">開始</label><input id="req-start" type="time" value="09:30" class="inp"></div>
-            <div><label class="text-sm text-gray-600 block mb-1">終了</label><input id="req-end" type="time" value="19:00" class="inp"></div>
-          </div>
-          ${projects.length ? `<div><label class="text-sm text-gray-600 block mb-1">案件（任意）</label><select id="req-project" class="inp">
-            <option value="">指定しない</option>${projects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>` : ''}
-          <div><label class="text-sm text-gray-600 block mb-1">備考</label><input id="req-memo" type="text" class="inp" maxlength="500" placeholder="希望条件など"></div>
-          <p id="req-error" class="text-sm text-red-600 hidden"></p>
-          <button class="btn btn-primary w-full" onclick="submitShiftRequest(this)">提出する</button>
-        </div>
-      </div>
-    </div>`
-}
-
-window.submitShiftRequest = async function (btn) {
-  const errEl = document.getElementById('req-error')
-  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.remove('hidden') }
-  const date = document.getElementById('req-date').value
-  const start = document.getElementById('req-start').value
-  const end = document.getElementById('req-end').value
-  if (!date) return showErr('日付を選択してください')
-  if (date < dayjs().format('YYYY-MM-DD')) return showErr('過去の日付には希望を出せません')
-  if (!start || !end) return showErr('開始・終了の時刻を入力してください')
-  if (start === end) return showErr('開始と終了に同じ時刻は指定できません')
-  const proj = document.getElementById('req-project')
-  await withSubmitLock(btn, async () => {
-    try {
-      await axios.post('/api/staff/shifts/request', {
-        work_date: date, start_time: start, end_time: end,
-        project_id: proj && proj.value ? Number(proj.value) : null,
-        memo: document.getElementById('req-memo').value,
-      })
-    } catch (e) {
-      showErr((e.response && e.response.data && e.response.data.error) || '提出に失敗しました。電波の良い場所で再度お試しください')
-      return
-    }
-    toast('シフト希望を提出しました')
-    // 提出した日が表示中の期間に無ければ、その日から表示する
-    renderShifts(SHIFTS_FROM && date >= SHIFTS_FROM && date <= shiftViewTo(SHIFTS_FROM) ? SHIFTS_FROM : date)
-  })
-}
-
-// シフト希望の取り下げ（返事待ちのものだけ）
-delegate('withdrawShiftRequest', async (el) => {
-  if (!confirm('このシフト希望を取り下げますか？')) return
-  await withSubmitLock(el, async () => {
-    try { await axios.post(`/api/staff/shift-requests/${Number(el.dataset.id)}/cancel`) }
-    catch (e) { showApiError(e, '取り下げに失敗しました'); return }
-    toast('取り下げました')
-    renderShifts(SHIFTS_FROM)
-  })
-})
+delegate('closeShiftTeam', () => closeModal())
 
 // 会社の仮押さえへの返事
 delegate('replyShift', async (el) => {
@@ -2829,7 +2402,6 @@ const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled'
 function openStaffNotification(n) {
   const go = (hash) => { if ((location.hash || '').slice(1) === hash) route(); else location.hash = hash }
   if (n.kind === 'daily_report_comment') { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; return go('report') }
-  if (n.kind === 'recruit_new') return openRecruitFromAnywhere()
   const link = String(n.link || '')
   go(/^#shift(\/\d{4}-\d{2}-\d{2})?$/.test(link) ? link.slice(1) : 'shift')
 }
@@ -2888,7 +2460,8 @@ function drawAvailability() {
       <div class="flex items-center gap-2 flex-wrap"><h2 class="font-bold text-gray-800">${esc(avMonthLabel(AV.month))}の出勤可能日</h2>${status}</div>
       ${d.deadline ? `<p class="text-sm mt-1 ${overdue ? 'text-red-600 font-bold' : 'text-gray-600'}"><i class="far fa-clock mr-1"></i>締切: ${esc(fmtDate(d.deadline))}${overdue ? '（締切を過ぎています。できるだけ早く提出してください）' : ''}</p>` : ''}
       ${d.note ? `<p class="text-xs text-gray-600 bg-gray-50 rounded-lg px-2.5 py-2 mt-2 whitespace-pre-wrap">${linkify(esc(d.note))}</p>` : ''}
-      <p class="text-xs text-gray-400 mt-2">下の記号を選んでから日付を押すと付きます。提出した後も出し直せます。シフトの確定は管理者が行います</p>
+      <p class="text-xs text-gray-500 mt-2">シフトの希望は、ここで出してください（○ 終日入れる・△ 入れる時間帯・× 入れない）。管理者がこれを見てシフトを組みます</p>
+      <p class="text-xs text-gray-400 mt-1">下の記号を選んでから日付を押すと付きます。提出した後も出し直せます。シフトの確定は管理者が行います</p>
     </section>
     ${d.editable ? `<section class="card p-3 mb-3">
       <div class="grid grid-cols-5 gap-1">${AV_TOOLS.map(([k, l]) => `<button class="btn ${AV.tool === k ? 'btn-primary' : 'btn-outline'} text-xs px-1" data-action="avTool" data-tool="${k}">${l}</button>`).join('')}</div>

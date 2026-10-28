@@ -78,11 +78,12 @@ async function notifyUser(db: D1Database, companyId: number, userId: number, kin
 // #272 登録情報の変更申請
 // =========================================================
 // 本人が申請できる項目。最寄駅は基本項目（ROSTER_BASE_FIELDS）、通勤可能時間・稼働開始可能日・稼働エリア・スキルは業務側の項目、
-// ログイン用メールは承認後に確認用のリンクを送り、本人が確かめたときに有効になる（管理画面からの変更と同じ）
+// ログイン用メール（users.email）は承認後に確認用のリンクを送り、本人が確かめたときに有効になる（管理画面からの変更と同じ）。
+// ログインには使わず、通知とパスワード再設定に使うため、表示の名前はそれが分かるものにする（#9414）
 export const PROFILE_REQUEST_FIELDS = ['nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'work_area', 'skills', 'login_email'] as const
 export const PROFILE_REQUEST_LABEL: Record<string, string> = {
   nearest_station_line: '最寄駅（路線）', nearest_station: '最寄駅（駅）', commute_minutes: '通勤可能時間（分）', available_from: '稼働開始可能日',
-  work_area: '稼働エリア', skills: 'スキル', login_email: 'ログイン用メール',
+  work_area: '稼働エリア', skills: 'スキル', login_email: 'メールアドレス（通知・パスワード再設定）',
 }
 const TEXT_MAX: Record<string, number> = { nearest_station_line: 100, nearest_station: 100, work_area: 200, skills: 1000 }
 const NOTE_MAX = 500
@@ -196,7 +197,7 @@ staffSelfServiceApi.post('/profile-requests', async (c) => {
   if ('error' in t) return c.json({ error: t.error }, t.status)
   const n = normalizeChanges(b.changes)
   if ('error' in n) return c.json({ error: n.error }, 400)
-  if (n.changes.login_email !== undefined && !canRequestEmail(t.roster)) return c.json({ error: 'ログインのない登録のため、ログイン用メールの変更は申請できません' }, 400)
+  if (n.changes.login_email !== undefined && !canRequestEmail(t.roster)) return c.json({ error: 'ログインのない登録のため、メールアドレス（通知・パスワード再設定）の変更は申請できません' }, 400)
   const current = currentValues(t.roster, false)
   // 今の値と同じ項目は申請に含めない
   const changes: Record<string, any> = {}, before: Record<string, any> = {}
