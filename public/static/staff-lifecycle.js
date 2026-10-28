@@ -155,7 +155,7 @@
           ${window.scheduleLinkRowHtml ? scheduleLinkRowHtml(sid, data) : ''}
           ${t !== 'linked_external' && !data.merged_into_staff_id ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">メール</dt><dd>${data.email ? esc(data.email) : '<span class="text-gray-400">なし</span>'}
             ${data.unverified_email ? `<div class="mt-1" id="unverified-email"><span class="badge badge-yellow">未確認</span> ${esc(data.unverified_email)}
-              <span class="block text-[11px] text-gray-400">応募フォームなどで入力された、本人確認をしていないメールです。ログイン・パスワード再設定・お知らせには使いません</span>
+              <span class="block text-[11px] text-gray-400">応募フォームなどで入力された、本人確認をしていないメールです。通知・パスワード再設定には使いません</span>
               <button class="btn btn-outline text-xs mt-1" data-action="confirmUnverifiedEmail" data-id="${Number(sid)}" data-email="${esc(data.unverified_email)}" data-current="${esc(data.email || '')}">本人に確認したので設定する</button>
               <button class="btn btn-outline text-xs mt-1" data-action="discardUnverifiedEmail" data-id="${Number(sid)}">消す</button></div>` : ''}</dd></div>` : ''}
           ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-blue-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
@@ -337,7 +337,7 @@
           ${req.map(requiredFieldHtml).join('')}
         </div>
         ${req.length ? '<p class="text-[11px] text-gray-400 -mt-1">* の項目は、会社の設定で必須になっています</p>' : ''}
-        ${d.unverified_email ? `<p class="text-[11px] text-amber-700"><i class="fas fa-circle-info mr-1"></i>応募時のメール ${esc(d.unverified_email)} は未確認のため、ログイン・パスワード再設定には使っていません</p>` : ''}
+        ${d.unverified_email ? `<p class="text-[11px] text-amber-700"><i class="fas fa-circle-info mr-1"></i>応募時のメール ${esc(d.unverified_email)} は未確認のため、通知・パスワード再設定には使っていません</p>` : ''}
         <details class="p-3 rounded-lg border border-gray-200"><summary class="text-sm text-gray-600 cursor-pointer">ログインを発行する（任意）</summary>
           <div class="mt-3">${loginFieldsHtml(d, 'fz', next)}${emailReq ? '<p class="text-[11px] text-red-600 mt-1">ログインを発行する場合、メールは必須です（会社の設定）</p>' : ''}</div></details>
         <p class="text-[11px] text-gray-400">${req.length || kanaReq ? 'そのほかの項目' : 'その他の項目（生年月日・スキル等）'}は本登録後に基本情報欄で入力できます</p>
