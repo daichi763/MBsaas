@@ -62,7 +62,9 @@ document.addEventListener('click', (ev) => {
   // 閉じない理由は、モーダルごとに1回だけ伝える
   if (!bg.dataset.backdropNoted) {
     bg.dataset.backdropNoted = '1'
-    if (typeof toast === 'function') toast('入力中の内容を閉じるときは、右上の ✕ か「キャンセル」を押してください')
+    // 「キャンセル」のボタンが無いモーダル（スタッフの登録など）では ✕ だけを案内する
+    const hasCancel = [...bg.querySelectorAll('button')].some(b => b.textContent.trim() === 'キャンセル')
+    if (typeof toast === 'function') toast(hasCancel ? '入力中の内容を閉じるときは、右上の ✕ か「キャンセル」を押してください' : '入力中の内容を閉じるときは、右上の ✕ を押してください')
   }
 }, true)
 // 入力欄のあるモーダルに、閉じるボタン（✕）が無ければ右上に足す（スクロールしても右上に残る）
