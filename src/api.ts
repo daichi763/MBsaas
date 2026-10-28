@@ -2136,7 +2136,9 @@ const familyName = (name: any) => String(name || '').trim().split(/[\s　]+/)[0]
 
 // 店舗の申し送り（#522）。同じ案件（開催場所が決まっていれば同じ場所）の、ほかのスタッフの直近の日報から、
 // 共有する項目（テンプレートの項目に share: true。無ければ store_share・good_case）が書かれたものを新しい順に返す。
-// 稼働日の前後にだけ見られるよう、直近 DAILY_REPORT_PENDING_DAYS 日より前のシフトでは返さない
+// 稼働日の前後にだけ見られるよう、直近 DAILY_REPORT_PENDING_DAYS 日より前のシフトでは返さない。
+// 申し送りがないときは reason で理由を返す（画面で「どこに書くと出るか」を案内する。#9413）:
+//   no_share_field … この案件の日報に共有する項目がない / no_notes … 共有する項目はあるが、直近の日報に書かれていない
 const HANDOVER_DAYS = 14
 const HANDOVER_MAX = 20
 const HANDOVER_DEFAULT_KEYS = ['store_share', 'good_case']
@@ -2148,15 +2150,15 @@ api.get('/staff/handover/:shiftId', async (c) => {
   if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
   const { shift } = resolved
   const empty = { days: HANDOVER_DAYS, fields: [], notes: [] }
-  if (!TEAM_VIEW_STATUSES.includes(shift.status) || shift.work_date < addDays(todayJST(), -DAILY_REPORT_PENDING_DAYS)) return c.json(empty)
+  if (!TEAM_VIEW_STATUSES.includes(shift.status) || shift.work_date < addDays(todayJST(), -DAILY_REPORT_PENDING_DAYS)) return c.json({ ...empty, reason: 'not_target' })
   const pt = await shiftReportTemplate(db, shift)
-  if (!pt) return c.json(empty)
+  if (!pt) return c.json({ ...empty, reason: 'no_share_field' })
   let raw: any[] = []
   try { const v = JSON.parse(pt.template?.fields_json || '[]'); if (Array.isArray(v)) raw = v } catch { raw = [] }
   const textFields = raw.filter(f => f && typeof f.key === 'string' && f.type !== 'number')
   const marked = textFields.filter(f => f.share === true)
   const fields = (marked.length ? marked : textFields.filter(f => HANDOVER_DEFAULT_KEYS.includes(f.key))).map(f => ({ key: f.key as string, label: String(f.label || f.key) }))
-  if (!fields.length) return c.json(empty)
+  if (!fields.length) return c.json({ ...empty, reason: 'no_share_field' })
   const personIds = await personStaffIds(db, c.get('user'))
   const rows = (await db.prepare(`
     SELECT dr.work_date, dr.report_values, us.name
@@ -2176,7 +2178,7 @@ api.get('/staff/handover/:shiftId', async (c) => {
     for (const f of fields) if (typeof v[f.key] === 'string' && (v[f.key] as string).trim()) values[f.key] = (v[f.key] as string).trim()
     return { work_date: r.work_date, name: familyName(r.name), values }
   }).filter(n => Object.keys(n.values).length)
-  return c.json({ days: HANDOVER_DAYS, fields, notes })
+  return c.json({ days: HANDOVER_DAYS, fields, notes, ...(notes.length ? {} : { reason: 'no_notes' }) })
 })
 
 // 同じ日・同じ案件に入るほかのスタッフ（#523）。会社の設定（show_coworkers）で出すときだけ、姓と時刻だけを返す（電話番号・金額は返さない）。

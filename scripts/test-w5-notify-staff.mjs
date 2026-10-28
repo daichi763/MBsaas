@@ -1,4 +1,5 @@
 // スタッフあての通知（w5-notify-staff: #151 #155 #156 #158）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npm run build && npx wrangler dev --local --port 8813 --persist-to <保存先> で起動していること（MAIL_ENABLED は既定の false のまま）。

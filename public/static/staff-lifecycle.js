@@ -286,7 +286,7 @@
     <div class="grid grid-cols-2 gap-3">
       <input id="${px}-code" class="inp text-sm" placeholder="${esc(next ? 'スタッフ番号（空いている番号: ' + next.code + '）' : 'スタッフ番号')}" data-suggested="${esc(next ? next.code : '')}" maxlength="50"><input id="${px}-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）" autocomplete="new-password">
       ${next && next.last_code ? `<p class="col-span-2 text-[11px] text-gray-400 -mt-2">スタッフ番号を空欄にすると ${esc(next.code)} を使います（最後の番号: ${esc(next.last_code)}）</p>` : ''}
-      <label class="text-xs text-gray-600 col-span-2">メール（ログイン・パスワード再設定の宛先。任意）<input id="${px}-email" class="inp text-sm" type="email" maxlength="254" value="${esc(d.email || '')}" placeholder="メール（任意）"></label>
+      <label class="text-xs text-gray-600 col-span-2">メール（通知・パスワード再設定の宛先。任意）<input id="${px}-email" class="inp text-sm" type="email" maxlength="254" value="${esc(d.email || '')}" placeholder="メール（任意）"></label>
       ${d.unverified_email ? `<label class="col-span-2 flex items-start gap-2 text-xs p-2 rounded bg-amber-50 text-amber-800"><input type="checkbox" id="${px}-use-unverified" class="mt-0.5">
         <span>応募時などに入力されたメール <b>${esc(d.unverified_email)}</b>（未確認）を使う。本人のものと確認できた場合だけ選んでください</span></label>` : ''}
     </div>`
@@ -408,7 +408,7 @@
   // ---------- 未確認のメール（本人に確認したら設定する／不要なら消す。#38 #148） ----------
   delegate('confirmUnverifiedEmail', (el) => {
     const cur = el.dataset.current
-    if (!confirm(`${cur ? `今のメール（${cur}）を ` : ''}${el.dataset.email} ${cur ? 'に置き換えます' : 'をログイン・パスワード再設定の宛先に設定します'}。\n本人のメールアドレスであることを確認しましたか？`)) return
+    if (!confirm(`${cur ? `今のメール（${cur}）を ` : ''}${el.dataset.email} ${cur ? 'に置き換えます' : 'を通知・パスワード再設定の宛先に設定します'}。\n本人のメールアドレスであることを確認しましたか？`)) return
     withSubmitLock(el, async () => {
       try {
         await axios.post(`/api/admin/staff/${Number(el.dataset.id)}/unverified-email`, { action: 'confirm' })

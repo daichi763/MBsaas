@@ -325,7 +325,7 @@ window.renderProfileRequest = async function () {
       ${inp('nearest_station_line', 'text', '例: JR山手線')}${inp('nearest_station', 'text', '例: 渋谷')}
       ${inp('commute_minutes', 'number', '例: 60')}${inp('available_from', 'date')}${inp('work_area', 'text', '例: 東京都23区・神奈川県東部')}
       <div><label class="text-sm text-gray-600 block mb-1" for="pr-skills">${esc(L.skills)}（読点か改行で区切る）</label><textarea id="pr-skills" class="inp" rows="3" maxlength="1000">${esc(cur.skills ?? '')}</textarea></div>
-      ${d.email_allowed ? `<div><label class="text-sm text-gray-600 block mb-1" for="pr-login_email">${esc(L.login_email)}（変えるときだけ入力）</label>
+      ${d.email_allowed ? `<div><label class="text-sm text-gray-600 block mb-1" for="pr-login_email">通知・パスワード再設定に使うメールアドレス（変えるときだけ入力）</label>
         <input id="pr-login_email" type="email" class="inp" autocomplete="email" placeholder="今: ${esc(cur.login_email || '未登録')}">
         <p class="text-[11px] text-gray-400 mt-1">承認されると確認用のメールが届きます。メールのリンクを開くと切り替わります。</p></div>` : ''}
       <div><label class="text-sm text-gray-600 block mb-1" for="pr-note">補足（任意）</label><textarea id="pr-note" class="inp" rows="2" maxlength="500" placeholder="例: 引っ越しのため"></textarea></div>

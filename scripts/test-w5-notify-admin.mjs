@@ -1,4 +1,5 @@
 // 管理者・企業あての通知と、相談のやり取り・写真（作業単位 w5-notify-admin: #150 #152 #154 #166 #429、持ち越し #187）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npx wrangler dev --local --port 8812 --persist-to <保存先> で起動していること（MAIL_ENABLED=false。メールは送らず email_logs に skipped で残る）。

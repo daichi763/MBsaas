@@ -1,4 +1,5 @@
 // スタッフアプリの募集・応募（w4-recruit-staffapp: #239 #270 #310 #315 #316 #362 #364 #410 #513 #514）の統合テスト
+// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8811 node scripts/test-w4-recruit-staffapp.mjs
