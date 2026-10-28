@@ -636,7 +636,9 @@
     if (problems.length) showSaveProblems(problems, created, inherited)
     else toast(okText)
   }
+  let LAST_SAVE = { created: 0, inherited: 0 }
   function showSaveProblems(problems, created, inherited) {
+    LAST_SAVE = { created, inherited }
     const forceable = problems.filter(d => d.problem.can_force)
     modal(`
       <h3 class="font-bold text-lg mb-1">まとめて保存</h3>
@@ -644,12 +646,19 @@
       <div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>枠</th><th>スタッフ</th><th>理由</th></tr></thead><tbody>
         ${problems.map(d => `<tr class="${d.problem.can_force ? '' : 'bg-red-50'}"><td class="whitespace-nowrap">${esc(fmtDay(d.work_date))}</td>
           <td>${esc(projectOf(d.project_id).project_name || '')}<span class="block text-gray-400">${esc(d.start_time)}〜${esc(d.end_time)}・${esc(d.role_name)}</span></td>
-          <td class="whitespace-nowrap">${esc(d.staff_name)}</td><td>${d.problem.reasons.map(r => `<span class="block">${esc(r)}</span>`).join('')}${d.problem.can_force ? '<span class="badge badge-yellow mt-0.5">確認すれば登録できます</span>' : '<span class="badge badge-red mt-0.5">登録できません</span>'}</td></tr>`).join('')}
+          <td class="whitespace-nowrap">${esc(d.staff_name)}</td><td>${d.problem.reasons.map(r => `<span class="block">${esc(r)}</span>`).join('')}${d.problem.can_force ? '<span class="badge badge-yellow mt-0.5">確認すれば登録できます</span>' : '<span class="badge badge-red mt-0.5">登録できません</span>'}
+            <button type="button" class="block text-[11px] text-gray-500 hover:text-red-600 underline mt-0.5" data-action="boardProblemRemove" data-id="${Number(d.slot_role_id)}" data-staff-id="${Number(d.staff_id)}">この下書きを取り消す</button></td></tr>`).join('')}
       </tbody></table></div>
-      <p class="text-[11px] text-gray-400 mt-2">登録できない下書きは、表の下書きの「×」で取り消し、ほかの人を選んでください</p>
+      <p class="text-[11px] text-gray-400 mt-2">登録できない下書きは、ここの「この下書きを取り消す」か表の下書きの「×」で取り消し、ほかの人を選んでください（表に出ていない枠の下書きも、ここで取り消せます）</p>
       ${forceable.length ? `<button class="btn btn-primary w-full mt-3" data-action="boardSaveForce"><i class="fas fa-check"></i>警告を確認しました。このまま登録する（${forceable.length}件）</button>` : ''}
       <button class="btn btn-outline w-full mt-2" onclick="closeModal()">閉じる</button>`)
   }
+  // 保存の結果の一覧から下書きを取り消す（削除された枠・絞り込みで表に出ていない枠の下書きは、表の「×」が出ないため）
+  delegate('boardProblemRemove', (el) => {
+    DRAFTS.delete(dKey(el.dataset.id, el.dataset.staffId)); redraw()
+    const rest = [...DRAFTS.values()].filter(d => d.problem)
+    if (rest.length) showSaveProblems(rest, LAST_SAVE.created, LAST_SAVE.inherited); else closeModal()
+  })
   delegate('boardSaveDrafts', el => withSubmitLock(el, () => saveDrafts()))
   delegate('boardSaveForce', el => withSubmitLock(el, async () => {
     const list = [...DRAFTS.values()].filter(d => d.problem && d.problem.can_force)
