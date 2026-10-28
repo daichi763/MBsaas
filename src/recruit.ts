@@ -855,7 +855,8 @@ recruitAdminApi.get('/recruit-pages', async (c) => {
       open_remaining: sum.remaining, is_open: pageIsOpen(r), expired: r.date_to < todayJST() })
   }
   const turnstile = turnstileState(c.env)
-  return c.json({ pages: out, turnstile, turnstile_enabled: turnstile === 'enabled' })
+  // staff_app_recruit: スタッフアプリの募集が動いているか（#9411 で既定は止めている。止めているときは画面でアプリ向けの設定を出さない）
+  return c.json({ pages: out, turnstile, turnstile_enabled: turnstile === 'enabled', staff_app_recruit: staffAppRecruitEnabled(c.env) })
 })
 
 recruitAdminApi.post('/recruit-pages', async (c) => {

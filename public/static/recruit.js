@@ -68,6 +68,7 @@
     const host = document.getElementById('recruit-body')
     let data; try { data = (await axios.get('/api/admin/recruit-pages')).data } catch (e) { host.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
     window.__recruitPages = data.pages
+    window.__recruitStaffApp = !!data.staff_app_recruit
     host.innerHTML = `
       ${TURNSTILE_NOTE[data.turnstile] ? `<p class="text-[11px] ${data.turnstile === 'off' ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50 font-bold'} rounded p-2 mb-3" id="turnstile-note" data-state="${esc(data.turnstile)}"><i class="fas fa-shield-halved mr-1"></i>${TURNSTILE_NOTE[data.turnstile]}</p>` : ''}
       <div class="grid md:grid-cols-2 gap-3" id="recruit-page-list">
@@ -126,10 +127,11 @@
         <div class="text-gray-600">応募フォームの質問（任意・${MAX_QUESTIONS}問まで）
           <div id="rp-questions" class="space-y-2 mt-1">${(p?.questions || []).map(questionRow).join('')}</div>
           <button type="button" class="btn btn-outline text-xs mt-1" data-action="recruitAddQuestion"><i class="fas fa-plus"></i>質問を追加</button>
-          <p class="text-[11px] text-gray-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。スタッフアプリからの応募では質問しません</p></div>
+          <p class="text-[11px] text-gray-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。${window.__recruitStaffApp ? 'スタッフアプリからの応募では質問しません' : ''}</p></div>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-remaining" ${p ? (p.show_remaining ? 'checked' : '') : 'checked'}>残り人数を表示する</label>
-        <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-staff" ${p ? (p.allow_staff ? 'checked' : '') : 'checked'}>登録済みのスタッフがアプリから応募できるようにする</label>
-        <div class="text-xs pl-6 space-y-1" id="rp-notify-box">
+        <!-- スタッフアプリの募集を止めているとき（#9411）は、アプリ向けの設定を隠す（保存する値は今のまま送る） -->
+        <label class="flex items-center gap-2 text-xs ${window.__recruitStaffApp ? '' : 'hidden'}"><input type="checkbox" id="rp-staff" ${p ? (p.allow_staff ? 'checked' : '') : 'checked'}>登録済みのスタッフがアプリから応募できるようにする</label>
+        <div class="text-xs pl-6 space-y-1 ${window.__recruitStaffApp ? '' : 'hidden'}" id="rp-notify-box">
           <label class="flex items-center gap-2"><input type="checkbox" id="rp-notify" checked>${p ? '公開・再開でスタッフアプリに出るようになったら、' : ''}スタッフにアプリで知らせる</label>
           <label class="flex items-center gap-2"><input type="checkbox" id="rp-notify-mail">メールでも知らせる（メールアドレスを登録しているスタッフ）</label>
           <p class="text-[11px] text-gray-400">知らせるのは、自社の在籍中のスタッフでアプリにログインできる人です。同じ募集の通知は1日1回までです</p>
