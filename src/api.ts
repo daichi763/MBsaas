@@ -4962,7 +4962,7 @@ api.get('/admin/projects/:id', async (c) => {
 
   return c.json({
     // past_report_fields: 差し替える前のテンプレートの項目のうち、今のテンプレートに無いもの（#9511）
-    project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [],
+    project: { ...project, past_report_fields_json: undefined, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [],
       past_report_fields: withPastFields(parseReportFields(project.fields_json), project.past_report_fields_json).filter(f => f.past) },
     // テンプレートの数値項目の合計（#184。各行の values と performance_fields。mnp などの固定の列は今の画面のために残す）
     staff_performance: (staffPerf.results as any[]).map(r => ({ ...r, values: staffMetrics.valuesOf(r.staff_id) })), performance_fields: staffMetrics.fields,

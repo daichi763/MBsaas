@@ -538,7 +538,7 @@ async function renderDashboard() {
           </tbody>
         </table>
         </div>
-        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で見られます</p>` : ''}
+        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''}
       </section>
     </div>
 
@@ -2687,7 +2687,7 @@ function perfColumns(fields, showAll) {
   return { cols, more: all.length - cols.length, hidden: all.slice(cols.length), total: all.length }
 }
 const perfValue = (row, key) => Number(row && row.values && key in row.values ? row.values[key] : row ? row[key] : 0) || 0
-const perfMoreNote = (more) => more ? `<p class="text-[11px] text-gray-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で見られます</p>` : ''
+const perfMoreNote = (more) => more ? `<p class="text-[11px] text-gray-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-rank-min]') : null
   if (!sel) return
@@ -3139,7 +3139,11 @@ function projectPerfMoreHtml(c) {
     <button type="button" class="text-blue-600 hover:underline font-bold" data-action="toggleProjectPerfCols">すべての項目を表示</button></p>`
 }
 // 実績分析を、この案件・この月で開く（#9512）
-delegate('openProjectAnalytics', el => { ANALYTICS.month = el.dataset.month || ''; location.hash = 'analytics/' + Number(el.dataset.id) })
+delegate('openProjectAnalytics', el => {
+  const id = String(Number(el.dataset.id)); ANALYTICS.month = el.dataset.month || ''
+  // 同じ URL のときは hashchange が起きないので、直接描く
+  if (location.hash === '#analytics/' + id) renderAnalytics(ANALYTICS.month, id); else location.hash = 'analytics/' + id
+})
 delegate('toggleProjectPerfCols', () => { PROJECT_PERF_ALL = !PROJECT_PERF_ALL; drawProjectStaffPerf() })
 function drawProjectStaffPerf() {
   const host = document.getElementById('project-staff-perf'); if (!host || !PROJECT_DETAIL) return
