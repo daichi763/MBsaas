@@ -67,8 +67,10 @@ document.addEventListener('click', (ev) => {
     if (typeof toast === 'function') toast(hasCancel ? '入力中の内容を閉じるときは、右上の ✕ か「キャンセル」を押してください' : '入力中の内容を閉じるときは、右上の ✕ を押してください')
   }
 }, true)
-// 入力欄のあるモーダルに、閉じるボタン（✕）が無ければ右上に足す（スクロールしても右上に残る）
-const MODAL_X_SEL = '.modal-x, [onclick*="closeModal"] .fa-xmark, [onclick*="closeModal"] .fa-times, [data-modal-close]'
+// 入力欄のあるモーダルに、閉じるボタン（✕）が無ければ右上に足す（スクロールしても右上に残る）。
+// 閉じるボタンは box の中のものだけを見る（#9502）。背景（.modal-bg）にも onclick="…closeModal()" があるので、:scope を付けないと
+// 役割の行の削除・日付の削除などの ✕ アイコンまで「閉じるボタンがある」とみなし、✕ が付かなかった
+const MODAL_X_SEL = ':scope .modal-x, :scope [data-modal-close], :scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times'
 function addModalCloseButtons() {
   document.querySelectorAll('.modal-bg').forEach(bg => {
     const box = bg.querySelector('.modal-box')

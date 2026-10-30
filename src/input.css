@@ -146,6 +146,11 @@
 .board-chip.chip-draft-bad { background: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; }
 .board-savebar { position: fixed; right: 1rem; bottom: 1rem; z-index: 35; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; background: #fff; border: 1px solid #a7f3d0; border-radius: .9rem; padding: .5rem .75rem; box-shadow: 0 10px 25px rgba(0,0,0,.15); max-width: calc(100vw - 2rem); }
 .board-savebar[hidden] { display: none; }
+/* 枠のまとめて削除（Sprint 12 #9501）: 選択中の帯と、選んだマス */
+.board-bulkbar { position: sticky; top: .5rem; z-index: 30; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; background: #fef2f2; border: 1px solid #fecaca; border-radius: .75rem; padding: .5rem .75rem; margin-bottom: .75rem; }
+.board-bulkbar[hidden] { display: none; }
+.board-cell.is-bulk { outline: 2px solid #dc2626; outline-offset: -1px; box-shadow: 0 0 0 3px rgba(220,38,38,.18); }
+.bulk-check { width: .9rem; height: .9rem; margin-right: .3rem; vertical-align: -2px; accent-color: #dc2626; cursor: pointer; }
 .board-inherit { background: #eff6ff; border-radius: .6rem; padding: .5rem .6rem; font-size: .75rem; color: #374151; }
 .board-cand { display: flex; flex-direction: column; gap: .3rem; }
 .cand-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .1rem .5rem; text-align: left; border: 1px solid #e5e7eb; border-radius: .55rem; padding: .35rem .5rem; background: #fff; font-size: .8rem; }

@@ -3995,9 +3995,9 @@ window.showAddShift = async function (defaultDate) {
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">スタッフ *</label>
-          <select id="sh-staff" class="inp">${staff.map(s => `<option value="${s.staff_id}">${esc(s.name)}${s.employment_status === 'leave' ? '（休職中）' : ''}</option>`).join('')}</select></div>
+          <select id="sh-staff" class="inp" required><option value="" selected>選択してください</option>${staff.map(s => `<option value="${s.staff_id}">${esc(s.name)}${s.employment_status === 'leave' ? '（休職中）' : ''}</option>`).join('')}</select></div>
         <div><label class="text-sm text-gray-600 block mb-1">案件 *</label>
-          <select id="sh-project" class="inp" onchange="addShiftFeeHint()">${addShiftProjects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
+          <select id="sh-project" class="inp" onchange="addShiftFeeHint()" required><option value="" selected>選択してください</option>${addShiftProjects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">日付 *</label><input id="sh-date" type="date" class="inp" value="${defaultDate || ''}"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -4089,12 +4089,20 @@ window.addShiftFeeHint = function () {
   el.textContent = `案件の交通費: 請求 ${BILL_TRANSPORT_LABEL[bt] || bt}${bt === 'fixed' ? ' ' + Number(p.bill_transport_amount || 0) + '円' : ''}`
     + ` ／ 支払 ${PAY_TRANSPORT_LABEL[pt] || pt}${pt === 'fixed' || pt === 'capped' ? ' ' + Number(p.pay_transport_amount || 0) + '円' : ''}`
 }
+// スタッフ・案件は初めは「選択してください」（#9503。気づかずに違う案件で登録しないように）。選ばずに登録しようとしたら、その欄に移って知らせる
+function addShiftRequire(id, msg) {
+  toast(msg)
+  const el = document.getElementById(id); if (!el) return
+  el.focus(); el.classList.add('ring-2', 'ring-red-300')
+  el.addEventListener('change', () => el.classList.remove('ring-2', 'ring-red-300'), { once: true })
+}
 // 重複・NG・休職中があれば内容を出して確認し、確認できたら force で登録する（シフトボードと同じ流れ #94）
 window.addShift = async function (force) {
   const date = document.getElementById('sh-date').value
   if (!date) { toast('日付を選択してください'); return }
   const staffId = document.getElementById('sh-staff').value
-  if (!staffId) { toast('スタッフを選択してください'); return }
+  if (!staffId) { addShiftRequire('sh-staff', 'スタッフを選択してください'); return }
+  if (!document.getElementById('sh-project').value) { addShiftRequire('sh-project', '案件を選択してください（「選択してください」のままでは登録できません）'); return }
   const fee = document.getElementById('sh-fee').value
   const price = addShiftPriceInput()
   if (price && ((price.bill_rate != null && price.bill_rate < 0) || (price.pay_rate != null && price.pay_rate < 0))) { toast('単価にマイナスの値は入力できません'); return }

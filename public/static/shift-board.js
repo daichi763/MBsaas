@@ -97,6 +97,10 @@
     const reqShifts = requestedShifts()
     const seg = (key, val, label) => `<button type="button" class="board-seg ${String(BS[key] || '') === val ? 'on' : ''}" data-action="boardSeg" data-key="${key}" data-val="${esc(val)}" aria-pressed="${String(BS[key] || '') === val}">${label}</button>`
     const periodLabel = BS.range === 'month' ? dayjs(BS.from).format('YYYY年M月') : `${fmtDay(BS.from)}〜${fmtDay(to)}`
+    // まとめて削除のチェックは、案件ごとの表（週・2週間）でだけ出す。表に出ていない枠の選択は外す
+    const canBulk = BS.view === 'slot' && BS.range !== 'month'
+    if (!canBulk) BS.bulkDel = false
+    pruneBulk()
     const menuItem = (attrs, icon, label) => `<button type="button" class="board-menu-item" ${attrs}><i class="fas ${icon} w-4 text-gray-400"></i>${label}</button>`
 
     $app.innerHTML = `
@@ -104,6 +108,7 @@
         <h2 class="text-xl font-bold text-gray-900">シフト管理</h2>
         <div class="flex gap-2 flex-wrap items-center">
           <button class="btn btn-outline" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button>
+          ${canBulk ? bulkBtnHtml() : ''}
           <button class="btn btn-primary" data-action="boardOpenBulk" title="スタッフ × 曜日 × 期間で、常勤のシフトをまとめて登録します"><i class="fas fa-repeat"></i>常勤の繰り返し登録</button>
           <button class="btn board-save-btn" id="board-save-top" data-action="boardSaveDrafts" ${DRAFTS.size ? '' : 'disabled'} title="下書きの割り当てをまとめて登録します"><i class="fas fa-floppy-disk"></i><span>まとめて保存（<span class="board-draft-count">${DRAFTS.size}</span>件）</span></button>
           <details class="relative board-menu">
@@ -160,6 +165,7 @@
         <div class="card px-3 py-2"><p class="text-xs text-gray-500">粗利率</p><p class="text-lg font-bold">${t.profit_bill ? Math.round(t.profit / t.profit_bill * 1000) / 10 + '%' : '-'}</p>${t.pay_missing ? '<p class="text-[10px] text-gray-400">支払が決まっているシフトだけで計算</p>' : ''}</div>` : ''}
       </section>
 
+      <div id="board-bulkbar" class="board-bulkbar" hidden></div>
       <div class="board-d ${BS.view === 'person' || BS.range === 'month' ? 'board-d-full' : ''}">
         <section class="card p-0 overflow-auto min-w-0" id="board-grid" style="max-height: calc(100vh - 250px)">${gridHtml(days)}</section>
         ${BS.view === 'person' || BS.range === 'month' ? '' : '<aside class="card p-3 board-side" id="board-side" aria-label="選んだ枠と候補のスタッフ"></aside>'}
@@ -170,6 +176,7 @@
     SIDE_PRICE.key = null
     renderSide()
     updateSaveBar()
+    updateBulkBar()
     if (BS.sel && ROLE_IX.has(BS.sel)) loadCandidates(BS.sel)
   }
   function gridHtml(days) {
@@ -182,7 +189,7 @@
     const g = document.getElementById('board-grid'); if (!g || !BOARD) return
     const st = g.scrollTop, sl = g.scrollLeft
     g.innerHTML = gridHtml(boardDays()); g.scrollTop = st; g.scrollLeft = sl
-    enableDnD(); renderSide(); updateSaveBar()
+    enableDnD(); renderSide(); updateSaveBar(); updateBulkBar()
   }
 
   function slotGrid(days) {
@@ -326,18 +333,19 @@
     const left = leftOf(role)
     const over = left < 0
     const sel = BS.sel === role.slot_role_id
+    const bulk = !!BS.bulkDel, checked = bulk && BULK.has(slot.slot_id)
     const money = BS.showMoney ? role.assigned.filter(a => ['confirmed', 'substitute'].includes(a.status)).reduce((x, a) => x + (a.bill_total || 0), 0) : 0
     const need = left > 0 ? `<span class="board-need short">${left}人不足</span>`
       : `<span class="board-need ${over ? 'over' : 'full'}">${over ? '定員超過' : '充足'} ${Number(role.filled) + plannedOf(role.slot_role_id)}/${Number(role.headcount)}</span>`
     // 『不足のみ』では、同じ行の不足していない日のマスを薄く出す
-    return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''}" data-action="boardSelect" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
+    return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''} ${checked ? 'is-bulk' : ''}" data-action="boardSelect" data-slot-id="${Number(slot.slot_id)}" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
       tabindex="0" role="button" aria-pressed="${sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
       <div class="flex items-center justify-between gap-1 mb-1">
-        <span class="text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
+        <span class="text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
         <span class="flex items-center gap-0.5">
           ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400">${yen(money)}</span>` : ''}
-          <button type="button" class="cell-tool" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}" title="枠を編集" aria-label="枠を編集"><i class="fas fa-pen"></i></button>
-          <button type="button" class="cell-tool danger" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}" title="枠を削除" aria-label="枠を削除"><i class="fas fa-trash"></i></button>
+          ${bulk ? '' : `<button type="button" class="cell-tool" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}" title="枠を編集" aria-label="枠を編集"><i class="fas fa-pen"></i></button>
+          <button type="button" class="cell-tool danger" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}" title="枠を削除" aria-label="枠を削除"><i class="fas fa-trash"></i></button>`}
         </span>
       </div>
       <div class="board-drop space-y-0.5" data-slot-role-id="${Number(role.slot_role_id)}">${role.assigned.map(a => staffChip(a)).join('')}</div>
@@ -673,7 +681,10 @@
   let CAND = { rid: null, data: null, error: null, seq: 0 }
   let SIDE_PRICE = { key: null, data: null, error: null }
   const CAND_MAX = 60
-  delegate('boardSelect', el => selectRole(Number(el.dataset.id)))
+  delegate('boardSelect', (el) => {
+    if (BS.bulkDel) { toggleBulk(Number(el.dataset.slotId), !BULK.has(Number(el.dataset.slotId))); return }
+    selectRole(Number(el.dataset.id))
+  })
   function selectRole(rid) {
     if (!ROLE_IX.has(rid)) return
     BS.sel = rid
@@ -961,6 +972,112 @@
   }
   delegate('deleteSlotRun', el => withSubmitLock(el, () => deleteSlotRun(Number(el.dataset.id), el.dataset.force === '1')))
 
+  // ---------- 枠のまとめて削除（Sprint 12 #9501） ----------
+  // 「選択して削除」で表のマスにチェックを出し、選んだ枠をまとめて削除する。役割が複数ある枠は、どのマスで選んでも枠ごと選ぶ
+  const BULK = window.__boardBulk = window.__boardBulk || new Set()
+  const BULK_MAX = 200
+  function pruneBulk() {
+    if (!BS.bulkDel || !BOARD) { BULK.clear(); return }
+    const ids = new Set(BOARD.slots.map(s => s.slot_id))
+    for (const id of [...BULK]) if (!ids.has(id)) BULK.delete(id)
+  }
+  function toggleBulk(slotId, on) {
+    if (!slotId) return
+    if (on) BULK.add(slotId); else BULK.delete(slotId)
+    document.querySelectorAll(`.board-cell[data-slot-id="${Number(slotId)}"]`).forEach(c => {
+      c.classList.toggle('is-bulk', on)
+      const cb = c.querySelector('.bulk-check'); if (cb) cb.checked = on
+    })
+    updateBulkBar()
+  }
+  function updateBulkBar() {
+    const bar = document.getElementById('board-bulkbar'); if (!bar) return
+    bar.hidden = !BS.bulkDel
+    if (!BS.bulkDel) { bar.innerHTML = ''; return }
+    const n = BULK.size
+    bar.innerHTML = `<span class="text-sm"><i class="fas fa-list-check mr-1 text-red-500"></i>削除する枠を選んでください（マスを押すとチェックが付きます）。選択中 <b>${n}</b>件${n > BULK_MAX ? `<span class="text-red-600 font-bold ml-1">一度に削除できるのは${BULK_MAX}件までです</span>` : ''}</span>
+      <span class="flex-1"></span>
+      <button class="btn btn-outline text-xs py-1.5" data-action="boardBulkAll">表示中の枠をすべて選ぶ</button>
+      <button class="btn btn-outline text-xs py-1.5" data-action="boardBulkClear" ${n ? '' : 'disabled'}>選択を外す</button>
+      <button class="btn btn-danger text-xs py-1.5" data-action="boardBulkDelete" ${n ? '' : 'disabled'}><i class="fas fa-trash"></i>選んだ枠を削除（${n}件）</button>
+      <button class="btn btn-outline text-xs py-1.5" data-action="boardBulkDelToggle">やめる</button>`
+  }
+  function bulkBtnHtml() {
+    return `<button id="board-bulk-btn" class="btn ${BS.bulkDel ? 'btn-danger' : 'btn-outline'}" data-action="boardBulkDelToggle" aria-pressed="${!!BS.bulkDel}" title="表のマスにチェックを出し、選んだ枠をまとめて削除します"><i class="fas ${BS.bulkDel ? 'fa-xmark' : 'fa-list-check'}"></i>${BS.bulkDel ? '選択をやめる' : '選択して削除'}</button>`
+  }
+  delegate('boardBulkDelToggle', () => {
+    BS.bulkDel = !BS.bulkDel; BULK.clear()
+    const b = document.getElementById('board-bulk-btn'); if (b) b.outerHTML = bulkBtnHtml()
+    redraw()
+  })
+  delegate('boardBulkCheck', el => toggleBulk(Number(el.dataset.slotId), !!el.checked))
+  delegate('boardBulkAll', () => {
+    // 表に出ているマス（「不足のみ」で外した行は含めない）の枠
+    document.querySelectorAll('#board-grid .board-cell[data-slot-id]').forEach(c => BULK.add(Number(c.dataset.slotId)))
+    redraw()
+  })
+  delegate('boardBulkClear', () => { BULK.clear(); redraw() })
+  delegate('boardBulkDelete', () => openBulkDelete())
+  function openBulkDelete() {
+    const slots = BOARD ? BOARD.slots.filter(s => BULK.has(s.slot_id)) : []
+    if (!slots.length) { toast('削除する枠を選んでください'); return }
+    if (slots.length > BULK_MAX) { toast(`一度に削除できる枠は${BULK_MAX}件までです（${slots.length}件選ばれています）`); return }
+    // 1枠の削除（openDeleteSlot）と同じ内容を、選んだ枠の合計で出す
+    const roles = slots.flatMap(s => s.roles)
+    const people = roles.flatMap(r => r.assigned.filter(a => a.status !== 'absent'))
+    const anyShift = roles.some(r => r.assigned.length)
+    const applicants = roles.reduce((n, r) => n + Number(r.applicants || 0), 0)
+    const rids = new Set(roles.map(r => r.slot_role_id))
+    const drafts = [...DRAFTS.values()].filter(d => rids.has(d.slot_role_id))
+    const names = people.slice(0, 8).map(a => a.staff_name).join('、') + (people.length > 8 ? ` ほか${people.length - 8}人` : '')
+    const sorted = [...slots].sort((a, b) => String(a.work_date + a.start_time).localeCompare(b.work_date + b.start_time))
+    modal(`
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-red-500 mr-1"></i>選んだ枠を削除</h3>
+      <p class="text-sm text-gray-800 font-bold mb-1">${slots.length}件の枠を、役割ごとまとめて削除します</p>
+      <div class="max-h-48 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100 mb-3">
+        ${sorted.map(s => `<div class="px-2 py-1.5 text-xs"><span class="font-bold">${esc(fmtDay(s.work_date))} ${esc(s.start_time)}〜${esc(s.end_time)}</span>・${esc(projectOf(s.project_id).project_name || '')}
+          <span class="block text-gray-500">${esc(s.site_name || s.location || '場所未設定')}・${esc(s.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}</span></div>`).join('')}
+      </div>
+      <ul class="text-sm space-y-1.5 mb-3">
+        ${people.length ? `<li class="bg-amber-50 text-amber-900 rounded p-2"><b>割り当て済みの人が${people.length}人います</b>（${esc(names)}）。シフトは削除せず、「枠を使わないシフト」として残します（勤怠・日報が付いていることがあるため）。シフトも要らないときは、残ったシフトを開いて削除してください。</li>`
+          : anyShift ? '<li class="text-gray-600">欠勤のシフトは「枠を使わないシフト」として残します。</li>' : '<li class="text-gray-600">割り当て済みの人はいません。</li>'}
+        ${applicants ? `<li class="bg-red-50 text-red-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
+        ${drafts.length ? `<li class="bg-emerald-50 text-emerald-800 rounded p-2">これらの枠の保存していない下書き${drafts.length}件も消えます。</li>` : ''}
+      </ul>
+      <div class="flex gap-2">
+        <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
+        <button class="btn btn-danger flex-1" data-action="bulkDeleteRun" data-force="${anyShift ? 1 : 0}"><i class="fas fa-trash"></i>${slots.length}件の枠を削除する</button>
+      </div>`)
+  }
+  async function bulkDeleteRun(force) {
+    const ids = [...BULK]
+    if (!ids.length) { closeModal(); return }
+    let data
+    try { data = (await axios.post('/api/admin/shift-slots/bulk-delete', { slot_ids: ids, force: !!force })).data } catch (e) {
+      const d = e.response && e.response.data
+      if (d && d.need_force) {
+        // 確かめた後に割り当てが入った。件数を出して、もう一度確かめる
+        if (!confirm(`選んだ枠には ${Number(d.assigned)} 件のシフトがあります。\n枠だけを削除し、シフトは「枠を使わないシフト」として残しますか？`)) return
+        return bulkDeleteRun(true)
+      }
+      toast(slotDeleteError(e))
+      if (e.response && e.response.status === 404) { closeModal(); BULK.clear(); renderShiftBoard() }
+      return
+    }
+    // 削除した枠の下書き・選択を片づける
+    const done = new Set((data.deleted_ids || ids).map(Number))
+    const rids = new Set()
+    if (BOARD) for (const s of BOARD.slots) if (done.has(s.slot_id)) for (const r of s.roles) rids.add(r.slot_role_id)
+    for (const [k, d] of DRAFTS) if (rids.has(d.slot_role_id)) DRAFTS.delete(k)
+    if (rids.has(BS.sel)) BS.sel = null
+    BULK.clear(); BS.bulkDel = false
+    const notes = []
+    if (data.kept_shifts) notes.push(`シフト${Number(data.kept_shifts)}件は「枠を使わないシフト」として残しています`)
+    if (data.missing) notes.push(`${Number(data.missing)}件はすでに削除されていました`)
+    closeModal(); toast(`${Number(data.deleted)}件の枠を削除しました` + (notes.length ? `（${notes.join('。')}）` : '')); renderShiftBoard()
+  }
+  delegate('bulkDeleteRun', el => withSubmitLock(el, () => bulkDeleteRun(el.dataset.force === '1')))
+
   // ---------- 希望（仮）のまとめて確定（#390） ----------
   // 表示中のボードの希望（仮）のシフト。slotRoleId を渡すとその役割だけ
   function requestedShifts(slotRoleId) {
@@ -1142,6 +1259,7 @@
   async function loadPriceBox(prefix, params, names) {
     const st = PRICE_BOX[prefix] = { ...(PRICE_BOX[prefix] || {}), names, seq: ((PRICE_BOX[prefix] || {}).seq || 0) + 1 }
     const seq = st.seq
+    if ('project_id' in params && !params.project_id) { st.data = null; st.error = '案件を選ぶと、単価を表示します'; renderPriceBox(prefix); return }
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null).map(([k, v]) => [k, String(v)]))
     try {
       const { data } = await axios.get('/api/admin/shifts/price-preview?' + qs.toString())
@@ -1395,7 +1513,9 @@
     const box = document.getElementById('slot-roles'); box.insertAdjacentHTML('beforeend', roleRowsHtml([{ role_name: '', headcount: 1 }]))
   }
   // 無効の開催場所は選択肢に出さない。ただし今選ばれている場所は、無効でも「（無効）」を付けて残す（保存で場所が外れないように。#492）
+  // 案件を選んでいないときは、開催場所の選択肢を出さない（#9503。初めの案件の場所が出て、違う案件の場所を選ばないように）
   function siteOptions(m, projectId, selected) {
+    if (!projectId) return '<option value="">（先に案件を選んでください）</option>'
     const p = m.projects.find(x => String(x.project_id) === String(projectId))
     const isSel = (s) => selected != null && selected !== '' && String(selected) === String(s.site_id)
     const list = m.sites.filter(s => isSel(s) || (s.status !== 'inactive' && (!p || !p.client_id || !s.client_id || String(s.client_id) === String(p.client_id))))
@@ -1413,11 +1533,12 @@
       <div class="space-y-3">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label class="text-sm text-gray-600">案件 *
-            <select id="slot-project" class="inp" onchange="slotProjectChanged()" ${s.slot_id ? 'disabled' : ''}>
+            <select id="slot-project" class="inp" onchange="slotProjectChanged()" required ${s.slot_id ? 'disabled' : ''}>
+              <option value="" ${s.project_id ? '' : 'selected'}>選択してください</option>
               ${m.projects.filter(p => p.status === 'active' || String(p.project_id) === String(s.project_id)).map(p => `<option value="${p.project_id}" ${String(p.project_id) === String(s.project_id) ? 'selected' : ''}>${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}
             </select></label>
           <label class="text-sm text-gray-600">開催場所
-            <select id="slot-site" class="inp" data-orig="${esc(s.site_id || '')}">${siteOptions(m, s.project_id || (m.projects[0] || {}).project_id, s.site_id)}</select></label>
+            <select id="slot-site" class="inp" data-orig="${esc(s.site_id || '')}">${siteOptions(m, s.project_id || '', s.site_id)}</select></label>
         </div>
         <input id="slot-location" class="inp text-sm" placeholder="場所の補足（開催場所マスタにない場合はここに入力）" value="${esc(extra)}">
         <div class="grid grid-cols-3 gap-3">
@@ -1471,7 +1592,16 @@
       break_minutes: document.getElementById('slot-break').value, memo: document.getElementById('slot-memo').value, roles: collectRoles(),
     }
   }
+  // 案件を選んでいないときは、案件の欄に移って知らせる（#9503）
+  function requireProject(id) {
+    const el = document.getElementById(id)
+    if (el && el.value) return true
+    toast('案件を選択してください（「選択してください」のままでは登録できません）')
+    if (el) { el.focus(); el.classList.add('ring-2', 'ring-red-300'); el.addEventListener('change', () => el.classList.remove('ring-2', 'ring-red-300'), { once: true }) }
+    return false
+  }
   window.saveSlot = async function (slotId) {
+    if (!slotId && !requireProject('slot-project')) return
     const b = slotBody()
     if (!slotId) {
       if (!window.__slotDates.size) { toast('日付を追加してください'); return }
@@ -1526,6 +1656,7 @@
       <button class="btn btn-primary w-full mt-4" onclick="savePattern()">枠をまとめて作成</button>`)
   }
   window.savePattern = async function () {
+    if (!requireProject('slot-project')) return
     const b = slotBody()
     const weekdays = [...document.querySelectorAll('.pt-wd:checked')].map(el => Number(el.value))
     try {
@@ -1591,12 +1722,15 @@
   // ---------- 常勤の一括登録 ----------
   window.openBulkModal = async function () {
     const m = await loadMaster()
+    const active = m.projects.filter(p => p.status === 'active')
+    // 絞り込みで案件を1つに決めているときだけ、その案件を選んでおく（#9503）
+    const preset = BS.projectIds.length === 1 && active.some(p => p.project_id === BS.projectIds[0]) ? BS.projectIds[0] : null
     modal(`
       <h3 class="font-bold text-lg mb-1">常勤の一括登録</h3>
       <p class="text-xs text-gray-500 mb-3">スタッフ × 曜日 × 期間でシフトをまとめて登録します（退職・NG のスタッフと、同じ時間帯に別のシフトがある日はスキップし、一覧で表示します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">案件 *<select id="bk-project" class="inp">${m.projects.filter(p => p.status === 'active').map(p => `<option value="${p.project_id}">${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}</select></label>
+          <label class="text-sm text-gray-600">案件 *<select id="bk-project" class="inp" required><option value="" ${preset ? '' : 'selected'}>選択してください</option>${active.map(p => `<option value="${p.project_id}" ${p.project_id === preset ? 'selected' : ''}>${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}</select></label>
           <label class="text-sm text-gray-600">役割<input id="bk-role" class="inp" value="販売スタッフ" list="role-suggest"></label>
         </div>
         <div><p class="text-sm text-gray-600 mb-1">スタッフ *</p>
@@ -1624,6 +1758,7 @@
     reload()
   }
   async function saveBulk() {
+    if (!requireProject('bk-project')) return
     const v = (k) => document.getElementById(k).value
     const px = priceExtra('bk'); if (px.error) { toast(px.error); return }
     const body = {
