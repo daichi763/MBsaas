@@ -16,7 +16,7 @@ import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
 import { loadShiftSnaps, notifyShiftChanges } from './notifications'
 import type { ShiftSnap } from './notifications'
-import { opLog, logShifts, logShiftsOfSlot, logSlot, finishLog } from './lib/operation-log'
+import { opLog, logShifts, logShiftsOfSlot, logShiftsOfSlots, logSlot, logSlots, finishLog } from './lib/operation-log'
 import { csvResponse, toCsv } from './csv'
 import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { closedChecker, closedOn } from './lib/closings'
@@ -1377,6 +1377,43 @@ app.delete('/shift-slots/:id', async (c) => {
   await finishLog(op)
   await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
   return c.json({ ok: true })
+})
+
+// 枠のまとめて削除（Sprint 12 #9501）。中身は1枠の削除と同じ（シフトは消さずに枠から外し、操作履歴を枠・シフトごとに残す）。
+// 自社の枠だけを対象にし、ほかの画面ですでに削除された枠（と他社の枠）は missing として数える
+const BULK_DELETE_MAX = 200
+app.post('/shift-slots/bulk-delete', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({})) as any
+  const raw = Array.isArray(b && b.slot_ids) ? b.slot_ids : null
+  if (!raw || !raw.length) return c.json({ error: '削除する枠を選んでください' }, 400)
+  const ids = [...new Set(raw.map((x: any) => Number(x)))] as number[]
+  if (ids.some(n => !Number.isInteger(n) || n <= 0)) return c.json({ error: '枠の指定が正しくありません' }, 400)
+  if (ids.length > BULK_DELETE_MAX) return c.json({ error: `一度に削除できる枠は${BULK_DELETE_MAX}件までです（${ids.length}件選ばれています）` }, 400)
+  const own = ((await db.prepare(`SELECT slot_id FROM shift_slots WHERE company_id = ? AND slot_id IN ${JSON_IN}`)
+    .bind(u.company_id, bindJsonArray(ids)).all()).results as any[]).map(r => Number(r.slot_id))
+  if (!own.length) return c.json({ error: '選んだ枠が見つかりません（ほかの画面で削除された可能性があります。画面を読み直してください）' }, 404)
+  const ownJson = bindJsonArray(own)
+  const used = await db.prepare(`SELECT COUNT(*) AS n FROM shifts WHERE company_id = ? AND slot_id IN ${JSON_IN}`).bind(u.company_id, ownJson).first() as any
+  const assigned = Number(used?.n || 0)
+  if (assigned > 0 && !(b.force === true || b.force === 1 || b.force === '1')) return c.json({ error: `選んだ枠には ${assigned} 件のシフト（割り当て済みの人）があります`, assigned, need_force: true }, 409)
+  const op = opLog(db, u, 'slot_delete') // 操作履歴（#159）
+  try {
+    // 履歴は変更より前に残す（1つの batch なので、途中で失敗したら何も変わらない）
+    await db.batch([
+      logSlots(op, own), logShiftsOfSlots(op, own),
+      db.prepare(`UPDATE shifts SET slot_id = NULL, slot_role_id = NULL WHERE company_id = ? AND slot_id IN ${JSON_IN}`).bind(u.company_id, ownJson),
+      db.prepare(`DELETE FROM shift_slot_roles WHERE slot_id IN ${JSON_IN}`).bind(ownJson),
+      db.prepare(`DELETE FROM shift_slots WHERE company_id = ? AND slot_id IN ${JSON_IN}`).bind(u.company_id, ownJson),
+    ])
+  } catch (e) {
+    console.error('slot bulk delete failed', e)
+    return c.json({ error: '枠を削除できませんでした（枠・シフトは変更していません）。時間をおいてもう一度お試しください' }, 500)
+  }
+  await finishLog(op)
+  await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
+  // shifts にはトリガーがあるので、残したシフトの件数は meta.changes ではなく先に数えた件数を返す
+  return c.json({ ok: true, deleted: own.length, deleted_ids: own, missing: ids.length - own.length, kept_shifts: assigned })
 })
 
 // 役割への割り当て（複数可）
