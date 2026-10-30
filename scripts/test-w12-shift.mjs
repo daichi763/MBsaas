@@ -164,7 +164,7 @@ let BROWSER_SLOTS = null
   const ad = readFileSync(new URL('../public/static/admin.js', import.meta.url), 'utf8')
   ok('#9501 画面: 「選択して削除」でマスにチェックを出し、まとめて削除の API を呼ぶ', sb.includes("'選択して削除'") && sb.includes('class="bulk-check" data-action="boardBulkCheck"') && sb.includes("axios.post('/api/admin/shift-slots/bulk-delete'"))
   ok('#9501 画面: 削除した枠の下書きと選択を片づける', /for \(const \[k, d\] of DRAFTS\) if \(rids\.has\(d\.slot_role_id\)\) DRAFTS\.delete\(k\)\s+if \(rids\.has\(BS\.sel\)\) BS\.sel = null\s+BULK\.clear\(\)/.test(sb))
-  ok('#9502 common.js: 閉じるボタンの判定は box の中だけ（:scope）', /MODAL_X_SEL = ':scope \.modal-x, :scope \[data-modal-close\], :scope \[onclick\*="closeModal"\] \.fa-xmark, :scope \[onclick\*="closeModal"\] \.fa-times'/.test(cm))
+  ok('#9502 common.js: 閉じるボタンの判定は box の中だけ（:scope）', /MODAL_X_SEL = ':scope \.modal-x, :scope \[data-modal-close\], :scope button\[aria-label="閉じる"\], :scope \[onclick\*="closeModal"\] \.fa-xmark, :scope \[onclick\*="closeModal"\] \.fa-times'/.test(cm))
   ok('#9503 枠の作成・繰り返し登録・常勤の一括登録の案件は「選択してください」から', (sb.match(/>選択してください<\/option>/g) || []).length >= 2 && sb.includes("if (!slotId && !requireProject('slot-project')) return") && sb.includes("if (!requireProject('slot-project')) return") && sb.includes("if (!requireProject('bk-project')) return"))
   ok('#9503 開催場所の選択肢は、選んだ案件から作る（m.projects[0] を使わない）', !sb.includes('m.projects[0]') && sb.includes("if (!projectId) return '<option value=\"\">（先に案件を選んでください）</option>'"))
   ok('#9503 シフト登録（showAddShift）のスタッフ・案件も「選択してください」から', /id="sh-staff" class="inp" required><option value="" selected>選択してください<\/option>/.test(ad) && /id="sh-project" class="inp" onchange="addShiftFeeHint\(\)" required><option value="" selected>選択してください<\/option>/.test(ad) && ad.includes("addShiftRequire('sh-project'"))
@@ -207,7 +207,7 @@ async function browserChecks() {
     const MODAL_STATE = `(() => {
       const bg = document.querySelector('#modal-root .modal-bg'); if (!bg) return null
       const box = bg.querySelector('.modal-box')
-      const x = box.querySelector(':scope .modal-x') || [...box.querySelectorAll(':scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times')].map(i => i.closest('button')).find(Boolean)
+      const x = box.querySelector(':scope .modal-x, :scope button[aria-label="閉じる"]') || [...box.querySelectorAll(':scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times')].map(i => i.closest('button')).find(Boolean)
       const bt = box.getBoundingClientRect(), xr = x && x.getBoundingClientRect()
       return { inputs: modalHasInputs(bg), backdrop: typeof bg.onclick === 'function', x: !!x, added: !!box.querySelector(':scope > .modal-x'),
         topRight: !!xr && xr.top - bt.top < 70 && bt.right - xr.right < 70, title: (box.querySelector('h3') || {}).textContent || '' }
@@ -289,6 +289,12 @@ async function browserChecks() {
     ok('#9501 押すと各マスにチェックが出て、選択中の帯が出る', await ev(`document.querySelectorAll('#board-grid .bulk-check').length >= 3 && !document.getElementById('board-bulkbar').hidden`))
     await ev(`document.querySelector('.board-cell[data-slot-id="${BROWSER_SLOTS.ids[0]}"]').click()`); await wait(200)
     ok('#9501 マスを押すとチェックが付き、件数が出る', await ev(`document.querySelector('.board-cell[data-slot-id="${BROWSER_SLOTS.ids[0]}"] .bulk-check').checked && /選択中 1件/.test(document.getElementById('board-bulkbar').textContent)`))
+    // マスの中の名前を押しても、シフトの詳細を開かずに枠の選択になる
+    await ev(`document.querySelector('.board-cell[data-slot-id="${BROWSER_SLOTS.ids[1]}"] .board-chip').click()`); await wait(300)
+    ok('#9501 選択中はマスの中の名前を押しても詳細を開かず、枠を選ぶ', await ev(`!document.querySelector('#modal-root .modal-bg') && document.querySelector('.board-cell[data-slot-id="${BROWSER_SLOTS.ids[1]}"] .bulk-check').checked && /選択中 2件/.test(document.getElementById('board-bulkbar').textContent)`))
+    // チェックの欄を直接押して外す・付け直す
+    await ev(`document.querySelector('.board-cell[data-slot-id="${BROWSER_SLOTS.ids[1]}"] .bulk-check').click()`); await wait(200)
+    ok('#9501 チェックを直接押すと外れる', await ev(`!document.querySelector('.board-cell[data-slot-id="${BROWSER_SLOTS.ids[1]}"] .bulk-check').checked && /選択中 1件/.test(document.getElementById('board-bulkbar').textContent)`))
     await ev(`document.querySelector('[data-action=boardBulkAll]').click()`); await wait(300)
     ok('#9501 「表示中の枠をすべて選ぶ」', await ev(`/選択中 3件/.test(document.getElementById('board-bulkbar').textContent)`), await ev(`document.getElementById('board-bulkbar').textContent`))
     await ev(`document.querySelector('[data-action=boardBulkDelete]').click()`); await wait(400)

@@ -339,7 +339,7 @@
       : `<span class="board-need ${over ? 'over' : 'full'}">${over ? '定員超過' : '充足'} ${Number(role.filled) + plannedOf(role.slot_role_id)}/${Number(role.headcount)}</span>`
     // 『不足のみ』では、同じ行の不足していない日のマスを薄く出す
     return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''} ${checked ? 'is-bulk' : ''}" data-action="boardSelect" data-slot-id="${Number(slot.slot_id)}" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
-      tabindex="0" role="button" aria-pressed="${sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
+      tabindex="0" role="button" aria-pressed="${bulk ? checked : sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
       <div class="flex items-center justify-between gap-1 mb-1">
         <span class="text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
         <span class="flex items-center gap-0.5">
@@ -985,7 +985,7 @@
     if (!slotId) return
     if (on) BULK.add(slotId); else BULK.delete(slotId)
     document.querySelectorAll(`.board-cell[data-slot-id="${Number(slotId)}"]`).forEach(c => {
-      c.classList.toggle('is-bulk', on)
+      c.classList.toggle('is-bulk', on); c.setAttribute('aria-pressed', String(on))
       const cb = c.querySelector('.bulk-check'); if (cb) cb.checked = on
     })
     updateBulkBar()
@@ -1011,6 +1011,15 @@
     redraw()
   })
   delegate('boardBulkCheck', el => toggleBulk(Number(el.dataset.slotId), !!el.checked))
+  // 「選択して削除」の間は、マスの中のどこを押しても（名前・応募のリンク・希望の確定なども）枠の選択だけにする
+  document.addEventListener('click', (ev) => {
+    if (!BS.bulkDel || !ev.target || !ev.target.closest) return
+    const cell = ev.target.closest('#board-grid .board-cell[data-slot-id]')
+    if (!cell || ev.target.closest('.bulk-check')) return
+    ev.preventDefault(); ev.stopPropagation()
+    const id = Number(cell.dataset.slotId)
+    toggleBulk(id, !BULK.has(id))
+  }, true)
   delegate('boardBulkAll', () => {
     // 表に出ているマス（「不足のみ」で外した行は含めない）の枠
     document.querySelectorAll('#board-grid .board-cell[data-slot-id]').forEach(c => BULK.add(Number(c.dataset.slotId)))
@@ -1142,7 +1151,8 @@
     if (list) Sortable.create(list, { group: { name: 'board', pull: 'clone', put: false }, sort: false, animation: 120 })
     document.querySelectorAll('.board-drop').forEach(el => {
       Sortable.create(el, {
-        group: { name: 'board', pull: true, put: true }, sort: false, animation: 120, emptyInsertThreshold: 20,
+        // 「選択して削除」の間は、割り当ての移動をしない（マスを押して選ぶため）
+        group: { name: 'board', pull: true, put: true }, sort: false, animation: 120, emptyInsertThreshold: 20, disabled: !!BS.bulkDel,
         onAdd: async (evt) => {
           const item = evt.item, toRole = Number(evt.to.dataset.slotRoleId)
           const shiftId = item.dataset.shiftId, staffId = item.dataset.staffId

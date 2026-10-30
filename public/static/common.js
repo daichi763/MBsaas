@@ -69,8 +69,9 @@ document.addEventListener('click', (ev) => {
 }, true)
 // 入力欄のあるモーダルに、閉じるボタン（✕）が無ければ右上に足す（スクロールしても右上に残る）。
 // 閉じるボタンは box の中のものだけを見る（#9502）。背景（.modal-bg）にも onclick="…closeModal()" があるので、:scope を付けないと
-// 役割の行の削除・日付の削除などの ✕ アイコンまで「閉じるボタンがある」とみなし、✕ が付かなかった
-const MODAL_X_SEL = ':scope .modal-x, :scope [data-modal-close], :scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times'
+// 役割の行の削除・日付の削除などの ✕ アイコンまで「閉じるボタンがある」とみなし、✕ が付かなかった。
+// aria-label が「閉じる」のボタン（data-action で閉じる作り）も閉じるボタンとみなし、二重に足さない
+const MODAL_X_SEL = ':scope .modal-x, :scope [data-modal-close], :scope button[aria-label="閉じる"], :scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times'
 function addModalCloseButtons() {
   document.querySelectorAll('.modal-bg').forEach(bg => {
     const box = bg.querySelector('.modal-box')
