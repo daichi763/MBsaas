@@ -31,7 +31,7 @@ function client(cookie) {
   }
   return { get: (p) => call('GET', p), post: (p, b) => call('POST', p, b ?? {}), put: (p, b) => call('PUT', p, b ?? {}), del: (p) => call('DELETE', p) }
 }
-const must = (r, what) => { if (r.status !== 200) throw new Error(`${what}: ${r.status} ${(r.text || '').slice(0, 300)}`); return r.data }
+const must = (r, what) => { if (r.status !== 200 || r.data == null) throw new Error(`${what}: ${r.status} ${(r.text || '').slice(0, 300)}`); return r.data }
 const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
 const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
 const weekday = (d) => new Date(d + 'T00:00:00Z').getUTCDay()
@@ -107,7 +107,7 @@ let BROWSER_SLOTS = null
   must(await admin.post(`/api/admin/shift-slots/roles/${s3.roles[0]}/assign`, { staff_ids: [B.staff_id], force: true }), 'assign B')
   const bShift = (await board(P, WED)).slots.find(x => x.slot_id === s3.slot_id).roles[0].assigned[0]
   must(await admin.put(`/api/admin/shifts/${bShift.shift_id}`, { status: 'absent', force: true }), 'absent B')
-  const page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [P], date_from: today, date_to: addDays(MON, 10), allow_staff: true, show_remaining: true, description: '', pay_note: '', contact_note: '' }), 'recruit page')
+  const page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [P], date_from: MON, date_to: addDays(MON, 10), allow_staff: true, show_remaining: true, description: '', pay_note: '', contact_note: '' }), 'recruit page')
   const phone = '090' + String(Date.now()).slice(-8)
   const ap = await pub.post(`/api/public/recruit/${page.token}/apply`, { name: `${PFX} 応募`, phone, agree: true, slot_role_ids: [s4.roles[0]], issued_at: Date.now() - 10000 })
   ok('（前提）公開の募集ページから応募', ap.status === 200, ap.data)
@@ -209,7 +209,9 @@ async function browserChecks() {
       const box = bg.querySelector('.modal-box')
       const x = box.querySelector(':scope .modal-x, :scope button[aria-label="閉じる"]') || [...box.querySelectorAll(':scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times')].map(i => i.closest('button')).find(Boolean)
       const bt = box.getBoundingClientRect(), xr = x && x.getBoundingClientRect()
-      return { inputs: modalHasInputs(bg), backdrop: typeof bg.onclick === 'function', x: !!x, added: !!box.querySelector(':scope > .modal-x'),
+      // 自前の閉じるボタン（common.js が足した ✕ 以外）
+      const own = box.querySelectorAll(':scope button[aria-label="閉じる"]:not(.modal-x), :scope [data-modal-close], :scope [onclick*="closeModal"] .fa-xmark, :scope [onclick*="closeModal"] .fa-times').length
+      return { inputs: modalHasInputs(bg), backdrop: typeof bg.onclick === 'function', x: !!x, own, added: !!box.querySelector(':scope > .modal-x'),
         topRight: !!xr && xr.top - bt.top < 70 && bt.right - xr.right < 70, title: (box.querySelector('h3') || {}).textContent || '' }
     })()`
     // #9502 全モーダルの一通り: 入力欄のあるモーダルには、box の中の右上に ✕ がある
@@ -236,7 +238,8 @@ async function browserChecks() {
     const bad = withInputs.filter(s => !s.x || !s.topRight)
     ok(`#9502 入力欄のあるモーダル（${withInputs.length}件）すべてで、右上に ✕ が出る`, withInputs.length >= 15 && !bad.length, { bad, opened: seen.map(s => s.label) })
     ok('#9502 枠の作成・編集・繰り返し登録（中に ✕ のアイコンがある）にも ✕ を足す', ['枠を作成', '枠の編集', '枠の繰り返し登録'].every(l => seen.find(s => s.label === l)?.added), seen.filter(s => s.label.startsWith('枠')))
-    ok('#9502 自前の ✕ があるモーダルには二重に足さない', seen.every(s => s.added ? true : s.x), seen.filter(s => !s.added).map(s => s.label))
+    ok('#9502 自前の ✕ があるモーダルには二重に足さない', seen.every(s => !(s.added && s.own)), seen.filter(s => s.added && s.own).map(s => s.label))
+    ok('#9502 ✕ を足さなかったモーダルは、自前の ✕ があるか、入力欄のない（背景で閉じる）モーダル', seen.every(s => s.added || s.own || !s.inputs || !s.backdrop), seen.filter(s => !s.added).map(s => ({ l: s.label, inputs: s.inputs, own: s.own, backdrop: s.backdrop })))
     // ✕ を押すと閉じる・背景を押しても閉じない
     await ev('closeModal()'); await ev('openPatternModal()'); await wait(800)
     await ev(`document.querySelector('#modal-root .modal-bg').click()`); await wait(200)
@@ -300,10 +303,13 @@ async function browserChecks() {
     await ev(`document.querySelector('[data-action=boardBulkDelete]').click()`); await wait(400)
     const conf = await ev(`document.querySelector('#modal-root .modal-box').innerText`)
     ok('#9501 確かめのモーダルに、枠の件数・割り当て済みの人数を出す', /3件の枠/.test(conf) && /割り当て済みの人が1人/.test(conf), conf)
-    await ev(`document.querySelector('[data-action=bulkDeleteRun]').click()`); await wait(2500)
+    await ev(`document.querySelector('[data-action=bulkDeleteRun]').click()`)
+    // toast は 2.5 秒で消えるので、出ている間に確かめる
+    const toasted = await until(`[...document.querySelectorAll('#toast .toast-msg')].some(t => /3件の枠を削除しました/.test(t.textContent))`, 2400)
+    await until(`!document.querySelector('.bulk-check') && document.querySelectorAll('#board-grid .board-cell').length === 0`, 4000)
     const after = await board(P, BROWSER_SLOTS.week, addDays(BROWSER_SLOTS.week, 6))
     ok('#9501 画面から3件の枠をまとめて削除し、シフトは枠なしで残る', BROWSER_SLOTS.ids.every(id => !after.slots.some(x => x.slot_id === id)) && after.unslotted.some(x => x.staff_id === A.staff_id), after.slots.map(x => x.slot_id))
-    ok('#9501 削除の後は選択をやめ、チェックと帯を消す', await toastHas('/3件の枠を削除しました/') && await ev(`!document.querySelector('.bulk-check') && document.getElementById('board-bulkbar').hidden`))
+    ok('#9501 削除の後は選択をやめ、チェックと帯を消す', toasted && await ev(`!document.querySelector('.bulk-check') && document.getElementById('board-bulkbar').hidden && !__boardState.bulkDel`))
     ok('画面: スクリプトのエラーがない', !errors.length, errors)
   } finally {
     try { ws && ws.close() } catch { }
