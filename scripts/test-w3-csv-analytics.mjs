@@ -151,31 +151,35 @@ await waitServer()
 // ---------- #184 実績分析 ----------
 {
   const [m] = d1(`SELECT substr(work_date, 1, 7) AS month, COUNT(*) AS n FROM daily_reports WHERE company_id = 1 GROUP BY 1 ORDER BY n DESC LIMIT 1`)[0]
-  const [dr] = d1(`SELECT dr.daily_report_id, p.report_template_id FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
+  const [dr] = d1(`SELECT dr.daily_report_id, dr.project_id, p.report_template_id FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
     WHERE dr.company_id = 1 AND dr.work_date LIKE '${m.month}%' AND p.report_template_id IS NOT NULL ORDER BY dr.daily_report_id LIMIT 1`)[0]
   // テンプレートに日本語のキーの数値項目を足し、その値と、テンプレートに無い古い数値項目を日報に入れる
   d1(`UPDATE report_templates SET fields_json = json_insert(fields_json, '$[#]', json('{"key":"入電数","label":"入電数（件）","type":"number"}'))
     WHERE template_id = ${dr.report_template_id} AND fields_json NOT LIKE '%入電数%'`)
   d1(`UPDATE daily_reports SET report_values = json_set(json_set(report_values, '$.入電数', 7), '$.legacy_x', 3) WHERE daily_report_id = ${dr.daily_report_id}`)
   await waitServer()
-  const r = await admin.get('/api/admin/analytics?month=' + m.month)
+  // 全案件のときは共通の数だけ、案件を選ぶとその案件のテンプレートの項目で集計する（#9512）
+  const all = (await admin.get('/api/admin/analytics?month=' + m.month)).data
+  ok('#184 #9512 全案件の日報数が件数と一致し、項目の列は出さない', all.totals.reports === m.n && all.fields.length === 0, { reports: all.totals.reports, n: m.n })
+  const [{ n: pn }] = d1(`SELECT COUNT(*) AS n FROM daily_reports WHERE project_id = ${dr.project_id} AND work_date LIKE '${m.month}%'`)[0]
+  const r = await admin.get(`/api/admin/analytics?month=${m.month}&project_id=${dr.project_id}`)
   const a = r.data
   const f = a && a.fields.find(x => x.key === '入電数')
   ok('#184 テンプレートの数値項目（日本語のキー）がラベル付きで集計される', f && f.label === '入電数（件）' && a.totals.values['入電数'] >= 7, a && a.fields)
   ok('#184 テンプレートに無い数値項目もキーの名前で出る', a.fields.some(x => x.key === 'legacy_x' && x.label === 'legacy_x') && a.totals.values.legacy_x >= 3)
   ok('#184 テキスト項目は集計しない', !a.fields.some(x => x.key === 'free' || x.key === 'good_case'), a.fields.map(x => x.key))
-  ok('#184 日報数が件数と一致する', a.totals.reports === m.n, { reports: a.totals.reports, n: m.n })
+  ok('#184 日報数が件数と一致する', a.totals.reports === pn, { reports: a.totals.reports, n: pn })
   const sumStaff = a.by_staff.reduce((s, x) => s + (x.values['入電数'] || 0), 0)
-  ok('#184 スタッフ別の合計が全体と一致する', sumStaff === a.totals.values['入電数'] && a.by_staff.reduce((s, x) => s + x.reports, 0) === m.n)
+  ok('#184 スタッフ別の合計が全体と一致する', sumStaff === a.totals.values['入電数'] && a.by_staff.reduce((s, x) => s + x.reports, 0) === pn)
   ok('#184 クライアント別・日別もある', a.by_client.length > 0 && a.daily.length > 0 && a.by_project.length > 0)
   const bad = await admin.get('/api/admin/analytics?month=2026-13')
   ok('#184 不正な月は今月にする', bad.status === 200 && /^\d{4}-\d{2}$/.test(bad.data.month) && bad.data.month !== '2026-13', bad.data && bad.data.month)
   for (const by of ['staff', 'project', 'client', 'daily']) {
-    const c = await admin.get(`/api/admin/analytics/csv?month=${m.month}&by=${by}`)
+    const c = await admin.get(`/api/admin/analytics/csv?month=${m.month}&by=${by}&project_id=${dr.project_id}`)
     const rows = parseCsv(c.text)
     ok(`#184 実績分析CSV（${by}）: 項目のラベルの列があり、行の長さがそろう`, c.status === 200 && c.bom && rows[0].includes('入電数（件）') && rows.every(x => x.length === rows[0].length) && rows.length > 1, rows[0])
   }
-  const sc = parseCsv((await admin.get(`/api/admin/analytics/csv?month=${m.month}&by=staff`)).text)
+  const sc = parseCsv((await admin.get(`/api/admin/analytics/csv?month=${m.month}&by=staff&project_id=${dr.project_id}`)).text)
   ok('#184 スタッフ別CSVにスタッフID・社員番号', sc[0][1] === 'スタッフID' && sc[0][2] === '社員番号', sc[0])
 }
 // ---------- #72 #518 既読率レポート ----------

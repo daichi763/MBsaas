@@ -105,6 +105,18 @@ export function logSlot(op: OpCtx, slotId: number): D1PreparedStatement {
     .bind(op.action, op.actorId, op.key, op.at, Number(slotId), op.companyId)
 }
 
+/** 複数の枠の logShiftsOfSlot / logSlot（枠のまとめて削除。#9501）。行は枠・シフトごとに残す */
+export function logShiftsOfSlots(op: OpCtx, slotIds: Iterable<number>): D1PreparedStatement {
+  return op.db.prepare(`INSERT INTO operation_logs (company_id, entity, entity_id, staff_id, action, before_json, actor_user_id, op_key, created_at)
+    SELECT s.company_id, 'shift', s.shift_id, s.staff_id, ?, ${SHIFT_SNAP}, ?, ?, ? FROM ${SHIFT_FROM} WHERE s.company_id = ? AND s.slot_id IN (SELECT value FROM json_each(?))`)
+    .bind(op.action, op.actorId, op.key, op.at, op.companyId, JSON.stringify([...slotIds].map(Number)))
+}
+export function logSlots(op: OpCtx, slotIds: Iterable<number>): D1PreparedStatement {
+  return op.db.prepare(`INSERT INTO operation_logs (company_id, entity, entity_id, staff_id, action, before_json, actor_user_id, op_key, created_at)
+    SELECT sl.company_id, 'slot', sl.slot_id, NULL, ?, ${SLOT_SNAP}, ?, ?, ? FROM shift_slots sl WHERE sl.slot_id IN (SELECT value FROM json_each(?)) AND sl.company_id = ?`)
+    .bind(op.action, op.actorId, op.key, op.at, JSON.stringify([...slotIds].map(Number)), op.companyId)
+}
+
 /** 変更の後の値を入れる文（消えた行は NULL）。前後で値が同じ行（実際には変わらなかった行）は消す */
 export function finishLogStmts(op: OpCtx): D1PreparedStatement[] {
   const db = op.db

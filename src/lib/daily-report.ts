@@ -106,3 +106,79 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
       r.entered_by ?? null, explicit, explicit).run()
   return { updated: existed }
 }
+
+// =========================================================
+// 日報テンプレートを差し替えた後も、古い項目を元の表示名で出す（#9511）。
+// 案件の日報テンプレートを差し替えるとき、それまでのテンプレートの項目を projects.past_report_fields_json に写して残す
+// （migrations/0092）。実績分析・案件詳細の実績・日報の一覧と CSV は、今のテンプレートの項目を先に、残した項目を後ろに並べる。
+// =========================================================
+export type ReportFieldDef = { key: string; label: string; type: string; unit?: string; past?: true }
+export const PAST_REPORT_FIELDS_MAX = 300
+
+/** テンプレートの項目（fields_json の文字列か配列）を key・label・type（・unit）にそろえる。壊れていれば空 */
+export function parseReportFields(json: unknown): ReportFieldDef[] {
+  let f: unknown = json
+  if (typeof json === 'string') { try { f = JSON.parse(json) } catch { f = [] } }
+  if (!Array.isArray(f)) return []
+  const out: ReportFieldDef[] = []
+  for (const x of f as any[]) {
+    if (!x || typeof x.key !== 'string' || !x.key) continue
+    const d: ReportFieldDef = { key: x.key, label: String(x.label || x.key), type: String(x.type || 'text') }
+    if (typeof x.unit === 'string' && x.unit) d.unit = x.unit
+    out.push(d)
+  }
+  return out
+}
+
+/**
+ * 差し替える前のテンプレートの項目を、案件に残した項目に足す（同じ key は今回の表示名で上書きし、位置は保つ）。
+ * 戻り値は projects.past_report_fields_json に入れる文字列（項目がなければ今の値のまま）
+ */
+export function mergePastReportFields(pastJson: unknown, oldFieldsJson: unknown, meta: { template_id: number | null; template_name: string | null; replaced_at: string }): string | null {
+  const past = parsePastEntries(pastJson)
+  const old = parseReportFields(oldFieldsJson)
+  if (!old.length) return past.length ? JSON.stringify(past) : null
+  const at = new Map(past.map((p, i) => [p.key, i]))
+  for (const f of old) {
+    const e: any = { ...f, template_id: meta.template_id, template_name: meta.template_name, replaced_at: meta.replaced_at }
+    const i = at.get(f.key)
+    if (i === undefined) { at.set(f.key, past.length); past.push(e) } else past[i] = e
+  }
+  // 何度も差し替えても行が大きくなりすぎないよう、古いものから捨てる
+  return JSON.stringify(past.slice(-PAST_REPORT_FIELDS_MAX))
+}
+function parsePastEntries(json: unknown): any[] {
+  let v: unknown = []
+  if (typeof json === 'string' && json) { try { v = JSON.parse(json) } catch { v = [] } }
+  return Array.isArray(v) ? (v as any[]).filter(x => x && typeof x.key === 'string' && x.key) : []
+}
+
+/** 案件に残した古い項目（画面・API に返す形。past: true を付ける） */
+export function pastReportFields(pastJson: unknown): ReportFieldDef[] {
+  return parseReportFields(parsePastEntries(pastJson)).map(f => ({ ...f, past: true as const }))
+}
+
+/** 今のテンプレートの項目の後ろに、残した古い項目のうち今のテンプレートに無いものを足す */
+export function withPastFields(current: ReportFieldDef[], pastJson: unknown): ReportFieldDef[] {
+  const seen = new Set(current.map(f => f.key))
+  return [...current, ...pastReportFields(pastJson).filter(f => !seen.has(f.key) && (seen.add(f.key), true))]
+}
+
+/**
+ * 表示名のわからないキー（0092 の前にテンプレートを差し替えた案件など）を、自社・本部のテンプレートの同じキーの表示名で補う。
+ * 自社のテンプレートを先に、同じ会社の中は番号の小さい順で最初に見つかったもの。keys が空なら DB を読まない
+ */
+export async function guessReportFieldLabels(db: D1Database, companyId: number, keys: Iterable<string>): Promise<Map<string, ReportFieldDef>> {
+  const want = new Set(keys)
+  const out = new Map<string, ReportFieldDef>()
+  if (!want.size) return out
+  const rows = (await db.prepare(`SELECT fields_json FROM report_templates WHERE company_id = ? OR company_id IS NULL
+    ORDER BY company_id IS NULL, template_id`).bind(companyId).all()).results as any[]
+  for (const r of rows) {
+    for (const f of parseReportFields(r.fields_json)) {
+      if (want.has(f.key) && !out.has(f.key)) out.set(f.key, { ...f, past: true })
+    }
+    if (out.size === want.size) break
+  }
+  return out
+}
