@@ -48,7 +48,7 @@ const admin = client(await login('sample', 'admin'))
     ['pay_request_submitted', 'profile_change_submitted', 'staff_document_submitted', 'leave_submitted', 'attendance_no_break'].every(k => nt.includes(k + ':')))
   ok('#297 #464 書類の有効期限の通知（docs_expiring）とメールの種類（doc_expiry）の名前', nt.includes('docs_expiring:') && nt.includes('doc_expiry:'))
   ok('#184 スタッフ詳細・案件詳細・スキルシートの実績は、API の performance_fields（テンプレートの数値項目）で列を組み立てる',
-    a.includes('function perfColumns') && a.split('perfColumns(data.performance_fields)').length - 1 >= 3 && a.includes('const PERF_FIXED_FIELDS'))
+    a.includes('function perfColumns') && a.split('perfColumns(data.performance_fields').length - 1 >= 3 && a.includes('const PERF_FIXED_FIELDS'))
   ok('9004 勤怠の設定を変えられない役割（can_edit が false）には、保存のボタンを出さない',
     a.includes('ATTENDANCE_SETTING_DENIED_TEXT') && (a.match(/can_edit === false/g) || []).length >= 4 && co.includes("s.can_edit === false"))
   ok('#464 表にない種類は「その他」と出し、生の種類名をそのまま出さない', nt.includes('const kindLabel') && !nt.includes("KIND[n.kind] || n.kind"))

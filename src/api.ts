@@ -45,10 +45,10 @@ import {
   normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, PERSON_SESSION_WHERE,
 } from './lib/login-security'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
-import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
+import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
-import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
 import { NOTICE_TARGET_SQL, NOTICE_LIVE_SQL, NOTICE_EXPIRED_SQL, loadStaffNotices, countUnreadNotices, parseResponseOptions } from './lib/notices'
 import { staffShiftView } from './shift-board'
@@ -4929,7 +4929,9 @@ api.get('/admin/projects/:id', async (c) => {
       SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) AS seiyaku
     FROM daily_reports dr JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE dr.project_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.staff_id ORDER BY seiyaku DESC`).bind(pid, mFrom, mTo).all()
-  const staffMetrics = await reportMetricSums(db, 'dr.project_id = ? AND dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?', [pid, u.company_id, mFrom, mTo], 'dr.staff_id')
+  // 項目はその月の日報に値のあるもの（今のテンプレートの項目を先に、差し替える前の項目を後ろに。#9511）
+  const staffMetrics = await reportMetricSums(db, 'dr.project_id = ? AND dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?', [pid, u.company_id, mFrom, mTo], 'dr.staff_id',
+    { cid: u.company_id, presentOnly: true })
 
   // インシデント・クレーム（#169）: 対応済みでないものを先に、対応状況・メモを付けて返す
   const incidents = await db.prepare(`
@@ -4959,7 +4961,9 @@ api.get('/admin/projects/:id', async (c) => {
   }
 
   return c.json({
-    project: { ...project, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [] },
+    // past_report_fields: 差し替える前のテンプレートの項目のうち、今のテンプレートに無いもの（#9511）
+    project: { ...project, past_report_fields_json: undefined, template_fields: project.fields_json ? JSON.parse(project.fields_json as string) : [],
+      past_report_fields: withPastFields(parseReportFields(project.fields_json), project.past_report_fields_json).filter(f => f.past) },
     // テンプレートの数値項目の合計（#184。各行の values と performance_fields。mnp などの固定の列は今の画面のために残す）
     staff_performance: (staffPerf.results as any[]).map(r => ({ ...r, values: staffMetrics.valuesOf(r.staff_id) })), performance_fields: staffMetrics.fields,
     incidents: (incidents.results as any[]).map(i => ({ ...i, values: JSON.parse(i.report_values) })),
@@ -5089,7 +5093,7 @@ function projectTextError(b: any): string | null {
 //  - 確認が要る変更は 409 で理由を返し、確認の印を付けて送り直すと保存する
 //      confirm_duplicate       : 稼働中の別の案件と同じ名前（allow_duplicate）
 //      confirm_close           : 今日以降のシフトが残っている案件を終了する（confirm_close。シフトは取り消さない）
-//      confirm_template_change : 日報がある案件の日報テンプレートを変える（confirm_template_change。過去の日報の項目が表示されなくなることがある）
+//      confirm_template_change : 日報がある案件の日報テンプレートを変える（confirm_template_change。古い項目は past_report_fields_json に残して元の表示名で出す。#9511）
 api.put('/admin/projects/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => null) as any
@@ -5146,7 +5150,7 @@ api.put('/admin/projects/:id', async (c) => {
   if (set.report_template_id !== undefined && b.confirm_template_change !== true) {
     const used = await db.prepare('SELECT COUNT(*) AS n FROM daily_reports WHERE project_id = ?').bind(cur.project_id).first() as any
     if (Number(used?.n || 0) > 0) return c.json({
-      error: `この案件には日報が${Number(used.n)}件あります。日報テンプレートを変えると、新しいテンプレートにない項目は過去の日報の一覧・集計に表示されなくなります（保存された値は消えません）`,
+      error: `この案件には日報が${Number(used.n)}件あります。日報テンプレートを変えると、これからの日報は新しいテンプレートの項目で入力します。今までの日報の項目は、元の表示名のまま日報の一覧・実績分析・CSV に出ます（保存された値は消えません）`,
       confirm_template_change: true }, 409)
   }
   if (nextStatus === 'closed' && (cur.status || 'active') === 'active' && b.confirm_close !== true) {
@@ -5161,6 +5165,18 @@ api.put('/admin/projects/:id', async (c) => {
     set.status = nextStatus
     set.closed_at = nextStatus === 'closed' ? now : null
     set.closed_by = nextStatus === 'closed' ? u.user_id : null
+  }
+  // テンプレートを差し替えるとき、日報があれば、それまでのテンプレートの項目（key・表示名・種類）を案件に残す（#9511。lib/daily-report.ts）
+  if (set.report_template_id !== undefined
+    && await db.prepare('SELECT 1 FROM daily_reports WHERE project_id = ? LIMIT 1').bind(cur.project_id).first()) {
+    const old = cur.report_template_id == null ? null
+      : await db.prepare('SELECT template_id, template_name, fields_json FROM report_templates WHERE template_id = ?').bind(cur.report_template_id).first() as any
+    // テンプレートの無かった案件（項目の無いテンプレートも）は「報告内容（free）」だけで入力していた（validate.ts の pickReportValues と同じ）
+    if (old || cur.report_template_id == null) {
+      const oldFields = parseReportFields(old?.fields_json)
+      set.past_report_fields_json = mergePastReportFields(cur.past_report_fields_json, oldFields.length ? oldFields : NO_TEMPLATE_FIELDS,
+        { template_id: old ? Number(old.template_id) : null, template_name: old?.template_name ?? null, replaced_at: now })
+    }
   }
   const cols = Object.keys(set)
   if (!cols.length) return c.json({ ok: true, changed: false })
@@ -5536,6 +5552,34 @@ api.get('/admin/daily-reports/missing', async (c) => {
   const missing = list.filter(r => m.get(r.shift_id)?.daily_report_required !== false).map(r => ({ ...r, has_login: !!r.has_login }))
   return c.json({ from, to, missing, has_more: more })
 })
+// 日報の一覧・CSV の、案件ごとの古い項目（#9511）。案件に残した、差し替える前のテンプレートの項目のうち今のテンプレートに無いもの。
+// どちらにも無いキー（0092 の前に差し替えた案件など）は、自社・本部のテンプレートの同じキーの表示名で補う（見つからなければ足さない）。
+// rows は project_id・report_template_id・past_report_fields_json・values（日報の値）を持つ行、templates は template_id → 項目
+async function reportPastFieldsByProject(db: D1Database, cid: number, rows: any[], templates: Record<string, { key: string }[]>): Promise<Record<string, ReportFieldDef[]>> {
+  const out: Record<string, ReportFieldDef[]> = {}
+  const known = new Map<string, Set<string>>()
+  const unknown = new Map<string, Set<string>>()
+  for (const r of rows) {
+    const pid = String(r.project_id)
+    if (!out[pid]) {
+      const cur = parseReportFields(templates[r.report_template_id] || [])
+      out[pid] = withPastFields(cur, r.past_report_fields_json).filter(f => f.past)
+      // テンプレートの無い案件は「報告内容（free）」だけを出す（validate.ts の NO_TEMPLATE_FIELDS）
+      known.set(pid, new Set([...cur.map(f => f.key), ...out[pid].map(f => f.key), ...(cur.length ? [] : ['free'])]))
+    }
+    for (const k of Object.keys(r.values || {})) {
+      if (known.get(pid)!.has(k) || /^(incident|complaint)_/.test(k)) continue
+      if (!unknown.has(pid)) unknown.set(pid, new Set())
+      unknown.get(pid)!.add(k)
+    }
+  }
+  if (unknown.size) {
+    const guessed = await guessReportFieldLabels(db, cid, new Set([...unknown.values()].flatMap(s => [...s])))
+    for (const [pid, keys] of unknown) for (const k of keys) { const g = guessed.get(k); if (g) out[pid].push(g) }
+  }
+  for (const pid of Object.keys(out)) if (!out[pid].length) delete out[pid]
+  return out
+}
 api.get('/admin/daily-reports', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const q = (k: string) => { const v = c.req.query(k); return v === undefined || v === '' ? null : v }
@@ -5564,7 +5608,7 @@ api.get('/admin/daily-reports', async (c) => {
   const extra = (unchecked ? ` AND ${DR_UNCHECKED_SQL}` : '') + (flagged ? ` AND ${DR_FLAGGED_SQL}` : '') + (incidentOpen ? ` AND ${DR_INCIDENT_OPEN_SQL}` : '')
   const [rowsRes, countRes] = await db.batch([
     db.prepare(`
-      SELECT dr.*, p.project_name, p.report_template_id, us.name AS staff_name,
+      SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name,
         cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name
       FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
       JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
@@ -5594,11 +5638,13 @@ api.get('/admin/daily-reports', async (c) => {
     }
   }
   const reports = rows.map(r => {
-    const { report_values, ...rest } = r
+    const { report_values, past_report_fields_json: _past, ...rest } = r
     let values: Record<string, unknown> = {}
     try { const v = JSON.parse(report_values || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) values = v } catch { values = {} }
     return { ...rest, values }
   })
+  // 案件ごとの、差し替える前のテンプレートの項目（#9511。画面はテンプレートの項目の後ろに並べる）
+  const pastFields = await reportPastFieldsByProject(db, u.company_id, rows.map((r, i) => ({ ...r, values: reports[i].values })), templates)
   let options: any = undefined
   if (q('options') === '1') {
     const [pr, st] = await db.batch([
@@ -5609,7 +5655,7 @@ api.get('/admin/daily-reports', async (c) => {
     options = { projects: pr.results, staff: st.results }
   }
   return c.json({
-    reports, templates, offset, limit, total: Number(cnt.total || 0), as_of: asOf,
+    reports, templates, past_fields: pastFields, offset, limit, total: Number(cnt.total || 0), as_of: asOf,
     counts: { all: Number(cnt.total_all || 0), unchecked: Number(cnt.unchecked || 0), flagged: Number(cnt.flagged || 0), incident_open: Number(cnt.incident_open || 0) },
     ...(options ? { options } : {}),
   })
@@ -5795,9 +5841,10 @@ api.put('/admin/projects/:id/goals', async (c) => {
   return c.json({ ok: true, goals })
 })
 
-// 実績分析（#184）。集計する項目は決め打ちにせず、その月に日報のある案件の日報テンプレートの数値項目（type: number）から決める。
-// 値は json_each で項目ごとに合計する（キーを SQL に埋め込まない）。テンプレートから外れた古い数値項目も、キーを名前にして出す
-type AnalyticsField = { key: string; label: string }
+// 実績分析（#184 #9512）。案件を選ぶと、その案件の日報テンプレートの数値項目（type: number）で集計する。
+// 全案件のときは、全案件に共通の数（日報数・稼働人数など）だけを出し、テンプレートの項目の列は出さない。
+// 値は json_each で項目ごとに合計する（キーを SQL に埋め込まない）。差し替える前のテンプレートの項目は、残した表示名で出す（#9511）
+type AnalyticsField = { key: string; label: string; past?: true }
 type AnalyticsRow = { reports: number; values: Record<string, number>; [k: string]: any }
 const ANALYTICS_NUM = `CASE WHEN je.type IN ('integer','real') THEN je.value ELSE 0 END`
 const ANALYTICS_JE = `json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je`
@@ -5805,6 +5852,9 @@ const ANALYTICS_JOINS = `LEFT JOIN projects p ON p.project_id = dr.project_id AN
     LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
     LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = dr.staff_id AND er.company_id = dr.company_id`
+// 全案件に共通の数: 日報数・稼働人数（日報を出した人の数）・稼働日数（日報のある日の数）・案件数・インシデントかクレームの印のある日報の数
+const ANALYTICS_COUNTS = `COUNT(*) AS reports, COUNT(DISTINCT dr.staff_id) AS staff_count, COUNT(DISTINCT dr.work_date) AS work_days,
+      COUNT(DISTINCT dr.project_id) AS project_count, SUM(CASE WHEN dr.incident_flag = 1 OR dr.complaint_flag = 1 THEN 1 ELSE 0 END) AS flagged`
 // 集計の単位: 日別・スタッフ別・案件別・クライアント別（g は GROUP BY の式、extra は各行に添える列）
 const ANALYTICS_GROUPS = {
   total: { g: "''", extra: '' },
@@ -5814,36 +5864,58 @@ const ANALYTICS_GROUPS = {
   client: { g: 'COALESCE(p.client_id, 0)', extra: ', MAX(cl.client_name) AS client_name' },
 } as const
 type AnalyticsGroup = keyof typeof ANALYTICS_GROUPS
-// 項目: テンプレートの順に、数値項目を重複なく並べる（同じキーは最初のテンプレートのラベル）。
-// sumRows（je.key AS k・isnum の集計行）から、テンプレートに無い数値のキーも足す（テンプレートで文字の項目のキーは足さない）
-function metricFields(templates: any[], sumRows: any[]): AnalyticsField[] {
+// 項目: 今のテンプレートの数値項目を先に（同じキーは最初のテンプレートのラベル）、
+// 残した古い項目（projects.past_report_fields_json）のうち値のあるものを後ろに並べる。
+// sumRows（je.key AS k・isnum の集計行）から、どちらにも無い数値のキーも足す（ラベルは guessed、無ければキー。今のテンプレートで文字の項目のキーは足さない）。
+// presentOnly: その期間の日報に数値が入っている項目だけにする（日報が1件も無ければ今のテンプレートの項目のまま）
+type MetricTemplateRow = { fields_json?: unknown; past_report_fields_json?: unknown }
+function metricFields(templates: MetricTemplateRow[], sumRows: any[], opts: { presentOnly?: boolean; guessed?: Map<string, ReportFieldDef> } = {}): AnalyticsField[] {
   const fields: AnalyticsField[] = []; const seen = new Set<string>(); const textKeys = new Set<string>()
+  const numKeys = new Set<string>(sumRows.filter(r => r.isnum).map(r => String(r.k)))
   for (const t of templates) {
-    let defs: any[] = []
-    try { defs = JSON.parse(t.fields_json) } catch { defs = [] }
-    for (const f of Array.isArray(defs) ? defs : []) {
-      if (!f || typeof f.key !== 'string' || !f.key) continue
+    for (const f of parseReportFields(t.fields_json)) {
       if (f.type !== 'number') { textKeys.add(f.key); continue }
-      if (!seen.has(f.key)) { seen.add(f.key); fields.push({ key: f.key, label: String(f.label || f.key) }) }
+      if (!seen.has(f.key)) { seen.add(f.key); fields.push({ key: f.key, label: f.label }) }
     }
   }
-  for (const r of sumRows) {
-    if (r.isnum && !seen.has(r.k) && !textKeys.has(r.k)) { seen.add(r.k); fields.push({ key: r.k, label: r.k }) }
+  for (const t of templates) {
+    for (const f of pastReportFields(t.past_report_fields_json)) {
+      if (f.type === 'number' && numKeys.has(f.key) && !seen.has(f.key) && !textKeys.has(f.key)) { seen.add(f.key); fields.push({ key: f.key, label: f.label, past: true }) }
+    }
   }
-  return fields
+  for (const k of numKeys) {
+    if (seen.has(k) || textKeys.has(k)) continue
+    seen.add(k); fields.push({ key: k, label: opts.guessed?.get(k)?.label || k, past: true })
+  }
+  return opts.presentOnly && numKeys.size ? fields.filter(f => numKeys.has(f.key)) : fields
+}
+// metricFields に、テンプレートにも残した項目にも無い数値のキーの表示名を、自社・本部のテンプレートから補う（guessReportFieldLabels）。
+// cid が null なら補わない
+async function metricFieldsWithLabels(db: D1Database, cid: number | null, templates: MetricTemplateRow[], sumRows: any[], presentOnly = false) {
+  const fields = metricFields(templates, sumRows, { presentOnly })
+  if (cid == null) return fields
+  const known = new Set<string>()
+  for (const t of templates) {
+    for (const f of parseReportFields(t.fields_json)) known.add(f.key)
+    for (const f of pastReportFields(t.past_report_fields_json)) known.add(f.key)
+  }
+  const unknown = fields.filter(f => !known.has(f.key)).map(f => f.key)
+  if (!unknown.length) return fields
+  return metricFields(templates, sumRows, { presentOnly, guessed: await guessReportFieldLabels(db, cid, unknown) })
 }
 // 日報の数値項目の合計（#184。スタッフ詳細・スキルシート・案件詳細の実績）。where は daily_reports dr の条件、group は GROUP BY の式。
-// 項目は実績分析と同じ規則（metricFields）で決め、group の値ごとに { キー: 合計 } を返す（その組に無い項目は 0）
-async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string) {
+// 項目は実績分析と同じ規則（metricFields）で決め、group の値ごとに { キー: 合計 } を返す（その組に無い項目は 0）。
+// opts.cid を渡すと、表示名のわからないキーを自社・本部のテンプレートで補う。opts.presentOnly は metricFields と同じ
+async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string, opts: { cid?: number; presentOnly?: boolean } = {}) {
   const [tpl, sums] = await db.batch([
-    db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM daily_reports dr
-      JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id JOIN report_templates rt ON rt.template_id = p.report_template_id
-      WHERE ${where} ORDER BY rt.template_id`).bind(...binds),
+    db.prepare(`SELECT DISTINCT p.project_id, rt.template_id, rt.fields_json, p.past_report_fields_json FROM daily_reports dr
+      JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id LEFT JOIN report_templates rt ON rt.template_id = p.report_template_id
+      WHERE ${where} ORDER BY rt.template_id IS NULL, rt.template_id, p.project_id`).bind(...binds),
     db.prepare(`SELECT ${group} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
       FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...binds),
   ])
   const sumRows = (sums.results || []) as any[]
-  const fields = metricFields((tpl.results || []) as any[], sumRows)
+  const fields = await metricFieldsWithLabels(db, opts.cid ?? null, (tpl.results || []) as any[], sumRows, !!opts.presentOnly)
   const keys = new Set(fields.map(f => f.key))
   const values = new Map<string, Record<string, number>>()
   const valuesOf = (g: unknown) => {
@@ -5854,30 +5926,41 @@ async function reportMetricSums(db: D1Database, where: string, binds: any[], gro
   for (const r of sumRows) if (keys.has(r.k)) valuesOf(r.g)[r.k] = Number(r.v) || 0
   return { fields, valuesOf }
 }
-async function loadAnalytics(db: D1Database, cid: number, month: string) {
-  const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?'
-  const bind = [cid, ...monthBounds(month)]
+// 実績分析の集計。project を渡すと、その案件の日報だけを、その案件のテンプレートの項目で集計する（無ければ全案件。項目の列は出さない）。
+// withOptions: 画面の案件の選択肢（稼働中の案件と、日報のある終了した案件）も返す
+async function loadAnalytics(db: D1Database, cid: number, month: string, project: any | null, withOptions = false) {
+  const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?' + (project ? ' AND dr.project_id = ?' : '')
+  const bind = [cid, ...monthBounds(month), ...(project ? [project.project_id] : [])]
   const groups = Object.keys(ANALYTICS_GROUPS) as AnalyticsGroup[]
+  // 項目は案件を選んだときだけ合計する（案件別・クライアント別はそのとき1行なので、全体の合計を写す）
+  const sumGroups: AnalyticsGroup[] = project ? ['total', 'daily', 'staff'] : []
   const stmts = [
-    db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM daily_reports dr
-      JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id JOIN report_templates rt ON rt.template_id = p.report_template_id
-      WHERE ${where} ORDER BY rt.template_id`).bind(...bind),
-    ...groups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, COUNT(*) AS reports ${ANALYTICS_GROUPS[k].extra}
+    ...groups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, ${ANALYTICS_COUNTS} ${ANALYTICS_GROUPS[k].extra}
       FROM daily_reports dr ${ANALYTICS_JOINS} WHERE ${where} GROUP BY g`).bind(...bind)),
-    ...groups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
+    ...sumGroups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
       FROM daily_reports dr ${ANALYTICS_JOINS}, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...bind)),
+    ...(project ? [db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null)] : []),
+    ...(withOptions ? [db.prepare(`SELECT p.project_id, p.project_name, COALESCE(p.status, 'active') AS status, cl.client_name
+      FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+      WHERE p.company_id = ? AND (COALESCE(p.status, 'active') = 'active' OR EXISTS (SELECT 1 FROM daily_reports d2 WHERE d2.project_id = p.project_id AND d2.company_id = p.company_id))
+      ORDER BY CASE WHEN COALESCE(p.status, 'active') = 'active' THEN 0 ELSE 1 END, p.project_id`).bind(cid)] : []),
   ]
   const res = (await db.batch(stmts)).map(r => (r.results || []) as any[])
-  const fields = metricFields(res[0], res[1 + groups.length]) // 合計の行から、テンプレートに無い数値項目を拾う
+  const sumRes = (k: AnalyticsGroup) => { const i = sumGroups.indexOf(k); return i < 0 ? [] : res[groups.length + i] }
+  const tplRow = project ? (res[groups.length + sumGroups.length][0] || null) : null
+  const fields: AnalyticsField[] = project
+    ? await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], sumRes('total'), true)
+    : []
   const seen = new Set(fields.map(f => f.key))
+  const zero = () => Object.fromEntries(fields.map(f => [f.key, 0]))
   const out = {} as Record<AnalyticsGroup, AnalyticsRow[]>
   groups.forEach((k, i) => {
     const rows = new Map<any, AnalyticsRow>()
-    for (const r of res[1 + i]) {
+    for (const r of res[i]) {
       const { g, ...rest } = r
-      rows.set(g, { ...rest, values: Object.fromEntries(fields.map(f => [f.key, 0])) })
+      rows.set(g, { ...rest, flagged: Number(rest.flagged) || 0, values: zero() })
     }
-    for (const r of res[1 + groups.length + i]) {
+    for (const r of sumRes(k)) {
       const row = rows.get(r.g)
       if (row && seen.has(r.k)) row.values[r.k] = Number(r.v) || 0
     }
@@ -5886,30 +5969,56 @@ async function loadAnalytics(db: D1Database, cid: number, month: string) {
   })
   out.daily.sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)))
   for (const k of ['staff', 'project', 'client'] as const) out[k].sort((a, b) => b.reports - a.reports)
-  const totals = out.total[0] || { reports: 0, values: Object.fromEntries(fields.map(f => [f.key, 0])) }
-  return { month, fields, totals, daily: out.daily, by_staff: out.staff, by_project: out.project, by_client: out.client }
+  const totals = out.total[0] || { reports: 0, staff_count: 0, work_days: 0, project_count: 0, flagged: 0, values: zero() }
+  if (project) for (const r of [...out.project, ...out.client]) r.values = { ...totals.values }
+  return {
+    month, fields, totals, daily: out.daily, by_staff: out.staff, by_project: out.project, by_client: out.client,
+    project: project ? { project_id: project.project_id, project_name: project.project_name, status: project.status || 'active' } : null,
+    ...(withOptions ? { projects: res[res.length - 1] } : {}),
+  }
 }
 const analyticsMonth = (q: string | undefined) => (q && /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : monthJST())
+// project_id（任意）は自社の案件か確かめる。空・未指定・all は全案件。ほかの会社の案件・形式の違うものは null（404 にする）
+async function analyticsProject(db: D1Database, cid: number, q: string | undefined): Promise<{ project: any | null } | null> {
+  if (q === undefined || q === '' || q === 'all') return { project: null }
+  const id = toInt(q, 1)
+  const p = id === null ? null : await ownProject(db, cid, id)
+  return p ? { project: p } : null
+}
 api.get('/admin/analytics', async (c) => {
   const u = c.get('user')
-  return c.json(await loadAnalytics(c.env.DB, u.company_id, analyticsMonth(c.req.query('month'))))
+  const sel = await analyticsProject(c.env.DB, u.company_id, c.req.query('project_id'))
+  if (!sel) return c.json({ error: '案件が見つかりません' }, 404)
+  return c.json(await loadAnalytics(c.env.DB, u.company_id, analyticsMonth(c.req.query('month')), sel.project, true))
 })
-// 実績分析の CSV（by: staff スタッフ別 / project 案件別 / client クライアント別 / daily 日別）。項目の列は画面と同じ
+// 実績分析の CSV（by: staff スタッフ別 / project 案件別 / client クライアント別 / daily 日別）。列は画面と同じ。
+// project_id を付けるとその案件の分（項目の列つき）を、付けなければ全案件の共通の数だけを出す。ファイル名に案件名と月を入れる
+const ANALYTICS_CSV_COUNTS: Record<'staff' | 'project' | 'client' | 'daily', [string, string][]> = {
+  staff: [['work_days', '稼働日数'], ['project_count', '案件数']],
+  project: [['staff_count', '稼働人数'], ['work_days', '稼働日数'], ['flagged', 'インシデント・クレーム']],
+  client: [['staff_count', '稼働人数'], ['project_count', '案件数'], ['flagged', 'インシデント・クレーム']],
+  daily: [['staff_count', '稼働人数'], ['flagged', 'インシデント・クレーム']],
+}
+const csvFileNamePart = (s: unknown) => String(s ?? '').replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_').trim().slice(0, 60) || '案件'
 api.get('/admin/analytics/csv', async (c) => {
   const u = c.get('user'); const month = analyticsMonth(c.req.query('month'))
   const by = (['staff', 'project', 'client', 'daily'] as const).find(k => k === c.req.query('by')) || 'staff'
-  const a = await loadAnalytics(c.env.DB, u.company_id, month)
-  const vals = (r: AnalyticsRow) => a.fields.map(f => r.values[f.key] ?? 0)
-  const labels = a.fields.map(f => f.label)
+  const sel = await analyticsProject(c.env.DB, u.company_id, c.req.query('project_id'))
+  if (!sel) return c.json({ error: '案件が見つかりません' }, 404)
+  const a = await loadAnalytics(c.env.DB, u.company_id, month, sel.project)
+  // 案件を選んだときは、案件数（いつも1）の列は出さない
+  const counts = ANALYTICS_CSV_COUNTS[by].filter(([k]) => !(sel.project && k === 'project_count'))
+  const vals = (r: AnalyticsRow) => [r.reports, ...counts.map(([k]) => Number(r[k]) || 0), ...a.fields.map(f => r.values[f.key] ?? 0)]
+  const heads = ['日報数', ...counts.map(([, l]) => l), ...a.fields.map(f => f.label)]
   const NAME = { staff: 'スタッフ別', project: '案件別', client: 'クライアント別', daily: '日別' }[by]
   const csv = by === 'staff'
-    ? toCsv(['月', 'スタッフID', '社員番号', 'スタッフ', '日報数', ...labels], a.by_staff.map(r => [month, r.staff_id, r.employee_number, r.name, r.reports, ...vals(r)]), { textCols: ['社員番号'] })
+    ? toCsv(['月', 'スタッフID', '社員番号', 'スタッフ', ...heads], a.by_staff.map(r => [month, r.staff_id, r.employee_number, r.name, ...vals(r)]), { textCols: ['社員番号'] })
     : by === 'project'
-      ? toCsv(['月', '案件ID', '案件', 'クライアント', '日報数', ...labels], a.by_project.map(r => [month, r.project_id, r.project_name, r.client_name, r.reports, ...vals(r)]))
+      ? toCsv(['月', '案件ID', '案件', 'クライアント', ...heads], a.by_project.map(r => [month, r.project_id, r.project_name, r.client_name, ...vals(r)]))
       : by === 'client'
-        ? toCsv(['月', 'クライアント', '日報数', ...labels], a.by_client.map(r => [month, r.client_name || '（クライアント未設定）', r.reports, ...vals(r)]))
-        : toCsv(['日付', '日報数', ...labels], a.daily.map(r => [r.work_date, r.reports, ...vals(r)]))
-  return csvResponse(`実績分析_${NAME}_${month}.csv`, csv)
+        ? toCsv(['月', 'クライアント', ...heads], a.by_client.map(r => [month, r.client_name || '（クライアント未設定）', ...vals(r)]))
+        : toCsv(['日付', ...heads], a.daily.map(r => [r.work_date, ...vals(r)]))
+  return csvResponse(`実績分析_${sel.project ? csvFileNamePart(sel.project.project_name) : '全案件'}_${NAME}_${month}.csv`, csv)
 })
 
 // お知らせ配信
@@ -7803,29 +7912,31 @@ api.get('/admin/daily-reports-csv', async (c) => {
     where += ` AND ${col} = ?`; binds.push(v)
   }
   const { rows, total } = await loadLatestForCsv(db, `SELECT dr.work_date, dr.submitted_at, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_checked, dr.manager_comment, dr.staff_id, p.project_name, p.report_template_id, us.name AS staff_name
+      dr.manager_checked, dr.manager_comment, dr.staff_id, dr.project_id, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name
     FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
     JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
     WHERE ${where} ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC`,
     `SELECT COUNT(*) AS n FROM daily_reports dr WHERE ${where}`, binds, DR_CSV_LIMIT)
   // テンプレートの項目の順とラベル（複数の案件のテンプレートは、出てきた順に列を足す）
   const cols = new Map<string, string>()
+  const templates: Record<string, ReportFieldDef[]> = {}
   const tplIds = [...new Set(rows.map(r => r.report_template_id).filter(Boolean))]
   if (tplIds.length) {
     const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN ${JSON_IN}`).bind(bindJsonArray(tplIds)).all()).results as any[]
-    const byId = new Map(ts.map(t => [t.template_id, t.fields_json]))
-    for (const id of tplIds) {
-      let f: any[] = []
-      try { const v = JSON.parse(byId.get(id) || '[]'); if (Array.isArray(v)) f = v } catch { f = [] }
-      for (const x of f) if (x && typeof x.key === 'string' && !cols.has(x.key)) cols.set(x.key, String(x.label || x.key))
-    }
+    for (const t of ts) templates[t.template_id] = parseReportFields(t.fields_json)
+    for (const id of tplIds) for (const x of templates[id] || []) if (!cols.has(x.key)) cols.set(x.key, x.label)
   }
   const values = rows.map(r => {
     let v: Record<string, unknown> = {}
     try { const o = JSON.parse(r.report_values || '{}'); if (o && typeof o === 'object' && !Array.isArray(o)) v = o } catch { v = {} }
-    for (const k of Object.keys(v)) if (!cols.has(k)) cols.set(k, k)
     return v
   })
+  // 差し替える前のテンプレートの項目は、値の入った日報があるものだけを、今のテンプレートの項目の後ろに元の表示名で足す（#9511）
+  const pastFields = await reportPastFieldsByProject(db, u.company_id, rows.map((r, i) => ({ ...r, values: values[i] })), templates)
+  rows.forEach((r, i) => {
+    for (const f of pastFields[r.project_id] || []) if (!cols.has(f.key) && values[i][f.key] != null && values[i][f.key] !== '') cols.set(f.key, f.label)
+  })
+  for (const v of values) for (const k of Object.keys(v)) if (!cols.has(k)) cols.set(k, k)
   const cell = (x: unknown) => x == null ? '' : Array.isArray(x) ? x.join('、') : typeof x === 'object' ? JSON.stringify(x) : x
   const keys = [...cols.keys()]
   const header = ['稼働日', '案件', 'スタッフ', 'スタッフID', '提出日時', 'インシデント', 'クレーム', '確認', '管理者コメント', ...keys.map(k => cols.get(k) as string)]

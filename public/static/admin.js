@@ -538,7 +538,7 @@ async function renderDashboard() {
           </tbody>
         </table>
         </div>
-        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で見られます</p>` : ''}
+        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''}
       </section>
     </div>
 
@@ -2680,12 +2680,14 @@ const ratePct = (n, d) => d ? Math.round((n / d) * 100) + '%' : '-'
 // 返さない・項目がないときは従来の決め打ちの項目を使う。列が多すぎないよう先頭の PERF_COL_MAX 件までにする
 const PERF_FIXED_FIELDS = [{ key: 'mnp', label: 'MNP' }, { key: 'pi', label: 'PI' }, { key: 'shinki', label: '新規' }, { key: 'hikari', label: '光' }, { key: 'seiyaku', label: '成約' }]
 const PERF_COL_MAX = 8
-function perfColumns(fields) {
+// showAll: 先頭の PERF_COL_MAX 件で切らずに全部出す（案件詳細の切り替え。#9511）。hidden は出していない項目
+function perfColumns(fields, showAll) {
   const all = Array.isArray(fields) && fields.length ? fields : PERF_FIXED_FIELDS
-  return { cols: all.slice(0, PERF_COL_MAX), more: Math.max(0, all.length - PERF_COL_MAX) }
+  const cols = showAll ? all : all.slice(0, PERF_COL_MAX)
+  return { cols, more: all.length - cols.length, hidden: all.slice(cols.length), total: all.length }
 }
 const perfValue = (row, key) => Number(row && row.values && key in row.values ? row.values[key] : row ? row[key] : 0) || 0
-const perfMoreNote = (more) => more ? `<p class="text-[11px] text-gray-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で見られます</p>` : ''
+const perfMoreNote = (more) => more ? `<p class="text-[11px] text-gray-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-rank-min]') : null
   if (!sel) return
@@ -2768,6 +2770,8 @@ async function renderProjectDetail(pid) {
         <div class="flex flex-wrap gap-1.5">
           ${(p.template_fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}">${esc(f.label)}</span>`).join('')}
         </div>
+        ${(p.past_report_fields || []).length ? `<p class="text-xs text-gray-500 mt-3 mb-1">以前のテンプレートの項目（今までの日報の値は、日報の一覧・実績・CSV にこの表示名で出ます）</p>
+        <div class="flex flex-wrap gap-1.5">${p.past_report_fields.map(f => `<span class="badge badge-gray">${esc(f.label)}</span>`).join('')}</div>` : ''}
         <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
         <div class="mt-4 pt-3 border-t border-gray-100">
           <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
@@ -2920,7 +2924,7 @@ delegate('editProject', el => withSubmitLock(el, async () => {
       <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="ep-loc" class="inp" maxlength="200" value="${esc(p.location || '')}"></div>
       <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
         <select id="ep-tpl" class="inp">${tpls.map(t => `<option value="${Number(t.template_id)}" ${Number(t.template_id) === Number(p.report_template_id) ? 'selected' : ''}>${esc(t.template_name)}${t.editable ? '（自社）' : ''}${t.status === 'stopped' ? '（配信停止）' : ''}</option>`).join('')}</select>
-        <p class="text-[11px] text-gray-400 mt-1">日報がある案件のテンプレートを変えると、新しいテンプレートにない項目は過去の日報に表示されなくなります</p></div>
+        <p class="text-[11px] text-gray-400 mt-1">テンプレートを変えても、今までの日報の項目は元の表示名のまま日報の一覧・実績・CSV に出ます</p></div>
       <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
@@ -3116,28 +3120,47 @@ function projectSkillBadges(v) {
   return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-gray-400">-</span>'
 }
 // 案件詳細のスタッフ別実績。成約/日・成約率も出し、並べ方を切り替えられる（#489）
-// 案件詳細のスタッフ別実績の列。並べ替えの基準は成約（テンプレートに無ければ先頭の数値項目）。成約率は成約と商談の両方があるときだけ出す
+// 案件詳細のスタッフ別実績の列。並べ替えの基準は成約（テンプレートに無ければ先頭の数値項目）。成約率は成約と商談の両方があるときだけ出す。
+// 項目はその月の日報に値のあるもの（API。差し替える前のテンプレートの項目は後ろに「旧」を付けて出す。#9511）。
+// 先頭の PERF_COL_MAX 件を超える分は、隠れていることを示し、すべての項目の表示に切り替えられる（PROJECT_PERF_ALL）
+let PROJECT_PERF_ALL = false
 function projectPerfColumns(data) {
-  const { cols, more } = perfColumns(data.performance_fields)
-  const main = cols.find(f => f.key === 'seiyaku') || cols[0]
+  const { cols, more, hidden } = perfColumns(data.performance_fields, PROJECT_PERF_ALL)
+  const all = perfColumns(data.performance_fields, true).cols
+  const main = all.find(f => f.key === 'seiyaku') || cols[0]
   const hasRate = main.key === 'seiyaku' && (!Array.isArray(data.performance_fields) || !data.performance_fields.length || data.performance_fields.some(f => f.key === 'shodan'))
-  return { cols, more, main, hasRate }
+  return { cols, more, hidden, total: all.length, main, hasRate }
 }
+function projectPerfMoreHtml(c) {
+  if (c.total <= PERF_COL_MAX) return ''
+  if (PROJECT_PERF_ALL) return `<p class="text-[11px] text-gray-500 mt-1">日報の項目をすべて（${c.total}件）出しています。
+    <button type="button" class="text-blue-600 hover:underline" data-action="toggleProjectPerfCols">先頭の${PERF_COL_MAX}件だけにする</button></p>`
+  return `<p class="text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1"><i class="fas fa-eye-slash mr-0.5"></i>表に出していない項目が${c.more}件あります（${esc(c.hidden.map(f => f.label).join('、'))}）。
+    <button type="button" class="text-blue-600 hover:underline font-bold" data-action="toggleProjectPerfCols">すべての項目を表示</button></p>`
+}
+// 実績分析を、この案件・この月で開く（#9512）
+delegate('openProjectAnalytics', el => {
+  const id = String(Number(el.dataset.id)); ANALYTICS.month = el.dataset.month || ''
+  // 同じ URL のときは hashchange が起きないので、直接描く
+  if (location.hash === '#analytics/' + id) renderAnalytics(ANALYTICS.month, id); else location.hash = 'analytics/' + id
+})
+delegate('toggleProjectPerfCols', () => { PROJECT_PERF_ALL = !PROJECT_PERF_ALL; drawProjectStaffPerf() })
 function drawProjectStaffPerf() {
   const host = document.getElementById('project-staff-perf'); if (!host || !PROJECT_DETAIL) return
   const { data } = PROJECT_DETAIL; const range = monthRangeOf(data.month)
-  const { cols, more, main, hasRate } = projectPerfColumns(data)
+  const pc = projectPerfColumns(data); const { cols, main, hasRate } = pc
   const rows = rankRows(data.staff_performance.map(s => ({ ...s, days: Number(s.days || 0), val: perfValue(s, main.key), num: perfValue(s, 'seiyaku'), den: perfValue(s, 'shodan') })), hasRate)
   host.innerHTML = `<div class="overflow-x-auto"><table class="tbl">
-    <thead><tr><th>スタッフ</th><th>日数</th>${cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}</th>`).join('')}<th class="whitespace-nowrap">${esc(main.label)}/日</th>${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
+    <thead><tr><th>スタッフ</th><th>日数</th>${cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}${pastFieldMark(f)}</th>`).join('')}<th class="whitespace-nowrap">${esc(main.label)}/日</th>${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
     <tbody>${rows.map(s => `
       <tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name)}</a>
         <a href="${esc(reportsLink({ project: data.project.project_id, staff: s.staff_id, ...range }))}" class="text-[11px] text-gray-400 hover:underline ml-1" title="この人の日報を見る"><i class="fas fa-file-lines"></i></a></td>
       <td>${s.days}</td>${cols.map(f => `<td class="${f.key === main.key ? 'font-bold' : ''}">${perfValue(s, f.key)}</td>`).join('')}
       <td>${perDay(s.val, s.days)}</td>${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 3 + (hasRate ? 1 : 0)}" class="text-center text-gray-400 py-3">データなし</td></tr>`}
     </tbody></table></div>
-    ${perfMoreNote(more)}
-    <p class="text-[11px] text-gray-400 mt-1">日数は日報の数。${hasRate ? '成約率は成約÷商談（商談の入力がない人は -）' : `並べ替えは「${esc(main.label)}」で行います`}</p>`
+    ${projectPerfMoreHtml(pc)}
+    <p class="text-[11px] text-gray-400 mt-1">日数は日報の数。${hasRate ? '成約率は成約÷商談（商談の入力がない人は -）' : `並べ替えは「${esc(main.label)}」で行います`}。
+      <button type="button" class="text-blue-600 hover:underline" data-action="openProjectAnalytics" data-id="${Number(data.project.project_id)}" data-month="${esc(data.month)}">実績分析で日別・CSV を見る</button></p>`
 }
 delegate('rankProject', el => { RANK_STATE.mode = el.dataset.mode; renderProjectDetailRankButtons(); drawProjectStaffPerf() })
 function renderProjectDetailRankButtons() {
@@ -4295,6 +4318,15 @@ window.applyReportFilter = function () {
 }
 
 // テンプレートの項目の順に「ラベル: 値」を出す。数値はバッジ、テキストは本文。テンプレートにないキーは最後にまとめる
+// 日報の項目: 案件の今のテンプレートの項目（無ければ「報告内容」）の後ろに、差し替える前のテンプレートの項目を元の表示名で足す（API の past_fields。#9511）
+function reportFieldsOf(data, r) {
+  const cur = ((data && data.templates) || {})[r.report_template_id] || []
+  const past = ((data && data.past_fields) || {})[r.project_id] || []
+  if (!past.length) return cur
+  const base = cur.length ? cur : REPORT_NO_TEMPLATE_FIELDS
+  const seen = new Set(base.map(f => f.key))
+  return [...base, ...past.filter(f => !seen.has(f.key))]
+}
 function reportValuesHtml(r, fields) {
   const vals = r.values || {}
   const list = fields && fields.length ? fields : REPORT_NO_TEMPLATE_FIELDS
@@ -4560,7 +4592,7 @@ async function renderReports(refresh) {
       ${uncheckedShown ? `<button class="btn btn-primary text-xs" data-action="checkShownReports"><i class="fas fa-check-double"></i>表示中の未確認 ${uncheckedShown}件をまとめて確認済みにする</button>` : ''}
     </div>
     <div class="space-y-3">
-      ${data.reports.map(r => reportCardHtml(r, data.templates[r.report_template_id])).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
+      ${data.reports.map(r => reportCardHtml(r, reportFieldsOf(data, r))).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
     </div>
     ${pager}`
   loadReportRetentionNote()
@@ -4716,20 +4748,40 @@ delegate('saveReportComment', (el) => {
 })
 
 // ============ 実績分析 ============
-// 集計する項目は、API がその月の日報テンプレートの数値項目から返す（#184）。
-// 指標を選ぶと、スタッフ別ランキングの並びと日別のグラフが切り替わる。各表は CSV でも出せる
-const ANALYTICS = { data: null, key: '' }
-async function renderAnalytics(month) {
+// 画面の上で案件（全案件／各案件）と月を選ぶ（#9512）。選んだ案件・月・指標は、案件や月を移っても引き継ぐ（ページを開き直すまで）。
+// 全案件のときは日報数・稼働人数など全案件に共通の数だけを出す。案件を選ぶと、その案件の日報テンプレートの数値項目
+// （テンプレートを差し替える前の項目も元の表示名で。#9511）で集計する。指標を選ぶと、ランキングの並びと日別のグラフが切り替わる。各表は CSV でも出せる
+const ANALYTICS = { data: null, key: '', wantKey: '', month: '', project: '' }
+async function renderAnalytics(month, project) {
   loading()
-  month = month || dayjs().format('YYYY-MM')
+  ANALYTICS.month = /^\d{4}-\d{2}$/.test(month || '') ? month : (ANALYTICS.month || dayjs().format('YYYY-MM'))
+  if (project !== undefined) ANALYTICS.project = /^\d+$/.test(String(project)) ? String(project) : ''
+  const params = { month: ANALYTICS.month }
+  if (ANALYTICS.project) params.project_id = ANALYTICS.project
   let data
-  try { data = (await axios.get('/api/admin/analytics', { params: { month } })).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, '実績を読み込めませんでした'))}</p>`; return }
+  try { data = (await axios.get('/api/admin/analytics', { params })).data } catch (e) {
+    // 消した案件など、選べない案件のときは全案件に戻す
+    if (ANALYTICS.project && e.response && e.response.status === 404) { toast('案件が見つからないため、全案件を表示します'); return renderAnalytics(ANALYTICS.month, '') }
+    $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, '実績を読み込めませんでした'))}</p>`; return
+  }
   ANALYTICS.data = data
-  // 選んでいた指標が無い月は、成約数（あれば）か最初の項目にする
-  if (!data.fields.some(f => f.key === ANALYTICS.key)) ANALYTICS.key = (data.fields.find(f => f.key === 'seiyaku') || data.fields[0] || {}).key || ''
+  const h = ANALYTICS.project ? '#analytics/' + ANALYTICS.project : '#analytics'
+  if ((location.hash || '').split('/')[0] === '#analytics' && location.hash !== h) history.replaceState(null, '', h)
+  // 選んでいた指標が無い月・案件は、成約数（あれば）か最初の項目にする（選んだ指標は覚えておき、ある月に戻れば使う）
+  const fields = data.fields || []
+  ANALYTICS.key = fields.some(f => f.key === ANALYTICS.wantKey) ? ANALYTICS.wantKey : ((fields.find(f => f.key === 'seiyaku') || fields[0] || {}).key || '')
   drawAnalytics()
 }
 delegate('analyticsMonth', el => renderAnalytics(el.dataset.month))
+delegate('analyticsProject', el => renderAnalytics(undefined, el.dataset.id || ''))
+// 案件・月（input type=month）・指標の選択
+document.addEventListener('change', ev => {
+  const t = ev.target
+  if (!t || !t.matches) return
+  if (t.matches('select[data-analytics-project]')) renderAnalytics(undefined, t.value)
+  else if (t.matches('input[data-analytics-month]')) { if (/^\d{4}-\d{2}$/.test(t.value)) renderAnalytics(t.value) }
+  else if (t.matches('select[data-analytics-key]')) { ANALYTICS.key = ANALYTICS.wantKey = t.value; drawAnalytics() }
+})
 
 // 案件の月間目標（#292）。日報テンプレートの数値項目ごとに、スタッフ1人あたりの件数を決める。スタッフの実績画面に進み具合が出る
 let GOAL_PROJECTS = []
@@ -4796,72 +4848,115 @@ delegate('saveStaffViewSetting', el => withSubmitLock(el, async () => {
   const body = { ranking_visible: document.getElementById('sv-ranking').checked, ranking_anonymous: document.getElementById('sv-anon').checked, show_coworkers: document.getElementById('sv-cowork').checked }
   try { await axios.put('/api/admin/settings/staff-view', body); closeModal(); toast('スタッフアプリへの表示を保存しました') } catch (e) { showApiError(e, '保存できませんでした') }
 }))
-window.setAnalyticsKey = function (key) { ANALYTICS.key = key; drawAnalytics() }
 delegate('rankAnalytics', el => { RANK_STATE.mode = el.dataset.mode; drawAnalytics() })
-function drawAnalytics() {
-  const data = ANALYTICS.data; const month = data.month; const fields = data.fields; const key = ANALYTICS.key
-  const tv = (data.totals && data.totals.values) || {}
-  const has = k => fields.some(f => f.key === k)
-  const rate = has('shodan') && has('seiyaku') ? (tv.shodan ? Math.round((tv.seiyaku / tv.shodan) * 100) : 0) + '%' : null
-  const num = v => Number(v || 0).toLocaleString()
-  const heads = fields.map(f => `<th class="whitespace-nowrap ${f.key === key ? 'text-blue-700' : ''}">${esc(f.label)}</th>`).join('')
-  const cells = r => fields.map(f => `<td class="${f.key === key ? 'font-bold' : ''}">${num(r.values[f.key])}</td>`).join('')
-  const csvLink = by => `<a class="text-xs text-blue-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(new URLSearchParams({ month, by }).toString())}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
-  const empty = (n) => `<tr><td colspan="${n}" class="text-center text-gray-400 py-4">日報はありません</td></tr>`
-  // ランキングは 合計・1日あたり・成約率 で並べ替えられる（#489）。日数は日報の数
-  const hasRate = has('shodan') && has('seiyaku')
-  const staff = rankRows(data.by_staff.map(s => ({ ...s, days: Number(s.reports || 0), val: Number(s.values[key] || 0), num: Number(s.values.seiyaku || 0), den: Number(s.values.shodan || 0) })), hasRate)
-  const keyLabel = (fields.find(f => f.key === key) || {}).label || ''
-  const rankLabel = { total: `${keyLabel}の多い順`, per_day: `1日あたりの${keyLabel}の多い順`, rate: '成約率の高い順' }[RANK_STATE.mode === 'rate' && !hasRate ? 'total' : RANK_STATE.mode]
-  const m0 = dayjs(month + '-01')
-
-  $app.innerHTML = `
-    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+// 全案件のときの、表ごとの共通の数の列（API の ANALYTICS_CSV_COUNTS と同じ。CSV と同じ並び）
+const ANALYTICS_COUNT_COLS = {
+  staff: [['work_days', '稼働日数'], ['project_count', '案件数']],
+  project: [['staff_count', '稼働人数'], ['work_days', '稼働日数'], ['flagged', 'インシデント・クレーム']],
+  client: [['staff_count', '稼働人数'], ['project_count', '案件数'], ['flagged', 'インシデント・クレーム']],
+}
+// 差し替える前のテンプレートの項目の見出しに付ける印（#9511）
+const pastFieldMark = f => f && f.past ? '<span class="badge badge-gray ml-0.5 text-[10px]" title="以前の日報テンプレートの項目">旧</span>' : ''
+function analyticsHeaderHtml(data) {
+  const m0 = dayjs(data.month + '-01')
+  const projects = (data.projects || []).slice()
+  // 選んだ案件が選択肢に無い（日報のない終了した案件）ときも、選んだ状態で出す
+  if (data.project && !projects.some(p => Number(p.project_id) === Number(data.project.project_id))) projects.push(data.project)
+  const sel = data.project ? Number(data.project.project_id) : 0
+  const fields = data.fields || []
+  return `
+    <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">実績分析</h2>
       <div class="flex gap-2 items-center flex-wrap">
-        <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
-        <span class="font-bold">${esc(m0.format('YYYY年M月'))}</span>
-        <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
-        ${fields.length ? `<label class="text-xs text-gray-500 flex items-center gap-1 ml-2">指標
-          <select class="inp text-sm w-auto" onchange="setAnalyticsKey(this.value)">${fields.map(f => `<option value="${esc(f.key)}" ${f.key === key ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select></label>` : ''}
         <button class="btn btn-outline text-sm" data-action="showProjectGoals" title="スタッフの実績画面に出す、案件ごとの月間目標"><i class="fas fa-bullseye"></i>案件の目標</button>
         <button class="btn btn-outline text-sm" data-action="showStaffViewSetting" title="スタッフアプリに出す順位・一緒に入る人の設定"><i class="fas fa-mobile-screen"></i>スタッフへの表示</button>
       </div>
     </div>
-    <p class="text-xs text-gray-500 mb-3">集計する項目は、この月に日報のある案件の日報テンプレートの数値項目です。</p>
+    <section class="card p-3 mb-4 flex items-end gap-3 flex-wrap">
+      <label class="text-xs text-gray-500">案件
+        <select class="inp text-sm w-auto max-w-[16rem] block" data-analytics-project aria-label="案件">
+          <option value="">全案件</option>
+          ${projects.map(p => `<option value="${Number(p.project_id)}" ${Number(p.project_id) === sel ? 'selected' : ''}>${esc(p.project_name || '')}${p.status && p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}
+        </select></label>
+      <div class="text-xs text-gray-500">月
+        <div class="flex items-center gap-1">
+          <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
+          <input type="month" class="inp text-sm w-auto" data-analytics-month value="${esc(data.month)}" aria-label="月を選ぶ">
+          <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
+        </div></div>
+      ${fields.length ? `<label class="text-xs text-gray-500">指標
+        <select class="inp text-sm w-auto block" data-analytics-key aria-label="指標">${fields.map(f => `<option value="${esc(f.key)}" ${f.key === ANALYTICS.key ? 'selected' : ''}>${esc(f.label)}${f.past ? '（以前の項目）' : ''}</option>`).join('')}</select></label>` : ''}
+      ${data.project ? `<a href="#projects/${Number(data.project.project_id)}" class="text-xs text-blue-600 hover:underline ml-auto self-center">案件の詳細を開く</a>` : ''}
+    </section>`
+}
+function drawAnalytics() {
+  const data = ANALYTICS.data; const month = data.month; const fields = data.fields || []; const key = ANALYTICS.key
+  const project = data.project
+  const tv = (data.totals && data.totals.values) || {}
+  const t = data.totals || {}
+  const has = k => fields.some(f => f.key === k)
+  const rate = has('shodan') && has('seiyaku') ? (tv.shodan ? Math.round((tv.seiyaku / tv.shodan) * 100) : 0) + '%' : null
+  const num = v => Number(v || 0).toLocaleString()
+  const heads = fields.map(f => `<th class="whitespace-nowrap ${f.key === key ? 'text-blue-700' : ''}">${esc(f.label)}${pastFieldMark(f)}</th>`).join('')
+  const cells = r => fields.map(f => `<td class="${f.key === key ? 'font-bold' : ''}">${num(r.values && r.values[f.key])}</td>`).join('')
+  const countHeads = by => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).map(([, l]) => `<th class="whitespace-nowrap">${esc(l)}</th>`).join('')
+  const countCells = (by, r) => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).map(([k]) => `<td>${num(r[k])}</td>`).join('')
+  const countLen = by => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).length
+  const csvQs = by => new URLSearchParams({ month, by, ...(project ? { project_id: String(project.project_id) } : {}) }).toString()
+  const csvLink = by => `<a class="text-xs text-blue-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(csvQs(by))}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
+  const empty = (n) => `<tr><td colspan="${n}" class="text-center text-gray-400 py-4">日報はありません</td></tr>`
+  // ランキングは 合計・1日あたり・成約率 で並べ替えられる（#489）。日数は日報の数。全案件のときは日報数の多い順
+  const hasRate = has('shodan') && has('seiyaku')
+  const staff = key ? rankRows(data.by_staff.map(s => ({ ...s, days: Number(s.reports || 0), val: Number(s.values[key] || 0), num: Number(s.values.seiyaku || 0), den: Number(s.values.shodan || 0) })), hasRate) : data.by_staff
+  const keyLabel = (fields.find(f => f.key === key) || {}).label || ''
+  const rankLabel = key ? { total: `${keyLabel}の多い順`, per_day: `1日あたりの${keyLabel}の多い順`, rate: '成約率の高い順' }[RANK_STATE.mode === 'rate' && !hasRate ? 'total' : RANK_STATE.mode] : '日報数の多い順'
+  const m0 = dayjs(month + '-01')
+  const scope = project ? `「${esc(project.project_name || '')}」` : '全案件'
+  const cards = project
+    ? [...fields.map(f => [f.label, num(tv[f.key]), f]), ...(rate ? [['成約率（成約数÷商談数）', rate]] : []), ['日報数', num(t.reports)], ['稼働人数', num(t.staff_count)]]
+    : [['日報数', num(t.reports)], ['稼働人数', num(t.staff_count)], ['稼働日数', num(t.work_days)], ['案件数', num(t.project_count)], ['インシデント・クレーム', num(t.flagged)]]
+  const chartLabel = key ? keyLabel : '日報数'
+
+  $app.innerHTML = `
+    ${analyticsHeaderHtml(data)}
+    <p class="text-xs text-gray-500 mb-3">${esc(m0.format('YYYY年M月'))}・${scope}の実績です。${project
+      ? '集計する項目は、この月の日報に値のある、この案件の日報テンプレートの数値項目です（テンプレートを差し替える前の項目は「旧」を付けて後ろに出します）。'
+      : '全案件のときは、全案件に共通の数（日報数・稼働人数〈日報を出した人の数〉など）だけを出します。成約数などの日報の項目は、案件を選ぶと出ます。'}</p>
     <section class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-5">
-      ${[...fields.map(f => [f.label, num(tv[f.key])]), ...(rate ? [['成約率（成約数÷商談数）', rate]] : []), ['日報数', num(data.totals && data.totals.reports)]].map(([l, v]) => `
-        <div class="card p-3 text-center"><p class="text-xl font-bold text-blue-600">${esc(v)}</p><p class="text-xs text-gray-500">${esc(l)}</p></div>`).join('')}
+      ${cards.map(([l, v, f]) => `
+        <div class="card p-3 text-center"><p class="text-xl font-bold text-blue-600">${esc(v)}</p><p class="text-xs text-gray-500">${esc(l)}${pastFieldMark(f)}</p></div>`).join('')}
     </section>
-    ${fields.length ? '' : '<p class="card p-4 text-sm text-gray-400 mb-5">この月の日報には、集計できる数値の項目がありません。</p>'}
+    ${project && !fields.length ? '<p class="card p-4 text-sm text-gray-400 mb-5">この月のこの案件の日報には、集計できる数値の項目がありません。</p>' : ''}
     <section class="card p-4 mb-5">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">日別推移${keyLabel ? `（${esc(keyLabel)}）` : ''}${csvLink('daily')}</h3>
-      ${key ? '<canvas id="daily-chart" height="80"></canvas>' : '<p class="text-sm text-gray-400">表示する項目がありません</p>'}
+      <h3 class="text-sm font-bold text-gray-700 mb-3">日別推移（${esc(chartLabel)}）${csvLink('daily')}</h3>
+      ${project && !key ? '<p class="text-sm text-gray-400">表示する項目がありません</p>' : '<canvas id="daily-chart" height="80"></canvas>'}
     </section>
     <section class="card p-4 mb-5">
       <div class="flex items-center gap-2 mb-3 flex-wrap">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別ランキング${keyLabel ? `（${esc(rankLabel)}）` : ''}${csvLink('staff')}</h3>
+        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別${key ? 'ランキング' : ''}（${esc(rankLabel)}）${csvLink('staff')}</h3>
         ${key ? `<span class="ml-auto">${rankControlsHtml('rankAnalytics', hasRate)}</span>` : ''}
       </div>
       <div class="overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>#</th><th>スタッフ</th><th>日報</th>${heads}${key ? `<th class="whitespace-nowrap">${esc(keyLabel)}/日</th>` : ''}${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
+        <thead><tr><th>#</th><th>スタッフ</th><th>日報</th>${countHeads('staff')}${heads}${key ? `<th class="whitespace-nowrap">${esc(keyLabel)}/日</th>` : ''}${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
         <tbody>${staff.map((s, i) => `
           <tr><td>${i < 3 && key && s.values[key] ? ['🥇', '🥈', '🥉'][i] : i + 1}</td>
           <td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name || '')}</a></td>
-          <td>${s.reports}</td>${cells(s)}${key ? `<td>${perDay(s.val, s.days)}</td>` : ''}${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || empty(fields.length + 3 + (key ? 1 : 0) + (hasRate ? 1 : 0))}
+          <td>${num(s.reports)}</td>${countCells('staff', s)}${cells(s)}${key ? `<td>${perDay(s.val, s.days)}</td>` : ''}${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || empty(fields.length + 3 + countLen('staff') + (key ? 1 : 0) + (hasRate ? 1 : 0))}
         </tbody>
       </table>
       </div>
     </section>
+    ${project ? '' : `
     <section class="card p-4 mb-5">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別実績${csvLink('project')}</h3>
       <div class="overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>案件</th><th>クライアント</th><th>日報</th>${heads}</tr></thead>
+        <thead><tr><th>案件</th><th>クライアント</th><th>日報</th>${countHeads('project')}<th></th></tr></thead>
         <tbody>${data.by_project.map(p => `
           <tr><td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline text-xs">${esc(p.project_name || '')}</a></td>
-          <td class="text-xs">${esc(p.client_name || '-')}</td><td>${p.reports}</td>${cells(p)}</tr>`).join('') || empty(fields.length + 3)}
+          <td class="text-xs">${esc(p.client_name || '-')}</td><td>${num(p.reports)}</td>${countCells('project', p)}
+          <td><button class="btn btn-outline text-xs whitespace-nowrap" data-action="analyticsProject" data-id="${Number(p.project_id)}" title="この案件の日報の項目で集計する"><i class="fas fa-chart-column"></i>項目別に見る</button></td></tr>`).join('') || empty(4 + countLen('project'))}
         </tbody>
       </table>
       </div>
@@ -4870,23 +4965,24 @@ function drawAnalytics() {
       <h3 class="text-sm font-bold text-gray-700 mb-3">クライアント別実績${csvLink('client')}</h3>
       <div class="overflow-x-auto">
       <table class="tbl">
-        <thead><tr><th>クライアント</th><th>日報</th>${heads}</tr></thead>
+        <thead><tr><th>クライアント</th><th>日報</th>${countHeads('client')}</tr></thead>
         <tbody>${data.by_client.map(c => `
-          <tr><td class="text-xs">${esc(c.client_name || '（クライアント未設定）')}</td><td>${c.reports}</td>${cells(c)}</tr>`).join('') || empty(fields.length + 2)}
+          <tr><td class="text-xs">${esc(c.client_name || '（クライアント未設定）')}</td><td>${num(c.reports)}</td>${countCells('client', c)}</tr>`).join('') || empty(2 + countLen('client'))}
         </tbody>
       </table>
       </div>
-    </section>`
+    </section>`}`
 
-  if (!key) return
-  // 日別推移は月の1日から末日まで並べ、日報のない日は0にする（#550。日付が詰まって見えないように）
+  if (project && !key) return
+  // 日別推移は月の1日から末日まで並べ、日報のない日は0にする（#550。日付が詰まって見えないように）。全案件のときは日報数
   const byDay = new Map(data.daily.map(d => [d.work_date, d]))
   const days = Array.from({ length: m0.daysInMonth() }, (_, i) => m0.add(i, 'day').format('YYYY-MM-DD'))
+  const dayValue = d => (key ? (d.values && d.values[key]) || 0 : Number(d.reports) || 0)
   new Chart(document.getElementById('daily-chart'), {
     type: 'bar',
     data: {
       labels: days.map(d => dayjs(d).format('M/D')),
-      datasets: [{ label: keyLabel, data: days.map(d => (byDay.get(d) ? byDay.get(d).values[key] || 0 : 0)), backgroundColor: '#2563eb' }],
+      datasets: [{ label: chartLabel, data: days.map(d => (byDay.get(d) ? dayValue(byDay.get(d)) : 0)), backgroundColor: '#2563eb' }],
     },
     options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
   })
@@ -6175,6 +6271,8 @@ function route() {
   if (tab === 'projects' && id) return renderProjectDetail(id)
   if (tab === 'clients' && id) return renderClientDetail(id)
   if (tab === 'employees' && id) return renderEmployeeDetail(id)
+  // 実績分析の #analytics/<案件ID>（#9512。数字以外は全案件）
+  if (tab === 'analytics' && id !== undefined) return renderAnalytics(undefined, /^\d+$/.test(id) ? id : '')
   if (tab === 'shifts' && id === 'week') return renderShifts()
   if (tab === 'board' && window.renderBoard) return renderBoard(id)
   if (tab === 'report-settings' && window.renderReportSettings) return renderReportSettings(id)
