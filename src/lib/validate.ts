@@ -39,7 +39,7 @@ const REPORT_TEXT_MAX = 2000
 export const REPORT_NUMBER_MAX = 99999
 // 保存する JSON 全体の上限（アプリと報告用URLで同じ）
 export const REPORT_JSON_MAX = 20000
-const NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: 'textarea' }]
+export const NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: 'textarea' }]
 export function pickReportValues(fieldsJson: unknown, values: unknown): { values: Record<string, number | string> } | { error: string } {
   let fields: any[] = []
   try { fields = typeof fieldsJson === 'string' ? JSON.parse(fieldsJson) : [] } catch { fields = [] }

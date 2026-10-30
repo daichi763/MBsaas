@@ -229,6 +229,20 @@ await waitServer()
   }
 }
 
+// ---------- テンプレートの無かった案件にテンプレートを付けると、「報告内容（free）」を残す ----------
+{
+  const [{ past: saved, tpl }] = d1(`SELECT past_report_fields_json AS past, report_template_id AS tpl FROM projects WHERE project_id = ${PID}`)[0]
+  d1(`UPDATE projects SET report_template_id = NULL, past_report_fields_json = NULL WHERE project_id = ${PID}`)
+  try {
+    await waitServer()
+    const r = await admin.put(`/api/admin/projects/${PID}`, { report_template_id: TA, confirm_template_change: true })
+    const arr = JSON.parse(d1(`SELECT past_report_fields_json AS past FROM projects WHERE project_id = ${PID}`)[0][0].past || '[]')
+    ok('#9511 テンプレートの無かった案件の差し替えでは「報告内容」（free）を残す', r.status === 200 && arr.some(f => f.key === 'free' && f.label === '報告内容' && f.template_id === null), arr)
+  } finally {
+    d1(`UPDATE projects SET report_template_id = ${tpl == null ? 'NULL' : Number(tpl)}, past_report_fields_json = ${saved == null ? 'NULL' : `'${String(saved).replace(/'/g, "''")}'`} WHERE project_id = ${PID}`)
+  }
+}
+
 // ---------- 画面のスクリプト ----------
 {
   const js = await (await fetch(`${BASE}/static/admin.js`)).text()

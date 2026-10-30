@@ -45,7 +45,7 @@ import {
   normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, PERSON_SESSION_WHERE,
 } from './lib/login-security'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
-import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES } from './lib/validate'
+import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef } from './lib/daily-report'
@@ -5167,10 +5167,16 @@ api.put('/admin/projects/:id', async (c) => {
     set.closed_by = nextStatus === 'closed' ? u.user_id : null
   }
   // テンプレートを差し替えるとき、日報があれば、それまでのテンプレートの項目（key・表示名・種類）を案件に残す（#9511。lib/daily-report.ts）
-  if (set.report_template_id !== undefined && cur.report_template_id != null
+  if (set.report_template_id !== undefined
     && await db.prepare('SELECT 1 FROM daily_reports WHERE project_id = ? LIMIT 1').bind(cur.project_id).first()) {
-    const old = await db.prepare('SELECT template_id, template_name, fields_json FROM report_templates WHERE template_id = ?').bind(cur.report_template_id).first() as any
-    if (old) set.past_report_fields_json = mergePastReportFields(cur.past_report_fields_json, old.fields_json, { template_id: Number(old.template_id), template_name: old.template_name ?? null, replaced_at: now })
+    const old = cur.report_template_id == null ? null
+      : await db.prepare('SELECT template_id, template_name, fields_json FROM report_templates WHERE template_id = ?').bind(cur.report_template_id).first() as any
+    // テンプレートの無かった案件（項目の無いテンプレートも）は「報告内容（free）」だけで入力していた（validate.ts の pickReportValues と同じ）
+    if (old || cur.report_template_id == null) {
+      const oldFields = parseReportFields(old?.fields_json)
+      set.past_report_fields_json = mergePastReportFields(cur.past_report_fields_json, oldFields.length ? oldFields : NO_TEMPLATE_FIELDS,
+        { template_id: old ? Number(old.template_id) : null, template_name: old?.template_name ?? null, replaced_at: now })
+    }
   }
   const cols = Object.keys(set)
   if (!cols.length) return c.json({ ok: true, changed: false })
