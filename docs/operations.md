@@ -61,7 +61,7 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 | 現場管理者 / 営業管理者 | `sample` | `mgr01` / `sales01` | `/admin` |
 | 本部 | （空欄） | `hq` | `/hq` |
 
-`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:243`）。
+`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:254`）。
 
 ### 1.5 型チェックとビルド
 
@@ -190,7 +190,7 @@ CI=true npx wrangler d1 migrations apply mbsaas-production --remote --env produc
 npm run db:migrations:check     # 「未適用のマイグレーションはありません」と出ること（scripts/check-migrations.mjs）
 ```
 
-`npm run db:migrate:remote` も同じ適用です（`package.json:11`）。`CI=true` は、適用してよいかの確認を聞かずに進めるためのものです。
+`npm run db:migrate:remote` も同じ適用です（`package.json:13`）。`CI=true` は、適用してよいかの確認を聞かずに進めるためのものです。
 
 **5. マージ 🔴**
 
@@ -284,10 +284,10 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
-| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:53`〜`57` |
+| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:55`〜`59` |
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:54` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:66` |
-| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:71` |
+| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:77` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:304` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:396` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:90` |
@@ -375,15 +375,15 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 ## 8. データの定期削除（retention）と解約企業のデータ
 
 ### 8.1 定期削除
-- 毎日 3:00 の `retention` と 3:30 の `retention_in_service` が、保存期間を過ぎた個人情報を消します（`src/services/retention.ts:3`〜`55` に対象と基準の一覧）。主な基準: 日報は勤務日から3年、退職したスタッフのデータは退職日（と最終稼働日の遅い方）から7年（本人情報の行は消さずに匿名化）、送信のメール記録は1年、操作履歴は7年、在職中でも位置情報・写真は報告から1年など。
+- 毎日 3:00 の `retention` と 3:30 の `retention_in_service` が、保存期間を過ぎた個人情報を消します（`src/services/retention.ts:4`〜`57` に対象と基準の一覧）。主な基準: 日報は勤務日から3年、退職したスタッフのデータは退職日（と最終稼働日の遅い方）から7年（本人情報の行は消さずに匿名化）、送信のメール記録は1年、操作履歴は7年、在職中でも位置情報・写真は報告から1年など。
 - 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:81`）。`'true'` 以外は dry-run（数えるだけ）です。
-- 安全策: 退職日のない人は消さない、退職日より後にシフトがある人は対象外、初めて対象になってから7日は猶予（本部画面に「次回削除予定」と出る）、1回の処理の人数・ファイル数に上限（`src/services/retention.ts:44`〜`55`）。
-- 本部画面「データ保持・定期処理」で、dry-run の実行・削除の予定・結果・在職中の保存期間の設定（`src/services/retention.ts:113`）・削除の保留ができます。
+- 安全策: 退職日のない人は消さない、退職日より後にシフトがある人は対象外、初めて対象になってから7日は猶予（本部画面に「次回削除予定」と出る）、1回の処理の人数・ファイル数に上限（`src/services/retention.ts:46`〜`57`）。
+- 本部画面「データ保持・定期処理」で、dry-run の実行・削除の予定・結果・在職中の保存期間の設定（`src/services/retention.ts:115`）・削除の保留ができます。
 - **削除の保留**: 調査や訴訟などで残す必要があるスタッフ・企業は、本部画面で保留にします（`staff_profiles.retention_hold_at`・`companies.retention_hold_at`）。保留中はどの削除でも消しません。
 - 消したデータは戻せません（Time Travel の期間内なら DB 全体を戻すことはできます。4.2）。
 
 ### 8.2 解約した企業のデータ
-本部画面「解約・データ」で、次の順に行います（`src/api.ts:7957`〜`7963`）。
+本部画面「解約・データ」で、次の順に行います（`src/api.ts:7978`〜`7984`）。
 1. 企業を停止にする（利用状態を「停止」。ログインと API が止まる）。
 2. 「契約終了」を登録する。登録すると猶予期間（既定90日。登録のときに30〜365日で変えられる。`src/services/retention.ts` の `OFFBOARDING_GRACE_DAYS`）に入る。登録は取り消せる。
 3. 猶予のあいだに、データ（CSV・写真・書類のファイル）を書き出して企業に渡す。

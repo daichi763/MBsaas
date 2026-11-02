@@ -78,7 +78,7 @@ for (const [d, text] of Object.entries(docText)) {
 // 主な関数・定数: 資料に書いた行（または20行以内の範囲）に、その定義がある
 const ANCHORS = [
   // maskPath・参照番号・Service Worker は Sprint 13 の w13-ops-safety で動く・書き換わる所なので、統合の後のずれをここで知らせる
-  ['src/index.tsx', "const maskPath ="], ['src/index.tsx', "const ref = crypto.randomUUID()"], ['src/index.tsx', "const SERVICE_WORKER_JS ="],
+  ['src/lib/error-log.ts', "export function maskPath("], ['src/lib/error-log.ts', "export function newErrorRef("], ['src/index.tsx', "const SERVICE_WORKER_JS ="],
   ['src/index.tsx', "app.onError("], ['src/index.tsx', "app.route('/api', api)"], ['src/index.tsx', "app.post('/webhooks/resend'"],
   ['src/index.tsx', "async function currentUser"], ['src/index.tsx', "app.get('/staff'"], ['src/index.tsx', "app.get('/admin'"],
   ['src/index.tsx', "app.get('/hq'"], ['src/index.tsx', 'const CRON_JOBS = defineCronJobs'], ['src/index.tsx', 'export default {'],
@@ -200,17 +200,21 @@ ok('README の定期処理の表に3つの起動の式がある', usedExprs.ever
 const varBlocks = [...wr.matchAll(/"vars":\s*\{([^}]*)\}/g)].map(m => [...m[1].matchAll(/"([A-Z_]+)":/g)].map(x => x[1]))
 const varNames = [...new Set(varBlocks.flat())]
 ok('wrangler.jsonc の vars はローカルと本番で同じ名前', varBlocks.length === 2 && JSON.stringify([...varBlocks[0]].sort()) === JSON.stringify([...varBlocks[1]].sort()), varBlocks)
-const sec121 = arch.split('### 12.1')[1]?.split('### 12.2')[0] || ''
+const sec121all = arch.split('### 12.1')[1]?.split('### 12.2')[0] || ''
+// 12.1 の後半の「省略できる vars」の表（wrangler.jsonc に書かなくても既定の値で動くもの）は、シークレットとは別に扱う
+const [sec121, sec121opt = ''] = sec121all.split('| 名前（省略できる）')
 const sec122 = arch.split('### 12.2')[1]?.split('### 12.3')[0] || ''
 const tableNames = (sec) => new Set([...sec.matchAll(/^\| ((?:`[A-Z_]+`(?: \/ )?)+) \|/gm)].flatMap(m => [...m[1].matchAll(/`([A-Z_]+)`/g)].map(x => x[1])))
 const docVars = tableNames(sec121), docSecrets = tableNames(sec122)
+const optionalVars = new Set([...sec121opt.matchAll(/^\| `([A-Z_]+)` \|/gm)].map(m => m[1]))
 ok('architecture.md の vars の表が wrangler.jsonc の vars と合う', varNames.length > 0 && varNames.every(v => docVars.has(v)) && [...docVars].every(v => varNames.includes(v)), { varNames, docVars: [...docVars] })
 function srcFiles(dir) {
   return readdirSync(join(ROOT, dir)).flatMap(f => { const p = `${dir}/${f}`; return statSync(join(ROOT, p)).isDirectory() ? srcFiles(p) : /\.(ts|tsx)$/.test(f) ? [p] : [] })
 }
 const BINDINGS = new Set(['DB', 'PHOTOS', 'DOCUMENTS', 'CONTRACTS'])
 const envNames = new Set(srcFiles('src').flatMap(f => [...read(f).matchAll(/env\??\.([A-Z][A-Z0-9_]+)/g)].map(m => m[1])))
-const secretNames = [...envNames].filter(n => !BINDINGS.has(n) && !varNames.includes(n)).sort()
+const secretNames = [...envNames].filter(n => !BINDINGS.has(n) && !varNames.includes(n) && !optionalVars.has(n)).sort()
+ok('architecture.md の 12.1 の省略できる vars は、コードが読み、wrangler.jsonc の vars にはない', [...optionalVars].every(n => envNames.has(n) && !varNames.includes(n)), [...optionalVars])
 const undocumented = secretNames.filter(n => !docSecrets.has(n))
 const stale = [...docSecrets].filter(n => !envNames.has(n))
 ok(`コードが読むシークレット（${secretNames.length} 件）が、すべて architecture.md の 12.2 にある`, secretNames.length > 0 && !undocumented.length, undocumented)
