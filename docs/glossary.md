@@ -1,7 +1,7 @@
 # 用語集
 
 画面に出る言葉と、テーブル・列・コードの名前の対応です。コードを調べるときは、右の列の名前で `grep` してください。
-テーブルの全部の列は [db.md](db.md)、決定の経緯は [decisions.md](decisions.md) を見てください。
+テーブルの全部の列は [db.md](db.md)、決定の経緯は [decisions.md](decisions.md) を見てください。`ファイル:行` の行番号は、[architecture.md](architecture.md) の冒頭に書いたコミットのものです。
 
 ## 1. 会社・人
 

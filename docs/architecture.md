@@ -285,7 +285,7 @@ docs/                     この資料と機能ごとの仕様
 | `hq.js`（と `security.js`） | `/hq` | 本部画面 |
 | `apply.js` / `report-link.js` | `/apply/:token` / `/r/:token` | 公開ページ |
 
-画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（CSP の `'unsafe-inline'` を外せない理由でもあります。`src/index.tsx:21`〜`22`）。
+画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（古い画面には `onclick` などのイベント属性が残っているため、CSP の `script-src` の `'unsafe-inline'` はまだ外せません。`src/index.tsx:21`〜`22`）。
 
 ### 8.3 スクリプト（`scripts/`）
 
@@ -395,4 +395,5 @@ docs/                     この資料と機能ごとの仕様
 ## 14. この資料の更新
 
 - Sprint の終わりに、変えた所に合わせてこの資料を直します（[decisions.md](decisions.md) の D-40）。
-- `npm test -- w13-docs-arch-ops` を流すと、行番号がずれた参照・定期処理の表の過不足・`vars` の過不足を知らせます。
+- `npm test -- w13-docs-arch-ops` を流すと、行番号がずれた参照・定期処理の表の過不足・`vars` の過不足を知らせます。行番号は、冒頭に書いた基準のコミットからコードの行が動いたかを `git diff` で調べて確かめます。
+- コードを変えて行番号がずれたら、コードをコミットしてから `node scripts/test-w13-docs-arch-ops.mjs --fix-refs` を流します。動いただけの参照を今の行番号に直し、基準のコミットと日付を今の HEAD にします。行が書き換わった・消えた参照は一覧に出るので、中身を確かめて手で直します（`--fix-refs` の後はこのテストで出なくなるので、一覧を必ず片付けます）。

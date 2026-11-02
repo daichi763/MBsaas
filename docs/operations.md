@@ -1,7 +1,7 @@
 # 運用手順書
 
 Field OS の開発・リリース・障害対応の手順です。初めて担当する人（社外の開発会社を含む）が、この資料だけで作業を始められるように書いています。
-全体の構成は [architecture.md](architecture.md)、用語は [glossary.md](glossary.md) を先に読んでください。
+全体の構成は [architecture.md](architecture.md)、用語は [glossary.md](glossary.md) を先に読んでください。`ファイル:行` の行番号は、[architecture.md](architecture.md) の冒頭に書いたコミットのものです。
 
 **本番に触る作業には印を付けています: 🔴 本番**。印のある手順は、Cloudflare のアカウントの権限が要り、取り消せないものもあります。手順どおりに、1人で急がずに行ってください。
 
@@ -126,7 +126,7 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node scripts/test-xxx.mjs
 
 本番へのデプロイは、GitHub の `main` へのマージで Workers Builds が自動で行います（[decisions.md](decisions.md) の D-32）。**マイグレーションは自動では適用されない**ので、新しいマイグレーションがあるときは、マージより先に手で本番に適用します。新しい列・テーブルを使うコードが先に出ると、その API が 500 になります。
 
-本番に触るコマンドには、必ず `--remote --env production` を付けます（wrangler 4 は付けないとローカルに対して動きます）。
+本番に触るコマンドには、必ず `--env production` を付けます。D1 の `execute`・`export`・`migrations apply` には `--remote` も付けます（wrangler 4 は付けないとローカルに対して動きます）。`d1 time-travel`・`deployments`・`rollback`・`tail`・`secret` は、`--remote` を付けなくても本番に対して動きます。
 
 ### 3.1 チェックリスト
 
@@ -383,7 +383,13 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 - 消したデータは戻せません（Time Travel の期間内なら DB 全体を戻すことはできます。4.2）。
 
 ### 8.2 解約した企業のデータ
-本部画面「解約・データ」で、企業を停止 → データを CSV とファイルで書き出す → 削除、の順に行います。書き出し・削除の操作は記録が残り、削除の記録は CSV で出せます（`src/api.ts:7957`〜`7963`）。
+本部画面「解約・データ」で、次の順に行います（`src/api.ts:7957`〜`7963`）。
+1. 企業を停止にする（利用状態を「停止」。ログインと API が止まる）。
+2. 「契約終了」を登録する。登録すると猶予期間（既定90日。登録のときに30〜365日で変えられる。`src/services/retention.ts` の `OFFBOARDING_GRACE_DAYS`）に入る。登録は取り消せる。
+3. 猶予のあいだに、データ（CSV・写真・書類のファイル）を書き出して企業に渡す。
+4. 契約終了日＋猶予日数を過ぎたら、会社コードと確認の入力のうえで削除する。スタッフ・勤怠・写真・書類などを消し、利用者とスタッフの氏名・連絡先は匿名化する。書き出していないときは、書き出さない理由の入力が要る。停止を解除した企業は削除できない。
+
+登録・取消・書き出し・削除の操作は `company_offboarding_events` に記録が残り、削除の記録は CSV で出せます。
 
 ---
 
@@ -395,4 +401,4 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 - **環境変数を足したら**: `wrangler.jsonc` の `vars` はトップレベルと `env.production` の両方に書きます（環境ごとに引き継がれないため。`wrangler.jsonc:3`〜`4`）。[architecture.md](architecture.md) の12章にも足します。
 - **画面**: 値は `esc` を通す。イベント属性の文字列に値を埋め込まず `data-*` と `delegate` を使う。二度押しは `withSubmitLock` で防ぐ（`public/static/common.js`）。
 - **D1**: バインドは1文100個まで（`src/lib/d1-chunk.ts`）。`shifts` を更新した文の `meta.changes` を件数に使わない（トリガーの分も数えるため）。SQL 関数の引数は本番で32個まで（ローカルでは見つからない）。
-- **資料**: Sprint の終わりに、変えた所に合わせて `docs/` を直します（[decisions.md](decisions.md) の D-40）。`npm test -- w13-docs-arch-ops` が、資料の中の `ファイル:行` の参照・定期処理の表・`vars` の表のずれを知らせます。
+- **資料**: Sprint の終わりに、変えた所に合わせて `docs/` を直します（[decisions.md](decisions.md) の D-40）。`npm test -- w13-docs-arch-ops` が、資料の中の `ファイル:行` の参照・定期処理の表・`vars` の表のずれを知らせます。行番号のずれは `node scripts/test-w13-docs-arch-ops.mjs --fix-refs` で直します（[architecture.md](architecture.md) の14章）。

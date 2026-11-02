@@ -1,15 +1,18 @@
 // 設計資料（w13-docs-arch-ops: Sprint 13 #9601）の確認
 //   docs/architecture.md・operations.md・decisions.md・glossary.md と README の案内について:
-//   1) 資料の中の `ファイル:行` の参照が、今のコードにある行を指しているか。主な関数・定数は、書いた行にあるか
+//   1) 資料の中の `ファイル:行` の参照が、今のコードにある行を指しているか。主な関数・定数は、書いた行にあるか。
+//      すべての参照の行が、architecture.md の冒頭に書いた基準のコミットから動いていないか（git diff で確かめる）
 //   2) 定期処理の表が src/index.tsx の CRON_JOBS・wrangler.jsonc の triggers.crons と合っているか
 //   3) 環境変数（vars）とシークレットの表が、wrangler.jsonc とコードの env の参照と合っているか
 //   4) 資料の間のリンクの先があるか（db.md・api.md・screens.md・backup.md・monitoring.md は別の作業単位が作るので、無ければ SKIP）
 //   5) 資料に書いた動き（認証・権限・Webhook・セキュリティヘッダー・Service Worker）を API で確かめる
-// 行番号がずれて落ちたときは、メッセージの「今は n 行目」に合わせて docs の参照を直す。
+// 行番号がずれて落ちたときは、node scripts/test-w13-docs-arch-ops.mjs --fix-refs で直す（動いただけの参照を直し、基準のコミットを HEAD にする）。
+//   書き換わった・消えた行の参照は一覧に出るので手で直す。主な関数・定数（ANCHORS）は「今は n 行目」で知らせる。
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、wrangler dev --local で起動していること（追加の起動オプションはない）
 // 実行: BASE=http://127.0.0.1:8810 node scripts/test-w13-docs-arch-ops.mjs
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -37,7 +40,7 @@ for (const d of DOCS) ok(`README から ${d} へ案内している`, readme.incl
 const PATH_RE = /^(?:(?:src|public|scripts|migrations|docs)\/[\w.\-/]+|wrangler\.jsonc|package\.json|seed\.sql|tsconfig\.json|vite\.config\.ts)$/
 const SEPS = ['〜', '、', '・']
 function collectRefs(text) {
-  const refs = [] // { file, start, end, line }
+  const refs = [] // { file, start, end, line, si, ei }（si・ei は行を ` で分けたときの、始まり・終わりの番号の位置）
   const paths = [] // 行番号のないパスの参照
   text.split('\n').forEach((ln, idx) => {
     const seg = ln.split('`')
@@ -45,10 +48,10 @@ function collectRefs(text) {
     for (let i = 1; i < seg.length; i += 2) {
       const code = seg[i], before = seg[i - 1].trim()
       const m = code.match(/^(.+):(\d+)$/)
-      if (m && PATH_RE.test(m[1])) { last = { file: m[1], start: +m[2], end: +m[2], line: idx + 1 }; refs.push(last); continue }
+      if (m && PATH_RE.test(m[1])) { last = { file: m[1], start: +m[2], end: +m[2], line: idx + 1, si: i, ei: i }; refs.push(last); continue }
       if (/^\d+$/.test(code) && last && SEPS.includes(before)) {
-        if (before === '〜') last.end = +code
-        else { last = { file: last.file, start: +code, end: +code, line: idx + 1 }; refs.push(last) }
+        if (before === '〜') { last.end = +code; last.ei = i }
+        else { last = { file: last.file, start: +code, end: +code, line: idx + 1, si: i, ei: i }; refs.push(last) }
         continue
       }
       if (before !== '' && !SEPS.includes(before)) last = null
@@ -103,6 +106,74 @@ for (const [file, needle] of ANCHORS) {
   const hit = mine.some(r => r.start <= at && at <= r.end && r.end - r.start <= 20)
   const near = mine.filter(r => Math.abs(r.start - at) <= 40).map(r => `${r.doc}:${r.line} → ${r.start}${r.end !== r.start ? '〜' + r.end : ''}`)
   ok(`資料の ${file} の「${needle}」の行番号が今の行（${at}）と合う`, hit, near.length ? `今は ${at} 行目。近い参照: ${near.join(' / ')}` : `今は ${at} 行目。資料に参照がない`)
+}
+
+// すべての `ファイル:行` の参照: architecture.md の冒頭に書いた基準のコミットから、参照した行が動いていないか（git diff で行の対応を取る）。
+// 動いた行は「今は n 行目」、書き換わった・消えた行は「中身を確かめて手で直す」と出す。
+// 統合などでずれたら `node scripts/test-w13-docs-arch-ops.mjs --fix-refs` で、動いただけの参照を直し、基準のコミットを今の HEAD にする
+const BASE_COMMIT_RE = /コミット `([0-9a-f]{7,40})`/
+const baseCommit = (docText['docs/architecture.md'] || '').match(BASE_COMMIT_RE)?.[1]
+const git = (args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
+const gitOk = (args) => { try { git(args); return true } catch { return false } }
+// 基準のコミットの n 行目が、今のファイルの何行目か（書き換わった・消えた行は null）
+function lineMapper(file) {
+  const out = git(['diff', '-U0', '--no-color', '--no-ext-diff', baseCommit, '--', file])
+  const hunks = [...out.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)]
+    .map(m => ({ a: +m[1], b: m[2] === undefined ? 1 : +m[2], d: m[4] === undefined ? 1 : +m[4] }))
+  return (n) => {
+    let off = 0
+    for (const h of hunks) {
+      if (h.b === 0) { if (n > h.a) off += h.d; continue } // a 行目の後ろに足した
+      if (n >= h.a && n < h.a + h.b) return null
+      if (n >= h.a + h.b) off += h.d - h.b
+    }
+    return n + off
+  }
+}
+const refMoves = [] // { r, which: 'start'|'end', from, to }（to が null は書き換わった・消えた行）
+let refCheckReady = false
+if (!baseCommit) ok('architecture.md の冒頭に、行番号の基準のコミット（コミット `xxxxxxx`）がある', false)
+else if (!gitOk(['cat-file', '-e', `${baseCommit}^{commit}`])) skip(`すべての参照の行が基準のコミット ${baseCommit} から動いていないか`, 'git か基準のコミットが無い')
+else {
+  const mappers = {}
+  for (const r of allRefs) {
+    if (!existsSync(join(ROOT, r.file))) continue
+    const map = (mappers[r.file] ||= lineMapper(r.file))
+    for (const which of r.end !== r.start ? ['start', 'end'] : ['start']) {
+      const to = map(r[which])
+      if (to !== r[which]) refMoves.push({ r, which, from: r[which], to })
+    }
+  }
+  refCheckReady = true
+  ok(`資料の ファイル:行 の参照（${allRefs.length} 件）の行が、基準のコミット ${baseCommit} から動いていない（ずれは --fix-refs で直す）`, !refMoves.length, `${refMoves.length} 件（下に一覧）`)
+  for (const m of refMoves) console.log(`      ${m.r.doc}:${m.r.line} ${m.r.file}:${m.from} → ${m.to === null ? '行が書き換わった・消えた（中身を確かめて手で直す）' : `今は ${m.to} 行目`}`)
+}
+
+if (process.argv.includes('--fix-refs')) {
+  // 動いただけの参照を今の行番号に直し、基準のコミットを今の HEAD にする。書き換わった・消えた行の参照は一覧に出すので手で直す
+  if (!refCheckReady) { console.log('基準のコミットを読めないので直せません'); process.exit(1) }
+  const files = [...new Set(allRefs.map(r => r.file))].filter(f => existsSync(join(ROOT, f)))
+  if (!gitOk(['diff', '--quiet', 'HEAD', '--', ...files])) { console.log('参照しているファイルにコミットしていない変更があります。コミットしてから実行してください（基準を HEAD にするため）'); process.exit(1) }
+  const head = git(['rev-parse', '--short', 'HEAD']).trim()
+  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
+  for (const d of Object.keys(docText)) {
+    const raw = readFileSync(join(ROOT, d), 'utf8'), eol = raw.includes('\r\n') ? '\r\n' : '\n'
+    const docLines = raw.replace(/\r\n/g, '\n').split('\n')
+    for (const m of refMoves.filter(x => x.r.doc === d && x.to !== null)) {
+      const seg = docLines[m.r.line - 1].split('`'), i = m.which === 'start' ? m.r.si : m.r.ei
+      seg[i] = seg[i].replace(/\d+$/, String(m.to))
+      docLines[m.r.line - 1] = seg.join('`')
+    }
+    let out = docLines.join('\n').replace(/(\d{4}-\d{2}-\d{2} 時点[^\n]*?)?コミット `[0-9a-f]{7,40}`/g, (s, at) => (at ? at.replace(/^\d{4}-\d{2}-\d{2}/, today) : '') + `コミット \`${head}\``)
+    writeFileSync(join(ROOT, d), out.split('\n').join(eol))
+  }
+  const manual = refMoves.filter(m => m.to === null)
+  console.log(`\n${refMoves.length - manual.length} 件の参照を直し、基準のコミットを ${head}（${today}）にしました。`)
+  if (manual.length) {
+    console.log(`次の ${manual.length} 件は行が書き換わった・消えたので、今のコード（${head}）を見て手で直してください（基準はもう ${head} なので、このテストではもう出ません）:`)
+    for (const m of manual) console.log(`  ${m.r.doc}:${m.r.line} ${m.r.file}:${m.from}`)
+  }
+  process.exit(manual.length ? 1 : 0)
 }
 
 // ============ 2. 定期処理の表 ============
