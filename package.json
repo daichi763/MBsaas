@@ -7,6 +7,8 @@
     "build:css": "tailwindcss -i ./src/input.css -o ./public/static/style.css --minify",
     "typecheck": "tsc --noEmit -p .",
     "test": "node scripts/run-tests.mjs",
+    "docs": "node scripts/gen-docs.mjs",
+    "docs:check": "node scripts/gen-docs.mjs --check",
     "db:migrate:local": "wrangler d1 migrations apply mbsaas-production --local",
     "db:migrate:remote": "wrangler d1 migrations apply mbsaas-production --remote --env production",
     "db:migrations:check": "node scripts/check-migrations.mjs",
