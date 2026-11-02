@@ -12,8 +12,9 @@ import { runReminders } from './services/reminders'
 import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
+import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string }
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'>
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -41,14 +42,15 @@ app.use('*', async (c, next) => {
   } catch { /* 変更できない応答（外部から取得したものなど）はそのまま返す */ }
 })
 
-// ============ 予期しないエラーの記録（#230） ============
+// ============ 予期しないエラーの記録（#230）と障害の記録・通知（#9622） ============
 // Workers Logs（wrangler.jsonc の observability）に、どの API で・誰の操作で起きたかを1行の JSON で残す。
 // 利用者には参照番号を返し、問い合わせのときにログと突き合わせられるようにする。
-// パスに入る報告用URL・募集ページ・再設定のトークンは記録しない
-const maskPath = (p: string) => p.replace(/[A-Za-z0-9_-]{20,}/g, '***')
+// パスに入る報告用URL・募集ページ・再設定のトークンは記録しない（maskPath。src/lib/error-log.ts）。
+// あわせて D1 の error_logs に要約を残し（本部画面「障害」）、件数が閾値を超えたら本部の管理者に通知する（src/lib/error-log.ts）。
+// D1 への記録は応答の後（waitUntil）に行い、記録に失敗しても応答は変えない
 app.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse()
-  const ref = crypto.randomUUID().slice(0, 8)
+  const ref = newErrorRef()
   const u = (c as any).get('user')
   console.error(JSON.stringify({
     level: 'error', event: 'unhandled_error', ref, method: c.req.method, path: maskPath(c.req.path),
@@ -57,6 +59,10 @@ app.onError((err, c) => {
   }))
   const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
+  try {
+    c.executionCtx.waitUntil(recordError(c.env, { ref, source: 'request', method: c.req.method, path: c.req.path, companyId: u?.company_id ?? null, role: u?.role ?? null, error: err })
+      .then(r => (r.alerted ? flushPushQueue(c.env as any) : null)).catch(e => console.log(`error log failed: ${e}`)))
+  } catch { /* waitUntil が使えないとき（テストなど）は記録しない（Workers Logs には上で残している） */ }
   if (c.req.path.startsWith('/api/')) return c.json({ error: msg, ref }, 500)
   return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
@@ -73,31 +79,36 @@ app.use('/api/*', async (c, next) => {
 
 app.route('/api', api)
 
-// ============ Service Worker（スタッフ画面のプッシュ通知の表示。#178） ============
-// プッシュには本文を載せないので、受けたら /api/staff/push/latest から最新の未読を取りに来て表示する。
+// ============ Service Worker（スタッフ画面と本部画面のプッシュ通知の表示。#178 #9622） ============
+// プッシュには本文を載せないので、受けたら最新の未読を取りに来て表示する（スタッフは /api/staff/push/latest、本部は /api/hq/push/latest）。
+// スタッフ画面は scope /staff、本部画面は scope /hq で登録する（staff.js・hq.js）。どちらの画面かは登録の scope で決める。
 // 取れないとき（ログインの期限切れ・別の人のログインなど）は、中身を出さない決まった文面にする。画面やデータの保存（オフライン）はしない
 const SERVICE_WORKER_JS = `'use strict'
+var HQ = new URL(self.registration.scope).pathname.replace(/\\/$/, '') === '/hq'
+var HOME = HQ ? '/hq' : '/staff'
+var FALLBACK = HQ ? '/hq#errors' : '/staff#notifications'
 self.addEventListener('install', function () { self.skipWaiting() })
 self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()) })
 self.addEventListener('push', function (e) { e.waitUntil(showLatest()) })
 async function showLatest() {
-  var n = { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: '/staff#notifications', tag: 'fieldos' }
+  var n = HQ ? { title: 'Field OS 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-hq' }
+    : { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: FALLBACK, tag: 'fieldos' }
   try {
     var sub = await self.registration.pushManager.getSubscription()
-    var r = await fetch('/api/staff/push/latest?endpoint=' + encodeURIComponent(sub ? sub.endpoint : ''), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Background': '1' } })
+    var r = await fetch('/api' + HOME + '/push/latest?endpoint=' + encodeURIComponent(sub ? sub.endpoint : ''), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Background': '1' } })
     if (r.ok) { var d = await r.json(); if (d && d.title) n = { title: String(d.title), body: String(d.body || ''), link: String(d.link || n.link), tag: String(d.tag || n.tag) } }
   } catch (err) { }
-  if (!/^\\/staff(#[^\\s]*)?$/.test(n.link)) n.link = '/staff#notifications'
+  if (n.link.indexOf(HOME) !== 0 || !/^\\/(staff|hq)(#[^\\s]*)?$/.test(n.link)) n.link = FALLBACK
   return self.registration.showNotification(n.title, { body: n.body, tag: n.tag, renotify: true, icon: '/static/icon-192.png', badge: '/static/icon-192.png', data: { link: n.link } })
 }
 self.addEventListener('notificationclick', function (e) {
   e.notification.close()
-  var link = (e.notification.data && e.notification.data.link) || '/staff#notifications'
+  var link = (e.notification.data && e.notification.data.link) || FALLBACK
   e.waitUntil((async function () {
     var list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     for (var i = 0; i < list.length; i++) {
       var c = list[i]
-      if (new URL(c.url).pathname === '/staff') { c.postMessage({ type: 'fos-open', hash: link.slice(6) }); return c.focus() }
+      if (new URL(c.url).pathname === HOME) { c.postMessage({ type: 'fos-open', hash: link.slice(HOME.length) }); return c.focus() }
     }
     return self.clients.openWindow(link)
   })())
@@ -799,6 +810,7 @@ app.get('/hq', async (c) => {
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援<span id="hq-support-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
           <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="announcements">企業へのお知らせ</a>
           <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
+          <a href="#errors" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="errors">障害<span id="hq-errors-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
       </div>
@@ -876,6 +888,28 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
 ])
 
+// 定期処理の失敗（例外、または結果の failed・error）を障害の記録（error_logs）にも残す（#9622）。
+// 実行と cron_runs への記録は services/cron.ts のまま。記録に失敗しても処理の結果は変えない
+let cronAlerted = false
+const withErrorLog = (jobs: typeof CRON_JOBS): typeof CRON_JOBS => jobs.map(job => ({
+  ...job,
+  run: async (env: Bindings) => {
+    const record = async (error: unknown) => {
+      const r = await recordError(env, { ref: newErrorRef(), source: 'cron', method: 'CRON', path: job.name, error })
+      cronAlerted = cronAlerted || r.alerted
+    }
+    let result
+    try {
+      result = await job.run(env)
+    } catch (e) {
+      await record(e)
+      throw e
+    }
+    if ((Number(result?.failed) || 0) > 0 || result?.error) await record(new Error(String(result?.error || `failed: ${result?.failed}`)))
+    return result
+  },
+}))
+
 export default {
   fetch: app.fetch,
   // Cron Trigger: 起動した式（event.cron）に合う処理を CRON_JOBS の順に実行する。
@@ -883,6 +917,9 @@ export default {
   // 処理は互いに独立させ、1つが失敗しても他の実行を妨げない（結果は cron_runs に記録する）。
   // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
-    await runCronJobs(env, CRON_JOBS, event.cron)
+    cronAlerted = false
+    await runCronJobs(env, withErrorLog(CRON_JOBS), event.cron)
+    // 障害の通知を作ったら、本部の管理者の端末へのプッシュをすぐに送る
+    if (cronAlerted) await flushPushQueue(env as any).catch(e => console.log(`push flush failed: ${e}`))
   },
 }

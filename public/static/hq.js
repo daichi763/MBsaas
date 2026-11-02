@@ -1054,6 +1054,7 @@ const RETENTION_TARGET_LABEL = {
   board_proposals_settled: '見送り・取り下げの人材提案の匿名化', ended_employee_records: '雇用終了の従業員データ（雇用終了から7年）',
   ended_employee_documents: '雇用終了の入社時書類（雇用終了から7年・R2の削除に回す）', ended_employment_periods: '過去の雇用期間（終了から7年）',
   orphan_photos: '勤怠に紐づかない写真（本部の手動削除）',
+  error_logs: '障害の記録（90日）', error_alerts: '障害の通知の記録（90日）',
 }
 // 人ごとの dry-run の内訳で出す列（API の DRY_RUN_STAFF_COUNTS と同じキー）
 const RETENTION_STAFF_COLS = [
@@ -1945,11 +1946,227 @@ async function refreshMailAlert() {
   try { renderMailAlert((await axios.get('/api/hq/email-stats', { params: { days: 7 } })).data) } catch { }
 }
 
+// ============ 障害（サーバーの予期しないエラー・定期処理の失敗の記録と通知。#9622） ============
+// 記録はサーバーの error_logs（src/lib/error-log.ts）。利用者の画面に出た「参照番号」で探せる。
+// 直近のエラーが目安を超えると、本部の管理者にアプリ内の通知（このタブの件数）とプッシュ通知（この端末で受け取る設定をした場合）が届く
+const HQ_ERR = { q: '', source: '', company_id: '', company_name: '', logs: [], hasMore: false }
+const ERR_SOURCE_LABEL = { request: '画面・API', cron: '定期処理' }
+const ERR_ROLE_LABEL = { ...ROLE_LABELS }
+const HQ_PUSH_SCOPE = '/hq'
+const HQ_PUSH_SUPPORTED = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+function hqB64urlToBytes(s) {
+  const t = String(s).replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(t + '='.repeat((4 - t.length % 4) % 4))
+  return Uint8Array.from(bin, ch => ch.charCodeAt(0))
+}
+function hqBytesToB64url(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+async function hqPushSubscription() {
+  if (!HQ_PUSH_SUPPORTED) return null
+  try {
+    const reg = await navigator.serviceWorker.getRegistration(HQ_PUSH_SCOPE)
+    return reg ? await reg.pushManager.getSubscription() : null
+  } catch (e) { return null }
+}
+function updateErrorsBadge(alerts) {
+  const b = document.getElementById('hq-errors-badge')
+  if (!b) return
+  const n = (alerts || []).length
+  b.textContent = n
+  b.classList.toggle('hidden', !n)
+}
+async function refreshErrorsBadge() {
+  try { updateErrorsBadge((await axios.get('/api/hq/errors/alerts', { headers: { 'X-Background': '1' } })).data.alerts_unread) } catch { }
+}
+function errParams(before) {
+  return { ...(HQ_ERR.q ? { q: HQ_ERR.q } : {}), ...(HQ_ERR.source ? { source: HQ_ERR.source } : {}), ...(HQ_ERR.company_id ? { company_id: HQ_ERR.company_id } : {}), ...(before ? { before } : {}) }
+}
+async function renderErrors() {
+  loading()
+  let d
+  try { d = (await axios.get('/api/hq/errors', { params: errParams() })).data } catch (e) {
+    $app.innerHTML = `<p class="text-red-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>
+      <button class="text-cyan-400 text-sm hover:underline mt-2" data-action="hqErrClear">条件を外して読み直す</button>`
+    return
+  }
+  if (location.hash.slice(1).split('/')[0] !== 'errors') return // 読み込み中にほかのタブへ移った
+  HQ_ERR.logs = d.logs; HQ_ERR.hasMore = !!d.has_more
+  updateErrorsBadge(d.alerts_unread)
+  const st = d.settings
+  const max = Math.max(1, ...d.trend.map(t => t.count))
+  const filtered = !!(HQ_ERR.q || HQ_ERR.source || HQ_ERR.company_id)
+  $app.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
+      <h2 class="text-xl font-bold">障害</h2>
+      <button class="text-cyan-400 text-sm hover:underline" data-action="hqErrReload"><i class="fas fa-rotate-right mr-1"></i>読み直す</button>
+    </div>
+    ${d.alerts_unread.length ? `
+    <section class="bg-slate-800 border rounded-xl p-4 mb-4" style="border-color:#ef4444">
+      <p class="font-bold text-red-400 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>エラーが増えたときの通知があります</p>
+      <ul class="text-sm space-y-1 mb-2">${d.alerts_unread.map(a => `<li><span class="text-xs text-slate-400 mr-2">${esc(hqTime(a.created_at))}</span>${esc(a.title)}</li>`).join('')}</ul>
+      <button class="btn btn-primary text-sm" data-action="hqErrAlertsRead"><i class="fas fa-check"></i>確認しました</button>
+    </section>` : ''}
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      ${[[`直近${Number(st.window_minutes)}分`, d.totals.last_window, d.totals.last_window >= st.threshold ? 'text-red-400' : ''], ['直近24時間', d.totals.last_24h, d.totals.last_24h ? 'text-amber-400' : ''], ['直近7日', d.totals.last_7d, ''],
+        ['最後の通知', d.last_alert ? hqTime(d.last_alert.created_at) : 'なし', '']]
+        .map(([l, v, c]) => `<div class="bg-slate-800 border border-slate-700 rounded-xl p-3"><p class="text-xs text-slate-400">${esc(l)}</p><p class="${typeof v === 'number' ? 'text-2xl' : 'text-base mt-1'} font-bold ${c}">${esc(v)}${typeof v === 'number' ? '<span class="text-xs font-normal text-slate-400 ml-1">件</span>' : ''}</p></div>`).join('')}
+    </div>
+    <p class="text-[11px] text-slate-400 mb-4">直近${Number(st.window_minutes)}分のエラーが${Number(st.threshold)}件以上になると、本部の管理者全員に通知します（同じ通知は${Number(st.cooldown_minutes)}分に1回まで）。記録は${Number(d.keep_days)}日で消えます。同じエラーが続くときは、一定の件数を超えた分を1行にまとめて数えます（まとめた分の参照番号は Cloudflare の Workers Logs で探せます）。</p>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+      <h3 class="font-bold mb-3"><i class="fas fa-chart-column text-cyan-400 mr-1"></i>件数の推移（直近${d.trend.length}日${filtered ? '・絞り込みの条件に合うもの' : ''}）</h3>
+      <div class="flex items-end gap-1 h-32" role="img" aria-label="日別のエラーの件数">
+        ${d.trend.map(t => `<div class="flex-1 flex flex-col items-center justify-end h-full min-w-0" title="${esc(t.day)}: ${Number(t.count)}件（うち定期処理 ${Number(t.cron)}件）">
+          <span class="text-[10px] ${t.count ? 'text-slate-200' : 'text-slate-600'}">${Number(t.count)}</span>
+          <div class="w-full rounded-t ${t.count ? 'bg-red-500' : 'bg-slate-700'}" style="height:${t.count ? Math.max(4, Math.round(t.count / max * 96)) : 2}px"></div>
+        </div>`).join('')}
+      </div>
+      <div class="flex gap-1 mt-1">${d.trend.map(t => `<span class="flex-1 text-center text-[10px] text-slate-500 min-w-0">${esc(dayjs(t.day).format('M/D'))}</span>`).join('')}</div>
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
+      <h3 class="font-bold mb-2"><i class="fas fa-ranking-star text-cyan-400 mr-1"></i>よく起きているエラー（直近7日）</h3>
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-right px-2 py-2">件数</th><th class="text-left px-2">場所</th><th class="text-left px-2">内容</th><th class="text-right px-2">会社</th><th class="text-left px-2">最後</th><th></th></tr></thead>
+        <tbody>${d.groups.map(g => `<tr class="border-b border-slate-700/40">
+          <td class="px-2 py-2 text-right font-bold">${Number(g.n)}</td>
+          <td class="px-2 text-xs"><span class="badge ${g.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[g.source] || g.source)}</span> <span class="font-mono break-all">${esc(g.method || '')} ${esc(g.path || '')}</span></td>
+          <td class="px-2 text-xs break-all"><span class="text-slate-400">${esc(g.error_name || '')}</span> ${esc(g.message || '')}</td>
+          <td class="px-2 text-right text-xs">${Number(g.companies)}</td>
+          <td class="px-2 text-xs whitespace-nowrap">${esc(hqTime(g.last_at))}</td>
+          <td class="px-2"><button class="text-cyan-400 text-xs hover:underline whitespace-nowrap" data-action="hqErrFind" data-ref="${esc(g.sample_ref)}">例を見る</button></td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">直近7日のエラーはありません</td></tr>'}</tbody>
+      </table>
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <h3 class="font-bold"><i class="fas fa-list text-cyan-400 mr-1"></i>記録</h3>
+        <form id="he-form" class="flex gap-2 text-sm flex-wrap items-center">
+          <input id="he-q" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1 font-mono w-36" maxlength="8" placeholder="参照番号（8桁）" value="${esc(HQ_ERR.q)}" autocomplete="off" aria-label="参照番号">
+          <select id="he-source" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1" aria-label="種類">${[['', 'すべての種類'], ['request', '画面・API'], ['cron', '定期処理']].map(([v, l]) => `<option value="${v}" ${HQ_ERR.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <button class="btn btn-primary text-sm" type="submit"><i class="fas fa-magnifying-glass"></i>探す</button>
+          ${filtered ? '<button class="text-cyan-400 text-xs hover:underline" type="button" data-action="hqErrClear">条件を外す</button>' : ''}
+        </form>
+      </div>
+      ${HQ_ERR.company_id ? `<p class="text-xs text-slate-400 mb-2">企業: ${esc(HQ_ERR.company_name || HQ_ERR.company_id)} のエラーだけを出しています</p>` : ''}
+      <div id="he-logs"></div>
+    </section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-push"></section>
+    <p class="text-[11px] text-slate-500">ここに出るのは、利用者の画面に「参照番号」付きのエラーが出たもの（サーバーの予期しないエラー）と、定期処理の失敗です。入力値や個人の情報は記録しません。詳しいログ（スタックトレースなど）は Cloudflare のダッシュボードの Workers Logs で、参照番号を検索して確かめます。</p>`
+  drawErrorLogs()
+  drawHqPush()
+  document.getElementById('he-form').addEventListener('submit', (e) => {
+    e.preventDefault()
+    const q = document.getElementById('he-q').value.trim().toLowerCase()
+    if (q && !/^[0-9a-f]{1,8}$/.test(q)) { toast('参照番号は、画面に出た8桁の英数字（0〜9・a〜f）で入力してください'); return }
+    HQ_ERR.q = q; HQ_ERR.source = document.getElementById('he-source').value
+    renderErrors()
+  })
+}
+function drawErrorLogs() {
+  const box = document.getElementById('he-logs'); if (!box) return
+  box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
+      <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">参照番号</th><th class="text-left px-2">場所</th><th class="text-left px-2">企業・ロール</th><th class="text-left px-2">内容</th></tr></thead>
+      <tbody>${HQ_ERR.logs.map(l => `<tr class="border-b border-slate-700/40 align-top">
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(hqTime(l.created_at))}${Number(l.repeat_count) ? `<span class="block text-amber-400" title="同じエラーをまとめた回数（最後: ${esc(hqTime(l.last_repeat_at))}）">ほか${Number(l.repeat_count)}回</span>` : ''}</td>
+        <td class="px-2 text-xs font-mono">${esc(l.ref)}</td>
+        <td class="px-2 text-xs"><span class="badge ${l.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[l.source] || l.source)}</span><span class="block font-mono break-all mt-0.5">${esc(l.method || '')} ${esc(l.path || '')}</span></td>
+        <td class="px-2 text-xs">${l.company_id ? `<button class="text-cyan-400 hover:underline text-left" data-action="hqErrCompany" data-id="${Number(l.company_id)}" data-name="${esc(l.company_name || '')}">${esc(l.company_name || ('企業 ' + l.company_id))}</button>` : '<span class="text-slate-500">－</span>'}${l.role ? `<span class="block text-slate-400">${esc(ERR_ROLE_LABEL[l.role] || l.role)}</span>` : ''}</td>
+        <td class="px-2 text-xs break-all"><span class="text-slate-400">${esc(l.error_name || '')}</span> ${esc(l.message || '')}${l.location ? `<span class="block text-[11px] text-slate-500 font-mono">${esc(l.location)}</span>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="5" class="text-center text-slate-500 py-4">${HQ_ERR.q ? 'この参照番号の記録はありません（同じエラーが続いてまとめられた場合や、90日を過ぎた場合は残りません）' : '該当する記録はありません'}</td></tr>`}</tbody></table></div>
+    ${HQ_ERR.hasMore ? '<div class="text-center mt-2"><button class="text-cyan-400 text-sm hover:underline" data-action="hqErrMore">さらに読み込む</button></div>' : ''}`
+}
+async function drawHqPush() {
+  const box = document.getElementById('he-push'); if (!box) return
+  const head = '<h3 class="font-bold mb-1"><i class="fas fa-mobile-screen text-cyan-400 mr-1"></i>プッシュ通知（この端末）</h3>'
+  const note = (cls, icon, text) => `<p class="text-sm ${cls}"><i class="fas ${icon} mr-1"></i>${text}</p>`
+  if (!HQ_PUSH_SUPPORTED) { box.innerHTML = head + note('text-slate-400', 'fa-circle-info', 'このブラウザはプッシュ通知に対応していません。通知はこのタブの件数で確認できます。'); return }
+  const sub = await hqPushSubscription()
+  let cfg
+  try { cfg = (await axios.get('/api/hq/push/config', { params: sub ? { endpoint: sub.endpoint } : {} })).data } catch (e) { box.innerHTML = head + note('text-red-400', 'fa-triangle-exclamation', '設定を読み込めませんでした'); return }
+  if (!document.getElementById('he-push')) return
+  let body
+  if (!cfg.available) body = note('text-amber-400', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
+  else if (Notification.permission === 'denied') body = note('text-red-400', 'fa-ban', '通知がブロックされています。ブラウザのサイトの設定で、このサイトの通知を許可してから開き直してください。')
+  else if (sub && cfg.subscribed) {
+    body = `${note('text-emerald-400', 'fa-circle-check', 'この端末で、エラーが増えたときの通知を受け取ります')}
+      ${cfg.last_error ? `<p class="text-xs text-amber-400 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
+      <div class="flex gap-2 mt-2 flex-wrap">
+        <button class="btn btn-outline text-sm" data-action="hqPushTest"><i class="fas fa-paper-plane"></i>テスト通知を送る</button>
+        <button class="btn btn-outline text-sm" data-action="hqPushDisable"><i class="fas fa-bell-slash"></i>受け取らない</button>
+      </div>`
+  } else {
+    body = `<p class="text-xs text-slate-400 mb-2">エラーが増えたときに、本部画面を開いていなくても、この端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
+      <button class="btn btn-primary text-sm" data-action="hqPushEnable"><i class="fas fa-bell"></i>この端末でプッシュ通知を受け取る</button>`
+  }
+  box.innerHTML = head + body
+}
+delegate('hqErrReload', () => renderErrors())
+delegate('hqErrClear', () => { Object.assign(HQ_ERR, { q: '', source: '', company_id: '', company_name: '' }); renderErrors() })
+delegate('hqErrFind', (el) => { Object.assign(HQ_ERR, { q: String(el.dataset.ref || ''), source: '', company_id: '', company_name: '' }); renderErrors() })
+delegate('hqErrCompany', (el) => { HQ_ERR.company_id = String(el.dataset.id || ''); HQ_ERR.company_name = el.dataset.name || ''; renderErrors() })
+delegate('hqErrMore', (el) => withSubmitLock(el, async () => {
+  const last = HQ_ERR.logs.length ? HQ_ERR.logs[HQ_ERR.logs.length - 1].error_id : null
+  try {
+    const d = (await axios.get('/api/hq/errors', { params: errParams(last) })).data
+    HQ_ERR.logs = HQ_ERR.logs.concat(d.logs); HQ_ERR.hasMore = !!d.has_more
+  } catch (e) { showApiError(e, '読み込めませんでした'); return }
+  drawErrorLogs()
+}))
+delegate('hqErrAlertsRead', (el) => withSubmitLock(el, async () => {
+  try { await axios.post('/api/hq/errors/alerts/read') } catch (e) { showApiError(e, '既読にできませんでした'); return }
+  updateErrorsBadge([])
+  renderErrors()
+}))
+delegate('hqPushEnable', (el) => withSubmitLock(el, async () => {
+  try {
+    const perm = await Notification.requestPermission()
+    if (perm !== 'granted') { toast('通知が許可されませんでした。ブラウザの設定で許可できます'); return drawHqPush() }
+    await navigator.serviceWorker.register('/sw.js', { scope: HQ_PUSH_SCOPE })
+    const reg = await navigator.serviceWorker.ready
+    const cfg = (await axios.get('/api/hq/push/config')).data
+    if (!cfg.available) { toast(cfg.error || 'プッシュ通知の準備ができていません'); return }
+    let sub = await reg.pushManager.getSubscription()
+    // サーバーの鍵が変わっていたら購読し直す
+    const key = sub && sub.options && sub.options.applicationServerKey
+    if (sub && key && hqBytesToB64url(key) !== cfg.public_key) { await sub.unsubscribe(); sub = null }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: hqB64urlToBytes(cfg.public_key) })
+    const j = sub.toJSON()
+    await axios.post('/api/hq/push/subscribe', { endpoint: j.endpoint, keys: j.keys })
+    toast('この端末でプッシュ通知を受け取ります')
+  } catch (e) {
+    if (e && e.isAxiosError) showApiError(e, '登録できませんでした')
+    else toast('この端末ではプッシュ通知を登録できませんでした')
+  }
+  drawHqPush()
+}))
+delegate('hqPushDisable', (el) => withSubmitLock(el, async () => {
+  const sub = await hqPushSubscription()
+  if (sub) {
+    try { await axios.post('/api/hq/push/unsubscribe', { endpoint: sub.endpoint }) } catch (e) { showApiError(e, '解除できませんでした'); return }
+    try { await sub.unsubscribe() } catch (e) { }
+  }
+  toast('この端末ではプッシュ通知を受け取りません')
+  drawHqPush()
+}))
+delegate('hqPushTest', (el) => withSubmitLock(el, async () => {
+  const sub = await hqPushSubscription()
+  if (!sub) return drawHqPush()
+  try { await axios.post('/api/hq/push/test', { endpoint: sub.endpoint }); toast('テスト通知を送りました。数秒で届きます') } catch (e) { showApiError(e, 'テスト通知を送れませんでした'); drawHqPush() }
+}))
+// 通知を押したときに、開いている本部画面を通知の行き先へ移す（Service Worker からの知らせ）
+if (HQ_PUSH_SUPPORTED) {
+  navigator.serviceWorker.addEventListener('message', (ev) => {
+    const d = ev.data || {}
+    if (d.type === 'fos-open' && /^#[A-Za-z0-9_\-/=&.]{1,200}$/.test(String(d.hash || ''))) location.hash = String(d.hash).slice(1)
+  })
+}
+
 // ============ ルーティング ============
 const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport, mail: renderHqMail,
   security: () => (window.renderHqSecurity ? renderHqSecurity() : renderCompanies()) }
 // 導入企業へのお知らせ（#516）
 routes.announcements = renderAnnouncements
+// 障害（#9622）
+routes.errors = renderErrors
 
 function route() {
   const hash = (location.hash || '#companies').slice(1)
@@ -1971,6 +2188,8 @@ window.addEventListener('hashchange', route)
   if (!/^#mail/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshMailAlert()
   // 未対応の伴走支援の依頼の件数（#179）。伴走支援のタブは自分で描き直す
   if (!/^#support/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshSupportBadge()
+  // 未読の障害の通知の件数（#9622）。障害のタブは自分で描き直す
+  if (!/^#errors/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshErrorsBadge()
 })()
 
 // ============ 解約・データ（解約・停止した企業のデータの書き出しと削除。作業単位 w5-hq-offboarding: #177） ============

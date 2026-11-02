@@ -1,0 +1,129 @@
+# 本番 D1（mbsaas-production）の毎日の自動バックアップ（利用者の決定 Sprint 13。#9621）
+#
+# 流れ: wrangler d1 export --remote で SQL に書き出す → 中身を確かめる → gzip → R2 のバックアップ用バケットに日付つきで保存する。
+# 古いバックアップは R2 のライフサイクルのルール（30日で消す）で自動で消す（ルールは利用者が一度だけ設定する）。
+# 必要な設定（GitHub の Secrets・R2 のバケット・API トークンの権限）と、復元のしかたは docs/backup.md。
+#
+# - Secrets が未登録のときは、Cloudflare に接続する前に「設定の確認」で失敗して終わる（何も書き出さない・何も消さない）。
+# - バックアップには個人情報が入る。GitHub の Artifacts やログには中身を出さない（件数・大きさ・ハッシュだけを出す）。
+# - 手動でも実行できる（Actions の画面の「Run workflow」。workflow_dispatch）。
+name: D1 backup
+
+on:
+  schedule:
+    # 毎日 UTC 19:05 = 日本時間 4:05。定期処理（3:00・3:30）と15分おきの処理（4:00）の直後を避ける。
+    # GitHub の混み具合で、数分〜数十分遅れることがある
+    - cron: '5 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同時に2つ動かさない（手動の実行と定期の実行が重なったときは、後のほうが待つ）
+concurrency:
+  group: d1-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # wrangler.jsonc の d1_databases の database_name
+      D1_DATABASE: mbsaas-production
+      # バケット名は GitHub の Variables（D1_BACKUP_BUCKET）で変えられる。未設定なら mbsaas-d1-backups
+      BACKUP_BUCKET: ${{ vars.D1_BACKUP_BUCKET || 'mbsaas-d1-backups' }}
+      # R2 のライフサイクルのルールは、このプレフィックスに付ける（docs/backup.md）
+      BACKUP_PREFIX: d1/
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - name: 設定の確認
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::GitHub の Secrets が登録されていません:$missing。docs/backup.md の「1回だけ行う設定」を行ってください"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: wrangler の用意（package-lock.json と同じ版）
+        run: npm ci --no-audit --no-fund
+
+      - name: 書き出し（wrangler d1 export --remote）
+        run: |
+          STAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M)
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/d1"
+          npx wrangler d1 export "$D1_DATABASE" --remote --skip-confirmation --output "$RUNNER_TEMP/d1/backup.sql"
+
+      - name: 中身の確認と圧縮
+        run: |
+          F="$RUNNER_TEMP/d1/backup.sql"
+          if [ ! -s "$F" ]; then echo "::error::書き出したファイルが空です"; exit 1; fi
+          TABLES=$(grep -c '^CREATE TABLE' "$F" || true)
+          INSERTS=$(grep -c '^INSERT INTO' "$F" || true)
+          # 主な表の定義が入っていることを確かめる（書き出しは「CREATE TABLE companies (」の形。ローカルの D1 の書き出しで確認済み）
+          has_table() { grep -Eq "^CREATE TABLE (IF NOT EXISTS )?[\"\`]?$1[\"\`]? ?\(" "$F"; }
+          for t in companies users staff_profiles shifts; do
+            if ! has_table "$t"; then echo "::error::表 $t の定義が書き出しにありません"; exit 1; fi
+          done
+          # マイグレーションの適用の記録（復元の後に、足りないマイグレーションだけを適用するのに使う）
+          has_table d1_migrations || echo "::warning::表 d1_migrations が書き出しにありません。復元の後のマイグレーションの適用は、docs/backup.md の注意を見てください"
+          SQL_BYTES=$(stat -c %s "$F")
+          gzip -9 -n "$F"
+          gzip -t "$F.gz"
+          GZ_BYTES=$(stat -c %s "$F.gz")
+          SHA256=$(sha256sum "$F.gz" | cut -d' ' -f1)
+          {
+            echo "TABLES=$TABLES"; echo "INSERTS=$INSERTS"; echo "SQL_BYTES=$SQL_BYTES"; echo "GZ_BYTES=$GZ_BYTES"; echo "SHA256=$SHA256"
+          } >> "$GITHUB_ENV"
+
+      - name: R2 に保存
+        run: |
+          KEY="${BACKUP_PREFIX}${D1_DATABASE}-${STAMP}.sql.gz"
+          echo "KEY=$KEY" >> "$GITHUB_ENV"
+          npx wrangler r2 object put "$BACKUP_BUCKET/$KEY" --remote --file "$RUNNER_TEMP/d1/backup.sql.gz" --content-type application/gzip
+
+      - name: 古いバックアップの自動削除（ライフサイクルのルール）の確認
+        # 確かめられないときや、ルールが見つからないときは警告だけにする（バックアップ自体は成功している）
+        continue-on-error: true
+        run: |
+          if npx wrangler r2 bucket lifecycle list "$BACKUP_BUCKET" > "$RUNNER_TEMP/lifecycle.txt" 2>&1; then
+            if grep -q "$BACKUP_PREFIX" "$RUNNER_TEMP/lifecycle.txt"; then
+              echo "ライフサイクルのルールがあります（$BACKUP_PREFIX）"
+            else
+              echo "::warning::バケット $BACKUP_BUCKET に、$BACKUP_PREFIX の古いバックアップを消すライフサイクルのルールが見つかりません。docs/backup.md の手順で設定してください（設定しないと、バックアップが消えずに残り続けます）"
+            fi
+          else
+            echo "::warning::ライフサイクルのルールを確かめられませんでした（API トークンの権限を確認してください）"
+          fi
+
+      - name: 結果の記録
+        run: |
+          {
+            echo "### D1 のバックアップ"
+            echo ""
+            echo "| 項目 | 値 |"
+            echo "|---|---|"
+            echo "| 保存先 | \`$BACKUP_BUCKET/$KEY\` |"
+            echo "| 表の定義の数 | $TABLES |"
+            echo "| INSERT の行数 | $INSERTS |"
+            echo "| 大きさ（SQL / gzip） | $SQL_BYTES / $GZ_BYTES バイト |"
+            echo "| SHA-256（gzip） | \`$SHA256\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 作業用のファイルを消す
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/d1" "$RUNNER_TEMP/lifecycle.txt"

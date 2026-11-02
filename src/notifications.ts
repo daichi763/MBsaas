@@ -335,6 +335,8 @@ function notificationRoutes(scope: 'admin' | 'staff') {
 }
 export const notificationsStaffApi = notificationRoutes('staff')
 export const notificationsAdminApi = notificationRoutes('admin')
+// 本部の管理者本人のプッシュ通知の購読（/api/hq/push/*。障害の通知 #9622）。ルートはこのファイルの末尾で足す
+export const notificationsHqApi = new Hono<{ Bindings: NotifyEnv; Variables: Variables }>()
 
 // ---------- メール送信失敗の一覧・再送（管理者）----------
 // 他社連携のスタッフが申請すると、宛先は所属元（他社）のユーザーになる。連携の同意ではメールを共有しないので、
@@ -1496,8 +1498,11 @@ export function emailWanted(prefs: PrefMap, userId: number, role: string, kind: 
   if (g.digest && p?.digest) return false
   return p && p.email != null ? !!p.email : g.defaultEmail(role)
 }
-/** この通知をプッシュで送るか（スタッフのみ。既定は送る） */
+// 本部の管理者（system_admin）にプッシュで送る通知の種類（障害の通知 #9622。src/lib/error-log.ts の ERROR_ALERT_KIND）
+const HQ_PUSH_KINDS = ['error_alert']
+/** この通知をプッシュで送るか（スタッフと、本部の管理者あての障害の通知。スタッフの既定は送る） */
 function pushWanted(prefs: PrefMap, userId: number, role: string, kind: string): boolean {
+  if (role === 'system_admin') return HQ_PUSH_KINDS.includes(kind)
   if (role !== 'staff') return false
   const g = prefGroupFor(kind, 'staff')
   const p = g ? prefs.get(Number(userId))?.get(g.key) : undefined
@@ -1779,66 +1784,70 @@ export async function runPushQueueJob(env: PushEnv) {
   return { claimed: r.claimed, sent: r.sent, push_failed: r.failed, removed: r.removed, purged }
 }
 
-// 購読の API（スタッフ本人）。購読はこの人（同じ人のほかの会社のユーザーを含む）のもの
+// 購読の API（スタッフ本人・本部の管理者本人）。購読はこの人（スタッフは同じ人のほかの会社のユーザーを含む）のもの。
+// スタッフは /api/staff/push/*、本部は /api/hq/push/*（障害の通知 #9622）。端末の Service Worker の範囲（scope）は /staff と /hq で別
 const ownsSub = (u: any) => ({ sql: '(user_id = ? OR (person_id IS NOT NULL AND person_id = ?))', binds: [u.user_id, u.person_id || ''] })
-notificationsStaffApi.get('/push/config', async (c) => {
-  const u = c.get('user')
-  let publicKey: string
-  try { publicKey = (await loadVapid(c.env)).publicKey } catch (e) {
-    console.log(`push: vapid load failed: ${e}`)
-    return c.json({ available: false, error: 'プッシュ通知の準備ができていません' })
-  }
-  const o = ownsSub(u)
-  const endpoint = c.req.query('endpoint') || ''
-  const row = endpoint ? await c.env.DB.prepare(`SELECT subscription_id, last_success_at, last_error FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(endpoint, ...o.binds).first() as any : null
-  const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM push_subscriptions WHERE ${o.sql}`).bind(...o.binds).first() as any
-  return c.json({ available: true, public_key: publicKey, subscribed: !!row, last_success_at: row?.last_success_at || null, last_error: row?.last_error || null, devices: Number(n?.n || 0) })
-})
-notificationsStaffApi.post('/push/subscribe', async (c) => {
-  const u = c.get('user')
-  const b = await c.req.json().catch(() => ({} as any))
-  const endpoint = String(b?.endpoint || '')
-  const keys = b?.keys && typeof b.keys === 'object' ? b.keys : {}
-  const key = (v: unknown) => (typeof v === 'string' && /^[A-Za-z0-9_-]{8,200}={0,2}$/.test(v) ? v : null)
-  if (!isAllowedPushEndpoint(endpoint, allowLocalPush(c.env))) return c.json({ error: 'この端末のプッシュ通知の宛先は登録できません' }, 400)
-  const p256dh = key(keys.p256dh), auth = key(keys.auth)
-  if (!p256dh || !auth) return c.json({ error: '購読の情報が正しくありません' }, 400)
-  const at = nowJST()
-  const ua = String(c.req.header('User-Agent') || '').slice(0, 200)
-  await c.env.DB.batch([
-    // 同じ端末で別の人がログインし直して登録したときは、その端末の宛先を今の人に付け替える
-    c.env.DB.prepare(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(endpoint) DO UPDATE SET company_id = excluded.company_id, user_id = excluded.user_id, person_id = excluded.person_id, p256dh = excluded.p256dh, auth = excluded.auth,
-        user_agent = excluded.user_agent, updated_at = excluded.updated_at, failures = 0, last_error = NULL, test_requested_at = NULL`)
-      .bind(u.company_id, u.user_id, u.person_id || null, endpoint, p256dh, auth, ua, at, at),
-    c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE user_id = ? AND subscription_id NOT IN (SELECT subscription_id FROM push_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, subscription_id DESC LIMIT ?)`)
-      .bind(u.user_id, u.user_id, PUSH_MAX_PER_USER),
-  ])
-  return c.json({ ok: true })
-})
-notificationsStaffApi.post('/push/unsubscribe', async (c) => {
-  const u = c.get('user')
-  const b = await c.req.json().catch(() => ({} as any))
-  const o = ownsSub(u)
-  const r = await c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(String(b?.endpoint || ''), ...o.binds).run()
-  return c.json({ ok: true, removed: r.meta.changes || 0 })
-})
-// テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す）
-notificationsStaffApi.post('/push/test', async (c) => {
-  const u = c.get('user')
-  const b = await c.req.json().catch(() => ({} as any))
-  const o = ownsSub(u)
-  const s = await c.env.DB.prepare(`SELECT subscription_id, endpoint FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(String(b?.endpoint || ''), ...o.binds).first() as any
-  if (!s) return c.json({ error: 'この端末はプッシュ通知を受け取る設定になっていません' }, 404)
-  if (!isAllowedPushEndpoint(s.endpoint, allowLocalPush(c.env))) return c.json({ error: 'この端末のプッシュ通知の宛先には送れません' }, 400)
-  await c.env.DB.prepare('UPDATE push_subscriptions SET test_requested_at = ? WHERE subscription_id = ?').bind(nowJST(), s.subscription_id).run()
-  const r = await sendWebPush(c.env, s.endpoint)
-  if (r.gone) await c.env.DB.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id).run()
-  else if (r.ok) await c.env.DB.prepare('UPDATE push_subscriptions SET last_success_at = ?, failures = 0, last_error = NULL WHERE subscription_id = ?').bind(nowJST(), s.subscription_id).run()
-  else await c.env.DB.prepare('UPDATE push_subscriptions SET last_error = ? WHERE subscription_id = ?').bind(r.error || 'unknown', s.subscription_id).run()
-  if (!r.ok) return c.json({ error: r.gone ? 'この端末の購読は無効になっていました。もう一度「受け取る」を押してください' : 'プッシュ通知を送れませんでした。時間をおいてお試しください', reason: r.error }, 502)
-  return c.json({ ok: true })
-})
+function pushDeviceRoutes(app: Hono<{ Bindings: NotifyEnv; Variables: Variables }>) {
+  app.get('/push/config', async (c) => {
+    const u = c.get('user')
+    let publicKey: string
+    try { publicKey = (await loadVapid(c.env)).publicKey } catch (e) {
+      console.log(`push: vapid load failed: ${e}`)
+      return c.json({ available: false, error: 'プッシュ通知の準備ができていません' })
+    }
+    const o = ownsSub(u)
+    const endpoint = c.req.query('endpoint') || ''
+    const row = endpoint ? await c.env.DB.prepare(`SELECT subscription_id, last_success_at, last_error FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(endpoint, ...o.binds).first() as any : null
+    const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM push_subscriptions WHERE ${o.sql}`).bind(...o.binds).first() as any
+    return c.json({ available: true, public_key: publicKey, subscribed: !!row, last_success_at: row?.last_success_at || null, last_error: row?.last_error || null, devices: Number(n?.n || 0) })
+  })
+  app.post('/push/subscribe', async (c) => {
+    const u = c.get('user')
+    const b = await c.req.json().catch(() => ({} as any))
+    const endpoint = String(b?.endpoint || '')
+    const keys = b?.keys && typeof b.keys === 'object' ? b.keys : {}
+    const key = (v: unknown) => (typeof v === 'string' && /^[A-Za-z0-9_-]{8,200}={0,2}$/.test(v) ? v : null)
+    if (!isAllowedPushEndpoint(endpoint, allowLocalPush(c.env))) return c.json({ error: 'この端末のプッシュ通知の宛先は登録できません' }, 400)
+    const p256dh = key(keys.p256dh), auth = key(keys.auth)
+    if (!p256dh || !auth) return c.json({ error: '購読の情報が正しくありません' }, 400)
+    const at = nowJST()
+    const ua = String(c.req.header('User-Agent') || '').slice(0, 200)
+    await c.env.DB.batch([
+      // 同じ端末で別の人がログインし直して登録したときは、その端末の宛先を今の人に付け替える
+      c.env.DB.prepare(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(endpoint) DO UPDATE SET company_id = excluded.company_id, user_id = excluded.user_id, person_id = excluded.person_id, p256dh = excluded.p256dh, auth = excluded.auth,
+          user_agent = excluded.user_agent, updated_at = excluded.updated_at, failures = 0, last_error = NULL, test_requested_at = NULL`)
+        .bind(u.company_id, u.user_id, u.person_id || null, endpoint, p256dh, auth, ua, at, at),
+      c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE user_id = ? AND subscription_id NOT IN (SELECT subscription_id FROM push_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, subscription_id DESC LIMIT ?)`)
+        .bind(u.user_id, u.user_id, PUSH_MAX_PER_USER),
+    ])
+    return c.json({ ok: true })
+  })
+  app.post('/push/unsubscribe', async (c) => {
+    const u = c.get('user')
+    const b = await c.req.json().catch(() => ({} as any))
+    const o = ownsSub(u)
+    const r = await c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(String(b?.endpoint || ''), ...o.binds).run()
+    return c.json({ ok: true, removed: r.meta.changes || 0 })
+  })
+  // テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す）
+  app.post('/push/test', async (c) => {
+    const u = c.get('user')
+    const b = await c.req.json().catch(() => ({} as any))
+    const o = ownsSub(u)
+    const s = await c.env.DB.prepare(`SELECT subscription_id, endpoint FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(String(b?.endpoint || ''), ...o.binds).first() as any
+    if (!s) return c.json({ error: 'この端末はプッシュ通知を受け取る設定になっていません' }, 404)
+    if (!isAllowedPushEndpoint(s.endpoint, allowLocalPush(c.env))) return c.json({ error: 'この端末のプッシュ通知の宛先には送れません' }, 400)
+    await c.env.DB.prepare('UPDATE push_subscriptions SET test_requested_at = ? WHERE subscription_id = ?').bind(nowJST(), s.subscription_id).run()
+    const r = await sendWebPush(c.env, s.endpoint)
+    if (r.gone) await c.env.DB.prepare('DELETE FROM push_subscriptions WHERE subscription_id = ?').bind(s.subscription_id).run()
+    else if (r.ok) await c.env.DB.prepare('UPDATE push_subscriptions SET last_success_at = ?, failures = 0, last_error = NULL WHERE subscription_id = ?').bind(nowJST(), s.subscription_id).run()
+    else await c.env.DB.prepare('UPDATE push_subscriptions SET last_error = ? WHERE subscription_id = ?').bind(r.error || 'unknown', s.subscription_id).run()
+    if (!r.ok) return c.json({ error: r.gone ? 'この端末の購読は無効になっていました。もう一度「受け取る」を押してください' : 'プッシュ通知を送れませんでした。時間をおいてお試しください', reason: r.error }, 502)
+    return c.json({ ok: true })
+  })
+}
+pushDeviceRoutes(notificationsStaffApi)
 // 端末の Service Worker が、プッシュを受けたときに表示する内容を取りに来る（本文はプッシュに載せない）。
 // 端末の購読が今ログインしている人のものでなければ（同じ端末で別の人がログインした後など）、中身を出さない
 const PUSH_BODY_MAX = 120
@@ -1865,4 +1874,26 @@ notificationsStaffApi.get('/push/latest', async (c) => {
   const body = String(n.body || '').replace(/\s+/g, ' ').trim()
   return c.json({ title: n.title, body: (body.length > PUSH_BODY_MAX ? body.slice(0, PUSH_BODY_MAX) + '…' : body) + (shown.length > 1 ? `（ほか${shown.length - 1}件の未読）` : ''),
     link: '/staff' + hash, tag: 'fieldos', notification_id: n.notification_id })
+})
+
+// 本部の管理者の端末（/hq の Service Worker）が、プッシュを受けたときに表示する内容を取りに来る。
+// 本部の管理者あての通知は障害の通知（HQ_PUSH_KINDS）だけを出す。開く先は本部画面の中だけ
+pushDeviceRoutes(notificationsHqApi)
+notificationsHqApi.get('/push/latest', async (c) => {
+  const u = c.get('user')
+  const generic = { title: 'Field OS 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: '/hq#errors', tag: 'fieldos-hq' }
+  const o = ownsSub(u)
+  const s = await c.env.DB.prepare(`SELECT subscription_id, test_requested_at FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(c.req.query('endpoint') || '', ...o.binds).first() as any
+  if (!s) return c.json({ ...generic, generic: true })
+  if (s.test_requested_at && s.test_requested_at >= minutesAgoJST(PUSH_TEST_MINUTES)) {
+    await c.env.DB.prepare('UPDATE push_subscriptions SET test_requested_at = NULL WHERE subscription_id = ?').bind(s.subscription_id).run()
+    return c.json({ title: 'テスト通知', body: 'この端末で本部の障害の通知を受け取れます', link: '/hq#errors', tag: 'fieldos-hq-test', test: true })
+  }
+  const n = await c.env.DB.prepare(`SELECT notification_id, title, body, link FROM user_notifications WHERE user_id = ? AND read_at IS NULL
+    AND kind IN (SELECT value FROM json_each(?)) ORDER BY notification_id DESC LIMIT 1`).bind(u.user_id, JSON.stringify(HQ_PUSH_KINDS)).first() as any
+  if (!n) return c.json({ ...generic, generic: true })
+  const link = String(n.link || '')
+  const hash = /^#[A-Za-z0-9_\-/=&.]{0,200}$/.test(link) ? link : '#errors'
+  const body = String(n.body || '').replace(/\s+/g, ' ').trim()
+  return c.json({ title: n.title, body: body.length > PUSH_BODY_MAX ? body.slice(0, PUSH_BODY_MAX) + '…' : body, link: '/hq' + hash, tag: 'fieldos-hq', notification_id: n.notification_id })
 })
