@@ -233,7 +233,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/staff/notices/:id{[0-9]+}/response` | スタッフ | [api.ts:2400](../src/api.ts#L2400) | 〔見出し〕電波がない場所で押した報告（#427） | staff.js |
 | POST | `/api/staff/notices/read-all` | スタッフ | [api.ts:2434](../src/api.ts#L2434) | まとめて確認（#553）。画面に出ていた未読（ids）のうち、既読確認が必須・緊急でないものだけを既読にする | staff.js |
 | GET | `/api/staff/notification-prefs` | スタッフ | [notifications.ts:1587](../src/notifications.ts#L1587) | 〔見出し〕受け取り設定の API | staff.js |
-| PUT | `/api/staff/notification-prefs` | スタッフ | [notifications.ts:1592](../src/notifications.ts#L1592) | 〔見出し〕受け取り設定の API | staff.js |
+| PUT | `/api/staff/notification-prefs` | スタッフ<br>＋本文で確認: NOTIFY_ADMIN_ROLES | [notifications.ts:1592](../src/notifications.ts#L1592) | 〔見出し〕受け取り設定の API | staff.js |
 | GET | `/api/staff/notifications` | スタッフ | [notifications.ts:289](../src/notifications.ts#L289) | 絞り込み（#380）: unread=1 で未読だけ、kind で種類、before（notification_id）で続きを取る。limit は 1〜100（既定 100） | staff-attendance.js staff-profile.js staff.js |
 | POST | `/api/staff/notifications/:id{[0-9]+}/read` | スタッフ | [notifications.ts:328](../src/notifications.ts#L328) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | staff-attendance.js staff-profile.js staff.js |
 | POST | `/api/staff/notifications/read-all` | スタッフ | [notifications.ts:312](../src/notifications.ts#L312) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | staff-attendance.js |
@@ -259,14 +259,14 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/staff/recruit/summary` | スタッフ | [recruit.ts:521](../src/recruit.ts#L521) | 募集の入口（シフト画面のボタン）用の件数だけを返す（#410。枠の一覧は『募集中のお仕事』を開いたときに GET / で取る） pending_items: 今日以降の承認待ちの日時（シフト一覧に『承認待ち』として出すときに使う） |  |
 | GET | `/api/staff/report-template/:projectId` | スタッフ | [api.ts:1941](../src/api.ts#L1941) | 日報テンプレート取得 |  |
 | GET | `/api/staff/self/documents` | スタッフ | [staff-self-service.ts:249](../src/staff-self-service.ts#L249) | 〔見出し〕#288 書類の提出 | staff-profile.js |
-| POST | `/api/staff/self/documents` | スタッフ | [staff-self-service.ts:257](../src/staff-self-service.ts#L257) | 〔見出し〕#288 書類の提出 | staff-profile.js |
+| POST | `/api/staff/self/documents` | スタッフ<br>＋本文で確認: ADMIN_NOTIFY_ROLES | [staff-self-service.ts:257](../src/staff-self-service.ts#L257) | 〔見出し〕#288 書類の提出 | staff-profile.js |
 | DELETE | `/api/staff/self/documents/:id` | スタッフ | [staff-self-service.ts:312](../src/staff-self-service.ts#L312) | 本人が削除できるのは、担当者がまだ確認していない書類だけ（D1 を先に消し、R2 は後で消す） | staff-profile.js |
 | GET | `/api/staff/self/documents/:id/download` | スタッフ | [staff-self-service.ts:296](../src/staff-self-service.ts#L296) | 本人が出した書類だけを開ける（管理者が登録した書類・ほかの人の書類は開けない） | staff-profile.js |
 | GET | `/api/staff/self/leave` | スタッフ | [staff-self-service.ts:344](../src/staff-self-service.ts#L344) | 〔見出し〕#289 有給の残日数と休暇の申請 | staff-profile.js |
 | POST | `/api/staff/self/leave` | スタッフ<br>＋本文で確認: 人事のロール | [staff-self-service.ts:355](../src/staff-self-service.ts#L355) | 〔見出し〕#289 有給の残日数と休暇の申請 | staff-profile.js |
 | POST | `/api/staff/self/leave/:id/cancel` | スタッフ | [staff-self-service.ts:387](../src/staff-self-service.ts#L387) | 〔見出し〕#289 有給の残日数と休暇の申請 | staff-profile.js |
 | GET | `/api/staff/self/profile-requests` | スタッフ | [staff-self-service.ts:180](../src/staff-self-service.ts#L180) | 〔見出し〕スタッフ本人の API（/api/staff/self/*） | staff-profile.js |
-| POST | `/api/staff/self/profile-requests` | スタッフ | [staff-self-service.ts:192](../src/staff-self-service.ts#L192) | 〔見出し〕スタッフ本人の API（/api/staff/self/*） | staff-profile.js |
+| POST | `/api/staff/self/profile-requests` | スタッフ<br>＋本文で確認: ADMIN_NOTIFY_ROLES | [staff-self-service.ts:192](../src/staff-self-service.ts#L192) | 〔見出し〕スタッフ本人の API（/api/staff/self/*） | staff-profile.js |
 | POST | `/api/staff/self/profile-requests/:id/cancel` | スタッフ | [staff-self-service.ts:223](../src/staff-self-service.ts#L223) | 〔見出し〕スタッフ本人の API（/api/staff/self/*） | staff-profile.js |
 | GET | `/api/staff/self/summary` | スタッフ | [staff-self-service.ts:175](../src/staff-self-service.ts#L175) | 『その他』のメニューの出し分け（有給・休暇は自社雇用の社員だけ） | staff-profile.js |
 | POST | `/api/staff/shift-requests/:id/cancel` | スタッフ | [api.ts:2294](../src/api.ts#L2294) | シフト希望の取り下げ（#353）。返事待ちのものだけ。採用・見送りの後は管理者に連絡してもらう |  |
@@ -303,7 +303,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/board/proposals/:id/status` | 管理者（4ロール） | [board.ts:765](../src/board.ts#L765) | 状態変更: 受け手 = 面談希望 / 採用 / 見送り、提案者 = 取り下げ（採用前のみ） | board.js |
 | GET | `/api/admin/board/saved-searches` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:994](../src/board.ts#L994) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
 | POST | `/api/admin/board/saved-searches` | 管理者（4ロール） | [board.ts:999](../src/board.ts#L999) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
-| DELETE | `/api/admin/board/saved-searches/:id` | 管理者（4ロール） | [board.ts:1031](../src/board.ts#L1031) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
+| DELETE | `/api/admin/board/saved-searches/:id` | 管理者（4ロール）<br>＋本文で確認: SAVED_SEARCH_NOTIFY_ROLES | [board.ts:1031](../src/board.ts#L1031) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
 | PUT | `/api/admin/board/saved-searches/:id` | 管理者（4ロール） | [board.ts:1016](../src/board.ts#L1016) | 名前・知らせ方の変更（条件そのものは変えない。変えるときは保存し直す） | board.js |
 | GET | `/api/admin/board/threads` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:424](../src/board.ts#L424) | スレッド一覧（自社が参加する全スレッド）。post_id を指定するとその掲載のスレッドのみ | board.js |
 | GET | `/api/admin/board/threads/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:458](../src/board.ts#L458) | メッセージ取得（全履歴）。取得しただけでは既読にしない（既読は POST /threads/:id/read。#250） | board.js |
@@ -402,9 +402,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/notification-emails` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:353](../src/notifications.ts#L353) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
 | POST | `/api/admin/notification-emails/:id{[0-9]+}/resend` | 管理者（4ロール） | [notifications.ts:419](../src/notifications.ts#L419) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
 | GET | `/api/admin/notification-emails/export` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:381](../src/notifications.ts#L381) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
-| POST | `/api/admin/notification-emails/resend-failed` | 管理者（4ロール） | [notifications.ts:450](../src/notifications.ts#L450) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
+| POST | `/api/admin/notification-emails/resend-failed` | 管理者（4ロール）<br>＋本文で確認: NOTIFY_ADMIN_ROLES | [notifications.ts:450](../src/notifications.ts#L450) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
 | GET | `/api/admin/notification-prefs` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:1568](../src/notifications.ts#L1568) | 〔見出し〕受け取り設定の API | notifications.js |
-| PUT | `/api/admin/notification-prefs` | 管理者（4ロール） | [notifications.ts:1573](../src/notifications.ts#L1573) | 〔見出し〕受け取り設定の API | notifications.js |
+| PUT | `/api/admin/notification-prefs` | 管理者（4ロール）<br>＋本文で確認: NOTIFY_ADMIN_ROLES | [notifications.ts:1573](../src/notifications.ts#L1573) | 〔見出し〕受け取り設定の API | notifications.js |
 | GET | `/api/admin/notifications` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:289](../src/notifications.ts#L289) | 絞り込み（#380）: unread=1 で未読だけ、kind で種類、before（notification_id）で続きを取る。limit は 1〜100（既定 100） | notifications.js |
 | POST | `/api/admin/notifications/:id{[0-9]+}/read` | 管理者（4ロール） | [notifications.ts:328](../src/notifications.ts#L328) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | notifications.js |
 | POST | `/api/admin/notifications/read-all` | 管理者（4ロール） | [notifications.ts:312](../src/notifications.ts#L312) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | notifications.js |
@@ -531,17 +531,17 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/settlement/closings` | 管理者（4ロール） | [settlement.ts:1084](../src/settlement.ts#L1084) | 期間を締める。期間内の精算の対象（確定・代打・キャンセル料を入れた欠勤）がすべて確定済みのときだけ締められる。 確定後に対応が必要な事項（確定後の打刻修正など）があるときは、確認してから force で締める | settlement.js |
 | POST | `/api/admin/settlement/closings/:id/reopen` | 管理者（4ロール）<br>＋本文で確認: 会社管理者 | [settlement.ts:1105](../src/settlement.ts#L1105) | 締めの解除は会社管理者だけ。理由を必ず残す（行は消さない） | settlement.js |
 | POST | `/api/admin/settlement/confirm` | 管理者（4ロール） | [settlement.ts:632](../src/settlement.ts#L632) | 〔見出し〕確定・取り消し | settlement.js |
-| GET | `/api/admin/settlement/export` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:769](../src/settlement.ts#L769) | 〔見出し〕CSV | settlement.js |
+| GET | `/api/admin/settlement/export` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: PAYOUT_ROLES | [settlement.ts:769](../src/settlement.ts#L769) | 〔見出し〕CSV | settlement.js |
 | GET | `/api/admin/settlement/options` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1049](../src/settlement.ts#L1049) | 精算画面を開くたびに取り直す（後から登録した案件・クライアントも選べるように）。締め日（#168）も返す | settlement.js |
-| GET | `/api/admin/settlement/payout` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:922](../src/settlement.ts#L922) | 〔見出し〕振込データ（#471） | settlement.js |
-| DELETE | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール） | [settlement.ts:1040](../src/settlement.ts#L1040) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1006](../src/settlement.ts#L1006) | 〔見出し〕振込データ（#471） | settlement.js |
-| PUT | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール） | [settlement.ts:1017](../src/settlement.ts#L1017) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/payout/export` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:936](../src/settlement.ts#L936) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/payout/settings` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:972](../src/settlement.ts#L972) | 振込元（依頼人）の設定 | settlement.js |
-| PUT | `/api/admin/settlement/payout/settings` | 管理者（4ロール） | [settlement.ts:978](../src/settlement.ts#L978) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/premium-settings` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1268](../src/settlement.ts#L1268) | 変更は給与の計算に関わるため、会社管理者と事務担当だけ（振込データと同じ）。変更は未確定のシフトにだけ効く（確定済みは確定したときの値のまま） | settlement.js |
-| PUT | `/api/admin/settlement/premium-settings` | 管理者（4ロール） | [settlement.ts:1272](../src/settlement.ts#L1272) | 〔見出し〕深夜・時間外・休日の割増の設定（#167） | settlement.js |
+| GET | `/api/admin/settlement/payout` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:922](../src/settlement.ts#L922) | 〔見出し〕振込データ（#471） | settlement.js |
+| DELETE | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1040](../src/settlement.ts#L1040) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1006](../src/settlement.ts#L1006) | 〔見出し〕振込データ（#471） | settlement.js |
+| PUT | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1017](../src/settlement.ts#L1017) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/payout/export` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:936](../src/settlement.ts#L936) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/payout/settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:972](../src/settlement.ts#L972) | 振込元（依頼人）の設定 | settlement.js |
+| PUT | `/api/admin/settlement/payout/settings` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:978](../src/settlement.ts#L978) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/premium-settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1268](../src/settlement.ts#L1268) | 変更は給与の計算に関わるため、会社管理者と事務担当だけ（振込データと同じ）。変更は未確定のシフトにだけ効く（確定済みは確定したときの値のまま） | settlement.js |
+| PUT | `/api/admin/settlement/premium-settings` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1272](../src/settlement.ts#L1272) | 〔見出し〕深夜・時間外・休日の割増の設定（#167） | settlement.js |
 | PUT | `/api/admin/settlement/projects/:id/cancel-policy` | 管理者（4ロール） | [settlement.ts:1175](../src/settlement.ts#L1175) | 案件のキャンセル料の規定（率は 0〜100%。空欄 = 規定なし） | settlement.js |
 | POST | `/api/admin/settlement/recalc` | 管理者（4ロール） | [settlement.ts:734](../src/settlement.ts#L734) | 確認事項『数量・金額が今の計算と違う』のシフトを、今の案件の時間の設定で計算し直す（amountsForActual。単価ルールは再適用しない）。 確定済みのシフトと、手動で数量も固定したシフト（qtyFixed）は変えない。単価だけを固定したもの（qty_locked = 0）は時給の数量を合わせる（#196） | settlement.js |
 | GET | `/api/admin/settlement/statement` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1210](../src/settlement.ts#L1210) | 〔見出し〕支払明細書・請求明細書（#168） | settlement.js |

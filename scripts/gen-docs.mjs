@@ -470,6 +470,9 @@ function extraChecks(p, line) {
   if (/HR_ROLES|isHr\(|canManageHr|can_manage_hr/.test(body)) found.push('人事のロール')
   if (/role\s*[!=]==\s*'company_admin'|'company_admin'\s*[!=]==/.test(body)) found.push('会社管理者')
   if (/canEditAttendanceSettings/.test(body)) found.push('勤怠の設定の権限')
+  // そのほかのロールの定数（PAYOUT_ROLES など）と、権限を確かめる関数（payoutForbidden など）
+  for (const m of new Set([...body.matchAll(/\b([A-Z][A-Z_]*_ROLES)\b(?!\s*=[^=])/g)].map(x => x[1]))) if (m !== 'HR_ROLES' && m !== 'ADMIN_ROLES') found.push(m)
+  for (const m of new Set([...body.matchAll(/\b(\w+Forbidden|\w+Only)\(/g)].map(x => x[1]))) found.push(m + '()')
   return found
 }
 
