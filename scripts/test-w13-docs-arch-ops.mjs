@@ -74,6 +74,8 @@ for (const [d, text] of Object.entries(docText)) {
 
 // 主な関数・定数: 資料に書いた行（または20行以内の範囲）に、その定義がある
 const ANCHORS = [
+  // maskPath・参照番号・Service Worker は Sprint 13 の w13-ops-safety で動く・書き換わる所なので、統合の後のずれをここで知らせる
+  ['src/index.tsx', "const maskPath ="], ['src/index.tsx', "const ref = crypto.randomUUID()"], ['src/index.tsx', "const SERVICE_WORKER_JS ="],
   ['src/index.tsx', "app.onError("], ['src/index.tsx', "app.route('/api', api)"], ['src/index.tsx', "app.post('/webhooks/resend'"],
   ['src/index.tsx', "async function currentUser"], ['src/index.tsx', "app.get('/staff'"], ['src/index.tsx', "app.get('/admin'"],
   ['src/index.tsx', "app.get('/hq'"], ['src/index.tsx', 'const CRON_JOBS = defineCronJobs'], ['src/index.tsx', 'export default {'],
