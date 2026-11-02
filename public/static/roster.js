@@ -206,7 +206,8 @@ window.showRosterForm = async function (route) {
     </div>
     <div id="rf-dup"></div>
     <div class="flex gap-2 mt-4">
-      <button class="btn btn-outline" data-action="showAddRoster"><i class="fas fa-arrow-left"></i></button>
+      <button class="btn btn-outline" data-action="showAddRoster" title="作成方法の選択に戻る" aria-label="作成方法の選択に戻る"><i class="fas fa-arrow-left"></i></button>
+      ${MODAL_CANCEL_BTN}
       <button class="btn btn-primary flex-1" data-action="submitRosterForm" data-route="${esc(route)}">登録する</button>
     </div>`)
 }
@@ -485,6 +486,7 @@ window.showRosterFieldSettings = async function () {
     </div>
     <p class="text-xs text-gray-400 mt-3">※ ①QR/ID連携で登録したスタッフの基本項目は所属元企業が管理するため、自社の必須設定は適用されません。</p>
     <div class="flex gap-2 mt-4">
+      ${canEdit ? MODAL_CANCEL_BTN : ''}
       <button class="btn btn-outline flex-1" data-action="showRosterMissing">未入力のスタッフを確認</button>
       ${canEdit ? '<button class="btn btn-primary flex-1" data-action="saveRosterFieldSettings">保存する</button>' : ''}
     </div>`)
@@ -1195,7 +1197,8 @@ window.showRosterBulkLink = function (prefill) {
     <textarea id="rb-codes" rows="8" class="inp font-mono text-sm" placeholder="FS1A2B3C4D5E&#10;FS2B3C4D5E6F">${esc(prefill || '')}</textarea>
     <div id="rb-result" class="mt-3"></div>
     <div class="flex gap-2 mt-3">
-      <button class="btn btn-outline" data-action="showAddRoster"><i class="fas fa-arrow-left"></i></button>
+      <button class="btn btn-outline" data-action="showAddRoster" title="作成方法の選択に戻る" aria-label="作成方法の選択に戻る"><i class="fas fa-arrow-left"></i></button>
+      ${MODAL_CANCEL_BTN}
       <button class="btn btn-primary flex-1" data-action="rosterBulkCheck"><i class="fas fa-magnifying-glass"></i>確認する</button>
     </div>`)
 }

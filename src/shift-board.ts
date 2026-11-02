@@ -2005,7 +2005,21 @@ app.post('/shifts/bulk', async (c) => {
   const rows: any[] = []; const skipped: Skipped[] = []
   // 直近のシフトの単価を引き継ぐ（9306）。引き継ぎ元は、すでにあるシフトから日付ごとに選ぶ（今回まとめて作る分は、同じ引き継ぎ元から作るので見ない）
   const bproj = data.projects.get(Number(project.project_id))
-  const ihs = b.inherit === false || !bproj ? [] : await loadInheritSources(db, u.company_id, bproj, part.map(([d, sid]) => ({ staff_id: sid, work_date: d })), data, { role_name: base.role })
+  // 引き継ぎ元は、単価を決める役割名で探す（#9634）。枠に割り当てる日（slot_match）は枠の役割の rate_role_name（役割名を変えても
+  // 単価を変えないことを選んだ役割は変更前の名前）、それ以外は登録する役割名。同じ名前の日をまとめて探す
+  const ihs: (InheritSource | null)[] = new Array(part.length).fill(null)
+  if (b.inherit !== false && bproj) {
+    const byRole = new Map<string, number[]>()
+    part.forEach(([d], i) => {
+      const m = slotMatch ? matchRole.get(d) : null
+      const role = (m ? rateRoleName(base, m) : base.role) || ''
+      const list = byRole.get(role) || []; list.push(i); byRole.set(role, list)
+    })
+    for (const [role, idx] of byRole) {
+      const got = await loadInheritSources(db, u.company_id, bproj, idx.map(i => ({ staff_id: part[i][1], work_date: part[i][0] })), data, { role_name: role || null })
+      idx.forEach((i, j) => { ihs[i] = got[j] ?? null })
+    }
+  }
   const inheritedFrom = new Map<number, any>() // スタッフごとの、いちばん後の日付の引き継ぎ（画面に返す）
   let inheritedCount = 0
   let pi = -1

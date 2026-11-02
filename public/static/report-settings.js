@@ -560,7 +560,7 @@
         <span class="w-20 shrink-0 text-gray-600">${label}</span><span class="text-gray-500">${pre}</span>
         <input id="rem-${k}" type="number" min="0" max="${Number(s.limits && s.limits[k]) || 0}" step="1" class="inp w-24" value="${s[k] === null ? '' : Number(s[k])}" placeholder="送らない" ${dis}><span class="text-gray-500">${post}</span></div>`).join('')}</div>
       <p class="text-[11px] text-gray-400 mt-2">空欄にした報告は送りません。報告の受付が始まる前（開始の6時間より前）の時点は、受付の開始に送ります</p>
-      ${s.can_edit ? '<button class="btn btn-primary w-full mt-4" data-action="rsSaveReminders">保存する</button>' : '<p class="text-xs text-gray-500 mt-4">設定を変更できるのは会社管理者だけです</p>'}`)
+      ${s.can_edit ? `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="rsSaveReminders">保存する</button></div>` : '<p class="text-xs text-gray-500 mt-4">設定を変更できるのは会社管理者だけです</p>'}`)
   })
   delegate('rsSaveReminders', el => withSubmitLock(el, async () => {
     const body = { enabled: document.getElementById('rem-enabled').checked, email: document.getElementById('rem-email').checked }
