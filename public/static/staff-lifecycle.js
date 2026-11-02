@@ -369,7 +369,7 @@
     modal(`<h3 class="font-bold text-lg mb-1">ログインを発行</h3>
       <p class="text-xs text-gray-500 mb-3">スタッフ番号と初期パスワードを設定し、スタッフ用のアプリでシフトの確認・勤怠報告ができるようにします。初期パスワードは本人に伝えてください</p>
       <div class="space-y-3">${loginFieldsHtml(d, 'il', await fetchNextCode())}
-        <button class="btn btn-primary w-full" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div>`)
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div></div>`)
   })
   delegate('submitIssueLogin', (el) => withSubmitLock(el, async () => {
     const sid = Number(el.dataset.id)

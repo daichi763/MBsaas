@@ -4850,7 +4850,7 @@ delegate('showStaffViewSetting', async () => {
     ${row('sv-ranking', s.ranking_visible, '実績画面に、案件の中での順位を出す', '同じ月・同じ案件の日報の合計で、本人の順位・人数・平均との差と上位の件数を出します')}
     ${row('sv-anon', s.ranking_anonymous, '順位はほかの人の名前を出さない（匿名）', 'オフにすると、上位の人の姓も出します')}
     ${row('sv-cowork', s.show_coworkers, '一緒に入る人を出す', 'シフト画面で、同じ日・同じ現場に入るほかのスタッフの姓と時刻を出します（電話番号などは出しません）')}
-    ${s.can_edit ? '<button class="btn btn-primary w-full mt-4" data-action="saveStaffViewSetting">保存する</button>' : '<p class="text-xs text-gray-500 mt-3">この設定は会社管理者だけが変更できます</p>'}`)
+    ${s.can_edit ? `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveStaffViewSetting">保存する</button></div>` :'<p class="text-xs text-gray-500 mt-3">この設定は会社管理者だけが変更できます</p>'}`)
 })
 delegate('saveStaffViewSetting', el => withSubmitLock(el, async () => {
   const body = { ranking_visible: document.getElementById('sv-ranking').checked, ranking_anonymous: document.getElementById('sv-anon').checked, show_coworkers: document.getElementById('sv-cowork').checked }

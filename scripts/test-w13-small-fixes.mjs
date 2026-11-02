@@ -186,9 +186,13 @@ const R = {}
   const leftovers = []
   for (const f of ['admin.js', 'roster.js', 'shift-board.js', 'staff-lifecycle.js', 'settlement.js', 'report-settings.js', 'corrections.js', 'board.js', 'recruit.js', 'hq-support.js', 'staff-attendance.js']) {
     const s = js(f), re = /\bmodal\(`/g; let m
+    // 入力欄を返す小さな関数（const row = (...) => `<input ...` など）を中で呼ぶモーダルも、入力のあるモーダルに数える
+    const helpers = [], hre = /\b(?:const|let)\s+(\w+)\s*=\s*\([^)]*\)\s*=>\s*`/g; let h
+    while ((h = hre.exec(s))) if (/<input|<select|<textarea/.test(s.slice(h.index, endOfTemplate(s, h.index + h[0].length - 1) + 1))) helpers.push(h[1])
+    const hasInput = (t) => /<input|<select|<textarea/.test(t) || helpers.some(n => t.includes('${' + n + '('))
     while ((m = re.exec(s))) {
       const t = s.slice(m.index + 6, endOfTemplate(s, m.index + 6) + 1)
-      if (!/<input|<select|<textarea/.test(t) || /キャンセル|>閉じる<|>やめる<|MODAL_CANCEL_BTN|戻る|fa-arrow-left/.test(t)) continue
+      if (!hasInput(t) ||/キャンセル|>閉じる<|>やめる<|MODAL_CANCEL_BTN|戻る|fa-arrow-left/.test(t)) continue
       if (!EXEMPT.some(([ef, mark]) => ef === f && t.includes(mark))) leftovers.push(`${f}:${s.slice(0, m.index).split('\n').length}`)
     }
   }
@@ -277,6 +281,7 @@ async function browserChecks() {
       ['前日確認の設定', dg('showDayBeforeSetting')], ['遅刻の猶予', dg('showLatenessSetting')], ['緊急連絡先・入店の位置', dg('showSiteContactSetting')],
       ['枠を作成', 'openSlotModal()'], ['枠の繰り返し登録', 'openPatternModal()'], ['常勤の一括登録', 'openBulkModal()'], ['枠とシフトをコピー', 'openCopyModal()'],
       ['単価ルール', 'openRuleModal({})'], ['単価ルールの再適用', 'repriceProject()'], ['管理者を追加', dg('showAddAdminUser')],
+      ['スタッフアプリへの表示', dg('showStaffViewSetting')],
     ]
     const seen = []
     for (const [label, call] of openers) {
