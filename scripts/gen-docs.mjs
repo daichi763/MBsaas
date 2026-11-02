@@ -22,6 +22,9 @@ import { join, dirname, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 
+// node:sqlite の「試験的な機能」の警告は出さない（ほかの警告はそのまま出す）
+process.removeAllListeners('warning')
+process.on('warning', (w) => { if (w.name !== 'ExperimentalWarning') console.warn(w) })
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const argv = process.argv.slice(2)
 const argOf = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null }
@@ -135,9 +138,16 @@ function leadingComment(lines, lineNo, prefix = '//') {
 }
 /** 行より上にある、いちばん近い見出しのコメント（// ===== 名前 ===== か // ----- 名前 -----） */
 function sectionAbove(lines, lineNo) {
+  const SEP = /^\s*\/\/\s*[=\-]{5,}\s*$/
   for (let i = lineNo - 1; i >= 0; i--) {
-    const m = lines[i].match(/^\s*\/\/\s*(?:={3,}|-{3,})\s*(.+?)\s*(?:={3,}|-{3,})\s*$/)
+    const m = lines[i].match(/^\s*\/\/\s*(?:={3,}|-{3,})\s*([^=\-\s].*?)\s*(?:={3,}|-{3,})\s*$/)
     if (m) return m[1]
+    // // ====== / // 見出し / // ====== の形（下の区切りの行から上へ読む）
+    if (SEP.test(lines[i]) && i >= 2 && /^\s*\/\/\s*\S/.test(lines[i - 1]) && !SEP.test(lines[i - 1])) {
+      let k = i - 1; const text = []
+      while (k >= 0 && !SEP.test(lines[k]) && /^\s*\/\//.test(lines[k])) { text.unshift(lines[k].replace(/^\s*\/\/\s*/, '')); k-- }
+      if (k >= 0 && SEP.test(lines[k]) && text.length) return text[0]
+    }
   }
   return ''
 }
@@ -416,7 +426,7 @@ async function collectApi() {
     const applied = middlewares.filter(m => m.order < e.order && patternCovers(m.path, e.rawPath))
     e.middlewares = applied.map(m => ({ file: m.file, line: m.line, path: m.path, label: m.def?.label || '（説明なし）', kind: m.def?.kind || 'unknown' }))
     e.access = accessOf(e.method, applied)
-    e.extraChecks = extraChecks(parsed[e.file], e.line)
+    e.extraChecks = e.access.public ? [] : extraChecks(parsed[e.file], e.line)
   }
   const dup = {}
   for (const e of endpoints) { const k = `${e.method} ${e.path}`; dup[k] = (dup[k] || 0) + 1 }
@@ -460,7 +470,6 @@ function extraChecks(p, line) {
   if (/HR_ROLES|isHr\(|canManageHr|can_manage_hr/.test(body)) found.push('人事のロール')
   if (/role\s*[!=]==\s*'company_admin'|'company_admin'\s*[!=]==/.test(body)) found.push('会社管理者')
   if (/canEditAttendanceSettings/.test(body)) found.push('勤怠の設定の権限')
-  if (/role\s*[!=]==\s*'system_admin'/.test(body) && !/^\/hq/.test(p.file)) found.push('本部')
   return found
 }
 
@@ -647,7 +656,8 @@ function collectScreens(api) {
       if (rm) {
         const ro = rm.index + rm[0].length - 1; const rc = matchClose(s, ro)
         for (const x of s.slice(ro, rc).matchAll(/if \(tab === '([\w-]+)'(?: && (id === '([\w-]+)'|id !== undefined|id\b))?[^\n]*?\)\s*return (?:window\.)?(\w+)\(/g)) {
-          if (!x[2]) continue
+          // id の条件のない分岐（#board など）は、routes の表にないタブのときだけ足す（そのタブの画面を route() が直接描く）
+          if (!x[2]) { if (!routes.some(r => r.hash === x[1])) routes.push({ hash: x[1], value: x[4], file: routerFile, line: lineOf(starts, ro + x.index) }); continue }
           routes.push({ hash: `${x[1]}/${x[3] || '<ID>'}`, value: x[4], file: routerFile, line: lineOf(starts, ro + x.index), sub: true })
         }
       }
@@ -928,7 +938,7 @@ function renderApi(api, screens) {
     sections.push(`### ${code(pre + '/…')} ${label}（${list.length}）`, '', '| メソッド | パス | 通すロール | 定義 | 用途（直前のコメント・なければ見出し） | 画面の JS |', '|---|---|---|---|---|---|')
     for (const e of list) {
       const callers = [...new Set((e.callers || []).map(c => c.file.replace('public/static/', '')))]
-      const purpose = e.comment || (e.section ? `（${e.section}）` : '')
+      const purpose = e.comment || (e.section ? `〔見出し〕${e.section}` : '')
       const access = e.access.label + (e.extraChecks.length ? `<br>＋本文で確認: ${e.extraChecks.join('・')}` : '')
       sections.push(`| ${e.method} | ${code(e.path)} | ${cell(access)} | ${e.file ? link(e.file, e.line) : '?'} | ${cell(clip(purpose, 160))} | ${cell(callers.join(' '))} |`)
     }

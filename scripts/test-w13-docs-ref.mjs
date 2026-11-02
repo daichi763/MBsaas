@@ -70,6 +70,14 @@ for (const [page, hs] of Object.entries(HASHES)) {
     ok(`screens.md に ${page} #${h} があり、描画する関数の定義が見つかる`, r && r.defs.length > 0 && screens.includes('`#' + h + '`'), r)
   }
 }
+{
+  const missing = []
+  for (const [page, nav] of [['/admin', model.nav], ['/hq', model.hqNav], ['/staff', model.staffNav]]) {
+    const spa = model.spas.find(s => s.page === page)
+    for (const n of nav) if (!spa || !spa.routes.some(r => r.hash === n.tab && r.defs.length)) missing.push(`${page}#${n.tab}`)
+  }
+  ok('メニューのすべての項目に、ハッシュのルートと描画する関数がある', missing.length === 0, missing)
+}
 ok('screens.md に左のメニューの分類（シフト・勤怠・人材・お金・設定）がある', ['**シフト・勤怠**', '**人材**', '**お金**', '**設定**'].every(s => screens.includes(s)))
 ok('screens.md に画面遷移の図（mermaid）がある', screens.includes('```mermaid\nflowchart'))
 ok('screens.md のスタッフマスタの詳細で、スタッフ詳細の API を使う', (model.spas.find(s => s.page === '/admin')?.routes.find(r => r.hash === 'staff/<ID>')?.apis || []).includes('GET /api/admin/staff/:id'))
