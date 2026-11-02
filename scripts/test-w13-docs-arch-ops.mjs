@@ -18,7 +18,8 @@ const BASE = process.env.BASE || 'http://127.0.0.1:8810'
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + (typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 800) : ''}`) }
 const skip = (name, why) => console.log(`SKIP  ${name}（${why}）`)
-const read = (p) => readFileSync(join(ROOT, p), 'utf8')
+// Windows で CRLF に変えて取り出したファイルも同じに読む
+const read = (p) => readFileSync(join(ROOT, p), 'utf8').replace(/\r\n/g, '\n')
 const lines = (p) => read(p).split('\n')
 
 const DOCS = ['docs/architecture.md', 'docs/operations.md', 'docs/decisions.md', 'docs/glossary.md']
