@@ -152,6 +152,26 @@ function sectionAbove(lines, lineNo) {
   return ''
 }
 
+// マイグレーションのコメントに「1. 表名: 説明」「#123 表名: 説明」「表名: 説明」の形で表ごとの説明があれば、それを使う
+// （1つのマイグレーションで複数の表を作るとき、CREATE TABLE の直前にコメントがない表もあるため）。
+// 続きの行（同じか深い字下げのコメント）もつなげる。空のコメント・次の「名前: 説明」の行（別の表や列の説明）で止める
+function headerEntry(lines, table) {
+  const re = new RegExp(`^--(\\s*)(?:\\d+\\.\\s*)?(?:#\\d+\\s+)?${table}\\s*[:：]\\s*(.+)$`)
+  const entryLike = /^(?:\d+\.\s*)?(?:#\d+\s+)?[A-Za-z_][\w.]*\s*[:：]/
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].replace(/\r$/, '').match(re)
+    if (!m) continue
+    const parts = [m[2].trim()]
+    for (let k = i + 1; k < lines.length; k++) {
+      const c = lines[k].replace(/\r$/, '').match(/^--(\s*)(.*)$/)
+      if (!c || c[1].length < m[1].length || !c[2].trim() || entryLike.test(c[2].trim())) break
+      parts.push(c[2].trim())
+    }
+    return parts.join(' ')
+  }
+  return ''
+}
+
 // =============================================================================================
 // 1. DB: マイグレーションを順に当てて、表・列・制約・索引・トリガーを読む
 // =============================================================================================
@@ -179,7 +199,7 @@ async function collectDb() {
         created[t] = created[t] || f
         // 作り直し（_new を作って名前を変える）で同じ名前に戻った表は、最初に作ったマイグレーションのままにする
         const idx = lines.findIndex(l => new RegExp(`CREATE\\s+TABLE\\s+(IF\\s+NOT\\s+EXISTS\\s+)?["\`]?${t}["\`]?\\s*\\(`, 'i').test(l))
-        if (idx >= 0 && !migComments[t]) migComments[t] = leadingComment(lines, idx + 1, '--')
+        if (!migComments[t]) migComments[t] = headerEntry(lines, t) || (idx >= 0 ? leadingComment(lines, idx + 1, '--') : '')
         continue
       }
       for (const c of cols) if (!prev.get(t).has(c)) (addedCols[t] = addedCols[t] || {})[c] = f
@@ -261,8 +281,25 @@ function collectRetention() {
   const retired = arrayConst('RETIRED_TARGETS')
   const inService = arrayConst('IN_SERVICE_TARGETS')
   const anonymize = arrayConst('ANONYMIZE_PROFILE_COLUMNS')
-  const byCreated = [...src.matchAll(/cleanupByCreatedAt\(db, dryRun, \{ target: '(\w+)', table: '(\w+)', idCol: '\w+', years: (\w+)/g)]
-    .map(m => ({ table: m[2], years: (src.match(new RegExp(`const ${m[3]} = (\\d+)`)) || [])[1] || m[3], line: lineOf(starts, m.index) }))
+  // 定数の値（このファイルの const か、import した先のファイルの const）
+  const constValue = (v) => {
+    if (/^\d+$/.test(v)) return Number(v)
+    const own = src.match(new RegExp(`const ${v} = (\\d+)`))
+    if (own) return Number(own[1])
+    const imp = src.match(new RegExp(`^import\\s*\\{[^}]*\\b${v}\\b[^}]*\\}\\s*from\\s*'([^']+)'`, 'm'))
+    const path = imp && join(dirname(file), imp[1]).replace(/\\/g, '/') + '.ts'
+    const other = path && existsSync(join(ROOT, path)) && read(path).match(new RegExp(`const ${v} = (\\d+)`))
+    return other ? Number(other[1]) : v
+  }
+  // 残す期間（years と days。days だけのものは「90日」のように出す）
+  const periodOf = (y, d) => {
+    const parts = []
+    if (y !== 0) parts.push(`${y}年`)
+    if (d !== undefined && d !== 0) parts.push(`${d}日`)
+    return parts.join('') || '0日'
+  }
+  const byCreated = [...src.matchAll(/cleanupByCreatedAt\(db, dryRun, \{ target: '(\w+)', table: '(\w+)', idCol: '\w+', years: (\w+)(?:, days: (\w+))?/g)]
+    .map(m => ({ table: m[2], period: periodOf(constValue(m[3]), m[4] === undefined ? undefined : constValue(m[4])), line: lineOf(starts, m.index) }))
   const files = [...src.matchAll(/\{\s*source:\s*'(\w+)',\s*bucket:\s*'(\w+)'/g)].map(m => ({ table: m[1], bucket: m[2], line: lineOf(starts, m.index) }))
   return { file, offboarding, kept, retired, inService, anonymize, byCreated, files }
 }
@@ -309,10 +346,26 @@ function staticRoutesOf(file) {
     const inst = instances.find(x => x.fn === m[2]); if (inst) aliases[m[1]] = inst.key
   }
   const defaultExport = (src.match(/^export\s+default\s+(\w+)/m) || [])[1] || null
+  // インスタンスの名前 → キー（関数の外で作ったもの・ファクトリで作ったもの）
+  const keyOfVar = (v) => { const own = instances.find(x => x.var === v && !x.fn); return own ? own.key : (aliases[v] ? `${file}#${v}` : null) }
+  // ルートを足す関数（function F(app: Hono…) { app.get(…) }）と、それを呼んでいる先（行頭の F(X)）。
+  // 同じルートを複数のインスタンスに付けるときに使う（例: プッシュ通知の購読をスタッフと本部の両方に付ける）
+  const helpers = []
+  for (const m of src.matchAll(/^(?:export\s+)?function\s+(\w+)\s*\(\s*(\w+)\s*:\s*Hono\b/gm)) {
+    const i = lineOf(starts, m.index) - 1
+    const close = matchClose(src, src.indexOf('{', starts[i] + lines[i].indexOf(')')))
+    const targets = [...src.matchAll(new RegExp(`^${m[1]}\\(\\s*(\\w+)\\s*\\)`, 'gm'))].map(c => keyOfVar(c[1])).filter(Boolean)
+    helpers.push({ name: m[1], param: m[2], range: [i + 1, lineOf(starts, close)], targets })
+  }
   const entries = []
   for (const m of src.matchAll(ROUTE_RE)) {
     const line = lineOf(starts, m.index)
     const v = m[2]
+    const helper = helpers.find(h => h.param === v && line >= h.range[0] && line <= h.range[1])
+    if (helper) {
+      for (const key of helper.targets) entries.push({ file, line, var: v, key, method: m[3].toUpperCase(), path: m[5], comment: leadingComment(lines, line), section: sectionAbove(lines, line) })
+      continue
+    }
     if (['c', 'app'].includes(v) && !instances.some(x => x.var === v) && file !== 'src/index.tsx') continue
     let inst = instances.find(x => x.var === v && x.range && line >= x.range[0] && line <= x.range[1]) || instances.find(x => x.var === v && !x.fn)
     let key = inst ? inst.key : (aliases[v] ? `${file}#${v}` : null)
@@ -835,7 +888,7 @@ function renderDb(db, ret) {
   const filesBy = {}; for (const f of ret.files) (filesBy[f.table] = filesBy[f.table] || []).push(f)
   const lifeOf = (t) => {
     const a = []
-    if (byCreated[t]) a.push(`作成から${byCreated[t].years}年で削除（${link(ret.file, byCreated[t].line)}）`)
+    if (byCreated[t]) a.push(`作成から${byCreated[t].period}で削除（${link(ret.file, byCreated[t].line)}）`)
     if (retiredSet.has(t)) a.push(`退職後7年の削除の対象（\`RETIRED_TARGETS\`）`)
     if (t === 'staff_profiles' || t === 'users') a.push('退職後7年で匿名化（行は残す）')
     if (ob[t]) a.push(`解約時: ${ob[t].noDelete ? '書き出しのみ（行は残す）' : ob[t].noExport ? '削除（書き出さない）' : '書き出して削除'}`)
@@ -848,7 +901,7 @@ function renderDb(db, ret) {
     ...ret.retired.items.map(x => `| ${code(x)} | ${db.tables.some(t => t.name === x) ? '表' : '表ではない対象（人数・R2 のファイル・匿名化など）'} |`),
     '', `在職中の保存期間で消すもの（${code('IN_SERVICE_TARGETS')}・${link(ret.file, ret.inService.line)}）: ${ret.inService.items.map(code).join('・')}`,
     '', `退職後7年の匿名化で空にする ${code('staff_profiles')} の列（${code('ANONYMIZE_PROFILE_COLUMNS')}・${link(ret.file, ret.anonymize.line)}）: ${ret.anonymize.items.map(code).join('・')}`,
-    '', `作成からの年数で消す表: ${ret.byCreated.map(b => `${code(b.table)}（${b.years}年・${link(ret.file, b.line)}）`).join('・')}`,
+    '', `作成からの期間で消す表: ${ret.byCreated.map(b => `${code(b.table)}（${b.period}・${link(ret.file, b.line)}）`).join('・')}`,
     '', `R2 に置くファイル（解約時の書き出しの対象。${code('OFFBOARDING_FILE_SOURCES')}）: ${ret.files.map(f => `${code(f.table)}→${f.bucket}`).join('・')}`,
   ].join('\n')
   const missingOb = db.tables.filter(t => t.columns.some(c => c.name === 'company_id') && !ob[t.name] && !ret.kept.items.includes(t.name)).map(t => t.name)

@@ -719,7 +719,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-refs -->
 | 名前 | 位置 |
 |---|---|
-| `MIDDLEWARE_DEFS` | [scripts/gen-docs.mjs:334](../scripts/gen-docs.mjs#L334) |
+| `MIDDLEWARE_DEFS` | [scripts/gen-docs.mjs:387](../scripts/gen-docs.mjs#L387) |
 | `csvResponse` | [csv.ts:30](../src/csv.ts#L30) |
 | `maskPath` | [index.tsx:48](../src/index.tsx#L48) |
 | `SESSION_COOKIE` | [lib/auth.ts:8](../src/lib/auth.ts#L8) |

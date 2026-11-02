@@ -520,7 +520,7 @@ erDiagram
 
 退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:94](../src/services/retention.ts#L94)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`
 
-作成からの年数で消す表: `user_notifications`（2年・[services/retention.ts:427](../src/services/retention.ts#L427)）・`email_logs`（1年・[services/retention.ts:431](../src/services/retention.ts#L431)）・`operation_logs`（7年・[services/retention.ts:435](../src/services/retention.ts#L435)）
+作成からの期間で消す表: `user_notifications`（2年・[services/retention.ts:427](../src/services/retention.ts#L427)）・`email_logs`（1年・[services/retention.ts:431](../src/services/retention.ts#L431)）・`operation_logs`（7年・[services/retention.ts:435](../src/services/retention.ts#L435)）
 
 R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE_SOURCES`）: `attendance_reports`→photos・`attendance_reports_duplicates_0036`→photos・`staff_documents`→documents・`employee_documents`→documents・`attendance_correction_attachments`→photos・`consultation_attachments`→photos・`notice_attachments`→documents・`client_documents`→contracts・`staff_pay_requests`→photos
 <!-- END GENERATED: db-retention -->
@@ -545,11 +545,11 @@ company_id の列がある表は、すべてどちらかに入っています。
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
 | [`companies`](#companies) | 企業 | 導入企業 | 0001 | 解約時: 書き出しのみ（行は残す） |
-| [`login_attempts`](#login_attempts) |  | 認証の強化（作業単位 w1-auth-session。#46 #131 #330） login_attempts: ログインの失敗の記録（会社コード＋ID 単位と IP 単位で、15分間の失敗回数を数える）。 生の会社コード・ID・IP … | 0030 |  |
+| [`login_attempts`](#login_attempts) |  | ログインの失敗の記録（会社コード＋ID 単位と IP 単位で、15分間の失敗回数を数える）。 生の会社コード・ID・IP は保存せず、SHA-256 のハッシュだけを保存する。成功すると ID 単位の記録は消し、 1日より古い記録は Cr… | 0030 |  |
 | [`login_email_verifications`](#login_email_verifications) | メールアドレスの確認 | ログイン・アカウントの情報（作業単位 w3-account-profile: #207 #396） 1. ログイン用メールアドレスの確認（#207） 管理者がスタッフのログイン用メール（users.email: パスワード再設定・通知の宛… | 0047 | 解約時: 削除（書き出さない） |
 | [`login_events`](#login_events) |  | ログイン履歴・ログイン中の端末・二段階認証（作業単位 w4-auth-features: #552 #453 #544） 1. ログインの履歴（#552） ログインの成功・失敗、二段階認証の失敗、パスワードの再設定、管理者による強制ログア… | 0062 | 解約時も残す（`OFFBOARDING_KEPT_TABLES`） |
 | [`mfa_challenges`](#mfa_challenges) | 二段階認証の確認中 | パスワードを確かめた後、認証アプリのコードを待つ間の一時的な記録（5分で期限切れ。token_hash は一時トークンの SHA-256）。 attempt_key はログイン試行の制限（login_attempts の account）… | 0062 | 解約時: 削除（書き出さない） |
-| [`password_reset_tokens`](#password_reset_tokens) | パスワード再設定のトークン | Resendメール送信基盤: パスワードリセット用トークン + メール送信ログ password_reset_tokens: リセットURLに使う生トークンはDBへ保存しない。ハッシュ値のみ保存し、 受信時にハッシュ化して照合する。1回使… | 0008 | 解約時: 削除（書き出さない） |
+| [`password_reset_tokens`](#password_reset_tokens) | パスワード再設定のトークン | リセットURLに使う生トークンはDBへ保存しない。ハッシュ値のみ保存し、 受信時にハッシュ化して照合する。1回使用したら used_at を立てて無効化する。 | 0008 | 解約時: 削除（書き出さない） |
 | [`persons`](#persons) |  | 人物マスタ（企業に非依存） | 0012 |  |
 | [`sessions`](#sessions) | ログイン中のセッション | セッション (ログイン状態保持) | 0001 | 解約時: 削除（書き出さない） |
 | [`users`](#users) | 利用者（パスワード・二段階認証の情報を除く） | ユーザー | 0001 | 退職後7年で匿名化（行は残す）<br>解約時: 書き出しのみ（行は残す） |
@@ -593,8 +593,8 @@ company_id の列がある表は、すべてどちらかに入っています。
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
 | [`affiliation_excluded_shifts`](#affiliation_excluded_shifts) | 所属区分の対象外シフト | 勤務済み（勤怠報告・実績・日報のどれかがある）のため支払先・単価を置き換えなかったシフトと、そのときの変更後の支払先。 精算で、支払先がこの値と違う未確定のシフトを確認事項『区分変更の対象外』として出す | 0046 | 解約時: 書き出して削除 |
-| [`availability_periods`](#availability_periods) | 出勤可能日の締切 | #171 availability_periods: 会社が月ごとに決める提出の締切と、スタッフへの案内文。未提出者へ通知した日時も残す | 0076 | 解約時: 書き出して削除 |
-| [`availability_submissions`](#availability_submissions) | 出勤可能日の提出 | #171 availability_submissions: 月ごとの提出の記録（未提出者の一覧と、締切後の提出の判定に使う）。 submitted_at は最初に提出した日時、updated_at は最後に出し直した日時（日本時間） | 0076 | 解約時: 書き出して削除 |
+| [`availability_periods`](#availability_periods) | 出勤可能日の締切 | 会社が月ごとに決める提出の締切と、スタッフへの案内文。未提出者へ通知した日時も残す | 0076 | 解約時: 書き出して削除 |
+| [`availability_submissions`](#availability_submissions) | 出勤可能日の提出 | 月ごとの提出の記録（未提出者の一覧と、締切後の提出の判定に使う）。 submitted_at は最初に提出した日時、updated_at は最後に出し直した日時（日本時間） | 0076 | 解約時: 書き出して削除 |
 | [`client_contacts`](#client_contacts) | クライアントの担当者 |  | 0011 | 解約時: 書き出して削除 |
 | [`client_documents`](#client_documents) | クライアントの契約書類 | クライアント（発注元企業）契約書ファイル管理 ファイル本体はD1へ保存しない（R2のみ）。ここにはメタデータのみ保持する。 同一クライアント・同名ファイルでも別レコード（別storage_key）として複数保存できる。 staff_doc… | 0006 | 解約時: 書き出して削除<br>R2 のファイル（contracts） |
 | [`client_ng_staff`](#client_ng_staff) | クライアントの NG スタッフ | #204 クライアントのNGスタッフの理由・登録日・登録者。 NG の判定は従来どおり clients.ng_staff_ids（カンマ区切り）を正とし、この表は画面に出す補足情報だけを持つ （PUT /api/admin/clients… | 0051 | 解約時: 書き出して削除 |
@@ -614,8 +614,8 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`shifts`](#shifts) | シフト | シフト | 0001 | 退職後7年の削除の対象（`RETIRED_TARGETS`）<br>解約時: 書き出して削除 |
 | [`sites`](#sites) | 開催場所 |  | 0016 | 解約時: 書き出して削除 |
 | [`slot_patterns`](#slot_patterns) | 募集枠のパターン |  | 0016 | 解約時: 書き出して削除 |
-| [`staff_availability`](#staff_availability) | 出勤可能日 | 翌月の出勤可能日の提出と、確定シフトのカレンダー追加（w5-staff-schedule: #171 #301） #171 staff_availability: スタッフが月のカレンダーで付けた日ごとの出勤可否（1人1日1行）。 sta… | 0076 | 解約時: 書き出して削除 |
-| [`staff_calendar_tokens`](#staff_calendar_tokens) | カレンダー購読のトークン | #301 staff_calendar_tokens: シフトをカレンダーアプリで購読する URL のトークン（1人1つ。ハッシュで保存し、発行し直すと前の URL は使えない）。 本人（user_id）が停止・退職になったり、会社が停止… | 0076 | 解約時: 削除（書き出さない） |
+| [`staff_availability`](#staff_availability) | 出勤可能日 | スタッフが月のカレンダーで付けた日ごとの出勤可否（1人1日1行）。 | 0076 | 解約時: 書き出して削除 |
+| [`staff_calendar_tokens`](#staff_calendar_tokens) | カレンダー購読のトークン | シフトをカレンダーアプリで購読する URL のトークン（1人1つ。ハッシュで保存し、発行し直すと前の URL は使えない）。 本人（user_id）が停止・退職になったり、会社が停止になったりしたら、URL があっても返さない | 0076 | 解約時: 削除（書き出さない） |
 | [`staff_schedule_tokens`](#staff_schedule_tokens) | シフト確認用URLのトークン | #442 予定確認URL（スタッフ単位。ログインのない人が、今日から2週間の確定シフトを見られる）。 トークンそのものは保存せず、SHA-256 のハッシュだけを持つ（URL は発行したときに一度だけ画面に出す）。 1人に有効なものは1つ… | 0072 | 解約時: 削除（書き出さない） |
 
 ### 勤怠・日報・報告の設定
@@ -648,24 +648,24 @@ company_id の列がある表は、すべてどちらかに入っています。
 
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
-| [`email_logs`](#email_logs) | メールの送信記録 | email_logs: 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。 | 0008 | 作成から1年で削除（[services/retention.ts:431](../src/services/retention.ts#L431)）<br>解約時: 書き出して削除 |
-| [`email_suppressions`](#email_suppressions) |  | 通知とメールの運用（w4-notifications-mail: #541 #438 #454） #541 email_suppressions: 宛先不明などで戻ってきた（ハードバウンス）・迷惑メールと報告されたアドレス。 Resend… | 0060 |  |
-| [`notice_ack_tokens`](#notice_ack_tokens) | お知らせの確認用トークン | #454 notice_ack_tokens: お知らせメールの「確認しました」のリンク（1人1通ずつのワンタイムのトークン。ハッシュで保存）。 リンクを開いてボタンを押すと、notice_reads に既読を記録し used_at を入… | 0060 | 解約時: 削除（書き出さない） |
-| [`notice_attachments`](#notice_attachments) | お知らせの添付 | #555 notice_attachments: お知らせの添付（画像・PDF。本体は R2 の DOCUMENTS に置く） | 0066 | 解約時: 書き出して削除<br>R2 のファイル（documents） |
+| [`email_logs`](#email_logs) | メールの送信記録 | 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。 | 0008 | 作成から1年で削除（[services/retention.ts:431](../src/services/retention.ts#L431)）<br>解約時: 書き出して削除 |
+| [`email_suppressions`](#email_suppressions) |  | 宛先不明などで戻ってきた（ハードバウンス）・迷惑メールと報告されたアドレス。 Resend の Webhook（/webhooks/resend）で記録し、以後このアドレスには送らない（services/email.ts）。 アドレスは小… | 0060 |  |
+| [`notice_ack_tokens`](#notice_ack_tokens) | お知らせの確認用トークン | お知らせメールの「確認しました」のリンク（1人1通ずつのワンタイムのトークン。ハッシュで保存）。 リンクを開いてボタンを押すと、notice_reads に既読を記録し used_at を入れる。期限は expires_at（日本時間） | 0060 | 解約時: 削除（書き出さない） |
+| [`notice_attachments`](#notice_attachments) | お知らせの添付 | お知らせの添付（画像・PDF。本体は R2 の DOCUMENTS に置く） | 0066 | 解約時: 書き出して削除<br>R2 のファイル（documents） |
 | [`notice_email_deliveries`](#notice_email_deliveries) | お知らせのメール送信 | 3) お知らせメールの送信結果（#24）。対象者ごとに1行。メールアドレスは保存しない（連携スタッフの所属元のアドレスを連携先に見せないため） status: pending（送信前）/ sent / failed / no_email（… | 0032 | 解約時: 書き出して削除 |
 | [`notice_read_reports`](#notice_read_reports) | 既読率レポート |  | 0007 | 解約時: 書き出して削除 |
 | [`notice_read_staff_reports`](#notice_read_staff_reports) | 既読率（スタッフ別） |  | 0007 | 解約時: 書き出して削除 |
 | [`notice_reads`](#notice_reads) | お知らせの既読 | お知らせ既読 | 0001 | 解約時: 書き出して削除 |
-| [`notice_responses`](#notice_responses) | お知らせへの回答 | #554 notice_responses: お知らせへの回答（1人1行。答え直したら上書きする）。choice は選択肢の文字列 | 0066 | 解約時: 書き出して削除 |
-| [`notice_revisions`](#notice_revisions) | お知らせの変更履歴 | #157 notice_revisions: 修正・取消の前の内容（誰がいつ何を変えたかを残す） | 0066 | 解約時: 書き出して削除 |
-| [`notice_targets`](#notice_targets) | お知らせの配信対象 | お知らせの配信対象の展開・再通知（w3-notice-ux: #191 #370） #370 notice_targets: 案件あて・個人あてのお知らせの配信先（notices.target_ids のカンマ区切り）を1行ずつに展開した… | 0052 | 解約時: 書き出して削除 |
+| [`notice_responses`](#notice_responses) | お知らせへの回答 | お知らせへの回答（1人1行。答え直したら上書きする）。choice は選択肢の文字列 | 0066 | 解約時: 書き出して削除 |
+| [`notice_revisions`](#notice_revisions) | お知らせの変更履歴 | 修正・取消の前の内容（誰がいつ何を変えたかを残す） | 0066 | 解約時: 書き出して削除 |
+| [`notice_targets`](#notice_targets) | お知らせの配信対象 | 案件あて・個人あてのお知らせの配信先（notices.target_ids のカンマ区切り）を1行ずつに展開した表。 対象者の判定（一覧・ホーム・既読数・メールの宛先・既読率レポート）は、これまでの 「',' \|\| target_ids … | 0052 | 解約時: 書き出して削除 |
 | [`notices`](#notices) | お知らせ | お知らせ | 0001 | 解約時: 書き出して削除 |
 | [`notification_emails`](#notification_emails) | 打刻修正の通知メール | メール通知の送信状態（本文は保存しない。再送時は申請データから作り直す） status: pending（送信前）/ sent / failed | 0029 | 解約時: 書き出して削除 |
-| [`push_queue`](#push_queue) | プッシュ通知の送信待ち |  | 0081 | 解約時: 削除（書き出さない） |
-| [`push_subscriptions`](#push_subscriptions) | プッシュ通知の購読（端末） |  | 0081 | 解約時: 削除（書き出さない） |
-| [`push_vapid_keys`](#push_vapid_keys) |  |  | 0081 |  |
+| [`push_queue`](#push_queue) | プッシュ通知の送信待ち | 送る前のプッシュ。アプリ内の通知（未読）が登録されたら、購読のある人の分だけトリガーで積む。 API の書き込みの応答の後と15分おきの cron で送り、送ったら消す（claimed_at: 送る処理が取った日時。二重に送らないため） | 0081 | 解約時: 削除（書き出さない） |
+| [`push_subscriptions`](#push_subscriptions) | プッシュ通知の購読（端末） | 端末（ブラウザ）ごとのプッシュの購読。endpoint は端末ごとに1つ。 | 0081 | 解約時: 削除（書き出さない） |
+| [`push_vapid_keys`](#push_vapid_keys) |  | VAPID の鍵（アプリで1組）。Secret の VAPID_PUBLIC_KEY・VAPID_PRIVATE_KEY があればそちらを使い、なければ初回に作ってここに保存する | 0081 |  |
 | [`todo_dismissals`](#todo_dismissals) | ToDo の非表示 | #487 ToDo を『対応済み』『あとで』にした記録。ToDo は毎回ルールから作るので、ここには非表示にしたキーだけを持つ。 todo_key: ToDo ごとの安定したキー（例: late:{staff_id}:{月}、consul… | 0053 | 解約時: 削除（書き出さない） |
-| [`user_notification_prefs`](#user_notification_prefs) | 通知の受け取り設定 | プッシュ通知（Web Push。#178）と、通知の受け取り設定（#284）（作業単位 w6-push） 1. user_notification_prefs: ユーザーごと・通知のまとまり（pref_key。src/notificati… | 0081 | 解約時: 書き出して削除 |
+| [`user_notification_prefs`](#user_notification_prefs) | 通知の受け取り設定 | ユーザーごと・通知のまとまり（pref_key。src/notifications.ts の NOTIFY_PREF_GROUPS）ごとの受け取り設定。 email / push: 1 = 受け取る、0 = 受け取らない、NULL = 既… | 0081 | 解約時: 書き出して削除 |
 | [`user_notifications`](#user_notifications) | アプリ内の通知 | 個人あての通知（受信者ごとに 1 行。既読は read_at） kind: correction_submitted（管理者への承認依頼）/ correction_received（申請者への受付）/ correction_approve… | 0029 | 作成から2年で削除（[services/retention.ts:427](../src/services/retention.ts#L427)）<br>解約時: 書き出して削除 |
 
 ### 募集・応募
@@ -756,7 +756,7 @@ UNIQUE 制約: (company_code)
 <a id="login_attempts"></a>
 #### login_attempts
 
-> 認証の強化（作業単位 w1-auth-session。#46 #131 #330） login_attempts: ログインの失敗の記録（会社コード＋ID 単位と IP 単位で、15分間の失敗回数を数える）。 生の会社コード・ID・IP は保存せず、SHA-256 のハッシュだけを保存する。成功すると ID 単位の記録は消し、 1日より古い記録は Cron で消す。attempted_at は ISO 8601（UTC）の文字列。
+> ログインの失敗の記録（会社コード＋ID 単位と IP 単位で、15分間の失敗回数を数える）。 生の会社コード・ID・IP は保存せず、SHA-256 のハッシュだけを保存する。成功すると ID 単位の記録は消し、 1日より古い記録は Cron で消す。attempted_at は ISO 8601（UTC）の文字列。
 
 作成: [migrations/0030_auth_session.sql:1](../migrations/0030_auth_session.sql#L1)
 
@@ -848,7 +848,7 @@ UNIQUE 制約: (company_code)
 <a id="password_reset_tokens"></a>
 #### password_reset_tokens — パスワード再設定のトークン
 
-> Resendメール送信基盤: パスワードリセット用トークン + メール送信ログ password_reset_tokens: リセットURLに使う生トークンはDBへ保存しない。ハッシュ値のみ保存し、 受信時にハッシュ化して照合する。1回使用したら used_at を立てて無効化する。
+> リセットURLに使う生トークンはDBへ保存しない。ハッシュ値のみ保存し、 受信時にハッシュ化して照合する。1回使用したら used_at を立てて無効化する。
 
 作成: [migrations/0008_add_password_reset_and_email_logs.sql:1](../migrations/0008_add_password_reset_and_email_logs.sql#L1)　／　解約時: 削除（書き出さない）
 
@@ -1801,7 +1801,7 @@ UNIQUE 制約: (user_id)
 <a id="availability_periods"></a>
 #### availability_periods — 出勤可能日の締切
 
-> #171 availability_periods: 会社が月ごとに決める提出の締切と、スタッフへの案内文。未提出者へ通知した日時も残す
+> 会社が月ごとに決める提出の締切と、スタッフへの案内文。未提出者へ通知した日時も残す
 
 作成: [migrations/0076_staff_schedule.sql:1](../migrations/0076_staff_schedule.sql#L1)　／　解約時: 書き出して削除
 
@@ -1818,7 +1818,7 @@ UNIQUE 制約: (user_id)
 <a id="availability_submissions"></a>
 #### availability_submissions — 出勤可能日の提出
 
-> #171 availability_submissions: 月ごとの提出の記録（未提出者の一覧と、締切後の提出の判定に使う）。 submitted_at は最初に提出した日時、updated_at は最後に出し直した日時（日本時間）
+> 月ごとの提出の記録（未提出者の一覧と、締切後の提出の判定に使う）。 submitted_at は最初に提出した日時、updated_at は最後に出し直した日時（日本時間）
 
 作成: [migrations/0076_staff_schedule.sql:1](../migrations/0076_staff_schedule.sql#L1)　／　解約時: 書き出して削除
 
@@ -2413,7 +2413,7 @@ UNIQUE 制約: (user_id)
 <a id="staff_availability"></a>
 #### staff_availability — 出勤可能日
 
-> 翌月の出勤可能日の提出と、確定シフトのカレンダー追加（w5-staff-schedule: #171 #301） #171 staff_availability: スタッフが月のカレンダーで付けた日ごとの出勤可否（1人1日1行）。 status: ok（終日可 ○）/ partial（時間帯なら可 △。start_time・end_time）/ ng（不可 ×）。行が無い日は未入力。 シフト（shifts）とも、案件を指定したシフト希望（shift_requests）とも別に持つ。日付は 'YYYY-MM-DD'（日本時間）
+> スタッフが月のカレンダーで付けた日ごとの出勤可否（1人1日1行）。
 
 作成: [migrations/0076_staff_schedule.sql:1](../migrations/0076_staff_schedule.sql#L1)　／　解約時: 書き出して削除
 
@@ -2440,7 +2440,7 @@ CHECK 制約: `CHECK (status IN ('ok', 'partial', 'ng'))`
 <a id="staff_calendar_tokens"></a>
 #### staff_calendar_tokens — カレンダー購読のトークン
 
-> #301 staff_calendar_tokens: シフトをカレンダーアプリで購読する URL のトークン（1人1つ。ハッシュで保存し、発行し直すと前の URL は使えない）。 本人（user_id）が停止・退職になったり、会社が停止になったりしたら、URL があっても返さない
+> シフトをカレンダーアプリで購読する URL のトークン（1人1つ。ハッシュで保存し、発行し直すと前の URL は使えない）。 本人（user_id）が停止・退職になったり、会社が停止になったりしたら、URL があっても返さない
 
 作成: [migrations/0076_staff_schedule.sql:1](../migrations/0076_staff_schedule.sql#L1)　／　解約時: 削除（書き出さない）
 
@@ -2973,7 +2973,7 @@ UNIQUE 制約: (shift_id, issue)
 <a id="email_logs"></a>
 #### email_logs — メールの送信記録
 
-> email_logs: 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。
+> 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。
 
 作成: [migrations/0008_add_password_reset_and_email_logs.sql:1](../migrations/0008_add_password_reset_and_email_logs.sql#L1)　／　作成から1年で削除（[services/retention.ts:431](../src/services/retention.ts#L431)）　／　解約時: 書き出して削除
 
@@ -2998,7 +2998,7 @@ UNIQUE 制約: (shift_id, issue)
 <a id="email_suppressions"></a>
 #### email_suppressions
 
-> 通知とメールの運用（w4-notifications-mail: #541 #438 #454） #541 email_suppressions: 宛先不明などで戻ってきた（ハードバウンス）・迷惑メールと報告されたアドレス。 Resend の Webhook（/webhooks/resend）で記録し、以後このアドレスには送らない（services/email.ts）。 アドレスは小文字にそろえて保存する。本部画面で解除する（行を消す）。
+> 宛先不明などで戻ってきた（ハードバウンス）・迷惑メールと報告されたアドレス。 Resend の Webhook（/webhooks/resend）で記録し、以後このアドレスには送らない（services/email.ts）。 アドレスは小文字にそろえて保存する。本部画面で解除する（行を消す）。
 
 作成: [migrations/0060_notifications_mail.sql:1](../migrations/0060_notifications_mail.sql#L1)
 
@@ -3013,7 +3013,7 @@ UNIQUE 制約: (shift_id, issue)
 <a id="notice_ack_tokens"></a>
 #### notice_ack_tokens — お知らせの確認用トークン
 
-> #454 notice_ack_tokens: お知らせメールの「確認しました」のリンク（1人1通ずつのワンタイムのトークン。ハッシュで保存）。 リンクを開いてボタンを押すと、notice_reads に既読を記録し used_at を入れる。期限は expires_at（日本時間）
+> お知らせメールの「確認しました」のリンク（1人1通ずつのワンタイムのトークン。ハッシュで保存）。 リンクを開いてボタンを押すと、notice_reads に既読を記録し used_at を入れる。期限は expires_at（日本時間）
 
 作成: [migrations/0060_notifications_mail.sql:1](../migrations/0060_notifications_mail.sql#L1)　／　解約時: 削除（書き出さない）
 
@@ -3034,7 +3034,7 @@ UNIQUE 制約: (shift_id, issue)
 <a id="notice_attachments"></a>
 #### notice_attachments — お知らせの添付
 
-> #555 notice_attachments: お知らせの添付（画像・PDF。本体は R2 の DOCUMENTS に置く）
+> お知らせの添付（画像・PDF。本体は R2 の DOCUMENTS に置く）
 
 作成: [migrations/0066_notice_features.sql:1](../migrations/0066_notice_features.sql#L1)　／　解約時: 書き出して削除　／　R2 のファイル（documents）
 
@@ -3153,7 +3153,7 @@ UNIQUE 制約: (company_id, fiscal_year, staff_id)
 <a id="notice_responses"></a>
 #### notice_responses — お知らせへの回答
 
-> #554 notice_responses: お知らせへの回答（1人1行。答え直したら上書きする）。choice は選択肢の文字列
+> お知らせへの回答（1人1行。答え直したら上書きする）。choice は選択肢の文字列
 
 作成: [migrations/0066_notice_features.sql:1](../migrations/0066_notice_features.sql#L1)　／　解約時: 書き出して削除
 
@@ -3174,7 +3174,7 @@ UNIQUE 制約: (company_id, fiscal_year, staff_id)
 <a id="notice_revisions"></a>
 #### notice_revisions — お知らせの変更履歴
 
-> #157 notice_revisions: 修正・取消の前の内容（誰がいつ何を変えたかを残す）
+> 修正・取消の前の内容（誰がいつ何を変えたかを残す）
 
 作成: [migrations/0066_notice_features.sql:1](../migrations/0066_notice_features.sql#L1)　／　解約時: 書き出して削除
 
@@ -3201,7 +3201,7 @@ UNIQUE 制約: (company_id, fiscal_year, staff_id)
 <a id="notice_targets"></a>
 #### notice_targets — お知らせの配信対象
 
-> お知らせの配信対象の展開・再通知（w3-notice-ux: #191 #370） #370 notice_targets: 案件あて・個人あてのお知らせの配信先（notices.target_ids のカンマ区切り）を1行ずつに展開した表。 対象者の判定（一覧・ホーム・既読数・メールの宛先・既読率レポート）は、これまでの 「',' || target_ids || ',' LIKE '%,' || id || ',%'」の走査をやめ、この表を索引で引く。 target_ids は表示と二重配信の判定のために残し、notices の追加・変更・削除のたびにトリガーで展開し直す （お知らせを書き込むどの経路でも、表とずれないように）。 トリガーでは WITH 句が使えないため、'[' || target_ids || ']' を JSON の配列として展開する （API は target_…
+> 案件あて・個人あてのお知らせの配信先（notices.target_ids のカンマ区切り）を1行ずつに展開した表。 対象者の判定（一覧・ホーム・既読数・メールの宛先・既読率レポート）は、これまでの 「',' || target_ids || ',' LIKE '%,' || id || ',%'」の走査をやめ、この表を索引で引く。 target_ids は表示と二重配信の判定のために残し、notices の追加・変更・削除のたびにトリガーで展開し直す （お知らせを書き込むどの経路でも、表とずれないように）。 トリガーでは WITH 句が使えないため、'[' || target_ids || ']' を JSON の配列として展開する （API は target_ids を「1,2,3」の形にそろえて保存する。形が崩れた値は展開しない）。
 
 作成: [migrations/0052_notice_ux.sql:1](../migrations/0052_notice_ux.sql#L1)　／　解約時: 書き出して削除
 
@@ -3295,6 +3295,8 @@ UNIQUE 制約: (company_id, fiscal_year, staff_id)
 <a id="push_queue"></a>
 #### push_queue — プッシュ通知の送信待ち
 
+> 送る前のプッシュ。アプリ内の通知（未読）が登録されたら、購読のある人の分だけトリガーで積む。 API の書き込みの応答の後と15分おきの cron で送り、送ったら消す（claimed_at: 送る処理が取った日時。二重に送らないため）
+
 作成: [migrations/0081_push.sql:1](../migrations/0081_push.sql#L1)　／　解約時: 削除（書き出さない）
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
@@ -3314,6 +3316,8 @@ UNIQUE 制約: (company_id, fiscal_year, staff_id)
 
 <a id="push_subscriptions"></a>
 #### push_subscriptions — プッシュ通知の購読（端末）
+
+> 端末（ブラウザ）ごとのプッシュの購読。endpoint は端末ごとに1つ。
 
 作成: [migrations/0081_push.sql:1](../migrations/0081_push.sql#L1)　／　解約時: 削除（書き出さない）
 
@@ -3344,6 +3348,8 @@ UNIQUE 制約: (endpoint)
 
 <a id="push_vapid_keys"></a>
 #### push_vapid_keys
+
+> VAPID の鍵（アプリで1組）。Secret の VAPID_PUBLIC_KEY・VAPID_PRIVATE_KEY があればそちらを使い、なければ初回に作ってここに保存する
 
 作成: [migrations/0081_push.sql:1](../migrations/0081_push.sql#L1)
 
@@ -3376,7 +3382,7 @@ CHECK 制約: `CHECK (key_id = 1)`
 <a id="user_notification_prefs"></a>
 #### user_notification_prefs — 通知の受け取り設定
 
-> プッシュ通知（Web Push。#178）と、通知の受け取り設定（#284）（作業単位 w6-push） 1. user_notification_prefs: ユーザーごと・通知のまとまり（pref_key。src/notifications.ts の NOTIFY_PREF_GROUPS）ごとの受け取り設定。 email / push: 1 = 受け取る、0 = 受け取らない、NULL = 既定（ロールとまとまりで決まる。承認依頼のメールは会社管理者・現場管理者だけ、処理の控えのメールは送らない など） digest: 1 = メールをすぐに送らず、1日1回まとめて送る（打刻修正の承認依頼のみ。digest_sent_on に送った日（JST）を残す） スタッフは同じ人のすべての会社のユーザーに同じ設定を保存する（通知の一覧と同じく、人の単位で受け取りを決めるため） 2. push_…
+> ユーザーごと・通知のまとまり（pref_key。src/notifications.ts の NOTIFY_PREF_GROUPS）ごとの受け取り設定。 email / push: 1 = 受け取る、0 = 受け取らない、NULL = 既定（ロールとまとまりで決まる。承認依頼のメールは会社管理者・現場管理者だけ、処理の控えのメールは送らない など）
 
 作成: [migrations/0081_push.sql:1](../migrations/0081_push.sql#L1)　／　解約時: 書き出して削除
 
@@ -4308,8 +4314,8 @@ END
 | `RETURNING_COUNTED` | [services/retention.ts:83](../src/services/retention.ts#L83) |
 | `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1231](../src/services/retention.ts#L1231) |
 | `RETIRED_TARGETS` | [services/retention.ts:84](../src/services/retention.ts#L84) |
-| `CORE_TABLES` | [scripts/gen-docs.mjs:772](../scripts/gen-docs.mjs#L772) |
-| `TABLE_GROUPS` | [scripts/gen-docs.mjs:757](../scripts/gen-docs.mjs#L757) |
+| `CORE_TABLES` | [scripts/gen-docs.mjs:825](../scripts/gen-docs.mjs#L825) |
+| `TABLE_GROUPS` | [scripts/gen-docs.mjs:810](../scripts/gen-docs.mjs#L810) |
 | `loadRoster` | [roster.ts:396](../src/roster.ts#L396) |
 | `CONSENT_VERSION` | [roster.ts:177](../src/roster.ts#L177) |
 | `SHARED_SCOPE` | [roster.ts:178](../src/roster.ts#L178) |
