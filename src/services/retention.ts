@@ -1,4 +1,5 @@
 import { REPORT_TYPES } from '../report-settings'
+import { ERROR_LOG_KEEP_DAYS } from '../lib/error-log'
 
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
@@ -7,6 +8,7 @@ import { REPORT_TYPES } from '../report-settings'
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
+//   error_logs / error_alerts  : created_at から90日（障害の記録と通知の記録。#9622。利用者の ID・入力値は持たないので、退職後の削除の対象はない）
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
 //                              : 勤怠と同じく、スタッフの退職日から7年（docs/spec_attendance_correction.md 8章）
 //   notice_read_staff_reports  : スタッフ別の既読率（人事評価の参考資料）も退職後7年（#437）
@@ -400,8 +402,9 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 // 作成日時から一定年数たった行を、件数を区切って消す（user_notifications・email_logs で共用）。
 // created_at は CURRENT_TIMESTAMP（YYYY-MM-DD HH:MM:SS）か ISO 8601 で、どちらも YYYY-MM-DD との文字列比較で判定できる
 // where は追加の条件（削除の保留中の企業を除くときなど）
-async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number; where?: string }): Promise<RetentionTargetResult> {
-  const cutoff = cutoffDate(t.years)
+// days を渡したときは、年数の代わりに日数で区切る（障害の記録の90日など）
+async function cleanupByCreatedAt(db: D1Database, dryRun: boolean, t: { target: string; table: string; idCol: string; years: number; days?: number; where?: string }): Promise<RetentionTargetResult> {
+  const cutoff = t.days != null ? addDays(todayJST(), -t.days) : cutoffDate(t.years)
   const extra = t.where ? ` AND ${t.where}` : ''
   if (dryRun) {
     const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t.table} WHERE created_at < ?${extra}`).bind(cutoff).first()
@@ -429,6 +432,13 @@ function cleanupUserNotifications(db: D1Database, dryRun: boolean): Promise<Rete
 // メールの送信記録（宛先のメールアドレスを含む）は1年で消す（#240）
 function cleanupEmailLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'email_logs', table: 'email_logs', idCol: 'log_id', years: EMAIL_LOGS_YEARS })
+}
+// 障害の記録（サーバーのエラー・定期処理の失敗）と通知の記録は90日で消す（#9622。src/lib/error-log.ts）
+function cleanupErrorLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'error_logs', table: 'error_logs', idCol: 'error_id', years: 0, days: ERROR_LOG_KEEP_DAYS })
+}
+function cleanupErrorAlerts(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'error_alerts', table: 'error_alerts', idCol: 'alert_id', years: 0, days: ERROR_LOG_KEEP_DAYS })
 }
 // シフト・精算の操作履歴（#159）は操作から7年で消す（精算・請求の帳簿と同じ期間）。削除の保留中の企業の分は消さない
 function cleanupOperationLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
@@ -939,6 +949,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('user_notifications', async () => [await cleanupUserNotifications(db, opts.dryRun)]),
       ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
       ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
+      ...await stage('error_logs', async () => [await cleanupErrorLogs(db, opts.dryRun), await cleanupErrorAlerts(db, opts.dryRun)]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
     ] : []),
     ...(stages.includes('in_service') ? await stage('in_service', () => cleanupInService(db, opts.dryRun)) : []),
@@ -1221,6 +1232,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'support_requests', label: '本部への支援の依頼', table: 'support_requests', where: OB_CO },
   { target: 'hq_announcement_reads', label: '本部のお知らせの既読', table: 'hq_announcement_reads', where: OB_CO, noExport: true },
   { target: 'email_logs', label: 'メールの送信記録', table: 'email_logs', where: OB_CO },
+  // 障害の記録（#9622）。その企業の利用者の操作で起きたエラーの要約（個人の情報は持たない）。書き出さずに消す
+  { target: 'error_logs', label: '障害の記録', table: 'error_logs', where: OB_CO, noExport: true },
   { target: 'sessions', label: 'ログイン中のセッション', table: 'sessions', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'password_reset_tokens', label: 'パスワード再設定のトークン', table: 'password_reset_tokens', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'login_email_verifications', label: 'メールアドレスの確認', table: 'login_email_verifications', where: OB_CO, noExport: true },

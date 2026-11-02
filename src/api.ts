@@ -34,6 +34,9 @@ import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
 import { loadShiftSnaps, notifyShiftChanges, notifyReportComment } from './notifications'
+// 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
+import { notificationsHqApi } from './notifications'
+import { hqErrorsApi } from './hq-errors'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -1234,6 +1237,9 @@ api.route('/staff', correctionsStaffApi)
 api.route('/admin', notificationsAdminApi)
 // メールの送信記録・送信を止めているアドレス（本部。#438 #541）
 api.route('/hq', mailHqApi)
+// 障害の記録（#9622）と、本部の管理者の端末のプッシュ通知（障害の通知）
+api.route('/hq', hqErrorsApi)
+api.route('/hq', notificationsHqApi)
 // 伴走支援の依頼・本部からのお知らせ・管理画面の閲覧（#179 #516 #293。src/hq-support.ts）
 api.route('/admin', hqSupportAdminApi)
 api.route('/hq', hqSupportHqApi)
