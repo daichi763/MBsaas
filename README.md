@@ -5,11 +5,25 @@
 - **目的**: 通信系人材会社（携帯ショップ・家電量販店・催事・光回線などへの派遣/請負）の日次運営を標準化するSaaS。勤怠・日報・実績・シフト・フォロー・請求前チェックまでを1つに統合。
 - **フェーズ**: Phase 1 動作モックアップ（仕様書 §25 準拠）。サンプルデータ入りで全画面が動作します。
 
+## 設計資料・運用手順（docs/）
+初めて担当する人（社外の開発会社を含む）は、次の順に読んでください。資料はコードと一緒にこの repo で管理し、Sprint の終わりに更新します。
+
+| 資料 | 中身 |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | 全体の構成図・構成要素・リクエストの流れ・定期処理・外部サービス・デプロイの仕組み・ソースの構成・認証・ロール・マルチテナント・設定値・無料プランの制約 |
+| [docs/glossary.md](docs/glossary.md) | 用語集（画面の言葉と、テーブル・コードの名前の対応） |
+| [docs/operations.md](docs/operations.md) | 運用手順書（ローカル開発・テスト・本番リリース・復元・ログの見方・障害時の初動・シークレット・データの定期削除） |
+| [docs/decisions.md](docs/decisions.md) | これまでの決定事項とその理由 |
+| [docs/db.md](docs/db.md) / [docs/api.md](docs/api.md) / [docs/screens.md](docs/screens.md) | DB 設計書 / API 一覧 / 画面一覧（コードから生成） |
+| [docs/backup.md](docs/backup.md) / [docs/monitoring.md](docs/monitoring.md) | 本番データの自動バックアップ / 障害の記録と通知 |
+| `docs/spec_*.md` | 機能ごとの初期の仕様 |
+
+この README の下の「実装済み機能」以降は、機能を足したときの記録です。今の仕様と違う所があるときは、docs/ とコードを正とします。
+
 ## URL
-- **開発プレビュー（sandbox）**: https://3000-iuu45cp1y072lqbwcd8ow-b32ec7bb.sandbox.novita.ai
-- **GitHub**: https://github.com/n0101r2000/SaaSDev
+- **GitHub**: https://github.com/daichi763/MBsaas
 - **ログイン**: `/login`（会社コード + ユーザーコード + パスワード）
-- **本番デプロイ**: Cloudflare Workers（Worker 名 `mbsaas`。手順は下の「デプロイ（本番）」）
+- **本番**: Cloudflare Workers（Worker 名 `mbsaas`。URL は `wrangler.jsonc` の `env.production.vars.APP_BASE_URL`）。`main` へのマージで自動でデプロイされる（下の「デプロイ（本番）」）
 
 ## デモアカウント（パスワードは全て `pass1234`。seed.sql を入れた開発環境のみ）
 - ログイン画面のデモアカウントの案内は、環境変数 `DEMO_MODE` が `true` のときだけ表示する（本番は `false`）。本番 DB には seed を入れない。
@@ -88,27 +102,24 @@ node scripts/gen_seed.cjs     # seed.sql を今日の日付に合わせて作り
 - 統合テストを1つだけ手で流す場合: `bash scripts/setup-test-db.sh <保存先>` → `npx wrangler dev --local --port 8799 --persist-to <保存先>` → `BASE=http://127.0.0.1:8799 PERSIST=<保存先> node scripts/test-xxx.mjs`（起動オプションは各テストの先頭のコメントに書いてある）
 
 ## デプロイ（本番）
-本番は Cloudflare Workers（Worker 名 `mbsaas`。設定は `wrangler.jsonc` の `env.production`）。マイグレーションの適用は手動で、**必ずデプロイより先に**行う（新しいテーブル・列を使うコードを先に出すと、その API が 500 になる）。
+本番は Cloudflare Workers（Worker 名 `mbsaas`。設定は `wrangler.jsonc` の `env.production`）。GitHub の `main` へのマージで、Cloudflare Workers Builds が `npm run build` → `npx wrangler deploy` を行う（ビルドのとき `scripts/ci-wrangler-config.mjs` が本番の設定の `wrangler.json` を作る）。
+マイグレーションの適用は手動で、**必ずマージ（デプロイ）より先に**行う（新しいテーブル・列を使うコードを先に出すと、その API が 500 になる）。
 
-```bash
-npx wrangler d1 time-travel info mbsaas-production --env production   # 適用前の戻し先（ブックマーク）を控える
-npm run db:migrate:remote                                             # 本番の D1 にマイグレーションを適用
-npm run deploy                                                        # 型チェック・未適用の確認（predeploy）→ ビルド → デプロイ
-```
-- 未適用の確認を意図して省くときだけ `SKIP_MIGRATION_CHECK=1 npm run deploy`（通常は使わない）
-- 秘密の値は `npx wrangler secret put <名前> --env production` で設定する: `RESEND_API_KEY`（メール送信）、`TURNSTILE_SECRET_KEY`（応募フォームのボット対策。任意）など
-- 戻し方・バックアップの扱いは `docs/spec_attendance_correction.md` の 9 章
+- 手順（バックアップ → 本番のコピーで試す → 本番に適用 → マージ → デプロイと設定の確認 → スモーク）は [docs/operations.md](docs/operations.md) の「本番リリース」
+- 戻し方・復元は [docs/operations.md](docs/operations.md) の「戻し方・復元」、自動バックアップは [docs/backup.md](docs/backup.md)
+- シークレットの一覧と意味は [docs/architecture.md](docs/architecture.md) の「設定値」、登録と入れ替えは [docs/operations.md](docs/operations.md) の「シークレットの登録と入れ替え」
+- 手元から出すときは `npm run deploy`（直前の `predeploy` が型チェックと、本番の未適用のマイグレーションの確認を行う。未適用の確認を意図して省くときだけ `SKIP_MIGRATION_CHECK=1`）。ふだんは使わない
 
 ## 定期処理（Cron Trigger）
 `wrangler.jsonc` の `triggers.crons`（時刻は UTC）と `src/index.tsx` の `CRON_JOBS` で決める。各処理は独立して実行し、結果を `cron_runs` に記録して本部画面「データ保持・定期処理」に出す（失敗・25時間以上の未実行は本部画面の上部に警告）。
 
 | 起動（UTC） | 日本時間 | 処理 |
 |---|---|---|
-| `0 18 * * *` | 毎日 3:00 | 期限切れのセッション・ログイン試行の削除 / 応募の削除（180日）/ データ保持の定期削除（`RETENTION_ENABLED=true` のときだけ実際に削除。それ以外は dry-run）/ 退職予定日を過ぎたスタッフの退職への切り替え / 所属区分の変更の予約の適用 / お知らせの既読の記録の削除（2年）/ 案件掲示板の保存した検索条件の新着の知らせ / 前月の請求の記録（毎月1〜3日。記録済みの企業はそのまま） |
-| `30 18 * * *` | 毎日 3:30 | 既読率レポートの集計 |
+| `0 18 * * *` | 毎日 3:00 | 期限切れのセッション・ログイン試行の削除 / 期限切れ・使用済みのトークン（パスワード再設定・報告用URL）の削除 / 応募の削除（180日）/ データ保持の定期削除（`RETENTION_ENABLED=true` のときだけ実際に削除。それ以外は dry-run）/ 退職予定日を過ぎたスタッフの退職への切り替え / 所属区分の変更の予約の適用 / お知らせの既読の記録の削除（2年）/ 案件掲示板の保存した検索条件の新着の知らせ / 本部から導入企業への利用料の、前月分の記録（毎月1〜3日。記録済みの企業はそのまま） |
+| `30 18 * * *` | 毎日 3:30 | データ保持の定期削除（在職中の位置情報・写真・相談など。`RETENTION_ENABLED=true` のときだけ実際に削除）/ 既読率レポートの集計 |
 | `*/15 * * * *` | 15分おき | 本人あての自動リマインド（起床・出発・入店の未報告と日報の未提出。案件報告管理の「未報告のリマインド」（`GET/PUT /api/admin/settings/reminders`）で ON にした会社だけ。何も送らなかった実行は記録を1行にまとめる）/ プッシュ通知の送信（応答の後に送れなかった分）/ 打刻修正の承認依頼のまとめメール（「1日1回まとめて」を選んだ管理者へ、毎朝8時以降の最初の起動で1回）/ お知らせの予約配信のメール（配信予定日時を過ぎた予約）/ 書類の有効期限の知らせ（30日以内・期限切れの書類を会社ごとに1件の通知にまとめて管理者へ。毎朝8時以降、会社ごとに1日1回まで） |
 
-- 処理の一覧の正は `src/index.tsx` の `CRON_JOBS`（ここに足した処理は上の表にも足す）
+- 処理の一覧の正は `src/index.tsx` の `CRON_JOBS`（ここに足した処理は上の表と [docs/architecture.md](docs/architecture.md) の「定期処理」の表にも足す。処理ごとの名前と関数はそちらの表）
 - ローカルで試すときは `npx wrangler dev --local --test-scheduled` で起動し、`/__scheduled?cron=0+18+*+*+*` を開く
 
 ## 入店/退店報告 写真添付機能 セットアップ
@@ -350,4 +361,4 @@ npm run cf-typegen
 - **Platform**: Cloudflare Workers（`@hono/vite-build/cloudflare-workers` で `dist/_worker.js` を作り、静的ファイルは Workers Assets で配信。`scheduled` = cron も同じ Worker）
 - **Backend**: Hono 4 + TypeScript、**DB**: Cloudflare D1
 - **Frontend**: Vanilla JS SPA（hash routing）+ TailwindCSS（`npm run build:css` で `public/static/style.css` を生成）+ Chart.js + axios + dayjs + FontAwesome
-- **Last Updated**: 2026-07-06
+- **Last Updated**: 2026-11-02（設計資料 docs/ を追加。Sprint 13）

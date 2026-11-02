@@ -790,6 +790,8 @@ async function planPageSlots(db: D1Database, u: any, page: { project_ids: string
     for (const r of cur) {
       const n = want.get(Number(r.slot_role_id))!
       if (!pids.includes(Number(r.project_id))) return fail('対象の案件から外した案件の枠の人数は変えられません')
+      // 過ぎた日（今日の JST より前）の枠は、画面と同じく人数を変えさせない。同じ人数のまま送られたものは通す
+      if (n !== Number(r.headcount) && r.work_date < today) return fail(`${slotDateLabel(r.work_date)} の「${r.role_name}」は過ぎた日の枠のため、人数は変えられません`)
       if (n < Number(r.assigned)) return fail(`${slotDateLabel(r.work_date)} の「${r.role_name}」は割り当て済みが${Number(r.assigned)}名のため、${Number(r.assigned)}名より少なくできません（シフトボードで割り当てを外してから変えてください）`)
       if (n !== Number(r.headcount)) updates.push({ id: Number(r.slot_role_id), headcount: n })
     }

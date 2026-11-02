@@ -85,7 +85,7 @@
           <div><label class="text-sm text-gray-600 block mb-1">希望の日時</label><input id="hqs-preferred" class="inp" maxlength="100" placeholder="例: 来週の平日午後"></div>
           <div><label class="text-sm text-gray-600 block mb-1">連絡先（電話・メール）</label><input id="hqs-contact" class="inp" maxlength="200"></div>
         </div>
-        <button type="button" class="btn btn-primary w-full" data-action="hqsSendSupport">本部に依頼する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button type="button" class="btn btn-primary flex-1" data-action="hqsSendSupport">本部に依頼する</button></div>
       </div>
       ${(reqs.requests || []).length ? `
       <h4 class="font-bold text-sm mt-5 mb-2">これまでの依頼</h4>

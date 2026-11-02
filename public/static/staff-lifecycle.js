@@ -55,7 +55,7 @@
           <p class="text-[11px] text-gray-400">勤怠報告は、シフトを割り当てた案件の標準設定が適用されます</p>
         </div>
         <input id="qr-memo" class="inp text-sm" placeholder="メモ（任意・紹介元など）">
-        <button class="btn btn-primary w-full" data-action="submitQuickRegister" data-slot-role-id="${Number(ctx.slot_role_id) || ''}" data-request-key="${esc(newRequestKey())}">${ctx.slot_role_id ? '仮登録して枠に割り当てる' : '仮登録する'}</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitQuickRegister" data-slot-role-id="${Number(ctx.slot_role_id) || ''}" data-request-key="${esc(newRequestKey())}">${ctx.slot_role_id ? '仮登録して枠に割り当てる' : '仮登録する'}</button></div>
       </div>`)
   }
   window.quickTypeChanged = function () {
@@ -341,7 +341,7 @@
         <details class="p-3 rounded-lg border border-gray-200"><summary class="text-sm text-gray-600 cursor-pointer">ログインを発行する（任意）</summary>
           <div class="mt-3">${loginFieldsHtml(d, 'fz', next)}${emailReq ? '<p class="text-[11px] text-red-600 mt-1">ログインを発行する場合、メールは必須です（会社の設定）</p>' : ''}</div></details>
         <p class="text-[11px] text-gray-400">${req.length || kanaReq ? 'そのほかの項目' : 'その他の項目（生年月日・スキル等）'}は本登録後に基本情報欄で入力できます</p>
-        <button class="btn btn-primary w-full" data-action="submitFinalize" data-id="${Number(sid)}">本登録する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitFinalize" data-id="${Number(sid)}">本登録する</button></div>
       </div>`)
   }
   delegate('submitFinalize', (el) => withSubmitLock(el, async () => {
@@ -369,7 +369,7 @@
     modal(`<h3 class="font-bold text-lg mb-1">ログインを発行</h3>
       <p class="text-xs text-gray-500 mb-3">スタッフ番号と初期パスワードを設定し、スタッフ用のアプリでシフトの確認・勤怠報告ができるようにします。初期パスワードは本人に伝えてください</p>
       <div class="space-y-3">${loginFieldsHtml(d, 'il', await fetchNextCode())}
-        <button class="btn btn-primary w-full" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div>`)
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div></div>`)
   })
   delegate('submitIssueLogin', (el) => withSubmitLock(el, async () => {
     const sid = Number(el.dataset.id)
@@ -453,7 +453,7 @@
         <input id="ac-contract" class="inp text-sm hidden" placeholder="雇用形態（正社員 / アルバイト / パート 等）">
         <input id="ac-note" class="inp text-sm" placeholder="メモ（任意）">
         <div id="ac-preview"></div>
-        <button id="ac-check" class="btn btn-outline w-full" data-action="previewAffiliationChange" data-sid="${Number(sid)}">影響を確認する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button id="ac-check" class="btn btn-outline flex-1" data-action="previewAffiliationChange" data-sid="${Number(sid)}">影響を確認する</button></div>
       </div>`)
     const form = document.getElementById('ac-form')
     // メモ以外の入力が変わったら確認をやり直す

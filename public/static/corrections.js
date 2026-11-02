@@ -52,7 +52,7 @@
       </div>
       <p class="text-[11px] text-gray-400 mt-2">例: 7日にすると、10/1 の勤務は 10/8 まで申請できます。精算が確定済みのシフトへの打刻修正は、期限内でも「支払額は自動では変わりません」と案内したうえで受け付けます（交通費・延長の申請は確定済み・締めた期間のシフトには出せません）。</p>
       ${s.can_edit === false ? '<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">勤怠の設定を変えられるのは会社管理者と現場管理者だけです</p>'
-        : `<button class="btn btn-primary w-full mt-4" data-action="corrDeadlineSave" data-max="${max}">保存する</button>`}`)
+        : `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="corrDeadlineSave" data-max="${max}">保存する</button></div>`}`)
     if (s.can_edit === false) document.querySelectorAll('input[name="cd-mode"]').forEach(r => { r.disabled = true })
     const days = document.getElementById('cd-days')
     if (days) days.addEventListener('focus', () => { const r = document.querySelector('input[name="cd-mode"][value="days"]'); if (r) r.checked = true })
@@ -486,7 +486,7 @@
       <label class="flex items-start gap-2 text-sm mt-2"><input type="checkbox" id="cn-approve-now" class="mt-0.5 w-4 h-4" checked>
         <span>申請と同時に承認する<span class="block text-[11px] text-gray-500">電話で受けた修正などを、その場で記録に反映します。ほかの管理者への承認依頼は送りません。外すと承認待ちの申請になります</span></span></label>
       <div id="cn-warn" class="mt-2"></div>
-      <button class="btn btn-primary w-full mt-2" id="cn-submit" onclick="corrSubmitNew(this)">申請する</button>
+      <div class="flex gap-2 mt-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" id="cn-submit" onclick="corrSubmitNew(this)">申請する</button></div>
       <p id="corr-msg" class="text-xs text-red-600 mt-2"></p>`}`
     if (document.getElementById('cn-type')) corrTypeChanged()
   }
