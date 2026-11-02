@@ -2021,15 +2021,15 @@ async function renderErrors() {
           <div class="w-full rounded-t ${t.count ? 'bg-red-500' : 'bg-slate-700'}" style="height:${t.count ? Math.max(4, Math.round(t.count / max * 96)) : 2}px"></div>
         </div>`).join('')}
       </div>
-      <div class="flex gap-1 mt-1">${d.trend.map(t => `<span class="flex-1 text-center text-[10px] text-slate-500 min-w-0">${esc(dayjs(t.day).format('M/D'))}</span>`).join('')}</div>
+      <div class="flex gap-1 mt-1">${d.trend.map((t, i) => `<span class="flex-1 text-center text-[10px] text-slate-500 min-w-0 whitespace-nowrap">${(d.trend.length - 1 - i) % 2 ? '' : esc(dayjs(t.day).format('M/D'))}</span>`).join('')}</div>
     </section>
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
       <h3 class="font-bold mb-2"><i class="fas fa-ranking-star text-cyan-400 mr-1"></i>よく起きているエラー（直近7日）</h3>
-      <table class="w-full text-sm">
+      <table class="w-full text-sm" style="min-width:640px">
         <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-right px-2 py-2">件数</th><th class="text-left px-2">場所</th><th class="text-left px-2">内容</th><th class="text-right px-2">会社</th><th class="text-left px-2">最後</th><th></th></tr></thead>
         <tbody>${d.groups.map(g => `<tr class="border-b border-slate-700/40">
           <td class="px-2 py-2 text-right font-bold">${Number(g.n)}</td>
-          <td class="px-2 text-xs"><span class="badge ${g.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[g.source] || g.source)}</span> <span class="font-mono break-all">${esc(g.method || '')} ${esc(g.path || '')}</span></td>
+          <td class="px-2 text-xs"><span class="badge whitespace-nowrap ${g.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[g.source] || g.source)}</span> <span class="font-mono break-all">${esc(g.method || '')} ${esc(g.path || '')}</span></td>
           <td class="px-2 text-xs break-all"><span class="text-slate-400">${esc(g.error_name || '')}</span> ${esc(g.message || '')}</td>
           <td class="px-2 text-right text-xs">${Number(g.companies)}</td>
           <td class="px-2 text-xs whitespace-nowrap">${esc(hqTime(g.last_at))}</td>
@@ -2063,12 +2063,12 @@ async function renderErrors() {
 }
 function drawErrorLogs() {
   const box = document.getElementById('he-logs'); if (!box) return
-  box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
+  box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm" style="min-width:720px">
       <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">参照番号</th><th class="text-left px-2">場所</th><th class="text-left px-2">企業・ロール</th><th class="text-left px-2">内容</th></tr></thead>
       <tbody>${HQ_ERR.logs.map(l => `<tr class="border-b border-slate-700/40 align-top">
         <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(hqTime(l.created_at))}${Number(l.repeat_count) ? `<span class="block text-amber-400" title="同じエラーをまとめた回数（最後: ${esc(hqTime(l.last_repeat_at))}）">ほか${Number(l.repeat_count)}回</span>` : ''}</td>
         <td class="px-2 text-xs font-mono">${esc(l.ref)}</td>
-        <td class="px-2 text-xs"><span class="badge ${l.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[l.source] || l.source)}</span><span class="block font-mono break-all mt-0.5">${esc(l.method || '')} ${esc(l.path || '')}</span></td>
+        <td class="px-2 text-xs"><span class="badge whitespace-nowrap ${l.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[l.source] || l.source)}</span><span class="block font-mono break-all mt-0.5">${esc(l.method || '')} ${esc(l.path || '')}</span></td>
         <td class="px-2 text-xs">${l.company_id ? `<button class="text-cyan-400 hover:underline text-left" data-action="hqErrCompany" data-id="${Number(l.company_id)}" data-name="${esc(l.company_name || '')}">${esc(l.company_name || ('企業 ' + l.company_id))}</button>` : '<span class="text-slate-500">－</span>'}${l.role ? `<span class="block text-slate-400">${esc(ERR_ROLE_LABEL[l.role] || l.role)}</span>` : ''}</td>
         <td class="px-2 text-xs break-all"><span class="text-slate-400">${esc(l.error_name || '')}</span> ${esc(l.message || '')}${l.location ? `<span class="block text-[11px] text-slate-500 font-mono">${esc(l.location)}</span>` : ''}</td></tr>`).join('')
         || `<tr><td colspan="5" class="text-center text-slate-500 py-4">${HQ_ERR.q ? 'この参照番号の記録はありません（同じエラーが続いてまとめられた場合や、90日を過ぎた場合は残りません）' : '該当する記録はありません'}</td></tr>`}</tbody></table></div>
