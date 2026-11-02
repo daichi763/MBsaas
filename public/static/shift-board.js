@@ -892,7 +892,7 @@
         </div>
         <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="rp-inherit" ${BS.noInherit[role.slot_role_id] ? '' : 'checked'}>前回のシフトの単価を引き継ぐ</label>
         <p class="text-[11px] text-gray-500 bg-gray-50 rounded p-2">選んだ曜日の、同じ時間・役割・開催場所の枠に<b>確定</b>で割り当てます（すぐに登録します）。枠のない日・定員に達した日・割り当て済みの日・重複・NG・退職などの日はスキップし、一覧で表示します。枠がまだない期間は、先に「その他の操作」→「枠の繰り返し登録」で枠を作ってください。</p>
-        <button class="btn btn-primary w-full" data-action="boardRepeatRun" data-id="${Number(role.slot_role_id)}"><i class="fas fa-repeat"></i>毎週の割り当てを登録する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="boardRepeatRun" data-id="${Number(role.slot_role_id)}"><i class="fas fa-repeat"></i>毎週の割り当てを登録する</button></div>
       </div>`)
   })
   delegate('boardRepeatRun', el => withSubmitLock(el, async () => {
@@ -1117,7 +1117,7 @@
             ${a.staff_reply ? `<span class="block text-[11px] ${a.staff_reply === 'ng' ? 'text-red-600' : 'text-gray-500'}">${esc(replyText(a))}</span>` : ''}</span>
         </label>`).join('')}
       </div>
-      <button class="btn btn-primary w-full mt-3" data-action="confirmRequestedRun"><i class="fas fa-check-double"></i>選択したシフトを確定にする</button>`)
+      <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="confirmRequestedRun"><i class="fas fa-check-double"></i>選択したシフトを確定にする</button></div>`)
     document.getElementById('cr-all').addEventListener('change', (ev) => document.querySelectorAll('.cr-check').forEach(el => { el.checked = ev.target.checked }))
   }
   async function confirmRequestedRun() {
@@ -1229,7 +1229,7 @@
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（空欄でスタッフの標準）" title="空欄のときは、スタッフごとの交通費の標準（精算の画面で登録）を入れます。入力すると選んだ全員に同じ金額を入れます">
       </div>
       ${priceBoxHtml('cand', false)}
-      <button class="btn btn-primary w-full mt-3" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button>
+      <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button></div>
       <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
     document.getElementById('cand-filter').addEventListener('input', (ev) => {
       const q = ev.target.value.trim()
@@ -1582,6 +1582,7 @@
           <div id="slot-dates" class="flex flex-wrap gap-1 mt-2"></div></div>`}
       <div class="flex gap-2 mt-4">
         ${slotId ? `<button class="btn btn-danger" data-action="deleteSlot" data-id="${slotId}"><i class="fas fa-trash"></i></button>` : ''}
+        ${MODAL_CANCEL_BTN}
         <button class="btn btn-primary flex-1" data-action="saveSlot" data-id="${slotId || 0}">${slotId ? '保存する' : '作成する'}</button>
       </div>`)
     if (!slotId) { window.__slotDates = new Set([s.work_date || BS.from]); drawSlotDates() }
@@ -1663,7 +1664,7 @@
         <label class="text-sm text-gray-600">開始日<input id="pt-from" type="date" class="inp" value="${BS.from}"></label>
         <label class="text-sm text-gray-600">終了日<input id="pt-to" type="date" class="inp" value="${dayjs(BS.from).add(2, 'month').endOf('month').format('YYYY-MM-DD')}"></label>
       </div>
-      <button class="btn btn-primary w-full mt-4" onclick="savePattern()">枠をまとめて作成</button>`)
+      <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" onclick="savePattern()">枠をまとめて作成</button></div>`)
   }
   window.savePattern = async function () {
     if (!requireProject('slot-project')) return
@@ -1755,7 +1756,7 @@
         </div>
         <datalist id="role-suggest"><option value="販売スタッフ"><option value="リーダー"></datalist>
         ${priceBoxHtml('bk', true)}
-        <button class="btn btn-primary w-full" data-action="saveBulk">登録する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveBulk">登録する</button></div>
       </div>`)
     // 選んだスタッフの単価の見込み（開始日の時点。直近のシフトからの引き継ぎ。9306）
     const names = new Map(m.staff.map(s => [s.staff_id, s.name]))
@@ -1837,7 +1838,7 @@
       <p class="text-[11px] text-gray-400 mt-1">退職・NG のスタッフと、同じ時間帯に別のシフトがあるスタッフはスキップします。希望・欠勤はコピーしません。コピー済みの枠・シフトは二重に作りません</p>
       <div id="cp-preview" class="mt-3"></div>
       <button id="cp-check" class="btn btn-outline w-full mt-3" data-action="copyPreview">コピーする内容を確認</button>
-      <button id="cp-run" class="btn btn-primary w-full mt-2" data-action="copyRun" disabled>コピーする</button>`)
+      <div class="flex gap-2 mt-2">${MODAL_CANCEL_BTN}<button id="cp-run" class="btn btn-primary flex-1" data-action="copyRun" disabled>コピーする</button></div>`)
     document.getElementById('cp-days').addEventListener('change', () => {
       document.getElementById('cp-to').value = dayjs(BS.from).add(Number(document.getElementById('cp-days').value), 'day').format('YYYY-MM-DD')
       copyRangeCheck()
@@ -2065,7 +2066,7 @@
         <label>開始日<input id="rp-from" type="date" class="inp" value="${dayjs().startOf('month').format('YYYY-MM-DD')}"></label>
         <label>終了日<input id="rp-to" type="date" class="inp" value="${dayjs().add(1, 'year').format('YYYY-MM-DD')}"></label>
       </div>
-      <button class="btn btn-outline w-full mt-3" data-action="repricePreview"><i class="fas fa-magnifying-glass"></i>変わる金額を確認</button>
+      <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-outline flex-1" data-action="repricePreview"><i class="fas fa-magnifying-glass"></i>変わる金額を確認</button></div>
       <div id="rp-result" class="mt-3"></div>`)
   }
   function repriceBody() {
@@ -2139,7 +2140,7 @@
         </div>
         <div id="pe-preview"></div>
         <button class="btn btn-outline w-full" data-action="patternPreview" data-id="${Number(id)}">反映する内容を確認</button>
-        <button id="pe-run" class="btn btn-primary w-full" data-action="patternSave" data-id="${Number(id)}" disabled>反映する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button id="pe-run" class="btn btn-primary flex-1" data-action="patternSave" data-id="${Number(id)}" disabled>反映する</button></div>
       </div>`)
     document.querySelectorAll('#pe-start,#pe-end,#pe-break,#pe-from,#pe-to').forEach(el => el.addEventListener('change', patternDirty))
     document.getElementById('pe-roles').addEventListener('input', patternDirty)
@@ -2193,7 +2194,7 @@
       <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 mb-2"><input type="radio" name="pd-mode" value="keep" checked><span>作成済みの枠は残し、繰り返し登録だけを削除する</span></label>
       <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-[11px] text-gray-400">割り当てのある枠は残ります</span>
         <span class="block text-[11px] text-amber-700">${x.future_pending_applications != null ? `削除する枠への未対応の応募 ${Number(x.future_pending_applications)}件` : '削除する枠に未対応の応募があれば、その応募'}は「枠の削除」で処理済みになり、承認できなくなります（#65）</span></span></label>
-      <button class="btn btn-danger w-full mt-4" data-action="deletePatternRun" data-id="${Number(x.pattern_id)}"><i class="fas fa-trash"></i>削除する</button>`)
+      <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-danger flex-1" data-action="deletePatternRun" data-id="${Number(x.pattern_id)}"><i class="fas fa-trash"></i>削除する</button></div>`)
   })
   delegate('deletePatternRun', el => withSubmitLock(el, async () => {
     const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
@@ -2280,7 +2281,7 @@
         <label class="col-span-2">備考<input id="rl-memo" class="inp text-sm" maxlength="200" placeholder="例: 経験者加算・リーダー手当" value="${val(r.memo)}"></label>
       </div>
       <datalist id="role-suggest"><option value="販売"><option value="リーダー"><option value="MC"><option value="設営"></datalist>
-      <button class="btn btn-primary w-full mt-4" data-action="saveRule">${rule ? '保存する' : '追加する'}</button>`)
+      <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveRule">${rule ? '保存する' : '追加する'}</button></div>`)
     window.__ruleCtx = { ...ctx, ...(rule ? { rule_id: rule.rule_id } : {}) }
     const st = document.getElementById('rl-staff'); if (st) st.addEventListener('change', refPayHint)
     for (const k of ['rl-pay', 'rl-inc']) document.getElementById(k).addEventListener('input', payTotalHint)
@@ -2497,7 +2498,7 @@
           <span class="block text-[11px] text-gray-400">地図アプリで場所を長押し（右クリック）すると表示される数値を貼り付けます。空欄にすると消します</span></label>
         <label class="text-sm text-gray-600 block">メモ<textarea id="se-memo" class="inp" rows="3" maxlength="500" placeholder="入口・搬入口・集合場所など">${esc(s.memo || '')}</textarea></label>
         <p class="text-[11px] text-gray-400">名前を変えると、今日以降の枠・シフト（実績が確定済みのものを除く）と繰り返し登録の場所名も新しい名前になります</p>
-        <button class="btn btn-primary w-full" data-action="saveSite" data-id="${Number(id)}" data-cid="${esc(cid)}">保存する</button>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSite" data-id="${Number(id)}" data-cid="${esc(cid)}">保存する</button></div>
       </div>`)
   }
   async function saveSite(id, cid) {

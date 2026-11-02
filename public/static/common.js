@@ -62,7 +62,7 @@ document.addEventListener('click', (ev) => {
   // 閉じない理由は、モーダルごとに1回だけ伝える
   if (!bg.dataset.backdropNoted) {
     bg.dataset.backdropNoted = '1'
-    // 「キャンセル」のボタンが無いモーダル（スタッフの登録など）では ✕ だけを案内する
+    // 「キャンセル」のボタンが無いモーダルでは ✕ だけを案内する
     const hasCancel = [...bg.querySelectorAll('button')].some(b => b.textContent.trim() === 'キャンセル')
     if (typeof toast === 'function') toast(hasCancel ? '入力中の内容を閉じるときは、右上の ✕ か「キャンセル」を押してください' : '入力中の内容を閉じるときは、右上の ✕ を押してください')
   }
@@ -86,20 +86,66 @@ function addModalCloseButtons() {
     box.insertBefore(b, box.firstChild)
   })
 }
-delegate('modalX', (el) => {
-  const bg = el.closest('.modal-bg')
-  if (!bg) return
+// モーダルの「キャンセル」（#9633）。入力したところがあれば、閉じてよいかを確かめてから閉じる（common.js が足した ✕ も同じ）。
+// 入力したかどうか: 利用者が操作した（input・change が利用者の操作で起きた）入力欄のうち、操作の前の値から変わったものがあるか。
+// 操作の前の値は、モーダルを開いたとき（入力欄を描いた直後）に覚え、利用者が初めてその欄に入ったときに覚え直す（画面が後から入れた値は入力に数えない）
+const MODAL_FIELD_SEL = 'input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=reset]), select, textarea, [contenteditable=""], [contenteditable="true"]'
+const MODAL_INITIAL = new WeakMap() // 入力欄 → 利用者が操作する前の値
+const MODAL_EDITED = new WeakSet()  // 利用者が操作した入力欄
+function modalFieldValue(el) {
+  if (el.type === 'checkbox' || el.type === 'radio') return el.checked ? '1' : ''
+  if (el.type === 'file') return el.files && el.files.length ? String(el.files.length) : ''
+  if (el.isContentEditable) return el.textContent
+  if (el.tagName === 'SELECT' && el.multiple) return [...el.selectedOptions].map(o => o.value).join('\n')
+  return el.value
+}
+const modalFieldOf = (t) => (t && t.matches && t.matches(MODAL_FIELD_SEL) && t.closest('.modal-box') ? t : null)
+function rememberModalFields() {
+  document.querySelectorAll('.modal-bg .modal-box').forEach(box => box.querySelectorAll(MODAL_FIELD_SEL).forEach(el => {
+    if (!MODAL_INITIAL.has(el)) MODAL_INITIAL.set(el, modalFieldValue(el))
+  }))
+}
+document.addEventListener('focusin', (ev) => {
+  const el = modalFieldOf(ev.target)
+  if (el && !MODAL_EDITED.has(el)) MODAL_INITIAL.set(el, modalFieldValue(el))
+}, true)
+for (const type of ['input', 'change']) document.addEventListener(type, (ev) => {
+  const el = ev.isTrusted && modalFieldOf(ev.target)
+  if (el) MODAL_EDITED.add(el)
+}, true)
+function modalIsDirty(bg) {
+  const box = bg && bg.querySelector('.modal-box')
+  if (!box) return false
+  return [...box.querySelectorAll(MODAL_FIELD_SEL)].some(el => {
+    if (!MODAL_EDITED.has(el) || el.disabled) return false
+    // 操作の前の値を覚えていない欄（チェックを押しても focus が来ない端末など）は、HTML に書いた初めの値と比べる
+    const init = MODAL_INITIAL.has(el) ? MODAL_INITIAL.get(el)
+      : el.type === 'checkbox' || el.type === 'radio' ? (el.defaultChecked ? '1' : '') : el.type === 'file' ? '' : el.isContentEditable ? '' : el.tagName === 'SELECT' ? null : el.defaultValue
+    return modalFieldValue(el) !== init
+  })
+}
+function closeModalBg(bg) {
   // #modal-root のモーダルは各画面の closeModal で閉じる（閉じたときの後片付けがあるため）。それ以外は背景ごと外す
   if (bg.closest('#modal-root') && typeof window.closeModal === 'function') window.closeModal()
   else bg.remove()
-})
+}
+function closeModalIfConfirmed(el) {
+  const bg = el.closest('.modal-bg')
+  if (!bg) return
+  if (modalIsDirty(bg) && !confirm('入力した内容は保存されていません。閉じてよいですか？')) return
+  closeModalBg(bg)
+}
+delegate('modalX', closeModalIfConfirmed)
+delegate('modalCancel', closeModalIfConfirmed)
+// 入力のあるモーダルの下のボタンの並び（#9633）: 左に「キャンセル」、右に保存などの主なボタン（flex-1 で同じ幅にそろえる）
+const MODAL_CANCEL_BTN = '<button type="button" class="btn btn-outline flex-1" data-action="modalCancel">キャンセル</button>'
 let modalScanQueued = false
-// MutationObserver の無い環境（テストで common.js だけを読み込むときなど）では、✕ を足す処理だけを省く
+// MutationObserver の無い環境（テストで common.js だけを読み込むときなど）では、✕ を足す処理と、開いたときの値を覚える処理を省く
 if (typeof MutationObserver === 'function' && document.documentElement) {
   new MutationObserver(() => {
     if (modalScanQueued) return
     modalScanQueued = true
-    queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons() })
+    queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons(); rememberModalFields() })
   }).observe(document.documentElement, { childList: true, subtree: true })
 }
 

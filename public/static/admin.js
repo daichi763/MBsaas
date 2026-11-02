@@ -727,7 +727,7 @@ delegate('showDayBeforeSetting', async () => {
     <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" id="dbc-enabled" class="w-4 h-4" ${s.enabled ? 'checked' : ''}>前日確認を使う</label>
     <label class="text-sm text-gray-600 block mb-1" for="dbc-deadline">確認の締切（前日の時刻）</label>
     <input id="dbc-deadline" type="time" class="inp" value="${esc(s.deadline || '18:00')}">
-    <button class="btn btn-primary w-full mt-4" data-action="saveDayBeforeSetting">保存する</button>`)
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveDayBeforeSetting">保存する</button></div>`)
 })
 delegate('saveDayBeforeSetting', el => withSubmitLock(el, async () => {
   const enabled = document.getElementById('dbc-enabled').checked
@@ -1240,7 +1240,7 @@ window.showAddStaff = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">経歴</label><input id="ns-career" class="inp"></div>
       <div><label class="text-sm text-gray-600 block mb-1">稼働可能エリア</label><input id="ns-area" class="inp" placeholder="東京23区"></div>
       <div id="ns-dup"></div>
-      <button class="btn btn-primary w-full" data-action="addStaff">登録する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addStaff">登録する</button></div>
     </div>`)
 }
 // 送信中はボタンを無効にする（二度押しで同じ人が2人登録されないように。#223）
@@ -1641,7 +1641,7 @@ async function renderStaffDetail(sid, opts = {}) {
                 ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
               </div>
               <div class="flex flex-wrap gap-1">
-                ${Object.entries(r.values).filter(([k, v]) => typeof v === 'number' && v > 0).map(([k, v]) => `<span class="badge badge-gray">${esc(LABELS[k] || k)} ${esc(v)}</span>`).join('')}
+                ${staffReportNumbersHtml(r, reportFieldsOf({ templates: data.report_templates, past_fields: data.report_past_fields }, r))}
               </div>
               ${r.values.free ? `<p class="text-xs text-gray-500 mt-1 whitespace-pre-wrap">${esc(r.values.free)}</p>` : ''}
             </div>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'}
@@ -1736,7 +1736,7 @@ delegate('showEvaluationModal', el => {
           <select id="ev-${k}" class="inp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Number(cur ? cur[k] : 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`).join('')}</div>
       <p class="text-[11px] text-gray-400">5: とても良い 〜 1: 課題が大きい。同じ期間の評価は上書きします</p>
       <div><label class="text-sm text-gray-600 block mb-1">コメント</label><textarea id="ev-comment" rows="3" class="inp" maxlength="1000">${esc(cur ? cur.comment || '' : '')}</textarea></div>
-      <button class="btn btn-primary w-full" data-action="saveEvaluation" data-id="${sid}" data-edit="${cur ? '1' : ''}">保存する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveEvaluation" data-id="${sid}" data-edit="${cur ? '1' : ''}">保存する</button></div>
     </div>`)
 })
 delegate('saveEvaluation', el => withSubmitLock(el, async () => {
@@ -2396,7 +2396,7 @@ window.showFollowModal = function (sid, name) {
       <div><label class="text-sm text-gray-600 block mb-1">対応状況</label>
         <select id="fl-status" class="inp"><option value="done">完了（次の対応なし）</option><option value="open">対応中（次の対応あり）</option></select>
         <p class="text-[11px] text-gray-400 mt-1">対応中で次回対応日を入れると、その日からダッシュボードの ToDo に出ます</p></div>
-      <button class="btn btn-primary w-full" data-action="addFollowLog" data-id="${Number(sid)}">記録する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addFollowLog" data-id="${Number(sid)}">記録する</button></div>
     </div>`)
   // 次回対応を入れたら対応中にする（自分で状態を選んだ後は変えない。#385）
   const st = document.getElementById('fl-status')
@@ -2554,7 +2554,7 @@ delegate('showLatenessSetting', async () => {
         : '<p class="text-xs text-gray-400">案件ごとに変えている案件はありません</p>'}
     </div>
     ${s.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`
-      : '<button class="btn btn-primary w-full mt-4" data-action="saveLatenessSetting">保存する</button>'}`)
+      : `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveLatenessSetting">保存する</button></div>`}`)
 })
 delegate('closeLatenessToProject', () => closeModal())
 delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
@@ -2583,7 +2583,7 @@ delegate('showSiteContactSetting', async () => {
         <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}">
         <p class="text-[11px] text-gray-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（クライアント詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
     </div>
-    <button class="btn btn-primary w-full mt-4" data-action="saveSiteContactSetting">保存する</button>`)
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSiteContactSetting">保存する</button></div>`)
 })
 delegate('saveSiteContactSetting', el => withSubmitLock(el, async () => {
   const far = document.getElementById('sc-far').value.trim()
@@ -2627,7 +2627,7 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
-      <button class="btn btn-primary w-full" data-action="addProject">登録する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addProject">登録する</button></div>
     </div>`)
 }
 // 登録する。同名の登録があるとき（サーバーが confirm_duplicate を返す）は、確認できたら確認済みとして送り直す。取りやめたら null を返す
@@ -2806,7 +2806,7 @@ delegate('editProjectText', el => {
     <p class="text-xs text-gray-500 mb-3">${esc(note)}。空欄にすると消えます</p>
     <textarea id="pj-text" rows="${k === 'manual_text' ? 10 : 6}" class="inp" maxlength="${max}">${esc(PROJECT_DETAIL.data.project[k] || '')}</textarea>
     <p class="text-[11px] text-gray-400 mt-1">${max}文字まで</p>
-    <button class="btn btn-primary w-full mt-3" data-action="saveProjectText" data-id="${Number(el.dataset.id)}" data-field="${k}">保存する</button>`)
+    <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProjectText" data-id="${Number(el.dataset.id)}" data-field="${k}">保存する</button></div>`)
 })
 delegate('saveProjectText', el => withSubmitLock(el, async () => {
   const pid = Number(el.dataset.id), k = el.dataset.field
@@ -2936,7 +2936,7 @@ delegate('editProject', el => withSubmitLock(el, async () => {
       <p class="text-[11px] text-gray-400 -mt-2">スタッフアプリ・報告用URLの当日のシフトに、タップで電話をかけられる連絡先として出します（空欄なら会社の緊急連絡先だけ。#173）</p>
       <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
       <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
-      <button class="btn btn-primary w-full" data-action="saveProject" data-id="${pid}">保存する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProject" data-id="${pid}">保存する</button></div>
       <p class="text-right"><button type="button" class="text-xs text-red-600 hover:underline" data-action="deleteProject" data-id="${pid}" data-name="${esc(p.project_name)}"><i class="fas fa-trash mr-0.5"></i>この案件を削除する</button></p>
       <p class="text-[11px] text-gray-400 text-right -mt-2">二重登録などで作った、シフト・日報が1件もない案件だけ削除できます。使った案件は「案件を終了する」にしてください</p>
     </div>`)
@@ -3048,7 +3048,7 @@ function openTemplateEditor(t, init) {
         <button type="button" class="btn btn-outline text-xs mt-2" data-action="tplAddRow"><i class="fas fa-plus"></i>項目を追加</button>
         <p class="text-[11px] text-gray-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
       </div>
-      <button class="btn btn-primary w-full" data-action="saveAdminTemplate">保存する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminTemplate">保存する</button></div>
     </div>`)
   drawTplRows()
 }
@@ -3172,7 +3172,7 @@ delegate('editProjectSkills', el => {
     <h3 class="font-bold text-lg mb-2">必要スキル</h3>
     <p class="text-xs text-gray-500 mb-3">カンマ・読点で区切って入力します。空欄にすると消えます。</p>
     <input id="pj-skills" class="inp" maxlength="500" value="${esc(el.dataset.skills || '')}" placeholder="例: MNP、光回線、クロージング">
-    <button class="btn btn-primary w-full mt-4" data-action="saveProjectSkills" data-id="${Number(el.dataset.id)}">保存する</button>`)
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProjectSkills" data-id="${Number(el.dataset.id)}">保存する</button></div>`)
 })
 delegate('saveProjectSkills', el => withSubmitLock(el, async () => {
   const pid = Number(el.dataset.id)
@@ -3934,7 +3934,7 @@ window.showAddClient = function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
-      <button class="btn btn-primary w-full" data-action="addClient">登録する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addClient">登録する</button></div>
     </div>`)
 }
 delegate('addClient', el => withSubmitLock(el, addClient))
@@ -4034,7 +4034,7 @@ window.showAddShift = async function (defaultDate) {
           <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
       <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
-      <button class="btn btn-primary w-full" data-action="addShift">登録する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addShift">登録する</button></div>
     </div>`)
   addShiftFeeHint()
   // スタッフ・案件・日付・時間を変えたら、単価の見込み（直近のシフトからの引き継ぎ）を読み直す（9306）
@@ -4326,6 +4326,14 @@ function reportFieldsOf(data, r) {
   const base = cur.length ? cur : REPORT_NO_TEMPLATE_FIELDS
   const seen = new Set(base.map(f => f.key))
   return [...base, ...past.filter(f => !seen.has(f.key))]
+}
+// スタッフ詳細の日報履歴の数値（0より大きいもの）のバッジ。テンプレートの項目の順に、項目の表示名で出す（#9631。テンプレートを差し替えた後の古い項目も元の表示名で）
+function staffReportNumbersHtml(r, fields) {
+  const vals = r.values || {}
+  const label = new Map((fields || []).map(f => [f.key, f.label]))
+  const keys = [...new Set([...(fields || []).map(f => f.key), ...Object.keys(vals)])]
+  return keys.filter(k => typeof vals[k] === 'number' && vals[k] > 0)
+    .map(k => `<span class="badge badge-gray">${esc(label.get(k) || LABELS[k] || k)} ${esc(vals[k])}</span>`).join('')
 }
 function reportValuesHtml(r, fields) {
   const vals = r.values || {}
@@ -6155,7 +6163,7 @@ delegate('showAddAdminUser', () => {
       <div><label class="text-sm text-gray-600 block mb-1">権限 *</label><select id="au-role" class="inp">${adminRoleOptions('field_manager')}</select></div>
       <div><label class="text-sm text-gray-600 block mb-1">初期パスワード（空欄なら自動で作ります）</label><input id="au-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
       <p class="text-[11px] text-gray-400">初回ログインで、本人にパスワードの変更を求めます。ログインの会社コードは自社の会社コードです。</p>
-      <button class="btn btn-primary w-full" data-action="addAdminUser">追加する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addAdminUser">追加する</button></div>
     </div>`)
 })
 delegate('addAdminUser', (el) => withSubmitLock(el, async () => {
@@ -6177,7 +6185,7 @@ delegate('editAdminUser', (el) => {
       <div><label class="text-sm text-gray-600 block mb-1">メールアドレス</label><input id="eu-email" type="email" class="inp" value="${esc(u.email || '')}"></div>
       <div><label class="text-sm text-gray-600 block mb-1">権限</label><select id="eu-role" class="inp" ${isMe ? 'disabled' : ''}>${adminRoleOptions(u.role)}</select>
         ${isMe ? '<p class="text-[11px] text-gray-400 mt-1">自分の権限は変更できません。自分のメールアドレスは「自分のアカウント」から変更してください。</p>' : ''}</div>
-      <button class="btn btn-primary w-full" data-action="saveAdminUser" data-id="${u.user_id}">保存する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminUser" data-id="${u.user_id}">保存する</button></div>
     </div>`)
   if (isMe) document.getElementById('eu-email').disabled = true
 })

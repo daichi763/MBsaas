@@ -3551,7 +3551,7 @@ api.get('/admin/staff/:id', async (c) => {
   ])
   const [attendance, reports, evals, follows] = await Promise.all([
     db.prepare(`SELECT a.*, s.work_date FROM attendance_reports a JOIN shifts s ON a.shift_id = s.shift_id WHERE a.staff_id = ? ORDER BY a.reported_at DESC LIMIT 40`).bind(sid).all(),
-    db.prepare(`SELECT dr.*, p.project_name FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id WHERE dr.staff_id = ? ORDER BY dr.work_date DESC LIMIT 20`).bind(sid).all(),
+    db.prepare(`SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id WHERE dr.staff_id = ? ORDER BY dr.work_date DESC LIMIT 20`).bind(sid).all(),
     db.prepare(`SELECT e.*, ev.name AS evaluator_name FROM evaluations e LEFT JOIN users ev ON ev.user_id = e.evaluator_id
       WHERE e.staff_id = ? AND e.company_id = ? ORDER BY e.evaluation_period DESC, e.evaluation_id DESC LIMIT 6`).bind(sid, u.company_id).all(),
     db.prepare(`SELECT f.*, um.name AS manager_name FROM follow_logs f LEFT JOIN users um ON f.manager_id = um.user_id WHERE f.staff_id = ? ORDER BY f.created_at DESC LIMIT 20`).bind(sid).all(),
@@ -3571,6 +3571,19 @@ api.get('/admin/staff/:id', async (c) => {
   // テンプレートの数値項目の合計（#184。values。項目の並びとラベルは performance_fields）。mnp などの固定の列は今の画面のために残す
   const metrics = await reportMetricSums(db, 'dr.staff_id = ? AND dr.work_date >= ? AND dr.work_date < ?', [sid, months[2] + '-01', monthBounds(months[0])[1]], 'substr(dr.work_date, 1, 7)')
   const perf = months.map(ym => ({ ...(perfBy.get(ym) || { ym, mnp: 0, pi: 0, shinki: 0, hikari: 0, seiyaku: 0, days: 0 }), values: metrics.valuesOf(ym) }))
+  // 日報履歴の項目の表示名（#9631）: 日報の一覧と同じく、案件の今のテンプレートの項目と、差し替える前のテンプレートの項目（past_report_fields_json）から引く
+  const reportRows = (reports.results as any[]).map(({ past_report_fields_json, ...r }) => {
+    let values: Record<string, unknown> = {}
+    try { const v = JSON.parse(r.report_values || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) values = v } catch { values = {} }
+    return { row: { ...r, values }, past_report_fields_json }
+  })
+  const reportTemplates: Record<string, ReportFieldDef[]> = {}
+  const reportTplIds = [...new Set(reportRows.map(x => x.row.report_template_id).filter(Boolean))]
+  if (reportTplIds.length) {
+    const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN ${JSON_IN}`).bind(bindJsonArray(reportTplIds)).all()).results as any[]
+    for (const t of ts) reportTemplates[t.template_id] = parseReportFields(t.fields_json)
+  }
+  const reportPastFields = await reportPastFieldsByProject(db, u.company_id, reportRows.map(x => ({ ...x.row, past_report_fields_json: x.past_report_fields_json })), reportTemplates)
 
   return c.json({
     profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
@@ -3578,7 +3591,9 @@ api.get('/admin/staff/:id', async (c) => {
     upcoming_shifts: upcoming.results, past_shifts: past.results, today,
     ng_clients: ngClients.results,
     attendance: attendance.results,
-    reports: (reports.results as any[]).map(r => ({ ...r, values: JSON.parse(r.report_values) })),
+    reports: reportRows.map(x => x.row),
+    // 日報履歴の項目（日報の一覧の templates・past_fields と同じ形。画面は reportFieldsOf で並べる）
+    report_templates: reportTemplates, report_past_fields: reportPastFields,
     evaluations: evals.results,
     follow_logs: follows.results,
     performance: perf, performance_fields: metrics.fields,
