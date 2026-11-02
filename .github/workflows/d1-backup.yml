@@ -66,7 +66,7 @@ jobs:
           STAMP=$(TZ=Asia/Tokyo date +%Y%m%d-%H%M)
           echo "STAMP=$STAMP" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/d1"
-          npx wrangler d1 export "$D1_DATABASE" --remote --skip-confirmation --output "$RUNNER_TEMP/d1/backup.sql"
+          npx wrangler d1 export "$D1_DATABASE" --remote --env production --skip-confirmation --output "$RUNNER_TEMP/d1/backup.sql"
 
       - name: 中身の確認と圧縮
         run: |

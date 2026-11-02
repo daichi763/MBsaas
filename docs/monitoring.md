@@ -114,7 +114,7 @@
 あわせて、次の通知も担当者に届くようにしておきます。
 
 - **GitHub Actions の失敗**（毎日のバックアップ。[backup.md](backup.md)）: GitHub の Settings → Notifications → **Actions** の通知を有効にする。
-- **Workers Builds（GitHub からの自動デプロイ）の失敗**: Cloudflare のダッシュボードの `mbsaas` → **Settings** → **Builds** で、ビルドの結果の確認先を決めておく。
+- **デプロイの失敗**: 手元から `npm run deploy` でデプロイする場合は、その場の出力で分かります。GitHub 連携の自動デプロイ（Cloudflare の Workers Builds）を使う場合は、ダッシュボードの `mbsaas` → **Settings** → **Builds** で、ビルドの結果をだれが確かめるかを決めておきます（自動デプロイを使うかどうかはリポジトリのファイルからは決まりません。`docs/spec_multi_company_staff.md` の設定の節を参照）。
 
 ## 7. 本部画面のほかの警告（以前からあるもの）
 

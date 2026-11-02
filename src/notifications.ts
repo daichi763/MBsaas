@@ -27,6 +27,7 @@ import { sha256Hex } from './lib/auth'
 import { personStaffRows } from './roster'
 import * as emailService from './services/email'
 import { loadVapid, sendWebPush, isAllowedPushEndpoint, allowLocalPush, type VapidEnv } from './lib/web-push'
+import { ERROR_ALERT_KIND } from './lib/error-log'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
@@ -1498,8 +1499,8 @@ export function emailWanted(prefs: PrefMap, userId: number, role: string, kind: 
   if (g.digest && p?.digest) return false
   return p && p.email != null ? !!p.email : g.defaultEmail(role)
 }
-// 本部の管理者（system_admin）にプッシュで送る通知の種類（障害の通知 #9622。src/lib/error-log.ts の ERROR_ALERT_KIND）
-const HQ_PUSH_KINDS = ['error_alert']
+// 本部の管理者（system_admin）にプッシュで送る通知の種類（障害の通知 #9622。src/lib/error-log.ts）
+const HQ_PUSH_KINDS = [ERROR_ALERT_KIND]
 /** この通知をプッシュで送るか（スタッフと、本部の管理者あての障害の通知。スタッフの既定は送る） */
 function pushWanted(prefs: PrefMap, userId: number, role: string, kind: string): boolean {
   if (role === 'system_admin') return HQ_PUSH_KINDS.includes(kind)

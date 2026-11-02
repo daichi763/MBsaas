@@ -23,7 +23,7 @@ Time Travel は設定なしで常に動いています。R2 のバックアッ�
 GitHub Actions（毎日 UTC 19:05 = 日本時間 4:05。手動でも実行できる）
   1. Secrets の確認（未登録ならここで失敗して終わる。Cloudflare には接続しない）
   2. npm ci（package-lock.json と同じ版の wrangler を入れる）
-  3. wrangler d1 export mbsaas-production --remote  → backup.sql
+  3. wrangler d1 export mbsaas-production --remote --env production  → backup.sql
   4. 中身の確認（主な表の CREATE TABLE があるか。d1_migrations 表がなければ警告）→ gzip
   5. wrangler r2 object put  → R2 のバケット mbsaas-d1-backups の d1/mbsaas-production-YYYYMMDD-HHMM.sql.gz
   6. R2 のライフサイクルのルール（30日で削除）があるかを確かめる（なければ警告）
@@ -131,7 +131,7 @@ GitHub → **Actions** → **D1 backup** → **Run workflow**
 どちらの方法でも、戻す前に今の状態を書き出しておきます（戻し方を誤ったときにやり直せるように）。
 
 ```bash
-npx wrangler d1 export mbsaas-production --remote --output before-restore-YYYYMMDD.sql
+npx wrangler d1 export mbsaas-production --remote --env production --output before-restore-YYYYMMDD.sql
 ```
 
 または GitHub の **D1 backup** を手動で実行します（R2 に保存されます）。書き出したファイルには個人情報が入るので、作業が終わったら端末から消します。
@@ -140,10 +140,10 @@ npx wrangler d1 export mbsaas-production --remote --output before-restore-YYYYMM
 
 ```bash
 # 戻したい時点（RFC3339 か Unix 時刻）の bookmark を確かめる。時刻は UTC で指定する（日本時間 - 9 時間）
-npx wrangler d1 time-travel info mbsaas-production --timestamp=2026-11-01T18:00:00Z
+npx wrangler d1 time-travel info mbsaas-production --env production --timestamp=2026-11-01T18:00:00Z
 
 # その時点に戻す（DB 全体が置き換わる）
-npx wrangler d1 time-travel restore mbsaas-production --timestamp=2026-11-01T18:00:00Z
+npx wrangler d1 time-travel restore mbsaas-production --env production --timestamp=2026-11-01T18:00:00Z
 ```
 
 - `restore` の出力に、戻す直前の bookmark が出ます。戻し方を誤ったときは、その bookmark を `--bookmark=...` に指定して、もう一度 `restore` すると元に戻せます。出力は控えておきます。
@@ -174,7 +174,7 @@ npx wrangler d1 time-travel restore mbsaas-production --timestamp=2026-11-01T18:
    ```
 
    - `wrangler.jsonc` の `env.production.d1_databases` の `database_id` を、新しい DB の ID に変えてデプロイすると、アプリが新しい DB を使います（DB の名前 `database_name` も合わせて変える）。トップレベル（ローカル開発用）の `d1_databases` も同じに揃えます。
-   - 書き出しのファイルは、表の定義 → データ（INSERT）→ 索引とトリガーの順です。流し込みの途中でトリガー（プッシュの積み込みなど）は動きません。
+   - 書き出しのファイルは、表ごとに定義（CREATE TABLE）とデータ（INSERT）が並び、索引とトリガーは最後にまとめて作られます（ローカルの D1 の書き出しで確認）。そのため、流し込みの途中でトリガー（プッシュの積み込みなど）は動きません。
    - 本番のマイグレーションは `wrangler d1 migrations apply` で適用しているので、バックアップには適用の記録（`d1_migrations` 表）も入ります（入っていないときは、ワークフローが警告を出します。その場合は、戻した DB の表・列を migrations/ のファイルと突き合わせて、どこまで適用済みかを確かめてから、足りないものだけを流します）。戻したあとに `npm run db:migrate:remote` を実行すると、バックアップの後に足したマイグレーションだけが適用されます（データベース名を新しいものに変えた場合は、コマンドの DB 名も合わせる）。
    - 切り替えのあと、古い DB はすぐに消さず、確認が終わるまで残します。
 
@@ -187,7 +187,7 @@ npx wrangler d1 time-travel restore mbsaas-production --timestamp=2026-11-01T18:
 手元に書き出す必要があるときは、次のコマンドで書き出し、使い終わったら消します。
 
 ```bash
-npx wrangler d1 export mbsaas-production --remote --output backup-YYYYMMDD.sql
+npx wrangler d1 export mbsaas-production --remote --env production --output backup-YYYYMMDD.sql
 ```
 
 ## 6. 関連
