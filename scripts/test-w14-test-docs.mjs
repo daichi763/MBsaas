@@ -83,9 +83,18 @@ const testFiles = readdirSync(join(ROOT, 'scripts')).filter(f => /^test-.*\.mjs$
   const cr = read('scripts/test-corrections.mjs')
   ok('#9641 test-corrections: 日をまたぐ夜勤（翌日 05:30 の追加）は4日前の日付で作る（早朝に流すと 05:30 がまだ来ていない）', /const dB = addDays\(today, -4\)/.test(cr) && !/const dB = addDays\(today, -1\)/.test(cr))
   const rs = read('scripts/test-report-settings.mjs')
+  const dt = read('scripts/test-w4-dashboard-todo.mjs')
+  ok('#9641 test-w4-dashboard-todo: #449 の同じ人の2シフトは、200分前が今日のときだけ確かめる（0 時の直後は SKIP）', /if \(at\(-200\)\.date === today\) \{[\s\S]{0,300}W4DT-p1/.test(dt) && /skip\('#449 同じ人の2シフト'/.test(dt))
+  for (const [f, m] of [['test-w8-staff-ui.mjs', 8], ['test-w7-followup-staff-ui.mjs', 6]]) {
+    const s = read(`scripts/${f}`)
+    ok(`#9641 ${f}: 日本時間の 0:0${m} までは待ってから今日のシフトを作る`, s.includes(`if (sinceMidnight < ${m} * 60000)`) && s.indexOf('sinceMidnight') < s.indexOf('const today ='))
+  }
+  const rf = read('scripts/test-w5-report-features.mjs')
+  ok('#9641 test-w5-report-features: #496 の前日の日報の mnp は、月の1日（前日が先月）なら今月の値に入らない', /const s9Mnp = addDays\(today, -1\)\.slice\(0, 7\) === today\.slice\(0, 7\) \? 1 : 0/.test(rf) && /mnp\.value === s9Mnp/.test(rf))
   ok('#9641 test-report-settings: 移行の記録の日時は「今より前で6時間以内」を見る（テスト用の DB を作ってから時間がたっても通る）', /migAge > -5 \* 60000 && migAge < 6 \* 3600000/.test(rs))
-  // 今の時刻から逆算するシフト（at(-分)）を作るテストは、日付が今日でないときに確かめ方を変える（SKIP か別の日付）
-  const rel = testFiles.filter(f => f !== 'test-w14-test-docs.mjs' && /const at = \(offset\)/.test(read(`scripts/${f}`)))
+  // 今の時刻から逆算するシフト（at(-分)）を作るダッシュボードのテストは、日付が今日でないときに確かめ方を変える（SKIP か別の日付）。
+  // test-w5-reminders はサーバーが前後1日のシフトを見るので、日付が変わっても同じに確かめられる（日本時間 0:05・23:58 で確認済み）
+  const rel = testFiles.filter(f => !['test-w14-test-docs.mjs', 'test-w5-reminders.mjs'].includes(f) && /const at = \(offset\)/.test(read(`scripts/${f}`)))
   const unguarded = rel.filter(f => !/\.date (!==|===) today/.test(read(`scripts/${f}`)))
   ok(`#9641 今の時刻から逆算するシフトを作るテスト（${rel.length} 本）は、日付が今日かどうかを見ている`, rel.length > 0 && !unguarded.length, unguarded)
 }

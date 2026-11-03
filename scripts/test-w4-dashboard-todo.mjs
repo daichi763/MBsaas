@@ -151,19 +151,21 @@ const hiddenBy = (d, key) => (d.hidden_todos || []).find(t => t.key === key)
   const sh = d.shifts.find(x => x.shift_id === s7)
   ok('#498 本日のシフトの行にも連絡ありが付く', sh && sh.contact && sh.contact.consultation_id === co.data.consultation_id, sh)
 
-  // #449 同じ人の2シフト
-  const p1 = await relShift(11, 'W4DT-p1', -200, -150)
-  const p2 = await relShift(11, 'W4DT-p2', -120, 30)
-  const px = await admin.post(`/api/admin/shifts/${p1}/proxy-attendance`, { report_types: ['wake_up'], times: { wake_up: at(-330).time } })
-  ok('1つ目のシフトに起床を代理入力', px.status === 200, px)
-  const d2 = await dash()
-  const rows11 = d2.unreported.check_in.filter(x => x.staff_id === 11)
-  ok('#449 未入店の一覧で同じ人は1行（ほかのシフトの数を添える）', rows11.length === 1 && rows11[0].other_shifts === 1, rows11)
-  ok('#449 同じ日の別のシフトで起床済みなら、起床の未報告に出さない', !d2.unreported.wake_up.some(x => x.staff_id === 11), d2.unreported.wake_up.filter(x => x.staff_id === 11))
-  const todayShifts = d2.shifts.filter(x => !x.carried_over)
-  ok('#449 稼働予定は人数（同じ人の複数シフトは1名）とシフト数を分けて返す',
-    d2.working_count === new Set(todayShifts.map(x => x.staff_id)).size && d2.working_shift_count === todayShifts.length && d2.working_shift_count > d2.working_count,
-    [d2.working_count, d2.working_shift_count])
+  // #449 同じ人の2シフト（今日の2つのシフトで確かめる。日本時間の 0 時の直後は、200分前が前日になり今日のシフトにならないので SKIP。#9641）
+  if (at(-200).date === today) {
+    const p1 = await relShift(11, 'W4DT-p1', -200, -150)
+    const p2 = await relShift(11, 'W4DT-p2', -120, 30)
+    const px = await admin.post(`/api/admin/shifts/${p1}/proxy-attendance`, { report_types: ['wake_up'], times: { wake_up: at(-330).date === today ? at(-330).time : '00:00' } })
+    ok('1つ目のシフトに起床を代理入力', px.status === 200, px)
+    const d2 = await dash()
+    const rows11 = d2.unreported.check_in.filter(x => x.staff_id === 11)
+    ok('#449 未入店の一覧で同じ人は1行（ほかのシフトの数を添える）', rows11.length === 1 && rows11[0].other_shifts === 1, rows11)
+    ok('#449 同じ日の別のシフトで起床済みなら、起床の未報告に出さない', !d2.unreported.wake_up.some(x => x.staff_id === 11), d2.unreported.wake_up.filter(x => x.staff_id === 11))
+    const todayShifts = d2.shifts.filter(x => !x.carried_over)
+    ok('#449 稼働予定は人数（同じ人の複数シフトは1名）とシフト数を分けて返す',
+      d2.working_count === new Set(todayShifts.map(x => x.staff_id)).size && d2.working_shift_count === todayShifts.length && d2.working_shift_count > d2.working_count,
+      [d2.working_count, d2.working_shift_count])
+  } else skip('#449 同じ人の2シフト', '200分前が前日のため（日本時間の 0 時〜3 時20分）')
 }
 
 // ---------- #497 遅刻は入店・勤務開始のどちらかが遅れたシフトの数 ----------
