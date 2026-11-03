@@ -2295,10 +2295,14 @@ app.get('/slot-patterns', async (c) => {
   const today = todayJST()
   const rows = (await c.env.DB.prepare(`SELECT sp.*, p.project_name, si.site_name,
       (SELECT COUNT(*) FROM shift_slots s WHERE s.pattern_id = sp.pattern_id) AS slot_count,
-      (SELECT COUNT(*) FROM shift_slots s WHERE s.pattern_id = sp.pattern_id AND s.work_date >= ?) AS future_slot_count
+      (SELECT COUNT(*) FROM shift_slots s WHERE s.pattern_id = sp.pattern_id AND s.work_date >= ?) AS future_slot_count,
+      (SELECT COUNT(*) FROM shift_slots s JOIN shift_slot_roles r ON r.slot_id = s.slot_id
+        JOIN recruit_application_items i ON i.slot_role_id = r.slot_role_id AND i.status = 'pending' JOIN recruit_applications a ON a.application_id = i.application_id AND a.status = 'pending'
+        WHERE s.pattern_id = sp.pattern_id AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)) AS future_pending_applications
     FROM slot_patterns sp JOIN projects p ON p.project_id = sp.project_id AND p.company_id = sp.company_id LEFT JOIN sites si ON si.site_id = sp.site_id
-    WHERE sp.company_id = ? ${pid ? 'AND sp.project_id = ?' : ''} ORDER BY sp.pattern_id DESC`).bind(today, u.company_id, ...(pid ? [pid] : [])).all()).results as any[]
-  // days_left: 終了日までの日数（終了が近い繰り返し登録を画面で目立たせる。#456）
+    WHERE sp.company_id = ? ${pid ? 'AND sp.project_id = ?' : ''} ORDER BY sp.pattern_id DESC`).bind(today, today, u.company_id, ...(pid ? [pid] : [])).all()).results as any[]
+  // days_left: 終了日までの日数（終了が近い繰り返し登録を画面で目立たせる。#456）。
+  // future_pending_applications: 「今日以降の割り当てのない枠も削除」で消える枠への未対応の応募の件数（消すと「枠の削除」で処理済みになる。#65）
   return c.json({ today, patterns: rows.map(r => ({ ...r, roles: JSON.parse(r.roles_json || '[]'), days_left: dayDiff(today, r.date_to) })) })
 })
 app.post('/slot-patterns', async (c) => {
@@ -2436,13 +2440,32 @@ app.put('/slot-patterns/:id', async (c) => {
       if (cf.length) warnings.push(`${s.work_date} ${names.get(s.staff_id) || ''}: 同じ時間帯に別のシフトがあります（${cf.map(x => conflictLabel(x, u.company_id)).join('、')}）`)
     }
   }
+  // 必要人数を、枠に割り当て済みの確定・代打の人数より少なくするときは確かめる（枠の編集 PUT /shift-slots/:id と同じ。#456）。
+  // 枠ごとに人数を直していることがあるので、枠の今の人数より減る枠だけを見る
+  const headcountWarnings: string[] = []
+  if (headcountChanged.length && targets.length) {
+    const filled = (await db.prepare(`SELECT sl.work_date, r.role_name, r.headcount, COUNT(*) AS n FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id
+      JOIN shifts sh ON sh.slot_role_id = r.slot_role_id AND sh.status IN ('confirmed','substitute')
+      WHERE r.slot_id IN ${JSON_IN} AND r.role_name IN (SELECT value FROM json_each(?)) GROUP BY r.slot_role_id ORDER BY sl.work_date, r.role_name`)
+      .bind(targetIds, JSON.stringify(headcountChanged.map(h => h.role_name))).all()).results as any[]
+    for (const f of filled) {
+      const h = headcountChanged.find(x => x.role_name === f.role_name)
+      if (h && h.headcount < Number(f.headcount) && Number(f.n) > h.headcount)
+        headcountWarnings.push(`${f.work_date} 役割「${h.role_name}」: 必要人数（${h.headcount}名）が、割り当て済みの確定・代打（${Number(f.n)}名）より少なくなります`)
+    }
+  }
+  const overlapCount = warnings.length
+  warnings.push(...headcountWarnings)
   const summary = {
     slots: targets.length, skipped_slots: lockedIds.size, custom_slots: customSlots, shifts: moving.length,
     roles_added: addRows.length, roles_removed: removable.length, roles_kept: keptRoles,
-    headcount_changed: headcountChanged.length ? targets.length : 0, extend_slots: extendDates.length, date_to: newTo, warnings,
+    headcount_changed: headcountChanged.length ? targets.length : 0, extend_slots: extendDates.length, date_to: newTo,
+    // warnings: 確認が必要な点のすべて（時間の重なりと必要人数の不足）。headcount_warnings はそのうちの必要人数の不足
+    warnings, headcount_warnings: headcountWarnings,
   }
   if (b.dry_run) return c.json({ ok: true, dry_run: true, ...summary })
-  if (warnings.length && !b.force) return c.json({ error: '割り当て済みのスタッフの時間が、別のシフトと重なります', need_force: true, ...summary }, 409)
+  if (warnings.length && !b.force) return c.json({ error: overlapCount && headcountWarnings.length ? '割り当て済みのスタッフの時間の重なりと、必要人数の不足があります'
+    : overlapCount ? '割り当て済みのスタッフの時間が、別のシフトと重なります' : '必要人数が、割り当て済みの確定・代打の人数より少なくなります', need_force: true, ...summary }, 409)
 
   // ---- 書き込み ----
   const stmts: D1PreparedStatement[] = []

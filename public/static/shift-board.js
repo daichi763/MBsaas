@@ -2173,14 +2173,20 @@
   delegate('patternPreview', el => withSubmitLock(el, async () => {
     let d
     try { d = (await axios.put(`/api/admin/slot-patterns/${Number(el.dataset.id)}`, { ...patternBody(), dry_run: true })).data } catch (e) { toast(errMsg(e)); return }
+    // warnings は時間の重なりと必要人数の不足（headcount_warnings）の両方を含む（#456）
+    const hc = d.headcount_warnings || []
+    const overlap = d.warnings.filter(w => !hc.includes(w))
+    const warnBlock = (title, list) => list.length ? `<div class="text-xs text-red-600 mt-2"><p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(title)}</p>${list.slice(0, 10).map(w => `<p>${esc(w)}</p>`).join('')}${list.length > 10 ? `<p>ほか${list.length - 10}件</p>` : ''}</div>` : ''
     document.getElementById('pe-preview').innerHTML = `<div class="rounded-lg bg-gray-50 p-3 text-sm">
       <p>${esc(patternSummary(d))}</p>
-      ${d.warnings.length ? `<div class="text-xs text-red-600 mt-2"><p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>割り当て済みの人の時間が、別のシフトと重なります</p>${d.warnings.slice(0, 10).map(w => `<p>${esc(w)}</p>`).join('')}${d.warnings.length > 10 ? `<p>ほか${d.warnings.length - 10}件</p>` : ''}</div>` : ''}</div>`
+      ${warnBlock('割り当て済みの人の時間が、別のシフトと重なります', overlap)}
+      ${warnBlock('必要人数が、割り当て済みの確定・代打の人数より少なくなります（反映しても割り当ては外れません。必要ならシフトから外してください）', hc)}</div>`
     const run = document.getElementById('pe-run'); run.disabled = false; run.dataset.force = d.warnings.length ? '1' : ''
+    run.dataset.confirm = [overlap.length ? '時間の重なり' : '', hc.length ? '必要人数を超える割り当て' : ''].filter(Boolean).join('と')
   }))
   delegate('patternSave', el => withSubmitLock(el, async () => {
     const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
-    if (el.dataset.force && !confirm('重なりがあります。このまま反映しますか？')) return
+    if (el.dataset.force && !confirm(`${el.dataset.confirm || '確認が必要な点'}があります。このまま反映しますか？`)) return
     let d
     try { d = (await axios.put(`/api/admin/slot-patterns/${Number(el.dataset.id)}`, { ...patternBody(), force: !!el.dataset.force })).data } catch (e) { toast(errMsg(e)); return }
     closeModal(); toast('反映しました（' + patternSummary(d) + '）'); renderProjectDetail(x.project.project_id)
@@ -2193,7 +2199,9 @@
       <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.start_time)}〜${esc(x.end_time)}（作成済みの枠 ${Number(x.slot_count)}件・今日以降 ${Number(x.future_slot_count || 0)}件）</p>
       <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 mb-2"><input type="radio" name="pd-mode" value="keep" checked><span>作成済みの枠は残し、繰り返し登録だけを削除する</span></label>
       <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-[11px] text-gray-400">割り当てのある枠は残ります</span>
-        <span class="block text-[11px] text-amber-700">${x.future_pending_applications != null ? `削除する枠への未対応の応募 ${Number(x.future_pending_applications)}件` : '削除する枠に未対応の応募があれば、その応募'}は「枠の削除」で処理済みになり、承認できなくなります（#65）</span></span></label>
+        ${Number(x.future_pending_applications) > 0 || x.future_pending_applications == null
+          ? `<span class="block text-[11px] text-amber-700">${x.future_pending_applications != null ? `削除する枠への未対応の応募 ${Number(x.future_pending_applications)}件` : '削除する枠に未対応の応募があれば、その応募'}は「枠の削除」で処理済みになり、承認できなくなります</span>`
+          : '<span class="block text-[11px] text-gray-400">削除する枠への未対応の応募はありません</span>'}</span></label>
       <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-danger flex-1" data-action="deletePatternRun" data-id="${Number(x.pattern_id)}"><i class="fas fa-trash"></i>削除する</button></div>`)
   })
   delegate('deletePatternRun', el => withSubmitLock(el, async () => {

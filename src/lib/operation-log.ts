@@ -68,6 +68,8 @@ export const OP_ACTION_LABELS: Record<string, string> = {
   settle_confirm: '精算の確定', settle_unconfirm: '精算の確定の取り消し', recalc: '金額の再計算', cancellation: 'キャンセル料・補償の入力',
   cancellation_remove: 'キャンセル料・補償の取り消し', transport_fill: '交通費を標準で埋める',
   bulk_create: '常勤の一括登録', copy_week: '前週のコピー', recruit_approve: '募集の承認',
+  // Sprint 14（#159 の残り）: 精算の「報告から実績を反映」・スタッフの交通費／延長の申請の承認・スタッフの統合
+  sync_actuals: '報告から実績を反映', transport_approve: '交通費の申請の承認', overtime_approve: '延長の申請の承認', staff_merge: 'スタッフの統合',
 }
 
 function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }

@@ -17,6 +17,7 @@ import { revokeSessionsStmt } from './lib/auth'
 import { conflictLabel } from './lib/staff-eligibility'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { updateRowsStmts } from './lib/bulk-write'
+import { opLog, logShifts, finishLogStmts } from './lib/operation-log'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -219,6 +220,7 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   // 付け替え・統合済みにする更新・NGの付け替え・空欄の補完・予定シフトの単価と支払先の置き換え・統合の記録を、
   // すべて1回の db.batch（トランザクション）で行う。途中で失敗したら何も変わらず、統合済みにもならないので、そのままやり直せる（#461）
   const now = nowJST()
+  const op = opLog(db, u, 'staff_merge')
   const srcLabel = src.is_provisional ? '仮登録' : (TYPE_LABEL[srcType] || srcType)
   const moved = {
     ...counts, shift_ids: shifts.map(s => s.shift_id),
@@ -233,6 +235,8 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, T, src.name, tgt.name, JSON.stringify(moved), future.length, String(b.note || '').slice(0, 300) || null, u.user_id, sid),
     db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, from_affiliation, to_affiliation, affected_shifts, note, changed_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, T, srcType, tType, today, src.affiliation || null, tgt.affiliation || null, future.length, `${srcLabel}「${src.name}」を統合（シフト${counts.shifts}件）`, u.user_id),
+    // 操作履歴（#159）。付け替える前の値を残す（担当者と、予定シフトの単価・支払先の変更。後の値は同じ batch の最後で入れる）
+    ...logShifts(op, shifts.map(s => s.shift_id)),
     db.prepare('UPDATE shifts SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
     db.prepare('UPDATE attendance_reports SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
     db.prepare('UPDATE daily_reports SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
@@ -314,6 +318,8 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
 
   // 今日以降の予定シフトの単価・支払先を統合先の区分で置き換える。applyPricingToShift と同じ計算を、まとめて読んだ値でメモリ上で行う
   stmts.push(...await repriceStmts(db, u.company_id, future.map(s => s.shift_id), tgt, moveRules, dropRules))
+  // 操作履歴の後の値も同じ batch で入れる（前の値だけが残って「削除」に見えることがないように）
+  if (shifts.length) stmts.push(...finishLogStmts(op))
 
   try {
     await db.batch(stmts)

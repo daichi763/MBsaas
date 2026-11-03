@@ -534,36 +534,48 @@ app.post('/settlement/sync-actuals', async (c) => {
   const actualCols = ['actual_start', 'actual_end', 'actual_break_minutes', 'actual_source']
   // 締めた期間のシフトは反映しない（#170）
   const closings = await loadClosings(db, u.company_id, f.from, f.to)
-  for (let page = 0; page < SYNC_MAX_PAGES; page++) {
-    const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
-      WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
-        ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''} AND s.shift_id > ? ORDER BY s.shift_id LIMIT ?`)
-      .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : []), after, SYNC_PAGE + 1).all()).results as any[]
-    const part = rows.slice(0, SYNC_PAGE)
-    if (!part.length) break
-    const reps = (await db.prepare(`SELECT shift_id, report_type, reported_at FROM attendance_reports
-      WHERE shift_id IN ${JSON_IN} AND report_type IN (SELECT value FROM json_each(?)) ORDER BY shift_id, attendance_id`)
-      .bind(bindJsonArray(part.map(s => s.shift_id)), JSON.stringify(ACTUAL_REPORT_TYPES)).all()).results as any[]
-    const repsBy = new Map<number, any[]>()
-    for (const r of reps) { const a = repsBy.get(r.shift_id) || []; a.push(r); repsBy.set(r.shift_id, a) }
-    const actualOnly: any[] = [], withAmounts: any[] = []
-    for (const s of part) {
-      if (closingOf(closings, String(s.work_date))) continue
-      const reps1 = repsBy.get(s.shift_id) || []
-      const { start, end, brk } = actualFromReports(t => reps1.find(r => r.report_type === t)?.reported_at as string | undefined)
-      if (start === (s.actual_start || null) && end === (s.actual_end || null) && brk === (s.actual_break_minutes ?? null)) continue
-      const row = { shift_id: s.shift_id, actual_start: start, actual_end: end, actual_break_minutes: brk, actual_source: start || brk != null ? 'report' : null }
-      const amt = amountsForActual({ ...s, ...row }, s)
-      if (amt) withAmounts.push({ ...row, ...amt }); else actualOnly.push(row)
+  // 操作履歴（#159）。1回の呼び出しを1つの操作（同じ op_key）として、実績を変えるシフトだけを残す。
+  // 前後の値は D1 の中で作るので、件数が多くても Worker の CPU はほとんど使わない
+  const op = opLog(db, u, 'sync_actuals')
+  let logged = false
+  try {
+    for (let page = 0; page < SYNC_MAX_PAGES; page++) {
+      const rows = (await db.prepare(`SELECT s.*, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes FROM shifts s JOIN projects p ON p.project_id = s.project_id
+        WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'
+          ${f.project_id ? 'AND s.project_id = ?' : ''} ${f.client_id ? 'AND p.client_id = ?' : ''} AND s.shift_id > ? ORDER BY s.shift_id LIMIT ?`)
+        .bind(u.company_id, f.from, f.to, ...(f.project_id ? [f.project_id] : []), ...(f.client_id ? [f.client_id] : []), after, SYNC_PAGE + 1).all()).results as any[]
+      const part = rows.slice(0, SYNC_PAGE)
+      if (!part.length) break
+      const reps = (await db.prepare(`SELECT shift_id, report_type, reported_at FROM attendance_reports
+        WHERE shift_id IN ${JSON_IN} AND report_type IN (SELECT value FROM json_each(?)) ORDER BY shift_id, attendance_id`)
+        .bind(bindJsonArray(part.map(s => s.shift_id)), JSON.stringify(ACTUAL_REPORT_TYPES)).all()).results as any[]
+      const repsBy = new Map<number, any[]>()
+      for (const r of reps) { const a = repsBy.get(r.shift_id) || []; a.push(r); repsBy.set(r.shift_id, a) }
+      const actualOnly: any[] = [], withAmounts: any[] = []
+      for (const s of part) {
+        if (closingOf(closings, String(s.work_date))) continue
+        const reps1 = repsBy.get(s.shift_id) || []
+        const { start, end, brk } = actualFromReports(t => reps1.find(r => r.report_type === t)?.reported_at as string | undefined)
+        if (start === (s.actual_start || null) && end === (s.actual_end || null) && brk === (s.actual_break_minutes ?? null)) continue
+        const row = { shift_id: s.shift_id, actual_start: start, actual_end: end, actual_break_minutes: brk, actual_source: start || brk != null ? 'report' : null }
+        const amt = amountsForActual({ ...s, ...row }, s)
+        if (amt) withAmounts.push({ ...row, ...amt }); else actualOnly.push(row)
+      }
+      // 変更の前の値を、書き込みより前に残す（更新と同じ条件のシフトだけ）
+      const logStmts = logShifts(op, [...actualOnly, ...withAmounts].map(r => r.shift_id),
+        { where: "COALESCE(s.settle_status,'planned') != 'confirmed' AND COALESCE(s.actual_source,'') != 'manual'" })
+      if (logStmts.length) logged = true
+      const res = await batchInChunks(db, [
+        ...logStmts,
+        ...updateRowsStmts(db, 'shifts', 'shift_id', actualCols, actualOnly, guard, [u.company_id]),
+        ...updateRowsStmts(db, 'shifts', 'shift_id', [...actualCols, 'bill_qty', 'unit_price', 'pay_qty', 'pay_amount'], withAmounts, guard, [u.company_id]),
+      ])
+      // 件数は更新の文だけで数える（履歴の INSERT は数えない）
+      checked += part.length; updated += changesOf(res.slice(logStmts.length)); after = part[part.length - 1].shift_id
+      more = rows.length > SYNC_PAGE
+      if (!more) break
     }
-    const res = await batchInChunks(db, [
-      ...updateRowsStmts(db, 'shifts', 'shift_id', actualCols, actualOnly, guard, [u.company_id]),
-      ...updateRowsStmts(db, 'shifts', 'shift_id', [...actualCols, 'bill_qty', 'unit_price', 'pay_qty', 'pay_amount'], withAmounts, guard, [u.company_id]),
-    ])
-    checked += part.length; updated += changesOf(res); after = part[part.length - 1].shift_id
-    more = rows.length > SYNC_PAGE
-    if (!more) break
-  }
+  } finally { if (logged) await finishLog(op) }
   return c.json({ ok: true, checked, updated, next_cursor: more ? after : null })
 })
 
