@@ -170,7 +170,7 @@ const R = {}
   ok('#9633 common.js に、キャンセルのボタンと、閉じる前に確かめる処理がある', cm.includes("const MODAL_CANCEL_BTN = '<button type=\"button\" class=\"btn btn-outline flex-1\" data-action=\"modalCancel\">キャンセル</button>'")
     && cm.includes("delegate('modalCancel', closeModalIfConfirmed)") && cm.includes("delegate('modalX', closeModalIfConfirmed)") && /入力した内容は保存されていません。閉じてよいですか？/.test(cm))
   ok('#9633 スタッフ一覧の新規追加（showRosterForm）の登録の横にキャンセル', /\$\{MODAL_CANCEL_BTN\}\s*<button class="btn btn-primary flex-1" data-action="submitRosterForm"/.test(ro))
-  // 入力のあるモーダルで、キャンセル・戻る・やめる・閉じるのどれも無いものが残っていない（hq.js は本部の画面で別の作業単位の担当）
+  // 入力のあるモーダルで、キャンセル・戻る・やめる・閉じるのどれも無いものが残っていない（本部の画面 hq.js も対象。Sprint 14 の #9633 の残り）
   const BS = 92
   const endOfTemplate = (s, i) => { i++; while (i < s.length) { const c = s[i]; if (s.charCodeAt(i) === BS) { i += 2; continue } if (c === '`') return i; if (c === '$' && s[i + 1] === '{') { i = endOfExpr(s, i + 2); continue } i++ } return i }
   const endOfExpr = (s, i) => { let d = 1; while (i < s.length) { const c = s[i]; if (c === '`') { i = endOfTemplate(s, i) + 1; continue } if (c === "'" || c === '"') { const q = c; i++; while (i < s.length && s[i] !== q) { if (s.charCodeAt(i) === BS) i++; i++ } i++; continue } if (c === '{') d++; if (c === '}') { d--; if (!d) return i + 1 } i++ } return i }
@@ -184,7 +184,7 @@ const R = {}
     ['staff-attendance.js', '${foot}'], // スタッフアプリの申請: 下のボタン（foot）に「やめる」
   ]
   const leftovers = []
-  for (const f of ['admin.js', 'roster.js', 'shift-board.js', 'staff-lifecycle.js', 'settlement.js', 'report-settings.js', 'corrections.js', 'board.js', 'recruit.js', 'hq-support.js', 'staff-attendance.js']) {
+  for (const f of ['admin.js', 'roster.js', 'shift-board.js', 'staff-lifecycle.js', 'settlement.js', 'report-settings.js', 'corrections.js', 'board.js', 'recruit.js', 'hq-support.js', 'staff-attendance.js', 'hq.js']) {
     const s = js(f), re = /\bmodal\(`/g; let m
     // 入力欄を返す小さな関数（const row = (...) => `<input ...` など）を中で呼ぶモーダルも、入力のあるモーダルに数える
     const helpers = [], hre = /\b(?:const|let)\s+(\w+)\s*=\s*\([^)]*\)\s*=>\s*`/g; let h

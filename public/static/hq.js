@@ -803,7 +803,7 @@ delegate('hqAddAdmin', (el) => {
       <div><label class="text-xs text-gray-600 block mb-1">メールアドレス</label><input id="ha-email" type="email" class="inp"></div>
       <div><label class="text-xs text-gray-600 block mb-1">権限</label><select id="ha-role" class="inp">${Object.entries(HQ_ADMIN_ROLE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
       <p class="text-[11px] text-gray-400">仮パスワードを自動で作ります。初回ログインで本人に変更を求めます。</p>
-      <button class="btn btn-primary w-full" data-action="hqDoAddAdmin" data-cid="${cid}">追加する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqDoAddAdmin" data-cid="${cid}">追加する</button></div>
     </div>`)
 })
 delegate('hqDoAddAdmin', (el) => withSubmitLock(el, async () => {
@@ -959,7 +959,7 @@ seiyaku,成約数,number
 free,自由記述,textarea</textarea>
         <p class="text-xs text-gray-400 mt-1">キー: 半角英字で始まる英数字と _（日報の値の保存に使うので、配信後は変えないでください）。タイプ: number（数値・件数の集計に使う）/ text / textarea。必須にする項目は4つ目に「必須」と書きます</p></div>
       <div id="tp-preview" class="border rounded-lg p-2 max-h-56 overflow-y-auto"></div>
-      <button class="btn btn-primary w-full" data-action="addTemplate">作成して配信する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addTemplate">作成して配信する</button></div>
     </div>`)
   document.getElementById('tp-fields').addEventListener('input', renderTemplatePreview)
   renderTemplatePreview()
@@ -995,7 +995,7 @@ delegate('editHqTemplate', el => {
         <textarea id="tp-fields" rows="8" class="inp text-xs font-mono">${esc(lines)}</textarea>
         ${t.has_reports ? '<p class="text-xs text-amber-700 mt-1">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます</p>' : ''}</div>
       <div id="tp-preview" class="border rounded-lg p-2 max-h-56 overflow-y-auto"></div>
-      <button class="btn btn-primary w-full" data-action="saveHqTemplate" data-id="${Number(t.template_id)}">保存する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveHqTemplate" data-id="${Number(t.template_id)}">保存する</button></div>
     </div>`)
   document.getElementById('tp-fields').addEventListener('input', renderTemplatePreview)
   renderTemplatePreview()
@@ -1670,7 +1670,7 @@ delegate('hqEditSupport', (el) => {
         <select id="sr-status" class="inp">${Object.entries({ open: '未対応', in_progress: '対応中', done: '完了' }).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div><label class="text-sm text-gray-600 block mb-1">対応メモ（本部のみ）</label>
         <textarea id="sr-note" rows="4" maxlength="2000" class="inp">${esc(r.hq_note || '')}</textarea></div>
-      <button class="btn btn-primary w-full" data-action="hqSaveSupport" data-id="${Number(r.request_id)}">保存する</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqSaveSupport" data-id="${Number(r.request_id)}">保存する</button></div>
     </div>`)
 })
 delegate('hqSaveSupport', (el) => withSubmitLock(el, async () => {
@@ -1691,7 +1691,7 @@ delegate('hqStartView', (el) => {
       ${openReqs.length ? `<div><label class="text-sm text-gray-600 block mb-1">対応する依頼</label><select id="vw-request" class="inp"><option value="">なし</option>${openReqs.map(r => `<option value="${Number(r.request_id)}">No.${Number(r.request_id)} ${esc(String(r.detail).slice(0, 30))}</option>`).join('')}</select></div>` : ''}
       <div><label class="text-sm text-gray-600 block mb-1">閲覧の時間</label><select id="vw-minutes" class="inp">${minutes.map(m => `<option value="${Number(m)}" ${m === 30 ? 'selected' : ''}>${Number(m)}分</option>`).join('')}</select></div>
       <p class="text-[11px] text-gray-400">別の企業を閲覧中なら、そちらは終了します。</p>
-      <button class="btn btn-primary w-full" data-action="hqDoStartView" data-cid="${cid}">閲覧を開始する（新しいタブで開きます）</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqDoStartView" data-cid="${cid}">閲覧を開始する（新しいタブで開きます）</button></div>
     </div>`)
 })
 delegate('hqDoStartView', (el) => withSubmitLock(el, async () => {
@@ -1775,7 +1775,7 @@ delegate('hqAnnEdit', (el) => {
         <div><label class="text-sm text-gray-600 block mb-1">掲載終了</label><input id="an-ends" type="datetime-local" class="inp" value="${esc(annLocal(a && a.ends_at))}"></div>
       </div>
       <p class="text-[11px] text-gray-400">日時は日本時間です。${a ? '修正しても、確認済みの記録はそのまま残ります。' : ''}</p>
-      <button class="btn btn-primary w-full" data-action="hqAnnSave" data-id="${a ? Number(a.announcement_id) : ''}">${a ? '保存する' : '配信する'}</button>
+      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqAnnSave" data-id="${a ? Number(a.announcement_id) : ''}">${a ? '保存する' : '配信する'}</button></div>
     </div>`)
   document.getElementById('an-target').addEventListener('change', e => {
     document.getElementById('an-plan-box').classList.toggle('hidden', e.target.value !== 'plan')

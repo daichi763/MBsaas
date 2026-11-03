@@ -818,18 +818,53 @@ delegate('dashTodoRestore', el => {
 // ---------- ダッシュボード: 欠勤・代わりの手配・報告状況 ----------
 // シフトの状態を変える。入店以降の報告があるシフトを欠勤にするときは、サーバーが確認を求める（need_force）ので、
 // 理由を示して確認できたら force を付けて送り直す（#221）。成功したらサーバーの応答、取りやめたら false。エラーは呼び出し元へ投げる
-async function putShiftStatus(shiftId, status, force) {
+// 欠勤にするときは、その場で理由（スタッフ都合／クライアント都合）を選んでもらい cancel_reason で送る（#283）。
+// cancelReason: 'staff' | 'client' | ''（理由を残さない）。省くと選ぶ画面を出す
+async function putShiftStatus(shiftId, status, force, cancelReason) {
+  if (status === 'absent' && cancelReason === undefined) {
+    cancelReason = await askAbsentReason()
+    if (cancelReason === null) return false
+  }
+  const body = { status }
+  if (force) body.force = true
+  if (status === 'absent' && cancelReason) body.cancel_reason = cancelReason
   try {
-    const res = await axios.put('/api/admin/shifts/' + shiftId, force ? { status, force: true } : { status })
+    const res = await axios.put('/api/admin/shifts/' + shiftId, body)
     return res.data || {}
   } catch (e) {
     const d = e.response && e.response.status === 409 ? e.response.data : null
     if (d && d.need_force && !force) {
       if (!confirm(`${(d.warnings || []).join('\n')}\nこのまま変更しますか？`)) return false
-      return putShiftStatus(shiftId, status, true)
+      return putShiftStatus(shiftId, status, true, cancelReason || '')
     }
     throw e
   }
+}
+// 欠勤の理由を選ぶ（#283）。選んだ理由（'staff' | 'client' | '' = 理由を残さない）、やめたら null を返す。
+// シフトボードの詳細（#modal-root のモーダル）の上に重ねて出すので、#modal-root は使わない
+const ABSENT_REASONS = [['staff', 'スタッフ都合の欠勤', 'fa-user'], ['client', 'クライアント都合の中止', 'fa-building']]
+function askAbsentReason(head) {
+  return new Promise(resolve => {
+    const bg = document.createElement('div')
+    bg.className = 'modal-bg'
+    bg.id = 'absent-reason'
+    bg.style.zIndex = '50'
+    bg.innerHTML = `<div class="modal-box p-5" style="max-width:420px" role="dialog" aria-labelledby="absent-reason-title">
+      <h3 class="font-bold text-lg mb-1" id="absent-reason-title">欠勤にする</h3>
+      ${head ? `<p class="text-sm text-gray-700 whitespace-pre-wrap mb-2">${esc(head)}</p>` : ''}
+      <p class="text-xs text-gray-500 mb-3">理由を選んでください。理由は精算の「キャンセル料・補償」に入ります（金額は精算の画面で入力します）。</p>
+      <div class="space-y-2">
+        ${ABSENT_REASONS.map(([k, l, ic]) => `<button type="button" class="btn btn-outline w-full justify-start" data-reason="${k}"><i class="fas ${ic}"></i>${l}</button>`).join('')}
+        <button type="button" class="btn btn-outline w-full justify-start text-gray-600" data-reason=""><i class="fas fa-minus"></i>理由を残さずに欠勤にする<span class="text-[11px] text-gray-400 ml-1">（あとで精算の画面で選べます）</span></button>
+      </div>
+      <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-reason-cancel>キャンセル</button></div>
+    </div>`
+    const done = (v) => { bg.remove(); resolve(v) }
+    bg.onclick = (ev) => { if (ev.target === bg) done(null) }
+    bg.querySelectorAll('[data-reason]').forEach(b => b.addEventListener('click', () => done(b.dataset.reason)))
+    bg.querySelector('[data-reason-cancel]').addEventListener('click', () => done(null))
+    document.body.appendChild(bg)
+  })
 }
 // シフトボード（shift-board.js）の状態の変更からも使う（#221）
 window.putShiftStatus = putShiftStatus
@@ -846,11 +881,13 @@ async function markAbsent(shiftId, button) {
     } catch (e) { /* 確かめられなくても、通常の確認で続ける */ }
     const head = `${s.staff_name}さん（${s.project_name} ${s.start_time}〜${s.end_time}）を欠勤にしますか？\n欠勤のシフトは精算（支払・請求）の対象から外れます。`
     const msg = started ? `${DASH_RS[started.report_type] || started.report_type}の報告が ${String(started.reported_at).slice(11, 16)} にあります（勤務した記録があります）。\n${head}` : head
-    if (!confirm(msg)) return
+    // 確認と理由の選択を1つの画面でする（#283）
+    const reason = await askAbsentReason(msg)
+    if (reason === null) return
     // 報告の時刻を示して確認したときは、そのまま確認済み（force）で送る
     let res
     try {
-      res = await putShiftStatus(shiftId, 'absent', !!started)
+      res = await putShiftStatus(shiftId, 'absent', !!started, reason)
       if (!res) return
     } catch (e) { showApiError(e, '欠勤にできませんでした'); return }
     toast('欠勤として登録しました')
@@ -1049,12 +1086,14 @@ function matchesKeyword(q, values) {
   const digits = text.replace(/[^0-9]/g, '')
   return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
 }
-const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用']]
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
   noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
   // ログインを発行したのに一度もアプリを使っていない人（#286。ログインなしの名簿のみの人は除く）
   noapp: s => s.user_role === 'staff' && !s.app_last_used_at,
+  // 有効期限が30日以内・切れた書類がある人（#297。doc_expiring はサーバーが数える）
+  docexp: s => Number(s.doc_expiring) > 0,
 }
 // 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
 function staffLastLoginCell(s) {
@@ -1176,7 +1215,7 @@ function drawStaffRows() {
   document.getElementById('staff-rows').innerHTML = list.map(s => `
             <tr class="cursor-pointer${isRetiredStaff(s) ? ' opacity-60' : ''}" data-action="openStaffDetail" data-id="${Number(s.staff_id)}">
               <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
               <td class="whitespace-nowrap">${staffEmpBadge(s)}</td>
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
@@ -3191,7 +3230,7 @@ function ratingStars(v) {
   return '★'.repeat(n) + '☆'.repeat(5 - n)
 }
 // クライアント一覧の検索・並べ替え（#490）
-const CLIENT_LIST = { q: '', stream: '', sort: 'client_id', data: null }
+const CLIENT_LIST = { q: '', stream: '', sort: 'client_id', docexp: false, data: null }
 async function renderClients() {
   loading()
   try { CLIENT_LIST.data = (await axios.get('/api/admin/clients')).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
@@ -3205,17 +3244,19 @@ async function renderClients() {
       <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・稼働案件で検索" value="${esc(L.q)}">
       <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
     </div>
     <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" id="client-cards"></div>`
   let timer = null
   document.getElementById('client-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawClientCards() }, 200) })
   document.getElementById('client-stream').addEventListener('change', ev => { L.stream = ev.target.value; drawClientCards() })
   document.getElementById('client-sort').addEventListener('change', ev => { L.sort = ev.target.value; drawClientCards() })
+  document.getElementById('client-docexp').addEventListener('change', ev => { L.docexp = ev.target.checked; drawClientCards() })
   drawClientCards()
 }
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
-  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email]))
+  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
     name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
@@ -3238,6 +3279,7 @@ function drawClientCards() {
             <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
               ${c.active_projects ? `<span class="block text-gray-500 truncate max-w-[220px]">${esc(c.active_projects)}</span>` : ''}</dd></div>
           </dl>
+          ${Number(c.doc_expiring) > 0 ? `<p class="text-xs text-amber-700 mt-2 client-docexp"><i class="fas fa-file-circle-exclamation mr-1"></i>契約書の期限が近い・切れたものが${Number(c.doc_expiring)}件あります（詳細の「契約書」で確かめてください）</p>` : ''}
           ${c.ng_staff_ids ? '<p class="text-xs text-red-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
           ${c.memo ? `<p class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2 text-gray-500 whitespace-pre-wrap">${esc(c.memo)}</p>` : ''}
         </section>`).join('') || '<p class="text-sm text-gray-400">条件に合うクライアントはありません</p>'
@@ -4436,6 +4478,11 @@ function reportEntryBadge(r) {
   if (r.entry_method === 'link') return '<span class="badge badge-gray" title="ログインのないスタッフが報告用URLから提出しました"><i class="fas fa-link mr-0.5"></i>報告用URL</span>'
   return ''
 }
+// スタッフが管理者のコメントを開いたか（#158。comment_read_at はコメントを書き直すと空に戻る）
+function reportCommentReadHtml(r, fmt) {
+  if (r.comment_read_at) return `<span class="badge badge-green font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフがアプリでこのコメントを開きました"><i class="fas fa-check-double mr-0.5"></i>スタッフ既読 ${esc(fmt(r.comment_read_at))}</span>`
+  return `<span class="badge badge-gray font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
+}
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
   const revised = !r.manager_checked && r.revised_after_check_at
@@ -4455,7 +4502,7 @@ function reportCardHtml(r, fields) {
       ${reportIncidentHtml(r, fields)}
       ${reportValuesHtml(r, fields)}
       ${r.manager_comment ? `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(r.manager_comment)}</span>
-        ${r.manager_comment_by_name || r.manager_comment_at ? `<span class="block text-[11px] text-gray-400 mt-0.5">${esc(r.manager_comment_by_name || '')} ${esc(fmt(r.manager_comment_at))}</span>` : ''}</div>` : ''}
+        <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5">${r.manager_comment_by_name || r.manager_comment_at ? `<span>${esc(r.manager_comment_by_name || '')} ${esc(fmt(r.manager_comment_at))}</span>` : ''}${reportCommentReadHtml(r, fmt)}</span></div>` : ''}
       <div class="flex gap-2 mt-3 flex-wrap items-center">
         ${r.manager_checked
           ? `<button class="btn btn-outline text-xs" data-action="uncheckReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-rotate-left"></i>未確認に戻す</button>
@@ -4720,7 +4767,7 @@ delegate('commentReport', (el) => {
   modal(`
     <h3 class="font-bold text-lg mb-1">スタッフへのコメント</h3>
     <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
-    <p id="rc-meta" class="text-[11px] text-gray-400 mb-1">${r.manager_comment ? `前回: ${esc(r.manager_comment_by_name || '')} ${esc(r.manager_comment_at ? dayjs(r.manager_comment_at).format('M/D HH:mm') : '')}` : ''}</p>
+    <p id="rc-meta" class="text-[11px] text-gray-400 mb-1">${r.manager_comment ? `前回: ${esc(r.manager_comment_by_name || '')} ${esc(r.manager_comment_at ? dayjs(r.manager_comment_at).format('M/D HH:mm') : '')}${r.comment_read_at ? `・スタッフ既読 ${esc(dayjs(r.comment_read_at).format('M/D HH:mm'))}（書き直すと未読に戻ります）` : '・スタッフ未読'}` : ''}</p>
     <textarea id="rc-text" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="コメントを入力（空にして保存すると削除します）">${esc(r.manager_comment || '')}</textarea>
     <div class="flex gap-2 justify-end mt-3 flex-wrap">
       ${r.manager_comment ? `<button class="btn btn-danger text-sm mr-auto" data-action="saveReportComment" data-id="${Number(r.daily_report_id)}" data-mode="delete"><i class="fas fa-trash"></i>削除</button>` : ''}

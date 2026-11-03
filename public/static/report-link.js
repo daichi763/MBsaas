@@ -183,6 +183,7 @@
         <p class="text-sm text-gray-600"><i class="far fa-calendar text-gray-400 mr-1"></i>${fmt(s.work_date)} <i class="far fa-clock text-gray-400 ml-2 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}</p>
         ${s.role ? `<p class="text-sm text-gray-600"><i class="fas fa-user-tag text-gray-400 mr-1"></i>役割: ${esc(s.role)}</p>` : ''}
         ${(s.site_name && s.site_name !== s.location) || s.site_address || map ? `<p class="text-xs text-gray-500 mt-0.5">${esc(s.site_name && s.site_name !== s.location ? s.site_name + ' ' : '')}${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
+        ${siteContactHtml(s)}
         ${d.manual_text ? `<details class="mt-2 rounded-lg bg-gray-50 p-2"><summary class="text-sm font-bold text-blue-700 cursor-pointer"><i class="fas fa-book mr-1"></i>注意事項・マニュアル</summary>
           <p class="text-sm text-gray-700 whitespace-pre-wrap break-words mt-2">${esc(d.manual_text)}</p></details>` : ''}
         ${firstStart && !order.some(t => ['done', 'open'].includes(st[t])) ? `<p class="text-xs text-amber-700 bg-amber-50 rounded p-2 mt-2">報告は ${esc(atLabel(firstStart))} から行えます</p>` : ''}
@@ -229,6 +230,13 @@
   // ---------- お知らせ（#281）・連絡（#163）・予定確認の画面（#442） ----------
   // 電話番号を tel: のリンクにする（数字と + 以外を除く）
   function telHref(p) { const n = String(p || '').replace(/[^\d+]/g, ''); return n.length >= 6 ? 'tel:' + n : '' }
+  // 案件の現場責任者（#173。管理画面の案件の詳細で入力。名前・電話のどちらかだけでも出す）。電話はタップで発信できる
+  function siteContactHtml(s) {
+    if (!s || (!s.site_contact_name && !s.site_contact_phone)) return ''
+    const tel = telHref(s.site_contact_phone)
+    const phone = s.site_contact_phone ? (tel ? `<a href="${esc(tel)}" class="text-blue-600 underline whitespace-nowrap font-bold"><i class="fas fa-phone text-[11px] mr-0.5"></i>${esc(s.site_contact_phone)}</a>` : esc(s.site_contact_phone)) : ''
+    return `<p class="text-sm text-gray-600 site-contact"><i class="fas fa-user-tie text-gray-400 mr-1"></i>現場責任者: ${esc(s.site_contact_name || '')}${s.site_contact_name && phone ? ' ' : ''}${phone}</p>`
+  }
   const IMPORTANCE_BADGE = { urgent: '<span class="badge badge-red">緊急</span>', important: '<span class="badge badge-yellow">重要</span>' }
   // 本人あての重要・緊急のお知らせ（直近のもの。ログインのない人はアプリのお知らせを見られないため、ここに出す）
   function noticesHtml(d) {
@@ -315,6 +323,7 @@
             <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}${s.role ? ` <span class="text-gray-400 ml-1">役割: ${esc(s.role)}</span>` : ''}</p>
             ${s.location || s.site_name ? `<p class="text-sm text-gray-600"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.site_name || s.location)}</p>` : ''}
             ${s.site_address || map ? `<p class="text-xs text-gray-500">${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
+            ${siteContactHtml(s)}
             ${s.report_token ? `<a href="/r/${encodeURIComponent(s.report_token)}" class="btn btn-primary w-full mt-2"><i class="fas fa-clipboard-check"></i>このシフトの勤怠・日報を報告する</a>` : ''}
           </div>` }).join('')}</div>`).join('')
         : '<div class="card p-6 text-center text-sm text-gray-500">この期間の確定したシフトはありません</div>'}

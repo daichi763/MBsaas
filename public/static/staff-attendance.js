@@ -12,6 +12,8 @@
   let TL = null
   let busy = false
   const today = () => dayjs().format('YYYY-MM-DD')
+  // 申請の受付期限（#215）は日本時間の日付で比べる（サーバーと同じ）。期限の日まで申請できる
+  const requestExpired = (s) => !!s.request_until && new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10) > s.request_until
   // 'YYYY-MM-DD HH:MM:SS' → 表示（稼働日と違う日は日付も出す）
   const showAt = (at, workDate) => at ? (at.slice(0, 10) === workDate ? at.slice(11, 16) : dayjs(at.slice(0, 10)).format('M/D') + ' ' + at.slice(11, 16)) : ''
   const toInput = (at) => at ? at.slice(0, 16).replace(' ', 'T') : ''
@@ -107,12 +109,15 @@
     const absent = s.status === 'absent'
     // 未確定（希望（仮））のシフトは、報告してしまったものだけが返る。打刻の修正・追加は申請できない
     const locked = absent || s.tentative
+    // 会社が決めた申請の受付期限を過ぎたシフトは、修正・追加申請のボタンを出さない（#215。押してもサーバーが断る）
+    const expired = !locked && requestExpired(s)
     const shown = TYPES.filter(t => s.enabled.includes(t) || rep[t] || pend[t])
     const hidden = TYPES.filter(t => !shown.includes(t))
     const row = (t) => {
       const r = rep[t], p = pend[t]
       const action = locked ? '' : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
-        : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" onclick="attOpen(${s.shift_id}, '${t}')">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '追加申請'}</button>`
+        : expired ? rejectedTag(s, t)
+        : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" data-action="attOpenRow" data-id="${Number(s.shift_id)}" data-type="${esc(t)}">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '追加申請'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
         <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${deviceTimeTag(r, s.work_date)}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
@@ -123,8 +128,9 @@
       <p class="text-xs text-gray-500">${esc(formatShiftTime(s.start_time, s.end_time))}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
       ${s.tentative ? '<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1">管理者の確定待ちのシフトです。確定されるまで打刻の修正・追加は申請できません。勤務した場合は管理者に連絡してください</p>' : ''}
       <ul class="mt-1">${(s.tentative ? shown.filter(t => rep[t]) : shown).map(row).join('')}</ul>
-      ${s.reports.some(r => r.entry_method === 'proxy') && !locked ? '<p class="text-[11px] text-gray-500 mt-1">「管理者が入力」は、あなたの代わりに管理者が記録した時刻です。違っていたら「修正」から申請してください</p>' : ''}
-      ${!locked && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
+      ${expired ? `<p class="text-[11px] text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1 att-expired"><span class="badge badge-gray font-normal mr-1">期限切れ</span>申請の期限（${esc(fmtDate(s.request_until))}まで）を過ぎたため、アプリからは修正・追加の申請ができません。直したいときは管理者に連絡してください</p>` : ''}
+      ${s.reports.some(r => r.entry_method === 'proxy') && !locked && !expired ? '<p class="text-[11px] text-gray-500 mt-1">「管理者が入力」は、あなたの代わりに管理者が記録した時刻です。違っていたら「修正」から申請してください</p>' : ''}
+      ${!locked && !expired && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
     </div>`
   }
 
@@ -182,8 +188,10 @@
   }
 
   let form = null
+  delegate('attOpenRow', el => attOpen(Number(el.dataset.id), el.dataset.type))
   window.attOpen = function (shiftId, type) {
     const s = TL && TL.shifts.find(x => x.shift_id === shiftId); if (!s) return
+    if (requestExpired(s)) { toast(`申請の期限（${fmtDate(s.request_until)}まで）を過ぎたため、アプリからは申請できません。管理者に連絡してください`); return }
     const r = s.reports.find(x => x.report_type === type)
     const rj = rejectedOf(s, type)
     form = { mode: 'new', shift: s, shift_id: shiftId, report_type: type, kind: r ? 'modify' : 'add', before: r ? r.reported_at : null, work_date: s.work_date, title: s.project_name, rejected: rj || null }
@@ -712,6 +720,13 @@
     })
   }
 
+  // 割増の時間の内訳（例: （深夜 1時間30分・時間外 30分））。時間の無い種類は出さない
+  function premiumMinutesText(m) {
+    if (!m) return ''
+    const hm = (v) => { const n = Math.round(Number(v) || 0); const h = Math.floor(n / 60), mm = n % 60; return `${h ? h + '時間' : ''}${mm ? mm + '分' : ''}` }
+    const list = [['深夜', m.night], ['時間外', m.overtime], ['休日', m.holiday]].filter(([, v]) => Number(v) > 0).map(([l, v]) => `${l} ${hm(v)}`)
+    return list.length ? `<span class="text-gray-500">（${esc(list.join('・'))}）</span>` : ''
+  }
   function payBox(s) {
     const p = s.pay
     if (!p) return ''
@@ -723,6 +738,8 @@
         ? `${esc(UNIT_LABEL[p.unit_type] || '')} ${esc(yenText(p.rate))}${p.unit_type === 'hourly' && p.qty != null ? ` × ${esc(p.qty)}時間` : ''} = ${esc(yenText(p.base))}`
         : '単価未設定'
       if (p.transport) parts += ` ＋ 交通費 ${esc(yenText(p.transport))}`
+      // 深夜・時間外・休日の割増（#167。サーバーは合計に含めて返す）。内訳の足し算が合計と合うように出す
+      if (p.premium) parts += ` ＋ <span class="pay-premium">割増 ${esc(yenText(p.premium))}${premiumMinutesText(p.premium_minutes)}</span>`
       if (p.adjust) parts += ` ${p.adjust > 0 ? '＋' : '−'} 調整 ${esc(yenText(Math.abs(p.adjust)))}`
     }
     return `<div class="mt-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700">${parts}
