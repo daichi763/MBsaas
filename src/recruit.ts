@@ -1206,7 +1206,8 @@ recruitAdminApi.post('/recruit-applications/:id/decide', async (c) => {
       if (type === 'own_employee' || type === 'daily_worker') affiliation = ownName
       if (type === 'freelance') affiliation = '個人事業主'
       if (type === 'partner_manual') {
-        const p = b.partner_affiliation_id ? await db.prepare('SELECT affiliation_id, affiliation_name FROM staff_affiliations WHERE affiliation_id = ? AND company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any : null
+        // 画面が古いままで統合済みの協力会社が選ばれても、統合先に所属させる（#161）
+        const p = b.partner_affiliation_id ? await db.prepare('SELECT t.affiliation_id, t.affiliation_name FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.affiliation_id = ? AND sa.company_id = ?').bind(b.partner_affiliation_id, u.company_id).first() as any : null
         if (!p) return c.json({ error: '協力会社を選択してください' }, 400)
         partnerId = p.affiliation_id; affiliation = p.affiliation_name
       }

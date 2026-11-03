@@ -79,26 +79,29 @@ app.use('/api/*', async (c, next) => {
 
 app.route('/api', api)
 
-// ============ Service Worker（スタッフ画面と本部画面のプッシュ通知の表示。#178 #9622） ============
-// プッシュには本文を載せないので、受けたら最新の未読を取りに来て表示する（スタッフは /api/staff/push/latest、本部は /api/hq/push/latest）。
-// スタッフ画面は scope /staff、本部画面は scope /hq で登録する（staff.js・hq.js）。どちらの画面かは登録の scope で決める。
+// ============ Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） ============
+// プッシュには本文を載せないので、受けたら最新の未読を取りに来て表示する（スタッフは /api/staff/push/latest、本部は /api/hq/push/latest、管理者は /api/admin/push/latest）。
+// スタッフ画面は scope /staff、本部画面は scope /hq、管理画面は scope /admin で登録する（staff.js・hq.js・notifications.js）。どちらの画面かは登録の scope で決める。
 // 取れないとき（ログインの期限切れ・別の人のログインなど）は、中身を出さない決まった文面にする。画面やデータの保存（オフライン）はしない
 const SERVICE_WORKER_JS = `'use strict'
-var HQ = new URL(self.registration.scope).pathname.replace(/\\/$/, '') === '/hq'
-var HOME = HQ ? '/hq' : '/staff'
-var FALLBACK = HQ ? '/hq#errors' : '/staff#notifications'
+var SCOPE = new URL(self.registration.scope).pathname.replace(/\\/$/, '')
+var HQ = SCOPE === '/hq'
+var ADMIN = SCOPE === '/admin'
+var HOME = HQ ? '/hq' : ADMIN ? '/admin' : '/staff'
+var FALLBACK = HQ ? '/hq#errors' : ADMIN ? '/admin#notifications' : '/staff#notifications'
 self.addEventListener('install', function () { self.skipWaiting() })
 self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()) })
 self.addEventListener('push', function (e) { e.waitUntil(showLatest()) })
 async function showLatest() {
   var n = HQ ? { title: 'Field OS 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-hq' }
+    : ADMIN ? { title: 'Field OS 管理', body: '新しい通知があります。管理画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-admin' }
     : { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: FALLBACK, tag: 'fieldos' }
   try {
     var sub = await self.registration.pushManager.getSubscription()
     var r = await fetch('/api' + HOME + '/push/latest?endpoint=' + encodeURIComponent(sub ? sub.endpoint : ''), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Background': '1' } })
     if (r.ok) { var d = await r.json(); if (d && d.title) n = { title: String(d.title), body: String(d.body || ''), link: String(d.link || n.link), tag: String(d.tag || n.tag) } }
   } catch (err) { }
-  if (n.link.indexOf(HOME) !== 0 || !/^\\/(staff|hq)(#[^\\s]*)?$/.test(n.link)) n.link = FALLBACK
+  if (n.link.indexOf(HOME) !== 0 || !/^\\/(staff|hq|admin)(#[^\\s]*)?$/.test(n.link)) n.link = FALLBACK
   return self.registration.showNotification(n.title, { body: n.body, tag: n.tag, renotify: true, icon: '/static/icon-192.png', badge: '/static/icon-192.png', data: { link: n.link } })
 }
 self.addEventListener('notificationclick', function (e) {
@@ -504,7 +507,7 @@ app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
     </header>
     <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
       <div id="verify-form">
-        <p class="text-sm text-gray-600 mb-4">このメールアドレスを、Field OS のログイン用（パスワード再設定・お知らせなどの宛先）として登録します。</p>
+        <p class="text-sm text-gray-600 mb-4">このメールアドレスを、Field OS の通知・パスワード再設定に使うメールアドレスとして登録します。</p>
         <p id="verify-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3" role="alert"></p>
         <button type="button" id="verify-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認して登録する</button>
       </div>
