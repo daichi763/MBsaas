@@ -70,9 +70,8 @@ const opLogs = async (q) => must(await admin.get(`/api/admin/operation-logs?${q}
   ok('（前提）繰り返し登録で枠を3件作った', slots.length === 3, slots.length)
   const roleOf = (s) => s.roles.find(r => r.role_name === '販売').slot_role_id
   const page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [P], date_from: from, date_to: to, allow_staff: true, show_remaining: true, description: '', pay_note: '', contact_note: '' }), 'recruit page')
-  await newStaff('AP')
-  const sp = client(await login('sample', `${PFX}AP`))
-  must(await sp.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: slots.map(roleOf) }), 'staff apply')
+  // 公開の募集ページから応募する（スタッフアプリの募集は止めている。#9411）
+  must(await client('').post(`/api/public/recruit/${page.token}/apply`, { name: `${PFX} 応募`, phone: phoneOf(), agree: true, slot_role_ids: slots.map(roleOf), issued_at: Date.now() - 10000 }), 'public apply')
   // 3日目の枠には人を割り当てる（割り当てのある枠は消さないので、その枠への応募は数えない）
   const SX = await newStaff('X')
   must(await admin.post(`/api/admin/shift-slots/roles/${roleOf(slots[2])}/assign`, { staff_ids: [SX], force: true }), 'assign day3')
