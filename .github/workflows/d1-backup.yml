@@ -55,7 +55,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22  # wrangler 4 は Node.js 22 以上が必要
           cache: npm
 
       - name: wrangler の用意（package-lock.json と同じ版）
