@@ -59,7 +59,10 @@ await admin.post('/api/admin/settings/photo-required', { enabled: false }) // �
   const logs = await admin.get('/api/admin/report-settings/logs?project_id=1&limit=500')
   ok('移行: 設定変更履歴に移行の記録がある', logs.data.logs.some(l => l.action === 'migration'), logs.data.logs.length)
   const mig = logs.data.logs.find(l => l.action === 'migration')
-  ok('移行: 履歴の日時は日本時間（アプリの記録と同じ）', mig && Math.abs(Date.parse(mig.created_at.replace(' ', 'T') + 'Z') - Date.parse(jstNow())) < 30 * 60000, mig && mig.created_at)
+  // 移行はテスト用の DB を作ったときに流れる。npm test は DB を最初に1回だけ作るので、作ってから時間がたっていても通るよう、
+  // 「日本時間の今より前で、6時間以内」を見る（UTC で記録していれば 9時間ずれるので見分けられる。#9641）
+  const migAge = mig ? Date.parse(jstNow()) - Date.parse(mig.created_at.replace(' ', 'T') + 'Z') : NaN
+  ok('移行: 履歴の日時は日本時間（アプリの記録と同じ）', mig && migAge > -5 * 60000 && migAge < 6 * 3600000, mig && mig.created_at)
 }
 
 // ---------- 2. スタッフ画面: 8 種類・順序・OFF の非表示 ----------

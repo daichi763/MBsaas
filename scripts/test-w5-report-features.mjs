@@ -165,7 +165,9 @@ let rid
   pj = perf.projects.find(p => p.project_id === 1)
   ok('#496 匿名のときは名前を返さない', pj.ranking && pj.ranking.anonymous === true && Object.values(pj.ranking.by_key).every(x => x.top.every(t => !('name' in t))), pj.ranking)
   const s9perf = (await st9.get('/api/staff/performance')).data.projects.find(p => p.project_id === 1)
-  ok('#496 小林さんから見た mnp の順位（自分より多い人の数＋1）', s9perf && s9perf.ranking.by_key.mnp.rank >= 2 && s9perf.ranking.by_key.mnp.value === 1, s9perf && s9perf.ranking.by_key.mnp)
+  // 小林さんの mnp 1件は前日の日報。月の1日は前日が先月なので、今月の値は 0（#9641）
+  const s9Mnp = addDays(today, -1).slice(0, 7) === today.slice(0, 7) ? 1 : 0
+  ok('#496 小林さんから見た mnp の順位（自分より多い人の数＋1）', s9perf && s9perf.ranking.by_key.mnp.rank >= 2 && s9perf.ranking.by_key.mnp.value === s9Mnp, s9perf && s9perf.ranking.by_key.mnp)
   must(await admin.put('/api/admin/settings/staff-view', { ranking_visible: false }), 'hide')
   perf = (await st8.get('/api/staff/performance')).data
   pj = perf.projects.find(p => p.project_id === 1)

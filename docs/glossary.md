@@ -38,7 +38,7 @@
 | 画面の言葉 | 意味 | テーブル・列・コード |
 |---|---|---|
 | スタッフマスタ | 業務側の情報（氏名・スキル・経歴・稼働できる条件など）。他社と共有し得る | `staff_profiles`（`src/roster.ts`） |
-| 従業員管理（以前の名前は「社員名簿」） | 労務側の情報（雇用・給与・口座・保険番号・緊急連絡先など）。自社だけ。会社管理者と事務担当だけが使える | `employee_records`（`src/api.ts:837` の `hrOnly`） |
+| 従業員管理（以前の名前は「社員名簿」） | 労務側の情報（雇用・給与・口座・保険番号・緊急連絡先など）。自社だけ。会社管理者と事務担当だけが使える | `employee_records`（`src/api.ts:839` の `hrOnly`） |
 | 所属元 / 連携先（稼働先） | 連携で、人を出す側の会社 / 受ける側の会社 | 連携先の行の `staff_profiles.owner_company_id`（所属元）・`source_staff_id`（直前の会社の行）・`root_staff_id`（雇用元の行） |
 | 連携・企業間連携 | 所属元のスタッフを連携先に登録すること。同意の記録を残す | 連携先に `linked_external` の行と、ユーザーコード `LK-…` のユーザー行を作る（`src/roster.ts:1211`）。同意は `roster_consents` |
 | 連携用コード | 連携で受けた人を、さらに次の会社へ連携するときのコード | `staff_profiles.relink_code`（`RL` で始まる） |
@@ -108,11 +108,11 @@
 
 | 言葉 | 意味 | テーブル・列・コード |
 |---|---|---|
-| 定期処理・cron | 決まった時刻に Worker が動かす処理 | `CRON_JOBS`（`src/index.tsx:837`）、記録は `cron_runs` |
+| 定期処理・cron | 決まった時刻に Worker が動かす処理 | `CRON_JOBS`（`src/index.tsx:840`）、記録は `cron_runs` |
 | データ保持・定期削除 | 保存期間を過ぎた個人情報の削除（日報3年・退職後7年など） | `src/services/retention.ts`、記録は `retention_logs` |
-| dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:854` |
+| dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:857` |
 | 削除の保留 | 本部が、特定のスタッフ・企業のデータの削除を止めること | `staff_profiles.retention_hold_at`・`companies.retention_hold_at` |
-| 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:7978`〜） |
+| 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:8060`〜） |
 | 操作履歴 | シフト・枠・精算の変更の前後の記録 | `operation_logs`（`src/lib/operation-log.ts`） |
 | 変更履歴 | 従業員データとスタッフ基本情報の変更の記録 | `employee_change_logs`（`src/lib/change-log.ts`） |
 | 本部の操作の履歴 | 本部の書き込みの記録 | `hq_audit_logs` |

@@ -1501,10 +1501,13 @@ export function emailWanted(prefs: PrefMap, userId: number, role: string, kind: 
 }
 // 本部の管理者（system_admin）にプッシュで送る通知の種類（障害の通知 #9622。src/lib/error-log.ts）
 const HQ_PUSH_KINDS = [ERROR_ALERT_KIND]
-/** この通知をプッシュで送るか（スタッフと、本部の管理者あての障害の通知。スタッフの既定は送る） */
+// 会社の管理者にプッシュで送る通知の種類（ログインの失敗が続いたとき #552。宛先は会社管理者だけ。api.ts の notifyLoginFailures）
+export const LOGIN_FAILURE_NOTIFY_KIND = 'login_failures'
+const ADMIN_PUSH_KINDS = [LOGIN_FAILURE_NOTIFY_KIND]
+/** この通知をプッシュで送るか（スタッフと、本部の管理者あての障害の通知・会社の管理者あてのログインの失敗。スタッフの既定は送る） */
 function pushWanted(prefs: PrefMap, userId: number, role: string, kind: string): boolean {
   if (role === 'system_admin') return HQ_PUSH_KINDS.includes(kind)
-  if (role !== 'staff') return false
+  if (role !== 'staff') return ADMIN_PUSH_KINDS.includes(kind)
   const g = prefGroupFor(kind, 'staff')
   const p = g ? prefs.get(Number(userId))?.get(g.key) : undefined
   return p && p.push != null ? !!p.push : true
@@ -1875,6 +1878,28 @@ notificationsStaffApi.get('/push/latest', async (c) => {
   const body = String(n.body || '').replace(/\s+/g, ' ').trim()
   return c.json({ title: n.title, body: (body.length > PUSH_BODY_MAX ? body.slice(0, PUSH_BODY_MAX) + '…' : body) + (shown.length > 1 ? `（ほか${shown.length - 1}件の未読）` : ''),
     link: '/staff' + hash, tag: 'fieldos', notification_id: n.notification_id })
+})
+
+// 会社の管理者の端末（/admin の Service Worker）。購読は /api/admin/push/*（#552）。
+// 管理者あての通知は ADMIN_PUSH_KINDS（ログインの失敗が続いたとき）だけを出す。開く先は管理画面の中だけ
+pushDeviceRoutes(notificationsAdminApi)
+notificationsAdminApi.get('/push/latest', async (c) => {
+  const u = c.get('user')
+  const generic = { title: 'Field OS 管理', body: '新しい通知があります。管理画面を開いて確認してください', link: '/admin#notifications', tag: 'fieldos-admin' }
+  const o = ownsSub(u)
+  const s = await c.env.DB.prepare(`SELECT subscription_id, test_requested_at FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(c.req.query('endpoint') || '', ...o.binds).first() as any
+  if (!s) return c.json({ ...generic, generic: true })
+  if (s.test_requested_at && s.test_requested_at >= minutesAgoJST(PUSH_TEST_MINUTES)) {
+    await c.env.DB.prepare('UPDATE push_subscriptions SET test_requested_at = NULL WHERE subscription_id = ?').bind(s.subscription_id).run()
+    return c.json({ title: 'テスト通知', body: 'この端末で管理者あての通知を受け取れます', link: '/admin#notifications', tag: 'fieldos-admin-test', test: true })
+  }
+  const n = await c.env.DB.prepare(`SELECT notification_id, title, body, link FROM user_notifications WHERE user_id = ? AND read_at IS NULL
+    AND kind IN (SELECT value FROM json_each(?)) ORDER BY notification_id DESC LIMIT 1`).bind(u.user_id, JSON.stringify(ADMIN_PUSH_KINDS)).first() as any
+  if (!n) return c.json({ ...generic, generic: true })
+  const link = String(n.link || '')
+  const hash = /^#[A-Za-z0-9_\-/=&.]{0,200}$/.test(link) ? link : /^\/admin#[A-Za-z0-9_\-/=&.]{0,200}$/.test(link) ? link.slice(6) : '#notifications'
+  const body = String(n.body || '').replace(/\s+/g, ' ').trim()
+  return c.json({ title: n.title, body: body.length > PUSH_BODY_MAX ? body.slice(0, PUSH_BODY_MAX) + '…' : body, link: '/admin' + hash, tag: 'fieldos-admin', notification_id: n.notification_id })
 })
 
 // 本部の管理者の端末（/hq の Service Worker）が、プッシュを受けたときに表示する内容を取りに来る。

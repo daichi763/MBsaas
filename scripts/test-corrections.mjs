@@ -95,7 +95,8 @@ let c1
 
 // ---------- 打刻漏れの追加（矛盾なし / 矛盾あり → 例外承認）----------
 {
-  const dB = addDays(today, -1)
+  // 翌日 05:30 の追加は、まだ来ていない時刻だと申請できない。いつ流しても過ぎた時刻になるよう、4日前の夜勤にする（#9641）
+  const dB = addDays(today, -4)
   const B = await createShift(1, 1, dB, 'CR-B', '22:00', '06:00')
   await proxy(B, 'work_start', '22:00')
   let r = await req(st1, { shift_id: B, report_type: 'work_end', kind: 'add', requested_at: `${addDays(dB, 1)} 05:30`, reason: '終了を押し忘れた' })

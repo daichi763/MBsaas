@@ -35,7 +35,7 @@ import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
 import { loadShiftSnaps, notifyShiftChanges, notifyReportComment } from './notifications'
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
-import { notificationsHqApi } from './notifications'
+import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND } from './notifications'
 import { hqErrorsApi } from './hq-errors'
 import { toCsv, csvResponse } from './csv'
 import {
@@ -477,6 +477,7 @@ api.post('/auth/login', async (c) => {
   if (!passwordOk) {
     await recordLoginFailure(db, keys)
     await logEvent('bad_password', user?.company_id ?? company?.company_id, user && canLogin(user.role) ? user.user_id : null)
+    if (user && canLogin(user.role)) await notifyLoginFailures(c, user)
     return c.json({ error: LOGIN_FAILED_MESSAGE }, 401)
   }
   // パスワードが合ったときだけ、利用できない理由を伝える（アカウントの有無は漏れない）
@@ -568,6 +569,7 @@ api.post('/auth/login/mfa', async (c) => {
     await db.prepare('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE token_hash = ?').bind(tokenHash).run()
     await recordLoginFailure(db, keys)
     await logEvent('mfa_failed')
+    await notifyLoginFailures(c, user)
     const left = MFA_MAX_ATTEMPTS - ch.attempts - 1
     if (left <= 0) return expired()
     return c.json({ error: `確認コードが正しくありません（あと${left}回）。認証アプリに表示されている最新の6桁を入力してください`, attempts_left: left }, 401)
@@ -928,6 +930,40 @@ async function loginFailureAlerts(db: D1Database, companyId: number | null) {
     WHERE e.created_at > ? AND e.result IN ('bad_password', 'mfa_failed', 'locked') ${companyId != null ? 'AND e.company_id = ?' : ''}
     GROUP BY e.company_id, LOWER(e.user_code) HAVING COUNT(*) >= ? ORDER BY failures DESC LIMIT 20`)
     .bind(since, ...(companyId != null ? [companyId] : []), LOGIN_FAILURE_ALERT).all()).results
+}
+/**
+ * ログインの失敗が続いたときの会社管理者への知らせ（#552。Sprint 14 の決定）。
+ * 同じ ID で、最後にログインに成功してから（直近24時間の中で）LOGIN_FAILURE_ALERT 回以上続けて失敗したら、
+ * その会社の会社管理者にアプリ内通知を送る（プッシュ通知を受け取る設定の端末にも届く）。同じ ID については1時間に1回まで。
+ * 本部の ID と、存在しない ID（会社が分からない）は送らない。メールは使わない（D-31）。
+ * 通知の文には ID・名前・回数だけを入れ、入力されたパスワード・接続元などは入れない。失敗してもログインの処理は止めない
+ */
+const LOGIN_FAILURE_NOTIFY_QUIET_MINUTES = 60
+async function notifyLoginFailures(c: any, user: any) {
+  if (!user?.user_id || !user.company_id || user.role === 'system_admin' || !canLogin(user.role)) return
+  try {
+    const db = c.env.DB as D1Database
+    const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString() // login_events.created_at は UTC
+    const quiet = new Date(Date.now() + 9 * 3600 * 1000 - LOGIN_FAILURE_NOTIFY_QUIET_MINUTES * 60000).toISOString().slice(0, 19).replace('T', ' ') // 通知は JST
+    const r = await db.prepare(`SELECT
+        (SELECT COUNT(*) FROM login_events e WHERE e.user_id = ?1 AND e.created_at > ?2 AND e.event_type = 'login' AND e.result IN ('bad_password', 'mfa_failed', 'locked')
+          AND e.event_id > COALESCE((SELECT MAX(s.event_id) FROM login_events s WHERE s.user_id = ?1 AND s.event_type = 'login' AND s.result = 'success'), 0)) AS failures,
+        EXISTS (SELECT 1 FROM user_notifications n WHERE n.kind = ?3 AND n.related_id = ?1 AND n.company_id = ?4 AND n.created_at > ?5) AS recent`)
+      .bind(user.user_id, since, LOGIN_FAILURE_NOTIFY_KIND, user.company_id, quiet).first() as any
+    const failures = Number(r?.failures || 0)
+    if (failures < LOGIN_FAILURE_ALERT || r?.recent) return
+    const name = String(user.name || ''), code = String(user.user_code || '')
+    await notifyCompanyAdmins(c, {
+      companyId: user.company_id, kind: LOGIN_FAILURE_NOTIFY_KIND, relatedId: user.user_id, roles: ['company_admin'], email: 'never', mailType: 'login_failures',
+      title: () => `ログインの失敗が続いています: ${name}さん（ID: ${code}）`,
+      headline: `${name}さんの ID で、ログインの失敗が続いています。`,
+      lines: [['ID', code], ['名前', name], ['失敗の回数', `${failures}回（最後にログインしてから・直近24時間）`],
+        ['確認すること', '本人の入力間違いか確かめてください。心当たりがなければ、パスワードの再設定・ログイン中の端末の確認をしてください']],
+      link: '/admin#security', button: 'セキュリティを開く',
+    })
+  } catch (e) {
+    console.log(`login failure notify failed: user=${user?.user_id}`)
+  }
 }
 /** 接続元の制限・二段階認証の必須の設定を検証して保存する（会社管理者と本部で共用） */
 async function saveSecuritySettings(c: any, companyId: number, b: any) {
@@ -2848,7 +2884,7 @@ const mdLabel = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10)
 
 // 管理者ダッシュボード
 api.get('/admin/dashboard', async (c) => {
-  const u = c.get('user'); const today = todayJST(); const month = monthJST()
+  const u = c.get('user'); const today = todayJST(); const month = monthJST(); const [mFrom, mTo] = monthBounds(month)
   const db = c.env.DB; const cid = u.company_id
 
   // 本日と前日のシフト + 勤怠状況（前日分は、日をまたぐ勤務の継続と勤務終了・退店の未報告に使う）
@@ -3013,11 +3049,11 @@ api.get('/admin/dashboard', async (c) => {
   // 今月の案件別実績。項目は日報テンプレートの数値項目（固定のキーで集計しない。実績分析 loadAnalytics と同じ数え方。#184）
   const [perfRows, perfVals, perfTpls, unchecked] = (await db.batch([
     db.prepare(`SELECT p.project_id, p.project_name, COUNT(dr.daily_report_id) AS report_count
-      FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date LIKE ?
-      WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id ORDER BY p.project_id`).bind(month + '%', cid),
+      FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date >= ? AND dr.work_date < ?
+      WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id ORDER BY p.project_id`).bind(mFrom, mTo, cid),
     db.prepare(`SELECT dr.project_id, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
       FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id AND p.status = 'active', ${ANALYTICS_JE}
-      WHERE dr.company_id = ? AND dr.work_date LIKE ? GROUP BY dr.project_id, je.key`).bind(cid, month + '%'),
+      WHERE dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.project_id, je.key`).bind(cid, mFrom, mTo),
     db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM projects p JOIN report_templates rt ON rt.template_id = p.report_template_id
       WHERE p.company_id = ? AND p.status = 'active' ORDER BY rt.template_id`).bind(cid),
     // 未確認の日報の件数（日報一覧の「未確認のみ」と同じ条件。#183）
@@ -3090,8 +3126,8 @@ api.get('/admin/dashboard', async (c) => {
     SELECT s.staff_id, us.name, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a
     JOIN shifts s ON s.shift_id = a.shift_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE a.company_id = ? AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')
-    GROUP BY s.staff_id HAVING n >= 2`).bind(cid, month + '%').all()
+    WHERE a.company_id = ? AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')
+    GROUP BY s.staff_id HAVING n >= 2`).bind(cid, mFrom, mTo).all()
   // 前日確認を使っている会社は、明日のシフトの確認状況の一覧へ移れるようにする（#176）
   const dayBefore = dayBeforeSettings(u.settings_json)
   for (const r of lateRows.results as any[]) {
@@ -3102,7 +3138,7 @@ api.get('/admin/dashboard', async (c) => {
   const absRows = await db.prepare(`
     SELECT s.staff_id, us.name, COUNT(*) AS n FROM shifts s
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.status = 'absent' AND s.work_date LIKE ? AND s.work_date <= ? GROUP BY s.staff_id HAVING n >= 2`).bind(cid, month + '%', today).all()
+    WHERE s.company_id = ? AND s.status = 'absent' AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? GROUP BY s.staff_id HAVING n >= 2`).bind(cid, mFrom, mTo, today).all()
   for (const r of absRows.results as any[]) {
     todos.push({ key: `absent:${r.staff_id}:${month}`, mark: Number(r.n), level: 'high', text: `${r.name}さんの欠勤が今月${r.n}回です。離職リスク中として体調・状況確認をしてください。`, staff_id: r.staff_id, actions: BOTH })
   }
@@ -3481,7 +3517,6 @@ api.get('/admin/staff', async (c) => {
            -- 本日未入店の絞り込みに使う: 欠勤・希望（仮）のシフトは数えない（#85）
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date = ? AND s.status IN ('confirmed','substitute')) AS today_shift,
            (SELECT COUNT(*) FROM attendance_reports a JOIN shifts s2 ON a.shift_id = s2.shift_id WHERE a.staff_id = sp.staff_id AND s2.work_date = ? AND s2.status IN ('confirmed','substitute') AND a.report_type IN ('check_in','work_start')) AS today_checkin,
-           (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id AND dr.work_date >= ? AND dr.work_date < ?) AS month_seiyaku,
            (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date >= ? AND s3.work_date < ?) AS projects,
            -- 有効期限が30日以内・切れた書類の数（#297。一覧の絞り込みに使う）
            (SELECT COUNT(*) FROM staff_documents d WHERE d.staff_id = sp.staff_id AND d.company_id = sp.company_id AND d.valid_until IS NOT NULL AND d.valid_until <= ?) AS doc_expiring
@@ -3490,7 +3525,10 @@ api.get('/admin/staff', async (c) => {
     LEFT JOIN users srcu ON srcu.user_id = src.user_id
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
-    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, today, mFrom, mTo, mFrom, mTo, addDays(today, DASH_DOC_EXPIRY_DAYS), u.company_id).all()
+    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, today, mFrom, mTo, addDays(today, DASH_DOC_EXPIRY_DAYS), u.company_id).all()
+  // 今月成約（#184）: 該当の案件（テンプレートに「成約」の項目がある案件）が今月1つもない人は null（画面は「—」）
+  const seiyaku = await seiyakuSums(c.env.DB, u.company_id, mFrom, mTo, 'staff')
+  for (const r of rows.results as any[]) r.month_seiyaku = seiyaku.get(Number(r.staff_id)) ?? null
   return c.json({ staff: rows.results })
 })
 
@@ -3840,7 +3878,7 @@ async function checkContactUpdate(c: any, sid: string, body: any, roster: any): 
   }
   if (body.login_email !== undefined) {
     if (roster.affiliation_type === 'linked_external') return { status: 403, body: { error: '他社から連携したスタッフのメールアドレスは、所属元の会社で設定します' } }
-    if (!hasOwnLoginRow(roster)) return { status: 400, body: { error: 'ログインのないスタッフです。ログイン用のメールアドレスは、ログインを発行してから設定してください' } }
+    if (!hasOwnLoginRow(roster)) return { status: 400, body: { error: 'ログインのないスタッフです。通知・パスワード再設定に使うメールアドレスは、ログインを発行してから設定してください' } }
     const email = cleanEmail(body.login_email)
     if (email === undefined) return { status: 400, body: { error: 'メールアドレスの形式が正しくありません' } }
     if (email && normalizeEmail(email) !== normalizeEmail(roster.email)) {
@@ -4921,10 +4959,12 @@ api.get('/admin/projects', async (c) => {
     SELECT p.*, cl.client_name,
       (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS staff_count,
       (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS month_shifts,
-      (SELECT SUM(COALESCE(json_extract(dr.report_values,'$.seiyaku'),0)) FROM daily_reports dr WHERE dr.project_id = p.project_id AND dr.work_date >= ?1 AND dr.work_date < ?2) AS month_seiyaku,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id).all()
+  // 成約（#184）: テンプレートに「成約」の項目がない案件は null（画面は「—」）
+  const seiyaku = await seiyakuSums(c.env.DB, u.company_id, mFrom, mTo, 'project')
+  for (const r of rows.results as any[]) r.month_seiyaku = seiyaku.get(Number(r.project_id)) ?? null
   return c.json({ projects: rows.results, month })
 })
 
@@ -5946,6 +5986,47 @@ async function reportMetricSums(db: D1Database, where: string, binds: any[], gro
   }
   for (const r of sumRows) if (keys.has(r.k)) valuesOf(r.g)[r.k] = Number(r.v) || 0
   return { fields, valuesOf }
+}
+// 一覧（スタッフ一覧の「今月成約」・案件一覧の「成約」）に出す「成約」の項目（#184）。
+// 案件の日報テンプレートの数値項目のうち、キーが seiyaku のもの、無ければ表示名に「成約」を含む最初のもの。無ければ null
+function seiyakuFieldKey(fieldsJson: unknown): string | null {
+  const nums = parseReportFields(fieldsJson).filter(f => f.type === 'number')
+  return (nums.find(f => f.key === 'seiyaku') || nums.find(f => f.label.includes('成約')))?.key ?? null
+}
+// 月の「成約」の合計。by が project なら案件ごと、staff ならスタッフごと（Map に無い = 該当の案件が無いので「—」）。
+// 該当の案件 = テンプレートに「成約」の項目がある自社の案件。スタッフは、その月にその案件の日報か確定・代打のシフトがあれば 0 以上を返す。
+// 値は json_each で項目のキーと照らして合計する（キーを SQL に埋め込まない。数値以外は 0。実績分析と同じ）
+async function seiyakuSums(db: D1Database, companyId: number, mFrom: string, mTo: string, by: 'project' | 'staff'): Promise<Map<number, number>> {
+  const [projects, templates] = await db.batch([
+    db.prepare('SELECT project_id, report_template_id FROM projects WHERE company_id = ? AND report_template_id IS NOT NULL').bind(companyId),
+    db.prepare('SELECT template_id, fields_json FROM report_templates WHERE template_id IN (SELECT report_template_id FROM projects WHERE company_id = ?)').bind(companyId),
+  ])
+  const keyOfTpl = new Map<number, string | null>()
+  for (const t of (templates.results || []) as any[]) keyOfTpl.set(Number(t.template_id), seiyakuFieldKey(t.fields_json))
+  const keys: Record<string, string> = {}
+  for (const p of (projects.results || []) as any[]) {
+    const k = keyOfTpl.get(Number(p.report_template_id))
+    if (k) keys[String(p.project_id)] = k
+  }
+  const out = new Map<number, number>()
+  if (!Object.keys(keys).length) return out
+  const map = JSON.stringify(keys)
+  const g = by === 'project' ? 'dr.project_id' : 'dr.staff_id'
+  // m は { project_id: 成約の項目のキー }（自社の案件だけ）。日報・シフトは案件と日付のインデックスで引く
+  const stmts = [db.prepare(`SELECT ${g} AS g, SUM((SELECT SUM(${ANALYTICS_NUM}) FROM ${ANALYTICS_JE} WHERE je.key = m.value)) AS v
+    FROM json_each(?) m JOIN daily_reports dr ON dr.project_id = CAST(m.key AS INTEGER) AND dr.work_date >= ? AND dr.work_date < ?
+    GROUP BY ${g}`).bind(map, mFrom, mTo)]
+  if (by === 'project') {
+    for (const pid of Object.keys(keys)) out.set(Number(pid), 0)
+  } else {
+    stmts.push(db.prepare(`SELECT DISTINCT s.staff_id AS g FROM json_each(?) m
+      JOIN shifts s ON s.project_id = CAST(m.key AS INTEGER) AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')
+      WHERE s.staff_id IS NOT NULL`).bind(map, mFrom, mTo))
+  }
+  const [sums, worked] = await db.batch(stmts)
+  for (const r of (worked?.results || []) as any[]) out.set(Number(r.g), 0)
+  for (const r of (sums.results || []) as any[]) if (r.g != null) out.set(Number(r.g), Number(r.v) || 0)
+  return out
 }
 // 実績分析の集計。project を渡すと、その案件の日報だけを、その案件のテンプレートの項目で集計する（無ければ全案件。項目の列は出さない）。
 // withOptions: 画面の案件の選択肢（稼働中の案件と、日報のある終了した案件）も返す
@@ -7068,10 +7149,11 @@ api.put('/admin/follow-logs/:id', async (c) => {
 api.get('/admin/billing-check', async (c) => {
   const u = c.get('user'); const month = c.req.query('month') || monthJST()
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return c.json({ error: '月を正しく指定してください' }, 400)
+  const [mFrom, mTo] = monthBounds(month) // 月は範囲の条件で絞る（#212）
   // 件数は SQL で数え、金額は精算と同じ shiftTotals（交通費の請求区分・請求の調整額を含む）で、シフトの行を読んでから合計する
   const money = (await c.env.DB.prepare(`SELECT s.project_id, s.staff_id, s.unit_price, s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust
-    FROM shifts s WHERE s.company_id = ? AND s.work_date LIKE ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`)
-    .bind(u.company_id, month + '%', todayJST()).all()).results as any[]
+    FROM shifts s WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`)
+    .bind(u.company_id, mFrom, mTo, todayJST()).all()).results as any[]
   type Money = { base: number; transport: number; adjust: number; total: number }
   const byProject = new Map<number, Money>(), byStaff = new Map<string, Money>()
   const add = (m: Map<any, Money>, k: any, s: any) => {
@@ -7097,9 +7179,9 @@ api.get('/admin/billing-check', async (c) => {
       COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
       COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    LEFT JOIN shifts s ON s.project_id = p.project_id AND s.work_date LIKE ? AND s.work_date <= ?
+    LEFT JOIN shifts s ON s.project_id = p.project_id AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
     LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id
-    WHERE p.company_id = ? GROUP BY p.project_id`).bind(month + '%', todayJST(), u.company_id).all()
+    WHERE p.company_id = ? GROUP BY p.project_id`).bind(mFrom, mTo, todayJST(), u.company_id).all()
 
   // スタッフ別明細
   const detail = await c.env.DB.prepare(`
@@ -7110,8 +7192,8 @@ api.get('/admin/billing-check', async (c) => {
       COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
     FROM shifts s JOIN projects p ON s.project_id = p.project_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.work_date LIKE ? AND s.work_date <= ?
-    GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, month + '%', todayJST()).all()
+    WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
+    GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()).all()
 
   // total_amount / amount = 請求基本額、total_transport / transport = 請求する交通費、total_adjust / adjust = 請求の調整、total_bill / total = 請求合計（精算の請求合計と同じ）
   return c.json({

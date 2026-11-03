@@ -21,6 +21,7 @@ import { addDays, overlaps, shiftWindow, toMin } from './lib/shift-time'
 import { isHHMM, oneOf, toInt } from './lib/validate'
 import { mdText, notifyCompanyAdmins, notifyShiftStaff, nowJST } from './lib/staff-pay-notify'
 import { attachPremiums } from './lib/premium-pay'
+import { opLog, logShifts, finishLog } from './lib/operation-log'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -387,10 +388,16 @@ staffPayAdminApi.post('/pay-requests/:id{[0-9]+}/approve', async (c) => {
         .bind(end, q.shift_id, u.company_id, q.request_id, now, u.user_id)]
     resultLine = `予定の終了: ${q.end_time} → ${end}${end !== q.new_end_time ? `（申請 ${q.new_end_time} から管理者が変更）` : ''}`
   }
+  // 操作履歴（#159）。シフトの変更の前の値を、申請の状態の更新の後・シフトの更新の前に残す（res[0] は申請の更新のまま）。
+  // 承認できなかったとき（同時に処理された）はシフトが変わらないので、finishLog で履歴の行も消える
+  const op = opLog(db, u, q.kind === 'transport' ? 'transport_approve' : 'overtime_approve')
+  stmts.splice(1, 0, ...logShifts(op, [q.shift_id], { where: "COALESCE(s.settle_status,'planned') != 'confirmed'" }))
   const res = await db.batch(stmts)
-  if (!res[0].meta.changes) return c.json({ error: 'この申請はすでに処理されています' }, 409)
-  // 延長: 時給のシフトは、延ばした予定で数量・金額を計算し直す（日給は変わらない。手動で数量を固定したシフトは変えない）
-  if (q.kind === 'overtime') await refreshShiftAmounts(db, u.company_id, q.shift_id)
+  try {
+    if (!res[0].meta.changes) return c.json({ error: 'この申請はすでに処理されています' }, 409)
+    // 延長: 時給のシフトは、延ばした予定で数量・金額を計算し直す（日給は変わらない。手動で数量を固定したシフトは変えない）
+    if (q.kind === 'overtime') await refreshShiftAmounts(db, u.company_id, q.shift_id)
+  } finally { await finishLog(op) }
   const label = PAY_REQUEST_KIND_LABEL[q.kind]
   await notifyShiftStaff(db, { company_id: u.company_id, staff_id: q.staff_id }, 'pay_request_approved', `${label}の申請が承認されました: ${mdText(q.work_date)} ${q.project_name || ''}`,
     [resultLine, ...(note ? [`管理者より: ${note}`] : [])].join('\n'), `#pay/${String(q.work_date).slice(0, 7)}`, q.request_id)

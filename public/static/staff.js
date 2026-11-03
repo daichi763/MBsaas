@@ -168,6 +168,7 @@ function drawHome(data, offline) {
     ${homeNoticesHtml(data)}
     ${homeMenuHtml()}`
   applyBadges() // 先に取れていた通知の件数を案内に足す
+  fillHomeEmergency(data, offline)
 }
 function homeOfflineHtml() {
   return `<div class="bg-gray-100 border border-gray-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-gray-700" role="status">
@@ -274,6 +275,49 @@ function shiftPlaceHtml(s, compact) {
     ${s.slot_memo ? `<p class="text-xs text-gray-700 bg-gray-50 rounded-lg px-2 py-1.5 mt-1 whitespace-pre-wrap"><i class="fas fa-note-sticky text-gray-400 mr-1"></i>${esc(s.slot_memo)}</p>` : ''}`
 }
 
+// 現場責任者・会社の緊急連絡先（#173）。電話番号はタップで発信できる tel: のリンクにする
+const telHref = (p) => { const n = String(p || '').replace(/[^0-9+]/g, ''); return n.length >= 6 ? 'tel:' + n : '' }
+function telLinkHtml(phone) {
+  const href = telHref(phone)
+  return href ? `<a href="${esc(href)}" class="text-blue-600 underline whitespace-nowrap font-bold"><i class="fas fa-phone text-[11px] mr-0.5"></i>${esc(phone)}</a>` : esc(phone || '')
+}
+// 案件の現場責任者（管理画面の案件の詳細で入力。名前・電話のどちらかだけでも出す）
+function siteContactHtml(s) {
+  if (!s || (!s.site_contact_name && !s.site_contact_phone)) return ''
+  return `<p class="text-sm text-gray-700 site-contact"><i class="fas fa-user-tie text-gray-400 mr-1"></i>現場責任者: ${esc(s.site_contact_name || '')}${s.site_contact_name && s.site_contact_phone ? ' ' : ''}${s.site_contact_phone ? telLinkHtml(s.site_contact_phone) : ''}</p>`
+}
+// ホームのシフトのカード: 現場責任者はシフトの値で描き、会社の緊急連絡先は後から入れる（fillHomeEmergency）
+function homeShiftContactsHtml(s, cur) {
+  return `<div class="mt-2 space-y-1" id="home-shift-contacts">${siteContactHtml(s)}<div id="home-emergency" data-company="${esc(cur ? cur.company_name || '' : '')}"></div></div>`
+}
+// 会社の緊急連絡先（GET /api/staff/emergency-contacts）。ホーム・相談の画面を開くたびに取り直さないよう、しばらく覚えておく
+const EMERGENCY_CACHE_MS = 10 * 60 * 1000
+let EMERGENCY_CACHE = null // { at, contacts }
+async function emergencyContacts(useCacheOnly) {
+  if (EMERGENCY_CACHE && (useCacheOnly || Date.now() - EMERGENCY_CACHE.at < EMERGENCY_CACHE_MS)) return EMERGENCY_CACHE.contacts
+  if (useCacheOnly) return null
+  try {
+    const d = (await axios.get('/api/staff/emergency-contacts')).data
+    EMERGENCY_CACHE = { at: Date.now(), contacts: (d && d.contacts) || [] }
+    return EMERGENCY_CACHE.contacts
+  } catch (e) { return EMERGENCY_CACHE ? EMERGENCY_CACHE.contacts : null }
+}
+// シフトの会社の緊急連絡先を選ぶ（2社以上に所属している人は、会社名で選ぶ。見つからなければ出さない）
+function shiftEmergencyContact(contacts, companyName, multi) {
+  if (!contacts || !contacts.length) return null
+  if (companyName) { const hit = contacts.find(x => x.company_name === companyName); if (hit) return hit }
+  return !multi && contacts.length === 1 ? contacts[0] : null
+}
+async function fillHomeEmergency(data, offline) {
+  if (!data || !data.shift) return
+  const contacts = await emergencyContacts(offline)
+  const box = document.getElementById('home-emergency')
+  if (!box) return
+  const x = shiftEmergencyContact(contacts, box.dataset.company, data.multi_company)
+  box.innerHTML = x ? `<p class="text-sm text-gray-700"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先${data.multi_company ? `（${esc(x.company_name)}）` : ''}: ${telLinkHtml(x.phone)}</p>
+    <p class="text-[11px] text-gray-400 ml-4">当日の欠勤・遅刻・体調不良・現場のトラブルは電話で${x.note ? '。' + esc(x.note) : ''}</p>` : ''
+}
+
 // シフトカード
 function homeShiftCardHtml(data) {
   const s = data.shift
@@ -293,6 +337,7 @@ function homeShiftCardHtml(data) {
       <p class="text-lg font-bold text-gray-900">${esc(s.project_name)}</p>
       ${shiftPlaceHtml(s, false)}
       ${company}
+      ${homeShiftContactsHtml(s, cur)}
       ${data.carryover ? '<p class="text-xs mt-2 text-amber-800 bg-amber-50 rounded-lg px-2 py-1"><i class="fas fa-moon mr-1"></i>日付をまたぐ勤務です。勤務終了・退店などは、このまま報告できます。</p>' : ''}
       ${homeLateButtonHtml(data)}
       ${homeDayShiftsHtml(data, cur)}
@@ -1807,16 +1852,16 @@ function renderMore() {
 }
 
 // 会社の緊急連絡先（#173）。所属・連携している会社のうち、登録のある会社の電話をタップで発信できるボタンにする。取れなければ何も出さない
-async function loadEmergencyContacts() {
-  let d
-  try { d = (await axios.get('/api/staff/emergency-contacts')).data } catch (e) { return }
-  const box = document.getElementById('more-emergency')
-  if (!box || !d.contacts || !d.contacts.length) return
-  const many = d.contacts.length > 1
+// boxId: 出す場所（『その他』は more-emergency、相談・連絡は consult-emergency）
+async function loadEmergencyContacts(boxId = 'more-emergency') {
+  const contacts = await emergencyContacts(false)
+  const box = document.getElementById(boxId)
+  if (!box || !contacts || !contacts.length) return
+  const many = contacts.length > 1
   box.innerHTML = `<section class="card p-4 mb-3 border-red-100">
       <p class="text-sm font-bold text-gray-800 mb-1"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先</p>
       <p class="text-[11px] text-gray-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください${many ? '（シフトの会社の番号にかけてください）' : ''}</p>
-      <div class="space-y-2">${d.contacts.map(x => `
+      <div class="space-y-2">${contacts.map(x => `
         <a href="tel:${esc(String(x.phone).replace(/[^0-9+]/g, ''))}" class="btn btn-outline w-full justify-start">
           <i class="fas fa-phone text-red-500"></i><span class="flex-1 text-left">${many ? `<span class="block text-[11px] text-gray-500">${esc(x.company_name)}</span>` : ''}<span class="font-bold">${esc(x.phone)}</span>${x.note ? `<span class="block text-[11px] text-gray-400">${esc(x.note)}</span>` : ''}</span>
         </a>`).join('')}</div>
@@ -2158,6 +2203,7 @@ window.renderConsult = async function () {
   $app.innerHTML = `
     ${MORE_BACK}
     <h2 class="font-bold text-gray-800 mb-3 px-1"><i class="fas fa-comments text-blue-600 mr-1"></i>相談・連絡</h2>
+    <div id="consult-emergency"></div>
     ${loadError}
     <section class="card p-4 mb-4">
       <form id="consult-form" class="space-y-3">
@@ -2232,6 +2278,8 @@ window.renderConsult = async function () {
   }
   shiftSel.addEventListener('change', syncCompany)
   syncCompany()
+  // 急ぎの連絡は電話で（会社の緊急連絡先。#173）
+  loadEmergencyContacts('consult-emergency')
 
   // 下書き（#421）: 送っていない入力があれば戻し、入力のたびに保存する
   const cform = document.getElementById('consult-form')
