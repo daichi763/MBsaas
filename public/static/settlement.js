@@ -1066,7 +1066,8 @@
         <div class="text-xs"><p class="mb-1">休日の曜日（この曜日の勤務はすべて休日の割増にし、時間外は付けません）</p>
           <div class="flex gap-1">${WD_LABEL.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1 cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden pp-wd" value="${i}" ${st.holiday_weekdays.includes(i) ? 'checked' : ''} ${dis}>${w}</label>`).join('')}</div></div>
         <p class="text-[11px] text-gray-400">割増額 = 1時間あたりの賃金 × 時間 × 割増率（割増の部分だけ）。1時間あたりの賃金は、時給はその単価、日額は単価を予定の実働時間で割った額です。
-          深夜の時間は、休憩を深夜以外の時間に取ったものとして数えます。週40時間を超えた分の時間外は計算しません</p>
+          深夜の時間は、休憩を深夜以外の時間に取ったものとして数えます</p>
+        <p class="text-xs text-amber-800 bg-amber-50 rounded-lg px-2.5 py-1.5" id="premium-not-covered"><i class="fas fa-circle-info mr-1"></i>週40時間を超えた分・国民の祝日の割増は計算しません。必要なときは精算で手で調整してください（シフトの「支払の調整」に入れます）</p>
       </div>
       <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-action="settleCloseModal">閉じる</button>
         ${d.can_edit ? '<button type="button" class="btn btn-primary flex-1" data-action="settlePremiumSave">保存</button>' : '<p class="flex-1 text-xs text-gray-500 self-center">変更は会社管理者・事務担当のみできます</p>'}</div>`)
