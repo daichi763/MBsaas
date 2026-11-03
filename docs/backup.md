@@ -201,7 +201,7 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --timesta
    - 本番のマイグレーションは `wrangler d1 migrations apply` で適用しているので、バックアップには適用の記録（`d1_migrations` 表）も入ります（入っていないときは、ワークフローが警告を出します。その場合は、戻した DB の表・列を migrations/ のファイルと突き合わせて、どこまで適用済みかを確かめてから、足りないものだけを流します）。戻したあとに `npm run db:migrate:remote` を実行すると、バックアップの後に足したマイグレーションだけが適用されます（データベース名を新しいものに変えた場合は、コマンドの DB 名も合わせる）。
    - 切り替えのあと、古い DB はすぐに消さず、確認が終わるまで残します。
 
-4. 復元に使った `restore.sql`・`before-restore-*.sql` は、作業が終わったら端末から消します（個人情報が入っています）。
+4. 復元に使った `restore.sql.gz`・`restore.sql`・`before-restore-*.sql` と、確かめるのに使ったローカルの D1（`.wrangler/restore-check`）は、作業が終わったら端末から消します（個人情報が入っています）。
 
 ## 5. 手動のバックアップ（リリースの前など）
 
