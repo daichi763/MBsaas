@@ -1067,10 +1067,12 @@ const STAFF_DORMANT = [['', '最終稼働: すべて'], ['30', '30日以上稼�
 const RISK_ORDER = { low: 0, mid: 1, high: 2 }
 const STAFF_SORT = {
   staff_id: s => Number(s.staff_id), code: s => staffCodeLabel(s) || null, name: s => searchNorm(s.kana || s.name),
-  month_days: s => Number(s.month_days || 0), month_seiyaku: s => Number(s.month_seiyaku || 0), evaluation_score: s => Number(s.evaluation_score || 0),
+  month_days: s => Number(s.month_days || 0), month_seiyaku: s => (s.month_seiyaku == null ? null : Number(s.month_seiyaku)), evaluation_score: s => Number(s.evaluation_score || 0),
   retention_risk: s => RISK_ORDER[s.retention_risk] ?? 0, last_work_date: s => s.last_work_date || null, last_report_date: s => s.last_report_date || null,
   last_login: s => s.app_last_used_at || null,
 }
+// 一覧の「成約」（#184）。該当の項目・案件が無いときは null で、0 ではなく「—」と出す
+const seiyakuCell = (v, why) => (v == null ? `<span class="text-gray-300 font-normal" title="${esc(why)}">—</span>` : String(Number(v) || 0))
 const isRetiredStaff = s => s.employment_status === 'retired'
 function staffEmpBadge(s) {
   const st = s.employment_status || 'working'
@@ -1181,7 +1183,7 @@ function drawStaffRows() {
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
               <td>${Number(s.month_days || 0)}日</td>
-              <td class="font-bold">${Number(s.month_seiyaku || 0)}</td>
+              <td class="font-bold">${seiyakuCell(s.month_seiyaku, '今月、日報テンプレートに「成約」の項目がある案件の稼働がありません')}</td>
               <td>${Number(s.evaluation_score).toFixed(1)}</td>
               <td>${RISK_BADGE[s.retention_risk] || ''}</td>
               <td>${s.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : '<span class="text-gray-300">-</span>'}</td>
@@ -2444,7 +2446,7 @@ function monthRangeOf(month) { const m0 = dayjs(month + '-01'); return { from: m
 const PROJ_LIST = { month: '', q: '', client: '', status: '', worked: false, incident: false, sort: 'project_id', dir: 1, data: null }
 const PROJ_SORT = {
   project_id: p => Number(p.project_id), name: p => searchNorm(p.project_name), client: p => p.client_name ? searchNorm(p.client_name) : null,
-  unit_price: p => Number(p.unit_price || 0), month_shifts: p => Number(p.month_shifts || 0), month_seiyaku: p => Number(p.month_seiyaku || 0), incidents: p => Number(p.incidents || 0),
+  unit_price: p => Number(p.unit_price || 0), month_shifts: p => Number(p.month_shifts || 0), month_seiyaku: p => (p.month_seiyaku == null ? null : Number(p.month_seiyaku)), incidents: p => Number(p.incidents || 0),
 }
 async function renderProjects() {
   loading()
@@ -2508,7 +2510,7 @@ function drawProjectRows() {
               <td class="text-xs">${esc(p.location || '-')}</td>
               <td class="whitespace-nowrap">${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}</td>
               <td class="whitespace-nowrap">${Number(p.month_shifts || 0)}件 (${Number(p.staff_count || 0)}名)</td>
-              <td class="font-bold">${Number(p.month_seiyaku || 0)}</td>
+              <td class="font-bold">${seiyakuCell(p.month_seiyaku, '日報テンプレートに「成約」の項目がありません')}</td>
               <td>${p.incidents ? `<span class="badge badge-red">${Number(p.incidents)}件</span>` : '<span class="text-gray-300">0</span>'}</td>
               <td>${p.status === 'active' ? '<span class="badge badge-green">稼働中</span>' : '<span class="badge badge-gray">終了</span>'}</td>
             </tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-6">条件に合う案件はありません</td></tr>'

@@ -100,6 +100,8 @@ type ImportCtx = {
   usedCodes: Set<string>
   empNos: Set<string>
   partners: Set<string>
+  /** 統合して消した協力会社の名前 → 統合先の名前（古い名前で書かれても統合先に所属させる。#161） */
+  mergedPartners: Map<string, string>
   otherCompanyNames: Set<string>
   today: string
 }
@@ -116,7 +118,8 @@ async function loadCtx(db: D1Database, companyId: number, partnerNames: string[]
     samePersonRows(db, companyId),
     db.prepare('SELECT user_code FROM users WHERE company_id = ?').bind(companyId).all(),
     db.prepare('SELECT employee_number FROM employee_records WHERE company_id = ? AND employee_number IS NOT NULL').bind(companyId).all(),
-    db.prepare('SELECT affiliation_name FROM staff_affiliations WHERE company_id = ?').bind(companyId).all(),
+    db.prepare(`SELECT sa.affiliation_name, t.affiliation_name AS target_name FROM staff_affiliations sa
+      LEFT JOIN staff_affiliations t ON t.affiliation_id = sa.merged_into_id WHERE sa.company_id = ?`).bind(companyId).all(),
   ])
   const byPhone = new Map<string, any[]>(), byNameDob = new Map<string, any[]>()
   const push = (m: Map<string, any[]>, k: string, r: any) => { const a = m.get(k); if (a) a.push(r); else m.set(k, [r]) }
@@ -137,7 +140,8 @@ async function loadCtx(db: D1Database, companyId: number, partnerNames: string[]
     companyId, ownName: co?.company_name || '', required, byPhone, byNameDob,
     usedCodes: new Set((users.results as any[]).map(r => String(r.user_code || '').toLowerCase())),
     empNos: new Set((emps.results as any[]).map(r => String(r.employee_number))),
-    partners: new Set((partners.results as any[]).map(r => String(r.affiliation_name))),
+    partners: new Set((partners.results as any[]).filter(r => r.target_name == null).map(r => String(r.affiliation_name))),
+    mergedPartners: new Map((partners.results as any[]).filter(r => r.target_name != null).map(r => [String(r.affiliation_name), String(r.target_name)])),
     otherCompanyNames: new Set(other.map(r => String(r.company_name))),
     today: new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10),
   }
@@ -197,8 +201,9 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
     if (!pname) errors.push('協力会社の人は協力会社名を入れてください')
     else if (pname === ctx.ownName) errors.push('自社名は協力会社として登録できません（区分を「自社雇用」にしてください）')
     else if (ctx.otherCompanyNames.has(pname)) errors.push(`「${pname}」はField OSの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）`)
+    else if (ctx.mergedPartners.has(pname)) notes.push(`協力会社「${pname}」は「${ctx.mergedPartners.get(pname)}」に統合済みのため、「${ctx.mergedPartners.get(pname)}」に所属させます`)
     else if (!ctx.partners.has(pname)) notes.push(`協力会社「${pname}」を新しく登録します`)
-    data.partner_name = pname
+    data.partner_name = ctx.mergedPartners.get(pname) || pname
   } else if (raw.partner_name) warnings.push('協力会社名は、区分が協力会社の人だけに使います')
 
   // 自社雇用の従業員管理の項目
@@ -276,7 +281,7 @@ async function insertRow(db: D1Database, u: any, ctx: ImportCtx, row: RowResult,
   stmts.push(db.prepare(`INSERT INTO staff_profiles
       (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation, affiliation_contact,
        kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status)
-      VALUES (${userOf}, ?, ?, ?, ?, ${type === 'partner_manual' ? '(SELECT affiliation_id FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)' : 'NULL'},
+      VALUES (${userOf}, ?, ?, ?, ?, ${type === 'partner_manual' ? '(SELECT COALESCE(merged_into_id, affiliation_id) FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)' : 'NULL'},
        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working')`)
     .bind(u.company_id, userCode, u.company_id, person.person_id, u.company_id, type,
       ...(type === 'partner_manual' ? [u.company_id, d.partner_name] : []),

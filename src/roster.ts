@@ -699,7 +699,7 @@ rosterApi.get('/:id/links', async (c) => {
   }
   // 所属元が閲覧できるのは: 連携先企業名・連携日・共有追記項目（現場評価/稼働メモ）・稼働実績の件数のみ
   // （稼働先の社内メモ・フォロー履歴・日報本文等は返さない）
-  const today = nowJST().slice(0, 10); const month = today.slice(0, 7)
+  const today = nowJST().slice(0, 10); const [mFrom, mTo] = monthRange(today.slice(0, 7)) // 月は範囲の条件で絞る（#212）
   // 稼働日数・最終稼働は今日以前の分。今後の予定は month_planned_days（予定を含む今月の日数）で分けて返す（#85）
   // link_revoked_at: 所属元（自社）が連携を終了した日時（#162）。終了した操作者は自社のユーザーなので名前を返す
   const links = await db.prepare(`
@@ -707,11 +707,11 @@ rosterApi.get('/:id/links', async (c) => {
       sp.site_evaluation, sp.work_memo, sp.host_note_updated_at, sp.link_revoked_at,
       (SELECT ru.name FROM users ru WHERE ru.user_id = sp.link_revoked_by AND ru.company_id = ?) AS revoked_by_name,
       (SELECT MIN(rc.created_at) FROM roster_consents rc WHERE rc.staff_id = sp.staff_id) AS consented_at,
-      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS month_days,
-      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_planned_days,
+      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS month_days,
+      (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')) AS month_planned_days,
       (SELECT MAX(s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date <= ? AND s.status IN ('confirmed','substitute')) AS last_work_date
     FROM staff_profiles sp JOIN companies co ON co.company_id = sp.company_id
-    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(u.company_id, month + '%', today, month + '%', today, sid).all()
+    WHERE sp.source_staff_id = ? AND sp.affiliation_type = 'linked_external' ORDER BY sp.created_at`).bind(u.company_id, mFrom, mTo, today, mFrom, mTo, today, sid).all()
   // 連携先が書いた現場評価・稼働メモの変更履歴（新しい順に各10件。#538）
   const linkRows = links.results as any[]
   if (linkRows.length) {
@@ -858,15 +858,15 @@ rosterApi.get('/next-code', async (c) => c.json(await nextStaffCode(c.env.DB, c.
 // 削除できるか（所属スタッフ・支払先のシフト・予約中の区分変更がない）も返す
 rosterApi.get('/partners', async (c) => {
   const u = c.get('user')
-  const month = nowJST().slice(0, 7)
+  const [mFrom, mTo] = monthRange(nowJST().slice(0, 7)) // 月は範囲の条件で絞る（#212）
   const rows = await c.env.DB.prepare(`
     SELECT * FROM (
       SELECT sa.affiliation_id, sa.affiliation_name, sa.contact_name, sa.phone, sa.email, sa.memo, sa.updated_at,
         (SELECT COUNT(*) FROM staff_profiles sp WHERE sp.partner_affiliation_id = sa.affiliation_id AND sp.company_id = sa.company_id) AS staff_count,
         (SELECT COUNT(*) FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.partner_affiliation_id = sa.affiliation_id AND sp.company_id = sa.company_id
           AND sp.merged_into_staff_id IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired' AND us.status = 'active') AS active_staff_count,
-        (SELECT COUNT(*) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
-        (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date LIKE ? AND s.status IN ('confirmed','substitute')) AS month_staff,
+        (SELECT COUNT(*) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')) AS month_shifts,
+        (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')) AS month_staff,
         cl.client_id AS client_id, cl.client_name AS client_name,
         CASE WHEN ${PARTNER_IN_USE_SQL} THEN 1 ELSE 0 END AS in_use,
         CASE WHEN COALESCE(sa.contact_name, '') = '' AND COALESCE(sa.phone, '') = '' AND COALESCE(sa.email, '') = '' AND COALESCE(sa.memo, '') = ''
@@ -878,7 +878,7 @@ rosterApi.get('/partners', async (c) => {
       LEFT JOIN clients cl ON cl.client_id = sa.client_id AND cl.company_id = sa.company_id
       WHERE sa.company_id = ? AND sa.merged_into_id IS NULL AND sa.affiliation_name != (SELECT company_name FROM companies WHERE company_id = ?)
     ) WHERE NOT (staff_count = 0 AND not_partner = 1 AND client_id IS NULL)
-    ORDER BY affiliation_name`).bind(month + '%', month + '%', u.company_id, u.company_id).all()
+    ORDER BY affiliation_name`).bind(mFrom, mTo, mFrom, mTo, u.company_id, u.company_id).all()
   return c.json({ partners: (rows.results as any[]).map(({ not_partner: _n, in_use, ...r }) => ({ ...r, can_delete: !in_use })) })
 })
 

@@ -16,7 +16,9 @@
     pay_request_submitted: '交通費・延長の申請', profile_change_submitted: '登録情報の変更申請', staff_document_submitted: '書類の提出',
     leave_submitted: '休暇の申請', attendance_no_break: '休憩なしの申告',
     // 書類の有効期限（#297。期限が30日以内・期限切れの書類があるとき）
-    docs_expiring: '書類の有効期限' }
+    docs_expiring: '書類の有効期限',
+    // ログインの失敗が続いたとき（#552。会社管理者あて）
+    login_failures: 'ログインの失敗' }
   // 表にない種類（あとから増えたもの）は「その他」と出し、未読があれば種類の絞り込みにも並べる
   const kindLabel = (k) => KIND[k] || 'その他'
   // 送信の失敗・停止の理由。送信サービスの理由は「コード: 内容」の形で、コロンの後をそのまま添える（#438）
@@ -144,7 +146,88 @@
       <p class="text-xs text-gray-500 mb-3">アプリ内の通知（受信箱）には、設定によらずすべて届きます。ここでは自分あてのメールを選べます。
         ${d.has_email ? '' : '<span class="text-amber-700">メールアドレスが登録されていないため、メールは届きません（アカウントの設定で登録できます）。</span>'}</p>
       <div class="card p-4"><div class="divide-y divide-gray-100">${(d.groups || []).map(row).join('')}</div>
-        <button class="btn btn-primary mt-3" data-action="notifyPrefsSave"><i class="fas fa-check"></i>保存する</button></div>`
+        <button class="btn btn-primary mt-3" data-action="notifyPrefsSave"><i class="fas fa-check"></i>保存する</button></div>
+      ${isCompanyAdmin() ? '<div class="card p-4 mt-3" id="admin-push"></div>' : ''}`
+    drawAdminPush()
+  }
+  // ---------- プッシュ通知（この端末。#552）----------
+  // 会社管理者だけ。ログインの失敗が続いたときに、管理画面を開いていなくてもこの端末の通知で知らせる（購読は /api/admin/push/*。Service Worker は scope /admin）
+  const ADMIN_PUSH_SCOPE = '/admin'
+  const PUSH_SUPPORTED = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+  const isCompanyAdmin = () => typeof ME !== 'undefined' && !!ME && ME.role === 'company_admin'
+  const b64urlToBytes = (s) => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); const bin = atob(t + '='.repeat((4 - t.length % 4) % 4)); return Uint8Array.from(bin, ch => ch.charCodeAt(0)) }
+  const bytesToB64url = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  async function adminPushSubscription() {
+    if (!PUSH_SUPPORTED) return null
+    try { const reg = await navigator.serviceWorker.getRegistration(ADMIN_PUSH_SCOPE); return reg ? await reg.pushManager.getSubscription() : null } catch (e) { return null }
+  }
+  async function drawAdminPush() {
+    const box = document.getElementById('admin-push'); if (!box) return
+    const head = '<p class="font-bold text-gray-800 text-sm mb-1"><i class="fas fa-mobile-screen text-blue-600 mr-1"></i>プッシュ通知（この端末）</p>'
+    const note = (cls, icon, text) => `<p class="text-sm ${cls}"><i class="fas ${icon} mr-1"></i>${text}</p>`
+    if (!PUSH_SUPPORTED) { box.innerHTML = head + note('text-gray-500', 'fa-circle-info', 'このブラウザはプッシュ通知に対応していません。通知は受信箱で確認できます。'); return }
+    const sub = await adminPushSubscription()
+    let cfg
+    try { cfg = (await axios.get('/api/admin/push/config', { params: sub ? { endpoint: sub.endpoint } : {} })).data } catch (e) { box.innerHTML = head + note('text-red-600', 'fa-triangle-exclamation', '設定を読み込めませんでした'); return }
+    if (!document.getElementById('admin-push')) return
+    let body
+    if (!cfg.available) body = note('text-amber-700', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
+    else if (Notification.permission === 'denied') body = note('text-red-600', 'fa-ban', '通知がブロックされています。ブラウザのサイトの設定で、このサイトの通知を許可してから開き直してください。')
+    else if (sub && cfg.subscribed) {
+      body = `${note('text-green-700', 'fa-circle-check', 'この端末で、ログインの失敗が続いたときの通知を受け取ります')}
+        ${cfg.last_error ? `<p class="text-xs text-amber-700 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
+        <div class="flex gap-2 mt-2 flex-wrap">
+          <button class="btn btn-outline text-sm" data-action="adminPushTest"><i class="fas fa-paper-plane"></i>テスト通知を送る</button>
+          <button class="btn btn-outline text-sm" data-action="adminPushDisable"><i class="fas fa-bell-slash"></i>受け取らない</button>
+        </div>`
+    } else {
+      body = `<p class="text-xs text-gray-500 mb-2">同じ ID でログインの失敗が続いたとき（5回。同じ ID は1時間に1回まで）に、管理画面を開いていなくても、この端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
+        <button class="btn btn-primary text-sm" data-action="adminPushEnable"><i class="fas fa-bell"></i>この端末でプッシュ通知を受け取る</button>`
+    }
+    box.innerHTML = head + body
+  }
+  delegate('adminPushEnable', (el) => withSubmitLock(el, async () => {
+    try {
+      const perm = await Notification.requestPermission()
+      if (perm !== 'granted') { toast('通知が許可されませんでした。ブラウザの設定で許可できます'); return drawAdminPush() }
+      await navigator.serviceWorker.register('/sw.js', { scope: ADMIN_PUSH_SCOPE })
+      const reg = await navigator.serviceWorker.ready
+      const cfg = (await axios.get('/api/admin/push/config')).data
+      if (!cfg.available) { toast(cfg.error || 'プッシュ通知の準備ができていません'); return }
+      let sub = await reg.pushManager.getSubscription()
+      // サーバーの鍵が変わっていたら購読し直す
+      const key = sub && sub.options && sub.options.applicationServerKey
+      if (sub && key && bytesToB64url(key) !== cfg.public_key) { await sub.unsubscribe(); sub = null }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(cfg.public_key) })
+      const j = sub.toJSON()
+      await axios.post('/api/admin/push/subscribe', { endpoint: j.endpoint, keys: j.keys })
+      toast('この端末でプッシュ通知を受け取ります')
+    } catch (e) {
+      if (e && e.isAxiosError) showApiError(e, '登録できませんでした')
+      else toast('この端末ではプッシュ通知を登録できませんでした')
+    }
+    drawAdminPush()
+  }))
+  delegate('adminPushDisable', (el) => withSubmitLock(el, async () => {
+    const sub = await adminPushSubscription()
+    if (sub) {
+      try { await axios.post('/api/admin/push/unsubscribe', { endpoint: sub.endpoint }) } catch (e) { showApiError(e, '解除できませんでした'); return }
+      try { await sub.unsubscribe() } catch (e) { }
+    }
+    toast('この端末ではプッシュ通知を受け取りません')
+    drawAdminPush()
+  }))
+  delegate('adminPushTest', (el) => withSubmitLock(el, async () => {
+    const sub = await adminPushSubscription()
+    if (!sub) return drawAdminPush()
+    try { await axios.post('/api/admin/push/test', { endpoint: sub.endpoint }); toast('テスト通知を送りました。数秒で届きます') } catch (e) { showApiError(e, 'テスト通知を送れませんでした'); drawAdminPush() }
+  }))
+  // 通知を押したときに、開いている管理画面を通知の行き先へ移す（Service Worker からの知らせ）
+  if (PUSH_SUPPORTED) {
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      const d = ev.data || {}
+      if (d.type === 'fos-open' && /^#[A-Za-z0-9_\-/=&.]{1,200}$/.test(String(d.hash || ''))) location.hash = String(d.hash).slice(1)
+    })
   }
   delegate('notifyPrefsSave', el => withSubmitLock(el, async () => {
     const prefs = {}
