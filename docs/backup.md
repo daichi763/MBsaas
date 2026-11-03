@@ -156,8 +156,12 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --timesta
 
    ```bash
    npx wrangler r2 object get mbsaas-d1-backups/d1/mbsaas-production-20261101-0405.sql.gz --remote --file restore.sql.gz
-   gunzip restore.sql.gz            # restore.sql ができる
+   sha256sum restore.sql.gz         # ワークフローの記録の SHA-256 と比べる（gunzip の前に）
+   gunzip -k restore.sql.gz         # restore.sql ができる（-k で .gz も残す）
    ```
+
+   - 取り出したファイルが壊れていないかは、SHA-256 で確かめます。ワークフローが Summary とログに出す SHA-256（「SHA-256（gzip）」）は、**gzip のファイル（.sql.gz）の値**です（`.github/workflows/d1-backup.yml` の `sha256sum "$F.gz"`）。取り出した `.sql.gz` で `sha256sum` を取って比べます。gunzip した後の `.sql` で取ると、中身が同じでも値は合いません。
+   - Windows の PowerShell では `Get-FileHash restore.sql.gz -Algorithm SHA256` で取れます（大文字で出るので、大文字・小文字を区別せずに比べる）。
 
 2. 手元（ローカル）の D1 に入れて、中身を確かめる（本番には接続しない）
 
@@ -165,6 +169,25 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --timesta
    npx wrangler d1 execute mbsaas-production --local --persist-to .wrangler/restore-check --file restore.sql
    npx wrangler d1 execute mbsaas-production --local --persist-to .wrangler/restore-check --command "SELECT COUNT(*) FROM users"
    ```
+
+   表ごとの行数が、ファイルの INSERT の数と合うかを確かめます（書き出しのファイルは1行に1件の `INSERT INTO "表名" ...` の形）。
+
+   ```bash
+   # ファイルの表ごとの INSERT の数（「表名 件数」の形で file-counts.txt に出す）
+   grep -o '^INSERT INTO "[a-z_0-9]*"' restore.sql | sed -e 's/^INSERT INTO "//' -e 's/"$//' | sort | uniq -c | awk '{print $2, $1}' > file-counts.txt
+
+   # 戻した DB の表ごとの行数。1つの SELECT に (SELECT COUNT(*) FROM 表) を並べて数える（列は100までなので、50の表ずつに分ける）
+   split -l 50 file-counts.txt part-
+   for f in part-*; do
+     Q=$(cut -d' ' -f1 "$f" | sed 's/.*/(SELECT COUNT(*) FROM "&") AS "&"/' | paste -sd, -)
+     npx wrangler d1 execute mbsaas-production --local --persist-to .wrangler/restore-check --json --command "SELECT $Q" > "db-counts-$f.json"
+   done
+   ```
+
+   - `SELECT '表' AS t, COUNT(*) FROM 表 UNION ALL ...` のように表の数だけ UNION ALL でつなぐと、D1 の上限（UNION ALL でつなげるのは5つまで）に当たって `too many terms in compound SELECT` で失敗します。上のように、1つの SELECT の列に並べます。
+   - 1つの SELECT の列は100まで（101 以上は `too many columns in result set`）です。データのある表は100を超えることがあるので、上のように 50 ずつに分けます。
+   - 各 `db-counts-part-*.json` の `results[0]` の各列（表名）の値と、`file-counts.txt` の件数を比べます。表の定義の数（`grep -c '^CREATE TABLE' restore.sql`）とトリガーの数（`grep -c '^CREATE TRIGGER' restore.sql`）、`d1_migrations` の件数と最後の番号（`SELECT COUNT(*), MAX(name) FROM d1_migrations`）も見ます。
+   - Windows では Git Bash で動かします（PowerShell では引用符の扱いが違うため）。
 
 3. 本番に戻す。**今の本番の DB に上書きで流し込まない**でください（同じ表がすでにあるため失敗するか、データが二重になります）。新しい DB を作って流し込み、アプリの向き先を切り替えます。
 
@@ -190,7 +213,32 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --timesta
 npx wrangler d1 export mbsaas-production --remote --env production --output backup-YYYYMMDD.sql
 ```
 
-## 6. 関連
+## 6. 復元の練習の記録
+
+「バックアップはあるのに戻せない」ことがないよう、R2 のバックアップを実際に手元に戻して確かめた記録です。本番には接続せず（書き込まない）、取り出したファイルはローカルの D1 にだけ流しました。練習をしたら、ここに1行ずつ足します。
+
+| 日付 | 使ったバックアップ | 確かめたこと | 結果 |
+|---|---|---|---|
+| 2026-11-03 | `d1/mbsaas-production-20261103-1731.sql.gz`（手動の実行で取ったもの） | SHA-256・表とトリガーの数・マイグレーションの記録・表ごとの行数・アプリの起動 | すべて一致・問題なし |
+
+### 2026-11-03 の練習（Sprint 14。要件 #9642）
+
+手順は 4-3 の 1〜2 のとおりです。
+
+1. R2 から `d1/mbsaas-production-20261103-1731.sql.gz` を取り出した。
+2. 取り出した `.sql.gz` の SHA-256 が、ワークフローのログの SHA-256（gzip のファイルの値）と一致した。
+3. 新しいローカルの D1（`--local --persist-to` の空のフォルダ）に流し込んだ。
+4. 戻した DB を数えた。
+   - 表の定義: 129、トリガー: 14。
+   - `d1_migrations`: 93件。最後は `0093`（バックアップを取った時点で本番に適用済みの最後のマイグレーション）。
+   - データのある 58 の表で、表ごとの行数がファイルの INSERT の数と一致した（合計 5,532 行）。
+5. 戻した DB でアプリを起動し（`npm run build` → `npx wrangler dev --local --persist-to <戻した先>`）、主な画面の API が 5xx なしで応答した。
+6. 取り出したファイルと戻したローカルの D1 は、確かめたら消す（個人情報が入るため。4-3 の 4）。
+
+- **かかった時間**: 取り出しから行数の照合まで、数分から（端末の速さによる）。流し込みがいちばん時間がかかる。
+- **気づいたこと**: ワークフローの SHA-256 は gzip のファイルの値なので、gunzip した後の `.sql` で比べると合わない（4-3 に書いた）。表ごとの行数は、UNION ALL でつなぐと D1 の上限に当たるので、1つの SELECT に並べて数える。1つの SELECT の列は100までなので、表が多いときは分ける（4-3 に書いた）。
+
+## 7. 関連
 
 - 障害に気づく仕組み（エラーの記録と通知・Workers Logs）: [monitoring.md](monitoring.md)
 - データの保存期間（定期削除）: `src/services/retention.ts` の先頭のコメント

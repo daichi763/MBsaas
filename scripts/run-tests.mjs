@@ -1,7 +1,7 @@
 // 統合テスト（scripts/test-*.mjs）をまとめて実行する（npm test。#340）。本番には接続しない（wrangler は --local のみ）。
 //
 // 流れ: ビルド → テスト用のローカル D1 を1回だけ作る（scripts/setup-test-db.sh）→ テストのファイルごとに、
-//   その D1 を複製して wrangler dev --local を起動し、テストを実行して、サーバーを止める（テストのたびに DB を作り直す決まりのため）。
+//   その D1 を複製して wrangler dev --local を起動し、テストを実行して、サーバーを止める（テストのたびに DB を作り直す決まりのため）。日本時間の 0 時の直前は、日付が変わるまで待ってから次のテストを始める（#9641）。
 //   各テストの先頭のコメントにある `--var 名前:値` と `--test-scheduled` を読み取って、起動に付ける（--var の値はテストの環境変数にも渡す）。
 //
 // 使い方:
@@ -71,6 +71,8 @@ for (const file of tests) {
   const { vars, scheduled } = devOptions(file)
   rmSync(WORK, { recursive: true, force: true })
   cpSync(TEMPLATE, WORK, { recursive: true })
+  await waitPastJstMidnight()
+  const started = Date.now()
   const devArgs = ['wrangler', 'dev', '--local', '--port', String(PORT), '--persist-to', WORK.replace(/\\/g, '/'),
     ...vars.flatMap(([k, v]) => ['--var', `${k}:${v}`]), ...(scheduled ? ['--test-scheduled'] : [])]
   console.log(`\n===== ${file}  (${devArgs.slice(2).join(' ')})`)
@@ -84,7 +86,7 @@ for (const file of tests) {
     if (!(await waitReady(proc))) { console.error('サーバーが起動しませんでした\n' + errLog); results.push({ file, ok: false }); continue }
     const env = { ...process.env, BASE, PERSIST: WORK.replace(/\\/g, '/'), ...Object.fromEntries(vars) }
     status = spawnSync(process.execPath, [join('scripts', file)], { cwd: ROOT, stdio: 'inherit', env }).status ?? 1
-    results.push({ file, ok: status === 0 })
+    results.push({ file, ok: status === 0, sec: Math.round((Date.now() - started) / 1000) })
   } finally {
     stop(proc)
     await new Promise(r => setTimeout(r, 1500))
@@ -92,7 +94,19 @@ for (const file of tests) {
 }
 
 console.log('\n===== 結果')
-for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.file}`)
+for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.file}${r.sec != null ? `  (${r.sec}秒)` : ''}`)
 const failed = results.filter(r => !r.ok).length
 console.log(`${results.length - failed}/${results.length} 件のテストファイルが成功しました`)
 process.exit(failed ? 1 : 0)
+
+// 日本時間の 0 時の直前（MIDNIGHT_WAIT_MIN 分前より後）なら、日付が変わるまで待つ（#9641）。サーバーは日本時間で「今日」を決めるので、
+// テストの途中で日付が変わると、テストの始めに作った「今日」とずれて落ちる。1本はふつう数分以内に終わる。
+// （資料が行番号で参照している行を動かさないよう、ここに置く。関数の宣言なので上のループから呼べる）
+async function waitPastJstMidnight() {
+  const MIDNIGHT_WAIT_MIN = 15
+  const DAY_MS = 24 * 3600 * 1000
+  const left = DAY_MS - (Date.now() + 9 * 3600 * 1000) % DAY_MS // 日本時間の次の 0 時までのミリ秒
+  if (left > MIDNIGHT_WAIT_MIN * 60000) return
+  console.log(`日本時間の 0 時の直前のため、日付が変わるまで ${Math.ceil(left / 60000)} 分待ちます（テストの途中で日付が変わらないように）`)
+  await new Promise(r => setTimeout(r, left + 5000))
+}
