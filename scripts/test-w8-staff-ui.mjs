@@ -29,6 +29,8 @@ function client(cookie) {
 const must = (r, what) => { if (r.status !== 200) throw new Error(`${what}: ${r.status} ${JSON.stringify(r.data).slice(0, 300)}`); return r.data }
 const jst = (ms) => new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
 const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
+// 日本時間の 0:00〜0:08 は、今日のシフトの開始（0:05 より前にしない）と、その後の「10分前に押した」報告が作れないので、0:08 まで待つ（#9641）
+{ const sinceMidnight = (Date.now() + 9 * 3600 * 1000) % (24 * 3600 * 1000); if (sinceMidnight < 8 * 60000) { console.log('日本時間の 0:08 まで待ちます'); await new Promise(r => setTimeout(r, 8 * 60000 - sinceMidnight + 1000)) } }
 const today = jst(Date.now()).slice(0, 10)
 const hm = (ms) => jst(ms).slice(11, 16)
 const key = () => 'k' + Math.random().toString(36).slice(2) + Date.now().toString(36)

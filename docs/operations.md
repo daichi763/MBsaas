@@ -16,6 +16,7 @@ Field OS の開発・リリース・障害対応の手順です。初めて担�
 | 7 | シークレットの登録と入れ替え |
 | 8 | データの定期削除（retention）と解約企業のデータ |
 | 9 | 開発の決まり（テーブル・定期処理・画面を足すとき） |
+| 10 | ローンチ当日のチェックリスト |
 
 自動バックアップの仕組みと設定は [backup.md](backup.md)、障害の記録と通知の仕組みと設定は [monitoring.md](monitoring.md) にあります。
 
@@ -119,6 +120,18 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node scripts/test-xxx.mjs
 - ログインは `POST /api/auth/login` に会社コード・ID・パスワードを送り、`set-cookie` の `session` を次の要求に付けます。
 - 起動のオプションが要るときは、先頭25行のコメントに `--var 名前:値` / `--test-scheduled` と書きます（`npm test` がそれを読みます）。値に `<` `>` を書かないでください（2.2 の理由）。
 - 画面の確認が要るときは、ヘッドレスの Chrome を使い、Chrome がない環境では省くようにします（`scripts/test-w12-shift.mjs:9`）。
+
+### 2.5 時刻に依存するテスト（いつ流しても通るようにする）
+
+サーバーは「今日」「今の時刻」を日本時間で決めます（`Date.now() + 9 時間`）。テストもいつ流しても通るように、次のように書きます（Sprint 14。#9641）。本番のコード（`src/`）に時刻を差し替える仕組みは足さず、テストの側で合わせます。
+
+- 「今日」は、サーバーと同じく `new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)` で作る。`new Date().toISOString()`（UTC の日付）や端末のタイムゾーンの日付は使わない。
+- 「今から○分前に始まったシフト」のように今の時刻から逆算するデータは、日本時間の 0 時を過ぎた直後だと前日のシフトになる。前日になると確かめられないことは、日付を見て `SKIP` にする（例: `scripts/test-w3-dashboard.mjs` の #221・#107）か、日付をずらしたデータ（2日以上前の日付など）を使う。
+- 「今日の 05:30」のような決まった時刻は、その時刻より前に流すとまだ来ていない時刻になる。過ぎた日（前日より前）の日付を使う。
+- テストを流している途中で日付が変わると、テストの始めに作った「今日」とサーバーの「今日」がずれる。`npm test` は、日本時間の 23:45 を過ぎたら、0 時を過ぎるまで待ってから次のテストを始める（`scripts/run-tests.mjs`）。1本だけ手で流すときは、0 時の前後を避ける。
+- 月の初め・終わりにまたがるデータ（前日の日報が今月の集計に入らない、など）は、期待する値を日付から決めるか、同じように `SKIP` にする（例: `scripts/test-w5-report-features.mjs` の #496）。
+- 「今日のシフトを1時間前に開始」のように 0 時より前にできないデータは、0 時の直後の数分だけテストの始めで待つ（例: `scripts/test-w8-staff-ui.mjs`）。
+- 確かめ方: 開発者の手元で、サーバー（`dist/_worker.js` を読み込む入口）とテストの両方の `Date` を同じだけずらして流すと、0:05・23:58・月の1日などの時刻で試せます（Sprint 14 で使った方法。D1 の SQL の `datetime('now')` はずれないので、SQL の時刻を使う確認は落ちることがある）。この仕組みは repo には入れていません。
 
 ---
 
@@ -401,4 +414,54 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 - **環境変数を足したら**: `wrangler.jsonc` の `vars` はトップレベルと `env.production` の両方に書きます（環境ごとに引き継がれないため。`wrangler.jsonc:3`〜`4`）。[architecture.md](architecture.md) の12章にも足します。
 - **画面**: 値は `esc` を通す。イベント属性の文字列に値を埋め込まず `data-*` と `delegate` を使う。二度押しは `withSubmitLock` で防ぐ（`public/static/common.js`）。
 - **D1**: バインドは1文100個まで（`src/lib/d1-chunk.ts`）。`shifts` を更新した文の `meta.changes` を件数に使わない（トリガーの分も数えるため）。SQL 関数の引数は本番で32個まで（ローカルでは見つからない）。
+- **テスト**: 時刻に依存するテストは 2.5 のように書きます。
 - **資料**: Sprint の終わりに、変えた所に合わせて `docs/` を直します（[decisions.md](decisions.md) の D-40）。`npm test -- w13-docs-arch-ops` が、資料の中の `ファイル:行` の参照・定期処理の表・`vars` の表のずれを知らせます。行番号のずれは `node scripts/test-w13-docs-arch-ops.mjs --fix-refs` で直します（[architecture.md](architecture.md) の14章）。
+
+---
+
+## 10. ローンチ当日のチェックリスト 🔴 本番
+
+正式に利用を始める日（ローンチ）に行うことです。ローンチまでは、デモのアカウントを本番に残す方針です。開発者は本番の設定を変えないので、Cloudflare・GitHub・本部の管理者の権限を持つ人が行います。
+
+| # | 作業 | 確かめ方 | 本番 |
+|---|---|---|---|
+| 1 | デモ用の会社・ユーザーを止めるか、パスワードを変える（#62） | 下の 10.1 | 🔴 |
+| 2 | 本番の設定が `DEMO_MODE=false` で動いている（#62） | Workers Builds のビルドのログ（10.2） | 🔴 |
+| 3 | メールの送信を始めるなら、Resend の準備をする（#36・[decisions.md](decisions.md) の D-31） | 下の 10.3 | 🔴 |
+| 4 | 毎日のバックアップが成功し、失敗の通知が届く | 下の 10.4 | |
+| 5 | 本部画面のプッシュ通知を有効にする | 下の 10.5 | 🔴 |
+| 6 | スモーク | 3.2 の 8 と同じ | 🔴 |
+
+### 10.1 デモ用の会社・ユーザー
+本番の DB には、`seed.sql` と同じデモ用の会社（会社コード `sample`・`demo2`・`demo3`）と、本部のデモユーザー（ID `hq`）が残っています。パスワードはすべて `pass1234`（ローカルのデモと同じ。1.4）で、2026-11 の時点で約26件あります。だれでもログインできるので、ローンチの前に必ず止めます。
+
+1. 残っているものを確かめる（`SELECT` だけ）。パスワードはハッシュでは見分けられない（ログインするとハッシュが作り直される）ので、会社コードと ID で探します。
+
+   ```bash
+   npx wrangler d1 execute mbsaas-production --remote --env production --command "SELECT c.company_code, c.active_status, u.user_code, u.role, u.status FROM users u LEFT JOIN companies c ON c.company_id = u.company_id WHERE c.company_code IN ('sample', 'demo2', 'demo3') OR u.user_code = 'hq' ORDER BY c.company_code, u.user_code"
+   ```
+
+2. デモ用の会社は、本部画面「解約・データ」の「この企業を停止する」で止めます。停止した会社の利用者はログインできず、ログイン中のセッションも使えなくなります（`src/lib/auth.ts:138`）。デモを続けて使う会社があるなら、止めずに、その会社のユーザー全員のパスワードを変えます（管理者の画面での仮パスワードの再発行など）。
+3. 本部の `hq` は、本部の担当者が実際に使っているなら、止めずにパスワードを変えます。本部画面にはパスワードを変える画面がないので、`hq` でログインしたブラウザから `POST /api/auth/change-password`（`src/accounts.ts:254`。今のパスワードと新しいパスワードを送る）を呼ぶか、開発者に依頼します。
+4. もう一度 1 の SQL を流し、会社が停止（`active_status`）になっているか、ユーザーのパスワードを変えたかを確かめます。`/login` で `sample` / `admin` / `pass1234` でログインできないことも確かめます。
+
+### 10.2 `DEMO_MODE=false` の確認
+- Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:31` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
+- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:254`）。
+
+### 10.3 メールの送信を始めるとき（任意）
+メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。
+1. Resend で独自ドメインを認証する（Resend の Domains で DNS のレコードを足す）。
+2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:78`）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
+3. `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` をシークレットに登録する（7章の `secret put`）。
+4. 管理者の画面からパスワードの再設定のメールなどを1通送り、届くこと、本部画面「メール送信」に送信の記録が出ることを確かめる。
+5. [decisions.md](decisions.md) の D-31 に、再開した日を書き足す。
+
+### 10.4 バックアップと通知
+- GitHub の **Actions** → **D1 backup** が、毎日（日本時間 4:05 ごろ）緑（成功）になっていることを、ローンチの前の数日分確かめます。Summary の「表の定義の数」「INSERT の行数」が急に減っていないことも見ます（[backup.md](backup.md) の 3）。
+- 失敗したときの GitHub の通知が担当者に届く設定になっていることを確かめます（GitHub の Settings → Notifications → Actions。[monitoring.md](monitoring.md) の 6）。
+- 戻せることは、[backup.md](backup.md) の 6 の練習で確かめています。
+
+### 10.5 本部画面のプッシュ通知
+- 本部の担当者の端末で、本部画面「障害」の「この端末でプッシュ通知を受け取る」を押し、「テスト通知を送る」で届くことを確かめます（[monitoring.md](monitoring.md) の 3）。端末ごとに行います。
+- iPhone・iPad は、Safari で本部画面を「ホーム画面に追加」してから行います（iOS 16.4 以降）。
