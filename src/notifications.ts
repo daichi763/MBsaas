@@ -286,13 +286,16 @@ function notificationRoutes(scope: 'admin' | 'staff') {
     return ids.includes(u.user_id) ? ids : [u.user_id, ...ids]
   }
   const inIds = (ids: number[]) => `user_id IN (${ids.map(() => '?').join(',')})`
+  // スタッフには、止めている機能の通知（hiddenStaffNotifyKinds）を一覧・未読の数に出さない（#9801。行は消さない）
+  const hidden = (c: any): string => JSON.stringify(scope === 'staff' ? hiddenStaffNotifyKinds(c.env) : [])
+  const notHidden = (col = 'kind') => `${col} NOT IN (SELECT value FROM json_each(?))`
   // 絞り込み（#380）: unread=1 で未読だけ、kind で種類、before（notification_id）で続きを取る。limit は 1〜100（既定 100）
   app.get('/notifications', async (c) => {
     const ids = await userIds(c)
     const q = (k: string) => c.req.query(k) || ''
     const limit = Math.min(100, Math.max(1, Number.parseInt(q('limit'), 10) || 100))
-    const where = [`n.${inIds(ids)}`]
-    const binds: any[] = [...ids]
+    const where = [`n.${inIds(ids)}`, notHidden('n.kind')]
+    const binds: any[] = [...ids, hidden(c)]
     if (q('unread') === '1') where.push('n.read_at IS NULL')
     if (/^[a-z_]{1,40}$/.test(q('kind'))) { where.push('n.kind = ?'); binds.push(q('kind')) }
     if (/^\d{1,12}$/.test(q('before'))) { where.push('n.notification_id < ?'); binds.push(Number(q('before'))) }
@@ -301,18 +304,19 @@ function notificationRoutes(scope: 'admin' | 'staff') {
       FROM user_notifications n LEFT JOIN attendance_corrections ac ON n.kind = 'correction_submitted' AND ac.correction_id = n.related_id
       WHERE ${where.join(' AND ')} ORDER BY n.notification_id DESC LIMIT ?`).bind(...binds, limit + 1).all()).results as any[]
     // 未読の件数は全体と種類ごと（受信箱の切り替えに件数を出す）
-    const byKind = (await c.env.DB.prepare(`SELECT kind, COUNT(*) AS n FROM user_notifications WHERE ${inIds(ids)} AND read_at IS NULL GROUP BY kind`).bind(...ids).all()).results as any[]
+    const byKind = (await c.env.DB.prepare(`SELECT kind, COUNT(*) AS n FROM user_notifications WHERE ${inIds(ids)} AND read_at IS NULL AND ${notHidden()} GROUP BY kind`).bind(...ids, hidden(c)).all()).results as any[]
     const unread = byKind.reduce((a, r) => a + Number(r.n), 0)
     return c.json({ notifications: rows.slice(0, limit), has_more: rows.length > limit, unread, unread_by_kind: Object.fromEntries(byKind.map(r => [r.kind, r.n])) })
   })
   app.get('/notifications/unread-count', async (c) => {
     const ids = await userIds(c)
-    const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE ${inIds(ids)} AND read_at IS NULL`).bind(...ids).first() as any
+    const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE ${inIds(ids)} AND read_at IS NULL AND ${notHidden()}`).bind(...ids, hidden(c)).first() as any
     return c.json({ count: n?.n || 0 })
   })
   app.post('/notifications/read-all', async (c) => {
     const ids = await userIds(c)
-    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND read_at IS NULL`).bind(nowJST(), ...ids).run()
+    // 出していない通知は既読にもしない（再開したときに、元の未読のまま出す）
+    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND read_at IS NULL AND ${notHidden()}`).bind(nowJST(), ...ids, hidden(c)).run()
     return c.json({ ok: true, updated: r.meta.changes || 0 })
   })
   // kind（と related_id）で既読にする（募集の応募一覧を開いたときなど、通知を開かずに対応したとき。#150）
@@ -1362,6 +1366,9 @@ export async function notifyRecruitResult(c: any, companyId: number, application
 // スタッフアプリの募集は Sprint 11 で止めた（#9411。利用者の決定）。環境変数 STAFF_APP_RECRUIT=1 のときだけ、
 // スタッフアプリの募集の API（src/recruit.ts の recruitStaffApi）と、この「新しい募集」の通知を動かす（再開の判断と既存の試験のために残す）
 export const staffAppRecruitEnabled = (env: any) => String(env?.STAFF_APP_RECRUIT || '') === '1'
+// 止めている間は、止める前に作った「新しい募集」の通知（本文に「シフト画面の『募集中のお仕事』から応募できます」）を、
+// スタッフの通知の一覧・未読の数・ホームのバッジ・プッシュに出さない（#9801）。行は消さない（再開したら元どおり出る）
+export const hiddenStaffNotifyKinds = (env: any): string[] => (staffAppRecruitEnabled(env) ? [] : ['recruit_new'])
 // スタッフアプリから応募できる募集（allow_staff）を公開・再開したら、自社の割り当てられるスタッフ（ログインできる人）に知らせる。
 // 同じ募集ページの通知は RECRUIT_NEW_QUIET_HOURS に1回まで（終了・再開をくり返しても何度も届かないように）。メールは管理者が選んだときだけ送る
 export const RECRUIT_NEW_QUIET_HOURS = 24
@@ -1759,9 +1766,10 @@ export async function flushPushQueue(env: PushEnv, limit = PUSH_FLUSH_LIMIT): Pr
       FROM users u LEFT JOIN companies co ON co.company_id = u.company_id WHERE u.user_id IN ${JSON_IN}`).bind(bindJsonArray(userIds)).all()).results as any[])
       .map(u => [Number(u.user_id), u]))
     const prefs = await loadNotifyPrefs(db, userIds)
+    const hiddenKinds = hiddenStaffNotifyKinds(env)
     const wanted = rows.filter(r => {
       const u = users.get(Number(r.user_id))
-      return u && u.status === 'active' && pushWanted(prefs, u.user_id, u.role, String(r.kind || ''))
+      return u && u.status === 'active' && !(u.role === 'staff' && hiddenKinds.includes(String(r.kind || ''))) && pushWanted(prefs, u.user_id, u.role, String(r.kind || ''))
     })
     if (wanted.length) {
       const targets = [...new Set(wanted.map(r => Number(r.user_id)))]
@@ -1895,7 +1903,8 @@ notificationsStaffApi.get('/push/latest', async (c) => {
   const rows = (await c.env.DB.prepare(`SELECT notification_id, user_id, kind, title, body, link FROM user_notifications WHERE user_id IN ${JSON_IN} AND read_at IS NULL
     ORDER BY notification_id DESC LIMIT 20`).bind(bindJsonArray(ids)).all()).results as any[]
   const prefs = await loadNotifyPrefs(c.env.DB, ids)
-  const shown = rows.filter(r => pushWanted(prefs, r.user_id, 'staff', r.kind))
+  const hiddenKinds = hiddenStaffNotifyKinds(c.env)
+  const shown = rows.filter(r => !hiddenKinds.includes(r.kind) && pushWanted(prefs, r.user_id, 'staff', r.kind))
   if (!shown.length) return c.json({ ...generic, generic: true })
   const n = shown[0]
   // 開く先はスタッフ画面の中だけ（#shift/... など）。それ以外の通知は通知の一覧を開く
