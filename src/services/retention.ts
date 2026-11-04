@@ -4,7 +4,7 @@ import { ERROR_LOG_KEEP_DAYS } from '../lib/error-log'
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
 // 対象と基準:
-//   daily_reports              : work_date から3年
+//   daily_reports              : work_date から3年（実績の修正の履歴 daily_report_edits も、日報と一緒に消す。#9707）
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
@@ -96,7 +96,8 @@ const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件�
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'site_evaluation', 'work_memo', 'career_rows', 'pr_points',
   'remarks', 'unverified_email', 'skill_sheet_comment',
-  'reference_pay_unit', 'reference_pay_amount'] // 支払の参考単価（0090。Sprint 9）
+  'reference_pay_unit', 'reference_pay_amount', // 支払の参考単価（0090。Sprint 9）
+  'age_entered', 'age_entered_on'] // 生年月日が分からないときの年齢と入力した日（0095。Sprint 15）
 
 // 人材提案の匿名化で消す列（#350）。snapshot は NOT NULL なので空の JSON にする
 const ANONYMIZE_PROPOSAL_SET = `snapshot = '{}', disclosed = NULL, comment = NULL, upstream_chain = NULL, consent_note = NULL, upstream_consent_note = NULL`
@@ -384,10 +385,14 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 
   let deleted = 0
   try {
+    // 消す日報の実績の修正の履歴（daily_report_edits。#9707）も、同じ batch で先に消す。
+    // 2つの文で同じ日報を選ぶよう、番号の順に選ぶ
+    const pick = `SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} ORDER BY daily_report_id LIMIT ?`
     for (let i = 0; i < DAILY_REPORTS_MAX_BATCHES; i++) {
-      const result = await db.prepare(
-        `DELETE FROM daily_reports WHERE daily_report_id IN (SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} LIMIT ?)`
-      ).bind(cutoff, DAILY_REPORTS_BATCH).run()
+      const [, result] = await db.batch([
+        db.prepare(`DELETE FROM daily_report_edits WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
+        db.prepare(`DELETE FROM daily_reports WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
+      ])
       const changes = result.meta.changes || 0
       deleted += changes
       if (changes < DAILY_REPORTS_BATCH) break
@@ -718,6 +723,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare('DELETE FROM payout_accounts WHERE staff_id = ?').bind(staffId)],
         // Sprint 6（w6-premium-pay）: スタッフの交通費の標準
         [null, db.prepare('DELETE FROM staff_transport_defaults WHERE staff_id = ?').bind(staffId)],
+        // Sprint 15（w15-monthly-billing #9702）: スタッフ別の月額（固定）の請求のルール（そのスタッフのシフトも消すので、行は出なくなる）
+        [null, db.prepare('DELETE FROM monthly_bill_rules WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM profile_change_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM leave_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM staff_availability WHERE staff_id = ?').bind(staffId)],
@@ -729,6 +736,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ${userOf}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM push_queue WHERE user_id = ${userOf}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM user_notification_prefs WHERE user_id = ${userOf}`).bind(staffId)],
+        // Sprint 15 で足した、本人の案内（チュートリアル）の進み具合（w15-tour）
+        [null, db.prepare(`DELETE FROM user_tour_progress WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
         ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads} RETURNING 1`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
@@ -1146,6 +1155,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'attendance_reports_duplicates_0036', label: '出退勤記録（重複の控え）', table: 'attendance_reports_duplicates_0036', where: OB_CO },
   { target: 'attendance_reports', label: '出退勤記録', table: 'attendance_reports', where: OB_CO },
   { target: 'daily_report_duplicates', label: '日報（重複の控え）', table: 'daily_report_duplicates', where: OB_CO },
+  // Sprint 15（w15-report-edit）: 日報の実績の修正の履歴（#9707）
+  { target: 'daily_report_edits', label: '日報の実績の修正の履歴', table: 'daily_report_edits', where: OB_CO },
   { target: 'daily_reports', label: '日報', table: 'daily_reports', where: OB_CO },
   { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
@@ -1163,6 +1174,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'project_cancel_policies', label: '案件のキャンセル規定', table: 'project_cancel_policies', where: OB_CO },
   { target: 'project_price_history', label: '案件の単価の履歴', table: 'project_price_history', where: OB_CO },
   { target: 'rate_rules', label: '単価ルール', table: 'rate_rules', where: OB_CO },
+  { target: 'monthly_bill_rules', label: '月額（固定）の請求のルール', table: 'monthly_bill_rules', where: OB_CO },
   { target: 'slot_patterns', label: '募集枠のパターン', table: 'slot_patterns', where: OB_CO },
   { target: 'shifts', label: 'シフト', table: 'shifts', where: OB_CO },
   { target: 'shift_slot_roles', label: '募集枠の役割', table: 'shift_slot_roles', where: 'slot_id IN (SELECT slot_id FROM shift_slots WHERE company_id = $C)' },
@@ -1209,6 +1221,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'push_queue', label: 'プッシュ通知の送信待ち', table: 'push_queue', where: OB_CO, noExport: true },
   { target: 'push_subscriptions', label: 'プッシュ通知の購読（端末）', table: 'push_subscriptions', where: OB_CO, noExport: true },
   { target: 'user_notification_prefs', label: '通知の受け取り設定', table: 'user_notification_prefs', where: OB_CO },
+  // Sprint 15 で足した表（w15-tour）。画面の案内を見たかどうかだけなので書き出さない
+  { target: 'user_tour_progress', label: '案内（チュートリアル）の進み具合', table: 'user_tour_progress', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'user_notifications', label: 'アプリ内の通知', table: 'user_notifications', where: OB_CO },
   { target: 'todo_dismissals', label: 'ToDo の非表示', table: 'todo_dismissals', where: OB_CO, noExport: true },
   { target: 'client_ng_staff', label: 'クライアントの NG スタッフ', table: 'client_ng_staff', where: OB_CO },

@@ -33,7 +33,7 @@ import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, no
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
-import { loadShiftSnaps, notifyShiftChanges, notifyReportComment } from './notifications'
+import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEdit } from './notifications'
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
 import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND } from './notifications'
 import { hqErrorsApi } from './hq-errors'
@@ -48,10 +48,14 @@ import {
   normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, PERSON_SESSION_WHERE,
 } from './lib/login-security'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
+import { ageEntryUpdate, estimatedAge } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
+import { halfWidthNumber, toNumberOrNull, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
+import { loadMonthlyLines, monthlyTotal } from './lib/monthly-billing'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
-import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef } from './lib/daily-report'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef,
+  reportEditFields, buildAdminReportEdit, parseReportValuesJson, REPORT_EDIT_REASON_MAX } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
 import { NOTICE_TARGET_SQL, NOTICE_LIVE_SQL, NOTICE_EXPIRED_SQL, loadStaffNotices, countUnreadNotices, parseResponseOptions } from './lib/notices'
 import { staffShiftView } from './shift-board'
@@ -65,6 +69,7 @@ import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defa
 import rosterImportApi from './roster-import'
 import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_READONLY_MESSAGE } from './hq-support'
+import { toursAdminApi, toursStaffApi } from './tours'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -93,6 +98,13 @@ function calcAge(dob: string | null | undefined): number | null {
   let age = ty - by
   if (tm < bm || (tm === bm && td < bd)) age--
   return age
+}
+// 画面に返す年齢（#9710）: 生年月日があれば満年齢、なければ年齢の欄（age_entered）と入力した日からの推定の年齢（age_estimated = true）
+function ageFields(row: any): { age: number | null; age_estimated: boolean } {
+  const dobAge = calcAge(row?.date_of_birth as string | null)
+  if (dobAge != null) return { age: dobAge, age_estimated: false }
+  const est = estimatedAge(row?.age_entered, row?.age_entered_on, todayJST())
+  return { age: est, age_estimated: est != null }
 }
 // 入社年月日から勤続年月（"n年mヶ月"）を計算する
 function calcTenure(hireDate: string | null | undefined): string | null {
@@ -1290,6 +1302,9 @@ api.route('/admin', staffPayAdminApi)
 // 出勤可能日の提出・一覧（#171）と、シフトのカレンダー追加（#301）（src/staff-schedule.ts）
 api.route('/staff', scheduleStaffApi)
 api.route('/admin', scheduleAdminApi)
+// 案内（チュートリアル）の進み具合と「はじめにやること」（#9711 #9712。src/tours.ts）
+api.route('/admin', toursAdminApi)
+api.route('/staff', toursStaffApi)
 
 // =========================================================
 // スタッフ側 API
@@ -2106,8 +2121,8 @@ async function personStaffIds(db: D1Database, u: any): Promise<number[]> {
 
 // comment_read_at: 本人が管理者のコメントを開いた日時（#158。コメントが変わると空に戻る）。unread_comment: まだ開いていないコメントがある
 const MY_REPORT_COLS = `dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_comment, dr.manager_comment_at, dr.comment_read_at, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at,
-      p.project_name, p.report_template_id, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
+      dr.manager_comment, dr.manager_comment_at, dr.comment_read_at, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at, dr.admin_edited_at,
+      p.project_name, p.report_template_id, p.past_report_fields_json, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
     LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id`
 async function myReportsView(db: D1Database, rows: any[]) {
@@ -2117,11 +2132,33 @@ async function myReportsView(db: D1Database, rows: any[]) {
     const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN (${tplIds.map(() => '?').join(',')})`).bind(...tplIds).all()).results as any[]
     for (const t of ts) templates[t.template_id] = parseTemplateFields(t.fields_json)
   }
+  // 管理者が直した日報（#9707）は、直した項目と、スタッフが提出したときの値を返す（最後の出し直しの後の、最初の修正の前の値）
+  const edited = rows.filter(r => r.admin_edited_at).map(r => Number(r.daily_report_id))
+  const original = new Map<number, { keys: Set<string>; values: Record<string, unknown> }>()
+  if (edited.length) {
+    const es = (await db.prepare(`SELECT daily_report_id, kind, before_values, changed_keys FROM daily_report_edits WHERE daily_report_id IN ${JSON_IN} ORDER BY edit_id`)
+      .bind(bindJsonArray(edited)).all()).results as any[]
+    for (const e of es) {
+      const rid = Number(e.daily_report_id)
+      if (e.kind !== 'admin_edit') { original.delete(rid); continue }
+      const before = parseReportValuesJson(e.before_values)
+      let keys: string[] = []
+      try { const v = JSON.parse(e.changed_keys || '[]'); if (Array.isArray(v)) keys = v.filter((k: unknown) => typeof k === 'string') } catch { keys = [] }
+      const o = original.get(rid) || { keys: new Set<string>(), values: {} }
+      for (const k of keys) if (!o.keys.has(k)) { o.keys.add(k); o.values[k] = before[k] ?? null }
+      original.set(rid, o)
+    }
+  }
   return {
     reports: rows.map(r => {
-      const { report_values, ...rest } = r
+      const { report_values, past_report_fields_json, ...rest } = r
+      const o = r.admin_edited_at ? original.get(Number(r.daily_report_id)) : undefined
+      const values = parseReportValues(report_values)
       return { ...rest, template_id: r.report_template_id, other_company: !!r.other_company, incident_flag: !!r.incident_flag, complaint_flag: !!r.complaint_flag,
-        manager_checked: !!r.manager_checked, values: parseReportValues(report_values), unread_comment: !!r.manager_comment && !r.comment_read_at }
+        manager_checked: !!r.manager_checked, values, unread_comment: !!r.manager_comment && !r.comment_read_at,
+        // テンプレートを差し替える前の項目のうち、この日報に値のあるもの（#9511。画面で元の表示名を出す。#9707）
+        past_fields: pastReportFields(past_report_fields_json).filter(f => Object.prototype.hasOwnProperty.call(values, f.key)),
+        admin_edit: r.admin_edited_at ? { edited_at: r.admin_edited_at, changed_keys: o ? [...o.keys] : [], original: o ? o.values : {} } : null }
     }),
     templates,
   }
@@ -2142,6 +2179,9 @@ api.get('/staff/my-reports/:id{[0-9]+}', async (c) => {
     await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE user_id = ? AND kind = 'daily_report_comment' AND related_id = ? AND read_at IS NULL`)
       .bind(row.comment_read_at, u.user_id, row.daily_report_id).run()
   }
+  // 実績の修正の通知（#9707）も、日報を開いたら既読にする
+  if (row.admin_edited_at) await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE user_id = ? AND kind = 'daily_report_edit' AND related_id = ? AND read_at IS NULL`)
+    .bind(nowJST(), u.user_id, row.daily_report_id).run()
   const v = await myReportsView(db, [row])
   return c.json({ report: v.reports[0], templates: v.templates })
 })
@@ -3630,7 +3670,7 @@ api.get('/admin/staff/:id', async (c) => {
   const reportPastFields = await reportPastFieldsByProject(db, u.company_id, reportRows.map(x => ({ ...x.row, past_report_fields_json: x.past_report_fields_json })), reportTemplates)
 
   return c.json({
-    profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
+    profile: { ...profile, ...ageFields(profile) },
     shifts: [...(upcoming.results as any[])].reverse().concat(past.results as any[]),
     upcoming_shifts: upcoming.results, past_shifts: past.results, today,
     ng_clients: ngClients.results,
@@ -3712,7 +3752,8 @@ api.delete('/admin/staff/:id/evaluations/:eid', async (c) => {
 //      partner_manual / skillsheet_only / daily_worker / freelance: スタッフマスタ画面から編集可
 //  - linked_external（他社連携）    : 所属元企業が管理するため編集不可
 //  - 管理者メモ・要フォロー・稼働先追記項目 は全スタッフでスタッフマスタ画面から編集可
-const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[])]
+// age_entered: 生年月日が分からないときの年齢（#9710）。連携先には共有しない（ROSTER_BASE_FIELDS には入れない）
+const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[]), 'age_entered']
 const BUSINESS_KEYS = ROSTER_BUSINESS_FIELDS as readonly string[]
 function touchesProfileBase(body: any): boolean {
   return PROFILE_BASE_KEYS.some(k => body[k] !== undefined && !BUSINESS_KEYS.includes(k))
@@ -3745,9 +3786,10 @@ function normalizeBusinessBody(body: any): string | null {
     }
   }
   if (body.commute_minutes !== undefined && body.commute_minutes !== null && body.commute_minutes !== '') {
-    const n = Number(body.commute_minutes)
-    if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
-    body.commute_minutes = Math.round(n)
+    const n = toNumberOrNull(body.commute_minutes) // 全角の数字も受け付ける（#9704）
+    if (n === null) body.commute_minutes = null
+    else if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
+    else body.commute_minutes = Math.round(n)
   } else if (body.commute_minutes === '') body.commute_minutes = null
   if (body.available_from !== undefined && body.available_from && !/^\d{4}-\d{2}-\d{2}$/.test(String(body.available_from))) return '稼働開始可能日の形式が不正です'
   return null
@@ -3792,6 +3834,10 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
     await c.env.DB.prepare(`UPDATE staff_profiles SET ${base.clause} WHERE staff_id = ? AND company_id = ?`)
       .bind(...base.values, sid, u.company_id).run()
   }
+  // 生年月日が分からないときの年齢と入力した日（#9710）。生年月日を入れたら年齢の欄は空にする
+  const ageCols = ageEntryUpdate(body, roster, todayJST())
+  if (ageCols) await c.env.DB.prepare('UPDATE staff_profiles SET age_entered = ?, age_entered_on = ? WHERE staff_id = ? AND company_id = ?')
+    .bind(ageCols.age_entered, ageCols.age_entered_on, sid, u.company_id).run()
 
   // 業務側項目は「送られてきた項目だけ」をそのまま保存する（空欄にしてクリアできるように COALESCE は使わない）
   // skills / career / work_area は従来どおり NOT NULL 相当の扱いなので null は空文字にする
@@ -4126,7 +4172,7 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
   // 管理者メモは社内用なので、社外に出すスキルシートには返さない。推薦コメントは別の欄（skill_sheet_comment。#447）に保存したものを返す
   const { memo: _memo, ...sheet } = profile
-  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results,
+  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), ...ageFields(profile) }, experienced_projects: projects.results,
     performance: { ...(perf || {}), values: metrics.valuesOf('') }, performance_fields: metrics.fields, evaluation: latestEval,
     skill_sheet_comment: profile.skill_sheet_comment || '' })
 })
@@ -4326,10 +4372,10 @@ api.post('/admin/clients', async (c) => {
     return c.json(dupMsg, 409)
   const contactName = typeof b.contact_name === 'string' ? b.contact_name.trim() : ''
   const r = await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo, client_rating,
-      client_kind, representative_name, branch_name, department_name)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM clients WHERE company_id = ? AND client_name = ?)`)
+      client_kind, representative_name, branch_name, department_name, postal_code, website_url)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM clients WHERE company_id = ? AND client_name = ?)`)
     .bind(u.company_id, name, b.stream_type || 'upstream', contactName || null, b.email ? String(b.email).trim() : null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating,
-      b.client_kind || null, b.representative_name || null, b.branch_name || null, b.department_name || null,
+      b.client_kind || null, b.representative_name || null, b.branch_name || null, b.department_name || null, b.postal_code ?? null, b.website_url ?? null,
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
   // 担当者の名前が送られてきたら（以前の画面・外部からの登録）、顧客担当者の一覧に1件として入れる（#9101）
@@ -4375,6 +4421,15 @@ api.get('/admin/clients/:id', async (c) => {
     p.shifts++; p.staff.add(s.staff_id); p.bill_total += bill
     perProject.set(s.project_id, p)
   }
+  // 月額（固定。#9702）: 今日までにその月のシフトがあれば、その月の売上と案件の売上に1回だけ足す
+  for (const l of await loadMonthlyLines(c.env.DB, u.company_id, { months, client_id: Number(cid), until: todayJST() })) {
+    const t = trend.get(l.ym)
+    if (t) t.bill_total += l.amount
+    if (l.ym !== month) continue
+    const p = perProject.get(l.project_id) || { shifts: 0, staff: new Set<number>(), bill_total: 0 }
+    p.bill_total += l.amount
+    perProject.set(l.project_id, p)
+  }
   const projects = ((projectRows.results || []) as any[]).map(p => {
     const a = perProject.get(p.project_id)
     return { ...p, shifts: a?.shifts || 0, staff_count: a?.staff.size || 0, bill_total: a?.bill_total || 0 }
@@ -4400,6 +4455,17 @@ function normalizeClientFields(b: any): string | null {
     const v = b[key].replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
     if (v.length > max) return `${label}は${max}文字以内で入力してください`
     b[key] = v
+  }
+  // 郵便番号（#9701。半角の「123-4567」にそろえる）とホームページの URL（#9709。http/https だけ）。送られていなければそのまま
+  if (b.postal_code !== undefined) {
+    const v = normalizePostalCode(b.postal_code)
+    if (v === undefined) return '郵便番号は7桁の数字（例: 123-4567）で入力してください'
+    b.postal_code = v
+  }
+  if (b.website_url !== undefined) {
+    const v = normalizeWebsiteUrl(b.website_url)
+    if (v === undefined) return 'ホームページの URL は http:// または https:// から入力してください'
+    b.website_url = v
   }
   return null
 }
@@ -4441,7 +4507,7 @@ api.put('/admin/clients/:id', async (c) => {
   // 会社名は空にできない。区分・評価は空で送られたら変更しない
   const upd = buildUpdate({ ...b, invoice_number: b.invoice_number === undefined ? undefined : invoiceNumber },
     ['client_name', 'stream_type', 'contract_type', 'billing_rule', 'memo', 'client_rating',
-      'contact_name', 'phone', 'email', 'address',
+      'contact_name', 'phone', 'email', 'address', 'postal_code', 'website_url',
       'representative_title', 'representative_name', 'representative_kana', 'invoice_number',
       'client_kind', 'branch_name', 'department_name'],
     { required: ['client_name', 'stream_type', 'client_rating'] })
@@ -4664,12 +4730,12 @@ api.get('/admin/employees/:staffId', async (c) => {
       JOIN employee_records er ON er.staff_id = sp.staff_id WHERE sp.staff_id = ? AND sp.company_id = ? AND er.employment_ended_at IS NOT NULL`).bind(sid, u.company_id).first()
     if (!endedStaff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
     const rec = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
-    return c.json({ staff: { ...endedStaff, age: calcAge(endedStaff.date_of_birth as string | null) }, record: rec ? { ...rec, tenure: calcTenure(rec.hire_date as string | null) } : null, read_only: true })
+    return c.json({ staff: { ...endedStaff, ...ageFields(endedStaff) }, record: rec ? { ...rec, tenure: calcTenure(rec.hire_date as string | null) } : null, read_only: true })
   }
 
   const record = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
   return c.json({
-    staff: { ...staff, age: calcAge(staff.date_of_birth as string | null) },
+    staff: { ...staff, ...ageFields(staff) },
     record: record ? { ...record, tenure: calcTenure(record.hire_date as string | null) } : null,
   })
 })
@@ -4720,6 +4786,13 @@ api.put('/admin/employees/:staffId', async (c) => {
     'employment_insurance_no', 'social_insurance_no',
     'paid_leave_granted_at', 'paid_leave_remaining', 'telework_remaining_this_month',
   ]
+  for (const k of EMPLOYEE_NUMBER_COLS) {
+    if (b[k] === undefined) continue
+    const n = toNumberOrNull(b[k])
+    if (n !== null && !Number.isFinite(n)) return c.json({ error: `「${CHANGE_FIELD_LABELS[k] || k}」は数字で入力してください` }, 400)
+    b[k] = n
+  }
+  for (const k of ['postal_code', 'emergency_postal_code']) if (typeof b[k] === 'string') b[k] = halfWidthNumber(b[k]) || null
   const exists = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
   // 電話番号が変わったときだけ users.phone にそろえる（従業員管理を初めて保存したときに、登録時の電話番号を空欄で消さないように比べる。#123）
   const phoneChanged = b.phone_main !== undefined && normalizePhone(b.phone_main) !== normalizePhone(exists?.phone_main)
@@ -4745,6 +4818,9 @@ api.put('/admin/employees/:staffId', async (c) => {
   return c.json({ ok: true })
 })
 
+// 従業員管理の数値の項目（#9704。全角で入れても半角にそろえて保存する）
+const EMPLOYEE_NUMBER_COLS = ['scheduled_hours', 'scheduled_days_week', 'scheduled_days_month', 'dependents_count', 'base_salary', 'fixed_overtime_hours',
+  'fixed_overtime_pay', 'gross_pay', 'position_allowance', 'sales_allowance', 'other_deduction', 'paid_leave_remaining', 'telework_remaining_this_month']
 // 従業員データとスタッフ基本情報の変更履歴（#464）。新しい順に50件ずつ（before に前のページの最後の log_id を渡す）。
 // 雇用終了した従業員（他の区分へ移行）も閲覧できる（従業員データと同じく7年保存）
 const CHANGE_LOG_PAGE = 50
@@ -4951,17 +5027,21 @@ api.delete('/admin/clients/documents/:docId', async (c) => {
   return c.json({ ok: true })
 })
 
+// 案件全体の月額（固定。#9702）のうち、月 ym（SQL の式）に適用するもの。無ければ NULL
+const MONTHLY_AMOUNT_SQL = (ym: string) => `(SELECT mr.amount FROM monthly_bill_rules mr WHERE mr.company_id = p.company_id AND mr.project_id = p.project_id AND mr.staff_id IS NULL
+  AND (mr.valid_from IS NULL OR mr.valid_from <= ${ym}) AND (mr.valid_to IS NULL OR mr.valid_to >= ${ym}) ORDER BY COALESCE(mr.valid_from, '') DESC LIMIT 1)`
 // 案件一覧
-// ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）
+// ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）。monthly_amount: その月の案件全体の月額（#9702）
 api.get('/admin/projects', async (c) => {
   const u = c.get('user'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const rows = await c.env.DB.prepare(`
     SELECT p.*, cl.client_name,
       (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS staff_count,
       (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS month_shifts,
-      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents
+      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents,
+      ${MONTHLY_AMOUNT_SQL('?4')} AS monthly_amount
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id).all()
+    WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id, month).all()
   // 成約（#184）: テンプレートに「成約」の項目がない案件は null（画面は「—」）
   const seiyaku = await seiyakuSums(c.env.DB, u.company_id, mFrom, mTo, 'project')
   for (const r of rows.results as any[]) r.month_seiyaku = seiyaku.get(Number(r.project_id)) ?? null
@@ -4973,10 +5053,12 @@ api.get('/admin/projects/:id', async (c) => {
   const u = c.get('user'); const pid = c.req.param('id'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const db = c.env.DB
   const project = await db.prepare(`
-    SELECT p.*, cl.client_name, rt.template_name, rt.fields_json
+    SELECT p.*, cl.client_name, rt.template_name, rt.fields_json, ${MONTHLY_AMOUNT_SQL('?3')} AS monthly_amount,
+      (SELECT COUNT(*) FROM monthly_bill_rules mr WHERE mr.company_id = p.company_id AND mr.project_id = p.project_id AND mr.staff_id IS NOT NULL
+        AND (mr.valid_from IS NULL OR mr.valid_from <= ?3) AND (mr.valid_to IS NULL OR mr.valid_to >= ?3)) AS monthly_staff_rules
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     LEFT JOIN report_templates rt ON p.report_template_id = rt.template_id
-    WHERE p.project_id = ? AND p.company_id = ?`).bind(pid, u.company_id).first()
+    WHERE p.project_id = ?1 AND p.company_id = ?2`).bind(pid, u.company_id, month).first()
   if (!project) return c.json({ error: 'not found' }, 404)
 
   const staffPerf = await db.prepare(`
@@ -5008,7 +5090,7 @@ api.get('/admin/projects/:id', async (c) => {
   const monthRows = (await db.prepare(`SELECT unit_price, transportation_fee, bill_transport_type, bill_transport_amount, bill_adjust,
       pay_amount, pay_transport_type, pay_transport_amount, pay_adjust, pay_premium
     FROM shifts WHERE project_id = ? AND company_id = ? AND work_date >= ? AND work_date < ? AND status IN ('confirmed','substitute')`).bind(pid, u.company_id, mFrom, mTo).all()).results as any[]
-  const monthShifts = { n: monthRows.length, revenue: 0, bill_total: 0, pay_total: 0, profit: 0, pay_missing: 0 }
+  const monthShifts = { n: monthRows.length, revenue: 0, bill_total: 0, pay_total: 0, profit: 0, pay_missing: 0, monthly_bill: 0 }
   {
     let profitBill = 0
     for (const s of monthRows) {
@@ -5017,8 +5099,11 @@ api.get('/admin/projects/:id', async (c) => {
       if (t.pay_total == null) monthShifts.pay_missing++
       else { monthShifts.pay_total += t.pay_total; profitBill += t.bill_total }
     }
-    monthShifts.revenue = monthShifts.bill_total
-    monthShifts.profit = profitBill - monthShifts.pay_total
+    // 月額（固定。#9702）は、その月にシフトがあれば売上・粗利に1回だけ足す（シフトの請求額 bill_total には入れない）
+    const monthly = await loadMonthlyLines(db, u.company_id, { months: [month], project_id: Number(pid) })
+    monthShifts.monthly_bill = monthlyTotal(monthly)
+    monthShifts.revenue = monthShifts.bill_total + monthShifts.monthly_bill
+    monthShifts.profit = profitBill - monthShifts.pay_total + monthShifts.monthly_bill
   }
 
   return c.json({
@@ -5077,12 +5162,18 @@ api.post('/admin/projects', async (c) => {
   const dupMsg = { error: `同じ名前の稼働中の案件「${name}」が既に登録されています`, confirm_duplicate: true }
   if (b.allow_duplicate !== true && await c.env.DB.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active' LIMIT 1`).bind(u.company_id, name).first())
     return c.json(dupMsg, 409)
+  // 月額（固定。#9702）: シフトの請求単価は日額 0 にして、案件全体の月額のルール（monthly_bill_rules）を作る。
+  // シフトの時給・日額の計算（shift-board.ts の resolvePrice）には月額を混ぜない
+  const monthly = b.unit_price_type === 'monthly'
+  if (monthly && !(Number.isInteger(Number(b.unit_price)) && Number(b.unit_price) >= 1)) return c.json({ error: '月額を1円以上で入力してください' }, 400)
   const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo, remarks)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
     .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
+      monthly ? 'daily' : b.unit_price_type || 'daily', monthly ? 0 : b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
+  if (monthly) await c.env.DB.prepare('INSERT INTO monthly_bill_rules (company_id, project_id, staff_id, amount, created_by, created_at) VALUES (?, ?, NULL, ?, ?, ?)')
+    .bind(u.company_id, r.meta.last_row_id, Number(b.unit_price), u.user_id, nowJST()).run()
   const cs = Object.keys(contact.set)
   if (cs.length) await c.env.DB.prepare(`UPDATE projects SET ${cs.map(k => `${k} = ?`).join(', ')} WHERE project_id = ? AND company_id = ?`)
     .bind(...cs.map(k => contact.set[k]), r.meta.last_row_id, u.company_id).run()
@@ -5266,7 +5357,7 @@ const PROJECT_USAGE: UsageCheck[] = [
   ['follow_logs', 'フォロー記録', 'SELECT 1 FROM follow_logs WHERE related_project_id = ?1 AND company_id = ?2'],
 ]
 // 案件と一緒に消す設定（単価ルール・単価の履歴・キャンセル料の規定・報告の設定とその変更の記録）
-const PROJECT_OWNED_TABLES = ['rate_rules', 'project_price_history', 'project_cancel_policies', 'project_report_defaults', 'project_staff_report_settings', 'report_setting_logs']
+const PROJECT_OWNED_TABLES = ['rate_rules', 'monthly_bill_rules', 'project_price_history', 'project_cancel_policies', 'project_report_defaults', 'project_staff_report_settings', 'report_setting_logs']
 const CLIENT_USAGE: UsageCheck[] = [
   ['projects', '案件', 'SELECT 1 FROM projects WHERE client_id = ?1 AND company_id = ?2'],
   ['sites', '開催場所', 'SELECT 1 FROM sites WHERE client_id = ?1 AND company_id = ?2'],
@@ -5670,12 +5761,15 @@ api.get('/admin/daily-reports', async (c) => {
   const [rowsRes, countRes] = await db.batch([
     db.prepare(`
       SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name,
-        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name
+        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name, eu.name AS admin_edited_by_name,
+        (SELECT COUNT(*) FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id) AS edit_count,
+        (SELECT e.kind FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id ORDER BY e.edit_id DESC LIMIT 1) AS last_edit_kind
       FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
       JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
       LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
       LEFT JOIN users ku ON ku.user_id = dr.manager_checked_by
       LEFT JOIN users iu ON iu.user_id = dr.incident_updated_by
+      LEFT JOIN users eu ON eu.user_id = dr.admin_edited_by
       ${base}${extra}
       ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset),
     db.prepare(`SELECT COUNT(*) AS total_all,
@@ -5795,6 +5889,90 @@ api.put('/admin/daily-reports/:id', async (c) => {
   // コメントを新しく付けた・書き換えたときは、スタッフに知らせる（#158。ログインのない人には送らない）
   if (commentChanged && (r.meta?.changes ?? 0)) return c.json({ ok: true, staff_notified: await notifyReportComment(c, u.company_id, id!, u.name) })
   return c.json({ ok: true })
+})
+
+// ---------- 日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） ----------
+// 管理者（日報を見られるロール）が日報の値を直す。直した値で report_values を上書きし、もとの値・直した人・日時・理由を daily_report_edits に残す。
+// スタッフが値を変えて出し直したら再提出の値を正にする（saveDailyReport。履歴に kind = 'resubmit' を残す）
+const REPORT_EDIT_CONFLICT = '開いている間に、スタッフが日報を出し直したか、ほかの管理者が修正しました。内容を確かめてから直してください'
+const REPORT_EDIT_HISTORY_MAX = 100
+// 修正の画面に出す日報と項目
+async function loadReportEditContext(db: D1Database, companyId: number, id: number) {
+  const row = await db.prepare(`SELECT dr.daily_report_id, dr.company_id, dr.staff_id, dr.project_id, dr.work_date, dr.report_values, dr.submitted_at, dr.entry_method,
+      dr.admin_edited_at, dr.admin_edited_by, eu.name AS admin_edited_by_name, us.name AS staff_name, p.project_name, p.past_report_fields_json, t.fields_json
+    FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
+    JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN report_templates t ON t.template_id = p.report_template_id
+    LEFT JOIN users eu ON eu.user_id = dr.admin_edited_by
+    WHERE dr.daily_report_id = ? AND dr.company_id = ?`).bind(id, companyId).first() as any
+  if (!row) return null
+  const values = parseReportValuesJson(row.report_values)
+  const known = new Set([...parseReportFields(row.fields_json).map(f => f.key), ...pastReportFields(row.past_report_fields_json).map(f => f.key), 'free'])
+  const guessed = await guessReportFieldLabels(db, companyId, Object.keys(values).filter(k => !known.has(k) && !/^(incident|complaint)_/.test(k)))
+  const fields = reportEditFields(row.fields_json, NO_TEMPLATE_FIELDS, row.past_report_fields_json, values, guessed)
+  return { row, values, fields }
+}
+// 修正の画面の内容と、修正の履歴（新しい順）
+api.get('/admin/daily-reports/:id{[0-9]+}/edits', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const id = toInt(c.req.param('id'), 1)
+  const ctx = id ? await loadReportEditContext(db, u.company_id, id) : null
+  if (!ctx) return c.json({ error: '日報が見つかりません' }, 404)
+  const edits = (await db.prepare(`SELECT e.edit_id, e.kind, e.entry_method, e.before_values, e.after_values, e.changed_keys, e.reason, e.edited_at, eu.name AS edited_by_name
+    FROM daily_report_edits e LEFT JOIN users eu ON eu.user_id = e.edited_by
+    WHERE e.daily_report_id = ? AND e.company_id = ? ORDER BY e.edit_id DESC LIMIT ?`).bind(id, u.company_id, REPORT_EDIT_HISTORY_MAX).all()).results as any[]
+  const { row } = ctx
+  // 履歴にしか無いキー（後で消えた項目など）も出せるよう、項目の一覧に足す
+  const fieldKeys = new Set(ctx.fields.map(f => f.key))
+  const extra: { key: string; label: string; type: string }[] = []
+  const list = edits.map(e => {
+    let changed: string[] = []
+    try { const v = JSON.parse(e.changed_keys || '[]'); if (Array.isArray(v)) changed = v.filter((k: unknown) => typeof k === 'string') } catch { changed = [] }
+    for (const k of changed) if (!fieldKeys.has(k)) { fieldKeys.add(k); extra.push({ key: k, label: k, type: 'text' }) }
+    return { edit_id: e.edit_id, kind: e.kind, entry_method: e.entry_method, reason: e.reason, edited_at: e.edited_at, edited_by_name: e.edited_by_name,
+      changed_keys: changed, before: parseReportValuesJson(e.before_values), after: parseReportValuesJson(e.after_values) }
+  })
+  return c.json({
+    report: { daily_report_id: row.daily_report_id, staff_id: row.staff_id, staff_name: row.staff_name, project_id: row.project_id, project_name: row.project_name,
+      work_date: row.work_date, submitted_at: row.submitted_at, entry_method: row.entry_method, values: ctx.values,
+      admin_edited_at: row.admin_edited_at, admin_edited_by_name: row.admin_edited_by_name },
+    fields: [...ctx.fields, ...extra], edits: list, reason_max: REPORT_EDIT_REASON_MAX,
+  })
+})
+// 値を直す。values は項目のキー → 値（送らなかった項目は今の値のまま）、reason は理由（任意）。
+// expected_submitted_at・expected_admin_edited_at（画面を開いたときの値）を送ると、その後にスタッフが出し直した・ほかの管理者が直したときは 409 を返して書かない
+api.put('/admin/daily-reports/:id{[0-9]+}/values', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({})) as any
+  const has = (k: string) => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k)
+  const id = toInt(c.req.param('id'), 1)
+  const ctx = id ? await loadReportEditContext(db, u.company_id, id) : null
+  if (!ctx) return c.json({ error: '日報が見つかりません' }, 404)
+  const { row } = ctx
+  if ((has('expected_submitted_at') && (b.expected_submitted_at || null) !== (row.submitted_at || null))
+    || (has('expected_admin_edited_at') && (b.expected_admin_edited_at || null) !== (row.admin_edited_at || null))) return c.json({ error: REPORT_EDIT_CONFLICT }, 409)
+  if (b.reason !== undefined && b.reason !== null && typeof b.reason !== 'string') return c.json({ error: '理由の形式が正しくありません' }, 400)
+  const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim() : null
+  if (reason && reason.length > REPORT_EDIT_REASON_MAX) return c.json({ error: `理由は${REPORT_EDIT_REASON_MAX}文字以内で入力してください` }, 400)
+  const built = buildAdminReportEdit(ctx.fields, ctx.values, b.values, { rules: reportFieldRulesError, pick: pickReportValues })
+  if ('error' in built) return c.json({ error: built.error }, 400)
+  if (!built.changed.length) return c.json({ ok: true, changed: false, changed_keys: [] })
+  const now = nowJST()
+  const after = JSON.stringify(built.values)
+  // 読んだときの値・提出日時のままのときだけ書く（履歴と上書きを1つの batch で、同じ条件で。片方だけにはならない）
+  const cond = 'daily_report_id = ? AND company_id = ? AND report_values IS ? AND submitted_at IS ?'
+  const condBinds = [id, u.company_id, row.report_values ?? null, row.submitted_at ?? null]
+  const [, upd] = await db.batch([
+    db.prepare(`INSERT INTO daily_report_edits (company_id, daily_report_id, kind, before_values, after_values, changed_keys, reason, edited_by, edited_at)
+      SELECT company_id, daily_report_id, 'admin_edit', report_values, ?, ?, ?, ?, ? FROM daily_reports WHERE ${cond}`)
+      .bind(after, JSON.stringify(built.changed), reason, u.user_id, now, ...condBinds),
+    db.prepare(`UPDATE daily_reports SET report_values = ?, admin_edited_at = ?, admin_edited_by = ? WHERE ${cond}`).bind(after, now, u.user_id, ...condBinds),
+  ])
+  if (!(upd.meta?.changes ?? 0)) return c.json({ error: REPORT_EDIT_CONFLICT }, 409)
+  const label = new Map(ctx.fields.map(f => [f.key, f.label]))
+  const changes = built.changed.map(k => ({ label: label.get(k) || k, before: ctx.values[k], after: built.values[k] }))
+  const notified = await notifyReportEdit(c, u.company_id, id!, u.name, changes, reason)
+  return c.json({ ok: true, changed: true, changed_keys: built.changed, admin_edited_at: now, staff_notified: notified })
 })
 
 // インシデント・クレームの対応状況（#169）。status: open（未対応）/ in_progress（対応中）/ done（対応済み）、memo: 対応メモ（空欄で削除）、
@@ -7163,6 +7341,12 @@ api.get('/admin/billing-check', async (c) => {
   }
   for (const s of money) { add(byProject, s.project_id, s); add(byStaff, `${s.staff_id}:${s.project_id}`, s) }
   const zero: Money = { base: 0, transport: 0, adjust: 0, total: 0 }
+  // 月額（固定。#9702）: 今日までにその月の確定・代打のシフトがあれば、案件に1回（スタッフ別の月額はそのスタッフの行にも）足す
+  const monthly = await loadMonthlyLines(c.env.DB, u.company_id, { months: [month], until: todayJST() })
+  const monthlyBy = (k: (l: (typeof monthly)[number]) => string | null) => {
+    const m = new Map<string, number>(); for (const l of monthly) { const key = k(l); if (key) m.set(key, (m.get(key) || 0) + l.amount) } return m
+  }
+  const monthlyOfProject = monthlyBy(l => String(l.project_id)), monthlyOfStaff = monthlyBy(l => (l.staff_id == null ? null : `${l.staff_id}:${l.project_id}`))
   // 稼働人数は確定・代打のシフトの人だけを数える（欠勤・希望（仮）だけの人は数えない）。
   // 日報は、確定・代打のシフトのうち日報が必要なもの（シフト → スタッフ → 案件の設定）を分母に、そのシフトの日報があるものを分子に数える（#448）。
   // 日報の照合は shift_id、shift_id の無い古い日報はスタッフ・稼働日・案件（lib/daily-report.ts の findDailyReport と同じ）
@@ -7196,10 +7380,18 @@ api.get('/admin/billing-check', async (c) => {
     GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()).all()
 
   // total_amount / amount = 請求基本額、total_transport / transport = 請求する交通費、total_adjust / adjust = 請求の調整、total_bill / total = 請求合計（精算の請求合計と同じ）
+  // total_monthly / monthly = 月額（固定。#9702。請求合計に含む）。monthly_lines = 月額の行（案件全体・スタッフ別）
   return c.json({
     month,
-    by_project: (rows.results as any[]).map(p => { const m = byProject.get(p.project_id) || zero; return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_bill: m.total } }),
-    detail: (detail.results as any[]).map(d => { const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero; return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, total: m.total } }),
+    by_project: (rows.results as any[]).map(p => {
+      const m = byProject.get(p.project_id) || zero, mo = monthlyOfProject.get(String(p.project_id)) || 0
+      return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_monthly: mo, total_bill: m.total + mo }
+    }),
+    detail: (detail.results as any[]).map(d => {
+      const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero, mo = monthlyOfStaff.get(`${d.staff_id}:${d.project_id}`) || 0
+      return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, monthly: mo, total: m.total + mo }
+    }),
+    monthly_lines: monthly,
   })
 })
 
@@ -8015,7 +8207,7 @@ api.get('/admin/daily-reports-csv', async (c) => {
     where += ` AND ${col} = ?`; binds.push(v)
   }
   const { rows, total } = await loadLatestForCsv(db, `SELECT dr.work_date, dr.submitted_at, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_checked, dr.manager_comment, dr.staff_id, dr.project_id, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name
+      dr.manager_checked, dr.manager_comment, dr.admin_edited_at, dr.staff_id, dr.project_id, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name
     FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
     JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
     WHERE ${where} ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC`,
@@ -8042,9 +8234,10 @@ api.get('/admin/daily-reports-csv', async (c) => {
   for (const v of values) for (const k of Object.keys(v)) if (!cols.has(k)) cols.set(k, k)
   const cell = (x: unknown) => x == null ? '' : Array.isArray(x) ? x.join('、') : typeof x === 'object' ? JSON.stringify(x) : x
   const keys = [...cols.keys()]
-  const header = ['稼働日', '案件', 'スタッフ', 'スタッフID', '提出日時', 'インシデント', 'クレーム', '確認', '管理者コメント', ...keys.map(k => cols.get(k) as string)]
+  // 管理者の修正（#9707）: 管理者が値を直した日時（値の列は直した後の値）
+  const header = ['稼働日', '案件', 'スタッフ', 'スタッフID', '提出日時', 'インシデント', 'クレーム', '確認', '管理者コメント', '管理者の修正', ...keys.map(k => cols.get(k) as string)]
   const body = rows.map((r, i) => [r.work_date, r.project_name, r.staff_name, r.staff_id, r.submitted_at, r.incident_flag ? 'あり' : '', r.complaint_flag ? 'あり' : '',
-    r.manager_checked ? '確認済み' : '未確認', r.manager_comment || '', ...keys.map(k => cell(values[i][k]))])
+    r.manager_checked ? '確認済み' : '未確認', r.manager_comment || '', r.admin_edited_at || '', ...keys.map(k => cell(values[i][k]))])
   return csvResponse(`日報_${from}_${to}.csv`, toCsv(header, body, { note: csvLimitNote(total, DR_CSV_LIMIT) }), csvLimitHeaders(total, DR_CSV_LIMIT))
 })
 // 日報の保存期間と、今後30日のうちに3年を過ぎて削除される件数（日報一覧の案内に出す）

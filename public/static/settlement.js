@@ -116,7 +116,8 @@
 
       <section class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4" id="settle-totals">
         ${[['シフト', t.shifts + '件' + (t.cancel_shifts ? `<span class="text-[10px] text-gray-400 block">うち欠勤・中止 ${t.cancel_shifts}件</span>` : '')], ['確定済み', `${t.confirmed} / ${t.shifts}`],
-          ['請求合計', yen(t.bill) + (t.cancel_bill ? `<span class="text-[10px] text-gray-400 block">うちキャンセル料 ${yen(t.cancel_bill)}</span>` : '')],
+          ['請求合計', yen(t.bill) + (t.cancel_bill ? `<span class="text-[10px] text-gray-400 block">うちキャンセル料 ${yen(t.cancel_bill)}</span>` : '')
+            + (t.monthly_bill ? `<span class="text-[10px] text-gray-400 block" id="settle-monthly-total">うち月額 ${yen(t.monthly_bill)}（${Number(t.monthly_count)}件）</span>` : '')],
           ['支払合計', yen(t.pay) + (t.cancel_pay ? `<span class="text-[10px] text-gray-400 block">うち補償・控除 ${yen(t.cancel_pay)}</span>` : '') + (t.pay_unset ? `<span class="text-[10px] text-amber-600 block">単価未設定 ${t.pay_unset}件</span>` : '')],
           ['粗利', (gross == null ? '-' : yen(gross)) + `<span class="text-[10px] text-gray-400 block">${t.profit_bill && gross != null ? Math.round(gross / t.profit_bill * 1000) / 10 + '%' : '-'}</span>`
             + (t.pay_unset ? `<span class="text-[10px] text-amber-600 block">支払未設定 ${t.pay_unset}件・請求 ${yen(t.pay_unset_bill)} を除外</span>` : '')],
@@ -218,6 +219,10 @@
     if (S.tab === 'billing') {
       // 請求明細書はクライアントごと（同じクライアントの最初の行にだけリンクを出す）
       const seen = new Set()
+      // 月額（固定。#9702）の行は、同じ案件のシフトの行の後に、シフトの行のない案件の月額は最後に出す
+      const monthlyLeft = new Map()
+      for (const l of data.monthly_lines || []) monthlyLeft.set(l.project_id, [...(monthlyLeft.get(l.project_id) || []), l])
+      const monthlyRows = (pid) => { const a = monthlyLeft.get(pid) || []; monthlyLeft.delete(pid); return a.map(monthlyRowHtml).join('') }
       host.innerHTML = `<div class="overflow-x-auto"><table class="tbl" id="settle-billing-table"><thead><tr><th>クライアント</th><th>案件</th><th class="text-right">シフト</th><th class="text-right">人数</th><th class="text-right">時間</th>
         <th class="text-right">請求基本額</th><th class="text-right">交通費</th><th class="text-right">調整</th><th class="text-right">請求合計</th><th class="text-right">支払合計</th><th class="text-right">粗利</th><th>確定</th><th></th></tr></thead><tbody>
         ${data.by_client.map(g => {
@@ -228,9 +233,12 @@
           <td class="text-right">${g.profit == null ? '<span class="text-gray-400" title="支払単価が未設定のため計算できません">—</span>' : yen(g.profit)}${g.pay_unset && g.profit != null ? `<span class="block text-[10px] text-amber-600">請求 ${yen(g.pay_unset_bill)} を除外</span>` : ''}</td>
           <td>${g.confirmed === g.shifts ? '<span class="badge badge-green">確定</span>' : `<span class="badge badge-gray">${g.confirmed}/${g.shifts}</span>`}</td>
           <td class="whitespace-nowrap">${first ? `<a class="text-blue-600 hover:underline text-xs" target="_blank" rel="noopener" href="/api/admin/settlement/statement?kind=billing&client_id=${cid}&${period()}" title="このクライアントの確定済みのシフトの請求明細書（印刷・PDF保存）"><i class="fas fa-file-invoice"></i> 請求明細書</a>` : ''}</td></tr>`
-        }).join('') || '<tr><td colspan="13" class="text-center text-gray-400">対象のシフトはありません</td></tr>'}
+        }).map((html, i) => html + monthlyRows(Number(data.by_client[i].project_id))).join('')
+        + [...monthlyLeft.values()].flat().map(monthlyRowHtml).join('')
+        || '<tr><td colspan="13" class="text-center text-gray-400">対象のシフトはありません</td></tr>'}
         </tbody></table></div>
-        <p class="text-[11px] text-gray-400 mt-2">請求明細書は、表示中の期間のそのクライアントの確定済みのシフトを載せます（案件・スタッフ・支払区分の絞り込みは使いません）</p>`
+        <p class="text-[11px] text-gray-400 mt-2">請求明細書は、表示中の期間のそのクライアントの確定済みのシフトを載せます（案件・スタッフ・支払区分の絞り込みは使いません）</p>
+        <p class="text-[11px] text-gray-400 mt-1" id="settle-monthly-note">月額（固定）は、その月に確定・代打のシフトが1件以上あれば月に1回だけ請求します。その月の最初のシフトの日が表示中の期間に入る月の分を出します（単価の設定のタブで登録）${S.payee_type ? '。支払区分で絞り込んでいるときは出しません' : ''}</p>`
       return
     }
     if (S.tab === 'payment') {
@@ -270,6 +278,88 @@
       </tbody></table></div>`
     syncSelectionUi()
   }
+  // 月額（固定。#9702）の行。シフトの数・時間には左右されないので、シフト・人数・時間・支払・粗利の列は空ける
+  function monthlyRowHtml(l) {
+    const ym = dayjs(l.ym + '-01').format('YYYY年M月')
+    return `<tr class="bg-blue-50/40" data-monthly-rule="${Number(l.rule_id)}"><td>${esc(l.client_name || '-')}</td>
+      <td class="font-medium">${esc(l.project_name)}<span class="badge badge-blue ml-1">月額</span><span class="block text-[11px] text-gray-500">${esc(ym)}分・${l.staff_id == null ? '案件全体' : esc(l.staff_name || '')}${l.memo ? '・' + esc(l.memo) : ''}</span></td>
+      <td class="text-right text-gray-400" colspan="3">その月のシフト ${Number(l.shifts)}件</td>
+      <td class="text-right">${yen(l.amount)}</td><td class="text-right">-</td><td class="text-right">-</td><td class="text-right font-bold">${yen(l.amount)}</td>
+      <td class="text-right text-gray-400">-</td><td class="text-right">${yen(l.amount)}</td>
+      <td>${l.confirmed ? '<span class="badge badge-green whitespace-nowrap" title="その月に確定済みのシフトがあります">確定</span>' : '<span class="badge badge-gray whitespace-nowrap" title="その月のシフトがまだ確定されていません">未確定</span>'}</td><td></td></tr>`
+  }
+  // 単価の設定のタブの「月額（固定）」の欄（#9702）。案件全体・スタッフ別の月額を登録・変更・削除する（API は /api/admin/settlement/monthly-rules）
+  const monthYM = (ym) => (ym ? dayjs(ym + '-01').format('YYYY年M月') : '')
+  const monthlyPeriod = (r) => (r.valid_from || r.valid_to ? `${monthYM(r.valid_from)}〜${monthYM(r.valid_to)}` : '期限なし')
+  let monthlyCtx = null
+  async function renderMonthlyPanel(pid) {
+    const host = document.getElementById('settle-monthly-panel'); if (!host) return
+    if (!pid) { host.innerHTML = ''; return }
+    let data
+    try { data = (await axios.get('/api/admin/settlement/monthly-rules', { params: { project_id: pid } })).data } catch (e) {
+      host.innerHTML = `<p class="text-sm text-red-600">${esc(errMsg(e, '月額を読み込めませんでした'))}</p>`; return
+    }
+    if (String(S.pricing_pid || S.project_id || '') !== String(pid)) return
+    monthlyCtx = { pid: Number(pid), rules: data.rules || [], staff: data.staff || [] }
+    host.innerHTML = `
+      <section class="card p-4 mt-4" id="project-monthly-rules">
+        <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-calendar-check text-blue-600 mr-1"></i>月額（固定）の請求</h3>
+          <button class="btn btn-outline text-xs" data-action="monthlyAdd"><i class="fas fa-plus"></i>月額を追加</button>
+        </div>
+        <p class="text-[11px] text-gray-500 mb-2">その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求します（シフトの数・時間には左右されません）。シフトの時給・日額とは別の行として、精算の請求・請求前確認・請求の CSV・請求明細書に出します。
+          スタッフ別の月額は、そのスタッフのシフトがある月だけ請求します（案件全体の月額とは別に請求します）。金額を変えるときは、適用開始月を入れて追加してください（前の月額はその前の月までになります。日割りはしません）。支払（スタッフへの給与）には使いません</p>
+        <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr><th>対象</th><th class="text-right">月額</th><th>適用する月</th><th>備考</th><th></th></tr></thead><tbody>
+          ${monthlyCtx.rules.map(r => `<tr data-monthly-rule="${Number(r.rule_id)}"><td>${r.staff_id == null ? '案件全体' : `<a class="text-blue-600 hover:underline" href="#staff/${Number(r.staff_id)}">${esc(r.staff_name || '')}</a>`}</td>
+            <td class="text-right font-bold">${yen(r.amount)}</td><td>${esc(monthlyPeriod(r))}</td><td>${esc(r.memo || '')}</td>
+            <td class="whitespace-nowrap"><button class="btn btn-outline text-xs" data-action="monthlyEdit" data-id="${Number(r.rule_id)}"><i class="fas fa-pen"></i>変更</button>
+              <button class="btn btn-outline text-xs" data-action="monthlyDelete" data-id="${Number(r.rule_id)}"><i class="fas fa-trash"></i>削除</button></td></tr>`).join('')
+            || '<tr><td colspan="5" class="text-center text-gray-400">月額は登録されていません</td></tr>'}
+        </tbody></table></div>
+      </section>`
+  }
+  function monthlyModal(rule) {
+    const ctx = monthlyCtx; if (!ctx) return
+    modal(`
+      <h3 class="font-bold text-lg mb-1">${rule ? '月額の変更' : '月額の追加'}</h3>
+      <p class="text-xs text-gray-500 mb-3">その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求します</p>
+      <div class="space-y-3 text-sm">
+        <label class="block">対象${rule ? `<p class="font-medium mt-1">${rule.staff_id == null ? '案件全体' : esc(rule.staff_name || '')}</p>` : `
+          <select id="mr-staff" class="inp text-sm"><option value="">案件全体</option>${ctx.staff.map(s => `<option value="${Number(s.staff_id)}">${esc(s.name)}</option>`).join('')}</select>
+          <span class="block text-[11px] text-gray-400 mt-1">スタッフは、この案件にシフトのある人から選べます</span>`}</label>
+        <label class="block">月額（円）<input id="mr-amount" type="number" min="1" step="1" inputmode="numeric" class="inp text-sm" value="${rule ? Number(rule.amount) : ''}"></label>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="block">適用開始月<input id="mr-from" type="month" class="inp text-sm" value="${esc(rule ? rule.valid_from || '' : '')}"></label>
+          <label class="block">終了月<input id="mr-to" type="month" class="inp text-sm" value="${esc(rule ? rule.valid_to || '' : '')}"></label>
+        </div>
+        <p class="text-[11px] text-gray-400">空欄は期限なしです。月の途中では変えられません（その月は1つの月額だけを使います）</p>
+        <label class="block">備考（請求明細書に出します）<input id="mr-memo" class="inp text-sm" maxlength="200" value="${esc(rule ? rule.memo || '' : '')}"></label>
+      </div>
+      <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" data-action="settleCloseModal">やめる</button>
+        <button class="btn btn-primary flex-1" data-action="monthlySave" data-id="${rule ? Number(rule.rule_id) : ''}">保存</button></div>`)
+  }
+  delegate('monthlyAdd', () => monthlyModal(null))
+  delegate('monthlyEdit', el => { const r = monthlyCtx && monthlyCtx.rules.find(x => String(x.rule_id) === el.dataset.id); if (r) monthlyModal(r) })
+  delegate('monthlySave', el => withSubmitLock(el, async () => {
+    const ctx = monthlyCtx; if (!ctx) return
+    // 全角の数字で入れても保存できるよう、半角にそろえる
+    const amount = String(document.getElementById('mr-amount').value || '').normalize('NFKC').replace(/[,\s円]/g, '')
+    if (!/^\d+$/.test(amount) || Number(amount) < 1) { toast('月額を1円以上の整数で入力してください'); return }
+    const body = { amount: Number(amount), valid_from: document.getElementById('mr-from').value, valid_to: document.getElementById('mr-to').value, memo: document.getElementById('mr-memo').value }
+    try {
+      if (el.dataset.id) await axios.put('/api/admin/settlement/monthly-rules/' + encodeURIComponent(el.dataset.id), body)
+      else {
+        const { data } = await axios.post('/api/admin/settlement/monthly-rules', { ...body, project_id: ctx.pid, staff_id: document.getElementById('mr-staff').value || null })
+        if (data.revised_rule_id) toast('前の月額を、適用開始月の前の月までにしました')
+      }
+      closeModal(); toast('月額を保存しました'); await renderMonthlyPanel(ctx.pid)
+    } catch (e) { toast(errMsg(e, '保存できませんでした')) }
+  }))
+  delegate('monthlyDelete', async el => {
+    const ctx = monthlyCtx; if (!ctx) return
+    if (!confirm('この月額を削除しますか？（この月額で請求していた月の請求額も変わります）')) return
+    try { await axios.delete('/api/admin/settlement/monthly-rules/' + encodeURIComponent(el.dataset.id)); toast('削除しました'); await renderMonthlyPanel(ctx.pid) } catch (e) { toast(errMsg(e, '削除できませんでした')) }
+  })
   // 単価の設定（9203）: 案件を選ぶと、区分・標準単価と単価ルール（開催場所・役割・スタッフ別。インセンティブ・備考）を出す。
   // 中身は public/static/shift-board.js の renderSettlePricingPanel（計算・API は今までと同じ）
   function renderPricingTab(host) {
@@ -283,12 +373,15 @@
           ${list.map(p => `<option value="${esc(p.project_id)}" ${String(p.project_id) === pid ? 'selected' : ''}>${esc(p.project_name)}${p.client_id ? `（${esc(clientName(p.client_id))}）` : ''}${p.status && p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}</select></label>
       </div>
       <p class="text-[11px] text-gray-400 mb-3">区分・標準単価と、開催場所・役割・スタッフ別の単価ルールを設定します。人によって単価を変えるときはスタッフを選んだルールを、インセンティブは加算額を入れます。保存しても登録済みのシフトの金額は変わらず、「単価ルールを再適用」で反映します（確定済みのシフトは変わりません）</p>
-      <div id="settle-pricing-panel"></div>`
+      <div id="settle-pricing-panel"></div>
+      <div id="settle-monthly-panel"></div>`
     document.getElementById('settle-pricing-project').addEventListener('change', (ev) => {
       S.pricing_pid = ev.target.value
       if (window.renderSettlePricingPanel) window.renderSettlePricingPanel(Number(S.pricing_pid) || null)
+      renderMonthlyPanel(Number(S.pricing_pid) || null)
     })
     if (window.renderSettlePricingPanel) window.renderSettlePricingPanel(Number(pid) || null)
+    renderMonthlyPanel(Number(pid) || null)
   }
   function detailRowHtml(r, sel) {
     const cancel = r.kind === 'cancel'

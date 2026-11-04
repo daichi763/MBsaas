@@ -1095,10 +1095,11 @@ noticeAckPublicApi.post('/', async (c) => {
 //   shift_assigned / shift_changed / shift_cancelled … シフトの登録・変更（日時・場所・案件・状態）・取消（#155）
 //   recruit_result … 募集への応募の承認・見送りの結果（#151）/ recruit_new … 新しい募集（#156）
 //   daily_report_comment … 日報への管理者のコメント（#158）
+//   daily_report_edit … 管理者が日報の実績の値を直したこと（#9707）
 // 宛先は、スタッフマスタ行のユーザーがログインできるスタッフ（role = 'staff'・在籍中）のときだけ。ログインのない人（roster_only）には送らない。
 // メールの送信結果は email_logs に残す（notification_emails は打刻修正の申請に結び付くため使わない）。通知の失敗で元の操作は取り消さない
 // =========================================================
-export const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment'] as const
+export const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment', 'daily_report_edit'] as const
 MAIL_TYPES.push('shift_change', 'recruit_result', 'recruit_new')
 
 type StaffUser = { staff_id: number; user_id: number; name: string; email: string | null }
@@ -1422,6 +1423,31 @@ export async function notifyReportComment(c: any, companyId: number, dailyReport
   }
 }
 
+// ---------- 日報の実績の修正（#9707） ----------
+// 管理者が日報の値を直したときに、日報を出したスタッフに短い文で知らせる（アプリ内のみ。コメントの通知と同じ仕組み）。
+// changes は直した項目（表示名・前・後）。同じ日報のまだ読んでいない修正の通知は、新しい内容の1件に置き換える。戻り値は通知したか
+export async function notifyReportEdit(c: any, companyId: number, dailyReportId: number, actorName: string,
+  changes: { label: string; before: unknown; after: unknown }[], reason: string | null): Promise<boolean> {
+  try {
+    const db: D1Database = c.env.DB
+    const r = await db.prepare(`SELECT dr.staff_id, dr.work_date, p.project_name FROM daily_reports dr LEFT JOIN projects p ON p.project_id = dr.project_id
+      WHERE dr.daily_report_id = ? AND dr.company_id = ?`).bind(dailyReportId, companyId).first() as any
+    if (!r) return false
+    const u = (await staffLoginUsers(db, [r.staff_id])).get(Number(r.staff_id))
+    if (!u) return false
+    const val = (v: unknown) => (v === undefined || v === null || v === '' ? '（空欄）' : clip(String(v).replace(/\s+/g, ' '), 40))
+    const lines = changes.slice(0, 5).map(x => `${x.label}: ${val(x.before)} → ${val(x.after)}`)
+    if (changes.length > 5) lines.push(`ほか${changes.length - 5}項目`)
+    await db.prepare(`DELETE FROM user_notifications WHERE kind = 'daily_report_edit' AND related_id = ? AND company_id = ? AND read_at IS NULL`).bind(dailyReportId, companyId).run()
+    await insertStaffNotifications(db, [{ company_id: companyId, user_id: u.user_id, kind: 'daily_report_edit', title: `日報の実績を管理者が修正しました: ${fmtDay(r.work_date)} ${r.project_name || ''}`,
+      body: `${lines.join('\n')}${reason ? `\n理由: ${clip(reason, 200)}` : ''}\n修正した人: ${actorName || '管理者'}`, link: '#report', related_id: dailyReportId }])
+    return true
+  } catch (e) {
+    console.log(`report edit notify failed: report=${dailyReportId}`)
+    return false
+  }
+}
+
 // =========================================================
 // 通知の受け取り設定（#284）とプッシュ通知（#178）（作業単位 w6-push）
 // 受け取り設定: ユーザーごと・通知のまとまり（NOTIFY_PREF_GROUPS）ごとに、メールとプッシュの ON/OFF を持つ（user_notification_prefs）。
@@ -1470,7 +1496,7 @@ export const NOTIFY_PREF_GROUPS: PrefGroup[] = [
   { key: 'recruit_result', audience: 'staff', label: '応募の結果', desc: '応募したお仕事の確定・見送り', kinds: ['recruit_result'], push: true },
   { key: 'correction_staff', audience: 'staff', label: '打刻の修正・代理入力', desc: '打刻修正の申請の結果、管理者による修正・代理入力',
     kinds: ['correction_approved', 'correction_rejected', 'correction_changed_by_admin', 'correction_cancelled', 'correction_proxy_submitted', 'attendance_proxy'], push: true },
-  { key: 'daily_report_comment', audience: 'staff', label: '日報へのコメント', desc: '管理者が日報にコメントしたとき', kinds: ['daily_report_comment'], push: true },
+  { key: 'daily_report_comment', audience: 'staff', label: '日報へのコメント', desc: '管理者が日報にコメントしたとき・日報の実績を直したとき', kinds: ['daily_report_comment', 'daily_report_edit'], push: true },
   { key: 'staff_other', audience: 'staff', label: 'そのほかの通知', desc: '相談への返信・申請の結果・お知らせの確認のお願いなど', kinds: [], push: true },
 ]
 const audienceOf = (role: string): 'admin' | 'staff' => (role === 'staff' ? 'staff' : 'admin')

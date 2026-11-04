@@ -1316,6 +1316,27 @@ window.addStaff = async function (force) {
 
 // ============ スタッフ詳細 ============
 const GENDER_LABEL_ADMIN = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
+// 年齢の表示（#9710）。生年月日がなく、年齢の欄（生年月日が分からないとき）から推定した年齢は「約31歳（2026/11 時点で30歳）」の形で出す
+function ageLabel(p) {
+  if (!p || p.age == null) return '-'
+  if (!p.age_estimated) return Number(p.age) + '歳'
+  const on = p.age_entered_on ? dayjs(p.age_entered_on).format('YYYY/MM') : ''
+  const base = Number(p.age_entered)
+  return `約${Number(p.age)}歳` + (on ? (base === Number(p.age) ? `（${on} 時点）` : `（${on} 時点で${base}歳）`) : '')
+}
+// 年齢の入力欄（生年月日が分からないとき）。今の推定の年齢を入れておく（変えなければ入力した日も変わらない）。
+// 生年月日の欄に data-age-input="この欄の id" を付けると、生年月日を入れている間はこの欄を使えなくする
+function ageInputHtml(id, p, cls) {
+  const dob = p && p.date_of_birth
+  return `<span class="inline-flex items-center gap-1"><input id="${id}" type="text" inputmode="numeric" maxlength="3" class="${cls || 'inp text-xs'} w-20" value="${p && p.age_estimated && p.age != null ? Number(p.age) : ''}" placeholder="例: 30" ${dob ? 'disabled' : ''} aria-label="年齢（生年月日が分からないとき）">歳</span>
+    <span class="block text-[11px] text-gray-400">生年月日が分からないときだけ入れます（入れた日から年が経つと自動で増えます。生年月日を入れたらそちらを使います）</span>`
+}
+document.addEventListener('input', (ev) => {
+  const t = ev.target
+  if (!t || !t.dataset || !t.dataset.ageInput) return
+  const a = document.getElementById(t.dataset.ageInput)
+  if (a) a.disabled = !!t.value
+})
 function genderOptions(v) {
   return `<option value="">-</option>` + Object.entries(GENDER_LABEL_ADMIN).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
 }
@@ -1508,7 +1529,8 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('フリガナ', ed ? `<input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}">` : esc(p.kana || '-'))}
           ${bi('性別', ed ? `<select id="staff-gender" class="inp text-xs">${genderOptions(p.gender)}</select>` : esc(GENDER_LABEL_ADMIN[p.gender] || '-'))}
           ${linked ? bi('年代', esc(p.age_group || '-') + '<span class="block text-[11px] text-gray-400">生年月日は所属元から共有されません</span>')
-            : bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}">` : esc(p.date_of_birth || '-')) + bi('年齢', p.age != null ? p.age + '歳' : '-')}
+            : bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}" data-age-input="staff-age">` : esc(p.date_of_birth || '-'))
+              + bi('年齢', ed ? ageInputHtml('staff-age', p) : esc(ageLabel(p)))}
           ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-gray-500' : 'text-amber-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
           ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? partnerSelectHtml(affData, p.affiliation)
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
@@ -1927,6 +1949,7 @@ window.saveStaffBasicInfo = async function (sid) {
     if (document.getElementById('staff-name')) Object.assign(body, {
       name: (val('staff-name') || '').trim(),
       kana: val('staff-kana'), gender: val('staff-gender'), date_of_birth: val('staff-dob') || null,
+      ...(document.getElementById('staff-age') ? { age_entered: toHalfWidthNumber(val('staff-age')) || null } : {}),
       affiliation: val('staff-affiliation'), affiliation_contact: val('staff-affiliation-contact'),
       nearest_station_line: val('staff-station-line'), nearest_station: val('staff-station'),
     })
@@ -2467,6 +2490,12 @@ delegate('addFollowLog', el => addFollowLog(Number(el.dataset.id), el))
 // ============ 案件 ============
 // 請求の標準単価の単位（時給の案件を日単価に見せない #91。日額・時給以外の古い値は日額として計算している）
 function priceUnitLabel(t) { return t === 'hourly' ? '/時' : '/日' }
+// 案件の請求単価の表示。月額（固定。#9702）の案件は「¥300,000/月」、シフトの単価もあれば「¥16,000/日 ＋ 月額 ¥300,000」
+function projectPriceText(p) {
+  const m = p.monthly_amount == null ? null : Number(p.monthly_amount)
+  if (m == null) return `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}`
+  return Number(p.unit_price || 0) ? `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} ＋ 月額 ${yen(m)}` : `${yen(m)}/月`
+}
 // 月の切り替え（案件一覧・案件詳細・クライアント詳細で共通。#450）
 function monthNavHtml(action, month) {
   const m0 = dayjs(month + '-01')
@@ -2547,7 +2576,7 @@ function drawProjectRows() {
               <td class="text-xs">${esc(p.client_name || '-')}</td>
               <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
               <td class="text-xs">${esc(p.location || '-')}</td>
-              <td class="whitespace-nowrap">${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}</td>
+              <td class="whitespace-nowrap">${esc(projectPriceText(p))}</td>
               <td class="whitespace-nowrap">${Number(p.month_shifts || 0)}件 (${Number(p.staff_count || 0)}名)</td>
               <td class="font-bold">${seiyakuCell(p.month_seiyaku, '日報テンプレートに「成約」の項目がありません')}</td>
               <td>${p.incidents ? `<span class="badge badge-red">${Number(p.incidents)}件</span>` : '<span class="text-gray-300">0</span>'}</td>
@@ -2656,8 +2685,9 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="np-loc" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">請求単価（円）</label>
-          <div class="flex gap-2"><select id="np-price-unit" class="inp w-24 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option></select>
-            <input id="np-price" type="number" min="0" class="inp" value="16000"></div>
+          <div class="flex gap-2"><select id="np-price-unit" class="inp w-32 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option><option value="monthly">月額（固定）</option></select>
+            <input id="np-price" type="number" min="0" class="inp" value="16000" inputmode="numeric"></div>
+          <p id="np-price-monthly-note" class="text-[11px] text-blue-700 mt-1 hidden">月額（固定）は、その月にシフトが1件以上あれば月に1回だけ請求します（シフトの数・時間には左右されません）。シフトごとの請求単価は 0円 になります</p>
           <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
         <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
@@ -2670,6 +2700,9 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addProject">登録する</button></div>
     </div>`)
+  // 月額（固定）を選んだときだけ説明を出す（#9702）
+  const unitSel = document.getElementById('np-price-unit')
+  unitSel.addEventListener('change', () => document.getElementById('np-price-monthly-note').classList.toggle('hidden', unitSel.value !== 'monthly'))
 }
 // 登録する。同名の登録があるとき（サーバーが confirm_duplicate を返す）は、確認できたら確認済みとして送り直す。取りやめたら null を返す
 async function postConfirmingDuplicate(url, body) {
@@ -2686,6 +2719,7 @@ delegate('addProject', el => withSubmitLock(el, addProject))
 window.addProject = async function () {
   const name = document.getElementById('np-name').value.trim()
   if (!name) { toast('案件名を入力してください'); return }
+  if (document.getElementById('np-price-unit').value === 'monthly' && !(Number(document.getElementById('np-price').value) >= 1)) { toast('月額を1円以上で入力してください'); return }
   try {
     const res = await postConfirmingDuplicate('/api/admin/projects', {
       project_name: name, client_id: document.getElementById('np-client').value || null,
@@ -2761,9 +2795,14 @@ async function renderProjectDetail(pid) {
     ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-gray-50 text-sm text-gray-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-      <div class="card p-4"><p class="text-xs text-gray-500">請求単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p></div>
+      <div class="card p-4" id="project-bill-price"><p class="text-xs text-gray-500">請求単価</p>${p.monthly_amount == null
+        ? `<p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p>`
+        : `<p class="text-xl font-bold">${yen(p.monthly_amount)}<span class="text-xs font-normal text-gray-400">/月（固定）</span></p>
+          ${Number(p.unit_price || 0) ? `<p class="text-xs text-gray-500">シフトの単価 ${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} と別に請求</p>` : ''}`}
+        ${Number(p.monthly_staff_rules || 0) ? `<p class="text-[11px] text-gray-400">スタッフ別の月額 ${Number(p.monthly_staff_rules)}件</p>` : ''}</div>
       <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-gray-400">件</span></p></div>
-      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p>
+        ${Number(data.month_summary.monthly_bill || 0) ? `<p class="text-[11px] text-gray-400">うち月額 ${yen(data.month_summary.monthly_bill)}</p>` : ''}</div>
       <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
         <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a>
         <a href="#projects/templates" class="text-xs text-blue-600 hover:underline ml-2">テンプレートの管理</a></div>
@@ -3243,7 +3282,7 @@ async function renderClients() {
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
-      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・稼働案件で検索" value="${esc(L.q)}">
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・住所・稼働案件で検索" value="${esc(L.q)}">
       <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
@@ -3258,7 +3297,7 @@ async function renderClients() {
 }
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
-  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email]))
+  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
     name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
@@ -3276,6 +3315,7 @@ function drawClientCards() {
           <dl class="text-xs text-gray-600 space-y-1.5">
             <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
+            ${c.address || c.postal_code || c.website_url ? `<div class="flex"><dt class="w-20 text-gray-400 shrink-0">住所</dt><dd class="min-w-0"><span class="block truncate max-w-[220px]" title="${esc(postalAddress(c.postal_code, c.address))}">${esc(postalAddress(c.postal_code, c.address) || '-')}</span>${c.website_url ? `<span class="block text-gray-400 truncate max-w-[220px]">${esc(urlHost(c.website_url))}</span>` : ''}</dd></div>` : ''}
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
@@ -3293,6 +3333,14 @@ let CLIENT_DETAIL = { cid: null, month: '' }
 // 種別（#9102）。これまでの契約形態（contract_type）は DB に残すが画面には出さない
 const CLIENT_KIND_LABEL = { corporation: '法人', sole_proprietor: '個人事業主', other: 'その他' }
 const clientKindLabel = k => CLIENT_KIND_LABEL[k] || '-'
+// 郵便番号つきの住所（#9701）と、ホームページの表示（#9709。http/https のリンクだけを新しいタブで開く）
+const postalAddress = (postal, address) => [postal ? '〒' + postal : '', address || ''].filter(Boolean).join(' ')
+function urlHost(u) { try { return new URL(u).host } catch { return String(u || '') } }
+function websiteLinkHtml(u) {
+  if (!u) return '-'
+  if (!/^https?:\/\//i.test(String(u))) return esc(u)
+  return `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline break-all"><i class="fas fa-arrow-up-right-from-square text-[10px] mr-1"></i>${esc(u)}</a>`
+}
 const clientKindOptions = cur => `<option value="">（未設定）</option>${Object.entries(CLIENT_KIND_LABEL).map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`
 function clientBasicHtml(c, editing) {
   const cid = Number(c.client_id)
@@ -3303,7 +3351,8 @@ function clientBasicHtml(c, editing) {
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
           ${clientOrgHtml(c, false)}
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(c.address || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(postalAddress(c.postal_code, c.address) || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(c.website_url)}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
@@ -3326,7 +3375,9 @@ function clientBasicHtml(c, editing) {
           ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
           ${inp('cl-email', 'メール', c.email, 'type="email"')}
+          ${inp('cl-postal', '郵便番号', c.postal_code, 'inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"')}
           ${inp('cl-address', '住所', c.address)}
+          ${inp('cl-url', 'ホームページ', c.website_url, 'type="url" maxlength="500" placeholder="https://example.co.jp"')}
           <div class="flex items-center gap-2"><label for="cl-kind" class="w-28 text-xs text-gray-400 shrink-0">種別</label>
             <select id="cl-kind" class="inp text-xs flex-1">${clientKindOptions(c.client_kind)}</select></div>
           ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
@@ -3596,7 +3647,8 @@ window.saveClientBasicInfo = async function (cid) {
   try {
     await axios.put('/api/admin/clients/' + cid, {
       client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
-      address: v('cl-address'), client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
+      address: v('cl-address'), postal_code: v('cl-postal'), website_url: v('cl-url'),
+      client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
       branch_name: v('cl-branch'), department_name: v('cl-department'), invoice_number: v('cl-invoice'),
       // 代表者役職・代表者フリガナは画面に出さないので送らない（送らない項目は変わらず、これまでのデータは残る。#9304）
@@ -3731,8 +3783,8 @@ async function renderEmployeeDetail(sid) {
         ${field('sp-name', '氏名 *', s.name)}
         ${field('sp-kana', 'フリガナ', s.kana || '')}
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">性別 *</dt><dd class="flex-1"><select id="sp-gender" class="inp text-xs">${genderOptions(s.gender)}</select></dd></div>
-        ${field('sp-dob', '生年月日', s.date_of_birth, 'date')}
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">年齢</dt><dd class="text-xs">${s.age != null ? s.age + '歳' : '-'}</dd></div>
+        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="sp-dob" class="inp text-xs" value="${esc(s.date_of_birth || '')}" data-age-input="sp-age"></dd></div>
+        <div class="flex items-start gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0 pt-1">年齢</dt><dd class="flex-1 text-xs">${s.age != null ? `<span class="block mb-0.5">${esc(ageLabel(s))}</span>` : ''}${ageInputHtml('sp-age', s)}</dd></div>
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">在籍状況</dt><dd class="flex-1">
           <select id="sp-emp-status" class="inp text-xs">
             ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(s.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
@@ -3878,6 +3930,28 @@ function changeLogRowsHtml(logs) {
     <td class="py-1.5 pr-2 break-all">${changeLogValue(l.field, l.old_value)} <i class="fas fa-arrow-right text-gray-300 mx-1"></i> ${changeLogValue(l.field, l.new_value)}</td>
     <td class="py-1.5 whitespace-nowrap text-gray-500">${esc(l.changed_by_name || '-')}</td></tr>`).join('')
 }
+// 畳んだときに出す件数。開いているかは box の data-open に持つ（画面を出し直すと畳んだ状態に戻る）
+const EMPLOYEE_CHANGE_LOG_FOLDED = 5
+function applyEmployeeChangeLogFold(box) {
+  const open = box.dataset.open === '1'
+  const rows = box.querySelectorAll('#employee-change-log-rows tr')
+  rows.forEach((tr, i) => { tr.hidden = !open && i >= EMPLOYEE_CHANGE_LOG_FOLDED })
+  const more = box.querySelector('[data-action="moreEmployeeChangeLog"]'); if (more) more.classList.toggle('hidden', !open)
+  const btn = box.querySelector('[data-action="toggleEmployeeChangeLog"]')
+  const hasMore = !!more
+  if (btn) {
+    btn.classList.toggle('hidden', rows.length <= EMPLOYEE_CHANGE_LOG_FOLDED && !hasMore)
+    btn.innerHTML = open ? '<i class="fas fa-chevron-up mr-1"></i>畳む' : `<i class="fas fa-chevron-down mr-1"></i>すべて表示（${rows.length}件${hasMore ? '以上' : ''}）`
+  }
+  const note = box.querySelector('.employee-change-log-note')
+  if (note) note.textContent = !open && rows.length > EMPLOYEE_CHANGE_LOG_FOLDED ? `新しい${EMPLOYEE_CHANGE_LOG_FOLDED}件を表示しています` : ''
+}
+delegate('toggleEmployeeChangeLog', el => {
+  const box = document.getElementById('employee-change-log'); if (!box) return
+  box.dataset.open = box.dataset.open === '1' ? '' : '1'
+  applyEmployeeChangeLogFold(box)
+  if (box.dataset.open !== '1') box.scrollIntoView && box.scrollIntoView({ block: 'nearest' })
+})
 async function loadEmployeeChangeLog(sid, before) {
   const box = document.getElementById('employee-change-log')
   if (!box || Number(box.dataset.sid) !== Number(sid)) return
@@ -3892,18 +3966,26 @@ async function loadEmployeeChangeLog(sid, before) {
     if (tbody) tbody.insertAdjacentHTML('beforeend', changeLogRowsHtml(logs))
     const old = box.querySelector('[data-action="moreEmployeeChangeLog"]'); if (old) old.remove()
     if (more) box.insertAdjacentHTML('beforeend', more)
+    applyEmployeeChangeLogFold(box)
     return
   }
-  box.innerHTML = `<h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
+  box.innerHTML = `<div class="flex items-center gap-2 mb-1 flex-wrap"><h3 class="text-sm font-bold text-gray-700"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
+      <span class="text-xs text-gray-400 employee-change-log-note"></span>
+      <button type="button" class="ml-auto btn btn-outline text-xs hidden" data-action="toggleEmployeeChangeLog"></button></div>
     <p class="text-xs text-gray-400 mb-2">従業員管理とスタッフ基本情報で変わった項目を、変更した人・日時とともに残しています。口座番号・保険番号は下4桁だけを残します。</p>
     ${logs.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-left text-gray-400">
       <th class="py-1 pr-2 font-normal">日時</th><th class="py-1 pr-2 font-normal">項目</th><th class="py-1 pr-2 font-normal">変更前 → 変更後</th><th class="py-1 font-normal">変更した人</th></tr></thead>
       <tbody id="employee-change-log-rows">${changeLogRowsHtml(logs)}</tbody></table></div>${more}`
       : '<p class="text-xs text-gray-400">まだ変更の記録はありません</p>'}`
+  box.dataset.open = ''
+  applyEmployeeChangeLogFold(box)
 }
 delegate('moreEmployeeChangeLog', el => withSubmitLock(el, () => loadEmployeeChangeLog(Number(el.dataset.sid), Number(el.dataset.before))))
 
 window.saveEmployeeRecord = async function (sid) {
+  // 数として読めない値の欄（全角のまま確定してブラウザが空にした欄など）があれば、空で上書きしないよう保存を止める（#9704）
+  const bad = [...$app.querySelectorAll('input[type=number]')].find(x => x.validity && x.validity.badInput)
+  if (bad) { toast('数字は半角で入力し直してください（読み取れない値の欄があります）'); bad.focus(); return }
   const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }
   const str = (id) => document.getElementById(id).value || null
   const raw = (id) => document.getElementById(id).value
@@ -3918,6 +4000,8 @@ window.saveEmployeeRecord = async function (sid) {
     name: raw('sp-name').trim(), kana: raw('sp-kana'), gender: raw('sp-gender'), date_of_birth: str('sp-dob'),
     nearest_station_line: raw('sp-station-line'), nearest_station: raw('sp-station'),
   }
+  // 生年月日が分からないときの年齢（#9710）。欄があるときだけ送る
+  if (document.getElementById('sp-age')) profile.age_entered = toHalfWidthNumber(raw('sp-age')) || null
   if (retired !== origRetired || empStatus !== origStatus) {
     const r = retirementBody(empStatus, retired, origRetired)
     if (r.error) { toast(r.error); return }
@@ -3972,10 +4056,12 @@ window.showAddClient = function () {
         <div><label class="text-sm text-gray-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
         <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">郵便番号</label><input id="nc-postal" class="inp" inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"></div>
+        <div class="sm:col-span-2"><label class="text-sm text-gray-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
       </div>
+      <div><label class="text-sm text-gray-600 block mb-1">ホームページ</label><input id="nc-url" class="inp" type="url" maxlength="500" placeholder="https://example.co.jp"></div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addClient">登録する</button></div>
@@ -3991,6 +4077,7 @@ window.addClient = async function () {
       client_kind: document.getElementById('nc-kind').value, representative_name: document.getElementById('nc-rep-name').value.trim(),
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
       email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
+      postal_code: document.getElementById('nc-postal').value.trim(), website_url: document.getElementById('nc-url').value.trim(),
       memo: document.getElementById('nc-memo').value
     })
     if (!res) return
@@ -4499,6 +4586,7 @@ function reportCardHtml(r, fields) {
         ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
         ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に修正しました">確認後に修正あり</span>` : ''}
         ${reportEntryBadge(r)}
+        ${reportAdminEditBadge(r, fmt)}
         <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
       </div>
       ${reportIncidentHtml(r, fields)}
@@ -4511,9 +4599,119 @@ function reportCardHtml(r, fields) {
              ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
         <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
+        <button class="btn btn-outline text-xs" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します"><i class="fas fa-pen-to-square"></i>実績を修正</button>
+        ${Number(r.edit_count) > 0 ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
 }
+
+// ---------- 日報の実績の修正（#9707。API は GET /admin/daily-reports/:id/edits・PUT /admin/daily-reports/:id/values） ----------
+// 直した値が正になり、実績分析・案件の実績・CSV・スタッフのアプリに使われる。もとの値・直した人・日時・理由は修正履歴に残る。
+// スタッフが値を変えて出し直したら、出し直した値が正になる（「管理者が修正」の印は外れ、修正履歴に「再提出」が残る）
+function reportAdminEditBadge(r, fmt) {
+  if (r.admin_edited_at) return `<span class="badge badge-purple" title="${esc(`${r.admin_edited_by_name || '管理者'}が ${fmt(r.admin_edited_at)} に実績を修正しました`)}"><i class="fas fa-user-pen mr-0.5"></i>管理者が修正${r.admin_edited_by_name ? '・' + esc(r.admin_edited_by_name) : ''}</span>`
+  if (r.last_edit_kind === 'resubmit') return '<span class="badge badge-yellow" title="管理者が修正した後に、スタッフが値を変えて出し直しました。出し直した値を使っています（修正した値は修正履歴にあります）">修正後にスタッフが再提出</span>'
+  return ''
+}
+const REPORT_EDIT = { data: null }
+// 値の表示（空欄・数値・文字）
+function reportEditValueText(v) {
+  if (v === undefined || v === null || v === '') return '（空欄）'
+  return typeof v === 'object' ? JSON.stringify(v) : String(v)
+}
+// 全角の数字を半角にする（数値の欄。全角のまま入力しても保存できるように）
+function reportHalfWidthNumber(s) {
+  return String(s == null ? '' : s).replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xfee0)).replace(/[，,]/g, '').trim()
+}
+async function loadReportEdit(id) {
+  try { return (await axios.get('/api/admin/daily-reports/' + Number(id) + '/edits')).data } catch (e) {
+    showApiError(e, '日報を読み込めませんでした'); return null
+  }
+}
+delegate('editReportValues', (el) => withSubmitLock(el, async () => {
+  const d = await loadReportEdit(el.dataset.id)
+  if (!d) return
+  REPORT_EDIT.data = d
+  const r = d.report, vals = r.values || {}
+  const input = (f, i) => {
+    const v = vals[f.key]
+    const id = 'rev-f-' + i
+    const req = f.required ? '<span class="text-red-500 ml-0.5">*</span>' : ''
+    const label = `<label class="text-xs font-bold text-gray-600 block mb-0.5" for="${id}">${esc(f.label)}${f.unit ? `（${esc(f.unit)}）` : ''}${req}${f.past ? ' <span class="badge badge-gray font-normal">以前の項目</span>' : ''}</label>`
+    if (f.type === 'number') return `<div>${label}<input id="${id}" data-key="${esc(f.key)}" data-type="number" type="text" inputmode="numeric" class="inp text-sm w-full rev-field" value="${esc(v == null ? '' : v)}" placeholder="0"></div>`
+    const max = Number(f.maxLength) > 0 ? Number(f.maxLength) : 2000
+    return `<div class="col-span-full">${label}<textarea id="${id}" data-key="${esc(f.key)}" data-type="text" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp text-sm w-full rev-field" style="resize:vertical">${esc(v == null ? '' : v)}</textarea></div>`
+  }
+  modal(`
+    <h3 class="font-bold text-lg mb-1">日報の実績を修正</h3>
+    <p class="text-xs text-gray-500 mb-2">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}　提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')}</p>
+    <p class="text-xs text-gray-600 bg-blue-50 rounded-lg px-2.5 py-1.5 mb-3">直した値が正になり、実績分析・案件の実績・CSV・スタッフのアプリに使われます。スタッフのアプリには「管理者が修正」と表示され、通知が届きます。もとの値は修正履歴に残ります。</p>
+    ${r.admin_edited_at ? `<p class="text-[11px] text-gray-400 mb-2">前回の修正: ${esc(r.admin_edited_by_name || '')} ${esc(dayjs(String(r.admin_edited_at).replace(' ', 'T')).format('M/D HH:mm'))}</p>` : ''}
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">${d.fields.map(input).join('') || '<p class="text-sm text-gray-400 col-span-full">直せる項目がありません</p>'}</div>
+    <label class="text-sm text-gray-600 block mb-1" for="rev-reason">修正の理由（任意。スタッフにも伝わります）</label>
+    <textarea id="rev-reason" rows="2" class="inp text-sm w-full" style="resize:vertical" maxlength="${Number(d.reason_max) || 500}" placeholder="例: 店舗から届いた実績の数に合わせました"></textarea>
+    <div class="flex gap-2 justify-end mt-3 flex-wrap">
+      ${d.edits && d.edits.length ? `<button class="btn btn-outline text-sm mr-auto" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left"></i>修正履歴（${d.edits.length}件）</button>` : ''}
+      <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary text-sm" data-action="saveReportValues" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>保存</button>
+    </div>`)
+}))
+delegate('saveReportValues', (el) => {
+  const d = REPORT_EDIT.data
+  if (!d || Number(d.report.daily_report_id) !== Number(el.dataset.id)) return
+  const values = {}
+  document.querySelectorAll('.rev-field').forEach(inp => {
+    values[inp.dataset.key] = inp.dataset.type === 'number' ? reportHalfWidthNumber(inp.value) : inp.value
+  })
+  // 数値の欄は、半角にした値を画面にも戻す（エラーのときに何が送られたか分かるように）
+  document.querySelectorAll('.rev-field[data-type="number"]').forEach(inp => { inp.value = values[inp.dataset.key] })
+  const body = { values, reason: document.getElementById('rev-reason').value.trim() || null,
+    expected_submitted_at: d.report.submitted_at || null, expected_admin_edited_at: d.report.admin_edited_at || null }
+  withSubmitLock(el, async () => {
+    let res
+    try { res = (await axios.put('/api/admin/daily-reports/' + Number(d.report.daily_report_id) + '/values', body)).data } catch (e) {
+      showApiError(e, '実績を保存できませんでした')
+      // スタッフが出し直した・ほかの管理者が直した（409）ときは、今の内容で表示し直す
+      if (e.response && e.response.status === 409) { closeModal(); renderReports(true) }
+      return
+    }
+    closeModal()
+    if (!res || !res.changed) { toast('変更された項目はありません'); return }
+    toast('実績を修正しました' + (res.staff_notified ? '（スタッフのアプリに通知しました）' : '（このスタッフはアプリにログインしないため、通知は届きません）'))
+    renderReports(true)
+  })
+})
+const REPORT_EDIT_KIND_LABEL = { admin_edit: '管理者が修正', resubmit: 'スタッフが再提出' }
+const REPORT_EDIT_METHOD_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力' }
+delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
+  const d = await loadReportEdit(el.dataset.id)
+  if (!d) return
+  const r = d.report
+  const label = new Map((d.fields || []).map(f => [f.key, f.label]))
+  const fmt = t => (t ? dayjs(String(t).replace(' ', 'T')).format('YYYY/M/D HH:mm') : '')
+  const item = e => `
+    <li class="border border-gray-200 rounded-lg p-3">
+      <div class="flex items-center gap-2 flex-wrap text-xs">
+        <span class="badge ${e.kind === 'admin_edit' ? 'badge-purple' : 'badge-yellow'}">${esc(REPORT_EDIT_KIND_LABEL[e.kind] || e.kind)}</span>
+        ${e.kind === 'resubmit' && e.entry_method ? `<span class="text-gray-500">${esc(REPORT_EDIT_METHOD_LABEL[e.entry_method] || e.entry_method)}</span>` : ''}
+        <span class="text-gray-600">${esc(e.edited_by_name || (e.kind === 'resubmit' ? r.staff_name : ''))}</span>
+        <span class="text-gray-400 ml-auto">${esc(fmt(e.edited_at))}</span>
+      </div>
+      ${e.reason ? `<p class="text-xs text-gray-700 bg-gray-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
+      <table class="w-full text-xs mt-1.5"><tbody>
+        ${(e.changed_keys || []).map(k => `<tr class="border-t border-gray-100">
+          <td class="py-1 pr-2 text-gray-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
+          <td class="py-1 pr-1 text-gray-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>
+          <td class="py-1 px-1 text-gray-400 align-top">→</td>
+          <td class="py-1 font-bold text-gray-800 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.after[k]))}</td></tr>`).join('')}
+      </tbody></table>
+    </li>`
+  modal(`
+    <h3 class="font-bold text-lg mb-1">実績の修正履歴</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}（新しい順。左がもとの値、右が直した後の値）</p>
+    ${d.edits && d.edits.length ? `<ul class="space-y-2 max-h-[60vh] overflow-y-auto">${d.edits.map(item).join('')}</ul>` : '<p class="text-sm text-gray-400">修正の履歴はありません</p>'}
+    <div class="flex justify-end mt-3"><button class="btn btn-outline text-sm" onclick="closeModal()">閉じる</button></div>`)
+}))
 
 // refresh: 確認・コメントの後の読み直し（読み込み中の表示を出さず、スクロール位置を保つ）
 // 提出済みの日報と未提出のシフト（#344）の切り替え。期間・案件・スタッフの絞り込みは引き継ぐ
@@ -5970,6 +6168,8 @@ async function renderBilling(month) {
   month = month || dayjs().format('YYYY-MM')
   let data
   try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
+  // 月額（固定。#9702）の列は、その月に月額の行があるときだけ出す
+  const hasMonthly = (data.monthly_lines || []).length > 0, hasStaffMonthly = (data.monthly_lines || []).some(l => l.staff_id != null)
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
@@ -5981,12 +6181,13 @@ async function renderBilling(month) {
       </div>
     </div>
     <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください。
+      ${hasMonthly ? '月額（固定）は、その月に今日までの確定・代打のシフトがあれば、1回だけ請求合計に含めます（スタッフ別の月額は、そのスタッフの行にも出します）。' : ''}
       稼働人数は確定・代打のシフトの人数、日報提出は日報が必要な確定・代打のシフトのうち日報があるものです（欠勤・希望（仮）と、日報を不要にしたシフトは数えません）</p>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
+          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.by_project.map(p => `
             <tr>
               <td class="font-medium">${esc(p.project_name)}</td>
@@ -5996,6 +6197,7 @@ async function renderBilling(month) {
               <td>${p.substitute_days || 0}</td>
               <td>${billingReportCell(p)}</td>
               <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
+              ${hasMonthly ? `<td>${p.total_monthly ? yen(p.total_monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
           </tbody>
@@ -6006,13 +6208,14 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td><td>${billingReportCell(d)}</td>
               <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
+              ${hasStaffMonthly ? `<td>${d.monthly ? yen(d.monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
           </tbody>
@@ -6031,8 +6234,10 @@ function billingReportCell(x) {
 window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
-  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id])
-  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID'], rows)
+  // 月額（固定。#9702）は末尾の「月額」の列に出す（スタッフ別の月額はそのスタッフの行に、案件全体の月額は「案件全体の月額」の行として足す）
+  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id, d.monthly || 0])
+  for (const l of (data.monthly_lines || []).filter(x => x.staff_id == null)) rows.push(['案件全体の月額', l.project_name, '', '', 0, 0, 0, l.amount, '', l.amount])
+  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID', '月額'], rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -6290,7 +6495,8 @@ function accountEmailNotice() {
 
 // ============ ルーティング ============
 const routes = {
-  dashboard: async () => { await renderDashboard(); accountEmailNotice() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
+  // ダッシュボードの上の「はじめにやること」（#9711。public/static/tour.js）
+  dashboard: async () => { await renderDashboard(); accountEmailNotice(); if (window.FosTour) FosTour.dashboard() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
@@ -6478,4 +6684,6 @@ delegate('avbRemind', (el) => {
   }
   hideEmptyNavGroups()
   route()
+  // 案内（チュートリアル）・右上の「？」（#9711。public/static/tour.js）
+  if (window.FosTour) FosTour.init('admin', ME)
 })()

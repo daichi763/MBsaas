@@ -320,6 +320,10 @@
   }
   const requiredFieldHtml = (f) => f.code === 'career'
     ? `<label class="text-sm text-gray-600 col-span-2">${esc(f.label)} <span class="text-red-500">*</span><textarea class="inp fz-req" data-code="career" rows="2">${esc(f.value || '')}</textarea></label>`
+    // 生年月日が分からない人は、年齢（#9710）を入れれば足りる
+    : f.code === 'date_of_birth'
+    ? `<label class="text-sm text-gray-600">${esc(f.label)} <span class="text-red-500">*</span><input class="inp fz-req" data-code="date_of_birth" type="date" value="${esc(f.value ?? '')}" data-age-input="fz-age"></label>
+      <label class="text-sm text-gray-600">年齢（生年月日が分からないとき）<span class="flex items-center gap-1"><input id="fz-age" class="inp" type="text" inputmode="numeric" maxlength="3" placeholder="例: 30" value="${f.age_entered != null ? Number(f.age_entered) : ''}" ${f.value ? 'disabled' : ''}>歳</span></label>`
     : `<label class="text-sm text-gray-600">${esc(f.label)} <span class="text-red-500">*</span><input class="inp fz-req" data-code="${esc(f.code)}" ${REQ_INPUT[f.code] || ''} value="${esc(f.value ?? '')}"></label>`
   window.openFinalize = async function (sid) {
     let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
@@ -348,10 +352,14 @@
     const sid = Number(el.dataset.id)
     const body = { gender: val('fz-gender'), kana: val('fz-kana') }
     const lacks = []
+    const age = document.getElementById('fz-age')
+    const ageVal = age ? toHalfWidthNumber(age.value) : ''
     document.querySelectorAll('.fz-req').forEach(x => {
       body[x.dataset.code] = x.value.trim()
+      if (x.dataset.code === 'date_of_birth' && !x.value.trim() && ageVal) return
       if (!x.value.trim()) lacks.push(x.parentElement.firstChild.textContent.trim())
     })
+    if (age) body.age_entered = body.date_of_birth ? null : (ageVal || null)
     if (lacks.length) { toast('次の項目は必須です: ' + lacks.join('・')); return }
     // ログインの欄に入力があるときだけ、ログインの発行とメールを送る
     if (val('fz-code') || val('fz-pass')) Object.assign(body, loginBody('fz'))
