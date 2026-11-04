@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
-import { sendEmail, sendEmailBatch, mailMode } from './services/email'
+import { sendEmail, sendEmailBatch, mailMode, canSendMail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS, RETENTION_TOKEN_TARGETS } from './services/retention'
@@ -35,7 +35,7 @@ import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
 import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEdit } from './notifications'
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
-import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND } from './notifications'
+import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND, hiddenStaffNotifyKinds } from './notifications'
 import { hqErrorsApi } from './hq-errors'
 import { toCsv, csvResponse } from './csv'
 import {
@@ -680,7 +680,7 @@ api.post('/auth/verify-email', async (c) => {
   const invalid = () => c.json({ error: 'このリンクは無効か、有効期限が切れています。所属の会社の担当者にお問い合わせください' }, 400)
   if (!token) return invalid()
   const db = c.env.DB
-  const v = await db.prepare(`SELECT v.*, u.status AS user_status, u.role AS user_role, u.user_code, co.company_code, co.company_name
+  const v = await db.prepare(`SELECT v.*, u.status AS user_status, u.role AS user_role, u.user_code, u.email AS old_email, co.company_code, co.company_name
     FROM login_email_verifications v JOIN users u ON u.user_id = v.user_id AND u.company_id = v.company_id JOIN companies co ON co.company_id = v.company_id
     WHERE v.token_hash = ? AND v.verified_at IS NULL AND v.canceled_at IS NULL AND v.expires_at > ?`).bind(await hashToken(token), new Date().toISOString()).first() as any
   if (!v || v.user_status !== 'active' || v.user_role !== 'staff') return invalid()
@@ -691,6 +691,8 @@ api.post('/auth/verify-email', async (c) => {
     // 同じ人のほかの確認待ちは取り消し、以前のアドレスに送った再設定リンクは使えなくする
     db.prepare('UPDATE login_email_verifications SET canceled_at = ? WHERE user_id = ? AND verification_id != ? AND verified_at IS NULL AND canceled_at IS NULL').bind(now, v.user_id, v.verification_id),
     db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL').bind(now, v.user_id),
+    // 変更履歴（#9802。変更したのは確認を出した管理者）
+    loginEmailChangeLogStmt(db, v.user_id, v.company_id, v.old_email, v.email, v.requested_by ?? null, now),
   ])
   return c.json({ ok: true, email: v.email, company_name: v.company_name, company_code: v.company_code, user_code: v.user_code })
 })
@@ -2440,7 +2442,9 @@ api.get('/staff/badges', async (c) => {
   const uids = [...new Set<number>([u.user_id, ...persons.map(r => r.user_id).filter(Boolean)])]
   const [counts, notif] = await Promise.all([
     countUnreadNotices(db, [u.user_id, ...others.map(r => r.user_id)]),
-    db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${uids.map(() => '?').join(',')}) AND read_at IS NULL`).bind(...uids).first() as Promise<any>,
+    // 止めている機能の通知（スタッフアプリの募集の「新しい募集」#9801）は、通知の一覧と同じく数えない
+    db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${uids.map(() => '?').join(',')}) AND read_at IS NULL
+      AND kind NOT IN (SELECT value FROM json_each(?))`).bind(...uids, JSON.stringify(hiddenStaffNotifyKinds(c.env))).first() as Promise<any>,
   ])
   return c.json({
     notices: counts.get(u.user_id) || 0,
@@ -3938,9 +3942,10 @@ async function checkContactUpdate(c: any, sid: string, body: any, roster: any): 
 }
 /**
  * 電話番号とログイン用メールを保存する（checkContactUpdate の後に呼ぶ）。
- * ログイン用メールは、空欄ならすぐに消す。新しいアドレスはすぐには使わず、確認用のリンクを送り、本人が確認したときに有効にする（/auth/verify-email）
+ * ログイン用メールは、空欄ならすぐに消す。新しいアドレスはすぐには使わず、確認用のリンクを送り、本人が確認したときに有効にする（/auth/verify-email）。
+ * opts.direct（変更申請の承認で、メールを送れない環境のとき。#9802）は確認用のメールを使わず、その場で切り替える
  */
-async function applyContactUpdate(c: any, body: any, roster: any): Promise<{ login_email?: { pending: string | null; cleared?: boolean; mail_sent?: boolean; mail_skipped?: boolean } }> {
+async function applyContactUpdate(c: any, body: any, roster: any, opts: { direct?: boolean } = {}): Promise<{ login_email?: { pending: string | null; cleared?: boolean; switched?: boolean; mail_sent?: boolean; mail_skipped?: boolean } }> {
   const u = c.get('user'); const db = c.env.DB
   const out: any = {}
   if (body.phone !== undefined) await db.prepare('UPDATE users SET phone = ? WHERE user_id = ? AND company_id = ?').bind(body.phone, roster.user_id, u.company_id).run()
@@ -3960,6 +3965,17 @@ async function applyContactUpdate(c: any, body: any, roster: any): Promise<{ log
   if (normalizeEmail(email) === normalizeEmail(roster.email)) {
     await cancelPending.run()
     out.login_email = { pending: null }
+    return out
+  }
+  if (opts.direct) {
+    // 確認のリンクを開いたとき（/auth/verify-email）と同じ後始末: ほかの確認待ちを取り消し、以前のアドレスに送った再設定リンクを使えなくする
+    await db.batch([
+      cancelPending,
+      db.prepare('UPDATE users SET email = ? WHERE user_id = ? AND company_id = ?').bind(email, roster.user_id, u.company_id),
+      db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL').bind(now, roster.user_id),
+      loginEmailChangeLogStmt(db, roster.user_id, u.company_id, roster.email, email, u.user_id, now),
+    ])
+    out.login_email = { pending: null, switched: true }
     return out
   }
   const raw = genToken()
@@ -4008,8 +4024,15 @@ async function applyApprovedProfileChange(c: any, sid: string, changes: Record<s
     if (contactErr) return { error: contactErr.body?.error || 'メールアドレスを変更できません', status: contactErr.status }
   }
   await applyProfileUpdate(c, sid, body, roster)
-  const contact = await applyContactUpdate(c, body, roster)
+  // メールを送れない環境（本番の RESEND_API_KEY 未設定など）では、承認した時点で切り替える（#9802。送れるようになれば確認用のメールの流れに戻る）
+  const contact = await applyContactUpdate(c, body, roster, { direct: !canSendMail(c.env) })
   return { ok: true, login_email: contact.login_email }
+}
+// 通知・パスワード再設定に使うメールアドレス（users.email）の変更履歴（#9802。スタッフ基本情報の変更履歴に1行残す）
+function loginEmailChangeLogStmt(db: D1Database, userId: number, companyId: number, oldEmail: any, newEmail: any, changedBy: number | null, at: string) {
+  return db.prepare(`INSERT INTO employee_change_logs (company_id, staff_id, source, field, old_value, new_value, changed_by, changed_at)
+    SELECT sp.company_id, sp.staff_id, 'profile', 'login_email', ?, ?, ?, ? FROM staff_profiles sp WHERE sp.user_id = ? AND sp.company_id = ? LIMIT 1`)
+    .bind(String(oldEmail ?? '').trim() || null, String(newEmail ?? '').trim() || null, changedBy, at, userId, companyId)
 }
 // 従業員管理で電話番号（phone_main）を変えたら、照合（仮登録・応募の重複確認、統合候補）に使う users.phone にもそろえる（#123）
 async function syncUserPhoneFromEmployee(db: D1Database, sid: string, companyId: number, phoneMain: unknown) {

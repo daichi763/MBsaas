@@ -2237,6 +2237,10 @@ async function srProfile() {
   const { data } = await axios.get('/api/admin/staff-requests/profile' + (SR_STATE.profileAll ? '?status=all' : ''))
   const L = data.labels
   const show = (v) => v == null || v === '' ? '（空欄）' : String(v)
+  // メールアドレスの反映のしかた（#9802。メールを送れない間は承認した時点で切り替わる）
+  const emailNote = data.email_mode === 'direct'
+    ? '承認すると、この時点でメールアドレスが切り替わります（メールを送れない設定のため、確認用のメールは送りません）'
+    : '承認すると確認用のメールを送り、本人が開いたときに切り替わります'
   document.getElementById('sr-body').innerHTML = `
     <label class="text-xs text-gray-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srProfileAll" ${SR_STATE.profileAll ? 'checked' : ''}>処理済みも表示</label>
     ${data.requests.length ? data.requests.map(r => `
@@ -2252,7 +2256,7 @@ async function srProfile() {
             const changedSince = r.status === 'pending' && String(r.before[k] ?? '') !== String(r.current[k] ?? '')
             return `<tr class="border-t border-gray-100 align-top"><td class="py-1 pr-2 text-gray-500 whitespace-nowrap">${esc(L[k] || k)}</td>
               <td class="pr-2 whitespace-pre-wrap break-words">${esc(show(r.current[k]))}${changedSince ? ' <span class="badge badge-yellow">申請の後に変更あり</span>' : ''}</td>
-              <td class="font-bold whitespace-pre-wrap break-words">${esc(show(r.changes[k]))}${k === 'login_email' ? '<span class="block text-[11px] font-normal text-gray-400">承認すると確認用のメールを送り、本人が開いたときに切り替わります</span>' : ''}</td></tr>`
+              <td class="font-bold whitespace-pre-wrap break-words">${esc(show(r.changes[k]))}${k === 'login_email' && r.status === 'pending' ? `<span class="block text-[11px] font-normal text-gray-400">${esc(emailNote)}</span>` : ''}</td></tr>`
           }).join('')}</tbody></table></div>
         ${r.note ? `<p class="text-xs text-gray-600 mt-2 whitespace-pre-wrap">補足: ${esc(r.note)}</p>` : ''}
         ${r.status === 'pending' ? `
@@ -2269,7 +2273,10 @@ delegate('srProfileApprove', el => withSubmitLock(el, async () => {
   const comment = (document.getElementById('sr-pc-' + id) || {}).value || ''
   try {
     const { data } = await axios.post(`/api/admin/staff-requests/profile/${id}/approve`, { comment })
-    toast(data.login_email && data.login_email.pending ? '反映しました。メールアドレスは本人が確認用のメールを開いたときに切り替わります' : '承認して登録情報に反映しました')
+    const le = data.login_email
+    toast(le && le.switched ? '承認して反映しました。メールアドレスも切り替えました'
+      : le && le.pending ? (le.mail_sent && !le.mail_skipped ? '反映しました。メールアドレスは本人が確認用のメールを開いたときに切り替わります' : '反映しました。確認用のメールを送れなかったため、メールアドレスはまだ切り替わっていません（メールの設定を確認してください）')
+      : '承認して登録情報に反映しました')
     renderStaffRequests()
   } catch (e) { showApiError(e, '承認できませんでした') }
 }))

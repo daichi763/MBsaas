@@ -61,9 +61,10 @@ window.renderMyProfile = async function () {
           ${logins.length > 1 ? `<p class="text-xs font-bold text-gray-500">${esc(l.company_name)}</p>` : ''}
           ${row('会社コード', l.company_code)}${row('スタッフ番号', l.user_code)}
           ${row('電話番号', l.phone_masked || '未登録')}
-          ${rowHtml('メール', l.email_masked ? esc(l.email_masked) : '<span class="text-amber-700">未登録（パスワードを忘れたときの再設定に使います。所属会社の担当者に登録を依頼してください）</span>')}
+          ${rowHtml('メール', l.email_masked ? esc(l.email_masked) : '<span class="text-amber-700">未登録（パスワードを忘れたときの再設定に使います。下の「メールアドレスの変更を申請する」から登録を申請できます）</span>')}
         </dl>`).join('')}
         <p class="text-[11px] text-gray-400 mt-1">機種変更などでログインし直すときに使います。パスワードは表示しません。</p>
+        <a href="#profile-request" class="btn btn-outline w-full mt-3 text-sm"><i class="fas fa-envelope"></i>メールアドレスの変更を申請する</a>
       </section>` : ''}
     ${p.global_staff_code ? `
       <section class="card p-4 mb-3">
@@ -94,7 +95,7 @@ window.renderMyProfile = async function () {
         ${row('稼働開始可能日', p.available_from)}
         ${row('稼働エリア', p.work_area)}${rowHtml('スキル', skillsHtml(p.skills))}${rowHtml('経歴', careerHtml(p))}
       </dl>
-      <a href="#profile-request" class="btn btn-outline w-full mt-3"><i class="fas fa-pen"></i>最寄駅・稼働エリアなどの変更を申請する</a>
+      <a href="#profile-request" class="btn btn-outline w-full mt-3"><i class="fas fa-pen"></i>最寄駅・稼働エリア・メールアドレスなどの変更を申請する</a>
       <p class="text-[11px] text-gray-400 mt-2">氏名・生年月日などほかの項目の変更は、所属会社の担当者にご連絡ください。</p>
     </section>`
 }
@@ -316,8 +317,19 @@ window.renderProfileRequest = async function () {
   const show = (v) => v == null || v === '' ? '（空欄）' : String(v)
   const inp = (k, type, ph) => `<div><label class="text-sm text-gray-600 block mb-1" for="pr-${k}">${esc(L[k])}</label>
     <input id="pr-${k}" type="${type}" class="inp" value="${esc(cur[k] ?? '')}" ${ph ? `placeholder="${esc(ph)}"` : ''} ${type === 'number' ? 'min="0" max="1440" inputmode="numeric"' : ''}></div>`
+  // メールアドレスの欄（#9802）。出せないときも欄の所に理由と連絡先を出す。
+  // 反映のしかたは環境で変わる（メールを送れない間は承認した時点で切り替わる / 送れるときは確認用のメールのリンクを開くと切り替わる）
+  const emailHint = d.email_mode === 'direct'
+    ? '担当者が承認した時点で、このメールアドレスに切り替わります（確認用のメールは届きません）。'
+    : '承認されると確認用のメールが届きます。メールのリンクを開くと切り替わります。'
+  const emailField = d.email_allowed
+    ? `<div><label class="text-sm text-gray-600 block mb-1" for="pr-login_email">通知・パスワード再設定に使うメールアドレス（変えるときだけ入力）</label>
+        <input id="pr-login_email" type="email" class="inp" autocomplete="email" placeholder="今: ${esc(cur.login_email || '未登録')}">
+        <p class="text-[11px] text-gray-400 mt-1">${esc(emailHint)}</p></div>`
+    : `<div><p class="text-sm text-gray-600 mb-1">通知・パスワード再設定に使うメールアドレス</p>
+        <p class="text-xs bg-gray-50 text-gray-600 rounded-lg p-2">${esc(d.email_reason || 'ここではメールアドレスを変更できません。所属会社の担当者に連絡してください')}</p></div>`
   let form
-  if (!d.available) form = `<p class="text-sm text-gray-600">${esc(d.reason)}</p>`
+  if (!d.available) form = `<p class="text-sm text-gray-600">${esc(/担当者/.test(d.reason || '') ? d.reason : `${d.reason || '変更を申請できません'}。所属会社の担当者に連絡してください`)}</p>`
   else if (d.pending) form = '<p class="text-sm bg-amber-50 text-amber-800 rounded-lg p-3">承認待ちの申請があります。内容を変えるときは、下の申請を取り消してから出し直してください。</p>'
   else form = `
     <p class="text-xs text-gray-500 mb-3">変えたい項目だけ書き換えて送ってください。${esc(d.target_company_name)} の担当者が確認して、承認されたら登録が変わります。</p>
@@ -325,9 +337,7 @@ window.renderProfileRequest = async function () {
       ${inp('nearest_station_line', 'text', '例: JR山手線')}${inp('nearest_station', 'text', '例: 渋谷')}
       ${inp('commute_minutes', 'number', '例: 60')}${inp('available_from', 'date')}${inp('work_area', 'text', '例: 東京都23区・神奈川県東部')}
       <div><label class="text-sm text-gray-600 block mb-1" for="pr-skills">${esc(L.skills)}（読点か改行で区切る）</label><textarea id="pr-skills" class="inp" rows="3" maxlength="1000">${esc(cur.skills ?? '')}</textarea></div>
-      ${d.email_allowed ? `<div><label class="text-sm text-gray-600 block mb-1" for="pr-login_email">通知・パスワード再設定に使うメールアドレス（変えるときだけ入力）</label>
-        <input id="pr-login_email" type="email" class="inp" autocomplete="email" placeholder="今: ${esc(cur.login_email || '未登録')}">
-        <p class="text-[11px] text-gray-400 mt-1">承認されると確認用のメールが届きます。メールのリンクを開くと切り替わります。</p></div>` : ''}
+      ${emailField}
       <div><label class="text-sm text-gray-600 block mb-1" for="pr-note">補足（任意）</label><textarea id="pr-note" class="inp" rows="2" maxlength="500" placeholder="例: 引っ越しのため"></textarea></div>
       <button class="btn btn-primary w-full" data-action="submitProfileRequest"><i class="fas fa-paper-plane"></i>変更を申請する</button>
     </div>`

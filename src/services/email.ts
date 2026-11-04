@@ -84,6 +84,13 @@ export function mailMode(env: MailEnv): 'enabled' | 'disabled' | 'not_configured
   if (!env.RESEND_API_KEY || !env.MAIL_FROM) return 'not_configured'
   return 'enabled'
 }
+/**
+ * 実際にメールを送れる環境か（#9802）。MAIL_ENABLED が 'true' で、APIキーと送信元があるときだけ true。
+ * 本番の MAIL_ENABLED=true・RESEND_API_KEY 未設定は false になる。送れない間の動き（確認用のメールを使わずに切り替えるなど）の判断に使う
+ */
+export function canSendMail(env: { RESEND_API_KEY?: string; MAIL_FROM?: string; MAIL_ENABLED?: string }): boolean {
+  return env.MAIL_ENABLED === 'true' && !!env.RESEND_API_KEY && !!env.MAIL_FROM
+}
 
 function warnTestSender(env: MailEnv) {
   // Resend のテスト用アドレスはアカウント所有者あてにしか届かない（本番では独自ドメインの送信元にする）
