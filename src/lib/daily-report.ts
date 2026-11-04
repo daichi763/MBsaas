@@ -99,6 +99,9 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
   // 直した値を失わないよう、出し直す前の値を履歴（daily_report_edits）に残す。同じ値のままの出し直しは、印も履歴もそのまま
   const cur = existed ? await db.prepare('SELECT report_values, admin_edited_at FROM daily_reports WHERE shift_id = ?').bind(r.shift_id).first() as any : null
   const stmts: D1PreparedStatement[] = []
+  // キーの並びだけが違う同じ値は、同じ値の出し直しとして扱う（保存してある文字列のままにして、印を外さない）
+  if (cur && cur.admin_edited_at && typeof cur.report_values === 'string' && cur.report_values !== r.values_json
+    && !changedReportKeys(parseReportValuesJson(cur.report_values), parseReportValuesJson(r.values_json)).length) r = { ...r, values_json: cur.report_values }
   if (cur && cur.admin_edited_at && cur.report_values !== r.values_json) {
     const changed = changedReportKeys(parseReportValuesJson(cur.report_values), parseReportValuesJson(r.values_json))
     stmts.push(db.prepare(`INSERT INTO daily_report_edits (company_id, daily_report_id, kind, entry_method, before_values, after_values, changed_keys, edited_by, edited_at)

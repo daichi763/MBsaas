@@ -184,6 +184,16 @@ ok('修正: 提出日時・入力の経路は変えない', rep1.submitted_at ==
   must(await submit({ w15sales: 12, w15memo: 'abc', w15talk: 3 }, { incident_flag: true, incident_note: '什器にぶつかった' }), 'resubmit same')
   const r = await listOne()
   ok('出し直し: 直した値のまま出し直したときは「管理者が修正」の印を残し、履歴は増やさない', r.admin_edited_at === rep1.admin_edited_at && Number(r.edit_count) === 1, r)
+  // 保存してある値のキーの並びだけが違うとき（RV）も、同じ値の出し直しとして印を残す
+  {
+    const [[cur]] = d1(`SELECT report_values FROM daily_reports WHERE daily_report_id = ${RID}`)
+    const obj = JSON.parse(cur.report_values)
+    const reversed = JSON.stringify(Object.fromEntries(Object.entries(obj).reverse())).replace(/'/g, "''")
+    d1(`UPDATE daily_reports SET report_values = '${reversed}' WHERE daily_report_id = ${RID}`)
+    must(await submit({ w15sales: 12, w15memo: 'abc', w15talk: 3 }, { incident_flag: true, incident_note: '什器にぶつかった' }), 'resubmit same (key order)')
+    const rk = await listOne()
+    ok('出し直し: キーの並びだけが違う同じ値の出し直しでも印を残し、履歴は増やさない', rk.admin_edited_at === rep1.admin_edited_at && Number(rk.edit_count) === 1, rk)
+  }
   // 値を変えて出し直す → 再提出の値を正にし、印を外して履歴に「再提出」を残す
   must(await submit({ w15sales: 15, w15memo: 'abc', w15talk: 3 }, { incident_flag: true, incident_note: '什器にぶつかった' }), 'resubmit changed')
   const r2 = await listOne()
