@@ -659,6 +659,8 @@ app.get('/staff', async (c) => {
   <script src="/static/staff-attendance.js"></script>
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   <script src="/static/staff-profile.js"></script>
+  <!-- 案内（チュートリアル。#9712）。staff.js の起動が FosTour.init を呼ぶ -->
+  <script src="/static/tour.js"></script>
 </body>
 </html>`)
 })
@@ -786,6 +788,8 @@ app.get('/admin', async (c) => {
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>
   <script src="/static/security.js"></script>
+  <!-- 案内（チュートリアル）・「？」・はじめにやること（#9711）。admin.js の起動が FosTour.init を呼ぶ -->
+  <script src="/static/tour.js"></script>
 </body>
 </html>`)
 })

@@ -729,6 +729,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM push_subscriptions WHERE user_id = ${userOf}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM push_queue WHERE user_id = ${userOf}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM user_notification_prefs WHERE user_id = ${userOf}`).bind(staffId)],
+        // Sprint 15 で足した、本人の案内（チュートリアル）の進み具合（w15-tour）
+        [null, db.prepare(`DELETE FROM user_tour_progress WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
         ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads} RETURNING 1`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
@@ -1209,6 +1211,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'push_queue', label: 'プッシュ通知の送信待ち', table: 'push_queue', where: OB_CO, noExport: true },
   { target: 'push_subscriptions', label: 'プッシュ通知の購読（端末）', table: 'push_subscriptions', where: OB_CO, noExport: true },
   { target: 'user_notification_prefs', label: '通知の受け取り設定', table: 'user_notification_prefs', where: OB_CO },
+  // Sprint 15 で足した表（w15-tour）。画面の案内を見たかどうかだけなので書き出さない
+  { target: 'user_tour_progress', label: '案内（チュートリアル）の進み具合', table: 'user_tour_progress', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'user_notifications', label: 'アプリ内の通知', table: 'user_notifications', where: OB_CO },
   { target: 'todo_dismissals', label: 'ToDo の非表示', table: 'todo_dismissals', where: OB_CO, noExport: true },
   { target: 'client_ng_staff', label: 'クライアントの NG スタッフ', table: 'client_ng_staff', where: OB_CO },

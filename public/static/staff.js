@@ -1841,6 +1841,7 @@ function renderMore() {
       ${item('notify-settings', 'fa-sliders', '通知の設定', 'プッシュ通知・メールの受け取り')}
       ${item('attendance', 'fa-user-clock', '打刻履歴・修正申請', '打刻の確認・時刻の修正・打刻漏れの追加')}
       ${item('manual', 'fa-book-open', '研修・マニュアル', '案件マニュアル・研修資料')}
+      ${window.FosTour ? FosTour.staffMoreHtml() : ''}
     </div>
     <section class="mt-8 pt-4 border-t border-gray-200">
       <button class="btn btn-outline w-full text-red-600" data-action="staffLogout"><i class="fas fa-right-from-bracket"></i>ログアウト</button>
@@ -2878,6 +2879,9 @@ async function boot() {
     ME = (await axios.get('/api/auth/me')).data
   } catch (e) { showLoadError(e); return }
   document.getElementById('user-name').textContent = ME.name
-  return route()
+  const shown = route()
+  // 初回の使い方の案内（#9712。public/static/tour.js）
+  if (window.FosTour) FosTour.init('staff', ME)
+  return shown
 }
 boot()

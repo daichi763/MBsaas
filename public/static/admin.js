@@ -6290,7 +6290,8 @@ function accountEmailNotice() {
 
 // ============ ルーティング ============
 const routes = {
-  dashboard: async () => { await renderDashboard(); accountEmailNotice() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
+  // ダッシュボードの上の「はじめにやること」（#9711。public/static/tour.js）
+  dashboard: async () => { await renderDashboard(); accountEmailNotice(); if (window.FosTour) FosTour.dashboard() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
   shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
   notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
   'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
@@ -6478,4 +6479,6 @@ delegate('avbRemind', (el) => {
   }
   hideEmptyNavGroups()
   route()
+  // 案内（チュートリアル）・右上の「？」（#9711。public/static/tour.js）
+  if (window.FosTour) FosTour.init('admin', ME)
 })()
