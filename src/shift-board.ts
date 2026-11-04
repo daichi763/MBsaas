@@ -14,7 +14,7 @@ import type { ConflictRow } from './lib/staff-eligibility'
 import { changesOf, insertRowsStmts, returnedIds, updateRowsStmts } from './lib/bulk-write'
 import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
-import { loadShiftSnaps, notifyShiftChanges } from './notifications'
+import { loadShiftSnaps, notifyCorrection, notifyShiftChanges } from './notifications'
 import type { ShiftSnap } from './notifications'
 import { opLog, logShifts, logShiftsOfSlot, logShiftsOfSlots, logSlot, logSlots, finishLog } from './lib/operation-log'
 import { csvResponse, toCsv } from './csv'
@@ -1394,13 +1394,18 @@ app.post('/shift-slots/bulk-delete', async (c) => {
     .bind(u.company_id, bindJsonArray(ids)).all()).results as any[]).map(r => Number(r.slot_id))
   if (!own.length) return c.json({ error: '選んだ枠が見つかりません（ほかの画面で削除された可能性があります。画面を読み直してください）' }, 404)
   const ownJson = bindJsonArray(own)
-  const used = await db.prepare(`SELECT COUNT(*) AS n FROM shifts WHERE company_id = ? AND slot_id IN ${JSON_IN}`).bind(u.company_id, ownJson).first() as any
-  const assigned = Number(used?.n || 0)
-  if (assigned > 0 && !(b.force === true || b.force === 1 || b.force === '1')) return c.json({ error: `選んだ枠には ${assigned} 件のシフト（割り当て済みの人）があります`, assigned, need_force: true }, 409)
+  const shiftIds = ((await db.prepare(`SELECT shift_id FROM shifts WHERE company_id = ? AND slot_id IN ${JSON_IN}`).bind(u.company_id, ownJson).all()).results as any[]).map(r => Number(r.shift_id))
+  // delete_shifts（Sprint 15 #9705）: 割り当て済みのシフトも削除する。勤怠・日報の報告・確定済み・締めた期間のシフトは削除せず、枠なしで残す
+  const plan = flag(b.delete_shifts) ? await planShiftDelete(db, u.company_id, shiftIds) : null
+  const assigned = shiftIds.length - (plan ? plan.del.length : 0)
+  if (assigned > 0 && !flag(b.force)) return c.json({ error: `選んだ枠には ${assigned} 件のシフト（割り当て済みの人）があります`, assigned, need_force: true }, 409)
   const op = opLog(db, u, 'slot_delete') // 操作履歴（#159）
+  const del = plan && plan.del.length ? shiftDeleteParts(db, u, plan.del) : null
+  if (del) del.before = await loadShiftSnaps(db, u.company_id, del.ids)
   try {
-    // 履歴は変更より前に残す（1つの batch なので、途中で失敗したら何も変わらない）
+    // 履歴は変更より前に残す（1つの batch なので、途中で失敗したら何も変わらない）。削除するシフトを先に消し、残りのシフトを枠から外す
     await db.batch([
+      ...(del ? del.stmts : []),
       logSlots(op, own), logShiftsOfSlots(op, own),
       db.prepare(`UPDATE shifts SET slot_id = NULL, slot_role_id = NULL WHERE company_id = ? AND slot_id IN ${JSON_IN}`).bind(u.company_id, ownJson),
       db.prepare(`DELETE FROM shift_slot_roles WHERE slot_id IN ${JSON_IN}`).bind(ownJson),
@@ -1412,8 +1417,163 @@ app.post('/shift-slots/bulk-delete', async (c) => {
   }
   await finishLog(op)
   await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
-  // shifts にはトリガーがあるので、残したシフトの件数は meta.changes ではなく先に数えた件数を返す
-  return c.json({ ok: true, deleted: own.length, deleted_ids: own, missing: ids.length - own.length, kept_shifts: assigned })
+  // shifts にはトリガーがあるので、残したシフトの件数は meta.changes ではなく数えた件数を返す
+  if (!del) return c.json({ ok: true, deleted: own.length, deleted_ids: own, missing: ids.length - own.length, kept_shifts: assigned,
+    ...(plan ? { deleted_shifts: 0, skipped_shifts: plan.skipped } : {}) })
+  const r = await afterShiftDelete(c, u.company_id, del, plan!)
+  return c.json({ ok: true, deleted: own.length, deleted_ids: own, missing: ids.length - own.length, kept_shifts: shiftIds.length - r.deleted_ids.length,
+    deleted_shifts: r.deleted_ids.length, skipped_shifts: r.skipped })
+})
+
+// ---------- シフトのまとめて削除（Sprint 15 #9705 #9706） ----------
+// 1件の削除（DELETE /api/admin/shifts/:id。api.ts）と同じ決まりで、まとめて削除する。
+//   実績が確定済み・精算を締めた期間・勤怠・日報の報告があるシフトは削除せず、理由を付けて返す。
+//   承認待ちの打刻修正は「取り消し（シフト削除）」にして申請者に知らせ、報告用URL・キャンセルの記録も消す。操作履歴を残し、本人に取消を知らせる。
+//   D1 の問い合わせの数を増やさないよう、シフトごとではなく json_each でまとめて書く
+const flag = (v: any) => v === true || v === 1 || v === '1'
+const SHIFT_BULK_DELETE_MAX = 200
+type ShiftDelSkip = { shift_id: number; staff_name: string; work_date: string; reason: string }
+type ShiftDelPlan = { del: number[]; skipped: ShiftDelSkip[]; found: number }
+const SHIFT_DEL_SETTLED = '実績が確定済みのため削除できません（精算画面で確定を取り消してください）'
+const SHIFT_DEL_REPORTED = '勤怠・日報の報告があるため削除できません（状態を「欠勤」などに変更してください）'
+// 削除してよいシフトの条件（計画の後に報告が入ったものを消さないよう、書き込みの文でも同じ条件で絞る）
+const SHIFT_DELETABLE = `COALESCE(s.settle_status,'planned') != 'confirmed' AND NOT EXISTS (SELECT 1 FROM attendance_reports a WHERE a.shift_id = s.shift_id)
+  AND NOT EXISTS (SELECT 1 FROM daily_reports d WHERE d.shift_id = s.shift_id)`
+async function planShiftDelete(db: D1Database, cid: number, ids: number[]): Promise<ShiftDelPlan> {
+  if (!ids.length) return { del: [], skipped: [], found: 0 }
+  const rows = (await db.prepare(`SELECT s.shift_id, s.work_date, s.settle_status, us.name AS staff_name,
+      EXISTS (SELECT 1 FROM attendance_reports a WHERE a.shift_id = s.shift_id) OR EXISTS (SELECT 1 FROM daily_reports d WHERE d.shift_id = s.shift_id) AS reported
+    FROM shifts s LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+    WHERE s.company_id = ? AND s.shift_id IN ${JSON_IN} ORDER BY s.work_date, s.start_time, s.shift_id`).bind(cid, bindJsonArray(ids)).all()).results as any[]
+  const dates = rows.map(r => String(r.work_date)).sort()
+  const closedAt = dates.length ? await closedChecker(db, cid, dates[0], dates[dates.length - 1]) : () => null
+  const del: number[] = [], skipped: ShiftDelSkip[] = []
+  for (const r of rows) {
+    const reason = r.settle_status === 'confirmed' ? SHIFT_DEL_SETTLED : closedAt(r.work_date) || (r.reported ? SHIFT_DEL_REPORTED : null)
+    if (reason) skipped.push({ shift_id: Number(r.shift_id), staff_name: r.staff_name || '', work_date: r.work_date, reason })
+    else del.push(Number(r.shift_id))
+  }
+  return { del, skipped, found: rows.length }
+}
+// 削除の文（呼び出し側の batch に入れる）と、後で知らせるための値
+function shiftDeleteParts(db: D1Database, u: any, ids: number[]) {
+  const cid = u.company_id, json = JSON.stringify(ids)
+  const op = opLog(db, u, 'delete') // 操作履歴（#159）。削除の前の値を残す
+  const token = crypto.randomUUID(), at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const target = `(SELECT s.shift_id FROM shifts s WHERE s.company_id = ? AND s.shift_id IN (SELECT value FROM json_each(?)) AND ${SHIFT_DELETABLE})`
+  const stmts: D1PreparedStatement[] = [
+    ...logShifts(op, ids, { where: SHIFT_DELETABLE }),
+    // 承認待ちの打刻修正申請は『取り消し（シフト削除）』にする（corrections.ts の autoCancelStatements と同じ内容を、まとめて。#70）
+    db.prepare(`UPDATE attendance_corrections SET status = 'cancelled', cancel_reason = 'shift_deleted', cancelled_at = ?, decision_token = ?, updated_at = ?
+      WHERE company_id = ? AND status = 'pending' AND shift_id IN ${target}`).bind(at, token, at, cid, cid, json),
+    db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
+      SELECT correction_id, company_id, 'cancelled', ?, ?, ?, ?, ? FROM attendance_corrections WHERE company_id = ? AND decision_token = ? AND status = 'cancelled'`)
+      .bind(u.user_id, u.name ?? null, u.role ?? null, JSON.stringify({ auto: true, reason: 'shift_deleted' }), at, cid, token),
+    db.prepare(`DELETE FROM shift_report_tokens WHERE company_id = ? AND shift_id IN ${target}`).bind(cid, cid, json),
+    db.prepare(`DELETE FROM shift_cancellations WHERE company_id = ? AND shift_id IN ${target}`).bind(cid, cid, json),
+    db.prepare(`DELETE FROM shifts WHERE shift_id IN ${target}`).bind(cid, json),
+  ]
+  return { op, token, ids, stmts, before: null as ShiftSnap[] | null }
+}
+// batch の後: 実際に消えたシフトを確かめ、操作履歴を仕上げ、打刻修正の申請者と本人に知らせる
+async function afterShiftDelete(c: any, cid: number, del: ReturnType<typeof shiftDeleteParts>, plan: ShiftDelPlan) {
+  const db: D1Database = c.env.DB
+  const left = new Set(((await db.prepare(`SELECT shift_id FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`).bind(cid, bindJsonArray(del.ids)).all()).results as any[]).map(r => Number(r.shift_id)))
+  const deleted = del.ids.filter(id => !left.has(id))
+  const skipped = [...plan.skipped]
+  // 確かめた後に報告などが入ったシフトは残る
+  for (const id of left) skipped.push({ shift_id: id, staff_name: '', work_date: '', reason: '確かめた後に勤怠・日報の報告などが入ったため、削除していません' })
+  await finishLog(del.op)
+  const cancelled = (await db.prepare(`SELECT correction_id FROM attendance_corrections WHERE company_id = ? AND decision_token = ? AND status = 'cancelled'`).bind(cid, del.token).all()).results as any[]
+  for (const r of cancelled) await notifyCorrection(c, Number(r.correction_id), 'cancelled')
+  const gone = new Set(deleted)
+  if (del.before) await notifyShiftChanges(c, cid, del.before.filter(s => s.shift_id && gone.has(Number(s.shift_id))), []) // 本人に取消を知らせる（#155）
+  return { deleted_ids: deleted, skipped, cancelled_corrections: cancelled.length }
+}
+app.post('/shifts/bulk-delete', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({})) as any
+  const raw = Array.isArray(b && b.shift_ids) ? b.shift_ids : null
+  if (!raw || !raw.length) return c.json({ error: '削除するシフトを選んでください' }, 400)
+  const ids = [...new Set(raw.map((x: any) => Number(x)))] as number[]
+  if (ids.some(n => !Number.isInteger(n) || n <= 0)) return c.json({ error: 'シフトの指定が正しくありません' }, 400)
+  if (ids.length > SHIFT_BULK_DELETE_MAX) return c.json({ error: `一度に削除できるシフトは${SHIFT_BULK_DELETE_MAX}件までです（${ids.length}件選ばれています）` }, 400)
+  const plan = await planShiftDelete(db, u.company_id, ids)
+  if (!plan.found) return c.json({ error: 'シフトが見つかりません（ほかの画面で削除された可能性があります。画面を読み直してください）' }, 404)
+  if (flag(b.dry_run)) return c.json({ ok: true, dry_run: true, deletable: plan.del.length, skipped: plan.skipped, missing: ids.length - plan.found })
+  if (!plan.del.length) return c.json({ ok: true, deleted: 0, deleted_ids: [], skipped: plan.skipped, missing: ids.length - plan.found })
+  const del = shiftDeleteParts(db, u, plan.del)
+  del.before = await loadShiftSnaps(db, u.company_id, plan.del)
+  try { await db.batch(del.stmts) } catch (e) {
+    console.error('shift bulk delete failed', e)
+    return c.json({ error: 'シフトを削除できませんでした（シフトは変更していません）。時間をおいてもう一度お試しください' }, 500)
+  }
+  const r = await afterShiftDelete(c, u.company_id, del, plan)
+  return c.json({ ok: true, deleted: r.deleted_ids.length, deleted_ids: r.deleted_ids, skipped: r.skipped, missing: ids.length - plan.found,
+    ...(r.cancelled_corrections ? { cancelled_corrections: r.cancelled_corrections } : {}) })
+})
+
+// ---------- 帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） ----------
+// 枠の帯: 「枠の繰り返し登録」で作った枠は同じ登録の枠、それ以外は同じ案件・開催場所・時間の枠（日付を複数選んで作った枠など。表の同じ行）。
+// シフトの帯: 枠を使わないシフト（常勤の一括登録など）の、同じスタッフ・案件・開催場所・時間・役割のシフト。
+// 範囲は today（今日以降）と all（過去を含むすべて）。削除は、返した ID を枠のまとめて削除・シフトのまとめて削除に分けて送る
+const BAND_MAX = 1000
+const todayOf = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
+app.get('/shift-slots/:id/band', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const cid = u.company_id
+  const slot = await ownSlot(db, cid, c.req.param('id'))
+  if (!slot) return c.json({ error: '枠が見つかりません（ほかの画面で削除された可能性があります。画面を読み直してください）' }, 404)
+  const pattern = slot.pattern_id ? await db.prepare('SELECT pattern_id, weekdays, date_from, date_to FROM slot_patterns WHERE pattern_id = ? AND company_id = ?').bind(slot.pattern_id, cid).first() as any : null
+  const rows = (await (pattern
+    ? db.prepare(`SELECT slot_id, work_date FROM shift_slots WHERE company_id = ? AND pattern_id = ? ORDER BY work_date, slot_id LIMIT ?`).bind(cid, pattern.pattern_id, BAND_MAX * 2 + 1)
+    : db.prepare(`SELECT slot_id, work_date FROM shift_slots WHERE company_id = ? AND project_id = ? AND site_id IS ? AND COALESCE(location,'') = ? AND start_time = ? AND end_time = ?
+        ORDER BY work_date, slot_id LIMIT ?`).bind(cid, slot.project_id, slot.site_id ?? null, slot.location || '', slot.start_time, slot.end_time, BAND_MAX * 2 + 1)).all()).results as any[]
+  const ids = rows.map(r => Number(r.slot_id))
+  const json = bindJsonArray(ids)
+  const [shiftRows, appRows] = await Promise.all([
+    db.prepare(`SELECT s.shift_id, s.slot_id, s.status, us.name AS staff_name FROM shifts s LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+      WHERE s.company_id = ? AND s.slot_id IN ${JSON_IN} ORDER BY s.work_date, us.name`).bind(cid, json).all(),
+    db.prepare(`SELECT r.slot_id, COUNT(*) AS n FROM shift_slot_roles r JOIN recruit_application_items i ON i.slot_role_id = r.slot_role_id AND i.status = 'pending'
+      JOIN recruit_applications a ON a.application_id = i.application_id AND a.status = 'pending' WHERE r.slot_id IN ${JSON_IN} GROUP BY r.slot_id`).bind(json).all(),
+  ])
+  const shifts = shiftRows.results as any[]
+  const plan = await planShiftDelete(db, cid, shifts.map(s => Number(s.shift_id)))
+  const deletable = new Set(plan.del)
+  const apps = new Map(((appRows.results || []) as any[]).map(r => [Number(r.slot_id), Number(r.n)]))
+  const today = todayOf()
+  const scope = (list: any[]) => {
+    const set = new Set(list.map(r => Number(r.slot_id)))
+    const sh = shifts.filter(s => set.has(Number(s.slot_id)))
+    const people = sh.filter(s => s.status !== 'absent')
+    return {
+      slots: list.length, too_many: list.length > BAND_MAX, slot_ids: list.length > BAND_MAX ? [] : list.map(r => Number(r.slot_id)),
+      first_date: list[0]?.work_date ?? null, last_date: list[list.length - 1]?.work_date ?? null,
+      shifts: sh.length, assigned: people.length, deletable_shifts: sh.filter(s => deletable.has(Number(s.shift_id))).length,
+      applicants: [...set].reduce((n, id) => n + (apps.get(id) || 0), 0), names: [...new Set(people.map(s => s.staff_name || ''))].slice(0, 8),
+    }
+  }
+  return c.json({ slot_id: slot.slot_id, kind: pattern ? 'pattern' : 'row', pattern, today, truncated: rows.length > BAND_MAX * 2,
+    scopes: { one: scope(rows.filter(r => Number(r.slot_id) === Number(slot.slot_id))), today: scope(rows.filter(r => r.work_date >= today)), all: scope(rows) } })
+})
+app.get('/shifts/:id/band', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const cid = u.company_id
+  const s = await db.prepare('SELECT shift_id, staff_id, project_id, site_id, location, start_time, end_time, role, slot_id FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), cid).first() as any
+  if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
+  if (s.slot_id) return c.json({ error: '枠に割り当てたシフトは、枠の削除（帯ごと）で削除してください' }, 409)
+  const rows = (await db.prepare(`SELECT shift_id, work_date FROM shifts WHERE company_id = ? AND staff_id = ? AND project_id = ? AND site_id IS ? AND COALESCE(location,'') = ?
+      AND start_time = ? AND end_time = ? AND COALESCE(role,'') = ? AND slot_id IS NULL ORDER BY work_date, shift_id LIMIT ?`)
+    .bind(cid, s.staff_id, s.project_id, s.site_id ?? null, s.location || '', s.start_time, s.end_time, s.role || '', BAND_MAX * 2 + 1).all()).results as any[]
+  const plan = await planShiftDelete(db, cid, rows.map(r => Number(r.shift_id)))
+  const deletable = new Set(plan.del)
+  const today = todayOf()
+  const scope = (list: any[]) => {
+    const del = list.filter(r => deletable.has(Number(r.shift_id))).map(r => Number(r.shift_id))
+    const reasons: Record<string, number> = {}, inList = new Set(list.map(r => Number(r.shift_id)))
+    for (const k of plan.skipped) if (inList.has(k.shift_id)) reasons[k.reason] = (reasons[k.reason] || 0) + 1
+    return { shifts: list.length, too_many: del.length > BAND_MAX, deletable: del.length, deletable_ids: del.length > BAND_MAX ? [] : del, kept: list.length - del.length, kept_reasons: reasons,
+      first_date: list[0]?.work_date ?? null, last_date: list[list.length - 1]?.work_date ?? null }
+  }
+  return c.json({ shift_id: s.shift_id, today, truncated: rows.length > BAND_MAX * 2, scopes: { today: scope(rows.filter(r => r.work_date >= today)), all: scope(rows) } })
 })
 
 // 役割への割り当て（複数可）
