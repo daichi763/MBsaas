@@ -27,6 +27,8 @@ export const CHANGE_FIELD_LABELS: Record<string, string> = {
   sales_allowance_note: '営業手当（摘要）', sales_allowance: '営業手当', other_deduction_note: 'その他控除（摘要）', other_deduction: 'その他控除',
   employment_insurance_no: '雇用保険被保険者番号', social_insurance_no: '社会保険番号', paid_leave_granted_at: '有給付与日',
   paid_leave_remaining: '有給残数', telework_remaining_this_month: '今月テレワーク残数',
+  // ログインの users.email（変更申請の承認・確認用のメールで切り替えたとき。#9802）
+  login_email: 'メールアドレス（通知・パスワード再設定）',
 }
 // スタッフ基本情報のうち履歴に残す項目（経歴・PRポイント・備考などの長い文章と、管理者メモ・フォローは対象外）
 export const PROFILE_LOG_FIELDS = ['name', 'kana', 'gender', 'date_of_birth', 'age_entered', 'affiliation', 'affiliation_contact', 'nearest_station_line', 'nearest_station',
