@@ -201,6 +201,23 @@ let closingId = null
   if (closingId) must(await admin.post(`/api/admin/settlement/closings/${closingId}/reopen`, { reason: 'テストの後片付け' }), 'reopen')
 }
 
+// ---------- スタッフの統合でスタッフ別の月額を統合先に付け替える（RV） ----------
+{
+  const S1 = await newStaff(11), T1 = await newStaff(12), S2 = await newStaff(13), T2 = await newStaff(14)
+  await newShift(PM, S1, '2018-09-05'); await newShift(PM, S2, '2018-09-06')
+  const r1 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: S1, amount: 7000, valid_from: '2018-09' }), 'rule S1').rule_id
+  const r2 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: S2, amount: 8000, valid_from: '2018-09' }), 'rule S2').rule_id
+  const t2 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: T2, amount: 9000, valid_from: '2018-01' }), 'rule T2').rule_id
+  const m1 = await admin.post(`/api/admin/staff/${S1}/merge`, { target_staff_id: T1, force: true })
+  const m2 = await admin.post(`/api/admin/staff/${S2}/merge`, { target_staff_id: T2, force: true })
+  const rules = must(await admin.get(`/api/admin/settlement/monthly-rules?project_id=${PM}`), 'rules').rules
+  ok('統合: 統合先に同じ案件のスタッフ別の月額がなければ、統合元の月額を統合先に付け替える', m1.status === 200 && rules.find(r => r.rule_id === r1)?.staff_id === T1, [m1.status, m1.text?.slice(0, 200), rules.find(r => r.rule_id === r1)])
+  ok('統合: 統合先に同じ案件のスタッフ別の月額があれば、統合先の月額を使う（付け替えない）', m2.status === 200 && rules.find(r => r.rule_id === r2)?.staff_id === S2 && rules.find(r => r.rule_id === t2)?.staff_id === T2, [m2.status, rules.filter(r => [r2, t2].includes(r.rule_id))])
+  const s = await settle('2018-09-01', '2018-09-30')
+  const st = s.monthly_lines.filter(l => l.staff_id != null).map(l => [l.staff_id, l.amount]).sort((a, b) => a[1] - b[1])
+  ok('統合: 統合後もスタッフ別の月額を請求する（統合先 7000・9000）', JSON.stringify(st) === JSON.stringify([[T1, 7000], [T2, 9000]]), st)
+}
+
 // ---------- 案件の削除で月額のルールも消す ----------
 {
   const P2 = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-削除用`, unit_price_type: 'monthly', unit_price: 1000 }), 'p2').project_id

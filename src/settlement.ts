@@ -469,10 +469,11 @@ function summarize(rows: Row[]) {
 
 // ---------- 月額（固定）の請求（#9702。src/lib/monthly-billing.ts） ----------
 // 精算の期間に計上する月額の行。支払区分で絞ったときは出さない（月額は請求だけで、支払先がない）。
+// client_id=0 はシフトの絞り込み（loadRows）と同じく「絞らない」にする（loadMonthlyLines の 0 =「クライアントなし」にしない）。
 // スタッフで絞ったときはそのスタッフのスタッフ別の月額だけ。確定で絞ったときは、その月の対象のシフトに確定済みがあるか（ないか）で選ぶ
 async function loadMonthlyForFilters(db: D1Database, companyId: number, f: Filters): Promise<MonthlyLine[]> {
   if (f.payee_type) return []
-  const lines = await loadMonthlyLines(db, companyId, { months: monthsOverlapping(f.from, f.to), from: f.from, to: f.to, client_id: f.client_id, project_id: f.project_id, staff_id: f.staff_id })
+  const lines = await loadMonthlyLines(db, companyId, { months: monthsOverlapping(f.from, f.to), from: f.from, to: f.to, client_id: f.client_id || null, project_id: f.project_id, staff_id: f.staff_id })
   return f.settle === 'confirmed' ? lines.filter(l => l.confirmed > 0) : f.settle === 'planned' ? lines.filter(l => l.confirmed === 0) : lines
 }
 // 集計に月額を足す。請求合計（bill）と粗利（月額は支払がないので、そのまま粗利）に入れ、monthly_bill・monthly_count に内訳を出す。
