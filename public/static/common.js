@@ -145,8 +145,48 @@ if (typeof MutationObserver === 'function' && document.documentElement) {
   new MutationObserver(() => {
     if (modalScanQueued) return
     modalScanQueued = true
-    queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons(); rememberModalFields() })
+    queueMicrotask(() => { modalScanQueued = false; addModalCloseButtons(); rememberModalFields(); holdToasts() })
   }).observe(document.documentElement, { childList: true, subtree: true })
+}
+
+// トーストの表示時間（Sprint 15 #9708）。toast は画面ごと（admin.js・staff.js・hq.js など）にあり、どれも 2.5〜3 秒で el.remove() する。
+// ここで全画面分をまとめて扱う: エラー・「できない」理由・入力の案内は長めに出し（8 秒〜。文が長いほど延ばす。最大 20 秒）、✕ で閉じられるようにする。
+// 成功などの短い知らせは今のまま。長い文の知らせは、読める時間（1文字あたり約 0.11 秒。最大 10 秒）まで延ばす。
+// 呼び出し側が長めの時間を指定したとき（staff.js の toast(msg, ms)）は、その時間を短くしない
+const TOAST_ALERT_RE = /できません|できない|失敗|エラー|見つかりません|ありません|許可されません|権限|てください|が必要です|大きすぎ|正しくありません|重複|超え|締めて|不足|中です/
+const TOAST_KEEP_MAX = 5
+function toastHoldMs(text, alert) {
+  const n = String(text || '').length
+  return alert ? Math.min(20000, Math.max(8000, 3000 + n * 150)) : Math.min(10000, n * 110)
+}
+function holdToasts() {
+  document.querySelectorAll('#toast > .toast-msg:not([data-toast-held])').forEach(holdToast)
+}
+function holdToast(el) {
+  el.dataset.toastHeld = '1'
+  const text = (el.textContent || '').trim()
+  const alert = TOAST_ALERT_RE.test(text)
+  const want = toastHoldMs(text, alert), shownAt = Date.now()
+  const removeNow = () => Element.prototype.remove.call(el)
+  // 画面の toast の時間で消そうとしたときに、まだ読める時間がたっていなければ、残りの時間だけ待ってから消す
+  el.remove = function () {
+    const left = want - (Date.now() - shownAt)
+    if (left > 50) setTimeout(removeNow, left); else removeNow()
+  }
+  if (alert) {
+    el.setAttribute('role', 'alert')
+    el.style.cssText += ';display:flex;align-items:flex-start;gap:.75rem;pointer-events:auto'
+    const x = document.createElement('button')
+    x.type = 'button'
+    x.setAttribute('aria-label', '閉じる'); x.title = '閉じる'
+    x.style.cssText = 'flex-shrink:0;margin:-.15rem -.4rem 0 0;width:1.5rem;height:1.5rem;border-radius:9999px;color:#d1d5db;font-size:1rem;line-height:1.5rem;text-align:center;background:transparent'
+    x.textContent = '✕'
+    x.addEventListener('click', removeNow)
+    el.appendChild(x)
+  }
+  // 長く出すトーストが積み重なりすぎないよう、古いものから消す
+  const list = el.parentNode ? [...el.parentNode.querySelectorAll(':scope > .toast-msg')] : []
+  for (const old of list.slice(0, Math.max(0, list.length - TOAST_KEEP_MAX))) Element.prototype.remove.call(old)
 }
 
 // API のエラー文言（無ければ fallback）を toast で出す。toast の無い画面では alert で出す
