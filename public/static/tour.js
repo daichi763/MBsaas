@@ -8,7 +8,7 @@
 // 進み具合は人ごとにサーバーに残す（GET/PUT /api/admin/tours・/api/staff/tours。src/tours.ts）。途中で閉じたら続きから。
 // 案内が指す要素は、各画面の既存の id・data-* で探す。見つからないステップは飛ばす（ほかの作業で画面が変わっても止まらないように）。
 // 呼び出しの口: admin.js の起動の後（FosTour.init）・ダッシュボードの描画の後（FosTour.dashboard）、staff.js の起動の後（FosTour.init）と
-// 「その他」の画面（FosTour.staffMoreHtml）。common.js（esc・delegate）の後、admin.js・staff.js の後に読み込む（index.tsx）
+// 「その他」の画面（FosTour.staffMoreHtml）。common.js（esc・delegate）の後、admin.js・staff.js の前に読み込む（index.tsx。起動が済んだ時点で FosTour があるように）
 // =========================================================
 ;(function () {
   'use strict'
@@ -26,6 +26,7 @@
     saveTimer: null, tick: null, raf: 0,
     layer: null, menu: null, menuBtn: null,
     checklist: null,       // 最後に読んだ「はじめにやること」
+    checklistShown: false, // この画面を開いてから「はじめにやること」を出したか（済んだお知らせは、見ていた人にだけ出す）
   }
   const $ = (sel, root) => (root || document).querySelector(sel)
   const wait = (ms) => new Promise(r => setTimeout(r, ms))
@@ -686,10 +687,12 @@
     try { d = (await axios.get('/api/admin/tours/checklist', { background: true })).data } catch (e) { return }
     S.checklist = d
     const old = document.getElementById('tour-checklist')
-    if (d.completed_now) say('「はじめにやること」がすべて済みました。', 4000)
+    // 一度も見ていない人（初期設定がもう済んでいる会社の管理者など）には、済んだお知らせを出さない
+    if (d.completed_now && (S.checklistShown || old)) say('「はじめにやること」がすべて済みました。', 4000)
     if (!d.show || !d.items) { if (old) old.remove(); return }
     // 読み込みの間にほかの画面へ移ったら出さない
     if (adminScreen() !== 'dashboard' || !document.getElementById('kpi-cards')) return
+    S.checklistShown = true
     if (old) old.outerHTML = checklistHtml(d.items)
     else document.getElementById('app').insertAdjacentHTML('afterbegin', checklistHtml(d.items))
   }
