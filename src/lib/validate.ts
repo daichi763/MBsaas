@@ -20,9 +20,46 @@ export function oneOf<T extends string>(v: unknown, allowed: readonly T[]): v is
 // 整数に変換する。整数でない・範囲外なら null
 export function toInt(v: unknown, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER): number | null {
   if (v === null || v === undefined || v === '' || typeof v === 'boolean') return null
-  const n = typeof v === 'number' ? v : Number(String(v).trim())
+  const n = typeof v === 'number' ? v : Number(halfWidthNumber(String(v)))
   if (!Number.isInteger(n) || n < min || n > max) return null
   return n
+}
+
+// 数字の入力を半角にそろえる（#9704）。全角の数字・小数点・マイナス（長音・ダッシュを含む）・プラスを半角にし、
+// 桁区切りのカンマ（全角・半角）と空白（全角・半角）を除く。画面の common.js の toHalfWidthNumber と同じ規則
+export function halfWidthNumber(s: string): string {
+  return s.replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[．]/g, '.').replace(/[－−‐‑‒–—―ーｰ]/g, '-').replace(/＋/g, '+')
+    .replace(/[,，\s　]/g, '')
+}
+/** 数値の項目の値を数にする（全角は半角にそろえる）。空欄・null は null、数でなければ NaN */
+export function toNumberOrNull(v: unknown): number | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'boolean' || typeof v === 'object') return NaN
+  if (typeof v === 'number') return v
+  const s = halfWidthNumber(String(v))
+  return s === '' ? null : Number(s)
+}
+
+// 郵便番号（#9701）: 全角・ハイフンの違いをそろえ、7桁の数字を「123-4567」の形にする。空欄は null、形が違えば undefined
+export function normalizePostalCode(v: unknown): string | null | undefined {
+  if (v === null || v === undefined) return null
+  const d = halfWidthNumber(String(v)).replace(/^〒/, '').replace(/-/g, '')
+  if (d === '') return null
+  return /^\d{7}$/.test(d) ? `${d.slice(0, 3)}-${d.slice(3)}` : undefined
+}
+// ホームページの URL（#9709）: http/https だけ。空欄は null、受け付けない形なら undefined
+export const WEBSITE_URL_MAX = 500
+export function normalizeWebsiteUrl(v: unknown): string | null | undefined {
+  if (v === null || v === undefined) return null
+  const s = String(v).trim()
+  if (!s) return null
+  if (s.length > WEBSITE_URL_MAX || /[\s<>"'`\u0000-\u001f\u007f]/.test(s)) return undefined
+  let u: URL
+  try { u = new URL(s) } catch { return undefined }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined
+  if (!u.hostname || u.username || u.password) return undefined
+  return u.href
 }
 
 // 相談のカテゴリ・緊急度（admin.js / staff.js の CAT_LABELS と同じキー）

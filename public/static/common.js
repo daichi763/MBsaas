@@ -212,3 +212,52 @@ function formatReportedTime(at, workDate) {
   if (!m) return ''
   return `${m[1]}-${m[2]}-${m[3]}` === String(workDate || '').slice(0, 10) ? m[4] : `${Number(m[2])}/${Number(m[3])} ${m[4]}`
 }
+
+// 数字の入力欄の全角を半角にそろえる（#9704）。全角の数字・小数点・マイナス（長音・ダッシュを含む）・プラスを半角にし、
+// 桁区切りのカンマと空白（全角・半角）を除く（サーバー側の src/lib/validate.ts の halfWidthNumber と同じ規則）。
+// 全画面の数字の欄（type=number・tel、inputmode=numeric・decimal・tel、data-halfwidth を付けた欄）に、下でまとめて効かせる:
+// - 入力の確定時（change・欄を離れたとき・ボタンを押す直前）に、欄の値をそろえる
+// - type=number の欄は、全角のまま確定すると値が空になるブラウザ（Safari・Firefox）があるため、IME の確定と貼り付けの時点でそろえる。
+//   それでも数として読めないまま欄を離れたときは、空のまま保存されないように知らせる
+function toHalfWidthNumber(v) {
+  return String(v == null ? '' : v).replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/\uFF0E/g, '.').replace(/[\uFF0D\u2212\u2010-\u2015\u30FC\uFF70]/g, '-').replace(/\uFF0B/g, '+')
+    .replace(/[,\uFF0C\s\u3000]/g, '')
+}
+toHalfWidthNumber.SELECTOR = 'input[type=number], input[type=tel], input[inputmode=numeric], input[inputmode=decimal], input[inputmode=tel], input[data-halfwidth]'
+;(function () {
+  const isNumField = (el) => !!(el && el.matches && el.matches(toHalfWidthNumber.SELECTOR) && !el.readOnly && !el.disabled)
+  const notify = (el) => el.dispatchEvent(new Event('input', { bubbles: true }))
+  const fix = (el) => {
+    if (!isNumField(el)) return
+    if (el.type === 'number') {
+      if (el.validity && el.validity.badInput && typeof toast === 'function') toast('数字は半角で入力してください（読み取れない値は保存されません）')
+      return
+    }
+    const s = toHalfWidthNumber(el.value)
+    if (s !== el.value) { el.value = s; notify(el) }
+  }
+  const before = new WeakMap() // IME で入力を始める前の値（type=number の欄）
+  document.addEventListener('compositionstart', (ev) => { if (isNumField(ev.target) && ev.target.type === 'number') before.set(ev.target, ev.target.value) }, true)
+  document.addEventListener('compositionend', (ev) => {
+    const el = ev.target
+    if (!isNumField(el) || el.type !== 'number') return
+    const prev = before.get(el) || '', data = ev.data || ''
+    setTimeout(() => {
+      if (el.value !== '' && !(el.validity && el.validity.badInput)) return // ブラウザが半角にした（Chrome など）
+      const s = toHalfWidthNumber(prev + data)
+      if (s !== '' && Number.isFinite(Number(s))) { el.value = s; notify(el) }
+    }, 0)
+  }, true)
+  document.addEventListener('paste', (ev) => {
+    const el = ev.target
+    if (!isNumField(el) || el.type !== 'number' || !ev.clipboardData) return
+    const t = ev.clipboardData.getData('text'), s = toHalfWidthNumber(t)
+    if (s === t || s === '' || !Number.isFinite(Number(s))) return
+    ev.preventDefault(); el.value = s; notify(el)
+  }, true)
+  // 画面の処理より先にそろえる（キャプチャで受ける）
+  document.addEventListener('change', (ev) => fix(ev.target), true)
+  document.addEventListener('blur', (ev) => fix(ev.target), true) // 欄の onblur の処理より先に動く
+  document.addEventListener('click', () => { const a = document.activeElement; if (a && a.type !== 'number') fix(a) }, true)
+})()

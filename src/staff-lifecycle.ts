@@ -7,6 +7,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { createPerson, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode, ageGroupOf } from './roster'
+import { ageEntryUpdate, estimatedAge } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk, batchInChunks } from './lib/d1-chunk'
 import { insertRowsStmts, changesOf } from './lib/bulk-write'
@@ -292,7 +293,9 @@ const FINALIZE_PROFILE_COLUMNS = ['date_of_birth', 'affiliation_contact', 'skill
 function finalizeRequiredFields(required: Set<string>, sp: any) {
   const type = sp.affiliation_type || 'own_employee'
   return ROSTER_CONFIGURABLE_FIELDS.filter(f => required.has(f.code) && requirementApplies(f, type))
-    .map(f => ({ code: f.code, label: f.label, login_only: !!f.login_only, value: f.code === 'phone' ? sp.phone ?? null : f.code === 'email' ? sp.email ?? null : sp[f.code] ?? null }))
+    .map(f => ({ code: f.code, label: f.label, login_only: !!f.login_only, value: f.code === 'phone' ? sp.phone ?? null : f.code === 'email' ? sp.email ?? null : sp[f.code] ?? null,
+      // 生年月日が分からないときの年齢（#9710。今日の推定の年齢）
+      ...(f.code === 'date_of_birth' ? { age_entered: estimatedAge(sp.age_entered, sp.age_entered_on) } : {}) }))
 }
 /**
  * 本登録の入力（body）と今の値を合わせて、企業の必須設定に足りない項目がないかを確かめる。
@@ -302,10 +305,14 @@ async function finalizeRequirements(db: D1Database, companyId: number, sp: any, 
   Promise<{ stmts: D1PreparedStatement[] } | { error: true; body: any }> {
   const type = sp.affiliation_type || 'own_employee'
   const upd: any = {}
-  for (const k of [...FINALIZE_PROFILE_COLUMNS, 'phone']) if (b[k] !== undefined) upd[k] = typeof b[k] === 'string' ? b[k].trim() : b[k]
+  for (const k of [...FINALIZE_PROFILE_COLUMNS, 'phone', 'age_entered']) if (b[k] !== undefined) upd[k] = typeof b[k] === 'string' ? b[k].trim() : b[k]
   if (type !== 'partner_manual') delete upd.affiliation_contact
   const valueErr = normalizeRosterValues(upd)
   if (valueErr) return { error: true, body: { error: valueErr } }
+  // 生年月日が分からないときの年齢（#9710）は、入力した日と一緒に保存する（生年月日があれば空にする）
+  const ageCols = ageEntryUpdate(upd, sp)
+  const ageForCheck = upd.age_entered !== undefined ? upd.age_entered : sp.age_entered
+  delete upd.age_entered
   for (const k of ['skills', 'career', 'work_area', 'nearest_station_line', 'nearest_station', 'affiliation_contact']) {
     // スキル・経歴・エリアは登録時と同じく空欄を ''、それ以外は NULL にする
     if (upd[k] !== undefined) upd[k] = String(upd[k] ?? '').slice(0, k === 'career' ? 5000 : 500) || (['skills', 'career', 'work_area'].includes(k) ? '' : null)
@@ -317,11 +324,13 @@ async function finalizeRequirements(db: D1Database, companyId: number, sp: any, 
   const merged: any = { kana: kana || sp.kana, phone: sp.phone, email }
   for (const k of FINALIZE_PROFILE_COLUMNS) merged[k] = sp[k]
   for (const [k, v] of Object.entries(upd)) merged[k] = v
+  merged.age_entered = ageCols ? ageCols.age_entered : ageForCheck
   const missing = missingRequired(await getRequiredFields(db, companyId), merged, 'create', type, hasLogin)
   if (missing.length) return { error: true, body: { error: `次の項目は必須です: ${missing.join('・')}`, missing } }
   const stmts: D1PreparedStatement[] = []
   const cols = Object.keys(upd).filter(k => k !== 'phone')
   if (cols.length) stmts.push(db.prepare(`UPDATE staff_profiles SET ${cols.map(k => `${k} = ?`).join(', ')} WHERE staff_id = ?`).bind(...cols.map(k => upd[k] ?? null), sp.staff_id))
+  if (ageCols) stmts.push(db.prepare('UPDATE staff_profiles SET age_entered = ?, age_entered_on = ? WHERE staff_id = ?').bind(ageCols.age_entered, ageCols.age_entered_on, sp.staff_id))
   if (upd.phone !== undefined) stmts.push(db.prepare('UPDATE users SET phone = ? WHERE user_id = ? AND company_id = ?').bind(upd.phone ?? null, sp.user_id, companyId))
   return { stmts }
 }
@@ -591,7 +600,7 @@ async function executeAffiliationChange(db: D1Database, companyId: number, actor
         stmts.push(db.prepare(`UPDATE staff_profiles SET kana = ?, gender = ?, skills = ?, career = ?, career_rows = ?, pr_points = ?, work_area = ?, age_group = ?,
             nearest_station_line = ?, nearest_station = ?, commute_minutes = ?, available_from = ?,
             affiliation_contact = CASE WHEN ? = 'partner_manual' THEN affiliation_contact ELSE NULL END WHERE staff_id = ?`)
-          .bind(src.kana, src.gender, src.skills, src.career, src.career_rows, src.pr_points, src.work_area, ageGroupOf(src.date_of_birth, src.age_group) || null,
+          .bind(src.kana, src.gender, src.skills, src.career, src.career_rows, src.pr_points, src.work_area, ageGroupOf(src.date_of_birth, src.age_group, undefined, { age: src.age_entered, on: src.age_entered_on }) || null,
             src.nearest_station_line, src.nearest_station, src.commute_minutes, src.available_from, to, sp.staff_id))
       }
       // 稼働先側のユーザー行は照合不能パスワードのままなので、ログインは所属元のまま。自社で使う場合は本登録でログインを発行する
