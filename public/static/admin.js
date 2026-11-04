@@ -4499,6 +4499,7 @@ function reportCardHtml(r, fields) {
         ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
         ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に修正しました">確認後に修正あり</span>` : ''}
         ${reportEntryBadge(r)}
+        ${reportAdminEditBadge(r, fmt)}
         <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
       </div>
       ${reportIncidentHtml(r, fields)}
@@ -4511,9 +4512,119 @@ function reportCardHtml(r, fields) {
              ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
         <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
+        <button class="btn btn-outline text-xs" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します"><i class="fas fa-pen-to-square"></i>実績を修正</button>
+        ${Number(r.edit_count) > 0 ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
 }
+
+// ---------- 日報の実績の修正（#9707。API は GET /admin/daily-reports/:id/edits・PUT /admin/daily-reports/:id/values） ----------
+// 直した値が正になり、実績分析・案件の実績・CSV・スタッフのアプリに使われる。もとの値・直した人・日時・理由は修正履歴に残る。
+// スタッフが値を変えて出し直したら、出し直した値が正になる（「管理者が修正」の印は外れ、修正履歴に「再提出」が残る）
+function reportAdminEditBadge(r, fmt) {
+  if (r.admin_edited_at) return `<span class="badge badge-purple" title="${esc(`${r.admin_edited_by_name || '管理者'}が ${fmt(r.admin_edited_at)} に実績を修正しました`)}"><i class="fas fa-user-pen mr-0.5"></i>管理者が修正${r.admin_edited_by_name ? '・' + esc(r.admin_edited_by_name) : ''}</span>`
+  if (r.last_edit_kind === 'resubmit') return '<span class="badge badge-yellow" title="管理者が修正した後に、スタッフが値を変えて出し直しました。出し直した値を使っています（修正した値は修正履歴にあります）">修正後にスタッフが再提出</span>'
+  return ''
+}
+const REPORT_EDIT = { data: null }
+// 値の表示（空欄・数値・文字）
+function reportEditValueText(v) {
+  if (v === undefined || v === null || v === '') return '（空欄）'
+  return typeof v === 'object' ? JSON.stringify(v) : String(v)
+}
+// 全角の数字を半角にする（数値の欄。全角のまま入力しても保存できるように）
+function reportHalfWidthNumber(s) {
+  return String(s == null ? '' : s).replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xfee0)).replace(/[，,]/g, '').trim()
+}
+async function loadReportEdit(id) {
+  try { return (await axios.get('/api/admin/daily-reports/' + Number(id) + '/edits')).data } catch (e) {
+    showApiError(e, '日報を読み込めませんでした'); return null
+  }
+}
+delegate('editReportValues', (el) => withSubmitLock(el, async () => {
+  const d = await loadReportEdit(el.dataset.id)
+  if (!d) return
+  REPORT_EDIT.data = d
+  const r = d.report, vals = r.values || {}
+  const input = (f, i) => {
+    const v = vals[f.key]
+    const id = 'rev-f-' + i
+    const req = f.required ? '<span class="text-red-500 ml-0.5">*</span>' : ''
+    const label = `<label class="text-xs font-bold text-gray-600 block mb-0.5" for="${id}">${esc(f.label)}${f.unit ? `（${esc(f.unit)}）` : ''}${req}${f.past ? ' <span class="badge badge-gray font-normal">以前の項目</span>' : ''}</label>`
+    if (f.type === 'number') return `<div>${label}<input id="${id}" data-key="${esc(f.key)}" data-type="number" type="text" inputmode="numeric" class="inp text-sm w-full rev-field" value="${esc(v == null ? '' : v)}" placeholder="0"></div>`
+    const max = Number(f.maxLength) > 0 ? Number(f.maxLength) : 2000
+    return `<div class="col-span-full">${label}<textarea id="${id}" data-key="${esc(f.key)}" data-type="text" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp text-sm w-full rev-field" style="resize:vertical">${esc(v == null ? '' : v)}</textarea></div>`
+  }
+  modal(`
+    <h3 class="font-bold text-lg mb-1">日報の実績を修正</h3>
+    <p class="text-xs text-gray-500 mb-2">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}　提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')}</p>
+    <p class="text-xs text-gray-600 bg-blue-50 rounded-lg px-2.5 py-1.5 mb-3">直した値が正になり、実績分析・案件の実績・CSV・スタッフのアプリに使われます。スタッフのアプリには「管理者が修正」と表示され、通知が届きます。もとの値は修正履歴に残ります。</p>
+    ${r.admin_edited_at ? `<p class="text-[11px] text-gray-400 mb-2">前回の修正: ${esc(r.admin_edited_by_name || '')} ${esc(dayjs(String(r.admin_edited_at).replace(' ', 'T')).format('M/D HH:mm'))}</p>` : ''}
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">${d.fields.map(input).join('') || '<p class="text-sm text-gray-400 col-span-full">直せる項目がありません</p>'}</div>
+    <label class="text-sm text-gray-600 block mb-1" for="rev-reason">修正の理由（任意。スタッフにも伝わります）</label>
+    <textarea id="rev-reason" rows="2" class="inp text-sm w-full" style="resize:vertical" maxlength="${Number(d.reason_max) || 500}" placeholder="例: 店舗から届いた実績の数に合わせました"></textarea>
+    <div class="flex gap-2 justify-end mt-3 flex-wrap">
+      ${d.edits && d.edits.length ? `<button class="btn btn-outline text-sm mr-auto" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left"></i>修正履歴（${d.edits.length}件）</button>` : ''}
+      <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary text-sm" data-action="saveReportValues" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>保存</button>
+    </div>`)
+}))
+delegate('saveReportValues', (el) => {
+  const d = REPORT_EDIT.data
+  if (!d || Number(d.report.daily_report_id) !== Number(el.dataset.id)) return
+  const values = {}
+  document.querySelectorAll('.rev-field').forEach(inp => {
+    values[inp.dataset.key] = inp.dataset.type === 'number' ? reportHalfWidthNumber(inp.value) : inp.value
+  })
+  // 数値の欄は、半角にした値を画面にも戻す（エラーのときに何が送られたか分かるように）
+  document.querySelectorAll('.rev-field[data-type="number"]').forEach(inp => { inp.value = values[inp.dataset.key] })
+  const body = { values, reason: document.getElementById('rev-reason').value.trim() || null,
+    expected_submitted_at: d.report.submitted_at || null, expected_admin_edited_at: d.report.admin_edited_at || null }
+  withSubmitLock(el, async () => {
+    let res
+    try { res = (await axios.put('/api/admin/daily-reports/' + Number(d.report.daily_report_id) + '/values', body)).data } catch (e) {
+      showApiError(e, '実績を保存できませんでした')
+      // スタッフが出し直した・ほかの管理者が直した（409）ときは、今の内容で表示し直す
+      if (e.response && e.response.status === 409) { closeModal(); renderReports(true) }
+      return
+    }
+    closeModal()
+    if (!res || !res.changed) { toast('変更された項目はありません'); return }
+    toast('実績を修正しました' + (res.staff_notified ? '（スタッフのアプリに通知しました）' : '（このスタッフはアプリにログインしないため、通知は届きません）'))
+    renderReports(true)
+  })
+})
+const REPORT_EDIT_KIND_LABEL = { admin_edit: '管理者が修正', resubmit: 'スタッフが再提出' }
+const REPORT_EDIT_METHOD_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力' }
+delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
+  const d = await loadReportEdit(el.dataset.id)
+  if (!d) return
+  const r = d.report
+  const label = new Map((d.fields || []).map(f => [f.key, f.label]))
+  const fmt = t => (t ? dayjs(String(t).replace(' ', 'T')).format('YYYY/M/D HH:mm') : '')
+  const item = e => `
+    <li class="border border-gray-200 rounded-lg p-3">
+      <div class="flex items-center gap-2 flex-wrap text-xs">
+        <span class="badge ${e.kind === 'admin_edit' ? 'badge-purple' : 'badge-yellow'}">${esc(REPORT_EDIT_KIND_LABEL[e.kind] || e.kind)}</span>
+        ${e.kind === 'resubmit' && e.entry_method ? `<span class="text-gray-500">${esc(REPORT_EDIT_METHOD_LABEL[e.entry_method] || e.entry_method)}</span>` : ''}
+        <span class="text-gray-600">${esc(e.edited_by_name || (e.kind === 'resubmit' ? r.staff_name : ''))}</span>
+        <span class="text-gray-400 ml-auto">${esc(fmt(e.edited_at))}</span>
+      </div>
+      ${e.reason ? `<p class="text-xs text-gray-700 bg-gray-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
+      <table class="w-full text-xs mt-1.5"><tbody>
+        ${(e.changed_keys || []).map(k => `<tr class="border-t border-gray-100">
+          <td class="py-1 pr-2 text-gray-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
+          <td class="py-1 pr-1 text-gray-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>
+          <td class="py-1 px-1 text-gray-400 align-top">→</td>
+          <td class="py-1 font-bold text-gray-800 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.after[k]))}</td></tr>`).join('')}
+      </tbody></table>
+    </li>`
+  modal(`
+    <h3 class="font-bold text-lg mb-1">実績の修正履歴</h3>
+    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}（新しい順。左がもとの値、右が直した後の値）</p>
+    ${d.edits && d.edits.length ? `<ul class="space-y-2 max-h-[60vh] overflow-y-auto">${d.edits.map(item).join('')}</ul>` : '<p class="text-sm text-gray-400">修正の履歴はありません</p>'}
+    <div class="flex justify-end mt-3"><button class="btn btn-outline text-sm" onclick="closeModal()">閉じる</button></div>`)
+}))
 
 // refresh: 確認・コメントの後の読み直し（読み込み中の表示を出さず、スクロール位置を保つ）
 // 提出済みの日報と未提出のシフト（#344）の切り替え。期間・案件・スタッフの絞り込みは引き継ぐ

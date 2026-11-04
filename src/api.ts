@@ -33,7 +33,7 @@ import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, no
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
-import { loadShiftSnaps, notifyShiftChanges, notifyReportComment } from './notifications'
+import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEdit } from './notifications'
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
 import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND } from './notifications'
 import { hqErrorsApi } from './hq-errors'
@@ -51,7 +51,8 @@ import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRos
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
-import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef } from './lib/daily-report'
+import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef,
+  reportEditFields, buildAdminReportEdit, parseReportValuesJson, REPORT_EDIT_REASON_MAX } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
 import { NOTICE_TARGET_SQL, NOTICE_LIVE_SQL, NOTICE_EXPIRED_SQL, loadStaffNotices, countUnreadNotices, parseResponseOptions } from './lib/notices'
 import { staffShiftView } from './shift-board'
@@ -2106,8 +2107,8 @@ async function personStaffIds(db: D1Database, u: any): Promise<number[]> {
 
 // comment_read_at: 本人が管理者のコメントを開いた日時（#158。コメントが変わると空に戻る）。unread_comment: まだ開いていないコメントがある
 const MY_REPORT_COLS = `dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_comment, dr.manager_comment_at, dr.comment_read_at, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at,
-      p.project_name, p.report_template_id, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
+      dr.manager_comment, dr.manager_comment_at, dr.comment_read_at, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at, dr.admin_edited_at,
+      p.project_name, p.report_template_id, p.past_report_fields_json, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
     LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id`
 async function myReportsView(db: D1Database, rows: any[]) {
@@ -2117,11 +2118,33 @@ async function myReportsView(db: D1Database, rows: any[]) {
     const ts = (await db.prepare(`SELECT template_id, fields_json FROM report_templates WHERE template_id IN (${tplIds.map(() => '?').join(',')})`).bind(...tplIds).all()).results as any[]
     for (const t of ts) templates[t.template_id] = parseTemplateFields(t.fields_json)
   }
+  // 管理者が直した日報（#9707）は、直した項目と、スタッフが提出したときの値を返す（最後の出し直しの後の、最初の修正の前の値）
+  const edited = rows.filter(r => r.admin_edited_at).map(r => Number(r.daily_report_id))
+  const original = new Map<number, { keys: Set<string>; values: Record<string, unknown> }>()
+  if (edited.length) {
+    const es = (await db.prepare(`SELECT daily_report_id, kind, before_values, changed_keys FROM daily_report_edits WHERE daily_report_id IN ${JSON_IN} ORDER BY edit_id`)
+      .bind(bindJsonArray(edited)).all()).results as any[]
+    for (const e of es) {
+      const rid = Number(e.daily_report_id)
+      if (e.kind !== 'admin_edit') { original.delete(rid); continue }
+      const before = parseReportValuesJson(e.before_values)
+      let keys: string[] = []
+      try { const v = JSON.parse(e.changed_keys || '[]'); if (Array.isArray(v)) keys = v.filter((k: unknown) => typeof k === 'string') } catch { keys = [] }
+      const o = original.get(rid) || { keys: new Set<string>(), values: {} }
+      for (const k of keys) if (!o.keys.has(k)) { o.keys.add(k); o.values[k] = before[k] ?? null }
+      original.set(rid, o)
+    }
+  }
   return {
     reports: rows.map(r => {
-      const { report_values, ...rest } = r
+      const { report_values, past_report_fields_json, ...rest } = r
+      const o = r.admin_edited_at ? original.get(Number(r.daily_report_id)) : undefined
+      const values = parseReportValues(report_values)
       return { ...rest, template_id: r.report_template_id, other_company: !!r.other_company, incident_flag: !!r.incident_flag, complaint_flag: !!r.complaint_flag,
-        manager_checked: !!r.manager_checked, values: parseReportValues(report_values), unread_comment: !!r.manager_comment && !r.comment_read_at }
+        manager_checked: !!r.manager_checked, values, unread_comment: !!r.manager_comment && !r.comment_read_at,
+        // テンプレートを差し替える前の項目のうち、この日報に値のあるもの（#9511。画面で元の表示名を出す。#9707）
+        past_fields: pastReportFields(past_report_fields_json).filter(f => Object.prototype.hasOwnProperty.call(values, f.key)),
+        admin_edit: r.admin_edited_at ? { edited_at: r.admin_edited_at, changed_keys: o ? [...o.keys] : [], original: o ? o.values : {} } : null }
     }),
     templates,
   }
@@ -2142,6 +2165,9 @@ api.get('/staff/my-reports/:id{[0-9]+}', async (c) => {
     await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE user_id = ? AND kind = 'daily_report_comment' AND related_id = ? AND read_at IS NULL`)
       .bind(row.comment_read_at, u.user_id, row.daily_report_id).run()
   }
+  // 実績の修正の通知（#9707）も、日報を開いたら既読にする
+  if (row.admin_edited_at) await db.prepare(`UPDATE user_notifications SET read_at = ? WHERE user_id = ? AND kind = 'daily_report_edit' AND related_id = ? AND read_at IS NULL`)
+    .bind(nowJST(), u.user_id, row.daily_report_id).run()
   const v = await myReportsView(db, [row])
   return c.json({ report: v.reports[0], templates: v.templates })
 })
@@ -5670,12 +5696,15 @@ api.get('/admin/daily-reports', async (c) => {
   const [rowsRes, countRes] = await db.batch([
     db.prepare(`
       SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name,
-        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name
+        cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name, eu.name AS admin_edited_by_name,
+        (SELECT COUNT(*) FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id) AS edit_count,
+        (SELECT e.kind FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id ORDER BY e.edit_id DESC LIMIT 1) AS last_edit_kind
       FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
       JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
       LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
       LEFT JOIN users ku ON ku.user_id = dr.manager_checked_by
       LEFT JOIN users iu ON iu.user_id = dr.incident_updated_by
+      LEFT JOIN users eu ON eu.user_id = dr.admin_edited_by
       ${base}${extra}
       ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset),
     db.prepare(`SELECT COUNT(*) AS total_all,
@@ -5795,6 +5824,90 @@ api.put('/admin/daily-reports/:id', async (c) => {
   // コメントを新しく付けた・書き換えたときは、スタッフに知らせる（#158。ログインのない人には送らない）
   if (commentChanged && (r.meta?.changes ?? 0)) return c.json({ ok: true, staff_notified: await notifyReportComment(c, u.company_id, id!, u.name) })
   return c.json({ ok: true })
+})
+
+// ---------- 日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） ----------
+// 管理者（日報を見られるロール）が日報の値を直す。直した値で report_values を上書きし、もとの値・直した人・日時・理由を daily_report_edits に残す。
+// スタッフが値を変えて出し直したら再提出の値を正にする（saveDailyReport。履歴に kind = 'resubmit' を残す）
+const REPORT_EDIT_CONFLICT = '開いている間に、スタッフが日報を出し直したか、ほかの管理者が修正しました。内容を確かめてから直してください'
+const REPORT_EDIT_HISTORY_MAX = 100
+// 修正の画面に出す日報と項目
+async function loadReportEditContext(db: D1Database, companyId: number, id: number) {
+  const row = await db.prepare(`SELECT dr.daily_report_id, dr.company_id, dr.staff_id, dr.project_id, dr.work_date, dr.report_values, dr.submitted_at, dr.entry_method,
+      dr.admin_edited_at, dr.admin_edited_by, eu.name AS admin_edited_by_name, us.name AS staff_name, p.project_name, p.past_report_fields_json, t.fields_json
+    FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
+    JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
+    LEFT JOIN report_templates t ON t.template_id = p.report_template_id
+    LEFT JOIN users eu ON eu.user_id = dr.admin_edited_by
+    WHERE dr.daily_report_id = ? AND dr.company_id = ?`).bind(id, companyId).first() as any
+  if (!row) return null
+  const values = parseReportValuesJson(row.report_values)
+  const known = new Set([...parseReportFields(row.fields_json).map(f => f.key), ...pastReportFields(row.past_report_fields_json).map(f => f.key), 'free'])
+  const guessed = await guessReportFieldLabels(db, companyId, Object.keys(values).filter(k => !known.has(k) && !/^(incident|complaint)_/.test(k)))
+  const fields = reportEditFields(row.fields_json, NO_TEMPLATE_FIELDS, row.past_report_fields_json, values, guessed)
+  return { row, values, fields }
+}
+// 修正の画面の内容と、修正の履歴（新しい順）
+api.get('/admin/daily-reports/:id{[0-9]+}/edits', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const id = toInt(c.req.param('id'), 1)
+  const ctx = id ? await loadReportEditContext(db, u.company_id, id) : null
+  if (!ctx) return c.json({ error: '日報が見つかりません' }, 404)
+  const edits = (await db.prepare(`SELECT e.edit_id, e.kind, e.entry_method, e.before_values, e.after_values, e.changed_keys, e.reason, e.edited_at, eu.name AS edited_by_name
+    FROM daily_report_edits e LEFT JOIN users eu ON eu.user_id = e.edited_by
+    WHERE e.daily_report_id = ? AND e.company_id = ? ORDER BY e.edit_id DESC LIMIT ?`).bind(id, u.company_id, REPORT_EDIT_HISTORY_MAX).all()).results as any[]
+  const { row } = ctx
+  // 履歴にしか無いキー（後で消えた項目など）も出せるよう、項目の一覧に足す
+  const fieldKeys = new Set(ctx.fields.map(f => f.key))
+  const extra: { key: string; label: string; type: string }[] = []
+  const list = edits.map(e => {
+    let changed: string[] = []
+    try { const v = JSON.parse(e.changed_keys || '[]'); if (Array.isArray(v)) changed = v.filter((k: unknown) => typeof k === 'string') } catch { changed = [] }
+    for (const k of changed) if (!fieldKeys.has(k)) { fieldKeys.add(k); extra.push({ key: k, label: k, type: 'text' }) }
+    return { edit_id: e.edit_id, kind: e.kind, entry_method: e.entry_method, reason: e.reason, edited_at: e.edited_at, edited_by_name: e.edited_by_name,
+      changed_keys: changed, before: parseReportValuesJson(e.before_values), after: parseReportValuesJson(e.after_values) }
+  })
+  return c.json({
+    report: { daily_report_id: row.daily_report_id, staff_id: row.staff_id, staff_name: row.staff_name, project_id: row.project_id, project_name: row.project_name,
+      work_date: row.work_date, submitted_at: row.submitted_at, entry_method: row.entry_method, values: ctx.values,
+      admin_edited_at: row.admin_edited_at, admin_edited_by_name: row.admin_edited_by_name },
+    fields: [...ctx.fields, ...extra], edits: list, reason_max: REPORT_EDIT_REASON_MAX,
+  })
+})
+// 値を直す。values は項目のキー → 値（送らなかった項目は今の値のまま）、reason は理由（任意）。
+// expected_submitted_at・expected_admin_edited_at（画面を開いたときの値）を送ると、その後にスタッフが出し直した・ほかの管理者が直したときは 409 を返して書かない
+api.put('/admin/daily-reports/:id{[0-9]+}/values', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({})) as any
+  const has = (k: string) => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k)
+  const id = toInt(c.req.param('id'), 1)
+  const ctx = id ? await loadReportEditContext(db, u.company_id, id) : null
+  if (!ctx) return c.json({ error: '日報が見つかりません' }, 404)
+  const { row } = ctx
+  if ((has('expected_submitted_at') && (b.expected_submitted_at || null) !== (row.submitted_at || null))
+    || (has('expected_admin_edited_at') && (b.expected_admin_edited_at || null) !== (row.admin_edited_at || null))) return c.json({ error: REPORT_EDIT_CONFLICT }, 409)
+  if (b.reason !== undefined && b.reason !== null && typeof b.reason !== 'string') return c.json({ error: '理由の形式が正しくありません' }, 400)
+  const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim() : null
+  if (reason && reason.length > REPORT_EDIT_REASON_MAX) return c.json({ error: `理由は${REPORT_EDIT_REASON_MAX}文字以内で入力してください` }, 400)
+  const built = buildAdminReportEdit(ctx.fields, ctx.values, b.values, { rules: reportFieldRulesError, pick: pickReportValues })
+  if ('error' in built) return c.json({ error: built.error }, 400)
+  if (!built.changed.length) return c.json({ ok: true, changed: false, changed_keys: [] })
+  const now = nowJST()
+  const after = JSON.stringify(built.values)
+  // 読んだときの値・提出日時のままのときだけ書く（履歴と上書きを1つの batch で、同じ条件で。片方だけにはならない）
+  const cond = 'daily_report_id = ? AND company_id = ? AND report_values IS ? AND submitted_at IS ?'
+  const condBinds = [id, u.company_id, row.report_values ?? null, row.submitted_at ?? null]
+  const [, upd] = await db.batch([
+    db.prepare(`INSERT INTO daily_report_edits (company_id, daily_report_id, kind, before_values, after_values, changed_keys, reason, edited_by, edited_at)
+      SELECT company_id, daily_report_id, 'admin_edit', report_values, ?, ?, ?, ?, ? FROM daily_reports WHERE ${cond}`)
+      .bind(after, JSON.stringify(built.changed), reason, u.user_id, now, ...condBinds),
+    db.prepare(`UPDATE daily_reports SET report_values = ?, admin_edited_at = ?, admin_edited_by = ? WHERE ${cond}`).bind(after, now, u.user_id, ...condBinds),
+  ])
+  if (!(upd.meta?.changes ?? 0)) return c.json({ error: REPORT_EDIT_CONFLICT }, 409)
+  const label = new Map(ctx.fields.map(f => [f.key, f.label]))
+  const changes = built.changed.map(k => ({ label: label.get(k) || k, before: ctx.values[k], after: built.values[k] }))
+  const notified = await notifyReportEdit(c, u.company_id, id!, u.name, changes, reason)
+  return c.json({ ok: true, changed: true, changed_keys: built.changed, admin_edited_at: now, staff_notified: notified })
 })
 
 // インシデント・クレームの対応状況（#169）。status: open（未対応）/ in_progress（対応中）/ done（対応済み）、memo: 対応メモ（空欄で削除）、
@@ -8015,7 +8128,7 @@ api.get('/admin/daily-reports-csv', async (c) => {
     where += ` AND ${col} = ?`; binds.push(v)
   }
   const { rows, total } = await loadLatestForCsv(db, `SELECT dr.work_date, dr.submitted_at, dr.report_values, dr.incident_flag, dr.complaint_flag,
-      dr.manager_checked, dr.manager_comment, dr.staff_id, dr.project_id, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name
+      dr.manager_checked, dr.manager_comment, dr.admin_edited_at, dr.staff_id, dr.project_id, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name
     FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id
     JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
     WHERE ${where} ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC`,
@@ -8042,9 +8155,10 @@ api.get('/admin/daily-reports-csv', async (c) => {
   for (const v of values) for (const k of Object.keys(v)) if (!cols.has(k)) cols.set(k, k)
   const cell = (x: unknown) => x == null ? '' : Array.isArray(x) ? x.join('、') : typeof x === 'object' ? JSON.stringify(x) : x
   const keys = [...cols.keys()]
-  const header = ['稼働日', '案件', 'スタッフ', 'スタッフID', '提出日時', 'インシデント', 'クレーム', '確認', '管理者コメント', ...keys.map(k => cols.get(k) as string)]
+  // 管理者の修正（#9707）: 管理者が値を直した日時（値の列は直した後の値）
+  const header = ['稼働日', '案件', 'スタッフ', 'スタッフID', '提出日時', 'インシデント', 'クレーム', '確認', '管理者コメント', '管理者の修正', ...keys.map(k => cols.get(k) as string)]
   const body = rows.map((r, i) => [r.work_date, r.project_name, r.staff_name, r.staff_id, r.submitted_at, r.incident_flag ? 'あり' : '', r.complaint_flag ? 'あり' : '',
-    r.manager_checked ? '確認済み' : '未確認', r.manager_comment || '', ...keys.map(k => cell(values[i][k]))])
+    r.manager_checked ? '確認済み' : '未確認', r.manager_comment || '', r.admin_edited_at || '', ...keys.map(k => cell(values[i][k]))])
   return csvResponse(`日報_${from}_${to}.csv`, toCsv(header, body, { note: csvLimitNote(total, DR_CSV_LIMIT) }), csvLimitHeaders(total, DR_CSV_LIMIT))
 })
 // 日報の保存期間と、今後30日のうちに3年を過ぎて削除される件数（日報一覧の案内に出す）
