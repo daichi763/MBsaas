@@ -35,7 +35,7 @@ import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
 import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEdit } from './notifications'
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
-import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND } from './notifications'
+import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND, hiddenStaffNotifyKinds } from './notifications'
 import { hqErrorsApi } from './hq-errors'
 import { toCsv, csvResponse } from './csv'
 import {
@@ -2440,7 +2440,9 @@ api.get('/staff/badges', async (c) => {
   const uids = [...new Set<number>([u.user_id, ...persons.map(r => r.user_id).filter(Boolean)])]
   const [counts, notif] = await Promise.all([
     countUnreadNotices(db, [u.user_id, ...others.map(r => r.user_id)]),
-    db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${uids.map(() => '?').join(',')}) AND read_at IS NULL`).bind(...uids).first() as Promise<any>,
+    // 止めている機能の通知（スタッフアプリの募集の「新しい募集」#9801）は、通知の一覧と同じく数えない
+    db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${uids.map(() => '?').join(',')}) AND read_at IS NULL
+      AND kind NOT IN (SELECT value FROM json_each(?))`).bind(...uids, JSON.stringify(hiddenStaffNotifyKinds(c.env))).first() as Promise<any>,
   ])
   return c.json({
     notices: counts.get(u.user_id) || 0,
