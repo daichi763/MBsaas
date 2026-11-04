@@ -1655,7 +1655,7 @@ async function loadPastReports() {
         ${pastReportCheckBadge(r)}
       </span>
       <span class="block text-xs text-gray-500 mt-0.5">${esc(r.project_name)}${r.other_company ? ` <span class="badge badge-purple">${esc(r.company_name)}</span>` : ''}
-        ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレーム</span>' : ''}</span>
+        ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレーム</span>' : ''}${r.admin_edited_at ? '<span class="badge badge-purple"><i class="fas fa-user-pen"></i>管理者が修正</span>' : ''}</span>
       ${r.manager_comment ? `<span class="block text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-1.5 whitespace-pre-wrap"><i class="fas fa-comment-dots mr-1"></i>${esc(r.manager_comment)}</span>` : ''}
     </button>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
   // 日報のコメントの通知から来たときは、その日報を開く（#158）
@@ -1700,11 +1700,25 @@ delegate('openPastReport', (el) => {
   if (!r) return
   // 未読の管理者のコメントを開いたら既読にする（#158。サーバーが unread_comment を返すときだけ。失敗しても表示はそのまま）
   if (r.unread_comment) { r.unread_comment = false; axios.post('/api/staff/my-reports/' + Number(r.daily_report_id) + '/comment-read').catch(() => { }) }
-  // 項目はテンプレートの並び・表示名で出す。テンプレートに無い値（項目を変える前の日報）はキーを表示名にして後ろに出す
+  // 項目はテンプレートの並び・表示名で出す。テンプレートに無い値（項目を変える前の日報）は、差し替える前の表示名（API の past_fields）か、
+  // わからなければキーを表示名にして後ろに出す。インシデント・クレームの内容は決まった表示名で出す
   const fields = ((PAST_REPORTS.templates || {})[r.template_id] || []).slice()
-  for (const k of Object.keys(r.values || {})) if (!fields.some(f => f.key === k)) fields.push({ key: k, label: k === 'free' ? '報告内容' : k, type: typeof r.values[k] === 'number' ? 'number' : 'text' })
+  for (const f of r.past_fields || []) if (!fields.some(x => x.key === f.key)) fields.push(f)
+  const NOTE_LABEL = { free: '報告内容', incident_note: 'インシデントの内容', complaint_note: 'クレームの内容' }
+  for (const k of Object.keys(r.values || {})) if (!fields.some(f => f.key === k)) fields.push({ key: k, label: NOTE_LABEL[k] || k, type: typeof r.values[k] === 'number' ? 'number' : 'text' })
   const shown = fields.filter(f => r.values[f.key] != null && r.values[f.key] !== '')
   const nums = shown.filter(f => f.type === 'number'), texts = shown.filter(f => f.type !== 'number')
+  // 管理者が実績を直した日報（#9707）。直した項目に印を付け、提出したときの値と今の値を並べて出す
+  const ae = r.admin_edit || null
+  const edited = new Set(ae ? ae.changed_keys || [] : [])
+  const mark = k => (edited.has(k) ? ' <span class="text-[10px] font-bold text-purple-600">修正</span>' : '')
+  const valText = v => (v === undefined || v === null || v === '' ? '（空欄）' : String(v))
+  const labelOf = k => (fields.find(f => f.key === k) || {}).label || (k === 'free' ? '報告内容' : k)
+  const adminEditHtml = ae ? `<div class="mt-3 bg-purple-50 rounded-lg px-3 py-2">
+      <p class="text-xs font-bold text-purple-700"><i class="fas fa-user-pen mr-1"></i>管理者が実績を修正しました${ae.edited_at ? `（${esc(dayjs(String(ae.edited_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</p>
+      ${[...edited].map(k => `<p class="text-xs text-purple-900 mt-0.5 break-words">${esc(labelOf(k))}: 提出時 ${esc(valText((ae.original || {})[k]))} → <span class="font-bold">${esc(valText(r.values[k]))}</span></p>`).join('')}
+      <p class="text-[11px] text-purple-700 mt-1">集計には修正した値が使われます。違う場合は管理者に連絡してください</p>
+    </div>` : ''
   modal(`
     <div class="flex items-center justify-between mb-2">
       <h3 class="font-bold text-gray-800">${esc(fmtDate(r.work_date))} の日報</h3>
@@ -1712,12 +1726,14 @@ delegate('openPastReport', (el) => {
     </div>
     <p class="text-sm text-gray-600">${esc(r.project_name)}${r.start_time ? ` ${esc(formatShiftTime(r.start_time, r.end_time))}` : ''}${r.other_company ? ` <span class="badge badge-purple">${esc(r.company_name)}</span>` : ''}</p>
     <p class="text-xs text-gray-500 mt-1">提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')} ${pastReportCheckBadge(r)}</p>
-    ${nums.length ? `<div class="grid grid-cols-3 gap-2 mt-3">${nums.map(f => `<div class="bg-gray-50 rounded-lg p-2 text-center"><p class="text-lg font-bold text-blue-600">${esc(r.values[f.key])}</p><p class="text-[11px] text-gray-500">${esc(f.label)}</p></div>`).join('')}</div>` : ''}
-    ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-gray-500">${esc(f.label)}</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(r.values[f.key])}</p></div>`).join('')}
+    ${adminEditHtml}
+    ${nums.length ? `<div class="grid grid-cols-3 gap-2 mt-3">${nums.map(f => `<div class="${edited.has(f.key) ? 'bg-purple-50 ring-1 ring-purple-200' : 'bg-gray-50'} rounded-lg p-2 text-center"><p class="text-lg font-bold text-blue-600">${esc(r.values[f.key])}</p><p class="text-[11px] text-gray-500">${esc(f.label)}${mark(f.key)}</p></div>`).join('')}</div>` : ''}
+    ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-gray-500">${esc(f.label)}${mark(f.key)}</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(r.values[f.key])}</p></div>`).join('')}
     ${!shown.length ? '<p class="text-sm text-gray-400 mt-3">入力された項目はありません</p>' : ''}
     ${r.incident_flag || r.complaint_flag ? `<p class="mt-3">${r.incident_flag ? '<span class="badge badge-red">インシデントあり</span> ' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレームあり</span>' : ''}</p>` : ''}
     ${r.manager_comment ? `<div class="mt-3 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-comment-dots mr-1"></i>管理者のコメント</p><p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${linkify(esc(r.manager_comment))}</p></div>` : ''}
-    ${r.shift_id ? `<button class="btn btn-primary w-full mt-4" data-action="editPastReport" data-id="${Number(r.shift_id)}"><i class="fas fa-pen-to-square"></i>内容を直して再提出する</button>` : ''}
+    ${r.shift_id && ae ? '<p class="text-[11px] text-gray-500 mt-4">再提出すると、出し直した内容が正になります（管理者の修正は履歴に残ります）</p>' : ''}
+    ${r.shift_id ? `<button class="btn btn-primary w-full ${ae ? 'mt-1' : 'mt-4'}" data-action="editPastReport" data-id="${Number(r.shift_id)}"><i class="fas fa-pen-to-square"></i>内容を直して再提出する</button>` : ''}
     <button class="btn btn-outline w-full ${r.shift_id ? 'mt-2' : 'mt-4'}" onclick="closeModal()">閉じる</button>`)
 })
 // 過去の日報を開き直して、直して再提出する（#16。日報の画面はシフトの保存済みの内容を読み込む）
@@ -2447,10 +2463,11 @@ document.addEventListener('click', (ev) => {
 // ---------- スタッフあての通知の行き先（#155 #151 #156 #158） ----------
 // 通知の一覧（staff-attendance.js の notifOpenStaff）を開いたとき、シフト・募集・日報コメントの通知だけは、ここで行き先を決める。
 // それ以外の通知（打刻修正・お知らせ・相談）は元の処理に渡す。staff-attendance.js は staff.js の後に読み込むので、読み込みが済んでから差し替える
-const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment']
+// daily_report_edit（管理者が日報の実績を直した。#9707）も、コメントと同じくその日報を開く
+const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment', 'daily_report_edit']
 function openStaffNotification(n) {
   const go = (hash) => { if ((location.hash || '').slice(1) === hash) route(); else location.hash = hash }
-  if (n.kind === 'daily_report_comment') { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; return go('report') }
+  if (n.kind === 'daily_report_comment' || n.kind === 'daily_report_edit') { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; return go('report') }
   const link = String(n.link || '')
   go(/^#shift(\/\d{4}-\d{2}-\d{2})?$/.test(link) ? link.slice(1) : 'shift')
 }

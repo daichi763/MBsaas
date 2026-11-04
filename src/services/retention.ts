@@ -4,7 +4,7 @@ import { ERROR_LOG_KEEP_DAYS } from '../lib/error-log'
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
 // 対象と基準:
-//   daily_reports              : work_date から3年
+//   daily_reports              : work_date から3年（実績の修正の履歴 daily_report_edits も、日報と一緒に消す。#9707）
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
@@ -385,10 +385,14 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 
   let deleted = 0
   try {
+    // 消す日報の実績の修正の履歴（daily_report_edits。#9707）も、同じ batch で先に消す。
+    // 2つの文で同じ日報を選ぶよう、番号の順に選ぶ
+    const pick = `SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} ORDER BY daily_report_id LIMIT ?`
     for (let i = 0; i < DAILY_REPORTS_MAX_BATCHES; i++) {
-      const result = await db.prepare(
-        `DELETE FROM daily_reports WHERE daily_report_id IN (SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} LIMIT ?)`
-      ).bind(cutoff, DAILY_REPORTS_BATCH).run()
+      const [, result] = await db.batch([
+        db.prepare(`DELETE FROM daily_report_edits WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
+        db.prepare(`DELETE FROM daily_reports WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
+      ])
       const changes = result.meta.changes || 0
       deleted += changes
       if (changes < DAILY_REPORTS_BATCH) break
@@ -1151,6 +1155,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'attendance_reports_duplicates_0036', label: '出退勤記録（重複の控え）', table: 'attendance_reports_duplicates_0036', where: OB_CO },
   { target: 'attendance_reports', label: '出退勤記録', table: 'attendance_reports', where: OB_CO },
   { target: 'daily_report_duplicates', label: '日報（重複の控え）', table: 'daily_report_duplicates', where: OB_CO },
+  // Sprint 15（w15-report-edit）: 日報の実績の修正の履歴（#9707）
+  { target: 'daily_report_edits', label: '日報の実績の修正の履歴', table: 'daily_report_edits', where: OB_CO },
   { target: 'daily_reports', label: '日報', table: 'daily_reports', where: OB_CO },
   { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
