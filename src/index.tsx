@@ -655,6 +655,8 @@ app.get('/staff', async (c) => {
     </div>
   </nav>
   <div id="modal-root"></div>
+  <!-- 案内（チュートリアル。#9712）。staff.js の起動が FosTour.init を呼ぶので staff.js より前に読む（後のスクリプトを待つ間に起動が済むと案内が出ないため） -->
+  <script src="/static/tour.js"></script>
   <script src="/static/staff.js"></script>
   <script src="/static/staff-attendance.js"></script>
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
@@ -772,6 +774,8 @@ app.get('/admin', async (c) => {
   ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
   <script>window.HQ_VIEW = ${hqViewJson}</script>
   <script src="/static/hq-support.js"></script>
+  <!-- 案内（チュートリアル）・「？」・はじめにやること（#9711）。admin.js の起動が FosTour.init を呼ぶので admin.js より前に読む -->
+  <script src="/static/tour.js"></script>
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>

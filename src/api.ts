@@ -65,6 +65,7 @@ import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defa
 import rosterImportApi from './roster-import'
 import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_READONLY_MESSAGE } from './hq-support'
+import { toursAdminApi, toursStaffApi } from './tours'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -1290,6 +1291,9 @@ api.route('/admin', staffPayAdminApi)
 // 出勤可能日の提出・一覧（#171）と、シフトのカレンダー追加（#301）（src/staff-schedule.ts）
 api.route('/staff', scheduleStaffApi)
 api.route('/admin', scheduleAdminApi)
+// 案内（チュートリアル）の進み具合と「はじめにやること」（#9711 #9712。src/tours.ts）
+api.route('/admin', toursAdminApi)
+api.route('/staff', toursStaffApi)
 
 // =========================================================
 // スタッフ側 API
