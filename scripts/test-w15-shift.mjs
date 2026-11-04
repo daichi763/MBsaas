@@ -217,6 +217,9 @@ async function browserChecks() {
     const ev = async (expr) => { const x = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); return x.result?.exceptionDetails ? { __error: x.result.exceptionDetails.exception?.description || x.result.exceptionDetails.text } : x.result?.result?.value }
     await send('Runtime.enable'); await send('Page.enable'); await send('Network.enable')
     const ck = await login('sample', 'admin')
+    // 案内（チュートリアル。Sprint 15 の w15-tour）が初回に画面を覆うと、ドラッグが案内に当たるので、見終わった扱いにしておく
+    await client(ck).put('/api/admin/tours', { items: [{ key: 'admin-welcome', status: 'skipped' }, { key: 'admin-checklist', status: 'skipped' },
+      ...['dashboard', 'clients', 'projects', 'staff', 'shifts', 'reports', 'corrections', 'settlement'].map(s => ({ key: `admin-screen-${s}`, status: 'done' }))] })
     const [n, ...v] = ck.split('='); await send('Network.setCookie', { name: n, value: v.join('='), url: BASE })
     await send('Page.navigate', { url: `${BASE}/admin#shifts` }); await wait(4000)
     const until = async (expr, ms = 6000) => { for (let t = 0; t < ms; t += 200) { if (await ev(expr)) return true; await wait(200) } return false }
