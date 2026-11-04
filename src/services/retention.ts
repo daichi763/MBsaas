@@ -96,7 +96,8 @@ const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件�
 const ANONYMIZE_PROFILE_COLUMNS = ['career', 'skills', 'work_area', 'age_group', 'memo', 'affiliation_contact', 'kana', 'gender', 'date_of_birth',
   'nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'site_evaluation', 'work_memo', 'career_rows', 'pr_points',
   'remarks', 'unverified_email', 'skill_sheet_comment',
-  'reference_pay_unit', 'reference_pay_amount'] // 支払の参考単価（0090。Sprint 9）
+  'reference_pay_unit', 'reference_pay_amount', // 支払の参考単価（0090。Sprint 9）
+  'age_entered', 'age_entered_on'] // 生年月日が分からないときの年齢と入力した日（0095。Sprint 15）
 
 // 人材提案の匿名化で消す列（#350）。snapshot は NOT NULL なので空の JSON にする
 const ANONYMIZE_PROPOSAL_SET = `snapshot = '{}', disclosed = NULL, comment = NULL, upstream_chain = NULL, consent_note = NULL, upstream_consent_note = NULL`

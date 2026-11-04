@@ -8,7 +8,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
-import { isISODate } from './lib/validate'
+import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
 import { recordLoginEvent } from './lib/login-security'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
@@ -127,6 +127,8 @@ export function missingRequired(required: Set<string>, body: any, mode: 'create'
     .filter(f => required.has(f.code))
     .filter(f => requirementApplies(f, type, hasLogin))
     .filter(f => mode === 'create' ? isBlank(body[f.code]) : (body[f.code] !== undefined && isBlank(body[f.code])))
+    // 生年月日が分からない人は、年齢（#9710）を入れれば生年月日の必須を満たす
+    .filter(f => !(f.code === 'date_of_birth' && !isBlank(body.age_entered)))
     .map(f => f.label)
 }
 
@@ -137,8 +139,8 @@ export function missingRequired(required: Set<string>, body: any, mode: 'create'
  */
 export function normalizeRosterValues(body: any): string | null {
   const cm = body.commute_minutes
-  if (cm !== undefined && cm !== null && String(cm).trim() !== '') {
-    const n = typeof cm === 'boolean' ? NaN : Number(String(cm).trim())
+  if (cm !== undefined && cm !== null && halfWidthNumber(String(cm)) !== '') {
+    const n = typeof cm === 'boolean' ? NaN : Number(halfWidthNumber(String(cm)))
     if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
     body.commute_minutes = Math.round(n)
   } else if (cm !== undefined) body.commute_minutes = null
@@ -150,6 +152,16 @@ export function normalizeRosterValues(body: any): string | null {
     if (!isISODate(s)) return `${label}は「2000-01-31」の形式で入力してください`
     if (k === 'date_of_birth' && (s < '1900-01-01' || s > today)) return '生年月日が正しくありません'
     body[k] = s
+  }
+  // 生年月日が分からないときの年齢（#9710）。全角の数字は半角にそろえる。空欄は null
+  if (body.age_entered !== undefined) {
+    const s = typeof body.age_entered === 'number' ? String(body.age_entered) : halfWidthNumber(String(body.age_entered ?? '')).replace(/歳$/, '')
+    if (!s) body.age_entered = null
+    else {
+      const n = Number(s)
+      if (typeof body.age_entered === 'boolean' || !Number.isInteger(n) || n < AGE_ENTERED_MIN || n > AGE_ENTERED_MAX) return `年齢は${AGE_ENTERED_MIN}〜${AGE_ENTERED_MAX}の整数で入力してください`
+      body.age_entered = n
+    }
   }
   if (body.phone !== undefined) {
     const s = String(body.phone ?? '').trim()
@@ -163,9 +175,39 @@ export function normalizeRosterValues(body: any): string | null {
   }
   return null
 }
+// ---------- 生年月日が分からないときの年齢（#9710。利用者の決定 Sprint 15: 年齢＋入力した日） ----------
+export const AGE_ENTERED_MIN = 15
+export const AGE_ENTERED_MAX = 100
+/** 入れた年齢（age_entered）と入力した日（age_entered_on。'YYYY-MM-DD'）から、今日の推定の年齢を返す。入力した日からの満年数を足す */
+export function estimatedAge(age: any, on: any, today = nowJST().slice(0, 10)): number | null {
+  if (age === null || age === undefined || age === '') return null
+  const n = Number(age)
+  if (!Number.isInteger(n)) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(on || ''))
+  if (!m) return n
+  const [ty, tm, td] = today.split('-').map(Number)
+  let years = ty - Number(m[1]); if (tm < Number(m[2]) || (tm === Number(m[2]) && td < Number(m[3]))) years--
+  return n + Math.max(0, years)
+}
+/**
+ * 年齢の列（age_entered・age_entered_on）に保存する値。body は normalizeRosterValues の後の値、cur は今の行（新規は null）。
+ * 変えないときは null を返す。生年月日があれば年齢は使わないので空にする。
+ * 年齢が今の推定の年齢と同じなら入力した日を変えない（保存のたびに入力した日が新しくならないように）
+ */
+export function ageEntryUpdate(body: any, cur: any, today = nowJST().slice(0, 10)): { age_entered: number | null; age_entered_on: string | null } | null {
+  const hadAge = !!cur && (cur.age_entered != null || cur.age_entered_on != null)
+  const dob = body.date_of_birth !== undefined ? body.date_of_birth : cur ? cur.date_of_birth : null
+  const clear = hadAge || !cur ? { age_entered: null, age_entered_on: null } : null
+  if (dob) return clear
+  if (body.age_entered === undefined) return null
+  if (body.age_entered === null) return clear
+  if (cur && estimatedAge(cur.age_entered, cur.age_entered_on, today) === body.age_entered) return null
+  return { age_entered: body.age_entered, age_entered_on: today }
+}
+
 // 電話番号の数字だけ（+81 は 0 に）。staff-lifecycle.ts の normalizePhone と同じ規則（循環 import を避けるためここに置く）
 function phoneDigits(p: string): string {
-  let s = p.replace(/[^\d+]/g, '')
+  let s = p.normalize('NFKC').replace(/[^\d+]/g, '')
   if (s.startsWith('+81')) s = '0' + s.slice(3)
   return s.replace(/\D/g, '')
 }
@@ -187,19 +229,28 @@ export const NOT_SHARED_SCOPE = [
 // 連携先（linked_external の行）に返さない基本項目（#9001）。年代は所属元の生年月日から計算して返す
 export const ROSTER_OWNER_ONLY_FIELDS: readonly string[] = ['date_of_birth', 'remarks']
 /** 生年月日（YYYY-MM-DD）から年代（20代など）を返す。計算できなければ fallback（手入力の年代） */
-export function ageGroupOf(dob: string | null | undefined, fallback?: string | null, today = nowJST().slice(0, 10)): string {
+// entered: 生年月日が分からないときに入れた年齢と入力した日（#9710）。生年月日がなければ、その推定の年齢から年代を出す
+export function ageGroupOf(dob: string | null | undefined, fallback?: string | null, today = nowJST().slice(0, 10), entered?: { age: any; on: any }): string {
   if (dob && /^\d{4}-\d{2}-\d{2}/.test(dob)) {
     const [ty, tm, td] = today.split('-').map(Number); const [by, bm, bd] = dob.slice(0, 10).split('-').map(Number)
     let age = ty - by; if (tm < bm || (tm === bm && td < bd)) age--
     if (age >= 10 && age < 100) return `${Math.floor(age / 10) * 10}代`
+  } else if (entered) {
+    const age = estimatedAge(entered.age, entered.on, today)
+    if (age != null && age >= 10 && age < 100) return `${Math.floor(age / 10) * 10}代`
   }
   return fallback || ''
 }
-// 年代を SQL で計算する式（ageGroupOf と同じ規則）。dob = 生年月日の列、fallback = 手入力の年代の列
-function ageGroupSql(dob: string, fallback: string): string {
+// 年代を SQL で計算する式（ageGroupOf と同じ規則）。dob = 生年月日の列、fallback = 手入力の年代の列、
+// alias = その行の表の別名（生年月日が空なら、年齢の列 age_entered・age_entered_on の推定の年齢を使う。#9710）
+function ageGroupSql(dob: string, fallback: string, alias?: string): string {
   const today = `date('now', '+9 hours')`
-  const age = `(CAST(strftime('%Y', ${today}) AS INTEGER) - CAST(substr(${dob}, 1, 4) AS INTEGER) - (strftime('%m-%d', ${today}) < substr(${dob}, 6, 5)))`
-  return `CASE WHEN ${dob} GLOB '[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*' AND ${age} BETWEEN 10 AND 99 THEN (${age} / 10 * 10) || '代' ELSE ${fallback} END`
+  const years = (from: string) => `(CAST(strftime('%Y', ${today}) AS INTEGER) - CAST(substr(${from}, 1, 4) AS INTEGER) - (strftime('%m-%d', ${today}) < substr(${from}, 6, 5)))`
+  const age = years(dob)
+  const dateGlob = `'[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*'`
+  const est = alias ? `(${alias}.age_entered + MAX(0, ${years(`${alias}.age_entered_on`)}))` : ''
+  const byEstimate = alias ? ` WHEN COALESCE(${dob}, '') = '' AND ${alias}.age_entered IS NOT NULL AND ${alias}.age_entered_on GLOB ${dateGlob} AND ${est} BETWEEN 10 AND 99 THEN (${est} / 10 * 10) || '代'` : ''
+  return `CASE WHEN ${dob} GLOB ${dateGlob} AND ${age} BETWEEN 10 AND 99 THEN (${age} / 10 * 10) || '代'${byEstimate} ELSE ${fallback} END`
 }
 
 // ---------- ユーティリティ ----------
@@ -342,7 +393,7 @@ export function rosterBaseSelect(local = 'sp', src = 'src'): string {
   const linked = `${local}.affiliation_type = 'linked_external'`
   return ROSTER_BASE_FIELDS.map(f => ROSTER_LOCAL_FIELDS.includes(f) ? `${local}.${f} AS ${f}` :
     ROSTER_OWNER_ONLY_FIELDS.includes(f) ? `CASE WHEN ${linked} THEN NULL ELSE ${local}.${f} END AS ${f}` :
-    f === 'age_group' ? `CASE WHEN ${linked} THEN ${ageGroupSql(`${src}.date_of_birth`, `${src}.age_group`)} ELSE ${local}.${f} END AS ${f}` :
+    f === 'age_group' ? `CASE WHEN ${linked} THEN ${ageGroupSql(`${src}.date_of_birth`, `${src}.age_group`, src)} ELSE ${local}.${f} END AS ${f}` :
     `CASE WHEN ${linked} THEN ${src}.${f} ELSE ${local}.${f} END AS ${f}`
   ).join(', ')
 }
@@ -573,7 +624,7 @@ rosterApi.get('/field-settings/missing', async (c) => {
   const rows = (await db.prepare(`
     SELECT sp.staff_id, us.name, us.role, us.email, us.phone, COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type,
       sp.kana, sp.date_of_birth, sp.affiliation_contact, sp.skills, sp.career, sp.work_area,
-      sp.nearest_station_line, sp.nearest_station, sp.commute_minutes, sp.available_from
+      sp.nearest_station_line, sp.nearest_station, sp.commute_minutes, sp.available_from, sp.age_entered
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.company_id = ? AND COALESCE(sp.affiliation_type, 'own_employee') != 'linked_external'
       AND sp.merged_into_staff_id IS NULL AND us.status = 'active' AND COALESCE(sp.employment_status, 'working') != 'retired'
@@ -581,7 +632,9 @@ rosterApi.get('/field-settings/missing', async (c) => {
   const out: { staff_id: number; name: string; affiliation_type: string; missing: string[] }[] = []
   let count = 0
   for (const r of rows) {
-    const missing = fields.filter(f => requirementApplies(f, r.affiliation_type, r.role === 'staff') && isBlank(r[f.code])).map(f => f.label)
+    // 生年月日は、年齢（#9710）が入っていれば足りている
+    const missing = fields.filter(f => requirementApplies(f, r.affiliation_type, r.role === 'staff') && isBlank(r[f.code])
+      && !(f.code === 'date_of_birth' && !isBlank(r.age_entered))).map(f => f.label)
     if (!missing.length) continue
     count++
     if (out.length < MISSING_LIST_MAX) out.push({ staff_id: r.staff_id, name: r.name, affiliation_type: r.affiliation_type, missing })
@@ -861,7 +914,7 @@ rosterApi.get('/partners', async (c) => {
   const [mFrom, mTo] = monthRange(nowJST().slice(0, 7)) // 月は範囲の条件で絞る（#212）
   const rows = await c.env.DB.prepare(`
     SELECT * FROM (
-      SELECT sa.affiliation_id, sa.affiliation_name, sa.contact_name, sa.phone, sa.email, sa.memo, sa.updated_at,
+      SELECT sa.affiliation_id, sa.affiliation_name, ${PARTNER_INFO_COLS.map(k => `sa.${k}`).join(', ')}, sa.updated_at,
         (SELECT COUNT(*) FROM staff_profiles sp WHERE sp.partner_affiliation_id = sa.affiliation_id AND sp.company_id = sa.company_id) AS staff_count,
         (SELECT COUNT(*) FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.partner_affiliation_id = sa.affiliation_id AND sp.company_id = sa.company_id
           AND sp.merged_into_staff_id IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired' AND us.status = 'active') AS active_staff_count,
@@ -869,7 +922,7 @@ rosterApi.get('/partners', async (c) => {
         (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')) AS month_staff,
         cl.client_id AS client_id, cl.client_name AS client_name,
         CASE WHEN ${PARTNER_IN_USE_SQL} THEN 1 ELSE 0 END AS in_use,
-        CASE WHEN COALESCE(sa.contact_name, '') = '' AND COALESCE(sa.phone, '') = '' AND COALESCE(sa.email, '') = '' AND COALESCE(sa.memo, '') = ''
+        CASE WHEN ${PARTNER_INFO_EMPTY_SQL}
           AND EXISTS (SELECT 1 FROM staff_profiles np WHERE np.company_id = sa.company_id AND np.affiliation = sa.affiliation_name
             AND COALESCE(np.affiliation_type, 'own_employee') IN ('freelance', 'skillsheet_only', 'daily_worker', 'own_employee'))
           AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id)
@@ -933,7 +986,7 @@ rosterApi.get('/partners/:pid{[0-9]+}', async (c) => {
   const clients = (clientRows.results || []) as any[]
   const linked = p.client_id ? clients.find(x => Number(x.client_id) === Number(p.client_id)) : null
   return c.json({
-    partner: { affiliation_id: p.affiliation_id, affiliation_name: p.affiliation_name, contact_name: p.contact_name, phone: p.phone, email: p.email, memo: p.memo,
+    partner: { affiliation_id: p.affiliation_id, affiliation_name: p.affiliation_name, ...Object.fromEntries(PARTNER_INFO_COLS.map(k => [k, p[k] ?? null])),
       client_id: linked ? linked.client_id : null, client_name: linked ? linked.client_name : null },
     staff: staffRows.results || [],
     summary: await partnerMonthSummary(db, u.company_id, p.affiliation_id, linked ? linked.client_id : null, month),
@@ -956,7 +1009,7 @@ rosterApi.get('/partners/by-client/:cid{[0-9]+}', async (c) => {
       AND (sa.client_id IS NULL OR NOT EXISTS (SELECT 1 FROM clients x WHERE x.client_id = sa.client_id AND x.company_id = sa.company_id))
       AND (EXISTS (SELECT 1 FROM staff_profiles sp WHERE sp.company_id = sa.company_id AND sp.partner_affiliation_id = sa.affiliation_id)
         OR EXISTS (SELECT 1 FROM shifts s WHERE s.company_id = sa.company_id AND s.payee_affiliation_id = sa.affiliation_id)
-        OR COALESCE(sa.contact_name, '') != '' OR COALESCE(sa.phone, '') != '' OR COALESCE(sa.email, '') != '' OR COALESCE(sa.memo, '') != ''
+        OR NOT (${PARTNER_INFO_EMPTY_SQL})
         OR NOT EXISTS (SELECT 1 FROM staff_profiles np WHERE np.company_id = sa.company_id AND np.affiliation = sa.affiliation_name
           AND COALESCE(np.affiliation_type, 'own_employee') IN ('freelance', 'skillsheet_only', 'daily_worker', 'own_employee')))
     ORDER BY sa.affiliation_name`).bind(u.company_id, u.company_id).all()
@@ -999,21 +1052,50 @@ const PARTNER_IN_USE_SQL = `(EXISTS (SELECT 1 FROM staff_profiles x WHERE x.comp
   OR EXISTS (SELECT 1 FROM shifts x WHERE x.company_id = sa.company_id AND x.payee_affiliation_id = sa.affiliation_id)
   OR EXISTS (SELECT 1 FROM staff_affiliation_schedules x WHERE x.company_id = sa.company_id AND x.partner_affiliation_id = sa.affiliation_id AND x.status = 'pending')
   OR EXISTS (SELECT 1 FROM affiliation_excluded_shifts x WHERE x.company_id = sa.company_id AND x.to_payee_affiliation_id = sa.affiliation_id))`
-const PARTNER_FIELD_MAX: Record<string, number> = { affiliation_name: 100, contact_name: 100, phone: 30, email: 254, memo: 2000 }
+// 協力会社の名前以外の項目（#9709 でクライアントにそろえて足した列は 0095）。contact_name・phone・email は先方の担当者の名前・電話・メール
+const PARTNER_INFO_COLS = ['contact_name', 'contact_department', 'phone', 'email', 'memo', 'postal_code', 'address', 'company_phone', 'website_url',
+  'representative_name', 'invoice_number', 'internal_contact_name'] as const
+// 名前以外の項目がすべて空か（sa = staff_affiliations）。所属会社名だけが入った行を取引先として出さない判定に使う（#262）
+const PARTNER_INFO_EMPTY_SQL = PARTNER_INFO_COLS.map(k => `COALESCE(sa.${k}, '') = ''`).join(' AND ')
+const PARTNER_FIELD_MAX: Record<string, number> = { affiliation_name: 100, contact_name: 100, contact_department: 100, phone: 30, email: 254, memo: 2000,
+  address: 300, company_phone: 30, representative_name: 100, internal_contact_name: 100 }
 /** 取引先の入力を確かめて正規化する。送られた項目だけを返す（空欄は null。名前は空にできない） */
 function partnerValues(b: any): { values?: Record<string, string | null>; error?: string } {
   const out: Record<string, string | null> = {}
+  if (!b || typeof b !== 'object') b = {}
   for (const [k, max] of Object.entries(PARTNER_FIELD_MAX)) {
     if (b[k] === undefined) continue
-    const v = String(b[k] ?? '').trim()
+    const v = String(b[k] ?? '').replace(k === 'memo' || k === 'address' ? /[\u0000-\u0009\u000b-\u001f\u007f]/g : /[\u0000-\u001f\u007f]/g, ' ').trim()
     if (v.length > max) return { error: '入力が長すぎます' }
     out[k] = v || null
   }
   if ('affiliation_name' in out && !out.affiliation_name) return { error: '協力会社名を入力してください' }
-  if (out.phone && !/^\d{10,11}$/.test(phoneDigits(out.phone))) return { error: '電話番号は10〜11桁の数字で入力してください' }
+  for (const k of ['phone', 'company_phone']) {
+    if (!out[k]) continue
+    out[k] = halfWidthNumber(out[k]!)
+    if (!/^\d{10,11}$/.test(phoneDigits(out[k]!))) return { error: '電話番号は10〜11桁の数字で入力してください' }
+  }
   if (out.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(out.email)) return { error: 'メールアドレスの形式が正しくありません' }
+  // 郵便番号・ホームページの URL・インボイス登録番号（#9709）
+  if (b.postal_code !== undefined) {
+    const v = normalizePostalCode(b.postal_code)
+    if (v === undefined) return { error: '郵便番号は7桁の数字（例: 123-4567）で入力してください' }
+    out.postal_code = v
+  }
+  if (b.website_url !== undefined) {
+    const v = normalizeWebsiteUrl(b.website_url)
+    if (v === undefined) return { error: 'ホームページの URL は http:// または https:// から入力してください' }
+    out.website_url = v
+  }
+  if (b.invoice_number !== undefined) {
+    const v = String(b.invoice_number ?? '').normalize('NFKC').replace(/[\s-]/g, '').toUpperCase()
+    if (v && !/^T\d{13}$/.test(v)) return { error: 'インボイス登録番号は「T」+数字13桁で入力してください（例: T1234567890123）' }
+    out.invoice_number = v || null
+  }
   return { values: out }
 }
+// 統合で、統合先が空欄なら統合元の値で埋める項目（メモは後ろに足す）
+const PARTNER_FILL_COLS = PARTNER_INFO_COLS.filter(k => k !== 'memo')
 async function partnerNameError(db: D1Database, companyId: number, name: string): Promise<string | null> {
   const own = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first() as any
   if (own && own.company_name === name) return '自社名は協力会社として登録できません'
@@ -1031,8 +1113,9 @@ rosterApi.post('/partners', async (c) => {
   if (!values.affiliation_name) return c.json({ error: '協力会社名を入力してください' }, 400)
   const nameErr = await partnerNameError(db, u.company_id, values.affiliation_name)
   if (nameErr) return c.json({ error: nameErr }, 400)
-  const r = await db.prepare(`INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, contact_name, phone, email, memo, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, values.affiliation_name, values.contact_name ?? null, values.phone ?? null, values.email ?? null, values.memo ?? null, nowJST()).run()
+  const r = await db.prepare(`INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name, ${PARTNER_INFO_COLS.join(', ')}, updated_at)
+      VALUES (?, ?, ${PARTNER_INFO_COLS.map(() => '?').join(', ')}, ?)`)
+    .bind(u.company_id, values.affiliation_name, ...PARTNER_INFO_COLS.map(k => values[k] ?? null), nowJST()).run()
   if (!r.meta.changes) return c.json({ error: '同じ名前の協力会社が登録済みです（統合済みの協力会社を含む）' }, 409)
   return c.json({ ok: true, affiliation_id: r.meta.last_row_id })
 })
@@ -1076,9 +1159,9 @@ rosterApi.post('/partners/:pid/merge', async (c) => {
     db.prepare('UPDATE staff_profiles SET partner_affiliation_id = ?, affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ?').bind(t, into.affiliation_name, cid, f),
     db.prepare(`UPDATE shifts SET payee_affiliation_id = ? WHERE company_id = ? AND payee_affiliation_id = ? AND COALESCE(settle_status, 'planned') != 'confirmed'`).bind(t, cid, f),
     db.prepare(`UPDATE staff_affiliation_schedules SET partner_affiliation_id = ?, to_affiliation = ? WHERE company_id = ? AND partner_affiliation_id = ? AND status = 'pending'`).bind(t, into.affiliation_name, cid, f),
-    db.prepare(`UPDATE staff_affiliations SET contact_name = COALESCE(NULLIF(contact_name, ''), ?), phone = COALESCE(NULLIF(phone, ''), ?), email = COALESCE(NULLIF(email, ''), ?),
+    db.prepare(`UPDATE staff_affiliations SET ${PARTNER_FILL_COLS.map(k => `${k} = COALESCE(NULLIF(${k}, ''), ?)`).join(', ')},
         memo = CASE WHEN COALESCE(?, '') = '' THEN memo WHEN COALESCE(memo, '') = '' THEN ? ELSE memo || char(10) || ? END, updated_at = ?
-      WHERE affiliation_id = ? AND company_id = ?`).bind(from.contact_name, from.phone, from.email, from.memo, from.memo, from.memo, now, t, cid),
+      WHERE affiliation_id = ? AND company_id = ?`).bind(...PARTNER_FILL_COLS.map(k => from[k] ?? null), from.memo, from.memo, from.memo, now, t, cid),
     // 統合元に以前統合した取引先も、統合先を付け替える
     db.prepare(`UPDATE staff_affiliations SET merged_into_id = ?, updated_at = ? WHERE company_id = ? AND (affiliation_id = ? OR merged_into_id = ?)`).bind(t, now, cid, f, f),
     db.prepare(`DELETE FROM staff_affiliations AS sa WHERE sa.affiliation_id = ? AND sa.company_id = ? AND NOT ${PARTNER_IN_USE_SQL}`).bind(f, cid),
@@ -1377,14 +1460,17 @@ rosterApi.post('/', async (c) => {
     return c.json({ error: 'スタッフ番号が重複しています', suggested_code: wantsLogin ? (await nextStaffCode(db, u.company_id)).code : null }, 409)
   }
 
+  // 生年月日が分からないときの年齢と入力した日（#9710。生年月日があれば入れない）
+  const ageCols = ageEntryUpdate(b, null) || { age_entered: null, age_entered_on: null }
   const sr = await db.prepare(`INSERT INTO staff_profiles
       (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation, affiliation_contact,
-       kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
+       age_entered, age_entered_on)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(userId, u.company_id, person.person_id, u.company_id, type, partnerId, affiliation, b.affiliation_contact || null,
       b.kana || null, b.gender, b.date_of_birth || null, b.skills || '', b.career || '', b.work_area || '',
       b.nearest_station_line || null, b.nearest_station || null, b.commute_minutes ?? null, b.available_from || null,
-      type === 'own_employee' ? (b.employment_status || 'working') : 'working').run()
+      type === 'own_employee' ? (b.employment_status || 'working') : 'working', ageCols.age_entered, ageCols.age_entered_on).run()
   const staffId = sr.meta.last_row_id as number
 
   // ②では従業員管理（社員名簿）の最小レコードも同時に作成する。電話番号は従業員管理の電話番号にも入れる（従業員管理で直したら users.phone にそろえる。#123）

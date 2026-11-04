@@ -1316,6 +1316,27 @@ window.addStaff = async function (force) {
 
 // ============ スタッフ詳細 ============
 const GENDER_LABEL_ADMIN = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
+// 年齢の表示（#9710）。生年月日がなく、年齢の欄（生年月日が分からないとき）から推定した年齢は「約31歳（2026/11 時点で30歳）」の形で出す
+function ageLabel(p) {
+  if (!p || p.age == null) return '-'
+  if (!p.age_estimated) return Number(p.age) + '歳'
+  const on = p.age_entered_on ? dayjs(p.age_entered_on).format('YYYY/MM') : ''
+  const base = Number(p.age_entered)
+  return `約${Number(p.age)}歳` + (on ? (base === Number(p.age) ? `（${on} 時点）` : `（${on} 時点で${base}歳）`) : '')
+}
+// 年齢の入力欄（生年月日が分からないとき）。今の推定の年齢を入れておく（変えなければ入力した日も変わらない）。
+// 生年月日の欄に data-age-input="この欄の id" を付けると、生年月日を入れている間はこの欄を使えなくする
+function ageInputHtml(id, p, cls) {
+  const dob = p && p.date_of_birth
+  return `<span class="inline-flex items-center gap-1"><input id="${id}" type="text" inputmode="numeric" maxlength="3" class="${cls || 'inp text-xs'} w-20" value="${p && p.age_estimated && p.age != null ? Number(p.age) : ''}" placeholder="例: 30" ${dob ? 'disabled' : ''} aria-label="年齢（生年月日が分からないとき）">歳</span>
+    <span class="block text-[11px] text-gray-400">生年月日が分からないときだけ入れます（入れた日から年が経つと自動で増えます。生年月日を入れたらそちらを使います）</span>`
+}
+document.addEventListener('input', (ev) => {
+  const t = ev.target
+  if (!t || !t.dataset || !t.dataset.ageInput) return
+  const a = document.getElementById(t.dataset.ageInput)
+  if (a) a.disabled = !!t.value
+})
 function genderOptions(v) {
   return `<option value="">-</option>` + Object.entries(GENDER_LABEL_ADMIN).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
 }
@@ -1508,7 +1529,8 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('フリガナ', ed ? `<input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}">` : esc(p.kana || '-'))}
           ${bi('性別', ed ? `<select id="staff-gender" class="inp text-xs">${genderOptions(p.gender)}</select>` : esc(GENDER_LABEL_ADMIN[p.gender] || '-'))}
           ${linked ? bi('年代', esc(p.age_group || '-') + '<span class="block text-[11px] text-gray-400">生年月日は所属元から共有されません</span>')
-            : bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}">` : esc(p.date_of_birth || '-')) + bi('年齢', p.age != null ? p.age + '歳' : '-')}
+            : bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}" data-age-input="staff-age">` : esc(p.date_of_birth || '-'))
+              + bi('年齢', ed ? ageInputHtml('staff-age', p) : esc(ageLabel(p)))}
           ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-gray-500' : 'text-amber-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
           ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? partnerSelectHtml(affData, p.affiliation)
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
@@ -1927,6 +1949,7 @@ window.saveStaffBasicInfo = async function (sid) {
     if (document.getElementById('staff-name')) Object.assign(body, {
       name: (val('staff-name') || '').trim(),
       kana: val('staff-kana'), gender: val('staff-gender'), date_of_birth: val('staff-dob') || null,
+      ...(document.getElementById('staff-age') ? { age_entered: toHalfWidthNumber(val('staff-age')) || null } : {}),
       affiliation: val('staff-affiliation'), affiliation_contact: val('staff-affiliation-contact'),
       nearest_station_line: val('staff-station-line'), nearest_station: val('staff-station'),
     })
@@ -3243,7 +3266,7 @@ async function renderClients() {
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
-      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・稼働案件で検索" value="${esc(L.q)}">
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・住所・稼働案件で検索" value="${esc(L.q)}">
       <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
@@ -3258,7 +3281,7 @@ async function renderClients() {
 }
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
-  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email]))
+  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
     name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
@@ -3276,6 +3299,7 @@ function drawClientCards() {
           <dl class="text-xs text-gray-600 space-y-1.5">
             <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
+            ${c.address || c.postal_code || c.website_url ? `<div class="flex"><dt class="w-20 text-gray-400 shrink-0">住所</dt><dd class="min-w-0"><span class="block truncate max-w-[220px]" title="${esc(postalAddress(c.postal_code, c.address))}">${esc(postalAddress(c.postal_code, c.address) || '-')}</span>${c.website_url ? `<span class="block text-gray-400 truncate max-w-[220px]">${esc(urlHost(c.website_url))}</span>` : ''}</dd></div>` : ''}
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
@@ -3293,6 +3317,14 @@ let CLIENT_DETAIL = { cid: null, month: '' }
 // 種別（#9102）。これまでの契約形態（contract_type）は DB に残すが画面には出さない
 const CLIENT_KIND_LABEL = { corporation: '法人', sole_proprietor: '個人事業主', other: 'その他' }
 const clientKindLabel = k => CLIENT_KIND_LABEL[k] || '-'
+// 郵便番号つきの住所（#9701）と、ホームページの表示（#9709。http/https のリンクだけを新しいタブで開く）
+const postalAddress = (postal, address) => [postal ? '〒' + postal : '', address || ''].filter(Boolean).join(' ')
+function urlHost(u) { try { return new URL(u).host } catch { return String(u || '') } }
+function websiteLinkHtml(u) {
+  if (!u) return '-'
+  if (!/^https?:\/\//i.test(String(u))) return esc(u)
+  return `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline break-all"><i class="fas fa-arrow-up-right-from-square text-[10px] mr-1"></i>${esc(u)}</a>`
+}
 const clientKindOptions = cur => `<option value="">（未設定）</option>${Object.entries(CLIENT_KIND_LABEL).map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`
 function clientBasicHtml(c, editing) {
   const cid = Number(c.client_id)
@@ -3303,7 +3335,8 @@ function clientBasicHtml(c, editing) {
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
           ${clientOrgHtml(c, false)}
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(c.address || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(postalAddress(c.postal_code, c.address) || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(c.website_url)}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
@@ -3326,7 +3359,9 @@ function clientBasicHtml(c, editing) {
           ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
           ${inp('cl-email', 'メール', c.email, 'type="email"')}
+          ${inp('cl-postal', '郵便番号', c.postal_code, 'inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"')}
           ${inp('cl-address', '住所', c.address)}
+          ${inp('cl-url', 'ホームページ', c.website_url, 'type="url" maxlength="500" placeholder="https://example.co.jp"')}
           <div class="flex items-center gap-2"><label for="cl-kind" class="w-28 text-xs text-gray-400 shrink-0">種別</label>
             <select id="cl-kind" class="inp text-xs flex-1">${clientKindOptions(c.client_kind)}</select></div>
           ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
@@ -3596,7 +3631,8 @@ window.saveClientBasicInfo = async function (cid) {
   try {
     await axios.put('/api/admin/clients/' + cid, {
       client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
-      address: v('cl-address'), client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
+      address: v('cl-address'), postal_code: v('cl-postal'), website_url: v('cl-url'),
+      client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
       branch_name: v('cl-branch'), department_name: v('cl-department'), invoice_number: v('cl-invoice'),
       // 代表者役職・代表者フリガナは画面に出さないので送らない（送らない項目は変わらず、これまでのデータは残る。#9304）
@@ -3731,8 +3767,8 @@ async function renderEmployeeDetail(sid) {
         ${field('sp-name', '氏名 *', s.name)}
         ${field('sp-kana', 'フリガナ', s.kana || '')}
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">性別 *</dt><dd class="flex-1"><select id="sp-gender" class="inp text-xs">${genderOptions(s.gender)}</select></dd></div>
-        ${field('sp-dob', '生年月日', s.date_of_birth, 'date')}
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">年齢</dt><dd class="text-xs">${s.age != null ? s.age + '歳' : '-'}</dd></div>
+        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="sp-dob" class="inp text-xs" value="${esc(s.date_of_birth || '')}" data-age-input="sp-age"></dd></div>
+        <div class="flex items-start gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0 pt-1">年齢</dt><dd class="flex-1 text-xs">${s.age != null ? `<span class="block mb-0.5">${esc(ageLabel(s))}</span>` : ''}${ageInputHtml('sp-age', s)}</dd></div>
         <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">在籍状況</dt><dd class="flex-1">
           <select id="sp-emp-status" class="inp text-xs">
             ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(s.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
@@ -3878,6 +3914,28 @@ function changeLogRowsHtml(logs) {
     <td class="py-1.5 pr-2 break-all">${changeLogValue(l.field, l.old_value)} <i class="fas fa-arrow-right text-gray-300 mx-1"></i> ${changeLogValue(l.field, l.new_value)}</td>
     <td class="py-1.5 whitespace-nowrap text-gray-500">${esc(l.changed_by_name || '-')}</td></tr>`).join('')
 }
+// 畳んだときに出す件数。開いているかは box の data-open に持つ（画面を出し直すと畳んだ状態に戻る）
+const EMPLOYEE_CHANGE_LOG_FOLDED = 5
+function applyEmployeeChangeLogFold(box) {
+  const open = box.dataset.open === '1'
+  const rows = box.querySelectorAll('#employee-change-log-rows tr')
+  rows.forEach((tr, i) => { tr.hidden = !open && i >= EMPLOYEE_CHANGE_LOG_FOLDED })
+  const more = box.querySelector('[data-action="moreEmployeeChangeLog"]'); if (more) more.classList.toggle('hidden', !open)
+  const btn = box.querySelector('[data-action="toggleEmployeeChangeLog"]')
+  const hasMore = !!more
+  if (btn) {
+    btn.classList.toggle('hidden', rows.length <= EMPLOYEE_CHANGE_LOG_FOLDED && !hasMore)
+    btn.innerHTML = open ? '<i class="fas fa-chevron-up mr-1"></i>畳む' : `<i class="fas fa-chevron-down mr-1"></i>すべて表示（${rows.length}件${hasMore ? '以上' : ''}）`
+  }
+  const note = box.querySelector('.employee-change-log-note')
+  if (note) note.textContent = !open && rows.length > EMPLOYEE_CHANGE_LOG_FOLDED ? `新しい${EMPLOYEE_CHANGE_LOG_FOLDED}件を表示しています` : ''
+}
+delegate('toggleEmployeeChangeLog', el => {
+  const box = document.getElementById('employee-change-log'); if (!box) return
+  box.dataset.open = box.dataset.open === '1' ? '' : '1'
+  applyEmployeeChangeLogFold(box)
+  if (box.dataset.open !== '1') box.scrollIntoView && box.scrollIntoView({ block: 'nearest' })
+})
 async function loadEmployeeChangeLog(sid, before) {
   const box = document.getElementById('employee-change-log')
   if (!box || Number(box.dataset.sid) !== Number(sid)) return
@@ -3892,14 +3950,19 @@ async function loadEmployeeChangeLog(sid, before) {
     if (tbody) tbody.insertAdjacentHTML('beforeend', changeLogRowsHtml(logs))
     const old = box.querySelector('[data-action="moreEmployeeChangeLog"]'); if (old) old.remove()
     if (more) box.insertAdjacentHTML('beforeend', more)
+    applyEmployeeChangeLogFold(box)
     return
   }
-  box.innerHTML = `<h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
+  box.innerHTML = `<div class="flex items-center gap-2 mb-1 flex-wrap"><h3 class="text-sm font-bold text-gray-700"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
+      <span class="text-xs text-gray-400 employee-change-log-note"></span>
+      <button type="button" class="ml-auto btn btn-outline text-xs hidden" data-action="toggleEmployeeChangeLog"></button></div>
     <p class="text-xs text-gray-400 mb-2">従業員管理とスタッフ基本情報で変わった項目を、変更した人・日時とともに残しています。口座番号・保険番号は下4桁だけを残します。</p>
     ${logs.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-left text-gray-400">
       <th class="py-1 pr-2 font-normal">日時</th><th class="py-1 pr-2 font-normal">項目</th><th class="py-1 pr-2 font-normal">変更前 → 変更後</th><th class="py-1 font-normal">変更した人</th></tr></thead>
       <tbody id="employee-change-log-rows">${changeLogRowsHtml(logs)}</tbody></table></div>${more}`
       : '<p class="text-xs text-gray-400">まだ変更の記録はありません</p>'}`
+  box.dataset.open = ''
+  applyEmployeeChangeLogFold(box)
 }
 delegate('moreEmployeeChangeLog', el => withSubmitLock(el, () => loadEmployeeChangeLog(Number(el.dataset.sid), Number(el.dataset.before))))
 
@@ -3918,6 +3981,8 @@ window.saveEmployeeRecord = async function (sid) {
     name: raw('sp-name').trim(), kana: raw('sp-kana'), gender: raw('sp-gender'), date_of_birth: str('sp-dob'),
     nearest_station_line: raw('sp-station-line'), nearest_station: raw('sp-station'),
   }
+  // 生年月日が分からないときの年齢（#9710）。欄があるときだけ送る
+  if (document.getElementById('sp-age')) profile.age_entered = toHalfWidthNumber(raw('sp-age')) || null
   if (retired !== origRetired || empStatus !== origStatus) {
     const r = retirementBody(empStatus, retired, origRetired)
     if (r.error) { toast(r.error); return }
@@ -3972,10 +4037,12 @@ window.showAddClient = function () {
         <div><label class="text-sm text-gray-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
         <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div><label class="text-sm text-gray-600 block mb-1">郵便番号</label><input id="nc-postal" class="inp" inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"></div>
+        <div class="sm:col-span-2"><label class="text-sm text-gray-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
       </div>
+      <div><label class="text-sm text-gray-600 block mb-1">ホームページ</label><input id="nc-url" class="inp" type="url" maxlength="500" placeholder="https://example.co.jp"></div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addClient">登録する</button></div>
@@ -3991,6 +4058,7 @@ window.addClient = async function () {
       client_kind: document.getElementById('nc-kind').value, representative_name: document.getElementById('nc-rep-name').value.trim(),
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
       email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
+      postal_code: document.getElementById('nc-postal').value.trim(), website_url: document.getElementById('nc-url').value.trim(),
       memo: document.getElementById('nc-memo').value
     })
     if (!res) return

@@ -48,7 +48,9 @@ import {
   normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, PERSON_SESSION_WHERE,
 } from './lib/login-security'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
+import { ageEntryUpdate, estimatedAge } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
+import { halfWidthNumber, toNumberOrNull, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef } from './lib/daily-report'
@@ -93,6 +95,13 @@ function calcAge(dob: string | null | undefined): number | null {
   let age = ty - by
   if (tm < bm || (tm === bm && td < bd)) age--
   return age
+}
+// 画面に返す年齢（#9710）: 生年月日があれば満年齢、なければ年齢の欄（age_entered）と入力した日からの推定の年齢（age_estimated = true）
+function ageFields(row: any): { age: number | null; age_estimated: boolean } {
+  const dobAge = calcAge(row?.date_of_birth as string | null)
+  if (dobAge != null) return { age: dobAge, age_estimated: false }
+  const est = estimatedAge(row?.age_entered, row?.age_entered_on, todayJST())
+  return { age: est, age_estimated: est != null }
 }
 // 入社年月日から勤続年月（"n年mヶ月"）を計算する
 function calcTenure(hireDate: string | null | undefined): string | null {
@@ -3630,7 +3639,7 @@ api.get('/admin/staff/:id', async (c) => {
   const reportPastFields = await reportPastFieldsByProject(db, u.company_id, reportRows.map(x => ({ ...x.row, past_report_fields_json: x.past_report_fields_json })), reportTemplates)
 
   return c.json({
-    profile: { ...profile, age: calcAge(profile.date_of_birth as string | null) },
+    profile: { ...profile, ...ageFields(profile) },
     shifts: [...(upcoming.results as any[])].reverse().concat(past.results as any[]),
     upcoming_shifts: upcoming.results, past_shifts: past.results, today,
     ng_clients: ngClients.results,
@@ -3712,7 +3721,8 @@ api.delete('/admin/staff/:id/evaluations/:eid', async (c) => {
 //      partner_manual / skillsheet_only / daily_worker / freelance: スタッフマスタ画面から編集可
 //  - linked_external（他社連携）    : 所属元企業が管理するため編集不可
 //  - 管理者メモ・要フォロー・稼働先追記項目 は全スタッフでスタッフマスタ画面から編集可
-const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[])]
+// age_entered: 生年月日が分からないときの年齢（#9710）。連携先には共有しない（ROSTER_BASE_FIELDS には入れない）
+const PROFILE_BASE_KEYS = ['name', 'employment_status', 'retired_at', ...(ROSTER_BASE_FIELDS as readonly string[]), 'age_entered']
 const BUSINESS_KEYS = ROSTER_BUSINESS_FIELDS as readonly string[]
 function touchesProfileBase(body: any): boolean {
   return PROFILE_BASE_KEYS.some(k => body[k] !== undefined && !BUSINESS_KEYS.includes(k))
@@ -3745,9 +3755,10 @@ function normalizeBusinessBody(body: any): string | null {
     }
   }
   if (body.commute_minutes !== undefined && body.commute_minutes !== null && body.commute_minutes !== '') {
-    const n = Number(body.commute_minutes)
-    if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
-    body.commute_minutes = Math.round(n)
+    const n = toNumberOrNull(body.commute_minutes) // 全角の数字も受け付ける（#9704）
+    if (n === null) body.commute_minutes = null
+    else if (!Number.isFinite(n) || n < 0 || n > 1440) return '通勤可能時間は0〜1440分で入力してください'
+    else body.commute_minutes = Math.round(n)
   } else if (body.commute_minutes === '') body.commute_minutes = null
   if (body.available_from !== undefined && body.available_from && !/^\d{4}-\d{2}-\d{2}$/.test(String(body.available_from))) return '稼働開始可能日の形式が不正です'
   return null
@@ -3792,6 +3803,10 @@ async function applyProfileUpdate(c: any, sid: string, body: any, roster: any) {
     await c.env.DB.prepare(`UPDATE staff_profiles SET ${base.clause} WHERE staff_id = ? AND company_id = ?`)
       .bind(...base.values, sid, u.company_id).run()
   }
+  // 生年月日が分からないときの年齢と入力した日（#9710）。生年月日を入れたら年齢の欄は空にする
+  const ageCols = ageEntryUpdate(body, roster, todayJST())
+  if (ageCols) await c.env.DB.prepare('UPDATE staff_profiles SET age_entered = ?, age_entered_on = ? WHERE staff_id = ? AND company_id = ?')
+    .bind(ageCols.age_entered, ageCols.age_entered_on, sid, u.company_id).run()
 
   // 業務側項目は「送られてきた項目だけ」をそのまま保存する（空欄にしてクリアできるように COALESCE は使わない）
   // skills / career / work_area は従来どおり NOT NULL 相当の扱いなので null は空文字にする
@@ -4126,7 +4141,7 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
   // 管理者メモは社内用なので、社外に出すスキルシートには返さない。推薦コメントは別の欄（skill_sheet_comment。#447）に保存したものを返す
   const { memo: _memo, ...sheet } = profile
-  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), age: calcAge(profile.date_of_birth as string | null) }, experienced_projects: projects.results,
+  return c.json({ profile: { ...sheet, career_rows: parseCareerRows(profile.career_rows), ...ageFields(profile) }, experienced_projects: projects.results,
     performance: { ...(perf || {}), values: metrics.valuesOf('') }, performance_fields: metrics.fields, evaluation: latestEval,
     skill_sheet_comment: profile.skill_sheet_comment || '' })
 })
@@ -4326,10 +4341,10 @@ api.post('/admin/clients', async (c) => {
     return c.json(dupMsg, 409)
   const contactName = typeof b.contact_name === 'string' ? b.contact_name.trim() : ''
   const r = await c.env.DB.prepare(`INSERT INTO clients (company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, memo, client_rating,
-      client_kind, representative_name, branch_name, department_name)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM clients WHERE company_id = ? AND client_name = ?)`)
+      client_kind, representative_name, branch_name, department_name, postal_code, website_url)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM clients WHERE company_id = ? AND client_name = ?)`)
     .bind(u.company_id, name, b.stream_type || 'upstream', contactName || null, b.email ? String(b.email).trim() : null, b.phone ?? null, b.address ?? null, b.contract_type ?? null, b.billing_rule ?? null, b.memo ?? null, rating,
-      b.client_kind || null, b.representative_name || null, b.branch_name || null, b.department_name || null,
+      b.client_kind || null, b.representative_name || null, b.branch_name || null, b.department_name || null, b.postal_code ?? null, b.website_url ?? null,
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
   // 担当者の名前が送られてきたら（以前の画面・外部からの登録）、顧客担当者の一覧に1件として入れる（#9101）
@@ -4401,6 +4416,17 @@ function normalizeClientFields(b: any): string | null {
     if (v.length > max) return `${label}は${max}文字以内で入力してください`
     b[key] = v
   }
+  // 郵便番号（#9701。半角の「123-4567」にそろえる）とホームページの URL（#9709。http/https だけ）。送られていなければそのまま
+  if (b.postal_code !== undefined) {
+    const v = normalizePostalCode(b.postal_code)
+    if (v === undefined) return '郵便番号は7桁の数字（例: 123-4567）で入力してください'
+    b.postal_code = v
+  }
+  if (b.website_url !== undefined) {
+    const v = normalizeWebsiteUrl(b.website_url)
+    if (v === undefined) return 'ホームページの URL は http:// または https:// から入力してください'
+    b.website_url = v
+  }
   return null
 }
 // インボイス登録番号: T + 数字13桁のみ許可（前後の空白はトリムする）
@@ -4441,7 +4467,7 @@ api.put('/admin/clients/:id', async (c) => {
   // 会社名は空にできない。区分・評価は空で送られたら変更しない
   const upd = buildUpdate({ ...b, invoice_number: b.invoice_number === undefined ? undefined : invoiceNumber },
     ['client_name', 'stream_type', 'contract_type', 'billing_rule', 'memo', 'client_rating',
-      'contact_name', 'phone', 'email', 'address',
+      'contact_name', 'phone', 'email', 'address', 'postal_code', 'website_url',
       'representative_title', 'representative_name', 'representative_kana', 'invoice_number',
       'client_kind', 'branch_name', 'department_name'],
     { required: ['client_name', 'stream_type', 'client_rating'] })
@@ -4664,12 +4690,12 @@ api.get('/admin/employees/:staffId', async (c) => {
       JOIN employee_records er ON er.staff_id = sp.staff_id WHERE sp.staff_id = ? AND sp.company_id = ? AND er.employment_ended_at IS NOT NULL`).bind(sid, u.company_id).first()
     if (!endedStaff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
     const rec = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
-    return c.json({ staff: { ...endedStaff, age: calcAge(endedStaff.date_of_birth as string | null) }, record: rec ? { ...rec, tenure: calcTenure(rec.hire_date as string | null) } : null, read_only: true })
+    return c.json({ staff: { ...endedStaff, ...ageFields(endedStaff) }, record: rec ? { ...rec, tenure: calcTenure(rec.hire_date as string | null) } : null, read_only: true })
   }
 
   const record = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
   return c.json({
-    staff: { ...staff, age: calcAge(staff.date_of_birth as string | null) },
+    staff: { ...staff, ...ageFields(staff) },
     record: record ? { ...record, tenure: calcTenure(record.hire_date as string | null) } : null,
   })
 })
@@ -4720,6 +4746,13 @@ api.put('/admin/employees/:staffId', async (c) => {
     'employment_insurance_no', 'social_insurance_no',
     'paid_leave_granted_at', 'paid_leave_remaining', 'telework_remaining_this_month',
   ]
+  for (const k of EMPLOYEE_NUMBER_COLS) {
+    if (b[k] === undefined) continue
+    const n = toNumberOrNull(b[k])
+    if (n !== null && !Number.isFinite(n)) return c.json({ error: `「${CHANGE_FIELD_LABELS[k] || k}」は数字で入力してください` }, 400)
+    b[k] = n
+  }
+  for (const k of ['postal_code', 'emergency_postal_code']) if (typeof b[k] === 'string') b[k] = halfWidthNumber(b[k]) || null
   const exists = await c.env.DB.prepare('SELECT * FROM employee_records WHERE staff_id = ?').bind(sid).first() as any
   // 電話番号が変わったときだけ users.phone にそろえる（従業員管理を初めて保存したときに、登録時の電話番号を空欄で消さないように比べる。#123）
   const phoneChanged = b.phone_main !== undefined && normalizePhone(b.phone_main) !== normalizePhone(exists?.phone_main)
@@ -4745,6 +4778,9 @@ api.put('/admin/employees/:staffId', async (c) => {
   return c.json({ ok: true })
 })
 
+// 従業員管理の数値の項目（#9704。全角で入れても半角にそろえて保存する）
+const EMPLOYEE_NUMBER_COLS = ['scheduled_hours', 'scheduled_days_week', 'scheduled_days_month', 'dependents_count', 'base_salary', 'fixed_overtime_hours',
+  'fixed_overtime_pay', 'gross_pay', 'position_allowance', 'sales_allowance', 'other_deduction', 'paid_leave_remaining', 'telework_remaining_this_month']
 // 従業員データとスタッフ基本情報の変更履歴（#464）。新しい順に50件ずつ（before に前のページの最後の log_id を渡す）。
 // 雇用終了した従業員（他の区分へ移行）も閲覧できる（従業員データと同じく7年保存）
 const CHANGE_LOG_PAGE = 50

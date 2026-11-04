@@ -157,7 +157,12 @@ window.showRosterForm = async function (route) {
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">性別 <span class="text-red-500">*</span></label>
           <select id="rf-gender" class="inp"><option value="">選択してください</option><option value="male">男性</option><option value="female">女性</option><option value="other">その他</option><option value="unspecified">回答しない</option></select></div>
-        ${f('rf-dob', '生年月日', 'type="date"')}
+        ${f('rf-dob', '生年月日', 'type="date" data-age-input="rf-age"')}
+      </div>
+      <div>
+        <label class="text-sm text-gray-600 block mb-1" for="rf-age">年齢（生年月日が分からないとき）</label>
+        <span class="inline-flex items-center gap-1 text-sm"><input id="rf-age" class="inp w-24" type="text" inputmode="numeric" maxlength="3" placeholder="例: 30">歳</span>
+        <p class="text-[11px] text-gray-400 mt-0.5">入れた日から年が経つと自動で増えます（推定の年齢として出します）。生年月日を入れたら、そちらを使います</p>
       </div>
       ${route === 'employee' ? `
         <div class="p-3 rounded-lg bg-emerald-50 space-y-3">
@@ -240,6 +245,7 @@ window.submitRosterForm = async function (route, force) {
   const v = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
   const body = {
     route, name: v('rf-name'), kana: v('rf-kana'), gender: v('rf-gender'), date_of_birth: v('rf-dob') || null,
+    age_entered: v('rf-dob') ? null : (toHalfWidthNumber(v('rf-age')) || null),
     skills: v('rf-skills'), work_area: v('rf-area'), career: v('rf-career'),
     nearest_station_line: v('rf-line'), nearest_station: v('rf-station'), available_from: v('rf-available') || null,
     commute_minutes: v('rf-commute') ? Number(v('rf-commute')) : null,
@@ -574,6 +580,7 @@ window.submitRosterForm = async function (route, force) {
   const lacks = []
   for (const [code, id] of Object.entries(RF_FIELD_IDS)) {
     if (!req[code] || !rfRequirementApplies(code, route, hasLogin)) continue
+    if (code === 'date_of_birth' && val('rf-age')) continue // 年齢（#9710）を入れれば生年月日の必須を満たす
     const el = document.getElementById(id)
     if (el && !el.value.trim()) lacks.push(el.parentElement.querySelector('label').textContent.replace('*', '').trim())
   }
@@ -827,7 +834,7 @@ delegate('rosterResumeLink', (el) => withSubmitLock(el, async () => {
 // 取引先（Field OS 未契約の所属元）の管理（#161）: 一覧・登録・編集・統合・削除
 // =========================================================
 // 協力会社（#9301。以前の名前は「取引先」）の詳細（#partners/<id>）とクライアントとのつながり（#9302）
-const PARTNERS = { list: [], detail: null, month: '' }
+const PARTNERS = { list: [], detail: null, month: '', q: '' }
 const partnerById = (id) => PARTNERS.list.find(p => Number(p.affiliation_id) === Number(id))
   || (PARTNERS.detail && Number(PARTNERS.detail.partner.affiliation_id) === Number(id) ? PARTNERS.detail.partner : null)
 window.renderPartners = async function () {
@@ -849,13 +856,18 @@ window.renderPartners = async function () {
     <p class="text-sm text-gray-700 mb-1">スタッフの所属会社・支払先になる会社です（Field OS を使っている会社は企業間連携で扱います）</p>
     <p class="text-xs text-gray-500 mb-4">精算では、協力会社ごとに支払先がまとまります。クライアントでもある会社は、詳細でクライアントとつなげます。
       同じ会社が別の名前（表記ゆれ）で分かれているときは「統合」でまとめてください（所属スタッフと未確定のシフトの支払先を付け替えます。確定済みの精算は変えません）。</p>
+    ${PARTNERS.list.length ? `<div class="card p-3 mb-3 flex gap-2 items-center"><i class="fas fa-magnifying-glass text-gray-400"></i>
+      <input id="partner-q" class="inp text-sm flex-1" placeholder="協力会社名・住所・ホームページ・担当者・メモで検索" value="${esc(PARTNERS.q)}">
+      <span id="partner-count" class="text-xs text-gray-400 whitespace-nowrap"></span></div>` : ''}
     <div class="card overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>協力会社名</th><th>担当者・連絡先</th><th>所属スタッフ</th><th>今月の稼働</th><th>クライアント</th><th>メモ</th><th></th></tr></thead>
         <tbody>${PARTNERS.list.map(p => `
-          <tr>
-            <td class="font-medium"><a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline">${esc(p.affiliation_name)}</a></td>
-            <td class="text-xs">${contact(p)}</td>
+          <tr data-partner-row="${Number(p.affiliation_id)}">
+            <td class="font-medium"><a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline">${esc(p.affiliation_name)}</a>
+              ${p.address || p.postal_code ? `<span class="block text-[11px] font-normal text-gray-500 max-w-[260px] truncate" title="${esc(partnerAddress(p))}"><i class="fas fa-location-dot mr-1 text-gray-400"></i>${esc(partnerAddress(p))}</span>` : ''}
+              ${p.website_url ? `<span class="block text-[11px] font-normal text-gray-500 max-w-[260px] truncate"><i class="fas fa-globe mr-1 text-gray-400"></i>${esc(partnerUrlHost(p.website_url))}</span>` : ''}</td>
+            <td class="text-xs">${contact(p)}${p.internal_contact_name ? `<span class="block text-gray-400 mt-0.5">自社担当: ${esc(p.internal_contact_name)}</span>` : ''}</td>
             <td class="whitespace-nowrap">${Number(p.active_staff_count) || 0}名${Number(p.staff_count) > Number(p.active_staff_count) ? `<span class="text-[11px] text-gray-400">（退職等を含め ${Number(p.staff_count)}名）</span>` : ''}</td>
             <td class="whitespace-nowrap text-xs">${Number(p.month_shifts) || 0}件（${Number(p.month_staff) || 0}名）</td>
             <td class="text-xs">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>${esc(p.client_name)}</a>` : '<span class="text-gray-300">-</span>'}</td>
@@ -868,8 +880,31 @@ window.renderPartners = async function () {
             </td>
           </tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-6">協力会社はまだありません</td></tr>'}</tbody>
       </table>
+      <p id="partner-empty" class="hidden text-center text-sm text-gray-400 py-6">条件に合う協力会社はありません</p>
     </div>`
+  const q = document.getElementById('partner-q')
+  if (q) {
+    let timer = null
+    q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { PARTNERS.q = q.value; filterPartnerRows() }, 200) })
+    filterPartnerRows()
+  }
 }
+// 協力会社の一覧の絞り込み（#9709。似た名前の会社を、住所・ホームページ・担当者でも探せるように）
+function filterPartnerRows() {
+  let shown = 0
+  for (const p of PARTNERS.list) {
+    const tr = document.querySelector(`tr[data-partner-row="${Number(p.affiliation_id)}"]`); if (!tr) continue
+    const hit = matchesKeyword(PARTNERS.q, [p.affiliation_name, p.postal_code, p.address, p.website_url, p.contact_name, p.contact_department, p.phone, p.email,
+      p.company_phone, p.representative_name, p.internal_contact_name, p.memo, p.client_name])
+    tr.hidden = !hit; if (hit) shown++
+  }
+  const cnt = document.getElementById('partner-count')
+  if (cnt) cnt.textContent = shown === PARTNERS.list.length ? '' : `${shown}社（全${PARTNERS.list.length}社）`
+  const empty = document.getElementById('partner-empty')
+  if (empty) empty.classList.toggle('hidden', shown > 0 || !PARTNERS.list.length)
+}
+const partnerAddress = (p) => [p.postal_code ? '〒' + p.postal_code : '', p.address || ''].filter(Boolean).join(' ')
+function partnerUrlHost(u) { try { return new URL(u).host } catch { return String(u || '') } }
 async function renderPartnerDetail(pid) {
   if (!PARTNERS.detail || Number(PARTNERS.detail.partner.affiliation_id) !== pid) { loading(); PARTNERS.month = '' }
   PARTNERS.month = PARTNERS.month || dayjs().format('YYYY-MM')
@@ -881,7 +916,8 @@ async function renderPartnerDetail(pid) {
   }
   PARTNERS.detail = data
   const p = data.partner
-  const row = (label, v) => `<div class="flex gap-3 py-1.5 border-b border-gray-100 last:border-0"><span class="text-xs text-gray-500 w-20 shrink-0">${label}</span><span class="text-sm break-words whitespace-pre-wrap min-w-0">${v ? esc(v) : '<span class="text-gray-300">-</span>'}</span></div>`
+  const rowHtml = (label, html) => `<div class="flex gap-3 py-1.5 border-b border-gray-100 last:border-0"><span class="text-xs text-gray-500 w-24 shrink-0">${label}</span><span class="text-sm break-words whitespace-pre-wrap min-w-0">${html || '<span class="text-gray-300">-</span>'}</span></div>`
+  const row = (label, v) => rowHtml(label, v ? esc(v) : '')
   $app.innerHTML = `
     <a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
     <div class="flex items-center gap-2 mt-2 mb-4 flex-wrap">
@@ -895,7 +931,14 @@ async function renderPartnerDetail(pid) {
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-building text-blue-500 mr-1"></i>基本情報</h3>
           <button class="btn btn-outline text-xs" data-action="partnerEdit" data-id="${Number(p.affiliation_id)}"><i class="fas fa-pen"></i>編集</button>
         </div>
-        ${row('担当者', p.contact_name)}${row('電話', p.phone)}${row('メール', p.email)}${row('メモ', p.memo)}
+        ${row('代表者氏名', p.representative_name)}${row('住所', partnerAddress(p))}${row('代表電話', p.company_phone)}
+        ${rowHtml('ホームページ', p.website_url && /^https?:\/\//i.test(p.website_url) ? `<a href="${esc(p.website_url)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline break-all"><i class="fas fa-arrow-up-right-from-square text-[10px] mr-1"></i>${esc(p.website_url)}</a>` : '')}
+        ${row('インボイス番号', p.invoice_number)}
+        <p class="text-xs font-bold text-gray-500 mt-3 mb-1">先方の担当者</p>
+        ${row('担当者', p.contact_name)}${row('部署・役職', p.contact_department)}${row('電話', p.phone)}${row('メール', p.email)}
+        <p class="text-xs font-bold text-gray-500 mt-3 mb-1">自社の担当者</p>
+        ${row('社内担当者', p.internal_contact_name)}
+        <div class="mt-3">${row('メモ', p.memo)}</div>
       </section>
       <section class="card p-4" id="partner-client-link">${partnerClientLinkHtml(data)}</section>
       <section class="card p-4 lg:col-span-2" id="partner-deals">${partnerDealsHtml(data)}</section>
@@ -977,11 +1020,27 @@ delegate('partnerEdit', (el) => {
     <div class="space-y-3">
       ${f('pt-name', '協力会社名 <span class="text-red-500">*</span>', p && p.affiliation_name, 'maxlength="100"')}
       ${p ? '<p class="text-[11px] text-gray-400 -mt-2">名前を変えると、所属スタッフの所属会社名も変わります</p>' : ''}
+      <p class="text-xs font-bold text-gray-500 pt-1">会社の情報</p>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        ${f('pt-postal', '郵便番号', p && p.postal_code, 'inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"')}
+        <div class="sm:col-span-2">${f('pt-address', '住所', p && p.address, 'maxlength="300"')}</div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        ${f('pt-company-phone', '代表電話', p && p.company_phone, 'type="tel" maxlength="20"')}
+        ${f('pt-url', 'ホームページ', p && p.website_url, 'type="url" maxlength="500" placeholder="https://example.co.jp"')}
+        ${f('pt-rep', '代表者氏名', p && p.representative_name, 'maxlength="100"')}
+        ${f('pt-invoice', 'インボイス登録番号', p && p.invoice_number, 'maxlength="20" placeholder="T1234567890123"')}
+      </div>
+      <p class="text-[11px] text-gray-400 -mt-1">名前や住所が似た会社と区別できるよう、住所やホームページを入れておくと一覧で見分けられます</p>
+      <p class="text-xs font-bold text-gray-500 pt-1">先方の担当者</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         ${f('pt-contact', '担当者名', p && p.contact_name, 'maxlength="100"')}
+        ${f('pt-contact-dept', '部署・役職', p && p.contact_department, 'maxlength="100"')}
         ${f('pt-phone', '電話', p && p.phone, 'type="tel" maxlength="20"')}
         ${f('pt-email', 'メール', p && p.email, 'type="email" maxlength="254"')}
       </div>
+      <p class="text-xs font-bold text-gray-500 pt-1">自社の担当者</p>
+      ${f('pt-internal', '社内担当者', p && p.internal_contact_name, 'maxlength="100" placeholder="この会社とのやりとりを受け持つ自社の人"')}
       <div><label class="text-sm text-gray-600 block mb-1">メモ</label><textarea id="pt-memo" rows="3" class="inp" maxlength="2000">${esc((p && p.memo) || '')}</textarea></div>
     </div>
     <div class="flex gap-2 mt-4">
@@ -991,7 +1050,9 @@ delegate('partnerEdit', (el) => {
 })
 delegate('partnerSave', (el) => withSubmitLock(el, async () => {
   const v = (id) => (document.getElementById(id).value || '').trim()
-  const body = { affiliation_name: v('pt-name'), contact_name: v('pt-contact'), phone: v('pt-phone'), email: v('pt-email'), memo: v('pt-memo') }
+  const body = { affiliation_name: v('pt-name'), contact_name: v('pt-contact'), contact_department: v('pt-contact-dept'), phone: v('pt-phone'), email: v('pt-email'),
+    postal_code: v('pt-postal'), address: v('pt-address'), company_phone: v('pt-company-phone'), website_url: v('pt-url'),
+    representative_name: v('pt-rep'), invoice_number: v('pt-invoice'), internal_contact_name: v('pt-internal'), memo: v('pt-memo') }
   if (!body.affiliation_name) { toast('協力会社名を入力してください'); return }
   try {
     if (el.dataset.id) await axios.put('/api/admin/roster/partners/' + Number(el.dataset.id), body)
@@ -1009,7 +1070,7 @@ delegate('partnerMerge', (el) => {
     <ul class="text-xs text-gray-500 mt-3 space-y-1">
       <li>・所属スタッフ ${Number(p.staff_count) || 0}名の所属会社を、統合先に付け替えます</li>
       <li>・精算が確定していないシフトの支払先も、統合先に付け替えます（確定済みの精算は変えません）</li>
-      <li>・統合先の担当者・電話・メールが空欄なら、「${esc(p.affiliation_name)}」の値で埋めます。メモは後ろに足します</li>
+      <li>・統合先の住所・ホームページ・担当者・電話・メールなどが空欄なら、「${esc(p.affiliation_name)}」の値で埋めます。メモは後ろに足します</li>
       ${p.client_id ? `<li>・クライアント「${esc(p.client_name)}」とのつながりは、統合先がほかのクライアントとつながっていなければ統合先に移します</li>` : ''}
       <li>・統合した協力会社は一覧と選択肢から消えます（元に戻せません）</li>
     </ul>

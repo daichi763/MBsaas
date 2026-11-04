@@ -10,7 +10,7 @@ export type FieldChange = { field: string; old_value: string | null; new_value: 
 // 画面に出す項目名（履歴の一覧で使う。ここに無い列は列名のまま出す）
 export const CHANGE_FIELD_LABELS: Record<string, string> = {
   // スタッフ基本情報
-  name: '氏名', kana: 'フリガナ', gender: '性別', date_of_birth: '生年月日', affiliation: '所属会社名', affiliation_contact: '所属先担当者名',
+  name: '氏名', kana: 'フリガナ', gender: '性別', date_of_birth: '生年月日', age_entered: '年齢（生年月日が分からないとき）', affiliation: '所属会社名', affiliation_contact: '所属先担当者名',
   nearest_station_line: '最寄駅（路線）', nearest_station: '最寄駅（駅）', employment_status: '在籍状況', retired_at: '退職日',
   commute_minutes: '通勤可能時間', available_from: '稼働開始可能日', work_area: '稼働可能エリア', skills: 'スキル',
   // 従業員管理
@@ -29,7 +29,7 @@ export const CHANGE_FIELD_LABELS: Record<string, string> = {
   paid_leave_remaining: '有給残数', telework_remaining_this_month: '今月テレワーク残数',
 }
 // スタッフ基本情報のうち履歴に残す項目（経歴・PRポイント・備考などの長い文章と、管理者メモ・フォローは対象外）
-export const PROFILE_LOG_FIELDS = ['name', 'kana', 'gender', 'date_of_birth', 'affiliation', 'affiliation_contact', 'nearest_station_line', 'nearest_station',
+export const PROFILE_LOG_FIELDS = ['name', 'kana', 'gender', 'date_of_birth', 'age_entered', 'affiliation', 'affiliation_contact', 'nearest_station_line', 'nearest_station',
   'employment_status', 'retired_at', 'commute_minutes', 'available_from', 'work_area', 'skills'] as const
 // 下4桁だけを残す項目
 export const MASKED_FIELDS = ['account_number', 'employment_insurance_no', 'social_insurance_no']
