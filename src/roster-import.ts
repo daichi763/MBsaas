@@ -13,7 +13,7 @@
 // 画面から何回かに分けて送る。確かめる処理は、既存のスタッフを1回だけ読んで索引にしてから比べる（行数×人数の比較をしない）
 // =========================================================
 import { Hono } from 'hono'
-import { createPerson, getRequiredFields, missingRequired, normalizeRosterValues, nextStaffCode, samePersonRows, inactiveLabelOf, unusablePasswordHash, type AffiliationType } from './roster'
+import { createPerson, getRequiredFields, missingRequired, normalizeRosterValues, nextStaffCode, samePersonRows, inactiveLabelOf, unusablePasswordHash, ageEntryUpdate, type AffiliationType } from './roster'
 import { hashPassword } from './lib/auth'
 import { isISODate } from './lib/validate'
 import { genTempPassword } from './accounts'
@@ -35,6 +35,8 @@ const COLUMNS: { key: string; label: string; aliases?: string[]; example: string
   { key: 'kana', label: 'フリガナ', example: 'ヤマダ タロウ' },
   { key: 'gender', label: '性別', example: '男性', note: '男性 / 女性 / その他 / 回答しない' },
   { key: 'date_of_birth', label: '生年月日', example: '1995-04-01' },
+  // 生年月日が分からない人の年齢（#9713。1件ずつの登録の「年齢（生年月日が分からないとき）」と同じく、取り込んだ日の年齢として保存する）
+  { key: 'age_entered', label: '年齢', aliases: ['年齢（生年月日が分からないとき）', 'age'], example: '', note: '生年月日が分からないときだけ。両方あれば生年月日を使う' },
   { key: 'phone', label: '電話番号', aliases: ['電話'], example: '09012345678' },
   { key: 'email', label: 'メール', aliases: ['メールアドレス'], example: '' },
   { key: 'user_code', label: 'スタッフ番号', example: '', note: '自社雇用で空欄なら空いている番号を使う。協力会社は入れたときだけログインを作る' },
@@ -170,8 +172,12 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
     affiliation_contact: type === 'partner_manual' ? (raw.affiliation_contact || null) : null,
     affiliation: type === 'skillsheet_only' ? (raw.affiliation || null) : null,
   }
+  // 年齢（#9713）: 生年月日があれば生年月日を使い、年齢の列は読まない。年齢だけなら1件ずつの登録と同じ確かめ方（normalizeRosterValues）にする
+  if (raw.age_entered && data.date_of_birth) notes.push('生年月日があるため、年齢の列は使いません')
+  else if (raw.age_entered) data.age_entered = raw.age_entered
   const valueErr = normalizeRosterValues(data)
   if (valueErr) errors.push(valueErr)
+  else if (typeof data.age_entered === 'number') notes.push(`年齢は取り込んだ日の${data.age_entered}歳として登録します（年が経つと推定の年齢が増えます）`)
   // Excel で開いて保存すると、電話番号の先頭の 0 が消えることがある
   const phone = data.phone ? normalizePhone(data.phone) : ''
   if (phone && !phone.startsWith('0')) errors.push('電話番号は0から始まる番号で入れてください（Excel で先頭の0が消えていないか確かめてください）')
@@ -273,6 +279,8 @@ async function insertRow(db: D1Database, u: any, ctx: ImportCtx, row: RowResult,
   const pwHash = password ? await hashPassword(password) : await unusablePasswordHash()
   const affiliation = type === 'own_employee' ? ctx.ownName : type === 'partner_manual' ? d.partner_name : (d.affiliation || null)
   const userOf = `(SELECT user_id FROM users WHERE company_id = ? AND user_code = ?)`
+  // 年齢と入力した日（#9713。1件ずつの登録と同じ ageEntryUpdate。生年月日があれば空）
+  const ageCols = ageEntryUpdate(d, null, ctx.today) || { age_entered: null, age_entered_on: null }
   const stmts: D1PreparedStatement[] = [
     db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(u.company_id, userCode, d.name, row.login ? 'staff' : 'roster_only', pwHash, row.login ? (d.email || null) : null, d.phone || null, person.person_id, row.login ? 1 : 0),
@@ -280,14 +288,16 @@ async function insertRow(db: D1Database, u: any, ctx: ImportCtx, row: RowResult,
   if (type === 'partner_manual') stmts.push(db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, d.partner_name))
   stmts.push(db.prepare(`INSERT INTO staff_profiles
       (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation, affiliation_contact,
-       kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status)
+       kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
+       age_entered, age_entered_on)
       VALUES (${userOf}, ?, ?, ?, ?, ${type === 'partner_manual' ? '(SELECT COALESCE(merged_into_id, affiliation_id) FROM staff_affiliations WHERE company_id = ? AND affiliation_name = ?)' : 'NULL'},
-       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working')`)
+       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?)`)
     .bind(u.company_id, userCode, u.company_id, person.person_id, u.company_id, type,
       ...(type === 'partner_manual' ? [u.company_id, d.partner_name] : []),
       affiliation, d.affiliation_contact || null,
       d.kana || null, d.gender, d.date_of_birth || null, d.skills || '', d.career || '', d.work_area || '',
-      d.nearest_station_line || null, d.nearest_station || null, d.commute_minutes ?? null, d.available_from || null))
+      d.nearest_station_line || null, d.nearest_station || null, d.commute_minutes ?? null, d.available_from || null,
+      ageCols.age_entered, ageCols.age_entered_on))
   // ②では従業員管理の最小レコードも作る（1件ずつの登録と同じ。電話番号は従業員管理の電話番号にも入れる）
   if (type === 'own_employee' && (d.employee_number || d.hire_date || d.contract_type || d.phone)) {
     stmts.push(db.prepare(`INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, phone_main, updated_at)
@@ -315,7 +325,7 @@ importApi.get('/template', (c) => {
   const header = COLUMNS.map(col => col.label)
   const rows = [
     COLUMNS.map(col => col.example),
-    COLUMNS.map(col => ({ type: '協力会社', name: '佐藤 花子', kana: 'サトウ ハナコ', gender: '女性', partner_name: '株式会社サンプル', affiliation_contact: '鈴木' } as Record<string, string>)[col.key] || ''),
+    COLUMNS.map(col => ({ type: '協力会社', name: '佐藤 花子', kana: 'サトウ ハナコ', gender: '女性', age_entered: '30', partner_name: '株式会社サンプル', affiliation_contact: '鈴木' } as Record<string, string>)[col.key] || ''),
   ]
   return csvResponse('スタッフ一括登録テンプレート.csv', toCsv(header, rows, { textCols: ['電話番号', 'スタッフ番号', '社員番号'] }))
 })
