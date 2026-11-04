@@ -52,6 +52,7 @@ import { ageEntryUpdate, estimatedAge } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
 import { halfWidthNumber, toNumberOrNull, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
+import { loadMonthlyLines, monthlyTotal } from './lib/monthly-billing'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
@@ -4394,6 +4395,15 @@ api.get('/admin/clients/:id', async (c) => {
     p.shifts++; p.staff.add(s.staff_id); p.bill_total += bill
     perProject.set(s.project_id, p)
   }
+  // 月額（固定。#9702）: 今日までにその月のシフトがあれば、その月の売上と案件の売上に1回だけ足す
+  for (const l of await loadMonthlyLines(c.env.DB, u.company_id, { months, client_id: Number(cid), until: todayJST() })) {
+    const t = trend.get(l.ym)
+    if (t) t.bill_total += l.amount
+    if (l.ym !== month) continue
+    const p = perProject.get(l.project_id) || { shifts: 0, staff: new Set<number>(), bill_total: 0 }
+    p.bill_total += l.amount
+    perProject.set(l.project_id, p)
+  }
   const projects = ((projectRows.results || []) as any[]).map(p => {
     const a = perProject.get(p.project_id)
     return { ...p, shifts: a?.shifts || 0, staff_count: a?.staff.size || 0, bill_total: a?.bill_total || 0 }
@@ -4991,17 +5001,21 @@ api.delete('/admin/clients/documents/:docId', async (c) => {
   return c.json({ ok: true })
 })
 
+// 案件全体の月額（固定。#9702）のうち、月 ym（SQL の式）に適用するもの。無ければ NULL
+const MONTHLY_AMOUNT_SQL = (ym: string) => `(SELECT mr.amount FROM monthly_bill_rules mr WHERE mr.company_id = p.company_id AND mr.project_id = p.project_id AND mr.staff_id IS NULL
+  AND (mr.valid_from IS NULL OR mr.valid_from <= ${ym}) AND (mr.valid_to IS NULL OR mr.valid_to >= ${ym}) ORDER BY COALESCE(mr.valid_from, '') DESC LIMIT 1)`
 // 案件一覧
-// ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）
+// ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）。monthly_amount: その月の案件全体の月額（#9702）
 api.get('/admin/projects', async (c) => {
   const u = c.get('user'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const rows = await c.env.DB.prepare(`
     SELECT p.*, cl.client_name,
       (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS staff_count,
       (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS month_shifts,
-      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents
+      (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents,
+      ${MONTHLY_AMOUNT_SQL('?4')} AS monthly_amount
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id).all()
+    WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id, month).all()
   // 成約（#184）: テンプレートに「成約」の項目がない案件は null（画面は「—」）
   const seiyaku = await seiyakuSums(c.env.DB, u.company_id, mFrom, mTo, 'project')
   for (const r of rows.results as any[]) r.month_seiyaku = seiyaku.get(Number(r.project_id)) ?? null
@@ -5013,10 +5027,12 @@ api.get('/admin/projects/:id', async (c) => {
   const u = c.get('user'); const pid = c.req.param('id'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const db = c.env.DB
   const project = await db.prepare(`
-    SELECT p.*, cl.client_name, rt.template_name, rt.fields_json
+    SELECT p.*, cl.client_name, rt.template_name, rt.fields_json, ${MONTHLY_AMOUNT_SQL('?3')} AS monthly_amount,
+      (SELECT COUNT(*) FROM monthly_bill_rules mr WHERE mr.company_id = p.company_id AND mr.project_id = p.project_id AND mr.staff_id IS NOT NULL
+        AND (mr.valid_from IS NULL OR mr.valid_from <= ?3) AND (mr.valid_to IS NULL OR mr.valid_to >= ?3)) AS monthly_staff_rules
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     LEFT JOIN report_templates rt ON p.report_template_id = rt.template_id
-    WHERE p.project_id = ? AND p.company_id = ?`).bind(pid, u.company_id).first()
+    WHERE p.project_id = ?1 AND p.company_id = ?2`).bind(pid, u.company_id, month).first()
   if (!project) return c.json({ error: 'not found' }, 404)
 
   const staffPerf = await db.prepare(`
@@ -5048,7 +5064,7 @@ api.get('/admin/projects/:id', async (c) => {
   const monthRows = (await db.prepare(`SELECT unit_price, transportation_fee, bill_transport_type, bill_transport_amount, bill_adjust,
       pay_amount, pay_transport_type, pay_transport_amount, pay_adjust, pay_premium
     FROM shifts WHERE project_id = ? AND company_id = ? AND work_date >= ? AND work_date < ? AND status IN ('confirmed','substitute')`).bind(pid, u.company_id, mFrom, mTo).all()).results as any[]
-  const monthShifts = { n: monthRows.length, revenue: 0, bill_total: 0, pay_total: 0, profit: 0, pay_missing: 0 }
+  const monthShifts = { n: monthRows.length, revenue: 0, bill_total: 0, pay_total: 0, profit: 0, pay_missing: 0, monthly_bill: 0 }
   {
     let profitBill = 0
     for (const s of monthRows) {
@@ -5057,8 +5073,11 @@ api.get('/admin/projects/:id', async (c) => {
       if (t.pay_total == null) monthShifts.pay_missing++
       else { monthShifts.pay_total += t.pay_total; profitBill += t.bill_total }
     }
-    monthShifts.revenue = monthShifts.bill_total
-    monthShifts.profit = profitBill - monthShifts.pay_total
+    // 月額（固定。#9702）は、その月にシフトがあれば売上・粗利に1回だけ足す（シフトの請求額 bill_total には入れない）
+    const monthly = await loadMonthlyLines(db, u.company_id, { months: [month], project_id: Number(pid) })
+    monthShifts.monthly_bill = monthlyTotal(monthly)
+    monthShifts.revenue = monthShifts.bill_total + monthShifts.monthly_bill
+    monthShifts.profit = profitBill - monthShifts.pay_total + monthShifts.monthly_bill
   }
 
   return c.json({
@@ -5117,12 +5136,18 @@ api.post('/admin/projects', async (c) => {
   const dupMsg = { error: `同じ名前の稼働中の案件「${name}」が既に登録されています`, confirm_duplicate: true }
   if (b.allow_duplicate !== true && await c.env.DB.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active' LIMIT 1`).bind(u.company_id, name).first())
     return c.json(dupMsg, 409)
+  // 月額（固定。#9702）: シフトの請求単価は日額 0 にして、案件全体の月額のルール（monthly_bill_rules）を作る。
+  // シフトの時給・日額の計算（shift-board.ts の resolvePrice）には月額を混ぜない
+  const monthly = b.unit_price_type === 'monthly'
+  if (monthly && !(Number.isInteger(Number(b.unit_price)) && Number(b.unit_price) >= 1)) return c.json({ error: '月額を1円以上で入力してください' }, 400)
   const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo, remarks)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
     .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
+      monthly ? 'daily' : b.unit_price_type || 'daily', monthly ? 0 : b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
+  if (monthly) await c.env.DB.prepare('INSERT INTO monthly_bill_rules (company_id, project_id, staff_id, amount, created_by, created_at) VALUES (?, ?, NULL, ?, ?, ?)')
+    .bind(u.company_id, r.meta.last_row_id, Number(b.unit_price), u.user_id, nowJST()).run()
   const cs = Object.keys(contact.set)
   if (cs.length) await c.env.DB.prepare(`UPDATE projects SET ${cs.map(k => `${k} = ?`).join(', ')} WHERE project_id = ? AND company_id = ?`)
     .bind(...cs.map(k => contact.set[k]), r.meta.last_row_id, u.company_id).run()
@@ -5306,7 +5331,7 @@ const PROJECT_USAGE: UsageCheck[] = [
   ['follow_logs', 'フォロー記録', 'SELECT 1 FROM follow_logs WHERE related_project_id = ?1 AND company_id = ?2'],
 ]
 // 案件と一緒に消す設定（単価ルール・単価の履歴・キャンセル料の規定・報告の設定とその変更の記録）
-const PROJECT_OWNED_TABLES = ['rate_rules', 'project_price_history', 'project_cancel_policies', 'project_report_defaults', 'project_staff_report_settings', 'report_setting_logs']
+const PROJECT_OWNED_TABLES = ['rate_rules', 'monthly_bill_rules', 'project_price_history', 'project_cancel_policies', 'project_report_defaults', 'project_staff_report_settings', 'report_setting_logs']
 const CLIENT_USAGE: UsageCheck[] = [
   ['projects', '案件', 'SELECT 1 FROM projects WHERE client_id = ?1 AND company_id = ?2'],
   ['sites', '開催場所', 'SELECT 1 FROM sites WHERE client_id = ?1 AND company_id = ?2'],
@@ -7203,6 +7228,12 @@ api.get('/admin/billing-check', async (c) => {
   }
   for (const s of money) { add(byProject, s.project_id, s); add(byStaff, `${s.staff_id}:${s.project_id}`, s) }
   const zero: Money = { base: 0, transport: 0, adjust: 0, total: 0 }
+  // 月額（固定。#9702）: 今日までにその月の確定・代打のシフトがあれば、案件に1回（スタッフ別の月額はそのスタッフの行にも）足す
+  const monthly = await loadMonthlyLines(c.env.DB, u.company_id, { months: [month], until: todayJST() })
+  const monthlyBy = (k: (l: (typeof monthly)[number]) => string | null) => {
+    const m = new Map<string, number>(); for (const l of monthly) { const key = k(l); if (key) m.set(key, (m.get(key) || 0) + l.amount) } return m
+  }
+  const monthlyOfProject = monthlyBy(l => String(l.project_id)), monthlyOfStaff = monthlyBy(l => (l.staff_id == null ? null : `${l.staff_id}:${l.project_id}`))
   // 稼働人数は確定・代打のシフトの人だけを数える（欠勤・希望（仮）だけの人は数えない）。
   // 日報は、確定・代打のシフトのうち日報が必要なもの（シフト → スタッフ → 案件の設定）を分母に、そのシフトの日報があるものを分子に数える（#448）。
   // 日報の照合は shift_id、shift_id の無い古い日報はスタッフ・稼働日・案件（lib/daily-report.ts の findDailyReport と同じ）
@@ -7236,10 +7267,18 @@ api.get('/admin/billing-check', async (c) => {
     GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()).all()
 
   // total_amount / amount = 請求基本額、total_transport / transport = 請求する交通費、total_adjust / adjust = 請求の調整、total_bill / total = 請求合計（精算の請求合計と同じ）
+  // total_monthly / monthly = 月額（固定。#9702。請求合計に含む）。monthly_lines = 月額の行（案件全体・スタッフ別）
   return c.json({
     month,
-    by_project: (rows.results as any[]).map(p => { const m = byProject.get(p.project_id) || zero; return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_bill: m.total } }),
-    detail: (detail.results as any[]).map(d => { const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero; return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, total: m.total } }),
+    by_project: (rows.results as any[]).map(p => {
+      const m = byProject.get(p.project_id) || zero, mo = monthlyOfProject.get(String(p.project_id)) || 0
+      return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_monthly: mo, total_bill: m.total + mo }
+    }),
+    detail: (detail.results as any[]).map(d => {
+      const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero, mo = monthlyOfStaff.get(`${d.staff_id}:${d.project_id}`) || 0
+      return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, monthly: mo, total: m.total + mo }
+    }),
+    monthly_lines: monthly,
   })
 })
 

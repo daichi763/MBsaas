@@ -2490,6 +2490,12 @@ delegate('addFollowLog', el => addFollowLog(Number(el.dataset.id), el))
 // ============ 案件 ============
 // 請求の標準単価の単位（時給の案件を日単価に見せない #91。日額・時給以外の古い値は日額として計算している）
 function priceUnitLabel(t) { return t === 'hourly' ? '/時' : '/日' }
+// 案件の請求単価の表示。月額（固定。#9702）の案件は「¥300,000/月」、シフトの単価もあれば「¥16,000/日 ＋ 月額 ¥300,000」
+function projectPriceText(p) {
+  const m = p.monthly_amount == null ? null : Number(p.monthly_amount)
+  if (m == null) return `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}`
+  return Number(p.unit_price || 0) ? `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} ＋ 月額 ${yen(m)}` : `${yen(m)}/月`
+}
 // 月の切り替え（案件一覧・案件詳細・クライアント詳細で共通。#450）
 function monthNavHtml(action, month) {
   const m0 = dayjs(month + '-01')
@@ -2570,7 +2576,7 @@ function drawProjectRows() {
               <td class="text-xs">${esc(p.client_name || '-')}</td>
               <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
               <td class="text-xs">${esc(p.location || '-')}</td>
-              <td class="whitespace-nowrap">${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}</td>
+              <td class="whitespace-nowrap">${esc(projectPriceText(p))}</td>
               <td class="whitespace-nowrap">${Number(p.month_shifts || 0)}件 (${Number(p.staff_count || 0)}名)</td>
               <td class="font-bold">${seiyakuCell(p.month_seiyaku, '日報テンプレートに「成約」の項目がありません')}</td>
               <td>${p.incidents ? `<span class="badge badge-red">${Number(p.incidents)}件</span>` : '<span class="text-gray-300">0</span>'}</td>
@@ -2679,8 +2685,9 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="np-loc" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">請求単価（円）</label>
-          <div class="flex gap-2"><select id="np-price-unit" class="inp w-24 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option></select>
-            <input id="np-price" type="number" min="0" class="inp" value="16000"></div>
+          <div class="flex gap-2"><select id="np-price-unit" class="inp w-32 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option><option value="monthly">月額（固定）</option></select>
+            <input id="np-price" type="number" min="0" class="inp" value="16000" inputmode="numeric"></div>
+          <p id="np-price-monthly-note" class="text-[11px] text-blue-700 mt-1 hidden">月額（固定）は、その月にシフトが1件以上あれば月に1回だけ請求します（シフトの数・時間には左右されません）。シフトごとの請求単価は 0円 になります</p>
           <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
         <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
@@ -2693,6 +2700,9 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addProject">登録する</button></div>
     </div>`)
+  // 月額（固定）を選んだときだけ説明を出す（#9702）
+  const unitSel = document.getElementById('np-price-unit')
+  unitSel.addEventListener('change', () => document.getElementById('np-price-monthly-note').classList.toggle('hidden', unitSel.value !== 'monthly'))
 }
 // 登録する。同名の登録があるとき（サーバーが confirm_duplicate を返す）は、確認できたら確認済みとして送り直す。取りやめたら null を返す
 async function postConfirmingDuplicate(url, body) {
@@ -2709,6 +2719,7 @@ delegate('addProject', el => withSubmitLock(el, addProject))
 window.addProject = async function () {
   const name = document.getElementById('np-name').value.trim()
   if (!name) { toast('案件名を入力してください'); return }
+  if (document.getElementById('np-price-unit').value === 'monthly' && !(Number(document.getElementById('np-price').value) >= 1)) { toast('月額を1円以上で入力してください'); return }
   try {
     const res = await postConfirmingDuplicate('/api/admin/projects', {
       project_name: name, client_id: document.getElementById('np-client').value || null,
@@ -2784,9 +2795,14 @@ async function renderProjectDetail(pid) {
     ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-gray-50 text-sm text-gray-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-      <div class="card p-4"><p class="text-xs text-gray-500">請求単価</p><p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p></div>
+      <div class="card p-4" id="project-bill-price"><p class="text-xs text-gray-500">請求単価</p>${p.monthly_amount == null
+        ? `<p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p>`
+        : `<p class="text-xl font-bold">${yen(p.monthly_amount)}<span class="text-xs font-normal text-gray-400">/月（固定）</span></p>
+          ${Number(p.unit_price || 0) ? `<p class="text-xs text-gray-500">シフトの単価 ${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} と別に請求</p>` : ''}`}
+        ${Number(p.monthly_staff_rules || 0) ? `<p class="text-[11px] text-gray-400">スタッフ別の月額 ${Number(p.monthly_staff_rules)}件</p>` : ''}</div>
       <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-gray-400">件</span></p></div>
-      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p></div>
+      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p>
+        ${Number(data.month_summary.monthly_bill || 0) ? `<p class="text-[11px] text-gray-400">うち月額 ${yen(data.month_summary.monthly_bill)}</p>` : ''}</div>
       <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
         <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a>
         <a href="#projects/templates" class="text-xs text-blue-600 hover:underline ml-2">テンプレートの管理</a></div>
@@ -6041,6 +6057,8 @@ async function renderBilling(month) {
   month = month || dayjs().format('YYYY-MM')
   let data
   try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
+  // 月額（固定。#9702）の列は、その月に月額の行があるときだけ出す
+  const hasMonthly = (data.monthly_lines || []).length > 0, hasStaffMonthly = (data.monthly_lines || []).some(l => l.staff_id != null)
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
@@ -6052,12 +6070,13 @@ async function renderBilling(month) {
       </div>
     </div>
     <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください。
+      ${hasMonthly ? '月額（固定）は、その月に今日までの確定・代打のシフトがあれば、1回だけ請求合計に含めます（スタッフ別の月額は、そのスタッフの行にも出します）。' : ''}
       稼働人数は確定・代打のシフトの人数、日報提出は日報が必要な確定・代打のシフトのうち日報があるものです（欠勤・希望（仮）と、日報を不要にしたシフトは数えません）</p>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
+          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.by_project.map(p => `
             <tr>
               <td class="font-medium">${esc(p.project_name)}</td>
@@ -6067,6 +6086,7 @@ async function renderBilling(month) {
               <td>${p.substitute_days || 0}</td>
               <td>${billingReportCell(p)}</td>
               <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
+              ${hasMonthly ? `<td>${p.total_monthly ? yen(p.total_monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
           </tbody>
@@ -6077,13 +6097,14 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th><th>請求合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td><td>${billingReportCell(d)}</td>
               <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
+              ${hasStaffMonthly ? `<td>${d.monthly ? yen(d.monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
           </tbody>
@@ -6102,8 +6123,10 @@ function billingReportCell(x) {
 window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
-  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id])
-  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID'], rows)
+  // 月額（固定。#9702）は末尾の「月額」の列に出す（スタッフ別の月額はそのスタッフの行に、案件全体の月額は「案件全体の月額」の行として足す）
+  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id, d.monthly || 0])
+  for (const l of (data.monthly_lines || []).filter(x => x.staff_id == null)) rows.push(['案件全体の月額', l.project_name, '', '', 0, 0, 0, l.amount, '', l.amount])
+  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID', '月額'], rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)

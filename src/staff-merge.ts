@@ -256,6 +256,10 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     // 交通費の標準（#564）。統合先に同じ開催場所の標準があれば統合先の値を残し、統合元の分は消す
     db.prepare('UPDATE OR IGNORE staff_transport_defaults SET staff_id = ? WHERE staff_id = ? AND company_id = ?').bind(T, sid, u.company_id),
     db.prepare('DELETE FROM staff_transport_defaults WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id),
+    // スタッフ別の月額（固定。#9702）。統合元のシフトは統合先に移るので、統合先に同じ案件のスタッフ別の月額がなければ付け替える
+    // （あれば統合先の月額を使う。期間が重ならないよう、統合元の分は付け替えずに残す）
+    db.prepare(`UPDATE monthly_bill_rules SET staff_id = ? WHERE staff_id = ? AND company_id = ?
+      AND project_id NOT IN (SELECT project_id FROM monthly_bill_rules WHERE staff_id = ? AND company_id = ?)`).bind(T, sid, u.company_id, T, u.company_id),
     // 報告設定: 統合先に行がない案件 × 種類だけを引き継ぎ、履歴に残してから統合元の行を消す（#10）
     db.prepare(`INSERT INTO report_setting_logs (company_id, project_id, staff_id, report_type, old_enabled, new_enabled, action, batch_id, changed_by, changed_by_name, changed_by_role, created_at)
       SELECT s.company_id, s.project_id, ?, s.report_type, NULL, s.enabled, 'merge', ?, ?, ?, ?, ? ${reportSettingsWhere}`)
