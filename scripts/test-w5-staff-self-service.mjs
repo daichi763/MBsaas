@@ -81,10 +81,11 @@ const notifsOf = async (c) => must(await c.get('/api/staff/notifications'), 'not
   ok('#272 本人は承認待ちの申請を取り消せる', (await sa.post(`/api/staff/self/profile-requests/${r4.request_id}/cancel`)).status === 200)
   ok('#272 取り消した申請は承認できない', (await admin.post(`/api/admin/staff-requests/profile/${r4.request_id}/approve`)).status === 409)
   ok('#272 スタッフは管理者の API を使えない', (await sa.get('/api/admin/staff-requests/profile')).status === 403)
-  // ログイン用メール（承認すると確認用のメールを送り、すぐには切り替えない）
+  // ログイン用メール（メールを送れる環境では承認すると確認用のメールを送り、すぐには切り替えない。送れない環境では承認した時点で切り替える: #9802）
   const r5 = must(await sa.post('/api/staff/self/profile-requests', { changes: { login_email: `${PFX.toLowerCase()}a@example.com` } }), 'email request')
   const ap5 = await admin.post(`/api/admin/staff-requests/profile/${r5.request_id}/approve`, {})
-  ok('#272 ログイン用メールの申請を承認すると、確認待ちになる（すぐには切り替えない）', ap5.status === 200 && ap5.data.login_email && ap5.data.login_email.pending === `${PFX.toLowerCase()}a@example.com`, ap5)
+  ok('#272 ログイン用メールの申請を承認すると、確認待ちになる（メールを送れない環境では、その場で切り替わる: #9802）', ap5.status === 200 && ap5.data.login_email
+    && (ap5.data.login_email.pending === `${PFX.toLowerCase()}a@example.com` || ap5.data.login_email.switched === true), ap5)
   // 自社雇用の最寄駅は従業員管理と同じく、会社管理者・事務担当だけが承認できる
   const r6 = must(await sa.post('/api/staff/self/profile-requests', { changes: { nearest_station: '品川' } }), 'request 6')
   const mg6 = await mgr.post(`/api/admin/staff-requests/profile/${r6.request_id}/approve`, {})

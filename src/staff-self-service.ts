@@ -14,8 +14,9 @@
 import { Hono } from 'hono'
 import { loadRoster } from './roster'
 import { isISODate } from './lib/validate'
+import { canSendMail } from './services/email'
 
-type Bindings = { DB: D1Database; DOCUMENTS: R2Bucket }
+type Bindings = { DB: D1Database; DOCUMENTS: R2Bucket; RESEND_API_KEY?: string; MAIL_FROM?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
 
 // 通知を受け取る管理ロール（notifications.ts の NOTIFY_ADMIN_ROLES と同じ）と、労務情報を扱えるロール（api.ts の HR_ROLES と同じ）
@@ -79,6 +80,7 @@ async function notifyUser(db: D1Database, companyId: number, userId: number, kin
 // =========================================================
 // 本人が申請できる項目。最寄駅は基本項目（ROSTER_BASE_FIELDS）、通勤可能時間・稼働開始可能日・稼働エリア・スキルは業務側の項目、
 // ログイン用メール（users.email）は承認後に確認用のリンクを送り、本人が確かめたときに有効になる（管理画面からの変更と同じ）。
+// ただしメールを送れない環境（canSendMail が false）では、承認した時点で切り替える（#9802。送れるようになれば確認用のリンクの流れに自動で戻る）。
 // ログインには使わず、通知とパスワード再設定に使うため、表示の名前はそれが分かるものにする（#9414）
 export const PROFILE_REQUEST_FIELDS = ['nearest_station_line', 'nearest_station', 'commute_minutes', 'available_from', 'work_area', 'skills', 'login_email'] as const
 export const PROFILE_REQUEST_LABEL: Record<string, string> = {
@@ -155,6 +157,20 @@ function maskEmail(v: any): string | null {
 }
 // ログイン用メールを申請できる行か（自社で発行したログインのある行。他社連携の LK- 行・ログインのない人は不可）
 const canRequestEmail = (roster: any) => roster.user_role === 'staff' && !/^(LK|TMP)-/i.test(String(roster.user_code || ''))
+/**
+ * メールアドレスの欄を出せないときの理由（#9802。欄を黙って消さず、理由と連絡先を出す）。出せるときは null。
+ * 申請先の行にこの会社で発行したログインが無い人（他社連携から自社管理に切り替えた行など）は、ログインを発行した会社に切り替えて申請する
+ */
+async function emailBlockedReason(db: D1Database, u: any, t: { roster: any; company_id: number }): Promise<string | null> {
+  if (canRequestEmail(t.roster)) return null
+  const others = u.person_id ? ((await db.prepare(`SELECT DISTINCT co.company_name FROM users us JOIN companies co ON co.company_id = us.company_id
+      WHERE us.person_id = ? AND us.company_id != ? AND us.role = 'staff' AND us.status = 'active' AND us.user_code NOT LIKE 'LK-%' AND us.user_code NOT LIKE 'TMP-%' LIMIT 3`)
+    .bind(u.person_id, t.company_id).all()).results as any[]).map(r => String(r.company_name || '')).filter(Boolean) : []
+  if (others.length) return `この会社の登録にはログインが無いため、ここではメールアドレスを変更できません。ログインを発行した会社（${others.join('・')}）に切り替えて申請してください。分からないときは所属会社の担当者に連絡してください`
+  return 'この登録にはログインが発行されていないため、ここではメールアドレスを変更できません。所属会社の担当者に連絡してください'
+}
+// メールアドレスの変更の反映のしかた（#9802）。verify: 承認すると確認用のメールを送り、本人がリンクを開くと切り替わる / direct: メールを送れない間は、承認した時点で切り替わる
+const emailChangeMode = (env: any): 'verify' | 'direct' => canSendMail(env || {}) ? 'verify' : 'direct'
 const safeJson = (s: any) => { try { return JSON.parse(String(s || '{}')) } catch { return {} } }
 function requestView(r: any, maskMail: boolean) {
   const ch = safeJson(r.changes_json), before = safeJson(r.before_json)
@@ -185,7 +201,9 @@ staffSelfServiceApi.get('/profile-requests', async (c) => {
     .bind(u.user_id, ...(u.person_id ? [u.person_id] : [])).all()).results as any[]
   const requests = rows.map(r => requestView(r, true))
   if ('error' in t) return c.json({ available: false, reason: t.error, fields: PROFILE_REQUEST_FIELDS, labels: PROFILE_REQUEST_LABEL, requests })
-  return c.json({ available: true, target_company_name: t.company_name, email_allowed: canRequestEmail(t.roster), current: currentValues(t.roster, true),
+  const emailReason = await emailBlockedReason(db, u, t)
+  return c.json({ available: true, target_company_name: t.company_name, email_allowed: !emailReason, email_reason: emailReason, email_mode: emailChangeMode(c.env),
+    current: currentValues(t.roster, true),
     fields: PROFILE_REQUEST_FIELDS, labels: PROFILE_REQUEST_LABEL, pending: requests.some(r => r.status === 'pending'), requests })
 })
 
@@ -197,7 +215,10 @@ staffSelfServiceApi.post('/profile-requests', async (c) => {
   if ('error' in t) return c.json({ error: t.error }, t.status)
   const n = normalizeChanges(b.changes)
   if ('error' in n) return c.json({ error: n.error }, 400)
-  if (n.changes.login_email !== undefined && !canRequestEmail(t.roster)) return c.json({ error: 'ログインのない登録のため、メールアドレス（通知・パスワード再設定）の変更は申請できません' }, 400)
+  if (n.changes.login_email !== undefined) {
+    const emailReason = await emailBlockedReason(db, u, t)
+    if (emailReason) return c.json({ error: emailReason }, 400)
+  }
   const current = currentValues(t.roster, false)
   // 今の値と同じ項目は申請に含めない
   const changes: Record<string, any> = {}, before: Record<string, any> = {}
@@ -398,6 +419,14 @@ staffSelfServiceApi.post('/leave/:id/cancel', async (c) => {
 // =========================================================
 export type ApplyProfileChange = (c: any, staffId: number, changes: Record<string, any>) => Promise<{ error: string; status: 400 | 403 | 404 | 409 } | { ok: true; login_email?: any }>
 
+// 承認の結果の通知に書くメールアドレスの扱い（#9802。実際に起きたことを書く）
+function loginEmailResultText(le: any): string {
+  if (le?.switched) return '新しいメールアドレスに切り替えました（確認用のメールは送っていません）'
+  if (le?.pending && le.mail_sent && !le.mail_skipped) return '確認用のメールを送りました。メールのリンクを開くと切り替わります'
+  if (le?.pending) return '確認用のメールを送れませんでした。所属会社の担当者に連絡してください'
+  return '今の登録と同じメールアドレスのため、変更はありません'
+}
+
 export function staffRequestsAdminApi(applyProfileChange: ApplyProfileChange) {
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -427,7 +456,7 @@ export function staffRequestsAdminApi(applyProfileChange: ApplyProfileChange) {
       LEFT JOIN users rq ON rq.user_id = r.requester_user_id LEFT JOIN companies rco ON rco.company_id = r.requester_company_id
       LEFT JOIN staff_profiles rsp ON rsp.user_id = r.requester_user_id AND rsp.company_id = r.requester_company_id
       WHERE r.company_id = ? ${status === 'pending' ? `AND r.status = 'pending'` : ''} ORDER BY (r.status = 'pending') DESC, r.request_id DESC LIMIT 100`).bind(u.company_id).all()).results as any[]
-    return c.json({ labels: PROFILE_REQUEST_LABEL, requests: rows.map(r => ({
+    return c.json({ labels: PROFILE_REQUEST_LABEL, email_mode: emailChangeMode(c.env), requests: rows.map(r => ({
       ...requestView(r, false), staff_id: r.staff_id, staff_name: r.staff_name, user_code: r.user_code,
       // 他社の稼働先に切り替えて出した申請。会社名は自社が直接連携した会社のときだけ出す
       // （多段連携の先の会社名を雇用元に見せると頭超えにつながるため、名前を伏せる）
@@ -454,7 +483,7 @@ export function staffRequestsAdminApi(applyProfileChange: ApplyProfileChange) {
     }
     const ch = safeJson(req.changes_json)
     await notifyUser(db, req.requester_company_id, req.requester_user_id, 'profile_change_approved', '登録情報の変更が承認されました',
-      [...Object.keys(ch).map(k => `${PROFILE_REQUEST_LABEL[k] || k}: ${k === 'login_email' ? '確認用のメールを送りました。メールのリンクを開くと切り替わります' : (ch[k] ?? '（空欄）')}`),
+      [...Object.keys(ch).map(k => `${PROFILE_REQUEST_LABEL[k] || k}: ${k === 'login_email' ? loginEmailResultText((res as any).login_email) : (ch[k] ?? '（空欄）')}`),
         ...(comment ? [`コメント: ${comment}`] : [])].join('\n'), '#profile-request', id)
     return c.json({ ok: true, login_email: (res as any).login_email })
   })
