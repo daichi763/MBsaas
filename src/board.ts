@@ -5,7 +5,7 @@
 // - 他社に返すのは掲載内容と掲載企業名のみ（コピー元の自社案件・作成者などの社内情報は返さない）
 // =========================================================
 import { Hono } from 'hono'
-import { loadRoster, createPerson, unusablePasswordHash } from './roster'
+import { loadRoster, createPerson, unusablePasswordHash, ageGroupOf } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
@@ -545,13 +545,11 @@ const PROPOSAL_WARNINGS: Record<string, string> = {
 }
 const MAX_PROPOSALS_PER_THREAD = 50
 
-function ageGroup(dob: string | null | undefined, fallback?: string | null): string {
-  if (dob && /^\d{4}-\d{2}-\d{2}/.test(dob)) {
-    const t = todayJST(); const [ty, tm, td] = t.split('-').map(Number); const [by, bm, bd] = dob.slice(0, 10).split('-').map(Number)
-    let age = ty - by; if (tm < bm || (tm === bm && td < bd)) age--
-    if (age >= 10 && age < 100) return `${Math.floor(age / 10) * 10}代`
-  }
-  return fallback || ''
+// 提案の年代: 生年月日 → 年齢だけの人は推定の年齢（#9710・#9713）→ 手入力の年代 の順（roster.ts の ageGroupOf。スタッフマスタの年代と同じ規則）。
+// 他社連携の行の age_group は、loadRoster が所属元の生年月日・年齢から出した値なので、自社の行の年齢の列は使わない
+function proposalAgeGroup(r: any): string {
+  const entered = r.affiliation_type === 'linked_external' ? undefined : { age: r.age_entered, on: r.age_entered_on }
+  return ageGroupOf(r.date_of_birth, r.age_group, todayJST(), entered)
 }
 // イニシャル: フリガナ（カタカナ/ひらがな）の各語の先頭をローマ字化。取れなければ空（表示側で「候補者No.○」）
 const KANA_ROMA: Record<string, string> = {}
@@ -570,7 +568,7 @@ function parseRows(v: any): any[] { try { const a = JSON.parse(String(v || '[]')
 function buildSnapshot(r: any, proposerName: string) {
   return {
     initials: initials(r.kana),
-    age_group: ageGroup(r.date_of_birth, r.age_group),
+    age_group: proposalAgeGroup(r),
     gender: r.gender || '',
     affiliation: proposerName,
     nearest_station: [r.nearest_station_line, r.nearest_station].filter(Boolean).join(' '),

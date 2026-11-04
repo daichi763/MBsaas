@@ -332,7 +332,8 @@ window.showRosterImport = function () {
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-file-csv text-orange-600 mr-1"></i>CSV でまとめて登録</h3>
     <p class="text-xs text-gray-500 mb-3">テンプレートの CSV に1行1人で記入して選んでください。登録の前に、必須項目の不足・スタッフ番号や社員番号の重複・同じ人と思われる登録済みのスタッフを確かめます。
-      区分は「自社雇用」「協力会社」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。</p>
+      区分は「自社雇用」「協力会社」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。
+      生年月日が分からない人は「年齢」の列に入れてください（取り込んだ日の年齢として登録します。両方あるときは生年月日を使います）。</p>
     ${ROSTER_IMPORT.downloaded ? '' : rosterImportResultHtml()}
     <div class="flex gap-2 flex-wrap items-center mt-3">
       <a class="btn btn-outline text-xs" href="/api/admin/roster/import/template"><i class="fas fa-download"></i>テンプレートをダウンロード</a>
