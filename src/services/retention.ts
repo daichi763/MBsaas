@@ -718,6 +718,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare('DELETE FROM payout_accounts WHERE staff_id = ?').bind(staffId)],
         // Sprint 6（w6-premium-pay）: スタッフの交通費の標準
         [null, db.prepare('DELETE FROM staff_transport_defaults WHERE staff_id = ?').bind(staffId)],
+        // Sprint 15（w15-monthly-billing #9702）: スタッフ別の月額（固定）の請求のルール（そのスタッフのシフトも消すので、行は出なくなる）
+        [null, db.prepare('DELETE FROM monthly_bill_rules WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM profile_change_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM leave_requests WHERE staff_id = ?').bind(staffId)],
         [null, db.prepare('DELETE FROM staff_availability WHERE staff_id = ?').bind(staffId)],
@@ -1163,6 +1165,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'project_cancel_policies', label: '案件のキャンセル規定', table: 'project_cancel_policies', where: OB_CO },
   { target: 'project_price_history', label: '案件の単価の履歴', table: 'project_price_history', where: OB_CO },
   { target: 'rate_rules', label: '単価ルール', table: 'rate_rules', where: OB_CO },
+  { target: 'monthly_bill_rules', label: '月額（固定）の請求のルール', table: 'monthly_bill_rules', where: OB_CO },
   { target: 'slot_patterns', label: '募集枠のパターン', table: 'slot_patterns', where: OB_CO },
   { target: 'shifts', label: 'シフト', table: 'shifts', where: OB_CO },
   { target: 'shift_slot_roles', label: '募集枠の役割', table: 'shift_slot_roles', where: 'slot_id IN (SELECT slot_id FROM shift_slots WHERE company_id = $C)' },

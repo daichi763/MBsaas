@@ -24,6 +24,7 @@ import { notifyShiftStaff } from './lib/staff-pay-notify'
 import { PREMIUM_COLUMNS, PREMIUM_RATE_MAX, attachPremiums, loadPremiumSettings } from './lib/premium-pay'
 import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
+import { MONTHLY_LABEL, MONTHLY_WORK_STATUSES, type MonthlyLine, addMonthsYM, isYM, loadMonthlyLines, monthlyTotal, monthsOverlapping, ruleActiveIn, ymLabel } from './lib/monthly-billing'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -235,6 +236,16 @@ async function loadOverlaps(db: D1Database, companyId: number, rows: any[]) {
   return map
 }
 
+// 行の案件の月額（固定）のルール（#9702。案件ID → ルール）
+async function loadMonthlyRulesFor(db: D1Database, companyId: number, rows: any[]) {
+  const map = new Map<number, { staff_id: number | null; valid_from: string | null; valid_to: string | null }[]>()
+  if (!rows.length) return map
+  const res = (await db.prepare(`SELECT project_id, staff_id, valid_from, valid_to FROM monthly_bill_rules WHERE company_id = ? AND project_id IN ${JSON_IN}`)
+    .bind(companyId, bindJsonArray([...new Set(rows.map(r => Number(r.project_id)))])).all()).results as any[]
+  for (const m of res) map.set(Number(m.project_id), [...(map.get(Number(m.project_id)) || []), m])
+  return map
+}
+
 // 条件に合うシフトを MAX_ROWS + 1 件まで読む（上限を超えたかどうかを呼び出し側で判定できるように1件多く読む）
 // 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤のシフト（#283）
 async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?: number[]) {
@@ -281,8 +292,10 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
   // 締めた期間（#170）も、行の稼働日の範囲で読む
   const dates = rows.map(r => String(r.work_date)).sort()
   // 深夜・時間外・休日の割増（#167）は、未確定の行に計算して付ける（確定済みの行は確定したときの値）
-  const [attTypes, acks, overlapsOf, closings] = await Promise.all([attendanceTypesForRows(db, rows), loadAcks(db, companyId, rows), loadOverlaps(db, companyId, rows),
-    dates.length ? loadClosings(db, companyId, dates[0], dates[dates.length - 1]) : Promise.resolve([] as Closing[]), attachPremiums(db, companyId, rows)])
+  const [attTypes, acks, overlapsOf, closings, monthlyRules] = await Promise.all([attendanceTypesForRows(db, rows), loadAcks(db, companyId, rows), loadOverlaps(db, companyId, rows),
+    dates.length ? loadClosings(db, companyId, dates[0], dates[dates.length - 1]) : Promise.resolve([] as Closing[]), loadMonthlyRulesFor(db, companyId, rows), attachPremiums(db, companyId, rows)])
+  // 月額（固定）で請求する案件（#9702）のシフトは、シフトの請求単価が 0 でも『請求単価未設定』にしない
+  const monthlyCovers = (r: any) => (monthlyRules.get(Number(r.project_id)) || []).some(m => (m.staff_id == null || Number(m.staff_id) === Number(r.staff_id)) && ruleActiveIn(m, String(r.work_date).slice(0, 7)))
   const out = rows.map(r => {
     const proj = { hours_basis: r.hours_basis, time_round_minutes: r.time_round_minutes, pay_time_round: r.pay_time_round, default_break_minutes: r.default_break_minutes }
     const h = workHours(r, proj)
@@ -332,7 +345,7 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     else if (!settled && unsynced && !missing) issues.push('報告が実績に未反映')
     // 手入力の実績のあるシフトで打刻修正を承認した（実績・金額は手入力のまま）。「報告の時刻に戻す」で反映される
     if (r.actual_source === 'manual' && r.manual_correction_at && !sameActual(fromReports, r)) issues.push('手入力後に打刻修正あり')
-    if (!r.unit_price && !r.bill_rate) issues.push('請求単価未設定')
+    if (!r.unit_price && !r.bill_rate && !monthlyCovers(r)) issues.push('請求単価未設定')
     if (qtyFixed(r) && ((r.bill_unit_type === 'hourly' && Number(r.bill_qty) !== h.hours) || (r.pay_unit_type === 'hourly' && Number(r.pay_qty) !== h.pay_hours))) issues.push('手動変更（数量が実働と違う）')
     // 案件の時間の数え方・丸め・休憩を変えた後など、保存した数量・金額が今の計算と違う未確定の過去シフト（#79）。
     // 金額は実績が変わったときにしか計算し直さないため。「再計算」（POST /settlement/recalc）で amountsForActual の値にそろえる
@@ -454,6 +467,24 @@ function summarize(rows: Row[]) {
   return { totals, by_client, by_payee }
 }
 
+// ---------- 月額（固定）の請求（#9702。src/lib/monthly-billing.ts） ----------
+// 精算の期間に計上する月額の行。支払区分で絞ったときは出さない（月額は請求だけで、支払先がない）。
+// スタッフで絞ったときはそのスタッフのスタッフ別の月額だけ。確定で絞ったときは、その月の対象のシフトに確定済みがあるか（ないか）で選ぶ
+async function loadMonthlyForFilters(db: D1Database, companyId: number, f: Filters): Promise<MonthlyLine[]> {
+  if (f.payee_type) return []
+  const lines = await loadMonthlyLines(db, companyId, { months: monthsOverlapping(f.from, f.to), from: f.from, to: f.to, client_id: f.client_id, project_id: f.project_id, staff_id: f.staff_id })
+  return f.settle === 'confirmed' ? lines.filter(l => l.confirmed > 0) : f.settle === 'planned' ? lines.filter(l => l.confirmed === 0) : lines
+}
+// 集計に月額を足す。請求合計（bill）と粗利（月額は支払がないので、そのまま粗利）に入れ、monthly_bill・monthly_count に内訳を出す。
+// シフトの集計（by_client・by_payee）は変えず、月額の行は monthly_lines で返す
+function withMonthly(s: ReturnType<typeof summarize>, lines: MonthlyLine[]) {
+  const m = monthlyTotal(lines)
+  const t = s.totals
+  const totals = { ...t, bill: t.bill + m, monthly_bill: m, monthly_count: lines.length,
+    profit: t.profit == null ? (lines.length && !t.shifts ? m : null) : t.profit + m, profit_bill: t.profit_bill + (t.profit == null && t.shifts ? 0 : m) }
+  return { ...s, totals, monthly_lines: lines }
+}
+
 app.get('/settlement', async (c) => {
   const u = c.get('user')
   const f = parseFilters(k => c.req.query(k))
@@ -462,10 +493,10 @@ app.get('/settlement', async (c) => {
   // 上限は絞り込み（確認事項のみ）の前の件数で判定する
   const truncated = rows.length > MAX_ROWS
   if (truncated) rows = rows.slice(0, MAX_ROWS)
-  const summary = summarize(rows)
+  const [tentative, absent, staffOptions, closings, monthly] = await Promise.all([loadTentativeReported(c.env.DB, u.company_id, f), loadAbsentUnhandled(c.env.DB, u.company_id, f),
+    loadStaffOptions(c.env.DB, u.company_id, f), loadClosings(c.env.DB, u.company_id, f.from, f.to), loadMonthlyForFilters(c.env.DB, u.company_id, f)])
+  const summary = withMonthly(summarize(rows), monthly)
   if (f.issues_only) rows = rows.filter(r => r.issues.length)
-  const [tentative, absent, staffOptions, closings] = await Promise.all([loadTentativeReported(c.env.DB, u.company_id, f), loadAbsentUnhandled(c.env.DB, u.company_id, f),
-    loadStaffOptions(c.env.DB, u.company_id, f), loadClosings(c.env.DB, u.company_id, f.from, f.to)])
   return c.json({ from: f.from, to: f.to, rows, ...summary, truncated, max_rows: MAX_ROWS, tentative_reported: tentative,
     absent_shifts: absent, staff_options: staffOptions, closings, can_reopen: u.role === 'company_admin' })
 })
@@ -790,10 +821,16 @@ app.get('/settlement/export', async (c) => {
   const { by_client, by_payee } = summarize(all)
   const rows = f.issues_only ? all.filter(r => r.issues.length) : all
   let csv = '', name = ''
+  let monthlyCount = 0
   if (kind === 'billing') {
     name = `請求集計_${f.from}_${f.to}.csv`
-    csv = toCsv(['クライアント', '案件', 'シフト数', 'スタッフ数', '時間', '請求基本額', '交通費', '調整', '請求合計', '確定数'],
-      by_client.map(g => [g.client_name, g.project_name, g.shifts, g.staff, g.hours, g.bill_base, g.bill_transport, g.bill_adjust, g.bill_total, g.confirmed]))
+    // 月額（固定。#9702）は、その案件のシフトの行の後に「月額」の行として足す。区分・対象月・月額のスタッフの列は、既存の列の位置を変えないよう末尾に足す
+    const monthly = await loadMonthlyForFilters(c.env.DB, u.company_id, f)
+    monthlyCount = monthly.length
+    csv = toCsv(['クライアント', '案件', 'シフト数', 'スタッフ数', '時間', '請求基本額', '交通費', '調整', '請求合計', '確定数', '区分', '対象月', '月額の対象'],
+      mergeMonthly(by_client, monthly).map(x => x.g
+        ? [x.g.client_name, x.g.project_name, x.g.shifts, x.g.staff, x.g.hours, x.g.bill_base, x.g.bill_transport, x.g.bill_adjust, x.g.bill_total, x.g.confirmed, 'シフト', '', '']
+        : [x.m.client_name, x.m.project_name, '', '', '', x.m.amount, 0, 0, x.m.amount, '', MONTHLY_LABEL, x.m.ym, x.m.staff_id == null ? '案件全体' : x.m.staff_name]))
   } else if (kind === 'payment') {
     // 社員番号は Excel で数値・日付に変わらないよう文字として出す（#571）。スタッフID は既存の列の位置を変えないよう末尾に足す
     name = `支払集計_${f.from}_${f.to}.csv`
@@ -819,13 +856,27 @@ app.get('/settlement/export', async (c) => {
         r.settle_status === 'confirmed' ? '確定' : '未確定', r.issues.join(' / '), r.staff_id,
         minHours(r.premium_night_minutes), minHours(r.premium_overtime_minutes), minHours(r.premium_holiday_minutes), r.premium_night_minutes == null ? '' : r.pay_premium]), { textCols: ['社員番号'] })
   }
-  await logExport(c.env.DB, u, kind, f, kind === 'billing' ? by_client.length : kind === 'payment' ? by_payee.length : rows.length)
+  await logExport(c.env.DB, u, kind, f, kind === 'billing' ? by_client.length + monthlyCount : kind === 'payment' ? by_payee.length : rows.length)
   return new Response(csv, { headers: {
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="settlement.csv"; filename*=UTF-8''${encodeURIComponent(name)}`,
     'Cache-Control': 'no-store',
   } })
 })
+
+// 請求集計（案件ごと）と月額の行を並べる。月額の行は同じ案件のシフトの行の後に、シフトの行のない案件の月額は最後に置く
+function mergeMonthly<G extends { project_id: number }>(groups: G[], lines: MonthlyLine[]): ({ g: G; m?: undefined } | { g?: undefined; m: MonthlyLine })[] {
+  const rest = new Map<number, MonthlyLine[]>()
+  for (const l of lines) rest.set(l.project_id, [...(rest.get(l.project_id) || []), l])
+  const out: ({ g: G; m?: undefined } | { g?: undefined; m: MonthlyLine })[] = []
+  for (const g of groups) {
+    out.push({ g })
+    for (const m of rest.get(Number(g.project_id)) || []) out.push({ m })
+    rest.delete(Number(g.project_id))
+  }
+  for (const l of lines) if (rest.has(l.project_id)) out.push({ m: l })
+  return out
+}
 
 // CSV・明細書を出力した記録（#170。いつ・だれが・どの期間を出したか）。記録に失敗しても出力は止めない
 async function logExport(db: D1Database, u: any, kind: string, f: Filters, rowCount: number, extra: Record<string, any> = {}) {
@@ -1105,7 +1156,8 @@ app.post('/settlement/closings', async (c) => {
   if (unconfirmed) return c.json({ error: `未確定のシフトが ${unconfirmed}件 あります。すべて確定してから締めてください`, unconfirmed }, 409)
   const withIssues = rows.filter(r => r.issues.length).length
   if (withIssues && !b.force) return c.json({ error: `確定後に対応が必要なシフトが ${withIssues}件 あります`, need_force: true, with_issues: withIssues }, 409)
-  const t = summarize(rows).totals
+  // 請求合計には、この期間に計上する月額（固定。#9702）も入れる
+  const t = withMonthly(summarize(rows), await loadMonthlyForFilters(db, u.company_id, f)).totals
   // 同時に締めたときに期間が重ならないよう、重なる締めがないことを条件に入れる
   const r = await db.prepare(`INSERT INTO settlement_closings (company_id, period_from, period_to, shift_count, bill_total, pay_total, note, closed_by, closed_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM settlement_closings WHERE company_id = ? AND reopened_at IS NULL AND period_from <= ? AND period_to >= ?)`)
@@ -1234,17 +1286,21 @@ app.get('/settlement/statement', async (c) => {
   const all = await loadRows(db, u.company_id, f)
   if (all.length > MAX_ROWS) return fail(`対象が${MAX_ROWS}件を超えています。期間を絞ってください`)
   const mine = all.filter(r => (kind === 'billing' ? Number(r.client_id || 0) === clientId : payeeGroupKey(r) === group))
-  if (!mine.length) return fail('この期間に対象のシフトはありません', 404)
+  // 請求明細書には、この期間に計上する月額（固定。#9702）のうち、その月に確定済みのシフトがあるものを載せる
+  const monthly = kind === 'billing' ? (await loadMonthlyLines(db, u.company_id, { months: monthsOverlapping(base.from, base.to), from: base.from, to: base.to, client_id: clientId }))
+    .filter(l => Number(l.client_id || 0) === clientId) : []
+  if (!mine.length && !monthly.length) return fail('この期間に対象のシフトはありません', 404)
   const rows = mine.filter(r => r.settle_status === 'confirmed')
   const unconfirmed = mine.length - rows.length
   const co = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  const first = mine[0]
+  const first = mine[0] || ({ client_name: monthly[0]?.client_name || '', payee_type: '' } as Row)
+  const monthlyOk = monthly.filter(l => l.confirmed > 0)
   // 宛先: クライアント、取引先・他社はその会社、自社給与・日雇い給与・個人事業主はスタッフ本人
   const company = first.payee_type === 'partner' || first.payee_type === 'linked'
   const toName = kind === 'billing' ? `${first.client_name || '（クライアントなし）'} 御中` : company ? `${first.payee_name} 御中` : `${first.staff_name} 様（${PAYEE_LABEL[first.payee_type] || first.payee_type}）`
   const title = kind === 'billing' ? '請求明細書' : '支払明細書'
   const v = (r: Row, k: string) => (r as any)[(kind === 'billing' ? 'bill_' : 'pay_') + k]
-  const sum = (k: string) => rows.reduce((n, r) => n + Number(v(r, k) || 0), 0)
+  const sum = (k: string) => rows.reduce((n, r) => n + Number(v(r, k) || 0), 0) + (k === 'base' || k === 'total' ? monthlyTotal(monthlyOk) : 0)
   const showStaff = kind === 'billing' || first.payee_type === 'partner' || first.payee_type === 'linked'
   // 支払明細書には、割増（#167）のあるときだけ割増の列を出す（合計に含む）
   const showPremium = kind === 'payment' && rows.some(r => r.pay_premium)
@@ -1261,7 +1317,10 @@ app.get('/settlement/statement', async (c) => {
       <td class="n">${h(yenText(v(r, 'base')))}</td><td class="n">${v(r, 'transport') ? h(yenText(v(r, 'transport'))) : ''}</td><td class="n">${v(r, 'adjust') ? h(yenText(v(r, 'adjust'))) : ''}</td>
       ${showPremium ? `<td class="n">${r.pay_premium ? h(yenText(r.pay_premium)) + `<br><small>${h(premiumText(r))}</small>` : ''}</td>` : ''}
       <td class="n">${h(yenText(v(r, 'total')))}</td><td>${h(memo)}</td></tr>`
-  }).join('')
+  }).join('') + monthlyOk.map(l => `<tr><td>${h(ymLabel(l.ym))}</td><td>${h(l.project_name)}</td>${showStaff ? `<td>${h(l.staff_id == null ? '' : l.staff_name)}</td>` : ''}
+      <td></td><td class="n">月額</td><td class="n">${h(yenText(l.amount) + '/月')}</td><td class="n">1</td>
+      <td class="n">${h(yenText(l.amount))}</td><td class="n"></td><td class="n"></td>
+      <td class="n">${h(yenText(l.amount))}</td><td>${h(MONTHLY_LABEL + (l.memo ? '・' + l.memo : ''))}</td></tr>`).join('')
   const cols = (showStaff ? 12 : 11) + (showPremium ? 1 : 0)
   const body = `<h1>${h(title)}</h1>
 <div class="meta"><div><p class="to">${h(toName)}</p><p>対象期間: ${h(base.from)} 〜 ${h(base.to)}</p></div>
@@ -1269,8 +1328,8 @@ app.get('/settlement/statement', async (c) => {
 <p class="total">${kind === 'billing' ? '請求' : '支払'}合計: ${h(yenText(sum('total')))}</p>
 <table><thead><tr><th>日付</th><th>案件・場所</th>${showStaff ? '<th>スタッフ</th>' : ''}<th>時間帯</th><th>時間</th><th>単価</th><th>数量</th><th>基本額</th><th>交通費</th><th>調整</th>${showPremium ? '<th>割増</th>' : ''}<th>合計</th><th>備考</th></tr></thead>
 <tbody>${lines || `<tr><td colspan="${cols}">確定済みのシフトはありません</td></tr>`}</tbody>
-<tfoot><tr><td colspan="${cols - 5 - (showPremium ? 1 : 0)}">合計（${rows.length}件）</td><td class="n">${h(yenText(sum('base')))}</td><td class="n">${h(yenText(sum('transport')))}</td><td class="n">${h(yenText(sum('adjust')))}</td>${showPremium ? `<td class="n">${h(yenText(sum('premium')))}</td>` : ''}<td class="n">${h(yenText(sum('total')))}</td><td></td></tr></tfoot></table>
-<p class="note">確定済みのシフトだけを載せています。${unconfirmed ? `この期間の未確定のシフト ${unconfirmed}件 は含みません。` : ''}金額は精算画面の確定値です（消費税の計算は含みません）。</p>`
+<tfoot><tr><td colspan="${cols - 5 - (showPremium ? 1 : 0)}">合計（${rows.length}件${monthlyOk.length ? `・月額 ${monthlyOk.length}件` : ''}）</td><td class="n">${h(yenText(sum('base')))}</td><td class="n">${h(yenText(sum('transport')))}</td><td class="n">${h(yenText(sum('adjust')))}</td>${showPremium ? `<td class="n">${h(yenText(sum('premium')))}</td>` : ''}<td class="n">${h(yenText(sum('total')))}</td><td></td></tr></tfoot></table>
+<p class="note">確定済みのシフトだけを載せています。${unconfirmed ? `この期間の未確定のシフト ${unconfirmed}件 は含みません。` : ''}${monthlyOk.length || monthly.length ? `月額は、その月の最初のシフトの日がこの期間に入る月の分を、その月に確定済みのシフトがあるときに載せています${monthly.length > monthlyOk.length ? `（確定済みのシフトのない月額 ${monthly.length - monthlyOk.length}件 は含みません）` : ''}。` : ''}金額は精算画面の確定値です（消費税の計算は含みません）。</p>`
   await logExport(db, u, 'statement_' + kind, base, rows.length, kind === 'billing' ? { client_id: clientId } : { group })
   return c.html(statementPage(`${title}_${toName}_${base.from}_${base.to}`, body))
 })
@@ -1331,6 +1390,113 @@ app.post('/settlement/transport-fill', async (c) => {
     "shifts.company_id = ? AND COALESCE(shifts.settle_status,'planned') != 'confirmed' AND COALESCE(shifts.transportation_fee, 0) = 0", [u.company_id])])
     .finally(() => finishLog(op))
   return c.json({ ok: true, updated: changesOf(res.slice(logStmts.length)) })
+})
+
+// ---------- 月額（固定）の請求のルール（#9702。monthly_bill_rules） ----------
+// 精算画面の「単価の設定」で案件を選んで登録する。案件全体（staff_id なし）か、その案件のスタッフ別。
+// 適用する月は YYYY-MM（空欄 = 期限なし）。同じ案件・同じ対象のルールの期間は重ならない。
+// 期限のないルールがあるところへ、より後の適用開始月で登録すると、前のルールをその前の月までにする（金額の改定）。
+// 締めた期間（#170）に計上した月額（その月の最初のシフトの日が締めた期間に入る月）は、変更・削除できない
+const MONTHLY_MEMO_MAX = 200
+const ymOrNull = (v: any): string | null | undefined => (v === undefined ? undefined : v === null || String(v).trim() === '' ? null : String(v).trim())
+// 期間 [from, to]（null = 端なし）の月で、その対象の月額を締めた期間に計上しているものがあれば、その締めを返す
+async function monthlyClosedConflict(db: D1Database, companyId: number, projectId: number, staffId: number | null, from: string | null, to: string | null) {
+  return await db.prepare(`SELECT k.period_from, k.period_to FROM (SELECT MIN(s.work_date) AS first FROM shifts s
+      WHERE s.company_id = ?1 AND s.project_id = ?2 AND (?3 IS NULL OR s.staff_id = ?3) AND s.status IN (${MONTHLY_WORK_STATUSES.map(x => `'${x}'`).join(',')})
+        AND s.work_date >= ?4 AND s.work_date < ?5 GROUP BY substr(s.work_date, 1, 7)) f
+    JOIN settlement_closings k ON k.company_id = ?1 AND k.reopened_at IS NULL AND f.first BETWEEN k.period_from AND k.period_to LIMIT 1`)
+    .bind(companyId, projectId, staffId, from ? from + '-01' : '0000-01-01', to ? addMonthsYM(to, 1) + '-01' : '9999-12-31').first() as { period_from: string; period_to: string } | null
+}
+const monthlyClosedText = (k: { period_from: string; period_to: string }) => `${k.period_from}〜${k.period_to} は精算を締めていて、この期間に計上した月額があるため変更できません。変更するには精算画面で締めを解除するか、適用開始月を締めた後の月にしてください`
+// 金額・期間・備考を確かめる（送られていない項目は cur の値）
+function monthlyValues(b: any, cur: any = {}): { v?: { amount: number; valid_from: string | null; valid_to: string | null; memo: string | null }; error?: string } {
+  const amountRaw = b.amount !== undefined ? b.amount : cur.amount
+  const amount = Number(amountRaw)
+  if (amountRaw === '' || amountRaw == null || !Number.isInteger(amount) || amount < 1 || amount > MONEY_MAX) return { error: `月額は1〜${MONEY_MAX}の整数で入力してください` }
+  const f0 = ymOrNull(b.valid_from), t0 = ymOrNull(b.valid_to)
+  const from = f0 === undefined ? (cur.valid_from ?? null) : f0
+  const to = t0 === undefined ? (cur.valid_to ?? null) : t0
+  if ((from && !isYM(from)) || (to && !isYM(to))) return { error: '適用する月は YYYY-MM の形で入力してください' }
+  if (from && to && from > to) return { error: '適用開始月は終了月以前にしてください' }
+  const memo = b.memo !== undefined ? String(b.memo ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim() : String(cur.memo ?? '')
+  if (memo.length > MONTHLY_MEMO_MAX) return { error: `備考は${MONTHLY_MEMO_MAX}文字以内で入力してください` }
+  return { v: { amount, valid_from: from, valid_to: to, memo: memo || null } }
+}
+const overlapsYM = (a: { valid_from: string | null; valid_to: string | null }, b: { valid_from: string | null; valid_to: string | null }) =>
+  (!a.valid_from || !b.valid_to || a.valid_from <= b.valid_to) && (!b.valid_from || !a.valid_to || b.valid_from <= a.valid_to)
+async function sameScopeRules(db: D1Database, companyId: number, projectId: number, staffId: number | null, exceptId = 0) {
+  return (await db.prepare(`SELECT * FROM monthly_bill_rules WHERE company_id = ? AND project_id = ? AND ${staffId == null ? 'staff_id IS NULL' : 'staff_id = ?'} AND rule_id != ?`)
+    .bind(...[companyId, projectId, ...(staffId == null ? [] : [staffId]), exceptId]).all()).results as any[]
+}
+const ymText = (ym: string | null) => (ym ? `${ym.slice(0, 4)}年${Number(ym.slice(5, 7))}月` : '')
+const periodText = (r: any) => (r.valid_from || r.valid_to ? `${ymText(r.valid_from)}〜${ymText(r.valid_to)}` : '期限なし')
+
+app.get('/settlement/monthly-rules', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const p = await ownProject(db, u.company_id, c.req.query('project_id'))
+  if (!p) return c.json({ error: '案件が見つかりません' }, 404)
+  const [rules, staff] = await db.batch([
+    db.prepare(`SELECT r.rule_id, r.project_id, r.staff_id, r.amount, r.valid_from, r.valid_to, r.memo, r.created_at, r.updated_at, us.name AS staff_name
+      FROM monthly_bill_rules r LEFT JOIN staff_profiles sp ON sp.staff_id = r.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+      WHERE r.company_id = ? AND r.project_id = ? ORDER BY r.staff_id IS NOT NULL, us.name, r.staff_id, COALESCE(r.valid_from, '')`).bind(u.company_id, p.project_id),
+    // スタッフ別の月額の対象の候補: この案件にシフトのあるスタッフ
+    db.prepare(`SELECT DISTINCT s.staff_id, us.name FROM shifts s JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+      WHERE s.company_id = ? AND s.project_id = ? ORDER BY us.name LIMIT 1000`).bind(u.company_id, p.project_id),
+  ])
+  return c.json({ project: { project_id: p.project_id, project_name: p.project_name }, rules: rules.results, staff: staff.results })
+})
+app.post('/settlement/monthly-rules', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const p = await ownProject(db, u.company_id, b.project_id)
+  if (!p) return c.json({ error: '案件が見つかりません' }, 404)
+  const staffId = intOrNull(b.staff_id)
+  if (staffId != null && !(await db.prepare('SELECT 1 FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(staffId, u.company_id).first()))
+    return c.json({ error: 'スタッフが見つかりません' }, 404)
+  const mv = monthlyValues(b); if (mv.error) return c.json({ error: mv.error }, 400)
+  const v = mv.v!
+  // 期間の重なり。期限のない前のルールより後に始まる、期限のないルールのときは、前のルールを前の月までにする（改定）。
+  // 終了月のあるルールで前のルールを切ると、その後の月に月額のない隙間ができるので、改定にはしない（重なりとして断る）
+  const others = (await sameScopeRules(db, u.company_id, p.project_id, staffId)).filter(r => overlapsYM(r, v))
+  const revise = others.length === 1 && !others[0].valid_to && v.valid_from && !v.valid_to && (!others[0].valid_from || others[0].valid_from < v.valid_from) ? others[0] : null
+  if (others.length && !revise) return c.json({ error: `同じ対象の月額の期間（${periodText(others[0])}）と重なっています。前の月額の終了月を入れてから登録してください` }, 409)
+  const closed = await monthlyClosedConflict(db, u.company_id, p.project_id, staffId, v.valid_from, revise ? null : v.valid_to)
+  if (closed) return c.json({ error: monthlyClosedText(closed) }, 409)
+  const now = nowJST()
+  const stmts = [db.prepare(`INSERT INTO monthly_bill_rules (company_id, project_id, staff_id, amount, valid_from, valid_to, memo, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, p.project_id, staffId, v.amount, v.valid_from, v.valid_to, v.memo, u.user_id, now)]
+  if (revise) stmts.unshift(db.prepare('UPDATE monthly_bill_rules SET valid_to = ?, updated_by = ?, updated_at = ? WHERE rule_id = ? AND company_id = ?')
+    .bind(addMonthsYM(v.valid_from!, -1), u.user_id, now, revise.rule_id, u.company_id))
+  const res = await db.batch(stmts)
+  return c.json({ ok: true, rule_id: res[res.length - 1].meta.last_row_id, revised_rule_id: revise ? revise.rule_id : null })
+})
+app.put('/settlement/monthly-rules/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json().catch(() => ({} as any))
+  const r = await db.prepare('SELECT * FROM monthly_bill_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!r) return c.json({ error: '月額が見つかりません' }, 404)
+  const mv = monthlyValues(b, r); if (mv.error) return c.json({ error: mv.error }, 400)
+  const v = mv.v!
+  const staffId = r.staff_id == null ? null : Number(r.staff_id)
+  const clash = (await sameScopeRules(db, u.company_id, r.project_id, staffId, r.rule_id)).find(o => overlapsYM(o, v))
+  if (clash) return c.json({ error: `同じ対象の月額の期間（${periodText(clash)}）と重なっています` }, 409)
+  // 金額・期間を変えるときは、変わる前と後の期間をあわせた範囲で、締めた期間に計上した月額がないかを確かめる（備考だけは変えられる）
+  if (v.amount !== Number(r.amount) || v.valid_from !== (r.valid_from ?? null) || v.valid_to !== (r.valid_to ?? null)) {
+    const lo = !v.valid_from || !r.valid_from ? null : (v.valid_from < r.valid_from ? v.valid_from : r.valid_from)
+    const hi = !v.valid_to || !r.valid_to ? null : (v.valid_to > r.valid_to ? v.valid_to : r.valid_to)
+    const closed = await monthlyClosedConflict(db, u.company_id, r.project_id, staffId, lo, hi)
+    if (closed) return c.json({ error: monthlyClosedText(closed) }, 409)
+  }
+  await db.prepare('UPDATE monthly_bill_rules SET amount = ?, valid_from = ?, valid_to = ?, memo = ?, updated_by = ?, updated_at = ? WHERE rule_id = ? AND company_id = ?')
+    .bind(v.amount, v.valid_from, v.valid_to, v.memo, u.user_id, nowJST(), r.rule_id, u.company_id).run()
+  return c.json({ ok: true })
+})
+app.delete('/settlement/monthly-rules/:id', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const r = await db.prepare('SELECT * FROM monthly_bill_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
+  if (!r) return c.json({ error: '月額が見つかりません' }, 404)
+  const closed = await monthlyClosedConflict(db, u.company_id, r.project_id, r.staff_id == null ? null : Number(r.staff_id), r.valid_from ?? null, r.valid_to ?? null)
+  if (closed) return c.json({ error: monthlyClosedText(closed) }, 409)
+  await db.prepare('DELETE FROM monthly_bill_rules WHERE rule_id = ? AND company_id = ?').bind(r.rule_id, u.company_id).run()
+  return c.json({ ok: true })
 })
 
 export default app
