@@ -1486,7 +1486,8 @@ async function afterShiftDelete(c: any, cid: number, del: ReturnType<typeof shif
   await finishLog(del.op)
   const cancelled = (await db.prepare(`SELECT correction_id FROM attendance_corrections WHERE company_id = ? AND decision_token = ? AND status = 'cancelled'`).bind(cid, del.token).all()).results as any[]
   for (const r of cancelled) await notifyCorrection(c, Number(r.correction_id), 'cancelled')
-  if (del.before) await notifyShiftChanges(c, cid, del.before.filter(s => s.shift_id && deleted.includes(Number(s.shift_id))), []) // 本人に取消を知らせる（#155）
+  const gone = new Set(deleted)
+  if (del.before) await notifyShiftChanges(c, cid, del.before.filter(s => s.shift_id && gone.has(Number(s.shift_id))), []) // 本人に取消を知らせる（#155）
   return { deleted_ids: deleted, skipped, cancelled_corrections: cancelled.length }
 }
 app.post('/shifts/bulk-delete', async (c) => {
@@ -1567,8 +1568,8 @@ app.get('/shifts/:id/band', async (c) => {
   const today = todayOf()
   const scope = (list: any[]) => {
     const del = list.filter(r => deletable.has(Number(r.shift_id))).map(r => Number(r.shift_id))
-    const reasons: Record<string, number> = {}
-    for (const k of plan.skipped) if (list.some(r => Number(r.shift_id) === k.shift_id)) reasons[k.reason] = (reasons[k.reason] || 0) + 1
+    const reasons: Record<string, number> = {}, inList = new Set(list.map(r => Number(r.shift_id)))
+    for (const k of plan.skipped) if (inList.has(k.shift_id)) reasons[k.reason] = (reasons[k.reason] || 0) + 1
     return { shifts: list.length, too_many: del.length > BAND_MAX, deletable: del.length, deletable_ids: del.length > BAND_MAX ? [] : del, kept: list.length - del.length, kept_reasons: reasons,
       first_date: list[0]?.work_date ?? null, last_date: list[list.length - 1]?.work_date ?? null }
   }
