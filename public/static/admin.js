@@ -3967,6 +3967,9 @@ async function loadEmployeeChangeLog(sid, before) {
 delegate('moreEmployeeChangeLog', el => withSubmitLock(el, () => loadEmployeeChangeLog(Number(el.dataset.sid), Number(el.dataset.before))))
 
 window.saveEmployeeRecord = async function (sid) {
+  // 数として読めない値の欄（全角のまま確定してブラウザが空にした欄など）があれば、空で上書きしないよう保存を止める（#9704）
+  const bad = [...$app.querySelectorAll('input[type=number]')].find(x => x.validity && x.validity.badInput)
+  if (bad) { toast('数字は半角で入力し直してください（読み取れない値の欄があります）'); bad.focus(); return }
   const num = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v) }
   const str = (id) => document.getElementById(id).value || null
   const raw = (id) => document.getElementById(id).value
