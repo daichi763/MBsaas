@@ -925,9 +925,10 @@ async function renderPartnerDetail(pid) {
   }
   PARTNERS.detail = data
   const p = data.partner
-  const editNow = PARTNERS.editOnOpen === pid
+  let editNow = PARTNERS.editOnOpen === pid
   PARTNERS.editOnOpen = null
-  if (editNow) { try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした') } }
+  // 選択肢を読めないまま編集欄を出すと、保存で社内担当者が消えるので、読めなければ表示のままにする
+  if (editNow) { try { await loadAssigneeOptions(true) } catch (e) { editNow = false; showApiError(e, '社内担当者の選択肢を読み込めませんでした') } }
   $app.innerHTML = `
     <a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
     <div class="flex items-center gap-2 mt-2 mb-4 flex-wrap">
