@@ -1087,7 +1087,7 @@ function matchesKeyword(q, values) {
   const digits = text.replace(/[^0-9]/g, '')
   return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
 }
-const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限']]
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限'], ['avexempt', 'シフト希望の対象外']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
   noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
@@ -1095,7 +1095,11 @@ const STAFF_STATE_TEST = {
   noapp: s => s.user_role === 'staff' && !s.app_last_used_at,
   // 有効期限が30日以内・切れた書類がある人（#297。doc_expiring はサーバーが数える）
   docexp: s => Number(s.doc_expiring) > 0,
+  // シフト希望（出勤可能日）の回収の対象外にした人（#9907）
+  avexempt: s => Number(s.availability_exempt) === 1,
 }
+// 一覧で選んだスタッフ（まとめての切り替え。#9907）。表示から外れた人は選択も外す
+const STAFF_PICK = new Set()
 // 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
 function staffLastLoginCell(s) {
   if (s.user_role !== 'staff') return '<span class="text-gray-300" title="ログインなし（名簿のみ）">-</span>'
@@ -1192,12 +1196,14 @@ function drawStaffTable(filter) {
         <span class="text-[11px] text-gray-400">（選んだどれかに当たる人）</span>
       </div>
     </div>
+    <div id="staff-bulk" class="hidden fixed bottom-4 inset-x-4 md:left-64 md:right-6 z-20 card p-3 bg-white border border-blue-200 shadow-lg flex items-center gap-2 flex-wrap"></div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
+        <thead><tr><th class="w-8"><input type="checkbox" id="staff-pick-all" class="w-4 h-4 align-middle" data-action="staffPickAll" title="表示中のスタッフをすべて選ぶ" aria-label="表示中のスタッフをすべて選ぶ"></th>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
         <tbody id="staff-rows"></tbody>
       </table>
-    </div>`
+    </div>
+    <div id="staff-bulk-space" class="hidden h-20"></div>`
   let timer = null
   document.getElementById('staff-q').addEventListener('input', ev => {
     clearTimeout(timer)
@@ -1215,10 +1221,12 @@ function drawStaffRows() {
   staffListIds = list.map(s => Number(s.staff_id))
   const total = staffCache.filter(s => !s.merged_into_staff_id && !isRetiredStaff(s)).length
   document.getElementById('staff-count').textContent = `${list.length}名${list.length !== total ? `（在籍 ${total}名）` : ''}`
+  for (const id of [...STAFF_PICK]) if (!staffListIds.includes(id)) STAFF_PICK.delete(id)
   document.getElementById('staff-rows').innerHTML = list.map(s => `
             <tr class="cursor-pointer${isRetiredStaff(s) ? ' opacity-60' : ''}" data-action="openStaffDetail" data-id="${Number(s.staff_id)}">
+              <td class="w-8" data-action="staffPickCell" data-id="${Number(s.staff_id)}"><input type="checkbox" class="w-4 h-4 align-middle" aria-label="${escAttr(s.name + ' を選ぶ')}" ${STAFF_PICK.has(Number(s.staff_id)) ? 'checked' : ''}></td>
               <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${Number(s.availability_exempt) === 1 ? ' <span class="badge badge-gray" title="シフト希望（出勤可能日）の回収の対象外です。未提出の案内・通知を出しません">シフト希望 対象外</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
               <td class="whitespace-nowrap">${staffEmpBadge(s)}</td>
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
@@ -1230,8 +1238,60 @@ function drawStaffRows() {
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${staffLastLoginCell(s)}</td>
-            </tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+            </tr>`).join('') || '<tr><td colspan="14" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+  drawStaffBulkBar()
 }
+// まとめての操作の帯（選んだ人がいるときだけ、画面の下に出す）。今はシフト希望の回収の対象の切り替え（#9907）
+function drawStaffBulkBar() {
+  const bar = document.getElementById('staff-bulk'); if (!bar) return
+  const all = document.getElementById('staff-pick-all')
+  if (all) {
+    all.checked = staffListIds.length > 0 && STAFF_PICK.size === staffListIds.length
+    all.indeterminate = STAFF_PICK.size > 0 && STAFF_PICK.size < staffListIds.length
+  }
+  bar.classList.toggle('hidden', !STAFF_PICK.size)
+  const space = document.getElementById('staff-bulk-space')
+  if (space) space.classList.toggle('hidden', !STAFF_PICK.size)
+  if (!STAFF_PICK.size) { bar.innerHTML = ''; return }
+  bar.innerHTML = `<span class="text-sm font-bold text-gray-800">${STAFF_PICK.size}人を選択中</span>
+    <span class="text-xs text-gray-500 ml-1">シフト希望（出勤可能日）の回収:</span>
+    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="1"><i class="fas fa-calendar-check"></i>対象にする</button>
+    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="0"><i class="fas fa-calendar-xmark"></i>対象外にする</button>
+    <button type="button" class="text-xs text-gray-500 hover:underline ml-auto" data-action="staffPickClear">選択を解除</button>`
+}
+// 行の左端のチェック欄（欄のどこを押しても選ぶ。行を押したときの詳細は開かない）
+delegate('staffPickCell', (el, ev) => {
+  const cb = el.querySelector('input[type="checkbox"]'); if (!cb) return
+  if (ev.target !== cb) cb.checked = !cb.checked
+  const id = Number(el.dataset.id)
+  if (cb.checked) STAFF_PICK.add(id); else STAFF_PICK.delete(id)
+  drawStaffBulkBar()
+})
+delegate('staffPickAll', (el) => {
+  STAFF_PICK.clear()
+  if (el.checked) for (const id of staffListIds) STAFF_PICK.add(id)
+  document.querySelectorAll('#staff-rows [data-action="staffPickCell"] input').forEach(cb => { cb.checked = el.checked })
+  drawStaffBulkBar()
+})
+delegate('staffPickClear', () => {
+  STAFF_PICK.clear()
+  document.querySelectorAll('#staff-rows [data-action="staffPickCell"] input').forEach(cb => { cb.checked = false })
+  drawStaffBulkBar()
+})
+delegate('staffBulkAvTarget', (el) => {
+  const ids = [...STAFF_PICK]; if (!ids.length) return
+  const target = el.dataset.target === '1'
+  if (!confirm(target
+    ? `選んだ ${ids.length}人を、シフト希望（出勤可能日）の回収の対象にします。未提出のときは、アプリに未提出の案内が出て、提出のお願いの通知も届くようになります。よろしいですか？`
+    : `選んだ ${ids.length}人を、シフト希望（出勤可能日）の回収の対象外にします。アプリの未提出の案内・提出のお願いの通知が出なくなり、出勤可能日の画面の未提出の数にも数えません（本人が自分から提出することはできます）。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    let r
+    try { r = (await axios.put('/api/admin/availability/targets', { staff_ids: ids, target })).data } catch (e) { showApiError(e, '変更できませんでした'); return }
+    toast(`${r.staff}人をシフト希望の回収の${target ? '対象' : '対象外'}にしました${r.changed < r.staff ? `（${r.staff - r.changed}人はすでに${target ? '対象' : '対象外'}でした）` : ''}`)
+    STAFF_PICK.clear()
+    renderStaff({ reload: true })
+  })
+})
 delegate('toggleStaffFilter', el => {
   const arr = STAFF_LIST[el.dataset.group]; const k = el.dataset.key
   if (!Array.isArray(arr)) return
@@ -6589,7 +6649,9 @@ document.getElementById('mobile-nav').addEventListener('change', e => { location
 })()
 routes.availability = () => renderAvailabilityBoard()
 const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
-const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み']]
+const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み'], ['exempt', '回収の対象外']]
+// 回収の対象（#9907）: exempt の人（スタッフマスタで「対象外」にした人）は、未提出の数・通知に数えない
+const avbIsTarget = (s) => s.has_login && !s.exempt
 let AVB = { month: null, data: null, filter: 'all' }
 const avbMonthLabel = (m) => `${Number(String(m).slice(0, 4))}年${Number(String(m).slice(5, 7))}月`
 const avbAt = (at) => at ? dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm') : ''
@@ -6614,9 +6676,11 @@ function drawAvailabilityBoard() {
   const d = AVB.data
   const first = dayjs(d.month + '-01')
   const loginStaff = d.staff.filter(s => s.has_login)
-  const unsubmitted = loginStaff.filter(s => !s.submitted_at)
-  const lateCount = d.staff.filter(s => s.late).length
-  const rows = d.staff.filter(s => AVB.filter === 'all' || (AVB.filter === 'submitted' ? !!s.submitted_at : !s.submitted_at && s.has_login))
+  const targets = loginStaff.filter(avbIsTarget)
+  const exemptCount = d.staff.filter(s => s.exempt).length
+  const unsubmitted = targets.filter(s => !s.submitted_at)
+  const lateCount = d.staff.filter(s => s.late && !s.exempt).length
+  const rows = d.staff.filter(s => AVB.filter === 'all' || (AVB.filter === 'submitted' ? !!s.submitted_at : AVB.filter === 'exempt' ? s.exempt : !s.submitted_at && avbIsTarget(s)))
   // △の時間帯・メモ（セルの title に出す）
   const detail = {}
   for (const x of d.details || []) detail[`${x.staff_id}:${Number(String(x.work_date).slice(8, 10))}`] = [x.status === 'partial' ? `${String(x.start_time).slice(0, 5)}〜${String(x.end_time).slice(0, 5)}` : '', x.note || ''].filter(Boolean).join(' ')
@@ -6627,9 +6691,10 @@ function drawAvailabilityBoard() {
   // 日ごとの ○・△ の人数
   const avail = Array(d.days).fill(0)
   for (const s of d.staff) for (let i = 0; i < d.days; i++) if (s.marks[i] === 'o' || s.marks[i] === 'p') avail[i]++
-  const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>'
-    : s.submitted_at ? `<span class="badge ${s.late ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>`
-    : '<span class="badge badge-red">未提出</span>'
+  const exemptBadge = '<span class="badge badge-gray" title="シフト希望の回収の対象外です。未提出の数・通知に数えません（スタッフマスタで変えられます）">対象外</span>'
+  const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>' + (s.exempt ? ' ' + exemptBadge : '')
+    : s.submitted_at ? `<span class="badge ${s.late && !s.exempt ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late && !s.exempt ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>${s.exempt ? ' ' + exemptBadge : ''}`
+    : s.exempt ? exemptBadge : '<span class="badge badge-red">未提出</span>'
   const cell = (s, i) => {
     const m = AVB_MARK[s.marks[i]]
     const hasShift = s.shift_days.includes(String(i + 1).padStart(2, '0'))
@@ -6656,8 +6721,9 @@ function drawAvailabilityBoard() {
       </section>
       <section class="card p-4">
         <h3 class="font-bold text-gray-800 mb-2">提出状況</h3>
-        <p class="text-sm text-gray-700">提出済み <b>${loginStaff.length - unsubmitted.length}</b> / ${loginStaff.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
+        <p class="text-sm text-gray-700">提出済み <b>${targets.length - unsubmitted.length}</b> / ${targets.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
         ${d.staff.length > loginStaff.length ? `<p class="text-xs text-gray-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
+        ${exemptCount ? `<p class="text-xs text-gray-400 mt-1" id="avb-exempt-note">回収の対象外のスタッフ ${exemptCount}人は数えていません（<a href="#staff" class="text-blue-600 hover:underline">スタッフマスタ</a>で、対象・対象外を変えられます）</p>` : ''}
         ${unsubmitted.length ? `<div class="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">${unsubmitted.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>` : ''}
         <div class="flex items-center gap-2 flex-wrap mt-3">
           <button class="btn btn-outline text-sm" data-action="avbRemind" ${unsubmitted.length ? '' : 'disabled'}><i class="fas fa-bell"></i>未提出の人に通知する（${unsubmitted.length}人）</button>
@@ -6673,7 +6739,7 @@ function drawAvailabilityBoard() {
     <div class="card overflow-x-auto">
       <table class="text-xs whitespace-nowrap">
         <thead class="bg-gray-50"><tr><th class="px-2 py-1 text-left sticky left-0 bg-gray-50">スタッフ</th><th class="px-2 py-1 text-left">提出</th>${dayHead}</tr></thead>
-        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr>
+        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr${s.exempt ? ' class="text-gray-500"' : ''}>
           <td class="px-2 py-1 sticky left-0 bg-white"><a href="#staff/${Number(s.staff_id)}" class="text-blue-700 hover:underline">${esc(s.name)}</a></td>
           <td class="px-2 py-1">${statusCell(s)}</td>
           ${Array.from({ length: d.days }, (_, i) => cell(s, i)).join('')}</tr>`).join('') || `<tr><td colspan="${d.days + 2}" class="text-center text-gray-400 py-8">該当するスタッフはいません</td></tr>`}</tbody>
@@ -6693,7 +6759,7 @@ delegate('avbSavePeriod', (el) => withSubmitLock(el, async () => {
   renderAvailabilityBoard(AVB.month)
 }))
 delegate('avbRemind', (el) => {
-  const n = AVB.data.staff.filter(s => s.has_login && !s.submitted_at).length
+  const n = AVB.data.staff.filter(s => avbIsTarget(s) && !s.submitted_at).length
   if (!confirm(`${avbMonthLabel(AVB.month)}の出勤可能日を提出していない ${n}人に、提出のお願いを通知します。よろしいですか？`)) return
   withSubmitLock(el, async () => {
     let r

@@ -2515,10 +2515,12 @@ async function renderAvailability(month) {
 
 function drawAvailability() {
   const d = AV.data
-  const overdue = !d.submitted_at && d.deadline && d.today > d.deadline
+  // 回収の対象外の人（target が false。#9907）には、未提出・締切切れの注意を出さない（自分から提出はできる）
+  const exempt = d.target === false
+  const overdue = !exempt && !d.submitted_at && d.deadline && d.today > d.deadline
   const status = d.submitted_at
-    ? `<span class="badge badge-green">提出済み</span><span class="text-xs text-gray-500">${esc(avFmtAt(d.updated_at || d.submitted_at))}${d.late ? '（締切後に提出）' : ''}</span>`
-    : '<span class="badge badge-yellow">未提出</span>'
+    ? `<span class="badge badge-green">提出済み</span><span class="text-xs text-gray-500">${esc(avFmtAt(d.updated_at || d.submitted_at))}${d.late && !exempt ? '（締切後に提出）' : ''}</span>`
+    : exempt ? '<span class="badge badge-gray">提出は任意です</span>' : '<span class="badge badge-yellow">未提出</span>'
   $app.innerHTML = `
     ${SCHEDULE_BACK}
     <div class="flex gap-1.5 mb-3 overflow-x-auto">${d.months.map(m => `<button class="btn ${m === AV.month ? 'btn-primary' : 'btn-outline'} text-xs shrink-0" data-action="avMonth" data-month="${esc(m)}">${esc(avMonthLabel(m))}</button>`).join('')}</div>
@@ -2638,17 +2640,17 @@ delegate('avSubmit', (el) => withSubmitLock(el, async () => {
   let r
   try { r = (await axios.put('/api/staff/availability', { month: AV.month, days })).data } catch (e) { showApiError(e, '提出できませんでした。電波の良い場所で再度お試しください'); return }
   AV.dirty = false
-  toast(`${avMonthLabel(AV.month)}の出勤可能日を提出しました${r.late ? '（締切後の提出です）' : ''}`)
+  toast(`${avMonthLabel(AV.month)}の出勤可能日を提出しました${r.late && AV.data.target !== false ? '（締切後の提出です）' : ''}`)
   renderAvailability(AV.month)
 }))
 
-// シフト画面の案内: 翌月の出勤可能日が未提出なら知らせる
+// シフト画面の案内: 翌月の出勤可能日が未提出なら知らせる（回収の対象外の人には出さない。#9907）
 async function availabilityBanner() {
   if (!document.getElementById('av-banner')) return
   let d
   try { d = (await axios.get('/api/staff/availability/summary')).data } catch (e) { return }
   const box = document.getElementById('av-banner')
-  if (!box || !d.month || d.submitted) return
+  if (!box || !d.month || d.submitted || d.target === false) return
   box.innerHTML = `<a href="#availability/${esc(d.month)}" class="block bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3 text-sm text-amber-800">
     <i class="fas fa-calendar-check mr-1"></i>${esc(avMonthLabel(d.month))}の出勤可能日がまだ提出されていません${d.deadline ? `（締切 ${esc(fmtDate(d.deadline))}）` : ''}
     <span class="underline font-bold ml-1">提出する</span></a>`

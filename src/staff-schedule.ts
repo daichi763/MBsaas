@@ -6,6 +6,8 @@
 //   提出できるのは今月〜3か月先の月の、今日以降の日だけ（過ぎた日は提出した内容のまま残す）。
 //   提出は月単位の置き換え（今日以降の日は、送られた日の分だけになる）。提出の記録は availability_submissions に残す。
 //   管理者は月ごとに締切と案内文を決め（availability_periods）、提出状況・日付×スタッフの一覧を見て、未提出の人にアプリ内通知を送る。
+//   回収の対象（Sprint 17 #9907）: staff_profiles.availability_exempt = 1 の人（スポットの人など）は回収の対象外。
+//   未提出の案内・提出のお願いの通知を出さず、管理画面の未提出の数にも数えない（本人が自分から提出することはできる）
 //   シフト（shifts）・案件を指定したシフト希望（shift_requests）とは別に持ち、シフトの登録には影響しない。
 //
 // カレンダー（.ics）:
@@ -56,6 +58,11 @@ function submittableMonths(today: string): string[] {
 async function loadPeriod(db: D1Database, companyId: number, month: string) {
   return await db.prepare('SELECT deadline, note, last_reminded_at FROM availability_periods WHERE company_id = ? AND month = ?').bind(companyId, month).first() as any
 }
+// 本人（このログインの会社の行）がシフト希望の回収の対象か
+async function isAvailabilityTarget(db: D1Database, staffId: number): Promise<boolean> {
+  const r = await db.prepare('SELECT availability_exempt FROM staff_profiles WHERE staff_id = ?').bind(staffId).first() as any
+  return !(r && Number(r.availability_exempt) === 1)
+}
 // 締切の後に（最初に）提出したか
 const isLate = (submittedAt: string | null | undefined, deadline: string | null | undefined) => !!(submittedAt && deadline && String(submittedAt).slice(0, 10) > deadline)
 
@@ -78,6 +85,7 @@ scheduleStaffApi.get('/availability', async (c) => {
     WHERE staff_id = ? AND work_date >= ? AND work_date < ? ORDER BY work_date`).bind(u.staff_id, from, to).all()).results
   const sub = await db.prepare('SELECT submitted_at, updated_at FROM availability_submissions WHERE staff_id = ? AND month = ?').bind(u.staff_id, month).first() as any
   const period = await loadPeriod(db, u.company_id, month)
+  const target = await isAvailabilityTarget(db, u.staff_id)
   // 参考: その月に入っているシフト（同じ人のほかの会社の分も。案件名は自社の分だけ）。欠勤は出さない
   const ids = (await personStaffRows(db, u)).map(r => r.staff_id)
   if (!ids.length) ids.push(u.staff_id)
@@ -87,21 +95,23 @@ scheduleStaffApi.get('/availability', async (c) => {
     WHERE s.staff_id IN ${JSON_IN} AND s.work_date >= ? AND s.work_date < ? AND s.status != 'absent' ORDER BY s.work_date, s.start_time`)
     .bind(u.company_id, u.company_id, bindJsonArray(ids), from, to).all()).results
   return c.json({
-    month, months, today, editable: months.includes(month), editable_from: today > from ? today : from,
+    month, months, today, editable: months.includes(month), editable_from: today > from ? today : from, target,
     deadline: period?.deadline || null, note: period?.note || null,
     submitted_at: sub?.submitted_at || null, updated_at: sub?.updated_at || null, late: isLate(sub?.submitted_at, period?.deadline),
     days, shifts,
   })
 })
 
-// シフト画面の案内用: 翌月の提出状況と締切だけ
+// シフト画面の案内用: 翌月の提出状況と締切だけ。target が false（回収の対象外）の人には、画面は未提出の案内を出さない
 scheduleStaffApi.get('/availability/summary', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   if (!u.staff_id) return c.json({ month: null })
   const month = addMonths(todayJST().slice(0, 7), 1)
-  const sub = await db.prepare('SELECT submitted_at FROM availability_submissions WHERE staff_id = ? AND month = ?').bind(u.staff_id, month).first() as any
+  const r = await db.prepare(`SELECT sp.availability_exempt, sub.submitted_at FROM staff_profiles sp
+    LEFT JOIN availability_submissions sub ON sub.staff_id = sp.staff_id AND sub.month = ? WHERE sp.staff_id = ?`).bind(month, u.staff_id).first() as any
+  const target = !(r && Number(r.availability_exempt) === 1)
   const period = await loadPeriod(db, u.company_id, month)
-  return c.json({ month, submitted: !!sub, submitted_at: sub?.submitted_at || null, deadline: period?.deadline || null })
+  return c.json({ month, target, submitted: !!r?.submitted_at, submitted_at: r?.submitted_at || null, deadline: period?.deadline || null })
 })
 
 // 月の出勤可能日をまとめて提出する。days: [{ date, status: ok|partial|ng, start_time, end_time, note }]。
@@ -327,7 +337,8 @@ function availabilityStaffWhere(month: string) {
   return { sql: `sp.company_id = ? AND us.role IN ('staff', 'roster_only') AND ${elig.sql}`, binds: elig.binds }
 }
 
-// 月の提出状況と、日付×スタッフの一覧。marks は日ごとの1文字（o=○ p=△ x=× -=未入力）、shift_days はシフトの入っている日（DD）
+// 月の提出状況と、日付×スタッフの一覧。marks は日ごとの1文字（o=○ p=△ x=× -=未入力）、shift_days はシフトの入っている日（DD）。
+// exempt は回収の対象外（#9907）。対象外の人は一覧の後ろに出す
 scheduleAdminApi.get('/availability', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const today = todayJST()
@@ -338,12 +349,12 @@ scheduleAdminApi.get('/availability', async (c) => {
   const w = availabilityStaffWhere(month)
   const staff = (await db.prepare(`SELECT sp.staff_id, us.name, us.role,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana,
-      COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sub.submitted_at, sub.updated_at
+      COALESCE(sp.affiliation_type, 'own_employee') AS affiliation_type, sub.submitted_at, sub.updated_at, COALESCE(sp.availability_exempt, 0) AS exempt
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     LEFT JOIN availability_submissions sub ON sub.staff_id = sp.staff_id AND sub.month = ?
     WHERE ${w.sql}
-    ORDER BY (sub.submitted_at IS NOT NULL), COALESCE(CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END, us.name), sp.staff_id`).bind(month, u.company_id, ...w.binds).all()).results as any[]
+    ORDER BY COALESCE(sp.availability_exempt, 0), (sub.submitted_at IS NOT NULL), COALESCE(CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END, us.name), sp.staff_id`).bind(month, u.company_id, ...w.binds).all()).results as any[]
   // 日ごとの記号は staff_id ごとに1行にまとめて取る（人数×日数の行を返さない）
   const marks = (await db.prepare(`SELECT staff_id, GROUP_CONCAT(substr(work_date, 9, 2) || status) AS m FROM staff_availability
     WHERE company_id = ? AND work_date >= ? AND work_date < ? GROUP BY staff_id`).bind(u.company_id, from, to).all()).results as any[]
@@ -363,7 +374,7 @@ scheduleAdminApi.get('/availability', async (c) => {
   const blank = '-'.repeat(dayCount)
   return c.json({
     month, today, days: dayCount, deadline: period?.deadline || null, note: period?.note || null, last_reminded_at: period?.last_reminded_at || null,
-    staff: staff.map(s => ({ staff_id: s.staff_id, name: s.name, kana: s.kana, affiliation_type: s.affiliation_type, has_login: s.role === 'staff',
+    staff: staff.map(s => ({ staff_id: s.staff_id, name: s.name, kana: s.kana, affiliation_type: s.affiliation_type, has_login: s.role === 'staff', exempt: Number(s.exempt) === 1,
       submitted_at: s.submitted_at || null, updated_at: s.updated_at || null, late: isLate(s.submitted_at, period?.deadline),
       marks: markOf.get(s.staff_id) || blank, shift_days: shiftOf.get(s.staff_id) || [] })),
     details: details.filter(d => staff.some(s => s.staff_id === d.staff_id)),
@@ -388,7 +399,7 @@ scheduleAdminApi.put('/availability/period', async (c) => {
   return c.json({ ok: true, month: b.month, deadline, note: note || null })
 })
 
-// 未提出の人（ログインできるスタッフ）へアプリ内通知で提出を頼む
+// 未提出の人（ログインできるスタッフ。回収の対象外の人を除く）へアプリ内通知で提出を頼む
 scheduleAdminApi.post('/availability/remind', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))
@@ -410,7 +421,7 @@ scheduleAdminApi.post('/availability/remind', async (c) => {
   try {
     const r = await db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at)
       SELECT sp.company_id, us.user_id, ?, ?, ?, ?, NULL, ? FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-      WHERE ${w.sql} AND us.role = 'staff'
+      WHERE ${w.sql} AND us.role = 'staff' AND COALESCE(sp.availability_exempt, 0) = 0
         AND NOT EXISTS (SELECT 1 FROM availability_submissions sub WHERE sub.staff_id = sp.staff_id AND sub.month = ?)`)
       .bind(AVAILABILITY_REQUEST_KIND, title, body, `#availability/${b.month}`, now, u.company_id, ...w.binds, b.month).run()
     return c.json({ ok: true, sent: r.meta.changes || 0 })
@@ -420,6 +431,28 @@ scheduleAdminApi.post('/availability/remind', async (c) => {
       .bind(period?.last_reminded_at ?? null, u.company_id, b.month, now).run()
     throw e
   }
+})
+
+// シフト希望の回収の対象を、スタッフごとに切り替える（#9907。スタッフ一覧のまとめての切り替え・スタッフ詳細）。
+// body: { staff_ids: number[], target: true（対象にする）| false（対象外にする） }。自社の行だけを変える（統合済みの行は除く）
+const TARGET_MAX_STAFF = 500
+scheduleAdminApi.put('/availability/targets', async (c) => {
+  const u = c.get('user'); const db = c.env.DB
+  const b = await c.req.json().catch(() => ({} as any))
+  if (typeof b.target !== 'boolean') return c.json({ error: '対象にするか、対象外にするかを選んでください' }, 400)
+  if (!Array.isArray(b.staff_ids) || !b.staff_ids.length) return c.json({ error: 'スタッフを選んでください' }, 400)
+  if (b.staff_ids.length > TARGET_MAX_STAFF) return c.json({ error: `一度に変えられるのは${TARGET_MAX_STAFF}人までです` }, 400)
+  const ids = b.staff_ids.map((v: unknown) => toInt(v, 1))
+  if (ids.some((v: number | null) => v == null)) return c.json({ error: 'スタッフの指定が正しくありません' }, 400)
+  const exempt = b.target ? 0 : 1
+  // changed は実際に変わった人数（すでに同じ設定だった人は数えない）。staff は選んだ人のうち自社の行の人数
+  const r = await db.prepare(`UPDATE staff_profiles SET availability_exempt = ?
+    WHERE company_id = ? AND staff_id IN ${JSON_IN} AND merged_into_staff_id IS NULL AND COALESCE(availability_exempt, 0) != ?`)
+    .bind(exempt, u.company_id, bindJsonArray(ids), exempt).run()
+  const found = await db.prepare(`SELECT COUNT(*) AS n FROM staff_profiles WHERE company_id = ? AND staff_id IN ${JSON_IN} AND merged_into_staff_id IS NULL`)
+    .bind(u.company_id, bindJsonArray(ids)).first() as any
+  if (!Number(found?.n)) return c.json({ error: 'スタッフが見つかりません' }, 404)
+  return c.json({ ok: true, target: b.target, staff: Number(found.n), changed: r.meta.changes || 0 })
 })
 
 // ある日の出勤可能日（シフトを組むときの参考。staff_id ごと）
