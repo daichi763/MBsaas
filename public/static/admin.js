@@ -4149,7 +4149,8 @@ async function renderShifts(dateStr) {
 
 window.showAddShift = async function (defaultDate) {
   // スタッフは選択肢用の軽いAPIで取る（#463）。割り当てられる人だけが返る（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職を除く #94）
-  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects')])
+  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects'),
+    window.loadShiftNotifySetting ? loadShiftNotifySetting() : null]) // 通知の会社の設定（「スタッフに通知を送る」の初めの値。#9906）
   const staff = st.staff.filter(s => s.assignable !== 0)
   addShiftProjects = pj.projects.filter(p => p.status === 'active')
   modal(`
@@ -4173,6 +4174,7 @@ window.showAddShift = async function (defaultDate) {
           <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
       <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
+      ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('sh-notify', { note: '登録したシフトを本人に知らせます' }) : ''}
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addShift">登録する</button></div>
     </div>`)
   addShiftFeeHint()
@@ -4276,6 +4278,7 @@ window.addShift = async function (force) {
       status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
       confirm_warnings: true, force: !!force,
       inherit: ADD_SHIFT_PRICE.inherit, ...(price ? { price } : {}),
+      ...(window.shiftNotifyParams ? shiftNotifyParams('sh-notify') : {}), // #9906
     })
   } catch (e) {
     const d = e.response && e.response.data
@@ -4287,7 +4290,8 @@ window.addShift = async function (force) {
 }
 delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
-window.showEditShift = function (shiftId, staffName, status) {
+window.showEditShift = async function (shiftId, staffName, status) {
+  if (window.loadShiftNotifySetting) await loadShiftNotifySetting() // 「スタッフに通知を送る」の初めの値（#9906）
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト操作 — ${esc(staffName)}</h3>
     <div class="space-y-2">
@@ -4296,6 +4300,7 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
+    ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('es-notify', { note: '上の状態の変更と削除のときに本人に知らせます' }) : ''}
     <div id="edit-shift-location"></div>
     <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
     <div id="edit-shift-withdrawals"></div>`)
@@ -4398,12 +4403,14 @@ window.openAttendancePhotos = function (shiftId, staffName) {
 delegate('attendancePhotos', el => openAttendancePhotos(Number(el.dataset.id), el.dataset.name))
 window.updateShift = async function (id, status) {
   // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
-  try { if (!await putShiftStatus(id, status)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
+  const np = window.shiftNotifyParams ? shiftNotifyParams('es-notify') : {} // スタッフに通知を送るか・メッセージ（#9906）
+  try { if (!await putShiftStatus(id, status, undefined, undefined, np)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
   closeModal(); toast('シフトを更新しました'); refreshShiftWeek()
 }
 window.deleteShift = async function (id) {
-  if (!confirm('このシフトを削除しますか？')) return
-  try { await axios.delete('/api/admin/shifts/' + id) } catch (e) { showApiError(e, '削除に失敗しました'); return }
+  const np = window.shiftNotifyParams ? shiftNotifyParams('es-notify') : {} // #9906
+  if (!confirm('このシフトを削除しますか？' + (np.notify === false ? '\n（スタッフに通知は送りません）' : ''))) return
+  try { await axios.delete('/api/admin/shifts/' + id, { data: np }) } catch (e) { showApiError(e, '削除に失敗しました'); return }
   closeModal(); toast('シフトを削除しました'); refreshShiftWeek()
 }
 

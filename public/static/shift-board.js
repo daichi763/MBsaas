@@ -99,6 +99,9 @@
     if (box.dataset.touched !== '1') return msg ? { notify_message: msg } : {}
     return { notify: cb.checked, ...(msg ? { notify_message: msg } : {}) }
   }
+  // 週表示（従来。admin.js のシフト登録・シフト操作）でも同じ欄を使う
+  window.shiftNotifyBoxHtml = notifyBoxHtml
+  window.shiftNotifyParams = notifyParams
   // チェックを切り替えたら、メッセージの欄と「送りません」の説明を出し分ける。文字数を出す。保存のバーの値は BS に残す（描き直しても消えないように）
   document.addEventListener('change', (ev) => {
     const cb = ev.target; if (!cb || !cb.classList || !cb.classList.contains('sn-on')) return
