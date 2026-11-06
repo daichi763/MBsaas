@@ -31,11 +31,11 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 97 本（0001_initial_schema.sql 〜 0097_daily_report_edits.sql）
-- 表: 131・索引: 306・トリガー: 14・ビュー: 0
-- REFERENCES（外部キー）で宣言した関係: 91・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 148
-- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 100・それ以外の主キーの表: 31
-- company_id の列がある表: 105
+- マイグレーション: 100 本（0001_initial_schema.sql 〜 0100_counterparty_assignees.sql）
+- 表: 132・索引: 309・トリガー: 14・ビュー: 0
+- REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 149
+- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 31
+- company_id の列がある表: 106
 <!-- END GENERATED: db-summary -->
 
 ## 2. 全体に共通する決まり
@@ -452,6 +452,7 @@ erDiagram
 
 ```mermaid
 erDiagram
+  users ||--o{ counterparty_assignees : "user_id *"
   projects ||--o{ monthly_bill_rules : "project_id"
   staff_profiles ||--o{ monthly_bill_rules : "staff_id *"
   error_alerts {
@@ -536,7 +537,7 @@ erDiagram
 | `retired_staff_deferred` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 | `r2_pending` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 
-在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:795](../src/services/retention.ts#L795)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
+在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:797](../src/services/retention.ts#L797)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
 
 退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:96](../src/services/retention.ts#L96)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`・`age_entered`・`age_entered_on`
 
@@ -550,7 +551,7 @@ R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE
 本部画面の「解約・データ」から、企業のデータを CSV で書き出し、猶予の日数（既定は [`OFFBOARDING_GRACE_DAYS`](../src/services/retention.ts)）の後に消します（記録は `company_offboardings`）。
 
 <!-- BEGIN GENERATED: db-offboarding -->
-解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（104 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1258](../src/services/retention.ts#L1258)）。
+解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（105 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1262](../src/services/retention.ts#L1262)）。
 
 company_id の列がある表は、すべてどちらかに入っています。
 <!-- END GENERATED: db-offboarding -->
@@ -736,6 +737,7 @@ company_id の列がある表は、すべてどちらかに入っています。
 
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
+| [`counterparty_assignees`](#counterparty_assignees) | クライアント・協力会社の社内担当者 | 1. 社内担当者（#9910。利用者の決定: 主担当1人＋副担当（複数））。 target_type: 'client'（clients.client_id）/ 'partner'（staff_affiliations.affiliati… | 0100 | 解約時: 書き出して削除 |
 | [`error_alerts`](#error_alerts) |  | 直近のエラーが閾値を超えたときに、本部の管理者へ送った通知の記録。 同じ通知を繰り返さないための判定（最後の通知から一定時間は送らない）に使う。created_at から90日で消す | 0093 | 作成から90日で削除（[services/retention.ts:446](../src/services/retention.ts#L446)） |
 | [`error_logs`](#error_logs) | 障害の記録 | サーバーの予期しないエラー（index.tsx の app.onError。利用者には参照番号を返している #230）と、 定期処理（cron）の失敗を1件ずつ残す。書き込みは src/lib/error-log.ts の recordE… | 0093 | 作成から90日で削除（[services/retention.ts:443](../src/services/retention.ts#L443)）<br>解約時: 削除（書き出さない） |
 | [`monthly_bill_rules`](#monthly_bill_rules) | 月額（固定）の請求のルール | 案件の月額の請求。その月に確定・代打のシフトが1件以上ある案件について、月に1回だけ請求する （staff_id のあるルールは、そのスタッフのその案件のシフトが1件以上ある月に1回）。シフトの数・時間には左右されない。 金額はシフトの請… | 0096 | 解約時: 書き出して削除 |
@@ -780,6 +782,9 @@ company_id の列がある表は、すべてどちらかに入っています。
 | `contact_phone` | TEXT | 可 |  |  | 0078 | #558 企業の連絡先（担当者・電話・メール・請求先の住所）。本部の企業詳細で編集する |
 | `contact_email` | TEXT | 可 |  |  | 0078 | #558 企業の連絡先（担当者・電話・メール・請求先の住所）。本部の企業詳細で編集する |
 | `billing_address` | TEXT | 可 |  |  | 0078 | #558 企業の連絡先（担当者・電話・メール・請求先の住所）。本部の企業詳細で編集する |
+| `shift_notify_default` | INTEGER |  | 1 |  | 0098 | シフトの確定・削除の通知の切り替え（利用者の決定 Sprint 17。#9906。w17-shift-notify） 列の追加のみ（既存の表・列・値は変えない）。 1. companies.shift_notify_default: シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るか… |
+| `shift_notify_updated_at` | TEXT | 可 |  |  | 0098 | シフトの確定・削除の通知の切り替え（利用者の決定 Sprint 17。#9906。w17-shift-notify） 列の追加のみ（既存の表・列・値は変えない）。 1. companies.shift_notify_default: シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るか… |
+| `shift_notify_updated_by` | INTEGER | 可 |  |  | 0098 | シフトの確定・削除の通知の切り替え（利用者の決定 Sprint 17。#9906。w17-shift-notify） 列の追加のみ（既存の表・列・値は変えない）。 1. companies.shift_notify_default: シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るか… |
 
 UNIQUE 制約: (company_code)
 
@@ -1623,6 +1628,12 @@ UNIQUE 制約: (company_id, employee_number)・(staff_id)
 | `invoice_number` | TEXT | 可 |  |  | 0095 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9709）。 これまでの contact_name・phone・email は、先方の担当者の名前・電話・メールとして使い続ける（画面の見出しだけ変える） postal_code / address: 会社の郵便番号・住所 com… |
 | `internal_contact_name` | TEXT | 可 |  |  | 0095 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9709）。 これまでの contact_name・phone・email は、先方の担当者の名前・電話・メールとして使い続ける（画面の見出しだけ変える） postal_code / address: 会社の郵便番号・住所 com… |
 | `contact_department` | TEXT | 可 |  |  | 0095 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9709）。 これまでの contact_name・phone・email は、先方の担当者の名前・電話・メールとして使い続ける（画面の見出しだけ変える） postal_code / address: 会社の郵便番号・住所 com… |
+| `partner_kind` | TEXT | 可 |  |  | 0100 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9909）。 partner_kind: 種別（corporation = 法人 / sole_proprietor = 個人事業主 / other = その他。クライアントの client_kind と同じ値） branch_n… |
+| `branch_name` | TEXT | 可 |  |  | 0100 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9909）。 partner_kind: 種別（corporation = 法人 / sole_proprietor = 個人事業主 / other = その他。クライアントの client_kind と同じ値） branch_n… |
+| `department_name` | TEXT | 可 |  |  | 0100 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9909）。 partner_kind: 種別（corporation = 法人 / sole_proprietor = 個人事業主 / other = その他。クライアントの client_kind と同じ値） branch_n… |
+| `company_email` | TEXT | 可 |  |  | 0100 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9909）。 partner_kind: 種別（corporation = 法人 / sole_proprietor = 個人事業主 / other = その他。クライアントの client_kind と同じ値） branch_n… |
+| `payment_rule` | TEXT | 可 |  |  | 0100 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9909）。 partner_kind: 種別（corporation = 法人 / sole_proprietor = 個人事業主 / other = その他。クライアントの client_kind と同じ値） branch_n… |
+| `partner_rating` | INTEGER | 可 |  |  | 0100 | 2. 協力会社（staff_affiliations）の項目をクライアントにそろえる（#9909）。 partner_kind: 種別（corporation = 法人 / sole_proprietor = 個人事業主 / other = その他。クライアントの client_kind と同じ値） branch_n… |
 
 UNIQUE 制約: (company_id, affiliation_name)
 
@@ -1758,6 +1769,7 @@ UNIQUE 制約: (company_id, affiliation_name)
 | `reference_pay_amount` | INTEGER | 可 |  |  | 0090 | 2. スタッフの支払の参考単価（9204）。単位は daily（日給）/ hourly（時給）。計算には使わず、 精算画面の「単価の設定」でスタッフ別の単価を決めるときの目安として出す。他社連携の行（linked_external）では使わない |
 | `age_entered` | INTEGER | 可 |  |  | 0095 | 3. 生年月日が分からないときの年齢（#9710。利用者の決定: 年齢＋入力した日）。 age_entered: 入れた年齢（整数）。age_entered_on: 入力した日（日本時間の 'YYYY-MM-DD'）。 今の年齢は、入れた年齢に入力した日からの満年数を足して推定する（src/roster.ts の e… |
 | `age_entered_on` | TEXT | 可 |  |  | 0095 | 3. 生年月日が分からないときの年齢（#9710。利用者の決定: 年齢＋入力した日）。 age_entered: 入れた年齢（整数）。age_entered_on: 入力した日（日本時間の 'YYYY-MM-DD'）。 今の年齢は、入れた年齢に入力した日からの満年数を足して推定する（src/roster.ts の e… |
+| `availability_exempt` | INTEGER |  | 0 |  | 0099 | シフト希望（出勤可能日）の回収の対象をスタッフごとに選ぶ（利用者の決定 Sprint 17。#9907。w17-shift-collect） 列の追加のみ（既存の表・列・値は変えない）。 staff_profiles.availability_exempt: 1 = 回収の対象外（スポットの人など）。既定の 0 は今… |
 
 UNIQUE 制約: (user_id)
 
@@ -2897,6 +2909,7 @@ UNIQUE 制約: (shift_id, report_type)
 | `actor_user_id` | INTEGER | 可 |  |  |  | 操作したユーザー |
 | `op_key` | TEXT |  |  |  |  | 1回の操作の識別子 |
 | `created_at` | TEXT |  |  |  |  |  |
+| `notify_off` | INTEGER | 可 |  |  | 0098 | シフトの確定・削除の通知の切り替え（利用者の決定 Sprint 17。#9906。w17-shift-notify） 列の追加のみ（既存の表・列・値は変えない）。 1. companies.shift_notify_default: シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るか… |
 
 索引:
 
@@ -4195,6 +4208,30 @@ UNIQUE 制約: (token_hash)
 
 ### その他
 
+<a id="counterparty_assignees"></a>
+#### counterparty_assignees — クライアント・協力会社の社内担当者
+
+> 1. 社内担当者（#9910。利用者の決定: 主担当1人＋副担当（複数））。 target_type: 'client'（clients.client_id）/ 'partner'（staff_affiliations.affiliation_id）。target_id はその ID。 user_id: 担当の自社の管理者のアカウント（users.user_id。company_admin・sales_manager・field_manager・office_staff）。 is_primary: 1 = 主担当（会社ごとに1人まで）/ 0 = 副担当。 アカウントを止めた・消したときも行は残し、画面で「担当から外れた」ことを出す（編集して保存すると外れる）。 これまでの文字の社内担当者（staff_affiliations.internal_contact_name）は消さずに「旧」と…
+
+作成: [migrations/0100_counterparty_assignees.sql:1](../migrations/0100_counterparty_assignees.sql#L1)　／　解約時: 書き出して削除
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `assignee_id` | INTEGER |  |  | PK |  |  |
+| `company_id` | INTEGER |  |  | → companies.company_id |  |  |
+| `target_type` | TEXT |  |  |  |  |  |
+| `target_id` | INTEGER |  |  |  |  |  |
+| `user_id` | INTEGER |  |  | （users） |  |  |
+| `is_primary` | INTEGER |  | 0 |  |  |  |
+| `created_by` | INTEGER | 可 |  |  |  |  |
+| `created_at` | TEXT | 可 |  |  |  |  |
+
+索引:
+
+- `idx_counterparty_assignees_company`: (company_id, user_id)
+- `idx_counterparty_assignees_primary`（UNIQUE）: (target_type, target_id) WHERE `is_primary = 1`
+- `idx_counterparty_assignees_user`（UNIQUE）: (target_type, target_id, user_id)
+
 <a id="error_alerts"></a>
 #### error_alerts
 
@@ -4473,34 +4510,34 @@ END
 <!-- BEGIN GENERATED: db-refs -->
 | 名前 | 位置 |
 |---|---|
-| `OFFBOARDING_TABLES` | [services/retention.ts:1143](../src/services/retention.ts#L1143) |
+| `OFFBOARDING_TABLES` | [services/retention.ts:1145](../src/services/retention.ts#L1145) |
 | `ownStaff` | [lib/tenant.ts:23](../src/lib/tenant.ts#L23) |
 | `ownProject` | [lib/tenant.ts:15](../src/lib/tenant.ts#L15) |
 | `ownShift` | [lib/tenant.ts:31](../src/lib/tenant.ts#L31) |
 | `hqViewAdminGuard` | [hq-support.ts:197](../src/hq-support.ts#L197) |
-| `AFFILIATION_TYPES` | [roster.ts:23](../src/roster.ts#L23) |
+| `AFFILIATION_TYPES` | [roster.ts:24](../src/roster.ts#L24) |
 | `NO_LOGIN_ROLES` | [lib/auth.ts:16](../src/lib/auth.ts#L16) |
-| `nowJST` | [api.ts:134](../src/api.ts#L134) |
+| `nowJST` | [api.ts:135](../src/api.ts#L135) |
 | `loadSessionUser` | [lib/auth.ts:127](../src/lib/auth.ts#L127) |
 | `hashPassword` | [lib/auth.ts:46](../src/lib/auth.ts#L46) |
 | `hashToken` | [lib/auth.ts:38](../src/lib/auth.ts#L38) |
 | `RETURNING_COUNTED` | [services/retention.ts:85](../src/services/retention.ts#L85) |
-| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1258](../src/services/retention.ts#L1258) |
+| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1262](../src/services/retention.ts#L1262) |
 | `RETIRED_TARGETS` | [services/retention.ts:86](../src/services/retention.ts#L86) |
 | `CORE_TABLES` | [scripts/gen-docs.mjs:825](../scripts/gen-docs.mjs#L825) |
 | `TABLE_GROUPS` | [scripts/gen-docs.mjs:810](../scripts/gen-docs.mjs#L810) |
-| `loadRoster` | [roster.ts:447](../src/roster.ts#L447) |
-| `CONSENT_VERSION` | [roster.ts:219](../src/roster.ts#L219) |
-| `SHARED_SCOPE` | [roster.ts:220](../src/roster.ts#L220) |
-| `NOT_SHARED_SCOPE` | [roster.ts:225](../src/roster.ts#L225) |
-| `ROSTER_OWNER_ONLY_FIELDS` | [roster.ts:230](../src/roster.ts#L230) |
-| `ROSTER_SHARED_HOST_FIELDS` | [roster.ts:77](../src/roster.ts#L77) |
+| `loadRoster` | [roster.ts:448](../src/roster.ts#L448) |
+| `CONSENT_VERSION` | [roster.ts:220](../src/roster.ts#L220) |
+| `SHARED_SCOPE` | [roster.ts:221](../src/roster.ts#L221) |
+| `NOT_SHARED_SCOPE` | [roster.ts:226](../src/roster.ts#L226) |
+| `ROSTER_OWNER_ONLY_FIELDS` | [roster.ts:231](../src/roster.ts#L231) |
+| `ROSTER_SHARED_HOST_FIELDS` | [roster.ts:78](../src/roster.ts#L78) |
 | `PUBLIC_COLS` | [board.ts:60](../src/board.ts#L60) |
 | `buildSnapshot` | [board.ts:568](../src/board.ts#L568) |
 | `shapeProposal` | [board.ts:603](../src/board.ts#L603) |
-| `runRetentionCleanup` | [services/retention.ts:942](../src/services/retention.ts#L942) |
+| `runRetentionCleanup` | [services/retention.ts:944](../src/services/retention.ts#L944) |
 | `CRON_JOBS` | [index.tsx:848](../src/index.tsx#L848) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:116](../src/services/retention.ts#L116) |
-| `purgeExpiredTokens` | [services/retention.ts:1084](../src/services/retention.ts#L1084) |
-| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1121](../src/services/retention.ts#L1121) |
+| `purgeExpiredTokens` | [services/retention.ts:1086](../src/services/retention.ts#L1086) |
+| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1123](../src/services/retention.ts#L1123) |
 <!-- END GENERATED: db-refs -->
