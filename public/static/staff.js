@@ -52,7 +52,7 @@ axios.interceptors.response.use(r => r, e => {
     location.reload()
   } else if (r && !SESSION_ENDED && r.status === 401) {
     SESSION_ENDED = true
-    if (ME) alert('ログインの期限が切れました。ログインし直すと、この画面に戻ります。')
+    if (ME) alert('ログインの期限が切れました。再ログインすると、この画面に戻ります。')
     location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
   }
   return Promise.reject(e)
@@ -1383,8 +1383,17 @@ delegate('replyShift', async (el) => {
 // ============ 日報入力 ============
 // 対象のシフトは #report/<shift_id> で指定する。指定がなければ、報告が済んで日報が未提出のシフト → ホームのシフト →
 // 前日以前の未提出の日報（直近7日。/api/staff/pending-daily-reports）の順に選ぶ（#185）
-const REPORT_TEXT_MAX = 2000 // src/lib/validate.ts の REPORT_TEXT_MAX と同じ
-const reportFieldRequired = (f) => !!f && (f.required === true || f.required === 1 || f.required === 'true')
+// 入力欄の描画（REPORT_TEXT_MAX・reportFieldRequired・reportFormBodyHtml）は report-form.js（管理画面の日報テンプレートのプレビューと共用。#9903）
+// 管理者のコメント（#9901）。誰からのコメントかを見出しに出す（名前が引けないときは「管理者」。通知の「コメントした人」と同じ名前）。
+// link: false はボタンの中に出すとき（リンクにしない）、large は日報の詳細
+function reportCommentHtml(text, byName, at, opts) {
+  const o = opts || {}
+  const from = `${byName ? byName + 'さん' : '管理者'}からのコメント`
+  const when = at ? ` <span class="font-normal text-blue-500">${esc(dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm'))}</span>` : ''
+  return `<span class="block bg-blue-50 rounded-lg ${o.large ? 'px-3 py-2 mt-3' : 'px-2.5 py-1.5 mt-2'}" data-report-comment>
+    <span class="block ${o.large ? 'text-xs' : 'text-[11px]'} font-bold text-blue-700 mb-0.5"><i class="fas fa-comment-dots mr-1"></i>${esc(from)}${when}</span>
+    <span class="block ${o.large ? 'text-sm text-blue-900' : 'text-xs text-blue-800'} whitespace-pre-wrap break-words">${o.link === false ? esc(text) : linkify(esc(text))}</span></span>`
+}
 const reportShiftLabel = (x) => `${fmtDate(x.work_date)} ${formatShiftTime(x.start_time, x.end_time)} ${x.project_name || ''}${x.other_company && x.company_name ? '（' + x.company_name + '）' : ''}`
 
 function reportLoadError(e) {
@@ -1434,23 +1443,12 @@ async function renderReport() {
   const tplFields = (data.template && data.template.fields) || []
   // テンプレートの無い案件は「報告内容」の欄だけ（報告用URLの画面・サーバーの検証と同じ）
   const fields = tplFields.length ? tplFields : [{ key: 'free', label: '報告内容', type: 'textarea' }]
-  const numFields = fields.filter(f => f.type === 'number')
-  const textFields = fields.filter(f => f.type !== 'number')
   const isPast = sh.work_date < home.today
   const otherPending = pending.filter(x => x.shift_id !== sh.shift_id)
-  const reqMark = (f) => reportFieldRequired(f) ? '<span class="text-red-500 ml-0.5">*</span>' : ''
   // 選べるシフト: 本日のシフト・前日以前の未提出・開いているシフト（過去の日報から開いた場合）
   const extra = !list.some(x => x.shift_id === sh.shift_id) && !pending.some(x => x.shift_id === sh.shift_id) ? [sh] : []
   const opt = (x, note) => `<option value="${Number(x.shift_id)}" ${x.shift_id === sh.shift_id ? 'selected' : ''}>${esc(reportShiftLabel(x))}${note}</option>`
   const optCount = list.length + pending.length + extra.length
-  // インシデント・クレームの内容（印を付けたら必須。#232）
-  const flagBox = (kind, label, checked) => `
-    <label class="flex items-center gap-3 py-1"><input id="${kind}-flag" type="checkbox" class="w-5 h-5 rounded rpt-flag" data-kind="${kind}" ${checked ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">${label}があった</span></label>
-    <div id="${kind}-note-box" class="${checked ? '' : 'hidden'} mb-2">
-      <label class="text-xs text-gray-500 block mb-1" for="${kind}-note">${label}の内容<span class="text-red-500 ml-0.5">*</span></label>
-      <textarea id="${kind}-note" rows="3" maxlength="${REPORT_TEXT_MAX}" class="inp rpt-autogrow" placeholder="何が・いつ・どう対応したか（例: 14時ごろ、料金の説明についてお客様から苦情。店長に報告し、説明し直して納得いただいた）">${esc(pv(kind + '_note'))}</textarea>
-    </div>`
-
   $app.innerHTML = `
     ${otherPending.length ? `<section class="card p-3 mb-3 bg-amber-50 text-amber-800 text-sm">
       <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>前日以前の未提出の日報が${otherPending.length}件あります</p>
@@ -1468,74 +1466,19 @@ async function renderReport() {
       ${sh.daily_report_required === false ? '<p class="text-xs text-gray-500 bg-gray-50 rounded p-2 mt-2"><i class="fas fa-circle-info mr-1"></i>このシフトは日報の提出は不要です（任意で提出できます）</p>' : ''}
       ${sh.blocked ? `<p class="text-xs text-red-700 bg-red-50 rounded p-2 mt-2"><i class="fas fa-ban mr-1"></i>${esc(sh.blocked)}</p>` : ''}
       ${!tplFields.length ? '<p class="text-xs text-gray-600 bg-gray-50 rounded p-2 mt-2" id="report-no-template"><i class="fas fa-circle-info mr-1"></i>この案件には日報の項目（件数など）が設定されていません。下の「報告内容」に、その日の実績・報告をまとめて書いてください。項目があるはずの場合は、管理者に連絡してください</p>' : ''}
-      ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
-      ${prev && prev.manager_comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2 whitespace-pre-wrap break-words"><i class="fas fa-comment-dots mr-1"></i>${linkify(esc(prev.manager_comment))}</p>` : ''}
+      ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。内容を変えて再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
+      ${prev && prev.manager_comment ? reportCommentHtml(prev.manager_comment, prev.manager_comment_by_name, prev.manager_comment_at) : ''}
     </section>
     <div id="report-handover"></div>
     <form id="report-form" class="space-y-4 pb-8" novalidate>
-      ${numFields.length ? `<section class="card p-4">
-        <div class="flex items-center justify-between mb-3 gap-2">
-          <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
-          <button type="button" class="btn btn-outline text-xs" data-action="reportFillZero">空欄を0にする</button>
-        </div>
-        <p class="text-xs text-gray-400 mb-2">0件の項目も「0」を入力してください。稼働中も −／＋ で数えられます（数えた件数はこの端末に残り、提出するまで消えません）</p>
-        <div class="grid grid-cols-2 gap-3">
-          ${numFields.map(f => `
-            <div>
-              <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
-              <div class="flex items-stretch gap-1">
-                <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="-1" aria-label="${esc(f.label)}を1減らす">−</button>
-                <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold min-w-0 px-1" value="${esc(pv(f.key))}" placeholder="未入力">
-                <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="1" aria-label="${esc(f.label)}を1増やす">＋</button>
-              </div>
-            </div>`).join('')}
-        </div>
-      </section>` : ''}
-      ${textFields.length ? `<section class="card p-4">
-        <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-message text-blue-500 mr-1"></i>報告事項</h3>
-        <div class="space-y-3">
-          ${textFields.map(f => {
-            // テキストの項目は、スマホで書いた内容を見返せるよう、すべて複数行の欄にする（#525）
-            // 文字数の上限はサーバー（reportFieldRulesError）と同じく 1〜REPORT_TEXT_MAX の整数だけを使う
-            const ml = Number(f.maxLength ?? f.max_length)
-            const max = Number.isInteger(ml) && ml >= 1 && ml <= REPORT_TEXT_MAX ? ml : REPORT_TEXT_MAX
-            const v = String(pv(f.key))
-            return `
-            <div>
-              <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
-              <textarea data-key="${esc(f.key)}" data-label="${esc(f.label)}" data-required="${reportFieldRequired(f) ? '1' : ''}" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp rpt-field rpt-autogrow" placeholder="${esc(f.placeholder || f.label + 'を入力')}">${esc(v)}</textarea>
-              <p class="text-[11px] text-gray-400 text-right mt-0.5" data-counter data-max="${max}">残り ${max - v.length} 文字</p>
-            </div>`
-          }).join('')}
-        </div>
-      </section>` : ''}
-      <section class="card p-4">
-        ${flagBox('incident', 'インシデント', prev && prev.incident_flag)}
-        ${flagBox('complaint', 'クレーム', prev && prev.complaint_flag)}
-      </section>
-      <button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base" ${sh.blocked ? 'disabled' : ''}>${prev ? '日報を修正して再提出' : '日報を提出する'}</button>
+      ${reportFormBodyHtml(fields, pv, { incident: prev && prev.incident_flag, complaint: prev && prev.complaint_flag, submitLabel: prev ? '日報を修正して再提出' : '日報を提出する', submitDisabled: !!sh.blocked })}
     </form>`
 
   const sel = document.getElementById('report-shift')
   if (sel) sel.addEventListener('change', () => { location.hash = 'report/' + Number(sel.value) })
   loadReportHandover(sh.shift_id)
   const form = document.getElementById('report-form')
-  // 複数行の欄は入力に合わせて高さを伸ばし、残りの文字数を出す
-  // 非表示の欄（インシデントの内容など）は高さを測れないので、表示したときに測る
-  const grow = (el) => { if (!el.offsetParent) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 480) + 'px' }
-  form.querySelectorAll('.rpt-autogrow').forEach(el => {
-    if (el.value) grow(el)
-    el.addEventListener('input', () => {
-      grow(el)
-      const c = el.nextElementSibling
-      if (c && c.hasAttribute('data-counter')) c.textContent = `残り ${Number(c.dataset.max) - el.value.length} 文字`
-    })
-  })
-  form.querySelectorAll('.rpt-flag').forEach(el => el.addEventListener('change', () => {
-    const box = document.getElementById(el.dataset.kind + '-note-box')
-    box.classList.toggle('hidden', !el.checked)
-    if (el.checked) { const note = document.getElementById(el.dataset.kind + '-note'); grow(note); note.focus() }
-  }))
+  reportFormBind(form)
   // 下書き（#421）: 送っていない入力があれば戻し、入力のたびに保存する
   const draftName = 'report:' + Number(sh.shift_id)
   const draft = draftLoad(draftName)
@@ -1602,20 +1545,6 @@ async function renderReport() {
     })
   })
 }
-// 実績件数の空欄を0で埋める（0件をまとめて入力する）
-delegate('reportFillZero', () => {
-  document.querySelectorAll('#report-form .rpt-num').forEach(el => { if (el.value.trim() === '') el.value = '0' })
-  const form = document.getElementById('report-form'); if (form) form.dispatchEvent(new Event('input'))
-})
-// 稼働中のカウント（#279）。−／＋ で1件ずつ増減し、入力のイベントで下書き（端末）に保存する
-delegate('reportCount', (el) => {
-  const inp = el.parentElement && el.parentElement.querySelector('.rpt-num')
-  if (!inp) return
-  const v = Math.min(99999, Math.max(0, (Math.floor(Number(inp.value)) || 0) + Number(el.dataset.step || 0)))
-  inp.value = String(v)
-  inp.dispatchEvent(new Event('input', { bubbles: true }))
-})
-
 // 店舗の申し送り（#522）。同じ案件のほかのスタッフの直近の日報から、共有の項目（店舗共有事項・好事例など）を出す
 function handoverNotesHtml(d) {
   const labelOf = Object.fromEntries((d.fields || []).map(f => [f.key, f.label]))
@@ -1656,7 +1585,7 @@ async function loadPastReports() {
       </span>
       <span class="block text-xs text-gray-500 mt-0.5">${esc(r.project_name)}${r.other_company ? ` <span class="badge badge-purple">${esc(r.company_name)}</span>` : ''}
         ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレーム</span>' : ''}${r.admin_edited_at ? '<span class="badge badge-purple"><i class="fas fa-user-pen"></i>管理者が修正</span>' : ''}</span>
-      ${r.manager_comment ? `<span class="block text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-1.5 whitespace-pre-wrap"><i class="fas fa-comment-dots mr-1"></i>${esc(r.manager_comment)}</span>` : ''}
+      ${r.manager_comment ? reportCommentHtml(r.manager_comment, r.manager_comment_by_name, r.manager_comment_at, { link: false }) : ''}
     </button>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
   // 日報のコメントの通知から来たときは、その日報を開く（#158）
   const openId = OPEN_PAST_REPORT_ID; OPEN_PAST_REPORT_ID = null
@@ -1731,7 +1660,7 @@ delegate('openPastReport', (el) => {
     ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-gray-500">${esc(f.label)}${mark(f.key)}</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(r.values[f.key])}</p></div>`).join('')}
     ${!shown.length ? '<p class="text-sm text-gray-400 mt-3">入力された項目はありません</p>' : ''}
     ${r.incident_flag || r.complaint_flag ? `<p class="mt-3">${r.incident_flag ? '<span class="badge badge-red">インシデントあり</span> ' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレームあり</span>' : ''}</p>` : ''}
-    ${r.manager_comment ? `<div class="mt-3 bg-blue-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-blue-700 mb-0.5"><i class="fas fa-comment-dots mr-1"></i>管理者のコメント</p><p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${linkify(esc(r.manager_comment))}</p></div>` : ''}
+    ${r.manager_comment ? reportCommentHtml(r.manager_comment, r.manager_comment_by_name, r.manager_comment_at, { large: true }) : ''}
     ${r.shift_id && ae ? '<p class="text-[11px] text-gray-500 mt-4">再提出すると、出し直した内容が正になります（管理者の修正は履歴に残ります）</p>' : ''}
     ${r.shift_id ? `<button class="btn btn-primary w-full ${ae ? 'mt-1' : 'mt-4'}" data-action="editPastReport" data-id="${Number(r.shift_id)}"><i class="fas fa-pen-to-square"></i>内容を直して再提出する</button>` : ''}
     <button class="btn btn-outline w-full ${r.shift_id ? 'mt-2' : 'mt-4'}" onclick="closeModal()">閉じる</button>`)
@@ -1831,7 +1760,7 @@ async function renderPerf(month) {
           <div class="flex flex-wrap gap-1.5 mt-1.5">
             ${keys.map(k => `<span class="badge badge-blue">${esc(labels[k] || k)} ${esc(d.values[k])}</span>`).join('') || '<span class="text-xs text-gray-400">実績なし</span>'}
           </div>
-          ${d.comment ? `<p class="text-xs bg-blue-50 text-blue-800 rounded-lg px-2.5 py-1.5 mt-2 whitespace-pre-wrap"><i class="fas fa-comment-dots mr-1"></i>${linkify(esc(d.comment))}</p>` : ''}
+          ${d.comment ? reportCommentHtml(d.comment, d.comment_by_name, d.comment_at) : ''}
         </div>`
       }).join('')}
     </div>` : ''}`
@@ -2515,10 +2444,12 @@ async function renderAvailability(month) {
 
 function drawAvailability() {
   const d = AV.data
-  const overdue = !d.submitted_at && d.deadline && d.today > d.deadline
+  // 回収の対象外の人（target が false。#9907）には、未提出・締切切れの注意を出さない（自分から提出はできる）
+  const exempt = d.target === false
+  const overdue = !exempt && !d.submitted_at && d.deadline && d.today > d.deadline
   const status = d.submitted_at
-    ? `<span class="badge badge-green">提出済み</span><span class="text-xs text-gray-500">${esc(avFmtAt(d.updated_at || d.submitted_at))}${d.late ? '（締切後に提出）' : ''}</span>`
-    : '<span class="badge badge-yellow">未提出</span>'
+    ? `<span class="badge badge-green">提出済み</span><span class="text-xs text-gray-500">${esc(avFmtAt(d.updated_at || d.submitted_at))}${d.late && !exempt ? '（締切後に提出）' : ''}</span>`
+    : exempt ? '<span class="badge badge-gray">提出は任意です</span>' : '<span class="badge badge-yellow">未提出</span>'
   $app.innerHTML = `
     ${SCHEDULE_BACK}
     <div class="flex gap-1.5 mb-3 overflow-x-auto">${d.months.map(m => `<button class="btn ${m === AV.month ? 'btn-primary' : 'btn-outline'} text-xs shrink-0" data-action="avMonth" data-month="${esc(m)}">${esc(avMonthLabel(m))}</button>`).join('')}</div>
@@ -2638,17 +2569,17 @@ delegate('avSubmit', (el) => withSubmitLock(el, async () => {
   let r
   try { r = (await axios.put('/api/staff/availability', { month: AV.month, days })).data } catch (e) { showApiError(e, '提出できませんでした。電波の良い場所で再度お試しください'); return }
   AV.dirty = false
-  toast(`${avMonthLabel(AV.month)}の出勤可能日を提出しました${r.late ? '（締切後の提出です）' : ''}`)
+  toast(`${avMonthLabel(AV.month)}の出勤可能日を提出しました${r.late && AV.data.target !== false ? '（締切後の提出です）' : ''}`)
   renderAvailability(AV.month)
 }))
 
-// シフト画面の案内: 翌月の出勤可能日が未提出なら知らせる
+// シフト画面の案内: 翌月の出勤可能日が未提出なら知らせる（回収の対象外の人には出さない。#9907）
 async function availabilityBanner() {
   if (!document.getElementById('av-banner')) return
   let d
   try { d = (await axios.get('/api/staff/availability/summary')).data } catch (e) { return }
   const box = document.getElementById('av-banner')
-  if (!box || !d.month || d.submitted) return
+  if (!box || !d.month || d.submitted || d.target === false) return
   box.innerHTML = `<a href="#availability/${esc(d.month)}" class="block bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3 text-sm text-amber-800">
     <i class="fas fa-calendar-check mr-1"></i>${esc(avMonthLabel(d.month))}の出勤可能日がまだ提出されていません${d.deadline ? `（締切 ${esc(fmtDate(d.deadline))}）` : ''}
     <span class="underline font-bold ml-1">提出する</span></a>`

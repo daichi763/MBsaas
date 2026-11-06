@@ -657,6 +657,8 @@ app.get('/staff', async (c) => {
   <div id="modal-root"></div>
   <!-- 案内（チュートリアル。#9712）。staff.js の起動が FosTour.init を呼ぶので staff.js より前に読む（後のスクリプトを待つ間に起動が済むと案内が出ないため） -->
   <script src="/static/tour.js"></script>
+  <!-- 日報の入力欄の描画（管理画面の日報テンプレートのプレビューと共用。#9903） -->
+  <script src="/static/report-form.js"></script>
   <script src="/static/staff.js"></script>
   <script src="/static/staff-attendance.js"></script>
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
@@ -776,6 +778,8 @@ app.get('/admin', async (c) => {
   <script src="/static/hq-support.js"></script>
   <!-- 案内（チュートリアル）・「？」・はじめにやること（#9711）。admin.js の起動が FosTour.init を呼ぶので admin.js より前に読む -->
   <script src="/static/tour.js"></script>
+  <!-- 日報の入力欄の描画（スタッフアプリと共用。日報テンプレートのプレビューに使う。#9903） -->
+  <script src="/static/report-form.js"></script>
   <script src="/static/admin.js"></script>
   <script src="/static/roster.js"></script>
   <script src="/static/roster-chat.js"></script>

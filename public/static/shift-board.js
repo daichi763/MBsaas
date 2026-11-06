@@ -57,6 +57,119 @@
   })
 
   // =========================================================
+  // シフトの確定・削除の通知（#9906。利用者の決定 Sprint 17）
+  // シフトを登録・確定・変更・削除・欠勤にする確認の画面に「スタッフに通知を送る」のチェック（初めは会社の設定）と、
+  // 通知に添えるメッセージ（150文字まで）を出す。確認の画面のない「まとめて保存」は、保存のバーに同じものを置く。
+  // 送る値: notify（true / false）・notify_message。会社の設定を読めなかったときにチェックを触っていなければ notify を送らない（サーバーが会社の設定に従う）
+  // =========================================================
+  const SN_MAX = 150
+  const SN = { def: null, at: 0, data: null }
+  async function loadShiftNotify(force) {
+    if (!force && SN.def !== null && Date.now() - SN.at < MASTER_TTL_MS) return SN.data
+    try {
+      const { data } = await axios.get('/api/admin/settings/shift-notify')
+      SN.def = !!data.enabled; SN.at = Date.now(); SN.data = data
+    } catch (e) { /* 読めないときは、チェックを触らなければ会社の設定に従う */ }
+    return SN.data
+  }
+  window.loadShiftNotifySetting = loadShiftNotify
+  const snDefault = () => SN.def !== false
+  // 確認の画面に入れる欄。init: 前の画面で選んだ値（{ notify, notify_message }）。note: いつ使うかの補足
+  function notifyBoxHtml(id, o) {
+    o = o || {}
+    const init = o.init || {}
+    const on = init.notify === undefined ? snDefault() : !!init.notify
+    const msg = init.notify_message || ''
+    const touched = init.notify !== undefined || SN.def !== null
+    return `<div class="rounded-lg border border-gray-200 bg-gray-50 p-2 mt-3 text-sm" id="${esc(id)}" data-sn-box data-touched="${touched ? 1 : 0}">
+      <label class="flex items-center gap-2 font-bold text-gray-700 cursor-pointer"><input type="checkbox" class="sn-on" ${on ? 'checked' : ''}><i class="fas fa-bell text-blue-500"></i>スタッフに通知を送る</label>
+      <div class="sn-msg-wrap mt-1.5" ${on ? '' : 'hidden'}>
+        <textarea class="inp text-sm sn-msg" rows="2" maxlength="${SN_MAX}" placeholder="スタッフへのメッセージ（任意・${SN_MAX}文字まで。通知に添えます）" aria-label="スタッフへのメッセージ">${esc(msg)}</textarea>
+        <p class="text-[11px] text-gray-400 text-right"><span class="sn-count">${[...msg].length}</span>/${SN_MAX}</p>
+      </div>
+      <p class="sn-off-note text-[11px] text-amber-700 mt-1" ${on ? 'hidden' : ''}>アプリ内の通知・プッシュ・メールのどれも送りません（変更履歴に「通知なし」と残します）</p>
+      <p class="text-[11px] text-gray-400 mt-1">${o.note ? esc(o.note) + '。' : ''}初めのチェックは会社の設定（${SN.def === null ? '確認できませんでした' : SN.def ? '送る' : '送らない'}）です（「その他の操作」→「通知の設定」で変えられます）</p>
+    </div>`
+  }
+  // 送る値。欄がないときは何も足さない（サーバーが会社の設定に従う）
+  function notifyParams(id) {
+    const box = document.getElementById(id); if (!box) return {}
+    const cb = box.querySelector('.sn-on'); if (!cb) return {}
+    const msg = cb.checked ? String((box.querySelector('.sn-msg') || {}).value || '').trim() : ''
+    if (box.dataset.touched !== '1') return msg ? { notify_message: msg } : {}
+    return { notify: cb.checked, ...(msg ? { notify_message: msg } : {}) }
+  }
+  // 週表示（従来。admin.js のシフト登録・シフト操作）でも同じ欄を使う
+  window.shiftNotifyBoxHtml = notifyBoxHtml
+  window.shiftNotifyParams = notifyParams
+  // チェックを切り替えたら、メッセージの欄と「送りません」の説明を出し分ける。文字数を出す。保存のバーの値は BS に残す（描き直しても消えないように）
+  document.addEventListener('change', (ev) => {
+    const cb = ev.target; if (!cb || !cb.classList || !cb.classList.contains('sn-on')) return
+    const box = cb.closest('[data-sn-box]'); if (!box) return
+    box.dataset.touched = '1'
+    const w = box.querySelector('.sn-msg-wrap'); if (w) w.hidden = !cb.checked
+    const n = box.querySelector('.sn-off-note'); if (n) n.hidden = cb.checked
+    if (box.id === 'board-sn-save') BS.saveNotify = cb.checked
+  })
+  document.addEventListener('input', (ev) => {
+    const t = ev.target; if (!t || !t.classList || !t.classList.contains('sn-msg')) return
+    const box = t.closest('[data-sn-box]'); if (!box) return
+    const cnt = box.querySelector('.sn-count'); if (cnt) cnt.textContent = String([...t.value].length)
+    if (box.id === 'board-sn-save') BS.saveNotifyMsg = t.value
+  })
+  // 保存のバーに置く、短い形の欄（まとめて保存・ドラッグの下書き用）
+  function saveNotifyHtml() {
+    const on = BS.saveNotify == null ? snDefault() : !!BS.saveNotify
+    const touched = BS.saveNotify != null || SN.def !== null
+    return `<span id="board-sn-save" data-sn-box data-touched="${touched ? 1 : 0}" class="flex items-center gap-1.5 flex-wrap text-xs" title="保存したときに、追加・移動・外したシフトの本人に通知を送るか（初めは会社の設定）">
+      <label class="flex items-center gap-1 cursor-pointer whitespace-nowrap"><input type="checkbox" class="sn-on" ${on ? 'checked' : ''}><i class="fas fa-bell text-blue-500"></i>スタッフに通知</label>
+      <span class="sn-msg-wrap" ${on ? '' : 'hidden'}><input class="inp text-xs py-1 sn-msg" style="width:13rem" maxlength="${SN_MAX}" placeholder="メッセージ（任意・${SN_MAX}文字まで）" aria-label="スタッフへのメッセージ" value="${esc(BS.saveNotifyMsg || '')}"></span>
+      <span class="sn-off-note text-amber-700 whitespace-nowrap" ${on ? 'hidden' : ''}>通知なしで保存</span>
+    </span>`
+  }
+  function saveNotifyParams() {
+    const on = BS.saveNotify == null ? (SN.def === null ? null : SN.def) : !!BS.saveNotify
+    const msg = on !== false ? String(BS.saveNotifyMsg || '').trim() : ''
+    return { ...(on === null ? {} : { notify: on }), ...(msg ? { notify_message: msg } : {}) }
+  }
+
+  // 会社の設定（会社管理者だけが変えられる）。シフト管理の「その他の操作」と、アカウント設定から開く
+  delegate('shiftNotifySetting', async () => {
+    const d = await loadShiftNotify(true)
+    if (!d) { toast('通知の設定を読み込めませんでした'); return }
+    const opt = (v, label, desc) => `<label class="flex items-start gap-2 p-2 rounded border border-gray-200 ${d.can_edit ? 'cursor-pointer' : 'opacity-70'}">
+        <input type="radio" name="sn-default" value="${v}" class="mt-1" ${d.enabled === (v === '1') ? 'checked' : ''} ${d.can_edit ? '' : 'disabled'}>
+        <span><span class="font-bold">${label}</span><span class="block text-[11px] text-gray-500">${desc}</span></span></label>`
+    modal(`
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-bell text-blue-500 mr-1"></i>シフトの確定・削除の通知（会社の設定）</h3>
+      <p class="text-xs text-gray-500 mb-3">シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るかの初めの値です。操作のたびに、確認の画面の「スタッフに通知を送る」のチェックで変えられます。</p>
+      <div class="space-y-1.5 text-sm">
+        ${opt('1', '通知を送る（おすすめ）', 'チェックが付いた状態で始まります。外したときだけ送りません')}
+        ${opt('0', '通知を送らない', 'チェックが外れた状態で始まります。送りたいときだけチェックを付けます')}
+      </div>
+      <ul class="text-[11px] text-gray-500 mt-3 space-y-0.5 list-disc pl-4">
+        <li>送らないときは、アプリ内の通知・プッシュ・メールのどれも送りません。変更履歴に「通知なし」と残します。</li>
+        <li>日報へのコメント・実績の修正・募集の結果などの通知は、この設定によらず送ります。</li>
+        <li>スタッフ本人がシフトの通知（メール・プッシュ）を止めているときは、送る設定でも届きません。</li>
+      </ul>
+      ${d.updated_at ? `<p class="text-[11px] text-gray-400 mt-2">最終変更 ${esc(typeof dashDateTime === 'function' ? dashDateTime(d.updated_at) : String(d.updated_at).slice(0, 16))} ${esc(d.updated_by_name || '')}</p>` : ''}
+      ${d.can_edit ? '' : '<p class="text-xs text-amber-700 mt-2">この設定は会社管理者だけが変更できます。</p>'}
+      <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}${d.can_edit ? '<button class="btn btn-primary flex-1" data-action="shiftNotifySave">保存する</button>' : ''}</div>`)
+  })
+  delegate('shiftNotifySave', el => withSubmitLock(el, async () => {
+    const v = (document.querySelector('input[name="sn-default"]:checked') || {}).value
+    if (v !== '0' && v !== '1') { toast('どちらかを選んでください'); return }
+    try {
+      const { data } = await axios.put('/api/admin/settings/shift-notify', { enabled: v === '1' })
+      SN.def = !!data.enabled; SN.at = Date.now(); SN.data = data
+      BS.saveNotify = null
+    } catch (e) { toast(errMsg(e, '保存できませんでした')); return }
+    closeModal(); toast(`シフトの確定・削除の通知を「${v === '1' ? '送る' : '送らない'}」にしました`)
+    if (typeof window.onShiftNotifySaved === 'function') window.onShiftNotifySaved(SN.data)
+    if (document.getElementById('board-savebar')) renderShiftBoard() // メニューの表示と保存のバーのチェックを新しい設定にする（下書きは残る）
+  }))
+
+  // =========================================================
   // シフト管理（D 案。Sprint 11 #9401〜#9403）
   // 上: 期間（週・2週間・月）と絞り込み、左: 案件 × 日付の表（月はカレンダー）、右: 選んだマスの案件・単価・候補。
   // 候補を押すと下書きにし（その場では保存しない）、「まとめて保存」で1回で登録する（POST /api/admin/shift-slots/assign-batch）
@@ -80,7 +193,7 @@
   window.renderShiftBoard = async function () {
     loading()
     normalizeRange()
-    const m = await loadMaster()
+    const [m] = await Promise.all([loadMaster(), loadShiftNotify()]) // 通知の会社の設定（確認の画面のチェックの初めの値。#9906）
     const to = dayjs(BS.from).add(BS.days - 1, 'day').format('YYYY-MM-DD')
     const q = new URLSearchParams({ from: BS.from, to })
     if (BS.clientId) q.set('client_id', BS.clientId)
@@ -121,6 +234,7 @@
               ${menuItem('data-action="boardPlacementExport" data-format="csv" title="表示中の期間・絞り込みの配置表（金額なし・未充足の枠と希望（仮）を含む）を CSV で出します"', 'fa-file-csv', '配置表CSV')}
               ${menuItem('data-action="boardPlacementExport" data-format="print" title="クライアント・現場リーダーに渡す配置表を、案件ごとに改ページして印刷します（金額は載せません）"', 'fa-print', '配置表を印刷')}
               ${menuItem(`data-action="openNologinBulk" data-date="${esc(nologinDefaultDate())}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="ログインのないスタッフの報告用URLを、日付ごとにまとめて発行・コピーします（未発行・発行済み・未使用の別も出します）"`, 'fa-link', '報告用URL（ログインなし）')}
+              ${menuItem('data-action="shiftNotifySetting" title="シフトを確定・削除したときに、スタッフに通知を送るかの会社の設定（確認の画面のチェックの初めの値）"', 'fa-bell', `通知の設定（今は「${SN.def === false ? '送らない' : '送る'}」）`)}
               ${menuItem('data-action="boardReloadMaster" title="案件・スタッフ・開催場所の一覧を読み直します"', 'fa-rotate', '一覧を更新')}
               <a class="board-menu-item" href="#shifts/week"><i class="fas fa-table-columns w-4 text-gray-400"></i>週表示（従来）</a>
             </div>
@@ -644,6 +758,7 @@
     const bar = document.getElementById('board-savebar'); if (!bar) return
     bar.hidden = !n
     bar.innerHTML = n ? `<span class="text-sm"><i class="fas fa-pen-to-square mr-1 text-emerald-600"></i>下書き <b>${n}</b>件${parts.length > 1 || moves || removes ? `（${esc(parts.join('・'))}）` : ''}<span class="text-gray-500">まだ保存していません</span>${bad ? `<span class="text-red-600 font-bold ml-1">要確認 ${bad}件</span>` : ''}</span>
+      ${saveNotifyHtml()}
       <button class="btn btn-outline text-xs py-1.5" data-action="boardDiscardDrafts">下書きを取り消す</button>
       <button class="btn board-save-btn text-xs py-1.5" data-action="boardSaveDrafts"><i class="fas fa-floppy-disk"></i>まとめて保存（${n}件）</button>` : ''
   }
@@ -660,6 +775,7 @@
     const ops = only ? only.ops : [...SHIFT_OPS.values()]
     if (!list.length && !ops.length) { toast('保存する下書きがありません'); return }
     SAVING = true
+    const np = saveNotifyParams() // スタッフに通知を送るか・メッセージ（保存のバー。#9906）
     const chunks = []; let cur = [], groups = new Set()
     for (const d of list) {
       const g = d.project_id + '|' + d.role_name
@@ -677,7 +793,7 @@
       for (let i = 0; i < removes.length && !error; i += REMOVE_ITEMS) {
         const part = removes.slice(i, i + REMOVE_ITEMS)
         let data
-        try { data = (await axios.post('/api/admin/shifts/bulk-delete', { shift_ids: part.map(o => o.shift_id) })).data } catch (e) {
+        try { data = (await axios.post('/api/admin/shifts/bulk-delete', { shift_ids: part.map(o => o.shift_id), ...np })).data } catch (e) {
           // すべてほかの画面で削除済み
           if (e.response && e.response.status === 404) { for (const o of part) SHIFT_OPS.delete(o.shift_id); continue }
           error = e.response ? errMsg(e) : NET_ERROR; break
@@ -692,7 +808,7 @@
       for (const o of ops.filter(o => o.kind === 'move')) {
         if (error) break
         try {
-          await axios.post(`/api/admin/shifts/${Number(o.shift_id)}/move`, { slot_role_id: o.to_rid, force: !!o.force })
+          await axios.post(`/api/admin/shifts/${Number(o.shift_id)}/move`, { slot_role_id: o.to_rid, force: !!o.force, ...np })
           SHIFT_OPS.delete(o.shift_id); n.moved++
         } catch (e) {
           if (!e.response) { error = NET_ERROR; break }
@@ -705,7 +821,7 @@
       for (const part of error ? [] : chunks) {
         let data
         try {
-          data = (await axios.post('/api/admin/shift-slots/assign-batch', { items: part.map(d => ({ slot_role_id: d.slot_role_id, staff_id: d.staff_id, status: d.status, inherit: d.inherit !== false, force: !!d.force })) })).data
+          data = (await axios.post('/api/admin/shift-slots/assign-batch', { items: part.map(d => ({ slot_role_id: d.slot_role_id, staff_id: d.staff_id, status: d.status, inherit: d.inherit !== false, force: !!d.force })), ...np })).data
         } catch (e) {
           error = e.response ? errMsg(e) : NET_ERROR
           break
@@ -718,6 +834,8 @@
         }
       }
     } finally { SAVING = false }
+    // 下書きをすべて保存できたら、通知のチェックとメッセージを初めの値に戻す（次の保存に同じメッセージが付かないように）
+    if (!draftTotal()) { BS.saveNotify = null; BS.saveNotifyMsg = '' }
     await renderShiftBoard()
     const okText = saveText(n)
     if (error) { alert(`${okText ? okText + '。' : ''}残りの下書きは保存できませんでした。\n${error}\n\n保存できなかった下書きは表に残っています。`); return }
@@ -901,7 +1019,7 @@
       : av ? `<span class="cand-badge av-${esc(av.status)}">${esc(availText(av))}</span>` : '<span class="cand-badge ok">空き</span>'
     const why = [
       av && (c.busy || drafted || otherDraft) ? esc(availText(av)) : '',
-      !av ? '出勤可能日 未提出' : '',
+      !av && !c.availability_exempt ? '出勤可能日 未提出' : '',
       av && av.note ? esc('メモ: ' + av.note) : '',
       c.last_project_date ? `前回この案件 ${esc(dayjs(c.last_project_date).format('M/D'))}` : '',
       Number(c.run_days) >= 2 ? `<span class="${Number(c.run_days) >= 6 ? 'text-amber-700 font-bold' : ''}">入ると${Number(c.run_days)}連勤</span>` : '',
@@ -991,6 +1109,7 @@
         </div>
         <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="rp-inherit" ${BS.noInherit[role.slot_role_id] ? '' : 'checked'}>前回のシフトの単価を引き継ぐ</label>
         <p class="text-[11px] text-gray-500 bg-gray-50 rounded p-2">選んだ曜日の、同じ時間・役割・開催場所の枠に<b>確定</b>で割り当てます（すぐに登録します）。枠のない日・定員に達した日・割り当て済みの日・重複・NG・退職などの日はスキップし、一覧で表示します。枠がまだない期間は、先に「その他の操作」→「枠の繰り返し登録」で枠を作ってください。</p>
+        ${notifyBoxHtml('rp-notify', { note: '登録したシフトを本人に知らせます（1人に1件にまとめます）' })}
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="boardRepeatRun" data-id="${Number(role.slot_role_id)}"><i class="fas fa-repeat"></i>毎週の割り当てを登録する</button></div>
       </div>`)
   })
@@ -1008,7 +1127,7 @@
     await runJob(newJob({
       title: '毎週の繰り返し登録', url: '/api/admin/shifts/bulk',
       body: { project_id: slot.project_id, staff_ids: [sid], weekdays, date_from: from, date_to: to, start_time: slot.start_time, end_time: slot.end_time,
-        role: role.role_name, site_id: slot.site_id || null, location: slot.location || '', slot_match: true, inherit: document.getElementById('rp-inherit').checked },
+        role: role.role_name, site_id: slot.site_id || null, location: slot.location || '', slot_match: true, inherit: document.getElementById('rp-inherit').checked, ...notifyParams('rp-notify') },
       keys: ['created', 'inherited'],
       summary: (n) => `${n.created}件を枠に割り当てました${n.inherited ? `（${n.inherited}件は前回のシフトの単価を引き継ぎ）` : ''}`, done: () => renderShiftBoard(),
     }))
@@ -1041,10 +1160,12 @@
       <p class="text-xs text-gray-500 mb-3">${esc(slot.site_name || slot.location || '場所未設定')}・役割: ${esc(slot.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}（枠は役割ごとまとめて削除します）</p>
       <div id="del-band" class="mb-3 text-xs text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>同じ帯（まとめて入れた枠）を確かめています…</div>
       <ul id="del-summary" class="text-sm space-y-1.5 mb-3">${deleteSummaryHtml()}</ul>
-      <div class="flex gap-2">
+      ${notifyBoxHtml('del-notify', { note: '「割り当て済みのシフトも削除する」にしたときに、削除したシフトの本人に取り消しを知らせます' })}
+      <div class="flex gap-2 mt-3">
         <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
         <button class="btn btn-danger flex-1" id="del-run" data-action="deleteSlotRun" data-id="${Number(slotId)}"><i class="fas fa-trash"></i>枠を削除する</button>
       </div>`)
+    drawDeleteSummary()
     let band
     try { band = (await axios.get(`/api/admin/shift-slots/${Number(slotId)}/band`)).data } catch (e) { band = { error: errMsg(e, '同じ帯の枠を確かめられませんでした（この枠だけ削除できます）') } }
     if (!DEL || DEL.slotId !== slotId || !document.getElementById('del-band')) return
@@ -1080,6 +1201,7 @@
   delegate('delWithShifts', () => drawDeleteSummary())
   function drawDeleteSummary() {
     const ul = document.getElementById('del-summary'); if (ul) ul.innerHTML = deleteSummaryHtml()
+    const nb = document.getElementById('del-notify'); if (nb) nb.hidden = !delWithShifts() // シフトも削除するときだけ通知の欄を出す（#9906）
     const btn = document.getElementById('del-run')
     const scope = delScope(), s = delScopeData(scope)
     if (btn) btn.innerHTML = `<i class="fas fa-trash"></i>${scope === 'one' ? '枠を削除する' : `${Number(s ? s.slots : 0)}件の枠を削除する`}`
@@ -1144,10 +1266,11 @@
     if (scope !== 'one' && !confirm(`${ids.length}件の枠を削除します。よろしいですか？${withShifts ? '\n割り当て済みのシフトも削除します（報告・確定済みのシフトは残します）。' : ''}`)) return
     const n = { deleted: 0, missing: 0, kept: 0, shifts: 0 }, done = new Set()
     let error = null
+    const np = withShifts ? notifyParams('del-notify') : {} // #9906
     for (let i = 0; i < ids.length; i += BULK_MAX) {
       const part = ids.slice(i, i + BULK_MAX)
       let data
-      try { data = (await axios.post('/api/admin/shift-slots/bulk-delete', { slot_ids: part, force: true, delete_shifts: withShifts })).data } catch (e) {
+      try { data = (await axios.post('/api/admin/shift-slots/bulk-delete', { slot_ids: part, force: true, delete_shifts: withShifts, ...np })).data } catch (e) {
         if (e.response && e.response.status === 404) { n.missing += part.length; continue } // すでに削除済み
         error = slotDeleteError(e); break
       }
@@ -1250,21 +1373,25 @@
       <ul class="text-sm space-y-1.5 mb-3">
         ${people.length ? `<li class="bg-amber-50 text-amber-900 rounded p-2"><b>割り当て済みの人が${people.length}人います</b>（${esc(names)}）。シフトは削除せず、「枠を使わないシフト」として残します（勤怠・日報が付いていることがあるため）。シフトも要らないときは、下の「割り当て済みのシフトも削除する」にチェックを入れてください。</li>`
           : anyShift ? '<li class="text-gray-600">欠勤のシフトは「枠を使わないシフト」として残します。</li>' : '<li class="text-gray-600">割り当て済みの人はいません。</li>'}
-        ${anyShift ? '<li><label class="flex items-start gap-2 text-sm"><input type="checkbox" id="bulk-with-shifts" class="mt-1"><span>割り当て済みのシフトも削除する<span class="block text-[11px] text-gray-500">勤怠・日報の報告・確定済み・締めた期間のシフトは削除せず、「枠を使わないシフト」として残します</span></span></label></li>' : ''}
+        ${anyShift ? '<li><label class="flex items-start gap-2 text-sm"><input type="checkbox" id="bulk-with-shifts" class="mt-1" data-action="bulkWithShifts"><span>割り当て済みのシフトも削除する<span class="block text-[11px] text-gray-500">勤怠・日報の報告・確定済み・締めた期間のシフトは削除せず、「枠を使わないシフト」として残します</span></span></label></li>' : ''}
         ${applicants ? `<li class="bg-red-50 text-red-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
         ${drafts.length ? `<li class="bg-emerald-50 text-emerald-800 rounded p-2">これらの枠の保存していない下書き${drafts.length}件も消えます。</li>` : ''}
       </ul>
-      <div class="flex gap-2">
+      ${anyShift ? notifyBoxHtml('bdel-notify', { note: '削除したシフトの本人に取り消しを知らせます' }) : ''}
+      <div class="flex gap-2 mt-3">
         <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
         <button class="btn btn-danger flex-1" data-action="bulkDeleteRun" data-force="${anyShift ? 1 : 0}"><i class="fas fa-trash"></i>${slots.length}件の枠を削除する</button>
       </div>`)
+    const nb = document.getElementById('bdel-notify'); if (nb) nb.hidden = true // シフトも削除するときだけ出す（#9906）
   }
+  delegate('bulkWithShifts', (el) => { const nb = document.getElementById('bdel-notify'); if (nb) nb.hidden = !el.checked })
   async function bulkDeleteRun(force) {
     const ids = [...BULK]
     if (!ids.length) { closeModal(); return }
     const withShifts = !!(document.getElementById('bulk-with-shifts') || {}).checked // #9705
+    const np = withShifts ? notifyParams('bdel-notify') : {} // #9906
     let data
-    try { data = (await axios.post('/api/admin/shift-slots/bulk-delete', { slot_ids: ids, force: !!force, delete_shifts: withShifts })).data } catch (e) {
+    try { data = (await axios.post('/api/admin/shift-slots/bulk-delete', { slot_ids: ids, force: !!force, delete_shifts: withShifts, ...np })).data } catch (e) {
       const d = e.response && e.response.data
       if (d && d.need_force) {
         // 確かめた後に割り当てが入った。件数を出して、もう一度確かめる
@@ -1321,19 +1448,21 @@
             ${a.staff_reply ? `<span class="block text-[11px] ${a.staff_reply === 'ng' ? 'text-red-600' : 'text-gray-500'}">${esc(replyText(a))}</span>` : ''}</span>
         </label>`).join('')}
       </div>
+      ${notifyBoxHtml('cr-notify', { note: '確定にしたシフトの本人に知らせます' })}
       <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="confirmRequestedRun"><i class="fas fa-check-double"></i>選択したシフトを確定にする</button></div>`)
     document.getElementById('cr-all').addEventListener('change', (ev) => document.querySelectorAll('.cr-check').forEach(el => { el.checked = ev.target.checked }))
   }
   async function confirmRequestedRun() {
     const ids = [...document.querySelectorAll('.cr-check:checked')].map(el => Number(el.value))
     if (!ids.length) { toast('確定にするシフトを選んでください'); return }
+    const np = notifyParams('cr-notify') // #9906
     let data
-    try { data = (await axios.post('/api/admin/shifts/confirm-requested', { shift_ids: ids })).data } catch (e) {
+    try { data = (await axios.post('/api/admin/shifts/confirm-requested', { shift_ids: ids, ...np })).data } catch (e) {
       const d = e.response && e.response.data
       if (!(d && d.need_force)) { toast(errMsg(e)); return }
       const w = d.warnings.slice(0, 15).join('\n') + (d.warnings.length > 15 ? `\nほか${d.warnings.length - 15}件` : '')
       if (!confirm(`確認してください:\n${w}\n\nこのまま確定にしますか？`)) return
-      try { data = (await axios.post('/api/admin/shifts/confirm-requested', { shift_ids: ids, force: true })).data } catch (e2) { toast(errMsg(e2)); return }
+      try { data = (await axios.post('/api/admin/shifts/confirm-requested', { shift_ids: ids, force: true, ...np })).data } catch (e2) { toast(errMsg(e2)); return }
     }
     const skipped = data.skipped || []
     if (skipped.length) {
@@ -1512,6 +1641,7 @@
         <input id="cand-fee" type="number" class="inp text-sm" placeholder="交通費の実費（空欄でスタッフの標準）" title="空欄のときは、スタッフごとの交通費の標準（精算の画面で登録）を入れます。入力すると選んだ全員に同じ金額を入れます">
       </div>
       ${priceBoxHtml('cand', false)}
+      ${notifyBoxHtml('cand-notify', { note: '割り当てた本人に知らせます' })}
       <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="assignFromCandidates" data-slot-role-id="${Number(slotRoleId)}">選択したスタッフを割り当て</button></div>
       <button class="btn btn-outline w-full mt-2 text-sm" data-action="openQuickRegister" data-slot-role-id="${Number(slotRoleId)}"><i class="fas fa-bolt"></i>一覧にいない人を仮登録して割り当て（氏名・電話のみ）</button>`)
     document.getElementById('cand-filter').addEventListener('input', (ev) => {
@@ -1530,7 +1660,7 @@
     if (!ids.length) { toast('スタッフを選択してください'); return }
     const fee = document.getElementById('cand-fee').value
     const px = priceExtra('cand'); if (px.error) { toast(px.error); return }
-    return assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}), ...px.body })
+    return assignStaff(slotRoleId, ids, false, { status: document.getElementById('cand-status').value, ...(fee !== '' ? { transportation_fee: Number(fee) } : {}), ...px.body, ...notifyParams('cand-notify') })
   }
 
   // ---------- 割り当て・一括登録の単価（9306） ----------
@@ -1619,6 +1749,7 @@
       <div class="grid grid-cols-4 gap-1.5 mb-4">
         ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-blue-400' : ''}" data-action="boardShiftStatus" data-id="${id}" data-status="${st}">${ST_LABEL[st]}</button>`).join('')}
       </div>
+      ${a.work_date >= dayjs().format('YYYY-MM-DD') && a.settle_status !== 'confirmed' ? `<div class="-mt-2 mb-3">${notifyBoxHtml('sd-notify', { note: '上の状態の変更と、下の「シフトを削除」のときに本人に知らせます' })}</div>` : ''}
       <div class="rounded-lg border border-gray-100 p-3 mb-3 text-xs space-y-2" id="shift-price-form">
         <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>金額（管理画面のみ表示）</p>
           ${a.price_locked ? `<button class="text-blue-600 hover:underline" data-action="boardResetPrice" data-id="${id}">単価ルールに戻す</button>` : '<span class="text-gray-400">単価ルールから自動計算</span>'}</div>
@@ -1658,8 +1789,9 @@
   // 状態の変更は admin.js の putShiftStatus を使う（入店などの報告があるシフトを欠勤にするときは、報告の時刻を示して確認する。#221）
   window.boardShiftStatus = async function (id, status) {
     let res
+    const np = notifyParams('sd-notify') // スタッフに通知を送るか・メッセージ（#9906）
     try {
-      res = window.putShiftStatus ? await window.putShiftStatus(id, status) : (await axios.put('/api/admin/shifts/' + id, { status })).data
+      res = window.putShiftStatus ? await window.putShiftStatus(id, status, undefined, undefined, np) : (await axios.put('/api/admin/shifts/' + id, { status, ...np })).data
       if (!res) return // 確認でやめた
     } catch (e) { toast(errMsg(e)); return }
     closeModal(); toast('更新しました'); renderShiftBoard()
@@ -1669,23 +1801,30 @@
   // シフトの削除。枠を使わないシフト（常勤の一括登録などで帯で入れたもの）は、帯ごと（今日以降・すべて）も選べる（Sprint 15 #9705）
   window.boardDeleteShift = async function (id) {
     const a = findShift(id)
-    if (a && !a.slot_id) return openShiftBandDelete(id)
-    if (!confirm('このシフトを削除しますか？')) return
-    return deleteOneShift(id)
+    const np = notifyParams('sd-notify') // シフトの詳細で選んだ通知（#9906）
+    if (a && !a.slot_id) return openShiftBandDelete(id, np)
+    if (!confirm('このシフトを削除しますか？' + notifyConfirmText(np))) return
+    return deleteOneShift(id, np)
   }
-  async function deleteOneShift(id) {
-    try { await axios.delete('/api/admin/shifts/' + id); closeModal(); SHIFT_OPS.delete(id); toast('削除しました'); renderShiftBoard() } catch (e) { toast(errMsg(e)) }
+  // confirm() の文に、通知を送るかを添える
+  function notifyConfirmText(np) {
+    if (np.notify === false) return '\n（スタッフに通知は送りません）'
+    if (np.notify === true) return '\n（スタッフに取り消しを通知します' + (np.notify_message ? '。メッセージを添えます' : '') + '）'
+    return ''
+  }
+  async function deleteOneShift(id, np) {
+    try { await axios.delete('/api/admin/shifts/' + id, { data: np || {} }); closeModal(); SHIFT_OPS.delete(id); toast('削除しました'); renderShiftBoard() } catch (e) { toast(errMsg(e)) }
   }
   let SHIFT_BAND = null // 開いている帯の削除（shift_id と GET /shifts/:id/band の結果）
   const SD_LABEL = { one: 'このシフトだけ', today: 'この帯の今日以降のシフト', all: 'この帯のすべてのシフト（過去を含む）' }
-  async function openShiftBandDelete(id) {
+  async function openShiftBandDelete(id, np) {
     const a = findShift(id)
     let band = null
     try { band = (await axios.get(`/api/admin/shifts/${Number(id)}/band`)).data } catch (e) { /* 帯を確かめられないときは1件だけ */ }
     const all = band && band.scopes && band.scopes.all, today = band && band.scopes && band.scopes.today
     if (!all || all.shifts <= 1) {
-      if (!confirm('このシフトを削除しますか？')) return
-      return deleteOneShift(id)
+      if (!confirm('このシフトを削除しますか？' + notifyConfirmText(np || {}))) return
+      return deleteOneShift(id, np)
     }
     SHIFT_BAND = { id, band }
     const kept = (s) => s.kept ? `<span class="block text-[11px] text-amber-700">${Number(s.kept)}件は削除できないため残します（${esc(Object.entries(s.kept_reasons || {}).map(([r, n]) => `${r} ${n}件`).join('、'))}）</span>` : ''
@@ -1699,8 +1838,9 @@
       <p class="text-[11px] text-gray-500 mb-3">帯: 同じスタッフ・案件・開催場所・時間・役割の、枠を使わないシフト（常勤の一括登録などでまとめて入れたもの）</p>
       <p class="text-xs font-bold text-gray-600 mb-1">削除する範囲</p>
       <div class="space-y-1.5 mb-3">${opt('one', null)}${today && today.shifts ? opt('today', today) : ''}${opt('all', all)}</div>
-      <p class="text-[11px] text-gray-500 mb-3">勤怠・日報の報告があるシフト・実績が確定済みのシフト・精算を締めた期間のシフトは削除しません（欠勤などに変更してください）。削除したシフトの本人には取り消しを知らせます</p>
-      <div class="flex gap-2">
+      <p class="text-[11px] text-gray-500">勤怠・日報の報告があるシフト・実績が確定済みのシフト・精算を締めた期間のシフトは削除しません（欠勤などに変更してください）</p>
+      ${notifyBoxHtml('sdb-notify', { init: np, note: '削除したシフトの本人に取り消しを知らせます' })}
+      <div class="flex gap-2 mt-3">
         <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
         <button class="btn btn-danger flex-1" data-action="shiftBandDeleteRun" data-id="${Number(id)}"><i class="fas fa-trash"></i>削除する</button>
       </div>`)
@@ -1708,16 +1848,17 @@
   async function shiftBandDeleteRun(id) {
     if (!SHIFT_BAND || SHIFT_BAND.id !== id) return
     const scope = ((document.querySelector('input[name="sd-scope"]:checked') || {}).value) || 'one'
-    if (scope === 'one') return deleteOneShift(id)
+    const np = notifyParams('sdb-notify') // #9906
+    if (scope === 'one') return deleteOneShift(id, np)
     const s = SHIFT_BAND.band.scopes[scope]
     const ids = s.deletable_ids || []
     if (!ids.length) { toast('削除できるシフトがありません（報告・確定済みなどのため）'); return }
-    if (!confirm(`${ids.length}件のシフトを削除します。よろしいですか？`)) return
+    if (!confirm(`${ids.length}件のシフトを削除します。よろしいですか？` + notifyConfirmText(np))) return
     let deleted = 0, error = null
     const skipped = []
     for (let i = 0; i < ids.length; i += 200) {
       let data
-      try { data = (await axios.post('/api/admin/shifts/bulk-delete', { shift_ids: ids.slice(i, i + 200) })).data } catch (e) {
+      try { data = (await axios.post('/api/admin/shifts/bulk-delete', { shift_ids: ids.slice(i, i + 200), ...np })).data } catch (e) {
         if (e.response && e.response.status === 404) continue // すでに削除済み
         error = errMsg(e, '通信できなかったため、シフトを削除できませんでした'); break
       }
@@ -1911,6 +2052,11 @@
         <input id="slot-memo" class="inp text-sm" placeholder="メモ（任意）" value="${esc(s.memo || '')}">
       </div>`
   }
+  // 枠に割り当て済みのシフトの数（表に出ていない枠は分からないので、通知の欄を出すように 1 とみなす）
+  function slotAssignedCount(slotId) {
+    const s = BOARD && BOARD.slots.find(x => x.slot_id === Number(slotId))
+    return s ? s.roles.reduce((n, r) => n + r.assigned.length, 0) : 1
+  }
   window.openSlotModal = async function (preset, slotId) {
     const m = await loadMaster()
     let s = { ...(preset || {}) }, roles = [{ role_name: '販売', headcount: 1 }]
@@ -1920,7 +2066,8 @@
       <h3 class="font-bold text-lg mb-3">${slotId ? '枠を編集' : '枠を作成'}</h3>
       ${slotFormHtml(m, s, roles)}
       ${slotId ? `<label class="text-sm text-gray-600 block mt-3">日付<input id="slot-date" type="date" class="inp" value="${esc(s.work_date)}"></label>
-        <p class="text-[11px] text-gray-400 mt-1">日付・時間・場所・休憩を変えると、割り当て済みのシフトにも反映し、単価を再計算します（休憩をシフトごとに直したもの、手動で変えた金額はそのまま。勤怠・日報の報告があるシフトと確定済みのシフトは日時を動かしません）</p>` :
+        <p class="text-[11px] text-gray-400 mt-1">日付・時間・場所・休憩を変えると、割り当て済みのシフトにも反映し、単価を再計算します（休憩をシフトごとに直したもの、手動で変えた金額はそのまま。勤怠・日報の報告があるシフトと確定済みのシフトは日時を動かしません）</p>
+        ${slotAssignedCount(slotId) ? notifyBoxHtml('slot-notify', { note: '日付・時間・場所を変えたときに、割り当て済みの人に変更を知らせます' }) : ''}` :
         `<div class="mt-3"><p class="text-sm text-gray-600 mb-1">日付 *（複数選択できます）</p>
           <div class="flex gap-2"><input id="slot-date-input" type="date" class="inp" value="${esc(s.work_date || BS.from)}" onchange="addSlotDate()"><button id="slot-date-add" class="btn btn-outline shrink-0 whitespace-nowrap" onclick="addSlotDate()">日付を追加</button></div>
           <p class="text-[11px] text-gray-400 mt-1">日付を選ぶと追加されます。同じ内容の枠を選んだ日付すべてに作成します</p>
@@ -1969,7 +2116,7 @@
     }
     const orig = document.getElementById('slot-site').dataset.orig
     if (orig && !b.site_id && !confirm('開催場所を外します。開催場所の単価ルール（交通費の定額・場所手当など）が当たらなくなり、割り当て済みのシフトの金額が変わることがあります。保存しますか？')) return
-    const body = { ...b, work_date: document.getElementById('slot-date').value }
+    const body = { ...b, work_date: document.getElementById('slot-date').value, ...notifyParams('slot-notify') }
     try {
       let res
       try { res = await putSlot(slotId, body) } catch (e) {
@@ -2101,6 +2248,7 @@
         </div>
         <datalist id="role-suggest"><option value="販売スタッフ"><option value="リーダー"></datalist>
         ${priceBoxHtml('bk', true)}
+        ${notifyBoxHtml('bk-notify', { note: '登録したシフトを本人に知らせます（1人に1件にまとめます）' })}
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveBulk">登録する</button></div>
       </div>`)
     // 選んだスタッフの単価の見込み（開始日の時点。直近のシフトからの引き継ぎ。9306）
@@ -2120,7 +2268,7 @@
     const body = {
       project_id: Number(v('bk-project')), role: v('bk-role'), staff_ids: [...document.querySelectorAll('.bk-staff:checked')].map(el => Number(el.value)),
       weekdays: [...document.querySelectorAll('.bk-wd:checked')].map(el => Number(el.value)), date_from: v('bk-from'), date_to: v('bk-to'),
-      start_time: v('bk-start'), end_time: v('bk-end'), transportation_fee: v('bk-fee'), ...px.body,
+      start_time: v('bk-start'), end_time: v('bk-end'), transportation_fee: v('bk-fee'), ...px.body, ...notifyParams('bk-notify'),
     }
     await runJob(newJob({
       title: '常勤の一括登録', url: '/api/admin/shifts/bulk', body, keys: ['created', 'inherited'],
@@ -2182,6 +2330,7 @@
       <label class="flex items-center gap-2 text-sm mt-3"><input type="checkbox" id="cp-assign" checked>割り当て（確定・代打）もコピーする</label>
       <p class="text-[11px] text-gray-400 mt-1">退職・NG のスタッフと、同じ時間帯に別のシフトがあるスタッフはスキップします。希望・欠勤はコピーしません。コピー済みの枠・シフトは二重に作りません</p>
       <div id="cp-preview" class="mt-3"></div>
+      ${notifyBoxHtml('cp-notify', { note: '割り当てもコピーしたときに、コピーしたシフトを本人に知らせます' })}
       <button id="cp-check" class="btn btn-outline w-full mt-3" data-action="copyPreview">コピーする内容を確認</button>
       <div class="flex gap-2 mt-2">${MODAL_CANCEL_BTN}<button id="cp-run" class="btn btn-primary flex-1" data-action="copyRun" disabled>コピーする</button></div>`)
     document.getElementById('cp-days').addEventListener('change', () => {
@@ -2211,7 +2360,7 @@
     const r = copyRange(); if (!r || r.overlap) return
     if (r.shift && !confirm(`コピー先の曜日が${r.shift}日ずれます。このままコピーしますか？`)) return
     await runJob(newJob({
-      title: '枠とシフトのコピー', url: '/api/admin/shifts/copy-week', body: { ...r.body, force: !!r.shift }, keys: ['slots', 'slots_reused', 'shifts', 'already'],
+      title: '枠とシフトのコピー', url: '/api/admin/shifts/copy-week', body: { ...r.body, force: !!r.shift, ...notifyParams('cp-notify') }, keys: ['slots', 'slots_reused', 'shifts', 'already'],
       summary: (n) => `枠${n.slots}件を作成${n.slots_reused ? `（既存の枠を使用 ${n.slots_reused}件）` : ''}・シフト${n.shifts}件をコピーしました${n.already ? `（コピー済み ${n.already}件は作成していません）` : ''}`,
       done: () => renderShiftBoard(),
     }))

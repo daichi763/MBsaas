@@ -100,7 +100,7 @@ function showSessionExpired() {
   // 入力中のモーダル（#modal-root）は消さずに、その上に重ねて出す
   sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
     <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-lock text-amber-500 mr-1"></i>ログインの期限が切れました</h3>
-    <p class="text-sm text-gray-600 mb-3">入力中の内容は残っています。パスワードを入力してログインし直すと、そのまま続けられます。保存などの操作は、ログインし直した後にもう一度送ります。</p>
+    <p class="text-sm text-gray-600 mb-3">入力中の内容は残っています。パスワードを入力して再ログインすると、そのまま続けられます。保存などの操作は、再ログインした後にもう一度送ります。</p>
     <form id="relogin-form">
       <p class="text-xs text-gray-500 mb-1">${ME.company_code ? '会社コード ' + esc(ME.company_code) + ' / ' : ''}ID ${esc(ME.user_code)}（${esc(ME.name)}）</p>
       <input type="password" id="relogin-pw" class="inp" autocomplete="current-password" placeholder="パスワード" required>
@@ -111,7 +111,7 @@ function showSessionExpired() {
       <p id="relogin-error" class="hidden text-sm text-red-600 mt-2"></p>
       <div class="flex flex-wrap gap-2 justify-end mt-4">
         <button type="button" class="btn btn-outline" data-action="sessionGoLogin">ログイン画面へ（入力中の内容は消えます）</button>
-        <button type="submit" class="btn btn-primary" id="relogin-btn">ログインし直す</button>
+        <button type="submit" class="btn btn-primary" id="relogin-btn">再ログイン</button>
       </div>
     </form></div></div>`
   document.getElementById('relogin-form').addEventListener('submit', ev => { ev.preventDefault(); relogin(document.getElementById('relogin-btn')) })
@@ -152,7 +152,7 @@ function relogin(btn) {
     sessionRoot().innerHTML = ''
     const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
     waiters.forEach(w => axios(w.config).then(w.resolve, w.reject))
-    toast('ログインし直しました')
+    toast('再ログインしました')
     if (window.refreshNotifBadge) refreshNotifBadge()
     if (window.refreshBoardBadge) refreshBoardBadge()
     if (window.refreshChatBadge) refreshChatBadge()
@@ -183,7 +183,7 @@ function showSessionWarning(left) {
   }
   const at = dayjs(SESSION_EXPIRES).format('HH:mm')
   el.innerHTML = el.dataset.capped === '1'
-    ? `<span><i class="fas fa-clock mr-1"></i>ログインからの最長期間に達するため、${at} にログインの期限が切れます。それまでに保存して、ログインし直してください。</span>`
+    ? `<span><i class="fas fa-clock mr-1"></i>ログインからの最長期間に達するため、${at} にログインの期限が切れます。それまでに保存して、再ログインしてください。</span>`
     : `<span><i class="fas fa-clock mr-1"></i>あと${Math.max(1, Math.ceil(left / 60000))}分（${at}）でログインの期限が切れます。</span><button type="button" class="btn btn-outline text-xs" data-action="sessionExtend">延長する</button>`
 }
 function hideSessionWarning() { const el = document.getElementById('session-warning'); if (el) el.remove() }
@@ -351,9 +351,63 @@ function dashLoginBadges(s) {
     + (s.has_report_link ? '' : ' <span class="badge badge-yellow text-[10px]" title="このシフトの報告用URLをまだ発行していません">URL未発行</span>')
 }
 
+// ダッシュボードの絞り込み（#9905）: '' = すべての案件 / 'p:<案件ID>' / 'c:<クライアントID>'。この端末に、管理者ごとに覚える
+let DASH_SCOPE = null // まだ読んでいない（最初の描画で localStorage から読む）
+let DASH_SEQ = 0      // 読み込みの番号（後から始めた読み込みだけを描く）
+const dashScopeKey = () => 'admin-dash-scope:' + (ME ? `${ME.company_id}:${ME.user_id}` : '')
+function dashScopeLoad() {
+  try { const v = localStorage.getItem(dashScopeKey()) || ''; return /^[pc]:\d+$/.test(v) ? v : '' } catch (e) { return '' }
+}
+function dashScopeSave(v) {
+  try { if (v) localStorage.setItem(dashScopeKey(), v); else localStorage.removeItem(dashScopeKey()) } catch (e) { /* 覚えられなくても絞り込みは使える */ }
+}
+// 絞り込みの選択肢: すべての案件・クライアントごとの案件（案件が2件以上のクライアントと、選んでいるクライアントは「〇〇の案件すべて」も）
+function dashScopeOptions(data) {
+  const groups = new Map()
+  for (const p of data.scope_options || []) {
+    const k = p.client_id == null ? '' : String(p.client_id)
+    if (!groups.has(k)) groups.set(k, { client_id: p.client_id, name: p.client_name || '', list: [] })
+    groups.get(k).list.push(p)
+  }
+  const opt = (v, label) => `<option value="${esc(v)}" ${DASH_SCOPE === v ? 'selected' : ''}>${esc(label)}</option>`
+  const sorted = [...groups.values()].sort((a, b) => (a.client_id == null) - (b.client_id == null) || a.name.localeCompare(b.name, 'ja'))
+  return opt('', 'すべての案件') + sorted.map(g => {
+    const list = g.list.sort((a, b) => (b.active - a.active) || String(a.project_name).localeCompare(String(b.project_name), 'ja'))
+    return `<optgroup label="${esc(g.client_id == null ? 'クライアントなし' : g.name || 'クライアント')}">
+      ${g.client_id != null && (list.length > 1 || DASH_SCOPE === 'c:' + Number(g.client_id)) ? opt('c:' + Number(g.client_id), `${g.name}の案件すべて（${list.length}件）`) : ''}
+      ${list.map(p => opt('p:' + Number(p.project_id), p.project_name + (p.active ? '' : '（終了・停止）'))).join('')}</optgroup>`
+  }).join('')
+}
+// 読み込み中: 前の表示を残したまま薄くし、更新ボタンを回す（#9904。画面を真っ白にしない）
+function dashSetBusy(on) {
+  const body = document.getElementById('dash-body')
+  if (body) { body.classList.toggle('opacity-60', on); body.classList.toggle('pointer-events-none', on); body.setAttribute('aria-busy', on ? 'true' : 'false') }
+  const btn = document.getElementById('dash-refresh')
+  if (btn) { btn.disabled = on; const i = btn.querySelector('i'); if (i) i.classList.toggle('fa-spin', on) }
+  const st = document.getElementById('dash-status')
+  if (st) st.textContent = on ? '更新中…' : st.dataset.time || ''
+}
+delegate('dashRefresh', () => renderDashboard())
+delegate('dashScopeClear', () => { DASH_SCOPE = ''; dashScopeSave(''); renderDashboard() })
+
 async function renderDashboard() {
-  loading()
-  const { data } = await axios.get('/api/admin/dashboard')
+  if (DASH_SCOPE === null) DASH_SCOPE = dashScopeLoad()
+  const root = document.getElementById('dash-body')
+  const refreshing = !!(root && DASH_DATA)
+  const seq = ++DASH_SEQ
+  if (refreshing) dashSetBusy(true)
+  else loading()
+  const params = DASH_SCOPE.startsWith('p:') ? { project_id: DASH_SCOPE.slice(2) } : DASH_SCOPE.startsWith('c:') ? { client_id: DASH_SCOPE.slice(2) } : {}
+  let data
+  try { data = (await axios.get('/api/admin/dashboard', { params })).data } catch (e) {
+    if (seq !== DASH_SEQ) return
+    if (refreshing) { if (root.isConnected) { dashSetBusy(false); showApiError(e, 'ダッシュボードを更新できませんでした') } return }
+    throw e
+  }
+  // 後から別の読み込みを始めた・更新の間にほかの画面へ移ったときは描かない
+  if (seq !== DASH_SEQ || (refreshing && !root.isConnected)) return
+  if (data.scope_invalid) { DASH_SCOPE = ''; dashScopeSave(''); toast('選んでいた案件が見つからないため、すべての案件を表示しています') }
+  const scope = data.scope
   DASH_DATA = data
   const un = data.unreported
   DASH_SHIFTS.clear()
@@ -421,7 +475,7 @@ async function renderDashboard() {
   // 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト。押すとシフトボードのその週・その案件を開く（#299）
   const ahead = data.staffing_ahead || { short_roles: [], requested_shifts: [] }
   const aheadHtml = `
-    <h4 class="text-xs font-bold text-gray-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
+    <h4 class="text-xs font-bold text-gray-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件${ahead.short_more ? '以上' : ''}・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
     ${ahead.short_roles.length ? `<div class="space-y-1 max-h-48 overflow-y-auto mb-3">${ahead.short_roles.map(r => `
       <button type="button" class="w-full text-left rounded-lg bg-red-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(r.work_date)}" data-project-id="${Number(r.project_id)}" data-short="1">
         <span class="text-gray-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
@@ -436,22 +490,34 @@ async function renderDashboard() {
       </button>`).join('')}</div>` : '<p class="text-xs text-gray-400">確定を待っているシフトはありません</p>'}`
 
   const photoChanged = data.photo_required_changed
-  $app.innerHTML = `
-    <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
+  // 日報一覧へのリンクは、案件で絞っていればその案件で開く（クライアントで絞ったときは日報一覧に同じ絞り込みがないので全案件）
+  const reportProject = scope && scope.project_id ? `&project=${Number(scope.project_id)}` : ''
+  const headHtml = `<div id="dash-head">
+    <div class="flex items-start justify-between mb-3 flex-wrap gap-2">
       <div>
         <h2 class="text-xl font-bold text-gray-900">管理者ダッシュボード</h2>
         <p class="text-sm text-gray-500">${dayjs(data.today).format('YYYY年M月D日')} — 今日見るべきこと・対応すべきこと</p>
       </div>
-      <button class="btn btn-outline" onclick="renderDashboard()"><i class="fas fa-rotate"></i>更新</button>
+      <div class="flex items-center gap-2 flex-wrap">
+        <select id="dash-scope" class="inp w-auto max-w-[16rem] text-sm" aria-label="表示する案件">${dashScopeOptions(data)}</select>
+        <button type="button" id="dash-refresh" class="btn btn-outline" data-action="dashRefresh"><i class="fas fa-rotate"></i>更新</button>
+        <span id="dash-status" class="text-[11px] text-gray-400 whitespace-nowrap" aria-live="polite" data-time="${esc(String(data.now || '').slice(11, 16))} 時点">${esc(String(data.now || '').slice(11, 16))} 時点</span>
+      </div>
     </div>
+    ${scope ? `<div class="mb-4 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800 flex items-center gap-2 flex-wrap">
+      <i class="fas fa-filter"></i><span class="flex-1 min-w-0"><b>${esc(scope.label)}</b>${scope.client_id ? 'の案件すべて' : ''}で表示しています（シフト・売上・未報告・日報・インシデント・案件別実績・人員不足・前日確認）。管理者ToDo・要フォロースタッフは会社全体です</span>
+      <button type="button" class="underline whitespace-nowrap" data-action="dashScopeClear">すべての案件に戻す</button></div>` : '<div class="mb-2"></div>'}
+    </div>`
+  const bodyHtml = `<div id="dash-body" class="transition-opacity">
 
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
       ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
-      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）')}
+      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）'
+        + (data.revenue_monthly ? `<br><span title="月額（固定）は、その月の最初の稼働日の売上予定に入れます（精算で計上する日と同じ）">うち月額（固定）${yen(data.revenue_monthly)}</span>` : ''))}
       ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400',
         (data.missing_daily_reports.length ? '<button type="button" class="text-blue-600 hover:underline mr-2" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
-        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
-      ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400')}
+        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1${reportProject}" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
+      ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400', scope ? '会社全体' : '')}
     </section>
 
     <section class="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mb-1" id="unreported-section">
@@ -492,7 +558,7 @@ async function renderDashboard() {
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-file-circle-exclamation text-red-500 mr-1"></i>日報未提出（直近3日）
           <span class="badge ${missing.length ? 'badge-red' : 'badge-green'} ml-1">${missing.length ? missing.length + '件' : 'なし'}</span></h3>
         ${missingHtml}
-        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
+        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1${reportProject}" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
       </section>
       <section class="card p-4" id="dash-ahead">
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-week text-blue-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
@@ -572,12 +638,23 @@ async function renderDashboard() {
         <span class="badge ${data.photo_required_attendance ? 'badge-green' : 'badge-gray'}">${data.photo_required_attendance ? '必須' : '無効'}</span>
         ${photoChanged ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
       <a href="#account" class="text-xs text-blue-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します（#405）">アカウント設定で変更</a>
-    </section>`
+    </section>
+    </div>`
+  // 更新: 見出しと本体だけを描き直す（上に出している「はじめにやること」・お知らせは残す）
+  const oldHead = document.getElementById('dash-head'), oldBody = document.getElementById('dash-body')
+  if (refreshing && oldHead && oldBody) { oldHead.outerHTML = headHtml; oldBody.outerHTML = bodyHtml }
+  else $app.innerHTML = headHtml + bodyHtml
+  const scopeSel = document.getElementById('dash-scope')
+  scopeSel.onchange = () => { DASH_SCOPE = scopeSel.value; dashScopeSave(DASH_SCOPE); renderDashboard() }
   drawDashShifts()
   DASH_TODOS.todos = data.todos || []
   DASH_TODOS.hidden = data.hidden_todos || []
   drawDashTodos()
-  if (window.renderChatDashboardNotice) renderChatDashboardNotice()
+  if (window.renderChatDashboardNotice) {
+    // 企業間チャットの新着は読み込み直して出し直す（見出しの直後に入る）
+    const chat = document.getElementById('chat-dashboard-notice'); if (chat) chat.remove()
+    renderChatDashboardNotice()
+  }
 }
 
 // ---------- ダッシュボード: 本日のシフトの表（#348 #355 #488）----------
@@ -820,12 +897,13 @@ delegate('dashTodoRestore', el => {
 // 理由を示して確認できたら force を付けて送り直す（#221）。成功したらサーバーの応答、取りやめたら false。エラーは呼び出し元へ投げる
 // 欠勤にするときは、その場で理由（スタッフ都合／クライアント都合）を選んでもらい cancel_reason で送る（#283）。
 // cancelReason: 'staff' | 'client' | ''（理由を残さない）。省くと選ぶ画面を出す
-async function putShiftStatus(shiftId, status, force, cancelReason) {
+// extra: 一緒に送る値（シフト管理の「スタッフに通知を送る」の notify・notify_message。#9906。省くと会社の設定に従う）
+async function putShiftStatus(shiftId, status, force, cancelReason, extra) {
   if (status === 'absent' && cancelReason === undefined) {
     cancelReason = await askAbsentReason()
     if (cancelReason === null) return false
   }
-  const body = { status }
+  const body = { ...(extra || {}), status }
   if (force) body.force = true
   if (status === 'absent' && cancelReason) body.cancel_reason = cancelReason
   try {
@@ -835,7 +913,7 @@ async function putShiftStatus(shiftId, status, force, cancelReason) {
     const d = e.response && e.response.status === 409 ? e.response.data : null
     if (d && d.need_force && !force) {
       if (!confirm(`${(d.warnings || []).join('\n')}\nこのまま変更しますか？`)) return false
-      return putShiftStatus(shiftId, status, true, cancelReason || '')
+      return putShiftStatus(shiftId, status, true, cancelReason || '', extra)
     }
     throw e
   }
@@ -1008,7 +1086,7 @@ function opLogValue(field, v, names) {
 }
 function opLogRowsHtml(logs, names) {
   return logs.map(l => `<div class="border-b border-gray-100 py-1.5">
-      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span></p>
+      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span>${l.notify_off ? ' <span class="badge badge-gray" title="スタッフに通知を送らずに操作しました（#9906）"><i class="fas fa-bell-slash mr-0.5"></i>通知なし</span>' : ''}</p>
       ${l.changes.length ? `<ul class="text-gray-600 mt-0.5 space-y-0.5">${l.changes.map(c => `<li><span class="text-gray-400">${esc(c.label)}:</span> ${esc(opLogValue(c.field, c.before, names))} <i class="fas fa-arrow-right text-[9px] text-gray-400"></i> ${esc(opLogValue(c.field, c.after, names))}</li>`).join('')}</ul>` : ''}
     </div>`).join('')
 }
@@ -1086,7 +1164,7 @@ function matchesKeyword(q, values) {
   const digits = text.replace(/[^0-9]/g, '')
   return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
 }
-const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限']]
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限'], ['avexempt', 'シフト希望の対象外']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
   noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
@@ -1094,7 +1172,11 @@ const STAFF_STATE_TEST = {
   noapp: s => s.user_role === 'staff' && !s.app_last_used_at,
   // 有効期限が30日以内・切れた書類がある人（#297。doc_expiring はサーバーが数える）
   docexp: s => Number(s.doc_expiring) > 0,
+  // シフト希望（出勤可能日）の回収の対象外にした人（#9907）
+  avexempt: s => Number(s.availability_exempt) === 1,
 }
+// 一覧で選んだスタッフ（まとめての切り替え。#9907）。表示から外れた人は選択も外す
+const STAFF_PICK = new Set()
 // 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
 function staffLastLoginCell(s) {
   if (s.user_role !== 'staff') return '<span class="text-gray-300" title="ログインなし（名簿のみ）">-</span>'
@@ -1191,12 +1273,14 @@ function drawStaffTable(filter) {
         <span class="text-[11px] text-gray-400">（選んだどれかに当たる人）</span>
       </div>
     </div>
+    <div id="staff-bulk" class="hidden fixed bottom-4 inset-x-4 md:left-64 md:right-6 z-20 card p-3 bg-white border border-blue-200 shadow-lg flex items-center gap-2 flex-wrap"></div>
     <div class="card overflow-x-auto">
       <table class="tbl">
-        <thead><tr>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
+        <thead><tr><th class="w-8"><input type="checkbox" id="staff-pick-all" class="w-4 h-4 align-middle" data-action="staffPickAll" title="表示中のスタッフをすべて選ぶ" aria-label="表示中のスタッフをすべて選ぶ"></th>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
         <tbody id="staff-rows"></tbody>
       </table>
-    </div>`
+    </div>
+    <div id="staff-bulk-space" class="hidden h-20"></div>`
   let timer = null
   document.getElementById('staff-q').addEventListener('input', ev => {
     clearTimeout(timer)
@@ -1214,10 +1298,12 @@ function drawStaffRows() {
   staffListIds = list.map(s => Number(s.staff_id))
   const total = staffCache.filter(s => !s.merged_into_staff_id && !isRetiredStaff(s)).length
   document.getElementById('staff-count').textContent = `${list.length}名${list.length !== total ? `（在籍 ${total}名）` : ''}`
+  for (const id of [...STAFF_PICK]) if (!staffListIds.includes(id)) STAFF_PICK.delete(id)
   document.getElementById('staff-rows').innerHTML = list.map(s => `
             <tr class="cursor-pointer${isRetiredStaff(s) ? ' opacity-60' : ''}" data-action="openStaffDetail" data-id="${Number(s.staff_id)}">
+              <td class="w-8" data-action="staffPickCell" data-id="${Number(s.staff_id)}"><input type="checkbox" class="w-4 h-4 align-middle" aria-label="${escAttr(s.name + ' を選ぶ')}" ${STAFF_PICK.has(Number(s.staff_id)) ? 'checked' : ''}></td>
               <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${Number(s.availability_exempt) === 1 ? ' <span class="badge badge-gray" title="シフト希望（出勤可能日）の回収の対象外です。未提出の案内・通知を出しません">シフト希望 対象外</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
               <td class="whitespace-nowrap">${staffEmpBadge(s)}</td>
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
@@ -1229,8 +1315,60 @@ function drawStaffRows() {
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
               <td class="text-xs text-gray-500 whitespace-nowrap">${staffLastLoginCell(s)}</td>
-            </tr>`).join('') || '<tr><td colspan="13" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+            </tr>`).join('') || '<tr><td colspan="14" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+  drawStaffBulkBar()
 }
+// まとめての操作の帯（選んだ人がいるときだけ、画面の下に出す）。今はシフト希望の回収の対象の切り替え（#9907）
+function drawStaffBulkBar() {
+  const bar = document.getElementById('staff-bulk'); if (!bar) return
+  const all = document.getElementById('staff-pick-all')
+  if (all) {
+    all.checked = staffListIds.length > 0 && STAFF_PICK.size === staffListIds.length
+    all.indeterminate = STAFF_PICK.size > 0 && STAFF_PICK.size < staffListIds.length
+  }
+  bar.classList.toggle('hidden', !STAFF_PICK.size)
+  const space = document.getElementById('staff-bulk-space')
+  if (space) space.classList.toggle('hidden', !STAFF_PICK.size)
+  if (!STAFF_PICK.size) { bar.innerHTML = ''; return }
+  bar.innerHTML = `<span class="text-sm font-bold text-gray-800">${STAFF_PICK.size}人を選択中</span>
+    <span class="text-xs text-gray-500 ml-1">シフト希望（出勤可能日）の回収:</span>
+    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="1"><i class="fas fa-calendar-check"></i>対象にする</button>
+    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="0"><i class="fas fa-calendar-xmark"></i>対象外にする</button>
+    <button type="button" class="text-xs text-gray-500 hover:underline ml-auto" data-action="staffPickClear">選択を解除</button>`
+}
+// 行の左端のチェック欄（欄のどこを押しても選ぶ。行を押したときの詳細は開かない）
+delegate('staffPickCell', (el, ev) => {
+  const cb = el.querySelector('input[type="checkbox"]'); if (!cb) return
+  if (ev.target !== cb) cb.checked = !cb.checked
+  const id = Number(el.dataset.id)
+  if (cb.checked) STAFF_PICK.add(id); else STAFF_PICK.delete(id)
+  drawStaffBulkBar()
+})
+delegate('staffPickAll', (el) => {
+  STAFF_PICK.clear()
+  if (el.checked) for (const id of staffListIds) STAFF_PICK.add(id)
+  document.querySelectorAll('#staff-rows [data-action="staffPickCell"] input').forEach(cb => { cb.checked = el.checked })
+  drawStaffBulkBar()
+})
+delegate('staffPickClear', () => {
+  STAFF_PICK.clear()
+  document.querySelectorAll('#staff-rows [data-action="staffPickCell"] input').forEach(cb => { cb.checked = false })
+  drawStaffBulkBar()
+})
+delegate('staffBulkAvTarget', (el) => {
+  const ids = [...STAFF_PICK]; if (!ids.length) return
+  const target = el.dataset.target === '1'
+  if (!confirm(target
+    ? `選んだ ${ids.length}人を、シフト希望（出勤可能日）の回収の対象にします。未提出のときは、アプリに未提出の案内が出て、提出のお願いの通知も届くようになります。よろしいですか？`
+    : `選んだ ${ids.length}人を、シフト希望（出勤可能日）の回収の対象外にします。アプリの未提出の案内・提出のお願いの通知が出なくなり、出勤可能日の画面の未提出の数にも数えません（本人が自分から提出することはできます）。よろしいですか？`)) return
+  withSubmitLock(el, async () => {
+    let r
+    try { r = (await axios.put('/api/admin/availability/targets', { staff_ids: ids, target })).data } catch (e) { showApiError(e, '変更できませんでした'); return }
+    toast(`${r.staff}人をシフト希望の回収の${target ? '対象' : '対象外'}にしました${r.changed < r.staff ? `（${r.staff - r.changed}人はすでに${target ? '対象' : '対象外'}でした）` : ''}`)
+    STAFF_PICK.clear()
+    renderStaff({ reload: true })
+  })
+})
 delegate('toggleStaffFilter', el => {
   const arr = STAFF_LIST[el.dataset.group]; const k = el.dataset.key
   if (!Array.isArray(arr)) return
@@ -1583,19 +1721,59 @@ function staffBasicCardHtml(sid, p, affData, editing) {
         </div>
 `
 }
-// ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。変更は確認メールを送り、本人が確認したときに切り替わる
+// ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。
+// メールを送れる環境では確認メールを送り、本人が確認したときに切り替わる。送れない環境では保存した時点で切り替わる（#9803）
 function staffLoginEmailHtml(p, editing) {
   if (p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return ''
   const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">メール（通知・パスワード再設定）</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
   if (!p.has_own_login) return row('<span class="text-xs text-gray-400">ログインなし</span>')
-  const pend = p.login_email_pending
-  const pendHtml = pend ? `<span class="block text-xs mt-0.5"><span class="badge badge-yellow">確認待ち</span> ${esc(pend.email)} <span class="text-[11px] text-gray-400">（本人が確認メールのリンクを開くと切り替わります。期限 ${esc(dayjs(pend.expires_at).format('M/D HH:mm'))}）</span></span>` : ''
+  const direct = p.login_email_mode === 'direct'
+  const pendHtml = staffPendingLoginEmailHtml(p, direct)
   if (editing && !p.merged_into_staff_id) {
     return row(`<input id="staff-login-email" class="inp text-xs" type="email" maxlength="254" autocomplete="off" value="${esc(p.email || '')}" data-orig="${esc(p.email || '')}" placeholder="例: taro@example.com">
-      <span class="block text-[11px] text-gray-400">変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります。空欄で保存すると削除します</span>${pendHtml}`)
+      <span class="block text-[11px] text-gray-400">${direct ? '保存した時点で新しいアドレスに切り替わります（メールを送れない設定のため、確認用のメールは送りません）' : '変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります'}。空欄で保存すると削除します</span>${pendHtml}`)
   }
   return row((p.email ? `<span class="text-xs">${esc(p.email)}</span>` : '<span class="text-xs text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>未登録（通知メール・パスワード再設定が使えません）</span>') + pendHtml)
 }
+// 確認待ちのメールアドレス（#9803）。管理者の保存・変更申請の承認で作られ、本人が確認用のメールを開くまで切り替わらない。
+// メールを送れない環境では確認用のメールが届かないので、管理者が「このアドレスに切り替える」か「取り消す」を選ぶ
+function staffPendingLoginEmailHtml(p, direct) {
+  const pend = p.login_email_pending
+  if (!pend) return ''
+  const canEdit = !p.merged_into_staff_id
+  const note = direct
+    ? 'メールを送れない設定のため、確認用のメールは届いていません。切り替えるか取り消してください'
+    : pend.expired ? `確認の期限（${dayjs(pend.expires_at).format('M/D HH:mm')}）が切れています。切り替えるには、もう一度保存して確認メールを送り直してください`
+      : `本人が確認メールのリンクを開くと切り替わります。期限 ${dayjs(pend.expires_at).format('M/D HH:mm')}`
+  return `<span class="block text-xs mt-1 p-2 rounded-lg bg-amber-50" id="staff-login-email-pending">
+      <span class="badge badge-yellow">確認待ちのメールアドレス</span> <span class="break-all">${esc(pend.email)}</span>
+      <span class="block text-[11px] text-gray-500 mt-0.5">${esc(note)}${pend.created_at ? `（${esc(dayjs(pend.created_at).format('YYYY/M/D'))} に受付）` : ''}</span>
+      ${canEdit ? `<span class="flex gap-2 mt-1 flex-wrap">
+        ${direct ? `<button type="button" class="btn btn-primary text-xs" data-action="applyPendingLoginEmail" data-sid="${Number(p.staff_id)}" data-id="${Number(pend.verification_id)}" data-email="${esc(pend.email)}">このアドレスに切り替える</button>` : ''}
+        <button type="button" class="btn btn-outline text-xs" data-action="cancelPendingLoginEmail" data-sid="${Number(p.staff_id)}" data-id="${Number(pend.verification_id)}" data-email="${esc(pend.email)}">取り消す</button>
+      </span>` : ''}
+    </span>`
+}
+delegate('applyPendingLoginEmail', el => {
+  if (!confirm(`通知・パスワード再設定のメールアドレスを「${el.dataset.email}」に切り替えます。以前のアドレスに送ったパスワード再設定のリンクは使えなくなります。よろしいですか？`)) return
+  return withSubmitLock(el, async () => {
+    try {
+      await axios.post(`/api/admin/staff/${Number(el.dataset.sid)}/login-email-pending/apply`, { verification_id: Number(el.dataset.id) })
+      toast('メールアドレスを切り替えました')
+      await refreshStaffProfile(el.dataset.sid)
+    } catch (e) { showApiError(e, '切り替えられませんでした') }
+  })
+})
+delegate('cancelPendingLoginEmail', el => {
+  if (!confirm(`確認待ちのメールアドレス「${el.dataset.email}」を取り消します。今のメールアドレスはそのままです。よろしいですか？`)) return
+  return withSubmitLock(el, async () => {
+    try {
+      await axios.post(`/api/admin/staff/${Number(el.dataset.sid)}/login-email-pending/cancel`, { verification_id: Number(el.dataset.id) })
+      toast('確認待ちのメールアドレスを取り消しました')
+      await refreshStaffProfile(el.dataset.sid)
+    } catch (e) { showApiError(e, '取り消せませんでした') }
+  })
+})
 // 直近に表示したスタッフ詳細のデータ（編集切替・保存後の部分再描画に使う）
 let staffDetailState = null
 function redrawStaffCard(editing) {
@@ -1996,7 +2174,9 @@ window.saveStaffBasicInfo = async function (sid) {
     const res = await putConfirmingRetiredAt('/api/admin/staff/' + sid, body)
     if (!res) return
     const le2 = res.data && res.data.login_email
-    if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました' : '保存しました。確認メールを送れませんでした（メールの設定を確認してください）')
+    if (le2 && le2.switched) toast('保存しました。メールアドレスを切り替えました')
+    else if (le2 && le2.cleared) toast('保存しました。メールアドレスを削除しました')
+    else if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました（本人が開くと切り替わります）' : '保存しました。確認メールを送れなかったため、メールアドレスはまだ切り替わっていません（メールの設定を確認してください）')
     else toast('保存しました')
     staffEditingSid = null
     await refreshStaffProfile(sid)
@@ -3124,8 +3304,10 @@ delegate('toggleAdminTemplateStatus', el => withSubmitLock(el, async () => {
 function openTemplateEditor(t, init) {
   const locked = new Set(t && t.has_reports ? (t.fields || []).map(f => f.key) : [])
   TPL_EDIT = { id: t ? Number(t.template_id) : null, locked, rows: (init.fields || []).map(f => ({ ...f, origKey: f.key })) }
+  // 左に編集、右（狭い画面では下）にスタッフのスマホでの見え方のプレビュー（#9903）
   modal(`
     <h3 class="font-bold text-lg mb-3">${t ? 'テンプレートの編集' : 'テンプレートの作成'}</h3>
+    <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_376px] lg:gap-5 lg:items-start">
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
       ${locked.size ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
@@ -3135,9 +3317,50 @@ function openTemplateEditor(t, init) {
         <button type="button" class="btn btn-outline text-xs mt-2" data-action="tplAddRow"><i class="fas fa-plus"></i>項目を追加</button>
         <p class="text-[11px] text-gray-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
       </div>
-      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminTemplate">保存する</button></div>
-    </div>`)
+    </div>
+    <div class="mt-5 lg:mt-0 lg:sticky lg:top-0" id="tpl-preview-pane">
+      <p class="text-sm font-bold text-gray-700 mb-0.5"><i class="fas fa-mobile-screen-button text-blue-500 mr-1"></i>スタッフのスマホでの見え方</p>
+      <p class="text-[11px] text-gray-400 mb-2">項目を足す・消す・並べ替えると、すぐに反映されます。ここで入力しても保存・提出はされません</p>
+      <div class="mx-auto w-[376px] max-w-full rounded-[2rem] border-[8px] border-gray-800 bg-gray-50 overflow-hidden shadow-lg">
+        <div class="bg-white border-b border-gray-100 px-4 py-2.5"><p class="font-bold text-gray-800 text-sm flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i>日報</p></div>
+        <div id="tpl-preview" class="px-4 py-4 h-[600px] max-h-[60vh] overflow-y-auto"></div>
+      </div>
+    </div>
+    </div>
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminTemplate">保存する</button></div>`)
+  // プレビューを横に並べるため、広い画面ではモーダルを広げる
+  const box = document.querySelector('#modal-root .modal-box'); if (box) box.classList.add('lg:max-w-5xl')
   drawTplRows()
+}
+// 保存する形の項目（表示名が空ならキー。プレビューも同じ形で描く）
+function tplFieldsFromRows(rows) {
+  return rows.map(r => {
+    const f = { key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), type: r.type || 'text' }
+    if (r.required) f.required = true
+    if (r.placeholder) f.placeholder = r.placeholder
+    if (r.maxLength && f.type !== 'number') f.maxLength = r.maxLength
+    return f
+  })
+}
+// スタッフアプリの日報の入力欄と同じ関数（report-form.js の reportFormBodyHtml）で描く。プレビューに入力した値は、描き直しても残す（保存はしない）
+function drawTplPreview() {
+  const host = document.getElementById('tpl-preview'); if (!host || !TPL_EDIT) return
+  const typed = {}
+  host.querySelectorAll('.rpt-field').forEach(el => { typed[el.dataset.key] = el.value })
+  const flags = { incident: !!(host.querySelector('#incident-flag') || {}).checked, complaint: !!(host.querySelector('#complaint-flag') || {}).checked }
+  const name = ((document.getElementById('tpl-name') || {}).value || '').trim()
+  const fields = tplFieldsFromRows(TPL_EDIT.rows)
+  host.innerHTML = `
+    <section class="card p-4 mb-4">
+      <h2 class="font-bold text-gray-800">案件名</h2>
+      <p class="text-xs text-gray-400">${esc(dayjs().format('M/D(dd)'))} 10:00〜19:00 の日報${name ? '｜' + esc(name) : ''}</p>
+    </section>
+    ${fields.length ? `<form id="tpl-preview-form" class="space-y-4 pb-8" novalidate>${reportFormBodyHtml(fields, k => typed[k], flags)}</form>`
+      : '<p class="text-xs text-gray-400 text-center py-6">項目を追加すると、ここにスタッフの入力欄が出ます</p>'}`
+  const form = document.getElementById('tpl-preview-form')
+  if (!form) return
+  reportFormBind(form)
+  form.addEventListener('submit', (e) => { e.preventDefault(); toast('プレビューのため、提出・保存はされません') })
 }
 function drawTplRows() {
   const box = document.getElementById('tpl-rows'); if (!box || !TPL_EDIT) return
@@ -3157,9 +3380,12 @@ function drawTplRows() {
       </span>
     </div>`
   }).join('') || '<p class="text-xs text-red-600">項目を1つ以上追加してください</p>'
+  drawTplPreview()
 }
 // 入力のたびに TPL_EDIT に写す（並べ替え・削除で描き直しても入力が消えないように）
 function syncTplField(ev) {
+  // テンプレート名はプレビューの見出しに出す
+  if (TPL_EDIT && ev.target && ev.target.id === 'tpl-name') { drawTplPreview(); return }
   const el = ev.target && ev.target.closest ? ev.target.closest('[data-tpl-field]') : null
   if (!el || !TPL_EDIT) return
   const row = TPL_EDIT.rows[Number(el.dataset.i)]; if (!row) return
@@ -3168,6 +3394,7 @@ function syncTplField(ev) {
   else row[k] = el.value
   // 数値の項目には文字数の上限を付けない（サーバーの検証と同じ）
   if (k === 'type' && row.type === 'number') delete row.maxLength
+  drawTplPreview()
 }
 document.addEventListener('input', syncTplField)
 document.addEventListener('change', syncTplField)
@@ -3189,13 +3416,7 @@ delegate('saveAdminTemplate', el => withSubmitLock(el, async () => {
   const name = document.getElementById('tpl-name').value.trim()
   if (!name) { toast('テンプレート名を入力してください'); return }
   if (!TPL_EDIT.rows.length) { toast('項目を1つ以上追加してください'); return }
-  const fields = TPL_EDIT.rows.map(r => {
-    const f = { key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), type: r.type || 'text' }
-    if (r.required) f.required = true
-    if (r.placeholder) f.placeholder = r.placeholder
-    if (r.maxLength && f.type !== 'number') f.maxLength = r.maxLength
-    return f
-  })
+  const fields = tplFieldsFromRows(TPL_EDIT.rows)
   try {
     if (TPL_EDIT.id) await axios.put('/api/admin/templates/' + TPL_EDIT.id, { template_name: name, fields })
     else await axios.post('/api/admin/templates', { template_name: name, fields })
@@ -3278,10 +3499,92 @@ function ratingStars(v) {
   return '★'.repeat(n) + '☆'.repeat(5 - n)
 }
 // クライアント一覧の検索・並べ替え（#490）
-const CLIENT_LIST = { q: '', stream: '', sort: 'client_id', docexp: false, data: null }
+// ---------- 社内担当者（#9910）。クライアントと協力会社（roster.js）で同じ部品を使う ----------
+// 主担当1人＋副担当（何人でも）を、自社の管理者のアカウントから選ぶ。止めた・消したアカウントは「担当から外れています」と出す
+let ASSIGNEE_OPTIONS = null // 担当に選べるアカウント（{ accounts, me }）
+async function loadAssigneeOptions(force) {
+  if (!ASSIGNEE_OPTIONS || force) ASSIGNEE_OPTIONS = (await axios.get('/api/admin/assignees/options')).data
+  return ASSIGNEE_OPTIONS
+}
+const assigneeName = a => a.name || '削除されたアカウント'
+const assigneeAccountLabel = a => `${a.name}（${a.user_code}・${ADMIN_ROLE_LABEL[a.role] || a.role}）`
+// 詳細の表示: 主担当・副担当と、これまでの文字の社内担当者（協力会社だけ。「旧: 〇〇」）
+function assigneesViewHtml(list, legacyText) {
+  list = list || []
+  const one = a => a.active ? esc(assigneeName(a))
+    : `<span class="line-through text-gray-400">${esc(assigneeName(a))}</span> <span class="badge badge-gray" title="アカウントを止めた・消したため、担当から外れています">担当から外れています</span>`
+  const main = list.filter(a => a.is_primary), subs = list.filter(a => !a.is_primary)
+  return `<span class="block"><span class="text-[11px] text-gray-400 mr-1">主</span>${main.length ? main.map(one).join('') : '<span class="text-gray-400">未設定</span>'}</span>
+    <span class="block"><span class="text-[11px] text-gray-400 mr-1">副</span>${subs.length ? subs.map(one).join('、') : '<span class="text-gray-400">-</span>'}</span>
+    ${legacyText ? `<span class="block text-[11px] text-gray-400">旧: ${esc(legacyText)}</span>` : ''}`
+}
+// 一覧の短い表示（主担当の名前と、副担当の人数）
+function assigneeShortHtml(list, legacyText) {
+  list = list || []
+  const main = list.find(a => a.is_primary), subs = list.filter(a => !a.is_primary && a.active).length
+  if (!list.length) return legacyText ? `<span class="text-gray-400">旧: ${esc(legacyText)}</span>` : '<span class="text-gray-300">未設定</span>'
+  const mainHtml = !main ? '<span class="text-gray-400">主担当なし</span>'
+    : main.active ? esc(assigneeName(main)) : `<span class="line-through text-gray-400">${esc(assigneeName(main))}</span><span class="text-[11px] text-amber-700">（担当から外れています）</span>`
+  return mainHtml + (subs ? `<span class="text-gray-400"> ほか${subs}名</span>` : '')
+}
+// 編集欄（prefix で入力欄の id を分ける）。名前・ID で絞り込める
+function assigneesEditorHtml(prefix, list) {
+  list = list || []
+  const opts = (ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.accounts) || []
+  const main = list.find(a => a.is_primary && a.active)
+  const subIds = new Set(list.filter(a => !a.is_primary && a.active).map(a => a.user_id))
+  const gone = list.filter(a => !a.active)
+  const search = a => escAttr(`${a.name} ${a.user_code}`.toLowerCase())
+  return `<div class="space-y-1.5 min-w-0" id="${prefix}-asg">
+      <input class="inp text-xs" data-assignee-filter="${prefix}" placeholder="名前・IDで絞り込み" autocomplete="off" aria-label="社内担当者を名前・IDで絞り込み">
+      <div><label for="${prefix}-asg-main" class="text-[11px] text-gray-500 block">主担当（1人）</label>
+        <select id="${prefix}-asg-main" class="inp text-xs"><option value="">（未設定）</option>${opts.map(a => `<option value="${Number(a.user_id)}" data-search="${search(a)}" ${main && main.user_id === a.user_id ? 'selected' : ''}>${esc(assigneeAccountLabel(a))}</option>`).join('')}</select></div>
+      <div><p class="text-[11px] text-gray-500">副担当（何人でも）</p>
+        <div class="max-h-36 overflow-y-auto border border-gray-200 rounded-lg p-1.5 space-y-0.5" id="${prefix}-asg-subs">
+          ${opts.map(a => `<label class="flex items-center gap-1.5 text-xs" data-search="${search(a)}"><input type="checkbox" value="${Number(a.user_id)}" ${subIds.has(a.user_id) ? 'checked' : ''}>${esc(assigneeAccountLabel(a))}</label>`).join('') || '<p class="text-xs text-gray-400">選べるアカウントがありません</p>'}
+        </div></div>
+      ${gone.length ? `<p class="text-[11px] text-amber-700">止めた・消したアカウント（${gone.map(a => esc(assigneeName(a))).join('、')}）は担当から外れています。保存すると担当の一覧からも消えます</p>` : ''}
+    </div>`
+}
+// 編集欄の値（欄がなければ undefined で、送らない＝今の担当のまま）
+function collectAssignees(prefix) {
+  const sel = document.getElementById(prefix + '-asg-main'); if (!sel) return undefined
+  const main = Number(sel.value) || null
+  const subs = [...document.querySelectorAll(`#${prefix}-asg-subs input[type=checkbox]:checked`)].map(i => Number(i.value)).filter(id => id !== main)
+  return { main_user_id: main, sub_user_ids: subs }
+}
+// 絞り込み: 名前・ID が合わない選択肢を隠す（選んでいるものは隠さない）
+document.addEventListener('input', ev => {
+  const el = ev.target
+  if (!el || !el.dataset || !el.dataset.assigneeFilter) return
+  const p = el.dataset.assigneeFilter, q = el.value.trim().toLowerCase()
+  const box = document.getElementById(p + '-asg'); if (!box) return
+  box.querySelectorAll('option[data-search]').forEach(o => { o.hidden = !!q && !o.selected && !o.dataset.search.includes(q) })
+  // 選択肢の label は flex なので、hidden 属性ではなく display で隠す
+  box.querySelectorAll('label[data-search]').forEach(l => { const cb = l.querySelector('input'); l.style.display = !!q && !(cb && cb.checked) && !l.dataset.search.includes(q) ? 'none' : '' })
+})
+// 一覧の「社内担当者」の絞り込みの選択肢（すべて・自分・未設定・アカウントごと。止めたアカウントもデータにあれば出す）
+function assigneeFilterOptions(rows, cur) {
+  const accounts = new Map(((ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.accounts) || []).map(a => [a.user_id, a.name]))
+  for (const r of rows) for (const a of r.assignees || []) if (!accounts.has(a.user_id)) accounts.set(a.user_id, assigneeName(a) + '（担当から外れています）')
+  const me = ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.me
+  return [['', '社内担当者: すべて'], ...(me ? [['me', '自分が担当']] : []), ['none', '社内担当者: 未設定'],
+    ...[...accounts.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ja')).map(([id, n]) => [String(id), n])]
+    .map(([k, v]) => `<option value="${esc(k)}" ${String(cur) === k ? 'selected' : ''}>${esc(v)}</option>`).join('')
+}
+function matchesAssigneeFilter(list, f) {
+  if (!f) return true
+  list = list || []
+  if (f === 'none') return !list.some(a => a.active)
+  const id = f === 'me' ? (ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.me) : Number(f)
+  return list.some(a => a.user_id === id)
+}
+
+// 上流・下流（clients.stream_type）は画面に出さない（#9908。クライアントは案件をくれる会社のため。列と値は DB に残す）
+const CLIENT_LIST = { q: '', sort: 'client_id', docexp: false, assignee: '', data: null }
 async function renderClients() {
   loading()
-  try { CLIENT_LIST.data = (await axios.get('/api/admin/clients')).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
+  try { [CLIENT_LIST.data] = await Promise.all([axios.get('/api/admin/clients').then(r => r.data), loadAssigneeOptions(true)]) } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
   const L = CLIENT_LIST
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -3289,22 +3592,24 @@ async function renderClients() {
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
-      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・住所・稼働案件で検索" value="${esc(L.q)}">
-      <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・社内担当者・住所・稼働案件で検索" value="${esc(L.q)}">
+      <select id="client-assignee" class="inp text-sm w-auto" aria-label="社内担当者で絞り込み">${assigneeFilterOptions(L.data.clients, L.assignee)}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
     </div>
     <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" id="client-cards"></div>`
   let timer = null
   document.getElementById('client-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawClientCards() }, 200) })
-  document.getElementById('client-stream').addEventListener('change', ev => { L.stream = ev.target.value; drawClientCards() })
   document.getElementById('client-sort').addEventListener('change', ev => { L.sort = ev.target.value; drawClientCards() })
+  document.getElementById('client-assignee').addEventListener('change', ev => { L.assignee = ev.target.value; drawClientCards() })
   document.getElementById('client-docexp').addEventListener('change', ev => { L.docexp = ev.target.checked; drawClientCards() })
   drawClientCards()
 }
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
-  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url]))
+  let list = all.filter(c => (!L.docexp || Number(c.doc_expiring) > 0) && matchesAssigneeFilter(c.assignees, L.assignee)
+    && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url,
+      ...(c.assignees || []).map(a => a.name)]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
     name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
@@ -3317,7 +3622,6 @@ function drawClientCards() {
         <section class="card p-4">
           <div class="flex items-start justify-between mb-2">
             <h3 class="font-bold text-gray-800"><a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
-            <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           </div>
           <dl class="text-xs text-gray-600 space-y-1.5">
             <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
@@ -3325,6 +3629,7 @@ function drawClientCards() {
             ${c.address || c.postal_code || c.website_url ? `<div class="flex"><dt class="w-20 text-gray-400 shrink-0">住所</dt><dd class="min-w-0"><span class="block truncate max-w-[220px]" title="${esc(postalAddress(c.postal_code, c.address))}">${esc(postalAddress(c.postal_code, c.address) || '-')}</span>${c.website_url ? `<span class="block text-gray-400 truncate max-w-[220px]">${esc(urlHost(c.website_url))}</span>` : ''}</dd></div>` : ''}
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneeShortHtml(c.assignees)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
               ${c.active_projects ? `<span class="block text-gray-500 truncate max-w-[220px]">${esc(c.active_projects)}</span>` : ''}</dd></div>
           </dl>
@@ -3363,6 +3668,7 @@ function clientBasicHtml(c, editing) {
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(c.assignees)}</dd></div>
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
         </dl>
         <div class="mt-3 pt-3 border-t border-gray-100">
@@ -3376,8 +3682,6 @@ function clientBasicHtml(c, editing) {
         <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
         <div class="space-y-2">
           ${inp('cl-name', 'クライアント名 *', c.client_name, 'maxlength="200"')}
-          <div class="flex items-center gap-2"><label for="cl-stream" class="w-28 text-xs text-gray-400 shrink-0">上流/下流</label>
-            <select id="cl-stream" class="inp text-xs flex-1"><option value="upstream" ${c.stream_type === 'upstream' ? 'selected' : ''}>上流</option><option value="downstream" ${c.stream_type === 'downstream' ? 'selected' : ''}>下流</option></select></div>
           ${inp('cl-rep-name', '代表者氏名', c.representative_name, 'maxlength="100"')}
           ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
@@ -3390,6 +3694,7 @@ function clientBasicHtml(c, editing) {
           ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
           <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
             <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
+          <div class="flex items-start gap-2"><span class="w-28 text-xs text-gray-400 shrink-0 pt-1">社内担当者</span><div class="flex-1 min-w-0">${assigneesEditorHtml('cl', c.assignees)}</div></div>
           <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
           <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
           ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
@@ -3464,7 +3769,6 @@ async function renderClientDetail(cid) {
       <div class="flex-1">
         <h2 class="text-xl font-bold text-gray-900">${esc(c.client_name)}</h2>
         <div class="flex gap-2 mt-1">
-          <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           ${c.ng_staff_ids ? '<span class="badge badge-red"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</span>' : ''}
         </div>
       </div>
@@ -3508,7 +3812,11 @@ delegate('clientDetailMonth', async el => {
   try { box.innerHTML = clientDealsHtml((await axios.get('/api/admin/clients/' + cid, { params: { month: CLIENT_DETAIL.month } })).data) }
   catch (e) { showApiError(e, '実績を読み込めませんでした') }
 })
-delegate('editClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true) })
+delegate('editClientBasic', el => withSubmitLock(el, async () => {
+  // 社内担当者の選択肢（自社の管理者のアカウント）を読んでから編集欄を出す
+  try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした'); return }
+  const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true)
+}))
 delegate('cancelClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, false) })
 delegate('saveClientBasic', el => withSubmitLock(el, () => saveClientBasicInfo(Number(el.dataset.id))))
 
@@ -3653,11 +3961,12 @@ window.saveClientBasicInfo = async function (cid) {
   if (!v('cl-name')) { err.textContent = 'クライアント名を入力してください'; err.classList.remove('hidden'); return }
   try {
     await axios.put('/api/admin/clients/' + cid, {
-      client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
+      client_name: v('cl-name'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
       address: v('cl-address'), postal_code: v('cl-postal'), website_url: v('cl-url'),
       client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
       branch_name: v('cl-branch'), department_name: v('cl-department'), invoice_number: v('cl-invoice'),
+      assignees: collectAssignees('cl'),
       // 代表者役職・代表者フリガナは画面に出さないので送らない（送らない項目は変わらず、これまでのデータは残る。#9304）
     })
   } catch (e) {
@@ -4048,17 +4357,14 @@ window.saveEmployeeRecord = async function (sid) {
   }
 }
 
-window.showAddClient = function () {
+window.showAddClient = async function () {
+  try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした'); return }
   modal(`
     <h3 class="font-bold text-lg mb-4">クライアント登録</h3>
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">クライアント名 *</label><input id="nc-name" class="inp"></div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">上流/下流</label>
-          <select id="nc-stream" class="inp"><option value="upstream">上流</option><option value="downstream">下流</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">種別</label>
-          <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
-      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">種別</label>
+        <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
         <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
@@ -4070,6 +4376,7 @@ window.showAddClient = function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">ホームページ</label><input id="nc-url" class="inp" type="url" maxlength="500" placeholder="https://example.co.jp"></div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
+      <div><p class="text-sm text-gray-600 mb-1">社内担当者</p>${assigneesEditorHtml('nc', [])}</div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addClient">登録する</button></div>
     </div>`)
@@ -4080,12 +4387,12 @@ window.addClient = async function () {
   if (!name) { toast('クライアント名を入力してください'); return }
   try {
     const res = await postConfirmingDuplicate('/api/admin/clients', {
-      client_name: name, stream_type: document.getElementById('nc-stream').value,
+      client_name: name,
       client_kind: document.getElementById('nc-kind').value, representative_name: document.getElementById('nc-rep-name').value.trim(),
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
       email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
       postal_code: document.getElementById('nc-postal').value.trim(), website_url: document.getElementById('nc-url').value.trim(),
-      memo: document.getElementById('nc-memo').value
+      memo: document.getElementById('nc-memo').value, assignees: collectAssignees('nc'),
     })
     if (!res) return
     closeModal(); toast('クライアントを登録しました'); renderClients()
@@ -4148,7 +4455,8 @@ async function renderShifts(dateStr) {
 
 window.showAddShift = async function (defaultDate) {
   // スタッフは選択肢用の軽いAPIで取る（#463）。割り当てられる人だけが返る（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職を除く #94）
-  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects')])
+  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects'),
+    window.loadShiftNotifySetting ? loadShiftNotifySetting() : null]) // 通知の会社の設定（「スタッフに通知を送る」の初めの値。#9906）
   const staff = st.staff.filter(s => s.assignable !== 0)
   addShiftProjects = pj.projects.filter(p => p.status === 'active')
   modal(`
@@ -4172,6 +4480,7 @@ window.showAddShift = async function (defaultDate) {
           <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
       <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
+      ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('sh-notify', { note: '登録したシフトを本人に知らせます' }) : ''}
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addShift">登録する</button></div>
     </div>`)
   addShiftFeeHint()
@@ -4275,6 +4584,7 @@ window.addShift = async function (force) {
       status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
       confirm_warnings: true, force: !!force,
       inherit: ADD_SHIFT_PRICE.inherit, ...(price ? { price } : {}),
+      ...(window.shiftNotifyParams ? shiftNotifyParams('sh-notify') : {}), // #9906
     })
   } catch (e) {
     const d = e.response && e.response.data
@@ -4286,7 +4596,8 @@ window.addShift = async function (force) {
 }
 delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
-window.showEditShift = function (shiftId, staffName, status) {
+window.showEditShift = async function (shiftId, staffName, status) {
+  if (window.loadShiftNotifySetting) await loadShiftNotifySetting() // 「スタッフに通知を送る」の初めの値（#9906）
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト操作 — ${esc(staffName)}</h3>
     <div class="space-y-2">
@@ -4295,6 +4606,7 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
+    ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('es-notify', { note: '上の状態の変更と削除のときに本人に知らせます' }) : ''}
     <div id="edit-shift-location"></div>
     <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
     <div id="edit-shift-withdrawals"></div>`)
@@ -4397,12 +4709,14 @@ window.openAttendancePhotos = function (shiftId, staffName) {
 delegate('attendancePhotos', el => openAttendancePhotos(Number(el.dataset.id), el.dataset.name))
 window.updateShift = async function (id, status) {
   // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
-  try { if (!await putShiftStatus(id, status)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
+  const np = window.shiftNotifyParams ? shiftNotifyParams('es-notify') : {} // スタッフに通知を送るか・メッセージ（#9906）
+  try { if (!await putShiftStatus(id, status, undefined, undefined, np)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
   closeModal(); toast('シフトを更新しました'); refreshShiftWeek()
 }
 window.deleteShift = async function (id) {
-  if (!confirm('このシフトを削除しますか？')) return
-  try { await axios.delete('/api/admin/shifts/' + id) } catch (e) { showApiError(e, '削除に失敗しました'); return }
+  const np = window.shiftNotifyParams ? shiftNotifyParams('es-notify') : {} // #9906
+  if (!confirm('このシフトを削除しますか？' + (np.notify === false ? '\n（スタッフに通知は送りません）' : ''))) return
+  try { await axios.delete('/api/admin/shifts/' + id, { data: np }) } catch (e) { showApiError(e, '削除に失敗しました'); return }
   closeModal(); toast('シフトを削除しました'); refreshShiftWeek()
 }
 
@@ -4579,6 +4893,22 @@ function reportCommentReadHtml(r, fmt) {
   if (r.comment_read_at) return `<span class="badge badge-green font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフがアプリでこのコメントを開きました"><i class="fas fa-check-double mr-0.5"></i>スタッフ既読 ${esc(fmt(r.comment_read_at))}</span>`
   return `<span class="badge badge-gray font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
 }
+// 最後の実績の修正・再提出（#9902。API の last_edit）。「誰が・いつ・どの項目を・いくつからいくつに」を1行で出し、全部は修正履歴で見る
+function reportLastEditHtml(r, fields, fmt) {
+  const e = r.last_edit
+  if (!e || !(e.changes || []).length) return ''
+  const label = new Map((fields && fields.length ? fields : REPORT_NO_TEMPLATE_FIELDS).map(f => [f.key, f.label]))
+  // 代理入力の再提出は、入力した管理者の名前を出す（修正履歴の表示と同じ）
+  const who = e.kind === 'admin_edit' ? `${e.edited_by_name || '管理者'}が修正`
+    : e.entry_method === 'proxy' ? `${e.edited_by_name || '管理者'}が代理入力で再提出` : `${r.staff_name || 'スタッフ'}が再提出`
+  // テキストの値は長いことがあるので折り返す（項目名だけ折り返さない）
+  const list = e.changes.map(c => `<span><span class="text-gray-500 whitespace-nowrap">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
+  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 break-words ${e.kind === 'admin_edit' ? 'bg-purple-50 text-purple-900' : 'bg-amber-50 text-amber-900'}" data-report-last-edit>
+    <i class="fas fa-user-pen mr-1"></i><b>${esc(who)}</b> <span class="text-gray-500">${esc(fmt(e.edited_at))}</span>：${list}${Number(e.more) > 0 ? ` ほか${Number(e.more)}項目` : ''}
+    ${e.reason ? `<span class="block text-gray-600 mt-0.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</span>` : ''}
+    <button class="text-blue-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>
+  </div>`
+}
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
   const revised = !r.manager_checked && r.revised_after_check_at
@@ -4591,13 +4921,18 @@ function reportCardHtml(r, fields) {
         ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
         ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
         ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
-        ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に修正しました">確認後に修正あり</span>` : ''}
+        ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に内容を変えて出し直したため、未確認に戻りました"><i class="fas fa-rotate-left mr-0.5"></i>出し直しで未確認に戻りました</span>` : ''}
         ${reportEntryBadge(r)}
         ${reportAdminEditBadge(r, fmt)}
         <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
       </div>
       ${reportIncidentHtml(r, fields)}
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="text-[11px] font-bold text-gray-500">日報の内容</span>
+        <button class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-blue-700 border-blue-200" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します（直した人・もとの値は修正履歴に残ります）"><i class="fas fa-pen-to-square"></i>実績を修正</button>
+      </div>
       ${reportValuesHtml(r, fields)}
+      ${reportLastEditHtml(r, fields, fmt)}
       ${r.manager_comment ? `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(r.manager_comment)}</span>
         <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5">${r.manager_comment_by_name || r.manager_comment_at ? `<span>${esc(r.manager_comment_by_name || '')} ${esc(fmt(r.manager_comment_at))}</span>` : ''}${reportCommentReadHtml(r, fmt)}</span></div>` : ''}
       <div class="flex gap-2 mt-3 flex-wrap items-center">
@@ -4606,7 +4941,6 @@ function reportCardHtml(r, fields) {
              ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
         <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
-        <button class="btn btn-outline text-xs" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します"><i class="fas fa-pen-to-square"></i>実績を修正</button>
         ${Number(r.edit_count) > 0 ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
@@ -4705,7 +5039,7 @@ delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
         <span class="text-gray-400 ml-auto">${esc(fmt(e.edited_at))}</span>
       </div>
       ${e.reason ? `<p class="text-xs text-gray-700 bg-gray-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
-      <table class="w-full text-xs mt-1.5"><tbody>
+      <table class="w-full text-xs mt-1.5"><thead><tr class="text-[11px] text-gray-400"><th class="text-left font-normal pr-2">項目</th><th class="text-left font-normal pr-1">もとの値</th><th></th><th class="text-left font-normal">変えた後</th></tr></thead><tbody>
         ${(e.changed_keys || []).map(k => `<tr class="border-t border-gray-100">
           <td class="py-1 pr-2 text-gray-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
           <td class="py-1 pr-1 text-gray-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>
@@ -6287,14 +6621,23 @@ delegate('copyTempPassword', async () => {
   toast('コピーしました')
 })
 
+// アカウントごとの「担当している会社」（#9910。クライアント・協力会社の社内担当者。user_id → [{ target_type, target_id, target_name, is_primary }]）
+let ACCOUNT_ASSIGNMENTS = new Map()
 async function renderAccount() {
   loading()
-  let me, list = null
+  let me, list = null, asg = []
   try {
     me = (await axios.get('/api/auth/account')).data
-    if (me.role === 'company_admin') list = (await axios.get('/api/admin/users')).data
+    const [l, a] = await Promise.all([
+      me.role === 'company_admin' ? axios.get('/api/admin/users').then(r => r.data) : null,
+      axios.get('/api/admin/assignees', me.role === 'company_admin' ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
+    ])
+    list = l; asg = a || []
   } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
   ADMIN_USERS = new Map((list ? list.users : []).map(u => [u.user_id, u]))
+  ACCOUNT_ASSIGNMENTS = new Map()
+  for (const a of asg) { const l = ACCOUNT_ASSIGNMENTS.get(a.user_id) || []; l.push(a); ACCOUNT_ASSIGNMENTS.set(a.user_id, l) }
+  const myAsg = ACCOUNT_ASSIGNMENTS.get(me.user_id) || []
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
     ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
@@ -6312,6 +6655,10 @@ async function renderAccount() {
           <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード（メールアドレスを変更するときだけ）</label><input id="ac-email-pw" type="password" class="inp" autocomplete="current-password"></div>
           <button class="btn btn-primary w-full" data-action="saveMyAccount">保存する</button>
           <p class="text-[11px] text-gray-400">メールアドレスを変更すると、新しいアドレスに確認のメールを、以前のアドレスに変更のお知らせを送ります。</p>
+        </div>
+        <div class="mt-4 pt-3 border-t border-gray-100" id="my-assignments">
+          <p class="text-xs font-bold text-gray-600 mb-1"><i class="fas fa-handshake text-blue-500 mr-1"></i>自分が担当している会社（社内担当者）</p>
+          ${accountAssignmentsHtml(myAsg)}
         </div>
       </section>
       <section class="card p-4">
@@ -6342,6 +6689,12 @@ async function renderAccount() {
       <button class="btn btn-outline text-sm" data-action="photoSkipSetting">写真を送れないときの扱い</button>
       <button class="btn btn-outline text-sm" data-action="photoRequiredSetting">写真添付の設定</button>
     </section>
+    <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-shift-notify">
+      <i class="fas fa-bell text-blue-500"></i>
+      <span class="text-sm flex-1">シフトを確定・削除したときのスタッフへの通知（会社全体）: <span id="account-shift-notify-state" class="text-gray-400">…</span>
+        <span class="block text-[11px] text-gray-400">確認の画面の「スタッフに通知を送る」のチェックの初めの値です。操作のたびに変えられます（#9906）</span></span>
+      <button class="btn btn-outline text-sm" data-action="shiftNotifySetting">通知の設定</button>
+    </section>
     ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
   // 写真添付の今の状態（読めなければ欄はそのまま。設定の画面を開けば読み直す）
   axios.get('/api/admin/settings/photo-required').then(({ data: d }) => {
@@ -6349,7 +6702,18 @@ async function renderAccount() {
     const last = (d.history || [])[0]
     el.outerHTML = `<span id="account-photo-state"><span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span>${last ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(last.at))} ${esc(last.name || '')}</span>` : ''}</span>`
   }).catch(() => { })
+  showShiftNotifyState()
 }
+// シフトの確定・削除の通知の会社の設定（#9906。設定の画面は shift-board.js の shiftNotifySetting）
+function showShiftNotifyState(d) {
+  const draw = (x) => {
+    const el = document.getElementById('account-shift-notify-state'); if (!el || !x) return
+    el.outerHTML = `<span id="account-shift-notify-state"><span class="badge ${x.enabled ? 'badge-green' : 'badge-gray'}">${x.enabled ? '送る' : '送らない'}</span>${x.updated_at ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(x.updated_at))} ${esc(x.updated_by_name || '')}</span>` : ''}</span>`
+  }
+  if (d) return draw(d)
+  axios.get('/api/admin/settings/shift-notify').then(({ data }) => draw(data)).catch(() => { })
+}
+window.onShiftNotifySaved = showShiftNotifyState
 
 function adminUsersHtml(users, meId) {
   return `
@@ -6364,7 +6728,7 @@ function adminUsersHtml(users, meId) {
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
-            <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">最終ログイン</th><th></th>
+            <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2 whitespace-nowrap">担当している会社</th><th class="text-left py-2">最終ログイン</th><th></th>
           </tr></thead>
           <tbody>
             ${users.map(u => `
@@ -6374,6 +6738,7 @@ function adminUsersHtml(users, meId) {
                 <td class="py-2 text-xs">${u.email ? esc(u.email) : '<span class="text-amber-600">未登録</span>'}</td>
                 <td class="py-2">${esc(ADMIN_ROLE_LABEL[u.role] || u.role)}</td>
                 <td class="py-2">${u.status === 'active' ? '<span class="badge badge-green">利用中</span>' : '<span class="badge badge-gray">停止</span>'}${u.must_change_password ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
+                <td class="py-2 text-xs whitespace-nowrap">${accountAssignmentCountHtml(u)}</td>
                 <td class="py-2 text-xs text-gray-400">${u.last_login_at ? esc(dayjs(u.last_login_at).format('M/D HH:mm')) : '-'}</td>
                 <td class="py-2 text-right whitespace-nowrap">
                   <button class="btn btn-outline text-xs" data-action="editAdminUser" data-id="${u.user_id}">編集</button>
@@ -6492,6 +6857,34 @@ delegate('doResetAdminUserPassword', (el) => withSubmitLock(el, async () => {
   } catch (e) { showApiError(e, '再発行に失敗しました') }
 }))
 
+// 担当している会社（#9910）: 主担当・副担当に分け、クライアント・協力会社の詳細へのリンクにする
+function accountAssignmentsHtml(list) {
+  if (!list.length) return '<p class="text-xs text-gray-400">担当している会社はありません（クライアント・協力会社の会社基本情報で、社内担当者に選ばれると出ます）</p>'
+  const link = a => `<a href="#${a.target_type === 'client' ? 'clients' : 'partners'}/${Number(a.target_id)}" class="text-blue-600 hover:underline" data-action="accountAssignmentLink">${esc(a.target_name)}</a><span class="text-[11px] text-gray-400 ml-0.5">（${a.target_type === 'client' ? 'クライアント' : '協力会社'}）</span>`
+  const main = list.filter(a => a.is_primary), subs = list.filter(a => !a.is_primary)
+  return `<dl class="text-xs space-y-1">
+    <div class="flex gap-2"><dt class="w-12 text-gray-400 shrink-0">主担当</dt><dd class="min-w-0">${main.length ? main.map(link).join('、') : '<span class="text-gray-400">-</span>'}</dd></div>
+    <div class="flex gap-2"><dt class="w-12 text-gray-400 shrink-0">副担当</dt><dd class="min-w-0">${subs.length ? subs.map(link).join('、') : '<span class="text-gray-400">-</span>'}</dd></div>
+  </dl>`
+}
+function accountAssignmentCountHtml(u) {
+  const list = ACCOUNT_ASSIGNMENTS.get(u.user_id) || []
+  if (!list.length) return '<span class="text-gray-300">-</span>'
+  const main = list.filter(a => a.is_primary).length
+  return `<button type="button" class="text-blue-600 hover:underline" data-action="showAccountAssignments" data-id="${Number(u.user_id)}">主 ${main}社・副 ${list.length - main}社</button>`
+    + (u.status !== 'active' ? '<span class="block text-[11px] text-amber-700">停止中のため担当から外れています</span>' : '')
+}
+// モーダルの中のリンクで移るときは、モーダルを閉じる（移動はリンクのまま）
+delegate('accountAssignmentLink', () => { if (document.getElementById('modal-root').innerHTML) closeModal() })
+delegate('showAccountAssignments', el => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">担当している会社（${esc(u.name)}）</h3>
+    ${u.status !== 'active' ? '<p class="text-xs text-amber-700 mb-2">このアカウントは停止中のため、各社の社内担当者から外れています（会社の画面で別の人を選んでください）</p>' : ''}
+    <div class="mt-2">${accountAssignmentsHtml(ACCOUNT_ASSIGNMENTS.get(u.user_id) || [])}</div>
+    <div class="flex justify-end mt-4"><button class="btn btn-outline" onclick="closeModal()">閉じる</button></div>`)
+})
+
 // ダッシュボード: メールアドレスのない管理者に登録を案内する（#25）
 function accountEmailNotice() {
   if (!ME || ME.email || document.getElementById('account-email-notice')) return
@@ -6564,7 +6957,9 @@ document.getElementById('mobile-nav').addEventListener('change', e => { location
 })()
 routes.availability = () => renderAvailabilityBoard()
 const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
-const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み']]
+const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み'], ['exempt', '回収の対象外']]
+// 回収の対象（#9907）: exempt の人（スタッフマスタで「対象外」にした人）は、未提出の数・通知に数えない
+const avbIsTarget = (s) => s.has_login && !s.exempt
 let AVB = { month: null, data: null, filter: 'all' }
 const avbMonthLabel = (m) => `${Number(String(m).slice(0, 4))}年${Number(String(m).slice(5, 7))}月`
 const avbAt = (at) => at ? dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm') : ''
@@ -6589,9 +6984,11 @@ function drawAvailabilityBoard() {
   const d = AVB.data
   const first = dayjs(d.month + '-01')
   const loginStaff = d.staff.filter(s => s.has_login)
-  const unsubmitted = loginStaff.filter(s => !s.submitted_at)
-  const lateCount = d.staff.filter(s => s.late).length
-  const rows = d.staff.filter(s => AVB.filter === 'all' || (AVB.filter === 'submitted' ? !!s.submitted_at : !s.submitted_at && s.has_login))
+  const targets = loginStaff.filter(avbIsTarget)
+  const exemptCount = d.staff.filter(s => s.exempt).length
+  const unsubmitted = targets.filter(s => !s.submitted_at)
+  const lateCount = d.staff.filter(s => s.late && !s.exempt).length
+  const rows = d.staff.filter(s => AVB.filter === 'all' || (AVB.filter === 'submitted' ? !!s.submitted_at : AVB.filter === 'exempt' ? s.exempt : !s.submitted_at && avbIsTarget(s)))
   // △の時間帯・メモ（セルの title に出す）
   const detail = {}
   for (const x of d.details || []) detail[`${x.staff_id}:${Number(String(x.work_date).slice(8, 10))}`] = [x.status === 'partial' ? `${String(x.start_time).slice(0, 5)}〜${String(x.end_time).slice(0, 5)}` : '', x.note || ''].filter(Boolean).join(' ')
@@ -6602,9 +6999,10 @@ function drawAvailabilityBoard() {
   // 日ごとの ○・△ の人数
   const avail = Array(d.days).fill(0)
   for (const s of d.staff) for (let i = 0; i < d.days; i++) if (s.marks[i] === 'o' || s.marks[i] === 'p') avail[i]++
-  const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>'
-    : s.submitted_at ? `<span class="badge ${s.late ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>`
-    : '<span class="badge badge-red">未提出</span>'
+  const exemptBadge = '<span class="badge badge-gray" title="シフト希望の回収の対象外です。未提出の数・通知に数えません（スタッフマスタで変えられます）">対象外</span>'
+  const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>' + (s.exempt ? ' ' + exemptBadge : '')
+    : s.submitted_at ? `<span class="badge ${s.late && !s.exempt ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late && !s.exempt ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>${s.exempt ? ' ' + exemptBadge : ''}`
+    : s.exempt ? exemptBadge : '<span class="badge badge-red">未提出</span>'
   const cell = (s, i) => {
     const m = AVB_MARK[s.marks[i]]
     const hasShift = s.shift_days.includes(String(i + 1).padStart(2, '0'))
@@ -6631,8 +7029,9 @@ function drawAvailabilityBoard() {
       </section>
       <section class="card p-4">
         <h3 class="font-bold text-gray-800 mb-2">提出状況</h3>
-        <p class="text-sm text-gray-700">提出済み <b>${loginStaff.length - unsubmitted.length}</b> / ${loginStaff.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
+        <p class="text-sm text-gray-700">提出済み <b>${targets.length - unsubmitted.length}</b> / ${targets.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
         ${d.staff.length > loginStaff.length ? `<p class="text-xs text-gray-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
+        ${exemptCount ? `<p class="text-xs text-gray-400 mt-1" id="avb-exempt-note">回収の対象外のスタッフ ${exemptCount}人は数えていません（<a href="#staff" class="text-blue-600 hover:underline">スタッフマスタ</a>で、対象・対象外を変えられます）</p>` : ''}
         ${unsubmitted.length ? `<div class="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">${unsubmitted.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>` : ''}
         <div class="flex items-center gap-2 flex-wrap mt-3">
           <button class="btn btn-outline text-sm" data-action="avbRemind" ${unsubmitted.length ? '' : 'disabled'}><i class="fas fa-bell"></i>未提出の人に通知する（${unsubmitted.length}人）</button>
@@ -6648,7 +7047,7 @@ function drawAvailabilityBoard() {
     <div class="card overflow-x-auto">
       <table class="text-xs whitespace-nowrap">
         <thead class="bg-gray-50"><tr><th class="px-2 py-1 text-left sticky left-0 bg-gray-50">スタッフ</th><th class="px-2 py-1 text-left">提出</th>${dayHead}</tr></thead>
-        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr>
+        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr${s.exempt ? ' class="text-gray-500"' : ''}>
           <td class="px-2 py-1 sticky left-0 bg-white"><a href="#staff/${Number(s.staff_id)}" class="text-blue-700 hover:underline">${esc(s.name)}</a></td>
           <td class="px-2 py-1">${statusCell(s)}</td>
           ${Array.from({ length: d.days }, (_, i) => cell(s, i)).join('')}</tr>`).join('') || `<tr><td colspan="${d.days + 2}" class="text-center text-gray-400 py-8">該当するスタッフはいません</td></tr>`}</tbody>
@@ -6668,7 +7067,7 @@ delegate('avbSavePeriod', (el) => withSubmitLock(el, async () => {
   renderAvailabilityBoard(AVB.month)
 }))
 delegate('avbRemind', (el) => {
-  const n = AVB.data.staff.filter(s => s.has_login && !s.submitted_at).length
+  const n = AVB.data.staff.filter(s => avbIsTarget(s) && !s.submitted_at).length
   if (!confirm(`${avbMonthLabel(AVB.month)}の出勤可能日を提出していない ${n}人に、提出のお願いを通知します。よろしいですか？`)) return
   withSubmitLock(el, async () => {
     let r

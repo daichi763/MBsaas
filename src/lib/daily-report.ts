@@ -26,6 +26,8 @@ export function dailyReportView(r: any | null) {
     admin_edited_at: r.admin_edited_at ?? null,
     incident_flag: !!r.incident_flag, complaint_flag: !!r.complaint_flag,
     manager_checked: !!r.manager_checked, manager_comment: r.manager_comment ?? null,
+    // コメントの日時と、コメントした人の名前（#9901。名前はスタッフアプリの API だけが入れる）
+    manager_comment_at: r.manager_comment ? (r.manager_comment_at ?? null) : null, manager_comment_by_name: null as string | null,
   }
 }
 
@@ -73,7 +75,8 @@ export function dailyReportBlocked(shift: { work_date: string; status?: string |
 
 /**
  * 日報の登録（同じシフトの日報があれば上書き）。1文の UPSERT なので、二度押しでも行は1つ。
- * - 上書きのときは管理者の確認済みを外し、確認済みだった場合は revised_after_check_at に日時を残す。
+ * - 上書きで値が変わったときは管理者の確認（manager_checked・_by・_at）を外し、確認済みだった場合は revised_after_check_at に日時を残す。
+ *   値（キーの並びを除く）とインシデント・クレームの印が同じ出し直しは、確認済みのままにする（#9902）。
  * - インシデント・クレームの印は、画面で前回の値を表示して送った（flagsExplicit）ときだけ下げられる。
  *   そうでなければ一度立てた印を保つ。
  */
@@ -97,11 +100,16 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
   const explicit = r.flags_explicit ? 1 : 0
   // 管理者が値を直した日報（#9707）を、値を変えて出し直したときは、再提出の値を正にする（「管理者が修正」の印を外す）。
   // 直した値を失わないよう、出し直す前の値を履歴（daily_report_edits）に残す。同じ値のままの出し直しは、印も履歴もそのまま
-  const cur = existed ? await db.prepare('SELECT report_values, admin_edited_at FROM daily_reports WHERE shift_id = ?').bind(r.shift_id).first() as any : null
+  const cur = existed ? await db.prepare('SELECT report_values, admin_edited_at, incident_flag, complaint_flag FROM daily_reports WHERE shift_id = ?').bind(r.shift_id).first() as any : null
   const stmts: D1PreparedStatement[] = []
-  // キーの並びだけが違う同じ値は、同じ値の出し直しとして扱う（保存してある文字列のままにして、印を外さない）
-  if (cur && cur.admin_edited_at && typeof cur.report_values === 'string' && cur.report_values !== r.values_json
+  // キーの並びだけが違う同じ値は、同じ値の出し直しとして扱う（保存してある文字列のままにして、印・管理者の確認を外さない）
+  if (cur && typeof cur.report_values === 'string' && cur.report_values !== r.values_json
     && !changedReportKeys(parseReportValuesJson(cur.report_values), parseReportValuesJson(r.values_json)).length) r = { ...r, values_json: cur.report_values }
+  // 出し直しで値（インシデント・クレームの印を含む）が変わったら、管理者の確認を外して「未確認」に戻す（#9902）。
+  // 値が変わらない出し直しは、確認済みのままにする（SQL でも保存してある値と同じときだけ保つ）
+  const flagAfter = (now: boolean, before: unknown) => (r.flags_explicit ? now : (now || !!before)) ? 1 : 0
+  const keepCheck = !!cur && cur.report_values === r.values_json
+    && flagAfter(r.incident, cur.incident_flag) === (cur.incident_flag ? 1 : 0) && flagAfter(r.complaint, cur.complaint_flag) === (cur.complaint_flag ? 1 : 0)
   if (cur && cur.admin_edited_at && cur.report_values !== r.values_json) {
     const changed = changedReportKeys(parseReportValuesJson(cur.report_values), parseReportValuesJson(r.values_json))
     stmts.push(db.prepare(`INSERT INTO daily_report_edits (company_id, daily_report_id, kind, entry_method, before_values, after_values, changed_keys, edited_by, edited_at)
@@ -116,12 +124,15 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
       incident_flag = CASE WHEN ? = 1 THEN excluded.incident_flag ELSE MAX(COALESCE(daily_reports.incident_flag, 0), excluded.incident_flag) END,
       complaint_flag = CASE WHEN ? = 1 THEN excluded.complaint_flag ELSE MAX(COALESCE(daily_reports.complaint_flag, 0), excluded.complaint_flag) END,
       submitted_at = excluded.submitted_at, entry_method = excluded.entry_method, entered_by = excluded.entered_by,
-      revised_after_check_at = CASE WHEN daily_reports.manager_checked = 1 THEN excluded.submitted_at ELSE daily_reports.revised_after_check_at END,
+      revised_after_check_at = CASE WHEN ? = 1 AND daily_reports.report_values IS excluded.report_values THEN daily_reports.revised_after_check_at
+        WHEN daily_reports.manager_checked = 1 THEN excluded.submitted_at ELSE daily_reports.revised_after_check_at END,
       admin_edited_at = CASE WHEN daily_reports.report_values IS excluded.report_values THEN daily_reports.admin_edited_at ELSE NULL END,
       admin_edited_by = CASE WHEN daily_reports.report_values IS excluded.report_values THEN daily_reports.admin_edited_by ELSE NULL END,
-      manager_checked = 0`)
+      manager_checked_by = CASE WHEN ? = 1 AND daily_reports.report_values IS excluded.report_values THEN daily_reports.manager_checked_by ELSE NULL END,
+      manager_checked_at = CASE WHEN ? = 1 AND daily_reports.report_values IS excluded.report_values THEN daily_reports.manager_checked_at ELSE NULL END,
+      manager_checked = CASE WHEN ? = 1 AND daily_reports.report_values IS excluded.report_values THEN daily_reports.manager_checked ELSE 0 END`)
     .bind(r.company_id, r.staff_id, r.project_id, r.shift_id, r.work_date, r.values_json, r.incident ? 1 : 0, r.complaint ? 1 : 0, r.now, r.entry_method,
-      r.entered_by ?? null, explicit, explicit))
+      r.entered_by ?? null, explicit, explicit, keepCheck ? 1 : 0, keepCheck ? 1 : 0, keepCheck ? 1 : 0, keepCheck ? 1 : 0))
   await db.batch(stmts)
   return { updated: existed }
 }

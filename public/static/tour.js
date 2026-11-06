@@ -552,7 +552,7 @@
     ] },
     clients: { label: 'クライアント', steps: [
       { sel: '[onclick^="showAddClient"]', title: 'クライアント登録', body: P('取引先（請求先）の会社を登録します。会社名・住所・締め日・担当者などを入れます。') },
-      { sel: [parentOf('#client-q'), '#client-q'], title: '検索・並べ替え', body: P('会社名・代表者・担当者・稼働中の案件で探せます。上流・下流や並び順も選べます。') },
+      { sel: [parentOf('#client-q'), '#client-q'], title: '検索・並べ替え', body: P('会社名・代表者・担当者・稼働中の案件で探せます。社内担当者での絞り込みや並び順も選べます。') },
       { sel: '#client-cards', title: 'クライアントの一覧', body: P('会社名を押すと詳細を開き、担当者・契約書・案件などを確かめられます。') },
       { sel: closestOf('#client-docexp', 'label'), title: '契約書の期限', body: P('契約書の契約終了日が近い・過ぎた会社だけを出せます。') },
     ] },
