@@ -351,9 +351,63 @@ function dashLoginBadges(s) {
     + (s.has_report_link ? '' : ' <span class="badge badge-yellow text-[10px]" title="このシフトの報告用URLをまだ発行していません">URL未発行</span>')
 }
 
+// ダッシュボードの絞り込み（#9905）: '' = すべての案件 / 'p:<案件ID>' / 'c:<クライアントID>'。この端末に、管理者ごとに覚える
+let DASH_SCOPE = null // まだ読んでいない（最初の描画で localStorage から読む）
+let DASH_SEQ = 0      // 読み込みの番号（後から始めた読み込みだけを描く）
+const dashScopeKey = () => 'admin-dash-scope:' + (ME ? `${ME.company_id}:${ME.user_id}` : '')
+function dashScopeLoad() {
+  try { const v = localStorage.getItem(dashScopeKey()) || ''; return /^[pc]:\d+$/.test(v) ? v : '' } catch (e) { return '' }
+}
+function dashScopeSave(v) {
+  try { if (v) localStorage.setItem(dashScopeKey(), v); else localStorage.removeItem(dashScopeKey()) } catch (e) { /* 覚えられなくても絞り込みは使える */ }
+}
+// 絞り込みの選択肢: すべての案件・クライアントごとの案件（案件が2件以上のクライアントと、選んでいるクライアントは「〇〇の案件すべて」も）
+function dashScopeOptions(data) {
+  const groups = new Map()
+  for (const p of data.scope_options || []) {
+    const k = p.client_id == null ? '' : String(p.client_id)
+    if (!groups.has(k)) groups.set(k, { client_id: p.client_id, name: p.client_name || '', list: [] })
+    groups.get(k).list.push(p)
+  }
+  const opt = (v, label) => `<option value="${esc(v)}" ${DASH_SCOPE === v ? 'selected' : ''}>${esc(label)}</option>`
+  const sorted = [...groups.values()].sort((a, b) => (a.client_id == null) - (b.client_id == null) || a.name.localeCompare(b.name, 'ja'))
+  return opt('', 'すべての案件') + sorted.map(g => {
+    const list = g.list.sort((a, b) => (b.active - a.active) || String(a.project_name).localeCompare(String(b.project_name), 'ja'))
+    return `<optgroup label="${esc(g.client_id == null ? 'クライアントなし' : g.name || 'クライアント')}">
+      ${g.client_id != null && (list.length > 1 || DASH_SCOPE === 'c:' + Number(g.client_id)) ? opt('c:' + Number(g.client_id), `${g.name}の案件すべて（${list.length}件）`) : ''}
+      ${list.map(p => opt('p:' + Number(p.project_id), p.project_name + (p.active ? '' : '（終了・停止）'))).join('')}</optgroup>`
+  }).join('')
+}
+// 読み込み中: 前の表示を残したまま薄くし、更新ボタンを回す（#9904。画面を真っ白にしない）
+function dashSetBusy(on) {
+  const body = document.getElementById('dash-body')
+  if (body) { body.classList.toggle('opacity-60', on); body.classList.toggle('pointer-events-none', on); body.setAttribute('aria-busy', on ? 'true' : 'false') }
+  const btn = document.getElementById('dash-refresh')
+  if (btn) { btn.disabled = on; const i = btn.querySelector('i'); if (i) i.classList.toggle('fa-spin', on) }
+  const st = document.getElementById('dash-status')
+  if (st) st.textContent = on ? '更新中…' : st.dataset.time || ''
+}
+delegate('dashRefresh', () => renderDashboard())
+delegate('dashScopeClear', () => { DASH_SCOPE = ''; dashScopeSave(''); renderDashboard() })
+
 async function renderDashboard() {
-  loading()
-  const { data } = await axios.get('/api/admin/dashboard')
+  if (DASH_SCOPE === null) DASH_SCOPE = dashScopeLoad()
+  const root = document.getElementById('dash-body')
+  const refreshing = !!(root && DASH_DATA)
+  const seq = ++DASH_SEQ
+  if (refreshing) dashSetBusy(true)
+  else loading()
+  const params = DASH_SCOPE.startsWith('p:') ? { project_id: DASH_SCOPE.slice(2) } : DASH_SCOPE.startsWith('c:') ? { client_id: DASH_SCOPE.slice(2) } : {}
+  let data
+  try { data = (await axios.get('/api/admin/dashboard', { params })).data } catch (e) {
+    if (seq !== DASH_SEQ) return
+    if (refreshing) { if (root.isConnected) { dashSetBusy(false); showApiError(e, 'ダッシュボードを更新できませんでした') } return }
+    throw e
+  }
+  // 後から別の読み込みを始めた・更新の間にほかの画面へ移ったときは描かない
+  if (seq !== DASH_SEQ || (refreshing && !root.isConnected)) return
+  if (data.scope_invalid) { DASH_SCOPE = ''; dashScopeSave(''); toast('選んでいた案件が見つからないため、すべての案件を表示しています') }
+  const scope = data.scope
   DASH_DATA = data
   const un = data.unreported
   DASH_SHIFTS.clear()
@@ -421,7 +475,7 @@ async function renderDashboard() {
   // 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト。押すとシフトボードのその週・その案件を開く（#299）
   const ahead = data.staffing_ahead || { short_roles: [], requested_shifts: [] }
   const aheadHtml = `
-    <h4 class="text-xs font-bold text-gray-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
+    <h4 class="text-xs font-bold text-gray-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件${ahead.short_more ? '以上' : ''}・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
     ${ahead.short_roles.length ? `<div class="space-y-1 max-h-48 overflow-y-auto mb-3">${ahead.short_roles.map(r => `
       <button type="button" class="w-full text-left rounded-lg bg-red-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(r.work_date)}" data-project-id="${Number(r.project_id)}" data-short="1">
         <span class="text-gray-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
@@ -436,22 +490,34 @@ async function renderDashboard() {
       </button>`).join('')}</div>` : '<p class="text-xs text-gray-400">確定を待っているシフトはありません</p>'}`
 
   const photoChanged = data.photo_required_changed
-  $app.innerHTML = `
-    <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
+  // 日報一覧へのリンクは、案件で絞っていればその案件で開く（クライアントで絞ったときは日報一覧に同じ絞り込みがないので全案件）
+  const reportProject = scope && scope.project_id ? `&project=${Number(scope.project_id)}` : ''
+  const headHtml = `<div id="dash-head">
+    <div class="flex items-start justify-between mb-3 flex-wrap gap-2">
       <div>
         <h2 class="text-xl font-bold text-gray-900">管理者ダッシュボード</h2>
         <p class="text-sm text-gray-500">${dayjs(data.today).format('YYYY年M月D日')} — 今日見るべきこと・対応すべきこと</p>
       </div>
-      <button class="btn btn-outline" onclick="renderDashboard()"><i class="fas fa-rotate"></i>更新</button>
+      <div class="flex items-center gap-2 flex-wrap">
+        <select id="dash-scope" class="inp w-auto max-w-[16rem] text-sm" aria-label="表示する案件">${dashScopeOptions(data)}</select>
+        <button type="button" id="dash-refresh" class="btn btn-outline" data-action="dashRefresh"><i class="fas fa-rotate"></i>更新</button>
+        <span id="dash-status" class="text-[11px] text-gray-400 whitespace-nowrap" aria-live="polite" data-time="${esc(String(data.now || '').slice(11, 16))} 時点">${esc(String(data.now || '').slice(11, 16))} 時点</span>
+      </div>
     </div>
+    ${scope ? `<div class="mb-4 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800 flex items-center gap-2 flex-wrap">
+      <i class="fas fa-filter"></i><span class="flex-1 min-w-0"><b>${esc(scope.label)}</b>${scope.client_id ? 'の案件すべて' : ''}で表示しています（シフト・売上・未報告・日報・インシデント・案件別実績・人員不足・前日確認）。管理者ToDo・要フォロースタッフは会社全体です</span>
+      <button type="button" class="underline whitespace-nowrap" data-action="dashScopeClear">すべての案件に戻す</button></div>` : '<div class="mb-2"></div>'}
+    </div>`
+  const bodyHtml = `<div id="dash-body" class="transition-opacity">
 
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
       ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
-      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）')}
+      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）'
+        + (data.revenue_monthly ? `<br><span title="月額（固定）は、その月の最初の稼働日の売上予定に入れます（精算で計上する日と同じ）">うち月額（固定）${yen(data.revenue_monthly)}</span>` : ''))}
       ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400',
         (data.missing_daily_reports.length ? '<button type="button" class="text-blue-600 hover:underline mr-2" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
-        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
-      ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400')}
+        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1${reportProject}" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
+      ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400', scope ? '会社全体' : '')}
     </section>
 
     <section class="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mb-1" id="unreported-section">
@@ -492,7 +558,7 @@ async function renderDashboard() {
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-file-circle-exclamation text-red-500 mr-1"></i>日報未提出（直近3日）
           <span class="badge ${missing.length ? 'badge-red' : 'badge-green'} ml-1">${missing.length ? missing.length + '件' : 'なし'}</span></h3>
         ${missingHtml}
-        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
+        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1${reportProject}" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
       </section>
       <section class="card p-4" id="dash-ahead">
         <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-week text-blue-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
@@ -572,12 +638,23 @@ async function renderDashboard() {
         <span class="badge ${data.photo_required_attendance ? 'badge-green' : 'badge-gray'}">${data.photo_required_attendance ? '必須' : '無効'}</span>
         ${photoChanged ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
       <a href="#account" class="text-xs text-blue-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します（#405）">アカウント設定で変更</a>
-    </section>`
+    </section>
+    </div>`
+  // 更新: 見出しと本体だけを描き直す（上に出している「はじめにやること」・お知らせは残す）
+  const oldHead = document.getElementById('dash-head'), oldBody = document.getElementById('dash-body')
+  if (refreshing && oldHead && oldBody) { oldHead.outerHTML = headHtml; oldBody.outerHTML = bodyHtml }
+  else $app.innerHTML = headHtml + bodyHtml
+  const scopeSel = document.getElementById('dash-scope')
+  scopeSel.onchange = () => { DASH_SCOPE = scopeSel.value; dashScopeSave(DASH_SCOPE); renderDashboard() }
   drawDashShifts()
   DASH_TODOS.todos = data.todos || []
   DASH_TODOS.hidden = data.hidden_todos || []
   drawDashTodos()
-  if (window.renderChatDashboardNotice) renderChatDashboardNotice()
+  if (window.renderChatDashboardNotice) {
+    // 企業間チャットの新着は読み込み直して出し直す（見出しの直後に入る）
+    const chat = document.getElementById('chat-dashboard-notice'); if (chat) chat.remove()
+    renderChatDashboardNotice()
+  }
 }
 
 // ---------- ダッシュボード: 本日のシフトの表（#348 #355 #488）----------

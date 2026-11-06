@@ -22,13 +22,13 @@ import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
 import { loginEmailVerifyEmail } from './email-templates/login-email'
 import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, latenessSettingsFor, validGraceMinutes, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
-import { dailyReportRequiredSql } from './report-settings'
+import { attendanceTypesBatch, dailyReportRequiredSql } from './report-settings'
 import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-settings'
 // 前日確認（#176）と、電波がない場所で押した報告の時刻（#427）
 import { clientRequestId, dayBeforeKey, dayBeforeSettings, dayBeforeState, deviceReportTime } from './report-settings'
 import { chunk } from './lib/d1-chunk'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
-import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow } from './lib/shift-time'
+import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
@@ -2924,17 +2924,47 @@ const DASH_LEAVE_OVERDUE_DAYS = 30
 function minutesBetween(from: string, to: string): number {
   return Math.round((Date.parse(to.replace(' ', 'T') + 'Z') - Date.parse(from.replace(' ', 'T') + 'Z')) / 60000)
 }
+// 日時の計算は分（数値。UTC として数える）で行う（#9904）。文字列の日時から Date を何度も作ると、シフトの多い会社で CPU の時間がかかるため。
+// dashMin: 'YYYY-MM-DD[ HH:MM[:SS]]' → 分。dashAt: 分 → 'YYYY-MM-DD HH:MM:SS'
+const dashMin = (v: string) => Date.UTC(Number(v.slice(0, 4)), Number(v.slice(5, 7)) - 1, Number(v.slice(8, 10)), Number(v.slice(11, 13)) || 0, Number(v.slice(14, 16)) || 0, Number(v.slice(17, 19)) || 0) / 60000
+const dashAt = (min: number) => new Date(Math.round(min) * 60000).toISOString().slice(0, 19).replace('T', ' ')
+// シフトの稼働日の 0:00・予定の開始・終了（分）と、日をまたぐか（shift-time.ts の shiftWindow・crossesMidnight と同じ。終了が開始以前なら翌日）
+function dashTimes(s: { work_date: string; start_time: string; end_time: string }) {
+  const day = dashMin(s.work_date), st = toMin(s.start_time); let en = toMin(s.end_time)
+  if (en <= st) en += 1440
+  return { day, start: day + st, end: day + en, cross: en >= 1440 }
+}
+// 名前の並べ替え（localeCompare(x, 'ja') と同じ順。比べるたびに照合の準備をしないよう、1つを使い回す）
+const DASH_JA_COMPARE = new Intl.Collator('ja').compare
 const mdLabel = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
 
+// 日報未提出（直近3日）のシフトの条件（日報一覧の『未提出』と同じ照合。shift_id の無い古い日報だけは稼働日・案件で照合）
+const DASH_NO_REPORT_SQL = `NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
+      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)`
+
 // 管理者ダッシュボード
+// 問い合わせは1回の db.batch（と、並べて行う人員不足・月額の読み込み）にまとめる（#9904。1つずつ待つと D1 の往復の数だけ遅くなる）。
+// 案件の絞り込み（#9905）: project_id（その案件）か client_id（そのクライアントの案件）。どちらもなければ全案件。
+//   絞り込むのは、今日のシフト・売上予定・未報告・欠勤・日報未提出・未確認の日報・インシデント・今月の案件別実績・人員不足・前日確認の一覧。
+//   管理者ToDo・要フォロースタッフ・相談の件数は会社全体のまま（ToDo の『対応済み』の件数の印 mark が絞り込みで変わらないように）
 api.get('/admin/dashboard', async (c) => {
   const u = c.get('user'); const today = todayJST(); const month = monthJST(); const [mFrom, mTo] = monthBounds(month)
   const db = c.env.DB; const cid = u.company_id
-
-  // 本日と前日のシフト + 勤怠状況（前日分は、日をまたぐ勤務の継続と勤務終了・退店の未報告に使う）
+  const qProject = toInt(c.req.query('project_id'), 1), qClient = toInt(c.req.query('client_id'), 1)
   const now = nowJST(); const yesterday = addDays(today, -1)
   const elig = assignableStaffSql({ sp: 'sp', us: 'us', onDate: today })
-  const shifts = await db.prepare(`
+  const waitSince = addMinutes(now, -DASH_CONSULT_WAIT_DAYS * 1440)
+  const dayBefore = dayBeforeSettings(u.settings_json)
+  const tomorrow = addDays(today, 1)
+  const isHr = HR_ROLES.includes(u.role)
+  const docLimit = addDays(today, DASH_DOC_EXPIRY_DAYS)
+  // 本日と前日の確定・代打のシフト（報告の設定を決める対象。欠勤は除く）
+  const workingIdsSql = `SELECT w.shift_id FROM shifts w WHERE w.company_id = ? AND w.work_date IN (?, ?) AND w.status IN ('confirmed','substitute')`
+  const att = attendanceTypesBatch(db, workingIdsSql, [cid, yesterday, today])
+
+  const Q: Record<string, D1PreparedStatement> = {
+    // 本日と前日のシフト + 勤怠状況（前日分は、日をまたぐ勤務の継続と勤務終了・退店の未報告に使う）
+    shifts: db.prepare(`
     SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.status, s.unit_price, s.location, s.slot_role_id, s.settle_status,
            s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust,
            p.project_id, p.project_name, us.name AS staff_name, us.phone AS staff_phone, us.role = 'staff' AS has_login,
@@ -2946,28 +2976,190 @@ api.get('/admin/dashboard', async (c) => {
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id
     JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.work_date IN (?, ?) AND s.status IN ('confirmed','substitute','absent')
-    ORDER BY s.work_date, s.start_time, p.project_name, us.name, s.shift_id`).bind(...elig.binds, cid, yesterday, today).all()
+    ORDER BY s.work_date, s.start_time, p.project_name, us.name, s.shift_id`).bind(...elig.binds, cid, yesterday, today),
+    // 報告ごとの時刻・遅延・位置不明・遅刻と早退の分数（#348）。報告はシフトと種類で1件（uq_attendance_shift_type）
+    reports: db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, time_source, received_at, corrected_by_correction_id, distance_m
+    FROM attendance_reports WHERE shift_id IN (SELECT r.shift_id FROM shifts r WHERE r.company_id = ? AND r.work_date IN (?, ?) AND r.status IN ('confirmed','substitute','absent'))`)
+      .bind(cid, yesterday, today),
+    att0: att.statements[0], att1: att.statements[1], att2: att.statements[2],
+    // 遅刻・欠勤・体調不良の相談（#498）
+    contacts: db.prepare(`
+    SELECT co.consultation_id, co.staff_id, co.category, co.urgency, co.status, co.target_project_id, co.target_date, co.created_at,
+      substr(co.body, 1, ${DASH_CONTACT_EXCERPT}) AS excerpt, length(co.body) > ${DASH_CONTACT_EXCERPT} AS truncated
+    FROM consultations co
+    WHERE co.company_id = ? AND co.category IN ('absence', 'health')
+      AND (co.target_date IN (?, ?) OR (co.target_date IS NULL AND co.created_at >= ?))
+    ORDER BY co.created_at DESC, co.consultation_id DESC LIMIT 200`).bind(cid, yesterday, today, `${addDays(yesterday, -1)} 00:00:00`),
+    // 昨日までの日報未提出 (直近3日)。代打も含め、シフトごとに判定する。日報「不要」のシフト（シフト → スタッフ → 案件の設定）は対象外
+    // 画面の一覧（日付・スタッフ・案件・電話。#344）に使う列も返す
+    missing: db.prepare(`
+    SELECT s.shift_id, s.work_date, s.start_time, s.end_time, us.name AS staff_name, s.staff_id, p.project_id, p.project_name,
+      us.phone AS staff_phone, us.role = 'staff' AS has_login
+    FROM shifts s
+    JOIN projects p ON s.project_id = p.project_id
+    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
+      AND ${dailyReportRequiredSql('s', 'sp', 'p')}
+      AND ${DASH_NO_REPORT_SQL}
+    ORDER BY s.work_date DESC, s.start_time, p.project_name, us.name`).bind(cid, today, today),
+    // インシデント (直近7日)。対応状況（#169）を付け、対応済みでないものを先に並べる
+    incidents: db.prepare(`
+    SELECT dr.daily_report_id, dr.project_id, dr.work_date, dr.incident_flag, dr.complaint_flag, us.name AS staff_name, dr.staff_id, p.project_name, dr.report_values,
+      COALESCE(dr.incident_status, 'open') AS incident_status, dr.incident_memo, dr.incident_client_shared_at, dr.incident_updated_at
+    FROM daily_reports dr
+    JOIN projects p ON dr.project_id = p.project_id
+    JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    WHERE dr.company_id = ? AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= date(?, '-7 days')
+    ORDER BY CASE WHEN ${DR_INCIDENT_OPEN_SQL} THEN 0 ELSE 1 END, dr.work_date DESC`).bind(cid, today),
+    // 要フォロースタッフ。退職・統合済み・停止中などは出さない（#314）
+    follow: db.prepare(`
+    SELECT sp.staff_id, us.name, sp.retention_risk, sp.memo, sp.evaluation_score
+    FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
+    WHERE sp.company_id = ? AND (sp.follow_flag = 1 OR sp.retention_risk != 'low') AND ${elig.sql}
+    ORDER BY CASE sp.retention_risk WHEN 'high' THEN 0 WHEN 'mid' THEN 1 ELSE 2 END, sp.staff_id`).bind(cid, ...elig.binds),
+    // 今月の案件別実績。項目は日報テンプレートの数値項目（固定のキーで集計しない。実績分析 loadAnalytics と同じ数え方。#184）
+    perfRows: db.prepare(`SELECT p.project_id, p.project_name, COUNT(dr.daily_report_id) AS report_count
+      FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date >= ? AND dr.work_date < ?
+      WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id ORDER BY p.project_id`).bind(mFrom, mTo, cid),
+    perfVals: db.prepare(`SELECT dr.project_id, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
+      FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id AND p.status = 'active', ${ANALYTICS_JE}
+      WHERE dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.project_id, je.key`).bind(cid, mFrom, mTo),
+    // 案件ごとのテンプレート（絞り込んだ案件のテンプレートの項目だけを出す）
+    perfTpls: db.prepare(`SELECT p.project_id, rt.template_id, rt.fields_json FROM projects p JOIN report_templates rt ON rt.template_id = p.report_template_id
+      WHERE p.company_id = ? AND p.status = 'active' ORDER BY rt.template_id, p.project_id`).bind(cid),
+    // 未確認の日報の件数（日報一覧の「未確認のみ」と同じ条件。#183）。案件ごとに数えて、絞り込んだ案件の分を足す
+    unchecked: db.prepare(`SELECT dr.project_id, COUNT(*) AS n FROM daily_reports dr WHERE dr.company_id = ? AND ${DR_UNCHECKED_SQL} GROUP BY dr.project_id`).bind(cid),
+    // 未完了の相談。ToDo の文言に要る列だけを読む（本文は返さない。#510）。
+    // 対応中は、最後に返信した日時（返信の通知の日時。なければ受付日時）から数える（#403）
+    consults: db.prepare(`
+    SELECT * FROM (
+      SELECT co.consultation_id, co.staff_id, co.category, co.urgency, co.status, co.created_at, us.name AS staff_name,
+        (SELECT MAX(n.created_at) FROM user_notifications n WHERE n.related_id = co.consultation_id AND n.kind = '${CONSULT_REPLY_KIND}') AS replied_at
+      FROM consultations co JOIN staff_profiles sp ON co.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      WHERE co.company_id = ? AND co.status IN ('open', 'in_progress')
+    ) WHERE status = 'open' OR COALESCE(replied_at, created_at) <= ?
+    ORDER BY created_at DESC, consultation_id DESC LIMIT ?`).bind(cid, waitSince, DASH_CONSULT_LIMIT),
+    consultCounts: db.prepare(`SELECT status, COUNT(*) AS n FROM consultations WHERE company_id = ? AND status IN ('open', 'in_progress') GROUP BY status`).bind(cid),
+    // ルール2: 遅刻が月2回以上。入店・勤務開始のどちらかが遅刻と判定されたシフトの数（同じシフトの入店と勤務開始は1回。#497）
+    late: db.prepare(`
+    SELECT s.staff_id, us.name, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a
+    JOIN shifts s ON s.shift_id = a.shift_id
+    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    WHERE a.company_id = ? AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')
+    GROUP BY s.staff_id HAVING n >= 2`).bind(cid, mFrom, mTo),
+    // ルール3: 欠勤が月2回以上
+    absent: db.prepare(`
+    SELECT s.staff_id, us.name, COUNT(*) AS n FROM shifts s
+    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+    WHERE s.company_id = ? AND s.status = 'absent' AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? GROUP BY s.staff_id HAVING n >= 2`).bind(cid, mFrom, mTo, today),
+    // ルール6: 承認待ちの打刻修正（#226）
+    pendCorr: db.prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS oldest, MAX(correction_id) AS last FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(cid),
+    // ルール7: 仮登録のまま、登録から日数がたった人・稼働が続いている人（#412）。電話番号が同じ本登録のスタッフがいれば統合の候補として添える
+    provisional: db.prepare(`
+    SELECT sp.staff_id, us.name, substr(sp.created_at, 1, 10) AS created_date,
+      (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.company_id = sp.company_id AND s.status IN ('confirmed','substitute') AND s.work_date <= ?) AS worked,
+      (SELECT COUNT(*) FROM staff_profiles sp2 JOIN users us2 ON us2.user_id = sp2.user_id
+        WHERE sp2.company_id = sp.company_id AND sp2.staff_id != sp.staff_id AND sp2.merged_into_staff_id IS NULL AND COALESCE(sp2.is_provisional, 0) = 0
+          AND COALESCE(us.phone, '') != '' AND us2.phone = us.phone) AS same_phone
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+    WHERE sp.company_id = ? AND sp.is_provisional = 1 AND ${elig.sql}
+    ORDER BY sp.staff_id LIMIT 200`).bind(today, cid, ...elig.binds),
+    // ルール8: 次回対応日が今日までの、対応中のフォロー記録（#385）。担当者の名前を添える
+    followDue: db.prepare(`
+    SELECT f.follow_id, f.staff_id, f.next_action, f.next_action_date, us.name AS staff_name, um.name AS manager_name
+    FROM follow_logs f JOIN staff_profiles sp ON f.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id LEFT JOIN users um ON um.user_id = f.manager_id
+    WHERE f.company_id = ? AND f.status = 'open' AND f.next_action_date IS NOT NULL AND f.next_action_date <= ?
+    ORDER BY f.next_action_date, f.follow_id LIMIT 50`).bind(cid, today),
+    // ルール9: 終了日が近い繰り返し登録（#456）
+    patterns: db.prepare(`
+    SELECT sp.pattern_id, sp.weekdays, sp.date_to, sp.start_time, sp.end_time, p.project_id, p.project_name
+    FROM slot_patterns sp JOIN projects p ON p.project_id = sp.project_id AND p.company_id = sp.company_id
+    WHERE sp.company_id = ? AND p.status = 'active' AND sp.date_to BETWEEN ? AND ? ORDER BY sp.date_to LIMIT 50`)
+      .bind(cid, today, addDays(today, DASH_PATTERN_END_DAYS)),
+    // ルール15: 有効期限が近い・切れた書類（#297）
+    docStaff: db.prepare(`SELECT COUNT(*) AS n, SUM(d.valid_until < ?) AS expired FROM staff_documents d JOIN staff_profiles sp ON sp.staff_id = d.staff_id JOIN users us ON us.user_id = sp.user_id
+        WHERE d.company_id = ? AND d.valid_until IS NOT NULL AND d.valid_until <= ? AND us.status = 'active' AND COALESCE(sp.employment_status, 'working') != 'retired' AND sp.merged_into_staff_id IS NULL`).bind(today, cid, docLimit),
+    docClient: db.prepare(`SELECT COUNT(*) AS n, SUM(d.valid_until < ?) AS expired FROM client_documents d JOIN clients cl ON cl.client_id = d.client_id AND cl.company_id = d.company_id
+        WHERE d.company_id = ? AND d.valid_until IS NOT NULL AND d.valid_until <= ?`).bind(today, cid, docLimit),
+    // 『対応済み』『あとで』にした ToDo
+    dismissals: db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
+    FROM todo_dismissals d LEFT JOIN users um ON um.user_id = d.user_id WHERE d.company_id = ? AND (d.action = 'done' OR d.until_at > ?)`).bind(cid, now),
+    // 絞り込みの選択肢と、指定された案件・クライアントの確認（自社の案件だけ）
+    projects: db.prepare(`SELECT p.project_id, p.project_name, p.status, p.client_id, cl.client_name
+      FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
+      WHERE p.company_id = ? ORDER BY p.project_id`).bind(cid),
+  }
+  // ルール12・13・15: 従業員管理を使えるロールだけ（契約終了・有給の付与日・入社時書類。#282 #297）
+  if (isHr) {
+    Q.hrAlerts = db.prepare(`
+      SELECT sp.staff_id, us.name, er.contract_end, er.paid_leave_granted_at,
+        CASE WHEN er.paid_leave_granted_at > ? THEN er.paid_leave_granted_at ELSE date(er.paid_leave_granted_at, '+1 year') END AS next_leave_grant
+      FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id AND sp.company_id = er.company_id JOIN users us ON us.user_id = sp.user_id
+      WHERE er.company_id = ? AND ${OWN_EMPLOYEE_COND} AND COALESCE(sp.employment_status, 'working') != 'retired' AND (us.retired_at IS NULL OR us.retired_at >= ?)
+        AND ((er.contract_end IS NOT NULL AND er.contract_end <= ?)
+          OR (er.paid_leave_granted_at IS NOT NULL AND (CASE WHEN er.paid_leave_granted_at > ? THEN er.paid_leave_granted_at ELSE date(er.paid_leave_granted_at, '+1 year') END) BETWEEN ? AND ?))
+      ORDER BY er.contract_end, us.name LIMIT 100`).bind(today, cid, today, addDays(today, DASH_CONTRACT_DAYS), today, addDays(today, -DASH_LEAVE_OVERDUE_DAYS), addDays(today, DASH_LEAVE_DAYS))
+    Q.docEmployee = db.prepare(`SELECT COUNT(*) AS n, SUM(d.valid_until < ?) AS expired FROM employee_documents d JOIN staff_profiles sp ON sp.staff_id = d.staff_id
+        LEFT JOIN employee_records er ON er.staff_id = d.staff_id AND er.company_id = d.company_id
+        WHERE d.company_id = ? AND d.valid_until IS NOT NULL AND d.valid_until <= ? AND er.employment_ended_at IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired'`).bind(today, cid, docLimit)
+  }
+  // ルール14: 前日確認（#176）。明日のシフト（確定・代打）
+  if (dayBefore.enabled) {
+    Q.dayBefore = db.prepare(`
+      SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.site_id, s.location, s.day_before_confirmed_at, s.day_before_confirmed_key, s.day_before_confirmed_by,
+        p.project_name, us.name AS staff_name, us.phone AS staff_phone, us.role = 'staff' AS has_login, cu.name AS confirmed_by_name
+      FROM shifts s JOIN projects p ON s.project_id = p.project_id
+      JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      LEFT JOIN users cu ON cu.user_id = s.day_before_confirmed_by AND cu.company_id = s.company_id
+      WHERE s.company_id = ? AND s.work_date = ? AND s.status IN ('confirmed', 'substitute')
+      ORDER BY s.start_time, p.project_name, us.name, s.shift_id LIMIT ${DASH_DAY_BEFORE_MAX}`).bind(cid, tomorrow)
+  }
+  const qNames = Object.keys(Q)
+  const [batchRes, ahead, monthlyToday] = await Promise.all([
+    db.batch(qNames.map(k => Q[k])),
+    // ルール10・11: 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト（#299）
+    staffingGaps(db, cid, today, addDays(today, DASH_AHEAD_DAYS)),
+    // 月額（固定。#9702）のうち、今日が計上する日（その月の最初の確定・代打のシフトの稼働日）のもの。精算と同じ日に売上予定へ足す
+    loadMonthlyLines(db, cid, { months: [month], from: today, to: today }),
+  ])
+  const RES: Record<string, D1Result> = Object.fromEntries(qNames.map((k, i) => [k, batchRes[i]]))
+  const R = (k: string) => ((RES[k]?.results || []) as any[])
 
-  const rows = shifts.results as any[]
+  // ---------- 絞り込み（#9905） ----------
+  const allProjects = R('projects')
+  let scope: { project_id: number | null; client_id: number | null; label: string } | null = null
+  let scopeIds: Set<number> | null = null
+  if (qProject) {
+    const p = allProjects.find(x => Number(x.project_id) === qProject)
+    if (p) { scope = { project_id: qProject, client_id: null, label: String(p.project_name || '') }; scopeIds = new Set([qProject]) }
+  } else if (qClient) {
+    const ps = allProjects.filter(x => Number(x.client_id) === qClient)
+    if (ps.length) { scope = { project_id: null, client_id: qClient, label: String(ps[0].client_name || '') }; scopeIds = new Set(ps.map(x => Number(x.project_id))) }
+  }
+  const inScope = (pid: any) => !scopeIds || scopeIds.has(Number(pid))
+
+  const allRows = R('shifts')
   // 提出設定で「不要」の報告は未報告アラートの対象外（第2段階）
-  const todayModes = await modesForShifts(db, rows.filter(s => s.status !== 'absent').map(s => s.shift_id))
-  // 報告ごとの時刻・遅延・位置不明・遅刻と早退の分数（#348）。報告はシフトと種類で1件（uq_attendance_shift_type）
+  const attTypes = att.resolve([RES.att0, RES.att1, RES.att2])
   // 電波がない場所で押して後から届いた報告は、押した時刻で記録したことと受け取った時刻も出す（#427）
   // 入店の位置が現場から離れている（#277。距離と会社のしきい値で判定。far と distance_m を入店の報告に付ける）
-  const reportRows = rows.length ? (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, time_source, received_at, corrected_by_correction_id, distance_m
-    FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(rows.map(s => s.shift_id))).all()).results as any[] : []
+  // 位置ずれのしきい値は会社の設定から1回だけ読む（distanceResult と同じ判定）
+  const farTh = farThresholdMeters(u.settings_json)
   const reportsByShift = new Map<number, Record<string, any>>()
-  for (const r of reportRows) {
+  for (const r of R('reports')) {
     const m = reportsByShift.get(r.shift_id) || {}
-    const dist = r.report_type === 'check_in' ? distanceResult(r.distance_m ?? null, u.settings_json) : null
+    const dist = r.report_type === 'check_in' ? { distance_m: r.distance_m ?? null, far: r.distance_m != null && farTh > 0 && r.distance_m > farTh } : null
     m[r.report_type] = { at: String(r.reported_at || '').slice(0, 16), status: r.status, late_minutes: Number(r.late_minutes) || 0, early_leave_minutes: Number(r.early_leave_minutes) || 0,
       ...(deviceTimeMark(r).device_time ? { device_time: true, received_at: String(r.received_at || '').slice(0, 16) } : {}),
       ...(dist && dist.far ? { far: true, distance_m: dist.distance_m } : {}) }
     reportsByShift.set(r.shift_id, m)
   }
+  // 予定の開始・終了などは分（数値）で持つ（dashTimes）。今の時刻も分にする
+  const times = new Map<number, ReturnType<typeof dashTimes>>()
+  const nowMin = dashMin(now)
   // 画面の報告状況の列: シフトごとの有効な報告と報告済みの種類
-  for (const s of rows) {
-    s.required_types = todayModes.get(s.shift_id)?.required_attendance ?? [...REPORT_TYPES]
+  for (const s of allRows) {
+    s.required_types = s.status === 'absent' ? [...REPORT_TYPES] : (attTypes.get(s.shift_id)?.types ?? [...REPORT_TYPES])
     s.reports = reportsByShift.get(s.shift_id) || {}
     s.done_types = Object.keys(s.reports)
     s.has_login = !!s.has_login; s.has_report_link = !!s.has_report_link
@@ -2978,45 +3170,45 @@ api.get('/admin/dashboard', async (c) => {
     s.no_location = s.reports.check_in?.status === 'no_location'
     s.on_break = !!s.reports.break_start && !s.reports.break_end && !s.reports.work_end && !s.reports.check_out
     s.pending_types = String(s.pending_types || '').split(',').filter(Boolean)
-    s.window = shiftWindow(s.work_date, s.start_time, s.end_time)
+    times.set(s.shift_id, dashTimes(s))
     s.carried_over = s.work_date !== today
     // 入店以降の報告がある（勤務した）シフトは、ダッシュボードから欠勤にしない（#221）
     s.started = s.done_types.some((t: string) => DASH_STARTED_TYPES.includes(t))
   }
+  // 遅刻・欠勤・体調不良の相談（#498）。対象の日付があればその日（案件があればその案件）のシフト、
+  // なければ送った日か前日（前の晩に送った連絡）のシフトに結び付け、未報告の一覧に『連絡あり』と出す
+  const contacts = R('contacts')
+  const prevDay = new Map([today, yesterday].map(d => [d, addDays(d, -1)]))
+  for (const s of allRows) {
+    const prev = prevDay.get(s.work_date) || addDays(s.work_date, -1)
+    const co = contacts.find(x => x.staff_id === s.staff_id && (x.target_date
+      ? x.target_date === s.work_date && (!x.target_project_id || x.target_project_id === s.project_id)
+      : [prev, s.work_date].includes(String(x.created_at).slice(0, 10))))
+    s.contact = co ? { consultation_id: co.consultation_id, category: co.category, category_label: catLabel(co.category), urgency: co.urgency, status: co.status,
+      excerpt: co.excerpt + (co.truncated ? '…' : ''), created_at: co.created_at } : null
+  }
+  // 同じ日に同じ人の別のシフトで起床を報告していれば、起床は済みとする（#449。別の案件のシフトでも同じ）
+  const wokeUp = new Set(allRows.filter(s => s.done_types.includes('wake_up')).map(s => `${s.staff_id}:${s.work_date}`))
+  // ここから下の一覧・数字は、絞り込んだ案件のシフトだけ
+  const rows = allRows.filter(s => inScope(s.project_id))
   const working = rows.filter(s => s.status !== 'absent')
   // 未報告の種類（有効で、報告も承認待ちの修正申請もないもの）
   const missingOf = (s: any, types: string[]) => types.filter(t => s.required_types.includes(t) && !s.done_types.includes(t) && !s.pending_types.includes(t))
   // 前日に始まった日をまたぐ勤務は、勤務中か、勤務終了・退店が未報告の間は「前日から継続」として本日の一覧に出す（#107）
-  const active = working.filter(s => !s.carried_over || (crossesMidnight(s) && (now < s.window.end || missingOf(s, DASH_END_TYPES).length > 0)))
+  const active = working.filter(s => { const tm = times.get(s.shift_id)!; return !s.carried_over || (tm.cross && (nowMin < tm.end || missingOf(s, DASH_END_TYPES).length > 0)) })
   const todayOnly = active.filter(s => !s.carried_over)
-  // 売上予定は精算と同じ式（基本額＋請求交通費＋請求の調整額。shiftTotals）で数える（#414）
-  const revenue = todayOnly.reduce((a, s) => a + shiftTotals(s).bill_total, 0)
-  // 遅刻・欠勤・体調不良の相談（#498）。対象の日付があればその日（案件があればその案件）のシフト、
-  // なければ送った日か前日（前の晩に送った連絡）のシフトに結び付け、未報告の一覧に『連絡あり』と出す
-  const contacts = (await db.prepare(`
-    SELECT co.consultation_id, co.staff_id, co.category, co.urgency, co.status, co.target_project_id, co.target_date, co.created_at,
-      substr(co.body, 1, ${DASH_CONTACT_EXCERPT}) AS excerpt, length(co.body) > ${DASH_CONTACT_EXCERPT} AS truncated
-    FROM consultations co
-    WHERE co.company_id = ? AND co.category IN ('absence', 'health')
-      AND (co.target_date IN (?, ?) OR (co.target_date IS NULL AND co.created_at >= ?))
-    ORDER BY co.created_at DESC, co.consultation_id DESC LIMIT 200`).bind(cid, yesterday, today, `${addDays(yesterday, -1)} 00:00:00`).all()).results as any[]
-  for (const s of rows) {
-    const co = contacts.find(x => x.staff_id === s.staff_id && (x.target_date
-      ? x.target_date === s.work_date && (!x.target_project_id || x.target_project_id === s.project_id)
-      : [addDays(s.work_date, -1), s.work_date].includes(String(x.created_at).slice(0, 10))))
-    s.contact = co ? { consultation_id: co.consultation_id, category: co.category, category_label: catLabel(co.category), urgency: co.urgency, status: co.status,
-      excerpt: co.excerpt + (co.truncated ? '…' : ''), created_at: co.created_at } : null
-  }
+  // 売上予定は精算と同じ式（基本額＋請求交通費＋請求の調整額。shiftTotals）で数える（#414）。
+  // 月額（固定）は、今日が計上する日の行を案件で絞って足す（#9702 #9905）
+  const revenueShifts = todayOnly.reduce((a, s) => a + shiftTotals(s).bill_total, 0)
+  const revenueMonthly = monthlyTotal(monthlyToday.filter(l => inScope(l.project_id)))
   // 未報告: 予定の時刻を過ぎたものだけ（起床・出発・入店は開始から、勤務終了・退店は終了から。#186）
   // 電話番号・ログインの有無・報告用URLの有無も添える（その場で電話・代理入力・URLの発行に進めるように。#343 #355）
-  const unreportedItem = (s: any, dueAt: string, extra: any = {}) => ({
+  const unreportedItem = (s: any, dueMin: number, extra: any = {}) => ({
     shift_id: s.shift_id, staff_id: s.staff_id, name: s.staff_name, project: s.project_name, project_id: s.project_id, work_date: s.work_date,
-    start_time: s.start_time, end_time: s.end_time, carried_over: s.carried_over, due_at: dueAt, overdue_minutes: minutesBetween(dueAt, now),
+    start_time: s.start_time, end_time: s.end_time, carried_over: s.carried_over, due_at: dashAt(dueMin), overdue_minutes: Math.round(nowMin - dueMin),
     phone: s.staff_phone || '', has_login: s.has_login, has_report_link: s.has_report_link,
     contact: s.contact, ...extra,
   })
-  // 同じ日に同じ人の別のシフトで起床を報告していれば、起床は済みとする（#449）
-  const wokeUp = new Set(rows.filter(s => s.done_types.includes('wake_up')).map(s => `${s.staff_id}:${s.work_date}`))
   // 一覧は人ごとにまとめる（同じ人の2つ目以降のシフトは件数だけ添える。#449）。連絡のない人を上にする（#498）
   const byPerson = (list: any[]) => {
     const m = new Map<number, any>()
@@ -3028,85 +3220,42 @@ api.get('/admin/dashboard', async (c) => {
     }
     // 経過時間が同じなら、開始時刻・案件・氏名の順（本日のシフトの表と同じ並び。#488）
     return [...m.values()].sort((a, b) => (a.contact ? 1 : 0) - (b.contact ? 1 : 0) || b.overdue_minutes - a.overdue_minutes
-      || String(a.start_time).localeCompare(String(b.start_time)) || String(a.project).localeCompare(String(b.project), 'ja') || String(a.name).localeCompare(String(b.name), 'ja'))
+      || String(a.start_time).localeCompare(String(b.start_time)) || DASH_JA_COMPARE(String(a.project), String(b.project)) || DASH_JA_COMPARE(String(a.name), String(b.name)))
   }
-  const startDue = (s: any, t: string) => {
-    const due = addMinutes(s.window.start, DASH_DUE_OFFSET[t])
-    const dayStart = `${s.work_date} 00:00:00` // 報告は稼働日の 0:00 から受け付ける（shift-time.ts reportableWindow）
-    return due < dayStart ? dayStart : due
-  }
+  // 報告は稼働日の 0:00 から受け付ける（shift-time.ts reportableWindow）ので、それより前にはしない
+  const startDue = (s: any, t: string) => { const tm = times.get(s.shift_id)!; return Math.max(tm.start + DASH_DUE_OFFSET[t], tm.day) }
+  const startOverdue = (s: any, t: string) => missingOf(s, [t]).length > 0 && startDue(s, t) <= nowMin && !(t === 'wake_up' && wokeUp.has(`${s.staff_id}:${s.work_date}`))
+  const endOverdue = (s: any) => times.get(s.shift_id)!.end + DASH_END_GRACE_MIN <= nowMin
   // 前日から継続している勤務（23時台に始まる夜勤など）も対象にする
-  const startList = (t: string) => byPerson(active
-    .filter(s => missingOf(s, [t]).length && startDue(s, t) <= now && !(t === 'wake_up' && wokeUp.has(`${s.staff_id}:${s.work_date}`)))
-    .map(s => unreportedItem(s, startDue(s, t))))
+  const startList = (t: string) => byPerson(active.filter(s => startOverdue(s, t)).map(s => unreportedItem(s, startDue(s, t))))
   // 勤務終了・退店: 本日と前日のシフト（日をまたがない前日分の退店漏れも含む）
   const endList = byPerson(working
-    .filter(s => missingOf(s, DASH_END_TYPES).length && addMinutes(s.window.end, DASH_END_GRACE_MIN) <= now)
-    .map(s => unreportedItem(s, s.window.end, { missing: missingOf(s, DASH_END_TYPES) })))
+    .filter(s => missingOf(s, DASH_END_TYPES).length && endOverdue(s))
+    .map(s => unreportedItem(s, times.get(s.shift_id)!.end, { missing: missingOf(s, DASH_END_TYPES) })))
   // 本日の欠勤（代わりの手配に使う。#216）
   const absentToday = rows.filter(s => s.status === 'absent' && s.work_date === today)
   const unreported = { wake_up: startList('wake_up'), departure: startList('departure'), check_in: startList('check_in'), work_end: endList }
   // 本日の表の『未報告あり』の絞り込みと強調に使う、予定の時刻を過ぎた未報告の種類（未報告の一覧と同じ判定。#488）
   for (const s of active) {
     s.overdue_types = [
-      ...['wake_up', 'departure', 'check_in'].filter(t => missingOf(s, [t]).length && startDue(s, t) <= now && !(t === 'wake_up' && wokeUp.has(`${s.staff_id}:${s.work_date}`))),
-      ...(addMinutes(s.window.end, DASH_END_GRACE_MIN) <= now ? missingOf(s, DASH_END_TYPES) : []),
+      ...['wake_up', 'departure', 'check_in'].filter(t => startOverdue(s, t)),
+      ...(endOverdue(s) ? missingOf(s, DASH_END_TYPES) : []),
     ]
   }
-  for (const s of rows) delete s.window
 
-  // 昨日までの日報未提出 (直近3日)。代打も含め、シフトごとに判定する（shift_id の無い古い日報だけは稼働日・案件で照合）
-  // 画面の一覧（日付・スタッフ・案件・電話。#344）に使う列も返す
-  const missingReports = await db.prepare(`
-    SELECT s.shift_id, s.work_date, s.start_time, s.end_time, us.name AS staff_name, s.staff_id, p.project_id, p.project_name,
-      us.phone AS staff_phone, us.role = 'staff' AS has_login
-    FROM shifts s
-    JOIN projects p ON s.project_id = p.project_id
-    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date < ? AND s.work_date >= date(?, '-3 days')
-      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id)
-      AND NOT EXISTS (SELECT 1 FROM daily_reports dr WHERE +dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id)
-    ORDER BY s.work_date DESC, s.start_time, p.project_name, us.name`).bind(cid, today, today).all()
-  // 日報「不要」のシフトは未提出の対象外（第2段階）
-  {
-    const m = await modesForShifts(db, (missingReports.results as any[]).map(r => r.shift_id))
-    missingReports.results = (missingReports.results as any[]).filter(r => m.get(r.shift_id)?.daily_report_required !== false)
-  }
+  const missingAll = R('missing')
+  const incidentsAll = R('incidents')
+  const followStaff = R('follow')
 
-  // インシデント (直近7日)。対応状況（#169）を付け、対応済みでないものを先に並べる
-  const incidents = await db.prepare(`
-    SELECT dr.daily_report_id, dr.project_id, dr.work_date, dr.incident_flag, dr.complaint_flag, us.name AS staff_name, dr.staff_id, p.project_name, dr.report_values,
-      COALESCE(dr.incident_status, 'open') AS incident_status, dr.incident_memo, dr.incident_client_shared_at, dr.incident_updated_at
-    FROM daily_reports dr
-    JOIN projects p ON dr.project_id = p.project_id
-    JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE dr.company_id = ? AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= date(?, '-7 days')
-    ORDER BY CASE WHEN ${DR_INCIDENT_OPEN_SQL} THEN 0 ELSE 1 END, dr.work_date DESC`).bind(cid, today).all()
-
-  // 要フォロースタッフ。退職・統合済み・停止中などは出さない（#314）
-  const followStaff = await db.prepare(`
-    SELECT sp.staff_id, us.name, sp.retention_risk, sp.memo, sp.evaluation_score
-    FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-    WHERE sp.company_id = ? AND (sp.follow_flag = 1 OR sp.retention_risk != 'low') AND ${elig.sql}
-    ORDER BY CASE sp.retention_risk WHEN 'high' THEN 0 WHEN 'mid' THEN 1 ELSE 2 END, sp.staff_id`).bind(cid, ...elig.binds).all()
-
-  // 今月の案件別実績。項目は日報テンプレートの数値項目（固定のキーで集計しない。実績分析 loadAnalytics と同じ数え方。#184）
-  const [perfRows, perfVals, perfTpls, unchecked] = (await db.batch([
-    db.prepare(`SELECT p.project_id, p.project_name, COUNT(dr.daily_report_id) AS report_count
-      FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date >= ? AND dr.work_date < ?
-      WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id ORDER BY p.project_id`).bind(mFrom, mTo, cid),
-    db.prepare(`SELECT dr.project_id, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
-      FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id AND p.status = 'active', ${ANALYTICS_JE}
-      WHERE dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.project_id, je.key`).bind(cid, mFrom, mTo),
-    db.prepare(`SELECT DISTINCT rt.template_id, rt.fields_json FROM projects p JOIN report_templates rt ON rt.template_id = p.report_template_id
-      WHERE p.company_id = ? AND p.status = 'active' ORDER BY rt.template_id`).bind(cid),
-    // 未確認の日報の件数（日報一覧の「未確認のみ」と同じ条件。#183）
-    db.prepare(`SELECT COUNT(*) AS n FROM daily_reports dr WHERE dr.company_id = ? AND ${DR_UNCHECKED_SQL}`).bind(cid),
-  ])).map(r => (r.results || []) as any[])
+  // 今月の案件別実績（絞り込んだ案件だけ）。項目は、その案件のテンプレートの数値項目と、日報に数値のある項目（#184）
+  const perfRows = R('perfRows').filter(p => inScope(p.project_id))
+  const perfVals = R('perfVals').filter(r => inScope(r.project_id))
   const perfFields: { key: string; label: string }[] = []
   {
-    const seen = new Set<string>(); const textKeys = new Set<string>()
-    for (const t of perfTpls) {
+    const seen = new Set<string>(); const textKeys = new Set<string>(); const tplSeen = new Set<number>()
+    for (const t of R('perfTpls')) {
+      if (!inScope(t.project_id) || tplSeen.has(Number(t.template_id))) continue
+      tplSeen.add(Number(t.template_id))
       let defs: any[] = []
       try { defs = JSON.parse(t.fields_json) } catch { defs = [] }
       for (const f of Array.isArray(defs) ? defs : []) {
@@ -3117,25 +3266,16 @@ api.get('/admin/dashboard', async (c) => {
     }
     for (const r of perfVals) if (r.isnum && !seen.has(r.k) && !textKeys.has(r.k)) { seen.add(r.k); perfFields.push({ key: r.k, label: r.k }) }
   }
+  const perfVal = new Map(perfVals.map(r => [`${r.project_id}:${r.k}`, Number(r.v) || 0]))
   const projectPerformance = perfRows.map(p => ({
-    ...p, values: Object.fromEntries(perfFields.map(f => [f.key, Number(perfVals.find(r => r.project_id === p.project_id && r.k === f.key)?.v) || 0])),
+    ...p, values: Object.fromEntries(perfFields.map(f => [f.key, perfVal.get(`${p.project_id}:${f.key}`) || 0])),
   }))
+  const uncheckedCount = R('unchecked').reduce((a, r) => a + (inScope(r.project_id) ? Number(r.n) || 0 : 0), 0)
 
-  // 未完了の相談。ToDo の文言に要る列だけを読む（本文は返さない。#510）。
-  // 対応中は、最後に返信した日時（返信の通知の日時。なければ受付日時）から数える（#403）
-  const waitSince = addMinutes(now, -DASH_CONSULT_WAIT_DAYS * 1440)
-  const consults = (await db.prepare(`
-    SELECT * FROM (
-      SELECT co.consultation_id, co.staff_id, co.category, co.urgency, co.status, co.created_at, us.name AS staff_name,
-        (SELECT MAX(n.created_at) FROM user_notifications n WHERE n.related_id = co.consultation_id AND n.kind = '${CONSULT_REPLY_KIND}') AS replied_at
-      FROM consultations co JOIN staff_profiles sp ON co.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-      WHERE co.company_id = ? AND co.status IN ('open', 'in_progress')
-    ) WHERE status = 'open' OR COALESCE(replied_at, created_at) <= ?
-    ORDER BY created_at DESC, consultation_id DESC LIMIT ?`).bind(cid, waitSince, DASH_CONSULT_LIMIT).all()).results as any[]
-  const consultCounts = Object.fromEntries((((await db.prepare(`SELECT status, COUNT(*) AS n FROM consultations WHERE company_id = ? AND status IN ('open', 'in_progress') GROUP BY status`)
-    .bind(cid).all()).results) as any[]).map(r => [r.status, Number(r.n) || 0]))
+  const consults = R('consults')
+  const consultCounts = Object.fromEntries(R('consultCounts').map(r => [r.status, Number(r.n) || 0]))
 
-  // ===== 管理者ToDo (ルールベース) =====
+  // ===== 管理者ToDo (ルールベース。会社全体) =====
   // key: ToDo ごとの安定したキー。mark: 件数・最新の ID など。『対応済み』『あとで』にした後で mark が増えたら、もう一度出す（#487）
   // actions: 画面に出す操作（done 対応済み / snooze あとで）。相談・打刻修正はそれぞれの画面で片付けるので、あとでだけにする
   type Todo = { key: string; mark: number; level: 'high' | 'mid'; text: string; staff_id?: number; href?: string; link_label?: string; actions: string[]; follow_id?: number }
@@ -3143,7 +3283,7 @@ api.get('/admin/dashboard', async (c) => {
   const BOTH = ['done', 'snooze'], LATER = ['snooze']
   // ルール1: 日報未提出。件数はシフトの数、「n日連続」は稼働日の数で数える（直近3日のすべての日に未提出があれば連続）
   const drCounts: Record<string, { name: string; count: number; dates: Set<string>; staff_id: number; last: number }> = {}
-  for (const m of missingReports.results as any[]) {
+  for (const m of missingAll) {
     const k = String(m.staff_id)
     drCounts[k] = drCounts[k] || { name: m.staff_name, count: 0, dates: new Set(), staff_id: m.staff_id, last: 0 }
     drCounts[k].count++
@@ -3158,38 +3298,26 @@ api.get('/admin/dashboard', async (c) => {
   }
   // ルール16: 今日、現場から離れた場所で入店を報告した人（#277。位置ずれ）。シフトの詳細で距離を確かめる
   {
-    const far = rows.filter((s: any) => s.work_date === today && s.reports?.check_in?.far)
+    const far = allRows.filter((s: any) => s.work_date === today && s.reports?.check_in?.far)
     if (far.length) {
       const names = [...new Set(far.map((s: any) => s.staff_name))]
       todos.push({ key: `check_in_far:${today}`, mark: far.length, level: 'mid', actions: BOTH, href: '#shifts', link_label: 'シフト→',
         text: `今日、現場から離れた場所で入店を報告した人がいます（${names.slice(0, 5).join('、')}${names.length > 5 ? ` ほか${names.length - 5}名` : ''}）。位置ずれの理由を確認してください。` })
     }
   }
-  // ルール2: 遅刻が月2回以上。入店・勤務開始のどちらかが遅刻と判定されたシフトの数（同じシフトの入店と勤務開始は1回。#497）
-  const lateRows = await db.prepare(`
-    SELECT s.staff_id, us.name, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a
-    JOIN shifts s ON s.shift_id = a.shift_id
-    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE a.company_id = ? AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date >= ? AND s.work_date < ? AND s.status IN ('confirmed','substitute')
-    GROUP BY s.staff_id HAVING n >= 2`).bind(cid, mFrom, mTo).all()
-  // 前日確認を使っている会社は、明日のシフトの確認状況の一覧へ移れるようにする（#176）
-  const dayBefore = dayBeforeSettings(u.settings_json)
-  for (const r of lateRows.results as any[]) {
+  // ルール2: 遅刻が月2回以上。前日確認を使っている会社は、明日のシフトの確認状況の一覧へ移れるようにする（#176）
+  for (const r of R('late')) {
     todos.push({ key: `late:${r.staff_id}:${month}`, mark: Number(r.n), level: 'mid', text: `${r.name}さんが今月${r.n}回遅刻しています（入店・勤務開始の遅れ）。前日確認を強化してください。`, staff_id: r.staff_id, actions: BOTH,
       ...(dayBefore.enabled ? { href: '#dash-day-before', link_label: '前日確認→' } : {}) })
   }
   // ルール3: 欠勤が月2回以上
-  const absRows = await db.prepare(`
-    SELECT s.staff_id, us.name, COUNT(*) AS n FROM shifts s
-    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.status = 'absent' AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? GROUP BY s.staff_id HAVING n >= 2`).bind(cid, mFrom, mTo, today).all()
-  for (const r of absRows.results as any[]) {
+  for (const r of R('absent')) {
     todos.push({ key: `absent:${r.staff_id}:${month}`, mark: Number(r.n), level: 'high', text: `${r.name}さんの欠勤が今月${r.n}回です。離職リスク中として体調・状況確認をしてください。`, staff_id: r.staff_id, actions: BOTH })
   }
   // ルール4: インシデント増加案件。日報一覧をその案件・直近7日・インシデントで絞って開く（#402 #404）
   // 対応済みのインシデント・クレームは数えない（#169）
   const incByProj = new Map<number, { name: string; n: number; last: number }>()
-  for (const i of incidents.results as any[]) {
+  for (const i of incidentsAll) {
     if (i.incident_status === 'done') continue
     const v = incByProj.get(i.project_id) || { name: i.project_name, n: 0, last: 0 }
     v.n++; v.last = Math.max(v.last, Number(i.daily_report_id))
@@ -3213,54 +3341,34 @@ api.get('/admin/dashboard', async (c) => {
     }
   }
   // ルール6: 承認待ちの打刻修正（#226）。最も古い申請から2日以上たっていれば high
-  const pendCorr = await db.prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS oldest, MAX(correction_id) AS last FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(cid).first() as any
+  const pendCorr = R('pendCorr')[0]
   if (pendCorr?.n > 0) {
     const days = pendCorr.oldest ? Math.max(0, Math.floor(minutesBetween(String(pendCorr.oldest), now) / 1440)) : 0
     todos.push({ key: 'corrections', mark: Number(pendCorr.last) || 0, level: days >= 2 ? 'high' : 'mid', actions: LATER, href: '#corrections', link_label: '確認→',
       text: `打刻修正の承認待ちが${pendCorr.n}件あります（最も古いものは${days ? days + '日前' : '24時間以内'}の申請）。確認してください。` })
   }
-  // ルール7: 仮登録のまま、登録から日数がたった人・稼働が続いている人（#412）。電話番号が同じ本登録のスタッフがいれば統合の候補として添える
-  const provisional = (await db.prepare(`
-    SELECT sp.staff_id, us.name, substr(sp.created_at, 1, 10) AS created_date,
-      (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.company_id = sp.company_id AND s.status IN ('confirmed','substitute') AND s.work_date <= ?) AS worked,
-      (SELECT COUNT(*) FROM staff_profiles sp2 JOIN users us2 ON us2.user_id = sp2.user_id
-        WHERE sp2.company_id = sp.company_id AND sp2.staff_id != sp.staff_id AND sp2.merged_into_staff_id IS NULL AND COALESCE(sp2.is_provisional, 0) = 0
-          AND COALESCE(us.phone, '') != '' AND us2.phone = us.phone) AS same_phone
-    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    WHERE sp.company_id = ? AND sp.is_provisional = 1 AND ${elig.sql}
-    ORDER BY sp.staff_id LIMIT 200`).bind(today, cid, ...elig.binds).all()).results as any[]
-  for (const p of provisional) {
+  // ルール7: 仮登録のまま、登録から日数がたった人・稼働が続いている人（#412）
+  for (const p of R('provisional')) {
     const days = p.created_date ? Math.max(0, Math.floor(minutesBetween(`${p.created_date} 00:00:00`, `${today} 00:00:00`) / 1440)) : 0
     if (days < DASH_PROVISIONAL_DAYS && Number(p.worked) < DASH_PROVISIONAL_SHIFTS) continue
     todos.push({ key: `provisional:${p.staff_id}`, mark: 0, level: 'mid', staff_id: p.staff_id, actions: BOTH, link_label: '本登録→',
       text: `${p.name}さんが仮登録のままです（登録から${days}日・稼働${Number(p.worked)}回）。本登録してください。`
         + (Number(p.same_phone) ? `電話番号が同じスタッフが${Number(p.same_phone)}名います。同じ人なら統合してください。` : '') })
   }
-  // ルール8: 次回対応日が今日までの、対応中のフォロー記録（#385）。担当者の名前を添える
-  const followDue = (await db.prepare(`
-    SELECT f.follow_id, f.staff_id, f.next_action, f.next_action_date, us.name AS staff_name, um.name AS manager_name
-    FROM follow_logs f JOIN staff_profiles sp ON f.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id LEFT JOIN users um ON um.user_id = f.manager_id
-    WHERE f.company_id = ? AND f.status = 'open' AND f.next_action_date IS NOT NULL AND f.next_action_date <= ?
-    ORDER BY f.next_action_date, f.follow_id LIMIT 50`).bind(cid, today).all()).results as any[]
-  for (const f of followDue) {
+  // ルール8: 次回対応日が今日までの、対応中のフォロー記録（#385）
+  for (const f of R('followDue')) {
     const late = f.next_action_date < today
     todos.push({ key: `follow:${f.follow_id}`, mark: 0, level: late ? 'high' : 'mid', staff_id: f.staff_id, follow_id: f.follow_id, actions: BOTH,
       text: `${f.staff_name}さんのフォロー「${f.next_action || '次回対応'}」が${late ? mdLabel(f.next_action_date) + 'の期日を過ぎています' : '今日が期日です'}（担当: ${f.manager_name || '-'}）。` })
   }
   // ルール9: 終了日が近い繰り返し登録（#456）。続けるなら案件詳細の一覧から延長する
-  const patterns = (await db.prepare(`
-    SELECT sp.pattern_id, sp.weekdays, sp.date_to, sp.start_time, sp.end_time, p.project_id, p.project_name
-    FROM slot_patterns sp JOIN projects p ON p.project_id = sp.project_id AND p.company_id = sp.company_id
-    WHERE sp.company_id = ? AND p.status = 'active' AND sp.date_to BETWEEN ? AND ? ORDER BY sp.date_to LIMIT 50`)
-    .bind(cid, today, addDays(today, DASH_PATTERN_END_DAYS)).all()).results as any[]
-  for (const p of patterns) {
+  for (const p of R('patterns')) {
     const wd = String(p.weekdays || '').split(',').map(Number).filter(n => n >= 0 && n <= 6).map(n => DASH_WEEKDAY[n]).join('・')
     const left = Math.round(minutesBetween(`${today} 00:00:00`, `${p.date_to} 00:00:00`) / 1440)
     todos.push({ key: `pattern_end:${p.pattern_id}:${p.date_to}`, mark: 0, level: 'mid', actions: BOTH, href: `#projects/${p.project_id}`, link_label: '案件→',
       text: `${p.project_name}の繰り返し登録（${wd} ${p.start_time}〜${p.end_time}）が${mdLabel(p.date_to)}で終わります（${left ? 'あと' + left + '日' : '今日まで'}）。続ける場合は延長してください。` })
   }
-  // ルール10・11: 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト（#299）。mark は件数・最新のシフトID（増えたらもう一度出す）
-  const ahead = await staffingGaps(db, cid, today, addDays(today, DASH_AHEAD_DAYS))
+  // ルール10・11: 人員不足の枠と、希望（仮）のままのシフト（#299）。mark は件数・最新のシフトID（増えたらもう一度出す）
   if (ahead.short_role_count) {
     const soon = ahead.short_roles.some(r => r.work_date <= addDays(today, 1))
     todos.push({ key: `staffing_short:${today}`, mark: ahead.short_headcount, level: soon ? 'high' : 'mid', actions: LATER, href: '#dash-ahead', link_label: '一覧→',
@@ -3271,48 +3379,27 @@ api.get('/admin/dashboard', async (c) => {
       text: `${mdLabel(today)}〜${mdLabel(ahead.to)}に希望（仮）のままのシフトが${ahead.requested_shifts.length}${ahead.requested_more ? '件以上' : '件'}あります。確定するか見送ってください。` })
   }
   // ルール12・13: 契約終了が近い社員（30日前・14日前）と、有給の次回付与日が近い社員（#282）。従業員管理を使えるロールだけに出す
-  let hrAlerts: any[] = []
-  if (HR_ROLES.includes(u.role)) {
-    hrAlerts = (await db.prepare(`
-      SELECT sp.staff_id, us.name, er.contract_end, er.paid_leave_granted_at,
-        CASE WHEN er.paid_leave_granted_at > ? THEN er.paid_leave_granted_at ELSE date(er.paid_leave_granted_at, '+1 year') END AS next_leave_grant
-      FROM employee_records er JOIN staff_profiles sp ON sp.staff_id = er.staff_id AND sp.company_id = er.company_id JOIN users us ON us.user_id = sp.user_id
-      WHERE er.company_id = ? AND ${OWN_EMPLOYEE_COND} AND COALESCE(sp.employment_status, 'working') != 'retired' AND (us.retired_at IS NULL OR us.retired_at >= ?)
-        AND ((er.contract_end IS NOT NULL AND er.contract_end <= ?)
-          OR (er.paid_leave_granted_at IS NOT NULL AND (CASE WHEN er.paid_leave_granted_at > ? THEN er.paid_leave_granted_at ELSE date(er.paid_leave_granted_at, '+1 year') END) BETWEEN ? AND ?))
-      ORDER BY er.contract_end, us.name LIMIT 100`).bind(today, cid, today, addDays(today, DASH_CONTRACT_DAYS), today, addDays(today, -DASH_LEAVE_OVERDUE_DAYS), addDays(today, DASH_LEAVE_DAYS)).all()).results as any[]
-    for (const e of hrAlerts) {
-      const href = `#employees/${Number(e.staff_id)}`
-      if (e.contract_end && e.contract_end <= addDays(today, DASH_CONTRACT_DAYS)) {
-        const left = Math.round(minutesBetween(`${today} 00:00:00`, `${e.contract_end} 00:00:00`) / 1440)
-        // 30日前に『対応済み』にしても、14日前・期限切れでもう一度出す
-        const stage = left < 0 ? 3 : left <= DASH_CONTRACT_SOON_DAYS ? 2 : 1
-        todos.push({ key: `contract_end:${e.staff_id}:${e.contract_end}`, mark: stage, level: stage >= 2 ? 'high' : 'mid', actions: BOTH, href, link_label: '従業員→',
-          text: left < 0 ? `${e.name}さんの契約終了日（${mdLabel(e.contract_end)}）を過ぎていますが、在職中のままです。契約の更新か退職の手続きを確認してください。`
-            : `${e.name}さんの契約が${mdLabel(e.contract_end)}に終了します（${left ? 'あと' + left + '日' : '今日まで'}）。更新の確認をしてください。` })
-      }
-      if (e.next_leave_grant && e.next_leave_grant >= addDays(today, -DASH_LEAVE_OVERDUE_DAYS) && e.next_leave_grant <= addDays(today, DASH_LEAVE_DAYS)) {
-        const past = e.next_leave_grant < today
-        todos.push({ key: `paid_leave:${e.staff_id}:${e.next_leave_grant}`, mark: past ? 2 : 1, level: past ? 'high' : 'mid', actions: BOTH, href, link_label: '従業員→',
-          text: past ? `${e.name}さんの有給の付与日（${mdLabel(e.next_leave_grant)}）を過ぎています。付与日数と残日数を従業員管理で更新してください。`
-            : `${e.name}さんの有給の付与日（${mdLabel(e.next_leave_grant)}）が近づいています。付与日数を確認してください。` })
-      }
+  for (const e of R('hrAlerts')) {
+    const href = `#employees/${Number(e.staff_id)}`
+    if (e.contract_end && e.contract_end <= addDays(today, DASH_CONTRACT_DAYS)) {
+      const left = Math.round(minutesBetween(`${today} 00:00:00`, `${e.contract_end} 00:00:00`) / 1440)
+      // 30日前に『対応済み』にしても、14日前・期限切れでもう一度出す
+      const stage = left < 0 ? 3 : left <= DASH_CONTRACT_SOON_DAYS ? 2 : 1
+      todos.push({ key: `contract_end:${e.staff_id}:${e.contract_end}`, mark: stage, level: stage >= 2 ? 'high' : 'mid', actions: BOTH, href, link_label: '従業員→',
+        text: left < 0 ? `${e.name}さんの契約終了日（${mdLabel(e.contract_end)}）を過ぎていますが、在職中のままです。契約の更新か退職の手続きを確認してください。`
+          : `${e.name}さんの契約が${mdLabel(e.contract_end)}に終了します（${left ? 'あと' + left + '日' : '今日まで'}）。更新の確認をしてください。` })
+    }
+    if (e.next_leave_grant && e.next_leave_grant >= addDays(today, -DASH_LEAVE_OVERDUE_DAYS) && e.next_leave_grant <= addDays(today, DASH_LEAVE_DAYS)) {
+      const past = e.next_leave_grant < today
+      todos.push({ key: `paid_leave:${e.staff_id}:${e.next_leave_grant}`, mark: past ? 2 : 1, level: past ? 'high' : 'mid', actions: BOTH, href, link_label: '従業員→',
+        text: past ? `${e.name}さんの有給の付与日（${mdLabel(e.next_leave_grant)}）を過ぎています。付与日数と残日数を従業員管理で更新してください。`
+          : `${e.name}さんの有給の付与日（${mdLabel(e.next_leave_grant)}）が近づいています。付与日数を確認してください。` })
     }
   }
   // ルール15: 有効期限が近い（DASH_DOC_EXPIRY_DAYS 日以内）・切れた書類（#297）。在籍中のスタッフの書類・取引先の書類と、
   // 従業員管理を使えるロールには入社時書類も数える。一覧は「スタッフの申請」の書類の欄（期限の一覧）で見る。mark は期限切れ・件数が増えたら出し直す
   {
-    const limit = addDays(today, DASH_DOC_EXPIRY_DAYS)
-    const docQ = [
-      db.prepare(`SELECT COUNT(*) AS n, SUM(d.valid_until < ?) AS expired FROM staff_documents d JOIN staff_profiles sp ON sp.staff_id = d.staff_id JOIN users us ON us.user_id = sp.user_id
-        WHERE d.company_id = ? AND d.valid_until IS NOT NULL AND d.valid_until <= ? AND us.status = 'active' AND COALESCE(sp.employment_status, 'working') != 'retired' AND sp.merged_into_staff_id IS NULL`).bind(today, cid, limit),
-      db.prepare(`SELECT COUNT(*) AS n, SUM(d.valid_until < ?) AS expired FROM client_documents d JOIN clients cl ON cl.client_id = d.client_id AND cl.company_id = d.company_id
-        WHERE d.company_id = ? AND d.valid_until IS NOT NULL AND d.valid_until <= ?`).bind(today, cid, limit),
-      ...(HR_ROLES.includes(u.role) ? [db.prepare(`SELECT COUNT(*) AS n, SUM(d.valid_until < ?) AS expired FROM employee_documents d JOIN staff_profiles sp ON sp.staff_id = d.staff_id
-        LEFT JOIN employee_records er ON er.staff_id = d.staff_id AND er.company_id = d.company_id
-        WHERE d.company_id = ? AND d.valid_until IS NOT NULL AND d.valid_until <= ? AND er.employment_ended_at IS NULL AND COALESCE(sp.employment_status, 'working') != 'retired'`).bind(today, cid, limit)] : []),
-    ]
-    const res = (await db.batch(docQ)).map(r => (r.results?.[0] || {}) as any)
+    const res = ['docStaff', 'docClient', ...(isHr ? ['docEmployee'] : [])].map(k => R(k)[0] || {})
     const total = res.reduce((a, r) => a + Number(r.n || 0), 0), expired = res.reduce((a, r) => a + Number(r.expired || 0), 0)
     if (total) {
       todos.push({ key: 'docs_expiring', mark: expired * 10000 + total, level: expired ? 'high' : 'mid', actions: BOTH, href: '#staff-requests', link_label: '書類→',
@@ -3321,36 +3408,27 @@ api.get('/admin/dashboard', async (c) => {
     }
   }
   // ルール14: 前日確認（#176）。明日のシフト（確定・代打）の確認状況を返し、締切を過ぎても未確認の人がいれば ToDo に出す。
-  // 確認の後にシフトが変わったものは未確認として数える（report-settings.ts の dayBeforeState）
+  // 確認の後にシフトが変わったものは未確認として数える（report-settings.ts の dayBeforeState）。ToDo は会社全体、一覧は絞り込んだ案件だけ
   let dayBeforeOut: any = { enabled: false, deadline: dayBefore.deadline }
   if (dayBefore.enabled) {
-    const tomorrow = addDays(today, 1)
-    const list = ((await db.prepare(`
-      SELECT s.shift_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.site_id, s.location, s.day_before_confirmed_at, s.day_before_confirmed_key, s.day_before_confirmed_by,
-        p.project_name, us.name AS staff_name, us.phone AS staff_phone, us.role = 'staff' AS has_login, cu.name AS confirmed_by_name
-      FROM shifts s JOIN projects p ON s.project_id = p.project_id
-      JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-      LEFT JOIN users cu ON cu.user_id = s.day_before_confirmed_by AND cu.company_id = s.company_id
-      WHERE s.company_id = ? AND s.work_date = ? AND s.status IN ('confirmed', 'substitute')
-      ORDER BY s.start_time, p.project_name, us.name, s.shift_id LIMIT ${DASH_DAY_BEFORE_MAX}`).bind(cid, tomorrow).all()).results as any[])
+    const list = R('dayBefore')
       .map(({ day_before_confirmed_at, day_before_confirmed_key, day_before_confirmed_by, ...s }) => {
         const st = dayBeforeState({ ...s, day_before_confirmed_at, day_before_confirmed_key })
         return { ...s, has_login: !!s.has_login, confirmed_at: st.confirmed_at, changed: st.changed,
           confirmed_by_name: st.confirmed_at && day_before_confirmed_by ? (s.confirmed_by_name || '管理者') : null }
       })
-    const unconfirmedStaff = new Set(list.filter(s => !s.confirmed_at).map(s => s.staff_id))
+    const unconfirmedAll = new Set(list.filter(s => !s.confirmed_at).map(s => s.staff_id))
     const pastDeadline = now >= `${today} ${dayBefore.deadline}:00`
-    dayBeforeOut = { enabled: true, deadline: dayBefore.deadline, date: tomorrow, past_deadline: pastDeadline, shifts: list,
-      unconfirmed_staff_count: unconfirmedStaff.size, staff_count: new Set(list.map(s => s.staff_id)).size }
-    if (pastDeadline && unconfirmedStaff.size) {
-      todos.push({ key: `day_before:${tomorrow}`, mark: unconfirmedStaff.size, level: 'high', actions: LATER, href: '#dash-day-before', link_label: '一覧→',
-        text: `明日（${mdLabel(tomorrow)}）のシフトで、前日確認がまだの人が${unconfirmedStaff.size}名います（締切 ${dayBefore.deadline}）。電話などで稼働を確認してください。` })
+    const shown = list.filter(s => inScope(s.project_id))
+    dayBeforeOut = { enabled: true, deadline: dayBefore.deadline, date: tomorrow, past_deadline: pastDeadline, shifts: shown,
+      unconfirmed_staff_count: new Set(shown.filter(s => !s.confirmed_at).map(s => s.staff_id)).size, staff_count: new Set(shown.map(s => s.staff_id)).size }
+    if (pastDeadline && unconfirmedAll.size) {
+      todos.push({ key: `day_before:${tomorrow}`, mark: unconfirmedAll.size, level: 'high', actions: LATER, href: '#dash-day-before', link_label: '一覧→',
+        text: `明日（${mdLabel(tomorrow)}）のシフトで、前日確認がまだの人が${unconfirmedAll.size}名います（締切 ${dayBefore.deadline}）。電話などで稼働を確認してください。` })
     }
   }
   // 『対応済み』『あとで』にした ToDo は分けて返す（画面ではたたんで出し、元に戻せる）
-  const dismissals = new Map(((await db.prepare(`SELECT d.todo_key, d.action, d.mark, d.until_at, d.created_at, um.name AS user_name
-    FROM todo_dismissals d LEFT JOIN users um ON um.user_id = d.user_id WHERE d.company_id = ? AND (d.action = 'done' OR d.until_at > ?)`).bind(cid, now).all()).results as any[])
-    .map(d => [String(d.todo_key), d]))
+  const dismissals = new Map(R('dismissals').map(d => [String(d.todo_key), d]))
   const visible: Todo[] = [], hidden: any[] = []
   for (const t of todos) {
     const d = dismissals.get(t.key)
@@ -3359,26 +3437,43 @@ api.get('/admin/dashboard', async (c) => {
   }
   const byLevel = (a: Todo, b: Todo) => (a.level === 'high' ? 0 : 1) - (b.level === 'high' ? 0 : 1)
 
+  // 人員不足・希望（仮）の一覧は絞り込んだ案件だけ（ToDo は会社全体の数で出す）。会社全体の一覧が上限で切れていれば、件数は『以上』
+  const shortShown = ahead.short_roles.filter(r => inScope(r.project_id))
+  const staffingAhead = scopeIds ? {
+    ...ahead, short_roles: shortShown, short_role_count: shortShown.length, short_headcount: shortShown.reduce((a, r) => a + r.shortage, 0),
+    short_more: ahead.short_role_count > ahead.short_roles.length,
+    requested_shifts: ahead.requested_shifts.filter(s => inScope(s.project_id)),
+  } : ahead
+  // 絞り込みの選択肢: 進行中の案件と、本日・前日にシフトのある案件・いま選んでいる案件（クライアントごとにまとめて出す）
+  const shiftProjects = new Set(allRows.map(s => Number(s.project_id)))
+  const scopeOptions = allProjects
+    .filter(p => p.status === 'active' || shiftProjects.has(Number(p.project_id)) || !!scopeIds?.has(Number(p.project_id)))
+    .map(p => ({ project_id: Number(p.project_id), project_name: p.project_name, client_id: p.client_id == null ? null : Number(p.client_id), client_name: p.client_name || '', active: p.status === 'active' }))
+
   return c.json({
     today, month, now,
+    // 絞り込み（#9905）。scope は今の絞り込み（なければ null）。指定された案件・クライアントが見つからなければ scope_invalid
+    scope, scope_invalid: !!(qProject || qClient) && !scope, scope_options: scopeOptions,
     // 稼働予定は人数（同じ人の複数のシフトは1名）とシフトの数を分けて返す（#449）
     working_count: new Set(todayOnly.map(s => s.staff_id)).size,
     working_shift_count: todayOnly.length,
-    revenue_forecast: revenue,
+    // revenue_forecast はシフトの請求合計と、今日が計上する日の月額（固定）の合計。revenue_monthly はそのうちの月額
+    revenue_forecast: revenueShifts + revenueMonthly,
+    revenue_monthly: revenueMonthly,
     shifts: active,
     absent_shifts: absentToday,
     unreported,
-    missing_daily_reports: (missingReports.results as any[]).map(r => ({ ...r, has_login: !!r.has_login })),
-    unchecked_daily_reports: Number(unchecked[0]?.n) || 0,
-    staffing_ahead: ahead,
+    missing_daily_reports: missingAll.filter(r => inScope(r.project_id)).map(r => ({ ...r, has_login: !!r.has_login })),
+    unchecked_daily_reports: uncheckedCount,
+    staffing_ahead: staffingAhead,
     // 明日のシフトの前日確認（#176。使っていない会社は enabled: false だけ）
     day_before: dayBeforeOut,
-    incidents: (incidents.results as any[]).map(({ report_values, ...i }) => {
+    incidents: incidentsAll.filter(i => inScope(i.project_id)).map(({ report_values, ...i }) => {
       let values: any = {}
       try { values = JSON.parse(report_values) || {} } catch { values = {} }
       return { ...i, values }
     }),
-    follow_staff: followStaff.results,
+    follow_staff: followStaff,
     performance_fields: perfFields.slice(0, DASH_PERF_FIELDS),
     performance_field_count: perfFields.length,
     project_performance: projectPerformance,
