@@ -3127,7 +3127,7 @@ function openTemplateEditor(t, init) {
   // 左に編集、右（狭い画面では下）にスタッフのスマホでの見え方のプレビュー（#9903）
   modal(`
     <h3 class="font-bold text-lg mb-3">${t ? 'テンプレートの編集' : 'テンプレートの作成'}</h3>
-    <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-5 lg:items-start">
+    <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_376px] lg:gap-5 lg:items-start">
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
       ${locked.size ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
@@ -3141,9 +3141,9 @@ function openTemplateEditor(t, init) {
     <div class="mt-5 lg:mt-0 lg:sticky lg:top-0" id="tpl-preview-pane">
       <p class="text-sm font-bold text-gray-700 mb-0.5"><i class="fas fa-mobile-screen-button text-blue-500 mr-1"></i>スタッフのスマホでの見え方</p>
       <p class="text-[11px] text-gray-400 mb-2">項目を足す・消す・並べ替えると、すぐに反映されます。ここで入力しても保存・提出はされません</p>
-      <div class="mx-auto w-[320px] max-w-full rounded-[2rem] border-[10px] border-gray-800 bg-gray-50 overflow-hidden shadow-lg">
+      <div class="mx-auto w-[376px] max-w-full rounded-[2rem] border-[8px] border-gray-800 bg-gray-50 overflow-hidden shadow-lg">
         <div class="bg-white border-b border-gray-100 px-4 py-2.5"><p class="font-bold text-gray-800 text-sm flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i>日報</p></div>
-        <div id="tpl-preview" class="px-3 py-3 h-[520px] max-h-[60vh] overflow-y-auto"></div>
+        <div id="tpl-preview" class="px-4 py-4 h-[600px] max-h-[60vh] overflow-y-auto"></div>
       </div>
     </div>
     </div>
@@ -4624,7 +4624,7 @@ function reportCommentReadHtml(r, fmt) {
 function reportLastEditHtml(r, fields, fmt) {
   const e = r.last_edit
   if (!e || !(e.changes || []).length) return ''
-  const label = new Map((fields || []).map(f => [f.key, f.label]))
+  const label = new Map((fields && fields.length ? fields : REPORT_NO_TEMPLATE_FIELDS).map(f => [f.key, f.label]))
   const who = e.kind === 'admin_edit' ? `${e.edited_by_name || '管理者'}が修正` : `${r.staff_name || 'スタッフ'}が再提出`
   const list = e.changes.map(c => `<span class="whitespace-nowrap"><span class="text-gray-500">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
   return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 ${e.kind === 'admin_edit' ? 'bg-purple-50 text-purple-900' : 'bg-amber-50 text-amber-900'}" data-report-last-edit>
