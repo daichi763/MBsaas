@@ -54,6 +54,7 @@ import { halfWidthNumber, toNumberOrNull, normalizePostalCode, normalizeWebsiteU
 import { ownProject, ownClient, ownStaff, ownNotice, ownShift } from './lib/tenant'
 import { loadMonthlyLines, monthlyTotal } from './lib/monthly-billing'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
+import { assigneesApi, assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt } from './assignees'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef,
   reportEditFields, buildAdminReportEdit, parseReportValuesJson, REPORT_EDIT_REASON_MAX } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
@@ -1260,6 +1261,8 @@ api.get('/hq/login-history', async (c) => {
 // 自分のアカウント（氏名・メール・パスワードの変更）・管理者アカウント・本部からの管理者の管理（src/accounts.ts）
 api.route('/auth', authAccountApi)
 api.route('/admin', adminUsersApi)
+// クライアント・協力会社の社内担当者（#9910。src/assignees.ts）
+api.route('/admin', assigneesApi)
 api.route('/hq', hqUsersApi)
 // スタッフマスタ（企業間連携・4ルート作成）: /admin/* の権限ミドルウェア適用後に登録（src/roster.ts）
 api.route('/admin/roster', rosterApi)
@@ -3611,9 +3614,12 @@ api.get('/admin/staff/:id', async (c) => {
   }
   // ログイン用メール（users.email）と、確認待ちのメール（#207）。他社連携の行の LK- コードは自社のログインではない（#569）
   profile.has_own_login = hasOwnLoginRow(profile)
-  profile.login_email_pending = profile.has_own_login ? await db.prepare(`SELECT email, expires_at, created_at FROM login_email_verifications
-    WHERE user_id = ? AND company_id = ? AND verified_at IS NULL AND canceled_at IS NULL AND expires_at > ? ORDER BY verification_id DESC LIMIT 1`)
-    .bind(profile.user_id, u.company_id, new Date().toISOString()).first() : null
+  // 期限の切れた確認待ちも出す（#9803。メールを送れない本番で作られ、切り替わらないまま残った行を、管理者が切り替える・取り消せるように）
+  profile.login_email_pending = profile.has_own_login ? await db.prepare(`SELECT verification_id, email, expires_at, created_at, CASE WHEN expires_at > ? THEN 0 ELSE 1 END AS expired
+    FROM login_email_verifications WHERE user_id = ? AND company_id = ? AND verified_at IS NULL AND canceled_at IS NULL ORDER BY verification_id DESC LIMIT 1`)
+    .bind(new Date().toISOString(), profile.user_id, u.company_id).first() : null
+  // メールアドレスの変え方（#9803）: verify = 確認用のメールを送り、本人が開いたときに切り替える / direct = メールを送れないので保存した時点で切り替える
+  profile.login_email_mode = canSendMail(c.env) ? 'verify' : 'direct'
   // 画面の編集可否（APIでも同じ判定で制御している）
   profile.can_edit_in_master = STAFF_MASTER_EDITABLE_TYPES.includes(profile.affiliation_type) && profile.can_edit_base && !profile.merged_into_staff_id
   // 業務側項目（通勤・稼働開始・エリア・スキル・経歴・PR・備考）は他社連携以外の全区分で編集可
@@ -3943,7 +3949,7 @@ async function checkContactUpdate(c: any, sid: string, body: any, roster: any): 
 /**
  * 電話番号とログイン用メールを保存する（checkContactUpdate の後に呼ぶ）。
  * ログイン用メールは、空欄ならすぐに消す。新しいアドレスはすぐには使わず、確認用のリンクを送り、本人が確認したときに有効にする（/auth/verify-email）。
- * opts.direct（変更申請の承認で、メールを送れない環境のとき。#9802）は確認用のメールを使わず、その場で切り替える
+ * opts.direct（メールを送れない環境での、管理者の保存・変更申請の承認・確認待ちの切り替え。#9802 #9803）は確認用のメールを使わず、その場で切り替える
  */
 async function applyContactUpdate(c: any, body: any, roster: any, opts: { direct?: boolean } = {}): Promise<{ login_email?: { pending: string | null; cleared?: boolean; switched?: boolean; mail_sent?: boolean; mail_skipped?: boolean } }> {
   const u = c.get('user'); const db = c.env.DB
@@ -4140,8 +4146,44 @@ api.put('/admin/staff/:id', async (c) => {
   const contactErr = await checkContactUpdate(c, sid, body, roster)
   if (contactErr) return c.json(contactErr.body, contactErr.status)
   await applyProfileUpdate(c, sid, body, roster)
-  const contact = await applyContactUpdate(c, body, roster)
+  // メールを送れない環境では、保存した時点で切り替える（#9803。変更申請の承認 #9802 と同じ）
+  const contact = await applyContactUpdate(c, body, roster, { direct: !canSendMail(c.env) })
   return c.json({ ok: true, ...contact })
+})
+
+// 確認待ちのメールアドレス（login_email_verifications の未確認の行）の切り替え・取り消し（#9803）。
+// 切り替えはメールを送れない環境だけ（送れる環境では本人が確認用のメールを開いて切り替える）。
+// 切り替えは管理者の保存と同じ確認（checkContactUpdate）と保存（applyContactUpdate の direct）を通す
+async function loadPendingLoginEmail(c: any) {
+  const u = c.get('user'); const sid = c.req.param('id')
+  const roster = await loadRoster(c.env.DB, sid, u.company_id)
+  if (!roster) return { error: c.json({ error: 'スタッフが見つかりません' }, 404) }
+  if (roster.merged_into_staff_id) return { error: c.json({ error: '統合済みのスタッフは変更できません（統合先のスタッフで編集してください）' }, 409) }
+  if (!hasOwnLoginRow(roster)) return { error: c.json({ error: 'ログインのないスタッフです' }, 400) }
+  const b = await c.req.json().catch(() => ({} as any))
+  const pending = await c.env.DB.prepare(`SELECT verification_id, email FROM login_email_verifications
+    WHERE verification_id = ? AND user_id = ? AND company_id = ? AND verified_at IS NULL AND canceled_at IS NULL`)
+    .bind(Number(b.verification_id) || 0, roster.user_id, u.company_id).first() as any
+  if (!pending) return { error: c.json({ error: '確認待ちのメールアドレスが見つかりません（すでに切り替わったか、取り消されています）。画面を読み直してください' }, 409) }
+  return { sid, roster, pending }
+}
+api.post('/admin/staff/:id/login-email-pending/apply', async (c) => {
+  if (canSendMail(c.env)) return c.json({ error: 'メールを送れる設定のため、本人が確認用のメールを開いたときに切り替わります' }, 409)
+  const r = await loadPendingLoginEmail(c)
+  if (r.error) return r.error
+  const body: any = { login_email: r.pending.email }
+  const err = await checkContactUpdate(c, r.sid, body, r.roster)
+  if (err) return c.json(err.body, err.status)
+  const contact = await applyContactUpdate(c, body, r.roster, { direct: true })
+  return c.json({ ok: true, ...contact })
+})
+api.post('/admin/staff/:id/login-email-pending/cancel', async (c) => {
+  const r = await loadPendingLoginEmail(c)
+  if (r.error) return r.error
+  if (r.roster.affiliation_type === 'linked_external') return c.json({ error: '他社から連携したスタッフのメールアドレスは、所属元の会社で設定します' }, 403)
+  await c.env.DB.prepare('UPDATE login_email_verifications SET canceled_at = ? WHERE verification_id = ? AND verified_at IS NULL AND canceled_at IS NULL')
+    .bind(nowJST(), r.pending.verification_id).run()
+  return c.json({ ok: true })
 })
 
 // スタッフ登録
@@ -4362,7 +4404,7 @@ api.delete('/admin/staff/documents/:docId', async (c) => {
 // クライアント
 api.get('/admin/clients', async (c) => {
   const u = c.get('user')
-  const rows = await c.env.DB.prepare(`
+  const [rows, asg] = await c.env.DB.batch([c.env.DB.prepare(`
     SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects,
       (SELECT COUNT(*) FROM projects p WHERE p.client_id = cl.client_id AND p.company_id = cl.company_id AND p.status = 'active') AS active_project_count,
       (SELECT COUNT(*) FROM projects p WHERE p.client_id = cl.client_id AND p.company_id = cl.company_id) AS project_count,
@@ -4370,8 +4412,11 @@ api.get('/admin/clients', async (c) => {
       (SELECT COUNT(*) FROM client_documents d WHERE d.client_id = cl.client_id AND d.company_id = cl.company_id AND d.valid_until IS NOT NULL AND d.valid_until <= ?) AS doc_expiring,
       -- 顧客担当者の名前（一覧の検索に使う。#9101 で会社基本情報の担当者は担当者一覧へ移した）
       (SELECT GROUP_CONCAT(cc.contact_name, '、') FROM client_contacts cc WHERE cc.client_id = cl.client_id AND cc.company_id = cl.company_id) AS contact_names
-    FROM clients cl WHERE cl.company_id = ? ORDER BY cl.client_id`).bind(addDays(todayJST(), DASH_DOC_EXPIRY_DAYS), u.company_id).all()
-  return c.json({ clients: rows.results })
+    FROM clients cl WHERE cl.company_id = ? ORDER BY cl.client_id`).bind(addDays(todayJST(), DASH_DOC_EXPIRY_DAYS), u.company_id),
+    // 社内担当者（#9910。主担当が先頭）
+    assigneeListStmt(c.env.DB, u.company_id, 'client')])
+  const byClient = groupAssignees(asg.results as any[])
+  return c.json({ clients: ((rows.results || []) as any[]).map(r => ({ ...r, assignees: byClient.get(Number(r.client_id)) || [] })) })
 })
 
 api.post('/admin/clients', async (c) => {
@@ -4382,6 +4427,8 @@ api.post('/admin/clients', async (c) => {
   if (b.email && !CLIENT_EMAIL_RE.test(String(b.email).trim())) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
   const fieldErr = normalizeClientFields(b)
   if (fieldErr) return c.json({ error: fieldErr }, 400)
+  const asg = await parseAssignees(c.env.DB, u.company_id, b.assignees)
+  if (asg.error) return c.json({ error: asg.error }, 400)
   let rating = 3
   if (b.client_rating !== undefined && b.client_rating !== null && String(b.client_rating).trim() !== '') {
     const r = toInt(b.client_rating, 1, 5)
@@ -4401,6 +4448,7 @@ api.post('/admin/clients', async (c) => {
       b.client_kind || null, b.representative_name || null, b.branch_name || null, b.department_name || null, b.postal_code ?? null, b.website_url ?? null,
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
+  if (asg.value) await c.env.DB.batch(assigneeSaveStmts(c.env.DB, u.company_id, 'client', Number(r.meta.last_row_id), asg.value, u.user_id))
   // 担当者の名前が送られてきたら（以前の画面・外部からの登録）、顧客担当者の一覧に1件として入れる（#9101）
   if (contactName) await c.env.DB.prepare('INSERT INTO client_contacts (company_id, client_id, contact_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
     .bind(u.company_id, r.meta.last_row_id, contactName, nowJST(), nowJST()).run()
@@ -4418,6 +4466,7 @@ api.get('/admin/clients/:id', async (c) => {
     SELECT cl.*, (SELECT GROUP_CONCAT(p.project_name) FROM projects p WHERE p.client_id = cl.client_id AND p.status = 'active') AS active_projects
     FROM clients cl WHERE cl.client_id = ? AND cl.company_id = ?`).bind(cid, u.company_id).first()
   if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  ;(client as any).assignees = await loadAssignees(c.env.DB, u.company_id, 'client', Number(client.client_id))
   const contacts = await c.env.DB.prepare(
     'SELECT * FROM client_contacts WHERE client_id = ? AND company_id = ? ORDER BY contact_id'
   ).bind(cid, u.company_id).all()
@@ -4525,6 +4574,9 @@ api.put('/admin/clients/:id', async (c) => {
 
   const exists = await c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
   if (!exists) return c.json({ error: 'クライアントが見つかりません' }, 404)
+  // 社内担当者（#9910）。送られていなければ変えない
+  const asg = await parseAssignees(c.env.DB, u.company_id, b.assignees)
+  if (asg.error) return c.json({ error: asg.error }, 400)
 
   // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#92）。
   // 会社名は空にできない。区分・評価は空で送られたら変更しない
@@ -4535,10 +4587,10 @@ api.put('/admin/clients/:id', async (c) => {
       'client_kind', 'branch_name', 'department_name'],
     { required: ['client_name', 'stream_type', 'client_rating'] })
   if (upd.missing.includes('client_name')) return c.json({ error: 'クライアント名は必須です' }, 400)
-  if (upd.clause) {
-    await c.env.DB.prepare(`UPDATE clients SET ${upd.clause} WHERE client_id = ? AND company_id = ?`)
-      .bind(...upd.values, cid, u.company_id).run()
-  }
+  const stmts: D1PreparedStatement[] = []
+  if (upd.clause) stmts.push(c.env.DB.prepare(`UPDATE clients SET ${upd.clause} WHERE client_id = ? AND company_id = ?`).bind(...upd.values, cid, u.company_id))
+  if (asg.value) stmts.push(...assigneeSaveStmts(c.env.DB, u.company_id, 'client', Number(exists.client_id), asg.value, u.user_id))
+  if (stmts.length) await c.env.DB.batch(stmts)
   return c.json({ ok: true })
 })
 
@@ -5417,8 +5469,13 @@ async function deleteUnused(c: any, o: { table: 'projects' | 'clients'; idCol: s
 }
 api.delete('/admin/projects/:id{[0-9]+}', async (c) => deleteUnused(c, { table: 'projects', idCol: 'project_id', id: Number(c.req.param('id')),
   usage: PROJECT_USAGE, owned: PROJECT_OWNED_TABLES, what: '案件', hint: '使わなくなった案件は「終了」にしてください' }))
-api.delete('/admin/clients/:id{[0-9]+}', async (c) => deleteUnused(c, { table: 'clients', idCol: 'client_id', id: Number(c.req.param('id')),
-  usage: CLIENT_USAGE, owned: CLIENT_OWNED_TABLES, what: 'クライアント', hint: '重複して登録したクライアントは、名前を変えて区別してください' }))
+api.delete('/admin/clients/:id{[0-9]+}', async (c) => {
+  const res = await deleteUnused(c, { table: 'clients', idCol: 'client_id', id: Number(c.req.param('id')),
+    usage: CLIENT_USAGE, owned: CLIENT_OWNED_TABLES, what: 'クライアント', hint: '重複して登録したクライアントは、名前を変えて区別してください' })
+  // 消したクライアントの社内担当者（#9910。列の名前が client_id でないので、消せたときにここで消す）
+  if (res.status === 200) await assigneeDeleteStmt(c.env.DB, c.get('user').company_id, 'client', Number(c.req.param('id'))).run()
+  return res
+})
 
 // シフト管理
 api.get('/admin/shifts', async (c) => {

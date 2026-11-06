@@ -181,10 +181,17 @@ let EMP_SID = null
   ok('#207 自社の別の人が使っているメールは 409', dupMail.status === 409, dupMail)
   const r = await admin.put(`/api/admin/staff/${S1.staff_id}`, { login_email: mail })
   const d = await admin.get(`/api/admin/staff/${S1.staff_id}`)
-  ok('#207 新しいメールは確認待ちになり、すぐには宛先にならない', r.status === 200 && r.data.login_email?.pending === mail && !d.data.profile.email && d.data.profile.login_email_pending?.email === mail, { r, p: d.data?.profile?.login_email_pending, email: d.data?.profile?.email })
+  // メールを送れない環境（既定の wrangler dev）では、管理者が保存した時点で切り替わる（#9803。w17-masters）
+  const direct = d.data.profile.login_email_mode === 'direct'
+  if (direct) ok('#207 #9803 メールを送れない環境では、保存した時点で新しいメールに切り替わる', r.status === 200 && r.data.login_email?.switched === true && d.data.profile.email === mail && !d.data.profile.login_email_pending, { r, email: d.data?.profile?.email })
+  else ok('#207 新しいメールは確認待ちになり、すぐには宛先にならない', r.status === 200 && r.data.login_email?.pending === mail && !d.data.profile.email && d.data.profile.login_email_pending?.email === mail, { r, p: d.data?.profile?.login_email_pending, email: d.data?.profile?.email })
   ok('#207 #569 詳細に自社のログインの有無を返す', d.data.profile.has_own_login === true)
   if (PERSIST) {
     const tok = `w3ap-verify-${SUF}`
+    // メールを送れない環境では確認待ちができないので、メールを送れる環境で作られた確認待ちと同じ状態を D1 に作って、確認のリンクを確かめる
+    if (direct) sql(`UPDATE users SET email = NULL WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = ${S1.staff_id});
+      INSERT INTO login_email_verifications (user_id, company_id, email, token_hash, expires_at, requested_by, created_at)
+      SELECT user_id, company_id, '${mail}', 'x', '${new Date(Date.now() + 3600e3).toISOString()}', NULL, '2026-01-01 00:00:00' FROM staff_profiles WHERE staff_id = ${S1.staff_id}`)
     sql(`UPDATE login_email_verifications SET token_hash = '${sha256(tok)}' WHERE email = '${mail}' AND verified_at IS NULL AND canceled_at IS NULL`)
     const bad = await pub.post('/api/auth/verify-email', { token: 'wrong-token' })
     ok('#207 誤ったトークンでは確認できない', bad.status === 400, bad)

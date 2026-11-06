@@ -52,7 +52,7 @@ axios.interceptors.response.use(r => r, e => {
     location.reload()
   } else if (r && !SESSION_ENDED && r.status === 401) {
     SESSION_ENDED = true
-    if (ME) alert('ログインの期限が切れました。ログインし直すと、この画面に戻ります。')
+    if (ME) alert('ログインの期限が切れました。再ログインすると、この画面に戻ります。')
     location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
   }
   return Promise.reject(e)

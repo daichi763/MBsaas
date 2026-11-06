@@ -100,7 +100,7 @@ function showSessionExpired() {
   // 入力中のモーダル（#modal-root）は消さずに、その上に重ねて出す
   sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
     <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-lock text-amber-500 mr-1"></i>ログインの期限が切れました</h3>
-    <p class="text-sm text-gray-600 mb-3">入力中の内容は残っています。パスワードを入力してログインし直すと、そのまま続けられます。保存などの操作は、ログインし直した後にもう一度送ります。</p>
+    <p class="text-sm text-gray-600 mb-3">入力中の内容は残っています。パスワードを入力して再ログインすると、そのまま続けられます。保存などの操作は、再ログインした後にもう一度送ります。</p>
     <form id="relogin-form">
       <p class="text-xs text-gray-500 mb-1">${ME.company_code ? '会社コード ' + esc(ME.company_code) + ' / ' : ''}ID ${esc(ME.user_code)}（${esc(ME.name)}）</p>
       <input type="password" id="relogin-pw" class="inp" autocomplete="current-password" placeholder="パスワード" required>
@@ -111,7 +111,7 @@ function showSessionExpired() {
       <p id="relogin-error" class="hidden text-sm text-red-600 mt-2"></p>
       <div class="flex flex-wrap gap-2 justify-end mt-4">
         <button type="button" class="btn btn-outline" data-action="sessionGoLogin">ログイン画面へ（入力中の内容は消えます）</button>
-        <button type="submit" class="btn btn-primary" id="relogin-btn">ログインし直す</button>
+        <button type="submit" class="btn btn-primary" id="relogin-btn">再ログイン</button>
       </div>
     </form></div></div>`
   document.getElementById('relogin-form').addEventListener('submit', ev => { ev.preventDefault(); relogin(document.getElementById('relogin-btn')) })
@@ -152,7 +152,7 @@ function relogin(btn) {
     sessionRoot().innerHTML = ''
     const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
     waiters.forEach(w => axios(w.config).then(w.resolve, w.reject))
-    toast('ログインし直しました')
+    toast('再ログインしました')
     if (window.refreshNotifBadge) refreshNotifBadge()
     if (window.refreshBoardBadge) refreshBoardBadge()
     if (window.refreshChatBadge) refreshChatBadge()
@@ -183,7 +183,7 @@ function showSessionWarning(left) {
   }
   const at = dayjs(SESSION_EXPIRES).format('HH:mm')
   el.innerHTML = el.dataset.capped === '1'
-    ? `<span><i class="fas fa-clock mr-1"></i>ログインからの最長期間に達するため、${at} にログインの期限が切れます。それまでに保存して、ログインし直してください。</span>`
+    ? `<span><i class="fas fa-clock mr-1"></i>ログインからの最長期間に達するため、${at} にログインの期限が切れます。それまでに保存して、再ログインしてください。</span>`
     : `<span><i class="fas fa-clock mr-1"></i>あと${Math.max(1, Math.ceil(left / 60000))}分（${at}）でログインの期限が切れます。</span><button type="button" class="btn btn-outline text-xs" data-action="sessionExtend">延長する</button>`
 }
 function hideSessionWarning() { const el = document.getElementById('session-warning'); if (el) el.remove() }
@@ -1583,19 +1583,59 @@ function staffBasicCardHtml(sid, p, affData, editing) {
         </div>
 `
 }
-// ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。変更は確認メールを送り、本人が確認したときに切り替わる
+// ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。
+// メールを送れる環境では確認メールを送り、本人が確認したときに切り替わる。送れない環境では保存した時点で切り替わる（#9803）
 function staffLoginEmailHtml(p, editing) {
   if (p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return ''
   const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">メール（通知・パスワード再設定）</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
   if (!p.has_own_login) return row('<span class="text-xs text-gray-400">ログインなし</span>')
-  const pend = p.login_email_pending
-  const pendHtml = pend ? `<span class="block text-xs mt-0.5"><span class="badge badge-yellow">確認待ち</span> ${esc(pend.email)} <span class="text-[11px] text-gray-400">（本人が確認メールのリンクを開くと切り替わります。期限 ${esc(dayjs(pend.expires_at).format('M/D HH:mm'))}）</span></span>` : ''
+  const direct = p.login_email_mode === 'direct'
+  const pendHtml = staffPendingLoginEmailHtml(p, direct)
   if (editing && !p.merged_into_staff_id) {
     return row(`<input id="staff-login-email" class="inp text-xs" type="email" maxlength="254" autocomplete="off" value="${esc(p.email || '')}" data-orig="${esc(p.email || '')}" placeholder="例: taro@example.com">
-      <span class="block text-[11px] text-gray-400">変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります。空欄で保存すると削除します</span>${pendHtml}`)
+      <span class="block text-[11px] text-gray-400">${direct ? '保存した時点で新しいアドレスに切り替わります（メールを送れない設定のため、確認用のメールは送りません）' : '変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります'}。空欄で保存すると削除します</span>${pendHtml}`)
   }
   return row((p.email ? `<span class="text-xs">${esc(p.email)}</span>` : '<span class="text-xs text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>未登録（通知メール・パスワード再設定が使えません）</span>') + pendHtml)
 }
+// 確認待ちのメールアドレス（#9803）。管理者の保存・変更申請の承認で作られ、本人が確認用のメールを開くまで切り替わらない。
+// メールを送れない環境では確認用のメールが届かないので、管理者が「このアドレスに切り替える」か「取り消す」を選ぶ
+function staffPendingLoginEmailHtml(p, direct) {
+  const pend = p.login_email_pending
+  if (!pend) return ''
+  const canEdit = !p.merged_into_staff_id
+  const note = direct
+    ? 'メールを送れない設定のため、確認用のメールは届いていません。切り替えるか取り消してください'
+    : pend.expired ? `確認の期限（${dayjs(pend.expires_at).format('M/D HH:mm')}）が切れています。切り替えるには、もう一度保存して確認メールを送り直してください`
+      : `本人が確認メールのリンクを開くと切り替わります。期限 ${dayjs(pend.expires_at).format('M/D HH:mm')}`
+  return `<span class="block text-xs mt-1 p-2 rounded-lg bg-amber-50" id="staff-login-email-pending">
+      <span class="badge badge-yellow">確認待ちのメールアドレス</span> <span class="break-all">${esc(pend.email)}</span>
+      <span class="block text-[11px] text-gray-500 mt-0.5">${esc(note)}${pend.created_at ? `（${esc(dayjs(pend.created_at).format('YYYY/M/D'))} に受付）` : ''}</span>
+      ${canEdit ? `<span class="flex gap-2 mt-1 flex-wrap">
+        ${direct ? `<button type="button" class="btn btn-primary text-xs" data-action="applyPendingLoginEmail" data-sid="${Number(p.staff_id)}" data-id="${Number(pend.verification_id)}" data-email="${esc(pend.email)}">このアドレスに切り替える</button>` : ''}
+        <button type="button" class="btn btn-outline text-xs" data-action="cancelPendingLoginEmail" data-sid="${Number(p.staff_id)}" data-id="${Number(pend.verification_id)}" data-email="${esc(pend.email)}">取り消す</button>
+      </span>` : ''}
+    </span>`
+}
+delegate('applyPendingLoginEmail', el => {
+  if (!confirm(`通知・パスワード再設定のメールアドレスを「${el.dataset.email}」に切り替えます。以前のアドレスに送ったパスワード再設定のリンクは使えなくなります。よろしいですか？`)) return
+  return withSubmitLock(el, async () => {
+    try {
+      await axios.post(`/api/admin/staff/${Number(el.dataset.sid)}/login-email-pending/apply`, { verification_id: Number(el.dataset.id) })
+      toast('メールアドレスを切り替えました')
+      await refreshStaffProfile(el.dataset.sid)
+    } catch (e) { showApiError(e, '切り替えられませんでした') }
+  })
+})
+delegate('cancelPendingLoginEmail', el => {
+  if (!confirm(`確認待ちのメールアドレス「${el.dataset.email}」を取り消します。今のメールアドレスはそのままです。よろしいですか？`)) return
+  return withSubmitLock(el, async () => {
+    try {
+      await axios.post(`/api/admin/staff/${Number(el.dataset.sid)}/login-email-pending/cancel`, { verification_id: Number(el.dataset.id) })
+      toast('確認待ちのメールアドレスを取り消しました')
+      await refreshStaffProfile(el.dataset.sid)
+    } catch (e) { showApiError(e, '取り消せませんでした') }
+  })
+})
 // 直近に表示したスタッフ詳細のデータ（編集切替・保存後の部分再描画に使う）
 let staffDetailState = null
 function redrawStaffCard(editing) {
@@ -1996,7 +2036,9 @@ window.saveStaffBasicInfo = async function (sid) {
     const res = await putConfirmingRetiredAt('/api/admin/staff/' + sid, body)
     if (!res) return
     const le2 = res.data && res.data.login_email
-    if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました' : '保存しました。確認メールを送れませんでした（メールの設定を確認してください）')
+    if (le2 && le2.switched) toast('保存しました。メールアドレスを切り替えました')
+    else if (le2 && le2.cleared) toast('保存しました。メールアドレスを削除しました')
+    else if (le2 && le2.pending) toast(le2.mail_sent && !le2.mail_skipped ? '保存しました。新しいメールアドレスに確認メールを送りました（本人が開くと切り替わります）' : '保存しました。確認メールを送れなかったため、メールアドレスはまだ切り替わっていません（メールの設定を確認してください）')
     else toast('保存しました')
     staffEditingSid = null
     await refreshStaffProfile(sid)
@@ -3278,10 +3320,92 @@ function ratingStars(v) {
   return '★'.repeat(n) + '☆'.repeat(5 - n)
 }
 // クライアント一覧の検索・並べ替え（#490）
-const CLIENT_LIST = { q: '', stream: '', sort: 'client_id', docexp: false, data: null }
+// ---------- 社内担当者（#9910）。クライアントと協力会社（roster.js）で同じ部品を使う ----------
+// 主担当1人＋副担当（何人でも）を、自社の管理者のアカウントから選ぶ。止めた・消したアカウントは「担当から外れています」と出す
+let ASSIGNEE_OPTIONS = null // 担当に選べるアカウント（{ accounts, me }）
+async function loadAssigneeOptions(force) {
+  if (!ASSIGNEE_OPTIONS || force) ASSIGNEE_OPTIONS = (await axios.get('/api/admin/assignees/options')).data
+  return ASSIGNEE_OPTIONS
+}
+const assigneeName = a => a.name || '削除されたアカウント'
+const assigneeAccountLabel = a => `${a.name}（${a.user_code}・${ADMIN_ROLE_LABEL[a.role] || a.role}）`
+// 詳細の表示: 主担当・副担当と、これまでの文字の社内担当者（協力会社だけ。「旧: 〇〇」）
+function assigneesViewHtml(list, legacyText) {
+  list = list || []
+  const one = a => a.active ? esc(assigneeName(a))
+    : `<span class="line-through text-gray-400">${esc(assigneeName(a))}</span> <span class="badge badge-gray" title="アカウントを止めた・消したため、担当から外れています">担当から外れています</span>`
+  const main = list.filter(a => a.is_primary), subs = list.filter(a => !a.is_primary)
+  return `<span class="block"><span class="text-[11px] text-gray-400 mr-1">主</span>${main.length ? main.map(one).join('') : '<span class="text-gray-400">未設定</span>'}</span>
+    <span class="block"><span class="text-[11px] text-gray-400 mr-1">副</span>${subs.length ? subs.map(one).join('、') : '<span class="text-gray-400">-</span>'}</span>
+    ${legacyText ? `<span class="block text-[11px] text-gray-400">旧: ${esc(legacyText)}</span>` : ''}`
+}
+// 一覧の短い表示（主担当の名前と、副担当の人数）
+function assigneeShortHtml(list, legacyText) {
+  list = list || []
+  const main = list.find(a => a.is_primary), subs = list.filter(a => !a.is_primary && a.active).length
+  if (!list.length) return legacyText ? `<span class="text-gray-400">旧: ${esc(legacyText)}</span>` : '<span class="text-gray-300">未設定</span>'
+  const mainHtml = !main ? '<span class="text-gray-400">主担当なし</span>'
+    : main.active ? esc(assigneeName(main)) : `<span class="line-through text-gray-400">${esc(assigneeName(main))}</span><span class="text-[11px] text-amber-700">（担当から外れています）</span>`
+  return mainHtml + (subs ? `<span class="text-gray-400"> ほか${subs}名</span>` : '')
+}
+// 編集欄（prefix で入力欄の id を分ける）。名前・ID で絞り込める
+function assigneesEditorHtml(prefix, list) {
+  list = list || []
+  const opts = (ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.accounts) || []
+  const main = list.find(a => a.is_primary && a.active)
+  const subIds = new Set(list.filter(a => !a.is_primary && a.active).map(a => a.user_id))
+  const gone = list.filter(a => !a.active)
+  const search = a => escAttr(`${a.name} ${a.user_code}`.toLowerCase())
+  return `<div class="space-y-1.5 min-w-0" id="${prefix}-asg">
+      <input class="inp text-xs" data-assignee-filter="${prefix}" placeholder="名前・IDで絞り込み" autocomplete="off" aria-label="社内担当者を名前・IDで絞り込み">
+      <div><label for="${prefix}-asg-main" class="text-[11px] text-gray-500 block">主担当（1人）</label>
+        <select id="${prefix}-asg-main" class="inp text-xs"><option value="">（未設定）</option>${opts.map(a => `<option value="${Number(a.user_id)}" data-search="${search(a)}" ${main && main.user_id === a.user_id ? 'selected' : ''}>${esc(assigneeAccountLabel(a))}</option>`).join('')}</select></div>
+      <div><p class="text-[11px] text-gray-500">副担当（何人でも）</p>
+        <div class="max-h-36 overflow-y-auto border border-gray-200 rounded-lg p-1.5 space-y-0.5" id="${prefix}-asg-subs">
+          ${opts.map(a => `<label class="flex items-center gap-1.5 text-xs" data-search="${search(a)}"><input type="checkbox" value="${Number(a.user_id)}" ${subIds.has(a.user_id) ? 'checked' : ''}>${esc(assigneeAccountLabel(a))}</label>`).join('') || '<p class="text-xs text-gray-400">選べるアカウントがありません</p>'}
+        </div></div>
+      ${gone.length ? `<p class="text-[11px] text-amber-700">止めた・消したアカウント（${gone.map(a => esc(assigneeName(a))).join('、')}）は担当から外れています。保存すると担当の一覧からも消えます</p>` : ''}
+    </div>`
+}
+// 編集欄の値（欄がなければ undefined で、送らない＝今の担当のまま）
+function collectAssignees(prefix) {
+  const sel = document.getElementById(prefix + '-asg-main'); if (!sel) return undefined
+  const main = Number(sel.value) || null
+  const subs = [...document.querySelectorAll(`#${prefix}-asg-subs input[type=checkbox]:checked`)].map(i => Number(i.value)).filter(id => id !== main)
+  return { main_user_id: main, sub_user_ids: subs }
+}
+// 絞り込み: 名前・ID が合わない選択肢を隠す（選んでいるものは隠さない）
+document.addEventListener('input', ev => {
+  const el = ev.target
+  if (!el || !el.dataset || !el.dataset.assigneeFilter) return
+  const p = el.dataset.assigneeFilter, q = el.value.trim().toLowerCase()
+  const box = document.getElementById(p + '-asg'); if (!box) return
+  box.querySelectorAll('option[data-search]').forEach(o => { o.hidden = !!q && !o.selected && !o.dataset.search.includes(q) })
+  // 選択肢の label は flex なので、hidden 属性ではなく display で隠す
+  box.querySelectorAll('label[data-search]').forEach(l => { const cb = l.querySelector('input'); l.style.display = !!q && !(cb && cb.checked) && !l.dataset.search.includes(q) ? 'none' : '' })
+})
+// 一覧の「社内担当者」の絞り込みの選択肢（すべて・自分・未設定・アカウントごと。止めたアカウントもデータにあれば出す）
+function assigneeFilterOptions(rows, cur) {
+  const accounts = new Map(((ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.accounts) || []).map(a => [a.user_id, a.name]))
+  for (const r of rows) for (const a of r.assignees || []) if (!accounts.has(a.user_id)) accounts.set(a.user_id, assigneeName(a) + '（担当から外れています）')
+  const me = ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.me
+  return [['', '社内担当者: すべて'], ...(me ? [['me', '自分が担当']] : []), ['none', '社内担当者: 未設定'],
+    ...[...accounts.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ja')).map(([id, n]) => [String(id), n])]
+    .map(([k, v]) => `<option value="${esc(k)}" ${String(cur) === k ? 'selected' : ''}>${esc(v)}</option>`).join('')
+}
+function matchesAssigneeFilter(list, f) {
+  if (!f) return true
+  list = list || []
+  if (f === 'none') return !list.some(a => a.active)
+  const id = f === 'me' ? (ASSIGNEE_OPTIONS && ASSIGNEE_OPTIONS.me) : Number(f)
+  return list.some(a => a.user_id === id)
+}
+
+// 上流・下流（clients.stream_type）は画面に出さない（#9908。クライアントは案件をくれる会社のため。列と値は DB に残す）
+const CLIENT_LIST = { q: '', sort: 'client_id', docexp: false, assignee: '', data: null }
 async function renderClients() {
   loading()
-  try { CLIENT_LIST.data = (await axios.get('/api/admin/clients')).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
+  try { [CLIENT_LIST.data] = await Promise.all([axios.get('/api/admin/clients').then(r => r.data), loadAssigneeOptions(true)]) } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
   const L = CLIENT_LIST
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -3289,22 +3413,24 @@ async function renderClients() {
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
-      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・住所・稼働案件で検索" value="${esc(L.q)}">
-      <select id="client-stream" class="inp text-sm w-auto">${[['', '上流・下流: すべて'], ['upstream', '上流'], ['downstream', '下流']].map(([k, v]) => `<option value="${k}" ${L.stream === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・社内担当者・住所・稼働案件で検索" value="${esc(L.q)}">
+      <select id="client-assignee" class="inp text-sm w-auto" aria-label="社内担当者で絞り込み">${assigneeFilterOptions(L.data.clients, L.assignee)}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
     </div>
     <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" id="client-cards"></div>`
   let timer = null
   document.getElementById('client-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawClientCards() }, 200) })
-  document.getElementById('client-stream').addEventListener('change', ev => { L.stream = ev.target.value; drawClientCards() })
   document.getElementById('client-sort').addEventListener('change', ev => { L.sort = ev.target.value; drawClientCards() })
+  document.getElementById('client-assignee').addEventListener('change', ev => { L.assignee = ev.target.value; drawClientCards() })
   document.getElementById('client-docexp').addEventListener('change', ev => { L.docexp = ev.target.checked; drawClientCards() })
   drawClientCards()
 }
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
-  let list = all.filter(c => (!L.stream || c.stream_type === L.stream) && (!L.docexp || Number(c.doc_expiring) > 0) && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url]))
+  let list = all.filter(c => (!L.docexp || Number(c.doc_expiring) > 0) && matchesAssigneeFilter(c.assignees, L.assignee)
+    && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url,
+      ...(c.assignees || []).map(a => a.name)]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
     name: (a, b) => String(a.client_name).localeCompare(String(b.client_name), 'ja'),
@@ -3317,7 +3443,6 @@ function drawClientCards() {
         <section class="card p-4">
           <div class="flex items-start justify-between mb-2">
             <h3 class="font-bold text-gray-800"><a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
-            <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           </div>
           <dl class="text-xs text-gray-600 space-y-1.5">
             <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
@@ -3325,6 +3450,7 @@ function drawClientCards() {
             ${c.address || c.postal_code || c.website_url ? `<div class="flex"><dt class="w-20 text-gray-400 shrink-0">住所</dt><dd class="min-w-0"><span class="block truncate max-w-[220px]" title="${esc(postalAddress(c.postal_code, c.address))}">${esc(postalAddress(c.postal_code, c.address) || '-')}</span>${c.website_url ? `<span class="block text-gray-400 truncate max-w-[220px]">${esc(urlHost(c.website_url))}</span>` : ''}</dd></div>` : ''}
             <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+            <div class="flex"><dt class="w-20 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneeShortHtml(c.assignees)}</dd></div>
             <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
               ${c.active_projects ? `<span class="block text-gray-500 truncate max-w-[220px]">${esc(c.active_projects)}</span>` : ''}</dd></div>
           </dl>
@@ -3363,6 +3489,7 @@ function clientBasicHtml(c, editing) {
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(c.assignees)}</dd></div>
           <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
         </dl>
         <div class="mt-3 pt-3 border-t border-gray-100">
@@ -3376,8 +3503,6 @@ function clientBasicHtml(c, editing) {
         <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
         <div class="space-y-2">
           ${inp('cl-name', 'クライアント名 *', c.client_name, 'maxlength="200"')}
-          <div class="flex items-center gap-2"><label for="cl-stream" class="w-28 text-xs text-gray-400 shrink-0">上流/下流</label>
-            <select id="cl-stream" class="inp text-xs flex-1"><option value="upstream" ${c.stream_type === 'upstream' ? 'selected' : ''}>上流</option><option value="downstream" ${c.stream_type === 'downstream' ? 'selected' : ''}>下流</option></select></div>
           ${inp('cl-rep-name', '代表者氏名', c.representative_name, 'maxlength="100"')}
           ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
@@ -3390,6 +3515,7 @@ function clientBasicHtml(c, editing) {
           ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
           <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
             <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
+          <div class="flex items-start gap-2"><span class="w-28 text-xs text-gray-400 shrink-0 pt-1">社内担当者</span><div class="flex-1 min-w-0">${assigneesEditorHtml('cl', c.assignees)}</div></div>
           <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
           <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
           ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
@@ -3464,7 +3590,6 @@ async function renderClientDetail(cid) {
       <div class="flex-1">
         <h2 class="text-xl font-bold text-gray-900">${esc(c.client_name)}</h2>
         <div class="flex gap-2 mt-1">
-          <span class="badge ${c.stream_type === 'upstream' ? 'badge-blue' : 'badge-purple'}">${c.stream_type === 'upstream' ? '上流' : '下流'}</span>
           ${c.ng_staff_ids ? '<span class="badge badge-red"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</span>' : ''}
         </div>
       </div>
@@ -3508,7 +3633,11 @@ delegate('clientDetailMonth', async el => {
   try { box.innerHTML = clientDealsHtml((await axios.get('/api/admin/clients/' + cid, { params: { month: CLIENT_DETAIL.month } })).data) }
   catch (e) { showApiError(e, '実績を読み込めませんでした') }
 })
-delegate('editClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true) })
+delegate('editClientBasic', el => withSubmitLock(el, async () => {
+  // 社内担当者の選択肢（自社の管理者のアカウント）を読んでから編集欄を出す
+  try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした'); return }
+  const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, true)
+}))
 delegate('cancelClientBasic', () => { const box = document.getElementById('client-basic-info'); if (box && CLIENT_DETAIL.client) box.innerHTML = clientBasicHtml(CLIENT_DETAIL.client, false) })
 delegate('saveClientBasic', el => withSubmitLock(el, () => saveClientBasicInfo(Number(el.dataset.id))))
 
@@ -3653,11 +3782,12 @@ window.saveClientBasicInfo = async function (cid) {
   if (!v('cl-name')) { err.textContent = 'クライアント名を入力してください'; err.classList.remove('hidden'); return }
   try {
     await axios.put('/api/admin/clients/' + cid, {
-      client_name: v('cl-name'), stream_type: v('cl-stream'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
+      client_name: v('cl-name'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
       address: v('cl-address'), postal_code: v('cl-postal'), website_url: v('cl-url'),
       client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
       branch_name: v('cl-branch'), department_name: v('cl-department'), invoice_number: v('cl-invoice'),
+      assignees: collectAssignees('cl'),
       // 代表者役職・代表者フリガナは画面に出さないので送らない（送らない項目は変わらず、これまでのデータは残る。#9304）
     })
   } catch (e) {
@@ -4048,17 +4178,14 @@ window.saveEmployeeRecord = async function (sid) {
   }
 }
 
-window.showAddClient = function () {
+window.showAddClient = async function () {
+  try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした'); return }
   modal(`
     <h3 class="font-bold text-lg mb-4">クライアント登録</h3>
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">クライアント名 *</label><input id="nc-name" class="inp"></div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">上流/下流</label>
-          <select id="nc-stream" class="inp"><option value="upstream">上流</option><option value="downstream">下流</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">種別</label>
-          <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
-      </div>
+      <div><label class="text-sm text-gray-600 block mb-1">種別</label>
+        <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-gray-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
         <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
@@ -4070,6 +4197,7 @@ window.showAddClient = function () {
       </div>
       <div><label class="text-sm text-gray-600 block mb-1">ホームページ</label><input id="nc-url" class="inp" type="url" maxlength="500" placeholder="https://example.co.jp"></div>
       <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
+      <div><p class="text-sm text-gray-600 mb-1">社内担当者</p>${assigneesEditorHtml('nc', [])}</div>
       <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addClient">登録する</button></div>
     </div>`)
@@ -4080,12 +4208,12 @@ window.addClient = async function () {
   if (!name) { toast('クライアント名を入力してください'); return }
   try {
     const res = await postConfirmingDuplicate('/api/admin/clients', {
-      client_name: name, stream_type: document.getElementById('nc-stream').value,
+      client_name: name,
       client_kind: document.getElementById('nc-kind').value, representative_name: document.getElementById('nc-rep-name').value.trim(),
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
       email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
       postal_code: document.getElementById('nc-postal').value.trim(), website_url: document.getElementById('nc-url').value.trim(),
-      memo: document.getElementById('nc-memo').value
+      memo: document.getElementById('nc-memo').value, assignees: collectAssignees('nc'),
     })
     if (!res) return
     closeModal(); toast('クライアントを登録しました'); renderClients()
@@ -6287,14 +6415,23 @@ delegate('copyTempPassword', async () => {
   toast('コピーしました')
 })
 
+// アカウントごとの「担当している会社」（#9910。クライアント・協力会社の社内担当者。user_id → [{ target_type, target_id, target_name, is_primary }]）
+let ACCOUNT_ASSIGNMENTS = new Map()
 async function renderAccount() {
   loading()
-  let me, list = null
+  let me, list = null, asg = []
   try {
     me = (await axios.get('/api/auth/account')).data
-    if (me.role === 'company_admin') list = (await axios.get('/api/admin/users')).data
+    const [l, a] = await Promise.all([
+      me.role === 'company_admin' ? axios.get('/api/admin/users').then(r => r.data) : null,
+      axios.get('/api/admin/assignees', me.role === 'company_admin' ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
+    ])
+    list = l; asg = a || []
   } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
   ADMIN_USERS = new Map((list ? list.users : []).map(u => [u.user_id, u]))
+  ACCOUNT_ASSIGNMENTS = new Map()
+  for (const a of asg) { const l = ACCOUNT_ASSIGNMENTS.get(a.user_id) || []; l.push(a); ACCOUNT_ASSIGNMENTS.set(a.user_id, l) }
+  const myAsg = ACCOUNT_ASSIGNMENTS.get(me.user_id) || []
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
     ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
@@ -6312,6 +6449,10 @@ async function renderAccount() {
           <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード（メールアドレスを変更するときだけ）</label><input id="ac-email-pw" type="password" class="inp" autocomplete="current-password"></div>
           <button class="btn btn-primary w-full" data-action="saveMyAccount">保存する</button>
           <p class="text-[11px] text-gray-400">メールアドレスを変更すると、新しいアドレスに確認のメールを、以前のアドレスに変更のお知らせを送ります。</p>
+        </div>
+        <div class="mt-4 pt-3 border-t border-gray-100" id="my-assignments">
+          <p class="text-xs font-bold text-gray-600 mb-1"><i class="fas fa-handshake text-blue-500 mr-1"></i>自分が担当している会社（社内担当者）</p>
+          ${accountAssignmentsHtml(myAsg)}
         </div>
       </section>
       <section class="card p-4">
@@ -6364,7 +6505,7 @@ function adminUsersHtml(users, meId) {
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
-            <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">最終ログイン</th><th></th>
+            <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2 whitespace-nowrap">担当している会社</th><th class="text-left py-2">最終ログイン</th><th></th>
           </tr></thead>
           <tbody>
             ${users.map(u => `
@@ -6374,6 +6515,7 @@ function adminUsersHtml(users, meId) {
                 <td class="py-2 text-xs">${u.email ? esc(u.email) : '<span class="text-amber-600">未登録</span>'}</td>
                 <td class="py-2">${esc(ADMIN_ROLE_LABEL[u.role] || u.role)}</td>
                 <td class="py-2">${u.status === 'active' ? '<span class="badge badge-green">利用中</span>' : '<span class="badge badge-gray">停止</span>'}${u.must_change_password ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
+                <td class="py-2 text-xs whitespace-nowrap">${accountAssignmentCountHtml(u)}</td>
                 <td class="py-2 text-xs text-gray-400">${u.last_login_at ? esc(dayjs(u.last_login_at).format('M/D HH:mm')) : '-'}</td>
                 <td class="py-2 text-right whitespace-nowrap">
                   <button class="btn btn-outline text-xs" data-action="editAdminUser" data-id="${u.user_id}">編集</button>
@@ -6491,6 +6633,34 @@ delegate('doResetAdminUserPassword', (el) => withSubmitLock(el, async () => {
     else showTempPassword('仮パスワードを発行しました', data.temp_password, [`氏名: ${u.name}`, `ID: ${u.user_code}`, `ログイン: ${location.origin}/login`])
   } catch (e) { showApiError(e, '再発行に失敗しました') }
 }))
+
+// 担当している会社（#9910）: 主担当・副担当に分け、クライアント・協力会社の詳細へのリンクにする
+function accountAssignmentsHtml(list) {
+  if (!list.length) return '<p class="text-xs text-gray-400">担当している会社はありません（クライアント・協力会社の会社基本情報で、社内担当者に選ばれると出ます）</p>'
+  const link = a => `<a href="#${a.target_type === 'client' ? 'clients' : 'partners'}/${Number(a.target_id)}" class="text-blue-600 hover:underline" data-action="accountAssignmentLink">${esc(a.target_name)}</a><span class="text-[11px] text-gray-400 ml-0.5">（${a.target_type === 'client' ? 'クライアント' : '協力会社'}）</span>`
+  const main = list.filter(a => a.is_primary), subs = list.filter(a => !a.is_primary)
+  return `<dl class="text-xs space-y-1">
+    <div class="flex gap-2"><dt class="w-12 text-gray-400 shrink-0">主担当</dt><dd class="min-w-0">${main.length ? main.map(link).join('、') : '<span class="text-gray-400">-</span>'}</dd></div>
+    <div class="flex gap-2"><dt class="w-12 text-gray-400 shrink-0">副担当</dt><dd class="min-w-0">${subs.length ? subs.map(link).join('、') : '<span class="text-gray-400">-</span>'}</dd></div>
+  </dl>`
+}
+function accountAssignmentCountHtml(u) {
+  const list = ACCOUNT_ASSIGNMENTS.get(u.user_id) || []
+  if (!list.length) return '<span class="text-gray-300">-</span>'
+  const main = list.filter(a => a.is_primary).length
+  return `<button type="button" class="text-blue-600 hover:underline" data-action="showAccountAssignments" data-id="${Number(u.user_id)}">主 ${main}社・副 ${list.length - main}社</button>`
+    + (u.status !== 'active' ? '<span class="block text-[11px] text-amber-700">停止中のため担当から外れています</span>' : '')
+}
+// モーダルの中のリンクで移るときは、モーダルを閉じる（移動はリンクのまま）
+delegate('accountAssignmentLink', () => { if (document.getElementById('modal-root').innerHTML) closeModal() })
+delegate('showAccountAssignments', el => {
+  const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
+  modal(`
+    <h3 class="font-bold text-lg mb-1">担当している会社（${esc(u.name)}）</h3>
+    ${u.status !== 'active' ? '<p class="text-xs text-amber-700 mb-2">このアカウントは停止中のため、各社の社内担当者から外れています（会社の画面で別の人を選んでください）</p>' : ''}
+    <div class="mt-2">${accountAssignmentsHtml(ACCOUNT_ASSIGNMENTS.get(u.user_id) || [])}</div>
+    <div class="flex justify-end mt-4"><button class="btn btn-outline" onclick="closeModal()">閉じる</button></div>`)
+})
 
 // ダッシュボード: メールアドレスのない管理者に登録を案内する（#25）
 function accountEmailNotice() {
