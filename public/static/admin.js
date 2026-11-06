@@ -4625,9 +4625,12 @@ function reportLastEditHtml(r, fields, fmt) {
   const e = r.last_edit
   if (!e || !(e.changes || []).length) return ''
   const label = new Map((fields && fields.length ? fields : REPORT_NO_TEMPLATE_FIELDS).map(f => [f.key, f.label]))
-  const who = e.kind === 'admin_edit' ? `${e.edited_by_name || '管理者'}が修正` : `${r.staff_name || 'スタッフ'}が再提出`
-  const list = e.changes.map(c => `<span class="whitespace-nowrap"><span class="text-gray-500">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
-  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 ${e.kind === 'admin_edit' ? 'bg-purple-50 text-purple-900' : 'bg-amber-50 text-amber-900'}" data-report-last-edit>
+  // 代理入力の再提出は、入力した管理者の名前を出す（修正履歴の表示と同じ）
+  const who = e.kind === 'admin_edit' ? `${e.edited_by_name || '管理者'}が修正`
+    : e.entry_method === 'proxy' ? `${e.edited_by_name || '管理者'}が代理入力で再提出` : `${r.staff_name || 'スタッフ'}が再提出`
+  // テキストの値は長いことがあるので折り返す（項目名だけ折り返さない）
+  const list = e.changes.map(c => `<span><span class="text-gray-500 whitespace-nowrap">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
+  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 break-words ${e.kind === 'admin_edit' ? 'bg-purple-50 text-purple-900' : 'bg-amber-50 text-amber-900'}" data-report-last-edit>
     <i class="fas fa-user-pen mr-1"></i><b>${esc(who)}</b> <span class="text-gray-500">${esc(fmt(e.edited_at))}</span>：${list}${Number(e.more) > 0 ? ` ほか${Number(e.more)}項目` : ''}
     ${e.reason ? `<span class="block text-gray-600 mt-0.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</span>` : ''}
     <button class="text-blue-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>

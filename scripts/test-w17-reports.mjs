@@ -161,6 +161,16 @@ ok('準備: 日報を2件出せた', rep0 && RID2 && rep0.values.w17sales === 10
   ok('#9902 確認済みにし直すと、出し直しの印は外れる', back.manager_checked === 1 && !back.revised_after_check_at, back)
 }
 
+// ---------- #9902 一覧の最後の修正: 長いテキストは先頭だけ返す（全文は修正履歴） ----------
+{
+  const long = 'あ'.repeat(100)
+  const r = await admin.put(`/api/admin/daily-reports/${RID2}/values`, { values: { free: long } })
+  const le = (await one(shift2.shift_id)).last_edit
+  const h = must(await admin.get(`/api/admin/daily-reports/${RID2}/edits`), 'edits long')
+  ok('#9902 一覧の最後の修正は長いテキストを60文字＋「…」にし、修正履歴は全文を返す', r.status === 200 && le && le.changes[0].after === 'あ'.repeat(60) + '…'
+    && JSON.stringify(h).includes(long), le)
+}
+
 // ---------- #9903 日報の入力欄の描画を共用する（report-form.js） ----------
 {
   const js = await (await fetch(`${BASE}/static/report-form.js`)).text()

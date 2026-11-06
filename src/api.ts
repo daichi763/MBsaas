@@ -5701,6 +5701,7 @@ api.get('/admin/operation-logs', async (c) => {
 const DAILY_REPORT_PAGE_MAX = 200
 // 一覧のカードに出す、最後の修正の項目の数（#9902。残りは修正履歴で見る）
 const REPORT_LAST_EDIT_KEYS = 8
+const REPORT_LAST_EDIT_TEXT = 60
 // 未確認の条件。migrations/0050_report_admin.sql の部分索引と同じ式にする（同じ式でないと索引が使われない）
 const DR_UNCHECKED_SQL = 'COALESCE(dr.manager_checked, 0) = 0'
 const DR_FLAGGED_SQL = '(dr.incident_flag = 1 OR dr.complaint_flag = 1)'
@@ -5837,8 +5838,10 @@ api.get('/admin/daily-reports', async (c) => {
       let keys: string[] = []
       try { const v = JSON.parse(e.changed_keys || '[]'); if (Array.isArray(v)) keys = v.filter((k: unknown) => typeof k === 'string') } catch { keys = [] }
       const before = parseReportValuesJson(e.before_values), after = parseReportValuesJson(e.after_values)
+      // 一覧のカードに出す1行なので、長いテキストは先頭だけ返す（全文は修正履歴で見る）
+      const short = (v: unknown) => (typeof v === 'string' && v.length > REPORT_LAST_EDIT_TEXT ? v.slice(0, REPORT_LAST_EDIT_TEXT) + '…' : v ?? null)
       lastEdits.set(Number(e.daily_report_id), { kind: e.kind, entry_method: e.entry_method, reason: e.reason, edited_at: e.edited_at, edited_by_name: e.edited_by_name,
-        changes: keys.slice(0, REPORT_LAST_EDIT_KEYS).map(k => ({ key: k, before: before[k] ?? null, after: after[k] ?? null })), more: Math.max(0, keys.length - REPORT_LAST_EDIT_KEYS) })
+        changes: keys.slice(0, REPORT_LAST_EDIT_KEYS).map(k => ({ key: k, before: short(before[k]), after: short(after[k]) })), more: Math.max(0, keys.length - REPORT_LAST_EDIT_KEYS) })
     }
   }
   const reports = rows.map(r => {
