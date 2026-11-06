@@ -14,8 +14,8 @@ import type { ConflictRow } from './lib/staff-eligibility'
 import { changesOf, insertRowsStmts, returnedIds, updateRowsStmts } from './lib/bulk-write'
 import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
-import { loadShiftSnaps, notifyCorrection, notifyShiftChanges } from './notifications'
-import type { ShiftSnap } from './notifications'
+import { loadShiftSnaps, notifyCorrection, notifyShiftChanges, shiftNotifyOptOf } from './notifications'
+import type { ShiftNotifyOpt, ShiftSnap } from './notifications'
 import { opLog, logShifts, logShiftsOfSlot, logShiftsOfSlots, logSlot, logSlots, finishLog } from './lib/operation-log'
 import { csvResponse, toCsv } from './csv'
 import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
@@ -1175,6 +1175,8 @@ const SLOT_EDIT_FIELDS = ['site_id', 'location', 'work_date', 'start_time', 'end
 const sameVal = (a: any, b: any) => (a ?? null) === (b ?? null)
 app.put('/shift-slots/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const slot = await ownSlot(db, u.company_id, c.req.param('id'))
   if (!slot) return c.json({ error: '枠が見つかりません' }, 404)
   const next: any = { ...slot }
@@ -1350,7 +1352,7 @@ app.put('/shift-slots/:id', async (c) => {
     .bind(slot.slot_id, u.company_id).all()).results as any[]
   await repriceRows(db, u.company_id, rows, true)
   await finishLog(op)
-  if (notifyIds.length) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, notifyIds))
+  if (notifyIds.length) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, notifyIds), nt, [op])
   return c.json({ ok: true, detached: detach.length, locked_kept: lockedKept, warnings })
 })
 
@@ -1390,6 +1392,8 @@ app.post('/shift-slots/bulk-delete', async (c) => {
   const ids = [...new Set(raw.map((x: any) => Number(x)))] as number[]
   if (ids.some(n => !Number.isInteger(n) || n <= 0)) return c.json({ error: '枠の指定が正しくありません' }, 400)
   if (ids.length > BULK_DELETE_MAX) return c.json({ error: `一度に削除できる枠は${BULK_DELETE_MAX}件までです（${ids.length}件選ばれています）` }, 400)
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const own = ((await db.prepare(`SELECT slot_id FROM shift_slots WHERE company_id = ? AND slot_id IN ${JSON_IN}`)
     .bind(u.company_id, bindJsonArray(ids)).all()).results as any[]).map(r => Number(r.slot_id))
   if (!own.length) return c.json({ error: '選んだ枠が見つかりません（ほかの画面で削除された可能性があります。画面を読み直してください）' }, 404)
@@ -1420,7 +1424,7 @@ app.post('/shift-slots/bulk-delete', async (c) => {
   // shifts にはトリガーがあるので、残したシフトの件数は meta.changes ではなく数えた件数を返す
   if (!del) return c.json({ ok: true, deleted: own.length, deleted_ids: own, missing: ids.length - own.length, kept_shifts: assigned,
     ...(plan ? { deleted_shifts: 0, skipped_shifts: plan.skipped } : {}) })
-  const r = await afterShiftDelete(c, u.company_id, del, plan!)
+  const r = await afterShiftDelete(c, u.company_id, del, plan!, nt)
   return c.json({ ok: true, deleted: own.length, deleted_ids: own, missing: ids.length - own.length, kept_shifts: shiftIds.length - r.deleted_ids.length,
     deleted_shifts: r.deleted_ids.length, skipped_shifts: r.skipped })
 })
@@ -1476,7 +1480,7 @@ function shiftDeleteParts(db: D1Database, u: any, ids: number[]) {
   return { op, token, ids, stmts, before: null as ShiftSnap[] | null }
 }
 // batch の後: 実際に消えたシフトを確かめ、操作履歴を仕上げ、打刻修正の申請者と本人に知らせる
-async function afterShiftDelete(c: any, cid: number, del: ReturnType<typeof shiftDeleteParts>, plan: ShiftDelPlan) {
+async function afterShiftDelete(c: any, cid: number, del: ReturnType<typeof shiftDeleteParts>, plan: ShiftDelPlan, nt: ShiftNotifyOpt) {
   const db: D1Database = c.env.DB
   const left = new Set(((await db.prepare(`SELECT shift_id FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`).bind(cid, bindJsonArray(del.ids)).all()).results as any[]).map(r => Number(r.shift_id)))
   const deleted = del.ids.filter(id => !left.has(id))
@@ -1487,7 +1491,7 @@ async function afterShiftDelete(c: any, cid: number, del: ReturnType<typeof shif
   const cancelled = (await db.prepare(`SELECT correction_id FROM attendance_corrections WHERE company_id = ? AND decision_token = ? AND status = 'cancelled'`).bind(cid, del.token).all()).results as any[]
   for (const r of cancelled) await notifyCorrection(c, Number(r.correction_id), 'cancelled')
   const gone = new Set(deleted)
-  if (del.before) await notifyShiftChanges(c, cid, del.before.filter(s => s.shift_id && gone.has(Number(s.shift_id))), []) // 本人に取消を知らせる（#155）
+  if (del.before) await notifyShiftChanges(c, cid, del.before.filter(s => s.shift_id && gone.has(Number(s.shift_id))), [], nt, [del.op]) // 本人に取消を知らせる（#155）
   return { deleted_ids: deleted, skipped, cancelled_corrections: cancelled.length }
 }
 app.post('/shifts/bulk-delete', async (c) => {
@@ -1498,6 +1502,8 @@ app.post('/shifts/bulk-delete', async (c) => {
   const ids = [...new Set(raw.map((x: any) => Number(x)))] as number[]
   if (ids.some(n => !Number.isInteger(n) || n <= 0)) return c.json({ error: 'シフトの指定が正しくありません' }, 400)
   if (ids.length > SHIFT_BULK_DELETE_MAX) return c.json({ error: `一度に削除できるシフトは${SHIFT_BULK_DELETE_MAX}件までです（${ids.length}件選ばれています）` }, 400)
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const plan = await planShiftDelete(db, u.company_id, ids)
   if (!plan.found) return c.json({ error: 'シフトが見つかりません（ほかの画面で削除された可能性があります。画面を読み直してください）' }, 404)
   if (flag(b.dry_run)) return c.json({ ok: true, dry_run: true, deletable: plan.del.length, skipped: plan.skipped, missing: ids.length - plan.found })
@@ -1508,7 +1514,7 @@ app.post('/shifts/bulk-delete', async (c) => {
     console.error('shift bulk delete failed', e)
     return c.json({ error: 'シフトを削除できませんでした（シフトは変更していません）。時間をおいてもう一度お試しください' }, 500)
   }
-  const r = await afterShiftDelete(c, u.company_id, del, plan)
+  const r = await afterShiftDelete(c, u.company_id, del, plan, nt)
   return c.json({ ok: true, deleted: r.deleted_ids.length, deleted_ids: r.deleted_ids, skipped: r.skipped, missing: ids.length - plan.found,
     ...(r.cancelled_corrections ? { cancelled_corrections: r.cancelled_corrections } : {}) })
 })
@@ -1579,6 +1585,8 @@ app.get('/shifts/:id/band', async (c) => {
 // 役割への割り当て（複数可）
 app.post('/shift-slots/roles/:id/assign', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const role = await ownSlotRole(db, u.company_id, c.req.param('id'))
   if (!role) return c.json({ error: '枠が見つかりません' }, 404)
   const staffIds: number[] = [...new Set(((Array.isArray(b.staff_ids) ? b.staff_ids : [b.staff_id]) as any[]).map(Number).filter(Boolean))]
@@ -1635,12 +1643,12 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
     if (used) inherited.push({ staff_id: s.staff_id, staff_name: s.name, new_shift_id: newId, ...inheritView(used) })
     created.push(newId)
   }
-  if (created.length) { // 操作履歴（#159）
-    const op = opLog(db, u, 'assign')
+  const op = created.length ? opLog(db, u, 'assign') : null
+  if (op) { // 操作履歴（#159）
     await db.batch(logShifts(op, created, { created: true }))
     await finishLog(op)
   }
-  await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(db, u.company_id, created)) // 本人に知らせる（#155）
+  await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(db, u.company_id, created), nt, [op]) // 本人に知らせる（#155）
   // inherited: 直近のシフトの単価を引き継いだもの（引き継ぎ元のシフトの日付と金額。9306）
   return c.json({ ok: true, shift_ids: created, warnings, inherited })
 })
@@ -1666,6 +1674,8 @@ app.post('/shift-slots/assign-batch', async (c) => {
   const raw: any[] = Array.isArray(b.items) ? b.items : []
   if (!raw.length) return c.json({ error: '保存する割り当てがありません' }, 400)
   if (raw.length > ASSIGN_BATCH_MAX) return c.json({ error: `一度に保存できるのは${ASSIGN_BATCH_MAX}件までです` }, 400)
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const items = raw.map(x => ({
     slot_role_id: Number(x?.slot_role_id), staff_id: Number(x?.staff_id),
     status: ASSIGN_STATUSES.includes(x?.status) ? String(x.status) : 'confirmed', inherit: x?.inherit !== false, force: !!x?.force,
@@ -1777,8 +1787,8 @@ app.post('/shift-slots/assign-batch', async (c) => {
   for (const { it, st } of pass) if (!made.has(`${it.slot_role_id}:${it.staff_id}`))
     problems.push({ slot_role_id: it.slot_role_id, staff_id: it.staff_id, staff_name: st?.name || '', reasons: ['すでにこの枠に割り当て済みです'], can_force: false })
   if (createdIds.length) {
-    await logCreatedShifts(db, u, 'assign', createdIds) // 操作履歴（#159）
-    await notifyShiftChanges(c, cid, [], await loadShiftSnaps(db, cid, createdIds)) // 本人に知らせる（#155）
+    const op = await logCreatedShifts(db, u, 'assign', createdIds) // 操作履歴（#159）
+    await notifyShiftChanges(c, cid, [], await loadShiftSnaps(db, cid, createdIds), nt, [op]) // 本人に知らせる（#155）
   }
   return c.json({ ok: true, created, problems, inherited })
 })
@@ -1786,6 +1796,8 @@ app.post('/shift-slots/assign-batch', async (c) => {
 // シフトを別の枠・役割へ移動（案件が変われば単価を再計算）。slot_role_id=null なら枠から外す
 app.post('/shifts/:id/move', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトは移動できません。精算画面で確定を取り消してください' }, 409)
@@ -1820,7 +1832,7 @@ app.post('/shifts/:id/move', async (c) => {
   // 手動変更した金額でも、案件が変わった場合は移動先の単価に置き換える
   await applyPricingToShift(db, u.company_id, s.shift_id, { force: projectChanged })
   await finishLog(op)
-  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [s.shift_id])) // 本人に知らせる（#155）
+  await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [s.shift_id]), nt, [op]) // 本人に知らせる（#155）
   return c.json({ ok: true, warnings })
 })
 
@@ -1833,6 +1845,8 @@ app.post('/shifts/confirm-requested', async (c) => {
   const ids = [...new Set((Array.isArray(b.shift_ids) ? b.shift_ids : []).map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] as number[]
   if (!ids.length) return c.json({ error: '確定にするシフトを選んでください' }, 400)
   if (ids.length > CONFIRM_REQUESTED_MAX) return c.json({ error: `一度に確定にできるのは${CONFIRM_REQUESTED_MAX}件までです` }, 400)
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const rows = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.project_id, s.slot_role_id, s.work_date, s.start_time, s.end_time, s.status, s.settle_status, s.staff_reply, s.staff_reply_note,
       p.project_name FROM shifts s LEFT JOIN projects p ON p.project_id = s.project_id
     WHERE s.company_id = ? AND s.shift_id IN ${JSON_IN} ORDER BY s.work_date, s.start_time, s.shift_id`).bind(u.company_id, bindJsonArray(ids)).all()).results as any[]
@@ -1882,7 +1896,7 @@ app.post('/shifts/confirm-requested', async (c) => {
   const wasRequested = new Set(notifyBefore.filter(s => s.status === 'requested').map(s => s.shift_id))
   const confirmed = notifyAfter.filter(s => s.status === 'confirmed' && wasRequested.has(s.shift_id)).length
   // 確定にしたことを本人に知らせる（スタッフごとにまとめる。#155）
-  await notifyShiftChanges(c, u.company_id, notifyBefore, notifyAfter)
+  await notifyShiftChanges(c, u.company_id, notifyBefore, notifyAfter, nt, [op])
   return c.json({ ok: true, confirmed, skipped })
 })
 
@@ -1930,6 +1944,8 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
   if (!st) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const from = futureFrom(b.from)
   if (!from) return c.json({ error: '日付の形式が正しくありません' }, 400)
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   let shifts = await futureShiftsOf(db, u.company_id, st.staff_id, from)
   if (Array.isArray(b.shift_ids)) { const want = new Set(b.shift_ids.map(Number)); shifts = shifts.filter(s => want.has(s.shift_id)) }
   // 精算を締めた期間のシフトは外さない（#170。外さなかった件数を closed で返す）
@@ -1951,7 +1967,7 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
   const before = await loadShiftSnaps(db, u.company_id, shifts.map(s => s.shift_id))
   try { await batchInChunks(db, [...logShifts(op, shifts.map(s => s.shift_id)), ...stmts]) } finally { await finishLog(op) }
   // 外したシフトを本人に知らせる（#155。削除は取消、欠勤にした分は状態の変更として、本人ごとに1件にまとめる。ログインが止まっている人には届かない）
-  await notifyShiftChanges(c, u.company_id, before, await loadShiftSnaps(db, u.company_id, shifts.filter(s => s.records > 0).map(s => s.shift_id)))
+  await notifyShiftChanges(c, u.company_id, before, await loadShiftSnaps(db, u.company_id, shifts.filter(s => s.records > 0).map(s => s.shift_id)), nt, [op])
   return c.json({ ok: true, removed, absent, closed })
 })
 
@@ -2108,6 +2124,8 @@ app.post('/shifts/reprice', async (c) => {
 // 組み合わせ（日付順 → 指定したスタッフ順）を BULK_LIMIT 件ずつ処理し、残りがあれば next_cursor（次に処理する組み合わせの番号）を返す
 app.post('/shifts/bulk', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const project = await ownProject(db, u.company_id, b.project_id)
   if (!project) return c.json({ error: '案件を選択してください' }, 400)
   const staffIds: number[] = [...new Set(((b.staff_ids || []) as any[]).map(Number).filter(n => Number.isInteger(n) && n > 0))]
@@ -2217,7 +2235,7 @@ app.post('/shifts/bulk', async (c) => {
     addPlannedConflict(conflicts, u.company_id, sid, d, b.start_time, b.end_time, project.project_name)
   }
   const res = await batchInChunks(db, insertRowsStmts(db, 'shifts', [...SHIFT_INSERT_COLUMNS, 'qty_locked', 'bill_adjust', 'pay_adjust', 'adjust_note'], rows, { returning: 'shift_id' }))
-  await logCreatedShifts(db, u, 'bulk_create', returnedIds(res, 'shift_id')) // 操作履歴（#159）
+  const op = await logCreatedShifts(db, u, 'bulk_create', returnedIds(res, 'shift_id')) // 操作履歴（#159）
   // 登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。件数が多く何回かに分けて呼ばれるときは、
   // 最後の回で、この操作で登録したシフト（同じ案件・期間・時刻・登録した人で、2時間以内に作ったもの）をまとめて知らせる（分けた回ごとに届かないように）
   if (next == null) {
@@ -2227,8 +2245,8 @@ app.post('/shifts/bulk', async (c) => {
           AND start_time = ? AND end_time = ? AND registered_by = ? ${slotMatch ? '' : 'AND slot_id IS NULL '}AND status = 'confirmed' AND created_at >= datetime('now', '-2 hours')
           AND staff_id IN (SELECT value FROM json_each(?)) LIMIT 5000`).bind(u.company_id, project.project_id, b.date_from, b.date_to, b.start_time, b.end_time, u.user_id,
           JSON.stringify(staffIds)).all()).results as any[]).map(r => r.shift_id))
-    await notifyShiftChanges(c, u.company_id, [], made)
-  }
+    await notifyShiftChanges(c, u.company_id, [], made, nt, [op])
+  } else await notifyShiftChanges(c, u.company_id, [], [], nt, [op]) // 途中の回: 知らせるのは最後の回。送らないときの「通知なし」だけ残す（#9906）
   // inherited: 直近のシフトの単価を引き継いだ件数、inherited_from: スタッフごとの引き継ぎ元（日付と金額。9306）
   return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next,
     inherited: inheritedCount, inherited_from: [...inheritedFrom.values()] })
@@ -2236,13 +2254,15 @@ app.post('/shifts/bulk', async (c) => {
 
 // まとめて作ったシフトの操作履歴（#159）。作成の後の値だけを残す。
 // シフトはもう登録してあるので、記録に失敗しても本人への知らせと結果の応答は続ける（500 で返すと、画面で登録できなかったと誤解される）
+// 戻り値: この操作の履歴（通知を送らないときに「通知なし」と残すため。#9906）。記録しなかった・失敗したときは null
 async function logCreatedShifts(db: D1Database, u: any, action: string, ids: number[]) {
-  if (!ids.length) return
+  if (!ids.length) return null
   try {
     const op = opLog(db, u, action)
     await batchInChunks(db, logShifts(op, ids, { created: true }))
     await finishLog(op)
-  } catch (e) { console.error(`${action} operation log failed`, e) }
+    return op
+  } catch (e) { console.error(`${action} operation log failed`, e); return null }
 }
 
 // 前週（任意の期間）のコピー: 枠と役割、割り当て（confirmed/substitute は confirmed として）をコピーする。
@@ -2257,6 +2277,8 @@ type RolePlan = { src: any; slot: SlotPlan; target: any | null }
 type ShiftPlan = { src: any; date: string; role: RolePlan | null; start: string; end: string }
 app.post('/shifts/copy-week', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await c.req.json(); const cid = u.company_id
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   if (!isDate(b.source_from) || !isDate(b.target_from)) return c.json({ error: 'コピー元とコピー先の開始日を指定してください' }, 400)
   const days = Math.min(Math.max(Math.floor(Number(b.days)) || 7, 1), MAX_RANGE_DAYS)
   const offset = dayDiff(b.source_from, b.target_from)
@@ -2435,11 +2457,11 @@ app.post('/shifts/copy-week', async (c) => {
     })
     const insRes = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true, returning: 'shift_id' }))
     shiftsCreated = changesOf(insRes)
-    await logCreatedShifts(db, u, 'copy_week', returnedIds(insRes, 'shift_id')) // 操作履歴（#159）
+    const op = await logCreatedShifts(db, u, 'copy_week', returnedIds(insRes, 'shift_id')) // 操作履歴（#159）
     // コピーで登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。
     // 同時に実行されて一部が作られなかったとき（どの行を作ったか分からない）は、作った側の呼び出しが知らせるので、ここでは送らない
-    if (shiftsCreated === rows.length) await notifyShiftChanges(c, cid, [], rows.map((r: any): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date,
-      start_time: r.start_time, end_time: r.end_time, status: r.status, location: r.location, project_name: projectName(r.project_id) })))
+    await notifyShiftChanges(c, cid, [], shiftsCreated !== rows.length ? [] : rows.map((r: any): ShiftSnap => ({ shift_id: null, staff_id: r.staff_id, work_date: r.work_date,
+      start_time: r.start_time, end_time: r.end_time, status: r.status, location: r.location, project_name: projectName(r.project_id) })), nt, [op])
   }
   return c.json({ ok: true, ...summary, slots: slotsCreated, slots_reused: slotPlans.filter(p => p.reused).length, roles: rolesCreated,
     shifts: shiftsCreated, already, skipped: view(), next_cursor: nextCursor })
