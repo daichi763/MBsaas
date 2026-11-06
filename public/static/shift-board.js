@@ -1019,7 +1019,7 @@
       : av ? `<span class="cand-badge av-${esc(av.status)}">${esc(availText(av))}</span>` : '<span class="cand-badge ok">空き</span>'
     const why = [
       av && (c.busy || drafted || otherDraft) ? esc(availText(av)) : '',
-      !av ? '出勤可能日 未提出' : '',
+      !av && !c.availability_exempt ? '出勤可能日 未提出' : '',
       av && av.note ? esc('メモ: ' + av.note) : '',
       c.last_project_date ? `前回この案件 ${esc(dayjs(c.last_project_date).format('M/D'))}` : '',
       Number(c.run_days) >= 2 ? `<span class="${Number(c.run_days) >= 6 ? 'text-amber-700 font-bold' : ''}">入ると${Number(c.run_days)}連勤</span>` : '',

@@ -1003,6 +1003,7 @@ app.get('/shift-board/candidates', async (c) => {
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.skills ELSE sp.skills END AS skills,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.work_area ELSE sp.work_area END AS work_area,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.available_from ELSE sp.available_from END AS available_from,
+      COALESCE(sp.availability_exempt, 0) AS availability_exempt,
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.project_id = ? AND s.status IN ('confirmed','substitute')) AS project_count,
       (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.site_id = ? AND s.site_id IS NOT NULL AND s.status IN ('confirmed','substitute')) AS site_count,
       (SELECT COUNT(DISTINCT s.work_date) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute')) AS week_days,
@@ -1056,6 +1057,8 @@ app.get('/shift-board/candidates', async (c) => {
       availability: avail.has(s.staff_id) ? (({ status, start_time, end_time, note }) => ({ status, start_time, end_time, note }))(avail.get(s.staff_id)) : null,
       last_project_date: isDate(s.last_project_date) ? s.last_project_date : null,
       run_days: runDays(s.staff_id),
+      // Sprint 17（#9907）: 出勤可能日の回収の対象外の人は「未提出」と出さない
+      availability_exempt: Number(s.availability_exempt) === 1,
     }
   })
   // 並び: 空きあり → NGでない → 出勤可能日を出している（○・△）→ 前回この案件 → 休職中・入社予定・稼働開始前でない → 同じ開催場所の経験 → 案件の経験 → スキル一致 → 週（月〜日）の稼働日数が少ない。
