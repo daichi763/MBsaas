@@ -68,6 +68,15 @@ const nf = await admin.put('/api/admin/availability/targets', { staff_ids: [9999
 ok('#9907 ほかの会社・存在しないスタッフは 404', nf.status === 404, nf)
 const forb = await st3.put('/api/admin/availability/targets', { staff_ids: [S_EX], target: false })
 ok('#9907 スタッフは管理者の API を使えない（403）', forb.status === 403, forb)
+// ほかの会社の管理者は、この会社のスタッフを変えられない（会社の行だけを変える）
+const tag = Date.now().toString(36).slice(-5)
+const hq = client(await login('sample', 'hq'))
+const codeB = 'sc' + tag, pwB = 'Sc-Passw0rd-' + tag
+const crB = await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: codeB, company_name: `回収対象B社${tag}`, admin_code: 'adminb', admin_password: pwB, admin_name: 'B社 管理者' })
+ok('（前提）B 社を作成', crB.status === 200, crB)
+const adminB = client(await login(codeB, 'adminb', pwB))
+const xB = await adminB.put('/api/admin/availability/targets', { staff_ids: [S_EX, S_IN], target: false })
+ok('#9907 ほかの会社の管理者がこの会社のスタッフを指定しても 404（変わらない）', xB.status === 404, xB)
 const after = (await admin.get('/api/admin/staff')).data.staff.find(s => s.staff_id === S_EX)
 ok('#9907 失敗した操作では変わらない', Number(after.availability_exempt) === 0, after)
 
