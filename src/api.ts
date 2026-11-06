@@ -33,7 +33,7 @@ import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, no
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
 import { notifyConsultation, notifyLinkedRetirement, markAdminNotificationsRead } from './notifications'
-import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEdit } from './notifications'
+import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEdit, shiftNotifyOptOf } from './notifications'
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
 import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND, hiddenStaffNotifyKinds } from './notifications'
 import { hqErrorsApi } from './hq-errors'
@@ -5453,6 +5453,9 @@ api.post('/admin/shifts', async (c) => {
   const u = c.get('user'); const b = await c.req.json()
   if (!b.staff_id || !b.project_id || !b.work_date) return c.json({ error: 'スタッフ・案件・日付は必須です' }, 400)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.work_date))) return c.json({ error: '日付の形式が正しくありません' }, 400)
+  // スタッフに通知を送るか・添えるメッセージ（#9906。省略すると会社の既定）
+  const nt = shiftNotifyOptOf(b)
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   if ((b.start_time && !isHHMM(b.start_time)) || (b.end_time && !isHHMM(b.end_time))) return c.json({ error: '時刻は HH:MM の形式で入力してください' }, 400)
   if (b.status && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
   // 自社の案件のみ（他社の案件名・場所・単価を取り込まない）
@@ -5497,8 +5500,8 @@ api.post('/admin/shifts', async (c) => {
     const op = opLog(c.env.DB, u, 'create')
     await c.env.DB.batch(logShifts(op, [sid], { created: true }))
     await finishLog(op)
-    // 本人に知らせる（#155）
-    await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(c.env.DB, u.company_id, [sid]))
+    // 本人に知らせる（#155。送らないときは操作履歴に「通知なし」と残す。#9906）
+    await notifyShiftChanges(c, u.company_id, [], await loadShiftSnaps(c.env.DB, u.company_id, [sid]), nt, [op])
   }
   // inherited: 引き継いだ単価（引き継ぎ元のシフトの日付と金額）。引き継がなかったときは null
   return c.json({ ok: true, shift_id: sid, warnings: chk.warnings, inherited })
@@ -5512,6 +5515,8 @@ api.put('/admin/shifts/:id', async (c) => {
   if (cur.settle_status === 'confirmed' && (b.status != null || b.start_time != null || b.end_time != null || b.staff_id != null))
     return c.json({ error: '確定済みのシフトは変更できません。精算画面で確定を取り消してください' }, 409)
   if (b.status != null && !SHIFT_STATUSES.includes(b.status)) return c.json({ error: 'シフトの状態が正しくありません' }, 400)
+  const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906）
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   // 精算を締めた期間のシフトは、状態・時間・スタッフを変えない（#170。メモだけの変更や、同じ値の送信は受け付ける）
   if ((b.status != null && b.status !== cur.status) || (b.start_time != null && b.start_time !== cur.start_time)
     || (b.end_time != null && b.end_time !== cur.end_time) || (b.staff_id != null && Number(b.staff_id) !== cur.staff_id)) {
@@ -5607,12 +5612,16 @@ api.put('/admin/shifts/:id', async (c) => {
   } finally { await finishLog(op) } // 途中で失敗しても変更の後の値を入れる（入れないと削除の履歴に見える）
   // 欠勤にしたシフトの承認待ちは承認できない（却下が必要）ので、件数を返す（#70）
   const pendingAbsent = b.status === 'absent' && cur.status !== 'absent' ? await pendingCorrectionCount(db, sid) : 0
-  if (notifyBefore) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [sid]))
+  if (notifyBefore) await notifyShiftChanges(c, u.company_id, notifyBefore, await loadShiftSnaps(db, u.company_id, [sid]), nt, [op])
   return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}), ...(pendingAbsent ? { pending_corrections: pendingAbsent } : {}) })
 })
 
 api.delete('/admin/shifts/:id', async (c) => {
   const u = c.get('user')
+  // スタッフに通知を送るか・メッセージ（#9906）。本文（JSON）か、クエリ（notify=0 など）で受け取る
+  const nb = await c.req.json().catch(() => null) as any
+  const nt = shiftNotifyOptOf(nb && typeof nb === 'object' ? nb : { notify: c.req.query('notify'), notify_message: c.req.query('notify_message') })
+  if ('error' in nt) return c.json({ error: nt.error }, 400)
   const cur = await c.env.DB.prepare('SELECT shift_id, work_date, settle_status FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!cur) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (cur.settle_status === 'confirmed') return c.json({ error: '確定済みのシフトは削除できません。精算画面で確定を取り消してください' }, 409)
@@ -5635,7 +5644,7 @@ api.delete('/admin/shifts/:id', async (c) => {
   ])
   await finishLog(op)
   const cancelled = await notifyAutoCancelled(c, cur.shift_id, cancelToken)
-  await notifyShiftChanges(c, u.company_id, notifyBefore, []) // 本人に取消を知らせる（#155）
+  await notifyShiftChanges(c, u.company_id, notifyBefore, [], nt, [op]) // 本人に取消を知らせる（#155）
   return c.json({ ok: true, ...(cancelled ? { cancelled_corrections: cancelled } : {}) })
 })
 
@@ -5660,14 +5669,14 @@ api.get('/admin/operation-logs', async (c) => {
   if (to !== null) { where.push('l.created_at < ?'); binds.push(addDays(to, 1)) }
   if (action !== null) { where.push('l.action = ?'); binds.push(action) }
   if (before !== null) { where.push('l.log_id < ?'); binds.push(before) }
-  const rows = (await db.prepare(`SELECT l.log_id, l.entity, l.entity_id, l.staff_id, l.action, l.before_json, l.after_json, l.op_key, l.created_at, l.actor_user_id, au.name AS actor_name
+  const rows = (await db.prepare(`SELECT l.log_id, l.entity, l.entity_id, l.staff_id, l.action, l.before_json, l.after_json, l.op_key, l.created_at, l.actor_user_id, au.name AS actor_name, l.notify_off
     FROM operation_logs l LEFT JOIN users au ON au.user_id = l.actor_user_id
     WHERE ${where.join(' AND ')} ORDER BY l.log_id DESC LIMIT ?`).bind(...binds, OP_LOG_PAGE + 1).all()).results as any[]
   const logs = rows.slice(0, OP_LOG_PAGE).map(r => {
     const d = opChanges(r.entity, r.before_json, r.after_json)
     const cur = d.after || d.before || {}
     return { log_id: r.log_id, entity: r.entity, entity_id: r.entity_id, staff_id: r.staff_id, action: r.action, action_label: OP_ACTION_LABELS[r.action] || r.action,
-      op_key: r.op_key, created_at: r.created_at, actor_name: r.actor_name || null,
+      op_key: r.op_key, created_at: r.created_at, actor_name: r.actor_name || null, notify_off: !!r.notify_off, // 通知なし（#9906）
       summary: { work_date: cur.work_date ?? null, start_time: cur.start_time ?? null, end_time: cur.end_time ?? null, staff_id: cur.staff_id ?? null, project_id: cur.project_id ?? null },
       changes: d.changes }
   })
@@ -6065,6 +6074,27 @@ api.put('/admin/settings/staff-view', async (c) => {
     .bind(...keys.flatMap(k => [`$.${k}`, b[k] ? 'true' : 'false']), u.company_id).run()
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
   return c.json({ ok: true, ...staffViewSettings(row?.settings_json) })
+})
+
+// シフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るかの会社の既定（#9906。companies.shift_notify_default）。
+// 操作のたびの確認の画面の「スタッフに通知を送る」の初期値になる。変えられるのは会社管理者だけ（ほかのロールは見るだけ。操作ごとのチェックは誰でも選べる）
+const shiftNotifySettingView = async (db: D1Database, companyId: number) => {
+  const r = await db.prepare(`SELECT c.shift_notify_default, c.shift_notify_updated_at, uu.name AS updated_by_name
+    FROM companies c LEFT JOIN users uu ON uu.user_id = c.shift_notify_updated_by AND uu.company_id = c.company_id WHERE c.company_id = ?`).bind(companyId).first() as any
+  return { enabled: !r || Number(r.shift_notify_default ?? 1) !== 0, updated_at: r?.shift_notify_updated_at || null, updated_by_name: r?.updated_by_name || null }
+}
+api.get('/admin/settings/shift-notify', async (c) => {
+  const u = c.get('user')
+  return c.json({ ...await shiftNotifySettingView(c.env.DB, u.company_id), can_edit: u.role === 'company_admin' })
+})
+api.put('/admin/settings/shift-notify', async (c) => {
+  const u = c.get('user')
+  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます', code: 'role_forbidden' }, 403)
+  const b = await c.req.json().catch(() => ({})) as any
+  if (typeof b?.enabled !== 'boolean') return c.json({ error: '設定の値が正しくありません' }, 400)
+  await c.env.DB.prepare(`UPDATE companies SET shift_notify_default = ?, shift_notify_updated_at = ?, shift_notify_updated_by = ?
+    WHERE company_id = ? AND shift_notify_default IS NOT ?`).bind(b.enabled ? 1 : 0, nowJST(), u.user_id, u.company_id, b.enabled ? 1 : 0).run()
+  return c.json({ ok: true, ...await shiftNotifySettingView(c.env.DB, u.company_id), can_edit: true })
 })
 
 // 案件の月間目標（#292）。稼働中の案件と、日報テンプレートの数値項目・設定済みの目標

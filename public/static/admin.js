@@ -820,12 +820,13 @@ delegate('dashTodoRestore', el => {
 // 理由を示して確認できたら force を付けて送り直す（#221）。成功したらサーバーの応答、取りやめたら false。エラーは呼び出し元へ投げる
 // 欠勤にするときは、その場で理由（スタッフ都合／クライアント都合）を選んでもらい cancel_reason で送る（#283）。
 // cancelReason: 'staff' | 'client' | ''（理由を残さない）。省くと選ぶ画面を出す
-async function putShiftStatus(shiftId, status, force, cancelReason) {
+// extra: 一緒に送る値（シフト管理の「スタッフに通知を送る」の notify・notify_message。#9906。省くと会社の設定に従う）
+async function putShiftStatus(shiftId, status, force, cancelReason, extra) {
   if (status === 'absent' && cancelReason === undefined) {
     cancelReason = await askAbsentReason()
     if (cancelReason === null) return false
   }
-  const body = { status }
+  const body = { ...(extra || {}), status }
   if (force) body.force = true
   if (status === 'absent' && cancelReason) body.cancel_reason = cancelReason
   try {
@@ -835,7 +836,7 @@ async function putShiftStatus(shiftId, status, force, cancelReason) {
     const d = e.response && e.response.status === 409 ? e.response.data : null
     if (d && d.need_force && !force) {
       if (!confirm(`${(d.warnings || []).join('\n')}\nこのまま変更しますか？`)) return false
-      return putShiftStatus(shiftId, status, true, cancelReason || '')
+      return putShiftStatus(shiftId, status, true, cancelReason || '', extra)
     }
     throw e
   }
@@ -1008,7 +1009,7 @@ function opLogValue(field, v, names) {
 }
 function opLogRowsHtml(logs, names) {
   return logs.map(l => `<div class="border-b border-gray-100 py-1.5">
-      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span></p>
+      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span>${l.notify_off ? ' <span class="badge badge-gray" title="スタッフに通知を送らずに操作しました（#9906）"><i class="fas fa-bell-slash mr-0.5"></i>通知なし</span>' : ''}</p>
       ${l.changes.length ? `<ul class="text-gray-600 mt-0.5 space-y-0.5">${l.changes.map(c => `<li><span class="text-gray-400">${esc(c.label)}:</span> ${esc(opLogValue(c.field, c.before, names))} <i class="fas fa-arrow-right text-[9px] text-gray-400"></i> ${esc(opLogValue(c.field, c.after, names))}</li>`).join('')}</ul>` : ''}
     </div>`).join('')
 }
@@ -4148,7 +4149,8 @@ async function renderShifts(dateStr) {
 
 window.showAddShift = async function (defaultDate) {
   // スタッフは選択肢用の軽いAPIで取る（#463）。割り当てられる人だけが返る（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職を除く #94）
-  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects')])
+  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects'),
+    window.loadShiftNotifySetting ? loadShiftNotifySetting() : null]) // 通知の会社の設定（「スタッフに通知を送る」の初めの値。#9906）
   const staff = st.staff.filter(s => s.assignable !== 0)
   addShiftProjects = pj.projects.filter(p => p.status === 'active')
   modal(`
@@ -4172,6 +4174,7 @@ window.showAddShift = async function (defaultDate) {
           <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
       </div>
       <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
+      ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('sh-notify', { note: '登録したシフトを本人に知らせます' }) : ''}
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addShift">登録する</button></div>
     </div>`)
   addShiftFeeHint()
@@ -4275,6 +4278,7 @@ window.addShift = async function (force) {
       status: document.getElementById('sh-status').value, transportation_fee: fee === '' ? null : Number(fee),
       confirm_warnings: true, force: !!force,
       inherit: ADD_SHIFT_PRICE.inherit, ...(price ? { price } : {}),
+      ...(window.shiftNotifyParams ? shiftNotifyParams('sh-notify') : {}), // #9906
     })
   } catch (e) {
     const d = e.response && e.response.data
@@ -4286,7 +4290,8 @@ window.addShift = async function (force) {
 }
 delegate('addShift', el => withSubmitLock(el, () => addShift()))
 
-window.showEditShift = function (shiftId, staffName, status) {
+window.showEditShift = async function (shiftId, staffName, status) {
+  if (window.loadShiftNotifySetting) await loadShiftNotifySetting() // 「スタッフに通知を送る」の初めの値（#9906）
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト操作 — ${esc(staffName)}</h3>
     <div class="space-y-2">
@@ -4295,6 +4300,7 @@ window.showEditShift = function (shiftId, staffName, status) {
       <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
+    ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('es-notify', { note: '上の状態の変更と削除のときに本人に知らせます' }) : ''}
     <div id="edit-shift-location"></div>
     <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
     <div id="edit-shift-withdrawals"></div>`)
@@ -4397,12 +4403,14 @@ window.openAttendancePhotos = function (shiftId, staffName) {
 delegate('attendancePhotos', el => openAttendancePhotos(Number(el.dataset.id), el.dataset.name))
 window.updateShift = async function (id, status) {
   // 欠勤から戻すとき、退職・取引終了の人や、同じ枠に有効なシフトがある人は戻せない（理由を表示する）
-  try { if (!await putShiftStatus(id, status)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
+  const np = window.shiftNotifyParams ? shiftNotifyParams('es-notify') : {} // スタッフに通知を送るか・メッセージ（#9906）
+  try { if (!await putShiftStatus(id, status, undefined, undefined, np)) return } catch (e) { showApiError(e, '更新に失敗しました'); return }
   closeModal(); toast('シフトを更新しました'); refreshShiftWeek()
 }
 window.deleteShift = async function (id) {
-  if (!confirm('このシフトを削除しますか？')) return
-  try { await axios.delete('/api/admin/shifts/' + id) } catch (e) { showApiError(e, '削除に失敗しました'); return }
+  const np = window.shiftNotifyParams ? shiftNotifyParams('es-notify') : {} // #9906
+  if (!confirm('このシフトを削除しますか？' + (np.notify === false ? '\n（スタッフに通知は送りません）' : ''))) return
+  try { await axios.delete('/api/admin/shifts/' + id, { data: np }) } catch (e) { showApiError(e, '削除に失敗しました'); return }
   closeModal(); toast('シフトを削除しました'); refreshShiftWeek()
 }
 
@@ -6342,6 +6350,12 @@ async function renderAccount() {
       <button class="btn btn-outline text-sm" data-action="photoSkipSetting">写真を送れないときの扱い</button>
       <button class="btn btn-outline text-sm" data-action="photoRequiredSetting">写真添付の設定</button>
     </section>
+    <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-shift-notify">
+      <i class="fas fa-bell text-blue-500"></i>
+      <span class="text-sm flex-1">シフトを確定・削除したときのスタッフへの通知（会社全体）: <span id="account-shift-notify-state" class="text-gray-400">…</span>
+        <span class="block text-[11px] text-gray-400">確認の画面の「スタッフに通知を送る」のチェックの初めの値です。操作のたびに変えられます（#9906）</span></span>
+      <button class="btn btn-outline text-sm" data-action="shiftNotifySetting">通知の設定</button>
+    </section>
     ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
   // 写真添付の今の状態（読めなければ欄はそのまま。設定の画面を開けば読み直す）
   axios.get('/api/admin/settings/photo-required').then(({ data: d }) => {
@@ -6349,7 +6363,18 @@ async function renderAccount() {
     const last = (d.history || [])[0]
     el.outerHTML = `<span id="account-photo-state"><span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span>${last ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(last.at))} ${esc(last.name || '')}</span>` : ''}</span>`
   }).catch(() => { })
+  showShiftNotifyState()
 }
+// シフトの確定・削除の通知の会社の設定（#9906。設定の画面は shift-board.js の shiftNotifySetting）
+function showShiftNotifyState(d) {
+  const draw = (x) => {
+    const el = document.getElementById('account-shift-notify-state'); if (!el || !x) return
+    el.outerHTML = `<span id="account-shift-notify-state"><span class="badge ${x.enabled ? 'badge-green' : 'badge-gray'}">${x.enabled ? '送る' : '送らない'}</span>${x.updated_at ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(x.updated_at))} ${esc(x.updated_by_name || '')}</span>` : ''}</span>`
+  }
+  if (d) return draw(d)
+  axios.get('/api/admin/settings/shift-notify').then(({ data }) => draw(data)).catch(() => { })
+}
+window.onShiftNotifySaved = showShiftNotifyState
 
 function adminUsersHtml(users, meId) {
   return `

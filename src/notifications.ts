@@ -1188,9 +1188,48 @@ function shiftEventLine(e: ShiftEvent) {
 }
 const SHIFT_EVENT_LABEL = { assigned: '登録', changed: '変更', cancelled: '取消' } as const
 const SHIFT_NOTIFY_MAX_LINES = 20
-export async function notifyShiftChanges(c: any, companyId: number, before: ShiftSnap[], after: ShiftSnap[]) {
+
+// ---------- シフトの確定・削除の通知を送るか（#9906。利用者の決定 Sprint 17） ----------
+// 会社の既定（companies.shift_notify_default。0098。既定は 1 = 送る）と、操作ごとのチェック（notify）・メッセージ（notify_message）。
+// 送らないときは、アプリ内の通知・プッシュ（アプリ内の通知の登録で積まれる）・メールのどれも送らず、操作履歴（operation_logs.notify_off）に「通知なし」と残す。
+// 対象はシフトの登録・変更・取消（shift_assigned / shift_changed / shift_cancelled）だけ。日報へのコメント・募集の結果などは今までどおり送る。
+// スタッフ本人の受け取り設定（シフトの変更のメール・プッシュ）は、送るときに今までどおり効く
+export const SHIFT_NOTIFY_MESSAGE_MAX = 150
+// send: true / false = 画面で選んだ値、null = 会社の既定に従う（画面を通らない呼び出し・古い画面）
+export type ShiftNotifyOpt = { send: boolean | null; message: string | null }
+export const SHIFT_NOTIFY_DEFAULT_OPT: ShiftNotifyOpt = { send: null, message: null }
+/** リクエストの notify（true / false / 省略）と notify_message（150文字まで）を読む */
+export function shiftNotifyOptOf(b: any): ShiftNotifyOpt | { error: string } {
+  const n = b?.notify
+  let send: boolean | null = null
+  if (n === true || n === 1 || n === '1' || n === 'true') send = true
+  else if (n === false || n === 0 || n === '0' || n === 'false') send = false
+  else if (n !== undefined && n !== null && n !== '') return { error: '通知を送るかどうかの指定が正しくありません' }
+  const m = b?.notify_message
+  if (m !== undefined && m !== null && typeof m !== 'string') return { error: 'スタッフへのメッセージが正しくありません' }
+  // 改行は残し、ほかの制御文字は外す
+  const message = String(m ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '').trim()
+  if ([...message].length > SHIFT_NOTIFY_MESSAGE_MAX) return { error: `スタッフへのメッセージは${SHIFT_NOTIFY_MESSAGE_MAX}文字以内で入力してください` }
+  return { send, message: message || null }
+}
+export async function loadShiftNotifyDefault(db: D1Database, companyId: number): Promise<boolean> {
+  const r = await db.prepare('SELECT shift_notify_default FROM companies WHERE company_id = ?').bind(companyId).first() as any
+  return !r || Number(r.shift_notify_default ?? 1) !== 0
+}
+// 操作履歴に「通知なし」と残す（op は operation-log.ts の opLog の戻り値。キーだけを使う）
+async function markShiftNotifyOff(db: D1Database, companyId: number, ops: ({ key: string } | null | undefined)[]) {
+  const keys = [...new Set(ops.filter((o): o is { key: string } => !!o && !!o.key).map(o => o.key))]
+  if (!keys.length) return
+  await db.prepare('UPDATE operation_logs SET notify_off = 1 WHERE company_id = ? AND op_key IN (SELECT value FROM json_each(?))').bind(companyId, JSON.stringify(keys)).run()
+}
+
+// opt: 送るか・添えるメッセージ（省略すると会社の既定）。ops: この操作の操作履歴（送らないときに「通知なし」と残す）
+export async function notifyShiftChanges(c: any, companyId: number, before: ShiftSnap[], after: ShiftSnap[],
+  opt: ShiftNotifyOpt = SHIFT_NOTIFY_DEFAULT_OPT, ops: ({ key: string } | null | undefined)[] = []) {
   try {
     const db: D1Database = c.env.DB
+    const send = opt.send ?? await loadShiftNotifyDefault(db, companyId)
+    if (!send) { await markShiftNotifyOff(db, companyId, ops); return }
     const today = todayStr(), tomorrow = addDaysStr(today, 1)
     const events: ShiftEvent[] = []
     const prev = new Map(before.filter(s => s.shift_id).map(s => [Number(s.shift_id), s]))
@@ -1237,13 +1276,16 @@ export async function notifyShiftChanges(c: any, companyId: number, before: Shif
       }
       const lines = list.slice(0, SHIFT_NOTIFY_MAX_LINES).map(shiftEventLine)
       if (list.length > SHIFT_NOTIFY_MAX_LINES) lines.push(`ほか${list.length - SHIFT_NOTIFY_MAX_LINES}件（シフト画面で確認してください）`)
-      const body = lines.join('\n')
+      const detail = lines.join('\n')
+      // 管理者が添えたメッセージ（#9906）は、内容の前に出す
+      const body = opt.message ? `管理者からのメッセージ: ${opt.message}\n\n${detail}` : detail
       // シフト画面のその日から開く（staff.js の route が #shift/YYYY-MM-DD を受ける）
       const link = `#shift/${first.work_date >= today ? first.work_date : today}`
       rows.push({ company_id: companyId, user_id: u.user_id, kind, title, body, link, related_id: list.length === 1 ? (first.shift_id ?? null) : null })
       // メールは今日・明日の分があるときだけ（その日のうちに気づく必要があるため）
       if (u.email && list.some(e => e.snap.work_date === today || e.snap.work_date === tomorrow)) {
-        const tpl = attendanceCorrectionEmail({ name: u.name, title, headline: '管理者がシフトを登録・変更しました。内容を確認してください。', lines: [['内容', body]], url: appUrl(c.env, '/staff' + link), button: 'シフトを確認する' })
+        const mailLines: [string, string][] = opt.message ? [['管理者からのメッセージ', opt.message], ['内容', detail]] : [['内容', detail]]
+        const tpl = attendanceCorrectionEmail({ name: u.name, title, headline: '管理者がシフトを登録・変更しました。内容を確認してください。', lines: mailLines, url: appUrl(c.env, '/staff' + link), button: 'シフトを確認する' })
         mails.push({ to: u.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'shift_change', company_id: companyId })
       }
     }
