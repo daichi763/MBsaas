@@ -3185,8 +3185,10 @@ delegate('toggleAdminTemplateStatus', el => withSubmitLock(el, async () => {
 function openTemplateEditor(t, init) {
   const locked = new Set(t && t.has_reports ? (t.fields || []).map(f => f.key) : [])
   TPL_EDIT = { id: t ? Number(t.template_id) : null, locked, rows: (init.fields || []).map(f => ({ ...f, origKey: f.key })) }
+  // 左に編集、右（狭い画面では下）にスタッフのスマホでの見え方のプレビュー（#9903）
   modal(`
     <h3 class="font-bold text-lg mb-3">${t ? 'テンプレートの編集' : 'テンプレートの作成'}</h3>
+    <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_376px] lg:gap-5 lg:items-start">
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
       ${locked.size ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
@@ -3196,9 +3198,50 @@ function openTemplateEditor(t, init) {
         <button type="button" class="btn btn-outline text-xs mt-2" data-action="tplAddRow"><i class="fas fa-plus"></i>項目を追加</button>
         <p class="text-[11px] text-gray-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
       </div>
-      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminTemplate">保存する</button></div>
-    </div>`)
+    </div>
+    <div class="mt-5 lg:mt-0 lg:sticky lg:top-0" id="tpl-preview-pane">
+      <p class="text-sm font-bold text-gray-700 mb-0.5"><i class="fas fa-mobile-screen-button text-blue-500 mr-1"></i>スタッフのスマホでの見え方</p>
+      <p class="text-[11px] text-gray-400 mb-2">項目を足す・消す・並べ替えると、すぐに反映されます。ここで入力しても保存・提出はされません</p>
+      <div class="mx-auto w-[376px] max-w-full rounded-[2rem] border-[8px] border-gray-800 bg-gray-50 overflow-hidden shadow-lg">
+        <div class="bg-white border-b border-gray-100 px-4 py-2.5"><p class="font-bold text-gray-800 text-sm flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i>日報</p></div>
+        <div id="tpl-preview" class="px-4 py-4 h-[600px] max-h-[60vh] overflow-y-auto"></div>
+      </div>
+    </div>
+    </div>
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminTemplate">保存する</button></div>`)
+  // プレビューを横に並べるため、広い画面ではモーダルを広げる
+  const box = document.querySelector('#modal-root .modal-box'); if (box) box.classList.add('lg:max-w-5xl')
   drawTplRows()
+}
+// 保存する形の項目（表示名が空ならキー。プレビューも同じ形で描く）
+function tplFieldsFromRows(rows) {
+  return rows.map(r => {
+    const f = { key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), type: r.type || 'text' }
+    if (r.required) f.required = true
+    if (r.placeholder) f.placeholder = r.placeholder
+    if (r.maxLength && f.type !== 'number') f.maxLength = r.maxLength
+    return f
+  })
+}
+// スタッフアプリの日報の入力欄と同じ関数（report-form.js の reportFormBodyHtml）で描く。プレビューに入力した値は、描き直しても残す（保存はしない）
+function drawTplPreview() {
+  const host = document.getElementById('tpl-preview'); if (!host || !TPL_EDIT) return
+  const typed = {}
+  host.querySelectorAll('.rpt-field').forEach(el => { typed[el.dataset.key] = el.value })
+  const flags = { incident: !!(host.querySelector('#incident-flag') || {}).checked, complaint: !!(host.querySelector('#complaint-flag') || {}).checked }
+  const name = ((document.getElementById('tpl-name') || {}).value || '').trim()
+  const fields = tplFieldsFromRows(TPL_EDIT.rows)
+  host.innerHTML = `
+    <section class="card p-4 mb-4">
+      <h2 class="font-bold text-gray-800">案件名</h2>
+      <p class="text-xs text-gray-400">${esc(dayjs().format('M/D(dd)'))} 10:00〜19:00 の日報${name ? '｜' + esc(name) : ''}</p>
+    </section>
+    ${fields.length ? `<form id="tpl-preview-form" class="space-y-4 pb-8" novalidate>${reportFormBodyHtml(fields, k => typed[k], flags)}</form>`
+      : '<p class="text-xs text-gray-400 text-center py-6">項目を追加すると、ここにスタッフの入力欄が出ます</p>'}`
+  const form = document.getElementById('tpl-preview-form')
+  if (!form) return
+  reportFormBind(form)
+  form.addEventListener('submit', (e) => { e.preventDefault(); toast('プレビューのため、提出・保存はされません') })
 }
 function drawTplRows() {
   const box = document.getElementById('tpl-rows'); if (!box || !TPL_EDIT) return
@@ -3218,9 +3261,12 @@ function drawTplRows() {
       </span>
     </div>`
   }).join('') || '<p class="text-xs text-red-600">項目を1つ以上追加してください</p>'
+  drawTplPreview()
 }
 // 入力のたびに TPL_EDIT に写す（並べ替え・削除で描き直しても入力が消えないように）
 function syncTplField(ev) {
+  // テンプレート名はプレビューの見出しに出す
+  if (TPL_EDIT && ev.target && ev.target.id === 'tpl-name') { drawTplPreview(); return }
   const el = ev.target && ev.target.closest ? ev.target.closest('[data-tpl-field]') : null
   if (!el || !TPL_EDIT) return
   const row = TPL_EDIT.rows[Number(el.dataset.i)]; if (!row) return
@@ -3229,6 +3275,7 @@ function syncTplField(ev) {
   else row[k] = el.value
   // 数値の項目には文字数の上限を付けない（サーバーの検証と同じ）
   if (k === 'type' && row.type === 'number') delete row.maxLength
+  drawTplPreview()
 }
 document.addEventListener('input', syncTplField)
 document.addEventListener('change', syncTplField)
@@ -3250,13 +3297,7 @@ delegate('saveAdminTemplate', el => withSubmitLock(el, async () => {
   const name = document.getElementById('tpl-name').value.trim()
   if (!name) { toast('テンプレート名を入力してください'); return }
   if (!TPL_EDIT.rows.length) { toast('項目を1つ以上追加してください'); return }
-  const fields = TPL_EDIT.rows.map(r => {
-    const f = { key: String(r.key || '').trim(), label: String(r.label || '').trim() || String(r.key || '').trim(), type: r.type || 'text' }
-    if (r.required) f.required = true
-    if (r.placeholder) f.placeholder = r.placeholder
-    if (r.maxLength && f.type !== 'number') f.maxLength = r.maxLength
-    return f
-  })
+  const fields = tplFieldsFromRows(TPL_EDIT.rows)
   try {
     if (TPL_EDIT.id) await axios.put('/api/admin/templates/' + TPL_EDIT.id, { template_name: name, fields })
     else await axios.post('/api/admin/templates', { template_name: name, fields })
@@ -4647,6 +4688,22 @@ function reportCommentReadHtml(r, fmt) {
   if (r.comment_read_at) return `<span class="badge badge-green font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフがアプリでこのコメントを開きました"><i class="fas fa-check-double mr-0.5"></i>スタッフ既読 ${esc(fmt(r.comment_read_at))}</span>`
   return `<span class="badge badge-gray font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
 }
+// 最後の実績の修正・再提出（#9902。API の last_edit）。「誰が・いつ・どの項目を・いくつからいくつに」を1行で出し、全部は修正履歴で見る
+function reportLastEditHtml(r, fields, fmt) {
+  const e = r.last_edit
+  if (!e || !(e.changes || []).length) return ''
+  const label = new Map((fields && fields.length ? fields : REPORT_NO_TEMPLATE_FIELDS).map(f => [f.key, f.label]))
+  // 代理入力の再提出は、入力した管理者の名前を出す（修正履歴の表示と同じ）
+  const who = e.kind === 'admin_edit' ? `${e.edited_by_name || '管理者'}が修正`
+    : e.entry_method === 'proxy' ? `${e.edited_by_name || '管理者'}が代理入力で再提出` : `${r.staff_name || 'スタッフ'}が再提出`
+  // テキストの値は長いことがあるので折り返す（項目名だけ折り返さない）
+  const list = e.changes.map(c => `<span><span class="text-gray-500 whitespace-nowrap">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
+  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 break-words ${e.kind === 'admin_edit' ? 'bg-purple-50 text-purple-900' : 'bg-amber-50 text-amber-900'}" data-report-last-edit>
+    <i class="fas fa-user-pen mr-1"></i><b>${esc(who)}</b> <span class="text-gray-500">${esc(fmt(e.edited_at))}</span>：${list}${Number(e.more) > 0 ? ` ほか${Number(e.more)}項目` : ''}
+    ${e.reason ? `<span class="block text-gray-600 mt-0.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</span>` : ''}
+    <button class="text-blue-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>
+  </div>`
+}
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
   const revised = !r.manager_checked && r.revised_after_check_at
@@ -4659,13 +4716,18 @@ function reportCardHtml(r, fields) {
         ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
         ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
         ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
-        ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に修正しました">確認後に修正あり</span>` : ''}
+        ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に内容を変えて出し直したため、未確認に戻りました"><i class="fas fa-rotate-left mr-0.5"></i>出し直しで未確認に戻りました</span>` : ''}
         ${reportEntryBadge(r)}
         ${reportAdminEditBadge(r, fmt)}
         <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
       </div>
       ${reportIncidentHtml(r, fields)}
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="text-[11px] font-bold text-gray-500">日報の内容</span>
+        <button class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-blue-700 border-blue-200" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します（直した人・もとの値は修正履歴に残ります）"><i class="fas fa-pen-to-square"></i>実績を修正</button>
+      </div>
       ${reportValuesHtml(r, fields)}
+      ${reportLastEditHtml(r, fields, fmt)}
       ${r.manager_comment ? `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(r.manager_comment)}</span>
         <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5">${r.manager_comment_by_name || r.manager_comment_at ? `<span>${esc(r.manager_comment_by_name || '')} ${esc(fmt(r.manager_comment_at))}</span>` : ''}${reportCommentReadHtml(r, fmt)}</span></div>` : ''}
       <div class="flex gap-2 mt-3 flex-wrap items-center">
@@ -4674,7 +4736,6 @@ function reportCardHtml(r, fields) {
              ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
         <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
-        <button class="btn btn-outline text-xs" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します"><i class="fas fa-pen-to-square"></i>実績を修正</button>
         ${Number(r.edit_count) > 0 ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
@@ -4773,7 +4834,7 @@ delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
         <span class="text-gray-400 ml-auto">${esc(fmt(e.edited_at))}</span>
       </div>
       ${e.reason ? `<p class="text-xs text-gray-700 bg-gray-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
-      <table class="w-full text-xs mt-1.5"><tbody>
+      <table class="w-full text-xs mt-1.5"><thead><tr class="text-[11px] text-gray-400"><th class="text-left font-normal pr-2">項目</th><th class="text-left font-normal pr-1">もとの値</th><th></th><th class="text-left font-normal">変えた後</th></tr></thead><tbody>
         ${(e.changed_keys || []).map(k => `<tr class="border-t border-gray-100">
           <td class="py-1 pr-2 text-gray-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
           <td class="py-1 pr-1 text-gray-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>

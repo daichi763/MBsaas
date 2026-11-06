@@ -2037,7 +2037,12 @@ api.get('/staff/daily-report/:shiftId', async (c) => {
   const t = pt.template
   let fields: any = []
   try { fields = t ? JSON.parse(t.fields_json as string) : [] } catch { fields = [] }
-  const report = dailyReportView(await findDailyReport(c.env.DB, resolved.shift))
+  const row = await findDailyReport(c.env.DB, resolved.shift)
+  const report = dailyReportView(row)
+  // コメントした人の名前（#9901）
+  if (report && row.manager_comment && row.manager_comment_by) {
+    report.manager_comment_by_name = ((await c.env.DB.prepare('SELECT name FROM users WHERE user_id = ?').bind(row.manager_comment_by).first()) as any)?.name ?? null
+  }
   const shift = await dailyReportShiftView(c.env.DB, c.get('user'), resolved.shift, pt.project)
   return c.json({ template: t ? { ...t, fields: Array.isArray(fields) ? fields : [] } : null, report, shift })
 })
@@ -2122,11 +2127,13 @@ async function personStaffIds(db: D1Database, u: any): Promise<number[]> {
 }
 
 // comment_read_at: 本人が管理者のコメントを開いた日時（#158。コメントが変わると空に戻る）。unread_comment: まだ開いていないコメントがある
+// manager_comment_by_name: コメントした人の名前（#9901。画面は「〇〇さんからのコメント」。引けないときは「管理者」）
 const MY_REPORT_COLS = `dr.daily_report_id, dr.shift_id, dr.work_date, dr.project_id, dr.report_values, dr.incident_flag, dr.complaint_flag,
       dr.manager_comment, dr.manager_comment_at, dr.comment_read_at, dr.manager_checked, dr.manager_checked_at, dr.submitted_at, dr.revised_after_check_at, dr.admin_edited_at,
-      p.project_name, p.report_template_id, p.past_report_fields_json, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time
+      p.project_name, p.report_template_id, p.past_report_fields_json, co.company_name, (dr.company_id != ?) AS other_company, sh.start_time, sh.end_time,
+      cu.name AS manager_comment_by_name
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
-    LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id`
+    LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by`
 async function myReportsView(db: D1Database, rows: any[]) {
   const tplIds = [...new Set(rows.map(r => r.report_template_id).filter((x: any) => x != null))]
   const templates: Record<string, any[]> = {}
@@ -2543,10 +2550,10 @@ api.get('/staff/performance', async (c) => {
   if (!ids.length) return c.json({ month, projects: [], daily: [], totals: {} })
   const [from, to] = monthBounds(month)
   const rows = (await db.prepare(`
-    SELECT dr.work_date, dr.report_values, dr.manager_comment, dr.project_id, dr.staff_id, dr.company_id, p.project_name, p.show_performance, p.performance_goals_json,
-      co.company_name, (dr.company_id != ?) AS other_company, t.fields_json
+    SELECT dr.work_date, dr.report_values, dr.manager_comment, dr.manager_comment_at, dr.project_id, dr.staff_id, dr.company_id, p.project_name, p.show_performance, p.performance_goals_json,
+      co.company_name, (dr.company_id != ?) AS other_company, t.fields_json, cu.name AS comment_by_name
     FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id JOIN companies co ON co.company_id = dr.company_id
-    LEFT JOIN report_templates t ON t.template_id = p.report_template_id
+    LEFT JOIN report_templates t ON t.template_id = p.report_template_id LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
     WHERE dr.staff_id IN (${ids.map(() => '?').join(',')}) AND dr.work_date >= ? AND dr.work_date < ? ORDER BY dr.work_date, dr.submitted_at`).bind(u.company_id, ...ids, from, to).all()).results as any[]
   const totals: Record<string, number> = {}
   type PerfProject = { project_id: number; project_name: string; company_name: string; other_company: boolean; fields: { key: string; label: string }[]; totals: Record<string, number>; days: number;
@@ -2571,7 +2578,8 @@ api.get('/staff/performance', async (c) => {
       totals[k] = (totals[k] || 0) + val
       if (!pj.fields.some(f => f.key === k)) pj.fields.push({ key: k, label: k })
     }
-    daily.push({ date: r.work_date, project_id: r.project_id, project: r.project_name, company_name: r.company_name, other_company: !!r.other_company, comment: r.manager_comment, values })
+    daily.push({ date: r.work_date, project_id: r.project_id, project: r.project_name, company_name: r.company_name, other_company: !!r.other_company, comment: r.manager_comment,
+      comment_by_name: r.manager_comment ? (r.comment_by_name ?? null) : null, comment_at: r.manager_comment ? (r.manager_comment_at ?? null) : null, values })
   }
   for (const pj of projects.values()) {
     pj.goals = pj.fields.filter(f => pj._goals[f.key] > 0).map(f => ({ key: f.key, label: f.label, target: pj._goals[f.key], actual: pj.totals[f.key] || 0 }))
@@ -5702,6 +5710,9 @@ api.get('/admin/operation-logs', async (c) => {
 // incident_open=1（対応済みでないインシデント・クレームのみ。#169）、offset、limit（既定50・最大200）
 // options=1 のときは、絞り込みの選択肢（案件・日報のあるスタッフ）も返す
 const DAILY_REPORT_PAGE_MAX = 200
+// 一覧のカードに出す、最後の修正の項目の数（#9902。残りは修正履歴で見る）
+const REPORT_LAST_EDIT_KEYS = 8
+const REPORT_LAST_EDIT_TEXT = 60
 // 未確認の条件。migrations/0050_report_admin.sql の部分索引と同じ式にする（同じ式でないと索引が使われない）
 const DR_UNCHECKED_SQL = 'COALESCE(dr.manager_checked, 0) = 0'
 const DR_FLAGGED_SQL = '(dr.incident_flag = 1 OR dr.complaint_flag = 1)'
@@ -5826,11 +5837,29 @@ api.get('/admin/daily-reports', async (c) => {
       templates[t.template_id] = f.filter(x => x && typeof x.key === 'string').map(x => ({ key: x.key, label: String(x.label || x.key), type: String(x.type || 'text') }))
     }
   }
+  // 実績の修正・再提出の最後の1件（#9902。一覧のカードに「誰が・どの項目を・いくつからいくつに」を出す）
+  const lastEdits = new Map<number, any>()
+  const editedIds = rows.filter(r => Number(r.edit_count) > 0).map(r => Number(r.daily_report_id))
+  if (editedIds.length) {
+    const es = (await db.prepare(`SELECT e.daily_report_id, e.kind, e.entry_method, e.before_values, e.after_values, e.changed_keys, e.reason, e.edited_at, eu.name AS edited_by_name
+      FROM daily_report_edits e LEFT JOIN users eu ON eu.user_id = e.edited_by
+      WHERE e.edit_id IN (SELECT MAX(edit_id) FROM daily_report_edits WHERE daily_report_id IN ${JSON_IN} GROUP BY daily_report_id) AND e.company_id = ?`)
+      .bind(bindJsonArray(editedIds), u.company_id).all()).results as any[]
+    for (const e of es) {
+      let keys: string[] = []
+      try { const v = JSON.parse(e.changed_keys || '[]'); if (Array.isArray(v)) keys = v.filter((k: unknown) => typeof k === 'string') } catch { keys = [] }
+      const before = parseReportValuesJson(e.before_values), after = parseReportValuesJson(e.after_values)
+      // 一覧のカードに出す1行なので、長いテキストは先頭だけ返す（全文は修正履歴で見る）
+      const short = (v: unknown) => (typeof v === 'string' && v.length > REPORT_LAST_EDIT_TEXT ? v.slice(0, REPORT_LAST_EDIT_TEXT) + '…' : v ?? null)
+      lastEdits.set(Number(e.daily_report_id), { kind: e.kind, entry_method: e.entry_method, reason: e.reason, edited_at: e.edited_at, edited_by_name: e.edited_by_name,
+        changes: keys.slice(0, REPORT_LAST_EDIT_KEYS).map(k => ({ key: k, before: short(before[k]), after: short(after[k]) })), more: Math.max(0, keys.length - REPORT_LAST_EDIT_KEYS) })
+    }
+  }
   const reports = rows.map(r => {
     const { report_values, past_report_fields_json: _past, ...rest } = r
     let values: Record<string, unknown> = {}
     try { const v = JSON.parse(report_values || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) values = v } catch { values = {} }
-    return { ...rest, values }
+    return { ...rest, values, last_edit: lastEdits.get(Number(r.daily_report_id)) ?? null }
   })
   // 案件ごとの、差し替える前のテンプレートの項目（#9511。画面はテンプレートの項目の後ろに並べる）
   const pastFields = await reportPastFieldsByProject(db, u.company_id, rows.map((r, i) => ({ ...r, values: reports[i].values })), templates)
