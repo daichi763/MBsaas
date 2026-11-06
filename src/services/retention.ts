@@ -738,6 +738,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM user_notification_prefs WHERE user_id = ${userOf}`).bind(staffId)],
         // Sprint 15 で足した、本人の案内（チュートリアル）の進み具合（w15-tour）
         [null, db.prepare(`DELETE FROM user_tour_progress WHERE user_id = ${userOf}`).bind(staffId)],
+        // Sprint 17 で足した、クライアント・協力会社の社内担当者（w17-masters #9910。担当は管理者のアカウントなので、ふつうはスタッフの行はない）
+        [null, db.prepare(`DELETE FROM counterparty_assignees WHERE user_id = ${userOf}`).bind(staffId)],
         // 企業間チャットと連携の同意履歴（#228）
         ['roster_comment_reads', db.prepare(`DELETE FROM roster_comment_reads WHERE ${ofThreads} RETURNING 1`).bind(staffId, staffId, staffId)],
         ['roster_comments', db.prepare(`DELETE FROM roster_comments WHERE ${ofThreads}`).bind(staffId, staffId, staffId)],
@@ -1225,6 +1227,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'user_tour_progress', label: '案内（チュートリアル）の進み具合', table: 'user_tour_progress', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'user_notifications', label: 'アプリ内の通知', table: 'user_notifications', where: OB_CO },
   { target: 'todo_dismissals', label: 'ToDo の非表示', table: 'todo_dismissals', where: OB_CO, noExport: true },
+  // Sprint 17 で足した表（w17-masters #9910）。クライアント・協力会社より先に消す
+  { target: 'counterparty_assignees', label: 'クライアント・協力会社の社内担当者', table: 'counterparty_assignees', where: OB_CO },
   { target: 'client_ng_staff', label: 'クライアントの NG スタッフ', table: 'client_ng_staff', where: OB_CO },
   { target: 'client_contacts', label: 'クライアントの担当者', table: 'client_contacts', where: OB_CO },
   { target: 'client_documents', label: 'クライアントの契約書類', table: 'client_documents', where: OB_CO },
