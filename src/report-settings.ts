@@ -113,20 +113,42 @@ function resolveAttendanceTypes(s: any, defaults: Map<string, number>, personal:
 // シフトの行を読み済みのとき（精算の一覧など件数の多い一覧）に、有効な報告をまとめて決める。
 // 規則は attendanceTypesForShifts と同じ。設定は json_each で2回の問い合わせにまとめて読む（シフトの件数で問い合わせが増えない）
 export async function attendanceTypesForRows(db: D1Database, rows: { shift_id: number; project_id: number; staff_id: number; attendance_mode?: any; attendance_types_fixed?: any; legacy_mode?: any }[]) {
+  if (!rows.length) return new Map<number, ShiftAttendance>()
+  const pset = new Set(rows.map(r => Number(r.project_id)))
+  const defRows = (await db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults WHERE project_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(pset)).all()).results as any[]
+  const perRows = (await db.prepare(`SELECT project_id, staff_id, report_type, enabled FROM project_staff_report_settings WHERE staff_id IN ${JSON_IN}`)
+    .bind(bindJsonArray(rows.map(x => x.staff_id))).all()).results as any[]
+  return attendanceMapFrom(rows, defRows, perRows)
+}
+// 読んだシフトの行と設定の行（project_report_defaults・project_staff_report_settings）から、シフトごとの有効な報告を決める
+function attendanceMapFrom(rows: any[], defRows: any[], perRows: any[]) {
   const map = new Map<number, ShiftAttendance>()
-  if (!rows.length) return map
   const defaults = new Map<string, number>(), personal = new Map<string, number>(), hasPersonal = new Set<string>()
   const pset = new Set(rows.map(r => Number(r.project_id)))
-  for (const r of (await db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults WHERE project_id IN ${JSON_IN}`)
-    .bind(bindJsonArray(pset)).all()).results as any[]) defaults.set(`${r.project_id}:${r.report_type}`, r.enabled)
-  for (const r of (await db.prepare(`SELECT project_id, staff_id, report_type, enabled FROM project_staff_report_settings WHERE staff_id IN ${JSON_IN}`)
-    .bind(bindJsonArray(rows.map(x => x.staff_id))).all()).results as any[]) {
+  for (const r of defRows) defaults.set(`${r.project_id}:${r.report_type}`, r.enabled)
+  for (const r of perRows) {
     if (!pset.has(Number(r.project_id))) continue
     personal.set(`${r.project_id}:${r.staff_id}:${r.report_type}`, r.enabled)
     hasPersonal.add(`${r.project_id}:${r.staff_id}`)
   }
   for (const s of rows) map.set(s.shift_id, resolveAttendanceTypes(s, defaults, personal, hasPersonal))
   return map
+}
+// 呼び出し元の db.batch にまとめて、有効な報告を決める形（ダッシュボードの読み込みを1往復にする。#9904）。規則は attendanceTypesForShifts と同じ。
+// shiftIdsSql は shift_id を返す副問い合わせ（別名 s を使わない）、binds はその値。statements を batch に入れ、その結果を resolve に渡す
+export function attendanceTypesBatch(db: D1Database, shiftIdsSql: string, binds: any[]) {
+  return {
+    statements: [
+      db.prepare(`SELECT s.shift_id, s.project_id, s.staff_id, s.attendance_mode, s.attendance_types_fixed, sp.attendance_mode AS legacy_mode
+        FROM shifts s LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id WHERE s.shift_id IN (${shiftIdsSql})`).bind(...binds),
+      db.prepare(`SELECT project_id, report_type, enabled FROM project_report_defaults
+        WHERE project_id IN (SELECT x.project_id FROM shifts x WHERE x.shift_id IN (${shiftIdsSql}))`).bind(...binds),
+      db.prepare(`SELECT project_id, staff_id, report_type, enabled FROM project_staff_report_settings
+        WHERE staff_id IN (SELECT x.staff_id FROM shifts x WHERE x.shift_id IN (${shiftIdsSql}))`).bind(...binds),
+    ],
+    resolve: (results: D1Result[]) => attendanceMapFrom((results[0]?.results || []) as any[], (results[1]?.results || []) as any[], (results[2]?.results || []) as any[]),
+  }
 }
 
 // 日報が必要なシフトか（SQL の式）。シフト → スタッフ → 案件の順に none / required の最初の値、なければ required。
