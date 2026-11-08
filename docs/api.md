@@ -705,9 +705,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/hq/email-stats` | 本部 | [notifications.ts:834](../src/notifications.ts#L834) | 〔見出し〕本部（/api/hq。system_admin のみ。api.ts のミドルウェアで確認する） | hq.js |
 | GET | `/api/hq/email-suppressions` | 本部 | [notifications.ts:886](../src/notifications.ts#L886) | 〔見出し〕本部（/api/hq。system_admin のみ。api.ts のミドルウェアで確認する） | hq.js |
 | POST | `/api/hq/email-suppressions/release` | 本部 | [notifications.ts:893](../src/notifications.ts#L893) | 〔見出し〕本部（/api/hq。system_admin のみ。api.ts のミドルウェアで確認する） | hq.js |
-| GET | `/api/hq/errors` | 本部 | [hq-errors.ts:19](../src/hq-errors.ts#L19) |  | hq.js |
-| GET | `/api/hq/errors/alerts` | 本部 | [hq-errors.ts:78](../src/hq-errors.ts#L78) | 自分あての未読の障害の通知（本部画面のタブの件数に使う。軽い問い合わせ1回） | hq.js |
-| POST | `/api/hq/errors/alerts/read` | 本部 | [hq-errors.ts:86](../src/hq-errors.ts#L86) | 自分あての障害の通知を既読にする（画面を開いて「確認しました」を押したとき）。操作の履歴（hq_audit_logs）には残さない | hq.js |
+| GET | `/api/hq/errors` | 本部 | [hq-errors.ts:22](../src/hq-errors.ts#L22) |  | hq.js |
+| GET | `/api/hq/errors/alerts` | 本部 | [hq-errors.ts:82](../src/hq-errors.ts#L82) | 自分あての未読の障害の通知（本部画面のタブの件数に使う。軽い問い合わせ1回） | hq.js |
+| POST | `/api/hq/errors/alerts/read` | 本部 | [hq-errors.ts:90](../src/hq-errors.ts#L90) | 自分あての障害の通知を既読にする（画面を開いて「確認しました」を押したとき）。操作の履歴（hq_audit_logs）には残さない | hq.js |
 | GET | `/api/hq/login-history` | 本部 | [api.ts:1251](../src/api.ts#L1251) | 全社のログインの履歴（会社コードの誤りなど、会社が分からない試行も含む） | security.js |
 | GET | `/api/hq/offboarding` | 本部 | [api.ts:8649](../src/api.ts#L8649) | 一覧: 停止中の企業と、解約の処理の記録がある企業 | hq.js |
 | GET | `/api/hq/offboarding/:cid` | 本部 | [api.ts:8665](../src/api.ts#L8665) | 詳細: 解約の処理・操作の記録・表ごとの件数（削除の dry-run を兼ねる）・R2 のファイルの件数 | hq.js |
