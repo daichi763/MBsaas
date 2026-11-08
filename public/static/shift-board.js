@@ -3055,7 +3055,7 @@
     if (!confirm('この開催場所を削除しますか？（シフトで使用中の場合は「無効」にします）')) return
     try {
       const { data } = await axios.delete('/api/admin/sites/' + id); invalidateMaster()
-      toast(data.deactivated ? (inactive ? 'シフトで使用中のため削除できません（無効のままです）' : '使用中のため無効にしました') : '削除しました'); refreshSitesPanel()
+      toast(data.deactivated ? (inactive ? 'シフト・枠で使用中のため削除できません（無効のままです）' : '使用中のため無効にしました') : '削除しました'); refreshSitesPanel()
     } catch (e) { toast(errMsg(e)) }
   }
 })()
