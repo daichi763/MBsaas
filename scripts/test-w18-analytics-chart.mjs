@@ -291,6 +291,15 @@ async function browserChecks() {
     ok('画面: はじめは選んだ月の日ごとの棒グラフ（成約数）', c.type === 'bar' && c.labels === daysIn(MONTH) && c.sets === 1 && /成約数/.test(c.title), c)
     ok('画面: 今までのランキング・表はグラフの下に残る', await ev(`(() => { const g = document.getElementById('analytics-chart-card'); const t = document.querySelector('.tbl'); return !!t && !!(g.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) && /スタッフ別/.test(document.getElementById('app').innerText) })()`))
     await shot('day')
+    // ランキングの並べ替え（グラフの設定は同じ）では、グラフを読み込み直さない（RV）
+    await ev(`window.__seriesCalls = 0; window.__axGet = window.__axGet || axios.get; axios.get = (u, o) => { if (String(u).includes('/analytics/series')) window.__seriesCalls++; return window.__axGet.call(axios, u, o) }; true`)
+    const hasRank = await ev(`document.querySelectorAll('[data-action="rankAnalytics"]').length > 1`)
+    ok('（前提）ランキングの並べ替えのボタンがある', hasRank)
+    if (hasRank) {
+      await ev(`window.__oldChart = ACHART.chart; document.querySelectorAll('[data-action="rankAnalytics"]')[1]?.click()`)
+      const redrawn = await until(`!!ACHART.chart && ACHART.chart !== window.__oldChart`, 5000)
+      ok('画面: ランキングを並べ替えても、グラフは読み込み直さずに描き直す', redrawn && (await ev(`window.__seriesCalls`)) === 0, await ev(`window.__seriesCalls`))
+    }
     ok('画面: 期間を直近3か月・週ごとにすると描き直す', await change('range', '3') && await change('unit', 'week'))
     c = await ev(chartInfo)
     ok('画面: 週ごとの枠の数（3か月分）', c.labels >= 13 && c.labels <= 15, c)

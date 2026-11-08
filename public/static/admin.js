@@ -5371,6 +5371,7 @@ async function renderAnalytics(month, project) {
   // 選んでいた指標が無い月・案件は、成約数（あれば）か最初の項目にする（選んだ指標は覚えておき、ある月に戻れば使う）
   const fields = data.fields || []
   ANALYTICS.key = fields.some(f => f.key === ANALYTICS.wantKey) ? ANALYTICS.wantKey : ((fields.find(f => f.key === 'seiyaku') || fields[0] || {}).key || '')
+  ACHART.qs = '' // 開き直し・案件や月の変更では、グラフも読み込み直す
   drawAnalytics()
 }
 delegate('analyticsMonth', el => renderAnalytics(el.dataset.month))
@@ -5575,14 +5576,15 @@ function drawAnalytics() {
       </div>
     </section>`}`
 
-  loadAnalyticsChart()
+  // ランキングの並べ替えなどで描き直すときは、設定が同じなら読み込んだグラフをそのまま使う
+  loadAnalyticsChart(true)
 }
 
 // 実績分析のグラフ（#9916）。期間（選んだ月・直近3/6/12か月・月の指定。12か月まで）、まとめ方（日・週〈月曜はじまり〉・月）、指標、
 // 分け方（案件のときはスタッフ別・開催場所別、全案件のときは案件別）と、表示（積み上げ棒・折れ線・合計の横棒）を選べる。
 // 設定は案件・月を移っても引き継ぐ（ページを開き直すまで）。分け方は案件のときと全案件のときで別々に覚える。
 // 指標は、グラフで選ぶまでは上の「指標」に合わせる。集計は API（/api/admin/analytics/series）で行う。日報のない日・週・月は 0 で並べる（#550）
-const ACHART = { range: 'month', from: '', to: '', unit: 'day', metric: '', key: '', splitProject: 'none', splitAll: 'none', viewPlain: 'bar', viewSplit: 'stack', top: 5, staffMode: 'top', picks: {}, colors: {}, seq: 0, chart: null, data: null }
+const ACHART = { range: 'month', from: '', to: '', unit: 'day', metric: '', key: '', splitProject: 'none', splitAll: 'none', viewPlain: 'bar', viewSplit: 'stack', top: 5, staffMode: 'top', picks: {}, colors: {}, seq: 0, chart: null, data: null, qs: '' }
 const ACHART_MAX_MONTHS = 12
 const ACHART_MAX_PICK = 8
 // 区別しやすい8色（分ける数の上限と同じ）。「ほか」は灰色
@@ -5613,7 +5615,7 @@ function achartColors(split, ids) {
   }
   return id => ACHART_COLORS[out[id]]
 }
-async function loadAnalyticsChart() {
+async function loadAnalyticsChart(reuse = false) {
   const body = document.getElementById('analytics-chart-body'); if (!body) return
   const seq = ++ACHART.seq
   const [from, to] = achartPeriod()
@@ -5627,6 +5629,8 @@ async function loadAnalyticsChart() {
     const ids = split === 'staff' && ACHART.staffMode === 'pick' ? (ACHART.picks[ANALYTICS.project] || []) : []
     if (ids.length) params.ids = ids.join(',')
   }
+  const qs = JSON.stringify(params)
+  if (reuse && ACHART.data && ACHART.qs === qs) return drawAnalyticsChart()
   body.style.opacity = '0.5'
   let d
   try { d = (await axios.get('/api/admin/analytics/series', { params })).data } catch (e) {
@@ -5636,7 +5640,7 @@ async function loadAnalyticsChart() {
   }
   // 読み込み中に設定や画面が変わったときは、古い結果を描かない
   if (seq !== ACHART.seq || !document.getElementById('analytics-chart-body')) return
-  ACHART.data = d
+  ACHART.data = d; ACHART.qs = qs
   drawAnalyticsChart()
 }
 function analyticsChartControlsHtml(d) {
