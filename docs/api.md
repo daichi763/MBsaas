@@ -275,8 +275,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/staff/shifts/:id/ics` | スタッフ | [staff-schedule.ts:198](../src/staff-schedule.ts#L198) | シフト1件の .ics（本人＝同じ人のほかの会社の分も含む。確定・代打だけ） | staff.js |
 | POST | `/api/staff/shifts/:id/reply` | スタッフ | [api.ts:2399](../src/api.ts#L2399) | 管理者が『希望（仮）』で入れたシフトへの返事（#411）。answer: ok（入れます）/ ng（入れません） | staff.js |
 | POST | `/api/staff/shifts/request` | スタッフ | [api.ts:2359](../src/api.ts#L2359) | シフト希望提出（#12 shift_requests に保存する。#59 案件は自社の選べる案件だけ） |  |
-| GET | `/api/staff/tours` | スタッフ | [tours.ts:94](../src/tours.ts#L94) |  | tour.js |
-| PUT | `/api/staff/tours` | スタッフ | [tours.ts:104](../src/tours.ts#L104) |  | tour.js |
+| GET | `/api/staff/tours` | スタッフ | [tours.ts:100](../src/tours.ts#L100) |  | tour.js |
+| PUT | `/api/staff/tours` | スタッフ | [tours.ts:110](../src/tours.ts#L110) |  | tour.js |
 
 ### `/api/admin/…` 管理画面（395）
 
@@ -320,8 +320,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/board/threads/:id/read` | 管理者（4ロール） | [board.ts:473](../src/board.ts#L473) | 既読にする（ユーザー単位）。画面が表示されていて、やり取りの一番下まで見えているときに画面から呼ぶ（#250） message_id: 画面に表示した最後のメッセージ。省略したら最新まで | board.js |
 | POST | `/api/admin/board/threads/:id/status` | 管理者（4ロール） | [board.ts:508](../src/board.ts#L508) | やり取りの終了 / 再開（どちらの企業からでも可。履歴は残る） | board.js |
 | GET | `/api/admin/board/unread-count` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:447](../src/board.ts#L447) | 未読件数のみ（サイドバーのバッジ用・軽量） | board.js |
-| GET | `/api/admin/clients` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4510](../src/api.ts#L4510) | クライアント | admin.js corrections.js shift-board.js |
-| POST | `/api/admin/clients` | 管理者（4ロール） | [api.ts:4527](../src/api.ts#L4527) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js |
+| GET | `/api/admin/clients` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4510](../src/api.ts#L4510) | クライアント | admin.js corrections.js shift-board.js tour.js |
+| POST | `/api/admin/clients` | 管理者（4ロール） | [api.ts:4527](../src/api.ts#L4527) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js tour.js |
 | GET | `/api/admin/clients/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4567](../src/api.ts#L4567) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js |
 | PUT | `/api/admin/clients/:id` | 管理者（4ロール） | [api.ts:4656](../src/api.ts#L4656) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js |
 | DELETE | `/api/admin/clients/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:5577](../src/api.ts#L5577) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
@@ -423,8 +423,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/pay-requests/:id{[0-9]+}/receipt` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-pay.ts:325](../src/staff-pay.ts#L325) | 申請の領収書の写真（自社の申請のみ。#273） | settlement.js |
 | POST | `/api/admin/pay-requests/:id{[0-9]+}/reject` | 管理者（4ロール） | [staff-pay.ts:408](../src/staff-pay.ts#L408) | 却下: { note（理由。必須） } | settlement.js |
 | GET | `/api/admin/project-goals` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6284](../src/api.ts#L6284) | 案件の月間目標（#292）。稼働中の案件と、日報テンプレートの数値項目・設定済みの目標 | admin.js |
-| GET | `/api/admin/projects` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5215](../src/api.ts#L5215) | 案件一覧 ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）。monthly_amount: その月の案件全体の月額（#9702） | admin.js attendance-history.js board.js corrections.js recruit.js shift-board.js |
-| POST | `/api/admin/projects` | 管理者（4ロール） | [api.ts:5309](../src/api.ts#L5309) | 案件登録 | admin.js |
+| GET | `/api/admin/projects` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5215](../src/api.ts#L5215) | 案件一覧 ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）。monthly_amount: その月の案件全体の月額（#9702） | admin.js attendance-history.js board.js corrections.js recruit.js shift-board.js tour.js |
+| POST | `/api/admin/projects` | 管理者（4ロール） | [api.ts:5309](../src/api.ts#L5309) | 案件登録 | admin.js tour.js |
 | GET | `/api/admin/projects/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5232](../src/api.ts#L5232) | 案件詳細 | admin.js |
 | PUT | `/api/admin/projects/:id` | 管理者（4ロール） | [api.ts:5429](../src/api.ts#L5429) | 案件の編集・終了（#153）。送られた項目だけを変える。単価・区分は単価パネル（PUT /admin/projects/:id/pricing）で変える。 - status: active（稼働中）/ closed（終了）。終了した案件には新しいシフトを入れられない（lib/staff-eligibility.ts … | admin.js |
 | DELETE | `/api/admin/projects/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:5575](../src/api.ts#L5575) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
@@ -477,7 +477,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/report-settings/staff/:staffId` | 管理者（4ロール）＋本部の閲覧（GET） | [report-settings.ts:870](../src/report-settings.ts#L870) | 〔見出し〕スタッフ 1 人の全案件の設定（#413） | report-settings.js |
 | POST | `/api/admin/report-settings/staff/:staffId/apply` | 管理者（4ロール） | [report-settings.ts:881](../src/report-settings.ts#L881) | すべての案件（または選んだ案件）に同じ設定を当てる。dry_run で案件ごとの変更前・変更後と確認トークンを返す（一括変更と同じ流れ） project_ids を省くと、稼働中の案件すべて | report-settings.js |
 | POST | `/api/admin/report-settings/staff/:staffId/reset` | 管理者（4ロール） | [report-settings.ts:907](../src/report-settings.ts#L907) | 案件の標準設定に戻す（案件 × スタッフ別の行を消す）。project_ids を省くとシフトのある全案件 | report-settings.js |
-| POST | `/api/admin/roster` | 管理者（4ロール） | [roster.ts:1413](../src/roster.ts#L1413) | ②従業員管理から作成 / ③取引先から作成 / ④スキルシートのみ作成 | roster.js |
+| POST | `/api/admin/roster` | 管理者（4ロール） | [roster.ts:1413](../src/roster.ts#L1413) | ②従業員管理から作成 / ③取引先から作成 / ④スキルシートのみ作成 | roster.js tour.js |
 | GET | `/api/admin/roster-chat/:staffId` | 管理者（4ロール）＋本部の閲覧（GET） | [roster-chat.ts:190](../src/roster-chat.ts#L190) | メッセージ取得（全履歴）。取得しただけでは既読にしない（#462。既読は POST /:staffId/read）。 自社の担当者それぞれの既読位置（誰がどこまで読んだか）も返す | roster-chat.js |
 | POST | `/api/admin/roster-chat/:staffId` | 管理者（4ロール） | [roster-chat.ts:231](../src/roster-chat.ts#L231) | 投稿 | roster-chat.js |
 | POST | `/api/admin/roster-chat/:staffId/read` | 管理者（4ロール） | [roster-chat.ts:215](../src/roster-chat.ts#L215) | 既読にする（チャット欄が画面に見えたとき・一覧から開いたとき）。last_comment_id まで（省略時は最新まで）を既読にする | roster-chat.js |
@@ -619,7 +619,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/staff-lookup` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:184](../src/staff-lifecycle.ts#L184) | 〔見出し〕仮登録（氏名・電話だけで登録し、すぐシフトに入れられる） | admin.js staff-lifecycle.js |
 | GET | `/api/admin/staff-pay/settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 会社管理者 | [staff-pay.ts:426](../src/staff-pay.ts#L426) | スタッフアプリに支払額を表示するか（#290。変更は会社管理者のみ） | settlement.js |
 | PUT | `/api/admin/staff-pay/settings` | 管理者（4ロール）<br>＋本文で確認: 会社管理者 | [staff-pay.ts:431](../src/staff-pay.ts#L431) | 〔見出し〕管理者 API（/api/admin/pay-requests*・/api/admin/staff-pay/settings） | settlement.js |
-| POST | `/api/admin/staff-quick` | 管理者（4ロール） | [staff-lifecycle.ts:190](../src/staff-lifecycle.ts#L190) | 〔見出し〕仮登録（氏名・電話だけで登録し、すぐシフトに入れられる） | staff-lifecycle.js |
+| POST | `/api/admin/staff-quick` | 管理者（4ロール） | [staff-lifecycle.ts:190](../src/staff-lifecycle.ts#L190) | 〔見出し〕仮登録（氏名・電話だけで登録し、すぐシフトに入れられる） | staff-lifecycle.js tour.js |
 | GET | `/api/admin/staff-reference-pay` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2971](../src/shift-board.ts#L2971) | 〔見出し〕スタッフの支払の参考単価（9204） | shift-board.js |
 | GET | `/api/admin/staff-requests/documents` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-self-service.ts:507](../src/staff-self-service.ts#L507) | 〔見出し〕書類（本人提出の確認・種類と期限の編集・期限の一覧） | admin.js |
 | PUT | `/api/admin/staff-requests/documents/:kind/:docId` | 管理者（4ロール）<br>＋本文で確認: 人事のロール | [staff-self-service.ts:517](../src/staff-self-service.ts#L517) | 種類・有効期限の変更と、本人提出の書類の確認（kind: staff / employee / client） | admin.js |
@@ -667,9 +667,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/templates` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7636](../src/api.ts#L7636) | テンプレート一覧 (企業側から参照) project_count: そのテンプレートを使う自社の案件の数。has_reports: 自社のテンプレートで日報が出ているか（項目の削除・タイプの変更を止める） | admin.js |
 | POST | `/api/admin/templates` | 管理者（4ロール） | [api.ts:7701](../src/api.ts#L7701) | 〔見出し〕日報テンプレートの作成・編集（#165） | admin.js |
 | PUT | `/api/admin/templates/:id` | 管理者（4ロール） | [api.ts:7719](../src/api.ts#L7719) | 〔見出し〕日報テンプレートの作成・編集（#165） | admin.js |
-| GET | `/api/admin/tours` | 管理者（4ロール）＋本部の閲覧（GET） | [tours.ts:94](../src/tours.ts#L94) |  | tour.js |
-| PUT | `/api/admin/tours` | 管理者（4ロール） | [tours.ts:104](../src/tours.ts#L104) |  | tour.js |
-| GET | `/api/admin/tours/checklist` | 管理者（4ロール）＋本部の閲覧（GET） | [tours.ts:113](../src/tours.ts#L113) |  | tour.js |
+| GET | `/api/admin/tours` | 管理者（4ロール）＋本部の閲覧（GET） | [tours.ts:100](../src/tours.ts#L100) |  | tour.js |
+| PUT | `/api/admin/tours` | 管理者（4ロール） | [tours.ts:110](../src/tours.ts#L110) |  | tour.js |
+| GET | `/api/admin/tours/checklist` | 管理者（4ロール）＋本部の閲覧（GET） | [tours.ts:119](../src/tours.ts#L119) |  | tour.js |
 | GET | `/api/admin/transport-defaults` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3054](../src/shift-board.ts#L3054) | 交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準 割り当て・一括登録・募集の承認で、交通費の入力がなければ使う（lib/transport-defaults） | settlement.js |
 | PUT | `/api/admin/transport-defaults` | 管理者（4ロール） | [shift-board.ts:3069](../src/shift-board.ts#L3069) | 登録・変更（同じスタッフ × 開催場所の標準は1つ。あれば金額を置き換える） | settlement.js |
 | DELETE | `/api/admin/transport-defaults/:id` | 管理者（4ロール） | [shift-board.ts:3086](../src/shift-board.ts#L3086) | 〔見出し〕交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準 | settlement.js |

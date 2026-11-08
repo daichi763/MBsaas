@@ -280,7 +280,7 @@ flowchart LR
 | `staff-lifecycle.js` | 37 | 30 |  |
 | `staff-profile.js` | 21 | 20 |  |
 | `staff.js` | 60 | 50 |  |
-| `tour.js` | 2 | 5 |  |
+| `tour.js` | 7 | 11 |  |
 <!-- END GENERATED: screens-files -->
 
 ## 本文で参照しているコードの位置
