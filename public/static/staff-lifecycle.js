@@ -777,20 +777,24 @@
 })()
 
 // =========================================================
-// シフト希望（出勤可能日）の回収の対象（#9907）。区分・登録状態のパネルに「する／しない」の行を足す
-// 対象外の人（スポットの人など）には、アプリの未提出の案内・提出のお願いの通知を出さない。一覧からまとめて変えることもできる（admin.js）
+// 出勤可能日の提出（する／しない。#9907 #9918）。区分・登録状態のパネルに「する／しない」の行を足す
+// 「しない」の人（スポットの人など）には、アプリの未提出の案内・提出のお願いの通知を出さない。
+// 基本情報の編集・新規登録・一覧のまとめての切り替えでも変えられる（admin.js・roster.js）
 // =========================================================
 ;(function () {
   const orig = window.renderStaffLifecyclePanel
   if (!orig) return
-  const rowHtml = (sid, exempt) => `<dt class="w-24 text-gray-400 shrink-0">シフト希望の回収の対象</dt><dd>
+  const rowHtml = (sid, exempt) => `<dt class="w-24 text-gray-400 shrink-0">出勤可能日の提出</dt><dd>
       <span class="inline-flex gap-1">
         <button type="button" class="btn ${exempt ? 'btn-outline' : 'btn-primary'} text-xs" data-action="staffAvTarget" data-id="${Number(sid)}" data-target="1" aria-pressed="${exempt ? 'false' : 'true'}">する</button>
         <button type="button" class="btn ${exempt ? 'btn-primary' : 'btn-outline'} text-xs" data-action="staffAvTarget" data-id="${Number(sid)}" data-target="0" aria-pressed="${exempt ? 'true' : 'false'}">しない</button>
       </span>
-      <span class="block text-[11px] text-gray-400 mt-1">${exempt
-        ? '出勤可能日の未提出の案内・提出のお願いの通知を出しません（本人が自分から提出することはできます）'
-        : '出勤可能日が未提出のとき、アプリに案内が出て、提出のお願いの通知が届きます。スポットの人など、回収しない人は「しない」にします'}</span></dd>`
+      <span class="block text-[11px] text-gray-400 mt-1">${esc(window.staffAvTargetHelp ? staffAvTargetHelp(exempt) : '')}</span></dd>`
+  // 基本情報の保存で変えたときに、この行も合わせる（admin.js の saveStaffBasicInfo から呼ぶ）
+  window.redrawStaffAvTargetRow = function (sid, exempt) {
+    const row = document.getElementById('staff-av-target')
+    if (row) row.innerHTML = rowHtml(sid, exempt)
+  }
   window.renderStaffLifecyclePanel = async function (sid, p) {
     await orig(sid, p)
     if (!p || p.merged_into_staff_id || p.affiliation_type === 'skillsheet_only') return
@@ -803,9 +807,10 @@
     if (el.getAttribute('aria-pressed') === 'true') return
     withSubmitLock(el, async () => {
       try { await axios.put('/api/admin/availability/targets', { staff_ids: [Number(el.dataset.id)], target }) } catch (e) { showApiError(e, '変更できませんでした'); return }
-      toast(target ? 'シフト希望の回収の対象にしました' : 'シフト希望の回収の対象外にしました')
-      const row = document.getElementById('staff-av-target')
-      if (row) row.innerHTML = rowHtml(el.dataset.id, !target)
+      toast(target ? '出勤可能日の提出を「する」にしました' : '出勤可能日の提出を「しない」にしました')
+      window.redrawStaffAvTargetRow(el.dataset.id, !target)
+      // 基本情報の欄の表示も合わせる（admin.js）
+      if (window.staffAvTargetChanged) staffAvTargetChanged(el.dataset.id, !target)
     })
   })
 })()

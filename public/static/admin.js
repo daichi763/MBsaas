@@ -1164,7 +1164,7 @@ function matchesKeyword(q, values) {
   const digits = text.replace(/[^0-9]/g, '')
   return words.every(w => text.includes(w) || (/^[0-9-]+$/.test(w) && w.replace(/-/g, '').length >= 3 && digits.includes(w.replace(/-/g, ''))))
 }
-const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限'], ['avexempt', 'シフト希望の対象外']]
+const STAFF_STATE_FILTERS = [['provisional', '仮登録'], ['follow', '要フォロー'], ['risk', '離職リスク'], ['noreport', '本日未入店'], ['lowscore', '評価3未満'], ['noapp', 'アプリ未利用'], ['docexp', '書類の期限'], ['avexempt', '出勤可能日の提出 しない']]
 const STAFF_STATE_TEST = {
   provisional: s => s.is_provisional, follow: s => s.follow_flag, risk: s => s.retention_risk && s.retention_risk !== 'low',
   noreport: s => s.today_shift && !s.today_checkin, lowscore: s => Number(s.evaluation_score) > 0 && Number(s.evaluation_score) < 3,
@@ -1172,9 +1172,18 @@ const STAFF_STATE_TEST = {
   noapp: s => s.user_role === 'staff' && !s.app_last_used_at,
   // 有効期限が30日以内・切れた書類がある人（#297。doc_expiring はサーバーが数える）
   docexp: s => Number(s.doc_expiring) > 0,
-  // シフト希望（出勤可能日）の回収の対象外にした人（#9907）
+  // 出勤可能日の提出を「しない」にした人（#9907 #9918）
   avexempt: s => Number(s.availability_exempt) === 1,
 }
+// 出勤可能日の提出（する／しない。#9907 #9918）の説明。スタッフ詳細の行（staff-lifecycle.js）・基本情報・新規登録（roster.js）で同じ文を使う
+window.staffAvTargetHelp = function (exempt) {
+  return exempt
+    ? '出勤可能日の未提出の案内・提出のお願いの通知を出しません。出勤可能日の画面の未提出の数にも数えません（本人が自分から提出することはできます）'
+    : '出勤可能日が未提出のとき、アプリに案内が出て、提出のお願いの通知が届きます。スポットの人など、出してもらわない人は「しない」にします'
+}
+// 選ぶ欄（基本情報の編集・新規登録）の下に出す説明
+const STAFF_AV_TARGET_CHOICE_HELP = '「する」は、未提出のときアプリに案内が出て、提出のお願いの通知が届きます。スポットの人など、出してもらわない人は「しない」にします（本人が自分から提出することはできます）'
+window.STAFF_AV_TARGET_CHOICE_HELP = STAFF_AV_TARGET_CHOICE_HELP
 // 一覧で選んだスタッフ（まとめての切り替え。#9907）。表示から外れた人は選択も外す
 const STAFF_PICK = new Set()
 // 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
@@ -1303,7 +1312,7 @@ function drawStaffRows() {
             <tr class="cursor-pointer${isRetiredStaff(s) ? ' opacity-60' : ''}" data-action="openStaffDetail" data-id="${Number(s.staff_id)}">
               <td class="w-8" data-action="staffPickCell" data-id="${Number(s.staff_id)}"><input type="checkbox" class="w-4 h-4 align-middle" aria-label="${escAttr(s.name + ' を選ぶ')}" ${STAFF_PICK.has(Number(s.staff_id)) ? 'checked' : ''}></td>
               <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${Number(s.availability_exempt) === 1 ? ' <span class="badge badge-gray" title="シフト希望（出勤可能日）の回収の対象外です。未提出の案内・通知を出しません">シフト希望 対象外</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
+              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${Number(s.availability_exempt) === 1 ? ' <span class="badge badge-gray" title="出勤可能日の提出を「しない」にしている人です。未提出の案内・提出のお願いの通知を出しません">出勤可能日 提出しない</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
               <td class="whitespace-nowrap">${staffEmpBadge(s)}</td>
               <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
@@ -1318,7 +1327,7 @@ function drawStaffRows() {
             </tr>`).join('') || '<tr><td colspan="14" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
   drawStaffBulkBar()
 }
-// まとめての操作の帯（選んだ人がいるときだけ、画面の下に出す）。今はシフト希望の回収の対象の切り替え（#9907）
+// まとめての操作の帯（選んだ人がいるときだけ、画面の下に出す）。今は出勤可能日の提出（する／しない）の切り替え（#9907 #9918）
 function drawStaffBulkBar() {
   const bar = document.getElementById('staff-bulk'); if (!bar) return
   const all = document.getElementById('staff-pick-all')
@@ -1331,9 +1340,9 @@ function drawStaffBulkBar() {
   if (space) space.classList.toggle('hidden', !STAFF_PICK.size)
   if (!STAFF_PICK.size) { bar.innerHTML = ''; return }
   bar.innerHTML = `<span class="text-sm font-bold text-gray-800">${STAFF_PICK.size}人を選択中</span>
-    <span class="text-xs text-gray-500 ml-1">シフト希望（出勤可能日）の回収:</span>
-    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="1"><i class="fas fa-calendar-check"></i>対象にする</button>
-    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="0"><i class="fas fa-calendar-xmark"></i>対象外にする</button>
+    <span class="text-xs text-gray-500 ml-1">出勤可能日の提出を</span>
+    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="1"><i class="fas fa-calendar-check"></i>「する」にする</button>
+    <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="0"><i class="fas fa-calendar-xmark"></i>「しない」にする</button>
     <button type="button" class="text-xs text-gray-500 hover:underline ml-auto" data-action="staffPickClear">選択を解除</button>`
 }
 // 行の左端のチェック欄（欄のどこを押しても選ぶ。行を押したときの詳細は開かない）
@@ -1359,12 +1368,13 @@ delegate('staffBulkAvTarget', (el) => {
   const ids = [...STAFF_PICK]; if (!ids.length) return
   const target = el.dataset.target === '1'
   if (!confirm(target
-    ? `選んだ ${ids.length}人を、シフト希望（出勤可能日）の回収の対象にします。未提出のときは、アプリに未提出の案内が出て、提出のお願いの通知も届くようになります。よろしいですか？`
-    : `選んだ ${ids.length}人を、シフト希望（出勤可能日）の回収の対象外にします。アプリの未提出の案内・提出のお願いの通知が出なくなり、出勤可能日の画面の未提出の数にも数えません（本人が自分から提出することはできます）。よろしいですか？`)) return
+    ? `選んだ ${ids.length}人の出勤可能日の提出を「する」にします。未提出のときは、アプリに未提出の案内が出て、提出のお願いの通知も届くようになります。よろしいですか？`
+    : `選んだ ${ids.length}人の出勤可能日の提出を「しない」にします。アプリの未提出の案内・提出のお願いの通知が出なくなり、出勤可能日の画面の未提出の数にも数えません（本人が自分から提出することはできます）。よろしいですか？`)) return
   withSubmitLock(el, async () => {
     let r
     try { r = (await axios.put('/api/admin/availability/targets', { staff_ids: ids, target })).data } catch (e) { showApiError(e, '変更できませんでした'); return }
-    toast(`${r.staff}人をシフト希望の回収の${target ? '対象' : '対象外'}にしました${r.changed < r.staff ? `（${r.staff - r.changed}人はすでに${target ? '対象' : '対象外'}でした）` : ''}`)
+    const label = target ? '「する」' : '「しない」'
+    toast(`${r.staff}人の出勤可能日の提出を${label}にしました${r.changed < r.staff ? `（${r.staff - r.changed}人はすでに${label}でした）` : ''}`)
     STAFF_PICK.clear()
     renderStaff({ reload: true })
   })
@@ -1683,6 +1693,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           ${bi('通勤可能時間', edBiz ? `<input type="number" min="0" max="1440" id="staff-commute" class="inp text-xs" value="${esc(p.commute_minutes ?? '')}" placeholder="分">` : (p.commute_minutes != null ? esc(p.commute_minutes) + '分' : '-'))}
           ${bi('稼働開始可能日', edBiz ? `<input type="date" id="staff-available-from" class="inp text-xs" value="${esc(p.available_from || '')}">` : esc(p.available_from || '-'))}
           ${bi('稼働可能エリア', edBiz ? `<input id="staff-work-area" class="inp text-xs" value="${esc(p.work_area || '')}">` : esc(p.work_area || '-'))}
+          ${staffAvTargetFieldHtml(p, editing)}
           <div class="md:col-span-2">${bi('スキル', edBiz ? `<input id="staff-skills" class="inp text-xs" value="${esc(p.skills || '')}" placeholder="カンマ区切り（例: MNP,接客,クロージング）">`
               : `<span class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(x => `<span class="badge badge-blue">${esc(x)}</span>`).join('') || '-'}</span>`)}</div>
         </dl>
@@ -1720,6 +1731,31 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           </div>` : ''}
         </div>
 `
+}
+// 出勤可能日の提出（する／しない。#9918）。区分を問わず、統合済み・スキルシートのみ以外の人で編集できる（自社雇用・他社連携も）。
+// 保存は PUT /admin/staff/:id の availability_target。区分・登録状態のパネルの「する／しない」の行（staff-lifecycle.js）と同じ値
+function staffAvTargetFieldHtml(p, editing) {
+  if (p.merged_into_staff_id || p.affiliation_type === 'skillsheet_only') return ''
+  const exempt = Number(p.availability_exempt) === 1
+  const body = editing
+    ? `<select id="staff-av-target-input" class="inp text-xs w-auto" data-orig="${exempt ? '0' : '1'}"><option value="1" ${exempt ? '' : 'selected'}>する</option><option value="0" ${exempt ? 'selected' : ''}>しない</option></select>
+      <span class="block text-[11px] text-gray-400 mt-0.5">${esc(STAFF_AV_TARGET_CHOICE_HELP)}</span>`
+    : `<span id="staff-av-target-view">${staffAvTargetViewHtml(exempt)}</span>`
+  // 編集中は説明が長いので2列分の幅を使う
+  return `<div class="flex items-start gap-2 min-w-0${editing ? ' md:col-span-2' : ''}"><dt class="w-28 text-gray-400 shrink-0 pt-1">出勤可能日の提出</dt><dd class="flex-1 min-w-0 pt-1">${body}</dd></div>`
+}
+function staffAvTargetViewHtml(exempt) {
+  return exempt ? `<span class="badge badge-gray" title="${escAttr(staffAvTargetHelp(true))}">しない</span>` : `<span class="badge badge-green" title="${escAttr(staffAvTargetHelp(false))}">する</span>`
+}
+// 区分・登録状態のパネルの「する／しない」で変えたとき（staff-lifecycle.js から呼ぶ）。基本情報の表示と、保存の前の値を合わせる
+window.staffAvTargetChanged = function (sid, exempt) {
+  const st = staffDetailState
+  if (!st || String(st.sid) !== String(sid)) return
+  st.p.availability_exempt = exempt ? 1 : 0
+  const view = document.getElementById('staff-av-target-view')
+  if (view) view.innerHTML = staffAvTargetViewHtml(exempt)
+  const input = document.getElementById('staff-av-target-input')
+  if (input) { input.value = exempt ? '0' : '1'; input.dataset.orig = input.value }
 }
 // ログイン用メール（users.email。パスワード再設定・通知の宛先。#207）。
 // メールを送れる環境では確認メールを送り、本人が確認したときに切り替わる。送れない環境では保存した時点で切り替わる（#9803）
@@ -2171,8 +2207,12 @@ window.saveStaffBasicInfo = async function (sid) {
       // 備考の欄は他社連携の行には出さない（欄がなければ送らず、今の値のまま）
       if (document.getElementById('staff-remarks')) body.remarks = val('staff-remarks')
     }
+    // 出勤可能日の提出（#9918）は、変えたときだけ送る
+    const avIn = document.getElementById('staff-av-target-input')
+    if (avIn && avIn.value !== avIn.dataset.orig) body.availability_target = avIn.value === '1'
     const res = await putConfirmingRetiredAt('/api/admin/staff/' + sid, body)
     if (!res) return
+    if (body.availability_target !== undefined && window.redrawStaffAvTargetRow) redrawStaffAvTargetRow(sid, !body.availability_target)
     const le2 = res.data && res.data.login_email
     if (le2 && le2.switched) toast('保存しました。メールアドレスを切り替えました')
     else if (le2 && le2.cleared) toast('保存しました。メールアドレスを削除しました')
@@ -4909,23 +4949,37 @@ function reportLastEditHtml(r, fields, fmt) {
     <button class="text-blue-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>
   </div>`
 }
+// 日報のカードの見出し（#9919。提出済みの日報と未提出のシフトで同じ並び・同じ見た目にする）
+// 日付・スタッフ・案件・開催場所・時間 → 印（badges）→ 右端に提出の日時など（right）
+function reportCardHeadHtml(o) {
+  const time = o.start_time ? formatShiftTime(o.start_time, o.end_time) : ''
+  return `
+      <div class="flex items-center gap-2 flex-wrap mb-2" data-report-head>
+        <span class="font-bold text-gray-800">${esc(dayjs(o.work_date).format('M/D(dd)'))}</span>
+        <a href="#staff/${Number(o.staff_id)}" class="text-blue-600 font-medium hover:underline">${esc(o.staff_name)}</a>
+        <span class="inline-flex items-center gap-x-2 gap-y-0.5 flex-wrap text-xs text-gray-400 min-w-0">
+          <a href="${esc(reportsHash({ ...reportFilterFromHash(), project: o.project_id, page: 0 }))}" class="hover:underline" title="この案件で絞り込む">${esc(o.project_name)}</a>
+          ${o.site_name ? `<span class="break-all"><i class="fas fa-location-dot mr-0.5"></i>${esc(o.site_name)}</span>` : ''}
+          ${time ? `<span class="whitespace-nowrap"><i class="far fa-clock mr-0.5"></i>${esc(time)}</span>` : ''}
+        </span>
+        ${o.badges || ''}
+        ${o.right ? `<span class="text-xs text-gray-400 ml-auto">${o.right}</span>` : ''}
+      </div>`
+}
 function reportCardHtml(r, fields) {
   const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
   const revised = !r.manager_checked && r.revised_after_check_at
-  return `
-    <section class="card p-4 ${r.incident_flag || r.complaint_flag ? 'ring-1 ring-red-200' : ''}">
-      <div class="flex items-center gap-2 flex-wrap mb-2">
-        <span class="font-bold text-gray-800">${dayjs(r.work_date).format('M/D(dd)')}</span>
-        <a href="#staff/${Number(r.staff_id)}" class="text-blue-600 font-medium hover:underline">${esc(r.staff_name)}</a>
-        <a href="${esc(reportsHash({ ...reportFilterFromHash(), project: r.project_id, page: 0 }))}" class="text-xs text-gray-400 hover:underline" title="この案件の日報で絞り込む">${esc(r.project_name)}</a>
+  const badges = `
         ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
         ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
         ${r.manager_checked ? '<span class="badge badge-green">確認済</span>' : '<span class="badge badge-yellow">未確認</span>'}
         ${revised ? `<span class="badge badge-red" title="確認済みにした後、スタッフが ${esc(fmt(r.revised_after_check_at))} に内容を変えて出し直したため、未確認に戻りました"><i class="fas fa-rotate-left mr-0.5"></i>出し直しで未確認に戻りました</span>` : ''}
         ${reportEntryBadge(r)}
-        ${reportAdminEditBadge(r, fmt)}
-        <span class="text-xs text-gray-400 ml-auto">提出 ${esc(fmt(r.submitted_at))}</span>
-      </div>
+        ${reportAdminEditBadge(r, fmt)}`
+  return `
+    <section class="card p-4 ${r.incident_flag || r.complaint_flag ? 'ring-1 ring-red-200' : ''}">
+      ${reportCardHeadHtml({ work_date: r.work_date, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name,
+        site_name: r.site_name, start_time: r.shift_start_time, end_time: r.shift_end_time, badges, right: `提出 ${esc(fmt(r.submitted_at))}` })}
       ${reportIncidentHtml(r, fields)}
       <div class="flex items-center gap-2 mb-1.5">
         <span class="text-[11px] font-bold text-gray-500">日報の内容</span>
@@ -5059,7 +5113,7 @@ delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
 function reportModeTabsHtml(f) {
   const base = { from: f.from, to: f.to, project: f.project, staff: f.staff }
   const tab = (on, label, hash) => `<a href="${esc(hash)}" class="px-3 py-1.5 rounded-lg text-sm ${on ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}">${label}</a>`
-  return `<div class="flex gap-2 mb-3" id="report-mode-tabs">${tab(!f.missing, '提出済みの日報', reportsHash(base))}${tab(!!f.missing, '未提出', reportsHash({ ...base, missing: 1 }))}</div>`
+  return `<div class="flex gap-2" id="report-mode-tabs">${tab(!f.missing, '提出済みの日報', reportsHash(base))}${tab(!!f.missing, '未提出', reportsHash({ ...base, missing: 1 }))}</div>`
 }
 // 日報が未提出のシフト（確定・代打で、勤務日を過ぎた・日報が必要なもの）。API は GET /admin/daily-reports/missing（#344）
 async function renderMissingReports(f, refresh) {
@@ -5075,16 +5129,19 @@ async function renderMissingReports(f, refresh) {
     if (!REPORT_OPTIONS) REPORT_OPTIONS = (await axios.get('/api/admin/daily-reports', { params: { limit: 1, options: 1 } })).data.options || null
     data = (await axios.get('/api/admin/daily-reports/missing', { params: q })).data
   } catch (e) {
-    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-3">日報一覧</h2>${reportModeTabsHtml(f)}<div class="card p-6 text-center text-sm text-gray-500">未提出のシフトを読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button><a class="btn btn-outline text-xs ml-2" href="#reports/missing=1">期間を既定に戻す</a></div>`
+    $app.innerHTML = `<div class="flex items-center justify-between mb-3 flex-wrap gap-2"><div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-gray-900">日報一覧</h2>${reportModeTabsHtml(f)}</div></div><div class="card p-6 text-center text-sm text-gray-500">未提出のシフトを読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button><a class="btn btn-outline text-xs ml-2" href="#reports/missing=1">期間を既定に戻す</a></div>`
     showApiError(e, '未提出のシフトを読み込めませんでした'); return
   }
   const opts = REPORT_OPTIONS || { projects: [], staff: [] }
   const rows = data.missing || []
   const from = data.from || f.from || '', to = data.to || f.to || ''
   for (const r of rows) MISSING_ROWS.set(Number(r.shift_id), r)
+  const scrollY = window.scrollY
+  // 見出し・タブの並びは提出済みの日報の画面と同じにする（#9919）
   $app.innerHTML = `
-    <h2 class="text-xl font-bold text-gray-900 mb-3">日報一覧</h2>
-    ${reportModeTabsHtml(f)}
+    <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+      <div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-gray-900">日報一覧</h2>${reportModeTabsHtml(f)}</div>
+    </div>
     <section class="card p-3 mb-4">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
         <label>勤務日（から）<input id="rp-from" type="date" class="inp" value="${esc(from)}" onchange="applyReportFilter()"></label>
@@ -5094,29 +5151,40 @@ async function renderMissingReports(f, refresh) {
         <label>スタッフ<select id="rp-staff" class="inp" onchange="applyReportFilter()"><option value="">すべて</option>
           ${opts.staff.map(s => `<option value="${Number(s.staff_id)}" ${f.staff === s.staff_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
       </div>
-      <p class="text-[11px] text-gray-400 mt-2">確定・代打のシフトのうち、日報が必要で、まだ日報が出ていないものです（日報「不要」の案件・シフトは出しません。期間は昨日までの62日以内）。押すと、そのシフトの報告状況から日報を代理入力できます</p>
+      <p class="text-[11px] text-gray-400 mt-2">確定・代打のシフトのうち、日報が必要で、まだ日報が出ていないものです（日報「不要」の案件・シフトは出しません。期間は昨日までの62日以内）。「報告状況・代理入力」を押すと、そのシフトの報告状況から日報を代理入力できます</p>
     </section>
-    <p class="text-xs text-gray-500 mb-2" id="missing-total">未提出 ${rows.length}件${data.has_more ? '（多いため先頭の分だけを表示しています。期間を短くしてください）' : ''}</p>
-    <div class="card overflow-x-auto">
-      <table class="tbl" id="missing-report-table"><thead><tr><th>勤務日</th><th>時間</th><th>スタッフ</th><th>案件</th><th>電話</th><th></th></tr></thead>
-      <tbody>${rows.map(r => {
-        const tel = String(r.staff_phone || '').replace(/[^\d+]/g, '')
-        return `<tr>
-          <td class="whitespace-nowrap">${esc(dayjs(r.work_date).format('M/D'))}</td>
-          <td class="whitespace-nowrap">${esc(formatShiftTime(r.start_time, r.end_time))}</td>
-          <td><a href="#staff/${Number(r.staff_id)}" class="text-blue-700 hover:underline">${esc(r.staff_name)}</a>${r.has_login ? '' : ' <span class="badge badge-gray text-[10px]">ログインなし</span>'}</td>
-          <td class="text-xs">${esc(r.project_name)}</td>
-          <td class="text-xs whitespace-nowrap">${tel ? `<a href="tel:${esc(tel)}" class="text-blue-600 hover:underline">${esc(r.staff_phone)}</a>` : '<span class="text-gray-300">-</span>'}</td>
-          <td class="text-right"><button type="button" class="btn btn-outline text-xs whitespace-nowrap" data-action="missingReportOpen" data-id="${Number(r.shift_id)}"><i class="fas fa-file-pen"></i>報告状況・代理入力</button></td>
-        </tr>`
-      }).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-6">この条件で未提出の日報はありません <i class="fas fa-check text-emerald-500"></i></td></tr>'}</tbody></table>
+    <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+      <p class="text-xs text-gray-500" id="missing-total">未提出 ${rows.length}件${data.has_more ? '（多いため先頭の分だけを表示しています。期間を短くしてください）' : ''}</p>
+    </div>
+    <div class="space-y-3" id="missing-report-list">
+      ${rows.map(missingReportCardHtml).join('') || '<p class="text-center text-gray-400 py-10">この条件で未提出の日報はありません <i class="fas fa-check text-emerald-500"></i></p>'}
     </div>`
+  if (refresh) window.scrollTo(0, scrollY)
+}
+// 未提出のシフトのカード（#9919）。提出済みの日報のカード（reportCardHtml）と同じ枠・余白・見出し・ボタンの並びにする。
+// 「日報の内容」の行の右に代理入力（提出済みの「実績を修正」と同じ位置・見た目）、下の行に電話（提出済みの「確認済みにする」などと同じ位置）
+function missingReportCardHtml(r) {
+  const tel = String(r.staff_phone || '').replace(/[^\d+]/g, '')
+  const badges = `<span class="badge badge-red">未提出</span>${r.has_login ? '' : ' <span class="badge badge-gray" title="ログインのないスタッフです。報告用URLを送るか、代理入力してください">ログインなし</span>'}`
+  return `
+    <section class="card p-4" data-missing-report="${Number(r.shift_id)}">
+      ${reportCardHeadHtml({ work_date: r.work_date, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name,
+        site_name: r.site_name, start_time: r.start_time, end_time: r.end_time, badges, right: '日報 未提出' })}
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="text-[11px] font-bold text-gray-500">日報の内容</span>
+        <button type="button" class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-blue-700 border-blue-200" data-action="missingReportOpen" data-id="${Number(r.shift_id)}" title="このシフトの報告状況を開き、日報を代理入力します（ログインのない人には報告用URLも発行できます）"><i class="fas fa-file-pen"></i>報告状況・代理入力</button>
+      </div>
+      <p class="text-xs text-gray-400">まだ日報が出ていません</p>
+      <div class="flex gap-2 mt-3 flex-wrap items-center">
+        ${tel ? `<a href="tel:${esc(tel)}" class="btn btn-outline text-xs"><i class="fas fa-phone"></i>${esc(r.staff_phone)}</a>` : '<span class="text-[11px] text-gray-400"><i class="fas fa-phone mr-0.5"></i>電話番号の登録なし</span>'}
+      </div>
+    </section>`
 }
 const MISSING_ROWS = new Map()
 delegate('missingReportOpen', el => {
   const id = Number(el.dataset.id), s = MISSING_ROWS.get(id) || {}
   modal(`<h3 class="font-bold text-lg mb-1">${esc(s.staff_name || '')}</h3>
-    <p class="text-xs text-gray-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(formatShiftTime(s.start_time, s.end_time))}・${esc(s.project_name || '')}</p>
+    <p class="text-xs text-gray-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(formatShiftTime(s.start_time, s.end_time))}・${esc(s.project_name || '')}${s.site_name ? '・' + esc(s.site_name) : ''}</p>
     <div id="shift-report-panel" class="mb-3"><p class="text-xs text-gray-400">読み込み中…</p></div>
     <button type="button" class="btn btn-outline w-full text-xs" onclick="closeModal(); renderReports(true)">閉じて更新</button>`)
   if (window.renderShiftReportPanel) renderShiftReportPanel(id)
@@ -5158,8 +5226,7 @@ async function renderReports(refresh) {
     </div>` : ''
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">日報一覧</h2>
-      ${reportModeTabsHtml(f)}
+      <div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-gray-900">日報一覧</h2>${reportModeTabsHtml(f)}</div>
       <div class="flex gap-2 text-xs">
         <button class="badge badge-yellow" data-action="reportQuick" data-kind="unchecked">未確認 ${Number(data.counts.unchecked)}件</button>
         <button class="badge badge-red" data-action="reportQuick" data-kind="flagged">インシデント・クレーム ${Number(data.counts.flagged)}件</button>
@@ -6957,8 +7024,8 @@ document.getElementById('mobile-nav').addEventListener('change', e => { location
 })()
 routes.availability = () => renderAvailabilityBoard()
 const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
-const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み'], ['exempt', '回収の対象外']]
-// 回収の対象（#9907）: exempt の人（スタッフマスタで「対象外」にした人）は、未提出の数・通知に数えない
+const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み'], ['exempt', '提出しない人']]
+// 出勤可能日の提出（#9907 #9918）: exempt の人（スタッフマスタで「しない」にした人）は、未提出の数・通知に数えない
 const avbIsTarget = (s) => s.has_login && !s.exempt
 let AVB = { month: null, data: null, filter: 'all' }
 const avbMonthLabel = (m) => `${Number(String(m).slice(0, 4))}年${Number(String(m).slice(5, 7))}月`
@@ -6999,7 +7066,7 @@ function drawAvailabilityBoard() {
   // 日ごとの ○・△ の人数
   const avail = Array(d.days).fill(0)
   for (const s of d.staff) for (let i = 0; i < d.days; i++) if (s.marks[i] === 'o' || s.marks[i] === 'p') avail[i]++
-  const exemptBadge = '<span class="badge badge-gray" title="シフト希望の回収の対象外です。未提出の数・通知に数えません（スタッフマスタで変えられます）">対象外</span>'
+  const exemptBadge = '<span class="badge badge-gray" title="出勤可能日の提出を「しない」にしている人です。未提出の数・通知に数えません（スタッフマスタで変えられます）">提出しない</span>'
   const statusCell = (s) => !s.has_login ? '<span class="badge badge-gray">ログインなし</span>' + (s.exempt ? ' ' + exemptBadge : '')
     : s.submitted_at ? `<span class="badge ${s.late && !s.exempt ? 'badge-yellow' : 'badge-green'}" title="${escAttr('最初の提出 ' + avbAt(s.submitted_at) + (s.updated_at && s.updated_at !== s.submitted_at ? ' / 最後の更新 ' + avbAt(s.updated_at) : ''))}">${s.late && !s.exempt ? '締切後' : '提出'} ${esc(avbAt(s.submitted_at).split(' ')[0])}</span>${s.exempt ? ' ' + exemptBadge : ''}`
     : s.exempt ? exemptBadge : '<span class="badge badge-red">未提出</span>'
@@ -7031,7 +7098,7 @@ function drawAvailabilityBoard() {
         <h3 class="font-bold text-gray-800 mb-2">提出状況</h3>
         <p class="text-sm text-gray-700">提出済み <b>${targets.length - unsubmitted.length}</b> / ${targets.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
         ${d.staff.length > loginStaff.length ? `<p class="text-xs text-gray-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
-        ${exemptCount ? `<p class="text-xs text-gray-400 mt-1" id="avb-exempt-note">回収の対象外のスタッフ ${exemptCount}人は数えていません（<a href="#staff" class="text-blue-600 hover:underline">スタッフマスタ</a>で、対象・対象外を変えられます）</p>` : ''}
+        ${exemptCount ? `<p class="text-xs text-gray-400 mt-1" id="avb-exempt-note">出勤可能日の提出を「しない」にしているスタッフ ${exemptCount}人は数えていません（<a href="#staff" class="text-blue-600 hover:underline">スタッフマスタ</a>の各スタッフの「出勤可能日の提出」で、する／しないを変えられます）</p>` : ''}
         ${unsubmitted.length ? `<div class="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">${unsubmitted.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>` : ''}
         <div class="flex items-center gap-2 flex-wrap mt-3">
           <button class="btn btn-outline text-sm" data-action="avbRemind" ${unsubmitted.length ? '' : 'disabled'}><i class="fas fa-bell"></i>未提出の人に通知する（${unsubmitted.length}人）</button>

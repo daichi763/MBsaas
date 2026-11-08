@@ -1426,6 +1426,9 @@ rosterApi.post('/', async (c) => {
   if (type !== 'partner_manual') b.affiliation_contact = null
   const valueErr = normalizeRosterValues(b)
   if (valueErr) return c.json({ error: valueErr }, 400)
+  // 出勤可能日の提出（する／しない。#9918）。既定は する。④スキルシートのみは出勤可能日を集めないので保存しない
+  if (b.availability_target !== undefined && typeof b.availability_target !== 'boolean') return c.json({ error: '出勤可能日の提出は「する」か「しない」を選んでください' }, 400)
+  const availabilityExempt = type !== 'skillsheet_only' && b.availability_target === false ? 1 : 0
 
   // ログイン: ②は必須（自社スタッフとして勤怠報告等を行うため）、③は任意、④は作らない
   const wantsLogin = type === 'own_employee' || (type === 'partner_manual' && !!b.user_code && !!b.password)
@@ -1500,12 +1503,12 @@ rosterApi.post('/', async (c) => {
   const sr = await db.prepare(`INSERT INTO staff_profiles
       (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation, affiliation_contact,
        kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
-       age_entered, age_entered_on)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       age_entered, age_entered_on, availability_exempt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(userId, u.company_id, person.person_id, u.company_id, type, partnerId, affiliation, b.affiliation_contact || null,
       b.kana || null, b.gender, b.date_of_birth || null, b.skills || '', b.career || '', b.work_area || '',
       b.nearest_station_line || null, b.nearest_station || null, b.commute_minutes ?? null, b.available_from || null,
-      type === 'own_employee' ? (b.employment_status || 'working') : 'working', ageCols.age_entered, ageCols.age_entered_on).run()
+      type === 'own_employee' ? (b.employment_status || 'working') : 'working', ageCols.age_entered, ageCols.age_entered_on, availabilityExempt).run()
   const staffId = sr.meta.last_row_id as number
 
   // ②では従業員管理（社員名簿）の最小レコードも同時に作成する。電話番号は従業員管理の電話番号にも入れる（従業員管理で直したら users.phone にそろえる。#123）
