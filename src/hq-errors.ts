@@ -2,10 +2,13 @@
 //   GET  /errors              … 件数の推移（日別）・よく起きているエラー・記録の一覧（参照番号・種類・会社で絞る）・未読の障害の通知
 //   POST /errors/alerts/read  … 自分あての障害の通知（error_alert）を既読にする
 // 記録と通知の仕組みは src/lib/error-log.ts、表は migrations/0093_error_logs.sql
+// GET /errors は、秘密の値（Turnstile・RATE_LIMIT_SALT）が登録されているかも返す（値そのものは返さない）。
+// 会社の募集・応募の画面には出さず、本部だけが見る（#9921）
 import { Hono } from 'hono'
 import { ERROR_ALERT_KIND, ERROR_LOG_KEEP_DAYS, errorAlertSettings, jstAt, recentErrorCount, type ErrorAlertEnv } from './lib/error-log'
+import { ipSaltState, turnstileState } from './recruit'
 
-type Env = { Bindings: ErrorAlertEnv; Variables: { user: any; hqAudited?: boolean } }
+type Env = { Bindings: ErrorAlertEnv & { TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string }; Variables: { user: any; hqAudited?: boolean } }
 export const hqErrorsApi = new Hono<Env>()
 
 const PAGE = 50
@@ -71,6 +74,7 @@ hqErrorsApi.get('/errors', async (c) => {
     totals: { last_window: await recentErrorCount(db, settings.window_minutes), last_24h: Number(t.last_24h) || 0, last_7d: Number(t.last_7d) || 0 },
     settings, keep_days: ERROR_LOG_KEEP_DAYS,
     alerts_unread: alerts.results || [], last_alert: (lastAlert.results || [])[0] || null,
+    secrets: { turnstile: turnstileState(c.env), rate_limit_salt: ipSaltState(c.env) },
   })
 })
 

@@ -1191,7 +1191,7 @@ app.put('/shift-slots/:id', async (c) => {
   if (next.site_id && siteChanged) {
     const site = await ownSite(db, u.company_id, next.site_id)
     if (!site) return c.json({ error: '開催場所が見つかりません' }, 400)
-    if (site.status === 'inactive') return c.json({ error: '無効にした開催場所は選べません（クライアント詳細で有効にしてください）' }, 400)
+    if (site.status === 'inactive') return c.json({ error: '無効にした開催場所は選べません（案件の詳細の「開催場所」で有効に戻してください）' }, 400)
   }
   const rangeErr = rangeError([['休憩', next.break_minutes, 0, BREAK_MAX]]) || rolesRangeError(b.roles); if (rangeErr) return c.json({ error: rangeErr }, 400)
   // 役割名の変更で当たる単価ルールが変わるときは、書き込む前に確かめる（#144）

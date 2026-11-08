@@ -433,13 +433,13 @@ scheduleAdminApi.post('/availability/remind', async (c) => {
   }
 })
 
-// シフト希望の回収の対象を、スタッフごとに切り替える（#9907。スタッフ一覧のまとめての切り替え・スタッフ詳細）。
-// body: { staff_ids: number[], target: true（対象にする）| false（対象外にする） }。自社の行だけを変える（統合済みの行は除く）
+// 出勤可能日の提出（する／しない）を、スタッフごとに切り替える（#9907 #9918。スタッフ一覧のまとめての切り替え・スタッフ詳細）。
+// body: { staff_ids: number[], target: true（する）| false（しない） }。自社の行だけを変える（統合済みの行は除く）
 const TARGET_MAX_STAFF = 500
 scheduleAdminApi.put('/availability/targets', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))
-  if (typeof b.target !== 'boolean') return c.json({ error: '対象にするか、対象外にするかを選んでください' }, 400)
+  if (typeof b.target !== 'boolean') return c.json({ error: '出勤可能日の提出を「する」にするか「しない」にするかを選んでください' }, 400)
   if (!Array.isArray(b.staff_ids) || !b.staff_ids.length) return c.json({ error: 'スタッフを選んでください' }, 400)
   if (b.staff_ids.length > TARGET_MAX_STAFF) return c.json({ error: `一度に変えられるのは${TARGET_MAX_STAFF}人までです` }, 400)
   const ids = b.staff_ids.map((v: unknown) => toInt(v, 1))

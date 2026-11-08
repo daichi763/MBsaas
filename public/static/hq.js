@@ -1982,6 +1982,29 @@ async function refreshErrorsBadge() {
 function errParams(before) {
   return { ...(HQ_ERR.q ? { q: HQ_ERR.q } : {}), ...(HQ_ERR.source ? { source: HQ_ERR.source } : {}), ...(HQ_ERR.company_id ? { company_id: HQ_ERR.company_id } : {}), ...(before ? { before } : {}) }
 }
+// システムの設定の状態（#9921）: 公開の応募ページを守る秘密の値が登録されているか。会社の画面には出さない。
+// 値そのものは API も返さない（登録されているかだけ）
+function hqSecretsHtml(s) {
+  if (!s) return ''
+  const TURNSTILE = {
+    enabled: ['ok', '登録済み（サイトキー・秘密鍵の両方）'],
+    off: ['warn', '未登録。送信回数の制限と入力チェックで守っています。使うときは TURNSTILE_SITE_KEY と TURNSTILE_SECRET_KEY の両方を wrangler secret put で登録してください'],
+    site_key_only: ['bad', 'サイトキー（TURNSTILE_SITE_KEY）だけが登録されているため、使われていません。秘密鍵（TURNSTILE_SECRET_KEY）も登録してください'],
+    secret_key_only: ['bad', '秘密鍵（TURNSTILE_SECRET_KEY）だけが登録されているため、使われていません。サイトキー（TURNSTILE_SITE_KEY）も登録してください'],
+  }
+  const SALT = {
+    set: ['ok', '登録済み'],
+    turnstile: ['ok', '未登録（Turnstile の秘密鍵を代わりに使っています）。分けるときは RATE_LIMIT_SALT を wrangler secret put で登録してください'],
+    none: ['warn', '未登録。接続元IPは短いハッシュにして保存しています。wrangler secret put RATE_LIMIT_SALT で推測できない値を登録してください'],
+  }
+  const row = (label, [lv, text]) => `<li class="flex items-start gap-2"><span class="shrink-0 ${lv === 'ok' ? 'text-emerald-400' : lv === 'bad' ? 'text-red-400' : 'text-amber-400'}"><i class="fas ${lv === 'ok' ? 'fa-circle-check' : 'fa-triangle-exclamation'}"></i></span>
+    <span><span class="font-bold">${esc(label)}</span><span class="block text-xs text-slate-400">${esc(text)}</span></span></li>`
+  const t = TURNSTILE[s.turnstile] || ['warn', '不明'], r = SALT[s.rate_limit_salt] || ['warn', '不明']
+  return `<section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="hq-secrets">
+    <p class="font-bold mb-2"><i class="fas fa-key mr-1 text-cyan-400"></i>システムの設定の状態（公開の応募ページ）</p>
+    <ul class="text-sm space-y-2">${row('ボット対策（Cloudflare Turnstile）', t)}${row('送信回数の制限の秘密の値（RATE_LIMIT_SALT）', r)}</ul>
+  </section>`
+}
 async function renderErrors() {
   loading()
   let d
@@ -2007,6 +2030,7 @@ async function renderErrors() {
       <ul class="text-sm space-y-1 mb-2">${d.alerts_unread.map(a => `<li><span class="text-xs text-slate-400 mr-2">${esc(hqTime(a.created_at))}</span>${esc(a.title)}</li>`).join('')}</ul>
       <button class="btn btn-primary text-sm" data-action="hqErrAlertsRead"><i class="fas fa-check"></i>確認しました</button>
     </section>` : ''}
+    ${hqSecretsHtml(d.secrets)}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
       ${[[`直近${Number(st.window_minutes)}分`, d.totals.last_window, d.totals.last_window >= st.threshold ? 'text-red-400' : ''], ['直近24時間', d.totals.last_24h, d.totals.last_24h ? 'text-amber-400' : ''], ['直近7日', d.totals.last_7d, ''],
         ['最後の通知', d.last_alert ? hqTime(d.last_alert.created_at) : 'なし', '']]

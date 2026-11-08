@@ -307,6 +307,8 @@
     enableDnD(); renderSide(); updateSaveBar(); updateBulkBar()
   }
 
+  // 案件ごと・人ごとの表の左の列の幅（#9922。文字は省略し、title で全部を出す）
+  const BOARD_RH_W = 150
   function slotGrid(days) {
     const b = BOARD
     const today = dayjs().format('YYYY-MM-DD')
@@ -331,10 +333,11 @@
       if (!plain.has(k)) plain.set(k, { project_id: s.project_id, site: s.site_name || s.location || '', cells: {} })
       const r = plain.get(k); (r.cells[s.work_date] = r.cells[s.work_date] || []).push(s)
     }
-    const w = BS.days > 7 ? 104 : 128
+    // 列の幅（#9922）: 左の列は決まった幅、日の列は残りを等分する（board-fit）。日の列の最小の幅より狭い画面では横にスクロールする
+    const w = BS.days > 7 ? 96 : 100
     const head = `<thead class="sticky top-0 z-10 bg-white"><tr>
-      <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:190px">案件 / 開催場所 / 役割</th>
-      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : ''}" style="min-width:${w}px;width:${w}px">
+      <th class="board-th text-left sticky left-0 z-20 bg-white" style="width:${BOARD_RH_W}px">案件 / 開催場所 / 役割</th>
+      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : ''}">
         <button class="hover:underline" data-action="boardSlotOnDate" data-date="${esc(d)}" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[wd]})</button>${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead>`
     let lastProject = null
@@ -345,20 +348,20 @@
         <a href="#projects/${Number(p.project_id)}" class="font-bold hover:underline ml-1">${esc(p.project_name)}</a><span class="text-gray-400 ml-2">${esc(p.client_name || '')}</span></td></tr>` : ''
       lastProject = r.project_id
       return header + `<tr>
-        <td class="board-rowhead sticky left-0 bg-white z-10"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
-          <p class="text-[11px] text-gray-500">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${w}px">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
+        <td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.site || '（場所未設定）'}\n${r.start}〜${r.end}・${r.role}`)}"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
+          <p class="text-[11px] text-gray-500 truncate">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
+        ${days.map(d => `<td class="board-td align-top">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
       </tr>`
     }).join('')
     const plainRows = BS.onlyShort ? '' : [...plain.values()].map(r => {
       const p = proj.get(r.project_id) || {}
-      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
+      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${p.project_name || ''}\n${r.site || ''}`)}"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
         <p class="text-[11px] text-gray-500 truncate">${esc(r.site)}</p></td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${w}px"><div class="board-drop-src space-y-0.5">${(r.cells[d] || []).map(s => assignedChip(s)).join('')}</div></td>`).join('')}</tr>`
+        ${days.map(d => `<td class="board-td align-top"><div class="board-drop-src space-y-0.5">${(r.cells[d] || []).map(s => assignedChip(s)).join('')}</div></td>`).join('')}</tr>`
     }).join('')
     if (!list.length && !plainRows) return `<div class="p-10 text-center text-sm text-gray-400">
       ${BS.onlyShort ? 'この期間に不足の枠はありません' : 'この期間の枠・シフトはありません'}<br><button class="btn btn-primary mt-3" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button></div>`
-    return `<table class="board-table">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
+    return `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + days.length * w}px">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
   }
 
   // 月のカレンダー（月曜始まり）。日ごとに案件の充足を出し、不足は赤くする。日付を押すとその週の表に切り替える
@@ -464,10 +467,10 @@
     // 『不足のみ』では、同じ行の不足していない日のマスを薄く出す
     return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''} ${checked ? 'is-bulk' : ''}" data-action="boardSelect" data-slot-id="${Number(slot.slot_id)}" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
       tabindex="0" role="button" aria-pressed="${bulk ? checked : sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
-      <div class="flex items-center justify-between gap-1 mb-1">
-        <span class="text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
-        <span class="flex items-center gap-0.5">
-          ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400">${yen(money)}</span>` : ''}
+      <div class="flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5 mb-1">
+        <span class="min-w-0 text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
+        <span class="flex items-center gap-0.5 min-w-0">
+          ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400 truncate min-w-0" title="${esc(yen(money))}">${yen(money)}</span>` : ''}
           ${bulk ? '' : `<button type="button" class="cell-tool" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}" title="枠を編集" aria-label="枠を編集"><i class="fas fa-pen"></i></button>
           <button type="button" class="cell-tool danger" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}" title="枠を削除" aria-label="枠を削除"><i class="fas fa-trash"></i></button>`}
         </span>
@@ -556,13 +559,15 @@
       <span class="text-gray-400">稼働 = 確定・代打のある日数（表示中の案件の範囲）</span></div>`
     if (!rows.length) return tools + `<div class="p-10 text-center text-sm text-gray-400">${BS.personIdleOnly ? 'シフトのない人はいません' : 'この期間のシフトはありません'}</div>`
     const today = dayjs().format('YYYY-MM-DD')
-    return tools + `<table class="board-table"><thead class="sticky top-0 z-10 bg-white"><tr>
-      <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:170px">スタッフ</th><th class="board-th">稼働</th>
-      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 86 : 118}px;max-width:${BS.days > 14 ? 86 : 118}px;width:${BS.days > 14 ? 86 : 118}px">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
+    // 列の幅（#9922）: 名前・稼働の列は決まった幅、日の列は残りを等分する（board-fit）
+    const dayW = BS.days > 14 ? 86 : 104
+    return tools + `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px"><thead class="sticky top-0 z-10 bg-white"><tr>
+      <th class="board-th text-left sticky left-0 z-20 bg-white" style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>
+      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead><tbody>${rows.map(([sid, r]) => {
-      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-[10px] text-amber-600 ml-1">休職中</span>' : ''}</td>
+      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.name || ''} ${AFF_SHORT[r.aff] || ''}${r.emp === 'leave' ? ' 休職中' : ''}`)}"><p class="truncate"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-[10px] text-amber-600 ml-1">休職中</span>' : ''}</p></td>
         <td class="board-td text-center text-xs ${r.workDays ? 'font-bold' : 'text-gray-400'}">${r.workDays}日${r.workShifts > r.workDays ? `<span class="block text-[10px] font-normal text-gray-500">${r.workShifts}シフト</span>` : ''}</td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${BS.days > 14 ? 86 : 118}px">${(r.cells[d] || []).map(a => {
+        ${days.map(d => `<td class="board-td align-top">${(r.cells[d] || []).map(a => {
           const p = proj.get(a.project_id) || {}
           const warn = (a.conflicts && a.conflicts.length) || a.ng || (a.unavailable && a.status !== 'absent')
           return `<div class="board-chip st-${a.status} ${warn ? 'chip-warn' : ''} flex-col items-start" onclick="openShiftDetail(${a.shift_id})" title="${esc(p.project_name + ' / ' + (a._site || ''))}">
@@ -2899,8 +2904,8 @@
       <td class="text-xs text-gray-500">${esc([s.site_name || s.location, s.role].filter(Boolean).join('・') || '-')}</td>
       <td class="whitespace-nowrap"><span class="badge ${ST_BADGE[s.status] || 'badge-gray'}">${esc(ST_LABEL[s.status] || s.status)}</span>${s.settle_status === 'confirmed' ? '<span class="badge badge-green ml-1">実績確定</span>' : ''}</td>
       <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button>
-        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します（#393）">打刻を修正</button>` : ''}
-        <button class="text-xs text-gray-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか（#159）">履歴</button></td></tr>`).join('')
+        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します">打刻を修正</button>` : ''}
+        <button class="text-xs text-gray-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか">履歴</button></td></tr>`).join('')
     const table = (list, empty) => `<div class="overflow-x-auto max-h-80 overflow-y-auto"><table class="tbl"><thead><tr><th>日付</th><th>案件</th><th>時間</th><th>開催場所・役割</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows(list) || `<tr><td colspan="6" class="text-center text-gray-400">${empty}</td></tr>`}</tbody></table></div>`
     const absent = past.filter(s => s.status === 'absent').length
@@ -2929,38 +2934,55 @@
   })
 
   // =========================================================
-  // クライアント詳細: 開催場所
+  // 案件詳細: 開催場所（9914。クライアント詳細から移した）。開催場所はクライアントに属し、同じクライアントの案件で共通に使う
   // =========================================================
-  window.renderClientSitesPanel = async function (cid) {
-    const host = document.getElementById('client-sites-panel'); if (!host) return
-    const { data } = await axios.get('/api/admin/sites?client_id=' + cid)
-    host.innerHTML = `<section class="card p-4" id="client-sites">
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-location-dot text-blue-500 mr-1"></i>開催場所<span class="text-[11px] font-normal text-gray-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>
-      </div>
-      <div class="flex gap-2 mb-3"><input id="site-new-name" class="inp text-sm" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm" placeholder="住所（任意）">
-        <button class="btn btn-primary text-sm shrink-0" data-action="addSite" data-cid="${esc(cid)}"><i class="fas fa-plus"></i>追加</button></div>
-      <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th>シフト</th><th>状態</th><th></th></tr></thead><tbody>
+  let SITE_CTX = null // { pid, cid }
+  window.renderProjectSitesPanel = async function (p) {
+    const host = document.getElementById('project-sites-panel'); if (!host || !p) return
+    const pid = Number(p.project_id), cid = Number(p.client_id) || 0
+    SITE_CTX = { pid, cid }
+    const head = '<h3 class="text-sm font-bold text-gray-700"><i class="fas fa-location-dot text-blue-500 mr-1"></i>開催場所<span class="text-[11px] font-normal text-gray-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>'
+    if (!cid) {
+      host.innerHTML = `<section class="card p-4" id="project-sites">
+        <div class="mb-2">${head}</div>
+        <p class="text-xs text-gray-600 bg-yellow-50 rounded p-2" id="project-sites-no-client"><i class="fas fa-circle-info text-yellow-600 mr-1"></i>開催場所はクライアントごとに登録するため、クライアントのない案件では登録できません。案件にクライアントを設定してください
+          <button type="button" class="text-blue-600 hover:underline ml-1" data-action="editProject" data-id="${pid}">案件を編集</button></p>
+      </section>`
+      return
+    }
+    let data
+    try { data = (await axios.get('/api/admin/sites?client_id=' + cid)).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '開催場所を読み込めませんでした'))}</p>`; return }
+    // 読み込みの間に別の案件へ移ったときは描かない
+    if (!SITE_CTX || SITE_CTX.pid !== pid || !document.getElementById('project-sites-panel')) return
+    host.innerHTML = `<section class="card p-4" id="project-sites">
+      <div class="mb-1">${head}</div>
+      <p class="text-[11px] text-gray-400 mb-2">このクライアント（${esc(p.client_name || '')}）の開催場所です。同じクライアントの案件で共通に使います（ここで変えると、ほかの案件にも反映されます）</p>
+      <div class="flex gap-2 mb-3 flex-wrap"><input id="site-new-name" class="inp text-sm flex-1 min-w-[10rem]" maxlength="100" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm flex-1 min-w-[10rem]" maxlength="200" placeholder="住所（任意）">
+        <button class="btn btn-primary text-sm shrink-0" data-action="addSite"><i class="fas fa-plus"></i>追加</button></div>
+      <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th title="このクライアントの全案件のシフトの件数">シフト（全案件）</th><th>状態</th><th></th></tr></thead><tbody>
         ${data.sites.map(s => `<tr><td><span class="font-bold">${esc(s.site_name)}</span>${s.memo ? `<span class="block text-[11px] text-gray-400 whitespace-pre-wrap">${esc(s.memo)}</span>` : ''}</td>
-          <td class="text-xs text-gray-500">${esc(s.address || '-')}${s.lat != null && s.lng != null ? `<a class="block text-blue-600 hover:underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.lat + ',' + s.lng)}"><i class="fas fa-location-dot mr-0.5"></i>位置を登録済み</a>` : ''}</td><td>${s.shift_count}件</td>
+          <td class="text-xs text-gray-500">${esc(s.address || '-')}${s.lat != null && s.lng != null ? `<a class="block text-blue-600 hover:underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.lat + ',' + s.lng)}"><i class="fas fa-location-dot mr-0.5"></i>位置を登録済み</a>` : ''}</td><td>${Number(s.shift_count) || 0}件</td>
           <td>${s.status === 'inactive' ? '<span class="badge badge-gray">無効</span>' : '<span class="badge badge-green">有効</span>'}</td>
-          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" data-action="editSite" data-id="${Number(s.site_id)}" data-cid="${esc(cid)}">編集</button>
-            ${s.status === 'inactive' ? `<button class="text-xs text-blue-600 hover:underline" data-action="toggleSite" data-id="${s.site_id}" data-cid="${esc(cid)}" data-status="active">有効にする</button>` : `<button class="text-xs text-red-600 hover:underline" data-action="removeSite" data-id="${s.site_id}" data-cid="${esc(cid)}">削除</button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
+          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline ml-2" data-action="editSite" data-id="${Number(s.site_id)}">編集</button>
+            ${s.status === 'inactive'
+              ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="active">有効に戻す</button>`
+              : `<button class="text-xs text-gray-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="inactive" title="シフト枠・単価ルールで選べなくします（登録済みのシフトはそのまま）">無効にする</button>`}
+            <button class="text-xs text-red-600 hover:underline ml-2" data-action="removeSite" data-id="${Number(s.site_id)}"${s.status === 'inactive' ? ' data-inactive="1"' : ''}>削除</button></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
       </tbody></table></div>
     </section>`
     SITES = new Map(data.sites.map(s => [s.site_id, s]))
-    renderClientRatePanel(cid)
+  }
+  // 追加・編集・無効・削除のあとに、開いている案件詳細の欄を描き直す
+  function refreshSitesPanel() {
+    if (SITE_CTX && typeof PROJECT_DETAIL === 'object' && PROJECT_DETAIL && PROJECT_DETAIL.pid === SITE_CTX.pid) renderProjectSitesPanel(PROJECT_DETAIL.data.project)
   }
 
   // =========================================================
   // クライアント詳細: クライアント共通の単価ルール（#470）。そのクライアントの全案件に当てる（案件のルールより弱い）
   // =========================================================
   window.renderClientRatePanel = async function (cid) {
-    let host = document.getElementById('client-rate-panel')
-    if (!host) {
-      const sites = document.getElementById('client-sites-panel'); if (!sites) return
-      host = document.createElement('div'); host.id = 'client-rate-panel'; host.className = 'mt-4'; sites.after(host)
-    }
+    // 差し込み先はクライアント詳細の #client-rate-panel（admin.js の renderClientDetail。9914 で開催場所の欄を外した）
+    const host = document.getElementById('client-rate-panel'); if (!host) return
     let data
     try { data = (await axios.get('/api/admin/rate-rules?client_id=' + Number(cid))).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '単価ルールを読み込めませんでした'))}</p>`; return }
     for (const r of data.rules) RULES.set(r.rule_id, r)
@@ -2989,7 +3011,7 @@
   }))
   // 開催場所の編集（名前・住所・メモ・位置。#406）。名前を変えると、今日以降の枠・シフトの場所名も変わる（#142）
   let SITES = new Map()
-  function openSiteEdit(id, cid) {
+  function openSiteEdit(id) {
     const s = SITES.get(id); if (!s) return
     modal(`
       <h3 class="font-bold text-lg mb-3">開催場所を編集</h3>
@@ -3000,10 +3022,10 @@
           <span class="block text-[11px] text-gray-400">地図アプリで場所を長押し（右クリック）すると表示される数値を貼り付けます。空欄にすると消します</span></label>
         <label class="text-sm text-gray-600 block">メモ<textarea id="se-memo" class="inp" rows="3" maxlength="500" placeholder="入口・搬入口・集合場所など">${esc(s.memo || '')}</textarea></label>
         <p class="text-[11px] text-gray-400">名前を変えると、今日以降の枠・シフト（実績が確定済みのものを除く）と繰り返し登録の場所名も新しい名前になります</p>
-        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSite" data-id="${Number(id)}" data-cid="${esc(cid)}">保存する</button></div>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSite" data-id="${Number(id)}">保存する</button></div>
       </div>`)
   }
-  async function saveSite(id, cid) {
+  async function saveSite(id) {
     const name = document.getElementById('se-name').value.trim()
     if (!name) { toast('開催場所名を入力してください'); return }
     const ll = document.getElementById('se-latlng').value.trim()
@@ -3016,23 +3038,29 @@
     try {
       await axios.put('/api/admin/sites/' + id, { site_name: name, address: document.getElementById('se-addr').value, memo: document.getElementById('se-memo').value, lat, lng })
     } catch (e) { toast(errMsg(e)); return }
-    invalidateMaster(); closeModal(); toast('保存しました'); renderClientSitesPanel(cid)
+    invalidateMaster(); closeModal(); toast('保存しました'); refreshSitesPanel()
   }
-  delegate('editSite', el => openSiteEdit(Number(el.dataset.id), Number(el.dataset.cid)))
-  delegate('saveSite', el => withSubmitLock(el, () => saveSite(Number(el.dataset.id), Number(el.dataset.cid))))
-  window.addSite = async function (cid) {
+  delegate('editSite', el => openSiteEdit(Number(el.dataset.id)))
+  delegate('saveSite', el => withSubmitLock(el, () => saveSite(Number(el.dataset.id))))
+  // 開催場所のクライアントは、開いている案件のクライアント（画面の値ではなく案件の情報から取る）
+  window.addSite = async function () {
+    const cid = SITE_CTX && SITE_CTX.cid; if (!cid) { toast('案件にクライアントを設定してください'); return }
     const name = document.getElementById('site-new-name').value.trim()
     if (!name) { toast('開催場所名を入力してください'); return }
-    try { await axios.post('/api/admin/sites', { client_id: cid, site_name: name, address: document.getElementById('site-new-addr').value }); invalidateMaster(); toast('追加しました'); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
+    try { await axios.post('/api/admin/sites', { client_id: cid, site_name: name, address: document.getElementById('site-new-addr').value }); invalidateMaster(); toast('追加しました'); refreshSitesPanel() } catch (e) { toast(errMsg(e)) }
   }
-  delegate('addSite', el => withSubmitLock(el, () => addSite(Number(el.dataset.cid))))
-  delegate('toggleSite', el => withSubmitLock(el, () => toggleSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.status)))
-  delegate('removeSite', el => withSubmitLock(el, () => removeSite(Number(el.dataset.id), Number(el.dataset.cid))))
-  window.toggleSite = async function (id, cid, status) {
-    try { await axios.put('/api/admin/sites/' + id, { status }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
+  delegate('addSite', el => withSubmitLock(el, () => addSite()))
+  delegate('toggleSite', el => withSubmitLock(el, () => toggleSite(Number(el.dataset.id), el.dataset.status)))
+  delegate('removeSite', el => withSubmitLock(el, () => removeSite(Number(el.dataset.id), el.dataset.inactive === '1')))
+  window.toggleSite = async function (id, status) {
+    if (status === 'inactive' && !confirm('この開催場所を無効にしますか？（シフト枠・単価ルールで選べなくなります。登録済みのシフトはそのままです）')) return
+    try { await axios.put('/api/admin/sites/' + id, { status }); invalidateMaster(); toast(status === 'inactive' ? '無効にしました' : '有効に戻しました'); refreshSitesPanel() } catch (e) { toast(errMsg(e)) }
   }
-  window.removeSite = async function (id, cid) {
+  window.removeSite = async function (id, inactive) {
     if (!confirm('この開催場所を削除しますか？（シフトで使用中の場合は「無効」にします）')) return
-    try { const { data } = await axios.delete('/api/admin/sites/' + id); invalidateMaster(); toast(data.deactivated ? '使用中のため無効にしました' : '削除しました'); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
+    try {
+      const { data } = await axios.delete('/api/admin/sites/' + id); invalidateMaster()
+      toast(data.deactivated ? (inactive ? 'シフト・枠で使用中のため削除できません（無効のままです）' : '使用中のため無効にしました') : '削除しました'); refreshSitesPanel()
+    } catch (e) { toast(errMsg(e)) }
   }
 })()

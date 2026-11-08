@@ -11,11 +11,6 @@
   // expired: 未対応のまま勤務日を過ぎた（src/recruit.ts）
   const ITEM_LABEL = { pending: '未対応', processing: '処理中', approved: '承認', rejected: '見送り', cancelled: '取り下げ', released: 'シフト解除', slot_removed: '枠の削除', expired: '期限切れ' }
   const ITEM_BADGE = { pending: 'badge-yellow', processing: 'badge-yellow', approved: 'badge-green', rejected: 'badge-gray', cancelled: 'badge-gray', released: 'badge-red', slot_removed: 'badge-gray', expired: 'badge-gray' }
-  const TURNSTILE_NOTE = {
-    off: 'ボット対策（Cloudflare Turnstile）は未設定です。送信回数の制限と入力チェックで保護しています。設定する場合は TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY の両方を登録してください',
-    site_key_only: 'ボット対策（Cloudflare Turnstile）はサイトキー（TURNSTILE_SITE_KEY）だけが登録されているため、使われていません。秘密鍵（TURNSTILE_SECRET_KEY）も登録してください',
-    secret_key_only: 'ボット対策（Cloudflare Turnstile）は秘密鍵（TURNSTILE_SECRET_KEY）だけが登録されているため、使われていません。サイトキー（TURNSTILE_SITE_KEY）も登録してください',
-  }
   const S = window.__recruitState = window.__recruitState || { tab: 'applications', status: 'pending' }
   let projects = null
   const pageUrl = (t) => location.origin + '/apply/' + t
@@ -70,7 +65,6 @@
     window.__recruitPages = data.pages
     window.__recruitStaffApp = !!data.staff_app_recruit
     host.innerHTML = `
-      ${TURNSTILE_NOTE[data.turnstile] ? `<p class="text-[11px] ${data.turnstile === 'off' ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50 font-bold'} rounded p-2 mb-3" id="turnstile-note" data-state="${esc(data.turnstile)}"><i class="fas fa-shield-halved mr-1"></i>${TURNSTILE_NOTE[data.turnstile]}</p>` : ''}
       <div class="grid md:grid-cols-2 gap-3" id="recruit-page-list">
         ${data.pages.map(p => `<article class="card p-4">
           <div class="flex items-start justify-between gap-2 mb-1">
@@ -384,7 +378,6 @@
     const sl = data.slot
     const pageTitle = S.page_id ? ((data.pages || []).find(p => p.page_id === Number(S.page_id)) || {}).title : ''
     host.innerHTML = `
-      ${data.ip_salt === 'none' ? '<p class="text-[11px] text-amber-700 bg-amber-50 rounded p-2 mb-3" id="recruit-salt-note"><i class="fas fa-key mr-1"></i>公開ページの送信回数の制限に使う秘密の値（RATE_LIMIT_SALT）が未設定です。接続元IPは短いハッシュにして保存しています。wrangler secret put RATE_LIMIT_SALT で推測できない値を登録してください</p>' : ''}
       <div class="flex items-center gap-1.5 mb-2 flex-wrap text-xs" id="recruit-status-tabs">
         ${STATUS_TABS.map(([k, l]) => `<button class="btn ${S.status === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="recruitStatus" data-status="${k}">${l}${k === 'pending' ? `（${data.counts.pending}）` : ''}</button>`).join('')}
       </div>
@@ -394,7 +387,7 @@
           ${(data.pages || []).map(p => `<option value="${p.page_id}" ${Number(S.page_id) === p.page_id ? 'selected' : ''}>${esc(p.title)}${p.status === 'open' ? '' : '（終了）'}</option>`).join('')}</select></label>
         <label class="text-gray-500">勤務日<span class="flex items-center gap-1"><input id="rc-from" type="date" class="inp text-sm" value="${esc(S.from || '')}">〜<input id="rc-to" type="date" class="inp text-sm" value="${esc(S.to || '')}"></span></label>
         <label class="flex items-center gap-1 text-gray-600 pb-2" title="だれも対応メモを残していない応募"><input type="checkbox" id="rc-no-note" ${S.no_note ? 'checked' : ''}>対応メモなしのみ</label>
-        <label class="flex items-center gap-1 text-gray-600 pb-2" title="ボット対策の確認サービスに接続できず、ロボットかどうかを判定せずに受け付けた応募（#501）"><input type="checkbox" id="rc-unverified" ${S.unverified ? 'checked' : ''}>要確認のみ</label>
+        <label class="flex items-center gap-1 text-gray-600 pb-2" title="ボット対策の確認サービスに接続できず、ロボットかどうかを判定せずに受け付けた応募"><input type="checkbox" id="rc-unverified" ${S.unverified ? 'checked' : ''}>要確認のみ</label>
         <button type="submit" class="btn btn-primary text-xs"><i class="fas fa-magnifying-glass"></i>検索</button>
         ${S.q || S.page_id || S.from || S.to || S.no_note || S.unverified ? '<button type="button" class="btn btn-outline text-xs" data-action="recruitClearFilter">条件をクリア</button>' : ''}
       </form>

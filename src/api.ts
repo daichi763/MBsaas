@@ -4222,6 +4222,10 @@ async function applyRetirement(db: D1Database, sid: string, companyId: number, r
   if (changed) await notifyLinkedRetirement(db, sid, newRetired)
 }
 
+// 出勤可能日の提出（する／しない。#9918）の入力。true = する（既定）・false = しない（staff_profiles.availability_exempt = 1）。送らなければ変えない
+function availabilityTargetError(v: unknown): string | null {
+  return v === undefined || typeof v === 'boolean' ? null : '出勤可能日の提出は「する」か「しない」を選んでください'
+}
 // スタッフ更新（スタッフマスタ画面から）
 api.put('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
@@ -4246,11 +4250,18 @@ api.put('/admin/staff/:id', async (c) => {
     const err = await validateProfileBase(c, body, roster)
     if (err) return c.json({ error: err }, 400)
   }
+  const avErr = availabilityTargetError(body.availability_target)
+  if (avErr) return c.json({ error: avErr }, 400)
   const retErr = await validateRetirement(c.env.DB, sid, body, roster)
   if (retErr) return c.json(retErr, retErr.confirm_required ? 409 : 400)
   const contactErr = await checkContactUpdate(c, sid, body, roster)
   if (contactErr) return c.json(contactErr.body, contactErr.status)
   await applyProfileUpdate(c, sid, body, roster)
+  // 出勤可能日の提出（#9918）。区分を問わず自社の行に保存する（PUT /admin/availability/targets と同じ列・同じ権限）
+  if (body.availability_target !== undefined) {
+    await c.env.DB.prepare('UPDATE staff_profiles SET availability_exempt = ? WHERE staff_id = ? AND company_id = ?')
+      .bind(body.availability_target ? 0 : 1, sid, u.company_id).run()
+  }
   // メールを送れない環境では、保存した時点で切り替える（#9803。変更申請の承認 #9802 と同じ）
   const contact = await applyContactUpdate(c, body, roster, { direct: !canSendMail(c.env) })
   return c.json({ ok: true, ...contact })
@@ -4294,9 +4305,11 @@ api.post('/admin/staff/:id/login-email-pending/cancel', async (c) => {
 // スタッフ登録
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
-  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force } = await c.req.json()
+  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force, availability_target } = await c.req.json()
   const user_code = normalizeLoginCode(rawCode) // ログイン画面と同じく全角を半角にそろえて保存する（#387）
   if (!user_code || !name || !password) return c.json({ error: 'スタッフ番号・氏名・パスワードは必須です' }, 400)
+  const avErr = availabilityTargetError(availability_target)
+  if (avErr) return c.json({ error: avErr }, 400)
   const pwErr = validatePassword(password)
   if (pwErr) return c.json({ error: pwErr }, 400)
   // 同じ人の確認（#223。スタッフマスタの新規追加と同じ。force で登録を続ける）
@@ -4311,8 +4324,8 @@ api.post('/admin/staff', async (c) => {
       .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null).run()
     const person = await createPerson(c.env.DB, u.company_id)
     await c.env.DB.prepare('UPDATE users SET person_id = ? WHERE user_id = ?').bind(person.person_id, r.meta.last_row_id).run()
-    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own_employee')`)
-      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id).run()
+    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type, availability_exempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own_employee', ?)`)
+      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id, availability_target === false ? 1 : 0).run()
     return c.json({ ok: true })
   } catch (e) {
     // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
@@ -5884,9 +5897,12 @@ api.get('/admin/daily-reports/missing', async (c) => {
   const projectId = toInt(c.req.query('project_id'), 1), staffId = toInt(c.req.query('staff_id'), 1)
   const rows = (await db.prepare(`
     SELECT s.shift_id, s.work_date, s.start_time, s.end_time, us.name AS staff_name, s.staff_id, p.project_id, p.project_name,
-      us.phone AS staff_phone, us.role = 'staff' AS has_login
+      us.phone AS staff_phone, us.role = 'staff' AS has_login,
+      -- 開催場所（#9919。日報のカードと同じ見出しに出す）
+      COALESCE(si.site_name, s.location) AS site_name
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
+    LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date BETWEEN ? AND ?
       ${projectId ? 'AND s.project_id = ?' : ''} ${staffId ? 'AND s.staff_id = ?' : ''}
@@ -5960,9 +5976,13 @@ api.get('/admin/daily-reports', async (c) => {
       SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name,
         cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name, eu.name AS admin_edited_by_name,
         (SELECT COUNT(*) FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id) AS edit_count,
-        (SELECT e.kind FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id ORDER BY e.edit_id DESC LIMIT 1) AS last_edit_kind
+        (SELECT e.kind FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id ORDER BY e.edit_id DESC LIMIT 1) AS last_edit_kind,
+        -- シフトの時間・開催場所（#9919。未提出のカードと同じ見出しに出す。シフトの無い日報は空）
+        sh.start_time AS shift_start_time, sh.end_time AS shift_end_time, COALESCE(si.site_name, sh.location) AS site_name
       FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
       JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id AND sh.company_id = dr.company_id
+      LEFT JOIN sites si ON si.site_id = sh.site_id AND si.company_id = sh.company_id
       LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
       LEFT JOIN users ku ON ku.user_id = dr.manager_checked_by
       LEFT JOIN users iu ON iu.user_id = dr.incident_updated_by
@@ -6506,6 +6526,117 @@ api.get('/admin/analytics', async (c) => {
   const sel = await analyticsProject(c.env.DB, u.company_id, c.req.query('project_id'))
   if (!sel) return c.json({ error: '案件が見つかりません' }, 404)
   return c.json(await loadAnalytics(c.env.DB, u.company_id, analyticsMonth(c.req.query('month')), sel.project, true))
+})
+// 実績分析のグラフ（#9916）。期間（開始月〜終了月。SERIES_MAX_MONTHS か月まで）の日報を、日・週（月曜はじまり）・月ごとにまとめた推移を返す。
+// 指標（metric）: reports 日報数・flagged インシデントかクレームの印のある日報の数（全案件・案件で共通）。
+//   field は案件を選んだときだけで、key にその期間の日報テンプレートの数値項目（差し替える前の項目も。#9511）を指定する。
+// 分け方（split）: 案件を選んだときは staff（スタッフ別）・site（開催場所別。日報のシフトの開催場所）、全案件のときは project（案件別）。
+//   期間の合計の多い順に上位 top 件（既定 5・8 まで。グラフの色の数）、または ids で選んだもの（8 件まで）を出し、残りは「ほか」（= 全体 − 出したもの）にまとめる。
+// 集計はすべて SQL の GROUP BY で行い、Workers では日付の枠に並べるだけにする（Free プランの CPU 10ms のため）
+const SERIES_MAX_MONTHS = 12
+const SERIES_MAX_TOP = 8
+const SERIES_UNITS = { day: 'dr.work_date', week: "date(dr.work_date, 'weekday 0', '-6 days')", month: 'substr(dr.work_date, 1, 7)' } as const
+type SeriesUnit = keyof typeof SERIES_UNITS
+const SERIES_SPLITS = {
+  staff: { g: 'dr.staff_id', name: 'MAX(us.name)', joins: 'LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id', none: '（名前なし）' },
+  site: { g: 'COALESCE(si.site_id, 0)', name: 'MAX(si.site_name)', joins: 'LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id AND sh.company_id = dr.company_id LEFT JOIN sites si ON si.site_id = sh.site_id AND si.company_id = dr.company_id', none: '（開催場所なし）' },
+  project: { g: 'dr.project_id', name: 'MAX(p.project_name)', joins: 'LEFT JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id', none: '（案件名なし）' },
+} as const
+type SeriesSplit = keyof typeof SERIES_SPLITS
+const SERIES_COMMON = { reports: '日報数', flagged: 'インシデント・クレーム' } as const
+const monthIndex = (m: string) => { const [y, mo] = m.split('-').map(Number); return y * 12 + mo - 1 }
+const ymdUTC = (d: Date) => d.toISOString().slice(0, 10)
+// 期間の日付の枠（day: 日付、week: その週の月曜日、month: YYYY-MM）。データの無い枠も 0 で並べる
+function seriesBuckets(from: string, to: string, unit: SeriesUnit): string[] {
+  const out: string[] = []
+  if (unit === 'month') {
+    for (let i = monthIndex(from); i <= monthIndex(to); i++) out.push(`${Math.floor(i / 12)}-${String(i % 12 + 1).padStart(2, '0')}`)
+    return out
+  }
+  const end = monthBounds(to)[1]
+  const d = new Date(monthBounds(from)[0] + 'T00:00:00Z')
+  if (unit === 'week') d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7)
+  for (; ymdUTC(d) < end; d.setUTCDate(d.getUTCDate() + (unit === 'week' ? 7 : 1))) out.push(ymdUTC(d))
+  return out
+}
+api.get('/admin/analytics/series', async (c) => {
+  const u = c.get('user'); const db = c.env.DB; const cid = u.company_id
+  const sel = await analyticsProject(db, cid, c.req.query('project_id'))
+  if (!sel) return c.json({ error: '案件が見つかりません' }, 404)
+  const project = sel.project
+  const okMonth = (q: string | undefined) => (q && /^\d{4}-(0[1-9]|1[0-2])$/.test(q) ? q : null)
+  let from = okMonth(c.req.query('from')) || analyticsMonth(c.req.query('month'))
+  let to = okMonth(c.req.query('to')) || from
+  if (from > to) [from, to] = [to, from]
+  if (monthIndex(to) - monthIndex(from) + 1 > SERIES_MAX_MONTHS) return c.json({ error: `期間は${SERIES_MAX_MONTHS}か月までにしてください` }, 400)
+  const unit = (Object.keys(SERIES_UNITS) as SeriesUnit[]).find(k => k === c.req.query('unit')) || 'day'
+  const splitQ = c.req.query('split') || 'none'
+  const splits: string[] = project ? ['none', 'staff', 'site'] : ['none', 'project']
+  if (!splits.includes(splitQ)) return c.json({ error: project ? '案件を選んだときは、スタッフ別・開催場所別で分けられます' : '全案件のときは、案件別で分けられます' }, 400)
+  const split = splitQ === 'none' ? null : SERIES_SPLITS[splitQ as SeriesSplit]
+  const top = toInt(c.req.query('top'), 1, SERIES_MAX_TOP) ?? 5
+  const pickIds = [...new Set(String(c.req.query('ids') || '').split(',').map(s => toInt(s.trim(), 0)).filter((n): n is number => n !== null))].slice(0, SERIES_MAX_TOP)
+
+  const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?' + (project ? ' AND dr.project_id = ?' : '')
+  const binds = [cid, monthBounds(from)[0], monthBounds(to)[1], ...(project ? [project.project_id] : [])]
+  // 案件の指標: その期間の日報に値のある数値項目（日報が無ければ今のテンプレートの項目）。実績分析の表と同じ規則
+  let fields: AnalyticsField[] = []
+  if (project) {
+    const [tpl, keys] = await db.batch([
+      db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null),
+      db.prepare(`SELECT je.key AS k, MAX(je.type IN ('integer','real')) AS isnum FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY je.key`).bind(...binds),
+    ])
+    const tplRow = ((tpl.results || []) as any[])[0]
+    fields = await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], (keys.results || []) as any[], true)
+  }
+  const metricQ = c.req.query('metric') || ''; const keyQ = c.req.query('key') || ''
+  // 指定の項目がその期間に無いとき（未指定も）は、成約数か最初の項目にする。項目が無ければ日報数
+  const field = !project || metricQ === 'reports' || metricQ === 'flagged' ? undefined
+    : (fields.find(f => f.key === keyQ && metricQ === 'field') || fields.find(f => f.key === 'seiyaku') || fields[0])
+  const metric: 'field' | 'reports' | 'flagged' = field ? 'field' : metricQ === 'flagged' ? 'flagged' : 'reports'
+  const val = metric === 'field' ? `COALESCE(SUM((SELECT SUM(${ANALYTICS_NUM}) FROM ${ANALYTICS_JE} WHERE je.key = ?)), 0)`
+    : metric === 'flagged' ? 'SUM(CASE WHEN dr.incident_flag = 1 OR dr.complaint_flag = 1 THEN 1 ELSE 0 END)' : 'COUNT(*)'
+  const vb = field ? [field.key] : []
+  const bucket = SERIES_UNITS[unit]
+
+  const stmts = [db.prepare(`SELECT ${bucket} AS b, ${val} AS v FROM daily_reports dr WHERE ${where} GROUP BY b`).bind(...vb, ...binds)]
+  if (split) stmts.push(db.prepare(`SELECT ${split.g} AS s, ${split.name} AS name, ${val} AS v, COUNT(*) AS n FROM daily_reports dr ${split.joins}
+    WHERE ${where} GROUP BY s ORDER BY v DESC, n DESC, s LIMIT 200`).bind(...vb, ...binds))
+  const [wholeRes, rankRes] = (await db.batch(stmts)).map(r => (r.results || []) as any[])
+  const buckets = seriesBuckets(from, to, unit)
+  const pos = new Map(buckets.map((b, i) => [b, i]))
+  const zeros = () => buckets.map(() => 0)
+  const total = zeros()
+  for (const r of wholeRes) { const i = pos.get(String(r.b)); if (i !== undefined) total[i] += Number(r.v) || 0 }
+  const sum = (a: number[]) => a.reduce((x, y) => x + y, 0)
+  const tidy = (n: number) => Math.round(n * 1e6) / 1e6
+  let series: { id: number; label: string; values: number[]; total: number }[] = []
+  let other: { values: number[]; total: number } | null = null
+  const choices = split ? (rankRes || []).map(r => ({ id: Number(r.s), label: String(r.name ?? '') || split.none, total: Number(r.v) || 0 })) : []
+  if (split) {
+    // 選んだもの（その期間に日報のあるものだけ）か、合計が 0 より大きい上位 top 件
+    const show = pickIds.length ? choices.filter(ch => pickIds.includes(ch.id)) : choices.filter(ch => ch.total > 0).slice(0, top)
+    if (show.length) {
+      const detail = await db.prepare(`SELECT ${bucket} AS b, ${split.g} AS s, ${val} AS v FROM daily_reports dr ${split.joins}
+        WHERE ${where} AND ${split.g} IN (SELECT value FROM json_each(?)) GROUP BY b, s`).bind(...vb, ...binds, JSON.stringify(show.map(s => s.id))).all()
+      const byId = new Map(show.map(s => [s.id, { id: s.id, label: s.label, values: zeros(), total: 0 }]))
+      for (const r of (detail.results || []) as any[]) {
+        const i = pos.get(String(r.b)); const row = byId.get(Number(r.s))
+        if (i !== undefined && row) row.values[i] += Number(r.v) || 0
+      }
+      series = [...byId.values()].map(s => ({ ...s, total: tidy(sum(s.values)) }))
+    }
+    const rest = total.map((v, i) => tidy(v - sum(series.map(s => s.values[i]))))
+    if (rest.some(v => v !== 0)) other = { values: rest, total: tidy(sum(rest)) }
+  }
+  const metrics = [...fields.map(f => ({ metric: 'field', key: f.key, label: f.label, ...(f.past ? { past: true } : {}) })),
+    ...Object.entries(SERIES_COMMON).map(([k, label]) => ({ metric: k, key: '', label }))]
+  return c.json({
+    from, to, unit, split: splitQ, metric, key: field?.key ?? '', label: field ? field.label : SERIES_COMMON[metric as 'reports' | 'flagged'],
+    metrics, splits, top, ids: pickIds.length ? series.map(s => s.id) : [], max_months: SERIES_MAX_MONTHS,
+    buckets, total, total_sum: tidy(sum(total)), series, other, choices,
+    project: project ? { project_id: project.project_id, project_name: project.project_name } : null,
+  })
 })
 // 実績分析の CSV（by: staff スタッフ別 / project 案件別 / client クライアント別 / daily 日別）。列は画面と同じ。
 // project_id を付けるとその案件の分（項目の列つき）を、付けなければ全案件の共通の数だけを出す。ファイル名に案件名と月を入れる

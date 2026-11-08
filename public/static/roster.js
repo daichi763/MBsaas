@@ -206,7 +206,15 @@ window.showRosterForm = async function (route) {
           ${f('rf-station', '最寄駅（駅）')}
           ${f('rf-available', '稼働開始可能日', 'type="date"')}
         </div>
-        ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0" max="1440" step="1"')}` : ''}
+        ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0" max="1440" step="1"')}
+        <div id="rf-av-target">
+          <span class="text-sm text-gray-600 block mb-1">出勤可能日の提出</span>
+          <div class="flex items-center gap-4 text-sm">
+            <label class="flex items-center gap-1.5 cursor-pointer"><input type="radio" name="rf-av-target" value="1" class="w-4 h-4" checked>する</label>
+            <label class="flex items-center gap-1.5 cursor-pointer"><input type="radio" name="rf-av-target" value="0" class="w-4 h-4">しない</label>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-0.5">${esc(window.STAFF_AV_TARGET_CHOICE_HELP || '')}。登録した後も、スタッフ詳細で変えられます</p>
+        </div>` : ''}
       <p class="text-xs text-gray-400"><span class="text-red-500">*</span> は必須項目です（氏名・性別は全企業共通の必須項目）</p>
     </div>
     <div id="rf-dup"></div>
@@ -253,6 +261,9 @@ window.submitRosterForm = async function (route, force) {
     employee_number: v('rf-empno'), hire_date: v('rf-hire') || null, contract_type: v('rf-contract'),
     affiliation_contact: v('rf-aff-contact'), affiliation: v('rf-affiliation'),
   }
+  // 出勤可能日の提出（する／しない。#9918）。④スキルシートのみには欄がない（送らない）
+  const avTarget = document.querySelector('input[name="rf-av-target"]:checked')
+  if (avTarget) body.availability_target = avTarget.value === '1'
   if (!body.name) { toast('氏名を入力してください'); return }
   if (!body.gender) { toast('性別を選択してください'); return }
   if (route === 'partner') {

@@ -2444,12 +2444,12 @@ async function renderAvailability(month) {
 
 function drawAvailability() {
   const d = AV.data
-  // 回収の対象外の人（target が false。#9907）には、未提出・締切切れの注意を出さない（自分から提出はできる）
+  // 出勤可能日の提出を「しない」にした人（target が false。#9907 #9918）には、未提出・締切切れの注意を出さない（自分から提出はできる）
   const exempt = d.target === false
   const overdue = !exempt && !d.submitted_at && d.deadline && d.today > d.deadline
   const status = d.submitted_at
     ? `<span class="badge badge-green">提出済み</span><span class="text-xs text-gray-500">${esc(avFmtAt(d.updated_at || d.submitted_at))}${d.late && !exempt ? '（締切後に提出）' : ''}</span>`
-    : exempt ? '<span class="badge badge-gray">提出は任意です</span>' : '<span class="badge badge-yellow">未提出</span>'
+    : exempt ? '<span class="badge badge-gray" title="出勤可能日の提出は任意です。入れる日があるときは、ここから提出できます">提出は任意です</span>' : '<span class="badge badge-yellow">未提出</span>'
   $app.innerHTML = `
     ${SCHEDULE_BACK}
     <div class="flex gap-1.5 mb-3 overflow-x-auto">${d.months.map(m => `<button class="btn ${m === AV.month ? 'btn-primary' : 'btn-outline'} text-xs shrink-0" data-action="avMonth" data-month="${esc(m)}">${esc(avMonthLabel(m))}</button>`).join('')}</div>
