@@ -280,6 +280,44 @@ delegate('navGroupToggle', el => {
   saveNavCollapsedGroups(set)
 })
 
+// 左のメニュー全体を畳む・開く（#9922）。畳むとアイコンだけの細い列にし、名前はマウスを乗せたときの title で出す（見た目は src/input.css）。
+// 状態は人ごと・端末ごとに localStorage に覚える（キーは src/index.tsx の body の data-side-key。読み込み時の反映も index.tsx。読めないときは開いた状態）
+const SIDE_KEY = document.body.dataset.sideKey || 'admin-side-collapsed'
+const sideCollapsed = () => document.body.classList.contains('side-collapsed')
+// 項目の名前（文字の部分）。件数のバッジが出ていれば「（n）」を付ける
+function sideItemLabel(el) {
+  const text = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim()
+  // バッジは hidden（各画面）か style.display（企業間チャット）で隠している
+  const badge = [...el.querySelectorAll('span')].find(b => !b.classList.contains('hidden') && b.style.display !== 'none' && !['', '0'].includes(b.textContent.trim()))
+  return badge ? `${text}（${badge.textContent.trim()}）` : text
+}
+// 畳んでいる間だけ title を付ける（開いているときは名前が見えるので外す。外すのは自分で付けた title だけ）
+function applySideTitles() {
+  const on = sideCollapsed()
+  document.querySelectorAll('#sidebar .side-link, #sidebar .side-foot button').forEach(el => {
+    if (on) { el.title = sideItemLabel(el); el.dataset.sideTitle = '1' }
+    else if (el.dataset.sideTitle) { el.removeAttribute('title'); delete el.dataset.sideTitle }
+  })
+}
+function setSideCollapsed(on, save) {
+  document.body.classList.toggle('side-collapsed', on)
+  const b = document.getElementById('side-toggle')
+  if (b) {
+    const label = on ? 'メニューを開く' : 'メニューを畳む'
+    b.setAttribute('aria-expanded', String(!on)); b.title = label; b.setAttribute('aria-label', label)
+    const i = b.querySelector('i'); if (i) i.className = 'fas ' + (on ? 'fa-angles-right' : 'fa-angles-left')
+  }
+  applySideTitles()
+  if (save) { try { localStorage.setItem(SIDE_KEY, on ? '1' : '0') } catch (e) { /* 覚えられなくても開閉はできる */ } }
+}
+setSideCollapsed(sideCollapsed(), false)
+delegate('sideToggle', () => setSideCollapsed(!sideCollapsed(), true))
+// 後から足す項目（出勤可能日・スタッフの申請）と件数の変化にも title を合わせる
+;(function watchSideNav() {
+  const nav = document.getElementById('side-nav')
+  if (nav && window.MutationObserver) new MutationObserver(() => { if (sideCollapsed()) applySideTitles() }).observe(nav, { childList: true, subtree: true, characterData: true })
+})()
+
 // ============ ダッシュボード ============
 // 入店/退店報告の写真添付（会社全体の設定）。ダッシュボードには現在の状態だけを出し、
 // 変更は影響する案件の数と変更の記録を見てから、確認して行う（#405）
@@ -1282,7 +1320,7 @@ function drawStaffTable(filter) {
         <span class="text-[11px] text-gray-400">（選んだどれかに当たる人）</span>
       </div>
     </div>
-    <div id="staff-bulk" class="hidden fixed bottom-4 inset-x-4 md:left-64 md:right-6 z-20 card p-3 bg-white border border-blue-200 shadow-lg flex items-center gap-2 flex-wrap"></div>
+    <div id="staff-bulk" class="hidden fixed bottom-4 inset-x-4 side-offset-left md:right-6 z-20 card p-3 bg-white border border-blue-200 shadow-lg flex items-center gap-2 flex-wrap"></div>
     <div class="card overflow-x-auto">
       <table class="tbl">
         <thead><tr><th class="w-8"><input type="checkbox" id="staff-pick-all" class="w-4 h-4 align-middle" data-action="staffPickAll" title="表示中のスタッフをすべて選ぶ" aria-label="表示中のスタッフをすべて選ぶ"></th>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>

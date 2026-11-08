@@ -307,6 +307,8 @@
     enableDnD(); renderSide(); updateSaveBar(); updateBulkBar()
   }
 
+  // 案件ごと・人ごとの表の左の列の幅（#9922。文字は省略し、title で全部を出す）
+  const BOARD_RH_W = 150
   function slotGrid(days) {
     const b = BOARD
     const today = dayjs().format('YYYY-MM-DD')
@@ -331,10 +333,11 @@
       if (!plain.has(k)) plain.set(k, { project_id: s.project_id, site: s.site_name || s.location || '', cells: {} })
       const r = plain.get(k); (r.cells[s.work_date] = r.cells[s.work_date] || []).push(s)
     }
-    const w = BS.days > 7 ? 104 : 128
+    // 列の幅（#9922）: 左の列は決まった幅、日の列は残りを等分する（board-fit）。日の列の最小の幅より狭い画面では横にスクロールする
+    const w = BS.days > 7 ? 96 : 100
     const head = `<thead class="sticky top-0 z-10 bg-white"><tr>
-      <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:190px">案件 / 開催場所 / 役割</th>
-      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : ''}" style="min-width:${w}px;width:${w}px">
+      <th class="board-th text-left sticky left-0 z-20 bg-white" style="width:${BOARD_RH_W}px">案件 / 開催場所 / 役割</th>
+      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : ''}">
         <button class="hover:underline" data-action="boardSlotOnDate" data-date="${esc(d)}" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[wd]})</button>${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead>`
     let lastProject = null
@@ -345,20 +348,20 @@
         <a href="#projects/${Number(p.project_id)}" class="font-bold hover:underline ml-1">${esc(p.project_name)}</a><span class="text-gray-400 ml-2">${esc(p.client_name || '')}</span></td></tr>` : ''
       lastProject = r.project_id
       return header + `<tr>
-        <td class="board-rowhead sticky left-0 bg-white z-10"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
-          <p class="text-[11px] text-gray-500">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${w}px">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
+        <td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.site || '（場所未設定）'}\n${r.start}〜${r.end}・${r.role}`)}"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
+          <p class="text-[11px] text-gray-500 truncate">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
+        ${days.map(d => `<td class="board-td align-top">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
       </tr>`
     }).join('')
     const plainRows = BS.onlyShort ? '' : [...plain.values()].map(r => {
       const p = proj.get(r.project_id) || {}
-      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
+      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${p.project_name || ''}\n${r.site || ''}`)}"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
         <p class="text-[11px] text-gray-500 truncate">${esc(r.site)}</p></td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${w}px"><div class="board-drop-src space-y-0.5">${(r.cells[d] || []).map(s => assignedChip(s)).join('')}</div></td>`).join('')}</tr>`
+        ${days.map(d => `<td class="board-td align-top"><div class="board-drop-src space-y-0.5">${(r.cells[d] || []).map(s => assignedChip(s)).join('')}</div></td>`).join('')}</tr>`
     }).join('')
     if (!list.length && !plainRows) return `<div class="p-10 text-center text-sm text-gray-400">
       ${BS.onlyShort ? 'この期間に不足の枠はありません' : 'この期間の枠・シフトはありません'}<br><button class="btn btn-primary mt-3" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button></div>`
-    return `<table class="board-table">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
+    return `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + days.length * w}px">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
   }
 
   // 月のカレンダー（月曜始まり）。日ごとに案件の充足を出し、不足は赤くする。日付を押すとその週の表に切り替える
@@ -464,10 +467,10 @@
     // 『不足のみ』では、同じ行の不足していない日のマスを薄く出す
     return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''} ${checked ? 'is-bulk' : ''}" data-action="boardSelect" data-slot-id="${Number(slot.slot_id)}" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
       tabindex="0" role="button" aria-pressed="${bulk ? checked : sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
-      <div class="flex items-center justify-between gap-1 mb-1">
-        <span class="text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
-        <span class="flex items-center gap-0.5">
-          ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400">${yen(money)}</span>` : ''}
+      <div class="flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5 mb-1">
+        <span class="min-w-0 text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
+        <span class="flex items-center gap-0.5 min-w-0">
+          ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400 truncate min-w-0" title="${esc(yen(money))}">${yen(money)}</span>` : ''}
           ${bulk ? '' : `<button type="button" class="cell-tool" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}" title="枠を編集" aria-label="枠を編集"><i class="fas fa-pen"></i></button>
           <button type="button" class="cell-tool danger" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}" title="枠を削除" aria-label="枠を削除"><i class="fas fa-trash"></i></button>`}
         </span>
@@ -556,13 +559,15 @@
       <span class="text-gray-400">稼働 = 確定・代打のある日数（表示中の案件の範囲）</span></div>`
     if (!rows.length) return tools + `<div class="p-10 text-center text-sm text-gray-400">${BS.personIdleOnly ? 'シフトのない人はいません' : 'この期間のシフトはありません'}</div>`
     const today = dayjs().format('YYYY-MM-DD')
-    return tools + `<table class="board-table"><thead class="sticky top-0 z-10 bg-white"><tr>
-      <th class="board-th text-left sticky left-0 z-20 bg-white" style="min-width:170px">スタッフ</th><th class="board-th">稼働</th>
-      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}" style="min-width:${BS.days > 14 ? 86 : 118}px;max-width:${BS.days > 14 ? 86 : 118}px;width:${BS.days > 14 ? 86 : 118}px">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
+    // 列の幅（#9922）: 名前・稼働の列は決まった幅、日の列は残りを等分する（board-fit）
+    const dayW = BS.days > 14 ? 86 : 104
+    return tools + `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px"><thead class="sticky top-0 z-10 bg-white"><tr>
+      <th class="board-th text-left sticky left-0 z-20 bg-white" style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>
+      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead><tbody>${rows.map(([sid, r]) => {
-      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-[10px] text-amber-600 ml-1">休職中</span>' : ''}</td>
+      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.name || ''} ${AFF_SHORT[r.aff] || ''}${r.emp === 'leave' ? ' 休職中' : ''}`)}"><p class="truncate"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-[10px] text-amber-600 ml-1">休職中</span>' : ''}</p></td>
         <td class="board-td text-center text-xs ${r.workDays ? 'font-bold' : 'text-gray-400'}">${r.workDays}日${r.workShifts > r.workDays ? `<span class="block text-[10px] font-normal text-gray-500">${r.workShifts}シフト</span>` : ''}</td>
-        ${days.map(d => `<td class="board-td align-top" style="max-width:${BS.days > 14 ? 86 : 118}px">${(r.cells[d] || []).map(a => {
+        ${days.map(d => `<td class="board-td align-top">${(r.cells[d] || []).map(a => {
           const p = proj.get(a.project_id) || {}
           const warn = (a.conflicts && a.conflicts.length) || a.ng || (a.unavailable && a.status !== 'absent')
           return `<div class="board-chip st-${a.status} ${warn ? 'chip-warn' : ''} flex-col items-start" onclick="openShiftDetail(${a.shift_id})" title="${esc(p.project_name + ' / ' + (a._site || ''))}">

@@ -137,7 +137,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/apply/:token` | [index.tsx:617](../src/index.tsx#L617) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
 | GET | `/staff` | [index.tsx:631](../src/index.tsx#L631) | スタッフ画面 (スマホファースト SPA) |
 | GET | `/admin` | [index.tsx:679](../src/index.tsx#L679) | 管理者画面 (PC向け SPA) |
-| GET | `/hq` | [index.tsx:802](../src/index.tsx#L802) | SaaS本部管理画面 |
+| GET | `/hq` | [index.tsx:807](../src/index.tsx#L807) | SaaS本部管理画面 |
 <!-- END GENERATED: api-pages -->
 
 ## 4. エンドポイントの一覧
