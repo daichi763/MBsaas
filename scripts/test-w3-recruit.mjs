@@ -297,7 +297,10 @@ if (PERSIST) {
   // 期待する状態: TURNSTILE があればそれ。無ければ、起動に付けた鍵（npm test はテストの環境変数にも渡す）から決める（recruit.ts の turnstileState と同じ）
   const sk = !!process.env.TURNSTILE_SECRET_KEY, pk = !!process.env.TURNSTILE_SITE_KEY
   const expect = process.env.TURNSTILE || (sk && pk ? 'enabled' : pk ? 'site_key_only' : sk ? 'secret_key_only' : 'off')
-  ok(`#501 管理画面に Turnstile の設定状態（${expect}）を返す`, list.turnstile === expect && list.turnstile_enabled === (expect === 'enabled'), { t: list.turnstile })
+  // 設定の状態は会社の管理画面には返さず、本部の「障害」にだけ返す（#9921）
+  ok('#9921 会社の管理画面には Turnstile の設定状態を返さない', list.turnstile === undefined && list.turnstile_enabled === undefined, { t: list.turnstile })
+  const hqErr = must(await client(await login('', 'hq')).get('/api/hq/errors'), 'hq errors')
+  ok(`#501 #9921 本部の「障害」に Turnstile の設定状態（${expect}）を返す`, hqErr.secrets && hqErr.secrets.turnstile === expect, hqErr.secrets)
   if (expect === 'secret_key_only' || expect === 'site_key_only') {
     const s = await newRoles(pid, addDays(D, 8), '10:00', '12:00')
     const page = await newPage([pid], today, addDays(today, 20))
