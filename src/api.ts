@@ -4222,6 +4222,10 @@ async function applyRetirement(db: D1Database, sid: string, companyId: number, r
   if (changed) await notifyLinkedRetirement(db, sid, newRetired)
 }
 
+// 出勤可能日の提出（する／しない。#9918）の入力。true = する（既定）・false = しない（staff_profiles.availability_exempt = 1）。送らなければ変えない
+function availabilityTargetError(v: unknown): string | null {
+  return v === undefined || typeof v === 'boolean' ? null : '出勤可能日の提出は「する」か「しない」を選んでください'
+}
 // スタッフ更新（スタッフマスタ画面から）
 api.put('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
@@ -4246,11 +4250,18 @@ api.put('/admin/staff/:id', async (c) => {
     const err = await validateProfileBase(c, body, roster)
     if (err) return c.json({ error: err }, 400)
   }
+  const avErr = availabilityTargetError(body.availability_target)
+  if (avErr) return c.json({ error: avErr }, 400)
   const retErr = await validateRetirement(c.env.DB, sid, body, roster)
   if (retErr) return c.json(retErr, retErr.confirm_required ? 409 : 400)
   const contactErr = await checkContactUpdate(c, sid, body, roster)
   if (contactErr) return c.json(contactErr.body, contactErr.status)
   await applyProfileUpdate(c, sid, body, roster)
+  // 出勤可能日の提出（#9918）。区分を問わず自社の行に保存する（PUT /admin/availability/targets と同じ列・同じ権限）
+  if (body.availability_target !== undefined) {
+    await c.env.DB.prepare('UPDATE staff_profiles SET availability_exempt = ? WHERE staff_id = ? AND company_id = ?')
+      .bind(body.availability_target ? 0 : 1, sid, u.company_id).run()
+  }
   // メールを送れない環境では、保存した時点で切り替える（#9803。変更申請の承認 #9802 と同じ）
   const contact = await applyContactUpdate(c, body, roster, { direct: !canSendMail(c.env) })
   return c.json({ ok: true, ...contact })
@@ -4294,9 +4305,11 @@ api.post('/admin/staff/:id/login-email-pending/cancel', async (c) => {
 // スタッフ登録
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
-  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force } = await c.req.json()
+  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force, availability_target } = await c.req.json()
   const user_code = normalizeLoginCode(rawCode) // ログイン画面と同じく全角を半角にそろえて保存する（#387）
   if (!user_code || !name || !password) return c.json({ error: 'スタッフ番号・氏名・パスワードは必須です' }, 400)
+  const avErr = availabilityTargetError(availability_target)
+  if (avErr) return c.json({ error: avErr }, 400)
   const pwErr = validatePassword(password)
   if (pwErr) return c.json({ error: pwErr }, 400)
   // 同じ人の確認（#223。スタッフマスタの新規追加と同じ。force で登録を続ける）
@@ -4311,8 +4324,8 @@ api.post('/admin/staff', async (c) => {
       .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null).run()
     const person = await createPerson(c.env.DB, u.company_id)
     await c.env.DB.prepare('UPDATE users SET person_id = ? WHERE user_id = ?').bind(person.person_id, r.meta.last_row_id).run()
-    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own_employee')`)
-      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id).run()
+    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type, availability_exempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own_employee', ?)`)
+      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id, availability_target === false ? 1 : 0).run()
     return c.json({ ok: true })
   } catch (e) {
     // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
@@ -5884,9 +5897,12 @@ api.get('/admin/daily-reports/missing', async (c) => {
   const projectId = toInt(c.req.query('project_id'), 1), staffId = toInt(c.req.query('staff_id'), 1)
   const rows = (await db.prepare(`
     SELECT s.shift_id, s.work_date, s.start_time, s.end_time, us.name AS staff_name, s.staff_id, p.project_id, p.project_name,
-      us.phone AS staff_phone, us.role = 'staff' AS has_login
+      us.phone AS staff_phone, us.role = 'staff' AS has_login,
+      -- 開催場所（#9919。日報のカードと同じ見出しに出す）
+      COALESCE(si.site_name, s.location) AS site_name
     FROM shifts s
     JOIN projects p ON s.project_id = p.project_id
+    LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
     WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date BETWEEN ? AND ?
       ${projectId ? 'AND s.project_id = ?' : ''} ${staffId ? 'AND s.staff_id = ?' : ''}
@@ -5960,9 +5976,13 @@ api.get('/admin/daily-reports', async (c) => {
       SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name,
         cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name, eu.name AS admin_edited_by_name,
         (SELECT COUNT(*) FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id) AS edit_count,
-        (SELECT e.kind FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id ORDER BY e.edit_id DESC LIMIT 1) AS last_edit_kind
+        (SELECT e.kind FROM daily_report_edits e WHERE e.daily_report_id = dr.daily_report_id ORDER BY e.edit_id DESC LIMIT 1) AS last_edit_kind,
+        -- シフトの時間・開催場所（#9919。未提出のカードと同じ見出しに出す。シフトの無い日報は空）
+        sh.start_time AS shift_start_time, sh.end_time AS shift_end_time, COALESCE(si.site_name, sh.location) AS site_name
       FROM daily_reports dr JOIN projects p ON dr.project_id = p.project_id
       JOIN staff_profiles sp ON dr.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
+      LEFT JOIN shifts sh ON sh.shift_id = dr.shift_id AND sh.company_id = dr.company_id
+      LEFT JOIN sites si ON si.site_id = sh.site_id AND si.company_id = sh.company_id
       LEFT JOIN users cu ON cu.user_id = dr.manager_comment_by
       LEFT JOIN users ku ON ku.user_id = dr.manager_checked_by
       LEFT JOIN users iu ON iu.user_id = dr.incident_updated_by
