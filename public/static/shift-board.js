@@ -2929,38 +2929,55 @@
   })
 
   // =========================================================
-  // クライアント詳細: 開催場所
+  // 案件詳細: 開催場所（9914。クライアント詳細から移した）。開催場所はクライアントに属し、同じクライアントの案件で共通に使う
   // =========================================================
-  window.renderClientSitesPanel = async function (cid) {
-    const host = document.getElementById('client-sites-panel'); if (!host) return
-    const { data } = await axios.get('/api/admin/sites?client_id=' + cid)
-    host.innerHTML = `<section class="card p-4" id="client-sites">
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-location-dot text-blue-500 mr-1"></i>開催場所<span class="text-[11px] font-normal text-gray-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>
-      </div>
-      <div class="flex gap-2 mb-3"><input id="site-new-name" class="inp text-sm" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm" placeholder="住所（任意）">
-        <button class="btn btn-primary text-sm shrink-0" data-action="addSite" data-cid="${esc(cid)}"><i class="fas fa-plus"></i>追加</button></div>
-      <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th>シフト</th><th>状態</th><th></th></tr></thead><tbody>
+  let SITE_CTX = null // { pid, cid }
+  window.renderProjectSitesPanel = async function (p) {
+    const host = document.getElementById('project-sites-panel'); if (!host || !p) return
+    const pid = Number(p.project_id), cid = Number(p.client_id) || 0
+    SITE_CTX = { pid, cid }
+    const head = '<h3 class="text-sm font-bold text-gray-700"><i class="fas fa-location-dot text-blue-500 mr-1"></i>開催場所<span class="text-[11px] font-normal text-gray-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>'
+    if (!cid) {
+      host.innerHTML = `<section class="card p-4" id="project-sites">
+        <div class="mb-2">${head}</div>
+        <p class="text-xs text-gray-600 bg-yellow-50 rounded p-2" id="project-sites-no-client"><i class="fas fa-circle-info text-yellow-600 mr-1"></i>開催場所はクライアントごとに登録するため、クライアントのない案件では登録できません。案件にクライアントを設定してください
+          <button type="button" class="text-blue-600 hover:underline ml-1" data-action="editProject" data-id="${pid}">案件を編集</button></p>
+      </section>`
+      return
+    }
+    let data
+    try { data = (await axios.get('/api/admin/sites?client_id=' + cid)).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '開催場所を読み込めませんでした'))}</p>`; return }
+    // 読み込みの間に別の案件へ移ったときは描かない
+    if (!SITE_CTX || SITE_CTX.pid !== pid || !document.getElementById('project-sites-panel')) return
+    host.innerHTML = `<section class="card p-4" id="project-sites">
+      <div class="mb-1">${head}</div>
+      <p class="text-[11px] text-gray-400 mb-2">このクライアント（${esc(p.client_name || '')}）の開催場所です。同じクライアントの案件で共通に使います（ここで変えると、ほかの案件にも反映されます）</p>
+      <div class="flex gap-2 mb-3 flex-wrap"><input id="site-new-name" class="inp text-sm flex-1 min-w-[10rem]" maxlength="100" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm flex-1 min-w-[10rem]" maxlength="200" placeholder="住所（任意）">
+        <button class="btn btn-primary text-sm shrink-0" data-action="addSite"><i class="fas fa-plus"></i>追加</button></div>
+      <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th title="このクライアントの全案件のシフトの件数">シフト（全案件）</th><th>状態</th><th></th></tr></thead><tbody>
         ${data.sites.map(s => `<tr><td><span class="font-bold">${esc(s.site_name)}</span>${s.memo ? `<span class="block text-[11px] text-gray-400 whitespace-pre-wrap">${esc(s.memo)}</span>` : ''}</td>
-          <td class="text-xs text-gray-500">${esc(s.address || '-')}${s.lat != null && s.lng != null ? `<a class="block text-blue-600 hover:underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.lat + ',' + s.lng)}"><i class="fas fa-location-dot mr-0.5"></i>位置を登録済み</a>` : ''}</td><td>${s.shift_count}件</td>
+          <td class="text-xs text-gray-500">${esc(s.address || '-')}${s.lat != null && s.lng != null ? `<a class="block text-blue-600 hover:underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.lat + ',' + s.lng)}"><i class="fas fa-location-dot mr-0.5"></i>位置を登録済み</a>` : ''}</td><td>${Number(s.shift_count) || 0}件</td>
           <td>${s.status === 'inactive' ? '<span class="badge badge-gray">無効</span>' : '<span class="badge badge-green">有効</span>'}</td>
-          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" data-action="editSite" data-id="${Number(s.site_id)}" data-cid="${esc(cid)}">編集</button>
-            ${s.status === 'inactive' ? `<button class="text-xs text-blue-600 hover:underline" data-action="toggleSite" data-id="${s.site_id}" data-cid="${esc(cid)}" data-status="active">有効にする</button>` : `<button class="text-xs text-red-600 hover:underline" data-action="removeSite" data-id="${s.site_id}" data-cid="${esc(cid)}">削除</button>`}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
+          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline ml-2" data-action="editSite" data-id="${Number(s.site_id)}">編集</button>
+            ${s.status === 'inactive'
+              ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="active">有効に戻す</button>`
+              : `<button class="text-xs text-gray-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="inactive" title="シフト枠・単価ルールで選べなくします（登録済みのシフトはそのまま）">無効にする</button>`}
+            <button class="text-xs text-red-600 hover:underline ml-2" data-action="removeSite" data-id="${Number(s.site_id)}"${s.status === 'inactive' ? ' data-inactive="1"' : ''}>削除</button></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
       </tbody></table></div>
     </section>`
     SITES = new Map(data.sites.map(s => [s.site_id, s]))
-    renderClientRatePanel(cid)
+  }
+  // 追加・編集・無効・削除のあとに、開いている案件詳細の欄を描き直す
+  function refreshSitesPanel() {
+    if (SITE_CTX && typeof PROJECT_DETAIL === 'object' && PROJECT_DETAIL && PROJECT_DETAIL.pid === SITE_CTX.pid) renderProjectSitesPanel(PROJECT_DETAIL.data.project)
   }
 
   // =========================================================
   // クライアント詳細: クライアント共通の単価ルール（#470）。そのクライアントの全案件に当てる（案件のルールより弱い）
   // =========================================================
   window.renderClientRatePanel = async function (cid) {
-    let host = document.getElementById('client-rate-panel')
-    if (!host) {
-      const sites = document.getElementById('client-sites-panel'); if (!sites) return
-      host = document.createElement('div'); host.id = 'client-rate-panel'; host.className = 'mt-4'; sites.after(host)
-    }
+    // 差し込み先はクライアント詳細の #client-rate-panel（admin.js の renderClientDetail。9914 で開催場所の欄を外した）
+    const host = document.getElementById('client-rate-panel'); if (!host) return
     let data
     try { data = (await axios.get('/api/admin/rate-rules?client_id=' + Number(cid))).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '単価ルールを読み込めませんでした'))}</p>`; return }
     for (const r of data.rules) RULES.set(r.rule_id, r)
@@ -2989,7 +3006,7 @@
   }))
   // 開催場所の編集（名前・住所・メモ・位置。#406）。名前を変えると、今日以降の枠・シフトの場所名も変わる（#142）
   let SITES = new Map()
-  function openSiteEdit(id, cid) {
+  function openSiteEdit(id) {
     const s = SITES.get(id); if (!s) return
     modal(`
       <h3 class="font-bold text-lg mb-3">開催場所を編集</h3>
@@ -3000,10 +3017,10 @@
           <span class="block text-[11px] text-gray-400">地図アプリで場所を長押し（右クリック）すると表示される数値を貼り付けます。空欄にすると消します</span></label>
         <label class="text-sm text-gray-600 block">メモ<textarea id="se-memo" class="inp" rows="3" maxlength="500" placeholder="入口・搬入口・集合場所など">${esc(s.memo || '')}</textarea></label>
         <p class="text-[11px] text-gray-400">名前を変えると、今日以降の枠・シフト（実績が確定済みのものを除く）と繰り返し登録の場所名も新しい名前になります</p>
-        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSite" data-id="${Number(id)}" data-cid="${esc(cid)}">保存する</button></div>
+        <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSite" data-id="${Number(id)}">保存する</button></div>
       </div>`)
   }
-  async function saveSite(id, cid) {
+  async function saveSite(id) {
     const name = document.getElementById('se-name').value.trim()
     if (!name) { toast('開催場所名を入力してください'); return }
     const ll = document.getElementById('se-latlng').value.trim()
@@ -3016,23 +3033,29 @@
     try {
       await axios.put('/api/admin/sites/' + id, { site_name: name, address: document.getElementById('se-addr').value, memo: document.getElementById('se-memo').value, lat, lng })
     } catch (e) { toast(errMsg(e)); return }
-    invalidateMaster(); closeModal(); toast('保存しました'); renderClientSitesPanel(cid)
+    invalidateMaster(); closeModal(); toast('保存しました'); refreshSitesPanel()
   }
-  delegate('editSite', el => openSiteEdit(Number(el.dataset.id), Number(el.dataset.cid)))
-  delegate('saveSite', el => withSubmitLock(el, () => saveSite(Number(el.dataset.id), Number(el.dataset.cid))))
-  window.addSite = async function (cid) {
+  delegate('editSite', el => openSiteEdit(Number(el.dataset.id)))
+  delegate('saveSite', el => withSubmitLock(el, () => saveSite(Number(el.dataset.id))))
+  // 開催場所のクライアントは、開いている案件のクライアント（画面の値ではなく案件の情報から取る）
+  window.addSite = async function () {
+    const cid = SITE_CTX && SITE_CTX.cid; if (!cid) { toast('案件にクライアントを設定してください'); return }
     const name = document.getElementById('site-new-name').value.trim()
     if (!name) { toast('開催場所名を入力してください'); return }
-    try { await axios.post('/api/admin/sites', { client_id: cid, site_name: name, address: document.getElementById('site-new-addr').value }); invalidateMaster(); toast('追加しました'); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
+    try { await axios.post('/api/admin/sites', { client_id: cid, site_name: name, address: document.getElementById('site-new-addr').value }); invalidateMaster(); toast('追加しました'); refreshSitesPanel() } catch (e) { toast(errMsg(e)) }
   }
-  delegate('addSite', el => withSubmitLock(el, () => addSite(Number(el.dataset.cid))))
-  delegate('toggleSite', el => withSubmitLock(el, () => toggleSite(Number(el.dataset.id), Number(el.dataset.cid), el.dataset.status)))
-  delegate('removeSite', el => withSubmitLock(el, () => removeSite(Number(el.dataset.id), Number(el.dataset.cid))))
-  window.toggleSite = async function (id, cid, status) {
-    try { await axios.put('/api/admin/sites/' + id, { status }); invalidateMaster(); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
+  delegate('addSite', el => withSubmitLock(el, () => addSite()))
+  delegate('toggleSite', el => withSubmitLock(el, () => toggleSite(Number(el.dataset.id), el.dataset.status)))
+  delegate('removeSite', el => withSubmitLock(el, () => removeSite(Number(el.dataset.id), el.dataset.inactive === '1')))
+  window.toggleSite = async function (id, status) {
+    if (status === 'inactive' && !confirm('この開催場所を無効にしますか？（シフト枠・単価ルールで選べなくなります。登録済みのシフトはそのままです）')) return
+    try { await axios.put('/api/admin/sites/' + id, { status }); invalidateMaster(); toast(status === 'inactive' ? '無効にしました' : '有効に戻しました'); refreshSitesPanel() } catch (e) { toast(errMsg(e)) }
   }
-  window.removeSite = async function (id, cid) {
+  window.removeSite = async function (id, inactive) {
     if (!confirm('この開催場所を削除しますか？（シフトで使用中の場合は「無効」にします）')) return
-    try { const { data } = await axios.delete('/api/admin/sites/' + id); invalidateMaster(); toast(data.deactivated ? '使用中のため無効にしました' : '削除しました'); renderClientSitesPanel(cid) } catch (e) { toast(errMsg(e)) }
+    try {
+      const { data } = await axios.delete('/api/admin/sites/' + id); invalidateMaster()
+      toast(data.deactivated ? (inactive ? 'シフト・枠で使用中のため削除できません（無効のままです）' : '使用中のため無効にしました') : '削除しました'); refreshSitesPanel()
+    } catch (e) { toast(errMsg(e)) }
   }
 })()
