@@ -700,7 +700,7 @@ app.get('/admin', async (c) => {
   ${cdnJs('flatpickr@4.6.13/dist/plugins/monthSelect/index.js')}
 </head>
 <body class="bg-gray-50 min-h-screen" data-side-key="admin-side-collapsed:${Number(u.user_id) || 0}">
-  <!-- 左のメニューを畳んだ状態（#9922。人ごと・端末ごとに覚える）を、描く前に戻す（描いた後に畳むと本文が動くため）。開閉は public/static/admin.js -->
+  <!-- 左のメニューを畳んだ状態（#9922。人ごと・端末ごとに覚える）を、描く前に戻す（描いた後に畳むと本文が動くため）。開閉は admin.js（public/static） -->
   <script>try { if (localStorage.getItem(document.body.dataset.sideKey) === '1') document.body.classList.add('side-collapsed') } catch (e) {}</script>
   <div class="flex min-h-screen">
     <aside id="sidebar" class="hidden md:flex flex-col bg-white border-r border-gray-100 fixed inset-y-0 z-30">
