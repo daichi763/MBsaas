@@ -218,6 +218,8 @@ async function browserChecks() {
 
     // ===== 管理画面: 新しい会社の最初の管理者（仮パスワードのまま） =====
     const ck = await login(CODE, 'boss', NEWPW)
+    // 会社管理者の初回の「はじめの準備」（Sprint 18 #9915）は test-w18-tutorial.mjs で確かめる。ここでは主な機能の案内を確かめるため、済んだことにする
+    must(await client(ck).put('/api/admin/tours', { items: [{ key: 'admin-setup', status: 'done' }] }), 'setup done')
     // 仮パスワードの状態をもう一度作る（パスワードの変更の後に案内が始まるかを画面で確かめる）
     if (PERSIST) { d1(`UPDATE users SET must_change_password = 1 WHERE company_id = ${Number(created.company_id)} AND user_code = 'boss'`); await waitServer() }
     await setCookie(ck)

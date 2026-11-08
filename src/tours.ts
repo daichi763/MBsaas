@@ -2,7 +2,8 @@
 // 画面の仕組みは public/static/tour.js。進み具合は人（users の行）ごとに user_tour_progress（migrations/0094）に残す。
 //   GET  /api/admin/tours・/api/staff/tours           … 自分の進み具合（{ progress: { tour_key: { status, step, updated_at } } }）
 //   PUT  /api/admin/tours・/api/staff/tours           … 進み具合を残す（{ items: [{ key, status, step }] }。まとめて最大20件）
-//   GET  /api/admin/tours/checklist                    … 「はじめにやること」の各項目が済んだか（実データから判定）と、出すかどうか
+//   GET  /api/admin/tours/checklist                    … 「はじめにやること」の各項目が済んだか（実データから判定）と、出すかどうか。
+//                                                         setup は初回の「作成までする案内」（Sprint 18 #9915）で使う各項目の済み（logins はログインの発行で済み）
 // /api/admin/* と /api/staff/* の権限のミドルウェア（api.ts）を通ってから呼ばれる。本部の閲覧中（読み取り専用）は書き込まない
 import { Hono } from 'hono'
 
@@ -16,7 +17,8 @@ function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOS
 // 案内を出す画面（管理画面）。tour.js の SCREEN_TOURS と同じ名前にする
 export const ADMIN_TOUR_SCREENS = ['dashboard', 'clients', 'projects', 'staff', 'shifts', 'reports', 'corrections', 'settlement'] as const
 export const TOUR_KEYS: Record<'admin' | 'staff', string[]> = {
-  admin: ['admin-welcome', 'admin-checklist', ...ADMIN_TOUR_SCREENS.map(s => `admin-screen-${s}`)],
+  // admin-setup: 会社管理者の初回の「作成までする案内」（#9915。step は「はじめにやること」の項目の番号）
+  admin: ['admin-welcome', 'admin-checklist', 'admin-setup', ...ADMIN_TOUR_SCREENS.map(s => `admin-screen-${s}`)],
   staff: ['staff-welcome'],
 }
 export const TOUR_STATUSES = ['in_progress', 'done', 'skipped'] as const
@@ -31,9 +33,11 @@ export const CHECKLIST_ITEMS = ['clients', 'projects', 'staff', 'shifts', 'login
  * - 項目がすべて済んでいれば出さない（済んだときに 'done' を残し、後でデータが減っても出し直さない）
  * - 自分が閉じた（skipped）・済んだ（done）なら出さない。「？」から出し直したとき（in_progress）は出す
  * - 自分の記録がなく、同じ会社のほかの管理者が閉じた・済ませたなら出さない（2人目以降の管理者には出さない）
+ * setup（#9915）: 初回の「作成までする案内」の各項目の済み。logins だけは「スタッフにログインを発行した」で済みにする
+ *   （本人のログインを待つと案内の中で終われないため。items.logins は今までどおり、スタッフが1人でもログインしたら済み）
  */
 export async function loadChecklist(db: D1Database, u: any) {
-  if (u.role !== 'company_admin') return { show: false, items: null, completed_now: false }
+  if (u.role !== 'company_admin') return { show: false, items: null, setup: null, completed_now: false }
   const cid = Number(u.company_id), uid = Number(u.user_id)
   const r = await db.prepare(`SELECT
       EXISTS(SELECT 1 FROM clients WHERE company_id = ?) AS clients,
@@ -41,11 +45,13 @@ export async function loadChecklist(db: D1Database, u: any) {
       EXISTS(SELECT 1 FROM staff_profiles WHERE company_id = ?) AS staff,
       EXISTS(SELECT 1 FROM shifts WHERE company_id = ?) AS shifts,
       EXISTS(SELECT 1 FROM users WHERE company_id = ? AND role = 'staff' AND (last_login_at IS NOT NULL OR last_seen_at IS NOT NULL)) AS logins,
+      EXISTS(SELECT 1 FROM users WHERE company_id = ? AND role = 'staff' AND user_code NOT LIKE 'LK-%') AS logins_issued,
       (SELECT status FROM user_tour_progress WHERE user_id = ? AND tour_key = 'admin-checklist') AS mine,
       EXISTS(SELECT 1 FROM user_tour_progress WHERE company_id = ? AND tour_key = 'admin-checklist' AND user_id != ? AND status IN ('done', 'skipped')) AS others_closed`)
-    .bind(cid, cid, cid, cid, cid, uid, cid, uid).first() as any
+    .bind(cid, cid, cid, cid, cid, cid, uid, cid, uid).first() as any
   const items: Record<string, boolean> = {}
   for (const k of CHECKLIST_ITEMS) items[k] = !!Number(r?.[k])
+  const setup: Record<string, boolean> = { ...items, logins: items.logins || !!Number(r?.logins_issued) }
   const allDone = CHECKLIST_ITEMS.every(k => items[k])
   const mine = r?.mine as string | null
   if (allDone) {
@@ -54,10 +60,10 @@ export async function loadChecklist(db: D1Database, u: any) {
       await saveProgress(db, u, [{ key: 'admin-checklist', status: 'done', step: 0 }])
       completedNow = mine === 'in_progress' || !Number(r?.others_closed)
     }
-    return { show: false, items, completed_now: completedNow }
+    return { show: false, items, setup, completed_now: completedNow }
   }
   const show = mine === 'in_progress' ? true : mine ? false : !Number(r?.others_closed)
-  return { show, items, completed_now: false }
+  return { show, items, setup, completed_now: false }
 }
 
 type ProgressItem = { key: string; status: string; step: number }
@@ -112,7 +118,7 @@ function toursApi(app: 'admin' | 'staff') {
   if (app === 'admin') {
     r.get('/tours/checklist', async (c) => {
       const u = c.get('user')
-      if (isHqView(u)) return c.json({ show: false, items: null, completed_now: false })
+      if (isHqView(u)) return c.json({ show: false, items: null, setup: null, completed_now: false })
       return c.json(await loadChecklist(c.env.DB, u))
     })
   }
