@@ -2838,7 +2838,7 @@ delegate('showSiteContactSetting', async () => {
         <input id="sc-note" class="inp" maxlength="100" placeholder="例: 7:00〜22:00（時間外は相談・連絡へ）" value="${esc(s.emergency_note || '')}"></div>
       <div><label class="text-sm text-gray-600 block mb-1">入店の位置が現場から離れているとみなす距離（m）</label>
         <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}">
-        <p class="text-[11px] text-gray-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（クライアント詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
+        <p class="text-[11px] text-gray-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（案件の詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
     </div>
     <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSiteContactSetting">保存する</button></div>`)
 })
@@ -3052,11 +3052,13 @@ async function renderProjectDetail(pid) {
       </section>
     </div>
     <div class="mt-4">${window.projectBasePriceHtml ? projectBasePriceHtml(p) : ''}</div>
+    <div id="project-sites-panel" class="mt-4"></div>
     <div id="project-patterns-panel" class="mt-4"></div>`
   drawProjectStaffPerf()
   fillProjectLatenessCompany()
   // 基本単価は表示だけ（設定は精算画面の「単価の設定」。9201）。提出設定・繰り返し登録（public/static/shift-board.js）
   if (window.renderProjectPatternsPanel) renderProjectPatternsPanel(p)
+  if (window.renderProjectSitesPanel) renderProjectSitesPanel(p) // 開催場所（案件のクライアントの開催場所。9914）
 }
 // 案件詳細でその場で編集する文の項目（9202）。[項目, 見出し, 文字数の上限, 説明]
 const PROJECT_TEXT_FIELDS = [
@@ -3798,10 +3800,10 @@ async function renderClientDetail(cid) {
       </section>
     </div>
     <div id="client-ng-panel" class="mt-4"></div>
-    <div id="client-sites-panel" class="mt-4"></div>`
+    <div id="client-rate-panel" class="mt-4"></div>`
   renderClientNgPanel(cid)
-  // 開催場所（public/static/shift-board.js）
-  if (window.renderClientSitesPanel) renderClientSitesPanel(cid)
+  // クライアント共通の単価ルール（public/static/shift-board.js）。開催場所の欄は案件詳細へ移した（9914）
+  if (window.renderClientRatePanel) renderClientRatePanel(cid)
   if (window.renderClientPartnerPanel) renderClientPartnerPanel(cid) // 協力会社としての支払（public/static/roster.js。#9302）
 }
 // 月を切り替えたら、取引の実績の欄だけを取り直す（編集中の入力を消さない）
@@ -4636,7 +4638,7 @@ async function loadCheckInLocation(box, shiftId) {
   const hasPos = ci.latitude != null && ci.longitude != null
   const map = hasPos ? ` <a class="text-blue-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(Number(ci.latitude) + ',' + Number(ci.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : ''
   const msg = !hasPos ? '<span class="badge badge-yellow">位置なし</span> 入店の報告に位置情報がありません'
-    : ci.distance_m == null ? `<span class="badge badge-gray">判定なし</span> 開催場所の位置が未登録のため、現場との距離を判定できません（クライアント詳細の「開催場所」で位置を登録できます）${map}`
+    : ci.distance_m == null ? `<span class="badge badge-gray">判定なし</span> 開催場所の位置が未登録のため、現場との距離を判定できません（案件の詳細の「開催場所」で位置を登録できます）${map}`
       : ci.far ? `<span class="badge badge-red">位置ずれ</span> 現場から約${fmtDistance(ci.distance_m)}離れた位置で入店を報告しています（基準 ${fmtDistance(d.threshold_m)}）${map}`
         : Number(d.threshold_m) > 0 ? `<span class="badge badge-green">現場付近</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
           : `<span class="badge badge-gray">判定しない設定</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
