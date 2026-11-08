@@ -699,12 +699,17 @@ app.get('/admin', async (c) => {
   ${cdnJs('flatpickr@4.6.13/dist/l10n/ja.js')}
   ${cdnJs('flatpickr@4.6.13/dist/plugins/monthSelect/index.js')}
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body class="bg-gray-50 min-h-screen" data-side-key="admin-side-collapsed:${Number(u.user_id) || 0}">
+  <!-- 左のメニューを畳んだ状態（#9922。人ごと・端末ごとに覚える）を、描く前に戻す（描いた後に畳むと本文が動くため）。開閉は public/static/admin.js -->
+  <script>try { if (localStorage.getItem(document.body.dataset.sideKey) === '1') document.body.classList.add('side-collapsed') } catch (e) {}</script>
   <div class="flex min-h-screen">
-    <aside id="sidebar" class="hidden md:flex flex-col w-60 bg-white border-r border-gray-100 fixed inset-y-0 z-30">
-      <div class="px-5 py-5 border-b border-gray-100">
-        <h1 class="font-bold text-gray-800 flex items-center gap-2 text-lg"><i class="fas fa-tower-cell text-blue-600"></i>Field OS</h1>
-        <p id="company-name" class="text-xs text-gray-400 mt-1 truncate"></p>
+    <aside id="sidebar" class="hidden md:flex flex-col bg-white border-r border-gray-100 fixed inset-y-0 z-30">
+      <div class="side-head px-5 py-5 border-b border-gray-100 flex items-start gap-2">
+        <div class="side-brand flex-1 min-w-0">
+          <h1 class="font-bold text-gray-800 flex items-center gap-2 text-lg"><i class="fas fa-tower-cell text-blue-600"></i>Field OS</h1>
+          <p id="company-name" class="text-xs text-gray-400 mt-1 truncate"></p>
+        </div>
+        <button type="button" id="side-toggle" class="side-toggle" data-action="sideToggle" aria-expanded="true" aria-controls="side-nav" title="メニューを畳む" aria-label="メニューを畳む"><i class="fas fa-angles-left" aria-hidden="true"></i></button>
       </div>
       <nav class="flex-1 overflow-y-auto py-3 px-3 space-y-0.5 text-sm" id="side-nav">
         <a href="#dashboard" class="side-link" data-tab="dashboard"><i class="fas fa-gauge-high w-5"></i>ダッシュボード</a>
@@ -739,14 +744,14 @@ app.get('/admin', async (c) => {
           <a href="#account" class="side-link" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
           <a href="#security" class="side-link" data-tab="security"><i class="fas fa-shield-halved w-5"></i>セキュリティ</a>`)}
       </nav>
-      <div class="p-3 border-t border-gray-100">
+      <div class="side-foot p-3 border-t border-gray-100">
         <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" data-action="hqsOpenSupport">
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
         <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-50 mt-1"><i class="fas fa-right-from-bracket mr-1"></i>ログアウト</button>
       </div>
     </aside>
-    <div class="flex-1 md:ml-60 min-w-0">
+    <div class="admin-main flex-1 min-w-0">
       <!-- スマホ用のヘッダー（#236）: 会社名・氏名、未対応の件数の合計（メニューの各項目にも件数を出す）、ログアウト -->
       <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-2 flex items-center justify-between gap-2">
         <div class="min-w-0 flex-1">

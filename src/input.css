@@ -173,6 +173,38 @@
 .board-cal-line { display: flex; justify-content: space-between; gap: .25rem; font-size: .68rem; white-space: nowrap; overflow: hidden; color: #374151; }
 .board-cal-line.short { color: #b91c1c; font-weight: 700; }
 
+/* 管理画面の左のメニューを畳む（#9922）。body.side-collapsed（admin.js が付ける）のとき、アイコンだけの細い列にする。
+   見出しは区切り線にし、件数のバッジはアイコンの右上に小さく出す。スマホ幅（md 未満）のメニューは変えない */
+.side-toggle { flex-shrink: 0; width: 1.75rem; height: 1.75rem; border-radius: .5rem; color: #9ca3af; display: inline-flex; align-items: center; justify-content: center; font-size: .8rem; }
+.side-toggle:hover { background: #f3f4f6; color: #4b5563; }
+.side-toggle:focus-visible, #sidebar .side-link:focus-visible, #sidebar .side-foot button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 1px; }
+@media (min-width: 768px) {
+  body { --side-w: 15rem; }
+  body.side-collapsed { --side-w: 3.5rem; }
+  #sidebar { width: var(--side-w); transition: width .15s; }
+  .admin-main { margin-left: var(--side-w); transition: margin-left .15s; }
+  /* 下に固定したバーの左の端（メニューの右から 1rem） */
+  .side-offset-left { left: calc(var(--side-w) + 1rem); }
+  body.side-collapsed #sidebar .side-head { padding: .75rem 0; justify-content: center; }
+  body.side-collapsed #sidebar .side-brand { display: none; }
+  body.side-collapsed #side-nav { padding-left: .4rem; padding-right: .4rem; overflow-x: hidden; scrollbar-width: thin; }
+  body.side-collapsed #side-nav .nav-group-head { display: none; }
+  body.side-collapsed #side-nav .nav-group { border-top: 1px solid #e5e7eb; margin-top: .4rem; padding-top: .4rem; }
+  /* 見出しで閉じたまとまりも、畳んだときはアイコンを出す（見出しを出さないので、閉じたままだと開けないため） */
+  body.side-collapsed #side-nav .nav-group.collapsed .nav-group-body { display: block; }
+  /* 文字は大きさ 0 で隠す（読み上げでは名前のまま）。名前はマウスを乗せたときの title で出す */
+  body.side-collapsed #sidebar .side-link, body.side-collapsed #sidebar .side-foot button { position: relative; justify-content: center; gap: 0; padding-left: 0; padding-right: 0; font-size: 0; text-align: center; }
+  body.side-collapsed #sidebar .side-link > i, body.side-collapsed #sidebar .side-foot button > i { font-size: .95rem; margin: 0; }
+  body.side-collapsed #sidebar .side-link > span { position: absolute; top: .1rem; right: .15rem; margin: 0; min-width: .95rem; padding: 0 .2rem; font-size: 9px; line-height: .95rem; text-align: center; }
+  body.side-collapsed #sidebar .side-foot { padding: .5rem .4rem; }
+}
+/* シフト管理の表（#9922）: 横に広い画面では内容の最大幅（max-w-7xl）を外し、週の7日を広く出す */
+body:has(#board-grid) #app, body:has(#board-grid) #hq-support-bar, body:has(#board-grid) #tour-help-bar { max-width: none; }
+/* 案件ごと・人ごとの表は列の幅を固定の計算にする。左の列は決まった幅、日の列は残りを等分する（中の長い文字が列を広げない）。
+   表の最小の幅は shift-board.js が付ける（狭い画面では今までどおり横にスクロールする） */
+.board-table.board-fit { table-layout: fixed; width: 100%; }
+.board-fit .board-rowhead { max-width: none; overflow: hidden; }
+
 /* スマホ幅では入力欄の文字を16px以上にする（iOS の Safari は16px未満の入力欄にフォーカスすると画面を拡大し、戻らないため。#231）。
    スタッフ画面・報告用URL・募集ページの .inp すべてに効かせる。拡大そのもの（maximum-scale）は禁止しない */
 @media (max-width: 640px) {
