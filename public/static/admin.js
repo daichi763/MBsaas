@@ -675,7 +675,7 @@ async function renderDashboard() {
       <p class="text-sm text-gray-700"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付（会社全体）:
         <span class="badge ${data.photo_required_attendance ? 'badge-green' : 'badge-gray'}">${data.photo_required_attendance ? '必須' : '無効'}</span>
         ${photoChanged ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
-      <a href="#account" class="text-xs text-blue-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します（#405）">アカウント設定で変更</a>
+      <a href="#account" class="text-xs text-blue-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します">アカウント設定で変更</a>
     </section>
     </div>`
   // 更新: 見出しと本体だけを描き直す（上に出している「はじめにやること」・お知らせは残す）
@@ -1124,7 +1124,7 @@ function opLogValue(field, v, names) {
 }
 function opLogRowsHtml(logs, names) {
   return logs.map(l => `<div class="border-b border-gray-100 py-1.5">
-      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span>${l.notify_off ? ' <span class="badge badge-gray" title="スタッフに通知を送らずに操作しました（#9906）"><i class="fas fa-bell-slash mr-0.5"></i>通知なし</span>' : ''}</p>
+      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span>${l.notify_off ? ' <span class="badge badge-gray" title="スタッフに通知を送らずに操作しました"><i class="fas fa-bell-slash mr-0.5"></i>通知なし</span>' : ''}</p>
       ${l.changes.length ? `<ul class="text-gray-600 mt-0.5 space-y-0.5">${l.changes.map(c => `<li><span class="text-gray-400">${esc(c.label)}:</span> ${esc(opLogValue(c.field, c.before, names))} <i class="fas fa-arrow-right text-[9px] text-gray-400"></i> ${esc(opLogValue(c.field, c.after, names))}</li>`).join('')}</ul>` : ''}
     </div>`).join('')
 }
@@ -1296,7 +1296,7 @@ function drawStaffTable(filter) {
       <div class="flex gap-2 flex-wrap">
         <button class="btn btn-outline" data-action="reloadStaffList" title="最新の情報に読み直す" aria-label="読み直す"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
-        <a class="btn btn-outline" href="#partners" title="協力会社（Field OS 未契約の所属元）の一覧・連絡先の編集・統合（#161）"><i class="fas fa-building"></i>協力会社</a>
+        <a class="btn btn-outline" href="#partners" title="協力会社（Field OS 未契約の所属元）の一覧・連絡先の編集・統合"><i class="fas fa-building"></i>協力会社</a>
         <button class="btn btn-outline" onclick="showQuickRegister && showQuickRegister()"><i class="fas fa-bolt"></i>仮登録（氏名・電話のみ）</button>
         <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
       </div>
@@ -3280,7 +3280,7 @@ delegate('editProject', el => withSubmitLock(el, async () => {
         <div><label class="text-sm text-gray-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>
         <div><label class="text-sm text-gray-600 block mb-1">現場責任者の電話番号（任意）</label><input id="ep-sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 090-1234-5678" value="${esc(p.site_contact_phone || '')}"></div>
       </div>
-      <p class="text-[11px] text-gray-400 -mt-2">スタッフアプリ・報告用URLの当日のシフトに、タップで電話をかけられる連絡先として出します（空欄なら会社の緊急連絡先だけ。#173）</p>
+      <p class="text-[11px] text-gray-400 -mt-2">スタッフアプリ・報告用URLの当日のシフトに、タップで電話をかけられる連絡先として出します（空欄なら会社の緊急連絡先だけ）</p>
       <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
       <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProject" data-id="${pid}">保存する</button></div>
@@ -4974,6 +4974,7 @@ function reportCommentReadHtml(r, fmt) {
   return `<span class="badge badge-gray font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
 }
 // 最後の実績の修正・再提出（#9902。API の last_edit）。「誰が・いつ・どの項目を・いくつからいくつに」を1行で出し、全部は修正履歴で見る
+// 修正履歴のボタンはこの行に1つだけ出す（この行が出ないときだけ、カードの下に出す。#9920）
 function reportLastEditHtml(r, fields, fmt) {
   const e = r.last_edit
   if (!e || !(e.changes || []).length) return ''
@@ -5035,7 +5036,7 @@ function reportCardHtml(r, fields) {
              ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
         <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
-        ${Number(r.edit_count) > 0 ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
+        ${Number(r.edit_count) > 0 && !reportLastEditHtml(r, fields, fmt) ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
 }
@@ -6986,14 +6987,14 @@ async function renderAccount() {
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-photo-setting">
       <i class="fas fa-camera text-blue-500"></i>
       <span class="text-sm flex-1">入店/退店報告の写真添付（会社全体）: <span id="account-photo-state" class="text-gray-400">…</span>
-        <span class="block text-[11px] text-gray-400">変更すると、写真の設定を案件ごとに決めていない案件のすべてのスタッフに反映されます。変更の前に影響する案件の数と変更の記録を確かめられます（#405）</span></span>
+        <span class="block text-[11px] text-gray-400">変更すると、写真の設定を案件ごとに決めていない案件のすべてのスタッフに反映されます。変更の前に影響する案件の数と変更の記録を確かめられます</span></span>
       <button class="btn btn-outline text-sm" data-action="photoSkipSetting">写真を送れないときの扱い</button>
       <button class="btn btn-outline text-sm" data-action="photoRequiredSetting">写真添付の設定</button>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-shift-notify">
       <i class="fas fa-bell text-blue-500"></i>
       <span class="text-sm flex-1">シフトを確定・削除したときのスタッフへの通知（会社全体）: <span id="account-shift-notify-state" class="text-gray-400">…</span>
-        <span class="block text-[11px] text-gray-400">確認の画面の「スタッフに通知を送る」のチェックの初めの値です。操作のたびに変えられます（#9906）</span></span>
+        <span class="block text-[11px] text-gray-400">確認の画面の「スタッフに通知を送る」のチェックの初めの値です。操作のたびに変えられます</span></span>
       <button class="btn btn-outline text-sm" data-action="shiftNotifySetting">通知の設定</button>
     </section>
     ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`

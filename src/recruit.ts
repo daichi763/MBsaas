@@ -281,9 +281,9 @@ recruitPublicApi.get('/:token', async (c) => {
 })
 
 // Turnstile はサイトキーと秘密鍵の両方があるときだけ使う。片方だけのときは、画面に確認欄が出ないのにサーバーで確認して
-// すべての応募が失敗するため、確認しない（管理画面に「片方だけ設定」と警告を出す。#501）
+// すべての応募が失敗するため、確認しない（本部の画面の「障害」に「片方だけ設定」と警告を出す。#501・#9921）
 function turnstileEnabled(env: Bindings) { return !!(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY) }
-function turnstileState(env: Bindings): 'enabled' | 'off' | 'site_key_only' | 'secret_key_only' {
+export function turnstileState(env: Pick<Bindings, 'TURNSTILE_SITE_KEY' | 'TURNSTILE_SECRET_KEY'>): 'enabled' | 'off' | 'site_key_only' | 'secret_key_only' {
   if (env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY) return 'enabled'
   if (env.TURNSTILE_SITE_KEY) return 'site_key_only'
   if (env.TURNSTILE_SECRET_KEY) return 'secret_key_only'
@@ -387,8 +387,8 @@ function addHourJST(h: number) { return new Date(Date.now() + (9 + h) * 3600 * 1
 
 // 送信回数の制限に使う接続元IPのハッシュ（#351）。塩は秘密の値（RATE_LIMIT_SALT、無ければ TURNSTILE_SECRET_KEY）を使う。
 // どちらも無いときは、ソースから分かる固定の塩で全数を試すとIPに戻せてしまうため、ハッシュを4桁（65,536通り）に縮めて保存する
-// （1つのハッシュに多数のIPが当たるので元のIPは特定できない。ページごと1時間の件数の制限には足りる）。管理画面で設定を促す
-function ipSaltState(env: Bindings): 'set' | 'turnstile' | 'none' { return env.RATE_LIMIT_SALT ? 'set' : env.TURNSTILE_SECRET_KEY ? 'turnstile' : 'none' }
+// （1つのハッシュに多数のIPが当たるので元のIPは特定できない。ページごと1時間の件数の制限には足りる）。本部の画面の「障害」で設定を促す（#9921）
+export function ipSaltState(env: Pick<Bindings, 'RATE_LIMIT_SALT' | 'TURNSTILE_SECRET_KEY'>): 'set' | 'turnstile' | 'none' { return env.RATE_LIMIT_SALT ? 'set' : env.TURNSTILE_SECRET_KEY ? 'turnstile' : 'none' }
 let warnedNoSalt = false
 async function ipHashFor(env: Bindings, ip: string) {
   const secret = env.RATE_LIMIT_SALT || env.TURNSTILE_SECRET_KEY
@@ -856,9 +856,9 @@ recruitAdminApi.get('/recruit-pages', async (c) => {
     out.push({ ...r, questions: parseQuestions(r.questions), project_names: parseIds(r.project_ids).map(id => pname.get(id) || `#${id}`), open_roles: sum.roles,
       open_remaining: sum.remaining, is_open: pageIsOpen(r), expired: r.date_to < todayJST() })
   }
-  const turnstile = turnstileState(c.env)
   // staff_app_recruit: スタッフアプリの募集が動いているか（#9411 で既定は止めている。止めているときは画面でアプリ向けの設定を出さない）
-  return c.json({ pages: out, turnstile, turnstile_enabled: turnstile === 'enabled', staff_app_recruit: staffAppRecruitEnabled(c.env) })
+  // 秘密の値（Turnstile・RATE_LIMIT_SALT）の設定の状態は会社には返さない。本部の画面の「障害」に出す（#9921）
+  return c.json({ pages: out, staff_app_recruit: staffAppRecruitEnabled(c.env) })
 })
 
 recruitAdminApi.post('/recruit-pages', async (c) => {
@@ -979,7 +979,7 @@ recruitAdminApi.get('/recruit-applications', async (c) => {
   // 絞り込みの選択肢（募集ページ）と、枠で絞り込んだときの枠の情報（まとめて見送るボタンに使う）
   const pages = ((await db.prepare(`SELECT page_id, title, status FROM recruit_pages WHERE company_id = ? ORDER BY status = 'open' DESC, date_from DESC, page_id DESC LIMIT 200`).bind(u.company_id).all()).results as any[])
   const slot = slotRoleId ? await slotSummary(db, u.company_id, slotRoleId) : null
-  const meta = { counts: await counts(db, u.company_id, true), total, offset, next_offset: nextOffset, truncated: nextOffset !== null, pages, slot, ip_salt: ipSaltState(c.env) }
+  const meta = { counts: await counts(db, u.company_id, true), total, offset, next_offset: nextOffset, truncated: nextOffset !== null, pages, slot }
   if (!apps.length) return c.json({ applications: [], ...meta })
   // 応募IDは json_each で1つにまとめてバインドする（D1 のバインド上限 100）
   // 枠が削除された日時（slot_removed）も出すため、枠・役割は LEFT JOIN にする（#65）。状態は承認後のシフトの有無で判定する（#64）

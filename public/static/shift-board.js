@@ -2904,8 +2904,8 @@
       <td class="text-xs text-gray-500">${esc([s.site_name || s.location, s.role].filter(Boolean).join('・') || '-')}</td>
       <td class="whitespace-nowrap"><span class="badge ${ST_BADGE[s.status] || 'badge-gray'}">${esc(ST_LABEL[s.status] || s.status)}</span>${s.settle_status === 'confirmed' ? '<span class="badge badge-green ml-1">実績確定</span>' : ''}</td>
       <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button>
-        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します（#393）">打刻を修正</button>` : ''}
-        <button class="text-xs text-gray-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか（#159）">履歴</button></td></tr>`).join('')
+        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します">打刻を修正</button>` : ''}
+        <button class="text-xs text-gray-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか">履歴</button></td></tr>`).join('')
     const table = (list, empty) => `<div class="overflow-x-auto max-h-80 overflow-y-auto"><table class="tbl"><thead><tr><th>日付</th><th>案件</th><th>時間</th><th>開催場所・役割</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows(list) || `<tr><td colspan="6" class="text-center text-gray-400">${empty}</td></tr>`}</tbody></table></div>`
     const absent = past.filter(s => s.status === 'absent').length

@@ -79,7 +79,10 @@ const page = await newPage([pid], today, addDays(today, 30), { contact_note: '�
   const g = must(await pub.get(`/api/public/recruit/${page.token}`), 'public get')
   ok('#351 公開ページ: 同意文に書く保存期間（180日）と会社名を返す', g.retention_days === 180 && !!g.company_name, { r: g.retention_days, c: g.company_name })
   const l = await listApps({ status: 'pending', page_id: page.page_id })
-  ok('#351 応募一覧: 送信回数の制限の塩の設定状態を返す', ['set', 'turnstile', 'none'].includes(l.ip_salt), l.ip_salt)
+  // 塩の設定状態は会社の応募一覧には返さず、本部の「障害」にだけ返す（#9921）
+  ok('#351 #9921 応募一覧: 送信回数の制限の塩の設定状態を会社には返さない', l.ip_salt === undefined, l.ip_salt)
+  const hqErr = must(await client(await login('', 'hq')).get('/api/hq/errors'), 'hq errors')
+  ok('#351 #9921 本部の「障害」に送信回数の制限の塩の設定状態を返す（値は返さない）', ['set', 'turnstile', 'none'].includes(hqErr.secrets && hqErr.secrets.rate_limit_salt), hqErr.secrets)
 }
 
 // ---------- #512 全角の電話番号 / #416 入力の誤りの欄 ----------
