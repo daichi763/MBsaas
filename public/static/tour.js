@@ -781,9 +781,11 @@
 
   // ログインの案内（staff-lifecycle.js の showLoginGuide）に渡す内容。② 自社雇用で登録したときは、入れたスタッフ番号・初期パスワードから作る
   function guideFrom(body) {
-    if (!body || !body.user_code || !body.password || !S.me) return null
+    // ログインを作るのは ②（自社雇用）と ③ でスタッフ番号・パスワードを入れたときだけ（src/roster.ts の wantsLogin と同じ）。④ は作らない
+    if (!body || !body.user_code || !body.password || !S.me || !['employee', 'partner'].includes(body.route)) return null
     const code = S.me.company_code || ''
-    return { login_url: `${location.origin}/login?c=${encodeURIComponent(code)}`, company_code: code, company_name: S.me.company_name || '', user_code: String(body.user_code), password: String(body.password) }
+    // スタッフ番号はサーバーと同じく全角を半角にして前後の空白を除いたもの
+    return { login_url: `${location.origin}/login?c=${encodeURIComponent(code)}`, company_code: code, company_name: S.me.company_name || '', user_code: String(body.user_code).normalize('NFKC').trim(), password: String(body.password) }
   }
 
   // 各項目の案内。hints は上から順に、条件に合い画面に出ている最初のものを指す（フォームの中 → 開くボタンの順）
