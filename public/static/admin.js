@@ -5351,7 +5351,12 @@ const ANALYTICS = { data: null, key: '', wantKey: '', month: '', project: '' }
 async function renderAnalytics(month, project) {
   loading()
   ANALYTICS.month = /^\d{4}-\d{2}$/.test(month || '') ? month : (ANALYTICS.month || dayjs().format('YYYY-MM'))
-  if (project !== undefined) ANALYTICS.project = /^\d+$/.test(String(project)) ? String(project) : ''
+  if (project !== undefined) {
+    const next = /^\d+$/.test(String(project)) ? String(project) : ''
+    // グラフで選んだ日報の項目は案件ごとに違うので、案件を変えたら上の「指標」に合わせ直す（#9916）
+    if (next !== ANALYTICS.project && ACHART.metric === 'field') ACHART.metric = ''
+    ANALYTICS.project = next
+  }
   const params = { month: ANALYTICS.month }
   if (ANALYTICS.project) params.project_id = ANALYTICS.project
   let data
@@ -5376,7 +5381,8 @@ document.addEventListener('change', ev => {
   if (!t || !t.matches) return
   if (t.matches('select[data-analytics-project]')) renderAnalytics(undefined, t.value)
   else if (t.matches('input[data-analytics-month]')) { if (/^\d{4}-\d{2}$/.test(t.value)) renderAnalytics(t.value) }
-  else if (t.matches('select[data-analytics-key]')) { ANALYTICS.key = ANALYTICS.wantKey = t.value; drawAnalytics() }
+  else if (t.matches('select[data-analytics-key]')) { ANALYTICS.key = ANALYTICS.wantKey = t.value; ACHART.metric = ''; drawAnalytics() }
+  else if (t.matches('#analytics-chart-card [data-chart]')) onAnalyticsChartChange(t)
 })
 
 // 案件の月間目標（#292）。日報テンプレートの数値項目ごとに、スタッフ1人あたりの件数を決める。スタッフの実績画面に進み具合が出る
@@ -5523,9 +5529,9 @@ function drawAnalytics() {
         <div class="card p-3 text-center"><p class="text-xl font-bold text-blue-600">${esc(v)}</p><p class="text-xs text-gray-500">${esc(l)}${pastFieldMark(f)}</p></div>`).join('')}
     </section>
     ${project && !fields.length ? '<p class="card p-4 text-sm text-gray-400 mb-5">この月のこの案件の日報には、集計できる数値の項目がありません。</p>' : ''}
-    <section class="card p-4 mb-5">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">日別推移（${esc(chartLabel)}）${csvLink('daily')}</h3>
-      ${project && !key ? '<p class="text-sm text-gray-400">表示する項目がありません</p>' : '<canvas id="daily-chart" height="80"></canvas>'}
+    <section class="card p-4 mb-5" id="analytics-chart-card" data-csv-daily="${esc('/api/admin/analytics/csv?' + csvQs('daily'))}">
+      <h3 class="text-sm font-bold text-gray-700 mb-3">推移（${esc(chartLabel)}）</h3>
+      <div id="analytics-chart-body" class="py-6 text-center"><span class="spin"></span></div>
     </section>
     <section class="card p-4 mb-5">
       <div class="flex items-center gap-2 mb-3 flex-wrap">
@@ -5569,20 +5575,204 @@ function drawAnalytics() {
       </div>
     </section>`}`
 
-  if (project && !key) return
-  // 日別推移は月の1日から末日まで並べ、日報のない日は0にする（#550。日付が詰まって見えないように）。全案件のときは日報数
-  const byDay = new Map(data.daily.map(d => [d.work_date, d]))
-  const days = Array.from({ length: m0.daysInMonth() }, (_, i) => m0.add(i, 'day').format('YYYY-MM-DD'))
-  const dayValue = d => (key ? (d.values && d.values[key]) || 0 : Number(d.reports) || 0)
-  new Chart(document.getElementById('daily-chart'), {
-    type: 'bar',
-    data: {
-      labels: days.map(d => dayjs(d).format('M/D')),
-      datasets: [{ label: chartLabel, data: days.map(d => (byDay.get(d) ? dayValue(byDay.get(d)) : 0)), backgroundColor: '#2563eb' }],
-    },
-    options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
-  })
+  loadAnalyticsChart()
 }
+
+// 実績分析のグラフ（#9916）。期間（選んだ月・直近3/6/12か月・月の指定。12か月まで）、まとめ方（日・週〈月曜はじまり〉・月）、指標、
+// 分け方（案件のときはスタッフ別・開催場所別、全案件のときは案件別）と、表示（積み上げ棒・折れ線・合計の横棒）を選べる。
+// 設定は案件・月を移っても引き継ぐ（ページを開き直すまで）。分け方は案件のときと全案件のときで別々に覚える。
+// 指標は、グラフで選ぶまでは上の「指標」に合わせる。集計は API（/api/admin/analytics/series）で行う。日報のない日・週・月は 0 で並べる（#550）
+const ACHART = { range: 'month', from: '', to: '', unit: 'day', metric: '', key: '', splitProject: 'none', splitAll: 'none', viewPlain: 'bar', viewSplit: 'stack', top: 5, staffMode: 'top', picks: {}, colors: {}, seq: 0, chart: null, data: null }
+const ACHART_MAX_MONTHS = 12
+const ACHART_MAX_PICK = 8
+// 区別しやすい8色（分ける数の上限と同じ）。「ほか」は灰色
+const ACHART_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
+const ACHART_OTHER = '#a3a3a3'
+const ACHART_RANGES = [['month', '選んだ月'], ['3', '直近3か月'], ['6', '直近6か月'], ['12', '直近12か月'], ['custom', '期間を指定']]
+const ACHART_UNITS = [['day', '日ごと'], ['week', '週ごと'], ['month', '月ごと']]
+const ACHART_SPLITS = { none: '分けない', staff: 'スタッフ別', site: '開催場所別', project: '案件別' }
+const achartSplit = () => (ANALYTICS.project ? ACHART.splitProject : ACHART.splitAll)
+const achartView = () => (achartSplit() === 'none' ? ACHART.viewPlain : ACHART.viewSplit)
+const achartMonths = (a, b) => dayjs(b + '-01').diff(dayjs(a + '-01'), 'month') + 1
+// 期間（開始月・終了月）。「選んだ月」「直近Nか月」は上の月に合わせる
+function achartPeriod() {
+  const m = ANALYTICS.month
+  if (ACHART.range === 'custom' && ACHART.from && ACHART.to) return [ACHART.from, ACHART.to]
+  if (/^\d+$/.test(ACHART.range)) return [dayjs(m + '-01').subtract(Number(ACHART.range) - 1, 'month').format('YYYY-MM'), m]
+  return [m, m]
+}
+// 色は分けたもの（スタッフ・開催場所・案件）ごとに決め、期間や順位が変わっても同じ色のままにする（空いている色を順に使う）
+function achartColors(split, ids) {
+  const mem = ACHART.colors[split] || (ACHART.colors[split] = {})
+  const used = new Set(); const out = {}
+  for (const id of ids) if (mem[id] !== undefined && !used.has(mem[id])) { out[id] = mem[id]; used.add(mem[id]) }
+  for (const id of ids) {
+    if (out[id] !== undefined) continue
+    const free = ACHART_COLORS.findIndex((_, i) => !used.has(i))
+    out[id] = mem[id] = free < 0 ? 0 : free; used.add(out[id])
+  }
+  return id => ACHART_COLORS[out[id]]
+}
+async function loadAnalyticsChart() {
+  const body = document.getElementById('analytics-chart-body'); if (!body) return
+  const seq = ++ACHART.seq
+  const [from, to] = achartPeriod()
+  const split = achartSplit()
+  const params = { from, to, unit: ACHART.unit, split }
+  if (ANALYTICS.project) params.project_id = ANALYTICS.project
+  params.metric = ACHART.metric || (ANALYTICS.key ? 'field' : 'reports')
+  if (params.metric === 'field') params.key = ACHART.metric ? ACHART.key : ANALYTICS.key
+  if (split !== 'none') {
+    params.top = ACHART.top
+    const ids = split === 'staff' && ACHART.staffMode === 'pick' ? (ACHART.picks[ANALYTICS.project] || []) : []
+    if (ids.length) params.ids = ids.join(',')
+  }
+  body.style.opacity = '0.5'
+  let d
+  try { d = (await axios.get('/api/admin/analytics/series', { params })).data } catch (e) {
+    if (seq !== ACHART.seq || !document.getElementById('analytics-chart-body')) return
+    body.style.opacity = ''
+    body.innerHTML = `<p class="text-sm text-red-600">${esc(showApiError(e, 'グラフを読み込めませんでした'))}</p>`; return
+  }
+  // 読み込み中に設定や画面が変わったときは、古い結果を描かない
+  if (seq !== ACHART.seq || !document.getElementById('analytics-chart-body')) return
+  ACHART.data = d
+  drawAnalyticsChart()
+}
+function analyticsChartControlsHtml(d) {
+  const split = achartSplit(); const view = achartView()
+  const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`
+  const sel = (name, label, options, cur, cls = '') => `<label class="text-xs text-gray-500">${esc(label)}
+    <select class="inp text-sm w-auto block ${cls}" data-chart="${name}" aria-label="グラフの${esc(label)}">${options.map(([v, l]) => opt(v, l, cur)).join('')}</select></label>`
+  const metricVal = m => (m.metric === 'field' ? 'field:' + m.key : m.metric)
+  const curMetric = d.metric === 'field' ? 'field:' + d.key : d.metric
+  const picks = ACHART.picks[ANALYTICS.project] || []
+  const picking = split === 'staff' && ACHART.staffMode === 'pick'
+  return `
+    <div class="flex items-end gap-2 flex-wrap mb-3">
+      ${sel('range', '期間', ACHART_RANGES, ACHART.range)}
+      ${ACHART.range === 'custom' ? `<div class="text-xs text-gray-500">開始月〜終了月（${ACHART_MAX_MONTHS}か月まで）
+        <div class="flex items-center gap-1"><input type="month" class="inp text-sm w-auto" data-chart="from" value="${esc(d.from)}" aria-label="開始月">
+        <span>〜</span><input type="month" class="inp text-sm w-auto" data-chart="to" value="${esc(d.to)}" aria-label="終了月"></div></div>` : ''}
+      ${sel('unit', 'まとめ方', ACHART_UNITS, d.unit)}
+      ${sel('metric', '指標', d.metrics.map(m => [metricVal(m), m.label + (m.past ? '（以前の項目）' : '')]), curMetric, 'max-w-[13rem]')}
+      ${sel('split', '分け方', d.splits.map(s => [s, ACHART_SPLITS[s] || s]), split)}
+      ${split === 'none'
+        ? sel('view', '表示', [['bar', '棒グラフ'], ['line', '折れ線']], view)
+        : sel('view', '表示', [['stack', '積み上げ棒'], ['line', '折れ線'], ['hbar', '合計の横棒']], view)}
+      ${split === 'staff' ? sel('staffMode', '対象', [['top', '上位から'], ['pick', '人を選ぶ']], ACHART.staffMode) : ''}
+      ${split !== 'none' && !picking ? sel('top', '件数', [3, 5, 8].map(n => [n, `上位${n}${split === 'staff' ? '人' : '件'}`]), ACHART.top) : ''}
+      ${picking ? `<button class="btn btn-outline text-sm" data-action="pickAnalyticsStaff"><i class="fas fa-user-check"></i>スタッフを選ぶ（${picks.length}人）</button>` : ''}
+    </div>`
+}
+function drawAnalyticsChart() {
+  const card = document.getElementById('analytics-chart-card'); const d = ACHART.data
+  if (!card || !d) return
+  if (ACHART.chart) { try { ACHART.chart.destroy() } catch (e) { } ACHART.chart = null }
+  const split = achartSplit(); const view = achartView()
+  const num = v => Number(v || 0).toLocaleString()
+  const fmtMonth = m => dayjs(m + '-01').format('YYYY年M月')
+  const period = d.from === d.to ? fmtMonth(d.from) : `${fmtMonth(d.from)}〜${fmtMonth(d.to)}`
+  const multiYear = d.from.slice(0, 4) !== d.to.slice(0, 4)
+  const labelOf = b => (d.unit === 'month' ? dayjs(b + '-01').format(multiYear ? 'YYYY/M' : 'M月')
+    : dayjs(b).format(multiYear ? 'YY/M/D' : 'M/D') + (d.unit === 'week' ? '〜' : ''))
+  const titleOf = b => (d.unit === 'month' ? fmtMonth(b) : d.unit === 'week' ? dayjs(b).format('YYYY年M月D日') + 'からの週' : dayjs(b).format('YYYY年M月D日') + `（${'日月火水木金土'[dayjs(b).day()]}）`)
+  const picking = split === 'staff' && ACHART.staffMode === 'pick'
+  const picks = ACHART.picks[ANALYTICS.project] || []
+  const colorOf = achartColors(split, d.series.map(s => s.id))
+  const parts = split === 'none' ? [] : [...d.series.map(s => ({ ...s, color: colorOf(s.id) })),
+    ...(d.other ? [{ id: 'other', label: 'ほか', values: d.other.values, total: d.other.total, color: ACHART_OTHER }] : [])]
+  const notes = []
+  if (d.unit === 'week') notes.push('週は月曜はじまりです。期間の最初と最後の週は、期間に入る日だけを数えます。')
+  if (split === 'site') notes.push('開催場所は、日報のシフトの開催場所です（シフトや開催場所のない日報は「（開催場所なし）」）。')
+  if (split !== 'none') notes.push(picking && picks.length
+    ? '選んだ人のほかは「ほか」にまとめています（この期間に日報のない人は出ません）。'
+    : `合計の多い上位${d.top}${split === 'staff' ? '人' : '件'}を出し、残りは「ほか」にまとめています。`)
+  if (picking && !picks.length) notes.push('「スタッフを選ぶ」で比べる人を選んでください（選ぶまでは上位の人を出します）。')
+  if (!d.total_sum) notes.push('この期間の日報はありません。')
+  const hbar = split !== 'none' && view === 'hbar'
+  const height = hbar ? Math.max(120, parts.length * 34 + 40) : 300
+  card.innerHTML = `
+    <div class="flex items-center gap-2 mb-2 flex-wrap">
+      <h3 class="text-sm font-bold text-gray-700">推移（${esc(d.label)}${split !== 'none' ? '・' + esc(ACHART_SPLITS[split] || '') : ''}）</h3>
+      <span class="text-xs text-gray-500">${esc(period)}・合計 ${esc(num(d.total_sum))}</span>
+      <a class="text-xs text-blue-600 hover:underline ml-auto" href="${esc(card.dataset.csvDaily || '')}" title="選んだ月の日別の表（CSV）"><i class="fas fa-file-csv mr-0.5"></i>CSV（${esc(dayjs(ANALYTICS.month + '-01').format('M月'))}の日別）</a>
+    </div>
+    ${analyticsChartControlsHtml(d)}
+    <div id="analytics-chart-body" style="position:relative;height:${height}px"><canvas id="daily-chart" role="img" aria-label="${esc(d.label)}の推移のグラフ"></canvas></div>
+    ${notes.length ? `<p class="text-xs text-gray-500 mt-2">${notes.map(esc).join('<br>')}</p>` : ''}`
+  const legend = { display: parts.length > 1, position: 'bottom', labels: { boxWidth: 12, boxHeight: 12 } }
+  const tooltip = { callbacks: { title: items => (!items[0] ? '' : hbar ? items[0].label : titleOf(d.buckets[items[0].dataIndex])) } }
+  const yScale = { beginAtZero: true, ticks: { precision: 0 } }
+  const dots = d.buckets.length <= 62 ? 3 : 0
+  let cfg
+  if (hbar) {
+    cfg = {
+      type: 'bar',
+      data: { labels: parts.map(p => p.label), datasets: [{ label: d.label, data: parts.map(p => p.total), backgroundColor: parts.map(p => p.color), borderRadius: 4, maxBarThickness: 22 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip }, scales: { x: yScale } },
+    }
+  } else if (split === 'none') {
+    cfg = {
+      type: view === 'line' ? 'line' : 'bar',
+      data: { labels: d.buckets.map(labelOf), datasets: [{ label: d.label, data: d.total, backgroundColor: '#2563eb', borderColor: '#2563eb', borderWidth: view === 'line' ? 2 : 0, pointRadius: dots, tension: 0.2 }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip }, scales: { y: yScale } },
+    }
+  } else {
+    const line = view === 'line'
+    cfg = {
+      type: line ? 'line' : 'bar',
+      data: {
+        labels: d.buckets.map(labelOf),
+        datasets: parts.map(p => ({ label: p.label, data: p.values, backgroundColor: p.color, borderColor: p.color, borderWidth: line ? 2 : 0,
+          pointRadius: line ? dots : 0, tension: 0.2, ...(line && p.id === 'other' ? { borderDash: [4, 3] } : {}) })),
+      },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend, tooltip },
+        scales: line ? { y: yScale } : { x: { stacked: true }, y: { ...yScale, stacked: true } } },
+    }
+  }
+  ACHART.chart = new Chart(document.getElementById('daily-chart'), cfg)
+}
+// グラフの設定の変更（期間・まとめ方・指標・分け方・表示・件数・対象）。表示だけのときは読み込み直さない
+function onAnalyticsChartChange(t) {
+  const name = t.dataset.chart; const v = t.value
+  if (name === 'view') { if (achartSplit() === 'none') ACHART.viewPlain = v; else ACHART.viewSplit = v; return drawAnalyticsChart() }
+  if (name === 'range') {
+    if (v === 'custom') { const [a, b] = achartPeriod(); ACHART.from = a; ACHART.to = b }
+    ACHART.range = v
+  } else if (name === 'from' || name === 'to') {
+    if (!/^\d{4}-\d{2}$/.test(v)) return
+    let [a, b] = name === 'from' ? [v, ACHART.to] : [ACHART.from, v]
+    if (a > b) [a, b] = [b, a]
+    if (achartMonths(a, b) > ACHART_MAX_MONTHS) { toast(`期間は${ACHART_MAX_MONTHS}か月までにしてください`); return drawAnalyticsChart() }
+    ACHART.from = a; ACHART.to = b
+  } else if (name === 'unit') ACHART.unit = v
+  else if (name === 'metric') { const i = v.indexOf(':'); ACHART.metric = i < 0 ? v : v.slice(0, i); ACHART.key = i < 0 ? '' : v.slice(i + 1) }
+  else if (name === 'split') { if (ANALYTICS.project) ACHART.splitProject = v; else ACHART.splitAll = v }
+  else if (name === 'top') ACHART.top = Number(v) || 5
+  else if (name === 'staffMode') ACHART.staffMode = v
+  else return
+  loadAnalyticsChart()
+}
+// 比べるスタッフを選ぶ（8人まで）。候補はこの期間に日報のある人（指標の合計の多い順）
+delegate('pickAnalyticsStaff', () => {
+  const d = ACHART.data; if (!d) return
+  const picks = new Set((ACHART.picks[ANALYTICS.project] || []).map(Number))
+  modal(`
+    <h3 class="font-bold text-lg mb-1">比べるスタッフを選ぶ</h3>
+    <p class="text-xs text-gray-500 mb-3">${ACHART_MAX_PICK}人まで選べます。この期間に日報のある人を、${esc(d.label)}の多い順に出しています。</p>
+    <div class="max-h-[50vh] overflow-y-auto border rounded-lg divide-y">
+      ${d.choices.map(ch => `<label class="flex items-center gap-2 px-3 py-2 text-sm"><input type="checkbox" class="w-4 h-4 achart-pick" value="${Number(ch.id)}" ${picks.has(Number(ch.id)) ? 'checked' : ''}>
+        <span class="flex-1">${esc(ch.label)}</span><span class="text-xs text-gray-500">${esc(Number(ch.total || 0).toLocaleString())}</span></label>`).join('') || '<p class="text-sm text-gray-400 p-3">この期間に日報のある人がいません</p>'}
+    </div>
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="savePickAnalyticsStaff">このスタッフで比べる</button></div>`)
+})
+delegate('savePickAnalyticsStaff', () => {
+  const ids = [...document.querySelectorAll('.achart-pick:checked')].map(el => Number(el.value))
+  if (ids.length > ACHART_MAX_PICK) { toast(`選べるのは${ACHART_MAX_PICK}人までです`); return }
+  ACHART.picks[ANALYTICS.project] = ids
+  closeModal(); loadAnalyticsChart()
+})
 
 // ============ お知らせ配信 ============
 // 一覧は50件ずつ（もっと見る）。キーワード・配信先の案件・期間・状態で絞り込める。配信先の案件名・配信した人も出す（#368）。
