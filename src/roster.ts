@@ -588,9 +588,6 @@ export async function linkedStaffEmails(db: D1Database, staffIds: number[]): Pro
 const rosterApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.get('user').company_id); return next() })
 
-// 同意文面（共有範囲）— フロントのポップアップ表示用
-rosterApi.get('/consent-terms', (c) => c.json({ version: CONSENT_VERSION, shared: SHARED_SCOPE, not_shared: NOT_SHARED_SCOPE }))
-
 // 必須項目設定の取得
 rosterApi.get('/field-settings', async (c) => {
   const u = c.get('user')

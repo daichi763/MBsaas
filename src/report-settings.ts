@@ -583,17 +583,6 @@ async function staffProjectIds(db: D1Database, companyId: number, staffId: numbe
   return ((await db.prepare('SELECT DISTINCT project_id FROM shifts WHERE staff_id = ? AND company_id = ?').bind(staffId, companyId).all()).results as any[]).map(r => r.project_id)
 }
 
-// 旧来のスタッフ単位の提出設定 API（PUT /admin/staff/:id/report-settings）の勤怠部分: 所属する全案件の設定を置き換える
-// mode = '' / null は「案件の標準設定に戻す」（案件 × スタッフ別の行を消し、スタッフ単位の値も消す。#413）
-export async function applyLegacyStaffMode(db: D1Database, companyId: number, staffId: number, mode: any, u: any) {
-  if (!mode) return { projects: (await resetStaffSettings(db, companyId, staffId, null, u)).projects }
-  const projects = await staffProjectIds(db, companyId, staffId)
-  for (const pid of projects) await setStaffSettings(db, companyId, pid, new Map([[staffId, flagsFromLegacyMode(mode)]]), 'individual', u)
-  // スタッフ単位の値も保存する（これから所属する案件で、案件 × スタッフ別の行がない間に使う）
-  await db.prepare('UPDATE staff_profiles SET attendance_mode = ? WHERE staff_id = ? AND company_id = ?').bind(mode, staffId, companyId).run()
-  return { projects: projects.length }
-}
-
 // スタッフの設定を案件の標準設定に戻す（#413）。案件 × スタッフ別の行を消して、標準設定に従う状態にする。
 // projectIds が null なら、シフトのあるすべての案件。すべての案件を戻すときは、スタッフ単位の旧設定（none / in_out）も消す。
 // 一部の案件だけを戻すときに旧設定が残っている場合は、行を消すと旧設定が効くため、標準設定の値で行を作る（標準（引き継ぎ））

@@ -333,7 +333,7 @@ adminUsersApi.post('/users/:id/reset-password', async (c) => {
 })
 
 // =========================================================
-// 本部（/api/hq/companies/:id/users。system_admin のみ。権限の確認は api.ts の /hq/* ミドルウェア）
+// 本部（/api/hq/companies/:id/users の追加・変更。一覧は GET /api/hq/companies/:id の users。system_admin のみ。権限の確認は api.ts の /hq/* ミドルウェア）
 // =========================================================
 export const hqUsersApi = new Hono<Env>()
 
@@ -342,11 +342,6 @@ async function loadCustomerCompany(db: D1Database, companyId: any) {
   return db.prepare(`SELECT company_id, company_name FROM companies WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`)
     .bind(Number(companyId), HQ_COMPANY_STATUS).first() as Promise<any>
 }
-hqUsersApi.get('/companies/:id/users', async (c) => {
-  const co = await loadCustomerCompany(c.env.DB, c.req.param('id'))
-  if (!co) return c.json({ error: 'not found' }, 404)
-  return c.json({ users: await listAdminAccounts(c.env.DB, co.company_id) })
-})
 hqUsersApi.post('/companies/:id/users', async (c) => {
   const co = await loadCustomerCompany(c.env.DB, c.req.param('id'))
   if (!co) return c.json({ error: 'not found' }, 404)

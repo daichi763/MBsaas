@@ -147,7 +147,7 @@ const admin = client(await login('sample', 'admin'))
   ok('#44 2人目の会社管理者を追加できる', add2.status === 200, add2)
   const hqAdd = await hq.post(`/api/hq/companies/${coId}/users`, { user_code: 'hqmade', name: '本部が追加' })
   ok('#44 本部から管理者を追加できる（既定は会社管理者・仮パスワード）', hqAdd.status === 200 && !!hqAdd.data.temp_password, hqAdd)
-  const hqUsers = await hq.get(`/api/hq/companies/${coId}/users`)
+  const hqUsers = await hq.get(`/api/hq/companies/${coId}`)  // 管理者の一覧は会社の詳細（users）で返す
   ok('#44 本部の管理者一覧に追加した管理者が出る', hqUsers.status === 200 && hqUsers.data.users.some(u => u.user_code === 'hqmade' && u.role === 'company_admin'), hqUsers)
   const noMail = await hq.post(`/api/hq/companies/${coId}/users/${hqAdd.data.user_id}/reset-password`, { mode: 'email' })
   ok('#44 メールのない管理者に再設定メールは送れない（400）', noMail.status === 400, noMail)

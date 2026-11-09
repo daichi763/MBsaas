@@ -100,7 +100,7 @@
 | POST | /admin/shifts/copy-week | 前週のコピー（枠と割り当て） |
 | GET/POST/DELETE | /admin/slot-patterns | 繰り返し登録 |
 | GET/POST/PUT/DELETE | /admin/sites | 開催場所 |
-| GET/POST/PUT/DELETE | /admin/rate-rules, GET /admin/rate-rules/resolve | 単価ルールと適用結果のプレビュー |
+| GET/POST/PUT/DELETE | /admin/rate-rules | 単価ルール（適用結果のプレビューは GET /admin/shifts/price-preview） |
 | PUT | /admin/projects/:id/pricing | 案件区分・標準単価・交通費ルール・時間の数え方・丸め（`pay_time_round`）・適用開始日（`price_valid_from`） |
 | GET | /admin/projects/:id/price-history | 標準単価の適用開始日と、改定前の単価 |
 

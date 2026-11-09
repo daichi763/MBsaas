@@ -47,8 +47,12 @@ for (const s of must(await admin.get('/api/admin/staff'), 'staff list').staff) {
   if (k) staff[k] = s
 }
 ok('（前提）自社雇用のスタッフに恒久ID（FS…）がある', ['X', 'Y', 'Z', 'W'].every(k => staff[k] && /^FS/.test(staff[k].global_staff_code)), staff)
-const terms = must(await admin.get('/api/admin/roster/consent-terms'), 'terms')
-const link = (api, code) => api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms.version })
+// 同意の版は、画面と同じく連携の前の照会（roster/lookup）の consent から取る
+let consentVersion = null
+const link = async (api, code) => {
+  consentVersion ??= (await api.get('/api/admin/roster/lookup?code=' + encodeURIComponent(code))).data?.consent?.version
+  return api.post('/api/admin/roster/link', { code, agreed: true, consent_version: consentVersion })
+}
 const putEmp = (sid, body) => admin.put(`/api/admin/employees/${sid}`, body)
 const detail = async (api, sid) => (await api.get(`/api/admin/staff/${sid}`)).data?.profile
 
@@ -174,10 +178,11 @@ const detail = async (api, sid) => (await api.get(`/api/admin/staff/${sid}`)).da
 
 // ---------- #262 屋号・自社名・スキルシートの所属を取引先にしない ----------
 {
-  const r = await admin.post('/api/admin/staff-affiliations', { affiliation_name: ownName })
+  const r = await admin.post('/api/admin/roster/partners', { affiliation_name: ownName })
   ok('#262 自社名は取引先として登録できない（400）', r.status === 400, r)
   const yago = `${PFX}屋号`
-  must(await admin.post('/api/admin/staff-affiliations', { affiliation_name: yago }), 'affiliation (old behaviour)')
+  // 担当者などを入れずに名前だけで作った行（所属会社名の選択肢と同じ形）
+  must(await admin.post('/api/admin/roster/partners', { affiliation_name: yago }), 'affiliation (name only)')
   must(await admin.post('/api/admin/roster', { route: 'skillsheet', name: `${PFX} シートのみ`, gender: 'female', affiliation: yago }), 'skillsheet staff')
   const partners = must(await admin.get('/api/admin/roster/partners'), 'partners').partners
   ok('#262 スキルシートのみの人の所属会社名だけの行は取引先一覧に出ない', !partners.some(p => p.affiliation_name === yago), partners.map(p => p.affiliation_name))

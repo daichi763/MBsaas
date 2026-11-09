@@ -1999,17 +1999,6 @@ api.post('/admin/settings/photo-skip', async (c) => {
   return c.json({ ok: true, enabled: body.enabled })
 })
 
-// 日報テンプレート取得
-api.get('/staff/report-template/:projectId', async (c) => {
-  const u = c.get('user')
-  // 他社シフトの案件でも日報テンプレートを取得できるよう、同一人物の所属企業の案件を対象にする
-  const cids = [...new Set([(u.company_id as number), ...(await personStaffRows(c.env.DB, u)).map(r => r.company_id)])]
-  const p = await c.env.DB.prepare(`SELECT report_template_id FROM projects WHERE project_id = ? AND company_id IN (${cids.map(() => '?').join(',')})`).bind(c.req.param('projectId'), ...cids).first()
-  if (!p) return c.json({ error: 'not found' }, 404)
-  const t = await c.env.DB.prepare('SELECT * FROM report_templates WHERE template_id = ?').bind(p.report_template_id).first()
-  return c.json({ template: t ? { ...t, fields: JSON.parse(t.fields_json as string) } : null })
-})
-
 // 日報の対象シフトの案件と日報テンプレート（案件はシフトの所有企業のものに限る）
 async function shiftReportTemplate(db: D1Database, shift: any): Promise<{ project: any; template: any | null } | null> {
   const project = await ownProject(db, shift.company_id, shift.project_id)
@@ -4774,15 +4763,6 @@ async function assertClientOwned(c: any, cid: string) {
   return c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
 }
 
-api.get('/admin/clients/:id/contacts', async (c) => {
-  const cid = c.req.param('id')
-  if (!(await assertClientOwned(c, cid))) return c.json({ error: 'クライアントが見つかりません' }, 404)
-  const u = c.get('user')
-  const rows = await c.env.DB.prepare('SELECT * FROM client_contacts WHERE client_id = ? AND company_id = ? ORDER BY contact_id')
-    .bind(cid, u.company_id).all()
-  return c.json({ contacts: rows.results })
-})
-
 api.post('/admin/clients/:id/contacts', async (c) => {
   const u = c.get('user'); const cid = c.req.param('id')
   if (!(await assertClientOwned(c, cid))) return c.json({ error: 'クライアントが見つかりません' }, 404)
@@ -4827,17 +4807,6 @@ api.get('/admin/staff-affiliations', async (c) => {
     .bind(u.company_id).all()
   return c.json({ affiliations: rows.results })
 })
-api.post('/admin/staff-affiliations', async (c) => {
-  const u = c.get('user'); const { affiliation_name } = await c.req.json()
-  if (!affiliation_name) return c.json({ error: '所属会社名は必須です' }, 400)
-  const conflict = await partnerNameConflict(c.env.DB, u.company_id, affiliation_name)
-  if (conflict) return c.json({ error: conflict }, 400)
-  // 自社名は取引先にしない（#262）
-  if (String(affiliation_name).trim() === await ownCompanyName(c.env.DB, u.company_id)) return c.json({ error: '自社名は協力会社として登録できません' }, 400)
-  await c.env.DB.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)')
-    .bind(u.company_id, affiliation_name).run()
-  return c.json({ ok: true })
-})
 
 // ============ 従業員管理（社員名簿）: 自社雇用者のみ ============
 // 0012 以降、「自社」判定は所属会社名の文字列一致ではなく staff_profiles.affiliation_type = 'own_employee'
@@ -4849,10 +4818,6 @@ const OWN_EMPLOYEE_COND = `COALESCE(sp.affiliation_type, 'own_employee') = 'own_
 async function assertOwnEmployee(c: any, sid: string) {
   const u = c.get('user')
   return c.env.DB.prepare(`SELECT sp.staff_id FROM staff_profiles sp WHERE sp.staff_id = ? AND sp.company_id = ? AND ${OWN_EMPLOYEE_COND}`).bind(sid, u.company_id).first()
-}
-async function ownCompanyName(db: D1Database, companyId: number): Promise<string> {
-  const row = await db.prepare('SELECT company_name FROM companies WHERE company_id = ?').bind(companyId).first()
-  return (row?.company_name as string) || ''
 }
 
 api.get('/admin/employees', async (c) => {

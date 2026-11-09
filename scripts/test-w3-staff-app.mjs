@@ -134,7 +134,7 @@ const st1 = client(await login('sample', `${PFX}HOME`))
   const A = client(await login(code, 'admin'))
   const X = await newStaff(admin, 'LINKX')
   const share = must(await admin.get(`/api/admin/roster/${X.staff_id}/share-code`), 'share-code')
-  const terms = must(await A.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(share.global_staff_code)), 'lookup').consent
   const xA = must(await A.post('/api/admin/roster/link', { code: share.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
   const aPid = await newProject(A, `${PFX}-A案件`)
   const aShift = await createShift(A, xA, aPid, today, '10:00', '18:00')

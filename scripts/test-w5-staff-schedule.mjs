@@ -126,8 +126,9 @@ ok('#171 管理者の一覧でも締切後の提出が分かる', a2.staff.find(
 await admin.put('/api/admin/availability/period', { month: nextMonth, deadline: lastDay })
 const a3 = (await admin.get('/api/admin/availability?month=' + nextMonth)).data
 ok('#171 締切までの提出は late にならない', a3.staff.find(s => s.staff_id === 1)?.late === false && a3.staff.find(s => s.staff_id === 2)?.late === false, a3.staff.filter(s => s.staff_id <= 2))
-const day = (await admin.get('/api/admin/availability/day?date=' + d1)).data
-ok('#171 ある日の出勤可否を staff_id ごとに取れる（シフトを組むときの参考）', (day.availability || []).some(x => x.staff_id === 1 && x.status === 'ok') && day.availability.some(x => x.staff_id === 2 && x.status === 'ng'), day)
+// ある日の出勤可否は、月の一覧の marks（1日1文字。o=可・p=一部・x=不可）から staff_id ごとに分かる
+const markOn = (sid) => a3.staff.find(s => s.staff_id === sid)?.marks?.[Number(d1.slice(8, 10)) - 1]
+ok('#171 ある日の出勤可否を staff_id ごとに取れる（月の一覧の記号。シフトを組むときの参考）', markOn(1) === 'o' && markOn(2) === 'x', [markOn(1), markOn(2)])
 
 // ---------- #301 カレンダー ----------
 const proj = (await admin.get('/api/admin/projects')).data.projects[0]

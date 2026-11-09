@@ -263,16 +263,6 @@ hqSupportAdminApi.get('/hq-support/status', async (c) => {
   return c.json({ announcements: anns, active_views: views, viewing, view_allowed: hqViewAllowed(u.settings_json), can_manage_view: u.role === 'company_admin' })
 })
 
-// 本部のお知らせの一覧（掲載中のもの。確認済みも含む）
-hqSupportAdminApi.get('/hq-announcements', async (c) => {
-  const u = c.get('user'); const now = nowJstMinute()
-  const rows = (await c.env.DB.prepare(`SELECT a.announcement_id, a.title, a.body, a.importance, a.starts_at, a.ends_at,
-        (SELECT r.read_at FROM hq_announcement_reads r WHERE r.announcement_id = a.announcement_id AND r.user_id = ?) AS read_at
-      FROM hq_announcements a WHERE ${ANN_ACTIVE_FOR_COMPANY} ORDER BY a.starts_at DESC LIMIT 50`)
-    .bind(u.hq_view ? 0 : u.user_id, now, now, u.company_id, u.company_id).all()).results
-  return c.json({ announcements: rows })
-})
-
 hqSupportAdminApi.post('/hq-announcements/:id/read', async (c) => {
   const u = c.get('user'); const id = c.req.param('id'); const now = nowJstMinute()
   if (!isId(id)) return c.json({ error: 'not found' }, 404)

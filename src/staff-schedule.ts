@@ -454,13 +454,3 @@ scheduleAdminApi.put('/availability/targets', async (c) => {
   if (!Number(found?.n)) return c.json({ error: 'スタッフが見つかりません' }, 404)
   return c.json({ ok: true, target: b.target, staff: Number(found.n), changed: r.meta.changes || 0 })
 })
-
-// ある日の出勤可能日（シフトを組むときの参考。staff_id ごと）
-scheduleAdminApi.get('/availability/day', async (c) => {
-  const u = c.get('user')
-  const date = c.req.query('date')
-  if (!isISODate(date)) return c.json({ error: '日付が正しくありません' }, 400)
-  const rows = (await c.env.DB.prepare(`SELECT staff_id, status, start_time, end_time, note FROM staff_availability WHERE company_id = ? AND work_date = ?`)
-    .bind(u.company_id, date).all()).results
-  return c.json({ date, availability: rows })
-})

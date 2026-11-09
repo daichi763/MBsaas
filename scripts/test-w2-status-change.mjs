@@ -229,8 +229,8 @@ if (PERSIST) {
   // 所属元（sample）の自社雇用スタッフを稼働先に連携する
   must(await admin.post('/api/admin/staff', { user_code: `${PFX}E1`, name: `${PFX} 連携`, password: 'pass1234' }), 'staff')
   const E = must(await admin.get('/api/admin/staff'), 'staff list').staff.find(s => s.user_code === `${PFX}E1`)
-  const terms = await host.get('/api/admin/roster/consent-terms')
-  const hostRow = must(await host.post('/api/admin/roster/link', { code: E.global_staff_code, agreed: true, consent_version: terms.data.version }), 'link').staff_id
+  const terms = must(await host.get('/api/admin/roster/lookup?code=' + encodeURIComponent(E.global_staff_code)), 'lookup').consent
+  const hostRow = must(await host.post('/api/admin/roster/link', { code: E.global_staff_code, agreed: true, consent_version: terms?.version }), 'link').staff_id
   must(await host.post(`/api/admin/roster-chat/${hostRow}`, { body: '稼働先からの連絡1' }), 'chat host→owner')
 
   // #140 所属元で区分を変えても、連携先とのスレッドを開いて既読にできる

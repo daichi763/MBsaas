@@ -193,8 +193,8 @@ if (PERSIST) {
   const coName = `お知らせUX連携先${tag}株式会社`
   must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: coName, admin_code: 'admin', admin_password: 'pass1234' }), 'company')
   const coAdmin = client(await login(code, 'admin'))
-  const terms = must(await coAdmin.get('/api/admin/roster/consent-terms'), 'terms')
   const aRow = (await admin.get('/api/admin/staff')).data.staff.find(s => s.staff_id === a.staff_id)
+  const terms = must(await coAdmin.get('/api/admin/roster/lookup?code=' + encodeURIComponent(aRow.global_staff_code)), 'lookup').consent
   const lk = await coAdmin.post('/api/admin/roster/link', { code: aRow.global_staff_code, agreed: true, consent_version: terms.version })
   ok('（前提）連携先の企業に a を連携する', lk.status === 200, lk)
   await sleep(1200)
