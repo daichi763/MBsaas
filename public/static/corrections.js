@@ -210,6 +210,10 @@
     if (r.status === 'late') out.push(`<span class="badge badge-red text-[10px]">遅刻${r.late_minutes != null ? ' ' + Number(r.late_minutes) + '分' : ''}</span>`)
     if (r.status === 'no_location') out.push('<span class="badge badge-yellow text-[10px]">位置なし</span>')
     if (Number(r.early_leave_minutes) > 0) out.push(`<span class="badge badge-yellow text-[10px]">早退 ${Number(r.early_leave_minutes)}分</span>`)
+    // 押した時刻と受け付けた時刻が違う打刻（#9939）。device は押した時刻、resent は受け付けた時刻で記録した
+    if (!r.corrected_by_correction_id && (r.time_source === 'device' || r.time_source === 'resent')) {
+      out.push(`<span class="badge badge-gray text-[10px]" title="${r.time_source === 'device' ? '押した時刻で記録' : '受け付けた時刻で記録（端末の時計のずれ・送信の遅れ）'}。押した ${esc(fmtAt(r.pressed_at))}・受付 ${esc(fmtAt(r.received_at))}">再送</span>`)
+    }
     if (r.corrected_by_correction_id) out.push(`<span class="badge badge-gray text-[10px]" title="打刻修正で変わった記録です">修正済み${r.original_reported_at ? '（元 ' + esc(fmtAt(r.original_reported_at)) + '）' : ''}</span>`)
     return out.join(' ')
   }
@@ -534,7 +538,7 @@
   // 勤務日の期間（31日まで）・案件・クライアント・スタッフ・記録方法で絞り、1シフト1行で8種類の報告の時刻と記録方法を出す。同じ条件で CSV を出せる
   const P = window.__punchState = window.__punchState || { from: '', to: '', project_id: '', client_id: '', staff_name: '', method: '' }
   let punchClients = null
-  // 報告ごとの印（サーバーの f: 1 = 打刻修正、2 = 写真、4 = 位置、8 = 写真なしの理由）
+  // 報告ごとの印（サーバーの f: 1 = 打刻修正、2 = 写真、4 = 位置、8 = 写真なしの理由、16 = 再送）
   const MARK = (r, t) => {
     const m = r[t + '_m'], f = Number(r[t + '_f'] || 0), out = []
     if (m === 'proxy') out.push('<span class="badge badge-purple text-[10px]" title="管理者の代理入力">代理</span>')
@@ -543,6 +547,7 @@
     if (f & 2) out.push('<i class="fas fa-camera text-gray-400 text-[10px]" title="写真あり"></i>')
     else if (f & 8) out.push('<i class="fas fa-ban text-amber-500 text-[10px]" title="写真なし（理由あり）"></i>')
     if (f & 4) out.push('<i class="fas fa-location-dot text-gray-400 text-[10px]" title="位置あり"></i>')
+    if (f & 16) out.push('<span class="badge badge-gray text-[10px]" title="押した時刻と受け付けた時刻が違う打刻（電波・混雑で送り直した、端末の時計のずれなど）">再送</span>')
     return out.join(' ')
   }
   async function renderPunches() {

@@ -717,9 +717,9 @@ function dashReportChip(s, t) {
     else if (Number(r.early_leave_minutes) > 0) { cls = 'badge-yellow'; note = ` 早退${Number(r.early_leave_minutes)}分` }
     // 入店の位置が現場から離れている（#277。ダッシュボードの API が far を返すとき）
     if (r.far) { if (cls === 'badge-green') cls = 'bg-orange-100 text-orange-700'; note += ` 位置ずれ${r.distance_m != null ? '（約' + fmtDistance(r.distance_m) + '）' : ''}` }
-    // 電波がない場所で押した時刻で記録した報告（#427）。受け取った時刻を添える
-    const dev = r.device_time ? ` title="端末で押した時刻で記録（受信 ${esc(String(r.received_at || '').slice(5, 16).replace('-', '/'))}）"` : ''
-    return `<span class="badge ${cls} text-[10px]"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-mobile-screen-button"></i>端末時刻' : ''}</span>`
+    // 電波・混雑で送り直し、押した時刻で記録した報告（#427 #9939。「再送」）。受け付けた時刻を添える
+    const dev = r.device_time ? ` title="再送: 押した時刻で記録（受付 ${esc(String(r.received_at || '').slice(5, 16).replace('-', '/'))}）"` : ''
+    return `<span class="badge ${cls} text-[10px]"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-rotate"></i>再送' : ''}</span>`
   }
   if ((s.pending_types || []).includes(t)) return `<span class="badge badge-yellow text-[10px]" title="打刻修正の申請中">${label} 申請中</span>`
   if ((s.overdue_types || []).includes(t)) return `<span class="badge bg-white text-red-600 border border-red-300 text-[10px]" title="予定の時刻を過ぎても報告がありません">${label} 未報告</span>`

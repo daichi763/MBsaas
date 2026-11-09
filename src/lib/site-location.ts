@@ -39,6 +39,10 @@ export async function sitePosition(db: D1Database, shift: { company_id: any; sit
   const row = await db.prepare(`SELECT si.lat AS s_lat, si.lng AS s_lng, p.location_lat AS p_lat, p.location_lng AS p_lng
     FROM (SELECT 1) LEFT JOIN sites si ON si.site_id = ? AND si.company_id = ? LEFT JOIN projects p ON p.project_id = ? AND p.company_id = ?`)
     .bind(shift.site_id ?? null, shift.company_id, shift.project_id ?? null, shift.company_id).first() as any
+  return sitePositionOf(row)
+}
+// 読み済みの行（s_lat・s_lng = 開催場所、p_lat・p_lng = 案件）から現場の位置を決める（打刻はシフトの行と一緒に読む。#9939）
+export function sitePositionOf(row: any): { lat: number; lng: number; source: 'site' | 'project' } | null {
   if (!row) return null
   const sLat = coord(row.s_lat, 90), sLng = coord(row.s_lng, 180)
   if (sLat != null && sLng != null) return { lat: sLat, lng: sLng, source: 'site' }
@@ -49,10 +53,13 @@ export async function sitePosition(db: D1Database, shift: { company_id: any; sit
 
 // 入店の位置と現場の距離（m、整数）。位置が取れていない・現場の位置が未登録なら null
 export async function checkInDistance(db: D1Database, shift: { company_id: any; site_id?: any; project_id?: any }, latitude: any, longitude: any): Promise<number | null> {
+  if (coord(latitude, 90) == null || coord(longitude, 180) == null) return null
+  return distanceFromSite(await sitePosition(db, shift), latitude, longitude)
+}
+export function distanceFromSite(pos: { lat: number; lng: number } | null, latitude: any, longitude: any): number | null {
   const lat = coord(latitude, 90), lng = coord(longitude, 180)
-  if (lat == null || lng == null) return null
-  const pos = await sitePosition(db, shift)
-  return pos ? Math.round(haversineMeters(lat, lng, pos.lat, pos.lng)) : null
+  if (lat == null || lng == null || !pos) return null
+  return Math.round(haversineMeters(lat, lng, pos.lat, pos.lng))
 }
 
 // 入店の報告の結果に添える距離の情報（スタッフに知らせる）

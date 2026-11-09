@@ -841,12 +841,14 @@ adminLifecycleApi.get('/shifts/:id/report-status', async (c) => {
   const rawReports = (await db.prepare(`SELECT a.report_type, a.reported_at, a.status, a.late_minutes, a.early_leave_minutes, a.entry_method, a.corrected_by_correction_id, a.original_reported_at, um.name AS entered_by_name,
       a.photo_key IS NOT NULL AS has_photo, a.photo_taken_at, a.photo_source, a.no_photo_reason, a.device_info, a.device_id, a.time_source, a.received_at
     FROM attendance_reports a LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(s.shift_id).all()).results as any[]
-  // 押した時刻（端末時刻）で記録した報告（#427）は device_time と受け取った時刻を付ける（打刻修正で直した報告は付けない）
+  // 押した時刻（端末時刻）で記録した報告（#427）は device_time と受け取った時刻を付ける（打刻修正で直した報告は付けない）。
+  // 押した時刻と受け付けた時刻が違う打刻（#9939。time_source が device・resent）は resent（画面の「再送」の印）
   const reports = rawReports.map(({ device_info, device_id, time_source, received_at, ...r }) => {
     const dev = time_source === 'device' && r.corrected_by_correction_id == null
+    const resent = (time_source === 'device' || time_source === 'resent') && r.corrected_by_correction_id == null
     return { ...r, has_photo: !!r.has_photo,
       photo_stale: !!r.has_photo && isPhotoStale(r.photo_taken_at, r.original_reported_at || r.reported_at), device: r.entry_method === 'proxy' ? '' : deviceSummary(device_info),
-      device_time: dev, received_at: dev ? received_at : null }
+      device_time: dev, resent, received_at: resent ? received_at : null }
   })
   // 報告用URLで報告した端末の数（端末ID。古い行は user-agent で数える）。2台以上なら画面で知らせる
   const linkRows = rawReports.filter(r => r.entry_method === 'link')

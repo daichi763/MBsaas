@@ -92,6 +92,7 @@
 | 報告用URL | ログインのない人が、1つのシフトの勤怠報告と日報だけを送れる URL | `shift_report_tokens`、画面 `/r/:token`（`src/staff-lifecycle.ts`） |
 | 代理入力 | 管理者がスタッフの代わりに勤怠を記録すること | `src/staff-lifecycle.ts` |
 | 端末時刻 | 電波がない場所で押した報告の、端末の時刻（D-07） | `attendance_reports.time_source = 'device'` |
+| 再送 | 押した時刻と受け付けた時刻が1分以上違う打刻の印（混雑・電波で送り直した、端末の時計のずれなど。D-50） | `attendance_reports.time_source IN ('device', 'resent')` |
 
 ## 7. 募集・掲示板・お知らせ
 

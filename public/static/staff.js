@@ -433,16 +433,22 @@ delegate('openMissedReport', (el) => {
   else location.hash = 'attendance'
 })
 
-// ---------- 電波がない場所での報告（#427） ----------
-// 通信できずに送れなかった報告は、押した時刻・位置・写真を端末（IndexedDB）に保存し、通信が戻ったら押した順に送る。
-// 送るときは押した時刻（pressed_at）と押したときに作った一意キー（client_request_id）を付ける。サーバーは時刻の範囲を確かめ、
-// 押した時刻で記録したことを管理者に示す。同じキーの再送は記録済みとして受け付けられる（応答だけが届かなかった場合も二重にならない）。
-// 断られた報告（受付の時間帯を過ぎた・管理者が記録済みなど）は『送れなかった報告』としてホームに出し、打刻履歴からの申請を案内する。
-// 端末に保存できない（プライベートモードなど）ときは、これまでどおりエラーを出す
+// ---------- 打刻の送信（#427 電波がない場所・#9939 混雑） ----------
+// 押した打刻は、送る前に押した時刻・位置・写真を端末（IndexedDB）に保存し、送れたら消す（アプリを閉じても、次に開いたときに送り直す）。
+// 通信の失敗・サーバーの障害や混雑（500・503 など）のときは、画面を閉じなくても 2・4・8・16・32・60秒… と間をあけて自動で送り直す
+// （続けて送り直すのは最大10分。その後もアプリを開いている間は1分ごと・電波が戻ったとき・次に開いたときに送る）。
+// 送るたびに、押した時刻（pressed_at）・端末の今の時刻（device_now）・押したときに作った一意キー（client_request_id）を付ける。
+// サーバーは同じキーの打刻を2回記録せず（応答だけが届かなかった場合も二重にならない）、押した時刻で記録する（範囲はサーバーが確かめる）。
+// 保存した打刻は押した順に送る（前の打刻が送れない間は、後の打刻も送らない。順序の確認で断られないように）。
+// 断られた打刻（受付の時間帯を過ぎた・報告済みなど）は、その画面で理由を出す。画面を離れていたときは『送れなかった報告』としてホームに出す。
+// 端末に保存できない（プライベートモードなど）ときは、画面を開いている間だけ送り直す
 const OUTBOX_DB = 'fos-outbox', OUTBOX_STORE = 'reports'
 const OUTBOX_KEEP_DAYS = 7
 const ATTENDANCE_TIMEOUT_MS = 20000, ATTENDANCE_PHOTO_TIMEOUT_MS = 60000
+const PUNCH_RETRY_DELAYS_S = [2, 4, 8, 16, 32, 60] // 送り直すまでの秒（最後の値をくり返す）
+const PUNCH_RETRY_MAX_MS = 10 * 60 * 1000
 let OUTBOX = [] // この人の保存中の報告（画面の表示用。outboxLoad で読み直す）
+let OUTBOX_MEM = [] // 端末に保存できなかった報告（画面を開いている間だけ持つ）
 function newRequestId() {
   try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID() } catch (e) { }
   const a = new Uint8Array(16); crypto.getRandomValues(a)
@@ -469,28 +475,31 @@ async function outboxTx(mode, fn) {
 // この人の保存中の報告（押した順）。古いもの（ほかの人の分を含む）は消す
 async function outboxAll() {
   let all = []
-  try { all = (await outboxTx('readonly', st => st.getAll())) || [] } catch (e) { return [] }
+  try { all = (await outboxTx('readonly', st => st.getAll())) || [] } catch (e) { all = [] }
   const old = all.filter(x => !x.pressed_at || Date.now() - x.pressed_at > OUTBOX_KEEP_DAYS * 86400000)
   for (const x of old) await outboxDelete(x.id)
-  return all.filter(x => !old.includes(x) && ME && x.user_id === ME.user_id).sort((a, b) => a.pressed_at - b.pressed_at)
+  return all.filter(x => !old.includes(x)).concat(OUTBOX_MEM.filter(m => !all.some(x => x.id === m.id)))
+    .filter(x => ME && x.user_id === ME.user_id).sort((a, b) => a.pressed_at - b.pressed_at)
 }
 async function outboxLoad() { OUTBOX = await outboxAll(); return OUTBOX }
-async function outboxDelete(id) { try { await outboxTx('readwrite', st => st.delete(id)) } catch (e) { } }
-// 保存できたら true
+async function outboxDelete(id) {
+  OUTBOX_MEM = OUTBOX_MEM.filter(x => x.id !== id)
+  try { await outboxTx('readwrite', st => st.delete(id)) } catch (e) { }
+}
+async function outboxPut(item) {
+  try { await outboxTx('readwrite', st => st.put(item)); return true } catch (e) { return false }
+}
+// 送る前に保存する。端末に保存できたら true（できなければ画面を開いている間だけ持つ）
 async function outboxAdd(item) {
-  if (!ME) return false
   const s = HOME && HOME.shift && HOME.shift.shift_id === item.shift_id ? HOME.shift : null
-  try {
-    await outboxTx('readwrite', st => st.put({ ...item, user_id: ME.user_id, state: 'queued', work_date: s ? s.work_date : null, project_name: s ? s.project_name : '' }))
-  } catch (e) { return false }
+  const full = { ...item, user_id: ME ? ME.user_id : null, state: 'queued', work_date: s ? s.work_date : null, project_name: s ? s.project_name : '' }
+  const saved = await outboxPut(full)
+  if (!saved) OUTBOX_MEM.push({ ...full, memory: true })
   await outboxLoad()
-  return true
+  return saved
 }
 const outboxQueued = () => OUTBOX.filter(x => x.state === 'queued')
 const outboxLabel = (x) => `${REPORT_LABELS[x.report_type] || x.report_type}（${dayjs(x.pressed_at).format('M/D HH:mm')} に押した${x.project_name ? '・' + x.project_name : ''}）`
-function outboxQueuedNotice(type, pressedAt) {
-  toast(`電波がないため、${REPORT_LABELS[type]}を押した時刻（${dayjs(pressedAt).format('HH:mm')}）で端末に保存しました。電波が戻ると自動で送ります`, 6000)
-}
 function outboxSend(it) {
   if (it.photo) {
     const form = new FormData()
@@ -498,55 +507,120 @@ function outboxSend(it) {
     form.append('report_type', it.report_type)
     if (it.latitude != null) { form.append('latitude', String(it.latitude)); form.append('longitude', String(it.longitude)) }
     form.append('photo', new Blob([it.photo.buf], { type: it.photo.type || 'image/jpeg' }), 'attendance.jpg')
+    // 写真のファイルの日時・選び方（#418）
     if (it.photo.taken_at) form.append('photo_taken_at', String(it.photo.taken_at))
     if (it.photo.source) form.append('photo_source', it.photo.source)
     form.append('client_request_id', it.id)
     form.append('pressed_at', String(it.pressed_at))
+    form.append('device_now', String(Date.now()))
     return axios.post('/api/staff/attendance-photo', form, { timeout: ATTENDANCE_PHOTO_TIMEOUT_MS })
   }
   // 写真なしの入店・退店（理由つき。#535）も同じ API で送る
   return axios.post('/api/staff/attendance', { shift_id: it.shift_id, report_type: it.report_type, latitude: it.latitude, longitude: it.longitude, address: null,
-    client_request_id: it.id, pressed_at: it.pressed_at, ...(it.no_photo_reason ? { no_photo_reason: it.no_photo_reason, no_photo_note: it.no_photo_note || '' } : {}) }, { timeout: ATTENDANCE_TIMEOUT_MS })
+    client_request_id: it.id, pressed_at: it.pressed_at, device_now: Date.now(), ...(it.no_photo_reason ? { no_photo_reason: it.no_photo_reason, no_photo_note: it.no_photo_note || '' } : {}) }, { timeout: ATTENDANCE_TIMEOUT_MS })
 }
+// 送り直す失敗か（通信できない・タイムアウト・サーバーの障害や混雑）
+const punchRetryable = (e) => { const st = e && e.response && e.response.status; return !st || st >= 500 || st === 429 }
 const homeTabActive = () => { const t = (location.hash || '#home').slice(1).split('/')[0]; return !t || t === 'home' }
-// 保存中の報告を押した順に送る。通信できない・サーバーの障害の間は、順序を保つため後の報告も送らない。
-// noRedraw: 新しい報告を送る前に呼ぶとき（送った後にホームを読み直すので、ここでは読み直さない）
-let OUTBOX_FLUSHING = null
-function outboxFlush(manual, noRedraw) {
-  if (OUTBOX_FLUSHING) return OUTBOX_FLUSHING
+
+// 送信の状態（画面の表示用）。retrying: 送り直しを待っている、persisted: 端末に保存できている
+const PUNCH_STATE = { retrying: false, attempt: 0, persisted: true }
+const PUNCH_WAITERS = new Map() // id → { done(結果), waiting(送り直しを始めたとき) }
+let PUNCH_PUMP = null, PUNCH_WAKE = null, PUNCH_AGAIN = false
+function punchWake() { if (PUNCH_WAKE) PUNCH_WAKE() }
+function punchSleep(ms) { return new Promise(r => { const t = setTimeout(() => { PUNCH_WAKE = null; r() }, ms); PUNCH_WAKE = () => { clearTimeout(t); PUNCH_WAKE = null; r() } }) }
+function punchRefreshBanner() { const box = document.getElementById('home-outbox'); if (box) box.innerHTML = homeOutboxHtml() }
+// 保存中の打刻を押した順に送る。manual: 「今すぐ送る」、once: 1回だけ試す（1分ごとの見直し）
+function outboxFlush(manual, once) {
+  // 送っている間に新しい打刻が保存されたら、今の送信が終わった後にもう一度見る（取りこぼさない）
+  if (PUNCH_PUMP) { PUNCH_AGAIN = true; punchWake(); return PUNCH_PUMP }
   if (!ME) return Promise.resolve()
-  OUTBOX_FLUSHING = (async () => {
+  PUNCH_PUMP = (async () => {
     const sent = [], failed = []
-    let waiting = false
-    for (const it of (await outboxAll()).filter(x => x.state === 'queued')) {
-      try { await outboxSend(it); await outboxDelete(it.id); sent.push(it) }
-      catch (e) {
-        const st = e && e.response && e.response.status
-        if (!st || st >= 500 || st === 401) { waiting = true; break }
-        try { await outboxTx('readwrite', x => x.put({ ...it, state: 'failed', error: attendanceErrorMessage(e, it.report_type), photo: null })) } catch (e2) { }
+    let since = null, gaveUp = false
+    PUNCH_STATE.attempt = 0
+    for (;;) {
+      PUNCH_AGAIN = false
+      const it = (await outboxAll()).find(x => x.state === 'queued')
+      if (!it) break
+      let res = null, err = null
+      try { res = await outboxSend(it) } catch (e) { err = e || new Error('送信失敗') }
+      if (!err) {
+        await outboxDelete(it.id)
+        const w = PUNCH_WAITERS.get(it.id); PUNCH_WAITERS.delete(it.id)
+        if (w) w.done({ ok: true, data: res.data }); else sent.push(it)
+        since = null; PUNCH_STATE.attempt = 0; PUNCH_STATE.retrying = false
+        continue
+      }
+      const st = err.response && err.response.status
+      if (st === 401) break // ログインの画面に移る（保存した打刻は、ログインし直してから送る）
+      if (punchRetryable(err)) {
+        since = since || Date.now()
+        if (once || Date.now() - since >= PUNCH_RETRY_MAX_MS) { gaveUp = !once; break }
+        PUNCH_STATE.retrying = true; PUNCH_STATE.persisted = !OUTBOX.some(x => x.memory)
+        for (const w of PUNCH_WAITERS.values()) w.waiting()
+        await outboxLoad(); punchRefreshBanner()
+        await punchSleep(PUNCH_RETRY_DELAYS_S[Math.min(PUNCH_STATE.attempt++, PUNCH_RETRY_DELAYS_S.length - 1)] * 1000)
+        continue
+      }
+      // 断られた: 待っている画面があれば、その画面に理由を出す（保存は消す）。なければ『送れなかった報告』に残す
+      const w = PUNCH_WAITERS.get(it.id); PUNCH_WAITERS.delete(it.id)
+      if (w) { await outboxDelete(it.id); w.done({ ok: false, error: err }) }
+      else {
+        const rec = { ...it, state: 'failed', error: attendanceErrorMessage(err, it.report_type), photo: null }
+        if (it.memory) OUTBOX_MEM = OUTBOX_MEM.map(x => x.id === it.id ? rec : x)
+        else if (!(await outboxPut(rec))) await outboxDelete(it.id)
         failed.push(it)
       }
     }
+    PUNCH_STATE.retrying = false
+    // 10分たっても送れなかった打刻は、保存したまま画面の待ちを終える（1分ごと・電波が戻ったとき・次に開いたときに送る）
+    if (gaveUp) for (const [id, w] of [...PUNCH_WAITERS]) { PUNCH_WAITERS.delete(id); w.done({ ok: false, gaveUp: true }) }
     await outboxLoad()
-    if (sent.length) toast(`通信が戻ったので、端末に保存した報告を送信しました（${sent.map(x => REPORT_LABELS[x.report_type]).join('・')}）`, 5000)
+    if (sent.length) toast(`端末に保存していた報告を送信しました（${sent.map(x => REPORT_LABELS[x.report_type]).join('・')}）`, 5000)
     if (failed.length) toast('端末に保存した報告のうち、送れなかったものがあります。ホームで理由を確かめてください', 6000)
-    else if (manual && waiting) toast('まだ通信できません。電波の良い場所で、もう一度お試しください')
-    if ((sent.length || failed.length) && homeTabActive() && !noRedraw) renderHome()
-    else { const box = document.getElementById('home-outbox'); if (box) box.innerHTML = homeOutboxHtml() }
-  })().finally(() => { OUTBOX_FLUSHING = null })
-  return OUTBOX_FLUSHING
+    else if (manual && outboxQueued().length) toast('まだ送信できません。電波の良い場所で、もう一度お試しください')
+    if ((sent.length || failed.length) && homeTabActive()) renderHome()
+    else punchRefreshBanner()
+  })().finally(() => { PUNCH_PUMP = null; PUNCH_WAKE = null; if (PUNCH_AGAIN) { PUNCH_AGAIN = false; outboxFlush() } })
+  return PUNCH_PUMP
+}
+// 打刻を1件送る。保存してから送り、結果（{ ok, data } / { ok: false, error } / { ok: false, gaveUp }）を返す。
+// onWaiting: 送り直しを始めたとき（画面に『送信中です…』を出す）
+async function punchSubmit(item, onWaiting) {
+  const result = new Promise(resolve => {
+    let told = false
+    PUNCH_WAITERS.set(item.id, { done: resolve, waiting: () => { if (!told) { told = true; if (onWaiting) onWaiting() } } })
+  })
+  await outboxAdd(item)
+  outboxFlush()
+  return result
+}
+// 送り直しを待っている間の案内
+function punchWaitingText() {
+  return PUNCH_STATE.persisted
+    ? '送信中です。電波や混雑で時間がかかっています。画面を閉じても、次に開いたときに送り直します'
+    : '送信中です。電波や混雑で時間がかかっています。この端末には保存できないため、送信が終わるまで画面を閉じないでください'
+}
+// 打刻の画面を離れた後に届いた結果（写真の画面を閉じた・送り直しを待つ間にほかの操作をした）
+function punchLateResult(type, r, noPos) {
+  if (r.ok) showAttendanceResult(type, r.data, noPos)
+  else if (r.gaveUp) toast(`${REPORT_LABELS[type]}を10分たっても送信できませんでした。端末に保存しています。電波の良い場所でアプリを開くと送ります`, 7000)
+  else toast(attendanceErrorMessage(r.error, type), 6000)
+  if (homeTabActive()) renderHome(); else punchRefreshBanner()
 }
 window.addEventListener('online', () => { if (ME) outboxFlush() })
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && outboxQueued().length) outboxFlush() })
-setInterval(() => { if (ME && !OUTBOX_FLUSHING) outboxLoad().then(() => { if (outboxQueued().length && navigator.onLine !== false) outboxFlush() }) }, 60 * 1000)
+setInterval(() => { if (ME && !PUNCH_PUMP) outboxLoad().then(() => { if (outboxQueued().length && navigator.onLine !== false) outboxFlush(false, true) }) }, 60 * 1000)
 // 保存中・送れなかった報告の案内（ホームの先頭）
 function homeOutboxHtml() {
   const q = outboxQueued(), f = OUTBOX.filter(x => x.state === 'failed')
   if (!q.length && !f.length) return ''
   return `
-    ${q.length ? `<section class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="status">
-      <p class="font-bold"><i class="fas fa-cloud-arrow-up mr-1"></i>まだ送れていない報告が${q.length}件あります</p>
-      <p class="text-xs mt-0.5">押した時刻で端末に保存しています。電波が戻ると自動で送ります（アプリを閉じても、次に開いたときに送ります）</p>
+    ${q.length ? `<section class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800" role="status" id="punch-status">
+      ${PUNCH_STATE.retrying ? `<p class="font-bold"><span class="spin" style="width:12px;height:12px;border-width:2px;vertical-align:-1px"></span> ${esc(punchWaitingText())}</p>`
+        : `<p class="font-bold"><i class="fas fa-cloud-arrow-up mr-1"></i>まだ送れていない報告が${q.length}件あります</p>
+      <p class="text-xs mt-0.5">押した時刻で端末に保存しています。電波が戻ると自動で送ります（アプリを閉じても、次に開いたときに送ります）</p>`}
       <ul class="text-xs mt-1 list-disc ml-5">${q.map(x => `<li>${esc(outboxLabel(x))}</li>`).join('')}</ul>
       <button type="button" class="btn btn-outline text-xs mt-2" data-action="outboxSendNow"><i class="fas fa-rotate-right"></i>今すぐ送る</button>
     </section>` : ''}
@@ -564,7 +638,7 @@ delegate('outboxSendNow', (el) => withSubmitLock(el, () => outboxFlush(true)))
 delegate('outboxDismiss', async (el) => {
   await outboxDelete(el.dataset.id)
   await outboxLoad()
-  const box = document.getElementById('home-outbox'); if (box) box.innerHTML = homeOutboxHtml()
+  punchRefreshBanner()
 })
 // ホームの報告に、保存中（未送信）の報告を足す（押した報告は押せないようにし、後の報告を押せるようにする）
 function homeReportsWithQueued(data) {
@@ -663,7 +737,8 @@ function homeReportButtonsHtml(data) {
           const isNext = i === nextIdx
           const open = st === 'open'
           const photoOn = data.photo_required_attendance !== false
-          const sub = queued ? esc(`未送信（${formatReportedTime(r[t].reported_at, s.work_date)} に押した報告を端末に保存しています。電波が戻ると自動で送ります）`)
+          const sub = queued ? esc(PUNCH_STATE.retrying ? `送信中（${formatReportedTime(r[t].reported_at, s.work_date)} に押した報告。電波や混雑で時間がかかっています。自動で送り直します）`
+              : `未送信（${formatReportedTime(r[t].reported_at, s.work_date)} に押した報告を端末に保存しています。電波が戻ると自動で送ります）`)
             : done ? homeDoneSubHtml(r[t], s.work_date, noBreak && (t === 'break_start' || t === 'break_end'))
             : esc(st === 'pending' ? `打刻修正を申請中 ${formatReportedTime(pend[t], s.work_date)}（承認待ち）`
               : st === 'skipped' ? '未報告（打刻履歴から追加を申請してください）'
@@ -886,6 +961,8 @@ function showAttendanceResult(type, d, noPos, sent) {
 }
 
 // 勤怠報告送信（送信中は押せない。位置情報を待つ間も含む）。成功しても失敗しても、ホームを読み直して今の状態を出す（#426）
+// 押した時刻と一意キーを作り、端末に保存してから送る。通信の失敗・混雑のときは自動で送り直す（#427 #9939。punchSubmit）。
+// 送り直しを待つ間はボタンを放し、ホームに『送信中です…』を出す（結果は届いたときに知らせる）
 let ATTENDANCE_SENDING = false
 window.submitAttendance = async function (type, shiftId, button) {
   if (homeIsStale()) { toast('日付が変わったため、画面を更新しました'); return }
@@ -894,30 +971,24 @@ window.submitAttendance = async function (type, shiftId, button) {
   // 送信中はボタンに『送信中』を出す（#182）
   const sub = button && button.querySelector('.flex-1 .text-xs')
   if (sub) sub.textContent = '送信中...'
-  // 押した時刻と一意キー。通信できずに送れなかったら、押した時刻で端末に保存して、通信が戻ってから送る（#427）
   const pressedAt = Date.now(), reqId = newRequestId()
-  let queued = false
+  let waiting = false
   try {
     await withSubmitLock(button, async () => {
       let pos = null
       if (type === 'check_in') { toast('位置情報を取得しています...'); pos = await getPositionOrNull() }
-      // 前に保存した報告があれば先に送る（後の報告が先に記録されて、前の報告が順序の確認で断られないように）
-      if (outboxQueued().length) await outboxFlush(false, true)
-      const body = { shift_id: shiftId, report_type: type, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, address: null, client_request_id: reqId }
-      try {
-        const res = await axios.post('/api/staff/attendance', body, { timeout: ATTENDANCE_TIMEOUT_MS })
-        showAttendanceResult(type, res.data, !pos)
-      } catch (e) {
-        if (e && !e.response && await outboxAdd({ id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: body.latitude, longitude: body.longitude, photo: null })) {
-          queued = true; outboxQueuedNotice(type, pressedAt); return
-        }
-        toast(attendanceErrorMessage(e, type), 5000)
-      }
+      const item = { id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, photo: null }
+      const r = await new Promise(resolve => {
+        punchSubmit(item, () => { waiting = true; resolve(null) }).then(x => { if (waiting) punchLateResult(type, x, !pos); else resolve(x) })
+      })
+      if (!r) return
+      if (r.ok) showAttendanceResult(type, r.data, !pos)
+      else toast(attendanceErrorMessage(r.error, type), 5000)
     })
   } finally {
     ATTENDANCE_SENDING = false
   }
-  if (queued && HOME) { drawHome(HOME, true); return }
+  if (waiting && HOME) { drawHome(HOME, false); return }
   renderHome()
 }
 
@@ -979,8 +1050,9 @@ function photoModalHtml() {
     <input type="file" id="photo-input-album" accept="image/*" class="hidden" onchange="onPhotoSelected(this.files[0], 'album'); this.value = ''">
     <div id="photo-error" class="text-sm text-red-600 mt-2"></div>
     <div id="photo-retry"></div>
+    <div id="photo-sending" role="status"></div>
     <div class="flex gap-2 mt-4">
-      <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
+      <button id="photo-cancel-btn" class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
       <button id="photo-submit-btn" class="btn btn-primary flex-1" disabled onclick="submitPhotoAttendance()">
         <i class="fas fa-paper-plane"></i>送信する
       </button>
@@ -1022,10 +1094,11 @@ function refreshPhotoModal() {
   const area = document.getElementById('photo-area')
   if (area) area.innerHTML = photoAreaHtml()
   const btn = document.getElementById('photo-submit-btn')
-  if (btn) btn.disabled = !pendingPhoto.blob
+  if (btn) btn.disabled = !pendingPhoto.blob || !!pendingPhoto.sendingId
 }
 
 window.removePendingPhoto = function () {
+  if (pendingPhoto.sendingId) return // 送信中（送り直しを待つ間も）は写真を変えない
   if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
   pendingPhoto.blob = null
   pendingPhoto.previewUrl = null
@@ -1036,6 +1109,7 @@ window.removePendingPhoto = function () {
 }
 
 window.onPhotoSelected = async function (file, source) {
+  if (pendingPhoto.sendingId) return
   setPhotoError('')
   if (!file) return
   if (!/^image\//.test(file.type) && !/\.(heic|heif)$/i.test(file.name || '')) {
@@ -1085,31 +1159,29 @@ delegate('photoSkipOpen', async (el) => {
 })
 let PHOTO_SKIP_SENDING = false
 delegate('photoSkipSubmit', async (el) => {
-  if (PHOTO_SKIP_SENDING) return
-  const { type, shiftId } = pendingPhoto
+  if (PHOTO_SKIP_SENDING || pendingPhoto.sendingId) return
+  const cur = pendingPhoto
+  const { type, shiftId } = cur
   const reason = (document.getElementById('photo-skip-reason') || {}).value
   const note = ((document.getElementById('photo-skip-note') || {}).value || '').trim()
   if (reason === 'other' && !note) { setPhotoError('「その他」の場合は理由を入力してください'); return }
   PHOTO_SKIP_SENDING = true
-  // 押した時刻と一意キー。通信できなければ、写真なしの報告も押した時刻で端末に保存して、通信が戻ってから送る（#427）
+  // 押した時刻と一意キー。写真なしの報告も端末に保存してから送り、通信の失敗・混雑のときは自動で送り直す（#427 #9939）
   const pressedAt = Date.now(), reqId = newRequestId()
   try {
     await withSubmitLock(el, async () => {
       const pos = await photoPosition()
-      if (outboxQueued().length) await outboxFlush(false, true) // 前に保存した報告を先に送る（submitAttendance と同じ）
-      const body = { shift_id: shiftId, report_type: type, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, address: null, no_photo_reason: reason, no_photo_note: note, client_request_id: reqId }
-      try {
-        const res = await axios.post('/api/staff/attendance', body, { timeout: ATTENDANCE_TIMEOUT_MS })
-        closeModal(); showAttendanceResult(type, res.data, type === 'check_in' && !pos, 'を写真なしで送信しました'); renderHome()
-      } catch (e) {
-        if (e && !e.response && await outboxAdd({ id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: body.latitude, longitude: body.longitude, photo: null, no_photo_reason: reason, no_photo_note: note })) {
-          closeModal(); outboxQueuedNotice(type, pressedAt)
-          if (HOME) drawHome(HOME, true)
-          return
-        }
-        if (e.response && e.response.status === 409 && e.response.data && e.response.data.error === 'すでに報告済みです') { closeModal(); toast(attendanceErrorMessage(e, type)); renderHome(); return }
-        setPhotoError(attendanceErrorMessage(e, type))
-      }
+      cur.sendingId = reqId
+      const item = { id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null, photo: null, no_photo_reason: reason, no_photo_note: note }
+      const r = await punchSubmit(item, () => { if (photoModalOpenFor(cur)) photoShowSending() })
+      const noPos = type === 'check_in' && !pos
+      if (!photoModalOpenFor(cur)) { punchLateResult(type, r, noPos); return }
+      if (r.ok) { closeModal(); showAttendanceResult(type, r.data, noPos, 'を写真なしで送信しました'); renderHome(); return }
+      if (r.gaveUp) { closeModal(); punchLateResult(type, r, noPos); return }
+      const e = r.error
+      if (e.response && e.response.status === 409 && e.response.data && e.response.data.error === 'すでに報告済みです') { closeModal(); toast(attendanceErrorMessage(e, type)); renderHome(); return }
+      cur.sendingId = null; photoShowSending(true)
+      setPhotoError(attendanceErrorMessage(e, type))
     })
   } finally { PHOTO_SKIP_SENDING = false }
 })
@@ -1156,56 +1228,49 @@ async function compressImage(file) {
   return blob
 }
 
+// 写真の画面がまだ開いていて、その送信を待っているか
+const photoModalOpenFor = (cur) => pendingPhoto === cur && !!document.getElementById('photo-submit-btn')
+// 送り直しを待っている間の案内（写真の画面）。off: 案内を消して、写真の操作を戻す
+function photoShowSending(off) {
+  const el = document.getElementById('photo-sending')
+  if (el) el.innerHTML = off ? '' : `<p class="text-sm text-amber-800 bg-amber-50 rounded-lg px-3 py-2 mt-2"><span class="spin" style="width:12px;height:12px;border-width:2px;vertical-align:-1px"></span> ${esc(punchWaitingText())}</p>`
+  const cancel = document.getElementById('photo-cancel-btn')
+  if (cancel) cancel.textContent = off ? 'キャンセル' : '閉じる（送信は続けます）'
+  const skip = document.getElementById('photo-skip-area')
+  if (skip) skip.classList.toggle('hidden', !off)
+  // 送信中は写真を変えられないので、撮り直しのボタンも隠す
+  document.querySelectorAll('#photo-area button').forEach(b => b.classList.toggle('hidden', !off))
+}
+
 window.submitPhotoAttendance = async function () {
   if (!pendingPhoto.blob) { setPhotoError('写真を選択してください'); return }
-  const { type, shiftId, blob, takenAt, source } = pendingPhoto
-  // 押した時刻と一意キー（#427。通信できなければ写真ごと端末に保存して、通信が戻ってから送る）
+  if (pendingPhoto.sendingId) return
+  const cur = pendingPhoto
+  const { type, shiftId, blob, takenAt, source } = cur
+  // 押した時刻と一意キー（#427 #9939。写真ごと端末に保存してから送り、通信の失敗・混雑のときは自動で送り直す）
   const pressedAt = Date.now(), reqId = newRequestId()
+  cur.sendingId = reqId
   const btn = document.getElementById('photo-submit-btn')
+  const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i>送信する' } }
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:1rem;height:1rem;border-width:2px"></span> 送信中...' }
-
-  const send = async (pos) => {
-    if (outboxQueued().length) await outboxFlush(false, true) // 前に保存した報告を先に送る（submitAttendance と同じ）
-    const form = new FormData()
-    form.append('shift_id', String(shiftId))
-    form.append('report_type', type)
-    if (pos) { form.append('latitude', String(pos.coords.latitude)); form.append('longitude', String(pos.coords.longitude)) }
-    form.append('photo', blob, 'attendance.jpg')
-    // 写真のファイルの日時・選び方（#418）
-    if (takenAt) form.append('photo_taken_at', String(takenAt))
-    if (source) form.append('photo_source', source)
-    form.append('client_request_id', reqId)
-    try {
-      const res = await axios.post('/api/staff/attendance-photo', form, { timeout: ATTENDANCE_PHOTO_TIMEOUT_MS })
-      closeModal()
-      showAttendanceResult(type, res.data, !pos)
-      renderHome()
-    } catch (e) {
-      if (e && !e.response) {
-        let buf = null
-        try { buf = await blob.arrayBuffer() } catch (e2) { buf = null }
-        if (buf && await outboxAdd({ id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null,
-          photo: { buf, type: blob.type || 'image/jpeg', taken_at: takenAt || null, source: source || null } })) {
-          closeModal(); outboxQueuedNotice(type, pressedAt)
-          if (HOME) drawHome(HOME, true)
-          return
-        }
-      }
-      // すでに報告済み（前の送信が届いていた・管理者が記録した）・設定の変更などで断られたら、閉じて最新の状態を出す（#182 #426）
-      if (attendanceNeedsReload(e)) {
-        closeModal(); toast(attendanceErrorMessage(e, type), 5000); renderHome(); return
-      }
-      setPhotoError((e.response && e.response.data && e.response.data.error) || '通信に失敗しました。電波の良い場所で再度お試しください')
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i>送信する' }
-    }
-  }
-
+  setPhotoError('')
   // 入店は写真の画面を開いたときに取った位置を使う（取れていなければもう一度試す。端末が応答しなくても10秒で諦める）
-  if (type === 'check_in') {
-    photoPosition().then(send)
-  } else {
-    send(null)
-  }
+  const pos = type === 'check_in' ? await photoPosition() : null
+  let buf = null
+  try { buf = await blob.arrayBuffer() } catch (e) { buf = null }
+  if (!buf) { cur.sendingId = null; resetBtn(); setPhotoError('写真の読み込みに失敗しました。「カメラで撮影」から撮り直してください', true); return }
+  const item = { id: reqId, shift_id: shiftId, report_type: type, pressed_at: pressedAt, latitude: pos ? pos.coords.latitude : null, longitude: pos ? pos.coords.longitude : null,
+    photo: { buf, type: blob.type || 'image/jpeg', taken_at: takenAt || null, source: source || null } }
+  const r = await punchSubmit(item, () => { if (photoModalOpenFor(cur)) photoShowSending() })
+  // 送り直しを待つ間に画面を閉じた: 結果は知らせだけで伝える
+  if (!photoModalOpenFor(cur)) { punchLateResult(type, r, !pos); return }
+  if (r.ok) { closeModal(); showAttendanceResult(type, r.data, !pos); renderHome(); return }
+  if (r.gaveUp) { closeModal(); punchLateResult(type, r, !pos); return }
+  const e = r.error
+  // すでに報告済み（前の送信が届いていた・管理者が記録した）・設定の変更などで断られたら、閉じて最新の状態を出す（#182 #426）
+  if (attendanceNeedsReload(e)) { closeModal(); toast(attendanceErrorMessage(e, type), 5000); renderHome(); return }
+  cur.sendingId = null; photoShowSending(true); resetBtn()
+  setPhotoError((e.response && e.response.data && e.response.data.error) || '送信に失敗しました。電波の良い場所で再度お試しください')
 }
 
 // ============ シフト ============
@@ -2827,6 +2892,8 @@ async function boot() {
     ME = (await axios.get('/api/auth/me')).data
   } catch (e) { showLoadError(e); return }
   document.getElementById('user-name').textContent = ME.name
+  // 前に開いたときに送れなかった打刻を送る（#9939。ホームを読めないときも送る）
+  outboxLoad().then(() => { if (outboxQueued().length) outboxFlush() })
   const shown = route()
   // 初回の使い方の案内（#9712。public/static/tour.js）
   if (window.FosTour) FosTour.init('staff', ME)

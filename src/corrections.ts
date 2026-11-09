@@ -84,7 +84,7 @@ const reportMap = (rows: any[]) => new Map(rows.map(r => [r.report_type as strin
 async function loadReportsDetail(db: D1Database, shiftId: number) {
   return (await db.prepare(`SELECT a.attendance_id, a.report_type, a.reported_at, a.entry_method, a.status, a.late_minutes, a.early_leave_minutes,
       a.latitude, a.longitude, a.address, CASE WHEN a.photo_key IS NOT NULL THEN 1 ELSE 0 END AS has_photo, a.entered_by, um.name AS entered_by_name,
-      a.original_reported_at, a.corrected_by_correction_id
+      a.original_reported_at, a.corrected_by_correction_id, a.time_source, a.pressed_at, a.received_at
     FROM attendance_reports a LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(shiftId).all()).results as any[]
 }
 async function loadCorrection(db: D1Database, id: any) {
@@ -908,13 +908,13 @@ correctionsAdminApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
 // =========================================================
 const PUNCH_METHOD_LABEL: Record<string, string> = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '打刻修正で追加' }
 // 報告ごとの印（f）: 1 = 打刻修正で変更・追加、2 = 写真あり、4 = 位置あり、8 = 写真なしの理由あり、
-// 16 = 押した時刻（端末時刻）で記録（#427。電波がない場所で押して後から送った報告。打刻修正で直したものは付けない）
+// 16 = 再送（押した時刻と受け付けた時刻が違う打刻。#427 #9939。time_source が device（押した時刻で記録）・resent（受け付けた時刻で記録）。打刻修正で直したものは付けない）
 const PUNCH_COLS = REPORT_TYPES.map(t => `
     MAX(CASE WHEN a.report_type = '${t}' THEN a.reported_at END) AS ${t}_at,
     MAX(CASE WHEN a.report_type = '${t}' THEN COALESCE(a.entry_method, 'app') END) AS ${t}_m,
     MAX(CASE WHEN a.report_type = '${t}' THEN (CASE WHEN a.corrected_by_correction_id IS NOT NULL OR a.entry_method = 'correction' THEN 1 ELSE 0 END)
       + (CASE WHEN a.photo_key IS NOT NULL THEN 2 ELSE 0 END) + (CASE WHEN a.latitude IS NOT NULL THEN 4 ELSE 0 END) + (CASE WHEN a.no_photo_reason IS NOT NULL THEN 8 ELSE 0 END)
-      + (CASE WHEN a.time_source = 'device' AND a.corrected_by_correction_id IS NULL THEN 16 ELSE 0 END) END) AS ${t}_f`).join(',')
+      + (CASE WHEN a.time_source IN ('device', 'resent') AND a.corrected_by_correction_id IS NULL THEN 16 ELSE 0 END) END) AS ${t}_f`).join(',')
 const PUNCH_FROM = `FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = s.staff_id AND er.company_id = s.company_id ${CLIENT_JOIN}`
 const PUNCH_SELECT = `SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.staff_id, p.project_name, cl.client_name, us.name AS staff_name, er.employee_number,
@@ -944,7 +944,7 @@ function punchFilter(companyId: number, q: (k: string) => string | undefined): {
 function punchMethodText(r: any, t: string): string {
   if (!r[`${t}_at`]) return ''
   const m = r[`${t}_m`], f = Number(r[`${t}_f`] || 0)
-  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 16 ? '端末時刻で記録' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
+  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 16 ? '再送' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
 }
 const PUNCH_LIST_LIMIT = 500
 correctionsAdminApi.get('/attendance-punches', async (c) => {
