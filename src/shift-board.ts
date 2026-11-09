@@ -2903,18 +2903,6 @@ app.delete('/rate-rules/:id', async (c) => {
   await c.env.DB.prepare('DELETE FROM rate_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).run()
   return c.json({ ok: true })
 })
-// 適用結果のプレビュー（work_date を省略したら今日の単価）
-app.get('/rate-rules/resolve', async (c) => {
-  const u = c.get('user'); const db = c.env.DB
-  const pid = intOrNull(c.req.query('project_id'))
-  if (!pid || !(await ownProject(db, u.company_id, pid))) return c.json({ error: '案件を指定してください' }, 400)
-  const data = await loadPricingData(db, u.company_id, [pid])
-  const workDate = isISODate(c.req.query('work_date')) ? c.req.query('work_date')! : todayJST()
-  const price = resolvePrice({ company_id: u.company_id, project_id: pid, site_id: intOrNull(c.req.query('site_id')), role_name: c.req.query('role_name') || null, staff_id: intOrNull(c.req.query('staff_id')), work_date: workDate }, data)
-  const start = isTime(c.req.query('start_time')) ? c.req.query('start_time')! : '10:00', end = isTime(c.req.query('end_time')) ? c.req.query('end_time')! : '19:00'
-  const brk = intOrNull(c.req.query('break_minutes')) ?? data.projects.get(pid)?.default_break_minutes ?? 60
-  return c.json({ work_date: workDate, price, amounts: calcAmounts(price, start, end, brk) })
-})
 
 // 登録する前の単価の見込み（9306）。シフト登録・枠への割り当て・一括登録の画面で、直近のシフトから引き継ぐ単価と、単価の設定の単価を出す。
 // project_id と work_date（または slot_role_id）、staff_ids（カンマ区切り。最大200人）。スポットはスタッフを選ばなくても引き継ぎ元を返す

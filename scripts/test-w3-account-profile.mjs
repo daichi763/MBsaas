@@ -243,7 +243,7 @@ if (PERSIST) {
   must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `W3AP 連携先${SUF}`, admin_code: 'admin', admin_password: 'pass1234', admin_name: '連携先管理者' }), 'company')
   const A = client(await login(code, 'admin'))
   const share = must(await admin.get(`/api/admin/roster/${EMP_SID}/share-code`), 'share-code')
-  const terms = must(await A.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(share.global_staff_code)), 'lookup').consent
   const linked = must(await A.post('/api/admin/roster/link', { code: share.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
   const lc = await A.get(`/api/admin/staff/${linked}/lifecycle`)
   ok('#569 他社連携の行は LK- コードをスタッフ番号として返さない', lc.status === 200 && lc.data.has_login === true && lc.data.has_own_login === false && lc.data.user_code === null, lc.data)

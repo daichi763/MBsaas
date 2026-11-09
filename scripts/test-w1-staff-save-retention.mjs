@@ -67,11 +67,11 @@ const putEmp = (sid, body) => admin.put(`/api/admin/employees/${sid}`, body)
 {
   const cid = 1
   let r = await admin.post(`/api/admin/clients/${cid}/contacts`, { contact_name: 'テスト担当', phone: '03-1111-2222', email: 'tanto@example.com', branch_name: '本店', title: '課長' })
-  const contacts = (await admin.get(`/api/admin/clients/${cid}/contacts`)).data.contacts
+  const contacts = (await admin.get(`/api/admin/clients/${cid}`)).data.contacts
   const ct = contacts.find(x => x.contact_name === 'テスト担当')
   ok('#92 （前提）担当者を登録できる', r.status === 200 && ct && ct.phone === '03-1111-2222', r)
   r = await admin.put(`/api/admin/clients/contacts/${ct.contact_id}`, { contact_name: 'テスト担当', phone: null, email: '', branch_name: null, title: null, department: null })
-  const ct2 = (await admin.get(`/api/admin/clients/${cid}/contacts`)).data.contacts.find(x => x.contact_id === ct.contact_id)
+  const ct2 = (await admin.get(`/api/admin/clients/${cid}`)).data.contacts.find(x => x.contact_id === ct.contact_id)
   ok('#92 担当者の電話・メール・支店・役職を空欄で保存すると消える', r.status === 200 && ct2.phone === null && ct2.email === null && ct2.branch_name === null && ct2.title === null, ct2)
   r = await admin.put(`/api/admin/clients/contacts/${ct.contact_id}`, { contact_name: '  ' })
   ok('#92 担当者氏名は空にできない（400）', r.status === 400, r)

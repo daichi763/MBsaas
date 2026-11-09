@@ -202,7 +202,7 @@ npm run cf-typegen
 - **権限制御**: 他社連携スタッフの基本項目（氏名・スキル等。生年月日は年代だけ・備考は共有しない＝同意文面 v3）は所属元企業の値を参照するだけで、稼働先はAPIレベルで編集不可（403）。メモ・評価・フォロー等の追記項目は企業ごとに独立して保持する。従業員管理は `own_employee` かつ所属元が自社のスタッフに限り参照・更新できる
 - **ログインを持たない人物**: `users.role = 'roster_only'`（ログイン不可。お知らせ対象・スタッフ数集計の対象外）。既存のシフト・勤怠・評価等は従来どおり `staff_id` で紐付ける
 - **API**（`src/roster.ts`。`/api/admin/*` の管理者ロールでのみ利用可）
-  - `GET /api/admin/roster/consent-terms` / `GET /api/admin/roster/lookup?code=` / `POST /api/admin/roster/link`
+  - `GET /api/admin/roster/lookup?code=`（同意文面 consent も返す） / `POST /api/admin/roster/link`
   - `POST /api/admin/roster`（`route`: `employee` / `partner` / `skillsheet`）
   - `GET /api/admin/roster/partners` / `GET /api/admin/roster/consents[?staff_id=]`
 - **マイグレーション**: `0012_add_persons_and_staff_master.sql`（`persons` と `roster_consents` を追加し、`staff_profiles` / `users` / `staff_affiliations` に列を追加。既存の `staff_id` の値は変更しない）
@@ -249,7 +249,7 @@ npm run cf-typegen
   - 割り当てた時点の金額をシフトに記録します（`bill_*` / `pay_*` / `payee_type` など）。単価表を変えても登録済みのシフトは変わりません。変更を反映するときは「今後のシフトに単価ルールを再適用」を使います（手動で変更したシフトは対象外です）
   - `shifts.unit_price` は請求の基本額です。これまでの売上概算・請求前確認はこの列をそのまま使います
 - **金額の公開範囲**: 管理画面（`/api/admin/*`）でのみ返します。スタッフ画面のAPI（`/api/staff/home`・`/api/staff/shifts`）は金額の列を取り除いて返します
-- **API**（`src/shift-board.ts`）: `/api/admin/shift-board`, `/shift-board/candidates`, `/shift-slots`, `/shift-slots/roles/:id/assign`, `/shifts/:id/move`, `/shifts/:id/price`, `/shifts/reprice`, `/shifts/bulk`, `/shifts/copy-week`, `/slot-patterns`, `/sites`, `/rate-rules`, `/rate-rules/resolve`, `/projects/:id/pricing`
+- **API**（`src/shift-board.ts`）: `/api/admin/shift-board`, `/shift-board/candidates`, `/shift-slots`, `/shift-slots/roles/:id/assign`, `/shifts/:id/move`, `/shifts/:id/price`, `/shifts/reprice`, `/shifts/bulk`, `/shifts/copy-week`, `/slot-patterns`, `/sites`, `/rate-rules`, `/shifts/price-preview`, `/projects/:id/pricing`
 - **マイグレーション**: `0016_add_spot_shift_board.sql`（列とテーブルの追加のみ。既存のシフトは「枠なし」「請求 = 既存の単価」のまま動きます）
 - **次の段階**: 区分の新設（日雇い・個人事業主）と区分変更の手順、仮登録、勤怠・日報の提出設定、報告用URL（第2段階）→ 実働時間の反映と請求・支払の集計・CSV出力（第3段階）→ 募集ページ（第4段階）→ 仮登録スタッフと連携スタッフの統合（第5段階）
 

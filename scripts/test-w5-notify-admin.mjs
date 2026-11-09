@@ -137,7 +137,7 @@ let linkedB, rosterStaff
   must(await A.post('/api/admin/staff', { user_code: code, name: `連携 花子${SUF}`, password: 'pass1234', phone: newPhone() }), 'staff')
   rosterStaff = must(await A.get('/api/admin/staff'), 'staff list').staff.find(s => s.user_code === code)
   const sc = must(await A.get(`/api/admin/roster/${rosterStaff.staff_id}/share-code`), 'share code')
-  const terms = must(await B.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await B.get('/api/admin/roster/lookup?code=' + encodeURIComponent(sc.global_staff_code)), 'lookup').consent
   linkedB = must(await B.post('/api/admin/roster/link', { code: sc.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
   const mA0 = await mailCount(A, 'roster_chat')
   const secret = `明日の遅刻の件${SUF}`

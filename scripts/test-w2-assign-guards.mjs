@@ -145,7 +145,7 @@ const busy = await newStaff(admin, 'BUSY')
   const A = client(await login(code, 'admin'))
   const link = async (staff) => {
     const share = must(await admin.get(`/api/admin/roster/${staff.staff_id}/share-code`), 'share-code')
-    const terms = must(await A.get('/api/admin/roster/consent-terms'), 'terms')
+    const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(share.global_staff_code)), 'lookup').consent
     return must(await A.post('/api/admin/roster/link', { code: share.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
   }
   const X = await newStaff(admin, 'LINKX'), Y = await newStaff(admin, 'LINKY')

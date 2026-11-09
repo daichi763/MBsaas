@@ -88,13 +88,14 @@ const codeA = `${pfx}a`
 const A = client(await login(codeA, 'admin'))
 
 // ---------- #9001 企業間連携の共有範囲 ----------
-const terms = must(await admin.get('/api/admin/roster/consent-terms'), 'terms')
-ok('#9001 同意の版は v3。共有する範囲に生年月日・備考がなく、年代がある', terms.version === 'v3' && !terms.shared.some(s => /生年月日・年齢|^備考/.test(s)) && terms.shared.some(s => /年代/.test(s))
-  && terms.not_shared.includes('生年月日') && terms.not_shared.some(s => /備考/.test(s)), terms)
 const DOB = '1990-04-01'
 const xr = must(await admin.post('/api/admin/roster', { route: 'employee', name: `${PFX} 連携X`, kana: 'レンケイ エックス', gender: 'male', date_of_birth: DOB,
   user_code: `${PFX}X`, password: 'pass1234', force: true }), 'staff X')
 const X = { staff_id: xr.staff_id, code: xr.global_staff_code }
+// 同意の文面は、連携の前の照会（roster/lookup）の consent で返す（画面と同じ）
+const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(X.code)), 'lookup').consent
+ok('#9001 同意の版は v3。共有する範囲に生年月日・備考がなく、年代がある', terms.version === 'v3' && !terms.shared.some(s => /生年月日・年齢|^備考/.test(s)) && terms.shared.some(s => /年代/.test(s))
+  && terms.not_shared.includes('生年月日') && terms.not_shared.some(s => /備考/.test(s)), terms)
 must(await admin.put(`/api/admin/staff/${X.staff_id}`, { remarks: `${PFX}の備考（所属元だけ）`, skills: '販売', pr_points: '明るい' }), 'remarks')
 const oldVer = await A.post('/api/admin/roster/link', { code: X.code, agreed: true, consent_version: 'v2' })
 ok('#9001 古い版（v2）の同意では連携できない（409。画面を読み直す）', oldVer.status === 409, oldVer)

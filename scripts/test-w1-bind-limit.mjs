@@ -135,8 +135,7 @@ for (const k of ['A', 'B', 'C']) {
 const C1NAME = '株式会社サンプルモバイル人材'
 async function linkTo(api, code) {
   const lk = await api.get(`/api/admin/roster/lookup?code=${code}`)
-  const terms = await api.get('/api/admin/roster/consent-terms')
-  return must(await api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms.data.version }), 'link').staff_id
+  return must(await api.post('/api/admin/roster/link', { code, agreed: true, consent_version: lk.data?.consent?.version }), 'link').staff_id
 }
 async function shiftIn(api, staff_id, projectName, date) {
   must(await api.post('/api/admin/projects', { project_name: projectName }), 'project ' + projectName)

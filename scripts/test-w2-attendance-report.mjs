@@ -196,8 +196,10 @@ let T1
     await admin.put(`/api/admin/report-settings/projects/${pa}/default`, { settings: { wake_up: false } })
     const d2 = (await admin.get(`/api/admin/report-settings/projects/${pa}`)).data.staff.find(s => s.staff_id === 2)
     ok('#519 案件の標準設定を変えても、旧設定の値で固定される', d2 && ALL.every(t => d2.settings[t] === 0) && d2.individual, d2)
-    const reset = await admin.put('/api/admin/staff/2/report-settings', { attendance_mode: '', daily_report_mode: '' })
-    ok('（準備）スタッフの提出設定を「案件の標準設定」に戻せる', reset.status === 200, reset)
+    // 勤怠は案件報告管理の「標準に戻す」（project_ids なし＝シフトのある全案件。旧設定も消す）、日報はスタッフの提出設定で戻す
+    const reset = await admin.post('/api/admin/report-settings/staff/2/reset', {})
+    const resetDr = await admin.put('/api/admin/staff/2/report-settings', { daily_report_mode: '' })
+    ok('（準備）スタッフの提出設定を「案件の標準設定」に戻せる', reset.status === 200 && resetDr.status === 200, [reset, resetDr])
     const sh2 = await createShift(admin, 2, pb, tomorrow, 'W2AR-LEGACY2')
     const rs2 = await reportStatus(admin, sh2)
     ok('#519 標準設定に戻した後に入った案件は、案件の標準設定を使う', rs2.modes.required_attendance.length > 0, rs2.modes)

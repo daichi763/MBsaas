@@ -207,8 +207,8 @@ const merge = (src, tgt, extra = {}) => admin.post(`/api/admin/staff/${src}/merg
   must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: bCode, company_name: `${PFX}連携先B株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company B')
   const B = client(await login(bCode, 'admin'))
   const linkTo = async (api, code) => {
-    const terms = await api.get('/api/admin/roster/consent-terms')
-    return must(await api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms.data.version }), 'link').staff_id
+    const terms = must(await api.get('/api/admin/roster/lookup?code=' + encodeURIComponent(code)), 'lookup').consent
+    return must(await api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms?.version }), 'link').staff_id
   }
   // #103: 仮登録のまま B に連携 → 本登録でログインを発行 → B のシフトもアプリに出る（企業の切り替えに B が出る）
   const p1 = await quick(`${PFX} 連携 五郎`)

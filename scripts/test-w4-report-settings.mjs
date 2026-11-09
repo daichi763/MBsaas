@@ -177,11 +177,13 @@ let ver = (await detail()).defaults_version
   ok('#413 標準に戻す: 行が消えて『標準』になり、標準設定の値に従う', reset.status === 200 && row(d2, 'A').kind === 'none' && ALL.every(t => row(d2, 'A').settings[t] === d2.defaults[t]), { reset: reset.data, A: row(d2, 'A') })
   const logs = must(await admin.get(`/api/admin/report-settings/logs?staff_id=${id.A}&action=staff_reset`), 'logs').logs
   ok('#413 標準に戻すと staff_reset の履歴が残る', logs.length > 0, logs.length)
-  // 旧来の API の『標準に戻す』（attendance_mode: ''）も行を消す
+  // project_ids を省いた『標準に戻す』は、シフトのある全案件の行を消す（旧来の PUT /admin/staff/:id/report-settings の attendance_mode は 9925 で廃止）
   must(await admin.put(`/api/admin/report-settings/projects/${pid}/staff/${id.C}`, { settings: { check_in: false } }), 'individual C')
   const legacy = await admin.put(`/api/admin/staff/${id.C}/report-settings`, { attendance_mode: '', daily_report_mode: '' })
+  ok('#9925 旧来の API の attendance_mode は受け付けない（400）', legacy.status === 400, legacy)
+  const resetAll = await admin.post(`/api/admin/report-settings/staff/${id.C}/reset`, {})
   const d3 = await detail()
-  ok('#413 旧来の API の attendance_mode 空欄も標準に戻す', legacy.status === 200 && row(d3, 'C').kind === 'none', row(d3, 'C'))
+  ok('#413 project_ids なしの『標準に戻す』でも行が消えて『標準』になる', resetAll.status === 200 && row(d3, 'C').kind === 'none', { reset: resetAll.data, C: row(d3, 'C') })
 }
 
 // ---------- #268 0056 の移行: スタッフ単位の旧設定から作った移行の行は『個別』 ----------

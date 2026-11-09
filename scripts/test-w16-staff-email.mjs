@@ -111,7 +111,7 @@ if (MODE === 'direct') {
   const code = `${pfx}a`
   must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: code, company_name: `${PFX}連携先A株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company A')
   const coA = client(await login(code, 'admin'))
-  const terms = must(await coA.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await coA.get('/api/admin/roster/lookup?code=' + encodeURIComponent(E.global_staff_code)), 'lookup').consent
   const lk = must(await coA.post('/api/admin/roster/link', { code: E.global_staff_code, agreed: true, consent_version: terms.version }), 'link E to A')
   const companies = must(await se.get('/api/staff/me/companies'), 'companies').companies
   const coAId = companies.find(x => x.company_name === `${PFX}連携先A株式会社`)?.company_id

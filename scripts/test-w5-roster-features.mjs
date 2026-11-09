@@ -33,8 +33,13 @@ for (const k of ['a', 'b', 'c']) {
   companies[k] = { name, api: client(await login(code, 'admin')) }
 }
 const A = companies.a.api, B = companies.b.api, C = companies.c.api
-const terms = must(await admin.get('/api/admin/roster/consent-terms'), 'terms')
-const link = (api, code) => api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms.version })
+// 同意の版は、画面と同じく連携の前の照会（roster/lookup）の consent から取る
+let consentVersion = null
+const link = async (api, code) => {
+  // 照会が 404・409（連携済み・退職）で consent を返さないときは、取れた版を上書きしない（同時送信のテストで版が消えないように）
+  if (!consentVersion) { const v = (await api.get('/api/admin/roster/lookup?code=' + encodeURIComponent(code))).data?.consent?.version; if (v) consentVersion = v }
+  return api.post('/api/admin/roster/link', { code, agreed: true, consent_version: consentVersion })
+}
 const notifs = async (api, kind) => must(await api.get('/api/admin/notifications?kind=' + kind), 'notifications ' + kind).notifications
 
 // 自社雇用のスタッフ X（ログインあり・生年月日・フリガナあり）

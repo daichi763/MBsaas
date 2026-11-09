@@ -88,6 +88,8 @@ const P = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-�
 // ---------- 9203 単価の設定（標準単価・スタッフ別のルール・インセンティブ） ----------
 const A = must(await admin.post('/api/admin/staff-quick', { name: `${PFX} 単価スタッフ`, phone: phone(1), affiliation_type: 'daily_worker', force: true }), 'staff-quick').staff_id
 const B = must(await admin.post('/api/admin/staff-quick', { name: `${PFX} 他のスタッフ`, phone: phone(2), affiliation_type: 'daily_worker', force: true }), 'staff-quick').staff_id
+// 単価の設定の適用結果（シフト登録の画面と同じ shifts/price-preview の settings。引き継ぎを含めない単価）
+const resolveFor = async (staffId) => must(await admin.get(`/api/admin/shifts/price-preview?project_id=${P}&staff_ids=${staffId}&work_date=${jstToday}`), 'price-preview ' + staffId).items[0].settings
 let ruleId
 {
   must(await admin.put(`/api/admin/projects/${P}/pricing`, { engagement_type: 'regular', unit_price_type: 'daily', unit_price: 18000, pay_unit_type: 'daily', pay_rate: 12000 }), 'pricing')
@@ -98,9 +100,8 @@ let ruleId
   const r = rules.find(x => x.rule_id === ruleId)
   ok('9203 ルールの一覧に支払単価（加算後）・インセンティブ・備考・スタッフ名が出る', r && r.pay_rate === 14000 && r.pay_incentive === 2000 && r.memo === 'リーダー手当' && String(r.staff_name || '').includes(PFX), r)
   // 計算は今までどおり（加算後の支払単価をそのまま使い、加算額を二重に足さない）
-  const resA = must(await admin.get(`/api/admin/rate-rules/resolve?project_id=${P}&staff_id=${A}&work_date=${jstToday}`), 'resolve A')
-  const resB = must(await admin.get(`/api/admin/rate-rules/resolve?project_id=${P}&staff_id=${B}&work_date=${jstToday}`), 'resolve B')
-  ok('9203 単価の計算は変わらない（その人は支払単価 14,000、ほかの人は案件の標準 12,000）', resA.price.pay_rate === 14000 && resA.amounts.pay_amount === 14000 && resB.price.pay_rate === 12000 && resA.price.bill_rate === 18000, [resA, resB])
+  const resA = await resolveFor(A), resB = await resolveFor(B)
+  ok('9203 単価の計算は変わらない（その人は支払単価 14,000、ほかの人は案件の標準 12,000）', resA.pay_rate === 14000 && resA.amounts.pay_amount === 14000 && resB.pay_rate === 12000 && resA.bill_rate === 18000, [resA, resB])
   // シフトを登録すると、ルールの支払単価で金額が入る
   const day = addDays(jstToday, 3)
   const memo = `${PFX}-s1`
@@ -155,8 +156,8 @@ let ruleId
   ok('9204 時給に変えられる', r4.status === 200 && p4.reference_pay_unit === 'hourly' && p4.reference_pay_amount === 1400, [p4.reference_pay_unit, p4.reference_pay_amount])
   // 参考単価は計算に使わない（スタッフ B の単価は案件の標準のまま）
   must(await admin.put(`/api/admin/staff/${B}/reference-pay`, { unit: 'daily', amount: 99999 }), 'ref B')
-  const resB = must(await admin.get(`/api/admin/rate-rules/resolve?project_id=${P}&staff_id=${B}&work_date=${jstToday}`), 'resolve B')
-  ok('9204 参考単価は計算に使わない（案件の標準の支払単価のまま）', resB.price.pay_rate === 12000, resB.price)
+  const resB = await resolveFor(B)
+  ok('9204 参考単価は計算に使わない（案件の標準の支払単価のまま）', resB.pay_rate === 12000, resB)
   const r5 = await admin.put(`/api/admin/staff/${B}/reference-pay`, { unit: 'daily', amount: null })
   const p5 = must(await admin.get(`/api/admin/staff/${B}`), 'staff').profile
   ok('9204 空欄で保存すると消す', r5.status === 200 && p5.reference_pay_amount == null && p5.reference_pay_unit == null, [p5.reference_pay_unit, p5.reference_pay_amount])
@@ -174,7 +175,7 @@ let ruleId
   await admin.get('/api/admin/staff')
   must(await admin.put('/api/admin/staff/1/reference-pay', { unit: 'daily', amount: 13000 }), 'ref staff 1')
   const sc = await admin.get('/api/admin/roster/1/share-code')
-  const terms = must(await adminB.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await adminB.get('/api/admin/roster/lookup?code=' + encodeURIComponent(sc.data?.global_staff_code)), 'lookup').consent
   const lk = await adminB.post('/api/admin/roster/link', { code: sc.data?.global_staff_code, agreed: true, consent_version: terms.version })
   ok('（前提）連携先が st001 を連携', sc.status === 200 && lk.status === 200, [sc.status, lk])
   if (lk.status === 200) {
