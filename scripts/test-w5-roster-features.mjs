@@ -149,8 +149,9 @@ const detailA = async () => must(await A.get(`/api/admin/staff/${inA}`), 'A deta
   // 稼働先 C は、受け取った2人のIDを1回の同意で連携する（画面は 1人ずつ POST /link を呼ぶ）
   const rs = await Promise.all(out.staff.map(s => link(C, s.code)))
   ok('#539 まとめて連携できる（同意の記録は1人ずつ残る）', rs.every(r => r.status === 200), rs)
-  const cons = must(await C.get('/api/admin/roster/consents'), 'consents').consents
-  ok('#539 同意の記録が人数分ある', rs.every(r => cons.some(c => c.staff_id === r.data.staff_id)), cons.length)
+  // 同意の記録は、連携した行ごとの連携状況（GET /roster/:id/links の consents）で確かめる（会社全体の一覧の API は #9929 で削除）
+  const cons = await Promise.all(rs.map(async r => must(await C.get(`/api/admin/roster/${r.data.staff_id}/links`), 'links').consents || []))
+  ok('#539 同意の記録が人数分ある', cons.length === rs.length && cons.every(l => l.length === 1 && l[0].consent_version === terms.version), cons)
   // C で連携した行の自社専用コード（RL）は、一覧の出力でまとめて発行する
   const ids = rs.map(r => r.data.staff_id)
   const before = must(await C.get('/api/admin/roster/share-codes'), 'C list').staff.filter(r => ids.includes(r.staff_id))

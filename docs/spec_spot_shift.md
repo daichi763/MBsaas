@@ -294,7 +294,6 @@
 |---|---|---|
 | GET | /staff/:id/merge-candidates?q= | 統合候補（一致した理由・稼働件数） |
 | POST | /staff/:id/merge | 統合（`target_staff_id`・`dry_run`・`force`・`note`） |
-| GET | /staff/:id/merges | 統合の履歴 |
 
 ### 11.5 画面
 - スタッフ詳細の「区分・登録状態」に「既存のスタッフに統合」（仮登録のみ）→ 候補の選択 → 確認（移す件数・置き換え・警告）→ 実行後は統合先の詳細へ移動
