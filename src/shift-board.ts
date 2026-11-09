@@ -2726,7 +2726,8 @@ app.delete('/slot-patterns/:id', async (c) => {
   const stmts: D1PreparedStatement[] = []
   if (c.req.query('remove_future') === '1') {
     const today = c.req.query('today') && isDate(c.req.query('today')) ? c.req.query('today')! : new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10)
-    const empties = `SELECT s.slot_id FROM shift_slots s WHERE s.pattern_id = ? AND s.company_id = ? AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)`
+    // +s.company_id: 会社・日付の索引（会社の今日以降の枠をすべて読む）ではなく、繰り返し登録の索引を使わせる
+    const empties = `SELECT s.slot_id FROM shift_slots s WHERE s.pattern_id = ? AND +s.company_id = ? AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)`
     stmts.push(
       db.prepare(`DELETE FROM shift_slot_roles WHERE slot_id IN (${empties})`).bind(p.pattern_id, u.company_id, today),
       db.prepare(`DELETE FROM shift_slots WHERE slot_id IN (${empties}) RETURNING slot_id`).bind(p.pattern_id, u.company_id, today))
