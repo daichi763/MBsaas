@@ -244,6 +244,16 @@ Cloudflare のダッシュボードの Workers Builds のビルドのログに�
 - **デプロイの前に問題が見つかった**: マージしなければ本番のコードは変わりません。マイグレーションだけ適用した状態でも、列・テーブルの追加だけなので今のコードは動きます。
 - **デプロイの後に問題が見つかった**: 4章の「コードを前の版に戻す」。
 
+### 3.4 プレビューの URL は使わない
+Workers Builds は、PR などの main 以外のブランチをビルドすると、本番とは別の版を作り、「プレビューの URL」（`<ブランチの別名>-mbsaas.saas-2a2.workers.dev`）で開けるようにします。**この版は本番の D1・R2 につながります**（`wrangler.jsonc` の D1・R2 は、トップレベルも `env.production` も本番のもの）。レビュー前のコードで本番のデータを読み書きできてしまうので、プレビューの URL は使いません（[decisions.md](decisions.md) の D-49）。リリースの確認は本番で行います（3.2）。
+
+- `wrangler.jsonc` のトップレベルと `env.production` に `"preview_urls": false` を書いています。この設定の入った版が本番にデプロイされると、プレビューの URL は外から開けなくなります。
+- `scripts/ci-wrangler-config.mjs` は、`preview_urls` が `false` でなければ本番のビルドを止めます。この確かめを消さないでください。
+- 本番の URL（`https://mbsaas.saas-2a2.workers.dev`）は `workers_dev` で決まり、この設定では止まりません。
+- **main 以外のブランチのビルドそのものを止める**（Cloudflare の管理者の権限を持つ人が行う。🔴 本番）: ダッシュボードの **Workers & Pages** → `mbsaas` → **Settings** → **Build** → **Branch control** で、**Builds for non-production branches**（main 以外のブランチのビルド）のチェックを外して保存します。本番（main）のデプロイは変わりません。画面の表記は Cloudflare の変更で変わることがあります。
+- プレビューを使いたくなったときは、先にプレビュー用の D1・R2 を作り、main 以外のブランチではそちらを使う設定にしてから、`preview_urls` を見直します。本番の D1・R2 のままプレビューを開けるようにしてはいけません。
+- 旧 Cloudflare Pages のプロジェクト `mbsaas`（`mbsaas.pages.dev`）は、2026-11-09 に確かめて、存在しません。
+
 ---
 
 ## 4. 戻し方・復元 🔴 本番
@@ -283,7 +293,7 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 3. `wrangler.jsonc` の D1 の `database_id`（と `database_name`）を、トップレベルと `env.production` の両方で新しい DB に変え、マージしてデプロイする。`package.json` の `db:*` のスクリプトと `scripts/check-migrations.mjs:10` も DB の名前を使っているので合わせて直す。
 
 ### 4.4 R2 のファイル
-入店・退店の写真、履歴書・入社時書類、契約書は R2 にあり、**D1 のバックアップと Time Travel には入りません**。R2 のファイルの扱いは [backup.md](backup.md) を見てください。
+入店・退店の写真、履歴書・入社時書類、契約書は R2 にあり、**D1 のバックアップと Time Travel には入りません**。R2 のファイルは**バックアップの対象外**です（[decisions.md](decisions.md) の D-48）。誤って消した・上書きしたファイルは戻せません。詳しくは [backup.md](backup.md) を見てください。
 
 ---
 

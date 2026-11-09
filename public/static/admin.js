@@ -1446,60 +1446,6 @@ function staffNeighbors(sid) {
   return i < 0 ? null : { prev: staffListIds[i - 1] || null, next: staffListIds[i + 1] || null, pos: i + 1, total: staffListIds.length }
 }
 
-// スタッフ番号には空いている番号（#424）を入れておく（手で変えることもできる）
-window.showAddStaff = async function () {
-  let next = null
-  try { next = (await axios.get('/api/admin/roster/next-code')).data } catch { next = null }
-  modal(`
-    <h3 class="font-bold text-lg mb-4">スタッフ登録</h3>
-    <div class="space-y-3">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">スタッフ番号 *</label><input id="ns-code" class="inp" placeholder="st021" value="${esc(next ? next.code : '')}">
-          ${next && next.last_code ? `<p class="text-[11px] text-gray-400 mt-1">空いている番号です（最後の番号: ${esc(next.last_code)}）</p>` : ''}</div>
-        <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="ns-name" class="inp" placeholder="山田 太郎"></div>
-      </div>
-      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード *</label><input id="ns-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="ns-email" class="inp"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="ns-phone" class="inp"></div>
-      </div>
-      <div><label class="text-sm text-gray-600 block mb-1">スキル（カンマ区切り）</label><input id="ns-skills" class="inp" placeholder="MNP,接客"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">経歴</label><input id="ns-career" class="inp"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">稼働可能エリア</label><input id="ns-area" class="inp" placeholder="東京23区"></div>
-      <div id="ns-dup"></div>
-      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addStaff">登録する</button></div>
-    </div>`)
-}
-// 送信中はボタンを無効にする（二度押しで同じ人が2人登録されないように。#223）
-delegate('addStaff', (el) => withSubmitLock(el, () => addStaff(false)))
-delegate('addStaffForce', (el) => withSubmitLock(el, () => addStaff(true)))
-
-window.addStaff = async function (force) {
-  try {
-    await axios.post('/api/admin/staff', {
-      user_code: document.getElementById('ns-code').value.trim(),
-      name: document.getElementById('ns-name').value.trim(),
-      password: document.getElementById('ns-pass').value,
-      email: document.getElementById('ns-email').value, phone: document.getElementById('ns-phone').value,
-      skills: document.getElementById('ns-skills').value, career: document.getElementById('ns-career').value,
-      work_area: document.getElementById('ns-area').value, force: !!force,
-    })
-    closeModal(); toast('スタッフを登録しました'); renderStaff()
-  } catch (e) {
-    const d = e.response && e.response.data
-    // 同じ人と思われるスタッフがいる（#223）: 一覧を出し、別の人なら登録を続けられるようにする
-    const box = document.getElementById('ns-dup')
-    if (d && d.need_force && d.matches && box && window.samePersonListHtml) {
-      box.innerHTML = `<div class="p-3 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>同じ人と思われるスタッフが登録済みです</p>
-        <ul class="space-y-1 mb-2">${samePersonListHtml(d.matches)}</ul>
-        <button class="btn btn-outline text-xs" data-action="addStaffForce">別の人として登録する</button></div>`
-      return
-    }
-    if (d && d.suggested_code) { document.getElementById('ns-code').value = d.suggested_code; toast(`スタッフ番号が使われています。空いている番号（${d.suggested_code}）を入れました`); return }
-    toast((d && d.error) || '登録に失敗しました')
-  }
-}
-
 // ============ スタッフ詳細 ============
 const GENDER_LABEL_ADMIN = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
 // 年齢の表示（#9710）。生年月日がなく、年齢の欄（生年月日が分からないとき）から推定した年齢は「約31歳（2026/11 時点で30歳）」の形で出す
@@ -2075,10 +2021,6 @@ delegate('deleteEvaluation', el => withSubmitLock(el, async () => {
   } catch (e) { showApiError(e, '評価を削除できませんでした') }
 }))
 
-window.saveStaffMemo = async function (sid) {
-  await axios.put('/api/admin/staff/' + sid, { memo: document.getElementById('staff-memo').value })
-  toast('メモを保存しました')
-}
 // 離職リスク（低・中・高）の変更（#381）。失敗したら選択を元に戻す
 document.addEventListener('change', async (ev) => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-staff-risk]') : null
@@ -2167,27 +2109,6 @@ async function putRetiredAtOnce(url, body, target) {
     if (!confirm(d.error + '\n\nこの日付で保存しますか？')) return null
     ;(target || body).retired_at_confirmed = true
     return axios.put(url, body)
-  }
-}
-window.setStaffRetiredAt = async function (sid, date) {
-  const r = retirementBody(date ? 'retired' : 'working', date || '', null)
-  if (r.error) { toast(r.error); return }
-  if (date && r.confirm && !confirm(r.confirm)) return
-  try {
-    if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, r.body))) return
-    toast(date ? '退職日を設定しました' : '現役に戻しました')
-    renderStaffDetail(sid)
-  } catch (e) {
-    toast((e.response && e.response.data && e.response.data.error) || '更新に失敗しました')
-  }
-}
-window.setStaffEmploymentStatus = async function (sid, status) {
-  try {
-    await axios.put('/api/admin/staff/' + sid, { employment_status: status })
-    toast('在籍状況を更新しました')
-    renderStaffDetail(sid)
-  } catch (e) {
-    toast((e.response && e.response.data && e.response.data.error) || '更新に失敗しました')
   }
 }
 window.saveStaffBasicInfo = async function (sid) {

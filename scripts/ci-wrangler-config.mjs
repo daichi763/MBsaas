@@ -27,5 +27,7 @@ const conf = JSON.parse(stripJsonc(fs.readFileSync('wrangler.jsonc', 'utf8')))
 const prod = conf.env && conf.env.production
 if (!prod || !prod.vars) throw new Error('wrangler.jsonc に env.production（vars を含む）がありません')
 const out = { ...conf, ...prod, env: { production: prod } }
+// プレビューの URL は本番の D1・R2 につながるので出さない（D-49）。設定が落ちていたらデプロイを止める
+if (out.preview_urls !== false) throw new Error('wrangler.jsonc の preview_urls が false ではありません（トップレベルと env.production の両方に false を書く）')
 fs.writeFileSync('wrangler.json', JSON.stringify(out, null, 2) + '\n')
 console.log(`wrangler.json を本番の設定で作成しました（APP_BASE_URL=${prod.vars.APP_BASE_URL}, DEMO_MODE=${prod.vars.DEMO_MODE}）`)

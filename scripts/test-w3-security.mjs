@@ -153,7 +153,8 @@ if (PERSIST) {
   const staffPage = await (await fetch(`${BASE}/staff`, { headers: { Cookie: staffCookie }, redirect: 'manual' })).text()
   const tags = (html) => [...html.matchAll(/<(script|link)\b[^>]*(?:src|href)="(https:\/\/cdn\.jsdelivr\.net\/[^"]+)"[^>]*>/g)].map(m => ({ url: m[2], tag: m[0] }))
   const all = [...tags(page), ...tags(hqPage), ...tags(staffPage)]
-  ok('#202 chart.js をバージョン固定で読み込む', /chart\.js@4\.5\.1\/dist\/chart\.umd\.min\.js/.test(page) && /chart\.js@4\.5\.1/.test(hqPage) && !/npm\/chart\.js"/.test(page + hqPage))
+  // 本部画面は Chart.js を使わないので読み込まない（arch-07）
+  ok('#202 chart.js をバージョン固定で読み込む（管理画面だけ）', /chart\.js@4\.5\.1\/dist\/chart\.umd\.min\.js/.test(page) && !/chart\.js@/.test(hqPage) && !/npm\/chart\.js"/.test(page + hqPage))
   ok('#202 CDN の script・link すべてに integrity と crossorigin を付ける', all.length >= 10 && all.every(t => /integrity="sha384-[A-Za-z0-9+/=]+"/.test(t.tag) && /crossorigin="anonymous"/.test(t.tag)), all.filter(t => !/integrity=/.test(t.tag)))
   ok('#202 qrcode-generator の読み込みは管理画面で1回だけ', (page.match(/qrcode-generator@/g) || []).length === 1)
   if (process.env.CHECK_SRI === '1') {

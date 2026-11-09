@@ -219,7 +219,7 @@ async function browserChecks() {
       ['枠を作成', 'openSlotModal()'], ['枠の編集', `openSlotModal(null, ${BROWSER_SLOTS.ids[0]})`], ['枠の繰り返し登録', 'openPatternModal()'],
       ['常勤の一括登録', 'openBulkModal()'], ['前の週のコピー', 'openCopyModal()'], ['シフト登録', `showAddShift('${BROWSER_SLOTS.week}')`],
       ['候補', `openCandidates(${BROWSER_SLOTS.roles[0]})`], ['単価ルール', `openRuleModal({ project_id: ${P}, client_id: ${cl.client_id} })`],
-      ['クライアントの登録', 'showAddClient()'], ['案件の登録', 'showAddProject()'], ['スタッフの登録', 'showAddStaff()'], ['仮登録', 'showQuickRegister()'],
+      ['クライアントの登録', 'showAddClient()'], ['案件の登録', 'showAddProject()'], ['仮登録', 'showQuickRegister()'],
       ['日報テンプレート', 'showAddTemplate()'], ['名簿の登録', 'showAddRoster()'], ['名簿の取り込み', 'showRosterImport()'], ['名簿のURL', 'showRosterLink()'],
       ['名簿のまとめてURL', 'showRosterBulkLink()'], ['取引先の担当者', `showClientContactForm(${cl.client_id})`], ['報告用URL', `openNologinBulk('${BROWSER_SLOTS.week}')`],
       ['フォロー', `showFollowModal(${A.staff_id}, 'A')`], ['書類の登録', `openDocumentUpload('staff', ${A.staff_id})`], ['所属の変更', `openAffiliationChange(${A.staff_id})`],
