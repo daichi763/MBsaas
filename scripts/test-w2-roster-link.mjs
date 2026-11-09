@@ -50,7 +50,8 @@ ok('（前提）自社雇用のスタッフに恒久ID（FS…）がある', ['X
 // 同意の版は、画面と同じく連携の前の照会（roster/lookup）の consent から取る
 let consentVersion = null
 const link = async (api, code) => {
-  consentVersion ??= (await api.get('/api/admin/roster/lookup?code=' + encodeURIComponent(code))).data?.consent?.version
+  // 照会が 404・409（連携済み・退職）で consent を返さないときは、取れた版を上書きしない（同時送信のテストで版が消えないように）
+  if (!consentVersion) { const v = (await api.get('/api/admin/roster/lookup?code=' + encodeURIComponent(code))).data?.consent?.version; if (v) consentVersion = v }
   return api.post('/api/admin/roster/link', { code, agreed: true, consent_version: consentVersion })
 }
 const putEmp = (sid, body) => admin.put(`/api/admin/employees/${sid}`, body)
