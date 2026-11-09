@@ -43,7 +43,7 @@ const billing = async (month) => must(await admin.get(`/api/admin/billing-check?
   ok('請求前確認にキャンセル料の列（案件別・スタッフ別）がある', a.includes("hasCancel ? '<th>キャンセル料</th>' : ''") && a.includes('cancelCell(p.total_cancel, p.cancel_count, false)') && a.includes('cancelCell(d.cancel, d.cancel_count, true)'))
   ok('スタッフ別明細のキャンセル料はバッジで出す（精算の画面と同じ badge-red）', a.includes('<span class="badge badge-red whitespace-nowrap">キャンセル料 ${Number(n)}件</span>'))
   ok('キャンセル料の明細（欠勤・中止の区分のバッジ付き）と、会社全体の請求合計を出す', a.includes('id="billing-cancel-lines"') && a.includes('${esc(l.reason_label)}') && a.includes('id="billing-totals"'))
-  ok('説明文に「キャンセル料」と、精算と合計が一致する期間を書く', a.includes('請求基本額＋請求する交通費＋請求の調整＋キャンセル料') && a.includes('精算で期間をこの月の1日〜今日にすると、請求合計が一致します'))
+  ok('説明文に「キャンセル料」と、精算と合計が一致する期間を書く', a.includes('請求基本額＋請求する交通費＋請求の調整＋キャンセル料') && a.includes('精算で期間をこの月の1日〜今日（過去の月は月末）にすると、請求合計が一致します'))
   ok('CSV にキャンセル料の列がある（今までの列の後ろ）', a.includes("'スタッフID', '月額', 'キャンセル料'"))
   ok('請求前確認の操作はイベント属性に値を埋め込まない', !/onclick="[^"]*\$\{/.test(a.slice(a.indexOf('// ============ 請求前確認'), a.indexOf('function adminCsvCell'))))
 }
