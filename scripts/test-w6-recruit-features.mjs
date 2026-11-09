@@ -1,5 +1,4 @@
 // 募集・掲示板の機能追加（w6-recruit-features: #287 #300 #478 #479）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npx wrangler dev --local --port 8814 --persist-to <保存先> で起動していること。
@@ -153,14 +152,21 @@ const role1 = s1.roles[0].slot_role_id
 }
 
 // ---------- #287 まとめて承認（画面は応募ごとに承認の API を順に呼ぶ。確認が必要な日時は承認しない） ----------
-{
-  const st1 = await newStaff('a', newPhone()), st2 = await newStaff('b', newPhone())
-  const c1 = client(await login('sample', `${PFX}a`)), c2 = client(await login('sample', `${PFX}b`))
+// 登録済みスタッフの応募（staff_id 付き）は、以前のスタッフアプリからの応募（source = 'staff'。D-22 で入口を外した）として、
+// 公開ページの応募をローカルの D1 で書き換えて作る（PERSIST が要る）
+if (PERSIST) {
+  const p1 = newPhone(), p2 = newPhone()
+  const st1 = await newStaff('a', p1), st2 = await newStaff('b', p2)
   const pageS = must(await admin.post('/api/admin/recruit-pages', { ...base, title: `${PFX} スタッフ募集` }), 'page S')
   const full = await newRoles(pid, addDays(D, 1), '09:00', '12:00', [{ role_name: '受付', headcount: 1 }])
   const open = await newRoles(pid, addDays(D, 2), '09:00', '12:00', [{ role_name: '受付', headcount: 2 }])
-  must(await c1.post('/api/staff/recruit/apply', { page_id: pageS.page_id, slot_role_ids: [full.roles[0].slot_role_id] }), 'apply 1')
-  must(await c2.post('/api/staff/recruit/apply', { page_id: pageS.page_id, slot_role_ids: [full.roles[0].slot_role_id, open.roles[0].slot_role_id] }), 'apply 2')
+  const legacy = async (st, phone, roleIds) => {
+    must(await publicApply(pageS.token, phone, roleIds, st.name), 'public apply (legacy)')
+    sql(`UPDATE recruit_applications SET source = 'staff', staff_id = ${Number(st.staff_id)} WHERE page_id = ${Number(pageS.page_id)} AND phone = '${phone}';
+      UPDATE recruit_application_items SET staff_id = ${Number(st.staff_id)} WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE page_id = ${Number(pageS.page_id)} AND phone = '${phone}');`)
+  }
+  await legacy(st1, p1, [full.roles[0].slot_role_id])
+  await legacy(st2, p2, [full.roles[0].slot_role_id, open.roles[0].slot_role_id])
   const apps = (await listApps({ status: 'pending', page_id: pageS.page_id })).applications
   const a1 = apps.find(a => a.staff_id === st1.staff_id), a2 = apps.find(a => a.staff_id === st2.staff_id)
   ok('#287 登録済みスタッフの応募は staff_id 付きで一覧に出る（まとめて承認の対象）', a1 && a2 && !a1.staff_inactive, apps.map(a => a.staff_id))
@@ -177,7 +183,7 @@ const role1 = s1.roles[0].slot_role_id
   ok('#287 1件ずつ: 定員を超える日時は 409、空きのある日時は承認', r3.status === 409 && r3.data.need_force && r4.status === 200 && r4.data.created_shifts === 1, { r3: r3.status, r4: r4.data })
   const after = (await listApps({ status: 'pending', page_id: pageS.page_id })).applications.find(a => a.application_id === a2.application_id)
   ok('#287 警告のあった日時は未対応のまま残る', after && after.items.find(i => i.item_id === fullItem.item_id).status === 'pending' && after.items.find(i => i.item_id === openItem.item_id).status === 'approved', after?.items.map(i => i.status))
-}
+} else skip('#287 まとめて承認')
 
 // ---------- #479 掲示板の検索条件の保存と新着の知らせ ----------
 {

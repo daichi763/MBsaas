@@ -1,10 +1,19 @@
 // スタッフアプリの画面遷移・シフト画面・ホームのお知らせの統合テスト（w4-staff-app-nav: #325 #383 #384 #428 #520 ほか）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local --persist-to <保存先>` で起動していること
-// 実行: BASE=http://127.0.0.1:8820 node scripts/test-w4-staff-app-nav.mjs
+// 実行: BASE=http://127.0.0.1:8820 PERSIST=<保存先> node scripts/test-w4-staff-app-nav.mjs
+//   PERSIST を付けると、以前に出されたシフト希望をローカルの D1 に直接入れて期間の絞り込みを確かめる（提出の API は D-23 で止めた。付けなければ SKIP）
 // 画面だけの修正（#374 URL と戻る、#336 #562 ログアウト、#421 下書き、#375 リンク、#400 #376 打刻履歴の状態、#409 読み込めないときの表示）は、
 // ここではページと静的ファイルの中身だけを確かめる
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 const BASE = process.env.BASE || 'http://127.0.0.1:8820'
+const PERSIST = process.env.PERSIST || ''
+function runSql(sql) {
+  const cli = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
+  const out = execFileSync(process.execPath, [cli, 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', PERSIST, '--json', '--command', sql], { encoding: 'utf8' })
+  return JSON.parse(out.slice(out.indexOf('['))).map(r => r.results)
+}
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 400) : ''}`) }
 async function login(company_code, user_code, password = 'pass1234') {
@@ -15,7 +24,9 @@ async function login(company_code, user_code, password = 'pass1234') {
 }
 function client(cookie) {
   const call = async (method, path, body) => {
-    const r = await fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const send = () => fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    // ローカルの D1 を直接書き換えた直後は、待ち受け側が閉じた接続を使い回して ECONNRESET になることがあるため、通信の失敗は1回だけやり直す
+    const r = await send().catch(() => send())
     let data = null; try { data = await r.json() } catch { }
     return { status: r.status, data }
   }
@@ -82,11 +93,13 @@ const st = client(await login('sample', `${PFX}A`))
   ok('#428 期間は最大62日に切り詰める', r4.to === addDays(today, 61) && r4.shifts.some(s => s.shift_id === c), r4.to)
   const r5 = must(await st.get(`/api/staff/shifts?month=${today.slice(0, 7)}`), 'month')
   ok('#428 これまでの month の指定も使える', r5.month === today.slice(0, 7) && r5.from === today.slice(0, 7) + '-01', { m: r5.month, f: r5.from })
-  // シフト希望も期間で絞る
-  must(await st.post('/api/staff/shifts/request', { work_date: d2, start_time: '09:00', end_time: '12:00' }), 'request')
-  const r6 = must(await st.get(`/api/staff/shifts?from=${today}&to=${addDays(today, 13)}`), 'range6')
-  const r7 = must(await st.get(`/api/staff/shifts?from=${addDays(today, 14)}&to=${addDays(today, 27)}`), 'range7')
-  ok('#428 シフト希望も期間で絞る', !r6.requests.some(x => x.work_date === d2) && r7.requests.some(x => x.work_date === d2), { a: r6.requests.length, b: r7.requests.length })
+  // 以前に出したシフト希望も期間で絞る（提出は D-23 で止めたので、以前の希望をローカルの D1 に入れる）
+  if (PERSIST) {
+    runSql(`INSERT INTO shift_requests (company_id, staff_id, user_id, work_date, start_time, end_time, status, created_at) SELECT company_id, staff_id, user_id, '${d2}', '09:00', '12:00', 'pending', datetime('now', '+9 hours') FROM staff_profiles WHERE staff_id = ${Number(S1.staff_id)}`)
+    const r6 = must(await st.get(`/api/staff/shifts?from=${today}&to=${addDays(today, 13)}`), 'range6')
+    const r7 = must(await st.get(`/api/staff/shifts?from=${addDays(today, 14)}&to=${addDays(today, 27)}`), 'range7')
+    ok('#428 シフト希望も期間で絞る', !r6.requests.some(x => x.work_date === d2) && r7.requests.some(x => x.work_date === d2), { a: r6.requests.length, b: r7.requests.length })
+  } else console.log('SKIP  #428 シフト希望の期間（PERSIST 未指定）')
 }
 
 // ---------- #325 #384 #383 ホームのお知らせと未読の件数 ----------

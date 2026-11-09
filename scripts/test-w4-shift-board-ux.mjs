@@ -1,5 +1,4 @@
 // シフトボードの使い勝手（w4-shift-board-ux: #258 #388 #390 #406 #407 #468 #551、持ち越し #65 #142 #456）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8825 node scripts/test-w4-shift-board-ux.mjs
@@ -166,9 +165,7 @@ const D = addDays(today, 12)
   const sl = must(await admin.get('/api/admin/shift-slots/' + r.slot_ids[0]), 'slot get')
   const keep = sl.roles.find(x => x.role_name === '販売'), drop = sl.roles.find(x => x.role_name === '設営')
   const page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [pid3], date_from: D3, date_to: D3, allow_staff: true, show_remaining: true, description: '', pay_note: '', contact_note: '' }), 'page')
-  await newStaff('AP')
-  const sp = client(await login('sample', `${PFX}AP`))
-  must(await sp.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [drop.slot_role_id] }), 'staff apply')
+  must(await client('').post(`/api/public/recruit/${page.token}/apply`, { name: `${PFX} 応募`, phone: '0801234' + String(Date.now() % 10000).padStart(4, '0'), agree: true, slot_role_ids: [drop.slot_role_id], issued_at: Date.now() - 10000 }), 'public apply')
   const body = (extra = {}) => ({ work_date: D3, start_time: '10:00', end_time: '18:00', roles: [{ slot_role_id: keep.slot_role_id, role_name: '販売', headcount: 1 }, { slot_role_id: drop.slot_role_id, role_name: '設営', headcount: 1, _delete: true }], ...extra })
   const p1 = await admin.put('/api/admin/shift-slots/' + sl.slot.slot_id, body())
   ok('#65 未対応の応募がある役割を消すと need_force で件数を出す', p1.status === 409 && p1.data.need_force && p1.data.warnings.some(w => w.includes('設営') && w.includes('未対応の応募が1件')), p1)

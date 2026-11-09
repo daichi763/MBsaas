@@ -665,6 +665,7 @@ export { findConflicts, conflictFor, ngStaffIds }
 // =========================================================
 // スタッフのシフト希望（shift_requests。#12 #353）
 // 希望はシフトではないので、ここでは採用・見送りの返事だけを記録する。シフトは枠への割り当てなど通常の経路で登録する
+// 新しい提出は D-23 で止めた（POST /api/staff/shifts/request は 410）。画面は以前の希望の表示と、返事待ちの希望への返事だけに使う
 // =========================================================
 const SHIFT_REQUEST_MAX_RANGE_DAYS = 92
 app.get('/shift-requests', async (c) => {

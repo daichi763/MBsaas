@@ -1,5 +1,4 @@
 // 管理者・企業あての通知と、相談のやり取り・写真（作業単位 w5-notify-admin: #150 #152 #154 #166 #429、持ち越し #187）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npx wrangler dev --local --port 8812 --persist-to <保存先> で起動していること（MAIL_ENABLED=false。メールは送らず email_logs に skipped で残る）。
@@ -83,9 +82,10 @@ const B = client(await login(coCode, 'adminb', pwB))
   u = await unreadOf(A, 'recruit_applied', page.page_id)
   ok('#150 続けて届いた応募は、未読の通知1件にまとめる（件数を出す）', u.length === 1 && u[0].title.includes('2件'), u)
   ok('#150 まとめた応募のメールは30分は送らない', (await mailCount(A, 'recruit_applied')) === m1)
-  const s = must(await st1.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [roleId] }), 'staff apply')
+  // スタッフアプリからの応募は D-22 で外した（登録済みのスタッフも公開ページから応募する）
+  const s = must(await apply(`応募 四郎${SUF}`), 'apply 4')
   u = await unreadOf(A, 'recruit_applied', page.page_id)
-  ok('#150 スタッフアプリからの応募も知らせる', s.count === 1 && u.length === 1 && u[0].title.includes('3件'), [s, u])
+  ok('#150 3件目の応募も、未読の通知1件にまとめる', s.count === 1 && u.length === 1 && u[0].title.includes('3件'), [s, u])
   must(await A.post('/api/admin/notifications/read-related', { kind: 'recruit_applied' }), 'read related')
   ok('#150 応募の一覧を開いたら（read-related）自分の通知だけ既読になる', (await unreadOf(A, 'recruit_applied', page.page_id)).length === 0 && (await unreadOf(A2, 'recruit_applied', page.page_id)).length === 1)
   const bad = await A.post('/api/admin/notifications/read-related', { kind: 'DROP TABLE' })

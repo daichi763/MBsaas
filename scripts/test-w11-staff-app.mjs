@@ -1,15 +1,24 @@
 // スタッフアプリの整理（w11-staff-app: #9411 #9412 #9413 #9414）の統合テスト
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
-//   （STAFF_APP_RECRUIT は付けない。スタッフアプリの募集を止めた状態を確かめる）
-// 実行: BASE=http://127.0.0.1:8811 node scripts/test-w11-staff-app.mjs
+// 実行: BASE=http://127.0.0.1:8811 PERSIST=<保存先> node scripts/test-w11-staff-app.mjs
+//   PERSIST を付けると、以前に出されたシフト希望をローカルの D1 に直接入れて確かめる（提出の API は D-23 で止めた。付けなければその確認は SKIP）
 // テストのたびに DB を作り直すこと（案件・シフト・日報・募集ページを追加するため）
-//   #9411 スタッフアプリの募集を外す（スタッフ向けの募集 API は 404・「新しい募集」の通知を送らない・管理者の募集と公開ページはそのまま）
-//   #9412 シフト希望を出勤可能日に一本化（画面から提出・取り下げを外す。今までのシフト希望は消さない）
+//   #9411 スタッフアプリの募集を外す（スタッフ向けの募集 API は 404・「新しい募集」の通知を送らない・管理者の募集と公開ページはそのまま。
+//     Sprint 20 の #9926 で API もコードから外した）
+//   #9412 シフト希望を出勤可能日に一本化（画面から提出・取り下げを外す。今までのシフト希望は消さない。Sprint 20 の #9927 で提出の API も 410 にした）
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 //   #9413 一緒に入る人・申し送りが無いときの理由（reason）と画面の案内
 //   #9414 メールアドレスの説明（通知・パスワード再設定に使う）
 
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
+const PERSIST = process.env.PERSIST || ''
+function d1(sql) {
+  const cli = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
+  const out = execFileSync(process.execPath, [cli, 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', PERSIST, '--json', '--command', sql.replace(/\s+/g, ' ')], { encoding: 'utf8' })
+  return JSON.parse(out.slice(out.indexOf('['))).map(r => r.results)
+}
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 400) : ''}`) }
 
@@ -71,7 +80,7 @@ async function createShift(staff_id, project_id, work_date, memo, start_time = '
   for (const [m, p, b] of [['get', '/api/staff/recruit'], ['get', '/api/staff/recruit/summary?counts=1'], ['get', `/api/staff/recruit/pages/${page.page_id}/roles`],
     ['post', '/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [1] }], ['post', '/api/staff/recruit/items/1/cancel']]) {
     const r = await st8[m](p, b)
-    ok(`#9411 スタッフ向けの募集 API は 404（${m.toUpperCase()} ${p.replace(/\?.*$/, '')}）`, r.status === 404 && r.data && r.data.error, r)
+    ok(`#9411 スタッフ向けの募集 API は 404（${m.toUpperCase()} ${p.replace(/\?.*$/, '')}）`, r.status === 404, r)
   }
   const ad = await admin.get('/api/staff/recruit')
   ok('#9411 管理者のアカウントからもスタッフ向けの募集 API は使えない', ad.status === 403 || ad.status === 404, ad.status)
@@ -94,14 +103,20 @@ async function createShift(staff_id, project_id, work_date, memo, start_time = '
     const a = must(await admin.get('/api/admin/availability?month=' + av.data.month), 'admin availability')
     ok('#9412 管理者は出勤可能日の提出を見られる（シフトの候補で使う）', (a.staff || []).some(x => x.staff_id === 8 && x.submitted_at), (a.staff || []).find(x => x.staff_id === 8))
   }
-  // 今までに出たシフト希望は消さない（API は残してあり、管理者の画面で見られる）
+  // 新しいシフト希望は受け付けない（#9927。D-23）
   const d = addDays(today, 9)
-  const sr = await st9.post('/api/staff/shifts/request', { work_date: d, start_time: '10:00', end_time: '18:00', memo: `${PFX}-希望` })
-  ok('#9412 以前のシフト希望のデータは残る（保存済みの希望）', sr.status === 200, sr)
-  const adm = must(await admin.get(`/api/admin/shift-requests?from=${today}&to=${addDays(today, 30)}`), 'admin requests').requests
-  ok('#9412 管理者はシフト希望を今までどおり見られる', adm.some(r => r.memo === `${PFX}-希望`), adm.length)
-  const mine = must(await st9.get(`/api/staff/shifts?from=${d}&to=${d}`), 'staff shifts')
-  ok('#9412 スタッフのシフトの API は、以前のシフト希望も返す（画面で表示だけする）', (mine.requests || []).some(r => r.memo === `${PFX}-希望`), mine.requests)
+  const sr = await st9.post('/api/staff/shifts/request', { work_date: d, start_time: '10:00', end_time: '18:00', memo: `${PFX}-新しい希望` })
+  ok('#9927 シフト希望の提出は 410「シフト希望の受け付けは終了しました」', sr.status === 410 && sr.data && sr.data.error === 'シフト希望の受け付けは終了しました', sr)
+  // 今までに出たシフト希望は消さない（管理者の画面で見られ、本人の画面に表示だけする）
+  if (PERSIST) {
+    d1(`INSERT INTO shift_requests (company_id, staff_id, user_id, work_date, start_time, end_time, memo, status, created_at)
+      SELECT company_id, staff_id, user_id, '${d}', '10:00', '18:00', '${PFX}-希望', 'pending', datetime('now', '+9 hours') FROM staff_profiles WHERE staff_id = 9`)
+    const adm = must(await admin.get(`/api/admin/shift-requests?from=${today}&to=${addDays(today, 30)}`), 'admin requests').requests
+    ok('#9412 管理者は以前のシフト希望を今までどおり見られる', adm.some(r => r.memo === `${PFX}-希望`) && !adm.some(r => r.memo === `${PFX}-新しい希望`), adm.length)
+    const mine = must(await st9.get(`/api/staff/shifts?from=${d}&to=${d}`), 'staff shifts')
+    ok('#9412 スタッフのシフトの API は、以前のシフト希望も返す（画面で表示だけする）', (mine.requests || []).some(r => r.memo === `${PFX}-希望`), mine.requests)
+    ok('#9927 スタッフのシフトの API は、希望で選べる案件（request_projects）を返さない', !('request_projects' in mine), Object.keys(mine))
+  } else console.log('SKIP  #9412 以前のシフト希望の表示（PERSIST 未指定）')
 }
 
 // ---------- #9413 一緒に入る人・申し送りの案内 ----------

@@ -377,7 +377,6 @@ docs/                     この資料と機能ごとの仕様
 | `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:394`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push の署名（`src/lib/web-push.ts:41`） | 初回に鍵を作って D1 の `push_vapid_keys` に保存して使う |
 | `VAPID_SUBJECT` | Web Push の連絡先（`https://` か `mailto:`。`src/lib/web-push.ts:61`） | `APP_BASE_URL` が https ならそれ、なければ仮のアドレス |
-| `STAFF_APP_RECRUIT` | `'1'` のときだけスタッフアプリの募集を動かす（`src/notifications.ts:1410`） | 止めたまま（Sprint 11 の決定。D-22） |
 
 どのシークレットが本番に登録されているかは `npx wrangler secret list --env production` で確かめます（値は表示されません）。
 

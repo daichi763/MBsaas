@@ -1210,8 +1210,8 @@ window.submitPhotoAttendance = async function () {
 
 // ============ シフト ============
 // shifts: 確定・代打・欠勤と、会社が仮で押さえた枠（status='requested'。本人が可否を返事する）
-// requests: 以前に本人が出したシフト希望（表示だけ）。シフトの希望は出勤可能日（#availability）に一本化した（#9412）。
-//   スタッフアプリの募集・応募の画面も外した（#9411。募集は公開ページから応募する）
+// requests: 以前に本人が出したシフト希望（表示だけ）。シフトの希望は出勤可能日（#availability）に一本化し、提出の受け付けも終えた（#9412・D-23）。
+//   スタッフアプリの募集・応募も外した（#9411・D-22。募集は公開ページから応募する）
 // 表示は今日から2週間（月をまたいで続けて出す）で、週ごとに前後へ送る（#428）
 let SHIFTS_FROM = null // 表示中の期間の初日（YYYY-MM-DD）
 const SHIFT_VIEW_DAYS = 14
@@ -2393,7 +2393,7 @@ document.addEventListener('click', (ev) => {
 // 通知の一覧（staff-attendance.js の notifOpenStaff）を開いたとき、シフト・募集・日報コメントの通知だけは、ここで行き先を決める。
 // それ以外の通知（打刻修正・お知らせ・相談）は元の処理に渡す。staff-attendance.js は staff.js の後に読み込むので、読み込みが済んでから差し替える
 // daily_report_edit（管理者が日報の実績を直した。#9707）も、コメントと同じくその日報を開く
-const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment', 'daily_report_edit']
+const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'daily_report_comment', 'daily_report_edit']
 function openStaffNotification(n) {
   const go = (hash) => { if ((location.hash || '').slice(1) === hash) route(); else location.hash = hash }
   if (n.kind === 'daily_report_comment' || n.kind === 'daily_report_edit') { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; return go('report') }

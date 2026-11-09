@@ -96,7 +96,7 @@ flowchart LR
 
 - 従業員管理（`#employees`）は、会社管理者・事務担当だけです。ほかのロールでは、メニューの項目とスタッフ詳細の「従業員管理」のボタンを消し（`public/static/admin.js` の起動の処理）、開いても鍵の表示だけにします（[`route`](../public/static/admin.js)）。API でも止めます（[API 一覧](api.md) の 2）。
 - セキュリティ（`#security`）は全員が開けます（自分の二段階認証・ログイン中の端末）。会社の設定（二段階認証の必須・接続元の制限）・管理者のアカウント・ログインの履歴は、会社管理者のときだけ出します（[`renderSecurity`](../public/static/security.js)）。API でも会社管理者だけに絞っています。
-- スタッフアプリから募集に応募する機能（API は `/api/staff/recruit/*`）は、環境変数 `STAFF_APP_RECRUIT` が `1` のときだけ使えます（[`staffAppRecruitEnabled`](../src/notifications.ts)）。
+- スタッフアプリには募集・応募の画面がありません（D-22。11/9 にスタッフ向けの募集の API も外しました）。登録済みのスタッフも公開の募集ページから応募します。
 
 ## 4. メニュー
 
