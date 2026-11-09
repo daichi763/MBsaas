@@ -41,7 +41,7 @@ const body = (s, start) => { const i = s.indexOf(start); if (i < 0) return ''; c
   ok('#9914 案件の詳細に「開催場所」の欄を置き、案件を渡して描く', /id="project-sites-panel"/.test(pd) && /renderProjectSitesPanel\(p\)/.test(pd))
   const ps = body(sb, '  window.renderProjectSitesPanel = async function (p) {')
   ok('#9914 案件の詳細の欄は、案件のクライアントの開催場所を読む', /\/api\/admin\/sites\?client_id=' \+ cid/.test(ps) && /Number\(p\.client_id\)/.test(ps))
-  ok('#9914 欄の説明: クライアントの開催場所で、同じクライアントの案件で共通に使う', /このクライアント.*の開催場所です。同じクライアントの案件で共通に使います/.test(ps))
+  ok('#9914 #9936 欄の説明: クライアントごとの開催場所の一覧で、案件・日ごとに選べ、変えるとほかの案件にも反映される', /このクライアント.*の開催場所の一覧です。シフトや募集枠を作るときに、この中から場所を選びます（案件や日ごとに違う場所を選べます）。同じクライアントのほかの案件とも共通の一覧なので/.test(ps))
   ok('#9914 クライアントのない案件: 登録できない理由と「案件にクライアントを設定してください」を出す', /if \(!cid\)/.test(ps) && /クライアントのない案件では登録できません。案件にクライアントを設定してください/.test(ps) && /data-action="editProject"/.test(ps))
   ok('#9914 追加・編集・無効にする・有効に戻す・削除のボタンがある（data-action で開く）',
     ['addSite', 'editSite', 'toggleSite', 'removeSite'].every(a => ps.includes(`'${a}'`) || ps.includes(`"${a}"`)) && />無効にする</.test(ps) && />有効に戻す</.test(ps) && />削除</.test(ps))
