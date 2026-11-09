@@ -702,11 +702,21 @@
       }).join('')}</ol>
     </section>`
   }
+  // 「はじめにやること」の取得。開いたときは、ダッシュボードの表示（dashboard）と案内の始まり（maybeSetup）がほぼ同時に取るので、
+  // shared のときは、取っている途中か3秒以内に取った結果を分け合う（#9935）。登録などの書き込みがあったら分け合わない（下の interceptors で消す）
+  const CL = { p: null, at: 0 }
+  function getChecklist(shared) {
+    if (shared && CL.p && Date.now() - CL.at < 3000) return CL.p
+    const p = axios.get('/api/admin/tours/checklist', { background: true }).then(r => r.data)
+    CL.p = p; CL.at = Date.now()
+    p.catch(() => { if (CL.p === p) CL.p = null })
+    return p
+  }
   // ダッシュボードを描いた後に呼ぶ（admin.js の routes.dashboard）
   async function dashboard() {
     if (!isAdmin() || S.readonly || !S.me || S.me.role !== 'company_admin') return
     let d
-    try { d = (await axios.get('/api/admin/tours/checklist', { background: true })).data } catch (e) { return }
+    try { d = await getChecklist(true) } catch (e) { return }
     S.checklist = d
     const old = document.getElementById('tour-checklist')
     // 一度も見ていない人（初期設定がもう済んでいる会社の管理者など）には、済んだお知らせを出さない
@@ -766,8 +776,8 @@
     if (rec && rec.status === 'done') return false
     return !!(S.checklist && S.checklist.setup && setupRest(S.checklist).length)
   }
-  async function loadSetupState() {
-    const d = (await axios.get('/api/admin/tours/checklist', { background: true })).data
+  async function loadSetupState(shared) {
+    const d = await getChecklist(shared)
     S.checklist = d
     SU.setup = d.setup; SU.items = d.items
     return d
@@ -872,7 +882,7 @@
     const rec = S.progress[SETUP_KEY]
     if (rec && rec.status === 'done') return false
     let d
-    try { d = await loadSetupState() } catch (e) { return false }
+    try { d = await loadSetupState(true) } catch (e) { return false }
     if (!d || !d.setup) return false
     const rest = setupRest(d)
     if (!rest.length) return false
@@ -1175,6 +1185,8 @@
   axios.interceptors.response.use((res) => {
     try {
       const cfg = res && res.config
+      // 書き込みの後は「はじめにやること」の取得を分け合わない（済んだかが変わるため）
+      if (cfg && String(cfg.method).toLowerCase() !== 'get') CL.p = null
       if (cfg && String(cfg.method).toLowerCase() === 'post' && /\/api\/auth\/change-password$/.test(String(cfg.url || ''))) {
         // 起動の途中（init の前）に変更されたときは、init で仮パスワードではないとみなす
         S.pwChanged = true

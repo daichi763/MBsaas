@@ -10,11 +10,12 @@
 // 管理者 API（/api/admin/corrections*）は api.ts から権限ミドルウェアの後に、スタッフ API（/api/staff/*）は認証の後に登録する。
 // =========================================================
 import { Hono } from 'hono'
-import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts, lateness, latenessSettingsFor, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, type ReportLateness } from './report-settings'
-import { syncActualFromReports, actualFromReports, amountsForActual } from './settlement'
-import { isSettled, loadPricingData, shiftTotals, workHours } from './shift-board'
+import { REPORT_TYPES, REPORT_LABEL, isReportType, attendanceTypesForShifts, lateness, latenessSettings, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, type ReportLateness } from './report-settings'
+import { syncActualFromReports, actualFromReports, amountsForActual, ACTUAL_REPORT_TYPES } from './settlement'
+import { isSettled, shiftTotals, workHours } from './shift-board'
 import { personStaffRows } from './roster'
-import { notifyCorrection, type NotifyEnv, type CorrectionEvent } from './notifications'
+import { notifyCorrection, notifyCorrections, type NotifyEnv, type CorrectionEvent } from './notifications'
+import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
 import { isTentativeShift, isWorkingShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { crossesMidnight, toMin, NEXT_DAY_TYPES, reportableWindow } from './lib/shift-time'
@@ -81,16 +82,18 @@ async function loadReports(db: D1Database, shiftId: number) {
 }
 const reportMap = (rows: any[]) => new Map(rows.map(r => [r.report_type as string, r.reported_at as string]))
 // 承認画面の根拠の表示用（管理者のみ）: 元の打刻の方法・入力者・位置・写真の有無・遅刻の判定（#443）
-async function loadReportsDetail(db: D1Database, shiftId: number) {
-  return (await db.prepare(`SELECT a.attendance_id, a.report_type, a.reported_at, a.entry_method, a.status, a.late_minutes, a.early_leave_minutes,
+const REPORTS_DETAIL_SQL = `SELECT a.shift_id, a.attendance_id, a.report_type, a.reported_at, a.entry_method, a.status, a.late_minutes, a.early_leave_minutes,
       a.latitude, a.longitude, a.address, CASE WHEN a.photo_key IS NOT NULL THEN 1 ELSE 0 END AS has_photo, a.entered_by, um.name AS entered_by_name,
-      a.original_reported_at, a.corrected_by_correction_id
-    FROM attendance_reports a LEFT JOIN users um ON um.user_id = a.entered_by WHERE a.shift_id = ?`).bind(shiftId).all()).results as any[]
+      a.original_reported_at, a.corrected_by_correction_id, a.time_source, a.pressed_at, a.received_at
+    FROM attendance_reports a LEFT JOIN users um ON um.user_id = a.entered_by`
+async function loadReportsDetail(db: D1Database, shiftId: number) {
+  return (await db.prepare(`${REPORTS_DETAIL_SQL} WHERE a.shift_id = ?`).bind(shiftId).all()).results as any[]
 }
-async function loadCorrection(db: D1Database, id: any) {
-  return db.prepare(`SELECT c.*, s.work_date, s.start_time, s.end_time, s.settle_status, p.project_name, p.status AS project_status, us.name AS staff_name
+const CORRECTION_SQL = `SELECT c.*, s.work_date, s.start_time, s.end_time, s.settle_status, p.project_name, p.status AS project_status, us.name AS staff_name
     FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id = ?`).bind(id).first() as Promise<any>
+    LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id`
+async function loadCorrection(db: D1Database, id: any) {
+  return db.prepare(`${CORRECTION_SQL} WHERE c.correction_id = ?`).bind(id).first() as Promise<any>
 }
 const parseWarnings = (c: any) => { try { return c.order_warnings ? JSON.parse(c.order_warnings) : [] } catch { return [] } }
 
@@ -323,19 +326,41 @@ function correctedStatus(j: ReportLateness, prev: any | null): 'late' | 'no_loca
 // 承認者が直した日時の範囲（申請と同じ: 稼働日の前日 0:00 から翌日 23:59 まで）
 const inShiftRange = (workDate: string, at: string) => at >= `${addDays(workDate, -1)} 00:00:00` && at <= `${addDays(workDate, 1)} 23:59:59`
 
+// ---------- 承認の読み込み（1件の承認・まとめて承認・詳細の確認で共用。#9932） ----------
+// シフトの行（実績・金額の計算に使う shifts.* に、案件の時間の計算方法と遅刻の猶予、会社の設定を足したもの）と、報告の詳細を、
+// 1回の db.batch で読む。shiftIn はシフトID の一覧を返す副問い合わせで、まとめて承認でも件数に比例して問い合わせを増やさない
+const APPROVAL_SHIFT_SQL = `SELECT s.*, p.project_name, p.photo_required_override, p.late_grace_minutes AS p_late_grace_minutes,
+    p.hours_basis AS p_hours_basis, p.time_round_minutes AS p_time_round_minutes, p.pay_time_round AS p_pay_time_round, p.default_break_minutes AS p_default_break_minutes,
+    us.name AS staff_name, co.company_name, co.settings_json
+  FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
+  JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = s.company_id`
+type ApprovalData = { shifts: Map<number, any>; reports: Map<number, any[]> }
+const approvalReads = (db: D1Database, shiftIn: string, bind: any[]) => [
+  db.prepare(`${APPROVAL_SHIFT_SQL} WHERE s.shift_id IN ${shiftIn}`).bind(...bind),
+  db.prepare(`${REPORTS_DETAIL_SQL} WHERE a.shift_id IN ${shiftIn}`).bind(...bind),
+]
+function approvalData(shiftRows: any[], reportRows: any[]): ApprovalData {
+  const reports = new Map<number, any[]>()
+  for (const r of reportRows) { const list = reports.get(r.shift_id) || []; list.push(r); reports.set(r.shift_id, list) }
+  return { shifts: new Map(shiftRows.map(s => [s.shift_id, s])), reports }
+}
+async function loadApprovalData(db: D1Database, shiftId: any): Promise<ApprovalData> {
+  const [s, r] = await db.batch(approvalReads(db, '(?)', [shiftId]))
+  return approvalData(s.results as any[], r.results as any[])
+}
+// 実績・金額の計算に使う案件の値（settlement.ts の syncActualsForShifts と同じ4項目）
+const projOf = (s: any) => ({ default_break_minutes: s.p_default_break_minutes, hours_basis: s.p_hours_basis, time_round_minutes: s.p_time_round_minutes, pay_time_round: s.p_pay_time_round })
+
 // 承認する日時での遅刻・早退の判定（#69）と、承認した場合の実績・金額（変更前 → 変更後。#443）。書き込みはしない。
-// 実績は syncActualFromReports と同じ規則（確定済み・手入力の実績は変えない）で計算する
-async function judgeApproval(db: D1Database, c: any, shift: any, reports: any[], at: string) {
-  const co = await db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(c.company_id).first() as any
-  const judged = lateness(shift, [{ report_type: c.report_type, reported_at: at }], await latenessSettingsFor(db, co?.settings_json, shift.project_id))[0]
+// 実績は syncActualFromReports と同じ規則（確定済み・手入力の実績は変えない）で計算する。shift は loadApprovalData の行
+function judgeApproval(c: any, shift: any, reports: any[], at: string) {
+  const judged = lateness(shift, [{ report_type: c.report_type, reported_at: at }], latenessSettings(shift.settings_json, shift.p_late_grace_minutes))[0]
   const prev = reports.find(r => r.report_type === c.report_type) || null
   const status = prev ? correctedStatus(judged, prev) : (judged.late ? 'late' : 'normal')
   return { judged, status, prev }
 }
-async function approvalPreview(db: D1Database, c: any, reports: any[], at: string, j: { judged: ReportLateness; status: string; prev: any }) {
-  const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.shift_id, c.company_id).first() as any
-  if (!s) return null
-  const proj: any = (await loadPricingData(db, c.company_id, [Number(s.project_id)])).projects.get(Number(s.project_id)) || {}
+function approvalPreview(c: any, s: any, reports: any[], at: string, j: { judged: ReportLateness; status: string; prev: any }) {
+  const proj: any = projOf(s)
   const view = (x: any) => {
     const w = workHours({ ...x, break_minutes: x.break_minutes ?? proj.default_break_minutes ?? 0 }, proj)
     const t = shiftTotals(x)
@@ -360,12 +385,26 @@ async function approvalPreview(db: D1Database, c: any, reports: any[], at: strin
   }
 }
 
+// 承認の後の報告（at: 種類 → 日時）から求める実績と金額。変わらない・確定済み・手入力の実績なら null
+// （settlement.ts の syncActualFromReports・refreshShiftAmounts と同じ規則。締めた期間は書き込みの条件で除く）
+function actualAfterApproval(s: any, at: (t: string) => string | null | undefined) {
+  if (isSettled(s) || s.actual_source === 'manual') return null
+  const a = actualFromReports(at)
+  if (a.start === (s.actual_start || null) && a.end === (s.actual_end || null) && a.brk === (s.actual_break_minutes ?? null)) return null
+  return { ...a, source: a.start || a.brk != null ? 'report' : null, amt: amountsForActual({ ...s, actual_start: a.start, actual_end: a.end, actual_break_minutes: a.brk }, projOf(s)) }
+}
+// 実績に関わる報告が、承認を計算したときの値のまま（ほかの操作と重なっていない）か。承認と同じ batch の中で確かめる
+const SAME_REPORTS_SQL = ACTUAL_REPORT_TYPES.map(t => `(SELECT reported_at FROM attendance_reports WHERE shift_id = ? AND report_type = '${t}') IS ?`).join(' AND ')
+const sameReportsBind = (shiftId: number, at: (t: string) => string | null | undefined) => ACTUAL_REPORT_TYPES.flatMap(t => [shiftId, at(t) ?? null])
+
 // 承認。requested_at を渡すと、承認者が日時を直して承認する（#548。直した理由のコメントは必須。申請の日時は操作履歴に残す）。
 // 申請の後に打刻が変わった時刻修正は、承認者が今の記録を確かめた（base_at = 今の記録の日時）ときだけ、今の記録をもとに承認する。
 // dry_run は書き込まずに、承認した場合の遅刻の判定と実績・金額を返す
 // with_request: 管理者が申請と同時に承認した（#174。操作履歴の detail に残す）
+// 申請の状態・報告・写真・操作履歴・シフトの実績と金額は、1回の db.batch（1トランザクション）で書く。途中で止まっても、どれかだけが書かれることはない（#9932）。
+// data: まとめて承認で読み込み済みのシフトと報告（省略すると、この申請のシフトを読む）。承認できたら、同じシフトの次の申請の確認のために data にも結果を写す
 type ApproveOpts = { comment?: any; exception?: any; requested_at?: any; base_at?: any; dry_run?: any; with_request?: boolean }
-async function approveCorrection(db: D1Database, c: any, a: Actor, opts: ApproveOpts) {
+async function approveCorrection(db: D1Database, c: any, a: Actor, opts: ApproveOpts, data?: ApprovalData) {
   if (c.status !== 'pending') return { error: DONE_MESSAGE[c.status] || '承認できない状態です', status: 409 }
   const comment = String(opts.comment ?? '').trim().slice(0, REASON_MAX) || null
   const dryRun = opts.dry_run === true
@@ -376,14 +415,15 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: Approve
     if (n.slice(0, 16) !== String(c.requested_at).slice(0, 16)) { at = n; adjusted = true }
   }
   if (adjusted && !comment && !dryRun) return { error: '日時を修正して承認するときは、修正の理由をコメントに入力してください（申請者に知らせます）', status: 400 }
-  const shift = await loadShift(db, c.shift_id)
-  if (!shift) return { error: '対象のシフトが見つかりません', status: 409 }
+  if (!data) data = await loadApprovalData(db, c.shift_id)
+  const shift = data.shifts.get(Number(c.shift_id))
+  if (!shift || shift.company_id !== c.company_id) return { error: '対象のシフトが見つかりません', status: 409 }
   // 申請の後にシフトの担当者が差し替えられた・欠勤になった・希望（仮）に戻された場合は承認しない（#101 #70 #559）
   if (shift.staff_id !== c.staff_id) return { error: 'シフトの担当者が変わったため承認できません。却下してください', status: 409 }
   if (shift.status === 'absent') return { error: '欠勤のシフトです。承認できないため却下してください', status: 409 }
   if (!isWorkingShift(shift.status)) return { error: '未確定（希望（仮））のシフトです。シフトを確定してから承認するか、却下してください', status: 409 }
   if (adjusted && !inShiftRange(shift.work_date, at)) return { error: `日時は稼働日（${fmtDay(shift.work_date)}）の前日から翌日までの範囲で入力してください`, status: 400 }
-  const reports = await loadReportsDetail(db, c.shift_id)
+  const reports = data.reports.get(shift.shift_id) || []
   const existing = reports.find(r => r.report_type === c.report_type)
   const conflicts = orderConflicts(reportMap(reports.filter(r => r.report_type !== c.report_type)), c.report_type, at)
   let exception = 0, before: string | null = c.before_at, rebased = false
@@ -406,9 +446,9 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: Approve
     }
   }
   // 遅刻・早退を承認する日時で判定し直す（#69）
-  const j = await judgeApproval(db, c, shift, reports, at)
+  const j = judgeApproval(c, shift, reports, at)
   if (dryRun) {
-    return { ok: true, dry_run: true, adjusted, rebased, conflicts, need_exception: c.kind === 'add' && conflicts.length > 0, preview: await approvalPreview(db, c, reports, at, j) }
+    return { ok: true, dry_run: true, adjusted, rebased, conflicts, need_exception: c.kind === 'add' && conflicts.length > 0, preview: approvalPreview(c, shift, reports, at, j) }
   }
   const nowAt = nowJST(), token = randToken(), settled = shift.settle_status === 'confirmed' ? 1 : 0
   // 実績が手入力のシフトは、報告を直しても実績・金額は変わらない（syncActualFromReports は手入力を上書きしない）。
@@ -452,26 +492,53 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: Approve
     // 遅刻の判定の変化（#69）
     before_status: j.prev ? j.prev.status : null, report_status: j.status, late_minutes: j.judged.late_minutes, early_leave_minutes: j.judged.early_leave_minutes,
   }
+  // 実績・時給の数量への反映（確定済み・手入力の実績・締めた期間は既存の規則どおり変えない）も、承認と同じ batch で書く。
+  // 実績に関わる報告が読んだときのままのときだけ書き、変わっていたら（ほかの操作と重なった）承認の後に読み直して反映する
+  const after = (t: string) => (t === c.report_type ? at : reports.find(r => r.report_type === t)?.reported_at)
+  const actual = actualAfterApproval(shift, after)
+  const actualStmt = actual ? [db.prepare(`UPDATE shifts SET actual_start = ?, actual_end = ?, actual_break_minutes = ?, actual_source = ?${actual.amt ? ', bill_qty = ?, unit_price = ?, pay_qty = ?, pay_amount = ?' : ''}
+      WHERE shift_id = ? AND company_id = ? AND COALESCE(settle_status, 'planned') != 'confirmed' AND COALESCE(actual_source, '') != 'manual'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL AND k.period_from <= shifts.work_date AND k.period_to >= shifts.work_date)
+        AND ${applied} AND ${SAME_REPORTS_SQL}`)
+    .bind(actual.start, actual.end, actual.brk, actual.source, ...(actual.amt ? [actual.amt.bill_qty, actual.amt.unit_price, actual.amt.pay_qty, actual.amt.pay_amount] : []),
+      c.shift_id, c.company_id, c.correction_id, token, ...sameReportsBind(c.shift_id, after))] : []
+  // 書き込みの結果は同じ batch の最後で読む（承認が効いたか・追加した報告の ID・実績に関わる報告が読んだときのままか）
+  const check = db.prepare(`SELECT (SELECT status FROM attendance_corrections WHERE correction_id = ?) AS status, ${applied} AS applied,
+      (SELECT attendance_id FROM attendance_reports WHERE shift_id = ? AND report_type = ?) AS attendance_id, (${SAME_REPORTS_SQL}) AS same_reports`)
+    .bind(c.correction_id, c.correction_id, token, c.shift_id, c.report_type, ...sameReportsBind(c.shift_id, after))
+  let res: D1Result[]
   try {
-    await db.batch([
+    res = await db.batch([
       guard, apply, ...photo,
       db.prepare(`UPDATE attendance_corrections SET applied_attendance_id = (SELECT attendance_id FROM attendance_reports WHERE shift_id = ? AND report_type = ?) WHERE correction_id = ? AND decision_token = ?`)
         .bind(c.shift_id, c.report_type, c.correction_id, token),
       db.prepare(`INSERT INTO attendance_correction_events (correction_id, company_id, event, actor_user_id, actor_name, actor_role, detail, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${applied}`)
         .bind(c.correction_id, c.company_id, event, a.user_id, a.name, a.role, JSON.stringify(detail), nowAt, c.correction_id, token),
+      ...actualStmt, check,
     ])
   } catch (e: any) {
     if (/UNIQUE/i.test(String(e?.message || e))) return { error: 'この報告はすでに登録されています（二重登録になるため承認できません）', status: 409 }
     throw e
   }
-  const after = await db.prepare('SELECT status, decision_token FROM attendance_corrections WHERE correction_id = ?').bind(c.correction_id).first() as any
-  if (!after || after.decision_token !== token) {
-    if (after && after.status !== 'pending') return { error: DONE_MESSAGE[after.status] || '処理できませんでした', status: 409 }
+  const chk = ((res[res.length - 1].results || [])[0] || {}) as any
+  if (!chk.applied) {
+    if (chk.status && chk.status !== 'pending') return { error: DONE_MESSAGE[chk.status] || '処理できませんでした', status: 409 }
     return { error: '申請の後に打刻またはシフトが変更されました。内容を確認してください', status: 409 }
   }
-  // 実績・時給の数量に反映（確定済み・手入力の実績は既存の規則どおり変えない）
-  await syncActualFromReports(db, c.company_id, c.shift_id).catch(() => {})
+  // 同じシフトの次の申請（まとめて承認）は、承認した後の報告と実績で確かめる
+  const v = { reported_at: at, status: j.status, late_minutes: j.judged.late_minutes, early_leave_minutes: j.judged.early_leave_minutes, corrected_by_correction_id: c.correction_id }
+  if (existing) Object.assign(existing, { original_reported_at: existing.original_reported_at ?? existing.reported_at }, v)
+  else data.reports.set(shift.shift_id, [...reports, { shift_id: shift.shift_id, attendance_id: chk.attendance_id ?? null, report_type: c.report_type, entry_method: 'correction', latitude: null, longitude: null, ...v }])
+  if (!chk.same_reports) {
+    // 承認と同時にほかの報告が変わった（まれ）: 承認の後の報告を読み直して実績に反映する
+    await syncActualFromReports(db, c.company_id, c.shift_id).catch(() => {})
+    data.reports.set(shift.shift_id, await loadReportsDetail(db, shift.shift_id).catch(() => data!.reports.get(shift.shift_id) || []))
+    const s = await db.prepare('SELECT actual_start, actual_end, actual_break_minutes, actual_source, bill_qty, unit_price, pay_qty, pay_amount FROM shifts WHERE shift_id = ?').bind(c.shift_id).first().catch(() => null)
+    if (s) Object.assign(shift, s)
+  } else if (actual) {
+    Object.assign(shift, { actual_start: actual.start, actual_end: actual.end, actual_break_minutes: actual.brk, actual_source: actual.source }, actual.amt || {})
+  }
   return { ok: true, exception: !!exception, applied_while_settled: !!settled, applied_while_manual: manual, adjusted, requested_at: at, report_status: j.status, late_minutes: j.judged.late_minutes }
 }
 
@@ -588,8 +655,8 @@ async function correctionDetail(db: D1Database, c: any, viewer: 'admin' | 'staff
   if (viewer === 'admin' && c.status === 'pending') {
     // 承認した場合の遅刻の判定と実績・金額（変更前 → 変更後）。計算できなくても詳細は返す
     try {
-      const shift = await loadShift(db, c.shift_id)
-      if (shift) out.preview = await approvalPreview(db, c, reports, c.requested_at, await judgeApproval(db, c, shift, reports, c.requested_at))
+      const shift = (await loadApprovalData(db, c.shift_id)).shifts.get(Number(c.shift_id))
+      if (shift && shift.company_id === c.company_id) out.preview = approvalPreview(c, shift, reports, c.requested_at, judgeApproval(c, shift, reports, c.requested_at))
     } catch { out.preview = null }
   }
   if (viewer === 'staff') {
@@ -638,10 +705,12 @@ async function sendAndNotify(c: any, r: any, correctionId: number | undefined, e
   return send(c, r)
 }
 
-correctionsAdminApi.get('/corrections/pending-count', async (c) => {
-  const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(c.get('user').company_id).first() as any
-  return c.json({ count: r?.n || 0 })
-})
+// 承認待ちの件数（バッジ用）。管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も使う
+export async function companyPendingCorrectionCount(db: D1Database, companyId: number): Promise<number> {
+  const r = await db.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(companyId).first() as any
+  return r?.n || 0
+}
+correctionsAdminApi.get('/corrections/pending-count', async (c) => c.json({ count: await companyPendingCorrectionCount(c.env.DB, c.get('user').company_id) }))
 
 // スタッフは氏名の一部か、社員番号（完全一致）で探す（#445。er は employee_records）
 function staffNameFilter(name: string | undefined, w: string[], bind: any[]) {
@@ -837,37 +906,92 @@ correctionsAdminApi.post('/corrections', async (c) => {
   return c.json({ ...ar, correction_id: r.correction_id, warnings: r.warnings, notices: r.notices, approved: true })
 })
 
-// まとめて承認（#280）: { ids: [申請ID]（1〜BULK_APPROVE_MAX件）, comment }。1件ずつ approveCorrection で承認し、成功・対象外・失敗を返す。
+// テスト用（#9932）: DB_CALL_COUNT が 'true'（wrangler dev の --var で渡す。本番の設定には書かない）のとき、この要求の D1 の呼び出しの回数
+// （prepare した文の実行は1回、db.batch は1回）を数えて応答の d1_calls に付ける。数えるときは、応答の後に送るメールも応答の前に待って数に入れる
+function d1Probe(c: any) {
+  const pending: Promise<any>[] = []
+  const later = (p: Promise<any>) => { try { c.executionCtx.waitUntil(p) } catch { pending.push(p) } }
+  if (c.env.DB_CALL_COUNT !== 'true') return { env: c.env as NotifyEnv, waitUntil: later, done: async () => { await Promise.all(pending) }, extra: () => ({}) }
+  const n = { calls: 0 }
+  const real = c.env.DB as D1Database
+  const wrap = (st: any): any => ({
+    __inner: st,
+    bind: (...v: any[]) => wrap(st.bind(...v)),
+    first: (col?: string) => { n.calls++; return col === undefined ? st.first() : st.first(col) },
+    all: () => { n.calls++; return st.all() },
+    run: () => { n.calls++; return st.run() },
+    raw: (o?: any) => { n.calls++; return st.raw(o) },
+  })
+  const db: any = {
+    prepare: (sql: string) => wrap(real.prepare(sql)),
+    batch: (stmts: any[]) => { n.calls++; return real.batch(stmts.map(s => s.__inner ?? s)) },
+    exec: (q: string) => { n.calls++; return real.exec(q) },
+  }
+  return { env: { ...c.env, DB: db } as NotifyEnv, waitUntil: (p: Promise<any>) => { pending.push(p) }, done: async () => { await Promise.all(pending) }, extra: () => ({ d1_calls: n.calls }) }
+}
+
+// まとめて承認（#280 #9932）: { ids: [申請ID]（1〜BULK_APPROVE_MAX件）, comment }。申請の ID の順に1件ずつ承認し、1件ごとの結果（results）を返す。
 // 順序の矛盾・確定済み・手入力の実績・写真が必須で添付なしの申請は承認せず、個別の承認に回す（skipped）。
-// 申請の後に打刻が変わった・今の記録と矛盾するなどで承認できなかったものは failed に理由を入れる。日時の修正・例外の承認は個別の画面で行う
-// 件数の上限は、承認ごとに送るメール（外部への送信）と D1 の問い合わせの数を、1回のリクエストの上限に収めるため。画面は上限ごとに分けて送る
+// 申請の後に打刻が変わった・今の記録と矛盾するなどで承認できなかったものは failed に理由を入れる。日時の修正・例外の承認は個別の画面で行う。
+// 1件の承認は1回の db.batch で書く（approveCorrection）ので、途中で止まっても承認した分だけが残り、書きかけの申請は残らない。
+// もう一度送ると、承認済みの申請は二重に処理せず（failed に code: 'already_approved' で返す。results では 'already'）、残りだけを承認する。
+// 1件の書き込みに失敗しても、ほかの申請の承認は続ける。読み込みは最初の1回にまとめ、通知はすべての承認を書いた後にまとめて作る（メールは応答の後に送る）
+// 件数の上限は、メールの送信（外部への送信）と処理の時間を、1回のリクエストに収めるため。画面は上限ごとに分けて送る
 export const BULK_APPROVE_MAX = 20
+type BulkResult = { correction_id: number; result: 'approved' | 'already' | 'skipped' | 'failed'; reason?: string }
 correctionsAdminApi.post('/corrections/bulk-approve', async (c) => {
-  const u = c.get('user'); const db = c.env.DB
+  const u = c.get('user')
+  const probe = d1Probe(c)
+  const db = probe.env.DB
   const b = await c.req.json().catch(() => ({} as any))
   if (Array.isArray(b.ids) && b.ids.length > BULK_APPROVE_MAX * 2) return c.json({ error: `まとめて承認できるのは${BULK_APPROVE_MAX}件までです` }, 400)
   // まとめて出した申請は ID の小さい順に承認すれば途中で矛盾しない（insertCorrections）ので、選んだ順ではなく ID の順に処理する
   const ids = Array.isArray(b.ids) ? ([...new Set(b.ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] as number[]).sort((x, y) => x - y) : []
   if (!ids.length) return c.json({ error: '承認する申請を選択してください' }, 400)
   if (ids.length > BULK_APPROVE_MAX) return c.json({ error: `まとめて承認できるのは${BULK_APPROVE_MAX}件までです` }, 400)
-  const co = await db.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  const approved: number[] = [], skipped: { correction_id: number; reason: string }[] = [], failed: { correction_id: number; reason: string }[] = []
+  // 申請・添付の数（まとめて出した申請の添付も数える。loadAttachments と同じ）・シフト・報告を、1回の batch で読む
+  const J = bindJsonArray(ids)
+  const [cr, ar, ...rest] = await db.batch([
+    db.prepare(`${CORRECTION_SQL} WHERE c.company_id = ? AND c.correction_id IN ${JSON_IN}`).bind(u.company_id, J),
+    db.prepare(`SELECT g.correction_id, (SELECT COUNT(*) FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
+        WHERE x.correction_id = g.correction_id OR (x.shift_id = g.shift_id AND x.requested_by = g.requested_by AND x.created_at = g.created_at AND x.batch_key IS g.batch_key)) AS n
+      FROM attendance_corrections g WHERE g.company_id = ? AND g.correction_id IN ${JSON_IN}`).bind(u.company_id, J),
+    ...approvalReads(db, `(SELECT shift_id FROM attendance_corrections WHERE company_id = ? AND correction_id IN ${JSON_IN})`, [u.company_id, J]),
+  ])
+  const rows = new Map((cr.results as any[]).map(r => [r.correction_id, r]))
+  const attachments = new Map((ar.results as any[]).map(r => [r.correction_id, Number(r.n) || 0]))
+  const data = approvalData(rest[0].results as any[], rest[1].results as any[])
+  const actor = actorOf(u)
+  const results: BulkResult[] = []
   for (const id of ids) {
-    const row = await loadCorrection(db, id)
-    if (!row || row.company_id !== u.company_id) { failed.push({ correction_id: id, reason: '申請が見つかりません' }); continue }
-    if (row.status !== 'pending') { failed.push({ correction_id: id, reason: DONE_MESSAGE[row.status] || '承認できない状態です' }); continue }
-    const s = await db.prepare(`SELECT s.actual_source, p.photo_required_override FROM shifts s JOIN projects p ON p.project_id = s.project_id WHERE s.shift_id = ?`).bind(row.shift_id).first() as any
-    const att = Number(((await db.prepare(`SELECT COUNT(*) AS n FROM attendance_correction_attachments a JOIN attendance_corrections x ON x.correction_id = a.correction_id
-      WHERE x.correction_id = ? OR (x.shift_id = ? AND x.requested_by = ? AND x.created_at = ? AND x.batch_key IS ?)`).bind(row.correction_id, row.shift_id, row.requested_by, row.created_at, row.batch_key ?? null).first()) as any)?.n || 0)
-    const block = bulkBlockReason({ ...row, order_warnings: parseWarnings(row) }, { settle_status: row.settle_status, actual_source: s?.actual_source }, photoRequiredFor(co?.settings_json, s?.photo_required_override), att)
-    if (block) { skipped.push({ correction_id: id, reason: block }); continue }
-    const r: any = await approveCorrection(db, row, actorOf(u), { comment: b.comment })
-    if ('error' in r) { failed.push({ correction_id: id, reason: r.error }); continue }
-    approved.push(id)
-    // 承認した管理者の控えは既読・メールなしにする（件数分のメールを自分に送らない。外部への送信を1回のリクエストの上限に収める）
-    await notifyCorrection(c, id, 'approved', { quietProcessor: true })
+    const row = rows.get(id)
+    if (!row) { results.push({ correction_id: id, result: 'failed', reason: '申請が見つかりません' }); continue }
+    if (row.status === 'approved') { results.push({ correction_id: id, result: 'already', reason: DONE_MESSAGE.approved }); continue }
+    if (row.status !== 'pending') { results.push({ correction_id: id, result: 'failed', reason: DONE_MESSAGE[row.status] || '承認できない状態です' }); continue }
+    const s = data.shifts.get(Number(row.shift_id))
+    if (!s) { results.push({ correction_id: id, result: 'failed', reason: '対象のシフトが見つかりません' }); continue }
+    const block = bulkBlockReason({ ...row, order_warnings: parseWarnings(row) }, { settle_status: s.settle_status, actual_source: s.actual_source },
+      photoRequiredFor(s.settings_json, s.photo_required_override), attachments.get(id) || 0)
+    if (block) { results.push({ correction_id: id, result: 'skipped', reason: block }); continue }
+    let r: any
+    try { r = await approveCorrection(db, row, actor, { comment: b.comment }, data) } catch (e) {
+      console.log(`bulk approve failed: correction=${id} ${String((e as any)?.message || e).slice(0, 200)}`)
+      r = { error: '保存できませんでした。時間をおいて、もう一度承認してください' }
+    }
+    if ('error' in r) results.push({ correction_id: id, result: r.error === DONE_MESSAGE.approved ? 'already' : 'failed', reason: r.error })
+    else results.push({ correction_id: id, result: 'approved' })
   }
-  return c.json({ ok: true, approved, skipped, failed, counts: { approved: approved.length, skipped: skipped.length, failed: failed.length } })
+  const approved = results.filter(r => r.result === 'approved').map(r => r.correction_id)
+  // 承認した管理者の控えは既読・メールなしにする（件数分のメールを自分に送らない）
+  await notifyCorrections(probe.env, probe.waitUntil, approved, 'approved', { quietProcessor: true })
+  await probe.done()
+  const pick = (k: BulkResult['result']) => results.filter(r => r.result === k)
+  const skipped = pick('skipped').map(r => ({ correction_id: r.correction_id, reason: r.reason! }))
+  // failed には、これまでどおり承認済みの申請も入れる（code で見分ける）
+  const failed = results.filter(r => r.result === 'failed' || r.result === 'already')
+    .map(r => ({ correction_id: r.correction_id, reason: r.reason!, ...(r.result === 'already' ? { code: 'already_approved' } : {}) }))
+  return c.json({ ok: true, approved, skipped, failed, results,
+    counts: { approved: approved.length, skipped: skipped.length, failed: failed.length, already: pick('already').length }, ...probe.extra() })
 })
 
 // 申請に添付した画像（自社の申請のみ。R2 のキーは画面に出さない。#485）
@@ -908,13 +1032,13 @@ correctionsAdminApi.post('/corrections/:id{[0-9]+}/resubmit', async (c) => {
 // =========================================================
 const PUNCH_METHOD_LABEL: Record<string, string> = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '打刻修正で追加' }
 // 報告ごとの印（f）: 1 = 打刻修正で変更・追加、2 = 写真あり、4 = 位置あり、8 = 写真なしの理由あり、
-// 16 = 押した時刻（端末時刻）で記録（#427。電波がない場所で押して後から送った報告。打刻修正で直したものは付けない）
+// 16 = 再送（押した時刻と受け付けた時刻が違う打刻。#427 #9939。time_source が device（押した時刻で記録）・resent（受け付けた時刻で記録）。打刻修正で直したものは付けない）
 const PUNCH_COLS = REPORT_TYPES.map(t => `
     MAX(CASE WHEN a.report_type = '${t}' THEN a.reported_at END) AS ${t}_at,
     MAX(CASE WHEN a.report_type = '${t}' THEN COALESCE(a.entry_method, 'app') END) AS ${t}_m,
     MAX(CASE WHEN a.report_type = '${t}' THEN (CASE WHEN a.corrected_by_correction_id IS NOT NULL OR a.entry_method = 'correction' THEN 1 ELSE 0 END)
       + (CASE WHEN a.photo_key IS NOT NULL THEN 2 ELSE 0 END) + (CASE WHEN a.latitude IS NOT NULL THEN 4 ELSE 0 END) + (CASE WHEN a.no_photo_reason IS NOT NULL THEN 8 ELSE 0 END)
-      + (CASE WHEN a.time_source = 'device' AND a.corrected_by_correction_id IS NULL THEN 16 ELSE 0 END) END) AS ${t}_f`).join(',')
+      + (CASE WHEN a.time_source IN ('device', 'resent') AND a.corrected_by_correction_id IS NULL THEN 16 ELSE 0 END) END) AS ${t}_f`).join(',')
 const PUNCH_FROM = `FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
     LEFT JOIN employee_records er ON er.staff_id = s.staff_id AND er.company_id = s.company_id ${CLIENT_JOIN}`
 const PUNCH_SELECT = `SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.staff_id, p.project_name, cl.client_name, us.name AS staff_name, er.employee_number,
@@ -944,7 +1068,7 @@ function punchFilter(companyId: number, q: (k: string) => string | undefined): {
 function punchMethodText(r: any, t: string): string {
   if (!r[`${t}_at`]) return ''
   const m = r[`${t}_m`], f = Number(r[`${t}_f`] || 0)
-  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 16 ? '端末時刻で記録' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
+  return [PUNCH_METHOD_LABEL[m] || m, f & 2 ? '写真' : f & 8 ? '写真なし' : '', f & 4 ? '位置' : '', f & 16 ? '再送' : '', f & 1 && m !== 'correction' ? '打刻修正で変更' : ''].filter(Boolean).join('・')
 }
 const PUNCH_LIST_LIMIT = 500
 correctionsAdminApi.get('/attendance-punches', async (c) => {

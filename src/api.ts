@@ -15,18 +15,21 @@ import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
 import { applyRateOverride, inheritView, inheritedAdjustStmt, loadPricingData, parsePriceSource, rateOverrideOf } from './shift-board'
 import boardApi from './board'
-import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
+import { adminBadgesApi } from './admin-badges'
+import settlementApi, { CANCEL_REASON_LABEL, closedMessage, loadSettleMoney, syncActualFromReports } from './settlement'
 import { shiftTotals, staffingGaps } from './shift-board'
 import { recruitAdminApi, recruitPublicApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
 import { loginEmailVerifyEmail } from './email-templates/login-email'
-import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, latenessSettingsFor, validGraceMinutes, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
+import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, validGraceMinutes, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { attendanceTypesBatch, dailyReportRequiredSql } from './report-settings'
 import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-settings'
 // 前日確認（#176）と、電波がない場所で押した報告の時刻（#427）
-import { clientRequestId, dayBeforeKey, dayBeforeSettings, dayBeforeState, deviceReportTime } from './report-settings'
+import { dayBeforeKey, dayBeforeSettings, dayBeforeState } from './report-settings'
 import { chunk } from './lib/d1-chunk'
+import { attendanceTestHooks } from './lib/d1-retry'
+import { recordPunch } from './attendance-punch'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
@@ -63,7 +66,7 @@ import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
 import { staffPayAdminApi, staffPayStaffApi } from './staff-pay'
 import { staffSelfServiceApi, staffRequestsAdminApi, parseDocMeta } from './staff-self-service'
-import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, checkInDistance, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
+import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
 import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
 import { opLog, logShifts, finishLog, opChanges, OP_ACTION_LABELS } from './lib/operation-log'
 import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
@@ -77,8 +80,9 @@ type Bindings = {
   RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   RETENTION_ENABLED?: string
   TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string
+  TEST_HOOKS?: string
 }
-type Variables = { user: any; hqAudited?: boolean }
+type Variables = { user: any; hqAudited?: boolean; d1FailWrite?: () => boolean }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -1307,6 +1311,8 @@ api.route('/staff', scheduleStaffApi)
 api.route('/admin', scheduleAdminApi)
 // 案内（チュートリアル）の進み具合と「はじめにやること」（#9711 #9712。src/tours.ts）
 api.route('/admin', toursAdminApi)
+// 管理画面のバッジの件数をまとめて返す（#9935。src/admin-badges.ts）
+api.route('/admin', adminBadgesApi)
 api.route('/staff', toursStaffApi)
 
 // =========================================================
@@ -1328,15 +1334,17 @@ const STAFF_SHIFT_PLACE_JOINS = `LEFT JOIN sites si ON si.site_id = s.site_id AN
 // 次回の稼働（#278）: 今日より後の最初の稼働日の勤務（確定・代打。同一人物の全所属企業）。同じ日に複数あれば開始時刻順に HOME_NEXT_MAX 件まで。
 // 前日確認（#176）: シフトの会社が前日確認を使っていれば、明日のシフトに確認の状態を付ける（確認の後にシフトが変わったものは未確認）
 const HOME_NEXT_MAX = 5
-async function homeLoadNextShifts(db: D1Database, u: any, personRows: any[], personIds: number[], today: string) {
+function homeNextShiftsStmt(db: D1Database, personIds: number[], today: string) {
   const inIds = personIds.map(() => '?').join(','), inSt = WORKING_SHIFT_STATUSES.map(() => '?').join(',')
-  const rows = (await db.prepare(`
+  return db.prepare(`
     SELECT s.*, p.project_name, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${inIds}) AND s.status IN (${inSt})
       AND s.work_date = (SELECT MIN(work_date) FROM shifts WHERE staff_id IN (${inIds}) AND status IN (${inSt}) AND work_date > ?)
-    ORDER BY s.start_time, s.shift_id LIMIT ${HOME_NEXT_MAX}`).bind(...personIds, ...WORKING_SHIFT_STATUSES, ...personIds, ...WORKING_SHIFT_STATUSES, today).all()).results as any[]
+    ORDER BY s.start_time, s.shift_id LIMIT ${HOME_NEXT_MAX}`).bind(...personIds, ...WORKING_SHIFT_STATUSES, ...personIds, ...WORKING_SHIFT_STATUSES, today)
+}
+function homeNextShiftsView(rows: any[], u: any, personRows: any[], today: string) {
   const tomorrow = addDays(today, 1)
   return rows.map(s => {
     const owner = personRows.find(r => r.staff_id === s.staff_id)
@@ -1350,31 +1358,32 @@ async function homeLoadNextShifts(db: D1Database, u: any, personRows: any[], per
 }
 
 // シフト: 本日のシフトと、前日に始まった日をまたぐシフト（同一人物の全所属企業。欠勤を除く）
-async function homeLoadShifts(db: D1Database, personIds: number[], today: string): Promise<any[]> {
-  const rows = (await db.prepare(`
+function homeShiftsStmt(db: D1Database, personIds: number[], today: string) {
+  return db.prepare(`
     SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date IN (?, ?) AND s.status != 'absent'
-    ORDER BY s.work_date, s.start_time`).bind(...personIds, addDays(today, -1), today).all()).results as any[]
-  return rows.filter(s => s.work_date === today || crossesMidnight(s))
+    ORDER BY s.work_date, s.start_time`).bind(...personIds, addDays(today, -1), today)
 }
+const homeShiftsOf = (rows: any[], today: string) => rows.filter(s => s.work_date === today || crossesMidnight(s))
 
 // 報告漏れ: 直近 HOME_MISSED_DAYS 日の勤務（確定・代打。精算の確定前）で、有効な報告に未報告のもの（承認待ちの申請があるものは除く）（#483）。
 // ホームに出しているシフト（本日・前日からの日をまたぐシフト）は除く。画面からは打刻修正の申請（打刻漏れの追加）へ進む
 const HOME_MISSED_DAYS = 7
 const HOME_MISSED_MAX = 20
-async function homeLoadMissedReports(db: D1Database, personIds: number[], today: string, shownIds: Set<number>) {
-  const rows = ((await db.prepare(`
+function homeMissedStmt(db: D1Database, personIds: number[], today: string) {
+  return db.prepare(`
     SELECT s.shift_id, s.staff_id, s.company_id, s.project_id, s.work_date, s.start_time, s.end_time, p.project_name, co.company_name
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date BETWEEN ? AND ?
       AND s.status IN (${WORKING_SHIFT_STATUSES.map(() => '?').join(',')}) AND COALESCE(s.settle_status, 'planned') != 'confirmed'
-    ORDER BY s.work_date DESC, s.start_time DESC LIMIT 60`).bind(...personIds, addDays(today, -HOME_MISSED_DAYS), addDays(today, -1), ...WORKING_SHIFT_STATUSES).all()).results as any[])
-    .filter(s => !shownIds.has(s.shift_id))
-  const status = await homeLoadReports(db, rows)
+    ORDER BY s.work_date DESC, s.start_time DESC LIMIT 60`).bind(...personIds, addDays(today, -HOME_MISSED_DAYS), addDays(today, -1), ...WORKING_SHIFT_STATUSES)
+}
+// candidates は homeMissedStmt の行。status は homeLoadStatus の status（候補の分も読んでおく）
+function homeMissedView(candidates: any[], status: Map<number, HomeShiftStatus>, shownIds: Set<number>) {
   const out: any[] = []
-  for (const s of rows) {
+  for (const s of candidates.filter(s => !shownIds.has(s.shift_id))) {
     const st = status.get(s.shift_id)
     if (!st) continue
     const missing = st.required_attendance.filter(t => !st.reports[t] && !st.pending_corrections[t])
@@ -1385,47 +1394,62 @@ async function homeLoadMissedReports(db: D1Database, personIds: number[], today:
 }
 
 // 報告: シフトごとの有効な報告（提出設定）と報告済みのもの、承認待ちの打刻修正申請（種類 → 申請の日時）
-async function homeLoadReports(db: D1Database, shifts: any[]) {
-  const out = new Map<number, { required_attendance: string[]; daily_report_required: boolean; reports: Record<string, any>; pending_corrections: Record<string, string> }>()
-  if (!shifts.length) return out
-  const ids = shifts.map(s => s.shift_id as number)
-  const modes = await modesForShifts(db, ids)
+// 日報: 提出済みのシフト（dailyShifts の分）。shift_id で照合する（日報はシフトごとに1件。shift_id の無い古い日報だけは稼働日・案件で照合する。src/lib/daily-report.ts）
+//   値は管理者が確認した日時（未確認・確認の後に直した日報は null。#371）
+// 提出設定の決め方は modesForShifts（staff-lifecycle.ts）と同じ（勤怠は attendanceTypesBatch。規則は attendanceTypesForShifts と同じ）
+type HomeShiftStatus = { required_attendance: string[]; daily_report_required: boolean; reports: Record<string, any>; pending_corrections: Record<string, string> }
+async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[]) {
+  const status = new Map<number, HomeShiftStatus>()
+  const dailyDone = new Map<number, { checked_at: string | null }>()
+  const ids = [...new Set(shifts.map(s => s.shift_id as number))]
+  if (!ids.length) return { status, dailyDone }
+  const idsJson = bindJsonArray(ids)
+  const att = attendanceTypesBatch(db, 'SELECT value FROM json_each(?)', [idsJson])
+  const dIds = dailyShifts.map(s => s.shift_id as number)
+  const dStaff = [...new Set(dailyShifts.map(s => s.staff_id as number))]
+  const dDates = [...new Set(dailyShifts.map(s => s.work_date as string))]
+  const res = await db.batch([
+    ...att.statements,
+    db.prepare(`SELECT s.shift_id, s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, sp.daily_report_mode AS sp_dr, p.daily_report_mode AS p_dr
+      FROM shifts s JOIN projects p ON p.project_id = s.project_id JOIN staff_profiles sp ON sp.staff_id = s.staff_id
+      WHERE s.shift_id IN ${JSON_IN}`).bind(idsJson),
+    // 遅延・位置不明（status・late_minutes）、早退の分数、打刻の方法（代理入力の区別・押し間違いの取消の可否）もボタンに出す（#347 #327 #323）
+    // 電波がない場所で押して後から送った報告は、押した時刻で記録したこと（device_time）と受け取った時刻も出す（#427）
+    db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id,
+      time_source, received_at
+      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(idsJson),
+    db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN ${JSON_IN} AND status = 'pending'`).bind(idsJson),
+    ...(dIds.length ? [db.prepare(`SELECT shift_id, staff_id, work_date, project_id, manager_checked, manager_checked_at FROM daily_reports
+      WHERE shift_id IN (${dIds.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${dStaff.map(() => '?').join(',')}) AND work_date IN (${dDates.map(() => '?').join(',')}))`)
+      .bind(...dIds, ...dStaff, ...dDates)] : []),
+  ])
+  const types = att.resolve(res.slice(0, att.statements.length))
+  const [modeRes, repRes, pendRes, dailyRes] = res.slice(att.statements.length)
+  const modes = new Map<number, ReturnType<typeof resolveModes>>()
+  for (const r of (modeRes.results || []) as any[]) {
+    const m = resolveModes({ daily_report_mode: r.p_dr }, { daily_report_mode: r.sp_dr }, { attendance_mode: r.s_att, daily_report_mode: r.s_dr })
+    const a = types.get(r.shift_id)
+    m.required_attendance = a ? a.types : [...REPORT_TYPES]
+    m.attendance_source = a ? a.source : 'default'
+    modes.set(r.shift_id, m)
+  }
   for (const id of ids) {
     const m = modes.get(id)
-    out.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {}, pending_corrections: {} })
+    status.set(id, { required_attendance: m ? m.required_attendance : [...REPORT_TYPES], daily_report_required: m ? m.daily_report_required : true, reports: {}, pending_corrections: {} })
   }
-  // 遅延・位置不明（status・late_minutes）、早退の分数、打刻の方法（代理入力の区別・押し間違いの取消の可否）もボタンに出す（#347 #327 #323）
-  // 電波がない場所で押して後から送った報告は、押した時刻で記録したこと（device_time）と受け取った時刻も出す（#427）
-  const rows = (await db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id,
-      time_source, received_at
-    FROM attendance_reports WHERE shift_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results as any[]
-  for (const r of rows) {
-    const o = out.get(r.shift_id)
+  for (const r of (repRes.results || []) as any[]) {
+    const o = status.get(r.shift_id)
     if (o) o.reports[r.report_type] = { report_type: r.report_type, reported_at: r.reported_at, status: r.status, late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
       entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null,
       ...deviceTimeMark(r) }
   }
-  const pend = (await db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN (${ids.map(() => '?').join(',')}) AND status = 'pending'`).bind(...ids).all()).results as any[]
-  for (const r of pend) { const o = out.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
-  return out
-}
-
-// 日報: 提出済みのシフト。shift_id で照合する（日報はシフトごとに1件。shift_id の無い古い日報だけは稼働日・案件で照合する。src/lib/daily-report.ts）
-// 値は管理者が確認した日時（未確認・確認の後に直した日報は null。#371）
-async function homeLoadDailyReports(db: D1Database, shifts: any[]): Promise<Map<number, { checked_at: string | null }>> {
-  const done = new Map<number, { checked_at: string | null }>()
-  if (!shifts.length) return done
-  const ids = shifts.map(s => s.shift_id as number)
-  const staffIds = [...new Set(shifts.map(s => s.staff_id as number))]
-  const dates = [...new Set(shifts.map(s => s.work_date as string))]
-  const rows = (await db.prepare(`SELECT shift_id, staff_id, work_date, project_id, manager_checked, manager_checked_at FROM daily_reports
-    WHERE shift_id IN (${ids.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${staffIds.map(() => '?').join(',')}) AND work_date IN (${dates.map(() => '?').join(',')}))`)
-    .bind(...ids, ...staffIds, ...dates).all()).results as any[]
-  for (const s of shifts) {
-    const d = rows.find(d => d.shift_id === s.shift_id || (d.shift_id == null && d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))
-    if (d) done.set(s.shift_id, { checked_at: d.manager_checked ? (d.manager_checked_at || '') : null })
+  for (const r of (pendRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
+  const drows = (dailyRes?.results || []) as any[]
+  for (const s of dailyShifts) {
+    const d = drows.find(d => d.shift_id === s.shift_id || (d.shift_id == null && d.staff_id === s.staff_id && d.work_date === s.work_date && d.project_id === s.project_id))
+    if (d) dailyDone.set(s.shift_id, { checked_at: d.manager_checked ? (d.manager_checked_at || '') : null })
   }
-  return done
+  return { status, dailyDone }
 }
 
 // 対象のシフトを選ぶ。指定があればそれ。なければ
@@ -1471,8 +1495,9 @@ async function homeLoadNotices(db: D1Database, u: any, personRows: any[]) {
 
 // 相談: 管理者からの返信をまだ読んでいない相談の件数（本人の全所属企業の分。#320）。
 // 返信のたびに user_notifications（kind=consult_reply）を作り、相談・連絡の画面を開くと既読にする
-async function homeLoadConsultations(db: D1Database, u: any): Promise<number> {
-  const uids = (await consultPersonRows(db, u)).map(r => r.user_id)
+// personRows は personStaffRows の結果（consultPersonRows と同じ行。読み直さない）
+async function homeLoadConsultations(db: D1Database, u: any, personRows: any[]): Promise<number> {
+  const uids = (personRows.length ? personRows : (u.staff_id ? [{ user_id: u.user_id }] : [])).map(r => r.user_id)
   if (!uids.length) return 0
   const r = await db.prepare(`SELECT COUNT(DISTINCT related_id) AS n FROM user_notifications
     WHERE kind = '${CONSULT_REPLY_KIND}' AND read_at IS NULL AND user_id IN (${uids.map(() => '?').join(',')})`).bind(...uids).first()
@@ -1486,9 +1511,16 @@ api.get('/staff/home', async (c) => {
   // 勤怠の自動振り分け（フェーズH）: 同一人物の全所属企業のシフトから探す
   const personRows = await personStaffRows(db, u)
   const personIds = personRows.length ? personRows.map(r => r.staff_id) : [u.staff_id]
-  const shifts = await homeLoadShifts(db, personIds, today)
-  const status = await homeLoadReports(db, shifts)
-  const dailyDone = await homeLoadDailyReports(db, shifts)
+  // 読み込みは2回の db.batch にまとめ、お知らせ・相談は並べて読む（#9937。スタッフが一番よく開く画面なので、1つずつ待たない）:
+  //   1回目 本日のシフト・報告漏れの候補・次回の稼働、2回目 そのシフトの報告の設定・報告・申請・日報（homeLoadStatus）
+  const [[shiftRes, missedRes, nextRes], noticeInfo, replied] = await Promise.all([
+    db.batch([homeShiftsStmt(db, personIds, today), homeMissedStmt(db, personIds, today), homeNextShiftsStmt(db, personIds, today)]),
+    homeLoadNotices(db, u, personRows),
+    homeLoadConsultations(db, u, personRows),
+  ])
+  const shifts = homeShiftsOf((shiftRes.results || []) as any[], today)
+  const missedCandidates = (missedRes.results || []) as any[]
+  const { status, dailyDone } = await homeLoadStatus(db, [...shifts, ...missedCandidates], shifts)
 
   const items = shifts.map(s => {
     const st = status.get(s.shift_id)!
@@ -1511,11 +1543,8 @@ api.get('/staff/home', async (c) => {
   const shift = picked ? shifts.find(s => s.shift_id === picked.shift_id) : null
   const shiftOwner = shift ? (personRows.find(r => r.staff_id === shift.staff_id) || { staff_id: u.staff_id, settings_json: u.settings_json }) : null
 
-  const missed = await homeLoadMissedReports(db, personIds, today, new Set(items.map(s => s.shift_id as number)))
-
-  const noticeInfo = await homeLoadNotices(db, u, personRows)
-  const replied = await homeLoadConsultations(db, u)
-  const nextShifts = await homeLoadNextShifts(db, u, personRows, personIds, today)
+  const missed = homeMissedView(missedCandidates, status, new Set(items.map(s => s.shift_id as number)))
+  const nextShifts = homeNextShiftsView((nextRes.results || []) as any[], u, personRows, today)
 
   return c.json({
     today, shift: staffShiftView(shift), carryover: !!picked?.carryover,
@@ -1736,37 +1765,9 @@ api.get('/admin/shifts/:id/check-in-location', async (c) => {
   })
 })
 
-// ---------- 電波がない場所で押した報告（#427） ----------
-// アプリは通信に失敗した報告を端末に保存し、通信が戻ってから押した時刻（pressed_at）と一意キー（client_request_id）を付けて送り直す。
-// 同じキーの報告が記録済みなら、記録済みの内容をそのまま返す（応答だけが届かなかった送信の再送で 409 にしない）
-async function duplicateStaffReport(db: D1Database, shiftId: number, type: string, key: string | null) {
-  if (!key) return null
-  return db.prepare(`SELECT reported_at, status, late_minutes, early_leave_minutes, distance_m, photo_key, time_source FROM attendance_reports
-    WHERE shift_id = ? AND report_type = ? AND client_request_id = ?`).bind(shiftId, type, key).first() as Promise<any>
-}
-function duplicateStaffReportResult(r: any, settingsJson: any) {
-  return { ok: true, duplicate: true, status: r.status, reported_at: r.reported_at, device_time: r.time_source === 'device', late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
-    ...(r.photo_key ? { photo_key: r.photo_key } : {}), ...distanceResult(r.distance_m ?? null, settingsJson) }
-}
-// 記録の時刻。押した時刻が送られたら、範囲（report-settings.ts の deviceReportTime）を確かめ、受け取った時刻より前の分なら押した時刻で記録する。
-//   checkAt: 受付の時間帯を確かめる時刻（押した時刻で記録するときは押した時刻）
-//   押した時刻で記録するときは、記録済みの前の報告より前の時刻にならないことも確かめる（順序が逆の記録を作らない）
-async function staffReportTime(db: D1Database, shiftId: number, type: string, now: string, pressedRaw: any):
-  Promise<{ at: string; checkAt: string; pressed: string | null; adopt: boolean } | { error: string; status: number }> {
-  const dev = deviceReportTime(pressedRaw, now)
-  if ('error' in dev) return dev
-  if (!dev.adopt || !dev.pressed) return { at: reportedAtMinute(now), checkAt: now, pressed: dev.pressed, adopt: false }
-  const at = reportedAtMinute(dev.pressed)
-  const earlier = REPORT_TYPES.slice(0, REPORT_TYPES.indexOf(type as any))
-  if (earlier.length) {
-    const r = await db.prepare(`SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ? AND report_type IN (${earlier.map(() => '?').join(',')})
-      ORDER BY reported_at DESC LIMIT 1`).bind(shiftId, ...earlier).first() as any
-    if (r && String(r.reported_at) > at) {
-      return { error: `${REPORT_LABEL[r.report_type]}（${fmtMdHm(r.reported_at)}）より前の時刻になるため、押した時刻（${fmtMdHm(at)}）では記録できません。打刻履歴から修正を申請してください`, status: 400 }
-    }
-  }
-  return { at, checkAt: dev.pressed, pressed: dev.pressed, adopt: true }
-}
+// ---------- 打刻（#427 #9939。本体は src/attendance-punch.ts） ----------
+// アプリは1回の打刻ごとに一意キー（client_request_id）・押した時刻（pressed_at）・端末の今の時刻（device_now）を付けて送り、
+// 通信の失敗・混雑（500・503）のときは、端末に保存して同じキーで送り直す。同じキーの報告が記録済みなら、記録済みの内容をそのまま返す
 
 // 押した時刻で記録した印（打刻修正で直した報告には付けない。修正の後の時刻は承認した内容のため）
 function deviceTimeMark(r: any) {
@@ -1774,87 +1775,30 @@ function deviceTimeMark(r: any) {
   return { device_time: dev, received_at: dev ? r.received_at : null }
 }
 
-// 勤怠報告
-api.post('/staff/attendance', async (c) => {
-  const u = c.get('user')
-  const { shift_id, report_type, latitude, longitude, address, no_photo_reason, no_photo_note, client_request_id, pressed_at } = await c.req.json()
-  if (!REPORT_TYPES.includes(report_type)) return c.json({ error: '不正な報告種別です' }, 400)
-  // 勤怠の自動振り分け: シフトの所有企業・スタッフ行に記録する（同一人物の他社シフトも可）
-  const resolved = await resolvePersonShift(c, shift_id)
-  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const { shift, staff: owner } = resolved
-  // 同じ送信の再送（#427）
-  const reqId = clientRequestId(client_request_id)
-  const dup = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-  if (dup) return c.json(duplicateStaffReportResult(dup, owner.settings_json))
-  const now = nowJST()
-  const time = await staffReportTime(c.env.DB, shift.shift_id, report_type, now, pressed_at)
-  if ('error' in time) return c.json({ error: time.error, code: 'device_time' }, time.status as 400)
-  const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  // 欠勤・確定済みでないか・受付の時間帯か（稼働日。休憩・勤務終了・退店は翌日も）・有効か・報告済みや申請中でないか・順序（#116 #84 #122 #47）
-  // 受付の時間帯は、押した時刻で記録するときは押した時刻で確かめる（#427）
-  const state = await loadReportState(c.env.DB, shift.shift_id)
-  const ng = checkStaffReport(shift, report_type, time.checkAt, modes ? modes.required_attendance : [...REPORT_TYPES], state)
-  if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 写真が必須の入店・退店は写真付きの API で送る。写真を送れないときは、会社が許可していれば理由つきで写真なしで受け付ける（#535）
-  let noPhotoReason: string | null = null
-  if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
-    const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
-    if (resolvePhotoRequired(owner, proj?.photo_required_override as number | null)) {
-      const reason = noPhotoReasonText(no_photo_reason, no_photo_note)
-      if (reason && typeof reason === 'object') return c.json({ error: reason.error }, 400)
-      if (!reason || !photoSkipAllowed(owner.settings_json)) return c.json({ error: PHOTO_REQUIRED_ERROR }, 400)
-      noPhotoReason = reason
-    }
-  }
+// 打刻の API のテスト用の仕掛け（TEST_HOOKS='true' のローカルだけ。src/lib/d1-retry.ts）
+api.use('/staff/attendance', attendanceTestHooks)
+api.use('/staff/attendance-photo', attendanceTestHooks)
 
-  // 遅刻・早退の判定（入店・勤務開始は開始の絶対日時と比べ、会社設定の猶予を超えたら late。勤務終了・退店は早退の分数。#134 #219 #497）
-  // 記録の時刻は受け取った時刻か、電波がない場所で押した時刻（#427。staffReportTime）
-  const at = time.at
-  const judged = lateness(shift, [{ report_type, reported_at: at }], await latenessSettingsFor(c.env.DB, owner.settings_json, shift.project_id))[0]
-  const status = reportStatus(judged, latitude)
-  // 入店の位置と現場（開催場所、なければ案件）の距離（#277）
-  const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, latitude, longitude) : null
-  // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
-  // 住所・user-agent は長さを切って保存する（報告用URLと同じ。#521）
-  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason, distance_m,
-      client_request_id, pressed_at, received_at, time_source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, typeof address === 'string' && address ? address.slice(0, 200) : null,
-      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason, distance,
-      reqId, time.pressed, now, time.adopt ? 'device' : null).run()
-  if (!ins.meta.changes) {
-    // 同じキーの送信が同時に届いて先に記録された場合は、記録済みの内容を返す
-    const again = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-    if (again) return c.json(duplicateStaffReportResult(again, owner.settings_json))
-    return c.json({ error: 'すでに報告済みです' }, 409)
-  }
-  // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
-  if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
-  return c.json({ ok: true, status, reported_at: at, device_time: time.adopt, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
+// 勤怠報告（写真なし。写真が必須の入店・退店は、会社が許可していれば理由つきで写真なしで受け付ける #535）
+api.post('/staff/attendance', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  if (!REPORT_TYPES.includes(b.report_type)) return c.json({ error: '不正な報告種別です' }, 400)
+  const r = await recordPunch(c, { shiftId: b.shift_id, reportType: b.report_type, latitude: b.latitude, longitude: b.longitude, address: b.address,
+    noPhotoReason: b.no_photo_reason, noPhotoNote: b.no_photo_note, clientRequestId: b.client_request_id, pressedAt: b.pressed_at, deviceNow: b.device_now,
+    userAgent: c.req.header('user-agent') || '' })
+  return c.json(r.body, r.status as 200)
 })
 
 // 勤怠報告（写真必須：入店報告・退店報告専用）
 // フロント側で圧縮済みのJPEG/PNGをmultipart/form-dataで受け取り、R2へ保存する
 api.post('/staff/attendance-photo', async (c) => {
-  const u = c.get('user')
-
   let form: FormData
   try {
     form = await c.req.formData()
   } catch {
     return c.json({ error: '送信データの形式が不正です' }, 400)
   }
-
-  const shift_id = form.get('shift_id')
-  const report_type = form.get('report_type')
-  const latitude = form.get('latitude')
-  const longitude = form.get('longitude')
-  const photo = form.get('photo')
-  // 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
-  const takenAt = photoTakenAt(form.get('photo_taken_at'))
-  const source = photoSource(form.get('photo_source'))
-
+  const shift_id = form.get('shift_id'), report_type = form.get('report_type'), photo = form.get('photo')
   if (typeof report_type !== 'string' || !PHOTO_REQUIRED_TYPES.includes(report_type)) {
     return c.json({ error: '不正な報告種別です' }, 400)
   }
@@ -1862,64 +1806,13 @@ api.post('/staff/attendance-photo', async (c) => {
   if (!(photo instanceof File) || photo.size === 0) return c.json({ error: '写真が添付されていません' }, 400)
   if (!PHOTO_ALLOWED_TYPES.includes(photo.type)) return c.json({ error: '対応していない画像形式です（JPEG/PNGのみ）' }, 400)
   if (photo.size > PHOTO_MAX_BYTES) return c.json({ error: '画像サイズが大きすぎます。圧縮に失敗している可能性があります' }, 400)
-
-  const resolved = await resolvePersonShift(c, shift_id)
-  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const { shift, staff: owner } = resolved
-  // 同じ送信の再送と、電波がない場所で押した時刻（#427。POST /staff/attendance と同じ）。再送なら写真は保存しない
-  const rawReqId = form.get('client_request_id'), rawPressed = form.get('pressed_at')
-  const reqId = clientRequestId(typeof rawReqId === 'string' ? rawReqId : null)
-  const dup = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-  if (dup) return c.json(duplicateStaffReportResult(dup, owner.settings_json))
-  const now = nowJST()
-  const time = await staffReportTime(c.env.DB, shift.shift_id, report_type, now, typeof rawPressed === 'string' ? rawPressed : null)
-  if ('error' in time) return c.json({ error: time.error, code: 'device_time' }, time.status as 400)
-  const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  // POST /staff/attendance と同じ確認（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序）
-  const state = await loadReportState(c.env.DB, shift.shift_id)
-  const ng = checkStaffReport(shift, report_type, time.checkAt, modes ? modes.required_attendance : [...REPORT_TYPES], state)
-  if (ng) return c.json({ error: ng.error }, ng.status as 400)
-
-  const lat = latitude != null && latitude !== '' ? Number(latitude) : null
-  const lng = longitude != null && longitude !== '' ? Number(longitude) : null
-  // 遅刻・早退の判定（POST /staff/attendance と同じ）
-  const at = time.at
-  const judged = lateness(shift, [{ report_type, reported_at: at }], await latenessSettingsFor(c.env.DB, owner.settings_json, shift.project_id))[0]
-  const status = reportStatus(judged, lat)
-  // 入店の位置と現場の距離（#277。POST /staff/attendance と同じ）
-  const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, lat, lng) : null
-
-  const ext = photo.type === 'image/png' ? 'png' : 'jpg'
-  const key = `attendance/${owner.company_id}/${owner.staff_id}/${shift_id}/${report_type}_${Date.now()}.${ext}`
-
-  try {
-    const buf = await photo.arrayBuffer()
-    await c.env.PHOTOS.put(key, buf, { httpMetadata: { contentType: photo.type } })
-  } catch {
-    return c.json({ error: '写真のアップロードに失敗しました。通信環境を確認して再度お試しください' }, 502)
-  }
-
-  try {
-    // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
-    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes,
-        photo_taken_at, photo_source, distance_m, client_request_id, pressed_at, received_at, time_source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, (c.req.header('user-agent') || '').slice(0, 300), status, key,
-        judged.late_minutes, judged.early_leave_minutes, takenAt, source, distance, reqId, time.pressed, now, time.adopt ? 'device' : null).run()
-    if (!ins.meta.changes) {
-      await c.env.PHOTOS.delete(key).catch(() => {})
-      const again = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-      if (again) return c.json(duplicateStaffReportResult(again, owner.settings_json))
-      return c.json({ error: 'すでに報告済みです' }, 409)
-    }
-  } catch {
-    // DB登録に失敗した場合はアップロード済みの写真を掃除する
-    await c.env.PHOTOS.delete(key).catch(() => {})
-    return c.json({ error: '報告の登録に失敗しました。もう一度お試しください' }, 500)
-  }
-  await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
-
-  return c.json({ ok: true, status, reported_at: at, device_time: time.adopt, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
+  const str = (k: string) => { const v = form.get(k); return typeof v === 'string' ? v : null }
+  // 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
+  const r = await recordPunch(c, { shiftId: shift_id, reportType: report_type, latitude: str('latitude'), longitude: str('longitude'),
+    clientRequestId: str('client_request_id'), pressedAt: str('pressed_at'), deviceNow: str('device_now'),
+    photo: { file: photo, takenAt: photoTakenAt(form.get('photo_taken_at')), source: photoSource(form.get('photo_source')) },
+    userAgent: c.req.header('user-agent') || '' })
+  return c.json(r.body, r.status as 200)
 })
 
 // 写真（R2）をそのまま返す。見つからなければ 404
@@ -2241,6 +2134,14 @@ api.get('/staff/handover/:shiftId', async (c) => {
   const fields = (marked.length ? marked : textFields.filter(f => HANDOVER_DEFAULT_KEYS.includes(f.key))).map(f => ({ key: f.key as string, label: String(f.label || f.key) }))
   if (!fields.length) return c.json({ ...empty, reason: 'no_share_field' })
   const personIds = await personStaffIds(db, c.get('user'))
+  // 共有する項目に文字が書かれた日報。項目は JSON のパス（$."キー"）で読む（日報ごとに json_each で全項目を読まない。#9937）。
+  // パスで表せないキー（jsonKeySums の jsonPathKey）があるときだけ json_each で読む
+  const keys = fields.map(f => f.key)
+  const pathOk = keys.every(jsonPathKey)
+  const hasNote = pathOk
+    ? `EXISTS (SELECT 1 FROM json_each(?) k WHERE json_type(${JSON_SUM_RV}, k.value) = 'text' AND trim(json_extract(${JSON_SUM_RV}, k.value)) != '')`
+    : `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je
+        WHERE je.key IN (SELECT value FROM json_each(?)) AND je.type = 'text' AND trim(je.value) != '')`
   const rows = (await db.prepare(`
     SELECT dr.work_date, dr.report_values, us.name
     FROM daily_reports dr JOIN staff_profiles sp ON sp.staff_id = dr.staff_id JOIN users us ON us.user_id = sp.user_id
@@ -2248,11 +2149,10 @@ api.get('/staff/handover/:shiftId', async (c) => {
     WHERE dr.company_id = ? AND dr.project_id = ? AND dr.work_date <= ? AND dr.work_date >= ?
       AND dr.staff_id NOT IN (SELECT value FROM json_each(?))
       ${shift.site_id ? 'AND (sh.site_id IS NULL OR sh.site_id = ?)' : ''}
-      AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je
-        WHERE je.key IN (SELECT value FROM json_each(?)) AND je.type = 'text' AND trim(je.value) != '')
+      AND ${hasNote}
     ORDER BY dr.work_date DESC, dr.submitted_at DESC LIMIT ?`)
     .bind(shift.company_id, shift.project_id, shift.work_date, addDays(shift.work_date, -HANDOVER_DAYS), bindJsonArray(personIds),
-      ...(shift.site_id ? [shift.site_id] : []), JSON.stringify(fields.map(f => f.key)), HANDOVER_MAX).all()).results as any[]
+      ...(shift.site_id ? [shift.site_id] : []), JSON.stringify(pathOk ? keys.map(k => `$."${k}"`) : keys), HANDOVER_MAX).all()).results as any[]
   const notes = rows.map(r => {
     const v = parseReportValues(r.report_values)
     const values: Record<string, string> = {}
@@ -2968,13 +2868,7 @@ api.get('/admin/dashboard', async (c) => {
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
     WHERE sp.company_id = ? AND (sp.follow_flag = 1 OR sp.retention_risk != 'low') AND ${elig.sql}
     ORDER BY CASE sp.retention_risk WHEN 'high' THEN 0 WHEN 'mid' THEN 1 ELSE 2 END, sp.staff_id`).bind(cid, ...elig.binds),
-    // 今月の案件別実績。項目は日報テンプレートの数値項目（固定のキーで集計しない。実績分析 loadAnalytics と同じ数え方。#184）
-    perfRows: db.prepare(`SELECT p.project_id, p.project_name, COUNT(dr.daily_report_id) AS report_count
-      FROM projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date >= ? AND dr.work_date < ?
-      WHERE p.company_id = ? AND p.status = 'active' GROUP BY p.project_id ORDER BY p.project_id`).bind(mFrom, mTo, cid),
-    perfVals: db.prepare(`SELECT dr.project_id, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
-      FROM daily_reports dr JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id AND p.status = 'active', ${ANALYTICS_JE}
-      WHERE dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ? GROUP BY dr.project_id, je.key`).bind(cid, mFrom, mTo),
+    // 今月の案件別実績。項目は日報テンプレートの数値項目（固定のキーで集計しない。実績分析 loadAnalytics と同じ数え方。#184）。件数と合計は perfLoad で読む
     // 案件ごとのテンプレート（絞り込んだ案件のテンプレートの項目だけを出す）
     perfTpls: db.prepare(`SELECT p.project_id, rt.template_id, rt.fields_json FROM projects p JOIN report_templates rt ON rt.template_id = p.report_template_id
       WHERE p.company_id = ? AND p.status = 'active' ORDER BY rt.template_id, p.project_id`).bind(cid),
@@ -3065,13 +2959,26 @@ api.get('/admin/dashboard', async (c) => {
       WHERE s.company_id = ? AND s.work_date = ? AND s.status IN ('confirmed', 'substitute')
       ORDER BY s.start_time, p.project_name, us.name, s.shift_id LIMIT ${DASH_DAY_BEFORE_MAX}`).bind(cid, tomorrow)
   }
+  // 今月の案件別実績（稼働中の案件ごとの日報の数と、項目の合計）。案件 → 日報の順に1回だけ読む（項目は jsonKeySums で、日報1件を1行として読む。#9937）。
+  // rows は `SELECT dr.project_id, je.key AS k, SUM(…) AS v, MAX(…) AS isnum … GROUP BY dr.project_id, je.key` と同じ行
+  const perfLoad = (async () => {
+    const js = jsonKeySums(db, { from: 'projects p LEFT JOIN daily_reports dr ON dr.project_id = p.project_id AND dr.company_id = p.company_id AND dr.work_date >= ? AND dr.work_date < ?',
+      where: "p.company_id = ? AND p.status = 'active'", binds: [mFrom, mTo, cid], group: 'p.project_id', extra: 'p.project_name, COUNT(dr.daily_report_id) AS report_count' },
+      reportKeysOf(await reportKeysStmt(db, cid).all()))
+    const { rows, groups } = await js.finish(await db.batch(js.statements))
+    return {
+      perfRows: groups.map(r => ({ project_id: r.g, project_name: r.project_name, report_count: r.report_count })),
+      perfVals: rows.map(r => ({ project_id: r.g, k: r.k, v: r.v, isnum: r.isnum })),
+    }
+  })()
   const qNames = Object.keys(Q)
-  const [batchRes, ahead, monthlyToday] = await Promise.all([
+  const [batchRes, ahead, monthlyToday, perfAll] = await Promise.all([
     db.batch(qNames.map(k => Q[k])),
     // ルール10・11: 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト（#299）
     staffingGaps(db, cid, today, addDays(today, DASH_AHEAD_DAYS)),
     // 月額（固定。#9702）のうち、今日が計上する日（その月の最初の確定・代打のシフトの稼働日）のもの。精算と同じ日に売上予定へ足す
     loadMonthlyLines(db, cid, { months: [month], from: today, to: today }),
+    perfLoad,
   ])
   const RES: Record<string, D1Result> = Object.fromEntries(qNames.map((k, i) => [k, batchRes[i]]))
   const R = (k: string) => ((RES[k]?.results || []) as any[])
@@ -3199,8 +3106,8 @@ api.get('/admin/dashboard', async (c) => {
   const followStaff = R('follow')
 
   // 今月の案件別実績（絞り込んだ案件だけ）。項目は、その案件のテンプレートの数値項目と、日報に数値のある項目（#184）
-  const perfRows = R('perfRows').filter(p => inScope(p.project_id))
-  const perfVals = R('perfVals').filter(r => inScope(r.project_id))
+  const perfRows = perfAll.perfRows.filter(p => inScope(p.project_id))
+  const perfVals = perfAll.perfVals.filter(r => inScope(r.project_id))
   const perfFields: { key: string; label: string }[] = []
   {
     const seen = new Set<string>(); const textKeys = new Set<string>(); const tplSeen = new Set<number>()
@@ -3608,16 +3515,20 @@ api.get('/admin/staff', async (c) => {
            (SELECT MAX(dr.work_date) FROM daily_reports dr WHERE dr.staff_id = sp.staff_id) AS last_report_date,
            -- 本日未入店の絞り込みに使う: 欠勤・希望（仮）のシフトは数えない（#85）
            (SELECT COUNT(*) FROM shifts s WHERE s.staff_id = sp.staff_id AND s.work_date = ? AND s.status IN ('confirmed','substitute')) AS today_shift,
-           (SELECT COUNT(*) FROM attendance_reports a JOIN shifts s2 ON a.shift_id = s2.shift_id WHERE a.staff_id = sp.staff_id AND s2.work_date = ? AND s2.status IN ('confirmed','substitute') AND a.report_type IN ('check_in','work_start')) AS today_checkin,
+           COALESCE(tc.n, 0) AS today_checkin,
            (SELECT GROUP_CONCAT(DISTINCT p.project_name) FROM shifts s3 JOIN projects p ON s3.project_id = p.project_id WHERE s3.staff_id = sp.staff_id AND s3.work_date >= ? AND s3.work_date < ?) AS projects,
            -- 有効期限が30日以内・切れた書類の数（#297。一覧の絞り込みに使う）
-           (SELECT COUNT(*) FROM staff_documents d WHERE d.staff_id = sp.staff_id AND d.company_id = sp.company_id AND d.valid_until IS NOT NULL AND d.valid_until <= ?) AS doc_expiring
+           -- スタッフの索引で引く（+d.company_id。会社の索引で引くと、スタッフごとに会社のすべての書類を読む。#9937）
+           (SELECT COUNT(*) FROM staff_documents d WHERE d.staff_id = sp.staff_id AND +d.company_id = sp.company_id AND d.valid_until IS NOT NULL AND d.valid_until <= ?) AS doc_expiring
     FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
+    -- 本日の入店・勤務開始の報告の数（本日の自社のシフトから引く。スタッフごとにすべての期間の打刻を読まない。#9937）
+    LEFT JOIN (SELECT a.staff_id, COUNT(*) AS n FROM shifts s2 JOIN attendance_reports a ON a.shift_id = s2.shift_id
+      WHERE s2.company_id = ? AND s2.work_date = ? AND s2.status IN ('confirmed','substitute') AND a.report_type IN ('check_in','work_start') GROUP BY a.staff_id) tc ON tc.staff_id = sp.staff_id
     LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
     LEFT JOIN users srcu ON srcu.user_id = src.user_id
     LEFT JOIN companies oc ON oc.company_id = sp.owner_company_id
     LEFT JOIN persons pe ON pe.person_id = sp.person_id
-    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, today, mFrom, mTo, addDays(today, DASH_DOC_EXPIRY_DAYS), u.company_id).all()
+    WHERE sp.company_id = ? ORDER BY sp.staff_id`).bind(...elig.binds, mFrom, mTo, today, today, mFrom, mTo, addDays(today, DASH_DOC_EXPIRY_DAYS), u.company_id, today, u.company_id).all()
   // 今月成約（#184）: 該当の案件（テンプレートに「成約」の項目がある案件）が今月1つもない人は null（画面は「—」）
   const seiyaku = await seiyakuSums(c.env.DB, u.company_id, mFrom, mTo, 'staff')
   for (const r of rows.results as any[]) r.month_seiyaku = seiyaku.get(Number(r.staff_id)) ?? null
@@ -5145,11 +5056,14 @@ api.get('/admin/projects', async (c) => {
   const u = c.get('user'); const month = queryMonth(c.req.query('month')); const [mFrom, mTo] = monthBounds(month)
   const rows = await c.env.DB.prepare(`
     SELECT p.*, cl.client_name,
-      (SELECT COUNT(DISTINCT s.staff_id) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS staff_count,
-      (SELECT COUNT(*) FROM shifts s WHERE s.project_id = p.project_id AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')) AS month_shifts,
+      COALESCE(ms.staff_count, 0) AS staff_count, COALESCE(ms.month_shifts, 0) AS month_shifts,
       (SELECT COUNT(*) FROM daily_reports dr WHERE dr.project_id = p.project_id AND (dr.incident_flag = 1 OR dr.complaint_flag = 1) AND dr.work_date >= ?1 AND dr.work_date < ?2) AS incidents,
       ${MONTHLY_AMOUNT_SQL('?4')} AS monthly_amount
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
+    -- 月の稼働人数・シフト数（確定・代打）。自社の案件の月のシフトを1回だけ読む（案件と日付の索引。#9937）
+    LEFT JOIN (SELECT s.project_id, COUNT(DISTINCT s.staff_id) AS staff_count, COUNT(*) AS month_shifts FROM shifts s
+      WHERE s.project_id IN (SELECT x.project_id FROM projects x WHERE x.company_id = ?3) AND s.work_date >= ?1 AND s.work_date < ?2 AND s.status IN ('confirmed','substitute')
+      GROUP BY s.project_id) ms ON ms.project_id = p.project_id
     WHERE p.company_id = ?3 ORDER BY p.project_id`).bind(mFrom, mTo, u.company_id, month).all()
   // 成約（#184）: テンプレートに「成約」の項目がない案件は null（画面は「—」）
   const seiyaku = await seiyakuSums(c.env.DB, u.company_id, mFrom, mTo, 'project')
@@ -6254,27 +6168,108 @@ api.put('/admin/projects/:id/goals', async (c) => {
 
 // 実績分析（#184 #9512）。案件を選ぶと、その案件の日報テンプレートの数値項目（type: number）で集計する。
 // 全案件のときは、全案件に共通の数（日報数・稼働人数など）だけを出し、テンプレートの項目の列は出さない。
-// 値は json_each で項目ごとに合計する（キーを SQL に埋め込まない）。差し替える前のテンプレートの項目は、残した表示名で出す（#9511）
+// 値は項目ごとに合計する（jsonKeySums。キーは bind し、SQL に埋め込まない）。差し替える前のテンプレートの項目は、残した表示名で出す（#9511）
 type AnalyticsField = { key: string; label: string; past?: true }
 type AnalyticsRow = { reports: number; values: Record<string, number>; [k: string]: any }
 const ANALYTICS_NUM = `CASE WHEN je.type IN ('integer','real') THEN je.value ELSE 0 END`
 const ANALYTICS_JE = `json_each(CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END) je`
-const ANALYTICS_JOINS = `LEFT JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id
-    LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN employee_records er ON er.staff_id = dr.staff_id AND er.company_id = dr.company_id`
 // 全案件に共通の数: 日報数・稼働人数（日報を出した人の数）・稼働日数（日報のある日の数）・案件数・インシデントかクレームの印のある日報の数
 const ANALYTICS_COUNTS = `COUNT(*) AS reports, COUNT(DISTINCT dr.staff_id) AS staff_count, COUNT(DISTINCT dr.work_date) AS work_days,
       COUNT(DISTINCT dr.project_id) AS project_count, SUM(CASE WHEN dr.incident_flag = 1 OR dr.complaint_flag = 1 THEN 1 ELSE 0 END) AS flagged`
-// 集計の単位: 日別・スタッフ別・案件別・クライアント別（g は GROUP BY の式、extra は各行に添える列）
+// 集計の単位: 日別・スタッフ別・案件別・クライアント別（g は GROUP BY の式、join は g に要る表、extra は各行に添える列と、その表）
+// 名前などは集計した後の行に付ける（日報1件ごとに案件・スタッフなどを引かない。#9937）。extra の ? は会社の ID
 const ANALYTICS_GROUPS = {
-  total: { g: "''", extra: '' },
-  daily: { g: 'dr.work_date', extra: '' },
-  staff: { g: 'dr.staff_id', extra: ', MAX(us.name) AS name, MAX(er.employee_number) AS employee_number' },
-  project: { g: 'dr.project_id', extra: ', MAX(p.project_name) AS project_name, MAX(cl.client_name) AS client_name' },
-  client: { g: 'COALESCE(p.client_id, 0)', extra: ', MAX(cl.client_name) AS client_name' },
+  total: { g: "''", join: '', extra: null },
+  daily: { g: 'dr.work_date', join: '', extra: null },
+  staff: { g: 'dr.staff_id', join: '', extra: { cols: 'us.name AS name, er.employee_number AS employee_number',
+    joins: 'LEFT JOIN staff_profiles sp ON sp.staff_id = a.g LEFT JOIN users us ON us.user_id = sp.user_id LEFT JOIN employee_records er ON er.staff_id = a.g AND er.company_id = ?' } },
+  project: { g: 'dr.project_id', join: '', extra: { cols: 'p.project_name AS project_name, cl.client_name AS client_name',
+    joins: 'LEFT JOIN projects p ON p.project_id = a.g AND p.company_id = ? LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id' } },
+  client: { g: 'COALESCE(p.client_id, 0)', join: 'LEFT JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id',
+    extra: { cols: 'cl.client_name AS client_name', joins: 'LEFT JOIN clients cl ON cl.client_id = a.g AND cl.company_id = ?' } },
 } as const
 type AnalyticsGroup = keyof typeof ANALYTICS_GROUPS
+// ---------- 日報の数値項目の合計を、json_each を全件に使わずに出す（#9937） ----------
+// json_each は日報1件につき項目の数だけ行を読む（D1 の rows read。月末のスタッフ200人の会社で1回に数万行）。
+// キーが分かっている項目（テンプレートの項目など）は json_type・json_extract のキーごとの列にして、日報1件を1行として読む。
+// 分かっていないキーのある日報（とオブジェクトでない日報）だけを json_each で読む（ふつうは0件）。
+// 返す行は `SELECT g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum FROM daily_reports dr, ${ANALYTICS_JE} WHERE … GROUP BY g, je.key`
+// と同じ行・同じ並び（g の順、その中はキーの BINARY の順）。
+//   from: FROM の後ろ（daily_reports の別名は dr。'?' は where と合わせて binds の順）、group: GROUP BY の式（別名 g）
+// キーは JSON のパス（$."キー"）にして bind する。" と \ と制御文字と、対になっていないサロゲートを含むキーは、パスで表せないので json_each の側で数える
+const JSON_SUM_KEYS_PER_STMT = 80 // D1 の bind は1文100個まで
+const JSON_SUM_RV = `CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END`
+const jsonPathKey = (k: string) => !/["\\\u0000-\u001f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(k)
+// SQLite の BINARY（UTF-8 のバイト順 = コードポイントの順）での比較。NULL → 数 → 文字の順（json_each の key は配列なら数）
+function sqliteKeyCompare(a: any, b: any): number {
+  const rank = (x: any) => (x == null ? 0 : typeof x === 'number' ? 1 : 2)
+  if (rank(a) !== rank(b)) return rank(a) - rank(b)
+  if (a == null) return 0
+  if (typeof a === 'number') return a - b
+  const x = [...String(a)], y = [...String(b)]
+  for (let i = 0; i < Math.min(x.length, y.length); i++) { const d = x[i].codePointAt(0)! - y[i].codePointAt(0)!; if (d) return d }
+  return x.length - y.length
+}
+type JsonSumRow = { g: any; k: any; v: number; isnum: number }
+// GROUP BY の句。全体の1行（g が定数）は並べ替えずに数える（GROUP BY と同じく、行が無ければ0行）
+const groupBySql = (g: string) => (g === "''" ? 'HAVING COUNT(*) > 0' : 'GROUP BY g ORDER BY g')
+type JsonSumQuery = { from: string; where: string; binds: any[]; group: string; extra?: string }
+// statements を呼び出し元の db.batch に入れ、その結果を finish に渡す。
+// 1つ目の文に extra の列（g ごとの件数など）と、分かっていないキーのある日報があるか（x）を付ける。x があるときだけ、もう1回 json_each で読む
+function jsonKeySums(db: D1Database, q: JsonSumQuery, knownKeys: Iterable<string>) {
+  const keys = [...new Set([...knownKeys].filter(k => typeof k === 'string' && k && jsonPathKey(k)))].sort(sqliteKeyCompare)
+  const base = `${q.from} WHERE ${q.where}`
+  let n = 0
+  const numbered = base.replace(/\?/g, () => `?${++n}`)
+  const mask = JSON.stringify(Object.fromEntries(keys.map(k => [k, null])))
+  // json_valid で確かめてから JSON の関数を使う（AND は先に偽になっても後ろを評価することがあり、JSON でない文字で失敗するため CASE にする）
+  const unknownSql = `(CASE WHEN json_valid(dr.report_values) THEN json_type(dr.report_values) != 'object' OR json_patch(dr.report_values, ?) != '{}' ELSE 0 END)`
+  const chunks: string[][] = []
+  for (let i = 0; i < keys.length; i += JSON_SUM_KEYS_PER_STMT) chunks.push(keys.slice(i, i + JSON_SUM_KEYS_PER_STMT))
+  if (!chunks.length) chunks.push([])
+  const statements = chunks.map((ks, ci) => {
+    const cols = ks.map((_, i) => {
+      const p = `?${n + i + 1}`, t = `json_type(${JSON_SUM_RV}, ${p})`
+      return `SUM(CASE WHEN ${t} IN ('integer','real') THEN json_extract(${JSON_SUM_RV}, ${p}) ELSE 0 END) AS v${i}, MAX(${t} IN ('integer','real')) AS n${i}, MAX(${t} IS NOT NULL) AS p${i}`
+    })
+    if (ci === 0) cols.unshift(`MAX(${unknownSql.replace('?', `?${n + ks.length + 1}`)}) AS x`, ...(q.extra ? [q.extra] : []))
+    return db.prepare(`SELECT ${q.group} AS g, ${cols.join(', ')} FROM ${numbered} ${groupBySql(q.group)}`)
+      .bind(...q.binds, ...ks.map(k => `$."${k}"`), ...(ci === 0 ? [mask] : []))
+  })
+  const finish = async (results: D1Result[]): Promise<{ rows: JsonSumRow[]; groups: any[] }> => {
+    const groups = (results[0]?.results || []) as any[]
+    const gk = (g: any) => `${typeof g}:${g}`
+    const byG = new Map<string, JsonSumRow[]>(groups.map(r => [gk(r.g), []]))
+    chunks.forEach((ks, ci) => {
+      for (const r of (results[ci]?.results || []) as any[]) ks.forEach((k, i) => { if (r[`p${i}`]) byG.get(gk(r.g))?.push({ g: r.g, k, v: r[`v${i}`], isnum: r[`n${i}`] }) })
+    })
+    // 分かっていないキー: そのキーがある日報だけを json_each で読む（json_patch で分かっているキーを消して、残りがあるか）
+    if (groups.some(r => r.x)) {
+      const extra = (await db.prepare(`SELECT ${q.group} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
+        FROM ${q.from}, ${ANALYTICS_JE}
+        WHERE ${q.where} AND ${unknownSql} AND je.key NOT IN (SELECT value FROM json_each(?)) GROUP BY g, je.key ORDER BY g, je.key`)
+        .bind(...q.binds, mask, JSON.stringify(keys)).all()).results as any[]
+      for (const r of extra) byG.get(gk(r.g))?.push({ g: r.g, k: r.k, v: r.v, isnum: r.isnum })
+    }
+    const rows: JsonSumRow[] = []
+    for (const r of groups) rows.push(...byG.get(gk(r.g))!.sort((a, b) => sqliteKeyCompare(a.k, b.k)))
+    return { rows, groups }
+  }
+  return { statements, finish }
+}
+// 日報にありそうなキー（jsonKeySums の knownKeys）: 自社と共通のテンプレートの項目、案件に残した古い項目（projects.past_report_fields_json）、
+// テンプレートの無い日報の本文（free）とインシデント・クレームの内容。ここに無いキーも jsonKeySums が json_each で数えるので、結果は変わらない
+const REPORT_FIXED_KEYS = ['free', 'incident_note', 'complaint_note']
+const reportKeysStmt = (db: D1Database, cid: number) => db.prepare(`SELECT fields_json, NULL AS past_report_fields_json FROM report_templates WHERE company_id = ? OR company_id IS NULL
+  UNION ALL SELECT NULL, past_report_fields_json FROM projects WHERE company_id = ? AND past_report_fields_json IS NOT NULL`).bind(cid, cid)
+function reportKeysOf(res: D1Result | undefined): Set<string> {
+  const out = new Set<string>(REPORT_FIXED_KEYS)
+  for (const r of (res?.results || []) as any[]) {
+    for (const f of parseReportFields(r.fields_json)) out.add(f.key)
+    for (const f of pastReportFields(r.past_report_fields_json)) out.add(f.key)
+  }
+  return out
+}
 // 項目: 今のテンプレートの数値項目を先に（同じキーは最初のテンプレートのラベル）、
 // 残した古い項目（projects.past_report_fields_json）のうち値のあるものを後ろに並べる。
 // sumRows（je.key AS k・isnum の集計行）から、どちらにも無い数値のキーも足す（ラベルは guessed、無ければキー。今のテンプレートで文字の項目のキーは足さない）。
@@ -6360,12 +6355,18 @@ async function seiyakuSums(db: D1Database, companyId: number, mFrom: string, mTo
   }
   const out = new Map<number, number>()
   if (!Object.keys(keys).length) return out
-  const map = JSON.stringify(keys)
   const g = by === 'project' ? 'dr.project_id' : 'dr.staff_id'
-  // m は { project_id: 成約の項目のキー }（自社の案件だけ）。日報・シフトは案件と日付のインデックスで引く
-  const stmts = [db.prepare(`SELECT ${g} AS g, SUM((SELECT SUM(${ANALYTICS_NUM}) FROM ${ANALYTICS_JE} WHERE je.key = m.value)) AS v
-    FROM json_each(?) m JOIN daily_reports dr ON dr.project_id = CAST(m.key AS INTEGER) AND dr.work_date >= ? AND dr.work_date < ?
-    GROUP BY ${g}`).bind(map, mFrom, mTo)]
+  // m は { project_id: 成約の項目のキー }（自社の案件だけ）。日報・シフトは案件と日付のインデックスで引く。
+  // 値は JSON のパス（$."キー"）で読む（日報ごとに json_each で全項目を読まない。#9937）。パスで表せないキーがあるときだけ json_each で読む
+  const pathOk = Object.values(keys).every(jsonPathKey)
+  const stmts = [pathOk
+    ? db.prepare(`SELECT ${g} AS g, SUM(CASE WHEN json_type(${JSON_SUM_RV}, m.value) IN ('integer','real') THEN json_extract(${JSON_SUM_RV}, m.value) ELSE 0 END) AS v
+      FROM json_each(?) m JOIN daily_reports dr ON dr.project_id = CAST(m.key AS INTEGER) AND dr.work_date >= ? AND dr.work_date < ?
+      GROUP BY ${g}`).bind(JSON.stringify(Object.fromEntries(Object.entries(keys).map(([pid, k]) => [pid, `$."${k}"`]))), mFrom, mTo)
+    : db.prepare(`SELECT ${g} AS g, SUM((SELECT SUM(${ANALYTICS_NUM}) FROM ${ANALYTICS_JE} WHERE je.key = m.value)) AS v
+      FROM json_each(?) m JOIN daily_reports dr ON dr.project_id = CAST(m.key AS INTEGER) AND dr.work_date >= ? AND dr.work_date < ?
+      GROUP BY ${g}`).bind(JSON.stringify(keys), mFrom, mTo)]
+  const map = JSON.stringify(keys)
   if (by === 'project') {
     for (const pid of Object.keys(keys)) out.set(Number(pid), 0)
   } else {
@@ -6386,20 +6387,28 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   const groups = Object.keys(ANALYTICS_GROUPS) as AnalyticsGroup[]
   // 項目は案件を選んだときだけ合計する（案件別・クライアント別はそのとき1行なので、全体の合計を写す）
   const sumGroups: AnalyticsGroup[] = project ? ['total', 'daily', 'staff'] : []
+  // 案件のテンプレートと日報にありそうなキーを先に読み、そのキーで合計する（jsonKeySums）
+  const [tplRes, keysRes] = project ? await db.batch([db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null), reportKeysStmt(db, cid)]) : []
+  const tplRow = project ? (((tplRes?.results || []) as any[])[0] || null) : null
+  const knownKeys = reportKeysOf(keysRes)
+  const sumQ = sumGroups.map(k => jsonKeySums(db, { from: 'daily_reports dr', where, binds: bind, group: ANALYTICS_GROUPS[k].g }, knownKeys))
   const stmts = [
-    ...groups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, ${ANALYTICS_COUNTS} ${ANALYTICS_GROUPS[k].extra}
-      FROM daily_reports dr ${ANALYTICS_JOINS} WHERE ${where} GROUP BY g`).bind(...bind)),
-    ...sumGroups.map(k => db.prepare(`SELECT ${ANALYTICS_GROUPS[k].g} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
-      FROM daily_reports dr ${ANALYTICS_JOINS}, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...bind)),
-    ...(project ? [db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null)] : []),
+    ...groups.map(k => {
+      const G = ANALYTICS_GROUPS[k]
+      const inner = `SELECT ${G.g} AS g, ${ANALYTICS_COUNTS} FROM daily_reports dr ${G.join} WHERE ${where} ${groupBySql(G.g)}`
+      return G.extra ? db.prepare(`SELECT a.*, ${G.extra.cols} FROM (${inner}) a ${G.extra.joins} ORDER BY a.g`).bind(...bind, cid) : db.prepare(inner).bind(...bind)
+    }),
+    ...sumQ.flatMap(s => s.statements),
     ...(withOptions ? [db.prepare(`SELECT p.project_id, p.project_name, COALESCE(p.status, 'active') AS status, cl.client_name
       FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
       WHERE p.company_id = ? AND (COALESCE(p.status, 'active') = 'active' OR EXISTS (SELECT 1 FROM daily_reports d2 WHERE d2.project_id = p.project_id AND d2.company_id = p.company_id))
       ORDER BY CASE WHEN COALESCE(p.status, 'active') = 'active' THEN 0 ELSE 1 END, p.project_id`).bind(cid)] : []),
   ]
-  const res = (await db.batch(stmts)).map(r => (r.results || []) as any[])
-  const sumRes = (k: AnalyticsGroup) => { const i = sumGroups.indexOf(k); return i < 0 ? [] : res[groups.length + i] }
-  const tplRow = project ? (res[groups.length + sumGroups.length][0] || null) : null
+  const raw = await db.batch(stmts)
+  const res = raw.map(r => (r.results || []) as any[])
+  const sumRows: JsonSumRow[][] = []
+  { let at = groups.length; for (const s of sumQ) { sumRows.push((await s.finish(raw.slice(at, at + s.statements.length))).rows); at += s.statements.length } }
+  const sumRes = (k: AnalyticsGroup) => { const i = sumGroups.indexOf(k); return i < 0 ? [] : sumRows[i] }
   const fields: AnalyticsField[] = project
     ? await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], sumRes('total'), true)
     : []
@@ -7611,19 +7620,21 @@ api.get('/admin/billing-check', async (c) => {
   const u = c.get('user'); const month = c.req.query('month') || monthJST()
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return c.json({ error: '月を正しく指定してください' }, 400)
   const [mFrom, mTo] = monthBounds(month) // 月は範囲の条件で絞る（#212）
-  // 件数は SQL で数え、金額は精算と同じ shiftTotals（交通費の請求区分・請求の調整額を含む）で、シフトの行を読んでから合計する
-  const money = (await c.env.DB.prepare(`SELECT s.project_id, s.staff_id, s.unit_price, s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust
-    FROM shifts s WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`)
-    .bind(u.company_id, mFrom, mTo, todayJST()).all()).results as any[]
-  type Money = { base: number; transport: number; adjust: number; total: number }
+  const today = todayJST(), mLast = addDays(mTo, -1)
+  // 件数は SQL で数え、金額は精算（src/settlement.ts の loadSettleMoney）と同じ対象・同じ計算で、その月の1日〜今日の分を合計する（#9931）。
+  // 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤・中止（キャンセル料は請求合計に含める）。精算で同じ期間を選べば請求・支払の合計が一致する
+  const money = await loadSettleMoney(c.env.DB, u.company_id, mFrom, mLast < today ? mLast : today)
+  type Money = { base: number; transport: number; adjust: number; cancel: number; cancel_count: number; total: number }
   const byProject = new Map<number, Money>(), byStaff = new Map<string, Money>()
-  const add = (m: Map<any, Money>, k: any, s: any) => {
-    const t = shiftTotals(s); const a = m.get(k) || { base: 0, transport: 0, adjust: 0, total: 0 }
-    a.base += Number(s.unit_price || 0); a.transport += t.bill_transport; a.adjust += Number(s.bill_adjust || 0); a.total += t.bill_total
+  const add = (m: Map<any, Money>, k: any, s: (typeof money)[number]) => {
+    const a = m.get(k) || { base: 0, transport: 0, adjust: 0, cancel: 0, cancel_count: 0, total: 0 }
+    // 請求基本額・交通費・調整は勤務の分、キャンセル料は欠勤・中止の分（精算では欠勤・中止の行の請求基本額に入る）
+    if (s.kind === 'cancel') { a.cancel += s.bill_total; a.cancel_count++ } else { a.base += s.bill_base; a.transport += s.bill_transport; a.adjust += s.bill_adjust }
+    a.total += s.bill_total
     m.set(k, a)
   }
   for (const s of money) { add(byProject, s.project_id, s); add(byStaff, `${s.staff_id}:${s.project_id}`, s) }
-  const zero: Money = { base: 0, transport: 0, adjust: 0, total: 0 }
+  const zero: Money = { base: 0, transport: 0, adjust: 0, cancel: 0, cancel_count: 0, total: 0 }
   // 月額（固定。#9702）: 今日までにその月の確定・代打のシフトがあれば、案件に1回（スタッフ別の月額はそのスタッフの行にも）足す
   const monthly = await loadMonthlyLines(c.env.DB, u.company_id, { months: [month], until: todayJST() })
   const monthlyBy = (k: (l: (typeof monthly)[number]) => string | null) => {
@@ -7633,47 +7644,80 @@ api.get('/admin/billing-check', async (c) => {
   // 稼働人数は確定・代打のシフトの人だけを数える（欠勤・希望（仮）だけの人は数えない）。
   // 日報は、確定・代打のシフトのうち日報が必要なもの（シフト → スタッフ → 案件の設定）を分母に、そのシフトの日報があるものを分子に数える（#448）。
   // 日報の照合は shift_id、shift_id の無い古い日報はスタッフ・稼働日・案件（lib/daily-report.ts の findDailyReport と同じ）
+  // 件数は、その月のシフトをスタッフ × 案件で1回だけ集計し（シフトの行ごとに案件・スタッフ・名前を読まない。#9938）、案件別・スタッフ別明細の両方に使う。
+  // 日報の要否はシフト → スタッフ → 案件の順（dailyReportRequiredSql と同じ）。スタッフ・案件の設定はグループの中で同じなので、
+  // シフトの設定ごと（required / none / どちらでもない = スタッフ・案件の設定に従う）に数えてから、スタッフ・案件の設定で足し合わせる
   const working = "s.status IN ('confirmed','substitute')"
-  const dailyReq = dailyReportRequiredSql('s', 'sp', 'p')
   const hasDaily = `EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id
     OR (+dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id))`
-  const rows = await c.env.DB.prepare(`
-    SELECT p.project_id, p.project_name, cl.client_name,
-      COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
-      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
-      COUNT(CASE WHEN s.status = 'substitute' THEN 1 END) AS substitute_days,
-      COUNT(DISTINCT CASE WHEN ${working} THEN s.staff_id END) AS staff_count,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
-    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    LEFT JOIN shifts s ON s.project_id = p.project_id AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
-    LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id
-    WHERE p.company_id = ? GROUP BY p.project_id`).bind(mFrom, mTo, todayJST(), u.company_id).all()
-
-  // スタッフ別明細
-  const detail = await c.env.DB.prepare(`
-    SELECT s.staff_id, s.project_id, us.name, p.project_name,
-      COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
-      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
-    FROM shifts s JOIN projects p ON s.project_id = p.project_id
-    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
-    GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()).all()
+  const sReq = "s.daily_report_mode = 'required'", sInherit = "(s.daily_report_mode IS NULL OR s.daily_report_mode NOT IN ('none','required'))"
+  const v = (a: string) => `CASE WHEN ${a}.daily_report_mode IN ('none','required') THEN ${a}.daily_report_mode END`
+  const [groupsRes, projectsRes] = await c.env.DB.batch([
+    c.env.DB.prepare(`SELECT g.*, sp.staff_id AS sp_staff_id, us.user_id AS us_user_id, us.name, p.project_name,
+        (COALESCE(${v('sp')}, ${v('p')}, 'required') = 'required') AS inherit_required
+      FROM (SELECT s.project_id, s.staff_id,
+          COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
+          COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
+          COUNT(CASE WHEN s.status = 'substitute' THEN 1 END) AS substitute_days,
+          COUNT(CASE WHEN ${working} AND ${sReq} THEN 1 END) AS req_own,
+          COUNT(CASE WHEN ${working} AND ${sInherit} THEN 1 END) AS req_inherit,
+          COUNT(CASE WHEN ${working} AND ${sReq} AND ${hasDaily} THEN 1 END) AS done_own,
+          COUNT(CASE WHEN ${working} AND ${sInherit} AND ${hasDaily} THEN 1 END) AS done_inherit
+        FROM shifts s WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
+        GROUP BY s.project_id, s.staff_id) g
+      JOIN projects p ON p.project_id = g.project_id
+      LEFT JOIN staff_profiles sp ON sp.staff_id = g.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+      ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()),
+    c.env.DB.prepare(`SELECT p.project_id, p.project_name, cl.client_name FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
+      WHERE p.company_id = ? ORDER BY p.project_id`).bind(u.company_id),
+  ])
+  const groups = (groupsRes.results as any[]).map(g => {
+    const inh = Number(g.inherit_required) === 1
+    return { ...g, report_required: Number(g.req_own) + (inh ? Number(g.req_inherit) : 0), report_count: Number(g.done_own) + (inh ? Number(g.done_inherit) : 0) }
+  })
+  // 案件別（自社のすべての案件。シフトのない案件は 0）。稼働人数は確定・代打のシフトのある人
+  const rows = {
+    results: (projectsRes.results as any[]).map(p => {
+      const gs = groups.filter(g => g.project_id === p.project_id)
+      const total = (k: string) => gs.reduce((n, g) => n + Number(g[k]), 0)
+      return { project_id: p.project_id, project_name: p.project_name, client_name: p.client_name, work_days: total('work_days'), absent_days: total('absent_days'),
+        substitute_days: total('substitute_days'), staff_count: gs.filter(g => Number(g.work_days) > 0).length, report_required: total('report_required'), report_count: total('report_count') }
+    }),
+  }
+  // スタッフ別明細（スタッフ・アカウントのある人だけ。並びは案件・名前の順）
+  const detail = {
+    results: groups.filter(g => g.sp_staff_id != null && g.us_user_id != null).map(g => ({
+      staff_id: g.staff_id, project_id: g.project_id, name: g.name, project_name: g.project_name, work_days: g.work_days, absent_days: g.absent_days,
+      report_required: g.report_required, report_count: g.report_count,
+    })),
+  }
 
   // total_amount / amount = 請求基本額、total_transport / transport = 請求する交通費、total_adjust / adjust = 請求の調整、total_bill / total = 請求合計（精算の請求合計と同じ）
+  // total_cancel / cancel = 欠勤・中止のキャンセル料（#9931。請求合計に含む）、cancel_count = その件数。cancel_lines = キャンセル料の行
   // total_monthly / monthly = 月額（固定。#9702。請求合計に含む）。monthly_lines = 月額の行（案件全体・スタッフ別）
+  // totals = 会社全体の合計（bill = 請求合計、pay = 支払合計。精算で同じ期間を選んだときの totals.bill・totals.pay と同じ）
+  const detailRows = detail.results as any[]
+  const nameOf = new Map(detailRows.map(d => [`${d.staff_id}:${d.project_id}`, d]))
+  const cancels = money.filter(s => s.kind === 'cancel')
+  const cancel_lines = cancels.map(s => {
+    const d = nameOf.get(`${s.staff_id}:${s.project_id}`) || {}
+    return { shift_id: s.shift_id, work_date: s.work_date, staff_id: s.staff_id, staff_name: String(d.name || ''), project_id: s.project_id, project_name: String(d.project_name || ''),
+      reason: s.cancel_reason, reason_label: CANCEL_REASON_LABEL[String(s.cancel_reason)] || '欠勤', note: s.cancel_note, bill_amount: s.bill_total }
+  }).sort((a, b) => a.work_date.localeCompare(b.work_date) || a.project_name.localeCompare(b.project_name, 'ja') || a.staff_name.localeCompare(b.staff_name, 'ja') || a.shift_id - b.shift_id)
+  const sum = (a: typeof money, k: 'bill_total' | 'pay_total') => a.reduce((n, s) => n + Number(s[k] || 0), 0)
+  const monthlySum = monthlyTotal(monthly)
   return c.json({
     month,
+    totals: { bill: sum(money, 'bill_total') + monthlySum, pay: sum(money, 'pay_total'), cancel_bill: sum(cancels, 'bill_total'), cancel_pay: sum(cancels, 'pay_total'), cancel_count: cancels.length, monthly_bill: monthlySum },
     by_project: (rows.results as any[]).map(p => {
       const m = byProject.get(p.project_id) || zero, mo = monthlyOfProject.get(String(p.project_id)) || 0
-      return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_monthly: mo, total_bill: m.total + mo }
+      return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_cancel: m.cancel, cancel_count: m.cancel_count, total_monthly: mo, total_bill: m.total + mo }
     }),
-    detail: (detail.results as any[]).map(d => {
+    detail: detailRows.map(d => {
       const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero, mo = monthlyOfStaff.get(`${d.staff_id}:${d.project_id}`) || 0
-      return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, monthly: mo, total: m.total + mo }
+      return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, cancel: m.cancel, cancel_count: m.cancel_count, monthly: mo, total: m.total + mo }
     }),
+    cancel_lines,
     monthly_lines: monthly,
   })
 })

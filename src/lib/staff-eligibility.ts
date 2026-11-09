@@ -140,16 +140,18 @@ export type ConflictRow = {
 // 日をまたぐ勤務と重なるよう、期間の前日・翌日のシフトも返す（どれが重なるかは conflictFor で判定する）。
 // 調べる範囲: 自社の行（同じ人物の自社の別の行を含む）、連携元の行（source_staff_id）、自社の行から連携した先の行。
 // 直接連携していない会社（多段連携の雇用元・同じ所属元から連携を受けた別の稼働先）のシフトは対象にしない。
+// 同じ人物の行は person_id の索引で引く（+sp.company_id。会社の索引で引くと、人数の2乗の行を読む。#9937）
 export async function findConflicts(db: D1Database, companyId: number, staffIds: number[], from: string, to: string) {
   const map = new Map<number, ConflictRow[]>()
-  const ids = bindJsonArray(staffIds)
+  // 同じ人が何件も並ぶので、重ねて渡さない（#9937）
+  const ids = bindJsonArray([...new Set(staffIds)])
   if (ids === '[]') return map
   const rows = (await db.prepare(`
     WITH me AS (
       SELECT staff_id, company_id, person_id, source_staff_id FROM staff_profiles WHERE company_id = ? AND staff_id IN ${JSON_IN}
     ), rel AS (
       SELECT me.staff_id AS my_staff_id, me.staff_id AS staff_id FROM me
-      UNION SELECT me.staff_id, sp.staff_id FROM me JOIN staff_profiles sp ON sp.person_id = me.person_id AND sp.company_id = me.company_id WHERE me.person_id IS NOT NULL
+      UNION SELECT me.staff_id, sp.staff_id FROM me JOIN staff_profiles sp ON sp.person_id = me.person_id AND +sp.company_id = me.company_id WHERE me.person_id IS NOT NULL
       UNION SELECT me.staff_id, me.source_staff_id FROM me WHERE me.source_staff_id IS NOT NULL
       UNION SELECT me.staff_id, sp.staff_id FROM me JOIN staff_profiles sp ON sp.source_staff_id = me.staff_id
     )

@@ -750,17 +750,21 @@
   delegate('boardThreadStatus', (el) => withSubmitLock(el, () => window.__boardThreadStatus(Number(el.dataset.id), el.dataset.status)))
 
   // ---------- 未読バッジ（サイドバー / モバイルメニュー / 一覧のボタン） ----------
-  window.refreshBoardBadge = async function () {
-    let n = 0
-    try { n = (await axios.get('/api/admin/board/unread-count')).data.unread } catch { return }
+  // 開いたときと60秒ごとの更新は admin.js の refreshBadges（GET /api/admin/badges の board）がまとめて行う（#9935）
+  const applyBoardBadge = (n) => {
+    n = Number(n) || 0
     const el = document.getElementById('board-badge'); if (el) { el.textContent = n; el.classList.toggle('hidden', !n) }
     if (window.setNavCount) setNavCount('board', n)
     document.querySelectorAll('.board-unread-total').forEach(b => { b.textContent = n; b.classList.toggle('hidden', !n) })
   }
-  // 定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
+  if (window.onBadge) onBadge('board', (d) => applyBoardBadge(d.unread))
+  window.refreshBoardBadge = async function () {
+    let n = 0
+    try { n = (await axios.get('/api/admin/board/unread-count')).data.unread } catch { return }
+    applyBoardBadge(n)
+  }
+  // やり取りの新着の確認は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
   function boardPollable() { return !window.sessionUsable || window.sessionUsable() }
-  setInterval(() => { if (!document.hidden && boardPollable()) window.refreshBoardBadge() }, 60 * 1000)
-  setTimeout(() => { if (boardPollable()) window.refreshBoardBadge() }, 900)
 
   // 締切・充足・再掲載は、問い合わせ中の企業にも知らせる（#476）。再掲載は専用の確認を出す（#125）
   window.__boardStatus = async function (id, status, republish) {

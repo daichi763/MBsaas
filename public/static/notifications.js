@@ -33,21 +33,14 @@
   const errText = (e) => { if (!e) return ''; const k = String(e).split(':')[0]; const rest = String(e).slice(k.length + 1).trim(); return (ERR[k] || k) + (rest ? `（${rest}）` : '') }
   const fmtAt = (at) => at ? dayjs(at.replace(' ', 'T')).format('YYYY/M/D HH:mm') : '－'
 
-  window.refreshNotifBadge = async function () {
-    try {
-      const { data } = await axios.get('/api/admin/notifications/unread-count')
-      if (window.setNavCount) setNavCount('notifications', data.count)
-      const el = document.getElementById('notif-badge'); if (!el) return
-      el.textContent = data.count; el.classList.toggle('hidden', !data.count)
-    } catch (e) { }
-    // 打刻修正と応募の件数も同じ間隔で更新する（#423）
-    if (window.refreshCorrectionsBadge) refreshCorrectionsBadge()
-    if (window.refreshRecruitBadge) refreshRecruitBadge()
-  }
-  // バッジの定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
-  const pollable = () => !window.sessionUsable || window.sessionUsable()
-  setTimeout(() => { if (pollable()) window.refreshNotifBadge() }, 1000)
-  setInterval(() => { if (!document.hidden && pollable()) window.refreshNotifBadge() }, 60000)
+  // 開いたときと60秒ごとの更新は admin.js の refreshBadges（GET /api/admin/badges の notifications）がまとめて行う（#9935）
+  if (window.onBadge) onBadge('notifications', (d) => {
+    if (window.setNavCount) setNavCount('notifications', d.count)
+    const el = document.getElementById('notif-badge'); if (!el) return
+    el.textContent = d.count; el.classList.toggle('hidden', !d.count)
+  })
+  // 通知を読んだ・申請を処理した後は、打刻修正と応募の件数も変わるので（#423）、バッジをまとめて取り直す（1本）
+  window.refreshNotifBadge = () => window.refreshBadges()
 
   // ---------- 通知（受信箱）----------
   // 未読だけ・種類で絞り込み、50件ずつ「さらに読み込む」で続きを出す（#380）

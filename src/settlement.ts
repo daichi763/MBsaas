@@ -112,6 +112,21 @@ const sameActual = (a: { start: string | null; end: string | null; brk: number |
   a.start === (s.actual_start || null) && a.end === (s.actual_end || null) && a.brk === (s.actual_break_minutes ?? null)
 // 実績に関わる報告の時刻を、シフトの行と一緒に読むための列（r_check_in など）。shifts の別名は s
 const REPORT_COLS = ACTUAL_REPORT_TYPES.map(t => `(SELECT a.reported_at FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = '${t}') AS r_${t}`).join(',\n      ')
+// 精算の一覧では、シフトの報告を1回の副問い合わせでまとめて読み（種類ごと・端末の数え方ごとに読み直さない。#9938）、applyReportJson で
+// REPORT_COLS と同じ r_check_in などの列と、報告用URLの端末の数（link_devices）にする
+const REPORT_JSON_COL = `(SELECT json_group_array(json_array(a.report_type, a.reported_at, a.entry_method, a.device_id, a.device_info))
+        FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reports_json`
+function applyReportJson(r: any) {
+  let reps: any[] = []
+  try { reps = JSON.parse(r.reports_json || '[]') } catch { }
+  delete r.reports_json
+  // 報告は (shift_id, report_type) で1件だけ（uq_attendance_shift_type）
+  for (const t of ACTUAL_REPORT_TYPES) r['r_' + t] = reps.find(a => a[0] === t)?.[1] ?? null
+  // 報告用URLで報告した端末の数（#532。報告状況（staff-lifecycle.ts の report-status）と同じ数え方: 端末IDのない古い行は、
+  // 同じ user-agent の端末IDがあればその端末とみなし、なければ user-agent で数える）
+  const link = reps.filter(a => a[2] === 'link'), ua = (a: any[]) => (a[4] == null ? '' : a[4])
+  r.link_devices = new Set(link.map(a => a[3] != null ? a[3] : (link.find(b => b[3] != null && ua(b) === ua(a))?.[3] ?? 'ua:' + ua(a)))).size
+}
 
 // 報告の時刻を実績に反映する（管理者の手入力・確定済み・締めた期間は対象外）。報告の登録・変更・削除と、打刻修正の承認のたびに呼ぶ
 export async function syncActualFromReports(db: D1Database, companyId: number, shiftId: number) {
@@ -202,22 +217,44 @@ const pickDailyMode = (...vals: any[]) => vals.find(v => v === 'none' || v === '
 async function loadAcks(db: D1Database, companyId: number, rows: any[]) {
   const map = new Map<string, { acked_at: string; acked_by_name: string | null }>()
   if (!rows.length) return map
-  const res = (await db.prepare(`SELECT a.shift_id, a.issue, a.acked_at, us.name AS acked_by_name FROM settlement_issue_acks a LEFT JOIN users us ON us.user_id = a.acked_by
-    WHERE a.company_id = ? AND a.shift_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(rows.map(r => r.shift_id))).all()).results as any[]
-  for (const a of res) map.set(`${a.shift_id}\n${a.issue}`, a)
+  // 印は確認事項のあるシフトにしかないため、行の shift_id がまとまっていれば、その範囲（索引 company_id, shift_id）で読み、行のシフトだけを使う
+  // （json_each で行の数だけ読まない。#9938）。shift_id が広く散らばっているときは今までどおり json_each で読む
+  const ids = new Set(rows.map(r => Number(r.shift_id)))
+  let lo = Infinity, hi = -Infinity
+  for (const id of ids) { if (id < lo) lo = id; if (id > hi) hi = id }
+  const sql = `SELECT a.shift_id, a.issue, a.acked_at, us.name AS acked_by_name FROM settlement_issue_acks a LEFT JOIN users us ON us.user_id = a.acked_by WHERE a.company_id = ? AND `
+  const res = (hi - lo + 1 <= ids.size * 4
+    ? await db.prepare(sql + 'a.shift_id BETWEEN ? AND ?').bind(companyId, lo, hi).all()
+    : await db.prepare(sql + `a.shift_id IN ${JSON_IN}`).bind(companyId, bindJsonArray(ids)).all()).results as any[]
+  for (const a of res) if (ids.has(Number(a.shift_id))) map.set(`${a.shift_id}\n${a.issue}`, a)
   return map
 }
 
 // 同じスタッフの時間が重なる確定・代打のシフト（#467）。一覧の絞り込み（案件・クライアントなど）の外のシフトも、前後1日まで含めて調べる。
 // 判定は lib/shift-time の shiftWindow（日をまたぐ勤務は翌日まで）と overlaps（端が接するだけなら重ならない）
-async function loadOverlaps(db: D1Database, companyId: number, rows: any[]) {
+// complete: rows が期間（complete.from〜to）の確定・代打のシフトのすべてのとき（絞り込みなし・上限で切れていない）。そのときは期間の中を読み直さず、
+// 期間の外の前後1日だけを読む（#9938）
+async function loadOverlaps(db: D1Database, companyId: number, rows: any[], complete?: { from: string; to: string }) {
   type Other = { shift_id: number; staff_id: number; work_date: string; start_time: string; end_time: string; project_name: string; w: ReturnType<typeof shiftWindow> }
   const map = new Map<number, Other[]>()
   if (!rows.length) return map
   const dates = rows.map(r => String(r.work_date)).sort()
-  const res = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, p.project_name FROM shifts s JOIN projects p ON p.project_id = s.project_id
-    WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.staff_id IN ${JSON_IN} AND s.work_date BETWEEN ? AND ?`)
-    .bind(companyId, bindJsonArray(rows.map(r => r.staff_id)), addDays(dates[0], -1), addDays(dates[dates.length - 1], 1)).all()).results as any[]
+  const lo = addDays(dates[0], -1), hi = addDays(dates[dates.length - 1], 1)
+  let res: any[]
+  if (complete) {
+    const staffIds = new Set(rows.map(r => Number(r.staff_id)))
+    const edges = [lo, hi].filter(d => d < complete.from || d > complete.to)
+    const outside = edges.length ? (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, p.project_name FROM shifts s JOIN projects p ON p.project_id = s.project_id
+      WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date IN (${edges.map(() => '?').join(',')})`).bind(companyId, ...edges).all()).results as any[] : []
+    // 索引（staff_id, work_date）で読んだときと同じ順（同じ開始の時刻のシフトの並びを変えない）
+    res = [...rows.filter(r => WORK_STATUSES.includes(r.status)), ...outside.filter(o => staffIds.has(Number(o.staff_id)))]
+      .map(o => ({ shift_id: o.shift_id, staff_id: o.staff_id, work_date: o.work_date, start_time: o.start_time, end_time: o.end_time, project_name: o.project_name }))
+      .sort((a, b) => Number(a.staff_id) - Number(b.staff_id) || String(a.work_date).localeCompare(String(b.work_date)) || Number(a.shift_id) - Number(b.shift_id))
+  } else {
+    res = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, p.project_name FROM shifts s JOIN projects p ON p.project_id = s.project_id
+      WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.staff_id IN ${JSON_IN} AND s.work_date BETWEEN ? AND ?`)
+      .bind(companyId, bindJsonArray(rows.map(r => r.staff_id)), lo, hi).all()).results as any[]
+  }
   const byStaff = new Map<number, Other[]>()
   for (const o of res) {
     if (!o.start_time || !o.end_time) continue
@@ -246,9 +283,10 @@ async function loadMonthlyRulesFor(db: D1Database, companyId: number, rows: any[
   return map
 }
 
-// 条件に合うシフトを MAX_ROWS + 1 件まで読む（上限を超えたかどうかを呼び出し側で判定できるように1件多く読む）
-// 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤のシフト（#283）
-async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?: number[]) {
+// 精算の対象のシフトの条件（一覧の loadRows と、請求前確認の loadSettleMoney で共通。#9931）。
+// 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤のシフト（#283）。別名は shifts s・projects p・shift_cancellations sc
+type ScopeFilters = Pick<Filters, 'from' | 'to' | 'client_id' | 'project_id' | 'staff_id' | 'payee_type' | 'settle'>
+function settleWhere(companyId: number, f: ScopeFilters, shiftIds?: number[]) {
   const w = ['s.company_id = ?', `(s.status IN (${WORK_STATUSES.map(() => '?').join(',')}) OR (s.status = 'absent' AND sc.shift_id IS NOT NULL))`]; const bind: any[] = [companyId, ...WORK_STATUSES]
   if (shiftIds) { w.push(`s.shift_id IN ${JSON_IN}`); bind.push(bindJsonArray(shiftIds)) }
   else { w.push('s.work_date BETWEEN ? AND ?'); bind.push(f.from, f.to) }
@@ -258,6 +296,49 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
   if (f.payee_type) { w.push("COALESCE(s.payee_type,'payroll') = ?"); bind.push(f.payee_type) }
   if (f.settle === 'confirmed') w.push("s.settle_status = 'confirmed'")
   if (f.settle === 'planned') w.push("COALESCE(s.settle_status,'planned') != 'confirmed'")
+  return { w, bind }
+}
+
+// 1行の請求・支払の金額（一覧の行と、請求前確認の金額で共通。#9931）。
+// 勤務は shiftTotals（交通費の区分・調整額・割増を含む）、欠勤・中止は shift_cancellations の値（cx_bill・cx_pay。未入力は 0。時間・単価・交通費は使わない）
+export function settleAmounts(r: any) {
+  if (r.status === 'absent') {
+    const bill = r.cx_bill == null ? 0 : Number(r.cx_bill), pay = r.cx_pay == null ? 0 : Number(r.cx_pay)
+    return { kind: 'cancel' as const, bill_base: bill, bill_transport: 0, bill_adjust: 0, bill_total: bill, pay_base: pay as number | null, pay_transport: 0, pay_adjust: 0, pay_premium: 0, pay_total: pay as number | null }
+  }
+  const t = shiftTotals(r)
+  return {
+    kind: 'work' as const, bill_base: Number(r.unit_price || 0), bill_transport: t.bill_transport, bill_adjust: Number(r.bill_adjust || 0), bill_total: t.bill_total,
+    pay_base: r.pay_amount == null ? null : Number(r.pay_amount), pay_transport: t.pay_transport, pay_adjust: Number(r.pay_adjust || 0), pay_premium: t.pay_premium, pay_total: t.pay_total,
+  }
+}
+
+// 請求前確認（GET /admin/billing-check）の金額: 精算の一覧と同じ対象・同じ計算（settleWhere・settleAmounts・attachPremiums）で、金額に要る列だけを読む（#9931）。
+// 一覧と違い件数の上限（MAX_ROWS）はない
+export async function loadSettleMoney(db: D1Database, companyId: number, from: string, to: string) {
+  if (from > to) return []
+  const { w, bind } = settleWhere(companyId, { from, to, client_id: null, project_id: null, staff_id: null, payee_type: '', settle: '' })
+  const rows = (await db.prepare(`SELECT s.shift_id, s.project_id, s.staff_id, s.work_date, s.status, s.settle_status, s.payee_type, s.unit_price, s.transportation_fee,
+      s.bill_transport_type, s.bill_transport_amount, s.bill_adjust, s.pay_amount, s.pay_transport_type, s.pay_transport_amount, s.pay_adjust, ${PREMIUM_COLUMNS.map(k => 's.' + k).join(', ')},
+      s.start_time, s.end_time, s.break_minutes, s.actual_start, s.actual_end, s.actual_break_minutes, s.pay_unit_type, s.pay_rate,
+      p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes,
+      sc.reason AS cx_reason, sc.bill_amount AS cx_bill, sc.pay_amount AS cx_pay, sc.note AS cx_note
+    FROM shifts s JOIN projects p ON p.project_id = s.project_id
+    LEFT JOIN shift_cancellations sc ON sc.shift_id = s.shift_id AND sc.company_id = s.company_id
+    JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id
+    WHERE ${w.join(' AND ')}`).bind(...bind).all()).results as any[]
+  // 未確定のシフトの深夜・時間外・休日の割増（支払の合計に含む。一覧と同じ）。期間のシフトをすべて読んでいるので、割増の計算に読み直さない
+  await attachPremiums(db, companyId, rows, undefined, rows)
+  return rows.map(r => ({
+    shift_id: Number(r.shift_id), project_id: Number(r.project_id), staff_id: Number(r.staff_id), work_date: String(r.work_date),
+    cancel_reason: r.status === 'absent' ? String(r.cx_reason) : null, cancel_note: r.status === 'absent' ? String(r.cx_note || '') : '', ...settleAmounts(r),
+  }))
+}
+
+// 条件に合うシフトを MAX_ROWS + 1 件まで読む（上限を超えたかどうかを呼び出し側で判定できるように1件多く読む）
+// 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤のシフト（#283）
+async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?: number[]) {
+  const { w, bind } = settleWhere(companyId, f, shiftIds)
   // manual_correction_at: 実績が手入力のときに承認した打刻修正（承認の操作履歴に applied_while_manual を記録している）
   const rows = (await db.prepare(`SELECT s.*, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, cl.client_name,
       st.site_name, us.name AS staff_name, sp.affiliation_type, er.employee_number,
@@ -266,18 +347,15 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       (SELECT COUNT(*) FROM attendance_corrections c WHERE c.shift_id = s.shift_id AND c.status = 'pending') AS pending_corrections,
       (SELECT MAX(e.created_at) FROM attendance_corrections c JOIN attendance_correction_events e ON e.correction_id = c.correction_id
         WHERE c.shift_id = s.shift_id AND c.status = 'approved' AND e.event IN ('approved','approved_exception') AND json_extract(e.detail, '$.applied_while_manual') = 1) AS manual_correction_at,
-      ${REPORT_COLS},
-      (SELECT COUNT(*) FROM daily_reports d WHERE d.shift_id = s.shift_id
-        OR (+d.shift_id IS NULL AND d.staff_id = s.staff_id AND d.work_date = s.work_date AND d.project_id = s.project_id)) AS has_daily,
+      ${REPORT_JSON_COL},
+      (EXISTS (SELECT 1 FROM daily_reports d WHERE d.shift_id = s.shift_id)
+        OR EXISTS (SELECT 1 FROM daily_reports d WHERE +d.shift_id IS NULL AND d.staff_id = s.staff_id AND d.work_date = s.work_date AND d.project_id = s.project_id)) AS has_daily,
       sp.attendance_mode AS legacy_mode, sp.daily_report_mode AS sp_daily_mode, p.daily_report_mode AS p_daily_mode,
+      -- 最後の区分変更（history_id が最大）の記録。ORDER BY … LIMIT 1 は行ごとに並べ替えの読み込みが要るため MAX で選ぶ（#9938）
       (SELECT x.to_payee_type || ':' || COALESCE(x.to_payee_affiliation_id, '') FROM affiliation_excluded_shifts x
-        WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id ORDER BY x.history_id DESC LIMIT 1) AS aff_excluded_payee,
+        WHERE x.shift_id = s.shift_id AND x.company_id = s.company_id
+          AND x.history_id = (SELECT MAX(y.history_id) FROM affiliation_excluded_shifts y WHERE y.shift_id = s.shift_id AND y.company_id = s.company_id)) AS aff_excluded_payee,
       (SELECT COUNT(*) FROM staff_pay_requests q WHERE q.shift_id = s.shift_id AND q.company_id = s.company_id AND q.status = 'pending') AS pending_pay_requests,
-      -- 報告用URLで報告した端末の数（#532。報告状況（staff-lifecycle.ts の report-status）と同じ数え方: 端末IDのない古い行は、
-      -- 同じ user-agent の端末IDがあればその端末とみなし、なければ user-agent で数える）
-      (SELECT COUNT(DISTINCT COALESCE(a.device_id, (SELECT b.device_id FROM attendance_reports b WHERE b.shift_id = a.shift_id AND b.entry_method = 'link'
-          AND b.device_id IS NOT NULL AND COALESCE(b.device_info, '') = COALESCE(a.device_info, '') LIMIT 1), 'ua:' || COALESCE(a.device_info, '')))
-        FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.entry_method = 'link') AS link_devices,
       sc.reason AS cx_reason, sc.notified_on AS cx_notified_on, sc.bill_amount AS cx_bill, sc.pay_amount AS cx_pay, sc.note AS cx_note
     FROM shifts s JOIN projects p ON p.project_id = s.project_id LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
     LEFT JOIN shift_cancellations sc ON sc.shift_id = s.shift_id AND sc.company_id = s.company_id
@@ -287,19 +365,25 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
     LEFT JOIN staff_affiliations aff ON aff.affiliation_id = s.payee_affiliation_id
     LEFT JOIN companies pco ON pco.company_id = s.payee_company_id
     WHERE ${w.join(' AND ')} ORDER BY s.work_date, cl.client_name, p.project_name, s.start_time, us.name LIMIT ${MAX_ROWS + 1}`).bind(...bind).all()).results as any[]
+  for (const r of rows) applyReportJson(r)
   const now = nowJST(), today = now.slice(0, 10)
   // 報告の設定（#209）、確認済みの印（#563）、同じ人の時間が重なるシフト（#467）をまとめて読む
   // 締めた期間（#170）も、行の稼働日の範囲で読む
   const dates = rows.map(r => String(r.work_date)).sort()
+  // 絞り込みなしで期間を読み、上限で切れていなければ、読んだ行が期間の確定・代打のシフトのすべて。
+  // そのときは、時間の重なり・割増の計算に使う同じ期間のシフトを読み直さない（#9938）
+  const complete = !shiftIds && !f.client_id && !f.project_id && !f.staff_id && !f.payee_type && !f.settle && rows.length <= MAX_ROWS
   // 深夜・時間外・休日の割増（#167）は、未確定の行に計算して付ける（確定済みの行は確定したときの値）
-  const [attTypes, acks, overlapsOf, closings, monthlyRules] = await Promise.all([attendanceTypesForRows(db, rows), loadAcks(db, companyId, rows), loadOverlaps(db, companyId, rows),
-    dates.length ? loadClosings(db, companyId, dates[0], dates[dates.length - 1]) : Promise.resolve([] as Closing[]), loadMonthlyRulesFor(db, companyId, rows), attachPremiums(db, companyId, rows)])
+  const [attTypes, acks, overlapsOf, closings, monthlyRules] = await Promise.all([attendanceTypesForRows(db, rows), loadAcks(db, companyId, rows),
+    loadOverlaps(db, companyId, rows, complete ? f : undefined),
+    dates.length ? loadClosings(db, companyId, dates[0], dates[dates.length - 1]) : Promise.resolve([] as Closing[]), loadMonthlyRulesFor(db, companyId, rows),
+    attachPremiums(db, companyId, rows, undefined, complete ? rows : undefined)])
   // 月額（固定）で請求する案件（#9702）のシフトは、シフトの請求単価が 0 でも『請求単価未設定』にしない
   const monthlyCovers = (r: any) => (monthlyRules.get(Number(r.project_id)) || []).some(m => (m.staff_id == null || Number(m.staff_id) === Number(r.staff_id)) && ruleActiveIn(m, String(r.work_date).slice(0, 7)))
   const out = rows.map(r => {
     const proj = { hours_basis: r.hours_basis, time_round_minutes: r.time_round_minutes, pay_time_round: r.pay_time_round, default_break_minutes: r.default_break_minutes }
     const h = workHours(r, proj)
-    const t = shiftTotals(r)
+    const m = settleAmounts(r)
     const settled = r.settle_status === 'confirmed'
     const at = (type: string) => r['r_' + type] as string | null
     const hasIn = !!at('check_in'), hasOut = !!at('check_out')
@@ -387,11 +471,11 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       start_time: r.start_time, end_time: r.end_time, break_minutes: h.planned_break_minutes, used_break_minutes: h.break_minutes, actual_start: r.actual_start, actual_end: r.actual_end,
       actual_break_minutes: r.actual_break_minutes, actual_source: r.actual_source, actual_note: r.actual_note,
       planned_hours: h.planned_hours, actual_hours: h.actual_hours, hours: h.hours, pay_hours: h.pay_hours, hours_basis: h.basis,
-      bill_unit_type: r.bill_unit_type || 'daily', bill_rate: r.bill_rate, bill_qty: r.bill_qty, bill_base: Number(r.unit_price || 0), bill_transport: t.bill_transport, bill_adjust: Number(r.bill_adjust || 0), bill_total: t.bill_total,
-      pay_unit_type: r.pay_unit_type || 'daily', pay_rate: r.pay_rate, pay_qty: r.pay_qty, pay_base: r.pay_amount == null ? null : Number(r.pay_amount), pay_transport: t.pay_transport, pay_adjust: Number(r.pay_adjust || 0), pay_total: t.pay_total,
+      bill_unit_type: r.bill_unit_type || 'daily', bill_rate: r.bill_rate, bill_qty: r.bill_qty, bill_base: m.bill_base, bill_transport: m.bill_transport, bill_adjust: m.bill_adjust, bill_total: m.bill_total,
+      pay_unit_type: r.pay_unit_type || 'daily', pay_rate: r.pay_rate, pay_qty: r.pay_qty, pay_base: m.pay_base, pay_transport: m.pay_transport, pay_adjust: m.pay_adjust, pay_total: m.pay_total,
       transportation_fee: Number(r.transportation_fee || 0), adjust_note: r.adjust_note || '',
       // 深夜・時間外・休日の割増（#167。pay_total に含む）。時間は分。対象外のシフトは null
-      pay_premium: t.pay_premium, premium_night_minutes: r.premium_night_minutes ?? null as number | null,
+      pay_premium: m.pay_premium, premium_night_minutes: r.premium_night_minutes ?? null as number | null,
       premium_overtime_minutes: r.premium_overtime_minutes ?? null as number | null, premium_holiday_minutes: r.premium_holiday_minutes ?? null as number | null,
       bill_transport_type: r.bill_transport_type || 'actual', bill_transport_amount: Number(r.bill_transport_amount || 0), pay_transport_type: r.pay_transport_type || 'actual', pay_transport_amount: Number(r.pay_transport_amount || 0),
       payee_type: payeeType, payee_label: PAYEE_LABEL[payeeType] || payeeType, payee_name: payeeName, payee_key: `${payeeType}:${payeeType === 'partner' ? (r.payee_affiliation_id || r.affiliation || '') : payeeType === 'linked' ? (r.payee_company_id || '') : payeeType === 'freelance' ? r.staff_id : ''}`,
@@ -407,13 +491,11 @@ async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?
       closed: !!closing, closing_id: closing ? closing.closing_id : null,
     }
     if (!cancel) return row
-    // 欠勤・中止: 金額は shift_cancellations の値（未入力は 0）。時間・単価・交通費は使わない
-    const bill = r.cx_bill == null ? 0 : Number(r.cx_bill), pay = r.cx_pay == null ? 0 : Number(r.cx_pay)
+    // 欠勤・中止: 金額は shift_cancellations の値（settleAmounts。未入力は 0）。時間・単価・交通費は使わない
     return {
       ...row, actual_start: null, actual_end: null, actual_hours: null, hours: 0, pay_hours: 0,
-      bill_rate: null, bill_qty: null, bill_base: bill, bill_transport: 0, bill_adjust: 0, bill_total: bill,
-      pay_rate: null, pay_qty: null, pay_base: pay, pay_transport: 0, pay_adjust: 0, pay_total: pay, transportation_fee: 0,
-      pay_premium: 0, premium_night_minutes: null, premium_overtime_minutes: null, premium_holiday_minutes: null,
+      bill_rate: null, bill_qty: null, pay_rate: null, pay_qty: null, transportation_fee: 0,
+      premium_night_minutes: null, premium_overtime_minutes: null, premium_holiday_minutes: null,
       adjust_note: String(r.cx_note || ''), price_locked: false, qty_locked: false,
     }
   })
@@ -504,9 +586,11 @@ app.get('/settlement', async (c) => {
 
 // 絞り込みの選択肢: 期間内に精算の対象（確定・代打・欠勤）のシフトがあるスタッフ（#168。スタッフの絞り込みは外して数える）
 async function loadStaffOptions(db: D1Database, companyId: number, f: Filters) {
-  return (await db.prepare(`SELECT DISTINCT s.staff_id, us.name AS staff_name, er.employee_number FROM shifts s
-    JOIN staff_profiles sp ON sp.staff_id = s.staff_id JOIN users us ON us.user_id = sp.user_id LEFT JOIN employee_records er ON er.staff_id = s.staff_id
-    WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute','absent') ORDER BY us.name, s.staff_id LIMIT 2000`)
+  // 先にスタッフを重複なしにしてから名前を引く（シフトの行ごとに名前・社員番号を読まない。#9938）
+  return (await db.prepare(`SELECT x.staff_id, us.name AS staff_name, er.employee_number
+    FROM (SELECT DISTINCT s.staff_id FROM shifts s WHERE s.company_id = ? AND s.work_date BETWEEN ? AND ? AND s.status IN ('confirmed','substitute','absent')) x
+    JOIN staff_profiles sp ON sp.staff_id = x.staff_id JOIN users us ON us.user_id = sp.user_id LEFT JOIN employee_records er ON er.staff_id = x.staff_id
+    ORDER BY us.name, x.staff_id LIMIT 2000`)
     .bind(companyId, f.from, f.to).all()).results as any[]
 }
 

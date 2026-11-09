@@ -60,6 +60,35 @@ async function loadInfo(db: D1Database, correctionId: number) {
   }
   return c
 }
+// loadInfo を複数の申請でまとめて読む文（#9932）。inSql は申請ID の一覧を返す副問い合わせ（例: `(SELECT value FROM json_each(?))`）で、bind はその値。
+// 1回の db.batch に入れ、結果を infosFrom に渡す（件数に比例して問い合わせを増やさない）
+function infoReads(db: D1Database, inSql: string, bind: any[]): D1PreparedStatement[] {
+  return [
+    db.prepare(`SELECT c.*, s.work_date, p.project_name, us.name AS staff_name
+      FROM attendance_corrections c LEFT JOIN shifts s ON s.shift_id = c.shift_id LEFT JOIN projects p ON p.project_id = c.project_id
+      LEFT JOIN staff_profiles sp ON sp.staff_id = c.staff_id LEFT JOIN users us ON us.user_id = sp.user_id WHERE c.correction_id IN ${inSql}`).bind(...bind),
+    db.prepare(`SELECT g.correction_id AS gid, x.correction_id, x.kind, x.report_type, x.before_at, x.requested_at FROM attendance_corrections g
+      JOIN attendance_corrections x ON x.shift_id = g.shift_id AND x.requested_by = g.requested_by AND x.created_at = g.created_at AND x.batch_key IS g.batch_key
+      WHERE g.correction_id IN ${inSql} ORDER BY g.correction_id, x.correction_id`).bind(...bind),
+    db.prepare(`SELECT correction_id, detail FROM attendance_correction_events WHERE correction_id IN ${inSql} AND event IN ('approved', 'approved_exception') ORDER BY event_id`).bind(...bind),
+  ]
+}
+function infosFrom(rows: any[], groupRows: any[], eventRows: any[]): Map<number, any> {
+  const groups = new Map<number, any[]>()
+  for (const { gid, ...x } of groupRows) { const g = groups.get(gid) || []; g.push(x); groups.set(gid, g) }
+  const last = new Map<number, string>()
+  for (const e of eventRows) last.set(e.correction_id, e.detail)
+  const out = new Map<number, any>()
+  for (const c of rows) {
+    const g = groups.get(c.correction_id) || []
+    c.group = g.length > 1 ? g : null
+    if (c.status === 'approved') {
+      try { const d = last.get(c.correction_id) ? JSON.parse(last.get(c.correction_id)!) : null; c.adjusted_from = d?.adjusted ? d.requested_at_original || null : null } catch { c.adjusted_from = null }
+    }
+    out.set(c.correction_id, c)
+  }
+  return out
+}
 
 // 受信者の立場（kind）ごとの文面。受信者が閲覧できる範囲の情報のみ
 // kind: correction_submitted（管理者への承認依頼）/ correction_received（申請者への受付）/
@@ -139,14 +168,16 @@ type Recipient = { user_id: number; company_id: number | null; name: string; ema
 const RESUBMIT_QUIET_MINUTES = 30
 // quietProcessor: 処理した管理者の控えを既読・メールなしにする（まとめて承認 #280。自分の操作の控えが件数分のメールにならないように）
 type NotifyOpts = { quietProcessor?: boolean }
-async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent, opts: NotifyOpts = {}): Promise<Recipient[]> {
-  const user = async (id: number | null) => id ? await db.prepare('SELECT user_id, company_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
+// look: 宛先のユーザーと、スタッフ本人のユーザーを、まとめて読んだものから引く（notifyCorrections。省略すると1件ずつ読む）
+type RecipientLookup = { user: (id: number | null) => any; owner: (staffId: number) => any }
+async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent, opts: NotifyOpts = {}, look?: RecipientLookup): Promise<Recipient[]> {
+  const user = async (id: number | null) => look ? look.user(id) : id ? await db.prepare('SELECT user_id, company_id, name, email, role, status, person_id FROM users WHERE user_id = ?').bind(id).first() as any : null
   const out = new Map<number, Recipient>()
   const add = (u: any, kind: string, opt: { read?: boolean; noEmail?: boolean } = {}) => {
     if (u && u.status !== 'suspended' && !out.has(u.user_id)) out.set(u.user_id, { user_id: u.user_id, company_id: u.company_id ?? null, name: u.name, email: u.email || null, role: u.role, kind, ...opt })
   }
   const requester = await user(c.requested_by)
-  const owner = async () => await db.prepare(`SELECT us.user_id, us.company_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+  const owner = async () => look ? look.owner(c.staff_id) : await db.prepare(`SELECT us.user_id, us.company_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.staff_id = ? AND us.role = 'staff' AND us.status = 'active'`).bind(c.staff_id).first() as any
   const samePerson = (a: any, b: any) => !!a && !!b && (a.user_id === b.user_id || (!!a.person_id && a.person_id === b.person_id))
   if (event === 'submitted' || event === 'resubmitted') {
@@ -218,31 +249,65 @@ export async function sendDelivery(env: NotifyEnv, deliveryId: number, byUserId:
   if (!d) return { ok: false, error: 'not_found', skipped: false }
   const c = await loadInfo(db, d.correction_id)
   const u = await db.prepare('SELECT name, role, status, email, company_id FROM users WHERE user_id = ?').bind(d.user_id).first() as any
+  const p = deliveryPlan(env, d, c, u)
+  const result = 'mail' in p ? await sendEmail(env, p.mail) : p.result
+  const skip = 'skip' in p && p.skip
+  const r = deliveryResult(db, d, u, p.to, result, skip, byUserId)
+  await r.stmt.run()
+  return { ...result, error: r.error ?? undefined, skipped: skip }
+}
+type DeliveryOutcome = { ok: boolean; id?: string; error?: string }
+// 1通の送り方を決める（sendDelivery と、まとめて送る sendDeliveries で共用）。送らないときは結果と、対応不要（skip）かを返す
+function deliveryPlan(env: NotifyEnv, d: any, c: any, u: any): { to: string; mail: SendEmailInput } | { to: string; result: DeliveryOutcome; skip: boolean } {
   const to = String(u?.email || '').trim()
-  let result: { ok: boolean; id?: string; error?: string }
-  let skip = false
-  if (!c || !u) result = { ok: false, error: 'source_missing' }
+  if (!c || !u) return { to, result: { ok: false, error: 'source_missing' }, skip: false }
   // 作成後に退職・停止・統合された宛先には送らない（再送も同じ。#260）
-  else if (u.status !== 'active') { result = { ok: false, error: 'recipient_suspended' }; skip = true }
+  if (u.status !== 'active') return { to, result: { ok: false, error: 'recipient_suspended' }, skip: true }
   // 処理済み・取り消し済みの申請の承認依頼は送らない（再送も同じ。#189 #357）
-  else if (d.kind === 'correction_submitted' && c.status !== 'pending') { result = { ok: false, error: 'already_processed' }; skip = true }
-  else if (!to) result = { ok: false, error: 'no_address' }
-  else {
-    const m = content(c, d.kind, NOTIFY_ADMIN_ROLES.includes(u.role) || u.role === 'system_admin')
-    const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
-    const tpl = attendanceCorrectionEmail({ name: u.name, title: m.title, headline: m.headline, lines: m.lines, url: base + m.link, button: m.button })
-    result = await sendEmail(env, { to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'attendance_correction', company_id: u.company_id ?? d.company_id })
-  }
+  if (d.kind === 'correction_submitted' && c.status !== 'pending') return { to, result: { ok: false, error: 'already_processed' }, skip: true }
+  if (!to) return { to, result: { ok: false, error: 'no_address' }, skip: false }
+  const m = content(c, d.kind, NOTIFY_ADMIN_ROLES.includes(u.role) || u.role === 'system_admin')
+  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const tpl = attendanceCorrectionEmail({ name: u.name, title: m.title, headline: m.headline, lines: m.lines, url: base + m.link, button: m.button })
+  return { to, mail: { to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'attendance_correction', company_id: u.company_id ?? d.company_id } }
+}
+// 送信の結果を notification_emails に書く文
+function deliveryResult(db: D1Database, d: any, u: any, to: string, result: DeliveryOutcome, skip: boolean, byUserId: number | null) {
   const otherCompany = u && u.company_id !== d.company_id
   const toEmail = otherCompany ? '' : (to || d.to_email)
   const error = result.ok ? null : maskEmailsIn(result.error || 'unknown')
   // 送る必要がなくなったもの（処理済みの承認依頼・停止中の宛先）は「対応不要」（skipped）にし、送信失敗の件数から外す
-  await db.prepare(`UPDATE notification_emails SET status = ?, error = ?, provider_message_id = ?, to_email = ?, attempts = attempts + 1, last_attempt_at = ?, last_attempt_by = ? WHERE delivery_id = ?`)
-    .bind(result.ok ? 'sent' : skip ? 'skipped' : 'failed', error, result.id ?? null, toEmail, nowJST(), byUserId, deliveryId).run()
-  return { ...result, error: error ?? undefined, skipped: skip }
+  const stmt = db.prepare(`UPDATE notification_emails SET status = ?, error = ?, provider_message_id = ?, to_email = ?, attempts = attempts + 1, last_attempt_at = ?, last_attempt_by = ? WHERE delivery_id = ?`)
+    .bind(result.ok ? 'sent' : skip ? 'skipped' : 'failed', error, result.id ?? null, toEmail, nowJST(), byUserId, d.delivery_id)
+  return { stmt, error }
 }
+// 作ったメールを送る（応答の後に waitUntil で呼ぶ）。2通以上は、宛先・申請をまとめて読み、Resend のバッチ送信で送り、結果を1回で書く（#9932。
+// 件数に比例して D1 の問い合わせを増やさない）。送る・送らないの判断と文面は sendDelivery と同じ
 export async function sendDeliveries(env: NotifyEnv, ids: number[]) {
-  for (const id of ids) { try { await sendDelivery(env, id, null) } catch { /* 送信状態の記録に失敗しても申請・承認は取り消さない */ } }
+  if (ids.length <= 1) {
+    for (const id of ids) { try { await sendDelivery(env, id, null) } catch { /* 送信状態の記録に失敗しても申請・承認は取り消さない */ } }
+    return
+  }
+  try {
+    const db = env.DB
+    const J = JSON.stringify(ids), cin = `(SELECT correction_id FROM notification_emails WHERE delivery_id IN ${JSON_IN})`
+    const [dr, ur, cr, gr, er] = await db.batch([
+      db.prepare(`SELECT * FROM notification_emails WHERE delivery_id IN ${JSON_IN} ORDER BY delivery_id`).bind(J),
+      db.prepare(`SELECT user_id, name, role, status, email, company_id FROM users WHERE user_id IN (SELECT user_id FROM notification_emails WHERE delivery_id IN ${JSON_IN})`).bind(J),
+      ...infoReads(db, cin, [J]),
+    ])
+    const infos = infosFrom(cr.results as any[], gr.results as any[], er.results as any[])
+    const users = new Map((ur.results as any[]).map(u => [u.user_id, u]))
+    const plans = (dr.results as any[]).map(d => ({ d, u: users.get(d.user_id) || null, p: deliveryPlan(env, d, infos.get(d.correction_id) || null, users.get(d.user_id) || null) }))
+    const sending = plans.filter(x => 'mail' in x.p)
+    const sent = await sendEmailBatch(env, sending.map(x => (x.p as { mail: SendEmailInput }).mail), { idempotencyKey: `correction-deliveries-${ids[0]}-${ids[ids.length - 1]}` })
+    const outcome = new Map(sending.map((x, i) => [x.d.delivery_id, sent[i]]))
+    await db.batch(plans.map(({ d, u, p }) => 'mail' in p
+      ? deliveryResult(db, d, u, p.to, outcome.get(d.delivery_id) || { ok: false, error: 'unknown' }, false, null).stmt
+      : deliveryResult(db, d, u, p.to, p.result, p.skip, null).stmt))
+  } catch {
+    // 送信状態の記録に失敗しても申請・承認は取り消さない（送れなかった行は『送信中』のまま残り、管理者が再送できる）
+  }
 }
 
 // 『送信中』のまま止まったとみなす時間（#311）。送信は応答の後に順に行うので、通常は数十秒で終わる
@@ -271,11 +336,71 @@ export async function notifyCorrection(c: any, correctionId: number, event: Corr
   }
 }
 
+// まとめて承認の通知（#9932）: すべての承認を書いた後に呼び、申請ごとの通知（宛先・文面は notifyCorrection と同じ）を、
+// 読み込み1回・書き込み1回の batch でまとめて作る（件数に比例して D1 の問い合わせを増やさない）。メールは waitUntil で応答の後にまとめて送る。
+// 通知の失敗は承認の結果に影響させない
+export async function notifyCorrections(env: NotifyEnv, waitUntil: (p: Promise<any>) => void, ids: number[], event: 'approved' | 'rejected', opts: NotifyOpts = {}) {
+  if (!ids.length) return
+  try {
+    const db = env.DB
+    const J = JSON.stringify(ids), at = nowJST()
+    const col = (k: string) => `SELECT ${k} FROM attendance_corrections WHERE correction_id IN ${JSON_IN}`
+    const [, ur, or, pr, cr, gr, er] = await db.batch([
+      // 処理済みになった申請の承認依頼は、ほかの管理者の分も既読にする（#189。markRequestNotificationsRead と同じ）
+      db.prepare(`UPDATE user_notifications SET read_at = ? WHERE kind = 'correction_submitted' AND read_at IS NULL
+        AND related_id IN (SELECT correction_id FROM attendance_corrections WHERE correction_id IN ${JSON_IN} AND status != 'pending')`).bind(at, J),
+      db.prepare(`SELECT user_id, company_id, name, email, role, status, person_id FROM users WHERE user_id IN (${col('requested_by')} UNION ${col('decided_by')})`).bind(J, J),
+      db.prepare(`SELECT sp.staff_id, us.user_id, us.company_id, us.name, us.email, us.role, us.status, us.person_id FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
+        WHERE sp.staff_id IN (${col('staff_id')}) AND us.role = 'staff' AND us.status = 'active'`).bind(J),
+      // 宛先になりうる人の通知の受け取り設定（loadNotifyPrefs と同じ）
+      db.prepare(`SELECT user_id, pref_key, email, push, digest FROM user_notification_prefs WHERE user_id IN (${col('requested_by')} UNION ${col('decided_by')}
+        UNION SELECT sp.user_id FROM staff_profiles sp WHERE sp.staff_id IN (${col('staff_id')}))`).bind(J, J, J),
+      ...infoReads(db, JSON_IN, [J]),
+    ])
+    const users = new Map((ur.results as any[]).map(u => [u.user_id, u]))
+    const owners = new Map((or.results as any[]).map(u => [u.staff_id, u]))
+    const look: RecipientLookup = { user: (id) => (id ? users.get(id) || null : null), owner: (sid) => owners.get(sid) || null }
+    const prefs = prefsFromRows(pr.results as any[])
+    const infos = infosFrom(cr.results as any[], gr.results as any[], er.results as any[])
+    const notes: any[] = [], mails: any[] = []
+    for (const id of ids) {
+      const c = infos.get(id)
+      if (!c) continue
+      for (const r of await recipientsFor(db, c, event, opts, look)) {
+        const m = content(c, r.kind, NOTIFY_ADMIN_ROLES.includes(r.role) || r.role === 'system_admin')
+        notes.push({ c: c.company_id, u: r.user_id, k: r.kind, t: m.title, b: m.body, l: m.link, r: c.correction_id, rd: r.read ? at : null })
+        // 受け取り設定でメールを止めた・まとめて受け取る人には、すぐのメールを送らない（#284）。他社の宛先のアドレスは記録に残さない（#570）
+        if (!r.email || r.noEmail || !emailWanted(prefs, r.user_id, r.role, r.kind)) continue
+        mails.push({ c: c.company_id, i: c.correction_id, k: r.kind, u: r.user_id, e: r.company_id != null && Number(r.company_id) !== Number(c.company_id) ? '' : r.email })
+      }
+    }
+    const v = (k: string) => `json_extract(value, '$.${k}')`
+    const stmts: D1PreparedStatement[] = []
+    if (notes.length) stmts.push(db.prepare(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at, read_at)
+      SELECT ${v('c')}, ${v('u')}, ${v('k')}, ${v('t')}, ${v('b')}, ${v('l')}, ${v('r')}, ?, ${v('rd')} FROM json_each(?)`).bind(at, JSON.stringify(notes)))
+    if (mails.length) stmts.push(db.prepare(`INSERT INTO notification_emails (company_id, correction_id, event, kind, user_id, to_email, status, created_at)
+      SELECT ${v('c')}, ${v('i')}, ?, ${v('k')}, ${v('u')}, ${v('e')}, 'pending', ? FROM json_each(?) RETURNING delivery_id`).bind(event, at, JSON.stringify(mails)))
+    if (!stmts.length) return
+    const res = await db.batch(stmts)
+    const deliveries = mails.length ? ((res[res.length - 1].results || []) as any[]).map(r => Number(r.delivery_id)).sort((a, b) => a - b) : []
+    if (deliveries.length) waitUntil(sendDeliveries(env, deliveries))
+  } catch (e) {
+    console.log(`notify failed: corrections=${ids.length} event=${event}`)
+  }
+}
+
 // =========================================================
 // アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications
 // スタッフは同じ人のすべてのユーザーあての通知を出す（所属企業を切り替えても、申請の結果の通知が見える。#96）
 // 管理者の承認依頼には、申請の今の状態（処理済みか）を添える（#189）
 // =========================================================
+// 未読の通知の件数（hiddenJson は出さない種類の JSON 配列）。管理者は本人あてだけ（ids = [user_id]、hiddenJson = '[]'）。
+// 管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も同じ数え方を使う
+export async function unreadNotificationCount(db: D1Database, ids: number[], hiddenJson = '[]'): Promise<number> {
+  const n = await db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${ids.map(() => '?').join(',')}) AND read_at IS NULL AND kind NOT IN (SELECT value FROM json_each(?))`)
+    .bind(...ids, hiddenJson).first() as any
+  return n?.n || 0
+}
 function notificationRoutes(scope: 'admin' | 'staff') {
   const app = new Hono<{ Bindings: NotifyEnv; Variables: Variables }>()
   const userIds = async (c: any): Promise<number[]> => {
@@ -307,11 +432,7 @@ function notificationRoutes(scope: 'admin' | 'staff') {
     const unread = byKind.reduce((a, r) => a + Number(r.n), 0)
     return c.json({ notifications: rows.slice(0, limit), has_more: rows.length > limit, unread, unread_by_kind: Object.fromEntries(byKind.map(r => [r.kind, r.n])) })
   })
-  app.get('/notifications/unread-count', async (c) => {
-    const ids = await userIds(c)
-    const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE ${inIds(ids)} AND read_at IS NULL AND ${notHidden()}`).bind(...ids, hidden(c)).first() as any
-    return c.json({ count: n?.n || 0 })
-  })
+  app.get('/notifications/unread-count', async (c) => c.json({ count: await unreadNotificationCount(c.env.DB, await userIds(c), hidden(c)) }))
   app.post('/notifications/read-all', async (c) => {
     const ids = await userIds(c)
     // 出していない通知は既読にもしない（再開したときに、元の未読のまま出す）
@@ -1516,6 +1637,11 @@ export async function loadNotifyPrefs(db: D1Database, userIds: number[]): Promis
   const ids = [...new Set(userIds.map(Number).filter(n => Number.isInteger(n) && n > 0))]
   if (!ids.length) return out
   const rows = (await db.prepare(`SELECT user_id, pref_key, email, push, digest FROM user_notification_prefs WHERE user_id IN ${JSON_IN}`).bind(bindJsonArray(ids)).all()).results as any[]
+  return prefsFromRows(rows)
+}
+// user_notification_prefs の行から PrefMap を作る（ほかの読み込みと同じ batch で読んだとき用）
+function prefsFromRows(rows: any[]): PrefMap {
+  const out: PrefMap = new Map()
   for (const r of rows) {
     const m = out.get(Number(r.user_id)) || new Map<string, PrefRow>()
     m.set(r.pref_key, { email: r.email, push: r.push, digest: Number(r.digest || 0) })

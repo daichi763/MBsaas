@@ -36,12 +36,12 @@ window.closeModal = () => {
 // ============ API 呼び出しの共通処理: ログインの期限切れ・アカウントの切り替え（#346 #526）・エラーの表示（#230） ============
 // バッジ更新・やり取りの新着確認など、利用者の操作によらない定期の取得（config に background: true を付けたものも含む）。
 // これらはセッションを延長せず（X-Background）、期限が切れても画面を移動しない
-const BACKGROUND_API = /^\/api\/admin\/(notifications\/unread-count|corrections\/pending-count|board\/unread-count|roster-chat\/unread-count|recruit-applications\/summary)(\?|$)/
+const BACKGROUND_API = /^\/api\/admin\/(badges|notifications\/unread-count|corrections\/pending-count|board\/unread-count|roster-chat\/unread-count|recruit-applications\/summary)(\?|$)/
 const SESSION_WARN_MINUTES = 30
 let SESSION_STATE = 'active' // active: 利用中 / expired: 期限切れ（再ログイン待ち） / switched: 別のアカウントでログインされた
 let SESSION_EXPIRES = null   // サーバーが返したセッションの期限（ミリ秒。端末の時計とのずれを補正済み）
 let RELOGIN_WAITERS = []     // 期限切れで止まった利用者の操作（再ログインの後に送り直す）
-// 定期の取得を止めるかどうか（notifications.js・board.js・roster-chat.js のポーリングで使う）
+// 定期の取得を止めるかどうか（バッジの定期の更新 refreshBadges・board.js のやり取りの新着の確認などで使う）
 window.sessionUsable = () => SESSION_STATE === 'active'
 // ログインの後に今の画面へ戻れるよう、パスとハッシュを next に付ける（#206）
 const loginNextUrl = () => '/login?next=' + encodeURIComponent(location.pathname + location.hash)
@@ -153,9 +153,7 @@ function relogin(btn) {
     const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
     waiters.forEach(w => axios(w.config).then(w.resolve, w.reject))
     toast('再ログインしました')
-    if (window.refreshNotifBadge) refreshNotifBadge()
-    if (window.refreshBoardBadge) refreshBoardBadge()
-    if (window.refreshChatBadge) refreshChatBadge()
+    refreshBadges()
   })
 }
 delegate('sessionGoLogin', () => { location.href = loginNextUrl() })
@@ -231,6 +229,34 @@ window.setNavCount = function (tab, n) {
   if (b) { b.textContent = total; b.classList.toggle('hidden', !total) }
   updateNavGroupCounts()
 }
+
+// ---------- メニューのバッジ（企業間チャット・通知・掲示板・打刻修正・応募）の件数の更新（#9935） ----------
+// 開いたときと60秒ごとの更新は GET /api/admin/badges の1本で取り、各画面の JS（roster-chat.js・notifications.js・board.js・
+// corrections.js・recruit.js）が onBadge で登録した描き方でバッジに出す。返ってこなかった数（権限がない・失敗した）のバッジは前のままにする。
+// 操作の後に1つだけ更新するときは、今までどおり各画面の refreshXxxBadge（それぞれの API）を使う
+const BADGE_APPLY = {}
+window.onBadge = (key, apply) => { BADGE_APPLY[key] = apply }
+// 描き方の登録は後から読み込む JS が行うので、HTML の読み込みが済んでから描く
+const DOM_READY = new Promise(r => document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', r, { once: true }) : r())
+let BADGES_SEQ = 0, BADGES_SHOWN = 0, BADGES_PENDING = 0, BADGES_AT = 0
+window.refreshBadges = async function () {
+  const seq = ++BADGES_SEQ
+  BADGES_PENDING++
+  try {
+    const { data } = await axios.get('/api/admin/badges')
+    await DOM_READY
+    // 先に送った要求の結果が後から届いたときは、新しい結果を上書きしない
+    if (seq < BADGES_SHOWN) return
+    BADGES_SHOWN = seq; BADGES_AT = Date.now()
+    for (const [key, apply] of Object.entries(BADGE_APPLY)) {
+      if (data && data[key] != null) { try { apply(data[key]) } catch (e) { } }
+    }
+  } catch (e) { } finally { BADGES_PENDING-- }
+}
+// ms 以内にまとめて取った（か取っている途中）か。開いたときに同じ数を続けて取らないために使う（roster-chat.js のダッシュボードの新着）
+window.badgesFresh = (ms) => BADGES_PENDING > 0 || Date.now() - BADGES_AT < ms
+// タブが裏にあるとき・ログインの期限切れ・アカウントの切り替えの後は取らない（#526）
+setInterval(() => { if (!document.hidden && ME && window.sessionUsable()) refreshBadges() }, 60 * 1000)
 
 // 左側のメニューの見出し（#9305。見出しは src/index.tsx の sideNavGroup）。押すと閉じたり開いたりし、閉じた見出しを localStorage に覚える。
 // 今のページがある見出しは開く（覚えた状態は変えない）。閉じた見出しの横には、中の項目の件数（NAV_COUNTS）の合計を出す
@@ -717,9 +743,9 @@ function dashReportChip(s, t) {
     else if (Number(r.early_leave_minutes) > 0) { cls = 'badge-yellow'; note = ` 早退${Number(r.early_leave_minutes)}分` }
     // 入店の位置が現場から離れている（#277。ダッシュボードの API が far を返すとき）
     if (r.far) { if (cls === 'badge-green') cls = 'bg-orange-100 text-orange-700'; note += ` 位置ずれ${r.distance_m != null ? '（約' + fmtDistance(r.distance_m) + '）' : ''}` }
-    // 電波がない場所で押した時刻で記録した報告（#427）。受け取った時刻を添える
-    const dev = r.device_time ? ` title="端末で押した時刻で記録（受信 ${esc(String(r.received_at || '').slice(5, 16).replace('-', '/'))}）"` : ''
-    return `<span class="badge ${cls} text-[10px]"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-mobile-screen-button"></i>端末時刻' : ''}</span>`
+    // 電波・混雑で送り直し、押した時刻で記録した報告（#427 #9939。「再送」）。受け付けた時刻を添える
+    const dev = r.device_time ? ` title="再送: 押した時刻で記録（受付 ${esc(String(r.received_at || '').slice(5, 16).replace('-', '/'))}）"` : ''
+    return `<span class="badge ${cls} text-[10px]"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-rotate"></i>再送' : ''}</span>`
   }
   if ((s.pending_types || []).includes(t)) return `<span class="badge badge-yellow text-[10px]" title="打刻修正の申請中">${label} 申請中</span>`
   if ((s.overdue_types || []).includes(t)) return `<span class="badge bg-white text-red-600 border border-red-300 text-[10px]" title="予定の時刻を過ぎても報告がありません">${label} 未報告</span>`
@@ -6726,7 +6752,7 @@ window.closeConsult = async function (id, btn) {
 }
 
 // ============ 請求前確認 ============
-// 金額は精算と同じ計算（交通費の請求区分・請求の調整額を含む請求合計）。total_bill / total がサーバーで計算した請求合計
+// 金額は精算と同じ計算（交通費の請求区分・請求の調整額・欠勤・中止のキャンセル料を含む請求合計。#9931）。total_bill / total がサーバーで計算した請求合計
 async function renderBilling(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
@@ -6734,6 +6760,9 @@ async function renderBilling(month) {
   try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
   // 月額（固定。#9702）の列は、その月に月額の行があるときだけ出す
   const hasMonthly = (data.monthly_lines || []).length > 0, hasStaffMonthly = (data.monthly_lines || []).some(l => l.staff_id != null)
+  // キャンセル料（欠勤・中止。#9931）の列と明細は、その月にキャンセル料の行があるときだけ出す
+  const cancelLines = data.cancel_lines || [], hasCancel = cancelLines.length > 0, t = data.totals || {}
+  const cancelCell = (amount, n, badge) => (n ? `${badge ? `<span class="badge badge-red whitespace-nowrap">キャンセル料 ${Number(n)}件</span><span class="block">${yen(amount)}</span>` : `${yen(amount)}<span class="text-[10px] text-gray-400 block">${Number(n)}件</span>`}` : '-')
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
@@ -6744,14 +6773,20 @@ async function renderBilling(month) {
         <button class="btn btn-primary" onclick="exportBillingCsv()"><i class="fas fa-file-csv"></i>CSV出力</button>
       </div>
     </div>
-    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください。
+    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額と、欠勤・中止のキャンセル料です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整＋キャンセル料）。
+      精算で期間をこの月の1日〜今日（過去の月は月末）にすると、請求合計が一致します。支払・粗利と確定は「精算」で確認してください。
       ${hasMonthly ? '月額（固定）は、その月に今日までの確定・代打のシフトがあれば、1回だけ請求合計に含めます（スタッフ別の月額は、そのスタッフの行にも出します）。' : ''}
       稼働人数は確定・代打のシフトの人数、日報提出は日報が必要な確定・代打のシフトのうち日報があるものです（欠勤・希望（仮）と、日報を不要にしたシフトは数えません）</p>
+    <section class="card p-3 mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1" id="billing-totals">
+      <span class="text-sm text-gray-600">請求合計（今日まで）<span class="text-lg font-bold text-gray-900 ml-2">${yen(t.bill || 0)}</span></span>
+      ${t.cancel_count ? `<span class="text-xs text-gray-500"><span class="badge badge-red">キャンセル料</span> うち ${yen(t.cancel_bill || 0)}（${Number(t.cancel_count)}件）</span>` : ''}
+      ${t.monthly_bill ? `<span class="text-xs text-gray-500">うち月額 ${yen(t.monthly_bill)}</span>` : ''}
+    </section>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
+          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasCancel ? '<th>キャンセル料</th>' : ''}${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.by_project.map(p => `
             <tr>
               <td class="font-medium">${esc(p.project_name)}</td>
@@ -6761,6 +6796,7 @@ async function renderBilling(month) {
               <td>${p.substitute_days || 0}</td>
               <td>${billingReportCell(p)}</td>
               <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
+              ${hasCancel ? `<td>${cancelCell(p.total_cancel, p.cancel_count, false)}</td>` : ''}
               ${hasMonthly ? `<td>${p.total_monthly ? yen(p.total_monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
@@ -6772,20 +6808,40 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasCancel ? '<th>キャンセル料</th>' : ''}${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td><td>${billingReportCell(d)}</td>
               <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
+              ${hasCancel ? `<td>${cancelCell(d.cancel, d.cancel_count, true)}</td>` : ''}
               ${hasStaffMonthly ? `<td>${d.monthly ? yen(d.monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
       </div>
-    </section>`
+    </section>
+    ${hasCancel ? `
+    <section class="card p-4 mt-4" id="billing-cancel-lines">
+      <h3 class="text-sm font-bold text-gray-700 mb-1">キャンセル料の明細（欠勤・中止）</h3>
+      <p class="text-xs text-gray-400 mb-3">請求合計に含めています。金額は「精算」の欠勤・中止の行（キャンセル料・補償）で入力・変更します</p>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>稼働日</th><th>スタッフ</th><th>案件</th><th>区分</th><th>キャンセル料</th></tr></thead>
+          <tbody>${cancelLines.map(l => `
+            <tr>
+              <td class="whitespace-nowrap">${esc(dayjs(l.work_date).format('M/D'))}</td>
+              <td><a href="#staff/${Number(l.staff_id)}" class="text-blue-600 hover:underline">${esc(l.staff_name)}</a></td>
+              <td class="text-xs">${esc(l.project_name)}</td>
+              <td><span class="badge badge-red whitespace-nowrap">${esc(l.reason_label)}</span>${l.note ? `<span class="text-xs text-gray-400 block">${esc(l.note)}</span>` : ''}</td>
+              <td class="whitespace-nowrap">${yen(l.bill_amount)}<span class="text-gray-400 text-xs block">キャンセル料</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>` : ''}`
   window._billingData = data
 }
 delegate('renderBilling', el => renderBilling(el.dataset.month))
@@ -6799,9 +6855,10 @@ window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
   // 月額（固定。#9702）は末尾の「月額」の列に出す（スタッフ別の月額はそのスタッフの行に、案件全体の月額は「案件全体の月額」の行として足す）
-  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id, d.monthly || 0])
-  for (const l of (data.monthly_lines || []).filter(x => x.staff_id == null)) rows.push(['案件全体の月額', l.project_name, '', '', 0, 0, 0, l.amount, '', l.amount])
-  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID', '月額'], rows)
+  // 欠勤・中止のキャンセル料（#9931。請求合計に含む）は、その後ろの「キャンセル料」の列に出す
+  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id, d.monthly || 0, d.cancel || 0])
+  for (const l of (data.monthly_lines || []).filter(x => x.staff_id == null)) rows.push(['案件全体の月額', l.project_name, '', '', 0, 0, 0, l.amount, '', l.amount, 0])
+  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID', '月額', 'キャンセル料'], rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -7342,6 +7399,8 @@ delegate('avbRemind', (el) => {
   }
   hideEmptyNavGroups()
   route()
+  // メニューのバッジ（#9935。開いたときはこの1回だけ取る）
+  refreshBadges()
   // 案内（チュートリアル）・右上の「？」（#9711。public/static/tour.js）
   if (window.FosTour) FosTour.init('admin', ME)
 })()

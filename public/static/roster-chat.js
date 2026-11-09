@@ -3,9 +3,9 @@
 const CHAT_NOTICE = 'このやり取りはスタッフ本人には表示されません（所属元企業・稼働先企業の担当者のみ閲覧できます）'
 
 // ---------- 未読バッジ（サイドバー / モバイルメニュー） ----------
-async function refreshChatBadge() {
-  let n = 0
-  try { n = (await axios.get('/api/admin/roster-chat/unread-count')).data.unread } catch { return }
+// 開いたときと60秒ごとの更新は admin.js の refreshBadges（GET /api/admin/badges の roster_chat）がまとめて行う（#9935）
+function applyChatBadge(n) {
+  n = Number(n) || 0
   const link = document.querySelector('.side-link[data-tab="roster-chat"]')
   if (link) {
     let b = link.querySelector('.chat-badge')
@@ -15,18 +15,22 @@ async function refreshChatBadge() {
   if (window.setNavCount) setNavCount('roster-chat', n)
   return n
 }
+if (window.onBadge) onBadge('roster_chat', (d) => applyChatBadge(d.unread))
+// 既読にした後などに、この数だけを取り直す
+async function refreshChatBadge() {
+  let n = 0
+  try { n = (await axios.get('/api/admin/roster-chat/unread-count')).data.unread } catch { return }
+  return applyChatBadge(n)
+}
 window.refreshChatBadge = refreshChatBadge
-// 定期更新は、ログインの期限切れ・アカウントの切り替えの後は止める（admin.js の sessionUsable。#526）
-const chatPollable = () => !window.sessionUsable || window.sessionUsable()
-setInterval(() => { if (!document.hidden && chatPollable()) refreshChatBadge() }, 60 * 1000)
-setTimeout(() => { if (chatPollable()) refreshChatBadge() }, 500)
 
 // ---------- ダッシュボード通知（新着のみ表示） ----------
 window.renderChatDashboardNotice = async function () {
   let data
   try { data = (await axios.get('/api/admin/roster-chat/threads')).data } catch { return }
   const unread = data.threads.filter(t => t.unread > 0)
-  refreshChatBadge()
+  // 開いた直後はバッジをまとめて取っている（取った）ので、同じ数を続けて取らない（#9935）
+  if (!(window.badgesFresh && window.badgesFresh(10000))) refreshChatBadge()
   if (!unread.length) return
   const app = document.getElementById('app')
   if (!app || !app.firstElementChild || document.getElementById('chat-dashboard-notice')) return

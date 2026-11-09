@@ -196,43 +196,34 @@ const ITEM_STATE_SQL = `CASE WHEN i.status = 'approved' AND NOT EXISTS (SELECT 1
 const ACTIVE_ITEM_SQL = `(i.status IN ('pending','processing') OR (i.status = 'approved' AND ${ITEM_STATE_SQL} = 'approved'))`
 
 // 枠・役割が削除されて残った未対応の応募を「枠の削除」で処理済みにする（#65）。
-// 枠の削除・繰り返し登録の削除（shift-board.ts）の後と、応募一覧・件数の取得のときに呼ぶ（枠の編集で役割を消した分もここで片づく）
+// 枠の削除・繰り返し登録の削除（shift-board.ts）の後と、応募一覧・件数の取得のときに呼ぶ（枠の編集で役割を消した分もここで片づく）。
+// 明細の片づけ（処理中の戻し・期限切れ・退職者の取り下げ・枠の削除）と、明細が残っていない応募を閉じる文を1つの batch で書く（9934）。
+// 途中で止まっても、明細だけ更新されて応募が閉じられないまま残ることはない（応募を閉じる文は、ほかの経路で閉じそびれた応募も拾う）。
+// 戻り値: 「枠の削除」にした明細の件数
 export async function settleRemovedSlotItems(db: D1Database, companyId: number) {
-  // 承認の途中で処理が止まった（通信が切れて打ち切られたなど）明細は、一定時間たったら未対応に戻す（#86。processing の間の decided_at は押さえた時刻）
-  await db.prepare(`UPDATE recruit_application_items SET status = 'pending', decided_at = NULL WHERE status = 'processing' AND (decided_at IS NULL OR decided_at < ?)
-    AND application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = ?)`).bind(addMinutesJST(-PROCESSING_STALE_MIN), companyId).run()
-  await expirePastItems(db, companyId)
-  await cancelRetiredStaffItems(db, companyId)
-  const rows = (await db.prepare(`SELECT i.item_id, i.application_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    WHERE a.company_id = ? AND a.status = 'pending' AND i.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shift_slot_roles r WHERE r.slot_role_id = i.slot_role_id)`)
-    .bind(companyId).all()).results as any[]
-  if (!rows.length) return 0
-  await db.prepare(`UPDATE recruit_application_items SET status = 'slot_removed', decided_at = ? WHERE status = 'pending' AND item_id IN ${JSON_IN}`)
-    .bind(nowJST(), bindJsonArray(rows.map(r => r.item_id))).run()
-  for (const id of new Set(rows.map(r => r.application_id as number))) await closeIfDone(db, id)
-  return rows.length
-}
-// 勤務日を過ぎても未対応のままの日時は「期限切れ」（expired）にする（#302）。未対応の件数・一覧の先頭に残り続けないようにする。
-// 当日の分は、開始時刻を過ぎても管理者が承認できるよう（警告付き）、翌日になってから片づける
-async function expirePastItems(db: D1Database, companyId: number) {
-  const rows = (await db.prepare(`SELECT i.item_id, i.application_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    JOIN shift_slot_roles r ON r.slot_role_id = i.slot_role_id JOIN shift_slots sl ON sl.slot_id = r.slot_id
-    WHERE a.company_id = ? AND a.status = 'pending' AND i.status = 'pending' AND sl.work_date < ?`).bind(companyId, todayJST()).all()).results as any[]
-  if (!rows.length) return
-  await db.prepare(`UPDATE recruit_application_items SET status = 'expired', decided_at = ? WHERE status = 'pending' AND item_id IN ${JSON_IN}`)
-    .bind(nowJST(), bindJsonArray(rows.map(r => r.item_id))).run()
-  for (const id of new Set(rows.map(r => r.application_id as number))) await closeIfDone(db, id)
-}
-// 退職したスタッフ（在籍状況が退職）の未対応の応募は「取り下げ」（cancelled）にする（#87）。
-// 退職の処理（手での退職・退職日の翌日の定期処理）のどちらの後でも、応募一覧・件数を開いたときに片づく。休職・ログイン停止だけの人は残す（印を付けて承認で止める）
-async function cancelRetiredStaffItems(db: D1Database, companyId: number) {
-  const rows = (await db.prepare(`SELECT i.item_id, i.application_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
-    JOIN staff_profiles sp ON sp.staff_id = COALESCE(i.staff_id, a.staff_id)
-    WHERE a.company_id = ? AND a.status = 'pending' AND i.status = 'pending' AND sp.employment_status = 'retired'`).bind(companyId).all()).results as any[]
-  if (!rows.length) return
-  await db.prepare(`UPDATE recruit_application_items SET status = 'cancelled', decided_at = ? WHERE status = 'pending' AND item_id IN ${JSON_IN}`)
-    .bind(nowJST(), bindJsonArray(rows.map(r => r.item_id))).run()
-  for (const id of new Set(rows.map(r => r.application_id as number))) await closeIfDone(db, id)
+  const now = nowJST()
+  const mine = `application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = ? AND status = 'pending')`
+  const res = await db.batch([
+    // 承認の途中で処理が止まった（通信が切れて打ち切られたなど）明細は、一定時間たったら未対応に戻す（#86。processing の間の decided_at は押さえた時刻）
+    db.prepare(`UPDATE recruit_application_items SET status = 'pending', decided_at = NULL WHERE status = 'processing' AND (decided_at IS NULL OR decided_at < ?)
+      AND application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = ?)`).bind(addMinutesJST(-PROCESSING_STALE_MIN), companyId),
+    // 勤務日を過ぎても未対応のままの日時は「期限切れ」（expired）にする（#302）。未対応の件数・一覧の先頭に残り続けないようにする。
+    // 当日の分は、開始時刻を過ぎても管理者が承認できるよう（警告付き）、翌日になってから片づける
+    db.prepare(`UPDATE recruit_application_items SET status = 'expired', decided_at = ? WHERE status = 'pending' AND ${mine}
+      AND EXISTS (SELECT 1 FROM shift_slot_roles r JOIN shift_slots sl ON sl.slot_id = r.slot_id WHERE r.slot_role_id = recruit_application_items.slot_role_id AND sl.work_date < ?)`)
+      .bind(now, companyId, todayJST()),
+    // 退職したスタッフ（在籍状況が退職）の未対応の応募は「取り下げ」（cancelled）にする（#87）。
+    // 退職の処理（手での退職・退職日の翌日の定期処理）のどちらの後でも、応募一覧・件数を開いたときに片づく。休職・ログイン停止だけの人は残す（印を付けて承認で止める）
+    db.prepare(`UPDATE recruit_application_items SET status = 'cancelled', decided_at = ? WHERE status = 'pending' AND item_id IN (
+      SELECT i.item_id FROM recruit_application_items i JOIN recruit_applications a ON a.application_id = i.application_id
+      JOIN staff_profiles sp ON sp.staff_id = COALESCE(i.staff_id, a.staff_id)
+      WHERE a.company_id = ? AND a.status = 'pending' AND i.status = 'pending' AND sp.employment_status = 'retired')`).bind(now, companyId),
+    // 枠・役割が削除された日時は「枠の削除」（slot_removed）
+    db.prepare(`UPDATE recruit_application_items SET status = 'slot_removed', decided_at = ? WHERE status = 'pending' AND ${mine}
+      AND NOT EXISTS (SELECT 1 FROM shift_slot_roles r WHERE r.slot_role_id = recruit_application_items.slot_role_id) RETURNING item_id`).bind(now, companyId),
+    closeDoneStmt(db, `company_id = ? AND status = 'pending'`, [companyId], null, now),
+  ])
+  return (res[3]?.results || []).length
 }
 async function loadPageByToken(db: D1Database, token: string) {
   if (!/^[A-Za-z0-9_-]{16,64}$/.test(token || '')) return null
@@ -396,13 +387,17 @@ async function ipHashFor(env: Bindings, ip: string) {
   return 'w:' + (await sha256(`recruit|${ip}`)).slice(0, 4)
 }
 
+// 未対応・処理中の明細が残っていない応募を閉じる文。すべての明細が取り下げなら cancelled、それ以外は done（9934。応募ごとの SELECT 2回と UPDATE をやめて1文に）。
+// 明細がまだ1件もない応募（登録の途中）は閉じない。where は recruit_applications の条件
+function closeDoneStmt(db: D1Database, where: string, binds: any[], byUserId: number | null, now = nowJST()) {
+  const items = 'SELECT 1 FROM recruit_application_items i WHERE i.application_id = recruit_applications.application_id'
+  return db.prepare(`UPDATE recruit_applications SET
+      status = CASE WHEN NOT EXISTS (${items} AND COALESCE(i.status,'') != 'cancelled') THEN 'cancelled' ELSE 'done' END,
+      decided_at = COALESCE(decided_at, ?), decided_by = COALESCE(decided_by, ?)
+    WHERE ${where} AND EXISTS (${items}) AND NOT EXISTS (${items} AND i.status IN ('pending','processing'))`).bind(now, byUserId ?? null, ...binds)
+}
 async function closeIfDone(db: D1Database, applicationId: number, byUserId?: number | null) {
-  const left = await db.prepare("SELECT COUNT(*) AS n FROM recruit_application_items WHERE application_id = ? AND status IN ('pending','processing')").bind(applicationId).first() as any
-  if (left?.n) return
-  const all = await db.prepare("SELECT COUNT(*) AS t, SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS c FROM recruit_application_items WHERE application_id = ?").bind(applicationId).first() as any
-  const status = all?.t && all.t === all.c ? 'cancelled' : 'done'
-  await db.prepare('UPDATE recruit_applications SET status = ?, decided_at = COALESCE(decided_at, ?), decided_by = COALESCE(decided_by, ?) WHERE application_id = ?')
-    .bind(status, nowJST(), byUserId ?? null, applicationId).run()
+  await closeDoneStmt(db, 'application_id = ?', [applicationId], byUserId ?? null).run()
 }
 
 // =========================================================
@@ -782,6 +777,8 @@ async function counts(db: D1Database, companyId: number, settled = false) {
   return { pending: Number(r?.pending || 0) - inactive, pending_public: Number(r?.pending_public || 0), pending_inactive: inactive }
 }
 recruitAdminApi.get('/recruit-applications/summary', async (c) => c.json(await counts(c.env.DB, c.get('user').company_id)))
+// 管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も同じ件数を返す
+export const recruitApplicationCounts = (db: D1Database, companyId: number) => counts(db, companyId)
 
 // 枠（役割）の充足と、残っている未対応の応募の件数
 async function slotSummary(db: D1Database, companyId: number, slotRoleId: number) {

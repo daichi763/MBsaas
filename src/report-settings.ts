@@ -227,34 +227,12 @@ export function reportedAtMinute(now: string): string {
   return now.slice(0, 16) + ':00'
 }
 
-// ---------- 電波がない場所で押した報告（#427） ----------
-// アプリは通信に失敗した報告を端末に保存し、通信が戻ってから押した時刻（pressed_at。端末の時計のエポックミリ秒）を付けて送る。
-// 端末の時計は本人が変えられるので、次の範囲だけを受け付け、記録には time_source='device' の印と受け取った時刻を残す:
-//   ・受け取った時刻より DEVICE_TIME_MAX_AHEAD_MINUTES 分を超えて先の時刻は受け付けない（端末の時計が進んでいる）
-//   ・受け取った時刻から DEVICE_TIME_MAX_DELAY_MINUTES 分より前に押したものは受け付けない（打刻修正の申請で直す）
-//   ・報告の受付時間帯（reportableWindow）と、記録済みの前の報告との順序は、押した時刻で確かめる（api.ts の staffReportTime）
-// 押した時刻が受け取った時刻と同じ分（か少し先）なら、これまでどおり受け取った時刻で記録する
-export const DEVICE_TIME_MAX_AHEAD_MINUTES = 2
-export const DEVICE_TIME_MAX_DELAY_MINUTES = 12 * 60
+// ---------- 打刻の一意キー（#427 #9939） ----------
+// アプリは1回の打刻ごとに一意キー（client_request_id）を作り、送り直しても同じキーを送る。押した時刻の扱いは src/attendance-punch.ts
 const CLIENT_REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/
 // 画面が押すたびに作る一意キー（形が正しくなければ使わない）
 export function clientRequestId(v: any): string | null {
   return typeof v === 'string' && CLIENT_REQUEST_ID_RE.test(v) ? v : null
-}
-const jstOfEpoch = (ms: number) => new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-// pressed: 端末で押した時刻（JST。送られていなければ null）、adopt: 記録の時刻に使うか
-export function deviceReportTime(raw: any, now: string): { pressed: string | null; adopt: boolean } | Ng {
-  if (raw == null || raw === '') return { pressed: null, adopt: false }
-  const ms = Number(raw)
-  if (!Number.isFinite(ms) || ms <= 0 || ms > 8.64e15) return { error: '押した時刻が正しくありません', status: 400 }
-  const pressed = jstOfEpoch(Math.floor(ms / 1000) * 1000)
-  if (minutesFromTo(now, pressed) > DEVICE_TIME_MAX_AHEAD_MINUTES) {
-    return { error: '端末の時計が進んでいるため、押した時刻で記録できません。端末の日時の設定を確かめてから、もう一度報告してください', status: 400 }
-  }
-  if (minutesFromTo(pressed, now) > DEVICE_TIME_MAX_DELAY_MINUTES) {
-    return { error: `押してから${DEVICE_TIME_MAX_DELAY_MINUTES / 60}時間を過ぎたため、押した時刻では記録できません。打刻履歴から打刻漏れの追加を申請してください`, status: 400 }
-  }
-  return { pressed, adopt: reportedAtMinute(pressed) < reportedAtMinute(now) }
 }
 
 // ---------- 前日確認（#176） ----------

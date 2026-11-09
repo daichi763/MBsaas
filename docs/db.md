@@ -31,8 +31,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 100 本（0001_initial_schema.sql 〜 0100_counterparty_assignees.sql）
-- 表: 132・索引: 309・トリガー: 14・ビュー: 0
+- マイグレーション: 101 本（0001_initial_schema.sql 〜 0101_heavy_read_indexes.sql）
+- 表: 132・索引: 314・トリガー: 14・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 149
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 31
 - company_id の列がある表: 106
@@ -2405,6 +2405,8 @@ UNIQUE 制約: (user_id)
 
 索引:
 
+- `idx_shifts_absent`: (company_id, work_date) WHERE `status = 'absent'`
+- `idx_shifts_project_date`: (project_id, work_date)
 - `idx_shifts_attendance_exception`: (company_id, work_date) WHERE `attendance_mode IN ('none', 'in_out')`
 - `idx_shifts_staff_project`: (staff_id, project_id, work_date)
 - `idx_shifts_site`: (site_id)
@@ -2677,6 +2679,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
+- `idx_attendance_late`: (company_id, report_type) WHERE `status = 'late'`
 - `idx_attendance_reported_at`: (reported_at)
 - `idx_attendance_location_photo`: (reported_at) WHERE `latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL`
 - `uq_attendance_shift_type`（UNIQUE）: (shift_id, report_type)
@@ -2799,6 +2802,8 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
+- `idx_daily_reports_project_flagged`: (project_id, work_date) WHERE `incident_flag = 1 OR complaint_flag = 1`
+- `idx_daily_reports_flagged`: (company_id, work_date) WHERE `incident_flag = 1 OR complaint_flag = 1`
 - `idx_daily_reports_staff_date`: (staff_id, work_date)
 - `idx_daily_reports_incident_open`: (company_id, work_date) WHERE `(incident_flag = 1 OR complaint_flag = 1) AND COALESCE(incident_status, 'open') != 'done'`
 - `idx_daily_reports_unchecked`: (company_id, work_date) WHERE `COALESCE(manager_checked, 0) = 0`
@@ -4517,15 +4522,15 @@ END
 | `hqViewAdminGuard` | [hq-support.ts:197](../src/hq-support.ts#L197) |
 | `AFFILIATION_TYPES` | [roster.ts:24](../src/roster.ts#L24) |
 | `NO_LOGIN_ROLES` | [lib/auth.ts:16](../src/lib/auth.ts#L16) |
-| `nowJST` | [api.ts:135](../src/api.ts#L135) |
+| `nowJST` | [api.ts:139](../src/api.ts#L139) |
 | `loadSessionUser` | [lib/auth.ts:127](../src/lib/auth.ts#L127) |
 | `hashPassword` | [lib/auth.ts:46](../src/lib/auth.ts#L46) |
 | `hashToken` | [lib/auth.ts:38](../src/lib/auth.ts#L38) |
 | `RETURNING_COUNTED` | [services/retention.ts:85](../src/services/retention.ts#L85) |
 | `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1262](../src/services/retention.ts#L1262) |
 | `RETIRED_TARGETS` | [services/retention.ts:86](../src/services/retention.ts#L86) |
-| `CORE_TABLES` | [scripts/gen-docs.mjs:824](../scripts/gen-docs.mjs#L824) |
-| `TABLE_GROUPS` | [scripts/gen-docs.mjs:809](../scripts/gen-docs.mjs#L809) |
+| `CORE_TABLES` | [scripts/gen-docs.mjs:826](../scripts/gen-docs.mjs#L826) |
+| `TABLE_GROUPS` | [scripts/gen-docs.mjs:811](../scripts/gen-docs.mjs#L811) |
 | `loadRoster` | [roster.ts:448](../src/roster.ts#L448) |
 | `CONSENT_VERSION` | [roster.ts:220](../src/roster.ts#L220) |
 | `SHARED_SCOPE` | [roster.ts:221](../src/roster.ts#L221) |
@@ -4533,8 +4538,8 @@ END
 | `ROSTER_OWNER_ONLY_FIELDS` | [roster.ts:231](../src/roster.ts#L231) |
 | `ROSTER_SHARED_HOST_FIELDS` | [roster.ts:78](../src/roster.ts#L78) |
 | `PUBLIC_COLS` | [board.ts:60](../src/board.ts#L60) |
-| `buildSnapshot` | [board.ts:568](../src/board.ts#L568) |
-| `shapeProposal` | [board.ts:603](../src/board.ts#L603) |
+| `buildSnapshot` | [board.ts:569](../src/board.ts#L569) |
+| `shapeProposal` | [board.ts:604](../src/board.ts#L604) |
 | `runRetentionCleanup` | [services/retention.ts:944](../src/services/retention.ts#L944) |
 | `CRON_JOBS` | [index.tsx:852](../src/index.tsx#L852) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:116](../src/services/retention.ts#L116) |

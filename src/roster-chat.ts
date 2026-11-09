@@ -10,7 +10,7 @@ type Bindings = { DB: D1Database }
 type Variables = { user: any }
 const chatApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-const CHAT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+export const CHAT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 const MAX_BODY = 2000
 const DUPLICATE_WINDOW_SEC = 60 // 同じ本文の再送を重複とみなす秒数（#263）
 
@@ -145,17 +145,18 @@ async function markRead(db: D1Database, threadStaffId: number, companyId: number
   ])
 }
 
-// 未読件数のみ（ダッシュボード/サイドバーのバッジ用・軽量）。ログイン中のユーザーが読んでいない件数
-chatApi.get('/unread-count', async (c) => {
-  const u = c.get('user')
-  const floor = await unreadFloor(c.env.DB, u.user_id)
-  const r = await c.env.DB.prepare(`
+// 未読件数のみ（ダッシュボード/サイドバーのバッジ用・軽量）。ログイン中のユーザーが読んでいない件数。
+// 管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も同じ数え方を使う
+export async function chatUnreadCount(db: D1Database, u: { user_id: number; company_id: number }): Promise<number> {
+  const floor = await unreadFloor(db, u.user_id)
+  const r = await db.prepare(`
     SELECT COUNT(*) AS n FROM roster_comments rc
     WHERE (rc.owner_company_id = ? OR rc.host_company_id = ?) AND rc.author_company_id != ? AND rc.created_at >= ?
       AND rc.comment_id > ${userReadSql('rc.thread_staff_id')}`)
     .bind(u.company_id, u.company_id, u.company_id, floor, u.user_id).first()
-  return c.json({ unread: (r?.n as number) || 0 })
-})
+  return (r?.n as number) || 0
+}
+chatApi.get('/unread-count', async (c) => c.json({ unread: await chatUnreadCount(c.env.DB, c.get('user')) }))
 
 // 連携が終わったスレッドのメッセージ（閲覧のみ・投稿はできない）。取得時に自社として既読にする（#237）
 // 自社が所属元・稼働先として参加したやり取りだけを返す。連携中のスレッドはスタッフ詳細のチャット欄から開く

@@ -164,25 +164,26 @@ const rep = (body) => stA.post('/api/staff/attendance', { shift_id: sid, latitud
   ok('#427 別のキーなら従来どおり報告済み（409）', r1c.status === 409, r1c)
 
   ok('#427 数値でない押した時刻は断る（400）', (await rep({ report_type: 'departure', client_request_id: key(), pressed_at: 'abc' })).status === 400)
-  const p2 = Date.now() - 30 * 60000
+  // 押した時刻で記録するのは、押してから30分以内・未来でない・前の報告より後のときだけ（#9939 で利用者が決めた範囲。超えたら受け付けた時刻で記録する）
+  const p2 = Date.now() - 25 * 60000
   const r2 = await rep({ report_type: 'departure', client_request_id: key(), pressed_at: p2 })
-  ok('#427 30分前に押した報告は押した時刻（分）で記録する', r2.status === 200 && r2.data.device_time === true && r2.data.reported_at === jst(p2).slice(0, 16) + ':00', r2)
-
-  const r3 = await rep({ report_type: 'check_in', client_request_id: key(), pressed_at: Date.now() - 60 * 60000 })
-  ok('#427 前の報告（出発）より前の時刻にはできない（400）', r3.status === 400 && r3.data.code === 'device_time', r3)
-  const r4 = await rep({ report_type: 'check_in', client_request_id: key(), pressed_at: Date.now() + 10 * 60000 })
-  ok('#427 先の時刻（端末の時計が進んでいる）は断る（400）', r4.status === 400 && r4.data.code === 'device_time', r4)
-  const r5 = await rep({ report_type: 'check_in', client_request_id: key(), pressed_at: Date.now() - 13 * 3600000 })
-  ok('#427 12時間より前に押したものは断る（400）', r5.status === 400 && r5.data.code === 'device_time', r5)
+  ok('#427 25分前に押した報告は押した時刻（分）で記録する', r2.status === 200 && r2.data.device_time === true && r2.data.reported_at === jst(p2).slice(0, 16) + ':00', r2)
 
   const p6 = Date.now() - 20 * 60000
   const r6 = await rep({ report_type: 'check_in', client_request_id: key(), pressed_at: p6 })
   const expLate = Math.max(0, minuteOf(jst(p6)) - minuteOf(`${today} 00:00`))
   ok('#427 遅刻の判定は押した時刻で行う', r6.status === 200 && r6.data.device_time === true && r6.data.late_minutes === expLate, { r6, expLate })
 
+  const r3 = await rep({ report_type: 'work_start', client_request_id: key(), pressed_at: Date.now() - 28 * 60000 })
+  ok('#9939 前の報告（入店）より前の押した時刻は、受け付けた時刻で記録する（再送の印）', r3.status === 200 && r3.data.device_time === false && r3.data.resent === true && r3.data.reported_at >= r6.data.reported_at, r3)
+  const r4 = await rep({ report_type: 'break_start', client_request_id: key(), pressed_at: Date.now() + 10 * 60000 })
+  ok('#9939 先の時刻（端末の時計が進んでいる）は、受け付けた時刻で記録する', r4.status === 200 && r4.data.device_time === false && r4.data.resent === true, r4)
+  const r5 = await rep({ report_type: 'break_end', client_request_id: key(), pressed_at: Date.now() - 13 * 3600000 })
+  ok('#9939 30分より前に押したものは、受け付けた時刻で記録する', r5.status === 200 && r5.data.device_time === false && r5.data.resent === true, r5)
+
   // 押した時刻が受け取った時刻と同じ分・少し先（時計のずれ）なら、受け取った時刻で記録する
-  const r7 = await rep({ report_type: 'work_start', client_request_id: key(), pressed_at: Date.now() + 60000 })
-  ok('#427 少し先の押した時刻は受け取った時刻で記録する（印なし）', r7.status === 200 && r7.data.device_time === false, r7)
+  const r7 = await rep({ report_type: 'work_end', client_request_id: key(), pressed_at: Date.now() + 30000 })
+  ok('#427 少し先の押した時刻は受け取った時刻で記録する（印なし）', r7.status === 200 && r7.data.device_time === false && r7.data.resent === false, r7)
   const h = must(await stA.get(`/api/staff/home?shift_id=${sid}`), 'home')
   const dep = h.reports.departure
   ok('#427 ホームの報告に押した時刻で記録した印と受け取った時刻', dep && dep.device_time === true && dep.received_at && dep.received_at > dep.reported_at, dep)

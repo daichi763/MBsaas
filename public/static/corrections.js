@@ -23,15 +23,16 @@
   }
   const MANUAL_NOTE = '実績が手入力のシフトのため、実績・金額は手入力のままです（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）'
 
-  window.refreshCorrectionsBadge = async function () {
-    try {
-      const { data } = await axios.get('/api/admin/corrections/pending-count')
-      if (window.setNavCount) setNavCount('corrections', data.count)
-      const el = document.getElementById('corrections-badge'); if (!el) return
-      el.textContent = data.count; el.classList.toggle('hidden', !data.count)
-    } catch (e) { }
+  // 開いたときと60秒ごとの更新は admin.js の refreshBadges（GET /api/admin/badges の corrections）がまとめて行う（#9935）
+  const applyCorrectionsBadge = (d) => {
+    if (window.setNavCount) setNavCount('corrections', d.count)
+    const el = document.getElementById('corrections-badge'); if (!el) return
+    el.textContent = d.count; el.classList.toggle('hidden', !d.count)
   }
-  setTimeout(() => window.refreshCorrectionsBadge(), 900)
+  if (window.onBadge) onBadge('corrections', applyCorrectionsBadge)
+  window.refreshCorrectionsBadge = async function () {
+    try { applyCorrectionsBadge((await axios.get('/api/admin/corrections/pending-count')).data) } catch (e) { }
+  }
 
   // ---------- スタッフの申請の受付期限（#215。companies.settings_json.correction_deadline_days） ----------
   // API は GET/PUT /admin/settings/corrections（{ deadline_days: 日数 | null }。null は期限なし）。
@@ -178,21 +179,29 @@
   delegate('corrBulkApprove', (el) => withSubmitLock(el, async () => {
     const ids = [...PICKED].sort((a, b) => a - b) // サーバーと同じく申請の ID の順（まとめて出した申請を登録した順に承認する）
     if (!ids.length || !confirm(`選んだ${ids.length}件の申請を承認しますか？\n承認すると勤怠の記録と実績に反映し、スタッフに知らせます`)) return
-    const res = { approved: [], skipped: [], failed: [] }
+    // 1件ごとの結果（#9932）: approved 承認した / already すでに承認済み（二重には処理しない）/ skipped 個別の確認が必要 / failed 承認できなかった /
+    // lost 通信が途切れて結果が分からない（サーバーでは1件ずつ書き終えているので、もう一度押せば残りだけを承認する）
+    const res = { approved: [], already: [], skipped: [], failed: [], lost: [] }
     for (let i = 0; i < ids.length; i += BULK_CHUNK) {
       try {
         const { data } = await axios.post('/api/admin/corrections/bulk-approve', { ids: ids.slice(i, i + BULK_CHUNK) })
-        res.approved.push(...data.approved); res.skipped.push(...data.skipped); res.failed.push(...data.failed)
-      } catch (e) { res.failed.push(...ids.slice(i, i + BULK_CHUNK).map(id => ({ correction_id: id, reason: errMsg(e) }))) }
+        for (const r of data.results || []) (res[r.result] || res.failed).push(r)
+      } catch (e) { res.lost.push(...ids.slice(i, i + BULK_CHUNK).map(id => ({ correction_id: id, reason: errMsg(e) }))) }
     }
     if (window.refreshNotifBadge) refreshNotifBadge()
     await renderCorrections()
-    const list = (xs) => `<ul class="text-xs space-y-1 mt-1">${xs.map(x => `<li><a class="text-blue-600 underline" href="#corrections/${Number(x.correction_id)}" onclick="closeModal()">#${Number(x.correction_id)}</a> ${esc(x.reason)}</li>`).join('')}</ul>`
-    if (!res.skipped.length && !res.failed.length) { toast(`${res.approved.length}件を承認しました`); return }
+    const list = (xs, reason = true) => `<ul class="text-xs space-y-1 mt-1">${xs.map(x => `<li><a class="text-blue-600 underline" href="#corrections/${Number(x.correction_id)}" onclick="closeModal()">#${Number(x.correction_id)}</a>${reason && x.reason ? ' ' + esc(x.reason) : ''}</li>`).join('')}</ul>`
+    const ng = res.skipped.length + res.failed.length + res.lost.length
+    const alreadyNote = res.already.length ? `（${res.already.length}件はすでに承認済みでした）` : ''
+    if (!ng) { toast(`${res.approved.length}件を承認しました${alreadyNote}`); return }
+    const box = (cls, title, xs, reason) => xs.length ? `<div class="mt-3 p-2.5 rounded-lg ${cls}"><p class="text-xs font-bold">${title}（${xs.length}件）</p>${list(xs, reason)}</div>` : ''
     modal(`<h3 class="font-bold text-gray-800 mb-2">まとめて承認の結果</h3>
-      <p class="text-sm">承認: <b>${res.approved.length}件</b></p>
-      ${res.skipped.length ? `<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-amber-800"><p class="text-xs font-bold">個別の確認が必要なため承認しなかった申請（${res.skipped.length}件）</p>${list(res.skipped)}</div>` : ''}
-      ${res.failed.length ? `<div class="mt-3 p-2.5 rounded-lg bg-red-50 text-red-800"><p class="text-xs font-bold">承認できなかった申請（${res.failed.length}件）</p>${list(res.failed)}</div>` : ''}
+      <p class="text-sm"><b>${res.approved.length}件</b>を承認しました。<b class="text-red-700">${ng}件</b>は承認できませんでした（理由は下のとおりです）。${esc(alreadyNote)}</p>
+      ${box('bg-amber-50 text-amber-800', '個別の確認が必要なため承認しなかった申請', res.skipped, true)}
+      ${box('bg-red-50 text-red-800', '承認できなかった申請', res.failed, true)}
+      ${res.lost.length ? `<div class="mt-3 p-2.5 rounded-lg bg-red-50 text-red-800"><p class="text-xs font-bold">通信が途切れたため、結果を確かめられなかった申請（${res.lost.length}件）</p>
+        <p class="text-xs mt-1">一覧で状態を確かめてください。もう一度選んで承認すると、承認済みの申請は二重に処理せず、残りだけを承認します。</p>${list(res.lost, true)}</div>` : ''}
+      ${box('bg-gray-50 text-gray-700', 'すでに承認済みだった申請（二重には承認していません）', res.already, false)}
       <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
   }))
 
@@ -210,6 +219,10 @@
     if (r.status === 'late') out.push(`<span class="badge badge-red text-[10px]">遅刻${r.late_minutes != null ? ' ' + Number(r.late_minutes) + '分' : ''}</span>`)
     if (r.status === 'no_location') out.push('<span class="badge badge-yellow text-[10px]">位置なし</span>')
     if (Number(r.early_leave_minutes) > 0) out.push(`<span class="badge badge-yellow text-[10px]">早退 ${Number(r.early_leave_minutes)}分</span>`)
+    // 押した時刻と受け付けた時刻が違う打刻（#9939）。device は押した時刻、resent は受け付けた時刻で記録した
+    if (!r.corrected_by_correction_id && (r.time_source === 'device' || r.time_source === 'resent')) {
+      out.push(`<span class="badge badge-gray text-[10px]" title="${r.time_source === 'device' ? '押した時刻で記録' : '受け付けた時刻で記録（端末の時計のずれ・送信の遅れ）'}。押した ${esc(fmtAt(r.pressed_at))}・受付 ${esc(fmtAt(r.received_at))}">再送</span>`)
+    }
     if (r.corrected_by_correction_id) out.push(`<span class="badge badge-gray text-[10px]" title="打刻修正で変わった記録です">修正済み${r.original_reported_at ? '（元 ' + esc(fmtAt(r.original_reported_at)) + '）' : ''}</span>`)
     return out.join(' ')
   }
@@ -534,7 +547,7 @@
   // 勤務日の期間（31日まで）・案件・クライアント・スタッフ・記録方法で絞り、1シフト1行で8種類の報告の時刻と記録方法を出す。同じ条件で CSV を出せる
   const P = window.__punchState = window.__punchState || { from: '', to: '', project_id: '', client_id: '', staff_name: '', method: '' }
   let punchClients = null
-  // 報告ごとの印（サーバーの f: 1 = 打刻修正、2 = 写真、4 = 位置、8 = 写真なしの理由）
+  // 報告ごとの印（サーバーの f: 1 = 打刻修正、2 = 写真、4 = 位置、8 = 写真なしの理由、16 = 再送）
   const MARK = (r, t) => {
     const m = r[t + '_m'], f = Number(r[t + '_f'] || 0), out = []
     if (m === 'proxy') out.push('<span class="badge badge-purple text-[10px]" title="管理者の代理入力">代理</span>')
@@ -543,6 +556,7 @@
     if (f & 2) out.push('<i class="fas fa-camera text-gray-400 text-[10px]" title="写真あり"></i>')
     else if (f & 8) out.push('<i class="fas fa-ban text-amber-500 text-[10px]" title="写真なし（理由あり）"></i>')
     if (f & 4) out.push('<i class="fas fa-location-dot text-gray-400 text-[10px]" title="位置あり"></i>')
+    if (f & 16) out.push('<span class="badge badge-gray text-[10px]" title="押した時刻と受け付けた時刻が違う打刻（電波・混雑で送り直した、端末の時計のずれなど）">再送</span>')
     return out.join(' ')
   }
   async function renderPunches() {

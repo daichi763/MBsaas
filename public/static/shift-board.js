@@ -2929,7 +2929,7 @@
   })
 
   // =========================================================
-  // 案件詳細: 開催場所（9914。クライアント詳細から移した）。開催場所はクライアントに属し、同じクライアントの案件で共通に使う
+  // 案件詳細: 開催場所（9914。クライアント詳細から移した）。開催場所はクライアントごとの一覧で、シフト・募集枠を作るときに1つずつ選ぶ（#9936）
   // =========================================================
   let SITE_CTX = null // { pid, cid }
   window.renderProjectSitesPanel = async function (p) {
@@ -2951,7 +2951,7 @@
     if (!SITE_CTX || SITE_CTX.pid !== pid || !document.getElementById('project-sites-panel')) return
     host.innerHTML = `<section class="card p-4" id="project-sites">
       <div class="mb-1">${head}</div>
-      <p class="text-[11px] text-gray-400 mb-2">このクライアント（${esc(p.client_name || '')}）の開催場所です。同じクライアントの案件で共通に使います（ここで変えると、ほかの案件にも反映されます）</p>
+      <p class="text-[11px] text-gray-400 mb-2">このクライアント（${esc(p.client_name || '')}）の開催場所の一覧です。シフトや募集枠を作るときに、この中から場所を選びます（案件や日ごとに違う場所を選べます）。同じクライアントのほかの案件とも共通の一覧なので、名前・住所・位置を変えると、この場所を使うほかの案件にも反映されます。</p>
       <div class="flex gap-2 mb-3 flex-wrap"><input id="site-new-name" class="inp text-sm flex-1 min-w-[10rem]" maxlength="100" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm flex-1 min-w-[10rem]" maxlength="200" placeholder="住所（任意）">
         <button class="btn btn-primary text-sm shrink-0" data-action="addSite"><i class="fas fa-plus"></i>追加</button></div>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th title="このクライアントの全案件のシフトの件数">シフト（全案件）</th><th>状態</th><th></th></tr></thead><tbody>
