@@ -181,6 +181,9 @@ async function browserChecks() {
       await ev(`location.hash = ${JSON.stringify(hash)}`)
       await wait(400)
       const okDraw = await until(`!document.querySelector('#app .fa-spinner') && document.getElementById('app').innerText.trim().length > 10`, 15000)
+      // 画面の中の後から読む部分（募集の応募の一覧など）が描き終わるのを待ってから次へ移る。
+      // 読み込み中に画面を移ると、recruit.js の renderApplications が消えた要素を探してエラーになる（この Sprint の変更とは別の、前からの動き）
+      await wait(1500)
       drawn.push({ hash, okDraw })
       if (name === 'staff' || name === 'staff-detail' || name === 'shifts') await shot(name)
     }
