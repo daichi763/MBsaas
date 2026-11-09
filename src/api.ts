@@ -22,12 +22,14 @@ import { recruitAdminApi, recruitPublicApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
 import { loginEmailVerifyEmail } from './email-templates/login-email'
-import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, latenessSettingsFor, validGraceMinutes, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
+import reportSettingsApi, { REPORT_TYPES as ALL_REPORT_TYPES, ACTUAL_SYNC_TYPES, checkStaffReport, lateness, latenessSettings, validGraceMinutes, canEditAttendanceSettings, ATTENDANCE_SETTING_DENIED, loadReportState, reportStatus, reportableTypes, reportedAtMinute, MAX_LATE_GRACE_MINUTES } from './report-settings'
 import { attendanceTypesBatch, dailyReportRequiredSql } from './report-settings'
 import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-settings'
 // 前日確認（#176）と、電波がない場所で押した報告の時刻（#427）
-import { clientRequestId, dayBeforeKey, dayBeforeSettings, dayBeforeState, deviceReportTime } from './report-settings'
+import { dayBeforeKey, dayBeforeSettings, dayBeforeState } from './report-settings'
 import { chunk } from './lib/d1-chunk'
+import { attendanceTestHooks } from './lib/d1-retry'
+import { recordPunch } from './attendance-punch'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
@@ -64,7 +66,7 @@ import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
 import { staffPayAdminApi, staffPayStaffApi } from './staff-pay'
 import { staffSelfServiceApi, staffRequestsAdminApi, parseDocMeta } from './staff-self-service'
-import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, checkInDistance, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
+import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
 import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
 import { opLog, logShifts, finishLog, opChanges, OP_ACTION_LABELS } from './lib/operation-log'
 import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
@@ -78,8 +80,9 @@ type Bindings = {
   RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   RETENTION_ENABLED?: string
   TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string
+  TEST_HOOKS?: string
 }
-type Variables = { user: any; hqAudited?: boolean }
+type Variables = { user: any; hqAudited?: boolean; d1FailWrite?: () => boolean }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -1762,37 +1765,9 @@ api.get('/admin/shifts/:id/check-in-location', async (c) => {
   })
 })
 
-// ---------- 電波がない場所で押した報告（#427） ----------
-// アプリは通信に失敗した報告を端末に保存し、通信が戻ってから押した時刻（pressed_at）と一意キー（client_request_id）を付けて送り直す。
-// 同じキーの報告が記録済みなら、記録済みの内容をそのまま返す（応答だけが届かなかった送信の再送で 409 にしない）
-async function duplicateStaffReport(db: D1Database, shiftId: number, type: string, key: string | null) {
-  if (!key) return null
-  return db.prepare(`SELECT reported_at, status, late_minutes, early_leave_minutes, distance_m, photo_key, time_source FROM attendance_reports
-    WHERE shift_id = ? AND report_type = ? AND client_request_id = ?`).bind(shiftId, type, key).first() as Promise<any>
-}
-function duplicateStaffReportResult(r: any, settingsJson: any) {
-  return { ok: true, duplicate: true, status: r.status, reported_at: r.reported_at, device_time: r.time_source === 'device', late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes,
-    ...(r.photo_key ? { photo_key: r.photo_key } : {}), ...distanceResult(r.distance_m ?? null, settingsJson) }
-}
-// 記録の時刻。押した時刻が送られたら、範囲（report-settings.ts の deviceReportTime）を確かめ、受け取った時刻より前の分なら押した時刻で記録する。
-//   checkAt: 受付の時間帯を確かめる時刻（押した時刻で記録するときは押した時刻）
-//   押した時刻で記録するときは、記録済みの前の報告より前の時刻にならないことも確かめる（順序が逆の記録を作らない）
-async function staffReportTime(db: D1Database, shiftId: number, type: string, now: string, pressedRaw: any):
-  Promise<{ at: string; checkAt: string; pressed: string | null; adopt: boolean } | { error: string; status: number }> {
-  const dev = deviceReportTime(pressedRaw, now)
-  if ('error' in dev) return dev
-  if (!dev.adopt || !dev.pressed) return { at: reportedAtMinute(now), checkAt: now, pressed: dev.pressed, adopt: false }
-  const at = reportedAtMinute(dev.pressed)
-  const earlier = REPORT_TYPES.slice(0, REPORT_TYPES.indexOf(type as any))
-  if (earlier.length) {
-    const r = await db.prepare(`SELECT report_type, reported_at FROM attendance_reports WHERE shift_id = ? AND report_type IN (${earlier.map(() => '?').join(',')})
-      ORDER BY reported_at DESC LIMIT 1`).bind(shiftId, ...earlier).first() as any
-    if (r && String(r.reported_at) > at) {
-      return { error: `${REPORT_LABEL[r.report_type]}（${fmtMdHm(r.reported_at)}）より前の時刻になるため、押した時刻（${fmtMdHm(at)}）では記録できません。打刻履歴から修正を申請してください`, status: 400 }
-    }
-  }
-  return { at, checkAt: dev.pressed, pressed: dev.pressed, adopt: true }
-}
+// ---------- 打刻（#427 #9939。本体は src/attendance-punch.ts） ----------
+// アプリは1回の打刻ごとに一意キー（client_request_id）・押した時刻（pressed_at）・端末の今の時刻（device_now）を付けて送り、
+// 通信の失敗・混雑（500・503）のときは、端末に保存して同じキーで送り直す。同じキーの報告が記録済みなら、記録済みの内容をそのまま返す
 
 // 押した時刻で記録した印（打刻修正で直した報告には付けない。修正の後の時刻は承認した内容のため）
 function deviceTimeMark(r: any) {
@@ -1800,87 +1775,30 @@ function deviceTimeMark(r: any) {
   return { device_time: dev, received_at: dev ? r.received_at : null }
 }
 
-// 勤怠報告
-api.post('/staff/attendance', async (c) => {
-  const u = c.get('user')
-  const { shift_id, report_type, latitude, longitude, address, no_photo_reason, no_photo_note, client_request_id, pressed_at } = await c.req.json()
-  if (!REPORT_TYPES.includes(report_type)) return c.json({ error: '不正な報告種別です' }, 400)
-  // 勤怠の自動振り分け: シフトの所有企業・スタッフ行に記録する（同一人物の他社シフトも可）
-  const resolved = await resolvePersonShift(c, shift_id)
-  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const { shift, staff: owner } = resolved
-  // 同じ送信の再送（#427）
-  const reqId = clientRequestId(client_request_id)
-  const dup = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-  if (dup) return c.json(duplicateStaffReportResult(dup, owner.settings_json))
-  const now = nowJST()
-  const time = await staffReportTime(c.env.DB, shift.shift_id, report_type, now, pressed_at)
-  if ('error' in time) return c.json({ error: time.error, code: 'device_time' }, time.status as 400)
-  const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  // 欠勤・確定済みでないか・受付の時間帯か（稼働日。休憩・勤務終了・退店は翌日も）・有効か・報告済みや申請中でないか・順序（#116 #84 #122 #47）
-  // 受付の時間帯は、押した時刻で記録するときは押した時刻で確かめる（#427）
-  const state = await loadReportState(c.env.DB, shift.shift_id)
-  const ng = checkStaffReport(shift, report_type, time.checkAt, modes ? modes.required_attendance : [...REPORT_TYPES], state)
-  if (ng) return c.json({ error: ng.error }, ng.status as 400)
-  // 写真が必須の入店・退店は写真付きの API で送る。写真を送れないときは、会社が許可していれば理由つきで写真なしで受け付ける（#535）
-  let noPhotoReason: string | null = null
-  if (PHOTO_REQUIRED_TYPES.includes(report_type)) {
-    const proj = await c.env.DB.prepare('SELECT photo_required_override FROM projects WHERE project_id = ?').bind(shift.project_id).first()
-    if (resolvePhotoRequired(owner, proj?.photo_required_override as number | null)) {
-      const reason = noPhotoReasonText(no_photo_reason, no_photo_note)
-      if (reason && typeof reason === 'object') return c.json({ error: reason.error }, 400)
-      if (!reason || !photoSkipAllowed(owner.settings_json)) return c.json({ error: PHOTO_REQUIRED_ERROR }, 400)
-      noPhotoReason = reason
-    }
-  }
+// 打刻の API のテスト用の仕掛け（TEST_HOOKS='true' のローカルだけ。src/lib/d1-retry.ts）
+api.use('/staff/attendance', attendanceTestHooks)
+api.use('/staff/attendance-photo', attendanceTestHooks)
 
-  // 遅刻・早退の判定（入店・勤務開始は開始の絶対日時と比べ、会社設定の猶予を超えたら late。勤務終了・退店は早退の分数。#134 #219 #497）
-  // 記録の時刻は受け取った時刻か、電波がない場所で押した時刻（#427。staffReportTime）
-  const at = time.at
-  const judged = lateness(shift, [{ report_type, reported_at: at }], await latenessSettingsFor(c.env.DB, owner.settings_json, shift.project_id))[0]
-  const status = reportStatus(judged, latitude)
-  // 入店の位置と現場（開催場所、なければ案件）の距離（#277）
-  const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, latitude, longitude) : null
-  // 同時に届いた2回目は一意制約（shift_id, report_type）で登録されない。秒は 00 にそろえる（#95 #133）
-  // 住所・user-agent は長さを切って保存する（報告用URLと同じ。#521）
-  const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, late_minutes, early_leave_minutes, no_photo_reason, distance_m,
-      client_request_id, pressed_at, received_at, time_source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-    .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, latitude ?? null, longitude ?? null, typeof address === 'string' && address ? address.slice(0, 200) : null,
-      (c.req.header('user-agent') || '').slice(0, 300), status, judged.late_minutes, judged.early_leave_minutes, noPhotoReason, distance,
-      reqId, time.pressed, now, time.adopt ? 'device' : null).run()
-  if (!ins.meta.changes) {
-    // 同じキーの送信が同時に届いて先に記録された場合は、記録済みの内容を返す
-    const again = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-    if (again) return c.json(duplicateStaffReportResult(again, owner.settings_json))
-    return c.json({ error: 'すでに報告済みです' }, 409)
-  }
-  // 勤務開始・終了（なければ入店・退店）と休憩を実績（実働時間）に反映
-  if (ACTUAL_SYNC_TYPES.includes(report_type)) await syncActualFromReports(c.env.DB, owner.company_id, Number(shift.shift_id)).catch(() => {})
-  return c.json({ ok: true, status, reported_at: at, device_time: time.adopt, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
+// 勤怠報告（写真なし。写真が必須の入店・退店は、会社が許可していれば理由つきで写真なしで受け付ける #535）
+api.post('/staff/attendance', async (c) => {
+  const b = await c.req.json().catch(() => ({} as any))
+  if (!REPORT_TYPES.includes(b.report_type)) return c.json({ error: '不正な報告種別です' }, 400)
+  const r = await recordPunch(c, { shiftId: b.shift_id, reportType: b.report_type, latitude: b.latitude, longitude: b.longitude, address: b.address,
+    noPhotoReason: b.no_photo_reason, noPhotoNote: b.no_photo_note, clientRequestId: b.client_request_id, pressedAt: b.pressed_at, deviceNow: b.device_now,
+    userAgent: c.req.header('user-agent') || '' })
+  return c.json(r.body, r.status as 200)
 })
 
 // 勤怠報告（写真必須：入店報告・退店報告専用）
 // フロント側で圧縮済みのJPEG/PNGをmultipart/form-dataで受け取り、R2へ保存する
 api.post('/staff/attendance-photo', async (c) => {
-  const u = c.get('user')
-
   let form: FormData
   try {
     form = await c.req.formData()
   } catch {
     return c.json({ error: '送信データの形式が不正です' }, 400)
   }
-
-  const shift_id = form.get('shift_id')
-  const report_type = form.get('report_type')
-  const latitude = form.get('latitude')
-  const longitude = form.get('longitude')
-  const photo = form.get('photo')
-  // 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
-  const takenAt = photoTakenAt(form.get('photo_taken_at'))
-  const source = photoSource(form.get('photo_source'))
-
+  const shift_id = form.get('shift_id'), report_type = form.get('report_type'), photo = form.get('photo')
   if (typeof report_type !== 'string' || !PHOTO_REQUIRED_TYPES.includes(report_type)) {
     return c.json({ error: '不正な報告種別です' }, 400)
   }
@@ -1888,64 +1806,13 @@ api.post('/staff/attendance-photo', async (c) => {
   if (!(photo instanceof File) || photo.size === 0) return c.json({ error: '写真が添付されていません' }, 400)
   if (!PHOTO_ALLOWED_TYPES.includes(photo.type)) return c.json({ error: '対応していない画像形式です（JPEG/PNGのみ）' }, 400)
   if (photo.size > PHOTO_MAX_BYTES) return c.json({ error: '画像サイズが大きすぎます。圧縮に失敗している可能性があります' }, 400)
-
-  const resolved = await resolvePersonShift(c, shift_id)
-  if (!resolved) return c.json({ error: 'シフトが見つかりません' }, 404)
-  const { shift, staff: owner } = resolved
-  // 同じ送信の再送と、電波がない場所で押した時刻（#427。POST /staff/attendance と同じ）。再送なら写真は保存しない
-  const rawReqId = form.get('client_request_id'), rawPressed = form.get('pressed_at')
-  const reqId = clientRequestId(typeof rawReqId === 'string' ? rawReqId : null)
-  const dup = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-  if (dup) return c.json(duplicateStaffReportResult(dup, owner.settings_json))
-  const now = nowJST()
-  const time = await staffReportTime(c.env.DB, shift.shift_id, report_type, now, typeof rawPressed === 'string' ? rawPressed : null)
-  if ('error' in time) return c.json({ error: time.error, code: 'device_time' }, time.status as 400)
-  const modes = (await modesForShifts(c.env.DB, [shift.shift_id])).get(shift.shift_id)
-  // POST /staff/attendance と同じ確認（欠勤・確定済み・受付の時間帯・有効・報告済み・申請中・順序）
-  const state = await loadReportState(c.env.DB, shift.shift_id)
-  const ng = checkStaffReport(shift, report_type, time.checkAt, modes ? modes.required_attendance : [...REPORT_TYPES], state)
-  if (ng) return c.json({ error: ng.error }, ng.status as 400)
-
-  const lat = latitude != null && latitude !== '' ? Number(latitude) : null
-  const lng = longitude != null && longitude !== '' ? Number(longitude) : null
-  // 遅刻・早退の判定（POST /staff/attendance と同じ）
-  const at = time.at
-  const judged = lateness(shift, [{ report_type, reported_at: at }], await latenessSettingsFor(c.env.DB, owner.settings_json, shift.project_id))[0]
-  const status = reportStatus(judged, lat)
-  // 入店の位置と現場の距離（#277。POST /staff/attendance と同じ）
-  const distance = report_type === 'check_in' ? await checkInDistance(c.env.DB, shift, lat, lng) : null
-
-  const ext = photo.type === 'image/png' ? 'png' : 'jpg'
-  const key = `attendance/${owner.company_id}/${owner.staff_id}/${shift_id}/${report_type}_${Date.now()}.${ext}`
-
-  try {
-    const buf = await photo.arrayBuffer()
-    await c.env.PHOTOS.put(key, buf, { httpMetadata: { contentType: photo.type } })
-  } catch {
-    return c.json({ error: '写真のアップロードに失敗しました。通信環境を確認して再度お試しください' }, 502)
-  }
-
-  try {
-    // 同時に届いた2回目（2台の端末・再送）は一意制約で登録されないので、写真を消して 409 にする。秒は 00 にそろえる（#95 #133）
-    const ins = await c.env.DB.prepare(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, latitude, longitude, address, device_info, status, photo_key, late_minutes, early_leave_minutes,
-        photo_taken_at, photo_source, distance_m, client_request_id, pressed_at, received_at, time_source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shift_id, report_type) DO NOTHING`)
-      .bind(owner.company_id, owner.staff_id, shift.shift_id, report_type, at, lat, lng, null, (c.req.header('user-agent') || '').slice(0, 300), status, key,
-        judged.late_minutes, judged.early_leave_minutes, takenAt, source, distance, reqId, time.pressed, now, time.adopt ? 'device' : null).run()
-    if (!ins.meta.changes) {
-      await c.env.PHOTOS.delete(key).catch(() => {})
-      const again = await duplicateStaffReport(c.env.DB, shift.shift_id, report_type, reqId)
-      if (again) return c.json(duplicateStaffReportResult(again, owner.settings_json))
-      return c.json({ error: 'すでに報告済みです' }, 409)
-    }
-  } catch {
-    // DB登録に失敗した場合はアップロード済みの写真を掃除する
-    await c.env.PHOTOS.delete(key).catch(() => {})
-    return c.json({ error: '報告の登録に失敗しました。もう一度お試しください' }, 500)
-  }
-  await syncActualFromReports(c.env.DB, owner.company_id, Number(shift_id)).catch(() => {})
-
-  return c.json({ ok: true, status, reported_at: at, device_time: time.adopt, photo_key: key, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, ...distanceResult(distance, owner.settings_json) })
+  const str = (k: string) => { const v = form.get(k); return typeof v === 'string' ? v : null }
+  // 写真のファイルの日時と選び方（カメラ・アルバム）。報告の日時とずれていれば管理画面で知らせる（#418）
+  const r = await recordPunch(c, { shiftId: shift_id, reportType: report_type, latitude: str('latitude'), longitude: str('longitude'),
+    clientRequestId: str('client_request_id'), pressedAt: str('pressed_at'), deviceNow: str('device_now'),
+    photo: { file: photo, takenAt: photoTakenAt(form.get('photo_taken_at')), source: photoSource(form.get('photo_source')) },
+    userAgent: c.req.header('user-agent') || '' })
+  return c.json(r.body, r.status as 200)
 })
 
 // 写真（R2）をそのまま返す。見つからなければ 404

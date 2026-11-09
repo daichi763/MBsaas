@@ -1,0 +1,68 @@
+// =========================================================
+// D1 の過負荷のときの短いやり直しと、打刻の API のテスト用の仕掛け（#9939）
+//   D1 は混雑すると「D1 DB is overloaded. Too many resources consumed within a 10 second window」で失敗する。
+//   一時的なものなので、打刻の読み書きは、このエラーのときだけその場で短く（200ms・500ms の2回まで）やり直す。
+//   ほかのエラー（制約違反など）はやり直さない。
+// =========================================================
+
+const OVERLOAD_RE = /D1 DB is overloaded|Too many resources consumed/i
+export function isD1Overloaded(e: any): boolean {
+  return OVERLOAD_RE.test(String((e && (e.message || e.cause?.message)) || e || ''))
+}
+export const D1_RETRY_DELAYS_MS = [200, 500]
+
+// fn を実行し、D1 の過負荷のときだけ D1_RETRY_DELAYS_MS の間をあけてやり直す。
+// inject はテスト用（呼ぶたびに true を返す間は、過負荷のエラーをまねる）
+export async function withD1Retry<T>(fn: () => Promise<T>, inject?: () => boolean): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      if (inject && inject()) throw new Error('D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window (test)')
+      return await fn()
+    } catch (e) {
+      if (!isD1Overloaded(e) || i >= D1_RETRY_DELAYS_MS.length) throw e
+      await new Promise(r => setTimeout(r, D1_RETRY_DELAYS_MS[i]))
+    }
+  }
+}
+
+// ---------- テスト用の仕掛け（環境変数 TEST_HOOKS='true' のときだけ。本番の設定には入れない） ----------
+// ローカルの wrangler dev に --var TEST_HOOKS:true を付けて起動したときだけ働く:
+//   ・応答のヘッダー X-Test-D1-Calls に、その要求で D1 を呼んだ回数（往復）と文の数を「回数/文の数」で返す
+//   ・要求のヘッダー X-Test-D1-Overload: n で、打刻の書き込みの最初の n 回を過負荷のエラーにする（やり直しの確認）
+export function testHooksOn(env: any): boolean {
+  return !!env && env.TEST_HOOKS === 'true'
+}
+type Stats = { calls: number; statements: number }
+function countingDb(db: D1Database, stats: Stats): D1Database {
+  const real = new WeakMap<object, D1PreparedStatement>()
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement => {
+    const p = new Proxy(s as any, {
+      get(t, k) {
+        if (k === 'bind') return (...a: any[]) => wrap(t.bind(...a))
+        if (k === 'first' || k === 'all' || k === 'run' || k === 'raw') return (...a: any[]) => { stats.calls++; stats.statements++; return t[k](...a) }
+        const v = Reflect.get(t, k, t)
+        return typeof v === 'function' ? v.bind(t) : v
+      },
+    })
+    real.set(p, s)
+    return p as D1PreparedStatement
+  }
+  return new Proxy(db as any, {
+    get(t, k) {
+      if (k === 'prepare') return (q: string) => wrap(t.prepare(q))
+      if (k === 'batch') return (list: D1PreparedStatement[]) => { stats.calls++; stats.statements += list.length; return t.batch(list.map(x => real.get(x as any) || x)) }
+      const v = Reflect.get(t, k, t)
+      return typeof v === 'function' ? v.bind(t) : v
+    },
+  }) as D1Database
+}
+// 打刻の API の前に置くミドルウェア。TEST_HOOKS のときだけ、この要求の DB を数える形に差し替える
+export async function attendanceTestHooks(c: any, next: () => Promise<void>) {
+  if (!testHooksOn(c.env)) return next()
+  const stats: Stats = { calls: 0, statements: 0 }
+  c.env = { ...c.env, DB: countingDb(c.env.DB, stats) }
+  let fail = Math.max(0, Number(c.req.header('X-Test-D1-Overload') || 0) || 0)
+  c.set('d1FailWrite', () => fail-- > 0)
+  await next()
+  try { c.res.headers.set('X-Test-D1-Calls', `${stats.calls}/${stats.statements}`) } catch { /* 応答のヘッダーを変えられないときは付けない */ }
+}
