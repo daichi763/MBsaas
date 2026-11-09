@@ -108,11 +108,11 @@
 
 | 言葉 | 意味 | テーブル・列・コード |
 |---|---|---|
-| 定期処理・cron | 決まった時刻に Worker が動かす処理 | `CRON_JOBS`（`src/index.tsx:853`）、記録は `cron_runs` |
+| 定期処理・cron | 決まった時刻に Worker が動かす処理 | `CRON_JOBS`（`src/index.tsx:852`）、記録は `cron_runs` |
 | データ保持・定期削除 | 保存期間を過ぎた個人情報の削除（日報3年・退職後7年など） | `src/services/retention.ts`、記録は `retention_logs` |
-| dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:870` |
+| dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:869` |
 | 削除の保留 | 本部が、特定のスタッフ・企業のデータの削除を止めること | `staff_profiles.retention_hold_at`・`companies.retention_hold_at` |
-| 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:8585`〜） |
+| 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:8538`〜） |
 | 操作履歴 | シフト・枠・精算の変更の前後の記録 | `operation_logs`（`src/lib/operation-log.ts`） |
 | 変更履歴 | 従業員データとスタッフ基本情報の変更の記録 | `employee_change_logs`（`src/lib/change-log.ts`） |
 | 本部の操作の履歴 | 本部の書き込みの記録 | `hq_audit_logs` |

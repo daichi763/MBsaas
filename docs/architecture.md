@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Field OS を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-09 時点の `review-fixes` ブランチ、コミット `706b263` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-09 時点の `review-fixes` ブランチ、コミット `56729d6` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -82,16 +82,16 @@ flowchart LR
 
 | 要素 | 役割 | 設定・コード |
 |---|---|---|
-| Worker `mbsaas` | 画面の HTML・API・Webhook・Service Worker・定期処理を1つの Worker で返す | `wrangler.jsonc:5`（名前）、`src/index.tsx:929`（`fetch` と `scheduled` の入口） |
-| Hono | ルーティングとミドルウェア。`/api/*` は `src/api.ts` にまとめ、機能ごとのファイルを `api.route()` でつなぐ | `src/index.tsx:80`、`src/api.ts:1262`〜`1309` |
+| Worker `mbsaas` | 画面の HTML・API・Webhook・Service Worker・定期処理を1つの Worker で返す | `wrangler.jsonc:5`（名前）、`src/index.tsx:928`（`fetch` と `scheduled` の入口） |
+| Hono | ルーティングとミドルウェア。`/api/*` は `src/api.ts` にまとめ、機能ごとのファイルを `api.route()` でつなぐ | `src/index.tsx:80`、`src/api.ts:1262`〜`1307` |
 | Workers Assets | `dist/` の静的ファイル（`public/` の中身が `vite build` で `dist/` に入る）を配信する | `wrangler.jsonc:8` |
-| D1 | すべての業務データ（SQLite 互換）。バインディング名 `DB` | `wrangler.jsonc:14`、`migrations/*.sql` |
-| R2 | 写真・書類のファイル。バケットは非公開で、ファイルは必ずログイン確認付きの API から返す | `wrangler.jsonc:21`（`PHOTOS`・`DOCUMENTS`・`CONTRACTS`） |
-| Cron Triggers | 毎日 3:00・3:30（日本時間）と15分おきに定期処理を起動する | `wrangler.jsonc:36`、`src/index.tsx:853`（`CRON_JOBS`） |
-| Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:86` |
+| D1 | すべての業務データ（SQLite 互換）。バインディング名 `DB` | `wrangler.jsonc:17`、`migrations/*.sql` |
+| R2 | 写真・書類のファイル。バケットは非公開で、ファイルは必ずログイン確認付きの API から返す | `wrangler.jsonc:24`（`PHOTOS`・`DOCUMENTS`・`CONTRACTS`） |
+| Cron Triggers | 毎日 3:00・3:30（日本時間）と15分おきに定期処理を起動する | `wrangler.jsonc:39`、`src/index.tsx:852`（`CRON_JOBS`） |
+| Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:90` |
 | Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:124` |
 | Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:86`（`/sw.js`） |
-| Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:285`・`295` |
+| Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:284`・`294` |
 | jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:129`〜`145` |
 | Workers Builds | GitHub の `main` に入ると、ビルドして本番にデプロイする | `scripts/ci-wrangler-config.mjs:1`〜`5` |
 
@@ -142,11 +142,11 @@ flowchart LR
 
 参照番号は `newErrorRef()`（`src/lib/error-log.ts:53`〜`55`）が作ります。パスに入るトークン（20文字以上で、数字か大文字を含む英数字）は `maskPath()` が `***` に伏せます（`src/lib/error-log.ts:62`〜`64`）。利用者から参照番号を聞いたら、Workers Logs で `ref` を検索します（[operations.md](operations.md) の「ログの見方」）。
 
-あわせて、エラーの要約を D1 の `error_logs` に応答の後で残し（`src/index.tsx:63`〜`64`）、本部画面の「障害」で見られるようにしています。定期処理の失敗も `withErrorLog` で同じ表に残します（`src/index.tsx:910`〜`927`）。件数が目安を超えると本部の管理者に通知します。仕組みと設定は [monitoring.md](monitoring.md) を見てください。
+あわせて、エラーの要約を D1 の `error_logs` に応答の後で残し（`src/index.tsx:63`〜`64`）、本部画面の「障害」で見られるようにしています。定期処理の失敗も `withErrorLog` で同じ表に残します（`src/index.tsx:909`〜`926`）。件数が目安を超えると本部の管理者に通知します。仕組みと設定は [monitoring.md](monitoring.md) を見てください。
 
 ## 5. 定期処理（Cron Trigger）
 
-起動の式は `wrangler.jsonc:36`（`triggers.crons`）、実行する処理の一覧は `src/index.tsx:853` の `CRON_JOBS` です。時刻は UTC で書くので、日本時間は +9 時間です。
+起動の式は `wrangler.jsonc:39`（`triggers.crons`）、実行する処理の一覧は `src/index.tsx:852` の `CRON_JOBS` です。時刻は UTC で書くので、日本時間は +9 時間です。
 起動した式に合う処理を、一覧の上から順に実行します。1つが失敗しても次へ進み、処理ごとの結果を `cron_runs` テーブルに残して本部画面の「データ保持・定期処理」に出します（`src/services/cron.ts:39`〜`75`）。失敗した処理と、25時間以上動いていない処理は、本部画面の上に警告を出します（`src/services/cron.ts:88`）。
 
 | 式（UTC） | 日本時間 | 処理名（`name`） | 内容 | 関数 |
@@ -156,20 +156,20 @@ flowchart LR
 | `*/15 * * * *` | 15分おき | `notification_digest` | 打刻修正の承認依頼のまとめメール（毎朝8時以降の最初の起動で1回） | `src/notifications.ts` の `runNotificationDigests` |
 | `0 18 * * *` | 毎日 3:00 | `auth_purge` | 期限切れのセッション・ログイン試行・1年より古いログイン履歴の削除 | `src/lib/auth.ts:191` |
 | `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL）の削除 | `src/services/retention.ts:1086` |
-| `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1336` |
+| `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1044` |
 | `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:944` |
 | `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:203` |
 | `0 18 * * *` | 毎日 3:00 | `affiliation_schedules` | 予約した所属区分の変更を適用する | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
 | `0 18 * * *` | 毎日 3:00 | `notice_reads_purge` | お知らせの既読の記録の削除（2年） | `src/api.ts:352` |
 | `0 18 * * *` | 毎日 3:00 | `board_saved_search` | 案件掲示板の保存した検索条件に合う新着の知らせ | `src/board.ts` の `notifySavedSearchMatches` |
-| `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日） | `src/api.ts:8256` |
+| `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日） | `src/api.ts:8207` |
 | `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:988` |
 | `30 18 * * *` | 毎日 3:30 | `notice_read_reports` | 既読率レポートの集計 | `src/api.ts:315` |
-| `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7106` |
+| `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7057` |
 | `*/15 * * * *` | 15分おき | `doc_expiry_notice` | 書類の有効期限（30日以内・期限切れ）を管理者に知らせる | `src/notifications.ts` の `notifyExpiringDocuments` |
 
-- 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:934`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
-- 毎日の処理を 3:00 と 3:30 に分けているのは、1回の起動で D1 に投げられる問い合わせの数に上限があるためです（`src/index.tsx:847`、`src/services/cron.ts:5`〜`6`）。
+- 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:933`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
+- 毎日の処理を 3:00 と 3:30 に分けているのは、1回の起動で D1 に投げられる問い合わせの数に上限があるためです（`src/index.tsx:846`、`src/services/cron.ts:5`〜`6`）。
 - 何もしなかった実行（`idle: true`）は、直前の記録も idle ならその行を消してから記録します。15分おきの処理で記録が埋まらないようにするためです（`src/services/cron.ts:56`〜`59`）。
 
 ## 6. 外部サービス
@@ -184,15 +184,15 @@ flowchart LR
 
 ### 6.2 Web Push（プッシュ通知）
 
-- 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:82`〜`120`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1870`・`1930`・`1962`・`1984`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
+- 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:82`〜`120`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1825`・`1885`・`1917`・`1939`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
 - 鍵: シークレット `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` があればそれを使い、なければ初回に作って D1 の `push_vapid_keys` に保存します（`src/lib/web-push.ts:40`〜`57`）。
 - アプリ内の通知（`user_notifications`）が入ると、トリガー（`migrations/0081_push.sql` の `trg_user_notifications_push`）で `push_queue` に積まれ、API の応答の後と15分おきの cron で送ります。送り先が 404・410 を返した購読は消します（`src/lib/web-push.ts:109`）。
 
 ### 6.3 Turnstile（応募のロボット判定）
 
-- `TURNSTILE_SITE_KEY` と `TURNSTILE_SECRET_KEY` の両方があるときだけ使います（`src/recruit.ts:285`）。
-- Cloudflare への問い合わせ（siteverify）が失敗・5秒でタイムアウトしたときは、応募を受け付けて「要確認」の印（`recruit_applications.turnstile_unverified = 1`）を付けます。判定に落ちた応募は受け付けません（`src/recruit.ts:319`〜`326`。[decisions.md](decisions.md) の D-01）。
-- そのほかの機械的な送信の対策: 見えない入力欄・表示から短時間の送信は保存しない、同じ接続元から1時間あたり・同じ電話番号から1日あたりの件数の上限（`src/recruit.ts:315`〜`354`）。接続元 IP はそのまま保存せず、`RATE_LIMIT_SALT`（なければ `TURNSTILE_SECRET_KEY`）を塩にしたハッシュにします（`src/recruit.ts:388`〜`398`）。
+- `TURNSTILE_SITE_KEY` と `TURNSTILE_SECRET_KEY` の両方があるときだけ使います（`src/recruit.ts:284`）。
+- Cloudflare への問い合わせ（siteverify）が失敗・5秒でタイムアウトしたときは、応募を受け付けて「要確認」の印（`recruit_applications.turnstile_unverified = 1`）を付けます。判定に落ちた応募は受け付けません（`src/recruit.ts:318`〜`325`。[decisions.md](decisions.md) の D-01）。
+- そのほかの機械的な送信の対策: 見えない入力欄・表示から短時間の送信は保存しない、同じ接続元から1時間あたり・同じ電話番号から1日あたりの件数の上限（`src/recruit.ts:314`〜`353`）。接続元 IP はそのまま保存せず、`RATE_LIMIT_SALT`（なければ `TURNSTILE_SECRET_KEY`）を塩にしたハッシュにします（`src/recruit.ts:387`〜`397`）。
 
 ### 6.4 jsDelivr（画面のライブラリ）
 
@@ -217,7 +217,7 @@ sequenceDiagram
 ```
 
 - `npm run build`（`package.json:6`）は、Tailwind の CSS を作り（`build:css`）、`vite build` で `dist/_worker.js` と静的ファイルを作り、最後に `scripts/ci-wrangler-config.mjs` を動かします。
-- `wrangler.jsonc` のトップレベルはローカル開発用（メールを送らない・デモの案内を出すなど）で、本番の設定は `env.production` にあります（`wrangler.jsonc:3`〜`4`）。Workers Builds は `--env` を付けずに `wrangler deploy` するので、CI のとき（`WORKERS_CI=1` か `CI=true`）だけ、`env.production` をトップレベルに展開した `wrangler.json` を作ります。wrangler は `wrangler.json` を `wrangler.jsonc` より先に読みます（`scripts/ci-wrangler-config.mjs:1`〜`31`）。`wrangler.json` は `.gitignore` に入っています。
+- `wrangler.jsonc` のトップレベルはローカル開発用（メールを送らない・デモの案内を出すなど）で、本番の設定は `env.production` にあります（`wrangler.jsonc:3`〜`4`）。Workers Builds は `--env` を付けずに `wrangler deploy` するので、CI のとき（`WORKERS_CI=1` か `CI=true`）だけ、`env.production` をトップレベルに展開した `wrangler.json` を作ります。wrangler は `wrangler.json` を `wrangler.jsonc` より先に読みます（`scripts/ci-wrangler-config.mjs:1`〜`33`）。`wrangler.json` は `.gitignore` に入っています。
 - **マイグレーションは自動では適用されません**。新しい列・テーブルを使うコードが先に出ると、その API が 500 になるので、マージより先に手で本番に適用します（手順は [operations.md](operations.md) の「本番リリース」）。
 - 手元から `npm run deploy`（`wrangler deploy --env production`）でも出せますが、ふだんは GitHub 経由で出します。
 
@@ -340,7 +340,7 @@ docs/                     この資料と機能ごとの仕様
 - **本部**: 本部ユーザー（`system_admin`）は、本部専用の企業行（`companies.active_status = 'internal'`）に所属します（`migrations/0033_account_admin.sql:7`〜`16`）。本部が各社の管理画面を見るのは、企業が許可したときだけで、期限付き・読み取り専用です。開始・終了と開いた画面を記録します（`src/hq-support.ts:4`、`197` の `hqViewAdminGuard`、Cookie `hq_view`）。本部の書き込みは `hq_audit_logs` に残します（`src/api.ts:860`〜`873`）。
 - **企業の停止**: 本部で停止にすると（`companies.active_status = 'inactive'`）、その企業の利用者はログイン・API が使えなくなり（`src/lib/auth.ts:98`、`138`）、セッションも消します（`src/lib/auth.ts:114`）。
 - **企業間のスタッフ連携**（会社をまたいで同じ人を使う仕組み）: 所属元のスタッフを、連携用のコード（自社雇用は人物の恒久 ID `FS…`、連携で受けた人をさらに渡すときは `RL…`）で連携先に登録します。連携先には自社の行（`staff_profiles.affiliation_type = 'linked_external'`、ユーザーコード `LK-…`。照合できないパスワード）が作られ（`src/roster.ts:1326`）、基本項目は所属元の行をその場で読みます。共有する項目と共有しない項目は `src/roster.ts:220`〜`234`（同意の版 v3）で決まり、同意は `roster_consents` に残します。詳細は [decisions.md](decisions.md) の D-03・D-04 と [spec_multi_company_staff.md](spec_multi_company_staff.md)。
-- **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1607`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:185` の `resolvePersonShift`）。
+- **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1593`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:185` の `resolvePersonShift`）。
 
 ## 12. 設定値（環境変数・シークレット）
 
@@ -348,12 +348,12 @@ docs/                     この資料と機能ごとの仕様
 
 ### 12.1 `vars`（`wrangler.jsonc` に書く。デプロイのたびにこの値になる）
 
-| 名前 | ローカル（`wrangler.jsonc:40`） | 本番（`wrangler.jsonc:77`） | 意味 |
+| 名前 | ローカル（`wrangler.jsonc:43`） | 本番（`wrangler.jsonc:81`） | 意味 |
 |---|---|---|---|
 | `MAIL_FROM` | Resend のテスト用アドレス | 同じ（独自ドメインに変える予定） | メールの送信元。`resend.dev` のテスト用アドレスは Resend のアカウント所有者にしか届かない（`src/services/email.ts:95`〜`98`） |
 | `APP_BASE_URL` | `http://localhost:8787` | 本番の URL | メールの中のリンク、VAPID の連絡先の既定 |
 | `MAIL_ENABLED` | `false` | `true` | `'false'` ならメールを送らず記録だけ（`src/services/email.ts:83`） |
-| `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:870`） |
+| `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:869`） |
 | `DEMO_MODE` | `true` | `false` | `'true'` のときだけ、ログイン画面にデモアカウントの案内を出す（`src/index.tsx:257`） |
 
 次の `vars` は省略できます（`wrangler.jsonc` に書かなければ既定の値。`src/lib/error-log.ts:39`〜`45`）。変え方は [monitoring.md](monitoring.md) の「通知の目安を変える」にあります。
@@ -372,9 +372,9 @@ docs/                     この資料と機能ごとの仕様
 |---|---|---|
 | `RESEND_API_KEY` | メール送信（`src/services/email.ts:84`・`137`） | メールを送らず、送信失敗（`mail_not_configured`）として記録する。**本番は未登録**（D-31） |
 | `RESEND_WEBHOOK_SECRET` | Resend の Webhook の署名の確認（`src/services/email.ts:273`） | Webhook に 503 を返す（不達の記録が更新されない） |
-| `TURNSTILE_SITE_KEY` | 募集ページに Turnstile を出す（`src/recruit.ts:276`） | 2つそろわなければ Turnstile を使わない。片方だけのときは管理画面に状態を出す（`src/recruit.ts:286`〜`289`） |
-| `TURNSTILE_SECRET_KEY` | Turnstile の判定（`src/recruit.ts:323`） | 同上 |
-| `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:394`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
+| `TURNSTILE_SITE_KEY` | 募集ページに Turnstile を出す（`src/recruit.ts:275`） | 2つそろわなければ Turnstile を使わない。片方だけのときは管理画面に状態を出す（`src/recruit.ts:285`〜`288`） |
+| `TURNSTILE_SECRET_KEY` | Turnstile の判定（`src/recruit.ts:322`） | 同上 |
+| `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:393`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push の署名（`src/lib/web-push.ts:41`） | 初回に鍵を作って D1 の `push_vapid_keys` に保存して使う |
 | `VAPID_SUBJECT` | Web Push の連絡先（`https://` か `mailto:`。`src/lib/web-push.ts:61`） | `APP_BASE_URL` が https ならそれ、なければ仮のアドレス |
 
@@ -384,7 +384,7 @@ docs/                     この資料と機能ごとの仕様
 
 | 名前 | 種類 | 本番の名前 |
 |---|---|---|
-| `DB` | D1 | `mbsaas-production`（`wrangler.jsonc:14`〜`20`。ローカルも同じ名前で、`--local` で手元の SQLite を使う） |
+| `DB` | D1 | `mbsaas-production`（`wrangler.jsonc:17`〜`23`。ローカルも同じ名前で、`--local` で手元の SQLite を使う） |
 | `PHOTOS` | R2 | `mbsaas-attendance-photos` |
 | `DOCUMENTS` | R2 | `mbsaas-staff-documents` |
 | `CONTRACTS` | R2 | `mbsaas-client-contracts` |
@@ -396,8 +396,8 @@ docs/                     この資料と機能ごとの仕様
 | CPU 時間が1リクエストあたり 10ms | PBKDF2 を 10,000 回にする。Web Push は本文の暗号化をせず署名だけにする。重い集計は D1 の SQL の中で行う（Worker の CPU を使わない） | `src/lib/auth.ts:10`〜`12`、`src/lib/web-push.ts:4`、`src/lib/operation-log.ts:7` |
 | D1 の1文あたりのバインドは100個まで | ID の一覧は `json_each(?)` で1つにまとめる。並べるときは90件ずつに分ける | `src/lib/d1-chunk.ts:1`〜`13` |
 | D1 の SQL 関数の引数は本番で32個まで（ローカルは127個まで通る） | `json_object` を16項目ずつに分ける。**ローカルのテストでは見つからない**ので注意 | `src/lib/operation-log.ts:13`〜`15` |
-| 1回の起動あたりの D1 の問い合わせ数に上限がある | 多くの行は `INSERT ... SELECT FROM json_each(?)` で1文100行ずつ書く。毎日の定期処理を2つの起動に分け、個人情報の削除を先に実行する | `src/lib/bulk-write.ts:1`〜`7`、`src/index.tsx:852` |
-| `shifts` にはトリガーがあり、D1 の `meta.changes` はトリガーの中の更新も数える | `shifts` を更新した文の `meta.changes` を件数として使わない（先に数えるか、前後の状態から数える） | `src/lib/bulk-write.ts:49`、`src/shift-board.ts:1896`、`migrations/0086_followups_a.sql:20` |
+| 1回の起動あたりの D1 の問い合わせ数に上限がある | 多くの行は `INSERT ... SELECT FROM json_each(?)` で1文100行ずつ書く。毎日の定期処理を2つの起動に分け、個人情報の削除を先に実行する | `src/lib/bulk-write.ts:1`〜`7`、`src/index.tsx:851` |
+| `shifts` にはトリガーがあり、D1 の `meta.changes` はトリガーの中の更新も数える | `shifts` を更新した文の `meta.changes` を件数として使わない（先に数えるか、前後の状態から数える） | `src/lib/bulk-write.ts:49`、`src/shift-board.ts:1897`、`migrations/0086_followups_a.sql:20` |
 
 まとめて保存・まとめて削除・CSV のような件数の多い処理が CPU の上限を超えないかの計測は、まだしていません（Sprint 13 の時点）。
 
