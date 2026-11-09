@@ -15,6 +15,7 @@ import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
 import { applyRateOverride, inheritView, inheritedAdjustStmt, loadPricingData, parsePriceSource, rateOverrideOf } from './shift-board'
 import boardApi from './board'
+import { adminBadgesApi } from './admin-badges'
 import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
 import { shiftTotals, staffingGaps } from './shift-board'
 import { recruitAdminApi, recruitPublicApi } from './recruit'
@@ -1307,6 +1308,8 @@ api.route('/staff', scheduleStaffApi)
 api.route('/admin', scheduleAdminApi)
 // 案内（チュートリアル）の進み具合と「はじめにやること」（#9711 #9712。src/tours.ts）
 api.route('/admin', toursAdminApi)
+// 管理画面のバッジの件数をまとめて返す（#9935。src/admin-badges.ts）
+api.route('/admin', adminBadgesApi)
 api.route('/staff', toursStaffApi)
 
 // =========================================================

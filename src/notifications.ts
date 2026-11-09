@@ -276,6 +276,13 @@ export async function notifyCorrection(c: any, correctionId: number, event: Corr
 // スタッフは同じ人のすべてのユーザーあての通知を出す（所属企業を切り替えても、申請の結果の通知が見える。#96）
 // 管理者の承認依頼には、申請の今の状態（処理済みか）を添える（#189）
 // =========================================================
+// 未読の通知の件数（hiddenJson は出さない種類の JSON 配列）。管理者は本人あてだけ（ids = [user_id]、hiddenJson = '[]'）。
+// 管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も同じ数え方を使う
+export async function unreadNotificationCount(db: D1Database, ids: number[], hiddenJson = '[]'): Promise<number> {
+  const n = await db.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE user_id IN (${ids.map(() => '?').join(',')}) AND read_at IS NULL AND kind NOT IN (SELECT value FROM json_each(?))`)
+    .bind(...ids, hiddenJson).first() as any
+  return n?.n || 0
+}
 function notificationRoutes(scope: 'admin' | 'staff') {
   const app = new Hono<{ Bindings: NotifyEnv; Variables: Variables }>()
   const userIds = async (c: any): Promise<number[]> => {
@@ -307,11 +314,7 @@ function notificationRoutes(scope: 'admin' | 'staff') {
     const unread = byKind.reduce((a, r) => a + Number(r.n), 0)
     return c.json({ notifications: rows.slice(0, limit), has_more: rows.length > limit, unread, unread_by_kind: Object.fromEntries(byKind.map(r => [r.kind, r.n])) })
   })
-  app.get('/notifications/unread-count', async (c) => {
-    const ids = await userIds(c)
-    const n = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM user_notifications WHERE ${inIds(ids)} AND read_at IS NULL AND ${notHidden()}`).bind(...ids, hidden(c)).first() as any
-    return c.json({ count: n?.n || 0 })
-  })
+  app.get('/notifications/unread-count', async (c) => c.json({ count: await unreadNotificationCount(c.env.DB, await userIds(c), hidden(c)) }))
   app.post('/notifications/read-all', async (c) => {
     const ids = await userIds(c)
     // 出していない通知は既読にもしない（再開したときに、元の未読のまま出す）

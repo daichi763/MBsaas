@@ -36,12 +36,12 @@ window.closeModal = () => {
 // ============ API 呼び出しの共通処理: ログインの期限切れ・アカウントの切り替え（#346 #526）・エラーの表示（#230） ============
 // バッジ更新・やり取りの新着確認など、利用者の操作によらない定期の取得（config に background: true を付けたものも含む）。
 // これらはセッションを延長せず（X-Background）、期限が切れても画面を移動しない
-const BACKGROUND_API = /^\/api\/admin\/(notifications\/unread-count|corrections\/pending-count|board\/unread-count|roster-chat\/unread-count|recruit-applications\/summary)(\?|$)/
+const BACKGROUND_API = /^\/api\/admin\/(badges|notifications\/unread-count|corrections\/pending-count|board\/unread-count|roster-chat\/unread-count|recruit-applications\/summary)(\?|$)/
 const SESSION_WARN_MINUTES = 30
 let SESSION_STATE = 'active' // active: 利用中 / expired: 期限切れ（再ログイン待ち） / switched: 別のアカウントでログインされた
 let SESSION_EXPIRES = null   // サーバーが返したセッションの期限（ミリ秒。端末の時計とのずれを補正済み）
 let RELOGIN_WAITERS = []     // 期限切れで止まった利用者の操作（再ログインの後に送り直す）
-// 定期の取得を止めるかどうか（notifications.js・board.js・roster-chat.js のポーリングで使う）
+// 定期の取得を止めるかどうか（バッジの定期の更新 refreshBadges・board.js のやり取りの新着の確認などで使う）
 window.sessionUsable = () => SESSION_STATE === 'active'
 // ログインの後に今の画面へ戻れるよう、パスとハッシュを next に付ける（#206）
 const loginNextUrl = () => '/login?next=' + encodeURIComponent(location.pathname + location.hash)
@@ -153,9 +153,7 @@ function relogin(btn) {
     const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
     waiters.forEach(w => axios(w.config).then(w.resolve, w.reject))
     toast('再ログインしました')
-    if (window.refreshNotifBadge) refreshNotifBadge()
-    if (window.refreshBoardBadge) refreshBoardBadge()
-    if (window.refreshChatBadge) refreshChatBadge()
+    refreshBadges()
   })
 }
 delegate('sessionGoLogin', () => { location.href = loginNextUrl() })
@@ -231,6 +229,34 @@ window.setNavCount = function (tab, n) {
   if (b) { b.textContent = total; b.classList.toggle('hidden', !total) }
   updateNavGroupCounts()
 }
+
+// ---------- メニューのバッジ（企業間チャット・通知・掲示板・打刻修正・応募）の件数の更新（#9935） ----------
+// 開いたときと60秒ごとの更新は GET /api/admin/badges の1本で取り、各画面の JS（roster-chat.js・notifications.js・board.js・
+// corrections.js・recruit.js）が onBadge で登録した描き方でバッジに出す。返ってこなかった数（権限がない・失敗した）のバッジは前のままにする。
+// 操作の後に1つだけ更新するときは、今までどおり各画面の refreshXxxBadge（それぞれの API）を使う
+const BADGE_APPLY = {}
+window.onBadge = (key, apply) => { BADGE_APPLY[key] = apply }
+// 描き方の登録は後から読み込む JS が行うので、HTML の読み込みが済んでから描く
+const DOM_READY = new Promise(r => document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', r, { once: true }) : r())
+let BADGES_SEQ = 0, BADGES_SHOWN = 0, BADGES_PENDING = 0, BADGES_AT = 0
+window.refreshBadges = async function () {
+  const seq = ++BADGES_SEQ
+  BADGES_PENDING++
+  try {
+    const { data } = await axios.get('/api/admin/badges')
+    await DOM_READY
+    // 先に送った要求の結果が後から届いたときは、新しい結果を上書きしない
+    if (seq < BADGES_SHOWN) return
+    BADGES_SHOWN = seq; BADGES_AT = Date.now()
+    for (const [key, apply] of Object.entries(BADGE_APPLY)) {
+      if (data && data[key] != null) { try { apply(data[key]) } catch (e) { } }
+    }
+  } catch (e) { } finally { BADGES_PENDING-- }
+}
+// ms 以内にまとめて取った（か取っている途中）か。開いたときに同じ数を続けて取らないために使う（roster-chat.js のダッシュボードの新着）
+window.badgesFresh = (ms) => BADGES_PENDING > 0 || Date.now() - BADGES_AT < ms
+// タブが裏にあるとき・ログインの期限切れ・アカウントの切り替えの後は取らない（#526）
+setInterval(() => { if (!document.hidden && ME && window.sessionUsable()) refreshBadges() }, 60 * 1000)
 
 // 左側のメニューの見出し（#9305。見出しは src/index.tsx の sideNavGroup）。押すと閉じたり開いたりし、閉じた見出しを localStorage に覚える。
 // 今のページがある見出しは開く（覚えた状態は変えない）。閉じた見出しの横には、中の項目の件数（NAV_COUNTS）の合計を出す
@@ -7342,6 +7368,8 @@ delegate('avbRemind', (el) => {
   }
   hideEmptyNavGroups()
   route()
+  // メニューのバッジ（#9935。開いたときはこの1回だけ取る）
+  refreshBadges()
   // 案内（チュートリアル）・右上の「？」（#9711。public/static/tour.js）
   if (window.FosTour) FosTour.init('admin', ME)
 })()

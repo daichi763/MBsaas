@@ -16,16 +16,16 @@
   const pageUrl = (t) => location.origin + '/apply/' + t
   const MAX_PAGE_PROJECTS = 50 // src/recruit.ts と同じ上限
 
-  // サイドメニュー・スマホのメニューの未対応件数。定期の更新は notifications.js の refreshNotifBadge から呼ぶ（#423）
-  window.refreshRecruitBadge = async function () {
-    try {
-      const { data } = await axios.get('/api/admin/recruit-applications/summary')
-      if (window.setNavCount) setNavCount('recruit', data.pending)
-      const el = document.getElementById('recruit-badge'); if (!el) return
-      el.textContent = data.pending; el.classList.toggle('hidden', !data.pending)
-    } catch (e) { }
+  // サイドメニュー・スマホのメニューの未対応件数。開いたときと60秒ごとの更新は admin.js の refreshBadges（GET /api/admin/badges の recruit）がまとめて行う（#9935）
+  const applyRecruitBadge = (d) => {
+    if (window.setNavCount) setNavCount('recruit', d.pending)
+    const el = document.getElementById('recruit-badge'); if (!el) return
+    el.textContent = d.pending; el.classList.toggle('hidden', !d.pending)
   }
-  setTimeout(() => window.refreshRecruitBadge(), 800)
+  if (window.onBadge) onBadge('recruit', applyRecruitBadge)
+  window.refreshRecruitBadge = async function () {
+    try { applyRecruitBadge((await axios.get('/api/admin/recruit-applications/summary')).data) } catch (e) { }
+  }
 
   window.renderRecruit = async function () {
     // シフトボードの「応募n」（#recruit/slot-枠ID）から開いたときは、その枠の未対応の応募に絞り込む（#303）。

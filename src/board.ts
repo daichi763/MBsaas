@@ -443,16 +443,17 @@ boardApi.get('/threads', async (c) => {
   return c.json({ threads, unread_total: threads.reduce((a, t) => a + (t.unread || 0), 0) })
 })
 
-// 未読件数のみ（サイドバーのバッジ用・軽量）
-boardApi.get('/unread-count', async (c) => {
+// 未読件数のみ（サイドバーのバッジ用・軽量）。管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も使う
+export async function boardUnreadCount(c: any): Promise<number> {
   const u = c.get('user')
   await checkSavedSearchesOnPoll(c, u.user_id) // #479
   const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM board_messages m JOIN board_threads t ON t.thread_id = m.thread_id
     WHERE (t.poster_company_id = ? OR t.inquirer_company_id = ?) AND m.author_company_id != ? AND ${UNREAD_KIND}
       AND m.message_id > ${READ_POS}`)
     .bind(u.company_id, u.company_id, u.company_id, u.company_id, u.user_id).first()
-  return c.json({ unread: (r?.n as number) || 0 })
-})
+  return (r?.n as number) || 0
+}
+boardApi.get('/unread-count', async (c) => c.json({ unread: await boardUnreadCount(c) }))
 
 // メッセージ取得（全履歴）。取得しただけでは既読にしない（既読は POST /threads/:id/read。#250）
 boardApi.get('/threads/:id', async (c) => {
@@ -963,7 +964,7 @@ async function sameProposedPerson(db: D1Database, p: any, companyId: number): Pr
 // 保存した検索条件と、条件に合う新しい掲載の知らせ（#479）
 // - 条件は利用者ごと。一覧の検索と同じ項目（種別・都道府県・エリア・稼働日・スキル・キーワード）
 // - 1日1回、前回の確認より後に掲載された他社の案件を条件と照らし合わせ、合うものがあればアプリ内通知（と、選んだ人にはメール）で知らせる。
-//   定期処理（notifySavedSearchMatches を CRON_DAILY に登録）と、その日はじめての未読件数の確認（GET /unread-count）のどちらか早い方で行う。
+//   定期処理（notifySavedSearchMatches を CRON_DAILY に登録）と、その日はじめての未読件数の確認（GET /unread-count・管理画面のバッジの GET /api/admin/badges）のどちらか早い方で行う。
 //   確認は条件の行を「確認済み」に書き換えて押さえてから行うので、同時に動いても二重に知らせない
 // =========================================================
 const MAX_SAVED_SEARCHES = 10
