@@ -23,15 +23,16 @@
   }
   const MANUAL_NOTE = '実績が手入力のシフトのため、実績・金額は手入力のままです（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）'
 
-  window.refreshCorrectionsBadge = async function () {
-    try {
-      const { data } = await axios.get('/api/admin/corrections/pending-count')
-      if (window.setNavCount) setNavCount('corrections', data.count)
-      const el = document.getElementById('corrections-badge'); if (!el) return
-      el.textContent = data.count; el.classList.toggle('hidden', !data.count)
-    } catch (e) { }
+  // 開いたときと60秒ごとの更新は admin.js の refreshBadges（GET /api/admin/badges の corrections）がまとめて行う（#9935）
+  const applyCorrectionsBadge = (d) => {
+    if (window.setNavCount) setNavCount('corrections', d.count)
+    const el = document.getElementById('corrections-badge'); if (!el) return
+    el.textContent = d.count; el.classList.toggle('hidden', !d.count)
   }
-  setTimeout(() => window.refreshCorrectionsBadge(), 900)
+  if (window.onBadge) onBadge('corrections', applyCorrectionsBadge)
+  window.refreshCorrectionsBadge = async function () {
+    try { applyCorrectionsBadge((await axios.get('/api/admin/corrections/pending-count')).data) } catch (e) { }
+  }
 
   // ---------- スタッフの申請の受付期限（#215。companies.settings_json.correction_deadline_days） ----------
   // API は GET/PUT /admin/settings/corrections（{ deadline_days: 日数 | null }。null は期限なし）。

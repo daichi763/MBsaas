@@ -274,7 +274,9 @@ async function rowsOf(cid) {
   const html = await (await fetch(`${BASE}/admin`, { headers: { Cookie: await login('sample', 'admin') } })).text()
   ok('#236 スマホ用ヘッダーにログアウト・会社名・件数の合計の欄がある', /id="mobile-logout-btn"/.test(html) && /id="mobile-company-name"/.test(html) && /id="mobile-todo-badge"/.test(html), html.length)
   const js = await (await fetch(`${BASE}/static/notifications.js`)).text()
-  ok('#423 定期の更新で応募の件数も更新する', /refreshRecruitBadge\(\)/.test(js), '')
+  // 定期の更新は GET /api/admin/badges の1本にまとめた（#9935）。応募の件数は recruit.js が onBadge で受け取る
+  const recruitJs = await (await fetch(`${BASE}/static/recruit.js`)).text()
+  ok('#423 定期の更新で応募の件数も更新する', /window\.refreshBadges\(\)/.test(js) && /onBadge\('recruit'/.test(recruitJs), '')
   const hqHtml = await (await fetch(`${BASE}/hq`, { headers: { Cookie: await login('sample', 'hq') } })).text()
   ok('#438 本部画面に「メール送信」のタブ', /href="#mail"/.test(hqHtml), '')
 }

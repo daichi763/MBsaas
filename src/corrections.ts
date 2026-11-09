@@ -705,10 +705,12 @@ async function sendAndNotify(c: any, r: any, correctionId: number | undefined, e
   return send(c, r)
 }
 
-correctionsAdminApi.get('/corrections/pending-count', async (c) => {
-  const r = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(c.get('user').company_id).first() as any
-  return c.json({ count: r?.n || 0 })
-})
+// 承認待ちの件数（バッジ用）。管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も使う
+export async function companyPendingCorrectionCount(db: D1Database, companyId: number): Promise<number> {
+  const r = await db.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE company_id = ? AND status = 'pending'`).bind(companyId).first() as any
+  return r?.n || 0
+}
+correctionsAdminApi.get('/corrections/pending-count', async (c) => c.json({ count: await companyPendingCorrectionCount(c.env.DB, c.get('user').company_id) }))
 
 // スタッフは氏名の一部か、社員番号（完全一致）で探す（#445。er は employee_records）
 function staffNameFilter(name: string | undefined, w: string[], bind: any[]) {

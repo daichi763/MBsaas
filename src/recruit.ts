@@ -777,6 +777,8 @@ async function counts(db: D1Database, companyId: number, settled = false) {
   return { pending: Number(r?.pending || 0) - inactive, pending_public: Number(r?.pending_public || 0), pending_inactive: inactive }
 }
 recruitAdminApi.get('/recruit-applications/summary', async (c) => c.json(await counts(c.env.DB, c.get('user').company_id)))
+// 管理画面のバッジをまとめて返す GET /api/admin/badges（src/admin-badges.ts）も同じ件数を返す
+export const recruitApplicationCounts = (db: D1Database, companyId: number) => counts(db, companyId)
 
 // 枠（役割）の充足と、残っている未対応の応募の件数
 async function slotSummary(db: D1Database, companyId: number, slotRoleId: number) {
