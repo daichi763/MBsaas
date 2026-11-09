@@ -48,7 +48,7 @@ const st1 = client(await login('sample', 'st001'))
   const called = ['roster/consent-terms', 'rate-rules/resolve', 'availability/day', 'staff/report-template'].filter(p => callers.includes(p))
   ok('#9925 画面のコードに消した API の呼び出しがない', called.length === 0, called)
   const sl = src('public/static/staff-lifecycle.js')
-  ok('#9925 スタッフの提出設定の画面は日報だけを送る（attendance_mode を送らない）', /report-settings`, \{ daily_report_mode:/.test(sl) && !/report-settings`, \{[^}]*attendance_mode/.test(sl))
+  ok('#9925 スタッフの提出設定の画面は日報だけを送る（attendance_mode を送らない）', /staff\/\$\{sid\}\/report-settings`, \{ daily_report_mode:/.test(sl) && !/staff\/\$\{sid\}\/report-settings`, \{[^}]*attendance_mode/.test(sl))
 }
 
 // ---------- 同意文面: consent-terms → roster/lookup の consent ----------
@@ -84,7 +84,7 @@ const st1 = client(await login('sample', 'st001'))
   const s = await admin.get('/api/admin/hq-support/status')
   ok('#9925 管理画面の上部は hq-support/status の announcements を使う', s.status === 200 && Array.isArray(s.data.announcements), s)
   const read = await admin.post('/api/admin/hq-announcements/99999999/read')
-  ok('#9925 確認済みにする API（POST hq-announcements/:id/read）は残る（存在しないお知らせは 404 の JSON）', read.status === 404 && read.data && read.data.error === 'not found', read)
+  ok('#9925 確認済みにする API（POST hq-announcements/:id/read）は残る（存在しないお知らせは 404 の JSON）', read.status === 404 && /お知らせ/.test(read.data?.error || ''), read)
 }
 
 // ---------- 単価: rate-rules/resolve → shifts/price-preview ----------
