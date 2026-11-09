@@ -771,9 +771,9 @@ app.get('/admin', async (c) => {
         <button type="button" class="text-blue-600 shrink-0 px-1 py-1" data-action="hqsOpenSupport" title="伴走支援を依頼する" aria-label="伴走支援を依頼する"><i class="fas fa-hands-holding-circle"></i></button>
         <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
-      <!-- 本部の閲覧中の表示・本部からのお知らせ（#293 #516。public/static/hq-support.js が描く） -->
-      <div id="hq-support-bar" class="px-4 md:px-6 pt-4 max-w-7xl space-y-2 hidden"></div>
-      <main id="app" class="p-4 md:p-6 max-w-7xl"></main>
+      <!-- 本部の閲覧中の表示・本部からのお知らせ（#293 #516。public/static/hq-support.js が描く）。本文と同じ幅（admin.js の route() が #app に付ける data-layout と input.css で決める。#9930） -->
+      <div id="hq-support-bar" class="px-4 md:px-6 pt-4 space-y-2 hidden"></div>
+      <main id="app" class="p-4 md:p-6" data-layout="full"></main>
     </div>
   </div>
   <div id="modal-root"></div>
