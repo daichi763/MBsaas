@@ -90,8 +90,10 @@ export function computePremiums(rows: any[], st: PremiumSettings): Map<number, P
 
 // 一覧の行（shifts.* を含む）に割増（pay_premium・premium_*_minutes）を付ける。行を書き換える。
 // 確定済みの行は確定したときの値のまま。未確定の行は、同じスタッフ・同じ稼働日のほかのシフト（一覧の絞り込みの外も含む）を読んで計算する。
-// 欠勤の行・対象外の行は割増なし
-export async function attachPremiums(db: D1Database, companyId: number, rows: any[], settings?: PremiumSettings) {
+// 欠勤の行・対象外の行は割増なし。
+// loaded: 呼び出し側が、対象の稼働日の範囲のその会社の確定・代打のシフトを（下の SELECT と同じ列を含めて）すべて読んでいるとき、その行を渡す。
+// 渡すと読み直さずに、その行から同じ条件で選ぶ（精算の一覧を絞り込みなしで読んだとき。#9938）
+export async function attachPremiums(db: D1Database, companyId: number, rows: any[], settings?: PremiumSettings, loaded?: any[]) {
   const open = rows.filter(r => r.settle_status !== 'confirmed')
   for (const r of open) Object.assign(r, NO_PREMIUM)
   const targets = open.filter(r => WORKING.includes(r.status) && PREMIUM_PAYEES.includes(r.payee_type || 'payroll'))
@@ -99,7 +101,10 @@ export async function attachPremiums(db: D1Database, companyId: number, rows: an
   const st = settings || await loadPremiumSettings(db, companyId)
   if (!st.enabled) return
   const dates = targets.map(r => String(r.work_date)).sort()
-  const all = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.break_minutes, s.actual_start, s.actual_end, s.actual_break_minutes,
+  const staffIds = new Set(targets.map(r => Number(r.staff_id)))
+  // SQL の COALESCE(s.payee_type,'payroll') と同じく、NULL だけを自社給与とみなす
+  const all = loaded ? loaded.filter(s => WORKING.includes(s.status) && PREMIUM_PAYEES.includes(s.payee_type ?? 'payroll') && staffIds.has(Number(s.staff_id))
+    && String(s.work_date) >= dates[0] && String(s.work_date) <= dates[dates.length - 1]) : (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.break_minutes, s.actual_start, s.actual_end, s.actual_break_minutes,
       s.status, s.payee_type, s.pay_unit_type, s.pay_rate, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes
     FROM shifts s JOIN projects p ON p.project_id = s.project_id
     WHERE s.company_id = ? AND s.status IN ('confirmed','substitute') AND COALESCE(s.payee_type,'payroll') IN ('payroll','payroll_daily')

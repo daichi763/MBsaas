@@ -6726,7 +6726,7 @@ window.closeConsult = async function (id, btn) {
 }
 
 // ============ 請求前確認 ============
-// 金額は精算と同じ計算（交通費の請求区分・請求の調整額を含む請求合計）。total_bill / total がサーバーで計算した請求合計
+// 金額は精算と同じ計算（交通費の請求区分・請求の調整額・欠勤・中止のキャンセル料を含む請求合計。#9931）。total_bill / total がサーバーで計算した請求合計
 async function renderBilling(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
@@ -6734,6 +6734,9 @@ async function renderBilling(month) {
   try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
   // 月額（固定。#9702）の列は、その月に月額の行があるときだけ出す
   const hasMonthly = (data.monthly_lines || []).length > 0, hasStaffMonthly = (data.monthly_lines || []).some(l => l.staff_id != null)
+  // キャンセル料（欠勤・中止。#9931）の列と明細は、その月にキャンセル料の行があるときだけ出す
+  const cancelLines = data.cancel_lines || [], hasCancel = cancelLines.length > 0, t = data.totals || {}
+  const cancelCell = (amount, n, badge) => (n ? `${badge ? `<span class="badge badge-red whitespace-nowrap">キャンセル料 ${Number(n)}件</span><span class="block">${yen(amount)}</span>` : `${yen(amount)}<span class="text-[10px] text-gray-400 block">${Number(n)}件</span>`}` : '-')
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
@@ -6744,14 +6747,20 @@ async function renderBilling(month) {
         <button class="btn btn-primary" onclick="exportBillingCsv()"><i class="fas fa-file-csv"></i>CSV出力</button>
       </div>
     </div>
-    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整）。支払・粗利と確定は「精算」で確認してください。
+    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額と、欠勤・中止のキャンセル料です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整＋キャンセル料）。
+      精算で期間をこの月の1日〜今日（過去の月は月末）にすると、請求合計が一致します。支払・粗利と確定は「精算」で確認してください。
       ${hasMonthly ? '月額（固定）は、その月に今日までの確定・代打のシフトがあれば、1回だけ請求合計に含めます（スタッフ別の月額は、そのスタッフの行にも出します）。' : ''}
       稼働人数は確定・代打のシフトの人数、日報提出は日報が必要な確定・代打のシフトのうち日報があるものです（欠勤・希望（仮）と、日報を不要にしたシフトは数えません）</p>
+    <section class="card p-3 mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1" id="billing-totals">
+      <span class="text-sm text-gray-600">請求合計（今日まで）<span class="text-lg font-bold text-gray-900 ml-2">${yen(t.bill || 0)}</span></span>
+      ${t.cancel_count ? `<span class="text-xs text-gray-500"><span class="badge badge-red">キャンセル料</span> うち ${yen(t.cancel_bill || 0)}（${Number(t.cancel_count)}件）</span>` : ''}
+      ${t.monthly_bill ? `<span class="text-xs text-gray-500">うち月額 ${yen(t.monthly_bill)}</span>` : ''}
+    </section>
     <section class="card p-4 mb-4">
       <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
-          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
+          <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasCancel ? '<th>キャンセル料</th>' : ''}${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.by_project.map(p => `
             <tr>
               <td class="font-medium">${esc(p.project_name)}</td>
@@ -6761,6 +6770,7 @@ async function renderBilling(month) {
               <td>${p.substitute_days || 0}</td>
               <td>${billingReportCell(p)}</td>
               <td>${yen(p.total_amount)}</td><td>${yen(p.total_transport)}</td><td>${p.total_adjust ? yen(p.total_adjust) : '-'}</td>
+              ${hasCancel ? `<td>${cancelCell(p.total_cancel, p.cancel_count, false)}</td>` : ''}
               ${hasMonthly ? `<td>${p.total_monthly ? yen(p.total_monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(p.total_bill)}</td>
             </tr>`).join('')}
@@ -6772,20 +6782,40 @@ async function renderBilling(month) {
       <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
-          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
+          <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasCancel ? '<th>キャンセル料</th>' : ''}${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
               <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td><td>${billingReportCell(d)}</td>
               <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
+              ${hasCancel ? `<td>${cancelCell(d.cancel, d.cancel_count, true)}</td>` : ''}
               ${hasStaffMonthly ? `<td>${d.monthly ? yen(d.monthly) : '-'}</td>` : ''}
               <td class="font-bold">${yen(d.total)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
       </div>
-    </section>`
+    </section>
+    ${hasCancel ? `
+    <section class="card p-4 mt-4" id="billing-cancel-lines">
+      <h3 class="text-sm font-bold text-gray-700 mb-1">キャンセル料の明細（欠勤・中止）</h3>
+      <p class="text-xs text-gray-400 mb-3">請求合計に含めています。金額は「精算」の欠勤・中止の行（キャンセル料・補償）で入力・変更します</p>
+      <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>稼働日</th><th>スタッフ</th><th>案件</th><th>区分</th><th>キャンセル料</th></tr></thead>
+          <tbody>${cancelLines.map(l => `
+            <tr>
+              <td class="whitespace-nowrap">${esc(dayjs(l.work_date).format('M/D'))}</td>
+              <td><a href="#staff/${Number(l.staff_id)}" class="text-blue-600 hover:underline">${esc(l.staff_name)}</a></td>
+              <td class="text-xs">${esc(l.project_name)}</td>
+              <td><span class="badge badge-red whitespace-nowrap">${esc(l.reason_label)}</span>${l.note ? `<span class="text-xs text-gray-400 block">${esc(l.note)}</span>` : ''}</td>
+              <td class="whitespace-nowrap">${yen(l.bill_amount)}<span class="text-gray-400 text-xs block">キャンセル料</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>` : ''}`
   window._billingData = data
 }
 delegate('renderBilling', el => renderBilling(el.dataset.month))
@@ -6799,9 +6829,10 @@ window.exportBillingCsv = function () {
   const data = window._billingData
   if (!data) return
   // 月額（固定。#9702）は末尾の「月額」の列に出す（スタッフ別の月額はそのスタッフの行に、案件全体の月額は「案件全体の月額」の行として足す）
-  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id, d.monthly || 0])
-  for (const l of (data.monthly_lines || []).filter(x => x.staff_id == null)) rows.push(['案件全体の月額', l.project_name, '', '', 0, 0, 0, l.amount, '', l.amount])
-  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID', '月額'], rows)
+  // 欠勤・中止のキャンセル料（#9931。請求合計に含む）は、その後ろの「キャンセル料」の列に出す
+  const rows = data.detail.map(d => [d.name, d.project_name, d.work_days, d.absent_days || 0, d.amount || 0, d.transport || 0, d.adjust || 0, d.total || 0, d.staff_id, d.monthly || 0, d.cancel || 0])
+  for (const l of (data.monthly_lines || []).filter(x => x.staff_id == null)) rows.push(['案件全体の月額', l.project_name, '', '', 0, 0, 0, l.amount, '', l.amount, 0])
+  const csv = adminToCsv(['スタッフ', '案件', '稼働日数', '欠勤', '請求基本額', '交通費', '調整', '請求合計', 'スタッフID', '月額', 'キャンセル料'], rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
