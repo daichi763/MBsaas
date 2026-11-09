@@ -7211,8 +7211,8 @@ const routes = {
 // スタッフの申請（#272 #288 #289 #297。画面は書類の欄の後に定義）
 routes['staff-requests'] = () => renderStaffRequests()
 // 本文の幅（#9930）: 入力フォームが中心の画面は読みやすい幅（form）、ほかの一覧・表・ダッシュボード・詳細などは幅いっぱい（full）。
-// 一覧とフォームが半々の画面は full にする。幅そのものは input.css で決める（どの画面をどちらにしたかは docs/screens.md）
-const APP_FORM_TABS = new Set(['account', 'security'])
+// 一覧とフォームが半々の画面（セキュリティなど）は full にする。幅そのものは input.css で決める（どの画面をどちらにしたかは docs/screens.md）
+const APP_FORM_TABS = new Set(['account'])
 
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)

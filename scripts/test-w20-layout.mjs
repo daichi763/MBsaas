@@ -60,7 +60,8 @@ ok('メニューを畳む規則（#9922）はそのまま（本文の左の余�
 // ---------- 画面の切り替え（admin.js） ----------
 const a = await staticFile('admin.js')
 const formTabs = (a.match(/const APP_FORM_TABS = new Set\(\[([^\]]*)\]\)/) || [])[1]
-ok('フォームの幅にする画面は、アカウント設定とセキュリティ', formTabs !== undefined && JSON.stringify(formTabs.split(',').map(x => x.trim().replace(/'/g, ''))) === JSON.stringify(['account', 'security']), formTabs)
+// セキュリティは表（端末・管理者・ログインの履歴）が多く、一覧とフォームが半々の画面なので幅いっぱい（迷う画面は full）
+ok('フォームの幅にする画面は、アカウント設定だけ', formTabs !== undefined && JSON.stringify(formTabs.split(',').map(x => x.trim().replace(/'/g, ''))) === JSON.stringify(['account']), formTabs)
 const routeFn = a.slice(a.indexOf('function route() {'), a.indexOf("window.addEventListener('hashchange', route)"))
 const mark = "$app.dataset.layout = APP_FORM_TABS.has(tab) ? 'form' : 'full'"
 ok('route() がハッシュの先頭で #app に印を付ける（それ以外の画面・詳細はすべて幅いっぱい）', routeFn.includes(mark))
