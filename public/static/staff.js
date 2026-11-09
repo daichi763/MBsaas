@@ -536,16 +536,18 @@ function outboxFlush(manual, once) {
   if (PUNCH_PUMP) { PUNCH_AGAIN = true; punchWake(); return PUNCH_PUMP }
   if (!ME) return Promise.resolve()
   PUNCH_PUMP = (async () => {
-    const sent = [], failed = []
+    // handled: この回で送れた・断られた打刻（端末の保存を消せなかったときも、同じ打刻をくり返し送らない）
+    const sent = [], failed = [], handled = new Set()
     let since = null, gaveUp = false
     PUNCH_STATE.attempt = 0
     for (;;) {
       PUNCH_AGAIN = false
-      const it = (await outboxAll()).find(x => x.state === 'queued')
+      const it = (await outboxAll()).find(x => x.state === 'queued' && !handled.has(x.id))
       if (!it) break
       let res = null, err = null
       try { res = await outboxSend(it) } catch (e) { err = e || new Error('送信失敗') }
       if (!err) {
+        handled.add(it.id)
         await outboxDelete(it.id)
         const w = PUNCH_WAITERS.get(it.id); PUNCH_WAITERS.delete(it.id)
         if (w) w.done({ ok: true, data: res.data }); else sent.push(it)
@@ -564,7 +566,8 @@ function outboxFlush(manual, once) {
         continue
       }
       // 断られた: 待っている画面があれば、その画面に理由を出す（保存は消す）。なければ『送れなかった報告』に残す
-      const w = PUNCH_WAITERS.get(it.id); PUNCH_WAITERS.delete(it.id)
+      handled.add(it.id)
+      const w =PUNCH_WAITERS.get(it.id); PUNCH_WAITERS.delete(it.id)
       if (w) { await outboxDelete(it.id); w.done({ ok: false, error: err }) }
       else {
         const rec = { ...it, state: 'failed', error: attendanceErrorMessage(err, it.report_type), photo: null }
