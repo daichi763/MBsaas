@@ -96,7 +96,21 @@ flowchart LR
 
 - 従業員管理（`#employees`）は、会社管理者・事務担当だけです。ほかのロールでは、メニューの項目とスタッフ詳細の「従業員管理」のボタンを消し（`public/static/admin.js` の起動の処理）、開いても鍵の表示だけにします（[`route`](../public/static/admin.js)）。API でも止めます（[API 一覧](api.md) の 2）。
 - セキュリティ（`#security`）は全員が開けます（自分の二段階認証・ログイン中の端末）。会社の設定（二段階認証の必須・接続元の制限）・管理者のアカウント・ログインの履歴は、会社管理者のときだけ出します（[`renderSecurity`](../public/static/security.js)）。API でも会社管理者だけに絞っています。
-- スタッフアプリには募集・応募の画面がありません（D-22。11/9 にスタッフ向けの募集の API も外しました）。登録済みのスタッフも公開の募集ページから応募します。
+- スタッフアプリから募集に応募する機能（API は `/api/staff/recruit/*`）は、環境変数 `STAFF_APP_RECRUIT` が `1` のときだけ使えます（[`staffAppRecruitEnabled`](../src/notifications.ts)）。
+
+### 3.3 管理画面（/admin）の本文の幅
+
+本文（`<main id="app">`）の幅は、画面の種類で2つに分けています（#9930）。ハッシュが変わると [`route`](../public/static/admin.js) が `#app` に `data-layout` を付け、`src/input.css` の規則で幅を決めます。本部の閲覧中の表示（`#hq-support-bar`）とヘルプの行（`#tour-help-bar`）も本文と同じ幅です。
+
+| 印（`data-layout`） | 幅 | 画面 |
+|---|---|---|
+| `full`（幅いっぱい） | 上限なし。左のメニューを畳むと、その分（184px）広がる | ダッシュボード・通知・シフト管理（`#shifts`・`#shifts/week`）・出勤可能日・日報一覧・打刻修正承認（`#corrections`・`#corrections/punches`・`#corrections/emails`）・案件報告管理・履歴・CSV・スタッフマスタ（一覧・詳細）・スタッフの申請・従業員管理（一覧・詳細）・協力会社（一覧・詳細）・募集・応募・相談対応・フォロー履歴・案件管理（一覧・詳細・日報テンプレート）・クライアント（一覧・詳細）・案件掲示板・企業間チャット・連携先からの追記・精算・請求前確認・お知らせ配信・既読率レポート・実績分析・セキュリティ（`#security`。端末・管理者・ログインの履歴の表が多いため） |
+| `form`（フォームの幅） | 最大 64rem（1024px。余白を含む）。左に寄せる | アカウント設定（`#account`） |
+
+- 入力フォームが中心の画面だけを `form` にし、一覧とフォームが半々の画面（スタッフ詳細・案件詳細・セキュリティなど）は `full` にします。新しい画面は、何もしなければ `full` です。`form` にするときは `admin.js` の `APP_FORM_TABS` にハッシュの先頭（`/` の前）を足します。
+- 幅いっぱいの画面のカードの並びは、画面の幅が 1800px 以上（1920px のモニターなど）で列を増やします（`min-[1800px]:`）。クライアントのカードは 4 列、日報テンプレートのカードは 3 列、スタッフ詳細は 4 列（基本情報 3 列・右のファイルと評価のグラフ 1 列。評価のグラフが大きくなりすぎないように）です。表は列の幅が広がるだけです。
+- 会社の設定（写真添付・シフトの通知・緊急連絡先など）は、アカウント設定の中のモーダルで変えます。モーダル・下に固定したバー・トーストの幅は、本文の幅に関係なく変わりません。
+- スマホ幅（768px 未満）は、どちらでも画面の幅いっぱいです。本部画面（`/hq`）とスタッフアプリは対象外です（本部画面は今までどおり `max-w-7xl` で中央に寄せます）。
 
 ## 4. メニュー
 
@@ -112,7 +126,7 @@ flowchart LR
   - `#notifications` 通知
 - **シフト・勤怠**
   - `#shifts` シフト管理
-  - `#availability` 出勤可能日（public/static/admin.js:7201 が足す）
+  - `#availability` 出勤可能日（public/static/admin.js:7205 が足す）
   - `#reports` 日報一覧
   - `#corrections` 打刻修正承認
   - `#report-settings` 案件報告管理
@@ -206,7 +220,7 @@ flowchart LR
 | `#analytics` | 実績分析 | `renderAnalytics` [static/admin.js:5380](../public/static/admin.js#L5380) | GET `/api/admin/analytics`<br>GET `/api/admin/analytics/csv`<br>GET `/api/admin/analytics/series` |
 | `#analytics/<ID>` | 実績分析（詳細） | `renderAnalytics` [static/admin.js:5380](../public/static/admin.js#L5380) | GET `/api/admin/analytics`<br>GET `/api/admin/analytics/csv`<br>GET `/api/admin/analytics/series` |
 | `#attendance-history` | 履歴・CSV | `renderAttendanceHistory` [static/attendance-history.js:23](../public/static/attendance-history.js#L23) | GET `/api/admin/corrections/events`<br>GET `/api/admin/corrections/events/export`<br>GET `/api/admin/projects`<br>GET `/api/admin/report-settings/logs`<br>GET `/api/admin/report-settings/logs/export` |
-| `#availability` | 出勤可能日 | `renderAvailabilityBoard` [static/admin.js:7215](../public/static/admin.js#L7215) | GET `/api/admin/availability` |
+| `#availability` | 出勤可能日 | `renderAvailabilityBoard` [static/admin.js:7219](../public/static/admin.js#L7219) | GET `/api/admin/availability` |
 | `#billing` | 請求前確認 | `renderBilling` [static/admin.js:6730](../public/static/admin.js#L6730) | GET `/api/admin/billing-check` |
 | `#board` | 案件掲示板 | `renderBoard` [static/board.js:34](../public/static/board.js#L34) | GET `/api/admin/board/posts`<br>GET `/api/admin/board/posts/:id`<br>GET `/api/admin/board/project-template/:projectId`<br>GET `/api/admin/board/proposals`<br>GET `/api/admin/board/saved-searches`<br>GET `/api/admin/board/threads`<br>GET `/api/admin/board/threads/:id`<br>POST `/api/admin/board/threads/:id/messages`<br>GET `/api/admin/board/threads/:id/proposals`<br>POST `/api/admin/board/threads/:id/read`<br>GET `/api/admin/board/unread-count`<br>GET `/api/admin/projects` |
 | `#clients` | クライアント | `renderClients` [static/admin.js:3586](../public/static/admin.js#L3586) | GET `/api/admin/assignees/options`<br>GET `/api/admin/clients` |
@@ -291,7 +305,7 @@ flowchart LR
 | 名前 | 位置 |
 |---|---|
 | `homePathFor` | [lib/auth.ts:143](../src/lib/auth.ts#L143) |
-| `route` | [static/admin.js:7160](../public/static/admin.js#L7160) |
+| `route` | [static/admin.js:7163](../public/static/admin.js#L7163) |
 | `route` | [static/hq.js:2195](../public/static/hq.js#L2195) |
 | `renderSecurity` | [static/security.js:373](../public/static/security.js#L373) |
 <!-- END GENERATED: screens-refs -->

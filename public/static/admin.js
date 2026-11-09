@@ -1832,8 +1832,8 @@ async function renderStaffDetail(sid, opts = {}) {
   $app.innerHTML = `
     <div id="staff-detail-header">${staffDetailHeaderHtml(sid, p)}</div>
 
-    <div class="grid lg:grid-cols-3 gap-4 mb-4">
-      <section class="card p-4 lg:col-span-2" id="staff-basic-info">
+    <div class="grid lg:grid-cols-3 min-[1800px]:grid-cols-4 gap-4 mb-4">
+      <section class="card p-4 lg:col-span-2 min-[1800px]:col-span-3" id="staff-basic-info">
         ${staffBasicCardHtml(sid, p, affData, editing)}
       </section>
 
@@ -3284,9 +3284,9 @@ async function renderAdminTemplates() {
     </div>
     <p class="text-sm text-gray-500 mb-4">案件ごとにスタッフが日報で入力する項目です。案件の登録・編集で選びます。配信停止にしたテンプレートは新しい案件では選べません（使っている案件はそのまま使えます）。</p>
     <h3 class="text-sm font-bold text-gray-700 mb-2">自社のテンプレート</h3>
-    <div class="grid md:grid-cols-2 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
+    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
     <h3 class="text-sm font-bold text-gray-700 mb-2">本部配信のテンプレート</h3>
-    <div class="grid md:grid-cols-2 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
+    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
 }
 const tplById = id => ADMIN_TPLS.find(t => Number(t.template_id) === Number(id))
 delegate('newAdminTemplate', () => openTemplateEditor(null, { name: '', fields: [{ key: 'item1', label: '', type: 'number' }, { key: 'free', label: '自由記述', type: 'textarea' }] }))
@@ -3598,7 +3598,7 @@ async function renderClients() {
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
     </div>
-    <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" id="client-cards"></div>`
+    <div class="grid md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4 gap-4" id="client-cards"></div>`
   let timer = null
   document.getElementById('client-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawClientCards() }, 200) })
   document.getElementById('client-sort').addEventListener('change', ev => { L.sort = ev.target.value; drawClientCards() })
@@ -7156,6 +7156,9 @@ const routes = {
 }
 // スタッフの申請（#272 #288 #289 #297。画面は書類の欄の後に定義）
 routes['staff-requests'] = () => renderStaffRequests()
+// 本文の幅（#9930）: 入力フォームが中心の画面は読みやすい幅（form）、ほかの一覧・表・ダッシュボード・詳細などは幅いっぱい（full）。
+// 一覧とフォームが半々の画面（セキュリティなど）は full にする。幅そのものは input.css で決める（どの画面をどちらにしたかは docs/screens.md）
+const APP_FORM_TABS = new Set(['account'])
 
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)
@@ -7166,6 +7169,7 @@ function route() {
   if (ME && !ME.mfa_setup_required && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   openNavGroupOf(tab)
+  $app.dataset.layout = APP_FORM_TABS.has(tab) ? 'form' : 'full'
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
   // 自社の日報テンプレートの作成・編集（#165）
