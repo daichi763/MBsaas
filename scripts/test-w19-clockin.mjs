@@ -172,7 +172,10 @@ let photoCalls = null
   const sh = must(await admin.get(`/api/admin/shifts?from=${today}&to=${today}`), 'shifts').shifts.find(x => x.shift_id === s7)
   ok('勤務開始・勤務終了が実績（実働時間）に反映される', sh && sh.actual_start === w.data.reported_at.slice(11, 16) && sh.actual_end === e.data.reported_at.slice(11, 16) && sh.actual_source === 'report', sh)
   // 時給のシフト: 入店・退店の記録と同じ batch で時給の数量・金額を反映し、精算の「今の計算と違う」にならない（settlement.ts と同じ計算）
-  const s8 = await createShift(A.staff_id, pid, '00:00', '23:52')
+  // 休憩の既定が0分の時給の案件を使う（案件の休憩の既定は60分なので、25分の実働から引くと0時間になるため）
+  const pid8 = await newProject(PFX + '-時給')
+  must(await admin.put('/api/admin/projects/' + pid8 + '/pricing', { unit_price_type: 'hourly', unit_price: 1500, pay_unit_type: 'hourly', pay_rate: 1200, default_break_minutes: 0, hours_basis: 'clipped' }), 'pricing')
+  const s8 = await createShift(A.staff_id, pid8, '00:00', '23:52')
   must(await admin.put(`/api/admin/shifts/${s8}/price`, { bill_unit_type: 'hourly', bill_rate: 1500, pay_unit_type: 'hourly', pay_rate: 1200, bill_qty: '', pay_qty: '' }), 'price')
   const fdp = (type, p) => { const f = new FormData(); f.append('shift_id', String(s8)); f.append('report_type', type); f.append('photo', new Blob([PNG], { type: 'image/png' }), 'a.png')
     f.append('client_request_id', key()); f.append('pressed_at', String(p)); f.append('device_now', String(Date.now())); return f }
