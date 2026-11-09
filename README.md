@@ -204,7 +204,7 @@ npm run cf-typegen
 - **API**（`src/roster.ts`。`/api/admin/*` の管理者ロールでのみ利用可）
   - `GET /api/admin/roster/consent-terms` / `GET /api/admin/roster/lookup?code=` / `POST /api/admin/roster/link`
   - `POST /api/admin/roster`（`route`: `employee` / `partner` / `skillsheet`）
-  - `GET /api/admin/roster/partners` / `GET /api/admin/roster/consents[?staff_id=]`
+  - `GET /api/admin/roster/partners`（同意の記録は `roster_consents` に残す。会社全体の同意履歴の一覧の API は置かない。連携した行ごとの同意は `GET /api/admin/roster/:id/links` の `consents`）
 - **マイグレーション**: `0012_add_persons_and_staff_master.sql`（`persons` と `roster_consents` を追加し、`staff_profiles` / `users` / `staff_affiliations` に列を追加。既存の `staff_id` の値は変更しない）
 - **フェーズD 必須項目の企業別設定**: スタッフマスタ画面の「必須項目の設定」から変更します（変更できるのは会社管理者のみ）。氏名・性別は常に必須で変更できません。設定は `roster_field_requirements` に保存され、新規作成と基本項目の更新の両方に適用されます。①連携で登録したスタッフには適用しません。④スキルシートのみでは、最寄駅などの稼働系の項目は必須判定の対象外です
 - **フェーズE QRコード**: 自社雇用スタッフのスタッフ詳細と、スタッフ本人の画面（その他 → マイプロフィール）に、恒久固定のQRコードを表示します。①連携ではカメラでQRを読み取れます。読み取りはブラウザ内の jsQR で行い、画像はサーバーへ送信しません

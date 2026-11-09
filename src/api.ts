@@ -8376,14 +8376,16 @@ api.get('/hq/audit-logs', async (c) => {
   return c.json({ logs: rows.slice(0, HQ_AUDIT_PAGE), page, has_more: rows.length > HQ_AUDIT_PAGE })
 })
 
-// 契約ユーザー数（本部が決めた上限）と今の利用数。企業の管理画面に表示する（#321。登録は止めず、表示のみ）
+// 契約ユーザー数（本部が決めた上限）と今の利用数。企業の管理画面（アカウント設定）に表示する（#321 #9928。登録は止めず、表示のみ）
+// 数え方は本部の企業一覧・企業詳細と同じ（HQ_BILLABLE_SQL）。near_limit: 上限の9割以上で、まだ超えていない
 api.get('/admin/contract-usage', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare(`SELECT co.user_limit,
       (SELECT COUNT(*) FROM users u WHERE u.company_id = co.company_id AND ${HQ_BILLABLE_SQL}) AS user_count
     FROM companies co WHERE co.company_id = ?`).bind(u.company_id).first() as any
   const limit = row?.user_limit ?? null, count = row?.user_count || 0
-  return c.json({ user_count: count, user_limit: limit, over_limit: limit != null && count > limit, remaining: limit != null ? limit - count : null })
+  const over = limit != null && count > limit
+  return c.json({ user_count: count, user_limit: limit, over_limit: over, near_limit: limit != null && !over && count >= limit * 0.9, remaining: limit != null ? limit - count : null })
 })
 
 // テンプレート配信管理

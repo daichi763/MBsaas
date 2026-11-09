@@ -362,11 +362,4 @@ async function repriceStmts(db: D1Database, companyId: number, shiftIds: number[
   return [...updateRowsStmts(db, 'shifts', 'shift_id', PRICE_COLUMNS, priced, where, [companyId]),
     ...updateRowsStmts(db, 'shifts', 'shift_id', ['payee_type', 'payee_affiliation_id', 'payee_company_id'], locked, where, [companyId])]
 }
-
-// 統合の履歴（スタッフ詳細の表示用）
-staffMergeApi.get('/staff/:id/merges', async (c) => {
-  const u = c.get('user')
-  const rows = ((await c.env.DB.prepare(`SELECT m.*, us.name AS merged_by_name FROM staff_merges m LEFT JOIN users us ON us.user_id = m.merged_by
-    WHERE m.company_id = ? AND (m.target_staff_id = ? OR m.source_staff_id = ?) ORDER BY m.created_at DESC`).bind(u.company_id, c.req.param('id'), c.req.param('id')).all()).results as any[])
-  return c.json({ merges: rows.map(r => { let moved: any = {}; try { moved = JSON.parse(r.moved_json || '{}') } catch { } delete moved.shift_ids; return { ...r, moved_json: undefined, moved } }) })
-})
+// 統合の記録（staff_merges）は残すが、画面には出さないので一覧の API は置かない（利用者の決定 11/9。#9929）

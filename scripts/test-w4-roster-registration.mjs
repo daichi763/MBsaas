@@ -1,8 +1,21 @@
 // スタッフの新規登録・本登録・統合の残り（w4-roster-registration: #223 #251 #356 #424 #461 #506）の統合テスト
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
-// 実行: BASE=http://127.0.0.1:8815 node scripts/test-w4-roster-registration.mjs
+// 実行: BASE=http://127.0.0.1:8815 PERSIST=<保存先> node scripts/test-w4-roster-registration.mjs
+//   統合の記録（staff_merges）は一覧の API が無い（#9929）ので、PERSIST があるときにローカルの D1 で確かめる
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+// wrangler d1 execute の後に、つなぎっぱなしの接続が切られることがあるので、1回だけやり直す
+const rawFetch = globalThis.fetch
+globalThis.fetch = async (...args) => { try { return await rawFetch(...args) } catch (e) { if (!['ECONNRESET', 'ECONNABORTED'].includes(e?.cause?.code)) throw e; return rawFetch(...args) } }
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
+const PERSIST = process.env.PERSIST || ''
+// シェルを通さずに wrangler を呼ぶ（ローカルの D1 のみ）
+function d1(sql) {
+  const cli = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
+  const out = execFileSync(process.execPath, [cli, 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', PERSIST, '--json', '--command', sql.replace(/\s+/g, ' ')], { encoding: 'utf8' })
+  return JSON.parse(out.slice(out.indexOf('['))).map(r => r.results)
+}
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 400) : ''}`) }
 
@@ -112,8 +125,10 @@ let partnerA, partnerB
   ])
   const oks = [r1, r2].filter(r => r.status === 200).length
   ok('#461 同じ統合元を同時に2回統合しても、成功は1回だけ', oks === 1 && [r1, r2].some(r => r.status === 409), { r1, r2 })
-  const merges = must(await admin.get(`/api/admin/staff/${partnerA}/merges`), 'merges').merges.filter(x => x.source_staff_id === src)
-  ok('#461 統合の記録が1件だけ残る', merges.length === 1 && merges[0].repriced_shifts === 2, merges)
+  if (PERSIST) {
+    const [merges] = d1(`SELECT merge_id, target_staff_id, repriced_shifts FROM staff_merges WHERE source_staff_id = ${Number(src)}`)
+    ok('#461 統合の記録が1件だけ残る', merges.length === 1 && merges[0].target_staff_id === partnerA && merges[0].repriced_shifts === 2, merges)
+  } else console.log('SKIP  #461 統合の記録の件数（PERSIST がない）')
   const shifts = must(await admin.get(`/api/admin/shifts?from=${D}&to=${addDays(today, 6)}`), 'shifts').shifts.filter(s => s.project_id === pid)
   ok('#461 予定シフトは統合先に移り、支払先が統合先の区分（取引先）になる',
     shifts.length >= 2 && shifts.every(s => s.staff_id === partnerA && s.payee_type === 'partner'), shifts.map(s => ({ id: s.shift_id, staff: s.staff_id, payee: s.payee_type })))

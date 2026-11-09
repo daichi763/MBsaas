@@ -6944,6 +6944,11 @@ async function renderAccount() {
     <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
     ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
     ${!me.email ? `<div class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800"><i class="fas fa-envelope mr-1"></i>メールアドレスが登録されていません。登録すると、打刻修正の承認依頼などの通知と、パスワードを忘れたときの再設定メールが届きます。</div>` : ''}
+    <section class="card p-3 mb-4 flex items-center gap-3 flex-wrap" id="account-contract-usage">
+      <i class="fas fa-users text-blue-500"></i>
+      <span class="text-sm flex-1">契約ユーザー数: <span id="account-contract-state" class="text-gray-400">…</span>
+        <span class="block text-[11px] text-gray-400">利用中のアカウント（管理者とスタッフ）の数です。ログインのない名簿のみのスタッフと、停止したアカウントは数えません。上限は本部との契約で決まります</span></span>
+    </section>
     <div class="grid lg:grid-cols-2 gap-4 mb-6">
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-user text-blue-500 mr-1"></i>自分のアカウント</h3>
@@ -7005,6 +7010,26 @@ async function renderAccount() {
     el.outerHTML = `<span id="account-photo-state"><span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span>${last ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(last.at))} ${esc(last.name || '')}</span>` : ''}</span>`
   }).catch(() => { })
   showShiftNotifyState()
+  showContractUsage()
+}
+// 契約ユーザー数（本部が決めた上限と今の利用数。#9928）。数え方は本部の画面と同じ（API の HQ_BILLABLE_SQL）。登録は止めず、表示だけ
+function showContractUsage() {
+  const draw = (html, tone) => {
+    const el = document.getElementById('account-contract-state'); if (!el) return
+    el.outerHTML = `<span id="account-contract-state">${html}</span>`
+    const sec = document.getElementById('account-contract-usage')
+    if (sec && tone) sec.classList.add(...tone.split(' '))
+  }
+  axios.get('/api/admin/contract-usage').then(({ data: d }) => {
+    const n = Number(d.user_count) || 0, lim = d.user_limit == null ? null : Number(d.user_limit)
+    const head = `<span class="font-bold">登録 ${n} 人 ／ ${lim == null ? '上限なし' : `上限 ${lim} 人`}</span>`
+    if (lim == null) return draw(head)
+    if (d.over_limit) return draw(`${head} <span class="badge badge-red">上限超過</span>
+      <span class="block text-xs text-red-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>契約ユーザー数の上限を ${n - lim} 人超えています。上限を増やすには本部にご相談ください</span>`, 'border-red-200 bg-red-50')
+    if (d.near_limit) return draw(`${head} <span class="badge badge-yellow">${n >= lim ? '上限に達しています' : `残り ${lim - n} 人`}</span>
+      <span class="block text-xs text-amber-800 mt-1"><i class="fas fa-circle-exclamation mr-1"></i>${n >= lim ? '上限に達しました。これより多く登録すると上限を超えます' : '上限に近づいています'}。上限を増やすには本部にご相談ください</span>`, 'border-amber-200 bg-amber-50')
+    draw(`${head} <span class="text-[11px] text-gray-400 ml-1">残り ${lim - n} 人</span>`)
+  }).catch(() => draw('<span class="text-gray-400">読み込めませんでした</span>'))
 }
 // シフトの確定・削除の通知の会社の設定（#9906。設定の画面は shift-board.js の shiftNotifySetting）
 function showShiftNotifyState(d) {

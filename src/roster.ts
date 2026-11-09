@@ -1391,22 +1391,8 @@ function linkedNoticeStmts(db: D1Database, u: any, src: any, newStaffId: number,
   ]
 }
 
-// 同意履歴（自社が行った連携の同意記録）
-rosterApi.get('/consents', async (c) => {
-  const u = c.get('user')
-  const sid = c.req.query('staff_id')
-  const rows = await c.env.DB.prepare(`
-    SELECT rc.consent_id, rc.staff_id, rc.consent_version, rc.shared_scope, rc.created_at,
-           um.name AS agreed_by, co.company_name AS source_company_name, us.name AS staff_name
-    FROM roster_consents rc
-    LEFT JOIN users um ON um.user_id = rc.user_id
-    LEFT JOIN companies co ON co.company_id = rc.source_company_id
-    LEFT JOIN staff_profiles sp ON sp.staff_id = rc.staff_id
-    LEFT JOIN users us ON us.user_id = sp.user_id
-    WHERE rc.company_id = ? ${sid ? 'AND rc.staff_id = ?' : ''}
-    ORDER BY rc.created_at DESC LIMIT 200`).bind(...(sid ? [u.company_id, sid] : [u.company_id])).all()
-  return c.json({ consents: (rows.results as any[]).map(r => ({ ...r, shared_scope: safeJson(r.shared_scope) })) })
-})
+// 同意の記録（roster_consents）は残す。会社全体の同意履歴の一覧は画面に出さないので API を置かない（利用者の決定 11/9。#9929）。
+// 連携した行ごとの同意は GET /:id/links の consents で返す
 function safeJson(s: any) { try { return JSON.parse(s) } catch { return s } }
 
 // ②従業員管理から作成 / ③取引先から作成 / ④スキルシートのみ作成
