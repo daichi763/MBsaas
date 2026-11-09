@@ -1,9 +1,8 @@
 // w16-recruit-notice（#9801）の統合テスト: 止めている「新しい募集」の通知をスタッフに出さない
-//  - スタッフアプリの募集を止めている間（STAFF_APP_RECRUIT なし）は、止める前に作った recruit_new の通知を、
+//  - スタッフアプリの募集は外した（D-22。Sprint 20 の #9926 でコードと環境変数 STAFF_APP_RECRUIT も外した）。止める前に作った recruit_new の通知を、
 //    スタッフの通知の一覧・未読の数（unread-count・badges）・プッシュ（push/latest と送信）に出さない。行は消さない・既読にもしない
 //  - 新しい募集を作っても recruit_new の通知・メールは作らない。受け取り設定に「新しい募集」を出さない（「応募の結果」は残す）
 //  - 管理者の通知の一覧はこの絞り込みの影響を受けない
-// 起動に STAFF_APP_RECRUIT を付けない（付けたときの動き = recruit_new を出す、は test-w5-notify-staff.mjs が確かめる）
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npm run build && npx wrangler dev --local --port 8810 --persist-to <保存先> で起動していること。
 //   PERSIST に --persist-to の保存先を指定する（古い通知の行をローカルの D1 に直接入れる。テスト用の DB 専用）
@@ -127,7 +126,7 @@ try {
   // ---------- すべて既読にしても、出していない通知の行はそのまま（消さない・既読にしない） ----------
   must(await staff.post('/api/staff/notifications/read-all'), 'read-all')
   const rows = d1(`SELECT kind, read_at FROM user_notifications WHERE user_id = ${UID} ORDER BY notification_id`)[0]
-  ok('#9801 「新しい募集」の通知の行は消さない（再開したときのため）', rows.filter(r => r.kind === 'recruit_new').length === 2, rows)
+  ok('#9801 「新しい募集」の通知の行は消さない（以前のデータ。スタッフには出さない）', rows.filter(r => r.kind === 'recruit_new').length === 2, rows)
   ok('#9801 すべて既読にしても、出していない通知は未読のまま（ほかの通知は既読になる）',
     rows.filter(r => r.kind === 'recruit_new').every(r => r.read_at == null) && rows.filter(r => r.kind === 'shift_assigned').every(r => r.read_at != null), rows)
   ok('#9801 すべて既読にした後も、未読の数は 0', must(await staff.get('/api/staff/notifications/unread-count'), 'c2').count === 0)
@@ -145,7 +144,7 @@ try {
   const re = must(await admin.put(`/api/admin/recruit-pages/${page.page_id}`, { status: 'open' }), 're-open')
   const made2 = d1(`SELECT COUNT(*) AS n FROM user_notifications WHERE kind = 'recruit_new' AND related_id = ${Number(page.page_id)}`)[0][0].n
   ok('#9801 募集を再開しても知らせない', Number(made2) === 0 && re.staff_notified === undefined, { made2, re })
-  ok('#9801 スタッフアプリの募集の API は使えない（止めたまま）', (await staff.get('/api/staff/recruit')).status === 404)
+  ok('#9801 #9926 スタッフアプリの募集の API は無い（404）', (await staff.get('/api/staff/recruit')).status === 404)
 
   // ---------- 受け取り設定 ----------
   const prefs = must(await staff.get('/api/staff/notification-prefs'), 'prefs')

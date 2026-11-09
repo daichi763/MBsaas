@@ -401,7 +401,6 @@ const MIDDLEWARE_DEFS = [
   { file: 'src/staff-self-service.ts', path: '/admin/staff-requests/leave', kind: 'roles', roles: HR, label: '会社管理者・事務担当だけ（休暇の申請）' },
   { file: 'src/staff-self-service.ts', path: '/admin/staff-requests/leave/*', kind: 'roles', roles: HR, label: '会社管理者・事務担当だけ（休暇の申請）' },
   { file: 'src/roster-chat.ts', path: '/admin/roster-chat/*', kind: 'roles', roles: ADMIN4, label: '管理系の4ロールだけ（企業間チャット）' },
-  { file: 'src/recruit.ts', path: '/staff/recruit/*', kind: 'roles', roles: ['staff'], label: 'スタッフだけ（スタッフアプリで募集を扱う設定のとき）' },
 ]
 const ROLE_LABEL = { system_admin: '本部', company_admin: '会社管理者', sales_manager: '営業', field_manager: '現場責任者', office_staff: '事務', staff: 'スタッフ' }
 const ALL_ROLES = ['system_admin', ...ADMIN4, 'staff']

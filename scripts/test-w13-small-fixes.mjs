@@ -179,7 +179,7 @@ const R = {}
     ['admin.js', 'data-action="assignSubstitute"'], // 代打の候補: 「あとで探す」で閉じる（入力は候補の絞り込みだけ）
     ['admin.js', 'doc-dropzone'], // 書類のアップロード: ファイルを選ぶとすぐアップロードする（保存のボタンが無い）。右上に ✕
     ['admin.js', 'saveSkillSheetComment'], ['admin.js', 'remindNotice'], ['roster.js', 'shareCodesExport'], // 表示・印刷・既読の確認が中心
-    ['shift-board.js', 'boardSavePrice'], ['shift-board.js', 'toggleShiftRequestsAll'], // シフトの詳細・シフト希望の一覧
+    ['shift-board.js', 'boardSavePrice'], ['shift-board.js', 'id="shift-request-list"'], // シフトの詳細・過去のシフト希望の一覧（返事待ちの返事の欄だけ）
     ['board.js', 'boardLoadCandidates'], ['corrections.js', '管理者として申請'], // 選んだ後に描く欄にキャンセルがある
     ['staff-attendance.js', '${foot}'], // スタッフアプリの申請: 下のボタン（foot）に「やめる」
   ]

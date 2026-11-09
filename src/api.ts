@@ -17,7 +17,7 @@ import { applyRateOverride, inheritView, inheritedAdjustStmt, loadPricingData, p
 import boardApi from './board'
 import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
 import { shiftTotals, staffingGaps } from './shift-board'
-import { recruitAdminApi, recruitPublicApi, recruitStaffApi } from './recruit'
+import { recruitAdminApi, recruitPublicApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
 import { adminLifecycleApi, publicReportApi, modesForShifts, resolveModes, normalizePhone, findStaffByPhone } from './staff-lifecycle'
 import { loginEmailVerifyEmail } from './email-templates/login-email'
@@ -1299,8 +1299,6 @@ api.route('/hq', hqSupportHqApi)
 api.route('/staff', notificationsStaffApi)
 // 案件掲示板（企業間の案件掲載・案件チャット・人材提案）。/admin/* 配下のみ（src/board.ts）
 api.route('/admin/board', boardApi)
-// スタッフアプリからの応募（src/recruit.ts）
-api.route('/staff/recruit', recruitStaffApi)
 // スタッフの勤務時間・支払額の確認と、交通費・延長の申請（src/staff-pay.ts。w5-staff-pay-features）
 api.route('/staff', staffPayStaffApi)
 api.route('/admin', staffPayAdminApi)
@@ -2291,7 +2289,7 @@ api.get('/staff/shifts/:id/coworkers', async (c) => {
 
 // シフト確認
 // shifts は確定・代打・欠勤と、管理者が入れた『希望（仮）』（status='requested'。本人は可否を返事できる）。
-// 本人が出したシフト希望は shift_requests にあり、requests で別に返す（#411）
+// 本人が以前に出したシフト希望は shift_requests にあり、requests で別に返す（#411。表示だけ。提出は D-23 で止めた）
 // 期間は ?from=&to=（日付。月をまたいでよい。最大 STAFF_SHIFT_MAX_DAYS 日。#428）か ?month=（月）で指定する
 const STAFF_SHIFT_MAX_DAYS = 62
 api.get('/staff/shifts', async (c) => {
@@ -2325,64 +2323,17 @@ api.get('/staff/shifts', async (c) => {
   return c.json({
     shifts: (rows.results as any[]).map(s => staffShiftView({ ...s, tentative: s.status === 'requested' })),
     requests,
-    request_projects: await requestableProjects(c.env.DB, u),
     month, from, to,
     // 2社以上に所属しているか（各シフトにどの会社のものかを出す。#503）
     multi_company: new Set(personRows.map(r => r.company_id)).size > 1,
   })
 })
 
-// シフト希望で選べる案件: 自社の稼働中の案件のうち、本人がシフトに入ったことのあるもの（#59 他社・無関係の案件は選べない）
-async function requestableProjects(db: D1Database, u: any): Promise<{ project_id: number; project_name: string }[]> {
-  if (!u.staff_id) return []
-  return (await db.prepare(`
-    SELECT p.project_id, p.project_name FROM projects p
-    WHERE p.company_id = ? AND COALESCE(p.status, 'active') = 'active'
-      AND EXISTS (SELECT 1 FROM shifts s WHERE s.project_id = p.project_id AND s.company_id = p.company_id AND s.staff_id = ? AND s.status != 'absent')
-    ORDER BY p.project_name`).bind(u.company_id, u.staff_id).all()).results as any[]
-}
-
-const SHIFT_REQUEST_MAX_DAYS_AHEAD = 366
-
-// シフト希望提出（#12 shift_requests に保存する。#59 案件は自社の選べる案件だけ）
-api.post('/staff/shifts/request', async (c) => {
-  const u = c.get('user'); const db = c.env.DB
-  if (!u.staff_id) return c.json({ error: 'スタッフ情報が見つかりません' }, 403)
-  const b = await c.req.json().catch(() => ({} as any))
-  const { work_date, memo } = b
-  const start_time = b.start_time || '09:30', end_time = b.end_time || '19:00'
-  if (!isISODate(work_date)) return c.json({ error: '日付を選択してください' }, 400)
-  const today = todayJST()
-  if (work_date < today) return c.json({ error: '過去の日付には希望を出せません' }, 400)
-  if (work_date > addDays(today, SHIFT_REQUEST_MAX_DAYS_AHEAD)) return c.json({ error: '1年より先の日付には希望を出せません' }, 400)
-  if (!isHHMM(start_time) || !isHHMM(end_time)) return c.json({ error: '時刻は HH:MM の形式で入力してください' }, 400)
-  if (start_time === end_time) return c.json({ error: '開始と終了に同じ時刻は指定できません' }, 400)
-  if (memo != null && typeof memo !== 'string') return c.json({ error: '備考が正しくありません' }, 400)
-  const note = String(memo || '').trim()
-  if (note.length > 500) return c.json({ error: '備考は500文字以内で入力してください' }, 400)
-  let projectId: number | null = null
-  if (b.project_id !== undefined && b.project_id !== null && b.project_id !== '') {
-    projectId = toInt(b.project_id, 1)
-    if (projectId == null || !(await requestableProjects(db, u)).some(p => p.project_id === projectId)) return c.json({ error: '案件が見つかりません' }, 400)
-  }
-  // 同じ日時の返事待ちの希望は1件だけ（uq_shift_requests_pending）。二度押しは 409 で返す
-  const r = await db.prepare(`INSERT INTO shift_requests (company_id, staff_id, user_id, project_id, work_date, start_time, end_time, memo, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT DO NOTHING`)
-    .bind(u.company_id, u.staff_id, u.user_id, projectId, work_date, start_time, end_time, note || null, nowJST()).run()
-  if (!r.meta.changes) return c.json({ error: '同じ日時の希望をすでに提出しています' }, 409)
-  return c.json({ ok: true, request_id: r.meta.last_row_id })
-})
-
-// シフト希望の取り下げ（#353）。返事待ちのものだけ。採用・見送りの後は管理者に連絡してもらう
-api.post('/staff/shift-requests/:id/cancel', async (c) => {
-  const u = c.get('user'); const db = c.env.DB
-  const id = toInt(c.req.param('id'), 1)
-  const req = id == null ? null : await db.prepare('SELECT request_id, status FROM shift_requests WHERE request_id = ? AND company_id = ? AND staff_id = ?').bind(id, u.company_id, u.staff_id).first() as any
-  if (!req) return c.json({ error: '希望が見つかりません' }, 404)
-  const r = await db.prepare(`UPDATE shift_requests SET status = 'withdrawn', withdrawn_at = ? WHERE request_id = ? AND status = 'pending'`).bind(nowJST(), req.request_id).run()
-  if (!r.meta.changes) return c.json({ error: req.status === 'withdrawn' ? 'すでに取り下げています' : '管理者が返事をした希望は取り下げできません。変更は管理者に連絡してください' }, 409)
-  return c.json({ ok: true })
-})
+// シフト希望の提出・取り下げは受け付けない（D-23。11/9 の利用者の決定）。シフトの希望は出勤可能日（/staff/availability）で受ける。
+// 以前に出した希望（shift_requests）は消さず、GET /staff/shifts の requests で表示だけする。管理者の返事は /admin/shift-requests のまま
+const shiftRequestClosed = (c: any) => c.json({ error: 'シフト希望の受け付けは終了しました', closed: true }, 410)
+api.post('/staff/shifts/request', (c) => shiftRequestClosed(c))
+api.post('/staff/shift-requests/:id/cancel', (c) => shiftRequestClosed(c))
 
 // 管理者が『希望（仮）』で入れたシフトへの返事（#411）。answer: ok（入れます）/ ng（入れません）
 api.post('/staff/shifts/:id/reply', async (c) => {

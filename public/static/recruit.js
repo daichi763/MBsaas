@@ -63,7 +63,6 @@
     const host = document.getElementById('recruit-body')
     let data; try { data = (await axios.get('/api/admin/recruit-pages')).data } catch (e) { host.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
     window.__recruitPages = data.pages
-    window.__recruitStaffApp = !!data.staff_app_recruit
     host.innerHTML = `
       <div class="grid md:grid-cols-2 gap-3" id="recruit-page-list">
         ${data.pages.map(p => `<article class="card p-4">
@@ -121,15 +120,8 @@
         <div class="text-gray-600">応募フォームの質問（任意・${MAX_QUESTIONS}問まで）
           <div id="rp-questions" class="space-y-2 mt-1">${(p?.questions || []).map(questionRow).join('')}</div>
           <button type="button" class="btn btn-outline text-xs mt-1" data-action="recruitAddQuestion"><i class="fas fa-plus"></i>質問を追加</button>
-          <p class="text-[11px] text-gray-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。${window.__recruitStaffApp ? 'スタッフアプリからの応募では質問しません' : ''}</p></div>
+          <p class="text-[11px] text-gray-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。</p></div>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-remaining" ${p ? (p.show_remaining ? 'checked' : '') : 'checked'}>残り人数を表示する</label>
-        <!-- スタッフアプリの募集を止めているとき（#9411）は、アプリ向けの設定を隠す（保存する値は今のまま送る） -->
-        <label class="flex items-center gap-2 text-xs ${window.__recruitStaffApp ? '' : 'hidden'}"><input type="checkbox" id="rp-staff" ${p ? (p.allow_staff ? 'checked' : '') : 'checked'}>登録済みのスタッフがアプリから応募できるようにする</label>
-        <div class="text-xs pl-6 space-y-1 ${window.__recruitStaffApp ? '' : 'hidden'}" id="rp-notify-box">
-          <label class="flex items-center gap-2"><input type="checkbox" id="rp-notify" checked>${p ? '公開・再開でスタッフアプリに出るようになったら、' : ''}スタッフにアプリで知らせる</label>
-          <label class="flex items-center gap-2"><input type="checkbox" id="rp-notify-mail">メールでも知らせる（メールアドレスを登録しているスタッフ）</label>
-          <p class="text-[11px] text-gray-400">知らせるのは、自社の在籍中のスタッフでアプリにログインできる人です。同じ募集の通知は1日1回までです</p>
-        </div>
         ${p ? '<label class="flex items-center gap-2 text-xs text-red-600"><input type="checkbox" id="rp-regen">URLを再発行する（今のURL・QRは使えなくなります）</label>' : ''}
       </div>
       <div class="flex gap-2 mt-4">
@@ -297,10 +289,6 @@
       required: row.querySelector('.rp-q-req').checked, options: row.querySelector('.rp-q-opts').value.split(/[,、，\n]/).map(s => s.trim()).filter(Boolean),
     })).filter(q => q.label)
   }
-  // 新しい募集をスタッフに知らせた結果（#156）
-  const staffNoticeText = (d) => !d || d.staff_notified == null ? ''
-    : d.staff_notice_skipped ? '（今日すでにスタッフに知らせた募集のため、通知は送っていません）'
-    : d.staff_notified ? `（スタッフ${Number(d.staff_notified)}人にアプリで知らせました${d.staff_emailed ? `・メール${Number(d.staff_emailed)}通` : ''}）` : '（知らせるスタッフがいませんでした）'
   delegate('recruitReopen', (el) => openRecruitPage(Number(el.dataset.id), true))
   delegate('recruitSavePage', (el) => withSubmitLock(el, () => saveRecruitPage(Number(el.dataset.id) || null, el.dataset.reopen === '1')))
   async function saveRecruitPage(id, reopen) {
@@ -308,8 +296,7 @@
     const body = {
       title: v('rp-title'), project_ids: [...document.querySelectorAll('.rp-proj:checked')].map(x => Number(x.value)),
       date_from: v('rp-from'), date_to: v('rp-to'), description: v('rp-desc'), pay_note: v('rp-pay'), contact_note: v('rp-contact'),
-      show_remaining: document.getElementById('rp-remaining').checked, allow_staff: document.getElementById('rp-staff').checked,
-      notify_staff: document.getElementById('rp-notify').checked, notify_staff_email: document.getElementById('rp-notify-mail').checked,
+      show_remaining: document.getElementById('rp-remaining').checked,
       questions: readQuestions(),
       ...(id && document.getElementById('rp-regen')?.checked ? { regenerate_token: true } : {}),
       ...(id && reopen ? { status: 'open' } : {}),
@@ -324,7 +311,7 @@
       const { data } = id ? await axios.put('/api/admin/recruit-pages/' + id, body) : await axios.post('/api/admin/recruit-pages', body)
       const slotText = data.slots_created || data.headcounts_updated
         ? `（${[data.slots_created ? `枠を${Number(data.slots_created)}件追加` : '', data.headcounts_updated ? `人数を${Number(data.headcounts_updated)}件変更` : ''].filter(Boolean).join('・')}）` : ''
-      closeModal(); toast((id ? (reopen ? '募集を再開しました' : '保存しました') : '募集ページを作成しました') + slotText + staffNoticeText(data))
+      closeModal(); toast((id ? (reopen ? '募集を再開しました' : '保存しました') : '募集ページを作成しました') + slotText)
       S.tab = 'pages'; await renderRecruit()
       showRecruitShare(id || data.page_id)
     } catch (e) { toast(errMsg(e)) }

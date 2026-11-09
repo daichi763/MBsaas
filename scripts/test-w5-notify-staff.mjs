@@ -1,5 +1,4 @@
 // スタッフあての通知（w5-notify-staff: #151 #155 #156 #158）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npm run build && npx wrangler dev --local --port 8813 --persist-to <保存先> で起動していること（MAIL_ENABLED は既定の false のまま）。
@@ -42,7 +41,7 @@ async function newStaff(k) {
   const phone = '080' + String((Date.now() + phoneSeq++ * 7919) % 100000000).padStart(8, '0')
   must(await admin.post('/api/admin/staff', { user_code: `${PFX}${k}`, name: `${PFX} ${k}`, password: 'pass1234', phone, email: `${tag}-${k.toLowerCase()}@example.com` }), 'staff ' + k)
   const s = must(await admin.get('/api/admin/staff'), 'staff list').staff.find(x => x.user_code === `${PFX}${k}`)
-  return { ...s, api: client(await login('sample', `${PFX}${k}`)) }
+  return { ...s, phone, api: client(await login('sample', `${PFX}${k}`)) }
 }
 const notifs = async (st, kind) => (must(await st.api.get('/api/staff/notifications' + (kind ? `?kind=${kind}` : '')), 'notifs').notifications)
 const mailLogs = async (type) => (must(await admin.get(`/api/admin/email-logs?type=${type}`), 'email logs').logs)
@@ -147,24 +146,19 @@ async function newSlot(p, date, start = '10:00', end = '18:00') {
   }
 }
 
-// ---------- #156 新しい募集 ----------
+// ---------- #156 新しい募集（スタッフアプリの募集は D-22 で外した。#9926） ----------
 let page
 const BLANK = { show_remaining: true, description: '', pay_note: '', contact_note: '' }
 {
-  page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [pid], date_from: today, date_to: addDays(today, 30), allow_staff: true, show_remaining: true, description: '黒のパンツで集合', pay_note: '日給 12,000円', contact_note: '採用担当 03-0000-0000' }), 'page')
-  const n = (await notifs(A, 'recruit_new')).filter(x => x.related_id === page.page_id)
-  ok('#156 アプリから応募できる募集を作ると、スタッフに知らせる（件数を応答で返す）', page.staff_notified >= 2 && n.length === 1 && n[0].title.includes(`${PFX} 募集`), { page, n })
+  page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [pid], date_from: today, date_to: addDays(today, 30), show_remaining: true, description: '黒のパンツで集合', pay_note: '日給 12,000円', contact_note: '採用担当 03-0000-0000' }), 'page')
+  ok('#9926 募集を作っても、スタッフに「新しい募集」を知らせない（staff_notified を返さない）', page.staff_notified === undefined && page.staff_emailed === undefined, page)
   must(await admin.put(`/api/admin/recruit-pages/${page.page_id}`, { status: 'closed' }), 'close')
   const re = must(await admin.put(`/api/admin/recruit-pages/${page.page_id}`, { status: 'open' }), 'reopen')
-  ok('#156 同じ募集を同じ日に再開しても、通知は1日1回まで', re.staff_notice_skipped === true && (await notifs(A, 'recruit_new')).filter(x => x.related_id === page.page_id).length === 1, re)
-  const silent = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 通知なし`, project_ids: [pid], date_from: today, date_to: addDays(today, 30), allow_staff: true, ...BLANK, notify_staff: false }), 'page silent')
-  ok('#156 notify_staff: false なら知らせない', silent.staff_notified === undefined && !(await notifs(A, 'recruit_new')).some(x => x.related_id === silent.page_id), silent)
-  const mailed = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} メールも`, project_ids: [pid], date_from: today, date_to: addDays(today, 30), allow_staff: true, ...BLANK, notify_staff_email: true }), 'page mail')
-  ok('#156 メールでも知らせる指定のときは、メールアドレスのあるスタッフにメールを送る', mailed.staff_emailed >= 2 && (await mailLogs('recruit_new')).some(l => l.to_email === `${tag}-a@example.com`), mailed)
-  const appOnly = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 公開のみ`, project_ids: [pid], date_from: today, date_to: addDays(today, 30), allow_staff: false, ...BLANK }), 'page public only')
-  ok('#156 アプリからの応募を許可しない募集は知らせない', appOnly.staff_notified === undefined, appOnly)
-  const sum = must(await A.api.get('/api/staff/recruit/summary?counts=1'), 'summary')
-  ok('#156 ホーム用の件数だけの取得（counts=1）', typeof sum.open === 'number' && sum.other_companies === undefined && sum.pending_items === undefined, sum)
+  ok('#9926 再開しても知らせない', re.staff_notified === undefined && re.staff_notice_skipped === undefined, re)
+  const mailed = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} メールも`, project_ids: [pid], date_from: today, date_to: addDays(today, 30), ...BLANK, notify_staff: true, notify_staff_email: true }), 'page mail')
+  ok('#9926 以前の画面の指定（notify_staff・notify_staff_email）を送っても、通知・メールは作らない', mailed.staff_emailed === undefined && !(await mailLogs('recruit_new')).some(l => l.to_email === `${tag}-a@example.com`), mailed)
+  const sum = await A.api.get('/api/staff/recruit/summary?counts=1')
+  ok('#9926 スタッフアプリの募集の件数の API は無い（404）', sum.status === 404, sum.status)
 }
 
 // ---------- #151 応募の結果 ----------
@@ -190,18 +184,24 @@ const BLANK = { show_remaining: true, description: '', pay_note: '', contact_not
     const rs = must(await admin.post(`/api/admin/recruit-applications/${pa.application_id}/notify-result`), 'resend')
     ok('#151 結果のお知らせを送り直せる（承認・見送りをまとめて1通）', rs.applicant_notice.email === 'disabled', rs)
   }
-  // スタッフアプリから
+  // 登録済みのスタッフが公開ページから応募し、承認のときに本人に紐づける（スタッフアプリからの応募は D-22 で外した）
+  const pubApply = (st, roleIds) => pub.post(`/api/public/recruit/${page.token}/apply`, { name: st.name, phone: st.phone, agree: true, slot_role_ids: roleIds, issued_at: Date.now() - 10000 })
+  const pendingOf = async (st) => must(await admin.get(`/api/admin/recruit-applications?status=pending&page_id=${page.page_id}`), 'apps').applications.find(a => a.phone === st.phone)
   const slotC = await newSlot(pid, addDays(today, 7), '13:00', '17:00')
-  must(await B.api.post('/api/staff/recruit/apply', { pages: [{ page_id: page.page_id, slot_role_ids: [slotC.roles[0].slot_role_id] }] }), 'staff apply')
-  const sa = must(await admin.get(`/api/admin/recruit-applications?status=pending&page_id=${page.page_id}`), 'apps').applications.find(a => a.staff_id === B.staff_id)
-  const dec = must(await admin.post(`/api/admin/recruit-applications/${sa.application_id}/decide`, { approve: sa.items.map(i => i.item_id), force: true }), 'approve staff')
+  must(await pubApply(B, [slotC.roles[0].slot_role_id]), 'B public apply')
+  const sa = await pendingOf(B)
+  const dec = must(await admin.post(`/api/admin/recruit-applications/${sa.application_id}/decide`, { approve: sa.items.map(i => i.item_id), staff_id: B.staff_id, force: true }), 'approve staff')
   const rn = (await notifs(B, 'recruit_result')).filter(x => x.related_id === sa.application_id)
-  ok('#151 アプリから応募したスタッフには、アプリ内の通知で確定を知らせる（シフトの登録の通知は重ねない）', dec.applicant_notice.app === true && rn.length === 1 && rn[0].title.includes('確定') && rn[0].body.includes('黒のパンツ'),
+  ok('#151 承認で本人に紐づけたスタッフには、アプリ内の通知で確定を知らせる（シフトの登録の通知は重ねない）', dec.applicant_notice.app === true && rn.length === 1 && rn[0].title.includes('確定') && rn[0].body.includes('黒のパンツ'),
     { dec: dec.applicant_notice, rn })
   // 定員に達した枠の残りをまとめて見送る
+  // A の応募（2つの日時）のうち1つを本人に紐づけて承認し、残りの未対応の日時を枠ごと見送る
   const slotD = await newSlot(pid, addDays(today, 8), '13:00', '17:00')
+  const slotE = await newSlot(pid, addDays(today, 9), '13:00', '17:00')
   const ridD = slotD.roles[0].slot_role_id
-  must(await A.api.post('/api/staff/recruit/apply', { pages: [{ page_id: page.page_id, slot_role_ids: [ridD] }] }), 'A apply')
+  must(await pubApply(A, [ridD, slotE.roles[0].slot_role_id]), 'A public apply')
+  const aa = await pendingOf(A)
+  must(await admin.post(`/api/admin/recruit-applications/${aa.application_id}/decide`, { approve: aa.items.filter(i => i.slot_role_id !== ridD).map(i => i.item_id), staff_id: A.staff_id, force: true, notify_applicant: false }), 'approve A (one)')
   const rp = must(await admin.post(`/api/admin/recruit-slots/${ridD}/reject-pending`), 'reject pending')
   const an = (await notifs(A, 'recruit_result')).filter(x => x.title.includes('見送り'))
   ok('#151 枠の残りをまとめて見送ったときも、応募者に知らせる', rp.rejected === 1 && rp.applicants_notified === 1 && an.length === 1, { rp, an })

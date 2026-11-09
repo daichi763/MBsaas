@@ -93,7 +93,7 @@ const ANCHORS = [
   ['src/services/retention.ts', 'export async function applyDueRetirements'],
   ['src/recruit.ts', 'function turnstileEnabled'], ['src/recruit.ts', 'async function verifyTurnstile'], ['src/recruit.ts', 'export async function purgeOldApplications'],
   ['src/roster.ts', 'export const CONSENT_VERSION'], ['src/roster.ts', "const userCode = 'LK-'"],
-  ['src/staff-lifecycle.ts', 'export const MATCH_PHONE_SQL'], ['src/notifications.ts', 'export const staffAppRecruitEnabled'],
+  ['src/staff-lifecycle.ts', 'export const MATCH_PHONE_SQL'],
   ['src/lib/web-push.ts', 'export async function loadVapid'], ['src/shift-board.ts', "app.post('/shift-slots/bulk-delete'"],
   ['src/shift-board.ts', "app.post('/shift-slots/assign-batch'"], ['src/accounts.ts', "adminUsersApi.post('/users/:id/reset-password'"],
   ['scripts/ci-wrangler-config.mjs', 'wrangler.json を本番の設定で作成しました'],

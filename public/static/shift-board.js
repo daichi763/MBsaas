@@ -229,7 +229,7 @@
             <div class="board-menu-list">
               ${menuItem('data-action="boardOpenPattern"', 'fa-calendar-plus', '枠の繰り返し登録（毎週の枠を作る）')}
               ${menuItem('data-action="boardOpenCopy"', 'fa-copy', '前の週の枠・シフトをコピー')}
-              ${menuItem('data-action="openShiftRequests"', 'fa-hand', 'シフト希望')}
+              ${menuItem('data-action="openShiftRequests" id="board-req-item" style="display:none" title="以前にスタッフが出したシフト希望（受け付けは終了しました）"', 'fa-hand', '過去のシフト希望')}
               ${reqShifts.length ? menuItem('data-action="boardConfirmRequested" title="表示中の希望（仮）のシフトをまとめて確定にします"', 'fa-check-double', `希望（仮）をまとめて確定<span class="badge badge-yellow ml-1">${reqShifts.length}</span>`) : ''}
               ${menuItem('data-action="boardPlacementExport" data-format="csv" title="表示中の期間・絞り込みの配置表（金額なし・未充足の枠と希望（仮）を含む）を CSV で出します"', 'fa-file-csv', '配置表CSV')}
               ${menuItem('data-action="boardPlacementExport" data-format="print" title="クライアント・現場リーダーに渡す配置表を、案件ごとに改ページして印刷します（金額は載せません）"', 'fa-print', '配置表を印刷')}
@@ -1896,23 +1896,25 @@
   delegate('boardDeleteShift', el => withSubmitLock(el, () => boardDeleteShift(Number(el.dataset.id))))
 
   // =========================================================
-  // スタッフのシフト希望（#12 #353）
-  // 採用・見送りの返事だけを記録する（本人の画面に出る）。シフトは枠への割り当てなど通常の経路で登録する
+  // スタッフのシフト希望（#12 #353）。新しい提出は D-23 で止めた（11/9 の利用者の決定）ので、以前に出された希望の表示だけにする。
+  // まだ返事をしていない希望（返事待ち）だけは、採用・見送りの返事ができる（本人の画面に出る）。シフトは枠への割り当てなど通常の経路で登録する
+  // 表示中の期間に希望が1件もなければ、メニューの項目を出さない
   // =========================================================
   const REQ_ST = { pending: ['返事待ち', 'badge-yellow'], accepted: ['採用', 'badge-green'], declined: ['見送り', 'badge-gray'], withdrawn: ['本人が取り下げ', 'badge-gray'] }
-  let REQ_ALL = false
   function boardRange() { return { from: BS.from, to: dayjs(BS.from).add(BS.days - 1, 'day').format('YYYY-MM-DD') } }
   async function loadRequestCount() {
     const el = document.getElementById('board-req-count'); if (!el) return
     try {
-      const { data } = await axios.get('/api/admin/shift-requests?' + new URLSearchParams({ ...boardRange(), status: 'pending' }))
-      el.innerHTML = data.pending ? `<span class="badge badge-red ml-1">${Number(data.pending)}</span>` : ''
+      const { data } = await axios.get('/api/admin/shift-requests?' + new URLSearchParams({ ...boardRange(), status: 'all' }))
+      el.innerHTML = data.pending ? `<span class="badge badge-red ml-1" title="返事待ちのシフト希望">${Number(data.pending)}</span>` : ''
+      const item = document.getElementById('board-req-item')
+      if (item) item.style.display = (data.requests || []).length ? '' : 'none'
     } catch (e) { /* 件数の表示のみ */ }
   }
   async function openShiftRequests() {
     const r = boardRange()
     let data
-    try { data = (await axios.get('/api/admin/shift-requests?' + new URLSearchParams({ ...r, status: REQ_ALL ? 'all' : 'pending' }))).data }
+    try { data = (await axios.get('/api/admin/shift-requests?' + new URLSearchParams({ ...r, status: 'all' }))).data }
     catch (e) { toast(errMsg(e)); return }
     const row = (q) => {
       const st = REQ_ST[q.status] || [q.status, 'badge-gray']
@@ -1936,16 +1938,14 @@
       </div>`
     }
     modal(`
-      <h3 class="font-bold text-lg mb-1">シフト希望</h3>
-      <p class="text-xs text-gray-500 mb-2">${dayjs(data.from).format('M/D')}〜${dayjs(data.to).format('M/D')}（ボードの表示期間）・返事待ち ${data.pending}件。
-        採用・見送りは本人のシフト画面に表示されます。採用したら、枠への割り当てでシフトを登録してください</p>
-      <label class="flex items-center gap-1 text-xs mb-2"><input type="checkbox" data-action="toggleShiftRequestsAll" ${REQ_ALL ? 'checked' : ''}>返事済み・取り下げも表示</label>
+      <h3 class="font-bold text-lg mb-1">過去のシフト希望</h3>
+      <p class="text-xs text-gray-500 mb-2">シフト希望の受け付けは終了しました。スタッフの希望は「出勤可能日」で受け付けています。ここでは以前に出された希望を表示します。</p>
+      <p class="text-xs text-gray-500 mb-2">${dayjs(data.from).format('M/D')}〜${dayjs(data.to).format('M/D')}（ボードの表示期間）・返事待ち ${Number(data.pending)}件${data.pending ? '。返事待ちの希望には、採用・見送りの返事ができます（本人のシフト画面に表示されます）。採用したら、枠への割り当てでシフトを登録してください' : ''}</p>
       <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100" id="shift-request-list">
         ${data.requests.map(row).join('') || '<p class="p-3 text-sm text-gray-400">シフト希望はありません</p>'}
       </div>`)
   }
   delegate('openShiftRequests', () => openShiftRequests())
-  delegate('toggleShiftRequestsAll', (el) => { REQ_ALL = !!el.checked; openShiftRequests() })
   delegate('respondShiftRequest', async (el) => {
     const id = Number(el.dataset.id)
     const decision = el.dataset.decision

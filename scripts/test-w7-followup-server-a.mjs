@@ -1,7 +1,6 @@
 // 持ち越しの仕上げ（作業単位 w7-followup-server-a）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //   #9001 企業間連携の共有範囲（生年月日・備考を渡さず年代を渡す・同意 v3）/ #162 連携を終了した行 / #552 企業の切り替えの履歴 / #286 最後の利用
-//   #293 本部の閲覧中はトークンを返さない / #513 終了した募集の問い合わせ先 / #225 止めた応募の件数 / #300 スタッフアプリの応募の質問
+//   #293 本部の閲覧中はトークンを返さない / #513 終了した募集の問い合わせ先 / #225 止めた応募の件数 / #300 応募の質問
 //   #87 退職者の未対応の応募 / #151 応募の結果のメールの状態 / #155 シフトの変更日時・まとめて外したときの知らせ / #158 日報コメントの既読
 //   #344 日報の未提出の一覧 / #387 本部で作る会社コード / #295 前月の請求の自動の記録 / #9002 退職後7年の削除・解約企業の削除で Sprint 5 の表が消えること
 //
@@ -176,24 +175,24 @@ const roleId = slot.roles[0].slot_role_id
 const page = must(await admin.post('/api/admin/recruit-pages', { title: `${PFX} 募集`, project_ids: [pid], date_from: today, date_to: addDays(today, 20), allow_staff: true, show_remaining: true,
   notify_staff: false, description: '集合は10分前', pay_note: '', contact_note: '担当 03-0000-0000',
   questions: [{ label: '販売の経験はありますか', type: 'yesno', required: true }] }), 'page')
-// #300 スタッフアプリの応募でも質問に答える
+// #300 質問への回答。スタッフアプリの応募は D-22 で外したので、登録済みのスタッフ S も公開ページから応募する
 const staffPhone = newPhone()
 must(await admin.post('/api/admin/staff', { user_code: `${PFX}S`, name: `${PFX} 応募S`, password: 'pass1234', phone: staffPhone }), 'staff S')
 const S = must(await admin.get('/api/admin/staff'), 'staff list').staff.find(s => s.user_code === `${PFX}S`)
-const sc = client(await login('sample', `${PFX}S`))
 {
-  const list = must(await sc.get('/api/staff/recruit'), 'staff recruit')
-  const pg = list.pages.find(p => p.page_id === page.page_id)
-  ok('#300 スタッフアプリの募集一覧に、募集ページの質問を返す', pg && pg.questions.length === 1 && pg.questions[0].required === true && pg.questions[0].type === 'yesno', pg && pg.questions)
-  const miss = await sc.post('/api/staff/recruit/apply', { pages: [{ page_id: page.page_id, slot_role_ids: [roleId] }], answers_supported: true })
-  ok('#300 質問に対応した画面（answers_supported）からは、必須の質問に答えないと 400（どの募集か page_id を返す）', miss.status === 400 && miss.data?.page_id === page.page_id && /販売の経験/.test(miss.data?.error || ''), miss)
-  const bad = await sc.post('/api/staff/recruit/apply', { pages: [{ page_id: page.page_id, slot_role_ids: [roleId], answers: { q1: 'たぶん' } }], answers_supported: true })
+  const apply = (extra) => pub.post(`/api/public/recruit/${page.token}/apply`, { name: `${PFX} 応募S`, phone: staffPhone, agree: true, slot_role_ids: [roleId], issued_at: Date.now() - 10000, ...extra })
+  const miss = await apply({})
+  ok('#300 必須の質問に答えないと 400（どの質問か field を返す）', miss.status === 400 && miss.data?.field === 'q_q1' && /販売の経験/.test(miss.data?.error || ''), miss)
+  const bad = await apply({ answers: { q1: 'たぶん' } })
   ok('#300 はい・いいえの質問に別の値は受け付けない（400）', bad.status === 400, bad)
-  const good = await sc.post('/api/staff/recruit/apply', { pages: [{ page_id: page.page_id, slot_role_ids: [roleId], answers: { q1: 'yes' } }], answers_supported: true })
+  const good = await apply({ answers: { q1: 'yes' } })
   ok('#300 質問に答えると応募できる', good.status === 200 && good.data?.count === 1, good)
   const apps = must(await admin.get('/api/admin/recruit-applications?status=pending'), 'apps').applications
-  const mine = apps.find(a => a.staff_id === S.staff_id && a.page_id === page.page_id)
-  ok('#300 スタッフアプリの応募にも回答が保存される', mine && mine.answers.length === 1 && mine.answers[0].value === 'はい', mine && mine.answers)
+  const mine = apps.find(a => a.phone === staffPhone && a.page_id === page.page_id)
+  ok('#300 応募に回答が保存される', mine && mine.answers.length === 1 && mine.answers[0].value === 'はい', mine && mine.answers)
+  // 下の #87 の確認のため、以前のスタッフアプリからの応募（source = 'staff'・staff_id 付き）に書き換える
+  if (PERSIST) sql(`UPDATE recruit_applications SET source = 'staff', staff_id = ${Number(S.staff_id)} WHERE page_id = ${Number(page.page_id)} AND phone = '${staffPhone}';
+    UPDATE recruit_application_items SET staff_id = ${Number(S.staff_id)} WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE page_id = ${Number(page.page_id)} AND phone = '${staffPhone}');`)
 }
 // #151 応募の結果のメールの状態を応募ごとに残す（公開ページからの応募・メールあり。ローカルはメールを送らない設定）
 {
