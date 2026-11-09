@@ -11,6 +11,9 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	// プレビューの URL（<版>-mbsaas.<サブドメイン>.workers.dev）は出さない。本番の D1・R2 につながったまま誰でも開けるため（D-49）。
+	// 本番の workers.dev の URL（workers_dev）はこれでは止まらない。環境ごとに引き継がれないことがあるので env.production にも書く
+	"preview_urls": false,
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -48,6 +51,7 @@
 		"production": {
 			// 環境名を付けた別の Worker（mbsaas-production）にならないよう、名前を明示する
 			"name": "mbsaas",
+			"preview_urls": false,
 			"d1_databases": [
 				{
 					"binding": "DB",

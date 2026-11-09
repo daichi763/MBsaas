@@ -4302,7 +4302,7 @@ api.post('/admin/staff/:id/login-email-pending/cancel', async (c) => {
   return c.json({ ok: true })
 })
 
-// スタッフ登録
+// スタッフ登録（テスト・内部用。画面からは呼ばない。画面の新規登録は名簿の登録 POST /admin/roster）
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
   const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force, availability_target } = await c.req.json()

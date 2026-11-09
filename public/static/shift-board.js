@@ -594,9 +594,6 @@
     BS.sel = null; renderShiftBoard()
   }
   window.boardToggleProject = function (id, on) { BS.projectIds = on ? [...new Set([...BS.projectIds, id])] : BS.projectIds.filter(x => x !== id) }
-  window.boardFilterStaff = function (q) {
-    document.querySelectorAll('#board-staff-list .staff-src').forEach(el => { el.style.display = !q || el.dataset.name.includes(q) ? '' : 'none' })
-  }
   // 人ごと表示の並び・絞り込み（#468）
   document.addEventListener('change', (ev) => {
     const el = ev.target && ev.target.closest ? ev.target.closest('[data-person-opt]') : null
@@ -687,7 +684,6 @@
     if (!confirm(`保存していない下書きが${n}件あります。\n${what}と、下書きは消えます。よろしいですか？\n（残すときは「キャンセル」を押し、「まとめて保存」で保存してください）`)) return false
     DRAFTS.clear(); SHIFT_OPS.clear(); return true
   }
-  window.boardHasDrafts = () => draftTotal() > 0
   // ページを閉じる・再読み込みするとき
   window.addEventListener('beforeunload', (ev) => { if (draftTotal()) { ev.preventDefault(); ev.returnValue = '' } })
   // 画面の移動（メニュー・リンク・戻る）。やめたときは元の URL に戻し、画面を切り替えない（true = 切り替えてよい）
@@ -2439,7 +2435,6 @@
           </tbody></table></div>
         </section>
       </div>`
-    window.__projectForPanel = p
     PATTERNS = new Map(pt.patterns.map(x => [x.pattern_id, { ...x, project: p }]))
     // 勤怠・日報の提出設定（案件の初期値。public/static/staff-lifecycle.js）
     if (window.renderProjectReportSettings) renderProjectReportSettings(p)

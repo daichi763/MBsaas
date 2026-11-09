@@ -486,15 +486,6 @@
   delegate('attResubmit', (el) => attResubmit(Number(el.dataset.id)))
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', approved_exception: '承認（順序の矛盾を確認済み）', rejected: '却下', cancelled: '取り消し' }
   // ---------- 通知（打刻修正申請の受付・承認・却下）----------
-  // ホーム・その他を開いたときに未読件数を表示する（staff.js の renderHome / renderMore から呼ぶ）
-  window.loadNotifBanner = async function () {
-    let n = 0
-    try { n = (await axios.get('/api/staff/notifications/unread-count')).data.count } catch (e) { return }
-    const banner = document.getElementById('notif-banner')
-    if (banner) banner.innerHTML = n ? `<a href="#notifications" class="block bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-800" role="alert"><i class="fas fa-bell mr-1"></i>未読の通知が <b>${n}件</b> あります <span class="underline font-bold ml-1">確認する</span></a>` : ''
-    const more = document.getElementById('more-notif-count')
-    if (more) { more.textContent = n; more.classList.toggle('hidden', !n) }
-  }
   let NOTIF_LIST = []
   window.renderStaffNotifications = async function () {
     loading()

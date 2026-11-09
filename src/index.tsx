@@ -811,7 +811,6 @@ app.get('/hq', async (c) => {
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('SaaS本部')}
-  ${cdnJs('chart.js@4.5.1/dist/chart.umd.min.js')}
 </head>
 <body class="bg-slate-900 min-h-screen text-gray-100">
   <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-20">

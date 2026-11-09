@@ -275,7 +275,7 @@ async function browserChecks() {
     // data-action で開くものは delegate の処理を直接呼ぶ
     const dg = (name, data = {}) => `delegate.handlers.${name}({ dataset: ${JSON.stringify(data)} })`
     const openers = [
-      ['スタッフ登録', 'showAddStaff()'], ['案件登録', 'showAddProject()'], ['クライアント登録', 'showAddClient()'], ['シフト登録', `showAddShift('${today}')`],
+      ['案件登録', 'showAddProject()'], ['クライアント登録', 'showAddClient()'], ['シフト登録', `showAddShift('${today}')`],
       ['日報テンプレート', dg('newAdminTemplate')], ['IDをまとめて連携', 'showRosterBulkLink()'], ['フォロー記録', `showFollowModal(${R.staff}, 'X')`],
       ['評価', dg('showEvaluationModal', { id: String(R.staff) })], ['仮登録', 'showQuickRegister({})'], ['区分を変更', `openAffiliationChange(${R.staff})`],
       ['前日確認の設定', dg('showDayBeforeSetting')], ['遅刻の猶予', dg('showLatenessSetting')], ['緊急連絡先・入店の位置', dg('showSiteContactSetting')],
