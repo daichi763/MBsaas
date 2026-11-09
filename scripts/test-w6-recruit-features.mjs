@@ -37,7 +37,9 @@ async function login(company_code, user_code, password = 'pass1234') {
 function client(cookie) {
   const call = async (method, path, body) => {
     const send = () => fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie || '', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
-    const r = await send().catch(() => send())
+    let r = await send().catch(() => send())
+    // sql() でローカルの D1 を直接書き換えた直後は、読み取りが一度だけ 500 になることがある。GET（読み取りだけ）は1回だけやり直す
+    if (method === 'GET' && r.status >= 500) { await new Promise(res => setTimeout(res, 1000)); r = await send() }
     let data = null; try { data = await r.json() } catch { }
     return { status: r.status, data }
   }
