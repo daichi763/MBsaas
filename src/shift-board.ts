@@ -8,10 +8,10 @@
 // =========================================================
 import { Hono } from 'hono'
 import { settleRemovedSlotItems } from './recruit'
-import { JSON_IN, batchInChunks, bindJsonArray } from './lib/d1-chunk'
+import { JSON_IN, batchInChunks, bindJsonArray, chunk } from './lib/d1-chunk'
 import { assertAssignable, assignableStaffSql, conflictFor, conflictLabel, conflictView, findConflicts, isUniqueViolation, ngStaffIds } from './lib/staff-eligibility'
 import type { ConflictRow } from './lib/staff-eligibility'
-import { changesOf, insertRowsStmts, returnedIds, updateRowsStmts } from './lib/bulk-write'
+import { ROWS_PER_STATEMENT, changesOf, insertRowsStmts, returnedIds, updateRowsStmts } from './lib/bulk-write'
 import { buildUpdate } from './lib/update-builder'
 import { isHHMM, isISODate } from './lib/validate'
 import { loadShiftSnaps, notifyCorrection, notifyShiftChanges, shiftNotifyOptOf } from './notifications'
@@ -1098,14 +1098,40 @@ function rolesRangeError(roles: any): string | null {
   }
   return null
 }
-async function insertSlot(db: D1Database, u: any, b: any, date: string, roles: any[], patternId: number | null) {
-  const res = await db.prepare(`INSERT INTO shift_slots (company_id, project_id, site_id, location, work_date, start_time, end_time, break_minutes, pattern_id, memo, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, b.project_id, b.site_id || null, b.location || null, date, b.start_time, b.end_time,
-    intOrNull(b.break_minutes), patternId, b.memo || null, u.user_id).run()
-  const slotId = res.meta.last_row_id
-  await db.batch(roles.map((r, i) => db.prepare(`INSERT INTO shift_slot_roles (slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(slotId, r.role_name, r.headcount, r.bill_unit_type, r.bill_rate, r.pay_unit_type, r.pay_rate, i)))
-  return slotId
+// 枠と役割をまとめて登録する文（9933）。返した文は呼び出し側が1つの batch で実行する（途中で失敗しても、一部の日の枠や役割のない枠が残らない）。
+//   枠は100日ずつ INSERT ... SELECT FROM json_each で登録し、続く文で、いま登録した枠に役割をまとめて登録する。
+//   いま登録した枠の見分け方: 繰り返し登録の枠は「その繰り返し登録・その日付で、役割がまだない枠」。
+//   それ以外は「slot_id の大きい方から n 件のうち、この会社・案件・日付で、役割がまだない枠」（新しい行には表の中で最も大きい slot_id が付き、batch の間はほかの書き込みが入らないため）
+//   pattern: 繰り返し登録の ID。'new' は同じ batch の前の文で登録した繰り返し登録（この会社の最も大きい pattern_id）。
+//     ID を渡したときは、その繰り返し登録の枠がすでにある日には作らない（延長のやり直しで二重にしない）
+//   slotIdx: 返した文のうち、枠の INSERT（RETURNING slot_id）の位置
+function slotInsertStmts(db: D1Database, u: any, b: any, dates: string[], roles: any[], pattern: number | 'new' | null) {
+  const cid = u.company_id
+  const pid = pattern === 'new' ? '(SELECT MAX(pattern_id) FROM slot_patterns WHERE company_id = ?)' : '?'
+  const pidBind = pattern === 'new' ? [cid] : [pattern]
+  const roleJson = JSON.stringify(roles.map(r => ({ role_name: r.role_name, headcount: r.headcount, bill_unit_type: r.bill_unit_type ?? null, bill_rate: r.bill_rate ?? null,
+    pay_unit_type: r.pay_unit_type ?? null, pay_rate: r.pay_rate ?? null })))
+  const stmts: D1PreparedStatement[] = [], slotIdx: number[] = []
+  for (const part of chunk(dates, ROWS_PER_STATEMENT)) {
+    const dj = JSON.stringify(part)
+    slotIdx.push(stmts.length)
+    stmts.push(db.prepare(`INSERT INTO shift_slots (company_id, project_id, site_id, location, work_date, start_time, end_time, break_minutes, pattern_id, memo, created_by)
+      SELECT ?, ?, ?, ?, j.value, ?, ?, ?, ${pattern == null ? 'NULL' : pid}, ?, ? FROM json_each(?) j
+      ${typeof pattern === 'number' ? 'WHERE NOT EXISTS (SELECT 1 FROM shift_slots x WHERE x.pattern_id = ? AND x.company_id = ? AND x.work_date = j.value)' : ''}
+      ORDER BY j.key RETURNING slot_id`).bind(cid, b.project_id, b.site_id || null, b.location || null, b.start_time, b.end_time, intOrNull(b.break_minutes),
+      ...(pattern == null ? [] : pidBind), b.memo || null, u.user_id, dj, ...(typeof pattern === 'number' ? [pattern, cid] : [])))
+    const cond = pattern == null
+      ? `s.slot_id IN (SELECT slot_id FROM shift_slots ORDER BY slot_id DESC LIMIT ?) AND s.company_id = ? AND s.project_id = ?`
+      : `s.pattern_id = ${pid} AND s.company_id = ?`
+    const condBind = pattern == null ? [part.length, cid, b.project_id] : [...pidBind, cid]
+    stmts.push(db.prepare(`INSERT INTO shift_slot_roles (slot_id, role_name, headcount, bill_unit_type, bill_rate, pay_unit_type, pay_rate, sort_order)
+      SELECT s.slot_id, json_extract(r.value, '$.role_name'), json_extract(r.value, '$.headcount'), json_extract(r.value, '$.bill_unit_type'), json_extract(r.value, '$.bill_rate'),
+        json_extract(r.value, '$.pay_unit_type'), json_extract(r.value, '$.pay_rate'), r.key
+      FROM shift_slots s, json_each(?) r
+      WHERE ${cond} AND s.work_date IN ${JSON_IN} AND NOT EXISTS (SELECT 1 FROM shift_slot_roles x WHERE x.slot_id = s.slot_id)
+      ORDER BY s.slot_id, r.key`).bind(roleJson, ...condBind, dj))
+  }
+  return { stmts, slotIdx }
 }
 // 終了した案件（#153）には募集枠を作らない（割り当ては assertAssignable で止めている。画面は稼働中の案件だけを出す）
 const CLOSED_PROJECT_SLOT_ERROR = '終了した案件には募集枠を作れません（案件詳細で「稼働中に戻す」と作れます）'
@@ -1156,8 +1182,9 @@ app.post('/shift-slots', async (c) => {
   if (!dates.length) return c.json({ error: '日付を選択してください' }, 400)
   if (dates.length > 92) return c.json({ error: '一度に作成できるのは92日分までです' }, 400)
   if (!b.location && b.site_id) b.location = (await ownSite(db, u.company_id, b.site_id))?.site_name
-  const ids: number[] = []
-  for (const d of dates.sort()) ids.push(await insertSlot(db, u, b, d, roles, null))
+  const ins = slotInsertStmts(db, u, b, dates.sort(), roles, null)
+  const res = await db.batch(ins.stmts)
+  const ids = returnedIds(ins.slotIdx.map(i => res[i]), 'slot_id').sort((x, y) => x - y) // 日付の順（slot_id は日付の順に付く）
   return c.json({ ok: true, slot_ids: ids })
 })
 
@@ -2504,12 +2531,16 @@ app.post('/slot-patterns', async (c) => {
   for (let d = b.date_from; dayDiff(d, b.date_to) >= 0; d = addDays(d, 1)) if (wds.includes(weekday(d))) dates.push(d)
   if (!dates.length) return c.json({ error: '期間内に該当する曜日がありません' }, 400)
   if (dates.length > 160) return c.json({ error: '一度に作成できる枠は160件までです（期間を分けてください）' }, 400)
-  const res = await db.prepare(`INSERT INTO slot_patterns (company_id, project_id, site_id, location, weekdays, date_from, date_to, start_time, end_time, break_minutes, roles_json, memo, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, b.project_id, b.site_id || null, b.location || null, wds.sort().join(','), b.date_from, b.date_to,
-    b.start_time, b.end_time, intOrNull(b.break_minutes), JSON.stringify(roles), b.memo || null, u.user_id).run()
-  const patternId = res.meta.last_row_id
-  for (const d of dates) await insertSlot(db, u, b, d, roles, patternId)
-  return c.json({ ok: true, pattern_id: patternId, slots: dates.length })
+  // 繰り返し登録・枠・役割を1つの batch で書く（9933）
+  const ins = slotInsertStmts(db, u, b, dates, roles, 'new')
+  const res = await db.batch([
+    db.prepare(`INSERT INTO slot_patterns (company_id, project_id, site_id, location, weekdays, date_from, date_to, start_time, end_time, break_minutes, roles_json, memo, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING pattern_id`).bind(u.company_id, b.project_id, b.site_id || null, b.location || null, wds.sort().join(','), b.date_from, b.date_to,
+      b.start_time, b.end_time, intOrNull(b.break_minutes), JSON.stringify(roles), b.memo || null, u.user_id),
+    ...ins.stmts,
+  ])
+  const patternId = Number(((res[0]?.results || []) as any[])[0]?.pattern_id) || res[0]?.meta?.last_row_id
+  return c.json({ ok: true, pattern_id: patternId, slots: returnedIds(ins.slotIdx.map(i => res[i + 1]), 'slot_id').length })
 })
 
 // 繰り返し登録の編集と延長（#456）
@@ -2672,16 +2703,15 @@ app.put('/slot-patterns/:id', async (c) => {
     AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_role_id = shift_slot_roles.slot_role_id)`).bind(bindJsonArray(removable.map(r => r.slot_role_id))))
   if (addRows.length) stmts.push(...insertRowsStmts(db, 'shift_slot_roles', ['slot_id', 'role_name', 'headcount', 'bill_unit_type', 'bill_rate', 'pay_unit_type', 'pay_rate', 'sort_order'],
     addRows.map(a => ({ slot_id: a.slot_id, role_name: a.role.role_name, headcount: a.role.headcount, bill_unit_type: null, bill_rate: null, pay_unit_type: null, pay_rate: null, sort_order: a.sort_order }))))
+  // 延長: 追加する日の枠と役割も同じ batch で書く（同じパターンの枠がすでにある日は作らない。9933）
+  const ext = extendDates.length ? slotInsertStmts(db, u, { project_id: p.project_id, site_id: p.site_id, location: p.location, start_time: start, end_time: end, break_minutes: brk, memo: p.memo },
+    extendDates, newRoles, Number(p.pattern_id)) : null
+  const extAt = stmts.length
+  if (ext) stmts.push(...ext.stmts)
   stmts.push(db.prepare('UPDATE slot_patterns SET start_time = ?, end_time = ?, break_minutes = ?, roles_json = ?, date_to = ? WHERE pattern_id = ? AND company_id = ?')
     .bind(start, end, brk ?? null, JSON.stringify(newRoles), newTo, p.pattern_id, u.company_id))
-  await batchInChunks(db, stmts)
-  // 延長: 追加する日の枠（同じパターンの枠がすでにある日は作らない）
-  let createdSlots = 0
-  if (extendDates.length) {
-    const exists = new Set(((await db.prepare('SELECT work_date FROM shift_slots WHERE pattern_id = ? AND company_id = ? AND work_date > ?').bind(p.pattern_id, u.company_id, p.date_to).all()).results as any[]).map(r => r.work_date))
-    const body = { project_id: p.project_id, site_id: p.site_id, location: p.location, start_time: start, end_time: end, break_minutes: brk, memo: p.memo }
-    for (const d of extendDates) if (!exists.has(d)) { await insertSlot(db, u, body, d, newRoles, p.pattern_id); createdSlots++ }
-  }
+  const written = await batchInChunks(db, stmts)
+  const createdSlots = ext ? returnedIds(ext.slotIdx.map(i => written[extAt + i]), 'slot_id').length : 0
   // 時刻・休憩を変えたシフトの単価を計算し直す（時給の時間が変わるため）
   const repriced = moving.length ? await repriceRows(db, u.company_id, ((await db.prepare(`SELECT * FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`)
     .bind(u.company_id, bindJsonArray(moving.map(x => x.s.shift_id))).all()).results as any[]), true) : 0
@@ -2692,19 +2722,20 @@ app.delete('/slot-patterns/:id', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const p = await db.prepare('SELECT * FROM slot_patterns WHERE pattern_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!p) return c.json({ error: '繰り返し登録が見つかりません' }, 404)
-  let removed = 0
+  // 枠の削除と繰り返し登録の削除を1つの batch で書く（枠のまとめて削除と同じく、枠ごとに問い合わせない。9933）
+  const stmts: D1PreparedStatement[] = []
   if (c.req.query('remove_future') === '1') {
     const today = c.req.query('today') && isDate(c.req.query('today')) ? c.req.query('today')! : new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10)
-    const empties = (await db.prepare(`SELECT s.slot_id FROM shift_slots s WHERE s.pattern_id = ? AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)`).bind(p.pattern_id, today).all()).results as any[]
-    for (const e of empties) {
-      await db.batch([db.prepare('DELETE FROM shift_slot_roles WHERE slot_id = ?').bind(e.slot_id), db.prepare('DELETE FROM shift_slots WHERE slot_id = ?').bind(e.slot_id)])
-      removed++
-    }
+    const empties = `SELECT s.slot_id FROM shift_slots s WHERE s.pattern_id = ? AND s.company_id = ? AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)`
+    stmts.push(
+      db.prepare(`DELETE FROM shift_slot_roles WHERE slot_id IN (${empties})`).bind(p.pattern_id, u.company_id, today),
+      db.prepare(`DELETE FROM shift_slots WHERE slot_id IN (${empties}) RETURNING slot_id`).bind(p.pattern_id, u.company_id, today))
   }
-  await db.batch([
+  stmts.push(
     db.prepare('UPDATE shift_slots SET pattern_id = NULL WHERE pattern_id = ?').bind(p.pattern_id),
-    db.prepare('DELETE FROM slot_patterns WHERE pattern_id = ?').bind(p.pattern_id),
-  ])
+    db.prepare('DELETE FROM slot_patterns WHERE pattern_id = ?').bind(p.pattern_id))
+  const res = await db.batch(stmts)
+  const removed = stmts.length > 2 ? ((res[1]?.results || []) as any[]).length : 0
   if (removed) await settleRemovedSlotItems(db, u.company_id) // 未対応の応募を「枠の削除」で処理済みにする（#65）
   return c.json({ ok: true, removed })
 })
