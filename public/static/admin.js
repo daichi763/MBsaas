@@ -1446,60 +1446,6 @@ function staffNeighbors(sid) {
   return i < 0 ? null : { prev: staffListIds[i - 1] || null, next: staffListIds[i + 1] || null, pos: i + 1, total: staffListIds.length }
 }
 
-// スタッフ番号には空いている番号（#424）を入れておく（手で変えることもできる）
-window.showAddStaff = async function () {
-  let next = null
-  try { next = (await axios.get('/api/admin/roster/next-code')).data } catch { next = null }
-  modal(`
-    <h3 class="font-bold text-lg mb-4">スタッフ登録</h3>
-    <div class="space-y-3">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">スタッフ番号 *</label><input id="ns-code" class="inp" placeholder="st021" value="${esc(next ? next.code : '')}">
-          ${next && next.last_code ? `<p class="text-[11px] text-gray-400 mt-1">空いている番号です（最後の番号: ${esc(next.last_code)}）</p>` : ''}</div>
-        <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="ns-name" class="inp" placeholder="山田 太郎"></div>
-      </div>
-      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード *</label><input id="ns-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="ns-email" class="inp"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="ns-phone" class="inp"></div>
-      </div>
-      <div><label class="text-sm text-gray-600 block mb-1">スキル（カンマ区切り）</label><input id="ns-skills" class="inp" placeholder="MNP,接客"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">経歴</label><input id="ns-career" class="inp"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">稼働可能エリア</label><input id="ns-area" class="inp" placeholder="東京23区"></div>
-      <div id="ns-dup"></div>
-      <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addStaff">登録する</button></div>
-    </div>`)
-}
-// 送信中はボタンを無効にする（二度押しで同じ人が2人登録されないように。#223）
-delegate('addStaff', (el) => withSubmitLock(el, () => addStaff(false)))
-delegate('addStaffForce', (el) => withSubmitLock(el, () => addStaff(true)))
-
-window.addStaff = async function (force) {
-  try {
-    await axios.post('/api/admin/staff', {
-      user_code: document.getElementById('ns-code').value.trim(),
-      name: document.getElementById('ns-name').value.trim(),
-      password: document.getElementById('ns-pass').value,
-      email: document.getElementById('ns-email').value, phone: document.getElementById('ns-phone').value,
-      skills: document.getElementById('ns-skills').value, career: document.getElementById('ns-career').value,
-      work_area: document.getElementById('ns-area').value, force: !!force,
-    })
-    closeModal(); toast('スタッフを登録しました'); renderStaff()
-  } catch (e) {
-    const d = e.response && e.response.data
-    // 同じ人と思われるスタッフがいる（#223）: 一覧を出し、別の人なら登録を続けられるようにする
-    const box = document.getElementById('ns-dup')
-    if (d && d.need_force && d.matches && box && window.samePersonListHtml) {
-      box.innerHTML = `<div class="p-3 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>同じ人と思われるスタッフが登録済みです</p>
-        <ul class="space-y-1 mb-2">${samePersonListHtml(d.matches)}</ul>
-        <button class="btn btn-outline text-xs" data-action="addStaffForce">別の人として登録する</button></div>`
-      return
-    }
-    if (d && d.suggested_code) { document.getElementById('ns-code').value = d.suggested_code; toast(`スタッフ番号が使われています。空いている番号（${d.suggested_code}）を入れました`); return }
-    toast((d && d.error) || '登録に失敗しました')
-  }
-}
-
 // ============ スタッフ詳細 ============
 const GENDER_LABEL_ADMIN = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
 // 年齢の表示（#9710）。生年月日がなく、年齢の欄（生年月日が分からないとき）から推定した年齢は「約31歳（2026/11 時点で30歳）」の形で出す
@@ -1886,8 +1832,8 @@ async function renderStaffDetail(sid, opts = {}) {
   $app.innerHTML = `
     <div id="staff-detail-header">${staffDetailHeaderHtml(sid, p)}</div>
 
-    <div class="grid lg:grid-cols-3 gap-4 mb-4">
-      <section class="card p-4 lg:col-span-2" id="staff-basic-info">
+    <div class="grid lg:grid-cols-3 min-[1800px]:grid-cols-4 gap-4 mb-4">
+      <section class="card p-4 lg:col-span-2 min-[1800px]:col-span-3" id="staff-basic-info">
         ${staffBasicCardHtml(sid, p, affData, editing)}
       </section>
 
@@ -2075,10 +2021,6 @@ delegate('deleteEvaluation', el => withSubmitLock(el, async () => {
   } catch (e) { showApiError(e, '評価を削除できませんでした') }
 }))
 
-window.saveStaffMemo = async function (sid) {
-  await axios.put('/api/admin/staff/' + sid, { memo: document.getElementById('staff-memo').value })
-  toast('メモを保存しました')
-}
 // 離職リスク（低・中・高）の変更（#381）。失敗したら選択を元に戻す
 document.addEventListener('change', async (ev) => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-staff-risk]') : null
@@ -2167,27 +2109,6 @@ async function putRetiredAtOnce(url, body, target) {
     if (!confirm(d.error + '\n\nこの日付で保存しますか？')) return null
     ;(target || body).retired_at_confirmed = true
     return axios.put(url, body)
-  }
-}
-window.setStaffRetiredAt = async function (sid, date) {
-  const r = retirementBody(date ? 'retired' : 'working', date || '', null)
-  if (r.error) { toast(r.error); return }
-  if (date && r.confirm && !confirm(r.confirm)) return
-  try {
-    if (!(await putConfirmingRetiredAt('/api/admin/staff/' + sid, r.body))) return
-    toast(date ? '退職日を設定しました' : '現役に戻しました')
-    renderStaffDetail(sid)
-  } catch (e) {
-    toast((e.response && e.response.data && e.response.data.error) || '更新に失敗しました')
-  }
-}
-window.setStaffEmploymentStatus = async function (sid, status) {
-  try {
-    await axios.put('/api/admin/staff/' + sid, { employment_status: status })
-    toast('在籍状況を更新しました')
-    renderStaffDetail(sid)
-  } catch (e) {
-    toast((e.response && e.response.data && e.response.data.error) || '更新に失敗しました')
   }
 }
 window.saveStaffBasicInfo = async function (sid) {
@@ -3363,9 +3284,9 @@ async function renderAdminTemplates() {
     </div>
     <p class="text-sm text-gray-500 mb-4">案件ごとにスタッフが日報で入力する項目です。案件の登録・編集で選びます。配信停止にしたテンプレートは新しい案件では選べません（使っている案件はそのまま使えます）。</p>
     <h3 class="text-sm font-bold text-gray-700 mb-2">自社のテンプレート</h3>
-    <div class="grid md:grid-cols-2 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
+    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
     <h3 class="text-sm font-bold text-gray-700 mb-2">本部配信のテンプレート</h3>
-    <div class="grid md:grid-cols-2 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
+    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
 }
 const tplById = id => ADMIN_TPLS.find(t => Number(t.template_id) === Number(id))
 delegate('newAdminTemplate', () => openTemplateEditor(null, { name: '', fields: [{ key: 'item1', label: '', type: 'number' }, { key: 'free', label: '自由記述', type: 'textarea' }] }))
@@ -3677,7 +3598,7 @@ async function renderClients() {
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
     </div>
-    <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" id="client-cards"></div>`
+    <div class="grid md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4 gap-4" id="client-cards"></div>`
   let timer = null
   document.getElementById('client-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawClientCards() }, 200) })
   document.getElementById('client-sort').addEventListener('change', ev => { L.sort = ev.target.value; drawClientCards() })
@@ -6944,6 +6865,11 @@ async function renderAccount() {
     <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
     ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
     ${!me.email ? `<div class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800"><i class="fas fa-envelope mr-1"></i>メールアドレスが登録されていません。登録すると、打刻修正の承認依頼などの通知と、パスワードを忘れたときの再設定メールが届きます。</div>` : ''}
+    <section class="card p-3 mb-4 flex items-center gap-3 flex-wrap" id="account-contract-usage">
+      <i class="fas fa-users text-blue-500"></i>
+      <span class="text-sm flex-1">契約ユーザー数: <span id="account-contract-state" class="text-gray-400">…</span>
+        <span class="block text-[11px] text-gray-400">利用中のアカウント（管理者とスタッフ）の数です。ログインのない名簿のみのスタッフと、停止したアカウントは数えません。上限は本部との契約で決まります</span></span>
+    </section>
     <div class="grid lg:grid-cols-2 gap-4 mb-6">
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-user text-blue-500 mr-1"></i>自分のアカウント</h3>
@@ -7005,6 +6931,26 @@ async function renderAccount() {
     el.outerHTML = `<span id="account-photo-state"><span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span>${last ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(last.at))} ${esc(last.name || '')}</span>` : ''}</span>`
   }).catch(() => { })
   showShiftNotifyState()
+  showContractUsage()
+}
+// 契約ユーザー数（本部が決めた上限と今の利用数。#9928）。数え方は本部の画面と同じ（API の HQ_BILLABLE_SQL）。登録は止めず、表示だけ
+function showContractUsage() {
+  const draw = (html, tone) => {
+    const el = document.getElementById('account-contract-state'); if (!el) return
+    el.outerHTML = `<span id="account-contract-state">${html}</span>`
+    const sec = document.getElementById('account-contract-usage')
+    if (sec && tone) sec.classList.add(...tone.split(' '))
+  }
+  axios.get('/api/admin/contract-usage').then(({ data: d }) => {
+    const n = Number(d.user_count) || 0, lim = d.user_limit == null ? null : Number(d.user_limit)
+    const head = `<span class="font-bold">登録 ${n} 人 ／ ${lim == null ? '上限なし' : `上限 ${lim} 人`}</span>`
+    if (lim == null) return draw(head)
+    if (d.over_limit) return draw(`${head} <span class="badge badge-red">上限超過</span>
+      <span class="block text-xs text-red-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>契約ユーザー数の上限を ${n - lim} 人超えています。上限を増やすには本部にご相談ください</span>`, 'border-red-200 bg-red-50')
+    if (d.near_limit) return draw(`${head} <span class="badge badge-yellow">${n >= lim ? '上限に達しています' : `残り ${lim - n} 人`}</span>
+      <span class="block text-xs text-amber-800 mt-1"><i class="fas fa-circle-exclamation mr-1"></i>${n >= lim ? '上限に達しました。これより多く登録すると上限を超えます' : '上限に近づいています'}。上限を増やすには本部にご相談ください</span>`, 'border-amber-200 bg-amber-50')
+    draw(`${head} <span class="text-[11px] text-gray-400 ml-1">残り ${lim - n} 人</span>`)
+  }).catch(() => draw('<span class="text-gray-400">読み込めませんでした</span>'))
 }
 // シフトの確定・削除の通知の会社の設定（#9906。設定の画面は shift-board.js の shiftNotifySetting）
 function showShiftNotifyState(d) {
@@ -7210,6 +7156,9 @@ const routes = {
 }
 // スタッフの申請（#272 #288 #289 #297。画面は書類の欄の後に定義）
 routes['staff-requests'] = () => renderStaffRequests()
+// 本文の幅（#9930）: 入力フォームが中心の画面は読みやすい幅（form）、ほかの一覧・表・ダッシュボード・詳細などは幅いっぱい（full）。
+// 一覧とフォームが半々の画面（セキュリティなど）は full にする。幅そのものは input.css で決める（どの画面をどちらにしたかは docs/screens.md）
+const APP_FORM_TABS = new Set(['account'])
 
 function route() {
   const hash = (location.hash || '#dashboard').slice(1)
@@ -7220,6 +7169,7 @@ function route() {
   if (ME && !ME.mfa_setup_required && ME.must_change_password && tab !== 'account') { history.replaceState(null, '', '#account'); toast('仮パスワードのままです。パスワードを変更してください'); return route() }
   document.querySelectorAll('.side-link').forEach(el => el.classList.toggle('active', el.dataset.tab === tab))
   openNavGroupOf(tab)
+  $app.dataset.layout = APP_FORM_TABS.has(tab) ? 'form' : 'full'
   const mob = document.getElementById('mobile-nav')
   if (mob && routes[tab]) mob.value = tab
   // 自社の日報テンプレートの作成・編集（#165）

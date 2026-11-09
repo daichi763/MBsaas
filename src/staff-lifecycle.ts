@@ -19,7 +19,7 @@ import { notifyDailyReportIncident, notifyConsultation } from './notifications'
 import { notifyProxyAttendance, ATTENDANCE_PROXY_KIND, loadMailContact } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
 import { issueTempPassword } from './accounts'
-import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, applyLegacyStaffMode, setProjectDefaults } from './report-settings'
+import { REPORT_TYPES, REPORT_LABEL, NEXT_DAY_TYPES, ACTUAL_SYNC_TYPES, attendanceTypesForShifts, checkReportable, flagsFromLegacyMode, setProjectDefaults } from './report-settings'
 import { checkStaffReport, lateness, latenessSettings, loadReportState, reportStatus, shiftOverrideLogStatements } from './report-settings'
 import { addMinutes, shiftWindow, type ShiftTimes } from './lib/shift-time'
 import { reportableWindow } from './lib/shift-time'
@@ -796,12 +796,11 @@ adminLifecycleApi.put('/staff/:id/report-settings', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
   const sp = await loadStaffRow(c.env.DB, u.company_id, c.req.param('id'))
   if (!sp) return c.json({ error: 'スタッフが見つかりません' }, 404)
-  const a = b.attendance_mode === undefined ? undefined : modeVal(b.attendance_mode, ATTENDANCE_MODES)
+  // ここで変えるのは日報だけ。勤怠報告は案件報告管理（/admin/report-settings/staff/:staffId/apply・reset）で変える
+  if (b.attendance_mode !== undefined) return c.json({ error: '勤怠報告の設定は「案件報告管理」で変更してください' }, 400)
   const d = modeVal(b.daily_report_mode, DAILY_REPORT_MODES)
-  if ((b.attendance_mode !== undefined && a === undefined) || d === undefined) return c.json({ error: '設定値が正しくありません' }, 400)
+  if (d === undefined) return c.json({ error: '設定値が正しくありません' }, 400)
   await c.env.DB.prepare('UPDATE staff_profiles SET daily_report_mode = ? WHERE staff_id = ?').bind(d, sp.staff_id).run()
-  // 勤怠は案件 × スタッフの報告設定に書き込む（所属する全案件。空は案件の標準設定に戻す）
-  if (b.attendance_mode !== undefined) await applyLegacyStaffMode(c.env.DB, u.company_id, sp.staff_id, a, u)
   return c.json({ ok: true })
 })
 adminLifecycleApi.put('/projects/:id/report-settings', async (c) => {

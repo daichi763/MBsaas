@@ -191,7 +191,7 @@ if (PERSIST) {
     d1(`UPDATE staff_profiles SET age_entered = 38, age_entered_on = '${on}', date_of_birth = NULL WHERE staff_id = ${Number(E)}`)
     await waitServer()
     const share = must(await admin.get(`/api/admin/roster/${E}/share-code`), 'share-code')
-    const terms = must(await admin2.get('/api/admin/roster/consent-terms'), 'terms')
+    const terms = must(await admin2.get('/api/admin/roster/lookup?code=' + encodeURIComponent(share.global_staff_code)), 'lookup').consent
     const link = must(await admin2.post('/api/admin/roster/link', { code: share.global_staff_code, agreed: true, consent_version: terms.version }), 'link')
     const lp = must(await admin2.get(`/api/admin/staff/${link.staff_id}`), 'linked staff').profile
     ok('#9710 他社連携の行: 年代は所属元の推定の年齢（38→40歳）から出し、年齢・入力した日は渡さない',

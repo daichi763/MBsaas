@@ -97,7 +97,7 @@ let mode = null
   const admin2 = client(await login(code, 'admin'))
   const share = await admin.get('/api/admin/roster/1/share-code')
   ok('（前提）連携用IDを取得', share.status === 200 && share.data.global_staff_code, share)
-  const terms = (await admin2.get('/api/admin/roster/consent-terms')).data
+  const terms = (await admin2.get('/api/admin/roster/lookup?code=' + encodeURIComponent(share.data.global_staff_code))).data?.consent || {}
   const link = await admin2.post('/api/admin/roster/link', { code: share.data.global_staff_code, agreed: true, consent_version: terms.version })
   ok('（前提）他社のスタッフを連携', link.status === 200 && link.data.staff_id, link)
   const n = await admin2.post('/api/admin/notices', { title: `連携先のお知らせ ${uid()}`, body: '集合場所変更', target_type: 'all', send_email: true, client_request_id: uid() })

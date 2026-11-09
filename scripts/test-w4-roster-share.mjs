@@ -35,7 +35,7 @@ const A = client(await login(coCode, 'admin'))
 must(await admin.post('/api/admin/staff', { user_code: `${PFX}X`, name: `${PFX} 共有X`, password: 'pass1234', email: `x${PFX.toLowerCase()}@example.com`, phone: '09012345678' }), 'staff X')
 const X = must(await admin.get('/api/admin/staff'), 'staff list').staff.find(s => s.user_code === `${PFX}X`)
 ok('（前提）自社雇用のスタッフに恒久ID（FS…）がある', X && /^FS[0-9A-F]{10}$/.test(X.global_staff_code), X)
-const terms = must(await admin.get('/api/admin/roster/consent-terms'), 'terms')
+const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(X.global_staff_code)), 'lookup').consent
 const inA = must(await A.post('/api/admin/roster/link', { code: X.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
 ok('（前提）A に連携できた', !!inA)
 

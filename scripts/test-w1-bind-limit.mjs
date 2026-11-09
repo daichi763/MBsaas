@@ -1,11 +1,24 @@
 // D1 のバインド上限（100）と、他社の会社名を出さない重複チェック（w1-bind-limit: #14 #29 #30 #35 #264 #560）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
-// 実行: BASE=http://127.0.0.1:8799 node scripts/test-w1-bind-limit.mjs
+// 実行: BASE=http://127.0.0.1:8799 PERSIST=<保存先> node scripts/test-w1-bind-limit.mjs
 // 合成データ（在籍150人・案件120件・枠150件・掲示板100件・応募105件・連携先の会社3社）を API で作るため、数分かかる。
+// 登録済みスタッフの応募105件は、以前のスタッフアプリからの応募（source = 'staff'。D-22 で入口を外した）として、ローカルの D1 に直接入れる（PERSIST が無ければ省く）。
 // テストのたびに DB を作り直すこと
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
+const PERSIST = process.env.PERSIST || ''
+let sqlSeq = 0, SQL_DIR = ''
+function sql(command) {
+  SQL_DIR = SQL_DIR || mkdtempSync(join(tmpdir(), 'w1bl-'))
+  const file = join(SQL_DIR, `q${++sqlSeq}.sql`)
+  writeFileSync(file, command)
+  const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', `"${PERSIST}"`, '--json', `--file="${file}"`], { encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  return JSON.parse(out)[0].results
+}
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 400) : ''}`) }
 
@@ -17,7 +30,9 @@ async function login(company_code, user_code, password = 'pass1234') {
 }
 function client(cookie) {
   const call = async (method, path, body) => {
-    const r = await fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const send = () => fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    // sql() の実行中に待ち受け側が閉じた接続を使い回すと ECONNRESET になるため、通信の失敗は1回だけやり直す
+    const r = await send().catch(() => send())
     let data = null; try { data = await r.json() } catch { }
     return { status: r.status, data }
   }
@@ -102,27 +117,32 @@ const page = await admin.post('/api/admin/recruit-pages', pageBody(pids.slice(0,
 ok('#264 募集ページ: 対象の案件50件で作成できる', page.status === 200, page)
 const put = await admin.put(`/api/admin/recruit-pages/${page.data.page_id}`, { status: 'open' })
 ok('#264 募集ページ: 案件を送らない更新（終了・再開）は上限の確認を受けない', put.status === 200, put)
-const st1 = client(await login('sample', 'st001'))
-const sp = await st1.get('/api/staff/recruit')
-const myPage = (sp.data?.pages || []).find(p => p.page_id === page.data.page_id)
-const openRoleIds = (myPage?.roles || []).filter(r => !r.my_status).map(r => r.slot_role_id)
-ok('#264 スタッフアプリ: 案件50件の募集ページを開ける', sp.status === 200 && openRoleIds.length >= 31, { status: sp.status, n: openRoleIds.length })
-// 自分のほかのシフトと重なる日時は確認（force）が要る（w4-recruit-staffapp #310）
-const ap = await st1.post('/api/staff/recruit/apply', { page_id: page.data.page_id, slot_role_ids: openRoleIds.slice(0, 31), force: true })
-ok('#264 スタッフアプリ: 案件50件のページで31件の日時に応募できる', ap.status === 200 && ap.data.count === 31, ap)
+// スタッフアプリの募集は外した（D-22）ので、公開ページで確かめる
+const pub = client('')
+const sp = await pub.get(`/api/public/recruit/${page.data.token}`)
+const openRoleIds = (sp.data?.roles || []).map(r => r.slot_role_id)
+ok('#264 公開ページ: 案件50件の募集ページを開ける', sp.status === 200 && openRoleIds.length >= 31, { status: sp.status, n: openRoleIds.length })
+const ap = await pub.post(`/api/public/recruit/${page.data.token}/apply`, { name: `${PFX} 公開応募`, phone: '09011112222', agree: true, slot_role_ids: openRoleIds.slice(0, 31), issued_at: Date.now() - 10000 })
+ok('#264 公開ページ: 案件50件のページで31件の日時に応募できる', ap.status === 200 && ap.data.count === 31, ap)
 
 // ---------- #29 応募一覧（105件） ----------
-// 自分が割り当て済みの枠は応募の対象外になるため、2件ずつ選んで必ず1件の応募ができるようにする
-await pool([...Array(105).keys()], 6, async (i) => {
-  const s = client(await login('sample', `${PFX}S${i}`))
-  must(await s.post('/api/staff/recruit/apply', { page_id: page.data.page_id, slot_role_ids: [openRoleIds[i % openRoleIds.length], openRoleIds[(i + 1) % openRoleIds.length]], force: true }), 'apply ' + i)
-})
-const apps = await admin.get(`/api/admin/recruit-applications?status=pending&page_id=${page.data.page_id}`)
-ok('#29 応募一覧: 応募が100件を超えても開ける', apps.status === 200 && apps.data.applications.length >= 106, { status: apps.status, n: apps.data?.applications?.length, error: apps.data?.error })
-ok('#29 応募一覧: 200件以内なら truncated は false', apps.data && apps.data.truncated === false, apps.data?.truncated)
-// 登録済みスタッフの重複（同じ日の自社のシフト）は案件名で出る
-const withConflict = (apps.data?.applications || []).flatMap(a => a.items).filter(i => i.conflicts.length)
-ok('#29 応募一覧: 自社のシフトとの重複は案件名付きで出る', withConflict.length > 0 && withConflict.every(i => i.conflicts.every(x => x.startsWith(PFX + '-P'))), withConflict.slice(0, 2).map(i => i.conflicts))
+// 登録済みスタッフ105人の、以前のスタッフアプリからの応募（staff_id 付き）。1人2件ずつ（自分が割り当て済みの枠と重なる日時を含む）
+if (PERSIST) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`
+  const now = jstNow().slice(0, 19).replace('T', ' ')
+  sql([...Array(105).keys()].map(i => {
+    const sid = Number(newStaff[i].staff_id)
+    const app = `(SELECT MAX(application_id) FROM recruit_applications WHERE page_id = ${Number(page.data.page_id)} AND staff_id = ${sid} AND source = 'staff')`
+    return [`INSERT INTO recruit_applications (company_id, page_id, source, staff_id, name, created_at) VALUES (1, ${Number(page.data.page_id)}, 'staff', ${sid}, ${q(newStaff[i].name)}, ${q(now)});`,
+      ...[openRoleIds[i % openRoleIds.length], openRoleIds[(i + 1) % openRoleIds.length]].map(rid => `INSERT INTO recruit_application_items (application_id, slot_role_id, staff_id) VALUES (${app}, ${Number(rid)}, ${sid});`)].join('\n')
+  }).join('\n'))
+  const apps = await admin.get(`/api/admin/recruit-applications?status=pending&page_id=${page.data.page_id}`)
+  ok('#29 応募一覧: 応募が100件を超えても開ける', apps.status === 200 && apps.data.applications.length >= 106, { status: apps.status, n: apps.data?.applications?.length, error: apps.data?.error })
+  ok('#29 応募一覧: 200件以内なら truncated は false', apps.data && apps.data.truncated === false, apps.data?.truncated)
+  // 登録済みスタッフの重複（同じ日の自社のシフト）は案件名で出る
+  const withConflict = (apps.data?.applications || []).flatMap(a => a.items).filter(i => i.conflicts.length)
+  ok('#29 応募一覧: 自社のシフトとの重複は案件名付きで出る', withConflict.length > 0 && withConflict.every(i => i.conflicts.every(x => x.startsWith(PFX + '-P'))), withConflict.slice(0, 2).map(i => i.conflicts))
+} else console.log('SKIP  #29 応募一覧（105件）（PERSIST 未指定）')
 
 // ---------- #560 他社のシフトの重複: 会社名・案件名を出さない / 直接連携していない会社は対象にしない ----------
 const hq = client(await login('sample', 'hq'))
@@ -135,8 +155,7 @@ for (const k of ['A', 'B', 'C']) {
 const C1NAME = '株式会社サンプルモバイル人材'
 async function linkTo(api, code) {
   const lk = await api.get(`/api/admin/roster/lookup?code=${code}`)
-  const terms = await api.get('/api/admin/roster/consent-terms')
-  return must(await api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms.data.version }), 'link').staff_id
+  return must(await api.post('/api/admin/roster/link', { code, agreed: true, consent_version: lk.data?.consent?.version }), 'link').staff_id
 }
 async function shiftIn(api, staff_id, projectName, date) {
   must(await api.post('/api/admin/projects', { project_name: projectName }), 'project ' + projectName)

@@ -88,7 +88,8 @@ ok('畳んだときは文字を隠してアイコンを出し、件数のバッ�
   && ['body.side-collapsed #sidebar .side-link>i', 'body.side-collapsed #sidebar .side-foot button>i'].every(x => decl(x).includes('font-size:.95rem'))
   && decl('body.side-collapsed #sidebar .side-link>span').includes('position:absolute;top:.1rem;right:.15rem'))
 ok('キーボードで操作したときに枠を出す', ['.side-toggle:focus-visible', '#sidebar .side-link:focus-visible', '#sidebar .side-foot button:focus-visible'].every(x => decl(x).includes('outline:2px solid')))
-ok('シフト管理の表の画面では内容の最大幅を外す', css.includes('body:has(#board-grid) #app,body:has(#board-grid) #hq-support-bar,body:has(#board-grid) #tour-help-bar{max-width:none}'))
+// #9930 で、本文の幅は画面の種類ごとの規則（#app の data-layout）にまとめた。シフト管理は幅いっぱい（full）の画面
+ok('シフト管理の表の画面では内容の最大幅を外す（#9930 の幅いっぱいの規則）', ['.admin-main>#app', '.admin-main>#hq-support-bar', '.admin-main>#tour-help-bar'].every(x => decl(x).includes('max-width:none')) && !/<main id="app" class="[^"]*max-w-7xl/.test(html))
 ok('週の表は table-layout: fixed で幅いっぱいにする', css.includes('.board-table.board-fit{table-layout:fixed;width:100%}'))
 
 // ---------- シフト管理の表の列の幅（shift-board.js） ----------

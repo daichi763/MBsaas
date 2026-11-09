@@ -40,7 +40,7 @@ await adminB.post('/api/admin/projects', { project_name: `B社の案件${tag}`, 
 const projB = (await adminB.get('/api/admin/projects')).data.projects.find(x => x.project_name === `B社の案件${tag}`)
 await admin.get('/api/admin/staff') // 人物IDの補完（ensureRosterIdentity）
 const sc = await admin.get('/api/admin/roster/1/share-code')
-const terms = (await adminB.get('/api/admin/roster/consent-terms')).data
+const terms = (await adminB.get('/api/admin/roster/lookup?code=' + encodeURIComponent(sc.data.global_staff_code))).data?.consent || {}
 const lk = await adminB.post('/api/admin/roster/link', { code: sc.data.global_staff_code, agreed: true, consent_version: terms.version })
 ok('（前提）B 社が st001 を連携登録', sc.status === 200 && lk.status === 200, [sc, lk])
 const sB = await adminB.post('/api/admin/shifts', { staff_id: lk.data.staff_id, project_id: projB.project_id, work_date: today, start_time: '10:00', end_time: '19:00', memo: `CS-B${tag}` })

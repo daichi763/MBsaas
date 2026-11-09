@@ -139,7 +139,7 @@ ok('#447 スキルシートに管理者メモを返さない', ss.status === 200
 // ---------- #570 他社連携スタッフの申請で、連携先に所属元のメールアドレスを見せない ----------
 await admin.get('/api/admin/staff')  // 人物IDの補完（ensureRosterIdentity）
 const sc = await admin.get('/api/admin/roster/1/share-code')
-const terms = (await adminB.get('/api/admin/roster/consent-terms')).data
+const terms = (await adminB.get('/api/admin/roster/lookup?code=' + encodeURIComponent(sc.data.global_staff_code))).data?.consent || {}
 const lk = await adminB.post('/api/admin/roster/link', { code: sc.data.global_staff_code, agreed: true, consent_version: terms.version })
 ok('（前提）B 社が st001 を連携登録', sc.status === 200 && lk.status === 200, [sc, lk])
 const dL = addDays(today, -1)

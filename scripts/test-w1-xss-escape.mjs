@@ -116,16 +116,13 @@ async function createShift(staff_id, project_id, work_date, memo) {
 }
 
 // ---------- #6 シフト希望の時刻は HH:MM ----------
+// シフト希望の提出は D-23 で止めた（#9927。410）。不正な時刻を送っても保存しない
 {
   const d = addDays(today, 41)
   const bad = await st1.post('/api/staff/shifts/request', { work_date: d, start_time: IMG, end_time: '19:00', project_id: 1 })
-  ok('#6 開始時刻が HH:MM でないと 400', bad.status === 400, bad)
-  const bad2 = await st1.post('/api/staff/shifts/request', { work_date: d, start_time: '10:00', end_time: '25:00', project_id: 1 })
-  ok('#6 終了時刻が範囲外だと 400', bad2.status === 400, bad2)
-  const good = await st1.post('/api/staff/shifts/request', { work_date: d, start_time: '10:00', end_time: '19:00', project_id: 1 })
-  ok('#6 正しい時刻は成功', good.status === 200, good)
-  const def = await st1.post('/api/staff/shifts/request', { work_date: addDays(today, 42), project_id: 1 })
-  ok('#6 時刻を省略したときは従来どおり既定の時刻で成功', def.status === 200, def)
+  ok('#6 #9927 シフト希望の提出は 410（不正な時刻でも保存しない）', bad.status === 410, bad)
+  const list = await admin.get(`/api/admin/shift-requests?from=${d}&to=${d}&status=all`)
+  ok('#6 不正な時刻の希望は保存されていない', list.status === 200 && !(list.data.requests || []).some(r => r.start_time === IMG), list.data)
 }
 
 // ---------- #132 アップロードしたファイル名の制御文字を除く ----------

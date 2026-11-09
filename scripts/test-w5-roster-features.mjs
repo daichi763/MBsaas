@@ -33,8 +33,13 @@ for (const k of ['a', 'b', 'c']) {
   companies[k] = { name, api: client(await login(code, 'admin')) }
 }
 const A = companies.a.api, B = companies.b.api, C = companies.c.api
-const terms = must(await admin.get('/api/admin/roster/consent-terms'), 'terms')
-const link = (api, code) => api.post('/api/admin/roster/link', { code, agreed: true, consent_version: terms.version })
+// 同意の版は、画面と同じく連携の前の照会（roster/lookup）の consent から取る
+let consentVersion = null
+const link = async (api, code) => {
+  // 照会が 404・409（連携済み・退職）で consent を返さないときは、取れた版を上書きしない（同時送信のテストで版が消えないように）
+  if (!consentVersion) { const v = (await api.get('/api/admin/roster/lookup?code=' + encodeURIComponent(code))).data?.consent?.version; if (v) consentVersion = v }
+  return api.post('/api/admin/roster/link', { code, agreed: true, consent_version: consentVersion })
+}
 const notifs = async (api, kind) => must(await api.get('/api/admin/notifications?kind=' + kind), 'notifications ' + kind).notifications
 
 // 自社雇用のスタッフ X（ログインあり・生年月日・フリガナあり）
@@ -144,8 +149,9 @@ const detailA = async () => must(await A.get(`/api/admin/staff/${inA}`), 'A deta
   // 稼働先 C は、受け取った2人のIDを1回の同意で連携する（画面は 1人ずつ POST /link を呼ぶ）
   const rs = await Promise.all(out.staff.map(s => link(C, s.code)))
   ok('#539 まとめて連携できる（同意の記録は1人ずつ残る）', rs.every(r => r.status === 200), rs)
-  const cons = must(await C.get('/api/admin/roster/consents'), 'consents').consents
-  ok('#539 同意の記録が人数分ある', rs.every(r => cons.some(c => c.staff_id === r.data.staff_id)), cons.length)
+  // 同意の記録は、連携した行ごとの連携状況（GET /roster/:id/links の consents）で確かめる（会社全体の一覧の API は #9929 で削除）
+  const cons = await Promise.all(rs.map(async r => must(await C.get(`/api/admin/roster/${r.data.staff_id}/links`), 'links').consents || []))
+  ok('#539 同意の記録が人数分ある', cons.length === rs.length && cons.every(l => l.length === 1 && l[0].consent_version === consentVersion), cons)
   // C で連携した行の自社専用コード（RL）は、一覧の出力でまとめて発行する
   const ids = rs.map(r => r.data.staff_id)
   const before = must(await C.get('/api/admin/roster/share-codes'), 'C list').staff.filter(r => ids.includes(r.staff_id))

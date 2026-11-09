@@ -17,7 +17,6 @@ import { Hono } from 'hono'
 import { sendEmail, sendEmailBatch, maskEmail, maskEmailsIn, normalizeAddress } from './services/email'
 import type { SendEmailInput } from './services/email'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
-import { assignableStaffSql } from './lib/staff-eligibility'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 import { REPORT_LABEL } from './report-settings'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders } from './csv'
@@ -1097,13 +1096,14 @@ noticeAckPublicApi.post('/', async (c) => {
 // スタッフあての通知（#155 #151 #156 #158）。管理者あての通知（承認依頼・インシデントなど）とは種類と関数を分ける
 // 種類（user_notifications.kind）:
 //   shift_assigned / shift_changed / shift_cancelled … シフトの登録・変更（日時・場所・案件・状態）・取消（#155）
-//   recruit_result … 募集への応募の承認・見送りの結果（#151）/ recruit_new … 新しい募集（#156）
+//   recruit_result … 募集への応募の承認・見送りの結果（#151）（recruit_new … 新しい募集（#156）は D-22 で作らなくなった。以前の行だけが残る）
 //   daily_report_comment … 日報への管理者のコメント（#158）
 //   daily_report_edit … 管理者が日報の実績の値を直したこと（#9707）
 // 宛先は、スタッフマスタ行のユーザーがログインできるスタッフ（role = 'staff'・在籍中）のときだけ。ログインのない人（roster_only）には送らない。
 // メールの送信結果は email_logs に残す（notification_emails は打刻修正の申請に結び付くため使わない）。通知の失敗で元の操作は取り消さない
 // =========================================================
-export const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'recruit_new', 'daily_report_comment', 'daily_report_edit'] as const
+export const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'daily_report_comment', 'daily_report_edit'] as const
+// recruit_new は以前のメールの送信記録を種類で絞り込めるように残す
 MAIL_TYPES.push('shift_change', 'recruit_result', 'recruit_new')
 
 type StaffUser = { staff_id: number; user_id: number; name: string; email: string | null }
@@ -1404,52 +1404,10 @@ export async function notifyRecruitResult(c: any, companyId: number, application
   return (await notifyRecruitResults(c, companyId, [{ applicationId, ...itemIds }], opts)).get(applicationId)!
 }
 
-// ---------- 新しい募集（#156） ----------
-// スタッフアプリの募集は Sprint 11 で止めた（#9411。利用者の決定）。環境変数 STAFF_APP_RECRUIT=1 のときだけ、
-// スタッフアプリの募集の API（src/recruit.ts の recruitStaffApi）と、この「新しい募集」の通知を動かす（再開の判断と既存の試験のために残す）
-export const staffAppRecruitEnabled = (env: any) => String(env?.STAFF_APP_RECRUIT || '') === '1'
-// 止めている間は、止める前に作った「新しい募集」の通知（本文に「シフト画面の『募集中のお仕事』から応募できます」）を、
-// スタッフの通知の一覧・未読の数・ホームのバッジ・プッシュに出さない（#9801）。行は消さない（再開したら元どおり出る）
-export const hiddenStaffNotifyKinds = (env: any): string[] => (staffAppRecruitEnabled(env) ? [] : ['recruit_new'])
-// スタッフアプリから応募できる募集（allow_staff）を公開・再開したら、自社の割り当てられるスタッフ（ログインできる人）に知らせる。
-// 同じ募集ページの通知は RECRUIT_NEW_QUIET_HOURS に1回まで（終了・再開をくり返しても何度も届かないように）。メールは管理者が選んだときだけ送る
-export const RECRUIT_NEW_QUIET_HOURS = 24
-export async function notifyRecruitNew(c: any, companyId: number, pageId: number, opts: { email?: boolean } = {}): Promise<{ notified: number; emailed: number; skipped_recent?: boolean }> {
-  if (!staffAppRecruitEnabled(c.env)) return { notified: 0, emailed: 0 }
-  try {
-    const db: D1Database = c.env.DB
-    const p = await db.prepare(`SELECT page_id, title, date_from, date_to, pay_note, status, allow_staff FROM recruit_pages WHERE page_id = ? AND company_id = ?`).bind(pageId, companyId).first() as any
-    if (!p || p.status !== 'open' || !p.allow_staff || p.date_to < todayStr()) return { notified: 0, emailed: 0 }
-    const since = new Date(Date.now() + 9 * 3600 * 1000 - RECRUIT_NEW_QUIET_HOURS * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-    const recent = await db.prepare(`SELECT 1 FROM user_notifications WHERE company_id = ? AND kind = 'recruit_new' AND related_id = ? AND created_at >= ? LIMIT 1`).bind(companyId, pageId, since).first()
-    if (recent) return { notified: 0, emailed: 0, skipped_recent: true }
-    const elig = assignableStaffSql({ onDate: todayStr() })
-    const staff = (await db.prepare(`SELECT us.user_id, us.name, us.email FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-      WHERE sp.company_id = ? AND us.role = 'staff' AND ${elig.sql}`).bind(companyId, ...elig.binds).all()).results as any[]
-    if (!staff.length) return { notified: 0, emailed: 0 }
-    const period = `${fmtDay(p.date_from)}〜${fmtDay(p.date_to)}`
-    const title = `新しい募集があります: ${p.title}`
-    const body = [`期間: ${period}`, p.pay_note ? `給与: ${p.pay_note}` : '', 'シフト画面の「募集中のお仕事」から応募できます'].filter(Boolean).join('\n')
-    await insertStaffNotifications(db, staff.map(s => ({ company_id: companyId, user_id: s.user_id, kind: 'recruit_new', title, body, link: '#shift', related_id: pageId })))
-    let emailed = 0
-    if (opts.email) {
-      const contact = await loadMailContact(db, companyId)
-      const lines: [string, string][] = [['募集', p.title], ['期間', period]]
-      if (p.pay_note) lines.push(['給与', p.pay_note])
-      const mails: SendEmailInput[] = staff.filter(s => s.email).map(s => {
-        const tpl = attendanceCorrectionEmail({ name: s.name, title: `${contact.company_name ? contact.company_name + ' ' : ''}${title}`, headline: '新しいお仕事の募集が始まりました。スタッフアプリから応募できます。',
-          lines, url: appUrl(c.env, '/staff#shift'), button: '募集を見る' })
-        return { to: s.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'recruit_new', company_id: companyId, reply_to: contact.reply_to }
-      })
-      emailed = mails.length
-      await queueStaffMails(c, mails)
-    }
-    return { notified: staff.length, emailed }
-  } catch (e) {
-    console.log(`recruit new notify failed: page=${pageId}`)
-    return { notified: 0, emailed: 0 }
-  }
-}
+// ---------- 新しい募集（#156。D-22 で外した） ----------
+// スタッフアプリの中の募集は外した（D-22。11/9 の利用者の決定で再開しない）。「新しい募集」（recruit_new）の通知はもう作らない。
+// 以前に作った通知（本文に「シフト画面の『募集中のお仕事』から応募できます」）は、スタッフの通知の一覧・未読の数・ホームのバッジ・プッシュに出さない（#9801。行は消さない）
+export const hiddenStaffNotifyKinds = (_env?: unknown): string[] => ['recruit_new']
 
 // ---------- 日報へのコメント（#158） ----------
 // コメントを新しく付けた・書き換えたときに、日報を出したスタッフに知らせる（アプリ内のみ）。
@@ -1541,7 +1499,6 @@ export const NOTIFY_PREF_GROUPS: PrefGroup[] = [
     defaultEmail: always, push: true, mailTypes: ['shift_change'] },
   { key: 'reminder', audience: 'staff', label: '報告・日報のリマインド', desc: '起床・出発・入店の報告や日報がまだのとき', kinds: ['report_reminder', 'daily_report_reminder'],
     defaultEmail: always, push: true, mailTypes: ['reminder'] },
-  { key: 'recruit_new', audience: 'staff', label: '新しい募集', desc: 'スタッフアプリから応募できる募集が始まったとき', kinds: ['recruit_new'], defaultEmail: always, push: true, mailTypes: ['recruit_new'] },
   { key: 'recruit_result', audience: 'staff', label: '応募の結果', desc: '応募したお仕事の確定・見送り', kinds: ['recruit_result'], push: true },
   { key: 'correction_staff', audience: 'staff', label: '打刻の修正・代理入力', desc: '打刻修正の申請の結果、管理者による修正・代理入力',
     kinds: ['correction_approved', 'correction_rejected', 'correction_changed_by_admin', 'correction_cancelled', 'correction_proxy_submitted', 'attendance_proxy'], push: true },
@@ -1647,8 +1604,6 @@ async function savePrefs(db: D1Database, companyId: number, userIds: number[], g
 }
 const ADMIN_GROUPS = NOTIFY_PREF_GROUPS.filter(g => g.audience === 'admin')
 const STAFF_GROUPS = NOTIFY_PREF_GROUPS.filter(g => g.audience === 'staff')
-// スタッフアプリの募集を止めている間は、「新しい募集」の受け取り設定を出さない（#9411）
-const staffPrefGroups = (env: any) => staffAppRecruitEnabled(env) ? STAFF_GROUPS : STAFF_GROUPS.filter(g => g.key !== 'recruit_new')
 notificationsAdminApi.get('/notification-prefs', async (c) => {
   const u = c.get('user')
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
@@ -1671,14 +1626,14 @@ const staffUserIds = async (c: any): Promise<number[]> => {
 notificationsStaffApi.get('/notification-prefs', async (c) => {
   const u = c.get('user')
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
-  return c.json({ groups: prefView(staffPrefGroups(c.env), 'staff', prefs.get(Number(u.user_id))), has_email: !!u.email })
+  return c.json({ groups: prefView(STAFF_GROUPS, 'staff', prefs.get(Number(u.user_id))), has_email: !!u.email })
 })
 notificationsStaffApi.put('/notification-prefs', async (c) => {
   const u = c.get('user')
   const err = await savePrefs(c.env.DB, u.company_id, await staffUserIds(c), STAFF_GROUPS, await c.req.json().catch(() => null))
   if (err) return c.json({ error: err }, 400)
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
-  return c.json({ ok: true, groups: prefView(staffPrefGroups(c.env), 'staff', prefs.get(Number(u.user_id))) })
+  return c.json({ ok: true, groups: prefView(STAFF_GROUPS, 'staff', prefs.get(Number(u.user_id))) })
 })
 
 // ---------- 承認依頼のまとめメール（#284。digest）----------

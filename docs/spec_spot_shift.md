@@ -100,7 +100,7 @@
 | POST | /admin/shifts/copy-week | 前週のコピー（枠と割り当て） |
 | GET/POST/DELETE | /admin/slot-patterns | 繰り返し登録 |
 | GET/POST/PUT/DELETE | /admin/sites | 開催場所 |
-| GET/POST/PUT/DELETE | /admin/rate-rules, GET /admin/rate-rules/resolve | 単価ルールと適用結果のプレビュー |
+| GET/POST/PUT/DELETE | /admin/rate-rules | 単価ルール（適用結果のプレビューは GET /admin/shifts/price-preview） |
 | PUT | /admin/projects/:id/pricing | 案件区分・標準単価・交通費ルール・時間の数え方・丸め（`pay_time_round`）・適用開始日（`price_valid_from`） |
 | GET | /admin/projects/:id/price-history | 標準単価の適用開始日と、改定前の単価 |
 
@@ -249,9 +249,9 @@
 - 仮登録は警告の確認後に作成する（警告で止めた場合に仮登録だけが残らないように）
 - シフトボードの役割に未対応の応募数を表示する
 
-### 10.4 既存スタッフの応募（スタッフアプリ「シフト」→「募集中のお仕事」）
-- 「スタッフアプリから応募できる」を有効にした募集ページの枠を表示し、選んで応募する。自分のシフトがある枠・応募済みの枠は選べない
-- 承認待ちの応募は取り下げできる。承認・見送りの結果を表示する
+### 10.4 既存スタッフの応募
+- スタッフアプリの中の募集・応募は外した（D-22。11/9 の利用者の決定で再開しない）。登録済みのスタッフも公開ページから応募し、管理者が承認のときに既存のスタッフに紐づける
+- 以前にスタッフアプリから出された応募（`source = 'staff'`）は、管理画面の応募の一覧に「アプリから応募」と出る
 
 ### 10.5 個人情報の保存期間
 - スタッフに紐づかない応募（見送り・放置）は180日で削除する（Cron）。IPハッシュは7日で消す
@@ -269,7 +269,6 @@
 | GET | /api/admin/recruit-applications/summary | 未対応件数 |
 | POST | /api/admin/recruit-applications/:id/decide | 承認・見送り（`approve` / `reject` / `staff_id` / `new_staff_type` / `force`） |
 | GET / POST | /api/public/recruit/:token, /:token/apply | 公開ページ |
-| GET / POST | /api/staff/recruit, /apply, /items/:id/cancel | スタッフアプリ（ログインできるスタッフのみ） |
 
 ## 11. 第5段階 仮登録スタッフと既存スタッフの統合（migrations/0020_add_staff_merge.sql, src/staff-merge.ts）
 ### 11.1 目的
@@ -295,7 +294,6 @@
 |---|---|---|
 | GET | /staff/:id/merge-candidates?q= | 統合候補（一致した理由・稼働件数） |
 | POST | /staff/:id/merge | 統合（`target_staff_id`・`dry_run`・`force`・`note`） |
-| GET | /staff/:id/merges | 統合の履歴 |
 
 ### 11.5 画面
 - スタッフ詳細の「区分・登録状態」に「既存のスタッフに統合」（仮登録のみ）→ 候補の選択 → 確認（移す件数・置き換え・警告）→ 実行後は統合先の詳細へ移動

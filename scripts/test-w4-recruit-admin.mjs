@@ -1,5 +1,4 @@
 // 公開応募フォームと管理の応募一覧（w4-recruit-admin: #211 #242 #302 #303 #309 #317 #339 #351 #395 #416 #512 #515、持ち越し #87）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8812 PERSIST=<保存先> node scripts/test-w4-recruit-admin.mjs
@@ -216,11 +215,14 @@ let fullSlot = null
 }
 
 // ---------- 持ち越し #87 退職したスタッフの未対応の応募は件数に数えない ----------
-{
-  const st = await newStaff('R87')
-  const sc = client(await login('sample', `${PFX}R87`))
+// 以前にスタッフアプリから出された応募（source = 'staff'・staff_id 付き。D-22 で入口を外した）を、公開ページの応募をローカルの D1 で書き換えて作る
+if (PERSIST) {
+  const phone = newPhone()
+  const st = await newStaff('R87', phone)
   const s = await newRoles(pid, addDays(D, 6), '10:00', '12:00')
-  must(await sc.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [s.roles[0].slot_role_id] }), 'staff apply')
+  must(await publicApply(page.token, phone, [s.roles[0].slot_role_id], `${PFX} R87`), 'public apply (legacy)')
+  sql(`UPDATE recruit_applications SET source = 'staff', staff_id = ${Number(st.staff_id)} WHERE page_id = ${Number(page.page_id)} AND phone = '${phone}';
+    UPDATE recruit_application_items SET staff_id = ${Number(st.staff_id)} WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE page_id = ${Number(page.page_id)} AND phone = '${phone}');`)
   const before = must(await admin.get('/api/admin/recruit-applications/summary'), 'summary')
   must(await admin.put(`/api/admin/employees/${st.staff_id}`, { profile: { retired_at: addDays(today, -1), employment_status: 'retired', retired_at_confirmed: true } }), 'retire')
   const after = must(await admin.get('/api/admin/recruit-applications/summary'), 'summary 2')
@@ -228,7 +230,7 @@ let fullSlot = null
   ok('#87 退職したスタッフの応募は未対応の件数から外す', after.pending === before.pending - 1 && after.pending_inactive === (before.pending_inactive || 0), { before, after })
   const l = (await listApps({ status: 'cancelled', q: `${PFX} R87` })).applications
   ok('#87 退職したスタッフの未対応の応募は取り下げ（cancelled）になる', l.length === 1 && l[0].items.every(i => i.status === 'cancelled'), l)
-}
+} else console.log('SKIP  #87 退職したスタッフの未対応の応募（PERSIST 未指定）')
 
 // ---------- #302 勤務日を過ぎた未対応は期限切れにして件数から外す ----------
 if (PERSIST) {

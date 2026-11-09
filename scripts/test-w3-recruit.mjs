@@ -1,5 +1,4 @@
 // 募集・応募の不具合（w3-recruit: #64 #65 #86 #87 #114 #126 #136 #190 #225 #501）の統合テスト
-// 起動に --var STAFF_APP_RECRUIT:1 を付ける（スタッフアプリの募集は Sprint 11 で止めた。#9411。この試験はスタッフアプリからの応募も使う。npm test は自動で付ける）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local` で起動していること
 // 実行: BASE=http://127.0.0.1:8821 node scripts/test-w3-recruit.mjs
@@ -75,6 +74,14 @@ async function newPage(pids, from, to, extra = {}) {
 const publicApply = (token, phone, roleIds, name = `${PFX} 応募`) =>
   pub.post(`/api/public/recruit/${token}/apply`, { name, phone, agree: true, slot_role_ids: roleIds, issued_at: Date.now() - 10000 })
 const appsOf = async (pageId, status = 'pending') => must(await admin.get(`/api/admin/recruit-applications?status=${status}&page_id=${pageId}`), 'apps').applications
+// 以前にスタッフアプリから出された応募（source = 'staff'・staff_id 付き。D-22 で入口を外した）を作る。
+// 公開ページから本人の電話番号で応募し、ローカルの D1 でアプリからの応募に書き換える（PERSIST が要る）
+async function legacyStaffApply(page, st, phone, roleIds) {
+  must(await publicApply(page.token, phone, roleIds, st.name), 'public apply (legacy)')
+  const sid = Number(st.staff_id)
+  sql(`UPDATE recruit_applications SET source = 'staff', staff_id = ${sid} WHERE page_id = ${Number(page.page_id)} AND phone = '${phone}' AND staff_id IS NULL;
+    UPDATE recruit_application_items SET staff_id = ${sid} WHERE application_id IN (SELECT application_id FROM recruit_applications WHERE page_id = ${Number(page.page_id)} AND staff_id = ${sid});`)
+}
 
 const pid = await newProject(`${PFX}-案件`)
 const D = addDays(today, 5)
@@ -111,13 +118,6 @@ const D = addDays(today, 5)
   ok('#126 公開ページ: 期間の最後の日の枠も出る', all.some(r => r.work_date === dates[dates.length - 1]))
   const list = must(await admin.get('/api/admin/recruit-pages'), 'pages').pages.find(p => p.page_id === page.page_id)
   ok('#126 管理画面: 募集中の枠の件数を打ち切らずに数える', list.open_roles === 372 && list.open_remaining === 372, { roles: list.open_roles, rem: list.open_remaining })
-  const st = await newStaff('S126')
-  const sc = client(await login('sample', `${PFX}S126`))
-  const sp = must(await sc.get('/api/staff/recruit'), 'staff recruit').pages.find(p => p.page_id === page.page_id)
-  ok('#126 スタッフアプリ: 300件までと続きの日付を返す', sp && sp.roles.length <= 300 && !!sp.next_from, { n: sp?.roles?.length })
-  const more = must(await sc.get(`/api/staff/recruit/pages/${page.page_id}/roles?from=${sp.next_from}`), 'staff more')
-  ok('#126 スタッフアプリ: 続きの日時を取得できる', sp.roles.length + more.roles.length === 372 && more.next_from === null, { a: sp.roles.length, b: more.roles.length })
-  void st
 }
 
 // ---------- #136 期間切れの募集ページの再開 ----------
@@ -192,48 +192,48 @@ if (PERSIST) {
 } else console.log('SKIP  #86 処理中のまま止まった明細の復旧（PERSIST 未指定）')
 
 // ---------- #64 承認後にシフトを削除したら『シフト解除』になり、応募し直せる ----------
+// スタッフアプリの募集は外した（D-22）ので、登録済みのスタッフも公開ページから応募し、承認のときに本人に紐づける
 {
-  const st = await newStaff('S64')
-  const sc = client(await login('sample', `${PFX}S64`))
+  const phone = newPhone()
+  const st = await newStaff('S64', phone)
   const s = await newRoles(pid, addDays(D, 2), '10:00', '12:00')
   const page = await newPage([pid], today, addDays(today, 20))
   const rid = s.roles[0].slot_role_id
-  must(await sc.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [rid] }), 'staff apply')
-  const app = (await appsOf(page.page_id)).find(a => a.staff_id === st.staff_id)
-  const dec = must(await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { approve: app.items.map(i => i.item_id), force: true }), 'decide')
-  ok('#64 承認でシフトができる', dec.created_shifts === 1, dec)
-  let r = must(await sc.get('/api/staff/recruit'), 'staff recruit')
-  ok('#64 承認直後は『確定』', r.applications.find(a => a.slot_role_id === rid)?.status === 'approved', r.applications)
+  must(await publicApply(page.token, phone, [rid], `${PFX} S64`), 'public apply')
+  const app = (await appsOf(page.page_id)).find(a => a.phone === phone)
+  const dec = must(await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { approve: app.items.map(i => i.item_id), staff_id: st.staff_id, force: true }), 'decide')
+  ok('#64 承認でシフトができる（選んだスタッフに紐づく）', dec.created_shifts === 1 && dec.staff_id === st.staff_id, dec)
+  let adm = (await appsOf(page.page_id, 'done')).find(a => a.application_id === app.application_id)
+  ok('#64 承認直後は『確定』', adm && adm.items[0].status === 'approved', adm?.items)
   const sh = must(await admin.get(`/api/admin/shifts?from=${addDays(D, 2)}&to=${addDays(D, 2)}`), 'shifts').shifts.find(x => x.slot_role_id === rid && x.staff_id === st.staff_id)
   must(await admin.del(`/api/admin/shifts/${sh.shift_id}`), 'delete shift')
-  r = must(await sc.get('/api/staff/recruit'), 'staff recruit 2')
-  ok('#64 シフトを削除すると『シフト解除』（released）になる', r.applications.find(a => a.slot_role_id === rid)?.status === 'released', r.applications)
-  const role = r.pages.find(p => p.page_id === page.page_id)?.roles.find(x => x.slot_role_id === rid)
-  ok('#64 その枠は応募済みとして扱わない', role && role.my_status === null, role)
-  const again = must(await sc.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [rid] }), 'apply again')
+  adm = (await appsOf(page.page_id, 'done')).find(a => a.application_id === app.application_id)
+  ok('#64 シフトを削除すると、管理画面で『シフト解除』（released）と出る', adm && adm.items[0].status === 'released', adm?.items)
+  const again = must(await publicApply(page.token, phone, [rid], `${PFX} S64`), 'apply again')
   ok('#64 同じ枠に応募し直せる', again.count === 1, again)
-  const adm = (await appsOf(page.page_id, 'done')).find(a => a.application_id === app.application_id)
-  ok('#64 管理画面でも『シフト解除』と出る', adm && adm.items[0].status === 'released', adm?.items)
 }
 
 // ---------- #87 退職したスタッフの応募は承認できない ----------
 {
-  const st = await newStaff('S87')
-  const sc = client(await login('sample', `${PFX}S87`))
   const s = await newRoles(pid, addDays(D, 3), '10:00', '12:00')
   const page = await newPage([pid], today, addDays(today, 20))
-  must(await sc.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [s.roles[0].slot_role_id] }), 'staff apply')
-  must(await admin.put(`/api/admin/employees/${st.staff_id}`, { profile: { retired_at: addDays(today, -1), employment_status: 'retired', retired_at_confirmed: true } }), 'retire')
-  // w7-followup-server-a（#87 の残り）から、退職したスタッフの未対応の応募は、一覧を開いたときに取り下げ（cancelled）にする
-  ok('#87 退職者の応募は未対応の一覧に残らない', !(await appsOf(page.page_id)).some(a => a.staff_id === st.staff_id))
-  const app = (await appsOf(page.page_id, 'cancelled')).find(a => a.staff_id === st.staff_id)
-  ok('#87 退職者の未対応の応募は取り下げ（cancelled）になり、退職・停止中の印が付く', app && app.items.every(i => i.status === 'cancelled') && app.staff_inactive === 1, app)
-  const dec = app ? await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { approve: app.items.map(i => i.item_id), force: true }) : { status: 0 }
-  ok('#87 退職者の応募は承認できない（force でも）', dec.status >= 400 && dec.status < 500, dec)
-  const n = must(await admin.get(`/api/admin/shifts?from=${addDays(D, 3)}&to=${addDays(D, 3)}`), 'shifts').shifts.filter(x => x.staff_id === st.staff_id).length
-  ok('#87 シフトは作られない', n === 0, n)
-  const after = app && (await appsOf(page.page_id, 'cancelled')).find(a => a.application_id === app.application_id)
-  ok('#87 明細は取り下げのまま（処理中のまま残らない）', after && after.items.every(i => i.status === 'cancelled'), after?.items)
+  // 以前にスタッフアプリから出された応募（staff_id 付き）が、本人の退職で取り下げになる
+  if (PERSIST) {
+    const phone0 = newPhone()
+    const st = await newStaff('S87', phone0)
+    await legacyStaffApply(page, st, phone0, [s.roles[0].slot_role_id])
+    must(await admin.put(`/api/admin/employees/${st.staff_id}`, { profile: { retired_at: addDays(today, -1), employment_status: 'retired', retired_at_confirmed: true } }), 'retire')
+    // w7-followup-server-a（#87 の残り）から、退職したスタッフの未対応の応募は、一覧を開いたときに取り下げ（cancelled）にする
+    ok('#87 退職者の応募は未対応の一覧に残らない', !(await appsOf(page.page_id)).some(a => a.staff_id === st.staff_id))
+    const app = (await appsOf(page.page_id, 'cancelled')).find(a => a.staff_id === st.staff_id)
+    ok('#87 退職者の未対応の応募は取り下げ（cancelled）になり、退職・停止中の印が付く', app && app.items.every(i => i.status === 'cancelled') && app.staff_inactive === 1, app)
+    const dec = app ? await admin.post(`/api/admin/recruit-applications/${app.application_id}/decide`, { approve: app.items.map(i => i.item_id), force: true }) : { status: 0 }
+    ok('#87 退職者の応募は承認できない（force でも）', dec.status >= 400 && dec.status < 500, dec)
+    const n = must(await admin.get(`/api/admin/shifts?from=${addDays(D, 3)}&to=${addDays(D, 3)}`), 'shifts').shifts.filter(x => x.staff_id === st.staff_id).length
+    ok('#87 シフトは作られない', n === 0, n)
+    const after = app && (await appsOf(page.page_id, 'cancelled')).find(a => a.application_id === app.application_id)
+    ok('#87 明細は取り下げのまま（処理中のまま残らない）', after && after.items.every(i => i.status === 'cancelled'), after?.items)
+  } else console.log('SKIP  #87 以前のスタッフアプリからの応募の退職（PERSIST 未指定）')
   // 電話番号が一致する退職者には印が付く
   const phone = newPhone()
   const st2 = await newStaff('S87B', phone)
@@ -246,27 +246,20 @@ if (PERSIST) {
 }
 
 // ---------- #114 登録済みスタッフが公開URLから応募した場合 ----------
+// スタッフアプリの募集は外した（D-22）ので、本人のアプリには出さない。管理画面で電話番号が一致するスタッフを出し、承認のときに紐づける
 {
   const phone = newPhone()
   const st = await newStaff('S114', phone)
-  const sc = client(await login('sample', `${PFX}S114`))
   const s = await newRoles(pid, addDays(D, 4), '10:00', '12:00')
   const page = await newPage([pid], today, addDays(today, 20))
-  const rid = s.roles[0].slot_role_id
-  must(await publicApply(page.token, phone, [rid], `${PFX} S114`), 'public apply')
-  let r = must(await sc.get('/api/staff/recruit'), 'staff recruit')
-  const mine = r.applications.find(a => a.slot_role_id === rid)
-  ok('#114 公開URLからの応募が本人のアプリに出る', mine && mine.status === 'pending' && mine.source === 'public', r.applications)
-  ok('#114 その枠は応募済みとして表示される', r.pages.find(p => p.page_id === page.page_id)?.roles.find(x => x.slot_role_id === rid)?.my_status === 'pending')
-  const dup = must(await sc.post('/api/staff/recruit/apply', { page_id: page.page_id, slot_role_ids: [rid] }), 'staff apply dup')
-  ok('#114 アプリから同じ枠に重ねて応募できない', dup.count === 0, dup)
-  const cancel = await sc.post(`/api/staff/recruit/items/${mine.item_id}/cancel`)
-  ok('#114 公開URLからの応募をアプリで取り下げられる', cancel.status === 200, cancel)
-  // 他人（電話番号が違う）の公開応募は見えない
-  const other = client(await login('sample', `${PFX}S64`))
-  const ro = must(await other.get('/api/staff/recruit'), 'other recruit')
-  ok('#114 電話番号が違うスタッフには出ない', !ro.applications.some(a => a.item_id === mine.item_id))
-  void st
+  must(await publicApply(page.token, phone, [s.roles[0].slot_role_id], `${PFX} S114`), 'public apply')
+  const pa = (await appsOf(page.page_id)).find(a => a.phone === phone)
+  ok('#114 公開URLからの応募は、電話番号が一致する登録済みのスタッフを出す（紐づけは承認のとき）', pa && pa.staff_id == null && pa.phone_matches.some(m => m.staff_id === st.staff_id), pa && { staff_id: pa.staff_id, m: pa.phone_matches })
+  const dec = await admin.post(`/api/admin/recruit-applications/${pa.application_id}/decide`, { approve: pa.items.map(i => i.item_id), force: true })
+  ok('#114 紐づけ先を選ばずに承認すると、登録済みのスタッフがいることを知らせる（409 need_staff）', dec.status === 409 && dec.data.need_staff === true, dec)
+  const sc = client(await login('sample', `${PFX}S114`))
+  const r = await sc.get('/api/staff/recruit')
+  ok('#9926 スタッフアプリの募集の API は無い（404）', r.status === 404, r.status)
 }
 
 // ---------- #65 応募がある枠を削除すると『枠の削除』で処理済みになる ----------

@@ -4,6 +4,8 @@
 作成日: 2026-09-28
 対象プロジェクト: Field OS (`/home/user/webapp`, GitHub: `daichi763/MBsaas`, 本番: https://mbsaas.pages.dev/)
 
+> **注（2026-11-09 追記）**: この指示書の Cloudflare Pages・`mbsaas.pages.dev` の記述（冒頭・第1章・第8章）は古い情報です。本番は Cloudflare Workers の `mbsaas`（https://mbsaas.saas-2a2.workers.dev ）で、GitHub の main へのマージで Workers Builds がデプロイします（[decisions.md](decisions.md) の D-32）。旧 Pages のプロジェクト `mbsaas` は、2026-11-09 に確かめて存在しません（D-49）。今の構成は [architecture.md](architecture.md) を見てください。
+
 ---
 
 ## 0. この指示書の位置づけ(重要)
@@ -196,11 +198,11 @@ Field OSを利用していない所属元企業を記録する軽量マスタ。
 
 ## 8. 実装にあたっての注意事項
 
-- 本プロジェクトは Cloudflare Pages / Workers 上で稼働する。D1(SQLite)・R2の制約(Node.js API不可、fsモジュール不可等)を踏まえて設計すること。
+- 本プロジェクトは Cloudflare Pages / Workers 上で稼働する（注: 今は Workers だけ。冒頭の注を参照）。D1(SQLite)・R2の制約(Node.js API不可、fsモジュール不可等)を踏まえて設計すること。
 - 既存の認証方式(SHA-256ハッシュ + httpOnly Cookieセッション)、マルチテナント構造(`company_id`ベース)との整合性を保つこと。
 - 既存機能(シフト管理・勤怠報告・日報・評価・実績分析・請求前チェック等)を壊さないよう、既存の `staff_id` 参照は可能な限り維持する形で移行すること。
 - マイグレーションファイルは `migrations/` 配下に連番で追加し、既存の `0001`〜`0004` を変更しないこと。
-- 本番環境: Cloudflare Pagesプロジェクト名 `mbsaas`、D1データベース `mbsaas-production`、R2バケット `mbsaas-attendance-photos`。デプロイ済みで本番URLは https://mbsaas.pages.dev/ 。GitHubリポジトリ `daichi763/MBsaas`(mainブランチ)と連携済み。本番D1には現時点でテストデータは未投入(テーブルスキーマのみ)。本部の標準日報テンプレート4種(携帯ショップ・家電量販店・催事・光回線)はマイグレーション `0032_mail_env.sql` で投入する(seed.sql には含めない)。
+- 本番環境（注: 古い記述。今は Workers の `mbsaas` で、Pages のプロジェクトはない。冒頭の注を参照）: Cloudflare Pagesプロジェクト名 `mbsaas`、D1データベース `mbsaas-production`、R2バケット `mbsaas-attendance-photos`。デプロイ済みで本番URLは https://mbsaas.pages.dev/ 。GitHubリポジトリ `daichi763/MBsaas`(mainブランチ)と連携済み。本番D1には現時点でテストデータは未投入(テーブルスキーマのみ)。本部の標準日報テンプレート4種(携帯ショップ・家電量販店・催事・光回線)はマイグレーション `0032_mail_env.sql` で投入する(seed.sql には含めない)。
 - 設定は環境ごとに分ける: `wrangler.jsonc` のトップレベルはローカル開発用(`MAIL_ENABLED=false`・`RETENTION_ENABLED=false`・`APP_BASE_URL=http://localhost:8787`・`DEMO_MODE=true`)、本番は `env.production`。デプロイは `npm run deploy`(`wrangler deploy --env production`)で行い、GitHub 連携の自動デプロイを使う場合もデプロイコマンドに `--env production` を付けること。本番の `MAIL_FROM` は Resend で認証した独自ドメインの送信元にする(`onboarding@resend.dev` はアカウント所有者あてにしか届かない)。
 
 ---

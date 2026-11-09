@@ -49,18 +49,20 @@ for (const pid of [PA, PB]) must(await admin.put(`/api/admin/projects/${pid}/pri
 
 // ---------- #470 クライアント単位の単価ルール ----------
 {
-  const resolve = async (pid, q = '') => must(await admin.get(`/api/admin/rate-rules/resolve?project_id=${pid}&work_date=${today}${q}`), 'resolve').price
+  // 単価の設定の適用結果は、シフト登録の画面と同じ shifts/price-preview の settings で見る（ルールの条件にスタッフを含めないので、誰でもよい）
+  const RS = must(await admin.post('/api/admin/staff-quick', { name: `${PFX} 単価確認`, phone: phone(8), affiliation_type: 'daily_worker' }), 'staff').staff_id
+  const resolve = async (pid, q = '') => must(await admin.get(`/api/admin/shifts/price-preview?project_id=${pid}&work_date=${today}&staff_ids=${RS}${q}`), 'price-preview').items[0].settings
   const r1 = must(await admin.post('/api/admin/rate-rules', { client_id: CA, role_name: 'リーダー', bill_rate: 20000 }), 'client role rule')
   ok('#470 クライアントと役割だけのルールを登録できる', r1.ok && r1.client_id === CA, r1)
-  let p = await resolve(PA, '&role_name=' + encodeURIComponent('リーダー'))
+  let p = await resolve(PA, '&role=' + encodeURIComponent('リーダー'))
   ok('#470 クライアントのルールが、そのクライアントの案件に当たる', p.bill_rate === 20000 && /クライアント/.test(p.sources.bill), p)
-  p = await resolve(PB, '&role_name=' + encodeURIComponent('リーダー'))
+  p = await resolve(PB, '&role=' + encodeURIComponent('リーダー'))
   ok('#470 別のクライアントの案件には当たらない', p.bill_rate === 10000, p)
   must(await admin.post('/api/admin/rate-rules', { client_id: CA, bill_rate: 12000 }), 'client rule')
   must(await admin.post('/api/admin/rate-rules', { project_id: PA, bill_rate: 15000 }), 'project rule')
   p = await resolve(PA)
   ok('#470 同じ条件なら案件のルールがクライアントのルールより優先', p.bill_rate === 15000, p)
-  p = await resolve(PA, '&role_name=' + encodeURIComponent('リーダー'))
+  p = await resolve(PA, '&role=' + encodeURIComponent('リーダー'))
   ok('#470 役割を指定したクライアントのルールは、案件だけのルールより具体的', p.bill_rate === 20000, p)
   // 開催場所だけのルールは、その開催場所のクライアントの範囲になる
   const r2 = must(await admin.post('/api/admin/rate-rules', { site_id: SA, pay_transport_type: 'fixed', pay_transport_amount: 1000 }), 'site rule')
@@ -79,7 +81,7 @@ for (const pid of [PA, PB]) must(await admin.put(`/api/admin/projects/${pid}/pri
   ok('#470 クライアントのルールの一覧（案件のルールは含まない）', list.length === 3 && list.every(r => r.client_id === CA && !r.project_id) && list[0].client_name === `${PFX} チェーン`, list)
   // 編集で案件を指定すると、クライアントは外れる（案件で決まる）
   must(await admin.put(`/api/admin/rate-rules/${r1.rule_id}`, { bill_rate: 21000 }), 'edit')
-  p = await resolve(PA, '&role_name=' + encodeURIComponent('リーダー'))
+  p = await resolve(PA, '&role=' + encodeURIComponent('リーダー'))
   ok('#470 クライアントのルールを編集できる', p.bill_rate === 21000, p)
   // 再適用はクライアントの全案件が対象
   const rp = must(await admin.post('/api/admin/shifts/reprice', { from: today, to: addDays(today, 30), client_id: CA, dry_run: true }), 'reprice dry')

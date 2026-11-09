@@ -107,7 +107,9 @@ const testFiles = readdirSync(join(ROOT, 'scripts')).filter(f => /^test-.*\.mjs$
   const num = (id) => Number(id.slice(2))
   ok('#9642 decisions.md: D-41〜D-44 の見出しと一覧の行がある', ['D-41', 'D-42', 'D-43', 'D-44'].every(id => heads.includes(id) && rows.includes(id)), { heads, rows })
   ok('#9642 decisions.md: 決定の番号が重ならず、一覧と見出しが同じ', new Set(heads).size === heads.length && new Set(rows).size === rows.length && heads.length === rows.length && heads.every(h => rows.includes(h)), { heads, rows })
-  ok('#9642 decisions.md: Sprint 14 の番号は既存の続き（D-40 の次から）', Math.min(...['D-41', 'D-42', 'D-43', 'D-44'].map(num)) === Math.max(...heads.filter(h => !['D-41', 'D-42', 'D-43', 'D-44'].includes(h)).map(num)) + 1)
+  // D-45 以降は後の Sprint の決定なので、D-41 より前の番号の続きになっているかを見る
+  const others = heads.filter(h => !['D-41', 'D-42', 'D-43', 'D-44'].includes(h)).map(num)
+  ok('#9642 decisions.md: Sprint 14 の番号は既存の続き（D-40 の次から）', Math.min(...['D-41', 'D-42', 'D-43', 'D-44'].map(num)) === Math.max(...others.filter(n => n < 41)) + 1 && others.every(n => n < 41 || n > 44))
   const sec = (id) => { const i = dec.indexOf(`### ${id} `); const j = dec.indexOf('\n### ', i + 1); return dec.slice(i, j < 0 ? undefined : j) }
   ok('#9642 D-41（#167）: 週40時間を超えた分・国民の祝日は計算せず、手で調整・設定画面に注記', /#167/.test(sec('D-41')) && /週40時間/.test(sec('D-41')) && /祝日/.test(sec('D-41')) && /手で調整/.test(sec('D-41')) && /注記/.test(sec('D-41')))
   ok('#9642 D-42（#277）: 送った後の知らせと開催場所の位置の登録で完了（送る前の警告・案件ごとの位置は作らない）', /#277/.test(sec('D-42')) && /送った後/.test(sec('D-42')) && /開催場所/.test(sec('D-42')) && /送る前の警告/.test(sec('D-42')) && /location_lat/.test(sec('D-42')))
@@ -129,7 +131,9 @@ const testFiles = readdirSync(join(ROOT, 'scripts')).filter(f => /^test-.*\.mjs$
   const ten = ops.slice(ops.indexOf('## 10. ローンチ当日のチェックリスト'))
   ok('#9642 operations.md: 目次と「ローンチ当日のチェックリスト」の節がある', ops.includes('| 10 | ローンチ当日のチェックリスト |') && ten.length > 100)
   ok('#9642 operations.md 10: デモ用の会社・ユーザー（pass1234・約26件）の停止かパスワードの変更（#62）', /#62/.test(ten) && /pass1234/.test(ten) && /約26件/.test(ten) && /この企業を停止する/.test(ten) && /パスワード/.test(ten))
-  ok('#9642 operations.md 10: Workers Builds のビルドのログで DEMO_MODE=false を確かめる', /Workers Builds/.test(ten) && /DEMO_MODE=false/.test(ten) && ten.includes('scripts/ci-wrangler-config.mjs:31'))
+  // 行番号はファイルの今の行から求める（行が動いても --fix-refs で直した参照と合えばよい）
+  const ciLine = read('scripts/ci-wrangler-config.mjs').split('\n').findIndex(l => l.includes('wrangler.json を本番の設定で作成しました')) + 1
+  ok('#9642 operations.md 10: Workers Builds のビルドのログで DEMO_MODE=false を確かめる', /Workers Builds/.test(ten) && /DEMO_MODE=false/.test(ten) && ciLine > 0 && ten.includes(`scripts/ci-wrangler-config.mjs:${ciLine}\``), ciLine)
   ok('#9642 operations.md 10: メールを始めるなら Resend の独自ドメイン・MAIL_FROM・RESEND_API_KEY（#36・D-31）', /#36/.test(ten) && /D-31/.test(ten) && /独自ドメイン/.test(ten) && /MAIL_FROM/.test(ten) && /RESEND_API_KEY/.test(ten))
   ok('#9642 operations.md 10: バックアップの毎日の成功・通知の受け取り、本部画面のプッシュ通知（monitoring.md）', /D1 backup/.test(ten) && /通知/.test(ten) && /この端末でプッシュ通知を受け取る/.test(ten) && ten.includes('(monitoring.md)'))
   // チェックリストに書いた本部画面のボタンの文言が、画面にある
@@ -137,7 +141,10 @@ const testFiles = readdirSync(join(ROOT, 'scripts')).filter(f => /^test-.*\.mjs$
   ok('#9642 チェックリストに書いた本部画面のボタンが画面にある（「この企業を停止する」「この端末でプッシュ通知を受け取る」「テスト通知を送る」）',
     ['この企業を停止する', 'この端末でプッシュ通知を受け取る', 'テスト通知を送る'].every(s => hq.includes(s)))
   const wr = read('wrangler.jsonc').split('\n')
-  ok('#9642 チェックリストの `wrangler.jsonc:78` は本番の MAIL_FROM の行', /"MAIL_FROM"/.test(wr[77] || '') && wr.slice(46, 77).some(l => /"production"/.test(l)), wr[77])
+  // チェックリストが指す行（wrangler.jsonc:N）が、env.production の中の MAIL_FROM の行であること
+  const mailRef = Number((ten.match(/`MAIL_FROM`（`wrangler\.jsonc:(\d+)`）/) || [])[1] || 0)
+  const prodAt = wr.findIndex(l => /"production"\s*:/.test(l))
+  ok('#9642 チェックリストの `wrangler.jsonc:N` は本番の MAIL_FROM の行', mailRef > 0 && /"MAIL_FROM"/.test(wr[mailRef - 1] || '') && prodAt >= 0 && prodAt < mailRef - 1, { mailRef, line: wr[mailRef - 1] })
   ok('#9642 operations.md 2.5: 時刻に依存するテストの書き方（日本時間の今日・逆算・決まった時刻・0 時の直前の待ち）', /### 2\.5 時刻に依存するテスト/.test(ops) && /Date\.now\(\) \+ 9 \* 3600 \* 1000/.test(ops) && /23:45/.test(ops))
 }
 

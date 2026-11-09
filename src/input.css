@@ -198,8 +198,11 @@
   body.side-collapsed #sidebar .side-link > span { position: absolute; top: .1rem; right: .15rem; margin: 0; min-width: .95rem; padding: 0 .2rem; font-size: 9px; line-height: .95rem; text-align: center; }
   body.side-collapsed #sidebar .side-foot { padding: .5rem .4rem; }
 }
-/* シフト管理の表（#9922）: 横に広い画面では内容の最大幅（max-w-7xl）を外し、週の7日を広く出す */
-body:has(#board-grid) #app, body:has(#board-grid) #hq-support-bar, body:has(#board-grid) #tour-help-bar { max-width: none; }
+/* 管理画面の本文の幅（#9930。シフト管理の #9922 の規則もここにまとめた）。admin.js の route() が画面ごとに #app へ data-layout を付ける。
+   full = 一覧・表・ダッシュボードなど（上限なし。メニューを畳めばその分広がる）、form = 入力フォームが中心の画面（64rem = 1024px。左に寄せる）。
+   本部の閲覧中の表示（#hq-support-bar）・ヘルプの行（#tour-help-bar。tour.js が付ける）も本文と同じ幅にする。本部の画面（/hq）は .admin-main がないので変わらない */
+.admin-main > #app, .admin-main > #hq-support-bar, .admin-main > #tour-help-bar { max-width: none; }
+.admin-main > #app[data-layout="form"], .admin-main:has(> #app[data-layout="form"]) > #hq-support-bar, .admin-main:has(> #app[data-layout="form"]) > #tour-help-bar { max-width: 64rem; }
 /* 案件ごと・人ごとの表は列の幅を固定の計算にする。左の列は決まった幅、日の列は残りを等分する（中の長い文字が列を広げない）。
    表の最小の幅は shift-board.js が付ける（狭い画面では今までどおり横にスクロールする） */
 .board-table.board-fit { table-layout: fixed; width: 100%; }

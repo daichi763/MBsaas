@@ -127,7 +127,7 @@ must(await admin.put(`/api/admin/shifts/${s1}`, { start_time: '10:30' }), 'updat
   must(await admin.put('/api/admin/staff/1', { remarks: `${PFX} 所属元だけの備考` }), 'remarks')
   const own = must(await admin.get('/api/admin/staff/1'), 'own staff 1').profile
   const sc = await admin.get('/api/admin/roster/1/share-code')
-  const terms = must(await adminB.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await adminB.get('/api/admin/roster/lookup?code=' + encodeURIComponent(sc.data?.global_staff_code)), 'lookup').consent
   const lk = await adminB.post('/api/admin/roster/link', { code: sc.data?.global_staff_code, agreed: true, consent_version: terms.version })
   ok('（前提）連携先が st001 を連携', sc.status === 200 && lk.status === 200, [sc.status, lk])
   const linked = lk.status === 200 ? must(await adminB.get(`/api/admin/staff/${lk.data.staff_id}`), 'linked staff').profile : {}

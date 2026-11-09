@@ -222,7 +222,7 @@ if (PERSIST) {
   const ph1 = phoneOf(), ph2 = phoneOf()
   const X = await newStaff('X', { phone: ph1 })
   const xRow = must(await admin.get('/api/admin/staff'), 'list').staff.find(s => s.staff_id === X)
-  const terms = must(await admin.get('/api/admin/roster/consent-terms'), 'terms')
+  const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(xRow.global_staff_code)), 'lookup').consent
   const inA = must(await A.post('/api/admin/roster/link', { code: xRow.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
   let m = must(await A.get(`/api/admin/staff-lookup?phone=${ph1}`), 'lookup').matches
   ok('#123 連携先の照合で、所属元の電話番号の人が見つかる（番号は返さない）', m.some(x => x.staff_id === inA && x.phone === null), m)
