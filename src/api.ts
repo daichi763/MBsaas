@@ -15,7 +15,7 @@ import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
 import { applyRateOverride, inheritView, inheritedAdjustStmt, loadPricingData, parsePriceSource, rateOverrideOf } from './shift-board'
 import boardApi from './board'
-import settlementApi, { closedMessage, syncActualFromReports } from './settlement'
+import settlementApi, { CANCEL_REASON_LABEL, closedMessage, loadSettleMoney, syncActualFromReports } from './settlement'
 import { shiftTotals, staffingGaps } from './shift-board'
 import { recruitAdminApi, recruitPublicApi } from './recruit'
 import { staffMergeApi } from './staff-merge'
@@ -7611,19 +7611,21 @@ api.get('/admin/billing-check', async (c) => {
   const u = c.get('user'); const month = c.req.query('month') || monthJST()
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return c.json({ error: '月を正しく指定してください' }, 400)
   const [mFrom, mTo] = monthBounds(month) // 月は範囲の条件で絞る（#212）
-  // 件数は SQL で数え、金額は精算と同じ shiftTotals（交通費の請求区分・請求の調整額を含む）で、シフトの行を読んでから合計する
-  const money = (await c.env.DB.prepare(`SELECT s.project_id, s.staff_id, s.unit_price, s.transportation_fee, s.bill_transport_type, s.bill_transport_amount, s.bill_adjust
-    FROM shifts s WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ? AND s.status IN ('confirmed','substitute')`)
-    .bind(u.company_id, mFrom, mTo, todayJST()).all()).results as any[]
-  type Money = { base: number; transport: number; adjust: number; total: number }
+  const today = todayJST(), mLast = addDays(mTo, -1)
+  // 件数は SQL で数え、金額は精算（src/settlement.ts の loadSettleMoney）と同じ対象・同じ計算で、その月の1日〜今日の分を合計する（#9931）。
+  // 対象は確定・代打のシフトと、キャンセル料・補償を入れた欠勤・中止（キャンセル料は請求合計に含める）。精算で同じ期間を選べば請求・支払の合計が一致する
+  const money = await loadSettleMoney(c.env.DB, u.company_id, mFrom, mLast < today ? mLast : today)
+  type Money = { base: number; transport: number; adjust: number; cancel: number; cancel_count: number; total: number }
   const byProject = new Map<number, Money>(), byStaff = new Map<string, Money>()
-  const add = (m: Map<any, Money>, k: any, s: any) => {
-    const t = shiftTotals(s); const a = m.get(k) || { base: 0, transport: 0, adjust: 0, total: 0 }
-    a.base += Number(s.unit_price || 0); a.transport += t.bill_transport; a.adjust += Number(s.bill_adjust || 0); a.total += t.bill_total
+  const add = (m: Map<any, Money>, k: any, s: (typeof money)[number]) => {
+    const a = m.get(k) || { base: 0, transport: 0, adjust: 0, cancel: 0, cancel_count: 0, total: 0 }
+    // 請求基本額・交通費・調整は勤務の分、キャンセル料は欠勤・中止の分（精算では欠勤・中止の行の請求基本額に入る）
+    if (s.kind === 'cancel') { a.cancel += s.bill_total; a.cancel_count++ } else { a.base += s.bill_base; a.transport += s.bill_transport; a.adjust += s.bill_adjust }
+    a.total += s.bill_total
     m.set(k, a)
   }
   for (const s of money) { add(byProject, s.project_id, s); add(byStaff, `${s.staff_id}:${s.project_id}`, s) }
-  const zero: Money = { base: 0, transport: 0, adjust: 0, total: 0 }
+  const zero: Money = { base: 0, transport: 0, adjust: 0, cancel: 0, cancel_count: 0, total: 0 }
   // 月額（固定。#9702）: 今日までにその月の確定・代打のシフトがあれば、案件に1回（スタッフ別の月額はそのスタッフの行にも）足す
   const monthly = await loadMonthlyLines(c.env.DB, u.company_id, { months: [month], until: todayJST() })
   const monthlyBy = (k: (l: (typeof monthly)[number]) => string | null) => {
@@ -7633,47 +7635,80 @@ api.get('/admin/billing-check', async (c) => {
   // 稼働人数は確定・代打のシフトの人だけを数える（欠勤・希望（仮）だけの人は数えない）。
   // 日報は、確定・代打のシフトのうち日報が必要なもの（シフト → スタッフ → 案件の設定）を分母に、そのシフトの日報があるものを分子に数える（#448）。
   // 日報の照合は shift_id、shift_id の無い古い日報はスタッフ・稼働日・案件（lib/daily-report.ts の findDailyReport と同じ）
+  // 件数は、その月のシフトをスタッフ × 案件で1回だけ集計し（シフトの行ごとに案件・スタッフ・名前を読まない。#9938）、案件別・スタッフ別明細の両方に使う。
+  // 日報の要否はシフト → スタッフ → 案件の順（dailyReportRequiredSql と同じ）。スタッフ・案件の設定はグループの中で同じなので、
+  // シフトの設定ごと（required / none / どちらでもない = スタッフ・案件の設定に従う）に数えてから、スタッフ・案件の設定で足し合わせる
   const working = "s.status IN ('confirmed','substitute')"
-  const dailyReq = dailyReportRequiredSql('s', 'sp', 'p')
   const hasDaily = `EXISTS (SELECT 1 FROM daily_reports dr WHERE dr.shift_id = s.shift_id
     OR (+dr.shift_id IS NULL AND dr.staff_id = s.staff_id AND dr.work_date = s.work_date AND dr.project_id = s.project_id))`
-  const rows = await c.env.DB.prepare(`
-    SELECT p.project_id, p.project_name, cl.client_name,
-      COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
-      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
-      COUNT(CASE WHEN s.status = 'substitute' THEN 1 END) AS substitute_days,
-      COUNT(DISTINCT CASE WHEN ${working} THEN s.staff_id END) AS staff_count,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
-    FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
-    LEFT JOIN shifts s ON s.project_id = p.project_id AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
-    LEFT JOIN staff_profiles sp ON sp.staff_id = s.staff_id
-    WHERE p.company_id = ? GROUP BY p.project_id`).bind(mFrom, mTo, todayJST(), u.company_id).all()
-
-  // スタッフ別明細
-  const detail = await c.env.DB.prepare(`
-    SELECT s.staff_id, s.project_id, us.name, p.project_name,
-      COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
-      COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} THEN 1 END) AS report_required,
-      COUNT(CASE WHEN ${working} AND ${dailyReq} AND ${hasDaily} THEN 1 END) AS report_count
-    FROM shifts s JOIN projects p ON s.project_id = p.project_id
-    JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-    WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
-    GROUP BY s.staff_id, s.project_id ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()).all()
+  const sReq = "s.daily_report_mode = 'required'", sInherit = "(s.daily_report_mode IS NULL OR s.daily_report_mode NOT IN ('none','required'))"
+  const v = (a: string) => `CASE WHEN ${a}.daily_report_mode IN ('none','required') THEN ${a}.daily_report_mode END`
+  const [groupsRes, projectsRes] = await c.env.DB.batch([
+    c.env.DB.prepare(`SELECT g.*, sp.staff_id AS sp_staff_id, us.user_id AS us_user_id, us.name, p.project_name,
+        (COALESCE(${v('sp')}, ${v('p')}, 'required') = 'required') AS inherit_required
+      FROM (SELECT s.project_id, s.staff_id,
+          COUNT(CASE WHEN ${working} THEN 1 END) AS work_days,
+          COUNT(CASE WHEN s.status = 'absent' THEN 1 END) AS absent_days,
+          COUNT(CASE WHEN s.status = 'substitute' THEN 1 END) AS substitute_days,
+          COUNT(CASE WHEN ${working} AND ${sReq} THEN 1 END) AS req_own,
+          COUNT(CASE WHEN ${working} AND ${sInherit} THEN 1 END) AS req_inherit,
+          COUNT(CASE WHEN ${working} AND ${sReq} AND ${hasDaily} THEN 1 END) AS done_own,
+          COUNT(CASE WHEN ${working} AND ${sInherit} AND ${hasDaily} THEN 1 END) AS done_inherit
+        FROM shifts s WHERE s.company_id = ? AND s.work_date >= ? AND s.work_date < ? AND s.work_date <= ?
+        GROUP BY s.project_id, s.staff_id) g
+      JOIN projects p ON p.project_id = g.project_id
+      LEFT JOIN staff_profiles sp ON sp.staff_id = g.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+      ORDER BY p.project_id, us.name`).bind(u.company_id, mFrom, mTo, todayJST()),
+    c.env.DB.prepare(`SELECT p.project_id, p.project_name, cl.client_name FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
+      WHERE p.company_id = ? ORDER BY p.project_id`).bind(u.company_id),
+  ])
+  const groups = (groupsRes.results as any[]).map(g => {
+    const inh = Number(g.inherit_required) === 1
+    return { ...g, report_required: Number(g.req_own) + (inh ? Number(g.req_inherit) : 0), report_count: Number(g.done_own) + (inh ? Number(g.done_inherit) : 0) }
+  })
+  // 案件別（自社のすべての案件。シフトのない案件は 0）。稼働人数は確定・代打のシフトのある人
+  const rows = {
+    results: (projectsRes.results as any[]).map(p => {
+      const gs = groups.filter(g => g.project_id === p.project_id)
+      const total = (k: string) => gs.reduce((n, g) => n + Number(g[k]), 0)
+      return { project_id: p.project_id, project_name: p.project_name, client_name: p.client_name, work_days: total('work_days'), absent_days: total('absent_days'),
+        substitute_days: total('substitute_days'), staff_count: gs.filter(g => Number(g.work_days) > 0).length, report_required: total('report_required'), report_count: total('report_count') }
+    }),
+  }
+  // スタッフ別明細（スタッフ・アカウントのある人だけ。並びは案件・名前の順）
+  const detail = {
+    results: groups.filter(g => g.sp_staff_id != null && g.us_user_id != null).map(g => ({
+      staff_id: g.staff_id, project_id: g.project_id, name: g.name, project_name: g.project_name, work_days: g.work_days, absent_days: g.absent_days,
+      report_required: g.report_required, report_count: g.report_count,
+    })),
+  }
 
   // total_amount / amount = 請求基本額、total_transport / transport = 請求する交通費、total_adjust / adjust = 請求の調整、total_bill / total = 請求合計（精算の請求合計と同じ）
+  // total_cancel / cancel = 欠勤・中止のキャンセル料（#9931。請求合計に含む）、cancel_count = その件数。cancel_lines = キャンセル料の行
   // total_monthly / monthly = 月額（固定。#9702。請求合計に含む）。monthly_lines = 月額の行（案件全体・スタッフ別）
+  // totals = 会社全体の合計（bill = 請求合計、pay = 支払合計。精算で同じ期間を選んだときの totals.bill・totals.pay と同じ）
+  const detailRows = detail.results as any[]
+  const nameOf = new Map(detailRows.map(d => [`${d.staff_id}:${d.project_id}`, d]))
+  const cancels = money.filter(s => s.kind === 'cancel')
+  const cancel_lines = cancels.map(s => {
+    const d = nameOf.get(`${s.staff_id}:${s.project_id}`) || {}
+    return { shift_id: s.shift_id, work_date: s.work_date, staff_id: s.staff_id, staff_name: String(d.name || ''), project_id: s.project_id, project_name: String(d.project_name || ''),
+      reason: s.cancel_reason, reason_label: CANCEL_REASON_LABEL[String(s.cancel_reason)] || '欠勤', note: s.cancel_note, bill_amount: s.bill_total }
+  }).sort((a, b) => a.work_date.localeCompare(b.work_date) || a.project_name.localeCompare(b.project_name, 'ja') || a.staff_name.localeCompare(b.staff_name, 'ja') || a.shift_id - b.shift_id)
+  const sum = (a: typeof money, k: 'bill_total' | 'pay_total') => a.reduce((n, s) => n + Number(s[k] || 0), 0)
+  const monthlySum = monthlyTotal(monthly)
   return c.json({
     month,
+    totals: { bill: sum(money, 'bill_total') + monthlySum, pay: sum(money, 'pay_total'), cancel_bill: sum(cancels, 'bill_total'), cancel_pay: sum(cancels, 'pay_total'), cancel_count: cancels.length, monthly_bill: monthlySum },
     by_project: (rows.results as any[]).map(p => {
       const m = byProject.get(p.project_id) || zero, mo = monthlyOfProject.get(String(p.project_id)) || 0
-      return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_monthly: mo, total_bill: m.total + mo }
+      return { ...p, total_amount: m.base, total_transport: m.transport, total_adjust: m.adjust, total_cancel: m.cancel, cancel_count: m.cancel_count, total_monthly: mo, total_bill: m.total + mo }
     }),
-    detail: (detail.results as any[]).map(d => {
+    detail: detailRows.map(d => {
       const m = byStaff.get(`${d.staff_id}:${d.project_id}`) || zero, mo = monthlyOfStaff.get(`${d.staff_id}:${d.project_id}`) || 0
-      return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, monthly: mo, total: m.total + mo }
+      return { ...d, amount: m.base, transport: m.transport, adjust: m.adjust, cancel: m.cancel, cancel_count: m.cancel_count, monthly: mo, total: m.total + mo }
     }),
+    cancel_lines,
     monthly_lines: monthly,
   })
 })
