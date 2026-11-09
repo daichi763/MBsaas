@@ -364,6 +364,7 @@ docs/                     この資料と機能ごとの仕様
 | `ERROR_ALERT_WINDOW_MINUTES` | `10` | 件数を数える期間（分） |
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | 同じ通知を次に出すまでの間隔（分） |
 | `TEST_HOOKS` | なし | テスト用。`'true'` のときだけ、打刻の API に D1 の回数のヘッダーと過負荷のまねを付ける（`src/lib/d1-retry.ts:33`。ローカルの `wrangler dev --var TEST_HOOKS:true` だけで使い、`wrangler.jsonc` と本番には入れない） |
+| `DB_CALL_COUNT` | なし | テスト用。`'true'` のときだけ、打刻修正のまとめて承認の応答に、その要求の D1 の呼び出しの回数 `d1_calls` を付ける（`src/corrections.ts:914`。ローカルの `wrangler dev --var DB_CALL_COUNT:true` だけで使い、`wrangler.jsonc` と本番には入れない） |
 
 ダッシュボードで `vars` を変えても、次のデプロイで `wrangler.jsonc` の値に戻ります。変えるときは `wrangler.jsonc`（トップレベルと `env.production` の両方）を直してマージします。
 

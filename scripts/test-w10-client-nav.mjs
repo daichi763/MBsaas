@@ -99,8 +99,8 @@ function parseMobileNav(html) {
   ok('#9305 スマホのヘッダーの合計（打刻修正・応募・掲示板・チャット）はこれまでどおり', a.includes("const NAV_TOTAL_TABS = ['corrections', 'recruit', 'board', 'roster-chat']"))
   ok('#9305 役割での出し分け（従業員管理を扱えないロールは項目を外す）はそのままで、項目のなくなった見出しは隠す',
     a.includes(`document.querySelectorAll('.side-link[data-tab="employees"], #mobile-nav option[value="employees"]').forEach(el => el.remove())`)
-    // Sprint 15（w15-tour）で route() の後に案内（tour.js）の起動が1行入った
-    && /hideEmptyNavGroups\(\)\s*route\(\)\s*(?:\/\/[^\n]*\s*if \(window\.FosTour\) FosTour\.init\('admin', ME\)\s*)?\}\)\(\)/.test(a))
+    // Sprint 15（w15-tour）で route() の後に案内（tour.js）の起動が1行入った。Sprint 19（w19-polling・#9935）でメニューのバッジの取得（refreshBadges）が1行入った
+    && /hideEmptyNavGroups\(\)\s*route\(\)\s*(?:\/\/[^\n]*\s*refreshBadges\(\)\s*)?(?:\/\/[^\n]*\s*if \(window\.FosTour\) FosTour\.init\('admin', ME\)\s*)?\}\)\(\)/.test(a))
   ok('#9305 あとから足すメニュー（出勤可能日・スタッフの申請）は、シフト管理・打刻修正承認の下（＝シフト・勤怠の見出しの中）に入る',
     a.includes(`document.querySelector('#side-nav a[data-tab="shifts"]')`) && a.includes(`document.querySelector('.side-link[data-tab="corrections"]')`))
   const css = await (await fetchRetry(`${BASE}/static/style.css`)).text()
