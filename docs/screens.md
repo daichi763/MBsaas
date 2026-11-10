@@ -29,17 +29,17 @@ Field OS の画面の一覧です。新しく加わる開発者や外部の開�
 <!-- BEGIN GENERATED: screens-pages -->
 | パス | 定義 | ログイン | 読み込む画面の JS |
 |---|---|---|---|
-| `/sw.js` | [index.tsx:120](../src/index.tsx#L120) |  | `common.js` |
-| `/` | [index.tsx:167](../src/index.tsx#L167) |  |  |
-| `/login` | [index.tsx:187](../src/index.tsx#L187) |  |  |
-| `/reset-password` | [index.tsx:416](../src/index.tsx#L416) |  |  |
-| `/verify-email` | [index.tsx:497](../src/index.tsx#L497) |  |  |
-| `/notice-ack` | [index.tsx:545](../src/index.tsx#L545) |  |  |
-| `/r/:token` | [index.tsx:603](../src/index.tsx#L603) |  | `report-link.js` |
-| `/apply/:token` | [index.tsx:617](../src/index.tsx#L617) |  | `apply.js` |
-| `/staff` | [index.tsx:631](../src/index.tsx#L631) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
-| `/admin` | [index.tsx:679](../src/index.tsx#L679) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
-| `/hq` | [index.tsx:807](../src/index.tsx#L807) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
+| `/sw.js` | [index.tsx:124](../src/index.tsx#L124) |  | `common.js` |
+| `/` | [index.tsx:171](../src/index.tsx#L171) |  |  |
+| `/login` | [index.tsx:191](../src/index.tsx#L191) |  |  |
+| `/reset-password` | [index.tsx:420](../src/index.tsx#L420) |  |  |
+| `/verify-email` | [index.tsx:501](../src/index.tsx#L501) |  |  |
+| `/notice-ack` | [index.tsx:549](../src/index.tsx#L549) |  |  |
+| `/r/:token` | [index.tsx:607](../src/index.tsx#L607) |  | `report-link.js` |
+| `/apply/:token` | [index.tsx:621](../src/index.tsx#L621) |  | `apply.js` |
+| `/staff` | [index.tsx:635](../src/index.tsx#L635) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
+| `/admin` | [index.tsx:683](../src/index.tsx#L683) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
+| `/hq` | [index.tsx:811](../src/index.tsx#L811) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
 <!-- END GENERATED: screens-pages -->
 
 | ページ | 使う人 | 入り口 |

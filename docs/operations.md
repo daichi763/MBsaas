@@ -62,7 +62,7 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 | 現場管理者 / 営業管理者 | `sample` | `mgr01` / `sales01` | `/admin` |
 | 本部 | （空欄） | `hq` | `/hq` |
 
-`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:257`）。
+`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:261`）。
 
 ### 1.5 型チェックとビルド
 
@@ -110,14 +110,14 @@ npm test -- --no-build            # ビルドを省く
 bash scripts/setup-test-db.sh "<短いパスの保存先>"          # Windows ではパスが長いと失敗する
 npm run build
 npx wrangler dev --local --port 8810 --persist-to "<保存先>"   # テストの先頭のコメントにある --var・--test-scheduled も付ける
-BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node scripts/test-xxx.mjs
+BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-origin.mjs scripts/test-xxx.mjs   # 書き込みに Origin を付ける（2.4）
 ```
 
 終わったら `wrangler dev` を止めます。
 
 ### 2.4 テストの書き方
 - `scripts/test-<作業単位>.mjs` に、API を呼んで確かめるテストを書きます。1件ごとに `PASS` / `FAIL` を出し、最後に `n/m passed` を出して、失敗があれば終了コード 1 にします（例: `scripts/test-w12-shift.mjs`）。
-- ログインは `POST /api/auth/login` に会社コード・ID・パスワードを送り、`set-cookie` の `session` を次の要求に付けます。
+- ログインは `POST /api/auth/login` に会社コード・ID・パスワードを送り、`set-cookie` の `session` を次の要求に付けます。サーバーはセッションの Cookie を付けた書き込みに `Origin` を求める（CSRF の対策。#9943）ので、`npm test` は各テストを `node --import ./scripts/fetch-origin.mjs` で起動し、Node の `fetch` の書き込みに宛先と同じ `Origin` を付けます（テストの中で付ける必要はありません）。
 - 起動のオプションが要るときは、先頭25行のコメントに `--var 名前:値` / `--test-scheduled` と書きます（`npm test` がそれを読みます）。値に `<` `>` を書かないでください（2.2 の理由）。
 - 画面の確認が要るときは、ヘッドレスの Chrome を使い、Chrome がない環境では省くようにします（`scripts/test-w12-shift.mjs:9`）。
 
@@ -307,10 +307,10 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
-| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:55`〜`59` |
+| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:56`〜`60` |
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:54` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:66` |
-| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:77` |
+| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:81` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:294` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:386` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:97` |
@@ -457,7 +457,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 
 ### 10.2 `DEMO_MODE=false` の確認
 - Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:33` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
-- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:257`）。
+- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:261`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
 メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。

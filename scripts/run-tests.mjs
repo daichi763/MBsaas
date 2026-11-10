@@ -85,7 +85,7 @@ for (const file of tests) {
   try {
     if (!(await waitReady(proc))) { console.error('サーバーが起動しませんでした\n' + errLog); results.push({ file, ok: false }); continue }
     const env = { ...process.env, BASE, PERSIST: WORK.replace(/\\/g, '/'), ...Object.fromEntries(vars) }
-    status = spawnSync(process.execPath, [join('scripts', file)], { cwd: ROOT, stdio: 'inherit', env }).status ?? 1
+    status = spawnSync(process.execPath, ['--import', './scripts/fetch-origin.mjs', join('scripts', file)], { cwd: ROOT, stdio: 'inherit', env }).status ?? 1  // 書き込みに Origin を付ける（#9943）
     results.push({ file, ok: status === 0, sec: Math.round((Date.now() - started) / 1000) })
   } finally {
     stop(proc)
