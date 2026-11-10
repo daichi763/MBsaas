@@ -50,7 +50,8 @@ import {
   type LoginEvent, recordLoginEvent, requestMeta, deviceLabel, canUseMfa, ipDenied, mfaSetupPending, securitySettings, saveSecuritySettingsStmt,
   normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, personSessions, revokePersonSessions,
 } from './lib/login-security'
-import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
+import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
+import { batchWithNewPerson, insertPersonStmt, isUniqueError, STAFF_USER_ID } from './roster'
 import { ageEntryUpdate, estimatedAge } from './roster'
 import { isHHMM, isISODate, oneOf, toInt, pickReportValues, reportFieldRulesError, cleanFileName, CONSULT_CATEGORIES, CONSULT_URGENCIES, NO_TEMPLATE_FIELDS } from './lib/validate'
 import { halfWidthNumber, toNumberOrNull, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
@@ -4171,18 +4172,24 @@ api.post('/admin/staff', async (c) => {
     if (matches.length) return c.json({ error: '同じ人と思われるスタッフが登録済みです', matches, need_force: true }, 409)
   }
   const hash = await hashPassword(password)
+  const db = c.env.DB
   try {
-    // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
-    const r = await c.env.DB.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, must_change_password) VALUES (?, ?, ?, 'staff', ?, ?, ?, 1)`)
-      .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null).run()
-    const person = await createPerson(c.env.DB, u.company_id)
-    await c.env.DB.prepare('UPDATE users SET person_id = ? WHERE user_id = ?').bind(person.person_id, r.meta.last_row_id).run()
-    await c.env.DB.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type, availability_exempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own_employee', ?)`)
-      .bind(r.meta.last_row_id, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id, availability_target === false ? 1 : 0).run()
+    // persons・users・staff_profiles を1つの batch で入れる（途中で失敗しても孤立した行を残さない。#9951）
+    await batchWithNewPerson(db, person => [
+      insertPersonStmt(db, person, u.company_id),
+      // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
+      db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id, must_change_password) VALUES (?, ?, ?, 'staff', ?, ?, ?, ?, 1)`)
+        .bind(u.company_id, user_code, name, hash, email ?? null, phone ?? null, person.person_id),
+      db.prepare(`INSERT INTO staff_profiles (user_id, company_id, affiliation, skills, career, work_area, person_id, owner_company_id, affiliation_type, availability_exempt)
+          VALUES (${STAFF_USER_ID}, ?, ?, ?, ?, ?, ?, ?, 'own_employee', ?)`)
+        .bind(u.company_id, user_code, u.company_id, u.company_name, skills ?? '', career ?? '', work_area ?? '', person.person_id, u.company_id, availability_target === false ? 1 : 0),
+    ])
     return c.json({ ok: true })
   } catch (e) {
     // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
-    return c.json({ error: 'スタッフ番号が重複しています', suggested_code: (await nextStaffCode(c.env.DB, u.company_id)).code }, 409)
+    if (isUniqueError(e, 'users.user_code')) return c.json({ error: 'スタッフ番号が重複しています', suggested_code: (await nextStaffCode(db, u.company_id)).code }, 409)
+    console.log(`staff create failed: ${e}`)
+    return c.json({ error: '登録に失敗しました。もう一度お試しください' }, 500)
   }
 })
 
@@ -5647,6 +5654,9 @@ api.delete('/admin/shifts/:id', async (c) => {
     ...autoCancelStatements(db, cur.shift_id, 'shift_deleted', actorOf(u), cancelToken),
     db.prepare('DELETE FROM shift_report_tokens WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
     db.prepare('DELETE FROM shift_cancellations WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
+    // 精算の確認済みの印・区分変更で対象外にした記録も消す（消したシフトを指す行を残さない。#9952）
+    db.prepare('DELETE FROM settlement_issue_acks WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
+    db.prepare('DELETE FROM affiliation_excluded_shifts WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
     db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(cur.shift_id, u.company_id),
   ])
   await finishLog(op)

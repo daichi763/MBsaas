@@ -697,6 +697,10 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
         [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
+        // シフトの取消の記録（メモ・金額）・精算の確認済みの印・区分変更で対象外にした記録（#9952）。shifts より先に消す
+        [null, db.prepare(`DELETE FROM shift_cancellations WHERE ${ofShifts}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM settlement_issue_acks WHERE ${ofShifts}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM affiliation_excluded_shifts WHERE ${ofShifts}`).bind(staffId)],
         ['shifts', db.prepare('DELETE FROM shifts WHERE staff_id = ?').bind(staffId)],
         ['evaluations', db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId)],
         ['follow_logs', db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId)],
