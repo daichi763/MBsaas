@@ -23,13 +23,14 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 
 - API はすべて `/api` の下です。画面（HTML）と Service Worker・Webhook は `src/index.tsx` にあります（下の「3. 画面などのルート」）。
 - 送るのも返すのも JSON です（CSV のダウンロードは除く。CSV は [`csvResponse`](../src/csv.ts) で返します）。
-- エラーは `{ "error": "日本語の説明" }` で返します。画面が分岐に使う場合は `code`（例: `company_inactive`・`mfa_setup_required`・`account_switched`・`hq_view_readonly`）も付けます。
+- エラーは `{ "error": "日本語の説明" }` で返します。画面が分岐に使う場合は `code`（例: `company_inactive`・`mfa_setup_required`・`account_switched`・`hq_view_readonly`・`csrf_origin`）も付けます。
 - 予期しないエラーは、`src/index.tsx` の `app.onError` が 500 と `{ "error": "…参照番号: xxxx", "ref": "xxxx" }` を返し、同じ参照番号で Workers のログに1行の JSON を残します（パスの中のトークンは [`maskPath`](../src/index.tsx) で伏せます）。
 
 ### 1.2 ログインとセッション
 
 - ログインは `POST /api/auth/login`（二段階認証がある人は続けて `POST /api/auth/login/mfa`）。成功すると、Cookie `session`（[`SESSION_COOKIE`](../src/lib/auth.ts)。HttpOnly・SameSite=Lax・https では Secure。[`sessionCookieOptions`](../src/lib/auth.ts)）が付きます。
 - `/api/*` の認証のミドルウェア（`src/api.ts` の `api.use('/*', …)`）が、Cookie のセッションを確かめます。期限切れ・退職・停止中の会社は 401 か 403 です。
+- 書き込み（GET・HEAD・OPTIONS 以外）は、送り元（`Origin`。無ければ `Referer`）が自分のサイト（リクエストのホストか `APP_BASE_URL`）のときだけ通し、違えば 403（`csrf_origin`）で止めます（CSRF の対策。[`csrfGuard`](../src/lib/csrf.ts)。#9943）。`Origin` も `Referer` も無い要求は、セッションの Cookie を付けたものだけ止めます（curl などからのログインは通ります）。`/api/public/*`（トークンで入る公開の API）と `/webhooks/resend`（署名で確かめる）は対象外です。
 - 操作のたびに、セッションの期限を延ばします。延ばす幅と最長の期間はロールで違います（[`SESSION_IDLE_HOURS`](../src/api.ts)・[`SESSION_MAX_DAYS`](../src/api.ts)。既定は [`SESSION_HOURS`](../src/lib/auth.ts)）。
 
 ### 1.3 画面が付けるヘッダー
@@ -127,18 +128,18 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-pages -->
 | メソッド | パス | 定義 | 用途 |
 |---|---|---|---|
-| GET | `/sw.js` | [index.tsx:120](../src/index.tsx#L120) | Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） |
-| POST | `/webhooks/resend` | [index.tsx:124](../src/index.tsx#L124) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
-| GET | `/` | [index.tsx:167](../src/index.tsx#L167) | ルート: ロール別リダイレクト |
-| GET | `/login` | [index.tsx:187](../src/index.tsx#L187) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
-| GET | `/reset-password` | [index.tsx:416](../src/index.tsx#L416) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
-| GET | `/verify-email` | [index.tsx:497](../src/index.tsx#L497) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
-| GET | `/notice-ack` | [index.tsx:545](../src/index.tsx#L545) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
-| GET | `/r/:token` | [index.tsx:603](../src/index.tsx#L603) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
-| GET | `/apply/:token` | [index.tsx:617](../src/index.tsx#L617) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
-| GET | `/staff` | [index.tsx:631](../src/index.tsx#L631) | スタッフ画面 (スマホファースト SPA) |
-| GET | `/admin` | [index.tsx:679](../src/index.tsx#L679) | 管理者画面 (PC向け SPA) |
-| GET | `/hq` | [index.tsx:807](../src/index.tsx#L807) | SaaS本部管理画面 |
+| GET | `/sw.js` | [index.tsx:124](../src/index.tsx#L124) | Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） |
+| POST | `/webhooks/resend` | [index.tsx:128](../src/index.tsx#L128) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
+| GET | `/` | [index.tsx:171](../src/index.tsx#L171) | ルート: ロール別リダイレクト |
+| GET | `/login` | [index.tsx:191](../src/index.tsx#L191) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
+| GET | `/reset-password` | [index.tsx:420](../src/index.tsx#L420) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
+| GET | `/verify-email` | [index.tsx:501](../src/index.tsx#L501) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
+| GET | `/notice-ack` | [index.tsx:549](../src/index.tsx#L549) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
+| GET | `/r/:token` | [index.tsx:607](../src/index.tsx#L607) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
+| GET | `/apply/:token` | [index.tsx:621](../src/index.tsx#L621) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
+| GET | `/staff` | [index.tsx:635](../src/index.tsx#L635) | スタッフ画面 (スマホファースト SPA) |
+| GET | `/admin` | [index.tsx:683](../src/index.tsx#L683) | 管理者画面 (PC向け SPA) |
+| GET | `/hq` | [index.tsx:811](../src/index.tsx#L811) | SaaS本部管理画面 |
 <!-- END GENERATED: api-pages -->
 
 ## 4. エンドポイントの一覧
@@ -746,6 +747,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | `maskPath` | [index.tsx:15](../src/index.tsx#L15) |
 | `SESSION_COOKIE` | [lib/auth.ts:8](../src/lib/auth.ts#L8) |
 | `sessionCookieOptions` | [lib/auth.ts:148](../src/lib/auth.ts#L148) |
+| `csrfGuard` | [lib/csrf.ts:53](../src/lib/csrf.ts#L53) |
 | `SESSION_IDLE_HOURS` | [api.ts:802](../src/api.ts#L802) |
 | `SESSION_MAX_DAYS` | [api.ts:803](../src/api.ts#L803) |
 | `SESSION_HOURS` | [lib/auth.ts:9](../src/lib/auth.ts#L9) |

@@ -110,14 +110,14 @@ npm test -- --no-build            # ビルドを省く
 bash scripts/setup-test-db.sh "<短いパスの保存先>"          # Windows ではパスが長いと失敗する
 npm run build
 npx wrangler dev --local --port 8810 --persist-to "<保存先>"   # テストの先頭のコメントにある --var・--test-scheduled も付ける
-BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node scripts/test-xxx.mjs
+BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-origin.mjs scripts/test-xxx.mjs   # 書き込みに Origin を付ける（2.4）
 ```
 
 終わったら `wrangler dev` を止めます。
 
 ### 2.4 テストの書き方
 - `scripts/test-<作業単位>.mjs` に、API を呼んで確かめるテストを書きます。1件ごとに `PASS` / `FAIL` を出し、最後に `n/m passed` を出して、失敗があれば終了コード 1 にします（例: `scripts/test-w12-shift.mjs`）。
-- ログインは `POST /api/auth/login` に会社コード・ID・パスワードを送り、`set-cookie` の `session` を次の要求に付けます。
+- ログインは `POST /api/auth/login` に会社コード・ID・パスワードを送り、`set-cookie` の `session` を次の要求に付けます。サーバーはセッションの Cookie を付けた書き込みに `Origin` を求める（CSRF の対策。#9943）ので、`npm test` は各テストを `node --import ./scripts/fetch-origin.mjs` で起動し、Node の `fetch` の書き込みに宛先と同じ `Origin` を付けます（テストの中で付ける必要はありません）。
 - 起動のオプションが要るときは、先頭25行のコメントに `--var 名前:値` / `--test-scheduled` と書きます（`npm test` がそれを読みます）。値に `<` `>` を書かないでください（2.2 の理由）。
 - 画面の確認が要るときは、ヘッドレスの Chrome を使い、Chrome がない環境では省くようにします（`scripts/test-w12-shift.mjs:9`）。
 
