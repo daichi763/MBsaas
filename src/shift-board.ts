@@ -1506,6 +1506,9 @@ function shiftDeleteParts(db: D1Database, u: any, ids: number[]) {
       .bind(u.user_id, u.name ?? null, u.role ?? null, JSON.stringify({ auto: true, reason: 'shift_deleted' }), at, cid, token),
     db.prepare(`DELETE FROM shift_report_tokens WHERE company_id = ? AND shift_id IN ${target}`).bind(cid, cid, json),
     db.prepare(`DELETE FROM shift_cancellations WHERE company_id = ? AND shift_id IN ${target}`).bind(cid, cid, json),
+    // 精算の確認済みの印・区分変更で対象外にした記録も消す（#9952）
+    db.prepare(`DELETE FROM settlement_issue_acks WHERE company_id = ? AND shift_id IN ${target}`).bind(cid, cid, json),
+    db.prepare(`DELETE FROM affiliation_excluded_shifts WHERE company_id = ? AND shift_id IN ${target}`).bind(cid, cid, json),
     db.prepare(`DELETE FROM shifts WHERE shift_id IN ${target}`).bind(cid, json),
   ]
   return { op, token, ids, stmts, before: null as ShiftSnap[] | null }
@@ -1993,6 +1996,13 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
       stmts.push(db.prepare('DELETE FROM shifts WHERE shift_id = ? AND company_id = ?').bind(s.shift_id, u.company_id))
       removed++
     }
+  }
+  // 消したシフトの精算の確認済みの印・区分変更で対象外にした記録・キャンセルの記録も消す（#9952）。
+  // batch が分かれても消えたシフトの分だけを消すよう、シフトが残っていないことを条件にして最後に入れる
+  const removedIds = shifts.filter(s => !(s.records > 0)).map(s => s.shift_id)
+  if (removedIds.length) for (const t of ['settlement_issue_acks', 'affiliation_excluded_shifts', 'shift_cancellations']) {
+    stmts.push(db.prepare(`DELETE FROM ${t} WHERE company_id = ? AND shift_id IN ${JSON_IN}
+      AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.shift_id = ${t}.shift_id)`).bind(u.company_id, bindJsonArray(removedIds)))
   }
   const op = opLog(db, u, 'release') // 操作履歴（#159）。外す前の値を先に残す
   const before = await loadShiftSnaps(db, u.company_id, shifts.map(s => s.shift_id))
