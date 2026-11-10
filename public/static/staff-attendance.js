@@ -4,9 +4,9 @@
 // =========================================================
 (function () {
   const TYPES = ['wake_up', 'departure', 'check_in', 'work_start', 'break_start', 'break_end', 'work_end', 'check_out']
-  const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
+  const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩はじめ', break_end: '休憩おわり', work_end: '勤務終了', check_out: '退店報告' }
   const STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
-  const KIND = { modify: '時刻修正', add: '打刻漏れの追加' }
+  const KIND = { modify: '時刻の直し', add: '押し忘れの報告' } // やさしい言葉に（UI-2 ui-staff-07）
   const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const S = window.__attState = window.__attState || { tab: 'timeline', to: null }
   let TL = null
@@ -38,7 +38,7 @@
     $app.innerHTML = `
       <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
       <div class="grid grid-cols-2 gap-2 mb-4" role="tablist">
-        <button class="btn ${S.tab === 'timeline' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'timeline'}" onclick="attTab('timeline')"><i class="fas fa-clock"></i>打刻履歴</button>
+        <button class="btn ${S.tab === 'timeline' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'timeline'}" onclick="attTab('timeline')"><i class="fas fa-clock"></i>報告の履歴</button>
         <button class="btn ${S.tab === 'requests' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'requests'}" onclick="attTab('requests')"><i class="fas fa-file-pen"></i>修正申請</button>
       </div>
       <div id="att-body"><div class="flex justify-center py-12"><span class="spin"></span></div></div>`
@@ -75,7 +75,7 @@
         <button class="btn btn-outline text-xs" onclick="attMove(14)" ${TL.to >= today() ? 'disabled' : ''} aria-label="次の2週間">次<i class="fas fa-chevron-right"></i></button>
       </div>
       ${TL.to < today() ? '<p class="text-center mb-2"><button class="text-xs text-blue-600 underline" onclick="attMove(0)">今日までの表示に戻る</button></p>' : ''}
-      <p class="text-[11px] text-gray-500 mb-3 px-1">報告をタップすると時刻の修正、未報告の項目は打刻漏れの追加を申請できます。承認されるまで記録は変わりません</p>
+      <p class="text-[11px] text-gray-500 mb-3 px-1">報告を押すと時刻を直せます。押し忘れた報告は、あとから時刻を送れます。管理者が確認するまで記録は変わりません</p>
       <div class="space-y-3">${Object.keys(byDate).map(d => `
         <section>
           <h3 class="text-sm font-bold text-gray-700 mb-1.5 px-1">${esc(fmtDate(d))}</h3>

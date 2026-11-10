@@ -85,6 +85,16 @@
   /* 今は押せない報告（後の報告が済んだ・修正の申請中・受付の時間外）: 点線の枠と薄い灰色の背景で、押せる報告と見分ける（UI-1 ui-staff-04）。
      ボタンは無効にせず、押すと押せない理由と次にすることを出す */
   .report-btn.locked { background: #f9fafb; border-style: dashed; border-color: #d1d5db; }
+  /* 次の報告の固定のボタン（UI-2 ui-staff-01）: 下のタブ（#bottom-nav。高さは staff.js が --nav-h に入れる）のすぐ上に固定する。
+     白い文字 #fff は #1d4ed8 の上で 6.7:1。ボタンの下に隠れる内容がないよう、ホームの最後に .next-bar-space の余白を置く */
+  .next-bar { position: fixed; left: 0; right: 0; bottom: var(--nav-h, 64px); z-index: 15; padding: .75rem 0 .5rem; background: linear-gradient(to top, rgba(249,250,251,1) 75%, rgba(249,250,251,0)); }
+  .next-bar-btn { width: 100%; display: flex; align-items: center; gap: .75rem; min-height: 4.25rem; padding: .75rem 1rem; border-radius: 1rem; background: #1d4ed8; color: #fff; text-align: left; box-shadow: 0 6px 18px rgba(29,78,216,.35); }
+  .next-bar-btn:active { background: #1e40af; }
+  .next-bar-btn:disabled { background: #6b7280; box-shadow: none; cursor: default; }
+  .next-bar-space { height: 7.5rem; }
+  /* 下から出るシート（UI-2 ui-staff-03。写真の報告）。広い画面では今までどおり真ん中に出す（@layer の外の @media） */
+  .modal-sheet { align-items: flex-end; padding: 0; }
+  .modal-sheet .modal-box { border-radius: 1.25rem 1.25rem 0 0; max-height: 94vh; padding-bottom: calc(1.25rem + env(safe-area-inset-bottom)); }
 
   /* ローディング */
   .spin { display: inline-block; width: 1.4rem; height: 1.4rem; border: 3px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite; }
@@ -116,6 +126,13 @@
 /* 幅を決めておき、長い文でも縦に細長い箱にしない（UI-1 ui-staff-05）。箱の外の画面は押せるままにする */
 #toast { position: fixed; bottom: 5.5rem; left: 50%; transform: translateX(-50%); z-index: 60; width: calc(100% - 2rem); max-width: 28rem; display: flex; flex-direction: column; align-items: center; gap: .4rem; pointer-events: none; }
 #toast > * { pointer-events: auto; max-width: 100%; }
+/* 次の報告の固定のボタンがあるときは、トーストをその上に出す（UI-2） */
+body.has-next-bar #toast { bottom: calc(var(--nav-h, 64px) + 6.5rem); }
+/* 写真のシート: 広い画面では真ん中に出す（UI-2） */
+@media (min-width: 640px) {
+  .modal-bg.modal-sheet { align-items: center; padding: 1rem; }
+  .modal-bg.modal-sheet .modal-box { border-radius: 1rem; }
+}
 /* シフトボードの状態（'st-' + シフトの状態で付ける） */
 .board-chip.st-requested { background: #fffbeb; border-color: #fcd34d; }
 .board-chip.st-substitute { background: #f5f3ff; border-color: #c4b5fd; }
