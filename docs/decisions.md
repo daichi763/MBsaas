@@ -5,7 +5,7 @@
 
 - **番号の読み方**: `#123` はレビューで見つかった指摘の番号、`#9101` のような4桁の 9xxx は利用者の要望の番号（9 の次の桁が Sprint。`91xx` は Sprint 9）です。どちらもコードのコメントに書いてあるので、`grep -rn "#9101" src public` で該当する所を探せます。
 - **日付**: 利用者が決めた日。決めた日の記録がないものは、反映した PR のマージの日（GitHub）です。
-- **根拠のコード**: `ファイル:行` は 2026-11-10 時点（コミット `cafa604`）のものです。
+- **根拠のコード**: `ファイル:行` は 2026-11-10 時点（コミット `849272b`）のものです。
 
 ## 一覧
 
@@ -305,7 +305,7 @@
 
 ### D-32 GitHub の main へのマージで Workers Builds が本番にデプロイする
 - **決定**: 本番へのデプロイは、GitHub（`daichi763/MBsaas`）の `main` へのマージで Cloudflare Workers Builds が行う。ビルドのとき `scripts/ci-wrangler-config.mjs` が `wrangler.jsonc` の `env.production` を `wrangler.json` の最上位に展開する。マイグレーションは自動では適用されないので、マージより先に手で適用する。
-- **根拠のコード**: `scripts/ci-wrangler-config.mjs:1`〜`8`、`package.json:6`
+- **根拠のコード**: `scripts/ci-wrangler-config.mjs:1`〜`13`、`package.json:6`
 - **手順**: [operations.md](operations.md) の「本番リリース」
 - **追加（Sprint 21。#9944）**: `npm run build` の最初に型チェックを入れ、Workers Builds のビルドが型のエラーで止まるようにした。CI なのに本番の設定の `wrangler.json` を作れなかったとき・中身が本番の値でないときも、ビルドを止める。`main` あての PR には GitHub Actions の CI（型チェック・ビルド・資料のずれ・速いテスト）を流す。CI を通らない PR のマージを止めるブランチの保護は、利用者が判断してから設定する（[operations.md](operations.md) の 2.6・3.5）。
 

@@ -234,7 +234,7 @@ GitHub で PR を `main` にマージします。Workers Builds が起動し、`
 npx wrangler deployments list --env production    # いちばん新しいデプロイの日時が今になっていること
 ```
 
-Cloudflare のダッシュボードの Workers Builds のビルドのログに、`scripts/ci-wrangler-config.mjs:33` の1行が出ていることを確かめます（本番の設定で `wrangler.json` を作ったという行で、`APP_BASE_URL` と `DEMO_MODE=false` が出ます）。この行がないと、ローカル用の設定（メールを送らない・デモの案内を出す）で本番に出てしまいます。
+Cloudflare のダッシュボードの Workers Builds のビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行が出ていることを確かめます（本番の設定で `wrangler.json` を作ったという行で、`APP_BASE_URL` と `DEMO_MODE=false` が出ます）。この行がないと、ローカル用の設定（メールを送らない・デモの案内を出す）で本番に出てしまいます。
 
 **7. 環境変数の確認 🔴**
 
@@ -494,7 +494,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 4. もう一度 1 の SQL を流し、会社が停止（`active_status`）になっているか、ユーザーのパスワードを変えたかを確かめます。`/login` で `sample` / `admin` / `pass1234` でログインできないことも確かめます。
 
 ### 10.2 `DEMO_MODE=false` の確認
-- Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:33` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
+- Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
 - `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:257`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
