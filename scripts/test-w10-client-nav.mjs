@@ -31,9 +31,10 @@ const PFX = 'W10N' + Date.now().toString(36).slice(-4).toUpperCase()
 const admin = client(await login('sample', 'admin'))
 
 // ---------- #9305 左側のメニューの見出しと並び ----------
+// Sprint 23（#9961）でメニューを src/admin-menu.ts の1つの配列にまとめ、JS が後から足していた出勤可能日・スタッフの申請も HTML に入った（画面の並びは前と同じ）
 const EXPECTED = [
   ['', '', ['dashboard', 'notifications']],
-  ['attendance', 'シフト・勤怠', ['shifts', 'reports', 'corrections', 'report-settings', 'attendance-history']],
+  ['attendance', 'シフト・勤怠', ['shifts', 'availability', 'reports', 'corrections', 'staff-requests', 'report-settings', 'attendance-history']],
   ['people', '人材', ['staff', 'employees', 'partners', 'recruit', 'consult', 'follow']],
   ['deals', '案件・取引', ['projects', 'clients', 'board', 'roster-chat']],
   ['money', 'お金', ['settlement', 'billing']],
@@ -73,7 +74,7 @@ function parseMobileNav(html) {
     && EXPECTED.slice(1).every(([k]) => nav.includes(`id="nav-group-${k}"`)))
   ok('#9305 見出しの横に件数の合計を出す欄がある（はじめは隠す）', (nav.match(/<span class="nav-group-count hidden"/g) || []).length === 7)
   ok('#9305 未読などのバッジ（通知・打刻修正・応募・掲示板）は項目の中にそのまま残す',
-    ['notif-badge', 'corrections-badge', 'recruit-badge', 'board-badge'].every(id => (html.match(new RegExp(`id="${id}"`, 'g')) || []).length === 1))
+    ['notif-badge', 'corrections-badge', 'staff-requests-badge', 'recruit-badge', 'board-badge'].every(id => (html.match(new RegExp(`id="${id}"`, 'g')) || []).length === 1))
   ok('#9305 アカウント設定・セキュリティは「設定」の見出しの中（下の欄には伴走支援とログアウトだけ）',
     (html.match(/data-tab="account"/g) || []).length === 1 && (html.match(/class="side-link[^"]*" data-tab="security"/g) || []).length === 1 && html.includes('data-action="hqsOpenSupport"') && html.includes('id="logout-btn"'))
   ok('#9305 イベント属性に値を埋め込まない（メニューに onclick を使わない）', !/<(a|button)[^>]*onclick/.test(nav))
@@ -83,7 +84,9 @@ function parseMobileNav(html) {
   ok('#9305 スマホのメニューも「取引先」ではなく「協力会社」', html.includes('<option value="partners">協力会社</option>'))
   // 項目にある画面は、すべて画面の切り替え（routes）か、他のファイルの登録で開ける
   const a = await staticJs('admin.js'), roster = await staticJs('roster.js'), chat = await staticJs('roster-chat.js')
-  ok('#9305 協力会社・企業間チャットの画面の登録はそのまま（roster.js・roster-chat.js）', roster.includes("routes['partners']") && chat.includes("routes['roster-chat']"))
+  // Sprint 23（#9961）: 画面の登録は src/admin-menu.ts の ADMIN_MENU（描く関数は名前で持つ）。roster.js・roster-chat.js は routes に書かない
+  ok('#9305 協力会社・企業間チャットの画面は ADMIN_MENU から登録する（描く関数は roster.js・roster-chat.js）', html.includes('["partners","renderPartners"]') && html.includes('["roster-chat","renderRosterChatList"]')
+    && roster.includes('window.renderPartners =') && chat.includes('window.renderRosterChatList =') && !roster.includes("routes['partners']") && !chat.includes("routes['roster-chat']"))
 
   // 画面のコード（admin.js）
   ok('#9305 開閉の状態は localStorage に覚え、読み書きは try/catch で囲む',
@@ -97,23 +100,24 @@ function parseMobileNav(html) {
   ok('#9305 件数（NAV_COUNTS）が変わるたびに、見出しの合計を描き直す', setCount.includes('updateNavGroupCounts()') && /function updateNavGroupCounts\(\) \{[\s\S]*?NAV_COUNTS\[el\.dataset\.tab\]/.test(a))
   ok('#9305 スタッフの申請の件数も NAV_COUNTS に入れる（シフト・勤怠の見出しの合計に入る）', /function applyStaffRequestsBadge[\s\S]*?setNavCount\('staff-requests', n\)/.test(a))
   ok('#9305 スマホのヘッダーの合計（打刻修正・応募・掲示板・チャット）はこれまでどおり', a.includes("const NAV_TOTAL_TABS = ['corrections', 'recruit', 'board', 'roster-chat']"))
-  ok('#9305 役割での出し分け（従業員管理を扱えないロールは項目を外す）はそのままで、項目のなくなった見出しは隠す',
-    a.includes(`document.querySelectorAll('.side-link[data-tab="employees"], #mobile-nav option[value="employees"]').forEach(el => el.remove())`)
-    // Sprint 15（w15-tour）で route() の後に案内（tour.js）の起動が1行入った。Sprint 19（w19-polling・#9935）でメニューのバッジの取得（refreshBadges）が1行入った
-    && /hideEmptyNavGroups\(\)\s*route\(\)\s*(?:\/\/[^\n]*\s*refreshBadges\(\)\s*)?(?:\/\/[^\n]*\s*if \(window\.FosTour\) FosTour\.init\('admin', ME\)\s*)?\}\)\(\)/.test(a))
-  ok('#9305 あとから足すメニュー（出勤可能日・スタッフの申請）は、シフト管理・打刻修正承認の下（＝シフト・勤怠の見出しの中）に入る',
-    a.includes(`document.querySelector('#side-nav a[data-tab="shifts"]')`) && a.includes(`document.querySelector('.side-link[data-tab="corrections"]')`))
+  // Sprint 23（#9961）: 役割での出し分けはサーバーが HTML を作るときに行う（src/admin-menu.ts の hr）。項目のない見出しは出さない
+  const mgrHtml = (await client(await login('sample', 'mgr01')).get('/admin')).text
+  const mgrSide = parseSideNav(mgrHtml)
+  ok('#9305 役割での出し分け（従業員管理を扱えないロールは項目を外す）はそのまま（現場責任者のメニューに従業員管理がない・ほかは同じ）',
+    JSON.stringify(mgrSide) === JSON.stringify(EXPECTED.map(([k, l, t]) => [k, l, t.filter(x => x !== 'employees')])) && !mgrHtml.includes('<option value="employees">'), mgrSide)
+  ok('#9305 出勤可能日・スタッフの申請は、シフト管理・打刻修正承認の下（＝シフト・勤怠の見出しの中）に入る',
+    JSON.stringify(side[1][2].slice(0, 5)) === JSON.stringify(['shifts', 'availability', 'reports', 'corrections', 'staff-requests']) && !a.includes('insertAdjacentHTML(\'afterend\', \'<a href="#availability"'))
   const css = await (await fetchRetry(`${BASE}/static/style.css`)).text()
   ok('#9305 閉じた見出しは中の項目を隠し、件数の合計は閉じたときだけ出す（style.css）',
     css.includes('.nav-group.collapsed .nav-group-body{display:none}') && css.includes('.nav-group:not(.collapsed) .nav-group-count{display:none}') && css.includes('.nav-group-head{'))
 }
 
-// ---------- #9305 役割による出し分けは変えない（現場責任者も同じメニューの HTML で、従業員管理は画面で外す） ----------
+// ---------- #9305 役割による出し分けは変えない（現場責任者も同じ見出しのメニューで、従業員管理だけを外す。Sprint 23 からはサーバーが HTML で外す） ----------
 {
   const mgr = client(await login('sample', 'mgr01'))
   const r = await mgr.get('/admin')
   const me = must(await mgr.get('/api/auth/me'), 'me')
-  ok('#9305 現場責任者も見出し付きのメニューで開ける', r.status === 200 && JSON.stringify(parseSideNav(r.text)) === JSON.stringify(EXPECTED), r.status)
+  ok('#9305 現場責任者も見出し付きのメニューで開ける', r.status === 200 && JSON.stringify(parseSideNav(r.text)) === JSON.stringify(EXPECTED.map(([k, l, t]) => [k, l, t.filter(x => x !== 'employees')])), r.status)
   ok('#9305 現場責任者は従業員管理を扱えない（画面で項目を外す判定に使う can_manage_hr はこれまでどおり）', me.can_manage_hr === false, me.can_manage_hr)
 }
 

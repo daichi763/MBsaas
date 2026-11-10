@@ -140,8 +140,8 @@ const S1 = await createShift(A.staff_id, pid, today, hm(startMs), endHm)
   const m = js['staff-attendance.js'].match(/link\.match\((\/\^#\(\[a-z\][^\n]*?\$\/)\)/)
   let re = null; try { re = m ? eval(m[1]) : null } catch { re = null }
   ok('#285 連携の知らせ（リンク #profile）は profile の画面を開く', re && (('#profile'.match(re) || [])[1] === 'profile'), m && m[1])
-  ok('#285 staff-profile.js: profile の画面（マイプロフィール）と共有中の会社の一覧', /routes\.profile = /.test(js['staff-profile.js']) && /あなたの情報を共有中の会社/.test(js['staff-profile.js']))
-  ok('#171 出勤可能日の提出のお願い（#availability/2026-11）は availability の画面を開く', re && (('#availability/2026-11'.match(re) || [])[1] === 'availability') && /routes\.availability = /.test(js['staff.js']))
+  ok('#285 staff-profile.js: profile の画面（マイプロフィール）と共有中の会社の一覧', /staffScreen\('profile', /.test(js['staff-profile.js']) && /あなたの情報を共有中の会社/.test(js['staff-profile.js']))
+  ok('#171 出勤可能日の提出のお願い（#availability/2026-11）は availability の画面を開く', re && (('#availability/2026-11'.match(re) || [])[1] === 'availability') && /staffScreen\('availability', /.test(js['staff.js']))
   // 連携の知らせは roster.ts が link='#profile' で作る（企業間の連携が必要なので、ここでは作らない）
   info('#285 連携の知らせの作成（roster_linked_staff）は test-w5-roster-features で確かめている')
 }

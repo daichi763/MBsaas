@@ -812,7 +812,8 @@ delegate('hostNotesPage', (el) => {
 delegate('hostNotesSeen', (el) => withSubmitLock(el, async () => {
   try { await axios.post('/api/admin/roster/host-notes/seen', {}); toast('確認済みにしました'); renderRosterHostNotes() } catch (e) { showApiError(e, '更新に失敗しました') }
 }))
-if (typeof routes === 'object') routes['roster-notes'] = () => { HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() }
+// #roster-notes で開く（画面の登録は src/admin-menu.ts の ADMIN_EXTRA_SCREENS）。開くたびに1ページ目から出す
+window.openRosterHostNotes = () => { HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() }
 
 // =========================================================
 // 所属元による連携の終了・再開（#162）
@@ -1220,7 +1221,6 @@ delegate('partnerDelete', (el) => withSubmitLock(el, async () => {
   if (!confirm(`協力会社「${p.affiliation_name}」を削除します。よろしいですか？`)) return
   try { await axios.delete('/api/admin/roster/partners/' + Number(p.affiliation_id)); toast('削除しました'); renderPartners() } catch (e) { showApiError(e, '削除に失敗しました') }
 }))
-if (typeof routes === 'object') routes['partners'] = () => renderPartners()
 
 // ---------- クライアント詳細の「協力会社としての支払」の欄（#9302。admin.js の renderClientDetail から呼ぶ） ----------
 // 取引の実績（#client-deals）の下に足す。つながっていなければ、つなげる協力会社を選べるようにする

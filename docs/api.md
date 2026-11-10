@@ -127,18 +127,18 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-pages -->
 | メソッド | パス | 定義 | 用途 |
 |---|---|---|---|
-| GET | `/sw.js` | [index.tsx:124](../src/index.tsx#L124) | Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） |
-| POST | `/webhooks/resend` | [index.tsx:128](../src/index.tsx#L128) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
-| GET | `/` | [index.tsx:171](../src/index.tsx#L171) | ルート: ロール別リダイレクト |
-| GET | `/login` | [index.tsx:191](../src/index.tsx#L191) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
-| GET | `/reset-password` | [index.tsx:420](../src/index.tsx#L420) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
-| GET | `/verify-email` | [index.tsx:501](../src/index.tsx#L501) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
-| GET | `/notice-ack` | [index.tsx:549](../src/index.tsx#L549) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
-| GET | `/r/:token` | [index.tsx:607](../src/index.tsx#L607) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
-| GET | `/apply/:token` | [index.tsx:621](../src/index.tsx#L621) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
-| GET | `/staff` | [index.tsx:635](../src/index.tsx#L635) | スタッフ画面 (スマホファースト SPA) |
-| GET | `/admin` | [index.tsx:683](../src/index.tsx#L683) | 管理者画面 (PC向け SPA) |
-| GET | `/hq` | [index.tsx:811](../src/index.tsx#L811) | SaaS本部管理画面 |
+| GET | `/sw.js` | [index.tsx:125](../src/index.tsx#L125) | Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） |
+| POST | `/webhooks/resend` | [index.tsx:129](../src/index.tsx#L129) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
+| GET | `/` | [index.tsx:172](../src/index.tsx#L172) | ルート: ロール別リダイレクト |
+| GET | `/login` | [index.tsx:192](../src/index.tsx#L192) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
+| GET | `/reset-password` | [index.tsx:421](../src/index.tsx#L421) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
+| GET | `/verify-email` | [index.tsx:502](../src/index.tsx#L502) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
+| GET | `/notice-ack` | [index.tsx:550](../src/index.tsx#L550) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
+| GET | `/r/:token` | [index.tsx:608](../src/index.tsx#L608) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
+| GET | `/apply/:token` | [index.tsx:622](../src/index.tsx#L622) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
+| GET | `/staff` | [index.tsx:636](../src/index.tsx#L636) | スタッフ画面 (スマホファースト SPA) |
+| GET | `/admin` | [index.tsx:676](../src/index.tsx#L676) | 管理者画面 (PC向け SPA) |
+| GET | `/hq` | [index.tsx:768](../src/index.tsx#L768) | SaaS本部管理画面 |
 <!-- END GENERATED: api-pages -->
 
 ## 4. エンドポイントの一覧
@@ -235,8 +235,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/staff/notices/read-all` | スタッフ | [api.ts:2374](../src/api.ts#L2374) | まとめて確認（#553）。画面に出ていた未読（ids）のうち、既読確認が必須・緊急でないものだけを既読にする | staff.js |
 | GET | `/api/staff/notification-prefs` | スタッフ | [notifications.ts:1752](../src/notifications.ts#L1752) | 〔見出し〕受け取り設定の API | staff.js |
 | PUT | `/api/staff/notification-prefs` | スタッフ<br>＋本文で確認: NOTIFY_ADMIN_ROLES | [notifications.ts:1757](../src/notifications.ts#L1757) | 〔見出し〕受け取り設定の API | staff.js |
-| GET | `/api/staff/notifications` | スタッフ | [notifications.ts:417](../src/notifications.ts#L417) | 絞り込み（#380）: unread=1 で未読だけ、kind で種類、before（notification_id）で続きを取る。limit は 1〜100（既定 100） | staff-attendance.js staff-profile.js staff.js |
-| POST | `/api/staff/notifications/:id{[0-9]+}/read` | スタッフ | [notifications.ts:453](../src/notifications.ts#L453) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | staff-attendance.js staff-profile.js staff.js |
+| GET | `/api/staff/notifications` | スタッフ | [notifications.ts:417](../src/notifications.ts#L417) | 絞り込み（#380）: unread=1 で未読だけ、kind で種類、before（notification_id）で続きを取る。limit は 1〜100（既定 100） | staff-attendance.js |
+| POST | `/api/staff/notifications/:id{[0-9]+}/read` | スタッフ | [notifications.ts:453](../src/notifications.ts#L453) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | staff-attendance.js staff.js |
 | POST | `/api/staff/notifications/read-all` | スタッフ | [notifications.ts:436](../src/notifications.ts#L436) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | staff-attendance.js |
 | POST | `/api/staff/notifications/read-related` | スタッフ | [notifications.ts:443](../src/notifications.ts#L443) | kind（と related_id）で既読にする（募集の応募一覧を開いたときなど、通知を開かずに対応したとき。#150） |  |
 | GET | `/api/staff/notifications/unread-count` | スタッフ | [notifications.ts:435](../src/notifications.ts#L435) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications |  |
@@ -741,9 +741,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-refs -->
 | 名前 | 位置 |
 |---|---|
-| `MIDDLEWARE_DEFS` | [scripts/gen-docs.mjs:387](../scripts/gen-docs.mjs#L387) |
+| `MIDDLEWARE_DEFS` | [scripts/gen-docs.mjs:399](../scripts/gen-docs.mjs#L399) |
 | `csvResponse` | [csv.ts:30](../src/csv.ts#L30) |
-| `maskPath` | [index.tsx:15](../src/index.tsx#L15) |
+| `maskPath` | [index.tsx:16](../src/index.tsx#L16) |
 | `SESSION_COOKIE` | [lib/auth.ts:8](../src/lib/auth.ts#L8) |
 | `sessionCookieOptions` | [lib/auth.ts:150](../src/lib/auth.ts#L150) |
 | `csrfGuard` | [lib/csrf.ts:55](../src/lib/csrf.ts#L55) |
