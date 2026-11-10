@@ -1517,7 +1517,7 @@ export async function personStaffRows(db: D1Database, u: any): Promise<PersonSta
     SELECT sp.staff_id, sp.company_id, us.user_id, co.company_name, co.settings_json
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = sp.company_id
     WHERE sp.person_id = ? AND us.person_id = ? AND us.status = 'active' AND us.role = 'staff' AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
-      AND NOT (sp.affiliation_type = 'linked_external' AND (sp.link_revoked_at IS NOT NULL OR sp.link_ended_at IS NOT NULL))
+      AND NOT (COALESCE(sp.affiliation_type, '') = 'linked_external' AND (sp.link_revoked_at IS NOT NULL OR sp.link_ended_at IS NOT NULL))
     ORDER BY (sp.company_id != ?), sp.staff_id`).bind(u.person_id, u.person_id, u.company_id).all()
   const list = rows.results as PersonStaffRow[]
   if (u.staff_id && !list.some(r => r.staff_id === u.staff_id)) list.unshift(...self)
