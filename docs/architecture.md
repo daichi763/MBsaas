@@ -155,7 +155,7 @@ flowchart LR
 | `*/15 * * * *` | 15分おき | `push_queue` | プッシュ通知のうち、API の応答の後に送れなかった分を送る | `src/notifications.ts` の `runPushQueueJob` |
 | `*/15 * * * *` | 15分おき | `notification_digest` | 打刻修正の承認依頼のまとめメール（毎朝8時以降の最初の起動で1回） | `src/notifications.ts` の `runNotificationDigests` |
 | `0 18 * * *` | 毎日 3:00 | `auth_purge` | 期限切れのセッション・ログイン試行・1年より古いログイン履歴の削除 | `src/lib/auth.ts:193` |
-| `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL）の削除 | `src/services/retention.ts:1085` |
+| `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL）の削除 | `src/services/retention.ts:1086` |
 | `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1041` |
 | `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:944` |
 | `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:203` |
