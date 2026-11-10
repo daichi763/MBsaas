@@ -823,7 +823,7 @@ rosterApi.post('/:id/links/:linkedId/end', async (c) => {
   await db.batch([
     linkEventStmt(db, done, 'ended', linkedId, u, now),
     hostAdminNotifyStmt(db, done, 'roster_link_ended', '連携の終了: ',
-      '所属元の企業が、このスタッフの情報の共有（企業間連携）を終了しました。基本項目は表示されなくなり、新しいシフトには割り当てられません。今後のシフトが入っている場合は、担当を見直してください。', now),
+      '所属元の企業が、このスタッフの情報の共有（企業間連携）を終了しました。基本項目は表示されなくなり、新しいシフトには割り当てられません。本人もスタッフのアプリで自社の画面に切り替えられなくなります。今後のシフトが入っている場合は、担当を見直してください。', now),
   ])
   return c.json({ ok: true, ended: done.length })
 })
@@ -1507,6 +1507,8 @@ export type PersonStaffRow = { staff_id: number; company_id: number; user_id: nu
 /**
  * ログイン中ユーザーと同一人物（person_id）の、稼働管理対象のスタッフマスタ行を全企業分返す。
  * 対象: users.status='active' かつ role='staff'、skillsheet_only 以外。person_id が無い場合は自分の行のみ。
+ * 連携が終わった他社連携の行（所属元が連携を終了した・稼働先が取引終了にした）は外す。企業切替の一覧・切替先・勤怠の振り分けに出さない
+ * （過去の勤怠・精算の記録は稼働先に残る。D-53 #9942）
  */
 export async function personStaffRows(db: D1Database, u: any): Promise<PersonStaffRow[]> {
   const self: PersonStaffRow[] = u.staff_id ? [{ staff_id: u.staff_id, company_id: u.company_id, user_id: u.user_id, company_name: u.company_name, settings_json: u.settings_json }] : []
@@ -1515,6 +1517,7 @@ export async function personStaffRows(db: D1Database, u: any): Promise<PersonSta
     SELECT sp.staff_id, sp.company_id, us.user_id, co.company_name, co.settings_json
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = sp.company_id
     WHERE sp.person_id = ? AND us.person_id = ? AND us.status = 'active' AND us.role = 'staff' AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
+      AND NOT (COALESCE(sp.affiliation_type, '') = 'linked_external' AND (sp.link_revoked_at IS NOT NULL OR sp.link_ended_at IS NOT NULL))
     ORDER BY (sp.company_id != ?), sp.staff_id`).bind(u.person_id, u.person_id, u.company_id).all()
   const list = rows.results as PersonStaffRow[]
   if (u.staff_id && !list.some(r => r.staff_id === u.staff_id)) list.unshift(...self)
@@ -1582,14 +1585,15 @@ function maskEmail(v: any): string | null {
   return s[0] + '***' + s.slice(at)
 }
 
-// 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）
+// 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）。
+// 連携が終わった会社（所属元の連携の終了・稼働先の取引終了）は出さない（personStaffRows。D-53 #9942）
 staffSelfApi.get('/companies', async (c) => {
   const u = c.get('user')
   const rows = await personStaffRows(c.env.DB, u)
   const unread = rows.length > 1 ? await countUnreadNotices(c.env.DB, rows.map(r => r.user_id)) : new Map<number, number>()
   return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id, unread_notices: unread.get(r.user_id) || 0 })) })
 })
-// 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）
+// 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）。連携が終わった会社へは切り替えない（404。D-53 #9942）
 staffSelfApi.post('/switch-company', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))

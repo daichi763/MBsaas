@@ -43,12 +43,12 @@ import { hqErrorsApi } from './hq-errors'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
-  hashToken, isCompanyActive, canLogin, revokeSessions, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
+  hashToken, isCompanyActive, canLogin, revokeCompanySessions, loadSessionUser, homePathFor, sessionCookieOptions,
   loginAttemptKeys, isLoginLocked, recordLoginFailure, clearLoginFailures,
 } from './lib/auth'
 import {
   type LoginEvent, recordLoginEvent, requestMeta, deviceLabel, canUseMfa, ipDenied, mfaSetupPending, securitySettings, saveSecuritySettingsStmt,
-  normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, PERSON_SESSION_WHERE,
+  normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, personSessions, revokePersonSessions,
 } from './lib/login-security'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, createPerson, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
 import { ageEntryUpdate, estimatedAge } from './roster'
@@ -202,8 +202,10 @@ async function resolvePersonShift(c: any, shiftId: any): Promise<{ shift: any; s
 // 配信対象の判定（NOTICE_TARGET_SQL）は src/lib/notices.ts にまとめ、一覧の「既読 x/y名」・既読状況・メールの宛先・
 // 既読率レポートと、スタッフの一覧・ホーム・企業切替の未読数で同じものを使う（#7 #370）。
 // 条件は n = notices、us = users、sp = staff_profiles の別名を前提にする。
-// 今の対象者（一覧の既読数・既読状況・メールの宛先）: いま在籍中で、ログインのあるスタッフ
-const NOTICE_MEMBER_NOW_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL`
+// 今の対象者（一覧の既読数・既読状況・メールの宛先）: いま在籍中で、ログインのあるスタッフ。
+// 連携が終わった他社連携の行（所属元の連携の終了・稼働先の取引終了）は、企業切替でこの会社に入れないので外す（D-53 #9942）
+const NOTICE_MEMBER_NOW_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL
+  AND NOT (COALESCE(sp.affiliation_type, '') = 'linked_external' AND (sp.link_revoked_at IS NOT NULL OR sp.link_ended_at IS NOT NULL))`
 // 公開した時点の対象者（既読率レポート）: 後で退職した人も含めて、公開日に在籍していた人（#49。今の在籍状況では決めない）。
 // 退職日の無い停止中の人（退職日の列ができる前に退職した人など）は、いつまで在籍したか分からないので含めない
 const NOTICE_MEMBER_AT_PUBLISH_SQL = `us.company_id = n.company_id AND us.role = 'staff' AND sp.merged_into_staff_id IS NULL
@@ -649,7 +651,7 @@ api.post('/auth/forgot-password', async (c) => {
   return c.json(genericResponse)
 })
 
-// パスワード再設定の実行（トークンは生の値では保存されておらずハッシュ照合、1回使用したら失効）
+// パスワード再設定の実行（トークンは生の値では保存されておらずハッシュ照合、1回使用したら失効）。同じ人のセッションは、企業を切り替えた分も含めてすべて消す（#9941）
 api.post('/auth/reset-password', async (c) => {
   const { token, password } = await c.req.json().catch(() => ({} as { token?: string; password?: string }))
   if (!token || !password) return c.json({ error: '入力内容が不足しています' }, 400)
@@ -669,8 +671,8 @@ api.post('/auth/reset-password', async (c) => {
   await c.env.DB.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE user_id = ?').bind(await hashPassword(password), row.user_id).run()
   await c.env.DB.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
     .bind(nowJST(), row.user_id).run() // 同一ユーザーの他の未使用トークンも合わせて失効させる
-  // 乗っ取られた場合に備え、既存のセッションはすべて切る（再設定後はログインし直す）
-  await revokeSessions(c.env.DB, row.user_id)
+  // 乗っ取られた場合に備え、既存のセッションはすべて切る（再設定後はログインし直す）。企業を切り替えて他社の行を指している分も消す（#9941）
+  await revokePersonSessions(c.env.DB, row.user_id)
   await recordLoginEvent(c.env.DB, c, { company_id: row.company_id ?? null, user_id: row.user_id, company_code: row.user_role === 'system_admin' ? '' : row.company_code,
     user_code: row.user_code, event_type: 'password_reset', result: 'success' })
 
@@ -751,6 +753,8 @@ api.use('/*', async (c, next) => {
     // 退職・停止になった利用者のセッションは、その場で消す
     if (token && r.reason !== 'none') await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(token)).run()
     if (r.reason === 'company_inactive') return c.json({ error: 'ご契約が停止中のため、現在ご利用いただけません', code: 'company_inactive' }, 403)
+    // 企業切替で入っていた会社との連携が終わった（D-53 #9942）。セッションは消したので、ログインし直すと所属元の会社に入る
+    if (r.reason === 'link_ended') return c.json({ error: 'この会社との連携が終了したため、この会社の画面は使えなくなりました。ログインし直してください', code: 'link_ended' }, 401)
     return c.json({ error: 'unauthorized' }, 401)
   }
   const u = r.user
@@ -1007,15 +1011,6 @@ async function saveSecuritySettings(c: any, companyId: number, b: any) {
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(companyId).first() as any
   return c.json({ ok: true, changed: true, ...securitySettings(row?.settings_json) })
 }
-/** 有効なセッション（同じ人のほかの会社の行の分も含む） */
-async function personSessions(db: D1Database, userId: number) {
-  return (await db.prepare(`SELECT token, user_id, company_id, created_at, expires_at, ip, user_agent FROM sessions WHERE ${PERSON_SESSION_WHERE} AND expires_at > ? ORDER BY created_at DESC`)
-    .bind(userId, userId, new Date().toISOString()).all()).results as any[]
-}
-async function revokePersonSessions(db: D1Database, userId: number): Promise<number> {
-  const r = await db.prepare(`DELETE FROM sessions WHERE ${PERSON_SESSION_WHERE}`).bind(userId, userId).run()
-  return r.meta.changes || 0
-}
 
 // ---------- 自分の二段階認証（本部・管理画面のアカウント） ----------
 api.get('/auth/mfa', (c) => {
@@ -1166,7 +1161,8 @@ api.get('/admin/security/staff', async (c) => {
   const like = '%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%'
   const rows = (await c.env.DB.prepare(`SELECT * FROM (SELECT sp.staff_id, us.name, us.user_code, us.status, us.last_login_at,
       (SELECT COUNT(*) FROM sessions s WHERE s.expires_at > ? AND (s.user_id = us.user_id
-        OR (us.person_id IS NOT NULL AND s.user_id IN (SELECT u2.user_id FROM users u2 WHERE u2.person_id = us.person_id)))) AS session_count
+        OR (us.person_id IS NOT NULL AND s.user_id IN (SELECT u2.user_id FROM users u2 WHERE u2.person_id = us.person_id)))
+        AND (COALESCE(sp.affiliation_type, '') != 'linked_external' OR s.company_id = sp.company_id)) AS session_count
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.company_id = ? AND us.role = 'staff'
       ${q ? `AND (us.name LIKE ? ESCAPE '\\' OR us.user_code LIKE ? ESCAPE '\\')` : ''})
@@ -1174,27 +1170,33 @@ api.get('/admin/security/staff', async (c) => {
     ORDER BY session_count > 0 DESC, last_login_at DESC LIMIT 50`).bind(now, u.company_id, ...(q ? [like, like] : [])).all()).results
   return c.json({ staff: rows })
 })
+// 他社から連携したスタッフ（linked_external）の行では、自社に切り替えているセッションだけを扱う（scope_company_id）。
+// 所属元の会社でのログイン（接続元・端末・時刻）は見せず、終了もしない（所属元の管理者が扱う。D-53 #9940）
 async function staffLoginUser(c: any): Promise<any | null> {
   const sp = await ownStaff(c.env.DB, c.get('user').company_id, c.req.param('id'))
   if (!sp) return null
-  return c.env.DB.prepare(`SELECT user_id, user_code, name, role FROM users WHERE user_id = ?`).bind(sp.user_id).first()
+  const su = await c.env.DB.prepare(`SELECT user_id, user_code, name, role FROM users WHERE user_id = ?`).bind(sp.user_id).first() as any
+  if (!su) return null
+  return { ...su, linked: sp.affiliation_type === 'linked_external', scope_company_id: sp.affiliation_type === 'linked_external' ? sp.company_id : undefined }
 }
-// スタッフのログイン中の端末と直近のログインの履歴（企業を切り替えた他社の画面でのログインも数に含める。会社名は出さない）
+// スタッフのログイン中の端末と直近のログインの履歴（自社雇用の行では、企業を切り替えた他社の画面でのログインも数に含める。会社名は出さない）。
+// 他社から連携したスタッフの行では、自社に切り替えている端末だけを返す（D-53 #9940）
 api.get('/admin/staff/:id/sessions', async (c) => {
   const u = c.get('user')
   const su = await staffLoginUser(c)
   if (!su) return c.json({ error: 'not found' }, 404)
-  const sessions = (await personSessions(c.env.DB, su.user_id)).map(s => ({ ...sessionView(s), company_id: undefined, other_company: s.company_id !== u.company_id }))
+  const sessions = (await personSessions(c.env.DB, su.user_id, su.scope_company_id)).map(s => ({ ...sessionView(s), company_id: undefined, other_company: s.company_id !== u.company_id }))
   const where = ['e.company_id = ?', 'e.user_id = ?']; const binds: any[] = [u.company_id, su.user_id]
   const history = u.role === 'company_admin' ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
-  return c.json({ staff: { name: su.name, user_code: su.user_code }, sessions, history })
+  return c.json({ staff: { name: su.name, user_code: su.user_code, linked: su.linked }, sessions, history })
 })
-// スタッフのログインを強制的に終了する（スマホの紛失・共用端末のログアウト忘れ。同じ人の他社の行のセッションも消す）
+// スタッフのログインを強制的に終了する（スマホの紛失・共用端末のログアウト忘れ）。自社雇用の行では、同じ人の他社の行のセッションも消す。
+// 他社から連携したスタッフの行では、自社に切り替えているセッションだけを消す（所属元でのログインは残る。D-53 #9940）
 api.delete('/admin/staff/:id/sessions', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const su = await staffLoginUser(c)
   if (!su) return c.json({ error: 'not found' }, 404)
-  const n = await revokePersonSessions(db, su.user_id)
+  const n = await revokePersonSessions(db, su.user_id, su.scope_company_id)
   await recordLoginEvent(db, c, { company_id: u.company_id, user_id: su.user_id, company_code: u.company_code, user_code: su.user_code, event_type: 'forced_logout', result: 'success', actor_user_id: u.user_id })
   return c.json({ ok: true, revoked: n })
 })
@@ -6662,6 +6664,7 @@ api.get('/admin/notices/recipients', async (c) => {
   const u = c.get('user')
   const rows = (await c.env.DB.prepare(`SELECT sp.staff_id, us.name, sp.kana FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
     WHERE sp.company_id = ? AND us.company_id = sp.company_id AND us.role = 'staff' AND us.status = 'active' AND sp.merged_into_staff_id IS NULL
+      AND NOT (COALESCE(sp.affiliation_type, '') = 'linked_external' AND (sp.link_revoked_at IS NOT NULL OR sp.link_ended_at IS NOT NULL))
     ORDER BY COALESCE(NULLIF(sp.kana, ''), us.name), sp.staff_id LIMIT 3000`).bind(u.company_id).all()).results
   return c.json({ staff: rows })
 })

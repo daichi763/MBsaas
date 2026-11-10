@@ -52,7 +52,9 @@ axios.interceptors.response.use(r => r, e => {
     location.reload()
   } else if (r && !SESSION_ENDED && r.status === 401) {
     SESSION_ENDED = true
-    if (ME) alert('ログインの期限が切れました。再ログインすると、この画面に戻ります。')
+    // 企業切替で入っていた会社との連携が終わったときは、その理由を伝える（D-53 #9942）
+    if (r.data && r.data.code === 'link_ended') alert(r.data.error)
+    else if (ME) alert('ログインの期限が切れました。再ログインすると、この画面に戻ります。')
     location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
   }
   return Promise.reject(e)
@@ -2889,11 +2891,15 @@ if (PUSH_SUPPORTED) {
 }
 
 // 起動: ログインを確かめてから画面を描く。401 以外の失敗（電波が弱いなど）では、白い画面のままにせず再試行を出す（#465）
+// 読んだ自分の情報は ME_READY で後から読むスクリプト（staff-profile.js の仮パスワードの確かめ）にも渡し、/api/auth/me を2回呼ばない（#9947）
+let resolveMeReady
+const ME_READY = new Promise(resolve => { resolveMeReady = resolve })
 async function boot() {
   loading()
   try {
     ME = (await axios.get('/api/auth/me')).data
   } catch (e) { showLoadError(e); return }
+  resolveMeReady(ME)
   document.getElementById('user-name').textContent = ME.name
   // 前に開いたときに送れなかった打刻を送る（#9939。ホームを読めないときも送る）
   outboxLoad().then(() => { if (outboxQueued().length) outboxFlush() })

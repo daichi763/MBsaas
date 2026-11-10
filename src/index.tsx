@@ -13,6 +13,7 @@ import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
 import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
+import { csrfGuard } from './lib/csrf'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'>
 
@@ -67,6 +68,9 @@ app.onError((err, c) => {
   return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
 })
+
+// CSRF の対策（#9943）: 別のサイトからの /api/* の書き込みを 403 で止める（プッシュの送信より前に止める）。対象から外すものは src/lib/csrf.ts に書く
+app.use('/api/*', csrfGuard)
 
 // ============ プッシュ通知の送信（#178） ============
 // API の書き込み（GET 以外）の応答の後に、積まれたプッシュ（push_queue。アプリ内の通知が入るとトリガーで積まれる）を送る。
@@ -415,7 +419,7 @@ app.get('/login', async (c) => {
 // パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る）
 app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('パスワード再設定')}<meta name="referrer" content="no-referrer"></head>
+<head>${head('パスワード再設定')}<meta name="referrer" content="strict-origin"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
@@ -496,7 +500,7 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 // メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する
 app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="strict-origin"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
@@ -844,7 +848,7 @@ app.get('/hq', async (c) => {
 // wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
 const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
 const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
-const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）
+const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）。止まると1時間で本部画面に警告する（services/cron.ts の cronStaleHours。#9946）
 
 // 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
 // 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
