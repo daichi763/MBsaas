@@ -133,14 +133,16 @@ const H = await import(new URL('../src/lib/hash.ts', import.meta.url))
 }
 
 // ---------- API: 日時・ハッシュを使う所が今までどおり ----------
+// ローカルの D1 を wrangler d1 execute で直接読み書きした直後は、開発サーバーの接続が切れることがあるので1回だけ送り直す
+const fetchRetry = async (url, opts) => { try { return await fetch(url, opts) } catch { return fetch(url, opts) } }
 async function login(company_code, user_code, password = 'pass1234') {
-  const r = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_code, user_code, password }) })
+  const r = await fetchRetry(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_code, user_code, password }) })
   const cookie = (r.headers.get('set-cookie') || '').split(';')[0]
   return { status: r.status, cookie }
 }
 function client(cookie) {
   const call = async (method, path, body) => {
-    const r = await fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const r = await fetchRetry(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
     let data = null; try { data = await r.json() } catch { }
     return { status: r.status, data }
   }
@@ -157,7 +159,7 @@ const la = await login('sample', 'admin')
 ok('ログインできる（パスワードの照合）', la.status === 200 && !!la.cookie, la.status)
 const admin = client(la.cookie)
 const me = await admin.get('/api/auth/me')
-ok('セッションの Cookie で /api/auth/me が開ける（トークンのハッシュの照合）', me.status === 200 && me.data?.user?.user_code === 'admin', { status: me.status })
+ok('セッションの Cookie で /api/auth/me が開ける（トークンのハッシュの照合）', me.status === 200 && Number(me.data?.user_id) > 0 && me.data?.role === 'company_admin', { status: me.status, data: me.data })
 const bad = await login('sample', 'admin', 'wrong-password')
 ok('違うパスワードではログインできない', bad.status === 401 || bad.status === 400 || bad.status === 429, bad.status)
 const hqLogin = await login('sample', 'hq')
