@@ -425,7 +425,7 @@ npx wrangler secret delete <名前> --env production        # 消す
 | `RESEND_WEBHOOK_SECRET` | Resend の Webhook の署名の秘密を作り直す → すぐ `secret put`。その間に届いた Webhook は署名が合わず 401 になる（Resend が送り直す） |
 | `TURNSTILE_SECRET_KEY` / `TURNSTILE_SITE_KEY` | Cloudflare の Turnstile の画面で作り直す → 2つとも `secret put`。`RATE_LIMIT_SALT` がないときは、応募の回数の数え方（IP のハッシュ）が変わり、直近1時間の回数がいったん0に戻る |
 | `RATE_LIMIT_SALT` | 長いランダムな文字列にする。入れ替えると、直近1時間の応募の回数がいったん0に戻る |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 入れ替えると、今までの端末の購読は使えなくなる。スタッフがアプリの通知の設定で「受け取る」を押し直すと、新しい鍵で購読し直す（`public/static/staff.js:2851`〜`2853`）。未設定のときは D1 の `push_vapid_keys` に鍵が保存されるので、D1 のバックアップの扱いに注意する |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 入れ替えると、今までの端末の購読は使えなくなる。スタッフがアプリの通知の設定で「受け取る」を押し直すと、新しい鍵で購読し直す（`public/static/staff.js:2853`〜`2855`）。未設定のときは D1 の `push_vapid_keys` に鍵が保存されるので、D1 のバックアップの扱いに注意する |
 
 Cloudflare の API トークンなど、自動バックアップ・通知の仕組みで使う鍵は [backup.md](backup.md)・[monitoring.md](monitoring.md) にあります。
 
@@ -442,7 +442,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 - 消したデータは戻せません（Time Travel の期間内なら DB 全体を戻すことはできます。4.2）。
 
 ### 8.2 解約した企業のデータ
-本部画面「解約・データ」で、次の順に行います（`src/api.ts:8582`〜`8588`）。
+本部画面「解約・データ」で、次の順に行います（`src/api.ts:8585`〜`8591`）。
 1. 企業を停止にする（利用状態を「停止」。ログインと API が止まる）。
 2. 「契約終了」を登録する。登録すると猶予期間（既定90日。登録のときに30〜365日で変えられる。`src/services/retention.ts` の `OFFBOARDING_GRACE_DAYS`）に入る。登録は取り消せる。
 3. 猶予のあいだに、データ（CSV・写真・書類のファイル）を書き出して企業に渡す。
@@ -489,7 +489,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
    npx wrangler d1 execute mbsaas-production --remote --env production --command "SELECT c.company_code, c.active_status, u.user_code, u.role, u.status FROM users u LEFT JOIN companies c ON c.company_id = u.company_id WHERE c.company_code IN ('sample', 'demo2', 'demo3') OR u.user_code = 'hq' ORDER BY c.company_code, u.user_code"
    ```
 
-2. デモ用の会社は、本部画面「解約・データ」の「この企業を停止する」で止めます。停止した会社の利用者はログインできず、ログイン中のセッションも使えなくなります（`src/lib/auth.ts:138`）。デモを続けて使う会社があるなら、止めずに、その会社のユーザー全員のパスワードを変えます（管理者の画面での仮パスワードの再発行など）。
+2. デモ用の会社は、本部画面「解約・データ」の「この企業を停止する」で止めます。停止した会社の利用者はログインできず、ログイン中のセッションも使えなくなります（`src/lib/auth.ts:139`）。デモを続けて使う会社があるなら、止めずに、その会社のユーザー全員のパスワードを変えます（管理者の画面での仮パスワードの再発行など）。
 3. 本部の `hq` は、本部の担当者が実際に使っているなら、止めずにパスワードを変えます。本部画面にはパスワードを変える画面がないので、`hq` でログインしたブラウザから `POST /api/auth/change-password`（`src/accounts.ts:254`。今のパスワードと新しいパスワードを送る）を呼ぶか、開発者に依頼します。
 4. もう一度 1 の SQL を流し、会社が停止（`active_status`）になっているか、ユーザーのパスワードを変えたかを確かめます。`/login` で `sample` / `admin` / `pass1234` でログインできないことも確かめます。
 
