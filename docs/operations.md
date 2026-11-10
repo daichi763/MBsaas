@@ -146,9 +146,9 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node scripts/test-xxx.mjs
 4. `npm run docs:check`（生成した資料が今のコードと合っているか）
 5. `wrangler.json` を消してから、速いテスト（`npm run test:ci -- --no-build`）
 
-`test:ci`（`package.json` の `scripts`）は、数分で終わり外に接続しないテストだけを選んでいます: `test-w21-release-guard`（CI・ビルドの設定）、`test-w13-docs-arch-ops`（資料の行番号と設定の表）、`test-w1-auth-session`・`test-w3-security`（認証・セッション・CSP）、`test-w1-tenant-guard`（会社をまたぐアクセス）、`test-w1-xss-escape`（画面の文字の扱い）。手元でも `npm run test:ci` で同じものを流せます。全部のテスト（`npm test`。約100本）は CI では流さないので、今までどおり PR の前に手元で流します（2.1）。
+`test:ci`（`package.json` の `scripts`）は、数分で終わり外に接続しないテストだけを選んでいます: `test-w21-release-guard`（CI・ビルドの設定）、`test-w13-docs-arch-ops`（資料の行番号と設定の表）、`test-w3-security`（セッション・CSP・機微情報の権限）、`test-w1-tenant-guard`（会社をまたぐアクセス）、`test-w1-xss-escape`（画面の文字の扱い）。手元でも `npm run test:ci` で同じものを流せます。`test-w1-auth-session` は、ローカルの D1 を直接書き換える確認の途中でサーバーとの接続が切れて落ちることがある（Windows で5回に2回）ので、CI には入れていません。全部のテスト（`npm test`。約100本）は CI では流さないので、今までどおり PR の前に手元で流します（2.1）。
 
-テストを足すときは、外に接続しない・数分で終わるものだけを `test:ci` に足します（ヘッドレスの Chrome を使う確認は、Chrome がない CI では省かれます）。
+テストを足すときは、外に接続しない・数分で終わる・くり返し流しても落ちないものだけを `test:ci` に足します（ヘッドレスの Chrome を使う確認は、Chrome がない CI では省かれます）。
 
 ---
 

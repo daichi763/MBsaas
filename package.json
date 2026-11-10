@@ -18,7 +18,7 @@
     "predeploy": "npm run typecheck && npm run db:migrations:check",
     "deploy": "npm run build && wrangler deploy --env production",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "test:ci": "node scripts/run-tests.mjs w21-release-guard w13-docs-arch-ops w1-auth-session w1-tenant-guard w3-security w1-xss-escape"
+    "test:ci": "node scripts/run-tests.mjs w21-release-guard w13-docs-arch-ops w1-tenant-guard w3-security w1-xss-escape"
   },
   "dependencies": {
     "hono": "^4.12.27",
