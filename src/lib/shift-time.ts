@@ -3,7 +3,7 @@
 // 日時は JST の 'YYYY-MM-DD HH:MM:SS'（nowJST()・attendance_reports.reported_at と同じ形）で扱い、文字列の大小で比べる。
 // 終了時刻が開始時刻以前のシフト（22:00〜06:00 など）は、終了を稼働日の翌日とみなす。
 // =========================================================
-import { addDays } from './time'
+import { addDays } from './time.ts' // テストが Node でこのファイルを直接読み込むので、拡張子まで書く
 
 export type DateTimeRange = { start: string; end: string }
 export type ShiftTimes = { work_date: string; start_time: string; end_time: string }

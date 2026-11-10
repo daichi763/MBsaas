@@ -126,10 +126,16 @@ const H = await import(new URL('../src/lib/hash.ts', import.meta.url))
   ok('time.ts が nowJST・todayJST・addDays・dayDiff・isDate・jstOf を export している', ['nowJST', 'todayJST', 'addDays', 'dayDiff', 'jstOf'].every(n => new RegExp(`export function ${n}\\b`).test(time)) && /export const isDate\b/.test(time))
   ok('hash.ts が sha256・randomHex・toHex を export している', ['sha256', 'randomHex', 'toHex'].every(n => new RegExp(`export (async )?function ${n}\\b`).test(hash)))
   ok('auth.ts の sha256Hex・hashToken は hash.ts の sha256（呼び出し元の名前は残す）', /import \{ sha256 \} from '\.\/hash'/.test(src('src/lib/auth.ts')) && /export const sha256Hex = sha256\b/.test(src('src/lib/auth.ts')) && /export const hashToken = sha256Hex\b/.test(src('src/lib/auth.ts')))
-  ok('shift-time.ts は addDays を time.ts から使う（自分では定義しない）', /import \{ addDays \} from '\.\/time'/.test(src('src/lib/shift-time.ts')))
+  ok('shift-time.ts は addDays を time.ts から使う（自分では定義しない）', /import \{ addDays \} from '\.\/time(\.ts)?'/.test(src('src/lib/shift-time.ts')))
   const fromShiftTime = files.filter(f => /import \{[^}]*\baddDays\b[^}]*\} from '[./]*(lib\/)?shift-time'/.test(src(f)))
   ok('addDays を shift-time から import している所がない（time.ts にそろえる）', !fromShiftTime.length, fromShiftTime)
   ok('staff-pay-notify.ts は nowJST を export しない（time.ts から使う）', !/export function nowJST/.test(src('src/lib/staff-pay-notify.ts')) && /import \{[^}]*nowJST[^}]*\} from '\.\/lib\/time'/.test(src('src/staff-pay.ts')))
+}
+// 他のテストが Node で直接読み込む src/lib のファイル（shift-time.ts・error-log.ts）も、time.ts を読み込んだうえで読み込める
+for (const f of ['shift-time.ts', 'error-log.ts']) {
+  let err = null
+  try { await import(new URL(`../src/lib/${f}`, import.meta.url)) } catch (e) { err = String(e?.message || e) }
+  ok(`src/lib/${f} を Node で直接読み込める（time.ts の import に拡張子がある）`, !err, err)
 }
 
 // ---------- API: 日時・ハッシュを使う所が今までどおり ----------

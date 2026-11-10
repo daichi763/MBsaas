@@ -10,7 +10,7 @@
 //   最後の通知から cooldown 分は送らない（error_alerts で判定。1文で判定と記録をするので、同時に起きても1回だけ）。
 //   プッシュは user_notifications のトリガーで push_queue に積まれる（migrations/0081_push.sql）。送るのは呼び出し側（index.tsx）の flushPushQueue。
 //   閾値などは環境変数（wrangler.jsonc の vars）で変えられる: ERROR_ALERT_THRESHOLD・ERROR_ALERT_WINDOW_MINUTES・ERROR_ALERT_COOLDOWN_MINUTES
-import { nowJST } from './time'
+import { nowJST } from './time.ts' // テストが Node でこのファイルを直接読み込むので、拡張子まで書く
 
 export const ERROR_ALERT_KIND = 'error_alert'
 export const ERROR_LOG_KEEP_DAYS = 90
