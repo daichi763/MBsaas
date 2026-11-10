@@ -4668,8 +4668,7 @@ async function loadCheckInLocation(box, shiftId) {
         : Number(d.threshold_m) > 0 ? `<span class="badge badge-green">現場付近</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
           : `<span class="badge badge-gray">判定しない設定</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
   box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">入店の位置</p>
-    <p class="text-xs text-gray-600 ${ci.far ? 'bg-red-50 rounded p-2' : ''}">${msg}</p>
-    ${d.site_position === 'project' ? '<p class="text-[11px] text-gray-400 mt-1">開催場所の位置がないため、案件の位置と比べています</p>' : ''}</div>`
+    <p class="text-xs text-gray-600 ${ci.far ? 'bg-red-50 rounded p-2' : ''}">${msg}</p></div>`
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 // スタッフ本人が押し間違いで取り消した勤怠報告の記録（#323）。無ければ何も出さない
