@@ -15,8 +15,10 @@
 // =========================================================
 import { Hono } from 'hono'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, roleLabel, CSV_LIMIT } from './csv'
-import { NEXT_DAY_TYPES, addDays, reportableWindow, shiftWindow, type ShiftTimes } from './lib/shift-time'
+import { NEXT_DAY_TYPES, reportableWindow, shiftWindow, type ShiftTimes } from './lib/shift-time'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
+import { nowJST, todayJST, addDays } from './lib/time'
+import { sha256, randomHex } from './lib/hash'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -407,15 +409,7 @@ async function freezeStartedShifts(db: D1Database, companyId: number, projectId:
   }
   return [...groups].map(([types, sids]) => db.prepare(`UPDATE shifts SET attendance_types_fixed = ? WHERE shift_id IN ${JSON_IN} AND attendance_types_fixed IS NULL`).bind(types, bindJsonArray(sids)))
 }
-function newBatchId(): string {
-  const a = new Uint8Array(8); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+function newBatchId(): string { return randomHex(8) }
 // 案件 × スタッフ別の行の書き込み。同じ（種類・値・由来）のスタッフをまとめて 1 文で書く（json_each）。
 // 文の数はスタッフの人数で増えない（最大 8 種類 × 2 値 × 由来の数）ため、人数の多い案件でも D1 の batch の上限に当たらない（#247）
 type Cell = { staffId: number; t: string; enabled: number; source: string }
@@ -634,7 +628,6 @@ function parseIdList(v: any): number[] | null {
   if (!Array.isArray(v)) return []
   return [...new Set(v.map(Number))].filter(n => Number.isInteger(n) && n > 0)
 }
-function todayJST(): string { return nowJST().slice(0, 10) }
 
 // 前日確認の設定（#176）。ほかの会社設定を上書きしないよう、この項目だけを書き換える
 reportSettingsApi.get('/report-settings/day-before-check', async (c) => {

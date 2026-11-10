@@ -6,13 +6,13 @@
 //                                                         setup は初回の「作成までする案内」（Sprint 18 #9915）で使う各項目の済み（logins はログインの発行で済み）
 // /api/admin/* と /api/staff/* の権限のミドルウェア（api.ts）を通ってから呼ばれる。本部の閲覧中（読み取り専用）は書き込まない
 import { Hono } from 'hono'
+import { nowJST } from './lib/time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
 
 // 本部の閲覧中（#293。ロールは閲覧用に置き換わり、hq_view が付く）
 const isHqView = (u: any) => u?.role === 'system_admin' || !!u?.hq_view
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 
 // 案内を出す画面（管理画面）。tour.js の SCREEN_TOURS と同じ名前にする
 export const ADMIN_TOUR_SCREENS = ['dashboard', 'clients', 'projects', 'staff', 'shifts', 'reports', 'corrections', 'settlement'] as const

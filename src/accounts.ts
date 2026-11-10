@@ -15,6 +15,8 @@ import {
 import { sendEmail } from './services/email'
 import { passwordResetEmail } from './email-templates/password-reset'
 import { accountEmailChangedEmail } from './email-templates/account-email'
+import { nowJST } from './lib/time'
+import { randomHex } from './lib/hash'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -28,11 +30,7 @@ const USER_STATUSES = ['active', 'suspended']
 const RESET_EXPIRES_HOURS = 1
 const VALID_EMAIL = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function genToken(): string {
-  const a = new Uint8Array(32); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+function genToken(): string { return randomHex(32) }
 
 /** メールアドレスの入力値（空欄は null）。形式が正しくなければ undefined */
 export function cleanEmail(v: unknown): string | null | undefined {

@@ -22,6 +22,7 @@ import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { distanceFromSite, distanceResult, sitePositionOf } from './lib/site-location'
 import { PHOTO_REQUIRED_ERROR, noPhotoReasonText, photoSkipAllowed } from './lib/attendance-photo'
 import { isD1Overloaded, withD1Retry } from './lib/d1-retry'
+import { jstOf } from './lib/time'
 
 export const PUNCH_CLOCK_SKEW_MAX_MS = 5 * 60000 // 端末の時計のずれがこれ以上なら、押した時刻を使わない
 export const PUNCH_DELAY_MAX_MS = 30 * 60000     // 押してから受け付けるまでがこれを超えたら、押した時刻を使わない
@@ -29,7 +30,6 @@ export const PUNCH_RESENT_MIN_MS = 60000         // 押した時刻と受け付�
 export const PUNCH_BUSY_ERROR = '混み合っているため、記録できませんでした。自動で送り直します'
 const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
 
-const jstOf = (ms: number) => new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
 
 // 押した時刻の扱い。pressed: 押した時刻（JST。送られていなければ null）、adopt: 記録の時刻に使うか、mark: 「再送」の印を付けるか
 export function punchTime(pressedRaw: any, deviceNowRaw: any, nowMs: number): { pressed: string | null; pressedMs: number | null; adopt: boolean; mark: boolean } | { error: string } {

@@ -10,6 +10,7 @@
 //   最後の通知から cooldown 分は送らない（error_alerts で判定。1文で判定と記録をするので、同時に起きても1回だけ）。
 //   プッシュは user_notifications のトリガーで push_queue に積まれる（migrations/0081_push.sql）。送るのは呼び出し側（index.tsx）の flushPushQueue。
 //   閾値などは環境変数（wrangler.jsonc の vars）で変えられる: ERROR_ALERT_THRESHOLD・ERROR_ALERT_WINDOW_MINUTES・ERROR_ALERT_COOLDOWN_MINUTES
+import { nowJST } from './time'
 
 export const ERROR_ALERT_KIND = 'error_alert'
 export const ERROR_LOG_KEEP_DAYS = 90
@@ -46,7 +47,7 @@ export function errorAlertSettings(env: ErrorAlertEnv): ErrorAlertSettings {
 
 /** 日本時間の YYYY-MM-DD HH:MM:SS（minutesAgo 分前） */
 export function jstAt(minutesAgo = 0): string {
-  return new Date(Date.now() + 9 * 3600 * 1000 - minutesAgo * 60000).toISOString().slice(0, 19).replace('T', ' ')
+  return nowJST(-minutesAgo * 60000)
 }
 
 /** 参照番号（8桁の16進）。onError と同じ形 */

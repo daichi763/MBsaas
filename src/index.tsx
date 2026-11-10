@@ -14,6 +14,7 @@ import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiring
 import { notifySavedSearchMatches } from './board'
 import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
 import { csrfGuard } from './lib/csrf'
+import { nowJST } from './lib/time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'>
 
@@ -58,7 +59,7 @@ app.onError((err, c) => {
     company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
     message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
   }))
-  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
+  const at = nowJST().slice(0, 16)
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
   try {
     c.executionCtx.waitUntil(recordError(c.env, { ref, source: 'request', method: c.req.method, path: c.req.path, companyId: u?.company_id ?? null, role: u?.role ?? null, error: err })

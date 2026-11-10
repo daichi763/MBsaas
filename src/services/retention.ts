@@ -1,5 +1,6 @@
 import { REPORT_TYPES } from '../report-settings'
 import { ERROR_LOG_KEEP_DAYS } from '../lib/error-log'
+import { nowJST, todayJST, addDays } from '../lib/time'
 
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
@@ -133,17 +134,6 @@ export async function getRetentionSettings(db: D1Database): Promise<RetentionSet
   return out
 }
 
-function nowJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19)
-}
-function todayJST(): string {
-  return nowJST().slice(0, 10)
-}
-function addDays(ymd: string, days: number): string {
-  const d = new Date(ymd + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
 function isValidYmd(v: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
   const d = new Date(v + 'T00:00:00Z')

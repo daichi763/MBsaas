@@ -19,6 +19,7 @@ import { isISODate } from './lib/validate'
 import { genTempPassword } from './accounts'
 import { normalizePhone } from './staff-lifecycle'
 import { toCsv, csvResponse } from './csv'
+import { nowJST, todayJST } from './lib/time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -145,7 +146,7 @@ async function loadCtx(db: D1Database, companyId: number, partnerNames: string[]
     partners: new Set((partners.results as any[]).filter(r => r.target_name == null).map(r => String(r.affiliation_name))),
     mergedPartners: new Map((partners.results as any[]).filter(r => r.target_name != null).map(r => [String(r.affiliation_name), String(r.target_name)])),
     otherCompanyNames: new Set(other.map(r => String(r.company_name))),
-    today: new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10),
+    today: todayJST(),
   }
 }
 
@@ -303,7 +304,7 @@ async function insertRow(db: D1Database, u: any, ctx: ImportCtx, row: RowResult,
     stmts.push(db.prepare(`INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, phone_main, updated_at)
       VALUES ((SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ?), ?, ?, ?, ?, ?, ?)`)
       .bind(u.company_id, person.person_id, u.company_id, d.employee_number || null, d.hire_date || null, d.contract_type || null, d.phone || null,
-        new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')))
+        nowJST()))
   }
   try {
     const res = await db.batch(stmts)
