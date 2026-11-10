@@ -67,9 +67,12 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 ### 1.5 型チェックとビルド
 
 ```bash
-npm run typecheck     # tsc --noEmit -p .（vite build は型を確かめないので、別に流す）
-npm run build
+npm run typecheck     # tsc --noEmit -p .（型チェックだけ）
+npm run build         # 型チェック → CSS → vite build → scripts/ci-wrangler-config.mjs（型のエラーがあると止まる）
 ```
+
+- `vite build` は型を確かめないので、`npm run build` の最初に型チェックを入れています（Sprint 21。#9944）。Workers Builds のビルドも `npm run build` なので、型のエラーがあると本番にデプロイされません。
+- CI（環境変数 `CI` か `WORKERS_CI`）でないときは、`scripts/ci-wrangler-config.mjs` は何もしません。手元に `wrangler.json`（本番の設定）が残っていると注意を出します。`wrangler dev` が本番の設定を先に読むので、消してから動かします（`CI=true` を付けたまま `npm run build` すると作られます。3.2 の 3）。
 
 ### 1.6 Windows での注意
 - 作業用のフォルダを Windows の Temp に置くと、しばらく触っていないファイルが自動で消えることがあります。`git status` で追跡しているファイルが消えていたら `git checkout -- .` で戻し、`node_modules` がなければ `npm ci` します。
@@ -133,6 +136,20 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-o
 - 「今日のシフトを1時間前に開始」のように 0 時より前にできないデータは、0 時の直後の数分だけテストの始めで待つ（例: `scripts/test-w8-staff-ui.mjs`）。
 - 確かめ方: 開発者の手元で、サーバー（`dist/_worker.js` を読み込む入口）とテストの両方の `Date` を同じだけずらして流すと、0:05・23:58・月の1日などの時刻で試せます（Sprint 14 で使った方法。D1 の SQL の `datetime('now')` はずれないので、SQL の時刻を使う確認は落ちることがある）。この仕組みは repo には入れていません。
 
+### 2.6 PR の CI（GitHub Actions）
+
+`main` あての PR と `main` への push で、GitHub Actions の **CI**（`.github/workflows/ci.yml`）が動きます（Sprint 21。#9944）。本番には接続せず、シークレットも使いません。
+
+1. `npm ci`
+2. 型チェック（`npx tsc --noEmit -p .`）
+3. `npm run build`（GitHub Actions は `CI=true` なので、Workers Builds と同じく本番の設定の `wrangler.json` を作って確かめる）
+4. `npm run docs:check`（生成した資料が今のコードと合っているか）
+5. `wrangler.json` を消してから、速いテスト（`npm run test:ci -- --no-build`）
+
+`test:ci`（`package.json` の `scripts`）は、数分で終わり外に接続しないテストだけを選んでいます: `test-w21-release-guard`（CI・ビルドの設定）、`test-w13-docs-arch-ops`（資料の行番号と設定の表）、`test-w3-security`（セッション・CSP・機微情報の権限）、`test-w1-tenant-guard`（会社をまたぐアクセス）、`test-w1-xss-escape`（画面の文字の扱い）。手元でも `npm run test:ci` で同じものを流せます。`test-w1-auth-session` は、ローカルの D1 を直接書き換える確認の途中でサーバーとの接続が切れて落ちることがある（Windows で5回に2回）ので、CI には入れていません。全部のテスト（`npm test`。約100本）は CI では流さないので、今までどおり PR の前に手元で流します（2.1）。
+
+テストを足すときは、外に接続しない・数分で終わる・くり返し流しても落ちないものだけを `test:ci` に足します（ヘッドレスの Chrome を使う確認は、Chrome がない CI では省かれます）。
+
 ---
 
 ## 3. 本番リリース 🔴 本番
@@ -145,7 +162,7 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-o
 
 | # | 作業 | 本番 |
 |---|---|---|
-| 0 | PR のテストを確かめる（型チェック・ビルド・`npm test` で既知の2本以外が合格） | |
+| 0 | PR のテストを確かめる（PR の **CI** が緑（2.6）・手元の `npm test` で既知の2本以外が合格） | |
 | 1 | 新しいマイグレーションがあるか確かめる | |
 | 2 | 本番 D1 のバックアップを取る（`d1 export`）と、Time Travel の戻し先を控える | 🔴 |
 | 3 | バックアップから作った**本番のコピー（ローカル）**でマイグレーションを試し、主な画面が動くか確かめる | |
@@ -209,13 +226,15 @@ npm run db:migrations:check     # 「未適用のマイグレーションはあ�
 
 GitHub で PR を `main` にマージします。Workers Builds が起動し、`npm run build` → `npx wrangler deploy` を行います。
 
+`npm run build` は、型のエラーがあるとき、または本番の設定の `wrangler.json` を作れなかったとき（`env.production` がない・`DEMO_MODE` などが本番の値でない・`preview_urls` が `false` でないなど）に止まり、デプロイされません（`scripts/ci-wrangler-config.mjs`。#9944）。ビルドが失敗したら、ログの「エラー:」の行を見て直し、もう一度マージします。
+
 **6. デプロイの確認 🔴**
 
 ```bash
 npx wrangler deployments list --env production    # いちばん新しいデプロイの日時が今になっていること
 ```
 
-Cloudflare のダッシュボードの Workers Builds のビルドのログに、`scripts/ci-wrangler-config.mjs:33` の1行が出ていることを確かめます（本番の設定で `wrangler.json` を作ったという行で、`APP_BASE_URL` と `DEMO_MODE=false` が出ます）。この行がないと、ローカル用の設定（メールを送らない・デモの案内を出す）で本番に出てしまいます。
+Cloudflare のダッシュボードの Workers Builds のビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行が出ていることを確かめます（本番の設定で `wrangler.json` を作ったという行で、`APP_BASE_URL` と `DEMO_MODE=false` が出ます）。この行がないと、ローカル用の設定（メールを送らない・デモの案内を出す）で本番に出てしまいます。
 
 **7. 環境変数の確認 🔴**
 
@@ -253,6 +272,23 @@ Workers Builds は、PR などの main 以外のブランチをビルドする�
 - **main 以外のブランチのビルドそのものを止める**（Cloudflare の管理者の権限を持つ人が行う。🔴 本番）: ダッシュボードの **Workers & Pages** → `mbsaas` → **Settings** → **Build** → **Branch control** で、**Builds for non-production branches**（main 以外のブランチのビルド）のチェックを外して保存します。本番（main）のデプロイは変わりません。画面の表記は Cloudflare の変更で変わることがあります。
 - プレビューを使いたくなったときは、先にプレビュー用の D1・R2 を作り、main 以外のブランチではそちらを使う設定にしてから、`preview_urls` を見直します。本番の D1・R2 のままプレビューを開けるようにしてはいけません。
 - 旧 Cloudflare Pages のプロジェクト `mbsaas`（`mbsaas.pages.dev`）は、2026-11-09 に確かめて、存在しません。
+
+### 3.5 ブランチの保護（CI が通らない PR をマージできないようにする）
+PR の CI（2.6）は、落ちても今はマージできます。`main` へのマージがそのまま本番のデプロイになる（D-32）ので、CI が緑でない PR をマージできないように、GitHub の「ブランチの保護」を設定します。**利用者が判断してから設定します**（開発者は GitHub の設定を変えません。10.6）。
+
+設定する人: GitHub の `daichi763/MBsaas` の管理者（Admin）の権限を持つ人。
+
+1. 先に CI を1回動かします（PR を1本作る）。動いたことのない確認は、手順 4 の一覧に出ません。
+2. GitHub の repo の **Settings** → **Branches** → **Add branch protection rule**（**Add classic branch protection rule**）を開き、**Branch name pattern** に `main` と入れます。
+3. **Require a pull request before merging** にチェックを入れます（`main` に直接 push できなくなり、PR を通す）。レビューの承認を必須にするか（**Require approvals**）は、レビューする人がいるかで決めます。
+4. **Require status checks to pass before merging** にチェックを入れ、検索欄で `check`（CI の確認の名前。`.github/workflows/ci.yml` の `jobs` の名前）を選びます。**Require branches to be up to date before merging** は任意です（入れると、マージの前に `main` を取り込み直す手間が増える）。
+5. 管理者も例外にしないなら **Do not allow bypassing the above settings** にチェックを入れます。
+6. **Allow force pushes** と **Allow deletions** は外したまま（既定）にして、**Create**（**Save changes**）で保存します。
+7. 確かめ方: CI が落ちている PR、または CI が終わる前の PR で、マージのボタンが押せないことを確かめます。
+
+- 非公開の repo では、GitHub の無料のプランだとブランチの保護を使えません（GitHub Pro・Team などが要ります）。使えないときは、マージの前に PR の **Checks** が緑であることを人が確かめます（3.1 の 0）。
+- 画面の表記は GitHub の変更で変わることがあります（新しい画面では **Rulesets** から同じ設定ができます）。
+- ブランチの保護がなくても、Workers Builds のビルド（`npm run build`）は型のエラーと本番の設定の作り忘れで止まります（3.2 の 5）。テストの失敗では止まりません。
 
 ---
 
@@ -432,9 +468,11 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 ## 10. ローンチ当日のチェックリスト 🔴 本番
 
 正式に利用を始める日（ローンチ）に行うことです。ローンチまでは、デモのアカウントを本番に残す方針です。開発者は本番の設定を変えないので、Cloudflare・GitHub・本部の管理者の権限を持つ人が行います。
+ローンチの後に変えると利用者全員がやり直すことになる項目があるので、先に 10.6 の「ローンチの前に利用者が決めること」を決めて、設定を済ませておきます。
 
 | # | 作業 | 確かめ方 | 本番 |
 |---|---|---|---|
+| 0 | ローンチの前に決めることを決め、設定を済ませている | 下の 10.6 | 🔴 |
 | 1 | デモ用の会社・ユーザーを止めるか、パスワードを変える（#62） | 下の 10.1 | 🔴 |
 | 2 | 本番の設定が `DEMO_MODE=false` で動いている（#62） | Workers Builds のビルドのログ（10.2） | 🔴 |
 | 3 | メールの送信を始めるなら、Resend の準備をする（#36・[decisions.md](decisions.md) の D-31） | 下の 10.3 | 🔴 |
@@ -456,7 +494,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 4. もう一度 1 の SQL を流し、会社が停止（`active_status`）になっているか、ユーザーのパスワードを変えたかを確かめます。`/login` で `sample` / `admin` / `pass1234` でログインできないことも確かめます。
 
 ### 10.2 `DEMO_MODE=false` の確認
-- Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:33` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
+- Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
 - `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:261`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
@@ -475,3 +513,20 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 ### 10.5 本部画面のプッシュ通知
 - 本部の担当者の端末で、本部画面「障害」の「この端末でプッシュ通知を受け取る」を押し、「テスト通知を送る」で届くことを確かめます（[monitoring.md](monitoring.md) の 3）。端末ごとに行います。
 - iPhone・iPad は、Safari で本部画面を「ホーム画面に追加」してから行います（iOS 16.4 以降）。
+
+### 10.6 ローンチの前に利用者が決めること
+総点検（Sprint 21。#9945）で、ローンチの後に変えると手間が大きいもの・本番の安全に関わるものを集めました。決めたら、設定の欄の手順で設定し、[decisions.md](decisions.md) に決めたことを残します。🔴 の設定は Cloudflare・GitHub の管理者の権限を持つ人が行います（開発者は本番の設定を変えません）。
+
+| # | 決めること | ローンチの前に決める理由 | 設定 | 本番 |
+|---|---|---|---|---|
+| 1 | Web Push の VAPID の鍵を Secret にする | 未設定だと、初めての通知のときに鍵を作り、秘密鍵を D1 の `push_vapid_keys` に平文で保存する（`src/lib/web-push.ts`）。D1 のバックアップにも入る。ローンチの後に入れ替えると、スタッフ全員が通知の受け取りを押し直すことになる（7章）。今のうちなら入れ替えの手間がない | 鍵を作り（`npx web-push generate-vapid-keys` と同じ形式）、`VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` を `secret put`（7章）。`push_vapid_keys` に行が残っていれば、開発者と相談して扱いを決める | 🔴 |
+| 2 | `RATE_LIMIT_SALT` を登録する | 未設定だと、応募の送信回数の制限に使う接続元 IP のハッシュが短い形になる（`src/recruit.ts` の `ipSaltState`）。入れ替えると直近1時間の回数がいったん0に戻るので、先に入れておく | 長いランダムな文字列を `secret put`（7章）。本部画面「障害」の設定の状態で、登録済みと出ることを確かめる | 🔴 |
+| 3 | Turnstile（応募フォームのロボット判定）を使うか | 未設定だと、公開の応募フォームにロボット判定がない（回数の制限だけ） | 使うなら Cloudflare の Turnstile で本番の URL のサイトを作り、`TURNSTILE_SITE_KEY`・`TURNSTILE_SECRET_KEY` を2つとも `secret put`（7章）。本部画面「障害」の設定の状態で、有効と出ることを確かめる | 🔴 |
+| 4 | 本番の URL（`workers.dev` のままか、独自ドメインにするか） | 今の本番の URL は `https://mbsaas.saas-2a2.workers.dev`（`APP_BASE_URL`）。ローンチの後に URL を変えると、プッシュ通知の購読・ホーム画面に追加したアプリ（PWA）・ログインの Cookie・メールのリンクがすべてやり直しになる | 独自ドメインにするなら、Cloudflare で Worker `mbsaas` にカスタムドメインを付け、`wrangler.jsonc` の `env.production` の `APP_BASE_URL` を変えてマージする（`vars` なのでダッシュボードでは変えない。7章）。VAPID・Turnstile の設定も新しい URL で行う | 🔴 |
+| 5 | Workers の有料プラン（Workers Paid）に切り替える（利用者の決定 2026-11-09） | 今は Free プラン（[decisions.md](decisions.md) の D-30。CPU は1リクエスト 10ms、D1 の呼び出しは1回の起動で50回まで）。同時に多くの人が使うと上限にかかる。有料プランは CPU 30秒・D1 の呼び出し1,000回まで、D1 の Time Travel も30日前まで戻せる | Cloudflare のダッシュボードの **Workers & Pages** → **Plans** で Workers Paid に切り替える（料金がかかる）。切り替えた日を D-30 に書き足す。PBKDF2 の回数（D-30）は、切り替えとは別に決める | 🔴 |
+| 6 | メール（Resend）を使うか | 本番は今メールを送らない（D-31）。「パスワードを忘れた」は、メールを送れない間も今のまま出す（D-52） | 使うなら 10.3 | 🔴 |
+| 7 | 管理者の4ロール（会社管理者・現場管理者・営業管理者・事務担当）の権限 | 会社全体の設定の一部（緊急連絡先・入店の位置ずれの判定距離・前日確認）は、今は4ロールのだれでも変えられる（D-51）。ローンチの後に絞ると、今使っている人が急に変えられなくなる | 利用者の決定（2026-11-09）で、4ロールの権限は最後にまとめて決めて設定する（Sprint 24）。決めた内容をコードに入れてリリースする | |
+| 8 | デモアカウント（パスワード `pass1234`）を消す | だれでもログインできる | 10.1 | 🔴 |
+| 9 | 開発者の Cloudflare の API トークンを消すか、期限を付ける | 開発の間に本番を確かめるために作ったトークンが残っていると、ローンチの後も本番の DB を読み書きできる | Cloudflare のダッシュボードの **My Profile** → **API Tokens** で、開発者が使っているトークンを消すか、**TTL**（有効期限）を付ける。開発者のアカウントを Cloudflare のメンバーにしているなら、権限も見直す。GitHub の Secrets の `CLOUDFLARE_API_TOKEN`（自動バックアップ用。[backup.md](backup.md)）は別のもので、消さない | 🔴 |
+| 10 | ブランチの保護（CI が通らない PR をマージできないようにする） | `main` へのマージがそのまま本番のデプロイになる（D-32） | 3.5 | |
+| 11 | main 以外のブランチのビルドを止める | プレビューの版は本番の D1・R2 につながる（D-49） | 3.4 | 🔴 |

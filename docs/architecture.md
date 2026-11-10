@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Field OS を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-10 時点の `review-fixes` ブランチ、コミット `0f61f44` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-10 時点の `review-fixes` ブランチ、コミット `849272b` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -211,13 +211,13 @@ sequenceDiagram
   Dev->>D1: 1. マイグレーションを手で適用（マージより先）
   Dev->>GH: 2. PR をマージ
   GH->>WB: 3. main の更新で起動
-  WB->>WB: npm run build（CSS → vite build → ci-wrangler-config.mjs）
+  WB->>WB: npm run build（型チェック → CSS → vite build → ci-wrangler-config.mjs）
   WB->>W: npx wrangler deploy
   Dev->>W: 4. デプロイとスモークの確認
 ```
 
-- `npm run build`（`package.json:6`）は、Tailwind の CSS を作り（`build:css`）、`vite build` で `dist/_worker.js` と静的ファイルを作り、最後に `scripts/ci-wrangler-config.mjs` を動かします。
-- `wrangler.jsonc` のトップレベルはローカル開発用（メールを送らない・デモの案内を出すなど）で、本番の設定は `env.production` にあります（`wrangler.jsonc:3`〜`4`）。Workers Builds は `--env` を付けずに `wrangler deploy` するので、CI のとき（`WORKERS_CI=1` か `CI=true`）だけ、`env.production` をトップレベルに展開した `wrangler.json` を作ります。wrangler は `wrangler.json` を `wrangler.jsonc` より先に読みます（`scripts/ci-wrangler-config.mjs:1`〜`33`）。`wrangler.json` は `.gitignore` に入っています。
+- `npm run build`（`package.json:6`）は、最初に型チェック（`typecheck`。型のエラーがあるとここで止まり、デプロイされない。Sprint 21 #9944）を行い、Tailwind の CSS を作り（`build:css`）、`vite build` で `dist/_worker.js` と静的ファイルを作り、最後に `scripts/ci-wrangler-config.mjs` を動かします。
+- `wrangler.jsonc` のトップレベルはローカル開発用（メールを送らない・デモの案内を出すなど）で、本番の設定は `env.production` にあります（`wrangler.jsonc:3`〜`4`）。Workers Builds は `--env` を付けずに `wrangler deploy` するので、CI のとき（`WORKERS_CI=1` か `CI=true` など）だけ、`env.production` をトップレベルに展開した `wrangler.json` を作ります。作れなかったとき・中身が本番の値（`DEMO_MODE=false` など）でないときは、ビルドを止めます。wrangler は `wrangler.json` を `wrangler.jsonc` より先に読みます（`scripts/ci-wrangler-config.mjs:1`〜`42`）。`wrangler.json` は `.gitignore` に入っています。
 - **マイグレーションは自動では適用されません**。新しい列・テーブルを使うコードが先に出ると、その API が 500 になるので、マージより先に手で本番に適用します（手順は [operations.md](operations.md) の「本番リリース」）。
 - 手元から `npm run deploy`（`wrangler deploy --env production`）でも出せますが、ふだんは GitHub 経由で出します。
 
