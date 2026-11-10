@@ -85,9 +85,10 @@ const hqRate = r => r == null ? '' : `<span class="block text-[11px] ${r <= -0.3
 // utc: シフトの登録日時（created_at）は UTC で保存されているので、日本時間に直して出す
 const hqDate = (v, utc) => v ? dayjs(String(v).replace(' ', 'T') + (utc ? 'Z' : '')).format('YYYY/M/D') : '<span class="text-slate-500">なし</span>'
 const hqLimit = c => c.user_limit == null ? '上限なし' : c.user_limit
-// 並べ替えの列（key: 並べ替えに使う値の名前）
+// 並べ替えの列（key: 並べ替えに使う値の名前）。
+// 企業名の列は最小の幅を決めて左に固定し、ほかの列は折り返さない（UI-1 ui-hq-01。列が多くても企業名が1文字ずつ縦に並ばず、表の中で横にスクロールする）
 const HQ_COLUMNS = [
-  { key: 'company_name', label: '企業', cls: 'text-left px-4' },
+  { key: 'company_name', label: '企業', cls: 'text-left px-4 sticky left-0 z-10 bg-slate-800 min-w-[12rem]' },
   { key: 'company_code', label: 'コード' },
   { key: 'plan', label: 'プラン' },
   { key: 'active_status', label: '状態' },
@@ -107,7 +108,7 @@ async function renderCompanies() {
   loading()
   let data
   try { data = (await axios.get('/api/hq/companies')).data } catch (e) {
-    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">企業の一覧を読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:#334155;color:#67e8f9" onclick="renderCompanies()">再試行</button></div>`
+    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">企業の一覧を読み込めませんでした。<button class="btn btn-dark-outline ml-2" onclick="renderCompanies()">再試行</button></div>`
     return
   }
   HQ_COMPANIES = data.companies
@@ -119,7 +120,7 @@ async function renderCompanies() {
   const billBanner = bill && bill.billable_companies && bill.prev_month_recorded < bill.billable_companies ? `
     <div class="bg-amber-900/30 border border-amber-700 text-amber-100 rounded-xl p-3 mb-4 text-sm flex flex-wrap items-center gap-2">
       <i class="fas fa-file-invoice-dollar"></i><span class="flex-1">${esc(dayjs(bill.prev_month + '-01').format('YYYY年M月'))}分の請求を記録していない企業があります（記録済み ${Number(bill.prev_month_recorded)}社 / 利用中 ${Number(bill.billable_companies)}社）。</span>
-      <button class="btn btn-outline text-xs" style="border-color:#b45309;color:#fde68a" data-action="hqCloseBilling" data-month="${esc(bill.prev_month)}">今の人数で記録する</button>
+      <button class="btn btn-warn text-xs" data-action="hqCloseBilling" data-month="${esc(bill.prev_month)}">今の人数で記録する</button>
     </div>` : ''
   const totalMRR = list.filter(c => c.active_status === 'active').reduce((a, c) => a + c.monthly_fee, 0)
   const kpi = (label, value, icon, filter) => `
@@ -129,12 +130,12 @@ async function renderCompanies() {
     </div>`
 
   $app.innerHTML = `
-    <div class="flex items-center justify-between mb-5">
+    <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
       <h2 class="text-xl font-bold">導入企業管理</h2>
       <div class="flex flex-wrap gap-2">
-        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqAuditLogs"><i class="fas fa-clock-rotate-left"></i>本部の操作の履歴</button>
-        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqBillingMenu"><i class="fas fa-file-invoice-dollar"></i>請求の記録</button>
-        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqPlanPrices"><i class="fas fa-tags"></i>プランの料金</button>
+        <button class="btn btn-dark-outline" data-action="hqAuditLogs"><i class="fas fa-clock-rotate-left"></i>本部の操作の履歴</button>
+        <button class="btn btn-dark-outline" data-action="hqBillingMenu"><i class="fas fa-file-invoice-dollar"></i>請求の記録</button>
+        <button class="btn btn-dark-outline" data-action="hqPlanPrices"><i class="fas fa-tags"></i>プランの料金</button>
         <button class="btn btn-primary" style="background:#0e7490" onclick="showAddCompany()"><i class="fas fa-plus"></i>企業登録</button>
       </div>
     </div>
@@ -201,19 +202,19 @@ function drawCompanyTable() {
     ].filter(Boolean).join(' ')
     return `
     <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer ${c.over_limit ? 'bg-red-900/20' : ''}" data-action="hqOpenCompany" data-cid="${Number(c.company_id)}">
-      <td class="px-4 py-3 font-medium">${esc(c.company_name)}</td>
-      <td class="px-3 py-3 text-slate-400">${esc(c.company_code)}</td>
-      <td class="px-3 py-3">${esc(PLAN_LABELS[c.plan] || c.plan)}</td>
-      <td class="px-3 py-3">${STATUS_BADGE[c.active_status] || ''}</td>
-      <td class="px-3 py-3">${BILLING_BADGE[c.billing_status] || ''}</td>
+      <td class="px-4 py-3 font-medium sticky left-0 z-10 bg-slate-800 min-w-[12rem] break-words">${esc(c.company_name)}</td>
+      <td class="px-3 py-3 text-slate-400 whitespace-nowrap">${esc(c.company_code)}</td>
+      <td class="px-3 py-3 whitespace-nowrap">${esc(PLAN_LABELS[c.plan] || c.plan)}</td>
+      <td class="px-3 py-3 whitespace-nowrap">${STATUS_BADGE[c.active_status] || ''}</td>
+      <td class="px-3 py-3 whitespace-nowrap">${BILLING_BADGE[c.billing_status] || ''}</td>
       <td class="px-3 py-3 text-right whitespace-nowrap ${c.over_limit ? 'text-red-400 font-bold' : ''}">${Number(c.user_count) || 0}/${hqLimit(c)}</td>
-      <td class="px-3 py-3 text-right">${Number(c.active_users) || 0}名</td>
+      <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.active_users) || 0}名</td>
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.reports_30d) || 0}件${hqRate(c.reports_change)}</td>
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.shifts_30d) || 0}件${hqRate(c.shifts_change)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_shift_created_at, true)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_admin_login_at)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDue(c.next_due, c.due_state)}</td>
-      <td class="px-3 py-3 text-right font-bold text-cyan-400">${yen(c.monthly_fee)}</td>
+      <td class="px-3 py-3 text-right font-bold text-cyan-400 whitespace-nowrap tabular-nums">${yen(c.monthly_fee)}</td>
       <td class="px-3 py-3 text-center whitespace-nowrap">${'●'.repeat(c.maturity_level || 1)}${'○'.repeat(5 - (c.maturity_level || 1))}</td>
       <td class="px-3 py-3 whitespace-nowrap">${flags}</td>
       <td class="px-3 py-3 text-cyan-400 text-xs whitespace-nowrap">詳細 →</td>
@@ -500,7 +501,7 @@ async function renderCompanyDetail(cid) {
   const darkInp = 'style="background:#1e293b;border-color:#334155;color:#fff"'
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5">
-      <a href="#companies" class="btn btn-outline" style="border-color:#334155;color:#94a3b8"><i class="fas fa-arrow-left"></i></a>
+      <a href="#companies" class="btn btn-dark-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
         <h2 class="text-xl font-bold">${esc(c.company_name)}</h2>
         <p class="text-sm text-slate-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} ${BILLING_BADGE[c.billing_status] || ''}</p>
@@ -580,7 +581,7 @@ async function renderCompanyDetail(cid) {
       <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
         <div class="flex items-center justify-between mb-3 gap-2">
           <h3 class="font-bold"><i class="fas fa-users text-cyan-400 mr-1"></i>ユーザー一覧 <span class="text-sm font-normal text-slate-300">課金対象 ${Number(usage.user_count)}名／全 ${data.users.length}行</span></h3>
-          <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="hqAddAdmin" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>管理者を追加</button>
+          <button class="btn btn-dark-outline text-xs" data-action="hqAddAdmin" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>管理者を追加</button>
         </div>
         <p class="text-[11px] text-slate-400 mb-2">課金対象は、利用中でログインできる人（退職・停止とログインなしの行を除く）です。${usage.linked_count ? `うち${Number(usage.linked_count)}名は他社から連携したスタッフです。` : ''}管理者のメールアドレスは、承認依頼の通知とパスワード再設定の宛先です。スタッフのパスワードは各社の管理画面（スタッフ詳細）で再発行します。</p>
         <div class="flex flex-wrap gap-1 mb-2">
@@ -872,7 +873,7 @@ async function renderTemplates() {
   loading()
   let data
   try { data = (await axios.get('/api/hq/templates')).data; HQ_TPLS = data.templates } catch (e) {
-    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">テンプレートを読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:#334155;color:#67e8f9" onclick="renderTemplates()">再試行</button></div>`
+    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">テンプレートを読み込めませんでした。<button class="btn btn-dark-outline ml-2" onclick="renderTemplates()">再試行</button></div>`
     return
   }
   $app.innerHTML = `
@@ -897,8 +898,8 @@ async function renderTemplates() {
           </div>
           <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}${t.fields.some(f => f.required) ? ` / 必須 ${t.fields.filter(f => f.required).length}` : ''}）・使用中の案件 ${Number(t.project_count || 0)}件${t.has_reports ? '・日報あり' : ''}</p>
           <div class="flex gap-2 mt-3">
-            <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="editHqTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>修正</button>
-            <button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="toggleHqTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '配信を再開' : '配信停止'}</button>
+            <button class="btn btn-dark-outline text-xs" data-action="editHqTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>修正</button>
+            <button class="btn btn-dark-outline text-xs" data-action="toggleHqTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '配信を再開' : '配信停止'}</button>
           </div>
         </section>`).join('')}
     </div>`
@@ -1596,8 +1597,8 @@ async function renderSupport() {
       <p class="text-[11px] text-slate-400 mb-3">企業が管理画面で許可している場合だけ、期限付きで閲覧できます。登録・変更はできず、従業員管理（労務情報）とセキュリティの画面は開けません。開始・終了と開いた画面は記録され、企業の管理者も確認できます。同時に開けるのは1社だけです。</p>
       ${cur ? `<div class="bg-cyan-900/30 border border-cyan-700 rounded-lg p-3 mb-3 text-sm flex flex-wrap items-center gap-3">
         <span class="flex-1">閲覧中: <b>${esc(cur.company_name)}</b>（${esc(hqTime(cur.expires_at))} まで）</span>
-        <a href="/admin" target="_blank" rel="noopener" class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9"><i class="fas fa-arrow-up-right-from-square"></i>管理画面を開く</a>
-        <button class="btn btn-outline text-xs" style="border-color:#334155;color:#fca5a5" data-action="hqEndView">閲覧を終了</button></div>` : ''}
+        <a href="/admin" target="_blank" rel="noopener" class="btn btn-dark-outline text-xs"><i class="fas fa-arrow-up-right-from-square"></i>管理画面を開く</a>
+        <button class="btn btn-dark-outline text-red-300 text-xs" data-action="hqEndView">閲覧を終了</button></div>` : ''}
       <div class="overflow-x-auto max-h-72 overflow-y-auto mb-4"><table class="w-full text-xs">
         <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">閲覧の許可</th><th></th></tr></thead>
         <tbody>${views.companies.map(c => `
@@ -2324,7 +2325,7 @@ function obStatusHtml(d) {
   return head + `
     <div class="flex flex-wrap gap-2 items-end">
       <label class="block text-sm"><span class="text-xs text-slate-400">取消の理由（任意）</span><input type="text" id="ob-cancel-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
-      <button class="btn btn-outline" style="border-color:#334155;color:#cbd5e1" data-action="obCancel" data-cid="${Number(c.company_id)}">契約終了を取り消す</button>
+      <button class="btn btn-dark-outline" data-action="obCancel" data-cid="${Number(c.company_id)}">契約終了を取り消す</button>
     </div>
     ${d.can_delete ? delForm : `<p class="text-xs text-slate-400 mt-2">猶予期間中のため、まだ削除できません。${c.active_status !== 'inactive' ? '企業の利用状態が「停止」ではないため削除できません。' : ''}</p>`}`
 }
@@ -2344,7 +2345,7 @@ function obTablesHtml(d) {
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
         <h3 class="font-bold"><i class="fas fa-database text-cyan-400 mr-1"></i>データの件数と書き出し（削除の dry-run）</h3>
-        ${canExport ? `<button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="obExportAll" data-cid="${cid}"><i class="fas fa-download"></i>すべての表を CSV で書き出す</button>` : ''}
+        ${canExport ? `<button class="btn btn-dark-outline text-xs" data-action="obExportAll" data-cid="${cid}"><i class="fas fa-download"></i>すべての表を CSV で書き出す</button>` : ''}
       </div>
       <p class="text-xs text-slate-400 mb-3">CSV は表ごとに ${Number(d.settings.export_page)} 行ずつ取得して1つのファイルにまとめます。パスワード・二段階認証・トークンの列は出しません。掲示板の投稿とやり取り・企業間チャット・連携の同意の記録は相手の企業と共有する記録のため、ログインの履歴は1年で自動で消えるため、削除の対象にしていません。</p>
       ${d.unknown_tables === null ? `<p class="text-xs text-amber-300 mb-3">削除の対象に入っていない表があるかを確かめられませんでした</p>` : ''}
@@ -2388,7 +2389,7 @@ async function renderOffboardingDetail(cid) {
   const d = OB_DETAIL, c = d.company
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5">
-      <a href="#offboarding" class="btn btn-outline" style="border-color:#334155;color:#94a3b8"><i class="fas fa-arrow-left"></i></a>
+      <a href="#offboarding" class="btn btn-dark-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
         <h2 class="text-xl font-bold">${esc(c.company_name)}</h2>
         <p class="text-sm text-slate-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} <a href="#companies/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline ml-2">企業の画面へ</a></p>

@@ -64,6 +64,13 @@
   .btn-outline:hover { background: #f9fafb; }
   .btn-danger { background: #fee2e2; color: #b91c1c; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
+  /* 本部（暗い画面）の枠だけのボタン（UI-1 ui-hq-02）。白い .btn-outline に明るい色の文字を重ねない（1.25〜1.45:1 だった）。
+     文字 #e2e8f0 は背景 #0f172a・#1e293b の上で 12:1 以上 */
+  .btn-dark-outline { background: transparent; border: 1px solid #475569; color: #e2e8f0; }
+  .btn-dark-outline:hover { background: #334155; }
+  /* 本部の注意を促す操作（今の人数で記録する）。文字 #0f172a は #f59e0b の上で 8.3:1 */
+  .btn-warn { background: #f59e0b; color: #0f172a; }
+  .btn-warn:hover { background: #d97706; }
 
   /* モーダル */
   .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 1rem; }
@@ -73,7 +80,11 @@
   .report-btn { width: 100%; display: flex; align-items: center; gap: .9rem; padding: 1rem; border-radius: 1rem; border: 2px solid #e5e7eb; background: #fff; text-align: left; transition: all .15s; }
   .report-btn.done { border-color: #10b981; background: #ecfdf5; }
   .report-btn.next { border-color: #2563eb; background: #eff6ff; box-shadow: 0 4px 12px rgba(37,99,235,.12); }
-  .report-btn:disabled { opacity: .55; }
+  /* 済んだ報告・送信待ちの報告は押せないが、薄くしない（UI-1 ui-staff-02。記録した時刻を読めるように） */
+  .report-btn:disabled { cursor: default; }
+  /* 今は押せない報告（後の報告が済んだ・修正の申請中・受付の時間外）: 点線の枠と薄い灰色の背景で、押せる報告と見分ける（UI-1 ui-staff-04）。
+     ボタンは無効にせず、押すと押せない理由と次にすることを出す */
+  .report-btn.locked { background: #f9fafb; border-style: dashed; border-color: #d1d5db; }
 
   /* ローディング */
   .spin { display: inline-block; width: 1.4rem; height: 1.4rem; border: 3px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite; }
@@ -102,7 +113,9 @@
 /* ---------- @layer の外（名前を組み立てて付けるクラス・ライブラリが付けるクラス・id） ---------- */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
-#toast { position: fixed; bottom: 5.5rem; left: 50%; transform: translateX(-50%); z-index: 60; }
+/* 幅を決めておき、長い文でも縦に細長い箱にしない（UI-1 ui-staff-05）。箱の外の画面は押せるままにする */
+#toast { position: fixed; bottom: 5.5rem; left: 50%; transform: translateX(-50%); z-index: 60; width: calc(100% - 2rem); max-width: 28rem; display: flex; flex-direction: column; align-items: center; gap: .4rem; pointer-events: none; }
+#toast > * { pointer-events: auto; max-width: 100%; }
 /* シフトボードの状態（'st-' + シフトの状態で付ける） */
 .board-chip.st-requested { background: #fffbeb; border-color: #fcd34d; }
 .board-chip.st-substitute { background: #f5f3ff; border-color: #c4b5fd; }
@@ -212,4 +225,9 @@
    スタッフ画面・報告用URL・募集ページの .inp すべてに効かせる。拡大そのもの（maximum-scale）は禁止しない */
 @media (max-width: 640px) {
   .inp:not(.text-lg):not(.text-xl):not(.text-2xl) { font-size: 16px; }
+  /* スマホ幅ではボタン・入力欄の高さを 44px 以上にする（UI-1 ui-admin-26。DADS・iOS の押す範囲は 44px 以上） */
+  .btn, .inp { min-height: 44px; }
+  /* 文字だけのリンク・小さなボタン（tap-44 を付けたもの）は、見た目は変えずに押せる範囲を 44px に広げる */
+  .tap-44 { position: relative; }
+  .tap-44::after { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
 }

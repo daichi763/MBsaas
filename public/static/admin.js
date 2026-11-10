@@ -425,6 +425,14 @@ function dashScopeLoad() {
 function dashScopeSave(v) {
   try { if (v) localStorage.setItem(dashScopeKey(), v); else localStorage.removeItem(dashScopeKey()) } catch (e) { /* 覚えられなくても絞り込みは使える */ }
 }
+// 「今月の集計・要フォロー」（ダッシュボードの一番下。UI-1 ui-admin-02）を開いているか。この端末に覚える（覚えられなくても開閉はできる）
+let DASH_MONTHLY_OPEN = (() => { try { return localStorage.getItem('admin-dash-monthly-open') === '1' } catch (e) { return false } })()
+document.addEventListener('toggle', (ev) => {
+  const d = ev.target
+  if (!d || d.id !== 'dash-monthly') return
+  DASH_MONTHLY_OPEN = d.open
+  try { localStorage.setItem('admin-dash-monthly-open', d.open ? '1' : '0') } catch (e) { /* 覚えられなくてもよい */ }
+}, true)
 // 絞り込みの選択肢: すべての案件・クライアントごとの案件（案件が2件以上のクライアントと、選んでいるクライアントは「〇〇の案件すべて」も）
 function dashScopeOptions(data) {
   const groups = new Map()
@@ -570,17 +578,20 @@ async function renderDashboard() {
     </div>
     ${scope ? `<div class="mb-4 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800 flex items-center gap-2 flex-wrap">
       <i class="fas fa-filter"></i><span class="flex-1 min-w-0"><b>${esc(scope.label)}</b>${scope.client_id ? 'の案件すべて' : ''}で表示しています（シフト・売上・未報告・日報・インシデント・案件別実績・人員不足・前日確認）。管理者ToDo・要フォロースタッフは会社全体です</span>
-      <button type="button" class="underline whitespace-nowrap" data-action="dashScopeClear">すべての案件に戻す</button></div>` : '<div class="mb-2"></div>'}
+      <button type="button" class="underline whitespace-nowrap tap-44" data-action="dashScopeClear">すべての案件に戻す</button></div>` : '<div class="mb-2"></div>'}
     </div>`
+  // 並び（UI-1 ui-admin-02）: 今日の数字（細い帯）→ 予定の時刻を過ぎた未報告 → 本日のシフト・報告状況 → 管理者ToDo・インシデント →
+  // 日報未提出・今後の人員不足 → 前日確認 → 写真の設定 → 今月の集計・要フォロー（たたむ。開いたかどうかは端末に覚える）。
+  // 案内（tour.js）が指す要素（#kpi-cards #unreported-section #todo-section #today-shifts #dash-ahead）は、たたまない所に置く
   const bodyHtml = `<div id="dash-body" class="transition-opacity">
 
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4" id="kpi-cards">
       ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
       ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）'
         + (data.revenue_monthly ? `<br><span title="月額（固定）は、その月の最初の稼働日の売上予定に入れます（精算で計上する日と同じ）">うち月額（固定）${yen(data.revenue_monthly)}</span>` : ''))}
       ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400',
-        (data.missing_daily_reports.length ? '<button type="button" class="text-blue-600 hover:underline mr-2" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
-        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1${reportProject}" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
+        (data.missing_daily_reports.length ? '<button type="button" class="text-blue-600 hover:underline mr-2 tap-44" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
+        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1${reportProject}" class="text-blue-600 hover:underline tap-44">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
       ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400', scope ? '会社全体' : '')}
     </section>
 
@@ -591,86 +602,6 @@ async function renderDashboard() {
       ${alertList('<i class="fas fa-door-open text-gray-500 mr-1"></i>勤務終了・退店の未報告', un.work_end || [], 'yellow', 'work_end')}
     </section>
     <p class="text-[11px] text-gray-400 mb-5">予定の時刻を過ぎた人だけを出します（起床は開始の2時間前、出発は1時間前、入店は開始時刻、勤務終了・退店は終了の30分後。前日分を含む）。名前を押すと代理入力・報告用URLの発行ができます</p>
-
-    <div class="grid lg:grid-cols-2 gap-4 mb-5">
-      <section class="card p-4" id="todo-section">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-list-check text-blue-600 mr-1"></i>管理者ToDo（運営支援）</h3>
-        <div id="dash-todos"></div>
-      </section>
-
-      <section class="card p-4" id="incident-section">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-bolt text-red-500 mr-1"></i>インシデント・クレーム（直近7日）</h3>
-        <div class="space-y-2 max-h-80 overflow-y-auto">
-          ${data.incidents.map(i => `
-            <div class="p-2.5 rounded-lg bg-gray-50 border border-gray-100">
-              <div class="flex items-center gap-2 text-xs mb-1">
-                ${i.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
-                ${i.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
-                <span class="text-gray-500">${dayjs(i.work_date).format('M/D')}</span>
-                <a href="#staff/${Number(i.staff_id)}" class="text-blue-600 hover:underline">${esc(i.staff_name)}</a>
-                <span class="text-gray-400">${esc(i.project_name)}</span>
-                <a href="#reports/date=${esc(i.work_date)}&project=${Number(i.project_id)}&staff=${Number(i.staff_id)}" class="text-blue-600 hover:underline ml-auto whitespace-nowrap">日報→</a>
-              </div>
-              <p class="text-xs text-gray-600">${esc((i.values && i.values.free) || '')}</p>
-            </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">直近のインシデントはありません</p>'}
-        </div>
-      </section>
-    </div>
-
-    <div class="grid lg:grid-cols-2 gap-4 mb-5">
-      <section class="card p-4" id="dash-missing-reports">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-file-circle-exclamation text-red-500 mr-1"></i>日報未提出（直近3日）
-          <span class="badge ${missing.length ? 'badge-red' : 'badge-green'} ml-1">${missing.length ? missing.length + '件' : 'なし'}</span></h3>
-        ${missingHtml}
-        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1${reportProject}" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
-      </section>
-      <section class="card p-4" id="dash-ahead">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-week text-blue-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
-        ${aheadHtml}
-        <p class="text-[11px] text-gray-400 mt-2">押すとシフトボードでその週・その案件を開きます</p>
-      </section>
-    </div>
-
-    ${dashDayBeforeHtml(data)}
-
-    <div class="grid lg:grid-cols-2 gap-4 mb-5">
-      <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-hand-holding-heart text-amber-500 mr-1"></i>要フォロースタッフ</h3>
-        <div class="overflow-x-auto">
-        <table class="tbl">
-          <thead><tr><th>氏名</th><th>離職リスク</th><th>評価</th><th>メモ</th><th></th></tr></thead>
-          <tbody>
-            ${data.follow_staff.map(s => `
-              <tr>
-                <td class="font-medium">${esc(s.name)}</td>
-                <td>${RISK_BADGE[s.retention_risk] || ''}</td>
-                <td>${Number(s.evaluation_score).toFixed(1)}</td>
-                <td class="text-xs text-gray-500 max-w-[180px] truncate">${esc(s.memo || '')}</td>
-                <td><a href="#staff/${s.staff_id}" class="text-blue-600 text-xs hover:underline">詳細</a></td>
-              </tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400 py-4">要フォロースタッフはいません</td></tr>'}
-          </tbody>
-        </table>
-        </div>
-      </section>
-
-      <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-briefcase text-blue-600 mr-1"></i>今月の案件別実績</h3>
-        <div class="overflow-x-auto">
-        <table class="tbl">
-          <thead><tr><th>案件</th><th>日報</th>${(data.performance_fields || []).map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${data.project_performance.map(p => `
-              <tr>
-                <td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.project_name)}</a></td>
-                <td>${p.report_count ? `<a href="#reports/from=${esc(data.month)}-01&to=${esc(data.today)}&project=${Number(p.project_id)}" class="text-blue-600 hover:underline">${Number(p.report_count)}</a>` : 0}</td>
-                ${(data.performance_fields || []).map(f => `<td>${Number((p.values || {})[f.key]) || 0}</td>`).join('')}
-              </tr>`).join('')}
-          </tbody>
-        </table>
-        </div>
-        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''}
-      </section>
-    </div>
 
     <section class="card p-4 mb-5" id="today-shifts">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
@@ -697,12 +628,100 @@ async function renderDashboard() {
       </div>` : ''}
     </section>
 
-    <section class="card p-3 flex items-center justify-between flex-wrap gap-2" id="dash-photo-setting">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-5">
+      <section class="card p-4" id="todo-section">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-list-check text-blue-600 mr-1"></i>管理者ToDo（運営支援）</h3>
+        <div id="dash-todos"></div>
+      </section>
+
+      <section class="card p-4" id="incident-section">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-bolt text-red-500 mr-1"></i>インシデント・クレーム（直近7日）</h3>
+        <div class="space-y-2 max-h-80 overflow-y-auto">
+          ${data.incidents.map(i => `
+            <div class="p-2.5 rounded-lg bg-gray-50 border border-gray-100">
+              <div class="flex items-center gap-2 text-xs mb-1">
+                ${i.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
+                ${i.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
+                <span class="text-gray-500">${dayjs(i.work_date).format('M/D')}</span>
+                <a href="#staff/${Number(i.staff_id)}" class="text-blue-600 hover:underline">${esc(i.staff_name)}</a>
+                <span class="text-gray-400">${esc(i.project_name)}</span>
+                <a href="#reports/date=${esc(i.work_date)}&project=${Number(i.project_id)}&staff=${Number(i.staff_id)}" class="text-blue-600 hover:underline ml-auto whitespace-nowrap tap-44">日報→</a>
+              </div>
+              <p class="text-xs text-gray-600">${esc((i.values && i.values.free) || '')}</p>
+            </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">直近のインシデントはありません</p>'}
+        </div>
+      </section>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-5">
+      <section class="card p-4" id="dash-missing-reports">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-file-circle-exclamation text-red-500 mr-1"></i>日報未提出（直近3日）
+          <span class="badge ${missing.length ? 'badge-red' : 'badge-green'} ml-1">${missing.length ? missing.length + '件' : 'なし'}</span></h3>
+        ${missingHtml}
+        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1${reportProject}" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
+      </section>
+      <section class="card p-4" id="dash-ahead">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-week text-blue-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
+        ${aheadHtml}
+        <p class="text-[11px] text-gray-400 mt-2">押すとシフトボードでその週・その案件を開きます</p>
+      </section>
+    </div>
+
+    ${dashDayBeforeHtml(data)}
+
+    <section class="card p-3 mb-5 flex items-center justify-between flex-wrap gap-2" id="dash-photo-setting">
       <p class="text-sm text-gray-700"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付（会社全体）:
         <span class="badge ${data.photo_required_attendance ? 'badge-green' : 'badge-gray'}">${data.photo_required_attendance ? '必須' : '無効'}</span>
         ${photoChanged ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
-      <a href="#account" class="text-xs text-blue-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します">アカウント設定で変更</a>
+      <a href="#account" class="text-xs text-blue-600 underline tap-44" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します">アカウント設定で変更</a>
     </section>
+
+    <details class="mb-5" id="dash-monthly" ${DASH_MONTHLY_OPEN ? 'open' : ''}>
+      <summary class="card p-3 cursor-pointer select-none font-bold text-gray-800 flex items-center gap-2 flex-wrap"><i class="fas fa-chart-column text-blue-600"></i>今月の集計・要フォロー
+        <span class="text-xs font-normal text-gray-500">要フォロースタッフ ${Number(data.follow_staff.length)}名・今月の案件別実績 ${Number(data.project_performance.length)}件</span>
+        <span class="ml-auto text-xs font-normal text-blue-700">開く・閉じる</span></summary>
+      <div class="mt-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-5">
+      <section class="card p-4">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-hand-holding-heart text-amber-500 mr-1"></i>要フォロースタッフ</h3>
+        <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th>氏名</th><th>離職リスク</th><th>評価</th><th>メモ</th><th></th></tr></thead>
+          <tbody>
+            ${data.follow_staff.map(s => `
+              <tr>
+                <td class="font-medium">${esc(s.name)}</td>
+                <td>${RISK_BADGE[s.retention_risk] || ''}</td>
+                <td>${Number(s.evaluation_score).toFixed(1)}</td>
+                <td class="text-xs text-gray-500 max-w-[180px] truncate">${esc(s.memo || '')}</td>
+                <td><a href="#staff/${s.staff_id}" class="text-blue-600 text-xs hover:underline tap-44">詳細</a></td>
+              </tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400 py-4">要フォロースタッフはいません</td></tr>'}
+          </tbody>
+        </table>
+        </div>
+      </section>
+
+      <section class="card p-4">
+        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-briefcase text-blue-600 mr-1"></i>今月の案件別実績</h3>
+        <div class="overflow-x-auto">
+        <table class="tbl">
+          <thead><tr><th class="sticky left-0 z-10 min-w-[12rem]">案件</th><th class="text-right">日報</th>${(data.performance_fields || []).map(f => `<th class="text-right">${esc(f.label)}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${data.project_performance.map(p => `
+              <tr>
+                <td class="sticky left-0 z-10 bg-white min-w-[12rem] break-words"><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.project_name)}</a></td>
+                <td class="text-right whitespace-nowrap tabular-nums">${p.report_count ? `<a href="#reports/from=${esc(data.month)}-01&to=${esc(data.today)}&project=${Number(p.project_id)}" class="text-blue-600 hover:underline tap-44">${Number(p.report_count)}</a>` : 0}</td>
+                ${(data.performance_fields || []).map(f => `<td class="text-right whitespace-nowrap tabular-nums">${Number((p.values || {})[f.key]) || 0}</td>`).join('')}
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''}
+      </section>
+    </div>
+
+      </div>
+    </details>
     </div>`
   // 更新: 見出しと本体だけを描き直す（上に出している「はじめにやること」・お知らせは残す）
   const oldHead = document.getElementById('dash-head'), oldBody = document.getElementById('dash-body')
@@ -761,7 +780,7 @@ function drawDashShifts() {
   sel.innerHTML = `<option value="">すべての案件（${all.length}件）</option>` + projects.map(([id, name]) => `<option value="${esc(id)}" ${DASH_FILTER.project === id ? 'selected' : ''}>${esc(name)}</option>`).join('')
   sel.onchange = () => { DASH_FILTER.project = sel.value; drawDashShifts() }
   const byProject = all.filter(s => !DASH_FILTER.project || String(s.project_id) === DASH_FILTER.project)
-  const chip = (key, label, n) => `<button type="button" class="badge ${DASH_FILTER.only === key ? 'badge-blue ring-1 ring-blue-400' : 'badge-gray'} text-xs" data-action="dashShiftFilter" data-only="${esc(key)}">${esc(label)} ${Number(n)}</button>`
+  const chip = (key, label, n) => `<button type="button" class="badge ${DASH_FILTER.only === key ? 'badge-blue ring-1 ring-blue-400' : 'badge-gray'} text-xs tap-44" data-action="dashShiftFilter" data-only="${esc(key)}">${esc(label)} ${Number(n)}</button>`
   document.getElementById('dash-shift-filters').innerHTML = chip('', 'すべて', byProject.length)
     + Object.entries(DASH_ONLY).map(([k, v]) => chip(k, v.label, byProject.filter(v.test).length)).join('')
   const only = DASH_ONLY[DASH_FILTER.only]
@@ -1604,6 +1623,22 @@ function staffBusinessSectionHtml(p, edBiz) {
 
 // 他社連携の行の LK- コードは、連携のために作った内部のコードで、自社ではログインに使えないためスタッフ番号として出さない（#569）
 function staffCodeLabel(s) { return String(s.user_code || '').startsWith('LK-') ? '' : (s.user_code || '') }
+// 詳細の画面の見出し（UI-1 ui-admin-01）。スマホ幅では2段にする: 1段目に「戻る」と名前（長い名前は折り返す）、2段目に操作のボタン。
+// md 以上では今までどおり1行に並べる。名前の欄に min-w-0 を付け、ボタンに幅を取られて名前が1文字ずつ縦に並ばないようにする。
+// back: 戻るのリンク（HTML）、title: 見出しの中身（HTML）、sub: 見出しの下の行（HTML）、actions: 右のボタン（HTML）
+function detailHeaderHtml({ back, title, sub, actions }) {
+  return `<div class="flex flex-col md:flex-row md:items-center gap-3 mb-5 detail-head">
+      <div class="flex items-start gap-3 min-w-0 md:flex-1">
+        ${back}
+        <div class="min-w-0 flex-1">
+          <h2 class="text-xl font-bold text-gray-900 break-words">${title}</h2>
+          ${sub || ''}
+        </div>
+      </div>
+      ${actions ? `<div class="flex items-center gap-2 flex-wrap md:justify-end">${actions}</div>` : ''}
+    </div>`
+}
+
 // ---------- スタッフ詳細: ヘッダー・基本情報カード（編集/保存時はここだけ差し替えて、画面全体を再読み込みしない） ----------
 const STAFF_EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '退職', preboarding: '入社予定' }
 function staffDetailHeaderHtml(sid, p) {
@@ -1615,11 +1650,10 @@ function staffDetailHeaderHtml(sid, p) {
       ${nb.prev ? `<a href="#staff/${nb.prev}" class="btn btn-outline text-xs"><i class="fas fa-chevron-left"></i>前の人</a>` : ''}
       ${nb.next ? `<a href="#staff/${nb.next}" class="btn btn-outline text-xs">次の人<i class="fas fa-chevron-right"></i></a>` : ''}
     </div>` : ''}
-    <div class="flex items-center gap-3 mb-5 flex-wrap">
-      <a href="#staff" class="btn btn-outline" title="スタッフ一覧に戻る（絞り込みはそのまま）"><i class="fas fa-arrow-left"></i></a>
-      <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : staffCodeLabel(p))}</span></h2>
-        <div class="flex gap-2 mt-1 flex-wrap">
+    ${detailHeaderHtml({
+      back: '<a href="#staff" class="btn btn-outline shrink-0" title="スタッフ一覧に戻る（絞り込みはそのまま）" aria-label="スタッフ一覧に戻る"><i class="fas fa-arrow-left"></i></a>',
+      title: `${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : staffCodeLabel(p))}</span>`,
+      sub: `<div class="flex gap-2 mt-1 flex-wrap">
           ${affTypeBadge(p.affiliation_type)}
           ${p.board_source ? `<a href="#board/t${p.board_source.thread_id}" class="badge badge-purple" title="案件掲示板のやり取りを開く"><i class="fas fa-clipboard-list mr-1"></i>掲示板経由（提案: ${esc(p.board_source.proposer_company_name)}）</a>` : ''}
           ${p.merged_into_staff_id ? '<span class="badge badge-gray"><i class="fas fa-code-merge mr-1"></i>統合済み</span>' : p.is_provisional ? '<span class="badge badge-red"><i class="fas fa-bolt mr-1"></i>仮登録</span>' : ''}
@@ -1629,13 +1663,13 @@ function staffDetailHeaderHtml(sid, p) {
           ${p.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : ''}
           <span class="badge ${Number(p.evaluation_score) > 0 ? 'badge-blue' : 'badge-gray'}">${Number(p.evaluation_score) > 0 ? '評価 ' + Number(p.evaluation_score).toFixed(1) : '未評価'}</span>
           ${staffLoginBadge(p)}
-        </div>
-      </div>
+        </div>`,
+      actions: `
       ${p.affiliation_type === 'own_employee' ? `<a class="btn btn-outline" href="#employees/${sid}"><i class="fas fa-id-card"></i>従業員管理</a>` : ''}
       ${p.link_shareable ? `<button class="btn btn-outline" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
       <button class="btn btn-outline" onclick="showSkillSheet(${sid})"><i class="fas fa-file-export"></i>スキルシート作成</button>
-      <button class="btn btn-primary" data-action="showFollowModal" data-id="${sid}" data-name="${esc(p.name)}"><i class="fas fa-plus"></i>フォロー記録</button>
-    </div>
+      <button class="btn btn-primary" data-action="showFollowModal" data-id="${sid}" data-name="${esc(p.name)}"><i class="fas fa-plus"></i>フォロー記録</button>`,
+    })}
 `
 }
 // アプリの利用状況（#286）。最後にアプリを使った日時（app_last_used_at。他社連携の行は所属元のログインも見る）か「未ログイン」を出す。
@@ -1898,7 +1932,7 @@ async function renderStaffDetail(sid, opts = {}) {
       ${perfMoreNote(staffPerfCols.more)}
     </section>
 
-    <div class="grid lg:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-handshake-angle text-amber-500 mr-1"></i>フォロー履歴</h3>
         <div class="space-y-2 max-h-72 overflow-y-auto">
@@ -1936,7 +1970,7 @@ async function renderStaffDetail(sid, opts = {}) {
       </section>
     </div>
 
-    <div id="roster-panels" class="grid lg:grid-cols-2 gap-4 mt-4 hidden"></div>
+    <div id="roster-panels" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 hidden"></div>
     <div id="roster-chat-panel" class="mt-4 hidden"></div>
     <div id="staff-lifecycle-panel" class="mt-4"></div>
     <div id="staff-reference-pay-panel" class="mt-4"></div>
@@ -2991,19 +3025,18 @@ async function renderProjectDetail(pid) {
   PROJECT_DETAIL = { pid: Number(p.project_id), data }
   const range = monthRangeOf(month); const ml = monthLabel(month)
   $app.innerHTML = `
-    <div class="flex items-center gap-3 mb-5 flex-wrap">
-      <a href="#projects" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
-      <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(p.project_name)}</h2>
-        <p class="text-sm text-gray-500">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="hover:underline">${esc(p.client_name || '')}</a>` : ''} ｜ ${PTYPE_LABELS[p.project_type] || ''} ｜ ${esc(p.location || '')}</p>
-      </div>
+    ${detailHeaderHtml({
+      back: '<a href="#projects" class="btn btn-outline shrink-0" aria-label="案件一覧に戻る"><i class="fas fa-arrow-left"></i></a>',
+      title: esc(p.project_name),
+      sub: `<p class="text-sm text-gray-500 break-words">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="hover:underline">${esc(p.client_name || '')}</a>` : ''} ｜ ${PTYPE_LABELS[p.project_type] || ''} ｜ ${esc(p.location || '')}</p>`,
+      actions: `
       ${monthNavHtml('projectDetailMonth', month)}
       <span class="badge ${p.status === 'active' ? 'badge-green' : 'badge-gray'}">${p.status === 'active' ? '稼働中' : '終了'}</span>
       <button class="btn btn-outline" data-action="editProject" data-id="${Number(p.project_id)}"><i class="fas fa-pen"></i>編集</button>
       ${p.status === 'active'
         ? `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="closed" data-name="${esc(p.project_name)}"><i class="fas fa-flag-checkered"></i>案件を終了する</button>`
-        : `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="active" data-name="${esc(p.project_name)}"><i class="fas fa-rotate-left"></i>稼働中に戻す</button>`}
-    </div>
+        : `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="active" data-name="${esc(p.project_name)}"><i class="fas fa-rotate-left"></i>稼働中に戻す</button>`}`,
+    })}
     ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-gray-50 text-sm text-gray-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
@@ -3020,7 +3053,7 @@ async function renderProjectDetail(pid) {
         <a href="#projects/templates" class="text-xs text-blue-600 hover:underline ml-2">テンプレートの管理</a></div>
     </div>
 
-    <div class="grid lg:grid-cols-2 gap-4 mb-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
       <section class="card p-4">
         <div class="flex items-center gap-2 mb-3 flex-wrap">
           <h3 class="text-sm font-bold text-gray-700">スタッフ別実績（${esc(ml)}）</h3>
@@ -3046,7 +3079,7 @@ async function renderProjectDetail(pid) {
       </section>
     </div>
 
-    <div class="grid lg:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <section class="card p-4" id="project-texts">
         ${PROJECT_TEXT_FIELDS.map(([k, label], i) => `
         <h3 class="text-sm font-bold text-gray-700 ${i ? 'mt-4 ' : ''}mb-2 flex items-center">${esc(label)}
@@ -3791,17 +3824,15 @@ async function renderClientDetail(cid) {
   const c = data.client; const contacts = data.contacts || []
   CLIENT_DETAIL.client = c
   $app.innerHTML = `
-    <div class="flex items-center gap-3 mb-5 flex-wrap">
-      <a href="#clients" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
-      <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(c.client_name)}</h2>
-        <div class="flex gap-2 mt-1">
+    ${detailHeaderHtml({
+      back: '<a href="#clients" class="btn btn-outline shrink-0" aria-label="クライアント一覧に戻る"><i class="fas fa-arrow-left"></i></a>',
+      title: esc(c.client_name),
+      sub: `<div class="flex gap-2 mt-1">
           ${c.ng_staff_ids ? '<span class="badge badge-red"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</span>' : ''}
-        </div>
-      </div>
-    </div>
+        </div>`,
+    })}
 
-    <div class="grid lg:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div class="space-y-4">
         <section class="card p-4" id="client-basic-info">${clientBasicHtml(c, false)}</section>
       </div>
@@ -4105,17 +4136,16 @@ async function renderEmployeeDetail(sid) {
     `<div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">${label}</dt><dd class="flex-1"><input type="${type}" id="${id}" class="inp text-xs" value="${esc(value ?? '')}"></dd></div>`
 
   $app.innerHTML = `
-    <div class="flex items-center gap-3 mb-5 flex-wrap">
-      <a href="#employees" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
-      <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(s.name)}</h2>
-        <div class="flex gap-2 mt-1">
+    ${detailHeaderHtml({
+      back: '<a href="#employees" class="btn btn-outline shrink-0" aria-label="従業員一覧に戻る"><i class="fas fa-arrow-left"></i></a>',
+      title: esc(s.name),
+      sub: `<div class="flex gap-2 mt-1">
           <span class="badge ${s.employment_status === 'retired' ? 'badge-gray' : s.employment_status === 'leave' ? 'badge-yellow' : s.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[s.employment_status] || '在職中'}</span>
-        </div>
-      </div>
+        </div>`,
+      actions: `
       <a class="btn btn-outline" href="#staff/${sid}"><i class="fas fa-user"></i>スタッフ情報を見る</a>
-      <button class="btn btn-primary" onclick="saveEmployeeRecord(${sid})"><i class="fas fa-floppy-disk"></i>保存</button>
-    </div>
+      <button class="btn btn-primary" onclick="saveEmployeeRecord(${sid})"><i class="fas fa-floppy-disk"></i>保存</button>`,
+    })}
 
     <section class="card p-4 mb-4" id="employee-staff-profile">
       <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
@@ -4153,7 +4183,7 @@ async function renderEmployeeDetail(sid) {
       <p class="text-xs text-gray-400 mt-2">※ 退職日を設定すると在籍状況は「退職」になります。退職日から7年経過すると出退勤記録等が定期削除の対象になります。</p>
     </section>
 
-    <div class="grid lg:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3">在籍・雇用情報</h3>
         <dl class="space-y-2">
@@ -6927,7 +6957,7 @@ async function renderAccount() {
       <span class="text-sm flex-1">契約ユーザー数: <span id="account-contract-state" class="text-gray-400">…</span>
         <span class="block text-[11px] text-gray-400">利用中のアカウント（管理者とスタッフ）の数です。ログインのない名簿のみのスタッフと、停止したアカウントは数えません。上限は本部との契約で決まります</span></span>
     </section>
-    <div class="grid lg:grid-cols-2 gap-4 mb-6">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
       <section class="card p-4">
         <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-user text-blue-500 mr-1"></i>自分のアカウント</h3>
         <dl class="text-sm mb-3">

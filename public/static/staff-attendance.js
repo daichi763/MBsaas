@@ -113,25 +113,37 @@
     const expired = !locked && requestExpired(s)
     const shown = TYPES.filter(t => s.enabled.includes(t) || rep[t] || pend[t])
     const hidden = TYPES.filter(t => !shown.includes(t))
-    const row = (t) => {
+    // まだ予定の時刻になっていない報告（UI-1 ui-staff-14）は「これから」と出し、申請のボタンを出さない（押すと不要な申請が管理者に届くため）。
+    // 予定の時刻を過ぎたら「未報告」と「押し忘れを送る」にする。使っていない報告（下のたたんだ一覧）は今までどおり申請できる
+    const row = (t, usual) => {
       const r = rep[t], p = pend[t]
+      const upcoming = usual && !r && !p && !locked && notDueYet(s, t)
       const action = locked ? '' : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
         : expired ? rejectedTag(s, t)
-        : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" data-action="attOpenRow" data-id="${Number(s.shift_id)}" data-type="${esc(t)}">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '追加申請'}</button>`
+        : upcoming ? ''
+        : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" data-action="attOpenRow" data-id="${Number(s.shift_id)}" data-type="${esc(t)}">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '押し忘れを送る'}</button>`
       return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
         <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
-        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${deviceTimeTag(r, s.work_date)}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
+        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : upcoming ? 'text-gray-500' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : upcoming ? 'これから' : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${deviceTimeTag(r, s.work_date)}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
         ${action}</li>`
     }
     return `<div class="card p-3 mb-2">
       <div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-800 truncate">${esc(s.project_name)}</p>${absent ? '<span class="badge badge-gray">欠勤</span>' : s.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}</div>
       <p class="text-xs text-gray-500">${esc(formatShiftTime(s.start_time, s.end_time))}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
       ${s.tentative ? '<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1">管理者の確定待ちのシフトです。確定されるまで打刻の修正・追加は申請できません。勤務した場合は管理者に連絡してください</p>' : ''}
-      <ul class="mt-1">${(s.tentative ? shown.filter(t => rep[t]) : shown).map(row).join('')}</ul>
+      <ul class="mt-1">${(s.tentative ? shown.filter(t => rep[t]) : shown).map(t => row(t, true)).join('')}</ul>
       ${expired ? `<p class="text-[11px] text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1 att-expired"><span class="badge badge-gray font-normal mr-1">期限切れ</span>申請の期限（${esc(fmtDate(s.request_until))}まで）を過ぎたため、アプリからは修正・追加の申請ができません。直したいときは管理者に連絡してください</p>` : ''}
       ${s.reports.some(r => r.entry_method === 'proxy') && !locked && !expired ? '<p class="text-[11px] text-gray-500 mt-1">「管理者が入力」は、あなたの代わりに管理者が記録した時刻です。違っていたら「修正」から申請してください</p>' : ''}
-      ${!locked && !expired && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
+      ${!locked && !expired && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(t => row(t, false)).join('')}</ul></details>` : ''}
     </div>`
+  }
+
+  // 報告の予定の時刻（稼働日 0:00 からの分）。起床は開始の2時間前、出発は1時間前、入店・勤務開始は開始、休憩・勤務終了・退店は終了
+  // （管理画面のダッシュボードの「未報告」と同じ考え方。休憩は時刻の予定がないので終了で見る）。今がその時刻より前なら true
+  function notDueYet(s, t) {
+    const { st, en } = span(s)
+    const due = { wake_up: st - 120, departure: st - 60, check_in: st, work_start: st }[t]
+    return dayjs().isBefore(atMin(s.work_date, due != null ? due : en))
   }
 
   // ---------- 申請（時刻修正・打刻漏れの追加。同じシフトのほかの報告もまとめて直せる #214） ----------

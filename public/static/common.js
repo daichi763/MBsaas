@@ -7,6 +7,22 @@
 //   値は data-* 属性（esc 済み）に入れ、data-action と delegate() で処理を結び付け、処理側で el.dataset から読む。
 //   onclick に埋め込んでよいのは、数値の ID と、コードに書いた固定の文字列だけ。
 
+// dayjs の曜日・月を日本語にする（UI-1 ui-admin-11）。format('M/D(dd)') が「7/5(Su)」ではなく「7/5(日)」になる。
+// CDN の ja ロケール（dayjs/locale/ja.js）と同じ値をここに書く（読み込むファイルと SRI を増やさないため）。週の始まり（日曜）は変えない
+if (typeof dayjs !== 'undefined' && dayjs && typeof dayjs.locale === 'function') {
+  dayjs.locale({
+    name: 'ja',
+    weekdays: '日曜日_月曜日_火曜日_水曜日_木曜日_金曜日_土曜日'.split('_'),
+    weekdaysShort: '日_月_火_水_木_金_土'.split('_'),
+    weekdaysMin: '日_月_火_水_木_金_土'.split('_'),
+    months: '1月_2月_3月_4月_5月_6月_7月_8月_9月_10月_11月_12月'.split('_'),
+    monthsShort: '1月_2月_3月_4月_5月_6月_7月_8月_9月_10月_11月_12月'.split('_'),
+    ordinal: (n) => n + '日',
+    formats: { LT: 'HH:mm', LTS: 'HH:mm:ss', L: 'YYYY/MM/DD', LL: 'YYYY年M月D日', LLL: 'YYYY年M月D日 HH:mm', LLLL: 'YYYY年M月D日 dddd HH:mm' },
+    meridiem: (hour) => (hour < 12 ? '午前' : '午後'),
+  })
+}
+
 // HTML の実体参照に変換する（& < > " ' `）
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"'`]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[m]))
