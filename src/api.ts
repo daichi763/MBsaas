@@ -6199,7 +6199,7 @@ type AnalyticsGroup = keyof typeof ANALYTICS_GROUPS
 // と同じ行・同じ並び（g の順、その中はキーの BINARY の順）。
 //   from: FROM の後ろ（daily_reports の別名は dr。'?' は where と合わせて binds の順）、group: GROUP BY の式（別名 g）
 // キーは JSON のパス（$."キー"）にして bind する。" と \ と制御文字と、対になっていないサロゲートを含むキーは、パスで表せないので json_each の側で数える
-const JSON_SUM_KEYS_PER_STMT = 80 // D1 の bind は1文100個まで
+const JSON_SUM_KEYS_PER_STMT = 30 // D1 は1文で返す列も100個まで（1キー3列＋g・x・extra 最大2列で94列）。bind（100個まで）も収まる
 const JSON_SUM_RV = `CASE WHEN json_valid(dr.report_values) THEN dr.report_values ELSE '{}' END`
 const jsonPathKey = (k: string) => !/["\\\u0000-\u001f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(k)
 // SQLite の BINARY（UTF-8 のバイト順 = コードポイントの順）での比較。NULL → 数 → 文字の順（json_each の key は配列なら数）
