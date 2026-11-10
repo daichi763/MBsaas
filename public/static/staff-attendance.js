@@ -7,7 +7,6 @@
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
   const STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
   const KIND = { modify: '時刻修正', add: '打刻漏れの追加' }
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const S = window.__attState = window.__attState || { tab: 'timeline', to: null }
   let TL = null
   let busy = false
@@ -556,7 +555,6 @@
 // =========================================================
 // 先頭の ; は、前の即時関数の })() とつながって呼び出しにならないようにするため
 ;(function () {
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const REQ_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
   const KIND_LABEL = { transport: '交通費', overtime: '延長' }
   const UNIT_LABEL = { daily: '日給', hourly: '時給' }

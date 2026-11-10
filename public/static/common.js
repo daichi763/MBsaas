@@ -41,9 +41,61 @@ async function withSubmitLock(button, fn) {
   }
 }
 
+// ============ 画面の共通の部品: errMsg・toast・loading・modal・closeModal（Sprint 23 #9959） ============
+// 以前は admin.js・staff.js・hq.js・apply.js・report-link.js と各画面の即時関数に同じものがあった。ここに1つだけ置く。
+// 画面ごとの違いは UI_PAGE と onModalClose で切り替える（各画面の js の先頭で変える）:
+//   - toast の既定の表示時間: 2.5 秒。apply.js（公開の募集ページ）だけ 3 秒（UI_PAGE.toastMs = 3000）
+//   - loading の上下の余白: py-20。staff.js（スタッフアプリ）だけ py-16（UI_PAGE.loadingPad = 'py-16'）
+//   - closeModal の後片付け: staff.js は撮った写真のプレビューを解放、roster.js はカメラを止める、report-link.js は送る報告を忘れる
+//   - closeModal を止める: report-link.js は送信中は閉じない（送信の後に閉じるときは closeModal(true)）
+const UI_PAGE = { toastMs: 2500, loadingPad: 'py-20' }
+
+// API のエラーの文言（無ければ d、それも無ければ『エラーが発生しました』）
+function errMsg(e, d) {
+  return (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
+}
+
+// ms: 表示する時間（長い文の知らせは長めに出す。既定は UI_PAGE.toastMs）。下の holdToasts で、エラー・長い文はさらに長く出す
+function toast(msg, ms) {
+  let root = document.getElementById('toast')
+  if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
+  const el = document.createElement('div')
+  el.className = 'toast-msg'; el.textContent = msg
+  root.appendChild(el)
+  setTimeout(() => el.remove(), ms || UI_PAGE.toastMs)
+}
+
+// 画面の本文（#app）を読み込み中の表示にする
+function loading() {
+  const app = document.getElementById('app')
+  if (app) app.innerHTML = `<div class="flex justify-center ${UI_PAGE.loadingPad}"><span class="spin"></span></div>`
+}
+
+// opts.onClose: 閉じたとき（ボタン・背景のタップ・画面の移動のどれでも）に1回だけ呼ぶ。別のモーダルに置き換えたときは呼ばない（#266）
+let MODAL_ON_CLOSE = null
+const MODAL_CLEANUPS = [] // onModalClose で登録した、閉じるたびの後片付け
+let MODAL_CAN_CLOSE = null // canClose(force) が false を返したら閉じない
+function modal(html, opts = {}) {
+  MODAL_ON_CLOSE = typeof opts.onClose === 'function' ? opts.onClose : null
+  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
+}
+// 画面ごとの closeModal の処理を足す。fn: 閉じるたびにモーダルを消す前に呼ぶ。opts.canClose(force): false を返したら閉じない
+function onModalClose(fn, opts) {
+  if (typeof fn === 'function') MODAL_CLEANUPS.push(fn)
+  if (opts && typeof opts.canClose === 'function') MODAL_CAN_CLOSE = opts.canClose
+}
+function closeModal(force) {
+  if (MODAL_CAN_CLOSE && !MODAL_CAN_CLOSE(force)) return
+  for (const fn of MODAL_CLEANUPS) fn()
+  const root = document.getElementById('modal-root')
+  if (root) root.innerHTML = ''
+  const fn = MODAL_ON_CLOSE; MODAL_ON_CLOSE = null
+  if (fn) { try { fn() } catch (e) { } }
+}
+
 // モーダルの閉じ方（#9422）。入力欄のあるモーダルは、背景のタップ（入力欄から背景へのドラッグも含む）では閉じず、
 // 右上の ✕ と「キャンセル」でだけ閉じる（入力が消えないように）。入力欄のない確認・表示だけのモーダルは、今までどおり背景のタップでも閉じる。
-// 各画面の modal()（背景に onclick="…closeModal()" を付ける作り）はそのままで、ここで全画面分をまとめて扱う。Esc で閉じるモーダルはない
+// modal()（背景に onclick="…closeModal()" を付ける作り）と、画面が独自に作るモーダルを、ここで全画面分をまとめて扱う。Esc で閉じるモーダルはない
 const MODAL_INPUT_SEL = 'input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=reset]):not([readonly]):not([disabled]), select:not([disabled]), textarea:not([readonly]):not([disabled]), [contenteditable=""], [contenteditable="true"]'
 function modalHasInputs(bg) {
   const box = bg.querySelector('.modal-box')
@@ -149,7 +201,7 @@ if (typeof MutationObserver === 'function' && document.documentElement) {
   }).observe(document.documentElement, { childList: true, subtree: true })
 }
 
-// トーストの表示時間（Sprint 15 #9708）。toast は画面ごと（admin.js・staff.js・hq.js など）にあり、どれも 2.5〜3 秒で el.remove() する。
+// トーストの表示時間（Sprint 15 #9708）。toast（上の共通の関数）は 2.5〜3 秒で el.remove() する。
 // ここで全画面分をまとめて扱う: エラー・「できない」理由・入力の案内は長めに出し（8 秒〜。文が長いほど延ばす。最大 20 秒）、✕ で閉じられるようにする。
 // 成功などの短い知らせは今のまま。長い文の知らせは、読める時間（1文字あたり約 0.11 秒。最大 10 秒）まで延ばす。
 // 呼び出し側が長めの時間を指定したとき（staff.js の toast(msg, ms)）は、その時間を短くしない
@@ -191,7 +243,7 @@ function holdToast(el) {
 
 // API のエラー文言（無ければ fallback）を toast で出す。toast の無い画面では alert で出す
 function showApiError(e, fallback) {
-  const msg = (e && e.response && e.response.data && e.response.data.error) || fallback || 'エラーが発生しました'
+  const msg = errMsg(e, fallback)
   if (typeof toast === 'function') toast(msg)
   else alert(msg)
   return msg

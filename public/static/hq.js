@@ -1,19 +1,8 @@
 // Field OS SaaS本部管理SPA
 const $app = document.getElementById('app')
 
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
+// esc・toast・loading・modal・closeModal・errMsg は common.js のものを使う
 function yen(n) { return '¥' + Number(n || 0).toLocaleString() }
-function toast(msg) {
-  let root = document.getElementById('toast')
-  if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
-  const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg
-  root.appendChild(el); setTimeout(() => el.remove(), 2500)
-}
-function loading() { $app.innerHTML = '<div class="flex justify-center py-20"><span class="spin"></span></div>' }
-function modal(html) {
-  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
-}
-window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
 
 // ---------- API 呼び出しの共通処理（#230 #346） ----------
 let HQ_ME = null

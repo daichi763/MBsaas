@@ -14,24 +14,7 @@ const AFF_TYPE_BADGE = { own_employee: 'badge-green', daily_worker: 'badge-yello
 function affTypeBadge(t) { t = t || 'own_employee'; return `<span class="badge ${AFF_TYPE_BADGE[t] || 'badge-gray'}">${esc(AFF_TYPE_LABEL[t] || t)}</span>` }
 
 function yen(n) { return '¥' + Number(n || 0).toLocaleString() }
-function toast(msg) {
-  let root = document.getElementById('toast')
-  if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
-  const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg
-  root.appendChild(el); setTimeout(() => el.remove(), 2500)
-}
-function loading() { $app.innerHTML = '<div class="flex justify-center py-20"><span class="spin"></span></div>' }
-// opts.onClose: 閉じたとき（ボタン・背景のタップ・画面の移動のどれでも）に1回だけ呼ぶ。別のモーダルに置き換えたときは呼ばない（#266）
-let MODAL_ON_CLOSE = null
-function modal(html, opts = {}) {
-  MODAL_ON_CLOSE = typeof opts.onClose === 'function' ? opts.onClose : null
-  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
-}
-window.closeModal = () => {
-  document.getElementById('modal-root').innerHTML = ''
-  const fn = MODAL_ON_CLOSE; MODAL_ON_CLOSE = null
-  if (fn) { try { fn() } catch (e) { } }
-}
+// toast・loading・modal（opts.onClose）・closeModal・errMsg は common.js のものを使う
 
 // ============ API 呼び出しの共通処理: ログインの期限切れ・アカウントの切り替え（#346 #526）・エラーの表示（#230） ============
 // バッジ更新・やり取りの新着確認など、利用者の操作によらない定期の取得（config に background: true を付けたものも含む）。

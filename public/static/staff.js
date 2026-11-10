@@ -15,26 +15,14 @@ const PHOTO_MAX_EDGE = 1600                     // 長辺の最大px
 let pendingPhoto = { blob: null, previewUrl: null, type: null, shiftId: null }
 const CAT_LABELS = { health: '体調不良', absence: '遅刻・欠勤相談', store_trouble: '店舗トラブル', claim: 'クレーム', relationship: '人間関係', shift: 'シフト相談', question: '業務質問', other: 'その他' }
 
-// ms: 表示する時間（長い文の知らせは長めに出す。既定 2.5 秒）
-function toast(msg, ms) {
-  let root = document.getElementById('toast')
-  if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
-  const el = document.createElement('div')
-  el.className = 'toast-msg'; el.textContent = msg
-  root.appendChild(el)
-  setTimeout(() => el.remove(), ms || 2500)
-}
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
+// esc・toast(msg, ms)・loading・modal・closeModal・errMsg は common.js のものを使う。スタッフアプリの読み込み中は余白を小さくする
+UI_PAGE.loadingPad = 'py-16'
 function fmtDate(d) { return d ? dayjs(d).format('M/D(ddd)').replace('Sun','日').replace('Mon','月').replace('Tue','火').replace('Wed','水').replace('Thu','木').replace('Fri','金').replace('Sat','土') : '' }
-function loading() { $app.innerHTML = '<div class="flex justify-center py-16"><span class="spin"></span></div>' }
-function modal(html) {
-  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
-}
-window.closeModal = () => {
-  document.getElementById('modal-root').innerHTML = ''
+// モーダルを閉じたら、撮った写真のプレビューを解放する
+onModalClose(() => {
   if (pendingPhoto.previewUrl) URL.revokeObjectURL(pendingPhoto.previewUrl)
   pendingPhoto = { blob: null, previewUrl: null, type: null, shiftId: null }
-}
+})
 
 // ---------- API 呼び出しの共通処理（#180 #230 #346） ----------
 // ログインは使うたびに延びる（サーバー側）。それでも切れたときは、理由を伝えてから元の画面に戻れるようにログインへ移る
