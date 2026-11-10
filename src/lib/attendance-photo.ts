@@ -4,6 +4,7 @@
 //   #535 写真が送れないときに、理由を選んで写真なしで報告する（会社設定 photo_skip_allowed で許可したときだけ）
 //   #532 報告した端末の要約（OS・ブラウザ）
 // =========================================================
+import { jstOf } from './time'
 
 // 写真なしで報告するときの理由（画面の選択肢と同じキー。保存するのは文言）
 export const NO_PHOTO_REASONS: Record<string, string> = {
@@ -36,7 +37,7 @@ export const PHOTO_REQUIRED_ERROR = 'この案件は写真の添付が必須で�
 export function photoTakenAt(v: any): string | null {
   const ms = Number(v)
   if (!Number.isFinite(ms) || ms < Date.UTC(2000, 0, 1) || ms > Date.now() + 24 * 3600 * 1000) return null
-  return new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  return jstOf(ms)
 }
 export function photoSource(v: any): 'camera' | 'album' | null {
   return v === 'camera' || v === 'album' ? v : null

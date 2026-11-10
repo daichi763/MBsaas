@@ -20,6 +20,8 @@ import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders, ro
 import { isTentativeShift, isWorkingShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { crossesMidnight, toMin, NEXT_DAY_TYPES, reportableWindow } from './lib/shift-time'
 import { photoTakenAt, photoSource } from './lib/attendance-photo'
+import { nowJST, addDays, isDate } from './lib/time'
+import { randomHex } from './lib/hash'
 
 type Bindings = NotifyEnv & { PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -38,10 +40,7 @@ export const CORRECTION_HOURLY_LIMIT = 20
 // まとめて申請できる報告の数（1シフトの報告の種類の数まで。#214）
 const BULK_MAX = 8
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function randToken(): string { const a = new Uint8Array(12); crypto.getRandomValues(a); return [...a].map(b => b.toString(16).padStart(2, '0')).join('') }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
-function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
+function randToken(): string { return randomHex(12) }
 
 // 'YYYY-MM-DD HH:MM'（'T' 区切り・秒ありも可）→ 'YYYY-MM-DD HH:MM:00'。存在しない日時は null
 export function normalizeDateTime(v: any): string | null {
@@ -226,7 +225,7 @@ function nextDayHint(shift: any, type: string, at: string): string | null {
 // 同じシフト・申請者・created_at・batch_key の承認待ちを「まとめて出した申請」として扱い、承認依頼のメールを1通にまとめる（notifications.ts。#392）。
 // batch_key は申請の操作ごとに作る（同じ秒に別々に出した申請を1つにまとめない。0087 より前の行は NULL で、created_at だけで束ねる）
 type NewRequest = { p: Prepared; from: number | null }
-const newBatchKey = () => { const x = new Uint8Array(9); crypto.getRandomValues(x); return [...x].map(v => v.toString(16).padStart(2, '0')).join('') }
+const newBatchKey = () => randomHex(9)
 async function insertCorrections(db: D1Database, shift: any, items: NewRequest[], a: Actor) {
   const at = nowJST()
   const batchKey = newBatchKey()
@@ -304,7 +303,7 @@ async function prepareBulk(db: D1Database, shift: any, b: any, opts: PrepareOpts
 
 // スタッフの申請の回数の上限（同じ人のユーザーが直近1時間に出した申請の数。取り消した申請も数える。#392）
 async function overHourlyLimit(db: D1Database, staffIds: number[], selfIds: number[], adding: number): Promise<Fail | null> {
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-3600 * 1000)
   const q = (ids: number[]) => ids.map(() => '?').join(',')
   const r = await db.prepare(`SELECT COUNT(*) AS n FROM attendance_corrections WHERE staff_id IN (${q(staffIds)}) AND requested_by IN (${q(selfIds)}) AND created_at >= ?`)
     .bind(...staffIds, ...selfIds, since).first() as any

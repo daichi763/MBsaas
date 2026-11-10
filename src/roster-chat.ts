@@ -5,6 +5,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { notifyCompanyAdmins, markAdminNotificationsRead } from './notifications'
+import { nowJST } from './lib/time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -14,9 +15,6 @@ export const CHAT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'o
 const MAX_BODY = 2000
 const DUPLICATE_WINDOW_SEC = 60 // 同じ本文の再送を重複とみなす秒数（#263）
 
-function nowJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-}
 
 // 念のためのロールチェック（/admin/* ミドルウェアと二重）
 chatApi.use('/*', async (c, next) => {
@@ -239,7 +237,7 @@ chatApi.post('/:staffId', async (c) => {
   if (!t) return c.json({ error: 'スレッドが見つかりません' }, 404)
   // 同じ人が同じスレッドに同じ本文を短い間に送ったら、2件目は登録しない（二度押し・別タブ・API の直接呼び出し。持ち越し #263）。
   // 確かめるのと登録するのを1つの文で行い、同時に届いても1件だけにする
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - DUPLICATE_WINDOW_SEC * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-DUPLICATE_WINDOW_SEC * 1000)
   const r = await db.prepare(`INSERT INTO roster_comments (thread_staff_id, owner_company_id, host_company_id, author_company_id, author_user_id, body, created_at)
     SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM roster_comments WHERE thread_staff_id = ? AND author_user_id = ? AND body = ? AND created_at >= ?)`)
     .bind(t.thread_staff_id, t.owner_company_id, t.host_company_id, u.company_id, u.user_id, body, nowJST(), t.thread_staff_id, u.user_id, body, since).run()

@@ -15,6 +15,7 @@ import { Hono } from 'hono'
 import { loadRoster } from './roster'
 import { isISODate } from './lib/validate'
 import { canSendMail } from './services/email'
+import { nowJST, todayJST, addDays } from './lib/time'
 
 type Bindings = { DB: D1Database; DOCUMENTS: R2Bucket; RESEND_API_KEY?: string; MAIL_FROM?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -24,11 +25,6 @@ const ADMIN_NOTIFY_ROLES = ['company_admin', 'sales_manager', 'field_manager', '
 const HR_ROLES = ['company_admin', 'office_staff']
 const isHr = (u: any) => HR_ROLES.includes(u?.role)
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
-function addDays(ymd: string, n: number): string {
-  const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10)
-}
 const idParam = (v: string | undefined) => /^\d{1,12}$/.test(String(v || '')) ? Number(v) : null
 
 // ---------- 書類の種類と有効期限（#297） ----------

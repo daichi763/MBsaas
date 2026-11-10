@@ -7,6 +7,7 @@
 import { Hono } from 'hono'
 import { ERROR_ALERT_KIND, ERROR_LOG_KEEP_DAYS, errorAlertSettings, jstAt, recentErrorCount, type ErrorAlertEnv } from './lib/error-log'
 import { ipSaltState, turnstileState } from './recruit'
+import { addDays, todayJST } from './lib/time'
 
 type Env = { Bindings: ErrorAlertEnv & { TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string }; Variables: { user: any; hqAudited?: boolean } }
 export const hqErrorsApi = new Hono<Env>()
@@ -17,7 +18,7 @@ const GROUP_LIMIT = 10
 const SOURCES = ['request', 'cron']
 
 // 日本時間の日付（days 日前）
-const jstDate = (daysAgo: number) => new Date(Date.now() + 9 * 3600 * 1000 - daysAgo * 86400000).toISOString().slice(0, 10)
+const jstDate = (daysAgo: number) => addDays(todayJST(), -daysAgo)
 
 hqErrorsApi.get('/errors', async (c) => {
   const db = c.env.DB

@@ -6,6 +6,7 @@
 // 鍵: Secret の VAPID_PUBLIC_KEY（非圧縮の公開鍵 65 バイトの base64url）・VAPID_PRIVATE_KEY（秘密鍵 d 32 バイトの base64url）があればそれを使う
 // （npx web-push generate-vapid-keys の出力と同じ形式）。なければ初回に作って push_vapid_keys に保存する
 // =========================================================
+import { nowJST } from './time'
 
 export type VapidEnv = { DB: D1Database; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; APP_BASE_URL?: string }
 type LoadedVapid = { publicKey: string; key: CryptoKey }
@@ -48,7 +49,7 @@ export async function loadVapid(env: VapidEnv): Promise<LoadedVapid> {
     const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair
     const rawPub = await crypto.subtle.exportKey('raw', kp.publicKey) as ArrayBuffer
     const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey) as JsonWebKey
-    const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const at = nowJST()
     // 同時に作られたときは先に入った鍵を使う
     await env.DB.prepare('INSERT OR IGNORE INTO push_vapid_keys (key_id, public_key, private_key, created_at) VALUES (1, ?, ?, ?)').bind(b64url(rawPub), jwk.d, at).run()
     row = await env.DB.prepare('SELECT public_key, private_key FROM push_vapid_keys WHERE key_id = 1').first() as any

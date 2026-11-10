@@ -7,6 +7,7 @@
 // 送らないもの（#541 #13）: 不達・迷惑メールの報告があったアドレス（email_suppressions）と、契約が停止中の企業のメール。
 // 配信の結果（不達・迷惑メールの報告・配信済み）は Resend の Webhook（handleResendWebhook）で受け取り、送信の記録を更新する。
 import { Resend } from 'resend'
+import { nowJST } from '../lib/time'
 
 export type MailEnv = {
   RESEND_API_KEY: string
@@ -285,7 +286,7 @@ export async function handleResendWebhook(env: MailEnv, req: Request): Promise<R
   const to: string[] = (Array.isArray(data.to) ? data.to : [data.to]).map((x: unknown) => normalizeAddress(String(x ?? ''))).filter(Boolean)
   if (!messageId) return json({ ok: true, ignored: true })
   const db = env.DB
-  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const at = nowJST()
   if (type === 'email.delivered') {
     await db.prepare(`UPDATE email_logs SET status = 'delivered' WHERE provider_message_id = ? AND status = 'sent'`).bind(messageId).run()
     return json({ ok: true })

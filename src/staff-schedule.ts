@@ -20,15 +20,15 @@ import { personStaffRows } from './roster'
 import { hashToken, isCompanyActive } from './lib/auth'
 import { isHHMM, isISODate, toInt } from './lib/validate'
 import { assignableStaffSql } from './lib/staff-eligibility'
-import { addDays, shiftWindow } from './lib/shift-time'
+import { shiftWindow } from './lib/shift-time'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { WORKING_SHIFT_STATUSES } from './lib/shift-status'
+import { nowJST, todayJST, addDays } from './lib/time'
+import { randomHex } from './lib/hash'
 
 type Bindings = { DB: D1Database; APP_BASE_URL?: string }
 type Variables = { user: any }
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
 const isMonth = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(v)
 function addMonths(month: string, n: number): string {
   const [y, m] = month.split('-').map(Number)
@@ -163,10 +163,7 @@ scheduleStaffApi.put('/availability', async (c) => {
 })
 
 // ---------- カレンダー（#301） ----------
-function genToken(): string {
-  const a = new Uint8Array(32); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+function genToken(): string { return randomHex(32) }
 function baseUrl(c: any): string {
   return String(c.env.APP_BASE_URL || new URL(c.req.url).origin).replace(/\/+$/, '')
 }
@@ -406,7 +403,7 @@ scheduleAdminApi.post('/availability/remind', async (c) => {
   const today = todayJST()
   if (!isMonth(b.month) || !submittableMonths(today).includes(b.month)) return c.json({ error: '提出を頼めるのは今月から先の月です' }, 400)
   const period = await loadPeriod(db, u.company_id, b.month)
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - REMIND_INTERVAL_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-REMIND_INTERVAL_MINUTES * 60 * 1000)
   const now = nowJST()
   // 送る権利を先に1回の書き込みで取る（ほかの管理者・別のタブから同時に押されても、通知は1回分だけにする）
   const claimed = await db.prepare(`INSERT INTO availability_periods (company_id, month, last_reminded_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)

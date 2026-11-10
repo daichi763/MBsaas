@@ -3,6 +3,7 @@
 // 日時は JST の 'YYYY-MM-DD HH:MM:SS'（nowJST()・attendance_reports.reported_at と同じ形）で扱い、文字列の大小で比べる。
 // 終了時刻が開始時刻以前のシフト（22:00〜06:00 など）は、終了を稼働日の翌日とみなす。
 // =========================================================
+import { addDays } from './time.ts' // テストが Node でこのファイルを直接読み込むので、拡張子まで書く
 
 export type DateTimeRange = { start: string; end: string }
 export type ShiftTimes = { work_date: string; start_time: string; end_time: string }
@@ -18,9 +19,6 @@ export const PRE_START_HOURS = 6
 // 休憩・勤務終了・退店を、予定の終了から何時間後まで受け付けるか（残業と押し忘れの分。稼働日の翌日 23:59:59 は超えない）
 export const AFTER_END_HOURS = 12
 
-export function addDays(d: string, n: number): string {
-  const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10)
-}
 export function toMin(t: string): number {
   const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0)
 }

@@ -31,7 +31,7 @@ import { chunk } from './lib/d1-chunk'
 import { attendanceTestHooks } from './lib/d1-retry'
 import { recordPunch } from './attendance-punch'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
-import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
+import { addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
@@ -75,6 +75,8 @@ import rosterImportApi from './roster-import'
 import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_READONLY_MESSAGE } from './hq-support'
 import { toursAdminApi, toursStaffApi } from './tours'
+import { nowJST, todayJST, addDays } from './lib/time'
+import { sha256, randomHex } from './lib/hash'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -88,13 +90,6 @@ type Variables = { user: any; hqAudited?: boolean; d1FailWrite?: () => boolean }
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 // ============ Utils ============
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function todayJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
-}
 // 生年月日から満年齢を計算する（NULLならnull）
 function calcAge(dob: string | null | undefined): number | null {
   if (!dob) return null
@@ -137,13 +132,7 @@ function normalizeSkills(v: unknown): string | null {
   const list = [...new Set(String(v ?? '').split(SKILL_SEP).map(s => s.trim()).filter(Boolean))]
   return list.length ? list.join(',') : null
 }
-function nowJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-}
-function genToken(): string {
-  const a = new Uint8Array(32); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+function genToken(): string { return randomHex(32) }
 // 日本の年度（4/1〜翌3/31）。fiscal_year=2025 は 2025/04/01〜2026/03/31 を指す
 function fiscalYearOf(dateStr: string): number {
   const y = Number(dateStr.slice(0, 4)); const m = Number(dateStr.slice(5, 7))
@@ -358,7 +347,7 @@ export async function generateFiscalYearReportsForAllCompanies(db: D1Database):
 // 下書き（#291）は配信していないので対象にしない（published_at は作成日時のため。古い下書きを後で配信したときに「確認不要」にならないように）
 export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; notices: number; batches: number; error?: string }> {
   const keepMs = NOTICE_READS_KEEP_DAYS * 24 * 3600 * 1000
-  const cutoffJst = new Date(Date.now() + 9 * 3600 * 1000 - keepMs).toISOString().slice(0, 19).replace('T', ' ')
+  const cutoffJst = nowJST(-keepMs)
   const cutoffUtc = new Date(Date.now() - keepMs).toISOString().slice(0, 19).replace('T', ' ') // read_at は UTC（列の既定値）
   const NOTICE_BATCH = 20
   const BATCH_SIZE = 500
@@ -788,7 +777,7 @@ const LAST_SEEN_STEP_MINUTES = 60
 async function touchLastSeen(c: any, u: any) {
   if (c.req.header('X-Background') === '1') return
   const now = nowJST()
-  const threshold = new Date(Date.now() + 9 * 3600 * 1000 - LAST_SEEN_STEP_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const threshold = nowJST(-LAST_SEEN_STEP_MINUTES * 60 * 1000)
   if (u.last_seen_at && String(u.last_seen_at) > threshold) return
   try {
     await c.env.DB.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ?').bind(now, u.user_id).run()
@@ -968,7 +957,7 @@ async function notifyLoginFailures(c: any, user: any) {
   try {
     const db = c.env.DB as D1Database
     const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString() // login_events.created_at は UTC
-    const quiet = new Date(Date.now() + 9 * 3600 * 1000 - LOGIN_FAILURE_NOTIFY_QUIET_MINUTES * 60000).toISOString().slice(0, 19).replace('T', ' ') // 通知は JST
+    const quiet = nowJST(-LOGIN_FAILURE_NOTIFY_QUIET_MINUTES * 60000) // 通知は JST
     const r = await db.prepare(`SELECT
         (SELECT COUNT(*) FROM login_events e WHERE e.user_id = ?1 AND e.created_at > ?2 AND e.event_type = 'login' AND e.result IN ('bad_password', 'mfa_failed', 'locked')
           AND e.event_id > COALESCE((SELECT MAX(s.event_id) FROM login_events s WHERE s.user_id = ?1 AND s.event_type = 'login' AND s.result = 'success'), 0)) AS failures,
@@ -2590,13 +2579,13 @@ api.post('/staff/consultations', async (c) => {
     }
   }
   // 二度押し・再送で同じ相談が続けて登録されないようにする（#194）
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-CONSULT_DUP_SECONDS * 1000)
   const dup = await db.prepare(`SELECT consultation_id FROM consultations WHERE staff_id = ? AND category = ? AND body = ? AND created_at >= ? LIMIT 1`)
     .bind(owner.staff_id, category, body, since).first()
   if (dup) return c.json({ error: '同じ内容の相談をすでに送信しています。相談履歴を確認してください', duplicate: true }, 409)
   // 送信回数の上限: 本人（全所属企業の分）が直近24時間に送った相談の数（#510）
   const sids = rows.length ? rows.map(r => r.staff_id) : [owner.staff_id]
-  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dayAgo = nowJST(-24 * 3600 * 1000)
   const sent = await db.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id IN (${sids.map(() => '?').join(',')}) AND created_at >= ?`).bind(...sids, dayAgo).first() as any
   if (Number(sent?.n) >= CONSULT_DAILY_MAX) return c.json({ error: `相談・連絡は24時間に${CONSULT_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください` }, 429)
   const r = await db.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at)
@@ -2663,11 +2652,11 @@ api.post('/staff/consultations/:id{[0-9]+}/messages', async (c) => {
   const co = await ownConsultation(db, u, toInt(c.req.param('id'), 1))
   if (!co) return c.json({ error: '相談が見つかりません' }, 404)
   const uids = (await consultPersonRows(db, u)).map(r => r.user_id)
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-CONSULT_DUP_SECONDS * 1000)
   const dup = await db.prepare(`SELECT 1 FROM consultation_messages WHERE consultation_id = ? AND author_side = 'staff' AND body = ? AND created_at >= ? LIMIT 1`)
     .bind(co.consultation_id, body, since).first()
   if (dup) return c.json({ error: '同じ内容をすでに送信しています', duplicate: true }, 409)
-  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dayAgo = nowJST(-24 * 3600 * 1000)
   const sent = await db.prepare(`SELECT COUNT(*) AS n FROM consultation_messages WHERE author_side = 'staff' AND author_user_id IN (SELECT value FROM json_each(?)) AND created_at >= ?`)
     .bind(JSON.stringify(uids.length ? uids : [u.user_id]), dayAgo).first() as any
   if (Number(sent?.n) >= CONSULT_MESSAGE_DAILY_MAX) return c.json({ error: `追加の連絡は24時間に${CONSULT_MESSAGE_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください` }, 429)
@@ -2700,10 +2689,10 @@ api.post('/staff/consultations/:id{[0-9]+}/photos', async (c) => {
   const postedAt = messageId == null ? co.created_at
     : ((await db.prepare(`SELECT created_at FROM consultation_messages WHERE message_id = ? AND consultation_id = ? AND author_side = 'staff'`).bind(messageId, co.consultation_id).first()) as any)?.created_at
   if (!postedAt) return c.json({ error: '追加の連絡が見つかりません' }, 404)
-  const windowStart = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_PHOTO_WINDOW_MIN * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const windowStart = nowJST(-CONSULT_PHOTO_WINDOW_MIN * 60 * 1000)
   if (String(postedAt) < windowStart) return c.json({ error: '写真は送信から1時間以内に付けてください。新しく追加の連絡を送ると、写真を付けられます' }, 409)
   const ext = photo.type === 'image/png' ? 'png' : 'jpg'
-  const rand = [...crypto.getRandomValues(new Uint8Array(6))].map(x => x.toString(16).padStart(2, '0')).join('')
+  const rand = randomHex(6)
   const key = `consultations/${co.company_id}/${co.consultation_id}/${Date.now()}_${rand}.${ext}`
   try {
     await c.env.PHOTOS.put(key, await photo.arrayBuffer(), { httpMetadata: { contentType: photo.type } })
@@ -6808,7 +6797,7 @@ api.post('/admin/notices', async (c) => {
   // キーが無い呼び出しも、同じ人が同じ内容を直前に配信していれば重複として扱う
   // （予約中のものは published_at が先の日時なので比べない。同じ文面を別の日時に予約できるように #291）
   const requestId = typeof b.client_request_id === 'string' && b.client_request_id.trim() ? b.client_request_id.trim().slice(0, 64) : null
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_DUP_WINDOW_SEC * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-NOTICE_DUP_WINDOW_SEC * 1000)
   const dup = await c.env.DB.prepare(`SELECT notice_id FROM notices WHERE company_id = ? AND created_by = ? AND title = ? AND COALESCE(body, '') = ?
     AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? AND published_at <= ? LIMIT 1`)
     .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since, nowJST()).first() as any
@@ -6847,7 +6836,7 @@ api.post('/admin/notices/:id{[0-9]+}/remind', async (c) => {
   if (!unread.length) return c.json({ error: '未読の人はいません' }, 400)
   // 先に再通知の日時を書き、同時に押されても1回だけ送る
   const now = nowJST()
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_REMIND_INTERVAL_MIN * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-NOTICE_REMIND_INTERVAL_MIN * 60 * 1000)
   const claim = await db.prepare(`UPDATE notices SET reminded_at = ?, remind_count = remind_count + 1
     WHERE notice_id = ? AND (reminded_at IS NULL OR reminded_at < ?) RETURNING remind_count`).bind(now, n.notice_id, since).first() as any
   if (!claim) return c.json({ error: `再通知は前回から${NOTICE_REMIND_INTERVAL_MIN}分たってから送れます` }, 409)
@@ -7522,7 +7511,7 @@ api.put('/admin/consultations/:id', async (c) => {
   let newReply = reply != null
   if (newReply) {
     const last = await db.prepare(`SELECT author_side, body, created_at FROM consultation_messages WHERE consultation_id = ? ORDER BY message_id DESC LIMIT 1`).bind(co.consultation_id).first() as any
-    const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const since = nowJST(-CONSULT_DUP_SECONDS * 1000)
     if (last && last.author_side === 'admin' && last.body === reply && String(last.created_at) >= since) newReply = false
   }
   const stmts = [db.prepare('UPDATE consultations SET manager_reply = COALESCE(?, manager_reply), status = COALESCE(?, status) WHERE consultation_id = ? AND company_id = ?')

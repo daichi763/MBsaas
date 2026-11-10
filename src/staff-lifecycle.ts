@@ -26,6 +26,8 @@ import { reportableWindow } from './lib/shift-time'
 import { getCookie } from 'hono/cookie'
 import { SESSION_COOKIE, loadSessionUser } from './lib/auth'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceIdOf, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
+import { nowJST, todayJST, addDays, isDate } from './lib/time'
+import { sha256 } from './lib/hash'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -145,17 +147,9 @@ export async function modesForShifts(db: D1Database, shiftIds: number[]) {
 }
 
 // ---------- ユーティリティ ----------
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
-function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 function randToken(bytes = 24): string {
   const a = new Uint8Array(bytes); crypto.getRandomValues(a)
   return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randToken(24)) }
 // 電話番号の正規化（数字のみ。+81 は 0 に）。全角の数字・＋は半角にそろえてから数える（#512）
@@ -1697,10 +1691,10 @@ publicReportApi.post('/:token/consultation', async (c) => {
     }
   }
   const body = `【${kind.label}】${text || '（報告用のページから連絡がありました。本人に確認してください）'}`
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - LINK_CONTACT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-LINK_CONTACT_DUP_SECONDS * 1000)
   const dup = await db.prepare('SELECT 1 FROM consultations WHERE staff_id = ? AND body = ? AND created_at >= ? LIMIT 1').bind(staffId, body, since).first()
   if (dup) return c.json({ error: '同じ内容の連絡を送信済みです', duplicate: true }, 409)
-  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dayAgo = nowJST(-24 * 3600 * 1000)
   const sent = await db.prepare("SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND entry_method = 'link' AND created_at >= ?").bind(staffId, dayAgo).first() as any
   const contact = await loadMailContact(db, companyId)
   if (Number(sent?.n) >= LINK_CONTACT_DAILY_MAX) {

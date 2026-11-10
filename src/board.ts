@@ -13,6 +13,7 @@ import { notifyCompanyAdmins, markAdminNotificationsRead, loadNotifyPrefs, email
 import { sendEmailBatch } from './services/email'
 import type { SendEmailInput } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
+import { nowJST, todayJST, isDate } from './lib/time'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -23,9 +24,6 @@ export const PRICE_UNITS = ['hourly', 'daily', 'monthly'] as const
 export const POST_STATUSES = ['draft', 'open', 'closed', 'filled'] as const
 const MAX_LIST = 200
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 const isTime = (s: any) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
 const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
 

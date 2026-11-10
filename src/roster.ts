@@ -15,6 +15,8 @@ import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isUniqueViolation } from './lib/staff-eligibility'
 import { shiftTotals } from './shift-board'
 import { assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt, assigneeMergeStmts } from './assignees'
+import { nowJST } from './lib/time'
+import { sha256, randomHex } from './lib/hash'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -255,26 +257,15 @@ function ageGroupSql(dob: string, fallback: string, alias?: string): string {
 }
 
 // ---------- ユーティリティ ----------
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function randHex(bytes: number): string {
-  const a = new Uint8Array(bytes); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function nowJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-}
 // ログイン不可のユーザー行用。ランダム値のハッシュなので、どのパスワードとも一致しない
-export async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randHex(32)) }
+export async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randomHex(32)) }
 function normalizeCode(code: string): string { return String(code || '').trim().toUpperCase().replace(/[^0-9A-Z]/g, '') }
 
 /** 人物IDと恒久固定コード（QR/ID連携用）を採番する */
 export async function createPerson(db: D1Database, companyId: number): Promise<{ person_id: string; global_staff_code: string }> {
   for (let i = 0; i < 5; i++) {
-    const person_id = randHex(16)
-    const global_staff_code = 'FS' + randHex(5).toUpperCase()
+    const person_id = randomHex(16)
+    const global_staff_code = 'FS' + randomHex(5).toUpperCase()
     try {
       await db.prepare('INSERT INTO persons (person_id, global_staff_code, created_company_id) VALUES (?, ?, ?)')
         .bind(person_id, global_staff_code, companyId).run()
@@ -299,7 +290,7 @@ export function insertPersonStmt(db: D1Database, p: NewPerson, companyId: number
 /** 人物IDと恒久固定コードを採番して build の文を1つの batch で流す。コードが偶然重なったときだけ採番し直す（createPerson と同じ5回まで） */
 export async function batchWithNewPerson(db: D1Database, build: (p: NewPerson) => D1PreparedStatement[]): Promise<{ person: NewPerson; res: D1Result[] }> {
   for (let i = 0; ; i++) {
-    const person = { person_id: randHex(16), global_staff_code: 'FS' + randHex(5).toUpperCase() }
+    const person = { person_id: randomHex(16), global_staff_code: 'FS' + randomHex(5).toUpperCase() }
     try { return { person, res: await db.batch(build(person)) } } catch (e) {
       if (i < 4 && isUniqueError(e, 'persons.')) continue
       throw e
@@ -1319,7 +1310,7 @@ async function findLinkSource(db: D1Database, code: string): Promise<any | null>
 /** 連携で受け入れた行（と他社連携から切り替えた行）に、次の企業へ連携するための自社専用コードを発行する（一度発行したら固定） */
 async function issueRelinkCode(db: D1Database, staffId: number): Promise<string> {
   for (let i = 0; i < 5; i++) {
-    const code = 'RL' + randHex(5).toUpperCase()
+    const code = 'RL' + randomHex(5).toUpperCase()
     try {
       const r = await db.prepare('UPDATE staff_profiles SET relink_code = ? WHERE staff_id = ? AND relink_code IS NULL').bind(code, staffId).run()
       if (r.meta.changes) return code
@@ -1351,7 +1342,7 @@ rosterApi.post('/link', async (c) => {
   // 連携の経路（雇用元・途中の企業）がたどれないよう、ユーザーコードは自社内で新規に採番する
   // email はコピーしない（お知らせメールの宛先は送信時に linkedStaffEmails で雇用元の行から取る）
   // 退職日は雇用元の行の値（退職予定）を引き継ぐ。以後の変更は propagateRetirementStmts で伝える（#127）
-  const userCode = 'LK-' + randHex(5).toUpperCase()
+  const userCode = 'LK-' + randomHex(5).toUpperCase()
   const linkedRole = src.source_role === 'staff' ? 'staff' : 'roster_only'
   const now = nowJST()
   // 二度押し・同時送信で同じ人が二重に登録されないよう（#238）、ユーザー行・スタッフマスタ行・同意記録を1つの batch で作り、

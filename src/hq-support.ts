@@ -8,6 +8,8 @@ import { HTTPException } from 'hono/http-exception'
 import { hashToken } from './lib/auth'
 import { sendEmailBatch } from './services/email'
 import { escapeHtml } from './email-templates/_util'
+import { nowJST } from './lib/time'
+import { randomHex } from './lib/hash'
 
 type Bindings = {
   DB: D1Database; PHOTOS?: R2Bucket; DOCUMENTS?: R2Bucket; CONTRACTS?: R2Bucket
@@ -18,7 +20,7 @@ type Env = { Bindings: Bindings; Variables: { user: any } }
 const HQ_COMPANY_STATUS = 'internal'
 const nowIso = () => new Date().toISOString()
 // 日本時間の 'YYYY-MM-DD HH:MM'（お知らせの掲載期間と比べる）
-const nowJstMinute = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
+const nowJstMinute = () => nowJST().slice(0, 16)
 const str = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max)
 const isId = (v: unknown) => /^\d{1,9}$/.test(String(v ?? ''))
 function settingsOf(json: unknown): Record<string, unknown> {
@@ -482,8 +484,7 @@ hqSupportHqApi.post('/view-sessions', async (c) => {
   if (requestId != null && !(await db.prepare('SELECT 1 FROM support_requests WHERE request_id = ? AND company_id = ?').bind(requestId, co.company_id).first())) {
     return c.json({ error: 'この企業の依頼の番号ではありません' }, 400)
   }
-  const a = new Uint8Array(32); crypto.getRandomValues(a)
-  const token = [...a].map(x => x.toString(16).padStart(2, '0')).join('')
+  const token = randomHex(32)
   const started = nowIso()
   const expires = new Date(Date.now() + minutes * 60 * 1000).toISOString()
   await db.batch([
