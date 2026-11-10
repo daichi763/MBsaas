@@ -747,7 +747,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | `maskPath` | [index.tsx:15](../src/index.tsx#L15) |
 | `SESSION_COOKIE` | [lib/auth.ts:8](../src/lib/auth.ts#L8) |
 | `sessionCookieOptions` | [lib/auth.ts:148](../src/lib/auth.ts#L148) |
-| `csrfGuard` | [lib/csrf.ts:53](../src/lib/csrf.ts#L53) |
+| `csrfGuard` | [lib/csrf.ts:55](../src/lib/csrf.ts#L55) |
 | `SESSION_IDLE_HOURS` | [api.ts:802](../src/api.ts#L802) |
 | `SESSION_MAX_DAYS` | [api.ts:803](../src/api.ts#L803) |
 | `SESSION_HOURS` | [lib/auth.ts:9](../src/lib/auth.ts#L9) |
