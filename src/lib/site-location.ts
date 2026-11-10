@@ -1,7 +1,7 @@
 // =========================================================
 // 会社の緊急連絡先と、入店の位置と現場の距離（作業単位 w5-site-contact）
 //   #173 会社の緊急連絡先（companies.emergency_phone・emergency_note）。スタッフアプリと報告用URLに出す
-//   #277 入店の位置と、シフトの開催場所（なければ案件）の位置との距離。基準は会社設定 settings_json.check_in_far_meters
+//   #277 入店の位置と、シフトの開催場所の位置との距離。基準は会社設定 settings_json.check_in_far_meters
 // =========================================================
 
 // 離れているとみなす距離の既定（m）。0 は判定しない
@@ -34,25 +34,23 @@ export function farThresholdMeters(settingsJson: any): number {
   return CHECK_IN_FAR_DEFAULT_METERS
 }
 
-// 現場の位置: シフトの開催場所の位置、なければ案件の位置。どちらもなければ null
-export async function sitePosition(db: D1Database, shift: { company_id: any; site_id?: any; project_id?: any }): Promise<{ lat: number; lng: number; source: 'site' | 'project' } | null> {
-  const row = await db.prepare(`SELECT si.lat AS s_lat, si.lng AS s_lng, p.location_lat AS p_lat, p.location_lng AS p_lng
-    FROM (SELECT 1) LEFT JOIN sites si ON si.site_id = ? AND si.company_id = ? LEFT JOIN projects p ON p.project_id = ? AND p.company_id = ?`)
-    .bind(shift.site_id ?? null, shift.company_id, shift.project_id ?? null, shift.company_id).first() as any
+// 現場の位置: シフトの開催場所の位置。開催場所がない・位置が未登録なら null
+// 案件の位置（projects.location_lat・location_lng）は書く経路がないので使わない（D-42。#9953）
+export async function sitePosition(db: D1Database, shift: { company_id: any; site_id?: any }): Promise<{ lat: number; lng: number; source: 'site' } | null> {
+  if (shift.site_id == null) return null
+  const row = await db.prepare('SELECT lat AS s_lat, lng AS s_lng FROM sites WHERE site_id = ? AND company_id = ?')
+    .bind(shift.site_id, shift.company_id).first() as any
   return sitePositionOf(row)
 }
-// 読み済みの行（s_lat・s_lng = 開催場所、p_lat・p_lng = 案件）から現場の位置を決める（打刻はシフトの行と一緒に読む。#9939）
-export function sitePositionOf(row: any): { lat: number; lng: number; source: 'site' | 'project' } | null {
+// 読み済みの行（s_lat・s_lng = 開催場所）から現場の位置を決める（打刻はシフトの行と一緒に読む。#9939）
+export function sitePositionOf(row: any): { lat: number; lng: number; source: 'site' } | null {
   if (!row) return null
   const sLat = coord(row.s_lat, 90), sLng = coord(row.s_lng, 180)
-  if (sLat != null && sLng != null) return { lat: sLat, lng: sLng, source: 'site' }
-  const pLat = coord(row.p_lat, 90), pLng = coord(row.p_lng, 180)
-  if (pLat != null && pLng != null) return { lat: pLat, lng: pLng, source: 'project' }
-  return null
+  return sLat != null && sLng != null ? { lat: sLat, lng: sLng, source: 'site' } : null
 }
 
 // 入店の位置と現場の距離（m、整数）。位置が取れていない・現場の位置が未登録なら null
-export async function checkInDistance(db: D1Database, shift: { company_id: any; site_id?: any; project_id?: any }, latitude: any, longitude: any): Promise<number | null> {
+export async function checkInDistance(db: D1Database, shift: { company_id: any; site_id?: any }, latitude: any, longitude: any): Promise<number | null> {
   if (coord(latitude, 90) == null || coord(longitude, 180) == null) return null
   return distanceFromSite(await sitePosition(db, shift), latitude, longitude)
 }

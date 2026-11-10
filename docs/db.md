@@ -98,6 +98,16 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 - 会社のデータを持つ表を足したら、[`OFFBOARDING_TABLES`](../src/services/retention.ts)（解約のときに書き出して消す表）か [`OFFBOARDING_KEPT_TABLES`](../src/services/retention.ts)（解約しても残す表）に入れます。スタッフ個人のデータなら、退職後の削除（[`RETIRED_TARGETS`](../src/services/retention.ts)）にも入れます。どちらにも入っていない表は、下の「6. 削除・匿名化・解約」に名前が出ます。
 - 足したら `npm run docs` でこの資料を作り直します。
 
+### 2.7 使っていない列
+
+列は消さずに残していますが、コードは読み書きしません。新しいコードでも使わないでください。
+
+| 列 | 理由 |
+|---|---|
+| `projects.location_lat`・`projects.location_lng` | 書く経路がありません（案件ごとの位置は作らない。`docs/decisions.md` の D-42）。入店の位置と比べる現場の位置は、シフトの開催場所（`sites.lat`・`sites.lng`）だけです（[`sitePosition`](../src/lib/site-location.ts)） |
+
+`staff_profiles.person_id` は、スタッフの行を作るどの経路でも入れます（[`createPerson`](../src/roster.ts) で人物を作ってから INSERT する。`seed.sql` も入れる）。NULL の行を後から埋める [`ensureRosterIdentity`](../src/roster.ts) は、スタッフ一覧などの一部の API だけが呼び、`/api/admin/roster/*` のリクエストのたびには呼びません。
+
 ## 3. ER 図
 
 `*` の付いた線は、REFERENCES（外部キー）の宣言がなく、列の名前がほかの表の主キーと同じもの（例: `staff_id` → `staff_profiles`）です。D1 の外部キーの制約は、宣言したものだけにかかります。`company_id`（ほぼ全部の表にあります）と、操作した人を記録する列（`*_by`・`actor_user_id` など）の線は、図が読めなくなるので省いています（列は下の「7. 表の一覧と定義」に出ています）。
@@ -4529,6 +4539,9 @@ END
 | `RETURNING_COUNTED` | [services/retention.ts:85](../src/services/retention.ts#L85) |
 | `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1262](../src/services/retention.ts#L1262) |
 | `RETIRED_TARGETS` | [services/retention.ts:86](../src/services/retention.ts#L86) |
+| `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
+| `createPerson` | [roster.ts:274](../src/roster.ts#L274) |
+| `ensureRosterIdentity` | [roster.ts:407](../src/roster.ts#L407) |
 | `CORE_TABLES` | [scripts/gen-docs.mjs:826](../scripts/gen-docs.mjs#L826) |
 | `TABLE_GROUPS` | [scripts/gen-docs.mjs:811](../scripts/gen-docs.mjs#L811) |
 | `loadRoster` | [roster.ts:448](../src/roster.ts#L448) |

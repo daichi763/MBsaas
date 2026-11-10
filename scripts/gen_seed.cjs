@@ -77,6 +77,15 @@ staffNames.forEach((n, i) => {
   profRows.push(`(${i + 1}, ${i + 4}, 1, '株式会社サンプルモバイル人材', ${esc(careers[i])}, '${skills[i]}', '${areas[i]}', '${ages[i]}', ${evalScore}, '${risk}', ${follow}, ${esc(memo)})`);
 });
 sql += profRows.join(',\n') + ';\n';
+sql += `-- 人物ID（person_id）を付ける。アプリはリクエストのたびの後埋めをしないため（#9954）。0012 の移行と同じ作り方で、入れ直しても変わらない
+UPDATE staff_profiles SET person_id = lower(hex(randomblob(16))), owner_company_id = COALESCE(owner_company_id, company_id)
+WHERE staff_id BETWEEN 1 AND ${profRows.length} AND company_id = 1 AND person_id IS NULL;
+INSERT OR IGNORE INTO persons (person_id, global_staff_code, created_company_id)
+SELECT sp.person_id, 'FS' || upper(hex(randomblob(5))), sp.company_id FROM staff_profiles sp
+WHERE sp.staff_id BETWEEN 1 AND ${profRows.length} AND sp.company_id = 1 AND NOT EXISTS (SELECT 1 FROM persons p WHERE p.person_id = sp.person_id);
+UPDATE users SET person_id = (SELECT sp.person_id FROM staff_profiles sp WHERE sp.user_id = users.user_id)
+WHERE person_id IS NULL AND user_id IN (SELECT user_id FROM staff_profiles WHERE staff_id BETWEEN 1 AND ${profRows.length} AND company_id = 1);
+`;
 
 // ============ クライアント ============
 sql += `

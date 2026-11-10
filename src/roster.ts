@@ -400,7 +400,7 @@ export function rosterBaseSelect(local = 'sp', src = 'src'): string {
 }
 
 /**
- * 0012 以降に person_id を付けずに作られた staff_profiles（seed.sql の後投入、他経路の INSERT 等）を補完する。
+ * person_id のない staff_profiles（テストの SQL で直接入れた行など）を補完する。作成の経路と seed.sql は person_id を入れるので、ふだんは何もしない（#9954）。
  * 所属区分は 0012 の移行と同じルール（所属会社名=自社名/未設定 → own_employee、それ以外 → partner_manual）。
  * 冪等。person_id が NULL の行が無ければ何もしない。
  */
@@ -585,8 +585,8 @@ export async function linkedStaffEmails(db: D1Database, staffIds: number[]): Pro
 }
 
 // ---------- ルーティング ----------
+// person_id の後埋め（ensureRosterIdentity）はリクエストごとには行わない。作成の経路はすべて person_id を入れる（#9954）
 const rosterApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
-rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.get('user').company_id); return next() })
 
 // 必須項目設定の取得
 rosterApi.get('/field-settings', async (c) => {

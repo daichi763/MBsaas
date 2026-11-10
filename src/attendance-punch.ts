@@ -91,7 +91,7 @@ async function recordPunchInner(c: any, input: PunchInput): Promise<Res> {
   const read = await withD1Retry(() => db.batch([
     db.prepare(`SELECT s.*, p.photo_required_override AS p_photo_required_override, p.late_grace_minutes AS p_late_grace_minutes,
         p.hours_basis AS p_hours_basis, p.time_round_minutes AS p_time_round_minutes, p.pay_time_round AS p_pay_time_round, p.default_break_minutes AS p_default_break_minutes,
-        si.lat AS s_lat, si.lng AS s_lng, p.location_lat AS p_lat, p.location_lng AS p_lng,
+        si.lat AS s_lat, si.lng AS s_lng,
         EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = s.company_id AND k.reopened_at IS NULL AND k.period_from <= s.work_date AND k.period_to >= s.work_date) AS p_closed
       FROM shifts s LEFT JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
       WHERE s.shift_id = ? AND s.staff_id IN ${JSON_IN}`).bind(shiftId, bindJsonArray(rows.map(r => r.staff_id))),

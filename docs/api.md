@@ -71,7 +71,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 
 <!-- BEGIN GENERATED: api-summary -->
 - エンドポイント: 564（GET 257・POST 194・PUT 78・PATCH 0・DELETE 35）
-- ミドルウェア: 22・画面などのルート（src/index.tsx）: 12
+- ミドルウェア: 21・画面などのルート（src/index.tsx）: 12
 - 画面の JS（public/static）から呼んでいる形が見つかったもの: 551・見つからないもの: 13
 
 | 区分 | 数 |
@@ -115,12 +115,11 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | 14 | `/api/admin/login-history` | [api.ts:1104](../src/api.ts#L1104) | 会社管理者だけ（セキュリティの設定・ログインの履歴） |
 | 15 | `/api/admin/users` | [accounts.ts:304](../src/accounts.ts#L304) | 会社管理者だけ（管理者アカウントの管理） |
 | 16 | `/api/admin/users/*` | [accounts.ts:305](../src/accounts.ts#L305) | 会社管理者だけ（管理者アカウントの管理） |
-| 17 | `/api/admin/roster/*` | [roster.ts:589](../src/roster.ts#L589) | 会社の連携用の識別子を用意する（権限の制限なし） |
-| 18 | `/api/admin/staff-requests/leave` | [staff-self-service.ts:544](../src/staff-self-service.ts#L544) | 会社管理者・事務担当だけ（休暇の申請） |
-| 19 | `/api/admin/staff-requests/leave/*` | [staff-self-service.ts:545](../src/staff-self-service.ts#L545) | 会社管理者・事務担当だけ（休暇の申請） |
-| 20 | `/api/admin/roster-chat/*` | [roster-chat.ts:22](../src/roster-chat.ts#L22) | 管理系の4ロールだけ（企業間チャット） |
-| 21 | `/api/staff/attendance` | [api.ts:1781](../src/api.ts#L1781) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts） |
-| 22 | `/api/staff/attendance-photo` | [api.ts:1782](../src/api.ts#L1782) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts） |
+| 17 | `/api/admin/staff-requests/leave` | [staff-self-service.ts:544](../src/staff-self-service.ts#L544) | 会社管理者・事務担当だけ（休暇の申請） |
+| 18 | `/api/admin/staff-requests/leave/*` | [staff-self-service.ts:545](../src/staff-self-service.ts#L545) | 会社管理者・事務担当だけ（休暇の申請） |
+| 19 | `/api/admin/roster-chat/*` | [roster-chat.ts:22](../src/roster-chat.ts#L22) | 管理系の4ロールだけ（企業間チャット） |
+| 20 | `/api/staff/attendance` | [api.ts:1781](../src/api.ts#L1781) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts） |
+| 21 | `/api/staff/attendance-photo` | [api.ts:1782](../src/api.ts#L1782) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts） |
 <!-- END GENERATED: api-middlewares -->
 
 ### 画面などのルート（src/index.tsx）
