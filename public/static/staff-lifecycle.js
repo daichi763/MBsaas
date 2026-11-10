@@ -205,12 +205,12 @@
         <button class="btn btn-outline text-xs" data-action="saveHostStatus" data-sid="${Number(sid)}">保存する</button>
         ${p.link_ended_at ? `<span class="text-xs text-gray-500">取引終了 ${esc(String(p.link_ended_at).slice(0, 10))}</span>` : ''}
       </div>
-      <p class="text-[11px] text-gray-400 mt-1">「取引終了」にすると、自社のシフトの割当候補から外れます（所属元の登録内容・ログインは変わりません）。「休止中」は割り当てるときに警告を出します</p>
+      <p class="text-[11px] text-gray-400 mt-1">「取引終了」にすると、自社のシフトの割当候補から外れ、本人もスタッフのアプリで自社の画面に切り替えられなくなります（所属元の登録内容・ログインは変わりません。取引状況を戻すとまた切り替えられます）。「休止中」は割り当てるときに警告を出します</p>
     </section>`)
   }
   delegate('saveHostStatus', (el) => withSubmitLock(el, async () => {
     const sid = Number(el.dataset.sid), status = document.getElementById('host-status').value
-    if (status === 'ended' && !confirm('取引終了にしますか？\n自社のシフトの割当候補から外れます（登録済みのシフトはそのまま残ります）')) return
+    if (status === 'ended' && !confirm('取引終了にしますか？\n自社のシフトの割当候補から外れます（登録済みのシフトはそのまま残ります）\n本人もスタッフのアプリで自社の画面（お知らせ・シフトなど）に切り替えられなくなります')) return
     try {
       await axios.put(`/api/admin/roster/${sid}/host-status`, { status })
       toast('取引状況を保存しました'); if (window.invalidateBoardMaster) invalidateBoardMaster(); renderStaffDetail(sid)

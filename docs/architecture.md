@@ -125,7 +125,7 @@ flowchart LR
 `/api/*` の処理の順番は次のとおりです（`src/api.ts`）。
 
 1. ログイン不要の API を先に登録する: `/api/auth/login` など（`src/api.ts:453`〜）、`/api/public/report`（報告用URL）・`/api/public/recruit`（募集ページ）・`/api/public/notice-ack`・`/api/public/calendar`（`src/api.ts:719`〜`737`）。
-2. 認証ミドルウェア（`src/api.ts:745`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業を止める（`src/lib/auth.ts:127` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
+2. 認証ミドルウェア（`src/api.ts:747`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業と、連携が終わった会社に企業切替で入ったままのスタッフ（401 `link_ended`。D-53）を止める（`src/lib/auth.ts:128` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
 3. ロールの確認: `/api/admin/*` は会社の管理系ロール（`src/api.ts:848`〜`851`）、`/api/admin/employees*` は会社管理者と事務担当だけ（`src/api.ts:858`）、`/api/hq/*` は本部だけ（`src/api.ts:860`）、`/api/staff/*` はスタッフだけ（`src/api.ts:887`）。
 4. 各機能の処理。会社の境界はここで確かめる（「8. マルチテナント」）。
 5. 書き込み（GET 以外）の後に、積まれたプッシュ通知を送る（`src/index.tsx:78`〜`82`）。

@@ -826,7 +826,7 @@ let ROSTER_PANEL_LINKS = []
 const rosterLinkHost = (id) => { const l = ROSTER_PANEL_LINKS.find(x => Number(x.linked_staff_id) === Number(id)); return l ? l.host_company_name : '' }
 delegate('rosterEndLink', (el) => withSubmitLock(el, async () => {
   const sid = Number(el.dataset.sid), linked = Number(el.dataset.linked)
-  if (!confirm(`「${rosterLinkHost(linked)}」との連携を終了します。\n\n・連携先は、このスタッフの基本項目（年代・最寄駅・スキル・経歴など）を見られなくなります\n・連携先では新しいシフトに割り当てられなくなります（入っているシフトは連携先が見直します）\n・連携先がさらに別の企業へ連携していた場合は、その連携も終了します\n・連携先の管理者に通知されます\n\nよろしいですか？`)) return
+  if (!confirm(`「${rosterLinkHost(linked)}」との連携を終了します。\n\n・連携先は、このスタッフの基本項目（年代・最寄駅・スキル・経歴など）を見られなくなります\n・連携先では新しいシフトに割り当てられなくなります（入っているシフトは連携先が見直します）\n・本人は、スタッフのアプリで連携先の会社に切り替えられなくなります\n・連携先がさらに別の企業へ連携していた場合は、その連携も終了します\n・連携先の管理者に通知されます\n\nよろしいですか？`)) return
   try {
     const { data } = await axios.post(`/api/admin/roster/${sid}/links/${linked}/end`, {})
     toast(data.ended > 1 ? `連携を終了しました（その先の連携 ${data.ended - 1}件も終了）` : '連携を終了しました')

@@ -52,6 +52,29 @@ export function deviceLabel(ua: unknown): string {
  */
 export const PERSON_SESSION_WHERE = `(user_id = ? OR user_id IN (
     SELECT user_id FROM users WHERE person_id IS NOT NULL AND person_id = (SELECT person_id FROM users WHERE user_id = ?)))`
+/** companyId を渡すと、その会社に切り替えている（その会社の行を指す）セッションだけに絞る（他社連携の行から開いたとき。D-53 #9940） */
+function personSessionWhere(userId: number, companyId?: number): { sql: string; binds: any[] } {
+  return companyId == null ? { sql: PERSON_SESSION_WHERE, binds: [userId, userId] }
+    : { sql: `${PERSON_SESSION_WHERE} AND company_id = ?`, binds: [userId, userId, companyId] }
+}
+/** 有効なセッション（同じ人のほかの会社の行の分も含む。companyId を渡すとその会社の分だけ） */
+export async function personSessions(db: D1Database, userId: number, companyId?: number): Promise<any[]> {
+  const w = personSessionWhere(userId, companyId)
+  return (await db.prepare(`SELECT token, user_id, company_id, created_at, expires_at, ip, user_agent FROM sessions WHERE ${w.sql} AND expires_at > ? ORDER BY created_at DESC`)
+    .bind(...w.binds, nowIso()).all()).results as any[]
+}
+/**
+ * 同じ人の全セッション（企業を切り替えて他社の行を指している分も）を消す文。パスワードの再設定・統合・強制ログアウトで使う（#9941）。
+ * companyId を渡すと、その会社に切り替えている分だけを消す
+ */
+export function revokePersonSessionsStmt(db: D1Database, userId: number, companyId?: number) {
+  const w = personSessionWhere(userId, companyId)
+  return db.prepare(`DELETE FROM sessions WHERE ${w.sql}`).bind(...w.binds)
+}
+export async function revokePersonSessions(db: D1Database, userId: number, companyId?: number): Promise<number> {
+  const r = await revokePersonSessionsStmt(db, userId, companyId).run()
+  return r.meta.changes || 0
+}
 
 // ---------- 会社ごとの設定（companies.settings_json） ----------
 export const IP_ALLOWLIST_MAX = 50
