@@ -1,0 +1,61 @@
+# PR ごとの確認（Sprint 21。#9944）
+#
+# main あての PR と main への push で、型チェック → ビルド → 資料の生成のずれ → 速いテスト を流す。
+# 本番のデプロイは Workers Builds が行う（docs/decisions.md の D-32）。この CI はデプロイしない・本番に接続しない・シークレットを使わない。
+# テストは wrangler dev --local（ローカルの D1）で動かす。対象は package.json の test:ci（数分で終わり、外に接続しないものだけ）。
+# 失敗した PR をマージできないようにするには、GitHub のブランチの保護でこの確認を必須にする（docs/operations.md の 3.5。利用者が判断してから設定する）。
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# 同じ PR・ブランチで新しい push があったら、前の実行は止める
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # test-w13-docs-arch-ops が、資料の行番号の基準のコミットとの差（git diff）を取るため、履歴をすべて取る
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22  # wrangler 4 は Node.js 22 以上が必要
+          cache: npm
+
+      - name: 依存のインストール
+        run: npm ci --no-audit --no-fund
+
+      - name: 型チェック
+        run: npx tsc --noEmit -p .
+
+      # GitHub Actions は CI=true なので、Workers Builds と同じく本番の設定の wrangler.json を作って確かめる（scripts/ci-wrangler-config.mjs）
+      - name: ビルド（本番の設定の確かめを含む）
+        run: npm run build
+
+      - name: 資料の生成のずれ
+        run: npm run docs:check
+
+      # wrangler dev は wrangler.json を先に読むので、テストの前に消してローカル用の設定（wrangler.jsonc のトップレベル）で動かす
+      - name: テスト用に本番の設定のファイルを消す
+        run: rm -f wrangler.json
+
+      - name: 速いテスト（wrangler dev --local）
+        run: npm run test:ci -- --no-build
+        env:
+          TEST_DB_DIR: ${{ runner.temp }}/mbsaas-test
