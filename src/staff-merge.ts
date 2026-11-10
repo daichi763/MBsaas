@@ -14,6 +14,7 @@ import { Hono } from 'hono'
 import { PRICE_COLUMNS, computeShiftPricing, conflictFor, findConflicts, isSettled, loadPayeeHistory, loadPricingData, payeeOn } from './shift-board'
 import { MATCH_PHONE_SQL, TYPE_LABEL, mergeSourceCheck, normalizePhone, payeeTypeFor } from './staff-lifecycle'
 import { revokeSessionsStmt } from './lib/auth'
+import { revokePersonSessionsStmt } from './lib/login-security'
 import { conflictLabel } from './lib/staff-eligibility'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { updateRowsStmts } from './lib/bulk-write'
@@ -281,6 +282,11 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     stmts.push(db.prepare(`UPDATE employee_records SET employment_ended_at = COALESCE(employment_ended_at, ?), ended_reason = COALESCE(ended_reason, ?), updated_at = ? WHERE staff_id = ?`)
       .bind(endedAt, `統合（統合先: ${tgt.name}）`, now, sid))
   }
+  // 統合元のセッションを消す（#9941）。統合元の人が企業を切り替えて他社の連携行を指しているセッションも消す。
+  // 下で連携行の人物IDを統合先に付け替えるので、その前に消す（付け替えた後は統合元の人のセッションとして見つけられない）。
+  // 統合元が他社連携の行のとき・統合先と同じ人物のときは、統合元の行のセッションだけを消す（所属元・統合先でのログインは残す）
+  const srcPersonWide = (src.affiliation_type || 'own_employee') !== 'linked_external' && !(src.person_id && src.person_id === tgt.person_id)
+  stmts.push(srcPersonWide ? revokePersonSessionsStmt(db, src.user_id) : revokeSessionsStmt(db, src.user_id))
   // 他社の連携行の付け替え（#248）。連携元は統合先、雇用元（基本情報の参照先）は統合先またはその雇用元。
   // 人物ID・表示名も統合先にそろえ、統合先の雇用元にログインがあれば連携先でもアプリを使えるようにする（#103）。
   // 連携先の会社に統合先の人の行がすでにある場合は、人物IDは変えない（同じ会社に同じ人物IDの行を2つ作らない）
@@ -299,10 +305,9 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   }
   // 未確認のメールとして統合先に残す（ログイン・再設定には使わない。#38）
   if (keepMail) stmts.push(db.prepare('UPDATE staff_profiles SET unverified_email = ? WHERE staff_id = ?').bind(srcMail, T))
-  // 統合元を「統合済み」に。ログインとセッションを無効化
+  // 統合元を「統合済み」に。ログインを無効化（セッションは上で消した）
   stmts.push(db.prepare('UPDATE staff_profiles SET merged_into_staff_id = ?, merged_at = ? WHERE staff_id = ?').bind(T, now, sid))
   stmts.push(db.prepare("UPDATE users SET status = 'inactive' WHERE user_id = ?").bind(src.user_id))
-  stmts.push(revokeSessionsStmt(db, src.user_id))
 
   // クライアントのNGスタッフ（カンマ区切り）の付け替え
   const ngs = ((await db.prepare(`SELECT client_id, ng_staff_ids FROM clients WHERE company_id = ? AND (',' || COALESCE(ng_staff_ids,'') || ',') LIKE ?`).bind(u.company_id, `%,${sid},%`).all()).results as any[])

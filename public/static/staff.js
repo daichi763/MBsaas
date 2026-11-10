@@ -52,7 +52,9 @@ axios.interceptors.response.use(r => r, e => {
     location.reload()
   } else if (r && !SESSION_ENDED && r.status === 401) {
     SESSION_ENDED = true
-    if (ME) alert('ログインの期限が切れました。再ログインすると、この画面に戻ります。')
+    // 企業切替で入っていた会社との連携が終わったときは、その理由を伝える（D-53 #9942）
+    if (r.data && r.data.code === 'link_ended') alert(r.data.error)
+    else if (ME) alert('ログインの期限が切れました。再ログインすると、この画面に戻ります。')
     location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash)
   }
   return Promise.reject(e)
