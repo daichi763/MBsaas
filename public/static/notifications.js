@@ -3,7 +3,6 @@
 // docs/spec_attendance_correction.md 5章。admin.js・corrections.js の後に読み込む（#notifications / #corrections/emails）
 // =========================================================
 (function () {
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店報告' }
   const EVENT = { submitted: '申請', resubmitted: '再申請', approved: '承認', rejected: '却下', cancelled: '取り消し' }
   const KIND = { correction_submitted: '承認依頼', correction_received: '受付', correction_approved: '承認の結果', correction_rejected: '却下の結果', correction_processed: '処理の控え', correction_changed_by_admin: '管理者による修正', correction_cancelled: '自動の取り消し', incident_reported: 'インシデント・クレーム',

@@ -13,7 +13,6 @@
   let closedNotice = [] // 送信したときに締め切られていた日時（選択から外したことを一覧の上に出す。#515）
 
   const nl2br = (s) => esc(s).replace(/\n/g, '<br>')
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d
   const fmt = (d) => { const x = dayjs(d); return `${x.format('M/D')}(${WD[x.day()]})` }
   // 問い合わせ先の表示。電話番号の形の部分は tel: のリンクにする（#513。esc した後の文字列に使う）
   const contactHtml = (note) => esc(note).replace(/(^|[^\d])(0\d{1,4}-\d{1,4}-\d{3,4}|0[5789]0\d{8}|0\d{9})(?![\d-])/g, (m, pre, tel) => `${pre}<a href="tel:${tel.replace(/-/g, '')}" class="text-blue-600 underline whitespace-nowrap">${tel}</a>`)
@@ -21,10 +20,8 @@
   const mapUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr)
   // 結果のメールを送れるか（#151）。サーバーがメールを送れない設定（result_mail: false）のときは、メールで届くと案内しない
   const mailOk = () => !(DATA && DATA.result_mail === false)
-  function toast(msg) {
-    let root = document.getElementById('toast'); if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
-    const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg; root.appendChild(el); setTimeout(() => el.remove(), 3000)
-  }
+  // errMsg・toast は common.js のものを使う。このページの知らせは少し長め（3 秒）に出す
+  UI_PAGE.toastMs = 3000
 
   async function load() {
     $app.innerHTML = '<div class="flex justify-center py-16"><span class="spin"></span></div>'

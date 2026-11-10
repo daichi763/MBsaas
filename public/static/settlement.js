@@ -3,7 +3,6 @@
 // docs/spec_spot_shift.md 第3段階。admin.js の後に読み込む（#settlement）
 // =========================================================
 (function () {
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const PAYEE_LABEL = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' }
   const UNIT = { daily: '日', hourly: '時' }
   // src/settlement.ts の確認事項と同じ文言

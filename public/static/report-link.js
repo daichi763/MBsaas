@@ -37,17 +37,11 @@
   function serverNow() { return clock ? new Date(clock.server + Date.now() - clock.client).toISOString().slice(0, 19).replace('T', ' ') : null }
   const atLabel = (at) => { const x = dayjs(at); return `${x.format('M/D')}(${WD[x.day()]}) ${x.format('HH:mm')}` }
 
-  // esc は common.js のものを使う
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d
+  // esc・errMsg・toast・modal・closeModal は common.js のものを使う
   const fmt = (d) => { const x = dayjs(d); return `${x.format('M/D')}(${WD[x.day()]})` }
   const nowStr = () => dayjs().format('YYYY-MM-DD HH:mm:ss')
-  function toast(msg) {
-    let root = document.getElementById('toast'); if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
-    const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg; root.appendChild(el); setTimeout(() => el.remove(), 2500)
-  }
-  function modal(html) { document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>` }
-  // 送信中は閉じない（送信の結果を写真の画面に出すため）。送信の後に閉じるときは force を付ける
-  window.closeModal = (force) => { if (sending && force !== true) return; document.getElementById('modal-root').innerHTML = ''; pending = null }
+  // 送信中は閉じない（送信の結果を写真の画面に出すため）。送信の後に閉じるときは force を付ける（closeModal(true)）
+  onModalClose(() => { pending = null }, { canClose: (force) => !sending || force === true })
 
   // ---------- 日報の下書き（勤怠報告の後の描き直しや再読み込みで、送っていない入力を消さない #440） ----------
   // タブを閉じるまで sessionStorage にトークン単位で保存する。使えない端末でも、画面を開いている間はメモリに保つ
