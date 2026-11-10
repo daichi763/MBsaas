@@ -230,10 +230,10 @@ delegate('staffChangePassword', (el) => withSubmitLock(el, async () => {
     else renderMore()
   } catch (e) { showApiError(e, 'パスワードの変更に失敗しました') }
 }))
-// 仮パスワードのままなら、閉じられない画面で変更を求める（背景のタップでは閉じない）
+// 仮パスワードのままなら、閉じられない画面で変更を求める（背景のタップでは閉じない）。
+// 自分の情報は staff.js の起動で読んだもの（ME_READY）を使う（#9947）
 ;(async () => {
-  let me
-  try { me = (await axios.get('/api/auth/me')).data } catch { return }
+  const me = await ME_READY
   if (!me || !me.must_change_password) return
   document.getElementById('modal-root').innerHTML = `<div class="modal-bg"><div class="modal-box p-5">
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-key text-blue-600 mr-1"></i>パスワードを変更してください</h3>
