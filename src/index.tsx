@@ -848,7 +848,7 @@ app.get('/hq', async (c) => {
 // wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
 const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
 const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
-const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）
+const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）。止まると1時間で本部画面に警告する（services/cron.ts の cronStaleHours。#9946）
 
 // 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
 // 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。
