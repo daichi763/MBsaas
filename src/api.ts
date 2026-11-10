@@ -5369,7 +5369,7 @@ api.put('/admin/projects/:id', async (c) => {
 type UsageCheck = [key: string, label: string, sql: string]
 const PROJECT_USAGE: UsageCheck[] = [
   ['shifts', 'シフト', 'SELECT 1 FROM shifts WHERE project_id = ?1'],
-  ['daily_reports', '日報', 'SELECT 1 FROM daily_reports WHERE project_id = ?1 UNION ALL SELECT 1 FROM daily_report_duplicates WHERE project_id = ?1'],
+  ['daily_reports', '日報', 'SELECT 1 FROM daily_reports WHERE project_id = ?1'],
   ['shift_slots', '募集枠', 'SELECT 1 FROM shift_slots WHERE project_id = ?1'],
   ['slot_patterns', '繰り返し登録', 'SELECT 1 FROM slot_patterns WHERE project_id = ?1'],
   ['shift_requests', 'シフト希望', 'SELECT 1 FROM shift_requests WHERE project_id = ?1'],

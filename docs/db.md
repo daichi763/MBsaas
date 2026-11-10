@@ -31,11 +31,11 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 101 本（0001_initial_schema.sql 〜 0101_heavy_read_indexes.sql）
-- 表: 132・索引: 314・トリガー: 14・ビュー: 0
-- REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 149
-- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 31
-- company_id の列がある表: 106
+- マイグレーション: 103 本（0001_initial_schema.sql 〜 0103_drop_migration_backups.sql）
+- 表: 129・索引: 314・トリガー: 14・ビュー: 0
+- REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 141
+- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 99・それ以外の主キーの表: 30
+- company_id の列がある表: 104
 <!-- END GENERATED: db-summary -->
 
 ## 2. 全体に共通する決まり
@@ -95,6 +95,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 
 - マイグレーションは `migrations/` に、4桁の番号を付けたファイルで足します（例: `0093_xxx.sql`）。番号は重ねません。
 - 既存のデータを壊す変更（列・表の削除、型の変更）は書きません。列・表の追加と、安全なデータの移行だけにします。
+  - 例外: 移行の控えの表3つ（`attendance_reports_duplicates_0036`・`daily_report_duplicates`・`roster_value_fixes`）は、利用者の決定で `0103` で消しました（[decisions.md](decisions.md) の D-54）。
+- 同じ名前の索引を別の定義で `CREATE INDEX IF NOT EXISTS` しても、何も起きません（前の索引が残ります）。索引の名前は重ねません（`scripts/test-w22-migrations.mjs` で確かめます。`0049` の `idx_board_proposals_imported` は作られず、`0102` で `idx_board_proposals_dup_check` として作り直しました）。
 - 会社のデータを持つ表を足したら、[`OFFBOARDING_TABLES`](../src/services/retention.ts)（解約のときに書き出して消す表）か [`OFFBOARDING_KEPT_TABLES`](../src/services/retention.ts)（解約しても残す表）に入れます。スタッフ個人のデータなら、退職後の削除（[`RETIRED_TARGETS`](../src/services/retention.ts)）にも入れます。どちらにも入っていない表は、下の「6. 削除・匿名化・解約」に名前が出ます。
 - 足したら `npm run docs` でこの資料を作り直します。
 
@@ -189,7 +191,6 @@ erDiagram
   staff_profiles ||--o{ roster_consents : "staff_id *"
   staff_profiles ||--o{ roster_host_note_history : "staff_id *"
   staff_profiles ||--o{ roster_link_events : "staff_id *"
-  staff_profiles ||--o{ roster_value_fixes : "staff_id *"
   staff_profiles ||--o{ staff_affiliation_history : "staff_id"
   staff_profiles ||--o{ staff_affiliation_schedules : "staff_id"
   staff_profiles ||--o{ staff_documents : "staff_id"
@@ -291,12 +292,7 @@ erDiagram
   attendance_reports ||--o{ attendance_corrections : "attendance_id *"
   shifts ||--o{ attendance_reports : "shift_id"
   staff_profiles ||--o{ attendance_reports : "staff_id"
-  attendance_reports ||--o{ attendance_reports_duplicates_0036 : "attendance_id *"
-  staff_profiles ||--o{ attendance_reports_duplicates_0036 : "staff_id *"
-  shifts ||--o{ attendance_reports_duplicates_0036 : "shift_id *"
-  staff_profiles ||--o{ daily_report_duplicates : "staff_id *"
-  projects ||--o{ daily_report_duplicates : "project_id *"
-  shifts ||--o{ daily_report_duplicates : "shift_id *"
+  daily_reports ||--o{ daily_report_edits : "daily_report_id *"
   projects ||--o{ daily_reports : "project_id"
   staff_profiles ||--o{ daily_reports : "staff_id"
   shifts ||--o{ daily_reports : "shift_id *"
@@ -306,9 +302,6 @@ erDiagram
   projects ||--o{ report_setting_logs : "project_id *"
   staff_profiles ||--o{ report_setting_logs : "staff_id *"
   shifts ||--o{ report_setting_logs : "shift_id *"
-  daily_report_edits {
-    INTEGER edit_id PK
-  }
   report_templates {
     INTEGER template_id PK
   }
@@ -503,6 +496,8 @@ erDiagram
 ### 5.2 企業間チャット
 
 - 所属元と稼働先の管理者どうしのチャットで、`roster_comments` に入ります（`roster_comments.owner_company_id`・`roster_comments.host_company_id` の2社）。API は `/api/admin/roster-chat` だけで、スタッフ本人には見せません。
+- 既読と未読の件数は、利用者ごとの `roster_comment_user_reads` で数えます。会社ごとの `roster_comment_reads`（自社で最後に読んだ人）は、既読にするたびに書きますが、画面・API では読みません（解約・退職後の削除で消すだけです）。
+- `roster_comment_reads` の行を消すと、トリガー `trg_roster_comment_reads_delete` が、同じスレッドの**同じ会社の**利用者の既読を消します。相手の会社の既読は消しません（`0102`。#9949。それまでは解約した会社の行を消すと、相手の会社の利用者にも過去のメッセージがまた未読で出ていました）。
 
 ### 5.3 案件掲示板
 
@@ -543,7 +538,7 @@ erDiagram
 
 作成からの期間で消す表: `user_notifications`（2年・[services/retention.ts:435](../src/services/retention.ts#L435)）・`email_logs`（1年・[services/retention.ts:439](../src/services/retention.ts#L439)）・`error_logs`（90日・[services/retention.ts:443](../src/services/retention.ts#L443)）・`error_alerts`（90日・[services/retention.ts:446](../src/services/retention.ts#L446)）・`operation_logs`（7年・[services/retention.ts:450](../src/services/retention.ts#L450)）
 
-R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE_SOURCES`）: `attendance_reports`→photos・`attendance_reports_duplicates_0036`→photos・`staff_documents`→documents・`employee_documents`→documents・`attendance_correction_attachments`→photos・`consultation_attachments`→photos・`notice_attachments`→documents・`client_documents`→contracts・`staff_pay_requests`→photos
+R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE_SOURCES`）: `attendance_reports`→photos・`staff_documents`→documents・`employee_documents`→documents・`attendance_correction_attachments`→photos・`consultation_attachments`→photos・`notice_attachments`→documents・`client_documents`→contracts・`staff_pay_requests`→photos
 <!-- END GENERATED: db-retention -->
 
 ### 解約のとき
@@ -551,7 +546,7 @@ R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE
 本部画面の「解約・データ」から、企業のデータを CSV で書き出し、猶予の日数（既定は [`OFFBOARDING_GRACE_DAYS`](../src/services/retention.ts)）の後に消します（記録は `company_offboardings`）。
 
 <!-- BEGIN GENERATED: db-offboarding -->
-解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（105 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1262](../src/services/retention.ts#L1262)）。
+解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（102 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1258](../src/services/retention.ts#L1258)）。
 
 company_id の列がある表は、すべてどちらかに入っています。
 <!-- END GENERATED: db-offboarding -->
@@ -599,7 +594,6 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`roster_host_note_history`](#roster_host_note_history) | 稼働先メモの履歴 | #538 稼働先が書く現場評価・稼働メモ（所属元と共有する追記項目）の履歴。 staff_profiles の site_evaluation / work_memo は最新の値として残し、保存のたびに変わった内容をここに追記する。 so… | 0058 | 解約時: 書き出して削除 |
 | [`roster_host_note_seen`](#roster_host_note_seen) | 稼働先メモの既読 | 所属元のユーザーが「連携先からの追記」の一覧で、どこまで確認したか（ユーザー単位）。 移行の時点の履歴は、今の管理系ユーザー全員が確認済みとして始める（移行で入れた行が一斉に未確認にならないように） | 0058 | 解約時: 削除（書き出さない） |
 | [`roster_link_events`](#roster_link_events) | 連携の成立・終了の記録（稼働先） | 連携の記録（成立・終了・再開）。所属元・稼働先の画面と、スタッフ本人の「共有中の会社」に使う | 0070 | 解約時: 書き出して削除 |
-| [`roster_value_fixes`](#roster_value_fixes) | 名簿の値の補正 | #40 作成APIで検証していなかった時期に入った、形式に合わない値を直す。 通勤可能時間: 数値でない値・0〜1440 の範囲外 → NULL、小数 → 四捨五入 生年月日・稼働開始可能日: 区切りが「/」「.」の日付は「-」にそろえ、… | 0057 | 解約時: 書き出して削除 |
 | [`staff_affiliation_history`](#staff_affiliation_history) | 所属区分の変更履歴 |  | 0017 | 解約時: 書き出して削除 |
 | [`staff_affiliation_schedules`](#staff_affiliation_schedules) | 所属区分の変更の予約 | status: pending（予約中）/ applied（適用済み）/ canceled（取消）/ failed（適用できなかった。error に理由） | 0039 | 解約時: 書き出して削除 |
 | [`staff_affiliations`](#staff_affiliations) | 所属先（協力会社） | 所属会社マスタ（テナント内。既存の会社横断マスタが無いため今回新設。自由入力の表記ゆれ防止用） | 0010 | 解約時: 書き出して削除 |
@@ -647,8 +641,6 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`attendance_correction_events`](#attendance_correction_events) | 打刻修正の操作履歴 | 申請の操作履歴（追記のみ） event: submitted / resubmitted / approved / approved_exception / rejected / cancelled | 0028 | 解約時: 書き出して削除 |
 | [`attendance_corrections`](#attendance_corrections) | 打刻修正の申請 |  | 0028 | 解約時: 書き出して削除 |
 | [`attendance_reports`](#attendance_reports) | 出退勤記録 | 勤怠報告 (起床/出発/入店/退店) | 0001 | 退職後7年の削除の対象（`RETIRED_TARGETS`）<br>解約時: 書き出して削除<br>R2 のファイル（photos） |
-| [`attendance_reports_duplicates_0036`](#attendance_reports_duplicates_0036) | 出退勤記録（重複の控え） |  | 0036 | 解約時: 書き出して削除<br>R2 のファイル（photos） |
-| [`daily_report_duplicates`](#daily_report_duplicates) | 日報（重複の控え） |  | 0035 | 解約時: 書き出して削除 |
 | [`daily_report_edits`](#daily_report_edits) | 日報の実績の修正の履歴 | 日報の値の修正の履歴。1回の修正・出し直しで1行。 | 0097 | 解約時: 書き出して削除 |
 | [`daily_reports`](#daily_reports) | 日報 | 日報 | 0001 | 解約時: 書き出して削除 |
 | [`reminder_sends`](#reminder_sends) | 報告のリマインドの送信記録 | 本人あての自動リマインド（作業単位 w5-reminders: #160） 起床・出発・入店の報告がない人と、日報を出していない人に、本人あてのアプリ内通知（とメール）を自動で送る（15分おきの cron。src/services/rem… | 0077 | 解約時: 削除（書き出さない） |
@@ -1521,23 +1513,6 @@ UNIQUE 制約: (company_id, employee_number)・(staff_id)
 
 - `idx_roster_link_events_source`: (source_staff_id, event_id)
 - `idx_roster_link_events_staff`: (staff_id, event_id)
-
-<a id="roster_value_fixes"></a>
-#### roster_value_fixes — 名簿の値の補正
-
-> #40 作成APIで検証していなかった時期に入った、形式に合わない値を直す。 通勤可能時間: 数値でない値・0〜1440 の範囲外 → NULL、小数 → 四捨五入 生年月日・稼働開始可能日: 区切りが「/」「.」の日付は「-」にそろえ、それでも実在する YYYY-MM-DD でない値 → NULL（空文字も NULL） 直す前の値は roster_value_fixes に残す（元に戻したり、本人に確かめたりできるように）
-
-作成: [migrations/0057_roster_registration.sql:1](../migrations/0057_roster_registration.sql#L1)　／　解約時: 書き出して削除
-
-| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
-|---|---|---|---|---|---|---|
-| `fix_id` | INTEGER |  |  | PK |  |  |
-| `staff_id` | INTEGER |  |  | （staff_profiles） |  |  |
-| `field` | TEXT |  |  |  |  | commute_minutes / date_of_birth / available_from |
-| `old_value` | TEXT | 可 |  |  |  |  |
-| `new_value` | TEXT | 可 |  |  |  |  |
-| `migration` | TEXT |  | '0057' |  |  |  |
-| `created_at` | DATETIME | 可 | CURRENT_TIMESTAMP |  |  |  |
 
 <a id="staff_affiliation_history"></a>
 #### staff_affiliation_history — 所属区分の変更履歴
@@ -2688,55 +2663,6 @@ UNIQUE 制約: (shift_id, report_type)
 - `idx_attendance_photo_key`: (photo_key)
 - `idx_attendance_shift`: (shift_id)
 
-<a id="attendance_reports_duplicates_0036"></a>
-#### attendance_reports_duplicates_0036 — 出退勤記録（重複の控え）
-
-作成: [migrations/0036_attendance_report.sql:1](../migrations/0036_attendance_report.sql#L1)　／　解約時: 書き出して削除　／　R2 のファイル（photos）
-
-| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
-|---|---|---|---|---|---|---|
-| `attendance_id` | INT | 可 |  | （attendance_reports） |  |  |
-| `company_id` | INT | 可 |  |  |  |  |
-| `staff_id` | INT | 可 |  | （staff_profiles） |  |  |
-| `shift_id` | INT | 可 |  | （shifts） |  |  |
-| `report_type` | TEXT | 可 |  |  |  |  |
-| `reported_at` | NUM | 可 |  |  |  |  |
-| `latitude` | REAL | 可 |  |  |  |  |
-| `longitude` | REAL | 可 |  |  |  |  |
-| `address` | TEXT | 可 |  |  |  |  |
-| `device_info` | TEXT | 可 |  |  |  |  |
-| `status` | TEXT | 可 |  |  |  |  |
-| `photo_key` | TEXT | 可 |  |  |  |  |
-| `entry_method` | TEXT | 可 |  |  |  |  |
-| `entered_by` | INT | 可 |  |  |  |  |
-
-<a id="daily_report_duplicates"></a>
-#### daily_report_duplicates — 日報（重複の控え）
-
-作成: [migrations/0035_daily_report.sql:1](../migrations/0035_daily_report.sql#L1)　／　解約時: 書き出して削除
-
-| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
-|---|---|---|---|---|---|---|
-| `daily_report_id` | INTEGER |  |  | PK |  |  |
-| `kept_daily_report_id` | INTEGER |  |  |  |  | 代わりに残した日報 |
-| `company_id` | INTEGER | 可 |  |  |  |  |
-| `staff_id` | INTEGER | 可 |  | （staff_profiles） |  |  |
-| `project_id` | INTEGER | 可 |  | （projects） |  |  |
-| `shift_id` | INTEGER | 可 |  | （shifts） |  |  |
-| `work_date` | DATE | 可 |  |  |  |  |
-| `report_values` | TEXT | 可 |  |  |  |  |
-| `incident_flag` | INTEGER | 可 |  |  |  |  |
-| `complaint_flag` | INTEGER | 可 |  |  |  |  |
-| `manager_comment` | TEXT | 可 |  |  |  |  |
-| `manager_checked` | INTEGER | 可 |  |  |  |  |
-| `submitted_at` | DATETIME | 可 |  |  |  |  |
-| `entry_method` | TEXT | 可 |  |  |  |  |
-| `archived_at` | DATETIME | 可 | CURRENT_TIMESTAMP |  |  |  |
-
-索引:
-
-- `idx_daily_report_duplicates_staff`: (staff_id)
-
 <a id="daily_report_edits"></a>
 #### daily_report_edits — 日報の実績の修正の履歴
 
@@ -2748,7 +2674,7 @@ UNIQUE 制約: (shift_id, report_type)
 |---|---|---|---|---|---|---|
 | `edit_id` | INTEGER |  |  | PK |  |  |
 | `company_id` | INTEGER |  |  |  |  |  |
-| `daily_report_id` | INTEGER |  |  |  |  |  |
+| `daily_report_id` | INTEGER |  |  | （daily_reports） |  |  |
 | `kind` | TEXT |  | 'admin_edit' |  |  |  |
 | `entry_method` | TEXT | 可 |  |  |  |  |
 | `before_values` | TEXT | 可 |  |  |  |  |
@@ -3741,6 +3667,7 @@ UNIQUE 制約: (token)
 
 索引:
 
+- `idx_board_proposals_dup_check`: (receiver_company_id, proposer_company_id, staff_id)
 - `idx_board_proposals_settled`: (status, decided_at) WHERE `anonymized_at IS NULL`
 - `uq_board_proposals_pending`（UNIQUE）: (thread_id, staff_id) WHERE `status IN ('proposed', 'interview')`
 - `idx_board_proposals_imported`: (imported_staff_id)
@@ -4422,7 +4349,7 @@ END
 ```sql
 CREATE TRIGGER trg_roster_comment_reads_delete AFTER DELETE ON roster_comment_reads
 BEGIN
-  DELETE FROM roster_comment_user_reads WHERE thread_staff_id = OLD.thread_staff_id;
+  DELETE FROM roster_comment_user_reads WHERE thread_staff_id = OLD.thread_staff_id AND company_id = OLD.company_id;
 END
 ```
 
@@ -4515,7 +4442,7 @@ END
 <!-- BEGIN GENERATED: db-refs -->
 | 名前 | 位置 |
 |---|---|
-| `OFFBOARDING_TABLES` | [services/retention.ts:1145](../src/services/retention.ts#L1145) |
+| `OFFBOARDING_TABLES` | [services/retention.ts:1144](../src/services/retention.ts#L1144) |
 | `ownStaff` | [lib/tenant.ts:23](../src/lib/tenant.ts#L23) |
 | `ownProject` | [lib/tenant.ts:15](../src/lib/tenant.ts#L15) |
 | `ownShift` | [lib/tenant.ts:31](../src/lib/tenant.ts#L31) |
@@ -4527,7 +4454,7 @@ END
 | `hashPassword` | [lib/auth.ts:46](../src/lib/auth.ts#L46) |
 | `hashToken` | [lib/auth.ts:38](../src/lib/auth.ts#L38) |
 | `RETURNING_COUNTED` | [services/retention.ts:85](../src/services/retention.ts#L85) |
-| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1262](../src/services/retention.ts#L1262) |
+| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1258](../src/services/retention.ts#L1258) |
 | `RETIRED_TARGETS` | [services/retention.ts:86](../src/services/retention.ts#L86) |
 | `CORE_TABLES` | [scripts/gen-docs.mjs:826](../scripts/gen-docs.mjs#L826) |
 | `TABLE_GROUPS` | [scripts/gen-docs.mjs:811](../scripts/gen-docs.mjs#L811) |
@@ -4543,6 +4470,6 @@ END
 | `runRetentionCleanup` | [services/retention.ts:944](../src/services/retention.ts#L944) |
 | `CRON_JOBS` | [index.tsx:856](../src/index.tsx#L856) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:116](../src/services/retention.ts#L116) |
-| `purgeExpiredTokens` | [services/retention.ts:1086](../src/services/retention.ts#L1086) |
-| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1123](../src/services/retention.ts#L1123) |
+| `purgeExpiredTokens` | [services/retention.ts:1085](../src/services/retention.ts#L1085) |
+| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1122](../src/services/retention.ts#L1122) |
 <!-- END GENERATED: db-refs -->
