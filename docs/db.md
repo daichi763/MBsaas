@@ -542,7 +542,7 @@ erDiagram
 | `retired_staff_deferred` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 | `r2_pending` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 
-在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:797](../src/services/retention.ts#L797)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
+在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:801](../src/services/retention.ts#L801)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
 
 退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:96](../src/services/retention.ts#L96)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`・`age_entered`・`age_entered_on`
 
@@ -556,7 +556,7 @@ R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE
 本部画面の「解約・データ」から、企業のデータを CSV で書き出し、猶予の日数（既定は [`OFFBOARDING_GRACE_DAYS`](../src/services/retention.ts)）の後に消します（記録は `company_offboardings`）。
 
 <!-- BEGIN GENERATED: db-offboarding -->
-解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（102 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1258](../src/services/retention.ts#L1258)）。
+解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（102 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1262](../src/services/retention.ts#L1262)）。
 
 company_id の列がある表は、すべてどちらかに入っています。
 <!-- END GENERATED: db-offboarding -->
@@ -4452,26 +4452,26 @@ END
 <!-- BEGIN GENERATED: db-refs -->
 | 名前 | 位置 |
 |---|---|
-| `OFFBOARDING_TABLES` | [services/retention.ts:1144](../src/services/retention.ts#L1144) |
+| `OFFBOARDING_TABLES` | [services/retention.ts:1148](../src/services/retention.ts#L1148) |
 | `ownStaff` | [lib/tenant.ts:23](../src/lib/tenant.ts#L23) |
 | `ownProject` | [lib/tenant.ts:15](../src/lib/tenant.ts#L15) |
 | `ownShift` | [lib/tenant.ts:31](../src/lib/tenant.ts#L31) |
 | `hqViewAdminGuard` | [hq-support.ts:197](../src/hq-support.ts#L197) |
 | `AFFILIATION_TYPES` | [roster.ts:24](../src/roster.ts#L24) |
 | `NO_LOGIN_ROLES` | [lib/auth.ts:16](../src/lib/auth.ts#L16) |
-| `nowJST` | [api.ts:139](../src/api.ts#L139) |
+| `nowJST` | [api.ts:140](../src/api.ts#L140) |
 | `loadSessionUser` | [lib/auth.ts:128](../src/lib/auth.ts#L128) |
 | `hashPassword` | [lib/auth.ts:46](../src/lib/auth.ts#L46) |
 | `hashToken` | [lib/auth.ts:38](../src/lib/auth.ts#L38) |
 | `RETURNING_COUNTED` | [services/retention.ts:85](../src/services/retention.ts#L85) |
-| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1258](../src/services/retention.ts#L1258) |
+| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1262](../src/services/retention.ts#L1262) |
 | `RETIRED_TARGETS` | [services/retention.ts:86](../src/services/retention.ts#L86) |
 | `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
 | `createPerson` | [roster.ts:274](../src/roster.ts#L274) |
-| `ensureRosterIdentity` | [roster.ts:407](../src/roster.ts#L407) |
+| `ensureRosterIdentity` | [roster.ts:435](../src/roster.ts#L435) |
 | `CORE_TABLES` | [scripts/gen-docs.mjs:826](../scripts/gen-docs.mjs#L826) |
 | `TABLE_GROUPS` | [scripts/gen-docs.mjs:811](../scripts/gen-docs.mjs#L811) |
-| `loadRoster` | [roster.ts:448](../src/roster.ts#L448) |
+| `loadRoster` | [roster.ts:476](../src/roster.ts#L476) |
 | `CONSENT_VERSION` | [roster.ts:220](../src/roster.ts#L220) |
 | `SHARED_SCOPE` | [roster.ts:221](../src/roster.ts#L221) |
 | `NOT_SHARED_SCOPE` | [roster.ts:226](../src/roster.ts#L226) |
@@ -4480,9 +4480,9 @@ END
 | `PUBLIC_COLS` | [board.ts:60](../src/board.ts#L60) |
 | `buildSnapshot` | [board.ts:569](../src/board.ts#L569) |
 | `shapeProposal` | [board.ts:604](../src/board.ts#L604) |
-| `runRetentionCleanup` | [services/retention.ts:944](../src/services/retention.ts#L944) |
+| `runRetentionCleanup` | [services/retention.ts:948](../src/services/retention.ts#L948) |
 | `CRON_JOBS` | [index.tsx:856](../src/index.tsx#L856) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:116](../src/services/retention.ts#L116) |
-| `purgeExpiredTokens` | [services/retention.ts:1085](../src/services/retention.ts#L1085) |
-| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1122](../src/services/retention.ts#L1122) |
+| `purgeExpiredTokens` | [services/retention.ts:1089](../src/services/retention.ts#L1089) |
+| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1126](../src/services/retention.ts#L1126) |
 <!-- END GENERATED: db-refs -->
