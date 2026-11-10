@@ -277,7 +277,8 @@ async function browserChecks() {
       const lo = writes.splice(0)
       ok('画面: ログアウト（POST /api/auth/logout）も通る', lo.some(x => x.path === '/api/auth/logout' && x.status === 200), lo)
     }
-    // Referrer-Policy が no-referrer の画面（パスワード再設定・メールアドレスの確認）からの送信も通る（ブラウザは Origin: null を付ける）。
+    // トークンを URL に持つ画面（パスワード再設定・メールアドレスの確認）からの送信も通る（Referrer-Policy は strict-origin。Referer にトークンを載せず、Origin は付く。
+    // no-referrer だと Origin が null になり、Sec-Fetch-Site を送らない古い Safari では 403 になるため）。
     // トークンは無効なので 400 などになるが、csrf_origin の 403 にはならない
     for (const [path, api, body] of [['/reset-password?token=' + 'y'.repeat(40), '/api/auth/reset-password', `{ token: '${'y'.repeat(40)}', password: 'Abcdefgh-2026' }`],
       ['/verify-email?token=' + 'y'.repeat(40), '/api/auth/verify-email', `{ token: '${'y'.repeat(40)}' }`]]) {
@@ -285,7 +286,9 @@ async function browserChecks() {
       await until(`typeof axios === 'function' && document.readyState === 'complete'`)
       await wait(800)
       const r = await ev(`axios.post('${api}', ${body}).then(x => ({ status: x.status, code: null }), e => ({ status: e.response ? e.response.status : 0, code: e.response && e.response.data ? e.response.data.code || null : null }))`)
-      ok(`画面: no-referrer の画面（${path.split('?')[0]}）からの送信は csrf_origin で止めない`, r && r.status !== 0 && r.code !== 'csrf_origin', r)
+      ok(`画面: トークンを URL に持つ画面（${path.split('?')[0]}）からの送信は csrf_origin で止めない`, r && r.status !== 0 && r.code !== 'csrf_origin', r)
+      const rp = await ev(`[...document.querySelectorAll('meta[name="referrer"]')].map(m => m.content).join(',')`)
+      ok(`画面: ${path.split('?')[0]} の Referrer-Policy は strict-origin（トークンを Referer に載せず、Origin を null にしない）`, rp === 'strict-origin', rp)
     }
     ok('画面: スクリプトのエラーがない', errors.length === 0, errors)
   } finally {

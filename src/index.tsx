@@ -419,7 +419,7 @@ app.get('/login', async (c) => {
 // パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る）
 app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('パスワード再設定')}<meta name="referrer" content="no-referrer"></head>
+<head>${head('パスワード再設定')}<meta name="referrer" content="strict-origin"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
@@ -500,7 +500,7 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 // メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する
 app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="strict-origin"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">

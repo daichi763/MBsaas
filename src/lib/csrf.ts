@@ -8,7 +8,7 @@
 //
 // Origin も Referer も無いとき:
 //   今のブラウザは GET・HEAD 以外のリクエストには、同じサイトでも必ず Origin を付ける。
-//   ただし Referrer-Policy が no-referrer の画面（パスワード再設定・メールアドレスの確認など）からは、同じサイトでも Origin が "null" になる。
+//   ただし Referrer-Policy が no-referrer の画面からは、同じサイトでも Origin が "null" になる（パスワード再設定・メールアドレスの確認は、Sec-Fetch-Site の無い古い Safari でも止まらないよう strict-origin にした。src/index.tsx）。
 //   "null" は、ブラウザが付ける Sec-Fetch-Site（画面からは書き換えられない）が same-origin のときだけ通し、それ以外（別のサイトの sandbox の iframe など）は拒否する。
 //   Origin も Referer も無いのは curl・テスト・ほかのプログラムからの呼び出しなので、セッションの Cookie を付けていないもの
 //   （ログインなど）は通し、セッションの Cookie を付けたものだけを拒否する（古いブラウザでの CSRF の余地を残さないため）。
