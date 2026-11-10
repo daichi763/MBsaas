@@ -258,7 +258,7 @@ window.badgesFresh = (ms) => BADGES_PENDING > 0 || Date.now() - BADGES_AT < ms
 // タブが裏にあるとき・ログインの期限切れ・アカウントの切り替えの後は取らない（#526）
 setInterval(() => { if (!document.hidden && ME && window.sessionUsable()) refreshBadges() }, 60 * 1000)
 
-// 左側のメニューの見出し（#9305。見出しは src/index.tsx の sideNavGroup）。押すと閉じたり開いたりし、閉じた見出しを localStorage に覚える。
+// 左側のメニューの見出し（#9305。見出しと項目は src/admin-menu.ts）。押すと閉じたり開いたりし、閉じた見出しを localStorage に覚える。
 // 今のページがある見出しは開く（覚えた状態は変えない）。閉じた見出しの横には、中の項目の件数（NAV_COUNTS）の合計を出す
 const NAV_COLLAPSED_KEY = 'admin-nav-collapsed'
 function navCollapsedGroups() {
@@ -287,11 +287,6 @@ function openNavGroupOf(tab) {
   const link = [...document.querySelectorAll('#side-nav .side-link[data-tab]')].find(el => el.dataset.tab === tab)
   const g = link && link.closest('.nav-group')
   if (g && g.classList.contains('collapsed')) setNavGroupOpen(g, true)
-}
-// 役割で項目を外したあと、項目が1つもない見出しは出さない
-function hideEmptyNavGroups() {
-  navGroups().forEach(g => g.classList.toggle('hidden', !g.querySelector('.side-link[data-tab]')))
-  document.querySelectorAll('#mobile-nav optgroup').forEach(og => { og.hidden = !og.querySelector('option') })
 }
 ;(function initNavGroups() {
   const collapsed = navCollapsedGroups()
@@ -2392,16 +2387,8 @@ delegate('confirmDocument', el => withSubmitLock(el, async () => {
 }))
 
 // ============ スタッフの申請（登録情報の変更 #272・提出書類と期限 #288 #297・休暇 #289） ============
-// メニューは index.tsx を変えずにここで足す（打刻修正承認の下）。件数はメニューのバッジに出す
-;(function addStaffRequestsNav() {
-  const after = document.querySelector('.side-link[data-tab="corrections"]')
-  if (after && !document.querySelector('.side-link[data-tab="staff-requests"]')) {
-    after.insertAdjacentHTML('afterend', `<a href="#staff-requests" class="side-link flex items-center" data-tab="staff-requests"><i class="fas fa-file-signature w-5"></i>スタッフの申請<span id="staff-requests-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>`)
-  }
-  const opt = document.querySelector('#mobile-nav option[value="corrections"]')
-  if (opt && !document.querySelector('#mobile-nav option[value="staff-requests"]')) opt.insertAdjacentHTML('afterend', '<option value="staff-requests">スタッフの申請</option>')
-  setTimeout(() => refreshStaffRequestsBadge(), 800)
-})()
+// メニューの項目は src/admin-menu.ts（打刻修正承認の下）。件数はメニューのバッジに出す
+setTimeout(() => refreshStaffRequestsBadge(), 800)
 function applyStaffRequestsBadge(sum) {
   const b = document.getElementById('staff-requests-badge')
   if (!b || !sum) return
@@ -7198,20 +7185,12 @@ function accountEmailNotice() {
 }
 
 // ============ ルーティング ============
-const routes = {
-  // ダッシュボードの上の「はじめにやること」（#9711。public/static/tour.js）
-  dashboard: async () => { await renderDashboard(); accountEmailNotice(); if (window.FosTour) FosTour.dashboard() }, account: renderAccount, staff: renderStaff, projects: renderProjects, clients: renderClients,
-  shifts: () => (window.renderShiftBoard ? renderShiftBoard() : renderShifts()), reports: () => renderReports(), analytics: () => renderAnalytics(),
-  notices: renderNotices, follow: renderFollow, consult: renderConsult, billing: () => renderBilling(), settlement: () => (window.renderSettlement ? renderSettlement() : renderBilling()), recruit: () => (window.renderRecruit ? renderRecruit() : renderDashboard()),
-  'notice-reports': () => renderNoticeReadReport(), employees: renderEmployees,
-  'report-settings': () => (window.renderReportSettings ? renderReportSettings() : renderDashboard()),
-  corrections: () => (window.renderCorrections ? renderCorrections() : renderDashboard()),
-  notifications: () => (window.renderNotificationsInbox ? renderNotificationsInbox() : renderDashboard()),
-  'attendance-history': () => (window.renderAttendanceHistory ? renderAttendanceHistory() : renderDashboard()),
-  security: () => (window.renderSecurity ? renderSecurity() : renderDashboard())
-}
-// スタッフの申請（#272 #288 #289 #297。画面は書類の欄の後に定義）
-routes['staff-requests'] = () => renderStaffRequests()
+// ダッシュボード。上の「はじめにやること」（#9711。public/static/tour.js）も描く
+async function renderDashboardPage() { await renderDashboard(); accountEmailNotice(); if (window.FosTour) FosTour.dashboard() }
+// 画面の登録: メニューの項目とメニューにない画面の一覧（src/admin-menu.ts。index.tsx が window.ADMIN_SCREENS に入れる）から作る。
+// 描く関数は名前で持ち、開くときに window から呼ぶ（ほかの画面の JS は admin.js の後に読み込むため）
+const routes = {}
+for (const [hash, render] of window.ADMIN_SCREENS || []) routes[hash] = () => window[render]()
 // 本文の幅（#9930）: 入力フォームが中心の画面は読みやすい幅（form）、ほかの一覧・表・ダッシュボード・詳細などは幅いっぱい（full）。
 // 一覧とフォームが半々の画面（セキュリティなど）は full にする。幅そのものは input.css で決める（どの画面をどちらにしたかは docs/screens.md）
 const APP_FORM_TABS = new Set(['account'])
@@ -7245,10 +7224,10 @@ function route() {
   // 実績分析の #analytics/<案件ID>（#9512。数字以外は全案件）
   if (tab === 'analytics' && id !== undefined) return renderAnalytics(undefined, /^\d+$/.test(id) ? id : '')
   if (tab === 'shifts' && id === 'week') return renderShifts()
-  if (tab === 'board' && window.renderBoard) return renderBoard(id)
-  if (tab === 'report-settings' && window.renderReportSettings) return renderReportSettings(id)
-  if (tab === 'corrections' && id === 'emails' && window.renderCorrectionEmails) return renderCorrectionEmails()
-  if (tab === 'corrections' && window.renderCorrections) return renderCorrections(id)
+  if (tab === 'board' && id) return renderBoard(id)
+  if (tab === 'report-settings' && id) return renderReportSettings(id)
+  if (tab === 'corrections' && id === 'emails') return renderCorrectionEmails()
+  if (tab === 'corrections' && id) return renderCorrections(id)
   ;(routes[tab] || renderDashboard)()
 }
 
@@ -7256,14 +7235,7 @@ window.addEventListener('hashchange', route)
 document.getElementById('mobile-nav').addEventListener('change', e => { location.hash = e.target.value })
 
 // ============ 出勤可能日（#171 #availability）: 締切・未提出の人への通知・日付×スタッフの一覧。API は src/staff-schedule.ts ============
-// メニューは index.tsx を変えずに、ここで『シフト管理』の下へ足す
-;(function addAvailabilityMenu() {
-  const side = document.querySelector('#side-nav a[data-tab="shifts"]')
-  if (side && !document.querySelector('#side-nav a[data-tab="availability"]')) side.insertAdjacentHTML('afterend', '<a href="#availability" class="side-link" data-tab="availability"><i class="fas fa-calendar-check w-5"></i>出勤可能日</a>')
-  const opt = document.querySelector('#mobile-nav option[value="shifts"]')
-  if (opt && !document.querySelector('#mobile-nav option[value="availability"]')) opt.insertAdjacentHTML('afterend', '<option value="availability">出勤可能日</option>')
-})()
-routes.availability = () => renderAvailabilityBoard()
+// メニューの項目は src/admin-menu.ts（『シフト管理』の下）
 const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
 const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み'], ['exempt', '提出しない人']]
 // 出勤可能日の提出（#9907 #9918）: exempt の人（スタッフマスタで「しない」にした人）は、未提出の数・通知に数えない
@@ -7391,12 +7363,10 @@ delegate('avbRemind', (el) => {
     ME = data
     showCompanyName(data.company_name + ' / ' + data.name)
   } catch (e) { return }
-  // 従業員管理を扱えないロールには、メニューとスタッフ詳細の「従業員管理」ボタンを出さない（#205）
+  // 従業員管理を扱えないロールには、スタッフ詳細の「従業員管理」ボタンを出さない（#205。メニューの項目は src/admin-menu.ts の hr で出し分ける）
   if (!ME.can_manage_hr) {
-    document.querySelectorAll('.side-link[data-tab="employees"], #mobile-nav option[value="employees"]').forEach(el => el.remove())
     const st = document.createElement('style'); st.textContent = 'a.btn[href^="#employees/"]{display:none!important}'; document.head.appendChild(st)
   }
-  hideEmptyNavGroups()
   route()
   // メニューのバッジ（#9935。開いたときはこの1回だけ取る）
   refreshBadges()

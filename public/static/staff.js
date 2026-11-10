@@ -1838,25 +1838,23 @@ async function renderPerf(month) {
 
 // ============ その他 (お知らせ / 相談) ============
 // 『その他』のメニュー。中の画面はそれぞれ URL（#notices・#consult・#manual など）で開き、戻る・下のタブで戻れるようにする（#374）。
+// 項目は画面の登録（staffScreen の more。staff-attendance.js・staff-profile.js の分も）から order の順に並べる。
 // ほかの画面の『戻る』から呼ばれたときは、URL を #more に変えて描き直す（false を返す）
+// 「使い方をもう一度見る」（tour.js）は、研修・マニュアルとマイプロフィールの間に置く
+const MORE_TOUR_ORDER = 80
 function renderMore() {
   if ((location.hash || '') !== '#more') { location.hash = 'more'; return false }
-  const item = (hash, icon, title, sub, badgeId) => `
-      <a href="#${hash}" class="report-btn">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas ${icon}"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">${title}${badgeId ? ` <span id="${badgeId}" class="badge badge-red hidden"></span>` : ''}</span><span class="block text-xs text-gray-400">${sub}</span></span>
+  const item = (m) => `
+      <a href="#${m.hash}" class="report-btn${m.hidden ? ' hidden' : ''}"${m.id ? ` id="${m.id}"` : ''}>
+        <span class="w-11 h-11 rounded-xl ${m.tone === 'gray' ? 'bg-gray-100 text-gray-600' : 'bg-blue-100 text-blue-600'} flex items-center justify-center text-lg"><i class="fas ${m.icon}"></i></span>
+        <span class="flex-1"><span class="block font-bold text-gray-800">${m.label}${m.badge ? ` <span id="${m.badge}" class="badge badge-red hidden"></span>` : ''}</span><span class="block text-xs text-gray-400">${m.sub}</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </a>`
+  const items = [...MORE_ITEMS, { order: MORE_TOUR_ORDER, html: () => (window.FosTour ? FosTour.staffMoreHtml() : '') }].sort((a, b) => a.order - b.order)
   $app.innerHTML = `
     <div id="more-emergency"></div>
     <div class="space-y-3">
-      ${item('notices', 'fa-bullhorn', 'お知らせ', '会社からのお知らせを確認', 'more-notice-count')}
-      ${item('consult', 'fa-comments', '相談・連絡', '管理者への相談・連絡')}
-      ${item('notifications', 'fa-bell', '通知', '打刻修正申請の受付・承認・却下、お知らせの確認のお願い', 'more-notif-count')}
-      ${item('notify-settings', 'fa-sliders', '通知の設定', 'プッシュ通知・メールの受け取り')}
-      ${item('attendance', 'fa-user-clock', '打刻履歴・修正申請', '打刻の確認・時刻の修正・打刻漏れの追加')}
-      ${item('manual', 'fa-book-open', '研修・マニュアル', '案件マニュアル・研修資料')}
-      ${window.FosTour ? FosTour.staffMoreHtml() : ''}
+      ${items.map(m => (m.html ? m.html() : item(m))).join('')}
     </div>
     <section class="mt-8 pt-4 border-t border-gray-200">
       <button class="btn btn-outline w-full text-red-600" data-action="staffLogout"><i class="fas fa-right-from-bracket"></i>ログアウト</button>
@@ -1865,6 +1863,8 @@ function renderMore() {
     </section>`
   applyBadges()
   loadEmergencyContacts()
+  // 描いた後に項目を出し分ける（有給・休暇など）
+  for (const m of MORE_ITEMS) if (m.shown) m.shown()
 }
 
 // 会社の緊急連絡先（#173）。所属・連携している会社のうち、登録のある会社の電話をタップで発信できるボタンにする。取れなければ何も出さない
@@ -2422,18 +2422,56 @@ window.renderManual = async function () {
     </div>`
 }
 
-// ============ ルーティング ============
+// ============ 画面の登録・ルーティング（#9962） ============
+// スタッフアプリの画面は、すべて staffScreen で登録する（staff.js・staff-attendance.js・staff-profile.js。読み込みは staff.js が先）。
+//   hash: URL の # の後（#hash/… も同じ画面）。title: 上の見出し。render: 描く関数（開くときに呼ぶ）。
+//   nav: 下のナビで選んだ表示にするタブ（省くと hash。『その他』の中の画面は 'more'）。
+//   more: 『その他』の項目（{ order, icon, label, sub, badge, id, hidden, tone, shown }。order の小さい順に並べる）。
+//   notify: 通知の一覧（staff-attendance.js の notifOpenStaff）で開いたときに、この登録で行き先を決める通知（{ match(n), open(n) }。既読にしてから open を呼ぶ）
+const routes = {}, titles = {}, SCREEN_NAV = {}, MORE_ITEMS = [], NOTIFY_ROUTES = []
+function staffScreen(hash, { title, render, nav, more, notify }) {
+  routes[hash] = render
+  titles[hash] = title
+  if (nav !== undefined) SCREEN_NAV[hash] = nav
+  if (more) MORE_ITEMS.push({ hash, ...more })
+  if (notify) NOTIFY_ROUTES.push(notify)
+}
+// 通知を、登録した画面の行き先で開く。開いたら true（登録のない通知は false。staff-attendance.js の notifOpenStaff が開く）
+async function openNotificationByScreen(n) {
+  const r = n && NOTIFY_ROUTES.find(x => x.match(n))
+  if (!r) return false
+  try { await axios.post(`/api/staff/notifications/${Number(n.notification_id)}/read`) } catch (e) { }
+  r.open(n)
+  return true
+}
+// 今と同じ画面なら描き直し、違えば移る
+const goScreen = (hash) => { if ((location.hash || '').slice(1) === hash) route(); else location.hash = hash }
+
+// スタッフあての通知の行き先（#155 #151 #156 #158）: シフト・募集の通知はシフト（#shift/YYYY-MM-DD はその日から）、
+// 日報のコメント・管理者が日報の実績を直した通知（#9707）はその日報を開く
+const SHIFT_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result']
+const REPORT_NOTIFY_KINDS = ['daily_report_comment', 'daily_report_edit']
+
+staffScreen('home', { title: 'ホーム', render: renderHome })
 // #shift/YYYY-MM-DD は、その日から表示する（シフトの変更の通知から開く。#155）
-const routes = { home: renderHome, shift: () => renderShifts(location.hash.split('/')[1]), report: renderReportWithHistory, perf: () => renderPerf(), more: renderMore,
-  attendance: () => (window.renderStaffAttendance ? renderStaffAttendance() : renderHome()),
-  notifications: () => (window.renderStaffNotifications ? renderStaffNotifications() : renderHome()),
-  notices: () => { const id = Number((location.hash.split('/')[1]) || 0); return id ? renderNoticeDetail(id) : renderNotices() },
-  // 相談・連絡（ホームの返信バナー・メニューから開く。#320）と研修・マニュアル。マイプロフィール・パスワードの変更は staff-profile.js が足す
-  consult: () => renderConsult(), manual: () => renderManual() }
-const titles = { home: 'ホーム', shift: 'シフト', report: '日報入力', perf: '実績', more: 'その他', attendance: '打刻履歴・修正申請', notifications: '通知', notices: 'お知らせ',
-  consult: '相談・連絡', manual: '研修・マニュアル', profile: 'マイプロフィール', password: 'パスワードの変更' }
-// 『その他』の中の画面（下のタブは『その他』を選んだ表示にする）
-const MORE_SUB_TABS = ['attendance', 'notifications', 'notices', 'consult', 'manual', 'profile', 'password']
+staffScreen('shift', { title: 'シフト', render: () => renderShifts(location.hash.split('/')[1]),
+  notify: { match: n => SHIFT_NOTIFY_KINDS.includes(n.kind), open: n => { const link = String(n.link || ''); goScreen(/^#shift(\/\d{4}-\d{2}-\d{2})?$/.test(link) ? link.slice(1) : 'shift') } } })
+staffScreen('report', { title: '日報入力', render: renderReportWithHistory,
+  notify: { match: n => REPORT_NOTIFY_KINDS.includes(n.kind), open: n => { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; goScreen('report') } } })
+staffScreen('perf', { title: '実績', render: () => renderPerf() })
+staffScreen('more', { title: 'その他', render: renderMore })
+// 『その他』の中の画面（下のタブは『その他』を選んだ表示にする）。描く関数が staff-attendance.js にあるものも、開くときに呼ぶ
+staffScreen('notices', { title: 'お知らせ', nav: 'more', render: () => { const id = Number((location.hash.split('/')[1]) || 0); return id ? renderNoticeDetail(id) : renderNotices() },
+  more: { order: 10, icon: 'fa-bullhorn', label: 'お知らせ', sub: '会社からのお知らせを確認', badge: 'more-notice-count' } })
+// 相談・連絡（ホームの返信バナー・メニューから開く。#320）
+staffScreen('consult', { title: '相談・連絡', nav: 'more', render: () => renderConsult(),
+  more: { order: 20, icon: 'fa-comments', label: '相談・連絡', sub: '管理者への相談・連絡' } })
+staffScreen('notifications', { title: '通知', nav: 'more', render: () => renderStaffNotifications(),
+  more: { order: 30, icon: 'fa-bell', label: '通知', sub: '打刻修正申請の受付・承認・却下、お知らせの確認のお願い', badge: 'more-notif-count' } })
+staffScreen('attendance', { title: '打刻履歴・修正申請', nav: 'more', render: () => renderStaffAttendance(),
+  more: { order: 50, icon: 'fa-user-clock', label: '打刻履歴・修正申請', sub: '打刻の確認・時刻の修正・打刻漏れの追加' } })
+staffScreen('manual', { title: '研修・マニュアル', nav: 'more', render: () => renderManual(),
+  more: { order: 70, icon: 'fa-book-open', label: '研修・マニュアル', sub: '案件マニュアル・研修資料' } })
 
 // 画面を描く。読み込みに失敗したら、読み込み中のまま止めずに再読み込みのボタンを出す（#182）。描き終わるまで待てる Promise を返す
 let LAST_TAB = null
@@ -2444,7 +2482,8 @@ function route() {
   // 開く直前に通知などが決めたタブ（修正申請）は、離れるまで保つ
   if (LAST_TAB === 'attendance' && tab !== 'attendance' && window.__attState) { window.__attState.tab = 'timeline'; window.__attState.to = null }
   LAST_TAB = tab
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === (MORE_SUB_TABS.includes(tab) ? 'more' : tab)))
+  const navTab = SCREEN_NAV[tab] !== undefined ? SCREEN_NAV[tab] : tab
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.tab === navTab))
   document.getElementById('header-title').textContent = titles[tab] || 'ホーム'
   refreshBadges()
   return Promise.resolve().then(fn).catch(showLoadError)
@@ -2459,35 +2498,10 @@ document.addEventListener('click', (ev) => {
   route()
 })
 
-// ---------- スタッフあての通知の行き先（#155 #151 #156 #158） ----------
-// 通知の一覧（staff-attendance.js の notifOpenStaff）を開いたとき、シフト・募集・日報コメントの通知だけは、ここで行き先を決める。
-// それ以外の通知（打刻修正・お知らせ・相談）は元の処理に渡す。staff-attendance.js は staff.js の後に読み込むので、読み込みが済んでから差し替える
-// daily_report_edit（管理者が日報の実績を直した。#9707）も、コメントと同じくその日報を開く
-const STAFF_NOTIFY_KINDS = ['shift_assigned', 'shift_changed', 'shift_cancelled', 'recruit_result', 'daily_report_comment', 'daily_report_edit']
-function openStaffNotification(n) {
-  const go = (hash) => { if ((location.hash || '').slice(1) === hash) route(); else location.hash = hash }
-  if (n.kind === 'daily_report_comment' || n.kind === 'daily_report_edit') { OPEN_PAST_REPORT_ID = Number(n.related_id) || null; return go('report') }
-  const link = String(n.link || '')
-  go(/^#shift(\/\d{4}-\d{2}-\d{2})?$/.test(link) ? link.slice(1) : 'shift')
-}
-document.addEventListener('DOMContentLoaded', () => {
-  const orig = window.notifOpenStaff
-  if (typeof orig !== 'function') return
-  window.notifOpenStaff = async function (id) {
-    let n = null
-    // 一覧の中身は staff-attendance.js が持っているので、その1件だけを取り直す（before は「この ID より前」）
-    try { n = ((await axios.get('/api/staff/notifications', { params: { before: Number(id) + 1, limit: 1 } })).data.notifications || [])[0] } catch (e) { }
-    if (!n || n.notification_id !== Number(id) || !STAFF_NOTIFY_KINDS.includes(n.kind)) return orig(id)
-    try { await axios.post(`/api/staff/notifications/${Number(id)}/read`) } catch (e) { }
-    openStaffNotification(n)
-  }
-})
 // ============ 出勤可能日の提出（#171 #availability）と、シフトのカレンダー追加（#301 #calendar） ============
 // どちらもシフト画面のボタンから開く。API は src/staff-schedule.ts
-routes.availability = () => renderAvailability()
-routes.calendar = () => renderShiftCalendar()
-titles.availability = '出勤可能日の提出'
-titles.calendar = 'カレンダーに追加'
+staffScreen('availability', { title: '出勤可能日の提出', render: () => renderAvailability() })
+staffScreen('calendar', { title: 'カレンダーに追加', render: () => renderShiftCalendar() })
 const SCHEDULE_BACK = '<a href="#shift" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>シフトへ戻る</a>'
 const AV_MARK = { ok: '○', partial: '△', ng: '×' }
 const AV_CELL = { ok: 'bg-emerald-50 border-emerald-300 text-emerald-700', partial: 'bg-amber-50 border-amber-300 text-amber-700', ng: 'bg-gray-100 border-gray-300 text-gray-500' }
@@ -2770,9 +2784,8 @@ function applyBadges() {
 // ============ 通知の設定（プッシュ通知 #178・受け取り設定 #284）。『その他』の #notify-settings ============
 // プッシュ通知: この端末（ブラウザ）で受け取るかを選ぶ。Service Worker（/sw.js）は、プッシュを受けたら最新の未読を取りに来て表示する。
 // 受け取り設定: 通知のまとまりごとに、プッシュとメールの ON/OFF（アプリ内の通知は必ず届く）。同じ人のすべての会社に同じ設定を保存する
-routes['notify-settings'] = () => renderNotifySettings()
-titles['notify-settings'] = '通知の設定'
-MORE_SUB_TABS.push('notify-settings')
+staffScreen('notify-settings', { title: '通知の設定', nav: 'more', render: () => renderNotifySettings(),
+  more: { order: 40, icon: 'fa-sliders', label: '通知の設定', sub: 'プッシュ通知・メールの受け取り' } })
 const PUSH_SUPPORTED = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
 const PUSH_SCOPE = '/staff'
 function b64urlToBytes(s) {

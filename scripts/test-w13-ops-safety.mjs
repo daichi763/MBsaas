@@ -266,7 +266,7 @@ try {
   const html = await page.text()
   ok('#9622 本部画面に「障害」のタブがある', page.status === 200 && /data-tab="errors"/.test(html) && /hq-errors-badge/.test(html))
   const js = await (await fetch(`${BASE}/static/hq.js`)).text()
-  ok('#9622 本部画面の「障害」を描く処理がある', /function renderErrors/.test(js) && /routes\.errors = renderErrors/.test(js))
+  ok('#9622 本部画面の「障害」を描く処理がある', /function renderErrors/.test(js) && /errors: renderErrors/.test(js))
   const sw = await (await fetch(`${BASE}/sw.js`)).text()
   ok('#9622 Service Worker は本部画面（scope /hq）でも使える', /'\/hq'/.test(sw) && /push\/latest/.test(sw))
 }

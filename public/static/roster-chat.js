@@ -240,6 +240,3 @@ window.sendRosterChat = async function (sid) {
     })
   } finally { CHAT_SENDING = false }
 }
-
-// ルート追加（admin.js の routes に登録）
-if (typeof routes === 'object') routes['roster-chat'] = window.renderRosterChatList
