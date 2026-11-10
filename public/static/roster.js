@@ -1,6 +1,6 @@
 // Field OS 管理画面: スタッフマスタ新規作成（4ルート）/ 企業間連携
 // docs/spec_multi_company_staff.md フェーズC
-// admin.js のヘルパー（modal / closeModal / toast / esc / renderStaff）を利用する。admin.js の後に読み込むこと。
+// common.js の部品（modal / closeModal / onModalClose / toast / esc）と admin.js の renderStaff を利用する。admin.js の後に読み込むこと。
 
 const ROSTER_ROUTES = [
   { key: 'link', icon: 'fa-qrcode', color: 'text-blue-600', title: '① QRコード / スタッフIDから連携',
