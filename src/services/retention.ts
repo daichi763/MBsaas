@@ -697,6 +697,10 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
         [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
+        // シフトの取消の記録（メモ・金額）・精算の確認済みの印・区分変更で対象外にした記録（#9952）。shifts より先に消す
+        [null, db.prepare(`DELETE FROM shift_cancellations WHERE ${ofShifts}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM settlement_issue_acks WHERE ${ofShifts}`).bind(staffId)],
+        [null, db.prepare(`DELETE FROM affiliation_excluded_shifts WHERE ${ofShifts}`).bind(staffId)],
         ['shifts', db.prepare('DELETE FROM shifts WHERE staff_id = ?').bind(staffId)],
         ['evaluations', db.prepare('DELETE FROM evaluations WHERE staff_id = ?').bind(staffId)],
         ['follow_logs', db.prepare('DELETE FROM follow_logs WHERE staff_id = ?').bind(staffId)],
@@ -1016,11 +1020,10 @@ export async function scanOrphanPhotos(db: D1Database, bucket: R2Bucket | undefi
   const old = page.objects.filter(x => ORPHAN_KEY_RE.test(x.key) && Date.now() - new Date(x.uploaded).getTime() >= ORPHAN_MIN_AGE_MS).map(x => x.key)
   let orphans: string[] = []
   if (old.length) {
-    // 勤怠の行・削除の控え・0036 で外した重複の控えのどれにもないキー
+    // 勤怠の行・削除の控えのどちらにもないキー（0036 で外した重複の控えの表は 0103 で消した。#9950）
     orphans = ((await db.prepare(`SELECT j.value AS k FROM json_each(?) j
       WHERE NOT EXISTS (SELECT 1 FROM attendance_reports a WHERE a.photo_key = j.value)
-        AND NOT EXISTS (SELECT 1 FROM retention_pending_r2 p WHERE p.photo_key = j.value)
-        AND NOT EXISTS (SELECT 1 FROM attendance_reports_duplicates_0036 d WHERE d.photo_key = j.value)`).bind(JSON.stringify(old)).all()).results as { k: string }[]).map(x => x.k)
+        AND NOT EXISTS (SELECT 1 FROM retention_pending_r2 p WHERE p.photo_key = j.value)`).bind(JSON.stringify(old)).all()).results as { k: string }[]).map(x => x.k)
   }
   let deleted = 0
   if (!o.dryRun && orphans.length) {
@@ -1154,9 +1157,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'attendance_correction_events', label: '打刻修正の操作履歴', table: 'attendance_correction_events', where: OB_CO },
   { target: 'notification_emails', label: '打刻修正の通知メール', table: 'notification_emails', where: OB_CO },
   { target: 'attendance_corrections', label: '打刻修正の申請', table: 'attendance_corrections', where: OB_CO },
-  { target: 'attendance_reports_duplicates_0036', label: '出退勤記録（重複の控え）', table: 'attendance_reports_duplicates_0036', where: OB_CO },
   { target: 'attendance_reports', label: '出退勤記録', table: 'attendance_reports', where: OB_CO },
-  { target: 'daily_report_duplicates', label: '日報（重複の控え）', table: 'daily_report_duplicates', where: OB_CO },
   // Sprint 15（w15-report-edit）: 日報の実績の修正の履歴（#9707）
   { target: 'daily_report_edits', label: '日報の実績の修正の履歴', table: 'daily_report_edits', where: OB_CO },
   { target: 'daily_reports', label: '日報', table: 'daily_reports', where: OB_CO },
@@ -1208,7 +1209,6 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'staff_affiliation_schedules', label: '所属区分の変更の予約', table: 'staff_affiliation_schedules', where: OB_CO },
   { target: 'staff_quick_locks', label: 'スタッフ登録の重複防止', table: 'staff_quick_locks', where: OB_CO, noExport: true },
   { target: 'staff_merges', label: 'スタッフの統合の記録', table: 'staff_merges', where: OB_CO },
-  { target: 'roster_value_fixes', label: '名簿の値の補正', table: 'roster_value_fixes', where: `staff_id IN ${OB_STAFF}` },
   { target: 'notice_read_staff_reports', label: '既読率（スタッフ別）', table: 'notice_read_staff_reports', where: OB_CO },
   { target: 'notice_read_reports', label: '既読率レポート', table: 'notice_read_reports', where: OB_CO },
   { target: 'notice_responses', label: 'お知らせへの回答', table: 'notice_responses', where: OB_CO },
@@ -1268,8 +1268,6 @@ const OFFBOARDING_SECRET_COL_RE = /password|secret|token|recovery|totp|link_key|
 type ObFileSource = { source: string; bucket: 'photos' | 'documents' | 'contracts'; idCol: string; keyCol: string; nameCol: string | null; whenCol: string; refCol: string }
 export const OFFBOARDING_FILE_SOURCES: ObFileSource[] = [
   { source: 'attendance_reports', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
-  // 0036 で重複として退避した出退勤の行にも写真のキーが残っている
-  { source: 'attendance_reports_duplicates_0036', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
   { source: 'staff_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'employee_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'attendance_correction_attachments', bucket: 'photos', idCol: 'attachment_id', keyCol: 'photo_key', nameCol: null, whenCol: 'created_at', refCol: 'staff_id' },

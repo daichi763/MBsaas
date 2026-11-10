@@ -55,6 +55,14 @@ INSERT OR IGNORE INTO staff_profiles (staff_id, user_id, company_id, affiliation
 (18, 21, 1, '株式会社サンプルモバイル人材', 'イベント運営経験豊富。', '催事,イベント', '東京23区', '30代', 4.9, 'low', 0, ''),
 (19, 22, 1, '株式会社サンプルモバイル人材', '光回線専門2年。', '光回線', '埼玉南部', '20代', 3.6, 'low', 0, ''),
 (20, 23, 1, '株式会社サンプルモバイル人材', '携帯ショップ1年。', '新規,機種変更', '東京・神奈川', '20代', 4.3, 'low', 0, '');
+-- 人物ID（person_id）を付ける。アプリはリクエストのたびの後埋めをしないため（#9954）。0012 の移行と同じ作り方で、入れ直しても変わらない
+UPDATE staff_profiles SET person_id = lower(hex(randomblob(16))), owner_company_id = COALESCE(owner_company_id, company_id)
+WHERE staff_id BETWEEN 1 AND 20 AND company_id = 1 AND person_id IS NULL;
+INSERT OR IGNORE INTO persons (person_id, global_staff_code, created_company_id)
+SELECT sp.person_id, 'FS' || upper(hex(randomblob(5))), sp.company_id FROM staff_profiles sp
+WHERE sp.staff_id BETWEEN 1 AND 20 AND sp.company_id = 1 AND NOT EXISTS (SELECT 1 FROM persons p WHERE p.person_id = sp.person_id);
+UPDATE users SET person_id = (SELECT sp.person_id FROM staff_profiles sp WHERE sp.user_id = users.user_id)
+WHERE person_id IS NULL AND user_id IN (SELECT user_id FROM staff_profiles WHERE staff_id BETWEEN 1 AND 20 AND company_id = 1);
 
 INSERT OR IGNORE INTO clients (client_id, company_id, client_name, stream_type, contact_name, email, phone, address, contract_type, billing_rule, ng_staff_ids, client_rating, memo) VALUES
  (1, 1, '株式会社モバイルプロモーション東日本', 'upstream', '西村 様', 'nishimura@mp-east.example.jp', '03-1234-5678', '東京都新宿区西新宿1-1-1', '業務委託', '月末締め・翌月末払い', '', 4, '主力クライアント。携帯ショップ・催事案件多数。'),

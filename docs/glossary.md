@@ -11,7 +11,7 @@
 | 会社コード | ログインで入れる、導入企業の識別子 | `companies.company_code` |
 | 本部・SaaS本部・システム管理者 | Field OS を運営する側。`/hq` を使う | `users.role = 'system_admin'`。所属は本部専用の企業行 `companies.active_status = 'internal'`（`migrations/0033_account_admin.sql`） |
 | 停止（企業） | 本部が企業の利用を止めた状態。ログイン・API・報告用URLが使えなくなる | `companies.active_status = 'inactive'`（`src/lib/auth.ts:98`） |
-| 管理者 | 導入企業の社員で、管理画面を使う人 | `users.role` が `company_admin`（会社管理者）・`office_staff`（事務担当）・`sales_manager`（営業管理者）・`field_manager`（現場管理者）。まとめて `ADMIN_ROLES`（`src/api.ts:181`） |
+| 管理者 | 導入企業の社員で、管理画面を使う人 | `users.role` が `company_admin`（会社管理者）・`office_staff`（事務担当）・`sales_manager`（営業管理者）・`field_manager`（現場管理者）。まとめて `ADMIN_ROLES`（`src/api.ts:182`） |
 | スタッフ | 導入企業から現場に出る人。スタッフアプリを使う | `users.role = 'staff'` と `staff_profiles` の行 |
 | ID・スタッフ番号・ユーザーID | ログインで入れる、会社の中での利用者の識別子 | `users.user_code` |
 | ログインなし（名簿のみ） | ログインを持たない人（スタッフマスタだけの行・仮登録） | `users.role = 'roster_only'` |
@@ -38,9 +38,9 @@
 | 画面の言葉 | 意味 | テーブル・列・コード |
 |---|---|---|
 | スタッフマスタ | 業務側の情報（氏名・スキル・経歴・稼働できる条件など）。他社と共有し得る | `staff_profiles`（`src/roster.ts`） |
-| 従業員管理（以前の名前は「社員名簿」） | 労務側の情報（雇用・給与・口座・保険番号・緊急連絡先など）。自社だけ。会社管理者と事務担当だけが使える | `employee_records`（`src/api.ts:862` の `hrOnly`） |
+| 従業員管理（以前の名前は「社員名簿」） | 労務側の情報（雇用・給与・口座・保険番号・緊急連絡先など）。自社だけ。会社管理者と事務担当だけが使える | `employee_records`（`src/api.ts:863` の `hrOnly`） |
 | 所属元 / 連携先（稼働先） | 連携で、人を出す側の会社 / 受ける側の会社 | 連携先の行の `staff_profiles.owner_company_id`（所属元）・`source_staff_id`（直前の会社の行）・`root_staff_id`（雇用元の行） |
-| 連携・企業間連携 | 所属元のスタッフを連携先に登録すること。同意の記録を残す | 連携先に `linked_external` の行と、ユーザーコード `LK-…` のユーザー行を作る（`src/roster.ts:1326`）。同意は `roster_consents` |
+| 連携・企業間連携 | 所属元のスタッフを連携先に登録すること。同意の記録を残す | 連携先に `linked_external` の行と、ユーザーコード `LK-…` のユーザー行を作る（`src/roster.ts:1354`）。同意は `roster_consents` |
 | 連携用コード | 連携で受けた人を、さらに次の会社へ連携するときのコード | `staff_profiles.relink_code`（`RL` で始まる） |
 | 仮登録 | 氏名と電話番号だけで登録し、すぐシフトに入れられる状態 | `staff_profiles.is_provisional = 1`、ユーザーコード `TMP-…`（`src/staff-lifecycle.ts:58`） |
 | 統合 | 仮登録の人などを、既存のスタッフにまとめること。元に戻せない | 統合元は `staff_profiles.merged_into_staff_id`（`src/staff-merge.ts`） |
@@ -113,7 +113,7 @@
 | データ保持・定期削除 | 保存期間を過ぎた個人情報の削除（日報3年・退職後7年など） | `src/services/retention.ts`、記録は `retention_logs` |
 | dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:873` |
 | 削除の保留 | 本部が、特定のスタッフ・企業のデータの削除を止めること | `staff_profiles.retention_hold_at`・`companies.retention_hold_at` |
-| 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:8585`〜） |
+| 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:8595`〜） |
 | 操作履歴 | シフト・枠・精算の変更の前後の記録 | `operation_logs`（`src/lib/operation-log.ts`） |
 | 変更履歴 | 従業員データとスタッフ基本情報の変更の記録 | `employee_change_logs`（`src/lib/change-log.ts`） |
 | 本部の操作の履歴 | 本部の書き込みの記録 | `hq_audit_logs` |
@@ -126,7 +126,7 @@
 | 頭文字 | 何のコードか | 作る所 |
 |---|---|---|
 | `FS…` | 人物の恒久のスタッフID（連携に使う） | `src/roster.ts:277` |
-| `RL…` | 連携で受けた人を、さらに次の会社へ連携するためのコード | `src/roster.ts:1294` |
-| `LK-…` | 連携先に作るユーザー行のユーザーコード（ログインできない） | `src/roster.ts:1326` |
+| `RL…` | 連携で受けた人を、さらに次の会社へ連携するためのコード | `src/roster.ts:1322` |
+| `LK-…` | 連携先に作るユーザー行のユーザーコード（ログインできない） | `src/roster.ts:1354` |
 | `TMP-…` | 仮登録のユーザーコード | `src/staff-lifecycle.ts:58` |
 | `BD-…` | 案件掲示板の提案から取り込んだ人のユーザーコード | `src/board.ts:910` |
