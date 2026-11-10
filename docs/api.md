@@ -174,7 +174,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/auth/login/mfa` | ログイン不要 | [api.ts:543](../src/api.ts#L543) | 二段階認証のコード（認証アプリの6桁、または予備コード）を確かめてログインする（#544） | admin.js src/index.tsx |
 | POST | `/api/auth/logout` | ログイン不要 | [api.ts:705](../src/api.ts#L705) | 〔見出し〕Auth | admin.js hq.js staff.js |
 | POST | `/api/auth/logout-all` | ログイン中の全員<br>＋本文で確認: 会社管理者 | [api.ts:1091](../src/api.ts#L1091) | 〔見出し〕自分のログイン中の端末と、すべての端末からのログアウト（#453。全ロール） | security.js staff-profile.js |
-| GET | `/api/auth/me` | ログイン中の全員<br>＋本文で確認: 人事のロール | [api.ts:831](../src/api.ts#L831) | 〔見出し〕Auth | admin.js corrections.js hq.js staff-profile.js staff.js |
+| GET | `/api/auth/me` | ログイン中の全員<br>＋本文で確認: 人事のロール | [api.ts:831](../src/api.ts#L831) | 〔見出し〕Auth | admin.js corrections.js hq.js staff.js |
 | GET | `/api/auth/mfa` | ログイン中の全員 | [api.ts:1021](../src/api.ts#L1021) | 〔見出し〕自分の二段階認証（本部・管理画面のアカウント） | security.js |
 | POST | `/api/auth/mfa/disable` | ログイン中の全員 | [api.ts:1056](../src/api.ts#L1056) | 解除: 現在のパスワードと、認証アプリのコード（または予備コード）を確かめる。必須の設定のときは解除できない | security.js |
 | POST | `/api/auth/mfa/enable` | ログイン中の全員 | [api.ts:1038](../src/api.ts#L1038) | 登録の完了: 認証アプリの6桁と現在のパスワードを確かめて有効にし、予備コードを一度だけ返す | security.js |

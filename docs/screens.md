@@ -294,7 +294,7 @@ flowchart LR
 | `shift-board.js` | 64 | 45 |  |
 | `staff-attendance.js` | 19 | 17 |  |
 | `staff-lifecycle.js` | 37 | 30 |  |
-| `staff-profile.js` | 21 | 20 |  |
+| `staff-profile.js` | 20 | 19 |  |
 | `staff.js` | 57 | 50 |  |
 | `tour.js` | 6 | 11 |  |
 <!-- END GENERATED: screens-files -->

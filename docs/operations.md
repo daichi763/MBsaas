@@ -344,8 +344,8 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
 | 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:56`〜`60` |
-| 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:54` |
-| 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:66` |
+| 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:66` |
+| 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:78` |
 | プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:81` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:294` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:386` |
