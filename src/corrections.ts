@@ -22,6 +22,7 @@ import { crossesMidnight, toMin, NEXT_DAY_TYPES, reportableWindow } from './lib/
 import { photoTakenAt, photoSource } from './lib/attendance-photo'
 import { nowJST, addDays, isDate } from './lib/time'
 import { randomHex } from './lib/hash'
+import { recordSwallowedErrorDb } from './lib/http'
 
 type Bindings = NotifyEnv & { PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -531,7 +532,7 @@ async function approveCorrection(db: D1Database, c: any, a: Actor, opts: Approve
   else data.reports.set(shift.shift_id, [...reports, { shift_id: shift.shift_id, attendance_id: chk.attendance_id ?? null, report_type: c.report_type, entry_method: 'correction', latitude: null, longitude: null, ...v }])
   if (!chk.same_reports) {
     // 承認と同時にほかの報告が変わった（まれ）: 承認の後の報告を読み直して実績に反映する
-    await syncActualFromReports(db, c.company_id, c.shift_id).catch(() => {})
+    await syncActualFromReports(db, c.company_id, c.shift_id).catch(e => recordSwallowedErrorDb(db, '実績の同期（打刻修正の承認）', e, { companyId: c.company_id, path: '/api/admin/corrections/approve' }))
     data.reports.set(shift.shift_id, await loadReportsDetail(db, shift.shift_id).catch(() => data!.reports.get(shift.shift_id) || []))
     const s = await db.prepare('SELECT actual_start, actual_end, actual_break_minutes, actual_source, bill_qty, unit_price, pay_qty, pay_amount FROM shifts WHERE shift_id = ?').bind(c.shift_id).first().catch(() => null)
     if (s) Object.assign(shift, s)

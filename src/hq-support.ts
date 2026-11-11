@@ -10,6 +10,7 @@ import { sendEmailBatch } from './services/email'
 import { escapeHtml } from './email-templates/_util'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
+import { appBaseUrl } from './lib/http'
 
 type Bindings = {
   DB: D1Database; PHOTOS?: R2Bucket; DOCUMENTS?: R2Bucket; CONTRACTS?: R2Bucket
@@ -267,7 +268,7 @@ hqSupportAdminApi.get('/hq-support/status', async (c) => {
 
 hqSupportAdminApi.post('/hq-announcements/:id/read', async (c) => {
   const u = c.get('user'); const id = c.req.param('id'); const now = nowJstMinute()
-  if (!isId(id)) return c.json({ error: 'not found' }, 404)
+  if (!isId(id)) return c.json({ error: '見つかりません' }, 404)
   const a = await c.env.DB.prepare(`SELECT a.announcement_id FROM hq_announcements a WHERE a.announcement_id = ? AND ${ANN_ACTIVE_FOR_COMPANY}`)
     .bind(Number(id), now, now, u.company_id, u.company_id).first()
   if (!a) return c.json({ error: 'お知らせが見つかりません（掲載が終わったか、取り消されました）' }, 404)
@@ -306,7 +307,7 @@ hqSupportAdminApi.post('/support-requests', async (c) => {
   if (hqUsers.length) {
     const tpl = supportRequestEmail({
       companyName: String(u.company_name || ''), companyCode: String(u.company_code || ''), requester: String(u.name || ''),
-      menu: SUPPORT_MENUS[menu], detail, preferredAt, contact, url: `${String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')}/hq#support`,
+      menu: SUPPORT_MENUS[menu], detail, preferredAt, contact, url: `${appBaseUrl(c.env)}/hq#support`,
     })
     const inputs = [...new Set(hqUsers.map(x => String(x.email).trim()))].map(to => ({ to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'support_request', company_id: u.company_id }))
     mailQueued = inputs.length
@@ -356,7 +357,7 @@ hqSupportHqApi.get('/support-requests', async (c) => {
 
 hqSupportHqApi.put('/support-requests/:id', async (c) => {
   const u = c.get('user'); const id = c.req.param('id')
-  if (!isId(id)) return c.json({ error: 'not found' }, 404)
+  if (!isId(id)) return c.json({ error: '見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({})) as any
   if (!(SUPPORT_STATUSES as readonly string[]).includes(String(b.status))) return c.json({ error: '対応状況が正しくありません' }, 400)
   const note = String(b.hq_note ?? '').trim()
@@ -388,7 +389,7 @@ function safeIds(json: unknown): number[] { try { const a = JSON.parse(String(js
 // 企業別の既読状況（配信先の企業ごとに、確認した管理者の人数と最初の確認日時）
 hqSupportHqApi.get('/announcements/:id/reads', async (c) => {
   const id = c.req.param('id')
-  if (!isId(id)) return c.json({ error: 'not found' }, 404)
+  if (!isId(id)) return c.json({ error: '見つかりません' }, 404)
   const a = await c.env.DB.prepare('SELECT * FROM hq_announcements WHERE announcement_id = ?').bind(Number(id)).first() as any
   if (!a) return c.json({ error: 'お知らせが見つかりません' }, 404)
   const where = a.target === 'all' ? `co.active_status NOT IN (?, 'inactive')`
@@ -421,7 +422,7 @@ hqSupportHqApi.post('/announcements', async (c) => {
 // 修正（内容・配信先・掲載期間）。取り消したものは直せない。確認済みの記録は残す
 hqSupportHqApi.put('/announcements/:id', async (c) => {
   const id = c.req.param('id'); const db = c.env.DB
-  if (!isId(id)) return c.json({ error: 'not found' }, 404)
+  if (!isId(id)) return c.json({ error: '見つかりません' }, 404)
   const cur = await db.prepare('SELECT withdrawn_at FROM hq_announcements WHERE announcement_id = ?').bind(Number(id)).first() as any
   if (!cur) return c.json({ error: 'お知らせが見つかりません' }, 404)
   if (cur.withdrawn_at) return c.json({ error: '取り消したお知らせは修正できません' }, 409)
@@ -438,7 +439,7 @@ hqSupportHqApi.put('/announcements/:id', async (c) => {
 
 hqSupportHqApi.post('/announcements/:id/withdraw', async (c) => {
   const id = c.req.param('id')
-  if (!isId(id)) return c.json({ error: 'not found' }, 404)
+  if (!isId(id)) return c.json({ error: '見つかりません' }, 404)
   const r = await c.env.DB.prepare('UPDATE hq_announcements SET withdrawn_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE announcement_id = ? AND withdrawn_at IS NULL').bind(Number(id)).run()
   if (!r.meta.changes) return c.json({ error: 'お知らせが見つからないか、取り消し済みです' }, 404)
   return c.json({ ok: true })
@@ -461,7 +462,7 @@ hqSupportHqApi.get('/view-sessions', async (c) => {
 
 hqSupportHqApi.get('/view-sessions/:id/logs', async (c) => {
   const id = c.req.param('id')
-  if (!isId(id)) return c.json({ error: 'not found' }, 404)
+  if (!isId(id)) return c.json({ error: '見つかりません' }, 404)
   const rows = (await c.env.DB.prepare('SELECT method, path, created_at FROM hq_view_logs WHERE view_id = ? ORDER BY log_id DESC LIMIT 500').bind(Number(id)).all()).results
   return c.json({ logs: rows })
 })

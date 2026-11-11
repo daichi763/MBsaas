@@ -10,7 +10,8 @@ import { batchWithNewPerson, insertPersonStmt, STAFF_USER_ID, STAFF_ID_OF_PERSON
 import { ageEntryUpdate, estimatedAge } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk, batchInChunks } from './lib/d1-chunk'
-import { insertRowsStmts, changesOf } from './lib/bulk-write'
+import { insertRowsStmts, changesOf, updateRowsStmts } from './lib/bulk-write'
+import { countD1 } from './lib/d1-retry'
 import { syncActualFromReports, syncActualsForShifts, closedMessage } from './settlement'
 import { NOTICE_TARGET_SQL } from './lib/notices'
 import { isHHMM, isISODate, pickReportValues, reportFieldRulesError } from './lib/validate'
@@ -28,6 +29,7 @@ import { SESSION_COOKIE, loadSessionUser } from './lib/auth'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceIdOf, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { nowJST, todayJST, addDays, isDate } from './lib/time'
 import { sha256 } from './lib/hash'
+import { recordSwallowedError } from './lib/http'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -95,12 +97,10 @@ export async function findStaffByPhones(db: D1Database, companyId: number, phone
   }
   return out
 }
-// 照合に使う電話番号（#123。利用者の判断）。他社連携の行（linked_external）は、所属元（雇用元）の行の今の電話番号を使う
-// （所属元で番号を変えても照合に古い番号を使わない）。連携先には連絡先を共有しないので、照合の結果には番号を入れない（withSharedPhone）。
-// 所属元が連携を終了した行（link_revoked_at）は所属元の番号を見ない
-export const MATCH_PHONE_SQL = `(CASE WHEN sp.affiliation_type = 'linked_external' THEN (CASE WHEN sp.link_revoked_at IS NULL THEN
-    (SELECT ru.phone FROM staff_profiles rs JOIN users ru ON ru.user_id = rs.user_id WHERE rs.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id)) END)
-  ELSE us.phone END)`
+// 照合に使う電話番号（#123）。他社連携の行（linked_external）の電話番号は所属元の連絡先で、連携先には共有しない項目なので、
+// 照合にも使わない（番号が一致するかで、手元の番号がその人のものかを確かめられないように。#9969 authz-08）。
+// 他社連携の行は、氏名などの共有する項目で照合する。照合の結果には番号を入れない（withSharedPhone）
+export const MATCH_PHONE_SQL = `(CASE WHEN sp.affiliation_type = 'linked_external' THEN NULL ELSE us.phone END)`
 export const withSharedPhone = <T extends { affiliation_type?: string; phone?: any }>(r: T): T => (r.affiliation_type === 'linked_external' ? { ...r, phone: null } : r)
 
 // ---------- 提出設定（案件 → スタッフ → シフト の順に上書き） ----------
@@ -174,7 +174,7 @@ export const adminLifecycleApi = new Hono<{ Bindings: Bindings; Variables: Varia
 // 退職・停止中の人には inactive（'退職' / '停止' / '休職'）を付け、画面で在籍中の人と区別する（#356）
 async function phoneMatches(db: D1Database, companyId: number, phone: string) {
   const today = todayJST()
-  // 他社連携の行は所属元の今の番号で照合し、番号は返さない（#123。findStaffByPhones と同じ）
+  // 他社連携の行の電話番号は照合に使わない（#9969。findStaffByPhones と同じ）。番号は返さない
   const rows = (await db.prepare(`SELECT sp.staff_id, us.name, ${MATCH_PHONE_SQL} AS phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       COALESCE(sp.employment_status, 'working') AS employment_status, us.status AS user_status, us.retired_at
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.company_id = ? AND ${MATCH_PHONE_SQL} IS NOT NULL AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
@@ -710,33 +710,52 @@ adminLifecycleApi.delete('/staff/:id/affiliation-schedules/:scheduleId', async (
   return c.json({ ok: true })
 })
 
-// 適用日になった区分変更の予約を適用する（毎日の cron。index.tsx の scheduled）。
-// 予約したときと状況が変わって適用できない場合（統合・退職・同じ区分になった等）は failed にして理由を残す
-export async function applyDueAffiliationSchedules(db: D1Database) {
+// 適用日になった区分変更の予約を適用する（毎日 3:00 の cron と、その残りを 4:00 以降の15分おきの cron。index.tsx の CRON_JOBS）。
+// 予約したときと状況が変わって適用できない場合（統合・退職・同じ区分になった等）は failed にして理由を残す。
+// D1 の1回の起動の問い合わせの上限（無料プランは50）で同じ起動の後ろの処理が止まらないよう、使う文の数を budget の内に収め、
+// 収まらない予約は pending のまま次の起動に回す（deferred。#9968）。スタッフの行と failed の記録はまとめて読み書きする
+export const AFFILIATION_SCHEDULE_BUDGET = 25
+// 予約1件の適用に使う文の数の見込み（区分変更の確認の読み込み・シフトと単価の読み込み・書き込みの batch。測った値に余裕を足す）
+const AFFILIATION_SCHEDULE_COST = 15
+const D1_LIMIT_RE = /too many (api requests|subrequests)/i
+export async function applyDueAffiliationSchedules(rawDb: D1Database, opts: { budget?: number } = {}) {
+  const budget = opts.budget ?? AFFILIATION_SCHEDULE_BUDGET
+  const { db, stats } = countD1(rawDb)
   const today = todayJST()
   const due = (await db.prepare(`SELECT * FROM staff_affiliation_schedules WHERE status = 'pending' AND effective_date <= ? ORDER BY effective_date, schedule_id LIMIT 100`).bind(today).all()).results as any[]
-  let applied = 0, failed = 0
-  const markFailed = async (id: number, msg: string) => {
-    failed++
-    await db.prepare(`UPDATE staff_affiliation_schedules SET status = 'failed', error = ? WHERE schedule_id = ? AND status = 'pending'`).bind(msg.slice(0, 300), id).run()
-  }
+  if (!due.length) return { due: 0, applied: 0, failed: 0, deferred: 0, statements: stats.statements }
+  const staff = new Map(((await db.prepare(`SELECT sp.*, us.name, us.phone, us.email, us.role AS user_role, us.user_code, us.status AS user_status, us.retired_at
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id IN ${JSON_IN}`).bind(bindJsonArray(due.map(s => s.staff_id))).all()).results as any[])
+    .map(r => [Number(r.staff_id), r]))
+  let applied = 0, deferred = 0, limitHit = false
+  const fails: { schedule_id: number; status: string; error: string }[] = []
+  const markFailed = (id: number, msg: string) => { fails.push({ schedule_id: id, status: 'failed', error: msg.slice(0, 300) }) }
   for (const s of due) {
+    const sp = staff.get(Number(s.staff_id))
+    if (!sp || Number(sp.company_id) !== Number(s.company_id)) { markFailed(s.schedule_id, 'スタッフが見つかりません'); continue }
+    if (sp.employment_status === 'retired' || sp.user_status !== 'active' || (sp.retired_at && String(sp.retired_at).slice(0, 10) < today)) {
+      markFailed(s.schedule_id, '退職・停止中のため適用しませんでした'); continue
+    }
+    if (limitHit || stats.statements + AFFILIATION_SCHEDULE_COST > budget) { deferred++; continue }
     try {
-      const sp = await loadStaffRow(db, s.company_id, s.staff_id)
-      if (!sp) { await markFailed(s.schedule_id, 'スタッフが見つかりません'); continue }
-      if (sp.employment_status === 'retired' || sp.user_status !== 'active') { await markFailed(s.schedule_id, '退職・停止中のため適用しませんでした'); continue }
       let req: any = {}; try { req = JSON.parse(s.request_json || '{}') } catch { }
       const body = { to_type: s.to_type, effective_date: s.effective_date, partner_affiliation_id: s.partner_affiliation_id, trade_name: req.trade_name, hire_date: req.hire_date, contract_type: req.contract_type }
       const r = await planAffiliationChange(db, s.company_id, sp, body, { today, fromSchedule: true })
-      if (!r.ok) { await markFailed(s.schedule_id, r.error); continue }
-      if (r.plan.repair) { await markFailed(s.schedule_id, `すでに「${TYPE_LABEL[s.to_type] || s.to_type}」に変更されています`); continue }
+      if (!r.ok) { markFailed(s.schedule_id, r.error); continue }
+      if (r.plan.repair) { markFailed(s.schedule_id, `すでに「${TYPE_LABEL[s.to_type] || s.to_type}」に変更されています`); continue }
       await executeAffiliationChange(db, s.company_id, s.created_by ?? null, sp, r.plan, req.note || null, s.schedule_id)
       applied++
     } catch (e) {
-      try { await markFailed(s.schedule_id, '適用に失敗しました: ' + String(e)) } catch { }
+      // 問い合わせの上限に当たったときは失敗にせず、次の起動に回す（この起動ではもう D1 を呼べない）
+      if (D1_LIMIT_RE.test(String((e as any)?.message || e))) { limitHit = true; deferred++; continue }
+      markFailed(s.schedule_id, '適用に失敗しました: ' + String(e))
     }
   }
-  return { due: due.length, applied, failed }
+  if (fails.length && !limitHit) {
+    try { await db.batch(updateRowsStmts(db, 'staff_affiliation_schedules', 'schedule_id', ['status', 'error'], fails, "staff_affiliation_schedules.status = 'pending'")) }
+    catch (e) { console.log(`affiliation_schedules: failed の記録に失敗しました: ${e}`) }
+  }
+  return { due: due.length, applied, failed: limitHit ? 0 : fails.length, deferred: deferred + (limitHit ? fails.length : 0), statements: stats.statements }
 }
 
 adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {
@@ -1009,7 +1028,7 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
     if (/UNIQUE constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
     throw e
   }
-  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
+  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(e => recordSwallowedError(c, '実績の同期', e))
   // スタッフ本人に、管理者が記録したことを知らせる（#327）
   await notifyProxyAttendance(db, s, rows, u.name)
   return c.json({ ok: true, created: rows.length, reports: rows })
@@ -1025,7 +1044,7 @@ adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
     .bind(s.shift_id, c.req.param('type')).first()
   if (corrected) return c.json({ error: '承認済みの打刻修正で直した報告は取り消せません。打刻修正の申請で時刻を直してください' }, 409)
   const r = await c.env.DB.prepare("DELETE FROM attendance_reports WHERE shift_id = ? AND report_type = ? AND entry_method = 'proxy' AND corrected_by_correction_id IS NULL").bind(s.shift_id, c.req.param('type')).run()
-  await syncActualFromReports(c.env.DB, u.company_id, s.shift_id).catch(() => {})
+  await syncActualFromReports(c.env.DB, u.company_id, s.shift_id).catch(e => recordSwallowedError(c, '実績の同期', e))
   return c.json({ ok: true, deleted: r.meta.changes || 0 })
 })
 
@@ -1033,12 +1052,43 @@ adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
 // 有効期限は、確認するときのシフトの稼働日から決める（発行後にシフトの日付を変えても、新しい稼働日の翌日まで使える。#68）。
 // shift_report_tokens.expires_at は発行時の値の記録として残す
 function reportTokenExpiry(workDate: string): string { return `${addDays(workDate, 1)} 23:59:59` }
-// シフトの今の担当者に発行した、使える報告用URL（差し替え前の担当者のURLは使えないので出さない。#81）
+
+// ---------- 報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） ----------
+// token_hash に照合用のハッシュを入れ、主キーの token 列にも同じハッシュを入れる（平文は残さない。列の作り直しは次の Sprint）。
+// URL は発行した応答でだけ返す。画面は発行した端末で覚えておき、閉じた後に送り直すときは発行し直す。
+// 0105 より前に発行した行（token_hash が NULL で token が平文）は、開いたときと、報告用URLを扱う API で最初に、ハッシュへ移す（配ったURLはそのまま使える）
+const TOKEN_REF_LEN = 12
+const tokenRef = (hash: string) => String(hash || '').slice(0, TOKEN_REF_LEN)
+async function newReportToken() { const token = randToken(24); const hash = await sha256(token); return { token, hash, ref: tokenRef(hash) } }
+// 照合の条件（a は shift_report_tokens の別名）。bind は ハッシュ, 平文 の順
+const tokenMatch = (a: string) => `(${a}.token_hash = ? OR (${a}.token_hash IS NULL AND ${a}.token = ?))`
+const LEGACY_HASH_LIMIT = 200
+/** 平文で残っている報告用URLのトークンをハッシュへ移す（1回に LEGACY_HASH_LIMIT 件まで）。移した件数を返す */
+export async function hashLegacyReportTokens(db: D1Database, limit = LEGACY_HASH_LIMIT): Promise<number> {
+  const rows = (await db.prepare('SELECT token FROM shift_report_tokens WHERE token_hash IS NULL LIMIT ?').bind(limit).all()).results as any[]
+  if (!rows.length) return 0
+  const pairs = await Promise.all(rows.map(async r => ({ r: String(r.token), h: await sha256(String(r.token)) })))
+  await db.prepare(`UPDATE shift_report_tokens SET token = json_extract(j.value, '$.h'), token_hash = json_extract(j.value, '$.h')
+    FROM json_each(?) j WHERE shift_report_tokens.token = json_extract(j.value, '$.r') AND shift_report_tokens.token_hash IS NULL`).bind(JSON.stringify(pairs)).run()
+  return rows.length
+}
+// この Worker で移し終えたか（移す行がないと分かったら、以後は確かめない）
+let legacyReportTokensDone = false
+async function ensureReportTokensHashed(db: D1Database) {
+  if (legacyReportTokensDone) return
+  try { if (await hashLegacyReportTokens(db) === 0) legacyReportTokensDone = true } catch (e) { console.log(`report token hash migration failed: ${e}`) }
+}
+// シフトの今の担当者に発行した、使える報告用URL（差し替え前の担当者のURLは使えないので出さない。#81）。トークンそのものは返さない。
+// 発行の記録は、管理者が発行したもの（created_by あり）の新しい方。予定確認URLのページが用意したもの（created_by なし）だけなら、その新しい方。
+// ref はハッシュの先頭（画面で、発行したときに覚えたURLが今のものかを見分ける）。最終アクセスは使えるURLのうちの新しい方
 async function currentReportToken(db: D1Database, s: { shift_id: number; staff_id: number; work_date: string }) {
   if (reportTokenExpiry(s.work_date) <= nowJST()) return null
-  const t = await db.prepare('SELECT token, last_used_at FROM shift_report_tokens WHERE shift_id = ? AND staff_id = ? AND revoked = 0 ORDER BY created_at DESC LIMIT 1')
+  await ensureReportTokensHashed(db)
+  const t = await db.prepare(`SELECT t.token_hash, t.created_at,
+      (SELECT MAX(x.last_used_at) FROM shift_report_tokens x WHERE x.shift_id = t.shift_id AND x.staff_id = t.staff_id AND x.revoked = 0) AS last_used_at
+    FROM shift_report_tokens t WHERE t.shift_id = ? AND t.staff_id = ? AND t.revoked = 0 ORDER BY (t.created_by IS NOT NULL) DESC, t.created_at DESC, t.rowid DESC LIMIT 1`)
     .bind(s.shift_id, s.staff_id).first() as any
-  return t ? { ...t, expires_at: reportTokenExpiry(s.work_date) } : null
+  return t ? { ref: tokenRef(t.token_hash || ''), issued_at: t.created_at, last_used_at: t.last_used_at, expires_at: reportTokenExpiry(s.work_date) } : null
 }
 adminLifecycleApi.post('/shifts/:id/report-link', async (c) => {
   const u = c.get('user'); const db = c.env.DB
@@ -1050,12 +1100,17 @@ adminLifecycleApi.post('/shifts/:id/report-link', async (c) => {
   const expires = reportTokenExpiry(s.work_date)
   if (expires <= nowJST()) return c.json({ error: '稼働日の翌日を過ぎたシフトには発行できません' }, 400)
   const existing = await currentReportToken(db, s)
-  if (existing && !(await c.req.json().catch(() => ({} as any))).regenerate) return c.json({ ok: true, token: existing.token, expires_at: existing.expires_at })
-  await db.prepare('UPDATE shift_report_tokens SET revoked = 1 WHERE shift_id = ?').bind(s.shift_id).run()
-  const token = randToken(24)
-  await db.prepare('INSERT INTO shift_report_tokens (token, shift_id, company_id, staff_id, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(token, s.shift_id, u.company_id, s.staff_id, expires, u.user_id).run()
-  return c.json({ ok: true, token, expires_at: expires })
+  // 発行済みのURLはハッシュしか持っていないので返せない。もう一度送るときは発行し直す（regenerate。前のURLは使えなくなる）
+  if (existing && !(await c.req.json().catch(() => ({} as any))).regenerate) {
+    return c.json({ error: '報告用URLは発行済みです。URLをもう一度表示するには「発行し直す」を押してください（前のURLは使えなくなります）', code: 'already_issued', ...existing }, 409)
+  }
+  const t = await newReportToken()
+  await db.batch([
+    db.prepare('UPDATE shift_report_tokens SET revoked = 1 WHERE shift_id = ?').bind(s.shift_id),
+    db.prepare('INSERT INTO shift_report_tokens (token, token_hash, shift_id, company_id, staff_id, expires_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(t.hash, t.hash, s.shift_id, u.company_id, s.staff_id, expires, u.user_id),
+  ])
+  return c.json({ ok: true, token: t.token, ref: t.ref, expires_at: expires })
 })
 adminLifecycleApi.delete('/shifts/:id/report-link', async (c) => {
   const u = c.get('user')
@@ -1220,7 +1275,7 @@ adminLifecycleApi.post('/proxy-attendance/bulk', async (c) => {
       if (!closed.has(wd)) closed.set(wd, !!(await closedMessage(db, u.company_id, wd)))
       if (!closed.get(wd)) syncIds.push(r.shift_id)
     }
-    if (syncIds.length) await syncActualsForShifts(db, u.company_id, syncIds).catch(() => 0)
+    if (syncIds.length) await syncActualsForShifts(db, u.company_id, syncIds).catch(e => recordSwallowedError(c, '実績の同期（まとめて）', e))
     // ログインのある人には、管理者が記録したことをアプリ内で知らせる（1件の代理入力の notifyProxyAttendance と同じ文面。#327）
     try {
       const notes = recorded.filter(r => { const s = byId.get(r.shift_id); return s.user_role === 'staff' && s.user_status === 'active' }).map(r => {
@@ -1241,8 +1296,12 @@ async function reportLinkRows(db: D1Database, companyId: number, date: string, p
   const all = await shiftsOfDay(db, companyId, { date, projectId, nologinOnly: true })
   const rows = all.slice(0, BULK_SHIFT_LIMIT)
   const ids = rows.map(r => r.shift_id as number)
-  const toks = ids.length ? (await db.prepare(`SELECT token, shift_id, staff_id, last_used_at FROM shift_report_tokens WHERE shift_id IN ${JSON_IN} AND revoked = 0
-    ORDER BY created_at DESC`).bind(bindJsonArray(ids)).all()).results as any[] : []
+  if (ids.length) await ensureReportTokensHashed(db)
+  // 管理者が発行したもの（created_by あり）を先に、新しい順。最終アクセスは使えるURLのうちの新しい方（currentReportToken と同じ）
+  const toks = ids.length ? (await db.prepare(`SELECT token_hash, shift_id, staff_id, created_at,
+      MAX(last_used_at) OVER (PARTITION BY shift_id, staff_id) AS last_used_at
+    FROM shift_report_tokens WHERE shift_id IN ${JSON_IN} AND revoked = 0
+    ORDER BY (created_by IS NOT NULL) DESC, created_at DESC, rowid DESC`).bind(bindJsonArray(ids)).all()).results as any[] : []
   const now = nowJST()
   const counts = await linkNoticeCounts(db, companyId, [...new Set(rows.map(r => r.staff_id as number))])
   return {
@@ -1256,7 +1315,8 @@ async function reportLinkRows(db: D1Database, companyId: number, date: string, p
       return {
         shift_id: s.shift_id, staff_id: s.staff_id, staff_name: s.staff_name, staff_phone: s.staff_phone || '', project_id: s.project_id, project_name: s.project_name,
         work_date: s.work_date, start_time: s.start_time, end_time: s.end_time, place: s.site_name || s.location || '',
-        token: t ? t.token : null, last_used_at: t ? t.last_used_at : null, expires_at: reportTokenExpiry(s.work_date),
+        // URL（token）は、まとめて発行した応答でだけ付ける（POST /report-links/bulk）。issued は発行済みか、ref は画面で覚えたURLと見分けるため
+        issued: !!t, ref: t ? tokenRef(t.token_hash || '') : null, token: null as string | null, last_used_at: t ? t.last_used_at : null, expires_at: reportTokenExpiry(s.work_date),
         unavailable: gone || (expired ? '稼働日の翌日を過ぎたため発行できません' : null), notice_count: counts.get(s.staff_id) || 0,
       }
     }),
@@ -1280,13 +1340,18 @@ adminLifecycleApi.post('/report-links/bulk', async (c) => {
   if (projectId === undefined) return c.json({ error: '案件の指定が正しくありません' }, 400)
   const only = Array.isArray(b.shift_ids) ? new Set(b.shift_ids.map((x: any) => Number(x))) : null
   const cur = await reportLinkRows(db, u.company_id, date, projectId)
-  const targets = cur.rows.filter(r => !r.token && !r.unavailable && (!only || only.has(r.shift_id)))
+  const targets = cur.rows.filter(r => !r.issued && !r.unavailable && (!only || only.has(r.shift_id)))
+  const fresh = new Map<number, string>()
   if (targets.length) {
-    await batchInChunks(db, insertRowsStmts(db, 'shift_report_tokens', ['token', 'shift_id', 'company_id', 'staff_id', 'expires_at', 'created_by'],
-      targets.map(r => ({ token: randToken(24), shift_id: r.shift_id, company_id: u.company_id, staff_id: r.staff_id, expires_at: r.expires_at, created_by: u.user_id }))))
+    const made = await Promise.all(targets.map(async r => ({ r, t: await newReportToken() })))
+    for (const m of made) fresh.set(m.r.shift_id, m.t.token)
+    await batchInChunks(db, insertRowsStmts(db, 'shift_report_tokens', ['token', 'token_hash', 'shift_id', 'company_id', 'staff_id', 'expires_at', 'created_by'],
+      made.map(({ r, t }) => ({ token: t.hash, token_hash: t.hash, shift_id: r.shift_id, company_id: u.company_id, staff_id: r.staff_id, expires_at: r.expires_at, created_by: u.user_id }))))
   }
   const after = await reportLinkRows(db, u.company_id, date, projectId)
-  return c.json({ ok: true, issued: targets.length, date, company_name: u.company_name || '', ...after })
+  // いま発行した分だけ URL を返す（前に発行した分は返せない。画面は発行した端末で覚えておく）
+  const rows = after.rows.map(r => (fresh.has(r.shift_id) ? { ...r, token: fresh.get(r.shift_id)! } : r))
+  return c.json({ ok: true, issued: targets.length, date, company_name: u.company_name || '', ...after, rows })
 })
 
 // 対応済みにしたインシデント・クレームを未対応に戻す（#169。api.ts の reopenIncidentStmt と同じ）
@@ -1423,6 +1488,7 @@ function staffGoneForShift(r: { merged_into_staff_id?: any; employment_status?: 
 }
 async function loadToken(db: D1Database, token: string) {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return null
+  const hash = await sha256(token)
   const t = await db.prepare(`SELECT t.*, s.work_date, s.start_time, s.end_time, s.location, s.status AS shift_status, s.project_id, s.role,
       s.attendance_mode AS s_att, s.daily_report_mode AS s_dr, p.project_name, p.report_template_id, p.attendance_mode AS p_att, p.daily_report_mode AS p_dr,
       sp.attendance_mode AS sp_att, sp.daily_report_mode AS sp_dr, us.name AS staff_name, co.company_name, co.settings_json, p.photo_required_override,
@@ -1432,7 +1498,12 @@ async function loadToken(db: D1Database, token: string) {
     FROM shift_report_tokens t JOIN shifts s ON s.shift_id = t.shift_id JOIN projects p ON p.project_id = s.project_id
     JOIN staff_profiles sp ON sp.staff_id = t.staff_id JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = t.company_id
     LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
-    WHERE t.token = ? AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(token).first() as any
+    WHERE ${tokenMatch('t')} AND s.staff_id = t.staff_id AND s.company_id = t.company_id`).bind(hash, token).first() as any
+  // 0105 より前に発行した行（平文）は、開いたときにハッシュへ移す（以後の照合・最終アクセスの記録は t.token = ハッシュで行う）
+  if (t && !t.token_hash) {
+    await db.prepare('UPDATE shift_report_tokens SET token = ?, token_hash = ? WHERE token = ? AND token_hash IS NULL').bind(hash, hash, token).run()
+    t.token = hash; t.token_hash = hash
+  }
   if (!t || t.revoked || reportTokenExpiry(t.work_date) <= nowJST() || t.shift_status === 'absent') return null
   // 本部で停止にした企業の報告用URLは使えない（ログインの停止と同じ判定。src/lib/auth.ts）
   if (!isCompanyActive(t.company_active_status)) return null
@@ -1454,7 +1525,7 @@ publicReportApi.get('/:token', async (c) => {
   if (!t) {
     // シフトの報告用URLでなければ、スタッフ単位の予定確認URL（#442）として探す
     const st = await loadScheduleToken(db, c.req.param('token'))
-    if (st && scheduleTokenUsable(st, nowJST())) return c.json(await scheduleView(db, st))
+    if (st && scheduleTokenUsable(st, nowJST())) return c.json(await scheduleView(db, st, c.req.param('token')))
     // 使えないURLの画面にも、会社名と連絡先を出す（#163）
     return c.json({ error: 'このURLは無効か、有効期限が切れています', ...(await invalidTokenInfo(db, c.req.param('token'))) }, 404)
   }
@@ -1554,7 +1625,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
     if (key) await c.env.PHOTOS.delete(key).catch(() => {})
     return c.json({ error: '報告の登録に失敗しました。もう一度お試しください' }, 500)
   }
-  if (ACTUAL_SYNC_TYPES.includes(reportType)) await syncActualFromReports(db, t.company_id, t.shift_id).catch(() => {})
+  if (ACTUAL_SYNC_TYPES.includes(reportType)) await syncActualFromReports(db, t.company_id, t.shift_id).catch(e => recordSwallowedError(c, '実績の同期', e))
   return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, no_photo: !!noPhotoReason })
 })
 
@@ -1609,8 +1680,10 @@ function scheduleTokenUsable(t: any, now: string): boolean {
   return true
 }
 // 予定確認ページの内容: 前日〜SCHEDULE_DAYS_AHEAD 日先の確定・代打のシフト（金額なし）と、
-// 前日・当日・翌日のシフトの報告用URL（なければ発行する。発行者は空 = 予定確認URLから）・重要なお知らせ・会社の連絡先
-async function scheduleView(db: D1Database, st: any) {
+// 前日・当日・翌日のシフトの報告用URL（このページ用。発行者は空 = 予定確認URLから）・重要なお知らせ・会社の連絡先
+// 1シフトで無効にされたこのページ用のURLがこの数を超えたら、そのシフトの入口は出さない
+const SCHEDULE_REPORT_TOKEN_TRIES = 8
+async function scheduleView(db: D1Database, st: any, rawToken: string) {
   const now = nowJST(), today = now.slice(0, 10)
   const rows = (await db.prepare(`SELECT s.shift_id, s.staff_id, s.work_date, s.start_time, s.end_time, s.location, s.role, s.status, p.project_name,
       si.site_name, si.address AS site_address, si.lat AS site_lat, si.lng AS site_lng, p.site_contact_name, p.site_contact_phone
@@ -1619,16 +1692,27 @@ async function scheduleView(db: D1Database, st: any) {
     ORDER BY s.work_date, s.start_time, s.shift_id LIMIT 60`).bind(st.staff_id, st.company_id, addDays(today, -1), addDays(today, SCHEDULE_DAYS_AHEAD)).all()).results as any[]
   const shifts = rows.filter(s => !(st.retired_at && s.work_date > st.retired_at))
   const near = shifts.filter(s => s.work_date <= addDays(today, 1) && reportTokenExpiry(s.work_date) > now)
+  // 報告用URLはハッシュしか持たないので、管理者が発行したURLはここに出せない。予定確認URLのトークンとシフトから決まる
+  // このページ用の報告用URLを使う（開くたびに同じURLになり、行も増えない）。無効にされていたら次の番号のURLにする（#9969）
   const tokens = new Map<number, string>()
+  const fresh: any[] = []
   if (near.length) {
-    const cur = (await db.prepare(`SELECT token, shift_id FROM shift_report_tokens WHERE shift_id IN ${JSON_IN} AND staff_id = ? AND revoked = 0 ORDER BY created_at`)
-      .bind(bindJsonArray(near.map(s => s.shift_id)), st.staff_id).all()).results as any[]
-    for (const t of cur) tokens.set(t.shift_id, t.token)
+    await ensureReportTokensHashed(db)
+    const cand = await Promise.all(near.map(async s => ({ s, list: await Promise.all(Array.from({ length: SCHEDULE_REPORT_TOKEN_TRIES }, async (_, k) => {
+      const token = (await sha256(`report-link:${rawToken}:${s.shift_id}:${st.staff_id}:${k}`)).slice(0, 43)
+      return { token, hash: await sha256(token) }
+    })) })))
+    const have = new Map(((await db.prepare(`SELECT token_hash, revoked FROM shift_report_tokens WHERE token_hash IN ${JSON_IN}`)
+      .bind(JSON.stringify(cand.flatMap(x => x.list.map(y => y.hash)))).all()).results as any[]).map(r => [r.token_hash, Number(r.revoked) || 0]))
+    for (const { s, list } of cand) {
+      const pick = list.find(y => have.get(y.hash) !== 1)
+      if (!pick) continue
+      tokens.set(s.shift_id, pick.token)
+      if (!have.has(pick.hash)) fresh.push({ token: pick.hash, token_hash: pick.hash, shift_id: s.shift_id, company_id: st.company_id, staff_id: st.staff_id, expires_at: reportTokenExpiry(s.work_date) })
+    }
   }
-  const fresh = near.filter(s => !tokens.has(s.shift_id)).map(s => ({ token: randToken(24), shift_id: s.shift_id, company_id: st.company_id, staff_id: st.staff_id, expires_at: reportTokenExpiry(s.work_date) }))
-  for (const f of fresh) tokens.set(f.shift_id, f.token)
   await db.batch([
-    ...insertRowsStmts(db, 'shift_report_tokens', ['token', 'shift_id', 'company_id', 'staff_id', 'expires_at'], fresh),
+    ...insertRowsStmts(db, 'shift_report_tokens', ['token', 'token_hash', 'shift_id', 'company_id', 'staff_id', 'expires_at'], fresh, { orIgnore: true }),
     db.prepare('UPDATE staff_schedule_tokens SET last_used_at = ? WHERE token_id = ?').bind(now, st.token_id),
   ])
   const [notices, contact] = await Promise.all([linkNotices(db, st.company_id, st.staff_id), loadMailContact(db, st.company_id)])
@@ -1646,8 +1730,9 @@ async function scheduleView(db: D1Database, st: any) {
 // 使えないURLの画面に出す会社名と連絡先（#163）。発行されたことのあるURL（期限切れ・取消を含む）だけ。でたらめなURLには何も返さない
 async function invalidTokenInfo(db: D1Database, token: string): Promise<{ company_name?: string; contact_phone?: string | null }> {
   if (!PUBLIC_TOKEN_RE.test(token || '')) return {}
-  const r = await db.prepare(`SELECT company_id FROM shift_report_tokens WHERE token = ?
-    UNION ALL SELECT company_id FROM staff_schedule_tokens WHERE token_hash = ? LIMIT 1`).bind(token, await sha256(token)).first() as any
+  const hash = await sha256(token)
+  const r = await db.prepare(`SELECT company_id FROM shift_report_tokens t WHERE ${tokenMatch('t')}
+    UNION ALL SELECT company_id FROM staff_schedule_tokens WHERE token_hash = ? LIMIT 1`).bind(hash, token, hash).first() as any
   if (!r) return {}
   const ct = await loadMailContact(db, r.company_id)
   return { company_name: ct.company_name, contact_phone: ct.phone }

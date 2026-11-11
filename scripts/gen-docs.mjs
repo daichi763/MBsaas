@@ -408,6 +408,8 @@ const MIDDLEWARE_DEFS = [
   { file: 'src/api.ts', path: '/staff/*', kind: 'roles', roles: ['staff'], label: 'スタッフだけ' },
   { file: 'src/api.ts', path: '/staff/attendance', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts）' },
   { file: 'src/api.ts', path: '/staff/attendance-photo', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts）' },
+  { file: 'src/shift-board.ts', path: '/admin/shift-slots/roles/:id/assign', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts）' },
+  { file: 'src/recruit.ts', path: '/admin/recruit-applications/:id/decide', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts）' },
   { file: 'src/api.ts', name: 'securityAdminOnly', kind: 'roles', roles: ['company_admin'], label: '会社管理者だけ（セキュリティの設定・ログインの履歴）' },
   { file: 'src/accounts.ts', name: 'companyAdminOnly', kind: 'roles', roles: ['company_admin'], label: '会社管理者だけ（管理者アカウントの管理）' },
   { file: 'src/recruit.ts', path: '/public/recruit/:token/*', kind: 'note', label: '募集ページの会社が停止中なら 410' },

@@ -6,14 +6,15 @@ import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServ
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
-import { runCronJobs, defineCronJobs } from './services/cron'
+import { runCronJobs, defineCronJobs, isUnknownCron } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
 import { loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_ROLE } from './hq-support'
 import { adminSideNavHtml, adminMobileNavHtml, adminScreensJson } from './admin-menu'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
-import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
+import { recordError, newErrorRef, maskPath, sanitizeErrorText, type ErrorAlertEnv } from './lib/error-log'
+import { apiNotFound } from './lib/http'
 import { csrfGuard } from './lib/csrf'
 import { nowJST } from './lib/time'
 
@@ -24,24 +25,32 @@ const app = new Hono<{ Bindings: Bindings }>()
 // ============ 画面の応答に付けるセキュリティヘッダー（#202） ============
 // 外部のスクリプト・スタイルは jsDelivr（バージョン固定・SRI 付き）と、募集ページの Turnstile だけを許す。
 // 画面に onclick などのイベント属性とインラインの script が残っているため、script-src の 'unsafe-inline' は外せない
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://challenges.cloudflare.com",
-  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-  "font-src 'self' https://cdn.jsdelivr.net data:",
-  "img-src 'self' data: blob:",
-  "connect-src 'self'",
-  'frame-src https://challenges.cloudflare.com',
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join('; ')
+// jsDelivr は、画面で読み込んでいるファイル（下の SRI の一覧）のパスだけを許す（#9969 arch-17）。SRI の一覧は後で定義するので、最初の応答で組み立てる。
+// 静的ファイル（/static/*・manifest）のヘッダーは public/_headers で付ける（Workers Assets はこのミドルウェアを通らない）
+let cspValue = ''
+function csp(): string {
+  if (cspValue) return cspValue
+  const cdnFiles = (re: RegExp) => Object.keys(SRI).filter(p => re.test(p)).map(p => CDN + p).join(' ')
+  return (cspValue = [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-inline' ${cdnFiles(/\.js$/)} https://challenges.cloudflare.com`,
+    `style-src 'self' 'unsafe-inline' ${cdnFiles(/\.css$/)}`,
+    // Font Awesome の CSS が読むフォント（webfonts/ の下）
+    `font-src 'self' ${CDN}@fortawesome/fontawesome-free@6.4.0/webfonts/ data:`,
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    'frame-src https://challenges.cloudflare.com',
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '))
+}
 app.use('*', async (c, next) => {
   await next()
   try {
     c.res.headers.set('X-Content-Type-Options', 'nosniff')
-    if ((c.res.headers.get('Content-Type') || '').startsWith('text/html')) c.res.headers.set('Content-Security-Policy', CSP)
+    if ((c.res.headers.get('Content-Type') || '').startsWith('text/html')) c.res.headers.set('Content-Security-Policy', csp())
   } catch { /* 変更できない応答（外部から取得したものなど）はそのまま返す */ }
 })
 
@@ -58,7 +67,9 @@ app.onError((err, c) => {
   console.error(JSON.stringify({
     level: 'error', event: 'unhandled_error', ref, method: c.req.method, path: maskPath(c.req.path),
     company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
-    message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
+    // 例外の文には入力の抜粋・SQL の値が入りうるので、D1 の記録（error_logs）と同じ規則で伏せる（#9967）
+    message: sanitizeErrorText(String((err as any)?.message || err), 500),
+    stack: String((err as any)?.stack || '').split('\n').slice(0, 6).map(l => sanitizeErrorText(l, 300)).join('\n'),
   }))
   const at = nowJST().slice(0, 16)
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
@@ -70,6 +81,9 @@ app.onError((err, c) => {
   return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
 })
+
+// 存在しないパス: /api は JSON の { error }（画面の errMsg がそのまま出せる形。#9967）、それ以外は今までどおりの文字の 404
+app.notFound((c) => (c.req.path === '/api' || c.req.path.startsWith('/api/') ? apiNotFound(c) : c.text('404 Not Found', 404)))
 
 // CSRF の対策（#9943）: 別のサイトからの /api/* の書き込みを 403 で止める（プッシュの送信より前に止める）。対象から外すものは src/lib/csrf.ts に書く
 app.use('/api/*', csrfGuard)
@@ -135,7 +149,7 @@ app.post('/webhooks/resend', (c) => handleResendWebhook(c.env as unknown as Mail
 const CDN = 'https://cdn.jsdelivr.net/npm/'
 const SRI: Record<string, string> = {
   '@fortawesome/fontawesome-free@6.4.0/css/all.min.css': 'sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0',
-  'axios@1.6.0/dist/axios.min.js': 'sha384-VekiXfVDZuqx75T/YaGfn7/p6+e+D0f/G8UoZ5GBOCMZ89kMW4wTo8PSn6GSzOEl',
+  'axios@1.21.0/dist/axios.min.js': 'sha384-p5EwRuz37ylAY9QrjGGIs9ngKVaIwppUFSourks9EIRp1CzoIDWoQkXrHxaAUhEB',
   'dayjs@1.11.10/dayjs.min.js': 'sha384-DpVxUeeBWjUvUV1czyIHJAjh+jYUZFu2lLakbdua5vbwOrBGi1UgaKCHjTC+x3Ky',
   'chart.js@4.5.1/dist/chart.umd.min.js': 'sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ',
   'flatpickr@4.6.13/dist/flatpickr.min.css': 'sha384-RkASv+6KfBMW9eknReJIJ6b3UnjKOKC5bOUaNgIY778NFbQ8MtWq9Lr/khUgqtTt',
@@ -156,7 +170,7 @@ const head = (title: string) => `
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} | Field OS</title>
   ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
-  ${cdnJs('axios@1.6.0/dist/axios.min.js')}
+  ${cdnJs('axios@1.21.0/dist/axios.min.js')}
   ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
   ${LIB_FALLBACK}
   <script src="/static/common.js"></script>
@@ -819,6 +833,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'push_queue', label: 'プッシュ通知の送信（残り）', cron: CRON_REMINDERS, run: env => runPushQueueJob(env as any) },
   // 打刻修正の承認依頼を「1日1回まとめて」受け取る管理者へのまとめメール（#284。毎朝8時以降の最初の起動で1回）
   { name: 'notification_digest', label: '承認依頼のまとめメール', cron: CRON_REMINDERS, run: env => runNotificationDigests(env as any) },
+  // 前月の請求の記録（#295。毎月1〜3日。記録済みの企業はそのまま）。取りこぼすと困るので、3:00 の起動の先頭で行う（問い合わせは1回。#9968）
+  { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
   // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）
@@ -842,11 +858,12 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   } },
   // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
   { name: 'retirements', label: '退職予定日を過ぎたスタッフの退職への切り替え', cron: CRON_DAILY, run: async env => ({ applied: await applyDueRetirements(env.DB) }) },
-  // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
+  // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない。
+  // 使う問い合わせの数を予算の内に収め、収まらない予約は deferred として 4:00 以降の affiliation_schedules_rest に回す（#9968）
   { name: 'affiliation_schedules', label: '所属区分の変更の予約の適用', cron: CRON_DAILY, run: async env => {
     // 状況が変わって適用できなかった予約は、理由をスタッフの画面に出すので定期処理の失敗にはしない
     const r = await applyDueAffiliationSchedules(env.DB)
-    return { due: r.due, applied: r.applied, not_applied: r.failed }
+    return { due: r.due, applied: r.applied, not_applied: r.failed, deferred: r.deferred, statements: r.statements }
   } },
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
   // 在職中の保存期間（位置情報と写真・相談・フォロー記録・決着した人材提案・雇用終了の従業員データ）の削除。D1 の問い合わせの数を分けるため 3:30 の起動で行う（#420 #511 #350 #425）
@@ -862,8 +879,14 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'board_saved_search', label: '掲示板の保存した検索条件の新着の知らせ', cron: CRON_DAILY, run: env => notifySavedSearchMatches(env as any) },
   // 書類の有効期限（30日以内・期限切れ）を会社の管理者に知らせる（#297。毎朝8時以降、会社ごとに1日1回まで。知らせた書類はその段階では二度知らせない）
   { name: 'doc_expiry_notice', label: '書類の有効期限の知らせ', cron: CRON_REMINDERS, run: env => notifyExpiringDocuments(env as any) },
-  // 前月の請求の記録（#295。毎月1〜3日。記録済みの企業はそのまま）
-  { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
+  // 3:00 の起動で問い合わせの予算に収まらなかった所属区分の変更の予約を、4:00 以降の15分おきの起動で少しずつ適用する（#9968）。
+  // 3:00 の起動と同時に動かないよう、また退職の切り替え（3:00）より前に新しい日の予約を適用しないよう、0:00〜3:59 は何もしない。
+  // 15分おきの起動の最後に置き、予約がなければ問い合わせ1回で終わる
+  { name: 'affiliation_schedules_rest', label: '所属区分の変更の予約の適用（3:00 の残り）', cron: CRON_REMINDERS, run: async env => {
+    if (Number(nowJST().slice(11, 13)) < 4) return { idle: true, skipped: 'before_4am' }
+    const r = await applyDueAffiliationSchedules(env.DB)
+    return r.due ? { due: r.due, applied: r.applied, not_applied: r.failed, deferred: r.deferred, statements: r.statements } : { due: 0, idle: true }
+  } },
 ])
 
 // 定期処理の失敗（例外、または結果の failed・error）を障害の記録（error_logs）にも残す（#9622）。
@@ -896,6 +919,14 @@ export default {
   // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
     cronAlerted = false
+    // 一覧にない式で起動したとき（wrangler.jsonc だけを変えたなど）は何もせず、障害の記録に残す（#9967。全部を実行すると毎日の削除まで走るため）
+    if (isUnknownCron(CRON_JOBS, event.cron)) {
+      console.error(JSON.stringify({ level: 'error', event: 'unknown_cron', cron: event.cron }))
+      const r = await recordError(env, { ref: newErrorRef(), source: 'cron', method: 'CRON', path: 'unknown_cron',
+        error: new Error(`定期処理の一覧にない cron の式で起動したため、何もしませんでした: ${event.cron}（wrangler.jsonc の triggers.crons と src/index.tsx の CRON_JOBS をそろえてください）`) })
+      if (r.alerted) await flushPushQueue(env as any).catch(e => console.log(`push flush failed: ${e}`))
+      return
+    }
     await runCronJobs(env, withErrorLog(CRON_JOBS), event.cron)
     // 障害の通知を作ったら、本部の管理者の端末へのプッシュをすぐに送る
     if (cronAlerted) await flushPushQueue(env as any).catch(e => console.log(`push flush failed: ${e}`))

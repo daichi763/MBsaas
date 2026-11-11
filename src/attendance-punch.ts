@@ -64,7 +64,7 @@ type Res = { body: any; status: number }
 // 記録済みの報告をそのまま返す（同じキーの送り直し）
 function duplicateResult(r: any, settingsJson: any): Res {
   return { status: 200, body: { ok: true, duplicate: true, status: r.status, reported_at: r.reported_at, device_time: r.time_source === 'device', resent: !!r.time_source,
-    late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes, ...(r.photo_key ? { photo_key: r.photo_key } : {}), ...distanceResult(r.distance_m ?? null, settingsJson) } }
+    late_minutes: r.late_minutes, early_leave_minutes: r.early_leave_minutes, ...(r.photo_key ? { has_photo: true } : {}), ...distanceResult(r.distance_m ?? null, settingsJson) } }
 }
 const sameActual = (a: { start: string | null; end: string | null; brk: number | null }, s: any) =>
   a.start === (s.actual_start || null) && a.end === (s.actual_end || null) && a.brk === (s.actual_break_minutes ?? null)
@@ -194,6 +194,6 @@ async function recordPunchInner(c: any, input: PunchInput): Promise<Res> {
     return { status: 409, body: { error: 'すでに報告済みです' } }
   }
   return { status: 200, body: { ok: true, status, reported_at: at, device_time: timeSource === 'device', resent: !!timeSource, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes,
-    ...(key ? { photo_key: key } : {}), ...distanceResult(distance, owner.settings_json) } }
+    ...(key ? { has_photo: true } : {}), ...distanceResult(distance, owner.settings_json) } }
 }
 

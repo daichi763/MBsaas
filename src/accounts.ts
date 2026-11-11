@@ -17,6 +17,7 @@ import { passwordResetEmail } from './email-templates/password-reset'
 import { accountEmailChangedEmail } from './email-templates/account-email'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
+import { appBaseUrl } from './lib/http'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -73,7 +74,7 @@ export async function sendPasswordResetLink(env: Bindings, u: { user_id: number;
   const expiresAt = new Date(Date.now() + RESET_EXPIRES_HOURS * 3600 * 1000).toISOString()
   await env.DB.prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
     .bind(u.user_id, await hashToken(rawToken), expiresAt).run()
-  const resetUrl = `${env.APP_BASE_URL}/reset-password?token=${rawToken}`
+  const resetUrl = `${appBaseUrl(env)}/reset-password?token=${rawToken}`
   // 同じメールアドレスに複数の会社のアカウントがあっても、どのアカウントのリンクか分かるように会社名とIDを入れる
   const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: RESET_EXPIRES_HOURS, companyName: u.company_name, userCode: u.user_code })
   return sendEmail(env, { to: String(u.email).trim(), subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'password_reset', company_id: u.company_id })
@@ -342,21 +343,21 @@ async function loadCustomerCompany(db: D1Database, companyId: any) {
 }
 hqUsersApi.post('/companies/:id/users', async (c) => {
   const co = await loadCustomerCompany(c.env.DB, c.req.param('id'))
-  if (!co) return c.json({ error: 'not found' }, 404)
+  if (!co) return c.json({ error: '見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
   const r = await createAdminAccount(c.env.DB, co.company_id, { ...b, role: b.role || 'company_admin' })
   return c.json(r.body, r.status)
 })
 hqUsersApi.put('/companies/:id/users/:uid', async (c) => {
   const co = await loadCustomerCompany(c.env.DB, c.req.param('id'))
-  if (!co) return c.json({ error: 'not found' }, 404)
+  if (!co) return c.json({ error: '見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
   const r = await updateAdminAccount(c.env.DB, co.company_id, c.req.param('uid'), b, null)
   return c.json(r.body, r.status)
 })
 hqUsersApi.post('/companies/:id/users/:uid/reset-password', async (c) => {
   const co = await loadCustomerCompany(c.env.DB, c.req.param('id'))
-  if (!co) return c.json({ error: 'not found' }, 404)
+  if (!co) return c.json({ error: '見つかりません' }, 404)
   const b = await c.req.json().catch(() => ({} as any))
   const r = await resetAdminAccountPassword(c.env, co.company_id, c.req.param('uid'), b.mode === 'email' ? 'email' : 'temp')
   return c.json(r.body, r.status)

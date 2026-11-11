@@ -66,15 +66,16 @@ must(await admin.post('/api/admin/notices', { title: `通常W5NL${tag}`, body: '
   const g = await admin.get(`/api/admin/report-links/bulk?date=${yesterday}&project_id=${P}`)
   const ids = (g.data.rows || []).map(r => r.shift_id)
   ok('#275 ログインのない人のシフトだけを返す（ログインのある人は出さない）', g.status === 200 && ids.includes(SA) && ids.includes(SB) && !ids.includes(S9), g.data)
-  ok('#275 発行前は未発行（token なし）', g.data.rows.every(r => !r.token), g.data.rows)
+  ok('#275 発行前は未発行（token なし）', g.data.rows.every(r => !r.token && !r.issued), g.data.rows)
   ok('#281 本人あての重要なお知らせの数を返す（案内文に添える）', g.data.rows.find(r => r.shift_id === SA).notice_count >= 1, g.data.rows)
   const p = await admin.post('/api/admin/report-links/bulk', { date: yesterday, project_id: P })
-  ok('#275 未発行の分をまとめて発行する', p.status === 200 && p.data.issued === 2 && p.data.rows.every(r => r.token), p.data)
+  ok('#275 未発行の分をまとめて発行する', p.status === 200 && p.data.issued === 2 && p.data.rows.every(r => r.token && r.issued && r.ref), p.data)
   const p2 = await admin.post('/api/admin/report-links/bulk', { date: yesterday, project_id: P })
-  ok('#275 もう一度押しても、発行済みのURLは発行し直さない', p2.status === 200 && p2.data.issued === 0 && p2.data.rows.find(r => r.shift_id === SA).token === p.data.rows.find(r => r.shift_id === SA).token, p2.data)
+  // URL はハッシュで持つので、発行した応答でだけ返す（#9969）
+  ok('#275 もう一度押しても、発行済みのURLは発行し直さない（URL は返さない）', p2.status === 200 && p2.data.issued === 0 && p2.data.rows.every(r => r.issued && !r.token) && p2.data.rows.find(r => r.shift_id === SA).ref === p.data.rows.find(r => r.shift_id === SA).ref, p2.data)
   const tA = p.data.rows.find(r => r.shift_id === SA).token
   const rs = await admin.get(`/api/admin/shifts/${SA}/report-status`)
-  ok('#275 発行したURLはシフト詳細の報告パネルでも同じもの', rs.data.token && rs.data.token.token === tA, rs.data.token)
+  ok('#275 発行したURLはシフト詳細の報告パネルでも同じもの（ref が同じ・URL は返さない）', rs.data.token && rs.data.token.ref === p.data.rows.find(r => r.shift_id === SA).ref && !rs.data.token.token, rs.data.token)
   const bad = await admin.get('/api/admin/report-links/bulk?date=2026-13-01')
   ok('#275 日付の形式が違えば 400', bad.status === 400, bad)
 
@@ -156,7 +157,8 @@ must(await admin.post('/api/admin/notices', { title: `通常W5NL${tag}`, body: '
   const fut = await admin.post(`/api/admin/shifts/${SA2}/proxy-daily-report`, { values })
   ok('#276 稼働日より前のシフトには代理入力できない', fut.status === 400, fut)
   // 本人が報告用URLから出し直したら、代理の印は外れ、管理者の上書きには確認が要る
-  const p = await admin.post(`/api/admin/shifts/${SA}/report-link`, {})
+  // 発行済みなので発行し直して URL を受け取る（ハッシュで持つため、発行済みの URL は返せない。#9969）
+  const p = await admin.post(`/api/admin/shifts/${SA}/report-link`, { regenerate: true })
   const sub = await pub.post(p.data.token, 'daily-report', { values, flags_explicit: true })
   ok('#276（前提）本人が報告用URLから日報を出し直す', sub.status === 200, sub)
   const rs3 = await admin.get(`/api/admin/shifts/${SA}/report-status`)

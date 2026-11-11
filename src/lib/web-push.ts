@@ -7,6 +7,7 @@
 // （npx web-push generate-vapid-keys の出力と同じ形式）。なければ初回に作って push_vapid_keys に保存する
 // =========================================================
 import { nowJST } from './time'
+import { appBaseUrl } from './http'
 
 export type VapidEnv = { DB: D1Database; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; APP_BASE_URL?: string }
 type LoadedVapid = { publicKey: string; key: CryptoKey }
@@ -62,7 +63,7 @@ export async function loadVapid(env: VapidEnv): Promise<LoadedVapid> {
 function vapidSubject(env: VapidEnv): string {
   const s = String(env.VAPID_SUBJECT || '').trim()
   if (/^(mailto:|https:\/\/)/.test(s)) return s
-  const base = String(env.APP_BASE_URL || '').trim().replace(/\/+$/, '')
+  const base = appBaseUrl(env)
   return /^https:\/\//.test(base) ? base : 'mailto:noreply@example.com'
 }
 

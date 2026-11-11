@@ -29,17 +29,17 @@ Field OS の画面の一覧です。新しく加わる開発者や外部の開�
 <!-- BEGIN GENERATED: screens-pages -->
 | パス | 定義 | ログイン | 読み込む画面の JS |
 |---|---|---|---|
-| `/sw.js` | [index.tsx:126](../src/index.tsx#L126) |  | `common.js` |
-| `/` | [index.tsx:173](../src/index.tsx#L173) |  |  |
-| `/login` | [index.tsx:193](../src/index.tsx#L193) |  |  |
-| `/reset-password` | [index.tsx:422](../src/index.tsx#L422) |  |  |
-| `/verify-email` | [index.tsx:503](../src/index.tsx#L503) |  |  |
-| `/notice-ack` | [index.tsx:551](../src/index.tsx#L551) |  |  |
-| `/r/:token` | [index.tsx:609](../src/index.tsx#L609) |  | `report-link.js` |
-| `/apply/:token` | [index.tsx:623](../src/index.tsx#L623) |  | `apply.js` |
-| `/staff` | [index.tsx:637](../src/index.tsx#L637) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
-| `/admin` | [index.tsx:677](../src/index.tsx#L677) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
-| `/hq` | [index.tsx:769](../src/index.tsx#L769) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
+| `/sw.js` | [index.tsx:140](../src/index.tsx#L140) |  | `common.js` |
+| `/` | [index.tsx:187](../src/index.tsx#L187) |  |  |
+| `/login` | [index.tsx:207](../src/index.tsx#L207) |  |  |
+| `/reset-password` | [index.tsx:436](../src/index.tsx#L436) |  |  |
+| `/verify-email` | [index.tsx:517](../src/index.tsx#L517) |  |  |
+| `/notice-ack` | [index.tsx:565](../src/index.tsx#L565) |  |  |
+| `/r/:token` | [index.tsx:623](../src/index.tsx#L623) |  | `report-link.js` |
+| `/apply/:token` | [index.tsx:637](../src/index.tsx#L637) |  | `apply.js` |
+| `/staff` | [index.tsx:651](../src/index.tsx#L651) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
+| `/admin` | [index.tsx:691](../src/index.tsx#L691) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
+| `/hq` | [index.tsx:783](../src/index.tsx#L783) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
 <!-- END GENERATED: screens-pages -->
 
 | ページ | 使う人 | 入り口 |
@@ -188,54 +188,54 @@ flowchart LR
 `<ID>` は数字の ID です。「画面」の名前は、メニューの文字（スタッフアプリは画面の上の見出し）です。
 
 <!-- BEGIN GENERATED: screens-routes -->
-### `/staff`（ルートの表: [static/staff.js:2443](../public/static/staff.js#L2443)）
+### `/staff`（ルートの表: [static/staff.js:2454](../public/static/staff.js#L2454)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|
 | `#attendance` | 打刻履歴・修正申請 | `renderStaffAttendance` [static/staff-attendance.js:27](../public/static/staff-attendance.js#L27) | GET `/api/staff/attendance/timeline`<br>GET `/api/staff/corrections`<br>GET `/api/staff/corrections/:id{[0-9]+}`<br>GET `/api/staff/corrections/attachments/:aid{[0-9]+}` |
-| `#availability` | 出勤可能日の提出 | `renderAvailability` [static/staff.js:2504](../public/static/staff.js#L2504) | GET `/api/staff/availability` |
-| `#calendar` | カレンダーに追加 | `renderShiftCalendar` [static/staff.js:2677](../public/static/staff.js#L2677) | GET `/api/staff/calendar-token`<br>GET `/api/staff/shifts`<br>GET `/api/staff/shifts/:id/ics` |
-| `#consult` | 相談・連絡 | `renderConsult` [static/staff.js:2186](../public/static/staff.js#L2186) | GET `/api/staff/consultation-photo/:id{[0-9]+}`<br>GET `/api/staff/consultations`<br>POST `/api/staff/consultations`<br>POST `/api/staff/consultations/:id{[0-9]+}/photos`<br>POST `/api/staff/consultations/read-replies`<br>GET `/api/staff/emergency-contacts` |
+| `#availability` | 出勤可能日の提出 | `renderAvailability` [static/staff.js:2515](../public/static/staff.js#L2515) | GET `/api/staff/availability` |
+| `#calendar` | カレンダーに追加 | `renderShiftCalendar` [static/staff.js:2688](../public/static/staff.js#L2688) | GET `/api/staff/calendar-token`<br>GET `/api/staff/shifts`<br>GET `/api/staff/shifts/:id/ics` |
+| `#consult` | 相談・連絡 | `renderConsult` [static/staff.js:2197](../public/static/staff.js#L2197) | GET `/api/staff/consultation-photo/:id{[0-9]+}`<br>GET `/api/staff/consultations`<br>POST `/api/staff/consultations`<br>POST `/api/staff/consultations/:id{[0-9]+}/photos`<br>POST `/api/staff/consultations/read-replies`<br>GET `/api/staff/emergency-contacts` |
 | `#home` | ホーム | `renderHome` [static/staff.js:133](../public/static/staff.js#L133) | POST `/api/staff/attendance`<br>POST `/api/staff/attendance-photo`<br>GET `/api/staff/home` |
-| `#manual` | 研修・マニュアル | `renderManual` [static/staff.js:2384](../public/static/staff.js#L2384) | GET `/api/staff/manuals` |
-| `#more` | その他 | `renderMore` [static/staff.js:1833](../public/static/staff.js#L1833) | GET `/api/staff/emergency-contacts` |
+| `#manual` | 研修・マニュアル | `renderManual` [static/staff.js:2395](../public/static/staff.js#L2395) | GET `/api/staff/manuals` |
+| `#more` | その他 | `renderMore` [static/staff.js:1844](../public/static/staff.js#L1844) | GET `/api/staff/emergency-contacts` |
 | `#my-docs` | 書類の提出 | `renderMyDocs` [static/staff-profile.js:354](../public/static/staff-profile.js#L354) | GET `/api/staff/self/documents`<br>POST `/api/staff/self/documents`<br>GET `/api/staff/self/documents/:id/download` |
 | `#my-leave` | 有給・休暇 | `renderMyLeave` [static/staff-profile.js:434](../public/static/staff-profile.js#L434) | GET `/api/staff/self/leave` |
-| `#notices` | お知らせ | `renderNoticeDetail` [static/staff.js:2009](../public/static/staff.js#L2009)<br>`renderNotices` [static/staff.js:1985](../public/static/staff.js#L1985) | GET `/api/staff/notices`<br>GET `/api/staff/notices/:id{[0-9]+}`<br>GET `/api/staff/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}` |
+| `#notices` | お知らせ | `renderNoticeDetail` [static/staff.js:2020](../public/static/staff.js#L2020)<br>`renderNotices` [static/staff.js:1996](../public/static/staff.js#L1996) | GET `/api/staff/notices`<br>GET `/api/staff/notices/:id{[0-9]+}`<br>GET `/api/staff/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}` |
 | `#notifications` | 通知 | `renderStaffNotifications` [static/staff-attendance.js:489](../public/static/staff-attendance.js#L489) | GET `/api/staff/notifications`<br>POST `/api/staff/notifications/read-all` |
-| `#notify-settings` | 通知の設定 | `renderNotifySettings` [static/staff.js:2794](../public/static/staff.js#L2794) | GET `/api/staff/notification-prefs`<br>GET `/api/staff/push/config` |
+| `#notify-settings` | 通知の設定 | `renderNotifySettings` [static/staff.js:2805](../public/static/staff.js#L2805) | GET `/api/staff/notification-prefs`<br>GET `/api/staff/push/config` |
 | `#password` | パスワードの変更 | `renderChangePassword` [static/staff-profile.js:159](../public/static/staff-profile.js#L159) | GET `/api/auth/sessions` |
 | `#pay` | 勤務時間・支払 | `renderStaffPay` [static/staff-attendance.js:571](../public/static/staff-attendance.js#L571) | GET `/api/staff/pay` |
-| `#perf` | 実績 | `renderPerf` [static/staff.js:1779](../public/static/staff.js#L1779) | GET `/api/staff/performance` |
+| `#perf` | 実績 | `renderPerf` [static/staff.js:1790](../public/static/staff.js#L1790) | GET `/api/staff/performance` |
 | `#profile` | マイプロフィール | `renderMyProfile` [static/staff-profile.js:40](../public/static/staff-profile.js#L40) | GET `/api/staff/me/profile` |
 | `#profile-request` | 登録情報の変更申請 | `renderProfileRequest` [static/staff-profile.js:282](../public/static/staff-profile.js#L282) | GET `/api/staff/self/profile-requests` |
-| `#report` | 日報入力 | `renderReportWithHistory` [static/staff.js:1730](../public/static/staff.js#L1730) | POST `/api/staff/daily-report`<br>GET `/api/staff/daily-report/:shiftId`<br>GET `/api/staff/handover/:shiftId`<br>GET `/api/staff/home`<br>GET `/api/staff/my-reports`<br>GET `/api/staff/pending-daily-reports` |
+| `#report` | 日報入力 | `renderReportWithHistory` [static/staff.js:1741](../public/static/staff.js#L1741) | POST `/api/staff/daily-report`<br>GET `/api/staff/daily-report/:shiftId`<br>GET `/api/staff/handover/:shiftId`<br>GET `/api/staff/home`<br>GET `/api/staff/my-reports`<br>GET `/api/staff/pending-daily-reports` |
 | `#shift` | シフト | `renderShifts` [static/staff.js:1286](../public/static/staff.js#L1286) | GET `/api/staff/availability/summary`<br>GET `/api/staff/shifts` |
 
 ### `/admin`（ルートの表: [admin-menu.ts:36](../src/admin-menu.ts#L36)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|
-| `#account` | アカウント設定 | `renderAccount` [static/admin.js:6875](../public/static/admin.js#L6875) | GET `/api/admin/assignees`<br>GET `/api/admin/contract-usage`<br>GET `/api/admin/settings/photo-required`<br>GET `/api/admin/settings/shift-notify`<br>GET `/api/admin/users`<br>GET `/api/auth/account` |
-| `#analytics` | 実績分析 | `renderAnalytics` [static/admin.js:5375](../public/static/admin.js#L5375) | GET `/api/admin/analytics`<br>GET `/api/admin/analytics/csv`<br>GET `/api/admin/analytics/series` |
-| `#analytics/<ID>` | 実績分析（詳細） | `renderAnalytics` [static/admin.js:5375](../public/static/admin.js#L5375) | GET `/api/admin/analytics`<br>GET `/api/admin/analytics/csv`<br>GET `/api/admin/analytics/series` |
+| `#account` | アカウント設定 | `renderAccount` [static/admin.js:6936](../public/static/admin.js#L6936) | GET `/api/admin/assignees`<br>GET `/api/admin/contract-usage`<br>GET `/api/admin/settings/photo-required`<br>GET `/api/admin/settings/shift-notify`<br>GET `/api/admin/users`<br>GET `/api/auth/account` |
+| `#analytics` | 実績分析 | `renderAnalytics` [static/admin.js:5410](../public/static/admin.js#L5410) | GET `/api/admin/analytics`<br>GET `/api/admin/analytics/csv`<br>GET `/api/admin/analytics/series` |
+| `#analytics/<ID>` | 実績分析（詳細） | `renderAnalytics` [static/admin.js:5410](../public/static/admin.js#L5410) | GET `/api/admin/analytics`<br>GET `/api/admin/analytics/csv`<br>GET `/api/admin/analytics/series` |
 | `#attendance-history` | 履歴・CSV | `renderAttendanceHistory` [static/attendance-history.js:22](../public/static/attendance-history.js#L22) | GET `/api/admin/corrections/events`<br>GET `/api/admin/corrections/events/export`<br>GET `/api/admin/projects`<br>GET `/api/admin/report-settings/logs`<br>GET `/api/admin/report-settings/logs/export` |
-| `#availability` | 出勤可能日 | `renderAvailabilityBoard` [static/admin.js:7230](../public/static/admin.js#L7230) | GET `/api/admin/availability` |
-| `#billing` | 請求前確認 | `renderBilling` [static/admin.js:6725](../public/static/admin.js#L6725) | GET `/api/admin/billing-check` |
+| `#availability` | 出勤可能日 | `renderAvailabilityBoard` [static/admin.js:7291](../public/static/admin.js#L7291) | GET `/api/admin/availability` |
+| `#billing` | 請求前確認 | `renderBilling` [static/admin.js:6786](../public/static/admin.js#L6786) | GET `/api/admin/billing-check` |
 | `#board` | 案件掲示板 | `renderBoard` [static/board.js:33](../public/static/board.js#L33) | GET `/api/admin/board/posts`<br>GET `/api/admin/board/posts/:id`<br>GET `/api/admin/board/project-template/:projectId`<br>GET `/api/admin/board/proposals`<br>GET `/api/admin/board/saved-searches`<br>GET `/api/admin/board/threads`<br>GET `/api/admin/board/threads/:id`<br>POST `/api/admin/board/threads/:id/messages`<br>GET `/api/admin/board/threads/:id/proposals`<br>POST `/api/admin/board/threads/:id/read`<br>GET `/api/admin/board/unread-count`<br>GET `/api/admin/projects` |
 | `#board/<ID>` | 案件掲示板（詳細） | `renderBoard` [static/board.js:33](../public/static/board.js#L33) | GET `/api/admin/board/posts`<br>GET `/api/admin/board/posts/:id`<br>GET `/api/admin/board/project-template/:projectId`<br>GET `/api/admin/board/proposals`<br>GET `/api/admin/board/saved-searches`<br>GET `/api/admin/board/threads`<br>GET `/api/admin/board/threads/:id`<br>POST `/api/admin/board/threads/:id/messages`<br>GET `/api/admin/board/threads/:id/proposals`<br>POST `/api/admin/board/threads/:id/read`<br>GET `/api/admin/board/unread-count`<br>GET `/api/admin/projects` |
 | `#clients` | クライアント | `renderClients` [static/admin.js:3582](../public/static/admin.js#L3582) | GET `/api/admin/assignees/options`<br>GET `/api/admin/clients` |
-| `#clients/<ID>` | クライアント（詳細） | `renderClientDetail` [static/admin.js:3753](../public/static/admin.js#L3753) | GET `/api/admin/clients/:id`<br>POST `/api/admin/clients/:id/contacts`<br>GET `/api/admin/clients/:id/documents`<br>GET `/api/admin/clients/:id/ng-staff`<br>PUT `/api/admin/clients/contacts/:contactId`<br>GET `/api/admin/rate-rules`<br>GET `/api/admin/roster/partners/by-client/:cid{[0-9]+}`<br>GET `/api/admin/staff/options` |
-| `#consult` | 相談対応 | `renderConsult` [static/admin.js:6617](../public/static/admin.js#L6617) | GET `/api/admin/consultation-photo/:id{[0-9]+}`<br>GET `/api/admin/consultations` |
+| `#clients/<ID>` | クライアント（詳細） | `renderClientDetail` [static/admin.js:3754](../public/static/admin.js#L3754) | GET `/api/admin/clients/:id`<br>POST `/api/admin/clients/:id/contacts`<br>GET `/api/admin/clients/:id/documents`<br>GET `/api/admin/clients/:id/ng-staff`<br>PUT `/api/admin/clients/contacts/:contactId`<br>GET `/api/admin/rate-rules`<br>GET `/api/admin/roster/partners/by-client/:cid{[0-9]+}`<br>GET `/api/admin/staff/options` |
+| `#consult` | 相談対応 | `renderConsult` [static/admin.js:6678](../public/static/admin.js#L6678) | GET `/api/admin/consultation-photo/:id{[0-9]+}`<br>GET `/api/admin/consultations` |
 | `#corrections` | 打刻修正承認 | `renderCorrections` [static/corrections.js:72](../public/static/corrections.js#L72) | GET `/api/admin/attendance-photo/:attendanceId`<br>GET `/api/admin/attendance-punches`<br>GET `/api/admin/attendance-punches/export`<br>GET `/api/admin/clients`<br>GET `/api/admin/corrections`<br>GET `/api/admin/corrections/:id{[0-9]+}`<br>POST `/api/admin/corrections/:id{[0-9]+}/cancel`<br>POST `/api/admin/corrections/:id{[0-9]+}/reject`<br>POST `/api/admin/corrections/:id{[0-9]+}/resubmit`<br>GET `/api/admin/corrections/attachments/:aid{[0-9]+}`<br>GET `/api/admin/corrections/export`<br>GET `/api/admin/corrections/pending-count`<br>GET `/api/admin/corrections/shift-candidates`<br>GET `/api/admin/corrections/shift/:shiftId`<br>GET `/api/admin/projects`<br>GET `/api/auth/me` |
 | `#corrections/<ID>` | 打刻修正承認（詳細） | `renderCorrections` [static/corrections.js:72](../public/static/corrections.js#L72) | GET `/api/admin/attendance-photo/:attendanceId`<br>GET `/api/admin/attendance-punches`<br>GET `/api/admin/attendance-punches/export`<br>GET `/api/admin/clients`<br>GET `/api/admin/corrections`<br>GET `/api/admin/corrections/:id{[0-9]+}`<br>POST `/api/admin/corrections/:id{[0-9]+}/cancel`<br>POST `/api/admin/corrections/:id{[0-9]+}/reject`<br>POST `/api/admin/corrections/:id{[0-9]+}/resubmit`<br>GET `/api/admin/corrections/attachments/:aid{[0-9]+}`<br>GET `/api/admin/corrections/export`<br>GET `/api/admin/corrections/pending-count`<br>GET `/api/admin/corrections/shift-candidates`<br>GET `/api/admin/corrections/shift/:shiftId`<br>GET `/api/admin/projects`<br>GET `/api/auth/me` |
 | `#corrections/emails` | 打刻修正承認（emails） | `renderCorrectionEmails` [static/notifications.js:257](../public/static/notifications.js#L257) | GET `/api/admin/email-logs`<br>GET `/api/admin/email-suppressions`<br>GET `/api/admin/notification-emails`<br>GET `/api/admin/notification-emails/export`<br>GET `/api/admin/settings/mail-contact` |
-| `#dashboard` | ダッシュボード | `renderDashboardPage` [static/admin.js:7172](../public/static/admin.js#L7172) | GET `/api/admin/dashboard`<br>GET `/api/admin/roster-chat/threads`<br>GET `/api/admin/settings/photo-required` |
-| `#employees` | 従業員管理 | `renderEmployees` [static/admin.js:3999](../public/static/admin.js#L3999) | GET `/api/admin/employees`<br>GET `/api/admin/roster/field-settings`<br>GET `/api/admin/roster/next-code`<br>GET `/api/admin/roster/partners` |
-| `#employees/<ID>` | 従業員管理（詳細） | `renderEmployeeDetail` [static/admin.js:4067](../public/static/admin.js#L4067) | GET `/api/admin/employees/:staffId`<br>PUT `/api/admin/employees/:staffId`<br>GET `/api/admin/employees/:staffId/documents`<br>GET `/api/admin/employees/:staffId/history`<br>GET `/api/admin/staff-requests/leave`<br>POST `/api/admin/staff/:id/release-future-shifts` |
-| `#follow` | フォロー履歴 | `renderFollow` [static/admin.js:6510](../public/static/admin.js#L6510) | GET `/api/admin/follow-logs` |
-| `#notice-reports` | 既読率レポート | `renderNoticeReadReport` [static/admin.js:6359](../public/static/admin.js#L6359) | GET `/api/admin/notice-reports/:fiscalYear`<br>GET `/api/admin/notice-reports/:fiscalYear/csv` |
-| `#notices` | お知らせ配信 | `renderNotices` [static/admin.js:6026](../public/static/admin.js#L6026) | GET `/api/admin/notices`<br>GET `/api/admin/notices/recipients`<br>GET `/api/admin/projects` |
+| `#dashboard` | ダッシュボード | `renderDashboardPage` [static/admin.js:7233](../public/static/admin.js#L7233) | GET `/api/admin/dashboard`<br>GET `/api/admin/roster-chat/threads`<br>GET `/api/admin/settings/photo-required` |
+| `#employees` | 従業員管理 | `renderEmployees` [static/admin.js:4004](../public/static/admin.js#L4004) | GET `/api/admin/employees`<br>GET `/api/admin/roster/field-settings`<br>GET `/api/admin/roster/next-code`<br>GET `/api/admin/roster/partners` |
+| `#employees/<ID>` | 従業員管理（詳細） | `renderEmployeeDetail` [static/admin.js:4072](../public/static/admin.js#L4072) | GET `/api/admin/employees/:staffId`<br>PUT `/api/admin/employees/:staffId`<br>GET `/api/admin/employees/:staffId/documents`<br>GET `/api/admin/employees/:staffId/history`<br>GET `/api/admin/staff-requests/leave`<br>POST `/api/admin/staff/:id/release-future-shifts` |
+| `#follow` | フォロー履歴 | `renderFollow` [static/admin.js:6571](../public/static/admin.js#L6571) | GET `/api/admin/follow-logs` |
+| `#notice-reports` | 既読率レポート | `renderNoticeReadReport` [static/admin.js:6420](../public/static/admin.js#L6420) | GET `/api/admin/notice-reports/:fiscalYear`<br>GET `/api/admin/notice-reports/:fiscalYear/csv` |
+| `#notices` | お知らせ配信 | `renderNotices` [static/admin.js:6087](../public/static/admin.js#L6087) | GET `/api/admin/notices`<br>GET `/api/admin/notices/recipients`<br>GET `/api/admin/projects` |
 | `#notifications` | 通知 | `renderNotificationsInbox` [static/notifications.js:91](../public/static/notifications.js#L91) | GET `/api/admin/badges`<br>GET `/api/admin/notifications` |
 | `#partners` | 協力会社 | `renderPartners` [static/roster.js:849](../public/static/roster.js#L849) | GET `/api/admin/assignees/options`<br>GET `/api/admin/roster/partners`<br>GET `/api/admin/roster/partners/:pid{[0-9]+}` |
 | `#projects` | 案件管理 | `renderProjects` [static/admin.js:2701](../public/static/admin.js#L2701) | GET `/api/admin/clients`<br>GET `/api/admin/projects`<br>GET `/api/admin/templates` |
@@ -244,30 +244,30 @@ flowchart LR
 | `#recruit` | 募集・応募 | `renderRecruit` [static/recruit.js:29](../public/static/recruit.js#L29) | POST `/api/admin/notifications/read-related`<br>GET `/api/admin/projects`<br>GET `/api/admin/recruit-applications`<br>GET `/api/admin/recruit-applications/summary`<br>GET `/api/admin/recruit-pages`<br>DELETE `/api/admin/recruit-pages/:id`<br>PUT `/api/admin/recruit-pages/:id`<br>GET `/api/admin/recruit-slots` |
 | `#report-settings` | 案件報告管理 | `renderReportSettings` [static/report-settings.js:24](../public/static/report-settings.js#L24) | GET `/api/admin/report-settings/logs`<br>GET `/api/admin/report-settings/off-list`<br>GET `/api/admin/report-settings/off-list/export`<br>GET `/api/admin/report-settings/projects`<br>GET `/api/admin/report-settings/projects/:id`<br>GET `/api/admin/report-settings/staff/:staffId` |
 | `#report-settings/<ID>` | 案件報告管理（詳細） | `renderReportSettings` [static/report-settings.js:24](../public/static/report-settings.js#L24) | GET `/api/admin/report-settings/logs`<br>GET `/api/admin/report-settings/off-list`<br>GET `/api/admin/report-settings/off-list/export`<br>GET `/api/admin/report-settings/projects`<br>GET `/api/admin/report-settings/projects/:id`<br>GET `/api/admin/report-settings/staff/:staffId` |
-| `#reports` | 日報一覧 | `renderReports` [static/admin.js:5149](../public/static/admin.js#L5149) | GET `/api/admin/daily-reports`<br>GET `/api/admin/daily-reports-retention`<br>GET `/api/admin/daily-reports/missing` |
+| `#reports` | 日報一覧 | `renderReports` [static/admin.js:5161](../public/static/admin.js#L5161) | GET `/api/admin/daily-reports`<br>GET `/api/admin/daily-reports-retention`<br>GET `/api/admin/daily-reports/missing` |
 | `#roster-chat` | 企業間チャット | `renderRosterChatList` [static/roster-chat.js:58](../public/static/roster-chat.js#L58) | GET `/api/admin/roster-chat/threads`<br>GET `/api/admin/roster-chat/unread-count` |
 | `#roster-notes` | 連携先からの追記（メニューにない画面。見出しから） | `openRosterHostNotes` [static/roster.js:816](../public/static/roster.js#L816) | GET `/api/admin/roster/host-notes` |
 | `#security` | セキュリティ | `renderSecurity` [static/security.js:377](../public/static/security.js#L377) | GET `/api/admin/login-history`<br>GET `/api/admin/security/settings`<br>PUT `/api/admin/security/settings`<br>GET `/api/admin/security/staff`<br>GET `/api/admin/security/users`<br>GET `/api/auth/mfa`<br>GET `/api/auth/sessions`<br>GET `/api/hq/login-history` |
 | `#settlement` | 精算（請求・支払） | `renderSettlement` [static/settlement.js:51](../public/static/settlement.js#L51) | GET `/api/admin/pay-requests`<br>GET `/api/admin/settlement`<br>GET `/api/admin/settlement/export`<br>GET `/api/admin/settlement/options`<br>GET `/api/admin/settlement/statement`<br>GET `/api/admin/staff-pay/settings` |
 | `#shifts` | シフト管理 | `renderShiftBoard` [static/shift-board.js:192](../public/static/shift-board.js#L192) | GET `/api/admin/clients`<br>GET `/api/admin/projects`<br>GET `/api/admin/settings/shift-notify`<br>GET `/api/admin/shift-board`<br>GET `/api/admin/shift-board/candidates`<br>GET `/api/admin/shift-requests`<br>GET `/api/admin/sites`<br>GET `/api/admin/staff/options` |
-| `#shifts/week` | シフト管理（week） | `renderShifts` [static/admin.js:4409](../public/static/admin.js#L4409) | GET `/api/admin/projects`<br>GET `/api/admin/shifts`<br>GET `/api/admin/shifts/price-preview`<br>GET `/api/admin/staff/options` |
+| `#shifts/week` | シフト管理（week） | `renderShifts` [static/admin.js:4415](../public/static/admin.js#L4415) | GET `/api/admin/projects`<br>GET `/api/admin/shifts`<br>GET `/api/admin/shifts/price-preview`<br>GET `/api/admin/staff/options` |
 | `#staff` | スタッフマスタ | `renderStaff` [static/admin.js:1275](../public/static/admin.js#L1275) | GET `/api/admin/roster/partners`<br>GET `/api/admin/staff` |
 | `#staff-requests` | スタッフの申請 | `renderStaffRequests` [static/admin.js:2390](../public/static/admin.js#L2390) | GET `/api/admin/staff-requests/documents`<br>GET `/api/admin/staff-requests/leave`<br>GET `/api/admin/staff-requests/profile`<br>GET `/api/admin/staff-requests/summary` |
 | `#staff/<ID>` | スタッフマスタ（詳細） | `renderStaffDetail` [static/admin.js:1821](../public/static/admin.js#L1821) | GET `/api/admin/report-settings/staff/:staffId`<br>GET `/api/admin/roster-chat/:staffId`<br>POST `/api/admin/roster-chat/:staffId`<br>GET `/api/admin/roster/:id/links`<br>GET `/api/admin/roster/:id/share-code`<br>GET `/api/admin/settings/site-contact`<br>GET `/api/admin/staff-affiliations`<br>GET `/api/admin/staff-lookup`<br>GET `/api/admin/staff/:id`<br>PUT `/api/admin/staff/:id`<br>GET `/api/admin/staff/:id/documents`<br>GET `/api/admin/staff/:id/lifecycle`<br>PUT `/api/admin/staff/:id/report-settings`<br>GET `/api/admin/staff/:id/skill-sheet` |
 
-### `/hq`（ルートの表: [static/hq.js:2178](../public/static/hq.js#L2178)）
+### `/hq`（ルートの表: [static/hq.js:2179](../public/static/hq.js#L2179)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|
-| `#announcements` | 企業へのお知らせ | `renderAnnouncements` [static/hq.js:1717](../public/static/hq.js#L1717) | GET `/api/hq/announcements` |
+| `#announcements` | 企業へのお知らせ | `renderAnnouncements` [static/hq.js:1718](../public/static/hq.js#L1718) | GET `/api/hq/announcements` |
 | `#companies` | 導入企業 | `renderCompanies` [static/hq.js:95](../public/static/hq.js#L95) | GET `/api/hq/companies` |
 | `#companies/<ID>` | 導入企業（詳細） | `renderCompanyDetail` [static/hq.js:478](../public/static/hq.js#L478) | GET `/api/hq/companies/:id` |
-| `#errors` | 障害 | `renderErrors` [static/hq.js:1997](../public/static/hq.js#L1997) | GET `/api/hq/errors`<br>GET `/api/hq/push/config` |
-| `#mail` | メール送信 | `renderHqMail` [static/hq.js:1812](../public/static/hq.js#L1812) | GET `/api/hq/email-logs`<br>GET `/api/hq/email-stats`<br>GET `/api/hq/email-suppressions` |
-| `#offboarding` | 解約・データ | `renderOffboardingDetail` [static/hq.js:2358](../public/static/hq.js#L2358)<br>`renderOffboardingList` [static/hq.js:2223](../public/static/hq.js#L2223) | GET `/api/hq/offboarding`<br>GET `/api/hq/offboarding/:cid`<br>GET `/api/hq/offboarding/:cid/record.csv` |
-| `#retention` | データ保持・定期処理 | `renderRetention` [static/hq.js:1163](../public/static/hq.js#L1163) | GET `/api/hq/cron/status`<br>GET `/api/hq/retention/logs`<br>GET `/api/hq/retention/schedule`<br>GET `/api/hq/retention/settings` |
+| `#errors` | 障害 | `renderErrors` [static/hq.js:1998](../public/static/hq.js#L1998) | GET `/api/hq/errors`<br>GET `/api/hq/push/config` |
+| `#mail` | メール送信 | `renderHqMail` [static/hq.js:1813](../public/static/hq.js#L1813) | GET `/api/hq/email-logs`<br>GET `/api/hq/email-stats`<br>GET `/api/hq/email-suppressions` |
+| `#offboarding` | 解約・データ | `renderOffboardingDetail` [static/hq.js:2359](../public/static/hq.js#L2359)<br>`renderOffboardingList` [static/hq.js:2224](../public/static/hq.js#L2224) | GET `/api/hq/offboarding`<br>GET `/api/hq/offboarding/:cid`<br>GET `/api/hq/offboarding/:cid/record.csv` |
+| `#retention` | データ保持・定期処理 | `renderRetention` [static/hq.js:1164](../public/static/hq.js#L1164) | GET `/api/hq/cron/status`<br>GET `/api/hq/retention/logs`<br>GET `/api/hq/retention/schedule`<br>GET `/api/hq/retention/settings` |
 | `#security` | セキュリティ | `renderHqSecurity` [static/security.js:408](../public/static/security.js#L408) | GET `/api/admin/login-history`<br>GET `/api/auth/mfa`<br>GET `/api/auth/sessions`<br>GET `/api/hq/companies`<br>GET `/api/hq/login-history`<br>GET `/api/hq/security` |
-| `#support` | 伴走支援 | `renderSupport` [static/hq.js:1534](../public/static/hq.js#L1534) | GET `/api/hq/companies`<br>GET `/api/hq/support-requests`<br>GET `/api/hq/view-sessions` |
+| `#support` | 伴走支援 | `renderSupport` [static/hq.js:1535](../public/static/hq.js#L1535) | GET `/api/hq/companies`<br>GET `/api/hq/support-requests`<br>GET `/api/hq/view-sessions` |
 | `#templates` | テンプレート配信 | `renderTemplates` [static/hq.js:860](../public/static/hq.js#L860) | GET `/api/hq/templates` |
 <!-- END GENERATED: screens-routes -->
 
@@ -278,7 +278,7 @@ flowchart LR
 <!-- BEGIN GENERATED: screens-files -->
 | 画面の JS | 呼び出しの数 | 対応する API の数 | 対応する API が見つからない呼び出し（メソッド パス:行） |
 |---|---|---|---|
-| `admin.js` | 183 | 151 |  |
+| `admin.js` | 184 | 153 |  |
 | `apply.js` | 5 | 2 |  |
 | `attendance-history.js` | 5 | 5 |  |
 | `board.js` | 32 | 26 |  |
@@ -296,7 +296,7 @@ flowchart LR
 | `settlement.js` | 55 | 42 |  |
 | `shift-board.js` | 64 | 45 |  |
 | `staff-attendance.js` | 19 | 17 |  |
-| `staff-lifecycle.js` | 36 | 30 |  |
+| `staff-lifecycle.js` | 38 | 30 |  |
 | `staff-profile.js` | 18 | 17 |  |
 | `staff.js` | 56 | 49 |  |
 | `tour.js` | 6 | 11 |  |
@@ -308,7 +308,7 @@ flowchart LR
 | 名前 | 位置 |
 |---|---|
 | `homePathFor` | [lib/auth.ts:143](../src/lib/auth.ts#L143) |
-| `route` | [static/admin.js:7181](../public/static/admin.js#L7181) |
-| `route` | [static/hq.js:2184](../public/static/hq.js#L2184) |
+| `route` | [static/admin.js:7242](../public/static/admin.js#L7242) |
+| `route` | [static/hq.js:2185](../public/static/hq.js#L2185) |
 | `renderSecurity` | [static/security.js:377](../public/static/security.js#L377) |
 <!-- END GENERATED: screens-refs -->

@@ -197,9 +197,9 @@ const rep = (body) => stA.post('/api/staff/attendance', { shift_id: sid, latitud
   const kp = key(), pp = Date.now() - 2 * 60000
   const photoForm = () => { const fd = new FormData(); fd.append('shift_id', String(sid2)); fd.append('report_type', 'check_out'); fd.append('photo', new Blob([PNG], { type: 'image/png' }), 'a.png'); fd.append('client_request_id', kp); fd.append('pressed_at', String(pp)); return fd }
   const ph = await stA.form('/api/staff/attendance-photo', photoForm())
-  ok('#427 写真付きの報告も押した時刻で記録する', ph.status === 200 && ph.data.device_time === true && ph.data.reported_at === jst(pp).slice(0, 16) + ':00' && ph.data.photo_key, ph)
+  ok('#427 写真付きの報告も押した時刻で記録する', ph.status === 200 && ph.data.device_time === true && ph.data.reported_at === jst(pp).slice(0, 16) + ':00' && ph.data.has_photo === true && !('photo_key' in ph.data), ph)
   const ph2 = await stA.form('/api/staff/attendance-photo', photoForm())
-  ok('#427 写真付きの同じキーの再送は記録済みとして返す（写真は増やさない）', ph2.status === 200 && ph2.data.duplicate === true && ph2.data.photo_key === ph.data.photo_key, ph2)
+  ok('#427 写真付きの同じキーの再送は記録済みとして返す（写真は増やさない）', ph2.status === 200 && ph2.data.duplicate === true && ph2.data.has_photo === true, ph2)
 
   // 受付の時間帯は押した時刻で確かめる: 昨日の 00:00〜01:00 のシフトに、今日押した起床は受け付けない
   const ys = await createShift(A.staff_id, pid, yesterday, '00:00', '01:00')

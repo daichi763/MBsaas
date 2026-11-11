@@ -1,0 +1,9 @@
+# 静的ファイル（Workers Assets が Worker を通さずに返すもの）に付けるヘッダー（#9969 arch-14）
+# 画面（Worker が返す HTML）のヘッダーは src/index.tsx のミドルウェアで付ける。ここは JS・CSS・画像・manifest だけなので、
+# CSP は「このファイルを直接開いても何も読み込まない・埋め込まれない」最小のものにする（読み込み元の画面の CSP には影響しない）
+/static/*
+  X-Content-Type-Options: nosniff
+  Content-Security-Policy: default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+/manifest.webmanifest
+  X-Content-Type-Options: nosniff
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'

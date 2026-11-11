@@ -21,6 +21,8 @@ import { csvResponse, toCsv } from './csv'
 import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { closedChecker, closedOn } from './lib/closings'
 import { nowJST, todayJST, addDays, dayDiff, isDate } from './lib/time'
+import { readJson } from './lib/http'
+import { d1CallCountHook } from './lib/d1-retry'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -599,7 +601,7 @@ function ineligibleReason(st: any, date: string): string | null {
   return null
 }
 // 案件ごとの NG スタッフ（クライアントの ng_staff_ids）
-async function ngByProjects(db: D1Database, companyId: number, projectIds: number[]) {
+export async function ngByProjects(db: D1Database, companyId: number, projectIds: number[]) {
   const map = new Map<number, number[]>()
   const ids = bindJsonArray(projectIds)
   if (ids === '[]') return map
@@ -617,7 +619,7 @@ function addPlannedConflict(conflicts: Map<number, ConflictRow[]>, companyId: nu
 }
 type Skipped = { date: string; staff_id: number; staff_name: string; reason: string; detail?: string; project_name?: string | null; start_time?: string; end_time?: string; slot_role_id?: number | null }
 // 登録するシフトの列（単価の列 PRICE_COLUMNS と合わせて INSERT する）
-const SHIFT_INSERT_COLUMNS = ['company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'transportation_fee', 'status',
+export const SHIFT_INSERT_COLUMNS = ['company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'transportation_fee', 'status',
   'registered_by', 'slot_id', 'slot_role_id', 'site_id', 'break_minutes', 'source_shift_id', ...PRICE_COLUMNS]
 
 // ---------- 共通の確認 ----------
@@ -1173,7 +1175,7 @@ async function planRoleRename(db: D1Database, companyId: number, slot: any, b: a
 }
 
 app.post('/shift-slots', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const err = await validateSlotBody(db, u, b); if (err) return c.json({ error: err }, 400)
   const roles = normalizeRoles(b.roles); if (!roles) return c.json({ error: '役割と必要人数を入力してください' }, 400)
   const dates: string[] = [...new Set(((Array.isArray(b.dates) ? b.dates : [b.work_date]) as any[]).filter(isDate))] as string[]
@@ -1203,7 +1205,7 @@ app.get('/shift-slots/:id', async (c) => {
 const SLOT_EDIT_FIELDS = ['site_id', 'location', 'work_date', 'start_time', 'end_time', 'break_minutes', 'memo', 'status'] as const
 const sameVal = (a: any, b: any) => (a ?? null) === (b ?? null)
 app.put('/shift-slots/:id', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const slot = await ownSlot(db, u.company_id, c.req.param('id'))
@@ -1613,15 +1615,20 @@ app.get('/shifts/:id/band', async (c) => {
   return c.json({ shift_id: s.shift_id, today, truncated: rows.length > BAND_MAX * 2, scopes: { today: scope(rows.filter(r => r.work_date >= today)), all: scope(rows) } })
 })
 
-// 役割への割り当て（複数可）
+// 役割への割り当て（複数可）。1回に割り当てる人数は ASSIGN_ROLE_MAX まで。
+// シフトは単価・調整・画面で変えた単価をメモリ上で計算してから、まとめて登録する（人数ごとに問い合わせない。#9968）
+const ASSIGN_ROLE_MAX = 200
+// テスト用（TEST_HOOKS='true' のローカルだけ）: 応答のヘッダー X-Test-D1-Calls に D1 の呼び出しの回数を返す
+app.use('/shift-slots/roles/:id/assign', d1CallCountHook)
 app.post('/shift-slots/roles/:id/assign', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const role = await ownSlotRole(db, u.company_id, c.req.param('id'))
   if (!role) return c.json({ error: '枠が見つかりません' }, 404)
   const staffIds: number[] = [...new Set(((Array.isArray(b.staff_ids) ? b.staff_ids : [b.staff_id]) as any[]).map(Number).filter(Boolean))]
   if (!staffIds.length) return c.json({ error: 'スタッフを選択してください' }, 400)
+  if (staffIds.length > ASSIGN_ROLE_MAX) return c.json({ error: `一度に割り当てられるのは${ASSIGN_ROLE_MAX}人までです` }, 400)
   // substitute: ダッシュボードで欠勤にしたシフトの代わりを割り当てるとき（#216）
   const status = ['confirmed', 'requested', 'substitute'].includes(b.status) ? b.status : 'confirmed'
   // 退職・統合・取引終了などは割り当てない。重複・NG・休職中・割当済みは確認のうえ force で続ける（#119 #354）
@@ -1651,26 +1658,34 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   const ihs = b.inherit === false || !proj ? [] : await loadInheritSources(db, u.company_id, proj, toAdd.map((s: any) => ({ staff_id: s.staff_id, work_date: role.work_date })), data,
     { role_name: rateRoleName({ role: role.role_name }, role) })
   const ihOf = new Map<number, InheritSource | null>(toAdd.map((s: any, i: number) => [s.staff_id, ihs[i] ?? null]))
+  // 支払先（applyPricingToShift の resolvePayee と同じ規則）は、スタッフの行と区分変更の履歴をまとめて読んで決める
+  const addIds = toAdd.map((s: any) => Number(s.staff_id))
+  const [spRows, hist] = await Promise.all([loadStaffForAssign(db, u.company_id, addIds), loadPayeeHistory(db, u.company_id, addIds)])
+  const plans = toAdd.map((s: any) => {
+    const row: any = {
+      company_id: u.company_id, staff_id: s.staff_id, project_id: role.project_id, work_date: role.work_date, start_time: role.start_time, end_time: role.end_time,
+      location: role.location || '', role: role.role_name, transportation_fee: fee ?? transportDefaultFor(tdefs, s.staff_id, role.site_id) ?? 0, status,
+      registered_by: u.user_id, memo: b.memo ?? null, slot_id: role.slot_id, slot_role_id: role.slot_role_id, site_id: role.site_id ?? null,
+      break_minutes: role.break_minutes ?? null, source_shift_id: null,
+    }
+    const ih = ihOf.get(s.staff_id) ?? null
+    const priced: any = { ...row, ...computeShiftPricing(u.company_id, row, role, payeeOn(spRows.get(s.staff_id), hist.get(s.staff_id), role.work_date), data, ih) }
+    const used = parsePriceSource(priced.price_source).inherit ? ih : null
+    // 引き継いだ調整（inheritedAdjustStmt と同じ）と、画面で変えた単価（applyRateOverride と同じ）
+    Object.assign(priced, { qty_locked: null, bill_adjust: 0, pay_adjust: 0, adjust_note: null }, inheritedAdjust(used) || {})
+    Object.assign(priced, overridePricing(priced, ov.value, proj) || {})
+    return { s, priced, used }
+  })
+  // 同時に届いた別のリクエストが先に割り当てた行（一意インデックス）は飛ばし、警告で返す（二重には作らない。#530）
+  const newIds = plans.length ? returnedIds(await db.batch(insertRowsStmts(db, 'shifts', [...SHIFT_INSERT_COLUMNS, 'memo', 'qty_locked', 'bill_adjust', 'pay_adjust', 'adjust_note'],
+    plans.map(p => p.priced), { orIgnore: true, returning: 'shift_id' })), 'shift_id') : []
+  const idOf = new Map<number, number>(newIds.length ? ((await db.prepare(`SELECT shift_id, staff_id FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`)
+    .bind(u.company_id, bindJsonArray(newIds)).all()).results as any[]).map(r => [Number(r.staff_id), Number(r.shift_id)]) : [])
   const inherited: any[] = []
   const created: number[] = []
-  for (const s of chk.staff) {
-    if (chk.already.has(s.staff_id)) continue
-    let res: D1Result
-    try {
-      res = await db.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo, slot_id, slot_role_id, site_id, break_minutes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, s.staff_id, role.project_id, role.work_date, role.start_time, role.end_time, role.location || '', role.role_name,
-          fee ?? transportDefaultFor(tdefs, s.staff_id, role.site_id) ?? 0, status, u.user_id, b.memo ?? null, role.slot_id, role.slot_role_id, role.site_id ?? null, role.break_minutes ?? null).run()
-    } catch (e) {
-      // 同時に届いた別のリクエストが先に割り当てた（一意インデックス）。二重には作らない（#530）
-      if (isUniqueViolation(e)) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
-      throw e
-    }
-    const newId = res.meta.last_row_id as number
-    const used = await applyPricingToShift(db, u.company_id, newId, { data, inherit: ihOf.get(s.staff_id) ?? null })
-    const adjStmt = inheritedAdjustStmt(db, u.company_id, newId, used)
-    if (adjStmt) await adjStmt.run()
-    await applyRateOverride(db, u.company_id, newId, ov.value, data)
+  for (const { s, used } of plans) {
+    const newId = idOf.get(Number(s.staff_id))
+    if (!newId) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
     if (used) inherited.push({ staff_id: s.staff_id, staff_name: s.name, new_shift_id: newId, ...inheritView(used) })
     created.push(newId)
   }
@@ -1826,7 +1841,7 @@ app.post('/shift-slots/assign-batch', async (c) => {
 
 // シフトを別の枠・役割へ移動（案件が変われば単価を再計算）。slot_role_id=null なら枠から外す
 app.post('/shifts/:id/move', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
@@ -2010,7 +2025,7 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
 
 // 金額の手動変更 / ルールに戻す
 app.put('/shifts/:id/price', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトの金額は変更できません。精算画面で確定を取り消してください' }, 409)
@@ -2129,7 +2144,7 @@ async function repricePreview(db: D1Database, companyId: number, where: string[]
   return out
 }
 app.post('/shifts/reprice', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   if (!isISODate(b.from) || !isISODate(b.to)) return c.json({ error: '期間を指定してください' }, 400)
   if (b.from > b.to) return c.json({ error: '期間の開始日は終了日以前にしてください' }, 400)
   const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'",
@@ -2160,7 +2175,7 @@ app.post('/shifts/reprice', async (c) => {
 // 退職・統合・停止中・NG・同じ時間帯に別のシフトがある組み合わせはスキップし、理由を skipped で返す。
 // 組み合わせ（日付順 → 指定したスタッフ順）を BULK_LIMIT 件ずつ処理し、残りがあれば next_cursor（次に処理する組み合わせの番号）を返す
 app.post('/shifts/bulk', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const project = await ownProject(db, u.company_id, b.project_id)
@@ -2313,7 +2328,7 @@ type SlotPlan = { src: any; date: string; target: any | null; reused: boolean }
 type RolePlan = { src: any; slot: SlotPlan; target: any | null }
 type ShiftPlan = { src: any; date: string; role: RolePlan | null; start: string; end: string }
 app.post('/shifts/copy-week', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json(); const cid = u.company_id
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c); const cid = u.company_id
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   if (!isDate(b.source_from) || !isDate(b.target_from)) return c.json({ error: 'コピー元とコピー先の開始日を指定してください' }, 400)
@@ -2525,7 +2540,7 @@ app.get('/slot-patterns', async (c) => {
   return c.json({ today, patterns: rows.map(r => ({ ...r, roles: JSON.parse(r.roles_json || '[]'), days_left: dayDiff(today, r.date_to) })) })
 })
 app.post('/slot-patterns', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const err = await validateSlotBody(db, u, b); if (err) return c.json({ error: err }, 400)
   const roles = normalizeRoles(b.roles); if (!roles) return c.json({ error: '役割と必要人数を入力してください' }, 400)
   const wds = [...new Set(((b.weekdays || []) as any[]).map(Number).filter(n => n >= 0 && n <= 6))]
@@ -2731,7 +2746,8 @@ app.delete('/slot-patterns/:id', async (c) => {
   // 枠の削除と繰り返し登録の削除を1つの batch で書く（枠のまとめて削除と同じく、枠ごとに問い合わせない。9933）
   const stmts: D1PreparedStatement[] = []
   if (c.req.query('remove_future') === '1') {
-    const today = c.req.query('today') && isDate(c.req.query('today')) ? c.req.query('today')! : todayJST()
+    // 「今日」はサーバーの日本時間で決める（ブラウザの日付は使わない。#9969 quality-14）
+    const today = todayJST()
     // +s.company_id: 会社・日付の索引（会社の今日以降の枠をすべて読む）ではなく、繰り返し登録の索引を使わせる
     const empties = `SELECT s.slot_id FROM shift_slots s WHERE s.pattern_id = ? AND +s.company_id = ? AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)`
     stmts.push(
@@ -2775,7 +2791,7 @@ function siteLatLng(b: any): { lat?: number | null; lng?: number | null; error?:
   return { lat, lng }
 }
 app.post('/sites', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   if (!String(b.site_name || '').trim()) return c.json({ error: '開催場所名を入力してください' }, 400)
   if (b.client_id) { const cl = await c.env.DB.prepare('SELECT 1 FROM clients WHERE client_id = ? AND company_id = ?').bind(b.client_id, u.company_id).first(); if (!cl) return c.json({ error: 'クライアントが見つかりません' }, 404) }
   const latlng = siteLatLng(b); if (latlng.error) return c.json({ error: latlng.error }, 400)
@@ -2784,7 +2800,7 @@ app.post('/sites', async (c) => {
   return c.json({ ok: true, site_id: res.meta.last_row_id })
 })
 app.put('/sites/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   const s = await ownSite(c.env.DB, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: '開催場所が見つかりません' }, 404)
   // 送られてきた項目だけを変える（名前の変更だけで無効の場所が有効に戻らないように。#130）。住所・メモは空欄で消す
@@ -2909,7 +2925,7 @@ function ruleIncentive(b: any): { value: number | null; error?: string } {
   return { value: inc }
 }
 app.post('/rate-rules', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   const vr = await validateRuleScope(c.env.DB, u, b); if (vr.error) return c.json({ error: vr.error }, 400)
   const inc = ruleIncentive(b); if (inc.error) return c.json({ error: inc.error }, 400)
   const v = ruleValues(b), s = vr.scope!
@@ -2921,7 +2937,7 @@ app.post('/rate-rules', async (c) => {
   return c.json({ ok: true, rule_id: res.meta.last_row_id, client_id: s.client_id })
 })
 app.put('/rate-rules/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   const r = await c.env.DB.prepare('SELECT * FROM rate_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!r) return c.json({ error: 'ルールが見つかりません' }, 404)
   const merged = { ...r, ...b }
@@ -3020,7 +3036,7 @@ app.put('/staff/:id/reference-pay', async (c) => {
 // price_valid_from（適用開始日）を付けて単価を変えると、その前日までの稼働日には今の単価を使い続ける（改定前の単価を project_price_history に残す。#210）。
 // 付けずに変えると、今の単価の適用期間（price_valid_from 以降。未設定ならすべての期間）の単価を直す
 app.put('/projects/:id/pricing', async (c) => {
-  const u = c.get('user'); const b = await c.req.json(); const db = c.env.DB
+  const u = c.get('user'); const b = await readJson(c); const db = c.env.DB
   const p = await ownProject(db, u.company_id, c.req.param('id'))
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
   // 負の単価・交通費・休憩は受け付けない（#218）

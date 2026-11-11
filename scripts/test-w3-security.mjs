@@ -134,9 +134,18 @@ if (PERSIST) {
 }
 
 // ---------- #230 予期しないエラーを記録し、参照番号を返す ----------
+// 壊れた JSON は 400 になった（#9967）ので、テスト用の D1 のトリガーで社員名簿の保存を失敗させて起こす
+if (PERSIST) {
+  sql(`CREATE TRIGGER w3_boom_u BEFORE UPDATE ON employee_records WHEN NEW.staff_id = 1 BEGIN SELECT RAISE(ABORT, 'w3 boom'); END;
+CREATE TRIGGER w3_boom_i BEFORE INSERT ON employee_records WHEN NEW.staff_id = 1 BEGIN SELECT RAISE(ABORT, 'w3 boom'); END;`)
+  let r
+  try { r = await call(await login('sample', 'admin'), 'PUT', '/api/admin/employees/1', {}) }
+  finally { sql('DROP TRIGGER IF EXISTS w3_boom_u; DROP TRIGGER IF EXISTS w3_boom_i;') }
+  ok('#230 予期しないエラーは JSON の 500 と参照番号を返す（Internal Server Error だけにしない）', r.status === 500 && /参照番号/.test(r.data?.error || '') && /^[0-9a-f]{8}$/.test(r.data?.ref || ''), r.text.slice(0, 200))
+} else skip('#230 予期しないエラーの 500 と参照番号')
 {
   const r = await call(await login('sample', 'admin'), 'PUT', '/api/admin/employees/1', undefined, {}, '{not json')
-  ok('#230 予期しないエラーは JSON の 500 と参照番号を返す（Internal Server Error だけにしない）', r.status === 500 && /参照番号/.test(r.data?.error || '') && /^[0-9a-f]{8}$/.test(r.data?.ref || ''), r.text.slice(0, 200))
+  ok('#9967 壊れた JSON は 400（予期しないエラーにしない）', r.status === 400 && r.data?.code === 'bad_json', r.text.slice(0, 200))
 }
 
 // ---------- #202 CSP・SRI ----------

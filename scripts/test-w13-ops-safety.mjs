@@ -5,7 +5,7 @@
 //   （通知の目安を 3 件にして確かめる。APP_BASE_URL が http://localhost のときだけ、手元の受け口 http://127.0.0.1 へプッシュを送れる）。
 //   プッシュの事業者の代わりに、このテストが 127.0.0.1 に受け口を立てる。
 // 実行: BASE=http://127.0.0.1:8812 PERSIST=<保存先> ERROR_ALERT_THRESHOLD=3 node scripts/test-w13-ops-safety.mjs
-//   PERSIST を指定すると、ローカルの D1 の表の名前を一時的に変えて、定期処理の失敗の記録も確かめる（wrangler d1 execute は --local のみ）。
+//   PERSIST は必須（予期しないエラーを D1 のトリガーで起こす。#9967）。ローカルの D1 の表の名前を一時的に変えて、定期処理の失敗の記録も確かめる（wrangler d1 execute は --local のみ）。
 //   本番には接続しない。テストのたびに DB を作り直すこと（npm test -- w13-ops-safety なら自動で行う）。
 import http from 'node:http'
 import { execFileSync } from 'node:child_process'
@@ -79,8 +79,13 @@ const staff = client(await login('sample', 'st001'))
 const anon = client('')
 const me = must(await admin.get('/api/auth/me'), 'me')
 
-// 予期しないエラー（壊れた JSON で 500。#230 のテストと同じ）を起こす
-const boom = () => admin.raw('PUT', '/api/admin/employees/1', '{not json "secret-input@example.com" 09012345678')
+// 予期しないエラーを起こす。壊れた JSON は 400 になった（#9967）ので、テスト用の D1 にトリガーを置いて、社員名簿の保存を
+// 入力の抜粋（メールアドレス・電話番号）を含む D1 のエラーで失敗させる（下の「同じエラーの連続」の後で消す。PERSIST が要る）
+if (!PERSIST) throw new Error('PERSIST（テスト用の D1 の保存先）を指定してください（予期しないエラーを D1 のトリガーで起こすため。#9967）')
+const BOOM_MSG = 'w13 boom "secret-input" staff@example.com 09012345678'
+sql(`CREATE TRIGGER w13_boom_u BEFORE UPDATE ON employee_records WHEN NEW.staff_id = 1 BEGIN SELECT RAISE(ABORT, '${BOOM_MSG}'); END;
+CREATE TRIGGER w13_boom_i BEFORE INSERT ON employee_records WHEN NEW.staff_id = 1 BEGIN SELECT RAISE(ABORT, '${BOOM_MSG}'); END;`)
+const boom = () => admin.raw('PUT', '/api/admin/employees/1', '{}')
 // 応答の後（waitUntil）に記録されるので、出てくるまで待つ
 async function waitLog(ref, ms = 8000) {
   const end = Date.now() + ms
@@ -136,7 +141,7 @@ const pushSince = received.length
   const log = await waitLog(firstRef)
   ok('#9622 参照番号で記録を探せる', !!log, firstRef)
   ok('#9622 記録: 種類・メソッド・パス・会社・ロール・エラーの種類', log && log.source === 'request' && log.method === 'PUT' && log.path === '/api/admin/employees/1'
-    && Number(log.company_id) === Number(me.company_id) && log.role === 'company_admin' && log.error_name === 'SyntaxError' && !!log.company_name, log)
+    && Number(log.company_id) === Number(me.company_id) && log.role === 'company_admin' && log.error_name === 'Error' && !!log.company_name, log)
   const flat = JSON.stringify(log || {})
   ok('#9622 記録に入力値・メールアドレス・電話番号・利用者の ID を残さない', !/secret-input|example\.com|09012345678|not json/.test(flat) && !('user_id' in (log || {})), log)
   const pre = must(await hq.get(`/api/hq/errors?q=${firstRef.slice(0, 4)}`), 'prefix')
@@ -198,6 +203,7 @@ const pushSince = received.length
   ok('#9622 同じエラーは10分あたり20行までにして、それ以上は最後の行に数える', rows.length === 20 && rows.some(l => Number(l.repeat_count) > 0), [rows.length, rows.map(l => l.repeat_count)])
   ok('#9622 まとめた分も件数に入る', total === N + THRESHOLD + 3, total)
 }
+sql('DROP TRIGGER IF EXISTS w13_boom_u; DROP TRIGGER IF EXISTS w13_boom_i;')
 
 // =========================================================
 // 定期処理の失敗も記録する（PERSIST 指定と --test-scheduled のときだけ）

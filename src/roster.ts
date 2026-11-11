@@ -8,7 +8,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
-import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
+import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl, normalizeKana, KANA_MAX } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
 import { recordLoginEvent } from './lib/login-security'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
@@ -379,15 +379,13 @@ export async function findSamePersonCandidates(db: D1Database, companyId: number
  * 他社連携の行（linked = 1）は生年月日を返さない（所属元だけの項目。#9001）
  */
 export async function samePersonRows(db: D1Database, companyId: number): Promise<any[]> {
-  // 他社連携の行の電話番号は、所属元の今の番号で比べる（#123。staff-lifecycle.ts の MATCH_PHONE_SQL と同じ。呼び出し側は番号を返さない）
-  return (await db.prepare(`SELECT sp.staff_id, us.name, CASE WHEN sp.affiliation_type = 'linked_external' THEN srcu.phone ELSE us.phone END AS phone,
+  // 他社連携の行の電話番号（所属元の連絡先。共有しない項目）は照合に使わない（#9969。staff-lifecycle.ts の MATCH_PHONE_SQL と同じ）
+  return (await db.prepare(`SELECT sp.staff_id, us.name, CASE WHEN sp.affiliation_type = 'linked_external' THEN NULL ELSE us.phone END AS phone,
       COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN 1 ELSE 0 END AS linked,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN NULL ELSE sp.date_of_birth END AS dob
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
-    LEFT JOIN staff_profiles src ON src.staff_id = COALESCE(sp.root_staff_id, sp.source_staff_id) AND sp.link_revoked_at IS NULL
-    LEFT JOIN users srcu ON srcu.user_id = src.user_id
     WHERE sp.company_id = ? AND sp.merged_into_staff_id IS NULL`).bind(companyId).all()).results as any[]
 }
 
@@ -664,7 +662,7 @@ rosterApi.get('/field-settings/missing', async (c) => {
 rosterApi.get('/:id/share-code', async (c) => {
   const u = c.get('user')
   const r = await loadRoster(c.env.DB, c.req.param('id'), u.company_id)
-  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r) return c.json({ error: '見つかりません' }, 404)
   if (r.link_revoked_at) return c.json({ error: '所属元の企業が連携を終了したため、連携用IDを共有できません' }, 400)
   if (!r.link_shareable) {
     return c.json({ error: r.linkable ? '退職・停止中のスタッフ（他社連携の場合は所属元で退職済みの人を含む）は連携用IDを共有できません'
@@ -687,7 +685,7 @@ rosterApi.put('/:id/host-status', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))
   const r = await loadRoster(db, c.req.param('id'), u.company_id)
-  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r) return c.json({ error: '見つかりません' }, 404)
   if (r.affiliation_type !== 'linked_external') return c.json({ error: '取引状況を設定できるのは、他社から連携したスタッフのみです（自社のスタッフは在籍状況で管理します）' }, 400)
   if (r.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません' }, 409)
   if (!(HOST_STATUSES as readonly string[]).includes(b.status)) return c.json({ error: '取引状況の値が正しくありません' }, 400)
@@ -758,7 +756,7 @@ rosterApi.post('/host-notes/seen', async (c) => {
 rosterApi.get('/:id/links', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const sid = c.req.param('id')
   const r = await loadRoster(db, sid, u.company_id)
-  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r) return c.json({ error: '見つかりません' }, 404)
   let consents: any[] | null = null
   if (r.affiliation_type === 'linked_external') {
     consents = ((await db.prepare(`
@@ -819,7 +817,7 @@ function linkEventStmt(db: D1Database, ids: number[], event: string, topId: numb
 rosterApi.post('/:id/links/:linkedId/end', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const r = await loadRoster(db, c.req.param('id'), u.company_id)
-  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r) return c.json({ error: '見つかりません' }, 404)
   const linkedId = Number(c.req.param('linkedId'))
   if (!Number.isInteger(linkedId) || linkedId <= 0) return c.json({ error: '連携が見つかりません' }, 404)
   // 自社の行から直接連携した稼働先の行と、そこからさらに連携した先の行（多段連携。深さは10段まで）
@@ -850,7 +848,7 @@ rosterApi.post('/:id/links/:linkedId/end', async (c) => {
 rosterApi.post('/:id/links/:linkedId/resume', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const r = await loadRoster(db, c.req.param('id'), u.company_id)
-  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r) return c.json({ error: '見つかりません' }, 404)
   if (r.link_revoked_at) return c.json({ error: '自社の連携が所属元の企業で終了しているため、再開できません' }, 409)
   if (!r.link_shareable) return c.json({ error: '退職・停止中のスタッフの連携は再開できません' }, 400)
   const linkedId = Number(c.req.param('linkedId'))
@@ -1073,10 +1071,12 @@ const PARTNER_IN_USE_SQL = `(EXISTS (SELECT 1 FROM staff_profiles x WHERE x.comp
   OR EXISTS (SELECT 1 FROM staff_affiliation_schedules x WHERE x.company_id = sa.company_id AND x.partner_affiliation_id = sa.affiliation_id AND x.status = 'pending')
   OR EXISTS (SELECT 1 FROM affiliation_excluded_shifts x WHERE x.company_id = sa.company_id AND x.to_payee_affiliation_id = sa.affiliation_id))`
 // 協力会社の名前以外の項目（#9709 でクライアントにそろえて足した列は 0095、#9909 で足した列は 0100）。
-// contact_name・phone・email は先方の担当者の名前・電話・メール。company_phone・company_email は会社の連絡先
+// contact_name・phone・email は先方の担当者の名前・電話・メール。company_phone・company_email は会社の連絡先。
+// affiliation_name_kana・contact_name_kana は会社名・先方の担当者のフリガナ（#9964。0106。全角カタカナにそろえる）
 const PARTNER_INFO_COLS = ['contact_name', 'contact_department', 'phone', 'email', 'memo', 'postal_code', 'address', 'company_phone', 'website_url',
   'representative_name', 'invoice_number', 'internal_contact_name',
-  'partner_kind', 'branch_name', 'department_name', 'company_email', 'payment_rule', 'partner_rating'] as const
+  'partner_kind', 'branch_name', 'department_name', 'company_email', 'payment_rule', 'partner_rating',
+  'affiliation_name_kana', 'contact_name_kana'] as const
 // 種別（#9909。クライアントの client_kind と同じ値）
 const PARTNER_KINDS = ['corporation', 'sole_proprietor', 'other']
 // 名前以外の項目がすべて空か（sa = staff_affiliations）。所属会社名だけが入った行を取引先として出さない判定に使う（#262）
@@ -1110,6 +1110,13 @@ function partnerValues(b: any): { values?: Record<string, string | null>; error?
     const n = Number(raw)
     if (raw && !(Number.isInteger(n) && n >= 1 && n <= 5)) return { error: '評価は1〜5で入力してください' }
     ;(out as any).partner_rating = raw ? n : null
+  }
+  // フリガナ（#9964）: 全角カタカナにそろえる（ひらがな・半角カナは変換する）
+  for (const k of ['affiliation_name_kana', 'contact_name_kana']) {
+    if (b[k] === undefined) continue
+    const v = normalizeKana(b[k] === null ? null : String(b[k]))
+    if (v === undefined) return { error: `フリガナは${KANA_MAX}文字以内で入力してください` }
+    out[k] = v
   }
   // 郵便番号・ホームページの URL・インボイス登録番号（#9709）
   if (b.postal_code !== undefined) {
@@ -1554,9 +1561,9 @@ export async function personStaffRows(db: D1Database, u: any): Promise<PersonSta
 export const staffSelfApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 staffSelfApi.get('/profile', async (c) => {
   const u = c.get('user')
-  if (!u.staff_id) return c.json({ error: 'not found' }, 404)
+  if (!u.staff_id) return c.json({ error: '見つかりません' }, 404)
   const r = await loadRoster(c.env.DB, u.staff_id, u.company_id, { self: true })
-  if (!r) return c.json({ error: 'not found' }, 404)
+  if (!r) return c.json({ error: '見つかりません' }, 404)
   const db = c.env.DB
   const pick: Record<string, any> = { name: r.name, affiliation_type: r.affiliation_type, company_name: u.company_name }
   // PRポイント・備考は企業間で共有する業務情報のため、スタッフ本人向けには返さない
@@ -1630,7 +1637,7 @@ staffSelfApi.post('/switch-company', async (c) => {
   const logSwitch = (result: 'success' | 'company_inactive') => recordLoginEvent(db, c as any, { company_id: target.company_id, user_id: target.user_id, event_type: 'switch_company', result, actor_user_id: u.user_id })
   if (!co || !isCompanyActive(co.active_status)) { await logSwitch('company_inactive'); return c.json({ error: 'この企業は現在ご利用いただけません' }, 403) }
   const token = getCookie(c, 'session')
-  if (!token) return c.json({ error: 'unauthorized' }, 401)
+  if (!token) return c.json({ error: 'ログインしてください' }, 401)
   // sessions.token にはトークンのハッシュを保存している（src/lib/auth.ts）
   await db.prepare('UPDATE sessions SET user_id = ?, company_id = ? WHERE token = ?').bind(target.user_id, target.company_id, await hashToken(token)).run()
   await logSwitch('success')
