@@ -26,6 +26,7 @@ import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defa
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { MONTHLY_LABEL, MONTHLY_WORK_STATUSES, type MonthlyLine, addMonthsYM, isYM, loadMonthlyLines, monthlyTotal, monthsOverlapping, ruleActiveIn, ymLabel } from './lib/monthly-billing'
 import { nowJST, addDays, dayDiff, isDate } from './lib/time'
+import { recordSwallowedErrorDb } from './lib/http'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -961,11 +962,12 @@ function mergeMonthly<G extends { project_id: number }>(groups: G[], lines: Mont
   return out
 }
 
-// CSV・明細書を出力した記録（#170。いつ・だれが・どの期間を出したか）。記録に失敗しても出力は止めない
+// CSV・明細書を出力した記録（#170。いつ・だれが・どの期間を出したか）。記録に失敗しても出力は止めない（失敗は障害の記録に残す。#9967）
 async function logExport(db: D1Database, u: any, kind: string, f: Filters, rowCount: number, extra: Record<string, any> = {}) {
   const filters = { client_id: f.client_id, project_id: f.project_id, staff_id: f.staff_id, payee_type: f.payee_type || null, settle: f.settle || null, issues_only: f.issues_only || null, ...extra }
   await db.prepare(`INSERT INTO settlement_export_logs (company_id, kind, period_from, period_to, filters_json, row_count, exported_by, exported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, kind, f.from, f.to, JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([, v]) => v != null))), rowCount, u.user_id, nowJST()).run().catch(() => {})
+    .bind(u.company_id, kind, f.from, f.to, JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([, v]) => v != null))), rowCount, u.user_id, nowJST()).run()
+    .catch(e => recordSwallowedErrorDb(db, `精算の書き出しの記録（${kind}）`, e, { companyId: u.company_id, role: u.role, path: '/api/admin/settlement' }))
 }
 
 // ---------- 振込データ（#471） ----------

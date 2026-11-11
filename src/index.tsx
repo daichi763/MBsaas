@@ -6,14 +6,15 @@ import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServ
 import { purgeOldApplications } from './recruit'
 import { applyDueAffiliationSchedules } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
-import { runCronJobs, defineCronJobs } from './services/cron'
+import { runCronJobs, defineCronJobs, isUnknownCron } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
 import { loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_ROLE } from './hq-support'
 import { adminSideNavHtml, adminMobileNavHtml, adminScreensJson } from './admin-menu'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
-import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
+import { recordError, newErrorRef, maskPath, sanitizeErrorText, type ErrorAlertEnv } from './lib/error-log'
+import { apiNotFound } from './lib/http'
 import { csrfGuard } from './lib/csrf'
 import { nowJST } from './lib/time'
 
@@ -58,7 +59,9 @@ app.onError((err, c) => {
   console.error(JSON.stringify({
     level: 'error', event: 'unhandled_error', ref, method: c.req.method, path: maskPath(c.req.path),
     company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
-    message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
+    // 例外の文には入力の抜粋・SQL の値が入りうるので、D1 の記録（error_logs）と同じ規則で伏せる（#9967）
+    message: sanitizeErrorText(String((err as any)?.message || err), 500),
+    stack: String((err as any)?.stack || '').split('\n').slice(0, 6).map(l => sanitizeErrorText(l, 300)).join('\n'),
   }))
   const at = nowJST().slice(0, 16)
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
@@ -70,6 +73,9 @@ app.onError((err, c) => {
   return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
 })
+
+// 存在しないパス: /api は JSON の { error }（画面の errMsg がそのまま出せる形。#9967）、それ以外は今までどおりの文字の 404
+app.notFound((c) => (c.req.path === '/api' || c.req.path.startsWith('/api/') ? apiNotFound(c) : c.text('404 Not Found', 404)))
 
 // CSRF の対策（#9943）: 別のサイトからの /api/* の書き込みを 403 で止める（プッシュの送信より前に止める）。対象から外すものは src/lib/csrf.ts に書く
 app.use('/api/*', csrfGuard)
@@ -896,6 +902,14 @@ export default {
   // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
     cronAlerted = false
+    // 一覧にない式で起動したとき（wrangler.jsonc だけを変えたなど）は何もせず、障害の記録に残す（#9967。全部を実行すると毎日の削除まで走るため）
+    if (isUnknownCron(CRON_JOBS, event.cron)) {
+      console.error(JSON.stringify({ level: 'error', event: 'unknown_cron', cron: event.cron }))
+      const r = await recordError(env, { ref: newErrorRef(), source: 'cron', method: 'CRON', path: 'unknown_cron',
+        error: new Error(`定期処理の一覧にない cron の式で起動したため、何もしませんでした: ${event.cron}（wrangler.jsonc の triggers.crons と src/index.tsx の CRON_JOBS をそろえてください）`) })
+      if (r.alerted) await flushPushQueue(env as any).catch(e => console.log(`push flush failed: ${e}`))
+      return
+    }
     await runCronJobs(env, withErrorLog(CRON_JOBS), event.cron)
     // 障害の通知を作ったら、本部の管理者の端末へのプッシュをすぐに送る
     if (cronAlerted) await flushPushQueue(env as any).catch(e => console.log(`push flush failed: ${e}`))

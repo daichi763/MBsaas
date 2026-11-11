@@ -2063,7 +2063,7 @@ async function renderErrors() {
       <div id="he-logs"></div>
     </section>
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-push"></section>
-    <p class="text-[11px] text-slate-500">ここに出るのは、利用者の画面に「参照番号」付きのエラーが出たもの（サーバーの予期しないエラー）と、定期処理の失敗です。入力値や個人の情報は記録しません。詳しいログ（スタックトレースなど）は Cloudflare のダッシュボードの Workers Logs で、参照番号を検索して確かめます。</p>`
+    <p class="text-[11px] text-slate-500">ここに出るのは、利用者の画面に「参照番号」付きのエラーが出たもの（サーバーの予期しないエラー）と、利用者への応答は成功にした後の処理の失敗（実績の同期・書き出しの記録など。「…に失敗しました」の行）と、定期処理の失敗です。入力値や個人の情報は記録しません。詳しいログ（スタックトレースなど）は Cloudflare のダッシュボードの Workers Logs で、参照番号を検索して確かめます。</p>`
   drawErrorLogs()
   drawHqPush()
   document.getElementById('he-form').addEventListener('submit', (e) => {

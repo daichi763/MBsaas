@@ -3,7 +3,8 @@
 // - 処理の一覧（CronJob の配列。index.tsx の CRON_JOBS）を上から順に実行し、処理ごとの結果を cron_runs に記録する。
 //   処理を足すときは、一覧に1行足すだけでよい。
 // - 処理は、指定した cron の式で起動したときに実行する（重い処理を別の起動に分け、1回の起動あたりの
-//   D1 の問い合わせ数の上限で後ろの処理が止まらないようにする）。一覧にない式で起動したとき（手動の確認など）は全部を実行する。
+//   D1 の問い合わせ数の上限で後ろの処理が止まらないようにする）。式なしで起動したとき（手動の確認）だけ全部を実行する。
+//   一覧にない式で起動したときは何もしない（#9967。index.tsx が障害の記録に残す。wrangler.jsonc だけを変えて毎日の削除が15分ごとに走らないように）。
 // - 処理が例外を投げた、または結果に failed（1以上）・error があれば「失敗」として記録する。1つが失敗しても次の処理は続ける。
 // - 結果に idle: true を返した（何もしなかった）実行は、同じ処理の直前の記録も idle なら、その行を消してから記録する
 //   （15分おきのリマインドなど回数の多い処理で、記録と本部画面の直近の一覧が埋まらないようにする。最後の実行の日時は残る）
@@ -42,14 +43,21 @@ export function defineCronJobs<E>(jobs: CronJob<E>[]): CronJob<E>[] {
   return jobs
 }
 
-/** 起動した cron の式で実行する処理を選ぶ */
+/** 起動した cron の式で実行する処理を選ぶ。式がない（手動）なら全部、一覧にない式なら空 */
 export function selectCronJobs<E>(jobs: CronJob<E>[], cron: string | undefined): CronJob<E>[] {
-  const matched = jobs.filter(j => j.cron === cron)
-  return matched.length ? matched : jobs
+  if (!cron) return jobs
+  return jobs.filter(j => j.cron === cron)
+}
+
+/** 一覧のどの処理の式とも合わない式で起動したか（式なしの手動の起動は false） */
+export function isUnknownCron<E>(jobs: CronJob<E>[], cron: string | undefined): boolean {
+  return !!cron && !jobs.some(j => j.cron === cron)
 }
 
 export async function runCronJobs<E extends { DB: D1Database }>(env: E, jobs: CronJob<E>[], cron: string | undefined): Promise<void> {
-  for (const job of selectCronJobs(jobs, cron)) {
+  const selected = selectCronJobs(jobs, cron)
+  if (!selected.length) { console.log(`cron: no job for ${cron}`); return }
+  for (const job of selected) {
     const started = Date.now()
     let status = 'ok', result: CronJobResult | null = null, error: string | null = null
     try {
