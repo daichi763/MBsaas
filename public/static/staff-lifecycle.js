@@ -565,7 +565,7 @@
           <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
         : d.token ? `<span class="text-[11px] text-gray-500 flex-1 min-w-[10rem] py-1"><i class="fas fa-link mr-1"></i>報告用URLは発行済みです（URLは発行した画面でだけ表示します）</span>
           <button class="btn btn-outline text-xs" data-action="reissueReportLink" data-shift-id="${Number(shiftId)}" title="新しいURLを発行して表示します。前に送ったURLは使えなくなります"><i class="fas fa-rotate"></i>発行し直す</button>
-          <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
+          <button class="btn btn-outline text-xs" data-action="revokeReportLinkOne" data-shift-id="${Number(shiftId)}" title="無効にする"><i class="fas fa-ban"></i></button>`
         : `<button class="btn btn-outline text-xs flex-1" onclick="issueReportLink(${shiftId})"><i class="fas fa-link"></i>報告用URLを発行（ログイン不要）</button>`}
         ${pending && !d.proxy_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyAttendance" data-shift-id="${shiftId}"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
         ${pending && d.proxy_blocked ? `<span class="text-[11px] text-gray-400 py-1">${esc(d.proxy_blocked)}のシフトは代理入力できません</span>` : ''}
@@ -638,6 +638,7 @@
     if (!confirm('この報告用URLを無効にしますか？')) return
     try { await axios.delete(`/api/admin/shifts/${shiftId}/report-link`); toast('無効にしました'); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
   }
+  delegate('revokeReportLinkOne', (el) => window.revokeReportLink(Number(el.dataset.shiftId)))
   async function copyText(text, done) {
     try { await navigator.clipboard.writeText(text); toast(done) } catch {
       // クリップボードが使えない環境: 一時的な入力欄から写す
