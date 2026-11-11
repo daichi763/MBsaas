@@ -504,12 +504,15 @@ type Row = Awaited<ReturnType<typeof loadRows>>[number]
 
 // 支払集計のまとめ方（自社給与・日雇い給与はスタッフごと、それ以外は支払先ごと）。支払明細書（#168）の宛先の指定にも使う
 const payeeGroupKey = (r: Row) => (r.payee_type === 'payroll' || r.payee_type === 'payroll_daily' ? `${r.payee_type}:staff${r.staff_id}` : r.payee_key) as string
+// 並べ替えの比較（localeCompare(x, 'ja') と同じ順。呼ぶたびに照合の準備をしないよう1つを使い回す。#9968 quality-16）
+const JA_COMPARE = new Intl.Collator('ja').compare
 // 粗利は支払が決まっている行だけで計算する（profit_bill = その行の請求額）。支払単価が未設定の行は件数と請求額を pay_unset* に出す
 function summarize(rows: Row[]) {
   const sum = (a: Row[], k: keyof Row) => a.reduce((n, r) => n + Number((r as any)[k] || 0), 0)
   const hoursOf = (a: Row[], k: keyof Row) => Math.round(sum(a, k) / 60 * 100) / 100
   const group = <K extends string>(keyFn: (r: Row) => K) => {
-    const m = new Map<K, Row[]>(); for (const r of rows) { const k = keyFn(r); m.set(k, [...(m.get(k) || []), r]) } return m
+    // 配列は作り直さずに足す（1つの案件・支払先に行が集まると、作り直しは行数の2乗になる。#9968 quality-16）
+    const m = new Map<K, Row[]>(); for (const r of rows) { const k = keyFn(r); const a = m.get(k); if (a) a.push(r); else m.set(k, [r]) } return m
   }
   const profitOf = (a: Row[]) => {
     const paid = a.filter(r => r.pay_total != null), unset = a.filter(r => r.pay_total == null)
@@ -532,7 +535,7 @@ function summarize(rows: Row[]) {
     shifts: a.length, staff: new Set(a.map(r => r.staff_id)).size, hours: Math.round(sum(a, 'hours') * 100) / 100,
     bill_base: sum(a, 'bill_base'), bill_transport: sum(a, 'bill_transport'), bill_adjust: sum(a, 'bill_adjust'), bill_total: sum(a, 'bill_total'),
     pay_total: sum(a, 'pay_total'), ...profitOf(a), confirmed: a.filter(r => r.settle_status === 'confirmed').length,
-  })).sort((x, y) => (x.client_name || '').localeCompare(y.client_name || '', 'ja') || x.project_name.localeCompare(y.project_name, 'ja'))
+  })).sort((x, y) => JA_COMPARE(x.client_name || '', y.client_name || '') || JA_COMPARE(x.project_name, y.project_name))
   const by_payee = [...group(payeeGroupKey)].map(([key, a]) => ({
     group_key: key, payee_type: a[0].payee_type, payee_label: a[0].payee_label, payee_name: a[0].payee_name,
     staff_id: a[0].payee_type === 'partner' || a[0].payee_type === 'linked' ? null : a[0].staff_id,
@@ -544,7 +547,7 @@ function summarize(rows: Row[]) {
     night_hours: hoursOf(a, 'premium_night_minutes'), overtime_hours: hoursOf(a, 'premium_overtime_minutes'), holiday_hours: hoursOf(a, 'premium_holiday_minutes'),
     pay_premium: sum(a, 'pay_premium'),
     pay_unset: a.filter(r => r.pay_total == null).length, confirmed: a.filter(r => r.settle_status === 'confirmed').length,
-  })).sort((x, y) => x.payee_type.localeCompare(y.payee_type) || x.payee_name.localeCompare(y.payee_name, 'ja') || (x.staff_name || '').localeCompare(y.staff_name || '', 'ja'))
+  })).sort((x, y) => x.payee_type.localeCompare(y.payee_type) || JA_COMPARE(x.payee_name, y.payee_name) || JA_COMPARE(x.staff_name || '', y.staff_name || ''))
   return { totals, by_client, by_payee }
 }
 

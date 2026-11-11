@@ -56,6 +56,20 @@ function countingDb(db: D1Database, stats: Stats): D1Database {
     },
   }) as D1Database
 }
+// D1 の呼び出しを数える形にした DB（定期処理で、1回の起動の問い合わせの数を予算の内に収めるのに使う。#9968）。
+// stats.statements は実行した文の数（db.batch の中の文も1つずつ数える）
+export function countD1(db: D1Database): { db: D1Database; stats: Stats } {
+  const stats: Stats = { calls: 0, statements: 0 }
+  return { db: countingDb(db, stats), stats }
+}
+// 回数だけを数えるミドルウェア（割り当て・応募の承認など、人数で問い合わせが増えないことをテストで確かめる API の前に置く。#9968）
+export async function d1CallCountHook(c: any, next: () => Promise<void>) {
+  if (!testHooksOn(c.env)) return next()
+  const stats: Stats = { calls: 0, statements: 0 }
+  c.env = { ...c.env, DB: countingDb(c.env.DB, stats) }
+  await next()
+  try { c.res.headers.set('X-Test-D1-Calls', `${stats.calls}/${stats.statements}`) } catch { /* 応答のヘッダーを変えられないときは付けない */ }
+}
 // 打刻の API の前に置くミドルウェア。TEST_HOOKS のときだけ、この要求の DB を数える形に差し替える
 export async function attendanceTestHooks(c: any, next: () => Promise<void>) {
   if (!testHooksOn(c.env)) return next()

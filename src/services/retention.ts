@@ -57,7 +57,10 @@ import { nowJST, todayJST, addDays } from '../lib/time'
 //   - R2 は最大1000キーずつまとめて消し、1回のCronで消すファイル数に上限を置く。超えた分は retention_pending_r2 に
 //     残して翌日に回し、上限に達したらそれ以降の人も次回に回す（#419）。
 //
-// 期限切れ・使用済みのトークン（パスワード再設定・報告用URL）は、データ保持とは別の定期処理（purgeExpiredTokens）で消す（#397）。
+// 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）は、データ保持とは別の定期処理（purgeExpiredTokens）で消す（#397 #9968）。
+//
+// 実行の記録（#9968）: retention_logs（データ保持・トークンの削除の実行ログ）と hq_view_logs（本部の閲覧で開いた画面の記録）は、
+//   保存期間が資料に決まっていなかったので、作成から1年（LOG_TABLES_KEEP_DAYS）で消す（docs/db.md の 6 章）
 
 const DAILY_REPORTS_YEARS = 3
 const RETIRED_YEARS = 7
@@ -69,6 +72,7 @@ const NOTIFICATIONS_BATCH = 500
 const NOTIFICATIONS_MAX_BATCHES = 20
 const EMAIL_LOGS_YEARS = 1
 const OPERATION_LOGS_YEARS = 7
+const LOG_TABLES_KEEP_DAYS = 365 // retention_logs・hq_view_logs（#9968）
 const R2_DELETE_CHUNK = 1000 // R2 の delete に1回で渡すキーの数（R2 の上限）
 const R2_DELETE_BUDGET = 5000 // 1回のCronで消す R2 の写真・書類の上限（超えた分は翌日に回す。#419）
 const DRY_RUN_STAFF_LIMIT = 300 // dry-run で一覧に出す対象スタッフの上限
@@ -89,7 +93,7 @@ const RETIRED_TARGETS = ['retired_staff', 'attendance_reports', 'shifts', 'evalu
 // 件数の単位が行数でない対象（実行ログの合計に含めない）
 export const RETENTION_NON_ROW_TARGETS = ['retired_staff', 'retired_staff_deferred', 'r2_pending']
 // トークンの削除（purgeExpiredTokens）が retention_logs に残す対象。RETENTION_ENABLED に関係なく実削除で記録する
-export const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens'] as const
+export const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens', 'expired_schedule_tokens'] as const
 // 本部画面の保守（紐づかない写真の削除。#533）が retention_logs に残す対象。データ保持の直近の実行には数えない
 export const RETENTION_MAINTENANCE_TARGETS = ['orphan_photos'] as const
 const MAX_ERRORS_PER_TARGET = 3 // error_message に残す失敗の理由の件数（それ以上は件数だけ）
@@ -439,6 +443,13 @@ function cleanupErrorAlerts(db: D1Database, dryRun: boolean): Promise<RetentionT
 function cleanupOperationLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'operation_logs', table: 'operation_logs', idCol: 'log_id', years: OPERATION_LOGS_YEARS,
     where: `company_id NOT IN (${HELD_COMPANY_SQL})` })
+}
+// 実行の記録は作成から1年で消す（#9968。どちらも会社のデータ・個人情報の本体ではなく、増え続けないように）
+function cleanupRetentionLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'retention_logs', table: 'retention_logs', idCol: 'log_id', years: 0, days: LOG_TABLES_KEEP_DAYS })
+}
+function cleanupHqViewLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'hq_view_logs', table: 'hq_view_logs', idCol: 'log_id', years: 0, days: LOG_TABLES_KEEP_DAYS })
 }
 
 function emptyRetiredAcc(): Record<string, RetentionTargetResult> {
@@ -955,6 +966,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('email_logs', async () => [await cleanupEmailLogs(db, opts.dryRun)]),
       ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
       ...await stage('error_logs', async () => [await cleanupErrorLogs(db, opts.dryRun), await cleanupErrorAlerts(db, opts.dryRun)]),
+      ...await stage('retention_logs', async () => [await cleanupRetentionLogs(db, opts.dryRun), await cleanupHqViewLogs(db, opts.dryRun)]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
     ] : []),
     ...(stages.includes('in_service') ? await stage('in_service', () => cleanupInService(db, opts.dryRun)) : []),
@@ -1049,6 +1061,7 @@ async function writeRetentionLogs(db: D1Database, results: RetentionTargetResult
 // データ保持（RETENTION_ENABLED）とは別に、常に実際に削除する（使えなくなったトークンを消すだけで、記録としての価値はない）
 const PASSWORD_RESET_KEEP_DAYS = 7 // 期限（1時間）が切れてから残す日数（問い合わせの調査用）
 const REPORT_TOKEN_KEEP_DAYS = 30 // 報告用URLの期限（稼働日の翌日 23:59）が切れてから残す日数
+const SCHEDULE_TOKEN_KEEP_DAYS = 30 // 予定確認URLの期限・取り消しから残す日数（報告用URLと同じ）
 const TOKEN_PURGE_BATCH = 500
 const TOKEN_PURGE_MAX_BATCHES = 20
 
@@ -1075,11 +1088,13 @@ async function purgeInBatches(db: D1Database, target: string, sql: string, binds
  *    （再設定の回数制限が直近1時間の行を数えるため、すぐには消さない）
  *  - shift_report_tokens: 有効期限は今のシフトの稼働日から決まる（staff-lifecycle.ts の reportTokenExpiry）ので、
  *    稼働日から 1+30 日たった行を消す。取り消し済み（revoked=1）の行は作成から30日たったら消す
+ *  - staff_schedule_tokens（予定確認URL）: 期限か取り消しの日から30日たった行を消す（発行し直した前の行・期限切れの行。#9968）
  */
 export async function purgeExpiredTokens(db: D1Database): Promise<{ deleted: number; failed: number; error: string | null }> {
   const startedAt = new Date().toISOString()
   const resetCutoff = new Date(Date.now() - PASSWORD_RESET_KEEP_DAYS * 86400 * 1000).toISOString()
   const reportCutoff = addDays(todayJST(), -(1 + REPORT_TOKEN_KEEP_DAYS))
+  const scheduleCutoff = addDays(todayJST(), -SCHEDULE_TOKEN_KEEP_DAYS)
   const results = [
     await purgeInBatches(db, RETENTION_TOKEN_TARGETS[0],
       `DELETE FROM password_reset_tokens WHERE token_id IN (SELECT token_id FROM password_reset_tokens
@@ -1087,6 +1102,10 @@ export async function purgeExpiredTokens(db: D1Database): Promise<{ deleted: num
     await purgeInBatches(db, RETENTION_TOKEN_TARGETS[1],
       `DELETE FROM shift_report_tokens WHERE token IN (SELECT t.token FROM shift_report_tokens t LEFT JOIN shifts s ON s.shift_id = t.shift_id
         WHERE s.work_date < ? OR s.shift_id IS NULL OR (t.revoked = 1 AND t.created_at < datetime('now', '-${REPORT_TOKEN_KEEP_DAYS} days')) LIMIT ?)`, [reportCutoff]),
+    // 予定確認URL（staff_schedule_tokens。#442）: 期限（expires_at・日本時間）か取り消し（revoked_at・日本時間）から30日たった行（#9968）
+    await purgeInBatches(db, RETENTION_TOKEN_TARGETS[2],
+      `DELETE FROM staff_schedule_tokens WHERE token_id IN (SELECT token_id FROM staff_schedule_tokens
+        WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?) LIMIT ?)`, [scheduleCutoff, scheduleCutoff]),
   ]
   for (const r of results) {
     r.error = errorMessageOf(r) || r.error

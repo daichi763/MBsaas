@@ -22,6 +22,7 @@ import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/tran
 import { closedChecker, closedOn } from './lib/closings'
 import { nowJST, todayJST, addDays, dayDiff, isDate } from './lib/time'
 import { readJson } from './lib/http'
+import { d1CallCountHook } from './lib/d1-retry'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -600,7 +601,7 @@ function ineligibleReason(st: any, date: string): string | null {
   return null
 }
 // 案件ごとの NG スタッフ（クライアントの ng_staff_ids）
-async function ngByProjects(db: D1Database, companyId: number, projectIds: number[]) {
+export async function ngByProjects(db: D1Database, companyId: number, projectIds: number[]) {
   const map = new Map<number, number[]>()
   const ids = bindJsonArray(projectIds)
   if (ids === '[]') return map
@@ -618,7 +619,7 @@ function addPlannedConflict(conflicts: Map<number, ConflictRow[]>, companyId: nu
 }
 type Skipped = { date: string; staff_id: number; staff_name: string; reason: string; detail?: string; project_name?: string | null; start_time?: string; end_time?: string; slot_role_id?: number | null }
 // 登録するシフトの列（単価の列 PRICE_COLUMNS と合わせて INSERT する）
-const SHIFT_INSERT_COLUMNS = ['company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'transportation_fee', 'status',
+export const SHIFT_INSERT_COLUMNS = ['company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'transportation_fee', 'status',
   'registered_by', 'slot_id', 'slot_role_id', 'site_id', 'break_minutes', 'source_shift_id', ...PRICE_COLUMNS]
 
 // ---------- 共通の確認 ----------
@@ -1614,7 +1615,11 @@ app.get('/shifts/:id/band', async (c) => {
   return c.json({ shift_id: s.shift_id, today, truncated: rows.length > BAND_MAX * 2, scopes: { today: scope(rows.filter(r => r.work_date >= today)), all: scope(rows) } })
 })
 
-// 役割への割り当て（複数可）
+// 役割への割り当て（複数可）。1回に割り当てる人数は ASSIGN_ROLE_MAX まで。
+// シフトは単価・調整・画面で変えた単価をメモリ上で計算してから、まとめて登録する（人数ごとに問い合わせない。#9968）
+const ASSIGN_ROLE_MAX = 200
+// テスト用（TEST_HOOKS='true' のローカルだけ）: 応答のヘッダー X-Test-D1-Calls に D1 の呼び出しの回数を返す
+app.use('/shift-slots/roles/:id/assign', d1CallCountHook)
 app.post('/shift-slots/roles/:id/assign', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
@@ -1623,6 +1628,7 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   if (!role) return c.json({ error: '枠が見つかりません' }, 404)
   const staffIds: number[] = [...new Set(((Array.isArray(b.staff_ids) ? b.staff_ids : [b.staff_id]) as any[]).map(Number).filter(Boolean))]
   if (!staffIds.length) return c.json({ error: 'スタッフを選択してください' }, 400)
+  if (staffIds.length > ASSIGN_ROLE_MAX) return c.json({ error: `一度に割り当てられるのは${ASSIGN_ROLE_MAX}人までです` }, 400)
   // substitute: ダッシュボードで欠勤にしたシフトの代わりを割り当てるとき（#216）
   const status = ['confirmed', 'requested', 'substitute'].includes(b.status) ? b.status : 'confirmed'
   // 退職・統合・取引終了などは割り当てない。重複・NG・休職中・割当済みは確認のうえ force で続ける（#119 #354）
@@ -1652,26 +1658,34 @@ app.post('/shift-slots/roles/:id/assign', async (c) => {
   const ihs = b.inherit === false || !proj ? [] : await loadInheritSources(db, u.company_id, proj, toAdd.map((s: any) => ({ staff_id: s.staff_id, work_date: role.work_date })), data,
     { role_name: rateRoleName({ role: role.role_name }, role) })
   const ihOf = new Map<number, InheritSource | null>(toAdd.map((s: any, i: number) => [s.staff_id, ihs[i] ?? null]))
+  // 支払先（applyPricingToShift の resolvePayee と同じ規則）は、スタッフの行と区分変更の履歴をまとめて読んで決める
+  const addIds = toAdd.map((s: any) => Number(s.staff_id))
+  const [spRows, hist] = await Promise.all([loadStaffForAssign(db, u.company_id, addIds), loadPayeeHistory(db, u.company_id, addIds)])
+  const plans = toAdd.map((s: any) => {
+    const row: any = {
+      company_id: u.company_id, staff_id: s.staff_id, project_id: role.project_id, work_date: role.work_date, start_time: role.start_time, end_time: role.end_time,
+      location: role.location || '', role: role.role_name, transportation_fee: fee ?? transportDefaultFor(tdefs, s.staff_id, role.site_id) ?? 0, status,
+      registered_by: u.user_id, memo: b.memo ?? null, slot_id: role.slot_id, slot_role_id: role.slot_role_id, site_id: role.site_id ?? null,
+      break_minutes: role.break_minutes ?? null, source_shift_id: null,
+    }
+    const ih = ihOf.get(s.staff_id) ?? null
+    const priced: any = { ...row, ...computeShiftPricing(u.company_id, row, role, payeeOn(spRows.get(s.staff_id), hist.get(s.staff_id), role.work_date), data, ih) }
+    const used = parsePriceSource(priced.price_source).inherit ? ih : null
+    // 引き継いだ調整（inheritedAdjustStmt と同じ）と、画面で変えた単価（applyRateOverride と同じ）
+    Object.assign(priced, { qty_locked: null, bill_adjust: 0, pay_adjust: 0, adjust_note: null }, inheritedAdjust(used) || {})
+    Object.assign(priced, overridePricing(priced, ov.value, proj) || {})
+    return { s, priced, used }
+  })
+  // 同時に届いた別のリクエストが先に割り当てた行（一意インデックス）は飛ばし、警告で返す（二重には作らない。#530）
+  const newIds = plans.length ? returnedIds(await db.batch(insertRowsStmts(db, 'shifts', [...SHIFT_INSERT_COLUMNS, 'memo', 'qty_locked', 'bill_adjust', 'pay_adjust', 'adjust_note'],
+    plans.map(p => p.priced), { orIgnore: true, returning: 'shift_id' })), 'shift_id') : []
+  const idOf = new Map<number, number>(newIds.length ? ((await db.prepare(`SELECT shift_id, staff_id FROM shifts WHERE company_id = ? AND shift_id IN ${JSON_IN}`)
+    .bind(u.company_id, bindJsonArray(newIds)).all()).results as any[]).map(r => [Number(r.staff_id), Number(r.shift_id)]) : [])
   const inherited: any[] = []
   const created: number[] = []
-  for (const s of chk.staff) {
-    if (chk.already.has(s.staff_id)) continue
-    let res: D1Result
-    try {
-      res = await db.prepare(`INSERT INTO shifts (company_id, staff_id, project_id, work_date, start_time, end_time, location, role, unit_price, transportation_fee, status, registered_by, memo, slot_id, slot_role_id, site_id, break_minutes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, s.staff_id, role.project_id, role.work_date, role.start_time, role.end_time, role.location || '', role.role_name,
-          fee ?? transportDefaultFor(tdefs, s.staff_id, role.site_id) ?? 0, status, u.user_id, b.memo ?? null, role.slot_id, role.slot_role_id, role.site_id ?? null, role.break_minutes ?? null).run()
-    } catch (e) {
-      // 同時に届いた別のリクエストが先に割り当てた（一意インデックス）。二重には作らない（#530）
-      if (isUniqueViolation(e)) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
-      throw e
-    }
-    const newId = res.meta.last_row_id as number
-    const used = await applyPricingToShift(db, u.company_id, newId, { data, inherit: ihOf.get(s.staff_id) ?? null })
-    const adjStmt = inheritedAdjustStmt(db, u.company_id, newId, used)
-    if (adjStmt) await adjStmt.run()
-    await applyRateOverride(db, u.company_id, newId, ov.value, data)
+  for (const { s, used } of plans) {
+    const newId = idOf.get(Number(s.staff_id))
+    if (!newId) { warnings.push(`${s.name}: すでにこの枠に割り当て済みです`); continue }
     if (used) inherited.push({ staff_id: s.staff_id, staff_name: s.name, new_shift_id: newId, ...inheritView(used) })
     created.push(newId)
   }
