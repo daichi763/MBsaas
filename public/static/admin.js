@@ -5842,7 +5842,7 @@ delegate('pickAnalyticsStaff', () => {
       ${opts.map(o => `<label class="flex items-center gap-2 px-3 py-2 text-sm" data-name="${esc(o.name || '')}"><input type="checkbox" class="w-4 h-4 analytics-staff-pick" value="${Number(o.staff_id)}" ${picks.has(Number(o.staff_id)) ? 'checked' : ''}>
         <span class="flex-1">${esc(o.name || '（名前なし）')}</span><span class="text-xs text-gray-500">${Number(o.reports) ? `日報 ${Number(o.reports)}件` : 'この月の日報なし'}</span></label>`).join('') || '<p class="text-sm text-gray-400 p-3">この月に日報のある人がいません</p>'}
     </div>
-    <div class="flex gap-2 mt-4 flex-wrap">
+    <div class="flex gap-2 mt-4 flex-wrap">${MODAL_CANCEL_BTN}
       <button class="btn btn-outline flex-1" data-action="clearAnalyticsStaff">全員に戻す</button>
       <button class="btn btn-primary flex-1" data-action="savePickAnalyticsStaff">このスタッフで絞り込む</button>
     </div>`)

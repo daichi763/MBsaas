@@ -154,7 +154,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `*/15 * * * *` | 15分おき | `reminders` | 本人あての自動リマインド（起床・出発・入店の未報告、日報の未提出。会社の設定で ON の会社だけ） | `src/services/reminders.ts` の `runReminders` |
 | `*/15 * * * *` | 15分おき | `push_queue` | プッシュ通知のうち、API の応答の後に送れなかった分を送る | `src/notifications.ts` の `runPushQueueJob` |
 | `*/15 * * * *` | 15分おき | `notification_digest` | 打刻修正の承認依頼のまとめメール（毎朝8時以降の最初の起動で1回） | `src/notifications.ts` の `runNotificationDigests` |
-| `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日）。取りこぼさないよう 3:00 の起動の先頭で行う | `src/api.ts:8145` |
+| `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日）。取りこぼさないよう 3:00 の起動の先頭で行う | `src/api.ts:8147` |
 | `0 18 * * *` | 毎日 3:00 | `auth_purge` | 期限切れのセッション・ログイン試行・1年より古いログイン履歴の削除 | `src/lib/auth.ts:191` |
 | `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）の削除 | `src/services/retention.ts:1095` |
 | `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1071` |
