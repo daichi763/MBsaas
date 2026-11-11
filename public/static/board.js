@@ -3,7 +3,6 @@
 // admin.js の後に読み込む。#board = 一覧 / #board/new = 新規 / #board/123 = 詳細 / #board/123-edit = 編集
 // =========================================================
 (function () {
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const WD = ['日', '月', '火', '水', '木', '金', '土']
   const fmtD = (d) => { if (!d) return ''; const x = dayjs(d); return `${x.format('YYYY/M/D')}(${WD[x.day()]})` }
   const ENG = { regular: '常勤', spot: 'スポット' }

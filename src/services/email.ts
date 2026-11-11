@@ -6,7 +6,7 @@
 // 送信元（MAIL_FROM）・有効/無効（MAIL_ENABLED）は wrangler.jsonc の vars で環境ごとに設定する。
 // 送らないもの（#541 #13）: 不達・迷惑メールの報告があったアドレス（email_suppressions）と、契約が停止中の企業のメール。
 // 配信の結果（不達・迷惑メールの報告・配信済み）は Resend の Webhook（handleResendWebhook）で受け取り、送信の記録を更新する。
-import { Resend } from 'resend'
+import { nowJST } from '../lib/time'
 
 export type MailEnv = {
   RESEND_API_KEY: string
@@ -36,6 +36,34 @@ const MAX_ATTEMPTS = 3
 const VALID_EMAIL = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+// ---- Resend の REST API（#9957。SDK は使っていない React などを Worker に巻き込むので、fetch で直接呼ぶ） ----
+// 応答の扱いは resend（SDK 4.x）と同じ: 失敗の応答は本文の JSON（{ name, message, statusCode }）を error にし、
+// JSON でなければ application_error。通信できないときも例外にせず application_error を返す（送信上限などと同じく再試行の対象）
+const RESEND_API = 'https://api.resend.com'
+type ResendError = { name?: string; message?: string; statusCode?: number }
+type ResendEmail = { from: string; to: string; subject: string; html: string; text?: string; reply_to?: string }
+function toResendEmail(env: MailEnv, m: SendEmailInput): ResendEmail {
+  return { from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(m.reply_to ? { reply_to: m.reply_to } : {}) }
+}
+async function resendPost<T>(apiKey: string, path: '/emails' | '/emails/batch', body: unknown, idempotencyKey?: string): Promise<{ data: T | null; error: ResendError | null }> {
+  // User-Agent が無い要求は Resend に断られるので付ける（SDK も resend-node:版 を付けていた）
+  const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'User-Agent': 'mbsaas-worker' }
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
+  let res: Response
+  try {
+    res = await fetch(RESEND_API + path, { method: 'POST', headers, body: JSON.stringify(body) })
+  } catch {
+    return { data: null, error: { name: 'application_error', message: 'Unable to fetch data. The request could not be resolved.' } }
+  }
+  if (!res.ok) {
+    let parsed: unknown = null
+    try { parsed = JSON.parse(await res.text()) } catch { }
+    if (parsed && typeof parsed === 'object') return { data: null, error: parsed as ResendError }
+    return { data: null, error: { name: 'application_error', message: 'Internal server error. We are unable to process your request right now, please try again later.', statusCode: res.status } }
+  }
+  try { return { data: await res.json() as T, error: null } } catch { return { data: null, error: { name: 'application_error', message: 'Invalid response' } } }
+}
 
 export function maskEmail(email: string): string {
   const at = email.indexOf('@')
@@ -134,15 +162,7 @@ export async function sendEmail(env: MailEnv, input: SendEmailInput): Promise<Se
   } else {
     warnTestSender(env)
     try {
-      const resend = new Resend(env.RESEND_API_KEY)
-      const { data, error } = await resend.emails.send({
-        from: env.MAIL_FROM,
-        to: input.to,
-        subject: input.subject,
-        html: input.html,
-        text: input.text,
-        ...(input.reply_to ? { replyTo: input.reply_to } : {}),
-      })
+      const { data, error } = await resendPost<{ id?: string }>(env.RESEND_API_KEY, '/emails', toResendEmail(env, input))
       if (error) {
         console.log(`resend send failed: type=${input.type} to=${maskEmail(input.to)} name=${error.name}`)
         result = { ok: false, error: resendErrorDetail(error) }
@@ -178,7 +198,6 @@ export async function sendEmailBatch(env: MailEnv, inputs: SendEmailInput[], opt
     results = inputs.map(() => ({ ok: false, error: 'mail_not_configured' }))
   } else {
     warnTestSender(env)
-    const resend = new Resend(env.RESEND_API_KEY)
     results = inputs.map((): SendEmailResult => ({ ok: false, error: 'invalid_address' }))
     // 書式の誤ったアドレスが1件でもあるとバッチ全体が失敗するため、先に除いておく
     const valid = inputs.map((_, k) => k).filter(k => VALID_EMAIL.test(inputs[k].to) && !blocked[k])
@@ -190,9 +209,9 @@ export async function sendEmailBatch(env: MailEnv, inputs: SendEmailInput[], opt
       let lastError = 'resend_error'
       for (let attempt = 1; attempt <= MAX_ATTEMPTS && !chunkResults; attempt++) {
         try {
-          const { data, error } = await resend.batch.send(
-            chunk.map(m => ({ from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(m.reply_to ? { replyTo: m.reply_to } : {}) })),
-            opts.idempotencyKey ? { idempotencyKey: `${opts.idempotencyKey}-${i / BATCH_SIZE}` } : undefined
+          const { data, error } = await resendPost<{ data?: { id?: string }[] }>(env.RESEND_API_KEY, '/emails/batch',
+            chunk.map(m => toResendEmail(env, m)),
+            opts.idempotencyKey ? `${opts.idempotencyKey}-${i / BATCH_SIZE}` : undefined
           )
           if (error) {
             console.log(`resend batch failed: type=${chunk[0].type} size=${chunk.length} name=${error.name} attempt=${attempt}`)
@@ -285,7 +304,7 @@ export async function handleResendWebhook(env: MailEnv, req: Request): Promise<R
   const to: string[] = (Array.isArray(data.to) ? data.to : [data.to]).map((x: unknown) => normalizeAddress(String(x ?? ''))).filter(Boolean)
   if (!messageId) return json({ ok: true, ignored: true })
   const db = env.DB
-  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const at = nowJST()
   if (type === 'email.delivered') {
     await db.prepare(`UPDATE email_logs SET status = 'delivered' WHERE provider_message_id = ? AND status = 'sent'`).bind(messageId).run()
     return json({ ok: true })

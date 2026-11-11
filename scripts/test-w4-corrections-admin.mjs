@@ -185,7 +185,8 @@ must(await admin.put('/api/admin/settings/lateness', { grace_minutes: 0 }), 'gra
 // ---------- #266 画面（配信されるスクリプト） ----------
 {
   const js = await (await fetch(`${BASE}/static/corrections.js`)).text()
-  const adm = await (await fetch(`${BASE}/static/admin.js`)).text()
+  // modal は Sprint 23（#9959）で common.js に1つにまとめた
+  const adm = await (await fetch(`${BASE}/static/common.js`)).text()
   ok('#266 共通の modal が閉じたときの処理（onClose）を受け付ける', /function modal\(html, opts = \{\}\)/.test(adm) && /MODAL_ON_CLOSE/.test(adm))
   ok('#266 詳細のモーダルは閉じたときに URL を一覧へ戻す', /onClose: \(\) => \{ if \(location\.hash === '#corrections\/' \+ c\.correction_id\) history\.replaceState/.test(js))
   ok('#266 一覧の行は data-action で開き、onclick に値を埋め込まない', /data-action="corrOpen"/.test(js) && !/onclick="location\.hash='corrections\//.test(js))

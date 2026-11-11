@@ -1,6 +1,6 @@
 // Field OS 管理画面: スタッフマスタ新規作成（4ルート）/ 企業間連携
 // docs/spec_multi_company_staff.md フェーズC
-// admin.js のヘルパー（modal / closeModal / toast / esc / renderStaff）を利用する。admin.js の後に読み込むこと。
+// common.js の部品（modal / closeModal / onModalClose / toast / esc）と admin.js の renderStaff を利用する。admin.js の後に読み込むこと。
 
 const ROSTER_ROUTES = [
   { key: 'link', icon: 'fa-qrcode', color: 'text-blue-600', title: '① QRコード / スタッフIDから連携',
@@ -27,6 +27,11 @@ window.showAddRoster = function () {
         <p class="font-bold text-sm text-gray-800"><i class="fas fa-file-csv text-orange-600 w-5"></i>CSV でまとめて登録（②③④）</p>
         <p class="text-xs text-gray-500 mt-1 ml-5">導入時の名簿の移行や、まとめて受け入れるときに。テンプレートに記入して取り込み、重複などを確かめてから登録します。</p>
       </button>
+    </div>
+    <div class="border-t border-gray-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+      <button class="btn btn-outline text-xs" data-action="rosterOpenBulkLink"><i class="fas fa-users-line"></i>IDをまとめて連携</button>
+      <button class="btn btn-outline text-xs" data-action="rosterOpenShareList"><i class="fas fa-id-badge"></i>連携用IDの一覧（出力）</button>
+      <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>協力会社の管理</a>
     </div>`)
 }
 
@@ -44,6 +49,8 @@ window.showRosterLink = function (prefill) {
       <input id="rl-code" class="inp flex-1 font-mono uppercase" placeholder="FS..." value="${esc(prefill || '')}">
       <button class="btn btn-primary" onclick="lookupRosterCode()"><i class="fas fa-magnifying-glass"></i>検索</button>
     </div>
+    <button class="btn btn-outline w-full mt-2" onclick="startQrScan()"><i class="fas fa-camera"></i>カメラでQRコードを読み取る</button>
+    <div id="rl-scan" class="mt-2"></div>
     <div id="rl-result" class="mt-4"></div>
     <button class="btn btn-outline w-full mt-4 text-xs" onclick="showAddRoster()"><i class="fas fa-arrow-left"></i>作成方法の選択に戻る</button>`)
   setTimeout(() => { const el = document.getElementById('rl-code'); if (el) el.focus() }, 50)
@@ -123,6 +130,7 @@ window.submitRosterLink = async function (p, button) {
 const ROSTER_FORM_TITLE = { employee: '② 従業員管理から作成（自社雇用）', partner: '③ 協力会社から作成', skillsheet: '④ スキルシートのみ作成' }
 
 window.showRosterForm = async function (route) {
+  await loadRosterRequired(true)
   let partners = []
   if (route === 'partner') {
     try { partners = (await axios.get('/api/admin/roster/partners')).data.partners } catch { partners = [] }
@@ -223,9 +231,10 @@ window.showRosterForm = async function (route) {
       ${MODAL_CANCEL_BTN}
       <button class="btn btn-primary flex-1" data-action="submitRosterForm" data-route="${esc(route)}">登録する</button>
     </div>`)
+  markRequiredInForm(route)
 }
 delegate('showAddRoster', () => showAddRoster())
-// 送信中はボタンを無効にして二重登録を防ぐ（submitRosterForm は下で必須確認付きに差し替えるため、呼ぶときに window から引く）
+// 送信中はボタンを無効にして二重登録を防ぐ
 delegate('submitRosterForm', el => withSubmitLock(el, () => window.submitRosterForm(el.dataset.route)))
 // 同じ人の確認で「別の人として登録する」を選んだとき（#223）
 delegate('submitRosterFormForce', el => withSubmitLock(el, () => window.submitRosterForm(el.dataset.route, true)))
@@ -250,6 +259,7 @@ function showRosterDuplicate(route, matches) {
 }
 
 window.submitRosterForm = async function (route, force) {
+  if (!rosterRequiredFilled(route)) return
   const v = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
   const body = {
     route, name: v('rf-name'), kana: v('rf-kana'), gender: v('rf-gender'), date_of_birth: v('rf-dob') || null,
@@ -577,14 +587,8 @@ function markRequiredInForm(route) {
     if (label && !label.querySelector('.req-mark')) label.insertAdjacentHTML('beforeend', ' <span class="text-red-500 req-mark">*</span>')
   }
 }
-const _origShowRosterForm = window.showRosterForm
-window.showRosterForm = async function (route) {
-  await loadRosterRequired(true)
-  await _origShowRosterForm(route)
-  markRequiredInForm(route)
-}
-const _origSubmitRosterForm = window.submitRosterForm
-window.submitRosterForm = async function (route, force) {
+// 送信前の必須項目の確認（submitRosterForm の初めに呼ぶ）。足りなければ知らせて false
+function rosterRequiredFilled(route) {
   const req = ROSTER_REQUIRED || {}
   const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
   // ログイン: ②は必ず作る、③はスタッフ番号と初期パスワードを入れたときだけ、④は作らない
@@ -596,8 +600,8 @@ window.submitRosterForm = async function (route, force) {
     const el = document.getElementById(id)
     if (el && !el.value.trim()) lacks.push(el.parentElement.querySelector('label').textContent.replace('*', '').trim())
   }
-  if (lacks.length) { toast('次の項目は必須です: ' + lacks.join('・')); return }
-  return _origSubmitRosterForm(route, force)
+  if (lacks.length) { toast('次の項目は必須です: ' + lacks.join('・')); return false }
+  return true
 }
 
 // =========================================================
@@ -675,17 +679,8 @@ window.startQrScan = async function () {
 window.stopQrScanUi = function () { stopQrScan(); const b = document.getElementById('rl-scan'); if (b) b.innerHTML = '' }
 window.addEventListener('hashchange', stopQrScan)
 
-// ① のモーダルにカメラ読み取りボタンを追加
-const _origShowRosterLink = window.showRosterLink
-window.showRosterLink = function (prefill) {
-  _origShowRosterLink(prefill)
-  const res = document.getElementById('rl-result')
-  if (res) res.insertAdjacentHTML('beforebegin', `
-    <button class="btn btn-outline w-full mt-2" onclick="startQrScan()"><i class="fas fa-camera"></i>カメラでQRコードを読み取る</button>
-    <div id="rl-scan" class="mt-2"></div>`)
-}
-const _origCloseModal = window.closeModal
-window.closeModal = function () { stopQrScan(); _origCloseModal() }
+// ① のモーダルのカメラ読み取りボタン（showRosterLink が描く）。モーダルを閉じたらカメラを止める
+onModalClose(stopQrScan)
 
 // =========================================================
 // フェーズE/F: スタッフ詳細への追加パネル（連携状況・共有追記項目・同意履歴）
@@ -817,7 +812,8 @@ delegate('hostNotesPage', (el) => {
 delegate('hostNotesSeen', (el) => withSubmitLock(el, async () => {
   try { await axios.post('/api/admin/roster/host-notes/seen', {}); toast('確認済みにしました'); renderRosterHostNotes() } catch (e) { showApiError(e, '更新に失敗しました') }
 }))
-if (typeof routes === 'object') routes['roster-notes'] = () => { HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() }
+// #roster-notes で開く（画面の登録は src/admin-menu.ts の ADMIN_EXTRA_SCREENS）。開くたびに1ページ目から出す
+window.openRosterHostNotes = () => { HOST_NOTES_VIEW.offset = 0; renderRosterHostNotes() }
 
 // =========================================================
 // 所属元による連携の終了・再開（#162）
@@ -1225,7 +1221,6 @@ delegate('partnerDelete', (el) => withSubmitLock(el, async () => {
   if (!confirm(`協力会社「${p.affiliation_name}」を削除します。よろしいですか？`)) return
   try { await axios.delete('/api/admin/roster/partners/' + Number(p.affiliation_id)); toast('削除しました'); renderPartners() } catch (e) { showApiError(e, '削除に失敗しました') }
 }))
-if (typeof routes === 'object') routes['partners'] = () => renderPartners()
 
 // ---------- クライアント詳細の「協力会社としての支払」の欄（#9302。admin.js の renderClientDetail から呼ぶ） ----------
 // 取引の実績（#client-deals）の下に足す。つながっていなければ、つなげる協力会社を選べるようにする
@@ -1519,17 +1514,6 @@ delegate('rosterBulkClose', () => {
   if ((location.hash || '#dashboard') === '#staff' && typeof renderStaff === 'function') renderStaff({ reload: true })
 })
 
-// 作成方法の選択に、まとめて連携・連携用IDの一覧・取引先の管理への入口を足す
-const _origShowAddRosterW5 = window.showAddRoster
-window.showAddRoster = function () {
-  _origShowAddRosterW5()
-  const box = document.querySelector('#modal-root .modal-box')
-  if (box) box.insertAdjacentHTML('beforeend', `
-    <div class="border-t border-gray-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
-      <button class="btn btn-outline text-xs" data-action="rosterOpenBulkLink"><i class="fas fa-users-line"></i>IDをまとめて連携</button>
-      <button class="btn btn-outline text-xs" data-action="rosterOpenShareList"><i class="fas fa-id-badge"></i>連携用IDの一覧（出力）</button>
-      <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>協力会社の管理</a>
-    </div>`)
-}
+// 作成方法の選択（showAddRoster）の下の、まとめて連携・連携用IDの一覧への入口
 delegate('rosterOpenBulkLink', () => showRosterBulkLink())
 delegate('rosterOpenShareList', () => showShareCodeList())

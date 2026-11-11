@@ -21,8 +21,7 @@
     "test:ci": "node scripts/run-tests.mjs w21-release-guard w13-docs-arch-ops w1-tenant-guard w3-security w1-xss-escape"
   },
   "dependencies": {
-    "hono": "^4.12.27",
-    "resend": "^4.0.1"
+    "hono": "^4.12.27"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",

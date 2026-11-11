@@ -712,7 +712,7 @@
     p.catch(() => { if (CL.p === p) CL.p = null })
     return p
   }
-  // ダッシュボードを描いた後に呼ぶ（admin.js の routes.dashboard）
+  // ダッシュボードを描いた後に呼ぶ（admin.js の renderDashboardPage）
   async function dashboard() {
     if (!isAdmin() || S.readonly || !S.me || S.me.role !== 'company_admin') return
     let d

@@ -6,6 +6,8 @@
 //   作成は書き込みの後に logShifts(op, ids, { created: true }) → finishLog(op)。
 // 前後の値は D1 の中で json_object で作る（Worker の CPU を使わないように。まとめての確定・取り消しでも行ごとに残す）
 import { chunk } from './d1-chunk'
+import { nowJST } from './time'
+import { randomHex } from './hash'
 
 export type OpEntity = 'shift' | 'slot'
 export type OpCtx = { db: D1Database; companyId: number; actorId: number | null; action: string; key: string; at: string }
@@ -72,8 +74,7 @@ export const OP_ACTION_LABELS: Record<string, string> = {
   sync_actuals: '報告から実績を反映', transport_approve: '交通費の申請の承認', overtime_approve: '延長の申請の承認', staff_merge: 'スタッフの統合',
 }
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function newKey(): string { const a = new Uint8Array(9); crypto.getRandomValues(a); return [...a].map(b => b.toString(16).padStart(2, '0')).join('') }
+function newKey(): string { return randomHex(9) }
 
 /** 1回の操作の記録の準備（u はログイン中の管理者） */
 export function opLog(db: D1Database, u: { company_id: number; user_id: number }, action: string): OpCtx {

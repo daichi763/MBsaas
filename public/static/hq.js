@@ -1,19 +1,8 @@
 // Field OS SaaS本部管理SPA
 const $app = document.getElementById('app')
 
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
+// esc・toast・loading・modal・closeModal・errMsg は common.js のものを使う
 function yen(n) { return '¥' + Number(n || 0).toLocaleString() }
-function toast(msg) {
-  let root = document.getElementById('toast')
-  if (!root) { root = document.createElement('div'); root.id = 'toast'; document.body.appendChild(root) }
-  const el = document.createElement('div'); el.className = 'toast-msg'; el.textContent = msg
-  root.appendChild(el); setTimeout(() => el.remove(), 2500)
-}
-function loading() { $app.innerHTML = '<div class="flex justify-center py-20"><span class="spin"></span></div>' }
-function modal(html) {
-  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal-box p-5">${html}</div></div>`
-}
-window.closeModal = () => { document.getElementById('modal-root').innerHTML = '' }
 
 // ---------- API 呼び出しの共通処理（#230 #346） ----------
 let HQ_ME = null
@@ -2185,12 +2174,12 @@ if (HQ_PUSH_SUPPORTED) {
 }
 
 // ============ ルーティング ============
+// 上のタブは src/index.tsx の /hq の HTML。セキュリティの画面は security.js、解約・データ（#offboarding/<企業ID>）はこのファイルの下
 const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport, mail: renderHqMail,
-  security: () => (window.renderHqSecurity ? renderHqSecurity() : renderCompanies()) }
-// 導入企業へのお知らせ（#516）
-routes.announcements = renderAnnouncements
-// 障害（#9622）
-routes.errors = renderErrors
+  security: () => renderHqSecurity(),
+  // 導入企業へのお知らせ（#516）・障害（#9622）
+  announcements: renderAnnouncements, errors: renderErrors,
+  offboarding: () => { const id = (location.hash.slice(1).split('/')[1] || ''); return id ? renderOffboardingDetail(id) : renderOffboardingList() } }
 
 function route() {
   const hash = (location.hash || '#companies').slice(1)
@@ -2230,19 +2219,6 @@ const OB_FILE_LABEL = { attendance_reports: '出退勤の写真', staff_document
 const OB_DARK_INP = 'style="background:#1e293b;border-color:#334155;color:#fff"'
 let OB_DETAIL = null
 let OB_ACTIVE = [] // 停止していない企業（「企業を停止する」の選択肢。#9423）
-
-// 本部画面のナビ（index.tsx）にタブを足す
-;(function addOffboardingNav() {
-  const first = document.querySelector('.hq-nav')
-  if (!first || document.querySelector('.hq-nav[data-tab="offboarding"]')) return
-  const a = document.createElement('a')
-  a.href = '#offboarding'; a.className = first.className.replace(/\bactive\b/, '').trim(); a.dataset.tab = 'offboarding'; a.textContent = '解約・データ'
-  first.parentNode.appendChild(a)
-})()
-routes.offboarding = () => {
-  const id = (location.hash.slice(1).split('/')[1] || '')
-  return id ? renderOffboardingDetail(id) : renderOffboardingList()
-}
 
 async function renderOffboardingList() {
   loading()

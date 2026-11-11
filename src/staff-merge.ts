@@ -19,13 +19,12 @@ import { conflictLabel } from './lib/staff-eligibility'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { updateRowsStmts } from './lib/bulk-write'
 import { opLog, logShifts, finishLogStmts } from './lib/operation-log'
+import { nowJST, todayJST, addDays } from './lib/time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
 export const staffMergeApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
 const normName = (s: any) => String(s || '').replace(/[\s\u3000]/g, '').toLowerCase()
 // ひらがな→カタカナ・空白除去（フリガナの比較用）
 const normKana = (s: any) => String(s || '').replace(/[\s\u3000]/g, '').replace(/[\u3041-\u3096]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60))
@@ -35,7 +34,6 @@ function inactiveLabel(r: any, today: string): string | null {
   if (r.user_status && r.user_status !== 'active') return '停止'
   return null
 }
-function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
 const yen = (v: any) => v == null ? '-' : Number(v).toLocaleString('ja-JP') + '円'
 // 単価ルールの範囲（案件・開催場所・役割）が同じか
 const sameScope = (a: any, b: any) => (a.project_id ?? null) === (b.project_id ?? null) && (a.site_id ?? null) === (b.site_id ?? null) && (a.role_name || null) === (b.role_name || null)

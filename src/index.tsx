@@ -9,11 +9,13 @@ import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } fr
 import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
-import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
+import { loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_ROLE } from './hq-support'
+import { adminSideNavHtml, adminMobileNavHtml, adminScreensJson } from './admin-menu'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
 import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
 import { csrfGuard } from './lib/csrf'
+import { nowJST } from './lib/time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'>
 
@@ -58,7 +60,7 @@ app.onError((err, c) => {
     company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
     message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
   }))
-  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
+  const at = nowJST().slice(0, 16)
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
   try {
     c.executionCtx.waitUntil(recordError(c.env, { ref, source: 'request', method: c.req.method, path: c.req.path, companyId: u?.company_id ?? null, role: u?.role ?? null, error: err })
@@ -671,14 +673,6 @@ app.get('/staff', async (c) => {
 </html>`)
 })
 
-// 管理画面の左側のメニューの見出し（#9305）。押すと閉じたり開いたりする（開閉は public/static/admin.js が localStorage に覚える）。
-// 閉じたときは、中の項目の未読などの件数の合計を見出しの横に出す
-const sideNavGroup = (key: string, label: string, links: string) => `<div class="nav-group" data-group="${key}">
-          <button type="button" class="nav-group-head" data-action="navGroupToggle" aria-expanded="true" aria-controls="nav-group-${key}"><span class="flex-1 text-left">${label}</span><span class="nav-group-count hidden" aria-label="未対応の件数"></span><i class="fas fa-chevron-down nav-group-caret" aria-hidden="true"></i></button>
-          <div class="nav-group-body space-y-0.5" id="nav-group-${key}">${links}
-          </div>
-        </div>`
-
 // ============ 管理者画面 (PC向け SPA) ============
 app.get('/admin', async (c) => {
   const u = await currentUser(c)
@@ -691,6 +685,8 @@ app.get('/admin', async (c) => {
     if (!v) return c.redirect('/hq#support')
     hqView = { company_name: v.company_name, expires_at: v.expires_at }
   }
+  // メニューに出す項目はロールで決める（src/admin-menu.ts。本部の閲覧は閲覧用のロール）
+  const menuRole = hqView ? HQ_VIEW_ROLE : u.role
   // script の中に置くので、< を逃がして </script> で閉じられないようにする
   const hqViewJson = JSON.stringify(hqView).replace(/</g, '\\u003c')
   return c.html(`<!DOCTYPE html>
@@ -715,38 +711,7 @@ app.get('/admin', async (c) => {
         </div>
         <button type="button" id="side-toggle" class="side-toggle" data-action="sideToggle" aria-expanded="true" aria-controls="side-nav" title="メニューを畳む" aria-label="メニューを畳む"><i class="fas fa-angles-left" aria-hidden="true"></i></button>
       </div>
-      <nav class="flex-1 overflow-y-auto py-3 px-3 space-y-0.5 text-sm" id="side-nav">
-        <a href="#dashboard" class="side-link" data-tab="dashboard"><i class="fas fa-gauge-high w-5"></i>ダッシュボード</a>
-        <a href="#notifications" class="side-link flex items-center" data-tab="notifications"><i class="fas fa-bell w-5"></i>通知<span id="notif-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-        ${sideNavGroup('attendance', 'シフト・勤怠', `
-          <a href="#shifts" class="side-link" data-tab="shifts"><i class="fas fa-calendar-days w-5"></i>シフト管理</a>
-          <a href="#reports" class="side-link" data-tab="reports"><i class="fas fa-file-lines w-5"></i>日報一覧</a>
-          <a href="#corrections" class="side-link flex items-center" data-tab="corrections"><i class="fas fa-user-clock w-5"></i>打刻修正承認<span id="corrections-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#report-settings" class="side-link" data-tab="report-settings"><i class="fas fa-list-check w-5"></i>案件報告管理</a>
-          <a href="#attendance-history" class="side-link" data-tab="attendance-history"><i class="fas fa-clock-rotate-left w-5"></i>履歴・CSV</a>`)}
-        ${sideNavGroup('people', '人材', `
-          <a href="#staff" class="side-link" data-tab="staff"><i class="fas fa-users w-5"></i>スタッフマスタ</a>
-          <a href="#employees" class="side-link" data-tab="employees"><i class="fas fa-id-card w-5"></i>従業員管理</a>
-          <a href="#partners" class="side-link" data-tab="partners"><i class="fas fa-handshake w-5"></i>協力会社</a>
-          <a href="#recruit" class="side-link flex items-center" data-tab="recruit"><i class="fas fa-bullhorn w-5"></i>募集・応募<span id="recruit-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#consult" class="side-link" data-tab="consult"><i class="fas fa-comments w-5"></i>相談対応</a>
-          <a href="#follow" class="side-link" data-tab="follow"><i class="fas fa-handshake-angle w-5"></i>フォロー履歴</a>`)}
-        ${sideNavGroup('deals', '案件・取引', `
-          <a href="#projects" class="side-link" data-tab="projects"><i class="fas fa-briefcase w-5"></i>案件管理</a>
-          <a href="#clients" class="side-link" data-tab="clients"><i class="fas fa-building w-5"></i>クライアント</a>
-          <a href="#board" class="side-link flex items-center" data-tab="board"><i class="fas fa-clipboard-list w-5"></i>案件掲示板<span id="board-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#roster-chat" class="side-link flex items-center" data-tab="roster-chat"><i class="fas fa-people-arrows w-5"></i>企業間チャット</a>`)}
-        ${sideNavGroup('money', 'お金', `
-          <a href="#settlement" class="side-link" data-tab="settlement"><i class="fas fa-scale-balanced w-5"></i>精算（請求・支払）</a>
-          <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>`)}
-        ${sideNavGroup('notices', 'お知らせ', `
-          <a href="#notices" class="side-link" data-tab="notices"><i class="fas fa-bullhorn w-5"></i>お知らせ配信</a>
-          <a href="#notice-reports" class="side-link" data-tab="notice-reports"><i class="fas fa-chart-pie w-5"></i>既読率レポート</a>`)}
-        ${sideNavGroup('analytics', '分析', `
-          <a href="#analytics" class="side-link" data-tab="analytics"><i class="fas fa-chart-column w-5"></i>実績分析</a>`)}
-        ${sideNavGroup('settings', '設定', `
-          <a href="#account" class="side-link" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
-          <a href="#security" class="side-link" data-tab="security"><i class="fas fa-shield-halved w-5"></i>セキュリティ</a>`)}
+      <nav class="flex-1 overflow-y-auto py-3 px-3 space-y-0.5 text-sm" id="side-nav">${adminSideNavHtml(menuRole)}
       </nav>
       <div class="side-foot p-3 border-t border-gray-100">
         <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" data-action="hqsOpenSupport">
@@ -762,16 +727,7 @@ app.get('/admin', async (c) => {
           <h1 class="font-bold text-gray-800 truncate"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
           <p id="mobile-company-name" class="text-[11px] text-gray-400 truncate"></p>
         </div>
-        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">
-          <option value="dashboard">ダッシュボード</option><option value="notifications">通知</option>
-          <optgroup label="シフト・勤怠"><option value="shifts">シフト</option><option value="reports">日報</option><option value="corrections">打刻修正承認</option><option value="report-settings">案件報告管理</option><option value="attendance-history">履歴・CSV</option></optgroup>
-          <optgroup label="人材"><option value="staff">スタッフマスタ</option><option value="employees">従業員管理</option><option value="partners">協力会社</option><option value="recruit">募集・応募</option><option value="consult">相談</option><option value="follow">フォロー</option></optgroup>
-          <optgroup label="案件・取引"><option value="projects">案件</option><option value="clients">クライアント</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option></optgroup>
-          <optgroup label="お金"><option value="settlement">精算</option><option value="billing">請求前確認</option></optgroup>
-          <optgroup label="お知らせ"><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option></optgroup>
-          <optgroup label="分析"><option value="analytics">分析</option></optgroup>
-          <optgroup label="設定"><option value="account">アカウント設定</option><option value="security">セキュリティ</option></optgroup>
-        </select>
+        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">${adminMobileNavHtml(menuRole)}</select>
         <button type="button" class="text-blue-600 shrink-0 px-1 py-1" data-action="hqsOpenSupport" title="伴走支援を依頼する" aria-label="伴走支援を依頼する"><i class="fas fa-hands-holding-circle"></i></button>
         <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
@@ -784,6 +740,8 @@ app.get('/admin', async (c) => {
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
   <script>window.HQ_VIEW = ${hqViewJson}</script>
+  <!-- 画面の一覧（src/admin-menu.ts。admin.js が routes を作る） -->
+  <script>window.ADMIN_SCREENS = ${adminScreensJson()}</script>
   <script src="/static/hq-support.js"></script>
   <!-- 案内（チュートリアル）・「？」・はじめにやること（#9711）。admin.js の起動が FosTour.init を呼ぶので admin.js より前に読む -->
   <script src="/static/tour.js"></script>
@@ -830,6 +788,7 @@ app.get('/hq', async (c) => {
           <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="announcements">企業へのお知らせ</a>
           <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
           <a href="#errors" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="errors">障害<span id="hq-errors-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
+          <a href="#offboarding" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="offboarding">解約・データ</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
       </div>

@@ -137,42 +137,12 @@ delegate('shareMyStaffId', async () => {
   }
 })
 
-// 「その他」メニューに項目を追加。画面は URL（#profile・#password）で開く（戻る・下のタブで戻れるように #374）
-const _origRenderMore = window.renderMore || (typeof renderMore === 'function' ? renderMore : null)
-if (_origRenderMore) {
-  window.renderMore = function () {
-    if (_origRenderMore() === false) return false // URL を #more に変えて描き直す途中
-    const wrap = $app.querySelector('.space-y-3')
-    if (wrap) wrap.insertAdjacentHTML('beforeend', `
-      <a href="#profile" class="report-btn">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-id-badge"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">マイプロフィール / スタッフID</span><span class="block text-xs text-gray-400">登録情報と企業間連携用QRコード</span></span>
-        <i class="fas fa-chevron-right text-gray-300"></i>
-      </a>
-      <a href="#my-docs" class="report-btn">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-file-arrow-up"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">書類の提出</span><span class="block text-xs text-gray-400">資格証・身分証・入社書類などを写真やPDFで提出</span></span>
-        <i class="fas fa-chevron-right text-gray-300"></i>
-      </a>
-      <a href="#my-leave" class="report-btn hidden" id="more-leave-link">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-umbrella-beach"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">有給・休暇</span><span class="block text-xs text-gray-400">有給の残日数の確認と休暇の申請</span></span>
-        <i class="fas fa-chevron-right text-gray-300"></i>
-      </a>
-      <a href="#password" class="report-btn">
-        <span class="w-11 h-11 rounded-xl bg-gray-100 text-gray-600 flex items-center justify-center text-lg"><i class="fas fa-lock"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">パスワードの変更</span><span class="block text-xs text-gray-400">ログインのパスワードを変更します</span></span>
-        <i class="fas fa-chevron-right text-gray-300"></i>
-      </a>`)
-    showLeaveMenuIfEligible()
-  }
-  // routes テーブルは staff.js 内の const のため直接差し替える
-  if (typeof routes === 'object') {
-    routes.more = window.renderMore
-    routes.profile = () => window.renderMyProfile()
-    routes.password = () => window.renderChangePassword()
-  }
-}
+// 画面の登録（staff.js の staffScreen）。画面は URL（#profile・#password）で開く（戻る・下のタブで戻れるように #374）。
+// 『その他』では「使い方をもう一度見る」の下に、マイプロフィール・書類の提出・有給・休暇・パスワードの変更の順に出す
+staffScreen('profile', { title: 'マイプロフィール', nav: 'more', render: () => window.renderMyProfile(),
+  more: { order: 90, icon: 'fa-id-badge', label: 'マイプロフィール / スタッフID', sub: '登録情報と企業間連携用QRコード' } })
+staffScreen('password', { title: 'パスワードの変更', nav: 'more', render: () => window.renderChangePassword(),
+  more: { order: 120, icon: 'fa-lock', tone: 'gray', label: 'パスワードの変更', sub: 'ログインのパスワードを変更します' } })
 
 // =========================================================
 // パスワードの変更（#43）。管理者が発行した仮パスワード・初期パスワードのままなら、ログイン直後に変更を求める
@@ -519,28 +489,12 @@ delegate('cancelLeave', el => {
   })
 })
 
-// 通知の行き先: この作業単位の通知（変更申請・休暇の結果）は、それぞれの画面を開く。
-// 通知の一覧（staff-attendance.js）は知らない種類を打刻修正の申請へ送るので、その前に振り分ける
-const SELF_NOTIF_LINK = /^#(profile-request|my-leave|my-docs)$/
-const _origNotifOpenStaff = window.notifOpenStaff
-if (typeof _origNotifOpenStaff === 'function') {
-  window.notifOpenStaff = async function (id) {
-    let n = null
-    try { n = (await axios.get('/api/staff/notifications?limit=100')).data.notifications.find(x => x.notification_id === id) } catch { /* 元の処理に任せる */ }
-    if (n && SELF_NOTIF_LINK.test(n.link || '') && /^(profile_change_|leave_)/.test(n.kind || '')) {
-      try { await axios.post(`/api/staff/notifications/${id}/read`) } catch { /* 既読にできなくても画面は開く */ }
-      location.hash = n.link.slice(1)
-      return
-    }
-    return _origNotifOpenStaff(id)
-  }
-}
-
-// 画面の URL（staff.js の routes・titles・MORE_SUB_TABS に足す。下のタブは『その他』を選んだ表示にする）
-if (typeof routes === 'object') {
-  routes['profile-request'] = () => window.renderProfileRequest()
-  routes['my-docs'] = () => window.renderMyDocs()
-  routes['my-leave'] = () => window.renderMyLeave()
-  if (typeof titles === 'object') Object.assign(titles, { 'profile-request': '登録情報の変更申請', 'my-docs': '書類の提出', 'my-leave': '有給・休暇' })
-  if (typeof MORE_SUB_TABS === 'object') MORE_SUB_TABS.push('profile-request', 'my-docs', 'my-leave')
-}
+// 画面の登録（staff.js の staffScreen。下のタブは『その他』を選んだ表示にする）。
+// 通知の行き先: この画面あての通知（変更申請・休暇の結果。リンクが #profile-request・#my-leave・#my-docs）は、それぞれの画面を開く
+const selfNotify = (hash) => ({ match: n => n.link === '#' + hash && /^(profile_change_|leave_)/.test(n.kind || ''), open: () => { location.hash = hash } })
+staffScreen('profile-request', { title: '登録情報の変更申請', nav: 'more', render: () => window.renderProfileRequest(), notify: selfNotify('profile-request') })
+staffScreen('my-docs', { title: '書類の提出', nav: 'more', render: () => window.renderMyDocs(), notify: selfNotify('my-docs'),
+  more: { order: 100, icon: 'fa-file-arrow-up', label: '書類の提出', sub: '資格証・身分証・入社書類などを写真やPDFで提出' } })
+// 有給・休暇は、使える人にだけ出す（最初は隠し、描いた後に showLeaveMenuIfEligible が出す）
+staffScreen('my-leave', { title: '有給・休暇', nav: 'more', render: () => window.renderMyLeave(), notify: selfNotify('my-leave'),
+  more: { order: 110, icon: 'fa-umbrella-beach', label: '有給・休暇', sub: '有給の残日数の確認と休暇の申請', id: 'more-leave-link', hidden: true, shown: () => showLeaveMenuIfEligible() } })

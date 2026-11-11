@@ -4,6 +4,7 @@
 // - セッション・再設定トークン: DB には SHA-256 のハッシュだけを保存し、Cookie の生の値をハッシュにして照合する。
 // - 期限の比較はすべて ISO 8601（toISOString）の文字列同士で行う（CURRENT_TIMESTAMP とは書式が違うため比べない）。
 import type { Context } from 'hono'
+import { sha256 } from './hash'
 
 export const SESSION_COOKIE = 'session'
 export const SESSION_HOURS = 12 // 1シフト分を目安とした有効期限
@@ -22,7 +23,6 @@ const LOGIN_MAX_FAILURES_IP = 50
 const enc = new TextEncoder()
 function toB64(u8: Uint8Array): string { return btoa(String.fromCharCode(...u8)) }
 function fromB64(s: string): Uint8Array { return Uint8Array.from(atob(s), ch => ch.charCodeAt(0)) }
-function toHex(u8: Uint8Array): string { return [...u8].map(b => b.toString(16).padStart(2, '0')).join('') }
 // 長さが同じなら全文字を比べる（一致位置で処理時間が変わらないように）
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
@@ -31,9 +31,7 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
-export async function sha256Hex(text: string): Promise<string> {
-  return toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))))
-}
+export const sha256Hex = sha256
 /** セッション・再設定トークンの保存用ハッシュ */
 export const hashToken = sha256Hex
 

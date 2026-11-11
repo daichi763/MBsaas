@@ -16,7 +16,6 @@
   const RT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
   const reportSettingsLink = (pid) => `<a href="#report-settings${pid ? '/' + pid : ''}" class="text-blue-600 hover:underline" onclick="closeModal && closeModal()">案件報告管理</a>`
   const ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '修正申請の承認' }
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const opts = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${String(v ?? '') === k ? 'selected' : ''}>${l}</option>`).join('')
 
   // =========================================================
@@ -159,6 +158,8 @@
               <button class="btn btn-outline text-xs mt-1" data-action="confirmUnverifiedEmail" data-id="${Number(sid)}" data-email="${esc(data.unverified_email)}" data-current="${esc(data.email || '')}">本人に確認したので設定する</button>
               <button class="btn btn-outline text-xs mt-1" data-action="discardUnverifiedEmail" data-id="${Number(sid)}">消す</button></div>` : ''}</dd></div>` : ''}
           ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-blue-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
+          ${p && p.affiliation_type !== 'linked_external' && data.has_own_login && !data.merged_into_staff_id ? staffPasswordRowHtml(sid) : ''}
+          ${p && !p.merged_into_staff_id ? `<div class="flex gap-2 items-start" id="staff-av-target">${staffAvTargetRowHtml(sid, Number(p.availability_exempt) === 1)}</div>` : ''}
         </dl>
         ${(data.schedules || []).map(s => s.status === 'pending'
           ? `<div class="text-xs bg-blue-50 text-blue-900 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap" id="aff-schedule"><i class="fas fa-clock"></i>
@@ -752,19 +753,10 @@
 // メールのないスタッフも、管理者が仮パスワードを発行してログインできる状態に戻せる（仮パスワードは一度だけ表示）
 // =========================================================
 ;(function () {
-  const orig = window.renderStaffLifecyclePanel
-  if (!orig) return
-  window.renderStaffLifecyclePanel = async function (sid, p) {
-    await orig(sid, p)
-    if (!p || p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return
-    let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch { return }
-    // 他社連携から区分を変えた行（LK- のまま）は自社のログインではないので出さない（#569）
-    if (!d.has_own_login || d.merged_into_staff_id) return
-    const dl = document.querySelector('#staff-lifecycle dl')
-    if (!dl || document.getElementById('staff-reset-password-btn')) return
-    dl.insertAdjacentHTML('beforeend', `<div class="flex gap-2 items-center"><dt class="w-24 text-gray-400">パスワード</dt><dd>
-      <button id="staff-reset-password-btn" class="btn btn-outline text-xs" data-action="resetStaffPassword" data-id="${Number(sid)}"><i class="fas fa-key"></i>パスワードを再発行</button></dd></div>`)
-  }
+  // 区分・登録状態のパネル（renderStaffLifecyclePanel）が、自社のログインのある人（他社連携・統合済みを除く）にだけ描く。
+  // 他社連携から区分を変えた行（LK- のまま）は自社のログインではないので出さない（#569。has_own_login で判断）
+  window.staffPasswordRowHtml = (sid) => `<div class="flex gap-2 items-center"><dt class="w-24 text-gray-400">パスワード</dt><dd>
+      <button id="staff-reset-password-btn" class="btn btn-outline text-xs" data-action="resetStaffPassword" data-id="${Number(sid)}"><i class="fas fa-key"></i>パスワードを再発行</button></dd></div>`
   delegate('resetStaffPassword', (el) => {
     if (!confirm('仮パスワードを発行します。今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。よろしいですか？')) return
     withSubmitLock(el, async () => {
@@ -782,9 +774,8 @@
 // 基本情報の編集・新規登録・一覧のまとめての切り替えでも変えられる（admin.js・roster.js）
 // =========================================================
 ;(function () {
-  const orig = window.renderStaffLifecyclePanel
-  if (!orig) return
-  const rowHtml = (sid, exempt) => `<dt class="w-24 text-gray-400 shrink-0">出勤可能日の提出</dt><dd>
+  // 区分・登録状態のパネル（renderStaffLifecyclePanel）が、統合済みでない人に描く（#staff-av-target の中身）
+  const rowHtml = window.staffAvTargetRowHtml = (sid, exempt) => `<dt class="w-24 text-gray-400 shrink-0">出勤可能日の提出</dt><dd>
       <span class="inline-flex gap-1">
         <button type="button" class="btn ${exempt ? 'btn-outline' : 'btn-primary'} text-xs" data-action="staffAvTarget" data-id="${Number(sid)}" data-target="1" aria-pressed="${exempt ? 'false' : 'true'}">する</button>
         <button type="button" class="btn ${exempt ? 'btn-primary' : 'btn-outline'} text-xs" data-action="staffAvTarget" data-id="${Number(sid)}" data-target="0" aria-pressed="${exempt ? 'true' : 'false'}">しない</button>
@@ -794,13 +785,6 @@
   window.redrawStaffAvTargetRow = function (sid, exempt) {
     const row = document.getElementById('staff-av-target')
     if (row) row.innerHTML = rowHtml(sid, exempt)
-  }
-  window.renderStaffLifecyclePanel = async function (sid, p) {
-    await orig(sid, p)
-    if (!p || p.merged_into_staff_id || p.affiliation_type === 'skillsheet_only') return
-    const dl = document.querySelector('#staff-lifecycle dl')
-    if (!dl || document.getElementById('staff-av-target')) return
-    dl.insertAdjacentHTML('beforeend', `<div class="flex gap-2 items-start" id="staff-av-target">${rowHtml(sid, Number(p.availability_exempt) === 1)}</div>`)
   }
   delegate('staffAvTarget', (el) => {
     const target = el.dataset.target === '1'
@@ -822,7 +806,6 @@
 // =========================================================
 ;(function () {
   const RT = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const PROXY_CHUNK = 50 // サーバーの1回の上限（staff-lifecycle.ts の BULK_PROXY_MAX）
   let st = { date: '', projectId: '', tab: 'links', links: null, proxy: null, result: null }
   async function copyText(text, done) {

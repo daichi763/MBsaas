@@ -3,7 +3,6 @@
 // docs/spec_spot_shift.md 第4段階。admin.js の後に読み込む
 // =========================================================
 (function () {
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const WD = ['日', '月', '火', '水', '木', '金', '土']
   const fmt = (d) => { const x = dayjs(d); return `${x.format('M/D')}(${WD[x.day()]})` }
   const TYPE_LABEL = { daily_worker: '自社日雇い', freelance: '個人事業主', partner_manual: '協力会社所属', own_employee: '自社雇用' }

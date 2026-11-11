@@ -20,6 +20,7 @@ import { opLog, logShifts, logShiftsOfSlot, logShiftsOfSlots, logSlot, logSlots,
 import { csvResponse, toCsv } from './csv'
 import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { closedChecker, closedOn } from './lib/closings'
+import { nowJST, todayJST, addDays, dayDiff, isDate } from './lib/time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -71,10 +72,7 @@ export function staffShiftView(row: Record<string, any> | null | undefined): Rec
 function toMin(t: string): number { const [h, m] = String(t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0) }
 // 終了が開始より前なら日跨ぎ（翌日）とみなす
 function spanMinutes(start: string, end: string): number { const s = toMin(start); let e = toMin(end); if (e <= s) e += 1440; return e - s }
-function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
-function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) }
 function weekday(d: string): number { return new Date(d + 'T00:00:00Z').getUTCDay() }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 // 時刻は 00:00〜23:59 だけを受け付ける（25:00 や 99:99 を通さない。#218）
 const isTime = (s: any) => isHHMM(s)
 const intOrNull = (v: any) => (v === '' || v == null || isNaN(Number(v))) ? null : Math.round(Number(v))
@@ -670,7 +668,7 @@ export { findConflicts, conflictFor, ngStaffIds }
 const SHIFT_REQUEST_MAX_RANGE_DAYS = 92
 app.get('/shift-requests', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  const from = isDate(c.req.query('from')) ? c.req.query('from')! : new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
+  const from = isDate(c.req.query('from')) ? c.req.query('from')! : todayJST()
   let to = isDate(c.req.query('to')) ? c.req.query('to')! : addDays(from, 30)
   if (dayDiff(from, to) < 0) to = from
   if (dayDiff(from, to) > SHIFT_REQUEST_MAX_RANGE_DAYS - 1) to = addDays(from, SHIFT_REQUEST_MAX_RANGE_DAYS - 1)
@@ -1494,7 +1492,7 @@ async function planShiftDelete(db: D1Database, cid: number, ids: number[]): Prom
 function shiftDeleteParts(db: D1Database, u: any, ids: number[]) {
   const cid = u.company_id, json = JSON.stringify(ids)
   const op = opLog(db, u, 'delete') // 操作履歴（#159）。削除の前の値を残す
-  const token = crypto.randomUUID(), at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const token = crypto.randomUUID(), at = nowJST()
   const target = `(SELECT s.shift_id FROM shifts s WHERE s.company_id = ? AND s.shift_id IN (SELECT value FROM json_each(?)) AND ${SHIFT_DELETABLE})`
   const stmts: D1PreparedStatement[] = [
     ...logShifts(op, ids, { where: SHIFT_DELETABLE }),
@@ -1558,7 +1556,6 @@ app.post('/shifts/bulk-delete', async (c) => {
 // シフトの帯: 枠を使わないシフト（常勤の一括登録など）の、同じスタッフ・案件・開催場所・時間・役割のシフト。
 // 範囲は today（今日以降）と all（過去を含むすべて）。削除は、返した ID を枠のまとめて削除・シフトのまとめて削除に分けて送る
 const BAND_MAX = 1000
-const todayOf = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
 app.get('/shift-slots/:id/band', async (c) => {
   const u = c.get('user'); const db = c.env.DB; const cid = u.company_id
   const slot = await ownSlot(db, cid, c.req.param('id'))
@@ -1580,7 +1577,7 @@ app.get('/shift-slots/:id/band', async (c) => {
   const plan = await planShiftDelete(db, cid, shifts.map(s => Number(s.shift_id)))
   const deletable = new Set(plan.del)
   const apps = new Map(((appRows.results || []) as any[]).map(r => [Number(r.slot_id), Number(r.n)]))
-  const today = todayOf()
+  const today = todayJST()
   const scope = (list: any[]) => {
     const set = new Set(list.map(r => Number(r.slot_id)))
     const sh = shifts.filter(s => set.has(Number(s.slot_id)))
@@ -1605,7 +1602,7 @@ app.get('/shifts/:id/band', async (c) => {
     .bind(cid, s.staff_id, s.project_id, s.site_id ?? null, s.location || '', s.start_time, s.end_time, s.role || '', BAND_MAX * 2 + 1).all()).results as any[]
   const plan = await planShiftDelete(db, cid, rows.map(r => Number(r.shift_id)))
   const deletable = new Set(plan.del)
-  const today = todayOf()
+  const today = todayJST()
   const scope = (list: any[]) => {
     const del = list.filter(r => deletable.has(Number(r.shift_id))).map(r => Number(r.shift_id))
     const reasons: Record<string, number> = {}, inList = new Set(list.map(r => Number(r.shift_id)))
@@ -1938,7 +1935,6 @@ app.post('/shifts/confirm-requested', async (c) => {
 // 退職・取引終了にするときの、今後のシフトの確認と取り外し（#500 #187）
 // 対象: 自社の、from 以降（今日より前は対象外）の希望・確定・代打のシフトで、精算が確定していないもの
 // =========================================================
-const todayJST = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
 async function futureShiftsOf(db: D1Database, companyId: number, staffId: number, from: string) {
   return (await db.prepare(`SELECT s.shift_id, s.work_date, s.start_time, s.end_time, s.status, s.slot_role_id, p.project_name,
       (SELECT COUNT(*) FROM attendance_reports a WHERE a.shift_id = s.shift_id) + (SELECT COUNT(*) FROM daily_reports d WHERE d.shift_id = s.shift_id)
@@ -2735,7 +2731,7 @@ app.delete('/slot-patterns/:id', async (c) => {
   // 枠の削除と繰り返し登録の削除を1つの batch で書く（枠のまとめて削除と同じく、枠ごとに問い合わせない。9933）
   const stmts: D1PreparedStatement[] = []
   if (c.req.query('remove_future') === '1') {
-    const today = c.req.query('today') && isDate(c.req.query('today')) ? c.req.query('today')! : new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10)
+    const today = c.req.query('today') && isDate(c.req.query('today')) ? c.req.query('today')! : todayJST()
     // +s.company_id: 会社・日付の索引（会社の今日以降の枠をすべて読む）ではなく、繰り返し登録の索引を使わせる
     const empties = `SELECT s.slot_id FROM shift_slots s WHERE s.pattern_id = ? AND +s.company_id = ? AND s.work_date >= ? AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.slot_id = s.slot_id)`
     stmts.push(

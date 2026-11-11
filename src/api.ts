@@ -31,7 +31,7 @@ import { chunk } from './lib/d1-chunk'
 import { attendanceTestHooks } from './lib/d1-retry'
 import { recordPunch } from './attendance-punch'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
-import { addDays, addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
+import { addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { correctionsAdminApi, correctionsStaffApi, actorOf, autoCancelStatements, notifyAutoCancelled, newCancelToken, pendingCorrectionCount } from './corrections'
 import { notificationsAdminApi, notificationsStaffApi, notifyDailyReportIncident, mailHqApi, noticeAckPublicApi, loadMailContact, createNoticeAckTokens } from './notifications'
@@ -67,6 +67,7 @@ import { staffShiftView } from './shift-board'
 import { validateTemplateFields, TEMPLATE_NAME_MAX } from './lib/report-template'
 import { staffPayAdminApi, staffPayStaffApi } from './staff-pay'
 import { staffSelfServiceApi, staffRequestsAdminApi, parseDocMeta } from './staff-self-service'
+import { uploadDocuments, downloadDocument, deleteDocument, storeUploads, NOTICE_ATTACH_RULES } from './lib/documents'
 import { CHECK_IN_FAR_MAX_METERS, CHECK_IN_FAR_MIN_METERS, distanceResult, emergencyNote, emergencyPhone, farThresholdMeters, haversineMeters, sitePosition } from './lib/site-location'
 import { diffFields, changeLogStmts, payrollAlertStmts, PROFILE_LOG_FIELDS, CHANGE_FIELD_LABELS } from './lib/change-log'
 import { opLog, logShifts, finishLog, opChanges, OP_ACTION_LABELS } from './lib/operation-log'
@@ -75,6 +76,8 @@ import rosterImportApi from './roster-import'
 import { scheduleStaffApi, scheduleAdminApi, calendarPublicApi } from './staff-schedule'
 import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_READONLY_MESSAGE } from './hq-support'
 import { toursAdminApi, toursStaffApi } from './tours'
+import { nowJST, todayJST, addDays } from './lib/time'
+import { sha256, randomHex } from './lib/hash'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -88,13 +91,6 @@ type Variables = { user: any; hqAudited?: boolean; d1FailWrite?: () => boolean }
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 // ============ Utils ============
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function todayJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
-}
 // 生年月日から満年齢を計算する（NULLならnull）
 function calcAge(dob: string | null | undefined): number | null {
   if (!dob) return null
@@ -137,13 +133,7 @@ function normalizeSkills(v: unknown): string | null {
   const list = [...new Set(String(v ?? '').split(SKILL_SEP).map(s => s.trim()).filter(Boolean))]
   return list.length ? list.join(',') : null
 }
-function nowJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-}
-function genToken(): string {
-  const a = new Uint8Array(32); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+function genToken(): string { return randomHex(32) }
 // 日本の年度（4/1〜翌3/31）。fiscal_year=2025 は 2025/04/01〜2026/03/31 を指す
 function fiscalYearOf(dateStr: string): number {
   const y = Number(dateStr.slice(0, 4)); const m = Number(dateStr.slice(5, 7))
@@ -358,7 +348,7 @@ export async function generateFiscalYearReportsForAllCompanies(db: D1Database):
 // 下書き（#291）は配信していないので対象にしない（published_at は作成日時のため。古い下書きを後で配信したときに「確認不要」にならないように）
 export async function purgeOldNoticeReads(db: D1Database): Promise<{ deleted: number; notices: number; batches: number; error?: string }> {
   const keepMs = NOTICE_READS_KEEP_DAYS * 24 * 3600 * 1000
-  const cutoffJst = new Date(Date.now() + 9 * 3600 * 1000 - keepMs).toISOString().slice(0, 19).replace('T', ' ')
+  const cutoffJst = nowJST(-keepMs)
   const cutoffUtc = new Date(Date.now() - keepMs).toISOString().slice(0, 19).replace('T', ' ') // read_at は UTC（列の既定値）
   const NOTICE_BATCH = 20
   const BATCH_SIZE = 500
@@ -788,7 +778,7 @@ const LAST_SEEN_STEP_MINUTES = 60
 async function touchLastSeen(c: any, u: any) {
   if (c.req.header('X-Background') === '1') return
   const now = nowJST()
-  const threshold = new Date(Date.now() + 9 * 3600 * 1000 - LAST_SEEN_STEP_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const threshold = nowJST(-LAST_SEEN_STEP_MINUTES * 60 * 1000)
   if (u.last_seen_at && String(u.last_seen_at) > threshold) return
   try {
     await c.env.DB.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ?').bind(now, u.user_id).run()
@@ -968,7 +958,7 @@ async function notifyLoginFailures(c: any, user: any) {
   try {
     const db = c.env.DB as D1Database
     const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString() // login_events.created_at は UTC
-    const quiet = new Date(Date.now() + 9 * 3600 * 1000 - LOGIN_FAILURE_NOTIFY_QUIET_MINUTES * 60000).toISOString().slice(0, 19).replace('T', ' ') // 通知は JST
+    const quiet = nowJST(-LOGIN_FAILURE_NOTIFY_QUIET_MINUTES * 60000) // 通知は JST
     const r = await db.prepare(`SELECT
         (SELECT COUNT(*) FROM login_events e WHERE e.user_id = ?1 AND e.created_at > ?2 AND e.event_type = 'login' AND e.result IN ('bad_password', 'mfa_failed', 'locked')
           AND e.event_id > COALESCE((SELECT MAX(s.event_id) FROM login_events s WHERE s.user_id = ?1 AND s.event_type = 'login' AND s.result = 'success'), 0)) AS failures,
@@ -2590,13 +2580,13 @@ api.post('/staff/consultations', async (c) => {
     }
   }
   // 二度押し・再送で同じ相談が続けて登録されないようにする（#194）
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-CONSULT_DUP_SECONDS * 1000)
   const dup = await db.prepare(`SELECT consultation_id FROM consultations WHERE staff_id = ? AND category = ? AND body = ? AND created_at >= ? LIMIT 1`)
     .bind(owner.staff_id, category, body, since).first()
   if (dup) return c.json({ error: '同じ内容の相談をすでに送信しています。相談履歴を確認してください', duplicate: true }, 409)
   // 送信回数の上限: 本人（全所属企業の分）が直近24時間に送った相談の数（#510）
   const sids = rows.length ? rows.map(r => r.staff_id) : [owner.staff_id]
-  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dayAgo = nowJST(-24 * 3600 * 1000)
   const sent = await db.prepare(`SELECT COUNT(*) AS n FROM consultations WHERE staff_id IN (${sids.map(() => '?').join(',')}) AND created_at >= ?`).bind(...sids, dayAgo).first() as any
   if (Number(sent?.n) >= CONSULT_DAILY_MAX) return c.json({ error: `相談・連絡は24時間に${CONSULT_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください` }, 429)
   const r = await db.prepare(`INSERT INTO consultations (company_id, staff_id, category, body, urgency, target_project_id, target_date, created_at)
@@ -2663,11 +2653,11 @@ api.post('/staff/consultations/:id{[0-9]+}/messages', async (c) => {
   const co = await ownConsultation(db, u, toInt(c.req.param('id'), 1))
   if (!co) return c.json({ error: '相談が見つかりません' }, 404)
   const uids = (await consultPersonRows(db, u)).map(r => r.user_id)
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-CONSULT_DUP_SECONDS * 1000)
   const dup = await db.prepare(`SELECT 1 FROM consultation_messages WHERE consultation_id = ? AND author_side = 'staff' AND body = ? AND created_at >= ? LIMIT 1`)
     .bind(co.consultation_id, body, since).first()
   if (dup) return c.json({ error: '同じ内容をすでに送信しています', duplicate: true }, 409)
-  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dayAgo = nowJST(-24 * 3600 * 1000)
   const sent = await db.prepare(`SELECT COUNT(*) AS n FROM consultation_messages WHERE author_side = 'staff' AND author_user_id IN (SELECT value FROM json_each(?)) AND created_at >= ?`)
     .bind(JSON.stringify(uids.length ? uids : [u.user_id]), dayAgo).first() as any
   if (Number(sent?.n) >= CONSULT_MESSAGE_DAILY_MAX) return c.json({ error: `追加の連絡は24時間に${CONSULT_MESSAGE_DAILY_MAX}件までです。急ぎの場合は電話で連絡してください` }, 429)
@@ -2700,10 +2690,10 @@ api.post('/staff/consultations/:id{[0-9]+}/photos', async (c) => {
   const postedAt = messageId == null ? co.created_at
     : ((await db.prepare(`SELECT created_at FROM consultation_messages WHERE message_id = ? AND consultation_id = ? AND author_side = 'staff'`).bind(messageId, co.consultation_id).first()) as any)?.created_at
   if (!postedAt) return c.json({ error: '追加の連絡が見つかりません' }, 404)
-  const windowStart = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_PHOTO_WINDOW_MIN * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const windowStart = nowJST(-CONSULT_PHOTO_WINDOW_MIN * 60 * 1000)
   if (String(postedAt) < windowStart) return c.json({ error: '写真は送信から1時間以内に付けてください。新しく追加の連絡を送ると、写真を付けられます' }, 409)
   const ext = photo.type === 'image/png' ? 'png' : 'jpg'
-  const rand = [...crypto.getRandomValues(new Uint8Array(6))].map(x => x.toString(16).padStart(2, '0')).join('')
+  const rand = randomHex(6)
   const key = `consultations/${co.company_id}/${co.consultation_id}/${Date.now()}_${rand}.${ext}`
   try {
     await c.env.PHOTOS.put(key, await photo.arrayBuffer(), { httpMetadata: { contentType: photo.type } })
@@ -4233,35 +4223,7 @@ api.put('/admin/staff/:id/skill-sheet-comment', async (c) => {
 })
 
 // ============ スタッフ履歴書ファイル管理 ============
-// 対応形式・上限は既存の写真添付(PHOTO_*)とは別に定義する
-const DOC_ALLOWED_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt', 'odt', 'ods', 'odp', 'jpg', 'jpeg', 'png', 'gif', 'webp']
-const DOC_MAX_BYTES = 20 * 1024 * 1024 // 20MB
-const DOC_MIME_MAP: Record<string, string[]> = {
-  pdf: ['application/pdf'],
-  doc: ['application/msword'],
-  docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  xls: ['application/vnd.ms-excel'],
-  xlsx: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
-  csv: ['text/csv', 'application/vnd.ms-excel', 'text/plain'],
-  ppt: ['application/vnd.ms-powerpoint'],
-  pptx: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-  txt: ['text/plain'],
-  odt: ['application/vnd.oasis.opendocument.text'],
-  ods: ['application/vnd.oasis.opendocument.spreadsheet'],
-  odp: ['application/vnd.oasis.opendocument.presentation'],
-  jpg: ['image/jpeg'], jpeg: ['image/jpeg'],
-  png: ['image/png'],
-  gif: ['image/gif'],
-  webp: ['image/webp'],
-}
-function docExt(filename: string): string {
-  const m = /\.([a-zA-Z0-9]+)$/.exec(filename)
-  return m ? m[1].toLowerCase() : ''
-}
-// R2キーの一部に使うため危険な記号だけ置換する（元のファイル名はDB側にそのまま保持）
-function sanitizeForKey(filename: string): string {
-  return filename.replace(/[\/\\:*?"<>|]/g, '_').slice(0, 150)
-}
+// 対応形式・上限・アップロードの流れは src/lib/documents.ts（#9956。写真添付(PHOTO_*)とは別）
 async function assertStaffInCompany(c: any, sid: string) {
   const u = c.get('user')
   return c.env.DB.prepare('SELECT staff_id FROM staff_profiles WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
@@ -4286,98 +4248,19 @@ api.post('/admin/staff/:id/documents', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
   const staff = await assertStaffInCompany(c, sid)
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
-
-  let form: FormData
-  try {
-    form = await c.req.formData()
-  } catch {
-    return c.json({ error: '送信データの形式が不正です' }, 400)
-  }
-  const files = form.getAll('files').filter(f => f instanceof File) as File[]
-  if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
   // 書類の種類と有効期限（#297。同じ送信のファイルすべてに付ける）
-  const meta = parseDocMeta('staff', form.get('doc_type'), form.get('valid_until'))
-  if ('error' in meta) return c.json({ error: meta.error }, 400)
-
-  const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
-
-  for (const file of files) {
-    const ext = docExt(file.name)
-    if (!DOC_ALLOWED_EXT.includes(ext)) {
-      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
-      continue
-    }
-    if (file.size > DOC_MAX_BYTES) {
-      results.push({ filename: file.name, ok: false, error: 'ファイルサイズは20MB以下にしてください。' })
-      continue
-    }
-    // MIME Typeは端末・ブラウザ差で信頼性が低いため、拡張子を主判定としつつ
-    // 明確に一致しない場合のみ弾く補助チェックとする（空/octet-streamは許容）
-    const acceptableMimes = DOC_MIME_MAP[ext] || []
-    if (file.type && file.type !== 'application/octet-stream' && acceptableMimes.length && !acceptableMimes.includes(file.type)) {
-      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
-      continue
-    }
-
-    // 同名ファイルでも上書きされないよう、UUIDを含むキーにする
-    const uuid = crypto.randomUUID()
-    const key = `staff-documents/${u.company_id}/${sid}/${uuid}/${sanitizeForKey(file.name)}`
-    try {
-      const buf = await file.arrayBuffer()
-      await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
-    } catch {
-      results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' })
-      continue
-    }
-
-    try {
-      const r = await c.env.DB.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id, meta.doc_type, meta.valid_until).run()
-      results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
-    } catch {
-      // D1登録に失敗した場合はアップロード済みのR2オブジェクトを掃除する
-      await c.env.DOCUMENTS.delete(key).catch(() => {})
-      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました。' })
-    }
-  }
-
-  return c.json({ results })
+  return uploadDocuments(c, { bucket: c.env.DOCUMENTS, table: 'staff_documents', keyPrefix: `staff-documents/${u.company_id}/${sid}`,
+    parse: form => parseDocMeta('staff', form.get('doc_type'), form.get('valid_until')),
+    columns: meta => ({ company_id: u.company_id, staff_id: sid, uploaded_by: u.user_id, doc_type: meta.doc_type, valid_until: meta.valid_until }) })
 })
 
 // ダウンロード（元ファイル名・元Content-Typeで返す。実行される事故を避けるため常にattachment指定）
-api.get('/admin/staff/documents/:docId/download', async (c) => {
-  const u = c.get('user'); const docId = c.req.param('docId')
-  const doc = await c.env.DB.prepare('SELECT * FROM staff_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
-  if (!doc) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
-
-  const obj = await c.env.DOCUMENTS.get(doc.storage_key as string)
-  if (!obj) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
-
-  const filename = (doc.original_file_name as string).replace(/["\\]/g, '_')
-  const encoded = encodeURIComponent(doc.original_file_name as string)
-  return c.body(obj.body, 200, {
-    'Content-Type': (doc.mime_type as string) || 'application/octet-stream',
-    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`,
-    'X-Content-Type-Options': 'nosniff',
-    'Cache-Control': 'private, max-age=0',
-  })
-})
+api.get('/admin/staff/documents/:docId/download', async (c) =>
+  downloadDocument(c, { bucket: c.env.DOCUMENTS, table: 'staff_documents', docId: c.req.param('docId'), companyId: c.get('user').company_id }))
 
 // 削除（D1を先に消し、R2はベストエフォート。孤立するならR2側の残骸の方が実害が小さいため）
-api.delete('/admin/staff/documents/:docId', async (c) => {
-  const u = c.get('user'); const docId = c.req.param('docId')
-  const doc = await c.env.DB.prepare('SELECT * FROM staff_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
-  if (!doc) return c.json({ error: 'ファイルの削除に失敗しました' }, 404)
-
-  try {
-    await c.env.DB.prepare('DELETE FROM staff_documents WHERE document_id = ?').bind(docId).run()
-  } catch {
-    return c.json({ error: 'ファイルの削除に失敗しました' }, 500)
-  }
-  await c.env.DOCUMENTS.delete(doc.storage_key as string).catch(() => {})
-  return c.json({ ok: true })
-})
+api.delete('/admin/staff/documents/:docId', async (c) =>
+  deleteDocument(c, { bucket: c.env.DOCUMENTS, table: 'staff_documents', docId: c.req.param('docId'), companyId: c.get('user').company_id }))
 
 // クライアント
 api.get('/admin/clients', async (c) => {
@@ -4883,69 +4766,19 @@ api.post('/admin/employees/:staffId/documents', async (c) => {
   const u = c.get('user'); const sid = c.req.param('staffId')
   const staff = await assertOwnEmployee(c, sid)
   if (!staff) return c.json({ error: 'スタッフが見つかりません' }, 404)
-
-  let form: FormData
-  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
-  const files = form.getAll('files').filter(f => f instanceof File) as File[]
-  if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
-  const meta = parseDocMeta('employee', form.get('doc_type'), form.get('valid_until')) // 書類の種類と有効期限（#297）
-  if ('error' in meta) return c.json({ error: meta.error }, 400)
-
-  const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
-  for (const file of files) {
-    const ext = docExt(file.name)
-    if (!DOC_ALLOWED_EXT.includes(ext)) { results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' }); continue }
-    if (file.size > DOC_MAX_BYTES) { results.push({ filename: file.name, ok: false, error: 'ファイルサイズは20MB以下にしてください。' }); continue }
-    const acceptableMimes = DOC_MIME_MAP[ext] || []
-    if (file.type && file.type !== 'application/octet-stream' && acceptableMimes.length && !acceptableMimes.includes(file.type)) {
-      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' }); continue
-    }
-    const uuid = crypto.randomUUID()
-    const key = `employee-documents/${u.company_id}/${sid}/${uuid}/${sanitizeForKey(file.name)}`
-    try {
-      const buf = await file.arrayBuffer()
-      await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
-    } catch { results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' }); continue }
-    try {
-      const r = await c.env.DB.prepare(`INSERT INTO employee_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(u.company_id, sid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id, meta.doc_type, meta.valid_until).run()
-      results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
-    } catch {
-      await c.env.DOCUMENTS.delete(key).catch(() => {})
-      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました。' })
-    }
-  }
-  return c.json({ results })
+  return uploadDocuments(c, { bucket: c.env.DOCUMENTS, table: 'employee_documents', keyPrefix: `employee-documents/${u.company_id}/${sid}`,
+    parse: form => parseDocMeta('employee', form.get('doc_type'), form.get('valid_until')), // 書類の種類と有効期限（#297）
+    columns: meta => ({ company_id: u.company_id, staff_id: sid, uploaded_by: u.user_id, doc_type: meta.doc_type, valid_until: meta.valid_until }) })
 })
 
-api.get('/admin/employees/documents/:docId/download', async (c) => {
-  const u = c.get('user'); const docId = c.req.param('docId')
-  const doc = await c.env.DB.prepare('SELECT * FROM employee_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
-  if (!doc) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
-  const obj = await c.env.DOCUMENTS.get(doc.storage_key as string)
-  if (!obj) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
-  const filename = (doc.original_file_name as string).replace(/["\\]/g, '_')
-  const encoded = encodeURIComponent(doc.original_file_name as string)
-  return c.body(obj.body, 200, {
-    'Content-Type': (doc.mime_type as string) || 'application/octet-stream',
-    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`,
-    'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=0',
-  })
-})
+api.get('/admin/employees/documents/:docId/download', async (c) =>
+  downloadDocument(c, { bucket: c.env.DOCUMENTS, table: 'employee_documents', docId: c.req.param('docId'), companyId: c.get('user').company_id }))
 
-api.delete('/admin/employees/documents/:docId', async (c) => {
-  const u = c.get('user'); const docId = c.req.param('docId')
-  const doc = await c.env.DB.prepare('SELECT * FROM employee_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
-  if (!doc) return c.json({ error: 'ファイルの削除に失敗しました' }, 404)
-  try {
-    await c.env.DB.prepare('DELETE FROM employee_documents WHERE document_id = ?').bind(docId).run()
-  } catch { return c.json({ error: 'ファイルの削除に失敗しました' }, 500) }
-  await c.env.DOCUMENTS.delete(doc.storage_key as string).catch(() => {})
-  return c.json({ ok: true })
-})
+api.delete('/admin/employees/documents/:docId', async (c) =>
+  deleteDocument(c, { bucket: c.env.DOCUMENTS, table: 'employee_documents', docId: c.req.param('docId'), companyId: c.get('user').company_id }))
 
 // ============ クライアント契約書ファイル管理 ============
-// バリデーション用の定数・ヘルパーは履歴書機能（DOC_ALLOWED_EXT等）をそのまま再利用する
+// 検証・保存の流れは履歴書機能と同じ（src/lib/documents.ts の uploadDocuments など）
 async function assertClientInCompany(c: any, cid: string) {
   const u = c.get('user')
   return c.env.DB.prepare('SELECT client_id FROM clients WHERE client_id = ? AND company_id = ?').bind(cid, u.company_id).first()
@@ -4967,94 +4800,19 @@ api.post('/admin/clients/:id/documents', async (c) => {
   const u = c.get('user'); const cid = c.req.param('id')
   const client = await assertClientInCompany(c, cid)
   if (!client) return c.json({ error: 'クライアントが見つかりません' }, 404)
-
-  let form: FormData
-  try {
-    form = await c.req.formData()
-  } catch {
-    return c.json({ error: '送信データの形式が不正です' }, 400)
-  }
-  const files = form.getAll('files').filter(f => f instanceof File) as File[]
-  if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
   // 契約書の種類と契約終了日（#297）
-  const meta = parseDocMeta('client', form.get('doc_type'), form.get('valid_until'))
-  if ('error' in meta) return c.json({ error: meta.error }, 400)
-
-  const results: { filename: string; ok: boolean; document_id?: number; error?: string }[] = []
-
-  for (const file of files) {
-    const ext = docExt(file.name)
-    if (!DOC_ALLOWED_EXT.includes(ext)) {
-      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
-      continue
-    }
-    if (file.size > DOC_MAX_BYTES) {
-      results.push({ filename: file.name, ok: false, error: 'ファイルサイズは20MB以下にしてください。' })
-      continue
-    }
-    const acceptableMimes = DOC_MIME_MAP[ext] || []
-    if (file.type && file.type !== 'application/octet-stream' && acceptableMimes.length && !acceptableMimes.includes(file.type)) {
-      results.push({ filename: file.name, ok: false, error: 'このファイル形式には対応していません。' })
-      continue
-    }
-
-    const uuid = crypto.randomUUID()
-    const key = `client-documents/${u.company_id}/${cid}/${uuid}/${sanitizeForKey(file.name)}`
-    try {
-      const buf = await file.arrayBuffer()
-      await c.env.CONTRACTS.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } })
-    } catch {
-      results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました。' })
-      continue
-    }
-
-    try {
-      const r = await c.env.DB.prepare(`INSERT INTO client_documents (company_id, client_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(u.company_id, cid, cleanFileName(file.name), key, file.type || 'application/octet-stream', file.size, u.user_id, meta.doc_type, meta.valid_until).run()
-      results.push({ filename: file.name, ok: true, document_id: r.meta.last_row_id as number })
-    } catch {
-      await c.env.CONTRACTS.delete(key).catch(() => {})
-      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました。' })
-    }
-  }
-
-  return c.json({ results })
+  return uploadDocuments(c, { bucket: c.env.CONTRACTS, table: 'client_documents', keyPrefix: `client-documents/${u.company_id}/${cid}`,
+    parse: form => parseDocMeta('client', form.get('doc_type'), form.get('valid_until')),
+    columns: meta => ({ company_id: u.company_id, client_id: cid, uploaded_by: u.user_id, doc_type: meta.doc_type, valid_until: meta.valid_until }) })
 })
 
 // ダウンロード
-api.get('/admin/clients/documents/:docId/download', async (c) => {
-  const u = c.get('user'); const docId = c.req.param('docId')
-  const doc = await c.env.DB.prepare('SELECT * FROM client_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
-  if (!doc) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
-
-  const obj = await c.env.CONTRACTS.get(doc.storage_key as string)
-  if (!obj) return c.json({ error: 'ファイルを取得できませんでした' }, 404)
-
-  const filename = (doc.original_file_name as string).replace(/["\\]/g, '_')
-  const encoded = encodeURIComponent(doc.original_file_name as string)
-  return c.body(obj.body, 200, {
-    'Content-Type': (doc.mime_type as string) || 'application/octet-stream',
-    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`,
-    'X-Content-Type-Options': 'nosniff',
-    'Cache-Control': 'private, max-age=0',
-  })
-})
+api.get('/admin/clients/documents/:docId/download', async (c) =>
+  downloadDocument(c, { bucket: c.env.CONTRACTS, table: 'client_documents', docId: c.req.param('docId'), companyId: c.get('user').company_id }))
 
 // 削除（D1を先に消し、R2はベストエフォート。履歴書機能と同じ順序方針）
-api.delete('/admin/clients/documents/:docId', async (c) => {
-  const u = c.get('user'); const docId = c.req.param('docId')
-  const doc = await c.env.DB.prepare('SELECT * FROM client_documents WHERE document_id = ? AND company_id = ?').bind(docId, u.company_id).first()
-  if (!doc) return c.json({ error: 'ファイルの削除に失敗しました' }, 404)
-
-  try {
-    await c.env.DB.prepare('DELETE FROM client_documents WHERE document_id = ?').bind(docId).run()
-  } catch {
-    return c.json({ error: 'ファイルの削除に失敗しました' }, 500)
-  }
-  await c.env.CONTRACTS.delete(doc.storage_key as string).catch(() => {})
-  return c.json({ ok: true })
-})
+api.delete('/admin/clients/documents/:docId', async (c) =>
+  deleteDocument(c, { bucket: c.env.CONTRACTS, table: 'client_documents', docId: c.req.param('docId'), companyId: c.get('user').company_id }))
 
 // 案件全体の月額（固定。#9702）のうち、月 ym（SQL の式）に適用するもの。無ければ NULL
 const MONTHLY_AMOUNT_SQL = (ym: string) => `(SELECT mr.amount FROM monthly_bill_rules mr WHERE mr.company_id = p.company_id AND mr.project_id = p.project_id AND mr.staff_id IS NULL
@@ -6808,7 +6566,7 @@ api.post('/admin/notices', async (c) => {
   // キーが無い呼び出しも、同じ人が同じ内容を直前に配信していれば重複として扱う
   // （予約中のものは published_at が先の日時なので比べない。同じ文面を別の日時に予約できるように #291）
   const requestId = typeof b.client_request_id === 'string' && b.client_request_id.trim() ? b.client_request_id.trim().slice(0, 64) : null
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_DUP_WINDOW_SEC * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-NOTICE_DUP_WINDOW_SEC * 1000)
   const dup = await c.env.DB.prepare(`SELECT notice_id FROM notices WHERE company_id = ? AND created_by = ? AND title = ? AND COALESCE(body, '') = ?
     AND target_type = ? AND COALESCE(target_ids, '') = ? AND published_at >= ? AND published_at <= ? LIMIT 1`)
     .bind(u.company_id, u.user_id, title, body, target_type, target_ids, since, nowJST()).first() as any
@@ -6847,7 +6605,7 @@ api.post('/admin/notices/:id{[0-9]+}/remind', async (c) => {
   if (!unread.length) return c.json({ error: '未読の人はいません' }, 400)
   // 先に再通知の日時を書き、同時に押されても1回だけ送る
   const now = nowJST()
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - NOTICE_REMIND_INTERVAL_MIN * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-NOTICE_REMIND_INTERVAL_MIN * 60 * 1000)
   const claim = await db.prepare(`UPDATE notices SET reminded_at = ?, remind_count = remind_count + 1
     WHERE notice_id = ? AND (reminded_at IS NULL OR reminded_at < ?) RETURNING remind_count`).bind(now, n.notice_id, since).first() as any
   if (!claim) return c.json({ error: `再通知は前回から${NOTICE_REMIND_INTERVAL_MIN}分たってから送れます` }, 409)
@@ -7253,21 +7011,7 @@ api.get('/admin/notices/:id{[0-9]+}/revisions', async (c) => {
 
 // ---- 添付（#555）: 画像・PDF を R2（DOCUMENTS）に置き、配信先の本人と自社の管理者だけが取得できる ----
 const NOTICE_ATTACH_MAX_FILES = 5
-const NOTICE_ATTACH_MAX_BYTES = 10 * 1024 * 1024
-// 拡張子で種類を決め、保存・返すときの Content-Type はここから取る（送られた type は使わない）
-const NOTICE_ATTACH_TYPES: Record<string, string> = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' }
-// 先頭のバイトが拡張子の形式と合うか（画像・PDF に見せかけた HTML などを、そのまま表示する形で返さないように）
-function noticeAttachmentMagicOk(ext: string, b: Uint8Array): boolean {
-  const starts = (sig: number[], at = 0) => sig.every((v, i) => b[at + i] === v)
-  switch (ext) {
-    case 'pdf': return starts([0x25, 0x50, 0x44, 0x46]) // %PDF
-    case 'jpg': case 'jpeg': return starts([0xff, 0xd8, 0xff])
-    case 'png': return starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-    case 'gif': return starts([0x47, 0x49, 0x46, 0x38]) // GIF8
-    case 'webp': return starts([0x52, 0x49, 0x46, 0x46]) && starts([0x57, 0x45, 0x42, 0x50], 8) // RIFF....WEBP
-  }
-  return false
-}
+// 形式・大きさ・中身の確認は src/lib/documents.ts の NOTICE_ATTACH_RULES（#9956）
 
 // お知らせごとの添付の一覧（保存場所のキーは返さない）
 async function loadNoticeAttachments(db: D1Database, ids: number[]): Promise<Map<number, any[]>> {
@@ -7307,42 +7051,13 @@ api.post('/admin/notices/:id{[0-9]+}/attachments', async (c) => {
   const n = await ownNotice(db, u.company_id, c.req.param('id')) as any
   if (!n) return c.json({ error: 'お知らせが見つかりません' }, 404)
   if (n.status === 'withdrawn') return c.json({ error: '取り消したお知らせには添付できません' }, 400)
-  let form: FormData
-  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
-  const files = form.getAll('files').filter(f => f instanceof File) as File[]
-  if (!files.length) return c.json({ error: 'ファイルが選択されていません' }, 400)
-  const results: { filename: string; ok: boolean; attachment_id?: number; error?: string }[] = []
-  for (const file of files) {
-    const ext = docExt(file.name)
-    const type = NOTICE_ATTACH_TYPES[ext]
-    if (!type) { results.push({ filename: file.name, ok: false, error: 'PDF か画像（JPEG・PNG・GIF・WebP）を選んでください' }); continue }
-    if (!file.size) { results.push({ filename: file.name, ok: false, error: '空のファイルです' }); continue }
-    if (file.size > NOTICE_ATTACH_MAX_BYTES) { results.push({ filename: file.name, ok: false, error: '1つ10MB以下にしてください' }); continue }
-    const buf = await file.arrayBuffer()
-    if (!noticeAttachmentMagicOk(ext, new Uint8Array(buf, 0, Math.min(16, buf.byteLength)))) {
-      results.push({ filename: file.name, ok: false, error: 'ファイルの中身が拡張子の形式と合いません' }); continue
-    }
-    const key = `notice-attachments/${u.company_id}/${n.notice_id}/${crypto.randomUUID()}/${sanitizeForKey(file.name)}`
-    try {
-      await c.env.DOCUMENTS.put(key, buf, { httpMetadata: { contentType: type } })
-    } catch {
-      results.push({ filename: file.name, ok: false, error: 'ファイルのアップロードに失敗しました' }); continue
-    }
-    try {
-      // 件数の上限は INSERT の条件で確かめる（同時に追加されても上限を超えないように）
-      const r = await db.prepare(`INSERT INTO notice_attachments (notice_id, company_id, storage_key, file_name, content_type, file_size, uploaded_by, created_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM notice_attachments WHERE notice_id = ?) < ?`)
-        .bind(n.notice_id, u.company_id, key, cleanFileName(file.name), type, file.size, u.user_id, nowJST(), n.notice_id, NOTICE_ATTACH_MAX_FILES).run()
-      if (!r.meta.changes) {
-        await c.env.DOCUMENTS.delete(key).catch(() => {})
-        results.push({ filename: file.name, ok: false, error: `添付は1つのお知らせに${NOTICE_ATTACH_MAX_FILES}件までです` }); continue
-      }
-      results.push({ filename: file.name, ok: true, attachment_id: Number(r.meta.last_row_id) })
-    } catch {
-      await c.env.DOCUMENTS.delete(key).catch(() => {})
-      results.push({ filename: file.name, ok: false, error: 'ファイルの登録に失敗しました' })
-    }
-  }
+  const results = await storeUploads(c, { bucket: c.env.DOCUMENTS, keyPrefix: `notice-attachments/${u.company_id}/${n.notice_id}`, rules: NOTICE_ATTACH_RULES,
+    // 件数の上限は INSERT の条件で確かめる（同時に追加されても上限を超えないように）
+    insert: f => db.prepare(`INSERT INTO notice_attachments (notice_id, company_id, storage_key, file_name, content_type, file_size, uploaded_by, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM notice_attachments WHERE notice_id = ?) < ?`)
+      .bind(n.notice_id, u.company_id, f.key, f.fileName, f.contentType, f.size, u.user_id, nowJST(), n.notice_id, NOTICE_ATTACH_MAX_FILES),
+    limitError: `添付は1つのお知らせに${NOTICE_ATTACH_MAX_FILES}件までです` })
+  if (results instanceof Response) return results
   if (results.some(r => r.ok) && noticeIsLive(n)) {
     await db.prepare('UPDATE notices SET updated_at = ?, updated_by = ? WHERE notice_id = ?').bind(nowJST(), u.user_id, n.notice_id).run()
   }
@@ -7522,7 +7237,7 @@ api.put('/admin/consultations/:id', async (c) => {
   let newReply = reply != null
   if (newReply) {
     const last = await db.prepare(`SELECT author_side, body, created_at FROM consultation_messages WHERE consultation_id = ? ORDER BY message_id DESC LIMIT 1`).bind(co.consultation_id).first() as any
-    const since = new Date(Date.now() + 9 * 3600 * 1000 - CONSULT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const since = nowJST(-CONSULT_DUP_SECONDS * 1000)
     if (last && last.author_side === 'admin' && last.body === reply && String(last.created_at) >= since) newReply = false
   }
   const stmts = [db.prepare('UPDATE consultations SET manager_reply = COALESCE(?, manager_reply), status = COALESCE(?, status) WHERE consultation_id = ? AND company_id = ?')
