@@ -31,8 +31,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 103 本（0001_initial_schema.sql 〜 0103_drop_migration_backups.sql）
-- 表: 129・索引: 314・トリガー: 14・ビュー: 0
+- マイグレーション: 104 本（0001_initial_schema.sql 〜 0105_report_token_hash.sql）
+- 表: 129・索引: 315・トリガー: 14・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 141
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 99・それ以外の主キーの表: 30
 - company_id の列がある表: 104
@@ -2221,9 +2221,11 @@ UNIQUE 制約: (user_id)
 | `created_by` | INTEGER | 可 |  |  |  |  |
 | `created_at` | DATETIME | 可 | CURRENT_TIMESTAMP |  |  |  |
 | `last_used_at` | DATETIME | 可 |  |  |  |  |
+| `token_hash` | TEXT | 可 |  |  | 0105 | 報告用URLのトークンをハッシュで持つ（#9969 authz-04・feat-other-12） shift_report_tokens: token_hash 列（SHA-256 の16進）を足す。ほかのトークン（staff_schedule_tokens など）と同じく、照合はハッシュで行う。 新しく発行する行… |
 
 索引:
 
+- `idx_report_tokens_hash`（UNIQUE）: (token_hash)
 - `idx_report_tokens_staff`: (staff_id)
 - `idx_report_tokens_shift`: (shift_id)
 
@@ -4468,10 +4470,10 @@ END
 | `RETIRED_TARGETS` | [services/retention.ts:87](../src/services/retention.ts#L87) |
 | `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
 | `createPerson` | [roster.ts:265](../src/roster.ts#L265) |
-| `ensureRosterIdentity` | [roster.ts:426](../src/roster.ts#L426) |
+| `ensureRosterIdentity` | [roster.ts:424](../src/roster.ts#L424) |
 | `CORE_TABLES` | [scripts/gen-docs.mjs:832](../scripts/gen-docs.mjs#L832) |
 | `TABLE_GROUPS` | [scripts/gen-docs.mjs:817](../scripts/gen-docs.mjs#L817) |
-| `loadRoster` | [roster.ts:467](../src/roster.ts#L467) |
+| `loadRoster` | [roster.ts:465](../src/roster.ts#L465) |
 | `CONSENT_VERSION` | [roster.ts:222](../src/roster.ts#L222) |
 | `SHARED_SCOPE` | [roster.ts:223](../src/roster.ts#L223) |
 | `NOT_SHARED_SCOPE` | [roster.ts:228](../src/roster.ts#L228) |
@@ -4481,7 +4483,7 @@ END
 | `buildSnapshot` | [board.ts:567](../src/board.ts#L567) |
 | `shapeProposal` | [board.ts:602](../src/board.ts#L602) |
 | `runRetentionCleanup` | [services/retention.ts:938](../src/services/retention.ts#L938) |
-| `CRON_JOBS` | [index.tsx:815](../src/index.tsx#L815) |
+| `CRON_JOBS` | [index.tsx:823](../src/index.tsx#L823) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:117](../src/services/retention.ts#L117) |
 | `purgeExpiredTokens` | [services/retention.ts:1079](../src/services/retention.ts#L1079) |
 | `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1116](../src/services/retention.ts#L1116) |
