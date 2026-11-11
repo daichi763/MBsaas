@@ -1036,7 +1036,8 @@ const RETENTION_TARGET_LABEL = {
   anonymized_staff: '本人情報の匿名化（退職後7年）',
   recruit_applications: '応募（スタッフに紐づくもの。退職後7年）', recruit_application_items: '応募した枠（退職後7年）', board_proposals: '人材提案の匿名化（退職後7年）',
   retired_staff_deferred: '上限で翌日に回した退職スタッフ（人数）', r2_pending: '翌日以降に消すR2ファイル（残り）',
-  password_reset_tokens: 'パスワード再設定のリンク（期限切れ・使用済み）', expired_report_tokens: '報告用URL（期限から30日・取り消し済み）',
+  password_reset_tokens: 'パスワード再設定のリンク（期限切れ・使用済み）', expired_report_tokens: '報告用URL（期限から30日・取り消し済み）', expired_schedule_tokens: '予定確認URL（期限・取り消しから30日）',
+  retention_logs: 'データ保持・定期削除の実行ログ（1年）', hq_view_logs: '本部の閲覧で開いた画面の記録（1年）',
   // 在職中の保存期間（期間は「保存期間の設定」で変えられる。#420 #511 #350 #425）
   attendance_location: '入店などの位置情報・端末情報（在職中）', attendance_photos: '入店などの写真（在職中・R2の削除に回す）',
   consultations_done: '対応済みの相談（在職中）', follow_logs_done: '完了したフォロー記録（在職中）',
@@ -1053,7 +1054,7 @@ const RETENTION_STAFF_COLS = [
 ]
 const RETENTION_TRIGGER_LABEL = { cron: '定期処理', manual: '手動' }
 // トークンの削除（API の RETENTION_TOKEN_TARGETS と同じ）
-const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens']
+const RETENTION_TOKEN_TARGETS = ['password_reset_tokens', 'expired_report_tokens', 'expired_schedule_tokens']
 // dry-run の結果と実行ログの表示状態（dry-run の後に描き直しても結果が消えないよう、ここに残す。#244）
 const retentionState = { dryRun: null, logPage: 1, logTrigger: 'all' }
 

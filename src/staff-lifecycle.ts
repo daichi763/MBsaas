@@ -10,7 +10,8 @@ import { batchWithNewPerson, insertPersonStmt, STAFF_USER_ID, STAFF_ID_OF_PERSON
 import { ageEntryUpdate, estimatedAge } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk, batchInChunks } from './lib/d1-chunk'
-import { insertRowsStmts, changesOf } from './lib/bulk-write'
+import { insertRowsStmts, changesOf, updateRowsStmts } from './lib/bulk-write'
+import { countD1 } from './lib/d1-retry'
 import { syncActualFromReports, syncActualsForShifts, closedMessage } from './settlement'
 import { NOTICE_TARGET_SQL } from './lib/notices'
 import { isHHMM, isISODate, pickReportValues, reportFieldRulesError } from './lib/validate'
@@ -710,33 +711,52 @@ adminLifecycleApi.delete('/staff/:id/affiliation-schedules/:scheduleId', async (
   return c.json({ ok: true })
 })
 
-// 適用日になった区分変更の予約を適用する（毎日の cron。index.tsx の scheduled）。
-// 予約したときと状況が変わって適用できない場合（統合・退職・同じ区分になった等）は failed にして理由を残す
-export async function applyDueAffiliationSchedules(db: D1Database) {
+// 適用日になった区分変更の予約を適用する（毎日 3:00 の cron と、その残りを 4:00 以降の15分おきの cron。index.tsx の CRON_JOBS）。
+// 予約したときと状況が変わって適用できない場合（統合・退職・同じ区分になった等）は failed にして理由を残す。
+// D1 の1回の起動の問い合わせの上限（無料プランは50）で同じ起動の後ろの処理が止まらないよう、使う文の数を budget の内に収め、
+// 収まらない予約は pending のまま次の起動に回す（deferred。#9968）。スタッフの行と failed の記録はまとめて読み書きする
+export const AFFILIATION_SCHEDULE_BUDGET = 25
+// 予約1件の適用に使う文の数の見込み（区分変更の確認の読み込み・シフトと単価の読み込み・書き込みの batch。測った値に余裕を足す）
+const AFFILIATION_SCHEDULE_COST = 15
+const D1_LIMIT_RE = /too many (api requests|subrequests)/i
+export async function applyDueAffiliationSchedules(rawDb: D1Database, opts: { budget?: number } = {}) {
+  const budget = opts.budget ?? AFFILIATION_SCHEDULE_BUDGET
+  const { db, stats } = countD1(rawDb)
   const today = todayJST()
   const due = (await db.prepare(`SELECT * FROM staff_affiliation_schedules WHERE status = 'pending' AND effective_date <= ? ORDER BY effective_date, schedule_id LIMIT 100`).bind(today).all()).results as any[]
-  let applied = 0, failed = 0
-  const markFailed = async (id: number, msg: string) => {
-    failed++
-    await db.prepare(`UPDATE staff_affiliation_schedules SET status = 'failed', error = ? WHERE schedule_id = ? AND status = 'pending'`).bind(msg.slice(0, 300), id).run()
-  }
+  if (!due.length) return { due: 0, applied: 0, failed: 0, deferred: 0, statements: stats.statements }
+  const staff = new Map(((await db.prepare(`SELECT sp.*, us.name, us.phone, us.email, us.role AS user_role, us.user_code, us.status AS user_status, us.retired_at
+    FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id WHERE sp.staff_id IN ${JSON_IN}`).bind(bindJsonArray(due.map(s => s.staff_id))).all()).results as any[])
+    .map(r => [Number(r.staff_id), r]))
+  let applied = 0, deferred = 0, limitHit = false
+  const fails: { schedule_id: number; status: string; error: string }[] = []
+  const markFailed = (id: number, msg: string) => { fails.push({ schedule_id: id, status: 'failed', error: msg.slice(0, 300) }) }
   for (const s of due) {
+    const sp = staff.get(Number(s.staff_id))
+    if (!sp || Number(sp.company_id) !== Number(s.company_id)) { markFailed(s.schedule_id, 'スタッフが見つかりません'); continue }
+    if (sp.employment_status === 'retired' || sp.user_status !== 'active' || (sp.retired_at && String(sp.retired_at).slice(0, 10) < today)) {
+      markFailed(s.schedule_id, '退職・停止中のため適用しませんでした'); continue
+    }
+    if (limitHit || stats.statements + AFFILIATION_SCHEDULE_COST > budget) { deferred++; continue }
     try {
-      const sp = await loadStaffRow(db, s.company_id, s.staff_id)
-      if (!sp) { await markFailed(s.schedule_id, 'スタッフが見つかりません'); continue }
-      if (sp.employment_status === 'retired' || sp.user_status !== 'active') { await markFailed(s.schedule_id, '退職・停止中のため適用しませんでした'); continue }
       let req: any = {}; try { req = JSON.parse(s.request_json || '{}') } catch { }
       const body = { to_type: s.to_type, effective_date: s.effective_date, partner_affiliation_id: s.partner_affiliation_id, trade_name: req.trade_name, hire_date: req.hire_date, contract_type: req.contract_type }
       const r = await planAffiliationChange(db, s.company_id, sp, body, { today, fromSchedule: true })
-      if (!r.ok) { await markFailed(s.schedule_id, r.error); continue }
-      if (r.plan.repair) { await markFailed(s.schedule_id, `すでに「${TYPE_LABEL[s.to_type] || s.to_type}」に変更されています`); continue }
+      if (!r.ok) { markFailed(s.schedule_id, r.error); continue }
+      if (r.plan.repair) { markFailed(s.schedule_id, `すでに「${TYPE_LABEL[s.to_type] || s.to_type}」に変更されています`); continue }
       await executeAffiliationChange(db, s.company_id, s.created_by ?? null, sp, r.plan, req.note || null, s.schedule_id)
       applied++
     } catch (e) {
-      try { await markFailed(s.schedule_id, '適用に失敗しました: ' + String(e)) } catch { }
+      // 問い合わせの上限に当たったときは失敗にせず、次の起動に回す（この起動ではもう D1 を呼べない）
+      if (D1_LIMIT_RE.test(String((e as any)?.message || e))) { limitHit = true; deferred++; continue }
+      markFailed(s.schedule_id, '適用に失敗しました: ' + String(e))
     }
   }
-  return { due: due.length, applied, failed }
+  if (fails.length && !limitHit) {
+    try { await db.batch(updateRowsStmts(db, 'staff_affiliation_schedules', 'schedule_id', ['status', 'error'], fails, "staff_affiliation_schedules.status = 'pending'")) }
+    catch (e) { console.log(`affiliation_schedules: failed の記録に失敗しました: ${e}`) }
+  }
+  return { due: due.length, applied, failed: limitHit ? 0 : fails.length, deferred: deferred + (limitHit ? fails.length : 0), statements: stats.statements }
 }
 
 adminLifecycleApi.get('/staff/:id/lifecycle', async (c) => {

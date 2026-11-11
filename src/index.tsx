@@ -819,6 +819,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'push_queue', label: 'プッシュ通知の送信（残り）', cron: CRON_REMINDERS, run: env => runPushQueueJob(env as any) },
   // 打刻修正の承認依頼を「1日1回まとめて」受け取る管理者へのまとめメール（#284。毎朝8時以降の最初の起動で1回）
   { name: 'notification_digest', label: '承認依頼のまとめメール', cron: CRON_REMINDERS, run: env => runNotificationDigests(env as any) },
+  // 前月の請求の記録（#295。毎月1〜3日。記録済みの企業はそのまま）。取りこぼすと困るので、3:00 の起動の先頭で行う（問い合わせは1回。#9968）
+  { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
   // expires_at は ISO 8601 で保存しているため、同じ書式の現在時刻と比べる（CURRENT_TIMESTAMP とは比べない）
   { name: 'auth_purge', label: '期限切れのセッション・ログイン試行の削除', cron: CRON_DAILY, run: env => purgeExpiredAuthRows(env.DB) },
   // 期限切れ・使用済みのパスワード再設定トークンと報告用URLのトークンの削除（RETENTION_ENABLED に関係なく実行。#397）
@@ -842,11 +844,12 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   } },
   // 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える（退職日の当日までは在籍。#34）
   { name: 'retirements', label: '退職予定日を過ぎたスタッフの退職への切り替え', cron: CRON_DAILY, run: async env => ({ applied: await applyDueRetirements(env.DB) }) },
-  // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない
+  // 適用日になった所属区分の変更の予約を適用する（#82）。退職の切り替えの後に行い、退職した人の予約は適用しない。
+  // 使う問い合わせの数を予算の内に収め、収まらない予約は deferred として 4:00 以降の affiliation_schedules_rest に回す（#9968）
   { name: 'affiliation_schedules', label: '所属区分の変更の予約の適用', cron: CRON_DAILY, run: async env => {
     // 状況が変わって適用できなかった予約は、理由をスタッフの画面に出すので定期処理の失敗にはしない
     const r = await applyDueAffiliationSchedules(env.DB)
-    return { due: r.due, applied: r.applied, not_applied: r.failed }
+    return { due: r.due, applied: r.applied, not_applied: r.failed, deferred: r.deferred, statements: r.statements }
   } },
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
   // 在職中の保存期間（位置情報と写真・相談・フォロー記録・決着した人材提案・雇用終了の従業員データ）の削除。D1 の問い合わせの数を分けるため 3:30 の起動で行う（#420 #511 #350 #425）
@@ -862,8 +865,14 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'board_saved_search', label: '掲示板の保存した検索条件の新着の知らせ', cron: CRON_DAILY, run: env => notifySavedSearchMatches(env as any) },
   // 書類の有効期限（30日以内・期限切れ）を会社の管理者に知らせる（#297。毎朝8時以降、会社ごとに1日1回まで。知らせた書類はその段階では二度知らせない）
   { name: 'doc_expiry_notice', label: '書類の有効期限の知らせ', cron: CRON_REMINDERS, run: env => notifyExpiringDocuments(env as any) },
-  // 前月の請求の記録（#295。毎月1〜3日。記録済みの企業はそのまま）
-  { name: 'billing_close', label: '前月の請求の記録', cron: CRON_DAILY, run: env => autoCloseBillingMonth(env.DB) },
+  // 3:00 の起動で問い合わせの予算に収まらなかった所属区分の変更の予約を、4:00 以降の15分おきの起動で少しずつ適用する（#9968）。
+  // 3:00 の起動と同時に動かないよう、また退職の切り替え（3:00）より前に新しい日の予約を適用しないよう、0:00〜3:59 は何もしない。
+  // 15分おきの起動の最後に置き、予約がなければ問い合わせ1回で終わる
+  { name: 'affiliation_schedules_rest', label: '所属区分の変更の予約の適用（3:00 の残り）', cron: CRON_REMINDERS, run: async env => {
+    if (Number(nowJST().slice(11, 13)) < 4) return { idle: true, skipped: 'before_4am' }
+    const r = await applyDueAffiliationSchedules(env.DB)
+    return r.due ? { due: r.due, applied: r.applied, not_applied: r.failed, deferred: r.deferred, statements: r.statements } : { due: 0, idle: true }
+  } },
 ])
 
 // 定期処理の失敗（例外、または結果の failed・error）を障害の記録（error_logs）にも残す（#9622）。
