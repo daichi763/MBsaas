@@ -3589,7 +3589,7 @@ async function renderClients() {
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
-      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・代表者・担当者・社内担当者・住所・稼働案件で検索" value="${esc(L.q)}">
+      <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・フリガナ・代表者・担当者・社内担当者・住所・稼働案件で検索" value="${esc(L.q)}">
       <select id="client-assignee" class="inp text-sm w-auto" aria-label="社内担当者で絞り込み">${assigneeFilterOptions(L.data.clients, L.assignee)}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
@@ -3605,7 +3605,7 @@ async function renderClients() {
 function drawClientCards() {
   const L = CLIENT_LIST; const all = L.data.clients
   let list = all.filter(c => (!L.docexp || Number(c.doc_expiring) > 0) && matchesAssigneeFilter(c.assignees, L.assignee)
-    && matchesKeyword(L.q, [c.client_name, c.representative_name, c.contact_names, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url,
+    && matchesKeyword(L.q, [c.client_name, c.client_name_kana, c.representative_name, c.contact_names, c.contact_kanas, c.active_projects, c.phone, c.email, c.postal_code, c.address, c.website_url,
       ...(c.assignees || []).map(a => a.name)]))
   const by = {
     client_id: (a, b) => a.client_id - b.client_id,
@@ -3618,7 +3618,7 @@ function drawClientCards() {
   document.getElementById('client-cards').innerHTML = list.map(c => `
         <section class="card p-4">
           <div class="flex items-start justify-between mb-2">
-            <h3 class="font-bold text-gray-800"><a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
+            <h3 class="font-bold text-gray-800">${c.client_name_kana ? `<span class="block text-[11px] font-normal text-gray-400">${esc(c.client_name_kana)}</span>` : ''}<a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
           </div>
           <dl class="text-xs text-gray-600 space-y-1.5">
             <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
@@ -3679,6 +3679,7 @@ function clientBasicHtml(c, editing) {
         <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
         <div class="space-y-2">
           ${inp('cl-name', 'クライアント名 *', c.client_name, 'maxlength="200"')}
+          ${inp('cl-name-kana', 'フリガナ', c.client_name_kana, 'maxlength="100" placeholder="カブシキガイシャ…（ひらがなでも可）"')}
           ${inp('cl-rep-name', '代表者氏名', c.representative_name, 'maxlength="100"')}
           ${clientOrgHtml(c, true)}
           ${inp('cl-phone', '電話', c.phone, 'type="tel"')}
@@ -3764,6 +3765,7 @@ async function renderClientDetail(cid) {
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#clients" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
+        ${c.client_name_kana ? `<p class="text-xs text-gray-400">${esc(c.client_name_kana)}</p>` : ''}
         <h2 class="text-xl font-bold text-gray-900">${esc(c.client_name)}</h2>
         <div class="flex gap-2 mt-1">
           ${c.ng_staff_ids ? '<span class="badge badge-red"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</span>' : ''}
@@ -3878,6 +3880,7 @@ function clientContactsHtml(contacts, cid) {
     <div class="p-2.5 rounded-lg bg-gray-50">
       <div class="flex items-start justify-between gap-2">
         <div class="text-sm min-w-0">
+          ${ct.contact_name_kana ? `<p class="text-[11px] text-gray-400">${esc(ct.contact_name_kana)}</p>` : ''}
           <p class="font-medium text-gray-800">${esc(ct.contact_name)}${ct.title ? ` <span class="text-xs text-gray-400">（${esc(ct.title)}）</span>` : ''}</p>
           <p class="text-xs text-gray-500">${[ct.branch_name, ct.department].filter(Boolean).map(esc).join(' / ') || '-'}</p>
           <p class="text-xs text-gray-500">${esc(ct.phone || '-')}　${esc(ct.email || '')}</p>
@@ -3896,6 +3899,7 @@ window.showClientContactForm = function (cid, contact) {
     <h3 class="font-bold text-lg mb-4">${ct.contact_id ? '担当者を編集' : '担当者を追加'}</h3>
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">顧客名（担当者氏名） *</label><input id="cc-name" class="inp" value="${esc(ct.contact_name || '')}"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">フリガナ</label><input id="cc-name-kana" class="inp" maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）" value="${esc(ct.contact_name_kana || '')}"></div>
       <div class="grid grid-cols-2 gap-2">
         <div><label class="text-sm text-gray-600 block mb-1">支店名</label><input id="cc-branch" class="inp" value="${esc(ct.branch_name || '')}"></div>
         <div><label class="text-sm text-gray-600 block mb-1">部署名</label><input id="cc-department" class="inp" value="${esc(ct.department || '')}"></div>
@@ -3918,6 +3922,7 @@ window.saveClientContact = async function (cid, contactId) {
   if (!name) { err.textContent = '担当者氏名は必須です'; err.classList.remove('hidden'); return }
   const payload = {
     contact_name: name,
+    contact_name_kana: document.getElementById('cc-name-kana').value.trim(),
     branch_name: document.getElementById('cc-branch').value || null,
     department: document.getElementById('cc-department').value || null,
     title: document.getElementById('cc-title').value || null,
@@ -3958,7 +3963,7 @@ window.saveClientBasicInfo = async function (cid) {
   if (!v('cl-name')) { err.textContent = 'クライアント名を入力してください'; err.classList.remove('hidden'); return }
   try {
     await axios.put('/api/admin/clients/' + cid, {
-      client_name: v('cl-name'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
+      client_name: v('cl-name'), client_name_kana: v('cl-name-kana'), representative_name: v('cl-rep-name'), phone: v('cl-phone'), email: v('cl-email'),
       address: v('cl-address'), postal_code: v('cl-postal'), website_url: v('cl-url'),
       client_kind: v('cl-kind'), billing_rule: v('cl-billing'), client_rating: Number(v('cl-rating')),
       memo: document.getElementById('cl-memo').value,
@@ -4360,6 +4365,7 @@ window.showAddClient = async function () {
     <h3 class="font-bold text-lg mb-4">クライアント登録</h3>
     <div class="space-y-3">
       <div><label class="text-sm text-gray-600 block mb-1">クライアント名 *</label><input id="nc-name" class="inp"></div>
+      <div><label class="text-sm text-gray-600 block mb-1">フリガナ</label><input id="nc-name-kana" class="inp" maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）"></div>
       <div><label class="text-sm text-gray-600 block mb-1">種別</label>
         <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -4384,7 +4390,7 @@ window.addClient = async function () {
   if (!name) { toast('クライアント名を入力してください'); return }
   try {
     const res = await postConfirmingDuplicate('/api/admin/clients', {
-      client_name: name,
+      client_name: name, client_name_kana: document.getElementById('nc-name-kana').value.trim(),
       client_kind: document.getElementById('nc-kind').value, representative_name: document.getElementById('nc-rep-name').value.trim(),
       phone: document.getElementById('nc-phone').value, billing_rule: document.getElementById('nc-billing').value,
       email: document.getElementById('nc-email').value.trim(), address: document.getElementById('nc-address').value,
@@ -4884,10 +4890,17 @@ function reportEntryBadge(r) {
   if (r.entry_method === 'link') return '<span class="badge badge-gray" title="ログインのないスタッフが報告用URLから提出しました"><i class="fas fa-link mr-0.5"></i>報告用URL</span>'
   return ''
 }
-// スタッフが管理者のコメントを開いたか（#158。comment_read_at はコメントを書き直すと空に戻る）
-function reportCommentReadHtml(r, fmt) {
-  if (r.comment_read_at) return `<span class="badge badge-green font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフがアプリでこのコメントを開きました"><i class="fas fa-check-double mr-0.5"></i>スタッフ既読 ${esc(fmt(r.comment_read_at))}</span>`
-  return `<span class="badge badge-gray font-normal" id="report-comment-read-${Number(r.daily_report_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
+// スタッフが管理者のコメントを開いたか（#158。コメントごと #9965。read_at はコメントを直すと空に戻る）
+function reportCommentReadHtml(cm, fmt) {
+  if (cm.read_at) return `<span class="badge badge-green font-normal" data-comment-read="${Number(cm.comment_id)}" title="スタッフがアプリでこのコメントを開きました"><i class="fas fa-check-double mr-0.5"></i>スタッフ既読 ${esc(fmt(cm.read_at))}</span>`
+  return `<span class="badge badge-gray font-normal" data-comment-read="${Number(cm.comment_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
+}
+// 日報のコメント（#9965。日報1件に複数。古い順）。書いた本人のコメントだけに「編集」「削除」を出す（サーバーでも確かめる）
+function reportCommentsHtml(r, fmt) {
+  return (r.comments || []).map(cm => `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2" data-report-comment="${Number(cm.comment_id)}"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(cm.body)}</span>
+        <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5"><span>${esc(cm.author_name || '管理者')} ${esc(fmt(cm.created_at))}${cm.updated_at ? `（編集 ${esc(fmt(cm.updated_at))}）` : ''}</span>${reportCommentReadHtml(cm, fmt)}
+          ${cm.mine ? `<button class="text-blue-600 hover:underline" data-action="commentReport" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">編集</button>
+          <button class="text-red-600 hover:underline" data-action="deleteReportComment" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">削除</button>` : ''}</span></div>`).join('')
 }
 // 最後の実績の修正・再提出（#9902。API の last_edit）。「誰が・いつ・どの項目を・いくつからいくつに」を1行で出し、全部は修正履歴で見る
 // 修正履歴のボタンはこの行に1つだけ出す（この行が出ないときだけ、カードの下に出す。#9920）
@@ -4944,14 +4957,13 @@ function reportCardHtml(r, fields) {
       </div>
       ${reportValuesHtml(r, fields)}
       ${reportLastEditHtml(r, fields, fmt)}
-      ${r.manager_comment ? `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(r.manager_comment)}</span>
-        <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5">${r.manager_comment_by_name || r.manager_comment_at ? `<span>${esc(r.manager_comment_by_name || '')} ${esc(fmt(r.manager_comment_at))}</span>` : ''}${reportCommentReadHtml(r, fmt)}</span></div>` : ''}
+      ${reportCommentsHtml(r, fmt)}
       <div class="flex gap-2 mt-3 flex-wrap items-center">
         ${r.manager_checked
           ? `<button class="btn btn-outline text-xs" data-action="uncheckReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-rotate-left"></i>未確認に戻す</button>
              ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
-        <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${r.manager_comment ? 'コメントを編集' : 'コメント'}</button>
+        <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${(r.comments || []).length ? 'コメントを追加' : 'コメント'}</button>
         ${Number(r.edit_count) > 0 && !reportLastEditHtml(r, fields, fmt) ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
@@ -5326,44 +5338,63 @@ delegate('checkShownReports', (el) => {
   })
 })
 
-// コメントは今の内容を入れて開き、空にして保存すると削除。開いた後に別の管理者が変えていたら保存しない（#360）
+// コメント（#9965）: 「コメントを追加」でいつでも新しいコメントを送れる（ほかの人のコメントは書き換えない）。
+// 自分のコメントだけ「編集」（data-cid）で直せる。直すとスタッフの既読は外れ、もう一度通知する
 delegate('commentReport', (el) => {
   const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const cid = Number(el.dataset.cid) || 0
+  const cm = cid ? (r.comments || []).find(x => Number(x.comment_id) === cid) : null
+  if (cid && !cm) return
+  const fmt = d => (d ? dayjs(d).format('M/D HH:mm') : '')
+  const others = (r.comments || []).filter(x => x !== cm)
   modal(`
-    <h3 class="font-bold text-lg mb-1">スタッフへのコメント</h3>
+    <h3 class="font-bold text-lg mb-1">${cm ? 'コメントを編集' : 'スタッフへのコメント'}</h3>
     <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
-    <p id="rc-meta" class="text-[11px] text-gray-400 mb-1">${r.manager_comment ? `前回: ${esc(r.manager_comment_by_name || '')} ${esc(r.manager_comment_at ? dayjs(r.manager_comment_at).format('M/D HH:mm') : '')}${r.comment_read_at ? `・スタッフ既読 ${esc(dayjs(r.comment_read_at).format('M/D HH:mm'))}（書き直すと未読に戻ります）` : '・スタッフ未読'}` : ''}</p>
-    <textarea id="rc-text" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="コメントを入力（空にして保存すると削除します）">${esc(r.manager_comment || '')}</textarea>
+    ${!cm && others.length ? `<div class="max-h-40 overflow-y-auto mb-2 space-y-1">${others.map(x => `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5"><span class="whitespace-pre-wrap break-words">${esc(x.body)}</span>
+      <span class="block text-[11px] text-gray-400">${esc(x.author_name || '管理者')} ${esc(fmt(x.created_at))}</span></div>`).join('')}</div>
+      <p class="text-[11px] text-gray-400 mb-1">ここに書いた内容は、新しいコメントとして追加されます（ほかの人のコメントは書き換えません）</p>` : ''}
+    ${cm ? `<p class="text-[11px] text-gray-400 mb-1">${cm.read_at ? `スタッフ既読 ${esc(fmt(cm.read_at))}（直すと未読に戻ります）` : 'スタッフ未読'}</p>` : ''}
+    <textarea id="rc-text" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="コメントを入力">${esc(cm ? cm.body : '')}</textarea>
     <div class="flex gap-2 justify-end mt-3 flex-wrap">
-      ${r.manager_comment ? `<button class="btn btn-danger text-sm mr-auto" data-action="saveReportComment" data-id="${Number(r.daily_report_id)}" data-mode="delete"><i class="fas fa-trash"></i>削除</button>` : ''}
       <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
-      <button class="btn btn-primary text-sm" data-action="saveReportComment" data-id="${Number(r.daily_report_id)}"><i class="fas fa-paper-plane"></i>保存</button>
+      <button class="btn btn-primary text-sm" data-action="saveReportComment" data-id="${Number(r.daily_report_id)}" data-cid="${cm ? Number(cm.comment_id) : ''}"><i class="fas fa-paper-plane"></i>${cm ? '保存' : '送信'}</button>
     </div>`)
   setTimeout(() => { const t = document.getElementById('rc-text'); if (t) t.focus() }, 0)
 })
 delegate('saveReportComment', (el) => {
   const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
-  const del = el.dataset.mode === 'delete'
-  if (del && !confirm('このコメントを削除しますか？')) return
-  const text = del ? '' : document.getElementById('rc-text').value.trim()
-  if (!del && text === (r.manager_comment || '')) { closeModal(); return }
+  const cid = Number(el.dataset.cid) || 0
+  const cm = cid ? (r.comments || []).find(x => Number(x.comment_id) === cid) : null
+  const text = document.getElementById('rc-text').value.trim()
+  if (!text) { toast(cm ? 'コメントを入力してください（消すときは一覧の「削除」を押してください）' : 'コメントを入力してください'); return }
+  if (cm && text === cm.body) { closeModal(); return }
   withSubmitLock(el, async () => {
     let res
     try {
-      res = (await axios.put('/api/admin/daily-reports/' + r.daily_report_id, { manager_comment: text || null, expected_comment: r.manager_comment || null })).data
+      const url = '/api/admin/daily-reports/' + Number(r.daily_report_id) + '/comments'
+      res = (cm ? await axios.put(url + '/' + cid, { body: text }) : await axios.post(url, { body: text })).data
     } catch (e) {
       showApiError(e, 'コメントを保存できませんでした')
-      // 別の管理者が変えていた場合は、今のコメントを表示する（もう一度保存すると、その内容を置き換える）
-      if (e.response && e.response.status === 409 && e.response.data && 'current_comment' in e.response.data) {
-        r.manager_comment = e.response.data.current_comment
-        const meta = document.getElementById('rc-meta')
-        if (meta) meta.textContent = '今のコメント: ' + (r.manager_comment || '（なし）')
-      }
+      // 消された・ほかの人のコメントだったときは、今の内容で表示し直す
+      if (e.response && [403, 404].includes(e.response.status)) { closeModal(); renderReports(true) }
       return
     }
     // コメントはスタッフのアプリに通知する。ログインのない人には届かない（#158）
     const notice = !res || res.staff_notified == null ? '' : res.staff_notified ? '（スタッフのアプリに通知しました）' : '（このスタッフはアプリにログインしないため、通知は届きません）'
-    closeModal(); toast(del || !text ? 'コメントを削除しました' : 'コメントを保存しました' + notice); renderReports(true)
+    closeModal(); toast((cm ? 'コメントを保存しました' : 'コメントを送りました') + notice); renderReports(true)
+  })
+})
+delegate('deleteReportComment', (el) => {
+  const r = REPORT_ROWS.get(Number(el.dataset.id)); if (!r) return
+  const cid = Number(el.dataset.cid) || 0
+  if (!cid || !confirm('このコメントを削除しますか？')) return
+  withSubmitLock(el, async () => {
+    try { await axios.delete('/api/admin/daily-reports/' + Number(r.daily_report_id) + '/comments/' + cid) } catch (e) {
+      showApiError(e, 'コメントを削除できませんでした')
+      if (e.response && [403, 404].includes(e.response.status)) renderReports(true)
+      return
+    }
+    toast('コメントを削除しました'); renderReports(true)
   })
 })
 
@@ -5371,7 +5402,11 @@ delegate('saveReportComment', (el) => {
 // 画面の上で案件（全案件／各案件）と月を選ぶ（#9512）。選んだ案件・月・指標は、案件や月を移っても引き継ぐ（ページを開き直すまで）。
 // 全案件のときは日報数・稼働人数など全案件に共通の数だけを出す。案件を選ぶと、その案件の日報テンプレートの数値項目
 // （テンプレートを差し替える前の項目も元の表示名で。#9511）で集計する。指標を選ぶと、ランキングの並びと日別のグラフが切り替わる。各表は CSV でも出せる
-const ANALYTICS = { data: null, key: '', wantKey: '', month: '', project: '' }
+// 絞り込みはページの上の「案件」「スタッフ」「月」に一本化し（#9963）、表・グラフ・CSV はすべてこの条件に従う。
+// スタッフ（staff。staff_id の配列。空は全員）は30人まで選べ、案件や月を移っても引き継ぐ。グラフの「スタッフ別」はこの人たちで分ける
+const ANALYTICS = { data: null, key: '', wantKey: '', month: '', project: '', staff: [] }
+const ANALYTICS_STAFF_MAX = 30
+const analyticsStaffParams = () => (ANALYTICS.staff.length ? { staff_ids: ANALYTICS.staff.join(',') } : {})
 async function renderAnalytics(month, project) {
   loading()
   ANALYTICS.month = /^\d{4}-\d{2}$/.test(month || '') ? month : (ANALYTICS.month || dayjs().format('YYYY-MM'))
@@ -5381,7 +5416,7 @@ async function renderAnalytics(month, project) {
     if (next !== ANALYTICS.project && ACHART.metric === 'field') ACHART.metric = ''
     ANALYTICS.project = next
   }
-  const params = { month: ANALYTICS.month }
+  const params = { month: ANALYTICS.month, ...analyticsStaffParams() }
   if (ANALYTICS.project) params.project_id = ANALYTICS.project
   let data
   try { data = (await axios.get('/api/admin/analytics', { params })).data } catch (e) {
@@ -5484,6 +5519,14 @@ const ANALYTICS_COUNT_COLS = {
 }
 // 差し替える前のテンプレートの項目の見出しに付ける印（#9511）
 const pastFieldMark = f => f && f.past ? '<span class="badge badge-gray ml-0.5 text-[10px]" title="以前の日報テンプレートの項目">旧</span>' : ''
+// スタッフの絞り込みの表示（全員・1人ならその名前・2人以上なら人数）
+function analyticsStaffLabel(data) {
+  const ids = ANALYTICS.staff
+  if (!ids.length) return '全員'
+  if (ids.length > 1) return `${ids.length}人を選択中`
+  const f = ((data && data.staff_filter) || []).find(s => Number(s.staff_id) === Number(ids[0]))
+  return (f && f.name) || '1人を選択中'
+}
 function analyticsHeaderHtml(data) {
   const m0 = dayjs(data.month + '-01')
   const projects = (data.projects || []).slice()
@@ -5505,6 +5548,11 @@ function analyticsHeaderHtml(data) {
           <option value="">全案件</option>
           ${projects.map(p => `<option value="${Number(p.project_id)}" ${Number(p.project_id) === sel ? 'selected' : ''}>${esc(p.project_name || '')}${p.status && p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}
         </select></label>
+      <div class="text-xs text-gray-500">スタッフ
+        <div class="flex items-center gap-1">
+          <button type="button" class="inp text-sm w-auto max-w-[16rem] text-left truncate ${ANALYTICS.staff.length ? 'text-blue-700 font-medium' : ''}" data-action="pickAnalyticsStaff" aria-label="スタッフで絞り込む" title="スタッフで絞り込む（表・グラフ・CSV に効きます）"><i class="fas fa-user-check text-gray-400 mr-1"></i>${esc(analyticsStaffLabel(data))}</button>
+          ${ANALYTICS.staff.length ? '<button type="button" class="btn btn-outline text-xs px-2" data-action="clearAnalyticsStaff" aria-label="スタッフの絞り込みを外す" title="全員に戻す"><i class="fas fa-xmark"></i></button>' : ''}
+        </div></div>
       <div class="text-xs text-gray-500">月
         <div class="flex items-center gap-1">
           <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
@@ -5529,7 +5577,7 @@ function drawAnalytics() {
   const countHeads = by => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).map(([, l]) => `<th class="whitespace-nowrap">${esc(l)}</th>`).join('')
   const countCells = (by, r) => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).map(([k]) => `<td>${num(r[k])}</td>`).join('')
   const countLen = by => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).length
-  const csvQs = by => new URLSearchParams({ month, by, ...(project ? { project_id: String(project.project_id) } : {}) }).toString()
+  const csvQs = by => new URLSearchParams({ month, by, ...(project ? { project_id: String(project.project_id) } : {}), ...analyticsStaffParams() }).toString()
   const csvLink = by => `<a class="text-xs text-blue-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(csvQs(by))}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
   const empty = (n) => `<tr><td colspan="${n}" class="text-center text-gray-400 py-4">日報はありません</td></tr>`
   // ランキングは 合計・1日あたり・成約率 で並べ替えられる（#489）。日数は日報の数。全案件のときは日報数の多い順
@@ -5538,7 +5586,7 @@ function drawAnalytics() {
   const keyLabel = (fields.find(f => f.key === key) || {}).label || ''
   const rankLabel = key ? { total: `${keyLabel}の多い順`, per_day: `1日あたりの${keyLabel}の多い順`, rate: '成約率の高い順' }[RANK_STATE.mode === 'rate' && !hasRate ? 'total' : RANK_STATE.mode] : '日報数の多い順'
   const m0 = dayjs(month + '-01')
-  const scope = project ? `「${esc(project.project_name || '')}」` : '全案件'
+  const scope = (project ? `「${esc(project.project_name || '')}」` : '全案件') + (ANALYTICS.staff.length ? `・スタッフ ${esc(analyticsStaffLabel(data))}` : '')
   const cards = project
     ? [...fields.map(f => [f.label, num(tv[f.key]), f]), ...(rate ? [['成約率（成約数÷商談数）', rate]] : []), ['日報数', num(t.reports)], ['稼働人数', num(t.staff_count)]]
     : [['日報数', num(t.reports)], ['稼働人数', num(t.staff_count)], ['稼働日数', num(t.work_days)], ['案件数', num(t.project_count)], ['インシデント・クレーム', num(t.flagged)]]
@@ -5608,7 +5656,7 @@ function drawAnalytics() {
 // 分け方（案件のときはスタッフ別・開催場所別、全案件のときは案件別）と、表示（積み上げ棒・折れ線・合計の横棒）を選べる。
 // 設定は案件・月を移っても引き継ぐ（ページを開き直すまで）。分け方は案件のときと全案件のときで別々に覚える。
 // 指標は、グラフで選ぶまでは上の「指標」に合わせる。集計は API（/api/admin/analytics/series）で行う。日報のない日・週・月は 0 で並べる（#550）
-const ACHART = { range: 'month', from: '', to: '', unit: 'day', metric: '', key: '', splitProject: 'none', splitAll: 'none', viewPlain: 'bar', viewSplit: 'stack', top: 5, staffMode: 'top', picks: {}, colors: {}, seq: 0, chart: null, data: null, qs: '' }
+const ACHART = { range: 'month', from: '', to: '', unit: 'day', metric: '', key: '', splitProject: 'none', splitAll: 'none', viewPlain: 'bar', viewSplit: 'stack', top: 5, colors: {}, seq: 0, chart: null, data: null, qs: '' }
 const ACHART_MAX_MONTHS = 12
 const ACHART_MAX_PICK = 8
 // 区別しやすい8色（分ける数の上限と同じ）。「ほか」は灰色
@@ -5619,6 +5667,8 @@ const ACHART_UNITS = [['day', '日ごと'], ['week', '週ごと'], ['month', '�
 const ACHART_SPLITS = { none: '分けない', staff: 'スタッフ別', site: '開催場所別', project: '案件別' }
 const achartSplit = () => (ANALYTICS.project ? ACHART.splitProject : ACHART.splitAll)
 const achartView = () => (achartSplit() === 'none' ? ACHART.viewPlain : ACHART.viewSplit)
+// スタッフ別のグラフを、上の「スタッフ」で選んだ人で描くか（選んだ人が1〜8人のとき）
+const achartStaffPicked = () => achartSplit() === 'staff' && ANALYTICS.staff.length > 0 && ANALYTICS.staff.length <= ACHART_MAX_PICK
 const achartMonths = (a, b) => dayjs(b + '-01').diff(dayjs(a + '-01'), 'month') + 1
 // 期間（開始月・終了月）。「選んだ月」「直近Nか月」は上の月に合わせる
 function achartPeriod() {
@@ -5644,14 +5694,14 @@ async function loadAnalyticsChart(reuse = false) {
   const seq = ++ACHART.seq
   const [from, to] = achartPeriod()
   const split = achartSplit()
-  const params = { from, to, unit: ACHART.unit, split }
+  const params = { from, to, unit: ACHART.unit, split, ...analyticsStaffParams() }
   if (ANALYTICS.project) params.project_id = ANALYTICS.project
   params.metric = ACHART.metric || (ANALYTICS.key ? 'field' : 'reports')
   if (params.metric === 'field') params.key = ACHART.metric ? ACHART.key : ANALYTICS.key
   if (split !== 'none') {
     params.top = ACHART.top
-    const ids = split === 'staff' && ACHART.staffMode === 'pick' ? (ACHART.picks[ANALYTICS.project] || []) : []
-    if (ids.length) params.ids = ids.join(',')
+    // スタッフで絞っているとき（グラフの色の数まで）は、スタッフ別はその人たちを並べる（#9963）
+    if (achartStaffPicked()) params.ids = ANALYTICS.staff.join(',')
   }
   const qs = JSON.stringify(params)
   if (reuse && ACHART.data && ACHART.qs === qs) return drawAnalyticsChart()
@@ -5674,8 +5724,7 @@ function analyticsChartControlsHtml(d) {
     <select class="inp text-sm w-auto block ${cls}" data-chart="${name}" aria-label="グラフの${esc(label)}">${options.map(([v, l]) => opt(v, l, cur)).join('')}</select></label>`
   const metricVal = m => (m.metric === 'field' ? 'field:' + m.key : m.metric)
   const curMetric = d.metric === 'field' ? 'field:' + d.key : d.metric
-  const picks = ACHART.picks[ANALYTICS.project] || []
-  const picking = split === 'staff' && ACHART.staffMode === 'pick'
+  const picking = achartStaffPicked()
   return `
     <div class="flex items-end gap-2 flex-wrap mb-3">
       ${sel('range', '期間', ACHART_RANGES, ACHART.range)}
@@ -5688,9 +5737,7 @@ function analyticsChartControlsHtml(d) {
       ${split === 'none'
         ? sel('view', '表示', [['bar', '棒グラフ'], ['line', '折れ線']], view)
         : sel('view', '表示', [['stack', '積み上げ棒'], ['line', '折れ線'], ['hbar', '合計の横棒']], view)}
-      ${split === 'staff' ? sel('staffMode', '対象', [['top', '上位から'], ['pick', '人を選ぶ']], ACHART.staffMode) : ''}
       ${split !== 'none' && !picking ? sel('top', '件数', [3, 5, 8].map(n => [n, `上位${n}${split === 'staff' ? '人' : '件'}`]), ACHART.top) : ''}
-      ${picking ? `<button class="btn btn-outline text-sm" data-action="pickAnalyticsStaff"><i class="fas fa-user-check"></i>スタッフを選ぶ（${picks.length}人）</button>` : ''}
     </div>`
 }
 function drawAnalyticsChart() {
@@ -5705,18 +5752,17 @@ function drawAnalyticsChart() {
   const labelOf = b => (d.unit === 'month' ? dayjs(b + '-01').format(multiYear ? 'YYYY/M' : 'M月')
     : dayjs(b).format(multiYear ? 'YY/M/D' : 'M/D') + (d.unit === 'week' ? '〜' : ''))
   const titleOf = b => (d.unit === 'month' ? fmtMonth(b) : d.unit === 'week' ? dayjs(b).format('YYYY年M月D日') + 'からの週' : dayjs(b).format('YYYY年M月D日') + `（${'日月火水木金土'[dayjs(b).day()]}）`)
-  const picking = split === 'staff' && ACHART.staffMode === 'pick'
-  const picks = ACHART.picks[ANALYTICS.project] || []
+  const picking = achartStaffPicked()
   const colorOf = achartColors(split, d.series.map(s => s.id))
   const parts = split === 'none' ? [] : [...d.series.map(s => ({ ...s, color: colorOf(s.id) })),
     ...(d.other ? [{ id: 'other', label: 'ほか', values: d.other.values, total: d.other.total, color: ACHART_OTHER }] : [])]
   const notes = []
   if (d.unit === 'week') notes.push('週は月曜はじまりです。期間の最初と最後の週は、期間に入る日だけを数えます。')
   if (split === 'site') notes.push('開催場所は、日報のシフトの開催場所です（シフトや開催場所のない日報は「（開催場所なし）」）。')
-  if (split !== 'none') notes.push(picking && picks.length
-    ? '選んだ人のほかは「ほか」にまとめています（この期間に日報のない人は出ません）。'
+  if (split !== 'none') notes.push(picking
+    ? '上の「スタッフ」で選んだ人を並べています（この期間に日報のない人は出ません）。'
     : `合計の多い上位${d.top}${split === 'staff' ? '人' : '件'}を出し、残りは「ほか」にまとめています。`)
-  if (picking && !picks.length) notes.push('「スタッフを選ぶ」で比べる人を選んでください（選ぶまでは上位の人を出します）。')
+  if (ANALYTICS.staff.length) notes.push(`上の「スタッフ」で選んだ人（${analyticsStaffLabel(ANALYTICS.data)}）の日報だけを数えています。`)
   if (!d.total_sum) notes.push('この期間の日報はありません。')
   const hbar = split !== 'none' && view === 'hbar'
   const height = hbar ? Math.max(120, parts.length * 34 + 40) : 300
@@ -5778,28 +5824,43 @@ function onAnalyticsChartChange(t) {
   else if (name === 'metric') { const i = v.indexOf(':'); ACHART.metric = i < 0 ? v : v.slice(0, i); ACHART.key = i < 0 ? '' : v.slice(i + 1) }
   else if (name === 'split') { if (ANALYTICS.project) ACHART.splitProject = v; else ACHART.splitAll = v }
   else if (name === 'top') ACHART.top = Number(v) || 5
-  else if (name === 'staffMode') ACHART.staffMode = v
   else return
   loadAnalyticsChart()
 }
-// 比べるスタッフを選ぶ（8人まで）。候補はこの期間に日報のある人（指標の合計の多い順）
+// スタッフで絞り込む（#9963。ページの上の絞り込み）。候補はこの月・この案件に日報のある人（日報の多い順）と、選んでいる人。
+// 30人まで選べ、表・グラフ・CSV が同じ条件になる。グラフの「スタッフ別」は選んだ人（8人まで）を並べる
 delegate('pickAnalyticsStaff', () => {
-  const d = ACHART.data; if (!d) return
-  const picks = new Set((ACHART.picks[ANALYTICS.project] || []).map(Number))
+  const d = ANALYTICS.data; if (!d) return
+  const picks = new Set(ANALYTICS.staff.map(Number))
+  const opts = (d.staff_options || []).slice()
+  for (const f of d.staff_filter || []) if (!opts.some(o => Number(o.staff_id) === Number(f.staff_id))) opts.push({ staff_id: f.staff_id, name: f.name, reports: 0 })
   modal(`
-    <h3 class="font-bold text-lg mb-1">比べるスタッフを選ぶ</h3>
-    <p class="text-xs text-gray-500 mb-3">${ACHART_MAX_PICK}人まで選べます。この期間に日報のある人を、${esc(d.label)}の多い順に出しています。</p>
-    <div class="max-h-[50vh] overflow-y-auto border rounded-lg divide-y">
-      ${d.choices.map(ch => `<label class="flex items-center gap-2 px-3 py-2 text-sm"><input type="checkbox" class="w-4 h-4 achart-pick" value="${Number(ch.id)}" ${picks.has(Number(ch.id)) ? 'checked' : ''}>
-        <span class="flex-1">${esc(ch.label)}</span><span class="text-xs text-gray-500">${esc(Number(ch.total || 0).toLocaleString())}</span></label>`).join('') || '<p class="text-sm text-gray-400 p-3">この期間に日報のある人がいません</p>'}
+    <h3 class="font-bold text-lg mb-1">スタッフで絞り込む</h3>
+    <p class="text-xs text-gray-500 mb-2">${ANALYTICS_STAFF_MAX}人まで選べます。選んだ人の日報だけで、表・グラフ・CSV を出します。この月${d.project ? 'のこの案件' : ''}に日報のある人を、日報の多い順に出しています。</p>
+    <input id="as-q" class="inp text-sm mb-2" placeholder="名前で絞り込み" aria-label="名前で絞り込み">
+    <div class="max-h-[50vh] overflow-y-auto border rounded-lg divide-y" id="as-rows">
+      ${opts.map(o => `<label class="flex items-center gap-2 px-3 py-2 text-sm" data-name="${esc(o.name || '')}"><input type="checkbox" class="w-4 h-4 analytics-staff-pick" value="${Number(o.staff_id)}" ${picks.has(Number(o.staff_id)) ? 'checked' : ''}>
+        <span class="flex-1">${esc(o.name || '（名前なし）')}</span><span class="text-xs text-gray-500">${Number(o.reports) ? `日報 ${Number(o.reports)}件` : 'この月の日報なし'}</span></label>`).join('') || '<p class="text-sm text-gray-400 p-3">この月に日報のある人がいません</p>'}
     </div>
-    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="savePickAnalyticsStaff">このスタッフで比べる</button></div>`)
+    <div class="flex gap-2 mt-4 flex-wrap">
+      <button class="btn btn-outline flex-1" data-action="clearAnalyticsStaff">全員に戻す</button>
+      <button class="btn btn-primary flex-1" data-action="savePickAnalyticsStaff">このスタッフで絞り込む</button>
+    </div>`)
+  const q = document.getElementById('as-q')
+  if (q) q.addEventListener('input', () => {
+    const w = searchNorm(q.value.trim())
+    document.querySelectorAll('#as-rows label[data-name]').forEach(l => { const cb = l.querySelector('input'); l.style.display = !w || (cb && cb.checked) || searchNorm(l.dataset.name).includes(w) ? '' : 'none' })
+  })
 })
 delegate('savePickAnalyticsStaff', () => {
-  const ids = [...document.querySelectorAll('.achart-pick:checked')].map(el => Number(el.value))
-  if (ids.length > ACHART_MAX_PICK) { toast(`選べるのは${ACHART_MAX_PICK}人までです`); return }
-  ACHART.picks[ANALYTICS.project] = ids
-  closeModal(); loadAnalyticsChart()
+  const ids = [...document.querySelectorAll('.analytics-staff-pick:checked')].map(el => Number(el.value))
+  if (ids.length > ANALYTICS_STAFF_MAX) { toast(`選べるのは${ANALYTICS_STAFF_MAX}人までです`); return }
+  ANALYTICS.staff = ids
+  closeModal(); renderAnalytics(ANALYTICS.month)
+})
+delegate('clearAnalyticsStaff', () => {
+  ANALYTICS.staff = []
+  closeModal(); renderAnalytics(ANALYTICS.month)
 })
 
 // ============ お知らせ配信 ============

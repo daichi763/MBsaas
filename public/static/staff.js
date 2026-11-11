@@ -1452,6 +1452,17 @@ function reportCommentHtml(text, byName, at, opts) {
     <span class="block ${o.large ? 'text-xs' : 'text-[11px]'} font-bold text-blue-700 mb-0.5"><i class="fas fa-comment-dots mr-1"></i>${esc(from)}${when}</span>
     <span class="block ${o.large ? 'text-sm text-blue-900' : 'text-xs text-blue-800'} whitespace-pre-wrap break-words">${o.link === false ? esc(text) : linkify(esc(text))}</span></span>`
 }
+// 管理者のコメント（#9965。日報1件に複数）。新しい順に、書いた人の名前つきで出す。直したコメントは直した日時。
+// comments が無い（古いサーバーの応答）ときは最新の1件（manager_comment）だけを出す。max を付けると新しい max 件だけを出し、残りの件数を添える
+function reportCommentsHtml(comments, legacy, opts) {
+  const o = opts || {}
+  const list = Array.isArray(comments) ? comments.slice().reverse()
+    : (legacy && legacy.text ? [{ body: legacy.text, author_name: legacy.by, created_at: legacy.at }] : [])
+  const shown = o.max ? list.slice(0, o.max) : list
+  const more = list.length - shown.length
+  return shown.map(c => reportCommentHtml(c.body, c.author_name, c.updated_at || c.created_at, o)).join('')
+    + (more > 0 ? `<span class="block text-[11px] text-blue-600 mt-1">ほか${more}件のコメント</span>` : '')
+}
 const reportShiftLabel = (x) => `${fmtDate(x.work_date)} ${formatShiftTime(x.start_time, x.end_time)} ${x.project_name || ''}${x.other_company && x.company_name ? '（' + x.company_name + '）' : ''}`
 
 function reportLoadError(e) {
@@ -1525,7 +1536,7 @@ async function renderReport() {
       ${sh.blocked ? `<p class="text-xs text-red-700 bg-red-50 rounded p-2 mt-2"><i class="fas fa-ban mr-1"></i>${esc(sh.blocked)}</p>` : ''}
       ${!tplFields.length ? '<p class="text-xs text-gray-600 bg-gray-50 rounded p-2 mt-2" id="report-no-template"><i class="fas fa-circle-info mr-1"></i>この案件には日報の項目（件数など）が設定されていません。下の「報告内容」に、その日の実績・報告をまとめて書いてください。項目があるはずの場合は、管理者に連絡してください</p>' : ''}
       ${prev ? `<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mt-2"><i class="fas fa-check mr-1"></i>提出済み（${esc(dayjs(prev.submitted_at).format('M/D HH:mm'))}）。内容を直して再提出できます${prev.manager_checked ? '<br>管理者が確認済みです。内容を変えて再提出すると、もう一度確認してもらうことになります' : ''}</p>` : ''}
-      ${prev && prev.manager_comment ? reportCommentHtml(prev.manager_comment, prev.manager_comment_by_name, prev.manager_comment_at) : ''}
+      ${prev ? reportCommentsHtml(prev.comments, { text: prev.manager_comment, by: prev.manager_comment_by_name, at: prev.manager_comment_at }) : ''}
     </section>
     <div id="report-handover"></div>
     <form id="report-form" class="space-y-4 pb-8" novalidate>
@@ -1643,7 +1654,7 @@ async function loadPastReports() {
       </span>
       <span class="block text-xs text-gray-500 mt-0.5">${esc(r.project_name)}${r.other_company ? ` <span class="badge badge-purple">${esc(r.company_name)}</span>` : ''}
         ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレーム</span>' : ''}${r.admin_edited_at ? '<span class="badge badge-purple"><i class="fas fa-user-pen"></i>管理者が修正</span>' : ''}</span>
-      ${r.manager_comment ? reportCommentHtml(r.manager_comment, r.manager_comment_by_name, r.manager_comment_at, { link: false }) : ''}
+      ${reportCommentsHtml(r.comments, { text: r.manager_comment, by: r.manager_comment_by_name, at: r.manager_comment_at }, { link: false, max: 1 })}
     </button>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'
   // 日報のコメントの通知から来たときは、その日報を開く（#158）
   const openId = OPEN_PAST_REPORT_ID; OPEN_PAST_REPORT_ID = null
@@ -1718,7 +1729,7 @@ delegate('openPastReport', (el) => {
     ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-gray-500">${esc(f.label)}${mark(f.key)}</p><p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(r.values[f.key])}</p></div>`).join('')}
     ${!shown.length ? '<p class="text-sm text-gray-400 mt-3">入力された項目はありません</p>' : ''}
     ${r.incident_flag || r.complaint_flag ? `<p class="mt-3">${r.incident_flag ? '<span class="badge badge-red">インシデントあり</span> ' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレームあり</span>' : ''}</p>` : ''}
-    ${r.manager_comment ? reportCommentHtml(r.manager_comment, r.manager_comment_by_name, r.manager_comment_at, { large: true }) : ''}
+    ${reportCommentsHtml(r.comments, { text: r.manager_comment, by: r.manager_comment_by_name, at: r.manager_comment_at }, { large: true })}
     ${r.shift_id && ae ? '<p class="text-[11px] text-gray-500 mt-4">再提出すると、出し直した内容が正になります（管理者の修正は履歴に残ります）</p>' : ''}
     ${r.shift_id ? `<button class="btn btn-primary w-full ${ae ? 'mt-1' : 'mt-4'}" data-action="editPastReport" data-id="${Number(r.shift_id)}"><i class="fas fa-pen-to-square"></i>内容を直して再提出する</button>` : ''}
     <button class="btn btn-outline w-full ${r.shift_id ? 'mt-2' : 'mt-4'}" onclick="closeModal()">閉じる</button>`)
@@ -1818,7 +1829,7 @@ async function renderPerf(month) {
           <div class="flex flex-wrap gap-1.5 mt-1.5">
             ${keys.map(k => `<span class="badge badge-blue">${esc(labels[k] || k)} ${esc(d.values[k])}</span>`).join('') || '<span class="text-xs text-gray-400">実績なし</span>'}
           </div>
-          ${d.comment ? reportCommentHtml(d.comment, d.comment_by_name, d.comment_at) : ''}
+          ${reportCommentsHtml(d.comments, { text: d.comment, by: d.comment_by_name, at: d.comment_at })}
         </div>`
       }).join('')}
     </div>` : ''}`

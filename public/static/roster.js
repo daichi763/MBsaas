@@ -858,7 +858,7 @@ window.renderPartners = async function () {
   } catch (e) {
     $app.innerHTML = `<div class="card p-6 text-center text-sm text-red-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
   }
-  const contact = (p) => [p.contact_name, p.phone, p.email].filter(Boolean).map(esc).join('<br>') || '<span class="text-gray-300">-</span>'
+  const contact = (p) => [p.contact_name ? esc(p.contact_name) + (p.contact_name_kana ? `<span class="text-[11px] text-gray-400">（${esc(p.contact_name_kana)}）</span>` : '') : '', esc(p.phone || ''), esc(p.email || '')].filter(Boolean).join('<br>') || '<span class="text-gray-300">-</span>'
   $app.innerHTML = `
     <a href="#staff" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>スタッフマスタ</a>
     <div class="flex items-center justify-between mt-2 mb-2 flex-wrap gap-2">
@@ -869,7 +869,7 @@ window.renderPartners = async function () {
     <p class="text-xs text-gray-500 mb-4">精算では、協力会社ごとに支払先がまとまります。クライアントでもある会社は、詳細でクライアントとつなげます。
       同じ会社が別の名前（表記ゆれ）で分かれているときは「統合」でまとめてください（所属スタッフと未確定のシフトの支払先を付け替えます。確定済みの精算は変えません）。</p>
     ${PARTNERS.list.length ? `<div class="card p-3 mb-3 flex gap-2 items-center flex-wrap"><i class="fas fa-magnifying-glass text-gray-400"></i>
-      <input id="partner-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="協力会社名・住所・ホームページ・担当者・社内担当者・メモで検索" value="${esc(PARTNERS.q)}">
+      <input id="partner-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="協力会社名・フリガナ・住所・ホームページ・担当者・社内担当者・メモで検索" value="${esc(PARTNERS.q)}">
       <select id="partner-assignee" class="inp text-sm w-auto" aria-label="社内担当者で絞り込み">${assigneeFilterOptions(PARTNERS.list, PARTNERS.assignee)}</select>
       <span id="partner-count" class="text-xs text-gray-400 whitespace-nowrap"></span></div>` : ''}
     <div class="card overflow-x-auto">
@@ -877,7 +877,7 @@ window.renderPartners = async function () {
         <thead><tr><th>協力会社名</th><th>担当者・連絡先</th><th>社内担当者</th><th>所属スタッフ</th><th>今月の稼働</th><th>クライアント</th><th>メモ</th><th></th></tr></thead>
         <tbody>${PARTNERS.list.map(p => `
           <tr data-partner-row="${Number(p.affiliation_id)}">
-            <td class="font-medium"><a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline">${esc(p.affiliation_name)}</a>
+            <td class="font-medium">${p.affiliation_name_kana ? `<span class="block text-[11px] font-normal text-gray-400">${esc(p.affiliation_name_kana)}</span>` : ''}<a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline">${esc(p.affiliation_name)}</a>
               ${p.address || p.postal_code ? `<span class="block text-[11px] font-normal text-gray-500 max-w-[260px] truncate" title="${esc(partnerAddress(p))}"><i class="fas fa-location-dot mr-1 text-gray-400"></i>${esc(partnerAddress(p))}</span>` : ''}
               ${p.website_url ? `<span class="block text-[11px] font-normal text-gray-500 max-w-[260px] truncate"><i class="fas fa-globe mr-1 text-gray-400"></i>${esc(partnerUrlHost(p.website_url))}</span>` : ''}</td>
             <td class="text-xs">${contact(p)}</td>
@@ -909,8 +909,8 @@ function filterPartnerRows() {
   let shown = 0
   for (const p of PARTNERS.list) {
     const tr = document.querySelector(`tr[data-partner-row="${Number(p.affiliation_id)}"]`); if (!tr) continue
-    const hit = matchesAssigneeFilter(p.assignees, PARTNERS.assignee) && matchesKeyword(PARTNERS.q, [p.affiliation_name, p.postal_code, p.address, p.website_url,
-      p.contact_name, p.contact_department, p.phone, p.email, p.company_phone, p.company_email, p.representative_name, p.branch_name, p.department_name,
+    const hit = matchesAssigneeFilter(p.assignees, PARTNERS.assignee) && matchesKeyword(PARTNERS.q, [p.affiliation_name, p.affiliation_name_kana, p.postal_code, p.address, p.website_url,
+      p.contact_name, p.contact_name_kana, p.contact_department, p.phone, p.email, p.company_phone, p.company_email, p.representative_name, p.branch_name, p.department_name,
       p.internal_contact_name, p.memo, p.client_name, ...(p.assignees || []).map(a => a.name)])
     tr.hidden = !hit; if (hit) shown++
   }
@@ -938,7 +938,8 @@ async function renderPartnerDetail(pid) {
   if (editNow) { try { await loadAssigneeOptions(true) } catch (e) { editNow = false; showApiError(e, '社内担当者の選択肢を読み込めませんでした') } }
   $app.innerHTML = `
     <a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
-    <div class="flex items-center gap-2 mt-2 mb-4 flex-wrap">
+    ${p.affiliation_name_kana ? `<p class="text-xs text-gray-400 mt-2">${esc(p.affiliation_name_kana)}</p>` : ''}
+    <div class="flex items-center gap-2 ${p.affiliation_name_kana ? '' : 'mt-2'} mb-4 flex-wrap">
       <h2 class="text-xl font-bold text-gray-900">${esc(p.affiliation_name)}</h2>
       <span class="badge badge-purple">協力会社</span>
       ${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>クライアント「${esc(p.client_name)}」でもあります</a>` : ''}
@@ -991,6 +992,7 @@ function partnerBasicHtml(p, editing) {
         <div class="space-y-2">
           ${inp('pt-name', '協力会社名 *', p.affiliation_name, 'maxlength="100"')}
           <p class="text-[11px] text-gray-400 -mt-1 text-right">名前を変えると、所属スタッフの所属会社名も変わります</p>
+          ${inp('pt-name-kana', 'フリガナ', p.affiliation_name_kana, 'maxlength="100" placeholder="ひらがなでも可（カタカナで保存）"')}
           ${inp('pt-rep', '代表者氏名', p.representative_name, 'maxlength="100"')}
           ${inp('pt-branch', '支店', p.branch_name, 'maxlength="100"')}
           ${inp('pt-department', '部門', p.department_name, 'maxlength="100"')}
@@ -1025,6 +1027,7 @@ function partnerContactHtml(p) {
       <button class="btn btn-outline text-xs" data-action="partnerEditContact"><i class="fas fa-pen"></i>${has ? '編集' : '担当者を登録'}</button>
     </div>
     ${has ? `<div class="p-2.5 rounded-lg bg-gray-50 text-sm min-w-0">
+      ${p.contact_name_kana ? `<p class="text-[11px] text-gray-400">${esc(p.contact_name_kana)}</p>` : ''}
       <p class="font-medium text-gray-800">${esc(p.contact_name || '-')}</p>
       <p class="text-xs text-gray-500">${esc(p.contact_department || '-')}</p>
       <p class="text-xs text-gray-500">${esc(p.phone || '-')}　${esc(p.email || '')}</p>
@@ -1038,7 +1041,7 @@ delegate('partnerCancelBasic', () => { const box = document.getElementById('part
 delegate('partnerSaveBasic', el => withSubmitLock(el, async () => {
   const err = document.getElementById('pt-basic-error'); err.classList.add('hidden')
   const v = id => { const x = document.getElementById(id); return x ? (x.value || '').trim() : undefined }
-  const body = { affiliation_name: v('pt-name'), representative_name: v('pt-rep'), branch_name: v('pt-branch'), department_name: v('pt-department'),
+  const body = { affiliation_name: v('pt-name'), affiliation_name_kana: v('pt-name-kana'), representative_name: v('pt-rep'), branch_name: v('pt-branch'), department_name: v('pt-department'),
     company_phone: v('pt-company-phone'), company_email: v('pt-company-email'), postal_code: v('pt-postal'), address: v('pt-address'), website_url: v('pt-url'),
     partner_kind: v('pt-kind'), payment_rule: v('pt-payment'), partner_rating: v('pt-rating'), memo: document.getElementById('pt-memo').value,
     invoice_number: v('pt-invoice'), assignees: collectAssignees('pt') }
@@ -1058,6 +1061,7 @@ delegate('partnerEditContact', () => {
     <h3 class="font-bold text-lg mb-4">先方の担当者</h3>
     <div class="space-y-3">
       ${f('pc-name', '担当者氏名', p.contact_name, 'maxlength="100"')}
+      ${f('pc-name-kana', 'フリガナ', p.contact_name_kana, 'maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）"')}
       ${f('pc-dept', '部署・役職', p.contact_department, 'maxlength="100"')}
       ${f('pc-phone', '電話番号', p.phone, 'type="tel" maxlength="20"')}
       ${f('pc-email', 'メールアドレス', p.email, 'type="email" maxlength="254"')}
@@ -1071,7 +1075,7 @@ delegate('partnerEditContact', () => {
 delegate('partnerSaveContact', el => withSubmitLock(el, async () => {
   const v = id => (document.getElementById(id).value || '').trim()
   try {
-    await axios.put('/api/admin/roster/partners/' + Number(el.dataset.id), { contact_name: v('pc-name'), contact_department: v('pc-dept'), phone: v('pc-phone'), email: v('pc-email') })
+    await axios.put('/api/admin/roster/partners/' + Number(el.dataset.id), { contact_name: v('pc-name'), contact_name_kana: v('pc-name-kana'), contact_department: v('pc-dept'), phone: v('pc-phone'), email: v('pc-email') })
     closeModal(); toast('先方の担当者を保存しました'); renderPartnerDetail(Number(el.dataset.id))
   } catch (e) { showApiError(e, '保存に失敗しました') }
 }))
@@ -1153,6 +1157,7 @@ delegate('partnerEdit', (el) => withSubmitLock(el, async () => {
     <h3 class="font-bold text-lg mb-4">協力会社の登録</h3>
     <div class="space-y-3">
       ${f('pt-name', '協力会社名 *', 'maxlength="100"')}
+      ${f('pt-name-kana', 'フリガナ', 'maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）"')}
       <div><label class="text-sm text-gray-600 block mb-1">種別</label><select id="pt-kind" class="inp">${clientKindOptions('')}</select></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         ${f('pt-rep', '代表者氏名', 'maxlength="100"')}
@@ -1177,7 +1182,7 @@ delegate('partnerEdit', (el) => withSubmitLock(el, async () => {
 }))
 delegate('partnerSave', (el) => withSubmitLock(el, async () => {
   const v = (id) => (document.getElementById(id).value || '').trim()
-  const body = { affiliation_name: v('pt-name'), partner_kind: v('pt-kind'), representative_name: v('pt-rep'), company_phone: v('pt-company-phone'),
+  const body = { affiliation_name: v('pt-name'), affiliation_name_kana: v('pt-name-kana'), partner_kind: v('pt-kind'), representative_name: v('pt-rep'), company_phone: v('pt-company-phone'),
     company_email: v('pt-company-email'), postal_code: v('pt-postal'), address: v('pt-address'), website_url: v('pt-url'), payment_rule: v('pt-payment'),
     invoice_number: v('pt-invoice'), memo: document.getElementById('pt-memo').value, assignees: collectAssignees('pt') }
   if (!body.affiliation_name) { toast('協力会社名を入力してください'); return }

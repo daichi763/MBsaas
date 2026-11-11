@@ -175,7 +175,8 @@ const R = { staff: A.staff_id }
 {
   const js = (f) => readFileSync(new URL(`../public/static/${f}`, import.meta.url), 'utf8')
   const ad = js('admin.js'), st = js('staff.js'), sa = js('staff-attendance.js'), rl = js('report-link.js'), se = js('settlement.js'), hq = js('hq.js')
-  ok('#158 日報のコメントの下に、スタッフ既読（comment_read_at）を出す', /function reportCommentReadHtml\(r, fmt\)/.test(ad) && ad.includes('スタッフ既読 ${esc(fmt(r.comment_read_at))}') && ad.includes('${reportCommentReadHtml(r, fmt)}'))
+  // コメントを複数にした #9965 の後は、コメントごとの既読（read_at）を出す
+  ok('#158 日報のコメントの下に、スタッフ既読（コメントごとの read_at）を出す', /function reportCommentReadHtml\(cm, fmt\)/.test(ad) && ad.includes('スタッフ既読 ${esc(fmt(cm.read_at))}') && ad.includes('${reportCommentReadHtml(cm, fmt)}'))
   ok('#283 欠勤にするときは理由を選び、cancel_reason で送る（シフトボードは putShiftStatus を使う）', ad.includes("if (status === 'absent' && cancelReason) body.cancel_reason = cancelReason") && /function askAbsentReason\(head\)/.test(ad) && ad.includes('const reason = await askAbsentReason(msg)'))
   ok('#297 スタッフ一覧の状態の絞り込みに「書類の期限」、クライアント一覧に契約書の期限の絞り込み', ad.includes("['docexp', '書類の期限']") && ad.includes('docexp: s => Number(s.doc_expiring) > 0') && ad.includes("(!L.docexp || Number(c.doc_expiring) > 0)"))
   ok('#173 スタッフアプリのホームのシフトと相談の画面、報告用URLに現場責任者・緊急連絡先を出す', st.includes('${homeShiftContactsHtml(s, cur)}') && st.includes("loadEmergencyContacts('consult-emergency')") && /function siteContactHtml\(s\)/.test(rl) && (rl.match(/\$\{siteContactHtml\(s\)\}/g) || []).length === 2)
@@ -224,8 +225,9 @@ async function browserChecks() {
     // ----- 管理画面 -----
     await as('sample', 'admin')
     await send('Page.navigate', { url: `${BASE}/admin#reports/date=${R.reportDate}&staff=${R.staff}` }); await wait(1500)
-    await until(`!!document.getElementById('report-comment-read-${R.reportId}')`)
-    const badge = await text(`#report-comment-read-${R.reportId}`)
+    const readSel = `[data-action=commentReport][data-id="${R.reportId}"]`
+    await until(`!!document.querySelector('[data-report-comment] [data-comment-read]')`)
+    const badge = await ev(`(() => { const b = document.querySelector(${JSON.stringify(readSel)}); const card = b && b.closest('section'); const el = card && card.querySelector('[data-comment-read]'); return el ? el.innerText : '' })()`)
     ok('#158 画面: 日報のコメントの下に「スタッフ既読 M/D HH:mm」', /スタッフ既読 \d{1,2}\/\d{1,2} \d{2}:\d{2}/.test(badge), badge)
 
     // スタッフ一覧の「書類の期限」の絞り込み
