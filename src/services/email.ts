@@ -106,18 +106,18 @@ async function blockedReasons(env: MailEnv, inputs: SendEmailInput[]): Promise<(
   return out
 }
 
-// 送信できる設定かどうか。disabled: MAIL_ENABLED='false' / not_configured: APIキーか送信元が未設定
-export function mailMode(env: MailEnv): 'enabled' | 'disabled' | 'not_configured' {
-  if (env.MAIL_ENABLED === 'false') return 'disabled'
+// 送信できる設定かどうか。disabled: MAIL_ENABLED が 'true' でない（未設定も含む。#9967 で canSendMail とそろえた）/ not_configured: APIキーか送信元が未設定
+export function mailMode(env: { RESEND_API_KEY?: string; MAIL_FROM?: string; MAIL_ENABLED?: string }): 'enabled' | 'disabled' | 'not_configured' {
+  if (env.MAIL_ENABLED !== 'true') return 'disabled'
   if (!env.RESEND_API_KEY || !env.MAIL_FROM) return 'not_configured'
   return 'enabled'
 }
 /**
- * 実際にメールを送れる環境か（#9802）。MAIL_ENABLED が 'true' で、APIキーと送信元があるときだけ true。
+ * 実際にメールを送れる環境か（#9802）。MAIL_ENABLED が 'true' で、APIキーと送信元があるときだけ true（mailMode が enabled のとき）。
  * 本番の MAIL_ENABLED=true・RESEND_API_KEY 未設定は false になる。送れない間の動き（確認用のメールを使わずに切り替えるなど）の判断に使う
  */
 export function canSendMail(env: { RESEND_API_KEY?: string; MAIL_FROM?: string; MAIL_ENABLED?: string }): boolean {
-  return env.MAIL_ENABLED === 'true' && !!env.RESEND_API_KEY && !!env.MAIL_FROM
+  return mailMode(env) === 'enabled'
 }
 
 function warnTestSender(env: MailEnv) {

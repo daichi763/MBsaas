@@ -18,7 +18,7 @@ const DUPLICATE_WINDOW_SEC = 60 // 同じ本文の再送を重複とみなす秒
 
 // 念のためのロールチェック（/admin/* ミドルウェアと二重）
 chatApi.use('/*', async (c, next) => {
-  if (!CHAT_ROLES.includes(c.get('user').role)) return c.json({ error: 'forbidden' }, 403)
+  if (!CHAT_ROLES.includes(c.get('user').role)) return c.json({ error: '権限がありません' }, 403)
   return next()
 })
 

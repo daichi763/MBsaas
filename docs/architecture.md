@@ -177,7 +177,7 @@ flowchart LR
 ### 6.1 Resend（メール）
 
 - 送信は `src/services/email.ts` の `sendEmail` / `sendEmailBatch` に集めています。メールの文面は `src/email-templates/` にあります。
-- 送るかどうか（`src/services/email.ts:110` の `mailMode`）: `MAIL_ENABLED` が `'false'` なら送らずに記録だけ残す（`skipped`）。`RESEND_API_KEY` か `MAIL_FROM` がなければ `not_configured`（送信失敗として記録）。
+- 送るかどうか（`src/services/email.ts:110` の `mailMode`）: `MAIL_ENABLED` が `'true'` でなければ（未設定も含む。`canSendMail` と同じ判定。#9967）送らずに記録だけ残す（`skipped`）。`RESEND_API_KEY` か `MAIL_FROM` がなければ `not_configured`（送信失敗として記録）。
 - 送信の記録は `email_logs` テーブル（本文と API キーは残さない）。本部画面の「メール送信」と、管理画面の「通知」の中のメール送信状況で見られます。
 - 不達・迷惑メールの報告・配信済みは、Resend の Webhook（`POST /webhooks/resend`）で受け取ります。`RESEND_WEBHOOK_SECRET` で Svix 形式の署名を確かめ、未設定なら 503、署名が違えば 401 を返します（`src/services/email.ts:290`〜`298`）。不達・迷惑メールの報告があったアドレスは `email_suppressions` に入れ、以後は送りません。
 - 現在の本番: `RESEND_API_KEY` を登録していないため、本番からメールは送られません（[decisions.md](decisions.md) の D-31）。
@@ -352,7 +352,7 @@ docs/                     この資料と機能ごとの仕様
 |---|---|---|---|
 | `MAIL_FROM` | Resend のテスト用アドレス | 同じ（独自ドメインに変える予定） | メールの送信元。`resend.dev` のテスト用アドレスは Resend のアカウント所有者にしか届かない（`src/services/email.ts:123`〜`126`） |
 | `APP_BASE_URL` | `http://localhost:8787` | 本番の URL | メールの中のリンク、VAPID の連絡先の既定 |
-| `MAIL_ENABLED` | `false` | `true` | `'false'` ならメールを送らず記録だけ（`src/services/email.ts:111`） |
+| `MAIL_ENABLED` | `false` | `true` | `'true'` 以外（未設定も含む）ならメールを送らず記録だけ（`src/services/email.ts:111`） |
 | `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:832`） |
 | `DEMO_MODE` | `true` | `false` | `'true'` のときだけ、ログイン画面にデモアカウントの案内を出す（`src/index.tsx:263`） |
 

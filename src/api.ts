@@ -78,6 +78,7 @@ import { hqSupportAdminApi, hqSupportHqApi, hqViewAdminGuard, hqViewUser, loadHq
 import { toursAdminApi, toursStaffApi } from './tours'
 import { nowJST, todayJST, addDays } from './lib/time'
 import { sha256, randomHex } from './lib/hash'
+import { readJson, recordSwallowedError, appBaseUrl } from './lib/http'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -630,7 +631,7 @@ api.post('/auth/forgot-password', async (c) => {
     await c.env.DB.prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
       .bind(u.user_id, tokenHash, expiresAt).run()
 
-    const resetUrl = `${c.env.APP_BASE_URL}/reset-password?token=${rawToken}`
+    const resetUrl = `${appBaseUrl(c.env)}/reset-password?token=${rawToken}`
     // 同じメールアドレスに複数の会社のアカウントがあっても、どのアカウントのリンクか分かるように会社名とIDを入れる
     // ログインに必要な会社コードも入れる（本部ユーザーは会社コードなしでログインするため入れない。#208）
     const tpl = passwordResetEmail({ name: u.name, resetUrl, expiresInHours: EXPIRES_HOURS, companyName: u.company_name, userCode: u.user_code,
@@ -746,7 +747,7 @@ api.use('/*', async (c, next) => {
     if (r.reason === 'company_inactive') return c.json({ error: 'ご契約が停止中のため、現在ご利用いただけません', code: 'company_inactive' }, 403)
     // 企業切替で入っていた会社との連携が終わった（D-53 #9942）。セッションは消したので、ログインし直すと所属元の会社に入る
     if (r.reason === 'link_ended') return c.json({ error: 'この会社との連携が終了したため、この会社の画面は使えなくなりました。ログインし直してください', code: 'link_ended' }, 401)
-    return c.json({ error: 'unauthorized' }, 401)
+    return c.json({ error: 'ログインしてください' }, 401)
   }
   const u = r.user
   // 同じブラウザで別のアカウントにログインし直されたら、開いたままの画面からの操作を通さない（#346）。
@@ -842,7 +843,7 @@ api.get('/auth/me', async (c) => {
 // 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用）のときだけ /admin/* の GET を使える（#293。src/hq-support.ts）
 api.use('/admin/*', hqViewAdminGuard)
 api.use('/admin/*', async (c, next) => {
-  if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: 'forbidden' }, 403)
+  if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: '権限がありません' }, 403)
   return next()
 })
 // 従業員管理（社員名簿・入社時書類）は会社管理者・事務担当のみ（#205）
@@ -853,7 +854,7 @@ const hrOnly = async (c: any, next: any) => {
 api.use('/admin/employees', hrOnly)
 api.use('/admin/employees/*', hrOnly)
 api.use('/hq/*', async (c, next) => {
-  if (c.get('user')?.role !== 'system_admin') return c.json({ error: 'forbidden' }, 403)
+  if (c.get('user')?.role !== 'system_admin') return c.json({ error: '権限がありません' }, 403)
   return next()
 })
 // 本部の操作の履歴（#542）: 本部の書き込み（GET 以外）が成功したら、だれが・いつ・どのパスを操作したかを残す。
@@ -880,7 +881,7 @@ function hqAuditStmt(c: any, e: { action: string; company_id?: number | null; ta
 }
 // スタッフ本人向け API（/api/staff/*）はスタッフのロールだけ（管理者・本部のセッションでは使えない）
 api.use('/staff/*', async (c, next) => {
-  if (c.get('user')?.role !== 'staff') return c.json({ error: 'forbidden' }, 403)
+  if (c.get('user')?.role !== 'staff') return c.json({ error: '権限がありません' }, 403)
   return next()
 })
 // ============ セキュリティ: 二段階認証・ログイン中の端末・ログインの履歴（作業単位 w4-auth-features: #544 #453 #552） ============
@@ -1175,7 +1176,7 @@ async function staffLoginUser(c: any): Promise<any | null> {
 api.get('/admin/staff/:id/sessions', async (c) => {
   const u = c.get('user')
   const su = await staffLoginUser(c)
-  if (!su) return c.json({ error: 'not found' }, 404)
+  if (!su) return c.json({ error: '見つかりません' }, 404)
   const sessions = (await personSessions(c.env.DB, su.user_id, su.scope_company_id)).map(s => ({ ...sessionView(s), company_id: undefined, other_company: s.company_id !== u.company_id }))
   const where = ['e.company_id = ?', 'e.user_id = ?']; const binds: any[] = [u.company_id, su.user_id]
   const history = u.role === 'company_admin' ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
@@ -1186,7 +1187,7 @@ api.get('/admin/staff/:id/sessions', async (c) => {
 api.delete('/admin/staff/:id/sessions', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const su = await staffLoginUser(c)
-  if (!su) return c.json({ error: 'not found' }, 404)
+  if (!su) return c.json({ error: '見つかりません' }, 404)
   const n = await revokePersonSessions(db, su.user_id, su.scope_company_id)
   await recordLoginEvent(db, c, { company_id: u.company_id, user_id: su.user_id, company_code: u.company_code, user_code: su.user_code, event_type: 'forced_logout', result: 'success', actor_user_id: u.user_id })
   return c.json({ ok: true, revoked: n })
@@ -1656,7 +1657,7 @@ api.post('/staff/attendance/no-break', async (c) => {
     if (isUniqueViolation(e)) return c.json({ error: 'すでに報告済みです' }, 409)
     throw e
   }
-  await syncActualFromReports(db, owner.company_id, Number(shift.shift_id)).catch(() => {})
+  await syncActualFromReports(db, owner.company_id, Number(shift.shift_id)).catch(e => recordSwallowedError(c, '実績の同期', e))
   // 管理者に理由を知らせる（失敗しても報告は取り消さない）
   try {
     const p = await db.prepare('SELECT project_name FROM projects WHERE project_id = ?').bind(shift.project_id).first() as any
@@ -1715,7 +1716,7 @@ api.post('/staff/attendance/withdraw', async (c) => {
       .bind(owner.company_id, recordUser, ATTENDANCE_WITHDRAWN_KIND, title, body, '#attendance', shift.shift_id, now, now, ...ids),
   ])
   if (!res[res.length - 1].meta.changes) return c.json({ error: '報告の状態が変わりました。画面を読み直してください' }, 409)
-  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, owner.company_id, Number(shift.shift_id)).catch(() => {})
+  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, owner.company_id, Number(shift.shift_id)).catch(e => recordSwallowedError(c, '実績の同期', e))
   // 写真は D1 から消した後に消す（失敗しても取消は戻さない）
   for (const r of rows) if (r.photo_key) await c.env.PHOTOS.delete(r.photo_key).catch(() => {})
   return c.json({ ok: true, withdrawn: types })
@@ -1774,7 +1775,7 @@ api.use('/staff/attendance-photo', attendanceTestHooks)
 
 // 勤怠報告（写真なし。写真が必須の入店・退店は、会社が許可していれば理由つきで写真なしで受け付ける #535）
 api.post('/staff/attendance', async (c) => {
-  const b = await c.req.json().catch(() => ({} as any))
+  const b = await readJson(c)
   if (!REPORT_TYPES.includes(b.report_type)) return c.json({ error: '不正な報告種別です' }, 400)
   const r = await recordPunch(c, { shiftId: b.shift_id, reportType: b.report_type, latitude: b.latitude, longitude: b.longitude, address: b.address,
     noPhotoReason: b.no_photo_reason, noPhotoNote: b.no_photo_note, clientRequestId: b.client_request_id, pressedAt: b.pressed_at, deviceNow: b.device_now,
@@ -3555,7 +3556,7 @@ api.get('/admin/staff/:id', async (c) => {
   const db = c.env.DB
   // 基本項目は linked_external（他社から連携）の場合、所属元企業の値で解決される（src/roster.ts）
   const profile = await loadRoster(db, sid, u.company_id)
-  if (!profile) return c.json({ error: 'not found' }, 404)
+  if (!profile) return c.json({ error: '見つかりません' }, 404)
   // 自社雇用者は従業員管理（社員名簿）の連絡先をそのまま表示する
   if (profile.affiliation_type === 'own_employee') {
     const er = await db.prepare('SELECT phone_main, personal_email, employee_number, department, job_title FROM employee_records WHERE staff_id = ? AND company_id = ?').bind(sid, u.company_id).first()
@@ -3945,7 +3946,7 @@ async function applyContactUpdate(c: any, body: any, roster: any, opts: { direct
   ])
   const co = await db.prepare('SELECT company_name, company_code FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
   const tpl = loginEmailVerifyEmail({ name: roster.name, companyName: co?.company_name || '', companyCode: co?.company_code || '', userCode: roster.user_code,
-    verifyUrl: `${c.env.APP_BASE_URL}/verify-email?token=${raw}`, expiresInHours: LOGIN_EMAIL_VERIFY_HOURS })
+    verifyUrl: `${appBaseUrl(c.env)}/verify-email?token=${raw}`, expiresInHours: LOGIN_EMAIL_VERIFY_HOURS })
   const sent = await sendEmail(c.env, { to: email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'login_email_verify', company_id: u.company_id })
   out.login_email = { pending: email, mail_sent: !!sent.ok, mail_skipped: !!sent.skipped }
   return out
@@ -4073,9 +4074,9 @@ function availabilityTargetError(v: unknown): string | null {
 // スタッフ更新（スタッフマスタ画面から）
 api.put('/admin/staff/:id', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
-  const body = await c.req.json()
+  const body = await readJson(c)
   const roster = await loadRoster(c.env.DB, sid, u.company_id)
-  if (!roster) return c.json({ error: 'not found' }, 404)
+  if (!roster) return c.json({ error: '見つかりません' }, 404)
   if (roster.merged_into_staff_id) return c.json({ error: '統合済みのスタッフは変更できません（統合先のスタッフで編集してください）' }, 409)
   // 離職リスクは 低・中・高 のみ（#381。ダッシュボードの要フォロー・一覧の絞り込みは low 以外を対象にする）
   if (body.retention_risk !== undefined && !['low', 'mid', 'high'].includes(body.retention_risk)) return c.json({ error: '離職リスクは 低・中・高 から選んでください' }, 400)
@@ -4149,7 +4150,7 @@ api.post('/admin/staff/:id/login-email-pending/cancel', async (c) => {
 // スタッフ登録（テスト・内部用。画面からは呼ばない。画面の新規登録は名簿の登録 POST /admin/roster）
 api.post('/admin/staff', async (c) => {
   const u = c.get('user')
-  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force, availability_target } = await c.req.json()
+  const { user_code: rawCode, name, password, email, phone, skills, career, work_area, force, availability_target } = await readJson(c)
   const user_code = normalizeLoginCode(rawCode) // ログイン画面と同じく全角を半角にそろえて保存する（#387）
   if (!user_code || !name || !password) return c.json({ error: 'スタッフ番号・氏名・パスワードは必須です' }, 400)
   const avErr = availabilityTargetError(availability_target)
@@ -4187,7 +4188,7 @@ api.post('/admin/staff', async (c) => {
 api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const u = c.get('user'); const sid = c.req.param('id')
   const profile = await loadRoster(c.env.DB, sid, u.company_id)
-  if (!profile) return c.json({ error: 'not found' }, 404)
+  if (!profile) return c.json({ error: '見つかりません' }, 404)
   // 経験案件は、確定・代打で稼働日が今日までのシフトに限る（欠勤・希望・未来の予定は含めない）
   const projects = await c.env.DB.prepare(`
     SELECT DISTINCT p.project_name, p.project_type FROM shifts s JOIN projects p ON s.project_id = p.project_id
@@ -4411,7 +4412,7 @@ function validateInvoiceNumber(v: string | null | undefined): string | null | 'i
 
 api.put('/admin/clients/:id', async (c) => {
   const u = c.get('user'); const cid = c.req.param('id')
-  const b = await c.req.json()
+  const b = await readJson(c)
 
   let invoiceNumber: string | null = null
   if (b.invoice_number !== undefined) {
@@ -4520,7 +4521,7 @@ async function assertClientOwned(c: any, cid: string) {
 api.post('/admin/clients/:id/contacts', async (c) => {
   const u = c.get('user'); const cid = c.req.param('id')
   if (!(await assertClientOwned(c, cid))) return c.json({ error: 'クライアントが見つかりません' }, 404)
-  const b = await c.req.json()
+  const b = await readJson(c)
   if (!b.contact_name) return c.json({ error: '担当者氏名は必須です' }, 400)
   if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
 
@@ -4534,7 +4535,7 @@ api.put('/admin/clients/contacts/:contactId', async (c) => {
   const u = c.get('user'); const contactId = c.req.param('contactId')
   const existing = await c.env.DB.prepare('SELECT contact_id FROM client_contacts WHERE contact_id = ? AND company_id = ?').bind(contactId, u.company_id).first()
   if (!existing) return c.json({ error: '担当者が見つかりません' }, 404)
-  const b = await c.req.json()
+  const b = await readJson(c)
   if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return c.json({ error: 'メールアドレスの形式が正しくありません' }, 400)
 
   // 送られてきた項目だけを更新し、空欄は NULL にして消せるようにする（#92）。氏名は空にできない
@@ -4626,7 +4627,7 @@ api.get('/admin/employees/export', async (c) => {
   const csv = toCsv(includePay ? [...header, ...payHeader] : header, csvRows,
     { textCols: ['社員番号', '郵便番号', '電話番号', '雇用保険番号', '社会保険番号', '金融機関コード', '支店コード', '口座番号'] })
   await db.prepare('INSERT INTO settlement_export_logs (company_id, kind, filters_json, row_count, exported_by, exported_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(u.company_id, 'employees', JSON.stringify({ status: status || null, include_pay: includePay || null }), rows.length, u.user_id, nowJST()).run().catch(() => {})
+    .bind(u.company_id, 'employees', JSON.stringify({ status: status || null, include_pay: includePay || null }), rows.length, u.user_id, nowJST()).run().catch(e => recordSwallowedError(c, '従業員の CSV の書き出しの記録', e))
   return csvResponse(`従業員名簿_${status ? statusLabel({ employment_status: status }) + '_' : ''}${todayJST()}${includePay ? '_口座給与あり' : ''}.csv`, csv)
 })
 
@@ -4657,7 +4658,7 @@ api.put('/admin/employees/:staffId', async (c) => {
   const staff = await assertOwnEmployee(c, sid)
   if (!staff) return c.json({ error: '社員名簿の対象ではありません' }, 404)
 
-  const b = await c.req.json()
+  const b = await readJson(c)
   // スタッフ基本情報（スタッフマスタに反映される項目）。自社雇用者はここでのみ編集できる
   // 所属会社名は自社名で固定のため受け付けない。メモ・フォロー等の追記項目はスタッフマスタ画面側で扱う
   const profile: Record<string, any> = {}
@@ -4849,7 +4850,7 @@ api.get('/admin/projects/:id', async (c) => {
     FROM projects p LEFT JOIN clients cl ON p.client_id = cl.client_id AND cl.company_id = p.company_id
     LEFT JOIN report_templates rt ON p.report_template_id = rt.template_id
     WHERE p.project_id = ?1 AND p.company_id = ?2`).bind(pid, u.company_id, month).first()
-  if (!project) return c.json({ error: 'not found' }, 404)
+  if (!project) return c.json({ error: '見つかりません' }, 404)
 
   const staffPerf = await db.prepare(`
     SELECT dr.staff_id, us.name,
@@ -5222,7 +5223,7 @@ api.get('/admin/shifts/:id/attendance-photos', async (c) => {
 })
 
 api.post('/admin/shifts', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   if (!b.staff_id || !b.project_id || !b.work_date) return c.json({ error: 'スタッフ・案件・日付は必須です' }, 400)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.work_date))) return c.json({ error: '日付の形式が正しくありません' }, 400)
   // スタッフに通知を送るか・添えるメッセージ（#9906。省略すると会社の既定）
@@ -5280,7 +5281,7 @@ api.post('/admin/shifts', async (c) => {
 })
 
 api.put('/admin/shifts/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   // 確定済み（精算）のシフトはメモ以外を変更できない
   const cur = await ownShift(c.env.DB, u.company_id, c.req.param('id'))
   if (!cur) return c.json({ error: 'シフトが見つかりません' }, 404)
@@ -6456,7 +6457,7 @@ async function sendNoticeEmails(env: Bindings, noticeId: number, companyId: numb
   const db = env.DB
   const record = opts.record !== false
   try {
-    const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+    const base = appBaseUrl(env)
     const url = `${base}/staff#notices/${noticeId}`
     // 件名・末尾に会社名・重要度・案件名・問い合わせ先を入れ、返信先を企業のアドレスにする（#367 #455）。
     // 「確認しました」のリンクは1人ずつのワンタイムのトークン（#454。確認が要らないお知らせには付けない）
@@ -7716,7 +7717,7 @@ api.get('/hq/companies/:id', async (c) => {
   const cid = c.req.param('id')
   const db = c.env.DB
   const company = await db.prepare('SELECT * FROM companies WHERE company_id = ? AND COALESCE(active_status, \'active\') != ?').bind(cid, HQ_COMPANY_STATUS).first() as any
-  if (!company) return c.json({ error: 'not found' }, 404)
+  if (!company) return c.json({ error: '見つかりません' }, 404)
   // 本部ユーザーは一覧に出さない。メールアドレスは管理者アカウントの分だけ返す（スタッフの連絡先は本部に出さない）
   // billable: 課金対象（企業一覧の利用数・月額と同じ条件）。在籍状況（休職など）はスタッフ行の値（#366）
   const users = await db.prepare(`SELECT u.user_id, u.user_code, u.name, u.role, u.status, u.last_login_at, u.last_seen_at, u.must_change_password,
@@ -7778,7 +7779,7 @@ api.put('/hq/companies/:id', async (c) => {
   const cid = Number(c.req.param('id'))
   // 本部専用の企業行（internal）は変更しない
   const before = await db.prepare(`SELECT * FROM companies WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`).bind(cid, HQ_COMPANY_STATUS).first() as any
-  if (!before) return c.json({ error: 'not found' }, 404)
+  if (!before) return c.json({ error: '見つかりません' }, 404)
   // 送られた項目だけを確かめて更新する（#254）。null は従来どおり「変更しない」。ただしユーザー上限の空欄・null は「上限なし」（NULL）
   const set: Record<string, unknown> = {}
   if (b.company_name != null) {
@@ -7985,7 +7986,7 @@ export async function autoCloseBillingMonth(db: D1Database): Promise<{ idle?: bo
 // 1か月分の請求記録の修正（入金状態・入金日・金額・メモ）
 api.put('/hq/companies/:id/billing/:month', async (c) => {
   const cid = Number(c.req.param('id')), month = c.req.param('month')
-  if (!MONTH_RE.test(month)) return c.json({ error: 'not found' }, 404)
+  if (!MONTH_RE.test(month)) return c.json({ error: '見つかりません' }, 404)
   const b = await c.req.json().catch(() => null)
   if (!b || typeof b !== 'object') return c.json({ error: '入力内容が正しくありません' }, 400)
   const db = c.env.DB
@@ -8035,7 +8036,7 @@ api.post('/hq/companies/:id/support-logs', async (c) => {
   if (next !== null && !isISODate(next)) return c.json({ error: '次回の予定日の日付が正しくありません', field: 'next_action_date' }, 400)
   const db = c.env.DB
   const co = await db.prepare(`SELECT company_id, company_name, next_review_at FROM companies WHERE company_id = ? AND COALESCE(active_status, 'active') != ?`).bind(cid, HQ_COMPANY_STATUS).first() as any
-  if (!co) return c.json({ error: 'not found' }, 404)
+  if (!co) return c.json({ error: '見つかりません' }, 404)
   const uid = c.get('user').user_id
   const stmts: D1PreparedStatement[] = [
     db.prepare('INSERT INTO company_support_logs (company_id, actor_user_id, body, next_action_date, created_at) VALUES (?, ?, ?, ?, ?)').bind(cid, uid, body, next, nowJST()),

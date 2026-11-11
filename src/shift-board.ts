@@ -21,6 +21,7 @@ import { csvResponse, toCsv } from './csv'
 import { feeInput, loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { closedChecker, closedOn } from './lib/closings'
 import { nowJST, todayJST, addDays, dayDiff, isDate } from './lib/time'
+import { readJson } from './lib/http'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -1173,7 +1174,7 @@ async function planRoleRename(db: D1Database, companyId: number, slot: any, b: a
 }
 
 app.post('/shift-slots', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const err = await validateSlotBody(db, u, b); if (err) return c.json({ error: err }, 400)
   const roles = normalizeRoles(b.roles); if (!roles) return c.json({ error: '役割と必要人数を入力してください' }, 400)
   const dates: string[] = [...new Set(((Array.isArray(b.dates) ? b.dates : [b.work_date]) as any[]).filter(isDate))] as string[]
@@ -1203,7 +1204,7 @@ app.get('/shift-slots/:id', async (c) => {
 const SLOT_EDIT_FIELDS = ['site_id', 'location', 'work_date', 'start_time', 'end_time', 'break_minutes', 'memo', 'status'] as const
 const sameVal = (a: any, b: any) => (a ?? null) === (b ?? null)
 app.put('/shift-slots/:id', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const slot = await ownSlot(db, u.company_id, c.req.param('id'))
@@ -1615,7 +1616,7 @@ app.get('/shifts/:id/band', async (c) => {
 
 // 役割への割り当て（複数可）
 app.post('/shift-slots/roles/:id/assign', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const role = await ownSlotRole(db, u.company_id, c.req.param('id'))
@@ -1826,7 +1827,7 @@ app.post('/shift-slots/assign-batch', async (c) => {
 
 // シフトを別の枠・役割へ移動（案件が変われば単価を再計算）。slot_role_id=null なら枠から外す
 app.post('/shifts/:id/move', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
@@ -2010,7 +2011,7 @@ app.post('/staff/:id/release-future-shifts', async (c) => {
 
 // 金額の手動変更 / ルールに戻す
 app.put('/shifts/:id/price', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const s = await db.prepare('SELECT * FROM shifts WHERE shift_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!s) return c.json({ error: 'シフトが見つかりません' }, 404)
   if (isSettled(s)) return c.json({ error: '確定済みのシフトの金額は変更できません。精算画面で確定を取り消してください' }, 409)
@@ -2129,7 +2130,7 @@ async function repricePreview(db: D1Database, companyId: number, where: string[]
   return out
 }
 app.post('/shifts/reprice', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   if (!isISODate(b.from) || !isISODate(b.to)) return c.json({ error: '期間を指定してください' }, 400)
   if (b.from > b.to) return c.json({ error: '期間の開始日は終了日以前にしてください' }, 400)
   const f: string[] = ['company_id = ?', 'work_date BETWEEN ? AND ?', 'COALESCE(price_locked,0) = 0', "COALESCE(settle_status,'planned') != 'confirmed'",
@@ -2160,7 +2161,7 @@ app.post('/shifts/reprice', async (c) => {
 // 退職・統合・停止中・NG・同じ時間帯に別のシフトがある組み合わせはスキップし、理由を skipped で返す。
 // 組み合わせ（日付順 → 指定したスタッフ順）を BULK_LIMIT 件ずつ処理し、残りがあれば next_cursor（次に処理する組み合わせの番号）を返す
 app.post('/shifts/bulk', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   const project = await ownProject(db, u.company_id, b.project_id)
@@ -2313,7 +2314,7 @@ type SlotPlan = { src: any; date: string; target: any | null; reused: boolean }
 type RolePlan = { src: any; slot: SlotPlan; target: any | null }
 type ShiftPlan = { src: any; date: string; role: RolePlan | null; start: string; end: string }
 app.post('/shifts/copy-week', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json(); const cid = u.company_id
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c); const cid = u.company_id
   const nt = shiftNotifyOptOf(b) // スタッフに通知を送るか・メッセージ（#9906。省略すると会社の既定）
   if ('error' in nt) return c.json({ error: nt.error }, 400)
   if (!isDate(b.source_from) || !isDate(b.target_from)) return c.json({ error: 'コピー元とコピー先の開始日を指定してください' }, 400)
@@ -2525,7 +2526,7 @@ app.get('/slot-patterns', async (c) => {
   return c.json({ today, patterns: rows.map(r => ({ ...r, roles: JSON.parse(r.roles_json || '[]'), days_left: dayDiff(today, r.date_to) })) })
 })
 app.post('/slot-patterns', async (c) => {
-  const u = c.get('user'); const db = c.env.DB; const b = await c.req.json()
+  const u = c.get('user'); const db = c.env.DB; const b = await readJson(c)
   const err = await validateSlotBody(db, u, b); if (err) return c.json({ error: err }, 400)
   const roles = normalizeRoles(b.roles); if (!roles) return c.json({ error: '役割と必要人数を入力してください' }, 400)
   const wds = [...new Set(((b.weekdays || []) as any[]).map(Number).filter(n => n >= 0 && n <= 6))]
@@ -2775,7 +2776,7 @@ function siteLatLng(b: any): { lat?: number | null; lng?: number | null; error?:
   return { lat, lng }
 }
 app.post('/sites', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   if (!String(b.site_name || '').trim()) return c.json({ error: '開催場所名を入力してください' }, 400)
   if (b.client_id) { const cl = await c.env.DB.prepare('SELECT 1 FROM clients WHERE client_id = ? AND company_id = ?').bind(b.client_id, u.company_id).first(); if (!cl) return c.json({ error: 'クライアントが見つかりません' }, 404) }
   const latlng = siteLatLng(b); if (latlng.error) return c.json({ error: latlng.error }, 400)
@@ -2784,7 +2785,7 @@ app.post('/sites', async (c) => {
   return c.json({ ok: true, site_id: res.meta.last_row_id })
 })
 app.put('/sites/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   const s = await ownSite(c.env.DB, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: '開催場所が見つかりません' }, 404)
   // 送られてきた項目だけを変える（名前の変更だけで無効の場所が有効に戻らないように。#130）。住所・メモは空欄で消す
@@ -2909,7 +2910,7 @@ function ruleIncentive(b: any): { value: number | null; error?: string } {
   return { value: inc }
 }
 app.post('/rate-rules', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   const vr = await validateRuleScope(c.env.DB, u, b); if (vr.error) return c.json({ error: vr.error }, 400)
   const inc = ruleIncentive(b); if (inc.error) return c.json({ error: inc.error }, 400)
   const v = ruleValues(b), s = vr.scope!
@@ -2921,7 +2922,7 @@ app.post('/rate-rules', async (c) => {
   return c.json({ ok: true, rule_id: res.meta.last_row_id, client_id: s.client_id })
 })
 app.put('/rate-rules/:id', async (c) => {
-  const u = c.get('user'); const b = await c.req.json()
+  const u = c.get('user'); const b = await readJson(c)
   const r = await c.env.DB.prepare('SELECT * FROM rate_rules WHERE rule_id = ? AND company_id = ?').bind(c.req.param('id'), u.company_id).first() as any
   if (!r) return c.json({ error: 'ルールが見つかりません' }, 404)
   const merged = { ...r, ...b }
@@ -3020,7 +3021,7 @@ app.put('/staff/:id/reference-pay', async (c) => {
 // price_valid_from（適用開始日）を付けて単価を変えると、その前日までの稼働日には今の単価を使い続ける（改定前の単価を project_price_history に残す。#210）。
 // 付けずに変えると、今の単価の適用期間（price_valid_from 以降。未設定ならすべての期間）の単価を直す
 app.put('/projects/:id/pricing', async (c) => {
-  const u = c.get('user'); const b = await c.req.json(); const db = c.env.DB
+  const u = c.get('user'); const b = await readJson(c); const db = c.env.DB
   const p = await ownProject(db, u.company_id, c.req.param('id'))
   if (!p) return c.json({ error: '案件が見つかりません' }, 404)
   // 負の単価・交通費・休憩は受け付けない（#218）

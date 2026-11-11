@@ -22,13 +22,14 @@ import { REPORT_LABEL } from './report-settings'
 import { toCsv, csvResponse, loadLatestForCsv, csvLimitNote, csvLimitHeaders } from './csv'
 import { shareableEmail, HIDDEN_EMAIL_LABEL } from './lib/tenant'
 import { loadStaffNotices } from './lib/notices'
-import { sha256Hex } from './lib/auth'
+import { sha256Hex, isCompanyActive } from './lib/auth'
 import { personStaffRows } from './roster'
 import * as emailService from './services/email'
 import { loadVapid, sendWebPush, isAllowedPushEndpoint, allowLocalPush, type VapidEnv } from './lib/web-push'
 import { ERROR_ALERT_KIND } from './lib/error-log'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
+import { appBaseUrl } from './lib/http'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
@@ -268,7 +269,7 @@ function deliveryPlan(env: NotifyEnv, d: any, c: any, u: any): { to: string; mai
   if (d.kind === 'correction_submitted' && c.status !== 'pending') return { to, result: { ok: false, error: 'already_processed' }, skip: true }
   if (!to) return { to, result: { ok: false, error: 'no_address' }, skip: false }
   const m = content(c, d.kind, NOTIFY_ADMIN_ROLES.includes(u.role) || u.role === 'system_admin')
-  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const base = appBaseUrl(env)
   const tpl = attendanceCorrectionEmail({ name: u.name, title: m.title, headline: m.headline, lines: m.lines, url: base + m.link, button: m.button })
   return { to, mail: { to, subject: tpl.subject, html: tpl.html, text: tpl.text, type: 'attendance_correction', company_id: u.company_id ?? d.company_id } }
 }
@@ -671,7 +672,7 @@ export async function notifyDailyReportIncident(c: any, shiftId: number, raised:
         .bind(...chunk.flatMap(a => [r.company_id, a.user_id, 'incident_reported', title, body, link, r.daily_report_id, at])))
     }
     await db.batch(stmts)
-    const base = String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')
+    const base = appBaseUrl(c.env)
     // 受け取り設定でこの種類のメールを止めた人には送らない（#284）
     const prefs = await loadNotifyPrefs(db, admins.map(a => a.user_id))
     const mails = admins.filter(a => a.email && emailWanted(prefs, a.user_id, a.role, 'incident_reported')).map(a => {
@@ -757,7 +758,7 @@ export async function notifyCompanyAdmins(c: any, n: AdminNotice): Promise<{ not
     }
     await db.batch(stmts)
     if (mailTo.length) {
-      const base = String(c.env.APP_BASE_URL || '').replace(/\/+$/, '')
+      const base = appBaseUrl(c.env)
       const mails = mailTo.map(m => {
         const tpl = attendanceCorrectionEmail({ name: m.name, title: m.title, headline: n.headline, lines: n.lines, url: base + n.link, button: n.button })
         return { to: m.email, subject: tpl.subject, html: tpl.html, text: tpl.text, type: n.mailType, company_id: n.companyId }
@@ -1096,7 +1097,7 @@ export async function deliverReminders(env: NotifyEnv, items: ReminderItem[]) {
     g.push(x); groups.set(key, g)
   }
   const at = nowJST()
-  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const base = appBaseUrl(env)
   const rows: any[] = []
   const mails: emailService.SendEmailInput[] = []
   const emailed: string[] = []
@@ -1183,13 +1184,16 @@ export async function createNoticeAckTokens(db: D1Database, noticeId: number, co
 }
 async function findAckToken(db: D1Database, token: string) {
   if (!/^[0-9a-f]{48}$/.test(token)) return null
-  return await db.prepare(`SELECT t.*, n.title, co.company_name FROM notice_ack_tokens t JOIN notices n ON n.notice_id = t.notice_id AND n.company_id = t.company_id
+  return await db.prepare(`SELECT t.*, n.title, co.company_name, co.active_status AS company_active_status FROM notice_ack_tokens t JOIN notices n ON n.notice_id = t.notice_id AND n.company_id = t.company_id
     JOIN companies co ON co.company_id = t.company_id WHERE t.token_hash = ?`).bind(await sha256Hex(token)).first() as any
 }
 export const noticeAckPublicApi = new Hono<{ Bindings: NotifyEnv }>()
+// 停止中の企業のリンクは使えない（他の公開 API と同じ。#9967）
+const COMPANY_INACTIVE_ERROR = 'ご契約が停止中のため、現在ご利用いただけません'
 noticeAckPublicApi.get('/', async (c) => {
   const t = await findAckToken(c.env.DB, c.req.query('token') || '')
   if (!t) return c.json({ error: 'リンクが正しくないか、お知らせが削除されています' }, 404)
+  if (!isCompanyActive(t.company_active_status)) return c.json({ error: COMPANY_INACTIVE_ERROR, code: 'company_inactive' }, 403)
   return c.json({ title: t.title, company_name: t.company_name, used: !!t.used_at, expired: t.expires_at < nowJST() })
 })
 noticeAckPublicApi.post('/', async (c) => {
@@ -1197,6 +1201,7 @@ noticeAckPublicApi.post('/', async (c) => {
   const b = await c.req.json().catch(() => ({} as any))
   const t = await findAckToken(db, String(b.token || ''))
   if (!t) return c.json({ error: 'リンクが正しくないか、お知らせが削除されています' }, 404)
+  if (!isCompanyActive(t.company_active_status)) return c.json({ error: COMPANY_INACTIVE_ERROR, code: 'company_inactive' }, 403)
   if (t.used_at) return c.json({ ok: true, already: true, title: t.title, company_name: t.company_name })
   if (t.expires_at < nowJST()) return c.json({ error: `リンクの有効期限（${NOTICE_ACK_DAYS}日）が切れています。アプリでお知らせを開き、「確認しました」を押してください` }, 410)
   const u = await db.prepare('SELECT status FROM users WHERE user_id = ? AND company_id = ?').bind(t.user_id, t.company_id).first() as any
@@ -1269,7 +1274,7 @@ async function queueStaffMails(c: any, mails: SendEmailInput[]) {
   })()
   try { c.executionCtx.waitUntil(job) } catch { await job }
 }
-const appUrl = (env: any, path: string) => String(env?.APP_BASE_URL || '').replace(/\/+$/, '') + path
+const appUrl = (env: any, path: string) => appBaseUrl(env) + path
 
 // ---------- シフトの登録・変更・取消（#155） ----------
 // 変更の前後のシフトを比べて、本人に知らせる。1回の操作の分は、スタッフごとに1件の通知・1通のメールにまとめる。
@@ -1779,7 +1784,7 @@ export async function runNotificationDigests(env: NotifyEnv): Promise<{ due: num
   await db.prepare(`UPDATE user_notification_prefs SET digest_sent_on = ? WHERE pref_key = 'correction_request' AND user_id IN ${JSON_IN}`).bind(today, bindJsonArray(due.map(d => d.user_id))).run()
   const counts = new Map(((await db.prepare(`SELECT company_id, COUNT(*) AS n, MIN(created_at) AS oldest FROM attendance_corrections WHERE status = 'pending' AND company_id IN ${JSON_IN} GROUP BY company_id`)
     .bind(bindJsonArray(due.map(d => d.company_id))).all()).results as any[]).map(r => [Number(r.company_id), r]))
-  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const base = appBaseUrl(env)
   const mails: SendEmailInput[] = []
   for (const d of due) {
     const cnt = counts.get(Number(d.company_id))

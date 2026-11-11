@@ -28,6 +28,7 @@ import { SESSION_COOKIE, loadSessionUser } from './lib/auth'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceIdOf, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { nowJST, todayJST, addDays, isDate } from './lib/time'
 import { sha256 } from './lib/hash'
+import { recordSwallowedError } from './lib/http'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -1009,7 +1010,7 @@ adminLifecycleApi.post('/shifts/:id/proxy-attendance', async (c) => {
     if (/UNIQUE constraint/i.test(String(e?.message || e))) return c.json({ error: 'すでに報告済みです（画面を開き直してください）' }, 409)
     throw e
   }
-  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(() => {})
+  if (types.some(t => ACTUAL_SYNC_TYPES.includes(t))) await syncActualFromReports(db, u.company_id, s.shift_id).catch(e => recordSwallowedError(c, '実績の同期', e))
   // スタッフ本人に、管理者が記録したことを知らせる（#327）
   await notifyProxyAttendance(db, s, rows, u.name)
   return c.json({ ok: true, created: rows.length, reports: rows })
@@ -1025,7 +1026,7 @@ adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
     .bind(s.shift_id, c.req.param('type')).first()
   if (corrected) return c.json({ error: '承認済みの打刻修正で直した報告は取り消せません。打刻修正の申請で時刻を直してください' }, 409)
   const r = await c.env.DB.prepare("DELETE FROM attendance_reports WHERE shift_id = ? AND report_type = ? AND entry_method = 'proxy' AND corrected_by_correction_id IS NULL").bind(s.shift_id, c.req.param('type')).run()
-  await syncActualFromReports(c.env.DB, u.company_id, s.shift_id).catch(() => {})
+  await syncActualFromReports(c.env.DB, u.company_id, s.shift_id).catch(e => recordSwallowedError(c, '実績の同期', e))
   return c.json({ ok: true, deleted: r.meta.changes || 0 })
 })
 
@@ -1220,7 +1221,7 @@ adminLifecycleApi.post('/proxy-attendance/bulk', async (c) => {
       if (!closed.has(wd)) closed.set(wd, !!(await closedMessage(db, u.company_id, wd)))
       if (!closed.get(wd)) syncIds.push(r.shift_id)
     }
-    if (syncIds.length) await syncActualsForShifts(db, u.company_id, syncIds).catch(() => 0)
+    if (syncIds.length) await syncActualsForShifts(db, u.company_id, syncIds).catch(e => recordSwallowedError(c, '実績の同期（まとめて）', e))
     // ログインのある人には、管理者が記録したことをアプリ内で知らせる（1件の代理入力の notifyProxyAttendance と同じ文面。#327）
     try {
       const notes = recorded.filter(r => { const s = byId.get(r.shift_id); return s.user_role === 'staff' && s.user_status === 'active' }).map(r => {
@@ -1554,7 +1555,7 @@ publicReportApi.post('/:token/attendance', async (c) => {
     if (key) await c.env.PHOTOS.delete(key).catch(() => {})
     return c.json({ error: '報告の登録に失敗しました。もう一度お試しください' }, 500)
   }
-  if (ACTUAL_SYNC_TYPES.includes(reportType)) await syncActualFromReports(db, t.company_id, t.shift_id).catch(() => {})
+  if (ACTUAL_SYNC_TYPES.includes(reportType)) await syncActualFromReports(db, t.company_id, t.shift_id).catch(e => recordSwallowedError(c, '実績の同期', e))
   return c.json({ ok: true, status, late_minutes: judged.late_minutes, early_leave_minutes: judged.early_leave_minutes, no_photo: !!noPhotoReason })
 })
 

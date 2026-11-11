@@ -14,6 +14,7 @@ import { sendEmailBatch } from './services/email'
 import type { SendEmailInput } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 import { nowJST, todayJST, isDate } from './lib/time'
+import { appBaseUrl } from './lib/http'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -1104,7 +1105,7 @@ async function deliverSavedSearchNotices(env: SavedSearchEnv, rows: any[], userT
   const prefs = await loadNotifyPrefs(db, [...byUser.keys()])
   const stmts: D1PreparedStatement[] = []
   const mails: SendEmailInput[] = []
-  const base = String(env.APP_BASE_URL || '').replace(/\/+$/, '')
+  const base = appBaseUrl(env)
   for (const [userId, x] of byUser) {
     const ids = [...x.searches.keys()]
     const title = `案件掲示板の新着 ${userTotals.get(userId) || x.posts.size}件（保存した検索条件）`

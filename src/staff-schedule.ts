@@ -25,6 +25,7 @@ import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { nowJST, todayJST, addDays } from './lib/time'
 import { randomHex } from './lib/hash'
+import { appBaseUrl } from './lib/http'
 
 type Bindings = { DB: D1Database; APP_BASE_URL?: string }
 type Variables = { user: any }
@@ -165,7 +166,7 @@ scheduleStaffApi.put('/availability', async (c) => {
 // ---------- カレンダー（#301） ----------
 function genToken(): string { return randomHex(32) }
 function baseUrl(c: any): string {
-  return String(c.env.APP_BASE_URL || new URL(c.req.url).origin).replace(/\/+$/, '')
+  return appBaseUrl(c.env) || new URL(c.req.url).origin
 }
 
 // 購読 URL の状態（URL そのものはハッシュで保存しているため返せない。分からなくなったら発行し直す）
