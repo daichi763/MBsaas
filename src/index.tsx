@@ -24,24 +24,32 @@ const app = new Hono<{ Bindings: Bindings }>()
 // ============ 画面の応答に付けるセキュリティヘッダー（#202） ============
 // 外部のスクリプト・スタイルは jsDelivr（バージョン固定・SRI 付き）と、募集ページの Turnstile だけを許す。
 // 画面に onclick などのイベント属性とインラインの script が残っているため、script-src の 'unsafe-inline' は外せない
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://challenges.cloudflare.com",
-  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-  "font-src 'self' https://cdn.jsdelivr.net data:",
-  "img-src 'self' data: blob:",
-  "connect-src 'self'",
-  'frame-src https://challenges.cloudflare.com',
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join('; ')
+// jsDelivr は、画面で読み込んでいるファイル（下の SRI の一覧）のパスだけを許す（#9969 arch-17）。SRI の一覧は後で定義するので、最初の応答で組み立てる。
+// 静的ファイル（/static/*・manifest）のヘッダーは public/_headers で付ける（Workers Assets はこのミドルウェアを通らない）
+let cspValue = ''
+function csp(): string {
+  if (cspValue) return cspValue
+  const cdnFiles = (re: RegExp) => Object.keys(SRI).filter(p => re.test(p)).map(p => CDN + p).join(' ')
+  return (cspValue = [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-inline' ${cdnFiles(/\.js$/)} https://challenges.cloudflare.com`,
+    `style-src 'self' 'unsafe-inline' ${cdnFiles(/\.css$/)}`,
+    // Font Awesome の CSS が読むフォント（webfonts/ の下）
+    `font-src 'self' ${CDN}@fortawesome/fontawesome-free@6.4.0/webfonts/ data:`,
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    'frame-src https://challenges.cloudflare.com',
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '))
+}
 app.use('*', async (c, next) => {
   await next()
   try {
     c.res.headers.set('X-Content-Type-Options', 'nosniff')
-    if ((c.res.headers.get('Content-Type') || '').startsWith('text/html')) c.res.headers.set('Content-Security-Policy', CSP)
+    if ((c.res.headers.get('Content-Type') || '').startsWith('text/html')) c.res.headers.set('Content-Security-Policy', csp())
   } catch { /* 変更できない応答（外部から取得したものなど）はそのまま返す */ }
 })
 
@@ -135,7 +143,7 @@ app.post('/webhooks/resend', (c) => handleResendWebhook(c.env as unknown as Mail
 const CDN = 'https://cdn.jsdelivr.net/npm/'
 const SRI: Record<string, string> = {
   '@fortawesome/fontawesome-free@6.4.0/css/all.min.css': 'sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0',
-  'axios@1.6.0/dist/axios.min.js': 'sha384-VekiXfVDZuqx75T/YaGfn7/p6+e+D0f/G8UoZ5GBOCMZ89kMW4wTo8PSn6GSzOEl',
+  'axios@1.21.0/dist/axios.min.js': 'sha384-p5EwRuz37ylAY9QrjGGIs9ngKVaIwppUFSourks9EIRp1CzoIDWoQkXrHxaAUhEB',
   'dayjs@1.11.10/dayjs.min.js': 'sha384-DpVxUeeBWjUvUV1czyIHJAjh+jYUZFu2lLakbdua5vbwOrBGi1UgaKCHjTC+x3Ky',
   'chart.js@4.5.1/dist/chart.umd.min.js': 'sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ',
   'flatpickr@4.6.13/dist/flatpickr.min.css': 'sha384-RkASv+6KfBMW9eknReJIJ6b3UnjKOKC5bOUaNgIY778NFbQ8MtWq9Lr/khUgqtTt',
@@ -156,7 +164,7 @@ const head = (title: string) => `
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} | Field OS</title>
   ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
-  ${cdnJs('axios@1.6.0/dist/axios.min.js')}
+  ${cdnJs('axios@1.21.0/dist/axios.min.js')}
   ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
   ${LIB_FALLBACK}
   <script src="/static/common.js"></script>

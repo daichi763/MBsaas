@@ -186,9 +186,10 @@ let p4members
 {
   const s = await createShift(admin, 8, 3, today, 'RS-TEST-LINK')
   const issued = await admin.post(`/api/admin/shifts/${s}/report-link`, {})
+  // URL は発行した応答でだけ返す（報告パネルはハッシュの先頭 ref だけ。#9969）
   const st = await admin.get(`/api/admin/shifts/${s}/report-status`)
-  const token = st.data.token && st.data.token.token
-  ok('報告URL: 発行できる', issued.status === 200 && token, issued)
+  const token = issued.data && issued.data.token
+  ok('報告URL: 発行できる', issued.status === 200 && token && st.data.token && st.data.token.ref === issued.data.ref, issued)
   const pub = await fetch(`${BASE}/api/public/report/${token}`).then(r => r.json())
   ok('報告URL: 8 種類が返る', JSON.stringify(pub.modes.required_attendance) === JSON.stringify(ALL), pub.modes)
   const post = (t) => fetch(`${BASE}/api/public/report/${token}/attendance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ report_type: t }) }).then(async r => ({ status: r.status, data: await r.json() }))

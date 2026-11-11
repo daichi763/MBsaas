@@ -92,7 +92,7 @@ flowchart LR
 | Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:130` |
 | Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:92`（`/sw.js`） |
 | Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:268`・`278` |
-| jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:135`〜`151` |
+| jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:143`〜`159` |
 | Workers Builds | GitHub の `main` に入ると、ビルドして本番にデプロイする | `scripts/ci-wrangler-config.mjs:1`〜`5` |
 
 ## 4. リクエストの流れ
@@ -118,7 +118,7 @@ flowchart LR
 | `/sw.js` | スタッフアプリ（scope `/staff`）と本部画面（scope `/hq`）の Service Worker（プッシュ通知の表示だけ。オフライン用の保存はしない） | `src/index.tsx:92`〜`126` |
 | `/webhooks/resend` | Resend の Webhook（署名を確かめる） | `src/index.tsx:130` |
 
-すべての応答に `X-Content-Type-Options: nosniff` を、HTML には CSP を付けます（`src/index.tsx:27`〜`46`）。
+Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HTML には CSP を付けます（`src/index.tsx:27`〜`55`）。CSP の jsDelivr は、画面で読み込んでいるファイルのパスだけを許します。静的ファイル（`/static/*`・`/manifest.webmanifest`）は Workers Assets が Worker を通さずに返すので、`public/_headers` で nosniff と最小の CSP を付けます。
 
 ### 4.2 API
 
@@ -196,8 +196,8 @@ flowchart LR
 
 ### 6.4 jsDelivr（画面のライブラリ）
 
-- 版を固定し、SRI のハッシュを付けて読みます（`src/index.tsx:135`〜`151`）。版を上げるときはハッシュも計算し直します（計算方法は `src/index.tsx:134` のコメント）。
-- CDN を読めないとき（店舗の Wi-Fi のフィルタなど）は、白い画面のままにせず理由を出します（`src/index.tsx:153`）。
+- 版を固定し、SRI のハッシュを付けて読みます（`src/index.tsx:143`〜`159`）。版を上げるときはハッシュも計算し直します（計算方法は `src/index.tsx:142` のコメント）。CSP（`script-src`・`style-src`）はこの一覧のファイルのパスだけを許すので、ファイルを足したら一覧にも足します。
+- CDN を読めないとき（店舗の Wi-Fi のフィルタなど）は、白い画面のままにせず理由を出します（`src/index.tsx:161`）。
 
 ## 7. デプロイの仕組み
 

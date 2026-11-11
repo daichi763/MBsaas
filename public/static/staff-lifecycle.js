@@ -538,7 +538,9 @@
     reportStatusCache[shiftId] = d
     const done = new Map(d.reports.map(r => [r.report_type, r]))
     const pending = d.modes.required_attendance.some(t => !done.has(t))
-    const url = d.token ? location.origin + '/r/' + d.token.token : ''
+    // 報告用URLはサーバーにハッシュしかないので、URL は発行したときに覚えたものだけ出せる（#9969）
+    if (d.token) d.token.token = rememberedReportToken(shiftId, d.token.ref)
+    const url = d.token && d.token.token ? location.origin + '/r/' + d.token.token : ''
     const phone = String(d.staff_phone || '').replace(/[^\d+]/g, '')
     // 取り消せる代理入力（確定済みのシフト・打刻修正で直した報告は取り消せない。#322）
     const cancellable = d.settled ? [] : d.reports.filter(r => r.entry_method === 'proxy' && !r.corrected_by_correction_id)
@@ -557,9 +559,12 @@
       </div>
       ${d.shift_daily_report_mode && DR_LABEL[d.shift_daily_report_mode] ? `<p class="text-[11px] text-gray-500">日報は、このシフトの例外で「${esc(DR_LABEL[d.shift_daily_report_mode])}」にしています（指定なしに戻すと、スタッフ・案件の設定の「${esc(DR_LABEL[d.inherited_daily_report_mode] || '')}」になります）</p>` : ''}
       <div class="flex flex-wrap gap-1.5">
-        ${d.token ? `<input class="inp text-[11px] flex-1 min-w-0" id="sr-url" readonly value="${esc(url)}">
+        ${url ? `<input class="inp text-[11px] flex-1 min-w-0" id="sr-url" readonly value="${esc(url)}">
           <button class="btn btn-primary text-xs" data-action="copyReportLink" title="URLだけをコピー"><i class="fas fa-copy"></i>コピー</button>
           <button class="btn btn-outline text-xs" data-action="copyReportGuide" data-shift-id="${Number(shiftId)}" title="日時・現場名・有効期限を添えた案内文をコピー"><i class="fas fa-file-lines"></i>案内文ごとコピー</button>
+          <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
+        : d.token ? `<span class="text-[11px] text-gray-500 flex-1 min-w-[10rem] py-1"><i class="fas fa-link mr-1"></i>報告用URLは発行済みです（URLは発行した画面でだけ表示します）</span>
+          <button class="btn btn-outline text-xs" data-action="reissueReportLink" data-shift-id="${Number(shiftId)}" title="新しいURLを発行して表示します。前に送ったURLは使えなくなります"><i class="fas fa-rotate"></i>発行し直す</button>
           <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
         : `<button class="btn btn-outline text-xs flex-1" onclick="issueReportLink(${shiftId})"><i class="fas fa-link"></i>報告用URLを発行（ログイン不要）</button>`}
         ${pending && !d.proxy_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyAttendance" data-shift-id="${shiftId}"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
@@ -569,12 +574,12 @@
       ${!d.has_login ? `<p class="text-[11px] text-gray-500">この日のログインのない人をまとめて:
         <button class="text-blue-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="links">報告用URLを発行</button>・
         <button class="text-blue-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="proxy">予定どおりで代理入力</button></p>` : ''}
-      ${d.token ? `<div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+      ${url ? `<div class="flex flex-wrap items-center gap-1.5 text-[11px]">
           <span class="text-gray-500"><i class="fas fa-phone mr-0.5"></i>${phone ? `<a href="tel:${esc(phone)}" class="text-blue-600 underline">${esc(d.staff_phone)}</a>` : '電話番号の登録なし'}</span>
           ${phone ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(phone)}?&body=${esc(encodeURIComponent(reportGuideText(d, url)))}"><i class="fas fa-comment-sms"></i>SMSで送る</a>` : ''}
           ${navigator.share ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="shareReportGuide" data-shift-id="${Number(shiftId)}"><i class="fas fa-share-nodes"></i>LINEなどで送る</button>` : ''}
-        </div>
-        <p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください（送り先の番号を確かめてください）</p>` : ''}
+        </div>` : ''}
+      ${d.token ? `<p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください（送り先の番号を確かめてください）</p>` : ''}
       <div class="flex flex-wrap gap-1.5 pt-2 border-t border-gray-100">
         ${d.proxy_blocked === '欠勤' || d.proxy_blocked === '稼働日より前' ? '' : `<button type="button" class="btn btn-outline text-xs" data-action="corrNew" data-shift-id="${Number(shiftId)}" title="このシフトの打刻の修正・打刻漏れの追加を、管理者として申請します"><i class="fas fa-user-clock"></i>打刻を修正</button>`}
         <button type="button" class="btn btn-outline text-xs" data-action="opLogShow" data-entity="shift" data-id="${Number(shiftId)}" data-host="shift-op-log-${Number(shiftId)}" title="このシフトの状態・時間・金額・精算の変更を、誰がいつ行ったか"><i class="fas fa-clock-rotate-left"></i>変更履歴</button>
@@ -611,8 +616,24 @@
     try { await axios.put(`/api/admin/shifts/${shiftId}/report-settings`, { attendance_mode: document.getElementById('sr-att').value, daily_report_mode: document.getElementById('sr-dr').value }); toast('このシフトの提出設定を保存しました'); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
   }
   window.issueReportLink = async function (shiftId) {
-    try { await axios.post(`/api/admin/shifts/${shiftId}/report-link`, {}); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
+    try {
+      const { data } = await axios.post(`/api/admin/shifts/${shiftId}/report-link`, {})
+      rememberReportToken(shiftId, data)
+    } catch (e) { toast(errMsg(e)) }
+    renderShiftReportPanel(shiftId)
   }
+  // 発行し直す（前のURLは使えなくなる）。URL はこの画面で覚えておき、閉じた後に送り直すときはもう一度発行し直す
+  delegate('reissueReportLink', (el) => {
+    if (!confirm('報告用URLを発行し直します。前に送ったURLは使えなくなります。よろしいですか？')) return
+    withSubmitLock(el, async () => {
+      const shiftId = Number(el.dataset.shiftId)
+      try {
+        const { data } = await axios.post(`/api/admin/shifts/${shiftId}/report-link`, { regenerate: true })
+        rememberReportToken(shiftId, data); toast('新しい報告用URLを発行しました。本人に送ってください')
+      } catch (e) { toast(errMsg(e)) }
+      renderShiftReportPanel(shiftId)
+    })
+  })
   window.revokeReportLink = async function (shiftId) {
     if (!confirm('この報告用URLを無効にしますか？')) return
     try { await axios.delete(`/api/admin/shifts/${shiftId}/report-link`); toast('無効にしました'); renderShiftReportPanel(shiftId) } catch (e) { toast(errMsg(e)) }
@@ -631,12 +652,12 @@
   }
   delegate('copyReportLink', () => copyReportLink())
   delegate('copyReportGuide', (el) => {
-    const d = reportStatusCache[Number(el.dataset.shiftId)]; if (!d || !d.token) return
+    const d = reportStatusCache[Number(el.dataset.shiftId)]; if (!d || !d.token || !d.token.token) return
     copyText(reportGuideText(d, location.origin + '/r/' + d.token.token), '案内文をコピーしました')
   })
   // スマホの管理画面から、そのまま LINE などで送る（navigator.share がある端末だけボタンを出す。#441）
   delegate('shareReportGuide', async (el) => {
-    const d = reportStatusCache[Number(el.dataset.shiftId)]; if (!d || !d.token || !navigator.share) return
+    const d = reportStatusCache[Number(el.dataset.shiftId)]; if (!d || !d.token || !d.token.token || !navigator.share) return
     try { await navigator.share({ text: reportGuideText(d, location.origin + '/r/' + d.token.token) }) } catch { }
   })
   // 代理入力の取消（確認のうえ DELETE を呼び、パネルを描き直す。#322）
@@ -651,6 +672,13 @@
   }))
   // 代理入力: 報告状況の最後の取得結果（シフトごと）。既定の時刻・未報告の種類はここから読む
   const reportStatusCache = {}
+  // 発行した報告用URL（シフトID → { token, ref }）。サーバーはハッシュしか持たないので、この画面を開いている間だけ覚えておく。
+  // ref（ハッシュの先頭）が今のURLと違えば（発行し直された・無効にされた）出さない。まとめての画面（下の即時関数）と共有する
+  const REPORT_TOKENS = window.__reportLinkTokens || (window.__reportLinkTokens = {})
+  function rememberReportToken(shiftId, data) { if (data && data.token && data.ref) REPORT_TOKENS[Number(shiftId)] = { token: data.token, ref: data.ref } }
+  function rememberedReportToken(shiftId, ref) { const m = REPORT_TOKENS[Number(shiftId)]; return m && ref && m.ref === ref ? m.token : null }
+  window.rememberReportToken = rememberReportToken
+  window.rememberedReportToken = rememberedReportToken
   // 'YYYY-MM-DD HH:MM:SS' を表示用に（稼働日と違う日付なら M/D を付ける）
   const atLabel = (at, workDate) => at ? (String(at).slice(0, 10) !== workDate ? dayjs(at).format('M/D HH:mm') : dayjs(at).format('HH:mm')) : ''
   // 打刻修正の承認で直した報告の注記（元の打刻の日時。位置・写真は元の打刻のもの。#252）
@@ -861,45 +889,65 @@
 
   // ---------- 報告用URL（#275） ----------
   const guideOf = (data, r) => reportGuideText({ company_name: data.company_name, work_date: r.work_date, start_time: r.start_time, end_time: r.end_time, project_name: r.project_name,
-    place: r.place, staff_name: r.staff_name, token: { expires_at: r.expires_at }, notice_count: r.notice_count }, location.origin + '/r/' + r.token)
+    place: r.place, staff_name: r.staff_name, token: { expires_at: r.expires_at }, notice_count: r.notice_count }, location.origin + '/r/' + linkTokenOf(r))
+  // 行の報告用URL。まとめて発行した応答の token か、この画面で発行したときに覚えたもの（サーバーはハッシュしか持たない。#9969）
+  const linkTokenOf = (r) => r.token || (r.issued && window.rememberedReportToken ? window.rememberedReportToken(r.shift_id, r.ref) : null)
+  const knownLinkRows = () => ((st.links && st.links.rows) || []).filter(r => r.issued && linkTokenOf(r))
   function linksHtml(data) {
     const rows = data.rows || []
     if (!rows.length) return '<p class="text-sm text-gray-500 py-6 text-center">この日のログインのない人のシフトはありません</p>'
-    const issued = rows.filter(r => r.token), unissued = rows.filter(r => !r.token && !r.unavailable), unused = issued.filter(r => !r.last_used_at)
+    const issued = rows.filter(r => r.issued), unissued = rows.filter(r => !r.issued && !r.unavailable), unused = issued.filter(r => !r.last_used_at)
+    const known = issued.filter(r => linkTokenOf(r)), hidden = issued.length - known.length
     return `<p class="text-xs text-gray-600 mb-2">対象 ${rows.length}件（発行済み ${issued.length}件・うち未使用 ${unused.length}件 / 未発行 ${unissued.length}件）${data.truncated ? '<span class="text-amber-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
       <div class="flex flex-wrap gap-2 mb-3">
         ${unissued.length ? `<button class="btn btn-primary text-xs" data-action="nlIssueAll"><i class="fas fa-link"></i>未発行の${unissued.length}件をまとめて発行</button>` : ''}
-        ${issued.length ? `<button class="btn btn-outline text-xs" data-action="nlCopyAll"><i class="fas fa-copy"></i>発行済み${issued.length}件の案内文をまとめてコピー</button>` : ''}
+        ${known.length ? `<button class="btn btn-outline text-xs" data-action="nlCopyAll"><i class="fas fa-copy"></i>発行した${known.length}件の案内文をまとめてコピー</button>` : ''}
       </div>
+      ${hidden ? `<p class="text-[11px] text-amber-700 mb-2"><i class="fas fa-circle-info mr-1"></i>発行済みのURLは、発行した画面でだけ表示します（${hidden}件）。送り直すときは「発行し直す」を押してください（前に送ったURLは使えなくなります）</p>` : ''}
       <div class="space-y-1.5 max-h-[55vh] overflow-y-auto" id="nl-links">${rows.map(r => {
         const tel = telOf(r.staff_phone)
         const status = r.unavailable ? `<span class="badge badge-gray">${esc(r.unavailable)}</span>`
-          : !r.token ? '<span class="badge badge-yellow">未発行</span>'
+          : !r.issued ? '<span class="badge badge-yellow">未発行</span>'
           : r.last_used_at ? `<span class="badge badge-green">開いた ${esc(dayjs(r.last_used_at).format('M/D HH:mm'))}</span>` : '<span class="badge badge-blue">発行済み・未使用</span>'
         return `<div class="rounded border border-gray-100 p-2 text-xs flex flex-wrap items-center gap-2" data-shift-id="${Number(r.shift_id)}">
           <div class="flex-1 min-w-[12rem]"><p class="font-bold text-gray-800">${esc(r.staff_name)} ${status}</p>
             <p class="text-gray-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}${r.place ? '（' + esc(r.place) + '）' : ''}
               ${tel ? ` ・<a href="tel:${esc(tel)}" class="text-blue-600 underline">${esc(r.staff_phone)}</a>` : ' ・電話番号の登録なし'}${r.notice_count ? ` ・お知らせ${Number(r.notice_count)}件` : ''}</p></div>
-          ${r.token ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="nlCopyOne" data-shift-id="${Number(r.shift_id)}"><i class="fas fa-copy"></i>案内文</button>
-            ${tel ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(tel)}?&body=${esc(encodeURIComponent(guideOf(data, r)))}"><i class="fas fa-comment-sms"></i>SMS</a>` : ''}` : ''}
+          ${r.issued && linkTokenOf(r) ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="nlCopyOne" data-shift-id="${Number(r.shift_id)}"><i class="fas fa-copy"></i>案内文</button>
+            ${tel ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(tel)}?&body=${esc(encodeURIComponent(guideOf(data, r)))}"><i class="fas fa-comment-sms"></i>SMS</a>` : ''}`
+          : r.issued && !r.unavailable ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="nlReissueOne" data-shift-id="${Number(r.shift_id)}" title="新しいURLを発行して表示します。前に送ったURLは使えなくなります"><i class="fas fa-rotate"></i>発行し直す</button>` : ''}
         </div>` }).join('')}</div>
       <p class="text-[11px] text-gray-400 mt-2">報告用URLは稼働日の翌日 23:59 まで使えます。送り先の番号を確かめてから送ってください。本人あての重要なお知らせがあれば、案内文に一言添えます（お知らせは報告用のページに出ます）</p>`
   }
   delegate('nlIssueAll', (el) => withSubmitLock(el, async () => {
     try {
       const { data } = await axios.post('/api/admin/report-links/bulk', { date: st.date, project_id: st.projectId || undefined })
+      for (const r of data.rows || []) if (r.token && window.rememberReportToken) window.rememberReportToken(r.shift_id, r)
       st.links = { ...st.links, ...data }
       toast(`${data.issued}件の報告用URLを発行しました`); drawBulk()
     } catch (e) { toast(errMsg(e)) }
   }))
   delegate('nlCopyOne', (el) => {
-    const r = ((st.links && st.links.rows) || []).find(x => x.shift_id === Number(el.dataset.shiftId)); if (!r || !r.token) return
+    const r = ((st.links && st.links.rows) || []).find(x => x.shift_id === Number(el.dataset.shiftId)); if (!r || !linkTokenOf(r)) return
     copyText(guideOf(st.links, r), `${r.staff_name}さんの案内文をコピーしました`)
   })
   delegate('nlCopyAll', () => {
-    const rows = ((st.links && st.links.rows) || []).filter(r => r.token)
+    const rows = knownLinkRows()
     if (!rows.length) return
     copyText(rows.map(r => `■ ${r.staff_name}さん${r.staff_phone ? '（' + r.staff_phone + '）' : ''}\n${guideOf(st.links, r)}`).join('\n\n'), `${rows.length}件の案内文をコピーしました`)
+  })
+
+  delegate('nlReissueOne', (el) => {
+    const r = ((st.links && st.links.rows) || []).find(x => x.shift_id === Number(el.dataset.shiftId)); if (!r) return
+    if (!confirm(`${r.staff_name}さんの報告用URLを発行し直します。前に送ったURLは使えなくなります。よろしいですか？`)) return
+    withSubmitLock(el, async () => {
+      try {
+        const { data } = await axios.post(`/api/admin/shifts/${Number(r.shift_id)}/report-link`, { regenerate: true })
+        if (window.rememberReportToken) window.rememberReportToken(r.shift_id, data)
+        toast(`${r.staff_name}さんの報告用URLを発行し直しました`)
+      } catch (e) { toast(errMsg(e)) }
+      await loadBulk()
+    })
   })
 
   // ---------- 予定どおりで代理入力（#508） ----------

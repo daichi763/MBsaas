@@ -90,8 +90,8 @@ try {
     (${CID}, ${UID}, 'recruit_new', ${q(`新しい募集があります: ${PFX} 古い募集2`)}, ${q(OLD_BODY)}, '#shift', 999902, '2026-10-23 10:00:00')`)
   const queued = d1(`SELECT COUNT(*) AS n FROM push_queue WHERE user_id = ${UID} AND kind = 'recruit_new'`)[0][0].n
   ok('準備: 古い通知の行を入れると、トリガーでプッシュが積まれる（送る側で止めるかを確かめる）', Number(queued) === 2, queued)
-  // 書き込みの API の応答の後に、積まれたプッシュを送る
-  await staff.post('/api/staff/notifications/read-related', { kind: 'w16_noop' })
+  // 書き込みの API の応答の後に、積まれたプッシュを送る（存在しない通知の既読。何も変えずに 404 を返す）
+  await staff.post('/api/staff/notifications/999999999/read', {})
   await sleep(2500)
   ok('#9801 「新しい募集」の通知はプッシュで送らない（端末に届かない）', !received.slice(since1).some(x => x.path === '/push/staff'), received.slice(since1))
   const left = d1(`SELECT COUNT(*) AS n FROM push_queue WHERE user_id = ${UID} AND kind = 'recruit_new' AND claimed_at IS NULL`)[0][0].n
@@ -113,7 +113,7 @@ try {
   const since2 = received.length
   d1(`INSERT INTO user_notifications (company_id, user_id, kind, title, body, link, related_id, created_at) VALUES
     (${CID}, ${UID}, 'shift_assigned', ${q(`${PFX} シフトが入りました`)}, '11/5(木) 10:00〜19:00', '#shift', NULL, '2026-10-24 09:00:00')`)
-  await staff.post('/api/staff/notifications/read-related', { kind: 'w16_noop' })
+  await staff.post('/api/staff/notifications/999999999/read', {})
   ok('#9801 ほかの通知（シフトの登録）はプッシュで送る', !!(await waitPush('/push/staff', since2)), received.slice(since2))
   const lat = must(await staff.get(`/api/staff/push/latest?endpoint=${encodeURIComponent(EP('/push/staff'))}`), 'push latest')
   ok('#9801 端末が取りに来る中身は、新しい募集ではなくシフトの通知（「ほか N 件の未読」に新しい募集を数えない）',
