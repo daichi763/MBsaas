@@ -15,6 +15,8 @@ import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isUniqueViolation } from './lib/staff-eligibility'
 import { shiftTotals } from './shift-board'
 import { assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt, assigneeMergeStmts } from './assignees'
+import { nowJST } from './lib/time'
+import { sha256, randomHex } from './lib/hash'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -255,26 +257,15 @@ function ageGroupSql(dob: string, fallback: string, alias?: string): string {
 }
 
 // ---------- ユーティリティ ----------
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function randHex(bytes: number): string {
-  const a = new Uint8Array(bytes); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function nowJST(): string {
-  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-}
 // ログイン不可のユーザー行用。ランダム値のハッシュなので、どのパスワードとも一致しない
-export async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randHex(32)) }
+export async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randomHex(32)) }
 function normalizeCode(code: string): string { return String(code || '').trim().toUpperCase().replace(/[^0-9A-Z]/g, '') }
 
 /** 人物IDと恒久固定コード（QR/ID連携用）を採番する */
 export async function createPerson(db: D1Database, companyId: number): Promise<{ person_id: string; global_staff_code: string }> {
   for (let i = 0; i < 5; i++) {
-    const person_id = randHex(16)
-    const global_staff_code = 'FS' + randHex(5).toUpperCase()
+    const person_id = randomHex(16)
+    const global_staff_code = 'FS' + randomHex(5).toUpperCase()
     try {
       await db.prepare('INSERT INTO persons (person_id, global_staff_code, created_company_id) VALUES (?, ?, ?)')
         .bind(person_id, global_staff_code, companyId).run()
@@ -282,6 +273,34 @@ export async function createPerson(db: D1Database, companyId: number): Promise<{
     } catch { /* コード衝突時は再採番 */ }
   }
   throw new Error('person id generation failed')
+}
+
+// ---------- スタッフの作成を1つの batch で行う（#9951） ----------
+// persons・users・staff_profiles などを1つの batch（トランザクション）で入れ、途中で失敗しても孤立した行を残さない。
+// user_id・staff_id は last_row_id に頼らず、STAFF_USER_ID（会社とスタッフ番号）・STAFF_ID_OF_PERSON（会社と人物ID）で引く
+export type NewPerson = { person_id: string; global_staff_code: string }
+export const STAFF_USER_ID = '(SELECT user_id FROM users WHERE company_id = ? AND user_code = ?)'
+export const STAFF_ID_OF_PERSON = '(SELECT staff_id FROM staff_profiles WHERE company_id = ? AND person_id = ?)'
+/** persons に入れる文。cond を渡すと、その条件（WHERE の中身）を満たすときだけ入れる */
+export function insertPersonStmt(db: D1Database, p: NewPerson, companyId: number, cond?: { sql: string; binds: unknown[] }) {
+  return cond
+    ? db.prepare(`INSERT INTO persons (person_id, global_staff_code, created_company_id) SELECT ?, ?, ? WHERE ${cond.sql}`).bind(p.person_id, p.global_staff_code, companyId, ...cond.binds)
+    : db.prepare('INSERT INTO persons (person_id, global_staff_code, created_company_id) VALUES (?, ?, ?)').bind(p.person_id, p.global_staff_code, companyId)
+}
+/** 人物IDと恒久固定コードを採番して build の文を1つの batch で流す。コードが偶然重なったときだけ採番し直す（createPerson と同じ5回まで） */
+export async function batchWithNewPerson(db: D1Database, build: (p: NewPerson) => D1PreparedStatement[]): Promise<{ person: NewPerson; res: D1Result[] }> {
+  for (let i = 0; ; i++) {
+    const person = { person_id: randomHex(16), global_staff_code: 'FS' + randomHex(5).toUpperCase() }
+    try { return { person, res: await db.batch(build(person)) } } catch (e) {
+      if (i < 4 && isUniqueError(e, 'persons.')) continue
+      throw e
+    }
+  }
+}
+/** D1 の UNIQUE 制約の違反か（what は 'users.user_code' のような「表名.列名」の一部） */
+export function isUniqueError(e: unknown, what: string): boolean {
+  const msg = String((e as any)?.message ?? e)
+  return /UNIQUE/i.test(msg) && msg.includes(what)
 }
 
 // ---------- スタッフ番号の自動採番（#424） ----------
@@ -400,7 +419,7 @@ export function rosterBaseSelect(local = 'sp', src = 'src'): string {
 }
 
 /**
- * 0012 以降に person_id を付けずに作られた staff_profiles（seed.sql の後投入、他経路の INSERT 等）を補完する。
+ * person_id のない staff_profiles（テストの SQL で直接入れた行など）を補完する。作成の経路と seed.sql は person_id を入れるので、ふだんは何もしない（#9954）。
  * 所属区分は 0012 の移行と同じルール（所属会社名=自社名/未設定 → own_employee、それ以外 → partner_manual）。
  * 冪等。person_id が NULL の行が無ければ何もしない。
  */
@@ -585,8 +604,8 @@ export async function linkedStaffEmails(db: D1Database, staffIds: number[]): Pro
 }
 
 // ---------- ルーティング ----------
+// person_id の後埋め（ensureRosterIdentity）はリクエストごとには行わない。作成の経路はすべて person_id を入れる（#9954）
 const rosterApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
-rosterApi.use('/*', async (c, next) => { await ensureRosterIdentity(c.env.DB, c.get('user').company_id); return next() })
 
 // 必須項目設定の取得
 rosterApi.get('/field-settings', async (c) => {
@@ -823,7 +842,7 @@ rosterApi.post('/:id/links/:linkedId/end', async (c) => {
   await db.batch([
     linkEventStmt(db, done, 'ended', linkedId, u, now),
     hostAdminNotifyStmt(db, done, 'roster_link_ended', '連携の終了: ',
-      '所属元の企業が、このスタッフの情報の共有（企業間連携）を終了しました。基本項目は表示されなくなり、新しいシフトには割り当てられません。今後のシフトが入っている場合は、担当を見直してください。', now),
+      '所属元の企業が、このスタッフの情報の共有（企業間連携）を終了しました。基本項目は表示されなくなり、新しいシフトには割り当てられません。本人もスタッフのアプリで自社の画面に切り替えられなくなります。今後のシフトが入っている場合は、担当を見直してください。', now),
   ])
   return c.json({ ok: true, ended: done.length })
 })
@@ -1291,7 +1310,7 @@ async function findLinkSource(db: D1Database, code: string): Promise<any | null>
 /** 連携で受け入れた行（と他社連携から切り替えた行）に、次の企業へ連携するための自社専用コードを発行する（一度発行したら固定） */
 async function issueRelinkCode(db: D1Database, staffId: number): Promise<string> {
   for (let i = 0; i < 5; i++) {
-    const code = 'RL' + randHex(5).toUpperCase()
+    const code = 'RL' + randomHex(5).toUpperCase()
     try {
       const r = await db.prepare('UPDATE staff_profiles SET relink_code = ? WHERE staff_id = ? AND relink_code IS NULL').bind(code, staffId).run()
       if (r.meta.changes) return code
@@ -1323,7 +1342,7 @@ rosterApi.post('/link', async (c) => {
   // 連携の経路（雇用元・途中の企業）がたどれないよう、ユーザーコードは自社内で新規に採番する
   // email はコピーしない（お知らせメールの宛先は送信時に linkedStaffEmails で雇用元の行から取る）
   // 退職日は雇用元の行の値（退職予定）を引き継ぐ。以後の変更は propagateRetirementStmts で伝える（#127）
-  const userCode = 'LK-' + randHex(5).toUpperCase()
+  const userCode = 'LK-' + randomHex(5).toUpperCase()
   const linkedRole = src.source_role === 'staff' ? 'staff' : 'roster_only'
   const now = nowJST()
   // 二度押し・同時送信で同じ人が二重に登録されないよう（#238）、ユーザー行・スタッフマスタ行・同意記録を1つの batch で作り、
@@ -1462,44 +1481,50 @@ rosterApi.post('/', async (c) => {
     if (dup) return c.json({ error: 'この社員番号は既に使用されています' }, 409)
   }
 
-  const person = await createPerson(db, u.company_id)
-  // スタッフ番号はログイン画面と同じく全角を半角にそろえて保存する（#387）
-  const userCode = wantsLogin ? String(b.user_code).normalize('NFKC').trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
   // ログインしない人物は role='roster_only'（お知らせ対象・スタッフ数集計・ログインの対象外）
   const role = wantsLogin ? 'staff' : 'roster_only'
   const pwHash = wantsLogin ? await hashPassword(String(b.password)) : await unusablePasswordHash()
-
-  let userId: number
-  try {
-    // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
-    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(u.company_id, userCode, name, role, pwHash, wantsLogin ? (b.email || null) : null, b.phone || null, person.person_id, wantsLogin ? 1 : 0).run()
-    userId = r.meta.last_row_id as number
-  } catch {
-    await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
-    // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
-    return c.json({ error: 'スタッフ番号が重複しています', suggested_code: wantsLogin ? (await nextStaffCode(db, u.company_id)).code : null }, 409)
-  }
-
   // 生年月日が分からないときの年齢と入力した日（#9710。生年月日があれば入れない）
   const ageCols = ageEntryUpdate(b, null) || { age_entered: null, age_entered_on: null }
-  const sr = await db.prepare(`INSERT INTO staff_profiles
-      (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation, affiliation_contact,
-       kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
-       age_entered, age_entered_on, availability_exempt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(userId, u.company_id, person.person_id, u.company_id, type, partnerId, affiliation, b.affiliation_contact || null,
-      b.kana || null, b.gender, b.date_of_birth || null, b.skills || '', b.career || '', b.work_area || '',
-      b.nearest_station_line || null, b.nearest_station || null, b.commute_minutes ?? null, b.available_from || null,
-      type === 'own_employee' ? (b.employment_status || 'working') : 'working', ageCols.age_entered, ageCols.age_entered_on, availabilityExempt).run()
-  const staffId = sr.meta.last_row_id as number
+  const withEmployee = type === 'own_employee' && !!(b.employee_number || b.hire_date || b.contract_type || b.phone)
 
-  // ②では従業員管理（社員名簿）の最小レコードも同時に作成する。電話番号は従業員管理の電話番号にも入れる（従業員管理で直したら users.phone にそろえる。#123）
-  if (type === 'own_employee' && (b.employee_number || b.hire_date || b.contract_type || b.phone)) {
-    await db.prepare('INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, phone_main, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(staffId, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, b.phone || null, nowJST()).run()
+  // persons・users・staff_profiles・employee_records を1つの batch で入れる（途中で失敗しても孤立した行を残さない。#9951）
+  let created: Awaited<ReturnType<typeof batchWithNewPerson>>
+  try {
+    created = await batchWithNewPerson(db, person => {
+      // スタッフ番号はログイン画面と同じく全角を半角にそろえて保存する（#387）
+      const userCode = wantsLogin ? String(b.user_code).normalize('NFKC').trim() : (type === 'skillsheet_only' ? 'SS-' : 'PT-') + person.global_staff_code
+      const stmts = [
+        insertPersonStmt(db, person, u.company_id),
+        // 初期パスワードは管理者が決めたものなので、初回ログインで本人に変更を求める（#43）
+        db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, email, phone, person_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .bind(u.company_id, userCode, name, role, pwHash, wantsLogin ? (b.email || null) : null, b.phone || null, person.person_id, wantsLogin ? 1 : 0),
+        db.prepare(`INSERT INTO staff_profiles
+            (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation, affiliation_contact,
+             kana, gender, date_of_birth, skills, career, work_area, nearest_station_line, nearest_station, commute_minutes, available_from, employment_status,
+             age_entered, age_entered_on, availability_exempt)
+            VALUES (${STAFF_USER_ID}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING staff_id`)
+          .bind(u.company_id, userCode, u.company_id, person.person_id, u.company_id, type, partnerId, affiliation, b.affiliation_contact || null,
+            b.kana || null, b.gender, b.date_of_birth || null, b.skills || '', b.career || '', b.work_area || '',
+            b.nearest_station_line || null, b.nearest_station || null, b.commute_minutes ?? null, b.available_from || null,
+            type === 'own_employee' ? (b.employment_status || 'working') : 'working', ageCols.age_entered, ageCols.age_entered_on, availabilityExempt),
+      ]
+      // ②では従業員管理（社員名簿）の最小レコードも同時に作成する。電話番号は従業員管理の電話番号にも入れる（従業員管理で直したら users.phone にそろえる。#123）
+      if (withEmployee) stmts.push(db.prepare(`INSERT INTO employee_records (staff_id, company_id, employee_number, hire_date, contract_type, phone_main, updated_at)
+          VALUES (${STAFF_ID_OF_PERSON}, ?, ?, ?, ?, ?, ?)`)
+        .bind(u.company_id, person.person_id, u.company_id, b.employee_number || null, b.hire_date || null, b.contract_type || null, b.phone || null, nowJST()))
+      return stmts
+    })
+  } catch (e) {
+    // 空いている番号を返し、画面の番号欄に入れ直せるようにする（#424）
+    if (isUniqueError(e, 'users.user_code')) return c.json({ error: 'スタッフ番号が重複しています', suggested_code: wantsLogin ? (await nextStaffCode(db, u.company_id)).code : null }, 409)
+    // 確認の後に別の登録で同じ社員番号が使われた
+    if (isUniqueError(e, 'employee_records.employee_number')) return c.json({ error: 'この社員番号は既に使用されています' }, 409)
+    console.log(`roster create failed: ${e}`)
+    return c.json({ error: '登録に失敗しました。もう一度お試しください' }, 500)
   }
-  return c.json({ ok: true, staff_id: staffId, global_staff_code: person.global_staff_code })
+  const staffId = Number((created.res[2].results[0] as any).staff_id)
+  return c.json({ ok: true, staff_id: staffId, global_staff_code: created.person.global_staff_code })
 })
 
 // ---------- フェーズH: 同一人物の所属企業（統合ログイン・勤怠の自動振り分け） ----------
@@ -1507,6 +1532,8 @@ export type PersonStaffRow = { staff_id: number; company_id: number; user_id: nu
 /**
  * ログイン中ユーザーと同一人物（person_id）の、稼働管理対象のスタッフマスタ行を全企業分返す。
  * 対象: users.status='active' かつ role='staff'、skillsheet_only 以外。person_id が無い場合は自分の行のみ。
+ * 連携が終わった他社連携の行（所属元が連携を終了した・稼働先が取引終了にした）は外す。企業切替の一覧・切替先・勤怠の振り分けに出さない
+ * （過去の勤怠・精算の記録は稼働先に残る。D-53 #9942）
  */
 export async function personStaffRows(db: D1Database, u: any): Promise<PersonStaffRow[]> {
   const self: PersonStaffRow[] = u.staff_id ? [{ staff_id: u.staff_id, company_id: u.company_id, user_id: u.user_id, company_name: u.company_name, settings_json: u.settings_json }] : []
@@ -1515,6 +1542,7 @@ export async function personStaffRows(db: D1Database, u: any): Promise<PersonSta
     SELECT sp.staff_id, sp.company_id, us.user_id, co.company_name, co.settings_json
     FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id JOIN companies co ON co.company_id = sp.company_id
     WHERE sp.person_id = ? AND us.person_id = ? AND us.status = 'active' AND us.role = 'staff' AND COALESCE(sp.affiliation_type, 'own_employee') != 'skillsheet_only'
+      AND NOT (COALESCE(sp.affiliation_type, '') = 'linked_external' AND (sp.link_revoked_at IS NOT NULL OR sp.link_ended_at IS NOT NULL))
     ORDER BY (sp.company_id != ?), sp.staff_id`).bind(u.person_id, u.person_id, u.company_id).all()
   const list = rows.results as PersonStaffRow[]
   if (u.staff_id && !list.some(r => r.staff_id === u.staff_id)) list.unshift(...self)
@@ -1582,14 +1610,15 @@ function maskEmail(v: any): string | null {
   return s[0] + '***' + s.slice(at)
 }
 
-// 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）
+// 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）。
+// 連携が終わった会社（所属元の連携の終了・稼働先の取引終了）は出さない（personStaffRows。D-53 #9942）
 staffSelfApi.get('/companies', async (c) => {
   const u = c.get('user')
   const rows = await personStaffRows(c.env.DB, u)
   const unread = rows.length > 1 ? await countUnreadNotices(c.env.DB, rows.map(r => r.user_id)) : new Map<number, number>()
   return c.json({ current_company_id: u.company_id, companies: rows.map(r => ({ company_id: r.company_id, company_name: r.company_name, current: r.company_id === u.company_id, unread_notices: unread.get(r.user_id) || 0 })) })
 })
-// 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）
+// 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）。連携が終わった会社へは切り替えない（404。D-53 #9942）
 staffSelfApi.post('/switch-company', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))

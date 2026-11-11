@@ -6,6 +6,7 @@
 // - 保存は api.ts（クライアント）・roster.ts（協力会社）の保存と同じ batch で行う（assigneeSaveStmts）
 // =========================================================
 import { Hono } from 'hono'
+import { nowJST } from './lib/time'
 
 type Env = { Bindings: { DB: D1Database }; Variables: { user: any } }
 export type AssigneeType = 'client' | 'partner'
@@ -17,7 +18,6 @@ const ASSIGNABLE_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'of
 const ROLES_SQL = ASSIGNABLE_ROLES.map(r => `'${r}'`).join(',')
 const MAX_SUBS = 30
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 
 /** 担当者の一覧の問い合わせ（id を渡せば1社分）。batch に入れられるよう文だけを返す */
 export function assigneeListStmt(db: D1Database, companyId: number, type: AssigneeType, id?: number): D1PreparedStatement {

@@ -27,6 +27,8 @@ import { personStaffRows } from './roster'
 import * as emailService from './services/email'
 import { loadVapid, sendWebPush, isAllowedPushEndpoint, allowLocalPush, type VapidEnv } from './lib/web-push'
 import { ERROR_ALERT_KIND } from './lib/error-log'
+import { nowJST } from './lib/time'
+import { randomHex } from './lib/hash'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
@@ -38,7 +40,6 @@ const KIND_LABEL: Record<string, string> = { modify: '時刻修正', add: '打�
 // corrections.ts の CANCEL_REASON_LABEL と同じ（corrections.ts がこのファイルを読み込むため、ここでは複製する）
 const CANCEL_REASON_LABEL: Record<string, string> = { shift_deleted: 'シフトが削除されたため', staff_changed: 'シフトの担当者が差し替えられたため' }
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 const fmtAt = (at: string | null) => { const m = String(at || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})/); return m ? `${Number(m[2])}/${Number(m[3])} ${m[4]}` : '－' }
 const fmtDate = (d: string | null) => { const m = String(d || '').match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])}` : '' }
 
@@ -188,7 +189,7 @@ async function recipientsFor(db: D1Database, c: any, event: CorrectionEvent, opt
     if (o && !samePerson(o, requester)) add(o, 'correction_proxy_submitted', { noEmail: true })
     // まとめて出した申請の2件目以降と、本人が取り消した直後の同じ報告の申請し直しは、承認依頼のメールを送らない（#392）
     const lead = !c.group || c.group[0].correction_id === c.correction_id
-    const since = new Date(Date.now() + 9 * 3600 * 1000 - RESUBMIT_QUIET_MINUTES * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const since = nowJST(-RESUBMIT_QUIET_MINUTES * 60 * 1000)
     const recentCancel = await db.prepare(`SELECT 1 FROM attendance_corrections WHERE shift_id = ? AND report_type = ? AND status = 'cancelled' AND cancel_reason IS NULL
       AND requested_by = ? AND cancelled_at >= ? AND correction_id < ? LIMIT 1`).bind(c.shift_id, c.report_type, c.requested_by, since, c.correction_id).first()
     const admins = (await db.prepare(`SELECT user_id, name, email, role, status FROM users WHERE company_id = ? AND status = 'active' AND role IN (${NOTIFY_ADMIN_ROLES.map(() => '?').join(',')})`)
@@ -312,7 +313,7 @@ export async function sendDeliveries(env: NotifyEnv, ids: number[]) {
 
 // 『送信中』のまま止まったとみなす時間（#311）。送信は応答の後に順に行うので、通常は数十秒で終わる
 export const STALLED_PENDING_MINUTES = 10
-const minutesAgoJST = (m: number) => new Date(Date.now() + 9 * 3600 * 1000 - m * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+const minutesAgoJST = (m: number) => nowJST(-m * 60 * 1000)
 // 再送できる行の条件: 送信失敗か、送信中のまま止まった行
 const RESENDABLE_SQL = `(e.status = 'failed' OR (e.status = 'pending' AND COALESCE(e.last_attempt_at, e.created_at) < ?))`
 
@@ -1159,12 +1160,8 @@ export async function deliverReminders(env: NotifyEnv, items: ReminderItem[]) {
 // 既読にする条件はアプリの「確認しました」と同じ（今も配信の対象であること。loadStaffNotices）。1つのトークンは1回だけ使える
 // =========================================================
 export const NOTICE_ACK_DAYS = 30
-const daysLaterJST = (d: number) => new Date(Date.now() + 9 * 3600 * 1000 + d * 86400 * 1000).toISOString().slice(0, 19).replace('T', ' ')
-function randomToken(): string {
-  const b = new Uint8Array(24)
-  crypto.getRandomValues(b)
-  return [...b].map(x => x.toString(16).padStart(2, '0')).join('')
-}
+const daysLaterJST = (d: number) => nowJST(d * 86400 * 1000)
+function randomToken(): string { return randomHex(24) }
 // 宛先ごとのトークン（user_id → トークン）。期限切れのトークンは、ついでに消す
 export async function createNoticeAckTokens(db: D1Database, noticeId: number, companyId: number, userIds: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()

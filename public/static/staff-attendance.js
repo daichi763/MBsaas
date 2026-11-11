@@ -7,7 +7,6 @@
   const LABEL = { wake_up: '起床報告', departure: '出発報告', check_in: '入店報告', work_start: '勤務開始', break_start: '休憩はじめ', break_end: '休憩おわり', work_end: '勤務終了', check_out: '退店報告' }
   const STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
   const KIND = { modify: '時刻の直し', add: '押し忘れの報告' } // やさしい言葉に（UI-2 ui-staff-07）
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const S = window.__attState = window.__attState || { tab: 'timeline', to: null }
   let TL = null
   let busy = false
@@ -516,9 +515,11 @@
           <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
   }
-  // 通知の行き先: お知らせの確認のお願い（#191）はそのお知らせ、相談への返信は相談・連絡（#320）、
+  // 通知の行き先: シフト・募集・日報のコメント・登録情報の変更申請・休暇の通知は、画面の登録（staff.js の staffScreen の notify）で決める。
+  // それ以外は、お知らせの確認のお願い（#191）はそのお知らせ、相談への返信は相談・連絡（#320）、
   // 打刻修正の通知はその申請（#306。リンクの #attendance/request/:id か、古い通知は related_id）
   window.notifOpenStaff = async function (id) {
+    if (await openNotificationByScreen(NOTIF_LIST.find(x => x.notification_id === id))) return
     try { await axios.post(`/api/staff/notifications/${id}/read`) } catch (e) { }
     const n = NOTIF_LIST.find(x => x.notification_id === id)
     const link = (n && n.link) || ''
@@ -568,7 +569,6 @@
 // =========================================================
 // 先頭の ; は、前の即時関数の })() とつながって呼び出しにならないようにするため
 ;(function () {
-  const errMsg = (e, d) => (e && e.response && e.response.data && e.response.data.error) || d || 'エラーが発生しました'
   const REQ_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
   const KIND_LABEL = { transport: '交通費', overtime: '延長' }
   const UNIT_LABEL = { daily: '日給', hourly: '時給' }
@@ -846,22 +846,7 @@
     renderStaffPay()
   }))
 
-  // 「その他」メニューに項目を足し、画面を登録する（staff.js の routes・titles・MORE_SUB_TABS）
-  const origMore = window.renderMore
-  if (origMore) {
-    window.renderMore = function () {
-      if (origMore() === false) return false // URL を #more に変えて描き直す途中
-      const html = `<a href="#pay" class="report-btn">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-yen-sign"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">勤務時間・支払</span><span class="block text-xs text-gray-400">月の勤務日数・実働時間の確認、交通費・延長の申請</span></span>
-        <i class="fas fa-chevron-right text-gray-300"></i>
-      </a>`
-      const at = $app.querySelector('a[href="#attendance"]')
-      if (at) at.insertAdjacentHTML('afterend', html)
-      else { const wrap = $app.querySelector('.space-y-3'); if (wrap) wrap.insertAdjacentHTML('beforeend', html) }
-    }
-  }
-  if (typeof routes === 'object') { routes.pay = () => window.renderStaffPay(); if (origMore) routes.more = window.renderMore }
-  if (typeof titles === 'object') titles.pay = '勤務時間・支払'
-  if (typeof MORE_SUB_TABS !== 'undefined' && !MORE_SUB_TABS.includes('pay')) MORE_SUB_TABS.push('pay')
+  // 画面の登録（staff.js の staffScreen）。『その他』では打刻履歴・修正申請の下に出す
+  staffScreen('pay', { title: '勤務時間・支払', nav: 'more', render: () => window.renderStaffPay(),
+    more: { order: 60, icon: 'fa-yen-sign', label: '勤務時間・支払', sub: '月の勤務日数・実働時間の確認、交通費・延長の申請' } })
 })()

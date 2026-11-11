@@ -4,6 +4,7 @@
 // - セッション・再設定トークン: DB には SHA-256 のハッシュだけを保存し、Cookie の生の値をハッシュにして照合する。
 // - 期限の比較はすべて ISO 8601（toISOString）の文字列同士で行う（CURRENT_TIMESTAMP とは書式が違うため比べない）。
 import type { Context } from 'hono'
+import { sha256 } from './hash'
 
 export const SESSION_COOKIE = 'session'
 export const SESSION_HOURS = 12 // 1シフト分を目安とした有効期限
@@ -22,7 +23,6 @@ const LOGIN_MAX_FAILURES_IP = 50
 const enc = new TextEncoder()
 function toB64(u8: Uint8Array): string { return btoa(String.fromCharCode(...u8)) }
 function fromB64(s: string): Uint8Array { return Uint8Array.from(atob(s), ch => ch.charCodeAt(0)) }
-function toHex(u8: Uint8Array): string { return [...u8].map(b => b.toString(16).padStart(2, '0')).join('') }
 // 長さが同じなら全文字を比べる（一致位置で処理時間が変わらないように）
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
@@ -31,9 +31,7 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
-export async function sha256Hex(text: string): Promise<string> {
-  return toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))))
-}
+export const sha256Hex = sha256
 /** セッション・再設定トークンの保存用ハッシュ */
 export const hashToken = sha256Hex
 
@@ -119,16 +117,17 @@ export async function revokeCompanySessions(db: D1Database, companyId: number): 
 
 export type SessionCheck =
   | { ok: true; user: any }
-  | { ok: false; reason: 'none' | 'user_inactive' | 'company_inactive' }
+  | { ok: false; reason: 'none' | 'user_inactive' | 'company_inactive' | 'link_ended' }
 /**
  * Cookie のセッショントークンから利用者を引く（API の認証ミドルウェアと画面の currentUser で共用）。
  * 期限切れ・退職（status!='active'）・ログインできないロール・停止中の企業（本部ユーザーは除く）は通さない。
+ * 企業切替で他社連携の行（稼働先）に入っているセッションは、連携が終わった（所属元の連携の終了・稼働先の取引終了）ら通さない（D-53 #9942）。
  */
 export async function loadSessionUser(db: D1Database, token: string | undefined | null): Promise<SessionCheck> {
   if (!token) return { ok: false, reason: 'none' }
   const row = await db.prepare(`
     SELECT u.*, s.expires_at, c.company_name, c.company_code, c.settings_json, c.active_status AS company_active_status,
-           sp.staff_id
+           sp.staff_id, sp.affiliation_type AS sp_affiliation_type, sp.link_revoked_at AS sp_link_revoked_at, sp.link_ended_at AS sp_link_ended_at
     FROM sessions s JOIN users u ON s.user_id = u.user_id
     JOIN companies c ON u.company_id = c.company_id
     LEFT JOIN staff_profiles sp ON sp.user_id = u.user_id
@@ -136,6 +135,7 @@ export async function loadSessionUser(db: D1Database, token: string | undefined 
   if (!row) return { ok: false, reason: 'none' }
   if (row.status !== 'active' || !canLogin(row.role)) return { ok: false, reason: 'user_inactive' }
   if (row.role !== 'system_admin' && !isCompanyActive(row.company_active_status)) return { ok: false, reason: 'company_inactive' }
+  if (row.sp_affiliation_type === 'linked_external' && (row.sp_link_revoked_at || row.sp_link_ended_at)) return { ok: false, reason: 'link_ended' }
   return { ok: true, user: row }
 }
 

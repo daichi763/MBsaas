@@ -21,6 +21,8 @@ import { notifyRecruitResult, notifyRecruitResults } from './notifications'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { mailMode } from './services/email'
 import { isHHMM, isISODate, toInt } from './lib/validate'
+import { nowJST, todayJST, addDays, dayDiff, isDate } from './lib/time'
+import { sha256 } from './lib/hash'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
@@ -41,19 +43,10 @@ const RETENTION_DAYS = 180        // 採用に至らなかった公開ページ�
 const NEW_STAFF_TYPES = ['daily_worker', 'freelance', 'partner_manual', 'own_employee']
 
 // ---------- ユーティリティ ----------
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
-function addMinutesJST(m: number): string { return new Date(Date.now() + (9 * 60 + m) * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
-function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
+function addMinutesJST(m: number): string { return nowJST(m * 60 * 1000) }
 function randToken(bytes = 18): string {
   const a = new Uint8Array(bytes); crypto.getRandomValues(a)
   return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
 function parseIds(v: any): number[] {

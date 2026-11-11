@@ -712,7 +712,7 @@
     p.catch(() => { if (CL.p === p) CL.p = null })
     return p
   }
-  // ダッシュボードを描いた後に呼ぶ（admin.js の routes.dashboard）
+  // ダッシュボードを描いた後に呼ぶ（admin.js の renderDashboardPage）
   async function dashboard() {
     if (!isAdmin() || S.readonly || !S.me || S.me.role !== 'company_admin') return
     let d
@@ -1138,8 +1138,8 @@
   // 「その他」の画面の「使い方をもう一度見る」（staff.js の renderMore が並べる）
   function staffMoreHtml() {
     return `<button type="button" class="report-btn w-full text-left" data-action="tourStaffReplay">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-circle-question"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">使い方をもう一度見る</span><span class="block text-xs text-gray-400">ホーム画面に追加・打刻・日報・通知の案内</span></span>
+        <span class="rb-icon" aria-hidden="true"><i class="fas fa-circle-question"></i></span>
+        <span class="flex-1"><span class="rb-label font-bold">使い方をもう一度見る</span><span class="block text-xs text-muted">ホーム画面に追加・打刻・日報・通知の案内</span></span>
         <i class="fas fa-chevron-right text-gray-300"></i>
       </button>`
   }

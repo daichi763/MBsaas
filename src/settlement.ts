@@ -15,7 +15,7 @@ import { MONEY_MAX, calcAmounts, hoursForAmounts, isSettled, loadPricingData, sh
 import { isHHMM } from './lib/validate'
 import { accountTypeCode, csvResponse, toCsv, toZenginKana, zenginTransferFile } from './csv'
 import { JSON_IN, batchInChunks, bindJsonArray, chunk } from './lib/d1-chunk'
-import { addDays, overlaps, shiftWindow } from './lib/shift-time'
+import { overlaps, shiftWindow } from './lib/shift-time'
 import { changesOf, updateRowsStmts } from './lib/bulk-write'
 import { isWorkingShift } from './lib/shift-status'
 import { REPORT_TYPES, attendanceTypesForRows } from './report-settings'
@@ -25,6 +25,7 @@ import { PREMIUM_COLUMNS, PREMIUM_RATE_MAX, attachPremiums, loadPremiumSettings 
 import { loadTransportDefaults, transportDefaultFor } from './lib/transport-defaults'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { MONTHLY_LABEL, MONTHLY_WORK_STATUSES, type MonthlyLine, addMonthsYM, isYM, loadMonthlyLines, monthlyTotal, monthsOverlapping, ruleActiveIn, ymLabel } from './lib/monthly-billing'
+import { nowJST, addDays, dayDiff, isDate } from './lib/time'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -34,11 +35,8 @@ const MAX_RANGE_DAYS = 93
 // 一覧・CSV・一括の確定と取り消しで扱う件数の上限。超えたときは一部だけを処理せず、期間や条件を絞ってもらう
 export const MAX_ROWS = 5000
 const WORK_STATUSES = ['confirmed', 'substitute']
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 // 時刻は 00:00〜23:59 だけを受け付ける（#218）
 const isTime = (s: any) => isHHMM(s)
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function dayDiff(a: string, b: string): number { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) }
 function intOrNull(v: any): number | null { if (v === '' || v == null) return null; const n = Math.round(Number(v)); return Number.isFinite(n) ? n : null }
 
 export const PAYEE_LABEL: Record<string, string> = {

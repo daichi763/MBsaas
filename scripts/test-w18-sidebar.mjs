@@ -81,7 +81,7 @@ const decl = (sel) => [...css.matchAll(/([^{}]+){([^{}]*)}/g)].filter(m => m[1].
 ok('畳んだ幅は 3.5rem（56px）、開いた幅は 15rem。本文と下のバーは同じ幅だけ空ける（md 以上だけ）',
   /@media \(min-width:768px\)\{body\{--side-w:15rem\}body\.side-collapsed\{--side-w:3\.5rem\}#sidebar\{width:var\(--side-w\)/.test(css)
   && css.includes('.admin-main{margin-left:var(--side-w)') && css.includes('.side-offset-left{left:calc(var(--side-w) + 1rem)}'))
-ok('畳んだときは見出しを区切り線にし、閉じた見出しの中の項目も出す', css.includes('body.side-collapsed #side-nav .nav-group-head{display:none}') && css.includes('body.side-collapsed #side-nav .nav-group{border-top:1px solid #e5e7eb')
+ok('畳んだときは見出しを区切り線にし、閉じた見出しの中の項目も出す', css.includes('body.side-collapsed #side-nav .nav-group-head{display:none}') && css.includes('body.side-collapsed #side-nav .nav-group{border-top:1px solid rgb(var(--c-line))')
   && css.includes('body.side-collapsed #side-nav .nav-group.collapsed .nav-group-body{display:block}'))
 ok('畳んだときは文字を隠してアイコンを出し、件数のバッジはアイコンの右上に小さく出す',
   ['body.side-collapsed #sidebar .side-link', 'body.side-collapsed #sidebar .side-foot button'].every(x => decl(x).includes('justify-content:center') && decl(x).includes('font-size:0'))
@@ -104,7 +104,7 @@ ok('案件ごと: 左の列は決まった幅、日の列は最小の幅だけ�
 ok('人ごと: 名前・稼働の列は決まった幅、日の列は最小の幅だけを決める',
   personDay > 0 && person.includes('<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px">') && person.includes('style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>') && !person.includes('118'), { personDay })
 ok('左の列の文字は省略し、title で全部を出す（案件ごと・枠なし・人ごと）',
-  slot.includes('<td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.site || \'（場所未設定）\'}\\n${r.start}〜${r.end}・${r.role}`)}">') && slot.includes('<p class="text-[11px] text-gray-500 truncate">${esc(r.start)}')
+  slot.includes('<td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.site || \'（場所未設定）\'}\\n${r.start}〜${r.end}・${r.role}`)}">') && slot.includes('<p class="text-xs text-gray-500 truncate">${esc(r.start)}')
   && slot.includes('title="${esc(`${p.project_name || \'\'}\\n${r.site || \'\'}`)}"') && person.includes('<td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.name || \'\'} ') && person.includes('<p class="truncate"><a href="#staff/'))
 // 週の表がメニューを畳んだ 1366px で収まる幅か（本文の幅の計算。スクロールバー 15px、本文の左右の余白 48px、右の候補の欄 340px と間 12px、表の枠 2px）
 const inner = (vw, side) => vw - 15 - side - 48

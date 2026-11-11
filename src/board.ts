@@ -5,7 +5,7 @@
 // - 他社に返すのは掲載内容と掲載企業名のみ（コピー元の自社案件・作成者などの社内情報は返さない）
 // =========================================================
 import { Hono } from 'hono'
-import { loadRoster, createPerson, unusablePasswordHash, ageGroupOf } from './roster'
+import { loadRoster, batchWithNewPerson, insertPersonStmt, STAFF_USER_ID, STAFF_ID_OF_PERSON, unusablePasswordHash, ageGroupOf } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
 import { isISODate } from './lib/validate'
@@ -13,6 +13,7 @@ import { notifyCompanyAdmins, markAdminNotificationsRead, loadNotifyPrefs, email
 import { sendEmailBatch } from './services/email'
 import type { SendEmailInput } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
+import { nowJST, todayJST, isDate } from './lib/time'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -23,9 +24,6 @@ export const PRICE_UNITS = ['hourly', 'daily', 'monthly'] as const
 export const POST_STATUSES = ['draft', 'open', 'closed', 'filled'] as const
 const MAX_LIST = 200
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 const isTime = (s: any) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
 const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
 
@@ -903,37 +901,39 @@ boardApi.post('/proposals/:id/import', async (c) => {
   // 取引先マスタ（提案企業名）
   await db.prepare('INSERT OR IGNORE INTO staff_affiliations (company_id, affiliation_name) VALUES (?, ?)').bind(u.company_id, partnerName).run()
   const pa = await db.prepare('SELECT t.affiliation_id FROM staff_affiliations sa JOIN staff_affiliations t ON t.affiliation_id = COALESCE(sa.merged_into_id, sa.affiliation_id) WHERE sa.company_id = ? AND sa.affiliation_name = ?').bind(u.company_id, partnerName).first() as any
-  const person = await createPerson(db, u.company_id)
-  let userId: number
-  try {
-    const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?)`)
-      .bind(u.company_id, 'BD-' + person.global_staff_code, name, await unusablePasswordHash(), person.person_id).run()
-    userId = r.meta.last_row_id as number
-  } catch {
-    await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
-    return c.json({ error: '取り込みに失敗しました。もう一度お試しください' }, 500)
-  }
   const careerRows = Array.isArray(sn.career_rows) ? sn.career_rows.map((x: any) => ({ from: x.from || '', to: x.to || '', company: x.company || '', work: x.work || '', note: '' })) : []
   // 提案元が記録した本人同意（取得方法・日付）も引き継ぐ（#502）
   const consentLine = p.consent_method ? `本人の同意: ${CONSENT_METHODS[p.consent_method] || p.consent_method}（${p.consent_obtained_on || '日付なし'}・提案元の記録）` : ''
   const remarks = [`掲示板経由（提案: ${partnerName}）`, p.proposed_price ? `提示単価: ${({ hourly: '時給', daily: '日給', monthly: '月給' } as any)[p.price_unit] || ''}${Number(p.proposed_price).toLocaleString()}円` : '', p.comment ? `提案コメント: ${p.comment}` : '', consentLine].filter(Boolean).join('\n')
-  const sr = await db.prepare(`INSERT INTO staff_profiles
-      (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
-       kana, gender, age_group, skills, career, career_rows, pr_points, remarks, work_area, nearest_station, commute_minutes, available_from, employment_status, board_proposal_id, is_provisional)
-      VALUES (?, ?, ?, ?, 'partner_manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?)`)
-    .bind(userId, u.company_id, person.person_id, u.company_id, pa?.affiliation_id ?? null, partnerName,
-      dis.kana || null, sn.gender || 'unspecified', sn.age_group || null, sn.skills || '', sn.career || '', JSON.stringify(careerRows), sn.pr_points || '', remarks,
-      sn.work_area || '', sn.nearest_station || null, sn.commute_minutes ?? null, sn.available_from || null, p.proposal_id, provisional).run()
-  const staffId = sr.meta.last_row_id as number
-  // 二重取り込み防止（同時押下でも1件だけ有効にする）
-  const upd = await db.prepare('UPDATE board_proposals SET imported_staff_id = ?, updated_at = ? WHERE proposal_id = ? AND imported_staff_id IS NULL')
-    .bind(staffId, nowJST(), p.proposal_id).run()
-  if (!upd.meta.changes) {
-    await db.prepare('DELETE FROM staff_profiles WHERE staff_id = ?').bind(staffId).run()
-    await db.prepare('DELETE FROM users WHERE user_id = ?').bind(userId).run()
-    await db.prepare('DELETE FROM persons WHERE person_id = ?').bind(person.person_id).run()
-    return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです' }, 409)
+  const pwHash = await unusablePasswordHash()
+  // persons・users・staff_profiles と取り込み先の記録を1つの batch で入れる（途中で失敗しても孤立した行を残さない。#9951）。
+  // 二重取り込み防止: まだ取り込まれていない提案のときだけ行を入れる（同時押下でも1件だけ有効にする）
+  const notYet = { sql: 'EXISTS (SELECT 1 FROM board_proposals WHERE proposal_id = ? AND imported_staff_id IS NULL)', binds: [p.proposal_id] }
+  let created: Awaited<ReturnType<typeof batchWithNewPerson>>
+  try {
+    created = await batchWithNewPerson(db, person => {
+      const userCode = 'BD-' + person.global_staff_code
+      return [
+        insertPersonStmt(db, person, u.company_id, notYet),
+        db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, person_id) SELECT ?, ?, ?, 'roster_only', ?, ? WHERE ${notYet.sql}`)
+          .bind(u.company_id, userCode, name, pwHash, person.person_id, ...notYet.binds),
+        db.prepare(`INSERT INTO staff_profiles
+            (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
+             kana, gender, age_group, skills, career, career_rows, pr_points, remarks, work_area, nearest_station, commute_minutes, available_from, employment_status, board_proposal_id, is_provisional)
+            SELECT ${STAFF_USER_ID}, ?, ?, ?, 'partner_manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ? WHERE ${notYet.sql} RETURNING staff_id`)
+          .bind(u.company_id, userCode, u.company_id, person.person_id, u.company_id, pa?.affiliation_id ?? null, partnerName,
+            dis.kana || null, sn.gender || 'unspecified', sn.age_group || null, sn.skills || '', sn.career || '', JSON.stringify(careerRows), sn.pr_points || '', remarks,
+            sn.work_area || '', sn.nearest_station || null, sn.commute_minutes ?? null, sn.available_from || null, p.proposal_id, provisional, ...notYet.binds),
+        db.prepare(`UPDATE board_proposals SET imported_staff_id = ${STAFF_ID_OF_PERSON}, updated_at = ? WHERE proposal_id = ? AND imported_staff_id IS NULL`)
+          .bind(u.company_id, person.person_id, nowJST(), p.proposal_id),
+      ]
+    })
+  } catch (e) {
+    console.log(`board import failed: ${e}`)
+    return c.json({ error: '取り込みに失敗しました。もう一度お試しください' }, 500)
   }
+  const staffId = Number((created.res[2].results[0] as any)?.staff_id) || 0
+  if (!staffId) return c.json({ error: 'この提案はすでにスタッフマスタに取り込み済みです' }, 409)
   await addMessage(db, p.thread_id, u.company_id, null, 'system', `${own?.company_name || ''}が採用した人材をスタッフマスタに登録しました`, true)
   return c.json({ ok: true, staff_id: staffId, shift, provisional: !!provisional })
 })

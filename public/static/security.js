@@ -297,6 +297,7 @@
     modal(`
       <h3 class="font-bold text-lg mb-1">${esc(d.staff.name)} さんのログイン</h3>
       <p class="text-xs text-gray-500 mb-3">スタッフ番号 ${esc(d.staff.user_code || '-')}</p>
+      ${d.staff.linked ? '<p class="p-2.5 rounded-lg bg-gray-50 text-xs text-gray-600 mb-3"><i class="fas fa-link mr-1"></i>他社から連携したスタッフです。ここに出るのは、本人が自社の画面に切り替えて使っている端末だけです。所属元の会社でのログインは、所属元の管理者が管理します。</p>' : ''}
       <h4 class="text-sm font-bold text-gray-700 mb-1">ログイン中の端末（${d.sessions.length}台）</h4>
       ${sessionRowsHtml(d.sessions, { showOther: true })}
       ${d.sessions.some(s => s.other_company) ? '<p class="text-[11px] text-gray-400 mt-1">「他社の画面」は、同じ人が連携先の会社に切り替えて使っている端末です。終了するとこちらも終了します。</p>' : ''}
@@ -304,11 +305,14 @@
         <ul class="text-xs space-y-1 max-h-48 overflow-y-auto">${d.history.map(e => `<li>${utcTime(e.created_at)} ${resultBadge(e.result)} ${esc(EVENT_LABEL[e.event_type] || e.event_type)} <span class="text-gray-400">${esc(e.ip || '')} ${esc(e.device)}</span></li>`).join('')}</ul>` : ''}
       <div class="flex flex-wrap gap-2 justify-end mt-4">
         <button class="btn btn-outline" onclick="closeModal()">閉じる</button>
-        ${d.sessions.length ? `<button class="btn btn-danger" data-action="secStaffRevoke" data-id="${id}" data-name="${esc(d.staff.name)}"><i class="fas fa-power-off"></i>ログインを終了させる</button>` : ''}
+        ${d.sessions.length ? `<button class="btn btn-danger" data-action="secStaffRevoke" data-id="${id}" data-name="${esc(d.staff.name)}" data-linked="${d.staff.linked ? 1 : ''}"><i class="fas fa-power-off"></i>ログインを終了させる</button>` : ''}
       </div>`)
   }))
   delegate('secStaffRevoke', (el) => {
-    if (!confirm(`${el.dataset.name} さんのログインを、すべての端末で終了します。本人は新しい端末でログインし直す必要があります。よろしいですか？`)) return
+    const msg = el.dataset.linked
+      ? `${el.dataset.name} さんが自社の画面に切り替えて使っている端末のログインを終了します（所属元の会社でのログインは終了しません）。よろしいですか？`
+      : `${el.dataset.name} さんのログインを、すべての端末で終了します。本人は新しい端末でログインし直す必要があります。よろしいですか？`
+    if (!confirm(msg)) return
     withSubmitLock(el, async () => {
       try {
         const { data } = await axios.delete(`/api/admin/staff/${Number(el.dataset.id)}/sessions`)

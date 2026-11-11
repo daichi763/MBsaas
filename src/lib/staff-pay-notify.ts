@@ -4,9 +4,10 @@
 // kind: pay_request_submitted（管理者への承認依頼）/ pay_request_approved・pay_request_rejected（本人への結果）/
 //       actual_entered（管理者が実績を入力したことの本人への通知）
 // =========================================================
+import { nowJST } from './time'
+
 const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 
-export function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 export const mdText = (d: string | null | undefined) => { const m = String(d || '').match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])}` : '' }
 
 // シフトの担当スタッフ本人（ログインできるスタッフのユーザー）に知らせる

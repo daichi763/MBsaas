@@ -22,6 +22,7 @@ import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { distanceFromSite, distanceResult, sitePositionOf } from './lib/site-location'
 import { PHOTO_REQUIRED_ERROR, noPhotoReasonText, photoSkipAllowed } from './lib/attendance-photo'
 import { isD1Overloaded, withD1Retry } from './lib/d1-retry'
+import { jstOf } from './lib/time'
 
 export const PUNCH_CLOCK_SKEW_MAX_MS = 5 * 60000 // 端末の時計のずれがこれ以上なら、押した時刻を使わない
 export const PUNCH_DELAY_MAX_MS = 30 * 60000     // 押してから受け付けるまでがこれを超えたら、押した時刻を使わない
@@ -29,7 +30,6 @@ export const PUNCH_RESENT_MIN_MS = 60000         // 押した時刻と受け付�
 export const PUNCH_BUSY_ERROR = '混み合っているため、記録できませんでした。自動で送り直します'
 const PHOTO_REQUIRED_TYPES = ['check_in', 'check_out']
 
-const jstOf = (ms: number) => new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
 
 // 押した時刻の扱い。pressed: 押した時刻（JST。送られていなければ null）、adopt: 記録の時刻に使うか、mark: 「再送」の印を付けるか
 export function punchTime(pressedRaw: any, deviceNowRaw: any, nowMs: number): { pressed: string | null; pressedMs: number | null; adopt: boolean; mark: boolean } | { error: string } {
@@ -91,7 +91,7 @@ async function recordPunchInner(c: any, input: PunchInput): Promise<Res> {
   const read = await withD1Retry(() => db.batch([
     db.prepare(`SELECT s.*, p.photo_required_override AS p_photo_required_override, p.late_grace_minutes AS p_late_grace_minutes,
         p.hours_basis AS p_hours_basis, p.time_round_minutes AS p_time_round_minutes, p.pay_time_round AS p_pay_time_round, p.default_break_minutes AS p_default_break_minutes,
-        si.lat AS s_lat, si.lng AS s_lng, p.location_lat AS p_lat, p.location_lng AS p_lng,
+        si.lat AS s_lat, si.lng AS s_lng,
         EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = s.company_id AND k.reopened_at IS NULL AND k.period_from <= s.work_date AND k.period_to >= s.work_date) AS p_closed
       FROM shifts s LEFT JOIN projects p ON p.project_id = s.project_id AND p.company_id = s.company_id LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
       WHERE s.shift_id = ? AND s.staff_id IN ${JSON_IN}`).bind(shiftId, bindJsonArray(rows.map(r => r.staff_id))),

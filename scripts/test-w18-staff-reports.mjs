@@ -147,7 +147,7 @@ ok('#9918 基本情報の欄（表示・編集）と保存（変えたときだ�
 ok('#9918 新規登録のフォームに「する／しない」（既定は する）があり、送信に入る', rosterJs.includes('name="rf-av-target" value="1" class="w-4 h-4" checked') && rosterJs.includes('body.availability_target = avTarget.value === \'1\''))
 ok('#9918 スタッフ詳細の行と基本情報の表示を、どちらで変えても合わせる', lifeJs.includes('staffAvTargetChanged(el.dataset.id, !target)') && adminJs.includes('redrawStaffAvTargetRow(sid, !body.availability_target)'))
 ok('#9919 未提出は表ではなくカードで、提出済みと同じ見出しの部品を使う', !adminJs.includes('missing-report-table') && /function missingReportCardHtml[\s\S]{0,900}reportCardHeadHtml\(/.test(adminJs) && /function reportCardHtml[\s\S]{0,1600}reportCardHeadHtml\(/.test(adminJs))
-ok('#9919 未提出のカードの代理入力は「実績を修正」と同じ位置・見た目（日報の内容の行の右）', /日報の内容<\/span>\s*<button type="button" class="btn btn-outline text-xs py-1 px-2\.5 ml-auto text-blue-700 border-blue-200" data-action="missingReportOpen"/.test(adminJs))
+ok('#9919 未提出のカードの代理入力は「実績を修正」と同じ位置・見た目（日報の内容の行の右）', /日報の内容<\/span>\s*<button type="button" class="btn btn-outline text-xs py-1 px-2\.5 ml-auto text-primary border-primary-line" data-action="missingReportOpen"/.test(adminJs))
 
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

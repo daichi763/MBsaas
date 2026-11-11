@@ -6,7 +6,7 @@
 // api.ts から認証ミドルウェアの前後に分けて登録する。金額は返さない（報告用URLはスタッフ本人向け）。
 // =========================================================
 import { Hono } from 'hono'
-import { createPerson, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode, ageGroupOf } from './roster'
+import { batchWithNewPerson, insertPersonStmt, STAFF_USER_ID, STAFF_ID_OF_PERSON, partnerNameConflict, getRequiredFields, missingRequired, normalizeRosterValues, requirementApplies, ROSTER_CONFIGURABLE_FIELDS, inactiveLabelOf, nextStaffCode, ageGroupOf } from './roster'
 import { ageEntryUpdate, estimatedAge } from './roster'
 import { isSettled, loadPricingData, stripMoney, computeShiftPricing } from './shift-board'
 import { JSON_IN, bindJsonArray, chunk, batchInChunks } from './lib/d1-chunk'
@@ -26,6 +26,8 @@ import { reportableWindow } from './lib/shift-time'
 import { getCookie } from 'hono/cookie'
 import { SESSION_COOKIE, loadSessionUser } from './lib/auth'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceIdOf, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
+import { nowJST, todayJST, addDays, isDate } from './lib/time'
+import { sha256 } from './lib/hash'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -53,20 +55,27 @@ export async function insertProvisionalStaff(db: D1Database, companyId: number, 
   name: string; phone: string; type: string; affiliation: string | null; partnerId: number | null; kana?: any; gender?: any
   attendance_mode?: any; daily_report_mode?: any; memo?: any; email?: string | null; unverified_email?: string | null; note: string
 }) {
-  const person = await createPerson(db, companyId)
-  const r = await db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, phone, email, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?, ?, ?)`)
-    .bind(companyId, 'TMP-' + person.global_staff_code, o.name, await unusablePasswordHash(), o.phone || null, o.email || null, person.person_id).run()
-  const sr = await db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
-      kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo, unverified_email)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?, ?)`)
-    .bind(r.meta.last_row_id, companyId, person.person_id, companyId, o.type, o.partnerId, o.affiliation,
-      o.kana || null, o.gender || null,
-      ['none', 'in_out', 'full'].includes(o.attendance_mode) ? o.attendance_mode : null,
-      ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null, String(o.unverified_email || '').trim() || null).run()
-  const staffId = sr.meta.last_row_id as number
-  await db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, note, changed_by)
-    VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?)`).bind(companyId, staffId, o.type, nowJST().slice(0, 10), o.affiliation, o.partnerId, o.note, byUserId).run()
-  return { staff_id: staffId, global_staff_code: person.global_staff_code }
+  const pwHash = await unusablePasswordHash()
+  // persons・users・staff_profiles・所属区分の履歴を1つの batch で入れる（途中で失敗しても孤立した行を残さない。#9951）
+  const { person, res } = await batchWithNewPerson(db, person => {
+    const userCode = 'TMP-' + person.global_staff_code
+    return [
+      insertPersonStmt(db, person, companyId),
+      db.prepare(`INSERT INTO users (company_id, user_code, name, role, password_hash, phone, email, person_id) VALUES (?, ?, ?, 'roster_only', ?, ?, ?, ?)`)
+        .bind(companyId, userCode, o.name, pwHash, o.phone || null, o.email || null, person.person_id),
+      db.prepare(`INSERT INTO staff_profiles (user_id, company_id, person_id, owner_company_id, affiliation_type, partner_affiliation_id, affiliation,
+          kana, gender, skills, career, work_area, employment_status, is_provisional, attendance_mode, daily_report_mode, memo, unverified_email)
+        VALUES (${STAFF_USER_ID}, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 'working', 1, ?, ?, ?, ?) RETURNING staff_id`)
+        .bind(companyId, userCode, companyId, person.person_id, companyId, o.type, o.partnerId, o.affiliation,
+          o.kana || null, o.gender || null,
+          ['none', 'in_out', 'full'].includes(o.attendance_mode) ? o.attendance_mode : null,
+          ['none', 'required'].includes(o.daily_report_mode) ? o.daily_report_mode : null, o.memo || null, String(o.unverified_email || '').trim() || null),
+      db.prepare(`INSERT INTO staff_affiliation_history (company_id, staff_id, from_type, to_type, effective_date, to_affiliation, partner_affiliation_id, note, changed_by)
+        VALUES (?, ${STAFF_ID_OF_PERSON}, 'new', ?, ?, ?, ?, ?, ?)`)
+        .bind(companyId, companyId, person.person_id, o.type, nowJST().slice(0, 10), o.affiliation, o.partnerId, o.note, byUserId),
+    ]
+  })
+  return { staff_id: Number((res[2].results[0] as any).staff_id), global_staff_code: person.global_staff_code }
 }
 export async function findStaffByPhone(db: D1Database, companyId: number, phone: string) {
   return (await findStaffByPhones(db, companyId, [phone])).get(normalizePhone(phone)) || []
@@ -138,17 +147,9 @@ export async function modesForShifts(db: D1Database, shiftIds: number[]) {
 }
 
 // ---------- ユーティリティ ----------
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
-function todayJST(): string { return nowJST().slice(0, 10) }
-function addDays(d: string, n: number): string { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10) }
-const isDate = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 function randToken(bytes = 24): string {
   const a = new Uint8Array(bytes); crypto.getRandomValues(a)
   return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randToken(24)) }
 // 電話番号の正規化（数字のみ。+81 は 0 に）。全角の数字・＋は半角にそろえてから数える（#512）
@@ -1690,10 +1691,10 @@ publicReportApi.post('/:token/consultation', async (c) => {
     }
   }
   const body = `【${kind.label}】${text || '（報告用のページから連絡がありました。本人に確認してください）'}`
-  const since = new Date(Date.now() + 9 * 3600 * 1000 - LINK_CONTACT_DUP_SECONDS * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const since = nowJST(-LINK_CONTACT_DUP_SECONDS * 1000)
   const dup = await db.prepare('SELECT 1 FROM consultations WHERE staff_id = ? AND body = ? AND created_at >= ? LIMIT 1').bind(staffId, body, since).first()
   if (dup) return c.json({ error: '同じ内容の連絡を送信済みです', duplicate: true }, 409)
-  const dayAgo = new Date(Date.now() + 9 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const dayAgo = nowJST(-24 * 3600 * 1000)
   const sent = await db.prepare("SELECT COUNT(*) AS n FROM consultations WHERE staff_id = ? AND entry_method = 'link' AND created_at >= ?").bind(staffId, dayAgo).first() as any
   const contact = await loadMailContact(db, companyId)
   if (Number(sent?.n) >= LINK_CONTACT_DAILY_MAX) {

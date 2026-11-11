@@ -9,10 +9,13 @@ import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } fr
 import { runCronJobs, defineCronJobs } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
 import { runReminders } from './services/reminders'
-import { loadHqView, HQ_VIEW_COOKIE } from './hq-support'
+import { loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_ROLE } from './hq-support'
+import { adminSideNavHtml, adminMobileNavHtml, adminScreensJson } from './admin-menu'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
 import { recordError, newErrorRef, maskPath, type ErrorAlertEnv } from './lib/error-log'
+import { csrfGuard } from './lib/csrf'
+import { nowJST } from './lib/time'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'>
 
@@ -57,7 +60,7 @@ app.onError((err, c) => {
     company_id: u?.company_id ?? null, user_id: u?.user_id ?? null, role: u?.role ?? null,
     message: String((err as any)?.message || err), stack: String((err as any)?.stack || '').split('\n').slice(0, 6).join('\n'),
   }))
-  const at = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ')
+  const at = nowJST().slice(0, 16)
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
   try {
     c.executionCtx.waitUntil(recordError(c.env, { ref, source: 'request', method: c.req.method, path: c.req.path, companyId: u?.company_id ?? null, role: u?.role ?? null, error: err })
@@ -67,6 +70,9 @@ app.onError((err, c) => {
   return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
 })
+
+// CSRF の対策（#9943）: 別のサイトからの /api/* の書き込みを 403 で止める（プッシュの送信より前に止める）。対象から外すものは src/lib/csrf.ts に書く
+app.use('/api/*', csrfGuard)
 
 // ============ プッシュ通知の送信（#178） ============
 // API の書き込み（GET 以外）の応答の後に、積まれたプッシュ（push_queue。アプリ内の通知が入るとトリガーで積まれる）を送る。
@@ -181,7 +187,7 @@ const APP_META = `
 // ハッシュ（#attendance など）はサーバーに届かないが、ブラウザがリダイレクト先に引き継ぐのでログイン画面の JS で付け直す（#206）
 const toLogin = (c: any) => c.redirect('/login?next=' + encodeURIComponent(new URL(c.req.url).pathname))
 // 入力欄の共通のクラス
-const LOGIN_INPUT = 'w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none text-base'
+const LOGIN_INPUT = 'w-full px-4 py-3 rounded-card border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary-line outline-none text-base'
 
 // ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ）
 app.get('/login', async (c) => {
@@ -193,19 +199,19 @@ app.get('/login', async (c) => {
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
-      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-card bg-primary text-white text-2xl mb-3 shadow-lg shadow-blue-200">
         <i class="fas fa-tower-cell"></i>
       </div>
       <h1 class="text-2xl font-bold text-gray-800">Field OS</h1>
       <p class="text-sm text-gray-500 mt-1">通信人材会社向け 運営標準化SaaS</p>
     </header>
-    <section id="login-card" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    <section id="login-card" class="bg-white rounded-card shadow-sm border border-gray-100 p-6">
       <form id="login-form" class="space-y-4" novalidate>
         <div>
           <label for="company_code" class="block text-sm font-medium text-gray-600 mb-1">会社コード</label>
           <!-- 会社名の自動入力・先頭の大文字化・自動修正をさせない（#201） -->
           <input id="company_code" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" class="${LOGIN_INPUT}" placeholder="所属の会社から案内されたコード">
-          <p class="text-[11px] text-gray-400 mt-1">本部の方は空欄のままログインできます</p>
+          <p class="text-xs text-gray-400 mt-1">本部の方は空欄のままログインできます</p>
         </div>
         <div>
           <label for="user_code" class="block text-sm font-medium text-gray-600 mb-1">スタッフ番号 / ユーザーID</label>
@@ -219,42 +225,42 @@ app.get('/login', async (c) => {
           </div>
         </div>
         <label class="flex items-center gap-2 text-xs text-gray-500"><input type="checkbox" id="remember" checked>この端末に会社コードとIDを記憶する（共用の端末では外してください）</label>
-        <p id="login-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
-        <button type="submit" id="login-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
+        <p id="login-error" class="hidden text-sm text-danger bg-danger-soft rounded-ctrl px-3 py-2" role="alert"></p>
+        <button type="submit" id="login-btn" class="w-full py-3.5 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base transition">
           ログイン
         </button>
-        <p class="text-center"><button type="button" id="forgot-link" class="text-sm text-blue-600 hover:underline">パスワードを忘れた方はこちら</button></p>
+        <p class="text-center"><button type="button" id="forgot-link" class="text-sm text-primary hover:underline">パスワードを忘れた方はこちら</button></p>
         <p class="text-xs text-gray-400 text-center">ログインできない場合やメールが届かない場合は、所属の会社の担当者にお問い合わせください。</p>
       </form>
 
       <!-- 二段階認証（#544）: パスワードの後で、認証アプリの6桁（または予備コード）を確かめる -->
       <form id="mfa-form" class="space-y-4 hidden" novalidate>
-        <p class="text-sm text-gray-600"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>認証アプリ（Google Authenticator など）に表示されている6桁の確認コードを入力してください。</p>
+        <p class="text-sm text-gray-600"><i class="fas fa-shield-halved text-primary mr-1"></i>認証アプリ（Google Authenticator など）に表示されている6桁の確認コードを入力してください。</p>
         <div>
           <label for="mfa-code" class="block text-sm font-medium text-gray-600 mb-1">確認コード</label>
           <input id="mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="20" class="${LOGIN_INPUT} tracking-widest" placeholder="123456">
-          <p class="text-[11px] text-gray-400 mt-1">スマホを失くしたなどで認証アプリを使えないときは、登録のときに控えた予備コード（xxxxx-xxxxx）を入力できます。</p>
+          <p class="text-xs text-gray-400 mt-1">スマホを失くしたなどで認証アプリを使えないときは、登録のときに控えた予備コード（xxxxx-xxxxx）を入力できます。</p>
         </div>
-        <p id="mfa-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
-        <button type="submit" id="mfa-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認してログイン</button>
+        <p id="mfa-error" class="hidden text-sm text-danger bg-danger-soft rounded-ctrl px-3 py-2" role="alert"></p>
+        <button type="submit" id="mfa-btn" class="w-full py-3.5 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base transition">確認してログイン</button>
         <p class="text-center"><button type="button" id="mfa-back" class="text-sm text-gray-500 hover:underline">最初からやり直す</button></p>
       </form>
 
       <form id="forgot-form" class="space-y-4 hidden">
         <p class="text-sm text-gray-500">登録済みのメールアドレスを入力してください。パスワード再設定用のリンクと、ログインに使う会社コード・IDをお送りします。</p>
-        <p class="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">メールアドレスを登録していない方は、所属の会社の担当者にパスワードの再発行を依頼してください（仮パスワードが発行されます）。</p>
+        <p class="text-xs text-gray-500 bg-gray-50 rounded-ctrl px-3 py-2">メールアドレスを登録していない方は、所属の会社の担当者にパスワードの再発行を依頼してください（仮パスワードが発行されます）。</p>
         <div>
           <label for="forgot-email" class="block text-sm font-medium text-gray-600 mb-1">メールアドレス</label>
           <input id="forgot-email" type="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" class="${LOGIN_INPUT}" required>
         </div>
-        <p id="forgot-message" class="hidden text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2"></p>
-        <button type="submit" id="forgot-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
+        <p id="forgot-message" class="hidden text-sm text-success bg-success-soft rounded-ctrl px-3 py-2"></p>
+        <button type="submit" id="forgot-btn" class="w-full py-3.5 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base transition">
           送信する
         </button>
         <p class="text-center"><button type="button" id="back-to-login-link" class="text-sm text-gray-500 hover:underline">ログインに戻る</button></p>
       </form>
     </section>
-    ${c.env.DEMO_MODE === 'true' ? `<aside id="demo-account-aside" class="mt-6 bg-blue-50 rounded-xl p-4 text-xs text-blue-900 leading-relaxed">
+    ${c.env.DEMO_MODE === 'true' ? `<aside id="demo-account-aside" class="mt-6 bg-primary-soft rounded-card p-4 text-xs text-primary-strong leading-relaxed">
       <p class="font-bold mb-1"><i class="fas fa-circle-info mr-1"></i>デモアカウント（パスワードは全て pass1234）</p>
       <ul class="space-y-0.5">
         <li>スタッフ: 会社コード <b>sample</b> / ID <b>st001</b>（〜st020）</li>
@@ -399,11 +405,11 @@ app.get('/login', async (c) => {
       try {
         const res = await axios.post('/api/auth/forgot-password', { email: document.getElementById('forgot-email').value.trim() }, { timeout: TIMEOUT_MS })
         msg.textContent = res.data.message
-        msg.className = 'text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2'
+        msg.className = 'text-sm text-success bg-success-soft rounded-ctrl px-3 py-2'
       } catch (e2) {
         // 通信できなかったときは送れていないので、そのことを伝える（受け付けた場合の応答は、アカウントの有無によらず同じ文言）
         msg.textContent = !e2.response ? OFFLINE_MSG : '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
-        msg.className = !e2.response ? 'text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2' : 'text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2'
+        msg.className = !e2.response ? 'text-sm text-danger bg-danger-soft rounded-ctrl px-3 py-2' : 'text-sm text-success bg-success-soft rounded-ctrl px-3 py-2'
       }
       btn.disabled = false; btn.textContent = '送信する'
     })
@@ -415,16 +421,16 @@ app.get('/login', async (c) => {
 // パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る）
 app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('パスワード再設定')}<meta name="referrer" content="no-referrer"></head>
+<head>${head('パスワード再設定')}<meta name="referrer" content="strict-origin"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
-      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-card bg-primary text-white text-2xl mb-3 shadow-lg shadow-blue-200">
         <i class="fas fa-key"></i>
       </div>
       <h1 class="text-2xl font-bold text-gray-800">パスワード再設定</h1>
     </header>
-    <section id="reset-card" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    <section id="reset-card" class="bg-white rounded-card shadow-sm border border-gray-100 p-6">
       <form id="reset-form" class="space-y-4">
         <div>
           <label for="new-password" class="block text-sm font-medium text-gray-600 mb-1">新しいパスワード</label>
@@ -436,19 +442,19 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
           <input id="new-password-confirm" type="password" autocomplete="new-password" minlength="8" class="${LOGIN_INPUT}" required>
         </div>
         <label class="flex items-center gap-2 text-xs text-gray-500"><input type="checkbox" id="reset-show">パスワードを表示する</label>
-        <p id="reset-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
-        <button type="submit" id="reset-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">
+        <p id="reset-error" class="hidden text-sm text-danger bg-danger-soft rounded-ctrl px-3 py-2" role="alert"></p>
+        <button type="submit" id="reset-btn" class="w-full py-3.5 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base transition">
           パスワードを再設定する
         </button>
       </form>
       <div id="reset-success" class="hidden text-center">
-        <p class="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3 mb-3"><i class="fas fa-check-circle mr-1"></i>パスワードを再設定しました。</p>
+        <p class="text-sm text-success bg-success-soft rounded-ctrl px-3 py-3 mb-3"><i class="fas fa-check-circle mr-1"></i>パスワードを再設定しました。</p>
         <!-- ログインに使う会社コードと ID（#208）。ログイン画面には入力した状態で移る -->
-        <dl id="reset-account" class="hidden text-sm text-left bg-gray-50 rounded-lg px-3 py-2 mb-4 space-y-1">
+        <dl id="reset-account" class="hidden text-sm text-left bg-gray-50 rounded-ctrl px-3 py-2 mb-4 space-y-1">
           <div id="reset-company-row" class="flex gap-2"><dt class="w-24 text-gray-500">会社コード</dt><dd id="reset-company" class="font-bold font-mono"></dd></div>
           <div class="flex gap-2"><dt class="w-24 text-gray-500">ID</dt><dd id="reset-user" class="font-bold font-mono"></dd></div>
         </dl>
-        <a id="reset-login-link" href="/login" class="inline-block w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base">ログイン画面へ</a>
+        <a id="reset-login-link" href="/login" class="inline-block w-full py-3 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base">ログイン画面へ</a>
       </div>
     </section>
   </main>
@@ -496,24 +502,24 @@ app.get('/reset-password', (c) => c.html(`<!DOCTYPE html>
 // メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する
 app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
 <html lang="ja">
-<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
+<head>${head('メールアドレスの確認')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="strict-origin"></head>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-8">
-      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-card bg-primary text-white text-2xl mb-3 shadow-lg shadow-blue-200">
         <i class="fas fa-envelope-circle-check"></i>
       </div>
       <h1 class="text-2xl font-bold text-gray-800">メールアドレスの確認</h1>
     </header>
-    <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+    <section class="bg-white rounded-card shadow-sm border border-gray-100 p-6 space-y-4">
       <div id="verify-form">
         <p class="text-sm text-gray-600 mb-4">このメールアドレスを、Field OS の通知・パスワード再設定に使うメールアドレスとして登録します。</p>
-        <p id="verify-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3" role="alert"></p>
-        <button type="button" id="verify-btn" class="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認して登録する</button>
+        <p id="verify-error" class="hidden text-sm text-danger bg-danger-soft rounded-ctrl px-3 py-2 mb-3" role="alert"></p>
+        <button type="button" id="verify-btn" class="w-full py-3.5 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base transition">確認して登録する</button>
       </div>
       <div id="verify-success" class="hidden text-center">
-        <p class="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3 mb-3"><i class="fas fa-check-circle mr-1"></i><span id="verify-email"></span> を登録しました。</p>
-        <a id="verify-login-link" href="/login" class="inline-block w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base">ログイン画面へ</a>
+        <p class="text-sm text-success bg-success-soft rounded-ctrl px-3 py-3 mb-3"><i class="fas fa-check-circle mr-1"></i><span id="verify-email"></span> を登録しました。</p>
+        <a id="verify-login-link" href="/login" class="inline-block w-full py-3 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base">ログイン画面へ</a>
       </div>
     </section>
   </main>
@@ -548,17 +554,17 @@ app.get('/notice-ack', (c) => c.html(`<!DOCTYPE html>
 <body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
   <main class="w-full max-w-sm">
     <header class="text-center mb-6">
-      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white text-2xl mb-3 shadow-lg shadow-blue-200">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-card bg-primary text-white text-2xl mb-3 shadow-lg shadow-blue-200">
         <i class="fas fa-bullhorn"></i>
       </div>
       <h1 class="text-2xl font-bold text-gray-800">お知らせの確認</h1>
     </header>
-    <section class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+    <section class="bg-white rounded-card shadow-sm border border-gray-100 p-6 space-y-4">
       <div id="ack-info" class="text-sm text-gray-600">読み込んでいます…</div>
-      <p id="ack-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
-      <button type="button" id="ack-btn" class="hidden w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-base transition">確認しました</button>
-      <p id="ack-done" class="hidden text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-3"><i class="fas fa-check-circle mr-1"></i>確認済みにしました。</p>
-      <a href="/staff#notices" class="block text-center text-sm text-blue-600 hover:underline">アプリでお知らせを開く</a>
+      <p id="ack-error" class="hidden text-sm text-danger bg-danger-soft rounded-ctrl px-3 py-2" role="alert"></p>
+      <button type="button" id="ack-btn" class="hidden w-full py-3.5 rounded-card bg-primary hover:bg-primary-hover text-white font-bold text-base transition">確認しました</button>
+      <p id="ack-done" class="hidden text-sm text-success bg-success-soft rounded-ctrl px-3 py-3"><i class="fas fa-check-circle mr-1"></i>確認済みにしました。</p>
+      <a href="/staff#notices" class="block text-center text-sm text-primary hover:underline">アプリでお知らせを開く</a>
     </section>
   </main>
   <script>
@@ -605,7 +611,7 @@ app.get('/r/:token', (c) => c.html(`<!DOCTYPE html>
 <head>${head('勤怠・日報の報告')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
 <body class="bg-gray-50 min-h-screen">
   <header class="bg-white border-b border-gray-100 sticky top-0 z-20">
-    <div class="max-w-lg mx-auto px-4 py-3"><h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i>勤怠・日報の報告</h1></div>
+    <div class="max-w-lg mx-auto px-4 py-3"><h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-primary"></i>勤怠・日報の報告</h1></div>
   </header>
   <main id="app" class="max-w-lg mx-auto px-4 py-4"></main>
   <div id="modal-root"></div>
@@ -619,7 +625,7 @@ app.get('/apply/:token', (c) => c.html(`<!DOCTYPE html>
 <head>${head('スタッフ募集')}<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"></head>
 <body class="bg-gray-50 min-h-screen">
   <header class="bg-white border-b border-gray-100 sticky top-0 z-20">
-    <div class="max-w-lg mx-auto px-4 py-3"><h1 class="font-bold text-gray-800 flex items-center gap-2" id="apply-header"><i class="fas fa-bullhorn text-blue-600"></i>スタッフ募集</h1></div>
+    <div class="max-w-lg mx-auto px-4 py-3"><h1 class="font-bold text-gray-800 flex items-center gap-2" id="apply-header"><i class="fas fa-bullhorn text-primary"></i>スタッフ募集</h1></div>
   </header>
   <main id="app" class="max-w-lg mx-auto px-4 py-4 pb-28"></main>
   <div id="modal-root"></div>
@@ -635,10 +641,10 @@ app.get('/staff', async (c) => {
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>${head('スタッフ')}${APP_META}</head>
-<body class="bg-gray-50 min-h-screen pb-20">
+<body class="app-staff bg-gray-50 min-h-screen pb-20">
   <header id="staff-header" class="bg-white border-b border-gray-100 sticky top-0 z-20">
     <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i><span id="header-title">ホーム</span></h1>
+      <h1 class="font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-tower-cell text-primary"></i><span id="header-title">ホーム</span></h1>
       <div class="flex items-center gap-3">
         <span id="user-name" class="text-sm text-gray-500"></span>
       </div>
@@ -651,7 +657,7 @@ app.get('/staff', async (c) => {
       <a href="#shift" class="nav-item py-2.5" data-tab="shift"><i class="fas fa-calendar-days block text-lg mb-0.5"></i>シフト</a>
       <a href="#report" class="nav-item py-2.5" data-tab="report"><i class="fas fa-pen-to-square block text-lg mb-0.5"></i>日報</a>
       <a href="#perf" class="nav-item py-2.5" data-tab="perf"><i class="fas fa-chart-line block text-lg mb-0.5"></i>実績</a>
-      <a href="#more" class="nav-item py-2.5 relative" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他<span id="nav-more-badge" class="hidden absolute top-1 left-1/2 ml-2 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[1.1rem] font-bold" aria-live="polite"></span></a>
+      <a href="#more" class="nav-item py-2.5 relative" data-tab="more"><i class="fas fa-bars block text-lg mb-0.5"></i>その他<span id="nav-more-badge" class="hidden absolute top-1 left-1/2 ml-2 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-danger text-white text-xs leading-[1.1rem] font-bold" aria-live="polite"></span></a>
     </div>
   </nav>
   <div id="modal-root"></div>
@@ -667,14 +673,6 @@ app.get('/staff', async (c) => {
 </html>`)
 })
 
-// 管理画面の左側のメニューの見出し（#9305）。押すと閉じたり開いたりする（開閉は public/static/admin.js が localStorage に覚える）。
-// 閉じたときは、中の項目の未読などの件数の合計を見出しの横に出す
-const sideNavGroup = (key: string, label: string, links: string) => `<div class="nav-group" data-group="${key}">
-          <button type="button" class="nav-group-head" data-action="navGroupToggle" aria-expanded="true" aria-controls="nav-group-${key}"><span class="flex-1 text-left">${label}</span><span class="nav-group-count hidden" aria-label="未対応の件数"></span><i class="fas fa-chevron-down nav-group-caret" aria-hidden="true"></i></button>
-          <div class="nav-group-body space-y-0.5" id="nav-group-${key}">${links}
-          </div>
-        </div>`
-
 // ============ 管理者画面 (PC向け SPA) ============
 app.get('/admin', async (c) => {
   const u = await currentUser(c)
@@ -687,6 +685,8 @@ app.get('/admin', async (c) => {
     if (!v) return c.redirect('/hq#support')
     hqView = { company_name: v.company_name, expires_at: v.expires_at }
   }
+  // メニューに出す項目はロールで決める（src/admin-menu.ts。本部の閲覧は閲覧用のロール）
+  const menuRole = hqView ? HQ_VIEW_ROLE : u.role
   // script の中に置くので、< を逃がして </script> で閉じられないようにする
   const hqViewJson = JSON.stringify(hqView).replace(/</g, '\\u003c')
   return c.html(`<!DOCTYPE html>
@@ -706,69 +706,29 @@ app.get('/admin', async (c) => {
     <aside id="sidebar" class="hidden md:flex flex-col bg-white border-r border-gray-100 fixed inset-y-0 z-30">
       <div class="side-head px-5 py-5 border-b border-gray-100 flex items-start gap-2">
         <div class="side-brand flex-1 min-w-0">
-          <h1 class="font-bold text-gray-800 flex items-center gap-2 text-lg"><i class="fas fa-tower-cell text-blue-600"></i>Field OS</h1>
+          <h1 class="font-bold text-gray-800 flex items-center gap-2 text-lg"><i class="fas fa-tower-cell text-primary"></i>Field OS</h1>
           <p id="company-name" class="text-xs text-gray-400 mt-1 truncate"></p>
         </div>
         <button type="button" id="side-toggle" class="side-toggle" data-action="sideToggle" aria-expanded="true" aria-controls="side-nav" title="メニューを畳む" aria-label="メニューを畳む"><i class="fas fa-angles-left" aria-hidden="true"></i></button>
       </div>
-      <nav class="flex-1 overflow-y-auto py-3 px-3 space-y-0.5 text-sm" id="side-nav">
-        <a href="#dashboard" class="side-link" data-tab="dashboard"><i class="fas fa-gauge-high w-5"></i>ダッシュボード</a>
-        <a href="#notifications" class="side-link flex items-center" data-tab="notifications"><i class="fas fa-bell w-5"></i>通知<span id="notif-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-        ${sideNavGroup('attendance', 'シフト・勤怠', `
-          <a href="#shifts" class="side-link" data-tab="shifts"><i class="fas fa-calendar-days w-5"></i>シフト管理</a>
-          <a href="#reports" class="side-link" data-tab="reports"><i class="fas fa-file-lines w-5"></i>日報一覧</a>
-          <a href="#corrections" class="side-link flex items-center" data-tab="corrections"><i class="fas fa-user-clock w-5"></i>打刻修正承認<span id="corrections-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#report-settings" class="side-link" data-tab="report-settings"><i class="fas fa-list-check w-5"></i>案件報告管理</a>
-          <a href="#attendance-history" class="side-link" data-tab="attendance-history"><i class="fas fa-clock-rotate-left w-5"></i>履歴・CSV</a>`)}
-        ${sideNavGroup('people', '人材', `
-          <a href="#staff" class="side-link" data-tab="staff"><i class="fas fa-users w-5"></i>スタッフマスタ</a>
-          <a href="#employees" class="side-link" data-tab="employees"><i class="fas fa-id-card w-5"></i>従業員管理</a>
-          <a href="#partners" class="side-link" data-tab="partners"><i class="fas fa-handshake w-5"></i>協力会社</a>
-          <a href="#recruit" class="side-link flex items-center" data-tab="recruit"><i class="fas fa-bullhorn w-5"></i>募集・応募<span id="recruit-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#consult" class="side-link" data-tab="consult"><i class="fas fa-comments w-5"></i>相談対応</a>
-          <a href="#follow" class="side-link" data-tab="follow"><i class="fas fa-handshake-angle w-5"></i>フォロー履歴</a>`)}
-        ${sideNavGroup('deals', '案件・取引', `
-          <a href="#projects" class="side-link" data-tab="projects"><i class="fas fa-briefcase w-5"></i>案件管理</a>
-          <a href="#clients" class="side-link" data-tab="clients"><i class="fas fa-building w-5"></i>クライアント</a>
-          <a href="#board" class="side-link flex items-center" data-tab="board"><i class="fas fa-clipboard-list w-5"></i>案件掲示板<span id="board-badge" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#roster-chat" class="side-link flex items-center" data-tab="roster-chat"><i class="fas fa-people-arrows w-5"></i>企業間チャット</a>`)}
-        ${sideNavGroup('money', 'お金', `
-          <a href="#settlement" class="side-link" data-tab="settlement"><i class="fas fa-scale-balanced w-5"></i>精算（請求・支払）</a>
-          <a href="#billing" class="side-link" data-tab="billing"><i class="fas fa-file-invoice-yen w-5"></i>請求前確認</a>`)}
-        ${sideNavGroup('notices', 'お知らせ', `
-          <a href="#notices" class="side-link" data-tab="notices"><i class="fas fa-bullhorn w-5"></i>お知らせ配信</a>
-          <a href="#notice-reports" class="side-link" data-tab="notice-reports"><i class="fas fa-chart-pie w-5"></i>既読率レポート</a>`)}
-        ${sideNavGroup('analytics', '分析', `
-          <a href="#analytics" class="side-link" data-tab="analytics"><i class="fas fa-chart-column w-5"></i>実績分析</a>`)}
-        ${sideNavGroup('settings', '設定', `
-          <a href="#account" class="side-link" data-tab="account"><i class="fas fa-user-gear w-5"></i>アカウント設定</a>
-          <a href="#security" class="side-link" data-tab="security"><i class="fas fa-shield-halved w-5"></i>セキュリティ</a>`)}
+      <nav class="flex-1 overflow-y-auto py-3 px-3 space-y-0.5 text-sm" id="side-nav">${adminSideNavHtml(menuRole)}
       </nav>
       <div class="side-foot p-3 border-t border-gray-100">
-        <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-sm text-blue-700 bg-blue-50 hover:bg-blue-100" data-action="hqsOpenSupport">
+        <button type="button" class="w-full text-left px-3 py-2 rounded-ctrl text-sm text-primary bg-primary-soft hover:bg-primary-soft" data-action="hqsOpenSupport">
           <i class="fas fa-hands-holding-circle mr-1"></i>伴走支援を依頼する
         </button>
-        <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-50 mt-1"><i class="fas fa-right-from-bracket mr-1"></i>ログアウト</button>
+        <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-ctrl text-sm text-gray-500 hover:bg-gray-50 mt-1"><i class="fas fa-right-from-bracket mr-1"></i>ログアウト</button>
       </div>
     </aside>
     <div class="admin-main flex-1 min-w-0">
       <!-- スマホ用のヘッダー（#236）: 会社名・氏名、未対応の件数の合計（メニューの各項目にも件数を出す）、ログアウト -->
       <header class="md:hidden bg-white border-b border-gray-100 sticky top-0 z-20 px-4 py-2 flex items-center justify-between gap-2">
         <div class="min-w-0 flex-1">
-          <h1 class="font-bold text-gray-800 truncate"><i class="fas fa-tower-cell text-blue-600 mr-1"></i>Field OS 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
-          <p id="mobile-company-name" class="text-[11px] text-gray-400 truncate"></p>
+          <h1 class="font-bold text-gray-800 truncate"><i class="fas fa-tower-cell text-primary mr-1"></i>Field OS 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-xs bg-danger text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
+          <p id="mobile-company-name" class="text-xs text-gray-400 truncate"></p>
         </div>
-        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">
-          <option value="dashboard">ダッシュボード</option><option value="notifications">通知</option>
-          <optgroup label="シフト・勤怠"><option value="shifts">シフト</option><option value="reports">日報</option><option value="corrections">打刻修正承認</option><option value="report-settings">案件報告管理</option><option value="attendance-history">履歴・CSV</option></optgroup>
-          <optgroup label="人材"><option value="staff">スタッフマスタ</option><option value="employees">従業員管理</option><option value="partners">協力会社</option><option value="recruit">募集・応募</option><option value="consult">相談</option><option value="follow">フォロー</option></optgroup>
-          <optgroup label="案件・取引"><option value="projects">案件</option><option value="clients">クライアント</option><option value="board">案件掲示板</option><option value="roster-chat">企業間チャット</option></optgroup>
-          <optgroup label="お金"><option value="settlement">精算</option><option value="billing">請求前確認</option></optgroup>
-          <optgroup label="お知らせ"><option value="notices">お知らせ</option><option value="notice-reports">既読率レポート</option></optgroup>
-          <optgroup label="分析"><option value="analytics">分析</option></optgroup>
-          <optgroup label="設定"><option value="account">アカウント設定</option><option value="security">セキュリティ</option></optgroup>
-        </select>
-        <button type="button" class="text-blue-600 shrink-0 px-1 py-1" data-action="hqsOpenSupport" title="伴走支援を依頼する" aria-label="伴走支援を依頼する"><i class="fas fa-hands-holding-circle"></i></button>
+        <select id="mobile-nav" class="text-sm border border-gray-200 rounded-ctrl px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">${adminMobileNavHtml(menuRole)}</select>
+        <button type="button" class="text-primary shrink-0 px-1 py-1" data-action="hqsOpenSupport" title="伴走支援を依頼する" aria-label="伴走支援を依頼する"><i class="fas fa-hands-holding-circle"></i></button>
         <button id="mobile-logout-btn" type="button" class="text-gray-400 hover:text-gray-600 shrink-0 px-1 py-1" title="ログアウト" aria-label="ログアウト"><i class="fas fa-right-from-bracket"></i></button>
       </header>
       <!-- 本部の閲覧中の表示・本部からのお知らせ（#293 #516。public/static/hq-support.js が描く）。本文と同じ幅（admin.js の route() が #app に付ける data-layout と input.css で決める。#9930） -->
@@ -780,6 +740,8 @@ app.get('/admin', async (c) => {
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   ${cdnJs('jsqr@1.4.0/dist/jsQR.min.js')}
   <script>window.HQ_VIEW = ${hqViewJson}</script>
+  <!-- 画面の一覧（src/admin-menu.ts。admin.js が routes を作る） -->
+  <script>window.ADMIN_SCREENS = ${adminScreensJson()}</script>
   <script src="/static/hq-support.js"></script>
   <!-- 案内（チュートリアル）・「？」・はじめにやること（#9711）。admin.js の起動が FosTour.init を呼ぶので admin.js より前に読む -->
   <script src="/static/tour.js"></script>
@@ -815,17 +777,18 @@ app.get('/hq', async (c) => {
 <body class="bg-slate-900 min-h-screen text-gray-100">
   <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-20">
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="font-bold flex items-center gap-2"><i class="fas fa-satellite-dish text-cyan-400"></i>Field OS <span class="text-cyan-400">本部管理</span></h1>
+      <h1 class="font-bold flex items-center gap-2"><i class="fas fa-satellite-dish text-primary-dark"></i>Field OS <span class="text-primary-dark">本部管理</span></h1>
       <div class="flex items-center gap-4 text-sm">
         <nav class="flex gap-1">
-          <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
-          <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
-          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
-          <a href="#mail" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="mail">メール送信</a>
-          <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援<span id="hq-support-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
-          <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="announcements">企業へのお知らせ</a>
-          <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
-          <a href="#errors" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="errors">障害<span id="hq-errors-badge" class="hidden ml-1 text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span></a>
+          <a href="#companies" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="companies">導入企業</a>
+          <a href="#templates" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="templates">テンプレート配信</a>
+          <a href="#retention" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="retention">データ保持・定期処理</a>
+          <a href="#mail" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="mail">メール送信</a>
+          <a href="#support" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="support">伴走支援<span id="hq-support-badge" class="hidden ml-1 text-xs bg-danger text-white rounded-full px-1.5 py-0.5"></span></a>
+          <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="announcements">企業へのお知らせ</a>
+          <a href="#security" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="security">セキュリティ</a>
+          <a href="#errors" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="errors">障害<span id="hq-errors-badge" class="hidden ml-1 text-xs bg-danger text-white rounded-full px-1.5 py-0.5"></span></a>
+          <a href="#offboarding" class="hq-nav px-3 py-1.5 rounded-ctrl" data-tab="offboarding">解約・データ</a>
         </nav>
         <button id="logout-btn" class="text-slate-400 hover:text-white"><i class="fas fa-right-from-bracket"></i></button>
       </div>
@@ -844,7 +807,7 @@ app.get('/hq', async (c) => {
 // wrangler.jsonc の triggers.crons と同じ式にする（時刻は UTC）
 const CRON_DAILY = '0 18 * * *'    // 日本時間 3:00: 認証の後片付け・個人情報の削除・退職と区分変更の適用
 const CRON_REPORTS = '30 18 * * *' // 日本時間 3:30: 既読率レポートの集計（問い合わせが多いので別の起動に分ける。#198）
-const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）
+const CRON_REMINDERS = '*/15 * * * *' // 15分おき: 本人あての自動リマインド（#160）。止まると1時間で本部画面に警告する（services/cron.ts の cronStaleHours。#9946）
 
 // 定期処理の一覧。上から順に実行し、処理ごとの結果を cron_runs に記録して本部画面に出す（#192）。
 // 処理を足すときは、ここに1行足す。結果に failed（1以上）か error を返すと「失敗」として記録される。

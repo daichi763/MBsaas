@@ -13,15 +13,15 @@
 // =========================================================
 import { reminderSettings, deliverReminders, REMINDER_DEFAULTS, REMINDER_LIMITS, type NotifyEnv, type ReminderItem, type ReminderSettings, type ReminderType } from '../notifications'
 import { attendanceTypesForRows, dailyReportRequiredSql, REPORT_TYPES } from '../report-settings'
-import { shiftWindow, reportableWindow, addMinutes, addDays } from '../lib/shift-time'
+import { shiftWindow, reportableWindow, addMinutes } from '../lib/shift-time'
 import { JSON_IN, bindJsonArray } from '../lib/d1-chunk'
+import { nowJST, addDays } from '../lib/time'
 
 const START_TYPES = ['wake_up', 'departure', 'check_in'] as const
 export const REMIND_LATE_MINUTES = { attendance: 60, daily_report: 180 }
 const MAX_CANDIDATES = 1000
 const KEEP_DAYS = 90
 
-function nowJST(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 
 // 会社ごとの設定（行ごとに JSON を読み直さない）
 function settingsCache() {

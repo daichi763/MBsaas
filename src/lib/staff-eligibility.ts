@@ -12,7 +12,8 @@
 //   （多段連携の雇用元や、同じ所属元から連携を受けた別の稼働先の会社名・予定が見えないようにする）
 // =========================================================
 import { JSON_IN, bindJsonArray } from './d1-chunk'
-import { addDays, overlaps, shiftWindow } from './shift-time'
+import { overlaps, shiftWindow } from './shift-time'
+import { addDays, dayDiff } from './time'
 
 // 割当可能なスタッフの条件。onDate を渡すと、その日より前に退職日がある人を除く（退職日当日は稼働可）
 export function assignableStaffSql(opts: { sp?: string; us?: string; onDate?: string | null } = {}): { sql: string; binds: any[] } {
@@ -128,7 +129,6 @@ export async function ngStaffIds(db: D1Database, projectId: number): Promise<num
 // ---------- 重複チェック ----------
 // 稼働日＋時刻の絶対日時（lib/shift-time.ts の shiftWindow。終了が開始以前なら翌日）で重なりを判定する。
 // 日をまたぐ勤務（22:00〜06:00）と翌日の早朝の勤務のように、稼働日が違うシフトどうしの重なりも見る（#77）
-const dayDiff = (a: string, b: string) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000)
 
 export type ConflictRow = {
   my_staff_id: number; shift_id: number; slot_role_id: number | null; staff_id: number; company_id: number

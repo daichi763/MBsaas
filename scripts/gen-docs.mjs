@@ -10,7 +10,7 @@
 //   DB   … migrations/*.sql を Node の組み込みの SQLite（node:sqlite。メモリ上）に順に当て、sqlite_master と PRAGMA から読む
 //   API  … src/api.ts を esbuild で1つにまとめて読み込み、Hono が持つルートの一覧（api.routes）を取る。
 //          ファイル:行・用途（直前のコメント）は src/*.ts のルート定義の行を読んで突き合わせる
-//   画面 … src/index.tsx（ページと読み込む JS・左メニュー）と public/static/*.js（ハッシュのルート・描画関数・呼ぶ API）を読む
+//   画面 … src/index.tsx（ページと読み込む JS）、src/admin-menu.ts（管理画面のメニューと画面の一覧。esbuild で読み込む）と public/static/*.js（ハッシュのルート・描画関数・呼ぶ API）を読む
 //
 // docs/*.md のうち、<!-- BEGIN GENERATED: 名前 --> と <!-- END GENERATED: 名前 --> の間だけを書き換える。
 // それ以外（人が書く説明）はそのまま残す。人が書く説明の中の [`名前`](../src/…) のリンクは、そのファイルに名前があるかを確かめ、
@@ -319,6 +319,18 @@ async function loadRuntimeRoutes() {
   } finally { rmSync(out, { force: true }) }
 }
 
+// 管理画面のメニューと画面の一覧（src/admin-menu.ts の ADMIN_MENU・ADMIN_MENU_GROUPS・ADMIN_EXTRA_SCREENS。#9961）
+async function loadAdminMenu() {
+  const esbuild = await import('esbuild')
+  const dir = join(tmpdir(), 'mbsaas-gen-docs'); mkdirSync(dir, { recursive: true })
+  const out = join(dir, `admin-menu-${process.pid}.mjs`)
+  await esbuild.build({ entryPoints: [join(ROOT, 'src/admin-menu.ts')], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' })
+  try {
+    const mod = await import(pathToFileURL(out).href)
+    return { items: mod.ADMIN_MENU, groups: mod.ADMIN_MENU_GROUPS, extra: mod.ADMIN_EXTRA_SCREENS }
+  } finally { rmSync(out, { force: true }) }
+}
+
 const ROUTE_RE = /^([ \t]*)([A-Za-z_$][\w$]*)\.(get|post|put|delete|patch|all|use|on)\(\s*(['"`])([^'"`\n]*)\4/gm
 function staticRoutesOf(file) {
   const src = read(file); const lines = src.split('\n'); const starts = lineStarts(src)
@@ -533,7 +545,7 @@ function extraChecks(p, line) {
 // =============================================================================================
 // 3. 画面: index.tsx のページと JS、各 JS のハッシュのルート・描画関数・呼ぶ API
 // =============================================================================================
-function collectScreens(api) {
+function collectScreens(api, menu) {
   const idx = read('src/index.tsx'); const idxStarts = lineStarts(idx)
   // ページ（app.get('/x') の範囲で読み込む /static/*.js）
   const pageMatches = [...idx.matchAll(/^app\.get\('([^']+)'/gm)]
@@ -544,52 +556,28 @@ function collectScreens(api) {
     const roleCheck = (body.match(/if \(u\.role [!=]== '(\w+)'\)[^\n]*/) || [])[0] || ''
     return { path: m[1], line: lineOf(idxStarts, m.index), scripts, roleCheck: roleCheck.trim(), html: /c\.html\(/.test(body), title: (body.match(/head\('([^']+)'\)/) || [])[1] || '' }
   })
-  // 左メニュー（管理画面）。sideNavGroup('key', '見出し', `…リンク…`) と、グループの外のリンク
-  const nav = []
-  const adminPage = idx.slice(idx.indexOf("app.get('/admin'"), idx.indexOf("app.get('/hq'"))
-  const sideNav = adminPage.slice(adminPage.indexOf('id="side-nav"'), adminPage.indexOf('</nav>'))
+  // 左メニュー（管理画面）。src/admin-menu.ts の ADMIN_MENU（見出しの外の項目が上、見出しは ADMIN_MENU_GROUPS の順）
+  const menuSrc = read('src/admin-menu.ts'); const menuStarts = lineStarts(menuSrc)
+  const menuLine = (hash) => { const i = menuSrc.indexOf(`hash: '${hash}'`); return i < 0 ? 1 : lineOf(menuStarts, i) }
+  const nav = [
+    ...menu.items.filter(m => !m.group).map(m => ({ group: '', tab: m.hash, label: m.label, ...(m.hr ? { hr: true } : {}) })),
+    ...menu.groups.flatMap(([key, label]) => menu.items.filter(m => m.group === key).map(m => ({ group: label, groupKey: key, tab: m.hash, label: m.label, ...(m.hr ? { hr: true } : {}) }))),
+  ]
   const anchorRe = /<a href="#([\w-]+)"[^>]*data-tab="\1"[^>]*>(.*?)<\/a>/g
   const textOf = (h) => h.replace(/<span[^>]*>.*?<\/span>/g, '').replace(/<[^>]+>/g, '').trim()
-  let cursor = 0
-  for (const g of sideNav.matchAll(/\$\{sideNavGroup\('([\w-]+)', '([^']+)', `([\s\S]*?)`\)\}/g)) {
-    for (const a of sideNav.slice(cursor, g.index).matchAll(anchorRe)) nav.push({ group: '', tab: a[1], label: textOf(a[2]) })
-    for (const a of g[3].matchAll(anchorRe)) nav.push({ group: g[2], groupKey: g[1], tab: a[1], label: textOf(a[2]) })
-    cursor = g.index + g[0].length
-  }
-  for (const a of sideNav.slice(cursor).matchAll(anchorRe)) nav.push({ group: '', tab: a[1], label: textOf(a[2]) })
-  // JS が足すメニュー（#side-nav a[data-tab="Y"] の後ろに <a href="#X">）
   const staticFiles = readdirSync(join(ROOT, 'public/static')).filter(f => f.endsWith('.js')).sort()
   const src = Object.fromEntries(staticFiles.map(f => [f, read(`public/static/${f}`)]))
   // ログイン・パスワードの再設定などの画面は、src/index.tsx の中の script に書いてある
   src['index.tsx'] = idx
   const pathOf = (f) => f === 'index.tsx' ? 'src/index.tsx' : `public/static/${f}`
-  const navAdds = []
-  for (const f of staticFiles) {
-    for (const m of src[f].matchAll(/#side-nav a\[data-tab="([\w-]+)"\]'\)[\s\S]{0,200}?insertAdjacentHTML\('afterend', '<a href="#([\w-]+)"[^>]*>(.*?)<\/a>'\)/g)) {
-      const after = nav.findIndex(n => n.tab === m[1])
-      const item = { group: after >= 0 ? nav[after].group : '', tab: m[2], label: textOf(m[3]), addedBy: loc(`public/static/${f}`, lineAt(src[f], m.index)) }
-      nav.splice(after + 1, 0, item); navAdds.push(item)
-    }
-  }
-  const mobileOnly = []
-  for (const f of staticFiles) for (const m of src[f].matchAll(/#mobile-nav option\[value="([\w-]+)"\]'\)\s*\n?.*?insertAdjacentHTML\('afterend', '<option value="([\w-]+)">([^<]+)<\/option>'\)/g)) {
-    if (!nav.some(n => n.tab === m[2])) mobileOnly.push({ tab: m[2], label: m[3], after: m[1], addedBy: loc(`public/static/${f}`, lineAt(src[f], m.index)) })
-  }
-  // 本部画面の上のメニュー
+  // 本部画面の上のメニュー（src/index.tsx の /hq の HTML）
   const hqPage = idx.slice(idx.indexOf("app.get('/hq'"))
   const hqNav = [...hqPage.slice(0, hqPage.indexOf('</nav>')).matchAll(anchorRe)].map(a => ({ tab: a[1], label: textOf(a[2]) }))
-  for (const f of staticFiles) for (const m of src[f].matchAll(/a\.href = '#([\w-]+)';[^\n]*a\.textContent = '([^']+)'/g)) hqNav.push({ tab: m[1], label: m[2], addedBy: loc(`public/static/${f}`, lineAt(src[f], m.index)) })
-  // スタッフ画面の下のタブと、画面の名前（staff.js の titles）
-  const staffPage = idx.slice(idx.indexOf("app.get('/staff'"), idx.indexOf('const sideNavGroup'))
+  // スタッフ画面の下のタブと、画面の名前（staff.js などの staffScreen('hash', { title: '…' … }) の登録。#9962）
+  const staffPage = idx.slice(idx.indexOf("app.get('/staff'"), idx.indexOf("app.get('/admin'"))
   const staffNav = [...staffPage.matchAll(/<a href="#([\w-]+)" class="nav-item[^"]*" data-tab="\1">(.*?)<\/a>/g)].map(a => ({ tab: a[1], label: textOf(a[2]) }))
   const staffTitles = {}
-  {
-    const s = src['staff.js'] || ''
-    const m = s.match(/const titles = \{/)
-    if (m) { const open = m.index + m[0].length - 1; for (const x of s.slice(open, matchClose(s, open)).matchAll(/['"]?([\w-]+)['"]?\s*:\s*'([^']+)'/g)) staffTitles[x[1]] = x[2] }
-    for (const f of staticFiles) for (const x of src[f].matchAll(/titles(?:\.([\w]+)|\['([\w-]+)'\])\s*=\s*'([^']+)'/g)) staffTitles[x[1] || x[2]] = x[3]
-    for (const f of staticFiles) for (const x of src[f].matchAll(/Object\.assign\(titles,\s*\{([^}]*)\}\)/g)) for (const y of x[1].matchAll(/['"]?([\w-]+)['"]?\s*:\s*'([^']+)'/g)) staffTitles[y[1]] = y[2]
-  }
+  for (const f of staticFiles) for (const x of src[f].matchAll(/staffScreen\('([\w-]+)', \{ title: '([^']+)'/g)) staffTitles[x[1]] = x[2]
 
   // 関数の定義（どの JS の何行目か・本文の範囲）
   const fnDefs = Object.create(null) // 名前 → [{ file, line, start, end }]
@@ -671,11 +659,14 @@ function collectScreens(api) {
     }
     return out
   }
-  // 画面の見出し（描画する関数の中の最初の <h2>）。メニューにない画面の名前に使う
-  const headingOf = (name, files, fromFile) => {
+  // 画面の見出し（描画する関数の中の最初の <h2>）。メニューにない画面の名前に使う。
+  // 描画する関数に見出しがなければ、その中で呼ぶ描画の関数（render…）を1段だけ見る（#roster-notes の openRosterHostNotes など）
+  const headingOf = (name, files, fromFile, depth = 1) => {
     for (const d of defsIn(name, files, fromFile)) {
-      const h = src[d.file].slice(d.start, d.end).match(/<h2[^>]*>([\s\S]*?)<\/h2>/)
+      const body = src[d.file].slice(d.start, d.end)
+      const h = body.match(/<h2[^>]*>([\s\S]*?)<\/h2>/)
       if (h) { const t = h[1].replace(/<[^>]+>/g, '').replace(/\$\{[^}]*\}/g, '').trim(); if (t) return t }
+      if (depth > 0) for (const m of new Set([...body.matchAll(/\b(render[A-Z]\w*)\(/g)].map(x => x[1]))) { const t = m !== name && headingOf(m, files, d.file, depth - 1); if (t) return t }
     }
     return ''
   }
@@ -698,6 +689,18 @@ function collectScreens(api) {
         const part = s.slice(a, b).replace(/^\s*(\/\/[^\n]*\n\s*)*/, '')
         const km = part.match(/^\s*['"]?([\w-]+)['"]?\s*:\s*([\s\S]*)$/)
         if (km) routes.push({ hash: km[1], value: km[2].trim(), file: routerFile, line: lineOf(starts, a + s.slice(a, b).indexOf(km[1])) })
+      }
+      // 管理画面: 画面の一覧は src/admin-menu.ts（描く関数は名前で持つ）
+      if (page.path === '/admin') {
+        for (const m of [...menu.items, ...menu.extra]) routes.push({ hash: m.hash, value: `${m.render}()`, file: routerFile, line: menuLine(m.hash), menuFile: 'src/admin-menu.ts' })
+      }
+      // スタッフアプリ: staffScreen('hash', { … }) の登録
+      for (const f of files) {
+        const t = src[f]; const ts = lineStarts(t)
+        for (const x of t.matchAll(/(?<!function )staffScreen\('([\w-]+)',/g)) {
+          const open = x.index + 'staffScreen'.length
+          routes.push({ hash: x[1], value: t.slice(open, matchClose(t, open) + 1), file: f, line: lineOf(ts, x.index) })
+        }
       }
       for (const f of files) {
         const t = src[f]; const ts = lineStarts(t)
@@ -736,9 +739,12 @@ function collectScreens(api) {
       r.defs = r.renderers.flatMap(n => defsIn(n, files, from).map(d => ({ name: n, file: `public/static/${d.file}`, line: d.line })))
       r.heading = r.renderers.map(n => headingOf(n, files, from)).find(Boolean) || ''
     }
-    spas.push({ page: page.path, files, routerFile, routes })
+    // ルートの表の場所（管理画面は src/admin-menu.ts の ADMIN_MENU）
+    const routerLink = page.path === '/admin' ? { file: 'src/admin-menu.ts', line: lineOf(menuStarts, menuSrc.indexOf('export const ADMIN_MENU:')) }
+      : routerFile ? { file: `public/static/${routerFile}`, line: routes[0]?.line || 1 } : null
+    spas.push({ page: page.path, files, routerFile, routerLink, routes })
   }
-  return { pages, nav, navAdds, mobileOnly, hqNav, staffNav, staffTitles, spas, apiRefs, files: staticFiles }
+  return { pages, nav, hqNav, staffNav, staffTitles, spas, apiRefs, files: staticFiles }
 }
 
 /** /api/ の文字列から始まる式を読み、パスの形（変数の部分は {x}）を返す */
@@ -1013,21 +1019,20 @@ function renderScreens(sc, api) {
   let cur = null
   for (const n of sc.nav) {
     if (n.group !== cur) { g.push(`- ${n.group ? `**${n.group}**` : '（見出しなし）'}`); cur = n.group }
-    g.push(`  - ${code('#' + n.tab)} ${n.label}${n.addedBy ? `（${n.addedBy} が足す）` : ''}`)
+    g.push(`  - ${code('#' + n.tab)} ${n.label}${n.hr ? '（会社管理者・事務担当だけに出す）' : ''}`)
   }
-  for (const m of sc.mobileOnly) g.push(`- （スマホのメニューだけ）${code('#' + m.tab)} ${m.label}（${code('#' + m.after)} の後ろ。${m.addedBy} が足す）`)
   out.adminNav = g.join('\n')
-  out.hqNav = sc.hqNav.map(n => `- ${code('#' + n.tab)} ${n.label}${n.addedBy ? `（${n.addedBy} が足す）` : ''}`).join('\n')
+  out.hqNav = sc.hqNav.map(n => `- ${code('#' + n.tab)} ${n.label}`).join('\n')
   out.staffNav = sc.staffNav.map(n => `- ${code('#' + n.tab)} ${n.label}`).join('\n')
   const labelFor = (spa, hash) => {
     const [tab, sub] = hash.split('/')
-    let base = spa.page === '/admin' ? (sc.nav.find(n => n.tab === tab)?.label || sc.mobileOnly.find(n => n.tab === tab)?.label)
+    let base = spa.page === '/admin' ? sc.nav.find(n => n.tab === tab)?.label
       : spa.page === '/hq' ? sc.hqNav.find(n => n.tab === tab)?.label : sc.staffTitles[tab]
     return (base || '') + (sub ? `（${sub === '<ID>' ? '詳細' : sub}）` : '')
   }
   const per = []
   for (const spa of sc.spas.filter(s => s.routes.length)) {
-    per.push(`### ${code(spa.page)}（ルートの表: ${link('public/static/' + spa.routerFile, spa.routes[0]?.line || 1)}）`, '',
+    per.push(`### ${code(spa.page)}（ルートの表: ${link(spa.routerLink.file, spa.routerLink.line)}）`, '',
       '| ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |', '|---|---|---|---|')
     const sorted = spa.routes.slice().sort((a, b) => a.hash.localeCompare(b.hash))
     for (const r of sorted) {
@@ -1093,7 +1098,7 @@ async function main() {
   const db = await collectDb()
   const ret = collectRetention()
   const api = await collectApi()
-  const screens = collectScreens(api)
+  const screens = collectScreens(api, await loadAdminMenu())
   const docsDir = join(ROOT, 'docs')
   const original = Object.fromEntries(DOC_NAMES.map(n => [n, existsSync(join(docsDir, n)) ? readFileSync(join(docsDir, n), 'utf8').replace(/\r\n/g, '\n') : null]))
   for (const [n, t] of Object.entries(original)) if (t === null) throw new Error(`docs/${n} がありません（人が書く部分と生成の区切りを書いた雛形が必要です）`)

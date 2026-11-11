@@ -13,20 +13,20 @@ function reportFormBodyHtml(fields, pv, opts) {
   const val = (k) => { const v = pv ? pv(k) : ''; return v == null ? '' : v }
   const numFields = fields.filter(f => f.type === 'number')
   const textFields = fields.filter(f => f.type !== 'number')
-  const reqMark = (f) => reportFieldRequired(f) ? '<span class="text-red-500 ml-0.5">*</span>' : ''
+  const reqMark = (f) => reportFieldRequired(f) ? '<span class="text-danger ml-0.5">*</span>' : ''
   // インシデント・クレームの内容（印を付けたら必須。#232）
   const flagBox = (kind, label, checked) => `
     <label class="flex items-center gap-3 py-1"><input id="${kind}-flag" type="checkbox" class="w-5 h-5 rounded rpt-flag" data-kind="${kind}" ${checked ? 'checked' : ''}><span class="text-sm font-medium text-gray-700">${label}があった</span></label>
     <div id="${kind}-note-box" class="${checked ? '' : 'hidden'} mb-2">
-      <label class="text-xs text-gray-500 block mb-1" for="${kind}-note">${label}の内容<span class="text-red-500 ml-0.5">*</span></label>
+      <label class="text-xs text-gray-500 block mb-1" for="${kind}-note">${label}の内容<span class="text-danger ml-0.5">*</span></label>
       <textarea id="${kind}-note" rows="3" maxlength="${REPORT_TEXT_MAX}" class="inp rpt-autogrow" placeholder="何が・いつ・どう対応したか（例: 14時ごろ、料金の説明についてお客様から苦情。店長に報告し、説明し直して納得いただいた）">${esc(val(kind + '_note'))}</textarea>
-      <p class="rpt-err hidden text-xs text-red-700 font-bold mt-1"></p>
+      <p class="rpt-err hidden text-xs text-danger font-bold mt-1"></p>
     </div>`
   return `
       <div id="report-errors" class="hidden" tabindex="-1"></div>
       ${numFields.length ? `<section class="card p-4">
         <div class="flex items-center justify-between mb-3 gap-2">
-          <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-hashtag text-blue-500 mr-1"></i>実績件数</h3>
+          <h3 class="font-bold text-gray-700 text-sm"><i class="fas fa-hashtag text-icon mr-1"></i>実績件数</h3>
           <button type="button" class="btn btn-outline text-xs" data-action="reportFillZero">空欄を0にする</button>
         </div>
         <p class="text-xs text-gray-400 mb-2">0件の項目も「0」を入力してください。稼働中も −／＋ で数えられます（数えた件数はこの端末に残り、提出するまで消えません）</p>
@@ -39,12 +39,12 @@ function reportFormBodyHtml(fields, pv, opts) {
                 <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold min-w-0 px-1 placeholder:font-normal placeholder:text-sm placeholder:text-gray-400" value="${esc(val(f.key))}" placeholder="—" aria-label="${esc(f.label)}">
                 <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="1" aria-label="${esc(f.label)}を1増やす">＋</button>
               </div>
-              <p class="rpt-err hidden text-xs text-red-700 font-bold mt-1"></p>
+              <p class="rpt-err hidden text-xs text-danger font-bold mt-1"></p>
             </div>`).join('')}
         </div>
       </section>` : ''}
       ${textFields.length ? `<section class="card p-4">
-        <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-message text-blue-500 mr-1"></i>報告事項</h3>
+        <h3 class="font-bold text-gray-700 mb-3 text-sm"><i class="fas fa-message text-icon mr-1"></i>報告事項</h3>
         <div class="space-y-3">
           ${textFields.map(f => {
             // テキストの項目は、スマホで書いた内容を見返せるよう、すべて複数行の欄にする（#525）
@@ -56,8 +56,8 @@ function reportFormBodyHtml(fields, pv, opts) {
             <div>
               <label class="text-xs text-gray-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
               <textarea data-key="${esc(f.key)}" data-label="${esc(f.label)}" data-required="${reportFieldRequired(f) ? '1' : ''}" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp rpt-field rpt-autogrow" placeholder="${esc(f.placeholder || f.label + 'を入力')}">${esc(v)}</textarea>
-              <p class="text-[11px] text-gray-400 text-right mt-0.5" data-counter data-max="${max}">残り ${max - v.length} 文字</p>
-              <p class="rpt-err hidden text-xs text-red-700 font-bold mt-1"></p>
+              <p class="text-xs text-gray-400 text-right mt-0.5" data-counter data-max="${max}">残り ${max - v.length} 文字</p>
+              <p class="rpt-err hidden text-xs text-danger font-bold mt-1"></p>
             </div>`
           }).join('')}
         </div>
@@ -86,7 +86,7 @@ function reportFormCheck(form) {
   const box = form.querySelector('#report-errors')
   if (!errs.length) { if (box) { box.className = 'hidden'; box.innerHTML = '' } return false }
   errs.forEach((x, i) => {
-    x.el.classList.add('rpt-invalid', 'ring-2', 'ring-red-400', 'border-red-400')
+    x.el.classList.add('rpt-invalid', 'ring-2', 'ring-danger', 'border-danger')
     x.el.setAttribute('aria-invalid', 'true')
     if (!x.el.id) x.el.id = 'rpt-f-' + i
     const msg = reportFieldErrorEl(x.el)
@@ -94,7 +94,7 @@ function reportFormCheck(form) {
   })
   const nums = errs.filter(x => x.kind === 'num').length
   if (box) {
-    box.className = 'bg-red-50 border-2 border-red-400 rounded-2xl p-4 text-sm text-red-800 outline-none scroll-mt-20'
+    box.className = 'bg-danger-soft border-2 border-danger rounded-card p-4 text-sm text-danger outline-none scroll-mt-20'
     box.setAttribute('role', 'alert')
     box.innerHTML = `<p class="font-bold text-base"><i class="fas fa-circle-exclamation mr-1"></i>未入力が${errs.length}件あります</p>
       ${nums ? '<p class="mt-1">0件の項目は「0」を入れてください。まとめて入れるときは「空欄を0にする」を押してください。</p>' : ''}
@@ -111,7 +111,7 @@ function reportFieldErrorEl(el) {
   return wrap ? wrap.querySelector('.rpt-err') : null
 }
 function reportFieldClearError(el) {
-  el.classList.remove('rpt-invalid', 'ring-2', 'ring-red-400', 'border-red-400')
+  el.classList.remove('rpt-invalid', 'ring-2', 'ring-danger', 'border-danger')
   el.removeAttribute('aria-invalid'); el.removeAttribute('aria-describedby')
   const msg = reportFieldErrorEl(el)
   if (msg) { msg.textContent = ''; msg.classList.add('hidden') }
