@@ -8,7 +8,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
-import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl } from './lib/validate'
+import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl, normalizeKana, KANA_MAX } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
 import { recordLoginEvent } from './lib/login-security'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
@@ -1073,10 +1073,12 @@ const PARTNER_IN_USE_SQL = `(EXISTS (SELECT 1 FROM staff_profiles x WHERE x.comp
   OR EXISTS (SELECT 1 FROM staff_affiliation_schedules x WHERE x.company_id = sa.company_id AND x.partner_affiliation_id = sa.affiliation_id AND x.status = 'pending')
   OR EXISTS (SELECT 1 FROM affiliation_excluded_shifts x WHERE x.company_id = sa.company_id AND x.to_payee_affiliation_id = sa.affiliation_id))`
 // 協力会社の名前以外の項目（#9709 でクライアントにそろえて足した列は 0095、#9909 で足した列は 0100）。
-// contact_name・phone・email は先方の担当者の名前・電話・メール。company_phone・company_email は会社の連絡先
+// contact_name・phone・email は先方の担当者の名前・電話・メール。company_phone・company_email は会社の連絡先。
+// affiliation_name_kana・contact_name_kana は会社名・先方の担当者のフリガナ（#9964。0106。全角カタカナにそろえる）
 const PARTNER_INFO_COLS = ['contact_name', 'contact_department', 'phone', 'email', 'memo', 'postal_code', 'address', 'company_phone', 'website_url',
   'representative_name', 'invoice_number', 'internal_contact_name',
-  'partner_kind', 'branch_name', 'department_name', 'company_email', 'payment_rule', 'partner_rating'] as const
+  'partner_kind', 'branch_name', 'department_name', 'company_email', 'payment_rule', 'partner_rating',
+  'affiliation_name_kana', 'contact_name_kana'] as const
 // 種別（#9909。クライアントの client_kind と同じ値）
 const PARTNER_KINDS = ['corporation', 'sole_proprietor', 'other']
 // 名前以外の項目がすべて空か（sa = staff_affiliations）。所属会社名だけが入った行を取引先として出さない判定に使う（#262）
@@ -1110,6 +1112,13 @@ function partnerValues(b: any): { values?: Record<string, string | null>; error?
     const n = Number(raw)
     if (raw && !(Number.isInteger(n) && n >= 1 && n <= 5)) return { error: '評価は1〜5で入力してください' }
     ;(out as any).partner_rating = raw ? n : null
+  }
+  // フリガナ（#9964）: 全角カタカナにそろえる（ひらがな・半角カナは変換する）
+  for (const k of ['affiliation_name_kana', 'contact_name_kana']) {
+    if (b[k] === undefined) continue
+    const v = normalizeKana(b[k] === null ? null : String(b[k]))
+    if (v === undefined) return { error: `フリガナは${KANA_MAX}文字以内で入力してください` }
+    out[k] = v
   }
   // 郵便番号・ホームページの URL・インボイス登録番号（#9709）
   if (b.postal_code !== undefined) {

@@ -1529,18 +1529,20 @@ export const hiddenStaffNotifyKinds = (_env?: unknown): string[] => ['recruit_ne
 
 // ---------- 日報へのコメント（#158） ----------
 // コメントを新しく付けた・書き換えたときに、日報を出したスタッフに知らせる（アプリ内のみ）。
-// 同じ日報のまだ読んでいないコメントの通知は、新しい内容の1件に置き換える。戻り値は通知したか
-export async function notifyReportComment(c: any, companyId: number, dailyReportId: number, actorName: string): Promise<boolean> {
+// 同じ日報のまだ読んでいないコメントの通知は、新しい内容の1件に置き換える（未読の数は、未読のコメントがある日報の数のまま。#9965）。
+// text は通知に出すコメントの本文（コメントを複数にした #9965。無ければ日報の最新のコメント）。戻り値は通知したか
+export async function notifyReportComment(c: any, companyId: number, dailyReportId: number, actorName: string, text?: string): Promise<boolean> {
   try {
     const db: D1Database = c.env.DB
     const r = await db.prepare(`SELECT dr.daily_report_id, dr.staff_id, dr.work_date, dr.manager_comment, p.project_name FROM daily_reports dr LEFT JOIN projects p ON p.project_id = dr.project_id
       WHERE dr.daily_report_id = ? AND dr.company_id = ?`).bind(dailyReportId, companyId).first() as any
-    if (!r || !r.manager_comment) return false
+    const body = text ?? r?.manager_comment
+    if (!r || !body) return false
     const u = (await staffLoginUsers(db, [r.staff_id])).get(Number(r.staff_id))
     if (!u) return false
     await db.prepare(`DELETE FROM user_notifications WHERE kind = 'daily_report_comment' AND related_id = ? AND company_id = ? AND read_at IS NULL`).bind(dailyReportId, companyId).run()
     await insertStaffNotifications(db, [{ company_id: companyId, user_id: u.user_id, kind: 'daily_report_comment', title: `日報にコメントがあります: ${fmtDay(r.work_date)} ${r.project_name || ''}`,
-      body: `${clip(String(r.manager_comment), 300)}\nコメントした人: ${actorName || '管理者'}`, link: '#report', related_id: dailyReportId }])
+      body: `${clip(String(body), 300)}\nコメントした人: ${actorName || '管理者'}`, link: '#report', related_id: dailyReportId }])
     return true
   } catch (e) {
     console.log(`report comment notify failed: report=${dailyReportId}`)

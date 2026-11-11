@@ -48,6 +48,17 @@ export function normalizePostalCode(v: unknown): string | null | undefined {
   if (d === '') return null
   return /^\d{7}$/.test(d) ? `${d.slice(0, 3)}-${d.slice(3)}` : undefined
 }
+// フリガナ（#9964）: 全角カタカナにそろえる（半角カナは全角に、ひらがなはカタカナにする）。空白は1つにまとめる。
+// カタカナ以外の文字（英字の社名など）はそのまま残す。空欄は null、文字列でない・max を超えるときは undefined
+export const KANA_MAX = 100
+export function normalizeKana(v: unknown, max = KANA_MAX): string | null | undefined {
+  if (v === null || v === undefined) return null
+  if (typeof v !== 'string') return undefined
+  const s = v.normalize('NFKC').replace(/[ぁ-ゖ]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60))
+    .replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/[\s　]+/g, ' ').trim()
+  if (!s) return null
+  return s.length > max ? undefined : s
+}
 // ホームページの URL（#9709）: http/https だけ。空欄は null、受け付けない形なら undefined
 export const WEBSITE_URL_MAX = 500
 export function normalizeWebsiteUrl(v: unknown): string | null | undefined {
