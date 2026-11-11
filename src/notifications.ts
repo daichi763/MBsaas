@@ -441,17 +441,20 @@ function notificationRoutes(scope: 'admin' | 'staff') {
     const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND read_at IS NULL AND ${notHidden()}`).bind(nowJST(), ...ids, hidden(c)).run()
     return c.json({ ok: true, updated: r.meta.changes || 0 })
   })
-  // kind（と related_id）で既読にする（募集の応募一覧を開いたときなど、通知を開かずに対応したとき。#150）
-  app.post('/notifications/read-related', async (c) => {
-    const ids = await userIds(c)
-    const b = await c.req.json().catch(() => ({} as any))
-    const kind = String(b.kind || '')
-    if (!/^[a-z_]{1,40}$/.test(kind)) return c.json({ error: '種類が正しくありません' }, 400)
-    const rid = Number.isInteger(b.related_id) && b.related_id > 0 ? b.related_id : null
-    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND kind = ? AND read_at IS NULL${rid != null ? ' AND related_id = ?' : ''}`)
-      .bind(nowJST(), ...ids, kind, ...(rid != null ? [rid] : [])).run()
-    return c.json({ ok: true, updated: r.meta.changes || 0 })
-  })
+  // kind（と related_id）で既読にする（募集の応募一覧を開いたときなど、通知を開かずに対応したとき。#150）。
+  // 管理画面だけで使う（スタッフの画面からは呼ばない。止めている種類も既読にできてしまうため、スタッフには作らない。#9969 feat-other-06）
+  if (scope === 'admin') {
+    app.post('/notifications/read-related', async (c) => {
+      const ids = await userIds(c)
+      const b = await c.req.json().catch(() => ({} as any))
+      const kind = String(b.kind || '')
+      if (!/^[a-z_]{1,40}$/.test(kind)) return c.json({ error: '種類が正しくありません' }, 400)
+      const rid = Number.isInteger(b.related_id) && b.related_id > 0 ? b.related_id : null
+      const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE ${inIds(ids)} AND kind = ? AND read_at IS NULL${rid != null ? ' AND related_id = ?' : ''}`)
+        .bind(nowJST(), ...ids, kind, ...(rid != null ? [rid] : [])).run()
+      return c.json({ ok: true, updated: r.meta.changes || 0 })
+    })
+  }
   app.post('/notifications/:id{[0-9]+}/read', async (c) => {
     const ids = await userIds(c)
     const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = COALESCE(read_at, ?) WHERE notification_id = ? AND ${inIds(ids)}`).bind(nowJST(), c.req.param('id'), ...ids).run()
@@ -1975,15 +1978,22 @@ function pushDeviceRoutes(app: Hono<{ Bindings: NotifyEnv; Variables: Variables 
     if (!p256dh || !auth) return c.json({ error: '購読の情報が正しくありません' }, 400)
     const at = nowJST()
     const ua = String(c.req.header('User-Agent') || '').slice(0, 200)
-    await c.env.DB.batch([
-      // 同じ端末で別の人がログインし直して登録したときは、その端末の宛先を今の人に付け替える
+    const res = await c.env.DB.batch([
+      // 同じ宛先（endpoint）が別の利用者・別の会社の購読なら、その行を消してから新しく登録する（他の人の購読を付け替えない。#9969 authz-07）。
+      // 同じ端末で別の人がログインし直したときも、前の人の購読は消える（前の人の通知はこの端末に届かなくなる）
+      c.env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND NOT (user_id = ? AND company_id = ?) RETURNING subscription_id, company_id, user_id')
+        .bind(endpoint, u.user_id, u.company_id),
       c.env.DB.prepare(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(endpoint) DO UPDATE SET company_id = excluded.company_id, user_id = excluded.user_id, person_id = excluded.person_id, p256dh = excluded.p256dh, auth = excluded.auth,
+        ON CONFLICT(endpoint) DO UPDATE SET person_id = excluded.person_id, p256dh = excluded.p256dh, auth = excluded.auth,
           user_agent = excluded.user_agent, updated_at = excluded.updated_at, failures = 0, last_error = NULL, test_requested_at = NULL`)
         .bind(u.company_id, u.user_id, u.person_id || null, endpoint, p256dh, auth, ua, at, at),
       c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE user_id = ? AND subscription_id NOT IN (SELECT subscription_id FROM push_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, subscription_id DESC LIMIT ?)`)
         .bind(u.user_id, u.user_id, PUSH_MAX_PER_USER),
     ])
+    // 消した購読を記録する（宛先の URL は残さない）
+    const replaced = (res[0]?.results || []) as any[]
+    if (replaced.length) console.log(JSON.stringify({ event: 'push_subscription_replaced', company_id: u.company_id, user_id: u.user_id,
+      replaced: replaced.map(r => ({ subscription_id: r.subscription_id, company_id: r.company_id, user_id: r.user_id })) }))
     return c.json({ ok: true })
   })
   app.post('/push/unsubscribe', async (c) => {

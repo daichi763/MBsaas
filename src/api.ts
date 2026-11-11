@@ -716,10 +716,11 @@ api.route('/public/report', publicReportApi)
 api.get('/public/report/:token/contact', async (c) => {
   const token = c.req.param('token')
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token || '')) return c.json({ error: '連絡先が見つかりません' }, 404)
-  // 予定確認URL（#442。staff_schedule_tokens はトークンのハッシュで持つ）でも返す（#163）
+  // 予定確認URL（#442）でも返す（#163）。どちらもトークンのハッシュで照合する（報告用URLは 0105 より前の平文の行も。#9969）
+  const hash = await sha256(token)
   const row = await c.env.DB.prepare(`SELECT co.company_name, co.emergency_phone, co.emergency_note, co.active_status FROM companies co
-    WHERE co.company_id = (SELECT company_id FROM shift_report_tokens WHERE token = ? UNION ALL SELECT company_id FROM staff_schedule_tokens WHERE token_hash = ? LIMIT 1)`)
-    .bind(token, await sha256(token)).first() as any
+    WHERE co.company_id = (SELECT company_id FROM shift_report_tokens WHERE token_hash = ? OR (token_hash IS NULL AND token = ?) UNION ALL SELECT company_id FROM staff_schedule_tokens WHERE token_hash = ? LIMIT 1)`)
+    .bind(hash, token, hash).first() as any
   if (!row || !isCompanyActive(row.active_status)) return c.json({ error: '連絡先が見つかりません' }, 404)
   return c.json({ company_name: row.company_name, phone: row.emergency_phone || '', note: row.emergency_note || '' })
 })
@@ -1820,15 +1821,8 @@ async function attendancePhotoResponse(c: any, key: string) {
   })
 }
 
-// 勤怠報告に添付された写真の取得（スタッフ本人の報告の写真だけ。連携先の会社のシフトも person 単位で本人とみなす #217）
-api.get('/staff/attendance-photo/*', async (c) => {
-  const u = c.get('user')
-  const key = c.req.path.replace('/api/staff/attendance-photo/', '')
-  const row = await c.env.DB.prepare('SELECT staff_id FROM attendance_reports WHERE photo_key = ?').bind(key).first() as any
-  const mine = new Set((await personStaffRows(c.env.DB, u)).map(r => Number(r.staff_id)))
-  if (!row || !mine.has(Number(row.staff_id))) return c.json({ error: '写真が見つかりません' }, 404)
-  return attendancePhotoResponse(c, key)
-})
+// スタッフが自分の勤怠の写真を取る API（GET /api/staff/attendance-photo/<R2のキー>）は、画面から使わないので置かない。
+// 打刻の応答にも写真のキー（R2）は入れない（#9969 feat-other-05。管理者は attendance_id で取る）
 
 // 管理者: 勤怠報告の写真の取得。報告のシフトが自社のものかを確かめてから返す（写真のキーは画面に出さない #217）
 api.get('/admin/attendance-photo/:attendanceId', async (c) => {
@@ -4682,6 +4676,14 @@ api.put('/admin/employees/:staffId', async (c) => {
     const dup = await c.env.DB.prepare('SELECT 1 FROM employee_records WHERE company_id = ? AND employee_number = ? AND staff_id != ?')
       .bind(u.company_id, b.employee_number, sid).first()
     if (dup) return c.json({ error: 'この社員番号は既に使用されています' }, 409)
+  }
+  // 人材担当者は自社の利用者だけ（他社の利用者・存在しない ID は保存しない。#9969 db-12）
+  if (b.hr_staff_user_id !== undefined && b.hr_staff_user_id !== null && b.hr_staff_user_id !== '') {
+    const hr = Number(b.hr_staff_user_id)
+    const mine = Number.isInteger(hr) && hr > 0
+      ? await c.env.DB.prepare('SELECT 1 FROM users WHERE user_id = ? AND company_id = ?').bind(hr, u.company_id).first() : null
+    if (!mine) return c.json({ error: '人材担当者が見つかりません' }, 400)
+    b.hr_staff_user_id = hr
   }
 
   const cols = [

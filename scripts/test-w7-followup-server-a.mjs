@@ -309,9 +309,10 @@ if (PERSIST) {
   ok('（前提）報告用URLを発行できる', link.status === 200 && !!link.data?.token, link)
   const asAdmin = must(await admin.get(`/api/admin/shifts/${shiftId}/report-status`), 'report-status admin')
   const asHq = await hq.get(`/api/admin/shifts/${shiftId}/report-status`)
-  const tk = asAdmin.token?.token
-  ok('#293 企業の管理者には報告用URLのトークンを返す', typeof tk === 'string' && tk.length >= 16, asAdmin.token)
-  ok('#293 本部の閲覧中は、同じ API でもトークンを返さない（null）', asHq.status === 200 && asHq.data.token?.token === null && asHq.data.shift_id === shiftId && !asHq.text.includes(tk), { status: asHq.status, token: asHq.data?.token })
+  // 報告用URLのトークンはハッシュで持つので、発行した応答（POST）でだけ返す（#9969）。報告パネルは企業の管理者にも返さない
+  const tk = link.data?.token
+  ok('#293 企業の管理者の報告パネルは発行済みと分かるが、トークンは返さない', !!asAdmin.token?.ref && !asAdmin.token?.token && !JSON.stringify(asAdmin).includes(tk), asAdmin.token)
+  ok('#293 本部の閲覧中も、同じ API でトークンを返さない', asHq.status === 200 && !asHq.data.token?.token && asHq.data.shift_id === shiftId && !asHq.text.includes(tk), { status: asHq.status, token: asHq.data?.token })
   await hq.del('/api/hq/view-sessions/current')
   must(await admin.put('/api/admin/hq-access', { allowed: false }), 'disallow hq view')
 }

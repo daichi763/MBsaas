@@ -148,13 +148,15 @@ let photoCalls = null
   ok('写真付きも、過負荷が続くときは 503', b.status === 503, b)
   const a = await stA.form('/api/staff/attendance-photo', fd())
   photoCalls = callsOf(a)
-  ok('写真付きの打刻を押した時刻で記録し、写真のキーは一意キーから決まる', a.status === 200 && a.data.reported_at === minute(p) && String(a.data.photo_key).endsWith(`check_in_${k}.png`) && a.data.resent === true, a)
+  // 写真の R2 のキーは応答に入れない（#9969）。キーが一意キーから決まり増えないことは、下の「写真は1件だけ」で確かめる
+  ok('写真付きの打刻を押した時刻で記録する（応答に写真のキーは入れない）', a.status === 200 && a.data.reported_at === minute(p) && a.data.has_photo === true && !('photo_key' in a.data) && a.data.resent === true, a)
   const a2 = await stA.form('/api/staff/attendance-photo', fd())
-  ok('写真付きの同じキーの送り直しは記録済みとして返す（写真のキーは同じ）', a2.status === 200 && a2.data.duplicate === true && a2.data.photo_key === a.data.photo_key, a2)
+  ok('写真付きの同じキーの送り直しは記録済みとして返す', a2.status === 200 && a2.data.duplicate === true && a2.data.has_photo === true && !('photo_key' in a2.data), a2)
   const ph = must(await admin.get(`/api/admin/shifts/${s5}/attendance-photos`), 'photos')
   ok('写真は1件だけ', ph.reports.filter(r => r.report_type === 'check_in' && r.has_photo).length === 1, ph.reports)
-  const g = await fetch(`${BASE}/api/staff/attendance-photo/${a.data.photo_key}`, { headers: { Cookie: (await login('sample', `${PFX}A`)) } })
-  ok('記録した写真を本人が開ける（503 の後の送り直しで写真が消えていない）', g.status === 200)
+  const phId = (ph.reports.find(r => r.report_type === 'check_in' && r.has_photo) || {}).attendance_id
+  const g = await admin.get(`/api/admin/attendance-photo/${Number(phId)}`)
+  ok('記録した写真を開ける（503 の後の送り直しで写真が消えていない）', g.status === 200, g)
   // 写真なしの入店（写真必須の会社）は断る（これまでどおり）
   const s6 = await createShift(A.staff_id, pid, '00:00', '23:54')
   ok('写真が必須なら、写真なしの入店は断る（これまでどおり）', (await stA.post('/api/staff/attendance', { shift_id: s6, report_type: 'check_in', client_request_id: key() })).status === 400)

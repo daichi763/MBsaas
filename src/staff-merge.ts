@@ -55,7 +55,7 @@ staffMergeApi.get('/staff/:id/merge-candidates', async (c) => {
   const s = await loadStaff(db, u.company_id, c.req.param('id'))
   if (!s) return c.json({ error: 'スタッフが見つかりません' }, 404)
   const q = String(c.req.query('q') || '').trim()
-  // 他社連携の行の電話番号は、所属元の今の番号で比べる（#123。番号そのものは返さない）
+  // 他社連携の行の電話番号（所属元の連絡先。共有しない項目）は比べない（#9969。MATCH_PHONE_SQL）
   const rows = ((await db.prepare(`SELECT sp.staff_id, us.name, ${MATCH_PHONE_SQL} AS phone, COALESCE(sp.affiliation_type,'own_employee') AS affiliation_type, sp.is_provisional,
       sp.employment_status, us.status AS user_status, us.retired_at,
       CASE WHEN sp.affiliation_type = 'linked_external' THEN src.kana ELSE sp.kana END AS kana, oc.company_name AS owner_company_name, CASE WHEN sp.affiliation_type = 'linked_external' OR pe.created_company_id != sp.company_id THEN sp.relink_code ELSE pe.global_staff_code END AS global_staff_code,

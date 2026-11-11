@@ -2701,7 +2701,7 @@
     const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
     const future = (document.querySelector('input[name="pd-mode"]:checked') || {}).value === 'future'
     let data
-    try { data = (await axios.delete(`/api/admin/slot-patterns/${Number(x.pattern_id)}?remove_future=${future ? 1 : 0}&today=${dayjs().format('YYYY-MM-DD')}`)).data } catch (e) { toast(errMsg(e)); return }
+    try { data = (await axios.delete(`/api/admin/slot-patterns/${Number(x.pattern_id)}?remove_future=${future ? 1 : 0}`)).data } catch (e) { toast(errMsg(e)); return }
     closeModal(); toast(`削除しました${data.removed ? `（枠${data.removed}件を削除）` : ''}`); renderProjectDetail(x.project.project_id)
   }))
 

@@ -214,7 +214,7 @@ if (PERSIST) {
   ok('#392 本部のメールの集計に直近24時間の送信数の目安を返す', stats.alert && stats.alert.daily_warn > 0 && Array.isArray(stats.warnings), stats.alert)
 }
 
-// ---------- #123 連携先での電話番号の照合（所属元の今の番号。番号は出さない） ----------
+// ---------- #123 連携先での電話番号の照合（#9969 で変更: 所属元の電話番号は共有しない項目なので照合に使わない。番号は出さない） ----------
 {
   const coCode = `${PFX.toLowerCase()}a`
   must(await hq.post('/api/hq/companies', { admin_email: 'admin@example.com', company_code: coCode, company_name: `${PFX}連携先株式会社`, admin_code: 'admin', admin_password: 'pass1234' }), 'company A')
@@ -225,12 +225,12 @@ if (PERSIST) {
   const terms = must(await A.get('/api/admin/roster/lookup?code=' + encodeURIComponent(xRow.global_staff_code)), 'lookup').consent
   const inA = must(await A.post('/api/admin/roster/link', { code: xRow.global_staff_code, agreed: true, consent_version: terms.version }), 'link').staff_id
   let m = must(await A.get(`/api/admin/staff-lookup?phone=${ph1}`), 'lookup').matches
-  ok('#123 連携先の照合で、所属元の電話番号の人が見つかる（番号は返さない）', m.some(x => x.staff_id === inA && x.phone === null), m)
+  ok('#9969 連携先の照合で、所属元の電話番号では他社連携のスタッフを見つけない', !m.some(x => x.staff_id === inA), m)
   // 所属元で電話番号を変える（従業員管理の電話番号 → users.phone にそろえる）
   must(await admin.put(`/api/admin/employees/${X}`, { phone_main: ph2 }), 'emp phone')
   m = must(await A.get(`/api/admin/staff-lookup?phone=${ph2}`), 'lookup2').matches
   const old = must(await A.get(`/api/admin/staff-lookup?phone=${ph1}`), 'lookup3').matches
-  ok('#123 所属元で変えた後は、新しい番号で見つかり、古い番号では見つからない', m.some(x => x.staff_id === inA) && !old.some(x => x.staff_id === inA), { m, old })
+  ok('#9969 所属元で変えた後も、新しい番号・古い番号のどちらでも見つけない', !m.some(x => x.staff_id === inA) && !old.some(x => x.staff_id === inA), { m, old })
   const det = await A.get(`/api/admin/staff/${inA}`), list = await A.get('/api/admin/staff')
   const opts = await A.get('/api/admin/staff/options?include=all')
   const leak = [det.text, list.text, opts.text].some(t => t.includes(ph2) || t.includes(ph1))

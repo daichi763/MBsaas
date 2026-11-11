@@ -49,17 +49,12 @@ await admin.post('/api/admin/settings/photo-required', { enabled: true })
 // ---------- #217 アプリの入店（写真つき） → 本人だけが写真を取得でき、管理者は自社のシフトの報告として取得できる ----------
 const S1 = await createShift(admin, 9, 1, 'W3RL-S1-' + tag)
 const up = await st9.form('/api/staff/attendance-photo', photoForm('check_in', S1))
-ok('（前提）アプリの入店報告（写真つき）', up.status === 200 && up.data.photo_key, up)
-const key = up.data && up.data.photo_key
+ok('（前提）アプリの入店報告（写真つき）', up.status === 200 && up.data.has_photo === true, up)
+// スタッフが写真のキーで写真を取る API は置かない（画面から使わない。打刻の応答にもキーを入れない。#9969）
 {
-  const mine = await st9.raw('/api/staff/attendance-photo/' + key)
-  ok('#217 本人は自分の写真を取得できる', mine.status === 200 && mine.size > 0, mine)
-  const other = await st10.raw('/api/staff/attendance-photo/' + key)
-  ok('#217 同じ会社の別のスタッフは他人の写真を取得できない（404）', other.status === 404, other)
-  const byAdmin = await admin.raw('/api/staff/attendance-photo/' + key)
-  ok('#217 スタッフ用の取得 API は管理者のセッションでは使えない（403）', byAdmin.status === 403, byAdmin)
-  const unknown = await st9.raw('/api/staff/attendance-photo/attendance/1/9/0/none.jpg')
-  ok('#217 記録にないキーは 404', unknown.status === 404, unknown)
+  ok('#9969 打刻の応答に写真の R2 のキーを入れない', !('photo_key' in (up.data || {})), up.data)
+  const gone = await st9.raw('/api/staff/attendance-photo/attendance/1/9/0/none.jpg')
+  ok('#9969 スタッフ用の写真の取得 API は無い（404）', gone.status === 404, gone)
 }
 {
   const list = await admin.get(`/api/admin/shifts?from=${today}&to=${today}`)
