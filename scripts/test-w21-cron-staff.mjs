@@ -68,8 +68,8 @@ const ago = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString()
 if (!PERSIST) console.log('SKIP  #9946 警告の出る・出ないの確認（PERSIST が無いため cron_runs に書けません）')
 else {
   const jobs = Object.keys((await status()).stale_hours_by_job || {})
-  // affiliation_schedules_rest は Sprint 24（#9968）で足した15分おきの処理
-  const FREQ = ['reminders', 'push_queue', 'notification_digest', 'notice_scheduled_publish', 'doc_expiry_notice', 'affiliation_schedules_rest']
+  // affiliation_schedules_rest は Sprint 24（#9968）、monitor_daily は Sprint 25（#9971）で足した15分おきの処理
+  const FREQ = ['reminders', 'push_queue', 'notification_digest', 'notice_scheduled_publish', 'doc_expiry_notice', 'affiliation_schedules_rest', 'monitor_daily']
   // 処理ごとに最後の実行の日時（何時間前か）を決めて、cron_runs をその1行ずつにする
   const setRuns = (hoursAgo, extra = []) => sql(`DELETE FROM cron_runs;
 ${[...jobs.map(j => [j, typeof hoursAgo === 'function' ? hoursAgo(j) : hoursAgo]), ...extra].map(([j, h]) =>
