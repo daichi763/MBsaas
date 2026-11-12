@@ -210,7 +210,7 @@ let C1, C2
 // ---------- #9965 画面のコード ----------
 {
   const ad = src('public/static/admin.js'), st = src('public/static/staff.js')
-  ok('#9965 管理画面: コメントを一覧で出し、自分のコメントだけ「編集」「削除」を出す。ボタンは「コメントを追加」', /function reportCommentsHtml\(r, fmt\)/.test(ad) && ad.includes('${cm.mine ?') && ad.includes('data-action="deleteReportComment"') && ad.includes("'コメントを追加'"))
+  ok('#9965 管理画面: コメントを一覧で出し、自分のコメント（と書いた人の記録がない古いコメント。#9975）だけ「編集」「削除」を出す。ボタンは「コメントを追加」', /function reportCommentsHtml\(r, fmt\)/.test(ad) && ad.includes('${cm.mine || cm.editable ?') && ad.includes('data-action="deleteReportComment"') && ad.includes("'コメントを追加'"))
   ok('#9965 管理画面: 追加は POST、編集は PUT（/comments/:id）を使う', ad.includes("'/comments'") && ad.includes("axios.put(url + '/' + cid, { body: text })") && ad.includes('axios.post(url, { body: text })'))
   ok('#9965 スタッフアプリ: コメントを新しい順に、書いた人の名前つきで出す', /function reportCommentsHtml\(comments, legacy, opts\)/.test(st) && st.includes('comments.slice().reverse()') && (st.match(/reportCommentsHtml\(/g) || []).length >= 5)
   // スタッフアプリの描画を実際に動かす（新しい順・名前・件数の省略）
