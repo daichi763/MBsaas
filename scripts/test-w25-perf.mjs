@@ -198,6 +198,22 @@ async function sameCounts(name, f) {
   must(await admin.post('/api/admin/daily-reports/check', { ids: [curId] }), 'check current')
   ok('今月の日報の確認では、控えは変わらない', (await sql(`SELECT COUNT(*) AS n FROM daily_report_month_counts WHERE company_id = 1`))[0].n === before)
   await sameCounts('今月の日報を確認した後', { options: true })
+
+  // 本部の閲覧中（D1 は読み取り専用で、控えを書けない）でも、件数は日報の表から数えた値と同じ（RV）
+  must(await admin.put('/api/admin/hq-access', { allowed: true }), 'hq-access')
+  const hqL = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_code: '', user_code: 'hq', password: 'pass1234' }) })
+  const jar = [(hqL.headers.get('set-cookie') || '').split(';')[0]]
+  const vs = await fetch(`${BASE}/api/hq/view-sessions`, { method: 'POST', headers: { Cookie: jar.join('; '), 'Content-Type': 'application/json' }, body: JSON.stringify({ company_id: 1, reason: 'w25-perf の確認', minutes: 15 }) })
+  for (const sc of vs.headers.getSetCookie()) if (sc.startsWith('hq_view=')) jar.push(sc.split(';')[0])
+  ok('本部の閲覧を始められる', hqL.status === 200 && vs.status === 200 && jar.length === 2, { login: hqL.status, view: vs.status })
+  const hq = client(jar.join('; '))
+  await sql('DELETE FROM daily_report_month_counts WHERE company_id = 1')
+  for (const f of [{}, { unchecked: 1 }, { open: 1 }, { project: P1, from: addDays(today, -250) }]) {
+    const [r, want] = [await hq.get(qs(f)), await oracle(f)]
+    ok(`本部の閲覧中: 件数・総数が日報の表から数えた値と同じ ${JSON.stringify(f)}`, r.status === 200 && r.data.total === want.total && JSON.stringify(r.data.counts) === JSON.stringify(want.counts), { status: r.status, api: r.data && { total: r.data.total, counts: r.data.counts }, want })
+  }
+  ok('本部の閲覧中は控えを書かない', (await sql('SELECT COUNT(*) AS n FROM daily_report_month_counts WHERE company_id = 1'))[0].n === 0)
+  must(await admin.put('/api/admin/hq-access', { allowed: false }), 'hq-access off')
 }
 
 // ---------- (2) アプリを開く（同時に何本も） ----------

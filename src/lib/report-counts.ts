@@ -122,6 +122,9 @@ export function dailyReportCountPlan(db: D1Database, q: DrCountQuery): { first: 
       if (liveCount === 2) stmts.push(live({ lt: monthStart(months[0]) }))
       stmts.push(live({ gte: monthStart(nextYm(months[months.length - 1])) }))
       const out = await db.batch(stmts)
+      // 控えを書けなかったとき（本部の閲覧中は D1 が読み取り専用で、書き込みは実行されない。hq-support.ts の readOnlyDb）は、
+      // 控えの無い・古い月を足すと件数がずれるので、これまでどおり日報の表から数える
+      if (stale.length && !(Number(out[1]?.meta?.changes) > 0)) return add(zero, await live({}).first())
       return out.slice(out.length - liveCount - 1).reduce((a, r) => add(a, (r.results as any[])[0]), zero)
     },
   }
