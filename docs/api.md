@@ -88,8 +88,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | 管理者（4ロール）＋本部の閲覧（GET） | 166 |
 | スタッフ | 83 |
 | 本部 | 63 |
-| ログイン中の全員 | 27 |
+| ログイン不要 | 16 |
 | 会社管理者・事務 | 13 |
+| ログイン中の全員 | 11 |
 | 会社管理者 | 10 |
 <!-- END GENERATED: api-summary -->
 
@@ -98,7 +99,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-middlewares -->
 | 順 | パス | 定義 | 内容 |
 |---|---|---|---|
-| 1 | `/api/*` | [api.ts:97](../src/api.ts#L97) | ログイン必須（セッションの確認・延長・二段階認証の登録待ちの制限） |
+| 1 | `/api/*` | [api.ts:97](../src/api.ts#L97) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の読み書きの行数。src/lib/d1-retry.ts） |
 | 2 | `/api/public/recruit/:token/*` | [recruit.ts:243](../src/recruit.ts#L243) | 募集ページの会社が停止中なら 410 |
 | 3 | `/api/*` | [api.ts:745](../src/api.ts#L745) | ログイン必須（セッションの確認・延長・二段階認証の登録待ちの制限） |
 | 4 | `/api/auth/*` | [api.ts:835](../src/api.ts#L835) | 本部の閲覧中は書き込み不可 |
@@ -152,16 +153,16 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 
 | メソッド | パス | 通すロール | 定義 | 用途（直前のコメント・なければ見出し） | 画面の JS |
 |---|---|---|---|---|---|
-| GET | `/api/public/calendar/:file` | ログイン中の全員 | [staff-schedule.ts:221](../src/staff-schedule.ts#L221) | 〔見出し〕購読用（ログイン不要。/api/public/calendar/<トークン>.ics） |  |
-| GET | `/api/public/notice-ack` | ログイン中の全員 | [notifications.ts:1196](../src/notifications.ts#L1196) | 〔見出し〕お知らせメールの「確認しました」のリンク（#454） | src/index.tsx |
-| POST | `/api/public/notice-ack` | ログイン中の全員<br>＋本文で確認: 会社管理者 | [notifications.ts:1202](../src/notifications.ts#L1202) | 〔見出し〕お知らせメールの「確認しました」のリンク（#454） | src/index.tsx |
-| GET | `/api/public/recruit/:token` | ログイン中の全員 | [recruit.ts:251](../src/recruit.ts#L251) | 〔見出し〕公開ページ（ログイン不要） | apply.js |
-| POST | `/api/public/recruit/:token/apply` | ログイン中の全員 | [recruit.ts:294](../src/recruit.ts#L294) | 〔見出し〕公開ページ（ログイン不要） | apply.js |
-| GET | `/api/public/report/:token` | ログイン中の全員 | [staff-lifecycle.ts:1524](../src/staff-lifecycle.ts#L1524) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
-| POST | `/api/public/report/:token/attendance` | ログイン中の全員 | [staff-lifecycle.ts:1566](../src/staff-lifecycle.ts#L1566) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
-| POST | `/api/public/report/:token/consultation` | ログイン中の全員 | [staff-lifecycle.ts:1757](../src/staff-lifecycle.ts#L1757) | 〔見出し〕報告用URL・予定確認URLからの連絡（#163） | report-link.js |
-| GET | `/api/public/report/:token/contact` | ログイン中の全員 | [api.ts:721](../src/api.ts#L721) | 報告用URLに出す会社の緊急連絡先（#173）。期限切れ・取り消し後の画面でも連絡できるよう、発行済みのURLなら返す（停止中の企業は返さない）。 返すのは会社名と連絡先だけ（シフト・スタッフの情報は返さない） | report-link.js |
-| POST | `/api/public/report/:token/daily-report` | ログイン中の全員 | [staff-lifecycle.ts:1634](../src/staff-lifecycle.ts#L1634) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
+| GET | `/api/public/calendar/:file` | ログイン不要 | [staff-schedule.ts:221](../src/staff-schedule.ts#L221) | 〔見出し〕購読用（ログイン不要。/api/public/calendar/<トークン>.ics） |  |
+| GET | `/api/public/notice-ack` | ログイン不要 | [notifications.ts:1196](../src/notifications.ts#L1196) | 〔見出し〕お知らせメールの「確認しました」のリンク（#454） | src/index.tsx |
+| POST | `/api/public/notice-ack` | ログイン不要 | [notifications.ts:1202](../src/notifications.ts#L1202) | 〔見出し〕お知らせメールの「確認しました」のリンク（#454） | src/index.tsx |
+| GET | `/api/public/recruit/:token` | ログイン不要 | [recruit.ts:251](../src/recruit.ts#L251) | 〔見出し〕公開ページ（ログイン不要） | apply.js |
+| POST | `/api/public/recruit/:token/apply` | ログイン不要 | [recruit.ts:294](../src/recruit.ts#L294) | 〔見出し〕公開ページ（ログイン不要） | apply.js |
+| GET | `/api/public/report/:token` | ログイン不要 | [staff-lifecycle.ts:1524](../src/staff-lifecycle.ts#L1524) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
+| POST | `/api/public/report/:token/attendance` | ログイン不要 | [staff-lifecycle.ts:1566](../src/staff-lifecycle.ts#L1566) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
+| POST | `/api/public/report/:token/consultation` | ログイン不要 | [staff-lifecycle.ts:1757](../src/staff-lifecycle.ts#L1757) | 〔見出し〕報告用URL・予定確認URLからの連絡（#163） | report-link.js |
+| GET | `/api/public/report/:token/contact` | ログイン不要 | [api.ts:721](../src/api.ts#L721) | 報告用URLに出す会社の緊急連絡先（#173）。期限切れ・取り消し後の画面でも連絡できるよう、発行済みのURLなら返す（停止中の企業は返さない）。 返すのは会社名と連絡先だけ（シフト・スタッフの情報は返さない） | report-link.js |
+| POST | `/api/public/report/:token/daily-report` | ログイン不要 | [staff-lifecycle.ts:1634](../src/staff-lifecycle.ts#L1634) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
 
 ### `/api/auth/…` ログイン・自分のアカウント（17）
 
@@ -170,10 +171,10 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/auth/account` | ログイン中の全員 | [accounts.ts:191](../src/accounts.ts#L191) | 〔見出し〕自分のアカウント（/api/auth/*。ログインしている全ロール） | admin.js |
 | PUT | `/api/auth/account` | ログイン中の全員 | [accounts.ts:207](../src/accounts.ts#L207) | 氏名・メールアドレスの変更（管理者・本部のみ。スタッフの登録情報は所属会社が管理する） メールアドレスの変更は乗っ取りの踏み台になるため、現在のパスワードを確かめる | admin.js |
 | POST | `/api/auth/change-password` | ログイン中の全員<br>＋本文で確認: 会社管理者 | [accounts.ts:253](../src/accounts.ts#L253) | パスワードの変更（スタッフ・管理者・本部の全員）。ほかの端末のセッションは消し、この端末はログインしたままにする | admin.js staff-profile.js |
-| POST | `/api/auth/forgot-password` | ログイン中の全員 | [api.ts:600](../src/api.ts#L600) | パスワード再設定メールの送信リクエスト セキュリティ: メールアドレスの存在有無に関わらず常に同じレスポンスを返す（アカウント存在の推測を防ぐ） | src/index.tsx |
-| POST | `/api/auth/login` | ログイン中の全員 | [api.ts:452](../src/api.ts#L452) | 〔見出し〕Auth | admin.js src/index.tsx |
-| POST | `/api/auth/login/mfa` | ログイン中の全員 | [api.ts:542](../src/api.ts#L542) | 二段階認証のコード（認証アプリの6桁、または予備コード）を確かめてログインする（#544） | admin.js src/index.tsx |
-| POST | `/api/auth/logout` | ログイン中の全員 | [api.ts:704](../src/api.ts#L704) | 〔見出し〕Auth | admin.js hq.js staff.js |
+| POST | `/api/auth/forgot-password` | ログイン不要 | [api.ts:600](../src/api.ts#L600) | パスワード再設定メールの送信リクエスト セキュリティ: メールアドレスの存在有無に関わらず常に同じレスポンスを返す（アカウント存在の推測を防ぐ） | src/index.tsx |
+| POST | `/api/auth/login` | ログイン不要 | [api.ts:452](../src/api.ts#L452) | 〔見出し〕Auth | admin.js src/index.tsx |
+| POST | `/api/auth/login/mfa` | ログイン不要 | [api.ts:542](../src/api.ts#L542) | 二段階認証のコード（認証アプリの6桁、または予備コード）を確かめてログインする（#544） | admin.js src/index.tsx |
+| POST | `/api/auth/logout` | ログイン不要 | [api.ts:704](../src/api.ts#L704) | 〔見出し〕Auth | admin.js hq.js staff.js |
 | POST | `/api/auth/logout-all` | ログイン中の全員<br>＋本文で確認: 会社管理者 | [api.ts:1092](../src/api.ts#L1092) | 〔見出し〕自分のログイン中の端末と、すべての端末からのログアウト（#453。全ロール） | security.js staff-profile.js |
 | GET | `/api/auth/me` | ログイン中の全員<br>＋本文で確認: 人事のロール | [api.ts:841](../src/api.ts#L841) | 〔見出し〕Auth | admin.js corrections.js hq.js staff.js |
 | GET | `/api/auth/mfa` | ログイン中の全員 | [api.ts:1022](../src/api.ts#L1022) | 〔見出し〕自分の二段階認証（本部・管理画面のアカウント） | security.js |
@@ -181,9 +182,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/auth/mfa/enable` | ログイン中の全員 | [api.ts:1039](../src/api.ts#L1039) | 登録の完了: 認証アプリの6桁と現在のパスワードを確かめて有効にし、予備コードを一度だけ返す | security.js |
 | POST | `/api/auth/mfa/recovery-codes` | ログイン中の全員 | [api.ts:1074](../src/api.ts#L1074) | 予備コードを作り直す（以前の予備コードは使えなくなる） | security.js |
 | POST | `/api/auth/mfa/setup` | ログイン中の全員 | [api.ts:1029](../src/api.ts#L1029) | 登録の開始: 秘密鍵を作り、認証アプリに登録する URI（QR コード）を返す。コードを確かめるまでは有効にしない | security.js |
-| POST | `/api/auth/reset-password` | ログイン中の全員 | [api.ts:652](../src/api.ts#L652) | パスワード再設定の実行（トークンは生の値では保存されておらずハッシュ照合、1回使用したら失効）。同じ人のセッションは、企業を切り替えた分も含めてすべて消す（#9941） | src/index.tsx |
+| POST | `/api/auth/reset-password` | ログイン不要 | [api.ts:652](../src/api.ts#L652) | パスワード再設定の実行（トークンは生の値では保存されておらずハッシュ照合、1回使用したら失効）。同じ人のセッションは、企業を切り替えた分も含めてすべて消す（#9941） | src/index.tsx |
 | GET | `/api/auth/sessions` | ログイン中の全員 | [api.ts:1086](../src/api.ts#L1086) | 〔見出し〕自分のログイン中の端末と、すべての端末からのログアウト（#453。全ロール） | security.js staff-profile.js |
-| POST | `/api/auth/verify-email` | ログイン中の全員 | [api.ts:681](../src/api.ts#L681) | ログイン用メールアドレスの確認（#207）。管理者が登録したアドレスに届いたリンク（/verify-email）から、本人が確認したときに有効にする | src/index.tsx |
+| POST | `/api/auth/verify-email` | ログイン不要 | [api.ts:681](../src/api.ts#L681) | ログイン用メールアドレスの確認（#207）。管理者が登録したアドレスに届いたリンク（/verify-email）から、本人が確認したときに有効にする | src/index.tsx |
 
 ### `/api/staff/…` スタッフアプリ（83）
 
