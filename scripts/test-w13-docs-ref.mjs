@@ -48,7 +48,7 @@ ok('db.md に company_id のある表で、retention.ts の解約の対象に入
 const ROUTES = [['POST', '/api/auth/login'], ['GET', '/api/auth/me'], ['GET', '/api/staff/home'], ['POST', '/api/staff/daily-report'], ['GET', '/api/admin/staff/:id'],
   ['GET', '/api/admin/shift-board'], ['GET', '/api/admin/settlement'], ['GET', '/api/admin/employees'], ['GET', '/api/hq/companies'], ['GET', '/api/public/recruit/:token']]
 for (const [m, p] of ROUTES) ok(`api.md に ${m} ${p} がある`, new RegExp(`\\| ${m} \\| \`${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\` \\|`).test(api) && model.endpoints.some(e => e.method === m && e.path === p))
-ok('api.md のエンドポイントの数が、Hono のルートの数と同じ', (api.match(/^\| (GET|POST|PUT|PATCH|DELETE) \| `\/api\//gm) || []).length === model.endpoints.length, model.endpoints.length)
+ok('api.md のエンドポイントの数が、Hono のルートの数と同じ', ((api.split('<!-- BEGIN GENERATED: api-endpoints -->')[1] || '').split('<!-- END GENERATED: api-endpoints -->')[0].match(/^\| (GET|POST|PUT|PATCH|DELETE) \| `\/api\//gm) || []).length === model.endpoints.length, model.endpoints.length) // api.ts のルートの区切りの中だけを数える（src/index.tsx の /api/health は「画面などのルート」に出る。#9973）
 ok('実行して取ったルートが、すべてソースの定義の行と対応している', model.unmatched.length === 0 && model.endpoints.every(e => e.file && e.line), model.unmatched)
 ok('ミドルウェアにすべて説明がある', model.middlewares.every(m => m.label), model.middlewares.filter(m => !m.label))
 

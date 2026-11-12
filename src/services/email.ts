@@ -11,7 +11,7 @@ import { nowJST } from '../lib/time'
 export type MailEnv = {
   RESEND_API_KEY: string
   MAIL_FROM: string
-  MAIL_ENABLED?: string // 'false' の場合は実送信せずログのみ（開発環境での誤送信防止）
+  MAIL_ENABLED?: string // 'true' のときだけ実際に送る。それ以外（'false'・未設定も含む）は送らずに記録だけ残す（mailMode。開発環境での誤送信防止）
   DB: D1Database
   RESEND_WEBHOOK_SECRET?: string // Resend の Webhook の署名の秘密（whsec_...）。未設定なら Webhook を受け付けない
 }
@@ -26,7 +26,7 @@ export type SendEmailInput = {
   reply_to?: string | null // 返信先（企業が設定した問い合わせ先のアドレス。#367）
 }
 
-// skipped: MAIL_ENABLED='false' のため送らなかった（ok は true のまま。既存の呼び出し側の扱いを変えないため）
+// skipped: MAIL_ENABLED が 'true' でない（未設定も含む）ため送らなかった（ok は true のまま。既存の呼び出し側の扱いを変えないため）
 export type SendEmailResult = { ok: boolean; id?: string; error?: string; skipped?: boolean }
 
 // Resend のバッチ送信の上限（1回100件）と、既定の送信上限（1秒あたり2リクエスト）に合わせた間隔

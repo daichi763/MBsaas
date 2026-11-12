@@ -16,6 +16,7 @@ import { syncActualFromReports, syncActualsForShifts, closedMessage } from './se
 import { NOTICE_TARGET_SQL } from './lib/notices'
 import { isHHMM, isISODate, pickReportValues, reportFieldRulesError } from './lib/validate'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
+import { dirtyReportCountsByShiftStmt } from './lib/report-counts'
 import { notifyDailyReportIncident, notifyConsultation } from './notifications'
 import { notifyProxyAttendance, ATTENDANCE_PROXY_KIND, loadMailContact } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
@@ -28,7 +29,7 @@ import { getCookie } from 'hono/cookie'
 import { SESSION_COOKIE, loadSessionUser } from './lib/auth'
 import { NO_PHOTO_REASONS, PHOTO_REQUIRED_ERROR, deviceIdOf, deviceSummary, isPhotoStale, noPhotoReasonText, photoSkipAllowed, photoSource, photoTakenAt } from './lib/attendance-photo'
 import { nowJST, todayJST, addDays, isDate } from './lib/time'
-import { sha256 } from './lib/hash'
+import { sha256, randomB64url } from './lib/hash'
 import { recordSwallowedError } from './lib/http'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
@@ -147,10 +148,7 @@ export async function modesForShifts(db: D1Database, shiftIds: number[]) {
 }
 
 // ---------- ユーティリティ ----------
-function randToken(bytes = 24): string {
-  const a = new Uint8Array(bytes); crypto.getRandomValues(a)
-  return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
+const randToken = (bytes = 24) => randomB64url(bytes)
 async function unusablePasswordHash(): Promise<string> { return sha256('!nologin!' + randToken(24)) }
 // 電話番号の正規化（数字のみ。+81 は 0 に）。全角の数字・＋は半角にそろえてから数える（#512）
 export function normalizePhone(p: any): string {
@@ -1054,23 +1052,40 @@ adminLifecycleApi.delete('/shifts/:id/proxy-attendance/:type', async (c) => {
 function reportTokenExpiry(workDate: string): string { return `${addDays(workDate, 1)} 23:59:59` }
 
 // ---------- 報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） ----------
-// token_hash に照合用のハッシュを入れ、主キーの token 列にも同じハッシュを入れる（平文は残さない。列の作り直しは次の Sprint）。
+// token_hash に照合用のハッシュを入れ、主キーの token 列にも同じハッシュを入れる（平文は残さない。列は作り直さない。#9975）。
 // URL は発行した応答でだけ返す。画面は発行した端末で覚えておき、閉じた後に送り直すときは発行し直す。
-// 0105 より前に発行した行（token_hash が NULL で token が平文）は、開いたときと、報告用URLを扱う API で最初に、ハッシュへ移す（配ったURLはそのまま使える）
+// 0105 より前に発行した行（token_hash が NULL で token が平文）は、開いたとき・報告用URLを扱う API の最初・毎日の定期処理で、ハッシュへ移す（配ったURLはそのまま使える）
 const TOKEN_REF_LEN = 12
 const tokenRef = (hash: string) => String(hash || '').slice(0, TOKEN_REF_LEN)
 async function newReportToken() { const token = randToken(24); const hash = await sha256(token); return { token, hash, ref: tokenRef(hash) } }
 // 照合の条件（a は shift_report_tokens の別名）。bind は ハッシュ, 平文 の順
 const tokenMatch = (a: string) => `(${a}.token_hash = ? OR (${a}.token_hash IS NULL AND ${a}.token = ?))`
 const LEGACY_HASH_LIMIT = 200
-/** 平文で残っている報告用URLのトークンをハッシュへ移す（1回に LEGACY_HASH_LIMIT 件まで）。移した件数を返す */
-export async function hashLegacyReportTokens(db: D1Database, limit = LEGACY_HASH_LIMIT): Promise<number> {
-  const rows = (await db.prepare('SELECT token FROM shift_report_tokens WHERE token_hash IS NULL LIMIT ?').bind(limit).all()).results as any[]
+/** 平文で残っている報告用URLのトークンをハッシュへ移す（1回に LEGACY_HASH_LIMIT 件まで）。移した件数を返す。stats を渡すと D1 の読み書きの行数を足す */
+export async function hashLegacyReportTokens(db: D1Database, limit = LEGACY_HASH_LIMIT, stats?: { rows_read: number; rows_written: number }): Promise<number> {
+  const add = (m: any) => { if (stats && m) { stats.rows_read += Number(m.rows_read) || 0; stats.rows_written += Number(m.rows_written) || 0 } }
+  const sel = await db.prepare('SELECT token FROM shift_report_tokens WHERE token_hash IS NULL LIMIT ?').bind(limit).all()
+  add(sel.meta)
+  const rows = sel.results as any[]
   if (!rows.length) return 0
   const pairs = await Promise.all(rows.map(async r => ({ r: String(r.token), h: await sha256(String(r.token)) })))
-  await db.prepare(`UPDATE shift_report_tokens SET token = json_extract(j.value, '$.h'), token_hash = json_extract(j.value, '$.h')
-    FROM json_each(?) j WHERE shift_report_tokens.token = json_extract(j.value, '$.r') AND shift_report_tokens.token_hash IS NULL`).bind(JSON.stringify(pairs)).run()
+  // token_hash の条件に + を付けて索引を使わせない（付けないと、平文の行ごとに json_each を全部読む形になり、行数×件数を読む。#9975）。
+  // json_each の1件ごとに主キー（token）で1行を引く
+  const upd = await db.prepare(`UPDATE shift_report_tokens SET token = json_extract(j.value, '$.h'), token_hash = json_extract(j.value, '$.h')
+    FROM json_each(?) j WHERE shift_report_tokens.token = json_extract(j.value, '$.r') AND +shift_report_tokens.token_hash IS NULL`).bind(JSON.stringify(pairs)).run()
+  add(upd.meta)
   return rows.length
+}
+// 定期処理（毎日 3:30。#9975）: 使われないまま残った平文の行も、1日に LEGACY_HASH_DAILY_MAX 件ずつハッシュへ移す
+// （1回の起動の問い合わせは3回まで。書き込みの行数を無料枠の内に抑える）。すべて移せば平文は残らないので、列は作り直さない。
+// 結果（cron_runs）には、移した件数・残り・D1 の読み書きの行数を残す
+export const LEGACY_HASH_DAILY_MAX = 500
+export async function runLegacyReportTokenHashJob(db: D1Database): Promise<{ hashed: number; remaining: number; rows_read?: number; rows_written?: number; idle?: boolean }> {
+  const stats = { rows_read: 0, rows_written: 0 }
+  const hashed = await hashLegacyReportTokens(db, LEGACY_HASH_DAILY_MAX, stats)
+  if (!hashed) return { hashed: 0, remaining: 0, idle: true }
+  const left = await db.prepare('SELECT COUNT(*) AS n FROM shift_report_tokens WHERE token_hash IS NULL').first() as { n: number } | null
+  return { hashed, remaining: Number(left?.n || 0), ...stats }
 }
 // この Worker で移し終えたか（移す行がないと分かったら、以後は確かめない）
 let legacyReportTokensDone = false
@@ -1356,7 +1371,8 @@ adminLifecycleApi.post('/report-links/bulk', async (c) => {
 
 // 対応済みにしたインシデント・クレームを未対応に戻す（#169。api.ts の reopenIncidentStmt と同じ）
 async function reopenIncident(db: D1Database, shiftId: number) {
-  await db.prepare(`UPDATE daily_reports SET incident_status = NULL WHERE shift_id = ? AND incident_status = 'done'`).bind(shiftId).run()
+  // 日報一覧の件数の控え（今月より前の月）の印も消す（#9970）
+  await db.batch([db.prepare(`UPDATE daily_reports SET incident_status = NULL WHERE shift_id = ? AND incident_status = 'done'`).bind(shiftId), dirtyReportCountsByShiftStmt(db, shiftId)])
 }
 
 // ---------- 日報の代理入力（#276） ----------

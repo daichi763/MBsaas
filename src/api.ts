@@ -28,7 +28,7 @@ import { REPORT_LABEL, checkNoBreak, checkShiftAcceptsReport } from './report-se
 // 前日確認（#176）と、電波がない場所で押した報告の時刻（#427）
 import { dayBeforeKey, dayBeforeSettings, dayBeforeState } from './report-settings'
 import { chunk } from './lib/d1-chunk'
-import { attendanceTestHooks } from './lib/d1-retry'
+import { attendanceTestHooks, d1RowsHook } from './lib/d1-retry'
 import { recordPunch } from './attendance-punch'
 import { isTentativeShift, WORKING_SHIFT_STATUSES } from './lib/shift-status'
 import { addMinutes, crossesMidnight, isWithin, reportableWindow, shiftWindow, toMin } from './lib/shift-time'
@@ -40,6 +40,8 @@ import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEd
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
 import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND, hiddenStaffNotifyKinds } from './notifications'
 import { hqErrorsApi } from './hq-errors'
+// 障害の通知の送り先・DB の大きさ（#9971 #9974。src/hq-monitor.ts）
+import { hqMonitorApi } from './hq-monitor'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -60,6 +62,8 @@ import { loadMonthlyLines, monthlyTotal } from './lib/monthly-billing'
 import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword, HQ_COMPANY_STATUS } from './accounts'
 import { assigneesApi, assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt } from './assignees'
 import { loadReportComments, staffCommentView, legacyCommentSyncStmt, legacyCommentReadSyncStmt, parseCommentBody, type ReportComment } from './lib/report-comments'
+// 日報一覧の件数の控え（#9970。migrations/0108）
+import { dailyReportCountPlan, dirtyReportCountsByIdsStmt, dirtyReportCountsByShiftStmt } from './lib/report-counts'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef,
   reportEditFields, buildAdminReportEdit, parseReportValuesJson, REPORT_EDIT_REASON_MAX } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
@@ -91,6 +95,8 @@ type Bindings = {
 type Variables = { user: any; hqAudited?: boolean; d1FailWrite?: () => boolean }
 
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+// 読み書きの行数を応答のヘッダーに出す（TEST_HOOKS='true' のローカルだけ。#9970。src/lib/d1-retry.ts）
+api.use('/*', d1RowsHook)
 
 // ============ Utils ============
 // 生年月日から満年齢を計算する（NULLならnull）
@@ -784,7 +790,8 @@ async function touchLastSeen(c: any, u: any) {
   const threshold = nowJST(-LAST_SEEN_STEP_MINUTES * 60 * 1000)
   if (u.last_seen_at && String(u.last_seen_at) > threshold) return
   try {
-    await c.env.DB.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ?').bind(now, u.user_id).run()
+    // アプリを開くと API を同時に何本も呼ぶので、先に更新した要求があれば書かない（同じ判定を SQL でもする。#9970）
+    await c.env.DB.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ? AND (last_seen_at IS NULL OR last_seen_at <= ?)').bind(now, u.user_id, threshold).run()
     u.last_seen_at = now
   } catch (e) {
     // 記録できなくても操作は止めない
@@ -810,10 +817,17 @@ async function extendSession(c: any, token: string, u: any): Promise<string> {
   if (Date.parse(current) > Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000) return current
   // created_at は CURRENT_TIMESTAMP（UTC）。expires_at と同じ ISO 8601 の書式にして比べる
   const maxSql = `COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+${maxDays} days'), expires_at)`
-  const row = await c.env.DB.prepare(`UPDATE sessions SET expires_at = MIN(?, ${maxSql})
+  // アプリを開くと API を同時に何本も呼ぶ。先に延ばした要求があれば（期限が延ばす幅より短い差なら）書かない（#9970）。
+  // そのときは延ばした後の期限を読み、ほかの要求と同じ期限・Cookie を返す
+  const stepFloor = new Date(Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000).toISOString()
+  const hashed = await hashToken(token)
+  let row = await c.env.DB.prepare(`UPDATE sessions SET expires_at = MIN(?, ${maxSql})
       WHERE token = ? AND expires_at < MIN(?, ${maxSql}) RETURNING expires_at`)
-    .bind(target, await hashToken(token), target).first() as any
-  if (!row) return current
+    .bind(target, hashed, stepFloor).first() as any
+  if (!row) {
+    row = await c.env.DB.prepare('SELECT expires_at FROM sessions WHERE token = ?').bind(hashed).first() as any
+    if (!row || !(String(row.expires_at) > current)) return current
+  }
   const maxAge = Math.floor((Date.parse(row.expires_at) - Date.now()) / 1000)
   if (maxAge > 0) setCookie(c, SESSION_COOKIE, token, { ...sessionCookieOptions(c), maxAge })
   return String(row.expires_at)
@@ -1292,6 +1306,7 @@ api.route('/admin', notificationsAdminApi)
 api.route('/hq', mailHqApi)
 // 障害の記録（#9622）と、本部の管理者の端末のプッシュ通知（障害の通知）
 api.route('/hq', hqErrorsApi)
+api.route('/hq', hqMonitorApi)
 api.route('/hq', notificationsHqApi)
 // 伴走支援の依頼・本部からのお知らせ・管理画面の閲覧（#179 #516 #293。src/hq-support.ts）
 api.route('/admin', hqSupportAdminApi)
@@ -1979,7 +1994,7 @@ api.post('/staff/daily-report', async (c) => {
     flags_explicit: b.flags_explicit === true, entry_method: 'app', now: nowJST(),
   })
   // 対応済みにした日報に新しく印が付いたら、未対応に戻す（#169。新しい事故が対応済みのまま埋もれないように）
-  if (merged.raised.length) await reopenIncidentStmt(c.env.DB, shift.shift_id).run()
+  if (merged.raised.length) await c.env.DB.batch([reopenIncidentStmt(c.env.DB, shift.shift_id), dirtyReportCountsByShiftStmt(c.env.DB, shift.shift_id)])
   await notifyDailyReportIncident(c, shift.shift_id, merged.raised)
   return c.json({ ok: true, updated: r.updated })
 })
@@ -5611,7 +5626,10 @@ api.get('/admin/daily-reports', async (c) => {
   if (projectId) { base += ' AND dr.project_id = ?'; binds.push(projectId) }
   if (staffId) { base += ' AND dr.staff_id = ?'; binds.push(staffId) }
   const extra = (unchecked ? ` AND ${DR_UNCHECKED_SQL}` : '') + (flagged ? ` AND ${DR_FLAGGED_SQL}` : '') + (incidentOpen ? ` AND ${DR_INCIDENT_OPEN_SQL}` : '')
-  const [rowsRes, countRes] = await db.batch([
+  // 件数は、今月より前の月を控え（daily_report_month_counts）から足す（過去の日報を毎回すべて読まない。#9970。src/lib/report-counts.ts）
+  const countPlan = dailyReportCountPlan(db, { companyId: u.company_id, from, to, date, projectId, staffId, only: { unchecked, flagged, open: incidentOpen },
+    conds: { unchecked: DR_UNCHECKED_SQL, flagged: DR_FLAGGED_SQL, open: DR_INCIDENT_OPEN_SQL }, today: todayJST(), now: asOf })
+  const [rowsRes, ...countRes] = await db.batch([
     db.prepare(`
       SELECT dr.*, p.project_name, p.report_template_id, p.past_report_fields_json, us.name AS staff_name,
         cu.name AS manager_comment_by_name, ku.name AS manager_checked_by_name, iu.name AS incident_updated_by_name, eu.name AS admin_edited_by_name,
@@ -5629,15 +5647,10 @@ api.get('/admin/daily-reports', async (c) => {
       LEFT JOIN users eu ON eu.user_id = dr.admin_edited_by
       ${base}${extra}
       ORDER BY dr.work_date DESC, dr.submitted_at DESC, dr.daily_report_id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset),
-    db.prepare(`SELECT COUNT(*) AS total_all,
-        SUM(CASE WHEN ${DR_UNCHECKED_SQL} THEN 1 ELSE 0 END) AS unchecked,
-        SUM(CASE WHEN ${DR_FLAGGED_SQL} THEN 1 ELSE 0 END) AS flagged,
-        SUM(CASE WHEN ${DR_INCIDENT_OPEN_SQL} THEN 1 ELSE 0 END) AS incident_open,
-        SUM(CASE WHEN 1${extra} THEN 1 ELSE 0 END) AS total
-      FROM daily_reports dr${base}`).bind(...binds),
+    ...countPlan.first,
   ])
   const rows = rowsRes.results as any[]
-  const cnt = (countRes.results as any[])[0] || {}
+  const cnt = await countPlan.finish(countRes)
   // 案件の日報テンプレートの項目（表示の順とラベルに使う）
   const tplIds = [...new Set(rows.map(r => r.report_template_id).filter(Boolean))]
   const templates: Record<string, { key: string; label: string; type: string }[]> = {}
@@ -5682,8 +5695,9 @@ api.get('/admin/daily-reports', async (c) => {
   if (q('options') === '1') {
     const [pr, st] = await db.batch([
       db.prepare(`SELECT project_id, project_name, status FROM projects WHERE company_id = ? ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, project_id`).bind(u.company_id),
+      // 日報のあるスタッフ。自社のスタッフごとに、スタッフの索引で1件あるかだけを見る（会社の日報をすべて読まない。#9970）
       db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON sp.user_id = us.user_id
-        WHERE sp.staff_id IN (SELECT DISTINCT staff_id FROM daily_reports WHERE company_id = ?) ORDER BY us.name, sp.staff_id`).bind(u.company_id),
+        WHERE sp.company_id = ? AND EXISTS (SELECT 1 FROM daily_reports d WHERE d.staff_id = sp.staff_id AND d.company_id = ?) ORDER BY us.name, sp.staff_id`).bind(u.company_id, u.company_id),
     ])
     options = { projects: pr.results, staff: st.results }
   }
@@ -5706,19 +5720,20 @@ api.post('/admin/daily-reports/check', async (c) => {
   const asOf = reportAsOf(b.as_of)
   // 確認済みにしたら「確認後に修正あり」の印（revised_after_check_at）は外す（後で未確認に戻したときに古い印が出ないように）。
   // as_of（一覧を読んだ時刻）より後にスタッフが出し直した日報は、管理者が見ていない内容なので確認済みにしない
-  const r = await c.env.DB.prepare(`UPDATE daily_reports SET manager_checked = 1, manager_checked_by = ?, manager_checked_at = ?, revised_after_check_at = NULL
+  // 一覧の件数の控え（今月より前の月）の印も同じ batch で消す（#9970）
+  const [r] = await c.env.DB.batch([c.env.DB.prepare(`UPDATE daily_reports SET manager_checked = 1, manager_checked_by = ?, manager_checked_at = ?, revised_after_check_at = NULL
     WHERE daily_report_id IN ${JSON_IN} AND company_id = ? AND COALESCE(manager_checked, 0) = 0${asOf ? ' AND submitted_at <= ?' : ''}`)
-    .bind(u.user_id, nowJST(), bindJsonArray(b.ids), u.company_id, ...(asOf ? [asOf] : [])).run()
+    .bind(u.user_id, nowJST(), bindJsonArray(b.ids), u.company_id, ...(asOf ? [asOf] : [])), dirtyReportCountsByIdsStmt(c.env.DB, u.company_id, b.ids)])
   return c.json({ ok: true, checked: r.meta?.changes ?? 0 })
 })
 
 // ---------- 日報のコメント（#360 → 複数のコメント #9965。lib/report-comments.ts・migrations/0107） ----------
-// コメントは日報1件に何件でも付けられる。だれでも「コメントを追加」でき、編集・削除は書いた本人だけ（ほかの人のコメントは 403）。
+// コメントは日報1件に何件でも付けられる。だれでも「コメントを追加」でき、編集・削除は書いた本人だけ（ほかの人のコメントは 403。書いた人の記録がない古いコメントは、管理者ならだれでも直せる。#9975）。
 // 追加・編集したら、日報を出したスタッフに知らせる（同じ日報の未読の通知は1件にまとめる）。編集するとスタッフの既読は外れる
 const COMMENT_CONFLICT = '開いている間に、ほかの管理者がコメントを変更しました。内容を確かめてから保存してください'
 const COMMENT_NOT_MINE = 'このコメントは、書いた人だけが編集・削除できます。補足は「コメントを追加」で送ってください'
-const adminCommentView = (cm: ReportComment, userId: number) => ({ ...cm, mine: cm.author_user_id != null && cm.author_user_id === userId })
-// 追加・編集・削除（db.batch で、旧列への写しと一緒に書く）。戻り値: 書けたか（書いた本人の条件・日報の会社で絞る）
+const adminCommentView = (cm: ReportComment, userId: number) => ({ ...cm, mine: cm.author_user_id != null && cm.author_user_id === userId, editable: cm.author_user_id == null || cm.author_user_id === userId })
+// 追加・編集・削除（db.batch で、旧列への写しと一緒に書く）。戻り値: 書けたか（書いた本人か書いた人の記録がない・日報の会社で絞る）
 async function addReportComment(db: D1Database, u: any, reportId: number, body: string): Promise<number | null> {
   const now = nowJST()
   const [ins] = await db.batch([
@@ -5731,14 +5746,14 @@ async function addReportComment(db: D1Database, u: any, reportId: number, body: 
 async function editReportComment(db: D1Database, u: any, reportId: number, commentId: number, body: string): Promise<boolean> {
   const [upd] = await db.batch([
     db.prepare(`UPDATE daily_report_comments SET body = ?, updated_at = ?, read_at = NULL
-      WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND author_user_id = ?`).bind(body, nowJST(), commentId, reportId, u.company_id, u.user_id),
+      WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND (author_user_id = ? OR author_user_id IS NULL)`).bind(body, nowJST(), commentId, reportId, u.company_id, u.user_id),
     legacyCommentSyncStmt(db, reportId),
   ])
   return !!upd.meta?.changes
 }
 async function deleteReportComment(db: D1Database, u: any, reportId: number, commentId: number): Promise<boolean> {
   const [del] = await db.batch([
-    db.prepare('DELETE FROM daily_report_comments WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND author_user_id = ?').bind(commentId, reportId, u.company_id, u.user_id),
+    db.prepare('DELETE FROM daily_report_comments WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND (author_user_id = ? OR author_user_id IS NULL)').bind(commentId, reportId, u.company_id, u.user_id),
     legacyCommentSyncStmt(db, reportId),
     // 未読のコメントが残らなければ、まだ読んでいない通知も消す（スタッフの未読の数は、未読のコメントがある日報の数）
     db.prepare(`DELETE FROM user_notifications WHERE kind = 'daily_report_comment' AND related_id = ? AND company_id = ? AND read_at IS NULL
@@ -5746,14 +5761,14 @@ async function deleteReportComment(db: D1Database, u: any, reportId: number, com
   ])
   return !!del.meta?.changes
 }
-// 日報（自社）とコメント（その日報の）を読む。無ければ 404、ほかの人のコメントなら 403 の応答を返す
+// 日報（自社）とコメント（その日報の）を読む。無ければ 404、ほかの人のコメントなら 403 の応答を返す（書いた人の記録がない古いコメントは通す）
 async function ownReportComment(c: any, u: any): Promise<{ reportId: number; comment: any } | Response> {
   const reportId = toInt(c.req.param('id'), 1); const commentId = toInt(c.req.param('cid'), 1)
   const cm = reportId && commentId ? await c.env.DB.prepare(`SELECT c.comment_id, c.author_user_id, c.body FROM daily_report_comments c
       JOIN daily_reports dr ON dr.daily_report_id = c.daily_report_id AND dr.company_id = c.company_id
     WHERE c.comment_id = ? AND c.daily_report_id = ? AND c.company_id = ?`).bind(commentId, reportId, u.company_id).first() as any : null
   if (!cm) return c.json({ error: 'コメントが見つかりません' }, 404)
-  if (cm.author_user_id == null || Number(cm.author_user_id) !== Number(u.user_id)) return c.json({ error: COMMENT_NOT_MINE }, 403)
+  if (cm.author_user_id != null && Number(cm.author_user_id) !== Number(u.user_id)) return c.json({ error: COMMENT_NOT_MINE }, 403)
   return { reportId: reportId!, comment: cm }
 }
 const reportCommentsOf = async (db: D1Database, u: any, reportId: number) =>
@@ -5838,8 +5853,8 @@ api.put('/admin/daily-reports/:id', async (c) => {
   }
   if (!sets.length && !has('manager_comment')) return c.json({ error: '変更する項目がありません' }, 400)
   if (sets.length) {
-    const r = await c.env.DB.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${asOf ? ' AND submitted_at <= ?' : ''}`)
-      .bind(...vals, id, u.company_id, ...(asOf ? [asOf] : [])).run()
+    const [r] = await c.env.DB.batch([c.env.DB.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${asOf ? ' AND submitted_at <= ?' : ''}`)
+      .bind(...vals, id, u.company_id, ...(asOf ? [asOf] : [])), dirtyReportCountsByIdsStmt(c.env.DB, u.company_id, [id!])])
     if (asOf && !(r.meta?.changes ?? 0)) return c.json({ error: REPORT_REVISED }, 409)
   }
   const db = c.env.DB
@@ -5975,8 +5990,10 @@ api.put('/admin/daily-reports/:id/incident', async (c) => {
   sets.push('incident_updated_by = ?', 'incident_updated_at = ?'); vals.push(u.user_id, now)
   const guard = has('expected_updated_at')
   if (guard && (b.expected_updated_at || null) !== (cur.incident_updated_at || null)) return c.json({ error: INCIDENT_CONFLICT }, 409)
-  const r = await db.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${guard ? " AND COALESCE(incident_updated_at, '') = ?" : ''}`)
-    .bind(...vals, id, u.company_id, ...(guard ? [cur.incident_updated_at || ''] : [])).run()
+  const [r] = await db.batch([db.prepare(`UPDATE daily_reports SET ${sets.join(', ')} WHERE daily_report_id = ? AND company_id = ?${guard ? " AND COALESCE(incident_updated_at, '') = ?" : ''}`)
+    .bind(...vals, id, u.company_id, ...(guard ? [cur.incident_updated_at || ''] : [])),
+    // 対応状況が変わると「未対応」の件数が変わるので、一覧の件数の控えの印を消す（#9970）
+    ...(has('status') ? [dirtyReportCountsByIdsStmt(db, u.company_id, [id!])] : [])])
   if (guard && !(r.meta?.changes ?? 0)) return c.json({ error: INCIDENT_CONFLICT }, 409)
   return c.json({ ok: true, incident_updated_at: now })
 })

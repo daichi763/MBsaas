@@ -29,17 +29,18 @@ Field OS の画面の一覧です。新しく加わる開発者や外部の開�
 <!-- BEGIN GENERATED: screens-pages -->
 | パス | 定義 | ログイン | 読み込む画面の JS |
 |---|---|---|---|
-| `/sw.js` | [index.tsx:140](../src/index.tsx#L140) |  | `common.js` |
-| `/` | [index.tsx:187](../src/index.tsx#L187) |  |  |
-| `/login` | [index.tsx:207](../src/index.tsx#L207) |  |  |
-| `/reset-password` | [index.tsx:436](../src/index.tsx#L436) |  |  |
-| `/verify-email` | [index.tsx:517](../src/index.tsx#L517) |  |  |
-| `/notice-ack` | [index.tsx:565](../src/index.tsx#L565) |  |  |
-| `/r/:token` | [index.tsx:623](../src/index.tsx#L623) |  | `report-link.js` |
-| `/apply/:token` | [index.tsx:637](../src/index.tsx#L637) |  | `apply.js` |
-| `/staff` | [index.tsx:651](../src/index.tsx#L651) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
-| `/admin` | [index.tsx:691](../src/index.tsx#L691) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
-| `/hq` | [index.tsx:783](../src/index.tsx#L783) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
+| `/api/health` | [index.tsx:104](../src/index.tsx#L104) |  |  |
+| `/sw.js` | [index.tsx:180](../src/index.tsx#L180) |  | `common.js` |
+| `/` | [index.tsx:227](../src/index.tsx#L227) |  |  |
+| `/login` | [index.tsx:247](../src/index.tsx#L247) |  |  |
+| `/reset-password` | [index.tsx:476](../src/index.tsx#L476) |  |  |
+| `/verify-email` | [index.tsx:557](../src/index.tsx#L557) |  |  |
+| `/notice-ack` | [index.tsx:605](../src/index.tsx#L605) |  |  |
+| `/r/:token` | [index.tsx:663](../src/index.tsx#L663) |  | `report-link.js` |
+| `/apply/:token` | [index.tsx:677](../src/index.tsx#L677) |  | `apply.js` |
+| `/staff` | [index.tsx:691](../src/index.tsx#L691) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
+| `/admin` | [index.tsx:731](../src/index.tsx#L731) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
+| `/hq` | [index.tsx:823](../src/index.tsx#L823) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
 <!-- END GENERATED: screens-pages -->
 
 | ページ | 使う人 | 入り口 |
@@ -255,19 +256,19 @@ flowchart LR
 | `#staff-requests` | スタッフの申請 | `renderStaffRequests` [static/admin.js:2390](../public/static/admin.js#L2390) | GET `/api/admin/staff-requests/documents`<br>GET `/api/admin/staff-requests/leave`<br>GET `/api/admin/staff-requests/profile`<br>GET `/api/admin/staff-requests/summary` |
 | `#staff/<ID>` | スタッフマスタ（詳細） | `renderStaffDetail` [static/admin.js:1821](../public/static/admin.js#L1821) | GET `/api/admin/report-settings/staff/:staffId`<br>GET `/api/admin/roster-chat/:staffId`<br>POST `/api/admin/roster-chat/:staffId`<br>GET `/api/admin/roster/:id/links`<br>GET `/api/admin/roster/:id/share-code`<br>GET `/api/admin/settings/site-contact`<br>GET `/api/admin/staff-affiliations`<br>GET `/api/admin/staff-lookup`<br>GET `/api/admin/staff/:id`<br>PUT `/api/admin/staff/:id`<br>GET `/api/admin/staff/:id/documents`<br>GET `/api/admin/staff/:id/lifecycle`<br>PUT `/api/admin/staff/:id/report-settings`<br>GET `/api/admin/staff/:id/skill-sheet` |
 
-### `/hq`（ルートの表: [static/hq.js:2179](../public/static/hq.js#L2179)）
+### `/hq`（ルートの表: [static/hq.js:2302](../public/static/hq.js#L2302)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|
-| `#announcements` | 企業へのお知らせ | `renderAnnouncements` [static/hq.js:1718](../public/static/hq.js#L1718) | GET `/api/hq/announcements` |
+| `#announcements` | 企業へのお知らせ | `renderAnnouncements` [static/hq.js:1719](../public/static/hq.js#L1719) | GET `/api/hq/announcements` |
 | `#companies` | 導入企業 | `renderCompanies` [static/hq.js:95](../public/static/hq.js#L95) | GET `/api/hq/companies` |
 | `#companies/<ID>` | 導入企業（詳細） | `renderCompanyDetail` [static/hq.js:478](../public/static/hq.js#L478) | GET `/api/hq/companies/:id` |
-| `#errors` | 障害 | `renderErrors` [static/hq.js:1998](../public/static/hq.js#L1998) | GET `/api/hq/errors`<br>GET `/api/hq/push/config` |
-| `#mail` | メール送信 | `renderHqMail` [static/hq.js:1813](../public/static/hq.js#L1813) | GET `/api/hq/email-logs`<br>GET `/api/hq/email-stats`<br>GET `/api/hq/email-suppressions` |
-| `#offboarding` | 解約・データ | `renderOffboardingDetail` [static/hq.js:2359](../public/static/hq.js#L2359)<br>`renderOffboardingList` [static/hq.js:2224](../public/static/hq.js#L2224) | GET `/api/hq/offboarding`<br>GET `/api/hq/offboarding/:cid`<br>GET `/api/hq/offboarding/:cid/record.csv` |
-| `#retention` | データ保持・定期処理 | `renderRetention` [static/hq.js:1164](../public/static/hq.js#L1164) | GET `/api/hq/cron/status`<br>GET `/api/hq/retention/logs`<br>GET `/api/hq/retention/schedule`<br>GET `/api/hq/retention/settings` |
+| `#errors` | 障害 | `renderErrors` [static/hq.js:1999](../public/static/hq.js#L1999) | GET `/api/hq/errors`<br>GET `/api/hq/monitor`<br>GET `/api/hq/push/config` |
+| `#mail` | メール送信 | `renderHqMail` [static/hq.js:1814](../public/static/hq.js#L1814) | GET `/api/hq/email-logs`<br>GET `/api/hq/email-stats`<br>GET `/api/hq/email-suppressions` |
+| `#offboarding` | 解約・データ | `renderOffboardingDetail` [static/hq.js:2484](../public/static/hq.js#L2484)<br>`renderOffboardingList` [static/hq.js:2349](../public/static/hq.js#L2349) | GET `/api/hq/offboarding`<br>GET `/api/hq/offboarding/:cid`<br>GET `/api/hq/offboarding/:cid/record.csv` |
+| `#retention` | データ保持・定期処理 | `renderRetention` [static/hq.js:1165](../public/static/hq.js#L1165) | GET `/api/hq/cron/status`<br>GET `/api/hq/retention/logs`<br>GET `/api/hq/retention/schedule`<br>GET `/api/hq/retention/settings` |
 | `#security` | セキュリティ | `renderHqSecurity` [static/security.js:408](../public/static/security.js#L408) | GET `/api/admin/login-history`<br>GET `/api/auth/mfa`<br>GET `/api/auth/sessions`<br>GET `/api/hq/companies`<br>GET `/api/hq/login-history`<br>GET `/api/hq/security` |
-| `#support` | 伴走支援 | `renderSupport` [static/hq.js:1535](../public/static/hq.js#L1535) | GET `/api/hq/companies`<br>GET `/api/hq/support-requests`<br>GET `/api/hq/view-sessions` |
+| `#support` | 伴走支援 | `renderSupport` [static/hq.js:1536](../public/static/hq.js#L1536) | GET `/api/hq/companies`<br>GET `/api/hq/support-requests`<br>GET `/api/hq/view-sessions` |
 | `#templates` | テンプレート配信 | `renderTemplates` [static/hq.js:860](../public/static/hq.js#L860) | GET `/api/hq/templates` |
 <!-- END GENERATED: screens-routes -->
 
@@ -284,7 +285,7 @@ flowchart LR
 | `board.js` | 32 | 26 |  |
 | `corrections.js` | 26 | 21 |  |
 | `hq-support.js` | 8 | 7 |  |
-| `hq.js` | 70 | 58 |  |
+| `hq.js` | 74 | 62 |  |
 | `index.tsx` | 8 | 7 |  |
 | `notifications.js` | 19 | 18 |  |
 | `recruit.js` | 22 | 16 |  |
@@ -307,8 +308,8 @@ flowchart LR
 <!-- BEGIN GENERATED: screens-refs -->
 | 名前 | 位置 |
 |---|---|
-| `homePathFor` | [lib/auth.ts:143](../src/lib/auth.ts#L143) |
+| `homePathFor` | [lib/auth.ts:145](../src/lib/auth.ts#L145) |
 | `route` | [static/admin.js:7242](../public/static/admin.js#L7242) |
-| `route` | [static/hq.js:2185](../public/static/hq.js#L2185) |
+| `route` | [static/hq.js:2308](../public/static/hq.js#L2308) |
 | `renderSecurity` | [static/security.js:377](../public/static/security.js#L377) |
 <!-- END GENERATED: screens-refs -->

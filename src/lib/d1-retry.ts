@@ -80,3 +80,41 @@ export async function attendanceTestHooks(c: any, next: () => Promise<void>) {
   await next()
   try { c.res.headers.set('X-Test-D1-Calls', `${stats.calls}/${stats.statements}`) } catch { /* 応答のヘッダーを変えられないときは付けない */ }
 }
+
+// ---------- 読み書きの行数を数える仕掛け（TEST_HOOKS='true' のローカルだけ。#9970） ----------
+// 応答のヘッダー X-Test-D1-Rows に、その要求で D1 が返した meta.rows_read・rows_written の合計を「読み取り/書き込み」で返す
+// （性能の直しの前後を、ローカルの D1 の値で比べる。応答の後に waitUntil で動く処理の分は入らない）
+type RowStats = { read: number; written: number }
+function rowCountingDb(db: D1Database, stats: RowStats): D1Database {
+  const real = new WeakMap<object, D1PreparedStatement>()
+  const add = (r: any) => { const m = r && r.meta; if (m) { stats.read += Number(m.rows_read) || 0; stats.written += Number(m.rows_written) || 0 } return r }
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement => {
+    const p = new Proxy(s as any, {
+      get(t, k) {
+        if (k === 'bind') return (...a: any[]) => wrap(t.bind(...a))
+        if (k === 'all' || k === 'run') return (...a: any[]) => t[k](...a).then(add)
+        // first() は meta を返さないので、all() で読んで先頭の行（列の名前があればその値）を返す
+        if (k === 'first') return (col?: string) => t.all().then(add).then((r: any) => { const row = (r.results || [])[0]; return row === undefined ? null : col ? (row[col] ?? null) : row })
+        const v = Reflect.get(t, k, t)
+        return typeof v === 'function' ? v.bind(t) : v
+      },
+    })
+    real.set(p, s)
+    return p as D1PreparedStatement
+  }
+  return new Proxy(db as any, {
+    get(t, k) {
+      if (k === 'prepare') return (q: string) => wrap(t.prepare(q))
+      if (k === 'batch') return (list: D1PreparedStatement[]) => t.batch(list.map(x => real.get(x as any) || x)).then((rs: any[]) => { rs.forEach(add); return rs })
+      const v = Reflect.get(t, k, t)
+      return typeof v === 'function' ? v.bind(t) : v
+    },
+  }) as D1Database
+}
+export async function d1RowsHook(c: any, next: () => Promise<void>) {
+  if (!testHooksOn(c.env)) return next()
+  const stats: RowStats = { read: 0, written: 0 }
+  c.env = { ...c.env, DB: rowCountingDb(c.env.DB, stats) }
+  await next()
+  try { c.res.headers.set('X-Test-D1-Rows', `${stats.read}/${stats.written}`) } catch { /* 応答のヘッダーを変えられないときは付けない */ }
+}

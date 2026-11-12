@@ -62,7 +62,7 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 | 現場管理者 / 営業管理者 | `sample` | `mgr01` / `sales01` | `/admin` |
 | 本部 | （空欄） | `hq` | `/hq` |
 
-`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:277`）。
+`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:317`）。
 
 ### 1.5 型チェックとビルド
 
@@ -242,7 +242,7 @@ Cloudflare のダッシュボードの Workers Builds のビルドのログに�
 
 | 名前 | 本番の値 |
 |---|---|
-| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:83`） |
+| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:84`） |
 | `MAIL_ENABLED` | `true` |
 | `RETENTION_ENABLED` | `true` |
 | `DEMO_MODE` | `false` |
@@ -339,16 +339,16 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 
 ### 5.1 Workers Logs（本番の console の出力）
 
-本番だけ有効です（`wrangler.jsonc:90`〜`93`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
+本番だけ有効です（`wrangler.jsonc:92`〜`95`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
-| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:67`〜`73` |
+| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:79`〜`85` |
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:74` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:86` |
-| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:97` |
-| Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:289` |
-| 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:381` |
+| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:137` |
+| Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:286` |
+| 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:378` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:125` |
 
 予期しないエラーの1行は JSON で、`ref`（参照番号）・`method`・`path`・`company_id`・`user_id`・`role`・`message`・`stack`（6行まで）を持ちます（[architecture.md](architecture.md) の 4.3）。利用者から「参照番号: xxxx」と聞いたら、その文字で検索します。
@@ -383,6 +383,7 @@ npx wrangler d1 execute mbsaas-production --remote --env production --command "S
 ```
 
 - 調べるときは `SELECT` だけを使います。書き換えが要るときは、先にバックアップを取り（3.2 の 2）、SQL をもう1人に見てもらってから流します。
+- `daily_reports` を SQL で直接足す・消す・書き換えたとき（4.3 の行の戻しや、検証環境への過去のデータの積み込みを含む）は、日報一覧の件数の控えも消します: `DELETE FROM daily_report_month_counts WHERE company_id = <会社>`（次に日報一覧を開いたときに数え直します。消さないと、今月より前の月の件数が最長7日古いまま出ます。#9970・`src/lib/report-counts.ts`）。
 - 個人情報の列を画面やチャットに貼らないでください。
 
 ---
@@ -434,15 +435,15 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 ## 8. データの定期削除（retention）と解約企業のデータ
 
 ### 8.1 定期削除
-- 毎日 3:00 の `retention` と 3:30 の `retention_in_service` が、保存期間を過ぎた個人情報を消します（`src/services/retention.ts:5`〜`58` に対象と基準の一覧）。主な基準: 日報は勤務日から3年、退職したスタッフのデータは退職日（と最終稼働日の遅い方）から7年（本人情報の行は消さずに匿名化）、送信のメール記録は1年、操作履歴は7年、在職中でも位置情報・写真は報告から1年など。
-- 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:85`）。`'true'` 以外は dry-run（数えるだけ）です。
-- 安全策: 退職日のない人は消さない、退職日より後にシフトがある人は対象外、初めて対象になってから7日は猶予（本部画面に「次回削除予定」と出る）、1回の処理の人数・ファイル数に上限（`src/services/retention.ts:47`〜`58`）。
-- 本部画面「データ保持・定期処理」で、dry-run の実行・削除の予定・結果・在職中の保存期間の設定（`src/services/retention.ts:121`）・削除の保留ができます。
+- 毎日 3:00 の `retention` と 3:30 の `retention_in_service` が、保存期間を過ぎた個人情報を消します（`src/services/retention.ts:6`〜`60` に対象と基準の一覧）。主な基準: 日報は勤務日から3年、退職したスタッフのデータは退職日（と最終稼働日の遅い方）から7年（本人情報の行は消さずに匿名化）、送信のメール記録は1年、操作履歴は7年、在職中でも位置情報・写真は報告から1年など。
+- 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:86`）。`'true'` 以外は dry-run（数えるだけ）です。
+- 安全策: 退職日のない人は消さない、退職日より後にシフトがある人は対象外、初めて対象になってから7日は猶予（本部画面に「次回削除予定」と出る）、1回の処理の人数・ファイル数に上限（`src/services/retention.ts:49`〜`60`）。
+- 本部画面「データ保持・定期処理」で、dry-run の実行・削除の予定・結果・在職中の保存期間の設定（`src/services/retention.ts:125`）・削除の保留ができます。
 - **削除の保留**: 調査や訴訟などで残す必要があるスタッフ・企業は、本部画面で保留にします（`staff_profiles.retention_hold_at`・`companies.retention_hold_at`）。保留中はどの削除でも消しません。
 - 消したデータは戻せません（Time Travel の期間内なら DB 全体を戻すことはできます。4.2）。
 
 ### 8.2 解約した企業のデータ
-本部画面「解約・データ」で、次の順に行います（`src/api.ts:8486`〜`8492`）。
+本部画面「解約・データ」で、次の順に行います（`src/api.ts:8503`〜`8509`）。
 1. 企業を停止にする（利用状態を「停止」。ログインと API が止まる）。
 2. 「契約終了」を登録する。登録すると猶予期間（既定90日。登録のときに30〜365日で変えられる。`src/services/retention.ts` の `OFFBOARDING_GRACE_DAYS`）に入る。登録は取り消せる。
 3. 猶予のあいだに、データ（CSV・写真・書類のファイル）を書き出して企業に渡す。
@@ -489,18 +490,18 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
    npx wrangler d1 execute mbsaas-production --remote --env production --command "SELECT c.company_code, c.active_status, u.user_code, u.role, u.status FROM users u LEFT JOIN companies c ON c.company_id = u.company_id WHERE c.company_code IN ('sample', 'demo2', 'demo3') OR u.user_code = 'hq' ORDER BY c.company_code, u.user_code"
    ```
 
-2. デモ用の会社は、本部画面「解約・データ」の「この企業を停止する」で止めます。停止した会社の利用者はログインできず、ログイン中のセッションも使えなくなります（`src/lib/auth.ts:137`）。デモを続けて使う会社があるなら、止めずに、その会社のユーザー全員のパスワードを変えます（管理者の画面での仮パスワードの再発行など）。
+2. デモ用の会社は、本部画面「解約・データ」の「この企業を停止する」で止めます。停止した会社の利用者はログインできず、ログイン中のセッションも使えなくなります（`src/lib/auth.ts:139`）。デモを続けて使う会社があるなら、止めずに、その会社のユーザー全員のパスワードを変えます（管理者の画面での仮パスワードの再発行など）。
 3. 本部の `hq` は、本部の担当者が実際に使っているなら、止めずにパスワードを変えます。本部画面にはパスワードを変える画面がないので、`hq` でログインしたブラウザから `POST /api/auth/change-password`（`src/accounts.ts:253`。今のパスワードと新しいパスワードを送る）を呼ぶか、開発者に依頼します。
 4. もう一度 1 の SQL を流し、会社が停止（`active_status`）になっているか、ユーザーのパスワードを変えたかを確かめます。`/login` で `sample` / `admin` / `pass1234` でログインできないことも確かめます。
 
 ### 10.2 `DEMO_MODE=false` の確認
 - Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
-- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:277`）。
+- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:317`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
 メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。
 1. Resend で独自ドメインを認証する（Resend の Domains で DNS のレコードを足す）。
-2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:82`）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
+2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:83`）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
 3. `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` をシークレットに登録する（7章の `secret put`）。
 4. 管理者の画面からパスワードの再設定のメールなどを1通送り、届くこと、本部画面「メール送信」に送信の記録が出ることを確かめる。
 5. [decisions.md](decisions.md) の D-31 に、再開した日を書き足す。

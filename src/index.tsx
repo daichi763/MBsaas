@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads, publishDueNotices, autoCloseBillingMonth } from './api'
 import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServiceRetentionJob } from './services/retention'
 import { purgeOldApplications } from './recruit'
-import { applyDueAffiliationSchedules } from './staff-lifecycle'
+import { applyDueAffiliationSchedules, runLegacyReportTokenHashJob } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs, isUnknownCron } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
@@ -13,14 +13,26 @@ import { loadHqView, HQ_VIEW_COOKIE, HQ_VIEW_ROLE } from './hq-support'
 import { adminSideNavHtml, adminMobileNavHtml, adminScreensJson } from './admin-menu'
 import { flushPushQueue, runPushQueueJob, runNotificationDigests, notifyExpiringDocuments } from './notifications'
 import { notifySavedSearchMatches } from './board'
-import { recordError, newErrorRef, maskPath, sanitizeErrorText, type ErrorAlertEnv } from './lib/error-log'
+import { recordError, newErrorRef, maskPath, sanitizeErrorText, errorAlertSettings, setErrorAlertSender, type ErrorAlertEnv } from './lib/error-log'
 import { apiNotFound } from './lib/http'
 import { csrfGuard } from './lib/csrf'
 import { nowJST } from './lib/time'
+import { CRITICAL_PLACES, notifyCriticalFailure, notifyCronFailure, sendErrorThresholdAlert, type AlertEnv } from './services/alerts'
+import { runMonitorDaily, type MonitorEnv } from './services/monitor'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'>
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'> & Omit<MonitorEnv, 'DB'>
+
+// 版の短い ID（ビルドのときに vite.config.ts が git のコミットから入れる。/api/health で返す）
+declare const __APP_VERSION__: string | undefined
+const APP_VERSION = typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'dev'
 
 const app = new Hono<{ Bindings: Bindings }>()
+
+// 障害の通知（エラーの急増）を送り先にも送る（#9974）。送り先の秘密の値を持たない env（{ DB } だけで記録する所）から通知が出たときのため、
+// 最初に受けた要求・定期処理の env を控えて使う（Workers の env は同じ版の間は変わらない）
+let fullEnv: AlertEnv | null = null
+setErrorAlertSender((env, a) => sendErrorThresholdAlert({ ...(fullEnv || {}), ...env } as AlertEnv, a))
+app.use('*', async (c, next) => { if (!fullEnv) fullEnv = c.env as unknown as AlertEnv; await next() })
 
 // ============ 画面の応答に付けるセキュリティヘッダー（#202） ============
 // 外部のスクリプト・スタイルは jsDelivr（バージョン固定・SRI 付き）と、募集ページの Turnstile だけを許す。
@@ -71,6 +83,7 @@ app.onError((err, c) => {
     message: sanitizeErrorText(String((err as any)?.message || err), 500),
     stack: String((err as any)?.stack || '').split('\n').slice(0, 6).map(l => sanitizeErrorText(l, 300)).join('\n'),
   }))
+  ;(c as any).set('errorRef', ref) // 打刻・日報の送信の失敗の通知（下の /api/staff/* のミドルウェア）で参照番号を使う
   const at = nowJST().slice(0, 16)
   const msg = `処理に失敗しました。時間をおいてもう一度お試しください（${at} 参照番号: ${ref}）`
   try {
@@ -85,8 +98,35 @@ app.onError((err, c) => {
 // 存在しないパス: /api は JSON の { error }（画面の errMsg がそのまま出せる形。#9967）、それ以外は今までどおりの文字の 404
 app.notFound((c) => (c.req.path === '/api' || c.req.path.startsWith('/api/') ? apiNotFound(c) : c.text('404 Not Found', 404)))
 
+// ============ 外からの死活監視の入口（#9973。docs/monitoring.md の 11 章） ============
+// ログイン不要・CSRF の対象外（GET だけ）。D1 に SELECT 1 だけを投げ、R2 には触らない。応答は ok と版の短い ID だけ（内部の情報は出さない）。
+// D1 につながらないときは 503（本文に ok を含めないので、キーワードの監視でも落ちたと分かる）。キャッシュさせない
+app.get('/api/health', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  try {
+    await c.env.DB.prepare('SELECT 1').first()
+    return c.json({ ok: true, version: APP_VERSION })
+  } catch (e) {
+    console.log(JSON.stringify({ level: 'error', event: 'health_failed', name: String((e as any)?.name || 'Error') }))
+    return c.json({ error: 'unavailable' }, 503)
+  }
+})
+
 // CSRF の対策（#9943）: 別のサイトからの /api/* の書き込みを 403 で止める（プッシュの送信より前に止める）。対象から外すものは src/lib/csrf.ts に書く
 app.use('/api/*', csrfGuard)
+
+// ============ 打刻・日報の送信の失敗を1件目から知らせる（#9974） ============
+// POST /api/staff/attendance・attendance-photo・daily-report が 5xx（予期しないエラーの 500・混雑の 503）になったら、
+// エラーの急増（10件）を待たずに本部の管理者と送り先に知らせる（同じ場所の通知は ERROR_ALERT_COOLDOWN_MINUTES 分に1回まで。既定60分）。
+// 応答の後（waitUntil）に行い、通知の失敗は応答に影響させない
+app.use('/api/staff/*', async (c, next) => {
+  await next()
+  if (c.req.method !== 'POST' || !CRITICAL_PLACES[c.req.path] || c.res.status < 500) return
+  const env = c.env as unknown as AlertEnv
+  const p = notifyCriticalFailure(env, { path: c.req.path, status: c.res.status, ref: (c as any).get('errorRef') || null, cooldownMinutes: errorAlertSettings(c.env).cooldown_minutes })
+    .then(r => (r.notified ? flushPushQueue(c.env as any) : null)).catch(e => console.log(`critical alert failed: ${String((e as any)?.name || 'Error')}`))
+  try { c.executionCtx.waitUntil(p) } catch { /* waitUntil が使えないとき（テストなど）は待たない */ }
+})
 
 // ============ プッシュ通知の送信（#178） ============
 // API の書き込み（GET 以外）の応答の後に、積まれたプッシュ（push_queue。アプリ内の通知が入るとトリガーで積まれる）を送る。
@@ -868,6 +908,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
   // 在職中の保存期間（位置情報と写真・相談・フォロー記録・決着した人材提案・雇用終了の従業員データ）の削除。D1 の問い合わせの数を分けるため 3:30 の起動で行う（#420 #511 #350 #425）
   { name: 'retention_in_service', label: 'データ保持の定期削除（在職中の位置情報・写真・相談など）', cron: CRON_REPORTS, run: env => runInServiceRetentionJob(env.DB, env, env.RETENTION_ENABLED === 'true') },
+  // 報告用URLの古いトークン（0105 より前の平文）を、1日に500件ずつハッシュへ移す（#9975。残りが無ければ問い合わせ1回で終わる）
+  { name: 'report_token_hash', label: '報告用URLの古いトークンのハッシュへの置き換え', cron: CRON_REPORTS, run: env => runLegacyReportTokenHashJob(env.DB) },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
   // 予約配信のお知らせのメール（#291。画面には時刻どおりに出る。管理者・スタッフがお知らせを開いたときにもその会社の分を送る）
   // 予約の時刻から遅れないよう15分おきに確かめる。予約がなければ問い合わせ1回で終わる
@@ -879,6 +921,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'board_saved_search', label: '掲示板の保存した検索条件の新着の知らせ', cron: CRON_DAILY, run: env => notifySavedSearchMatches(env as any) },
   // 書類の有効期限（30日以内・期限切れ）を会社の管理者に知らせる（#297。毎朝8時以降、会社ごとに1日1回まで。知らせた書類はその段階では二度知らせない）
   { name: 'doc_expiry_notice', label: '書類の有効期限の知らせ', cron: CRON_REMINDERS, run: env => notifyExpiringDocuments(env as any) },
+  // D1 の DB の大きさの記録と段階の通知・送り先への毎朝のまとめ（#9971 #9974。毎朝8時以降の最初の起動で1回。済んだ後は問い合わせ1回で終わる）
+  { name: 'monitor_daily', label: 'DB の大きさの記録・障害の通知の毎朝のまとめ', cron: CRON_REMINDERS, run: env => runMonitorDaily(env) },
   // 3:00 の起動で問い合わせの予算に収まらなかった所属区分の変更の予約を、4:00 以降の15分おきの起動で少しずつ適用する（#9968）。
   // 3:00 の起動と同時に動かないよう、また退職の切り替え（3:00）より前に新しい日の予約を適用しないよう、0:00〜3:59 は何もしない。
   // 15分おきの起動の最後に置き、予約がなければ問い合わせ1回で終わる
@@ -896,8 +940,11 @@ const withErrorLog = (jobs: typeof CRON_JOBS): typeof CRON_JOBS => jobs.map(job 
   ...job,
   run: async (env: Bindings) => {
     const record = async (error: unknown) => {
-      const r = await recordError(env, { ref: newErrorRef(), source: 'cron', method: 'CRON', path: job.name, error })
-      cronAlerted = cronAlerted || r.alerted
+      const ref = newErrorRef()
+      const r = await recordError(env, { ref, source: 'cron', method: 'CRON', path: job.name, error })
+      // 定期処理の失敗は、件数を待たずに本部の管理者と送り先に知らせる（同じ処理は ERROR_ALERT_COOLDOWN_MINUTES 分に1回まで。#9974）
+      const n = await notifyCronFailure(env as unknown as AlertEnv, { job: job.name, label: job.label, ref, cooldownMinutes: errorAlertSettings(env).cooldown_minutes })
+      cronAlerted = cronAlerted || r.alerted || n.notified > 0
     }
     let result
     try {
@@ -919,6 +966,7 @@ export default {
   // 処理を足したら README の「定期処理（Cron Trigger）」の表にも足す（#332）
   async scheduled(event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
     cronAlerted = false
+    if (!fullEnv) fullEnv = env as unknown as AlertEnv
     // 一覧にない式で起動したとき（wrangler.jsonc だけを変えたなど）は何もせず、障害の記録に残す（#9967。全部を実行すると毎日の削除まで走るため）
     if (isUnknownCron(CRON_JOBS, event.cron)) {
       console.error(JSON.stringify({ level: 'error', event: 'unknown_cron', cron: event.cron }))

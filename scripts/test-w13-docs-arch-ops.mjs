@@ -117,6 +117,9 @@ const git = (args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'ut
 const gitOk = (args) => { try { git(args); return true } catch { return false } }
 // 基準のコミットの n 行目が、今のファイルの何行目か（書き換わった・消えた行は null）
 function lineMapper(file) {
+  // 基準のコミットに無いファイル（後から足したファイル）は、全体が「足した行」の差分になり、すべての参照がずれて見える。
+  // 基準と比べられないので、行は動いていないものとして扱う（--fix-refs で基準を HEAD にすれば、以後は比べられる。#9966）
+  if (!gitOk(['cat-file', '-e', `${baseCommit}:${file}`])) return (n) => n
   const out = git(['diff', '-U0', '--no-color', '--no-ext-diff', baseCommit, '--', file])
   const hunks = [...out.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)]
     .map(m => ({ a: +m[1], b: m[2] === undefined ? 1 : +m[2], d: m[4] === undefined ? 1 : +m[4] }))

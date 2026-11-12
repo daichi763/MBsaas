@@ -8,7 +8,7 @@ import { Hono } from 'hono'
 import { loadRoster, batchWithNewPerson, insertPersonStmt, STAFF_USER_ID, STAFF_ID_OF_PERSON, unusablePasswordHash, ageGroupOf } from './roster'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { isCompanyActive } from './lib/auth'
-import { isISODate } from './lib/validate'
+import { isISODate, clipText } from './lib/validate'
 import { notifyCompanyAdmins, markAdminNotificationsRead, loadNotifyPrefs, emailWanted } from './notifications'
 import { sendEmailBatch } from './services/email'
 import type { SendEmailInput } from './services/email'
@@ -26,7 +26,7 @@ export const POST_STATUSES = ['draft', 'open', 'closed', 'filled'] as const
 const MAX_LIST = 200
 
 const isTime = (s: any) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
-const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
+const str = clipText
 
 // 締切日を過ぎた掲載と、実施日（終了日があれば終了日）を過ぎたスポット・終了予定日を過ぎた常勤の掲載を「締切」にする
 // （cron を使わない遅延処理。一覧・詳細・編集・問い合わせ・提案のときに実行。#88）。やり取り中の企業にも知らせる（#476）

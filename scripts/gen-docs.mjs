@@ -397,6 +397,8 @@ const normPath = (p) => (p.replace(/\/+$/, '') || '/')
 const ADMIN4 = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
 const HR = ['company_admin', 'office_staff']
 const MIDDLEWARE_DEFS = [
+  // 認証より前の、読み書きの行数を数える仕掛け（#9970）。名前で見分ける（下の認証のミドルウェアと同じパス）
+  { file: 'src/api.ts', path: '/*', name: 'd1RowsHook', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の読み書きの行数。src/lib/d1-retry.ts）' },
   { file: 'src/api.ts', path: '/*', kind: 'auth', label: 'ログイン必須（セッションの確認・延長・二段階認証の登録待ちの制限）' },
   { file: 'src/api.ts', path: '/auth/*', kind: 'note', label: '本部の閲覧中は書き込み不可' },
   { file: 'src/api.ts', path: '/admin/*', name: 'hqViewAdminGuard', kind: 'hqview', label: '本部は、企業が許可した閲覧の間だけ GET を通す（閲覧中は sales_manager として扱う）' },

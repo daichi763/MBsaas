@@ -94,11 +94,27 @@ export const NOTICE_ATTACH_RULES: UploadRules = {
   },
 }
 
+// スタッフ本人がアプリから出す書類（#288）: 写真（JPEG・PNG・WebP）と PDF だけ。1ファイル10MBまで。中身の先頭が拡張子の形式と合うこと
+export const STAFF_SELF_DOC_MAX_BYTES = 10 * 1024 * 1024
+export const STAFF_SELF_DOC_TYPES: Record<string, string> = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
+export const STAFF_SELF_DOC_RULES: UploadRules = {
+  idField: 'document_id',
+  messages: { put: 'ファイルのアップロードに失敗しました。もう一度お試しください', insert: 'ファイルの登録に失敗しました。もう一度お試しください' },
+  async check(file, ext) {
+    const type = STAFF_SELF_DOC_TYPES[ext]
+    if (!type) return { error: '写真（JPEG・PNG・WebP）か PDF を選んでください' }
+    if (file.size <= 0 || file.size > STAFF_SELF_DOC_MAX_BYTES) return { error: 'ファイルは10MB以下にしてください' }
+    if (!noticeAttachmentMagicOk(ext, new Uint8Array(await file.slice(0, 16).arrayBuffer()))) return { error: 'ファイルの中身が形式と合いません。写真か PDF を選び直してください' }
+    return { contentType: type }
+  },
+}
+
 /**
  * 送られたファイル（files）を1つずつ確かめ、R2 に置いて D1 に登録する。成功した分だけ残す。
  * 戻り値はファイルごとの結果。送信データの形が不正・ファイルが無い・parse がエラーを返したときは 400 の応答を返す。
  * - キーは `${keyPrefix}/${UUID}/${ファイル名}`（同名のファイルでも上書きされないように）
- * - insert の changes が 0 なら登録しなかった扱いにして R2 から消し、limitError の文言を返す（お知らせの添付の件数の上限）
+ * - insert の changes が 0 なら登録しなかった扱いにして R2 から消し、limitError の文言を返す（お知らせの添付・スタッフ本人の書類の件数の上限）
+ * - field・maxFiles: ファイルの項目名（既定 files）と、受け取る数の上限（スタッフ本人の書類は file を1つ）
  */
 export async function storeUploads<M = undefined>(c: Context<any>, opts: {
   bucket: R2Bucket
@@ -107,10 +123,12 @@ export async function storeUploads<M = undefined>(c: Context<any>, opts: {
   parse?: (form: FormData) => M | { error: string } // ファイル以外の項目（書類の種類・期限など）
   insert: (f: StoredFile, meta: M) => D1PreparedStatement
   limitError?: string
+  field?: string
+  maxFiles?: number
 }): Promise<Response | UploadResult[]> {
   let form: FormData
   try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
-  const files = form.getAll('files').filter(f => f instanceof File) as File[]
+  const files = (form.getAll(opts.field || 'files').filter(f => f instanceof File) as File[]).slice(0, opts.maxFiles ?? Infinity)
   if (files.length === 0) return c.json({ error: 'ファイルが選択されていません' }, 400)
   const meta = opts.parse ? opts.parse(form) : undefined
   if (meta && typeof meta === 'object' && 'error' in meta) return c.json({ error: (meta as { error: string }).error }, 400)
