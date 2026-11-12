@@ -82,11 +82,20 @@ export function summarizeDbSize(rows: { day: string; size_bytes: number }[], lim
     reached_80: size >= limit * 0.8, reached_100: size >= limit, growth_days: span }
 }
 
-/** 段階を知らせるか: 「警告」「緊急」は毎日、「準備」「着手」は前の日の記録より段階が上がった日だけ */
+/** 段階を知らせるか: 「警告」「緊急」は毎日、「準備」「着手」は前の記録（highestPrevStage）より段階が上がった日だけ */
 export function shouldNotifyDbStage(prevStage: string | null, stage: DbStage): boolean {
   const rank = DB_STAGE_RANK[stage]
   const prevRank = prevStage ? DB_STAGE_RANK[prevStage as DbStage] ?? 0 : 0
   return rank >= DB_STAGE_RANK.warning || (rank > 0 && rank > prevRank)
+}
+
+/** 今日より前の記録（直近 GROWTH_DAYS 日）のうち一番上の段階。残り月数・割合が目安の前後で上下しても、「準備」「着手」を何度も知らせないため */
+export function highestPrevStage(history: { day: string; stage: string }[], today: string): DbStage | null {
+  let best: DbStage | null = null
+  for (const r of history) {
+    if (r.day < today && r.stage in DB_STAGE_RANK && (!best || DB_STAGE_RANK[r.stage as DbStage] > DB_STAGE_RANK[best])) best = r.stage as DbStage
+  }
+  return best
 }
 
 /** 直近 GROWTH_DAYS 日の記録（古い順） */
@@ -126,10 +135,9 @@ export async function runMonitorDaily(env: MonitorEnv): Promise<Record<string, u
   if (!m) return { error: 'D1 の大きさを取れませんでした（meta.size_after・PRAGMA page_count のどちらも使えない）' }
   const limitMb = dbSizeLimitMb(env)
   const history = await dbSizeHistory(db, today)
-  const prev = [...history].reverse().find(r => r.day < today)
   const rows = [...history.filter(r => r.day < today), { day: today, size_bytes: m.bytes }]
   const s = summarizeDbSize(rows, limitMb, today)
-  const notify = shouldNotifyDbStage(prev ? prev.stage : null, s.stage)
+  const notify = shouldNotifyDbStage(highestPrevStage(history, today), s.stage)
   const now = nowJST()
   // 先に記録して（今日の分を済ませた印）、通知に失敗しても同じ日に何度も送らない
   await db.prepare(`INSERT INTO db_size_logs (day, size_bytes, limit_mb, method, stage, notified, checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

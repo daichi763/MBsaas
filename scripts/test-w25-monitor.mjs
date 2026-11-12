@@ -318,6 +318,12 @@ let destKeys = {}
   ok('#9971 段階: 残り12か月=準備・残り6か月=着手（割合が低くても）', M.dbStageOf(10, 12) === 'prepare' && M.dbStageOf(10, 12.5) === 'ok' && M.dbStageOf(10, 6) === 'start' && M.dbStageOf(55, 5) === 'start')
   ok('#9971 通知: 準備・着手は上がった日だけ、警告・緊急は毎日', M.shouldNotifyDbStage(null, 'prepare') && !M.shouldNotifyDbStage('prepare', 'prepare') && M.shouldNotifyDbStage('prepare', 'start') && !M.shouldNotifyDbStage('start', 'prepare')
     && M.shouldNotifyDbStage('warning', 'warning') && M.shouldNotifyDbStage('emergency', 'emergency') && !M.shouldNotifyDbStage(null, 'ok'))
+  // 残り月数が12か月の前後で上下しても（準備 → 余裕あり → 準備）、直近の記録に「準備」があれば2回目は知らせない
+  const hist = [{ day: '2026-11-01', stage: 'prepare' }, { day: '2026-11-02', stage: 'ok' }, { day: '2026-11-03', stage: 'ok' }, { day: '2026-11-04', stage: 'start' }]
+  ok('#9971 通知: 段階が目安の前後で上下しても、準備・着手は直近90日の一番上の段階より上がったときだけ',
+    M.highestPrevStage(hist.slice(0, 3), '2026-11-04') === 'prepare' && !M.shouldNotifyDbStage(M.highestPrevStage(hist.slice(0, 3), '2026-11-04'), 'prepare')
+    && M.highestPrevStage(hist, '2026-11-04') === 'prepare' && M.highestPrevStage(hist, '2026-11-05') === 'start' && M.highestPrevStage([], '2026-11-05') === null
+    && M.shouldNotifyDbStage(M.highestPrevStage(hist.slice(0, 3), '2026-11-04'), 'start'))
   ok('#9971 上限は DB_SIZE_LIMIT_MB（既定 500）', M.dbSizeLimitMb({}) === 500 && M.dbSizeLimitMb({ DB_SIZE_LIMIT_MB: '10240' }) === 10240 && M.dbSizeLimitMb({ DB_SIZE_LIMIT_MB: 'x' }) === 500)
   // 90日で 100MB → 200MB（1日 1.11MB）。上限 500MB
   const T = '2026-11-12'
