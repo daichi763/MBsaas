@@ -31,10 +31,10 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 108 本（0001_initial_schema.sql 〜 0108_daily_report_month_counts.sql）
-- 表: 131・索引: 305・トリガー: 15・ビュー: 0
+- マイグレーション: 109 本（0001_initial_schema.sql 〜 0109_monitoring.sql）
+- 表: 134・索引: 308・トリガー: 15・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 143
-- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 100・それ以外の主キーの表: 31
+- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 33
 - company_id の列がある表: 106
 <!-- END GENERATED: db-summary -->
 
@@ -462,6 +462,15 @@ erDiagram
   users ||--o{ counterparty_assignees : "user_id *"
   projects ||--o{ monthly_bill_rules : "project_id"
   staff_profiles ||--o{ monthly_bill_rules : "staff_id *"
+  alert_cooldowns {
+    TEXT alert_key PK
+  }
+  alert_destination_status {
+    TEXT dest_key PK
+  }
+  db_size_logs {
+    INTEGER log_id PK
+  }
   error_alerts {
     INTEGER alert_id PK
   }
@@ -534,7 +543,7 @@ erDiagram
 対象の一覧（コードから生成）:
 
 <!-- BEGIN GENERATED: db-retention -->
-| 対象（`RETIRED_TARGETS`・[services/retention.ts:92](../src/services/retention.ts#L92)） | 種類 |
+| 対象（`RETIRED_TARGETS`・[services/retention.ts:95](../src/services/retention.ts#L95)） | 種類 |
 |---|---|
 | `retired_staff` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 | `attendance_reports` | 表 |
@@ -547,11 +556,11 @@ erDiagram
 | `retired_staff_deferred` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 | `r2_pending` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 
-在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:807](../src/services/retention.ts#L807)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
+在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:829](../src/services/retention.ts#L829)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
 
-退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:102](../src/services/retention.ts#L102)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`・`age_entered`・`age_entered_on`
+退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:105](../src/services/retention.ts#L105)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`・`age_entered`・`age_entered_on`
 
-作成からの期間で消す表: `user_notifications`（2年・[services/retention.ts:434](../src/services/retention.ts#L434)）・`email_logs`（1年・[services/retention.ts:438](../src/services/retention.ts#L438)）・`error_logs`（90日・[services/retention.ts:442](../src/services/retention.ts#L442)）・`error_alerts`（90日・[services/retention.ts:445](../src/services/retention.ts#L445)）・`operation_logs`（7年・[services/retention.ts:449](../src/services/retention.ts#L449)）・`retention_logs`（365日・[services/retention.ts:454](../src/services/retention.ts#L454)）・`hq_view_logs`（365日・[services/retention.ts:457](../src/services/retention.ts#L457)）
+作成からの期間で消す表: `user_notifications`（2年・[services/retention.ts:437](../src/services/retention.ts#L437)）・`email_logs`（1年・[services/retention.ts:441](../src/services/retention.ts#L441)）・`error_logs`（90日・[services/retention.ts:445](../src/services/retention.ts#L445)）・`error_alerts`（90日・[services/retention.ts:448](../src/services/retention.ts#L448)）・`operation_logs`（7年・[services/retention.ts:452](../src/services/retention.ts#L452)）・`retention_logs`（365日・[services/retention.ts:457](../src/services/retention.ts#L457)）・`hq_view_logs`（365日・[services/retention.ts:460](../src/services/retention.ts#L460)）・`db_size_logs`（730日・[services/retention.ts:465](../src/services/retention.ts#L465)）
 
 R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE_SOURCES`）: `attendance_reports`→photos・`staff_documents`→documents・`employee_documents`→documents・`attendance_correction_attachments`→photos・`consultation_attachments`→photos・`notice_attachments`→documents・`client_documents`→contracts・`staff_pay_requests`→photos
 <!-- END GENERATED: db-retention -->
@@ -561,7 +570,7 @@ R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE
 本部画面の「解約・データ」から、企業のデータを CSV で書き出し、猶予の日数（既定は [`OFFBOARDING_GRACE_DAYS`](../src/services/retention.ts)）の後に消します（記録は `company_offboardings`）。
 
 <!-- BEGIN GENERATED: db-offboarding -->
-解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（104 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1280](../src/services/retention.ts#L1280)）。
+解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（104 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1304](../src/services/retention.ts#L1304)）。
 
 company_id の列がある表は、すべてどちらかに入っています。
 <!-- END GENERATED: db-offboarding -->
@@ -668,7 +677,7 @@ company_id の列がある表は、すべてどちらかに入っています。
 
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
-| [`operation_logs`](#operation_logs) | シフト・精算の操作履歴 | シフト・募集枠・精算の操作履歴（w6-audit-log: #159） 管理者は全員が自社の全案件を扱うため、シフトの編集・削除、精算の確定・取り消し、金額・実績の変更などを 「だれが・いつ・何を・前後の値」で残す。1件の操作で変わった行… | 0084 | 作成から7年で削除（[services/retention.ts:449](../src/services/retention.ts#L449)）<br>解約時: 書き出して削除 |
+| [`operation_logs`](#operation_logs) | シフト・精算の操作履歴 | シフト・募集枠・精算の操作履歴（w6-audit-log: #159） 管理者は全員が自社の全案件を扱うため、シフトの編集・削除、精算の確定・取り消し、金額・実績の変更などを 「だれが・いつ・何を・前後の値」で残す。1件の操作で変わった行… | 0084 | 作成から7年で削除（[services/retention.ts:452](../src/services/retention.ts#L452)）<br>解約時: 書き出して削除 |
 | [`payout_settings`](#payout_settings) | 振込元（依頼人）の設定 |  | 0069 | 解約時: 書き出して削除 |
 | [`settlement_closings`](#settlement_closings) | 精算の締め | reopened_at が NULL の行が有効な締め。締めた期間（period_from〜period_to。稼働日）のシフトは、 確定・取り消し、実績・金額の変更、報告・打刻修正の実績への反映、シフトの追加・変更・削除を受け付けない。… | 0061 | 解約時: 書き出して削除 |
 | [`settlement_export_logs`](#settlement_export_logs) | 精算の出力の記録 | CSV・明細書を出力した記録（いつ・だれが・どの期間を出したか） | 0061 | 解約時: 書き出して削除 |
@@ -679,7 +688,7 @@ company_id の列がある表は、すべてどちらかに入っています。
 
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
-| [`email_logs`](#email_logs) | メールの送信記録 | 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。 | 0008 | 作成から1年で削除（[services/retention.ts:438](../src/services/retention.ts#L438)）<br>解約時: 書き出して削除 |
+| [`email_logs`](#email_logs) | メールの送信記録 | 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。 | 0008 | 作成から1年で削除（[services/retention.ts:441](../src/services/retention.ts#L441)）<br>解約時: 書き出して削除 |
 | [`email_suppressions`](#email_suppressions) |  | 宛先不明などで戻ってきた（ハードバウンス）・迷惑メールと報告されたアドレス。 Resend の Webhook（/webhooks/resend）で記録し、以後このアドレスには送らない（services/email.ts）。 アドレスは小… | 0060 |  |
 | [`notice_ack_tokens`](#notice_ack_tokens) | お知らせの確認用トークン | お知らせメールの「確認しました」のリンク（1人1通ずつのワンタイムのトークン。ハッシュで保存）。 リンクを開いてボタンを押すと、notice_reads に既読を記録し used_at を入れる。期限は expires_at（日本時間） | 0060 | 解約時: 削除（書き出さない） |
 | [`notice_attachments`](#notice_attachments) | お知らせの添付 | お知らせの添付（画像・PDF。本体は R2 の DOCUMENTS に置く） | 0066 | 解約時: 書き出して削除<br>R2 のファイル（documents） |
@@ -697,7 +706,7 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`push_vapid_keys`](#push_vapid_keys) |  | VAPID の鍵（アプリで1組）。Secret の VAPID_PUBLIC_KEY・VAPID_PRIVATE_KEY があればそちらを使い、なければ初回に作ってここに保存する | 0081 |  |
 | [`todo_dismissals`](#todo_dismissals) | ToDo の非表示 | #487 ToDo を『対応済み』『あとで』にした記録。ToDo は毎回ルールから作るので、ここには非表示にしたキーだけを持つ。 todo_key: ToDo ごとの安定したキー（例: late:{staff_id}:{月}、consul… | 0053 | 解約時: 削除（書き出さない） |
 | [`user_notification_prefs`](#user_notification_prefs) | 通知の受け取り設定 | ユーザーごと・通知のまとまり（pref_key。src/notifications.ts の NOTIFY_PREF_GROUPS）ごとの受け取り設定。 email / push: 1 = 受け取る、0 = 受け取らない、NULL = 既… | 0081 | 解約時: 書き出して削除 |
-| [`user_notifications`](#user_notifications) | アプリ内の通知 | 個人あての通知（受信者ごとに 1 行。既読は read_at） kind: correction_submitted（管理者への承認依頼）/ correction_received（申請者への受付）/ correction_approve… | 0029 | 作成から2年で削除（[services/retention.ts:434](../src/services/retention.ts#L434)）<br>解約時: 書き出して削除 |
+| [`user_notifications`](#user_notifications) | アプリ内の通知 | 個人あての通知（受信者ごとに 1 行。既読は read_at） kind: correction_submitted（管理者への承認依頼）/ correction_received（申請者への受付）/ correction_approve… | 0029 | 作成から2年で削除（[services/retention.ts:437](../src/services/retention.ts#L437)）<br>解約時: 書き出して削除 |
 
 ### 募集・応募
 
@@ -734,10 +743,10 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`hq_announcements`](#hq_announcements) |  | 2. 本部から導入企業の管理者へのお知らせ（#516） importance: normal（通常）/ important（重要）/ maintenance（メンテナンス）。 target: all（全企業）/ companies（選んだ… | 0079 |  |
 | [`hq_audit_logs`](#hq_audit_logs) |  | #542 本部の操作の履歴。だれが・いつ・何を（変更前と変更後）・なぜ（停止・再開の理由）。 action は操作の名前（company.update など）。詳しく記録しない本部の書き込みは、メソッドとパスを action に残す | 0078 | 解約時も残す（`OFFBOARDING_KEPT_TABLES`） |
 | [`hq_plan_prices`](#hq_plan_prices) |  | #295 プランごとの料金（基本料金・基本料金に含む人数・追加1人あたり）。 これまでの料金（990円で3人まで、追加1人300円）を3つのプランに入れておく（金額は変わらない）。本部の画面で変更する | 0078 |  |
-| [`hq_view_logs`](#hq_view_logs) |  | 閲覧中に開いた画面（API のパス）の記録。定期の取得（X-Background）は残さない | 0079 | 作成から365日で削除（[services/retention.ts:457](../src/services/retention.ts#L457)） |
+| [`hq_view_logs`](#hq_view_logs) |  | 閲覧中に開いた画面（API のパス）の記録。定期の取得（X-Background）は残さない | 0079 | 作成から365日で削除（[services/retention.ts:460](../src/services/retention.ts#L460)） |
 | [`hq_view_sessions`](#hq_view_sessions) |  | 3. 本部による管理画面の閲覧（読み取り専用。#293） 企業が許可したとき（companies.settings_json の hq_view_allowed）だけ、本部ユーザーが期限付きで閲覧できる。 token_hash: 閲覧用 … | 0079 | 解約時も残す（`OFFBOARDING_KEPT_TABLES`） |
 | [`offboarding_pending_r2`](#offboarding_pending_r2) |  | 3. 削除する R2 のファイル。D1 の行を消す前にキーを控え、D1 の削除が済んでから R2 を消す（消せたものから行を消す）。 bucket は photos（PHOTOS）/ documents（DOCUMENTS）/ contr… | 0080 |  |
-| [`retention_logs`](#retention_logs) |  | 削除処理の実行ログ（対象/削除/失敗件数、dry-runかどうかを記録） | 0009 | 作成から365日で削除（[services/retention.ts:454](../src/services/retention.ts#L454)） |
+| [`retention_logs`](#retention_logs) |  | 削除処理の実行ログ（対象/削除/失敗件数、dry-runかどうかを記録） | 0009 | 作成から365日で削除（[services/retention.ts:457](../src/services/retention.ts#L457)） |
 | [`retention_pending_r2`](#retention_pending_r2) |  | 2. D1 の削除が済んだ後に消せなかった R2 の写真キー（次回の定期削除で再試行する） | 0031 |  |
 | [`retention_settings`](#retention_settings) |  | 2. 保存期間の設定（#420 #511 #350）。本部画面で変えられる。行がなければ src/services/retention.ts の既定値を使う key: location_photo_days（入店の位置情報・端末情報と写真… | 0063 |  |
 | [`support_requests`](#support_requests) | 本部への支援の依頼 | 本部の支援機能（作業単位 w5-hq-support: #179 #516 #293）。テーブルの追加のみで、既存のデータは変えない 1. 伴走支援の依頼（#179） 管理画面の「伴走支援を依頼する」から送られた依頼。会社と依頼した人を付… | 0079 | 解約時: 書き出して削除 |
@@ -746,9 +755,12 @@ company_id の列がある表は、すべてどちらかに入っています。
 
 | 表 | 名前（retention.ts） | 用途（作ったマイグレーションのコメント） | 作成 | 行の扱い |
 |---|---|---|---|---|
+| [`alert_cooldowns`](#alert_cooldowns) |  | 同じ通知を続けて送らないための記録（打刻・日報の失敗は60分に1回までなど）。 pending は前回の通知の後に起きて、まだ知らせていない件数。last_pending は最後に通知したときに一緒に知らせた件数。 claim_token… | 0109 |  |
+| [`alert_destination_status`](#alert_destination_status) |  | 障害の通知の送り先（秘密の値 ALERT_DESTINATIONS）ごとの最後の送信の結果。 dest_key は種類と URL・トークンから作った短いハッシュ。URL・トークン・宛先そのものは持たない | 0109 |  |
 | [`counterparty_assignees`](#counterparty_assignees) | クライアント・協力会社の社内担当者 | 1. 社内担当者（#9910。利用者の決定: 主担当1人＋副担当（複数））。 target_type: 'client'（clients.client_id）/ 'partner'（staff_affiliations.affiliati… | 0100 | 解約時: 書き出して削除 |
-| [`error_alerts`](#error_alerts) |  | 直近のエラーが閾値を超えたときに、本部の管理者へ送った通知の記録。 同じ通知を繰り返さないための判定（最後の通知から一定時間は送らない）に使う。created_at から90日で消す | 0093 | 作成から90日で削除（[services/retention.ts:445](../src/services/retention.ts#L445)） |
-| [`error_logs`](#error_logs) | 障害の記録 | サーバーの予期しないエラー（index.tsx の app.onError。利用者には参照番号を返している #230）と、 定期処理（cron）の失敗を1件ずつ残す。書き込みは src/lib/error-log.ts の recordE… | 0093 | 作成から90日で削除（[services/retention.ts:442](../src/services/retention.ts#L442)）<br>解約時: 削除（書き出さない） |
+| [`db_size_logs`](#db_size_logs) |  | D1 の DB の大きさの記録（毎日1回。src/services/monitor.ts の runMonitorDaily）。 day は日本時間の日付（1日1行）。stage は上限（vars の DB_SIZE_LIMIT_MB）に… | 0109 | 作成から730日で削除（[services/retention.ts:465](../src/services/retention.ts#L465)） |
+| [`error_alerts`](#error_alerts) |  | 直近のエラーが閾値を超えたときに、本部の管理者へ送った通知の記録。 同じ通知を繰り返さないための判定（最後の通知から一定時間は送らない）に使う。created_at から90日で消す | 0093 | 作成から90日で削除（[services/retention.ts:448](../src/services/retention.ts#L448)） |
+| [`error_logs`](#error_logs) | 障害の記録 | サーバーの予期しないエラー（index.tsx の app.onError。利用者には参照番号を返している #230）と、 定期処理（cron）の失敗を1件ずつ残す。書き込みは src/lib/error-log.ts の recordE… | 0093 | 作成から90日で削除（[services/retention.ts:445](../src/services/retention.ts#L445)）<br>解約時: 削除（書き出さない） |
 | [`monthly_bill_rules`](#monthly_bill_rules) | 月額（固定）の請求のルール | 案件の月額の請求。その月に確定・代打のシフトが1件以上ある案件について、月に1回だけ請求する （staff_id のあるルールは、そのスタッフのその案件のシフトが1件以上ある月に1回）。シフトの数・時間には左右されない。 金額はシフトの請… | 0096 | 解約時: 書き出して削除 |
 | [`user_tour_progress`](#user_tour_progress) | 案内（チュートリアル）の進み具合 | 人（users の行）ごと・案内（tour_key）ごとに、見終わった・スキップした・途中まで進んだかを残す。 別の端末で開いても同じ状態になるよう、端末ではなくサーバーに残す。書き込みは src/tours.ts だけ。 | 0094 | 解約時: 削除（書き出さない） |
 <!-- END GENERATED: db-tables -->
@@ -2882,7 +2894,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 > シフト・募集枠・精算の操作履歴（w6-audit-log: #159） 管理者は全員が自社の全案件を扱うため、シフトの編集・削除、精算の確定・取り消し、金額・実績の変更などを 「だれが・いつ・何を・前後の値」で残す。1件の操作で変わった行ごとに1行（まとめての操作は op_key で束ねる）。 entity : shift（シフト。キャンセル料・補償を含む）/ slot（募集枠と役割） action : create / update / delete / move / confirm / unconfirm / price / actual / cancellation / reprice など before_json: 変更の前の値（作成は NULL）。after_json: 変更の後の値（削除は NULL）。値は src/lib/operation-log.ts の項目だけ sta…
 
-作成: [migrations/0084_audit_log.sql:1](../migrations/0084_audit_log.sql#L1)　／　作成から7年で削除（[services/retention.ts:449](../src/services/retention.ts#L449)）　／　解約時: 書き出して削除
+作成: [migrations/0084_audit_log.sql:1](../migrations/0084_audit_log.sql#L1)　／　作成から7年で削除（[services/retention.ts:452](../src/services/retention.ts#L452)）　／　解約時: 書き出して削除
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -3046,7 +3058,7 @@ UNIQUE 制約: (shift_id, issue)
 
 > 送信種別(type)ごとの成否を追跡する。本文・トークン・パスワードは記録しない。
 
-作成: [migrations/0008_add_password_reset_and_email_logs.sql:1](../migrations/0008_add_password_reset_and_email_logs.sql#L1)　／　作成から1年で削除（[services/retention.ts:438](../src/services/retention.ts#L438)）　／　解約時: 書き出して削除
+作成: [migrations/0008_add_password_reset_and_email_logs.sql:1](../migrations/0008_add_password_reset_and_email_logs.sql#L1)　／　作成から1年で削除（[services/retention.ts:441](../src/services/retention.ts#L441)）　／　解約時: 書き出して削除
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -3472,7 +3484,7 @@ CHECK 制約: `CHECK (key_id = 1)`
 
 > 個人あての通知（受信者ごとに 1 行。既読は read_at） kind: correction_submitted（管理者への承認依頼）/ correction_received（申請者への受付）/ correction_approved・correction_rejected（申請者への結果）/ correction_processed（処理した管理者への控え）
 
-作成: [migrations/0029_add_user_notifications.sql:1](../migrations/0029_add_user_notifications.sql#L1)　／　作成から2年で削除（[services/retention.ts:434](../src/services/retention.ts#L434)）　／　解約時: 書き出して削除
+作成: [migrations/0029_add_user_notifications.sql:1](../migrations/0029_add_user_notifications.sql#L1)　／　作成から2年で削除（[services/retention.ts:437](../src/services/retention.ts#L437)）　／　解約時: 書き出して削除
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -4047,7 +4059,7 @@ UNIQUE 制約: (company_id, month)
 
 > 閲覧中に開いた画面（API のパス）の記録。定期の取得（X-Background）は残さない
 
-作成: [migrations/0079_hq_support.sql:1](../migrations/0079_hq_support.sql#L1)　／　作成から365日で削除（[services/retention.ts:457](../src/services/retention.ts#L457)）
+作成: [migrations/0079_hq_support.sql:1](../migrations/0079_hq_support.sql#L1)　／　作成から365日で削除（[services/retention.ts:460](../src/services/retention.ts#L460)）
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -4111,7 +4123,7 @@ UNIQUE 制約: (token_hash)
 
 > 削除処理の実行ログ（対象/削除/失敗件数、dry-runかどうかを記録）
 
-作成: [migrations/0009_add_retention_cleanup.sql:1](../migrations/0009_add_retention_cleanup.sql#L1)　／　作成から365日で削除（[services/retention.ts:454](../src/services/retention.ts#L454)）
+作成: [migrations/0009_add_retention_cleanup.sql:1](../migrations/0009_add_retention_cleanup.sql#L1)　／　作成から365日で削除（[services/retention.ts:457](../src/services/retention.ts#L457)）
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -4192,6 +4204,41 @@ UNIQUE 制約: (token_hash)
 
 ### その他
 
+<a id="alert_cooldowns"></a>
+#### alert_cooldowns
+
+> 同じ通知を続けて送らないための記録（打刻・日報の失敗は60分に1回までなど）。 pending は前回の通知の後に起きて、まだ知らせていない件数。last_pending は最後に通知したときに一緒に知らせた件数。 claim_token は最後に通知を出した呼び出しの印（同時に2つの要求が来ても、通知を出すのは1つだけにする）
+
+作成: [migrations/0109_monitoring.sql:1](../migrations/0109_monitoring.sql#L1)
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `alert_key` | TEXT |  |  | PK |  |  |
+| `last_sent_at` | TEXT |  |  |  |  |  |
+| `pending` | INTEGER |  | 0 |  |  |  |
+| `last_pending` | INTEGER |  | 0 |  |  |  |
+| `claim_token` | TEXT | 可 |  |  |  |  |
+| `updated_at` | TEXT |  |  |  |  |  |
+
+<a id="alert_destination_status"></a>
+#### alert_destination_status
+
+> 障害の通知の送り先（秘密の値 ALERT_DESTINATIONS）ごとの最後の送信の結果。 dest_key は種類と URL・トークンから作った短いハッシュ。URL・トークン・宛先そのものは持たない
+
+作成: [migrations/0109_monitoring.sql:1](../migrations/0109_monitoring.sql#L1)
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `dest_key` | TEXT |  |  | PK |  |  |
+| `dest_type` | TEXT |  |  |  |  |  |
+| `last_status` | TEXT |  |  |  |  |  |
+| `last_http_status` | INTEGER | 可 |  |  |  |  |
+| `last_error` | TEXT | 可 |  |  |  |  |
+| `last_event` | TEXT | 可 |  |  |  |  |
+| `last_attempt_at` | TEXT |  |  |  |  |  |
+| `last_success_at` | TEXT | 可 |  |  |  |  |
+| `updated_at` | TEXT |  |  |  |  |  |
+
 <a id="counterparty_assignees"></a>
 #### counterparty_assignees — クライアント・協力会社の社内担当者
 
@@ -4216,12 +4263,37 @@ UNIQUE 制約: (token_hash)
 - `idx_counterparty_assignees_primary`（UNIQUE）: (target_type, target_id) WHERE `is_primary = 1`
 - `idx_counterparty_assignees_user`（UNIQUE）: (target_type, target_id, user_id)
 
+<a id="db_size_logs"></a>
+#### db_size_logs
+
+> D1 の DB の大きさの記録（毎日1回。src/services/monitor.ts の runMonitorDaily）。 day は日本時間の日付（1日1行）。stage は上限（vars の DB_SIZE_LIMIT_MB）に対する段階: ok / prepare / start / warning / emergency。 checked_at は定期処理が記録・通知の判定をした日時（本部画面の「表ごとの行数を数える」だけで作った行は NULL）。 table_counts_json は表ごとの行数（[{ "table": 名前, "rows": 件数 }]。本部画面のボタンで数えたときだけ入る）
+
+作成: [migrations/0109_monitoring.sql:1](../migrations/0109_monitoring.sql#L1)　／　作成から730日で削除（[services/retention.ts:465](../src/services/retention.ts#L465)）
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `log_id` | INTEGER |  |  | PK |  |  |
+| `day` | TEXT |  |  |  |  |  |
+| `size_bytes` | INTEGER |  |  |  |  |  |
+| `limit_mb` | INTEGER |  |  |  |  |  |
+| `method` | TEXT | 可 |  |  |  |  |
+| `stage` | TEXT |  | 'ok' |  |  |  |
+| `notified` | INTEGER |  | 0 |  |  |  |
+| `checked_at` | TEXT | 可 |  |  |  |  |
+| `table_counts_json` | TEXT | 可 |  |  |  |  |
+| `table_counts_at` | TEXT | 可 |  |  |  |  |
+| `table_counts_rows_read` | INTEGER | 可 |  |  |  |  |
+| `created_at` | TEXT |  |  |  |  |  |
+| `updated_at` | TEXT |  |  |  |  |  |
+
+UNIQUE 制約: (day)
+
 <a id="error_alerts"></a>
 #### error_alerts
 
 > 直近のエラーが閾値を超えたときに、本部の管理者へ送った通知の記録。 同じ通知を繰り返さないための判定（最後の通知から一定時間は送らない）に使う。created_at から90日で消す
 
-作成: [migrations/0093_error_logs.sql:1](../migrations/0093_error_logs.sql#L1)　／　作成から90日で削除（[services/retention.ts:445](../src/services/retention.ts#L445)）
+作成: [migrations/0093_error_logs.sql:1](../migrations/0093_error_logs.sql#L1)　／　作成から90日で削除（[services/retention.ts:448](../src/services/retention.ts#L448)）
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -4241,7 +4313,7 @@ UNIQUE 制約: (token_hash)
 
 > サーバーの予期しないエラー（index.tsx の app.onError。利用者には参照番号を返している #230）と、 定期処理（cron）の失敗を1件ずつ残す。書き込みは src/lib/error-log.ts の recordError だけ。 残すのは参照番号・時刻・パス（トークンは伏せる）・メソッド・会社・ロール・エラーの要約だけで、 利用者の ID・入力値・SQL の値・スタックの全文は残さない（要約の中の引用・メールアドレス・長い英数字も伏せる）。 同じエラー（fingerprint）が続くときは、10分あたり一定の行数を超えた分を新しい行にせず、 最後の行の repeat_count に数える（行が増えすぎないように）。 created_at から90日で消す（src/services/retention.ts の error_logs）。 company_id を持…
 
-作成: [migrations/0093_error_logs.sql:1](../migrations/0093_error_logs.sql#L1)　／　作成から90日で削除（[services/retention.ts:442](../src/services/retention.ts#L442)）　／　解約時: 削除（書き出さない）
+作成: [migrations/0093_error_logs.sql:1](../migrations/0093_error_logs.sql#L1)　／　作成から90日で削除（[services/retention.ts:445](../src/services/retention.ts#L445)）　／　解約時: 削除（書き出さない）
 
 | 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
 |---|---|---|---|---|---|---|
@@ -4508,20 +4580,20 @@ END
 <!-- BEGIN GENERATED: db-refs -->
 | 名前 | 位置 |
 |---|---|
-| `OFFBOARDING_TABLES` | [services/retention.ts:1162](../src/services/retention.ts#L1162) |
+| `OFFBOARDING_TABLES` | [services/retention.ts:1186](../src/services/retention.ts#L1186) |
 | `ownStaff` | [lib/tenant.ts:23](../src/lib/tenant.ts#L23) |
 | `ownProject` | [lib/tenant.ts:15](../src/lib/tenant.ts#L15) |
 | `ownShift` | [lib/tenant.ts:31](../src/lib/tenant.ts#L31) |
 | `hqViewAdminGuard` | [hq-support.ts:201](../src/hq-support.ts#L201) |
 | `AFFILIATION_TYPES` | [roster.ts:26](../src/roster.ts#L26) |
 | `NO_LOGIN_ROLES` | [lib/auth.ts:17](../src/lib/auth.ts#L17) |
-| `nowJST` | [api.ts:82](../src/api.ts#L82) |
+| `nowJST` | [api.ts:84](../src/api.ts#L84) |
 | `loadSessionUser` | [lib/auth.ts:128](../src/lib/auth.ts#L128) |
 | `hashPassword` | [lib/auth.ts:44](../src/lib/auth.ts#L44) |
 | `hashToken` | [lib/auth.ts:36](../src/lib/auth.ts#L36) |
-| `RETURNING_COUNTED` | [services/retention.ts:91](../src/services/retention.ts#L91) |
-| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1280](../src/services/retention.ts#L1280) |
-| `RETIRED_TARGETS` | [services/retention.ts:92](../src/services/retention.ts#L92) |
+| `RETURNING_COUNTED` | [services/retention.ts:94](../src/services/retention.ts#L94) |
+| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1304](../src/services/retention.ts#L1304) |
+| `RETIRED_TARGETS` | [services/retention.ts:95](../src/services/retention.ts#L95) |
 | `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
 | `createPerson` | [roster.ts:265](../src/roster.ts#L265) |
 | `ensureRosterIdentity` | [roster.ts:424](../src/roster.ts#L424) |
@@ -4536,9 +4608,9 @@ END
 | `PUBLIC_COLS` | [board.ts:59](../src/board.ts#L59) |
 | `buildSnapshot` | [board.ts:568](../src/board.ts#L568) |
 | `shapeProposal` | [board.ts:603](../src/board.ts#L603) |
-| `runRetentionCleanup` | [services/retention.ts:954](../src/services/retention.ts#L954) |
-| `CRON_JOBS` | [index.tsx:829](../src/index.tsx#L829) |
-| `RETENTION_SETTING_DEFS` | [services/retention.ts:122](../src/services/retention.ts#L122) |
-| `purgeExpiredTokens` | [services/retention.ts:1098](../src/services/retention.ts#L1098) |
-| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1140](../src/services/retention.ts#L1140) |
+| `runRetentionCleanup` | [services/retention.ts:976](../src/services/retention.ts#L976) |
+| `CRON_JOBS` | [index.tsx:869](../src/index.tsx#L869) |
+| `RETENTION_SETTING_DEFS` | [services/retention.ts:125](../src/services/retention.ts#L125) |
+| `purgeExpiredTokens` | [services/retention.ts:1122](../src/services/retention.ts#L1122) |
+| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1164](../src/services/retention.ts#L1164) |
 <!-- END GENERATED: db-refs -->
