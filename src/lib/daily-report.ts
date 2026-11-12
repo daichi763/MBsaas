@@ -5,6 +5,8 @@
 // その照合の `+shift_id IS NULL` の + は、shift_id の一意索引で全社の古い日報を走査させず、稼働日などの索引を使わせるため（api.ts の同じ照合も同じ）。
 // =========================================================
 
+import { dirtyReportCountsByShiftStmt } from './report-counts'
+
 export type DailyReportShift = { shift_id: number; staff_id: number; work_date: string; project_id: number }
 
 /** シフトの日報（shift_id の一致を優先し、無ければ shift_id の無い古い日報） */
@@ -101,7 +103,8 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
   // 管理者が値を直した日報（#9707）を、値を変えて出し直したときは、再提出の値を正にする（「管理者が修正」の印を外す）。
   // 直した値を失わないよう、出し直す前の値を履歴（daily_report_edits）に残す。同じ値のままの出し直しは、印も履歴もそのまま
   const cur = existed ? await db.prepare('SELECT report_values, admin_edited_at, incident_flag, complaint_flag FROM daily_reports WHERE shift_id = ?').bind(r.shift_id).first() as any : null
-  const stmts: D1PreparedStatement[] = []
+  // 日報一覧の件数の控え（今月より前の月）の印を、出し直しの前（前の稼働日の月）と後（新しい稼働日の月）で消す（#9970。ふだんは今月なので何も消さない）
+  const stmts: D1PreparedStatement[] = [dirtyReportCountsByShiftStmt(db, r.shift_id)]
   // キーの並びだけが違う同じ値は、同じ値の出し直しとして扱う（保存してある文字列のままにして、印・管理者の確認を外さない）
   if (cur && typeof cur.report_values === 'string' && cur.report_values !== r.values_json
     && !changedReportKeys(parseReportValuesJson(cur.report_values), parseReportValuesJson(r.values_json)).length) r = { ...r, values_json: cur.report_values }
@@ -133,6 +136,7 @@ export async function saveDailyReport(db: D1Database, r: DailyReportShift & {
       manager_checked = CASE WHEN ? = 1 AND daily_reports.report_values IS excluded.report_values THEN daily_reports.manager_checked ELSE 0 END`)
     .bind(r.company_id, r.staff_id, r.project_id, r.shift_id, r.work_date, r.values_json, r.incident ? 1 : 0, r.complaint ? 1 : 0, r.now, r.entry_method,
       r.entered_by ?? null, explicit, explicit, keepCheck ? 1 : 0, keepCheck ? 1 : 0, keepCheck ? 1 : 0, keepCheck ? 1 : 0))
+  stmts.push(dirtyReportCountsByShiftStmt(db, r.shift_id))
   await db.batch(stmts)
   return { updated: existed }
 }

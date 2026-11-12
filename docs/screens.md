@@ -307,7 +307,7 @@ flowchart LR
 <!-- BEGIN GENERATED: screens-refs -->
 | 名前 | 位置 |
 |---|---|
-| `homePathFor` | [lib/auth.ts:143](../src/lib/auth.ts#L143) |
+| `homePathFor` | [lib/auth.ts:145](../src/lib/auth.ts#L145) |
 | `route` | [static/admin.js:7242](../public/static/admin.js#L7242) |
 | `route` | [static/hq.js:2185](../public/static/hq.js#L2185) |
 | `renderSecurity` | [static/security.js:377](../public/static/security.js#L377) |

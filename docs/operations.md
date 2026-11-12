@@ -383,6 +383,7 @@ npx wrangler d1 execute mbsaas-production --remote --env production --command "S
 ```
 
 - 調べるときは `SELECT` だけを使います。書き換えが要るときは、先にバックアップを取り（3.2 の 2）、SQL をもう1人に見てもらってから流します。
+- `daily_reports` を SQL で直接足す・消す・書き換えたとき（4.3 の行の戻しや、検証環境への過去のデータの積み込みを含む）は、日報一覧の件数の控えも消します: `DELETE FROM daily_report_month_counts WHERE company_id = <会社>`（次に日報一覧を開いたときに数え直します。消さないと、今月より前の月の件数が最長7日古いまま出ます。#9970・`src/lib/report-counts.ts`）。
 - 個人情報の列を画面やチャットに貼らないでください。
 
 ---

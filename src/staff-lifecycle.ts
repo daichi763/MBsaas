@@ -16,6 +16,7 @@ import { syncActualFromReports, syncActualsForShifts, closedMessage } from './se
 import { NOTICE_TARGET_SQL } from './lib/notices'
 import { isHHMM, isISODate, pickReportValues, reportFieldRulesError } from './lib/validate'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes } from './lib/daily-report'
+import { dirtyReportCountsByShiftStmt } from './lib/report-counts'
 import { notifyDailyReportIncident, notifyConsultation } from './notifications'
 import { notifyProxyAttendance, ATTENDANCE_PROXY_KIND, loadMailContact } from './notifications'
 import { hashPassword, validatePassword, isCompanyActive } from './lib/auth'
@@ -1356,7 +1357,8 @@ adminLifecycleApi.post('/report-links/bulk', async (c) => {
 
 // 対応済みにしたインシデント・クレームを未対応に戻す（#169。api.ts の reopenIncidentStmt と同じ）
 async function reopenIncident(db: D1Database, shiftId: number) {
-  await db.prepare(`UPDATE daily_reports SET incident_status = NULL WHERE shift_id = ? AND incident_status = 'done'`).bind(shiftId).run()
+  // 日報一覧の件数の控え（今月より前の月）の印も消す（#9970）
+  await db.batch([db.prepare(`UPDATE daily_reports SET incident_status = NULL WHERE shift_id = ? AND incident_status = 'done'`).bind(shiftId), dirtyReportCountsByShiftStmt(db, shiftId)])
 }
 
 // ---------- 日報の代理入力（#276） ----------
