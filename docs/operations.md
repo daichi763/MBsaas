@@ -347,8 +347,8 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:74` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:86` |
 | プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:97` |
-| Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:289` |
-| 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:381` |
+| Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:286` |
+| 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:378` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:125` |
 
 予期しないエラーの1行は JSON で、`ref`（参照番号）・`method`・`path`・`company_id`・`user_id`・`role`・`message`・`stack`（6行まで）を持ちます（[architecture.md](architecture.md) の 4.3）。利用者から「参照番号: xxxx」と聞いたら、その文字で検索します。

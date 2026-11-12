@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Field OS を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-11 時点の `review-fixes` ブランチ、コミット `73967f7` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-12 時点の `review-fixes` ブランチ、コミット `660d95b` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -82,7 +82,7 @@ flowchart LR
 
 | 要素 | 役割 | 設定・コード |
 |---|---|---|
-| Worker `mbsaas` | 画面の HTML・API・Webhook・Service Worker・定期処理を1つの Worker で返す | `wrangler.jsonc:5`（名前）、`src/index.tsx:914`（`fetch` と `scheduled` の入口） |
+| Worker `mbsaas` | 画面の HTML・API・Webhook・Service Worker・定期処理を1つの Worker で返す | `wrangler.jsonc:5`（名前）、`src/index.tsx:916`（`fetch` と `scheduled` の入口） |
 | Hono | ルーティングとミドルウェア。`/api/*` は `src/api.ts` にまとめ、機能ごとのファイルを `api.route()` でつなぐ | `src/index.tsx:100`、`src/api.ts:1262`〜`1307` |
 | Workers Assets | `dist/` の静的ファイル（`public/` の中身が `vite build` で `dist/` に入る）を配信する | `wrangler.jsonc:8` |
 | D1 | すべての業務データ（SQLite 互換）。バインディング名 `DB` | `wrangler.jsonc:17`、`migrations/*.sql` |
@@ -91,7 +91,7 @@ flowchart LR
 | Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:90` |
 | Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:144` |
 | Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:106`（`/sw.js`） |
-| Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:270`・`280` |
+| Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:267`・`277` |
 | jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:149`〜`165` |
 | Workers Builds | GitHub の `main` に入ると、ビルドして本番にデプロイする | `scripts/ci-wrangler-config.mjs:1`〜`5` |
 
@@ -142,7 +142,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 
 参照番号は `newErrorRef()`（`src/lib/error-log.ts:54`〜`56`）が作ります。パスに入るトークン（20文字以上で、数字か大文字を含む英数字）は `maskPath()` が `***` に伏せます（`src/lib/error-log.ts:63`〜`65`）。利用者から参照番号を聞いたら、Workers Logs で `ref` を検索します（[operations.md](operations.md) の「ログの見方」）。
 
-あわせて、エラーの要約を D1 の `error_logs` に応答の後で残し（`src/index.tsx:77`〜`78`）、本部画面の「障害」で見られるようにしています。定期処理の失敗も `withErrorLog` で同じ表に残します（`src/index.tsx:895`〜`912`）。件数が目安を超えると本部の管理者に通知します。仕組みと設定は [monitoring.md](monitoring.md) を見てください。
+あわせて、エラーの要約を D1 の `error_logs` に応答の後で残し（`src/index.tsx:77`〜`78`）、本部画面の「障害」で見られるようにしています。定期処理の失敗も `withErrorLog` で同じ表に残します（`src/index.tsx:897`〜`914`）。件数が目安を超えると本部の管理者に通知します。仕組みと設定は [monitoring.md](monitoring.md) を見てください。
 
 ## 5. 定期処理（Cron Trigger）
 
@@ -157,7 +157,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日）。取りこぼさないよう 3:00 の起動の先頭で行う | `src/api.ts:8147` |
 | `0 18 * * *` | 毎日 3:00 | `auth_purge` | 期限切れのセッション・ログイン試行・1年より古いログイン履歴の削除 | `src/lib/auth.ts:191` |
 | `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）の削除 | `src/services/retention.ts:1095` |
-| `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1071` |
+| `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1068` |
 | `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年・実行の記録 `retention_logs`・`hq_view_logs` の1年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:951` |
 | `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:197` |
 | `0 18 * * *` | 毎日 3:00 | `affiliation_schedules` | 予約した所属区分の変更を適用する。使う問い合わせの数を予算（`AFFILIATION_SCHEDULE_BUDGET`）の内に収め、収まらない予約は次の `affiliation_schedules_rest` に回す | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
@@ -170,7 +170,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `*/15 * * * *` | 15分おき | `doc_expiry_notice` | 書類の有効期限（30日以内・期限切れ）を管理者に知らせる | `src/notifications.ts` の `notifyExpiringDocuments` |
 | `*/15 * * * *` | 15分おき | `affiliation_schedules_rest` | 3:00 の起動で予算に収まらなかった所属区分の変更の予約を、4:00 以降に少しずつ適用する（0:00〜3:59 は何もしない。予約がなければ問い合わせ1回） | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
 
-- 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:911`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
+- 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:913`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
 - 毎日の処理を 3:00 と 3:30 に分けているのは、1回の起動で D1 に投げられる問い合わせの数に上限があるためです（`src/index.tsx:815`、`src/services/cron.ts:5`〜`6`）。件数で問い合わせが増える所属区分の変更の予約は、使う文の数を数えて予算の内で止め、残りを15分おきの起動に回します（#9968）。
 - 何もしなかった実行（`idle: true`）は、直前の記録も idle ならその行を消してから記録します。15分おきの処理で記録が埋まらないようにするためです（`src/services/cron.ts:76`〜`79`）。
 
@@ -187,14 +187,14 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 ### 6.2 Web Push（プッシュ通知）
 
 - 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:102`〜`140`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1958`・`2025`・`2057`・`2079`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
-- 鍵: シークレット `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` があればそれを使い、なければ初回に作って D1 の `push_vapid_keys` に保存します（`src/lib/web-push.ts:42`〜`59`）。
-- アプリ内の通知（`user_notifications`）が入ると、トリガー（`migrations/0081_push.sql` の `trg_user_notifications_push`）で `push_queue` に積まれ、API の応答の後と15分おきの cron で送ります。送り先が 404・410 を返した購読は消します（`src/lib/web-push.ts:111`）。
+- 鍵: シークレット `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` があればそれを使い、なければ初回に作って D1 の `push_vapid_keys` に保存します（`src/lib/web-push.ts:37`〜`54`）。
+- アプリ内の通知（`user_notifications`）が入ると、トリガー（`migrations/0081_push.sql` の `trg_user_notifications_push`）で `push_queue` に積まれ、API の応答の後と15分おきの cron で送ります。送り先が 404・410 を返した購読は消します（`src/lib/web-push.ts:106`）。
 
 ### 6.3 Turnstile（応募のロボット判定）
 
-- `TURNSTILE_SITE_KEY` と `TURNSTILE_SECRET_KEY` の両方があるときだけ使います（`src/recruit.ts:270`）。
-- Cloudflare への問い合わせ（siteverify）が失敗・5秒でタイムアウトしたときは、応募を受け付けて「要確認」の印（`recruit_applications.turnstile_unverified = 1`）を付けます。判定に落ちた応募は受け付けません（`src/recruit.ts:304`〜`311`。[decisions.md](decisions.md) の D-01）。
-- そのほかの機械的な送信の対策: 見えない入力欄・表示から短時間の送信は保存しない、同じ接続元から1時間あたり・同じ電話番号から1日あたりの件数の上限（`src/recruit.ts:300`〜`339`）。接続元 IP はそのまま保存せず、`RATE_LIMIT_SALT`（なければ `TURNSTILE_SECRET_KEY`）を塩にしたハッシュにします（`src/recruit.ts:373`〜`383`）。
+- `TURNSTILE_SITE_KEY` と `TURNSTILE_SECRET_KEY` の両方があるときだけ使います（`src/recruit.ts:267`）。
+- Cloudflare への問い合わせ（siteverify）が失敗・5秒でタイムアウトしたときは、応募を受け付けて「要確認」の印（`recruit_applications.turnstile_unverified = 1`）を付けます。判定に落ちた応募は受け付けません（`src/recruit.ts:301`〜`308`。[decisions.md](decisions.md) の D-01）。
+- そのほかの機械的な送信の対策: 見えない入力欄・表示から短時間の送信は保存しない、同じ接続元から1時間あたり・同じ電話番号から1日あたりの件数の上限（`src/recruit.ts:297`〜`336`）。接続元 IP はそのまま保存せず、`RATE_LIMIT_SALT`（なければ `TURNSTILE_SECRET_KEY`）を塩にしたハッシュにします（`src/recruit.ts:370`〜`380`）。
 
 ### 6.4 jsDelivr（画面のライブラリ）
 
@@ -339,7 +339,7 @@ docs/                     この資料と機能ごとの仕様
 
 - **導入企業 = `companies` の1行**です。業務データのテーブルは `company_id` を持ち、API はログイン中の利用者の `company_id` で絞ります。
 - 画面や API から受け取った ID は、必ず自社の行かを確かめてから使います。共通の関数は `src/lib/tenant.ts`（`ownProject`・`ownClient`・`ownStaff`・`ownShift` など。見つからなければ 404 にする）。
-- **本部**: 本部ユーザー（`system_admin`）は、本部専用の企業行（`companies.active_status = 'internal'`）に所属します（`migrations/0033_account_admin.sql:7`〜`16`）。本部が各社の管理画面を見るのは、企業が許可したときだけで、期限付き・読み取り専用です。開始・終了と開いた画面を記録します（`src/hq-support.ts:4`、`200` の `hqViewAdminGuard`、Cookie `hq_view`）。本部の書き込みは `hq_audit_logs` に残します（`src/api.ts:862`〜`875`）。
+- **本部**: 本部ユーザー（`system_admin`）は、本部専用の企業行（`companies.active_status = 'internal'`）に所属します（`migrations/0033_account_admin.sql:7`〜`16`）。本部が各社の管理画面を見るのは、企業が許可したときだけで、期限付き・読み取り専用です。開始・終了と開いた画面を記録します（`src/hq-support.ts:4`、`201` の `hqViewAdminGuard`、Cookie `hq_view`）。本部の書き込みは `hq_audit_logs` に残します（`src/api.ts:862`〜`875`）。
 - **企業の停止**: 本部で停止にすると（`companies.active_status = 'inactive'`）、その企業の利用者はログイン・API が使えなくなり（`src/lib/auth.ts:96`、`137`）、セッションも消します（`src/lib/auth.ts:112`）。
 - **企業間のスタッフ連携**（会社をまたいで同じ人を使う仕組み）: 所属元のスタッフを、連携用のコード（自社雇用は人物の恒久 ID `FS…`、連携で受けた人をさらに渡すときは `RL…`）で連携先に登録します。連携先には自社の行（`staff_profiles.affiliation_type = 'linked_external'`、ユーザーコード `LK-…`。照合できないパスワード）が作られ（`src/roster.ts:1352`）、基本項目は所属元の行をその場で読みます。共有する項目と共有しない項目は `src/roster.ts:222`〜`236`（同意の版 v3）で決まり、同意は `roster_consents` に残します。詳細は [decisions.md](decisions.md) の D-03・D-04 と [spec_multi_company_staff.md](spec_multi_company_staff.md)。
 - **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1629`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:182` の `resolvePersonShift`）。
@@ -376,11 +376,11 @@ docs/                     この資料と機能ごとの仕様
 |---|---|---|
 | `RESEND_API_KEY` | メール送信（`src/services/email.ts:112`・`165`） | メールを送らず、送信失敗（`mail_not_configured`）として記録する。**本番は未登録**（D-31） |
 | `RESEND_WEBHOOK_SECRET` | Resend の Webhook の署名の確認（`src/services/email.ts:292`） | Webhook に 503 を返す（不達の記録が更新されない） |
-| `TURNSTILE_SITE_KEY` | 募集ページに Turnstile を出す（`src/recruit.ts:261`） | 2つそろわなければ Turnstile を使わない。片方だけのときは管理画面に状態を出す（`src/recruit.ts:271`〜`274`） |
-| `TURNSTILE_SECRET_KEY` | Turnstile の判定（`src/recruit.ts:308`） | 同上 |
-| `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:379`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push の署名（`src/lib/web-push.ts:43`） | 初回に鍵を作って D1 の `push_vapid_keys` に保存して使う |
-| `VAPID_SUBJECT` | Web Push の連絡先（`https://` か `mailto:`。`src/lib/web-push.ts:63`） | `APP_BASE_URL` が https ならそれ、なければ仮のアドレス |
+| `TURNSTILE_SITE_KEY` | 募集ページに Turnstile を出す（`src/recruit.ts:258`） | 2つそろわなければ Turnstile を使わない。片方だけのときは管理画面に状態を出す（`src/recruit.ts:268`〜`271`） |
+| `TURNSTILE_SECRET_KEY` | Turnstile の判定（`src/recruit.ts:305`） | 同上 |
+| `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:376`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push の署名（`src/lib/web-push.ts:38`） | 初回に鍵を作って D1 の `push_vapid_keys` に保存して使う |
+| `VAPID_SUBJECT` | Web Push の連絡先（`https://` か `mailto:`。`src/lib/web-push.ts:58`） | `APP_BASE_URL` が https ならそれ、なければ仮のアドレス |
 
 どのシークレットが本番に登録されているかは `npx wrangler secret list --env production` で確かめます（値は表示されません）。
 
