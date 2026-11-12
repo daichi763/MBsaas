@@ -167,6 +167,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `30 18 * * *` | 毎日 3:30 | `notice_read_reports` | 既読率レポートの集計 | `src/api.ts:314` |
 | `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7005` |
 | `*/15 * * * *` | 15分おき | `doc_expiry_notice` | 書類の有効期限（30日以内・期限切れ）を管理者に知らせる | `src/notifications.ts` の `notifyExpiringDocuments` |
+| `*/15 * * * *` | 15分おき | `monitor_daily` | D1 の DB の大きさを記録し（1日1行の `db_size_logs`）、上限（`DB_SIZE_LIMIT_MB`）に対する段階を本部の管理者と送り先に知らせる。送り先への障害の通知の毎朝のまとめも送る（毎朝8時以降の最初の起動で1回。済んだ後は問い合わせ1回。[monitoring.md](monitoring.md) の 9・10 章） | `src/services/monitor.ts` の `runMonitorDaily` |
 | `*/15 * * * *` | 15分おき | `affiliation_schedules_rest` | 3:00 の起動で予算に収まらなかった所属区分の変更の予約を、4:00 以降に少しずつ適用する（0:00〜3:59 は何もしない。予約がなければ問い合わせ1回） | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
 
 - 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:911`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
@@ -356,6 +357,7 @@ docs/                     この資料と機能ごとの仕様
 | `MAIL_ENABLED` | `false` | `true` | `'true'` 以外（未設定も含む）ならメールを送らず記録だけ（`src/services/email.ts:111`） |
 | `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:840`） |
 | `DEMO_MODE` | `true` | `false` | `'true'` のときだけ、ログイン画面にデモアカウントの案内を出す（`src/index.tsx:269`） |
+| `DB_SIZE_LIMIT_MB` | `500` | `500` | D1 の DB の大きさの上限（MB）。本部画面の「DB の大きさ」の割合・段階をこの値に対して計算する。今は無料プランの 500MB。有料プラン（10GB）に切り替えたら両方を `10240` に変える（`src/services/monitor.ts` の `dbSizeLimitMb`。[monitoring.md](monitoring.md) の 10 章） |
 
 次の `vars` は省略できます（`wrangler.jsonc` に書かなければ既定の値。`src/lib/error-log.ts:40`〜`46`）。変え方は [monitoring.md](monitoring.md) の「通知の目安を変える」にあります。
 
@@ -364,7 +366,7 @@ docs/                     この資料と機能ごとの仕様
 | `ERROR_ALERT_THRESHOLD` | `10` | 障害の通知を出す件数 |
 | `ERROR_ALERT_WINDOW_MINUTES` | `10` | 件数を数える期間（分） |
 | `ERROR_ALERT_COOLDOWN_MINUTES` | `60` | 同じ通知を次に出すまでの間隔（分） |
-| `TEST_HOOKS` | なし | テスト用。`'true'` のときだけ、打刻の API に D1 の回数のヘッダーと過負荷のまねを付ける（`src/lib/d1-retry.ts:33`。ローカルの `wrangler dev --var TEST_HOOKS:true` だけで使い、`wrangler.jsonc` と本番には入れない） |
+| `TEST_HOOKS` | なし | テスト用。`'true'` のときだけ、打刻の API に D1 の回数のヘッダーと過負荷のまねを付ける。障害の通知の送り先に http の URL（手元の受け口）を使えるようにし、DB の大きさの毎日の記録で8時を待たない（`src/lib/d1-retry.ts:33`。ローカルの `wrangler dev --var TEST_HOOKS:true` だけで使い、`wrangler.jsonc` と本番には入れない） |
 | `DB_CALL_COUNT` | なし | テスト用。`'true'` のときだけ、打刻修正のまとめて承認の応答に、その要求の D1 の呼び出しの回数 `d1_calls` を付ける（`src/corrections.ts:1038`。ローカルの `wrangler dev --var DB_CALL_COUNT:true` だけで使い、`wrangler.jsonc` と本番には入れない） |
 
 ダッシュボードで `vars` を変えても、次のデプロイで `wrangler.jsonc` の値に戻ります。変えるときは `wrangler.jsonc`（トップレベルと `env.production` の両方）を直してマージします。
@@ -380,6 +382,8 @@ docs/                     この資料と機能ごとの仕様
 | `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:379`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push の署名（`src/lib/web-push.ts:43`） | 初回に鍵を作って D1 の `push_vapid_keys` に保存して使う |
 | `VAPID_SUBJECT` | Web Push の連絡先（`https://` か `mailto:`。`src/lib/web-push.ts:63`） | `APP_BASE_URL` が https ならそれ、なければ仮のアドレス |
+| `ALERT_DESTINATIONS` | 障害の通知の送り先（Slack・Discord・Google Chat・Teams・LINE・Webhook・メール。JSON の配列か、それを base64 にしたもの。`src/services/alerts.ts` の `loadDestinations`。書き方は [monitoring.md](monitoring.md) の 9 章） | 送り先へは送らない（アプリ内の通知とプッシュ通知だけ）。エラーにはしない |
+| `ALERT_WEBHOOK_URL` | 以前の決定の Webhook の URL（1つ）。あれば `type: webhook` の送り先として足す（`src/services/alerts.ts`） | 足さない |
 
 どのシークレットが本番に登録されているかは `npx wrangler secret list --env production` で確かめます（値は表示されません）。
 

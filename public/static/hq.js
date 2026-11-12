@@ -1045,6 +1045,7 @@ const RETENTION_TARGET_LABEL = {
   ended_employee_documents: '雇用終了の入社時書類（雇用終了から7年・R2の削除に回す）', ended_employment_periods: '過去の雇用期間（終了から7年）',
   orphan_photos: '勤怠に紐づかない写真（本部の手動削除）',
   error_logs: '障害の記録（90日）', error_alerts: '障害の通知の記録（90日）',
+  db_size_logs: 'DB の大きさの記録（2年）', alert_destination_status: '通知の送り先の最後の送信の結果（90日）', alert_cooldowns: '同じ通知の間隔の記録（90日）',
 }
 // 人ごとの dry-run の内訳で出す列（API の DRY_RUN_STAFF_COUNTS と同じキー）
 const RETENTION_STAFF_COLS = [
@@ -2016,7 +2017,7 @@ async function renderErrors() {
     </div>
     ${d.alerts_unread.length ? `
     <section class="bg-slate-800 border rounded-xl p-4 mb-4" style="border-color:#ef4444">
-      <p class="font-bold text-red-400 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>エラーが増えたときの通知があります</p>
+      <p class="font-bold text-red-400 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>障害の通知があります</p>
       <ul class="text-sm space-y-1 mb-2">${d.alerts_unread.map(a => `<li><span class="text-xs text-slate-400 mr-2">${esc(hqTime(a.created_at))}</span>${esc(a.title)}</li>`).join('')}</ul>
       <button class="btn btn-primary text-sm" data-action="hqErrAlertsRead"><i class="fas fa-check"></i>確認しました</button>
     </section>` : ''}
@@ -2064,9 +2065,12 @@ async function renderErrors() {
       <div id="he-logs"></div>
     </section>
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-push"></section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-dests"><p class="text-sm text-slate-400">通知の送り先を読み込み中…</p></section>
+    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-dbsize"></section>
     <p class="text-[11px] text-slate-500">ここに出るのは、利用者の画面に「参照番号」付きのエラーが出たもの（サーバーの予期しないエラー）と、利用者への応答は成功にした後の処理の失敗（実績の同期・書き出しの記録など。「…に失敗しました」の行）と、定期処理の失敗です。入力値や個人の情報は記録しません。詳しいログ（スタックトレースなど）は Cloudflare のダッシュボードの Workers Logs で、参照番号を検索して確かめます。</p>`
   drawErrorLogs()
   drawHqPush()
+  drawHqMonitor()
   document.getElementById('he-form').addEventListener('submit', (e) => {
     e.preventDefault()
     const q = document.getElementById('he-q').value.trim().toLowerCase()
@@ -2113,6 +2117,125 @@ async function drawHqPush() {
   }
   box.innerHTML = head + body
 }
+// ---- 障害の通知の送り先・DB の大きさ（#9974 #9971。/api/hq/monitor。src/hq-monitor.ts） ----
+// 送り先の URL・トークン・宛先は API も返さない（名前・種類・最後の送信の結果だけ）
+const DEST_RECEIVE_LABEL = { all: 'すべての通知', critical: 'すぐに知らせるものだけ', digest: '毎朝のまとめだけ' }
+const DEST_STATUS_BADGE = { sent: ['badge-green', '送れました'], failed: ['badge-red', '失敗'], not_configured: ['badge-yellow', '未設定'], invalid: ['badge-red', '設定の誤り'] }
+const DEST_EVENT_LABEL = { error_threshold: 'エラーの急増', critical_failure: '打刻・日報の失敗', cron_failed: '定期処理の失敗', db_size: 'DB の大きさ', digest: '毎朝のまとめ', test: 'テスト送信' }
+const DB_STAGE_BADGE = { ok: 'badge-green', prepare: 'badge-blue', start: 'badge-yellow', warning: 'badge-red', emergency: 'badge-red' }
+const DB_STAGE_TEXT = {
+  ok: 'まだ余裕があります（上限の50%未満で、上限まで12か月より長い見込み）。',
+  prepare: '準備の段階です（上限の50%か、上限まで残り12か月）。有料プランへの切り替え・データを移す仕組みの準備を始めます。',
+  start: '着手の段階です（上限の60%か、上限まで残り6か月）。データを移す仕組み（有料プランへの切り替えなど）に着手します。',
+  warning: '警告の段階です（上限の80%）。毎日通知します。有料プランへの切り替えなどを急いでください。',
+  emergency: '緊急の段階です（上限の90%）。上限に届くと書き込みができなくなります。毎日通知し、本部画面の上部に赤い帯を出します。',
+}
+function hqBytes(b) {
+  const mb = Number(b || 0) / 1048576
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)}GB` : `${mb.toFixed(1)}MB`
+}
+function hqDestsHtml(d) {
+  const head = `<h3 class="font-bold mb-1"><i class="fas fa-paper-plane text-cyan-400 mr-1"></i>通知の送り先（Slack・LINE など）</h3>
+    <p class="text-xs text-slate-400 mb-2">障害の通知を、アプリ内の通知・プッシュ通知に加えて、ここの送り先にも送ります。すぐに知らせるもの: 打刻・日報の送信の失敗（1件目から。同じ場所は${Number(d.cooldown_minutes) || 60}分に1回まで）・エラーの急増・DB の大きさが上限の90%を超えたとき。そのほか: 定期処理の失敗・DB の大きさの段階。毎朝8時に前日からのまとめも送ります。</p>`
+  if (d.destinations_source === 'invalid') return head + '<p class="text-sm text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>秘密の値 ALERT_DESTINATIONS を読み取れませんでした（JSON の配列か、それを base64 にしたものにしてください）。今は送り先へは送っていません。</p>'
+  if (!d.destinations.length) return head + '<p class="text-sm text-slate-400"><i class="fas fa-circle-info mr-1"></i>送り先はまだ登録されていません。今はアプリ内の通知とプッシュ通知だけで知らせます。登録のしかたは資料（docs/monitoring.md の「通知の送り先」）にあります。</p>'
+  const rows = d.destinations.map(x => {
+    const [cls, label] = x.problem ? DEST_STATUS_BADGE.invalid : (DEST_STATUS_BADGE[x.last_status] || ['badge-gray', 'まだ送っていません'])
+    const last = x.problem ? `<span class="block text-[11px] text-red-400">${esc(x.problem)}</span>`
+      : x.last_attempt_at ? `<span class="block text-[11px] text-slate-400">${esc(hqTime(x.last_attempt_at))}（${esc(DEST_EVENT_LABEL[x.last_event] || x.last_event || '')}）${x.last_error ? `・${esc(x.last_error)}` : ''}</span>${x.last_success_at && x.last_status !== 'sent' ? `<span class="block text-[11px] text-slate-500">最後に送れた日時: ${esc(hqTime(x.last_success_at))}</span>` : ''}` : ''
+    return `<tr class="border-b border-slate-700/40 align-top">
+      <td class="px-2 py-2 font-bold">${esc(x.label)}</td>
+      <td class="px-2 py-2 text-xs whitespace-nowrap">${esc(x.type_label)}</td>
+      <td class="px-2 py-2 text-xs">${esc(DEST_RECEIVE_LABEL[x.receive] || x.receive)}</td>
+      <td class="px-2 py-2 text-xs"><span class="badge ${cls}">${esc(label)}</span>${last}</td>
+      <td class="px-2 py-2 text-right"><button class="btn btn-outline text-xs whitespace-nowrap" data-action="hqDestTest" data-key="${esc(x.key)}" ${x.problem ? 'disabled' : ''}><i class="fas fa-paper-plane"></i>テスト送信</button></td></tr>`
+  }).join('')
+  return head + `<div class="overflow-x-auto"><table class="w-full text-sm" style="min-width:600px">
+      <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">名前</th><th class="text-left px-2">種類</th><th class="text-left px-2">受け取る通知</th><th class="text-left px-2">最後の送信</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="text-[11px] text-slate-500 mt-2">送り先の URL・トークン・宛先は画面に出しません。変えるときは秘密の値 ALERT_DESTINATIONS を登録し直します。</p>`
+}
+function hqDbSizeHtml(s) {
+  const head = `<div class="flex items-center justify-between flex-wrap gap-2 mb-2"><h3 class="font-bold"><i class="fas fa-database text-cyan-400 mr-1"></i>DB の大きさ（D1）</h3>${s.size_bytes != null ? `<span class="badge ${DB_STAGE_BADGE[s.stage] || 'badge-gray'}">${esc(s.stage_label)}</span>` : ''}</div>`
+  const limitNote = `<p class="text-[11px] text-slate-500 mt-2">上限 ${Number(s.limit_mb)}MB は設定（vars の DB_SIZE_LIMIT_MB）の値です。今は無料プランの 500MB で、有料プランに切り替えたら 10240（10GB）に変えます。記録は毎朝8時以降の定期処理で1日1回です。</p>`
+  if (s.size_bytes == null) return head + '<p class="text-sm text-slate-400">まだ記録がありません（毎朝8時以降の定期処理で1日1回記録します）。</p>' + limitNote
+  const pct = Number(s.pct) || 0
+  const card = (l, v, sub, c) => `<div class="bg-slate-900 border border-slate-700 rounded-xl p-3"><p class="text-xs text-slate-400">${esc(l)}</p><p class="text-lg font-bold ${c || ''}">${esc(v)}</p>${sub ? `<p class="text-[11px] text-slate-400">${esc(sub)}</p>` : ''}</div>`
+  const growth = s.growth_bytes_per_month == null ? card('1か月の増え方', '－', '記録が7日分たまると出します') : card('1か月の増え方', hqBytes(s.growth_bytes_per_month), `直近${Number(s.growth_days)}日の記録から`)
+  const left = s.reached_100 ? card('上限までの残り', '届いています', '', 'text-red-400') : s.months_left == null ? card('上限までの残り', '－', s.growth_bytes_per_month != null ? '増えていません' : '') : card('上限までの残り', `約${s.months_left}か月`, '', s.months_left <= 6 ? 'text-red-400' : s.months_left <= 12 ? 'text-amber-400' : '')
+  const when = (reached, date) => reached ? '届いています' : date ? dayjs(date).format('YYYY/M/D') : '－'
+  const marks = [50, 60, 80, 90].map(m => `<span class="absolute top-0 bottom-0 border-l border-slate-500" style="left:${m}%" title="${m}%"></span>`).join('')
+  const hist = s.history || []
+  const max = Math.max(1, ...hist.map(h => h.size_bytes))
+  const tables = s.tables || []
+  return head + `
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+      ${card('今の大きさ', hqBytes(s.size_bytes), `上限 ${hqBytes(Number(s.limit_mb) * 1048576)} の ${pct}%（${esc(s.day ? dayjs(s.day).format('M/D') : '')} の記録）`, pct >= 80 ? 'text-red-400' : pct >= 50 ? 'text-amber-400' : '')}
+      ${growth}${left}
+      ${card('80% に届く見込み', when(s.reached_80, s.date_80), '')}
+      ${card('上限（100%）に届く見込み', when(s.reached_100, s.date_100), '')}
+    </div>
+    <div class="relative h-3 rounded bg-slate-700 overflow-hidden mb-1" role="img" aria-label="上限に対する割合 ${pct}%">
+      <div class="h-full ${pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-cyan-500'}" style="width:${Math.min(100, pct)}%"></div>${marks}
+    </div>
+    <p class="text-[11px] text-slate-400 mb-2">目盛りは 50%（準備）・60%（着手）・80%（警告）・90%（緊急）</p>
+    <p class="text-sm mb-3">${esc(DB_STAGE_TEXT[s.stage] || '')}</p>
+    ${hist.length > 1 ? `<div class="flex items-end gap-0.5 h-16 mb-3" role="img" aria-label="直近${hist.length}日の大きさ">${hist.map(h => `<div class="flex-1 bg-cyan-700 rounded-t min-w-0" style="height:${Math.max(2, Math.round(h.size_bytes / max * 60))}px" title="${esc(h.day)}: ${esc(hqBytes(h.size_bytes))}"></div>`).join('')}</div>` : ''}
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+      <p class="font-bold text-sm">行の多い表${s.tables_at ? `<span class="text-[11px] font-normal text-slate-400 ml-2">${esc(hqTime(s.tables_at))} に数えました（${Number(s.tables_total)}表）</span>` : ''}</p>
+      <button class="btn btn-outline text-xs" data-action="hqDbCountTables"><i class="fas fa-list-ol"></i>表ごとの行数を数える</button>
+    </div>
+    ${tables.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><tbody>${tables.map(t => `<tr class="border-b border-slate-700/40"><td class="px-2 py-1 font-mono">${esc(t.table)}</td><td class="px-2 py-1 text-right">${Number(t.rows).toLocaleString()}行</td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="text-xs text-slate-400">まだ数えていません。</p>'}
+    <p class="text-[11px] text-slate-500 mt-1">行数を数えるときは、すべての表のすべての行を読むので、D1 の1日の読み取りの枠を使います${s.tables_rows_read != null ? `（前回は ${Number(s.tables_rows_read).toLocaleString()}行を読みました）` : ''}。10分に1回まで数えられます。</p>` + limitNote
+}
+async function drawHqMonitor() {
+  const a = document.getElementById('he-dests'), b = document.getElementById('he-dbsize')
+  if (!a || !b) return
+  let d
+  try { d = (await axios.get('/api/hq/monitor')).data } catch (e) {
+    a.innerHTML = `<p class="text-sm text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>${esc((e.response && e.response.data && e.response.data.error) || '通知の送り先・DB の大きさを読み込めませんでした')}</p>`
+    b.innerHTML = ''
+    return
+  }
+  if (!document.getElementById('he-dests')) return // 読み込み中にほかのタブへ移った
+  a.innerHTML = hqDestsHtml(d)
+  b.innerHTML = hqDbSizeHtml(d.db_size)
+  renderDbSizeBand({ db_stage: d.db_size.size_bytes == null ? 'ok' : d.db_size.stage, db_pct: d.db_size.pct })
+}
+// DB の大きさが「緊急」（上限の90%）のときは、どのタブでも画面の上部に赤い帯を出す
+function renderDbSizeBand(b) {
+  let box = document.getElementById('hq-db-band')
+  const on = !!b && b.db_stage === 'emergency'
+  if (!box) {
+    if (!on) return
+    box = document.createElement('div')
+    box.id = 'hq-db-band'
+    box.className = 'max-w-7xl mx-auto p-4 md:p-6'
+    box.style.paddingBottom = '0'
+    $app.parentNode.insertBefore(box, document.getElementById('hq-cron-alert') || $app)
+  }
+  box.innerHTML = on ? `<div class="rounded-xl p-3 text-sm text-white" style="background:#dc2626" role="alert">
+      <p class="font-bold"><i class="fas fa-database mr-1"></i>DB の大きさが上限の${esc(b.db_pct)}%です（緊急）</p>
+      <p class="text-xs mt-1">上限に届くと、打刻・日報などの書き込みができなくなります。有料プランへの切り替えなどをすぐに進めてください。</p>
+      <a href="#errors" class="text-xs underline">障害の「DB の大きさ」を開く →</a></div>` : ''
+  box.style.display = on ? '' : 'none'
+}
+async function refreshDbSizeBand() {
+  try { renderDbSizeBand((await axios.get('/api/hq/monitor/banner', { headers: { 'X-Background': '1' } })).data) } catch { }
+}
+delegate('hqDestTest', (el) => withSubmitLock(el, async () => {
+  let r
+  try { r = (await axios.post(`/api/hq/monitor/destinations/${encodeURIComponent(el.dataset.key || '')}/test`)).data } catch (e) { showApiError(e, 'テスト送信できませんでした'); return }
+  const res = r.result || {}
+  toast(r.ok ? 'テストの通知を送りました。届いたか確かめてください' : res.status === 'not_configured' ? `送りませんでした: ${res.error || '未設定'}` : `送れませんでした: ${res.error || '失敗'}`)
+  drawHqMonitor()
+}))
+delegate('hqDbCountTables', (el) => withSubmitLock(el, async () => {
+  try { await axios.post('/api/hq/monitor/db-size/count-tables') } catch (e) { showApiError(e, '行数を数えられませんでした'); return }
+  toast('表ごとの行数を数えました')
+  drawHqMonitor()
+}))
 delegate('hqErrReload', () => renderErrors())
 delegate('hqErrClear', () => { Object.assign(HQ_ERR, { q: '', source: '', company_id: '', company_name: '' }); renderErrors() })
 delegate('hqErrFind', (el) => { Object.assign(HQ_ERR, { q: String(el.dataset.ref || ''), source: '', company_id: '', company_name: '' }); renderErrors() })
@@ -2204,6 +2327,8 @@ window.addEventListener('hashchange', route)
   if (!/^#support/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshSupportBadge()
   // 未読の障害の通知の件数（#9622）。障害のタブは自分で描き直す
   if (!/^#errors/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshErrorsBadge()
+  // DB の大きさが「緊急」のときの上部の赤い帯（#9971）。障害のタブは自分で描き直す
+  if (!/^#errors/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshDbSizeBand()
 })()
 
 // ============ 解約・データ（解約・停止した企業のデータの書き出しと削除。作業単位 w5-hq-offboarding: #177） ============
