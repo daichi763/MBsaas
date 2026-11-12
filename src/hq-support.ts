@@ -10,6 +10,7 @@ import { sendEmailBatch } from './services/email'
 import { escapeHtml } from './email-templates/_util'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
+import { clipText } from './lib/validate'
 import { appBaseUrl } from './lib/http'
 
 type Bindings = {
@@ -22,7 +23,7 @@ const HQ_COMPANY_STATUS = 'internal'
 const nowIso = () => new Date().toISOString()
 // 日本時間の 'YYYY-MM-DD HH:MM'（お知らせの掲載期間と比べる）
 const nowJstMinute = () => nowJST().slice(0, 16)
-const str = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max)
+const str = clipText
 const isId = (v: unknown) => /^\d{1,9}$/.test(String(v ?? ''))
 function settingsOf(json: unknown): Record<string, unknown> {
   try { const s = JSON.parse(String(json || '{}')); return s && typeof s === 'object' ? s : {} } catch { return {} }

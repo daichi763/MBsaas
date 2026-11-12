@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception'
 import api, { generateFiscalYearReportsForAllCompanies, purgeOldNoticeReads, publishDueNotices, autoCloseBillingMonth } from './api'
 import { runRetentionCleanup, applyDueRetirements, purgeExpiredTokens, runInServiceRetentionJob } from './services/retention'
 import { purgeOldApplications } from './recruit'
-import { applyDueAffiliationSchedules } from './staff-lifecycle'
+import { applyDueAffiliationSchedules, runLegacyReportTokenHashJob } from './staff-lifecycle'
 import { loadSessionUser, homePathFor, purgeExpiredAuthRows, SESSION_COOKIE } from './lib/auth'
 import { runCronJobs, defineCronJobs, isUnknownCron } from './services/cron'
 import { handleResendWebhook, type MailEnv } from './services/email'
@@ -908,6 +908,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'notice_reads_purge', label: 'お知らせの既読の記録の削除（2年）', cron: CRON_DAILY, run: env => purgeOldNoticeReads(env.DB) },
   // 在職中の保存期間（位置情報と写真・相談・フォロー記録・決着した人材提案・雇用終了の従業員データ）の削除。D1 の問い合わせの数を分けるため 3:30 の起動で行う（#420 #511 #350 #425）
   { name: 'retention_in_service', label: 'データ保持の定期削除（在職中の位置情報・写真・相談など）', cron: CRON_REPORTS, run: env => runInServiceRetentionJob(env.DB, env, env.RETENTION_ENABLED === 'true') },
+  // 報告用URLの古いトークン（0105 より前の平文）を、1日に500件ずつハッシュへ移す（#9975。残りが無ければ問い合わせ1回で終わる）
+  { name: 'report_token_hash', label: '報告用URLの古いトークンのハッシュへの置き換え', cron: CRON_REPORTS, run: env => runLegacyReportTokenHashJob(env.DB) },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
   // 予約配信のお知らせのメール（#291。画面には時刻どおりに出る。管理者・スタッフがお知らせを開いたときにもその会社の分を送る）
   // 予約の時刻から遅れないよう15分おきに確かめる。予約がなければ問い合わせ1回で終わる

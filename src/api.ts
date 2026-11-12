@@ -5728,12 +5728,12 @@ api.post('/admin/daily-reports/check', async (c) => {
 })
 
 // ---------- 日報のコメント（#360 → 複数のコメント #9965。lib/report-comments.ts・migrations/0107） ----------
-// コメントは日報1件に何件でも付けられる。だれでも「コメントを追加」でき、編集・削除は書いた本人だけ（ほかの人のコメントは 403）。
+// コメントは日報1件に何件でも付けられる。だれでも「コメントを追加」でき、編集・削除は書いた本人だけ（ほかの人のコメントは 403。書いた人の記録がない古いコメントは、管理者ならだれでも直せる。#9975）。
 // 追加・編集したら、日報を出したスタッフに知らせる（同じ日報の未読の通知は1件にまとめる）。編集するとスタッフの既読は外れる
 const COMMENT_CONFLICT = '開いている間に、ほかの管理者がコメントを変更しました。内容を確かめてから保存してください'
 const COMMENT_NOT_MINE = 'このコメントは、書いた人だけが編集・削除できます。補足は「コメントを追加」で送ってください'
-const adminCommentView = (cm: ReportComment, userId: number) => ({ ...cm, mine: cm.author_user_id != null && cm.author_user_id === userId })
-// 追加・編集・削除（db.batch で、旧列への写しと一緒に書く）。戻り値: 書けたか（書いた本人の条件・日報の会社で絞る）
+const adminCommentView = (cm: ReportComment, userId: number) => ({ ...cm, mine: cm.author_user_id != null && cm.author_user_id === userId, editable: cm.author_user_id == null || cm.author_user_id === userId })
+// 追加・編集・削除（db.batch で、旧列への写しと一緒に書く）。戻り値: 書けたか（書いた本人か書いた人の記録がない・日報の会社で絞る）
 async function addReportComment(db: D1Database, u: any, reportId: number, body: string): Promise<number | null> {
   const now = nowJST()
   const [ins] = await db.batch([
@@ -5746,14 +5746,14 @@ async function addReportComment(db: D1Database, u: any, reportId: number, body: 
 async function editReportComment(db: D1Database, u: any, reportId: number, commentId: number, body: string): Promise<boolean> {
   const [upd] = await db.batch([
     db.prepare(`UPDATE daily_report_comments SET body = ?, updated_at = ?, read_at = NULL
-      WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND author_user_id = ?`).bind(body, nowJST(), commentId, reportId, u.company_id, u.user_id),
+      WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND (author_user_id = ? OR author_user_id IS NULL)`).bind(body, nowJST(), commentId, reportId, u.company_id, u.user_id),
     legacyCommentSyncStmt(db, reportId),
   ])
   return !!upd.meta?.changes
 }
 async function deleteReportComment(db: D1Database, u: any, reportId: number, commentId: number): Promise<boolean> {
   const [del] = await db.batch([
-    db.prepare('DELETE FROM daily_report_comments WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND author_user_id = ?').bind(commentId, reportId, u.company_id, u.user_id),
+    db.prepare('DELETE FROM daily_report_comments WHERE comment_id = ? AND daily_report_id = ? AND company_id = ? AND (author_user_id = ? OR author_user_id IS NULL)').bind(commentId, reportId, u.company_id, u.user_id),
     legacyCommentSyncStmt(db, reportId),
     // 未読のコメントが残らなければ、まだ読んでいない通知も消す（スタッフの未読の数は、未読のコメントがある日報の数）
     db.prepare(`DELETE FROM user_notifications WHERE kind = 'daily_report_comment' AND related_id = ? AND company_id = ? AND read_at IS NULL
@@ -5761,14 +5761,14 @@ async function deleteReportComment(db: D1Database, u: any, reportId: number, com
   ])
   return !!del.meta?.changes
 }
-// 日報（自社）とコメント（その日報の）を読む。無ければ 404、ほかの人のコメントなら 403 の応答を返す
+// 日報（自社）とコメント（その日報の）を読む。無ければ 404、ほかの人のコメントなら 403 の応答を返す（書いた人の記録がない古いコメントは通す）
 async function ownReportComment(c: any, u: any): Promise<{ reportId: number; comment: any } | Response> {
   const reportId = toInt(c.req.param('id'), 1); const commentId = toInt(c.req.param('cid'), 1)
   const cm = reportId && commentId ? await c.env.DB.prepare(`SELECT c.comment_id, c.author_user_id, c.body FROM daily_report_comments c
       JOIN daily_reports dr ON dr.daily_report_id = c.daily_report_id AND dr.company_id = c.company_id
     WHERE c.comment_id = ? AND c.daily_report_id = ? AND c.company_id = ?`).bind(commentId, reportId, u.company_id).first() as any : null
   if (!cm) return c.json({ error: 'コメントが見つかりません' }, 404)
-  if (cm.author_user_id == null || Number(cm.author_user_id) !== Number(u.user_id)) return c.json({ error: COMMENT_NOT_MINE }, 403)
+  if (cm.author_user_id != null && Number(cm.author_user_id) !== Number(u.user_id)) return c.json({ error: COMMENT_NOT_MINE }, 403)
   return { reportId: reportId!, comment: cm }
 }
 const reportCommentsOf = async (db: D1Database, u: any, reportId: number) =>

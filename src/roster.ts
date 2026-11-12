@@ -8,7 +8,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { hashPassword, validatePassword, hashToken, isCompanyActive } from './lib/auth'
-import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl, normalizeKana, KANA_MAX } from './lib/validate'
+import { isISODate, halfWidthNumber, normalizePostalCode, normalizeWebsiteUrl, normalizeKana, KANA_MAX, parseJsonOr } from './lib/validate'
 import { countUnreadNotices } from './lib/notices'
 import { recordLoginEvent } from './lib/login-security'
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
@@ -1416,7 +1416,7 @@ function linkedNoticeStmts(db: D1Database, u: any, src: any, newStaffId: number,
 
 // 同意の記録（roster_consents）は残す。会社全体の同意履歴の一覧は画面に出さないので API を置かない（利用者の決定 11/9。#9929）。
 // 連携した行ごとの同意は GET /:id/links の consents で返す
-function safeJson(s: any) { try { return JSON.parse(s) } catch { return s } }
+const safeJson = (s: any) => parseJsonOr(s, s)
 
 // ②従業員管理から作成 / ③取引先から作成 / ④スキルシートのみ作成
 rosterApi.post('/', async (c) => {
