@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Field OS を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-11 時点の `review-fixes` ブランチ、コミット `73967f7` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-12 時点の `review-fixes` ブランチ、コミット `5bfc69e` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -82,17 +82,17 @@ flowchart LR
 
 | 要素 | 役割 | 設定・コード |
 |---|---|---|
-| Worker `mbsaas` | 画面の HTML・API・Webhook・Service Worker・定期処理を1つの Worker で返す | `wrangler.jsonc:5`（名前）、`src/index.tsx:914`（`fetch` と `scheduled` の入口） |
-| Hono | ルーティングとミドルウェア。`/api/*` は `src/api.ts` にまとめ、機能ごとのファイルを `api.route()` でつなぐ | `src/index.tsx:100`、`src/api.ts:1262`〜`1307` |
+| Worker `mbsaas` | 画面の HTML・API・Webhook・Service Worker・定期処理を1つの Worker で返す | `wrangler.jsonc:5`（名前）、`src/index.tsx:959`（`fetch` と `scheduled` の入口） |
+| Hono | ルーティングとミドルウェア。`/api/*` は `src/api.ts` にまとめ、機能ごとのファイルを `api.route()` でつなぐ | `src/index.tsx:140`、`src/api.ts:1264`〜`1310` |
 | Workers Assets | `dist/` の静的ファイル（`public/` の中身が `vite build` で `dist/` に入る）を配信する | `wrangler.jsonc:8` |
 | D1 | すべての業務データ（SQLite 互換）。バインディング名 `DB` | `wrangler.jsonc:17`、`migrations/*.sql` |
 | R2 | 写真・書類のファイル。バケットは非公開で、ファイルは必ずログイン確認付きの API から返す | `wrangler.jsonc:24`（`PHOTOS`・`DOCUMENTS`・`CONTRACTS`） |
-| Cron Triggers | 毎日 3:00・3:30（日本時間）と15分おきに定期処理を起動する | `wrangler.jsonc:39`、`src/index.tsx:829`（`CRON_JOBS`） |
-| Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:90` |
-| Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:144` |
-| Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:106`（`/sw.js`） |
+| Cron Triggers | 毎日 3:00・3:30（日本時間）と15分おきに定期処理を起動する | `wrangler.jsonc:39`、`src/index.tsx:869`（`CRON_JOBS`） |
+| Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:92` |
+| Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:184` |
+| Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:146`（`/sw.js`） |
 | Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:270`・`280` |
-| jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:149`〜`165` |
+| jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:189`〜`205` |
 | Workers Builds | GitHub の `main` に入ると、ビルドして本番にデプロイする | `scripts/ci-wrangler-config.mjs:1`〜`5` |
 
 ## 4. リクエストの流れ
@@ -101,52 +101,52 @@ flowchart LR
 
 画面は SPA（1枚の HTML の中で `#` 以降で切り替える）です。HTML はサーバー（`src/index.tsx`）が返し、中身は `public/static/*.js` がブラウザで描きます。
 
-1. ブラウザが `/admin` などを開くと、Worker がセッションを確かめ（`src/index.tsx:181` の `currentUser`）、ロールに合う HTML を返す。未ログインなら `/login?next=...` へ移す（`src/index.tsx:202`）。
-2. HTML の `<head>` で、CDN のライブラリ（SRI 付き）・`/static/common.js`（共通部品）・`/static/style.css`（Tailwind をビルドしたもの）を読む（`src/index.tsx:168`〜`178`）。
+1. ブラウザが `/admin` などを開くと、Worker がセッションを確かめ（`src/index.tsx:221` の `currentUser`）、ロールに合う HTML を返す。未ログインなら `/login?next=...` へ移す（`src/index.tsx:242`）。
+2. HTML の `<head>` で、CDN のライブラリ（SRI 付き）・`/static/common.js`（共通部品）・`/static/style.css`（Tailwind をビルドしたもの）を読む（`src/index.tsx:208`〜`218`）。
 3. 画面の JS が `/api/...` を axios で呼んで描く。
 
 | パス | 返すもの | コード |
 |---|---|---|
-| `/` | ロールに合う画面へ移す | `src/index.tsx:187` |
-| `/login` | ログイン（会社コード・ID・パスワード → 必要なら二段階認証） | `src/index.tsx:207` |
-| `/reset-password` `/verify-email` `/notice-ack` | メールのリンクから開く画面（ログイン不要） | `src/index.tsx:436`・`517`・`565` |
-| `/r/:token` | シフト専用の報告用URL（ログイン不要） | `src/index.tsx:623`、`public/static/report-link.js` |
-| `/apply/:token` | 公開の募集ページ（ログイン不要） | `src/index.tsx:637`、`public/static/apply.js` |
-| `/staff` | スタッフアプリ（ロール `staff` だけ） | `src/index.tsx:651` |
-| `/admin` | 管理画面（会社の管理系ロール。本部は許可された閲覧のときだけ） | `src/index.tsx:691` |
-| `/hq` | 本部画面（ロール `system_admin` だけ） | `src/index.tsx:783` |
-| `/sw.js` | スタッフアプリ（scope `/staff`）と本部画面（scope `/hq`）の Service Worker（プッシュ通知の表示だけ。オフライン用の保存はしない） | `src/index.tsx:106`〜`140` |
-| `/webhooks/resend` | Resend の Webhook（署名を確かめる） | `src/index.tsx:144` |
+| `/` | ロールに合う画面へ移す | `src/index.tsx:227` |
+| `/login` | ログイン（会社コード・ID・パスワード → 必要なら二段階認証） | `src/index.tsx:247` |
+| `/reset-password` `/verify-email` `/notice-ack` | メールのリンクから開く画面（ログイン不要） | `src/index.tsx:476`・`557`・`605` |
+| `/r/:token` | シフト専用の報告用URL（ログイン不要） | `src/index.tsx:663`、`public/static/report-link.js` |
+| `/apply/:token` | 公開の募集ページ（ログイン不要） | `src/index.tsx:677`、`public/static/apply.js` |
+| `/staff` | スタッフアプリ（ロール `staff` だけ） | `src/index.tsx:691` |
+| `/admin` | 管理画面（会社の管理系ロール。本部は許可された閲覧のときだけ） | `src/index.tsx:731` |
+| `/hq` | 本部画面（ロール `system_admin` だけ） | `src/index.tsx:823` |
+| `/sw.js` | スタッフアプリ（scope `/staff`）と本部画面（scope `/hq`）の Service Worker（プッシュ通知の表示だけ。オフライン用の保存はしない） | `src/index.tsx:146`〜`180` |
+| `/webhooks/resend` | Resend の Webhook（署名を確かめる） | `src/index.tsx:184` |
 
-Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HTML には CSP を付けます（`src/index.tsx:25`〜`55`）。CSP の jsDelivr は、画面で読み込んでいるファイルのパスだけを許します。静的ファイル（`/static/*`・`/manifest.webmanifest`）は Workers Assets が Worker を通さずに返すので、`public/_headers` で nosniff と最小の CSP を付けます。
+Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HTML には CSP を付けます（`src/index.tsx:37`〜`67`）。CSP の jsDelivr は、画面で読み込んでいるファイルのパスだけを許します。静的ファイル（`/static/*`・`/manifest.webmanifest`）は Workers Assets が Worker を通さずに返すので、`public/_headers` で nosniff と最小の CSP を付けます。
 
 ### 4.2 API
 
 `/api/*` の処理の順番は次のとおりです（`src/api.ts`）。
 
-1. ログイン不要の API を先に登録する: `/api/auth/login` など（`src/api.ts:448`〜）、`/api/public/report`（報告用URL）・`/api/public/recruit`（募集ページ）・`/api/public/notice-ack`・`/api/public/calendar`（`src/api.ts:714`〜`733`）。
-2. 認証ミドルウェア（`src/api.ts:741`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業と、連携が終わった会社に企業切替で入ったままのスタッフ（401 `link_ended`。D-53）を止める（`src/lib/auth.ts:126` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
-3. ロールの確認: `/api/admin/*` は会社の管理系ロール（`src/api.ts:846`〜`849`）、`/api/admin/employees*` は会社管理者と事務担当だけ（`src/api.ts:856`）、`/api/hq/*` は本部だけ（`src/api.ts:858`）、`/api/staff/*` はスタッフだけ（`src/api.ts:885`）。
+1. ログイン不要の API を先に登録する: `/api/auth/login` など（`src/api.ts:450`〜）、`/api/public/report`（報告用URL）・`/api/public/recruit`（募集ページ）・`/api/public/notice-ack`・`/api/public/calendar`（`src/api.ts:716`〜`735`）。
+2. 認証ミドルウェア（`src/api.ts:743`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業と、連携が終わった会社に企業切替で入ったままのスタッフ（401 `link_ended`。D-53）を止める（`src/lib/auth.ts:126` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
+3. ロールの確認: `/api/admin/*` は会社の管理系ロール（`src/api.ts:848`〜`851`）、`/api/admin/employees*` は会社管理者と事務担当だけ（`src/api.ts:858`）、`/api/hq/*` は本部だけ（`src/api.ts:860`）、`/api/staff/*` はスタッフだけ（`src/api.ts:887`）。
 4. 各機能の処理。会社の境界はここで確かめる（「8. マルチテナント」）。
-5. 書き込み（GET 以外）の後に、積まれたプッシュ通知を送る（`src/index.tsx:94`〜`98`）。
+5. 書き込み（GET 以外）の後に、積まれたプッシュ通知を送る（`src/index.tsx:134`〜`138`）。
 
 エンドポイントの一覧と権限は [api.md](api.md) を見てください。
 
 ### 4.3 予期しないエラー
 
-例外が起きると `app.onError`（`src/index.tsx:63`）が、次の1行の JSON を `console.error` で Workers Logs に残し、利用者には8文字の参照番号を返します（API は `{ error, ref }` と 500、画面はエラーのページ）。
+例外が起きると `app.onError`（`src/index.tsx:75`）が、次の1行の JSON を `console.error` で Workers Logs に残し、利用者には8文字の参照番号を返します（API は `{ error, ref }` と 500、画面はエラーのページ）。
 
 ```json
 {"level":"error","event":"unhandled_error","ref":"1a2b3c4d","method":"POST","path":"/api/admin/...","company_id":1,"user_id":2,"role":"company_admin","message":"...","stack":"..."}
 ```
 
-参照番号は `newErrorRef()`（`src/lib/error-log.ts:54`〜`56`）が作ります。パスに入るトークン（20文字以上で、数字か大文字を含む英数字）は `maskPath()` が `***` に伏せます（`src/lib/error-log.ts:63`〜`65`）。利用者から参照番号を聞いたら、Workers Logs で `ref` を検索します（[operations.md](operations.md) の「ログの見方」）。
+参照番号は `newErrorRef()`（`src/lib/error-log.ts:55`〜`57`）が作ります。パスに入るトークン（20文字以上で、数字か大文字を含む英数字）は `maskPath()` が `***` に伏せます（`src/lib/error-log.ts:64`〜`66`）。利用者から参照番号を聞いたら、Workers Logs で `ref` を検索します（[operations.md](operations.md) の「ログの見方」）。
 
-あわせて、エラーの要約を D1 の `error_logs` に応答の後で残し（`src/index.tsx:77`〜`78`）、本部画面の「障害」で見られるようにしています。定期処理の失敗も `withErrorLog` で同じ表に残します（`src/index.tsx:895`〜`912`）。件数が目安を超えると本部の管理者に通知します。仕組みと設定は [monitoring.md](monitoring.md) を見てください。
+あわせて、エラーの要約を D1 の `error_logs` に応答の後で残し（`src/index.tsx:90`〜`91`）、本部画面の「障害」で見られるようにしています。定期処理の失敗も `withErrorLog` で同じ表に残します（`src/index.tsx:937`〜`957`）。件数が目安を超えると本部の管理者に通知します。仕組みと設定は [monitoring.md](monitoring.md) を見てください。
 
 ## 5. 定期処理（Cron Trigger）
 
-起動の式は `wrangler.jsonc:39`（`triggers.crons`）、実行する処理の一覧は `src/index.tsx:829` の `CRON_JOBS` です。時刻は UTC で書くので、日本時間は +9 時間です。
+起動の式は `wrangler.jsonc:39`（`triggers.crons`）、実行する処理の一覧は `src/index.tsx:869` の `CRON_JOBS` です。時刻は UTC で書くので、日本時間は +9 時間です。
 起動した式に合う処理を、一覧の上から順に実行します。1つが失敗しても次へ進み、処理ごとの結果を `cron_runs` テーブルに残して本部画面の「データ保持・定期処理」に出します（`src/services/cron.ts:57`〜`95`）。失敗した処理と、目安（15分おきの処理は1時間、毎日の処理は25時間）を過ぎても動いていない処理は、本部画面の上に警告を出します（`src/services/cron.ts:108`）。
 
 | 式（UTC） | 日本時間 | 処理名（`name`） | 内容 | 関数 |
@@ -154,24 +154,24 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `*/15 * * * *` | 15分おき | `reminders` | 本人あての自動リマインド（起床・出発・入店の未報告、日報の未提出。会社の設定で ON の会社だけ） | `src/services/reminders.ts` の `runReminders` |
 | `*/15 * * * *` | 15分おき | `push_queue` | プッシュ通知のうち、API の応答の後に送れなかった分を送る | `src/notifications.ts` の `runPushQueueJob` |
 | `*/15 * * * *` | 15分おき | `notification_digest` | 打刻修正の承認依頼のまとめメール（毎朝8時以降の最初の起動で1回） | `src/notifications.ts` の `runNotificationDigests` |
-| `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日）。取りこぼさないよう 3:00 の起動の先頭で行う | `src/api.ts:8147` |
+| `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日）。取りこぼさないよう 3:00 の起動の先頭で行う | `src/api.ts:8150` |
 | `0 18 * * *` | 毎日 3:00 | `auth_purge` | 期限切れのセッション・ログイン試行・1年より古いログイン履歴の削除 | `src/lib/auth.ts:191` |
-| `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）の削除 | `src/services/retention.ts:1095` |
+| `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）の削除 | `src/services/retention.ts:1119` |
 | `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1071` |
-| `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年・実行の記録 `retention_logs`・`hq_view_logs` の1年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:951` |
-| `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:197` |
+| `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年・実行の記録 `retention_logs`・`hq_view_logs` の1年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:973` |
+| `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:200` |
 | `0 18 * * *` | 毎日 3:00 | `affiliation_schedules` | 予約した所属区分の変更を適用する。使う問い合わせの数を予算（`AFFILIATION_SCHEDULE_BUDGET`）の内に収め、収まらない予約は次の `affiliation_schedules_rest` に回す | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
-| `0 18 * * *` | 毎日 3:00 | `notice_reads_purge` | お知らせの既読の記録の削除（2年） | `src/api.ts:351` |
+| `0 18 * * *` | 毎日 3:00 | `notice_reads_purge` | お知らせの既読の記録の削除（2年） | `src/api.ts:353` |
 | `0 18 * * *` | 毎日 3:00 | `board_saved_search` | 案件掲示板の保存した検索条件に合う新着の知らせ | `src/board.ts` の `notifySavedSearchMatches` |
-| `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:996` |
-| `30 18 * * *` | 毎日 3:30 | `notice_read_reports` | 既読率レポートの集計 | `src/api.ts:314` |
-| `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7005` |
+| `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:1020` |
+| `30 18 * * *` | 毎日 3:30 | `notice_read_reports` | 既読率レポートの集計 | `src/api.ts:316` |
+| `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7008` |
 | `*/15 * * * *` | 15分おき | `doc_expiry_notice` | 書類の有効期限（30日以内・期限切れ）を管理者に知らせる | `src/notifications.ts` の `notifyExpiringDocuments` |
 | `*/15 * * * *` | 15分おき | `monitor_daily` | D1 の DB の大きさを記録し（1日1行の `db_size_logs`）、上限（`DB_SIZE_LIMIT_MB`）に対する段階を本部の管理者と送り先に知らせる。送り先への障害の通知の毎朝のまとめも送る（毎朝8時以降の最初の起動で1回。済んだ後は問い合わせ1回。[monitoring.md](monitoring.md) の 9・10 章） | `src/services/monitor.ts` の `runMonitorDaily` |
 | `*/15 * * * *` | 15分おき | `affiliation_schedules_rest` | 3:00 の起動で予算に収まらなかった所属区分の変更の予約を、4:00 以降に少しずつ適用する（0:00〜3:59 は何もしない。予約がなければ問い合わせ1回） | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
 
-- 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:911`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
-- 毎日の処理を 3:00 と 3:30 に分けているのは、1回の起動で D1 に投げられる問い合わせの数に上限があるためです（`src/index.tsx:815`、`src/services/cron.ts:5`〜`6`）。件数で問い合わせが増える所属区分の変更の予約は、使う文の数を数えて予算の内で止め、残りを15分おきの起動に回します（#9968）。
+- 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:956`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
+- 毎日の処理を 3:00 と 3:30 に分けているのは、1回の起動で D1 に投げられる問い合わせの数に上限があるためです（`src/index.tsx:855`、`src/services/cron.ts:5`〜`6`）。件数で問い合わせが増える所属区分の変更の予約は、使う文の数を数えて予算の内で止め、残りを15分おきの起動に回します（#9968）。
 - 何もしなかった実行（`idle: true`）は、直前の記録も idle ならその行を消してから記録します。15分おきの処理で記録が埋まらないようにするためです（`src/services/cron.ts:76`〜`79`）。
 
 ## 6. 外部サービス
@@ -186,7 +186,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 
 ### 6.2 Web Push（プッシュ通知）
 
-- 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:102`〜`140`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1958`・`2025`・`2057`・`2079`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
+- 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:142`〜`180`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1958`・`2025`・`2057`・`2079`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
 - 鍵: シークレット `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` があればそれを使い、なければ初回に作って D1 の `push_vapid_keys` に保存します（`src/lib/web-push.ts:42`〜`59`）。
 - アプリ内の通知（`user_notifications`）が入ると、トリガー（`migrations/0081_push.sql` の `trg_user_notifications_push`）で `push_queue` に積まれ、API の応答の後と15分おきの cron で送ります。送り先が 404・410 を返した購読は消します（`src/lib/web-push.ts:111`）。
 
@@ -198,8 +198,8 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 
 ### 6.4 jsDelivr（画面のライブラリ）
 
-- 版を固定し、SRI のハッシュを付けて読みます（`src/index.tsx:149`〜`165`）。版を上げるときはハッシュも計算し直します（計算方法は `src/index.tsx:148` のコメント）。CSP（`script-src`・`style-src`）はこの一覧のファイルのパスだけを許すので、ファイルを足したら一覧にも足します。
-- CDN を読めないとき（店舗の Wi-Fi のフィルタなど）は、白い画面のままにせず理由を出します（`src/index.tsx:167`）。
+- 版を固定し、SRI のハッシュを付けて読みます（`src/index.tsx:189`〜`205`）。版を上げるときはハッシュも計算し直します（計算方法は `src/index.tsx:188` のコメント）。CSP（`script-src`・`style-src`）はこの一覧のファイルのパスだけを許すので、ファイルを足したら一覧にも足します。
+- CDN を読めないとき（店舗の Wi-Fi のフィルタなど）は、白い画面のままにせず理由を出します（`src/index.tsx:207`）。
 
 ## 7. デプロイの仕組み
 
@@ -289,7 +289,7 @@ docs/                     この資料と機能ごとの仕様
 | `hq.js`（と `security.js`） | `/hq` | 本部画面 |
 | `apply.js` / `report-link.js` | `/apply/:token` / `/r/:token` | 公開ページ |
 
-画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（古い画面には `onclick` などのイベント属性が残っているため、CSP の `script-src` の `'unsafe-inline'` はまだ外せません。`src/index.tsx:26`〜`27`）。
+画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（古い画面には `onclick` などのイベント属性が残っているため、CSP の `script-src` の `'unsafe-inline'` はまだ外せません。`src/index.tsx:38`〜`39`）。
 
 ### 8.3 スクリプト（`scripts/`）
 
@@ -307,17 +307,17 @@ docs/                     この資料と機能ごとの仕様
 
 | 項目 | 内容 | 根拠 |
 |---|---|---|
-| ログイン | 会社コード＋ID（スタッフ番号）＋パスワード。本部は会社コードなし。全角は半角にそろえ、大文字・小文字を区別せずに照合 | `src/api.ts:448`、`src/index.tsx:287` |
+| ログイン | 会社コード＋ID（スタッフ番号）＋パスワード。本部は会社コードなし。全角は半角にそろえ、大文字・小文字を区別せずに照合 | `src/api.ts:450`、`src/index.tsx:327` |
 | パスワードの保存 | PBKDF2（SHA-256・ソルト16バイト）`pbkdf2$回数$ソルト$ハッシュ`。作るときは 10,000 回、照合は 100,000 回まで受け付ける。回数の少ないハッシュ・旧形式はログイン成功時に作り直す | `src/lib/auth.ts:13`〜`14`、`44`〜`71` |
 | パスワードの条件 | 8〜128文字、空白だけは不可（全経路で `validatePassword`） | `src/lib/auth.ts:82` |
 | セッション | ランダムなトークンを httpOnly の Cookie `session`（https では Secure、SameSite=Lax）に入れ、DB（`sessions`）には SHA-256 のハッシュだけを保存 | `src/lib/auth.ts:9`、`148`〜`151` |
-| 有効期限 | 操作のたびに延ばす。操作のない時間の上限は 12 時間（スタッフは 72 時間）、ログインからの最長は 7 日（スタッフは 30 日）。バッジの更新などの定期の取得（`X-Background: 1`）では延ばさない | `src/lib/auth.ts:10`、`src/api.ts:795`〜`820` |
+| 有効期限 | 操作のたびに延ばす。操作のない時間の上限は 12 時間（スタッフは 72 時間）、ログインからの最長は 7 日（スタッフは 30 日）。バッジの更新などの定期の取得（`X-Background: 1`）では延ばさない | `src/lib/auth.ts:10`、`src/api.ts:797`〜`822` |
 | 止める条件 | 期限切れ・退職（`users.status` が `active` 以外）・ログインできないロール（`roster_only`）・本部で停止した企業（本部ユーザーは除く） | `src/lib/auth.ts:126`〜`140` |
 | ログイン試行の制限 | 15分間に、会社コード＋ID ごとに10回、IP ごとに50回の失敗で一時的に止める。ID・IP はハッシュで保存 | `src/lib/auth.ts:18`〜`21`、`154`〜`187` |
-| 二段階認証 | 認証アプリ（TOTP）と予備コード。管理系ロールと本部が使える（スタッフは対象外）。会社の設定で必須にできる。必須なのに未登録の人は、登録の画面だけを使える | `src/api.ts:736`、`767`〜`770`、`src/lib/login-security.ts` |
-| 接続元 IP の制限 | 会社の設定で、管理系ロールの接続元を制限できる（スタッフは対象外） | `src/api.ts:763`、`src/lib/login-security.ts:101` |
-| 同じブラウザでの別アカウント | 画面は自分の `user_id` を `X-Expected-User-Id` で送り、違えば 409 で止める | `src/api.ts:755`〜`760` |
-| パスワードの再設定 | メールのリンク（1時間）。ただし本番はメールを送れないため、当面は管理者が仮パスワードを再発行する（`POST /api/admin/users/:id/reset-password`。`src/accounts.ts:326`） | `src/api.ts:596`・`648` |
+| 二段階認証 | 認証アプリ（TOTP）と予備コード。管理系ロールと本部が使える（スタッフは対象外）。会社の設定で必須にできる。必須なのに未登録の人は、登録の画面だけを使える | `src/api.ts:738`、`769`〜`772`、`src/lib/login-security.ts` |
+| 接続元 IP の制限 | 会社の設定で、管理系ロールの接続元を制限できる（スタッフは対象外） | `src/api.ts:765`、`src/lib/login-security.ts:101` |
+| 同じブラウザでの別アカウント | 画面は自分の `user_id` を `X-Expected-User-Id` で送り、違えば 409 で止める | `src/api.ts:757`〜`762` |
+| パスワードの再設定 | メールのリンク（1時間）。ただし本番はメールを送れないため、当面は管理者が仮パスワードを再発行する（`POST /api/admin/users/:id/reset-password`。`src/accounts.ts:326`） | `src/api.ts:598`・`650` |
 
 ## 10. ロール（権限）
 
@@ -333,16 +333,16 @@ docs/                     この資料と機能ごとの仕様
 | `roster_only` | ログインなし（名簿のみ） | ログインできない（スタッフマスタ・仮登録の行） |
 | `system_admin` | 本部（システム管理者） | `/hq` と `/api/hq/*`。各社の `/admin` は、企業が許可した期限付きの閲覧（読み取り専用）のときだけ |
 
-根拠: `src/api.ts:172`〜`176`（`ADMIN_ROLES`・`HR_ROLES`）、`src/lib/auth.ts:17`、`src/lib/auth.ts:143`（ロールごとの最初の画面）。
+根拠: `src/api.ts:174`〜`178`（`ADMIN_ROLES`・`HR_ROLES`）、`src/lib/auth.ts:17`、`src/lib/auth.ts:143`（ロールごとの最初の画面）。
 
 ## 11. マルチテナント（会社ごとのデータの分離）
 
 - **導入企業 = `companies` の1行**です。業務データのテーブルは `company_id` を持ち、API はログイン中の利用者の `company_id` で絞ります。
 - 画面や API から受け取った ID は、必ず自社の行かを確かめてから使います。共通の関数は `src/lib/tenant.ts`（`ownProject`・`ownClient`・`ownStaff`・`ownShift` など。見つからなければ 404 にする）。
-- **本部**: 本部ユーザー（`system_admin`）は、本部専用の企業行（`companies.active_status = 'internal'`）に所属します（`migrations/0033_account_admin.sql:7`〜`16`）。本部が各社の管理画面を見るのは、企業が許可したときだけで、期限付き・読み取り専用です。開始・終了と開いた画面を記録します（`src/hq-support.ts:4`、`200` の `hqViewAdminGuard`、Cookie `hq_view`）。本部の書き込みは `hq_audit_logs` に残します（`src/api.ts:862`〜`875`）。
+- **本部**: 本部ユーザー（`system_admin`）は、本部専用の企業行（`companies.active_status = 'internal'`）に所属します（`migrations/0033_account_admin.sql:7`〜`16`）。本部が各社の管理画面を見るのは、企業が許可したときだけで、期限付き・読み取り専用です。開始・終了と開いた画面を記録します（`src/hq-support.ts:4`、`200` の `hqViewAdminGuard`、Cookie `hq_view`）。本部の書き込みは `hq_audit_logs` に残します（`src/api.ts:864`〜`877`）。
 - **企業の停止**: 本部で停止にすると（`companies.active_status = 'inactive'`）、その企業の利用者はログイン・API が使えなくなり（`src/lib/auth.ts:96`、`137`）、セッションも消します（`src/lib/auth.ts:112`）。
 - **企業間のスタッフ連携**（会社をまたいで同じ人を使う仕組み）: 所属元のスタッフを、連携用のコード（自社雇用は人物の恒久 ID `FS…`、連携で受けた人をさらに渡すときは `RL…`）で連携先に登録します。連携先には自社の行（`staff_profiles.affiliation_type = 'linked_external'`、ユーザーコード `LK-…`。照合できないパスワード）が作られ（`src/roster.ts:1352`）、基本項目は所属元の行をその場で読みます。共有する項目と共有しない項目は `src/roster.ts:222`〜`236`（同意の版 v3）で決まり、同意は `roster_consents` に残します。詳細は [decisions.md](decisions.md) の D-03・D-04 と [spec_multi_company_staff.md](spec_multi_company_staff.md)。
-- **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1629`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:182` の `resolvePersonShift`）。
+- **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1629`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:184` の `resolvePersonShift`）。
 
 ## 12. 設定値（環境変数・シークレット）
 
@@ -350,16 +350,16 @@ docs/                     この資料と機能ごとの仕様
 
 ### 12.1 `vars`（`wrangler.jsonc` に書く。デプロイのたびにこの値になる）
 
-| 名前 | ローカル（`wrangler.jsonc:43`） | 本番（`wrangler.jsonc:81`） | 意味 |
+| 名前 | ローカル（`wrangler.jsonc:43`） | 本番（`wrangler.jsonc:82`） | 意味 |
 |---|---|---|---|
 | `MAIL_FROM` | Resend のテスト用アドレス | 同じ（独自ドメインに変える予定） | メールの送信元。`resend.dev` のテスト用アドレスは Resend のアカウント所有者にしか届かない（`src/services/email.ts:123`〜`126`） |
 | `APP_BASE_URL` | `http://localhost:8787` | 本番の URL | メールの中のリンク、VAPID の連絡先の既定 |
 | `MAIL_ENABLED` | `false` | `true` | `'true'` 以外（未設定も含む）ならメールを送らず記録だけ（`src/services/email.ts:111`） |
-| `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:840`） |
-| `DEMO_MODE` | `true` | `false` | `'true'` のときだけ、ログイン画面にデモアカウントの案内を出す（`src/index.tsx:269`） |
+| `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:880`） |
+| `DEMO_MODE` | `true` | `false` | `'true'` のときだけ、ログイン画面にデモアカウントの案内を出す（`src/index.tsx:309`） |
 | `DB_SIZE_LIMIT_MB` | `500` | `500` | D1 の DB の大きさの上限（MB）。本部画面の「DB の大きさ」の割合・段階をこの値に対して計算する。今は無料プランの 500MB。有料プラン（10GB）に切り替えたら両方を `10240` に変える（`src/services/monitor.ts` の `dbSizeLimitMb`。[monitoring.md](monitoring.md) の 10 章） |
 
-次の `vars` は省略できます（`wrangler.jsonc` に書かなければ既定の値。`src/lib/error-log.ts:40`〜`46`）。変え方は [monitoring.md](monitoring.md) の「通知の目安を変える」にあります。
+次の `vars` は省略できます（`wrangler.jsonc` に書かなければ既定の値。`src/lib/error-log.ts:41`〜`47`）。変え方は [monitoring.md](monitoring.md) の「通知の目安を変える」にあります。
 
 | 名前（省略できる） | 既定 | 意味 |
 |---|---|---|
@@ -403,7 +403,7 @@ docs/                     この資料と機能ごとの仕様
 | CPU 時間が1リクエストあたり 10ms | PBKDF2 を 10,000 回にする。Web Push は本文の暗号化をせず署名だけにする。重い集計は D1 の SQL の中で行う（Worker の CPU を使わない） | `src/lib/auth.ts:11`〜`13`、`src/lib/web-push.ts:4`、`src/lib/operation-log.ts:7` |
 | D1 の1文あたりのバインドは100個まで | ID の一覧は `json_each(?)` で1つにまとめる。並べるときは90件ずつに分ける | `src/lib/d1-chunk.ts:1`〜`13` |
 | D1 の SQL 関数の引数は本番で32個まで（ローカルは127個まで通る） | `json_object` を16項目ずつに分ける。**ローカルのテストでは見つからない**ので注意 | `src/lib/operation-log.ts:15`〜`17` |
-| 1回の起動あたりの D1 の問い合わせ数に上限がある | 多くの行は `INSERT ... SELECT FROM json_each(?)` で1文100行ずつ書く。毎日の定期処理を2つの起動に分け、個人情報の削除を先に実行する | `src/lib/bulk-write.ts:1`〜`7`、`src/index.tsx:828` |
+| 1回の起動あたりの D1 の問い合わせ数に上限がある | 多くの行は `INSERT ... SELECT FROM json_each(?)` で1文100行ずつ書く。毎日の定期処理を2つの起動に分け、個人情報の削除を先に実行する | `src/lib/bulk-write.ts:1`〜`7`、`src/index.tsx:868` |
 | `shifts` にはトリガーがあり、D1 の `meta.changes` はトリガーの中の更新も数える | `shifts` を更新した文の `meta.changes` を件数として使わない（先に数えるか、前後の状態から数える） | `src/lib/bulk-write.ts:49`、`src/shift-board.ts:1939`、`migrations/0086_followups_a.sql:20` |
 
 まとめて保存・まとめて削除・CSV のような件数の多い処理が CPU の上限を超えないかの計測は、まだしていません（Sprint 13 の時点）。
