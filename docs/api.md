@@ -157,11 +157,11 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/public/notice-ack` | ログイン不要 | [notifications.ts:1202](../src/notifications.ts#L1202) | 〔見出し〕お知らせメールの「確認しました」のリンク（#454） | src/index.tsx |
 | GET | `/api/public/recruit/:token` | ログイン不要 | [recruit.ts:248](../src/recruit.ts#L248) | 〔見出し〕公開ページ（ログイン不要） | apply.js |
 | POST | `/api/public/recruit/:token/apply` | ログイン不要 | [recruit.ts:291](../src/recruit.ts#L291) | 〔見出し〕公開ページ（ログイン不要） | apply.js |
-| GET | `/api/public/report/:token` | ログイン不要 | [staff-lifecycle.ts:1528](../src/staff-lifecycle.ts#L1528) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
-| POST | `/api/public/report/:token/attendance` | ログイン不要 | [staff-lifecycle.ts:1570](../src/staff-lifecycle.ts#L1570) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
-| POST | `/api/public/report/:token/consultation` | ログイン不要 | [staff-lifecycle.ts:1761](../src/staff-lifecycle.ts#L1761) | 〔見出し〕報告用URL・予定確認URLからの連絡（#163） | report-link.js |
+| GET | `/api/public/report/:token` | ログイン不要 | [staff-lifecycle.ts:1536](../src/staff-lifecycle.ts#L1536) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
+| POST | `/api/public/report/:token/attendance` | ログイン不要 | [staff-lifecycle.ts:1578](../src/staff-lifecycle.ts#L1578) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
+| POST | `/api/public/report/:token/consultation` | ログイン不要 | [staff-lifecycle.ts:1769](../src/staff-lifecycle.ts#L1769) | 〔見出し〕報告用URL・予定確認URLからの連絡（#163） | report-link.js |
 | GET | `/api/public/report/:token/contact` | ログイン不要 | [api.ts:717](../src/api.ts#L717) | 報告用URLに出す会社の緊急連絡先（#173）。期限切れ・取り消し後の画面でも連絡できるよう、発行済みのURLなら返す（停止中の企業は返さない）。 返すのは会社名と連絡先だけ（シフト・スタッフの情報は返さない） | report-link.js |
-| POST | `/api/public/report/:token/daily-report` | ログイン不要 | [staff-lifecycle.ts:1638](../src/staff-lifecycle.ts#L1638) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
+| POST | `/api/public/report/:token/daily-report` | ログイン不要 | [staff-lifecycle.ts:1646](../src/staff-lifecycle.ts#L1646) | 〔見出し〕ログイン不要の報告用URL（/api/public/report/:token） | report-link.js |
 
 ### `/api/auth/…` ログイン・自分のアカウント（17）
 
@@ -432,8 +432,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | PUT | `/api/admin/projects/:id/pricing` | 管理者（4ロール） | [shift-board.ts:3038](../src/shift-board.ts#L3038) | 区分・標準単価・交通費ルール・時間の数え方。 price_valid_from（適用開始日）を付けて単価を変えると、その前日までの稼働日には今の単価を使い続ける（改定前の単価を project_price_history に残す。#210）。 付けずに変えると、今の単価の適用期間（price_valid_from 以… | shift-board.js |
 | PUT | `/api/admin/projects/:id/report-settings` | 管理者（4ロール） | [staff-lifecycle.ts:823](../src/staff-lifecycle.ts#L823) | 〔見出し〕提出設定 | staff-lifecycle.js |
 | PUT | `/api/admin/projects/:id/required-skills` | 管理者（4ロール） | [api.ts:5032](../src/api.ts#L5032) | 案件の必要スキル（#556。シフトボードの候補一覧の『スキル n/m』に使う）。カンマ・読点で区切り、空欄なら消す | admin.js |
-| GET | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:1177](../src/staff-lifecycle.ts#L1177) | 日付（と案件）を選ぶと、勤務のシフトと報告の状況を返す。ログインのない人を先頭に並べる | staff-lifecycle.js |
-| POST | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール） | [staff-lifecycle.ts:1210](../src/staff-lifecycle.ts#L1210) | チェックしたシフトに「予定どおり」で記録する。scope: start = 入店・勤務開始だけ / all = 予定どおり全部（休憩・勤務終了・退店も）。 人ごとに start・end（'HH:MM'）で開始・終了の時刻を直せる。1件の代理入力と同じ確認（確定済み・欠勤・稼働日より前・報告済み・順序）をして、 記録で… | staff-lifecycle.js |
+| GET | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:1185](../src/staff-lifecycle.ts#L1185) | 日付（と案件）を選ぶと、勤務のシフトと報告の状況を返す。ログインのない人を先頭に並べる | staff-lifecycle.js |
+| POST | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール） | [staff-lifecycle.ts:1218](../src/staff-lifecycle.ts#L1218) | チェックしたシフトに「予定どおり」で記録する。scope: start = 入店・勤務開始だけ / all = 予定どおり全部（休憩・勤務終了・退店も）。 人ごとに start・end（'HH:MM'）で開始・終了の時刻を直せる。1件の代理入力と同じ確認（確定済み・欠勤・稼働日より前・報告済み・順序）をして、 記録で… | staff-lifecycle.js |
 | GET | `/api/admin/push/config` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:1959](../src/notifications.ts#L1959) | 〔見出し〕プッシュ通知（#178） | notifications.js |
 | GET | `/api/admin/push/latest` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:2058](../src/notifications.ts#L2058) | 〔見出し〕プッシュ通知（#178） |  |
 | POST | `/api/admin/push/subscribe` | 管理者（4ロール） | [notifications.ts:1972](../src/notifications.ts#L1972) | 〔見出し〕プッシュ通知（#178） | notifications.js |
@@ -456,8 +456,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | PUT | `/api/admin/recruit-pages/:id` | 管理者（4ロール） | [recruit.ts:590](../src/recruit.ts#L590) | 〔見出し〕既存の枠の人数の変更（割り当て済みの人数より少なくはできない） | recruit.js |
 | GET | `/api/admin/recruit-slots` | 管理者（4ロール）＋本部の閲覧（GET） | [recruit.ts:525](../src/recruit.ts#L525) | 募集ページの画面に出す、対象の案件・期間の既存の枠（役割ごと）。人数をこの画面で直せるようにする（#9421） | recruit.js |
 | POST | `/api/admin/recruit-slots/:id/reject-pending` | 管理者（4ロール） | [recruit.ts:792](../src/recruit.ts#L792) | 枠（役割）に残っている未対応の応募をまとめて見送る（定員に達した枠の残り。#303）。承認の処理中（processing）の明細は対象にしない | recruit.js |
-| GET | `/api/admin/report-links/bulk` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:1331](../src/staff-lifecycle.ts#L1331) | 〔見出し〕報告用URLのまとめての発行（#275） | staff-lifecycle.js |
-| POST | `/api/admin/report-links/bulk` | 管理者（4ロール） | [staff-lifecycle.ts:1341](../src/staff-lifecycle.ts#L1341) | 未発行のシフトにまとめて発行する（発行済みのURLはそのまま）。shift_ids を送ったときは、その中の未発行のものだけ | staff-lifecycle.js |
+| GET | `/api/admin/report-links/bulk` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:1339](../src/staff-lifecycle.ts#L1339) | 〔見出し〕報告用URLのまとめての発行（#275） | staff-lifecycle.js |
+| POST | `/api/admin/report-links/bulk` | 管理者（4ロール） | [staff-lifecycle.ts:1349](../src/staff-lifecycle.ts#L1349) | 未発行のシフトにまとめて発行する（発行済みのURLはそのまま）。shift_ids を送ったときは、その中の未発行のものだけ | staff-lifecycle.js |
 | GET | `/api/admin/report-settings/day-before-check` | 管理者（4ロール）＋本部の閲覧（GET） | [report-settings.ts:633](../src/report-settings.ts#L633) | 前日確認の設定（#176）。ほかの会社設定を上書きしないよう、この項目だけを書き換える | admin.js |
 | PUT | `/api/admin/report-settings/day-before-check` | 管理者（4ロール） | [report-settings.ts:638](../src/report-settings.ts#L638) | 〔見出し〕管理者 API | admin.js |
 | GET | `/api/admin/report-settings/exceptions` | 管理者（4ロール）＋本部の閲覧（GET） | [report-settings.ts:793](../src/report-settings.ts#L793) | 〔見出し〕シフト単位の例外（#313） | report-settings.js |
@@ -587,9 +587,9 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | PUT | `/api/admin/shifts/:id/price` | 管理者（4ロール） | [shift-board.ts:2027](../src/shift-board.ts#L2027) | 金額の手動変更 / ルールに戻す | settlement.js shift-board.js |
 | POST | `/api/admin/shifts/:id/proxy-attendance` | 管理者（4ロール） | [staff-lifecycle.ts:997](../src/staff-lifecycle.ts#L997) | 〔見出し〕代理入力（管理者が勤怠を記録。entry_method='proxy'） | staff-lifecycle.js |
 | DELETE | `/api/admin/shifts/:id/proxy-attendance/:type` | 管理者（4ロール） | [staff-lifecycle.ts:1033](../src/staff-lifecycle.ts#L1033) | 〔見出し〕代理入力（管理者が勤怠を記録。entry_method='proxy'） | staff-lifecycle.js |
-| POST | `/api/admin/shifts/:id/proxy-daily-report` | 管理者（4ロール） | [staff-lifecycle.ts:1371](../src/staff-lifecycle.ts#L1371) | 電話・口頭で聞いた内容や、報告用URLの期限が過ぎた日報を管理者が記録する（entry_method = 'proxy'、entered_by = 記録した管理者）。 本人が提出した日報があるときは overwrite: true のときだけ上書きする。確認済みの日報を上書きしたら、アプリと同じく確認済みを外す | staff-lifecycle.js |
-| DELETE | `/api/admin/shifts/:id/report-link` | 管理者（4ロール） | [staff-lifecycle.ts:1121](../src/staff-lifecycle.ts#L1121) | 〔見出し〕報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） | staff-lifecycle.js |
-| POST | `/api/admin/shifts/:id/report-link` | 管理者（4ロール） | [staff-lifecycle.ts:1099](../src/staff-lifecycle.ts#L1099) | 〔見出し〕報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） | staff-lifecycle.js |
+| POST | `/api/admin/shifts/:id/proxy-daily-report` | 管理者（4ロール） | [staff-lifecycle.ts:1379](../src/staff-lifecycle.ts#L1379) | 電話・口頭で聞いた内容や、報告用URLの期限が過ぎた日報を管理者が記録する（entry_method = 'proxy'、entered_by = 記録した管理者）。 本人が提出した日報があるときは overwrite: true のときだけ上書きする。確認済みの日報を上書きしたら、アプリと同じく確認済みを外す | staff-lifecycle.js |
+| DELETE | `/api/admin/shifts/:id/report-link` | 管理者（4ロール） | [staff-lifecycle.ts:1129](../src/staff-lifecycle.ts#L1129) | 〔見出し〕報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） | staff-lifecycle.js |
+| POST | `/api/admin/shifts/:id/report-link` | 管理者（4ロール） | [staff-lifecycle.ts:1107](../src/staff-lifecycle.ts#L1107) | 〔見出し〕報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） | staff-lifecycle.js |
 | PUT | `/api/admin/shifts/:id/report-settings` | 管理者（4ロール） | [staff-lifecycle.ts:904](../src/staff-lifecycle.ts#L904) | 〔見出し〕提出設定 | staff-lifecycle.js |
 | GET | `/api/admin/shifts/:id/report-status` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:852](../src/staff-lifecycle.ts#L852) | 〔見出し〕提出設定 | admin.js settlement.js staff-lifecycle.js |
 | POST | `/api/admin/shifts/bulk` | 管理者（4ロール） | [shift-board.ts:2177](../src/shift-board.ts#L2177) | 常勤の一括登録: スタッフ × 曜日 × 期間（枠なしのシフトとして登録）。 退職・統合・停止中・NG・同じ時間帯に別のシフトがある組み合わせはスキップし、理由を skipped で返す。 組み合わせ（日付順 → 指定したスタッフ順）を BULK_LIMIT 件ずつ処理し、残りがあれば next_cursor（次に処… | shift-board.js |
@@ -644,8 +644,8 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/staff/:id/release-future-shifts` | 管理者（4ロール） | [shift-board.ts:1986](../src/shift-board.ts#L1986) | 今後のシフトをまとめて外す。記録（勤怠・日報・打刻修正・募集の承認）のないシフトは削除して枠を空きに戻し、 記録のあるシフトは残して欠勤にする。shift_ids を送ったときは、確認画面に出したものだけを処理する | admin.js |
 | PUT | `/api/admin/staff/:id/report-settings` | 管理者（4ロール） | [staff-lifecycle.ts:812](../src/staff-lifecycle.ts#L812) | 〔見出し〕提出設定 | staff-lifecycle.js |
 | POST | `/api/admin/staff/:id/reset-password` | 管理者（4ロール） | [staff-lifecycle.ts:793](../src/staff-lifecycle.ts#L793) | 自社でログインを発行したスタッフだけが対象。他社から連携したスタッフは所属元の会社で再発行する（稼働先の行ではログインできない）。 仮パスワードはこの応答で一度だけ返し、次回ログインで本人に変更を求める。今のセッションと未使用の再設定リンクは無効にする | staff-lifecycle.js |
-| DELETE | `/api/admin/staff/:id/schedule-link` | 管理者（4ロール） | [staff-lifecycle.ts:1433](../src/staff-lifecycle.ts#L1433) | 〔見出し〕予定確認URL（#442。スタッフ単位） | staff-lifecycle.js |
-| POST | `/api/admin/staff/:id/schedule-link` | 管理者（4ロール） | [staff-lifecycle.ts:1417](../src/staff-lifecycle.ts#L1417) | 発行（発行し直すと前のURLは使えなくなる）。URL はこの応答で一度だけ返す（保存するのはハッシュだけ） | staff-lifecycle.js |
+| DELETE | `/api/admin/staff/:id/schedule-link` | 管理者（4ロール） | [staff-lifecycle.ts:1441](../src/staff-lifecycle.ts#L1441) | 〔見出し〕予定確認URL（#442。スタッフ単位） | staff-lifecycle.js |
+| POST | `/api/admin/staff/:id/schedule-link` | 管理者（4ロール） | [staff-lifecycle.ts:1425](../src/staff-lifecycle.ts#L1425) | 発行（発行し直すと前のURLは使えなくなる）。URL はこの応答で一度だけ返す（保存するのはハッシュだけ） | staff-lifecycle.js |
 | DELETE | `/api/admin/staff/:id/sessions` | 管理者（4ロール） | [api.ts:1189](../src/api.ts#L1189) | スタッフのログインを強制的に終了する（スマホの紛失・共用端末のログアウト忘れ）。自社雇用の行では、同じ人の他社の行のセッションも消す。 他社から連携したスタッフの行では、自社に切り替えているセッションだけを消す（所属元でのログインは残る。D-53 #9940） | security.js |
 | GET | `/api/admin/staff/:id/sessions` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 会社管理者 | [api.ts:1178](../src/api.ts#L1178) | スタッフのログイン中の端末と直近のログインの履歴（自社雇用の行では、企業を切り替えた他社の画面でのログインも数に含める。会社名は出さない）。 他社から連携したスタッフの行では、自社に切り替えている端末だけを返す（D-53 #9940） | security.js |
 | GET | `/api/admin/staff/:id/skill-sheet` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4199](../src/api.ts#L4199) | スキルシート生成 | admin.js |
