@@ -22,9 +22,9 @@ import { notifyRecruitApplied } from './notifications'
 import { notifyRecruitResult, notifyRecruitResults } from './notifications'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { mailMode } from './services/email'
-import { isHHMM, isISODate, toInt } from './lib/validate'
+import { isHHMM, isISODate, toInt, clipText } from './lib/validate'
 import { nowJST, todayJST, addDays, dayDiff, isDate } from './lib/time'
-import { sha256 } from './lib/hash'
+import { sha256, randomB64url } from './lib/hash'
 
 // RATE_LIMIT_SALT: 送信回数の制限に使う接続元IPのハッシュの塩（秘密の値。wrangler secret put で登録する。#351）
 type Bindings = { DB: D1Database; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; RATE_LIMIT_SALT?: string
@@ -46,11 +46,8 @@ const NEW_STAFF_TYPES = ['daily_worker', 'freelance', 'partner_manual', 'own_emp
 
 // ---------- ユーティリティ ----------
 function addMinutesJST(m: number): string { return nowJST(m * 60 * 1000) }
-function randToken(bytes = 18): string {
-  const a = new Uint8Array(bytes); crypto.getRandomValues(a)
-  return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max)
+const randToken = (bytes = 18) => randomB64url(bytes)
+const str = clipText
 function parseIds(v: any): number[] {
   const arr = Array.isArray(v) ? v : String(v || '').split(',')
   return [...new Set(arr.map((x: any) => Number(x)).filter((n: number) => Number.isInteger(n) && n > 0))] as number[]

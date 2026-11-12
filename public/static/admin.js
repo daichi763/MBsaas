@@ -4895,11 +4895,11 @@ function reportCommentReadHtml(cm, fmt) {
   if (cm.read_at) return `<span class="badge badge-green font-normal" data-comment-read="${Number(cm.comment_id)}" title="スタッフがアプリでこのコメントを開きました"><i class="fas fa-check-double mr-0.5"></i>スタッフ既読 ${esc(fmt(cm.read_at))}</span>`
   return `<span class="badge badge-gray font-normal" data-comment-read="${Number(cm.comment_id)}" title="スタッフはまだアプリでこのコメントを開いていません（アプリを使っていない人には既読が付きません）">スタッフ未読</span>`
 }
-// 日報のコメント（#9965。日報1件に複数。古い順）。書いた本人のコメントだけに「編集」「削除」を出す（サーバーでも確かめる）
+// 日報のコメント（#9965。日報1件に複数。古い順）。書いた本人のコメントと、書いた人の記録がない古いコメント（#9975）だけに「編集」「削除」を出す（サーバーでも確かめる）
 function reportCommentsHtml(r, fmt) {
   return (r.comments || []).map(cm => `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2" data-report-comment="${Number(cm.comment_id)}"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(cm.body)}</span>
         <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5"><span>${esc(cm.author_name || '管理者')} ${esc(fmt(cm.created_at))}${cm.updated_at ? `（編集 ${esc(fmt(cm.updated_at))}）` : ''}</span>${reportCommentReadHtml(cm, fmt)}
-          ${cm.mine ? `<button class="text-blue-600 hover:underline" data-action="commentReport" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">編集</button>
+          ${cm.mine || cm.editable ? `<button class="text-blue-600 hover:underline" data-action="commentReport" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">編集</button>
           <button class="text-red-600 hover:underline" data-action="deleteReportComment" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">削除</button>` : ''}</span></div>`).join('')
 }
 // 最後の実績の修正・再提出（#9902。API の last_edit）。「誰が・いつ・どの項目を・いくつからいくつに」を1行で出し、全部は修正履歴で見る

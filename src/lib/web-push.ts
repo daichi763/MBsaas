@@ -8,16 +8,11 @@
 // =========================================================
 import { nowJST } from './time'
 import { appBaseUrl } from './http'
+import { b64url } from './hash'
+export { b64url }
 
 export type VapidEnv = { DB: D1Database; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; APP_BASE_URL?: string }
 type LoadedVapid = { publicKey: string; key: CryptoKey }
-
-export function b64url(buf: ArrayBuffer | Uint8Array): string {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
-  let s = ''
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
 export function fromB64url(s: string): Uint8Array {
   const t = s.replace(/-/g, '+').replace(/_/g, '/')
   const bin = atob(t + '='.repeat((4 - (t.length % 4)) % 4))

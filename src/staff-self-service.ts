@@ -13,7 +13,8 @@
 // =========================================================
 import { Hono } from 'hono'
 import { loadRoster } from './roster'
-import { isISODate } from './lib/validate'
+import { isISODate, parseJsonOr } from './lib/validate'
+import { storeUploads, STAFF_SELF_DOC_RULES } from './lib/documents'
 import { canSendMail } from './services/email'
 import { nowJST, todayJST, addDays } from './lib/time'
 
@@ -167,7 +168,7 @@ async function emailBlockedReason(db: D1Database, u: any, t: { roster: any; comp
 }
 // メールアドレスの変更の反映のしかた（#9802）。verify: 承認すると確認用のメールを送り、本人がリンクを開くと切り替わる / direct: メールを送れない間は、承認した時点で切り替わる
 const emailChangeMode = (env: any): 'verify' | 'direct' => canSendMail(env || {}) ? 'verify' : 'direct'
-const safeJson = (s: any) => { try { return JSON.parse(String(s || '{}')) } catch { return {} } }
+const safeJson = (s: any) => parseJsonOr(s || '{}', {})
 function requestView(r: any, maskMail: boolean) {
   const ch = safeJson(r.changes_json), before = safeJson(r.before_json)
   if (maskMail) {
@@ -248,19 +249,10 @@ staffSelfServiceApi.post('/profile-requests/:id/cancel', async (c) => {
 })
 
 // ---------- #288 書類の提出 ----------
-// スマホから出す書類は写真（JPEG・PNG・WebP）と PDF に限る。1ファイル10MBまで。未確認のまま出せるのは30件まで
-const STAFF_DOC_EXT: Record<string, string> = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
-const STAFF_DOC_MAX_BYTES = 10 * 1024 * 1024
+// スマホから出す書類は写真（JPEG・PNG・WebP）と PDF に限る（形式・大きさ・中身の確かめは lib/documents.ts の STAFF_SELF_DOC_RULES）。
+// 保存の流れはほかの書類と同じ storeUploads。未確認のまま出せるのは30件まで（登録の文の中で数える）
 const STAFF_DOC_PENDING_MAX = 30
-// 拡張子と中身の先頭が合っているか（画像に見せかけた別の形式を受け付けない）
-function magicMatches(ext: string, head: Uint8Array): boolean {
-  const s = (from: number, len: number) => String.fromCharCode(...head.slice(from, from + len))
-  if (ext === 'pdf') return s(0, 5) === '%PDF-'
-  if (ext === 'jpg' || ext === 'jpeg') return head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff
-  if (ext === 'png') return head[0] === 0x89 && s(1, 3) === 'PNG'
-  if (ext === 'webp') return s(0, 4) === 'RIFF' && s(8, 4) === 'WEBP'
-  return false
-}
+const STAFF_DOC_PENDING_ERROR = `確認待ちの書類が${STAFF_DOC_PENDING_MAX}件あります。担当者の確認を待ってから提出してください`
 const STAFF_DOC_COLS = `document_id, original_file_name, mime_type, file_size, doc_type, valid_until, confirmed_at, datetime(uploaded_at, '+9 hours') AS uploaded_at`
 
 staffSelfServiceApi.get('/documents', async (c) => {
@@ -274,39 +266,38 @@ staffSelfServiceApi.get('/documents', async (c) => {
 staffSelfServiceApi.post('/documents', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   if (!u.staff_id) return c.json({ error: 'スタッフの登録が見つかりません' }, 404)
-  let form: FormData
-  try { form = await c.req.formData() } catch { return c.json({ error: '送信データの形式が不正です' }, 400) }
-  const file = form.get('file')
-  if (!(file instanceof File)) return c.json({ error: 'ファイルが選択されていません' }, 400)
-  const meta = parseDocMeta('staff', form.get('doc_type'), form.get('valid_until'))
-  if ('error' in meta) return c.json({ error: meta.error }, 400)
-  if (!meta.doc_type) return c.json({ error: '書類の種類を選んでください' }, 400)
-  const m = /\.([a-zA-Z0-9]+)$/.exec(file.name || '')
-  const ext = m ? m[1].toLowerCase() : ''
-  if (!STAFF_DOC_EXT[ext]) return c.json({ error: '写真（JPEG・PNG・WebP）か PDF を選んでください' }, 400)
-  if (file.size <= 0 || file.size > STAFF_DOC_MAX_BYTES) return c.json({ error: 'ファイルは10MB以下にしてください' }, 400)
-  if (!magicMatches(ext, new Uint8Array(await file.slice(0, 12).arrayBuffer()))) return c.json({ error: 'ファイルの中身が形式と合いません。写真か PDF を選び直してください' }, 400)
-  const cnt = await db.prepare('SELECT COUNT(*) AS n FROM staff_documents WHERE staff_id = ? AND company_id = ? AND submitted_by_staff = 1 AND confirmed_at IS NULL')
-    .bind(u.staff_id, u.company_id).first() as any
-  if (Number(cnt?.n || 0) >= STAFF_DOC_PENDING_MAX) return c.json({ error: `確認待ちの書類が${STAFF_DOC_PENDING_MAX}件あります。担当者の確認を待ってから提出してください` }, 429)
-  const name = String(file.name).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200) || `document.${ext}`
-  const key = `staff-documents/${u.company_id}/${u.staff_id}/${crypto.randomUUID()}/${name.replace(/[\/\\:*?"<>|]/g, '_').slice(0, 150)}`
-  try {
-    await c.env.DOCUMENTS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: STAFF_DOC_EXT[ext] } })
-  } catch { return c.json({ error: 'ファイルのアップロードに失敗しました。もう一度お試しください' }, 500) }
-  let id: number
-  try {
-    const r = await db.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until, submitted_by_staff)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).bind(u.company_id, u.staff_id, name, key, STAFF_DOC_EXT[ext], file.size, u.user_id, meta.doc_type, meta.valid_until).run()
-    id = Number(r.meta.last_row_id)
-  } catch {
-    await c.env.DOCUMENTS.delete(key).catch(() => {})
-    return c.json({ error: 'ファイルの登録に失敗しました。もう一度お試しください' }, 500)
+  type Meta = { doc_type: string; valid_until: string | null }
+  const saved: { name?: string; meta?: Meta } = {}
+  const out = await storeUploads<Meta>(c, {
+    bucket: c.env.DOCUMENTS, keyPrefix: `staff-documents/${u.company_id}/${u.staff_id}`, rules: STAFF_SELF_DOC_RULES, field: 'file', maxFiles: 1,
+    parse: (form) => {
+      const meta = parseDocMeta('staff', form.get('doc_type'), form.get('valid_until'))
+      if ('error' in meta) return meta
+      if (!meta.doc_type) return { error: '書類の種類を選んでください' }
+      return { doc_type: meta.doc_type, valid_until: meta.valid_until }
+    },
+    // 確認待ちが上限に達していたら登録しない（changes が 0 になり、R2 のファイルは消して limitError を返す）
+    insert: (f, meta) => {
+      saved.name = f.fileName; saved.meta = meta
+      return db.prepare(`INSERT INTO staff_documents (company_id, staff_id, original_file_name, storage_key, mime_type, file_size, uploaded_by, doc_type, valid_until, submitted_by_staff)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1
+        WHERE (SELECT COUNT(*) FROM staff_documents WHERE staff_id = ? AND company_id = ? AND submitted_by_staff = 1 AND confirmed_at IS NULL) < ?`)
+        .bind(u.company_id, u.staff_id, f.fileName, f.key, f.contentType, f.size, u.user_id, meta.doc_type, meta.valid_until, u.staff_id, u.company_id, STAFF_DOC_PENDING_MAX)
+    },
+    limitError: STAFF_DOC_PENDING_ERROR,
+  })
+  if (out instanceof Response) return out
+  const r = out[0]
+  if (!r || !r.ok || !saved.meta) {
+    const error = r?.error || STAFF_SELF_DOC_RULES.messages.insert
+    const status = error === STAFF_DOC_PENDING_ERROR ? 429 : Object.values(STAFF_SELF_DOC_RULES.messages).includes(error) ? 500 : 400
+    return c.json({ error }, status)
   }
   // 管理者へ（同じスタッフの未読の知らせがあれば重ねない）。リンクはスタッフ詳細の書類の欄
+  const meta = saved.meta
   await notifyAdmins(db, u.company_id, ADMIN_NOTIFY_ROLES, 'staff_document_submitted', `書類が提出されました: ${u.name || ''}`,
-    `${DOC_TYPE_LABEL[meta.doc_type] || ''}: ${name}${meta.valid_until ? `（有効期限 ${meta.valid_until}）` : ''}`, `#staff/${u.staff_id}`, Number(u.staff_id), true)
-  return c.json({ ok: true, document_id: id })
+    `${DOC_TYPE_LABEL[meta.doc_type] || ''}: ${saved.name}${meta.valid_until ? `（有効期限 ${meta.valid_until}）` : ''}`, `#staff/${u.staff_id}`, Number(u.staff_id), true)
+  return c.json({ ok: true, document_id: r.document_id })
 })
 
 // 本人が出した書類だけを開ける（管理者が登録した書類・ほかの人の書類は開けない）

@@ -156,3 +156,12 @@ export function cleanFileName(name: unknown, max = 200): string {
   }
   return s
 }
+
+/** 前後の空白を除き、max 文字までにした文字列（null・undefined は空文字） */
+export function clipText(v: unknown, max: number): string {
+  return String(v ?? '').trim().slice(0, max)
+}
+/** JSON の文字列を読む。読めなければ fallback を返す */
+export function parseJsonOr(v: unknown, fallback: unknown): any {
+  try { return JSON.parse(String(v)) } catch { return fallback }
+}

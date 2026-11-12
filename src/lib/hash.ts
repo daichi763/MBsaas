@@ -13,3 +13,14 @@ export async function sha256(text: string): Promise<string> {
 export function randomHex(bytes: number): string {
   const a = new Uint8Array(bytes); crypto.getRandomValues(a); return toHex(a)
 }
+/** バイト列を base64url（URL に使える形。末尾の = は付けない）にする */
+export function b64url(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
+  let s = ''
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+/** bytes バイトの乱数の base64url（URL に入れるトークン） */
+export function randomB64url(bytes: number): string {
+  const a = new Uint8Array(bytes); crypto.getRandomValues(a); return b64url(a)
+}
