@@ -109,15 +109,15 @@
 
 | 言葉 | 意味 | テーブル・列・コード |
 |---|---|---|
-| 定期処理・cron | 決まった時刻に Worker が動かす処理 | `CRON_JOBS`（`src/index.tsx:829`）、記録は `cron_runs` |
+| 定期処理・cron | 決まった時刻に Worker が動かす処理 | `CRON_JOBS`（`src/index.tsx:869`）、記録は `cron_runs` |
 | データ保持・定期削除 | 保存期間を過ぎた個人情報の削除（日報3年・退職後7年など） | `src/services/retention.ts`、記録は `retention_logs` |
-| dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:848` |
+| dry-run | 消さずに対象の件数だけを数えること。`RETENTION_ENABLED` が `'true'` 以外のとき | `src/index.tsx:888` |
 | 削除の保留 | 本部が、特定のスタッフ・企業のデータの削除を止めること | `staff_profiles.retention_hold_at`・`companies.retention_hold_at` |
 | 解約・データ | 解約した企業のデータを書き出して削除する本部の画面 | `company_offboardings`（`src/api.ts:8500`〜） |
 | 操作履歴 | シフト・枠・精算の変更の前後の記録 | `operation_logs`（`src/lib/operation-log.ts`） |
 | 変更履歴 | 従業員データとスタッフ基本情報の変更の記録 | `employee_change_logs`（`src/lib/change-log.ts`） |
 | 本部の操作の履歴 | 本部の書き込みの記録 | `hq_audit_logs` |
-| 参照番号 | 予期しないエラーのときに画面に出る8文字。ログの `ref`・`error_logs.ref` と同じ | `newErrorRef()`（`src/lib/error-log.ts:54`）、`app.onError`（`src/index.tsx:63`） |
+| 参照番号 | 予期しないエラーのときに画面に出る8文字。ログの `ref`・`error_logs.ref` と同じ | `newErrorRef()`（`src/lib/error-log.ts:55`）、`app.onError`（`src/index.tsx:75`） |
 | Sprint | 修正のまとまりの単位（以前は「波」）。ブランチ名の `w12` などは Sprint の番号 | D-34 |
 | 作業単位 | Sprint の中で分けた作業（例: `w13-docs-arch-ops`） | ブランチ `fix/<作業単位>` |
 

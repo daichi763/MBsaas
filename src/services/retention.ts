@@ -11,6 +11,7 @@ import { dirtyReportCountsBeforeStmt } from '../lib/report-counts'
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
 //   error_logs / error_alerts  : created_at から90日（障害の記録と通知の記録。#9622。利用者の ID・入力値は持たないので、退職後の削除の対象はない）
+//   db_size_logs               : created_at から2年。alert_destination_status / alert_cooldowns: updated_at から90日（#9971 #9974。会社・利用者の情報は持たない）
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
 //                              : 勤怠と同じく、スタッフの退職日から7年（docs/spec_attendance_correction.md 8章）
 //   notice_read_staff_reports  : スタッフ別の既読率（人事評価の参考資料）も退職後7年（#437）
@@ -74,6 +75,8 @@ const NOTIFICATIONS_MAX_BATCHES = 20
 const EMAIL_LOGS_YEARS = 1
 const OPERATION_LOGS_YEARS = 7
 const LOG_TABLES_KEEP_DAYS = 365 // retention_logs・hq_view_logs（#9968）
+const MONITOR_LOGS_KEEP_DAYS = 730 // db_size_logs（#9971）
+const MONITOR_STATE_KEEP_DAYS = 90 // alert_destination_status・alert_cooldowns（最後の更新から。#9974）
 const R2_DELETE_CHUNK = 1000 // R2 の delete に1回で渡すキーの数（R2 の上限）
 const R2_DELETE_BUDGET = 5000 // 1回のCronで消す R2 の写真・書類の上限（超えた分は翌日に回す。#419）
 const DRY_RUN_STAFF_LIMIT = 300 // dry-run で一覧に出す対象スタッフの上限
@@ -455,6 +458,25 @@ function cleanupRetentionLogs(db: D1Database, dryRun: boolean): Promise<Retentio
 }
 function cleanupHqViewLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'hq_view_logs', table: 'hq_view_logs', idCol: 'log_id', years: 0, days: LOG_TABLES_KEEP_DAYS })
+}
+// 障害に気づく仕組みの表（#9971 #9974。migrations/0109）。会社・利用者の情報は持たないので、退職後の削除・解約の削除の対象はない。
+// DB の大きさの記録は2年（増え方は直近3か月で見る）、送り先の最後の送信の結果・同じ通知の間隔の印は、最後の更新から90日で消す（使わなくなった送り先の分）
+function cleanupDbSizeLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
+  return cleanupByCreatedAt(db, dryRun, { target: 'db_size_logs', table: 'db_size_logs', idCol: 'log_id', years: 0, days: MONITOR_LOGS_KEEP_DAYS })
+}
+async function cleanupMonitorState(db: D1Database, dryRun: boolean, table: 'alert_destination_status' | 'alert_cooldowns'): Promise<RetentionTargetResult> {
+  const cutoff = addDays(todayJST(), -MONITOR_STATE_KEEP_DAYS)
+  try {
+    if (dryRun) {
+      const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE updated_at < ?`).bind(cutoff).first()
+      return { target: table, targetCount: (row?.n as number) || 0, deletedCount: 0, failedCount: 0 }
+    }
+    // 行は送り先・通知の種類の数だけ（多くても数十行）なので、区切らずに消す。どちらの表にもトリガーはない
+    const n = (await db.prepare(`DELETE FROM ${table} WHERE updated_at < ?`).bind(cutoff).run()).meta.changes || 0
+    return { target: table, targetCount: n, deletedCount: n, failedCount: 0 }
+  } catch (e) {
+    return { target: table, targetCount: 0, deletedCount: 0, failedCount: 1, error: String(e).slice(0, 1000) }
+  }
 }
 
 function emptyRetiredAcc(): Record<string, RetentionTargetResult> {
@@ -972,6 +994,8 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
       ...await stage('error_logs', async () => [await cleanupErrorLogs(db, opts.dryRun), await cleanupErrorAlerts(db, opts.dryRun)]),
       ...await stage('retention_logs', async () => [await cleanupRetentionLogs(db, opts.dryRun), await cleanupHqViewLogs(db, opts.dryRun)]),
+      ...await stage('monitor_logs', async () => [await cleanupDbSizeLogs(db, opts.dryRun),
+        await cleanupMonitorState(db, opts.dryRun, 'alert_destination_status'), await cleanupMonitorState(db, opts.dryRun, 'alert_cooldowns')]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
     ] : []),
     ...(stages.includes('in_service') ? await stage('in_service', () => cleanupInService(db, opts.dryRun)) : []),

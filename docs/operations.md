@@ -62,7 +62,7 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 | 現場管理者 / 営業管理者 | `sample` | `mgr01` / `sales01` | `/admin` |
 | 本部 | （空欄） | `hq` | `/hq` |
 
-`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:277`）。
+`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:317`）。
 
 ### 1.5 型チェックとビルド
 
@@ -242,7 +242,7 @@ Cloudflare のダッシュボードの Workers Builds のビルドのログに�
 
 | 名前 | 本番の値 |
 |---|---|
-| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:83`） |
+| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:84`） |
 | `MAIL_ENABLED` | `true` |
 | `RETENTION_ENABLED` | `true` |
 | `DEMO_MODE` | `false` |
@@ -339,14 +339,14 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 
 ### 5.1 Workers Logs（本番の console の出力）
 
-本番だけ有効です（`wrangler.jsonc:90`〜`93`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
+本番だけ有効です（`wrangler.jsonc:92`〜`95`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
-| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:67`〜`73` |
+| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:79`〜`85` |
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:74` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:86` |
-| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:97` |
+| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:137` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:289` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:381` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:125` |
@@ -496,12 +496,12 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 
 ### 10.2 `DEMO_MODE=false` の確認
 - Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
-- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:277`）。
+- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:317`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
 メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。
 1. Resend で独自ドメインを認証する（Resend の Domains で DNS のレコードを足す）。
-2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:82`）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
+2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:83`）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
 3. `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` をシークレットに登録する（7章の `secret put`）。
 4. 管理者の画面からパスワードの再設定のメールなどを1通送り、届くこと、本部画面「メール送信」に送信の記録が出ることを確かめる。
 5. [decisions.md](decisions.md) の D-31 に、再開した日を書き足す。

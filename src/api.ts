@@ -40,6 +40,8 @@ import { loadShiftSnaps, notifyShiftChanges, notifyReportComment, notifyReportEd
 // 障害の記録の一覧と、本部の管理者のプッシュ通知の購読（#9622。src/hq-errors.ts・src/notifications.ts）
 import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND, hiddenStaffNotifyKinds } from './notifications'
 import { hqErrorsApi } from './hq-errors'
+// 障害の通知の送り先・DB の大きさ（#9971 #9974。src/hq-monitor.ts）
+import { hqMonitorApi } from './hq-monitor'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -1304,6 +1306,7 @@ api.route('/admin', notificationsAdminApi)
 api.route('/hq', mailHqApi)
 // 障害の記録（#9622）と、本部の管理者の端末のプッシュ通知（障害の通知）
 api.route('/hq', hqErrorsApi)
+api.route('/hq', hqMonitorApi)
 api.route('/hq', notificationsHqApi)
 // 伴走支援の依頼・本部からのお知らせ・管理画面の閲覧（#179 #516 #293。src/hq-support.ts）
 api.route('/admin', hqSupportAdminApi)

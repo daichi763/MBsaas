@@ -9,6 +9,7 @@
 // - 通知: 記録のたびに直近 window 分の件数を数え、閾値以上なら本部の管理者（system_admin）全員にアプリ内の通知（kind: error_alert）を作る。
 //   最後の通知から cooldown 分は送らない（error_alerts で判定。1文で判定と記録をするので、同時に起きても1回だけ）。
 //   プッシュは user_notifications のトリガーで push_queue に積まれる（migrations/0081_push.sql）。送るのは呼び出し側（index.tsx）の flushPushQueue。
+//   あわせて、登録した送り先（秘密の値 ALERT_DESTINATIONS。setErrorAlertSender で index.tsx が登録する）にも送る（#9974）。
 //   閾値などは環境変数（wrangler.jsonc の vars）で変えられる: ERROR_ALERT_THRESHOLD・ERROR_ALERT_WINDOW_MINUTES・ERROR_ALERT_COOLDOWN_MINUTES
 import { nowJST } from './time.ts' // テストが Node でこのファイルを直接読み込むので、拡張子まで書く
 
@@ -164,5 +165,15 @@ export async function checkErrorAlert(env: ErrorAlertEnv): Promise<boolean> {
   const notified = rows.length
   await db.prepare('UPDATE error_alerts SET notified = ? WHERE alert_id = ?').bind(notified, alertId).run()
   console.error(JSON.stringify({ level: 'error', event: 'error_alert', alert_id: alertId, count: n, window_minutes: st.window_minutes, notified }))
+  // 送り先（Slack・LINE など。src/services/alerts.ts）にも送る。送り先の失敗はここまでの通知に影響させない
+  if (alertSender) await alertSender(env, { alertId, count: n, windowMinutes: st.window_minutes, threshold: st.threshold, cooldownMinutes: st.cooldown_minutes, title })
+    .catch(e => console.log(`error alert send failed: ${String((e as any)?.name || 'Error')}`))
   return true
+}
+
+// 障害の通知を送り先にも送る関数（index.tsx が起動時に登録する。このファイルは Node のテストからも直接読み込むので、送り先の処理は import しない）
+export type ErrorAlertInfo = { alertId: number; count: number; windowMinutes: number; threshold: number; cooldownMinutes: number; title: string }
+let alertSender: ((env: ErrorAlertEnv, a: ErrorAlertInfo) => Promise<unknown>) | null = null
+export function setErrorAlertSender(fn: (env: ErrorAlertEnv, a: ErrorAlertInfo) => Promise<unknown>): void {
+  alertSender = fn
 }

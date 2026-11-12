@@ -45,7 +45,8 @@
 		"APP_BASE_URL": "http://localhost:8787",
 		"MAIL_ENABLED": "false",
 		"RETENTION_ENABLED": "false",
-		"DEMO_MODE": "true"
+		"DEMO_MODE": "true",
+		"DB_SIZE_LIMIT_MB": "500"
 	},
 	"env": {
 		"production": {
@@ -77,13 +78,14 @@
 				"crons": ["0 18 * * *", "30 18 * * *", "*/15 * * * *"]
 			},
 			// MAIL_FROM: Resend で認証した独自ドメインの送信元に変えること（resend.dev のテスト用アドレスはアカウント所有者あてにしか届かない）
-			// RETENTION_ENABLED: 'true' で定期削除を実行する。'true' 以外は dry-run
+			// RETENTION_ENABLED: 'true' で定期削除を実行する。'true' 以外は dry-run。DB_SIZE_LIMIT_MB: D1 の上限（MB。無料プランは 500、有料プランに切り替えたら 10240。docs/monitoring.md）
 			"vars": {
 				"MAIL_FROM": "Field OS <onboarding@resend.dev>",
 				"APP_BASE_URL": "https://mbsaas.saas-2a2.workers.dev",
 				"MAIL_ENABLED": "true",
 				"RETENTION_ENABLED": "true",
-				"DEMO_MODE": "false"
+				"DEMO_MODE": "false",
+				"DB_SIZE_LIMIT_MB": "500"
 			},
 			// Workers Logs。API の 500（app.onError が参照番号付きで記録する）・cron・メール送信の失敗を、
 			// wrangler tail を開いていなくてもダッシュボードで後から確認できるようにする（#230）
