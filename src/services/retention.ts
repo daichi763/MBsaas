@@ -1,6 +1,7 @@
 import { REPORT_TYPES } from '../report-settings'
 import { ERROR_LOG_KEEP_DAYS } from '../lib/error-log'
 import { nowJST, todayJST, addDays } from '../lib/time'
+import { dirtyReportCountsBeforeStmt } from '../lib/report-counts'
 
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
@@ -388,6 +389,8 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
         // 日報のコメント（#9965。migrations/0107）
         db.prepare(`DELETE FROM daily_report_comments WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
         db.prepare(`DELETE FROM daily_reports WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
+        // 日報一覧の件数の控え（#9970。migrations/0108）の、消した月までの印を消す（次に開いたときに数え直す）
+        dirtyReportCountsBeforeStmt(db, cutoff),
       ])
       const changes = result.meta.changes || 0
       deleted += changes
@@ -1174,6 +1177,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   // Sprint 24（w24-requests）: 日報のコメント（#9965）
   { target: 'daily_report_comments', label: '日報のコメント', table: 'daily_report_comments', where: OB_CO },
   { target: 'daily_reports', label: '日報', table: 'daily_reports', where: OB_CO },
+  // Sprint 25（w25-perf）: 日報一覧の件数の控え（#9970。日報から作り直せるので書き出さない）
+  { target: 'daily_report_month_counts', label: '日報一覧の件数の控え', table: 'daily_report_month_counts', where: OB_CO, noExport: true },
   { target: 'affiliation_excluded_shifts', label: '所属区分の対象外シフト', table: 'affiliation_excluded_shifts', where: OB_CO },
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },

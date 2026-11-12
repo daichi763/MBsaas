@@ -63,11 +63,13 @@ export async function verifyPassword(password: string, stored: string | null | u
   return false
 }
 
-/** 旧形式・回数の少ないハッシュなら true（ログイン成功時に作り直す） */
+/** 旧形式・回数が今の設定と違うハッシュなら true（ログイン成功時に作り直す）。
+ *  回数の多いハッシュ（seed.sql・以前に作ったデモの 100000 回など）も今の回数で作り直す。照合のたびに CPU を 10 倍使い、
+ *  Free プランの CPU 10ms を超えるため（#9970。ログインの CPU p50 38ms）。上の PBKDF2_ITERATIONS を上げれば、上げた回数に作り直される */
 export function needsRehash(stored: string | null | undefined): boolean {
   const s = String(stored || '')
   if (!s.startsWith('pbkdf2$')) return true
-  return Number(s.split('$')[1]) < PBKDF2_ITERATIONS
+  return Number(s.split('$')[1]) !== PBKDF2_ITERATIONS
 }
 
 // 会社コードやユーザーが無いときも同じだけ計算して、応答時間からアカウントの有無を推測されないようにする
