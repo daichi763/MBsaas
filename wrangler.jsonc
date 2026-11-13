@@ -41,7 +41,7 @@
 	},
 	// ローカルの既定: メールは送らない・定期削除は dry-run・メールのリンクはローカルを指す・デモ案内を出す
 	"vars": {
-		"MAIL_FROM": "Field OS <onboarding@resend.dev>",
+		"MAIL_FROM": "Mobital <onboarding@resend.dev>",
 		"APP_BASE_URL": "http://localhost:8787",
 		"MAIL_ENABLED": "false",
 		"RETENTION_ENABLED": "false",
@@ -77,10 +77,11 @@
 			"triggers": {
 				"crons": ["0 18 * * *", "30 18 * * *", "*/15 * * * *"]
 			},
-			// MAIL_FROM: Resend で認証した独自ドメインの送信元に変えること（resend.dev のテスト用アドレスはアカウント所有者あてにしか届かない）
+			// MAIL_FROM: Resend で認証した notify.mobital.jp の送信元。MAIL_REPLY_TO: 自動メールへの返信先の既定（企業が問い合わせ先を設定したお知らせはそちらが優先）
 			// RETENTION_ENABLED: 'true' で定期削除を実行する。'true' 以外は dry-run。DB_SIZE_LIMIT_MB: D1 の上限（MB。無料プランは 500、有料プランに切り替えたら 10240。docs/monitoring.md）
 			"vars": {
-				"MAIL_FROM": "Field OS <onboarding@resend.dev>",
+				"MAIL_FROM": "Mobital <notify@notify.mobital.jp>",
+				"MAIL_REPLY_TO": "support@mobital.jp",
 				"APP_BASE_URL": "https://mbsaas.saas-2a2.workers.dev",
 				"MAIL_ENABLED": "true",
 				"RETENTION_ENABLED": "true",

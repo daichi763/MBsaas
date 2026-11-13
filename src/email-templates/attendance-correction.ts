@@ -4,7 +4,7 @@ import { escapeHtml } from './_util'
 // 件名は title（だれの・いつの・どの報告か。アプリ内通知のタイトルと同じ。#358）。title が無いときは headline。headline は本文の1行目に出す
 export function attendanceCorrectionEmail(params: { name: string; title?: string; headline: string; lines: [string, string][]; url: string; button: string }) {
   const { name, title, headline, lines, url, button } = params
-  const subject = `【Field OS】${title || headline}`
+  const subject = `【Mobital】${title || headline}`
   const rows = lines.map(([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#6b7280;white-space:nowrap;vertical-align:top;">${escapeHtml(k)}</td><td style="padding:4px 0;white-space:pre-wrap;">${escapeHtml(v)}</td></tr>`).join('')
   const html = `
     <div style="font-family: -apple-system, 'Hiragino Kaku Gothic ProN', sans-serif; line-height:1.7; color:#111827; max-width:480px; margin:0 auto;">
@@ -17,7 +17,7 @@ export function attendanceCorrectionEmail(params: { name: string; title?: string
         <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:bold;">${escapeHtml(button)}</a>
       </p>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
-      <p style="color:#9ca3af;font-size:12px;">Field OS</p>
+      <p style="color:#9ca3af;font-size:12px;">Mobital</p>
     </div>`
   const text = `${name} 様
 
@@ -27,7 +27,7 @@ ${headline}
 ${lines.map(([k, v]) => `${k}: ${v}`).join('\n')}
 ────────────
 
-詳細はField OSからご確認ください。
+詳細はMobitalからご確認ください。
 ${url}`
   return { subject, html, text }
 }

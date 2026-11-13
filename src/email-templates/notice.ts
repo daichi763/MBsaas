@@ -13,11 +13,11 @@ export function noticeEmail(params: {
   noApp?: boolean
 }) {
   const { name, title, body, url, companyName, importance, projectNames, ackUrl, contactEmail, contactPhone, noApp } = params
-  const from = companyName ? `【${companyName}】` : '【Field OS】'
+  const from = companyName ? `【${companyName}】` : '【Mobital】'
   const mark = IMPORTANCE_MARK[String(importance || '')] || ''
   const projects = projectNames ? (projectNames.length > SUBJECT_PROJECTS_MAX ? projectNames.slice(0, SUBJECT_PROJECTS_MAX) + '…' : projectNames) : ''
   const subject = `${from}${mark}${title}${projects ? `（${projects}）` : ''}`
-  const sender = companyName ? `${companyName}（Field OS から送信しています）` : 'Field OS'
+  const sender = companyName ? `${companyName}（Mobital から送信しています）` : 'Mobital'
   const contact = [contactPhone ? `電話: ${contactPhone}` : '', contactEmail ? `メール: ${contactEmail}（このメールへの返信も届きます）` : ''].filter(Boolean)
   const ackNote = noApp
     ? 'このお知らせはメールでお送りしています。ご不明な点は、下のお問い合わせ先へご連絡ください。'
@@ -29,7 +29,7 @@ export function noticeEmail(params: {
   const html = `
     <div style="font-family: -apple-system, 'Hiragino Kaku Gothic ProN', sans-serif; line-height:1.7; color:#111827; max-width:480px; margin:0 auto;">
       <p>${escapeHtml(name)} 様</p>
-      <p>${escapeHtml(companyName || 'Field OS')} から新しいお知らせがあります。</p>
+      <p>${escapeHtml(companyName || 'Mobital')} から新しいお知らせがあります。</p>
       <div style="border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:20px 0;">
         <p style="font-weight:bold;margin:0 0 8px;">${mark ? `<span style="color:#dc2626;">${escapeHtml(mark)}</span>` : ''}${escapeHtml(title)}</p>
         <p style="white-space:pre-wrap;margin:0;color:#374151;">${escapeHtml(body)}</p>
@@ -44,7 +44,7 @@ export function noticeEmail(params: {
     </div>`
   const text = `${name} 様
 
-${companyName || 'Field OS'} から新しいお知らせがあります。
+${companyName || 'Mobital'} から新しいお知らせがあります。
 
 ────────────
 ${mark}${title}

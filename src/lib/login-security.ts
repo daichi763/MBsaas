@@ -199,7 +199,7 @@ export function newTotpSecret(): string {
   return base32Encode(a)
 }
 /** 認証アプリに登録する URI（QR コードにする） */
-export function totpUri(secret: string, account: string, issuer = 'Field OS'): string {
+export function totpUri(secret: string, account: string, issuer = 'Mobital'): string {
   return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(account)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${TOTP_STEP_SECONDS}`
 }
 async function hotp(secret: string, counter: number): Promise<string> {

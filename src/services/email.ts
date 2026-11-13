@@ -11,6 +11,7 @@ import { nowJST } from '../lib/time'
 export type MailEnv = {
   RESEND_API_KEY: string
   MAIL_FROM: string
+  MAIL_REPLY_TO?: string // 自動メールへの返信先の既定（例 support@mobital.jp）。メールごとの reply_to（企業の問い合わせ先）があればそちらを使う
   MAIL_ENABLED?: string // 'true' のときだけ実際に送る。それ以外（'false'・未設定も含む）は送らずに記録だけ残す（mailMode。開発環境での誤送信防止）
   DB: D1Database
   RESEND_WEBHOOK_SECRET?: string // Resend の Webhook の署名の秘密（whsec_...）。未設定なら Webhook を受け付けない
@@ -44,7 +45,8 @@ const RESEND_API = 'https://api.resend.com'
 type ResendError = { name?: string; message?: string; statusCode?: number }
 type ResendEmail = { from: string; to: string; subject: string; html: string; text?: string; reply_to?: string }
 function toResendEmail(env: MailEnv, m: SendEmailInput): ResendEmail {
-  return { from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(m.reply_to ? { reply_to: m.reply_to } : {}) }
+  const replyTo = m.reply_to || env.MAIL_REPLY_TO
+  return { from: env.MAIL_FROM, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(replyTo ? { reply_to: replyTo } : {}) }
 }
 async function resendPost<T>(apiKey: string, path: '/emails' | '/emails/batch', body: unknown, idempotencyKey?: string): Promise<{ data: T | null; error: ResendError | null }> {
   // User-Agent が無い要求は Resend に断られるので付ける（SDK も resend-node:版 を付けていた）
