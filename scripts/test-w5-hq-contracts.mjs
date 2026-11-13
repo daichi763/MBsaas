@@ -212,11 +212,12 @@ let newId = null
     // アプリからの勤怠の報告も利用として数える（他社から連携したスタッフは、報告先の企業のスタッフ行で数える）。代理入力は数えない
     sql(`UPDATE users SET last_login_at = NULL, last_seen_at = NULL WHERE user_id = (SELECT user_id FROM staff_profiles WHERE staff_id = 2)`)
     const b4 = (await findCo(1)).active_users
-    sql(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, entry_method)
-      SELECT 1, 2, shift_id, 'w5_rv_test', '${jstNow()}', 'proxy' FROM shifts WHERE staff_id = 2 AND company_id = 1 ORDER BY shift_id LIMIT 1`)
+    // 実際の報告と同じく端末の情報を入れる（代理入力は 'proxy'、アプリは user-agent。週次アクティブは端末の情報がある報告を部分索引で引く。#9976）
+    sql(`INSERT INTO attendance_reports (company_id, staff_id, shift_id, report_type, reported_at, entry_method, device_info)
+      SELECT 1, 2, shift_id, 'w5_rv_test', '${jstNow()}', 'proxy', 'proxy' FROM shifts WHERE staff_id = 2 AND company_id = 1 ORDER BY shift_id LIMIT 1`)
     const c4 = await findCo(1)
     ok('#491 代理入力の報告だけの人は週次アクティブに数えない', c4.active_users === b4, { b4, c4: c4.active_users })
-    sql(`UPDATE attendance_reports SET entry_method = 'app' WHERE report_type = 'w5_rv_test'`)
+    sql(`UPDATE attendance_reports SET entry_method = 'app', device_info = 'Mozilla/5.0 (test)' WHERE report_type = 'w5_rv_test'`)
     const c5 = await findCo(1)
     ok('#491 アプリから勤怠を報告した人は、ログインの記録がなくても週次アクティブに数える', c5.active_users === b4 + 1, { b4, c5: c5.active_users })
     sql(`DELETE FROM attendance_reports WHERE report_type = 'w5_rv_test'`)
