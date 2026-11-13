@@ -1193,7 +1193,7 @@ const OB_USERS = `(SELECT user_id FROM users WHERE company_id = $C AND role != '
 const OB_STAFF = '(SELECT staff_id FROM staff_profiles WHERE company_id = $C)'
 const OB_CO = 'company_id = $C'
 // 打刻は企業の索引（idx_attendance_company）を使わず、その企業のシフト・スタッフから引く（打刻のたびの索引の書き込みを減らすため、
-// 次の Sprint でこの索引を消す。#9976）。company_id の条件も残し、ほかの企業の行には触れない
+// migrations/0112 でこの索引を消した。#9976 #9982）。company_id の条件も残し、ほかの企業の行には触れない
 const OB_ATTENDANCE = `${OB_CO} AND (shift_id IN (SELECT shift_id FROM shifts WHERE company_id = $C) OR staff_id IN ${OB_STAFF})`
 const OB_NOTICES = 'notice_id IN (SELECT notice_id FROM notices WHERE company_id = $C)'
 // 削除の順（参照する側が先）。書き出しにもこの一覧を使う
