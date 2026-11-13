@@ -5,9 +5,10 @@
 // - 同じ人（person_id が同じ他社の行）のセッションをまとめて扱う条件
 import type { Context } from 'hono'
 import { sha256Hex } from './auth'
+import { ADMIN_ROLES } from './permissions'
 
 /** 二段階認証を使える（接続元の制限の対象になる）ロール。スタッフは対象外 */
-export const MFA_ROLES = ['system_admin', 'company_admin', 'sales_manager', 'field_manager', 'office_staff']
+export const MFA_ROLES: readonly string[] = ['system_admin', ...ADMIN_ROLES]
 export function canUseMfa(role: unknown): boolean { return MFA_ROLES.includes(String(role)) }
 
 const nowIso = () => new Date().toISOString()
