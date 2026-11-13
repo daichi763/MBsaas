@@ -107,6 +107,7 @@ npm test -- --no-retry            # 落ちたテストを流し直さない
 - この機械のすべての `npm test` を合わせて、テスト用サーバーを `TEST_MAX_SERVERS` 本までにする（空くまで待つ。印は OS の一時フォルダの `mbsaas-test-slots`）。
 - 各テストは `scripts/lib/test-preload.mjs` を読み込んで起動する。開発サーバーが閉じた接続を使い回したときの ECONNRESET・ECONNABORTED は、要求が届いていないので少し待って送り直す（2回まで）。テストが DB を直接読み書きする `wrangler d1 execute --local` が、開発サーバーと同じファイルを取り合って「internal error」・database is locked・EBUSY・EPERM になったときは、少し待ってやり直す（3回まで。1回の実行は1つのトランザクションなので、失敗した回は何も書いていない）。やり直したときは「（再試行）」と出る。原因を調べるときは `TEST_RETRY=0` でやめられる。
 - DB の写しを消すときの EPERM・EBUSY（止めた直後の workerd がファイルを持っている）は待ってやり直し、消せなければ次の `npm test` で消す。
+- テスト用 D1 を作る `scripts/setup-test-db.sh` も、`wrangler d1 execute` が途中で落ちたとき（機械のメモリが足りないときの「out of memory」など）は、少し待って3回までやり直す（失敗した回は何も書いていない）。3回とも落ちたときは wrangler の出力の最後を出して止まる。機械のメモリ（コミット）が足りないと、テストのサーバーやヘッドレス Chrome も落ちるので、ほかの重いアプリを閉じるか、同時に流す `npm test` を減らす。
 
 ### 2.2 以前の既知の失敗（Sprint 26 で直した）
 

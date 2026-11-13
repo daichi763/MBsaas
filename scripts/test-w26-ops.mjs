@@ -154,6 +154,24 @@ else {
   writeFileSync(join(keyDir, '.env'), 'RESEND_API_KEY="re_test456"\n')
   const both = mailKeyFiles(keyDir)
   ok('#9980 npm test: .dev.vars・.env に RESEND_API_KEY があれば始めない（空の値・無いときは始める）', none.length === 0 && empty.length === 0 && JSON.stringify(both) === '[".dev.vars",".env"]' && /mailKeyFiles\(ROOT\)/.test(rt), { none, empty, both })
+  // テスト用 D1 を作る setup-test-db.sh の run(): wrangler が途中で落ちても3回までやり直す（npx・sleep を差し替えて run() だけを動かす）
+  const fn = /^run\(\) \{\n[\s\S]*?\n\}$/m.exec(read('scripts/setup-test-db.sh'))?.[0]
+  const cnt = join(TMP, 'npx-count.txt').replace(/\\/g, '/')
+  const trial = (failTimes) => {
+    writeFileSync(cnt, '0')
+    const script = `sleep() { :; }\nnpx() { n=$(cat '${cnt}'); n=$((n+1)); echo $n > '${cnt}'; if [ $n -le ${failTimes} ]; then echo "FATAL ERROR: out of memory $n"; return 1; fi; echo ok; }\nDIR=x\n${fn}\nrun --file=migrations/0001.sql 2>&1; echo "rc=$?"`
+    try { return { out: execFileSync('bash', ['-c', script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), err: '', calls: Number(readFileSync(cnt, 'utf8')) } }
+    catch (e) { return { out: String(e.stdout || ''), err: String(e.stderr || e.message), code: e.code, calls: Number(readFileSync(cnt, 'utf8')) } }
+  }
+  if (!fn) ok('#9980 setup-test-db.sh: run() が読める', false)
+  else {
+    const a = trial(2), b = trial(9)
+    if (a.code === 'ENOENT') skip('#9980 setup-test-db.sh のやり直し', 'bash がありません')
+    else {
+      ok('#9980 setup-test-db.sh: wrangler が2回落ちても3回目で通れば続ける', /rc=0/.test(a.out) && a.calls === 3 && /（再試行）/.test(a.out), a)
+      ok('#9980 setup-test-db.sh: 3回とも落ちたら止まり、wrangler の出力の最後を見せる', /rc=1/.test(b.out) && b.calls === 3 && /out of memory 3/.test(b.out), b)
+    }
+  }
 }
 
 // ============ 5) CDN を手元で返す ============
