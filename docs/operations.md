@@ -344,8 +344,8 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
 | 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:79`〜`85` |
-| 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:74` |
-| 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:86` |
+| 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:76` |
+| 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:92` |
 | プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:137` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:286` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:378` |
@@ -443,7 +443,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 - 消したデータは戻せません（Time Travel の期間内なら DB 全体を戻すことはできます。4.2）。
 
 ### 8.2 解約した企業のデータ
-本部画面「解約・データ」で、次の順に行います（`src/api.ts:8503`〜`8509`）。
+本部画面「解約・データ」で、次の順に行います（`src/api.ts:8514`〜`8520`）。
 1. 企業を停止にする（利用状態を「停止」。ログインと API が止まる）。
 2. 「契約終了」を登録する。登録すると猶予期間（既定90日。登録のときに30〜365日で変えられる。`src/services/retention.ts` の `OFFBOARDING_GRACE_DAYS`）に入る。登録は取り消せる。
 3. 猶予のあいだに、データ（CSV・写真・書類のファイル）を書き出して企業に渡す。
