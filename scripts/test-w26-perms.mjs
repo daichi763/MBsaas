@@ -204,7 +204,7 @@ const measured = { routes: table, pages, me: Object.fromEntries(Object.entries(m
 console.log(`API ${ordered.length} 本 × ${ROLE_KEYS.length} ロールを ${Math.round(apiMs / 1000)} 秒で測った`)
 
 if (RECORD) {
-  writeFileSync(BASELINE, JSON.stringify({ note: '権限の表（#9978）の実測。scripts/test-w26-perms.mjs が RECORD=1 で書く。手で直さない', recorded_at: new Date().toISOString().slice(0, 10), roles: ROLE_KEYS, ...measured }, null, 0).replace(/\],"/g, '],\n"').replace(/\},"(GET|POST|PUT|DELETE|PATCH) /g, '},\n"$1 ') + '\n')
+  writeFileSync(BASELINE, JSON.stringify({ note: '権限の表（#9978）の実測。scripts/test-w26-perms.mjs が RECORD=1 で書く。手で直さない', recorded_at: new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10), roles: ROLE_KEYS, ...measured }, null, 0).replace(/\],"/g, '],\n"').replace(/\},"(GET|POST|PUT|DELETE|PATCH) /g, '},\n"$1 ') + '\n')
   console.log(`書きました: ${BASELINE}`)
   process.exit(results.some(r => !r.pass) ? 1 : 0)
 }
