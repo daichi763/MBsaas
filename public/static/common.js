@@ -137,7 +137,7 @@ function addModalCloseButtons() {
     if (!box || box.querySelector(MODAL_X_SEL) || !modalClosesOnBackdrop(bg) || !modalHasInputs(bg)) return
     const b = document.createElement('button')
     b.type = 'button'
-    b.className = 'modal-x text-gray-400 hover:text-gray-600'
+    b.className = 'modal-x text-neutral-400 hover:text-neutral-600'
     b.dataset.action = 'modalX'
     b.setAttribute('aria-label', '閉じる'); b.title = '閉じる'
     b.style.cssText = 'position:sticky;top:0;float:right;z-index:1;width:2rem;height:2rem;margin:-.75rem -.75rem .25rem .5rem;border-radius:9999px;background:rgba(255,255,255,.9);font-size:1.1rem;line-height:2rem;text-align:center'
@@ -238,7 +238,7 @@ function holdToast(el) {
     const x = document.createElement('button')
     x.type = 'button'
     x.setAttribute('aria-label', '閉じる'); x.title = '閉じる'
-    x.style.cssText = 'flex-shrink:0;margin:-.15rem -.4rem 0 0;width:1.5rem;height:1.5rem;border-radius:9999px;color:#d1d5db;font-size:1rem;line-height:1.5rem;text-align:center;background:transparent'
+    x.style.cssText = 'flex-shrink:0;margin:-.15rem -.4rem 0 0;width:1.5rem;height:1.5rem;border-radius:9999px;color:rgb(var(--color-neutral-300));font-size:1rem;line-height:1.5rem;text-align:center;background:transparent'
     x.textContent = '✕'
     x.addEventListener('click', removeNow)
     el.appendChild(x)
@@ -270,6 +270,13 @@ function formatReportedTime(at, workDate) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/.exec(String(at || ''))
   if (!m) return ''
   return `${m[1]}-${m[2]}-${m[3]}` === String(workDate || '').slice(0, 10) ? m[4] : `${Number(m[2])}/${Number(m[3])} ${m[4]}`
+}
+
+// 見た目のトークン（src/input.css の :root の --color-…）の色を、CSS の変数が使えない所（グラフの canvas）で使える rgba() にする。
+// 読めないとき（style.css の読み込み前など）は fallback を返す
+function tokenColor(name, alpha = 1, fallback = '') {
+  const v = getComputedStyle(document.documentElement).getPropertyValue('--color-' + name).trim().match(/^(\d+)\s+(\d+)\s+(\d+)$/)
+  return v ? `rgba(${v[1]},${v[2]},${v[3]},${alpha})` : fallback
 }
 
 // 数字の入力欄の全角を半角にそろえる（#9704）。全角の数字・小数点・マイナス（長音・ダッシュを含む）・プラスを半角にし、

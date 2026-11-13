@@ -109,34 +109,34 @@
 #tour-root .tour-block{position:fixed;inset:0;pointer-events:auto;background:transparent}
 #tour-root .tour-block.dim{background:rgba(15,23,42,.55)}
 #tour-root .tour-hole{position:fixed;border-radius:10px;pointer-events:none;box-shadow:0 0 0 3px rgba(96,165,250,.95),0 0 0 200vmax rgba(15,23,42,.55);transition:top .2s,left .2s,width .2s,height .2s}
-#tour-root .tour-bubble{position:fixed;pointer-events:auto;background:#fff;color:#1f2937;border-radius:14px;box-shadow:0 12px 32px rgba(0,0,0,.28);padding:14px 16px 12px;font-size:14px;line-height:1.65;overflow:auto;overscroll-behavior:contain;outline:none}
-#tour-root .tour-arrow{position:fixed;width:14px;height:14px;background:#fff;transform:rotate(45deg);pointer-events:none}
+#tour-root .tour-bubble{position:fixed;pointer-events:auto;background:rgb(var(--color-surface));color:rgb(var(--color-neutral-800));border-radius:14px;box-shadow:0 12px 32px rgba(0,0,0,.28);padding:14px 16px 12px;font-size:14px;line-height:1.65;overflow:auto;overscroll-behavior:contain;outline:none}
+#tour-root .tour-arrow{position:fixed;width:14px;height:14px;background:rgb(var(--color-surface));transform:rotate(45deg);pointer-events:none}
 #tour-root .tour-head{display:flex;align-items:center;gap:8px;margin-bottom:2px}
-#tour-root .tour-count{font-size:11px;color:#6b7280;flex:1}
-#tour-root .tour-x{width:2rem;height:2rem;margin:-6px -8px 0 0;border-radius:9999px;color:#9ca3af;font-size:1.05rem}
-#tour-root .tour-x:hover{color:#4b5563;background:#f3f4f6}
-#tour-root .tour-title{font-weight:700;font-size:15px;color:#111827;margin-bottom:4px}
+#tour-root .tour-count{font-size:11px;color:rgb(var(--color-neutral-500));flex:1}
+#tour-root .tour-x{width:2rem;height:2rem;margin:-6px -8px 0 0;border-radius:9999px;color:rgb(var(--color-neutral-400));font-size:1.05rem}
+#tour-root .tour-x:hover{color:rgb(var(--color-neutral-600));background:rgb(var(--color-neutral-100))}
+#tour-root .tour-title{font-weight:700;font-size:15px;color:rgb(var(--color-neutral-900));margin-bottom:4px}
 #tour-root .tour-body p+p,#tour-root .tour-body p+ol,#tour-root .tour-body ol+p{margin-top:6px}
 #tour-root .tour-body ol{list-style:decimal;padding-left:1.3em}
 #tour-root .tour-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:12px}
-#tour-root .tour-actions .tour-skip{font-size:12px;color:#6b7280;text-decoration:underline;padding:6px 2px;margin-right:auto}
+#tour-root .tour-actions .tour-skip{font-size:12px;color:rgb(var(--color-neutral-500));text-decoration:underline;padding:6px 2px;margin-right:auto}
 #tour-root .tour-actions .btn{padding:.45rem .9rem;font-size:13px}
 #tour-root .tour-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-#tour-menu{position:fixed;z-index:1100;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.18);padding:6px;min-width:240px;max-width:calc(100vw - 24px)}
-#tour-menu button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;border-radius:8px;font-size:14px;color:#374151}
-#tour-menu button:hover:not(:disabled),#tour-menu button:focus-visible{background:#eff6ff;color:#1d4ed8;outline:none}
-#tour-menu button:disabled{color:#9ca3af;cursor:default}
-#tour-menu button i{width:1.1rem;text-align:center;color:#2563eb}
-#tour-menu button:disabled i{color:#d1d5db}
+#tour-menu{position:fixed;z-index:1100;background:rgb(var(--color-surface));border:1px solid rgb(var(--color-neutral-200));border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.18);padding:6px;min-width:240px;max-width:calc(100vw - 24px)}
+#tour-menu button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;border-radius:8px;font-size:14px;color:rgb(var(--color-neutral-700))}
+#tour-menu button:hover:not(:disabled),#tour-menu button:focus-visible{background:rgb(var(--color-primary-50));color:rgb(var(--color-primary-700));outline:none}
+#tour-menu button:disabled{color:rgb(var(--color-neutral-400));cursor:default}
+#tour-menu button i{width:1.1rem;text-align:center;color:rgb(var(--color-primary-600))}
+#tour-menu button:disabled i{color:rgb(var(--color-neutral-300))}
 #tour-root.tour-live .tour-block{display:none}
 #tour-root.tour-live .tour-hole{box-shadow:0 0 0 3px rgba(37,99,235,.95),0 0 0 8px rgba(96,165,250,.35);animation:tour-pulse 1.6s cubic-bezier(.4,0,.6,1) infinite}
-#tour-root.tour-live .tour-bubble{border:2px solid #bfdbfe}
-#tour-root .tour-note{font-size:12px;color:#6b7280;margin-top:6px}
+#tour-root.tour-live .tour-bubble{border:2px solid rgb(var(--color-primary-200))}
+#tour-root .tour-note{font-size:12px;color:rgb(var(--color-neutral-500));margin-top:6px}
 #tour-root .tour-setup-list{margin-top:6px}
 #tour-root .tour-setup-list li{display:flex;gap:6px;align-items:baseline}
-#tour-root .tour-setup-list li.ok{color:#9ca3af;text-decoration:line-through}
-#tour-root .tour-setup-list li i{width:1rem;text-align:center;color:#d1d5db}
-#tour-root .tour-setup-list li.ok i{color:#10b981}
+#tour-root .tour-setup-list li.ok{color:rgb(var(--color-neutral-400));text-decoration:line-through}
+#tour-root .tour-setup-list li i{width:1rem;text-align:center;color:rgb(var(--color-neutral-300))}
+#tour-root .tour-setup-list li.ok i{color:rgb(var(--color-success-500))}
 @keyframes tour-pulse{50%{box-shadow:0 0 0 3px rgba(37,99,235,.95),0 0 0 12px rgba(96,165,250,.12)}}
 @media (prefers-reduced-motion: reduce){#tour-root .tour-hole{transition:none}#tour-root.tour-live .tour-hole{animation:none}}`
     document.head.appendChild(st)
@@ -324,7 +324,7 @@
   }
   function waitingBubble(a, idx) {
     a.el = null; a.sel = null
-    fillBubble({ count: `${idx + 1} / ${a.tour.steps.length}`, title: '画面を開いています…', body: '<p class="text-gray-500"><span class="spin" style="width:16px;height:16px;vertical-align:-3px"></span> 少しお待ちください</p>', buttons: [{ act: 'skip', label: 'スキップ', skip: true }], closeLabel: '案内を閉じる（続きはあとで見られます）' })
+    fillBubble({ count: `${idx + 1} / ${a.tour.steps.length}`, title: '画面を開いています…', body: '<p class="text-neutral-500"><span class="spin" style="width:16px;height:16px;vertical-align:-3px"></span> 少しお待ちください</p>', buttons: [{ act: 'skip', label: 'スキップ', skip: true }], closeLabel: '案内を閉じる（続きはあとで見られます）' })
     place()
   }
   function render(a, idx, el) {
@@ -437,11 +437,11 @@
     // スマホ: 上のヘッダーの「伴走支援」の左。PC: 画面の右上（内容の上の細い行）
     const head = document.querySelector('header.md\\:hidden')
     const ref = head && head.querySelector('[data-action="hqsOpenSupport"]')
-    if (ref && !head.querySelector('.tour-help-btn')) ref.insertAdjacentHTML('beforebegin', helpBtnHtml('text-blue-600 shrink-0 px-1 py-1 text-lg'))
+    if (ref && !head.querySelector('.tour-help-btn')) ref.insertAdjacentHTML('beforebegin', helpBtnHtml('text-primary-600 shrink-0 px-1 py-1 text-lg'))
     const bar = document.getElementById('hq-support-bar')
     if (bar && !document.getElementById('tour-help-bar')) {
       bar.insertAdjacentHTML('beforebegin', `<div id="tour-help-bar" class="hidden md:flex justify-end px-6 pt-3 -mb-4 max-w-7xl">
-        ${helpBtnHtml('inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-blue-700 bg-white border border-gray-200 rounded-full px-3 py-1 shadow-sm', true)}</div>`)
+        ${helpBtnHtml('inline-flex items-center gap-1.5 text-sm text-neutral-600 hover:text-primary-700 bg-surface border border-neutral-200 rounded-full px-3 py-1 shadow-sm', true)}</div>`)
     }
   }
   function menuItems() {
@@ -682,21 +682,21 @@
   function checklistHtml(items) {
     const done = CHECKLIST.filter(x => items[x.key]).length
     const pct = Math.round(done / CHECKLIST.length * 100)
-    return `<section id="tour-checklist" class="card p-4 mb-4 border-blue-200" aria-labelledby="tour-checklist-title">
+    return `<section id="tour-checklist" class="card p-4 mb-4 border-primary-200" aria-labelledby="tour-checklist-title">
       <div class="flex items-start gap-2">
         <div class="flex-1 min-w-0">
-          <h3 id="tour-checklist-title" class="font-bold text-gray-800"><i class="fas fa-flag-checkered text-blue-600 mr-1"></i>はじめにやること</h3>
-          <p class="text-xs text-gray-500 mt-0.5">使い始めるための準備です。済んだ項目には自動でチェックが付き、すべて済むとこの欄は消えます（${done} / ${CHECKLIST.length} 完了）</p>
+          <h3 id="tour-checklist-title" class="font-bold text-neutral-800"><i class="fas fa-flag-checkered text-primary-600 mr-1"></i>はじめにやること</h3>
+          <p class="text-xs text-neutral-500 mt-0.5">使い始めるための準備です。済んだ項目には自動でチェックが付き、すべて済むとこの欄は消えます（${done} / ${CHECKLIST.length} 完了）</p>
         </div>
-        <button type="button" class="text-xs text-gray-500 hover:text-gray-700 underline shrink-0" data-action="tourChecklistClose">閉じる</button>
+        <button type="button" class="text-xs text-neutral-500 hover:text-neutral-700 underline shrink-0" data-action="tourChecklistClose">閉じる</button>
       </div>
-      <div class="h-1.5 bg-gray-100 rounded-full mt-2 mb-3 overflow-hidden" role="progressbar" aria-label="はじめにやることの進み具合" aria-valuemin="0" aria-valuemax="${CHECKLIST.length}" aria-valuenow="${done}"><div class="h-full bg-blue-600 rounded-full" style="width:${pct}%"></div></div>
+      <div class="h-1.5 bg-neutral-100 rounded-full mt-2 mb-3 overflow-hidden" role="progressbar" aria-label="はじめにやることの進み具合" aria-valuemin="0" aria-valuemax="${CHECKLIST.length}" aria-valuenow="${done}"><div class="h-full bg-primary-600 rounded-full" style="width:${pct}%"></div></div>
       <ol class="space-y-2">${CHECKLIST.map(x => {
         const ok = !!items[x.key]
         return `<li class="flex items-start gap-2 text-sm" data-check="${h(x.key)}">
-          <i class="fas ${ok ? 'fa-circle-check text-emerald-500' : 'fa-circle text-gray-300'} mt-1" aria-hidden="true"></i>
-          <div class="flex-1 min-w-0"><p class="${ok ? 'text-gray-400 line-through' : 'font-bold text-gray-800'}">${h(x.label)}<span class="sr-only">${ok ? '（完了）' : '（未完了）'}</span></p>
-            ${ok ? '' : `<p class="text-xs text-gray-500">${h(x.hint)}</p>`}</div>
+          <i class="fas ${ok ? 'fa-circle-check text-success-500' : 'fa-circle text-neutral-300'} mt-1" aria-hidden="true"></i>
+          <div class="flex-1 min-w-0"><p class="${ok ? 'text-neutral-400 line-through' : 'font-bold text-neutral-800'}">${h(x.label)}<span class="sr-only">${ok ? '（完了）' : '（未完了）'}</span></p>
+            ${ok ? '' : `<p class="text-xs text-neutral-500">${h(x.hint)}</p>`}</div>
           ${ok ? '' : `<a href="${h(x.href)}" class="btn btn-outline text-xs shrink-0">開く</a>`}
         </li>`
       }).join('')}</ol>
@@ -1100,11 +1100,11 @@
     if (IS_IOS) {
       const safari = !/CriOS|FxiOS|EdgiOS|OPiOS/.test(UA)
       return (safari ? '' : P('iPhone・iPad では、<b>Safari</b> でこのページを開いてから追加してください。'))
-        + '<ol><li>画面の下（iPad は上）の共有ボタン <i class="fas fa-arrow-up-from-bracket text-blue-600" aria-label="共有"></i> を押します</li><li>「ホーム画面に追加」を選び、「追加」を押します</li></ol>'
+        + '<ol><li>画面の下（iPad は上）の共有ボタン <i class="fas fa-arrow-up-from-bracket text-primary-600" aria-label="共有"></i> を押します</li><li>「ホーム画面に追加」を選び、「追加」を押します</li></ol>'
         + P('次からはホーム画面のアイコンで1回で開けます。', '<b>プッシュ通知を受け取るには、ホーム画面に追加したアイコンから開く必要があります</b>（iOS 16.4 以降）。')
     }
     if (IS_ANDROID) {
-      return '<ol><li>Chrome の右上のメニュー <i class="fas fa-ellipsis-vertical text-blue-600" aria-label="メニュー"></i> を押します</li><li>「ホーム画面に追加」（または「アプリをインストール」）を選びます</li></ol>'
+      return '<ol><li>Chrome の右上のメニュー <i class="fas fa-ellipsis-vertical text-primary-600" aria-label="メニュー"></i> を押します</li><li>「ホーム画面に追加」（または「アプリをインストール」）を選びます</li></ol>'
         + P('次からはホーム画面のアイコンで1回で開けます。')
     }
     return P('スマホで使うときは、ブラウザのメニューから「ホーム画面に追加」すると、次からアイコンで1回で開けます。')
@@ -1138,9 +1138,9 @@
   // 「その他」の画面の「使い方をもう一度見る」（staff.js の renderMore が並べる）
   function staffMoreHtml() {
     return `<button type="button" class="report-btn w-full text-left" data-action="tourStaffReplay">
-        <span class="w-11 h-11 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center text-lg"><i class="fas fa-circle-question"></i></span>
-        <span class="flex-1"><span class="block font-bold text-gray-800">使い方をもう一度見る</span><span class="block text-xs text-gray-400">ホーム画面に追加・打刻・日報・通知の案内</span></span>
-        <i class="fas fa-chevron-right text-gray-300"></i>
+        <span class="w-11 h-11 rounded-xl bg-primary-100 text-primary-600 flex items-center justify-center text-lg"><i class="fas fa-circle-question"></i></span>
+        <span class="flex-1"><span class="block font-bold text-neutral-800">使い方をもう一度見る</span><span class="block text-xs text-neutral-400">ホーム画面に追加・打刻・日報・通知の案内</span></span>
+        <i class="fas fa-chevron-right text-neutral-300"></i>
       </button>`
   }
 

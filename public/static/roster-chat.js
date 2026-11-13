@@ -35,18 +35,18 @@ window.renderChatDashboardNotice = async function () {
   const app = document.getElementById('app')
   if (!app || !app.firstElementChild || document.getElementById('chat-dashboard-notice')) return
   const html = `
-    <section id="chat-dashboard-notice" class="card p-4 mb-5 border-l-4 border-blue-500">
+    <section id="chat-dashboard-notice" class="card p-4 mb-5 border-l-4 border-primary-500">
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-bold text-gray-800"><i class="fas fa-comments text-blue-600 mr-1"></i>企業間チャット 新着 <span class="badge badge-red">${data.unread_total}</span></h3>
-        <a href="#roster-chat" class="text-xs text-blue-600 hover:underline">すべて見る</a>
+        <h3 class="text-sm font-bold text-neutral-800"><i class="fas fa-comments text-primary-600 mr-1"></i>企業間チャット 新着 <span class="badge badge-red">${data.unread_total}</span></h3>
+        <a href="#roster-chat" class="text-xs text-primary-600 hover:underline">すべて見る</a>
       </div>
       <div class="space-y-1">
         ${unread.slice(0, 5).map(t => `
-          <a href="#roster-chat" ${chatOpenAttrs(t)} class="flex items-center gap-2 text-sm p-2 rounded-lg hover:bg-gray-50">
+          <a href="#roster-chat" ${chatOpenAttrs(t)} class="flex items-center gap-2 text-sm p-2 rounded-lg hover:bg-neutral-50">
             <span class="badge badge-red">${Number(t.unread)}</span>
-            <span class="font-medium text-gray-800">${esc(t.staff_name || '（削除済み）')}</span>${t.ended ? '<span class="badge badge-gray">連携終了</span>' : ''}
-            <span class="text-xs text-gray-400">${esc(t.partner_company_name)}</span>
-            <span class="text-xs text-gray-500 truncate flex-1">${esc(t.last_body || '')}</span>
+            <span class="font-medium text-neutral-800">${esc(t.staff_name || '（削除済み）')}</span>${t.ended ? '<span class="badge badge-gray">連携終了</span>' : ''}
+            <span class="text-xs text-neutral-400">${esc(t.partner_company_name)}</span>
+            <span class="text-xs text-neutral-500 truncate flex-1">${esc(t.last_body || '')}</span>
           </a>`).join('')}
       </div>
     </section>`
@@ -60,23 +60,23 @@ window.renderRosterChatList = async function () {
   const { data } = await axios.get('/api/admin/roster-chat/threads')
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">企業間チャット</h2>
-      <span class="text-sm text-gray-400">未読 ${data.unread_total}件 ・ <a href="#roster-notes" class="text-blue-600 hover:underline">連携先からの追記（現場評価・稼働メモ）</a></span>
+      <h2 class="text-xl font-bold text-neutral-900">企業間チャット</h2>
+      <span class="text-sm text-neutral-400">未読 ${data.unread_total}件 ・ <a href="#roster-notes" class="text-primary-600 hover:underline">連携先からの追記（現場評価・稼働メモ）</a></span>
     </div>
-    <p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-4"><i class="fas fa-eye-slash mr-1"></i>${CHAT_NOTICE}</p>
+    <p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mb-4"><i class="fas fa-eye-slash mr-1"></i>${CHAT_NOTICE}</p>
     <section class="card overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>スタッフ</th><th>相手企業</th><th>自社の立場</th><th>最新メッセージ</th><th>日時</th><th>未読</th></tr></thead>
         <tbody>
           ${data.threads.map(t => `
             <tr class="cursor-pointer" ${chatOpenAttrs(t)}>
-              <td class="font-medium text-blue-700">${esc(t.staff_name || '（削除済み）')}${t.ended ? ' <span class="badge badge-gray" title="区分の変更などで連携が終わったスレッドです。閲覧のみできます">連携終了</span>' : ''}</td>
+              <td class="font-medium text-primary-700">${esc(t.staff_name || '（削除済み）')}${t.ended ? ' <span class="badge badge-gray" title="区分の変更などで連携が終わったスレッドです。閲覧のみできます">連携終了</span>' : ''}</td>
               <td>${esc(t.partner_company_name)}</td>
               <td>${t.my_side === 'owner' ? '<span class="badge badge-green">所属元</span>' : '<span class="badge badge-blue">稼働先</span>'}</td>
-              <td class="text-xs text-gray-600 max-w-[320px] truncate">${esc(t.last_body || '—')}</td>
-              <td class="text-xs text-gray-400">${t.last_at ? esc(t.last_at.slice(5, 16)) : ''}</td>
+              <td class="text-xs text-neutral-600 max-w-[320px] truncate">${esc(t.last_body || '—')}</td>
+              <td class="text-xs text-neutral-400">${t.last_at ? esc(t.last_at.slice(5, 16)) : ''}</td>
               <td>${t.unread ? `<span class="badge badge-red">${Number(t.unread)}</span>` : ''}</td>
-            </tr>`).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-6">連携中のスタッフがいません（①QR/ID連携で登録すると、所属元企業とのチャットが利用できます）</td></tr>'}
+            </tr>`).join('') || '<tr><td colspan="6" class="text-center text-neutral-400 py-6">連携中のスタッフがいません（①QR/ID連携で登録すると、所属元企業とのチャットが利用できます）</td></tr>'}
         </tbody>
       </table>
     </section>`
@@ -97,13 +97,13 @@ delegate('openChatThread', (el, ev) => {
 async function openEndedChat(threadId) {
   let d
   try { d = (await axios.get(`/api/admin/roster-chat/ended/${Number(threadId)}`)).data } catch (e) { return toast((e.response && e.response.data && e.response.data.error) || '読み込みに失敗しました') }
-  modal(`<h3 class="font-bold text-lg mb-1"><i class="fas fa-comments text-blue-600 mr-1"></i>企業間チャット（連携終了）</h3>
-    <p class="text-xs text-gray-500 mb-2">${esc(d.thread.staff_name || '（削除済み）')} ・ 相手: ${esc(d.thread.partner_company_name || '')}（${d.thread.my_side === 'owner' ? '自社は所属元' : '自社は稼働先'}）</p>
-    <p class="text-xs text-gray-600 bg-gray-50 rounded-lg p-2 mb-3">区分の変更などで連携が終わったため、閲覧のみできます（新しいメッセージは送れません）</p>
-    <div class="space-y-2 max-h-96 overflow-y-auto p-1 bg-gray-50 rounded-lg" id="ended-chat-log">${d.messages.map(m => `
+  modal(`<h3 class="font-bold text-lg mb-1"><i class="fas fa-comments text-primary-600 mr-1"></i>企業間チャット（連携終了）</h3>
+    <p class="text-xs text-neutral-500 mb-2">${esc(d.thread.staff_name || '（削除済み）')} ・ 相手: ${esc(d.thread.partner_company_name || '')}（${d.thread.my_side === 'owner' ? '自社は所属元' : '自社は稼働先'}）</p>
+    <p class="text-xs text-neutral-600 bg-neutral-50 rounded-lg p-2 mb-3">区分の変更などで連携が終わったため、閲覧のみできます（新しいメッセージは送れません）</p>
+    <div class="space-y-2 max-h-96 overflow-y-auto p-1 bg-neutral-50 rounded-lg" id="ended-chat-log">${d.messages.map(m => `
       <div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
-        <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800'}">
-          <p class="text-[10px] ${m.mine ? 'text-blue-100' : 'text-gray-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
+        <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-800'}">
+          <p class="text-3xs ${m.mine ? 'text-primary-100' : 'text-neutral-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
           <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
         </div>
       </div>`).join('')}</div>
@@ -134,13 +134,13 @@ window.renderRosterChatPanel = async function (sid, p) {
   host.innerHTML = `
     <section class="card p-4">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-comments text-blue-600 mr-1"></i>企業間チャット</h3>
+        <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-comments text-primary-600 mr-1"></i>企業間チャット</h3>
         ${threads.length > 1 ? `<select id="chat-thread-sel" class="inp text-xs w-auto">
-          ${threads.map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('')}</select>` : `<span class="text-xs text-gray-500">相手: ${esc(threads[0].label)}</span>`}
+          ${threads.map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('')}</select>` : `<span class="text-xs text-neutral-500">相手: ${esc(threads[0].label)}</span>`}
       </div>
-      <p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3"><i class="fas fa-eye-slash mr-1"></i>${CHAT_NOTICE}</p>
-      <div id="chat-log" class="space-y-2 max-h-80 overflow-y-auto p-1 bg-gray-50 rounded-lg"></div>
-      <p id="chat-reads" class="text-[11px] text-gray-400 mt-1"></p>
+      <p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mb-3"><i class="fas fa-eye-slash mr-1"></i>${CHAT_NOTICE}</p>
+      <div id="chat-log" class="space-y-2 max-h-80 overflow-y-auto p-1 bg-neutral-50 rounded-lg"></div>
+      <p id="chat-reads" class="text-2xs text-neutral-400 mt-1"></p>
       <div class="flex gap-2 mt-3">
         <textarea id="chat-input" rows="2" maxlength="2000" class="inp text-sm flex-1" placeholder="メッセージを入力（Ctrl+Enterで送信）"></textarea>
         <button class="btn btn-primary self-end" data-action="sendRosterChat" data-sid="${Number(sid)}"><i class="fas fa-paper-plane"></i>送信</button>
@@ -190,13 +190,13 @@ window.loadRosterChat = async function (sid, hostKey, opts) {
     // 相手からの未読の始まりに印を付ける
     const firstUnread = data.messages.find(m => !m.mine && m.comment_id > myRead)
     log.innerHTML = data.messages.map(m => `
-      ${firstUnread && m.comment_id === firstUnread.comment_id ? '<p id="chat-unread-mark" class="text-[11px] text-red-500 text-center border-t border-red-200 pt-1">ここから未読</p>' : ''}
+      ${firstUnread && m.comment_id === firstUnread.comment_id ? '<p id="chat-unread-mark" class="text-2xs text-danger-500 text-center border-t border-danger-200 pt-1">ここから未読</p>' : ''}
       <div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
-        <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-800'}">
-          <p class="text-[10px] ${m.mine ? 'text-blue-100' : 'text-gray-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
+        <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-800'}">
+          <p class="text-3xs ${m.mine ? 'text-primary-100' : 'text-neutral-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
           <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
         </div>
-      </div>`).join('') || '<p class="text-xs text-gray-400 text-center py-6">まだメッセージはありません</p>'
+      </div>`).join('') || '<p class="text-xs text-neutral-400 text-center py-6">まだメッセージはありません</p>'
     log.scrollTop = log.scrollHeight
     const readsEl = document.getElementById('chat-reads'); if (readsEl) readsEl.textContent = chatReadsText(data)
     const lastId = data.messages.length ? data.messages[data.messages.length - 1].comment_id : 0
@@ -217,7 +217,7 @@ window.loadRosterChat = async function (sid, hostKey, opts) {
       CHAT_OBSERVER = observer
       observer.observe(log)
     }
-  } catch { log.innerHTML = '<p class="text-xs text-red-500 text-center py-6">読み込みに失敗しました</p>' }
+  } catch { log.innerHTML = '<p class="text-xs text-danger-500 text-center py-6">読み込みに失敗しました</p>' }
 }
 // 送信中は送信ボタンと Ctrl+Enter を止め、入力欄は送る前に空にする（失敗したら戻す）。
 // 二度押しで同じメッセージが相手に2件届かないように（#263）

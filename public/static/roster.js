@@ -3,32 +3,32 @@
 // common.js の部品（modal / closeModal / onModalClose / toast / esc）と admin.js の renderStaff を利用する。admin.js の後に読み込むこと。
 
 const ROSTER_ROUTES = [
-  { key: 'link', icon: 'fa-qrcode', color: 'text-blue-600', title: '① QRコード / スタッフIDから連携',
+  { key: 'link', icon: 'fa-qrcode', color: 'text-primary-600', title: '① QRコード / スタッフIDから連携',
     desc: '他社（Field OS利用企業）に所属する既存スタッフを、スタッフIDで連携登録します。基本項目は所属元が管理し、自社では追記のみ可能です。' },
-  { key: 'employee', icon: 'fa-id-card', color: 'text-emerald-600', title: '② 従業員管理から作成（自社雇用）',
+  { key: 'employee', icon: 'fa-id-card', color: 'text-success-600', title: '② 従業員管理から作成（自社雇用）',
     desc: '自社で雇用するスタッフを登録します。ログインアカウントと従業員管理（社員名簿）が作成されます。' },
-  { key: 'partner', icon: 'fa-building', color: 'text-purple-600', title: '③ 協力会社から作成',
+  { key: 'partner', icon: 'fa-building', color: 'text-accent-600', title: '③ 協力会社から作成',
     desc: '所属会社がField OSを利用していない場合に、協力会社所属のスタッフとして登録します。' },
-  { key: 'skillsheet', icon: 'fa-file-lines', color: 'text-gray-600', title: '④ スキルシートのみ作成',
+  { key: 'skillsheet', icon: 'fa-file-lines', color: 'text-neutral-600', title: '④ スキルシートのみ作成',
     desc: '稼働管理は行わず、スキルシートの発行だけを目的に登録します。ログインアカウントは作成されません。' },
 ]
 
 window.showAddRoster = function () {
   modal(`
     <h3 class="font-bold text-lg mb-1">スタッフマスタ 新規追加</h3>
-    <p class="text-xs text-gray-500 mb-4">作成方法を選択してください</p>
+    <p class="text-xs text-neutral-500 mb-4">作成方法を選択してください</p>
     <div class="space-y-2">
       ${ROSTER_ROUTES.map(r => `
-        <button class="w-full text-left p-3 rounded-xl border border-gray-200 hover:border-blue-400 hover:bg-blue-50 transition" onclick="${r.key === 'link' ? 'showRosterLink()' : `showRosterForm('${r.key}')`}">
-          <p class="font-bold text-sm text-gray-800"><i class="fas ${r.icon} ${r.color} w-5"></i>${r.title}</p>
-          <p class="text-xs text-gray-500 mt-1 ml-5">${r.desc}</p>
+        <button class="w-full text-left p-3 rounded-xl border border-neutral-200 hover:border-primary-400 hover:bg-primary-50 transition" onclick="${r.key === 'link' ? 'showRosterLink()' : `showRosterForm('${r.key}')`}">
+          <p class="font-bold text-sm text-neutral-800"><i class="fas ${r.icon} ${r.color} w-5"></i>${r.title}</p>
+          <p class="text-xs text-neutral-500 mt-1 ml-5">${r.desc}</p>
         </button>`).join('')}
-      <button class="w-full text-left p-3 rounded-xl border border-dashed border-gray-300 hover:border-orange-400 hover:bg-orange-50 transition" data-action="showRosterImport">
-        <p class="font-bold text-sm text-gray-800"><i class="fas fa-file-csv text-orange-600 w-5"></i>CSV でまとめて登録（②③④）</p>
-        <p class="text-xs text-gray-500 mt-1 ml-5">導入時の名簿の移行や、まとめて受け入れるときに。テンプレートに記入して取り込み、重複などを確かめてから登録します。</p>
+      <button class="w-full text-left p-3 rounded-xl border border-dashed border-neutral-300 hover:border-notice-400 hover:bg-notice-50 transition" data-action="showRosterImport">
+        <p class="font-bold text-sm text-neutral-800"><i class="fas fa-file-csv text-notice-600 w-5"></i>CSV でまとめて登録（②③④）</p>
+        <p class="text-xs text-neutral-500 mt-1 ml-5">導入時の名簿の移行や、まとめて受け入れるときに。テンプレートに記入して取り込み、重複などを確かめてから登録します。</p>
       </button>
     </div>
-    <div class="border-t border-gray-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+    <div class="border-t border-neutral-100 mt-4 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
       <button class="btn btn-outline text-xs" data-action="rosterOpenBulkLink"><i class="fas fa-users-line"></i>IDをまとめて連携</button>
       <button class="btn btn-outline text-xs" data-action="rosterOpenShareList"><i class="fas fa-id-badge"></i>連携用IDの一覧（出力）</button>
       <a class="btn btn-outline text-xs" href="#partners" onclick="closeModal()"><i class="fas fa-building"></i>協力会社の管理</a>
@@ -43,8 +43,8 @@ delegate('rosterLinkBack', () => showRosterLink(ROSTER_LINK.consent ? ROSTER_LIN
 delegate('rosterLinkSubmit', (el) => { if (ROSTER_LINK.consent) submitRosterLink(ROSTER_LINK.consent, el) })
 window.showRosterLink = function (prefill) {
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-qrcode text-blue-600 mr-1"></i>スタッフIDから連携</h3>
-    <p class="text-xs text-gray-500 mb-4">所属元企業から共有されたスタッフID（例: FS1A2B3C4D5E）を入力してください。</p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-qrcode text-primary-600 mr-1"></i>スタッフIDから連携</h3>
+    <p class="text-xs text-neutral-500 mb-4">所属元企業から共有されたスタッフID（例: FS1A2B3C4D5E）を入力してください。</p>
     <div class="flex gap-2">
       <input id="rl-code" class="inp flex-1 font-mono uppercase" placeholder="FS..." value="${esc(prefill || '')}">
       <button class="btn btn-primary" onclick="lookupRosterCode()"><i class="fas fa-magnifying-glass"></i>検索</button>
@@ -66,20 +66,20 @@ window.lookupRosterCode = async function () {
     // 他社が登録した氏名・会社名を含むため、onclick に埋め込まずここに保持する
     ROSTER_LINK.candidate = { code: cand.global_staff_code, name: cand.name, owner: cand.owner_company_name, consent: data.consent }
     if (data.already_linked_staff_id) {
-      box.innerHTML = `<div class="p-3 rounded-lg bg-amber-50 text-amber-700 text-sm">
+      box.innerHTML = `<div class="p-3 rounded-lg bg-warning-50 text-warning-700 text-sm">
         「${esc(cand.name)}」さんは既に連携済みです。<a class="underline font-bold" href="#staff/${data.already_linked_staff_id}" onclick="closeModal()">スタッフマスタを開く</a></div>`
       return
     }
     box.innerHTML = `
-      <div class="p-3 rounded-xl border border-gray-200">
-        <p class="text-xs text-gray-400">連携候補</p>
-        <p class="font-bold text-gray-900">${esc(cand.name)} <span class="text-xs font-normal text-gray-400">${esc(cand.kana || '')}</span></p>
-        <p class="text-xs text-gray-500 mt-1">所属元: ${esc(cand.owner_company_name)} ／ ID: <span class="font-mono">${esc(cand.global_staff_code)}</span></p>
+      <div class="p-3 rounded-xl border border-neutral-200">
+        <p class="text-xs text-neutral-400">連携候補</p>
+        <p class="font-bold text-neutral-900">${esc(cand.name)} <span class="text-xs font-normal text-neutral-400">${esc(cand.kana || '')}</span></p>
+        <p class="text-xs text-neutral-500 mt-1">所属元: ${esc(cand.owner_company_name)} ／ ID: <span class="font-mono">${esc(cand.global_staff_code)}</span></p>
       </div>
       <button class="btn btn-primary w-full mt-3" data-action="rosterConsent">
         <i class="fas fa-link"></i>この人を連携登録する</button>`
   } catch (e) {
-    box.innerHTML = `<div class="p-3 rounded-lg bg-red-50 text-red-600 text-sm">${esc((e.response && e.response.data && e.response.data.error) || '検索に失敗しました')}</div>`
+    box.innerHTML = `<div class="p-3 rounded-lg bg-danger-50 text-danger-600 text-sm">${esc((e.response && e.response.data && e.response.data.error) || '検索に失敗しました')}</div>`
   }
 }
 
@@ -87,26 +87,26 @@ window.lookupRosterCode = async function () {
 window.showRosterConsent = function (info) {
   ROSTER_LINK.consent = { code: info.code, version: info.consent.version }
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>情報共有の同意確認</h3>
-    <p class="text-sm text-gray-600 mb-3">「${esc(info.owner)}」に所属する <b>${esc(info.name)}</b> さんを自社のスタッフマスタに連携します。連携すると、以下の範囲の情報が所属元企業から共有されます。</p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-shield-halved text-primary-600 mr-1"></i>情報共有の同意確認</h3>
+    <p class="text-sm text-neutral-600 mb-3">「${esc(info.owner)}」に所属する <b>${esc(info.name)}</b> さんを自社のスタッフマスタに連携します。連携すると、以下の範囲の情報が所属元企業から共有されます。</p>
     <div class="grid sm:grid-cols-2 gap-3 text-xs">
-      <div class="p-3 rounded-lg bg-blue-50">
-        <p class="font-bold text-blue-700 mb-1"><i class="fas fa-check mr-1"></i>共有される情報（スタッフマスタ項目のみ）</p>
-        <ul class="list-disc ml-4 text-blue-900 space-y-0.5">${info.consent.shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      <div class="p-3 rounded-lg bg-primary-50">
+        <p class="font-bold text-primary-700 mb-1"><i class="fas fa-check mr-1"></i>共有される情報（スタッフマスタ項目のみ）</p>
+        <ul class="list-disc ml-4 text-primary-900 space-y-0.5">${info.consent.shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
       </div>
-      <div class="p-3 rounded-lg bg-gray-50">
-        <p class="font-bold text-gray-600 mb-1"><i class="fas fa-ban mr-1"></i>共有されない情報</p>
-        <ul class="list-disc ml-4 text-gray-600 space-y-0.5">${info.consent.not_shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      <div class="p-3 rounded-lg bg-neutral-50">
+        <p class="font-bold text-neutral-600 mb-1"><i class="fas fa-ban mr-1"></i>共有されない情報</p>
+        <ul class="list-disc ml-4 text-neutral-600 space-y-0.5">${info.consent.not_shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
       </div>
     </div>
-    <ul class="text-xs text-gray-500 mt-3 space-y-1">
+    <ul class="text-xs text-neutral-500 mt-3 space-y-1">
       <li>・基本項目（氏名・スキル等）は所属元企業のみが編集でき、自社では閲覧のみとなります。</li>
       <li>・自社では評価・メモ・フォロー記録などの追記、およびシフト登録ができます。</li>
       <li>・共有情報は、スタッフの稼働管理の目的の範囲内でのみ利用してください。</li>
     </ul>
-    <label class="flex items-start gap-2 mt-4 p-3 rounded-lg border border-gray-200 cursor-pointer">
+    <label class="flex items-start gap-2 mt-4 p-3 rounded-lg border border-neutral-200 cursor-pointer">
       <input type="checkbox" id="rc-agree" class="mt-0.5" onchange="document.getElementById('rc-submit').disabled = !this.checked">
-      <span class="text-sm text-gray-700">上記の共有範囲と利用条件を確認し、同意します（同意の記録は保存されます）</span>
+      <span class="text-sm text-neutral-700">上記の共有範囲と利用条件を確認し、同意します（同意の記録は保存されます）</span>
     </label>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline flex-1" data-action="rosterLinkBack">戻る</button>
@@ -138,15 +138,15 @@ window.showRosterForm = async function (route) {
   // 空いているスタッフ番号（#424）。②は番号欄に入れておき、③（ログインは任意）は例として出す
   let next = null
   if (route !== 'skillsheet') { try { next = (await axios.get('/api/admin/roster/next-code')).data } catch { next = null } }
-  const nextHint = next && next.last_code ? `<p class="text-[11px] text-gray-400 sm:col-span-2 -mt-2">空いている番号を入れています（最後の番号: ${esc(next.last_code)}）。変えることもできます</p>` : ''
+  const nextHint = next && next.last_code ? `<p class="text-2xs text-neutral-400 sm:col-span-2 -mt-2">空いている番号を入れています（最後の番号: ${esc(next.last_code)}）。変えることもできます</p>` : ''
   const f = (id, label, attrs = '', req = false) =>
-    `<div><label class="text-sm text-gray-600 block mb-1">${label}${req ? ' <span class="text-red-500">*</span>' : ''}</label><input id="${id}" class="inp" ${attrs}></div>`
+    `<div><label class="text-sm text-neutral-600 block mb-1">${label}${req ? ' <span class="text-danger-500">*</span>' : ''}</label><input id="${id}" class="inp" ${attrs}></div>`
   modal(`
     <h3 class="font-bold text-lg mb-4">${ROSTER_FORM_TITLE[route]}</h3>
     <div class="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
       ${route === 'partner' ? `
-        <div class="p-3 rounded-lg bg-purple-50 space-y-2">
-          <label class="text-sm text-gray-700 font-bold block">所属会社（協力会社） <span class="text-red-500">*</span></label>
+        <div class="p-3 rounded-lg bg-accent-50 space-y-2">
+          <label class="text-sm text-neutral-700 font-bold block">所属会社（協力会社） <span class="text-danger-500">*</span></label>
           <select id="rf-partner" class="inp" onchange="document.getElementById('rf-new-partner').classList.toggle('hidden', this.value !== 'new')">
             ${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}（${p.staff_count}名）</option>`).join('')}
             <option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい協力会社を登録</option>
@@ -163,18 +163,18 @@ window.showRosterForm = async function (route) {
         ${f('rf-kana', 'フリガナ', 'placeholder="ヤマダ タロウ"')}
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">性別 <span class="text-red-500">*</span></label>
+        <div><label class="text-sm text-neutral-600 block mb-1">性別 <span class="text-danger-500">*</span></label>
           <select id="rf-gender" class="inp"><option value="">選択してください</option><option value="male">男性</option><option value="female">女性</option><option value="other">その他</option><option value="unspecified">回答しない</option></select></div>
         ${f('rf-dob', '生年月日', 'type="date" data-age-input="rf-age"')}
       </div>
       <div>
-        <label class="text-sm text-gray-600 block mb-1" for="rf-age">年齢（生年月日が分からないとき）</label>
+        <label class="text-sm text-neutral-600 block mb-1" for="rf-age">年齢（生年月日が分からないとき）</label>
         <span class="inline-flex items-center gap-1 text-sm"><input id="rf-age" class="inp w-24" type="text" inputmode="numeric" maxlength="3" placeholder="例: 30">歳</span>
-        <p class="text-[11px] text-gray-400 mt-0.5">入れた日から年が経つと自動で増えます（推定の年齢として出します）。生年月日を入れたら、そちらを使います</p>
+        <p class="text-2xs text-neutral-400 mt-0.5">入れた日から年が経つと自動で増えます（推定の年齢として出します）。生年月日を入れたら、そちらを使います</p>
       </div>
       ${route === 'employee' ? `
-        <div class="p-3 rounded-lg bg-emerald-50 space-y-3">
-          <p class="text-xs font-bold text-emerald-700"><i class="fas fa-key mr-1"></i>ログインアカウント（勤怠報告・日報用）</p>
+        <div class="p-3 rounded-lg bg-success-50 space-y-3">
+          <p class="text-xs font-bold text-success-700"><i class="fas fa-key mr-1"></i>ログインアカウント（勤怠報告・日報用）</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             ${f('rf-code', 'スタッフ番号', `placeholder="st021" value="${esc(next ? next.code : '')}"`, true)}
             ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"', true)}
@@ -182,7 +182,7 @@ window.showRosterForm = async function (route) {
             ${f('rf-email', 'メール', 'type="email"')}
             ${f('rf-phone', '電話', 'type="tel"')}
           </div>
-          <p class="text-xs font-bold text-emerald-700 pt-1"><i class="fas fa-id-card mr-1"></i>従業員管理（詳細は登録後に従業員管理画面で入力）</p>
+          <p class="text-xs font-bold text-success-700 pt-1"><i class="fas fa-id-card mr-1"></i>従業員管理（詳細は登録後に従業員管理画面で入力）</p>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             ${f('rf-empno', '社員番号')}
             ${f('rf-hire', '入社年月日', 'type="date"')}
@@ -190,8 +190,8 @@ window.showRosterForm = async function (route) {
           </div>
         </div>` : ''}
       ${route === 'partner' ? `
-        <details class="p-3 rounded-lg border border-gray-200">
-          <summary class="text-sm text-gray-600 cursor-pointer">ログインアカウントを発行する（任意・勤怠報告を行う場合）</summary>
+        <details class="p-3 rounded-lg border border-neutral-200">
+          <summary class="text-sm text-neutral-600 cursor-pointer">ログインアカウントを発行する（任意・勤怠報告を行う場合）</summary>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
             ${f('rf-code', 'スタッフ番号', `placeholder="${esc(next ? '空いている番号: ' + next.code : 'pt001')}" data-suggested="${esc(next ? next.code : '')}"`)}
             ${f('rf-pass', '初期パスワード', 'autocomplete="new-password" placeholder="8文字以上"')}
@@ -207,7 +207,7 @@ window.showRosterForm = async function (route) {
         ${f('rf-skills', 'スキル（カンマ区切り）', 'placeholder="MNP,接客"')}
         ${f('rf-area', '稼働可能エリア', 'placeholder="東京23区"')}
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">経歴</label><textarea id="rf-career" rows="2" class="inp"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">経歴</label><textarea id="rf-career" rows="2" class="inp"></textarea></div>
       ${route !== 'skillsheet' ? `
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
           ${f('rf-line', '最寄駅（路線）')}
@@ -216,14 +216,14 @@ window.showRosterForm = async function (route) {
         </div>
         ${f('rf-commute', '通勤可能時間（分）', 'type="number" min="0" max="1440" step="1"')}
         <div id="rf-av-target">
-          <span class="text-sm text-gray-600 block mb-1">出勤可能日の提出</span>
+          <span class="text-sm text-neutral-600 block mb-1">出勤可能日の提出</span>
           <div class="flex items-center gap-4 text-sm">
             <label class="flex items-center gap-1.5 cursor-pointer"><input type="radio" name="rf-av-target" value="1" class="w-4 h-4" checked>する</label>
             <label class="flex items-center gap-1.5 cursor-pointer"><input type="radio" name="rf-av-target" value="0" class="w-4 h-4">しない</label>
           </div>
-          <p class="text-[11px] text-gray-400 mt-0.5">${esc(window.STAFF_AV_TARGET_CHOICE_HELP || '')}。登録した後も、スタッフ詳細で変えられます</p>
+          <p class="text-2xs text-neutral-400 mt-0.5">${esc(window.STAFF_AV_TARGET_CHOICE_HELP || '')}。登録した後も、スタッフ詳細で変えられます</p>
         </div>` : ''}
-      <p class="text-xs text-gray-400"><span class="text-red-500">*</span> は必須項目です（氏名・性別は全企業共通の必須項目）</p>
+      <p class="text-xs text-neutral-400"><span class="text-danger-500">*</span> は必須項目です（氏名・性別は全企業共通の必須項目）</p>
     </div>
     <div id="rf-dup"></div>
     <div class="flex gap-2 mt-4">
@@ -243,13 +243,13 @@ delegate('submitRosterFormForce', el => withSubmitLock(el, () => window.submitRo
 window.samePersonListHtml = function (matches) {
   return matches.map(m => `<li class="flex items-center gap-2 flex-wrap">
     <a class="underline font-bold" href="#staff/${Number(m.staff_id)}">${esc(m.name)}</a>
-    <span class="text-gray-500">${esc((typeof AFF_TYPE_LABEL !== 'undefined' && AFF_TYPE_LABEL[m.affiliation_type]) || m.affiliation_type || '')}${m.is_provisional ? '・仮登録' : ''}</span>
+    <span class="text-neutral-500">${esc((typeof AFF_TYPE_LABEL !== 'undefined' && AFF_TYPE_LABEL[m.affiliation_type]) || m.affiliation_type || '')}${m.is_provisional ? '・仮登録' : ''}</span>
     ${m.inactive ? `<span class="badge badge-red">${esc(m.inactive)}</span>` : ''}
-    <span class="text-gray-400">${(m.reasons || []).map(esc).join('・')}</span></li>`).join('')
+    <span class="text-neutral-400">${(m.reasons || []).map(esc).join('・')}</span></li>`).join('')
 }
 function showRosterDuplicate(route, matches) {
   const box = document.getElementById('rf-dup'); if (!box) return
-  box.innerHTML = `<div class="mt-3 p-3 rounded-lg bg-amber-50 text-xs text-amber-800" id="rf-dup-box">
+  box.innerHTML = `<div class="mt-3 p-3 rounded-lg bg-warning-50 text-xs text-warning-800" id="rf-dup-box">
     <p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>同じ人と思われるスタッフが登録済みです</p>
     <ul class="space-y-1 mb-2">${samePersonListHtml(matches)}</ul>
     <p class="mb-2">同じ人なら、登録せずに既存のスタッフを開いてください（退職の人は、スタッフ詳細で在籍状況を戻すと再び使えます）。
@@ -342,7 +342,7 @@ function rosterImportResultHtml() {
   const created = ROSTER_IMPORT.created, failed = ROSTER_IMPORT.failed
   if (!created.length && !failed.length) return ''
   const withPw = created.filter(r => r.password)
-  return `<div class="p-3 rounded-lg ${failed.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'} text-xs space-y-2" id="ri-result">
+  return `<div class="p-3 rounded-lg ${failed.length ? 'bg-warning-50 text-warning-800' : 'bg-success-50 text-success-800'} text-xs space-y-2" id="ri-result">
     <p class="font-bold"><i class="fas fa-circle-check mr-1"></i>${created.length}人を登録しました${failed.length ? `（登録しなかった行: ${failed.length}）` : ''}</p>
     ${withPw.length ? `<p>ログインを作った ${withPw.length}人の初期パスワードは、この画面でしか確認できません。ログイン案内（CSV）を保存して、本人に伝えてください（初回のログインでパスワードの変更を求めます）。</p>
       <button class="btn btn-primary text-xs" data-action="downloadRosterImportLogins"><i class="fas fa-download"></i>ログイン案内をダウンロード（CSV）</button>` : ''}
@@ -351,8 +351,8 @@ function rosterImportResultHtml() {
 }
 window.showRosterImport = function () {
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-file-csv text-orange-600 mr-1"></i>CSV でまとめて登録</h3>
-    <p class="text-xs text-gray-500 mb-3">テンプレートの CSV に1行1人で記入して選んでください。登録の前に、必須項目の不足・スタッフ番号や社員番号の重複・同じ人と思われる登録済みのスタッフを確かめます。
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-file-csv text-notice-600 mr-1"></i>CSV でまとめて登録</h3>
+    <p class="text-xs text-neutral-500 mb-3">テンプレートの CSV に1行1人で記入して選んでください。登録の前に、必須項目の不足・スタッフ番号や社員番号の重複・同じ人と思われる登録済みのスタッフを確かめます。
       区分は「自社雇用」「協力会社」「スキルシートのみ」です（他社から連携するスタッフは ①スタッフIDから連携 で登録してください）。
       生年月日が分からない人は「年齢」の列に入れてください（取り込んだ日の年齢として登録します。両方あるときは生年月日を使います）。</p>
     ${ROSTER_IMPORT.downloaded ? '' : rosterImportResultHtml()}
@@ -360,7 +360,7 @@ window.showRosterImport = function () {
       <a class="btn btn-outline text-xs" href="/api/admin/roster/import/template"><i class="fas fa-download"></i>テンプレートをダウンロード</a>
       <input type="file" id="ri-file" accept=".csv,text/csv" class="text-xs flex-1 min-w-0">
     </div>
-    <p class="text-[11px] text-gray-400 mt-1">文字コードは UTF-8 と Shift_JIS（Excel で保存した CSV）に対応しています。1回に${ROSTER_IMPORT_MAX_ROWS}行まで。</p>
+    <p class="text-2xs text-neutral-400 mt-1">文字コードは UTF-8 と Shift_JIS（Excel で保存した CSV）に対応しています。1回に${ROSTER_IMPORT_MAX_ROWS}行まで。</p>
     <div id="ri-preview" class="mt-3"></div>
     <button class="btn btn-outline w-full mt-4 text-xs" data-action="showAddRoster"><i class="fas fa-arrow-left"></i>作成方法の選択に戻る</button>`)
   const input = document.getElementById('ri-file')
@@ -371,18 +371,18 @@ async function previewRosterImport(file) {
   const box = document.getElementById('ri-preview'); if (!box) return
   box.innerHTML = '<div class="flex justify-center py-4"><span class="spin"></span></div>'
   let records
-  try { records = parseCsvText(decodeCsvBuffer(await file.arrayBuffer())) } catch { box.innerHTML = '<p class="text-xs text-red-500">ファイルを読めませんでした</p>'; return }
+  try { records = parseCsvText(decodeCsvBuffer(await file.arrayBuffer())) } catch { box.innerHTML = '<p class="text-xs text-danger-500">ファイルを読めませんでした</p>'; return }
   const header = records[0] || []
   // 空の行は読み飛ばす。行番号は CSV の何行目か（見出しが1行目）
   const rows = records.slice(1).map((cells, i) => ({ line: i + 2, cells })).filter(r => r.cells.some(v => String(v).trim()))
-  if (!rows.length) { box.innerHTML = '<p class="text-xs text-red-500">登録する行がありません</p>'; return }
-  if (rows.length > ROSTER_IMPORT_MAX_ROWS) { box.innerHTML = `<p class="text-xs text-red-500">${rows.length}行あります。1回に${ROSTER_IMPORT_MAX_ROWS}行までにして、ファイルを分けてください</p>`; return }
+  if (!rows.length) { box.innerHTML = '<p class="text-xs text-danger-500">登録する行がありません</p>'; return }
+  if (rows.length > ROSTER_IMPORT_MAX_ROWS) { box.innerHTML = `<p class="text-xs text-danger-500">${rows.length}行あります。1回に${ROSTER_IMPORT_MAX_ROWS}行までにして、ファイルを分けてください</p>`; return }
   Object.assign(ROSTER_IMPORT, { header, rows, preview: null })
   try {
     ROSTER_IMPORT.preview = (await axios.post('/api/admin/roster/import/preview', { header, rows })).data
   } catch (e) {
     const d = e.response && e.response.data
-    box.innerHTML = `<p class="text-xs text-red-500">${esc((d && d.error) || '確かめられませんでした')}</p>`
+    box.innerHTML = `<p class="text-xs text-danger-500">${esc((d && d.error) || '確かめられませんでした')}</p>`
     return
   }
   renderRosterImportPreview()
@@ -399,19 +399,19 @@ function renderRosterImportPreview() {
       <span class="badge badge-yellow">警告 ${Number(s.warning)}</span>
       <span class="badge badge-red">エラー ${Number(s.error)}</span>
     </div>
-    ${p.unknown_columns && p.unknown_columns.length ? `<p class="text-xs text-amber-700 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>読まない列: ${p.unknown_columns.map(esc).join('・')}（見出しがテンプレートと違います）</p>` : ''}
-    <div class="max-h-[40vh] overflow-auto border border-gray-100 rounded-lg">
-      <table class="w-full text-xs"><thead class="sticky top-0 bg-gray-50"><tr class="text-left text-gray-500">
+    ${p.unknown_columns && p.unknown_columns.length ? `<p class="text-xs text-warning-700 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>読まない列: ${p.unknown_columns.map(esc).join('・')}（見出しがテンプレートと違います）</p>` : ''}
+    <div class="max-h-[40vh] overflow-auto border border-neutral-100 rounded-lg">
+      <table class="w-full text-xs"><thead class="sticky top-0 bg-neutral-50"><tr class="text-left text-neutral-500">
         <th class="p-1.5">行</th><th class="p-1.5">区分</th><th class="p-1.5">氏名</th><th class="p-1.5">スタッフ番号</th><th class="p-1.5">確認の結果</th></tr></thead>
-        <tbody>${p.rows.map(r => `<tr class="border-t border-gray-100 align-top ${r.errors.length ? 'bg-red-50' : r.warnings.length ? 'bg-amber-50' : ''}">
+        <tbody>${p.rows.map(r => `<tr class="border-t border-neutral-100 align-top ${r.errors.length ? 'bg-danger-50' : r.warnings.length ? 'bg-warning-50' : ''}">
           <td class="p-1.5">${Number(r.line)}</td><td class="p-1.5 whitespace-nowrap">${esc(r.type_label || '')}</td><td class="p-1.5 whitespace-nowrap">${esc(r.name || '')}</td>
-          <td class="p-1.5 whitespace-nowrap">${r.login ? esc(r.user_code || '自動') : '<span class="text-gray-400">ログインなし</span>'}</td>
-          <td class="p-1.5">${r.errors.length || r.warnings.length || r.notes.length ? msg(r.errors, 'text-red-600') + msg(r.warnings, 'text-amber-700') + msg(r.notes, 'text-gray-500') : '<span class="text-emerald-600">登録できます</span>'}</td></tr>`).join('')}</tbody></table>
+          <td class="p-1.5 whitespace-nowrap">${r.login ? esc(r.user_code || '自動') : '<span class="text-neutral-400">ログインなし</span>'}</td>
+          <td class="p-1.5">${r.errors.length || r.warnings.length || r.notes.length ? msg(r.errors, 'text-danger-600') + msg(r.warnings, 'text-warning-700') + msg(r.notes, 'text-neutral-500') : '<span class="text-success-600">登録できます</span>'}</td></tr>`).join('')}</tbody></table>
     </div>
     ${s.warning ? `<label class="flex items-start gap-2 text-xs mt-3"><input type="checkbox" id="ri-accept" class="mt-0.5">
       <span>警告のある行も登録する（同じ人と思われるスタッフがいる行は、別の人であることを確かめてから登録してください）</span></label>` : ''}
-    <p class="text-xs text-gray-500 mt-2">エラーの行は登録しません。CSV を直して、もう一度選び直すこともできます。</p>
-    <div id="ri-progress" class="text-xs text-gray-500 mt-2"></div>
+    <p class="text-xs text-neutral-500 mt-2">エラーの行は登録しません。CSV を直して、もう一度選び直すこともできます。</p>
+    <div id="ri-progress" class="text-xs text-neutral-500 mt-2"></div>
     <button class="btn btn-primary w-full mt-2" data-action="commitRosterImport" ${s.ok + s.warning ? '' : 'disabled'}><i class="fas fa-user-plus"></i>登録する</button>`
 }
 delegate('commitRosterImport', el => withSubmitLock(el, () => commitRosterImport()))
@@ -495,24 +495,24 @@ window.showRosterFieldSettings = async function () {
   const data = req.__meta
   const canEdit = hasPerm('roster.required_fields')
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>スタッフマスタ 必須項目の設定</h3>
-    <p class="text-xs text-gray-500 mb-4">新規作成時・基本項目の更新時に入力を必須にする項目を選択します。登録済みのスタッフで未入力の人は「未入力のスタッフを確認」で一覧できます。${canEdit ? '' : '<br><span class="text-red-500">変更は会社管理者のみ可能です</span>'}</p>
-    <p class="text-xs font-bold text-gray-500 mb-1">常に必須（変更不可）</p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-sliders text-primary-600 mr-1"></i>スタッフマスタ 必須項目の設定</h3>
+    <p class="text-xs text-neutral-500 mb-4">新規作成時・基本項目の更新時に入力を必須にする項目を選択します。登録済みのスタッフで未入力の人は「未入力のスタッフを確認」で一覧できます。${canEdit ? '' : '<br><span class="text-danger-500">変更は会社管理者のみ可能です</span>'}</p>
+    <p class="text-xs font-bold text-neutral-500 mb-1">常に必須（変更不可）</p>
     <div class="flex gap-2 mb-4">${data.absolute.map(f => `<span class="badge badge-red">${esc(f.label)}</span>`).join('')}</div>
-    <p class="text-xs font-bold text-gray-500 mb-1">企業ごとに設定</p>
+    <p class="text-xs font-bold text-neutral-500 mb-1">企業ごとに設定</p>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
       ${data.fields.map(f => {
         // 対象の説明（例: 所属先担当者名は③取引先のみ、メールはログインのある人のみ、④スキルシートのみは対象外）
         const scope = [f.note, f.skillsheet || f.only ? '' : '④対象外'].filter(Boolean).join('・')
         return `
-        <label class="flex items-center gap-2 p-2 rounded-lg border border-gray-200 ${canEdit ? 'cursor-pointer' : 'opacity-70'}">
+        <label class="flex items-center gap-2 p-2 rounded-lg border border-neutral-200 ${canEdit ? 'cursor-pointer' : 'opacity-70'}">
           <input type="checkbox" class="rq-field" data-code="${esc(f.code)}" ${f.is_required ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
           <span class="text-sm">${esc(f.label)}</span>
-          ${scope ? `<span class="text-[10px] text-gray-400 ml-auto">${esc(scope)}</span>` : ''}
+          ${scope ? `<span class="text-3xs text-neutral-400 ml-auto">${esc(scope)}</span>` : ''}
         </label>`
       }).join('')}
     </div>
-    <p class="text-xs text-gray-400 mt-3">※ ①QR/ID連携で登録したスタッフの基本項目は所属元企業が管理するため、自社の必須設定は適用されません。</p>
+    <p class="text-xs text-neutral-400 mt-3">※ ①QR/ID連携で登録したスタッフの基本項目は所属元企業が管理するため、自社の必須設定は適用されません。</p>
     <div class="flex gap-2 mt-4">
       ${canEdit ? MODAL_CANCEL_BTN : ''}
       <button class="btn btn-outline flex-1" data-action="showRosterMissing">未入力のスタッフを確認</button>
@@ -545,17 +545,17 @@ window.showRosterMissing = async function (opts) {
   }
   const link = s => (s.affiliation_type === 'own_employee' ? '#employees/' : '#staff/') + Number(s.staff_id)
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-triangle-exclamation text-amber-500 mr-1"></i>必須項目が未入力のスタッフ</h3>
-    <p class="text-sm text-gray-600 mb-3">既存スタッフのうち <b>${Number(data.count)}名</b> が未入力です。${data.truncated ? `（先頭の${Number(data.staff.length)}名を表示）` : ''}<br>
-      <span class="text-xs text-gray-400">他社連携・退職・統合済みのスタッフは対象外です。名前を押すと詳細を開きます。</span></p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-triangle-exclamation text-warning-500 mr-1"></i>必須項目が未入力のスタッフ</h3>
+    <p class="text-sm text-neutral-600 mb-3">既存スタッフのうち <b>${Number(data.count)}名</b> が未入力です。${data.truncated ? `（先頭の${Number(data.staff.length)}名を表示）` : ''}<br>
+      <span class="text-xs text-neutral-400">他社連携・退職・統合済みのスタッフは対象外です。名前を押すと詳細を開きます。</span></p>
     <div class="max-h-[60vh] overflow-y-auto">
       <table class="tbl">
         <thead><tr><th>氏名</th><th>区分</th><th>未入力の項目</th></tr></thead>
         <tbody>${data.staff.map(s => `
           <tr>
-            <td><a class="text-blue-700 hover:underline" href="${link(s)}">${esc(s.name)}</a></td>
+            <td><a class="text-primary-700 hover:underline" href="${link(s)}">${esc(s.name)}</a></td>
             <td class="text-xs">${esc((typeof AFF_TYPE_LABEL !== 'undefined' && AFF_TYPE_LABEL[s.affiliation_type]) || s.affiliation_type)}</td>
-            <td class="text-xs text-red-600">${s.missing.map(esc).join('・')}</td>
+            <td class="text-xs text-danger-600">${s.missing.map(esc).join('・')}</td>
           </tr>`).join('')}</tbody>
       </table>
     </div>
@@ -584,7 +584,7 @@ function markRequiredInForm(route) {
     if (!req[code] || !rfRequirementApplies(code, route)) continue
     const el = document.getElementById(id); if (!el) continue
     const label = el.parentElement && el.parentElement.querySelector('label')
-    if (label && !label.querySelector('.req-mark')) label.insertAdjacentHTML('beforeend', ' <span class="text-red-500 req-mark">*</span>')
+    if (label && !label.querySelector('.req-mark')) label.insertAdjacentHTML('beforeend', ' <span class="text-danger-500 req-mark">*</span>')
   }
 }
 // 送信前の必須項目の確認（submitRosterForm の初めに呼ぶ）。足りなければ知らせて false
@@ -625,16 +625,16 @@ window.showShareQr = async function (sid) {
     const { data } = await axios.get(`/api/admin/roster/${sid}/share-code`)
     modal(`
       <div class="flex items-center justify-between mb-3">
-        <h3 class="font-bold text-lg"><i class="fas fa-qrcode text-blue-600 mr-1"></i>連携用QRコード</h3>
+        <h3 class="font-bold text-lg"><i class="fas fa-qrcode text-primary-600 mr-1"></i>連携用QRコード</h3>
         <button class="btn btn-outline text-xs" onclick="window.print()"><i class="fas fa-print"></i>印刷</button>
       </div>
       <div class="text-center">
         <div class="w-56 h-56 mx-auto">${qrSvg(data.global_staff_code)}</div>
         <p class="font-mono text-xl font-bold tracking-widest mt-2">${esc(String(data.global_staff_code || '').replace(/(.{4})(?=.)/g, '$1 '))}</p>
-        <p class="text-sm text-gray-700 mt-1">${esc(data.name)}（${esc(data.company_name)}）</p>
+        <p class="text-sm text-neutral-700 mt-1">${esc(data.name)}（${esc(data.company_name)}）</p>
         <button class="btn btn-outline text-xs mt-2" data-action="copyShareCode" data-code="${esc(data.global_staff_code)}"><i class="fas fa-copy"></i>IDをコピー</button>
       </div>
-      <ul class="text-xs text-gray-500 mt-4 space-y-1">
+      <ul class="text-xs text-neutral-500 mt-4 space-y-1">
         <li>・このQRコード / スタッフIDは${data.relink ? '自社から連携するための専用コードで、固定です' : '恒久固定です（再発行・有効期限・取り消しはありません）'}。IDを渡した企業はいつでも連携できるため、渡す相手を確かめてください。</li>
         <li>・稼働先企業が「スタッフマスタ → 新規追加 → ① QRコード / スタッフIDから連携」で読み取ると、スタッフマスタ項目（氏名・年代・最寄駅・スキル・経歴・「経験・スキル・人柄・PRポイント等」など）が共有されます。生年月日は年代（20代など）だけを渡し、備考は共有しません。</li>
         <li>・連携先から見える所属元は${data.relink ? '自社（' + esc(data.company_name) + '）のみです。自社の所属元の企業名は連携先には表示されません' : '自社のみです。連携先がさらに別の企業へ連携しても、その先の企業から見える所属元は直前の企業だけです'}。</li>
@@ -652,7 +652,7 @@ window.startQrScan = async function () {
   if (!box) return
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('この端末ではカメラを利用できません。IDを入力してください'); return }
   box.innerHTML = `<video id="rl-video" class="w-full rounded-lg bg-black" playsinline muted></video>
-    <p class="text-xs text-gray-500 mt-1 text-center">QRコードを枠内に映してください（画像はサーバーに送信されません）</p>
+    <p class="text-xs text-neutral-500 mt-1 text-center">QRコードを枠内に映してください（画像はサーバーに送信されません）</p>
     <button class="btn btn-outline w-full mt-2 text-xs" onclick="stopQrScanUi()">カメラを停止</button>`
   try {
     qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
@@ -695,14 +695,14 @@ window.renderRosterPanels = async function (sid, p) {
   ROSTER_PANEL_LINKS = (links && links.links) || []
   const hostNotes = p.affiliation_type === 'linked_external' ? `
     <section class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-pen-to-square text-emerald-500 mr-1"></i>稼働先追記項目</h3>
-      <p class="text-xs text-gray-400 mb-3">ここに記入した内容は所属元「${esc(p.owner_company_name || '')}」も閲覧できます（スタッフ本人には表示されません）。社内だけのメモは「管理者メモ」に記入してください。</p>
-      <label class="text-xs text-gray-500 block mb-1">現場評価</label>
+      <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-pen-to-square text-success-500 mr-1"></i>稼働先追記項目</h3>
+      <p class="text-xs text-neutral-400 mb-3">ここに記入した内容は所属元「${esc(p.owner_company_name || '')}」も閲覧できます（スタッフ本人には表示されません）。社内だけのメモは「管理者メモ」に記入してください。</p>
+      <label class="text-xs text-neutral-500 block mb-1">現場評価</label>
       <textarea id="host-site-eval" rows="2" class="inp text-xs mb-2">${esc(p.site_evaluation || '')}</textarea>
-      <label class="text-xs text-gray-500 block mb-1">稼働メモ</label>
+      <label class="text-xs text-neutral-500 block mb-1">稼働メモ</label>
       <textarea id="host-work-memo" rows="2" class="inp text-xs">${esc(p.work_memo || '')}</textarea>
       <div class="flex items-center justify-between mt-2">
-        <span class="text-[11px] text-gray-400">${p.host_note_updated_at ? '最終更新 ' + esc(p.host_note_updated_at) : ''}</span>
+        <span class="text-2xs text-neutral-400">${p.host_note_updated_at ? '最終更新 ' + esc(p.host_note_updated_at) : ''}</span>
         <button class="btn btn-outline text-xs" data-action="saveHostNotes" data-sid="${Number(sid)}">保存</button>
       </div>
     </section>` : ''
@@ -711,43 +711,43 @@ window.renderRosterPanels = async function (sid, p) {
     linkHtml = `
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-link text-blue-500 mr-1"></i>連携先企業（自社から連携した稼働先）</h3>
+          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-link text-primary-500 mr-1"></i>連携先企業（自社から連携した稼働先）</h3>
           ${p.link_shareable ? `<button class="btn btn-outline text-xs" onclick="showShareQr(${sid})"><i class="fas fa-qrcode"></i>連携用QR</button>` : ''}
         </div>
         ${links.links.length ? links.links.map(l => `
-          <div class="p-2.5 rounded-lg ${l.link_revoked_at ? 'bg-gray-100 opacity-80' : 'bg-gray-50'} mb-2">
+          <div class="p-2.5 rounded-lg ${l.link_revoked_at ? 'bg-neutral-100 opacity-80' : 'bg-neutral-50'} mb-2">
             <div class="flex items-center gap-2 text-xs flex-wrap">
-              <span class="font-bold text-gray-800">${esc(l.host_company_name)}</span>
-              <span class="text-gray-400">連携 ${esc((l.consented_at || l.linked_at || '').slice(0, 10))}</span>
+              <span class="font-bold text-neutral-800">${esc(l.host_company_name)}</span>
+              <span class="text-neutral-400">連携 ${esc((l.consented_at || l.linked_at || '').slice(0, 10))}</span>
               ${l.link_revoked_at ? `<span class="badge badge-gray">連携終了 ${esc(String(l.link_revoked_at).slice(0, 10))}${l.revoked_by_name ? '（' + esc(l.revoked_by_name) + '）' : ''}</span>` : '<span class="badge badge-green">共有中</span>'}
-              <span class="ml-auto text-gray-500">今月の稼働 ${Number(l.month_days) || 0}日${Number(l.month_planned_days) > Number(l.month_days) ? `（予定を含め ${Number(l.month_planned_days)}日）` : ''} / 最終稼働 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
+              <span class="ml-auto text-neutral-500">今月の稼働 ${Number(l.month_days) || 0}日${Number(l.month_planned_days) > Number(l.month_days) ? `（予定を含め ${Number(l.month_planned_days)}日）` : ''} / 最終稼働 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
             </div>
             ${l.site_evaluation || l.work_memo ? `
-              <p class="text-xs text-gray-700 mt-1 whitespace-pre-wrap break-words"><span class="text-gray-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
-              <p class="text-xs text-gray-700 whitespace-pre-wrap break-words"><span class="text-gray-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>
-              ${l.host_note_updated_at ? `<p class="text-[11px] text-gray-400">更新 ${esc(String(l.host_note_updated_at).slice(0, 16))}</p>` : ''}` : '<p class="text-xs text-gray-400 mt-1">稼働先からの追記はまだありません</p>'}
-            ${(l.history || []).length > 1 ? `<details class="mt-1"><summary class="text-[11px] text-blue-600 cursor-pointer">変更の履歴（${l.history.length}件${l.history.length >= 10 ? '・新しい10件' : ''}）</summary>
-              <div class="mt-1 space-y-1">${l.history.map(h => `<div class="text-[11px] text-gray-600 border-l-2 border-gray-200 pl-2">
-                <p class="text-gray-400">${esc(String(h.created_at || '').slice(0, 16))}</p>
+              <p class="text-xs text-neutral-700 mt-1 whitespace-pre-wrap break-words"><span class="text-neutral-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
+              <p class="text-xs text-neutral-700 whitespace-pre-wrap break-words"><span class="text-neutral-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>
+              ${l.host_note_updated_at ? `<p class="text-2xs text-neutral-400">更新 ${esc(String(l.host_note_updated_at).slice(0, 16))}</p>` : ''}` : '<p class="text-xs text-neutral-400 mt-1">稼働先からの追記はまだありません</p>'}
+            ${(l.history || []).length > 1 ? `<details class="mt-1"><summary class="text-2xs text-primary-600 cursor-pointer">変更の履歴（${l.history.length}件${l.history.length >= 10 ? '・新しい10件' : ''}）</summary>
+              <div class="mt-1 space-y-1">${l.history.map(h => `<div class="text-2xs text-neutral-600 border-l-2 border-neutral-200 pl-2">
+                <p class="text-neutral-400">${esc(String(h.created_at || '').slice(0, 16))}</p>
                 <p class="whitespace-pre-wrap break-words">現場評価: ${esc(h.site_evaluation || '-')}</p>
                 <p class="whitespace-pre-wrap break-words">稼働メモ: ${esc(h.work_memo || '-')}</p></div>`).join('')}</div></details>` : ''}
             <div class="flex justify-end mt-1">${l.link_revoked_at
               ? (p.link_shareable ? `<button class="btn btn-outline text-xs" data-action="rosterResumeLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-rotate-left"></i>連携を再開</button>` : '')
-              : `<button class="btn btn-outline text-xs text-red-600" data-action="rosterEndLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-link-slash"></i>連携を終了</button>`}</div>
-          </div>`).join('') : `<p class="text-sm text-gray-400">${!p.linkable ? '連携対象外のスタッフです' : p.link_shareable ? 'まだ他社には連携されていません' : '退職・停止中のため、新しく連携することはできません'}</p>`}
-        <p class="text-[11px] text-gray-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。<a href="#roster-notes" class="text-blue-600 hover:underline">連携先からの追記の一覧</a></p>
+              : `<button class="btn btn-outline text-xs text-danger-600" data-action="rosterEndLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-link-slash"></i>連携を終了</button>`}</div>
+          </div>`).join('') : `<p class="text-sm text-neutral-400">${!p.linkable ? '連携対象外のスタッフです' : p.link_shareable ? 'まだ他社には連携されていません' : '退職・停止中のため、新しく連携することはできません'}</p>`}
+        <p class="text-2xs text-neutral-400 mt-1">稼働先の追記内容は閲覧のみです（編集は稼働先企業が行います）。<a href="#roster-notes" class="text-primary-600 hover:underline">連携先からの追記の一覧</a></p>
       </section>`
   }
   if (links && links.role === 'host') {
     linkHtml += `
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-shield-halved text-blue-500 mr-1"></i>連携の同意履歴</h3>
-        ${links.link_revoked_at ? `<div class="p-2.5 rounded-lg bg-red-50 text-red-700 text-xs mb-2"><i class="fas fa-link-slash mr-1"></i>所属元の企業が ${esc(String(links.link_revoked_at).slice(0, 16))} に連携を終了しました。基本項目は表示されず、新しいシフトには割り当てられません。</div>` : ''}
+        <h3 class="text-sm font-bold text-neutral-700 mb-3"><i class="fas fa-shield-halved text-primary-500 mr-1"></i>連携の同意履歴</h3>
+        ${links.link_revoked_at ? `<div class="p-2.5 rounded-lg bg-danger-50 text-danger-700 text-xs mb-2"><i class="fas fa-link-slash mr-1"></i>所属元の企業が ${esc(String(links.link_revoked_at).slice(0, 16))} に連携を終了しました。基本項目は表示されず、新しいシフトには割り当てられません。</div>` : ''}
         ${links.consents.map(x => `
-          <div class="p-2.5 rounded-lg bg-gray-50 mb-2 text-xs">
-            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-gray-400">${esc((x.created_at || '').slice(0, 16))}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
-            <p class="text-gray-500 mt-1">共有範囲: ${esc(Array.isArray(x.shared_scope) ? x.shared_scope.join('・') : x.shared_scope)}</p>
-          </div>`).join('') || '<p class="text-sm text-gray-400">記録がありません</p>'}
+          <div class="p-2.5 rounded-lg bg-neutral-50 mb-2 text-xs">
+            <p><span class="font-bold">${esc(x.agreed_by || '-')}</span> が同意 <span class="text-neutral-400">${esc((x.created_at || '').slice(0, 16))}</span> <span class="badge badge-gray">${esc(x.consent_version)}</span></p>
+            <p class="text-neutral-500 mt-1">共有範囲: ${esc(Array.isArray(x.shared_scope) ? x.shared_scope.join('・') : x.shared_scope)}</p>
+          </div>`).join('') || '<p class="text-sm text-neutral-400">記録がありません</p>'}
       </section>`
   }
   host.innerHTML = hostNotes + linkHtml
@@ -772,31 +772,31 @@ window.renderRosterHostNotes = async function () {
   loading()
   let d
   try { d = (await axios.get('/api/admin/roster/host-notes', { params: { unseen: HOST_NOTES_VIEW.unseen ? 1 : undefined, offset: HOST_NOTES_VIEW.offset || undefined } })).data } catch (e) {
-    $app.innerHTML = `<div class="card p-6 text-center text-sm text-red-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
+    $app.innerHTML = `<div class="card p-6 text-center text-sm text-danger-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
   }
-  const diff = (label, now, prev, first) => `<p class="text-sm whitespace-pre-wrap break-words"><span class="text-xs text-gray-400">${label}:</span> ${esc(now || '-')}</p>
-    ${!first && (prev || '') !== (now || '') ? `<p class="text-[11px] text-gray-400 whitespace-pre-wrap break-words line-through">前: ${esc(prev || '（空欄）')}</p>` : ''}`
+  const diff = (label, now, prev, first) => `<p class="text-sm whitespace-pre-wrap break-words"><span class="text-xs text-neutral-400">${label}:</span> ${esc(now || '-')}</p>
+    ${!first && (prev || '') !== (now || '') ? `<p class="text-2xs text-neutral-400 whitespace-pre-wrap break-words line-through">前: ${esc(prev || '（空欄）')}</p>` : ''}`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">連携先からの追記</h2>
+      <h2 class="text-xl font-bold text-neutral-900">連携先からの追記</h2>
       <div class="flex items-center gap-2">
-        <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="hn-unseen" ${HOST_NOTES_VIEW.unseen ? 'checked' : ''}>未確認だけ</label>
+        <label class="text-xs text-neutral-600 flex items-center gap-1"><input type="checkbox" id="hn-unseen" ${HOST_NOTES_VIEW.unseen ? 'checked' : ''}>未確認だけ</label>
         <button class="btn btn-outline text-xs" data-action="hostNotesSeen" ${d.unseen_count ? '' : 'disabled'}><i class="fas fa-check-double"></i>すべて確認済みにする</button>
       </div>
     </div>
-    <p class="text-xs text-gray-500 mb-4">自社から連携した稼働先の企業が書いた「現場評価」「稼働メモ」の変更です（未確認 ${Number(d.unseen_count) || 0}件）。スタッフ本人には表示されません。</p>
+    <p class="text-xs text-neutral-500 mb-4">自社から連携した稼働先の企業が書いた「現場評価」「稼働メモ」の変更です（未確認 ${Number(d.unseen_count) || 0}件）。スタッフ本人には表示されません。</p>
     <div class="space-y-2">
       ${d.notes.map(n => `
-        <section class="card p-3 ${n.unseen ? 'border-l-4 border-blue-500' : ''}">
+        <section class="card p-3 ${n.unseen ? 'border-l-4 border-primary-500' : ''}">
           <div class="flex items-center gap-2 flex-wrap text-xs mb-1">
             ${n.unseen ? '<span class="badge badge-blue">未確認</span>' : ''}
-            <a href="#staff/${Number(n.staff_id)}" class="font-bold text-blue-700 hover:underline text-sm">${esc(n.staff_name || '')}</a>
-            <span class="text-gray-500">${esc(n.host_company_name || '')}</span>
-            <span class="text-gray-400 ml-auto">${esc(String(n.created_at || '').slice(0, 16))}</span>
+            <a href="#staff/${Number(n.staff_id)}" class="font-bold text-primary-700 hover:underline text-sm">${esc(n.staff_name || '')}</a>
+            <span class="text-neutral-500">${esc(n.host_company_name || '')}</span>
+            <span class="text-neutral-400 ml-auto">${esc(String(n.created_at || '').slice(0, 16))}</span>
           </div>
           ${diff('現場評価', n.site_evaluation, n.prev_site_evaluation, n.prev_site_evaluation == null && n.prev_work_memo == null)}
           ${diff('稼働メモ', n.work_memo, n.prev_work_memo, n.prev_site_evaluation == null && n.prev_work_memo == null)}
-        </section>`).join('') || `<p class="card p-6 text-center text-sm text-gray-400">${HOST_NOTES_VIEW.unseen ? '未確認の追記はありません' : '連携先からの追記はまだありません'}</p>`}
+        </section>`).join('') || `<p class="card p-6 text-center text-sm text-neutral-400">${HOST_NOTES_VIEW.unseen ? '未確認の追記はありません' : '連携先からの追記はまだありません'}</p>`}
     </div>
     <div class="flex justify-between mt-3">
       ${HOST_NOTES_VIEW.offset ? '<button class="btn btn-outline text-xs" data-action="hostNotesPage" data-dir="-1">前へ</button>' : '<span></span>'}
@@ -856,45 +856,45 @@ window.renderPartners = async function () {
     const [d] = await Promise.all([axios.get('/api/admin/roster/partners').then(r => r.data), loadAssigneeOptions(true)])
     PARTNERS.list = d.partners || []
   } catch (e) {
-    $app.innerHTML = `<div class="card p-6 text-center text-sm text-red-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
+    $app.innerHTML = `<div class="card p-6 text-center text-sm text-danger-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
   }
-  const contact = (p) => [p.contact_name ? esc(p.contact_name) + (p.contact_name_kana ? `<span class="text-[11px] text-gray-400">（${esc(p.contact_name_kana)}）</span>` : '') : '', esc(p.phone || ''), esc(p.email || '')].filter(Boolean).join('<br>') || '<span class="text-gray-300">-</span>'
+  const contact = (p) => [p.contact_name ? esc(p.contact_name) + (p.contact_name_kana ? `<span class="text-2xs text-neutral-400">（${esc(p.contact_name_kana)}）</span>` : '') : '', esc(p.phone || ''), esc(p.email || '')].filter(Boolean).join('<br>') || '<span class="text-neutral-300">-</span>'
   $app.innerHTML = `
-    <a href="#staff" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>スタッフマスタ</a>
+    <a href="#staff" class="text-sm text-primary-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>スタッフマスタ</a>
     <div class="flex items-center justify-between mt-2 mb-2 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">協力会社 <span class="text-sm font-normal text-gray-400">${PARTNERS.list.length}社</span></h2>
+      <h2 class="text-xl font-bold text-neutral-900">協力会社 <span class="text-sm font-normal text-neutral-400">${PARTNERS.list.length}社</span></h2>
       <button class="btn btn-primary" data-action="partnerEdit"><i class="fas fa-plus"></i>協力会社を登録</button>
     </div>
-    <p class="text-sm text-gray-700 mb-1">スタッフの所属会社・支払先になる会社です（Field OS を使っている会社は企業間連携で扱います）</p>
-    <p class="text-xs text-gray-500 mb-4">精算では、協力会社ごとに支払先がまとまります。クライアントでもある会社は、詳細でクライアントとつなげます。
+    <p class="text-sm text-neutral-700 mb-1">スタッフの所属会社・支払先になる会社です（Field OS を使っている会社は企業間連携で扱います）</p>
+    <p class="text-xs text-neutral-500 mb-4">精算では、協力会社ごとに支払先がまとまります。クライアントでもある会社は、詳細でクライアントとつなげます。
       同じ会社が別の名前（表記ゆれ）で分かれているときは「統合」でまとめてください（所属スタッフと未確定のシフトの支払先を付け替えます。確定済みの精算は変えません）。</p>
-    ${PARTNERS.list.length ? `<div class="card p-3 mb-3 flex gap-2 items-center flex-wrap"><i class="fas fa-magnifying-glass text-gray-400"></i>
+    ${PARTNERS.list.length ? `<div class="card p-3 mb-3 flex gap-2 items-center flex-wrap"><i class="fas fa-magnifying-glass text-neutral-400"></i>
       <input id="partner-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="協力会社名・フリガナ・住所・ホームページ・担当者・社内担当者・メモで検索" value="${esc(PARTNERS.q)}">
       <select id="partner-assignee" class="inp text-sm w-auto" aria-label="社内担当者で絞り込み">${assigneeFilterOptions(PARTNERS.list, PARTNERS.assignee)}</select>
-      <span id="partner-count" class="text-xs text-gray-400 whitespace-nowrap"></span></div>` : ''}
+      <span id="partner-count" class="text-xs text-neutral-400 whitespace-nowrap"></span></div>` : ''}
     <div class="card overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>協力会社名</th><th>担当者・連絡先</th><th>社内担当者</th><th>所属スタッフ</th><th>今月の稼働</th><th>クライアント</th><th>メモ</th><th></th></tr></thead>
         <tbody>${PARTNERS.list.map(p => `
           <tr data-partner-row="${Number(p.affiliation_id)}">
-            <td class="font-medium">${p.affiliation_name_kana ? `<span class="block text-[11px] font-normal text-gray-400">${esc(p.affiliation_name_kana)}</span>` : ''}<a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline">${esc(p.affiliation_name)}</a>
-              ${p.address || p.postal_code ? `<span class="block text-[11px] font-normal text-gray-500 max-w-[260px] truncate" title="${esc(partnerAddress(p))}"><i class="fas fa-location-dot mr-1 text-gray-400"></i>${esc(partnerAddress(p))}</span>` : ''}
-              ${p.website_url ? `<span class="block text-[11px] font-normal text-gray-500 max-w-[260px] truncate"><i class="fas fa-globe mr-1 text-gray-400"></i>${esc(partnerUrlHost(p.website_url))}</span>` : ''}</td>
+            <td class="font-medium">${p.affiliation_name_kana ? `<span class="block text-2xs font-normal text-neutral-400">${esc(p.affiliation_name_kana)}</span>` : ''}<a href="#partners/${Number(p.affiliation_id)}" class="text-primary-600 hover:underline">${esc(p.affiliation_name)}</a>
+              ${p.address || p.postal_code ? `<span class="block text-2xs font-normal text-neutral-500 max-w-[260px] truncate" title="${esc(partnerAddress(p))}"><i class="fas fa-location-dot mr-1 text-neutral-400"></i>${esc(partnerAddress(p))}</span>` : ''}
+              ${p.website_url ? `<span class="block text-2xs font-normal text-neutral-500 max-w-[260px] truncate"><i class="fas fa-globe mr-1 text-neutral-400"></i>${esc(partnerUrlHost(p.website_url))}</span>` : ''}</td>
             <td class="text-xs">${contact(p)}</td>
             <td class="text-xs">${assigneeShortHtml(p.assignees, p.internal_contact_name)}</td>
-            <td class="whitespace-nowrap">${Number(p.active_staff_count) || 0}名${Number(p.staff_count) > Number(p.active_staff_count) ? `<span class="text-[11px] text-gray-400">（退職等を含め ${Number(p.staff_count)}名）</span>` : ''}</td>
+            <td class="whitespace-nowrap">${Number(p.active_staff_count) || 0}名${Number(p.staff_count) > Number(p.active_staff_count) ? `<span class="text-2xs text-neutral-400">（退職等を含め ${Number(p.staff_count)}名）</span>` : ''}</td>
             <td class="whitespace-nowrap text-xs">${Number(p.month_shifts) || 0}件（${Number(p.month_staff) || 0}名）</td>
-            <td class="text-xs">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>${esc(p.client_name)}</a>` : '<span class="text-gray-300">-</span>'}</td>
+            <td class="text-xs">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>${esc(p.client_name)}</a>` : '<span class="text-neutral-300">-</span>'}</td>
             <td class="text-xs max-w-[240px] whitespace-pre-wrap break-words">${esc(p.memo || '')}</td>
             <td class="whitespace-nowrap text-right">
               <a class="btn btn-outline text-xs" href="#partners/${Number(p.affiliation_id)}">詳細</a>
               <button class="btn btn-outline text-xs" data-action="partnerEdit" data-id="${Number(p.affiliation_id)}">編集</button>
               ${PARTNERS.list.length > 1 ? `<button class="btn btn-outline text-xs" data-action="partnerMerge" data-id="${Number(p.affiliation_id)}">統合</button>` : ''}
-              ${p.can_delete ? `<button class="btn btn-outline text-xs text-red-600" data-action="partnerDelete" data-id="${Number(p.affiliation_id)}">削除</button>` : ''}
+              ${p.can_delete ? `<button class="btn btn-outline text-xs text-danger-600" data-action="partnerDelete" data-id="${Number(p.affiliation_id)}">削除</button>` : ''}
             </td>
-          </tr>`).join('') || '<tr><td colspan="8" class="text-center text-gray-400 py-6">協力会社はまだありません</td></tr>'}</tbody>
+          </tr>`).join('') || '<tr><td colspan="8" class="text-center text-neutral-400 py-6">協力会社はまだありません</td></tr>'}</tbody>
       </table>
-      <p id="partner-empty" class="hidden text-center text-sm text-gray-400 py-6">条件に合う協力会社はありません</p>
+      <p id="partner-empty" class="hidden text-center text-sm text-neutral-400 py-6">条件に合う協力会社はありません</p>
     </div>`
   const q = document.getElementById('partner-q')
   if (q) {
@@ -927,8 +927,8 @@ async function renderPartnerDetail(pid) {
   let data
   try { data = (await axios.get('/api/admin/roster/partners/' + pid, { params: { month: PARTNERS.month } })).data } catch (e) {
     const msg = showApiError(e, '読み込みに失敗しました')
-    $app.innerHTML = `<a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
-      <div class="card p-6 mt-3 text-center text-sm text-red-500">${esc(msg)}</div>`; return
+    $app.innerHTML = `<a href="#partners" class="text-sm text-primary-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
+      <div class="card p-6 mt-3 text-center text-sm text-danger-500">${esc(msg)}</div>`; return
   }
   PARTNERS.detail = data
   const p = data.partner
@@ -937,10 +937,10 @@ async function renderPartnerDetail(pid) {
   // 選択肢を読めないまま編集欄を出すと、保存で社内担当者が消えるので、読めなければ表示のままにする
   if (editNow) { try { await loadAssigneeOptions(true) } catch (e) { editNow = false; showApiError(e, '社内担当者の選択肢を読み込めませんでした') } }
   $app.innerHTML = `
-    <a href="#partners" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
-    ${p.affiliation_name_kana ? `<p class="text-xs text-gray-400 mt-2">${esc(p.affiliation_name_kana)}</p>` : ''}
+    <a href="#partners" class="text-sm text-primary-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>協力会社</a>
+    ${p.affiliation_name_kana ? `<p class="text-xs text-neutral-400 mt-2">${esc(p.affiliation_name_kana)}</p>` : ''}
     <div class="flex items-center gap-2 ${p.affiliation_name_kana ? '' : 'mt-2'} mb-4 flex-wrap">
-      <h2 class="text-xl font-bold text-gray-900">${esc(p.affiliation_name)}</h2>
+      <h2 class="text-xl font-bold text-neutral-900">${esc(p.affiliation_name)}</h2>
       <span class="badge badge-purple">協力会社</span>
       ${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>クライアント「${esc(p.client_name)}」でもあります</a>` : ''}
     </div>
@@ -954,9 +954,9 @@ async function renderPartnerDetail(pid) {
       </div>
       <section class="card p-4 lg:col-span-2" id="partner-deals">${partnerDealsHtml(data)}</section>
       <section class="card p-4 lg:col-span-2">
-        <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-users text-blue-500 mr-1"></i>所属スタッフ（在籍中） <span class="font-normal text-gray-400">${(data.staff || []).length}名</span></h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-users text-primary-500 mr-1"></i>所属スタッフ（在籍中） <span class="font-normal text-neutral-400">${(data.staff || []).length}名</span></h3>
         ${(data.staff || []).length ? `<div class="flex flex-wrap gap-2">${data.staff.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>`
-          : '<p class="text-sm text-gray-400">在籍中の所属スタッフはいません</p>'}
+          : '<p class="text-sm text-neutral-400">在籍中の所属スタッフはいません</p>'}
       </section>
     </div>`
 }
@@ -965,33 +965,33 @@ async function renderPartnerDetail(pid) {
 function partnerBasicHtml(p, editing) {
   const pid = Number(p.affiliation_id)
   if (!editing) return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center">会社基本情報
+        <h3 class="text-sm font-bold text-neutral-700 mb-3 flex items-center">会社基本情報
           <button type="button" class="ml-auto btn btn-outline text-xs" data-action="partnerEditBasic"><i class="fas fa-pen"></i>編集</button></h3>
         <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(p.representative_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(p.branch_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(p.department_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(p.company_phone || '-')}<br>${esc(p.company_email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(partnerAddress(p) || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(p.website_url)}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(p.partner_kind))}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">支払条件</dt><dd class="whitespace-pre-wrap">${esc(p.payment_rule || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${p.partner_rating ? ratingStars(p.partner_rating) : '<span class="text-gray-400">未評価</span>'}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(p.assignees, p.internal_contact_name)}</dd></div>
-          <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.memo || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">代表者氏名</dt><dd>${esc(p.representative_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">支店</dt><dd class="break-all">${esc(p.branch_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">部門</dt><dd class="break-all">${esc(p.department_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(p.company_phone || '-')}<br>${esc(p.company_email || '')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(partnerAddress(p) || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(p.website_url)}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(p.partner_kind))}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">支払条件</dt><dd class="whitespace-pre-wrap">${esc(p.payment_rule || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">評価</dt><dd>${p.partner_rating ? ratingStars(p.partner_rating) : '<span class="text-neutral-400">未評価</span>'}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(p.assignees, p.internal_contact_name)}</dd></div>
+          <div><dt class="text-neutral-400 mb-1">備考</dt><dd class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.memo || '-')}</dd></div>
         </dl>
-        <div class="mt-3 pt-3 border-t border-gray-100">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
+        <div class="mt-3 pt-3 border-t border-neutral-100">
+          <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-receipt text-neutral-400 mr-1"></i>インボイス情報</p>
           <dl class="text-xs space-y-1.5">
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">インボイス番号</dt><dd>${esc(p.invoice_number || '-')}</dd></div>
+            <div class="flex"><dt class="w-28 text-neutral-400 shrink-0">インボイス番号</dt><dd>${esc(p.invoice_number || '-')}</dd></div>
           </dl>
         </div>`
-  const inp = (id, label, v, extra = '') => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" value="${esc(v || '')}" ${extra}></div>`
+  const inp = (id, label, v, extra = '') => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-neutral-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" value="${esc(v || '')}" ${extra}></div>`
   return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">会社基本情報の編集</h3>
         <div class="space-y-2">
           ${inp('pt-name', '協力会社名 *', p.affiliation_name, 'maxlength="100"')}
-          <p class="text-[11px] text-gray-400 -mt-1 text-right">名前を変えると、所属スタッフの所属会社名も変わります</p>
+          <p class="text-2xs text-neutral-400 -mt-1 text-right">名前を変えると、所属スタッフの所属会社名も変わります</p>
           ${inp('pt-name-kana', 'フリガナ', p.affiliation_name_kana, 'maxlength="100" placeholder="ひらがなでも可（カタカナで保存）"')}
           ${inp('pt-rep', '代表者氏名', p.representative_name, 'maxlength="100"')}
           ${inp('pt-branch', '支店', p.branch_name, 'maxlength="100"')}
@@ -1001,18 +1001,18 @@ function partnerBasicHtml(p, editing) {
           ${inp('pt-postal', '郵便番号', p.postal_code, 'inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"')}
           ${inp('pt-address', '住所', p.address, 'maxlength="300"')}
           ${inp('pt-url', 'ホームページ', p.website_url, 'type="url" maxlength="500" placeholder="https://example.co.jp"')}
-          <div class="flex items-center gap-2"><label for="pt-kind" class="w-28 text-xs text-gray-400 shrink-0">種別</label>
+          <div class="flex items-center gap-2"><label for="pt-kind" class="w-28 text-xs text-neutral-400 shrink-0">種別</label>
             <select id="pt-kind" class="inp text-xs flex-1">${clientKindOptions(p.partner_kind)}</select></div>
           ${inp('pt-payment', '支払条件', p.payment_rule, 'maxlength="200" placeholder="月末締め・翌月末払い"')}
-          <div class="flex items-center gap-2"><label for="pt-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
+          <div class="flex items-center gap-2"><label for="pt-rating" class="w-28 text-xs text-neutral-400 shrink-0">評価</label>
             <select id="pt-rating" class="inp text-xs flex-1"><option value="">（未評価）</option>${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Number(p.partner_rating) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
-          <div class="flex items-start gap-2"><span class="w-28 text-xs text-gray-400 shrink-0 pt-1">社内担当者</span><div class="flex-1 min-w-0">${assigneesEditorHtml('pt', p.assignees)}
-            ${p.internal_contact_name ? `<div class="flex items-center gap-2 mt-1.5"><label for="pt-internal" class="text-[11px] text-gray-400 shrink-0">旧（文字）</label><input id="pt-internal" class="inp text-xs flex-1" maxlength="100" value="${esc(p.internal_contact_name)}"></div>
-              <p class="text-[11px] text-gray-400">アカウントを選んだら、旧の文字は消してかまいません</p>` : ''}</div></div>
-          <div><label for="pt-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="pt-memo" rows="3" class="inp text-xs" maxlength="2000">${esc(p.memo || '')}</textarea></div>
-          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
+          <div class="flex items-start gap-2"><span class="w-28 text-xs text-neutral-400 shrink-0 pt-1">社内担当者</span><div class="flex-1 min-w-0">${assigneesEditorHtml('pt', p.assignees)}
+            ${p.internal_contact_name ? `<div class="flex items-center gap-2 mt-1.5"><label for="pt-internal" class="text-2xs text-neutral-400 shrink-0">旧（文字）</label><input id="pt-internal" class="inp text-xs flex-1" maxlength="100" value="${esc(p.internal_contact_name)}"></div>
+              <p class="text-2xs text-neutral-400">アカウントを選んだら、旧の文字は消してかまいません</p>` : ''}</div></div>
+          <div><label for="pt-memo" class="text-xs text-neutral-400 block mb-1">備考</label><textarea id="pt-memo" rows="3" class="inp text-xs" maxlength="2000">${esc(p.memo || '')}</textarea></div>
+          <p class="text-xs text-neutral-500 pt-2 border-t border-neutral-100"><i class="fas fa-receipt text-neutral-400 mr-1"></i>インボイス情報</p>
           ${inp('pt-invoice', 'インボイス番号', p.invoice_number, 'maxlength="20" placeholder="T1234567890123"')}
-          <p id="pt-basic-error" class="hidden text-xs text-red-600"></p>
+          <p id="pt-basic-error" class="hidden text-xs text-danger-600"></p>
           <div class="flex gap-2">
             <button type="button" class="btn btn-outline text-xs flex-1" data-action="partnerCancelBasic">取り消す</button>
             <button type="button" class="btn btn-primary text-xs flex-1" data-action="partnerSaveBasic" data-id="${pid}">保存</button>
@@ -1023,15 +1023,15 @@ function partnerBasicHtml(p, editing) {
 function partnerContactHtml(p) {
   const has = p.contact_name || p.contact_department || p.phone || p.email
   return `<div class="flex items-center justify-between mb-3">
-      <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-address-book text-blue-500 mr-1"></i>先方の担当者</h3>
+      <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-address-book text-primary-500 mr-1"></i>先方の担当者</h3>
       <button class="btn btn-outline text-xs" data-action="partnerEditContact"><i class="fas fa-pen"></i>${has ? '編集' : '担当者を登録'}</button>
     </div>
-    ${has ? `<div class="p-2.5 rounded-lg bg-gray-50 text-sm min-w-0">
-      ${p.contact_name_kana ? `<p class="text-[11px] text-gray-400">${esc(p.contact_name_kana)}</p>` : ''}
-      <p class="font-medium text-gray-800">${esc(p.contact_name || '-')}</p>
-      <p class="text-xs text-gray-500">${esc(p.contact_department || '-')}</p>
-      <p class="text-xs text-gray-500">${esc(p.phone || '-')}　${esc(p.email || '')}</p>
-    </div>` : '<p class="text-sm text-gray-400">先方の担当者が登録されていません</p>'}`
+    ${has ? `<div class="p-2.5 rounded-lg bg-neutral-50 text-sm min-w-0">
+      ${p.contact_name_kana ? `<p class="text-2xs text-neutral-400">${esc(p.contact_name_kana)}</p>` : ''}
+      <p class="font-medium text-neutral-800">${esc(p.contact_name || '-')}</p>
+      <p class="text-xs text-neutral-500">${esc(p.contact_department || '-')}</p>
+      <p class="text-xs text-neutral-500">${esc(p.phone || '-')}　${esc(p.email || '')}</p>
+    </div>` : '<p class="text-sm text-neutral-400">先方の担当者が登録されていません</p>'}`
 }
 delegate('partnerEditBasic', el => withSubmitLock(el, async () => {
   try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした'); return }
@@ -1056,7 +1056,7 @@ delegate('partnerSaveBasic', el => withSubmitLock(el, async () => {
 }))
 delegate('partnerEditContact', () => {
   const p = PARTNERS.detail && PARTNERS.detail.partner; if (!p) return
-  const f = (id, label, v, attrs = '') => `<div><label class="text-sm text-gray-600 block mb-1">${label}</label><input id="${id}" class="inp" value="${esc(v || '')}" ${attrs}></div>`
+  const f = (id, label, v, attrs = '') => `<div><label class="text-sm text-neutral-600 block mb-1">${label}</label><input id="${id}" class="inp" value="${esc(v || '')}" ${attrs}></div>`
   modal(`
     <h3 class="font-bold text-lg mb-4">先方の担当者</h3>
     <div class="space-y-3">
@@ -1065,7 +1065,7 @@ delegate('partnerEditContact', () => {
       ${f('pc-dept', '部署・役職', p.contact_department, 'maxlength="100"')}
       ${f('pc-phone', '電話番号', p.phone, 'type="tel" maxlength="20"')}
       ${f('pc-email', 'メールアドレス', p.email, 'type="email" maxlength="254"')}
-      <p class="text-[11px] text-gray-400">すべて空欄で保存すると、担当者を消します</p>
+      <p class="text-2xs text-neutral-400">すべて空欄で保存すると、担当者を消します</p>
       <div class="flex gap-2 pt-2">
         <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary flex-1" data-action="partnerSaveContact" data-id="${Number(p.affiliation_id)}">保存</button>
@@ -1082,39 +1082,39 @@ delegate('partnerSaveContact', el => withSubmitLock(el, async () => {
 // クライアントとのつながりの欄（協力会社の詳細）
 function partnerClientLinkHtml(data) {
   const p = data.partner
-  const head = '<h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-link text-blue-500 mr-1"></i>クライアントとのつながり</h3>'
+  const head = '<h3 class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-link text-primary-500 mr-1"></i>クライアントとのつながり</h3>'
   if (p.client_id) return `${head}
-    <p class="text-sm text-gray-700">この会社は、クライアント「<a href="#clients/${Number(p.client_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.client_name)}</a>」でもあります。</p>
-    <p class="text-xs text-gray-500 mt-1">クライアントの詳細にも、この協力会社へのリンクと、協力会社としての支払が出ます。</p>
+    <p class="text-sm text-neutral-700">この会社は、クライアント「<a href="#clients/${Number(p.client_id)}" class="text-primary-600 hover:underline font-medium">${esc(p.client_name)}</a>」でもあります。</p>
+    <p class="text-xs text-neutral-500 mt-1">クライアントの詳細にも、この協力会社へのリンクと、協力会社としての支払が出ます。</p>
     <div class="flex gap-2 mt-3 flex-wrap">
       <a href="#clients/${Number(p.client_id)}" class="btn btn-outline text-xs"><i class="fas fa-arrow-right"></i>クライアントの詳細</a>
-      <button class="btn btn-outline text-xs text-red-600" data-action="partnerUnlinkClient" data-id="${Number(p.affiliation_id)}">つながりを外す</button>
+      <button class="btn btn-outline text-xs text-danger-600" data-action="partnerUnlinkClient" data-id="${Number(p.affiliation_id)}">つながりを外す</button>
     </div>`
   const clients = data.clients || []
   return `${head}
-    <p class="text-xs text-gray-500 mb-2">この会社がクライアントでもあるときは、クライアントを選んでつなぎます。つなぐと、お互いの詳細に相手へのリンクと、月の請求・支払が出ます（いつでも外せます）。</p>
+    <p class="text-xs text-neutral-500 mb-2">この会社がクライアントでもあるときは、クライアントを選んでつなぎます。つなぐと、お互いの詳細に相手へのリンクと、月の請求・支払が出ます（いつでも外せます）。</p>
     ${clients.length ? `<div class="flex gap-2 flex-wrap">
       <select id="pt-link-client" class="inp text-sm flex-1 min-w-[12rem]"><option value="">クライアントを選ぶ</option>
         ${clients.map(c => `<option value="${Number(c.client_id)}" ${c.linked_partner_name ? 'disabled' : ''}>${esc(c.client_name)}${c.linked_partner_name ? `（${esc(c.linked_partner_name)} とつながっています）` : ''}</option>`).join('')}</select>
       <button class="btn btn-primary text-xs" data-action="partnerLinkClient" data-id="${Number(p.affiliation_id)}"><i class="fas fa-link"></i>つなぐ</button>
-    </div>` : '<p class="text-sm text-gray-400">クライアントがまだ登録されていません（<a href="#clients" class="text-blue-600 hover:underline">クライアント</a>）</p>'}`
+    </div>` : '<p class="text-sm text-neutral-400">クライアントがまだ登録されていません（<a href="#clients" class="text-primary-600 hover:underline">クライアント</a>）</p>'}`
 }
 // 月の取引（協力会社の詳細）: この会社への支払と、つながったクライアントへの請求
 function partnerDealsHtml(data) {
   const p = data.partner, s = data.summary || {}, ml = monthLabel(s.month)
   const pay = s.pay || { total: 0, shifts: 0, staff: 0, unset: 0 }
-  const box = (title, amount, sub, color) => `<div class="bg-gray-50 rounded-lg p-3"><p class="text-xs text-gray-500">${title}</p><p class="text-lg font-bold ${color}">${amount}</p><p class="text-xs text-gray-500 mt-0.5">${sub}</p></div>`
+  const box = (title, amount, sub, color) => `<div class="bg-neutral-50 rounded-lg p-3"><p class="text-xs text-neutral-500">${title}</p><p class="text-lg font-bold ${color}">${amount}</p><p class="text-xs text-neutral-500 mt-0.5">${sub}</p></div>`
   return `
     <div class="flex items-center gap-2 mb-3 flex-wrap">
-      <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-chart-column text-blue-500 mr-1"></i>月の取引</h3>
+      <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-chart-column text-primary-500 mr-1"></i>月の取引</h3>
       <span class="ml-auto">${monthNavHtml('partnerDetailMonth', s.month)}</span>
     </div>
     <div class="grid sm:grid-cols-2 gap-3">
-      ${box(`${esc(ml)}の支払（この会社へ）`, yen(pay.total), `${Number(pay.shifts)}件・${Number(pay.staff)}名${pay.unset ? `<span class="text-amber-600">（支払額が未設定 ${Number(pay.unset)}件は含みません）</span>` : ''}`, 'text-purple-700')}
-      ${s.bill ? box(`${esc(ml)}の請求（クライアント「${esc(p.client_name)}」へ）`, yen(s.bill.total), `案件 ${Number(s.bill.projects)}件・シフト ${Number(s.bill.shifts)}件 <a href="#clients/${Number(p.client_id)}" class="text-blue-600 hover:underline ml-1">案件ごとの内訳</a>`, 'text-blue-600')
-        : `<div class="bg-gray-50 rounded-lg p-3 text-xs text-gray-400 flex items-center">クライアントとつながると、この会社への請求も出ます</div>`}
+      ${box(`${esc(ml)}の支払（この会社へ）`, yen(pay.total), `${Number(pay.shifts)}件・${Number(pay.staff)}名${pay.unset ? `<span class="text-warning-600">（支払額が未設定 ${Number(pay.unset)}件は含みません）</span>` : ''}`, 'text-accent-700')}
+      ${s.bill ? box(`${esc(ml)}の請求（クライアント「${esc(p.client_name)}」へ）`, yen(s.bill.total), `案件 ${Number(s.bill.projects)}件・シフト ${Number(s.bill.shifts)}件 <a href="#clients/${Number(p.client_id)}" class="text-primary-600 hover:underline ml-1">案件ごとの内訳</a>`, 'text-primary-600')
+        : `<div class="bg-neutral-50 rounded-lg p-3 text-xs text-neutral-400 flex items-center">クライアントとつながると、この会社への請求も出ます</div>`}
     </div>
-    <p class="text-[11px] text-gray-400 mt-2">今日までの確定・代打のシフトの合計です（単価・交通費・調整。精算の確定前の概算を含みます）。支払は、支払先がこの協力会社のシフトです</p>`
+    <p class="text-2xs text-neutral-400 mt-2">今日までの確定・代打のシフトの合計です（単価・交通費・調整。精算の確定前の概算を含みます）。支払は、支払先がこの協力会社のシフトです</p>`
 }
 delegate('partnerDetailMonth', async (el) => {
   const d = PARTNERS.detail; if (!d) return
@@ -1152,13 +1152,13 @@ delegate('partnerEdit', (el) => withSubmitLock(el, async () => {
     return
   }
   try { await loadAssigneeOptions(true) } catch (e) { showApiError(e, '社内担当者の選択肢を読み込めませんでした'); return }
-  const f = (id, label, attrs = '') => `<div><label class="text-sm text-gray-600 block mb-1">${label}</label><input id="${id}" class="inp" ${attrs}></div>`
+  const f = (id, label, attrs = '') => `<div><label class="text-sm text-neutral-600 block mb-1">${label}</label><input id="${id}" class="inp" ${attrs}></div>`
   modal(`
     <h3 class="font-bold text-lg mb-4">協力会社の登録</h3>
     <div class="space-y-3">
       ${f('pt-name', '協力会社名 *', 'maxlength="100"')}
       ${f('pt-name-kana', 'フリガナ', 'maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）"')}
-      <div><label class="text-sm text-gray-600 block mb-1">種別</label><select id="pt-kind" class="inp">${clientKindOptions('')}</select></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">種別</label><select id="pt-kind" class="inp">${clientKindOptions('')}</select></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         ${f('pt-rep', '代表者氏名', 'maxlength="100"')}
         ${f('pt-company-phone', '電話', 'type="tel" maxlength="20"')}
@@ -1171,9 +1171,9 @@ delegate('partnerEdit', (el) => withSubmitLock(el, async () => {
       ${f('pt-url', 'ホームページ', 'type="url" maxlength="500" placeholder="https://example.co.jp"')}
       ${f('pt-payment', '支払条件', 'maxlength="200" placeholder="月末締め・翌月末払い"')}
       ${f('pt-invoice', 'インボイス登録番号', 'maxlength="20" placeholder="T1234567890123"')}
-      <div><p class="text-sm text-gray-600 mb-1">社内担当者</p>${assigneesEditorHtml('pt', [])}</div>
-      <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="pt-memo" rows="2" class="inp" maxlength="2000"></textarea></div>
-      <p class="text-[11px] text-gray-400">名前や住所が似た会社と区別できるよう、住所やホームページを入れておくと一覧で見分けられます。先方の担当者・支店・部門・評価は、登録した後に詳細で入れられます</p>
+      <div><p class="text-sm text-neutral-600 mb-1">社内担当者</p>${assigneesEditorHtml('pt', [])}</div>
+      <div><label class="text-sm text-neutral-600 block mb-1">備考</label><textarea id="pt-memo" rows="2" class="inp" maxlength="2000"></textarea></div>
+      <p class="text-2xs text-neutral-400">名前や住所が似た会社と区別できるよう、住所やホームページを入れておくと一覧で見分けられます。先方の担当者・支店・部門・評価は、登録した後に詳細で入れられます</p>
     </div>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
@@ -1198,9 +1198,9 @@ delegate('partnerMerge', (el) => {
   const others = PARTNERS.list.filter(x => x.affiliation_id !== p.affiliation_id)
   modal(`
     <h3 class="font-bold text-lg mb-1">協力会社の統合</h3>
-    <p class="text-sm text-gray-600 mb-3">「${esc(p.affiliation_name)}」を、次の協力会社にまとめます（同じ会社が表記ゆれで分かれているとき）。</p>
+    <p class="text-sm text-neutral-600 mb-3">「${esc(p.affiliation_name)}」を、次の協力会社にまとめます（同じ会社が表記ゆれで分かれているとき）。</p>
     <select id="pt-merge-into" class="inp">${others.map(x => `<option value="${Number(x.affiliation_id)}">${esc(x.affiliation_name)}（${Number(x.staff_count) || 0}名）</option>`).join('')}</select>
-    <ul class="text-xs text-gray-500 mt-3 space-y-1">
+    <ul class="text-xs text-neutral-500 mt-3 space-y-1">
       <li>・所属スタッフ ${Number(p.staff_count) || 0}名の所属会社を、統合先に付け替えます</li>
       <li>・精算が確定していないシフトの支払先も、統合先に付け替えます（確定済みの精算は変えません）</li>
       <li>・統合先の住所・ホームページ・担当者・電話・メールなどが空欄なら、「${esc(p.affiliation_name)}」の値で埋めます。メモは後ろに足します</li>
@@ -1245,33 +1245,33 @@ window.renderClientPartnerPanel = async function (cid, month) {
     anchor.insertAdjacentHTML('afterend', '<section class="card p-4 lg:col-span-2" id="client-partner-panel"></section>')
     box = document.getElementById('client-partner-panel')
   }
-  const head = '<i class="fas fa-handshake text-purple-500 mr-1"></i>協力会社としての支払'
+  const head = '<i class="fas fa-handshake text-accent-500 mr-1"></i>協力会社としての支払'
   if (data.partner) {
     const p = data.partner, s = data.summary || {}, pay = s.pay || { total: 0, shifts: 0, staff: 0, unset: 0 }
     box.innerHTML = `
       <div class="flex items-center gap-2 mb-2 flex-wrap">
-        <h3 class="text-sm font-bold text-gray-700">${head}</h3>
+        <h3 class="text-sm font-bold text-neutral-700">${head}</h3>
         <span class="ml-auto">${monthNavHtml('clientPartnerMonth', s.month)}</span>
       </div>
-      <p class="text-sm text-gray-700 mb-3">この会社は、協力会社「<a href="#partners/${Number(p.affiliation_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.affiliation_name)}</a>」でもあります（スタッフの所属会社・支払先）。</p>
+      <p class="text-sm text-neutral-700 mb-3">この会社は、協力会社「<a href="#partners/${Number(p.affiliation_id)}" class="text-primary-600 hover:underline font-medium">${esc(p.affiliation_name)}</a>」でもあります（スタッフの所属会社・支払先）。</p>
       <div class="flex items-center gap-3 flex-wrap">
-        <div class="bg-gray-50 rounded-lg p-3 min-w-[14rem]"><p class="text-xs text-gray-500">${esc(monthLabel(s.month))}の支払（この会社へ）</p>
-          <p class="text-lg font-bold text-purple-700">${yen(pay.total)}</p>
-          <p class="text-xs text-gray-500 mt-0.5">${Number(pay.shifts)}件・${Number(pay.staff)}名${pay.unset ? `<span class="text-amber-600">（支払額が未設定 ${Number(pay.unset)}件は含みません）</span>` : ''}</p></div>
+        <div class="bg-neutral-50 rounded-lg p-3 min-w-[14rem]"><p class="text-xs text-neutral-500">${esc(monthLabel(s.month))}の支払（この会社へ）</p>
+          <p class="text-lg font-bold text-accent-700">${yen(pay.total)}</p>
+          <p class="text-xs text-neutral-500 mt-0.5">${Number(pay.shifts)}件・${Number(pay.staff)}名${pay.unset ? `<span class="text-warning-600">（支払額が未設定 ${Number(pay.unset)}件は含みません）</span>` : ''}</p></div>
         <a href="#partners/${Number(p.affiliation_id)}" class="btn btn-outline text-xs"><i class="fas fa-arrow-right"></i>協力会社の詳細</a>
       </div>
-      <p class="text-[11px] text-gray-400 mt-2">今日までの確定・代打のシフトのうち、支払先がこの協力会社のものの合計です（精算の確定前の概算を含みます）</p>`
+      <p class="text-2xs text-neutral-400 mt-2">今日までの確定・代打のシフトのうち、支払先がこの協力会社のものの合計です（精算の確定前の概算を含みます）</p>`
     return
   }
   const cand = data.candidates || []
   box.innerHTML = `
-    <h3 class="text-sm font-bold text-gray-700 mb-1">${head}</h3>
-    <p class="text-xs text-gray-500">この会社が協力会社（スタッフの所属会社・支払先）でもあるときは、協力会社とつなぐと、協力会社としての月の支払がここに出ます。</p>
+    <h3 class="text-sm font-bold text-neutral-700 mb-1">${head}</h3>
+    <p class="text-xs text-neutral-500">この会社が協力会社（スタッフの所属会社・支払先）でもあるときは、協力会社とつなぐと、協力会社としての月の支払がここに出ます。</p>
     ${cand.length ? `<div class="flex gap-2 flex-wrap mt-2">
       <select id="cl-link-partner" class="inp text-sm flex-1 min-w-[12rem]"><option value="">協力会社を選ぶ</option>
         ${cand.map(p => `<option value="${Number(p.affiliation_id)}">${esc(p.affiliation_name)}</option>`).join('')}</select>
       <button class="btn btn-outline text-xs" data-action="clientLinkPartner" data-cid="${cid}"><i class="fas fa-link"></i>つなぐ</button>
-    </div>` : '<p class="text-xs text-gray-400 mt-1">つなげる協力会社がありません（協力会社は <a href="#partners" class="text-blue-600 hover:underline">協力会社</a> で登録します）</p>'}`
+    </div>` : '<p class="text-xs text-neutral-400 mt-1">つなげる協力会社がありません（協力会社は <a href="#partners" class="text-primary-600 hover:underline">協力会社</a> で登録します）</p>'}`
 }
 delegate('clientPartnerMonth', (el) => { if (CLIENT_PARTNER.cid) renderClientPartnerPanel(CLIENT_PARTNER.cid, el.dataset.month) })
 delegate('clientLinkPartner', (el) => withSubmitLock(el, async () => {
@@ -1295,15 +1295,15 @@ window.showShareCodeList = async function () {
   try { SHARE_LIST.staff = (await axios.get('/api/admin/roster/share-codes')).data.staff || [] } catch (e) { showApiError(e, '読み込みに失敗しました'); return }
   SHARE_LIST.q = ''
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-id-badge text-blue-600 mr-1"></i>連携用IDの一覧</h3>
-    <p class="text-xs text-gray-500 mb-2">選んだスタッフの氏名と連携用ID（FS／RL）を、CSV または印刷用の一覧で出します。稼働先は「新規追加 → IDをまとめて連携」で一度に連携できます。</p>
-    <div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mb-3">IDを渡した企業は、いつでもそのスタッフを連携できます。渡す相手を確かめてください。連携されると自社に通知が届き、スタッフ詳細の「連携先企業」から終了できます。</div>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-id-badge text-primary-600 mr-1"></i>連携用IDの一覧</h3>
+    <p class="text-xs text-neutral-500 mb-2">選んだスタッフの氏名と連携用ID（FS／RL）を、CSV または印刷用の一覧で出します。稼働先は「新規追加 → IDをまとめて連携」で一度に連携できます。</p>
+    <div class="text-xs bg-warning-50 text-warning-800 rounded-lg p-2 mb-3">IDを渡した企業は、いつでもそのスタッフを連携できます。渡す相手を確かめてください。連携されると自社に通知が届き、スタッフ詳細の「連携先企業」から終了できます。</div>
     <div class="flex gap-2 items-center mb-2">
       <input id="sc-q" class="inp text-sm flex-1" placeholder="氏名・フリガナ・番号で絞り込み">
-      <label class="text-xs text-gray-600 flex items-center gap-1 whitespace-nowrap"><input type="checkbox" id="sc-all">表示中をすべて選択</label>
+      <label class="text-xs text-neutral-600 flex items-center gap-1 whitespace-nowrap"><input type="checkbox" id="sc-all">表示中をすべて選択</label>
     </div>
-    <div class="max-h-[50vh] overflow-y-auto border border-gray-100 rounded-lg" id="sc-rows"></div>
-    <p class="text-xs text-gray-500 mt-2" id="sc-count"></p>
+    <div class="max-h-[50vh] overflow-y-auto border border-neutral-100 rounded-lg" id="sc-rows"></div>
+    <p class="text-xs text-neutral-500 mt-2" id="sc-count"></p>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-outline flex-1" data-action="shareCodesExport" data-kind="csv"><i class="fas fa-file-csv"></i>CSVで保存</button>
       <button class="btn btn-primary flex-1" data-action="shareCodesExport" data-kind="print"><i class="fas fa-print"></i>印刷用に表示</button>
@@ -1320,11 +1320,11 @@ function drawShareCodeRows() {
   const box = document.getElementById('sc-rows'); if (!box) return
   const q = SHARE_LIST.q.trim().toLowerCase()
   const list = SHARE_LIST.staff.filter(s => !q || [s.name, s.kana, s.user_code].some(v => String(v || '').toLowerCase().includes(q)))
-  box.innerHTML = list.map(s => `<label class="flex items-center gap-2 px-3 py-1.5 border-b border-gray-50 text-sm cursor-pointer">
+  box.innerHTML = list.map(s => `<label class="flex items-center gap-2 px-3 py-1.5 border-b border-neutral-50 text-sm cursor-pointer">
       <input type="checkbox" class="sc-pick" value="${Number(s.staff_id)}" ${SHARE_LIST.picked.has(Number(s.staff_id)) ? 'checked' : ''}>
-      <span class="flex-1">${esc(s.name)} <span class="text-[11px] text-gray-400">${esc(s.kana || '')}</span></span>
-      <span class="text-[11px] text-gray-400">${s.affiliation_type === 'linked_external' ? '他社連携' : '自社雇用'}</span></label>`).join('')
-    || '<p class="text-center text-gray-400 text-sm py-6">連携用IDを共有できるスタッフはいません（在籍中の自社雇用・他社連携のスタッフが対象です）</p>'
+      <span class="flex-1">${esc(s.name)} <span class="text-2xs text-neutral-400">${esc(s.kana || '')}</span></span>
+      <span class="text-2xs text-neutral-400">${s.affiliation_type === 'linked_external' ? '他社連携' : '自社雇用'}</span></label>`).join('')
+    || '<p class="text-center text-neutral-400 text-sm py-6">連携用IDを共有できるスタッフはいません（在籍中の自社雇用・他社連携のスタッフが対象です）</p>'
   box.querySelectorAll('.sc-pick').forEach(cb => cb.addEventListener('change', () => {
     if (cb.checked) SHARE_LIST.picked.add(Number(cb.value)); else SHARE_LIST.picked.delete(Number(cb.value))
     countShareCodePicks()
@@ -1385,8 +1385,8 @@ function parseRosterCodes(text) {
 }
 window.showRosterBulkLink = function (prefill) {
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-users-line text-blue-600 mr-1"></i>IDをまとめて連携</h3>
-    <p class="text-xs text-gray-500 mb-3">所属元の企業から受け取ったスタッフID（FS… / RL…）を、1行に1人ずつ貼り付けてください（所属元が出力した CSV の中身をそのまま貼り付けてもかまいません）。一度に ${ROSTER_BULK_MAX}人まで。</p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-users-line text-primary-600 mr-1"></i>IDをまとめて連携</h3>
+    <p class="text-xs text-neutral-500 mb-3">所属元の企業から受け取ったスタッフID（FS… / RL…）を、1行に1人ずつ貼り付けてください（所属元が出力した CSV の中身をそのまま貼り付けてもかまいません）。一度に ${ROSTER_BULK_MAX}人まで。</p>
     <textarea id="rb-codes" rows="8" class="inp font-mono text-sm" placeholder="FS1A2B3C4D5E&#10;FS2B3C4D5E6F">${esc(prefill || '')}</textarea>
     <div id="rb-result" class="mt-3"></div>
     <div class="flex gap-2 mt-3">
@@ -1398,9 +1398,9 @@ window.showRosterBulkLink = function (prefill) {
 delegate('rosterBulkCheck', (el) => withSubmitLock(el, async () => {
   const { codes, bad } = parseRosterCodes(document.getElementById('rb-codes').value)
   const box = document.getElementById('rb-result')
-  if (!codes.length) { box.innerHTML = '<div class="p-3 rounded-lg bg-red-50 text-red-600 text-sm">スタッフIDが見つかりません（「FS」または「RL」で始まる12文字です）</div>'; return }
-  if (codes.length > ROSTER_BULK_MAX) { box.innerHTML = `<div class="p-3 rounded-lg bg-red-50 text-red-600 text-sm">一度に連携できるのは${ROSTER_BULK_MAX}人までです（${codes.length}人分のIDがあります）</div>`; return }
-  box.innerHTML = `<p class="text-sm text-gray-500"><span class="spin"></span> <span id="rb-checking">確認しています（0/${codes.length}）</span></p>`
+  if (!codes.length) { box.innerHTML = '<div class="p-3 rounded-lg bg-danger-50 text-danger-600 text-sm">スタッフIDが見つかりません（「FS」または「RL」で始まる12文字です）</div>'; return }
+  if (codes.length > ROSTER_BULK_MAX) { box.innerHTML = `<div class="p-3 rounded-lg bg-danger-50 text-danger-600 text-sm">一度に連携できるのは${ROSTER_BULK_MAX}人までです（${codes.length}人分のIDがあります）</div>`; return }
+  box.innerHTML = `<p class="text-sm text-neutral-500"><span class="spin"></span> <span id="rb-checking">確認しています（0/${codes.length}）</span></p>`
   const items = new Array(codes.length)
   let next = 0, doneCount = 0
   // 1件ずつ検索する（同時に3件まで。1回の通信を軽くするため）
@@ -1431,18 +1431,18 @@ function drawRosterBulkCandidates() {
   const okCount = items.filter(x => x.status === 'ok').length
   const label = { ok: '<span class="badge badge-green">連携できます</span>', already: '<span class="badge badge-gray">連携済み</span>' }
   box.innerHTML = `
-    <div class="max-h-[40vh] overflow-y-auto border border-gray-100 rounded-lg">
+    <div class="max-h-[40vh] overflow-y-auto border border-neutral-100 rounded-lg">
       <table class="tbl"><thead><tr><th></th><th>氏名</th><th>所属元</th><th>ID</th><th>状態</th></tr></thead><tbody>
       ${items.map((x, i) => `<tr>
         <td>${x.status === 'ok' ? `<input type="checkbox" class="rb-pick" value="${i}" checked>` : ''}</td>
-        <td>${esc(x.name || '-')}${x.kana ? `<div class="text-[11px] text-gray-400">${esc(x.kana)}</div>` : ''}</td>
+        <td>${esc(x.name || '-')}${x.kana ? `<div class="text-2xs text-neutral-400">${esc(x.kana)}</div>` : ''}</td>
         <td class="text-xs">${esc(x.owner || '')}</td>
         <td class="font-mono text-xs">${esc(x.code)}</td>
-        <td class="text-xs">${label[x.status] || `<span class="text-red-600">${esc(x.error || '')}</span>`}${x.status === 'already' && x.staff_id ? ` <a class="text-blue-600 underline" href="#staff/${Number(x.staff_id)}" onclick="closeModal()">開く</a>` : ''}</td>
+        <td class="text-xs">${label[x.status] || `<span class="text-danger-600">${esc(x.error || '')}</span>`}${x.status === 'already' && x.staff_id ? ` <a class="text-primary-600 underline" href="#staff/${Number(x.staff_id)}" onclick="closeModal()">開く</a>` : ''}</td>
       </tr>`).join('')}</tbody></table>
     </div>
-    ${ROSTER_BULK.bad.length ? `<p class="text-xs text-amber-700 mt-2">IDが見つからない行（${ROSTER_BULK.bad.length}行）: ${ROSTER_BULK.bad.slice(0, 5).map(esc).join('、')}${ROSTER_BULK.bad.length > 5 ? ' …' : ''}</p>` : ''}
-    ${okCount ? '<button class="btn btn-primary w-full mt-3" data-action="rosterBulkConsent"><i class="fas fa-link"></i>選んだ人を連携する（同意の確認へ）</button>' : '<p class="text-sm text-gray-500 mt-2">連携できる人はいません</p>'}`
+    ${ROSTER_BULK.bad.length ? `<p class="text-xs text-warning-700 mt-2">IDが見つからない行（${ROSTER_BULK.bad.length}行）: ${ROSTER_BULK.bad.slice(0, 5).map(esc).join('、')}${ROSTER_BULK.bad.length > 5 ? ' …' : ''}</p>` : ''}
+    ${okCount ? '<button class="btn btn-primary w-full mt-3" data-action="rosterBulkConsent"><i class="fas fa-link"></i>選んだ人を連携する（同意の確認へ）</button>' : '<p class="text-sm text-neutral-500 mt-2">連携できる人はいません</p>'}`
 }
 delegate('rosterBulkConsent', () => {
   const picks = [...document.querySelectorAll('#rb-result .rb-pick:checked')].map(cb => ROSTER_BULK.items[Number(cb.value)]).filter(Boolean)
@@ -1452,30 +1452,30 @@ delegate('rosterBulkConsent', () => {
   ROSTER_BULK.picks = picks
   const owners = [...new Set(picks.map(x => x.owner).filter(Boolean))]
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-shield-halved text-blue-600 mr-1"></i>情報共有の同意確認（${picks.length}人）</h3>
-    <p class="text-sm text-gray-600 mb-2">「${owners.map(esc).join('」「')}」に所属する次の <b>${picks.length}人</b> を自社のスタッフマスタに連携します。連携すると、以下の範囲の情報が所属元企業から共有されます。</p>
-    <div class="text-xs text-gray-700 max-h-24 overflow-y-auto p-2 rounded-lg border border-gray-100 mb-3">${picks.map(x => esc(x.name)).join('、')}</div>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-shield-halved text-primary-600 mr-1"></i>情報共有の同意確認（${picks.length}人）</h3>
+    <p class="text-sm text-neutral-600 mb-2">「${owners.map(esc).join('」「')}」に所属する次の <b>${picks.length}人</b> を自社のスタッフマスタに連携します。連携すると、以下の範囲の情報が所属元企業から共有されます。</p>
+    <div class="text-xs text-neutral-700 max-h-24 overflow-y-auto p-2 rounded-lg border border-neutral-100 mb-3">${picks.map(x => esc(x.name)).join('、')}</div>
     <div class="grid sm:grid-cols-2 gap-3 text-xs">
-      <div class="p-3 rounded-lg bg-blue-50">
-        <p class="font-bold text-blue-700 mb-1"><i class="fas fa-check mr-1"></i>共有される情報（スタッフマスタ項目のみ）</p>
-        <ul class="list-disc ml-4 text-blue-900 space-y-0.5">${consent.shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      <div class="p-3 rounded-lg bg-primary-50">
+        <p class="font-bold text-primary-700 mb-1"><i class="fas fa-check mr-1"></i>共有される情報（スタッフマスタ項目のみ）</p>
+        <ul class="list-disc ml-4 text-primary-900 space-y-0.5">${consent.shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
       </div>
-      <div class="p-3 rounded-lg bg-gray-50">
-        <p class="font-bold text-gray-600 mb-1"><i class="fas fa-ban mr-1"></i>共有されない情報</p>
-        <ul class="list-disc ml-4 text-gray-600 space-y-0.5">${consent.not_shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
+      <div class="p-3 rounded-lg bg-neutral-50">
+        <p class="font-bold text-neutral-600 mb-1"><i class="fas fa-ban mr-1"></i>共有されない情報</p>
+        <ul class="list-disc ml-4 text-neutral-600 space-y-0.5">${consent.not_shared.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
       </div>
     </div>
-    <ul class="text-xs text-gray-500 mt-3 space-y-1">
+    <ul class="text-xs text-neutral-500 mt-3 space-y-1">
       <li>・基本項目（氏名・スキル等）は所属元企業のみが編集でき、自社では閲覧のみとなります。</li>
       <li>・自社では評価・メモ・フォロー記録などの追記、およびシフト登録ができます。</li>
       <li>・共有情報は、スタッフの稼働管理の目的の範囲内でのみ利用してください。</li>
       <li>・同意の記録は1人ずつ保存され、所属元企業とスタッフ本人に連携されたことが通知されます。</li>
     </ul>
-    <label class="flex items-start gap-2 mt-4 p-3 rounded-lg border border-gray-200 cursor-pointer">
+    <label class="flex items-start gap-2 mt-4 p-3 rounded-lg border border-neutral-200 cursor-pointer">
       <input type="checkbox" id="rb-agree" class="mt-0.5" onchange="document.getElementById('rb-submit').disabled = !this.checked">
-      <span class="text-sm text-gray-700">上記の${picks.length}人について、共有範囲と利用条件を確認し、同意します（同意の記録は保存されます）</span>
+      <span class="text-sm text-neutral-700">上記の${picks.length}人について、共有範囲と利用条件を確認し、同意します（同意の記録は保存されます）</span>
     </label>
-    <p class="text-sm text-gray-600 mt-2 hidden" id="rb-progress"></p>
+    <p class="text-sm text-neutral-600 mt-2 hidden" id="rb-progress"></p>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline flex-1" data-action="rosterBulkBack">戻る</button>
       <button id="rb-submit" class="btn btn-primary flex-1" disabled data-action="rosterBulkSubmit">同意して${picks.length}人を連携する</button>
@@ -1505,11 +1505,11 @@ delegate('rosterBulkSubmit', (el) => withSubmitLock(el, async () => {
   }
   const okN = results.filter(r => r.ok).length
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-circle-check text-emerald-600 mr-1"></i>まとめて連携の結果</h3>
-    <p class="text-sm text-gray-600 mb-3">${okN}人を連携しました${results.length - okN ? `（連携できなかった人 ${results.length - okN}人）` : ''}。${picks.length > results.length ? `残りの${picks.length - results.length}人は連携していません。` : ''}</p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-circle-check text-success-600 mr-1"></i>まとめて連携の結果</h3>
+    <p class="text-sm text-neutral-600 mb-3">${okN}人を連携しました${results.length - okN ? `（連携できなかった人 ${results.length - okN}人）` : ''}。${picks.length > results.length ? `残りの${picks.length - results.length}人は連携していません。` : ''}</p>
     <div class="max-h-[50vh] overflow-y-auto"><table class="tbl"><thead><tr><th>氏名</th><th>結果</th></tr></thead><tbody>
-      ${results.map(r => `<tr><td>${r.staff_id ? `<a class="text-blue-700 hover:underline" href="#staff/${Number(r.staff_id)}" onclick="closeModal()">${esc(r.name)}</a>` : esc(r.name)}</td>
-        <td class="text-xs">${r.ok ? '<span class="badge badge-green">連携しました</span>' : `<span class="text-red-600">${esc(r.error)}</span>`}</td></tr>`).join('')}
+      ${results.map(r => `<tr><td>${r.staff_id ? `<a class="text-primary-700 hover:underline" href="#staff/${Number(r.staff_id)}" onclick="closeModal()">${esc(r.name)}</a>` : esc(r.name)}</td>
+        <td class="text-xs">${r.ok ? '<span class="badge badge-green">連携しました</span>' : `<span class="text-danger-600">${esc(r.error)}</span>`}</td></tr>`).join('')}
     </tbody></table></div>
     <button class="btn btn-outline w-full mt-4" data-action="rosterBulkClose">閉じる</button>`)
   if (okN) toast(`${okN}人を連携しました`)

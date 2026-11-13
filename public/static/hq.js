@@ -65,14 +65,14 @@ const hqMatchFilter = (c, f) => !f ? true : f === 'needs_attention' ? !!(c.usage
 // 料金の説明（プランごとの料金。#295）
 const hqPriceText = p => `${yen(p.base_fee)}（${Number(p.included_users)}ユーザーまで）+ 追加1ユーザーごとに${yen(p.per_user_fee)}/月`
 // 期日（YYYY-MM-DD）の表示。過ぎたものは赤、近いものは黄（#296）
-const hqDue = (v, state) => !v ? '<span class="text-slate-500">-</span>'
-  : `<span class="${state === 'past' ? 'text-red-400 font-bold' : state === 'soon' ? 'text-amber-300 font-bold' : ''}">${esc(dayjs(v).format('YYYY/M/D'))}</span>`
+const hqDue = (v, state) => !v ? '<span class="text-hq-500">-</span>'
+  : `<span class="${state === 'past' ? 'text-danger-400 font-bold' : state === 'soon' ? 'text-warning-300 font-bold' : ''}">${esc(dayjs(v).format('YYYY/M/D'))}</span>`
 const BILLING_MONTH_LABEL = { issued: '請求済み（入金待ち）', paid: '入金済み', overdue: '滞納', waived: '請求しない' }
 const BILLING_MONTH_BADGE = { issued: 'badge-yellow', paid: 'badge-green', overdue: 'badge-red', waived: 'badge-gray' }
 // 増減率（前の30日と比べて）。前の期間が0なら出さない
-const hqRate = r => r == null ? '' : `<span class="block text-[11px] ${r <= -0.3 ? 'text-red-400' : r < 0 ? 'text-amber-300' : 'text-emerald-400'}">${r > 0 ? '+' : ''}${Math.round(r * 100)}%</span>`
+const hqRate = r => r == null ? '' : `<span class="block text-2xs ${r <= -0.3 ? 'text-danger-400' : r < 0 ? 'text-warning-300' : 'text-success-400'}">${r > 0 ? '+' : ''}${Math.round(r * 100)}%</span>`
 // utc: シフトの登録日時（created_at）は UTC で保存されているので、日本時間に直して出す
-const hqDate = (v, utc) => v ? dayjs(String(v).replace(' ', 'T') + (utc ? 'Z' : '')).format('YYYY/M/D') : '<span class="text-slate-500">なし</span>'
+const hqDate = (v, utc) => v ? dayjs(String(v).replace(' ', 'T') + (utc ? 'Z' : '')).format('YYYY/M/D') : '<span class="text-hq-500">なし</span>'
 const hqLimit = c => c.user_limit == null ? '上限なし' : c.user_limit
 // 並べ替えの列（key: 並べ替えに使う値の名前）
 const HQ_COLUMNS = [
@@ -96,7 +96,7 @@ async function renderCompanies() {
   loading()
   let data
   try { data = (await axios.get('/api/hq/companies')).data } catch (e) {
-    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">企業の一覧を読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:#334155;color:#67e8f9" onclick="renderCompanies()">再試行</button></div>`
+    $app.innerHTML = `<div class="bg-hq-800 border border-hq-700 rounded-xl p-6 text-center text-sm text-hq-300">企業の一覧を読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" onclick="renderCompanies()">再試行</button></div>`
     return
   }
   HQ_COMPANIES = data.companies
@@ -106,25 +106,25 @@ async function renderCompanies() {
   const bill = data.billing
   // 前の月の請求をまだ記録していない企業があれば知らせる（#295）
   const billBanner = bill && bill.billable_companies && bill.prev_month_recorded < bill.billable_companies ? `
-    <div class="bg-amber-900/30 border border-amber-700 text-amber-100 rounded-xl p-3 mb-4 text-sm flex flex-wrap items-center gap-2">
+    <div class="bg-warning-900/30 border border-warning-700 text-warning-100 rounded-xl p-3 mb-4 text-sm flex flex-wrap items-center gap-2">
       <i class="fas fa-file-invoice-dollar"></i><span class="flex-1">${esc(dayjs(bill.prev_month + '-01').format('YYYY年M月'))}分の請求を記録していない企業があります（記録済み ${Number(bill.prev_month_recorded)}社 / 利用中 ${Number(bill.billable_companies)}社）。</span>
-      <button class="btn btn-outline text-xs" style="border-color:#b45309;color:#fde68a" data-action="hqCloseBilling" data-month="${esc(bill.prev_month)}">今の人数で記録する</button>
+      <button class="btn btn-outline text-xs" style="border-color:rgb(var(--color-warning-700));color:rgb(var(--color-warning-200))" data-action="hqCloseBilling" data-month="${esc(bill.prev_month)}">今の人数で記録する</button>
     </div>` : ''
   const totalMRR = list.filter(c => c.active_status === 'active').reduce((a, c) => a + c.monthly_fee, 0)
   const kpi = (label, value, icon, filter) => `
-    <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 ${filter ? 'cursor-pointer hover:border-cyan-700' : ''}" ${filter ? `data-action="hqFilter" data-filter="${filter}"` : ''}>
-      <p class="text-xs text-slate-400">${label}</p>
-      <p class="text-2xl font-bold mt-0.5 truncate"><i class="fas ${icon} text-cyan-400 mr-2 text-lg"></i>${value}</p>
+    <div class="bg-hq-800 border border-hq-700 rounded-xl p-4 ${filter ? 'cursor-pointer hover:border-hq-accent-700' : ''}" ${filter ? `data-action="hqFilter" data-filter="${filter}"` : ''}>
+      <p class="text-xs text-hq-400">${label}</p>
+      <p class="text-2xl font-bold mt-0.5 truncate"><i class="fas ${icon} text-hq-accent-400 mr-2 text-lg"></i>${value}</p>
     </div>`
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5">
       <h2 class="text-xl font-bold">導入企業管理</h2>
       <div class="flex flex-wrap gap-2">
-        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqAuditLogs"><i class="fas fa-clock-rotate-left"></i>本部の操作の履歴</button>
-        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqBillingMenu"><i class="fas fa-file-invoice-dollar"></i>請求の記録</button>
-        <button class="btn btn-outline" style="border-color:#334155;color:#67e8f9" data-action="hqPlanPrices"><i class="fas fa-tags"></i>プランの料金</button>
-        <button class="btn btn-primary" style="background:#0e7490" onclick="showAddCompany()"><i class="fas fa-plus"></i>企業登録</button>
+        <button class="btn btn-outline" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" data-action="hqAuditLogs"><i class="fas fa-clock-rotate-left"></i>本部の操作の履歴</button>
+        <button class="btn btn-outline" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" data-action="hqBillingMenu"><i class="fas fa-file-invoice-dollar"></i>請求の記録</button>
+        <button class="btn btn-outline" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" data-action="hqPlanPrices"><i class="fas fa-tags"></i>プランの料金</button>
+        <button class="btn btn-primary" style="background:rgb(var(--color-hq-accent-700))" onclick="showAddCompany()"><i class="fas fa-plus"></i>企業登録</button>
       </div>
     </div>
     ${billBanner}
@@ -139,21 +139,21 @@ async function renderCompanies() {
       ${kpi('未入金・滞納', list.filter(c => c.payment_alert).length + '社', 'fa-triangle-exclamation', 'payment_alert')}
     </section>
     <div class="flex flex-wrap items-center gap-2 mb-3">
-      <input id="hq-co-q" class="inp" style="max-width:16rem;background:#1e293b;border-color:#334155;color:#fff" placeholder="企業名・会社コードで検索" value="${esc(HQ_LIST.q)}">
-      <select id="hq-co-filter" class="inp" style="max-width:14rem;background:#1e293b;border-color:#334155;color:#fff">
+      <input id="hq-co-q" class="inp" style="max-width:16rem;background:rgb(var(--color-hq-800));border-color:rgb(var(--color-hq-700));color:rgb(var(--color-on-primary))" placeholder="企業名・会社コードで検索" value="${esc(HQ_LIST.q)}">
+      <select id="hq-co-filter" class="inp" style="max-width:14rem;background:rgb(var(--color-hq-800));border-color:rgb(var(--color-hq-700));color:rgb(var(--color-on-primary))">
         ${Object.entries(HQ_FILTERS).map(([k, v]) => `<option value="${k}" ${HQ_LIST.filter === k ? 'selected' : ''}>${v}</option>`).join('')}
       </select>
-      <span id="hq-co-count" class="text-xs text-slate-400"></span>
+      <span id="hq-co-count" class="text-xs text-hq-400"></span>
     </div>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl overflow-x-auto">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl overflow-x-auto">
       <table class="w-full text-sm">
         <thead id="hq-co-head"></thead>
         <tbody id="hq-co-body"></tbody>
       </table>
     </section>
-    <p class="text-xs text-slate-500 mt-3"><i class="fas fa-circle-info mr-1"></i>料金: ${HQ_PLAN_PRICES.map(p => `${esc(PLAN_LABELS[p.plan] || p.plan)} ${hqPriceText(p)}`).join('、') || '-'}。ユーザー数は課金対象（利用中で、ログインできる人）の人数です。月額は今の人数で計算した見込みで、確定した額は企業詳細の請求の記録で確かめます</p>
-    <p class="text-xs text-slate-500 mt-1"><i class="fas fa-circle-info mr-1"></i>週次アクティブは、課金対象の人のうち今日を含む直近7日にログイン・アプリの操作・アプリからの勤怠の報告があった人数です（他社から連携したスタッフは、報告した稼働先の企業で数えます）。次の期日は、トライアルの終了日（トライアル中のみ）と次回レビュー日の早いほうで、過ぎたものを赤、${Number(HQ_RULES.due_soon_days) || 7}日以内のものを黄で示します</p>
-    <p class="text-xs text-slate-500 mt-1"><i class="fas fa-circle-info mr-1"></i>増減率は直近30日と、その前の30日の比較です。「利用減」は日報かシフトが前の30日（${HQ_RULES.drop_min_base}件以上）から${Math.round(HQ_RULES.drop_rate * 100)}%以上減った企業、「シフト登録なし」は${HQ_RULES.no_shift_days}日以上シフトを登録していない企業です</p>`
+    <p class="text-xs text-hq-500 mt-3"><i class="fas fa-circle-info mr-1"></i>料金: ${HQ_PLAN_PRICES.map(p => `${esc(PLAN_LABELS[p.plan] || p.plan)} ${hqPriceText(p)}`).join('、') || '-'}。ユーザー数は課金対象（利用中で、ログインできる人）の人数です。月額は今の人数で計算した見込みで、確定した額は企業詳細の請求の記録で確かめます</p>
+    <p class="text-xs text-hq-500 mt-1"><i class="fas fa-circle-info mr-1"></i>週次アクティブは、課金対象の人のうち今日を含む直近7日にログイン・アプリの操作・アプリからの勤怠の報告があった人数です（他社から連携したスタッフは、報告した稼働先の企業で数えます）。次の期日は、トライアルの終了日（トライアル中のみ）と次回レビュー日の早いほうで、過ぎたものを赤、${Number(HQ_RULES.due_soon_days) || 7}日以内のものを黄で示します</p>
+    <p class="text-xs text-hq-500 mt-1"><i class="fas fa-circle-info mr-1"></i>増減率は直近30日と、その前の30日の比較です。「利用減」は日報かシフトが前の30日（${HQ_RULES.drop_min_base}件以上）から${Math.round(HQ_RULES.drop_rate * 100)}%以上減った企業、「シフト登録なし」は${HQ_RULES.no_shift_days}日以上シフトを登録していない企業です</p>`
   document.getElementById('hq-co-q').addEventListener('input', ev => { HQ_LIST.q = ev.target.value; drawCompanyTable() })
   document.getElementById('hq-co-filter').addEventListener('change', ev => { HQ_LIST.filter = ev.target.value; drawCompanyTable() })
   drawCompanyTable()
@@ -175,8 +175,8 @@ function drawCompanyTable() {
     const d = col && col.num ? Number(va) - Number(vb) : String(va).localeCompare(String(vb), 'ja')
     return d ? d * dir : a.company_id - b.company_id
   })
-  head.innerHTML = `<tr class="text-slate-400 text-xs border-b border-slate-700">
-    ${HQ_COLUMNS.map(c => `<th class="${c.cls || (c.num ? 'text-right px-3' : 'text-left px-3')} py-3 cursor-pointer select-none whitespace-nowrap hover:text-cyan-300" data-action="hqSort" data-key="${c.key}">${c.label}${HQ_LIST.sort === c.key ? (HQ_LIST.dir === 'desc' ? ' ▼' : ' ▲') : ''}</th>`).join('')}
+  head.innerHTML = `<tr class="text-hq-400 text-xs border-b border-hq-700">
+    ${HQ_COLUMNS.map(c => `<th class="${c.cls || (c.num ? 'text-right px-3' : 'text-left px-3')} py-3 cursor-pointer select-none whitespace-nowrap hover:text-hq-accent-300" data-action="hqSort" data-key="${c.key}">${c.label}${HQ_LIST.sort === c.key ? (HQ_LIST.dir === 'desc' ? ' ▼' : ' ▲') : ''}</th>`).join('')}
     <th class="text-left px-3 py-3">注意</th><th></th>
   </tr>`
   body.innerHTML = rows.map(c => {
@@ -189,25 +189,25 @@ function drawCompanyTable() {
       c.overdue_months ? `<span class="badge badge-red">滞納${Number(c.overdue_months)}か月</span>` : c.payment_alert ? `<span class="badge badge-yellow">未入金${Number(c.unpaid_months)}か月</span>` : '',
     ].filter(Boolean).join(' ')
     return `
-    <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer ${c.over_limit ? 'bg-red-900/20' : ''}" data-action="hqOpenCompany" data-cid="${Number(c.company_id)}">
+    <tr class="border-b border-hq-700/50 hover:bg-hq-700/30 cursor-pointer ${c.over_limit ? 'bg-danger-900/20' : ''}" data-action="hqOpenCompany" data-cid="${Number(c.company_id)}">
       <td class="px-4 py-3 font-medium">${esc(c.company_name)}</td>
-      <td class="px-3 py-3 text-slate-400">${esc(c.company_code)}</td>
+      <td class="px-3 py-3 text-hq-400">${esc(c.company_code)}</td>
       <td class="px-3 py-3">${esc(PLAN_LABELS[c.plan] || c.plan)}</td>
       <td class="px-3 py-3">${STATUS_BADGE[c.active_status] || ''}</td>
       <td class="px-3 py-3">${BILLING_BADGE[c.billing_status] || ''}</td>
-      <td class="px-3 py-3 text-right whitespace-nowrap ${c.over_limit ? 'text-red-400 font-bold' : ''}">${Number(c.user_count) || 0}/${hqLimit(c)}</td>
+      <td class="px-3 py-3 text-right whitespace-nowrap ${c.over_limit ? 'text-danger-400 font-bold' : ''}">${Number(c.user_count) || 0}/${hqLimit(c)}</td>
       <td class="px-3 py-3 text-right">${Number(c.active_users) || 0}名</td>
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.reports_30d) || 0}件${hqRate(c.reports_change)}</td>
       <td class="px-3 py-3 text-right whitespace-nowrap">${Number(c.shifts_30d) || 0}件${hqRate(c.shifts_change)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_shift_created_at, true)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDate(c.last_admin_login_at)}</td>
       <td class="px-3 py-3 whitespace-nowrap">${hqDue(c.next_due, c.due_state)}</td>
-      <td class="px-3 py-3 text-right font-bold text-cyan-400">${yen(c.monthly_fee)}</td>
+      <td class="px-3 py-3 text-right font-bold text-hq-accent-400">${yen(c.monthly_fee)}</td>
       <td class="px-3 py-3 text-center whitespace-nowrap">${'●'.repeat(c.maturity_level || 1)}${'○'.repeat(5 - (c.maturity_level || 1))}</td>
       <td class="px-3 py-3 whitespace-nowrap">${flags}</td>
-      <td class="px-3 py-3 text-cyan-400 text-xs whitespace-nowrap">詳細 →</td>
+      <td class="px-3 py-3 text-hq-accent-400 text-xs whitespace-nowrap">詳細 →</td>
     </tr>`
-  }).join('') || `<tr><td colspan="${HQ_COLUMNS.length + 2}" class="px-4 py-8 text-center text-slate-400">条件に合う企業はありません</td></tr>`
+  }).join('') || `<tr><td colspan="${HQ_COLUMNS.length + 2}" class="px-4 py-8 text-center text-hq-400">条件に合う企業はありません</td></tr>`
   const cnt = document.getElementById('hq-co-count')
   if (cnt) cnt.textContent = `${rows.length}社 / 全${HQ_COMPANIES.length}社`
 }
@@ -230,9 +230,9 @@ delegate('hqFilter', (el) => {
 delegate('hqBillingMenu', () => {
   const last = dayjs().subtract(1, 'month').format('YYYY-MM')
   modal(`
-    <h3 class="font-bold text-lg mb-2 text-gray-800">請求の記録</h3>
-    <p class="text-xs text-gray-500 mb-3">指定した月の請求を、利用中の企業ごとに記録します。人数は記録する時点の課金対象の人数で、金額はプランの料金で計算します。すでに記録のある企業は変えません（金額・入金状態は企業詳細で直します）。トライアル・停止中の企業は記録しません。</p>
-    <label class="text-xs text-gray-600 block mb-1">記録する月</label>
+    <h3 class="font-bold text-lg mb-2 text-neutral-800">請求の記録</h3>
+    <p class="text-xs text-neutral-500 mb-3">指定した月の請求を、利用中の企業ごとに記録します。人数は記録する時点の課金対象の人数で、金額はプランの料金で計算します。すでに記録のある企業は変えません（金額・入金状態は企業詳細で直します）。トライアル・停止中の企業は記録しません。</p>
+    <label class="text-xs text-neutral-600 block mb-1">記録する月</label>
     <input id="bill-month" type="month" class="inp mb-3" value="${esc(last)}" max="${esc(dayjs().format('YYYY-MM'))}">
     <div class="flex gap-2">
       <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
@@ -258,10 +258,10 @@ delegate('hqPlanPrices', async () => {
   let prices = HQ_PLAN_PRICES
   try { prices = (await axios.get('/api/hq/plan-prices')).data.prices } catch { }
   modal(`
-    <h3 class="font-bold text-lg mb-2 text-gray-800">プランの料金</h3>
-    <p class="text-xs text-gray-500 mb-3">月額 = 基本料金（含む人数まで）+ 超えた1人ごとの料金。変更すると、企業一覧の月額と、これから記録する請求に使います（記録済みの請求は変わりません）。</p>
-    <table class="w-full text-sm text-gray-800">
-      <thead><tr class="text-xs text-gray-500"><th class="text-left py-1">プラン</th><th class="text-left">基本料金（円）</th><th class="text-left">含む人数</th><th class="text-left">追加1人（円）</th></tr></thead>
+    <h3 class="font-bold text-lg mb-2 text-neutral-800">プランの料金</h3>
+    <p class="text-xs text-neutral-500 mb-3">月額 = 基本料金（含む人数まで）+ 超えた1人ごとの料金。変更すると、企業一覧の月額と、これから記録する請求に使います（記録済みの請求は変わりません）。</p>
+    <table class="w-full text-sm text-neutral-800">
+      <thead><tr class="text-xs text-neutral-500"><th class="text-left py-1">プラン</th><th class="text-left">基本料金（円）</th><th class="text-left">含む人数</th><th class="text-left">追加1人（円）</th></tr></thead>
       <tbody>${prices.map(p => `
         <tr data-plan="${esc(p.plan)}">
           <td class="py-1 pr-2 whitespace-nowrap">${esc(PLAN_LABELS[p.plan] || p.plan)}</td>
@@ -316,23 +316,23 @@ function hqAuditDiff(l) {
   try { before = JSON.parse(l.before_json || '{}') || {} } catch { }
   try { after = JSON.parse(l.after_json || '{}') || {} } catch { }
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])]
-  return keys.map(k => `<div><span class="text-gray-500">${esc(HQ_AUDIT_FIELD[k] || PLAN_LABELS[k] || k)}:</span> ${l.before_json ? `${esc(hqAuditValue(k, before[k]))} → ` : ''}${esc(hqAuditValue(k, after[k]))}</div>`).join('')
+  return keys.map(k => `<div><span class="text-neutral-500">${esc(HQ_AUDIT_FIELD[k] || PLAN_LABELS[k] || k)}:</span> ${l.before_json ? `${esc(hqAuditValue(k, before[k]))} → ` : ''}${esc(hqAuditValue(k, after[k]))}</div>`).join('')
 }
 function hqAuditRow(l, withCompany) {
-  return `<tr class="border-b border-gray-100 align-top">
-    <td class="py-2 pr-2 whitespace-nowrap text-gray-500">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}</td>
+  return `<tr class="border-b border-neutral-100 align-top">
+    <td class="py-2 pr-2 whitespace-nowrap text-neutral-500">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}</td>
     <td class="py-2 pr-2 whitespace-nowrap">${esc(l.actor_name || '-')}</td>
     ${withCompany ? `<td class="py-2 pr-2">${esc(l.company_name || '')}</td>` : ''}
-    <td class="py-2 pr-2">${esc(HQ_AUDIT_ACTION[l.action] || l.action)}${l.target ? `<div class="text-[11px] text-gray-400">${esc(l.target)}</div>` : ''}</td>
-    <td class="py-2">${hqAuditDiff(l)}${l.reason ? `<div class="text-amber-700">理由: ${esc(l.reason)}</div>` : ''}</td>
+    <td class="py-2 pr-2">${esc(HQ_AUDIT_ACTION[l.action] || l.action)}${l.target ? `<div class="text-2xs text-neutral-400">${esc(l.target)}</div>` : ''}</td>
+    <td class="py-2">${hqAuditDiff(l)}${l.reason ? `<div class="text-warning-700">理由: ${esc(l.reason)}</div>` : ''}</td>
   </tr>`
 }
 const HQ_AUDIT = { page: 1, logs: [] }
 delegate('hqAuditLogs', async () => {
   HQ_AUDIT.page = 1; HQ_AUDIT.logs = []
-  modal(`<h3 class="font-bold text-lg mb-2 text-gray-800">本部の操作の履歴</h3>
-    <div class="max-h-[70vh] overflow-y-auto"><table class="w-full text-xs text-gray-800"><thead><tr class="text-gray-500 border-b"><th class="text-left py-1">日時</th><th class="text-left">操作した人</th><th class="text-left">企業</th><th class="text-left">操作</th><th class="text-left">内容</th></tr></thead>
-    <tbody id="hq-audit-body"><tr><td colspan="5" class="py-4 text-center text-gray-400">読み込み中…</td></tr></tbody></table>
+  modal(`<h3 class="font-bold text-lg mb-2 text-neutral-800">本部の操作の履歴</h3>
+    <div class="max-h-[70vh] overflow-y-auto"><table class="w-full text-xs text-neutral-800"><thead><tr class="text-neutral-500 border-b"><th class="text-left py-1">日時</th><th class="text-left">操作した人</th><th class="text-left">企業</th><th class="text-left">操作</th><th class="text-left">内容</th></tr></thead>
+    <tbody id="hq-audit-body"><tr><td colspan="5" class="py-4 text-center text-neutral-400">読み込み中…</td></tr></tbody></table>
     <div id="hq-audit-more" class="text-center mt-2"></div></div>
     <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
   await loadHqAuditLogs()
@@ -344,10 +344,10 @@ async function loadHqAuditLogs() {
     const { data } = await axios.get('/api/hq/audit-logs', { params: { page: HQ_AUDIT.page } })
     HQ_AUDIT.logs = HQ_AUDIT.logs.concat(data.logs)
     if (!body) return
-    body.innerHTML = HQ_AUDIT.logs.map(l => hqAuditRow(l, true)).join('') || '<tr><td colspan="5" class="py-4 text-center text-gray-400">記録はまだありません</td></tr>'
+    body.innerHTML = HQ_AUDIT.logs.map(l => hqAuditRow(l, true)).join('') || '<tr><td colspan="5" class="py-4 text-center text-neutral-400">記録はまだありません</td></tr>'
     if (more) more.innerHTML = data.has_more ? '<button class="btn btn-outline text-xs" data-action="hqAuditMore">さらに読み込む</button>' : ''
   } catch (e) {
-    if (body) body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-red-500">読み込めませんでした</td></tr>'
+    if (body) body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-danger-500">読み込めませんでした</td></tr>'
   }
 }
 
@@ -356,46 +356,46 @@ const HQ_COMPANY_CODE_RE = /^[a-z0-9][a-z0-9-]{1,39}$/
 const hqNormCode = v => String(v || '').normalize('NFKC').trim().toLowerCase()
 // 入力ミスの欄に印を付けて、そこへ移動する
 function hqMarkField(id, msg) {
-  document.querySelectorAll('.hq-field-error').forEach(el => el.classList.remove('hq-field-error', 'border-red-500'))
+  document.querySelectorAll('.hq-field-error').forEach(el => el.classList.remove('hq-field-error', 'border-danger-500'))
   const el = id && document.getElementById(id)
-  if (el) { el.classList.add('hq-field-error', 'border-red-500'); el.focus() }
+  if (el) { el.classList.add('hq-field-error', 'border-danger-500'); el.focus() }
   toast(msg)
 }
 
 window.showAddCompany = function () {
   modal(`
-    <h3 class="font-bold text-lg mb-4 text-gray-800">導入企業登録</h3>
+    <h3 class="font-bold text-lg mb-4 text-neutral-800">導入企業登録</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">会社コード *</label><input id="co-code" class="inp" placeholder="newcompany" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40">
-          <p class="text-[11px] text-gray-400 mt-1">半角の英小文字・数字・ハイフン（2〜40文字）。利用者がログインで入力します</p></div>
-        <div><label class="text-sm text-gray-600 block mb-1">会社名 *</label><input id="co-name" class="inp" maxlength="100"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">会社コード *</label><input id="co-code" class="inp" placeholder="newcompany" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40">
+          <p class="text-2xs text-neutral-400 mt-1">半角の英小文字・数字・ハイフン（2〜40文字）。利用者がログインで入力します</p></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">会社名 *</label><input id="co-name" class="inp" maxlength="100"></div>
       </div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">プラン</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">プラン</label>
           <select id="co-plan" class="inp"><option value="basic">ベーシック</option><option value="standard">スタンダード</option><option value="premium">プレミアム</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">ユーザー上限</label><input id="co-limit" type="number" min="1" step="1" value="3" class="inp" placeholder="空欄 = 上限なし"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">ユーザー上限</label><input id="co-limit" type="number" min="1" step="1" value="3" class="inp" placeholder="空欄 = 上限なし"></div>
       </div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs text-gray-600 block mb-1">トライアルの終了日</label><input id="co-trial-ends" type="date" class="inp"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">契約開始日</label><input id="co-contract-start" type="date" class="inp"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">トライアルの終了日</label><input id="co-trial-ends" type="date" class="inp"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">契約開始日</label><input id="co-contract-start" type="date" class="inp"></div>
       </div>
       <hr>
-      <p class="text-xs text-gray-500">初期管理者（必須）: 最初にログインして、会社の設定やスタッフの登録をする人です</p>
+      <p class="text-xs text-neutral-500">初期管理者（必須）: 最初にログインして、会社の設定やスタッフの登録をする人です</p>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs text-gray-600 block mb-1">氏名 *</label><input id="co-admin-name" class="inp" maxlength="60" placeholder="山田 太郎"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">管理者ID *</label><input id="co-admin-code" class="inp" placeholder="admin" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">氏名 *</label><input id="co-admin-name" class="inp" maxlength="60" placeholder="山田 太郎"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">管理者ID *</label><input id="co-admin-code" class="inp" placeholder="admin" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40"></div>
       </div>
-      <div><label class="text-xs text-gray-600 block mb-1">メールアドレス *（承認依頼の通知・パスワード再設定の宛先）</label><input id="co-admin-email" type="email" class="inp" autocapitalize="none" spellcheck="false" maxlength="254"></div>
-      <div><label class="text-xs text-gray-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="空欄なら自動で作成"></div>
-      <p class="text-[11px] text-gray-400">初回ログインで、管理者本人にパスワードの変更を求めます。</p>
-      <label class="flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" id="co-contact-same" checked onchange="document.getElementById('co-contact-box').classList.toggle('hidden', this.checked)">企業の担当者（請求などの連絡先）は管理者と同じ</label>
+      <div><label class="text-xs text-neutral-600 block mb-1">メールアドレス *（承認依頼の通知・パスワード再設定の宛先）</label><input id="co-admin-email" type="email" class="inp" autocapitalize="none" spellcheck="false" maxlength="254"></div>
+      <div><label class="text-xs text-neutral-600 block mb-1">パスワード</label><input id="co-admin-pass" class="inp" autocomplete="new-password" placeholder="空欄なら自動で作成"></div>
+      <p class="text-2xs text-neutral-400">初回ログインで、管理者本人にパスワードの変更を求めます。</p>
+      <label class="flex items-center gap-2 text-xs text-neutral-700"><input type="checkbox" id="co-contact-same" checked onchange="document.getElementById('co-contact-box').classList.toggle('hidden', this.checked)">企業の担当者（請求などの連絡先）は管理者と同じ</label>
       <div id="co-contact-box" class="hidden grid grid-cols-3 gap-3">
-        <div><label class="text-xs text-gray-600 block mb-1">企業の担当者</label><input id="co-contact-name" class="inp" maxlength="60"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">電話</label><input id="co-contact-phone" type="tel" class="inp" maxlength="30"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">メール</label><input id="co-contact-email" type="email" class="inp"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">企業の担当者</label><input id="co-contact-name" class="inp" maxlength="60"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">電話</label><input id="co-contact-phone" type="tel" class="inp" maxlength="30"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">メール</label><input id="co-contact-email" type="email" class="inp"></div>
       </div>
-      <p class="text-[11px] text-gray-400">企業の担当者は、登録の後に企業詳細で別の人に変えられます。</p>
+      <p class="text-2xs text-neutral-400">企業の担当者は、登録の後に企業詳細で別の人に変えられます。</p>
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary flex-1" data-action="addCompany">登録する</button>
@@ -448,9 +448,9 @@ delegate('addCompany', (el) => withSubmitLock(el, async () => {
 // 仮パスワードを一度だけ表示する（閉じると二度と表示できない）
 function showTempPassword(title, password, lines) {
   modal(`
-    <h3 class="font-bold text-lg mb-2 text-gray-800"><i class="fas fa-key text-cyan-600 mr-1"></i>${esc(title)}</h3>
-    <p class="text-xs text-red-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。管理者本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
-    <textarea id="temp-pw-text" class="inp font-mono text-sm text-gray-800" rows="${lines.length + 1}" readonly>${esc([...lines, '仮パスワード: ' + password].join('\n'))}</textarea>
+    <h3 class="font-bold text-lg mb-2 text-neutral-800"><i class="fas fa-key text-hq-accent-600 mr-1"></i>${esc(title)}</h3>
+    <p class="text-xs text-danger-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。管理者本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
+    <textarea id="temp-pw-text" class="inp font-mono text-sm text-neutral-800" rows="${lines.length + 1}" readonly>${esc([...lines, '仮パスワード: ' + password].join('\n'))}</textarea>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-outline flex-1" data-action="copyTempPassword"><i class="fas fa-copy"></i>コピー</button>
       <button class="btn btn-primary flex-1" onclick="closeModal()">閉じる</button>
@@ -479,105 +479,105 @@ async function renderCompanyDetail(cid) {
   loading()
   let data
   try { data = (await axios.get('/api/hq/companies/' + cid)).data } catch (e) {
-    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">${e.response && e.response.status === 404 ? '企業が見つかりません。' : '企業の情報を読み込めませんでした。'}<a href="#companies" class="text-cyan-400 ml-2 hover:underline">一覧へ戻る</a></div>`
+    $app.innerHTML = `<div class="bg-hq-800 border border-hq-700 rounded-xl p-6 text-center text-sm text-hq-300">${e.response && e.response.status === 404 ? '企業が見つかりません。' : '企業の情報を読み込めませんでした。'}<a href="#companies" class="text-hq-accent-400 ml-2 hover:underline">一覧へ戻る</a></div>`
     return
   }
   const c = data.company
   const usage = data.usage || { user_count: data.users.filter(u => u.billable).length, user_limit: c.user_limit, linked_count: 0, over_limit: false }
   HQ_USERS = new Map(data.users.map(u => [u.user_id, u]))
   HQ_BILLING_ROWS = data.billing || []
-  const darkInp = 'style="background:#1e293b;border-color:#334155;color:#fff"'
+  const darkInp = 'style="background:rgb(var(--color-hq-800));border-color:rgb(var(--color-hq-700));color:rgb(var(--color-on-primary))"'
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5">
-      <a href="#companies" class="btn btn-outline" style="border-color:#334155;color:#94a3b8"><i class="fas fa-arrow-left"></i></a>
+      <a href="#companies" class="btn btn-outline" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-400))"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
         <h2 class="text-xl font-bold">${esc(c.company_name)}</h2>
-        <p class="text-sm text-slate-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} ${BILLING_BADGE[c.billing_status] || ''}</p>
+        <p class="text-sm text-hq-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} ${BILLING_BADGE[c.billing_status] || ''}</p>
       </div>
     </div>
-    ${usage.over_limit ? `<div class="bg-red-900/40 border border-red-700 text-red-200 rounded-xl p-3 mb-4 text-sm"><i class="fas fa-triangle-exclamation mr-1"></i>契約ユーザー数を超えています（課金対象 ${Number(usage.user_count)}名 / 上限 ${Number(usage.user_limit)}名）。プランの見直しか、上限の変更をご案内してください。</div>` : ''}
+    ${usage.over_limit ? `<div class="bg-danger-900/40 border border-danger-700 text-danger-200 rounded-xl p-3 mb-4 text-sm"><i class="fas fa-triangle-exclamation mr-1"></i>契約ユーザー数を超えています（課金対象 ${Number(usage.user_count)}名 / 上限 ${Number(usage.user_limit)}名）。プランの見直しか、上限の変更をご案内してください。</div>` : ''}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
       ${[['総日報数', data.stats.total_reports + '件'], ['総シフト数', data.stats.total_shifts + '件'], ['総勤怠報告', data.stats.total_attendance + '件'], ['稼働案件', data.stats.active_projects + '件']].map(([l, v]) => `
-        <div class="bg-slate-800 border border-slate-700 rounded-xl p-4"><p class="text-xs text-slate-400">${l}</p><p class="text-xl font-bold mt-0.5">${v}</p></div>`).join('')}
+        <div class="bg-hq-800 border border-hq-700 rounded-xl p-4"><p class="text-xs text-hq-400">${l}</p><p class="text-xl font-bold mt-0.5">${v}</p></div>`).join('')}
     </div>
 
     ${data.monthly ? `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5 overflow-x-auto">
-      <h3 class="font-bold mb-3"><i class="fas fa-chart-line text-cyan-400 mr-1"></i>直近6か月の推移</h3>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5 overflow-x-auto">
+      <h3 class="font-bold mb-3"><i class="fas fa-chart-line text-hq-accent-400 mr-1"></i>直近6か月の推移</h3>
       <table class="w-full text-xs">
-        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left py-2">月</th>${data.monthly.map(m => `<th class="text-right py-2 px-2">${esc(m.month.replace('-', '/'))}</th>`).join('')}</tr></thead>
+        <thead><tr class="text-hq-400 border-b border-hq-700"><th class="text-left py-2">月</th>${data.monthly.map(m => `<th class="text-right py-2 px-2">${esc(m.month.replace('-', '/'))}</th>`).join('')}</tr></thead>
         <tbody>
           ${[['日報数', 'reports', '件'], ['シフト数', 'shifts', '件'], ['稼働した人数', 'working_staff', '名']].map(([label, k, unit]) => `
-            <tr class="border-b border-slate-700/40"><td class="py-2 text-slate-400 whitespace-nowrap">${label}</td>${data.monthly.map((m, i) => {
+            <tr class="border-b border-hq-700/40"><td class="py-2 text-hq-400 whitespace-nowrap">${label}</td>${data.monthly.map((m, i) => {
               const prev = i > 0 ? data.monthly[i - 1][k] : null
               const down = prev != null && prev >= 10 && m[k] <= prev * 0.7
-              return `<td class="py-2 px-2 text-right ${down ? 'text-red-400 font-bold' : ''}">${Number(m[k]) || 0}${unit}</td>`
+              return `<td class="py-2 px-2 text-right ${down ? 'text-danger-400 font-bold' : ''}">${Number(m[k]) || 0}${unit}</td>`
             }).join('')}</tr>`).join('')}
         </tbody>
       </table>
-      <p class="text-[11px] text-slate-500 mt-2">今月は途中までの件数です。前の月から3割以上減った月を赤で示します（前の月が10件・10名以上のとき）。稼働した人数は、確定・代打のシフトがあるスタッフの人数です。</p>
+      <p class="text-2xs text-hq-500 mt-2">今月は途中までの件数です。前の月から3割以上減った月を赤で示します（前の月が10件・10名以上のとき）。稼働した人数は、確定・代打のシフトがあるスタッフの人数です。</p>
     </section>` : ''}
 
     <div class="grid lg:grid-cols-2 gap-4">
-      <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-        <h3 class="font-bold mb-3"><i class="fas fa-gear text-cyan-400 mr-1"></i>契約・設定</h3>
+      <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
+        <h3 class="font-bold mb-3"><i class="fas fa-gear text-hq-accent-400 mr-1"></i>契約・設定</h3>
         <div class="space-y-3 text-sm">
-          <div><label class="text-xs text-slate-400 block mb-1">会社名（掲示板・企業間連携の相手にもこの名前が出ます）</label>
+          <div><label class="text-xs text-hq-400 block mb-1">会社名（掲示板・企業間連携の相手にもこの名前が出ます）</label>
             <input id="cd-name" class="inp" maxlength="100" value="${esc(c.company_name)}" data-current="${esc(c.company_name)}" ${darkInp}></div>
           <div class="grid grid-cols-3 gap-3">
-            <div><label class="text-xs text-slate-400 block mb-1">トライアルの終了日</label>
+            <div><label class="text-xs text-hq-400 block mb-1">トライアルの終了日</label>
               <input id="cd-trial-ends" type="date" class="inp" value="${esc(c.trial_ends_at || '')}" ${darkInp}></div>
-            <div><label class="text-xs text-slate-400 block mb-1">契約開始日</label>
+            <div><label class="text-xs text-hq-400 block mb-1">契約開始日</label>
               <input id="cd-contract-start" type="date" class="inp" value="${esc(c.contract_start_at || '')}" ${darkInp}></div>
-            <div><label class="text-xs text-slate-400 block mb-1">次回レビュー日</label>
+            <div><label class="text-xs text-hq-400 block mb-1">次回レビュー日</label>
               <input id="cd-next-review" type="date" class="inp" value="${esc(c.next_review_at || '')}" ${darkInp}></div>
           </div>
           <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-400 block mb-1">プラン</label>
+            <div><label class="text-xs text-hq-400 block mb-1">プラン</label>
               <select id="cd-plan" class="inp" ${darkInp}>
                 ${['basic', 'standard', 'premium'].map(p => `<option value="${p}" ${c.plan === p ? 'selected' : ''}>${PLAN_LABELS[p]}</option>`).join('')}
               </select></div>
-            <div><label class="text-xs text-slate-400 block mb-1">ユーザー上限（課金対象 ${Number(usage.user_count)}名）</label>
+            <div><label class="text-xs text-hq-400 block mb-1">ユーザー上限（課金対象 ${Number(usage.user_count)}名）</label>
               <input id="cd-limit" type="number" min="1" step="1" value="${c.user_limit == null ? '' : Number(c.user_limit)}" placeholder="空欄 = 上限なし" class="inp" ${darkInp}></div>
           </div>
           <div class="grid grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-400 block mb-1">利用状態</label>
+            <div><label class="text-xs text-hq-400 block mb-1">利用状態</label>
               <select id="cd-status" data-current="${esc(c.active_status)}" class="inp" ${darkInp}>
                 ${['active', 'trial', 'inactive'].map(s => `<option value="${s}" ${c.active_status === s ? 'selected' : ''}>${s === 'active' ? '利用中' : s === 'trial' ? 'トライアル' : '停止'}</option>`).join('')}
               </select></div>
-            <div><label class="text-xs text-slate-400 block mb-1">請求状態</label>
+            <div><label class="text-xs text-hq-400 block mb-1">請求状態</label>
               <select id="cd-billing" class="inp" ${darkInp}>
                 ${['active', 'overdue', 'suspended'].map(s => `<option value="${s}" ${c.billing_status === s ? 'selected' : ''}>${s === 'active' ? '正常' : s === 'overdue' ? '滞納' : '停止'}</option>`).join('')}
               </select></div>
           </div>
-          <div><label class="text-xs text-slate-400 block mb-1">運営成熟度 (1-5)</label>
+          <div><label class="text-xs text-hq-400 block mb-1">運営成熟度 (1-5)</label>
             <input id="cd-maturity" type="range" min="1" max="5" value="${Number(c.maturity_level) || 1}" class="w-full"></div>
-          <p class="text-xs text-slate-400 pt-1">企業の連絡先（請求・契約・障害の連絡用）</p>
+          <p class="text-xs text-hq-400 pt-1">企業の連絡先（請求・契約・障害の連絡用）</p>
           <div class="grid grid-cols-3 gap-3">
-            <div><label class="text-xs text-slate-400 block mb-1">担当者</label><input id="cd-contact-name" class="inp" maxlength="60" value="${esc(c.contact_name || '')}" ${darkInp}></div>
-            <div><label class="text-xs text-slate-400 block mb-1">電話</label><input id="cd-contact-phone" type="tel" class="inp" maxlength="30" value="${esc(c.contact_phone || '')}" ${darkInp}></div>
-            <div><label class="text-xs text-slate-400 block mb-1">メール</label><input id="cd-contact-email" type="email" class="inp" value="${esc(c.contact_email || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-hq-400 block mb-1">担当者</label><input id="cd-contact-name" class="inp" maxlength="60" value="${esc(c.contact_name || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-hq-400 block mb-1">電話</label><input id="cd-contact-phone" type="tel" class="inp" maxlength="30" value="${esc(c.contact_phone || '')}" ${darkInp}></div>
+            <div><label class="text-xs text-hq-400 block mb-1">メール</label><input id="cd-contact-email" type="email" class="inp" value="${esc(c.contact_email || '')}" ${darkInp}></div>
           </div>
-          <div><label class="text-xs text-slate-400 block mb-1">請求先の住所</label><input id="cd-billing-address" class="inp" maxlength="200" value="${esc(c.billing_address || '')}" ${darkInp}></div>
-          <div><label class="text-xs text-slate-400 block mb-1">伴走支援メモ（いまの状況のまとめ。経緯は下の「伴走支援の履歴」に追記します）</label>
+          <div><label class="text-xs text-hq-400 block mb-1">請求先の住所</label><input id="cd-billing-address" class="inp" maxlength="200" value="${esc(c.billing_address || '')}" ${darkInp}></div>
+          <div><label class="text-xs text-hq-400 block mb-1">伴走支援メモ（いまの状況のまとめ。経緯は下の「伴走支援の履歴」に追記します）</label>
             <textarea id="cd-memo" rows="3" maxlength="5000" class="inp" ${darkInp}>${esc(c.support_memo || '')}</textarea></div>
-          <button class="btn btn-primary w-full" style="background:#0e7490" data-action="hqSaveCompany" data-cid="${Number(cid)}">保存する</button>
+          <button class="btn btn-primary w-full" style="background:rgb(var(--color-hq-accent-700))" data-action="hqSaveCompany" data-cid="${Number(cid)}">保存する</button>
         </div>
       </section>
 
-      <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+      <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
         <div class="flex items-center justify-between mb-3 gap-2">
-          <h3 class="font-bold"><i class="fas fa-users text-cyan-400 mr-1"></i>ユーザー一覧 <span class="text-sm font-normal text-slate-300">課金対象 ${Number(usage.user_count)}名／全 ${data.users.length}行</span></h3>
-          <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="hqAddAdmin" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>管理者を追加</button>
+          <h3 class="font-bold"><i class="fas fa-users text-hq-accent-400 mr-1"></i>ユーザー一覧 <span class="text-sm font-normal text-hq-300">課金対象 ${Number(usage.user_count)}名／全 ${data.users.length}行</span></h3>
+          <button class="btn btn-outline text-xs" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" data-action="hqAddAdmin" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>管理者を追加</button>
         </div>
-        <p class="text-[11px] text-slate-400 mb-2">課金対象は、利用中でログインできる人（退職・停止とログインなしの行を除く）です。${usage.linked_count ? `うち${Number(usage.linked_count)}名は他社から連携したスタッフです。` : ''}管理者のメールアドレスは、承認依頼の通知とパスワード再設定の宛先です。スタッフのパスワードは各社の管理画面（スタッフ詳細）で再発行します。</p>
+        <p class="text-2xs text-hq-400 mb-2">課金対象は、利用中でログインできる人（退職・停止とログインなしの行を除く）です。${usage.linked_count ? `うち${Number(usage.linked_count)}名は他社から連携したスタッフです。` : ''}管理者のメールアドレスは、承認依頼の通知とパスワード再設定の宛先です。スタッフのパスワードは各社の管理画面（スタッフ詳細）で再発行します。</p>
         <div class="flex flex-wrap gap-1 mb-2">
-          ${Object.entries(HQ_USER_FILTERS).map(([k, v]) => `<button class="text-xs px-2 py-1 rounded-lg border ${HQ_USER_FILTER === k ? 'border-cyan-500 text-cyan-300' : 'border-slate-600 text-slate-400'}" data-action="hqUserFilter" data-filter="${k}" data-cid="${Number(cid)}">${v}（${k ? data.users.filter(u => hqUserState(u).key === k).length : data.users.length}）</button>`).join('')}
+          ${Object.entries(HQ_USER_FILTERS).map(([k, v]) => `<button class="text-xs px-2 py-1 rounded-lg border ${HQ_USER_FILTER === k ? 'border-hq-accent-500 text-hq-accent-300' : 'border-hq-600 text-hq-400'}" data-action="hqUserFilter" data-filter="${k}" data-cid="${Number(cid)}">${v}（${k ? data.users.filter(u => hqUserState(u).key === k).length : data.users.length}）</button>`).join('')}
         </div>
         <div class="max-h-96 overflow-y-auto">
           <table class="w-full text-xs">
-            <thead><tr class="text-slate-400 border-b border-slate-700">
+            <thead><tr class="text-hq-400 border-b border-hq-700">
               <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2">メール</th><th class="text-left py-2" title="ログインした日時。下の段は最後にアプリを使った日時">最終ログイン</th><th></th>
             </tr></thead>
             <tbody id="hq-user-body">${hqUserRows(data.users, cid)}</tbody>
@@ -590,13 +590,13 @@ async function renderCompanyDetail(cid) {
       ${hqBillingSection(data, cid)}
       ${hqSupportLogSection(data, cid)}
     </div>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mt-4 overflow-x-auto">
-      <h3 class="font-bold mb-3"><i class="fas fa-clock-rotate-left text-cyan-400 mr-1"></i>変更履歴（本部の操作）</h3>
-      <div class="bg-white rounded-lg p-2 max-h-80 overflow-y-auto">
-        <table class="w-full text-xs text-gray-800"><thead><tr class="text-gray-500 border-b"><th class="text-left py-1">日時</th><th class="text-left">操作した人</th><th class="text-left">操作</th><th class="text-left">内容</th></tr></thead>
-        <tbody>${(data.audit_logs || []).map(l => hqAuditRow(l, false)).join('') || '<tr><td colspan="4" class="py-4 text-center text-gray-400">記録はまだありません</td></tr>'}</tbody></table>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mt-4 overflow-x-auto">
+      <h3 class="font-bold mb-3"><i class="fas fa-clock-rotate-left text-hq-accent-400 mr-1"></i>変更履歴（本部の操作）</h3>
+      <div class="bg-surface rounded-lg p-2 max-h-80 overflow-y-auto">
+        <table class="w-full text-xs text-neutral-800"><thead><tr class="text-neutral-500 border-b"><th class="text-left py-1">日時</th><th class="text-left">操作した人</th><th class="text-left">操作</th><th class="text-left">内容</th></tr></thead>
+        <tbody>${(data.audit_logs || []).map(l => hqAuditRow(l, false)).join('') || '<tr><td colspan="4" class="py-4 text-center text-neutral-400">記録はまだありません</td></tr>'}</tbody></table>
       </div>
-      <p class="text-[11px] text-slate-500 mt-2">新しい順に50件まで表示します。すべての企業の履歴は、企業一覧の「本部の操作の履歴」から見られます。</p>
+      <p class="text-2xs text-hq-500 mt-2">新しい順に50件まで表示します。すべての企業の履歴は、企業一覧の「本部の操作の履歴」から見られます。</p>
     </section>`
 }
 // 月ごとの請求記録（#295）
@@ -604,45 +604,45 @@ function hqBillingSection(data, cid) {
   const rows = data.billing || []
   const price = (data.plan_prices || []).find(p => p.plan === data.company.plan)
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-      <h3 class="font-bold mb-1"><i class="fas fa-file-invoice-dollar text-cyan-400 mr-1"></i>請求の記録</h3>
-      <p class="text-[11px] text-slate-400 mb-2">今月の見込み: ${yen(data.usage && data.usage.monthly_fee)}（課金対象 ${Number(data.usage && data.usage.user_count) || 0}名${price ? `・${esc(PLAN_LABELS[price.plan] || price.plan)} ${esc(hqPriceText(price))}` : ''}）。記録は企業一覧の「請求の記録」で月ごとに作ります。</p>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
+      <h3 class="font-bold mb-1"><i class="fas fa-file-invoice-dollar text-hq-accent-400 mr-1"></i>請求の記録</h3>
+      <p class="text-2xs text-hq-400 mb-2">今月の見込み: ${yen(data.usage && data.usage.monthly_fee)}（課金対象 ${Number(data.usage && data.usage.user_count) || 0}名${price ? `・${esc(PLAN_LABELS[price.plan] || price.plan)} ${esc(hqPriceText(price))}` : ''}）。記録は企業一覧の「請求の記録」で月ごとに作ります。</p>
       <div class="max-h-80 overflow-y-auto">
         <table class="w-full text-xs">
-          <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left py-2">月</th><th class="text-left">プラン</th><th class="text-right">人数</th><th class="text-right">金額</th><th class="text-left pl-3">入金状態</th><th></th></tr></thead>
+          <thead><tr class="text-hq-400 border-b border-hq-700"><th class="text-left py-2">月</th><th class="text-left">プラン</th><th class="text-right">人数</th><th class="text-right">金額</th><th class="text-left pl-3">入金状態</th><th></th></tr></thead>
           <tbody>${rows.map(r => `
-            <tr class="border-b border-slate-700/40 ${r.status === 'overdue' ? 'bg-red-900/20' : ''}">
+            <tr class="border-b border-hq-700/40 ${r.status === 'overdue' ? 'bg-danger-900/20' : ''}">
               <td class="py-2 whitespace-nowrap">${esc(String(r.month).replace('-', '/'))}</td>
               <td>${esc(PLAN_LABELS[r.plan] || r.plan || '')}</td>
               <td class="text-right">${Number(r.user_count) || 0}名</td>
               <td class="text-right font-bold">${yen(r.amount)}</td>
-              <td class="pl-3 whitespace-nowrap"><span class="badge ${BILLING_MONTH_BADGE[r.status] || 'badge-gray'}">${esc(BILLING_MONTH_LABEL[r.status] || r.status)}</span>${r.paid_at ? `<span class="text-slate-400 ml-1">${esc(dayjs(r.paid_at).format('M/D'))}</span>` : ''}${r.note ? `<div class="text-[11px] text-slate-400">${esc(r.note)}</div>` : ''}</td>
-              <td class="text-right"><button class="text-cyan-400 hover:underline" data-action="hqEditBilling" data-cid="${Number(cid)}" data-month="${esc(r.month)}">編集</button></td>
-            </tr>`).join('') || '<tr><td colspan="6" class="py-6 text-center text-slate-400">請求の記録はまだありません</td></tr>'}</tbody>
+              <td class="pl-3 whitespace-nowrap"><span class="badge ${BILLING_MONTH_BADGE[r.status] || 'badge-gray'}">${esc(BILLING_MONTH_LABEL[r.status] || r.status)}</span>${r.paid_at ? `<span class="text-hq-400 ml-1">${esc(dayjs(r.paid_at).format('M/D'))}</span>` : ''}${r.note ? `<div class="text-2xs text-hq-400">${esc(r.note)}</div>` : ''}</td>
+              <td class="text-right"><button class="text-hq-accent-400 hover:underline" data-action="hqEditBilling" data-cid="${Number(cid)}" data-month="${esc(r.month)}">編集</button></td>
+            </tr>`).join('') || '<tr><td colspan="6" class="py-6 text-center text-hq-400">請求の記録はまだありません</td></tr>'}</tbody>
         </table>
       </div>
     </section>`
 }
 // 伴走支援の履歴（#296）。追記で残す
 function hqSupportLogSection(data, cid) {
-  const darkInp = 'style="background:#1e293b;border-color:#334155;color:#fff"'
+  const darkInp = 'style="background:rgb(var(--color-hq-800));border-color:rgb(var(--color-hq-700));color:rgb(var(--color-on-primary))"'
   const logs = data.support_logs || []
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-      <h3 class="font-bold mb-2"><i class="fas fa-handshake text-cyan-400 mr-1"></i>伴走支援の履歴</h3>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
+      <h3 class="font-bold mb-2"><i class="fas fa-handshake text-hq-accent-400 mr-1"></i>伴走支援の履歴</h3>
       <div class="space-y-2 mb-3">
         <textarea id="sl-body" rows="2" maxlength="2000" class="inp" placeholder="実施した支援・打ち合わせの内容" ${darkInp}></textarea>
         <div class="flex flex-wrap items-end gap-2">
-          <div><label class="text-[11px] text-slate-400 block mb-1">次回の予定日（入れると次回レビュー日も更新します）</label><input id="sl-next" type="date" class="inp" ${darkInp}></div>
-          <button class="btn btn-primary" style="background:#0e7490" data-action="hqAddSupportLog" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>記録する</button>
+          <div><label class="text-2xs text-hq-400 block mb-1">次回の予定日（入れると次回レビュー日も更新します）</label><input id="sl-next" type="date" class="inp" ${darkInp}></div>
+          <button class="btn btn-primary" style="background:rgb(var(--color-hq-accent-700))" data-action="hqAddSupportLog" data-cid="${Number(cid)}"><i class="fas fa-plus"></i>記録する</button>
         </div>
       </div>
       <div class="max-h-80 overflow-y-auto space-y-2">
         ${logs.map(l => `
-          <div class="border-l-2 border-cyan-700 pl-2 text-xs">
-            <div class="text-slate-400">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}・${esc(l.actor_name || '（担当者の記録なし）')}${l.next_action_date ? `<span class="ml-2 text-amber-300">次回 ${esc(dayjs(l.next_action_date).format('YYYY/M/D'))}</span>` : ''}</div>
+          <div class="border-l-2 border-hq-accent-700 pl-2 text-xs">
+            <div class="text-hq-400">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}・${esc(l.actor_name || '（担当者の記録なし）')}${l.next_action_date ? `<span class="ml-2 text-warning-300">次回 ${esc(dayjs(l.next_action_date).format('YYYY/M/D'))}</span>` : ''}</div>
             <div class="whitespace-pre-wrap break-words">${esc(l.body)}</div>
-          </div>`).join('') || '<p class="text-xs text-slate-400">記録はまだありません</p>'}
+          </div>`).join('') || '<p class="text-xs text-hq-400">記録はまだありません</p>'}
       </div>
     </section>`
 }
@@ -660,16 +660,16 @@ delegate('hqEditBilling', (el) => {
   const r = (HQ_BILLING_ROWS || []).find(x => x.month === month)
   if (!r) return
   modal(`
-    <h3 class="font-bold text-lg mb-1 text-gray-800">${esc(dayjs(month + '-01').format('YYYY年M月'))}分の請求</h3>
-    <p class="text-xs text-gray-500 mb-3">記録した時点: ${esc(PLAN_LABELS[r.plan] || r.plan || '')}・${Number(r.user_count) || 0}名${r.recorded_at ? `（${esc(dayjs(String(r.recorded_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}に記録）` : ''}</p>
+    <h3 class="font-bold text-lg mb-1 text-neutral-800">${esc(dayjs(month + '-01').format('YYYY年M月'))}分の請求</h3>
+    <p class="text-xs text-neutral-500 mb-3">記録した時点: ${esc(PLAN_LABELS[r.plan] || r.plan || '')}・${Number(r.user_count) || 0}名${r.recorded_at ? `（${esc(dayjs(String(r.recorded_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}に記録）` : ''}</p>
     <div class="space-y-3">
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs text-gray-600 block mb-1">入金状態</label>
+        <div><label class="text-xs text-neutral-600 block mb-1">入金状態</label>
           <select id="bm-status" class="inp">${Object.entries(BILLING_MONTH_LABEL).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div><label class="text-xs text-gray-600 block mb-1">入金日（入金済みのとき。空欄なら今日）</label><input id="bm-paid" type="date" class="inp" value="${esc(r.paid_at || '')}"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">入金日（入金済みのとき。空欄なら今日）</label><input id="bm-paid" type="date" class="inp" value="${esc(r.paid_at || '')}"></div>
       </div>
-      <div><label class="text-xs text-gray-600 block mb-1">金額（円）</label><input id="bm-amount" type="number" min="0" step="1" class="inp" value="${Number(r.amount) || 0}"></div>
-      <div><label class="text-xs text-gray-600 block mb-1">メモ（値引き・日割りの理由など）</label><input id="bm-note" class="inp" maxlength="500" value="${esc(r.note || '')}"></div>
+      <div><label class="text-xs text-neutral-600 block mb-1">金額（円）</label><input id="bm-amount" type="number" min="0" step="1" class="inp" value="${Number(r.amount) || 0}"></div>
+      <div><label class="text-xs text-neutral-600 block mb-1">メモ（値引き・日割りの理由など）</label><input id="bm-note" class="inp" maxlength="500" value="${esc(r.note || '')}"></div>
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
         <button class="btn btn-primary flex-1" data-action="hqSaveBilling" data-cid="${cid}" data-month="${esc(month)}">保存する</button>
@@ -693,9 +693,9 @@ delegate('hqSaveBilling', (el) => withSubmitLock(el, async () => {
 function hqLoginCell(u) {
   const fmt = v => dayjs(String(v).replace(' ', 'T')).format('M/D HH:mm')
   if (u.role === 'roster_only') return '-'
-  const seen = u.last_seen_at && u.last_seen_at !== u.last_login_at ? `<div class="text-[11px] text-slate-500">利用 ${esc(fmt(u.last_seen_at))}</div>` : ''
+  const seen = u.last_seen_at && u.last_seen_at !== u.last_login_at ? `<div class="text-2xs text-hq-500">利用 ${esc(fmt(u.last_seen_at))}</div>` : ''
   if (u.last_login_at) return esc(fmt(u.last_login_at)) + seen
-  if (u.linked) return (seen || '<span class="text-slate-500">所属元でログイン</span>')
+  if (u.linked) return (seen || '<span class="text-hq-500">所属元でログイン</span>')
   return '<span class="badge badge-yellow">未ログイン</span>' + seen
 }
 function hqUserRows(users, cid) {
@@ -703,23 +703,23 @@ function hqUserRows(users, cid) {
   return rows.map(u => {
     const st = hqUserState(u)
     return `
-    <tr class="border-b border-slate-700/40">
-      <td class="py-2 text-slate-400">${esc(u.user_code)}</td>
+    <tr class="border-b border-hq-700/40">
+      <td class="py-2 text-hq-400">${esc(u.user_code)}</td>
       <td class="py-2">${esc(u.name)}${u.must_change_password && HQ_ADMIN_ROLES.includes(u.role) ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
       <td class="py-2"><span class="badge ${u.role === 'staff' || u.role === 'roster_only' ? 'badge-gray' : 'badge-blue'}">${esc(ROLE_LABELS[u.role] || u.role)}</span></td>
       <td class="py-2 whitespace-nowrap"><span class="badge ${st.cls}">${st.label}</span>${u.linked ? ' <span class="badge badge-blue">他社連携</span>' : ''}</td>
-      <td class="py-2 text-slate-400">${HQ_ADMIN_ROLES.includes(u.role) ? (u.email ? esc(u.email) : '<span class="text-amber-400">未登録</span>') : ''}</td>
-      <td class="py-2 text-slate-400 whitespace-nowrap">${hqLoginCell(u)}</td>
-      <td class="py-2 text-right whitespace-nowrap">${HQ_ADMIN_ROLES.includes(u.role) ? `<button class="text-cyan-400 hover:underline" data-action="hqManageAdmin" data-cid="${Number(cid)}" data-id="${Number(u.user_id)}">管理</button>` : ''}</td>
+      <td class="py-2 text-hq-400">${HQ_ADMIN_ROLES.includes(u.role) ? (u.email ? esc(u.email) : '<span class="text-warning-400">未登録</span>') : ''}</td>
+      <td class="py-2 text-hq-400 whitespace-nowrap">${hqLoginCell(u)}</td>
+      <td class="py-2 text-right whitespace-nowrap">${HQ_ADMIN_ROLES.includes(u.role) ? `<button class="text-hq-accent-400 hover:underline" data-action="hqManageAdmin" data-cid="${Number(cid)}" data-id="${Number(u.user_id)}">管理</button>` : ''}</td>
     </tr>`
-  }).join('') || '<tr><td colspan="7" class="py-6 text-center text-slate-400">該当する利用者はいません</td></tr>'
+  }).join('') || '<tr><td colspan="7" class="py-6 text-center text-hq-400">該当する利用者はいません</td></tr>'
 }
 delegate('hqUserFilter', (el) => {
   HQ_USER_FILTER = el.dataset.filter || ''
   document.querySelectorAll('[data-action="hqUserFilter"]').forEach(b => {
     const on = b.dataset.filter === HQ_USER_FILTER
-    b.classList.toggle('border-cyan-500', on); b.classList.toggle('text-cyan-300', on)
-    b.classList.toggle('border-slate-600', !on); b.classList.toggle('text-slate-400', !on)
+    b.classList.toggle('border-hq-accent-500', on); b.classList.toggle('text-hq-accent-300', on)
+    b.classList.toggle('border-hq-600', !on); b.classList.toggle('text-hq-400', !on)
   })
   const body = document.getElementById('hq-user-body')
   if (body) body.innerHTML = hqUserRows([...HQ_USERS.values()], Number(el.dataset.cid))
@@ -783,15 +783,15 @@ const hqErr = (e, fallback) => toast((e.response && e.response.data && e.respons
 delegate('hqAddAdmin', (el) => {
   const cid = Number(el.dataset.cid)
   modal(`
-    <h3 class="font-bold text-lg mb-4 text-gray-800">管理者を追加</h3>
+    <h3 class="font-bold text-lg mb-4 text-neutral-800">管理者を追加</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs text-gray-600 block mb-1">管理者ID *</label><input id="ha-code" class="inp"></div>
-        <div><label class="text-xs text-gray-600 block mb-1">氏名 *</label><input id="ha-name" class="inp" maxlength="60"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">管理者ID *</label><input id="ha-code" class="inp"></div>
+        <div><label class="text-xs text-neutral-600 block mb-1">氏名 *</label><input id="ha-name" class="inp" maxlength="60"></div>
       </div>
-      <div><label class="text-xs text-gray-600 block mb-1">メールアドレス</label><input id="ha-email" type="email" class="inp"></div>
-      <div><label class="text-xs text-gray-600 block mb-1">権限</label><select id="ha-role" class="inp">${Object.entries(HQ_ADMIN_ROLE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
-      <p class="text-[11px] text-gray-400">仮パスワードを自動で作ります。初回ログインで本人に変更を求めます。</p>
+      <div><label class="text-xs text-neutral-600 block mb-1">メールアドレス</label><input id="ha-email" type="email" class="inp"></div>
+      <div><label class="text-xs text-neutral-600 block mb-1">権限</label><select id="ha-role" class="inp">${Object.entries(HQ_ADMIN_ROLE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+      <p class="text-2xs text-neutral-400">仮パスワードを自動で作ります。初回ログインで本人に変更を求めます。</p>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqDoAddAdmin" data-cid="${cid}">追加する</button></div>
     </div>`)
 })
@@ -810,17 +810,17 @@ delegate('hqManageAdmin', (el) => {
   const u = HQ_USERS.get(Number(el.dataset.id)); if (!u) return
   const active = u.status === 'active'
   modal(`
-    <h3 class="font-bold text-lg mb-1 text-gray-800">${esc(u.name)}（${esc(u.user_code)}）</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(HQ_ADMIN_ROLE_LABEL[u.role] || u.role)} ・ ${active ? '利用中' : '停止中'}</p>
+    <h3 class="font-bold text-lg mb-1 text-neutral-800">${esc(u.name)}（${esc(u.user_code)}）</h3>
+    <p class="text-xs text-neutral-500 mb-3">${esc(HQ_ADMIN_ROLE_LABEL[u.role] || u.role)} ・ ${active ? '利用中' : '停止中'}</p>
     <div class="space-y-3">
-      <div><label class="text-xs text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label>
+      <div><label class="text-xs text-neutral-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label>
         <div class="flex gap-2"><input id="hm-email" type="email" class="inp flex-1" value="${esc(u.email || '')}">
           <button class="btn btn-outline text-xs" data-action="hqSaveAdminEmail" data-cid="${cid}" data-id="${u.user_id}">保存</button></div></div>
       ${active ? `
-        <p class="text-xs font-bold text-gray-600 pt-1">パスワードの再発行（今のパスワードは使えなくなり、ログイン中の画面もログアウトされます）</p>
+        <p class="text-xs font-bold text-neutral-600 pt-1">パスワードの再発行（今のパスワードは使えなくなり、ログイン中の画面もログアウトされます）</p>
         ${u.email ? `<button class="btn btn-outline w-full" data-action="hqResetAdmin" data-cid="${cid}" data-id="${u.user_id}" data-mode="email"><i class="fas fa-envelope"></i>再設定メールを送る</button>` : ''}
         <button class="btn btn-outline w-full" data-action="hqResetAdmin" data-cid="${cid}" data-id="${u.user_id}" data-mode="temp"><i class="fas fa-key"></i>仮パスワードを発行する</button>` : ''}
-      <button class="btn ${active ? 'btn-outline text-red-600' : 'btn-primary'} w-full" data-action="hqToggleAdmin" data-cid="${cid}" data-id="${u.user_id}">${active ? 'このアカウントを停止する' : '利用を再開する'}</button>
+      <button class="btn ${active ? 'btn-outline text-danger-600' : 'btn-primary'} w-full" data-action="hqToggleAdmin" data-cid="${cid}" data-id="${u.user_id}">${active ? 'このアカウントを停止する' : '利用を再開する'}</button>
       <button class="btn btn-outline w-full" onclick="closeModal()">閉じる</button>
     </div>`)
 })
@@ -861,18 +861,18 @@ async function renderTemplates() {
   loading()
   let data
   try { data = (await axios.get('/api/hq/templates')).data; HQ_TPLS = data.templates } catch (e) {
-    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">テンプレートを読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:#334155;color:#67e8f9" onclick="renderTemplates()">再試行</button></div>`
+    $app.innerHTML = `<div class="bg-hq-800 border border-hq-700 rounded-xl p-6 text-center text-sm text-hq-300">テンプレートを読み込めませんでした。<button class="btn btn-outline ml-2" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" onclick="renderTemplates()">再試行</button></div>`
     return
   }
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5">
       <h2 class="text-xl font-bold">テンプレート配信管理</h2>
-      <button class="btn btn-primary" style="background:#0e7490" onclick="showAddTemplate()"><i class="fas fa-plus"></i>テンプレート作成</button>
+      <button class="btn btn-primary" style="background:rgb(var(--color-hq-accent-700))" onclick="showAddTemplate()"><i class="fas fa-plus"></i>テンプレート作成</button>
     </div>
-    <p class="text-sm text-slate-400 mb-4">本部テンプレートは全導入企業の案件設定で選択可能になります。配信停止にすると、新しい案件では選べなくなります（使っている案件はそのまま使えます）。</p>
+    <p class="text-sm text-hq-400 mb-4">本部テンプレートは全導入企業の案件設定で選択可能になります。配信停止にすると、新しい案件では選べなくなります（使っている案件はそのまま使えます）。</p>
     <div class="grid md:grid-cols-2 gap-4">
       ${data.templates.map(t => `
-        <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 ${t.status === 'stopped' ? 'opacity-70' : ''}">
+        <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 ${t.status === 'stopped' ? 'opacity-70' : ''}">
           <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
             <h3 class="font-bold">${esc(t.template_name)}</h3>
             <span class="flex gap-1 items-center">
@@ -880,14 +880,14 @@ async function renderTemplates() {
               <span class="badge ${t.template_type === 'hq' ? 'badge-blue' : 'badge-gray'}">${t.template_type === 'hq' ? '本部配信' : '企業独自'}</span>
             </span>
           </div>
-          ${t.company_name ? `<p class="text-xs text-slate-400 mb-2">${esc(t.company_name)}</p>` : ''}
+          ${t.company_name ? `<p class="text-xs text-hq-400 mb-2">${esc(t.company_name)}</p>` : ''}
           <div class="flex flex-wrap gap-1.5">
-            ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-cyan-900 text-cyan-300' : 'bg-slate-700 text-slate-300'}" title="${esc(f.key)}${f.required ? '（必須）' : ''}">${esc(f.label)}${f.required ? ' <span class="text-amber-300">*</span>' : ''}</span>`).join('')}
+            ${t.fields.map(f => `<span class="text-xs px-2 py-0.5 rounded-full ${f.type === 'number' ? 'bg-hq-accent-900 text-hq-accent-300' : 'bg-hq-700 text-hq-300'}" title="${esc(f.key)}${f.required ? '（必須）' : ''}">${esc(f.label)}${f.required ? ' <span class="text-warning-300">*</span>' : ''}</span>`).join('')}
           </div>
-          <p class="text-xs text-slate-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}${t.fields.some(f => f.required) ? ` / 必須 ${t.fields.filter(f => f.required).length}` : ''}）・使用中の案件 ${Number(t.project_count || 0)}件${t.has_reports ? '・日報あり' : ''}</p>
+          <p class="text-xs text-hq-500 mt-2">項目数: ${t.fields.length}（数値 ${t.fields.filter(f => f.type === 'number').length} / テキスト ${t.fields.filter(f => f.type !== 'number').length}${t.fields.some(f => f.required) ? ` / 必須 ${t.fields.filter(f => f.required).length}` : ''}）・使用中の案件 ${Number(t.project_count || 0)}件${t.has_reports ? '・日報あり' : ''}</p>
           <div class="flex gap-2 mt-3">
-            <button class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9" data-action="editHqTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>修正</button>
-            <button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="toggleHqTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '配信を再開' : '配信停止'}</button>
+            <button class="btn btn-outline text-xs" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))" data-action="editHqTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>修正</button>
+            <button class="btn btn-outline text-xs" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-300))" data-action="toggleHqTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '配信を再開' : '配信停止'}</button>
           </div>
         </section>`).join('')}
     </div>`
@@ -922,31 +922,31 @@ function renderTemplatePreview() {
   const box = document.getElementById('tp-preview'); if (!box) return
   const rows = parseTemplateLines(document.getElementById('tp-fields').value)
   const bad = rows.filter(r => r.errors.length).length
-  box.innerHTML = !rows.length ? '<p class="text-xs text-red-600">項目を1つ以上入力してください</p>' : `
-    <table class="w-full text-xs text-gray-700">
-      <thead><tr class="text-gray-400 border-b"><th class="text-left py-1">行</th><th class="text-left py-1">キー</th><th class="text-left py-1">表示名</th><th class="text-left py-1">入力欄</th><th class="text-left py-1">必須</th></tr></thead>
+  box.innerHTML = !rows.length ? '<p class="text-xs text-danger-600">項目を1つ以上入力してください</p>' : `
+    <table class="w-full text-xs text-neutral-700">
+      <thead><tr class="text-neutral-400 border-b"><th class="text-left py-1">行</th><th class="text-left py-1">キー</th><th class="text-left py-1">表示名</th><th class="text-left py-1">入力欄</th><th class="text-left py-1">必須</th></tr></thead>
       <tbody>${rows.map(r => `
-        <tr class="border-b ${r.errors.length ? 'bg-red-50' : ''}">
+        <tr class="border-b ${r.errors.length ? 'bg-danger-50' : ''}">
           <td class="py-1">${r.line}</td><td class="py-1 font-mono">${esc(r.field.key)}</td><td class="py-1">${esc(r.field.label)}</td>
           <td class="py-1">${esc(TPL_TYPE_LABEL[r.field.type] || r.field.type)}</td><td class="py-1">${r.field.required ? '必須' : ''}</td>
-        </tr>${r.errors.length ? `<tr class="bg-red-50"><td></td><td colspan="4" class="pb-1 text-red-600">${r.errors.map(esc).join(' / ')}</td></tr>` : ''}`).join('')}
+        </tr>${r.errors.length ? `<tr class="bg-danger-50"><td></td><td colspan="4" class="pb-1 text-danger-600">${r.errors.map(esc).join(' / ')}</td></tr>` : ''}`).join('')}
       </tbody>
     </table>
-    <p class="text-[11px] mt-1 ${bad ? 'text-red-600' : 'text-gray-500'}">${bad ? `${bad}行に問題があります。直してから配信してください` : `${rows.length}項目（数値 ${rows.filter(r => r.field.type === 'number').length}）。この内容で全導入企業に配信します`}</p>`
+    <p class="text-2xs mt-1 ${bad ? 'text-danger-600' : 'text-neutral-500'}">${bad ? `${bad}行に問題があります。直してから配信してください` : `${rows.length}項目（数値 ${rows.filter(r => r.field.type === 'number').length}）。この内容で全導入企業に配信します`}</p>`
 }
 
 window.showAddTemplate = function () {
   TPL_KEEP_KEYS = new Set()
   modal(`
-    <h3 class="font-bold text-lg mb-4 text-gray-800">テンプレート作成</h3>
+    <h3 class="font-bold text-lg mb-4 text-neutral-800">テンプレート作成</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tp-name" class="inp" maxlength="60" placeholder="コールセンター稼働テンプレート"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">項目定義（1行1項目: キー,表示名,タイプ[,必須]）</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">テンプレート名 *</label><input id="tp-name" class="inp" maxlength="60" placeholder="コールセンター稼働テンプレート"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">項目定義（1行1項目: キー,表示名,タイプ[,必須]）</label>
         <textarea id="tp-fields" rows="8" class="inp text-xs font-mono">calls,架電数,number
 connects,接続数,number
 seiyaku,成約数,number
 free,自由記述,textarea</textarea>
-        <p class="text-xs text-gray-400 mt-1">キー: 半角英字で始まる英数字と _（日報の値の保存に使うので、配信後は変えないでください）。タイプ: number（数値・件数の集計に使う）/ text / textarea。必須にする項目は4つ目に「必須」と書きます</p></div>
+        <p class="text-xs text-neutral-400 mt-1">キー: 半角英字で始まる英数字と _（日報の値の保存に使うので、配信後は変えないでください）。タイプ: number（数値・件数の集計に使う）/ text / textarea。必須にする項目は4つ目に「必須」と書きます</p></div>
       <div id="tp-preview" class="border rounded-lg p-2 max-h-56 overflow-y-auto"></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addTemplate">作成して配信する</button></div>
     </div>`)
@@ -976,13 +976,13 @@ delegate('editHqTemplate', el => {
   TPL_KEEP_KEYS = new Set(t.fields.map(f => f.key))
   const lines = t.fields.map(f => [f.key, f.label, f.type || 'text'].concat(f.required ? ['必須'] : []).join(',')).join('\n')
   modal(`
-    <h3 class="font-bold text-lg mb-4 text-gray-800">テンプレートの修正</h3>
+    <h3 class="font-bold text-lg mb-4 text-neutral-800">テンプレートの修正</h3>
     <div class="space-y-3">
-      ${t.company_name ? `<p class="text-xs text-gray-500">企業独自: ${esc(t.company_name)}</p>` : ''}
-      <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tp-name" class="inp" maxlength="60" value="${esc(t.template_name)}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">項目定義（1行1項目: キー,表示名,タイプ[,必須]）</label>
+      ${t.company_name ? `<p class="text-xs text-neutral-500">企業独自: ${esc(t.company_name)}</p>` : ''}
+      <div><label class="text-sm text-neutral-600 block mb-1">テンプレート名 *</label><input id="tp-name" class="inp" maxlength="60" value="${esc(t.template_name)}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">項目定義（1行1項目: キー,表示名,タイプ[,必須]）</label>
         <textarea id="tp-fields" rows="8" class="inp text-xs font-mono">${esc(lines)}</textarea>
-        ${t.has_reports ? '<p class="text-xs text-amber-700 mt-1">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます</p>' : ''}</div>
+        ${t.has_reports ? '<p class="text-xs text-warning-700 mt-1">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます</p>' : ''}</div>
       <div id="tp-preview" class="border rounded-lg p-2 max-h-56 overflow-y-auto"></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveHqTemplate" data-id="${Number(t.template_id)}">保存する</button></div>
     </div>`)
@@ -1063,14 +1063,14 @@ const retentionState = { dryRun: null, logPage: 1, logTrigger: 'all' }
 function retentionModeHtml(sch) {
   if (!sch) return ''
   const mode = sch.enabled
-    ? '<span class="badge badge-red">実削除</span> <span class="text-xs text-slate-400">毎日の定期処理で実際に削除・匿名化します（RETENTION_ENABLED=true）</span>'
-    : '<span class="badge badge-gray">dry-run のみ</span> <span class="text-xs text-slate-400">定期処理は対象件数を記録するだけで、削除しません（RETENTION_ENABLED が true ではありません）</span>'
+    ? '<span class="badge badge-red">実削除</span> <span class="text-xs text-hq-400">毎日の定期処理で実際に削除・匿名化します（RETENTION_ENABLED=true）</span>'
+    : '<span class="badge badge-gray">dry-run のみ</span> <span class="text-xs text-hq-400">定期処理は対象件数を記録するだけで、削除しません（RETENTION_ENABLED が true ではありません）</span>'
   const next = sch.enabled
-    ? `${esc(sch.next_run_date)} 3:00 の定期処理で <b class="${sch.next_run_count > 0 ? 'text-amber-400' : ''}">${esc(sch.next_run_count)}人</b> の退職者のデータを削除します` +
+    ? `${esc(sch.next_run_date)} 3:00 の定期処理で <b class="${sch.next_run_count > 0 ? 'text-warning-400' : ''}">${esc(sch.next_run_count)}人</b> の退職者のデータを削除します` +
       (sch.next_run_due > sch.next_run_count ? `（猶予が明けた ${esc(sch.next_run_due)}人のうち、1回の上限 ${esc(sch.staff_batch)}人）` : '')
     : `${esc(sch.next_run_date)} 3:00 の定期処理は dry-run のため削除しません（猶予が明けた退職者: ${esc(sch.next_run_due)}人）`
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <p class="text-sm mb-1">動作モード: ${mode}</p>
       <p class="text-sm">${next}</p>
     </section>`
@@ -1080,7 +1080,7 @@ function retentionScheduleHtml(sch) {
   const row = (s, note) => `
     <tr>
       <td class="text-xs">${esc(s.company_name || '-')}</td>
-      <td>${esc(s.name || '-')} <span class="text-xs text-slate-500">#${esc(s.staff_id)}</span></td>
+      <td>${esc(s.name || '-')} <span class="text-xs text-hq-500">#${esc(s.staff_id)}</span></td>
       <td class="text-xs">${esc(s.retired_at || '-')}</td>
       <td class="text-xs">${esc(s.last_work_date || '-')}</td>
       <td class="text-xs">${note}
@@ -1090,43 +1090,43 @@ function retentionScheduleHtml(sch) {
     <div class="overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>会社</th><th>スタッフ</th><th>退職日</th><th>最終稼働日</th><th>状況</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="5" class="text-center text-slate-500 py-4">${empty}</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="5" class="text-center text-hq-500 py-4">${empty}</td></tr>`}</tbody>
       </table>
     </div>`
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <h3 class="font-bold mb-1">次回削除予定</h3>
-      <p class="text-xs text-slate-400 mb-3">初めて対象になったスタッフは${esc(sch.grace_days)}日間削除せずに猶予します。退職日に誤りがあれば、猶予中に各社で退職日を直してください（直すと猶予をやり直します）。</p>
+      <p class="text-xs text-hq-400 mb-3">初めて対象になったスタッフは${esc(sch.grace_days)}日間削除せずに猶予します。退職日に誤りがあれば、猶予中に各社で退職日を直してください（直すと猶予をやり直します）。</p>
       ${table(sch.scheduled.map(s => row(s, s.delete_on
-        ? `<span class="text-amber-400">${esc(s.delete_on)} 以降の定期削除で削除</span>`
-        : '<span class="text-slate-400">次回の定期削除で猶予を開始</span>')).join(''), '削除予定のスタッフはいません')}
+        ? `<span class="text-warning-400">${esc(s.delete_on)} 以降の定期削除で削除</span>`
+        : '<span class="text-hq-400">次回の定期削除で猶予を開始</span>')).join(''), '削除予定のスタッフはいません')}
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <h3 class="font-bold mb-1">対象外（退職日より後にシフトあり）</h3>
-      <p class="text-xs text-slate-400 mb-3">退職日の入力誤りの可能性があるため削除しません。各社に退職日の確認を依頼してください。</p>
-      ${table(sch.excluded.map(s => row(s, '<span class="text-red-400">退職日より後にシフトあり</span>')).join(''), '該当するスタッフはいません')}
+      <p class="text-xs text-hq-400 mb-3">退職日の入力誤りの可能性があるため削除しません。各社に退職日の確認を依頼してください。</p>
+      ${table(sch.excluded.map(s => row(s, '<span class="text-danger-400">退職日より後にシフトあり</span>')).join(''), '該当するスタッフはいません')}
     </section>`
 }
 // dry-run の会社別・退職者別の内訳（#365）
 function retentionDryRunDetailHtml(data) {
-  if (data.detailError) return `<p class="text-xs text-red-400 mt-3">会社別・退職者別の内訳の集計に失敗しました: ${esc(data.detailError)}</p>`
+  if (data.detailError) return `<p class="text-xs text-danger-400 mt-3">会社別・退職者別の内訳の集計に失敗しました: ${esc(data.detailError)}</p>`
   const d = data.detail
   if (!d) return ''
-  const num = (n) => n > 0 ? `<span class="text-amber-400">${esc(n)}</span>` : '<span class="text-slate-500">0</span>'
+  const num = (n) => n > 0 ? `<span class="text-warning-400">${esc(n)}</span>` : '<span class="text-hq-500">0</span>'
   const head = RETENTION_STAFF_COLS.map(([, l]) => `<th>${esc(l)}</th>`).join('')
   const cells = (counts) => RETENTION_STAFF_COLS.map(([k]) => `<td class="text-xs">${num(counts[k] || 0)}</td>`).join('')
   const companies = d.companies.length ? d.companies.map(c => `
     <tr><td>${esc(c.company_name || '-')}</td><td>${esc(c.staff_count)}人</td>${cells(c.counts)}</tr>`).join('')
-    : `<tr><td colspan="${RETENTION_STAFF_COLS.length + 2}" class="text-center text-slate-500 py-4">対象の退職者はいません</td></tr>`
+    : `<tr><td colspan="${RETENTION_STAFF_COLS.length + 2}" class="text-center text-hq-500 py-4">対象の退職者はいません</td></tr>`
   const flagged = d.staff.filter(s => s.report_after_retired).length
   const staff = d.staff.map(s => `
     <tr>
       <td class="text-xs">${esc(s.company_name || '-')}</td>
-      <td>${esc(s.name || '-')} <span class="text-xs text-slate-500">#${esc(s.staff_id)}</span>
+      <td>${esc(s.name || '-')} <span class="text-xs text-hq-500">#${esc(s.staff_id)}</span>
         ${s.report_after_retired ? '<br><span class="badge badge-red">退職日より後に勤怠あり</span>' : ''}</td>
       <td class="text-xs">${esc(s.retired_at || '-')}</td>
-      <td class="text-xs">${esc(s.last_work_date || '-')}${s.last_report_date ? `<br><span class="text-slate-500">最終報告 ${esc(s.last_report_date)}</span>` : ''}</td>
-      <td class="text-xs">${s.delete_on ? esc(s.delete_on) + ' 以降' : '<span class="text-slate-400">猶予前</span>'}</td>
+      <td class="text-xs">${esc(s.last_work_date || '-')}${s.last_report_date ? `<br><span class="text-hq-500">最終報告 ${esc(s.last_report_date)}</span>` : ''}</td>
+      <td class="text-xs">${s.delete_on ? esc(s.delete_on) + ' 以降' : '<span class="text-hq-400">猶予前</span>'}</td>
       ${cells(s.counts)}
     </tr>`).join('')
   return `
@@ -1135,10 +1135,10 @@ function retentionDryRunDetailHtml(data) {
       <table class="tbl"><thead><tr><th>会社</th><th>退職者</th>${head}</tr></thead><tbody>${companies}</tbody></table>
     </div>
     <h4 class="font-bold text-sm mt-5 mb-1">退職者別（${esc(d.staff_total)}人${d.staff_total > d.staff.length ? `のうち先頭の${esc(d.staff.length)}人` : ''}）</h4>
-    ${flagged ? `<p class="text-xs text-red-400 mb-2">退職日より後に勤怠の報告がある人が ${esc(flagged)}人います。退職日の入力誤りでないか、各社に確認してください。</p>` : ''}
+    ${flagged ? `<p class="text-xs text-danger-400 mb-2">退職日より後に勤怠の報告がある人が ${esc(flagged)}人います。退職日の入力誤りでないか、各社に確認してください。</p>` : ''}
     ${d.staff.length ? `
     <details${d.staff.length <= 20 ? ' open' : ''}>
-      <summary class="text-xs text-slate-400 cursor-pointer">一覧を開く</summary>
+      <summary class="text-xs text-hq-400 cursor-pointer">一覧を開く</summary>
       <div class="overflow-x-auto mt-2">
         <table class="tbl"><thead><tr><th>会社</th><th>スタッフ</th><th>退職日</th><th>最終稼働日</th><th>削除できる日</th>${head}</tr></thead><tbody>${staff}</tbody></table>
       </div>
@@ -1148,15 +1148,15 @@ function retentionDryRunHtml(data) {
   // 実削除のときだけ意味のある項目（翌日に回した人数）は出さない
   const results = data.results.filter(r => r.target !== 'retired_staff_deferred')
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
       <h3 class="font-bold mb-1">dry-run結果（削除は実行していません。猶予中のスタッフも含みます）</h3>
-      <p class="text-xs text-slate-500 mb-3">${data.finishedAt ? esc(dayjs(data.finishedAt).format('YYYY/M/D HH:mm')) + ' に集計' : ''}</p>
+      <p class="text-xs text-hq-500 mb-3">${data.finishedAt ? esc(dayjs(data.finishedAt).format('YYYY/M/D HH:mm')) + ' に集計' : ''}</p>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
         ${results.map(r => `
-          <div class="bg-slate-900 rounded-lg p-3">
-            <p class="text-xs text-slate-400">${esc(RETENTION_TARGET_LABEL[r.target] || r.target)}</p>
-            <p class="text-lg font-bold ${r.targetCount > 0 ? 'text-amber-400' : ''}">${esc(r.targetCount)}件</p>
-            ${r.failedCount > 0 ? `<p class="text-xs text-red-400">集計に失敗しました</p>` : ''}
+          <div class="bg-hq-900 rounded-lg p-3">
+            <p class="text-xs text-hq-400">${esc(RETENTION_TARGET_LABEL[r.target] || r.target)}</p>
+            <p class="text-lg font-bold ${r.targetCount > 0 ? 'text-warning-400' : ''}">${esc(r.targetCount)}件</p>
+            ${r.failedCount > 0 ? `<p class="text-xs text-danger-400">集計に失敗しました</p>` : ''}
           </div>`).join('')}
       </div>
       ${retentionDryRunDetailHtml(data)}
@@ -1173,19 +1173,19 @@ async function renderRetention() {
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>
         <h2 class="text-xl font-bold">データ保持・定期処理</h2>
-        <p class="text-sm text-slate-400 mt-1">日報は3年、アプリ内通知は2年、メール送信ログは1年で削除します。出退勤記録・シフト・評価・やり取り・相談・R2写真・打刻修正・報告設定・スタッフ別の既読率・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴・スタッフに紐づく応募は退職後7年で削除し、氏名・連絡先などの本人情報と人材提案の経歴・氏名は匿名化します（毎日Cronで実行）。期限切れ・使用済みのパスワード再設定のリンクと報告用URLも毎日削除します。</p>
-        <p class="text-sm text-slate-400 mt-1">在職中でも、入店などの位置情報・端末情報と写真、対応済みの相談、完了したフォロー記録、見送り・取り下げになった人材提案の経歴・氏名は「保存期間の設定」の期間で消します。区分変更で雇用終了にした人の従業員データと入社時書類は、雇用終了から7年で削除します（毎日 3:30 の Cron）。削除を保留したスタッフ・企業のデータは、どの削除の対象にもなりません。</p>
+        <p class="text-sm text-hq-400 mt-1">日報は3年、アプリ内通知は2年、メール送信ログは1年で削除します。出退勤記録・シフト・評価・やり取り・相談・R2写真・打刻修正・報告設定・スタッフ別の既読率・従業員データ（口座・住所・給与など）・履歴書や入社時書類・企業間チャット・連携の同意履歴・スタッフに紐づく応募は退職後7年で削除し、氏名・連絡先などの本人情報と人材提案の経歴・氏名は匿名化します（毎日Cronで実行）。期限切れ・使用済みのパスワード再設定のリンクと報告用URLも毎日削除します。</p>
+        <p class="text-sm text-hq-400 mt-1">在職中でも、入店などの位置情報・端末情報と写真、対応済みの相談、完了したフォロー記録、見送り・取り下げになった人材提案の経歴・氏名は「保存期間の設定」の期間で消します。区分変更で雇用終了にした人の従業員データと入社時書類は、雇用終了から7年で削除します（毎日 3:30 の Cron）。削除を保留したスタッフ・企業のデータは、どの削除の対象にもなりません。</p>
       </div>
       <button class="btn btn-outline" data-action="runRetentionDryRun"><i class="fas fa-magnifying-glass"></i>dry-run実行（削除せず対象件数を確認）</button>
     </div>
     ${retentionModeHtml(sch)}
-    ${cron ? cronStatusHtml(cron) : '<p class="text-sm text-red-400 mb-5">定期処理の実行記録の取得に失敗しました</p>'}
+    ${cron ? cronStatusHtml(cron) : '<p class="text-sm text-danger-400 mb-5">定期処理の実行記録の取得に失敗しました</p>'}
     <div id="retention-dryrun-result" class="mb-5">${retentionState.dryRun ? retentionDryRunHtml(retentionState.dryRun) : ''}</div>
-    ${sch ? retentionScheduleHtml(sch) : '<p class="text-sm text-red-400 mb-5">次回削除予定の取得に失敗しました</p>'}
+    ${sch ? retentionScheduleHtml(sch) : '<p class="text-sm text-danger-400 mb-5">次回削除予定の取得に失敗しました</p>'}
     ${sch ? retentionHoldsHtml(sch.holds, sch.grace_days) : ''}
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5" id="retention-settings"></section>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5" id="retention-settings"></section>
     ${retentionOrphanHtml()}
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4" id="retention-logs"></section>`
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4" id="retention-logs"></section>`
   await Promise.all([loadRetentionLogs(), loadRetentionSettings()])
 }
 
@@ -1193,24 +1193,24 @@ async function renderRetention() {
 // 係争中・調査中のスタッフや、解約手続き中などの企業のデータを、どの定期削除の対象からも外す
 function retentionHoldsHtml(holds, graceDays) {
   if (!holds) return ''
-  const by = (h) => `${esc(h.hold_at || '-')}${h.hold_by_name ? `<br><span class="text-slate-500">${esc(h.hold_by_name)}</span>` : ''}`
+  const by = (h) => `${esc(h.hold_at || '-')}${h.hold_by_name ? `<br><span class="text-hq-500">${esc(h.hold_by_name)}</span>` : ''}`
   const staffRows = holds.staff.map(h => `
     <tr>
       <td class="text-xs">${esc(h.company_name || '-')}</td>
-      <td>${esc(h.name || '-')} <span class="text-xs text-slate-500">#${esc(h.staff_id)}</span>${h.retired_at ? `<br><span class="text-xs text-slate-500">退職日 ${esc(h.retired_at)}</span>` : ''}</td>
+      <td>${esc(h.name || '-')} <span class="text-xs text-hq-500">#${esc(h.staff_id)}</span>${h.retired_at ? `<br><span class="text-xs text-hq-500">退職日 ${esc(h.retired_at)}</span>` : ''}</td>
       <td class="text-xs" style="white-space:pre-wrap;word-break:break-all">${esc(h.hold_reason || '')}</td>
       <td class="text-xs">${by(h)}</td>
       <td><button class="btn btn-outline text-xs" data-action="releaseRetentionHold" data-kind="staff" data-id="${Number(h.staff_id)}" data-name="${esc(h.name || '')}">解除</button></td>
     </tr>`).join('')
   const companyRows = holds.companies.map(h => `
     <tr>
-      <td>${esc(h.company_name || '-')} <span class="text-xs text-slate-500">#${esc(h.company_id)}</span></td>
+      <td>${esc(h.company_name || '-')} <span class="text-xs text-hq-500">#${esc(h.company_id)}</span></td>
       <td class="text-xs" style="white-space:pre-wrap;word-break:break-all">${esc(h.hold_reason || '')}</td>
       <td class="text-xs">${by(h)}</td>
       <td><button class="btn btn-outline text-xs" data-action="releaseRetentionHold" data-kind="company" data-id="${Number(h.company_id)}" data-name="${esc(h.company_name || '')}">解除</button></td>
     </tr>`).join('')
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
         <h3 class="font-bold">削除の保留</h3>
         <div class="flex gap-2">
@@ -1218,16 +1218,16 @@ function retentionHoldsHtml(holds, graceDays) {
           <button class="btn btn-outline text-xs" data-action="openRetentionHold" data-kind="company">企業を保留</button>
         </div>
       </div>
-      <p class="text-xs text-slate-400 mb-3">未払い賃金の請求・労災・調査・請求トラブルなどが続いている間は、保留にすると退職後7年・在職中の保存期間・日報の3年のどの削除でもデータを消しません。解除すると、退職後7年の削除は猶予（${esc(graceDays)}日）からやり直します。</p>
+      <p class="text-xs text-hq-400 mb-3">未払い賃金の請求・労災・調査・請求トラブルなどが続いている間は、保留にすると退職後7年・在職中の保存期間・日報の3年のどの削除でもデータを消しません。解除すると、退職後7年の削除は猶予（${esc(graceDays)}日）からやり直します。</p>
       <h4 class="text-sm font-bold mt-2 mb-1">スタッフ（${esc(holds.staff.length)}人）</h4>
       <div class="overflow-x-auto">
         <table class="tbl"><thead><tr><th>会社</th><th>スタッフ</th><th>理由</th><th>設定</th><th></th></tr></thead>
-        <tbody>${staffRows || '<tr><td colspan="5" class="text-center text-slate-500 py-3">保留中のスタッフはいません</td></tr>'}</tbody></table>
+        <tbody>${staffRows || '<tr><td colspan="5" class="text-center text-hq-500 py-3">保留中のスタッフはいません</td></tr>'}</tbody></table>
       </div>
       <h4 class="text-sm font-bold mt-4 mb-1">企業（${esc(holds.companies.length)}社）</h4>
       <div class="overflow-x-auto">
         <table class="tbl"><thead><tr><th>企業</th><th>理由</th><th>設定</th><th></th></tr></thead>
-        <tbody>${companyRows || '<tr><td colspan="4" class="text-center text-slate-500 py-3">保留中の企業はいません</td></tr>'}</tbody></table>
+        <tbody>${companyRows || '<tr><td colspan="4" class="text-center text-hq-500 py-3">保留中の企業はいません</td></tr>'}</tbody></table>
       </div>
     </section>`
 }
@@ -1239,17 +1239,17 @@ delegate('openRetentionHold', async (el) => {
     try { companies = (await axios.get('/api/hq/companies')).data.companies || [] } catch (e) { return showApiError(e, '企業の一覧を読み込めませんでした') }
   }
   const target = id
-    ? `<p class="text-sm text-gray-700 mb-2">${kind === 'staff' ? 'スタッフ' : '企業'}: <b>${esc(el.dataset.name || '')}</b> <span class="text-xs text-gray-400">#${esc(id)}</span></p><input type="hidden" id="rh-id" value="${esc(id)}">`
+    ? `<p class="text-sm text-neutral-700 mb-2">${kind === 'staff' ? 'スタッフ' : '企業'}: <b>${esc(el.dataset.name || '')}</b> <span class="text-xs text-neutral-400">#${esc(id)}</span></p><input type="hidden" id="rh-id" value="${esc(id)}">`
     : kind === 'staff'
-      ? `<div class="mb-2"><label class="text-xs text-gray-600 block mb-1">スタッフID（staff_id。次回削除予定の一覧の # の番号）</label><input id="rh-id" type="number" min="1" class="inp"></div>`
-      : `<div class="mb-2"><label class="text-xs text-gray-600 block mb-1">企業</label><select id="rh-id" class="inp"><option value="">選んでください</option>
+      ? `<div class="mb-2"><label class="text-xs text-neutral-600 block mb-1">スタッフID（staff_id。次回削除予定の一覧の # の番号）</label><input id="rh-id" type="number" min="1" class="inp"></div>`
+      : `<div class="mb-2"><label class="text-xs text-neutral-600 block mb-1">企業</label><select id="rh-id" class="inp"><option value="">選んでください</option>
           ${companies.map(c => `<option value="${Number(c.company_id)}">${esc(c.company_name)}（${esc(c.company_code || '')}）</option>`).join('')}</select></div>`
   modal(`
-    <h3 class="font-bold text-lg mb-2 text-gray-800">削除を保留する</h3>
+    <h3 class="font-bold text-lg mb-2 text-neutral-800">削除を保留する</h3>
     ${target}
-    <div><label class="text-xs text-gray-600 block mb-1">理由（必須。例: 未払い賃金の請求で係争中・2026年10月 顧問弁護士より依頼）</label>
+    <div><label class="text-xs text-neutral-600 block mb-1">理由（必須。例: 未払い賃金の請求で係争中・2026年10月 顧問弁護士より依頼）</label>
       <textarea id="rh-reason" class="inp" rows="3" maxlength="500"></textarea></div>
-    <p class="text-[11px] text-gray-400 mt-1">保留中は、この${kind === 'staff' ? 'スタッフ' : '企業'}のデータをどの定期削除でも消しません。不要になったら解除してください。</p>
+    <p class="text-2xs text-neutral-400 mt-1">保留中は、この${kind === 'staff' ? 'スタッフ' : '企業'}のデータをどの定期削除でも消しません。不要になったら解除してください。</p>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary flex-1" data-action="saveRetentionHold" data-kind="${kind}">保留にする</button>
@@ -1281,16 +1281,16 @@ async function loadRetentionSettings() {
   if (!box) return
   let data
   try { data = (await axios.get('/api/hq/retention/settings')).data } catch (e) {
-    box.innerHTML = '<p class="text-sm text-red-400">保存期間の設定を読み込めませんでした</p>'; return
+    box.innerHTML = '<p class="text-sm text-danger-400">保存期間の設定を読み込めませんでした</p>'; return
   }
   box.innerHTML = `
     <h3 class="font-bold mb-1">保存期間の設定（在職中）</h3>
-    <p class="text-xs text-slate-400 mb-3">勤怠の時刻・種別は残し、位置情報・写真などだけを消します。期間を短くすると、次の定期処理（3:30）で新しい期間を過ぎた分が削除されます。</p>
+    <p class="text-xs text-hq-400 mb-3">勤怠の時刻・種別は残し、位置情報・写真などだけを消します。期間を短くすると、次の定期処理（3:30）で新しい期間を過ぎた分が削除されます。</p>
     <div class="grid md:grid-cols-2 gap-3">
       ${Object.entries(data.defs).map(([k, d]) => `
-        <label class="text-xs text-slate-300">${esc(d.label)}
+        <label class="text-xs text-hq-300">${esc(d.label)}
           <input type="number" class="inp mt-1" data-retention-key="${esc(k)}" data-orig="${esc(data.settings[k])}" min="${esc(d.min)}" max="${esc(d.max)}" value="${esc(data.settings[k])}">
-          <span class="text-[11px] text-slate-500">既定 ${esc(d.def)}・${esc(d.min)}〜${esc(d.max)}</span>
+          <span class="text-2xs text-hq-500">既定 ${esc(d.def)}・${esc(d.min)}〜${esc(d.max)}</span>
         </label>`).join('')}
     </div>
     <button class="btn btn-primary text-xs mt-3" data-action="saveRetentionSettings">保存する</button>`
@@ -1317,16 +1317,16 @@ const retentionOrphanState = { cursor: null, last: null }
 function retentionOrphanHtml() {
   const r = retentionOrphanState.last
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5" id="retention-orphans">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5" id="retention-orphans">
       <h3 class="font-bold mb-1">勤怠に紐づかない写真</h3>
-      <p class="text-xs text-slate-400 mb-3">報告の登録に失敗したときなどに R2 に残った写真を探します（アップロードから1日以内のものは対象外）。まず確認し、件数を見てから削除してください。1回に500件ずつ確認します。</p>
+      <p class="text-xs text-hq-400 mb-3">報告の登録に失敗したときなどに R2 に残った写真を探します（アップロードから1日以内のものは対象外）。まず確認し、件数を見てから削除してください。1回に500件ずつ確認します。</p>
       <div class="flex gap-2 flex-wrap">
         <button class="btn btn-outline text-xs" data-action="scanOrphanPhotos" data-mode="first">最初から確認（削除しない）</button>
         ${r && r.next_cursor ? '<button class="btn btn-outline text-xs" data-action="scanOrphanPhotos" data-mode="next">次の500件を確認</button>' : ''}
         ${r && r.orphans > 0 ? '<button class="btn btn-danger text-xs" data-action="deleteOrphanPhotos">このページの紐づかない写真を削除</button>' : ''}
       </div>
-      ${r ? `<p class="text-xs mt-3">確認した写真 ${esc(r.scanned)}件のうち、紐づかないもの <b class="${r.orphans ? 'text-amber-400' : ''}">${esc(r.orphans)}件</b>${r.deleted ? `（${esc(r.deleted)}件を削除しました）` : ''}${r.next_cursor ? '。続きがあります' : '。最後まで確認しました'}</p>
-        ${r.samples && r.samples.length ? `<details class="mt-1"><summary class="text-xs text-slate-400 cursor-pointer">例（先頭の${esc(r.samples.length)}件）</summary><pre class="text-[11px] text-slate-400 mt-1" style="white-space:pre-wrap;word-break:break-all">${esc(r.samples.join('\n'))}</pre></details>` : ''}` : ''}
+      ${r ? `<p class="text-xs mt-3">確認した写真 ${esc(r.scanned)}件のうち、紐づかないもの <b class="${r.orphans ? 'text-warning-400' : ''}">${esc(r.orphans)}件</b>${r.deleted ? `（${esc(r.deleted)}件を削除しました）` : ''}${r.next_cursor ? '。続きがあります' : '。最後まで確認しました'}</p>
+        ${r.samples && r.samples.length ? `<details class="mt-1"><summary class="text-xs text-hq-400 cursor-pointer">例（先頭の${esc(r.samples.length)}件）</summary><pre class="text-2xs text-hq-400 mt-1" style="white-space:pre-wrap;word-break:break-all">${esc(r.samples.join('\n'))}</pre></details>` : ''}` : ''}
     </section>`
 }
 function redrawOrphan() {
@@ -1362,16 +1362,16 @@ function retentionRunRow(r) {
     <tr>
       <td>${esc(RETENTION_TARGET_LABEL[i.target] || i.target)}</td>
       <td>${esc(i.target_count)}</td><td>${esc(i.deleted_count)}</td>
-      <td>${i.failed_count > 0 ? `<span class="text-red-400">${esc(i.failed_count)}</span>` : '0'}</td>
+      <td>${i.failed_count > 0 ? `<span class="text-danger-400">${esc(i.failed_count)}</span>` : '0'}</td>
     </tr>${i.error_message ? `
-    <tr><td colspan="4" class="text-xs text-red-400" style="white-space:pre-wrap;word-break:break-all">失敗の理由: ${esc(i.error_message)}</td></tr>` : ''}`).join('')
+    <tr><td colspan="4" class="text-xs text-danger-400" style="white-space:pre-wrap;word-break:break-all">失敗の理由: ${esc(i.error_message)}</td></tr>` : ''}`).join('')
   // トークンの削除は動作モードに関係なく毎日実削除で記録されるので、データ保持の実行と見分けられるようにする
   const isTokenRun = r.items.length > 0 && r.items.every(i => RETENTION_TOKEN_TARGETS.includes(i.target))
   return `
     <tr>
       <td class="text-xs">${r.started_at ? esc(dayjs(r.started_at).format('YYYY/M/D HH:mm')) : '-'}</td>
-      <td class="text-xs">${esc(RETENTION_TRIGGER_LABEL[r.trigger_source] || '-')}${r.triggered_by_name ? `<br><span class="text-slate-500">${esc(r.triggered_by_name)}</span>` : ''}</td>
-      <td><span class="badge ${r.dry_run ? 'badge-gray' : 'badge-blue'}">${r.dry_run ? 'dry-run' : '実削除'}</span>${isTokenRun ? '<br><span class="text-xs text-slate-500">トークンの削除</span>' : ''}</td>
+      <td class="text-xs">${esc(RETENTION_TRIGGER_LABEL[r.trigger_source] || '-')}${r.triggered_by_name ? `<br><span class="text-hq-500">${esc(r.triggered_by_name)}</span>` : ''}</td>
+      <td><span class="badge ${r.dry_run ? 'badge-gray' : 'badge-blue'}">${r.dry_run ? 'dry-run' : '実削除'}</span>${isTokenRun ? '<br><span class="text-xs text-hq-500">トークンの削除</span>' : ''}</td>
       <td>${r.staff_count == null ? '-' : esc(r.staff_count) + '人'}</td>
       <td>${esc(r.target_count)}</td>
       <td>${esc(r.deleted_count)}</td>
@@ -1381,7 +1381,7 @@ function retentionRunRow(r) {
     <tr>
       <td colspan="8" style="padding-top:0">
         <details${r.failed_count > 0 ? ' open' : ''}>
-          <summary class="text-xs text-slate-400 cursor-pointer">対象ごとの内訳（${esc(r.items.length)}件）</summary>
+          <summary class="text-xs text-hq-400 cursor-pointer">対象ごとの内訳（${esc(r.items.length)}件）</summary>
           <div class="overflow-x-auto mt-1">
             <table class="tbl"><thead><tr><th>対象</th><th>対象件数</th><th>削除件数</th><th>失敗</th></tr></thead><tbody>${items}</tbody></table>
           </div>
@@ -1396,7 +1396,7 @@ async function loadRetentionLogs() {
   try {
     data = (await axios.get('/api/hq/retention/logs', { params: { page: retentionState.logPage, trigger: retentionState.logTrigger } })).data
   } catch (e) {
-    box.innerHTML = '<p class="text-sm text-red-400">実行ログの取得に失敗しました</p>'
+    box.innerHTML = '<p class="text-sm text-danger-400">実行ログの取得に失敗しました</p>'
     return
   }
   const pages = Math.max(1, Math.ceil(data.total / data.per_page))
@@ -1407,14 +1407,14 @@ async function loadRetentionLogs() {
       <h3 class="font-bold">実行ログ</h3>
       <div class="flex gap-1">${tab('all', 'すべて')}${tab('cron', '定期処理')}${tab('manual', '手動の dry-run')}</div>
     </div>
-    <p class="text-xs text-slate-400 mb-3">直近の定期処理: ${fmt(data.latest && data.latest.last_cron_run)} ／ 直近の実削除: ${fmt(data.latest && data.latest.last_real_run)}。件数の合計に退職スタッフの人数は含みません。</p>
+    <p class="text-xs text-hq-400 mb-3">直近の定期処理: ${fmt(data.latest && data.latest.last_cron_run)} ／ 直近の実削除: ${fmt(data.latest && data.latest.last_real_run)}。件数の合計に退職スタッフの人数は含みません。</p>
     <div class="overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>実行日時</th><th>実行元</th><th>種別</th><th>退職者</th><th>対象件数</th><th>削除件数</th><th>失敗</th><th>所要時間</th></tr></thead>
-        <tbody>${data.runs.length ? data.runs.map(retentionRunRow).join('') : '<tr><td colspan="8" class="text-center text-slate-500 py-4">実行履歴がありません</td></tr>'}</tbody>
+        <tbody>${data.runs.length ? data.runs.map(retentionRunRow).join('') : '<tr><td colspan="8" class="text-center text-hq-500 py-4">実行履歴がありません</td></tr>'}</tbody>
       </table>
     </div>
-    <div class="flex items-center justify-between mt-3 text-xs text-slate-400">
+    <div class="flex items-center justify-between mt-3 text-xs text-hq-400">
       <span>全${esc(data.total)}回</span>
       <div class="flex items-center gap-2">
         <button class="btn btn-outline text-xs" data-action="retentionLogPage" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}>前へ</button>
@@ -1477,22 +1477,22 @@ function cronRunRow(r) {
       <td>${esc(r.label || r.job)}</td>
       <td>${cronStatusBadge(r.status)}</td>
       <td class="text-xs">${r.duration_ms == null ? '-' : esc(formatDuration(r.duration_ms))}</td>
-      <td class="text-xs">${esc(cronResultText(r.result_json))}${r.error_message ? `<div class="text-red-400" style="white-space:pre-wrap;word-break:break-all">${esc(r.error_message)}</div>` : ''}</td>
+      <td class="text-xs">${esc(cronResultText(r.result_json))}${r.error_message ? `<div class="text-danger-400" style="white-space:pre-wrap;word-break:break-all">${esc(r.error_message)}</div>` : ''}</td>
     </tr>`
 }
 function cronStatusHtml(cron) {
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <h3 class="font-bold mb-1">定期処理の実行状況</h3>
-      <p class="text-xs text-slate-400 mb-3">毎日 日本時間3:00（削除・退職の適用など）と3:30（既読率レポートの集計）に実行します。処理ごとの最後の実行です。</p>
+      <p class="text-xs text-hq-400 mb-3">毎日 日本時間3:00（削除・退職の適用など）と3:30（既読率レポートの集計）に実行します。処理ごとの最後の実行です。</p>
       <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>最終実行</th><th>処理</th><th>結果</th><th>所要時間</th><th>内容</th></tr></thead>
-          <tbody>${cron.latest.length ? cron.latest.map(cronRunRow).join('') : '<tr><td colspan="5" class="text-center text-slate-500 py-4">実行記録がありません</td></tr>'}</tbody>
+          <tbody>${cron.latest.length ? cron.latest.map(cronRunRow).join('') : '<tr><td colspan="5" class="text-center text-hq-500 py-4">実行記録がありません</td></tr>'}</tbody>
         </table>
       </div>
       <details class="mt-3">
-        <summary class="text-xs text-slate-400 cursor-pointer">直近の実行記録（${esc(cron.recent.length)}件）</summary>
+        <summary class="text-xs text-hq-400 cursor-pointer">直近の実行記録（${esc(cron.recent.length)}件）</summary>
         <div class="overflow-x-auto mt-2">
           <table class="tbl">
             <thead><tr><th>実行日時</th><th>処理</th><th>結果</th><th>所要時間</th><th>内容</th></tr></thead>
@@ -1514,10 +1514,10 @@ function renderCronAlert(cron) {
   }
   const warnings = (cron && cron.warnings) || []
   box.innerHTML = warnings.length ? `
-    <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#ef4444">
-      <p class="font-bold text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>定期処理の確認が必要です</p>
+    <div class="bg-hq-800 border rounded-xl p-3 text-sm" style="border-color:rgb(var(--color-danger-500))">
+      <p class="font-bold text-danger-400"><i class="fas fa-triangle-exclamation mr-1"></i>定期処理の確認が必要です</p>
       <ul class="mt-1 text-xs">${warnings.map(w => `<li>・${esc(w.message)}</li>`).join('')}</ul>
-      <a href="#retention" class="text-cyan-400 text-xs hover:underline">データ保持・定期処理を開く →</a>
+      <a href="#retention" class="text-hq-accent-400 text-xs hover:underline">データ保持・定期処理を開く →</a>
     </div>` : ''
   box.style.display = warnings.length ? '' : 'none'
 }
@@ -1554,86 +1554,86 @@ async function renderSupport() {
     ['KPI設計', 'fa-bullseye', '案件・スタッフ別のKPI設計支援'],
   ]
   const counts = reqs.counts || {}
-  const tab = (key, label) => `<button class="text-xs px-2 py-1 rounded-lg border ${HQ_SUPPORT.status === key ? 'border-cyan-500 text-cyan-300' : 'border-slate-600 text-slate-400'}" data-action="hqSupportFilter" data-status="${key}">${label}${key ? `（${Number(counts[key]) || 0}）` : ''}</button>`
+  const tab = (key, label) => `<button class="text-xs px-2 py-1 rounded-lg border ${HQ_SUPPORT.status === key ? 'border-hq-accent-500 text-hq-accent-300' : 'border-hq-600 text-hq-400'}" data-action="hqSupportFilter" data-status="${key}">${label}${key ? `（${Number(counts[key]) || 0}）` : ''}</button>`
   const cur = views.current
   $app.innerHTML = `
     <h2 class="text-xl font-bold mb-5">伴走支援管理</h2>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <div class="flex flex-wrap items-center gap-2 mb-3">
-        <h3 class="font-bold mr-2"><i class="fas fa-inbox text-cyan-400 mr-1"></i>依頼の受付</h3>
+        <h3 class="font-bold mr-2"><i class="fas fa-inbox text-hq-accent-400 mr-1"></i>依頼の受付</h3>
         ${tab('', 'すべて')}${tab('open', '未対応')}${tab('in_progress', '対応中')}${tab('done', '完了')}
       </div>
-      <p class="text-[11px] text-slate-400 mb-2">管理画面の「伴走支援を依頼する」から届いた依頼です。届いたときは、メールアドレスのある本部ユーザーにメールでも知らせます。</p>
+      <p class="text-2xs text-hq-400 mb-2">管理画面の「伴走支援を依頼する」から届いた依頼です。届いたときは、メールアドレスのある本部ユーザーにメールでも知らせます。</p>
       <div class="overflow-x-auto"><table class="w-full text-xs">
-        <thead><tr class="text-slate-400 border-b border-slate-700">
+        <thead><tr class="text-hq-400 border-b border-hq-700">
           <th class="text-left px-2 py-2">No.</th><th class="text-left px-2 py-2">受付</th><th class="text-left px-2 py-2">企業・依頼者</th><th class="text-left px-2 py-2">メニュー</th><th class="text-left px-2 py-2">内容</th><th class="text-left px-2 py-2">希望日時・連絡先</th><th class="text-left px-2 py-2">状況</th><th></th>
         </tr></thead>
         <tbody>${reqs.requests.map(r => `
-          <tr class="border-b border-slate-700/40 align-top">
-            <td class="px-2 py-2 text-slate-400">${Number(r.request_id)}</td>
+          <tr class="border-b border-hq-700/40 align-top">
+            <td class="px-2 py-2 text-hq-400">${Number(r.request_id)}</td>
             <td class="px-2 py-2 whitespace-nowrap">${esc(hqTime(r.created_at, true))}</td>
-            <td class="px-2 py-2"><a href="#companies/${Number(r.company_id)}" class="text-cyan-400 hover:underline">${esc(r.company_name)}</a><span class="block text-slate-400">${esc(r.requester_name || '')}</span></td>
+            <td class="px-2 py-2"><a href="#companies/${Number(r.company_id)}" class="text-hq-accent-400 hover:underline">${esc(r.company_name)}</a><span class="block text-hq-400">${esc(r.requester_name || '')}</span></td>
             <td class="px-2 py-2 whitespace-nowrap">${esc((reqs.menus || {})[r.menu] || r.menu)}</td>
-            <td class="px-2 py-2 max-w-xs"><p class="whitespace-pre-wrap">${esc(r.detail)}</p>${r.hq_note ? `<p class="text-slate-400 mt-1 whitespace-pre-wrap">対応メモ: ${esc(r.hq_note)}</p>` : ''}</td>
-            <td class="px-2 py-2 text-slate-300">${esc(r.preferred_at || '-')}<span class="block text-slate-400">${esc(r.contact || '')}</span></td>
-            <td class="px-2 py-2 whitespace-nowrap">${SUPPORT_STATUS_BADGE[r.status] || esc(r.status)}${r.handled_by_name ? `<span class="block text-slate-500 mt-1">${esc(r.handled_by_name)}</span>` : ''}</td>
-            <td class="px-2 py-2"><button class="text-cyan-400 hover:underline whitespace-nowrap" data-action="hqEditSupport" data-id="${Number(r.request_id)}">対応</button></td>
-          </tr>`).join('') || '<tr><td colspan="8" class="text-center text-slate-500 py-4">依頼はありません</td></tr>'}</tbody>
+            <td class="px-2 py-2 max-w-xs"><p class="whitespace-pre-wrap">${esc(r.detail)}</p>${r.hq_note ? `<p class="text-hq-400 mt-1 whitespace-pre-wrap">対応メモ: ${esc(r.hq_note)}</p>` : ''}</td>
+            <td class="px-2 py-2 text-hq-300">${esc(r.preferred_at || '-')}<span class="block text-hq-400">${esc(r.contact || '')}</span></td>
+            <td class="px-2 py-2 whitespace-nowrap">${SUPPORT_STATUS_BADGE[r.status] || esc(r.status)}${r.handled_by_name ? `<span class="block text-hq-500 mt-1">${esc(r.handled_by_name)}</span>` : ''}</td>
+            <td class="px-2 py-2"><button class="text-hq-accent-400 hover:underline whitespace-nowrap" data-action="hqEditSupport" data-id="${Number(r.request_id)}">対応</button></td>
+          </tr>`).join('') || '<tr><td colspan="8" class="text-center text-hq-500 py-4">依頼はありません</td></tr>'}</tbody>
       </table></div>
     </section>
 
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
-      <h3 class="font-bold mb-1"><i class="fas fa-eye text-cyan-400 mr-1"></i>管理画面の閲覧（読み取り専用）</h3>
-      <p class="text-[11px] text-slate-400 mb-3">企業が管理画面で許可している場合だけ、期限付きで閲覧できます。登録・変更はできず、従業員管理（労務情報）とセキュリティの画面は開けません。開始・終了と開いた画面は記録され、企業の管理者も確認できます。同時に開けるのは1社だけです。</p>
-      ${cur ? `<div class="bg-cyan-900/30 border border-cyan-700 rounded-lg p-3 mb-3 text-sm flex flex-wrap items-center gap-3">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-1"><i class="fas fa-eye text-hq-accent-400 mr-1"></i>管理画面の閲覧（読み取り専用）</h3>
+      <p class="text-2xs text-hq-400 mb-3">企業が管理画面で許可している場合だけ、期限付きで閲覧できます。登録・変更はできず、従業員管理（労務情報）とセキュリティの画面は開けません。開始・終了と開いた画面は記録され、企業の管理者も確認できます。同時に開けるのは1社だけです。</p>
+      ${cur ? `<div class="bg-hq-accent-900/30 border border-hq-accent-700 rounded-lg p-3 mb-3 text-sm flex flex-wrap items-center gap-3">
         <span class="flex-1">閲覧中: <b>${esc(cur.company_name)}</b>（${esc(hqTime(cur.expires_at))} まで）</span>
-        <a href="/admin" target="_blank" rel="noopener" class="btn btn-outline text-xs" style="border-color:#334155;color:#67e8f9"><i class="fas fa-arrow-up-right-from-square"></i>管理画面を開く</a>
-        <button class="btn btn-outline text-xs" style="border-color:#334155;color:#fca5a5" data-action="hqEndView">閲覧を終了</button></div>` : ''}
+        <a href="/admin" target="_blank" rel="noopener" class="btn btn-outline text-xs" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-accent-300))"><i class="fas fa-arrow-up-right-from-square"></i>管理画面を開く</a>
+        <button class="btn btn-outline text-xs" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-danger-300))" data-action="hqEndView">閲覧を終了</button></div>` : ''}
       <div class="overflow-x-auto max-h-72 overflow-y-auto mb-4"><table class="w-full text-xs">
-        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">閲覧の許可</th><th></th></tr></thead>
+        <thead><tr class="text-hq-400 border-b border-hq-700"><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">閲覧の許可</th><th></th></tr></thead>
         <tbody>${views.companies.map(c => `
-          <tr class="border-b border-slate-700/40">
-            <td class="px-2 py-2">${esc(c.company_name)} <span class="text-slate-500">${esc(c.company_code)}</span>${c.active_status === 'inactive' ? ' <span class="badge badge-gray">停止</span>' : ''}</td>
-            <td class="px-2 py-2">${c.allowed ? '<span class="badge badge-green">許可あり</span>' : '<span class="text-slate-500">許可なし</span>'}</td>
-            <td class="px-2 py-2 text-right">${c.allowed ? `<button class="text-cyan-400 hover:underline" data-action="hqStartView" data-cid="${Number(c.company_id)}" data-name="${esc(c.company_name)}">閲覧する</button>` : ''}</td>
+          <tr class="border-b border-hq-700/40">
+            <td class="px-2 py-2">${esc(c.company_name)} <span class="text-hq-500">${esc(c.company_code)}</span>${c.active_status === 'inactive' ? ' <span class="badge badge-gray">停止</span>' : ''}</td>
+            <td class="px-2 py-2">${c.allowed ? '<span class="badge badge-green">許可あり</span>' : '<span class="text-hq-500">許可なし</span>'}</td>
+            <td class="px-2 py-2 text-right">${c.allowed ? `<button class="text-hq-accent-400 hover:underline" data-action="hqStartView" data-cid="${Number(c.company_id)}" data-name="${esc(c.company_name)}">閲覧する</button>` : ''}</td>
           </tr>`).join('')}</tbody>
       </table></div>
       <h4 class="font-bold text-sm mb-2">閲覧の記録（直近50件）</h4>
       <div class="overflow-x-auto"><table class="w-full text-xs">
-        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-2">開始</th><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">本部の担当</th><th class="text-left px-2 py-2">目的</th><th class="text-left px-2 py-2">終了</th><th class="text-right px-2 py-2">画面</th></tr></thead>
+        <thead><tr class="text-hq-400 border-b border-hq-700"><th class="text-left px-2 py-2">開始</th><th class="text-left px-2 py-2">企業</th><th class="text-left px-2 py-2">本部の担当</th><th class="text-left px-2 py-2">目的</th><th class="text-left px-2 py-2">終了</th><th class="text-right px-2 py-2">画面</th></tr></thead>
         <tbody>${views.sessions.map(v => `
-          <tr class="border-b border-slate-700/40">
+          <tr class="border-b border-hq-700/40">
             <td class="px-2 py-2 whitespace-nowrap">${esc(hqTime(v.started_at))}</td>
             <td class="px-2 py-2">${esc(v.company_name)}</td>
             <td class="px-2 py-2">${esc(v.hq_name || '')}</td>
-            <td class="px-2 py-2">${esc(v.reason)}${v.support_request_id ? ` <span class="text-slate-500">（依頼 No.${Number(v.support_request_id)}）</span>` : ''}</td>
+            <td class="px-2 py-2">${esc(v.reason)}${v.support_request_id ? ` <span class="text-hq-500">（依頼 No.${Number(v.support_request_id)}）</span>` : ''}</td>
             <td class="px-2 py-2 whitespace-nowrap">${v.ended_at ? `${esc(hqTime(v.ended_at))} ${esc(VIEW_END_LABEL[v.end_reason] || '')}` : Date.parse(v.expires_at) > Date.parse(views.now) ? '<span class="badge badge-blue">閲覧中</span>' : `${esc(hqTime(v.expires_at))} 期限`}</td>
-            <td class="px-2 py-2 text-right">${Number(v.pages) ? `<button class="text-cyan-400 hover:underline" data-action="hqViewLogs" data-id="${Number(v.view_id)}">${Number(v.pages)}件</button>` : '0件'}</td>
-          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">記録はありません</td></tr>'}</tbody>
+            <td class="px-2 py-2 text-right">${Number(v.pages) ? `<button class="text-hq-accent-400 hover:underline" data-action="hqViewLogs" data-id="${Number(v.view_id)}">${Number(v.pages)}件</button>` : '0件'}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-hq-500 py-4">記録はありません</td></tr>'}</tbody>
       </table></div>
     </section>
 
     <div class="grid md:grid-cols-4 gap-3 mb-6">
       ${MENU.map(([t, i, d]) => `
-        <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-          <i class="fas ${i} text-cyan-400 text-lg mb-2"></i>
+        <div class="bg-hq-800 border border-hq-700 rounded-xl p-4">
+          <i class="fas ${i} text-hq-accent-400 text-lg mb-2"></i>
           <p class="font-bold text-sm">${t}</p>
-          <p class="text-xs text-slate-400 mt-1">${d}</p>
+          <p class="text-xs text-hq-400 mt-1">${d}</p>
         </div>`).join('')}
     </div>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-      <h3 class="font-bold mb-3"><i class="fas fa-notes-medical text-cyan-400 mr-1"></i>企業別 伴走支援状況</h3>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
+      <h3 class="font-bold mb-3"><i class="fas fa-notes-medical text-hq-accent-400 mr-1"></i>企業別 伴走支援状況</h3>
       <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700">
+        <thead><tr class="text-hq-400 text-xs border-b border-hq-700">
           <th class="text-left px-3 py-2">企業</th><th class="text-center px-3 py-2">運営成熟度</th><th class="text-left px-3 py-2">伴走支援メモ</th><th></th>
         </tr></thead>
         <tbody>
           ${data.companies.map(c => `
-            <tr class="border-b border-slate-700/40">
+            <tr class="border-b border-hq-700/40">
               <td class="px-3 py-3 font-medium">${esc(c.company_name)}</td>
               <td class="px-3 py-3 text-center">${'●'.repeat(c.maturity_level || 1)}${'○'.repeat(5 - (c.maturity_level || 1))}</td>
-              <td class="px-3 py-3 text-slate-400 text-xs">${esc(c.support_memo || '-')}</td>
-              <td class="px-3 py-3"><a href="#companies/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline">編集 →</a></td>
+              <td class="px-3 py-3 text-hq-400 text-xs">${esc(c.support_memo || '-')}</td>
+              <td class="px-3 py-3"><a href="#companies/${Number(c.company_id)}" class="text-hq-accent-400 text-xs hover:underline">編集 →</a></td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -1654,12 +1654,12 @@ delegate('hqEditSupport', (el) => {
   const r = HQ_SUPPORT_REQS.get(Number(el.dataset.id))
   if (!r) return
   modal(`
-    <h3 class="font-bold text-lg mb-1 text-gray-800">依頼 No.${Number(r.request_id)} の対応</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(r.company_name)}・${esc(r.requester_name || '')}</p>
+    <h3 class="font-bold text-lg mb-1 text-neutral-800">依頼 No.${Number(r.request_id)} の対応</h3>
+    <p class="text-xs text-neutral-500 mb-3">${esc(r.company_name)}・${esc(r.requester_name || '')}</p>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">対応状況</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">対応状況</label>
         <select id="sr-status" class="inp">${Object.entries({ open: '未対応', in_progress: '対応中', done: '完了' }).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-      <div><label class="text-sm text-gray-600 block mb-1">対応メモ（本部のみ）</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">対応メモ（本部のみ）</label>
         <textarea id="sr-note" rows="4" maxlength="2000" class="inp">${esc(r.hq_note || '')}</textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqSaveSupport" data-id="${Number(r.request_id)}">保存する</button></div>
     </div>`)
@@ -1675,13 +1675,13 @@ delegate('hqStartView', (el) => {
   const minutes = (HQ_VIEW_DATA && HQ_VIEW_DATA.minutes) || [15, 30, 60]
   const openReqs = [...HQ_SUPPORT_REQS.values()].filter(r => r.company_id === cid && r.status !== 'done')
   modal(`
-    <h3 class="font-bold text-lg mb-1 text-gray-800">管理画面を閲覧する</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(el.dataset.name)} の管理画面を、読み取り専用で開きます。目的は企業の管理者にも表示されます。</p>
+    <h3 class="font-bold text-lg mb-1 text-neutral-800">管理画面を閲覧する</h3>
+    <p class="text-xs text-neutral-500 mb-3">${esc(el.dataset.name)} の管理画面を、読み取り専用で開きます。目的は企業の管理者にも表示されます。</p>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">目的 *（問い合わせの内容など）</label><input id="vw-reason" class="inp" maxlength="200" placeholder="例: シフトが表示されないとの問い合わせの確認"></div>
-      ${openReqs.length ? `<div><label class="text-sm text-gray-600 block mb-1">対応する依頼</label><select id="vw-request" class="inp"><option value="">なし</option>${openReqs.map(r => `<option value="${Number(r.request_id)}">No.${Number(r.request_id)} ${esc(String(r.detail).slice(0, 30))}</option>`).join('')}</select></div>` : ''}
-      <div><label class="text-sm text-gray-600 block mb-1">閲覧の時間</label><select id="vw-minutes" class="inp">${minutes.map(m => `<option value="${Number(m)}" ${m === 30 ? 'selected' : ''}>${Number(m)}分</option>`).join('')}</select></div>
-      <p class="text-[11px] text-gray-400">別の企業を閲覧中なら、そちらは終了します。</p>
+      <div><label class="text-sm text-neutral-600 block mb-1">目的 *（問い合わせの内容など）</label><input id="vw-reason" class="inp" maxlength="200" placeholder="例: シフトが表示されないとの問い合わせの確認"></div>
+      ${openReqs.length ? `<div><label class="text-sm text-neutral-600 block mb-1">対応する依頼</label><select id="vw-request" class="inp"><option value="">なし</option>${openReqs.map(r => `<option value="${Number(r.request_id)}">No.${Number(r.request_id)} ${esc(String(r.detail).slice(0, 30))}</option>`).join('')}</select></div>` : ''}
+      <div><label class="text-sm text-neutral-600 block mb-1">閲覧の時間</label><select id="vw-minutes" class="inp">${minutes.map(m => `<option value="${Number(m)}" ${m === 30 ? 'selected' : ''}>${Number(m)}分</option>`).join('')}</select></div>
+      <p class="text-2xs text-neutral-400">別の企業を閲覧中なら、そちらは終了します。</p>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqDoStartView" data-cid="${cid}">閲覧を開始する（新しいタブで開きます）</button></div>
     </div>`)
 })
@@ -1704,8 +1704,8 @@ delegate('hqEndView', (el) => withSubmitLock(el, async () => {
 delegate('hqViewLogs', (el) => withSubmitLock(el, async () => {
   try {
     const { data } = await axios.get(`/api/hq/view-sessions/${Number(el.dataset.id)}/logs`)
-    modal(`<h3 class="font-bold text-lg mb-3 text-gray-800">開いた画面（API）</h3>
-      <div class="max-h-96 overflow-y-auto text-xs text-gray-700 divide-y divide-gray-100">${data.logs.map(l => `<div class="py-1 flex gap-3"><span class="text-gray-400 whitespace-nowrap">${esc(hqTime(l.created_at))}</span><span class="break-all">${esc(l.method)} ${esc(l.path)}</span></div>`).join('')}</div>`)
+    modal(`<h3 class="font-bold text-lg mb-3 text-neutral-800">開いた画面（API）</h3>
+      <div class="max-h-96 overflow-y-auto text-xs text-neutral-700 divide-y divide-neutral-100">${data.logs.map(l => `<div class="py-1 flex gap-3"><span class="text-neutral-400 whitespace-nowrap">${esc(hqTime(l.created_at))}</span><span class="break-all">${esc(l.method)} ${esc(l.path)}</span></div>`).join('')}</div>`)
   } catch (e) { hqErr(e, '読み込めませんでした') }
 }))
 
@@ -1724,23 +1724,23 @@ async function renderAnnouncements() {
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5">
       <h2 class="text-xl font-bold">導入企業へのお知らせ</h2>
-      <button class="btn btn-primary" style="background:#0e7490" data-action="hqAnnEdit"><i class="fas fa-plus"></i>お知らせを作る</button>
+      <button class="btn btn-primary" style="background:rgb(var(--color-hq-accent-700))" data-action="hqAnnEdit"><i class="fas fa-plus"></i>お知らせを作る</button>
     </div>
-    <p class="text-xs text-slate-400 mb-3">メンテナンス・仕様変更・新機能の案内などを、導入企業の管理画面の上部に出します。管理者が「確認しました」を押すと既読になります。掲載期間を過ぎたものは自動で出なくなります（メンテナンスは掲載終了が必須）。</p>
-    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-x-auto">
+    <p class="text-xs text-hq-400 mb-3">メンテナンス・仕様変更・新機能の案内などを、導入企業の管理画面の上部に出します。管理者が「確認しました」を押すと既読になります。掲載期間を過ぎたものは自動で出なくなります（メンテナンスは掲載終了が必須）。</p>
+    <div class="bg-hq-800 border border-hq-700 rounded-xl overflow-x-auto">
       <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700">
+        <thead><tr class="text-hq-400 text-xs border-b border-hq-700">
           <th class="text-left px-3 py-2">状態</th><th class="text-left px-3 py-2">タイトル</th><th class="text-left px-3 py-2">配信先</th><th class="text-left px-3 py-2">掲載期間</th><th class="text-right px-3 py-2">確認した企業</th><th></th>
         </tr></thead>
         <tbody>${data.announcements.map(a => `
-          <tr class="border-b border-slate-700/40 align-top">
+          <tr class="border-b border-hq-700/40 align-top">
             <td class="px-3 py-2 whitespace-nowrap">${ANN_STATE_LABEL[a.state] || ''}</td>
-            <td class="px-3 py-2"><span class="badge ${ANN_IMPORTANCE_BADGE[a.importance] || 'badge-gray'}">${esc(ANN_IMPORTANCE_LABEL[a.importance] || a.importance)}</span> ${esc(a.title)}<span class="block text-[11px] text-slate-500">${esc(a.created_by_name || '')}</span></td>
+            <td class="px-3 py-2"><span class="badge ${ANN_IMPORTANCE_BADGE[a.importance] || 'badge-gray'}">${esc(ANN_IMPORTANCE_LABEL[a.importance] || a.importance)}</span> ${esc(a.title)}<span class="block text-2xs text-hq-500">${esc(a.created_by_name || '')}</span></td>
             <td class="px-3 py-2 text-xs">${target(a)}</td>
             <td class="px-3 py-2 text-xs whitespace-nowrap">${esc(a.starts_at)} 〜 ${esc(a.ends_at || '期限なし')}</td>
-            <td class="px-3 py-2 text-right whitespace-nowrap"><button class="text-cyan-400 hover:underline" data-action="hqAnnReads" data-id="${Number(a.announcement_id)}">${Number(a.read_companies) || 0} / ${Number(a.target_count) || 0}社</button></td>
-            <td class="px-3 py-2 text-right whitespace-nowrap">${a.state === 'withdrawn' ? '' : `<button class="text-cyan-400 text-xs hover:underline mr-2" data-action="hqAnnEdit" data-id="${Number(a.announcement_id)}">修正</button><button class="text-red-400 text-xs hover:underline" data-action="hqAnnWithdraw" data-id="${Number(a.announcement_id)}">取消</button>`}</td>
-          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-6">お知らせはまだありません</td></tr>'}</tbody>
+            <td class="px-3 py-2 text-right whitespace-nowrap"><button class="text-hq-accent-400 hover:underline" data-action="hqAnnReads" data-id="${Number(a.announcement_id)}">${Number(a.read_companies) || 0} / ${Number(a.target_count) || 0}社</button></td>
+            <td class="px-3 py-2 text-right whitespace-nowrap">${a.state === 'withdrawn' ? '' : `<button class="text-hq-accent-400 text-xs hover:underline mr-2" data-action="hqAnnEdit" data-id="${Number(a.announcement_id)}">修正</button><button class="text-danger-400 text-xs hover:underline" data-action="hqAnnWithdraw" data-id="${Number(a.announcement_id)}">取消</button>`}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="text-center text-hq-500 py-6">お知らせはまだありません</td></tr>'}</tbody>
       </table>
     </div>`
 }
@@ -1749,23 +1749,23 @@ delegate('hqAnnEdit', (el) => {
   const sel = new Set(a ? a.company_ids || [] : [])
   const t = a ? a.target : 'all'
   modal(`
-    <h3 class="font-bold text-lg mb-3 text-gray-800">${a ? 'お知らせを修正' : 'お知らせを作る'}</h3>
+    <h3 class="font-bold text-lg mb-3 text-neutral-800">${a ? 'お知らせを修正' : 'お知らせを作る'}</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="an-title" class="inp" maxlength="100" value="${esc(a ? a.title : '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">本文 *</label><textarea id="an-body" rows="5" maxlength="3000" class="inp">${esc(a ? a.body : '')}</textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">タイトル *</label><input id="an-title" class="inp" maxlength="100" value="${esc(a ? a.title : '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">本文 *</label><textarea id="an-body" rows="5" maxlength="3000" class="inp">${esc(a ? a.body : '')}</textarea></div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">重要度</label><select id="an-importance" class="inp">${Object.entries(ANN_IMPORTANCE_LABEL).map(([k, v]) => `<option value="${k}" ${(a ? a.importance : 'normal') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">配信先</label><select id="an-target" class="inp">
+        <div><label class="text-sm text-neutral-600 block mb-1">重要度</label><select id="an-importance" class="inp">${Object.entries(ANN_IMPORTANCE_LABEL).map(([k, v]) => `<option value="${k}" ${(a ? a.importance : 'normal') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">配信先</label><select id="an-target" class="inp">
           <option value="all" ${t === 'all' ? 'selected' : ''}>全企業</option><option value="plan" ${t === 'plan' ? 'selected' : ''}>プラン別</option><option value="companies" ${t === 'companies' ? 'selected' : ''}>企業を選ぶ</option></select></div>
       </div>
-      <div id="an-plan-box" class="${t === 'plan' ? '' : 'hidden'}"><label class="text-sm text-gray-600 block mb-1">プラン</label><select id="an-plan" class="inp">${Object.entries(PLAN_LABELS).map(([k, v]) => `<option value="${k}" ${a && a.target_plan === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-      <div id="an-companies-box" class="${t === 'companies' ? '' : 'hidden'}"><label class="text-sm text-gray-600 block mb-1">企業</label>
-        <div class="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 text-sm text-gray-700 space-y-1">${HQ_ANN.companies.map(c => `<label class="flex items-center gap-2"><input type="checkbox" class="an-company" value="${Number(c.company_id)}" ${sel.has(c.company_id) ? 'checked' : ''}>${esc(c.company_name)}${c.active_status === 'inactive' ? '（停止）' : ''}</label>`).join('')}</div></div>
+      <div id="an-plan-box" class="${t === 'plan' ? '' : 'hidden'}"><label class="text-sm text-neutral-600 block mb-1">プラン</label><select id="an-plan" class="inp">${Object.entries(PLAN_LABELS).map(([k, v]) => `<option value="${k}" ${a && a.target_plan === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div id="an-companies-box" class="${t === 'companies' ? '' : 'hidden'}"><label class="text-sm text-neutral-600 block mb-1">企業</label>
+        <div class="max-h-40 overflow-y-auto border border-neutral-200 rounded-lg p-2 text-sm text-neutral-700 space-y-1">${HQ_ANN.companies.map(c => `<label class="flex items-center gap-2"><input type="checkbox" class="an-company" value="${Number(c.company_id)}" ${sel.has(c.company_id) ? 'checked' : ''}>${esc(c.company_name)}${c.active_status === 'inactive' ? '（停止）' : ''}</label>`).join('')}</div></div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">掲載開始（空欄なら今から）</label><input id="an-starts" type="datetime-local" class="inp" value="${esc(annLocal(a && a.starts_at))}"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">掲載終了</label><input id="an-ends" type="datetime-local" class="inp" value="${esc(annLocal(a && a.ends_at))}"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">掲載開始（空欄なら今から）</label><input id="an-starts" type="datetime-local" class="inp" value="${esc(annLocal(a && a.starts_at))}"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">掲載終了</label><input id="an-ends" type="datetime-local" class="inp" value="${esc(annLocal(a && a.ends_at))}"></div>
       </div>
-      <p class="text-[11px] text-gray-400">日時は日本時間です。${a ? '修正しても、確認済みの記録はそのまま残ります。' : ''}</p>
+      <p class="text-2xs text-neutral-400">日時は日本時間です。${a ? '修正しても、確認済みの記録はそのまま残ります。' : ''}</p>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqAnnSave" data-id="${a ? Number(a.announcement_id) : ''}">${a ? '保存する' : '配信する'}</button></div>
     </div>`)
   document.getElementById('an-target').addEventListener('change', e => {
@@ -1795,9 +1795,9 @@ delegate('hqAnnReads', (el) => withSubmitLock(el, async () => {
   try {
     const { data } = await axios.get(`/api/hq/announcements/${Number(el.dataset.id)}/reads`)
     const unread = data.companies.filter(c => !Number(c.read_users)).length
-    modal(`<h3 class="font-bold text-lg mb-1 text-gray-800">企業別の確認状況</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(data.announcement.title)}｜未確認 ${unread}社 / ${data.companies.length}社</p>
-      <div class="max-h-96 overflow-y-auto text-sm text-gray-700 divide-y divide-gray-100">${data.companies.map(c => `<div class="py-1.5 flex items-center gap-2"><span class="flex-1">${esc(c.company_name)}</span>${Number(c.read_users) ? `<span class="badge badge-green">確認済み ${Number(c.read_users)}名</span><span class="text-xs text-gray-400">${esc(hqTime(c.first_read_at, true))}</span>` : '<span class="badge badge-red">未確認</span>'}</div>`).join('') || '<p class="text-gray-400 py-2">配信先の企業がありません</p>'}</div>`)
+    modal(`<h3 class="font-bold text-lg mb-1 text-neutral-800">企業別の確認状況</h3>
+      <p class="text-xs text-neutral-500 mb-3">${esc(data.announcement.title)}｜未確認 ${unread}社 / ${data.companies.length}社</p>
+      <div class="max-h-96 overflow-y-auto text-sm text-neutral-700 divide-y divide-neutral-100">${data.companies.map(c => `<div class="py-1.5 flex items-center gap-2"><span class="flex-1">${esc(c.company_name)}</span>${Number(c.read_users) ? `<span class="badge badge-green">確認済み ${Number(c.read_users)}名</span><span class="text-xs text-neutral-400">${esc(hqTime(c.first_read_at, true))}</span>` : '<span class="badge badge-red">未確認</span>'}</div>`).join('') || '<p class="text-neutral-400 py-2">配信先の企業がありません</p>'}</div>`)
   } catch (e) { hqErr(e, '読み込めませんでした') }
 }))
 
@@ -1817,7 +1817,7 @@ async function renderHqMail() {
   try {
     [stats, sup] = await Promise.all([axios.get('/api/hq/email-stats', { params: { days: HQ_MAIL.days } }), axios.get('/api/hq/email-suppressions')]).then(r => r.map(x => x.data))
     await loadHqMailLogs(false)
-  } catch (e) { $app.innerHTML = `<p class="text-red-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>`; return }
+  } catch (e) { $app.innerHTML = `<p class="text-danger-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>`; return }
   if (HQ_MAIL.days === 7) renderMailAlert(stats)
   const pct = (r) => `${Math.round(r * 1000) / 10}%`
   // 会社ごとの直近24時間の送信数（last_24h）と目安（alert.daily_warn）。サーバーが返すときだけ列を出す（#392）
@@ -1826,47 +1826,47 @@ async function renderHqMail() {
   $app.innerHTML = `
     <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
       <h2 class="text-xl font-bold">メール送信</h2>
-      <select id="hm-days" class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm">${[7, 30, 90].map(d => `<option value="${d}" ${HQ_MAIL.days === d ? 'selected' : ''}>直近${d}日</option>`).join('')}</select>
+      <select id="hm-days" class="bg-hq-800 border border-hq-600 rounded-lg px-2 py-1.5 text-sm">${[7, 30, 90].map(d => `<option value="${d}" ${HQ_MAIL.days === d ? 'selected' : ''}>直近${d}日</option>`).join('')}</select>
     </div>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-      ${[['送信', stats.totals.total, ''], ['送信済み・配信済み', stats.totals.ok, 'text-emerald-400'], ['届かなかった', stats.totals.failed, stats.totals.failed ? 'text-red-400' : ''], ['送信を止めているアドレス', stats.suppressed_count, '']]
-        .map(([l, v, c]) => `<div class="bg-slate-800 border border-slate-700 rounded-xl p-3"><p class="text-xs text-slate-400">${l}</p><p class="text-2xl font-bold ${c}">${Number(v)}</p></div>`).join('')}
+      ${[['送信', stats.totals.total, ''], ['送信済み・配信済み', stats.totals.ok, 'text-success-400'], ['届かなかった', stats.totals.failed, stats.totals.failed ? 'text-danger-400' : ''], ['送信を止めているアドレス', stats.suppressed_count, '']]
+        .map(([l, v, c]) => `<div class="bg-hq-800 border border-hq-700 rounded-xl p-3"><p class="text-xs text-hq-400">${l}</p><p class="text-2xl font-bold ${c}">${Number(v)}</p></div>`).join('')}
     </div>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
-      <h3 class="font-bold mb-2"><i class="fas fa-building text-cyan-400 mr-1"></i>会社別</h3>
-      <p class="text-[11px] text-slate-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。${dailyLimit ? `直近24時間の送信が${dailyLimit}通以上の会社も警告します（申請・通知の繰り返しや設定の誤りの目安）。` : ''}</p>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4 overflow-x-auto">
+      <h3 class="font-bold mb-2"><i class="fas fa-building text-hq-accent-400 mr-1"></i>会社別</h3>
+      <p class="text-2xs text-hq-400 mb-2">届かなかった割合が${Math.round(stats.alert.rate * 100)}%以上（送信${stats.alert.min}件以上）の会社は、画面の上部に警告を出します。送信無効の環境（MAIL_ENABLED=false）で送らなかったものは割合に含めません。${dailyLimit ? `直近24時間の送信が${dailyLimit}通以上の会社も警告します（申請・通知の繰り返しや設定の誤りの目安）。` : ''}</p>
       <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">企業</th>${hasToday ? `<th class="text-right px-2" title="直近24時間の送信数${dailyLimit ? `（目安 ${dailyLimit}通を超えると警告）` : ''}">24時間</th>` : ''}<th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
-        <tbody>${stats.companies.map(c => `<tr class="border-b border-slate-700/40">
-          <td class="px-2 py-2">${esc(c.company_name)}</td>${hasToday ? `<td class="px-2 text-right ${dailyLimit && Number(c.last_24h) >= dailyLimit ? 'text-amber-400 font-bold' : ''}">${Number(c.last_24h) || 0}</td>` : ''}<td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
-          <td class="px-2 text-right ${c.failed ? 'text-red-400' : ''}">${c.failed}</td><td class="px-2 text-right ${c.failure_rate >= stats.alert.rate ? 'text-red-400 font-bold' : ''}">${pct(c.failure_rate)}</td>
-          <td class="px-2 text-xs text-slate-400">${c.types.map(t => `${esc(MAIL_TYPE_LABEL[t.type] || t.type)} ${t.ok}/${t.total}`).join('、')}</td>
+        <thead><tr class="text-hq-400 text-xs border-b border-hq-700"><th class="text-left px-2 py-2">企業</th>${hasToday ? `<th class="text-right px-2" title="直近24時間の送信数${dailyLimit ? `（目安 ${dailyLimit}通を超えると警告）` : ''}">24時間</th>` : ''}<th class="text-right px-2">送信</th><th class="text-right px-2">成功</th><th class="text-right px-2">届かなかった</th><th class="text-right px-2">割合</th><th class="text-left px-2">種類別（成功/送信）</th><th class="text-left px-2">最後に成功</th><th></th></tr></thead>
+        <tbody>${stats.companies.map(c => `<tr class="border-b border-hq-700/40">
+          <td class="px-2 py-2">${esc(c.company_name)}</td>${hasToday ? `<td class="px-2 text-right ${dailyLimit && Number(c.last_24h) >= dailyLimit ? 'text-warning-400 font-bold' : ''}">${Number(c.last_24h) || 0}</td>` : ''}<td class="px-2 text-right">${c.total}</td><td class="px-2 text-right">${c.ok}</td>
+          <td class="px-2 text-right ${c.failed ? 'text-danger-400' : ''}">${c.failed}</td><td class="px-2 text-right ${c.failure_rate >= stats.alert.rate ? 'text-danger-400 font-bold' : ''}">${pct(c.failure_rate)}</td>
+          <td class="px-2 text-xs text-hq-400">${c.types.map(t => `${esc(MAIL_TYPE_LABEL[t.type] || t.type)} ${t.ok}/${t.total}`).join('、')}</td>
           <td class="px-2 text-xs">${esc(c.last_success_at || '－')}</td>
-          <td class="px-2">${c.company_id ? `<button class="text-cyan-400 text-xs hover:underline" data-action="hqMailCompany" data-id="${Number(c.company_id)}">記録</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="text-center text-slate-500 py-4">この期間の送信はありません</td></tr>'}</tbody>
+          <td class="px-2">${c.company_id ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="hqMailCompany" data-id="${Number(c.company_id)}">記録</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="text-center text-hq-500 py-4">この期間の送信はありません</td></tr>'}</tbody>
       </table>
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
-      <h3 class="font-bold mb-2"><i class="fas fa-circle-exclamation text-cyan-400 mr-1"></i>届かなかった理由の上位</h3>
-      ${stats.reasons.length ? `<ul class="text-sm space-y-1">${stats.reasons.map(r => `<li><span class="font-bold">${esc(MAIL_ERR_LABEL[r.code] || r.code)}</span> ${Number(r.n)}件${r.sample ? `<span class="block text-[11px] text-slate-400 break-all">例: ${esc(r.sample)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="text-sm text-slate-500">ありません</p>'}
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4">
+      <h3 class="font-bold mb-2"><i class="fas fa-circle-exclamation text-hq-accent-400 mr-1"></i>届かなかった理由の上位</h3>
+      ${stats.reasons.length ? `<ul class="text-sm space-y-1">${stats.reasons.map(r => `<li><span class="font-bold">${esc(MAIL_ERR_LABEL[r.code] || r.code)}</span> ${Number(r.n)}件${r.sample ? `<span class="block text-2xs text-hq-400 break-all">例: ${esc(r.sample)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="text-sm text-hq-500">ありません</p>'}
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
-        <h3 class="font-bold"><i class="fas fa-list text-cyan-400 mr-1"></i>送信の記録</h3>
+        <h3 class="font-bold"><i class="fas fa-list text-hq-accent-400 mr-1"></i>送信の記録</h3>
         <div class="flex gap-2 text-sm">
-          <select id="hm-company" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1"><option value="">すべての企業</option>${stats.companies.filter(c => c.company_id).map(c => `<option value="${Number(c.company_id)}" ${String(HQ_MAIL.company_id) === String(c.company_id) ? 'selected' : ''}>${esc(c.company_name)}</option>`).join('')}</select>
-          <select id="hm-status" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1">${[['failed', '届かなかったもの'], ['', 'すべて']].map(([v, l]) => `<option value="${v}" ${HQ_MAIL.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <select id="hm-company" class="bg-hq-900 border border-hq-600 rounded-lg px-2 py-1"><option value="">すべての企業</option>${stats.companies.filter(c => c.company_id).map(c => `<option value="${Number(c.company_id)}" ${String(HQ_MAIL.company_id) === String(c.company_id) ? 'selected' : ''}>${esc(c.company_name)}</option>`).join('')}</select>
+          <select id="hm-status" class="bg-hq-900 border border-hq-600 rounded-lg px-2 py-1">${[['failed', '届かなかったもの'], ['', 'すべて']].map(([v, l]) => `<option value="${v}" ${HQ_MAIL.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         </div>
       </div>
       <div id="hm-logs"></div>
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
-      <h3 class="font-bold mb-1"><i class="fas fa-ban text-cyan-400 mr-1"></i>送信を止めているアドレス</h3>
-      <p class="text-[11px] text-slate-400 mb-2">Resend の Webhook で、宛先に届かなかった（恒久的な不達）か迷惑メールと報告されたアドレスです。以後、このアドレスには送りません。受信できるようになったと確かめた場合は解除します。</p>
-      <div class="space-y-1 text-sm">${sup.suppressions.map(x => `<div class="flex items-center gap-2 flex-wrap border-b border-slate-700/40 py-1">
-        <span class="font-mono">${esc(x.masked)}</span><span class="text-xs text-slate-400">${esc(x.companies || '')}</span>
-        <span class="badge ${x.reason === 'complained' ? 'badge-yellow' : 'badge-red'}">${x.reason === 'complained' ? '迷惑メール報告' : '不達'}</span><span class="text-[11px] text-slate-500">${esc(x.created_at || '')}</span>
-        <button class="text-cyan-400 text-xs hover:underline ml-auto" data-action="hqMailRelease" data-email="${esc(x.email)}" data-masked="${esc(x.masked)}">解除</button>
-        ${x.detail ? `<p class="w-full text-[11px] text-slate-500 break-all">${esc(x.detail)}</p>` : ''}</div>`).join('') || '<p class="text-slate-500">ありません</p>'}</div>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
+      <h3 class="font-bold mb-1"><i class="fas fa-ban text-hq-accent-400 mr-1"></i>送信を止めているアドレス</h3>
+      <p class="text-2xs text-hq-400 mb-2">Resend の Webhook で、宛先に届かなかった（恒久的な不達）か迷惑メールと報告されたアドレスです。以後、このアドレスには送りません。受信できるようになったと確かめた場合は解除します。</p>
+      <div class="space-y-1 text-sm">${sup.suppressions.map(x => `<div class="flex items-center gap-2 flex-wrap border-b border-hq-700/40 py-1">
+        <span class="font-mono">${esc(x.masked)}</span><span class="text-xs text-hq-400">${esc(x.companies || '')}</span>
+        <span class="badge ${x.reason === 'complained' ? 'badge-yellow' : 'badge-red'}">${x.reason === 'complained' ? '迷惑メール報告' : '不達'}</span><span class="text-2xs text-hq-500">${esc(x.created_at || '')}</span>
+        <button class="text-hq-accent-400 text-xs hover:underline ml-auto" data-action="hqMailRelease" data-email="${esc(x.email)}" data-masked="${esc(x.masked)}">解除</button>
+        ${x.detail ? `<p class="w-full text-2xs text-hq-500 break-all">${esc(x.detail)}</p>` : ''}</div>`).join('') || '<p class="text-hq-500">ありません</p>'}</div>
     </section>`
   drawHqMailLogs()
   document.getElementById('hm-days').addEventListener('change', e => { HQ_MAIL.days = Number(e.target.value); renderHqMail() })
@@ -1884,13 +1884,13 @@ function drawHqMailLogs() {
   const box = document.getElementById('hm-logs'); if (!box) return
   const errText = (e) => { if (!e) return ''; const k = String(e).split(':')[0]; const rest = String(e).slice(k.length + 1).trim(); return (MAIL_ERR_LABEL[k] || k) + (rest ? `（${rest}）` : '') }
   box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
-      <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">企業</th><th class="text-left px-2">種類</th><th class="text-left px-2">宛先</th><th class="text-left px-2">状態</th><th class="text-left px-2">理由</th></tr></thead>
-      <tbody>${HQ_MAIL.logs.map(l => `<tr class="border-b border-slate-700/40">
+      <thead><tr class="text-hq-400 text-xs border-b border-hq-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">企業</th><th class="text-left px-2">種類</th><th class="text-left px-2">宛先</th><th class="text-left px-2">状態</th><th class="text-left px-2">理由</th></tr></thead>
+      <tbody>${HQ_MAIL.logs.map(l => `<tr class="border-b border-hq-700/40">
         <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(l.created_at || '')}</td><td class="px-2 text-xs">${esc(l.company_name || '－')}</td>
         <td class="px-2 text-xs">${esc(MAIL_TYPE_LABEL[l.type] || l.type)}</td><td class="px-2 text-xs font-mono">${esc(l.to_email)}</td>
-        <td class="px-2 text-xs ${['failed', 'bounced', 'bounced_soft', 'complained'].includes(l.status) ? 'text-red-400' : ''}">${esc(MAIL_STATUS_LABEL[l.status] || l.status)}</td>
-        <td class="px-2 text-xs text-slate-400 break-all">${esc(errText(l.error_message))}</td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">該当する記録はありません</td></tr>'}</tbody></table></div>
-    ${HQ_MAIL.hasMore ? '<div class="text-center mt-2"><button class="text-cyan-400 text-sm hover:underline" data-action="hqMailMore">さらに読み込む</button></div>' : ''}`
+        <td class="px-2 text-xs ${['failed', 'bounced', 'bounced_soft', 'complained'].includes(l.status) ? 'text-danger-400' : ''}">${esc(MAIL_STATUS_LABEL[l.status] || l.status)}</td>
+        <td class="px-2 text-xs text-hq-400 break-all">${esc(errText(l.error_message))}</td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-hq-500 py-4">該当する記録はありません</td></tr>'}</tbody></table></div>
+    ${HQ_MAIL.hasMore ? '<div class="text-center mt-2"><button class="text-hq-accent-400 text-sm hover:underline" data-action="hqMailMore">さらに読み込む</button></div>' : ''}`
 }
 async function reloadHqMailLogs() {
   try { await loadHqMailLogs(false) } catch (e) { showApiError(e, '読み込めませんでした'); return }
@@ -1926,10 +1926,10 @@ function renderMailAlert(stats) {
   const volumeN = warnings.filter(w => w.kind === 'daily_volume').length
   const title = !volumeN ? 'メールが届いていない会社があります' : volumeN === warnings.length ? 'メールの送信数が多い会社があります' : 'メールの送信で確認が必要な会社があります'
   box.innerHTML = warnings.length ? `
-    <div class="bg-slate-800 border rounded-xl p-3 text-sm" style="border-color:#f59e0b">
-      <p class="font-bold text-amber-400"><i class="fas fa-envelope-circle-check mr-1"></i>${title}</p>
+    <div class="bg-hq-800 border rounded-xl p-3 text-sm" style="border-color:rgb(var(--color-warning-500))">
+      <p class="font-bold text-warning-400"><i class="fas fa-envelope-circle-check mr-1"></i>${title}</p>
       <ul class="mt-1 text-xs">${warnings.map(w => `<li>・${esc(w.message)}</li>`).join('')}</ul>
-      <a href="#mail" class="text-cyan-400 text-xs hover:underline">メール送信を開く →</a>
+      <a href="#mail" class="text-hq-accent-400 text-xs hover:underline">メール送信を開く →</a>
     </div>` : ''
   box.style.display = warnings.length ? '' : 'none'
 }
@@ -1988,11 +1988,11 @@ function hqSecretsHtml(s) {
     turnstile: ['ok', '未登録（Turnstile の秘密鍵を代わりに使っています）。分けるときは RATE_LIMIT_SALT を wrangler secret put で登録してください'],
     none: ['warn', '未登録。接続元IPは短いハッシュにして保存しています。wrangler secret put RATE_LIMIT_SALT で推測できない値を登録してください'],
   }
-  const row = (label, [lv, text]) => `<li class="flex items-start gap-2"><span class="shrink-0 ${lv === 'ok' ? 'text-emerald-400' : lv === 'bad' ? 'text-red-400' : 'text-amber-400'}"><i class="fas ${lv === 'ok' ? 'fa-circle-check' : 'fa-triangle-exclamation'}"></i></span>
-    <span><span class="font-bold">${esc(label)}</span><span class="block text-xs text-slate-400">${esc(text)}</span></span></li>`
+  const row = (label, [lv, text]) => `<li class="flex items-start gap-2"><span class="shrink-0 ${lv === 'ok' ? 'text-success-400' : lv === 'bad' ? 'text-danger-400' : 'text-warning-400'}"><i class="fas ${lv === 'ok' ? 'fa-circle-check' : 'fa-triangle-exclamation'}"></i></span>
+    <span><span class="font-bold">${esc(label)}</span><span class="block text-xs text-hq-400">${esc(text)}</span></span></li>`
   const t = TURNSTILE[s.turnstile] || ['warn', '不明'], r = SALT[s.rate_limit_salt] || ['warn', '不明']
-  return `<section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="hq-secrets">
-    <p class="font-bold mb-2"><i class="fas fa-key mr-1 text-cyan-400"></i>システムの設定の状態（公開の応募ページ）</p>
+  return `<section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4" id="hq-secrets">
+    <p class="font-bold mb-2"><i class="fas fa-key mr-1 text-hq-accent-400"></i>システムの設定の状態（公開の応募ページ）</p>
     <ul class="text-sm space-y-2">${row('ボット対策（Cloudflare Turnstile）', t)}${row('送信回数の制限の秘密の値（RATE_LIMIT_SALT）', r)}</ul>
   </section>`
 }
@@ -2000,8 +2000,8 @@ async function renderErrors() {
   loading()
   let d
   try { d = (await axios.get('/api/hq/errors', { params: errParams() })).data } catch (e) {
-    $app.innerHTML = `<p class="text-red-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>
-      <button class="text-cyan-400 text-sm hover:underline mt-2" data-action="hqErrClear">条件を外して読み直す</button>`
+    $app.innerHTML = `<p class="text-danger-400">${esc((e.response && e.response.data && e.response.data.error) || '読み込めませんでした')}</p>
+      <button class="text-hq-accent-400 text-sm hover:underline mt-2" data-action="hqErrClear">条件を外して読み直す</button>`
     return
   }
   if (location.hash.slice(1).split('/')[0] !== 'errors') return // 読み込み中にほかのタブへ移った
@@ -2013,61 +2013,61 @@ async function renderErrors() {
   $app.innerHTML = `
     <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
       <h2 class="text-xl font-bold">障害</h2>
-      <button class="text-cyan-400 text-sm hover:underline" data-action="hqErrReload"><i class="fas fa-rotate-right mr-1"></i>読み直す</button>
+      <button class="text-hq-accent-400 text-sm hover:underline" data-action="hqErrReload"><i class="fas fa-rotate-right mr-1"></i>読み直す</button>
     </div>
     ${d.alerts_unread.length ? `
-    <section class="bg-slate-800 border rounded-xl p-4 mb-4" style="border-color:#ef4444">
-      <p class="font-bold text-red-400 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>障害の通知があります</p>
-      <ul class="text-sm space-y-1 mb-2">${d.alerts_unread.map(a => `<li><span class="text-xs text-slate-400 mr-2">${esc(hqTime(a.created_at))}</span>${esc(a.title)}</li>`).join('')}</ul>
+    <section class="bg-hq-800 border rounded-xl p-4 mb-4" style="border-color:rgb(var(--color-danger-500))">
+      <p class="font-bold text-danger-400 mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>障害の通知があります</p>
+      <ul class="text-sm space-y-1 mb-2">${d.alerts_unread.map(a => `<li><span class="text-xs text-hq-400 mr-2">${esc(hqTime(a.created_at))}</span>${esc(a.title)}</li>`).join('')}</ul>
       <button class="btn btn-primary text-sm" data-action="hqErrAlertsRead"><i class="fas fa-check"></i>確認しました</button>
     </section>` : ''}
     ${hqSecretsHtml(d.secrets)}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-      ${[[`直近${Number(st.window_minutes)}分`, d.totals.last_window, d.totals.last_window >= st.threshold ? 'text-red-400' : ''], ['直近24時間', d.totals.last_24h, d.totals.last_24h ? 'text-amber-400' : ''], ['直近7日', d.totals.last_7d, ''],
+      ${[[`直近${Number(st.window_minutes)}分`, d.totals.last_window, d.totals.last_window >= st.threshold ? 'text-danger-400' : ''], ['直近24時間', d.totals.last_24h, d.totals.last_24h ? 'text-warning-400' : ''], ['直近7日', d.totals.last_7d, ''],
         ['最後の通知', d.last_alert ? hqTime(d.last_alert.created_at) : 'なし', '']]
-        .map(([l, v, c]) => `<div class="bg-slate-800 border border-slate-700 rounded-xl p-3"><p class="text-xs text-slate-400">${esc(l)}</p><p class="${typeof v === 'number' ? 'text-2xl' : 'text-base mt-1'} font-bold ${c}">${esc(v)}${typeof v === 'number' ? '<span class="text-xs font-normal text-slate-400 ml-1">件</span>' : ''}</p></div>`).join('')}
+        .map(([l, v, c]) => `<div class="bg-hq-800 border border-hq-700 rounded-xl p-3"><p class="text-xs text-hq-400">${esc(l)}</p><p class="${typeof v === 'number' ? 'text-2xl' : 'text-base mt-1'} font-bold ${c}">${esc(v)}${typeof v === 'number' ? '<span class="text-xs font-normal text-hq-400 ml-1">件</span>' : ''}</p></div>`).join('')}
     </div>
-    <p class="text-[11px] text-slate-400 mb-4">直近${Number(st.window_minutes)}分のエラーが${Number(st.threshold)}件以上になると、本部の管理者全員に通知します（同じ通知は${Number(st.cooldown_minutes)}分に1回まで）。記録は${Number(d.keep_days)}日で消えます。同じエラーが続くときは、一定の件数を超えた分を1行にまとめて数えます（まとめた分の参照番号は Cloudflare の Workers Logs で探せます）。</p>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
-      <h3 class="font-bold mb-3"><i class="fas fa-chart-column text-cyan-400 mr-1"></i>件数の推移（直近${d.trend.length}日${filtered ? '・絞り込みの条件に合うもの' : ''}）</h3>
+    <p class="text-2xs text-hq-400 mb-4">直近${Number(st.window_minutes)}分のエラーが${Number(st.threshold)}件以上になると、本部の管理者全員に通知します（同じ通知は${Number(st.cooldown_minutes)}分に1回まで）。記録は${Number(d.keep_days)}日で消えます。同じエラーが続くときは、一定の件数を超えた分を1行にまとめて数えます（まとめた分の参照番号は Cloudflare の Workers Logs で探せます）。</p>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4">
+      <h3 class="font-bold mb-3"><i class="fas fa-chart-column text-hq-accent-400 mr-1"></i>件数の推移（直近${d.trend.length}日${filtered ? '・絞り込みの条件に合うもの' : ''}）</h3>
       <div class="flex items-end gap-1 h-32" role="img" aria-label="日別のエラーの件数">
         ${d.trend.map(t => `<div class="flex-1 flex flex-col items-center justify-end h-full min-w-0" title="${esc(t.day)}: ${Number(t.count)}件（うち定期処理 ${Number(t.cron)}件）">
-          <span class="text-[10px] ${t.count ? 'text-slate-200' : 'text-slate-600'}">${Number(t.count)}</span>
-          <div class="w-full rounded-t ${t.count ? 'bg-red-500' : 'bg-slate-700'}" style="height:${t.count ? Math.max(4, Math.round(t.count / max * 96)) : 2}px"></div>
+          <span class="text-3xs ${t.count ? 'text-hq-200' : 'text-hq-600'}">${Number(t.count)}</span>
+          <div class="w-full rounded-t ${t.count ? 'bg-danger-500' : 'bg-hq-700'}" style="height:${t.count ? Math.max(4, Math.round(t.count / max * 96)) : 2}px"></div>
         </div>`).join('')}
       </div>
-      <div class="flex gap-1 mt-1">${d.trend.map((t, i) => `<span class="flex-1 text-center text-[10px] text-slate-500 min-w-0 whitespace-nowrap">${(d.trend.length - 1 - i) % 2 ? '' : esc(dayjs(t.day).format('M/D'))}</span>`).join('')}</div>
+      <div class="flex gap-1 mt-1">${d.trend.map((t, i) => `<span class="flex-1 text-center text-3xs text-hq-500 min-w-0 whitespace-nowrap">${(d.trend.length - 1 - i) % 2 ? '' : esc(dayjs(t.day).format('M/D'))}</span>`).join('')}</div>
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 overflow-x-auto">
-      <h3 class="font-bold mb-2"><i class="fas fa-ranking-star text-cyan-400 mr-1"></i>よく起きているエラー（直近7日）</h3>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4 overflow-x-auto">
+      <h3 class="font-bold mb-2"><i class="fas fa-ranking-star text-hq-accent-400 mr-1"></i>よく起きているエラー（直近7日）</h3>
       <table class="w-full text-sm" style="min-width:640px">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-right px-2 py-2">件数</th><th class="text-left px-2">場所</th><th class="text-left px-2">内容</th><th class="text-right px-2">会社</th><th class="text-left px-2">最後</th><th></th></tr></thead>
-        <tbody>${d.groups.map(g => `<tr class="border-b border-slate-700/40">
+        <thead><tr class="text-hq-400 text-xs border-b border-hq-700"><th class="text-right px-2 py-2">件数</th><th class="text-left px-2">場所</th><th class="text-left px-2">内容</th><th class="text-right px-2">会社</th><th class="text-left px-2">最後</th><th></th></tr></thead>
+        <tbody>${d.groups.map(g => `<tr class="border-b border-hq-700/40">
           <td class="px-2 py-2 text-right font-bold">${Number(g.n)}</td>
           <td class="px-2 text-xs"><span class="badge whitespace-nowrap ${g.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[g.source] || g.source)}</span> <span class="font-mono break-all">${esc(g.method || '')} ${esc(g.path || '')}</span></td>
-          <td class="px-2 text-xs break-all"><span class="text-slate-400">${esc(g.error_name || '')}</span> ${esc(g.message || '')}</td>
+          <td class="px-2 text-xs break-all"><span class="text-hq-400">${esc(g.error_name || '')}</span> ${esc(g.message || '')}</td>
           <td class="px-2 text-right text-xs">${Number(g.companies)}</td>
           <td class="px-2 text-xs whitespace-nowrap">${esc(hqTime(g.last_at))}</td>
-          <td class="px-2"><button class="text-cyan-400 text-xs hover:underline whitespace-nowrap" data-action="hqErrFind" data-ref="${esc(g.sample_ref)}">例を見る</button></td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-slate-500 py-4">直近7日のエラーはありません</td></tr>'}</tbody>
+          <td class="px-2"><button class="text-hq-accent-400 text-xs hover:underline whitespace-nowrap" data-action="hqErrFind" data-ref="${esc(g.sample_ref)}">例を見る</button></td></tr>`).join('') || '<tr><td colspan="6" class="text-center text-hq-500 py-4">直近7日のエラーはありません</td></tr>'}</tbody>
       </table>
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
-        <h3 class="font-bold"><i class="fas fa-list text-cyan-400 mr-1"></i>記録</h3>
+        <h3 class="font-bold"><i class="fas fa-list text-hq-accent-400 mr-1"></i>記録</h3>
         <form id="he-form" class="flex gap-2 text-sm flex-wrap items-center">
-          <input id="he-q" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1 font-mono w-36" maxlength="8" placeholder="参照番号（8桁）" value="${esc(HQ_ERR.q)}" autocomplete="off" aria-label="参照番号">
-          <select id="he-source" class="bg-slate-900 border border-slate-600 rounded-lg px-2 py-1" aria-label="種類">${[['', 'すべての種類'], ['request', '画面・API'], ['cron', '定期処理']].map(([v, l]) => `<option value="${v}" ${HQ_ERR.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <input id="he-q" class="bg-hq-900 border border-hq-600 rounded-lg px-2 py-1 font-mono w-36" maxlength="8" placeholder="参照番号（8桁）" value="${esc(HQ_ERR.q)}" autocomplete="off" aria-label="参照番号">
+          <select id="he-source" class="bg-hq-900 border border-hq-600 rounded-lg px-2 py-1" aria-label="種類">${[['', 'すべての種類'], ['request', '画面・API'], ['cron', '定期処理']].map(([v, l]) => `<option value="${v}" ${HQ_ERR.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
           <button class="btn btn-primary text-sm" type="submit"><i class="fas fa-magnifying-glass"></i>探す</button>
-          ${filtered ? '<button class="text-cyan-400 text-xs hover:underline" type="button" data-action="hqErrClear">条件を外す</button>' : ''}
+          ${filtered ? '<button class="text-hq-accent-400 text-xs hover:underline" type="button" data-action="hqErrClear">条件を外す</button>' : ''}
         </form>
       </div>
-      ${HQ_ERR.company_id ? `<p class="text-xs text-slate-400 mb-2">企業: ${esc(HQ_ERR.company_name || HQ_ERR.company_id)} のエラーだけを出しています</p>` : ''}
+      ${HQ_ERR.company_id ? `<p class="text-xs text-hq-400 mb-2">企業: ${esc(HQ_ERR.company_name || HQ_ERR.company_id)} のエラーだけを出しています</p>` : ''}
       <div id="he-logs"></div>
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-push"></section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-dests"><p class="text-sm text-slate-400">通知の送り先を読み込み中…</p></section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4" id="he-dbsize"></section>
-    <p class="text-[11px] text-slate-500">ここに出るのは、利用者の画面に「参照番号」付きのエラーが出たもの（サーバーの予期しないエラー）と、利用者への応答は成功にした後の処理の失敗（実績の同期・書き出しの記録など。「…に失敗しました」の行）と、定期処理の失敗です。入力値や個人の情報は記録しません。詳しいログ（スタックトレースなど）は Cloudflare のダッシュボードの Workers Logs で、参照番号を検索して確かめます。</p>`
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4" id="he-push"></section>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4" id="he-dests"><p class="text-sm text-hq-400">通知の送り先を読み込み中…</p></section>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4" id="he-dbsize"></section>
+    <p class="text-2xs text-hq-500">ここに出るのは、利用者の画面に「参照番号」付きのエラーが出たもの（サーバーの予期しないエラー）と、利用者への応答は成功にした後の処理の失敗（実績の同期・書き出しの記録など。「…に失敗しました」の行）と、定期処理の失敗です。入力値や個人の情報は記録しません。詳しいログ（スタックトレースなど）は Cloudflare のダッシュボードの Workers Logs で、参照番号を検索して確かめます。</p>`
   drawErrorLogs()
   drawHqPush()
   drawHqMonitor()
@@ -2082,37 +2082,37 @@ async function renderErrors() {
 function drawErrorLogs() {
   const box = document.getElementById('he-logs'); if (!box) return
   box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm" style="min-width:720px">
-      <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">参照番号</th><th class="text-left px-2">場所</th><th class="text-left px-2">企業・ロール</th><th class="text-left px-2">内容</th></tr></thead>
-      <tbody>${HQ_ERR.logs.map(l => `<tr class="border-b border-slate-700/40 align-top">
-        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(hqTime(l.created_at))}${Number(l.repeat_count) ? `<span class="block text-amber-400" title="同じエラーをまとめた回数（最後: ${esc(hqTime(l.last_repeat_at))}）">ほか${Number(l.repeat_count)}回</span>` : ''}</td>
+      <thead><tr class="text-hq-400 text-xs border-b border-hq-700"><th class="text-left px-2 py-2">日時</th><th class="text-left px-2">参照番号</th><th class="text-left px-2">場所</th><th class="text-left px-2">企業・ロール</th><th class="text-left px-2">内容</th></tr></thead>
+      <tbody>${HQ_ERR.logs.map(l => `<tr class="border-b border-hq-700/40 align-top">
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${esc(hqTime(l.created_at))}${Number(l.repeat_count) ? `<span class="block text-warning-400" title="同じエラーをまとめた回数（最後: ${esc(hqTime(l.last_repeat_at))}）">ほか${Number(l.repeat_count)}回</span>` : ''}</td>
         <td class="px-2 text-xs font-mono">${esc(l.ref)}</td>
         <td class="px-2 text-xs"><span class="badge whitespace-nowrap ${l.source === 'cron' ? 'badge-yellow' : 'badge-blue'}">${esc(ERR_SOURCE_LABEL[l.source] || l.source)}</span><span class="block font-mono break-all mt-0.5">${esc(l.method || '')} ${esc(l.path || '')}</span></td>
-        <td class="px-2 text-xs">${l.company_id ? `<button class="text-cyan-400 hover:underline text-left" data-action="hqErrCompany" data-id="${Number(l.company_id)}" data-name="${esc(l.company_name || '')}">${esc(l.company_name || ('企業 ' + l.company_id))}</button>` : '<span class="text-slate-500">－</span>'}${l.role ? `<span class="block text-slate-400">${esc(ERR_ROLE_LABEL[l.role] || l.role)}</span>` : ''}</td>
-        <td class="px-2 text-xs break-all"><span class="text-slate-400">${esc(l.error_name || '')}</span> ${esc(l.message || '')}${l.location ? `<span class="block text-[11px] text-slate-500 font-mono">${esc(l.location)}</span>` : ''}</td></tr>`).join('')
-        || `<tr><td colspan="5" class="text-center text-slate-500 py-4">${HQ_ERR.q ? 'この参照番号の記録はありません（同じエラーが続いてまとめられた場合や、90日を過ぎた場合は残りません）' : '該当する記録はありません'}</td></tr>`}</tbody></table></div>
-    ${HQ_ERR.hasMore ? '<div class="text-center mt-2"><button class="text-cyan-400 text-sm hover:underline" data-action="hqErrMore">さらに読み込む</button></div>' : ''}`
+        <td class="px-2 text-xs">${l.company_id ? `<button class="text-hq-accent-400 hover:underline text-left" data-action="hqErrCompany" data-id="${Number(l.company_id)}" data-name="${esc(l.company_name || '')}">${esc(l.company_name || ('企業 ' + l.company_id))}</button>` : '<span class="text-hq-500">－</span>'}${l.role ? `<span class="block text-hq-400">${esc(ERR_ROLE_LABEL[l.role] || l.role)}</span>` : ''}</td>
+        <td class="px-2 text-xs break-all"><span class="text-hq-400">${esc(l.error_name || '')}</span> ${esc(l.message || '')}${l.location ? `<span class="block text-2xs text-hq-500 font-mono">${esc(l.location)}</span>` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="5" class="text-center text-hq-500 py-4">${HQ_ERR.q ? 'この参照番号の記録はありません（同じエラーが続いてまとめられた場合や、90日を過ぎた場合は残りません）' : '該当する記録はありません'}</td></tr>`}</tbody></table></div>
+    ${HQ_ERR.hasMore ? '<div class="text-center mt-2"><button class="text-hq-accent-400 text-sm hover:underline" data-action="hqErrMore">さらに読み込む</button></div>' : ''}`
 }
 async function drawHqPush() {
   const box = document.getElementById('he-push'); if (!box) return
-  const head = '<h3 class="font-bold mb-1"><i class="fas fa-mobile-screen text-cyan-400 mr-1"></i>プッシュ通知（この端末）</h3>'
+  const head = '<h3 class="font-bold mb-1"><i class="fas fa-mobile-screen text-hq-accent-400 mr-1"></i>プッシュ通知（この端末）</h3>'
   const note = (cls, icon, text) => `<p class="text-sm ${cls}"><i class="fas ${icon} mr-1"></i>${text}</p>`
-  if (!HQ_PUSH_SUPPORTED) { box.innerHTML = head + note('text-slate-400', 'fa-circle-info', 'このブラウザはプッシュ通知に対応していません。通知はこのタブの件数で確認できます。'); return }
+  if (!HQ_PUSH_SUPPORTED) { box.innerHTML = head + note('text-hq-400', 'fa-circle-info', 'このブラウザはプッシュ通知に対応していません。通知はこのタブの件数で確認できます。'); return }
   const sub = await hqPushSubscription()
   let cfg
-  try { cfg = (await axios.get('/api/hq/push/config', { params: sub ? { endpoint: sub.endpoint } : {} })).data } catch (e) { box.innerHTML = head + note('text-red-400', 'fa-triangle-exclamation', '設定を読み込めませんでした'); return }
+  try { cfg = (await axios.get('/api/hq/push/config', { params: sub ? { endpoint: sub.endpoint } : {} })).data } catch (e) { box.innerHTML = head + note('text-danger-400', 'fa-triangle-exclamation', '設定を読み込めませんでした'); return }
   if (!document.getElementById('he-push')) return
   let body
-  if (!cfg.available) body = note('text-amber-400', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
-  else if (Notification.permission === 'denied') body = note('text-red-400', 'fa-ban', '通知がブロックされています。ブラウザのサイトの設定で、このサイトの通知を許可してから開き直してください。')
+  if (!cfg.available) body = note('text-warning-400', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
+  else if (Notification.permission === 'denied') body = note('text-danger-400', 'fa-ban', '通知がブロックされています。ブラウザのサイトの設定で、このサイトの通知を許可してから開き直してください。')
   else if (sub && cfg.subscribed) {
-    body = `${note('text-emerald-400', 'fa-circle-check', 'この端末で、エラーが増えたときの通知を受け取ります')}
-      ${cfg.last_error ? `<p class="text-xs text-amber-400 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
+    body = `${note('text-success-400', 'fa-circle-check', 'この端末で、エラーが増えたときの通知を受け取ります')}
+      ${cfg.last_error ? `<p class="text-xs text-warning-400 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
       <div class="flex gap-2 mt-2 flex-wrap">
         <button class="btn btn-outline text-sm" data-action="hqPushTest"><i class="fas fa-paper-plane"></i>テスト通知を送る</button>
         <button class="btn btn-outline text-sm" data-action="hqPushDisable"><i class="fas fa-bell-slash"></i>受け取らない</button>
       </div>`
   } else {
-    body = `<p class="text-xs text-slate-400 mb-2">エラーが増えたときに、本部画面を開いていなくても、この端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
+    body = `<p class="text-xs text-hq-400 mb-2">エラーが増えたときに、本部画面を開いていなくても、この端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
       <button class="btn btn-primary text-sm" data-action="hqPushEnable"><i class="fas fa-bell"></i>この端末でプッシュ通知を受け取る</button>`
   }
   box.innerHTML = head + body
@@ -2135,15 +2135,15 @@ function hqBytes(b) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)}GB` : `${mb.toFixed(1)}MB`
 }
 function hqDestsHtml(d) {
-  const head = `<h3 class="font-bold mb-1"><i class="fas fa-paper-plane text-cyan-400 mr-1"></i>通知の送り先（Slack・LINE など）</h3>
-    <p class="text-xs text-slate-400 mb-2">障害の通知を、アプリ内の通知・プッシュ通知に加えて、ここの送り先にも送ります。すぐに知らせるもの: 打刻・日報の送信の失敗（1件目から。同じ場所は${Number(d.cooldown_minutes) || 60}分に1回まで）・エラーの急増・DB の大きさが上限の90%を超えたとき。そのほか: 定期処理の失敗・DB の大きさの段階。毎朝8時に前日からのまとめも送ります。</p>`
-  if (d.destinations_source === 'invalid') return head + '<p class="text-sm text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>秘密の値 ALERT_DESTINATIONS を読み取れませんでした（JSON の配列か、それを base64 にしたものにしてください）。今は送り先へは送っていません。</p>'
-  if (!d.destinations.length) return head + '<p class="text-sm text-slate-400"><i class="fas fa-circle-info mr-1"></i>送り先はまだ登録されていません。今はアプリ内の通知とプッシュ通知だけで知らせます。登録のしかたは資料（docs/monitoring.md の「通知の送り先」）にあります。</p>'
+  const head = `<h3 class="font-bold mb-1"><i class="fas fa-paper-plane text-hq-accent-400 mr-1"></i>通知の送り先（Slack・LINE など）</h3>
+    <p class="text-xs text-hq-400 mb-2">障害の通知を、アプリ内の通知・プッシュ通知に加えて、ここの送り先にも送ります。すぐに知らせるもの: 打刻・日報の送信の失敗（1件目から。同じ場所は${Number(d.cooldown_minutes) || 60}分に1回まで）・エラーの急増・DB の大きさが上限の90%を超えたとき。そのほか: 定期処理の失敗・DB の大きさの段階。毎朝8時に前日からのまとめも送ります。</p>`
+  if (d.destinations_source === 'invalid') return head + '<p class="text-sm text-danger-400"><i class="fas fa-triangle-exclamation mr-1"></i>秘密の値 ALERT_DESTINATIONS を読み取れませんでした（JSON の配列か、それを base64 にしたものにしてください）。今は送り先へは送っていません。</p>'
+  if (!d.destinations.length) return head + '<p class="text-sm text-hq-400"><i class="fas fa-circle-info mr-1"></i>送り先はまだ登録されていません。今はアプリ内の通知とプッシュ通知だけで知らせます。登録のしかたは資料（docs/monitoring.md の「通知の送り先」）にあります。</p>'
   const rows = d.destinations.map(x => {
     const [cls, label] = x.problem ? DEST_STATUS_BADGE.invalid : (DEST_STATUS_BADGE[x.last_status] || ['badge-gray', 'まだ送っていません'])
-    const last = x.problem ? `<span class="block text-[11px] text-red-400">${esc(x.problem)}</span>`
-      : x.last_attempt_at ? `<span class="block text-[11px] text-slate-400">${esc(hqTime(x.last_attempt_at))}（${esc(DEST_EVENT_LABEL[x.last_event] || x.last_event || '')}）${x.last_error ? `・${esc(x.last_error)}` : ''}</span>${x.last_success_at && x.last_status !== 'sent' ? `<span class="block text-[11px] text-slate-500">最後に送れた日時: ${esc(hqTime(x.last_success_at))}</span>` : ''}` : ''
-    return `<tr class="border-b border-slate-700/40 align-top">
+    const last = x.problem ? `<span class="block text-2xs text-danger-400">${esc(x.problem)}</span>`
+      : x.last_attempt_at ? `<span class="block text-2xs text-hq-400">${esc(hqTime(x.last_attempt_at))}（${esc(DEST_EVENT_LABEL[x.last_event] || x.last_event || '')}）${x.last_error ? `・${esc(x.last_error)}` : ''}</span>${x.last_success_at && x.last_status !== 'sent' ? `<span class="block text-2xs text-hq-500">最後に送れた日時: ${esc(hqTime(x.last_success_at))}</span>` : ''}` : ''
+    return `<tr class="border-b border-hq-700/40 align-top">
       <td class="px-2 py-2 font-bold">${esc(x.label)}</td>
       <td class="px-2 py-2 text-xs whitespace-nowrap">${esc(x.type_label)}</td>
       <td class="px-2 py-2 text-xs">${esc(DEST_RECEIVE_LABEL[x.receive] || x.receive)}</td>
@@ -2151,50 +2151,50 @@ function hqDestsHtml(d) {
       <td class="px-2 py-2 text-right"><button class="btn btn-outline text-xs whitespace-nowrap" data-action="hqDestTest" data-key="${esc(x.key)}" ${x.problem ? 'disabled' : ''}><i class="fas fa-paper-plane"></i>テスト送信</button></td></tr>`
   }).join('')
   return head + `<div class="overflow-x-auto"><table class="w-full text-sm" style="min-width:600px">
-      <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-2 py-2">名前</th><th class="text-left px-2">種類</th><th class="text-left px-2">受け取る通知</th><th class="text-left px-2">最後の送信</th><th></th></tr></thead>
+      <thead><tr class="text-hq-400 text-xs border-b border-hq-700"><th class="text-left px-2 py-2">名前</th><th class="text-left px-2">種類</th><th class="text-left px-2">受け取る通知</th><th class="text-left px-2">最後の送信</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-    <p class="text-[11px] text-slate-500 mt-2">送り先の URL・トークン・宛先は画面に出しません。変えるときは秘密の値 ALERT_DESTINATIONS を登録し直します。</p>`
+    <p class="text-2xs text-hq-500 mt-2">送り先の URL・トークン・宛先は画面に出しません。変えるときは秘密の値 ALERT_DESTINATIONS を登録し直します。</p>`
 }
 function hqDbSizeHtml(s) {
-  const head = `<div class="flex items-center justify-between flex-wrap gap-2 mb-2"><h3 class="font-bold"><i class="fas fa-database text-cyan-400 mr-1"></i>DB の大きさ（D1）</h3>${s.size_bytes != null ? `<span class="badge ${DB_STAGE_BADGE[s.stage] || 'badge-gray'}">${esc(s.stage_label)}</span>` : ''}</div>`
-  const limitNote = `<p class="text-[11px] text-slate-500 mt-2">上限 ${Number(s.limit_mb)}MB は設定（vars の DB_SIZE_LIMIT_MB）の値です。今は無料プランの 500MB で、有料プランに切り替えたら 10240（10GB）に変えます。記録は毎朝8時以降の定期処理で1日1回です。</p>`
-  if (s.size_bytes == null) return head + '<p class="text-sm text-slate-400">まだ記録がありません（毎朝8時以降の定期処理で1日1回記録します）。</p>' + limitNote
+  const head = `<div class="flex items-center justify-between flex-wrap gap-2 mb-2"><h3 class="font-bold"><i class="fas fa-database text-hq-accent-400 mr-1"></i>DB の大きさ（D1）</h3>${s.size_bytes != null ? `<span class="badge ${DB_STAGE_BADGE[s.stage] || 'badge-gray'}">${esc(s.stage_label)}</span>` : ''}</div>`
+  const limitNote = `<p class="text-2xs text-hq-500 mt-2">上限 ${Number(s.limit_mb)}MB は設定（vars の DB_SIZE_LIMIT_MB）の値です。今は無料プランの 500MB で、有料プランに切り替えたら 10240（10GB）に変えます。記録は毎朝8時以降の定期処理で1日1回です。</p>`
+  if (s.size_bytes == null) return head + '<p class="text-sm text-hq-400">まだ記録がありません（毎朝8時以降の定期処理で1日1回記録します）。</p>' + limitNote
   const pct = Number(s.pct) || 0
-  const card = (l, v, sub, c) => `<div class="bg-slate-900 border border-slate-700 rounded-xl p-3"><p class="text-xs text-slate-400">${esc(l)}</p><p class="text-lg font-bold ${c || ''}">${esc(v)}</p>${sub ? `<p class="text-[11px] text-slate-400">${esc(sub)}</p>` : ''}</div>`
+  const card = (l, v, sub, c) => `<div class="bg-hq-900 border border-hq-700 rounded-xl p-3"><p class="text-xs text-hq-400">${esc(l)}</p><p class="text-lg font-bold ${c || ''}">${esc(v)}</p>${sub ? `<p class="text-2xs text-hq-400">${esc(sub)}</p>` : ''}</div>`
   const growth = s.growth_bytes_per_month == null ? card('1か月の増え方', '－', '記録が7日分たまると出します') : card('1か月の増え方', hqBytes(s.growth_bytes_per_month), `直近${Number(s.growth_days)}日の記録から`)
-  const left = s.reached_100 ? card('上限までの残り', '届いています', '', 'text-red-400') : s.months_left == null ? card('上限までの残り', '－', s.growth_bytes_per_month != null ? '増えていません' : '') : card('上限までの残り', `約${s.months_left}か月`, '', s.months_left <= 6 ? 'text-red-400' : s.months_left <= 12 ? 'text-amber-400' : '')
+  const left = s.reached_100 ? card('上限までの残り', '届いています', '', 'text-danger-400') : s.months_left == null ? card('上限までの残り', '－', s.growth_bytes_per_month != null ? '増えていません' : '') : card('上限までの残り', `約${s.months_left}か月`, '', s.months_left <= 6 ? 'text-danger-400' : s.months_left <= 12 ? 'text-warning-400' : '')
   const when = (reached, date) => reached ? '届いています' : date ? dayjs(date).format('YYYY/M/D') : '－'
-  const marks = [50, 60, 80, 90].map(m => `<span class="absolute top-0 bottom-0 border-l border-slate-500" style="left:${m}%" title="${m}%"></span>`).join('')
+  const marks = [50, 60, 80, 90].map(m => `<span class="absolute top-0 bottom-0 border-l border-hq-500" style="left:${m}%" title="${m}%"></span>`).join('')
   const hist = s.history || []
   const max = Math.max(1, ...hist.map(h => h.size_bytes))
   const tables = s.tables || []
   return head + `
     <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
-      ${card('今の大きさ', hqBytes(s.size_bytes), `上限 ${hqBytes(Number(s.limit_mb) * 1048576)} の ${pct}%（${esc(s.day ? dayjs(s.day).format('M/D') : '')} の記録）`, pct >= 80 ? 'text-red-400' : pct >= 50 ? 'text-amber-400' : '')}
+      ${card('今の大きさ', hqBytes(s.size_bytes), `上限 ${hqBytes(Number(s.limit_mb) * 1048576)} の ${pct}%（${esc(s.day ? dayjs(s.day).format('M/D') : '')} の記録）`, pct >= 80 ? 'text-danger-400' : pct >= 50 ? 'text-warning-400' : '')}
       ${growth}${left}
       ${card('80% に届く見込み', when(s.reached_80, s.date_80), '')}
       ${card('上限（100%）に届く見込み', when(s.reached_100, s.date_100), '')}
     </div>
-    <div class="relative h-3 rounded bg-slate-700 overflow-hidden mb-1" role="img" aria-label="上限に対する割合 ${pct}%">
-      <div class="h-full ${pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-cyan-500'}" style="width:${Math.min(100, pct)}%"></div>${marks}
+    <div class="relative h-3 rounded bg-hq-700 overflow-hidden mb-1" role="img" aria-label="上限に対する割合 ${pct}%">
+      <div class="h-full ${pct >= 80 ? 'bg-danger-500' : pct >= 50 ? 'bg-warning-500' : 'bg-hq-accent-500'}" style="width:${Math.min(100, pct)}%"></div>${marks}
     </div>
-    <p class="text-[11px] text-slate-400 mb-2">目盛りは 50%（準備）・60%（着手）・80%（警告）・90%（緊急）</p>
+    <p class="text-2xs text-hq-400 mb-2">目盛りは 50%（準備）・60%（着手）・80%（警告）・90%（緊急）</p>
     <p class="text-sm mb-3">${esc(DB_STAGE_TEXT[s.stage] || '')}</p>
-    ${hist.length > 1 ? `<div class="flex items-end gap-0.5 h-16 mb-3" role="img" aria-label="直近${hist.length}日の大きさ">${hist.map(h => `<div class="flex-1 bg-cyan-700 rounded-t min-w-0" style="height:${Math.max(2, Math.round(h.size_bytes / max * 60))}px" title="${esc(h.day)}: ${esc(hqBytes(h.size_bytes))}"></div>`).join('')}</div>` : ''}
+    ${hist.length > 1 ? `<div class="flex items-end gap-0.5 h-16 mb-3" role="img" aria-label="直近${hist.length}日の大きさ">${hist.map(h => `<div class="flex-1 bg-hq-accent-700 rounded-t min-w-0" style="height:${Math.max(2, Math.round(h.size_bytes / max * 60))}px" title="${esc(h.day)}: ${esc(hqBytes(h.size_bytes))}"></div>`).join('')}</div>` : ''}
     <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
-      <p class="font-bold text-sm">行の多い表${s.tables_at ? `<span class="text-[11px] font-normal text-slate-400 ml-2">${esc(hqTime(s.tables_at))} に数えました（${Number(s.tables_total)}表）</span>` : ''}</p>
+      <p class="font-bold text-sm">行の多い表${s.tables_at ? `<span class="text-2xs font-normal text-hq-400 ml-2">${esc(hqTime(s.tables_at))} に数えました（${Number(s.tables_total)}表）</span>` : ''}</p>
       <button class="btn btn-outline text-xs" data-action="hqDbCountTables"><i class="fas fa-list-ol"></i>表ごとの行数を数える</button>
     </div>
-    ${tables.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><tbody>${tables.map(t => `<tr class="border-b border-slate-700/40"><td class="px-2 py-1 font-mono">${esc(t.table)}</td><td class="px-2 py-1 text-right">${Number(t.rows).toLocaleString()}行</td></tr>`).join('')}</tbody></table></div>`
-      : '<p class="text-xs text-slate-400">まだ数えていません。</p>'}
-    <p class="text-[11px] text-slate-500 mt-1">行数を数えるときは、すべての表のすべての行を読むので、D1 の1日の読み取りの枠を使います${s.tables_rows_read != null ? `（前回は ${Number(s.tables_rows_read).toLocaleString()}行を読みました）` : ''}。10分に1回まで数えられます。</p>` + limitNote
+    ${tables.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><tbody>${tables.map(t => `<tr class="border-b border-hq-700/40"><td class="px-2 py-1 font-mono">${esc(t.table)}</td><td class="px-2 py-1 text-right">${Number(t.rows).toLocaleString()}行</td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="text-xs text-hq-400">まだ数えていません。</p>'}
+    <p class="text-2xs text-hq-500 mt-1">行数を数えるときは、すべての表のすべての行を読むので、D1 の1日の読み取りの枠を使います${s.tables_rows_read != null ? `（前回は ${Number(s.tables_rows_read).toLocaleString()}行を読みました）` : ''}。10分に1回まで数えられます。</p>` + limitNote
 }
 async function drawHqMonitor() {
   const a = document.getElementById('he-dests'), b = document.getElementById('he-dbsize')
   if (!a || !b) return
   let d
   try { d = (await axios.get('/api/hq/monitor')).data } catch (e) {
-    a.innerHTML = `<p class="text-sm text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>${esc((e.response && e.response.data && e.response.data.error) || '通知の送り先・DB の大きさを読み込めませんでした')}</p>`
+    a.innerHTML = `<p class="text-sm text-danger-400"><i class="fas fa-triangle-exclamation mr-1"></i>${esc((e.response && e.response.data && e.response.data.error) || '通知の送り先・DB の大きさを読み込めませんでした')}</p>`
     b.innerHTML = ''
     return
   }
@@ -2215,7 +2215,7 @@ function renderDbSizeBand(b) {
     box.style.paddingBottom = '0'
     $app.parentNode.insertBefore(box, document.getElementById('hq-cron-alert') || $app)
   }
-  box.innerHTML = on ? `<div class="rounded-xl p-3 text-sm text-white" style="background:#dc2626" role="alert">
+  box.innerHTML = on ? `<div class="rounded-xl p-3 text-sm text-white" style="background:rgb(var(--color-danger-600))" role="alert">
       <p class="font-bold"><i class="fas fa-database mr-1"></i>DB の大きさが上限の${esc(b.db_pct)}%です（緊急）</p>
       <p class="text-xs mt-1">上限に届くと、打刻・日報などの書き込みができなくなります。有料プランへの切り替えなどをすぐに進めてください。</p>
       <a href="#errors" class="text-xs underline">障害の「DB の大きさ」を開く →</a></div>` : ''
@@ -2342,7 +2342,7 @@ const OB_STATUS_BADGE = {
 const OB_EVENT_LABEL = { start: '契約終了の登録', cancel: '契約終了の取消', export: 'CSV の書き出し', file: 'ファイルの取得',
   delete_start: '削除の開始', delete_error: '削除の失敗', complete: '削除の完了' }
 const OB_FILE_LABEL = { attendance_reports: '出退勤の写真', staff_documents: 'スタッフの書類', employee_documents: '入社時書類', client_documents: 'クライアントの契約書類' }
-const OB_DARK_INP = 'style="background:#1e293b;border-color:#334155;color:#fff"'
+const OB_DARK_INP = 'style="background:rgb(var(--color-hq-800));border-color:rgb(var(--color-hq-700));color:rgb(var(--color-on-primary))"'
 let OB_DETAIL = null
 let OB_ACTIVE = [] // 停止していない企業（「企業を停止する」の選択肢。#9423）
 
@@ -2350,37 +2350,37 @@ async function renderOffboardingList() {
   loading()
   let data
   try { data = (await axios.get('/api/hq/offboarding')).data } catch (e) {
-    $app.innerHTML = '<p class="text-sm text-red-400">解約・停止した企業の一覧を読み込めませんでした</p>'
+    $app.innerHTML = '<p class="text-sm text-danger-400">解約・停止した企業の一覧を読み込めませんでした</p>'
     return
   }
   const rows = data.companies.map(c => `
-    <tr class="border-b border-slate-700/40">
-      <td class="px-3 py-3"><p class="font-medium">${esc(c.company_name)}</p><p class="text-xs text-slate-400">${esc(c.company_code)} ${STATUS_BADGE[c.active_status] || ''}</p></td>
-      <td class="px-3 py-3">${c.status ? OB_STATUS_BADGE[c.status] || esc(c.status) : '<span class="text-slate-500 text-xs">未登録</span>'}${c.last_error ? '<span class="block text-xs text-red-400">失敗あり</span>' : ''}</td>
+    <tr class="border-b border-hq-700/40">
+      <td class="px-3 py-3"><p class="font-medium">${esc(c.company_name)}</p><p class="text-xs text-hq-400">${esc(c.company_code)} ${STATUS_BADGE[c.active_status] || ''}</p></td>
+      <td class="px-3 py-3">${c.status ? OB_STATUS_BADGE[c.status] || esc(c.status) : '<span class="text-hq-500 text-xs">未登録</span>'}${c.last_error ? '<span class="block text-xs text-danger-400">失敗あり</span>' : ''}</td>
       <td class="px-3 py-3 text-xs">${c.contract_end_date ? esc(c.contract_end_date) : '-'}</td>
-      <td class="px-3 py-3 text-xs">${c.status === 'scheduled' ? `${esc(c.delete_after)}${c.delete_after <= data.today ? ' <span class="text-amber-300">削除できます</span>' : ''}` : c.completed_at ? '削除済み ' + hqDate(c.completed_at, false) : '-'}</td>
-      <td class="px-3 py-3 text-xs">${c.last_export_at ? hqDate(c.last_export_at, false) : '<span class="text-slate-500">なし</span>'}</td>
-      <td class="px-3 py-3"><a href="#offboarding/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline">開く →</a></td>
+      <td class="px-3 py-3 text-xs">${c.status === 'scheduled' ? `${esc(c.delete_after)}${c.delete_after <= data.today ? ' <span class="text-warning-300">削除できます</span>' : ''}` : c.completed_at ? '削除済み ' + hqDate(c.completed_at, false) : '-'}</td>
+      <td class="px-3 py-3 text-xs">${c.last_export_at ? hqDate(c.last_export_at, false) : '<span class="text-hq-500">なし</span>'}</td>
+      <td class="px-3 py-3"><a href="#offboarding/${Number(c.company_id)}" class="text-hq-accent-400 text-xs hover:underline">開く →</a></td>
     </tr>`).join('')
   OB_ACTIVE = data.active_companies || []
   $app.innerHTML = `
     <h2 class="text-xl font-bold">解約・データ</h2>
-    <p class="text-sm text-slate-400 mt-1 mb-5">利用状態が「停止」の企業に契約終了を登録すると、猶予期間（既定${Number(data.grace_days)}日）のあいだにデータ（CSV・写真・書類）を書き出して渡せます。猶予の後に、会社コードと確認の入力のうえで、スタッフ・勤怠・写真・書類などを削除し、利用者とスタッフの氏名・連絡先を匿名化します。</p>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5" id="ob-stop-box">
-      <h3 class="font-bold mb-1"><i class="fas fa-ban text-cyan-400 mr-1"></i>企業を停止する</h3>
-      <p class="text-xs text-slate-400 mb-3">解約する企業は、まず停止にします。停止すると、そのまま下の一覧からデータの書き出しと契約終了の登録に進めます（企業の画面の「利用状態」でも停止・再開できます）。</p>
+    <p class="text-sm text-hq-400 mt-1 mb-5">利用状態が「停止」の企業に契約終了を登録すると、猶予期間（既定${Number(data.grace_days)}日）のあいだにデータ（CSV・写真・書類）を書き出して渡せます。猶予の後に、会社コードと確認の入力のうえで、スタッフ・勤怠・写真・書類などを削除し、利用者とスタッフの氏名・連絡先を匿名化します。</p>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5" id="ob-stop-box">
+      <h3 class="font-bold mb-1"><i class="fas fa-ban text-hq-accent-400 mr-1"></i>企業を停止する</h3>
+      <p class="text-xs text-hq-400 mb-3">解約する企業は、まず停止にします。停止すると、そのまま下の一覧からデータの書き出しと契約終了の登録に進めます（企業の画面の「利用状態」でも停止・再開できます）。</p>
       ${OB_ACTIVE.length ? `<div class="flex flex-wrap gap-2 items-end">
-        <label class="block text-sm flex-1" style="min-width:14rem"><span class="text-xs text-slate-400">停止する企業</span>
+        <label class="block text-sm flex-1" style="min-width:14rem"><span class="text-xs text-hq-400">停止する企業</span>
           <select id="ob-stop-company" class="inp mt-1" ${OB_DARK_INP}><option value="">選んでください</option>${OB_ACTIVE.map(c => `<option value="${Number(c.company_id)}">${esc(c.company_name)}（${esc(c.company_code)}）${c.active_status === 'trial' ? '・トライアル' : ''}</option>`).join('')}</select></label>
         <button class="btn btn-danger" data-action="obStopPick"><i class="fas fa-ban"></i>この企業を停止する</button>
-      </div>` : '<p class="text-xs text-slate-500">停止していない企業はありません</p>'}
+      </div>` : '<p class="text-xs text-hq-500">停止していない企業はありません</p>'}
     </section>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 overflow-x-auto">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 overflow-x-auto">
       <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700">
+        <thead><tr class="text-hq-400 text-xs border-b border-hq-700">
           <th class="text-left px-3 py-2">企業</th><th class="text-left px-3 py-2">解約の処理</th><th class="text-left px-3 py-2">契約終了日</th><th class="text-left px-3 py-2">削除できる日</th><th class="text-left px-3 py-2">最後の書き出し</th><th></th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" class="text-center text-slate-500 py-6">停止中の企業はありません。企業を停止にすると、ここに出ます</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="6" class="text-center text-hq-500 py-6">停止中の企業はありません。企業を停止にすると、ここに出ます</td></tr>'}</tbody>
       </table>
     </section>`
 }
@@ -2390,74 +2390,74 @@ function obStatusHtml(d) {
   const open = ob && (ob.status === 'scheduled' || ob.status === 'deleting')
   if (!open && c.active_status !== 'inactive') {
     // 停止していない企業は、ここで停止してから進める（#9423）
-    return `<p class="text-sm text-slate-300 mb-3">この企業は「停止」ではないため、まだ契約終了を登録できません。停止すると、データの書き出しと契約終了の登録に進めます。</p>
+    return `<p class="text-sm text-hq-300 mb-3">この企業は「停止」ではないため、まだ契約終了を登録できません。停止すると、データの書き出しと契約終了の登録に進めます。</p>
       <button class="btn btn-danger" data-action="obStop" data-cid="${Number(c.company_id)}"><i class="fas fa-ban"></i>この企業を停止する</button>
-      <p class="text-[11px] text-slate-400 mt-2">企業の画面の「利用状態」でも停止・再開できます。</p>`
+      <p class="text-2xs text-hq-400 mt-2">企業の画面の「利用状態」でも停止・再開できます。</p>`
   }
   if (!open && ob && ob.status === 'completed') {
-    return `<p class="text-sm">削除が完了しています（${hqDate(ob.completed_at, false)}）。<a href="/api/hq/offboarding/${Number(c.company_id)}/record.csv" class="text-cyan-400 hover:underline ml-1"><i class="fas fa-file-csv mr-1"></i>削除の記録（CSV）</a></p>`
+    return `<p class="text-sm">削除が完了しています（${hqDate(ob.completed_at, false)}）。<a href="/api/hq/offboarding/${Number(c.company_id)}/record.csv" class="text-hq-accent-400 hover:underline ml-1"><i class="fas fa-file-csv mr-1"></i>削除の記録（CSV）</a></p>`
   }
   if (!open) {
     return `
-      <p class="text-sm text-slate-300 mb-3">契約終了日を登録すると、猶予期間の後に削除できるようになります。猶予中は取り消せます。</p>
+      <p class="text-sm text-hq-300 mb-3">契約終了日を登録すると、猶予期間の後に削除できるようになります。猶予中は取り消せます。</p>
       <div class="grid md:grid-cols-4 gap-3 text-sm">
-        <label class="block"><span class="text-xs text-slate-400">契約終了日</span><input type="date" id="ob-end" class="inp mt-1" ${OB_DARK_INP} value="${esc(d.today)}"></label>
-        <label class="block"><span class="text-xs text-slate-400">猶予日数（${Number(d.settings.grace_min)}〜${Number(d.settings.grace_max)}日）</span><input type="number" id="ob-grace" class="inp mt-1" ${OB_DARK_INP} min="${Number(d.settings.grace_min)}" max="${Number(d.settings.grace_max)}" value="${Number(d.settings.grace_days)}"></label>
-        <label class="block md:col-span-2"><span class="text-xs text-slate-400">理由・メモ（任意）</span><input type="text" id="ob-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
-        <label class="block md:col-span-2"><span class="text-xs text-slate-400">確認のため会社コード（${esc(c.company_code)}）を入力</span><input type="text" id="ob-start-code" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
+        <label class="block"><span class="text-xs text-hq-400">契約終了日</span><input type="date" id="ob-end" class="inp mt-1" ${OB_DARK_INP} value="${esc(d.today)}"></label>
+        <label class="block"><span class="text-xs text-hq-400">猶予日数（${Number(d.settings.grace_min)}〜${Number(d.settings.grace_max)}日）</span><input type="number" id="ob-grace" class="inp mt-1" ${OB_DARK_INP} min="${Number(d.settings.grace_min)}" max="${Number(d.settings.grace_max)}" value="${Number(d.settings.grace_days)}"></label>
+        <label class="block md:col-span-2"><span class="text-xs text-hq-400">理由・メモ（任意）</span><input type="text" id="ob-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
+        <label class="block md:col-span-2"><span class="text-xs text-hq-400">確認のため会社コード（${esc(c.company_code)}）を入力</span><input type="text" id="ob-start-code" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
       </div>
       <button class="btn btn-primary mt-3" data-action="obStart" data-cid="${Number(c.company_id)}"><i class="fas fa-flag-checkered"></i>契約終了を登録する</button>`
   }
-  const head = `<p class="text-sm mb-3">${OB_STATUS_BADGE[ob.status] || ''} 契約終了日 ${esc(ob.contract_end_date)} ／ 猶予 ${Number(ob.grace_days)}日 ／ <b>${esc(ob.delete_after)}</b> から削除できます${ob.reason ? `<span class="block text-xs text-slate-400 mt-1">理由: ${esc(ob.reason)}</span>` : ''}</p>
-    ${ob.last_error ? `<div class="bg-red-900/40 border border-red-700 text-red-200 rounded-xl p-3 mb-3 text-xs break-all">前回の削除で失敗しました: ${esc(ob.last_error)}</div>` : ''}`
+  const head = `<p class="text-sm mb-3">${OB_STATUS_BADGE[ob.status] || ''} 契約終了日 ${esc(ob.contract_end_date)} ／ 猶予 ${Number(ob.grace_days)}日 ／ <b>${esc(ob.delete_after)}</b> から削除できます${ob.reason ? `<span class="block text-xs text-hq-400 mt-1">理由: ${esc(ob.reason)}</span>` : ''}</p>
+    ${ob.last_error ? `<div class="bg-danger-900/40 border border-danger-700 text-danger-200 rounded-xl p-3 mb-3 text-xs break-all">前回の削除で失敗しました: ${esc(ob.last_error)}</div>` : ''}`
   const delForm = `
-    <div class="border border-red-700 rounded-xl p-3 mt-2">
-      <p class="text-sm text-red-200 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>削除すると元に戻せません。下の件数（dry-run）を確かめてから実行してください。</p>
+    <div class="border border-danger-700 rounded-xl p-3 mt-2">
+      <p class="text-sm text-danger-200 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>削除すると元に戻せません。下の件数（dry-run）を確かめてから実行してください。</p>
       <div class="grid md:grid-cols-3 gap-3 text-sm">
-        <label class="block"><span class="text-xs text-slate-400">会社コード（${esc(c.company_code)}）を入力</span><input type="text" id="ob-del-code" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
+        <label class="block"><span class="text-xs text-hq-400">会社コード（${esc(c.company_code)}）を入力</span><input type="text" id="ob-del-code" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
         ${ob.status === 'scheduled' ? `
-        <label class="block"><span class="text-xs text-slate-400">「${esc(d.settings.confirm_text)}」と入力</span><input type="text" id="ob-del-text" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
-        ${d.exported ? '' : `<label class="block"><span class="text-xs text-slate-400">書き出しをしない理由（まだ書き出していません）</span><input type="text" id="ob-del-skip" class="inp mt-1" ${OB_DARK_INP} maxlength="500" placeholder="例: 企業から不要と回答があった"></label>`}` : ''}
+        <label class="block"><span class="text-xs text-hq-400">「${esc(d.settings.confirm_text)}」と入力</span><input type="text" id="ob-del-text" class="inp mt-1" ${OB_DARK_INP} autocomplete="off"></label>
+        ${d.exported ? '' : `<label class="block"><span class="text-xs text-hq-400">書き出しをしない理由（まだ書き出していません）</span><input type="text" id="ob-del-skip" class="inp mt-1" ${OB_DARK_INP} maxlength="500" placeholder="例: 企業から不要と回答があった"></label>`}` : ''}
       </div>
       <button class="btn btn-danger mt-3" data-action="obDelete" data-cid="${Number(c.company_id)}"><i class="fas fa-trash"></i>${ob.status === 'deleting' ? '削除を続ける' : 'データを削除する'}</button>
-      <div id="ob-progress" class="text-xs text-slate-300 mt-2"></div>
+      <div id="ob-progress" class="text-xs text-hq-300 mt-2"></div>
     </div>`
   if (ob.status === 'deleting') return head + delForm
   return head + `
     <div class="flex flex-wrap gap-2 items-end">
-      <label class="block text-sm"><span class="text-xs text-slate-400">取消の理由（任意）</span><input type="text" id="ob-cancel-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
-      <button class="btn btn-outline" style="border-color:#334155;color:#cbd5e1" data-action="obCancel" data-cid="${Number(c.company_id)}">契約終了を取り消す</button>
+      <label class="block text-sm"><span class="text-xs text-hq-400">取消の理由（任意）</span><input type="text" id="ob-cancel-reason" class="inp mt-1" ${OB_DARK_INP} maxlength="1000"></label>
+      <button class="btn btn-outline" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-300))" data-action="obCancel" data-cid="${Number(c.company_id)}">契約終了を取り消す</button>
     </div>
-    ${d.can_delete ? delForm : `<p class="text-xs text-slate-400 mt-2">猶予期間中のため、まだ削除できません。${c.active_status !== 'inactive' ? '企業の利用状態が「停止」ではないため削除できません。' : ''}</p>`}`
+    ${d.can_delete ? delForm : `<p class="text-xs text-hq-400 mt-2">猶予期間中のため、まだ削除できません。${c.active_status !== 'inactive' ? '企業の利用状態が「停止」ではないため削除できません。' : ''}</p>`}`
 }
 
 function obTablesHtml(d) {
   const canExport = d.company.active_status === 'inactive' && !(d.offboarding && (d.offboarding.status === 'deleting' || d.offboarding.status === 'completed'))
   const cid = Number(d.company.company_id)
   const rows = d.tables.map(t => `
-    <tr class="border-b border-slate-700/40">
-      <td class="px-3 py-2">${esc(t.label)}<span class="block text-[11px] text-slate-500">${esc(t.target)}</span></td>
+    <tr class="border-b border-hq-700/40">
+      <td class="px-3 py-2">${esc(t.label)}<span class="block text-2xs text-hq-500">${esc(t.target)}</span></td>
       <td class="px-3 py-2 text-right">${Number(t.count).toLocaleString()}</td>
-      <td class="px-3 py-2 text-xs">${t.delete ? '削除' : t.target === 'companies' ? '<span class="text-slate-400">残す（解約の記録）</span>' : '<span class="text-amber-300">匿名化</span>'}</td>
-      <td class="px-3 py-2">${canExport && t.export && t.count > 0 ? `<button class="text-cyan-400 text-xs hover:underline" data-action="obExport" data-cid="${cid}" data-target="${esc(t.target)}"><i class="fas fa-file-csv mr-1"></i>CSV</button>` : ''}</td>
+      <td class="px-3 py-2 text-xs">${t.delete ? '削除' : t.target === 'companies' ? '<span class="text-hq-400">残す（解約の記録）</span>' : '<span class="text-warning-300">匿名化</span>'}</td>
+      <td class="px-3 py-2">${canExport && t.export && t.count > 0 ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obExport" data-cid="${cid}" data-target="${esc(t.target)}"><i class="fas fa-file-csv mr-1"></i>CSV</button>` : ''}</td>
     </tr>`).join('')
   const files = Object.entries(d.files).map(([k, n]) => `${esc(OB_FILE_LABEL[k] || k)} ${Number(n).toLocaleString()}件`).join(' ／ ')
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
-        <h3 class="font-bold"><i class="fas fa-database text-cyan-400 mr-1"></i>データの件数と書き出し（削除の dry-run）</h3>
-        ${canExport ? `<button class="btn btn-outline text-xs" style="border-color:#334155;color:#cbd5e1" data-action="obExportAll" data-cid="${cid}"><i class="fas fa-download"></i>すべての表を CSV で書き出す</button>` : ''}
+        <h3 class="font-bold"><i class="fas fa-database text-hq-accent-400 mr-1"></i>データの件数と書き出し（削除の dry-run）</h3>
+        ${canExport ? `<button class="btn btn-outline text-xs" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-300))" data-action="obExportAll" data-cid="${cid}"><i class="fas fa-download"></i>すべての表を CSV で書き出す</button>` : ''}
       </div>
-      <p class="text-xs text-slate-400 mb-3">CSV は表ごとに ${Number(d.settings.export_page)} 行ずつ取得して1つのファイルにまとめます。パスワード・二段階認証・トークンの列は出しません。掲示板の投稿とやり取り・企業間チャット・連携の同意の記録は相手の企業と共有する記録のため、ログインの履歴は1年で自動で消えるため、削除の対象にしていません。</p>
-      ${d.unknown_tables === null ? `<p class="text-xs text-amber-300 mb-3">削除の対象に入っていない表があるかを確かめられませんでした</p>` : ''}
-      ${d.unknown_tables && d.unknown_tables.length ? `<div class="bg-red-900/40 border border-red-700 text-red-200 rounded-xl p-3 mb-3 text-xs">削除の対象に入っていない、企業の行を持つ表があります（開発者に確認してください）: ${d.unknown_tables.map(esc).join(', ')}</div>` : ''}
+      <p class="text-xs text-hq-400 mb-3">CSV は表ごとに ${Number(d.settings.export_page)} 行ずつ取得して1つのファイルにまとめます。パスワード・二段階認証・トークンの列は出しません。掲示板の投稿とやり取り・企業間チャット・連携の同意の記録は相手の企業と共有する記録のため、ログインの履歴は1年で自動で消えるため、削除の対象にしていません。</p>
+      ${d.unknown_tables === null ? `<p class="text-xs text-warning-300 mb-3">削除の対象に入っていない表があるかを確かめられませんでした</p>` : ''}
+      ${d.unknown_tables && d.unknown_tables.length ? `<div class="bg-danger-900/40 border border-danger-700 text-danger-200 rounded-xl p-3 mb-3 text-xs">削除の対象に入っていない、企業の行を持つ表があります（開発者に確認してください）: ${d.unknown_tables.map(esc).join(', ')}</div>` : ''}
       <div class="overflow-x-auto max-h-96 overflow-y-auto"><table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs border-b border-slate-700"><th class="text-left px-3 py-2">表</th><th class="text-right px-3 py-2">件数</th><th class="text-left px-3 py-2">削除の扱い</th><th></th></tr></thead>
+        <thead><tr class="text-hq-400 text-xs border-b border-hq-700"><th class="text-left px-3 py-2">表</th><th class="text-right px-3 py-2">件数</th><th class="text-left px-3 py-2">削除の扱い</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
       <div class="mt-4 text-sm">
-        <p><i class="fas fa-images text-cyan-400 mr-1"></i>写真・書類（R2）: ${files}</p>
-        ${canExport ? `<button class="text-cyan-400 text-xs hover:underline mt-1" data-action="obFiles" data-cid="${cid}" data-offset="0">ファイルの一覧を表示して取得する</button>` : ''}
+        <p><i class="fas fa-images text-hq-accent-400 mr-1"></i>写真・書類（R2）: ${files}</p>
+        ${canExport ? `<button class="text-hq-accent-400 text-xs hover:underline mt-1" data-action="obFiles" data-cid="${cid}" data-offset="0">ファイルの一覧を表示して取得する</button>` : ''}
         <div id="ob-files" class="mt-2"></div>
       </div>
     </section>`
@@ -2467,37 +2467,37 @@ function obEventsHtml(d) {
   const rows = d.events.map(e => {
     let detail = ''
     try { const o = JSON.parse(e.detail || 'null'); detail = o ? Object.entries(o).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => `${k}: ${v}`).join(' ／ ') : '' } catch { detail = '' }
-    return `<tr class="border-b border-slate-700/40"><td class="px-3 py-2 text-xs whitespace-nowrap">${esc(dayjs(e.created_at).format('YYYY/M/D HH:mm'))}</td>
+    return `<tr class="border-b border-hq-700/40"><td class="px-3 py-2 text-xs whitespace-nowrap">${esc(dayjs(e.created_at).format('YYYY/M/D HH:mm'))}</td>
       <td class="px-3 py-2 text-xs">${esc(OB_EVENT_LABEL[e.action] || e.action)}</td><td class="px-3 py-2 text-xs">${esc(e.actor_name || '')}</td>
-      <td class="px-3 py-2 text-xs text-slate-400 break-all">${esc(detail)}</td></tr>`
+      <td class="px-3 py-2 text-xs text-hq-400 break-all">${esc(detail)}</td></tr>`
   }).join('')
   return `
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4">
       <div class="flex items-center justify-between mb-2">
-        <h3 class="font-bold"><i class="fas fa-clock-rotate-left text-cyan-400 mr-1"></i>操作の記録</h3>
-        ${d.offboarding ? `<a href="/api/hq/offboarding/${Number(d.company.company_id)}/record.csv" class="text-cyan-400 text-xs hover:underline"><i class="fas fa-file-csv mr-1"></i>解約の記録（CSV）</a>` : ''}
+        <h3 class="font-bold"><i class="fas fa-clock-rotate-left text-hq-accent-400 mr-1"></i>操作の記録</h3>
+        ${d.offboarding ? `<a href="/api/hq/offboarding/${Number(d.company.company_id)}/record.csv" class="text-hq-accent-400 text-xs hover:underline"><i class="fas fa-file-csv mr-1"></i>解約の記録（CSV）</a>` : ''}
       </div>
-      <div class="overflow-x-auto"><table class="w-full text-sm"><tbody>${rows || '<tr><td class="text-center text-slate-500 py-4 text-xs">記録はありません</td></tr>'}</tbody></table></div>
+      <div class="overflow-x-auto"><table class="w-full text-sm"><tbody>${rows || '<tr><td class="text-center text-hq-500 py-4 text-xs">記録はありません</td></tr>'}</tbody></table></div>
     </section>`
 }
 
 async function renderOffboardingDetail(cid) {
   loading()
   try { OB_DETAIL = (await axios.get('/api/hq/offboarding/' + Number(cid))).data } catch (e) {
-    $app.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-xl p-6 text-center text-sm text-slate-300">${e.response && e.response.status === 404 ? '企業が見つかりません。' : '読み込めませんでした。'}<a href="#offboarding" class="text-cyan-400 ml-2 hover:underline">一覧へ戻る</a></div>`
+    $app.innerHTML = `<div class="bg-hq-800 border border-hq-700 rounded-xl p-6 text-center text-sm text-hq-300">${e.response && e.response.status === 404 ? '企業が見つかりません。' : '読み込めませんでした。'}<a href="#offboarding" class="text-hq-accent-400 ml-2 hover:underline">一覧へ戻る</a></div>`
     return
   }
   const d = OB_DETAIL, c = d.company
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5">
-      <a href="#offboarding" class="btn btn-outline" style="border-color:#334155;color:#94a3b8"><i class="fas fa-arrow-left"></i></a>
+      <a href="#offboarding" class="btn btn-outline" style="border-color:rgb(var(--color-hq-700));color:rgb(var(--color-hq-400))"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
         <h2 class="text-xl font-bold">${esc(c.company_name)}</h2>
-        <p class="text-sm text-slate-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} <a href="#companies/${Number(c.company_id)}" class="text-cyan-400 text-xs hover:underline ml-2">企業の画面へ</a></p>
+        <p class="text-sm text-hq-400">コード: ${esc(c.company_code)} ｜ ${STATUS_BADGE[c.active_status] || ''} <a href="#companies/${Number(c.company_id)}" class="text-hq-accent-400 text-xs hover:underline ml-2">企業の画面へ</a></p>
       </div>
     </div>
-    <section class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-5">
-      <h3 class="font-bold mb-3"><i class="fas fa-file-contract text-cyan-400 mr-1"></i>契約終了と削除</h3>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-5">
+      <h3 class="font-bold mb-3"><i class="fas fa-file-contract text-hq-accent-400 mr-1"></i>契約終了と削除</h3>
       ${obStatusHtml(d)}
     </section>
     ${obTablesHtml(d)}
@@ -2509,14 +2509,14 @@ const obVal = id => { const el = document.getElementById(id); return el ? el.val
 // 企業の停止（#9423）。確認と理由の入力のうえで利用状態を「停止」にし、その企業の解約・データの画面へ進む
 function showObStop(c) {
   modal(`
-    <h3 class="font-bold text-lg mb-2 text-gray-800"><i class="fas fa-ban text-red-600 mr-1"></i>この企業を停止する</h3>
-    <p class="text-sm text-gray-700 mb-2">「${esc(c.company_name)}」（${esc(c.company_code)}）を停止にします。</p>
-    <ul class="text-xs text-gray-600 list-disc pl-5 mb-3 space-y-1">
+    <h3 class="font-bold text-lg mb-2 text-neutral-800"><i class="fas fa-ban text-danger-600 mr-1"></i>この企業を停止する</h3>
+    <p class="text-sm text-neutral-700 mb-2">「${esc(c.company_name)}」（${esc(c.company_code)}）を停止にします。</p>
+    <ul class="text-xs text-neutral-600 list-disc pl-5 mb-3 space-y-1">
       <li>この企業の管理者・スタッフは全員ログアウトされ、ログインも報告用URLも使えなくなります</li>
       <li>データは消えません。停止の後に、データの書き出しと契約終了の登録に進めます</li>
       <li>企業の画面の「利用状態」で、利用中に戻せます</li>
     </ul>
-    <label class="block text-xs text-gray-600 mb-1">停止する理由 *（変更履歴に残ります）</label>
+    <label class="block text-xs text-neutral-600 mb-1">停止する理由 *（変更履歴に残ります）</label>
     <input id="ob-stop-reason" class="inp" maxlength="500" placeholder="例: 契約終了のため">
     <div class="flex gap-2 mt-4">
       <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
@@ -2641,16 +2641,16 @@ delegate('obFiles', el => withSubmitLock(el, async () => {
     const { data } = await axios.get(`/api/hq/offboarding/${cid}/files`, { params: { offset } })
     box.innerHTML = `
       <div class="overflow-x-auto"><table class="w-full text-xs">
-        <thead><tr class="text-slate-400 border-b border-slate-700"><th class="text-left px-2 py-1">種類</th><th class="text-left px-2 py-1">ファイル</th><th class="text-left px-2 py-1">日時</th><th></th></tr></thead>
-        <tbody>${data.files.map(f => `<tr class="border-b border-slate-700/40">
+        <thead><tr class="text-hq-400 border-b border-hq-700"><th class="text-left px-2 py-1">種類</th><th class="text-left px-2 py-1">ファイル</th><th class="text-left px-2 py-1">日時</th><th></th></tr></thead>
+        <tbody>${data.files.map(f => `<tr class="border-b border-hq-700/40">
           <td class="px-2 py-1">${esc(OB_FILE_LABEL[f.source] || f.source)}</td>
           <td class="px-2 py-1 break-all">${esc(f.file_name || f.r2_key)}</td>
           <td class="px-2 py-1 whitespace-nowrap">${esc(f.created_at || '')}</td>
-          <td class="px-2 py-1"><a class="text-cyan-400 hover:underline" href="/api/hq/offboarding/${cid}/files/${encodeURIComponent(f.source)}/${Number(f.id)}">取得</a></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-slate-500 py-3">ファイルはありません</td></tr>'}</tbody>
+          <td class="px-2 py-1"><a class="text-hq-accent-400 hover:underline" href="/api/hq/offboarding/${cid}/files/${encodeURIComponent(f.source)}/${Number(f.id)}">取得</a></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-hq-500 py-3">ファイルはありません</td></tr>'}</tbody>
       </table></div>
       <div class="flex gap-2 mt-2">
-        ${offset > 0 ? `<button class="text-cyan-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Math.max(0, offset - 100)}">← 前へ</button>` : ''}
-        ${data.next != null ? `<button class="text-cyan-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Number(data.next)}">次へ →</button>` : ''}
+        ${offset > 0 ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Math.max(0, offset - 100)}">← 前へ</button>` : ''}
+        ${data.next != null ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Number(data.next)}">次へ →</button>` : ''}
       </div>`
   } catch (e) { showApiError(e, 'ファイルの一覧を読み込めませんでした') }
 }))

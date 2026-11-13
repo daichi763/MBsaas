@@ -20,6 +20,7 @@ Field OS の画面の一覧です。新しく加わる開発者や外部の開�
 - `/staff`・`/admin`・`/hq` は、それぞれ1つのページ（SPA）で、ハッシュが変わると `route()` が描き直します。
 - 共通の部品は `public/static/common.js` にあります（HTML のエスケープ `esc`・ボタンの処理をまとめる `delegate`・二重送信を防ぐ `withSubmitLock` など）。画面の文字列に値を入れるときは `esc` を通し、`onclick` などの属性に値を埋め込まず、`data-*` と `delegate` を使います。
 - 見た目は Tailwind CSS（`npm run build` で `public/static/style.css` を作ります）と、`card`・`badge`・`btn`・`inp` などのクラスです。
+  色・角丸・影・文字の大きさは `src/input.css` の `:root` の変数（トークン）で決めます（`bg-primary-600`・`text-neutral-500`・`bg-surface` など。一覧と使い方は [design-tokens.md](design-tokens.md)）。
 - 外部のライブラリ（axios・dayjs・Chart.js・flatpickr など）は jsDelivr から、版を固定して読み込みます（`src/index.tsx` の `SRI`）。
 
 ## 2. ページ（URL）と読み込む JS

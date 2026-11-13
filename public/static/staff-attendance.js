@@ -35,7 +35,7 @@
     } else if (parts[1] === 'requests') S.tab = 'requests'
     else if (parts[1] === 'request' && Number(parts[2])) { S.tab = 'requests'; openId = Number(parts[2]) }
     $app.innerHTML = `
-      <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
+      <a href="#more" class="text-sm text-primary-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
       <div class="grid grid-cols-2 gap-2 mb-4" role="tablist">
         <button class="btn ${S.tab === 'timeline' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'timeline'}" onclick="attTab('timeline')"><i class="fas fa-clock"></i>打刻履歴</button>
         <button class="btn ${S.tab === 'requests' ? 'btn-primary' : 'btn-outline'}" role="tab" aria-selected="${S.tab === 'requests'}" onclick="attTab('requests')"><i class="fas fa-file-pen"></i>修正申請</button>
@@ -58,7 +58,7 @@
     const to = S.to || today()
     try { TL = (await axios.get('/api/staff/attendance/timeline', { params: { to, from: dayjs(to).subtract(13, 'day').format('YYYY-MM-DD') } })).data } catch (e) {
       if (!host.isConnected) return
-      host.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-red-600 mb-3">${esc(e && e.response ? errMsg(e, '打刻履歴を読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
+      host.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-danger-600 mb-3">${esc(e && e.response ? errMsg(e, '打刻履歴を読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
         <button class="btn btn-outline" data-action="attReload"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
       return
     }
@@ -69,17 +69,17 @@
     host.innerHTML = `
       <div class="flex items-center justify-between gap-2 mb-3">
         <button class="btn btn-outline text-xs" onclick="attMove(-14)" aria-label="前の2週間"><i class="fas fa-chevron-left"></i>前</button>
-        <label class="text-xs text-gray-500 text-center">${dayjs(TL.from).format('M/D')}〜
+        <label class="text-xs text-neutral-500 text-center">${dayjs(TL.from).format('M/D')}〜
           <input type="date" id="att-to" class="inp py-1 text-xs w-36 inline-block" value="${esc(TL.to)}" max="${esc(today())}" aria-label="この日までの2週間を表示"></label>
         <button class="btn btn-outline text-xs" onclick="attMove(14)" ${TL.to >= today() ? 'disabled' : ''} aria-label="次の2週間">次<i class="fas fa-chevron-right"></i></button>
       </div>
-      ${TL.to < today() ? '<p class="text-center mb-2"><button class="text-xs text-blue-600 underline" onclick="attMove(0)">今日までの表示に戻る</button></p>' : ''}
-      <p class="text-[11px] text-gray-500 mb-3 px-1">報告をタップすると時刻の修正、未報告の項目は打刻漏れの追加を申請できます。承認されるまで記録は変わりません</p>
+      ${TL.to < today() ? '<p class="text-center mb-2"><button class="text-xs text-primary-600 underline" onclick="attMove(0)">今日までの表示に戻る</button></p>' : ''}
+      <p class="text-2xs text-neutral-500 mb-3 px-1">報告をタップすると時刻の修正、未報告の項目は打刻漏れの追加を申請できます。承認されるまで記録は変わりません</p>
       <div class="space-y-3">${Object.keys(byDate).map(d => `
         <section>
-          <h3 class="text-sm font-bold text-gray-700 mb-1.5 px-1">${esc(fmtDate(d))}</h3>
+          <h3 class="text-sm font-bold text-neutral-700 mb-1.5 px-1">${esc(fmtDate(d))}</h3>
           ${byDate[d].map(s => `<div id="att-shift-${Number(s.shift_id)}">${shiftCard(s)}</div>`).join('')}
-        </section>`).join('') || '<p class="text-center text-gray-400 py-10">この期間のシフトはありません</p>'}</div>`
+        </section>`).join('') || '<p class="text-center text-neutral-400 py-10">この期間のシフトはありません</p>'}</div>`
     const picker = document.getElementById('att-to')
     if (picker) picker.addEventListener('change', () => { if (/^\d{4}-\d{2}-\d{2}$/.test(picker.value)) { S.to = picker.value > today() ? today() : picker.value; renderTimeline() } })
     // シフト一覧から開いたときは、そのシフトの位置まで送って目立たせる
@@ -88,7 +88,7 @@
     if (focus) {
       focus.scrollIntoView({ block: 'center' })
       const card = focus.firstElementChild
-      if (card) { card.classList.add('ring-2', 'ring-blue-400'); setTimeout(() => card.classList.remove('ring-2', 'ring-blue-400'), 2500) }
+      if (card) { card.classList.add('ring-2', 'ring-primary-400'); setTimeout(() => card.classList.remove('ring-2', 'ring-primary-400'), 2500) }
     }
   }
   // n 日送る（0 で今日までに戻す）。今日より先には送らない
@@ -117,19 +117,19 @@
       const action = locked ? '' : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
         : expired ? rejectedTag(s, t)
         : `${rejectedTag(s, t)}<button class="btn btn-outline text-xs py-1.5" data-action="attOpenRow" data-id="${Number(s.shift_id)}" data-type="${esc(t)}">${rejectedOf(s, t) ? '再申請' : r ? '修正' : '追加申請'}</button>`
-      return `<li class="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0">
-        <span class="w-20 text-sm text-gray-700 shrink-0">${LABEL[t]}</span>
-        <span class="flex-1 text-sm ${r ? 'font-bold text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${deviceTimeTag(r, s.work_date)}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-[10px] font-normal text-gray-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
+      return `<li class="flex items-center gap-2 py-2 border-b border-neutral-50 last:border-0">
+        <span class="w-20 text-sm text-neutral-700 shrink-0">${LABEL[t]}</span>
+        <span class="flex-1 text-sm ${r ? 'font-bold text-neutral-900' : 'text-neutral-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}${r && r.entry_method === 'proxy' ? ' <span class="badge badge-purple font-normal">管理者が入力</span>' : ''}${deviceTimeTag(r, s.work_date)}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? ` <span class="text-3xs font-normal text-neutral-400">（修正済み${r.original_reported_at ? '・元: ' + esc(showAt(r.original_reported_at, s.work_date)) : ''}）</span>` : ''}</span>
         ${action}</li>`
     }
     return `<div class="card p-3 mb-2">
-      <div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-800 truncate">${esc(s.project_name)}</p>${absent ? '<span class="badge badge-gray">欠勤</span>' : s.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}</div>
-      <p class="text-xs text-gray-500">${esc(formatShiftTime(s.start_time, s.end_time))}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
-      ${s.tentative ? '<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1">管理者の確定待ちのシフトです。確定されるまで打刻の修正・追加は申請できません。勤務した場合は管理者に連絡してください</p>' : ''}
+      <div class="flex items-center justify-between gap-2"><p class="font-bold text-neutral-800 truncate">${esc(s.project_name)}</p>${absent ? '<span class="badge badge-gray">欠勤</span>' : s.tentative ? '<span class="badge badge-yellow">未確定</span>' : ''}</div>
+      <p class="text-xs text-neutral-500">${esc(formatShiftTime(s.start_time, s.end_time))}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
+      ${s.tentative ? '<p class="text-2xs text-warning-800 bg-warning-50 rounded px-2 py-1 mt-1">管理者の確定待ちのシフトです。確定されるまで打刻の修正・追加は申請できません。勤務した場合は管理者に連絡してください</p>' : ''}
       <ul class="mt-1">${(s.tentative ? shown.filter(t => rep[t]) : shown).map(row).join('')}</ul>
-      ${expired ? `<p class="text-[11px] text-gray-600 bg-gray-50 rounded px-2 py-1 mt-1 att-expired"><span class="badge badge-gray font-normal mr-1">期限切れ</span>申請の期限（${esc(fmtDate(s.request_until))}まで）を過ぎたため、アプリからは修正・追加の申請ができません。直したいときは管理者に連絡してください</p>` : ''}
-      ${s.reports.some(r => r.entry_method === 'proxy') && !locked && !expired ? '<p class="text-[11px] text-gray-500 mt-1">「管理者が入力」は、あなたの代わりに管理者が記録した時刻です。違っていたら「修正」から申請してください</p>' : ''}
-      ${!locked && !expired && hidden.length ? `<details class="mt-1"><summary class="text-xs text-gray-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
+      ${expired ? `<p class="text-2xs text-neutral-600 bg-neutral-50 rounded px-2 py-1 mt-1 att-expired"><span class="badge badge-gray font-normal mr-1">期限切れ</span>申請の期限（${esc(fmtDate(s.request_until))}まで）を過ぎたため、アプリからは修正・追加の申請ができません。直したいときは管理者に連絡してください</p>` : ''}
+      ${s.reports.some(r => r.entry_method === 'proxy') && !locked && !expired ? '<p class="text-2xs text-neutral-500 mt-1">「管理者が入力」は、あなたの代わりに管理者が記録した時刻です。違っていたら「修正」から申請してください</p>' : ''}
+      ${!locked && !expired && hidden.length ? `<details class="mt-1"><summary class="text-xs text-neutral-500 py-1 cursor-pointer">この案件で使っていない報告を追加申請する</summary><ul>${hidden.map(row).join('')}</ul></details>` : ''}
     </div>`
   }
 
@@ -205,27 +205,27 @@
     // 同じシフトの報告の一覧（#401）。新規の申請では、ほかの報告も『一緒に直す』でまとめて申請できる（#214）
     const row = (t) => {
       const me = t === form.report_type, r = rep[t], p = pend[t]
-      const tail = me ? '<span class="text-[11px] text-blue-700">この報告</span>'
+      const tail = me ? '<span class="text-2xs text-primary-700">この報告</span>'
         : p ? `<span class="badge badge-yellow">申請中 ${esc(showAt(p.requested_at, s.work_date))}</span>`
-        : form.mode === 'new' ? `<button type="button" class="text-[11px] text-blue-600 underline" data-action="attExtraToggle" data-type="${t}">一緒に直す</button>` : ''
-      return `<li class="py-1 ${me ? 'bg-blue-50 rounded px-1 font-bold' : ''}">
-        <div class="flex items-center gap-2 text-xs"><span class="w-16 shrink-0 text-gray-600">${LABEL[t]}</span><span class="flex-1 ${r ? 'text-gray-900' : 'text-gray-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}</span>${tail}</div>
+        : form.mode === 'new' ? `<button type="button" class="text-2xs text-primary-600 underline" data-action="attExtraToggle" data-type="${t}">一緒に直す</button>` : ''
+      return `<li class="py-1 ${me ? 'bg-primary-50 rounded px-1 font-bold' : ''}">
+        <div class="flex items-center gap-2 text-xs"><span class="w-16 shrink-0 text-neutral-600">${LABEL[t]}</span><span class="flex-1 ${r ? 'text-neutral-900' : 'text-neutral-400'}">${r ? esc(showAt(r.reported_at, s.work_date)) : '未報告'}</span>${tail}</div>
         ${!me && !p && form.mode === 'new' ? `<div class="hidden mt-1" id="att-x-${t}"><input type="datetime-local" class="inp text-sm" data-extra="${t}" min="${minFor(s)}" max="${fmtIn(maxFor(s, t))}"></div>` : ''}</li>`
     }
     const title = form.mode === 'resubmit' ? `再申請（${KIND[form.kind]}）` : `${KIND[form.kind]}の申請`
-    modal(`<div id="att-form"><h3 class="font-bold text-gray-800 mb-1">${title}</h3>
-      <p class="text-sm text-gray-600">${esc(fmtDate(form.work_date))} ${esc(form.title)} ・<b>${LABEL[form.report_type]}</b></p>
-      ${s.settled ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-2"><i class="fas fa-lock mr-1"></i>${esc(SETTLED)}</p>` : ''}
-      ${s.request_until ? `<p class="text-[11px] text-gray-500 mt-1">申請の期限: ${esc(fmtDate(s.request_until))}まで</p>` : ''}
-      ${form.changed ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-2">却下の後に記録が変わりました（今の記録: ${form.before ? esc(showAt(form.before, form.work_date)) : '未報告'}）。今の記録をもとに申請し直します</p>` : ''}
-      ${form.rejected ? `<div class="mt-2 p-2 rounded bg-red-50 text-xs text-red-800">前回の申請（${esc(showAt(form.rejected.requested_at, form.work_date))}）は却下されました。<br>理由: ${esc(form.rejected.reject_reason || '')}<br><span class="text-red-500">この申請は再申請として管理者に届きます</span></div>` : ''}
-      ${form.before ? `<p class="text-xs text-gray-500 mt-2">今の記録: ${esc(showAt(form.before, form.work_date))}</p>` : '<p class="text-xs text-gray-500 mt-2">未報告の打刻を追加します</p>'}
-      <label class="block text-sm text-gray-700 mt-2">${form.kind === 'modify' ? '正しい日時' : '日時'}<input type="datetime-local" id="att-at" class="inp mt-1" value="${esc(value)}" min="${minFor(s)}" max="${fmtIn(maxFor(s, form.report_type))}"></label>
+    modal(`<div id="att-form"><h3 class="font-bold text-neutral-800 mb-1">${title}</h3>
+      <p class="text-sm text-neutral-600">${esc(fmtDate(form.work_date))} ${esc(form.title)} ・<b>${LABEL[form.report_type]}</b></p>
+      ${s.settled ? `<p class="text-2xs text-warning-800 bg-warning-50 rounded px-2 py-1 mt-2"><i class="fas fa-lock mr-1"></i>${esc(SETTLED)}</p>` : ''}
+      ${s.request_until ? `<p class="text-2xs text-neutral-500 mt-1">申請の期限: ${esc(fmtDate(s.request_until))}まで</p>` : ''}
+      ${form.changed ? `<p class="text-2xs text-warning-800 bg-warning-50 rounded px-2 py-1 mt-2">却下の後に記録が変わりました（今の記録: ${form.before ? esc(showAt(form.before, form.work_date)) : '未報告'}）。今の記録をもとに申請し直します</p>` : ''}
+      ${form.rejected ? `<div class="mt-2 p-2 rounded bg-danger-50 text-xs text-danger-800">前回の申請（${esc(showAt(form.rejected.requested_at, form.work_date))}）は却下されました。<br>理由: ${esc(form.rejected.reject_reason || '')}<br><span class="text-danger-500">この申請は再申請として管理者に届きます</span></div>` : ''}
+      ${form.before ? `<p class="text-xs text-neutral-500 mt-2">今の記録: ${esc(showAt(form.before, form.work_date))}</p>` : '<p class="text-xs text-neutral-500 mt-2">未報告の打刻を追加します</p>'}
+      <label class="block text-sm text-neutral-700 mt-2">${form.kind === 'modify' ? '正しい日時' : '日時'}<input type="datetime-local" id="att-at" class="inp mt-1" value="${esc(value)}" min="${minFor(s)}" max="${fmtIn(maxFor(s, form.report_type))}"></label>
       <div id="att-order" class="mt-1"></div>
-      <h4 class="text-xs font-bold text-gray-500 mt-3 mb-0.5">このシフトの報告</h4>
-      <ul class="border-t border-b border-gray-100">${types.map(row).join('')}</ul>
-      ${form.mode === 'new' ? '<p class="text-[11px] text-gray-500 mt-1">前後の報告も違っている場合は『一緒に直す』で、まとめて申請できます（理由は共通）</p>' : ''}
-      <p class="text-sm text-gray-700 mt-3">修正理由（必須）</p>
+      <h4 class="text-xs font-bold text-neutral-500 mt-3 mb-0.5">このシフトの報告</h4>
+      <ul class="border-t border-b border-neutral-100">${types.map(row).join('')}</ul>
+      ${form.mode === 'new' ? '<p class="text-2xs text-neutral-500 mt-1">前後の報告も違っている場合は『一緒に直す』で、まとめて申請できます（理由は共通）</p>' : ''}
+      <p class="text-sm text-neutral-700 mt-3">修正理由（必須）</p>
       <div class="flex flex-wrap gap-1 mt-1">${REASONS.map(t => `<button type="button" class="badge badge-gray" data-action="attReasonPreset" data-text="${esc(t)}">${esc(t)}</button>`).join('')}</div>
       <textarea id="att-reason" rows="3" maxlength="500" class="inp mt-1" placeholder="例: 店舗の電波が悪く、入店報告を送れなかったため">${esc(reason)}</textarea>
       ${attachFieldHtml(s)}
@@ -247,9 +247,9 @@
     // 写真が必須の案件で、入店・退店の打刻漏れを追加するときは、写真の添付を案内する（添付がなくても申請はできる。管理者が確かめて承認する）
     const need = form.kind === 'add' && PHOTO_TYPES.includes(form.report_type) && s.photo_required
     return `<div class="mt-3">
-      <p class="text-sm text-gray-700">写真・画像（任意・${ATTACH_MAX}枚まで）</p>
-      ${need ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1 mt-1"><i class="fas fa-camera mr-1"></i>この案件は${LABEL[form.report_type]}の写真が必須です。店舗で撮った写真や入退館の記録などがあれば添付してください（承認されると報告の写真として残ります）</p>`
-        : '<p class="text-[11px] text-gray-500">店舗の入退館の記録や画面の写しなど、裏付けになる画像があれば添付してください</p>'}
+      <p class="text-sm text-neutral-700">写真・画像（任意・${ATTACH_MAX}枚まで）</p>
+      ${need ? `<p class="text-2xs text-warning-800 bg-warning-50 rounded px-2 py-1 mt-1"><i class="fas fa-camera mr-1"></i>この案件は${LABEL[form.report_type]}の写真が必須です。店舗で撮った写真や入退館の記録などがあれば添付してください（承認されると報告の写真として残ります）</p>`
+        : '<p class="text-2xs text-neutral-500">店舗の入退館の記録や画面の写しなど、裏付けになる画像があれば添付してください</p>'}
       <div id="att-thumbs" class="flex flex-wrap gap-2 mt-1"></div>
       <label class="btn btn-outline text-xs mt-1" id="att-file-label"><i class="fas fa-paperclip"></i>画像を選ぶ<input type="file" id="att-file" accept="image/jpeg,image/png,image/*" multiple class="hidden"></label>
     </div>`
@@ -257,7 +257,7 @@
   function drawThumbs() {
     const box = document.getElementById('att-thumbs'); if (!box) return
     box.innerHTML = form.files.map((f, i) => `<div class="relative"><img src="${esc(f.url)}" alt="添付${i + 1}" class="w-20 h-20 object-cover rounded border">
-      <button type="button" class="absolute -top-1.5 -right-1.5 bg-white rounded-full w-5 h-5 text-xs text-gray-600 border" data-action="attFileRemove" data-idx="${i}" aria-label="添付${i + 1}を外す">×</button></div>`).join('')
+      <button type="button" class="absolute -top-1.5 -right-1.5 bg-surface rounded-full w-5 h-5 text-xs text-neutral-600 border" data-action="attFileRemove" data-idx="${i}" aria-label="添付${i + 1}を外す">×</button></div>`).join('')
     const label = document.getElementById('att-file-label'); if (label) label.classList.toggle('hidden', form.files.length >= ATTACH_MAX)
   }
   // 選んだ画像を圧縮して添付の候補にする（HEIC など読めない画像は理由を出す）
@@ -274,7 +274,7 @@
     const input = document.getElementById('att-file'); if (!input) return
     input.addEventListener('change', async () => {
       const msg = document.getElementById('att-msg')
-      await addFiles([...input.files], (m) => { if (msg) msg.innerHTML = `<p class="text-xs text-red-600">${esc(m)}</p>` })
+      await addFiles([...input.files], (m) => { if (msg) msg.innerHTML = `<p class="text-xs text-danger-600">${esc(m)}</p>` })
       input.value = ''
       drawThumbs()
     })
@@ -329,7 +329,7 @@
     // 一緒に直す報告どうしの矛盾は1回だけ出す
     const done = new Set(), issues = []
     for (const i of items) { issues.push(...orderIssues(map, i.report_type, i.requested_at, done)); done.add(i.report_type) }
-    box.innerHTML = issues.length ? `<p class="text-xs text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>${issues.map(esc).join(' / ')}</p>` : ''
+    box.innerHTML = issues.length ? `<p class="text-xs text-danger-600"><i class="fas fa-triangle-exclamation mr-1"></i>${issues.map(esc).join(' / ')}</p>` : ''
   }
   function resetConfirm() {
     if (!form || !form.confirmed) return
@@ -350,15 +350,15 @@
     ta.value = ta.value.trim() ? `${ta.value.trim()}。${el.dataset.text}` : el.dataset.text
     ta.focus()
   })
-  const warnBox = (ws) => `<div class="p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>報告の順序に矛盾があります</p>
+  const warnBox = (ws) => `<div class="p-2.5 rounded-lg bg-warning-50 text-xs text-warning-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>報告の順序に矛盾があります</p>
     <ul class="list-disc pl-4 space-y-0.5">${ws.map(w => `<li>${esc(w)}</li>`).join('')}</ul><p class="mt-1">打刻漏れの追加は、このまま申請できます（管理者が確認して承認します）</p></div>`
-  const noticeBox = (ns) => `<div class="p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800 mt-1">${ns.map(n => `<p><i class="fas fa-circle-info mr-1"></i>${esc(n)}</p>`).join('')}</div>`
+  const noticeBox = (ns) => `<div class="p-2.5 rounded-lg bg-warning-50 text-xs text-warning-800 mt-1">${ns.map(n => `<p><i class="fas fa-circle-info mr-1"></i>${esc(n)}</p>`).join('')}</div>`
   async function submitForm(btn) {
     const items = collect()
     const reason = document.getElementById('att-reason').value.trim()
     const msg = document.getElementById('att-msg')
-    if (items.some(i => !i.requested_at)) { msg.innerHTML = '<p class="text-xs text-red-600">日時を入力してください</p>'; return }
-    if (!reason) { msg.innerHTML = '<p class="text-xs text-red-600">修正理由を入力してください</p>'; return }
+    if (items.some(i => !i.requested_at)) { msg.innerHTML = '<p class="text-xs text-danger-600">日時を入力してください</p>'; return }
+    if (!reason) { msg.innerHTML = '<p class="text-xs text-danger-600">修正理由を入力してください</p>'; return }
     const bulk = items.length > 1
     const url = form.mode === 'resubmit' ? `/api/staff/corrections/${form.from_id}/resubmit` : bulk ? '/api/staff/corrections/bulk' : '/api/staff/corrections'
     const body = bulk ? { shift_id: form.shift_id, reason, items } : { shift_id: form.shift_id, report_type: form.report_type, kind: form.kind, requested_at: items[0].requested_at, reason }
@@ -387,7 +387,7 @@
           + (failed ? `（画像${failed}枚を送れませんでした。修正申請の一覧の『写真を添付』から送り直してください）` : ''))
         S.tab === 'requests' ? renderRequests() : renderTimeline()
       } catch (e) {
-        msg.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e))}</p>`
+        msg.innerHTML = `<p class="text-xs text-danger-600">${esc(errMsg(e))}</p>`
       }
     })
   }
@@ -405,28 +405,28 @@
     // 読み込めなかったら、理由と再読み込みのボタンを出す（#524）
     try { LIST = (await axios.get('/api/staff/corrections')).data.corrections } catch (e) {
       if (!host.isConnected) return
-      host.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-red-600 mb-3">${esc(e && e.response ? errMsg(e, '修正申請を読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
+      host.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-danger-600 mb-3">${esc(e && e.response ? errMsg(e, '修正申請を読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
         <button class="btn btn-outline" data-action="attReloadRequests"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
       return
     }
     if (!host.isConnected) return
     host.innerHTML = `<div class="space-y-2">${LIST.map(c => `
       <div class="card p-3" id="att-req-${c.correction_id}">
-        <div class="flex items-center justify-between gap-2">${statusBadge(c.status)}<span class="text-[11px] text-gray-400">申請 ${esc(dayjs(c.created_at).format('M/D HH:mm'))}</span></div>
-        <p class="font-bold text-gray-800 mt-1.5">${esc(fmtDate(c.work_date))} ${LABEL[c.report_type] || ''} <span class="text-xs font-normal text-gray-500">${KIND[c.kind]}</span></p>
-        <p class="text-xs text-gray-500 truncate">${esc(c.project_name || '')}</p>
-        ${c.by_admin ? `<p class="text-[11px] text-blue-700 bg-blue-50 rounded px-2 py-1 mt-1"><i class="fas fa-user-tie mr-1"></i>管理者（${esc(c.requested_by_name || '')}）が代わりに申請しました${c.status === 'pending' ? '。取り消しは管理者が行います' : ''}</p>` : ''}
+        <div class="flex items-center justify-between gap-2">${statusBadge(c.status)}<span class="text-2xs text-neutral-400">申請 ${esc(dayjs(c.created_at).format('M/D HH:mm'))}</span></div>
+        <p class="font-bold text-neutral-800 mt-1.5">${esc(fmtDate(c.work_date))} ${LABEL[c.report_type] || ''} <span class="text-xs font-normal text-neutral-500">${KIND[c.kind]}</span></p>
+        <p class="text-xs text-neutral-500 truncate">${esc(c.project_name || '')}</p>
+        ${c.by_admin ? `<p class="text-2xs text-primary-700 bg-primary-50 rounded px-2 py-1 mt-1"><i class="fas fa-user-tie mr-1"></i>管理者（${esc(c.requested_by_name || '')}）が代わりに申請しました${c.status === 'pending' ? '。取り消しは管理者が行います' : ''}</p>` : ''}
         <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b></p>
-        <p class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">理由: ${esc(c.reason)}</p>
-        ${Number(c.attachment_count) ? `<p class="text-[11px] text-gray-500 mt-1"><i class="fas fa-paperclip mr-1"></i>添付 ${Number(c.attachment_count)}枚</p>` : ''}
-        ${c.order_warnings.length ? `<p class="text-[11px] text-amber-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${c.order_warnings.map(esc).join(' / ')}</p>` : ''}
-        ${c.status === 'approved' ? `<p class="text-xs text-emerald-700 mt-1.5">承認: ${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}</p>` : ''}
-        ${c.status === 'approved' && c.applied_while_settled ? '<p class="text-[11px] text-amber-800 mt-1">精算が確定済みのシフトのため、支払額は変わっていません（管理者が別途対応します）</p>' : ''}
-        ${c.status === 'pending' && c.settled ? '<p class="text-[11px] text-amber-800 mt-1">精算が確定済みのシフトです。承認されても支払額は自動では変わりません</p>' : ''}
-        ${c.status === 'rejected' ? `<div class="mt-1.5 p-2 rounded bg-red-50 text-xs text-red-800">却下の理由: ${esc(c.reject_reason || '')}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}<br><span class="text-red-500">${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}</span></div>` : ''}
-        ${c.status === 'rejected' && c.superseded_by ? `<p class="text-[11px] text-gray-500 mt-1">この報告は、後の申請 #${Number(c.superseded_by)} で申請し直しています</p>` : ''}
-        ${c.status === 'cancelled' && c.cancel_reason_label ? `<p class="text-xs text-gray-600 mt-1.5">${esc(c.cancel_reason_label)}、自動で取り消されました。勤怠の記録は変わっていません</p>` : ''}
-        ${c.resubmitted_from ? `<p class="text-[11px] text-gray-400 mt-1">再申請（元の申請 #${Number(c.resubmitted_from)}）</p>` : ''}
+        <p class="text-xs text-neutral-600 mt-1 whitespace-pre-wrap">理由: ${esc(c.reason)}</p>
+        ${Number(c.attachment_count) ? `<p class="text-2xs text-neutral-500 mt-1"><i class="fas fa-paperclip mr-1"></i>添付 ${Number(c.attachment_count)}枚</p>` : ''}
+        ${c.order_warnings.length ? `<p class="text-2xs text-warning-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${c.order_warnings.map(esc).join(' / ')}</p>` : ''}
+        ${c.status === 'approved' ? `<p class="text-xs text-success-700 mt-1.5">承認: ${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}</p>` : ''}
+        ${c.status === 'approved' && c.applied_while_settled ? '<p class="text-2xs text-warning-800 mt-1">精算が確定済みのシフトのため、支払額は変わっていません（管理者が別途対応します）</p>' : ''}
+        ${c.status === 'pending' && c.settled ? '<p class="text-2xs text-warning-800 mt-1">精算が確定済みのシフトです。承認されても支払額は自動では変わりません</p>' : ''}
+        ${c.status === 'rejected' ? `<div class="mt-1.5 p-2 rounded bg-danger-50 text-xs text-danger-800">却下の理由: ${esc(c.reject_reason || '')}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}<br><span class="text-danger-500">${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}</span></div>` : ''}
+        ${c.status === 'rejected' && c.superseded_by ? `<p class="text-2xs text-neutral-500 mt-1">この報告は、後の申請 #${Number(c.superseded_by)} で申請し直しています</p>` : ''}
+        ${c.status === 'cancelled' && c.cancel_reason_label ? `<p class="text-xs text-neutral-600 mt-1.5">${esc(c.cancel_reason_label)}、自動で取り消されました。勤怠の記録は変わっていません</p>` : ''}
+        ${c.resubmitted_from ? `<p class="text-2xs text-neutral-400 mt-1">再申請（元の申請 #${Number(c.resubmitted_from)}）</p>` : ''}
         <div class="flex gap-2 mt-2">
           <button class="btn btn-outline text-xs flex-1" data-action="attDetail" data-id="${c.correction_id}">経緯を見る</button>
           ${c.status === 'pending' && c.mine && Number(c.attachment_count) < ATTACH_MAX ? `<button class="btn btn-outline text-xs flex-1" data-action="attAttach" data-id="${Number(c.correction_id)}" data-count="${Number(c.attachment_count) || 0}"><i class="fas fa-paperclip"></i>写真を添付</button>` : ''}
@@ -434,12 +434,12 @@
           ${c.status === 'rejected' && c.mine && !c.resubmitted_count && !c.superseded_by ? `<button class="btn btn-primary text-xs flex-1" data-action="attResubmit" data-id="${c.correction_id}">修正して再申請</button>` : ''}
           ${c.by_admin ? `<button class="btn btn-outline text-xs flex-1" data-action="attConsult" data-id="${Number(c.correction_id)}">管理者に相談する</button>` : ''}
         </div>
-      </div>`).join('') || '<p class="text-center text-gray-400 py-10">申請はありません</p>'}</div>`
+      </div>`).join('') || '<p class="text-center text-neutral-400 py-10">申請はありません</p>'}</div>`
     const focus = requestIdFromHash()
     if (!focus) return
     const el = document.getElementById(`att-req-${focus}`)
-    if (el) { el.classList.add('ring-2', 'ring-blue-400'); el.scrollIntoView({ block: 'center' }) }
-    else host.insertAdjacentHTML('afterbegin', '<p class="text-xs text-gray-500 mb-2 px-1">お知らせの申請は一覧にありません（新しい200件まで表示しています）</p>')
+    if (el) { el.classList.add('ring-2', 'ring-primary-400'); el.scrollIntoView({ block: 'center' }) }
+    else host.insertAdjacentHTML('afterbegin', '<p class="text-xs text-neutral-500 mb-2 px-1">お知らせの申請は一覧にありません（新しい200件まで表示しています）</p>')
   }
   // 申請を開く（通知・メールのリンク #306。staff.js の route が #attendance/request/:id のときに呼ぶ）
   window.attOpenRequest = function (id) {
@@ -489,19 +489,19 @@
   window.renderStaffNotifications = async function () {
     loading()
     // 読み込めなかったら、再読み込みのボタンを出す（#524。staff.js の showLoadError）
-    let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { if (typeof showLoadError === 'function') showLoadError(e); else $app.innerHTML = `<p class="text-red-600 text-sm">${esc(errMsg(e))}</p>`; return }
+    let d; try { d = (await axios.get('/api/staff/notifications')).data } catch (e) { if (typeof showLoadError === 'function') showLoadError(e); else $app.innerHTML = `<p class="text-danger-600 text-sm">${esc(errMsg(e))}</p>`; return }
     if ((location.hash || '').slice(1).split('/')[0] !== 'notifications') return // 読み込み中にほかの画面へ移った
     NOTIF_LIST = d.notifications
     $app.innerHTML = `
-      <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
-      <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知</h2>
-        ${d.unread ? '<button class="text-xs text-blue-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
+      <a href="#more" class="text-sm text-primary-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
+      <div class="flex items-center justify-between mb-3 px-1"><h2 class="font-bold text-neutral-800"><i class="fas fa-bell text-primary-600 mr-1"></i>通知</h2>
+        ${d.unread ? '<button class="text-xs text-primary-600" onclick="notifReadAllStaff()">すべて既読にする</button>' : ''}</div>
       <div class="space-y-2">${d.notifications.map(n => `
-        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" data-action="notifOpenStaff" data-id="${n.notification_id}">
-          <div class="flex items-center gap-2">${n.read_at ? '<span class="badge badge-gray">既読</span>' : '<span class="badge badge-blue">未読</span>'}<span class="text-[11px] text-gray-400 ml-auto">${esc(dayjs(n.created_at.replace(' ', 'T')).format('M/D HH:mm'))}</span></div>
-          <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
-          <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
-        </button>`).join('') || '<p class="text-center text-gray-400 py-10">通知はありません</p>'}</div>`
+        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-primary-200'}" data-action="notifOpenStaff" data-id="${n.notification_id}">
+          <div class="flex items-center gap-2">${n.read_at ? '<span class="badge badge-gray">既読</span>' : '<span class="badge badge-blue">未読</span>'}<span class="text-2xs text-neutral-400 ml-auto">${esc(dayjs(n.created_at.replace(' ', 'T')).format('M/D HH:mm'))}</span></div>
+          <p class="font-bold text-neutral-800 mt-1 text-sm">${esc(n.title)}</p>
+          <p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
+        </button>`).join('') || '<p class="text-center text-neutral-400 py-10">通知はありません</p>'}</div>`
   }
   // 通知の行き先: シフト・募集・日報のコメント・登録情報の変更申請・休暇の通知は、画面の登録（staff.js の staffScreen の notify）で決める。
   // それ以外は、お知らせの確認のお願い（#191）はそのお知らせ、相談への返信は相談・連絡（#320）、
@@ -532,13 +532,13 @@
   window.attDetail = async function (id) {
     let d; try { d = (await axios.get(`/api/staff/corrections/${id}`)).data } catch (e) { toast(errMsg(e)); return }
     const c = d.correction
-    modal(`<h3 class="font-bold text-gray-800 mb-1">${LABEL[c.report_type]}（${KIND[c.kind]}）</h3>
-      <p class="text-sm text-gray-600 mb-3">${esc(fmtDate(c.work_date))} ${esc(c.project_name || '')} ${statusBadge(c.status)}</p>
-      <h4 class="text-xs font-bold text-gray-500 mb-1">この申請の経緯</h4>
-      <ol class="space-y-1.5 mb-3">${d.events.map(e => `<li class="text-xs"><span class="text-gray-400">${esc(dayjs(e.created_at).format('M/D HH:mm'))}</span> ${EVENT[e.event] || esc(e.event)} ・${esc(e.actor_name || '')}</li>`).join('')}</ol>
-      <h4 class="text-xs font-bold text-gray-500 mb-1">同じ報告の申請</h4>
+    modal(`<h3 class="font-bold text-neutral-800 mb-1">${LABEL[c.report_type]}（${KIND[c.kind]}）</h3>
+      <p class="text-sm text-neutral-600 mb-3">${esc(fmtDate(c.work_date))} ${esc(c.project_name || '')} ${statusBadge(c.status)}</p>
+      <h4 class="text-xs font-bold text-neutral-500 mb-1">この申請の経緯</h4>
+      <ol class="space-y-1.5 mb-3">${d.events.map(e => `<li class="text-xs"><span class="text-neutral-400">${esc(dayjs(e.created_at).format('M/D HH:mm'))}</span> ${EVENT[e.event] || esc(e.event)} ・${esc(e.actor_name || '')}</li>`).join('')}</ol>
+      <h4 class="text-xs font-bold text-neutral-500 mb-1">同じ報告の申請</h4>
       <ul class="space-y-1 mb-4">${d.history.map(h => `<li class="text-xs ${h.correction_id === c.correction_id ? 'font-bold' : ''}">#${h.correction_id} ${(STATUS[h.status] || [h.status])[0]} ・${esc(showAt(h.requested_at, c.work_date))}${h.reject_reason ? ' ・却下の理由: ' + esc(h.reject_reason) : ''}</li>`).join('')}</ul>
-      ${(d.attachments || []).length ? `<h4 class="text-xs font-bold text-gray-500 mb-1">添付した画像</h4><div class="flex flex-wrap gap-2 mb-4">${d.attachments.map(a => `<a href="/api/staff/corrections/attachments/${Number(a.attachment_id)}" target="_blank" rel="noopener" class="block border rounded overflow-hidden"><img src="/api/staff/corrections/attachments/${Number(a.attachment_id)}" alt="添付の画像" loading="lazy" class="w-20 h-20 object-cover bg-gray-100"></a>`).join('')}</div>` : ''}
+      ${(d.attachments || []).length ? `<h4 class="text-xs font-bold text-neutral-500 mb-1">添付した画像</h4><div class="flex flex-wrap gap-2 mb-4">${d.attachments.map(a => `<a href="/api/staff/corrections/attachments/${Number(a.attachment_id)}" target="_blank" rel="noopener" class="block border rounded overflow-hidden"><img src="/api/staff/corrections/attachments/${Number(a.attachment_id)}" alt="添付の画像" loading="lazy" class="w-20 h-20 object-cover bg-neutral-100"></a>`).join('')}</div>` : ''}
       <button class="btn btn-outline w-full" onclick="closeModal()">閉じる</button>`)
   }
   // ホームの『報告漏れ』から開く（#483）: 打刻履歴（直近2週間）を出してから、そのシフト・報告の打刻漏れの追加の申請を開く
@@ -575,7 +575,7 @@
     let data
     try { data = (await axios.get('/api/staff/pay', { params: { month } })).data } catch (e) {
       if ((location.hash || '').slice(1).split('/')[0] !== 'pay') return
-      $app.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-red-600 mb-3">${esc(e && e.response ? errMsg(e, '読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
+      $app.innerHTML = `<div class="card p-4 text-center" role="alert"><p class="text-sm text-danger-600 mb-3">${esc(e && e.response ? errMsg(e, '読み込めませんでした') : '通信できませんでした。電波の良い場所で再読み込みしてください')}</p>
         <button class="btn btn-outline" data-action="payReload"><i class="fas fa-rotate-right"></i>再読み込み</button></div>`
       return
     }
@@ -591,37 +591,37 @@
     const d = PAY, sm = d.summary, pay = sm.pay
     const prev = dayjs(d.month + '-01').subtract(1, 'month').format('YYYY-MM'), next = dayjs(d.month + '-01').add(1, 'month').format('YYYY-MM')
     $app.innerHTML = `
-      <a href="#more" class="text-sm text-blue-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
+      <a href="#more" class="text-sm text-primary-600 mb-3 inline-block"><i class="fas fa-chevron-left mr-1"></i>その他へ戻る</a>
       <div class="flex items-center justify-between gap-2 mb-3">
         <button class="btn btn-outline" data-action="payMonth" data-month="${esc(prev)}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
-        <h2 class="font-bold text-gray-800">${esc(dayjs(d.month + '-01').format('YYYY年M月'))}</h2>
+        <h2 class="font-bold text-neutral-800">${esc(dayjs(d.month + '-01').format('YYYY年M月'))}</h2>
         <button class="btn btn-outline" data-action="payMonth" data-month="${esc(next)}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
       </div>
       <section class="card p-4 mb-4" id="pay-summary">
         <div class="grid grid-cols-2 gap-3 text-center">
-          <div><p class="text-[11px] text-gray-500">勤務した日数</p><p class="text-xl font-bold text-gray-800">${Number(sm.worked_days)}日</p></div>
-          <div><p class="text-[11px] text-gray-500">実働時間の合計</p><p class="text-xl font-bold text-gray-800">${esc(hrsText(sm.worked_hours))}</p></div>
+          <div><p class="text-2xs text-neutral-500">勤務した日数</p><p class="text-xl font-bold text-neutral-800">${Number(sm.worked_days)}日</p></div>
+          <div><p class="text-2xs text-neutral-500">実働時間の合計</p><p class="text-xl font-bold text-neutral-800">${esc(hrsText(sm.worked_hours))}</p></div>
         </div>
-        ${sm.scheduled_days ? `<p class="text-xs text-gray-500 text-center mt-2">これからの予定: ${Number(sm.scheduled_days)}日・${esc(hrsText(sm.scheduled_hours))}</p>` : ''}
-        ${pay ? `<div class="grid grid-cols-2 gap-3 text-center mt-3 pt-3 border-t border-gray-100">
-          <div><p class="text-[11px] text-gray-500">支払の見込み（月の合計）</p><p class="text-lg font-bold text-gray-800">${esc(yenText(pay.estimate_total))}</p></div>
-          <div><p class="text-[11px] text-gray-500">うち確定済み</p><p class="text-lg font-bold text-emerald-700">${esc(yenText(pay.confirmed_total))}</p></div>
+        ${sm.scheduled_days ? `<p class="text-xs text-neutral-500 text-center mt-2">これからの予定: ${Number(sm.scheduled_days)}日・${esc(hrsText(sm.scheduled_hours))}</p>` : ''}
+        ${pay ? `<div class="grid grid-cols-2 gap-3 text-center mt-3 pt-3 border-t border-neutral-100">
+          <div><p class="text-2xs text-neutral-500">支払の見込み（月の合計）</p><p class="text-lg font-bold text-neutral-800">${esc(yenText(pay.estimate_total))}</p></div>
+          <div><p class="text-2xs text-neutral-500">うち確定済み</p><p class="text-lg font-bold text-success-700">${esc(yenText(pay.confirmed_total))}</p></div>
         </div>
-        ${pay.unset ? `<p class="text-[11px] text-amber-700 mt-1 text-center">単価が決まっていないシフトが ${Number(pay.unset)}件 あります（合計に含みません）</p>` : ''}
-        <p class="text-[11px] text-gray-400 mt-1">見込みは今の予定・実績での計算です。確定済みは、会社が精算で確定した金額です（税・社会保険などを差し引く前）</p>` : ''}
-        <p class="text-[11px] text-gray-400 mt-2">実働は、時給の計算に使う時間です（休憩を除く）。予定の時間の範囲で数える案件では、予定より長く働いた分は「延長を申請」から申請してください</p>
+        ${pay.unset ? `<p class="text-2xs text-warning-700 mt-1 text-center">単価が決まっていないシフトが ${Number(pay.unset)}件 あります（合計に含みません）</p>` : ''}
+        <p class="text-2xs text-neutral-400 mt-1">見込みは今の予定・実績での計算です。確定済みは、会社が精算で確定した金額です（税・社会保険などを差し引く前）</p>` : ''}
+        <p class="text-2xs text-neutral-400 mt-2">実働は、時給の計算に使う時間です（休憩を除く）。予定の時間の範囲で数える案件では、予定より長く働いた分は「延長を申請」から申請してください</p>
       </section>
-      <div class="space-y-2" id="pay-list">${d.shifts.map(shiftCard).join('') || '<p class="text-center text-gray-400 py-10">この月の勤務はありません</p>'}</div>`
+      <div class="space-y-2" id="pay-list">${d.shifts.map(shiftCard).join('') || '<p class="text-center text-neutral-400 py-10">この月の勤務はありません</p>'}</div>`
   }
 
   function requestRow(q) {
     const what = q.kind === 'transport'
       ? `${esc(yenText(q.status === 'approved' && q.approved_amount != null ? q.approved_amount : q.amount))}（${q.round_trip ? '往復' : '片道'}・${esc(q.route || '')}）`
       : `終了 ${esc(q.before_end_time || '')} → ${esc(q.status === 'approved' && q.approved_end_time ? q.approved_end_time : q.new_end_time)}`
-    const note = q.decision_note && q.status !== 'pending' ? `<span class="block text-gray-500">管理者より: ${esc(q.decision_note)}</span>` : ''
-    const cancel = q.status === 'pending' ? `<button class="text-[11px] text-gray-500 underline shrink-0" data-action="payReqCancel" data-id="${Number(q.request_id)}">取り消す</button>` : ''
+    const note = q.decision_note && q.status !== 'pending' ? `<span class="block text-neutral-500">管理者より: ${esc(q.decision_note)}</span>` : ''
+    const cancel = q.status === 'pending' ? `<button class="text-2xs text-neutral-500 underline shrink-0" data-action="payReqCancel" data-id="${Number(q.request_id)}">取り消す</button>` : ''
     return `<li class="flex items-start gap-2 py-1 text-xs"><span class="shrink-0">${reqBadge(q.status)}</span>
-      <span class="flex-1 text-gray-700">${esc(KIND_LABEL[q.kind] || q.kind)}: ${what}${note}${receiptLine(q)}</span>${cancel}</li>`
+      <span class="flex-1 text-neutral-700">${esc(KIND_LABEL[q.kind] || q.kind)}: ${what}${note}${receiptLine(q)}</span>${cancel}</li>`
   }
 
   // ---------- 領収書の写真（#273。交通費の申請に1枚・任意） ----------
@@ -631,12 +631,12 @@
     if (q.kind !== 'transport') return ''
     const id = Number(q.request_id)
     if (q.has_receipt) {
-      return `<button type="button" class="mt-1 flex items-center gap-2 text-blue-600" data-action="payReceiptView" data-id="${id}" aria-label="領収書の写真を見る">
-        <img src="${esc(receiptUrl(q))}" alt="" loading="lazy" class="w-10 h-10 object-cover rounded border border-gray-200 bg-gray-100">
+      return `<button type="button" class="mt-1 flex items-center gap-2 text-primary-600" data-action="payReceiptView" data-id="${id}" aria-label="領収書の写真を見る">
+        <img src="${esc(receiptUrl(q))}" alt="" loading="lazy" class="w-10 h-10 object-cover rounded border border-neutral-200 bg-neutral-100">
         <span class="underline"><i class="fas fa-receipt mr-1"></i>領収書の写真${q.status === 'pending' ? '（確認・差し替え）' : ''}</span></button>`
     }
     if (q.status !== 'pending') return ''
-    return `<button type="button" class="mt-1 block text-blue-600 underline" data-action="payReceiptAttach" data-id="${id}"><i class="fas fa-camera mr-1"></i>領収書の写真を付ける（任意）</button>`
+    return `<button type="button" class="mt-1 block text-primary-600 underline" data-action="payReceiptAttach" data-id="${id}"><i class="fas fa-camera mr-1"></i>領収書の写真を付ける（任意）</button>`
   }
   const findRequest = (id) => PAY && PAY.shifts.flatMap(s => s.requests || []).find(q => q.request_id === id)
   // 端末で縮小（staff.js の compressImage）してから送る。送れなければ理由を返す
@@ -650,11 +650,11 @@
   delegate('payReceiptView', (el) => {
     const q = findRequest(Number(el.dataset.id)); if (!q || !q.has_receipt) return
     const url = receiptUrl(q)
-    modal(`<h3 class="font-bold text-gray-800 mb-1">領収書の写真</h3>
-      <p class="text-sm text-gray-600 mb-3">交通費 ${esc(yenText(q.amount))}（${q.round_trip ? '往復' : '片道'}・${esc(q.route || '')}）</p>
-      <a href="${esc(url)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden bg-gray-50"><img src="${esc(url)}" alt="領収書の写真" class="w-full max-h-[60vh] object-contain"></a>
-      ${q.receipt_uploaded_at ? `<p class="text-[11px] text-gray-400 mt-1">添付 ${esc(dayjs(q.receipt_uploaded_at).format('M/D HH:mm'))}・タップで大きく表示</p>` : ''}
-      ${q.status === 'pending' ? '<p class="text-[11px] text-gray-500 mt-2">承認されるまでは差し替えられます</p>' : ''}
+    modal(`<h3 class="font-bold text-neutral-800 mb-1">領収書の写真</h3>
+      <p class="text-sm text-neutral-600 mb-3">交通費 ${esc(yenText(q.amount))}（${q.round_trip ? '往復' : '片道'}・${esc(q.route || '')}）</p>
+      <a href="${esc(url)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden bg-neutral-50"><img src="${esc(url)}" alt="領収書の写真" class="w-full max-h-[60vh] object-contain"></a>
+      ${q.receipt_uploaded_at ? `<p class="text-2xs text-neutral-400 mt-1">添付 ${esc(dayjs(q.receipt_uploaded_at).format('M/D HH:mm'))}・タップで大きく表示</p>` : ''}
+      ${q.status === 'pending' ? '<p class="text-2xs text-neutral-500 mt-2">承認されるまでは差し替えられます</p>' : ''}
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
         ${q.status === 'pending' ? `<button class="btn btn-primary flex-1" data-action="payReceiptAttach" data-id="${Number(q.request_id)}"><i class="fas fa-camera"></i>差し替える</button>` : ''}</div>`)
   })
@@ -684,8 +684,8 @@
   function drawNewReceipt() {
     const box = document.getElementById('pay-receipt-preview'), label = document.getElementById('pay-receipt-label'); if (!box) return
     box.innerHTML = NEW_RECEIPT && NEW_RECEIPT.url ? `<div class="relative inline-block"><img src="${esc(NEW_RECEIPT.url)}" alt="選んだ領収書の写真" class="w-24 h-24 object-cover rounded border">
-      <button type="button" class="absolute -top-1.5 -right-1.5 bg-white rounded-full w-5 h-5 text-xs text-gray-600 border" data-action="payReceiptClear" aria-label="選んだ写真を外す">×</button></div>`
-      : NEW_RECEIPT && NEW_RECEIPT.busy ? '<p class="text-xs text-gray-500"><span class="spin"></span> 写真を準備しています…</p>' : ''
+      <button type="button" class="absolute -top-1.5 -right-1.5 bg-surface rounded-full w-5 h-5 text-xs text-neutral-600 border" data-action="payReceiptClear" aria-label="選んだ写真を外す">×</button></div>`
+      : NEW_RECEIPT && NEW_RECEIPT.busy ? '<p class="text-xs text-neutral-500"><span class="spin"></span> 写真を準備しています…</p>' : ''
     if (label) label.classList.toggle('hidden', !!NEW_RECEIPT)
   }
   delegate('payReceiptClear', () => { clearNewReceipt(); drawNewReceipt() })
@@ -716,7 +716,7 @@
     if (!m) return ''
     const hm = (v) => { const n = Math.round(Number(v) || 0); const h = Math.floor(n / 60), mm = n % 60; return `${h ? h + '時間' : ''}${mm ? mm + '分' : ''}` }
     const list = [['深夜', m.night], ['時間外', m.overtime], ['休日', m.holiday]].filter(([, v]) => Number(v) > 0).map(([l, v]) => `${l} ${hm(v)}`)
-    return list.length ? `<span class="text-gray-500">（${esc(list.join('・'))}）</span>` : ''
+    return list.length ? `<span class="text-neutral-500">（${esc(list.join('・'))}）</span>` : ''
   }
   function payBox(s) {
     const p = s.pay
@@ -733,7 +733,7 @@
       if (p.premium) parts += ` ＋ <span class="pay-premium">割増 ${esc(yenText(p.premium))}${premiumMinutesText(p.premium_minutes)}</span>`
       if (p.adjust) parts += ` ${p.adjust > 0 ? '＋' : '−'} 調整 ${esc(yenText(Math.abs(p.adjust)))}`
     }
-    return `<div class="mt-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700">${parts}
+    return `<div class="mt-1.5 rounded-lg bg-neutral-50 px-2.5 py-1.5 text-xs text-neutral-700">${parts}
       <span class="block font-bold mt-0.5">合計 ${esc(yenText(p.total))} ${state}</span></div>`
   }
 
@@ -741,25 +741,25 @@
     const cancel = s.kind === 'cancel'
     const src = s.actual_source === 'manual' ? '<span class="badge badge-purple">管理者が入力</span>' : s.actual_source === 'report' ? '<span class="badge badge-gray">報告から</span>' : ''
     let actual
-    if (cancel) actual = '<p class="text-xs text-gray-500">欠勤（補償の対象）</p>'
-    else if (s.actual_start && s.actual_end) actual = `<p class="text-sm text-gray-800">実働 <b>${esc(formatShiftTime(s.actual_start, s.actual_end))}</b>${s.break_minutes ? `（休憩${Number(s.break_minutes)}分）` : ''}・<b>${esc(hrsText(s.hours))}</b> ${src}</p>`
-    else if (s.started) actual = `<p class="text-sm text-gray-500">実績なし（予定の時間で計算: ${esc(hrsText(s.hours))}）</p>`
-    else actual = `<p class="text-xs text-gray-400">予定: ${esc(hrsText(s.hours))}</p>`
+    if (cancel) actual = '<p class="text-xs text-neutral-500">欠勤（補償の対象）</p>'
+    else if (s.actual_start && s.actual_end) actual = `<p class="text-sm text-neutral-800">実働 <b>${esc(formatShiftTime(s.actual_start, s.actual_end))}</b>${s.break_minutes ? `（休憩${Number(s.break_minutes)}分）` : ''}・<b>${esc(hrsText(s.hours))}</b> ${src}</p>`
+    else if (s.started) actual = `<p class="text-sm text-neutral-500">実績なし（予定の時間で計算: ${esc(hrsText(s.hours))}）</p>`
+    else actual = `<p class="text-xs text-neutral-400">予定: ${esc(hrsText(s.hours))}</p>`
     const reqs = (s.requests || []).filter(q => q.status !== 'cancelled')
     const canReq = !cancel && s.started && !s.request_block
     const actions = canReq ? `<div class="flex gap-2 mt-2">
         <button class="btn btn-outline flex-1 text-xs" data-action="payReqOpen" data-kind="transport" data-id="${Number(s.shift_id)}"><i class="fas fa-train-subway"></i>交通費を申請</button>
         <button class="btn btn-outline flex-1 text-xs" data-action="payReqOpen" data-kind="overtime" data-id="${Number(s.shift_id)}"><i class="fas fa-clock"></i>延長を申請</button>
-      </div>` : !cancel && s.started && s.request_block ? `<p class="text-[11px] text-gray-400 mt-1">${esc(s.request_block)}</p>` : ''
+      </div>` : !cancel && s.started && s.request_block ? `<p class="text-2xs text-neutral-400 mt-1">${esc(s.request_block)}</p>` : ''
     return `<div class="card p-3" data-shift-id="${Number(s.shift_id)}">
       <div class="flex items-center justify-between gap-2">
-        <p class="font-bold text-gray-800 truncate">${esc(fmtDate(s.work_date))} ${esc(s.project_name)}</p>
+        <p class="font-bold text-neutral-800 truncate">${esc(fmtDate(s.work_date))} ${esc(s.project_name)}</p>
         ${s.settled ? '<span class="badge badge-green shrink-0">精算確定</span>' : ''}</div>
-      <p class="text-xs text-gray-500">予定 ${esc(formatShiftTime(s.start_time, s.end_time))}${!cancel && s.planned_break_minutes ? `（休憩${Number(s.planned_break_minutes)}分）` : ''}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
+      <p class="text-xs text-neutral-500">予定 ${esc(formatShiftTime(s.start_time, s.end_time))}${!cancel && s.planned_break_minutes ? `（休憩${Number(s.planned_break_minutes)}分）` : ''}${s.company_name ? ' ・' + esc(s.company_name) : ''}</p>
       ${actual}
-      ${s.actual_source === 'manual' ? '<p class="text-[11px] text-gray-500">管理者が実績を入力しました。違っている場合は「相談・連絡」から伝えてください</p>' : ''}
+      ${s.actual_source === 'manual' ? '<p class="text-2xs text-neutral-500">管理者が実績を入力しました。違っている場合は「相談・連絡」から伝えてください</p>' : ''}
       ${payBox(s)}
-      ${reqs.length ? `<ul class="mt-1.5 border-t border-gray-100 pt-1">${reqs.map(requestRow).join('')}</ul>` : ''}
+      ${reqs.length ? `<ul class="mt-1.5 border-t border-neutral-100 pt-1">${reqs.map(requestRow).join('')}</ul>` : ''}
       ${actions}
     </div>`
   }
@@ -768,25 +768,25 @@
   delegate('payReqOpen', (el) => {
     const s = PAY && PAY.shifts.find(x => x.shift_id === Number(el.dataset.id)); if (!s) return
     const transport = el.dataset.kind === 'transport'
-    const head = `<h3 class="font-bold text-gray-800 mb-1">${transport ? '交通費（実費）の申請' : '延長（残業）の申請'}</h3>
-      <p class="text-sm text-gray-600 mb-3">${esc(fmtDate(s.work_date))} ${esc(s.project_name)}・予定 ${esc(formatShiftTime(s.start_time, s.end_time))}</p>`
-    const foot = `<p id="pay-req-msg" class="hidden text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2 mt-2" role="alert"></p>
+    const head = `<h3 class="font-bold text-neutral-800 mb-1">${transport ? '交通費（実費）の申請' : '延長（残業）の申請'}</h3>
+      <p class="text-sm text-neutral-600 mb-3">${esc(fmtDate(s.work_date))} ${esc(s.project_name)}・予定 ${esc(formatShiftTime(s.start_time, s.end_time))}</p>`
+    const foot = `<p id="pay-req-msg" class="hidden text-sm text-danger-700 bg-danger-50 rounded-lg px-3 py-2 mt-2" role="alert"></p>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
       <button class="btn btn-primary flex-1" data-action="payReqSubmit" data-kind="${transport ? 'transport' : 'overtime'}" data-id="${Number(s.shift_id)}">申請する</button></div>`
     if (transport) {
       const max = (PAY.limits && PAY.limits.transport_max) || 100000
       modal(`${head}
-        <label class="text-sm text-gray-600 block mb-1">区間</label><input id="pay-route" class="inp mb-2" maxlength="100" placeholder="例: 新宿駅〜渋谷駅">
-        <label class="text-sm text-gray-600 block mb-1">金額（円）</label><input id="pay-amount" type="number" inputmode="numeric" min="1" max="${Number(max)}" class="inp mb-1">
-        <label class="flex items-center gap-2 text-sm text-gray-700 mb-2"><input type="checkbox" id="pay-round" checked>往復（金額は往復の合計で入力）</label>
-        <label class="text-sm text-gray-600 block mb-1">メモ（任意）</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 電車が止まりバスで移動"></textarea>
+        <label class="text-sm text-neutral-600 block mb-1">区間</label><input id="pay-route" class="inp mb-2" maxlength="100" placeholder="例: 新宿駅〜渋谷駅">
+        <label class="text-sm text-neutral-600 block mb-1">金額（円）</label><input id="pay-amount" type="number" inputmode="numeric" min="1" max="${Number(max)}" class="inp mb-1">
+        <label class="flex items-center gap-2 text-sm text-neutral-700 mb-2"><input type="checkbox" id="pay-round" checked>往復（金額は往復の合計で入力）</label>
+        <label class="text-sm text-neutral-600 block mb-1">メモ（任意）</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 電車が止まりバスで移動"></textarea>
         <div class="mt-3">
-          <p class="text-sm text-gray-600">領収書の写真（任意・1枚）</p>
-          <p class="text-[11px] text-gray-500">領収書や、ICカードの利用履歴の画面の写しなど。申請した後からでも付けられます</p>
+          <p class="text-sm text-neutral-600">領収書の写真（任意・1枚）</p>
+          <p class="text-2xs text-neutral-500">領収書や、ICカードの利用履歴の画面の写しなど。申請した後からでも付けられます</p>
           <div id="pay-receipt-preview" class="mt-1"></div>
           <label class="btn btn-outline text-xs mt-1" id="pay-receipt-label"><i class="fas fa-camera"></i>写真を選ぶ<input type="file" id="pay-receipt-file" accept="image/jpeg,image/png,image/*" class="hidden"></label>
         </div>
-        <p class="text-[11px] text-gray-500 mt-2">${s.transportation_fee ? `今の交通費（実費）は ${esc(yenText(s.transportation_fee))} です。` : ''}承認されると、このシフトの交通費（実費）が申請の金額になります。支払われる額は会社の交通費の決まり（定額・上限など）で決まります</p>
+        <p class="text-2xs text-neutral-500 mt-2">${s.transportation_fee ? `今の交通費（実費）は ${esc(yenText(s.transportation_fee))} です。` : ''}承認されると、このシフトの交通費（実費）が申請の金額になります。支払われる額は会社の交通費の決まり（定額・上限など）で決まります</p>
         ${foot}`)
       clearNewReceipt(); drawNewReceipt(); bindNewReceipt()
       return
@@ -797,10 +797,10 @@
     if (ae != null) { while (ae <= st) ae += 1440 }
     const def = hhmm(ae != null && ae > en ? ae : en + 30)
     modal(`${head}
-      <label class="text-sm text-gray-600 block mb-1">延長後の終了時刻</label><input id="pay-end" type="time" class="inp mb-2" value="${esc(def)}">
-      <label class="text-sm text-gray-600 block mb-1">延長を指示した人（任意）</label><input id="pay-instructed" class="inp mb-2" maxlength="50" placeholder="例: 店長 山田さん">
-      <label class="text-sm text-gray-600 block mb-1">理由</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 閉店作業が長引いたため"></textarea>
-      <p class="text-[11px] text-gray-500 mt-2">承認されると予定の終了時刻が延び、延びた分も時給の計算に入ります（日給の案件では金額は変わりません。必要な場合は管理者が調整します）</p>
+      <label class="text-sm text-neutral-600 block mb-1">延長後の終了時刻</label><input id="pay-end" type="time" class="inp mb-2" value="${esc(def)}">
+      <label class="text-sm text-neutral-600 block mb-1">延長を指示した人（任意）</label><input id="pay-instructed" class="inp mb-2" maxlength="50" placeholder="例: 店長 山田さん">
+      <label class="text-sm text-neutral-600 block mb-1">理由</label><textarea id="pay-reason" class="inp" rows="2" maxlength="500" placeholder="例: 閉店作業が長引いたため"></textarea>
+      <p class="text-2xs text-neutral-500 mt-2">承認されると予定の終了時刻が延び、延びた分も時給の計算に入ります（日給の案件では金額は変わりません。必要な場合は管理者が調整します）</p>
       ${foot}`)
   })
   delegate('payReqSubmit', (el) => withSubmitLock(el, async () => {

@@ -15,7 +15,7 @@
   const nl2br = (s) => esc(s).replace(/\n/g, '<br>')
   const fmt = (d) => { const x = dayjs(d); return `${x.format('M/D')}(${WD[x.day()]})` }
   // 問い合わせ先の表示。電話番号の形の部分は tel: のリンクにする（#513。esc した後の文字列に使う）
-  const contactHtml = (note) => esc(note).replace(/(^|[^\d])(0\d{1,4}-\d{1,4}-\d{3,4}|0[5789]0\d{8}|0\d{9})(?![\d-])/g, (m, pre, tel) => `${pre}<a href="tel:${tel.replace(/-/g, '')}" class="text-blue-600 underline whitespace-nowrap">${tel}</a>`)
+  const contactHtml = (note) => esc(note).replace(/(^|[^\d])(0\d{1,4}-\d{1,4}-\d{3,4}|0[5789]0\d{8}|0\d{9})(?![\d-])/g, (m, pre, tel) => `${pre}<a href="tel:${tel.replace(/-/g, '')}" class="text-primary-600 underline whitespace-nowrap">${tel}</a>`)
   // 会場の住所（返されたときだけ。#362）と地図のリンク
   const mapUrl = (addr) => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr)
   // 結果のメールを送れるか（#151）。サーバーがメールを送れない設定（result_mail: false）のときは、メールで届くと案内しない
@@ -28,10 +28,10 @@
     try { DATA = (await axios.get(API)).data } catch (e) {
       const d = e.response && e.response.data
       // 終了した募集でも、問い合わせ先が返されたら出す（応募の後に開き直した人が連絡できるように。#513）
-      $app.innerHTML = `<section class="card p-6 text-center mt-6" id="apply-closed"><i class="fas fa-calendar-xmark text-3xl text-gray-300 mb-2 block"></i>
-        ${d && d.title ? `<p class="text-xs text-gray-400 mb-1">${esc(d.company_name)}・${esc(d.title)}</p>` : ''}
-        <p class="font-bold text-gray-700">${esc(errMsg(e, 'この募集ページは利用できません'))}</p>
-        ${d && d.contact_note ? `<div class="mt-4 pt-3 border-t text-sm text-gray-600" id="apply-closed-contact"><p class="text-xs text-gray-400 mb-1">応募の内容・取り下げのお問い合わせ</p><p class="whitespace-pre-wrap break-words"><i class="fas fa-phone mr-1 text-gray-400"></i>${contactHtml(d.contact_note)}</p></div>` : ''}</section>`
+      $app.innerHTML = `<section class="card p-6 text-center mt-6" id="apply-closed"><i class="fas fa-calendar-xmark text-3xl text-neutral-300 mb-2 block"></i>
+        ${d && d.title ? `<p class="text-xs text-neutral-400 mb-1">${esc(d.company_name)}・${esc(d.title)}</p>` : ''}
+        <p class="font-bold text-neutral-700">${esc(errMsg(e, 'この募集ページは利用できません'))}</p>
+        ${d && d.contact_note ? `<div class="mt-4 pt-3 border-t text-sm text-neutral-600" id="apply-closed-contact"><p class="text-xs text-neutral-400 mb-1">応募の内容・取り下げのお問い合わせ</p><p class="whitespace-pre-wrap break-words"><i class="fas fa-phone mr-1 text-neutral-400"></i>${contactHtml(d.contact_note)}</p></div>` : ''}</section>`
       return
     }
     document.title = DATA.title + ' | ' + DATA.company_name
@@ -68,66 +68,66 @@
     const dates = Object.keys(byDate).sort()
     $app.innerHTML = `
       <section class="card p-4 mb-3" id="apply-intro">
-        <p class="text-xs text-gray-500">${esc(d.company_name)}</p>
-        <h2 class="text-lg font-bold text-gray-900 mb-1">${esc(d.title)}</h2>
-        <p class="text-xs text-gray-500 mb-2"><i class="far fa-calendar mr-1"></i>${fmt(d.date_from)}〜${fmt(d.date_to)}</p>
-        ${d.description ? `<p class="text-sm text-gray-700 leading-relaxed">${nl2br(d.description)}</p>` : ''}
-        ${d.pay_note ? `<p class="text-sm mt-2"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>${esc(d.pay_note)}</p>` : ''}
+        <p class="text-xs text-neutral-500">${esc(d.company_name)}</p>
+        <h2 class="text-lg font-bold text-neutral-900 mb-1">${esc(d.title)}</h2>
+        <p class="text-xs text-neutral-500 mb-2"><i class="far fa-calendar mr-1"></i>${fmt(d.date_from)}〜${fmt(d.date_to)}</p>
+        ${d.description ? `<p class="text-sm text-neutral-700 leading-relaxed">${nl2br(d.description)}</p>` : ''}
+        ${d.pay_note ? `<p class="text-sm mt-2"><i class="fas fa-yen-sign text-primary-500 mr-1"></i>${esc(d.pay_note)}</p>` : ''}
       </section>
 
       <section class="mb-3" id="apply-slots">
-        <h3 class="text-sm font-bold text-gray-700 mb-2">① 希望する日時を選んでください（複数可）</h3>
-        ${closedNotice.length ? `<div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-3 mb-2" id="apply-closed-notice" role="alert">
+        <h3 class="text-sm font-bold text-neutral-700 mb-2">① 希望する日時を選んでください（複数可）</h3>
+        ${closedNotice.length ? `<div class="text-xs text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-3 mb-2" id="apply-closed-notice" role="alert">
           <p class="font-bold mb-1"><i class="fas fa-circle-exclamation mr-1"></i>次の日時は募集が終了したため、選択から外しました</p>
           <ul class="list-disc pl-5">${closedNotice.map(r => `<li>${slotLabel(r)}</li>`).join('')}</ul>
           <p class="mt-1">ご入力の内容はそのまま残っています。日時を選び直して、もう一度「応募する」を押してください</p></div>` : ''}
         ${dates.map(dt => `<div class="card p-3 mb-2">
-          <p class="font-bold text-gray-800 mb-1.5">${fmt(dt)}</p>
+          <p class="font-bold text-neutral-800 mb-1.5">${fmt(dt)}</p>
           <div class="space-y-1.5">${byDate[dt].map(r => `
-            <label class="flex items-center gap-3 p-2.5 rounded-lg border ${picked.has(r.slot_role_id) ? 'border-blue-500 bg-blue-50' : 'border-gray-200'} ${r.full ? 'opacity-60' : ''}">
+            <label class="flex items-center gap-3 p-2.5 rounded-lg border ${picked.has(r.slot_role_id) ? 'border-primary-500 bg-primary-50' : 'border-neutral-200'} ${r.full ? 'opacity-60' : ''}">
               <input type="checkbox" class="w-5 h-5" data-role-id="${Number(r.slot_role_id)}" ${picked.has(r.slot_role_id) ? 'checked' : ''} onchange="applyPick(${r.slot_role_id}, this.checked)">
               <span class="flex-1 min-w-0">
-                <span class="block font-medium text-sm">${esc(formatShiftTime(r.start_time, r.end_time))}${r.role_name ? `<span class="text-gray-500 font-normal">・${esc(r.role_name)}</span>` : ''}</span>
-                <span class="block text-xs text-gray-500 truncate">${r.place ? '<i class="fas fa-location-dot mr-1"></i>' + esc(r.place) : ''}${Number(r.break_minutes) > 0 ? `<span class="ml-1">・休憩${Number(r.break_minutes)}分</span>` : ''}</span>
-                ${r.site_address ? `<span class="block text-[11px] text-gray-500">${esc(r.site_address)} <a href="${esc(mapUrl(r.site_address))}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap">地図</a></span>` : ''}
+                <span class="block font-medium text-sm">${esc(formatShiftTime(r.start_time, r.end_time))}${r.role_name ? `<span class="text-neutral-500 font-normal">・${esc(r.role_name)}</span>` : ''}</span>
+                <span class="block text-xs text-neutral-500 truncate">${r.place ? '<i class="fas fa-location-dot mr-1"></i>' + esc(r.place) : ''}${Number(r.break_minutes) > 0 ? `<span class="ml-1">・休憩${Number(r.break_minutes)}分</span>` : ''}</span>
+                ${r.site_address ? `<span class="block text-2xs text-neutral-500">${esc(r.site_address)} <a href="${esc(mapUrl(r.site_address))}" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline whitespace-nowrap">地図</a></span>` : ''}
               </span>
-              <span class="text-xs whitespace-nowrap ${r.full ? 'text-gray-500' : 'text-emerald-600'}">${r.full ? '定員に達しています<br><span class="text-[10px]">（キャンセル待ち）</span>' : r.remaining != null ? `残り${r.remaining}名` : '募集中'}</span>
-            </label>`).join('')}</div></div>`).join('') || '<p class="card p-6 text-center text-gray-400 text-sm">現在、募集中の日時はありません</p>'}
+              <span class="text-xs whitespace-nowrap ${r.full ? 'text-neutral-500' : 'text-success-600'}">${r.full ? '定員に達しています<br><span class="text-3xs">（キャンセル待ち）</span>' : r.remaining != null ? `残り${r.remaining}名` : '募集中'}</span>
+            </label>`).join('')}</div></div>`).join('') || '<p class="card p-6 text-center text-neutral-400 text-sm">現在、募集中の日時はありません</p>'}
         ${d.next_from ? `<button class="btn btn-outline w-full" id="apply-more" data-action="applyLoadMore">さらに後の日時を表示</button>` : ''}
       </section>
 
       ${dates.length ? `<section class="card p-4 mb-3" id="apply-form">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">② ご連絡先</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">② ご連絡先</h3>
         <div class="space-y-3">
-          <label class="block text-sm text-gray-600">お名前 <span class="text-red-500">*</span><input id="ap-name" class="inp" autocomplete="name" maxlength="60" placeholder="山田 太郎"></label>
-          <label class="block text-sm text-gray-600">フリガナ<input id="ap-kana" class="inp" maxlength="60" placeholder="ヤマダ タロウ"></label>
-          <label class="block text-sm text-gray-600">電話番号 <span class="text-red-500">*</span><input id="ap-phone" class="inp" type="tel" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="09012345678"></label>
-          <label class="block text-sm text-gray-600">メールアドレス<input id="ap-email" class="inp" type="email" inputmode="email" autocomplete="email" maxlength="120">
-            <span class="block text-[11px] text-gray-400 mt-0.5">${mailOk() ? '選考の結果（確定・見送り）をこのアドレスにお知らせします。入力がない場合は、担当者からお電話などでご連絡します' : '選考の結果は、担当者からお電話などでご連絡します'}</span></label>
+          <label class="block text-sm text-neutral-600">お名前 <span class="text-danger-500">*</span><input id="ap-name" class="inp" autocomplete="name" maxlength="60" placeholder="山田 太郎"></label>
+          <label class="block text-sm text-neutral-600">フリガナ<input id="ap-kana" class="inp" maxlength="60" placeholder="ヤマダ タロウ"></label>
+          <label class="block text-sm text-neutral-600">電話番号 <span class="text-danger-500">*</span><input id="ap-phone" class="inp" type="tel" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="09012345678"></label>
+          <label class="block text-sm text-neutral-600">メールアドレス<input id="ap-email" class="inp" type="email" inputmode="email" autocomplete="email" maxlength="120">
+            <span class="block text-2xs text-neutral-400 mt-0.5">${mailOk() ? '選考の結果（確定・見送り）をこのアドレスにお知らせします。入力がない場合は、担当者からお電話などでご連絡します' : '選考の結果は、担当者からお電話などでご連絡します'}</span></label>
           ${questions().map(questionHtml).join('')}
-          <label class="block text-sm text-gray-600">ご質問・ご要望<textarea id="ap-note" class="inp" rows="3" maxlength="500" placeholder="経験・希望の時間など"></textarea></label>
+          <label class="block text-sm text-neutral-600">ご質問・ご要望<textarea id="ap-note" class="inp" rows="3" maxlength="500" placeholder="経験・希望の時間など"></textarea></label>
           <div class="hidden" aria-hidden="true"><label>Website<input id="ap-website" tabindex="-1" autocomplete="off"></label></div>
-          <div class="text-[11px] text-gray-500 bg-gray-50 rounded-lg p-2.5 leading-relaxed" id="ap-privacy">
-            <p class="font-bold text-gray-600 mb-0.5">個人情報の取り扱い</p>
+          <div class="text-2xs text-neutral-500 bg-neutral-50 rounded-lg p-2.5 leading-relaxed" id="ap-privacy">
+            <p class="font-bold text-neutral-600 mb-0.5">個人情報の取り扱い</p>
             <p>取得する者: ${esc(d.company_name)}</p>
             <p>利用目的: このお仕事の選考・ご連絡・シフトの調整に使います。採用となった場合は、${esc(d.company_name)}のスタッフとして登録し（氏名・フリガナ・電話番号・メールアドレス・${questions().length ? '質問へのご回答・' : ''}ご質問欄の内容）、勤務の連絡・勤怠の記録に使います</p>
             <p>保存期間: 採用に至らなかった応募は、応募から${Number(d.retention_days) || 180}日で削除します</p>
             <p>開示・訂正・削除のご希望: ${d.contact_note ? esc(d.contact_note) : esc(d.company_name) + 'へご連絡ください'}</p>
           </div>
-          <label class="flex items-start gap-2 text-xs text-gray-600 rounded-lg p-1" id="ap-agree-box"><input type="checkbox" id="ap-agree" class="mt-0.5 w-4 h-4">
+          <label class="flex items-start gap-2 text-xs text-neutral-600 rounded-lg p-1" id="ap-agree-box"><input type="checkbox" id="ap-agree" class="mt-0.5 w-4 h-4">
             <span>上記の個人情報の取り扱いに同意します</span></label>
           <div id="ap-turnstile"></div>
         </div>
       </section>` : ''}
-      ${d.contact_note ? `<p class="text-xs text-gray-500 text-center mb-4 whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(d.contact_note)}</p>` : ''}
-      <p class="text-[11px] text-gray-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします${mailOk() ? '（メールアドレスを入れた場合はメールで届きます）' : ''}。応募の時点ではシフトは確定していません</p>
+      ${d.contact_note ? `<p class="text-xs text-neutral-500 text-center mb-4 whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(d.contact_note)}</p>` : ''}
+      <p class="text-2xs text-neutral-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします${mailOk() ? '（メールアドレスを入れた場合はメールで届きます）' : ''}。応募の時点ではシフトは確定していません</p>
 
-      ${dates.length ? `<div class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-3 z-30" id="apply-submit-bar">
+      ${dates.length ? `<div class="fixed bottom-0 inset-x-0 bg-surface border-t border-neutral-100 p-3 z-30" id="apply-submit-bar">
         <div class="max-w-lg mx-auto flex items-center gap-3">
-          <p class="text-sm text-gray-600 whitespace-nowrap"><b id="ap-count">${picked.size}</b>件選択</p>
+          <p class="text-sm text-neutral-600 whitespace-nowrap"><b id="ap-count">${picked.size}</b>件選択</p>
           <button class="btn btn-primary flex-1 py-3" id="ap-submit" onclick="applySubmit()" ${picked.size ? '' : 'disabled'}>応募する</button>
         </div>
-        <p class="max-w-lg mx-auto text-[11px] text-amber-700 mt-1 hidden" id="ap-hint"></p></div>` : ''}`
+        <p class="max-w-lg mx-auto text-2xs text-warning-700 mt-1 hidden" id="ap-hint"></p></div>` : ''}`
     for (const [id, v] of Object.entries(keep)) { const el = document.getElementById(id); if (el) el.value = v }
     restoreAnswers(keepAnswers)
     if (agreed && document.getElementById('ap-agree')) document.getElementById('ap-agree').checked = true
@@ -146,7 +146,7 @@
     on ? picked.add(id) : picked.delete(id)
     // 入力内容を保ったまま、選択状態だけ更新する
     const cb = document.querySelector(`input[data-role-id="${Number(id)}"]`)
-    const lab = cb && cb.closest('label'); if (lab) { lab.classList.toggle('border-blue-500', on); lab.classList.toggle('bg-blue-50', on); lab.classList.toggle('border-gray-200', !on) }
+    const lab = cb && cb.closest('label'); if (lab) { lab.classList.toggle('border-primary-500', on); lab.classList.toggle('bg-primary-50', on); lab.classList.toggle('border-neutral-200', !on) }
     document.getElementById('ap-count').textContent = picked.size
     document.getElementById('ap-submit').disabled = !picked.size
     if (picked.size) clearFieldError(document.getElementById('apply-slots'))
@@ -157,13 +157,13 @@
   const questions = () => (DATA && Array.isArray(DATA.questions) ? DATA.questions : [])
   const qid = (q) => 'ap-q-' + q.key
   function questionHtml(q) {
-    const mark = q.required ? ' <span class="text-red-500">*</span>' : ''
+    const mark = q.required ? ' <span class="text-danger-500">*</span>' : ''
     const input = q.type === 'select'
       ? `<select id="${esc(qid(q))}" class="inp"><option value="">選択してください</option>${(q.options || []).map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`
       : q.type === 'yesno'
         ? `<span class="flex gap-4 mt-1">${[['yes', 'はい'], ['no', 'いいえ']].map(([v, l]) => `<label class="inline-flex items-center gap-1.5 text-sm"><input type="radio" class="w-4 h-4" name="${esc(qid(q))}" value="${v}">${l}</label>`).join('')}</span>`
         : `<input id="${esc(qid(q))}" class="inp" maxlength="200">`
-    return `<div class="block text-sm text-gray-600 rounded-lg" id="ap-qbox-${esc(q.key)}" data-question="${esc(q.key)}">${esc(q.label)}${mark}${input}</div>`
+    return `<div class="block text-sm text-neutral-600 rounded-lg" id="ap-qbox-${esc(q.key)}" data-question="${esc(q.key)}">${esc(q.label)}${mark}${input}</div>`
   }
   function readAnswers() {
     const out = {}
@@ -189,7 +189,7 @@
   // ---------- 入力の誤りの表示（#416） ----------
   // 誤りのある欄を赤い枠で囲み、その下に理由を残して、その欄へ移動する（トーストだけでは画面の外の欄に気づけないため）
   const FIELD_EL = { name: 'ap-name', phone: 'ap-phone', email: 'ap-email', agree: 'ap-agree-box', turnstile: 'ap-turnstile', slots: 'apply-slots' }
-  const INVALID = ['border-red-500', 'ring-2', 'ring-red-200', 'ap-invalid']
+  const INVALID = ['border-danger-500', 'ring-2', 'ring-danger-200', 'ap-invalid']
   // 質問の欄は q_ + key（サーバーの field と同じ）
   const fieldId = (key) => FIELD_EL[key] || (/^q_q\d+$/.test(key || '') ? 'ap-qbox-' + key.slice(2) : '')
   function fieldError(key, msg) {
@@ -198,7 +198,7 @@
     if (!el) return
     clearFieldError(el)
     el.classList.add(...INVALID)
-    const p = document.createElement('p'); p.className = 'ap-err text-xs text-red-600 mt-1'; p.setAttribute('role', 'alert'); p.textContent = msg
+    const p = document.createElement('p'); p.className = 'ap-err text-xs text-danger-600 mt-1'; p.setAttribute('role', 'alert'); p.textContent = msg
     if (key === 'slots') el.querySelector('h3').insertAdjacentElement('afterend', p)
     else el.insertAdjacentElement('afterend', p)
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -303,21 +303,21 @@
   function renderDone(data, byEmail) {
     const accepted = data.accepted || [], already = data.already_applied || []
     const at = data.applied_at ? dayjs(data.applied_at) : null
-    const list = (rows, waitlist) => `<ul class="space-y-1.5">${rows.map(r => `<li class="border border-gray-100 rounded-lg p-2 text-sm">${slotLabel(r)}${waitlist && r.full ? '<span class="block text-[11px] text-amber-600">定員に達しているため、キャンセル待ちとして受け付けました</span>' : ''}</li>`).join('')}</ul>`
+    const list = (rows, waitlist) => `<ul class="space-y-1.5">${rows.map(r => `<li class="border border-neutral-100 rounded-lg p-2 text-sm">${slotLabel(r)}${waitlist && r.full ? '<span class="block text-2xs text-warning-600">定員に達しているため、キャンセル待ちとして受け付けました</span>' : ''}</li>`).join('')}</ul>`
     $app.innerHTML = `<section class="card p-6 mt-6" id="apply-done">
       <div class="text-center">
-        <i class="fas fa-circle-check text-4xl text-emerald-500 mb-3 block"></i>
-        <p class="font-bold text-gray-800 mb-1">${accepted.length || !data.message ? '応募を受け付けました' : esc(data.message)}</p>
-        ${at ? `<p class="text-xs text-gray-500" id="apply-done-at">受付日時: ${at.format('YYYY/M/D HH:mm')}</p>` : ''}
+        <i class="fas fa-circle-check text-4xl text-success-500 mb-3 block"></i>
+        <p class="font-bold text-neutral-800 mb-1">${accepted.length || !data.message ? '応募を受け付けました' : esc(data.message)}</p>
+        ${at ? `<p class="text-xs text-neutral-500" id="apply-done-at">受付日時: ${at.format('YYYY/M/D HH:mm')}</p>` : ''}
       </div>
-      ${accepted.length ? `<div class="mt-4" id="apply-done-list"><p class="text-xs font-bold text-gray-600 mb-1.5">応募した日時（${accepted.length}件）</p>${list(accepted, true)}</div>` : ''}
-      ${already.length ? `<div class="mt-3" id="apply-done-already"><p class="text-xs font-bold text-gray-600 mb-1.5">すでに応募済みの日時（今回は受け付けていません）</p>${list(already, false)}</div>` : ''}
-      <div class="text-xs text-gray-600 bg-gray-50 rounded-lg p-3 mt-4 leading-relaxed">
+      ${accepted.length ? `<div class="mt-4" id="apply-done-list"><p class="text-xs font-bold text-neutral-600 mb-1.5">応募した日時（${accepted.length}件）</p>${list(accepted, true)}</div>` : ''}
+      ${already.length ? `<div class="mt-3" id="apply-done-already"><p class="text-xs font-bold text-neutral-600 mb-1.5">すでに応募済みの日時（今回は受け付けていません）</p>${list(already, false)}</div>` : ''}
+      <div class="text-xs text-neutral-600 bg-neutral-50 rounded-lg p-3 mt-4 leading-relaxed">
         <p>この画面をスクリーンショットなどで保存してください。</p>
         <p>${byEmail ? '内容を確認のうえ、結果（確定・見送り）を入力いただいたメールアドレスにお知らせします。' : '内容を確認のうえ、担当者からご連絡します。'}応募の時点ではシフトは確定していません。</p>
         <p>応募の取り下げ・変更は、お問い合わせ先へご連絡ください。</p>
       </div>
-      ${DATA.contact_note ? `<p class="text-xs text-gray-500 mt-3 text-center whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(DATA.contact_note)}</p>` : ''}
+      ${DATA.contact_note ? `<p class="text-xs text-neutral-500 mt-3 text-center whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(DATA.contact_note)}</p>` : ''}
     </section>`
     window.scrollTo(0, 0)
   }
