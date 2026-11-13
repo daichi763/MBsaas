@@ -311,7 +311,7 @@ const KEYS = { p256dh: 'BOr4bW1kZXZpY2VLZXlGb3JUZXN0aW5nT25seQ', auth: 'dGVzdEF1
   // 画面: 受け取り設定に、会社管理者だけのプッシュ通知の欄
   const njs = await (await fetch(`${BASE}/static/notifications.js`)).text()
   ok('#552 画面: 通知の受け取り設定に、この端末のプッシュ通知の欄（会社管理者だけ。/api/admin/push/*・scope /admin）',
-    njs.includes("ME.role === 'company_admin'") && njs.includes('/api/admin/push/subscribe') && njs.includes("ADMIN_PUSH_SCOPE = '/admin'") && njs.includes("login_failures: 'ログインの失敗'"))
+    njs.includes("hasPerm('admin_push.device')") && njs.includes('/api/admin/push/subscribe') && njs.includes("ADMIN_PUSH_SCOPE = '/admin'") && njs.includes("login_failures: 'ログインの失敗'"))
   const swjs = await (await fetch(`${BASE}/sw.js`)).text()
   ok('#552 Service Worker は scope /admin のとき /api/admin/push/latest を取りに来る', swjs.includes("ADMIN ? '/admin'") && swjs.includes('staff|hq|admin'))
 }

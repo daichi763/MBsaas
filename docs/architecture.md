@@ -124,9 +124,9 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 
 `/api/*` の処理の順番は次のとおりです（`src/api.ts`）。
 
-1. ログイン不要の API を先に登録する: `/api/auth/login` など（`src/api.ts:454`〜）、`/api/public/report`（報告用URL）・`/api/public/recruit`（募集ページ）・`/api/public/notice-ack`・`/api/public/calendar`（`src/api.ts:720`〜`739`）。
-2. 認証ミドルウェア（`src/api.ts:747`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業と、連携が終わった会社に企業切替で入ったままのスタッフ（401 `link_ended`。D-53）を止める（`src/lib/auth.ts:128` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
-3. ロールの確認: `/api/admin/*` は会社の管理系ロール（`src/api.ts:864`〜`867`）、`/api/admin/employees*` は会社管理者と事務担当だけ（`src/api.ts:874`）、`/api/hq/*` は本部だけ（`src/api.ts:876`）、`/api/staff/*` はスタッフだけ（`src/api.ts:903`）。
+1. ログイン不要の API を先に登録する: `/api/auth/login` など（`src/api.ts:453`〜）、`/api/public/report`（報告用URL）・`/api/public/recruit`（募集ページ）・`/api/public/notice-ack`・`/api/public/calendar`（`src/api.ts:719`〜`738`）。
+2. 認証ミドルウェア（`src/api.ts:746`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業と、連携が終わった会社に企業切替で入ったままのスタッフ（401 `link_ended`。D-53）を止める（`src/lib/auth.ts:128` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
+3. ロールの確認: `/api/admin/*` は会社の管理系ロール（`src/api.ts:861`〜`862`）、`/api/admin/employees*` は会社管理者と事務担当だけ（`src/api.ts:864`〜`866`）、`/api/hq/*` は本部だけ（`src/api.ts:867`）、`/api/staff/*` はスタッフだけ（`src/api.ts:891`）。どれも権限の表（`src/lib/permissions.ts`）の `requirePerm` で確かめる。
 4. 各機能の処理。会社の境界はここで確かめる（「8. マルチテナント」）。
 5. 書き込み（GET 以外）の後に、積まれたプッシュ通知を送る（`src/index.tsx:134`〜`138`）。
 
@@ -161,7 +161,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年・実行の記録 `retention_logs`・`hq_view_logs` の1年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:979` |
 | `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:201` |
 | `0 18 * * *` | 毎日 3:00 | `affiliation_schedules` | 予約した所属区分の変更を適用する。使う問い合わせの数を予算（`AFFILIATION_SCHEDULE_BUDGET`）の内に収め、収まらない予約は次の `affiliation_schedules_rest` に回す | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
-| `0 18 * * *` | 毎日 3:00 | `notice_reads_purge` | お知らせの既読の記録の削除（2年） | `src/api.ts:357` |
+| `0 18 * * *` | 毎日 3:00 | `notice_reads_purge` | お知らせの既読の記録の削除（2年） | `src/api.ts:356` |
 | `0 18 * * *` | 毎日 3:00 | `board_saved_search` | 案件掲示板の保存した検索条件に合う新着の知らせ | `src/board.ts` の `notifySavedSearchMatches` |
 | `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:1026` |
 | `30 18 * * *` | 毎日 3:30 | `report_token_hash` | 報告用URLの古いトークン（0105 より前の平文）を、1日に500件ずつハッシュへ移す（すべて移せば平文は残らない。残りが無ければ問い合わせ1回） | `src/staff-lifecycle.ts` の `runLegacyReportTokenHashJob` |
@@ -308,17 +308,17 @@ docs/                     この資料と機能ごとの仕様
 
 | 項目 | 内容 | 根拠 |
 |---|---|---|
-| ログイン | 会社コード＋ID（スタッフ番号）＋パスワード。本部は会社コードなし。全角は半角にそろえ、大文字・小文字を区別せずに照合 | `src/api.ts:454`、`src/index.tsx:327` |
+| ログイン | 会社コード＋ID（スタッフ番号）＋パスワード。本部は会社コードなし。全角は半角にそろえ、大文字・小文字を区別せずに照合 | `src/api.ts:453`、`src/index.tsx:327` |
 | パスワードの保存 | PBKDF2（SHA-256・ソルト16バイト）`pbkdf2$回数$ソルト$ハッシュ`。作るときは 10,000 回、照合は 100,000 回まで受け付ける。回数の少ないハッシュ・旧形式はログイン成功時に作り直す | `src/lib/auth.ts:13`〜`14`、`44`〜`73` |
 | パスワードの条件 | 8〜128文字、空白だけは不可（全経路で `validatePassword`） | `src/lib/auth.ts:84` |
 | セッション | ランダムなトークンを httpOnly の Cookie `session`（https では Secure、SameSite=Lax）に入れ、DB（`sessions`）には SHA-256 のハッシュだけを保存 | `src/lib/auth.ts:9`、`150`〜`153` |
 | 有効期限 | 操作のたびに延ばす。操作のない時間の上限は 12 時間（スタッフは 72 時間）、ログインからの最長は 7 日（スタッフは 30 日）。バッジの更新などの定期の取得（`X-Background: 1`）では延ばさない | `src/lib/auth.ts:10`、`src/api.ts:803`〜`838` |
 | 止める条件 | 期限切れ・退職（`users.status` が `active` 以外）・ログインできないロール（`roster_only`）・本部で停止した企業（本部ユーザーは除く） | `src/lib/auth.ts:128`〜`142` |
 | ログイン試行の制限 | 15分間に、会社コード＋ID ごとに10回、IP ごとに50回の失敗で一時的に止める。ID・IP はハッシュで保存 | `src/lib/auth.ts:18`〜`21`、`156`〜`189` |
-| 二段階認証 | 認証アプリ（TOTP）と予備コード。管理系ロールと本部が使える（スタッフは対象外）。会社の設定で必須にできる。必須なのに未登録の人は、登録の画面だけを使える | `src/api.ts:742`、`773`〜`776`、`src/lib/login-security.ts` |
-| 接続元 IP の制限 | 会社の設定で、管理系ロールの接続元を制限できる（スタッフは対象外） | `src/api.ts:769`、`src/lib/login-security.ts:101` |
-| 同じブラウザでの別アカウント | 画面は自分の `user_id` を `X-Expected-User-Id` で送り、違えば 409 で止める | `src/api.ts:761`〜`766` |
-| パスワードの再設定 | メールのリンク（1時間）。ただし本番はメールを送れないため、当面は管理者が仮パスワードを再発行する（`POST /api/admin/users/:id/reset-password`。`src/accounts.ts:326`） | `src/api.ts:602`・`654` |
+| 二段階認証 | 認証アプリ（TOTP）と予備コード。管理系ロールと本部が使える（スタッフは対象外）。会社の設定で必須にできる。必須なのに未登録の人は、登録の画面だけを使える | `src/api.ts:741`、`772`〜`775`、`src/lib/login-security.ts` |
+| 接続元 IP の制限 | 会社の設定で、管理系ロールの接続元を制限できる（スタッフは対象外） | `src/api.ts:768`、`src/lib/login-security.ts:102` |
+| 同じブラウザでの別アカウント | 画面は自分の `user_id` を `X-Expected-User-Id` で送り、違えば 409 で止める | `src/api.ts:760`〜`765` |
+| パスワードの再設定 | メールのリンク（1時間）。ただし本番はメールを送れないため、当面は管理者が仮パスワードを再発行する（`POST /api/admin/users/:id/reset-password`。`src/accounts.ts:324`） | `src/api.ts:601`・`653` |
 
 ## 10. ロール（権限）
 
@@ -334,7 +334,9 @@ docs/                     この資料と機能ごとの仕様
 | `roster_only` | ログインなし（名簿のみ） | ログインできない（スタッフマスタ・仮登録の行） |
 | `system_admin` | 本部（システム管理者） | `/hq` と `/api/hq/*`。各社の `/admin` は、企業が許可した期限付きの閲覧（読み取り専用）のときだけ |
 
-根拠: `src/api.ts:178`〜`182`（`ADMIN_ROLES`・`HR_ROLES`）、`src/lib/auth.ts:17`、`src/lib/auth.ts:145`（ロールごとの最初の画面）。
+ロールごとにできる操作は、権限の表（`src/lib/permissions.ts`。一覧は [permissions.md](permissions.md)）にまとめてあり、API と画面のメニュー・ボタンは同じ表を見ます。
+
+根拠: `src/lib/permissions.ts:8`〜`11`（`ADMIN_ROLES`）・`36`（権限の表 `PERMISSIONS`）、`src/lib/auth.ts:17`、`src/lib/auth.ts:145`（ロールごとの最初の画面）。
 
 ## 11. マルチテナント（会社ごとのデータの分離）
 
@@ -342,8 +344,8 @@ docs/                     この資料と機能ごとの仕様
 - 画面や API から受け取った ID は、必ず自社の行かを確かめてから使います。共通の関数は `src/lib/tenant.ts`（`ownProject`・`ownClient`・`ownStaff`・`ownShift` など。見つからなければ 404 にする）。
 - **本部**: 本部ユーザー（`system_admin`）は、本部専用の企業行（`companies.active_status = 'internal'`）に所属します（`migrations/0033_account_admin.sql:7`〜`16`）。本部が各社の管理画面を見るのは、企業が許可したときだけで、期限付き・読み取り専用です。開始・終了と開いた画面を記録します（`src/hq-support.ts:4`、`201` の `hqViewAdminGuard`、Cookie `hq_view`）。本部の書き込みは `hq_audit_logs` に残します（`src/api.ts:880`〜`893`）。
 - **企業の停止**: 本部で停止にすると（`companies.active_status = 'inactive'`）、その企業の利用者はログイン・API が使えなくなり（`src/lib/auth.ts:98`、`139`）、セッションも消します（`src/lib/auth.ts:114`）。
-- **企業間のスタッフ連携**（会社をまたいで同じ人を使う仕組み）: 所属元のスタッフを、連携用のコード（自社雇用は人物の恒久 ID `FS…`、連携で受けた人をさらに渡すときは `RL…`）で連携先に登録します。連携先には自社の行（`staff_profiles.affiliation_type = 'linked_external'`、ユーザーコード `LK-…`。照合できないパスワード）が作られ（`src/roster.ts:1352`）、基本項目は所属元の行をその場で読みます。共有する項目と共有しない項目は `src/roster.ts:222`〜`236`（同意の版 v3）で決まり、同意は `roster_consents` に残します。詳細は [decisions.md](decisions.md) の D-03・D-04 と [spec_multi_company_staff.md](spec_multi_company_staff.md)。
-- **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1629`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:188` の `resolvePersonShift`）。
+- **企業間のスタッフ連携**（会社をまたいで同じ人を使う仕組み）: 所属元のスタッフを、連携用のコード（自社雇用は人物の恒久 ID `FS…`、連携で受けた人をさらに渡すときは `RL…`）で連携先に登録します。連携先には自社の行（`staff_profiles.affiliation_type = 'linked_external'`、ユーザーコード `LK-…`。照合できないパスワード）が作られ（`src/roster.ts:1353`）、基本項目は所属元の行をその場で読みます。共有する項目と共有しない項目は `src/roster.ts:223`〜`237`（同意の版 v3）で決まり、同意は `roster_consents` に残します。詳細は [decisions.md](decisions.md) の D-03・D-04 と [spec_multi_company_staff.md](spec_multi_company_staff.md)。
+- **同じ人の複数の会社**: 同じ人物（`persons`。`person_id`）が複数の会社に登録されているとき、ログインは所属元のアカウント1つで、スタッフアプリで会社を切り替えます（`src/roster.ts:1630`）。勤怠・日報はシフトを持つ会社の行に記録します（`src/api.ts:187` の `resolvePersonShift`）。
 
 ## 12. 設定値（環境変数・シークレット）
 

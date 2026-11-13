@@ -2491,7 +2491,7 @@ async function srDocs() {
     </section>
     <section class="card p-4">
       <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-hourglass-half text-amber-500 mr-1"></i>期限切れ・${data.warn_days}日以内に期限が来る書類（${data.expiring.length}件）</h3>
-      <p class="text-xs text-gray-400 mb-2">在籍中のスタッフの書類・クライアントの契約書${ME && ME.can_manage_hr ? '・入社時書類' : ''}が対象です。新しい書類を受け取ったら、古い書類の期限を消すか削除してください。</p>
+      <p class="text-xs text-gray-400 mb-2">在籍中のスタッフの書類・クライアントの契約書${hasPerm('hr.manage') ? '・入社時書類' : ''}が対象です。新しい書類を受け取ったら、古い書類の期限を消すか削除してください。</p>
       ${data.expiring.length ? `<div class="overflow-x-auto"><table class="w-full text-sm"><tbody>${data.expiring.map(d => {
         const k = SR_DOC_KIND[d.kind] || SR_DOC_KIND.staff
         return `<tr class="border-t border-gray-100"><td class="py-1.5 pr-2 whitespace-nowrap">${docExpiryBadge(d.valid_until, d.kind)}</td>
@@ -4017,7 +4017,7 @@ async function renderEmployees() {
       <select id="emp-export-status" class="inp text-sm w-auto">
         <option value="">自社雇用のすべて</option>${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}<option value="ended">雇用終了（他の区分へ移行・統合）</option>
       </select>
-      ${ME && ME.role === 'company_admin' ? '<label class="flex items-center gap-1 text-xs"><input type="checkbox" id="emp-export-pay">口座・給与を含める（会社管理者のみ）</label>' : ''}
+      ${hasPerm('roster_export.pay') ? '<label class="flex items-center gap-1 text-xs"><input type="checkbox" id="emp-export-pay">口座・給与を含める（会社管理者のみ）</label>' : ''}
       <button class="btn btn-outline text-sm" data-action="exportEmployees"><i class="fas fa-download"></i>出力</button>
       <span class="text-[11px] text-gray-400">社員番号・氏名・入社日・契約・住所・連絡先・保険番号を出します。出力した記録が残ります</span>
     </section>
@@ -6939,8 +6939,8 @@ async function renderAccount() {
   try {
     me = (await axios.get('/api/auth/account')).data
     const [l, a] = await Promise.all([
-      me.role === 'company_admin' ? axios.get('/api/admin/users').then(r => r.data) : null,
-      axios.get('/api/admin/assignees', me.role === 'company_admin' ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
+      hasPerm('admin_users.manage') ? axios.get('/api/admin/users').then(r => r.data) : null,
+      axios.get('/api/admin/assignees', hasPerm('admin_users.manage') ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
     ])
     list = l; asg = a || []
   } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
@@ -6989,7 +6989,7 @@ async function renderAccount() {
     </div>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
       <i class="fas fa-shield-halved text-blue-500"></i>
-      <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${me.role === 'company_admin' ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
+      <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${hasPerm('security.manage') ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
       <a href="#security" class="btn btn-outline text-sm">セキュリティへ</a>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
@@ -7257,7 +7257,7 @@ function route() {
   if (['staff', 'projects', 'clients', 'employees'].includes(tab) && id && !/^\d+$/.test(id)) { location.hash = tab; return }
   // 従業員管理（労務情報）は会社管理者・事務担当のみ（#205。API でも同じ判定で止める）
   // 社員の詳細へのリンク（スタッフマスタの登録後・未入力の一覧など）は、スタッフ詳細で開く
-  if (tab === 'employees' && ME && !ME.can_manage_hr) {
+  if (tab === 'employees' && ME && !hasPerm('hr.manage')) {
     if (id) { history.replaceState(null, '', '#staff/' + id); return route() }
     $app.innerHTML = '<div class="card p-6 text-center text-sm text-gray-500"><i class="fas fa-lock mr-1"></i>従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます。</div>'; return
   }
@@ -7407,8 +7407,8 @@ delegate('avbRemind', (el) => {
     ME = data
     showCompanyName(data.company_name + ' / ' + data.name)
   } catch (e) { return }
-  // 従業員管理を扱えないロールには、スタッフ詳細の「従業員管理」ボタンを出さない（#205。メニューの項目は src/admin-menu.ts の hr で出し分ける）
-  if (!ME.can_manage_hr) {
+  // 従業員管理を扱えないロールには、スタッフ詳細の「従業員管理」ボタンを出さない（#205。メニューの項目は src/admin-menu.ts の perm で出し分ける）
+  if (!hasPerm('hr.manage')) {
     const st = document.createElement('style'); st.textContent = 'a.btn[href^="#employees/"]{display:none!important}'; document.head.appendChild(st)
   }
   route()

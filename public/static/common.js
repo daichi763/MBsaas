@@ -17,6 +17,13 @@ function escAttr(s) {
   return esc(s).replace(/\r/g, '&#13;').replace(/\n/g, '&#10;').replace(/\t/g, '&#9;')
 }
 
+// 自分がその操作をできるか（権限の表 src/lib/permissions.ts。/api/auth/me の permissions）。メニュー・ボタンの出し分けに使う（#9978）。
+// me を省くと管理画面の ME を見る
+function hasPerm(action, me) {
+  const m = me || (typeof ME !== 'undefined' ? ME : null)
+  return !!m && Array.isArray(m.permissions) && m.permissions.includes(action)
+}
+
 // data-action="名前" を付けた要素がクリックされたら、delegate(名前, fn) で登録した fn(el, event) を呼ぶ。
 // 例: `<button data-action="deleteDocument" data-id="${d.document_id}" data-name="${esc(d.original_file_name)}">`
 //     delegate('deleteDocument', el => deleteDocument(Number(el.dataset.id), el.dataset.name))

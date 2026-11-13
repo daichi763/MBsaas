@@ -31,8 +31,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 110 本（0001_initial_schema.sql 〜 0110_partial_indexes.sql）
-- 表: 134・索引: 307・トリガー: 15・ビュー: 0
+- マイグレーション: 109 本（0001_initial_schema.sql 〜 0109_monitoring.sql）
+- 表: 134・索引: 308・トリガー: 15・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 143
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 33
 - company_id の列がある表: 106
@@ -556,7 +556,7 @@ erDiagram
 | `retired_staff_deferred` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 | `r2_pending` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 
-在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:832](../src/services/retention.ts#L832)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
+在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:829](../src/services/retention.ts#L829)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
 
 退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:105](../src/services/retention.ts#L105)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`・`age_entered`・`age_entered_on`
 
@@ -570,7 +570,7 @@ R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE
 本部画面の「解約・データ」から、企業のデータを CSV で書き出し、猶予の日数（既定は [`OFFBOARDING_GRACE_DAYS`](../src/services/retention.ts)）の後に消します（記録は `company_offboardings`）。
 
 <!-- BEGIN GENERATED: db-offboarding -->
-解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（104 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1310](../src/services/retention.ts#L1310)）。
+解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（104 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1304](../src/services/retention.ts#L1304)）。
 
 company_id の列がある表は、すべてどちらかに入っています。
 <!-- END GENERATED: db-offboarding -->
@@ -958,6 +958,7 @@ UNIQUE 制約: (global_staff_code)
 索引:
 
 - `idx_sessions_user`: (user_id)
+- `idx_sessions_expires`: (expires_at)
 
 <a id="users"></a>
 #### users — 利用者（パスワード・二段階認証の情報を除く）
@@ -2408,16 +2409,16 @@ UNIQUE 制約: (user_id)
 
 索引:
 
-- `idx_shifts_site_nn`: (site_id) WHERE `site_id IS NOT NULL`
-- `idx_shifts_slot_role_nn`: (slot_role_id) WHERE `slot_role_id IS NOT NULL`
-- `idx_shifts_slot_nn`: (slot_id) WHERE `slot_id IS NOT NULL`
 - `idx_shifts_absent`: (company_id, work_date) WHERE `status = 'absent'`
 - `idx_shifts_project_date`: (project_id, work_date)
 - `idx_shifts_attendance_exception`: (company_id, work_date) WHERE `attendance_mode IN ('none', 'in_out')`
 - `idx_shifts_staff_project`: (staff_id, project_id, work_date)
+- `idx_shifts_site`: (site_id)
+- `idx_shifts_slot`: (slot_id)
 - `uq_shifts_slot_role_staff`（UNIQUE）: (slot_role_id, staff_id) WHERE `slot_role_id IS NOT NULL AND status != 'absent' AND legacy_duplicate IS NULL`
 - `idx_shifts_source`（UNIQUE）: (source_shift_id, work_date) WHERE `source_shift_id IS NOT NULL`
 - `idx_shifts_company_date_settle`: (company_id, work_date, settle_status)
+- `idx_shifts_slot_role`: (slot_role_id)
 - `idx_shifts_staff`: (staff_id, work_date)
 
 トリガー: [`trg_shift_cancellations_clear`](#trigger-trg_shift_cancellations_clear)・[`trg_shifts_staff_changed_at`](#trigger-trg_shifts_staff_changed_at)
@@ -2680,12 +2681,12 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
-- `idx_attendance_photo_key_nn`: (photo_key) WHERE `photo_key IS NOT NULL`
 - `idx_attendance_late`: (company_id, report_type) WHERE `status = 'late'`
 - `idx_attendance_reported_at`: (reported_at)
 - `idx_attendance_location_photo`: (reported_at) WHERE `latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL`
 - `idx_attendance_company`: (company_id)
 - `idx_attendance_staff`: (staff_id)
+- `idx_attendance_photo_key`: (photo_key)
 
 <a id="daily_report_comments"></a>
 #### daily_report_comments — 日報のコメント
@@ -4579,37 +4580,37 @@ END
 <!-- BEGIN GENERATED: db-refs -->
 | 名前 | 位置 |
 |---|---|
-| `OFFBOARDING_TABLES` | [services/retention.ts:1192](../src/services/retention.ts#L1192) |
+| `OFFBOARDING_TABLES` | [services/retention.ts:1186](../src/services/retention.ts#L1186) |
 | `ownStaff` | [lib/tenant.ts:23](../src/lib/tenant.ts#L23) |
 | `ownProject` | [lib/tenant.ts:15](../src/lib/tenant.ts#L15) |
 | `ownShift` | [lib/tenant.ts:31](../src/lib/tenant.ts#L31) |
-| `hqViewAdminGuard` | [hq-support.ts:201](../src/hq-support.ts#L201) |
-| `AFFILIATION_TYPES` | [roster.ts:26](../src/roster.ts#L26) |
+| `hqViewAdminGuard` | [hq-support.ts:202](../src/hq-support.ts#L202) |
+| `AFFILIATION_TYPES` | [roster.ts:27](../src/roster.ts#L27) |
 | `NO_LOGIN_ROLES` | [lib/auth.ts:17](../src/lib/auth.ts#L17) |
 | `nowJST` | [api.ts:84](../src/api.ts#L84) |
 | `loadSessionUser` | [lib/auth.ts:128](../src/lib/auth.ts#L128) |
 | `hashPassword` | [lib/auth.ts:44](../src/lib/auth.ts#L44) |
 | `hashToken` | [lib/auth.ts:36](../src/lib/auth.ts#L36) |
 | `RETURNING_COUNTED` | [services/retention.ts:94](../src/services/retention.ts#L94) |
-| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1310](../src/services/retention.ts#L1310) |
+| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1304](../src/services/retention.ts#L1304) |
 | `RETIRED_TARGETS` | [services/retention.ts:95](../src/services/retention.ts#L95) |
 | `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
-| `createPerson` | [roster.ts:265](../src/roster.ts#L265) |
-| `ensureRosterIdentity` | [roster.ts:424](../src/roster.ts#L424) |
-| `CORE_TABLES` | [scripts/gen-docs.mjs:836](../scripts/gen-docs.mjs#L836) |
-| `TABLE_GROUPS` | [scripts/gen-docs.mjs:821](../scripts/gen-docs.mjs#L821) |
-| `loadRoster` | [roster.ts:465](../src/roster.ts#L465) |
-| `CONSENT_VERSION` | [roster.ts:222](../src/roster.ts#L222) |
-| `SHARED_SCOPE` | [roster.ts:223](../src/roster.ts#L223) |
-| `NOT_SHARED_SCOPE` | [roster.ts:228](../src/roster.ts#L228) |
-| `ROSTER_OWNER_ONLY_FIELDS` | [roster.ts:233](../src/roster.ts#L233) |
-| `ROSTER_SHARED_HOST_FIELDS` | [roster.ts:80](../src/roster.ts#L80) |
-| `PUBLIC_COLS` | [board.ts:59](../src/board.ts#L59) |
-| `buildSnapshot` | [board.ts:568](../src/board.ts#L568) |
-| `shapeProposal` | [board.ts:603](../src/board.ts#L603) |
-| `runRetentionCleanup` | [services/retention.ts:979](../src/services/retention.ts#L979) |
+| `createPerson` | [roster.ts:266](../src/roster.ts#L266) |
+| `ensureRosterIdentity` | [roster.ts:425](../src/roster.ts#L425) |
+| `CORE_TABLES` | [scripts/gen-docs.mjs:848](../scripts/gen-docs.mjs#L848) |
+| `TABLE_GROUPS` | [scripts/gen-docs.mjs:833](../scripts/gen-docs.mjs#L833) |
+| `loadRoster` | [roster.ts:466](../src/roster.ts#L466) |
+| `CONSENT_VERSION` | [roster.ts:223](../src/roster.ts#L223) |
+| `SHARED_SCOPE` | [roster.ts:224](../src/roster.ts#L224) |
+| `NOT_SHARED_SCOPE` | [roster.ts:229](../src/roster.ts#L229) |
+| `ROSTER_OWNER_ONLY_FIELDS` | [roster.ts:234](../src/roster.ts#L234) |
+| `ROSTER_SHARED_HOST_FIELDS` | [roster.ts:81](../src/roster.ts#L81) |
+| `PUBLIC_COLS` | [board.ts:60](../src/board.ts#L60) |
+| `buildSnapshot` | [board.ts:569](../src/board.ts#L569) |
+| `shapeProposal` | [board.ts:604](../src/board.ts#L604) |
+| `runRetentionCleanup` | [services/retention.ts:976](../src/services/retention.ts#L976) |
 | `CRON_JOBS` | [index.tsx:869](../src/index.tsx#L869) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:125](../src/services/retention.ts#L125) |
-| `purgeExpiredTokens` | [services/retention.ts:1125](../src/services/retention.ts#L1125) |
-| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1167](../src/services/retention.ts#L1167) |
+| `purgeExpiredTokens` | [services/retention.ts:1122](../src/services/retention.ts#L1122) |
+| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1164](../src/services/retention.ts#L1164) |
 <!-- END GENERATED: db-refs -->

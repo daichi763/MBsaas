@@ -493,7 +493,7 @@ async function loadRosterRequired(force) {
 window.showRosterFieldSettings = async function () {
   const req = await loadRosterRequired(true)
   const data = req.__meta
-  const canEdit = ME && ['company_admin', 'system_admin'].includes(ME.role)
+  const canEdit = hasPerm('roster.required_fields')
   modal(`
     <h3 class="font-bold text-lg mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>スタッフマスタ 必須項目の設定</h3>
     <p class="text-xs text-gray-500 mb-4">新規作成時・基本項目の更新時に入力を必須にする項目を選択します。登録済みのスタッフで未入力の人は「未入力のスタッフを確認」で一覧できます。${canEdit ? '' : '<br><span class="text-red-500">変更は会社管理者のみ可能です</span>'}</p>

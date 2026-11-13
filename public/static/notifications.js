@@ -146,7 +146,7 @@
   // 会社管理者だけ。ログインの失敗が続いたときに、管理画面を開いていなくてもこの端末の通知で知らせる（購読は /api/admin/push/*。Service Worker は scope /admin）
   const ADMIN_PUSH_SCOPE = '/admin'
   const PUSH_SUPPORTED = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
-  const isCompanyAdmin = () => typeof ME !== 'undefined' && !!ME && ME.role === 'company_admin'
+  const isCompanyAdmin = () => hasPerm('admin_push.device')
   const b64urlToBytes = (s) => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); const bin = atob(t + '='.repeat((4 - t.length % 4) % 4)); return Uint8Array.from(bin, ch => ch.charCodeAt(0)) }
   const bytesToB64url = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   async function adminPushSubscription() {

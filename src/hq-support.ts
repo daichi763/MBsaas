@@ -12,6 +12,7 @@ import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
 import { clipText } from './lib/validate'
 import { appBaseUrl } from './lib/http'
+import { can } from './lib/permissions'
 
 type Bindings = {
   DB: D1Database; PHOTOS?: R2Bucket; DOCUMENTS?: R2Bucket; CONTRACTS?: R2Bucket
@@ -264,7 +265,7 @@ hqSupportAdminApi.get('/hq-support/status', async (c) => {
     .bind(now, now, u.company_id, u.company_id, viewing ? 0 : u.user_id).all()).results
   const views = viewing ? [] : (await db.prepare(`SELECT v.started_at, v.expires_at, us.name AS hq_name FROM hq_view_sessions v LEFT JOIN users us ON us.user_id = v.hq_user_id
       WHERE v.company_id = ? AND v.ended_at IS NULL AND v.expires_at > ? ORDER BY v.started_at DESC LIMIT 5`).bind(u.company_id, nowIso()).all()).results
-  return c.json({ announcements: anns, active_views: views, viewing, view_allowed: hqViewAllowed(u.settings_json), can_manage_view: u.role === 'company_admin' })
+  return c.json({ announcements: anns, active_views: views, viewing, view_allowed: hqViewAllowed(u.settings_json), can_manage_view: can(u, 'hq_view.allow') })
 })
 
 hqSupportAdminApi.post('/hq-announcements/:id/read', async (c) => {
@@ -325,13 +326,13 @@ hqSupportAdminApi.get('/hq-access', async (c) => {
         (SELECT COUNT(*) FROM hq_view_logs l WHERE l.view_id = v.view_id) AS pages
       FROM hq_view_sessions v LEFT JOIN users us ON us.user_id = v.hq_user_id
       WHERE v.company_id = ? ORDER BY v.view_id DESC LIMIT 20`).bind(u.company_id).all()).results
-  return c.json({ allowed: hqViewAllowed(u.settings_json), can_manage: u.role === 'company_admin', sessions: rows, now: nowIso() })
+  return c.json({ allowed: hqViewAllowed(u.settings_json), can_manage: can(u, 'hq_view.allow'), sessions: rows, now: nowIso() })
 })
 
 // 閲覧の許可の切り替え（会社管理者のみ）。取り消したときは、閲覧中のものもその場で終える
 hqSupportAdminApi.put('/hq-access', async (c) => {
   const u = c.get('user'); const db = c.env.DB
-  if (u.role !== 'company_admin') return c.json({ error: '本部の閲覧の許可は、会社管理者だけが変更できます' }, 403)
+  if (!can(u, 'hq_view.allow')) return c.json({ error: '本部の閲覧の許可は、会社管理者だけが変更できます' }, 403)
   const b = await c.req.json().catch(() => ({})) as any
   if (typeof b.allowed !== 'boolean') return c.json({ error: 'allowed は true か false で指定してください' }, 400)
   const stmts = [db.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.hq_view_allowed', json(?)) WHERE company_id = ?`)

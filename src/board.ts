@@ -15,6 +15,7 @@ import type { SendEmailInput } from './services/email'
 import { attendanceCorrectionEmail } from './email-templates/attendance-correction'
 import { nowJST, todayJST, isDate } from './lib/time'
 import { appBaseUrl } from './lib/http'
+import { ADMIN_ROLES } from './lib/permissions'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY?: string; MAIL_FROM?: string; APP_BASE_URL?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
@@ -971,7 +972,7 @@ async function sameProposedPerson(db: D1Database, p: any, companyId: number): Pr
 const MAX_SAVED_SEARCHES = 10
 const SAVED_SEARCH_BATCH = 500   // 1回で確かめる条件の数
 const SAVED_SEARCH_MAX_ROUNDS = 4
-const SAVED_SEARCH_NOTIFY_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+const SAVED_SEARCH_NOTIFY_ROLES = ADMIN_ROLES
 const SAVED_SEARCH_PREVIEW = 3   // 通知の本文に出す案件名の数（条件ごと）
 
 function savedSearchValues(b: any) {

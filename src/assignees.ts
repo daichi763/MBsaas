@@ -7,6 +7,7 @@
 // =========================================================
 import { Hono } from 'hono'
 import { nowJST } from './lib/time'
+import { ADMIN_ROLES } from './lib/permissions'
 
 type Env = { Bindings: { DB: D1Database }; Variables: { user: any } }
 export type AssigneeType = 'client' | 'partner'
@@ -14,7 +15,7 @@ export type Assignee = { user_id: number; name: string | null; user_code: string
 export type AssigneeInput = { main: number | null; subs: number[] }
 
 /** 担当にできるアカウントの権限（管理画面に入れる人。本部 system_admin・スタッフは含めない） */
-const ASSIGNABLE_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+const ASSIGNABLE_ROLES = ADMIN_ROLES
 const ROLES_SQL = ASSIGNABLE_ROLES.map(r => `'${r}'`).join(',')
 const MAX_SUBS = 30
 

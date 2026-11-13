@@ -83,7 +83,7 @@ const ANCHORS = [
   ['src/index.tsx', "async function currentUser"], ['src/index.tsx', "app.get('/staff'"], ['src/index.tsx', "app.get('/admin'"],
   ['src/index.tsx', "app.get('/hq'"], ['src/index.tsx', 'const CRON_JOBS = defineCronJobs'], ['src/index.tsx', 'export default {'],
   ['src/index.tsx', "c.env.DEMO_MODE === 'true'"], ['src/index.tsx', 'const dryRun = env.RETENTION_ENABLED'],
-  ['src/api.ts', 'const ADMIN_ROLES ='], ['src/api.ts', "api.post('/auth/login', "], ['src/api.ts', "api.use('/*', async"],
+  ['src/lib/permissions.ts', 'export const ADMIN_ROLES'], ['src/api.ts', "api.post('/auth/login', "], ['src/api.ts', "api.use('/*', async"],
   ['src/api.ts', "api.use('/staff/*'"], ['src/api.ts', 'async function resolvePersonShift'], ['src/api.ts', 'export async function autoCloseBillingMonth'],
   ['src/lib/auth.ts', 'const PBKDF2_ITERATIONS ='], ['src/lib/auth.ts', 'export async function loadSessionUser'], ['src/lib/auth.ts', 'export async function purgeExpiredAuthRows'],
   ['src/services/cron.ts', 'console.log(`cron ${job.name}'], ['src/services/cron.ts', 'export async function cronStatus'],

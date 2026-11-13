@@ -1010,7 +1010,7 @@
     })
   })
   // ---------- 振込データ（#471）。会社管理者・事務担当のみ ----------
-  const canPayout = () => typeof ME !== 'undefined' && ME && ME.can_manage_hr
+  const canPayout = () => hasPerm('payout.manage')
   const PAYOUT_TYPE_LABEL = { payroll_daily: '日雇い給与', freelance: '個人事業主', payroll: '自社給与' }
   const ACCOUNT_TYPES = { 1: '普通', 2: '当座', 4: '貯蓄' }
   const P = window.__payoutState = window.__payoutState || { transfer_date: dayjs().add(1, 'day').format('YYYY-MM-DD'), types: ['payroll_daily', 'freelance'], data: null }

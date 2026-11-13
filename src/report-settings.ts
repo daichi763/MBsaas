@@ -19,6 +19,7 @@ import { NEXT_DAY_TYPES, reportableWindow, shiftWindow, type ShiftTimes } from '
 import { JSON_IN, bindJsonArray } from './lib/d1-chunk'
 import { nowJST, todayJST, addDays } from './lib/time'
 import { sha256, randomHex } from './lib/hash'
+import { can } from './lib/permissions'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -276,10 +277,9 @@ export const MAX_LATE_GRACE_MINUTES = 120
 export type LatenessSettings = { grace_minutes: number }
 export type ReportLateness = { report_type: string; late: boolean; late_minutes: number | null; early_leave_minutes: number | null }
 
-// 勤怠の設定（写真必須・遅刻の猶予・打刻修正の受付期限）を変えられるロール（9004）。営業管理者・事務担当は見るだけ
-export const ATTENDANCE_SETTING_ROLES = ['company_admin', 'field_manager']
+// 勤怠の設定（写真必須・遅刻の猶予・打刻修正の受付期限）を変えられるか（9004）。ロールは権限の表（src/lib/permissions.ts の attendance_settings.edit）
 export const ATTENDANCE_SETTING_DENIED = '勤怠の設定を変えられるのは会社管理者と現場管理者だけです'
-export const canEditAttendanceSettings = (u: any) => ATTENDANCE_SETTING_ROLES.includes(u?.role)
+export const canEditAttendanceSettings = (u: any) => can(u, 'attendance_settings.edit')
 export const validGraceMinutes = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_LATE_GRACE_MINUTES
 // 会社設定（companies.settings_json）から遅刻の猶予を読む。未設定・不正なら 0 分。
 // projectGrace は案件ごとの上書き（projects.late_grace_minutes。#497）。NULL・不正なら会社の値
