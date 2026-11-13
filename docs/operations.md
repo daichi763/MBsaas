@@ -95,8 +95,8 @@ npm test -- --no-retry            # 落ちたテストを流し直さない
 `scripts/run-tests.mjs` の流れ（`scripts/run-tests.mjs:3`〜`5`）:
 1. `npm run build`。
 2. テスト用のローカル D1 を1回だけ作る（`scripts/setup-test-db.sh`。0001〜0026 → `seed.sql` → 0027 以降の順に適用し、既存のデータに後のマイグレーションを当てる本番の状況を再現する）。
-3. テストのファイルごとに、その D1 を複製して `wrangler dev --local` を起動し、テストを流してサーバーを止める。起動のオプションはテストの先頭のコメントから読む（2.4。`scripts/run-tests.mjs:70`）。`// run-tests:` の行が複数あるテストは、同じ DB の写しで上から順に起動し直して流す（`scripts/run-tests.mjs:188`）。
-4. 落ちたテストは、新しい DB の写しでもう1回だけ流す。2回目で通ったものは結果に「PASS（再試行で合格）」と分けて出す（`scripts/run-tests.mjs:167`）。2回とも落ちたものが FAIL です。
+3. テストのファイルごとに、その D1 を複製して `wrangler dev --local` を起動し、テストを流してサーバーを止める。起動のオプションはテストの先頭のコメントから読む（2.4。`scripts/run-tests.mjs:70`）。`// run-tests:` の行が複数あるテストは、同じ DB の写しで上から順に起動し直して流す（`scripts/run-tests.mjs:201`）。
+4. 落ちたテストは、新しい DB の写しでもう1回だけ流す。2回目で通ったものは結果に「PASS（再試行で合格）」と分けて出す（`scripts/run-tests.mjs:180`）。2回とも落ちたものが FAIL です。
 
 環境変数: `TEST_DB_DIR`（テスト用 D1 の置き場所。既定は OS の一時フォルダの `mbsaas-test-<作業フォルダごとの記号>`）、`TEST_PORT`（既定 8899。使われていれば次の空いている番号）、`TEST_MAX_SERVERS`（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、`TEST_TIMEOUT_MIN`（1本の上限。既定 90 分）。テストは本番に接続しません。
 
