@@ -20,6 +20,7 @@ const CDN_RE = /^https:\/\/cdn\.jsdelivr\.net\/npm\/((?:@[^/@]+\/)?[^/@]+)@([^/]
 const TYPES = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.svg': 'image/svg+xml', '.map': 'application/json' }
 const warned = new Set()
 const wait = ms => new Promise(r => setTimeout(r, ms))
+const debug = (...a) => { if (process.env.CDN_DEBUG) console.log('[cdn]', ...a) }
 
 // 空いているポート（OS に選ばせる）
 export function freePort() {
@@ -61,11 +62,15 @@ export async function launchChrome(chromePath, args, opts = {}) {
   const port = Number((args.find(a => a.startsWith('--remote-debugging-port=')) || '').split('=')[1])
   if (!port) return chrome
   let ver = null
-  for (let i = 0; i < 100 && !ver && chrome.exitCode === null; i++) {
-    await wait(150)
+  // 混んでいると起動に時間がかかるので 60 秒まで待つ
+  for (let i = 0; i < 300 && !ver && chrome.exitCode === null; i++) {
+    await wait(200)
     ver = await fetch(`http://127.0.0.1:${port}/json/version`).then(r => r.json()).catch(() => null)
   }
-  if (!ver || !ver.webSocketDebuggerUrl) return chrome   // 起動しなかったときは、今までどおりテストの側で「起動できない」を出す
+  if (!ver || !ver.webSocketDebuggerUrl) {   // 起動しなかったときは、今までどおりテストの側で「起動できない」を出す
+    console.log(`（注意）ヘッドレス Chrome に接続できないので、CDN の横取りをしません（終了コード ${chrome.exitCode}）`)
+    return chrome
+  }
   try { await interceptCdn(ver.webSocketDebuggerUrl, chrome) } catch (e) { console.log(`（注意）CDN の横取りを用意できませんでした: ${e.message}`) }
   return chrome
 }
@@ -89,15 +94,24 @@ async function interceptCdn(wsUrl, chrome) {
     if (m.id) { const r = pend.get(m.id); pend.delete(m.id); if (r) r(m); return }
     if (m.method === 'Target.attachedToTarget') {
       const sid = m.params.sessionId, type = m.params.targetInfo.type
-      if (type !== 'tab') await send('Fetch.enable', { patterns: [{ urlPattern: 'https://cdn.jsdelivr.net/npm/*', requestStage: 'Request' }] }, sid)
+      debug('attached', type, m.params.targetInfo.targetId, m.params.targetInfo.url, m.params.waitingForDebugger)
+      // 作られた直後のページは Fetch.enable がエラーを返すことがあるので、通るまでやり直す（通らないままのページは ready にしない）
+      let enabled = type === 'tab'
+      for (let i = 0; i < 20 && !enabled; i++) {
+        const r = await send('Fetch.enable', { patterns: [{ urlPattern: 'https://cdn.jsdelivr.net/npm/*', requestStage: 'Request' }] }, sid)
+        enabled = !r.error
+        if (r.error) { debug('Fetch.enable error', type, r.error.message); await wait(100) }
+      }
       // ページの中の iframe・worker、タブの中のページにも入れる
       await send('Target.setAutoAttach', AUTO, sid)
-      ready.add(m.params.targetInfo.targetId)
+      if (enabled) ready.add(m.params.targetInfo.targetId)
+      else if (type === 'page') console.log(`（注意）ページ ${m.params.targetInfo.url} に CDN の横取りを入れられませんでした`)
       await send('Runtime.runIfWaitingForDebugger', {}, sid)
       return
     }
     if (m.method === 'Fetch.requestPaused') {
       const { requestId, request } = m.params
+      debug('paused', request.url)
       const sid = m.sessionId
       const { file, why } = localCdnFile(request.url)
       if (!file) {
@@ -118,7 +132,7 @@ async function interceptCdn(wsUrl, chrome) {
   }
   await send('Target.setAutoAttach', { ...AUTO, filter: [{ type: 'browser', exclude: true }, { type: 'page', exclude: true }, {}] })  // ページはタブの中でつなぐ
   // 起動したときの about:blank のページに Fetch が入るまで待つ（テストが最初に開く前に）
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 100; i++) {
     const { result } = await send('Target.getTargets')
     const pages = (result?.targetInfos || []).filter(t => t.type === 'page')
     if (pages.length && pages.every(t => ready.has(t.targetId))) return

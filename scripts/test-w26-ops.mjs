@@ -213,7 +213,10 @@ async function browserChecks() {
       if (cookie) { const [n, ...v] = cookie.split('='); await send('Network.setCookie', { name: n, value: v.join('='), url: BASE }) }
       errors = []; failed = []
       await send('Page.navigate', { url: BASE + path })
-      await wait(4000)
+      // 読み込みが終わるまで待つ（混んでいると遅い）。終わってから少し待って、後から読む部品とエラーを拾う
+      await wait(1000)
+      for (let i = 0; i < 60 && await evalJs('document.readyState') !== 'complete'; i++) await wait(500)
+      await wait(2000)
       const r = JSON.parse(await evalJs(libs) || '{}')
       const more = extra ? await evalJs(extra) : true
       return { ...r, more, errors: [...errors], failed: [...failed] }
