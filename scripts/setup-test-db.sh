@@ -10,7 +10,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DIR="${1:-.wrangler/test-db}"
 rm -rf "$DIR"
-run() { npx wrangler d1 execute mbsaas-production --local --persist-to "$DIR" "$@" > /dev/null; }
+# 機械が混んでいると、wrangler が「out of memory」・D1 の internal error などで途中で落ちることがある（Sprint 26 #9980）。
+# 1回の d1 execute は1つのトランザクションで、落ちた回は何も書いていないので、少し待って3回までやり直す。最後に落ちたときは出力を見せる
+run() {
+  local out i
+  for i in 1 2 3; do
+    if out=$(npx wrangler d1 execute mbsaas-production --local --persist-to "$DIR" "$@" 2>&1); then return 0; fi
+    if [ "$i" -lt 3 ]; then echo "（再試行）d1 execute $1 が失敗したので、やり直します（$i 回目）" >&2; sleep $((i * 5)); fi
+  done
+  echo "$out" | tail -n 30 >&2
+  return 1
+}
 for f in migrations/*.sql; do
   n=$(basename "$f" | cut -c1-4)
   if [ "$n" -le 26 ]; then run --file="$f"; fi
