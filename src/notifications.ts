@@ -30,13 +30,14 @@ import { ERROR_ALERT_KIND } from './lib/error-log'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
 import { appBaseUrl } from './lib/http'
+import { ADMIN_ROLES, can, rolesFor } from './lib/permissions'
 
 export type NotifyEnv = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string
   VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string }
 type Variables = { user: any }
 export type CorrectionEvent = 'submitted' | 'resubmitted' | 'approved' | 'rejected' | 'cancelled'
-// 通知を受け取る管理ロール（本部 system_admin は各社の通知を受け取らない）
-const NOTIFY_ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+// 通知を受け取る管理ロール（本部 system_admin は各社の通知を受け取らない。権限の表 src/lib/permissions.ts の4ロール）
+const NOTIFY_ADMIN_ROLES = ADMIN_ROLES
 const KIND_LABEL: Record<string, string> = { modify: '時刻修正', add: '打刻漏れの追加' }
 // corrections.ts の CANCEL_REASON_LABEL と同じ（corrections.ts がこのファイルを読み込むため、ここでは複製する）
 const CANCEL_REASON_LABEL: Record<string, string> = { shift_deleted: 'シフトが削除されたため', staff_changed: 'シフトの担当者が差し替えられたため' }
@@ -457,8 +458,11 @@ function notificationRoutes(scope: 'admin' | 'staff') {
   }
   app.post('/notifications/:id{[0-9]+}/read', async (c) => {
     const ids = await userIds(c)
-    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = COALESCE(read_at, ?) WHERE notification_id = ? AND ${inIds(ids)}`).bind(nowJST(), c.req.param('id'), ...ids).run()
-    if (!r.meta.changes) return c.json({ error: '通知が見つかりません' }, 404)
+    // 既読の行は書き直さない（開くたびに同じ行を書くと書き込みの行数が増えるため。#9976）。0件なら、すでに既読か無いかを確かめる
+    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE notification_id = ? AND ${inIds(ids)} AND read_at IS NULL`).bind(nowJST(), c.req.param('id'), ...ids).run()
+    if (!r.meta.changes && !(await c.env.DB.prepare(`SELECT 1 FROM user_notifications WHERE notification_id = ? AND ${inIds(ids)}`).bind(c.req.param('id'), ...ids).first())) {
+      return c.json({ error: '通知が見つかりません' }, 404)
+    }
     return c.json({ ok: true })
   })
   return app
@@ -878,11 +882,11 @@ export async function loadMailContact(db: D1Database, companyId: number): Promis
 notificationsAdminApi.get('/settings/mail-contact', async (c) => {
   const u = c.get('user')
   const m = await loadMailContact(c.env.DB, u.company_id)
-  return c.json({ ...m, can_edit: u.role === 'company_admin' })
+  return c.json({ ...m, can_edit: can(u, 'settings.mail_contact') })
 })
 notificationsAdminApi.put('/settings/mail-contact', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: '問い合わせ先の設定は会社管理者だけが変更できます' }, 403)
+  if (!can(u, 'settings.mail_contact')) return c.json({ error: '問い合わせ先の設定は会社管理者だけが変更できます' }, 403)
   const b = await c.req.json().catch(() => ({} as any))
   const reply = String(b.reply_to ?? '').trim()
   const phone = String(b.phone ?? '').trim()
@@ -932,12 +936,12 @@ notificationsAdminApi.get('/email-suppressions', async (c) => {
   const rows = (await c.env.DB.prepare(`SELECT x.email, x.reason, x.detail, x.created_at, group_concat(us.name, '、') AS names
     FROM email_suppressions x JOIN users us ON LOWER(us.email) = x.email AND us.company_id = ?
     GROUP BY x.email ORDER BY x.created_at DESC LIMIT 200`).bind(u.company_id).all()).results
-  return c.json({ suppressions: rows, can_release: u.role === 'company_admin' })
+  return c.json({ suppressions: rows, can_release: can(u, 'mail_suppression.release') })
 })
 // 送信の停止を解除する（受信できるようになったと本人に確かめた後）。自社のユーザーのアドレスだけ。会社管理者のみ
 notificationsAdminApi.post('/email-suppressions/release', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: '送信の停止の解除は会社管理者だけができます' }, 403)
+  if (!can(u, 'mail_suppression.release')) return c.json({ error: '送信の停止の解除は会社管理者だけができます' }, 403)
   const b = await c.req.json().catch(() => ({} as any))
   const email = normalizeAddress(b.email)
   if (!email) return c.json({ error: 'メールアドレスを指定してください' }, 400)
@@ -1058,11 +1062,11 @@ export function reminderSettings(settingsJson: unknown): ReminderSettings {
 notificationsAdminApi.get('/settings/reminders', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  return c.json({ ...reminderSettings(row?.settings_json), limits: REMINDER_LIMITS, can_edit: u.role === 'company_admin' })
+  return c.json({ ...reminderSettings(row?.settings_json), limits: REMINDER_LIMITS, can_edit: can(u, 'settings.reminders') })
 })
 notificationsAdminApi.put('/settings/reminders', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: 'リマインドの設定は会社管理者だけが変更できます' }, 403)
+  if (!can(u, 'settings.reminders')) return c.json({ error: 'リマインドの設定は会社管理者だけが変更できます' }, 403)
   const b = await c.req.json().catch(() => ({} as any))
   if (typeof b.enabled !== 'boolean') return c.json({ error: '送るかどうか（enabled）を指定してください' }, 400)
   if (b.email !== undefined && typeof b.email !== 'boolean') return c.json({ error: 'メールを送るかどうかの指定が正しくありません' }, 400)
@@ -1744,7 +1748,7 @@ notificationsAdminApi.get('/notification-prefs', async (c) => {
 })
 notificationsAdminApi.put('/notification-prefs', async (c) => {
   const u = c.get('user')
-  if (!NOTIFY_ADMIN_ROLES.includes(u.role)) return c.json({ error: 'この設定は、会社の管理者のアカウントで行ってください' }, 403)
+  if (!can(u, 'notification_prefs.edit')) return c.json({ error: 'この設定は、会社の管理者のアカウントで行ってください' }, 403)
   const err = await savePrefs(c.env.DB, u.company_id, [u.user_id], ADMIN_GROUPS, await c.req.json().catch(() => null))
   if (err) return c.json({ error: err }, 400)
   const prefs = await loadNotifyPrefs(c.env.DB, [u.user_id])
@@ -1856,7 +1860,7 @@ export async function notifyExpiringDocuments(env: NotifyEnv): Promise<{ checked
       const expired = mine.filter(r => Number(r.expired)).length, soon = mine.length - expired
       const r = await notifyCompanyAdmins(c, {
         companyId: cid, kind: DOC_EXPIRY_KIND, relatedId: group === 'hr' ? 1 : 0, merge: true, email: 'throttle',
-        roles: group === 'hr' ? ['company_admin', 'office_staff'] : undefined,
+        roles: group === 'hr' ? rolesFor('hr.manage') : undefined,
         title: () => group === 'hr' ? '入社時書類の有効期限が近づいています' : '書類の有効期限が近づいています',
         headline: `有効期限が${DOC_EXPIRY_NOTICE_DAYS}日以内の書類・期限が切れた書類があります。資格証・身分証・契約書などを更新してください。`,
         lines: [['期限切れ', `${expired}件`], [`${DOC_EXPIRY_NOTICE_DAYS}日以内に期限`, `${soon}件`]],

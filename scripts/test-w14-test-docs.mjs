@@ -141,8 +141,8 @@ const testFiles = readdirSync(join(ROOT, 'scripts')).filter(f => /^test-.*\.mjs$
   ok('#9642 チェックリストに書いた本部画面のボタンが画面にある（「この企業を停止する」「この端末でプッシュ通知を受け取る」「テスト通知を送る」）',
     ['この企業を停止する', 'この端末でプッシュ通知を受け取る', 'テスト通知を送る'].every(s => hq.includes(s)))
   const wr = read('wrangler.jsonc').split('\n')
-  // チェックリストが指す行（wrangler.jsonc:N）が、env.production の中の MAIL_FROM の行であること
-  const mailRef = Number((ten.match(/`MAIL_FROM`（`wrangler\.jsonc:(\d+)`）/) || [])[1] || 0)
+  // チェックリストが指す行（wrangler.jsonc:N）が、env.production の中の MAIL_FROM の行であること（番号の後に「。変えた日」が続く書き方も読む）
+  const mailRef = Number((ten.match(/`MAIL_FROM`（`wrangler\.jsonc:(\d+)`[）。]/) || [])[1] || 0)
   const prodAt = wr.findIndex(l => /"production"\s*:/.test(l))
   ok('#9642 チェックリストの `wrangler.jsonc:N` は本番の MAIL_FROM の行', mailRef > 0 && /"MAIL_FROM"/.test(wr[mailRef - 1] || '') && prodAt >= 0 && prodAt < mailRef - 1, { mailRef, line: wr[mailRef - 1] })
   ok('#9642 operations.md 2.5: 時刻に依存するテストの書き方（日本時間の今日・逆算・決まった時刻・0 時の直前の待ち）', /### 2\.5 時刻に依存するテスト/.test(ops) && /Date\.now\(\) \+ 9 \* 3600 \* 1000/.test(ops) && /23:45/.test(ops))

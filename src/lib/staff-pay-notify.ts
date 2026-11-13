@@ -5,8 +5,7 @@
 //       actual_entered（管理者が実績を入力したことの本人への通知）
 // =========================================================
 import { nowJST } from './time'
-
-const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+import { ADMIN_ROLES } from './permissions'
 
 export const mdText = (d: string | null | undefined) => { const m = String(d || '').match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${Number(m[1])}/${Number(m[2])}` : '' }
 

@@ -14,7 +14,7 @@
   const ATT_LABEL = { '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ', full: '案件報告管理の設定どおり' }
   const DR_LABEL = { '': '案件の設定に従う', none: '日報なし', required: '日報あり' }
   const RT_LABEL = { wake_up: '起床', departure: '出発', check_in: '入店', work_start: '勤務開始', break_start: '休憩入', break_end: '休憩出', work_end: '勤務終了', check_out: '退店' }
-  const reportSettingsLink = (pid) => `<a href="#report-settings${pid ? '/' + pid : ''}" class="text-blue-600 hover:underline" onclick="closeModal && closeModal()">案件報告管理</a>`
+  const reportSettingsLink = (pid) => `<a href="#report-settings${pid ? '/' + pid : ''}" class="text-primary-600 hover:underline" onclick="closeModal && closeModal()">案件報告管理</a>`
   const ENTRY_LABEL = { app: 'アプリ', link: '報告用URL', proxy: '代理入力', correction: '修正申請の承認' }
   const opts = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${String(v ?? '') === k ? 'selected' : ''}>${l}</option>`).join('')
 
@@ -29,20 +29,20 @@
     let partners = []
     try { partners = (await axios.get('/api/admin/roster/partners')).data.partners } catch { }
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-bolt text-amber-500 mr-1"></i>仮登録</h3>
-      <p class="text-xs text-gray-500 mb-3">氏名と電話番号だけで登録し、すぐシフトに入れられます。必須項目は後から「本登録」で入力します</p>
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-bolt text-warning-500 mr-1"></i>仮登録</h3>
+      <p class="text-xs text-neutral-500 mb-3">氏名と電話番号だけで登録し、すぐシフトに入れられます。必須項目は後から「本登録」で入力します</p>
       <div class="space-y-3">
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">氏名 <span class="text-red-500">*</span><input id="qr-name" class="inp" placeholder="山田 太郎"></label>
-          <label class="text-sm text-gray-600">電話番号 <span class="text-red-500">*</span><input id="qr-phone" class="inp" inputmode="tel" placeholder="09012345678" onblur="quickLookupPhone()"></label>
+          <label class="text-sm text-neutral-600">氏名 <span class="text-danger-500">*</span><input id="qr-name" class="inp" placeholder="山田 太郎"></label>
+          <label class="text-sm text-neutral-600">電話番号 <span class="text-danger-500">*</span><input id="qr-phone" class="inp" inputmode="tel" placeholder="09012345678" onblur="quickLookupPhone()"></label>
         </div>
         <div id="qr-dup"></div>
-        <label class="text-sm text-gray-600 block">区分
+        <label class="text-sm text-neutral-600 block">区分
           <select id="qr-type" class="inp" onchange="quickTypeChanged()">
             ${['daily_worker', 'freelance', 'partner_manual', 'own_employee'].map(k => `<option value="${k}">${TYPE_LABEL[k]}</option>`).join('')}
           </select></label>
-        <p id="qr-type-desc" class="text-[11px] text-gray-400 -mt-2">${TYPE_DESC.daily_worker}</p>
-        <div id="qr-partner" class="hidden p-3 rounded-lg bg-purple-50 space-y-2">
+        <p id="qr-type-desc" class="text-2xs text-neutral-400 -mt-2">${TYPE_DESC.daily_worker}</p>
+        <div id="qr-partner" class="hidden p-3 rounded-lg bg-accent-50 space-y-2">
           <select id="qr-partner-id" class="inp text-sm" onchange="document.getElementById('qr-partner-new').classList.toggle('hidden', this.value !== 'new')">
             ${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい協力会社</option>
           </select>
@@ -50,8 +50,8 @@
         </div>
         <input id="qr-trade" class="inp text-sm hidden" placeholder="屋号（任意）">
         <div class="grid grid-cols-2 gap-3 items-end">
-          <label class="text-sm text-gray-600">日報<select id="qr-dr" class="inp text-sm">${opts(DR_LABEL, '')}</select></label>
-          <p class="text-[11px] text-gray-400">勤怠報告は、シフトを割り当てた案件の標準設定が適用されます</p>
+          <label class="text-sm text-neutral-600">日報<select id="qr-dr" class="inp text-sm">${opts(DR_LABEL, '')}</select></label>
+          <p class="text-2xs text-neutral-400">勤怠報告は、シフトを割り当てた案件の標準設定が適用されます</p>
         </div>
         <input id="qr-memo" class="inp text-sm" placeholder="メモ（任意・紹介元など）">
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitQuickRegister" data-slot-role-id="${Number(ctx.slot_role_id) || ''}" data-request-key="${esc(newRequestKey())}">${ctx.slot_role_id ? '仮登録して枠に割り当てる' : '仮登録する'}</button></div>
@@ -76,7 +76,7 @@
     const slot = Number(quickCtx.slot_role_id) || 0
     const blocked = (m) => m.inactive === '退職' || m.inactive === '停止'
     const allBlocked = matches.every(blocked)
-    return `<div class="p-2 rounded-lg bg-amber-50 text-xs text-amber-800" id="qr-dup-box"><p><i class="fas fa-triangle-exclamation mr-1"></i>この電話番号のスタッフが登録済みです</p>
+    return `<div class="p-2 rounded-lg bg-warning-50 text-xs text-warning-800" id="qr-dup-box"><p><i class="fas fa-triangle-exclamation mr-1"></i>この電話番号のスタッフが登録済みです</p>
       <ul class="mt-1 space-y-1">${matches.map(m => `<li class="flex items-center gap-2 flex-wrap">
         <a class="underline font-bold" href="#staff/${Number(m.staff_id)}" onclick="closeModal()">${esc(m.name)}</a>
         <span>（${esc(TYPE_LABEL[m.affiliation_type] || '')}${m.is_provisional ? '・仮登録' : ''}）</span>
@@ -138,7 +138,7 @@
     host.innerHTML = `<div class="grid lg:grid-cols-2 gap-4">
       <section class="card p-4" id="staff-lifecycle">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-arrows-rotate text-blue-500 mr-1"></i>区分・登録状態</h3>
+          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-arrows-rotate text-primary-500 mr-1"></i>区分・登録状態</h3>
           <div class="flex gap-2 flex-wrap justify-end">
             ${data.merged_into_staff_id ? '' : `
             ${data.can_merge ? `<button class="btn btn-outline text-xs" data-action="openMerge" data-id="${Number(sid)}" id="merge-open-btn"><i class="fas fa-code-merge"></i>${data.is_provisional ? '既存のスタッフに統合' : '重複登録を統合'}</button>` : ''}
@@ -147,40 +147,40 @@
           </div>
         </div>
         <dl class="text-xs space-y-1.5">
-          <div class="flex gap-2"><dt class="w-24 text-gray-400">現在の区分</dt><dd class="font-bold">${TYPE_LABEL[t] || t}</dd></div>
-          <div class="flex gap-2"><dt class="w-24 text-gray-400">登録状態</dt><dd>${data.merged_into_staff_id ? `<span class="badge badge-gray">統合済み</span> <a class="text-blue-600 hover:underline" href="#staff/${data.merged_into_staff_id}">${esc(data.merged_into_name || '統合先')}</a>（${esc(String(data.merged_at || '').slice(0, 10))}）` : data.is_provisional ? '<span class="badge badge-red">仮登録</span>' : '<span class="badge badge-green">本登録</span>'}</dd></div>
-          <div class="flex gap-2"><dt class="w-24 text-gray-400">ログイン</dt><dd>${data.has_own_login ? 'あり（' + esc(data.user_code) + '）' : data.has_login ? '所属元の会社のログインから企業を切り替えて利用' : 'なし（報告用URLまたは代理入力で記録）'}
+          <div class="flex gap-2"><dt class="w-24 text-neutral-400">現在の区分</dt><dd class="font-bold">${TYPE_LABEL[t] || t}</dd></div>
+          <div class="flex gap-2"><dt class="w-24 text-neutral-400">登録状態</dt><dd>${data.merged_into_staff_id ? `<span class="badge badge-gray">統合済み</span> <a class="text-primary-600 hover:underline" href="#staff/${data.merged_into_staff_id}">${esc(data.merged_into_name || '統合先')}</a>（${esc(String(data.merged_at || '').slice(0, 10))}）` : data.is_provisional ? '<span class="badge badge-red">仮登録</span>' : '<span class="badge badge-green">本登録</span>'}</dd></div>
+          <div class="flex gap-2"><dt class="w-24 text-neutral-400">ログイン</dt><dd>${data.has_own_login ? 'あり（' + esc(data.user_code) + '）' : data.has_login ? '所属元の会社のログインから企業を切り替えて利用' : 'なし（報告用URLまたは代理入力で記録）'}
             ${data.can_issue_login ? `<button class="btn btn-outline text-xs ml-1" id="issue-login-btn" data-action="openIssueLogin" data-id="${Number(sid)}"><i class="fas fa-key"></i>ログインを発行</button>` : ''}</dd></div>
           ${window.scheduleLinkRowHtml ? scheduleLinkRowHtml(sid, data) : ''}
-          ${t !== 'linked_external' && !data.merged_into_staff_id ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">メール</dt><dd>${data.email ? esc(data.email) : '<span class="text-gray-400">なし</span>'}
+          ${t !== 'linked_external' && !data.merged_into_staff_id ? `<div class="flex gap-2"><dt class="w-24 text-neutral-400">メール</dt><dd>${data.email ? esc(data.email) : '<span class="text-neutral-400">なし</span>'}
             ${data.unverified_email ? `<div class="mt-1" id="unverified-email"><span class="badge badge-yellow">未確認</span> ${esc(data.unverified_email)}
-              <span class="block text-[11px] text-gray-400">応募フォームなどで入力された、本人確認をしていないメールです。通知・パスワード再設定には使いません</span>
+              <span class="block text-2xs text-neutral-400">応募フォームなどで入力された、本人確認をしていないメールです。通知・パスワード再設定には使いません</span>
               <button class="btn btn-outline text-xs mt-1" data-action="confirmUnverifiedEmail" data-id="${Number(sid)}" data-email="${esc(data.unverified_email)}" data-current="${esc(data.email || '')}">本人に確認したので設定する</button>
               <button class="btn btn-outline text-xs mt-1" data-action="discardUnverifiedEmail" data-id="${Number(sid)}">消す</button></div>` : ''}</dd></div>` : ''}
-          ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-gray-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-blue-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
+          ${data.employee_record && data.employee_record.employment_ended_at ? `<div class="flex gap-2"><dt class="w-24 text-neutral-400">従業員管理</dt><dd>雇用終了 ${esc(data.employee_record.employment_ended_at)}（閲覧のみで保持） <a class="text-primary-600 hover:underline" href="#employees/${sid}">開く</a></dd></div>` : ''}
           ${p && p.affiliation_type !== 'linked_external' && data.has_own_login && !data.merged_into_staff_id ? staffPasswordRowHtml(sid) : ''}
           ${p && !p.merged_into_staff_id ? `<div class="flex gap-2 items-start" id="staff-av-target">${staffAvTargetRowHtml(sid, Number(p.availability_exempt) === 1)}</div>` : ''}
         </dl>
         ${(data.schedules || []).map(s => s.status === 'pending'
-          ? `<div class="text-xs bg-blue-50 text-blue-900 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap" id="aff-schedule"><i class="fas fa-clock"></i>
+          ? `<div class="text-xs bg-primary-50 text-primary-900 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap" id="aff-schedule"><i class="fas fa-clock"></i>
               <span class="flex-1"><b>${esc(s.effective_date)}</b> から「${esc(TYPE_LABEL[s.to_type] || s.to_type)}${s.to_affiliation ? '（' + esc(s.to_affiliation) + '）' : ''}」に変更する予約があります</span>
               <button class="btn btn-outline text-xs" data-action="cancelAffiliationSchedule" data-sid="${Number(sid)}" data-id="${Number(s.schedule_id)}">予約を取り消す</button></div>`
-          : `<div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap"><i class="fas fa-triangle-exclamation"></i>
+          : `<div class="text-xs bg-warning-50 text-warning-800 rounded-lg p-2 mt-3 flex items-center gap-2 flex-wrap"><i class="fas fa-triangle-exclamation"></i>
               <span class="flex-1">${esc(s.effective_date)} からの「${esc(TYPE_LABEL[s.to_type] || s.to_type)}」への変更の予約は適用できませんでした: ${esc(s.error || '')}</span>
               <button class="btn btn-outline text-xs" data-action="cancelAffiliationSchedule" data-sid="${Number(sid)}" data-id="${Number(s.schedule_id)}" data-failed="1">確認した（表示を消す）</button></div>`).join('')}
-        <p class="text-xs font-bold text-gray-600 mt-3 mb-1">変更履歴</p>
-        <div class="space-y-1 max-h-40 overflow-y-auto">${data.history.map(h => `<div class="text-[11px] bg-gray-50 rounded p-1.5">
+        <p class="text-xs font-bold text-neutral-600 mt-3 mb-1">変更履歴</p>
+        <div class="space-y-1 max-h-40 overflow-y-auto">${data.history.map(h => `<div class="text-2xs bg-neutral-50 rounded p-1.5">
           <b>${esc(h.effective_date)}</b> ${h.from_type === 'new' ? '登録' : esc(TYPE_LABEL[h.from_type] || h.from_type) + ' → '}<b>${esc(TYPE_LABEL[h.to_type] || h.to_type)}</b>
           ${h.to_affiliation ? `（${esc(h.to_affiliation)}）` : ''}${h.affected_shifts ? ` ・予定シフト${Number(h.affected_shifts)}件を置き換え` : ''}${h.excluded_shifts ? `（勤務済み${Number(h.excluded_shifts)}件は対象外）` : ''}${h.note ? ` ・${esc(h.note)}` : ''}
-          <span class="text-gray-400">${esc(h.changed_by_name || '')}</span></div>`).join('') || '<p class="text-[11px] text-gray-400">履歴はありません</p>'}</div>
-        ${(data.employment_periods || []).length ? `<p class="text-xs font-bold text-gray-600 mt-3 mb-1">過去の雇用期間</p>
-        <div class="space-y-1" id="employment-periods">${data.employment_periods.map(e => `<div class="text-[11px] bg-gray-50 rounded p-1.5">
+          <span class="text-neutral-400">${esc(h.changed_by_name || '')}</span></div>`).join('') || '<p class="text-2xs text-neutral-400">履歴はありません</p>'}</div>
+        ${(data.employment_periods || []).length ? `<p class="text-xs font-bold text-neutral-600 mt-3 mb-1">過去の雇用期間</p>
+        <div class="space-y-1" id="employment-periods">${data.employment_periods.map(e => `<div class="text-2xs bg-neutral-50 rounded p-1.5">
           入社 <b>${esc(e.hire_date || '未登録')}</b> 〜 雇用終了 <b>${esc(e.employment_ended_at || '未登録')}</b>${e.ended_reason ? `（${esc(e.ended_reason)}）` : ''}${e.contract_type ? ` ・${esc(e.contract_type)}` : ''}</div>`).join('')}</div>` : ''}
       </section>
       <section class="card p-4" id="staff-report-settings">
-        <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>日報の提出設定</h3>
-        <p class="text-[11px] text-gray-400 mb-2">案件の初期値 → スタッフ → シフトの順に上書きします。勤怠報告（8 種類）は${reportSettingsLink()}で案件ごとに設定します（下の一覧から、このスタッフの全案件をまとめて設定できます）</p>
-        <label class="text-xs text-gray-600 block">日報<select id="sl-dr" class="inp text-sm">${opts(DR_LABEL, data.daily_report_mode || '')}</select></label>
+        <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-clipboard-check text-primary-500 mr-1"></i>日報の提出設定</h3>
+        <p class="text-2xs text-neutral-400 mb-2">案件の初期値 → スタッフ → シフトの順に上書きします。勤怠報告（8 種類）は${reportSettingsLink()}で案件ごとに設定します（下の一覧から、このスタッフの全案件をまとめて設定できます）</p>
+        <label class="text-xs text-neutral-600 block">日報<select id="sl-dr" class="inp text-sm">${opts(DR_LABEL, data.daily_report_mode || '')}</select></label>
         <button class="btn btn-outline w-full text-xs mt-2" onclick="saveStaffReportSettings(${sid})">保存する</button>
         <div id="staff-attendance-report-summary" class="mt-3"></div>
       </section>
@@ -199,14 +199,14 @@
     if (!host || !p || p.affiliation_type !== 'linked_external' || p.merged_into_staff_id) return
     const cur = p.link_ended_at ? 'ended' : p.employment_status === 'leave' ? 'leave' : 'working'
     host.insertAdjacentHTML('afterbegin', `<section class="card p-4 mb-4" id="staff-host-status">
-      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-handshake text-blue-500 mr-1"></i>自社での取引状況</h3>
-      ${p.source_retired ? '<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>所属元で退職（または利用停止）になっています。シフトの割当候補には出ません</div>' : ''}
+      <h3 class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-handshake text-primary-500 mr-1"></i>自社での取引状況</h3>
+      ${p.source_retired ? '<div class="text-xs bg-danger-50 text-danger-700 rounded-lg p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>所属元で退職（または利用停止）になっています。シフトの割当候補には出ません</div>' : ''}
       <div class="flex gap-2 flex-wrap items-center">
         <select id="host-status" class="inp text-sm w-40">${opts(HOST_STATUS_LABEL, cur)}</select>
         <button class="btn btn-outline text-xs" data-action="saveHostStatus" data-sid="${Number(sid)}">保存する</button>
-        ${p.link_ended_at ? `<span class="text-xs text-gray-500">取引終了 ${esc(String(p.link_ended_at).slice(0, 10))}</span>` : ''}
+        ${p.link_ended_at ? `<span class="text-xs text-neutral-500">取引終了 ${esc(String(p.link_ended_at).slice(0, 10))}</span>` : ''}
       </div>
-      <p class="text-[11px] text-gray-400 mt-1">「取引終了」にすると、自社のシフトの割当候補から外れ、本人もスタッフのアプリで自社の画面に切り替えられなくなります（所属元の登録内容・ログインは変わりません。取引状況を戻すとまた切り替えられます）。「休止中」は割り当てるときに警告を出します</p>
+      <p class="text-2xs text-neutral-400 mt-1">「取引終了」にすると、自社のシフトの割当候補から外れ、本人もスタッフのアプリで自社の画面に切り替えられなくなります（所属元の登録内容・ログインは変わりません。取引状況を戻すとまた切り替えられます）。「休止中」は割り当てるときに警告を出します</p>
     </section>`)
   }
   delegate('saveHostStatus', (el) => withSubmitLock(el, async () => {
@@ -223,18 +223,18 @@
   window.openMerge = async function (sid, q) {
     let d; try { d = (await axios.get(`/api/admin/staff/${sid}/merge-candidates` + (q ? '?q=' + encodeURIComponent(q) : ''))).data } catch (e) { return toast(errMsg(e)) }
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-code-merge text-blue-600 mr-1"></i>${d.source.is_provisional ? '既存のスタッフに統合' : '重複登録を統合'}</h3>
-      <p class="text-xs text-gray-500 mb-3">${d.source.is_provisional
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-code-merge text-primary-600 mr-1"></i>${d.source.is_provisional ? '既存のスタッフに統合' : '重複登録を統合'}</h3>
+      <p class="text-xs text-neutral-500 mb-3">${d.source.is_provisional
         ? `仮登録の「${esc(d.source.name)}」が、すでに登録のある人（他社から連携したスタッフなど）と同じ人の場合に使います。シフト・勤怠・日報・評価などを統合先に移します`
         : `「${esc(d.source.name)}」を誤って二重に登録したときに、同じ区分（${esc(TYPE_LABEL[d.source.affiliation_type] || '')}）の登録済みのスタッフにまとめます。この人は統合済みとして残り、一覧から外れます`}</p>
       <div class="flex gap-2 mb-2"><input id="mg-q" class="inp text-sm flex-1" placeholder="氏名・フリガナで探す" value="${esc(q || '')}">
         <button class="btn btn-outline text-xs" data-action="mergeSearch" data-id="${Number(sid)}"><i class="fas fa-magnifying-glass"></i></button></div>
       <div class="space-y-1.5 max-h-72 overflow-y-auto" id="merge-candidates">
-        ${d.candidates.map(r => `<button class="w-full text-left p-2.5 rounded-lg border border-gray-200 hover:border-blue-400 hover:bg-blue-50" data-action="previewMerge" data-id="${Number(sid)}" data-target="${Number(r.staff_id)}">
-          <div class="flex items-center justify-between gap-2"><p class="font-bold text-sm">${esc(r.name)} <span class="text-xs font-normal text-gray-400">${esc(r.kana || '')}</span>${r.inactive ? ` <span class="badge badge-red">${esc(r.inactive)}</span>` : ''}</p>
+        ${d.candidates.map(r => `<button class="w-full text-left p-2.5 rounded-lg border border-neutral-200 hover:border-primary-400 hover:bg-primary-50" data-action="previewMerge" data-id="${Number(sid)}" data-target="${Number(r.staff_id)}">
+          <div class="flex items-center justify-between gap-2"><p class="font-bold text-sm">${esc(r.name)} <span class="text-xs font-normal text-neutral-400">${esc(r.kana || '')}</span>${r.inactive ? ` <span class="badge badge-red">${esc(r.inactive)}</span>` : ''}</p>
             <span class="badge ${r.affiliation_type === 'linked_external' ? 'badge-blue' : 'badge-gray'}">${esc(TYPE_LABEL[r.affiliation_type] || r.affiliation_type)}${r.affiliation_type === 'linked_external' && r.owner_company_name ? '・' + esc(r.owner_company_name) : ''}</span></div>
-          <p class="text-[11px] text-gray-500">${r.reasons.map(x => `<span class="text-emerald-700">${esc(x)}</span>`).join('・') || '検索に一致'}${r.global_staff_code ? '・ID ' + esc(r.global_staff_code) : ''}・稼働 ${r.shift_count}件${r.last_work_date ? '（最終 ' + esc(r.last_work_date) + '）' : ''}${r.is_provisional ? '・<span class="text-red-600">仮登録</span>' : ''}</p>
-        </button>`).join('') || '<p class="text-xs text-gray-400 p-3 text-center">候補が見つかりません。氏名で検索するか、他社のスタッフなら先に「スタッフマスタ → 新規追加 → QR/ID連携」で連携してください</p>'}
+          <p class="text-2xs text-neutral-500">${r.reasons.map(x => `<span class="text-success-700">${esc(x)}</span>`).join('・') || '検索に一致'}${r.global_staff_code ? '・ID ' + esc(r.global_staff_code) : ''}・稼働 ${r.shift_count}件${r.last_work_date ? '（最終 ' + esc(r.last_work_date) + '）' : ''}${r.is_provisional ? '・<span class="text-danger-600">仮登録</span>' : ''}</p>
+        </button>`).join('') || '<p class="text-xs text-neutral-400 p-3 text-center">候補が見つかりません。氏名で検索するか、他社のスタッフなら先に「スタッフマスタ → 新規追加 → QR/ID連携」で連携してください</p>'}
       </div>
       <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
     const qEl = document.getElementById('mg-q')
@@ -249,13 +249,13 @@
     modal(`
       <h3 class="font-bold text-lg mb-2">統合の確認</h3>
       <div class="flex items-center gap-2 text-sm mb-3" id="merge-preview">
-        <div class="flex-1 p-2 rounded-lg bg-red-50"><p class="text-[11px] text-gray-500">統合元${d.source.is_provisional ? '（仮登録）' : ''}</p><p class="font-bold">${esc(d.source.name)}</p><p class="text-[11px]">${esc(d.source.type_label)}</p></div>
-        <i class="fas fa-arrow-right text-gray-400"></i>
-        <div class="flex-1 p-2 rounded-lg bg-blue-50"><p class="text-[11px] text-gray-500">統合先</p><p class="font-bold">${esc(d.target.name)}</p><p class="text-[11px]">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
+        <div class="flex-1 p-2 rounded-lg bg-danger-50"><p class="text-2xs text-neutral-500">統合元${d.source.is_provisional ? '（仮登録）' : ''}</p><p class="font-bold">${esc(d.source.name)}</p><p class="text-2xs">${esc(d.source.type_label)}</p></div>
+        <i class="fas fa-arrow-right text-neutral-400"></i>
+        <div class="flex-1 p-2 rounded-lg bg-primary-50"><p class="text-2xs text-neutral-500">統合先</p><p class="font-bold">${esc(d.target.name)}</p><p class="text-2xs">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
       </div>
       <ul class="text-xs space-y-1 mb-3 list-disc pl-4">${d.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
-      ${d.warnings.length ? `<div class="text-xs bg-amber-50 text-amber-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
-      <label class="block text-xs text-gray-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>
+      ${d.warnings.length ? `<div class="text-xs bg-warning-50 text-warning-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
+      <label class="block text-xs text-neutral-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" data-action="openMerge" data-id="${Number(sid)}">戻る</button>
         <button class="btn btn-danger flex-1" data-action="runMerge" data-id="${Number(sid)}" data-target="${Number(targetId)}" data-force="${d.warnings.length ? '1' : ''}">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>
@@ -286,9 +286,9 @@
   const loginFieldsHtml = (d, px, next) => `
     <div class="grid grid-cols-2 gap-3">
       <input id="${px}-code" class="inp text-sm" placeholder="${esc(next ? 'スタッフ番号（空いている番号: ' + next.code + '）' : 'スタッフ番号')}" data-suggested="${esc(next ? next.code : '')}" maxlength="50"><input id="${px}-pass" class="inp text-sm" placeholder="初期パスワード（8文字以上）" autocomplete="new-password">
-      ${next && next.last_code ? `<p class="col-span-2 text-[11px] text-gray-400 -mt-2">スタッフ番号を空欄にすると ${esc(next.code)} を使います（最後の番号: ${esc(next.last_code)}）</p>` : ''}
-      <label class="text-xs text-gray-600 col-span-2">メール（通知・パスワード再設定の宛先。任意）<input id="${px}-email" class="inp text-sm" type="email" maxlength="254" value="${esc(d.email || '')}" placeholder="メール（任意）"></label>
-      ${d.unverified_email ? `<label class="col-span-2 flex items-start gap-2 text-xs p-2 rounded bg-amber-50 text-amber-800"><input type="checkbox" id="${px}-use-unverified" class="mt-0.5">
+      ${next && next.last_code ? `<p class="col-span-2 text-2xs text-neutral-400 -mt-2">スタッフ番号を空欄にすると ${esc(next.code)} を使います（最後の番号: ${esc(next.last_code)}）</p>` : ''}
+      <label class="text-xs text-neutral-600 col-span-2">メール（通知・パスワード再設定の宛先。任意）<input id="${px}-email" class="inp text-sm" type="email" maxlength="254" value="${esc(d.email || '')}" placeholder="メール（任意）"></label>
+      ${d.unverified_email ? `<label class="col-span-2 flex items-start gap-2 text-xs p-2 rounded bg-warning-50 text-warning-800"><input type="checkbox" id="${px}-use-unverified" class="mt-0.5">
         <span>応募時などに入力されたメール <b>${esc(d.unverified_email)}</b>（未確認）を使う。本人のものと確認できた場合だけ選んでください</span></label>` : ''}
     </div>`
   const val = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : '' }
@@ -320,12 +320,12 @@
     phone: 'type="tel" inputmode="tel"',
   }
   const requiredFieldHtml = (f) => f.code === 'career'
-    ? `<label class="text-sm text-gray-600 col-span-2">${esc(f.label)} <span class="text-red-500">*</span><textarea class="inp fz-req" data-code="career" rows="2">${esc(f.value || '')}</textarea></label>`
+    ? `<label class="text-sm text-neutral-600 col-span-2">${esc(f.label)} <span class="text-danger-500">*</span><textarea class="inp fz-req" data-code="career" rows="2">${esc(f.value || '')}</textarea></label>`
     // 生年月日が分からない人は、年齢（#9710）を入れれば足りる
     : f.code === 'date_of_birth'
-    ? `<label class="text-sm text-gray-600">${esc(f.label)} <span class="text-red-500">*</span><input class="inp fz-req" data-code="date_of_birth" type="date" value="${esc(f.value ?? '')}" data-age-input="fz-age"></label>
-      <label class="text-sm text-gray-600">年齢（生年月日が分からないとき）<span class="flex items-center gap-1"><input id="fz-age" class="inp" type="text" inputmode="numeric" maxlength="3" placeholder="例: 30" value="${f.age_entered != null ? Number(f.age_entered) : ''}" ${f.value ? 'disabled' : ''}>歳</span></label>`
-    : `<label class="text-sm text-gray-600">${esc(f.label)} <span class="text-red-500">*</span><input class="inp fz-req" data-code="${esc(f.code)}" ${REQ_INPUT[f.code] || ''} value="${esc(f.value ?? '')}"></label>`
+    ? `<label class="text-sm text-neutral-600">${esc(f.label)} <span class="text-danger-500">*</span><input class="inp fz-req" data-code="date_of_birth" type="date" value="${esc(f.value ?? '')}" data-age-input="fz-age"></label>
+      <label class="text-sm text-neutral-600">年齢（生年月日が分からないとき）<span class="flex items-center gap-1"><input id="fz-age" class="inp" type="text" inputmode="numeric" maxlength="3" placeholder="例: 30" value="${f.age_entered != null ? Number(f.age_entered) : ''}" ${f.value ? 'disabled' : ''}>歳</span></label>`
+    : `<label class="text-sm text-neutral-600">${esc(f.label)} <span class="text-danger-500">*</span><input class="inp fz-req" data-code="${esc(f.code)}" ${REQ_INPUT[f.code] || ''} value="${esc(f.value ?? '')}"></label>`
   window.openFinalize = async function (sid) {
     let d; try { d = (await axios.get(`/api/admin/staff/${Number(sid)}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
     const next = await fetchNextCode()
@@ -334,18 +334,18 @@
     const kanaReq = (d.required_fields || []).some(f => f.code === 'kana')
     const emailReq = (d.required_fields || []).some(f => f.code === 'email')
     modal(`<h3 class="font-bold text-lg mb-1">本登録</h3>
-      <p class="text-xs text-gray-500 mb-3">性別などの必須項目を入力し、仮登録を解除します。ログインの発行は任意です（発行しない場合は報告用URLまたは代理入力で記録します）</p>
+      <p class="text-xs text-neutral-500 mb-3">性別などの必須項目を入力し、仮登録を解除します。ログインの発行は任意です（発行しない場合は報告用URLまたは代理入力で記録します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">性別 <span class="text-red-500">*</span><select id="fz-gender" class="inp"><option value="">選択してください</option>${Object.entries(GENDER_LABEL).map(([k, l]) => `<option value="${k}" ${d.gender === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-          <label class="text-sm text-gray-600">フリガナ${kanaReq ? ' <span class="text-red-500">*</span>' : ''}<input id="fz-kana" class="inp" maxlength="60" value="${esc(d.kana || '')}"></label>
+          <label class="text-sm text-neutral-600">性別 <span class="text-danger-500">*</span><select id="fz-gender" class="inp"><option value="">選択してください</option>${Object.entries(GENDER_LABEL).map(([k, l]) => `<option value="${k}" ${d.gender === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="text-sm text-neutral-600">フリガナ${kanaReq ? ' <span class="text-danger-500">*</span>' : ''}<input id="fz-kana" class="inp" maxlength="60" value="${esc(d.kana || '')}"></label>
           ${req.map(requiredFieldHtml).join('')}
         </div>
-        ${req.length ? '<p class="text-[11px] text-gray-400 -mt-1">* の項目は、会社の設定で必須になっています</p>' : ''}
-        ${d.unverified_email ? `<p class="text-[11px] text-amber-700"><i class="fas fa-circle-info mr-1"></i>応募時のメール ${esc(d.unverified_email)} は未確認のため、通知・パスワード再設定には使っていません</p>` : ''}
-        <details class="p-3 rounded-lg border border-gray-200"><summary class="text-sm text-gray-600 cursor-pointer">ログインを発行する（任意）</summary>
-          <div class="mt-3">${loginFieldsHtml(d, 'fz', next)}${emailReq ? '<p class="text-[11px] text-red-600 mt-1">ログインを発行する場合、メールは必須です（会社の設定）</p>' : ''}</div></details>
-        <p class="text-[11px] text-gray-400">${req.length || kanaReq ? 'そのほかの項目' : 'その他の項目（生年月日・スキル等）'}は本登録後に基本情報欄で入力できます</p>
+        ${req.length ? '<p class="text-2xs text-neutral-400 -mt-1">* の項目は、会社の設定で必須になっています</p>' : ''}
+        ${d.unverified_email ? `<p class="text-2xs text-warning-700"><i class="fas fa-circle-info mr-1"></i>応募時のメール ${esc(d.unverified_email)} は未確認のため、通知・パスワード再設定には使っていません</p>` : ''}
+        <details class="p-3 rounded-lg border border-neutral-200"><summary class="text-sm text-neutral-600 cursor-pointer">ログインを発行する（任意）</summary>
+          <div class="mt-3">${loginFieldsHtml(d, 'fz', next)}${emailReq ? '<p class="text-2xs text-danger-600 mt-1">ログインを発行する場合、メールは必須です（会社の設定）</p>' : ''}</div></details>
+        <p class="text-2xs text-neutral-400">${req.length || kanaReq ? 'そのほかの項目' : 'その他の項目（生年月日・スキル等）'}は本登録後に基本情報欄で入力できます</p>
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitFinalize" data-id="${Number(sid)}">本登録する</button></div>
       </div>`)
   }
@@ -376,7 +376,7 @@
     const sid = Number(el.dataset.id)
     let d; try { d = (await axios.get(`/api/admin/staff/${sid}/lifecycle`)).data } catch (e) { return toast(errMsg(e)) }
     modal(`<h3 class="font-bold text-lg mb-1">ログインを発行</h3>
-      <p class="text-xs text-gray-500 mb-3">スタッフ番号と初期パスワードを設定し、スタッフ用のアプリでシフトの確認・勤怠報告ができるようにします。初期パスワードは本人に伝えてください</p>
+      <p class="text-xs text-neutral-500 mb-3">スタッフ番号と初期パスワードを設定し、スタッフ用のアプリでシフトの確認・勤怠報告ができるようにします。初期パスワードは本人に伝えてください</p>
       <div class="space-y-3">${loginFieldsHtml(d, 'il', await fetchNextCode())}
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="submitIssueLogin" data-id="${sid}">ログインを発行する</button></div></div>`)
   })
@@ -400,8 +400,8 @@
       '※ 初回のログインで、ご自身のパスワードへの変更をお願いします。',
       '※ ログインの後に「ホーム画面に追加」すると、次から1回で開けます。',
     ].filter(Boolean).join('\n')
-    modal(`<h3 class="font-bold text-lg mb-1"><i class="fas fa-paper-plane text-blue-600 mr-1"></i>ログイン案内</h3>
-      <p class="text-xs text-gray-500 mb-2">コピーして、SMS・LINE などで本人に送ってください。初期パスワードは、この画面を閉じると二度と表示できません。</p>
+    modal(`<h3 class="font-bold text-lg mb-1"><i class="fas fa-paper-plane text-primary-600 mr-1"></i>ログイン案内</h3>
+      <p class="text-xs text-neutral-500 mb-2">コピーして、SMS・LINE などで本人に送ってください。初期パスワードは、この画面を閉じると二度と表示できません。</p>
       <textarea id="login-guide-text" class="inp font-mono text-sm" rows="8" readonly>${esc(text)}</textarea>
       <div class="flex gap-2 mt-3">
         <button class="btn btn-outline flex-1" data-action="copyLoginGuide"><i class="fas fa-copy"></i>コピー</button>
@@ -443,22 +443,22 @@
     try { partners = (await axios.get('/api/admin/roster/partners')).data.partners } catch { }
     const targets = ['own_employee', 'daily_worker', 'freelance', 'partner_manual'].filter(k => k !== from || k === 'partner_manual')
     modal(`<h3 class="font-bold text-lg mb-1">区分を変更</h3>
-      <p class="text-xs text-gray-500 mb-3">現在: <b>${esc(TYPE_LABEL[from] || from)}</b>。スタッフIDは変わらず、シフト・勤怠・評価・メモの履歴はそのまま引き継がれます</p>
+      <p class="text-xs text-neutral-500 mb-3">現在: <b>${esc(TYPE_LABEL[from] || from)}</b>。スタッフIDは変わらず、シフト・勤怠・評価・メモの履歴はそのまま引き継がれます</p>
       <div class="space-y-3" id="ac-form" data-sid="${Number(sid)}">
-        <div class="space-y-1.5">${targets.map((k, i) => `<label class="flex items-start gap-2 p-2 rounded-lg border border-gray-200 cursor-pointer has-[:checked]:border-blue-400 has-[:checked]:bg-blue-50">
-          <input type="radio" name="ac-type" value="${k}" ${i === 0 ? 'checked' : ''} class="mt-1"><span><b class="text-sm">${TYPE_LABEL[k]}</b><span class="block text-[11px] text-gray-500">${TYPE_DESC[k]}</span></span></label>`).join('')}</div>
-        <div id="ac-partner" class="hidden p-3 rounded-lg bg-purple-50 space-y-2">
+        <div class="space-y-1.5">${targets.map((k, i) => `<label class="flex items-start gap-2 p-2 rounded-lg border border-neutral-200 cursor-pointer has-[:checked]:border-primary-400 has-[:checked]:bg-primary-50">
+          <input type="radio" name="ac-type" value="${k}" ${i === 0 ? 'checked' : ''} class="mt-1"><span><b class="text-sm">${TYPE_LABEL[k]}</b><span class="block text-2xs text-neutral-500">${TYPE_DESC[k]}</span></span></label>`).join('')}</div>
+        <div id="ac-partner" class="hidden p-3 rounded-lg bg-accent-50 space-y-2">
           <select id="ac-partner-id" class="inp text-sm">
             ${partners.map(p => `<option value="${Number(p.affiliation_id)}">${esc(p.affiliation_name)}</option>`).join('')}<option value="new" ${partners.length ? '' : 'selected'}>＋ 新しい協力会社</option></select>
           <input id="ac-partner-new" class="inp text-sm ${partners.length ? 'hidden' : ''}" placeholder="協力会社名">
         </div>
         <input id="ac-trade" class="inp text-sm hidden" placeholder="屋号（任意）">
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">適用日 *<input id="ac-date" type="date" class="inp" value="${dayjs().format('YYYY-MM-DD')}"></label>
-          <div id="ac-emp" class="hidden"><label class="text-sm text-gray-600">入社日<input id="ac-hire" type="date" class="inp"></label>
-            <p class="text-[11px] text-gray-400">空欄なら適用日を入社日にします</p></div>
+          <label class="text-sm text-neutral-600">適用日 *<input id="ac-date" type="date" class="inp" value="${dayjs().format('YYYY-MM-DD')}"></label>
+          <div id="ac-emp" class="hidden"><label class="text-sm text-neutral-600">入社日<input id="ac-hire" type="date" class="inp"></label>
+            <p class="text-2xs text-neutral-400">空欄なら適用日を入社日にします</p></div>
         </div>
-        <p class="text-[11px] text-gray-400">適用日が明日以降なら予約になり、適用日の早朝に切り替わります（それまでは今の区分のままです）</p>
+        <p class="text-2xs text-neutral-400">適用日が明日以降なら予約になり、適用日の早朝に切り替わります（それまでは今の区分のままです）</p>
         <input id="ac-contract" class="inp text-sm hidden" placeholder="雇用形態（正社員 / アルバイト / パート 等）">
         <input id="ac-note" class="inp text-sm" placeholder="メモ（任意）">
         <div id="ac-preview"></div>
@@ -496,10 +496,10 @@
     const sid = Number(el.dataset.sid)
     try {
       const { data } = await axios.post(`/api/admin/staff/${sid}/affiliation-change`, { ...acBody(), dry_run: true })
-      document.getElementById('ac-preview').innerHTML = `<div class="p-3 rounded-lg bg-blue-50 text-xs text-blue-900" id="ac-effects">
+      document.getElementById('ac-preview').innerHTML = `<div class="p-3 rounded-lg bg-primary-50 text-xs text-primary-900" id="ac-effects">
         <p class="font-bold mb-1">${esc(data.effective_date)} から「${esc(data.from_label)}」→「${esc(data.to_label)}${data.affiliation ? '（' + esc(data.affiliation) + '）' : ''}」${data.scheduled ? ' <span class="badge badge-blue">予約</span>' : ''}</p>
         <ul class="list-disc ml-4 space-y-0.5">${data.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
-        ${(data.warnings || []).length ? `<div class="text-xs bg-amber-50 text-amber-800 rounded-lg p-2 mt-2" id="ac-warnings"><i class="fas fa-triangle-exclamation mr-1"></i>${data.warnings.map(x => esc(x)).join('<br>')}</div>` : ''}
+        ${(data.warnings || []).length ? `<div class="text-xs bg-warning-50 text-warning-800 rounded-lg p-2 mt-2" id="ac-warnings"><i class="fas fa-triangle-exclamation mr-1"></i>${data.warnings.map(x => esc(x)).join('<br>')}</div>` : ''}
         <button class="btn btn-primary w-full mt-3" id="ac-apply" data-action="applyAffiliationChange" data-sid="${sid}" data-token="${esc(data.preview_token)}" data-scheduled="${data.scheduled ? '1' : ''}">${data.scheduled ? 'この内容で予約する' : 'この内容で変更する'}</button>`
       el.classList.add('hidden')
     } catch (e) { toast(errMsg(e)) }
@@ -544,43 +544,43 @@
     const phone = String(d.staff_phone || '').replace(/[^\d+]/g, '')
     // 取り消せる代理入力（確定済みのシフト・打刻修正で直した報告は取り消せない。#322）
     const cancellable = d.settled ? [] : d.reports.filter(r => r.entry_method === 'proxy' && !r.corrected_by_correction_id)
-    host.innerHTML = `<div class="rounded-lg border border-gray-100 p-3 text-xs space-y-2" id="shift-report-box">
-      <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
-        <span class="text-gray-400">${d.login_via_owner ? '所属元のアカウントで報告' : d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
+    host.innerHTML = `<div class="rounded-lg border border-neutral-100 p-3 text-xs space-y-2" id="shift-report-box">
+      <div class="flex items-center justify-between"><p class="font-bold text-neutral-700"><i class="fas fa-clipboard-check mr-1"></i>勤怠・日報</p>
+        <span class="text-neutral-400">${d.login_via_owner ? '所属元のアカウントで報告' : d.has_login ? 'アプリで報告' : 'ログインなし'}</span></div>
       <div class="flex flex-wrap gap-1">
-        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? (r.no_photo_reason || r.photo_stale ? 'badge-yellow' : 'badge-green') : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') + (r.device ? ' ・' + esc(r.device) : '') + correctedNote(r, d.work_date) + (r.resent ? ' ・再送（' + (r.device_time ? '押した時刻で記録' : '受け付けた時刻で記録') + (r.received_at ? '。受付 ' + esc(atLabel(r.received_at, d.work_date)) : '') + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? '・修正' : ''}${r && r.no_photo_reason ? '・写真なし' : ''}${r && r.resent ? '・再送' : ''}</span>` }).join('') || '<span class="text-gray-400">勤怠報告なし</span>'}
+        ${d.modes.required_attendance.map(t => { const r = done.get(t); return `<span class="badge ${r ? (r.no_photo_reason || r.photo_stale ? 'badge-yellow' : 'badge-green') : 'badge-gray'}" title="${r ? esc(ENTRY_LABEL[r.entry_method] || '') + (r.entered_by_name ? '（' + esc(r.entered_by_name) + '）' : '') + (r.device ? ' ・' + esc(r.device) : '') + correctedNote(r, d.work_date) + (r.resent ? ' ・再送（' + (r.device_time ? '押した時刻で記録' : '受け付けた時刻で記録') + (r.received_at ? '。受付 ' + esc(atLabel(r.received_at, d.work_date)) : '') + '）' : '') : '未報告'}">${RT_LABEL[t]} ${r ? atLabel(r.reported_at, d.work_date) : '未'}${r && r.entry_method === 'proxy' ? '・代理' : r && r.entry_method === 'link' ? '・URL' : ''}${r && (r.corrected_by_correction_id || r.entry_method === 'correction') ? '・修正' : ''}${r && r.no_photo_reason ? '・写真なし' : ''}${r && r.resent ? '・再送' : ''}</span>` }).join('') || '<span class="text-neutral-400">勤怠報告なし</span>'}
         ${d.modes.daily_report_required ? `<span class="badge ${d.daily_report ? 'badge-green' : 'badge-gray'}" title="${d.daily_report ? esc(ENTRY_LABEL[d.daily_report.entry_method] || '') + (d.daily_report.entered_by_name ? '（' + esc(d.daily_report.entered_by_name) + '）' : '') : ''}">日報 ${d.daily_report ? '提出済み' + (d.daily_report.entry_method === 'proxy' ? '・代理' : d.daily_report.entry_method === 'link' ? '・URL' : '') : '未提出'}</span>` : '<span class="badge badge-gray">日報なし</span>'}
       </div>
       ${reportNotesHtml(d)}
-      ${cancellable.length ? `<div class="flex flex-wrap items-center gap-1"><span class="text-gray-500">代理入力の取消:</span>${cancellable.map(r => `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="cancelProxyAttendance" data-shift-id="${Number(shiftId)}" data-type="${esc(r.report_type)}" title="この代理入力を取り消す"><i class="fas fa-xmark"></i>${esc(RT_LABEL[r.report_type] || r.report_type)} ${esc(atLabel(r.reported_at, d.work_date))}</button>`).join('')}</div>` : ''}
+      ${cancellable.length ? `<div class="flex flex-wrap items-center gap-1"><span class="text-neutral-500">代理入力の取消:</span>${cancellable.map(r => `<button class="btn btn-outline text-2xs py-0.5 px-2" data-action="cancelProxyAttendance" data-shift-id="${Number(shiftId)}" data-type="${esc(r.report_type)}" title="この代理入力を取り消す"><i class="fas fa-xmark"></i>${esc(RT_LABEL[r.report_type] || r.report_type)} ${esc(atLabel(r.reported_at, d.work_date))}</button>`).join('')}</div>` : ''}
       <div class="grid grid-cols-2 gap-2">
         <label>このシフトの勤怠報告<select id="sr-att" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ' }, d.shift_attendance_mode === 'full' ? '' : (d.shift_attendance_mode || ''))}</select></label>
         <label>このシフトの日報<select id="sr-dr" class="inp text-xs" onchange="saveShiftReportSettings(${shiftId})">${opts({ '': 'スタッフ・案件の設定（' + (DR_LABEL[d.inherited_daily_report_mode || d.modes.daily_report_mode] || '') + '）', none: '日報なし', required: '日報あり' }, d.shift_daily_report_mode || '')}</select></label>
       </div>
-      ${d.shift_daily_report_mode && DR_LABEL[d.shift_daily_report_mode] ? `<p class="text-[11px] text-gray-500">日報は、このシフトの例外で「${esc(DR_LABEL[d.shift_daily_report_mode])}」にしています（指定なしに戻すと、スタッフ・案件の設定の「${esc(DR_LABEL[d.inherited_daily_report_mode] || '')}」になります）</p>` : ''}
+      ${d.shift_daily_report_mode && DR_LABEL[d.shift_daily_report_mode] ? `<p class="text-2xs text-neutral-500">日報は、このシフトの例外で「${esc(DR_LABEL[d.shift_daily_report_mode])}」にしています（指定なしに戻すと、スタッフ・案件の設定の「${esc(DR_LABEL[d.inherited_daily_report_mode] || '')}」になります）</p>` : ''}
       <div class="flex flex-wrap gap-1.5">
-        ${url ? `<input class="inp text-[11px] flex-1 min-w-0" id="sr-url" readonly value="${esc(url)}">
+        ${url ? `<input class="inp text-2xs flex-1 min-w-0" id="sr-url" readonly value="${esc(url)}">
           <button class="btn btn-primary text-xs" data-action="copyReportLink" title="URLだけをコピー"><i class="fas fa-copy"></i>コピー</button>
           <button class="btn btn-outline text-xs" data-action="copyReportGuide" data-shift-id="${Number(shiftId)}" title="日時・現場名・有効期限を添えた案内文をコピー"><i class="fas fa-file-lines"></i>案内文ごとコピー</button>
           <button class="btn btn-outline text-xs" onclick="revokeReportLink(${shiftId})" title="無効にする"><i class="fas fa-ban"></i></button>`
-        : d.token ? `<span class="text-[11px] text-gray-500 flex-1 min-w-[10rem] py-1"><i class="fas fa-link mr-1"></i>報告用URLは発行済みです（URLは発行した画面でだけ表示します）</span>
+        : d.token ? `<span class="text-2xs text-neutral-500 flex-1 min-w-[10rem] py-1"><i class="fas fa-link mr-1"></i>報告用URLは発行済みです（URLは発行した画面でだけ表示します）</span>
           <button class="btn btn-outline text-xs" data-action="reissueReportLink" data-shift-id="${Number(shiftId)}" title="新しいURLを発行して表示します。前に送ったURLは使えなくなります"><i class="fas fa-rotate"></i>発行し直す</button>
           <button class="btn btn-outline text-xs" data-action="revokeReportLinkOne" data-shift-id="${Number(shiftId)}" title="無効にする"><i class="fas fa-ban"></i></button>`
         : `<button class="btn btn-outline text-xs flex-1" onclick="issueReportLink(${shiftId})"><i class="fas fa-link"></i>報告用URLを発行（ログイン不要）</button>`}
         ${pending && !d.proxy_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyAttendance" data-shift-id="${shiftId}"><i class="fas fa-user-pen"></i>代理入力</button>` : ''}
-        ${pending && d.proxy_blocked ? `<span class="text-[11px] text-gray-400 py-1">${esc(d.proxy_blocked)}のシフトは代理入力できません</span>` : ''}
+        ${pending && d.proxy_blocked ? `<span class="text-2xs text-neutral-400 py-1">${esc(d.proxy_blocked)}のシフトは代理入力できません</span>` : ''}
         ${d.modes.daily_report_required && !d.daily_blocked ? `<button class="btn btn-outline text-xs" data-action="openProxyDaily" data-shift-id="${Number(shiftId)}"><i class="fas fa-file-pen"></i>日報を${d.daily_report ? '代理で修正' : '代理入力'}</button>` : ''}
       </div>
-      ${!d.has_login ? `<p class="text-[11px] text-gray-500">この日のログインのない人をまとめて:
-        <button class="text-blue-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="links">報告用URLを発行</button>・
-        <button class="text-blue-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="proxy">予定どおりで代理入力</button></p>` : ''}
-      ${url ? `<div class="flex flex-wrap items-center gap-1.5 text-[11px]">
-          <span class="text-gray-500"><i class="fas fa-phone mr-0.5"></i>${phone ? `<a href="tel:${esc(phone)}" class="text-blue-600 underline">${esc(d.staff_phone)}</a>` : '電話番号の登録なし'}</span>
-          ${phone ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(phone)}?&body=${esc(encodeURIComponent(reportGuideText(d, url)))}"><i class="fas fa-comment-sms"></i>SMSで送る</a>` : ''}
-          ${navigator.share ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="shareReportGuide" data-shift-id="${Number(shiftId)}"><i class="fas fa-share-nodes"></i>LINEなどで送る</button>` : ''}
+      ${!d.has_login ? `<p class="text-2xs text-neutral-500">この日のログインのない人をまとめて:
+        <button class="text-primary-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="links">報告用URLを発行</button>・
+        <button class="text-primary-600 underline" data-action="openNologinBulk" data-date="${esc(d.work_date)}" data-project-id="${Number(d.project_id) || ''}" data-tab="proxy">予定どおりで代理入力</button></p>` : ''}
+      ${url ? `<div class="flex flex-wrap items-center gap-1.5 text-2xs">
+          <span class="text-neutral-500"><i class="fas fa-phone mr-0.5"></i>${phone ? `<a href="tel:${esc(phone)}" class="text-primary-600 underline">${esc(d.staff_phone)}</a>` : '電話番号の登録なし'}</span>
+          ${phone ? `<a class="btn btn-outline text-2xs py-0.5 px-2" href="sms:${esc(phone)}?&body=${esc(encodeURIComponent(reportGuideText(d, url)))}"><i class="fas fa-comment-sms"></i>SMSで送る</a>` : ''}
+          ${navigator.share ? `<button class="btn btn-outline text-2xs py-0.5 px-2" data-action="shareReportGuide" data-shift-id="${Number(shiftId)}"><i class="fas fa-share-nodes"></i>LINEなどで送る</button>` : ''}
         </div>` : ''}
-      ${d.token ? `<p class="text-[11px] text-gray-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください（送り先の番号を確かめてください）</p>` : ''}
-      <div class="flex flex-wrap gap-1.5 pt-2 border-t border-gray-100">
+      ${d.token ? `<p class="text-2xs text-neutral-400">有効期限: ${dayjs(d.token.expires_at).format('M/D HH:mm')}${d.token.last_used_at ? '・最終アクセス ' + dayjs(d.token.last_used_at).format('M/D HH:mm') : '・未使用'}。SMS・LINEなどで本人に送ってください（送り先の番号を確かめてください）</p>` : ''}
+      <div class="flex flex-wrap gap-1.5 pt-2 border-t border-neutral-100">
         ${d.proxy_blocked === '欠勤' || d.proxy_blocked === '稼働日より前' ? '' : `<button type="button" class="btn btn-outline text-xs" data-action="corrNew" data-shift-id="${Number(shiftId)}" title="このシフトの打刻の修正・打刻漏れの追加を、管理者として申請します"><i class="fas fa-user-clock"></i>打刻を修正</button>`}
         <button type="button" class="btn btn-outline text-xs" data-action="opLogShow" data-entity="shift" data-id="${Number(shiftId)}" data-host="shift-op-log-${Number(shiftId)}" title="このシフトの状態・時間・金額・精算の変更を、誰がいつ行ったか"><i class="fas fa-clock-rotate-left"></i>変更履歴</button>
       </div>
@@ -598,8 +598,8 @@
     }
     const ld = d.link_devices || { count: 0, summaries: [] }
     if (ld.count > 1) notes.push(`<i class="fas fa-mobile-screen mr-1"></i>報告用URLが ${Number(ld.count)} 台の端末から使われています${ld.summaries.length ? '（' + esc(ld.summaries.join('、')) + '）' : ''}。本人以外が報告していないか確かめてください`)
-    const linkInfo = ld.count === 1 && ld.summaries.length ? `<p class="text-[11px] text-gray-400"><i class="fas fa-mobile-screen mr-1"></i>報告用URLの端末: ${esc(ld.summaries.join('、'))}</p>` : ''
-    return (notes.length ? `<div class="rounded bg-amber-50 text-amber-800 p-2 space-y-0.5">${notes.map(n => `<p>${n}</p>`).join('')}</div>` : '') + linkInfo
+    const linkInfo = ld.count === 1 && ld.summaries.length ? `<p class="text-2xs text-neutral-400"><i class="fas fa-mobile-screen mr-1"></i>報告用URLの端末: ${esc(ld.summaries.join('、'))}</p>` : ''
+    return (notes.length ? `<div class="rounded bg-warning-50 text-warning-800 p-2 space-y-0.5">${notes.map(n => `<p>${n}</p>`).join('')}</div>` : '') + linkInfo
   }
   // 報告用URLの案内文（会社名・稼働日・時間・案件・場所・有効期限。#441）
   const GUIDE_WD = ['日', '月', '火', '水', '木', '金', '土']
@@ -692,13 +692,13 @@
     const types = d.modes.required_attendance.filter(t => !done.has(t))
     const crosses = d.end_time <= d.start_time
     // 既定のチェックは入店だけ（勤務中に予定どおりの退店まで記録しないように）
-    box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-amber-50 space-y-2" id="proxy-form">
-      <p class="font-bold text-amber-800">代理入力（管理者が記録します。「代理入力」と表示されます）</p>
+    box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-warning-50 space-y-2" id="proxy-form">
+      <p class="font-bold text-warning-800">代理入力（管理者が記録します。「代理入力」と表示されます）</p>
       <div class="space-y-1">${types.map(t => { const def = d.proxy_defaults && d.proxy_defaults[t]; return `<label class="flex items-center gap-2 flex-wrap">
         <input type="checkbox" class="px-type" value="${esc(t)}" ${t === 'check_in' ? 'checked' : ''}><span class="w-16">${esc(RT_LABEL[t] || t)}</span>
         <input type="time" class="inp text-xs w-auto px-time" data-type="${esc(t)}">
-        <span class="text-gray-400">${def ? '空欄: ' + esc(atLabel(def, d.work_date)) + '（予定）' : '時刻を入力してください'}</span></label>` }).join('')}</div>
-      <p class="text-[11px] text-gray-500">実際の時刻を種類ごとに入力します。まだ来ていない時刻は記録できません。${crosses ? '日をまたぐシフトです。翌日の時刻はそのまま入力すると翌日として記録します。' : ''}</p>
+        <span class="text-neutral-400">${def ? '空欄: ' + esc(atLabel(def, d.work_date)) + '（予定）' : '時刻を入力してください'}</span></label>` }).join('')}</div>
+      <p class="text-2xs text-neutral-500">実際の時刻を種類ごとに入力します。まだ来ていない時刻は記録できません。${crosses ? '日をまたぐシフトです。翌日の時刻はそのまま入力すると翌日として記録します。' : ''}</p>
       <button class="btn btn-primary text-xs w-full" data-action="submitProxyAttendance" data-shift-id="${shiftId}">記録する</button></div>`)
     // 時刻を入力した種類にはチェックを入れる
     box.querySelectorAll('#proxy-form .px-time').forEach(el => el.addEventListener('input', () => { if (el.value) el.closest('label').querySelector('.px-type').checked = true }))
@@ -725,14 +725,14 @@
     const fields = d.daily_template && d.daily_template.fields && d.daily_template.fields.length ? d.daily_template.fields : [{ key: 'free', label: '報告内容', type: 'textarea' }]
     const fieldHtml = (f) => {
       const v = cur[f.key]
-      const label = `${esc(f.label || f.key)}${f.required === true || f.required === 1 || f.required === 'true' ? ' <span class="text-red-500">*</span>' : ''}`
+      const label = `${esc(f.label || f.key)}${f.required === true || f.required === 1 || f.required === 'true' ? ' <span class="text-danger-500">*</span>' : ''}`
       if (f.type === 'number') return `<label class="flex items-center gap-2"><span class="flex-1">${label}</span><input type="number" min="0" max="99999" step="1" class="inp text-xs w-24 pdr-field" data-key="${esc(f.key)}" data-type="number" value="${esc(v == null ? '' : v)}"></label>`
       if (f.type === 'textarea') return `<label class="block">${label}<textarea rows="2" class="inp text-xs pdr-field" data-key="${esc(f.key)}">${esc(v || '')}</textarea></label>`
       return `<label class="block">${label}<input class="inp text-xs pdr-field" data-key="${esc(f.key)}" value="${esc(v || '')}"></label>`
     }
-    box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-amber-50 space-y-2" id="proxy-daily-form">
-      <p class="font-bold text-amber-800">日報の代理入力（管理者が記録します。日報の一覧・報告状況に「代理」と表示されます）</p>
-      ${d.daily_report && d.daily_report.entry_method !== 'proxy' ? '<p class="text-[11px] text-red-600">本人が提出した日報があります。記録すると上書きします</p>' : ''}
+    box.insertAdjacentHTML('beforeend', `<div class="p-2 rounded bg-warning-50 space-y-2" id="proxy-daily-form">
+      <p class="font-bold text-warning-800">日報の代理入力（管理者が記録します。日報の一覧・報告状況に「代理」と表示されます）</p>
+      ${d.daily_report && d.daily_report.entry_method !== 'proxy' ? '<p class="text-2xs text-danger-600">本人が提出した日報があります。記録すると上書きします</p>' : ''}
       <div class="space-y-1.5">${fields.map(fieldHtml).join('')}</div>
       <label class="flex items-center gap-2"><input type="checkbox" id="pdr-incident" ${d.daily_report && d.daily_report.incident_flag ? 'checked' : ''}>インシデントがあった</label>
       <textarea rows="2" class="inp text-xs" id="pdr-incident-note" placeholder="インシデントの内容（任意）">${esc(cur.incident_note || '')}</textarea>
@@ -765,10 +765,10 @@
   window.renderProjectReportSettings = function (p) {
     const host = document.getElementById('project-report-settings'); if (!host) return
     host.innerHTML = `<div class="flex items-center justify-between flex-wrap gap-2">
-      <div><h3 class="text-sm font-bold text-gray-700"><i class="fas fa-clipboard-check text-blue-500 mr-1"></i>日報の提出設定（この案件の初期値）</h3>
-        <p class="text-[11px] text-gray-400">スタッフごと・シフトごとに上書きできます。勤怠報告（8 種類）は${reportSettingsLink(p.project_id)}で設定します</p></div>
+      <div><h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-clipboard-check text-primary-500 mr-1"></i>日報の提出設定（この案件の初期値）</h3>
+        <p class="text-2xs text-neutral-400">スタッフごと・シフトごとに上書きできます。勤怠報告（8 種類）は${reportSettingsLink(p.project_id)}で設定します</p></div>
       <div class="flex gap-2 items-end">
-        <label class="text-xs text-gray-600">日報<select id="pr-dr" class="inp text-sm">${opts({ none: '日報なし', required: '日報あり' }, p.daily_report_mode || 'required')}</select></label>
+        <label class="text-xs text-neutral-600">日報<select id="pr-dr" class="inp text-sm">${opts({ none: '日報なし', required: '日報あり' }, p.daily_report_mode || 'required')}</select></label>
         <button class="btn btn-outline text-xs" onclick="saveProjectReportSettings(${p.project_id})">保存</button>
       </div></div>`
   }
@@ -784,7 +784,7 @@
 ;(function () {
   // 区分・登録状態のパネル（renderStaffLifecyclePanel）が、自社のログインのある人（他社連携・統合済みを除く）にだけ描く。
   // 他社連携から区分を変えた行（LK- のまま）は自社のログインではないので出さない（#569。has_own_login で判断）
-  window.staffPasswordRowHtml = (sid) => `<div class="flex gap-2 items-center"><dt class="w-24 text-gray-400">パスワード</dt><dd>
+  window.staffPasswordRowHtml = (sid) => `<div class="flex gap-2 items-center"><dt class="w-24 text-neutral-400">パスワード</dt><dd>
       <button id="staff-reset-password-btn" class="btn btn-outline text-xs" data-action="resetStaffPassword" data-id="${Number(sid)}"><i class="fas fa-key"></i>パスワードを再発行</button></dd></div>`
   delegate('resetStaffPassword', (el) => {
     if (!confirm('仮パスワードを発行します。今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。よろしいですか？')) return
@@ -804,12 +804,12 @@
 // =========================================================
 ;(function () {
   // 区分・登録状態のパネル（renderStaffLifecyclePanel）が、統合済みでない人に描く（#staff-av-target の中身）
-  const rowHtml = window.staffAvTargetRowHtml = (sid, exempt) => `<dt class="w-24 text-gray-400 shrink-0">出勤可能日の提出</dt><dd>
+  const rowHtml = window.staffAvTargetRowHtml = (sid, exempt) => `<dt class="w-24 text-neutral-400 shrink-0">出勤可能日の提出</dt><dd>
       <span class="inline-flex gap-1">
         <button type="button" class="btn ${exempt ? 'btn-outline' : 'btn-primary'} text-xs" data-action="staffAvTarget" data-id="${Number(sid)}" data-target="1" aria-pressed="${exempt ? 'false' : 'true'}">する</button>
         <button type="button" class="btn ${exempt ? 'btn-primary' : 'btn-outline'} text-xs" data-action="staffAvTarget" data-id="${Number(sid)}" data-target="0" aria-pressed="${exempt ? 'true' : 'false'}">しない</button>
       </span>
-      <span class="block text-[11px] text-gray-400 mt-1">${esc(window.staffAvTargetHelp ? staffAvTargetHelp(exempt) : '')}</span></dd>`
+      <span class="block text-2xs text-neutral-400 mt-1">${esc(window.staffAvTargetHelp ? staffAvTargetHelp(exempt) : '')}</span></dd>`
   // 基本情報の保存で変えたときに、この行も合わせる（admin.js の saveStaffBasicInfo から呼ぶ）
   window.redrawStaffAvTargetRow = function (sid, exempt) {
     const row = document.getElementById('staff-av-target')
@@ -866,8 +866,8 @@
     const host = document.getElementById('nl-bulk'); if (!host) return
     const data = st.tab === 'links' ? st.links : st.proxy
     const projects = (data && data.projects) || []
-    host.innerHTML = `<div class="flex items-center justify-between mb-2"><h3 class="font-bold text-gray-800"><i class="fas fa-users-viewfinder text-blue-600 mr-1"></i>ログインのない人の報告（まとめて）</h3>
-        <button class="text-gray-400" onclick="closeModal()" title="閉じる"><i class="fas fa-xmark"></i></button></div>
+    host.innerHTML = `<div class="flex items-center justify-between mb-2"><h3 class="font-bold text-neutral-800"><i class="fas fa-users-viewfinder text-primary-600 mr-1"></i>ログインのない人の報告（まとめて）</h3>
+        <button class="text-neutral-400" onclick="closeModal()" title="閉じる"><i class="fas fa-xmark"></i></button></div>
       <div class="flex flex-wrap gap-2 items-end mb-3 text-xs">
         <label>稼働日<input type="date" id="nl-date" class="inp text-sm" value="${esc(st.date)}"></label>
         <label class="flex-1 min-w-[10rem]">案件<select id="nl-project" class="inp text-sm"><option value="">すべての案件</option>
@@ -875,8 +875,8 @@
         <button class="btn btn-outline text-xs" data-action="nlReload"><i class="fas fa-rotate-right"></i>表示</button>
       </div>
       <div class="flex gap-1 mb-3 border-b">
-        <button class="px-3 py-1.5 text-sm ${st.tab === 'links' ? 'border-b-2 border-blue-600 font-bold text-blue-700' : 'text-gray-500'}" data-action="nlTab" data-tab="links"><i class="fas fa-link mr-1"></i>報告用URL</button>
-        <button class="px-3 py-1.5 text-sm ${st.tab === 'proxy' ? 'border-b-2 border-blue-600 font-bold text-blue-700' : 'text-gray-500'}" data-action="nlTab" data-tab="proxy"><i class="fas fa-user-pen mr-1"></i>予定どおりで代理入力</button>
+        <button class="px-3 py-1.5 text-sm ${st.tab === 'links' ? 'border-b-2 border-primary-600 font-bold text-primary-700' : 'text-neutral-500'}" data-action="nlTab" data-tab="links"><i class="fas fa-link mr-1"></i>報告用URL</button>
+        <button class="px-3 py-1.5 text-sm ${st.tab === 'proxy' ? 'border-b-2 border-primary-600 font-bold text-primary-700' : 'text-neutral-500'}" data-action="nlTab" data-tab="proxy"><i class="fas fa-user-pen mr-1"></i>予定どおりで代理入力</button>
       </div>
       <div id="nl-body">${!data ? '' : st.tab === 'links' ? linksHtml(data) : proxyHtml(data)}</div>`
   }
@@ -896,29 +896,29 @@
   const knownLinkRows = () => ((st.links && st.links.rows) || []).filter(r => r.issued && linkTokenOf(r))
   function linksHtml(data) {
     const rows = data.rows || []
-    if (!rows.length) return '<p class="text-sm text-gray-500 py-6 text-center">この日のログインのない人のシフトはありません</p>'
+    if (!rows.length) return '<p class="text-sm text-neutral-500 py-6 text-center">この日のログインのない人のシフトはありません</p>'
     const issued = rows.filter(r => r.issued), unissued = rows.filter(r => !r.issued && !r.unavailable), unused = issued.filter(r => !r.last_used_at)
     const known = issued.filter(r => linkTokenOf(r)), hidden = issued.length - known.length
-    return `<p class="text-xs text-gray-600 mb-2">対象 ${rows.length}件（発行済み ${issued.length}件・うち未使用 ${unused.length}件 / 未発行 ${unissued.length}件）${data.truncated ? '<span class="text-amber-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
+    return `<p class="text-xs text-neutral-600 mb-2">対象 ${rows.length}件（発行済み ${issued.length}件・うち未使用 ${unused.length}件 / 未発行 ${unissued.length}件）${data.truncated ? '<span class="text-warning-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
       <div class="flex flex-wrap gap-2 mb-3">
         ${unissued.length ? `<button class="btn btn-primary text-xs" data-action="nlIssueAll"><i class="fas fa-link"></i>未発行の${unissued.length}件をまとめて発行</button>` : ''}
         ${known.length ? `<button class="btn btn-outline text-xs" data-action="nlCopyAll"><i class="fas fa-copy"></i>発行した${known.length}件の案内文をまとめてコピー</button>` : ''}
       </div>
-      ${hidden ? `<p class="text-[11px] text-amber-700 mb-2"><i class="fas fa-circle-info mr-1"></i>発行済みのURLは、発行した画面でだけ表示します（${hidden}件）。送り直すときは「発行し直す」を押してください（前に送ったURLは使えなくなります）</p>` : ''}
+      ${hidden ? `<p class="text-2xs text-warning-700 mb-2"><i class="fas fa-circle-info mr-1"></i>発行済みのURLは、発行した画面でだけ表示します（${hidden}件）。送り直すときは「発行し直す」を押してください（前に送ったURLは使えなくなります）</p>` : ''}
       <div class="space-y-1.5 max-h-[55vh] overflow-y-auto" id="nl-links">${rows.map(r => {
         const tel = telOf(r.staff_phone)
         const status = r.unavailable ? `<span class="badge badge-gray">${esc(r.unavailable)}</span>`
           : !r.issued ? '<span class="badge badge-yellow">未発行</span>'
           : r.last_used_at ? `<span class="badge badge-green">開いた ${esc(dayjs(r.last_used_at).format('M/D HH:mm'))}</span>` : '<span class="badge badge-blue">発行済み・未使用</span>'
-        return `<div class="rounded border border-gray-100 p-2 text-xs flex flex-wrap items-center gap-2" data-shift-id="${Number(r.shift_id)}">
-          <div class="flex-1 min-w-[12rem]"><p class="font-bold text-gray-800">${esc(r.staff_name)} ${status}</p>
-            <p class="text-gray-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}${r.place ? '（' + esc(r.place) + '）' : ''}
-              ${tel ? ` ・<a href="tel:${esc(tel)}" class="text-blue-600 underline">${esc(r.staff_phone)}</a>` : ' ・電話番号の登録なし'}${r.notice_count ? ` ・お知らせ${Number(r.notice_count)}件` : ''}</p></div>
-          ${r.issued && linkTokenOf(r) ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="nlCopyOne" data-shift-id="${Number(r.shift_id)}"><i class="fas fa-copy"></i>案内文</button>
-            ${tel ? `<a class="btn btn-outline text-[11px] py-0.5 px-2" href="sms:${esc(tel)}?&body=${esc(encodeURIComponent(guideOf(data, r)))}"><i class="fas fa-comment-sms"></i>SMS</a>` : ''}`
-          : r.issued && !r.unavailable ? `<button class="btn btn-outline text-[11px] py-0.5 px-2" data-action="nlReissueOne" data-shift-id="${Number(r.shift_id)}" title="新しいURLを発行して表示します。前に送ったURLは使えなくなります"><i class="fas fa-rotate"></i>発行し直す</button>` : ''}
+        return `<div class="rounded border border-neutral-100 p-2 text-xs flex flex-wrap items-center gap-2" data-shift-id="${Number(r.shift_id)}">
+          <div class="flex-1 min-w-[12rem]"><p class="font-bold text-neutral-800">${esc(r.staff_name)} ${status}</p>
+            <p class="text-neutral-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}${r.place ? '（' + esc(r.place) + '）' : ''}
+              ${tel ? ` ・<a href="tel:${esc(tel)}" class="text-primary-600 underline">${esc(r.staff_phone)}</a>` : ' ・電話番号の登録なし'}${r.notice_count ? ` ・お知らせ${Number(r.notice_count)}件` : ''}</p></div>
+          ${r.issued && linkTokenOf(r) ? `<button class="btn btn-outline text-2xs py-0.5 px-2" data-action="nlCopyOne" data-shift-id="${Number(r.shift_id)}"><i class="fas fa-copy"></i>案内文</button>
+            ${tel ? `<a class="btn btn-outline text-2xs py-0.5 px-2" href="sms:${esc(tel)}?&body=${esc(encodeURIComponent(guideOf(data, r)))}"><i class="fas fa-comment-sms"></i>SMS</a>` : ''}`
+          : r.issued && !r.unavailable ? `<button class="btn btn-outline text-2xs py-0.5 px-2" data-action="nlReissueOne" data-shift-id="${Number(r.shift_id)}" title="新しいURLを発行して表示します。前に送ったURLは使えなくなります"><i class="fas fa-rotate"></i>発行し直す</button>` : ''}
         </div>` }).join('')}</div>
-      <p class="text-[11px] text-gray-400 mt-2">報告用URLは稼働日の翌日 23:59 まで使えます。送り先の番号を確かめてから送ってください。本人あての重要なお知らせがあれば、案内文に一言添えます（お知らせは報告用のページに出ます）</p>`
+      <p class="text-2xs text-neutral-400 mt-2">報告用URLは稼働日の翌日 23:59 まで使えます。送り先の番号を確かめてから送ってください。本人あての重要なお知らせがあれば、案内文に一言添えます（お知らせは報告用のページに出ます）</p>`
   }
   delegate('nlIssueAll', (el) => withSubmitLock(el, async () => {
     try {
@@ -954,29 +954,29 @@
   // ---------- 予定どおりで代理入力（#508） ----------
   function proxyHtml(data) {
     const rows = data.shifts || []
-    if (!rows.length) return '<p class="text-sm text-gray-500 py-6 text-center">この日の勤務のシフトはありません</p>'
+    if (!rows.length) return '<p class="text-sm text-neutral-500 py-6 text-center">この日の勤務のシフトはありません</p>'
     const past = st.date < dayjs().format('YYYY-MM-DD')
     const res = st.result
-    return `${res ? `<div class="rounded bg-gray-50 p-2 mb-2 text-xs" id="nl-proxy-result"><p class="font-bold">${Number(res.created)}件の報告を記録しました（${res.recorded.length}人）</p>
-        ${res.skipped.length ? `<p class="text-amber-800 mt-1">記録しなかったシフト ${res.skipped.length}件:</p><ul class="list-disc ml-5 text-amber-800">${res.skipped.map(s => `<li>${esc(s.staff_name || 'シフト#' + s.shift_id)}: ${esc(s.reason)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+    return `${res ? `<div class="rounded bg-neutral-50 p-2 mb-2 text-xs" id="nl-proxy-result"><p class="font-bold">${Number(res.created)}件の報告を記録しました（${res.recorded.length}人）</p>
+        ${res.skipped.length ? `<p class="text-warning-800 mt-1">記録しなかったシフト ${res.skipped.length}件:</p><ul class="list-disc ml-5 text-warning-800">${res.skipped.map(s => `<li>${esc(s.staff_name || 'シフト#' + s.shift_id)}: ${esc(s.reason)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       <div class="flex flex-wrap items-center gap-3 text-xs mb-2">
-        <span class="text-gray-600">記録する範囲:</span>
+        <span class="text-neutral-600">記録する範囲:</span>
         <label class="flex items-center gap-1"><input type="radio" name="nl-scope" value="start" ${past ? '' : 'checked'}>入店・勤務開始だけ</label>
         <label class="flex items-center gap-1"><input type="radio" name="nl-scope" value="all" ${past ? 'checked' : ''}>予定どおり全部（休憩・勤務終了・退店も）</label>
       </div>
-      <p class="text-[11px] text-gray-500 mb-2">チェックした人を、予定の時刻（入店・勤務開始は開始、勤務終了・退店は終了、休憩は予定の休憩）で記録します。違う人は時刻を直してください。まだ来ていない時刻・報告済みの報告・起床と出発は記録しません。ログインのない人を先に並べています${data.truncated ? '<span class="text-amber-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
+      <p class="text-2xs text-neutral-500 mb-2">チェックした人を、予定の時刻（入店・勤務開始は開始、勤務終了・退店は終了、休憩は予定の休憩）で記録します。違う人は時刻を直してください。まだ来ていない時刻・報告済みの報告・起床と出発は記録しません。ログインのない人を先に並べています${data.truncated ? '<span class="text-warning-700">。件数が多いため一部だけを表示しています。案件で絞り込んでください</span>' : ''}</p>
       <div class="max-h-[50vh] overflow-y-auto space-y-1" id="nl-proxy-rows">${rows.map(r => {
         const pending = r.required.filter(t => !r.done[t])
         const can = !r.blocked && pending.length > 0
         const check = can && !r.has_login
-        return `<div class="rounded border border-gray-100 p-2 text-xs flex flex-wrap items-center gap-2 ${can ? '' : 'opacity-60'}">
+        return `<div class="rounded border border-neutral-100 p-2 text-xs flex flex-wrap items-center gap-2 ${can ? '' : 'opacity-60'}">
           <input type="checkbox" class="nl-px" data-shift-id="${Number(r.shift_id)}" ${check ? 'checked' : ''} ${can ? '' : 'disabled'}>
-          <div class="flex-1 min-w-[12rem]"><p class="font-bold text-gray-800">${esc(r.staff_name)} ${r.has_login ? '' : '<span class="badge badge-gray">ログインなし</span>'}</p>
-            <p class="text-gray-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}</p>
-            <p class="text-[11px] text-gray-500">${r.required.map(t => r.done[t] ? `<span class="text-emerald-700">${esc(RT[t] || t)} ${esc(hhmm(r.done[t].at))}${r.done[t].entry_method === 'proxy' ? '（代理）' : ''}</span>` : `<span class="text-gray-400">${esc(RT[t] || t)} 未</span>`).join(' ・ ') || '勤怠報告なし'}
-              ${r.daily.required ? ` ・日報 ${r.daily.submitted ? '提出済み' : '<span class="text-amber-700">未提出</span>'}` : ''}${r.blocked ? ` ・<span class="text-gray-500">${esc(r.blocked)}のため記録できません</span>` : ''}</p></div>
-          ${can ? `<label class="text-[11px] text-gray-500">開始<input type="time" class="inp text-xs w-auto nl-start" data-shift-id="${Number(r.shift_id)}" placeholder="${esc(hhmm(r.defaults.check_in || r.defaults.work_start))}"></label>
-            <label class="text-[11px] text-gray-500">終了<input type="time" class="inp text-xs w-auto nl-end" data-shift-id="${Number(r.shift_id)}" placeholder="${esc(hhmm(r.defaults.check_out || r.defaults.work_end))}"></label>` : ''}
+          <div class="flex-1 min-w-[12rem]"><p class="font-bold text-neutral-800">${esc(r.staff_name)} ${r.has_login ? '' : '<span class="badge badge-gray">ログインなし</span>'}</p>
+            <p class="text-neutral-500">${esc(formatShiftTime(r.start_time, r.end_time))} ${esc(r.project_name)}</p>
+            <p class="text-2xs text-neutral-500">${r.required.map(t => r.done[t] ? `<span class="text-success-700">${esc(RT[t] || t)} ${esc(hhmm(r.done[t].at))}${r.done[t].entry_method === 'proxy' ? '（代理）' : ''}</span>` : `<span class="text-neutral-400">${esc(RT[t] || t)} 未</span>`).join(' ・ ') || '勤怠報告なし'}
+              ${r.daily.required ? ` ・日報 ${r.daily.submitted ? '提出済み' : '<span class="text-warning-700">未提出</span>'}` : ''}${r.blocked ? ` ・<span class="text-neutral-500">${esc(r.blocked)}のため記録できません</span>` : ''}</p></div>
+          ${can ? `<label class="text-2xs text-neutral-500">開始<input type="time" class="inp text-xs w-auto nl-start" data-shift-id="${Number(r.shift_id)}" placeholder="${esc(hhmm(r.defaults.check_in || r.defaults.work_start))}"></label>
+            <label class="text-2xs text-neutral-500">終了<input type="time" class="inp text-xs w-auto nl-end" data-shift-id="${Number(r.shift_id)}" placeholder="${esc(hhmm(r.defaults.check_out || r.defaults.work_end))}"></label>` : ''}
         </div>` }).join('')}</div>
       <div class="flex gap-2 mt-3"><button class="btn btn-outline text-xs" data-action="nlCheckAll">記録できる人をすべてチェック</button>
         <button class="btn btn-primary text-xs flex-1" data-action="nlProxySubmit"><i class="fas fa-user-pen"></i>チェックした人を記録する</button></div>`
@@ -1006,13 +1006,13 @@
     if (data.has_login || data.merged_into_staff_id || data.affiliation_type === 'skillsheet_only') return ''
     const l = data.schedule_link
     const expired = l && l.expires_at < dayjs().format('YYYY-MM-DD HH:mm:ss')
-    return `<div class="flex gap-2" id="schedule-link-row"><dt class="w-24 text-gray-400">予定確認URL</dt><dd>
+    return `<div class="flex gap-2" id="schedule-link-row"><dt class="w-24 text-neutral-400">予定確認URL</dt><dd>
       ${l && !expired ? `発行済み（${esc(dayjs(l.expires_at).format('M/D'))}まで有効・${l.last_used_at ? '最終アクセス ' + esc(dayjs(l.last_used_at).format('M/D HH:mm')) : '未使用'}）
         <button class="btn btn-outline text-xs ml-1" data-action="issueScheduleLink" data-id="${Number(sid)}" data-reissue="1"><i class="fas fa-rotate"></i>発行し直す</button>
         <button class="btn btn-outline text-xs" data-action="revokeScheduleLink" data-id="${Number(sid)}"><i class="fas fa-ban"></i>無効にする</button>`
-      : data.schedule_link_blocked ? `<span class="text-gray-400">${esc(data.schedule_link_blocked)}</span>`
-      : `${expired ? '<span class="text-gray-400">期限切れ</span> ' : ''}<button class="btn btn-outline text-xs" data-action="issueScheduleLink" data-id="${Number(sid)}"><i class="fas fa-calendar-days"></i>発行する</button>`}
-      <span class="block text-[11px] text-gray-400">本人が、今日から2週間の確定シフト（日時・案件・場所）を見られるURLです。前日〜翌日のシフトは、そのページから勤怠・日報を報告できます。金額は表示しません</span></dd></div>`
+      : data.schedule_link_blocked ? `<span class="text-neutral-400">${esc(data.schedule_link_blocked)}</span>`
+      : `${expired ? '<span class="text-neutral-400">期限切れ</span> ' : ''}<button class="btn btn-outline text-xs" data-action="issueScheduleLink" data-id="${Number(sid)}"><i class="fas fa-calendar-days"></i>発行する</button>`}
+      <span class="block text-2xs text-neutral-400">本人が、今日から2週間の確定シフト（日時・案件・場所）を見られるURLです。前日〜翌日のシフトは、そのページから勤怠・日報を報告できます。金額は表示しません</span></dd></div>`
   }
   delegate('issueScheduleLink', (el) => {
     if (el.dataset.reissue && !confirm('予定確認URLを発行し直します。今のURLは使えなくなります。よろしいですか？')) return
@@ -1024,8 +1024,8 @@
         const text = `【${data.company_name}】${data.staff_name}さんの今後2週間のシフトは、こちらのURLで確認できます。当日の勤怠・日報の報告や、遅刻・欠勤の連絡もこのページからできます（${dayjs(data.expires_at).format('M/D')}まで有効。${data.staff_name}さん専用のURLです）\n${url}`
         const tel = telOf(data.staff_phone)
         window.__scheduleGuide = text
-        modal(`<h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-calendar-days text-blue-600 mr-1"></i>予定確認URLを発行しました</h3>
-          <p class="text-xs text-red-600 mb-2">このURLはこの画面でだけ表示します。閉じる前に本人に送ってください（あとから確かめることはできません。必要なら発行し直してください）</p>
+        modal(`<h3 class="font-bold text-neutral-800 mb-2"><i class="fas fa-calendar-days text-primary-600 mr-1"></i>予定確認URLを発行しました</h3>
+          <p class="text-xs text-danger-600 mb-2">このURLはこの画面でだけ表示します。閉じる前に本人に送ってください（あとから確かめることはできません。必要なら発行し直してください）</p>
           <input class="inp text-xs w-full" readonly value="${esc(url)}" id="schedule-link-url">
           <textarea class="inp text-xs w-full mt-2" rows="4" readonly id="schedule-link-guide">${esc(text)}</textarea>
           <div class="flex flex-wrap gap-2 mt-3">

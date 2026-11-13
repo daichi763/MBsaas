@@ -331,6 +331,15 @@ async function loadAdminMenu() {
   } finally { rmSync(out, { force: true }) }
 }
 
+// 権限の表（src/lib/permissions.ts の PERMISSIONS。#9978）。requirePerm('操作') のミドルウェアの通すロールを、この表から作る
+async function loadPermissions() {
+  const esbuild = await import('esbuild')
+  const dir = join(tmpdir(), 'mbsaas-gen-docs'); mkdirSync(dir, { recursive: true })
+  const out = join(dir, `permissions-${process.pid}.mjs`)
+  await esbuild.build({ entryPoints: [join(ROOT, 'src/lib/permissions.ts')], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' })
+  try { return (await import(pathToFileURL(out).href)).PERMISSIONS } finally { rmSync(out, { force: true }) }
+}
+
 const ROUTE_RE = /^([ \t]*)([A-Za-z_$][\w$]*)\.(get|post|put|delete|patch|all|use|on)\(\s*(['"`])([^'"`\n]*)\4/gm
 function staticRoutesOf(file) {
   const src = read(file); const lines = src.split('\n'); const starts = lineStarts(src)
@@ -395,33 +404,32 @@ const normPath = (p) => (p.replace(/\/+$/, '') || '/')
 
 // 権限のミドルウェアの説明（ファイルとパスで見分ける）。roles は通すロール（hq_view は本部の閲覧＝sales_manager と同じ扱い）
 const ADMIN4 = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
-const HR = ['company_admin', 'office_staff']
 const MIDDLEWARE_DEFS = [
   // 認証より前の、読み書きの行数を数える仕掛け（#9970）。名前で見分ける（下の認証のミドルウェアと同じパス）
   { file: 'src/api.ts', path: '/*', name: 'd1RowsHook', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の読み書きの行数。src/lib/d1-retry.ts）' },
   { file: 'src/api.ts', path: '/*', kind: 'auth', label: 'ログイン必須（セッションの確認・延長・二段階認証の登録待ちの制限）' },
   { file: 'src/api.ts', path: '/auth/*', kind: 'note', label: '本部の閲覧中は書き込み不可' },
   { file: 'src/api.ts', path: '/admin/*', name: 'hqViewAdminGuard', kind: 'hqview', label: '本部は、企業が許可した閲覧の間だけ GET を通す（閲覧中は sales_manager として扱う）' },
-  { file: 'src/api.ts', path: '/admin/*', name: '', kind: 'roles', roles: ADMIN4, label: '管理系の4ロールだけ' },
-  { file: 'src/api.ts', path: '/admin/employees', name: 'hrOnly', kind: 'roles', roles: HR, label: '会社管理者・事務担当だけ（労務情報）' },
-  { file: 'src/api.ts', path: '/admin/employees/*', name: 'hrOnly', kind: 'roles', roles: HR, label: '会社管理者・事務担当だけ（労務情報）' },
-  { file: 'src/api.ts', path: '/hq/*', nth: 0, kind: 'roles', roles: ['system_admin'], label: '本部（system_admin）だけ' },
+  // requirePerm('操作') のミドルウェア（/admin/*・/staff/*・/hq/* の入口、労務・セキュリティ・管理者アカウント・休暇・企業間チャット）は、
+  // ここに書かずに権限の表（src/lib/permissions.ts）から作る（permDef）
   { file: 'src/api.ts', path: '/hq/*', nth: 1, kind: 'note', label: '本部の書き込みを hq_audit_logs に記録' },
-  { file: 'src/api.ts', path: '/staff/*', kind: 'roles', roles: ['staff'], label: 'スタッフだけ' },
   { file: 'src/api.ts', path: '/staff/attendance', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts）' },
   { file: 'src/api.ts', path: '/staff/attendance-photo', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts）' },
   { file: 'src/shift-board.ts', path: '/admin/shift-slots/roles/:id/assign', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts）' },
   { file: 'src/recruit.ts', path: '/admin/recruit-applications/:id/decide', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts）' },
-  { file: 'src/api.ts', name: 'securityAdminOnly', kind: 'roles', roles: ['company_admin'], label: '会社管理者だけ（セキュリティの設定・ログインの履歴）' },
-  { file: 'src/accounts.ts', name: 'companyAdminOnly', kind: 'roles', roles: ['company_admin'], label: '会社管理者だけ（管理者アカウントの管理）' },
   { file: 'src/recruit.ts', path: '/public/recruit/:token/*', kind: 'note', label: '募集ページの会社が停止中なら 410' },
   { file: 'src/roster.ts', path: '/admin/roster/*', kind: 'note', label: '会社の連携用の識別子を用意する（権限の制限なし）' },
-  { file: 'src/staff-self-service.ts', path: '/admin/staff-requests/leave', kind: 'roles', roles: HR, label: '会社管理者・事務担当だけ（休暇の申請）' },
-  { file: 'src/staff-self-service.ts', path: '/admin/staff-requests/leave/*', kind: 'roles', roles: HR, label: '会社管理者・事務担当だけ（休暇の申請）' },
-  { file: 'src/roster-chat.ts', path: '/admin/roster-chat/*', kind: 'roles', roles: ADMIN4, label: '管理系の4ロールだけ（企業間チャット）' },
 ]
 const ROLE_LABEL = { system_admin: '本部', company_admin: '会社管理者', sales_manager: '営業', field_manager: '現場責任者', office_staff: '事務', staff: 'スタッフ' }
 const ALL_ROLES = ['system_admin', ...ADMIN4, 'staff']
+// requirePerm:<操作> のミドルウェアの説明（通すロールは権限の表から）
+function permDef(perms, action) {
+  const p = perms[action]
+  if (!p) return null
+  const roles = ALL_ROLES.filter(r => p.roles.includes(r))
+  const who = roles.length === ADMIN4.length && ADMIN4.every(r => roles.includes(r)) ? '管理系の4ロール' : roles.map(r => ROLE_LABEL[r]).join('・')
+  return { kind: 'roles', roles, label: `${who}だけ（権限の表の ${action}: ${p.label}）` }
+}
 
 // パスのパターン（:param・末尾の *）が、ルートのパスに当たるか
 function patternCovers(pattern, path) {
@@ -437,6 +445,7 @@ function patternCovers(pattern, path) {
 
 async function collectApi() {
   const runtime = await loadRuntimeRoutes()
+  const perms = await loadPermissions()
   const files = readdirSync(join(ROOT, 'src')).filter(f => /\.ts$/.test(f)).map(f => `src/${f}`)
   const parsed = Object.fromEntries(files.map(f => [f, staticRoutesOf(f)]))
   // api.ts の import（名前 → ファイル・書き出しの名前）
@@ -482,7 +491,8 @@ async function collectApi() {
     if (r.method === 'ALL') {
       const s = take('USE', r.path) || take('ALL', r.path)
       const k = `${s?.file}|${normPath(r.path)}`; const nth = mwSeen[k] = (mwSeen[k] ?? -1) + 1
-      const def = s && MIDDLEWARE_DEFS.find(d => d.file === s.file && (!d.path || normPath(d.path) === normPath(r.path)) && (d.name === undefined || d.name === r.name) && (d.nth === undefined || d.nth === nth))
+      const def = s && (MIDDLEWARE_DEFS.find(d => d.file === s.file && (!d.path || normPath(d.path) === normPath(r.path)) && (d.name === undefined || d.name === r.name) && (d.nth === undefined || d.nth === nth))
+        || (/^requirePerm:/.test(r.name) ? permDef(perms, r.name.slice('requirePerm:'.length)) : null))
       if (!s) unmatched.push(`${r.method} ${r.path}`)
       if (s && !def) warn(`権限の説明がないミドルウェアがあります: ${s.file}:${s.line} ${r.path}（scripts/gen-docs.mjs の MIDDLEWARE_DEFS に足してください）`)
       middlewares.push({ order: r.order, path: r.path, name: r.name, file: s?.file, line: s?.line, def: def || null })
@@ -538,6 +548,8 @@ function extraChecks(p, line) {
   const body = p.lines.slice(line - 1, next - 1).join('\n')
   const found = []
   if (/HR_ROLES|isHr\(|canManageHr|can_manage_hr/.test(body)) found.push('人事のロール')
+  // 権限の表（src/lib/permissions.ts）の操作: can(u, '操作')・requirePerm('操作')
+  for (const m of new Set([...body.matchAll(/\bcan\([^,()]*(?:\([^()]*\))?[^,()]*,\s*'([\w.]+)'\)|\brequirePerm\('([\w.]+)'/g)].map(x => x[1] || x[2]))) found.push(`権限の表: ${m}`)
   if (/role\s*[!=]==\s*'company_admin'|'company_admin'\s*[!=]==/.test(body)) found.push('会社管理者')
   if (/canEditAttendanceSettings/.test(body)) found.push('勤怠の設定の権限')
   // そのほかのロールの定数（PAYOUT_ROLES など）と、権限を確かめる関数（payoutForbidden など）
@@ -564,8 +576,8 @@ function collectScreens(api, menu) {
   const menuSrc = read('src/admin-menu.ts'); const menuStarts = lineStarts(menuSrc)
   const menuLine = (hash) => { const i = menuSrc.indexOf(`hash: '${hash}'`); return i < 0 ? 1 : lineOf(menuStarts, i) }
   const nav = [
-    ...menu.items.filter(m => !m.group).map(m => ({ group: '', tab: m.hash, label: m.label, ...(m.hr ? { hr: true } : {}) })),
-    ...menu.groups.flatMap(([key, label]) => menu.items.filter(m => m.group === key).map(m => ({ group: label, groupKey: key, tab: m.hash, label: m.label, ...(m.hr ? { hr: true } : {}) }))),
+    ...menu.items.filter(m => !m.group).map(m => ({ group: '', tab: m.hash, label: m.label, ...(m.perm ? { perm: m.perm } : {}) })),
+    ...menu.groups.flatMap(([key, label]) => menu.items.filter(m => m.group === key).map(m => ({ group: label, groupKey: key, tab: m.hash, label: m.label, ...(m.perm ? { perm: m.perm } : {}) }))),
   ]
   const anchorRe = /<a href="#([\w-]+)"[^>]*data-tab="\1"[^>]*>(.*?)<\/a>/g
   const textOf = (h) => h.replace(/<span[^>]*>.*?<\/span>/g, '').replace(/<[^>]+>/g, '').trim()
@@ -1023,7 +1035,7 @@ function renderScreens(sc, api) {
   let cur = null
   for (const n of sc.nav) {
     if (n.group !== cur) { g.push(`- ${n.group ? `**${n.group}**` : '（見出しなし）'}`); cur = n.group }
-    g.push(`  - ${code('#' + n.tab)} ${n.label}${n.hr ? '（会社管理者・事務担当だけに出す）' : ''}`)
+    g.push(`  - ${code('#' + n.tab)} ${n.label}${n.perm ? `（権限の表の ${code(n.perm)} を持つロールだけに出す）` : ''}`)
   }
   out.adminNav = g.join('\n')
   out.hqNav = sc.hqNav.map(n => `- ${code('#' + n.tab)} ${n.label}`).join('\n')

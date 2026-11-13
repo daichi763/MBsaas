@@ -5,6 +5,8 @@
 //   ローカルでは RESEND_API_KEY が無いので、送るメールは「送信失敗（mail_not_configured）」として記録される。
 //   PERSIST に --persist-to の保存先を指定する（送信記録・トークンの確認と準備に使う。テスト用の DB 専用）。
 // 実行: BASE=http://127.0.0.1:8823 PERSIST=<保存先> node scripts/test-w4-notifications-mail.mjs
+// npm test の起動（scripts/run-tests.mjs が読む。RESEND_WEBHOOK_SECRET は下の WEBHOOK_SECRET の既定値と同じ。#9980）:
+// run-tests: --var MAIL_ENABLED:true --var RESEND_WEBHOOK_SECRET:whsec_dGVzdC13ZWJob29rLXNlY3JldC1mb3ItbWJzYWFz
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { createHmac, createHash } from 'crypto'

@@ -48,6 +48,8 @@ export type StaffNoticeOptions = {
   ids?: number[]
   // 掲載期限を過ぎたものの扱い（#294）。既定は、id を指定したら含め、それ以外は除く。'only' は掲載終了の一覧
   expired?: 'include' | 'exclude' | 'only'
+  // true: ホームの一覧に出す列だけを読む（本文・回答・添付の数などは読まない。スタッフのホームの CPU を減らす #9970）
+  summary?: boolean
 }
 
 // スタッフ本人（users.user_id）あてのお知らせ。配信先の ID（target_ids）や作成者は返さない
@@ -64,6 +66,15 @@ export async function loadStaffNotices(db: D1Database, userId: number, opts: Sta
     ? 'n.published_at DESC, n.notice_id DESC'
     : `is_read, CASE WHEN ${NOTICE_CONFIRM_ONE_BY_ONE_SQL} THEN 0 ELSE 1 END, n.published_at DESC, n.notice_id DESC`
   binds.push(opts.limit ?? 50, opts.offset ?? 0)
+  if (opts.summary) {
+    const rows = (await db.prepare(`
+    SELECT n.notice_id, n.title, n.target_type, n.importance, n.read_required, n.published_at,
+      ${NOTICE_IS_READ_SQL} AS is_read, ${NOTICE_NO_CONFIRM_SQL} AS no_confirm, ${NOTICE_MY_PROJECT_NAMES_SQL} AS project_names
+    FROM users us JOIN staff_profiles sp ON sp.user_id = us.user_id JOIN notices n ON n.company_id = us.company_id
+    WHERE us.user_id = ? AND ${NOTICE_LIVE_SQL} AND ${NOTICE_TARGET_SQL} ${where.map(w => 'AND ' + w).join(' ')}
+    ORDER BY ${order} LIMIT ? OFFSET ?`).bind(...binds).all()).results as any[]
+    return rows.map(r => ({ ...r, is_read: r.is_read ? 1 : 0, no_confirm: r.no_confirm ? 1 : 0, read_required: r.read_required ? 1 : 0 }))
+  }
   const rows = (await db.prepare(`
     SELECT n.notice_id, n.title, n.body, n.target_type, n.importance, n.read_required, n.published_at,
       ${NOTICE_IS_READ_SQL} AS is_read, ${NOTICE_NO_CONFIRM_SQL} AS no_confirm,

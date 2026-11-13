@@ -27,6 +27,7 @@ import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { MONTHLY_LABEL, MONTHLY_WORK_STATUSES, type MonthlyLine, addMonthsYM, isYM, loadMonthlyLines, monthlyTotal, monthsOverlapping, ruleActiveIn, ymLabel } from './lib/monthly-billing'
 import { nowJST, addDays, dayDiff, isDate } from './lib/time'
 import { recordSwallowedErrorDb } from './lib/http'
+import { can } from './lib/permissions'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -113,8 +114,19 @@ const sameActual = (a: { start: string | null; end: string | null; brk: number |
 const REPORT_COLS = ACTUAL_REPORT_TYPES.map(t => `(SELECT a.reported_at FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = '${t}') AS r_${t}`).join(',\n      ')
 // 精算の一覧では、シフトの報告を1回の副問い合わせでまとめて読み（種類ごと・端末の数え方ごとに読み直さない。#9938）、applyReportJson で
 // REPORT_COLS と同じ r_check_in などの列と、報告用URLの端末の数（link_devices）にする
-const REPORT_JSON_COL = `(SELECT json_group_array(json_array(a.report_type, a.reported_at, a.entry_method, a.device_id, a.device_info))
+// 端末ID・user-agent は報告用URLの報告（entry_method = 'link'）の端末の数にだけ使うので、ほかの報告では読まない
+// （アプリの報告の user-agent は1件 100〜300 文字あり、シフトごとに8件を読むと結果が大きくなり Worker の CPU を使うため。#9970）
+const REPORT_JSON_COL = `(SELECT json_group_array(json_array(a.report_type, a.reported_at, a.entry_method,
+          CASE WHEN a.entry_method = 'link' THEN a.device_id END, CASE WHEN a.entry_method = 'link' THEN a.device_info END))
         FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reports_json`
+// 精算の一覧で読むシフトの列（s.* から、精算の計算・表示に使わない列（登録者・メモ・枠・単価の由来・スタッフの返信・前日確認など）を除いたもの。
+// 結果を小さくして Worker の CPU を減らす #9970）。計算に使う列を足したら、ここにも足す
+const SETTLE_SHIFT_COLUMNS = ['shift_id', 'company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'unit_price', 'transportation_fee', 'status',
+  'site_id', 'break_minutes', 'bill_unit_type', 'bill_rate', 'bill_qty', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
+  'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount', 'bill_adjust', 'pay_adjust', 'adjust_note',
+  'payee_type', 'payee_affiliation_id', 'payee_company_id', 'price_locked', 'attendance_mode', 'daily_report_mode',
+  'actual_start', 'actual_end', 'actual_break_minutes', 'actual_source', 'actual_note', 'settle_status', 'settled_at', 'settled_by',
+  'attendance_types_fixed', 'qty_locked', 'absent_at', 'pay_premium', 'premium_night_minutes', 'premium_overtime_minutes', 'premium_holiday_minutes'].map(c => 's.' + c).join(', ')
 function applyReportJson(r: any) {
   let reps: any[] = []
   try { reps = JSON.parse(r.reports_json || '[]') } catch { }
@@ -339,7 +351,7 @@ export async function loadSettleMoney(db: D1Database, companyId: number, from: s
 async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?: number[]) {
   const { w, bind } = settleWhere(companyId, f, shiftIds)
   // manual_correction_at: 実績が手入力のときに承認した打刻修正（承認の操作履歴に applied_while_manual を記録している）
-  const rows = (await db.prepare(`SELECT s.*, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, cl.client_name,
+  const rows = (await db.prepare(`SELECT ${SETTLE_SHIFT_COLUMNS}, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, cl.client_name,
       st.site_name, us.name AS staff_name, sp.affiliation_type, er.employee_number,
       aff.affiliation_name AS payee_affiliation_name, pco.company_name AS payee_company_name,
       (SELECT MAX(c.decided_at) FROM attendance_corrections c WHERE c.shift_id = s.shift_id AND c.status = 'approved') AS last_correction_at,
@@ -583,7 +595,7 @@ app.get('/settlement', async (c) => {
   const summary = withMonthly(summarize(rows), monthly)
   if (f.issues_only) rows = rows.filter(r => r.issues.length)
   return c.json({ from: f.from, to: f.to, rows, ...summary, truncated, max_rows: MAX_ROWS, tentative_reported: tentative,
-    absent_shifts: absent, staff_options: staffOptions, closings, can_reopen: u.role === 'company_admin' })
+    absent_shifts: absent, staff_options: staffOptions, closings, can_reopen: can(u, 'closing.reopen') })
 })
 
 // 絞り込みの選択肢: 期間内に精算の対象（確定・代打・欠勤）のシフトがあるスタッフ（#168。スタッフの絞り込みは外して数える）
@@ -978,10 +990,10 @@ async function logExport(db: D1Database, u: any, kind: string, f: Filters, rowCo
 // 口座は payout_accounts（精算の画面で登録）を使い、なければ従業員管理（employee_records）の口座を使う。名義カナがなければ氏名のフリガナを使う。
 // 口座・依頼人の情報は労務情報のため、会社管理者・事務担当だけが扱える（従業員管理と同じ #205 の方針）。
 // 金額は確定済みのシフトの支払合計（源泉徴収などの控除の前）。未確定のシフト・単価未設定のシフトは含めず、件数を知らせる
-const PAYOUT_ROLES = ['company_admin', 'office_staff']
 const PAYOUT_TYPES = ['payroll_daily', 'freelance', 'payroll'] as const
 const PAYOUT_DEFAULT_TYPES = ['payroll_daily', 'freelance']
-const payoutForbidden = (u: any) => !PAYOUT_ROLES.includes(u?.role)
+// ロールは権限の表（src/lib/permissions.ts の payout.manage）
+const payoutForbidden = (u: any) => !can(u, 'payout.manage')
 const PAYOUT_FORBIDDEN = '振込データと口座情報は、会社管理者と事務担当のみ利用できます'
 const ACCOUNT_TYPE_LABEL: Record<string, string> = { '1': '普通', '2': '当座', '4': '貯蓄' }
 const digits = (v: any) => String(v ?? '').normalize('NFKC').replace(/[\s-]/g, '')
@@ -1228,7 +1240,7 @@ app.get('/settlement/closings', async (c) => {
     db.prepare(`SELECT l.log_id, l.kind, l.period_from, l.period_to, l.filters_json, l.row_count, l.exported_at, us.name AS exported_by_name FROM settlement_export_logs l
       LEFT JOIN users us ON us.user_id = l.exported_by WHERE l.company_id = ? ORDER BY l.exported_at DESC, l.log_id DESC LIMIT 30`).bind(u.company_id),
   ])
-  return c.json({ closings: cl.results, exports: ex.results, can_reopen: u.role === 'company_admin' })
+  return c.json({ closings: cl.results, exports: ex.results, can_reopen: can(u, 'closing.reopen') })
 })
 // 期間を締める。期間内の精算の対象（確定・代打・キャンセル料を入れた欠勤）がすべて確定済みのときだけ締められる。
 // 確定後に対応が必要な事項（確定後の打刻修正など）があるときは、確認してから force で締める
@@ -1256,7 +1268,7 @@ app.post('/settlement/closings', async (c) => {
 // 締めの解除は会社管理者だけ。理由を必ず残す（行は消さない）
 app.post('/settlement/closings/:id/reopen', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
-  if (u.role !== 'company_admin') return c.json({ error: '締めの解除は会社管理者だけが行えます' }, 403)
+  if (!can(u, 'closing.reopen')) return c.json({ error: '締めの解除は会社管理者だけが行えます' }, 403)
   const reason = String(b.reason ?? '').trim()
   if (!reason) return c.json({ error: '解除の理由を入力してください' }, 400)
   const r = await c.env.DB.prepare('UPDATE settlement_closings SET reopened_at = ?, reopened_by = ?, reopen_reason = ? WHERE closing_id = ? AND company_id = ? AND reopened_at IS NULL')
@@ -1426,11 +1438,11 @@ app.get('/settlement/statement', async (c) => {
 // 変更は給与の計算に関わるため、会社管理者と事務担当だけ（振込データと同じ）。変更は未確定のシフトにだけ効く（確定済みは確定したときの値のまま）
 app.get('/settlement/premium-settings', async (c) => {
   const u = c.get('user')
-  return c.json({ settings: await loadPremiumSettings(c.env.DB, u.company_id), can_edit: !payoutForbidden(u) })
+  return c.json({ settings: await loadPremiumSettings(c.env.DB, u.company_id), can_edit: can(u, 'premium_settings.edit') })
 })
 app.put('/settlement/premium-settings', async (c) => {
   const u = c.get('user'); const b = await c.req.json().catch(() => ({} as any))
-  if (payoutForbidden(u)) return c.json({ error: '割増の設定は、会社管理者と事務担当のみ変更できます' }, 403)
+  if (!can(u, 'premium_settings.edit')) return c.json({ error: '割増の設定は、会社管理者と事務担当のみ変更できます' }, 403)
   const rate = (v: any) => (v === '' || v == null ? NaN : Number(v))
   const rates = { night_rate: rate(b.night_rate), overtime_rate: rate(b.overtime_rate), holiday_rate: rate(b.holiday_rate) }
   for (const [k, label] of [['night_rate', '深夜'], ['overtime_rate', '時間外'], ['holiday_rate', '休日']] as const) {

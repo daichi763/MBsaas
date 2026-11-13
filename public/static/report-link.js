@@ -70,16 +70,16 @@
       // 発行されたことのあるURLなら、会社名と電話番号が返る（#163。遅刻・欠勤などは電話で連絡してもらう）
       const d = e.response.data || {}
       const tel = telHref(d.contact_phone)
-      $app.innerHTML = `<section class="card p-6 text-center mt-6"><i class="fas fa-link-slash text-3xl text-gray-300 mb-2 block"></i>
-        <p class="font-bold text-gray-700">${esc(errMsg(e, 'このURLは利用できません'))}</p><p class="text-xs text-gray-400 mt-2">担当者に新しいURLを依頼してください</p>
-        ${d.company_name ? `<div class="mt-4 pt-3 border-t text-sm text-gray-600" id="link-invalid-contact"><p>${esc(d.company_name)}</p>
+      $app.innerHTML = `<section class="card p-6 text-center mt-6"><i class="fas fa-link-slash text-3xl text-neutral-300 mb-2 block"></i>
+        <p class="font-bold text-neutral-700">${esc(errMsg(e, 'このURLは利用できません'))}</p><p class="text-xs text-neutral-400 mt-2">担当者に新しいURLを依頼してください</p>
+        ${d.company_name ? `<div class="mt-4 pt-3 border-t text-sm text-neutral-600" id="link-invalid-contact"><p>${esc(d.company_name)}</p>
           ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone"></i>${esc(d.contact_phone)} に電話する</a>
-            <p class="text-xs text-gray-400 mt-1">遅刻・欠勤・現場のトラブルは、こちらに電話で連絡してください</p>` : '<p class="text-xs text-gray-400 mt-1">遅刻・欠勤・現場のトラブルは、担当者に電話で連絡してください</p>'}</div>` : ''}</section>`
+            <p class="text-xs text-neutral-400 mt-1">遅刻・欠勤・現場のトラブルは、こちらに電話で連絡してください</p>` : '<p class="text-xs text-neutral-400 mt-1">遅刻・欠勤・現場のトラブルは、担当者に電話で連絡してください</p>'}</div>` : ''}</section>`
       return
     }
-    $app.innerHTML = `<section class="card p-6 text-center mt-6"><i class="fas fa-wifi text-3xl text-gray-300 mb-2 block"></i>
-      <p class="font-bold text-gray-700">${esc(e && e.response ? errMsg(e, '読み込みに失敗しました') : '通信できませんでした')}</p>
-      <p class="text-xs text-gray-500 mt-2">電波の良い場所で、もう一度読み込んでください。このURLはそのまま使えます（新しいURLの依頼は不要です）</p>
+    $app.innerHTML = `<section class="card p-6 text-center mt-6"><i class="fas fa-wifi text-3xl text-neutral-300 mb-2 block"></i>
+      <p class="font-bold text-neutral-700">${esc(e && e.response ? errMsg(e, '読み込みに失敗しました') : '通信できませんでした')}</p>
+      <p class="text-xs text-neutral-500 mt-2">電波の良い場所で、もう一度読み込んでください。このURLはそのまま使えます（新しいURLの依頼は不要です）</p>
       <button class="btn btn-primary w-full mt-4" data-action="linkReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
   }
   async function load() {
@@ -160,57 +160,57 @@
     // すべて済んだ後の日報は、開いたときだけフォームを出す
     const dailyCollapsed = prog.allDone && !!d.daily_report && !dailyOpen
     $app.innerHTML = `
-      ${staleNote ? `<p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3"><i class="fas fa-circle-info mr-1"></i>${esc(staleNote)}
+      ${staleNote ? `<p class="text-xs text-warning-800 bg-warning-50 border border-warning-200 rounded-lg p-2.5 mb-3"><i class="fas fa-circle-info mr-1"></i>${esc(staleNote)}
         <button class="underline font-bold ml-1" data-action="linkRefresh">再読み込み</button></p>` : ''}
       ${noticesHtml(d)}
-      ${prog.allDone && (order.length || d.modes.daily_report_required) ? `<section class="card p-4 mb-4 bg-emerald-50 border border-emerald-200 text-center" id="report-link-complete">
-        <i class="fas fa-circle-check text-3xl text-emerald-500 mb-1 block"></i>
-        <p class="font-bold text-emerald-800">本日の報告はすべて完了しました</p><p class="text-sm text-emerald-700 mt-0.5">お疲れさまでした</p></section>`
-      : prog.attDone && !prog.dailyDone && !beforeDay && order.length ? `<section class="card p-4 mb-4 bg-amber-50 border border-amber-200" id="report-link-remaining">
-        <p class="font-bold text-amber-800"><i class="fas fa-file-pen mr-1"></i>あと日報の提出が残っています</p>
+      ${prog.allDone && (order.length || d.modes.daily_report_required) ? `<section class="card p-4 mb-4 bg-success-50 border border-success-200 text-center" id="report-link-complete">
+        <i class="fas fa-circle-check text-3xl text-success-500 mb-1 block"></i>
+        <p class="font-bold text-success-800">本日の報告はすべて完了しました</p><p class="text-sm text-success-700 mt-0.5">お疲れさまでした</p></section>`
+      : prog.attDone && !prog.dailyDone && !beforeDay && order.length ? `<section class="card p-4 mb-4 bg-warning-50 border border-warning-200" id="report-link-remaining">
+        <p class="font-bold text-warning-800"><i class="fas fa-file-pen mr-1"></i>あと日報の提出が残っています</p>
         <button class="btn btn-primary w-full mt-2" data-action="linkGoDaily">日報を入力する</button></section>` : ''}
       <section class="card p-4 mb-4" id="report-link-shift">
-        <p class="text-xs text-gray-400">${esc(d.company_name)}</p>
-        <p class="text-sm text-gray-600 mt-1">${esc(d.staff_name)} さん</p>
-        <p class="text-lg font-bold text-gray-900 mt-1">${esc(d.project_name)}</p>
-        <p class="text-sm text-gray-600 mt-0.5"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.location || '')}</p>
-        <p class="text-sm text-gray-600"><i class="far fa-calendar text-gray-400 mr-1"></i>${fmt(s.work_date)} <i class="far fa-clock text-gray-400 ml-2 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}</p>
-        ${s.role ? `<p class="text-sm text-gray-600"><i class="fas fa-user-tag text-gray-400 mr-1"></i>役割: ${esc(s.role)}</p>` : ''}
-        ${(s.site_name && s.site_name !== s.location) || s.site_address || map ? `<p class="text-xs text-gray-500 mt-0.5">${esc(s.site_name && s.site_name !== s.location ? s.site_name + ' ' : '')}${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
+        <p class="text-xs text-neutral-400">${esc(d.company_name)}</p>
+        <p class="text-sm text-neutral-600 mt-1">${esc(d.staff_name)} さん</p>
+        <p class="text-lg font-bold text-neutral-900 mt-1">${esc(d.project_name)}</p>
+        <p class="text-sm text-neutral-600 mt-0.5"><i class="fas fa-location-dot text-neutral-400 mr-1"></i>${esc(s.location || '')}</p>
+        <p class="text-sm text-neutral-600"><i class="far fa-calendar text-neutral-400 mr-1"></i>${fmt(s.work_date)} <i class="far fa-clock text-neutral-400 ml-2 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}</p>
+        ${s.role ? `<p class="text-sm text-neutral-600"><i class="fas fa-user-tag text-neutral-400 mr-1"></i>役割: ${esc(s.role)}</p>` : ''}
+        ${(s.site_name && s.site_name !== s.location) || s.site_address || map ? `<p class="text-xs text-neutral-500 mt-0.5">${esc(s.site_name && s.site_name !== s.location ? s.site_name + ' ' : '')}${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
         ${siteContactHtml(s)}
-        ${d.manual_text ? `<details class="mt-2 rounded-lg bg-gray-50 p-2"><summary class="text-sm font-bold text-blue-700 cursor-pointer"><i class="fas fa-book mr-1"></i>注意事項・マニュアル</summary>
-          <p class="text-sm text-gray-700 whitespace-pre-wrap break-words mt-2">${esc(d.manual_text)}</p></details>` : ''}
-        ${firstStart && !order.some(t => ['done', 'open'].includes(st[t])) ? `<p class="text-xs text-amber-700 bg-amber-50 rounded p-2 mt-2">報告は ${esc(atLabel(firstStart))} から行えます</p>` : ''}
+        ${d.manual_text ? `<details class="mt-2 rounded-lg bg-neutral-50 p-2"><summary class="text-sm font-bold text-primary-700 cursor-pointer"><i class="fas fa-book mr-1"></i>注意事項・マニュアル</summary>
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words mt-2">${esc(d.manual_text)}</p></details>` : ''}
+        ${firstStart && !order.some(t => ['done', 'open'].includes(st[t])) ? `<p class="text-xs text-warning-700 bg-warning-50 rounded p-2 mt-2">報告は ${esc(atLabel(firstStart))} から行えます</p>` : ''}
       </section>
       ${order.length ? `<section class="mb-4 space-y-2.5" id="report-link-attendance">
-        <h2 class="font-bold text-gray-800 px-1">勤怠報告</h2>
+        <h2 class="font-bold text-neutral-800 px-1">勤怠報告</h2>
         ${order.map(t => {
           const state = st[t], isDone = state === 'done', isNext = t === nextType, canPress = state === 'open'
           return `<button class="report-btn ${isDone ? 'done' : isNext ? 'next' : ''}" ${canPress ? '' : 'disabled'} data-action="linkReport" data-type="${esc(t)}">
-            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${isDone ? 'bg-emerald-500 text-white' : isNext ? 'bg-blue-600 text-white' : canPress ? 'bg-blue-50 text-blue-500' : 'bg-gray-100 text-gray-400'}"><i class="fas ${isDone ? 'fa-check' : ICON[t]}"></i></span>
-            <span class="flex-1 text-left"><span class="block font-bold ${isDone ? 'text-emerald-700' : isNext ? 'text-blue-700' : canPress ? 'text-gray-700' : 'text-gray-500'}">${LABEL[t]}</span>
-              <span class="rl-sub block text-xs ${isDone ? 'text-emerald-600' : state === 'after' ? 'text-amber-700' : 'text-gray-400'}">${esc(subText(d, t, state, isNext))}${!isDone && canPress && d.photo_required && ['check_in', 'check_out'].includes(t) ? '（写真が必要です）' : ''}</span></span>
+            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${isDone ? 'bg-success-500 text-white' : isNext ? 'bg-primary-600 text-white' : canPress ? 'bg-primary-50 text-primary-500' : 'bg-neutral-100 text-neutral-400'}"><i class="fas ${isDone ? 'fa-check' : ICON[t]}"></i></span>
+            <span class="flex-1 text-left"><span class="block font-bold ${isDone ? 'text-success-700' : isNext ? 'text-primary-700' : canPress ? 'text-neutral-700' : 'text-neutral-500'}">${LABEL[t]}</span>
+              <span class="rl-sub block text-xs ${isDone ? 'text-success-600' : state === 'after' ? 'text-warning-700' : 'text-neutral-400'}">${esc(subText(d, t, state, isNext))}${!isDone && canPress && d.photo_required && ['check_in', 'check_out'].includes(t) ? '（写真が必要です）' : ''}</span></span>
           </button>`
         }).join('')}
       </section>` : ''}
       ${d.modes.daily_report_required ? `<section class="card p-4 mb-4" id="report-link-daily">
-        <h2 class="font-bold text-gray-800 mb-1">日報 ${d.daily_report ? '<span class="badge badge-green ml-1">提出済み</span>' : ''}</h2>
-        <p class="text-xs text-gray-400 mb-3">${d.daily_report ? '提出済み（' + dayjs(d.daily_report.submitted_at).format('M/D HH:mm') + '）。修正して再提出できます' : beforeDay ? '日報は稼働日以降に提出できます' : prog.attDone ? '勤怠報告は済んでいます。日報を入力して提出してください' : '稼働終了後に入力してください'}</p>
+        <h2 class="font-bold text-neutral-800 mb-1">日報 ${d.daily_report ? '<span class="badge badge-green ml-1">提出済み</span>' : ''}</h2>
+        <p class="text-xs text-neutral-400 mb-3">${d.daily_report ? '提出済み（' + dayjs(d.daily_report.submitted_at).format('M/D HH:mm') + '）。修正して再提出できます' : beforeDay ? '日報は稼働日以降に提出できます' : prog.attDone ? '勤怠報告は済んでいます。日報を入力して提出してください' : '稼働終了後に入力してください'}</p>
         ${dailyCollapsed ? `<button class="btn btn-outline w-full" data-action="linkEditDaily"><i class="fas fa-pen"></i>日報を修正する</button>` : `<form id="link-daily-form" class="space-y-3">
           ${(d.template ? d.template.fields : []).map(f => {
             const v = d.daily_report && d.daily_report.values ? d.daily_report.values[f.key] : ''
-            if (f.type === 'number') return `<div class="flex items-center gap-3"><label class="text-sm text-gray-600 flex-1 min-w-0">${esc(f.label)}</label><input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" class="inp link-field text-center font-bold shrink-0" style="width:6rem" value="${esc(v == null ? '' : v)}" placeholder="0"></div>`
-            if (f.type === 'textarea') return `<div><label class="text-sm text-gray-600 block mb-1">${esc(f.label)}</label><textarea data-key="${esc(f.key)}" rows="3" class="inp link-field">${esc(v || '')}</textarea></div>`
-            return `<div><label class="text-sm text-gray-600 block mb-1">${esc(f.label)}</label><input data-key="${esc(f.key)}" class="inp link-field" value="${esc(v || '')}"></div>`
-          }).join('') || `<div><label class="text-sm text-gray-600 block mb-1">報告内容</label><textarea data-key="free" rows="4" class="inp link-field">${esc((d.daily_report && d.daily_report.values && d.daily_report.values.free) || '')}</textarea></div>`}
+            if (f.type === 'number') return `<div class="flex items-center gap-3"><label class="text-sm text-neutral-600 flex-1 min-w-0">${esc(f.label)}</label><input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" class="inp link-field text-center font-bold shrink-0" style="width:6rem" value="${esc(v == null ? '' : v)}" placeholder="0"></div>`
+            if (f.type === 'textarea') return `<div><label class="text-sm text-neutral-600 block mb-1">${esc(f.label)}</label><textarea data-key="${esc(f.key)}" rows="3" class="inp link-field">${esc(v || '')}</textarea></div>`
+            return `<div><label class="text-sm text-neutral-600 block mb-1">${esc(f.label)}</label><input data-key="${esc(f.key)}" class="inp link-field" value="${esc(v || '')}"></div>`
+          }).join('') || `<div><label class="text-sm text-neutral-600 block mb-1">報告内容</label><textarea data-key="free" rows="4" class="inp link-field">${esc((d.daily_report && d.daily_report.values && d.daily_report.values.free) || '')}</textarea></div>`}
           <label class="flex items-center gap-3"><input id="link-incident" type="checkbox" class="w-5 h-5" ${d.daily_report && d.daily_report.incident_flag ? 'checked' : ''}>インシデントがあった</label>
           <label class="flex items-center gap-3"><input id="link-complaint" type="checkbox" class="w-5 h-5" ${d.daily_report && d.daily_report.complaint_flag ? 'checked' : ''}>クレームがあった</label>
           <button id="link-daily-submit" class="btn btn-primary w-full py-3" ${beforeDay ? 'disabled' : ''}>${d.daily_report ? '日報を修正して再提出' : '日報を提出する'}</button>
         </form>`}
       </section>` : ''}
-      ${!order.length && !d.modes.daily_report_required ? '<section class="card p-6 text-center text-sm text-gray-500">このシフトは報告の提出は不要です</section>' : ''}
+      ${!order.length && !d.modes.daily_report_required ? '<section class="card p-6 text-center text-sm text-neutral-500">このシフトは報告の提出は不要です</section>' : ''}
       ${contactHtml(d)}
-      <p class="text-[11px] text-gray-400 text-center mt-6">このURLは ${dayjs(d.expires_at).format('M/D HH:mm')} まで有効です。${esc(d.staff_name)} さん専用のURLです。他の人に送ったり、代わりに押してもらったりしないでください（報告した端末は記録されます）</p>`
+      <p class="text-2xs text-neutral-400 text-center mt-6">このURLは ${dayjs(d.expires_at).format('M/D HH:mm')} まで有効です。${esc(d.staff_name)} さん専用のURLです。他の人に送ったり、代わりに押してもらったりしないでください（報告した端末は記録されます）</p>`
     const form = document.getElementById('link-daily-form')
     if (form) {
       form.addEventListener('submit', submitDaily)
@@ -228,20 +228,20 @@
   function siteContactHtml(s) {
     if (!s || (!s.site_contact_name && !s.site_contact_phone)) return ''
     const tel = telHref(s.site_contact_phone)
-    const phone = s.site_contact_phone ? (tel ? `<a href="${esc(tel)}" class="text-blue-600 underline whitespace-nowrap font-bold"><i class="fas fa-phone text-[11px] mr-0.5"></i>${esc(s.site_contact_phone)}</a>` : esc(s.site_contact_phone)) : ''
-    return `<p class="text-sm text-gray-600 site-contact"><i class="fas fa-user-tie text-gray-400 mr-1"></i>現場責任者: ${esc(s.site_contact_name || '')}${s.site_contact_name && phone ? ' ' : ''}${phone}</p>`
+    const phone = s.site_contact_phone ? (tel ? `<a href="${esc(tel)}" class="text-primary-600 underline whitespace-nowrap font-bold"><i class="fas fa-phone text-2xs mr-0.5"></i>${esc(s.site_contact_phone)}</a>` : esc(s.site_contact_phone)) : ''
+    return `<p class="text-sm text-neutral-600 site-contact"><i class="fas fa-user-tie text-neutral-400 mr-1"></i>現場責任者: ${esc(s.site_contact_name || '')}${s.site_contact_name && phone ? ' ' : ''}${phone}</p>`
   }
   const IMPORTANCE_BADGE = { urgent: '<span class="badge badge-red">緊急</span>', important: '<span class="badge badge-yellow">重要</span>' }
   // 本人あての重要・緊急のお知らせ（直近のもの。ログインのない人はアプリのお知らせを見られないため、ここに出す）
   function noticesHtml(d) {
     const list = d.notices || []
     if (!list.length) return ''
-    return `<section class="card p-4 mb-4 border border-amber-200" id="report-link-notices">
-      <h2 class="font-bold text-gray-800 mb-2"><i class="fas fa-bullhorn text-amber-500 mr-1"></i>会社からのお知らせ</h2>
-      <div class="space-y-2">${list.map(n => `<details class="rounded-lg bg-gray-50 p-2" ${n.importance === 'urgent' ? 'open' : ''}>
-        <summary class="text-sm font-bold text-gray-800 cursor-pointer">${IMPORTANCE_BADGE[n.importance] || ''} ${esc(n.title)}
-          <span class="text-[11px] font-normal text-gray-400 ml-1">${esc(dayjs(n.published_at).format('M/D'))}</span></summary>
-        <p class="text-sm text-gray-700 whitespace-pre-wrap break-words mt-2">${esc(n.body || '')}</p></details>`).join('')}</div></section>`
+    return `<section class="card p-4 mb-4 border border-warning-200" id="report-link-notices">
+      <h2 class="font-bold text-neutral-800 mb-2"><i class="fas fa-bullhorn text-warning-500 mr-1"></i>会社からのお知らせ</h2>
+      <div class="space-y-2">${list.map(n => `<details class="rounded-lg bg-neutral-50 p-2" ${n.importance === 'urgent' ? 'open' : ''}>
+        <summary class="text-sm font-bold text-neutral-800 cursor-pointer">${IMPORTANCE_BADGE[n.importance] || ''} ${esc(n.title)}
+          <span class="text-2xs font-normal text-neutral-400 ml-1">${esc(dayjs(n.published_at).format('M/D'))}</span></summary>
+        <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words mt-2">${esc(n.body || '')}</p></details>`).join('')}</div></section>`
   }
   // 遅刻・欠勤・トラブルの連絡（#163）。ボタンからフォームを開いて送る。会社の電話番号があれば発信のリンクも出す
   // 電話は、会社の緊急連絡先（GET /:token/contact。#173）があればそれを、なければ問い合わせの電話番号（contact_phone）を出す（同じ番号を2回出さない）
@@ -250,25 +250,25 @@
     const phone = em ? em.phone : d.contact_phone
     const tel = telHref(phone)
     return `<section class="card p-4 mb-4" id="report-link-contact">
-      <h2 class="font-bold text-gray-800 mb-1"><i class="fas fa-headset text-blue-500 mr-1"></i>遅刻・欠勤・トラブルの連絡</h2>
-      <p class="text-xs text-gray-400 mb-2">遅れそう・行けない・現場で困ったときは、担当者に連絡してください</p>
+      <h2 class="font-bold text-neutral-800 mb-1"><i class="fas fa-headset text-primary-500 mr-1"></i>遅刻・欠勤・トラブルの連絡</h2>
+      <p class="text-xs text-neutral-400 mb-2">遅れそう・行けない・現場で困ったときは、担当者に連絡してください</p>
       <button class="btn btn-outline w-full" data-action="linkOpenContact"><i class="fas fa-paper-plane"></i>担当者に連絡する</button>
-      ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone ${em ? 'text-red-500' : ''}"></i>${em ? '緊急連絡先 ' : ''}${esc(phone)} に電話する</a>
-        <p class="text-[11px] text-gray-400 mt-1">急ぎの場合（出勤の直前・当日の欠勤・体調不良など）は電話してください</p>
-        ${em && em.note ? `<p class="text-[11px] text-gray-400">${esc(em.note)}</p>` : ''}` : ''}
+      ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-2"><i class="fas fa-phone ${em ? 'text-danger-500' : ''}"></i>${em ? '緊急連絡先 ' : ''}${esc(phone)} に電話する</a>
+        <p class="text-2xs text-neutral-400 mt-1">急ぎの場合（出勤の直前・当日の欠勤・体調不良など）は電話してください</p>
+        ${em && em.note ? `<p class="text-2xs text-neutral-400">${esc(em.note)}</p>` : ''}` : ''}
     </section>`
   }
   const CONTACT_KINDS = [['late', '遅刻しそう'], ['absent', '欠勤したい'], ['health', '体調が悪い'], ['trouble', '現場でトラブル'], ['other', 'その他']]
   delegate('linkOpenContact', (el) => {
     const shifts = DATA.kind === 'schedule' ? (DATA.shifts || []) : []
-    modal(`<h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-headset text-blue-600 mr-1"></i>担当者に連絡する</h3>
+    modal(`<h3 class="font-bold text-neutral-800 mb-2"><i class="fas fa-headset text-primary-600 mr-1"></i>担当者に連絡する</h3>
       <div class="grid grid-cols-2 gap-2 mb-3" id="link-contact-kinds">${CONTACT_KINDS.map(([k, l]) => `<label class="flex items-center gap-2 rounded-lg border p-2 text-sm">
         <input type="radio" name="link-contact-kind" value="${esc(k)}">${esc(l)}</label>`).join('')}</div>
-      ${shifts.length ? `<label class="text-sm text-gray-600 block mb-1">どのシフトについて（任意）</label>
+      ${shifts.length ? `<label class="text-sm text-neutral-600 block mb-1">どのシフトについて（任意）</label>
         <select id="link-contact-shift" class="inp text-sm mb-3"><option value="">選ばない</option>${shifts.map(s => `<option value="${Number(s.shift_id)}" ${String(el.dataset.shiftId || '') === String(s.shift_id) ? 'selected' : ''}>${esc(fmt(s.work_date) + ' ' + formatShiftTime(s.start_time, s.end_time) + ' ' + s.project_name)}</option>`).join('')}</select>` : ''}
-      <label class="text-sm text-gray-600 block mb-1">内容（遅れる時間・理由など）</label>
+      <label class="text-sm text-neutral-600 block mb-1">内容（遅れる時間・理由など）</label>
       <textarea id="link-contact-body" rows="4" maxlength="1000" class="inp" placeholder="例: 電車の遅延で10分ほど遅れます"></textarea>
-      <p id="link-contact-err" class="text-sm text-red-600 mt-2"></p>
+      <p id="link-contact-err" class="text-sm text-danger-600 mt-2"></p>
       <div class="flex gap-2 mt-3"><button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary flex-1" data-action="linkSendContact"><i class="fas fa-paper-plane"></i>送信する</button></div>`)
     if (el.dataset.kind) { const r = document.querySelector(`input[name="link-contact-kind"][value="${el.dataset.kind}"]`); if (r) r.checked = true }
@@ -284,9 +284,9 @@
       const { data } = await axios.post(API + '/consultation', { kind, body, shift_id: shiftSel && shiftSel.value ? Number(shiftSel.value) : undefined }, { timeout: POST_TIMEOUT })
       const ph = (EMERGENCY && telHref(EMERGENCY.phone) && EMERGENCY.phone) || data.contact_phone || DATA.contact_phone
       const tel = telHref(ph)
-      modal(`<div class="text-center"><i class="fas fa-circle-check text-3xl text-emerald-500 mb-2 block"></i>
-        <p class="font-bold text-gray-800">担当者に送信しました</p>
-        <p class="text-sm text-gray-500 mt-1">担当者が確認します。急ぎの場合は電話でも連絡してください</p>
+      modal(`<div class="text-center"><i class="fas fa-circle-check text-3xl text-success-500 mb-2 block"></i>
+        <p class="font-bold text-neutral-800">担当者に送信しました</p>
+        <p class="text-sm text-neutral-500 mt-1">担当者が確認します。急ぎの場合は電話でも連絡してください</p>
         ${tel ? `<a href="${esc(tel)}" class="btn btn-outline w-full mt-3"><i class="fas fa-phone"></i>${esc(ph)} に電話する</a>` : ''}
         <button class="btn btn-primary w-full mt-2" onclick="closeModal()">閉じる</button></div>`)
     } catch (e) {
@@ -298,7 +298,7 @@
   function renderSchedule() {
     const d = DATA
     document.title = '予定の確認'
-    const h1 = document.querySelector('header h1'); if (h1) h1.innerHTML = '<i class="fas fa-calendar-days text-blue-600"></i>予定の確認'
+    const h1 = document.querySelector('header h1'); if (h1) h1.innerHTML = '<i class="fas fa-calendar-days text-primary-600"></i>予定の確認'
     const byDate = {}
     for (const s of d.shifts) (byDate[s.work_date] = byDate[s.work_date] || []).push(s)
     const dates = Object.keys(byDate).sort()
@@ -306,24 +306,24 @@
     $app.innerHTML = `
       ${noticesHtml(d)}
       <section class="card p-4 mb-4" id="schedule-head">
-        <p class="text-xs text-gray-400">${esc(d.company_name)}</p>
-        <p class="text-sm text-gray-600 mt-1">${esc(d.staff_name)} さんの予定</p>
-        <p class="text-xs text-gray-400 mt-1">今日から${Number(d.days_ahead)}日先までの確定したシフトです。変更があればこのページに反映されます</p>
+        <p class="text-xs text-neutral-400">${esc(d.company_name)}</p>
+        <p class="text-sm text-neutral-600 mt-1">${esc(d.staff_name)} さんの予定</p>
+        <p class="text-xs text-neutral-400 mt-1">今日から${Number(d.days_ahead)}日先までの確定したシフトです。変更があればこのページに反映されます</p>
       </section>
       <section class="space-y-3 mb-4" id="schedule-list">
-        ${dates.length ? dates.map(x => `<div><p class="text-sm font-bold text-gray-700 px-1 mb-1">${esc(fmt(x))}${dayLabel(x) ? ` <span class="badge ${x === d.today ? 'badge-blue' : 'badge-gray'}">${dayLabel(x)}</span>` : ''}</p>
+        ${dates.length ? dates.map(x => `<div><p class="text-sm font-bold text-neutral-700 px-1 mb-1">${esc(fmt(x))}${dayLabel(x) ? ` <span class="badge ${x === d.today ? 'badge-blue' : 'badge-gray'}">${dayLabel(x)}</span>` : ''}</p>
           ${byDate[x].map(s => { const map = mapUrl(s); return `<div class="card p-3 mb-2" data-shift-id="${Number(s.shift_id)}">
-            <p class="font-bold text-gray-900">${esc(s.project_name)}</p>
-            <p class="text-sm text-gray-600"><i class="far fa-clock text-gray-400 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}${s.role ? ` <span class="text-gray-400 ml-1">役割: ${esc(s.role)}</span>` : ''}</p>
-            ${s.location || s.site_name ? `<p class="text-sm text-gray-600"><i class="fas fa-location-dot text-gray-400 mr-1"></i>${esc(s.site_name || s.location)}</p>` : ''}
-            ${s.site_address || map ? `<p class="text-xs text-gray-500">${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
+            <p class="font-bold text-neutral-900">${esc(s.project_name)}</p>
+            <p class="text-sm text-neutral-600"><i class="far fa-clock text-neutral-400 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}${s.role ? ` <span class="text-neutral-400 ml-1">役割: ${esc(s.role)}</span>` : ''}</p>
+            ${s.location || s.site_name ? `<p class="text-sm text-neutral-600"><i class="fas fa-location-dot text-neutral-400 mr-1"></i>${esc(s.site_name || s.location)}</p>` : ''}
+            ${s.site_address || map ? `<p class="text-xs text-neutral-500">${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
             ${siteContactHtml(s)}
             ${s.report_token ? `<a href="/r/${encodeURIComponent(s.report_token)}" class="btn btn-primary w-full mt-2"><i class="fas fa-clipboard-check"></i>このシフトの勤怠・日報を報告する</a>` : ''}
           </div>` }).join('')}</div>`).join('')
-        : '<div class="card p-6 text-center text-sm text-gray-500">この期間の確定したシフトはありません</div>'}
+        : '<div class="card p-6 text-center text-sm text-neutral-500">この期間の確定したシフトはありません</div>'}
       </section>
       ${contactHtml(d)}
-      <p class="text-[11px] text-gray-400 text-center mt-6">このURLは ${esc(dayjs(d.expires_at).format('M/D'))} まで使えます。${esc(d.staff_name)} さん専用のURLです。他の人に送らないでください</p>`
+      <p class="text-2xs text-neutral-400 text-center mt-6">このURLは ${esc(dayjs(d.expires_at).format('M/D'))} まで使えます。${esc(d.staff_name)} さん専用のURLです。他の人に送らないでください</p>`
   }
 
   // ---------- 勤怠報告 ----------
@@ -339,33 +339,33 @@
     // takenAt・source: 写真のファイルの日時と選び方（#418）。processing: 画像の処理中（#545）
     pending = { type, blob: null, url: null, takenAt: null, source: null, processing: false }
     const reasons = DATA.no_photo_reasons || {}
-    modal(`<h3 class="font-bold text-gray-800 mb-2"><i class="fas ${ICON[type]} text-blue-600 mr-1"></i>${LABEL[type]}</h3>
-      <p class="text-sm text-gray-500 mb-3">現場の様子が分かる写真を1枚添付してください</p>
+    modal(`<h3 class="font-bold text-neutral-800 mb-2"><i class="fas ${ICON[type]} text-primary-600 mr-1"></i>${LABEL[type]}</h3>
+      <p class="text-sm text-neutral-500 mb-3">現場の様子が分かる写真を1枚添付してください</p>
       <div id="link-photo-area"></div>
       <input type="file" id="link-photo-camera" accept="image/*" capture="environment" class="hidden" onchange="linkPhoto(this.files[0], 'camera'); this.value = ''">
       <input type="file" id="link-photo-album" accept="image/*" class="hidden" onchange="linkPhoto(this.files[0], 'album'); this.value = ''">
-      <p id="link-photo-status" class="text-sm text-blue-700 mt-2"></p>
-      <p id="link-photo-err" class="text-sm text-red-600 mt-2"></p>
+      <p id="link-photo-status" class="text-sm text-primary-700 mt-2"></p>
+      <p id="link-photo-err" class="text-sm text-danger-600 mt-2"></p>
       <div id="link-photo-retry"></div>
       <div class="flex gap-2 mt-4"><button id="link-photo-cancel" class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         <button id="link-photo-send" class="btn btn-primary flex-1" disabled data-action="linkSendPhoto"><i class="fas fa-paper-plane"></i>送信する</button></div>
       ${DATA.photo_skip_allowed ? `<details class="mt-4 pt-3 border-t text-sm" id="link-nophoto">
-        <summary class="text-gray-600 cursor-pointer">写真を送れない場合</summary>
+        <summary class="text-neutral-600 cursor-pointer">写真を送れない場合</summary>
         <div class="mt-2 space-y-2">
           <select id="link-nophoto-reason" class="inp text-sm">${Object.entries(reasons).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join('')}</select>
           <input id="link-nophoto-note" class="inp text-sm" maxlength="100" placeholder="補足（「その他」のときは必須）">
           <button class="btn btn-outline w-full" data-action="linkSendNoPhoto"><i class="fas fa-ban"></i>写真なしで${esc(LABEL[type])}する</button>
-          <p class="text-xs text-gray-400">写真なしで報告したことと理由は、担当者に表示されます</p>
+          <p class="text-xs text-neutral-400">写真なしで報告したことと理由は、担当者に表示されます</p>
         </div></details>`
-      : '<p class="text-xs text-gray-500 mt-4 pt-3 border-t">写真を送れない場合（撮影禁止・カメラが使えないなど）は、担当者に連絡してください。担当者が代わりに記録できます</p>'}`)
+      : '<p class="text-xs text-neutral-500 mt-4 pt-3 border-t">写真を送れない場合（撮影禁止・カメラが使えないなど）は、担当者に連絡してください。担当者が代わりに記録できます</p>'}`)
     drawPhoto()
   })
   // 写真の欄: 選んだ写真のプレビュー（撮り直しのボタン付き）・処理中・撮影の選択（#545）
   function drawPhoto() {
     const a = document.getElementById('link-photo-area'); if (!a || !pending) return
-    a.innerHTML = pending.processing ? '<div class="flex flex-col items-center justify-center py-8 gap-2"><span class="spin"></span><span class="text-xs text-gray-400">画像を処理しています...</span></div>'
+    a.innerHTML = pending.processing ? '<div class="flex flex-col items-center justify-center py-8 gap-2"><span class="spin"></span><span class="text-xs text-neutral-400">画像を処理しています...</span></div>'
       : pending.url ? `<div class="relative"><img src="${pending.url}" class="w-full rounded-xl border max-h-64 object-cover" alt="プレビュー">
-          <button type="button" class="absolute top-2 right-2 bg-white/90 text-gray-700 rounded-full px-3 h-8 flex items-center gap-1 shadow text-xs font-bold" data-action="linkRetakePhoto"><i class="fas fa-rotate-left"></i>撮り直す</button></div>`
+          <button type="button" class="absolute top-2 right-2 bg-surface/90 text-neutral-700 rounded-full px-3 h-8 flex items-center gap-1 shadow text-xs font-bold" data-action="linkRetakePhoto"><i class="fas fa-rotate-left"></i>撮り直す</button></div>`
       : `<div class="grid grid-cols-2 gap-2"><button class="btn btn-outline" onclick="document.getElementById('link-photo-camera').click()"><i class="fas fa-camera"></i>カメラで撮影</button>
          <button class="btn btn-outline" onclick="document.getElementById('link-photo-album').click()"><i class="fas fa-images"></i>アルバムから選択</button></div>`
     const b = document.getElementById('link-photo-send'); if (b) b.disabled = !pending.blob || pending.processing
@@ -576,10 +576,10 @@
     const box = document.createElement('div')
     box.id = 'link-emergency'
     box.className = 'max-w-lg mx-auto px-4 pb-6'
-    box.innerHTML = `<section class="card p-4"><p class="text-sm font-bold text-gray-800 mb-1"><i class="fas fa-phone text-red-500 mr-1"></i>緊急連絡先（${esc(d.company_name)}）</p>
-      <p class="text-[11px] text-gray-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください</p>
-      <a href="tel:${esc(String(d.phone).replace(/[^0-9+]/g, ''))}" class="btn btn-outline w-full"><i class="fas fa-phone text-red-500"></i><span class="font-bold">${esc(d.phone)}</span></a>
-      ${d.note ? `<p class="text-[11px] text-gray-400 mt-1">${esc(d.note)}</p>` : ''}</section>`
+    box.innerHTML = `<section class="card p-4"><p class="text-sm font-bold text-neutral-800 mb-1"><i class="fas fa-phone text-danger-500 mr-1"></i>緊急連絡先（${esc(d.company_name)}）</p>
+      <p class="text-2xs text-neutral-500 mb-2">当日の欠勤・遅刻・体調不良・現場のトラブルは、こちらに電話してください</p>
+      <a href="tel:${esc(String(d.phone).replace(/[^0-9+]/g, ''))}" class="btn btn-outline w-full"><i class="fas fa-phone text-danger-500"></i><span class="font-bold">${esc(d.phone)}</span></a>
+      ${d.note ? `<p class="text-2xs text-neutral-400 mt-1">${esc(d.note)}</p>` : ''}</section>`
     $app.insertAdjacentElement('afterend', box)
   }
   // 画面を描き直したら、緊急連絡先の出し方も合わせる

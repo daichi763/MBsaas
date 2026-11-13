@@ -5,12 +5,12 @@
 // - 本部: 本部ユーザーの設定・ログインの強制終了、二段階認証と接続元の制限の解除（問い合わせ窓口）、全社のログインの履歴
 ;(function () {
   const IS_HQ = location.pathname.startsWith('/hq')
-  const CARD = IS_HQ ? 'bg-slate-800 border border-slate-700 rounded-xl p-4' : 'card p-4'
-  const H3 = IS_HQ ? 'font-bold mb-3' : 'text-sm font-bold text-gray-700 mb-3'
-  const ICON = IS_HQ ? 'text-cyan-400' : 'text-blue-500'
-  const MUTED = IS_HQ ? 'text-slate-400' : 'text-gray-500'
-  const BORDER = IS_HQ ? 'border-slate-700' : 'border-gray-100'
-  const INP = IS_HQ ? 'class="inp" style="background:#1e293b;border-color:#334155;color:#fff"' : 'class="inp"'
+  const CARD = IS_HQ ? 'bg-hq-800 border border-hq-700 rounded-xl p-4' : 'card p-4'
+  const H3 = IS_HQ ? 'font-bold mb-3' : 'text-sm font-bold text-neutral-700 mb-3'
+  const ICON = IS_HQ ? 'text-hq-accent-400' : 'text-primary-500'
+  const MUTED = IS_HQ ? 'text-hq-400' : 'text-neutral-500'
+  const BORDER = IS_HQ ? 'border-hq-700' : 'border-neutral-100'
+  const INP = IS_HQ ? 'class="inp" style="background:rgb(var(--color-hq-800));border-color:rgb(var(--color-hq-700));color:rgb(var(--color-on-primary))"' : 'class="inp"'
   const app = () => document.getElementById('app')
 
   const RESULT_LABEL = {
@@ -33,7 +33,7 @@
   function resultBadge(r) { const l = RESULT_LABEL[r] || [r, 'badge-gray']; return `<span class="badge ${l[1]}">${esc(l[0])}</span>` }
   function failText(e, fallback) { return showApiError(e, fallback) }
   function sectionError(el, msg, action) {
-    el.innerHTML = `<p class="text-sm text-red-500">${esc(msg)} <button class="btn btn-outline text-xs ml-2" data-action="${action}">再読み込み</button></p>`
+    el.innerHTML = `<p class="text-sm text-danger-500">${esc(msg)} <button class="btn btn-outline text-xs ml-2" data-action="${action}">再読み込み</button></p>`
   }
 
   // ============ 自分の二段階認証 ============
@@ -51,11 +51,11 @@
             <button class="btn btn-outline text-sm" data-action="secMfaRecovery"><i class="fas fa-key"></i>予備コードを作り直す</button>
             ${m.required ? '' : '<button class="btn btn-outline text-sm" data-action="secMfaDisable"><i class="fas fa-unlock"></i>解除する</button>'}
           </div>
-          ${m.required ? `<p class="text-[11px] ${MUTED}">${IS_HQ ? '本部' : '会社'}の設定で必須のため、自分では解除できません。スマホを替えるときは、${IS_HQ ? '別の本部ユーザー' : '会社管理者（会社管理者の方は本部）'}に解除を依頼してください。</p>` : ''}
+          ${m.required ? `<p class="text-2xs ${MUTED}">${IS_HQ ? '本部' : '会社'}の設定で必須のため、自分では解除できません。スマホを替えるときは、${IS_HQ ? '別の本部ユーザー' : '会社管理者（会社管理者の方は本部）'}に解除を依頼してください。</p>` : ''}
         </div>`
     }
     return `${head}
-      ${m.required ? `<p class="text-sm text-red-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>${IS_HQ ? '本部' : '会社'}の設定で必須です。登録するまで、ほかの画面は使えません。</p>` : ''}
+      ${m.required ? `<p class="text-sm text-danger-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>${IS_HQ ? '本部' : '会社'}の設定で必須です。登録するまで、ほかの画面は使えません。</p>` : ''}
       <p class="text-sm ${MUTED} mb-3">パスワードが漏れても、本人のスマホがなければログインできないようにします。スマホに認証アプリ（Google Authenticator、Microsoft Authenticator など）を入れてから始めてください。</p>
       <div id="sec-mfa-setup"><button class="btn btn-primary" data-action="secMfaStart"><i class="fas fa-qrcode"></i>登録を始める</button></div>`
   }
@@ -66,8 +66,8 @@
     try { if (window.qrcode) { const q = qrcode(0, 'M'); q.addData(d.uri); q.make(); qr = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }) } } catch (e) { qr = '' }
     document.getElementById('sec-mfa-setup').innerHTML = `
       <ol class="text-sm space-y-3 list-decimal pl-5">
-        <li>認証アプリで、この QR コードを読み取ってください。${qr ? `<div class="bg-white p-2 rounded-lg w-44 mt-2">${qr}</div>` : ''}
-          <p class="text-[11px] ${MUTED} mt-1">読み取れないときは、アプリで「キーを入力」を選び、次のキーを入力します（時間ベース）。</p>
+        <li>認証アプリで、この QR コードを読み取ってください。${qr ? `<div class="bg-surface p-2 rounded-lg w-44 mt-2">${qr}</div>` : ''}
+          <p class="text-2xs ${MUTED} mt-1">読み取れないときは、アプリで「キーを入力」を選び、次のキーを入力します（時間ベース）。</p>
           <p class="font-mono text-xs break-all select-all mt-1">${esc(String(d.secret).replace(/(.{4})/g, '$1 ').trim())}</p></li>
         <li>アプリに表示された6桁と、現在のパスワードを入力してください。
           <div class="space-y-2 mt-2">
@@ -90,9 +90,9 @@
   // 予備コードは一度だけ表示する。閉じたら画面を読み直す（登録待ちの制限を解き、メニューを使えるようにする）
   function showRecoveryCodes(codes, title) {
     modal(`
-      <h3 class="font-bold text-lg mb-2 text-gray-800">${esc(title)}</h3>
-      <p class="text-sm text-gray-600 mb-3">スマホを失くしたときなど、認証アプリを使えないときの<b>予備コード</b>です。1つにつき1回だけ、6桁の代わりに使えます。<b>この画面を閉じると二度と表示できません。</b>印刷するか、パスワード管理アプリなど安全な場所に控えてください。</p>
-      <div class="grid grid-cols-2 gap-2 font-mono text-sm bg-gray-50 rounded-lg p-3 mb-3 text-gray-800 select-all" id="sec-rc-list">${codes.map(c => `<span>${esc(c)}</span>`).join('')}</div>
+      <h3 class="font-bold text-lg mb-2 text-neutral-800">${esc(title)}</h3>
+      <p class="text-sm text-neutral-600 mb-3">スマホを失くしたときなど、認証アプリを使えないときの<b>予備コード</b>です。1つにつき1回だけ、6桁の代わりに使えます。<b>この画面を閉じると二度と表示できません。</b>印刷するか、パスワード管理アプリなど安全な場所に控えてください。</p>
+      <div class="grid grid-cols-2 gap-2 font-mono text-sm bg-neutral-50 rounded-lg p-3 mb-3 text-neutral-800 select-all" id="sec-rc-list">${codes.map(c => `<span>${esc(c)}</span>`).join('')}</div>
       <div class="flex flex-wrap gap-2 justify-end">
         <button class="btn btn-outline" data-action="secRcCopy"><i class="fas fa-copy"></i>コピー</button>
         <button class="btn btn-primary" data-action="secRcDone">控えました</button>
@@ -124,7 +124,7 @@
   // ============ 自分のログイン中の端末 ============
   function sessionRowsHtml(list, opts = {}) {
     if (!list.length) return `<p class="text-sm ${MUTED}">ログイン中の端末はありません。</p>`
-    return `<ul class="divide-y ${IS_HQ ? 'divide-slate-700' : 'divide-gray-100'} text-sm">${list.map(s => `
+    return `<ul class="divide-y ${IS_HQ ? 'divide-hq-700' : 'divide-neutral-100'} text-sm">${list.map(s => `
       <li class="py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
         <span class="font-medium"><i class="fas ${/iPhone|Android|iPad/.test(s.device) ? 'fa-mobile-screen' : 'fa-display'} ${MUTED} mr-1"></i>${esc(s.device)}</span>
         ${s.current ? '<span class="badge badge-blue">この端末</span>' : ''}
@@ -136,7 +136,7 @@
     return `<h3 class="${H3}"><i class="fas fa-laptop-mobile ${ICON} mr-1"></i>自分のログイン中の端末</h3>
       ${sessionRowsHtml(list)}
       <button class="btn btn-outline text-sm mt-3" data-action="secLogoutAll"><i class="fas fa-right-from-bracket"></i>すべての端末からログアウト</button>
-      <p class="text-[11px] ${MUTED} mt-1">心当たりのない端末があるときや、共用の端末でログアウトを忘れたときに使います。この端末もログアウトします。心当たりがなければパスワードも変更してください。</p>`
+      <p class="text-2xs ${MUTED} mt-1">心当たりのない端末があるときや、共用の端末でログアウトを忘れたときに使います。この端末もログアウトします。心当たりがなければパスワードも変更してください。</p>`
   }
   delegate('secLogoutAll', (el) => {
     if (!confirm('すべての端末（この端末を含む）からログアウトします。よろしいですか？')) return
@@ -149,7 +149,7 @@
   const HIST = { page: 1, result: '', q: '', company_id: '' }
   function historyFrameHtml(companies) {
     return `<h3 class="${H3}"><i class="fas fa-clock-rotate-left ${ICON} mr-1"></i>ログインの履歴</h3>
-      <p class="text-[11px] ${MUTED} mb-2">ログインの成功・失敗、パスワードの再設定、ログインの強制終了を1年間残します。心当たりのない接続元や、失敗が続く ID がないかを確かめてください。</p>
+      <p class="text-2xs ${MUTED} mb-2">ログインの成功・失敗、パスワードの再設定、ログインの強制終了を1年間残します。心当たりのない接続元や、失敗が続く ID がないかを確かめてください。</p>
       <div class="flex flex-wrap gap-2 mb-3">
         ${companies ? `<select id="sec-h-company" ${INP.replace('class="inp"', 'class="inp w-auto"')}><option value="">すべての会社</option><option value="unknown">会社コードの誤りなど（会社不明）</option>${companies.map(c => `<option value="${c.company_id}">${esc(c.company_name)}</option>`).join('')}</select>` : ''}
         <select id="sec-h-result" ${INP.replace('class="inp"', 'class="inp w-auto"')}><option value="">すべて</option><option value="failed">失敗だけ</option><option value="success">成功だけ</option></select>
@@ -167,10 +167,10 @@
     let d
     try { d = (await axios.get((IS_HQ ? '/api/hq/login-history?' : '/api/admin/login-history?') + params)).data }
     catch (e) { sectionError(box, 'ログインの履歴を読み込めませんでした', 'secHistReload'); return }
-    const alerts = (d.alerts || []).length ? `<div class="rounded-lg p-3 mb-3 text-sm ${IS_HQ ? 'bg-red-900/30 text-red-200' : 'bg-red-50 text-red-700'}">
+    const alerts = (d.alerts || []).length ? `<div class="rounded-lg p-3 mb-3 text-sm ${IS_HQ ? 'bg-danger-900/30 text-danger-200' : 'bg-danger-50 text-danger-700'}">
         <p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>直近24時間に失敗が続いている ID（${d.alert_threshold}回以上）</p>
         <ul class="text-xs space-y-0.5">${d.alerts.map(a => `<li>${IS_HQ ? esc(a.company_name || '会社不明') + ' / ' : ''}ID ${esc(a.user_code || '-')}${a.user_name ? '（' + esc(a.user_name) + '）' : '（該当なし）'}: ${a.failures}回・接続元${a.ip_count}か所・最後 ${utcTime(a.last_at)}</li>`).join('')}</ul>
-        <p class="text-[11px] mt-1">総当たりやパスワードの使い回しの疑いがあります。本人に確かめ、必要ならパスワードの再発行や二段階認証の登録をしてください。</p></div>` : ''
+        <p class="text-2xs mt-1">総当たりやパスワードの使い回しの疑いがあります。本人に確かめ、必要ならパスワードの再発行や二段階認証の登録をしてください。</p></div>` : ''
     const rows = d.events.map(e => `
       <tr class="border-b ${BORDER}">
         <td class="py-2 pr-2 whitespace-nowrap text-xs">${utcTime(e.created_at)}</td>
@@ -212,10 +212,10 @@
     return `<h3 class="${H3}"><i class="fas fa-building-shield ${ICON} mr-1"></i>${IS_HQ ? '本部ユーザーの設定' : '会社の設定'}</h3>
       <label class="flex items-start gap-2 text-sm mb-1"><input type="checkbox" id="sec-set-mfa" class="mt-1" ${s.mfa_required ? 'checked' : ''} ${!s.my_mfa_enabled && !s.mfa_required ? 'disabled' : ''}>
         <span>${who}に二段階認証を必須にする</span></label>
-      <p class="text-[11px] ${MUTED} mb-3 pl-6">${s.my_mfa_enabled ? '必須にすると、未登録の人は次の操作のときに登録の画面へ移ります（登録するまでほかの画面は使えません）。' : '必須にするには、先にご自身の二段階認証を登録してください。'}${IS_HQ ? '' : 'スタッフは対象外です。'}</p>
+      <p class="text-2xs ${MUTED} mb-3 pl-6">${s.my_mfa_enabled ? '必須にすると、未登録の人は次の操作のときに登録の画面へ移ります（登録するまでほかの画面は使えません）。' : '必須にするには、先にご自身の二段階認証を登録してください。'}${IS_HQ ? '' : 'スタッフは対象外です。'}</p>
       <label class="text-sm block mb-1">ログインできる接続元（IP アドレス。1行に1つ。空欄なら制限しません）</label>
       <textarea id="sec-set-ip" rows="4" ${INP} placeholder="203.0.113.5&#10;198.51.100.0/24">${esc((s.ip_allowlist || []).join('\n'))}</textarea>
-      <p class="text-[11px] ${MUTED} mt-1 mb-3">今の接続元: <span class="font-mono">${esc(s.current_ip || '不明')}</span>。事務所の固定 IP などを入れると、${who}はそれ以外の場所からログインできなくなります${IS_HQ ? '' : '（スタッフは対象外）'}。今の接続元を含まない一覧は保存できません。${IS_HQ ? '' : '誤って誰も入れなくなったときは、本部に解除を依頼してください。'}</p>
+      <p class="text-2xs ${MUTED} mt-1 mb-3">今の接続元: <span class="font-mono">${esc(s.current_ip || '不明')}</span>。事務所の固定 IP などを入れると、${who}はそれ以外の場所からログインできなくなります${IS_HQ ? '' : '（スタッフは対象外）'}。今の接続元を含まない一覧は保存できません。${IS_HQ ? '' : '誤って誰も入れなくなったときは、本部に解除を依頼してください。'}</p>
       <button class="btn btn-primary text-sm" data-action="secSaveSettings">保存する</button>`
   }
   delegate('secSaveSettings', (el) => withSubmitLock(el, async () => {
@@ -245,7 +245,7 @@
               ${!IS_HQ && u.totp_enabled_at ? `<button class="btn btn-outline text-xs" data-action="secResetUserMfa" data-id="${u.user_id}" data-name="${esc(u.name)}">二段階認証を解除</button>` : ''}
               ${Number(u.session_count) ? `<button class="btn btn-outline text-xs" data-action="secRevokeUser" data-id="${u.user_id}" data-name="${esc(u.name)}">ログインを終了</button>` : ''}`}</td>
           </tr>`).join('')}</tbody></table></div>
-      <p class="text-[11px] ${MUTED} mt-2">${IS_HQ ? '本部ユーザーの二段階認証の解除は、下の「二段階認証の解除」から会社コードを空欄にして行います。' : '二段階認証の解除は、スマホを失くした・替えたときに使います。解除するとログイン中の画面も終了し、次のログインはパスワードだけになります（必須の設定なら登録し直しになります）。'}</p>`
+      <p class="text-2xs ${MUTED} mt-2">${IS_HQ ? '本部ユーザーの二段階認証の解除は、下の「二段階認証の解除」から会社コードを空欄にして行います。' : '二段階認証の解除は、スマホを失くした・替えたときに使います。解除するとログイン中の画面も終了し、次のログインはパスワードだけになります（必須の設定なら登録し直しになります）。'}</p>`
   }
   delegate('secResetUserMfa', (el) => {
     if (!confirm(`${el.dataset.name} さんの二段階認証を解除します。ログイン中の画面も終了します。本人からの依頼を確かめましたか？`)) return
@@ -267,7 +267,7 @@
   // ============ スタッフのログイン（管理画面。スマホの紛失・共用端末のログアウト忘れ） ============
   function staffFrameHtml() {
     return `<h3 class="${H3}"><i class="fas fa-mobile-screen ${ICON} mr-1"></i>スタッフのログイン中の端末</h3>
-      <p class="text-[11px] ${MUTED} mb-2">スマホを失くした・共用の端末でログアウトを忘れた、という連絡があったときに、そのスタッフのログインをすべての端末で終了できます（本人は新しい端末でログインし直します）。空欄で探すと、今ログイン中のスタッフを最近ログインした順に出します。</p>
+      <p class="text-2xs ${MUTED} mb-2">スマホを失くした・共用の端末でログアウトを忘れた、という連絡があったときに、そのスタッフのログインをすべての端末で終了できます（本人は新しい端末でログインし直します）。空欄で探すと、今ログイン中のスタッフを最近ログインした順に出します。</p>
       <div class="flex gap-2 mb-3"><input id="sec-staff-q" class="inp" placeholder="氏名・スタッフ番号" maxlength="50"><button class="btn btn-outline text-sm whitespace-nowrap" data-action="secStaffSearch"><i class="fas fa-magnifying-glass"></i>探す</button></div>
       <div id="sec-staff-list"><div class="flex justify-center py-4"><span class="spin"></span></div></div>`
   }
@@ -279,13 +279,13 @@
     catch (e) { sectionError(box, 'スタッフを読み込めませんでした', 'secStaffSearch'); return }
     if (!d.staff.length) { box.innerHTML = `<p class="text-sm ${MUTED}">${q ? '該当するスタッフはいません。' : 'ログイン中のスタッフはいません。'}</p>`; return }
     box.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
-      <thead><tr class="text-gray-400 text-xs border-b border-gray-100"><th class="text-left py-2">スタッフ番号</th><th class="text-left py-2">氏名</th><th class="text-left py-2">ログイン中</th><th class="text-left py-2">最終ログイン</th><th></th></tr></thead>
+      <thead><tr class="text-neutral-400 text-xs border-b border-neutral-100"><th class="text-left py-2">スタッフ番号</th><th class="text-left py-2">氏名</th><th class="text-left py-2">ログイン中</th><th class="text-left py-2">最終ログイン</th><th></th></tr></thead>
       <tbody>${d.staff.map(s => `
-        <tr class="border-b border-gray-50">
-          <td class="py-2 text-xs text-gray-500">${esc(s.user_code || '-')}</td>
+        <tr class="border-b border-neutral-50">
+          <td class="py-2 text-xs text-neutral-500">${esc(s.user_code || '-')}</td>
           <td class="py-2">${esc(s.name)}${s.status !== 'active' ? ' <span class="badge badge-gray">利用停止</span>' : ''}</td>
           <td class="py-2 text-xs">${Number(s.session_count) || 0}台</td>
-          <td class="py-2 text-xs text-gray-400">${jstTime(s.last_login_at)}</td>
+          <td class="py-2 text-xs text-neutral-400">${jstTime(s.last_login_at)}</td>
           <td class="py-2 text-right"><button class="btn btn-outline text-xs" data-action="secStaffOpen" data-id="${s.staff_id}">端末を見る</button></td>
         </tr>`).join('')}</tbody></table></div>`
   }
@@ -296,13 +296,13 @@
     try { d = (await axios.get(`/api/admin/staff/${id}/sessions`)).data } catch (e) { failText(e, '読み込めませんでした'); return }
     modal(`
       <h3 class="font-bold text-lg mb-1">${esc(d.staff.name)} さんのログイン</h3>
-      <p class="text-xs text-gray-500 mb-3">スタッフ番号 ${esc(d.staff.user_code || '-')}</p>
-      ${d.staff.linked ? '<p class="p-2.5 rounded-lg bg-gray-50 text-xs text-gray-600 mb-3"><i class="fas fa-link mr-1"></i>他社から連携したスタッフです。ここに出るのは、本人が自社の画面に切り替えて使っている端末だけです。所属元の会社でのログインは、所属元の管理者が管理します。</p>' : ''}
-      <h4 class="text-sm font-bold text-gray-700 mb-1">ログイン中の端末（${d.sessions.length}台）</h4>
+      <p class="text-xs text-neutral-500 mb-3">スタッフ番号 ${esc(d.staff.user_code || '-')}</p>
+      ${d.staff.linked ? '<p class="p-2.5 rounded-lg bg-neutral-50 text-xs text-neutral-600 mb-3"><i class="fas fa-link mr-1"></i>他社から連携したスタッフです。ここに出るのは、本人が自社の画面に切り替えて使っている端末だけです。所属元の会社でのログインは、所属元の管理者が管理します。</p>' : ''}
+      <h4 class="text-sm font-bold text-neutral-700 mb-1">ログイン中の端末（${d.sessions.length}台）</h4>
       ${sessionRowsHtml(d.sessions, { showOther: true })}
-      ${d.sessions.some(s => s.other_company) ? '<p class="text-[11px] text-gray-400 mt-1">「他社の画面」は、同じ人が連携先の会社に切り替えて使っている端末です。終了するとこちらも終了します。</p>' : ''}
-      ${d.history.length ? `<h4 class="text-sm font-bold text-gray-700 mt-4 mb-1">直近のログインの履歴</h4>
-        <ul class="text-xs space-y-1 max-h-48 overflow-y-auto">${d.history.map(e => `<li>${utcTime(e.created_at)} ${resultBadge(e.result)} ${esc(EVENT_LABEL[e.event_type] || e.event_type)} <span class="text-gray-400">${esc(e.ip || '')} ${esc(e.device)}</span></li>`).join('')}</ul>` : ''}
+      ${d.sessions.some(s => s.other_company) ? '<p class="text-2xs text-neutral-400 mt-1">「他社の画面」は、同じ人が連携先の会社に切り替えて使っている端末です。終了するとこちらも終了します。</p>' : ''}
+      ${d.history.length ? `<h4 class="text-sm font-bold text-neutral-700 mt-4 mb-1">直近のログインの履歴</h4>
+        <ul class="text-xs space-y-1 max-h-48 overflow-y-auto">${d.history.map(e => `<li>${utcTime(e.created_at)} ${resultBadge(e.result)} ${esc(EVENT_LABEL[e.event_type] || e.event_type)} <span class="text-neutral-400">${esc(e.ip || '')} ${esc(e.device)}</span></li>`).join('')}</ul>` : ''}
       <div class="flex flex-wrap gap-2 justify-end mt-4">
         <button class="btn btn-outline" onclick="closeModal()">閉じる</button>
         ${d.sessions.length ? `<button class="btn btn-danger" data-action="secStaffRevoke" data-id="${id}" data-name="${esc(d.staff.name)}" data-linked="${d.staff.linked ? 1 : ''}"><i class="fas fa-power-off"></i>ログインを終了させる</button>` : ''}
@@ -327,13 +327,13 @@
       <div class="space-y-4 text-sm">
         <div>
           <p class="font-bold mb-1">二段階認証の解除</p>
-          <p class="text-[11px] ${MUTED} mb-2">スマホを失くした会社管理者など、社内で解除できる人がいないときに使います。本人確認をしてから行ってください。会社コードを空欄にすると本部ユーザーが対象です。</p>
+          <p class="text-2xs ${MUTED} mb-2">スマホを失くした会社管理者など、社内で解除できる人がいないときに使います。本人確認をしてから行ってください。会社コードを空欄にすると本部ユーザーが対象です。</p>
           <div class="grid grid-cols-2 gap-2 mb-2"><input id="sec-rm-company" ${INP} placeholder="会社コード"><input id="sec-rm-user" ${INP} placeholder="ID"></div>
           <button class="btn btn-outline text-sm" data-action="secHqResetMfa">二段階認証を解除する</button>
         </div>
         <div>
           <p class="font-bold mb-1">接続元の制限の解除</p>
-          <p class="text-[11px] ${MUTED} mb-2">企業が接続元の設定を誤って、管理者が誰もログインできなくなったときに使います。</p>
+          <p class="text-2xs ${MUTED} mb-2">企業が接続元の設定を誤って、管理者が誰もログインできなくなったときに使います。</p>
           <div class="flex gap-2"><input id="sec-ci-company" ${INP} placeholder="会社コード"><button class="btn btn-outline text-sm whitespace-nowrap" data-action="secHqClearIp">制限を外す</button></div>
         </div>
       </div>`
@@ -377,11 +377,11 @@
   window.renderSecurity = async function () {
     const $app = app(); $app.innerHTML = loadingHtml
     let mine
-    try { mine = await loadMine() } catch (e) { $app.innerHTML = `<p class="text-center text-gray-400 py-10">読み込めませんでした <button class="btn btn-outline text-xs ml-2" data-action="secReload">再読み込み</button></p>`; return }
-    const isCA = typeof ME !== 'undefined' && ME && ME.role === 'company_admin'
+    try { mine = await loadMine() } catch (e) { $app.innerHTML = `<p class="text-center text-neutral-400 py-10">読み込めませんでした <button class="btn btn-outline text-xs ml-2" data-action="secReload">再読み込み</button></p>`; return }
+    const isCA = hasPerm('security.manage')
     const pending = mine.mfa.setup_required
     $app.innerHTML = `
-      <h2 class="text-xl font-bold text-gray-900 mb-4">セキュリティ</h2>
+      <h2 class="text-xl font-bold text-neutral-900 mb-4">セキュリティ</h2>
       <div class="grid lg:grid-cols-2 gap-4 mb-4">
         <section class="${CARD}" id="sec-mfa">${mfaCardHtml(mine.mfa)}</section>
         <section class="${CARD}">${mySessionsHtml(mine.sessions)}</section>
@@ -393,7 +393,7 @@
             <section class="${CARD}" id="sec-settings">${loadingHtml}</section>
             <section class="${CARD}" id="sec-users">${loadingHtml}</section>
           </div>
-          <section class="${CARD} mb-4">${historyFrameHtml(null)}</section>` : `<p class="text-xs text-gray-400">会社の設定（二段階認証の必須・接続元の制限）とログインの履歴は、会社管理者が見られます。</p>`}`}`
+          <section class="${CARD} mb-4">${historyFrameHtml(null)}</section>` : `<p class="text-xs text-neutral-400">会社の設定（二段階認証の必須・接続元の制限）とログインの履歴は、会社管理者が見られます。</p>`}`}`
     if (pending) return
     const q = document.getElementById('sec-staff-q')
     if (q) q.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadStaffList() } })
@@ -408,7 +408,7 @@
   window.renderHqSecurity = async function () {
     const $app = app(); $app.innerHTML = loadingHtml
     let mine
-    try { mine = await loadMine() } catch (e) { $app.innerHTML = `<p class="text-center text-slate-400 py-10">読み込めませんでした <button class="btn btn-outline text-xs ml-2" data-action="secReloadHq">再読み込み</button></p>`; return }
+    try { mine = await loadMine() } catch (e) { $app.innerHTML = `<p class="text-center text-hq-400 py-10">読み込めませんでした <button class="btn btn-outline text-xs ml-2" data-action="secReloadHq">再読み込み</button></p>`; return }
     const pending = mine.mfa.setup_required
     let companies = []
     if (!pending) { try { companies = (await axios.get('/api/hq/companies')).data.companies || [] } catch (e) { companies = [] } }

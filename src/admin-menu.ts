@@ -2,6 +2,7 @@
 // 左のメニュー・スマホのメニュー（上のヘッダーの選択欄）・画面の登録（public/static/admin.js の routes）は、すべてこの配列から作る。
 // 項目を足す・消す・並べ替えるときは、ここだけを直す（画面を描く関数は render に名前で書く。すべての JS を読み込んだ後に window から呼ぶ）。
 // #タブ/<id> の詳細・サブ画面（スタッフ詳細など）は admin.js の route() が描く
+import { can, type Action } from './lib/permissions'
 
 export type AdminMenuItem = {
   hash: string
@@ -15,8 +16,8 @@ export type AdminMenuItem = {
   group?: string
   /** 件数のバッジの id。'' はバッジを画面の JS が足す（企業間チャット）。省くとバッジなし */
   badge?: string
-  /** true: 労務情報を扱えるロール（会社管理者・事務担当。src/api.ts の HR_ROLES）だけに出す（#205。API でも同じ判定で止める） */
-  hr?: boolean
+  /** 権限の表（src/lib/permissions.ts）の操作の名前。その操作を許されたロールだけに出す（API でも同じ表で止める。#205 #9978）。省くと4ロールすべて */
+  perm?: Action
   /** 画面を描く関数の名前（public/static/*.js で window から呼べるもの） */
   render: string
 }
@@ -49,7 +50,7 @@ export const ADMIN_MENU: AdminMenuItem[] = [
   { group: 'attendance', hash: 'attendance-history', label: '履歴・CSV', icon: 'fa-clock-rotate-left', render: 'renderAttendanceHistory' },
 
   { group: 'people', hash: 'staff', label: 'スタッフマスタ', icon: 'fa-users', render: 'renderStaff' },
-  { group: 'people', hash: 'employees', label: '従業員管理', icon: 'fa-id-card', hr: true, render: 'renderEmployees' },
+  { group: 'people', hash: 'employees', label: '従業員管理', icon: 'fa-id-card', perm: 'hr.manage', render: 'renderEmployees' },
   { group: 'people', hash: 'partners', label: '協力会社', icon: 'fa-handshake', render: 'renderPartners' },
   { group: 'people', hash: 'recruit', label: '募集・応募', icon: 'fa-bullhorn', badge: 'recruit-badge', render: 'renderRecruit' },
   { group: 'people', hash: 'consult', label: '相談対応', short: '相談', icon: 'fa-comments', render: 'renderConsult' },
@@ -78,13 +79,11 @@ export const ADMIN_EXTRA_SCREENS: { hash: string, render: string }[] = [
   { hash: 'roster-notes', render: 'openRosterHostNotes' },
 ]
 
-// 労務情報（給与・口座・保険番号など）を扱えるロール（src/api.ts の HR_ROLES と同じ）
-const HR_ROLES = ['company_admin', 'office_staff']
-const visibleItems = (role: string) => ADMIN_MENU.filter(m => !m.hr || HR_ROLES.includes(role))
+const visibleItems = (role: string) => ADMIN_MENU.filter(m => !m.perm || can(role, m.perm))
 
 const sideLink = (m: AdminMenuItem) => m.badge === undefined
   ? `<a href="#${m.hash}" class="side-link" data-tab="${m.hash}"><i class="fas ${m.icon} w-5"></i>${m.label}</a>`
-  : `<a href="#${m.hash}" class="side-link flex items-center" data-tab="${m.hash}"><i class="fas ${m.icon} w-5"></i>${m.label}${m.badge ? `<span id="${m.badge}" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span>` : ''}</a>`
+  : `<a href="#${m.hash}" class="side-link flex items-center" data-tab="${m.hash}"><i class="fas ${m.icon} w-5"></i>${m.label}${m.badge ? `<span id="${m.badge}" class="hidden ml-auto text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5"></span>` : ''}</a>`
 
 // 左のメニューの見出し（押すと閉じたり開いたりする。開閉は admin.js が localStorage に覚える）。
 // 閉じたときは、中の項目の未読などの件数の合計を見出しの横に出す

@@ -17,6 +17,7 @@ import { shiftTotals } from './shift-board'
 import { assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt, assigneeMergeStmts } from './assignees'
 import { nowJST } from './lib/time'
 import { sha256, randomHex } from './lib/hash'
+import { can } from './lib/permissions'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -617,7 +618,7 @@ rosterApi.get('/field-settings', async (c) => {
 // 必須項目設定の更新（会社管理者のみ）
 rosterApi.put('/field-settings', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: '必須項目の設定は会社管理者のみ変更できます' }, 403)
+  if (!can(u, 'roster.required_fields')) return c.json({ error: '必須項目の設定は会社管理者のみ変更できます' }, 403)
   const b = await c.req.json().catch(() => ({} as any))
   const req: Record<string, boolean> = b.required || {}
   const valid = new Set(ROSTER_CONFIGURABLE_FIELDS.map(f => f.code))

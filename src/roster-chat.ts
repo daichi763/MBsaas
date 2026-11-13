@@ -6,21 +6,20 @@
 import { Hono } from 'hono'
 import { notifyCompanyAdmins, markAdminNotificationsRead } from './notifications'
 import { nowJST } from './lib/time'
+import { requirePerm, rolesFor } from './lib/permissions'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
 const chatApi = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-export const CHAT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
+// 企業間チャットを使えるロール（権限の表 src/lib/permissions.ts の roster_chat.use）
+export const CHAT_ROLES: readonly string[] = rolesFor('roster_chat.use')
 const MAX_BODY = 2000
 const DUPLICATE_WINDOW_SEC = 60 // 同じ本文の再送を重複とみなす秒数（#263）
 
 
 // 念のためのロールチェック（/admin/* ミドルウェアと二重）
-chatApi.use('/*', async (c, next) => {
-  if (!CHAT_ROLES.includes(c.get('user').role)) return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+chatApi.use('/*', requirePerm('roster_chat.use'))
 
 /**
  * 画面の staff_id（自社のスタッフマスタ行）からスレッドを解決する。

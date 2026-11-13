@@ -223,9 +223,9 @@ async function sameCounts(name, f) {
   const st = client(L.cookie)
   const OPEN = ['/api/auth/me', '/api/auth/me', '/api/staff/tours', '/api/staff/badges', '/api/staff/me/companies', '/api/staff/home', '/api/staff/emergency-contacts']
   const sum = (rs) => rs.reduce((a, r) => ({ read: a.read + r.read, written: a.written + r.written }), { read: 0, written: 0 })
-  // 最終アクセスから1時間・セッションの延長から10分を過ぎた状態にする
+  // 最終アクセス・セッションの延長から6時間（スタッフの更新の間隔。Sprint 26 #9976）を過ぎた状態にする
   const stale = new Date(Date.now() + 3600e3).toISOString()
-  await sql(`UPDATE users SET last_seen_at = '${jst(Date.now() - 2 * 3600e3)}' WHERE user_id = ${A.user_id}; UPDATE sessions SET expires_at = '${stale}' WHERE user_id = ${A.user_id}`)
+  await sql(`UPDATE users SET last_seen_at = '${jst(Date.now() - 7 * 3600e3)}' WHERE user_id = ${A.user_id}; UPDATE sessions SET expires_at = '${stale}' WHERE user_id = ${A.user_id}`)
   const rs = await Promise.all(OPEN.map(p => st.get(p)))
   const s1 = sum(rs)
   info('アプリを開く（7本を同時に）の読み取り・書き込み', s1)

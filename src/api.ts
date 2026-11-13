@@ -6,7 +6,7 @@ import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS, RETENTION_TOKEN_TARGETS } from './services/retention'
 import { cronStatus } from './services/cron'
-import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, scanOrphanPhotos, setRetentionHold } from './services/retention'
+import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, locationPhotoSql, scanOrphanPhotos, setRetentionHold } from './services/retention'
 import { csvLimitHeaders, csvLimitNote, loadLatestForCsv } from './csv'
 import { OFFBOARDING_TABLES, OFFBOARDING_GRACE_DAYS, OFFBOARDING_GRACE_MIN, OFFBOARDING_GRACE_MAX, OFFBOARDING_EXPORT_PAGE, OFFBOARDING_TOTAL_STEPS,
   countOffboardingData, findUnknownOffboardingTables, exportOffboardingTablePage, listOffboardingFiles, findOffboardingFile, offboardingBucket, runOffboardingDeletion } from './services/retention'
@@ -63,7 +63,8 @@ import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword,
 import { assigneesApi, assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt } from './assignees'
 import { loadReportComments, staffCommentView, legacyCommentSyncStmt, legacyCommentReadSyncStmt, parseCommentBody, type ReportComment } from './lib/report-comments'
 // 日報一覧の件数の控え（#9970。migrations/0108）
-import { dailyReportCountPlan, dirtyReportCountsByIdsStmt, dirtyReportCountsByShiftStmt } from './lib/report-counts'
+import { dailyReportCountPlan, dirtyReportCountsByIdsStmt, dirtyReportCountsByShiftStmt, nextYm } from './lib/report-counts'
+import { LEGACY_KEYS, RS_DAY, RS_MONTH, addValues, freshSummaryMonths, popcount, summaryLastYm, summaryMarksStmt, summaryReady } from './lib/monthly-summary'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef,
   reportEditFields, buildAdminReportEdit, parseReportValuesJson, REPORT_EDIT_REASON_MAX } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
@@ -84,6 +85,7 @@ import { toursAdminApi, toursStaffApi } from './tours'
 import { nowJST, todayJST, addDays } from './lib/time'
 import { sha256, randomHex } from './lib/hash'
 import { readJson, recordSwallowedError, appBaseUrl } from './lib/http'
+import { ADMIN_ROLES, can, requirePerm, permissionsFor } from './lib/permissions'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -175,11 +177,9 @@ function resolvePhotoRequired(u: any, projectOverride: number | null | undefined
   const companyDefault = getCompanySetting(u, 'photo_required_attendance', true)
   return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
 }
-// system_admin（SaaS本部）は含めない。本部ユーザーは本部専用の企業行（0033。active_status='internal'）に所属し、
+// 管理画面の4ロール（ADMIN_ROLES）と、ロールごとにできる操作は src/lib/permissions.ts の権限の表に書く（#9978）。
+// system_admin（SaaS本部）は管理画面の4ロールに含めない。本部ユーザーは本部専用の企業行（0033。active_status='internal'）に所属し、
 // /admin を操作できると本部の操作がその企業のデータとして登録されてしまう。本部は /hq のみを使う。
-const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
-// 従業員管理（給与・口座・保険番号・緊急連絡先・入社時書類）を扱えるロール（#205）。現場管理者・営業管理者は扱えない
-const HR_ROLES = ['company_admin', 'office_staff']
 
 // ============ 勤怠の自動振り分け（フェーズH） ============
 // 同一人物が複数企業に所属する場合、シフトの所有企業（shifts.company_id / staff_id）に基づいて
@@ -783,7 +783,8 @@ api.use('/*', async (c, next) => {
 // 最後にアプリを使った日時（#491）: パスワードでのログインのほか、セッションでの操作でも残す（週次アクティブの集計に使う）。
 // 企業切替の後はセッションの利用者が切替先のユーザー行になるので、切替先の行が更新される。
 // 書き込みを減らすため、前回から LAST_SEEN_STEP_MINUTES 以上たったときだけ更新し、定期の取得（X-Background: 1）では更新しない
-const LAST_SEEN_STEP_MINUTES = 60
+// （6時間。週次アクティブは日単位なので足りる。スタッフ一覧の「最終利用」は最大6時間古くなる。利用者 11/12 了承。#9976）
+const LAST_SEEN_STEP_MINUTES = 360
 async function touchLastSeen(c: any, u: any) {
   if (c.req.header('X-Background') === '1') return
   const now = nowJST()
@@ -803,23 +804,26 @@ async function touchLastSeen(c: any, u: any) {
 // ・バッジ更新などの定期の取得（X-Background: 1）では延ばさない（画面を開いたままでも、操作がなければ期限が来る）
 // ・ログインから最長期間（SESSION_MAX_DAYS）を超えては延ばさない
 // ・書き込みを減らすため、前回の延長から SESSION_EXTEND_STEP_MINUTES 以上たったときだけ更新する
-// スタッフは日をまたぐ勤務や翌日の報告があるため、操作のない時間の上限と最長期間を長くする
+// スタッフは日をまたぐ勤務や翌日の報告があるため、操作のない時間の上限と最長期間を長くする。
+// スタッフの延長の間隔は6時間（上限72時間のうち、操作がなくても最低66時間は残る。#9976 利用者 11/12 了承）
 const SESSION_IDLE_HOURS: Record<string, number> = { staff: 72 }
 const SESSION_MAX_DAYS: Record<string, number> = { staff: 30 }
 const SESSION_MAX_DAYS_DEFAULT = 7
-const SESSION_EXTEND_STEP_MINUTES = 10
+const SESSION_EXTEND_STEP_MINUTES: Record<string, number> = { staff: 360 }
+const SESSION_EXTEND_STEP_MINUTES_DEFAULT = 10
 async function extendSession(c: any, token: string, u: any): Promise<string> {
   const current = String(u.expires_at)
   if (c.req.header('X-Background') === '1') return current
   const idleHours = SESSION_IDLE_HOURS[u.role] ?? SESSION_HOURS
   const maxDays = SESSION_MAX_DAYS[u.role] ?? SESSION_MAX_DAYS_DEFAULT
+  const stepMs = (SESSION_EXTEND_STEP_MINUTES[u.role] ?? SESSION_EXTEND_STEP_MINUTES_DEFAULT) * 60 * 1000
   const target = new Date(Date.now() + idleHours * 3600 * 1000).toISOString()
-  if (Date.parse(current) > Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000) return current
+  if (Date.parse(current) > Date.parse(target) - stepMs) return current
   // created_at は CURRENT_TIMESTAMP（UTC）。expires_at と同じ ISO 8601 の書式にして比べる
   const maxSql = `COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+${maxDays} days'), expires_at)`
   // アプリを開くと API を同時に何本も呼ぶ。先に延ばした要求があれば（期限が延ばす幅より短い差なら）書かない（#9970）。
   // そのときは延ばした後の期限を読み、ほかの要求と同じ期限・Cookie を返す
-  const stepFloor = new Date(Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000).toISOString()
+  const stepFloor = new Date(Date.parse(target) - stepMs).toISOString()
   const hashed = await hashToken(token)
   let row = await c.env.DB.prepare(`UPDATE sessions SET expires_at = MIN(?, ${maxSql})
       WHERE token = ? AND expires_at < MIN(?, ${maxSql}) RETURNING expires_at`)
@@ -849,30 +853,23 @@ api.get('/auth/me', async (c) => {
     if (v) u = hqViewUser(u, v)
   }
   return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
-    company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: HR_ROLES.includes(u.role),
+    company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: can(u, 'hr.manage'),
     user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password,
     // 二段階認証の登録待ちは、本人（本部ユーザー）のアカウントと会社の設定で判定する（閲覧先の企業の設定で、閲覧の画面が登録の画面へ移らないように）
-    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(self, self.settings_json), hq_view: u.hq_view || null })
+    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(self, self.settings_json), hq_view: u.hq_view || null,
+    // 自分ができる操作の一覧（権限の表 src/lib/permissions.ts。画面のメニュー・ボタンの出し分けは hasPerm でこれを見る）
+    permissions: permissionsFor(u.role) })
 })
 
 // 権限チェックミドルウェア
 // 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用）のときだけ /admin/* の GET を使える（#293。src/hq-support.ts）
 api.use('/admin/*', hqViewAdminGuard)
-api.use('/admin/*', async (c, next) => {
-  if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+api.use('/admin/*', requirePerm('admin.access'))
 // 従業員管理（社員名簿・入社時書類）は会社管理者・事務担当のみ（#205）
-const hrOnly = async (c: any, next: any) => {
-  if (!HR_ROLES.includes(c.get('user')?.role)) return c.json({ error: '従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます', code: 'hr_forbidden' }, 403)
-  return next()
-}
+const hrOnly = requirePerm('hr.manage', '従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます', 'hr_forbidden')
 api.use('/admin/employees', hrOnly)
 api.use('/admin/employees/*', hrOnly)
-api.use('/hq/*', async (c, next) => {
-  if (c.get('user')?.role !== 'system_admin') return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+api.use('/hq/*', requirePerm('hq.access'))
 // 本部の操作の履歴（#542）: 本部の書き込み（GET 以外）が成功したら、だれが・いつ・どのパスを操作したかを残す。
 // 変更前後の値を残すエンドポイントは hqAuditStmt で記録して hqAudited を立てるので、ここでは重ねて記録しない。
 // 送られた内容（パスワードなど）は残さない
@@ -896,10 +893,7 @@ function hqAuditStmt(c: any, e: { action: string; company_id?: number | null; ta
     .bind(c.get('user')?.user_id ?? null, e.action, e.company_id ?? null, e.target ?? null, j(e.before), j(e.after), e.reason ?? null, nowJST())
 }
 // スタッフ本人向け API（/api/staff/*）はスタッフのロールだけ（管理者・本部のセッションでは使えない）
-api.use('/staff/*', async (c, next) => {
-  if (c.get('user')?.role !== 'staff') return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+api.use('/staff/*', requirePerm('staff_app.access'))
 // ============ セキュリティ: 二段階認証・ログイン中の端末・ログインの履歴（作業単位 w4-auth-features: #544 #453 #552） ============
 const LOGIN_HISTORY_PAGE = 50
 // 直近24時間で、この回数以上ログインに失敗した ID を画面の上に出す（総当たり・パスワードの使い回しに気づけるように）
@@ -1102,10 +1096,7 @@ api.post('/auth/logout-all', async (c) => {
 
 // ---------- 会社の管理画面（/api/admin/security・/api/admin/login-history・/api/admin/staff/:id/sessions） ----------
 // 設定・管理者アカウントの二段階認証・ログインの履歴は会社管理者だけ。スタッフのログイン中の端末は管理系のロール全員（スマホの紛失にその場で対応できるように）
-const securityAdminOnly = async (c: any, next: any) => {
-  if (c.get('user')?.role !== 'company_admin') return c.json({ error: 'この操作は会社管理者だけが行えます' }, 403)
-  return next()
-}
+const securityAdminOnly = requirePerm('security.manage', 'この操作は会社管理者だけが行えます')
 api.use('/admin/security/settings', securityAdminOnly)
 api.use('/admin/security/users', securityAdminOnly)
 api.use('/admin/security/users/*', securityAdminOnly)
@@ -1195,7 +1186,7 @@ api.get('/admin/staff/:id/sessions', async (c) => {
   if (!su) return c.json({ error: '見つかりません' }, 404)
   const sessions = (await personSessions(c.env.DB, su.user_id, su.scope_company_id)).map(s => ({ ...sessionView(s), company_id: undefined, other_company: s.company_id !== u.company_id }))
   const where = ['e.company_id = ?', 'e.user_id = ?']; const binds: any[] = [u.company_id, su.user_id]
-  const history = u.role === 'company_admin' ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
+  const history = can(u, 'security.manage') ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
   return c.json({ staff: { name: su.name, user_code: su.user_code, linked: su.linked }, sessions, history })
 })
 // スタッフのログインを強制的に終了する（スマホの紛失・共用端末のログアウト忘れ）。自社雇用の行では、同じ人の他社の行のセッションも消す。
@@ -1341,6 +1332,10 @@ const STAFF_SHIFT_PLACE_COLUMNS = `si.site_name, si.address AS site_address, si.
   p.default_break_minutes AS project_break_minutes, p.site_contact_name, p.site_contact_phone`
 const STAFF_SHIFT_PLACE_JOINS = `LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     LEFT JOIN shift_slots sl ON sl.slot_id = s.slot_id AND sl.company_id = s.company_id`
+// ホームで読むシフトの列（s.* を読まない。返すのは staffShiftView の許可リストの列だけで、金額・精算などの列は使わないため。
+// D1 の結果を読む CPU を減らす #9970）。前日確認の状態（dayBeforeState）に使う列も読む
+const HOME_SHIFT_COLUMNS = `s.shift_id, s.company_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.location, s.role, s.status, s.break_minutes,
+  s.site_id, s.slot_id, s.staff_reply, s.staff_reply_note, s.staff_reply_at, s.staff_changed_at, s.day_before_confirmed_at, s.day_before_confirmed_key`
 
 // 次回の稼働（#278）: 今日より後の最初の稼働日の勤務（確定・代打。同一人物の全所属企業）。同じ日に複数あれば開始時刻順に HOME_NEXT_MAX 件まで。
 // 前日確認（#176）: シフトの会社が前日確認を使っていれば、明日のシフトに確認の状態を付ける（確認の後にシフトが変わったものは未確認）
@@ -1348,7 +1343,7 @@ const HOME_NEXT_MAX = 5
 function homeNextShiftsStmt(db: D1Database, personIds: number[], today: string) {
   const inIds = personIds.map(() => '?').join(','), inSt = WORKING_SHIFT_STATUSES.map(() => '?').join(',')
   return db.prepare(`
-    SELECT s.*, p.project_name, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
+    SELECT ${HOME_SHIFT_COLUMNS}, p.project_name, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${inIds}) AND s.status IN (${inSt})
@@ -1371,7 +1366,7 @@ function homeNextShiftsView(rows: any[], u: any, personRows: any[], today: strin
 // シフト: 本日のシフトと、前日に始まった日をまたぐシフト（同一人物の全所属企業。欠勤を除く）
 function homeShiftsStmt(db: D1Database, personIds: number[], today: string) {
   return db.prepare(`
-    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
+    SELECT ${HOME_SHIFT_COLUMNS}, p.project_name, p.photo_required_override, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date IN (?, ?) AND s.status != 'absent'
@@ -1417,6 +1412,8 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
   const idsJson = bindJsonArray(ids)
   const att = attendanceTypesBatch(db, 'SELECT value FROM json_each(?)', [idsJson])
   const dIds = dailyShifts.map(s => s.shift_id as number)
+  // 報告の詳細（遅延・早退・打刻の方法・時刻の扱い）はホームに出すシフト（dailyShifts）の分だけ読み、報告漏れの候補は種類だけを読む（#9970）
+  const shown = new Set(dIds), missedIds = ids.filter(id => !shown.has(id))
   const dStaff = [...new Set(dailyShifts.map(s => s.staff_id as number))]
   const dDates = [...new Set(dailyShifts.map(s => s.work_date as string))]
   const res = await db.batch([
@@ -1428,14 +1425,15 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
     // 電波がない場所で押して後から送った報告は、押した時刻で記録したこと（device_time）と受け取った時刻も出す（#427）
     db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id,
       time_source, received_at
-      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(idsJson),
+      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(dIds)),
+    db.prepare(`SELECT shift_id, report_type FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(missedIds)),
     db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN ${JSON_IN} AND status = 'pending'`).bind(idsJson),
     ...(dIds.length ? [db.prepare(`SELECT shift_id, staff_id, work_date, project_id, manager_checked, manager_checked_at FROM daily_reports
       WHERE shift_id IN (${dIds.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${dStaff.map(() => '?').join(',')}) AND work_date IN (${dDates.map(() => '?').join(',')}))`)
       .bind(...dIds, ...dStaff, ...dDates)] : []),
   ])
   const types = att.resolve(res.slice(0, att.statements.length))
-  const [modeRes, repRes, pendRes, dailyRes] = res.slice(att.statements.length)
+  const [modeRes, repRes, missedRepRes, pendRes, dailyRes] = res.slice(att.statements.length)
   const modes = new Map<number, ReturnType<typeof resolveModes>>()
   for (const r of (modeRes.results || []) as any[]) {
     const m = resolveModes({ daily_report_mode: r.p_dr }, { daily_report_mode: r.sp_dr }, { attendance_mode: r.s_att, daily_report_mode: r.s_dr })
@@ -1454,6 +1452,8 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
       entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null,
       ...deviceTimeMark(r) }
   }
+  // 報告漏れの候補は、報告があるかどうかだけを使う（homeMissedView）
+  for (const r of (missedRepRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.reports[r.report_type] = { report_type: r.report_type } }
   for (const r of (pendRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
   const drows = (dailyRes?.results || []) as any[]
   for (const s of dailyShifts) {
@@ -1484,8 +1484,8 @@ const HOME_NOTICE_PINNED_MAX = 5
 async function homeLoadNotices(db: D1Database, u: any, personRows: any[]) {
   const others = personRows.filter(r => r.user_id && r.company_id !== u.company_id)
   const [unread, recent, counts] = await Promise.all([
-    loadStaffNotices(db, u.user_id, { unreadOnly: true, order: 'unread_first', limit: 30 }),
-    loadStaffNotices(db, u.user_id, { order: 'recent', limit: HOME_NOTICE_PREVIEW }),
+    loadStaffNotices(db, u.user_id, { unreadOnly: true, order: 'unread_first', limit: 30, summary: true }),
+    loadStaffNotices(db, u.user_id, { order: 'recent', limit: HOME_NOTICE_PREVIEW, summary: true }),
     countUnreadNotices(db, [u.user_id, ...others.map(r => r.user_id)]),
   ])
   const rank = (n: any) => n.importance === 'urgent' ? 0 : n.read_required ? 1 : 2
@@ -2827,7 +2827,7 @@ api.get('/admin/dashboard', async (c) => {
   const waitSince = addMinutes(now, -DASH_CONSULT_WAIT_DAYS * 1440)
   const dayBefore = dayBeforeSettings(u.settings_json)
   const tomorrow = addDays(today, 1)
-  const isHr = HR_ROLES.includes(u.role)
+  const isHr = can(u, 'hr.manage')
   const docLimit = addDays(today, DASH_DOC_EXPIRY_DAYS)
   // 本日と前日の確定・代打のシフト（報告の設定を決める対象。欠勤は除く）
   const workingIdsSql = `SELECT w.shift_id FROM shifts w WHERE w.company_id = ? AND w.work_date IN (?, ?) AND w.status IN ('confirmed','substitute')`
@@ -3989,7 +3989,7 @@ async function applyApprovedProfileChange(c: any, sid: string, changes: Record<s
   if (roster.merged_into_staff_id) return { error: '統合済みのスタッフのため反映できません（統合先のスタッフで編集してください）', status: 409 }
   if (roster.affiliation_type === 'linked_external' || !roster.can_edit_base) return { error: '基本項目は所属元企業のみ編集できます', status: 403 }
   // 自社雇用の最寄駅は従業員管理（会社管理者・事務担当のみ）で直す項目なので、承認も同じロールに限る
-  if (roster.affiliation_type === 'own_employee' && !HR_ROLES.includes(u.role) && (changes.nearest_station_line !== undefined || changes.nearest_station !== undefined)) {
+  if (roster.affiliation_type === 'own_employee' && !can(u, 'hr.manage') && (changes.nearest_station_line !== undefined || changes.nearest_station !== undefined)) {
     return { error: '自社雇用スタッフの最寄駅の変更は、会社管理者・事務担当が承認してください', status: 403 }
   }
   const body: Record<string, any> = {}
@@ -4219,16 +4219,34 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const projects = await c.env.DB.prepare(`
     SELECT DISTINCT p.project_name, p.project_type FROM shifts s JOIN projects p ON s.project_id = p.project_id
     WHERE s.staff_id = ? AND s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date <= ?`).bind(sid, u.company_id, todayJST()).all()
+  // 通算実績（#9972）: 集計済みの過去の月（自社。今月と前月より前）は月ごとの集計（report_month_summaries）から読み、それ以外は日報の表から数えて足す。
+  // 集計はここでは作らない（実績分析で作られた月だけを使う。スタッフ1人のために会社の月をまるごと集計し直さない）
+  // 印を読めないときは、すべて日報の表から数える
+  const fresh = freshSummaryMonths(await summaryMarksStmt(c.env.DB, u.company_id, '0000-00', summaryLastYm(todayJST())).all().catch(() => undefined), nowJST())
+  const freshList = JSON.stringify(fresh)
+  const drWhere = fresh.length ? 'dr.staff_id = ? AND NOT (dr.company_id = ? AND substr(dr.work_date, 1, 7) IN (SELECT value FROM json_each(?)))' : 'dr.staff_id = ?'
+  const drBinds = fresh.length ? [sid, u.company_id, freshList] : [sid]
+  // +company_id: 主キー（会社・月）で引くと、その月の会社のすべての行を読むので、スタッフの索引（staff_id, ym）で引かせる
+  const msFrom = `FROM ${RS_MONTH} WHERE staff_id = ? AND +company_id = ? AND ym IN (SELECT value FROM json_each(?))`
+  const msRows = fresh.length ? (await c.env.DB.prepare(`SELECT reports, values_json, legacy_json ${msFrom}`).bind(sid, u.company_id, freshList).all()).results as any[] : []
+  // JSON でない日報（壊れた値）は 0 として数える（json_extract が失敗して 500 になっていた）
   const perf = await c.env.DB.prepare(`
-    SELECT SUM(COALESCE(json_extract(report_values,'$.mnp'),0)) AS mnp,
-      SUM(COALESCE(json_extract(report_values,'$.pi'),0)) AS pi,
-      SUM(COALESCE(json_extract(report_values,'$.shinki'),0)) AS shinki,
-      SUM(COALESCE(json_extract(report_values,'$.hikari'),0)) AS hikari,
-      SUM(COALESCE(json_extract(report_values,'$.seiyaku'),0)) AS seiyaku,
+    SELECT SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.mnp') END,0)) AS mnp,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.pi') END,0)) AS pi,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.shinki') END,0)) AS shinki,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.hikari') END,0)) AS hikari,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.seiyaku') END,0)) AS seiyaku,
       COUNT(*) AS total_days
-    FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
+    FROM daily_reports dr WHERE ${drWhere}`).bind(...drBinds).first() as any
+  const msSums = new Map<string, number>(), legacy = new Map<string, number>()
+  if (msRows.length) {
+    for (const r of msRows) { addValues(msSums, r.values_json); addValues(legacy, r.legacy_json) }
+    for (const k of LEGACY_KEYS) perf[k] = (Number(perf[k]) || 0) + (legacy.get(k) || 0)
+    perf.total_days = (Number(perf.total_days) || 0) + msRows.reduce((n, r) => n + (Number(r.reports) || 0), 0)
+  }
   // テンプレートの数値項目の合計（#184。performance.values と performance_fields。固定の列は今の画面のために残す）
-  const metrics = await reportMetricSums(c.env.DB, 'dr.staff_id = ?', [sid], "''")
+  const metrics = await reportMetricSums(c.env.DB, drWhere, drBinds, "''",
+    msRows.length ? { summary: { projects: `SELECT project_id, company_id ${msFrom}`, binds: [sid, u.company_id, freshList], sums: msSums } } : {})
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
   // 管理者メモは社内用なので、社外に出すスキルシートには返さない。推薦コメントは別の欄（skill_sheet_comment。#447）に保存したものを返す
   const { memo: _memo, ...sheet } = profile
@@ -4650,7 +4668,7 @@ api.get('/admin/employees/export', async (c) => {
   const status = String(c.req.query('status') || '')
   if (status && !['working', 'leave', 'preboarding', 'retired', 'ended'].includes(status)) return c.json({ error: '在籍状況の指定が正しくありません' }, 400)
   const includePay = c.req.query('include_pay') === '1'
-  if (includePay && u.role !== 'company_admin') return c.json({ error: '口座・給与を含めた出力は、会社管理者のみ行えます' }, 403)
+  if (includePay && !can(u, 'roster_export.pay')) return c.json({ error: '口座・給与を含めた出力は、会社管理者のみ行えます' }, 403)
   await ensureRosterIdentity(db, u.company_id)
   const where = status === 'ended'
     ? `er.company_id = ? AND er.employment_ended_at IS NOT NULL AND (COALESCE(sp.affiliation_type,'own_employee') != 'own_employee' OR sp.merged_into_staff_id IS NOT NULL)`
@@ -6008,11 +6026,11 @@ const STAFF_VIEW_KEYS = ['ranking_visible', 'ranking_anonymous', 'show_coworkers
 api.get('/admin/settings/staff-view', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  return c.json({ ...staffViewSettings(row?.settings_json), can_edit: u.role === 'company_admin' })
+  return c.json({ ...staffViewSettings(row?.settings_json), can_edit: can(u, 'settings.staff_view') })
 })
 api.put('/admin/settings/staff-view', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
+  if (!can(u, 'settings.staff_view')) return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
   const b = await c.req.json().catch(() => ({})) as any
   const keys = STAFF_VIEW_KEYS.filter(k => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k))
   if (!keys.length) return c.json({ error: '変更する項目がありません' }, 400)
@@ -6034,11 +6052,11 @@ const shiftNotifySettingView = async (db: D1Database, companyId: number) => {
 }
 api.get('/admin/settings/shift-notify', async (c) => {
   const u = c.get('user')
-  return c.json({ ...await shiftNotifySettingView(c.env.DB, u.company_id), can_edit: u.role === 'company_admin' })
+  return c.json({ ...await shiftNotifySettingView(c.env.DB, u.company_id), can_edit: can(u, 'settings.shift_notify') })
 })
 api.put('/admin/settings/shift-notify', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます', code: 'role_forbidden' }, 403)
+  if (!can(u, 'settings.shift_notify')) return c.json({ error: 'この設定は会社管理者だけが変更できます', code: 'role_forbidden' }, 403)
   const b = await c.req.json().catch(() => ({})) as any
   if (typeof b?.enabled !== 'boolean') return c.json({ error: '設定の値が正しくありません' }, 400)
   await c.env.DB.prepare(`UPDATE companies SET shift_notify_default = ?, shift_notify_updated_at = ?, shift_notify_updated_by = ?
@@ -6227,16 +6245,28 @@ async function metricFieldsWithLabels(db: D1Database, cid: number | null, templa
 }
 // 日報の数値項目の合計（#184。スタッフ詳細・スキルシート・案件詳細の実績）。where は daily_reports dr の条件、group は GROUP BY の式。
 // 項目は実績分析と同じ規則（metricFields）で決め、group の値ごとに { キー: 合計 } を返す（その組に無い項目は 0）。
-// opts.cid を渡すと、表示名のわからないキーを自社・本部のテンプレートで補う。opts.presentOnly は metricFields と同じ
-async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string, opts: { cid?: number; presentOnly?: boolean } = {}) {
+// opts.cid を渡すと、表示名のわからないキーを自社・本部のテンプレートで補う。opts.presentOnly は metricFields と同じ。
+// opts.summary（group が "''" のときだけ）: 月ごとの集計から読んだ分（#9972）。projects は案件と会社の SELECT（binds はその値）、sums は項目の合計で、日報の表から数えた分に足す
+async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string,
+  opts: { cid?: number; presentOnly?: boolean; summary?: { projects: string; binds: any[]; sums: Map<string, number> } } = {}) {
+  const sx = opts.summary
   const [tpl, sums] = await db.batch([
-    db.prepare(`SELECT DISTINCT p.project_id, rt.template_id, rt.fields_json, p.past_report_fields_json FROM daily_reports dr
+    db.prepare(`SELECT DISTINCT p.project_id, rt.template_id, rt.fields_json, p.past_report_fields_json
+      FROM ${sx ? `(SELECT dr.project_id, dr.company_id FROM daily_reports dr WHERE ${where} UNION ${sx.projects}) dr` : 'daily_reports dr'}
       JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id LEFT JOIN report_templates rt ON rt.template_id = p.report_template_id
-      WHERE ${where} ORDER BY rt.template_id IS NULL, rt.template_id, p.project_id`).bind(...binds),
+      WHERE ${sx ? '1' : where} ORDER BY rt.template_id IS NULL, rt.template_id, p.project_id`).bind(...binds, ...(sx ? sx.binds : [])),
     db.prepare(`SELECT ${group} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
       FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...binds),
   ])
-  const sumRows = (sums.results || []) as any[]
+  let sumRows = (sums.results || []) as any[]
+  if (sx?.sums.size) {
+    const byKey = new Map<any, any>(sumRows.map(r => [r.k, r]))
+    for (const [k, v] of sx.sums) {
+      const r = byKey.get(k)
+      if (r) { r.v = (Number(r.v) || 0) + v; r.isnum = 1 } else byKey.set(k, { g: '', k, v, isnum: 1 })
+    }
+    sumRows = [...byKey.values()].sort((a, b) => sqliteKeyCompare(a.k, b.k))
+  }
   const fields = await metricFieldsWithLabels(db, opts.cid ?? null, (tpl.results || []) as any[], sumRows, !!opts.presentOnly)
   const keys = new Set(fields.map(f => f.key))
   const values = new Map<string, Record<string, number>>()
@@ -6295,35 +6325,89 @@ async function seiyakuSums(db: D1Database, companyId: number, mFrom: string, mTo
   for (const r of (sums.results || []) as any[]) if (r.g != null) out.set(Number(r.g), Number(r.v) || 0)
   return out
 }
+// ---------- 確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） ----------
+// 月ごとの集計（report_month_summaries。案件 × スタッフの行）を読み、全体・スタッフ別・案件別・クライアント別を Workers で足し合わせる
+// （稼働人数・案件数は重ならないように数え、稼働日数は日報のある日のビットを重ねて数える）。名前などは日報の表のときと同じ結合で引く。
+// 日別は日ごとの集計（report_day_summaries）から読む。スタッフで絞ったときの日別は、人ごとの日別を持たないので日報の表から数える
+function analyticsSummaryStmts(db: D1Database, cid: number, month: string, project: any | null, staffIds: number[], dailyDetail: D1PreparedStatement) {
+  const w = 'ms.company_id = ? AND ms.ym = ?' + (project ? ' AND ms.project_id = ?' : '') + (staffIds.length ? ` AND ms.staff_id IN ${JSON_IN}` : '')
+  const b = [cid, month, ...(project ? [project.project_id] : []), ...(staffIds.length ? [bindJsonArray(staffIds)] : [])]
+  const ms = `${RS_MONTH} ms LEFT JOIN projects p ON p.project_id = ms.project_id AND p.company_id = ms.company_id`
+  const extra = (g: string, e: { cols: string; joins: string }) => db.prepare(`SELECT a.g, ${e.cols} FROM (SELECT DISTINCT ${g} AS g FROM ${ms} WHERE ${w}) a ${e.joins}`).bind(...b, cid)
+  return [
+    db.prepare(`SELECT ms.project_id, ms.staff_id, ms.reports, ms.flagged, ms.days_mask, ${project ? 'ms.values_json' : 'NULL AS values_json'}, COALESCE(p.client_id, 0) AS client_id
+      FROM ${ms} WHERE ${w}`).bind(...b),
+    extra('ms.staff_id', ANALYTICS_GROUPS.staff.extra), extra('ms.project_id', ANALYTICS_GROUPS.project.extra), extra('COALESCE(p.client_id, 0)', ANALYTICS_GROUPS.client.extra),
+    staffIds.length ? dailyDetail : db.prepare(`SELECT work_date AS g, reports, staff_count, 1 AS work_days, project_count, flagged FROM ${RS_DAY}
+      WHERE company_id = ? AND work_date >= ? AND work_date < ? AND project_id = ? ORDER BY work_date`).bind(cid, ...monthBounds(month), project ? project.project_id : 0),
+  ]
+}
+// analyticsSummaryStmts の結果から、日報の表から数えたときと同じ形の行（g の順）と、全体・スタッフ別の項目の合計（jsonKeySums の rows と同じ形）を作る
+function analyticsFromSummary(res: any[][], withValues: boolean) {
+  const [msRows, staffEx, projectEx, clientEx, daily] = res
+  const keyOf = { total: () => '', staff: (r: any) => r.staff_id, project: (r: any) => r.project_id, client: (r: any) => r.client_id }
+  const extras = { total: [], staff: staffEx, project: projectEx, client: clientEx }
+  const rows = { daily } as Record<AnalyticsGroup, any[]>
+  const sums: Partial<Record<AnalyticsGroup, JsonSumRow[]>> = {}
+  for (const k of ['total', 'staff', 'project', 'client'] as const) {
+    type Acc = { reports: number; flagged: number; staff: Set<number>; projects: Set<number>; mask: number; values: Map<string, number> }
+    const acc = new Map<any, Acc>()
+    const vals = withValues && (k === 'total' || k === 'staff')
+    for (const r of msRows) {
+      const g = keyOf[k](r)
+      let a = acc.get(g)
+      if (!a) acc.set(g, a = { reports: 0, flagged: 0, staff: new Set(), projects: new Set(), mask: 0, values: new Map() })
+      a.reports += Number(r.reports) || 0; a.flagged += Number(r.flagged) || 0
+      a.staff.add(r.staff_id); a.projects.add(r.project_id); a.mask |= Number(r.days_mask) || 0
+      if (vals) addValues(a.values, r.values_json)
+    }
+    const ex = new Map((extras[k] as any[]).map(({ g, ...rest }) => [g, rest]))
+    const gs = [...acc.keys()].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+    rows[k] = gs.map(g => { const a = acc.get(g)!; return { g, reports: a.reports, staff_count: a.staff.size, work_days: popcount(a.mask), project_count: a.projects.size, flagged: a.flagged, ...ex.get(g) } })
+    if (vals) sums[k] = gs.flatMap(g => [...acc.get(g)!.values].sort(([x], [y]) => sqliteKeyCompare(x, y)).map(([key, v]) => ({ g, k: key, v, isnum: 1 })))
+  }
+  return { rows, sums }
+}
 // 実績分析の集計。project を渡すと、その案件の日報だけを、その案件のテンプレートの項目で集計する（無ければ全案件。項目の列は出さない）。
 // withOptions: 画面の案件の選択肢（稼働中の案件と、日報のある終了した案件）も返す。
 // staffIds: スタッフで絞る（#9963。一覧・グラフ・CSV で同じ条件。空なら全員）。withOptions のときは、絞り込みの選択肢
-// （その月・その案件に日報のある人。staff_options）と、選んだ人の名前（staff_filter）も返す
+// （その月・その案件に日報のある人。staff_options）と、選んだ人の名前（staff_filter）も返す。
+// 確定した過去の月（今月と前月より前）は、日報の表ではなく月ごとの集計の表から数える（#9972。集計を書けないとき（本部の閲覧中）は日報の表から）
 async function loadAnalytics(db: D1Database, cid: number, month: string, project: any | null, withOptions = false, staffIds: number[] = []) {
   const baseWhere = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?' + (project ? ' AND dr.project_id = ?' : '')
   const baseBind = [cid, ...monthBounds(month), ...(project ? [project.project_id] : [])]
   const where = baseWhere + (staffIds.length ? ` AND dr.staff_id IN ${JSON_IN}` : '')
   const bind = [...baseBind, ...(staffIds.length ? [bindJsonArray(staffIds)] : [])]
   const groups = Object.keys(ANALYTICS_GROUPS) as AnalyticsGroup[]
+  const summary = month <= summaryLastYm(todayJST()) && await summaryReady(db, cid, month, month, nowJST())
   // 項目は案件を選んだときだけ合計する（案件別・クライアント別はそのとき1行なので、全体の合計を写す）
   const sumGroups: AnalyticsGroup[] = project ? ['total', 'daily', 'staff'] : []
   // 案件のテンプレートと日報にありそうなキーを先に読み、そのキーで合計する（jsonKeySums）
   const [tplRes, keysRes] = project ? await db.batch([db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null), reportKeysStmt(db, cid)]) : []
   const tplRow = project ? (((tplRes?.results || []) as any[])[0] || null) : null
   const knownKeys = reportKeysOf(keysRes)
-  const sumQ = sumGroups.map(k => jsonKeySums(db, { from: 'daily_reports dr', where, binds: bind, group: ANALYTICS_GROUPS[k].g }, knownKeys))
+  // 集計の表を使うときに日報の表から合計するのは、日別の項目だけ（日ごとの集計は項目の合計を持たない）
+  const detailSums = summary ? sumGroups.filter(k => k === 'daily') : sumGroups
+  const sumQ = detailSums.map(k => jsonKeySums(db, { from: 'daily_reports dr', where, binds: bind, group: ANALYTICS_GROUPS[k].g }, knownKeys))
+  const detailStmt = (k: AnalyticsGroup) => {
+    const G = ANALYTICS_GROUPS[k]
+    const inner = `SELECT ${G.g} AS g, ${ANALYTICS_COUNTS} FROM daily_reports dr ${G.join} WHERE ${where} ${groupBySql(G.g)}`
+    return G.extra ? db.prepare(`SELECT a.*, ${G.extra.cols} FROM (${inner}) a ${G.extra.joins} ORDER BY a.g`).bind(...bind, cid) : db.prepare(inner).bind(...bind)
+  }
+  const groupStmts = summary ? analyticsSummaryStmts(db, cid, month, project, staffIds, detailStmt('daily')) : groups.map(detailStmt)
   const stmts = [
-    ...groups.map(k => {
-      const G = ANALYTICS_GROUPS[k]
-      const inner = `SELECT ${G.g} AS g, ${ANALYTICS_COUNTS} FROM daily_reports dr ${G.join} WHERE ${where} ${groupBySql(G.g)}`
-      return G.extra ? db.prepare(`SELECT a.*, ${G.extra.cols} FROM (${inner}) a ${G.extra.joins} ORDER BY a.g`).bind(...bind, cid) : db.prepare(inner).bind(...bind)
-    }),
+    ...groupStmts,
     ...sumQ.flatMap(s => s.statements),
     ...(withOptions ? [db.prepare(`SELECT p.project_id, p.project_name, COALESCE(p.status, 'active') AS status, cl.client_name
       FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
       WHERE p.company_id = ? AND (COALESCE(p.status, 'active') = 'active' OR EXISTS (SELECT 1 FROM daily_reports d2 WHERE d2.project_id = p.project_id AND d2.company_id = p.company_id))
       ORDER BY CASE WHEN COALESCE(p.status, 'active') = 'active' THEN 0 ELSE 1 END, p.project_id`).bind(cid),
-      db.prepare(`SELECT dr.staff_id, MAX(us.name) AS name, COUNT(*) AS reports FROM daily_reports dr
+      summary
+        ? db.prepare(`SELECT ms.staff_id, MAX(us.name) AS name, SUM(ms.reports) AS reports FROM ${RS_MONTH} ms
+          LEFT JOIN staff_profiles sp ON sp.staff_id = ms.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+          WHERE ms.company_id = ? AND ms.ym = ?${project ? ' AND ms.project_id = ?' : ''} GROUP BY ms.staff_id ORDER BY reports DESC, name, ms.staff_id LIMIT ${ANALYTICS_STAFF_OPTIONS}`)
+          .bind(cid, month, ...(project ? [project.project_id] : []))
+        : db.prepare(`SELECT dr.staff_id, MAX(us.name) AS name, COUNT(*) AS reports FROM daily_reports dr
         LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
         WHERE ${baseWhere} GROUP BY dr.staff_id ORDER BY reports DESC, name, dr.staff_id LIMIT ${ANALYTICS_STAFF_OPTIONS}`).bind(...baseBind),
       ...(staffIds.length ? [db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
@@ -6332,9 +6416,15 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   ]
   const raw = await db.batch(stmts)
   const res = raw.map(r => (r.results || []) as any[])
-  const sumRows: JsonSumRow[][] = []
-  { let at = groups.length; for (const s of sumQ) { sumRows.push((await s.finish(raw.slice(at, at + s.statements.length))).rows); at += s.statements.length } }
-  const sumRes = (k: AnalyticsGroup) => { const i = sumGroups.indexOf(k); return i < 0 ? [] : sumRows[i] }
+  const sumRows: Partial<Record<AnalyticsGroup, JsonSumRow[]>> = {}
+  { let at = groupStmts.length; for (const [i, s] of sumQ.entries()) { sumRows[detailSums[i]] = (await s.finish(raw.slice(at, at + s.statements.length))).rows; at += s.statements.length } }
+  let groupRows = res.slice(0, groups.length)
+  if (summary) {
+    const s = analyticsFromSummary(res.slice(0, groupStmts.length), !!project)
+    groupRows = groups.map(k => s.rows[k])
+    Object.assign(sumRows, s.sums)
+  }
+  const sumRes = (k: AnalyticsGroup) => sumRows[k] || []
   const fields: AnalyticsField[] = project
     ? await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], sumRes('total'), true)
     : []
@@ -6343,7 +6433,7 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   const out = {} as Record<AnalyticsGroup, AnalyticsRow[]>
   groups.forEach((k, i) => {
     const rows = new Map<any, AnalyticsRow>()
-    for (const r of res[i]) {
+    for (const r of groupRows[i]) {
       const { g, ...rest } = r
       rows.set(g, { ...rest, flagged: Number(rest.flagged) || 0, values: zero() })
     }
@@ -6359,7 +6449,7 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   const totals = out.total[0] || { reports: 0, staff_count: 0, work_days: 0, project_count: 0, flagged: 0, values: zero() }
   if (project) for (const r of [...out.project, ...out.client]) r.values = { ...totals.values }
   // 選択肢は stmts の最後に、案件・スタッフ・選んだ人の名前の順に入れている
-  const optAt = groups.length + sumQ.reduce((n, s) => n + s.statements.length, 0)
+  const optAt = groupStmts.length + sumQ.reduce((n, s) => n + s.statements.length, 0)
   const names = new Map(((withOptions && staffIds.length ? res[optAt + 2] : []) || []).map((r: any) => [Number(r.staff_id), r.name]))
   return {
     month, fields, totals, daily: out.daily, by_staff: out.staff, by_project: out.project, by_client: out.client,
@@ -6456,15 +6546,34 @@ api.get('/admin/analytics/series', async (c) => {
 
   const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?' + (project ? ' AND dr.project_id = ?' : '') + (staffIds.length ? ` AND dr.staff_id IN ${JSON_IN}` : '')
   const binds = [cid, monthBounds(from)[0], monthBounds(to)[1], ...(project ? [project.project_id] : []), ...(staffIds.length ? [bindJsonArray(staffIds)] : [])]
+  // 確定した過去の月（今月と前月より前。#9972。src/lib/monthly-summary.ts）は集計の表から読む:
+  //   案件の項目の一覧と、月ごとの推移（全体・スタッフ別・案件別）は月ごとの集計、日・週ごとの推移（全体・案件別。スタッフで絞らず、日報の数か
+  //   インシデント・クレームの数のとき）は日ごとの集計。それ以外（開催場所別など）と、今月・前月の分は日報の表から数え、同じ日付の枠に足す
+  const sumTo = [to, summaryLastYm(todayJST())].sort()[0]
+  const useSum = from <= sumTo && (!!project || unit === 'month' || !staffIds.length) && await summaryReady(db, cid, from, sumTo, nowJST())
+  const msWhere = 'ms.company_id = ? AND ms.ym >= ? AND ms.ym <= ?' + (project ? ' AND ms.project_id = ?' : '') + (staffIds.length ? ` AND ms.staff_id IN ${JSON_IN}` : '')
+  const msBinds = [cid, from, sumTo, ...binds.slice(3)]
+  // 日報の表から数える分（集計の表を使うときは、集計の無い月だけ）
+  const dBinds = useSum ? [cid, `${nextYm(sumTo)}-01`, ...binds.slice(2)] : binds
+  const hasDetail = !useSum || sumTo < to
   // 案件の指標: その期間の日報に値のある数値項目（日報が無ければ今のテンプレートの項目）。実績分析の表と同じ規則
   let fields: AnalyticsField[] = []
   if (project) {
-    const [tpl, keys] = await db.batch([
+    const [tpl, keys, sumKeys] = await db.batch([
       db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null),
-      db.prepare(`SELECT je.key AS k, MAX(je.type IN ('integer','real')) AS isnum FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY je.key`).bind(...binds),
+      db.prepare(`SELECT je.key AS k, MAX(je.type IN ('integer','real')) AS isnum FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${hasDetail ? where : '0'} GROUP BY je.key`).bind(...(hasDetail ? dBinds : [])),
+      ...(useSum ? [db.prepare(`SELECT ms.values_json FROM ${RS_MONTH} ms WHERE ${msWhere} AND ms.values_json IS NOT NULL`).bind(...msBinds)] : []),
     ])
     const tplRow = ((tpl.results || []) as any[])[0]
-    fields = await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], (keys.results || []) as any[], true)
+    let keyRows = (keys.results || []) as any[]
+    if (sumKeys) {
+      const isnum = new Map<any, number>(keyRows.map(r => [r.k, Number(r.isnum) || 0]))
+      const seenKeys = new Map<string, number>()
+      for (const r of (sumKeys.results || []) as any[]) addValues(seenKeys, r.values_json)
+      for (const k of seenKeys.keys()) isnum.set(k, 1)
+      keyRows = [...isnum].sort(([x], [y]) => sqliteKeyCompare(x, y)).map(([k, n]) => ({ k, isnum: n }))
+    }
+    fields = await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], keyRows, true)
   }
   const metricQ = c.req.query('metric') || ''; const keyQ = c.req.query('key') || ''
   // 指定の項目がその期間に無いとき（未指定も）は、成約数か最初の項目にする。項目が無ければ日報数
@@ -6476,10 +6585,41 @@ api.get('/admin/analytics/series', async (c) => {
   const vb = field ? [field.key] : []
   const bucket = SERIES_UNITS[unit]
 
-  const stmts = [db.prepare(`SELECT ${bucket} AS b, ${val} AS v FROM daily_reports dr WHERE ${where} GROUP BY b`).bind(...vb, ...binds)]
-  if (split) stmts.push(db.prepare(`SELECT ${split.g} AS s, ${split.name} AS name, ${val} AS v, COUNT(*) AS n FROM daily_reports dr ${split.joins}
-    WHERE ${where} GROUP BY s ORDER BY v DESC, n DESC, s LIMIT 200`).bind(...vb, ...binds))
-  const [wholeRes, rankRes] = (await db.batch(stmts)).map(r => (r.results || []) as any[])
+  // 数える元（日報の表・月ごとの集計・日ごとの集計）。b は日付の枠、v は指標、n は日報の数、s は分ける単位
+  type SeriesSrc = { from: string; where: string; binds: any[]; b: string; v: string; n: string; s: string; name: string; joins: string }
+  const detailSrc: SeriesSrc = { from: 'daily_reports dr', where, binds: dBinds, b: bucket, v: val, n: 'COUNT(*)', s: split?.g || "''", name: split?.name || "''", joins: split?.joins || '' }
+  const dataSum = useSum && splitQ !== 'site' && (unit === 'month' || (splitQ !== 'staff' && !staffIds.length && metric !== 'field'))
+  const srcs: SeriesSrc[] = []
+  if (dataSum && unit === 'month') {
+    srcs.push({ from: `${RS_MONTH} ms`, where: msWhere, binds: msBinds, b: 'ms.ym', n: 'SUM(ms.reports)',
+      v: metric === 'field' ? 'COALESCE(SUM((SELECT SUM(value) FROM json_each(ms.values_json) WHERE key = ?)), 0)' : metric === 'flagged' ? 'SUM(ms.flagged)' : 'SUM(ms.reports)',
+      s: splitQ === 'staff' ? 'ms.staff_id' : 'ms.project_id', name: split?.name || "''",
+      joins: splitQ === 'staff' ? 'LEFT JOIN staff_profiles sp ON sp.staff_id = ms.staff_id LEFT JOIN users us ON us.user_id = sp.user_id'
+        : 'LEFT JOIN projects p ON p.project_id = ms.project_id AND p.company_id = ms.company_id' })
+  } else if (dataSum) {
+    srcs.push({ from: `${RS_DAY} ds`, where: `ds.company_id = ? AND ds.work_date >= ? AND ds.work_date < ? AND ds.project_id ${project ? '= ?' : splitQ === 'project' ? '!= 0' : '= 0'}`,
+      binds: [cid, monthBounds(from)[0], `${nextYm(sumTo)}-01`, ...(project ? [project.project_id] : [])], b: unit === 'week' ? "date(ds.work_date, 'weekday 0', '-6 days')" : 'ds.work_date',
+      v: metric === 'flagged' ? 'SUM(ds.flagged)' : 'SUM(ds.reports)', n: 'SUM(ds.reports)', s: 'ds.project_id', name: 'MAX(p.project_name)',
+      joins: 'LEFT JOIN projects p ON p.project_id = ds.project_id AND p.company_id = ds.company_id' })
+  }
+  if (!dataSum || hasDetail) srcs.push(dataSum ? detailSrc : { ...detailSrc, binds })
+  const vbOf = (x: SeriesSrc) => (x.from.startsWith(RS_DAY) ? [] : vb)
+  const stmts = srcs.map(x => db.prepare(`SELECT ${x.b} AS b, ${x.v} AS v FROM ${x.from} WHERE ${x.where} GROUP BY b`).bind(...vbOf(x), ...x.binds))
+  // 分けるときの順位: 日報の表だけなら SQL で並べて上位200件。集計の表と合わせるときは、元ごとに数えて足してから同じ順で並べる
+  if (split) stmts.push(...srcs.map(x => db.prepare(`SELECT ${x.s} AS s, ${x.name} AS name, ${x.v} AS v, ${x.n} AS n FROM ${x.from} ${x.joins}
+    WHERE ${x.where} GROUP BY s${dataSum ? '' : ' ORDER BY v DESC, n DESC, s LIMIT 200'}`).bind(...vbOf(x), ...x.binds)))
+  const batchRes = (await db.batch(stmts)).map(r => (r.results || []) as any[])
+  const wholeRes = batchRes.slice(0, srcs.length).flat()
+  let rankRes = batchRes.slice(srcs.length).flat()
+  if (split && dataSum) {
+    const m = new Map<number, { s: number; name: any; v: number; n: number }>()
+    for (const r of rankRes) {
+      const id = Number(r.s), x = m.get(id)
+      if (x) { x.v += Number(r.v) || 0; x.n += Number(r.n) || 0; if (x.name == null) x.name = r.name }
+      else m.set(id, { s: id, name: r.name, v: Number(r.v) || 0, n: Number(r.n) || 0 })
+    }
+    rankRes = [...m.values()].sort((a, b) => b.v - a.v || b.n - a.n || a.s - b.s).slice(0, 200)
+  }
   const buckets = seriesBuckets(from, to, unit)
   const pos = new Map(buckets.map((b, i) => [b, i]))
   const zeros = () => buckets.map(() => 0)
@@ -6494,10 +6634,11 @@ api.get('/admin/analytics/series', async (c) => {
     // 選んだもの（その期間に日報のあるものだけ）か、合計が 0 より大きい上位 top 件
     const show = pickIds.length ? choices.filter(ch => pickIds.includes(ch.id)) : choices.filter(ch => ch.total > 0).slice(0, top)
     if (show.length) {
-      const detail = await db.prepare(`SELECT ${bucket} AS b, ${split.g} AS s, ${val} AS v FROM daily_reports dr ${split.joins}
-        WHERE ${where} AND ${split.g} IN (SELECT value FROM json_each(?)) GROUP BY b, s`).bind(...vb, ...binds, JSON.stringify(show.map(s => s.id))).all()
+      const ids = JSON.stringify(show.map(s => s.id))
+      const detail = (await db.batch(srcs.map(x => db.prepare(`SELECT ${x.b} AS b, ${x.s} AS s, ${x.v} AS v FROM ${x.from} ${x.joins}
+        WHERE ${x.where} AND ${x.s} IN (SELECT value FROM json_each(?)) GROUP BY b, s`).bind(...vbOf(x), ...x.binds, ids)))).flatMap(r => (r.results || []) as any[])
       const byId = new Map(show.map(s => [s.id, { id: s.id, label: s.label, values: zeros(), total: 0 }]))
-      for (const r of (detail.results || []) as any[]) {
+      for (const r of detail) {
         const i = pos.get(String(r.b)); const row = byId.get(Number(r.s))
         if (i !== undefined && row) row.values[i] += Number(r.v) || 0
       }
@@ -7838,7 +7979,10 @@ api.get('/hq/companies', async (c) => {
     WHERE COALESCE(co.active_status, 'active') != ? ORDER BY co.company_id`)
       .bind(d90, d30, d30, d60, today, d30, d30, d60, today, HQ_COMPANY_STATUS),
     // 週次アクティブ（#491）: 課金対象の利用者のうち、ログイン・アプリの操作（last_seen_at）か、アプリからの勤怠の報告が期間内にあった人。
-    // 他社から連携したスタッフは所属元のログインのまま稼働先へ報告するので、報告先の企業のスタッフ行で数える
+    // 他社から連携したスタッフは所属元のログインのまま稼働先へ報告するので、報告先の企業のスタッフ行で数える。
+    // アプリからの報告には必ず端末の情報（device_info）が入り、位置情報・端末の情報は保存期間（最短90日）まで残るので、
+    // 30日以内のアプリの報告は locationPhotoSql の条件を満たす。この条件を付けて部分索引 idx_attendance_location_photo（reported_at）で引く
+    // （報告の日時だけの索引 idx_attendance_reported_at は打刻のたびに書くだけになるので、次の Sprint で消す。#9976）
     db.prepare(`SELECT company_id, SUM(CASE WHEN last_at >= ? THEN 1 ELSE 0 END) AS active_users, COUNT(*) AS active_users_30d
       FROM (SELECT company_id, user_id, MAX(t) AS last_at FROM (
           SELECT u.company_id, u.user_id, MAX(COALESCE(u.last_login_at, ''), COALESCE(u.last_seen_at, '')) AS t FROM users u
@@ -7846,7 +7990,7 @@ api.get('/hq/companies', async (c) => {
           UNION ALL
           SELECT u.company_id, u.user_id, ar.reported_at AS t FROM attendance_reports ar
             JOIN staff_profiles sp ON sp.staff_id = ar.staff_id JOIN users u ON u.user_id = sp.user_id
-            WHERE ar.reported_at >= ? AND COALESCE(ar.entry_method, 'app') = 'app' AND ${HQ_BILLABLE_SQL}
+            WHERE ar.reported_at >= ? AND ${locationPhotoSql('ar')} AND COALESCE(ar.entry_method, 'app') = 'app' AND ${HQ_BILLABLE_SQL}
         ) GROUP BY company_id, user_id)
       GROUP BY company_id`).bind(d7, d30, d30),
     // 請求記録（#295）: 入金待ち・滞納の月数と、最後に記録した月
@@ -7914,7 +8058,7 @@ api.get('/hq/companies/:id', async (c) => {
     SELECT
       (SELECT COUNT(*) FROM daily_reports WHERE company_id = ?) AS total_reports,
       (SELECT COUNT(*) FROM shifts WHERE company_id = ?) AS total_shifts,
-      (SELECT COUNT(*) FROM attendance_reports WHERE company_id = ?) AS total_attendance,
+      (SELECT COUNT(*) FROM attendance_reports WHERE staff_id IN (SELECT staff_id FROM staff_profiles WHERE company_id = ?)) AS total_attendance,
       (SELECT COUNT(*) FROM projects WHERE company_id = ? AND status = 'active') AS active_projects`).bind(cid, cid, cid, cid).first()
   // 直近6か月の月別の推移（日報数・シフト数・稼働した人数。#517）
   const today = todayJST()

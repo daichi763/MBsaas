@@ -6,6 +6,11 @@
 //   注意: 現状のビルド設定（cloudflare-pages）は scheduled を出力しないため、定期削除の確認は
 //   vite.config.ts を @hono/vite-build/cloudflare-workers（output: '_worker.js'）にしたビルドで行う（別 PR で修正予定）
 // 実行: PERSIST=<保存先> node scripts/test-history.mjs
+// npm test は、前提のテストから同じ DB で順に流す（scripts/run-tests.mjs。#9980）:
+// run-tests: test-report-settings.mjs
+// run-tests: test-corrections.mjs
+// run-tests: test-notifications.mjs --var MAIL_ENABLED:true
+// run-tests: --var RETENTION_ENABLED:true --test-scheduled
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
@@ -75,7 +80,9 @@ const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)
   ok('申請 CSV: 絞り込み（状態・申請の種類）', ap.length > 1 && ap.slice(1).every(x => x[1] === '承認済み' && x[2] === '打刻漏れの追加'), ap.slice(1).map(x => [x[1], x[2]]))
   // 数式インジェクション対策
   const sh = (await admin.get(`/api/admin/shifts?from=${today}&to=${today}`)).data.shifts.find(s => s.staff_id === 1)
-  const inj = await st1.post('/api/staff/corrections', { shift_id: sh.shift_id, report_type: 'departure', kind: 'add', requested_at: `${today} 08:00`, reason: '=HYPERLINK("http://example.com","x")' })
+  // まだ来ていない日時は申請できない（0〜8時に流すと「今日の 8:00」は先の時刻になり 400 で落ちていた。#9980）ので、前日の 22:00 にする（稼働日の前日から受け付ける）
+  const yesterday = new Date(Date.now() + 9 * 3600 * 1000 - 86400000).toISOString().slice(0, 10)
+  const inj = await st1.post('/api/staff/corrections', { shift_id: sh.shift_id, report_type: 'departure', kind: 'add', requested_at: `${yesterday} 22:00`, reason: '=HYPERLINK("http://example.com","x")' })
   const all = parseCsv((await admin.get('/api/admin/corrections/export')).text)
   const row = all.find(x => x[0] === String(inj.data && inj.data.correction_id))
   ok('申請 CSV: 数式として実行される値の先頭に \' を付ける', inj.status === 200 && row && row[10].startsWith("'="), [inj.status, row && row[10]])

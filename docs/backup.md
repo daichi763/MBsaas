@@ -235,6 +235,7 @@ npx wrangler d1 export mbsaas-production --remote --env production --output back
 | 日付 | 使ったバックアップ | 確かめたこと | 結果 |
 |---|---|---|---|
 | 2026-11-03 | `d1/mbsaas-production-20261103-1731.sql.gz`（手動の実行で取ったもの） | SHA-256・表とトリガーの数・マイグレーションの記録・表ごとの行数・アプリの起動 | すべて一致・問題なし |
+| 2026-11-13 | ローカルのテスト用 DB（本番のデータは使わない。`scripts/restore-drill.mjs`） | `d1 export` → 壊す → 空の DB に流し込む（全体）・足りない行と違う行だけを戻す（一部）→ 全部の表の行数・中身のハッシュ・スキーマ | すべて一致（記録は [operations.md](operations.md) の 4.7） |
 
 ### 2026-11-03 の練習（Sprint 14。要件 #9642）
 

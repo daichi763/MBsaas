@@ -23,6 +23,7 @@ import { mdText, notifyCompanyAdmins, notifyShiftStaff } from './lib/staff-pay-n
 import { addDays, nowJST } from './lib/time'
 import { attachPremiums } from './lib/premium-pay'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
+import { can } from './lib/permissions'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket }
 type Variables = { user: any }
@@ -427,11 +428,11 @@ staffPayAdminApi.post('/pay-requests/:id{[0-9]+}/reject', async (c) => {
 staffPayAdminApi.get('/staff-pay/settings', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  return c.json({ staff_pay_visible: staffPayVisible(row?.settings_json), can_edit: u.role === 'company_admin' })
+  return c.json({ staff_pay_visible: staffPayVisible(row?.settings_json), can_edit: can(u, 'staff_pay.visible_setting') })
 })
 staffPayAdminApi.put('/staff-pay/settings', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
+  if (!can(u, 'staff_pay.visible_setting')) return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
   const b = await c.req.json().catch(() => ({} as any))
   if (typeof b.staff_pay_visible !== 'boolean') return c.json({ error: 'staff_pay_visible を true / false で指定してください' }, 400)
   await c.env.DB.prepare(`UPDATE companies SET settings_json = json_set(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END, '$.staff_pay_visible', json(?)) WHERE company_id = ?`)

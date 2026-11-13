@@ -198,9 +198,9 @@ if (DUMP) writeFileSync(DUMP, JSON.stringify(dump, null, 1))
 
 async function browserChecks() {
   const wait = ms => new Promise(r => setTimeout(r, ms))
-  const PORT = 9700 + Math.floor(Math.random() * 200)
+  const PORT = await (await import('./lib/chrome.mjs')).freePort()  // 空いているポート（#9980）
   const prof = mkdtempSync(join(tmpdir(), 'w23mn-chrome-'))
-  const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1280,900', '--no-first-run', 'about:blank'], { stdio: 'ignore' })
+  const chrome = await (await import('./lib/chrome.mjs')).launchChrome(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1280,900', '--no-first-run', 'about:blank'], { stdio: 'ignore' })
   let ws
   try {
     let list

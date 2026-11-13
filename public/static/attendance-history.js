@@ -29,23 +29,23 @@
         : (await axios.get('/api/admin/report-settings/logs', { params: { ...params(), limit: 300 } })).data
       rows = isEv ? d.events : d.logs
       total = d.total ?? rows.length; csvLimit = d.csv_limit || csvLimit
-    } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     const csvUrl = (isEv ? '/api/admin/corrections/events/export?' : '/api/admin/report-settings/logs/export?') + new URLSearchParams(params()).toString()
-    const tab = (k, l) => `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${S.tab === k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" onclick="histSet('tab', '${k}')">${l}</button>`
+    const tab = (k, l) => `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${S.tab === k ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-600'}" onclick="histSet('tab', '${k}')">${l}</button>`
     const onoff = (v) => v == null ? '－' : v ? 'ON' : 'OFF'
     // 同じ氏名のスタッフが一覧にいるときは、社員番号（なければスタッフID）を添える（#474）
     const ids = new Map()
     for (const x of rows) if (x.staff_id) { const set = ids.get(x.staff_name) || new Set(); set.add(x.staff_id); ids.set(x.staff_name, set) }
-    const who = (x) => esc(x.staff_name || '') + ((ids.get(x.staff_name) || new Set()).size > 1 ? ` <span class="text-gray-400">（${x.employee_number ? '社員番号 ' + esc(x.employee_number) : 'ID ' + Number(x.staff_id)}）</span>` : '')
+    const who = (x) => esc(x.staff_name || '') + ((ids.get(x.staff_name) || new Set()).size > 1 ? ` <span class="text-neutral-400">（${x.employee_number ? '社員番号 ' + esc(x.employee_number) : 'ID ' + Number(x.staff_id)}）</span>` : '')
     $app.innerHTML = `
       <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
-        <div><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-clock-rotate-left text-blue-600 mr-1"></i>履歴・CSV</h2>
-          <p class="text-xs text-gray-500 mt-1">打刻修正の操作（申請・再申請・承認・却下・取り消し）と、報告設定の変更の履歴です。終了した案件の履歴も表示します</p></div>
+        <div><h2 class="text-xl font-bold text-neutral-800"><i class="fas fa-clock-rotate-left text-primary-600 mr-1"></i>履歴・CSV</h2>
+          <p class="text-xs text-neutral-500 mt-1">打刻修正の操作（申請・再申請・承認・却下・取り消し）と、報告設定の変更の履歴です。終了した案件の履歴も表示します</p></div>
         <a class="btn btn-primary text-sm" href="${esc(csvUrl)}"><i class="fas fa-file-csv"></i>表示中の条件で CSV 出力</a>
       </div>
       <div class="flex gap-2 mb-3">${tab('events', '打刻修正の操作履歴')}${tab('settings', '報告設定の変更履歴')}</div>
       <details class="card p-3 mb-3" ${window.innerWidth >= 768 || Object.keys(params()).length ? 'open' : ''}>
-      <summary class="text-sm font-bold text-gray-700 cursor-pointer"><i class="fas fa-filter text-gray-400 mr-1"></i>絞り込み</summary>
+      <summary class="text-sm font-bold text-neutral-700 cursor-pointer"><i class="fas fa-filter text-neutral-400 mr-1"></i>絞り込み</summary>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 text-xs mt-2">
         <label>期間（から）<input type="date" class="inp text-sm" value="${S.from}" onchange="histSet('from', this.value)"></label>
         <label>期間（まで）<input type="date" class="inp text-sm" value="${S.to}" onchange="histSet('to', this.value)"></label>
@@ -56,24 +56,24 @@
         : `<label>操作<select class="inp text-sm" onchange="histSet('action', this.value)"><option value="">すべて</option>${Object.entries(ACTION).map(([k, l]) => `<option value="${k}" ${S.action === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label class="flex items-center gap-1 self-end pb-2"><input type="checkbox" ${S.exclude_migration === '1' ? 'checked' : ''} onchange="histSet('exclude_migration', this.checked ? '1' : '')">導入時の移行を除く</label>`}
       </div></details>
-      <p class="text-[11px] text-gray-400 mb-2">条件に合う履歴は ${total.toLocaleString()} 件です。画面には新しい順に最大 300 件を表示します（CSV は新しい順に最大 ${csvLimit.toLocaleString()} 件を、古い順に並べて出力します）</p>
-      ${total > csvLimit ? `<p class="text-xs text-red-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>CSV に入るのは新しい ${csvLimit.toLocaleString()} 件だけです。期間を区切って、複数回に分けて出力してください</p>` : ''}
+      <p class="text-2xs text-neutral-400 mb-2">条件に合う履歴は ${total.toLocaleString()} 件です。画面には新しい順に最大 300 件を表示します（CSV は新しい順に最大 ${csvLimit.toLocaleString()} 件を、古い順に並べて出力します）</p>
+      ${total > csvLimit ? `<p class="text-xs text-danger-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>CSV に入るのは新しい ${csvLimit.toLocaleString()} 件だけです。期間を区切って、複数回に分けて出力してください</p>` : ''}
       ${isEv ? `
       <div class="hidden md:block card overflow-x-auto"><table class="tbl"><thead><tr><th>日時</th><th>操作</th><th>操作した人</th><th>申請</th><th>案件</th><th>スタッフ</th><th>報告</th><th>内容</th></tr></thead>
         <tbody>${rows.map(r => `<tr><td class="text-xs whitespace-nowrap">${esc(fmtAt(r.created_at))}</td><td class="whitespace-nowrap">${EVENT[r.event] || esc(r.event)}</td><td class="text-xs whitespace-nowrap">${esc(r.actor_name || '')}</td>
-          <td class="text-xs whitespace-nowrap"><a class="text-blue-600 hover:underline" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${KIND[r.kind] || ''}</td><td class="text-xs">${esc(r.project_name || '')}</td>
-          <td class="text-xs whitespace-nowrap">${who(r)}</td><td class="text-xs whitespace-nowrap">${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</td><td class="text-xs">${esc(r.summary || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="text-center text-gray-400 py-6">履歴はありません</td></tr>'}</tbody></table></div>
-      <div class="md:hidden space-y-2">${rows.map(r => `<div class="card p-3 text-xs"><p><b>${EVENT[r.event] || esc(r.event)}</b> ・${esc(r.actor_name || '')} <span class="text-gray-400">${esc(fmtAt(r.created_at))}</span></p>
-        <p class="mt-0.5"><a class="text-blue-600" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${who(r)} ${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</p>
-        <p class="text-gray-500 mt-0.5 break-words">${esc(r.summary || '')}</p></div>`).join('') || '<p class="text-center text-gray-400 py-6">履歴はありません</p>'}</div>`
+          <td class="text-xs whitespace-nowrap"><a class="text-primary-600 hover:underline" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${KIND[r.kind] || ''}</td><td class="text-xs">${esc(r.project_name || '')}</td>
+          <td class="text-xs whitespace-nowrap">${who(r)}</td><td class="text-xs whitespace-nowrap">${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</td><td class="text-xs">${esc(r.summary || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="text-center text-neutral-400 py-6">履歴はありません</td></tr>'}</tbody></table></div>
+      <div class="md:hidden space-y-2">${rows.map(r => `<div class="card p-3 text-xs"><p><b>${EVENT[r.event] || esc(r.event)}</b> ・${esc(r.actor_name || '')} <span class="text-neutral-400">${esc(fmtAt(r.created_at))}</span></p>
+        <p class="mt-0.5"><a class="text-primary-600" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${who(r)} ${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</p>
+        <p class="text-neutral-500 mt-0.5 break-words">${esc(r.summary || '')}</p></div>`).join('') || '<p class="text-center text-neutral-400 py-6">履歴はありません</p>'}</div>`
       : `
       <div class="hidden md:block card overflow-x-auto"><table class="tbl"><thead><tr><th>日時</th><th>案件</th><th>対象</th><th>報告</th><th>変更</th><th>操作</th><th>変更者</th></tr></thead>
-        <tbody>${rows.map(l => `<tr><td class="text-xs whitespace-nowrap">${esc(fmtAt(l.created_at))}</td><td class="text-xs">${esc(l.project_name || '')}${l.project_status && l.project_status !== 'active' ? ' <span class="badge badge-gray text-[10px]">終了</span>' : ''}</td>
-          <td class="text-xs">${l.staff_id ? who(l) : '<span class="badge badge-blue text-[10px]">標準設定</span>'}</td><td class="text-xs whitespace-nowrap">${LABEL[l.report_type] || esc(l.report_type)}</td>
-          <td class="text-xs whitespace-nowrap">${onoff(l.old_enabled)} → <b>${onoff(l.new_enabled)}</b></td><td class="text-xs">${ACTION[l.action] || esc(l.action)}${l.detail ? `<span class="block text-[11px] text-gray-500">${esc(l.detail)}</span>` : ''}</td>
-          <td class="text-xs whitespace-nowrap">${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))}</td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-6">履歴はありません</td></tr>'}</tbody></table></div>
+        <tbody>${rows.map(l => `<tr><td class="text-xs whitespace-nowrap">${esc(fmtAt(l.created_at))}</td><td class="text-xs">${esc(l.project_name || '')}${l.project_status && l.project_status !== 'active' ? ' <span class="badge badge-gray text-3xs">終了</span>' : ''}</td>
+          <td class="text-xs">${l.staff_id ? who(l) : '<span class="badge badge-blue text-3xs">標準設定</span>'}</td><td class="text-xs whitespace-nowrap">${LABEL[l.report_type] || esc(l.report_type)}</td>
+          <td class="text-xs whitespace-nowrap">${onoff(l.old_enabled)} → <b>${onoff(l.new_enabled)}</b></td><td class="text-xs">${ACTION[l.action] || esc(l.action)}${l.detail ? `<span class="block text-2xs text-neutral-500">${esc(l.detail)}</span>` : ''}</td>
+          <td class="text-xs whitespace-nowrap">${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))}</td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-neutral-400 py-6">履歴はありません</td></tr>'}</tbody></table></div>
       <div class="md:hidden space-y-2">${rows.map(l => `<div class="card p-3 text-xs"><p><b>${l.staff_id ? who(l) : '標準設定'}</b> ・${LABEL[l.report_type] || ''} ${onoff(l.old_enabled)} → <b>${onoff(l.new_enabled)}</b></p>
-        <p class="text-gray-500 mt-0.5">${esc(l.project_name || '')} ・${ACTION[l.action] || ''} ・${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))} ・${esc(fmtAt(l.created_at))}</p>${l.detail ? `<p class="text-gray-500 mt-0.5">${esc(l.detail)}</p>` : ''}</div>`).join('') || '<p class="text-center text-gray-400 py-6">履歴はありません</p>'}</div>`}`
+        <p class="text-neutral-500 mt-0.5">${esc(l.project_name || '')} ・${ACTION[l.action] || ''} ・${esc(l.changed_by_name || (l.action === 'migration' ? 'システム' : ''))} ・${esc(fmtAt(l.created_at))}</p>${l.detail ? `<p class="text-neutral-500 mt-0.5">${esc(l.detail)}</p>` : ''}</div>`).join('') || '<p class="text-center text-neutral-400 py-6">履歴はありません</p>'}</div>`}`
   }
   window.histSet = function (k, v) { S[k] = v; renderAttendanceHistory() }
 })()

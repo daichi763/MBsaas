@@ -226,8 +226,9 @@ ${roleIds.map(r => `INSERT INTO recruit_application_items (application_id, slot_
 // (2) 所属区分の予約の予算・後ろの処理
 // =========================================================
 const daily = async () => { const r = await fetch(`${BASE}/__scheduled?cron=${encodeURIComponent('0 18 * * *')}`); await r.text(); return r.status }
-const runsSince = async (id) => sql(`SELECT run_id, job, status, result_json, error_message FROM cron_runs WHERE run_id > ${id} ORDER BY run_id`)
-const lastRun = async () => (await sql('SELECT COALESCE(MAX(run_id), 0) AS n FROM cron_runs'))[0].n
+// 何もしなかった実行は直前の idle の行を上書きする（run_id は前のまま。#9976）ので、新しい行と、この時刻より後に始まった行を合わせて読む
+const runsSince = async (m) => sql(`SELECT run_id, job, status, result_json, error_message FROM cron_runs WHERE run_id > ${m.id} OR started_at >= '${m.at}' ORDER BY run_id`)
+const lastRun = async () => ({ id: (await sql('SELECT COALESCE(MAX(run_id), 0) AS n FROM cron_runs'))[0].n, at: new Date().toISOString() })
 {
   const old = addDays(today, -40), recent = addDays(today, -5)
   const sid = staff[6]

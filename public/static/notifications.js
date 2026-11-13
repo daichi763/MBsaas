@@ -55,11 +55,11 @@
     INBOX.unread_by_kind = d.unread_by_kind || {}
   }
   const inboxItem = (n) => `
-        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-blue-200'}" data-action="notifOpen" data-id="${n.notification_id}" data-link="${esc(n.link || '')}">
-          <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>'}<span class="badge badge-gray text-[10px]">${esc(kindLabel(n.kind))}</span>${processedBadge(n)}
-            <span class="text-[11px] text-gray-400 ml-auto">${esc(fmtAt(n.created_at))}</span></div>
-          <p class="font-bold text-gray-800 mt-1 text-sm">${esc(n.title)}</p>
-          <p class="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
+        <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-primary-200'}" data-action="notifOpen" data-id="${n.notification_id}" data-link="${esc(n.link || '')}">
+          <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-primary-500 shrink-0"></span>'}<span class="badge badge-gray text-3xs">${esc(kindLabel(n.kind))}</span>${processedBadge(n)}
+            <span class="text-2xs text-neutral-400 ml-auto">${esc(fmtAt(n.created_at))}</span></div>
+          <p class="font-bold text-neutral-800 mt-1 text-sm">${esc(n.title)}</p>
+          <p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
         </button>`
   function drawInbox() {
     const kinds = [...Object.keys(KIND), ...Object.keys(INBOX.unread_by_kind).filter(k => !KIND[k])]
@@ -70,27 +70,27 @@
     $app.innerHTML = `
       ${notifTabs('inbox')}
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-bell text-blue-600 mr-1"></i>通知 ${INBOX.unread_total ? `<span class="badge badge-red">${INBOX.unread_total}件 未読</span>` : ''}</h2>
+        <h2 class="text-xl font-bold text-neutral-800"><i class="fas fa-bell text-primary-600 mr-1"></i>通知 ${INBOX.unread_total ? `<span class="badge badge-red">${INBOX.unread_total}件 未読</span>` : ''}</h2>
         ${INBOX.unread_total ? '<button class="btn btn-outline text-sm" data-action="notifReadAll">すべて既読にする</button>' : ''}
       </div>
       <div class="flex flex-wrap items-center gap-2 mb-3">
-        <label class="flex items-center gap-1 text-sm text-gray-600"><input type="checkbox" id="inbox-unread" ${INBOX.unread ? 'checked' : ''}>未読のみ</label>
-        <select id="inbox-kind" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5" aria-label="種類">
+        <label class="flex items-center gap-1 text-sm text-neutral-600"><input type="checkbox" id="inbox-unread" ${INBOX.unread ? 'checked' : ''}>未読のみ</label>
+        <select id="inbox-kind" class="text-sm border border-neutral-200 rounded-lg px-2 py-1.5" aria-label="種類">
           <option value="">すべての種類</option>
           ${kinds.map(k => `<option value="${esc(k)}" ${INBOX.kind === k ? 'selected' : ''}>${esc(KIND[k] || `その他（${k}）`)}${INBOX.unread_by_kind[k] ? `（未読${Number(INBOX.unread_by_kind[k])}）` : ''}</option>`).join('')}
         </select>
-        ${filtered ? '<button class="text-xs text-blue-600 hover:underline" data-action="inboxClear">絞り込みを解除</button>' : ''}
+        ${filtered ? '<button class="text-xs text-primary-600 hover:underline" data-action="inboxClear">絞り込みを解除</button>' : ''}
       </div>
       ${!INBOX.unread && unreadInView > INBOX.rows.filter(n => !n.read_at).length && INBOX.hasMore
-        ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-3">表示している${shown}件より古い未読があります。「未読のみ」にすると、未読だけをまとめて見られます。</p>` : ''}
-      <div class="space-y-2">${INBOX.rows.map(inboxItem).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う通知はありません' : '通知はありません'}</p>`}</div>
+        ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg px-3 py-2 mb-3">表示している${shown}件より古い未読があります。「未読のみ」にすると、未読だけをまとめて見られます。</p>` : ''}
+      <div class="space-y-2">${INBOX.rows.map(inboxItem).join('') || `<p class="text-center text-neutral-400 py-10">${filtered ? '条件に合う通知はありません' : '通知はありません'}</p>`}</div>
       ${INBOX.hasMore ? '<div class="text-center mt-3"><button class="btn btn-outline text-sm" data-action="inboxMore">さらに読み込む</button></div>' : ''}`
     document.getElementById('inbox-unread').addEventListener('change', e => { INBOX.unread = e.target.checked; renderNotificationsInbox() })
     document.getElementById('inbox-kind').addEventListener('change', e => { INBOX.kind = e.target.value; renderNotificationsInbox() })
   }
   window.renderNotificationsInbox = async function () {
     loading()
-    try { await loadInbox(false) } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    try { await loadInbox(false) } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     drawInbox()
     window.refreshNotifBadge()
   }
@@ -102,7 +102,7 @@
   // 承認依頼のうち、ほかの管理者が処理した・取り消された申請（#189）
   const DONE = { approved: '承認', rejected: '却下', cancelled: '取り消し' }
   const processedBadge = (n) => n.kind === 'correction_submitted' && n.correction_status && n.correction_status !== 'pending'
-    ? `<span class="badge badge-green text-[10px]">処理済み（${DONE[n.correction_status] || esc(n.correction_status)}${n.correction_decided_by && n.correction_status !== 'cancelled' ? ': ' + esc(n.correction_decided_by) : ''}）</span>` : ''
+    ? `<span class="badge badge-green text-3xs">処理済み（${DONE[n.correction_status] || esc(n.correction_status)}${n.correction_decided_by && n.correction_status !== 'cancelled' ? ': ' + esc(n.correction_decided_by) : ''}）</span>` : ''
   delegate('notifOpen', el => window.notifOpen(Number(el.dataset.id), el.dataset.link || ''))
   window.notifOpen = async function (id, link) {
     try { await axios.post(`/api/admin/notifications/${id}/read`) } catch (e) { }
@@ -119,25 +119,25 @@
   async function renderNotifyPrefs() {
     loading()
     let d
-    try { d = (await axios.get('/api/admin/notification-prefs')).data } catch (e) { $app.innerHTML = `${notifTabs('prefs')}<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    try { d = (await axios.get('/api/admin/notification-prefs')).data } catch (e) { $app.innerHTML = `${notifTabs('prefs')}<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     const row = (g) => {
       const mode = !g.email ? 'off' : g.digest ? 'digest' : 'now'
       const opt = (v, l) => `<option value="${v}" ${mode === v ? 'selected' : ''}>${l}</option>`
       const ctl = g.digest_supported
-        ? `<select class="notify-pref text-sm border border-gray-200 rounded-lg px-2 py-1.5" data-key="${esc(g.key)}" aria-label="${esc(g.label)}のメール">
+        ? `<select class="notify-pref text-sm border border-neutral-200 rounded-lg px-2 py-1.5" data-key="${esc(g.key)}" aria-label="${esc(g.label)}のメール">
             ${opt('now', 'メールですぐに知らせる')}${opt('digest', `メールは1日1回まとめて（${Number(d.digest_hour)}時ごろ・承認待ちの件数）`)}${opt('off', 'メールは送らない')}</select>`
-        : `<label class="flex items-center gap-2 text-sm text-gray-700 whitespace-nowrap"><input type="checkbox" class="notify-pref w-4 h-4" data-key="${esc(g.key)}" ${g.email ? 'checked' : ''}>メールでも知らせる</label>`
+        : `<label class="flex items-center gap-2 text-sm text-neutral-700 whitespace-nowrap"><input type="checkbox" class="notify-pref w-4 h-4" data-key="${esc(g.key)}" ${g.email ? 'checked' : ''}>メールでも知らせる</label>`
       return `<div class="py-3 flex flex-wrap items-center gap-3">
-          <div class="flex-1 min-w-[16rem]"><p class="font-bold text-gray-800 text-sm">${esc(g.label)}</p>
-            <p class="text-xs text-gray-400">${esc(g.desc)}${g.email_default != null ? `（既定: ${g.email_default ? 'メールあり' : 'メールなし'}）` : ''}</p></div>
+          <div class="flex-1 min-w-[16rem]"><p class="font-bold text-neutral-800 text-sm">${esc(g.label)}</p>
+            <p class="text-xs text-neutral-400">${esc(g.desc)}${g.email_default != null ? `（既定: ${g.email_default ? 'メールあり' : 'メールなし'}）` : ''}</p></div>
           <div>${ctl}</div></div>`
     }
     $app.innerHTML = `
       ${notifTabs('prefs')}
-      <h2 class="text-xl font-bold text-gray-800 mb-1"><i class="fas fa-sliders text-blue-600 mr-1"></i>通知の受け取り設定</h2>
-      <p class="text-xs text-gray-500 mb-3">アプリ内の通知（受信箱）には、設定によらずすべて届きます。ここでは自分あてのメールを選べます。
-        ${d.has_email ? '' : '<span class="text-amber-700">メールアドレスが登録されていないため、メールは届きません（アカウントの設定で登録できます）。</span>'}</p>
-      <div class="card p-4"><div class="divide-y divide-gray-100">${(d.groups || []).map(row).join('')}</div>
+      <h2 class="text-xl font-bold text-neutral-800 mb-1"><i class="fas fa-sliders text-primary-600 mr-1"></i>通知の受け取り設定</h2>
+      <p class="text-xs text-neutral-500 mb-3">アプリ内の通知（受信箱）には、設定によらずすべて届きます。ここでは自分あてのメールを選べます。
+        ${d.has_email ? '' : '<span class="text-warning-700">メールアドレスが登録されていないため、メールは届きません（アカウントの設定で登録できます）。</span>'}</p>
+      <div class="card p-4"><div class="divide-y divide-neutral-100">${(d.groups || []).map(row).join('')}</div>
         <button class="btn btn-primary mt-3" data-action="notifyPrefsSave"><i class="fas fa-check"></i>保存する</button></div>
       ${isCompanyAdmin() ? '<div class="card p-4 mt-3" id="admin-push"></div>' : ''}`
     drawAdminPush()
@@ -146,7 +146,7 @@
   // 会社管理者だけ。ログインの失敗が続いたときに、管理画面を開いていなくてもこの端末の通知で知らせる（購読は /api/admin/push/*。Service Worker は scope /admin）
   const ADMIN_PUSH_SCOPE = '/admin'
   const PUSH_SUPPORTED = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
-  const isCompanyAdmin = () => typeof ME !== 'undefined' && !!ME && ME.role === 'company_admin'
+  const isCompanyAdmin = () => hasPerm('admin_push.device')
   const b64urlToBytes = (s) => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); const bin = atob(t + '='.repeat((4 - t.length % 4) % 4)); return Uint8Array.from(bin, ch => ch.charCodeAt(0)) }
   const bytesToB64url = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   async function adminPushSubscription() {
@@ -155,25 +155,25 @@
   }
   async function drawAdminPush() {
     const box = document.getElementById('admin-push'); if (!box) return
-    const head = '<p class="font-bold text-gray-800 text-sm mb-1"><i class="fas fa-mobile-screen text-blue-600 mr-1"></i>プッシュ通知（この端末）</p>'
+    const head = '<p class="font-bold text-neutral-800 text-sm mb-1"><i class="fas fa-mobile-screen text-primary-600 mr-1"></i>プッシュ通知（この端末）</p>'
     const note = (cls, icon, text) => `<p class="text-sm ${cls}"><i class="fas ${icon} mr-1"></i>${text}</p>`
-    if (!PUSH_SUPPORTED) { box.innerHTML = head + note('text-gray-500', 'fa-circle-info', 'このブラウザはプッシュ通知に対応していません。通知は受信箱で確認できます。'); return }
+    if (!PUSH_SUPPORTED) { box.innerHTML = head + note('text-neutral-500', 'fa-circle-info', 'このブラウザはプッシュ通知に対応していません。通知は受信箱で確認できます。'); return }
     const sub = await adminPushSubscription()
     let cfg
-    try { cfg = (await axios.get('/api/admin/push/config', { params: sub ? { endpoint: sub.endpoint } : {} })).data } catch (e) { box.innerHTML = head + note('text-red-600', 'fa-triangle-exclamation', '設定を読み込めませんでした'); return }
+    try { cfg = (await axios.get('/api/admin/push/config', { params: sub ? { endpoint: sub.endpoint } : {} })).data } catch (e) { box.innerHTML = head + note('text-danger-600', 'fa-triangle-exclamation', '設定を読み込めませんでした'); return }
     if (!document.getElementById('admin-push')) return
     let body
-    if (!cfg.available) body = note('text-amber-700', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
-    else if (Notification.permission === 'denied') body = note('text-red-600', 'fa-ban', '通知がブロックされています。ブラウザのサイトの設定で、このサイトの通知を許可してから開き直してください。')
+    if (!cfg.available) body = note('text-warning-700', 'fa-triangle-exclamation', esc(cfg.error || 'プッシュ通知の準備ができていません'))
+    else if (Notification.permission === 'denied') body = note('text-danger-600', 'fa-ban', '通知がブロックされています。ブラウザのサイトの設定で、このサイトの通知を許可してから開き直してください。')
     else if (sub && cfg.subscribed) {
-      body = `${note('text-green-700', 'fa-circle-check', 'この端末で、ログインの失敗が続いたときの通知を受け取ります')}
-        ${cfg.last_error ? `<p class="text-xs text-amber-700 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
+      body = `${note('text-success-2-700', 'fa-circle-check', 'この端末で、ログインの失敗が続いたときの通知を受け取ります')}
+        ${cfg.last_error ? `<p class="text-xs text-warning-700 mt-1">前回の送信に失敗しました（${esc(cfg.last_error)}）。届かないときは「受け取らない」にしてから、もう一度「受け取る」を押してください</p>` : ''}
         <div class="flex gap-2 mt-2 flex-wrap">
           <button class="btn btn-outline text-sm" data-action="adminPushTest"><i class="fas fa-paper-plane"></i>テスト通知を送る</button>
           <button class="btn btn-outline text-sm" data-action="adminPushDisable"><i class="fas fa-bell-slash"></i>受け取らない</button>
         </div>`
     } else {
-      body = `<p class="text-xs text-gray-500 mb-2">同じ ID でログインの失敗が続いたとき（5回。同じ ID は1時間に1回まで）に、管理画面を開いていなくても、この端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
+      body = `<p class="text-xs text-neutral-500 mb-2">同じ ID でログインの失敗が続いたとき（5回。同じ ID は1時間に1回まで）に、管理画面を開いていなくても、この端末の通知で知らせます。${cfg.devices ? `（ほかの端末 ${Number(cfg.devices)}台で受け取り中）` : ''}</p>
         <button class="btn btn-primary text-sm" data-action="adminPushEnable"><i class="fas fa-bell"></i>この端末でプッシュ通知を受け取る</button>`
     }
     box.innerHTML = head + body
@@ -248,8 +248,8 @@
 
   function mailHeader() {
     return `
-      <a href="#corrections" class="text-sm text-blue-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>打刻修正承認</a>
-      <h2 class="text-xl font-bold text-gray-800 mt-2"><i class="fas fa-envelope text-blue-600 mr-1"></i>メール送信状況</h2>
+      <a href="#corrections" class="text-sm text-primary-600 hover:underline"><i class="fas fa-arrow-left mr-1"></i>打刻修正承認</a>
+      <h2 class="text-xl font-bold text-neutral-800 mt-2"><i class="fas fa-envelope text-primary-600 mr-1"></i>メール送信状況</h2>
       <div class="flex gap-1 mt-2 mb-3 overflow-x-auto">${VIEWS.map(([k, l]) => `<button class="btn ${MAIL.view === k ? 'btn-primary' : 'btn-outline'} text-xs whitespace-nowrap" data-action="mailView" data-view="${k}">${l}</button>`).join('')}</div>`
   }
   delegate('mailView', el => { MAIL.view = el.dataset.view; renderCorrectionEmails() })
@@ -277,25 +277,25 @@
     return d
   }
   async function renderDeliveries(more) {
-    let d; try { d = await loadDeliveries(more) } catch (e) { $app.innerHTML = mailHeader() + `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    let d; try { d = await loadDeliveries(more) } catch (e) { $app.innerHTML = mailHeader() + `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     const n = d.counts || {}
-    const tab = (k, l) => `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${MAIL.status === k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" data-action="mailTab" data-status="${k}">${l}${n[k] ? ` <span class="text-xs opacity-80">${n[k]}</span>` : ''}</button>`
+    const tab = (k, l) => `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${MAIL.status === k ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-600'}" data-action="mailTab" data-status="${k}">${l}${n[k] ? ` <span class="text-xs opacity-80">${n[k]}</span>` : ''}</button>`
     const rows = ROWS
     const rowHtml = (r) => `<tr><td>${st(r)}</td><td class="text-xs whitespace-nowrap">${EVENT[r.event] || esc(r.event)}・${KIND[r.kind] || ''}</td>
-          <td class="text-xs">${esc(r.recipient_name || '')}<br><span class="text-gray-400">${esc(r.to_email || '')}</span></td>
-          <td class="text-xs"><a class="text-blue-600 hover:underline" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${esc(r.staff_name || '')} ${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</td>
-          <td class="text-xs ${r.status === 'skipped' ? 'text-gray-500' : 'text-red-600'}">${esc(errText(r.error))}</td><td class="text-xs">${r.attempts}回</td>
-          <td class="text-xs whitespace-nowrap">${esc(fmtAt(r.last_attempt_at))}${r.last_attempt_by_name ? '<br><span class="text-gray-400">再送: ' + esc(r.last_attempt_by_name) + '</span>' : ''}</td><td>${actionBtn(r, 'whitespace-nowrap')}</td></tr>`
+          <td class="text-xs">${esc(r.recipient_name || '')}<br><span class="text-neutral-400">${esc(r.to_email || '')}</span></td>
+          <td class="text-xs"><a class="text-primary-600 hover:underline" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${esc(r.staff_name || '')} ${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</td>
+          <td class="text-xs ${r.status === 'skipped' ? 'text-neutral-500' : 'text-danger-600'}">${esc(errText(r.error))}</td><td class="text-xs">${r.attempts}回</td>
+          <td class="text-xs whitespace-nowrap">${esc(fmtAt(r.last_attempt_at))}${r.last_attempt_by_name ? '<br><span class="text-neutral-400">再送: ' + esc(r.last_attempt_by_name) + '</span>' : ''}</td><td>${actionBtn(r, 'whitespace-nowrap')}</td></tr>`
     const cardHtml = (r) => `<div class="card p-3">
-        <div class="flex items-center justify-between gap-2">${st(r)}<span class="text-[11px] text-gray-400">${r.attempts}回 ・${esc(fmtAt(r.last_attempt_at))}</span></div>
-        <p class="text-sm font-bold mt-1">${esc(r.recipient_name || '')} <span class="text-xs font-normal text-gray-500">${EVENT[r.event] || ''}・${KIND[r.kind] || ''}</span></p>
-        <p class="text-xs text-gray-500 break-all">${esc(r.to_email || '')}</p>
-        <p class="text-xs mt-1"><a class="text-blue-600" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${esc(r.staff_name || '')} ${LABEL[r.report_type] || ''}</p>
-        ${r.error ? `<p class="text-xs ${r.status === 'skipped' ? 'text-gray-500' : 'text-red-600'} mt-1">${esc(errText(r.error))}</p>` : ''}
+        <div class="flex items-center justify-between gap-2">${st(r)}<span class="text-2xs text-neutral-400">${r.attempts}回 ・${esc(fmtAt(r.last_attempt_at))}</span></div>
+        <p class="text-sm font-bold mt-1">${esc(r.recipient_name || '')} <span class="text-xs font-normal text-neutral-500">${EVENT[r.event] || ''}・${KIND[r.kind] || ''}</span></p>
+        <p class="text-xs text-neutral-500 break-all">${esc(r.to_email || '')}</p>
+        <p class="text-xs mt-1"><a class="text-primary-600" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${esc(r.staff_name || '')} ${LABEL[r.report_type] || ''}</p>
+        ${r.error ? `<p class="text-xs ${r.status === 'skipped' ? 'text-neutral-500' : 'text-danger-600'} mt-1">${esc(errText(r.error))}</p>` : ''}
         ${resendable(r) ? `<div class="mt-2">${actionBtn(r, 'w-full')}</div>` : ''}</div>`
     $app.innerHTML = mailHeader() + `
       <div class="flex items-center justify-between flex-wrap gap-2">
-        <p class="text-xs text-gray-500">打刻修正申請の通知メールの送信結果です。送信に失敗しても申請・承認は保存されています。失敗したメールは再送できます（再送の結果も記録します）。宛先は送るときのアドレスです（アドレスを直した後に再送すると、直したアドレスへ送ります）</p>
+        <p class="text-xs text-neutral-500">打刻修正申請の通知メールの送信結果です。送信に失敗しても申請・承認は保存されています。失敗したメールは再送できます（再送の結果も記録します）。宛先は送るときのアドレスです（アドレスを直した後に再送すると、直したアドレスへ送ります）</p>
         <div class="flex gap-2">
           ${n.resendable ? `<button class="btn btn-primary text-sm" data-action="mailResendAll" data-count="${Number(n.resendable)}"><i class="fas fa-rotate"></i>送信失敗をまとめて再送（${Number(n.resendable)}件）</button>` : ''}
           <a class="btn btn-outline text-sm" href="/api/admin/notification-emails/export${['all', 'stalled'].includes(MAIL.status) ? '' : '?status=' + MAIL.status}"><i class="fas fa-file-csv"></i>CSV 出力</a>
@@ -303,12 +303,12 @@
       </div>
       <div id="mail-bulk-result"></div>
       <div class="flex gap-2 overflow-x-auto pb-1 my-3">${tab('failed', '送信失敗')}${tab('stalled', '止まった送信')}${tab('pending', '送信中')}${tab('sent', '送信済み')}${tab('skipped', '対応不要')}${tab('all', 'すべて')}</div>
-      ${MAIL.status === 'stalled' || (MAIL.status === 'pending' && n.stalled) ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-3">送信中のまま${Number(d.stalled_minutes) || 10}分以上たったメールは、送信の処理が途中で止まったとみなし、再送できます。</p>` : ''}
-      ${MAIL.status === 'skipped' ? '<p class="text-xs text-gray-500 mb-3">処理済み・取り消し済みの申請の承認依頼と、停止中の宛先あてのメールです。送る必要がないため再送しません。</p>' : ''}
+      ${MAIL.status === 'stalled' || (MAIL.status === 'pending' && n.stalled) ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg px-3 py-2 mb-3">送信中のまま${Number(d.stalled_minutes) || 10}分以上たったメールは、送信の処理が途中で止まったとみなし、再送できます。</p>` : ''}
+      ${MAIL.status === 'skipped' ? '<p class="text-xs text-neutral-500 mb-3">処理済み・取り消し済みの申請の承認依頼と、停止中の宛先あてのメールです。送る必要がないため再送しません。</p>' : ''}
       <div class="hidden md:block card overflow-x-auto"><table class="tbl">
         <thead><tr><th>状態</th><th>通知</th><th>宛先</th><th>申請</th><th>理由</th><th>試行</th><th>最終送信</th><th></th></tr></thead>
-        <tbody>${rows.map(rowHtml).join('') || '<tr><td colspan="8" class="text-center text-gray-400 py-6">該当するメールはありません</td></tr>'}</tbody></table></div>
-      <div class="md:hidden space-y-2">${rows.map(cardHtml).join('') || '<p class="text-center text-gray-400 py-6">該当するメールはありません</p>'}</div>
+        <tbody>${rows.map(rowHtml).join('') || '<tr><td colspan="8" class="text-center text-neutral-400 py-6">該当するメールはありません</td></tr>'}</tbody></table></div>
+      <div class="md:hidden space-y-2">${rows.map(cardHtml).join('') || '<p class="text-center text-neutral-400 py-6">該当するメールはありません</p>'}</div>
       ${HAS_MORE ? '<div class="text-center mt-3"><button class="btn btn-outline text-sm" data-action="mailMore">さらに読み込む</button></div>' : ''}`
   }
   delegate('mailTab', el => { MAIL.status = el.dataset.status; renderCorrectionEmails() })
@@ -335,7 +335,7 @@
         const { data } = await axios.post('/api/admin/notification-emails/resend-failed', { after })
         total.sent += data.sent; total.failed += data.failed; total.skipped += data.skipped
         for (const [k, v] of Object.entries(data.reasons || {})) total.reasons[k] = (total.reasons[k] || 0) + v
-        if (box) box.innerHTML = `<p class="text-xs text-gray-600 mt-2"><span class="spin mr-1"></span>再送しています… 成功 ${total.sent}件・失敗 ${total.failed}件（残り ${Number(data.remaining)}件）</p>`
+        if (box) box.innerHTML = `<p class="text-xs text-neutral-600 mt-2"><span class="spin mr-1"></span>再送しています… 成功 ${total.sent}件・失敗 ${total.failed}件（残り ${Number(data.remaining)}件）</p>`
         if (data.done || data.next_after === after || ++guard > 200) break
         after = data.next_after
       }
@@ -343,8 +343,8 @@
     await renderDeliveries()
     const box2 = document.getElementById('mail-bulk-result')
     const reasons = Object.entries(total.reasons).map(([k, v]) => `${esc(errText(k))} ${v}件`).join(' ／ ')
-    if (box2) box2.innerHTML = `<div class="card p-3 mt-2 text-sm ${total.failed ? 'border-red-200' : ''}">まとめて再送しました: 成功 <b>${total.sent}</b>件・失敗 <b class="${total.failed ? 'text-red-600' : ''}">${total.failed}</b>件・対応不要 ${total.skipped}件
-      ${reasons ? `<p class="text-xs text-red-600 mt-1">失敗の理由: ${reasons}</p>` : ''}</div>`
+    if (box2) box2.innerHTML = `<div class="card p-3 mt-2 text-sm ${total.failed ? 'border-danger-200' : ''}">まとめて再送しました: 成功 <b>${total.sent}</b>件・失敗 <b class="${total.failed ? 'text-danger-600' : ''}">${total.failed}</b>件・対応不要 ${total.skipped}件
+      ${reasons ? `<p class="text-xs text-danger-600 mt-1">失敗の理由: ${reasons}</p>` : ''}</div>`
   }))
 
   // ---- メールの記録（email_logs）----
@@ -353,25 +353,25 @@
     let d
     try {
       d = (await axios.get('/api/admin/email-logs', { params: { ...(MAIL.logStatus ? { status: MAIL.logStatus } : {}), ...(MAIL.logType ? { type: MAIL.logType } : {}), ...(last ? { before: last } : {}) } })).data
-    } catch (e) { $app.innerHTML = mailHeader() + `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    } catch (e) { $app.innerHTML = mailHeader() + `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     ROWS = more ? ROWS.concat(d.logs) : d.logs
     HAS_MORE = !!d.has_more
     const badge = (s) => { const [l, c] = LOG_STATUS[s] || [s, 'badge-gray']; return `<span class="badge ${c} whitespace-nowrap">${esc(l)}</span>` }
     $app.innerHTML = mailHeader() + `
-      <p class="text-xs text-gray-500 mb-3">お知らせ・打刻修正の通知・パスワード再設定などのメールの送信記録です。「配信済み」「不達」「迷惑メール報告」は、送信サービスから届いた結果です。ほかの会社に登録されたアドレス（連携スタッフの所属元）は伏せています</p>
+      <p class="text-xs text-neutral-500 mb-3">お知らせ・打刻修正の通知・パスワード再設定などのメールの送信記録です。「配信済み」「不達」「迷惑メール報告」は、送信サービスから届いた結果です。ほかの会社に登録されたアドレス（連携スタッフの所属元）は伏せています</p>
       <div class="flex flex-wrap gap-2 mb-3">
-        <select id="ml-status" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5" aria-label="状態">
+        <select id="ml-status" class="text-sm border border-neutral-200 rounded-lg px-2 py-1.5" aria-label="状態">
           ${[['', 'すべての状態'], ['failed', '届かなかったもの（失敗・不達・迷惑メール報告）'], ['sent', '送信済み'], ['delivered', '配信済み']].map(([v, l]) => `<option value="${v}" ${MAIL.logStatus === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
-        <select id="ml-type" class="text-sm border border-gray-200 rounded-lg px-2 py-1.5" aria-label="種類">
+        <select id="ml-type" class="text-sm border border-neutral-200 rounded-lg px-2 py-1.5" aria-label="種類">
           <option value="">すべての種類</option>${(d.types || []).map(t => `<option value="${esc(t)}" ${MAIL.logType === t ? 'selected' : ''}>${esc(TYPE_LABEL[t] || t)}</option>`).join('')}
         </select>
       </div>
       <div class="space-y-2">${ROWS.map(r => `<div class="card p-3">
-        <div class="flex items-center gap-2 flex-wrap">${badge(r.status)}<span class="badge badge-gray text-[10px]">${esc(TYPE_LABEL[r.type] || r.type)}</span>
-          ${r.suppressed ? '<span class="badge badge-red text-[10px]">送信停止中のアドレス</span>' : ''}<span class="text-[11px] text-gray-400 ml-auto">${esc(fmtAt(r.created_at))}</span></div>
-        <p class="text-sm mt-1">${esc(r.recipient_name || '')} <span class="text-xs text-gray-500 break-all">${esc(r.to_email || '')}</span></p>
-        ${r.error ? `<p class="text-xs text-red-600 mt-1">${esc(errText(r.error))}</p>` : ''}</div>`).join('') || '<p class="text-center text-gray-400 py-6">該当するメールはありません</p>'}</div>
+        <div class="flex items-center gap-2 flex-wrap">${badge(r.status)}<span class="badge badge-gray text-3xs">${esc(TYPE_LABEL[r.type] || r.type)}</span>
+          ${r.suppressed ? '<span class="badge badge-red text-3xs">送信停止中のアドレス</span>' : ''}<span class="text-2xs text-neutral-400 ml-auto">${esc(fmtAt(r.created_at))}</span></div>
+        <p class="text-sm mt-1">${esc(r.recipient_name || '')} <span class="text-xs text-neutral-500 break-all">${esc(r.to_email || '')}</span></p>
+        ${r.error ? `<p class="text-xs text-danger-600 mt-1">${esc(errText(r.error))}</p>` : ''}</div>`).join('') || '<p class="text-center text-neutral-400 py-6">該当するメールはありません</p>'}</div>
       ${HAS_MORE ? '<div class="text-center mt-3"><button class="btn btn-outline text-sm" data-action="mailLogsMore">さらに読み込む</button></div>' : ''}`
     document.getElementById('ml-status').addEventListener('change', e => { MAIL.logStatus = e.target.value; renderCorrectionEmails() })
     document.getElementById('ml-type').addEventListener('change', e => { MAIL.logType = e.target.value; renderCorrectionEmails() })
@@ -383,26 +383,26 @@
   async function renderMailSettings() {
     let m, s
     try { [m, s] = await Promise.all([axios.get('/api/admin/settings/mail-contact'), axios.get('/api/admin/email-suppressions')]).then(r => r.map(x => x.data)) }
-    catch (e) { $app.innerHTML = mailHeader() + `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    catch (e) { $app.innerHTML = mailHeader() + `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     const ro = m.can_edit ? '' : 'disabled'
     $app.innerHTML = mailHeader() + `
       <section class="card p-4 mb-4">
-        <h3 class="font-bold text-gray-800 mb-1">お知らせメールの問い合わせ先</h3>
-        <p class="text-xs text-gray-500 mb-3">お知らせメールの件名に会社名（${esc(m.company_name)}）を入れ、本文の末尾に問い合わせ先を書きます。返信先のアドレスを設定すると、スタッフがメールに返信したときにそのアドレスへ届きます。</p>
+        <h3 class="font-bold text-neutral-800 mb-1">お知らせメールの問い合わせ先</h3>
+        <p class="text-xs text-neutral-500 mb-3">お知らせメールの件名に会社名（${esc(m.company_name)}）を入れ、本文の末尾に問い合わせ先を書きます。返信先のアドレスを設定すると、スタッフがメールに返信したときにそのアドレスへ届きます。</p>
         <div class="grid md:grid-cols-2 gap-3">
-          <div><label class="text-xs text-gray-600 block mb-1">返信先・問い合わせのメールアドレス</label><input id="mc-reply" type="email" class="inp" value="${esc(m.reply_to || '')}" placeholder="例: staff-support@example.co.jp" ${ro}></div>
-          <div><label class="text-xs text-gray-600 block mb-1">問い合わせの電話番号</label><input id="mc-phone" type="tel" class="inp" value="${esc(m.phone || '')}" placeholder="例: 03-1234-5678" ${ro}></div>
+          <div><label class="text-xs text-neutral-600 block mb-1">返信先・問い合わせのメールアドレス</label><input id="mc-reply" type="email" class="inp" value="${esc(m.reply_to || '')}" placeholder="例: staff-support@example.co.jp" ${ro}></div>
+          <div><label class="text-xs text-neutral-600 block mb-1">問い合わせの電話番号</label><input id="mc-phone" type="tel" class="inp" value="${esc(m.phone || '')}" placeholder="例: 03-1234-5678" ${ro}></div>
         </div>
-        ${m.can_edit ? '<div class="flex justify-end mt-3"><button class="btn btn-primary text-sm" data-action="mailContactSave">保存</button></div>' : '<p class="text-xs text-gray-400 mt-2">変更できるのは会社管理者です。</p>'}
+        ${m.can_edit ? '<div class="flex justify-end mt-3"><button class="btn btn-primary text-sm" data-action="mailContactSave">保存</button></div>' : '<p class="text-xs text-neutral-400 mt-2">変更できるのは会社管理者です。</p>'}
       </section>
       <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-1">送信を止めているアドレス</h3>
-        <p class="text-xs text-gray-500 mb-3">宛先に届かなかった（アドレスの誤り・使われていないアドレス）か、迷惑メールと報告されたアドレスには、メールを送っていません。送り続けると、ほかのメールも届きにくくなるためです。スタッフ詳細などでアドレスを正しいものに直すと、直したアドレスへ送ります。受信できるようになったと本人に確かめた場合は、停止を解除できます。</p>
-        <div class="space-y-2">${(s.suppressions || []).map(x => `<div class="flex items-center gap-2 flex-wrap border-b border-gray-100 pb-2">
-          <span class="text-sm">${esc(x.names || '')}</span><span class="text-xs text-gray-500 break-all">${esc(x.email)}</span>
-          <span class="badge badge-red text-[10px]">${esc(SUP_REASON[x.reason] || x.reason)}</span><span class="text-[11px] text-gray-400">${esc(fmtAt(x.created_at))}</span>
+        <h3 class="font-bold text-neutral-800 mb-1">送信を止めているアドレス</h3>
+        <p class="text-xs text-neutral-500 mb-3">宛先に届かなかった（アドレスの誤り・使われていないアドレス）か、迷惑メールと報告されたアドレスには、メールを送っていません。送り続けると、ほかのメールも届きにくくなるためです。スタッフ詳細などでアドレスを正しいものに直すと、直したアドレスへ送ります。受信できるようになったと本人に確かめた場合は、停止を解除できます。</p>
+        <div class="space-y-2">${(s.suppressions || []).map(x => `<div class="flex items-center gap-2 flex-wrap border-b border-neutral-100 pb-2">
+          <span class="text-sm">${esc(x.names || '')}</span><span class="text-xs text-neutral-500 break-all">${esc(x.email)}</span>
+          <span class="badge badge-red text-3xs">${esc(SUP_REASON[x.reason] || x.reason)}</span><span class="text-2xs text-neutral-400">${esc(fmtAt(x.created_at))}</span>
           ${s.can_release ? `<button class="btn btn-outline text-xs ml-auto" data-action="mailSupRelease" data-email="${esc(x.email)}">停止を解除</button>` : ''}
-          ${x.detail ? `<p class="w-full text-[11px] text-gray-400">${esc(x.detail)}</p>` : ''}</div>`).join('') || '<p class="text-sm text-gray-400">ありません</p>'}</div>
+          ${x.detail ? `<p class="w-full text-2xs text-neutral-400">${esc(x.detail)}</p>` : ''}</div>`).join('') || '<p class="text-sm text-neutral-400">ありません</p>'}</div>
       </section>`
   }
   delegate('mailContactSave', el => withSubmitLock(el, async () => {

@@ -44,10 +44,10 @@
     if (!projects) projects = (await axios.get('/api/admin/projects')).data.projects || []
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <h2 class="text-xl font-bold text-gray-900"><i class="fas fa-bullhorn text-blue-600 mr-1"></i>募集・応募</h2>
+        <h2 class="text-xl font-bold text-neutral-900"><i class="fas fa-bullhorn text-primary-600 mr-1"></i>募集・応募</h2>
         <button class="btn btn-primary text-sm" onclick="openRecruitPage()"><i class="fas fa-plus"></i>募集ページを作成</button>
       </div>
-      <p class="text-xs text-gray-500 mb-3">シフトボードの「募集枠」を公開のURL・QRで募集します。応募はすべて承認で確定し、登録のない人は承認時に仮登録を作成します</p>
+      <p class="text-xs text-neutral-500 mb-3">シフトボードの「募集枠」を公開のURL・QRで募集します。応募はすべて承認で確定し、登録のない人は承認時に仮登録を作成します</p>
       <div class="flex gap-1 mb-3" id="recruit-tabs">
         <button class="btn ${S.tab === 'applications' ? 'btn-primary' : 'btn-outline'} text-xs" onclick="window.__recruitState.tab='applications';renderRecruit()">応募</button>
         <button class="btn ${S.tab === 'pages' ? 'btn-primary' : 'btn-outline'} text-xs" onclick="window.__recruitState.tab='pages';renderRecruit()">募集ページ</button>
@@ -60,18 +60,18 @@
   // ---------- 募集ページ ----------
   async function renderPages() {
     const host = document.getElementById('recruit-body')
-    let data; try { data = (await axios.get('/api/admin/recruit-pages')).data } catch (e) { host.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    let data; try { data = (await axios.get('/api/admin/recruit-pages')).data } catch (e) { host.innerHTML = `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     window.__recruitPages = data.pages
     host.innerHTML = `
       <div class="grid md:grid-cols-2 gap-3" id="recruit-page-list">
         ${data.pages.map(p => `<article class="card p-4">
           <div class="flex items-start justify-between gap-2 mb-1">
-            <div class="min-w-0"><p class="font-bold text-gray-800 truncate">${esc(p.title)}</p>
-              <p class="text-xs text-gray-500">${fmt(p.date_from)}〜${fmt(p.date_to)}・${p.project_names.map(esc).join('、')}</p></div>
+            <div class="min-w-0"><p class="font-bold text-neutral-800 truncate">${esc(p.title)}</p>
+              <p class="text-xs text-neutral-500">${fmt(p.date_from)}〜${fmt(p.date_to)}・${p.project_names.map(esc).join('、')}</p></div>
             ${p.is_open ? '<span class="badge badge-green shrink-0">募集中</span>' : p.status === 'open' && p.expired ? '<span class="badge badge-gray shrink-0">期間終了</span>' : '<span class="badge badge-gray shrink-0">終了</span>'}
           </div>
-          <p class="text-xs text-gray-600 mb-2">募集中の枠 ${p.open_roles}件（残り${p.open_remaining}名）・応募 ${p.application_count}件${p.pending_count ? `・<b class="text-red-600">未対応 ${p.pending_count}件</b>` : ''}</p>
-          ${Number(p.blocked_count) > 0 ? `<p class="text-[11px] text-amber-700 bg-amber-50 rounded p-1.5 mb-2 recruit-blocked" title="同じ接続元・同じ電話番号からの送信が多すぎたため止めた応募の数（これまでの合計）です。説明会などで同じ Wi-Fi から多くの人が応募すると止まることがあります"><i class="fas fa-shield-halved mr-1"></i>送信回数の制限で止めた応募 ${Number(p.blocked_count)}件${p.blocked_last_at ? `（最後 ${esc(dayjs(String(p.blocked_last_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</p>` : ''}
+          <p class="text-xs text-neutral-600 mb-2">募集中の枠 ${p.open_roles}件（残り${p.open_remaining}名）・応募 ${p.application_count}件${p.pending_count ? `・<b class="text-danger-600">未対応 ${p.pending_count}件</b>` : ''}</p>
+          ${Number(p.blocked_count) > 0 ? `<p class="text-2xs text-warning-700 bg-warning-50 rounded p-1.5 mb-2 recruit-blocked" title="同じ接続元・同じ電話番号からの送信が多すぎたため止めた応募の数（これまでの合計）です。説明会などで同じ Wi-Fi から多くの人が応募すると止まることがあります"><i class="fas fa-shield-halved mr-1"></i>送信回数の制限で止めた応募 ${Number(p.blocked_count)}件${p.blocked_last_at ? `（最後 ${esc(dayjs(String(p.blocked_last_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</p>` : ''}
           <div class="flex gap-1.5 flex-wrap">
             <button class="btn btn-outline text-xs" onclick="showRecruitShare(${p.page_id})"><i class="fas fa-qrcode"></i>URL・QR</button>
             <button class="btn btn-outline text-xs" onclick="openRecruitPage(${p.page_id})"><i class="fas fa-pen"></i>編集</button>
@@ -80,7 +80,7 @@
               : p.expired ? `<button class="btn btn-outline text-xs" data-action="recruitReopen" data-id="${p.page_id}">期間を延長して再開</button>`
               : `<button class="btn btn-outline text-xs" onclick="setRecruitStatus(${p.page_id},'open')">再開</button>`}
           </div>
-        </article>`).join('') || '<p class="card p-6 text-center text-sm text-gray-400 md:col-span-2">募集ページはありません。「募集ページを作成」から作成してください</p>'}
+        </article>`).join('') || '<p class="card p-6 text-center text-sm text-neutral-400 md:col-span-2">募集ページはありません。「募集ページを作成」から作成してください</p>'}
       </div>`
   }
 
@@ -96,32 +96,32 @@
     const spot = projects.filter(x => x.status !== 'ended')
     modal(`
       <h3 class="font-bold text-lg mb-3">${p ? (reopen ? '期間を延長して再開' : '募集ページの編集') : '募集ページの作成'}</h3>
-      ${reopen ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2 mb-3">期間の終了日が過ぎています。「期間（終了）」を今日以降に延ばしてから保存してください</p>' : ''}
+      ${reopen ? '<p class="text-xs text-warning-700 bg-warning-50 rounded p-2 mb-3">期間の終了日が過ぎています。「期間（終了）」を今日以降に延ばしてから保存してください</p>' : ''}
       <div class="space-y-3 text-sm" id="recruit-page-form">
-        <label class="block text-gray-600">タイトル（応募者に表示）<span class="text-red-500">*</span><input id="rp-title" class="inp" maxlength="80" value="${esc(p?.title || '')}" placeholder="例: 週末のスマホ販売イベントスタッフ"></label>
-        <div class="text-gray-600">対象の案件 <span class="text-red-500">*</span>
-          <div class="max-h-36 overflow-y-auto border border-gray-200 rounded-lg p-2 mt-1 space-y-1">
-            ${spot.map(x => `<label class="flex items-center gap-2 text-xs"><input type="checkbox" class="rp-proj" value="${x.project_id}" ${sel.has(x.project_id) ? 'checked' : ''}>${esc(x.project_name)}<span class="text-gray-400">${esc(x.client_name || '')}</span>${x.engagement_type === 'spot' ? '<span class="badge badge-purple">スポット</span>' : ''}</label>`).join('')}
+        <label class="block text-neutral-600">タイトル（応募者に表示）<span class="text-danger-500">*</span><input id="rp-title" class="inp" maxlength="80" value="${esc(p?.title || '')}" placeholder="例: 週末のスマホ販売イベントスタッフ"></label>
+        <div class="text-neutral-600">対象の案件 <span class="text-danger-500">*</span>
+          <div class="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-2 mt-1 space-y-1">
+            ${spot.map(x => `<label class="flex items-center gap-2 text-xs"><input type="checkbox" class="rp-proj" value="${x.project_id}" ${sel.has(x.project_id) ? 'checked' : ''}>${esc(x.project_name)}<span class="text-neutral-400">${esc(x.client_name || '')}</span>${x.engagement_type === 'spot' ? '<span class="badge badge-purple">スポット</span>' : ''}</label>`).join('')}
           </div>
-          <p class="text-[11px] text-gray-400 mt-1">案件名・クライアント名・金額は公開ページに表示しません。表示するのは、日時・開催場所・役割・残り人数です（対象の案件は${MAX_PAGE_PROJECTS}件まで）</p></div>
+          <p class="text-2xs text-neutral-400 mt-1">案件名・クライアント名・金額は公開ページに表示しません。表示するのは、日時・開催場所・役割・残り人数です（対象の案件は${MAX_PAGE_PROJECTS}件まで）</p></div>
         <div class="grid grid-cols-2 gap-2">
-          <label class="text-gray-600">期間（開始）<input id="rp-from" type="date" class="inp" value="${p?.date_from || dayjs().format('YYYY-MM-DD')}"></label>
-          <label class="text-gray-600">期間（終了）<input id="rp-to" type="date" class="inp" value="${p?.date_to || dayjs().add(1, 'month').format('YYYY-MM-DD')}"></label>
+          <label class="text-neutral-600">期間（開始）<input id="rp-from" type="date" class="inp" value="${p?.date_from || dayjs().format('YYYY-MM-DD')}"></label>
+          <label class="text-neutral-600">期間（終了）<input id="rp-to" type="date" class="inp" value="${p?.date_to || dayjs().add(1, 'month').format('YYYY-MM-DD')}"></label>
         </div>
-        <div class="text-gray-600" id="rp-slot-box">募集する枠（日付・時間・役割・募集人数）
+        <div class="text-neutral-600" id="rp-slot-box">募集する枠（日付・時間・役割・募集人数）
           <div id="rp-slots-existing" class="mt-1"></div>
           <div id="rp-slots-new" class="space-y-2 mt-2"></div>
           <button type="button" class="btn btn-outline text-xs mt-2" data-action="recruitAddSlotRow"><i class="fas fa-plus"></i>枠を追加</button>
-          <p class="text-[11px] text-gray-400 mt-1">追加した枠は、保存するとシフトボードの募集枠になります（開催場所・単価は、シフトボードの枠の編集で変えられます）。募集人数は1名以上です</p></div>
-        <label class="block text-gray-600">仕事内容・条件<textarea id="rp-desc" class="inp" rows="4" maxlength="2000" placeholder="仕事内容、服装、持ち物、集合場所など">${esc(p?.description || '')}</textarea></label>
-        <label class="block text-gray-600">給与の表示（任意）<input id="rp-pay" class="inp" maxlength="200" value="${esc(p?.pay_note || '')}" placeholder="例: 日給 12,000円〜・交通費支給"></label>
-        <label class="block text-gray-600">問い合わせ先の表示（任意）<input id="rp-contact" class="inp" maxlength="200" value="${esc(p?.contact_note || '')}" placeholder="例: 採用担当 03-0000-0000（平日10〜18時）"></label>
-        <div class="text-gray-600">応募フォームの質問（任意・${MAX_QUESTIONS}問まで）
+          <p class="text-2xs text-neutral-400 mt-1">追加した枠は、保存するとシフトボードの募集枠になります（開催場所・単価は、シフトボードの枠の編集で変えられます）。募集人数は1名以上です</p></div>
+        <label class="block text-neutral-600">仕事内容・条件<textarea id="rp-desc" class="inp" rows="4" maxlength="2000" placeholder="仕事内容、服装、持ち物、集合場所など">${esc(p?.description || '')}</textarea></label>
+        <label class="block text-neutral-600">給与の表示（任意）<input id="rp-pay" class="inp" maxlength="200" value="${esc(p?.pay_note || '')}" placeholder="例: 日給 12,000円〜・交通費支給"></label>
+        <label class="block text-neutral-600">問い合わせ先の表示（任意）<input id="rp-contact" class="inp" maxlength="200" value="${esc(p?.contact_note || '')}" placeholder="例: 採用担当 03-0000-0000（平日10〜18時）"></label>
+        <div class="text-neutral-600">応募フォームの質問（任意・${MAX_QUESTIONS}問まで）
           <div id="rp-questions" class="space-y-2 mt-1">${(p?.questions || []).map(questionRow).join('')}</div>
           <button type="button" class="btn btn-outline text-xs mt-1" data-action="recruitAddQuestion"><i class="fas fa-plus"></i>質問を追加</button>
-          <p class="text-[11px] text-gray-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。</p></div>
+          <p class="text-2xs text-neutral-400 mt-1">例: 販売の経験はありますか（はい・いいえ）、保有資格（選択肢）、18歳以上ですか、車で来られますか。回答は応募の一覧に出し、仮登録を作るときはスタッフのメモに引き継ぎます。</p></div>
         <label class="flex items-center gap-2 text-xs"><input type="checkbox" id="rp-remaining" ${p ? (p.show_remaining ? 'checked' : '') : 'checked'}>残り人数を表示する</label>
-        ${p ? '<label class="flex items-center gap-2 text-xs text-red-600"><input type="checkbox" id="rp-regen">URLを再発行する（今のURL・QRは使えなくなります）</label>' : ''}
+        ${p ? '<label class="flex items-center gap-2 text-xs text-danger-600"><input type="checkbox" id="rp-regen">URLを再発行する（今のURL・QRは使えなくなります）</label>' : ''}
       </div>
       <div class="flex gap-2 mt-4">
         <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
@@ -154,38 +154,38 @@
   function noteHeadcount(el) {
     const id = Number(el.dataset.id)
     if (String(el.value) === String(el.dataset.orig)) SLOT_EDITS.delete(id); else SLOT_EDITS.set(id, el.value)
-    el.classList.toggle('border-blue-500', SLOT_EDITS.has(id))
+    el.classList.toggle('border-primary-500', SLOT_EDITS.has(id))
   }
   async function loadPageSlots() {
     const box = document.getElementById('rp-slots-existing'); if (!box) return
     const pids = checkedProjects().map(x => x.id)
     const from = document.getElementById('rp-from').value, to = document.getElementById('rp-to').value
     const seq = ++SLOT_SEQ
-    if (!pids.length) { box.innerHTML = '<p class="text-[11px] text-gray-400">対象の案件を選ぶと、期間内の枠が出ます</p>'; return }
-    box.innerHTML = '<p class="text-[11px] text-gray-400">枠を読み込んでいます…</p>'
+    if (!pids.length) { box.innerHTML = '<p class="text-2xs text-neutral-400">対象の案件を選ぶと、期間内の枠が出ます</p>'; return }
+    box.innerHTML = '<p class="text-2xs text-neutral-400">枠を読み込んでいます…</p>'
     let data
     try { data = (await axios.get('/api/admin/recruit-slots', { params: { project_ids: pids.join(','), from, to } })).data } catch (e) {
-      if (seq === SLOT_SEQ && document.getElementById('rp-slots-existing')) box.innerHTML = `<p class="text-[11px] text-red-600">${esc(errMsg(e, '枠を読み込めませんでした'))}</p>`
+      if (seq === SLOT_SEQ && document.getElementById('rp-slots-existing')) box.innerHTML = `<p class="text-2xs text-danger-600">${esc(errMsg(e, '枠を読み込めませんでした'))}</p>`
       return
     }
     // 読み込みの間に案件・期間を変えた、またはモーダルを閉じたときは出さない
     if (seq !== SLOT_SEQ || !document.getElementById('rp-slots-existing')) return
     const multi = pids.length > 1
     box.innerHTML = data.roles.length ? `
-      <p class="text-[11px] text-gray-500 mb-1">期間内の枠 ${data.roles.length}件${data.truncated ? '（多いため先頭から表示）' : ''}。募集人数はここで直せます（割り当て済みの人数より少なくはできません）</p>
-      <div class="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-56 overflow-y-auto" id="rp-slot-list">
+      <p class="text-2xs text-neutral-500 mb-1">期間内の枠 ${data.roles.length}件${data.truncated ? '（多いため先頭から表示）' : ''}。募集人数はここで直せます（割り当て済みの人数より少なくはできません）</p>
+      <div class="border border-neutral-200 rounded-lg divide-y divide-neutral-100 max-h-56 overflow-y-auto" id="rp-slot-list">
         ${data.roles.map(r => {
           const id = Number(r.slot_role_id), val = SLOT_EDITS.has(id) ? SLOT_EDITS.get(id) : Number(r.headcount)
           const past = r.work_date < data.today
           const detail = [multi ? r.project_name : '', r.place].filter(Boolean)
           return `<div class="flex items-center gap-2 px-2 py-1.5 text-xs rp-slot-row" data-id="${id}">
             <span class="whitespace-nowrap shrink-0">${fmt(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
-            <span class="flex-1 min-w-0 truncate" title="${esc([r.role_name, ...detail].join('・'))}"><b class="text-gray-800">${esc(r.role_name)}</b>${detail.map(x => `<span class="text-gray-400">・${esc(x)}</span>`).join('')}${r.slot_status === 'closed' ? ' <span class="badge badge-gray">締切</span>' : ''}</span>
-            <span class="text-gray-500 whitespace-nowrap">割当 ${Number(r.assigned)}</span>
-            <span class="whitespace-nowrap"><input type="number" class="inp text-xs w-16 rp-hc ${SLOT_EDITS.has(id) ? 'border-blue-500' : ''}" min="${Math.max(1, Number(r.assigned))}" max="200" step="1" data-id="${id}" data-orig="${Number(r.headcount)}" value="${esc(val)}" ${past ? 'disabled title="過ぎた日の枠"' : ''} aria-label="募集人数">名</span>
+            <span class="flex-1 min-w-0 truncate" title="${esc([r.role_name, ...detail].join('・'))}"><b class="text-neutral-800">${esc(r.role_name)}</b>${detail.map(x => `<span class="text-neutral-400">・${esc(x)}</span>`).join('')}${r.slot_status === 'closed' ? ' <span class="badge badge-gray">締切</span>' : ''}</span>
+            <span class="text-neutral-500 whitespace-nowrap">割当 ${Number(r.assigned)}</span>
+            <span class="whitespace-nowrap"><input type="number" class="inp text-xs w-16 rp-hc ${SLOT_EDITS.has(id) ? 'border-primary-500' : ''}" min="${Math.max(1, Number(r.assigned))}" max="200" step="1" data-id="${id}" data-orig="${Number(r.headcount)}" value="${esc(val)}" ${past ? 'disabled title="過ぎた日の枠"' : ''} aria-label="募集人数">名</span>
           </div>`
         }).join('')}
-      </div>` : '<p class="text-[11px] text-gray-400">期間内に、対象の案件の枠はまだありません。「枠を追加」で作れます</p>'
+      </div>` : '<p class="text-2xs text-neutral-400">期間内に、対象の案件の枠はまだありません。「枠を追加」で作れます</p>'
   }
   function slotProjectOptions(selected) {
     return checkedProjects().map(x => `<option value="${x.id}" ${x.id === Number(selected) ? 'selected' : ''}>${esc(x.name)}</option>`).join('')
@@ -205,7 +205,7 @@
     const min = slotMinDate(), to = document.getElementById('rp-to').value
     const v = prev || { work_date: min <= to ? min : '', start_time: '10:00', end_time: '19:00', role_name: '', headcount: 1 }
     const multi = checkedProjects().length > 1
-    return `<div class="rp-slot border border-gray-200 rounded-lg p-2 text-xs">
+    return `<div class="rp-slot border border-neutral-200 rounded-lg p-2 text-xs">
       <label class="block mb-1.5 ${multi ? '' : 'hidden'}">案件<select class="inp text-xs rp-s-proj">${slotProjectOptions(v.project_id)}</select></label>
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
         <label>日付<input type="date" class="inp text-xs rp-s-date" min="${esc(min)}" max="${esc(to)}" value="${esc(v.work_date)}"></label>
@@ -266,7 +266,7 @@
   const Q_TYPES = [['text', '自由記述'], ['select', '選択肢から選ぶ'], ['yesno', 'はい・いいえ']]
   function questionRow(q) {
     q = q || { type: 'yesno' }
-    return `<div class="rp-q border border-gray-200 rounded-lg p-2 space-y-1" data-key="${esc(q.key || '')}">
+    return `<div class="rp-q border border-neutral-200 rounded-lg p-2 space-y-1" data-key="${esc(q.key || '')}">
       <div class="flex gap-1"><input class="inp text-sm flex-1 rp-q-label" maxlength="100" placeholder="質問（例: 携帯販売の経験はありますか）" value="${esc(q.label || '')}">
         <button type="button" class="btn btn-outline text-xs" data-action="recruitRemoveQuestion" title="この質問を削除"><i class="fas fa-trash"></i></button></div>
       <div class="flex gap-2 items-center flex-wrap text-xs">
@@ -334,12 +334,12 @@
     try { const q = window.qrcode(0, 'M'); q.addData(url); q.make(); qr = q.createDataURL(6, 12) } catch (e) { }
     modal(`
       <h3 class="font-bold text-lg mb-1">URL・QR</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(p.title)}（${fmt(p.date_from)}〜${fmt(p.date_to)}）</p>
+      <p class="text-xs text-neutral-500 mb-3">${esc(p.title)}（${fmt(p.date_from)}〜${fmt(p.date_to)}）</p>
       <div class="flex gap-2 mb-3"><input id="rp-url" class="inp text-xs flex-1" readonly value="${esc(url)}">
         <button class="btn btn-primary text-xs" onclick="navigator.clipboard.writeText(document.getElementById('rp-url').value).then(()=>toast('URLをコピーしました'))"><i class="fas fa-copy"></i>コピー</button></div>
-      ${qr ? `<div class="text-center" id="rp-qr"><img src="${qr}" alt="QRコード" class="mx-auto border border-gray-100 rounded-lg" width="240" height="240">
-        <a class="btn btn-outline text-xs mt-2" href="${qr}" download="recruit_qr_${p.page_id}.gif"><i class="fas fa-download"></i>QRを保存</a></div>` : '<p class="text-xs text-gray-400">QRを作成できませんでした</p>'}
-      <p class="text-[11px] text-gray-400 mt-3">SNS・チラシ・求人サイトに掲載できます。URLを知っている人は誰でも応募できます（承認するまでシフトは確定しません）</p>
+      ${qr ? `<div class="text-center" id="rp-qr"><img src="${qr}" alt="QRコード" class="mx-auto border border-neutral-100 rounded-lg" width="240" height="240">
+        <a class="btn btn-outline text-xs mt-2" href="${qr}" download="recruit_qr_${p.page_id}.gif"><i class="fas fa-download"></i>QRを保存</a></div>` : '<p class="text-xs text-neutral-400">QRを作成できませんでした</p>'}
+      <p class="text-2xs text-neutral-400 mt-3">SNS・チラシ・求人サイトに掲載できます。URLを知っている人は誰でも応募できます（承認するまでシフトは確定しません）</p>
       <div class="flex gap-2 mt-3"><a class="btn btn-outline flex-1 text-xs" href="${esc(url)}" target="_blank" rel="noopener">公開ページを開く</a><button class="btn btn-outline flex-1 text-xs" onclick="closeModal()">閉じる</button></div>`)
   }
 
@@ -356,7 +356,7 @@
   }
   async function renderApplications() {
     const host = document.getElementById('recruit-body')
-    let data; try { data = (await axios.get('/api/admin/recruit-applications?' + appQuery(0))).data } catch (e) { host.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    let data; try { data = (await axios.get('/api/admin/recruit-applications?' + appQuery(0))).data } catch (e) { host.innerHTML = `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     window.__recruitApps = data.applications
     // 応募の一覧を開いたので、新しい応募の通知は既読にする（#150）。募集ページで絞り込んでいるときはそのページの分だけ、枠で絞り込んでいるときは既読にしない
     if (!S.slot_role_id) axios.post('/api/admin/notifications/read-related', { kind: 'recruit_applied', ...(S.page_id ? { related_id: Number(S.page_id) } : {}) })
@@ -368,30 +368,30 @@
         ${STATUS_TABS.map(([k, l]) => `<button class="btn ${S.status === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="recruitStatus" data-status="${k}">${l}${k === 'pending' ? `（${data.counts.pending}）` : ''}</button>`).join('')}
       </div>
       <form class="flex items-end gap-2 mb-3 flex-wrap text-xs" id="recruit-filter">
-        <label class="text-gray-500">氏名・フリガナ・電話番号<input id="rc-q" class="inp text-sm w-48" maxlength="60" value="${esc(S.q || '')}" placeholder="例: 山田 / 0901234"></label>
-        <label class="text-gray-500">募集ページ<select id="rc-page" class="inp text-sm max-w-[14rem]"><option value="">すべて</option>
+        <label class="text-neutral-500">氏名・フリガナ・電話番号<input id="rc-q" class="inp text-sm w-48" maxlength="60" value="${esc(S.q || '')}" placeholder="例: 山田 / 0901234"></label>
+        <label class="text-neutral-500">募集ページ<select id="rc-page" class="inp text-sm max-w-[14rem]"><option value="">すべて</option>
           ${(data.pages || []).map(p => `<option value="${p.page_id}" ${Number(S.page_id) === p.page_id ? 'selected' : ''}>${esc(p.title)}${p.status === 'open' ? '' : '（終了）'}</option>`).join('')}</select></label>
-        <label class="text-gray-500">勤務日<span class="flex items-center gap-1"><input id="rc-from" type="date" class="inp text-sm" value="${esc(S.from || '')}">〜<input id="rc-to" type="date" class="inp text-sm" value="${esc(S.to || '')}"></span></label>
-        <label class="flex items-center gap-1 text-gray-600 pb-2" title="だれも対応メモを残していない応募"><input type="checkbox" id="rc-no-note" ${S.no_note ? 'checked' : ''}>対応メモなしのみ</label>
-        <label class="flex items-center gap-1 text-gray-600 pb-2" title="ボット対策の確認サービスに接続できず、ロボットかどうかを判定せずに受け付けた応募"><input type="checkbox" id="rc-unverified" ${S.unverified ? 'checked' : ''}>要確認のみ</label>
+        <label class="text-neutral-500">勤務日<span class="flex items-center gap-1"><input id="rc-from" type="date" class="inp text-sm" value="${esc(S.from || '')}">〜<input id="rc-to" type="date" class="inp text-sm" value="${esc(S.to || '')}"></span></label>
+        <label class="flex items-center gap-1 text-neutral-600 pb-2" title="だれも対応メモを残していない応募"><input type="checkbox" id="rc-no-note" ${S.no_note ? 'checked' : ''}>対応メモなしのみ</label>
+        <label class="flex items-center gap-1 text-neutral-600 pb-2" title="ボット対策の確認サービスに接続できず、ロボットかどうかを判定せずに受け付けた応募"><input type="checkbox" id="rc-unverified" ${S.unverified ? 'checked' : ''}>要確認のみ</label>
         <button type="submit" class="btn btn-primary text-xs"><i class="fas fa-magnifying-glass"></i>検索</button>
         ${S.q || S.page_id || S.from || S.to || S.no_note || S.unverified ? '<button type="button" class="btn btn-outline text-xs" data-action="recruitClearFilter">条件をクリア</button>' : ''}
       </form>
-      ${S.slot_role_id ? `<div class="text-xs bg-blue-50 border border-blue-100 rounded-lg p-3 mb-3 flex items-center gap-2 flex-wrap" id="recruit-slot-filter">
+      ${S.slot_role_id ? `<div class="text-xs bg-primary-50 border border-primary-100 rounded-lg p-3 mb-3 flex items-center gap-2 flex-wrap" id="recruit-slot-filter">
         <span class="badge badge-blue">枠で絞り込み中</span>
         ${sl ? `<span>${fmt(sl.work_date)} ${esc(sl.start_time)}〜${esc(sl.end_time)}・${esc(sl.project_name)}・${esc(sl.role_name)}</span>
-          <span class="${sl.full ? 'text-red-600 font-bold' : ''}">充足 ${sl.assigned}/${sl.headcount}名${sl.full ? '（定員に達しています）' : ''}・未対応 ${sl.pending}件</span>
+          <span class="${sl.full ? 'text-danger-600 font-bold' : ''}">充足 ${sl.assigned}/${sl.headcount}名${sl.full ? '（定員に達しています）' : ''}・未対応 ${sl.pending}件</span>
           ${sl.pending ? `<button class="btn ${sl.full ? 'btn-danger' : 'btn-outline'} text-xs" data-action="recruitRejectSlot" data-id="${sl.slot_role_id}" data-count="${sl.pending}">この枠の残りの応募をまとめて見送る</button>` : ''}`
-          : '<span class="text-gray-500">枠が見つかりません（削除された可能性があります）</span>'}
-        <button class="ml-auto text-gray-500" data-action="recruitClearSlot" title="絞り込みを外す"><i class="fas fa-xmark"></i></button></div>` : ''}
-      ${S.status === 'pending' && data.counts.pending_inactive ? `<p class="text-[11px] text-gray-500 mb-2">退職・停止中のスタッフの応募（${data.counts.pending_inactive}件）は承認できないため、未対応の件数に含めていません。見送りにしてください</p>` : ''}
-      ${S.status === 'waitlist' ? '<p class="text-[11px] text-gray-500 mb-2">見送りにした日時のうち、開始前のものです。キャンセルが出たときは「繰り上げて承認」でシフトを確定できます</p>' : ''}
-      <p class="text-xs text-gray-500 mb-2" id="recruit-app-total">${data.total}件${pageTitle ? `（${esc(pageTitle)}）` : ''}</p>
-      ${S.status === 'pending' && data.applications.some(bulkable) ? `<div class="flex items-center gap-2 mb-2 flex-wrap text-xs bg-white border border-gray-100 rounded-lg p-2" id="recruit-bulk-bar">
+          : '<span class="text-neutral-500">枠が見つかりません（削除された可能性があります）</span>'}
+        <button class="ml-auto text-neutral-500" data-action="recruitClearSlot" title="絞り込みを外す"><i class="fas fa-xmark"></i></button></div>` : ''}
+      ${S.status === 'pending' && data.counts.pending_inactive ? `<p class="text-2xs text-neutral-500 mb-2">退職・停止中のスタッフの応募（${data.counts.pending_inactive}件）は承認できないため、未対応の件数に含めていません。見送りにしてください</p>` : ''}
+      ${S.status === 'waitlist' ? '<p class="text-2xs text-neutral-500 mb-2">見送りにした日時のうち、開始前のものです。キャンセルが出たときは「繰り上げて承認」でシフトを確定できます</p>' : ''}
+      <p class="text-xs text-neutral-500 mb-2" id="recruit-app-total">${data.total}件${pageTitle ? `（${esc(pageTitle)}）` : ''}</p>
+      ${S.status === 'pending' && data.applications.some(bulkable) ? `<div class="flex items-center gap-2 mb-2 flex-wrap text-xs bg-surface border border-neutral-100 rounded-lg p-2" id="recruit-bulk-bar">
         <button class="btn btn-primary text-xs" data-action="recruitBulkApprove"><i class="fas fa-check-double"></i>選択をまとめて承認</button>
-        <span class="text-[11px] text-gray-500 flex-1 min-w-[12rem]">登録済みのスタッフの応募で、チェックした日時をまとめて承認します。定員超過・時間の重複などの確認が必要な日時は承認せずに残します。未登録の応募者は、カードごとに承認してください</span></div>` : ''}
+        <span class="text-2xs text-neutral-500 flex-1 min-w-[12rem]">登録済みのスタッフの応募で、チェックした日時をまとめて承認します。定員超過・時間の重複などの確認が必要な日時は承認せずに残します。未登録の応募者は、カードごとに承認してください</span></div>` : ''}
       <div class="space-y-3" id="recruit-app-list">
-        ${data.applications.map(appCard).join('') || '<p class="card p-6 text-center text-sm text-gray-400">応募はありません</p>'}
+        ${data.applications.map(appCard).join('') || '<p class="card p-6 text-center text-sm text-neutral-400">応募はありません</p>'}
       </div>
       ${moreButton(data)}`
     document.getElementById('recruit-filter').addEventListener('submit', (ev) => {
@@ -444,7 +444,7 @@
     // 結果が届く方法（#151）。アプリの通知は、ログインできるスタッフだけに届く
     const notifyHow = a.email ? (a.staff_id ? 'メール・アプリ' : 'メール') : a.staff_id ? 'アプリ（ログインできる人のみ）' : 'メールアドレスがないため届きません。電話などで連絡してください'
     const who = a.staff_id
-      ? `<a class="text-blue-600 hover:underline" href="#staff/${Number(a.staff_id)}">${esc(a.staff_name || a.name)}</a>${a.is_provisional ? '<span class="badge badge-yellow ml-1">仮</span>' : ''}<span class="badge badge-blue ml-1">${a.source === 'staff' ? 'アプリから応募' : '登録済み'}</span>${a.staff_inactive ? '<span class="badge badge-red ml-1">退職・停止中</span>' : ''}`
+      ? `<a class="text-primary-600 hover:underline" href="#staff/${Number(a.staff_id)}">${esc(a.staff_name || a.name)}</a>${a.is_provisional ? '<span class="badge badge-yellow ml-1">仮</span>' : ''}<span class="badge badge-blue ml-1">${a.source === 'staff' ? 'アプリから応募' : '登録済み'}</span>${a.staff_inactive ? '<span class="badge badge-red ml-1">退職・停止中</span>' : ''}`
       : `${esc(a.name)}<span class="badge badge-gray ml-1">新規（未登録）</span>`
     const matchName = (m) => `<a class="underline" href="#staff/${Number(m.staff_id)}">${esc(m.name)}</a>${m.inactive ? '（退職・停止中）' : ''}`
     const checks = (i) => [
@@ -453,34 +453,34 @@
       ...i.conflicts.map(x => '重複: ' + x)]
     return `<article class="card p-4" data-application-id="${a.application_id}">
       <div class="flex items-start justify-between gap-2 flex-wrap mb-2">
-        <div><p class="font-bold text-gray-800">${who}</p>
-          <p class="text-xs text-gray-500">${a.kana ? esc(a.kana) + '・' : ''}${a.phone ? `<a href="tel:${esc(a.phone)}" class="hover:underline">${esc(a.phone)}</a>` : ''}${a.email ? '・' + esc(a.email) : ''}</p>
+        <div><p class="font-bold text-neutral-800">${who}</p>
+          <p class="text-xs text-neutral-500">${a.kana ? esc(a.kana) + '・' : ''}${a.phone ? `<a href="tel:${esc(a.phone)}" class="hover:underline">${esc(a.phone)}</a>` : ''}${a.email ? '・' + esc(a.email) : ''}</p>
           ${a.turnstile_unverified ? '<span class="badge badge-yellow mt-1 recruit-unverified" title="ボット対策（Turnstile）の確認サービスに接続できなかったため、ロボットかどうかを判定せずに受け付けた応募です。氏名・電話番号などがいたずらでないか確かめてから承認してください">要確認（ロボット判定できず）</span>' : ''}</div>
-        <p class="text-[11px] text-gray-400 text-right">${esc(a.page_title || '')}<br>${dayjs(a.created_at).format('M/D HH:mm')} 応募</p>
+        <p class="text-2xs text-neutral-400 text-right">${esc(a.page_title || '')}<br>${dayjs(a.created_at).format('M/D HH:mm')} 応募</p>
       </div>
-      ${a.note ? `<p class="text-xs bg-gray-50 rounded p-2 mb-2 whitespace-pre-wrap">${esc(a.note)}</p>` : ''}
-      ${(a.answers || []).length ? `<div class="text-xs bg-blue-50 rounded p-2 mb-2 space-y-0.5 rc-answers">${a.answers.map(x => `<p><span class="text-gray-500">${esc(x.label)}:</span> <b class="font-medium">${esc(x.value)}</b></p>`).join('')}</div>` : ''}
-      ${a.staff_inactive && pending.length ? '<p class="text-xs text-red-700 bg-red-50 rounded p-2 mb-2"><i class="fas fa-user-slash mr-1"></i>このスタッフは退職・停止中のため、承認できません。見送りにしてください</p>' : ''}
-      ${!a.staff_id && a.phone_matches.length ? `<p class="text-xs text-amber-700 bg-amber-50 rounded p-2 mb-2"><i class="fas fa-user-check mr-1"></i>電話番号が一致するスタッフがいます: ${a.phone_matches.map(matchName).join('、')}</p>` : ''}
+      ${a.note ? `<p class="text-xs bg-neutral-50 rounded p-2 mb-2 whitespace-pre-wrap">${esc(a.note)}</p>` : ''}
+      ${(a.answers || []).length ? `<div class="text-xs bg-primary-50 rounded p-2 mb-2 space-y-0.5 rc-answers">${a.answers.map(x => `<p><span class="text-neutral-500">${esc(x.label)}:</span> <b class="font-medium">${esc(x.value)}</b></p>`).join('')}</div>` : ''}
+      ${a.staff_inactive && pending.length ? '<p class="text-xs text-danger-700 bg-danger-50 rounded p-2 mb-2"><i class="fas fa-user-slash mr-1"></i>このスタッフは退職・停止中のため、承認できません。見送りにしてください</p>' : ''}
+      ${!a.staff_id && a.phone_matches.length ? `<p class="text-xs text-warning-700 bg-warning-50 rounded p-2 mb-2"><i class="fas fa-user-check mr-1"></i>電話番号が一致するスタッフがいます: ${a.phone_matches.map(matchName).join('、')}</p>` : ''}
       <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr>${hasCheck ? `<th>${pending.length ? `<input type="checkbox" checked data-action="recruitCheckAll" data-id="${a.application_id}" title="未対応をすべて選ぶ">` : ''}</th>` : ''}<th>日時</th><th>案件・場所・役割</th><th>充足</th><th>確認</th><th>状態</th></tr></thead><tbody>
         ${a.items.map(i => `<tr>
           ${hasCheck ? `<td>${i.status === 'pending' ? `<input type="checkbox" class="ri-check" value="${i.item_id}" ${i.remaining > 0 && !i.past && !i.conflicts.length && !a.staff_inactive ? 'checked' : ''}>`
             : promo.includes(i) ? `<input type="checkbox" class="ri-promote" value="${i.item_id}" title="繰り上げて承認する日時">` : ''}</td>` : ''}
           ${i.work_date ? `<td class="whitespace-nowrap">${fmt(i.work_date)} ${esc(i.start_time)}〜${esc(i.end_time)}</td>
-          <td>${esc(i.project_name)}<span class="text-gray-400">${i.place ? '・' + esc(i.place) : ''}・${esc(i.role_name)}</span></td>
-          <td class="whitespace-nowrap ${i.remaining <= 0 ? 'text-red-600' : ''}">${i.assigned}/${i.headcount}名</td>`
-          : '<td colspan="3" class="text-gray-400">（削除された枠）</td>'}
+          <td>${esc(i.project_name)}<span class="text-neutral-400">${i.place ? '・' + esc(i.place) : ''}・${esc(i.role_name)}</span></td>
+          <td class="whitespace-nowrap ${i.remaining <= 0 ? 'text-danger-600' : ''}">${i.assigned}/${i.headcount}名</td>`
+          : '<td colspan="3" class="text-neutral-400">（削除された枠）</td>'}
           <td>${checks(i).map(x => `<span class="badge badge-red block mb-0.5 whitespace-nowrap">${esc(x)}</span>`).join('') || '-'}</td>
-          <td><span class="badge ${ITEM_BADGE[i.status] || 'badge-gray'}">${esc(ITEM_LABEL[i.status] || i.status)}</span>${promo.includes(i) ? '<span class="block text-[10px] text-gray-400 mt-0.5">キャンセル待ち</span>' : ''}</td></tr>`).join('')}
+          <td><span class="badge ${ITEM_BADGE[i.status] || 'badge-gray'}">${esc(ITEM_LABEL[i.status] || i.status)}</span>${promo.includes(i) ? '<span class="block text-3xs text-neutral-400 mt-0.5">キャンセル待ち</span>' : ''}</td></tr>`).join('')}
       </tbody></table></div>
       ${hasCheck ? `<div class="flex gap-2 mt-3 flex-wrap">
         ${pending.length ? `<button class="btn btn-primary text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="1"><i class="fas fa-check"></i>選択した日時を承認（シフト確定）</button>
         <button class="btn btn-outline text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="0">選択した日時を見送る</button>` : ''}
         ${promo.length ? `<button class="btn btn-outline text-xs" data-action="recruitDecide" data-id="${a.application_id}" data-approve="1" data-promote="1"><i class="fas fa-arrow-up"></i>選択した見送りを繰り上げて承認</button>` : ''}
-        <label class="flex items-center gap-1.5 text-[11px] text-gray-600 w-full"><input type="checkbox" class="ri-notify" checked>結果を応募者に知らせる（${notifyHow}）</label>
-        ${pending.length || promo.length ? '<p class="text-[11px] text-gray-400 w-full">承認で作るシフトの交通費（実費）には、スタッフの交通費の標準（精算の画面の「交通費の標準」で登録）を入れます。登録がなければ 0 円です</p>' : ''}
+        <label class="flex items-center gap-1.5 text-2xs text-neutral-600 w-full"><input type="checkbox" class="ri-notify" checked>結果を応募者に知らせる（${notifyHow}）</label>
+        ${pending.length || promo.length ? '<p class="text-2xs text-neutral-400 w-full">承認で作るシフトの交通費（実費）には、スタッフの交通費の標準（精算の画面の「交通費の標準」で登録）を入れます。登録がなければ 0 円です</p>' : ''}
       </div>` : ''}
-      ${decided.length && (a.email || a.staff_id) ? `<button class="text-[11px] text-blue-600 underline mt-2" data-action="recruitNotifyResult" data-id="${a.application_id}"><i class="fas fa-envelope mr-0.5"></i>結果のお知らせを送り直す</button>` : ''}
+      ${decided.length && (a.email || a.staff_id) ? `<button class="text-2xs text-primary-600 underline mt-2" data-action="recruitNotifyResult" data-id="${a.application_id}"><i class="fas fa-envelope mr-0.5"></i>結果のお知らせを送り直す</button>` : ''}
       ${decidedByText(a, decided)}
       ${notesBlock(a)}
     </article>`
@@ -489,23 +489,23 @@
   function decidedByText(a, decided) {
     if (a.status !== 'done' || !a.decided_by_name || !a.decided_at) return ''
     const ap = decided.some(i => i.status === 'approved'), rj = decided.some(i => i.status === 'rejected')
-    return `<p class="text-[11px] text-gray-500 mt-2 rc-decided-by"><i class="fas fa-user-check mr-1"></i>${esc(a.decided_by_name)}が${ap && !rj ? '承認' : rj && !ap ? '見送り' : '対応'} ${esc(dayjs(a.decided_at).format('M/D HH:mm'))}</p>`
+    return `<p class="text-2xs text-neutral-500 mt-2 rc-decided-by"><i class="fas fa-user-check mr-1"></i>${esc(a.decided_by_name)}が${ap && !rj ? '承認' : rj && !ap ? '見送り' : '対応'} ${esc(dayjs(a.decided_at).format('M/D HH:mm'))}</p>`
   }
 
   // ---------- 対応メモ（#478）。電話済み・不在・面談予定などを、書いた人・日時と一緒に残す ----------
   const QUICK_NOTES = ['電話済み', '不在（折り返し待ち）', '面談予定', '結果を連絡済み']
   function notesList(notes) {
-    return (notes || []).map(n => `<li class="flex items-start gap-1.5"><span class="text-gray-400 whitespace-nowrap">${esc(dayjs(n.created_at).format('M/D HH:mm'))} ${esc(n.author_name || '（削除された利用者）')}</span>
+    return (notes || []).map(n => `<li class="flex items-start gap-1.5"><span class="text-neutral-400 whitespace-nowrap">${esc(dayjs(n.created_at).format('M/D HH:mm'))} ${esc(n.author_name || '（削除された利用者）')}</span>
       <span class="flex-1 whitespace-pre-wrap break-words">${esc(n.body)}</span>
-      ${n.mine ? `<button class="text-gray-400 hover:text-red-600" data-action="recruitDeleteNote" data-id="${Number(n.application_id)}" data-note="${Number(n.note_id)}" title="このメモを削除"><i class="fas fa-xmark"></i></button>` : ''}</li>`).join('')
-      || '<li class="text-gray-400">まだメモはありません</li>'
+      ${n.mine ? `<button class="text-neutral-400 hover:text-danger-600" data-action="recruitDeleteNote" data-id="${Number(n.application_id)}" data-note="${Number(n.note_id)}" title="このメモを削除"><i class="fas fa-xmark"></i></button>` : ''}</li>`).join('')
+      || '<li class="text-neutral-400">まだメモはありません</li>'
   }
   function notesBlock(a) {
     const id = Number(a.application_id)
-    return `<div class="mt-3 border-t border-gray-100 pt-2 text-xs" data-notes-for="${id}">
-      <p class="text-[11px] font-bold text-gray-500 mb-1"><i class="far fa-comment-dots mr-1"></i>対応メモ</p>
+    return `<div class="mt-3 border-t border-neutral-100 pt-2 text-xs" data-notes-for="${id}">
+      <p class="text-2xs font-bold text-neutral-500 mb-1"><i class="far fa-comment-dots mr-1"></i>対応メモ</p>
       <ul class="space-y-1 rc-notes">${notesList(a.notes)}</ul>
-      <div class="flex gap-1 mt-1.5 flex-wrap">${QUICK_NOTES.map(t => `<button class="btn btn-outline text-[11px] py-0.5" data-action="recruitAddNote" data-id="${id}" data-body="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+      <div class="flex gap-1 mt-1.5 flex-wrap">${QUICK_NOTES.map(t => `<button class="btn btn-outline text-2xs py-0.5" data-action="recruitAddNote" data-id="${id}" data-body="${esc(t)}">${esc(t)}</button>`).join('')}</div>
       <div class="flex gap-1 mt-1"><input class="inp text-xs flex-1 rc-note-input" maxlength="500" placeholder="例: 10/20 14時に折り返し予定"><button class="btn btn-outline text-xs" data-action="recruitAddNote" data-id="${id}">記録</button></div>
     </div>`
   }
@@ -578,13 +578,13 @@
     const filled = [...res.filled.values()].filter(s => s.pending)
     modal(`
       <h3 class="font-bold text-lg mb-2">まとめて承認の結果</h3>
-      <p class="text-sm mb-2" id="recruit-bulk-result">${res.approved}件の日時を承認しました${res.held.length ? `。<b class="text-amber-700">${res.held.length}件</b>は確認が必要なため承認していません` : ''}${res.errors.length ? `。<b class="text-red-600">${res.errors.length}人</b>の応募は承認できませんでした` : ''}</p>
-      ${res.held.length ? `<div class="text-xs bg-amber-50 rounded p-2 mb-2"><p class="font-bold text-amber-800 mb-1">確認が必要な日時（応募のカードで内容を確かめて承認してください）</p>
-        <ul class="list-disc pl-4 space-y-1">${res.held.map(h => `<li>${esc(h.name)} ${esc(h.slot)}<br><span class="text-gray-600">${h.reasons.map(esc).join(' / ')}</span></li>`).join('')}</ul></div>` : ''}
-      ${res.errors.length ? `<div class="text-xs bg-red-50 rounded p-2 mb-2"><ul class="list-disc pl-4 space-y-1">${res.errors.map(x => `<li>${esc(x.name)}: ${esc(x.text)}</li>`).join('')}</ul></div>` : ''}
-      ${filled.length ? `<div class="text-xs bg-blue-50 rounded p-2 mb-2"><p class="font-bold mb-1">定員に達した枠に、ほかの人の未対応の応募が残っています</p>
-        <ul class="space-y-1">${filled.map(s => `<li><a class="text-blue-600 underline" href="#recruit/slot-${Number(s.slot_role_id)}" onclick="closeModal()">${esc(fmt(s.work_date))} ${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.role_name)}（${Number(s.pending)}件）</a></li>`).join('')}</ul>
-        <p class="text-[11px] text-gray-500 mt-1">開くと、その枠の残りの応募をまとめて見送れます</p></div>` : ''}
+      <p class="text-sm mb-2" id="recruit-bulk-result">${res.approved}件の日時を承認しました${res.held.length ? `。<b class="text-warning-700">${res.held.length}件</b>は確認が必要なため承認していません` : ''}${res.errors.length ? `。<b class="text-danger-600">${res.errors.length}人</b>の応募は承認できませんでした` : ''}</p>
+      ${res.held.length ? `<div class="text-xs bg-warning-50 rounded p-2 mb-2"><p class="font-bold text-warning-800 mb-1">確認が必要な日時（応募のカードで内容を確かめて承認してください）</p>
+        <ul class="list-disc pl-4 space-y-1">${res.held.map(h => `<li>${esc(h.name)} ${esc(h.slot)}<br><span class="text-neutral-600">${h.reasons.map(esc).join(' / ')}</span></li>`).join('')}</ul></div>` : ''}
+      ${res.errors.length ? `<div class="text-xs bg-danger-50 rounded p-2 mb-2"><ul class="list-disc pl-4 space-y-1">${res.errors.map(x => `<li>${esc(x.name)}: ${esc(x.text)}</li>`).join('')}</ul></div>` : ''}
+      ${filled.length ? `<div class="text-xs bg-primary-50 rounded p-2 mb-2"><p class="font-bold mb-1">定員に達した枠に、ほかの人の未対応の応募が残っています</p>
+        <ul class="space-y-1">${filled.map(s => `<li><a class="text-primary-600 underline" href="#recruit/slot-${Number(s.slot_role_id)}" onclick="closeModal()">${esc(fmt(s.work_date))} ${esc(s.start_time)}〜${esc(s.end_time)} ${esc(s.role_name)}（${Number(s.pending)}件）</a></li>`).join('')}</ul>
+        <p class="text-2xs text-neutral-500 mt-1">開くと、その枠の残りの応募をまとめて見送れます</p></div>` : ''}
       <button class="btn btn-primary w-full mt-2" onclick="closeModal()">閉じる</button>`)
   }
   // 結果のお知らせを送り直す（#151。メールが届かなかったとき・知らせずに処理したとき）
@@ -628,20 +628,20 @@
     window.__recruitApproveIds = ids
     modal(`
       <h3 class="font-bold text-lg mb-1">承認（${ids.length}件）</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(a.name)}さんはスタッフ登録がありません。どちらかを選んでください</p>
+      <p class="text-xs text-neutral-500 mb-3">${esc(a.name)}さんはスタッフ登録がありません。どちらかを選んでください</p>
       <div class="space-y-3 text-sm" id="recruit-approve-form">
-        <div class="flex items-start gap-2 p-3 rounded-lg border border-gray-200"><input type="radio" name="ra-mode" value="link" id="ra-mode-link" ${usable.length ? 'checked' : ''} class="mt-1">
+        <div class="flex items-start gap-2 p-3 rounded-lg border border-neutral-200"><input type="radio" name="ra-mode" value="link" id="ra-mode-link" ${usable.length ? 'checked' : ''} class="mt-1">
           <div class="flex-1 min-w-0"><label for="ra-mode-link">登録済みのスタッフに紐づける</label>
             <div class="flex gap-1 mt-1"><input id="ra-q" class="inp text-sm flex-1" maxlength="60" placeholder="氏名・フリガナ・スタッフ番号・電話番号で検索">
               <button type="button" class="btn btn-outline text-xs" data-action="recruitStaffSearch" data-id="${id}"><i class="fas fa-magnifying-glass"></i>検索</button></div>
             <select id="ra-staff" class="inp text-sm mt-1">${candidateOptions(cands)}</select>
-            <span class="block text-[11px] text-gray-400 mt-1">電話番号・氏名が一致する人を上に表示します。別の電話番号で応募した既存のスタッフも、検索して選べます</span></div></div>
-        <label class="flex items-start gap-2 p-3 rounded-lg border border-gray-200"><input type="radio" name="ra-mode" value="new" ${usable.length ? '' : 'checked'} class="mt-1">
+            <span class="block text-2xs text-neutral-400 mt-1">電話番号・氏名が一致する人を上に表示します。別の電話番号で応募した既存のスタッフも、検索して選べます</span></div></div>
+        <label class="flex items-start gap-2 p-3 rounded-lg border border-neutral-200"><input type="radio" name="ra-mode" value="new" ${usable.length ? '' : 'checked'} class="mt-1">
           <span class="flex-1">仮登録を作成する（氏名・電話番号）
             <select id="ra-type" class="inp text-sm mt-1" onchange="document.getElementById('ra-partner-box').classList.toggle('hidden', this.value!=='partner_manual')">
               ${Object.entries(TYPE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
             <span id="ra-partner-box" class="hidden block mt-1"><select id="ra-partner" class="inp text-sm"><option value="">協力会社を選択</option>${partners.map(p => `<option value="${p.affiliation_id}">${esc(p.affiliation_name)}</option>`).join('')}</select></span>
-            <span class="block text-[11px] text-gray-400 mt-1">ログインは発行しません。報告用URL・代理入力で勤怠を記録できます。後からスタッフ詳細で本登録できます</span></span></label>
+            <span class="block text-2xs text-neutral-400 mt-1">ログインは発行しません。報告用URL・代理入力で勤怠を記録できます。後からスタッフ詳細で本登録できます</span></span></label>
       </div>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
         <button class="btn btn-primary flex-1" data-action="recruitApproveUnregistered" data-id="${id}">承認してシフトを確定</button></div>`)

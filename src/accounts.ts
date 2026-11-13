@@ -18,13 +18,14 @@ import { accountEmailChangedEmail } from './email-templates/account-email'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
 import { appBaseUrl } from './lib/http'
+import { requirePerm, ADMIN_ROLES } from './lib/permissions'
 
 type Bindings = { DB: D1Database; RESEND_API_KEY: string; MAIL_FROM: string; APP_BASE_URL: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
 type Env = { Bindings: Bindings; Variables: Variables }
 
-/** 管理系のロール（本部 system_admin は含めない） */
-export const ADMIN_ACCOUNT_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff'] as const
+/** 管理系のロール（本部 system_admin は含めない。権限の表 src/lib/permissions.ts の4ロール） */
+export const ADMIN_ACCOUNT_ROLES = ADMIN_ROLES
 /** 本部専用の企業行の active_status（0033。本部の企業一覧・課金の集計に出さない） */
 export const HQ_COMPANY_STATUS = 'internal'
 const USER_STATUSES = ['active', 'suspended']
@@ -296,10 +297,7 @@ async function loginUserId(db: D1Database, u: any): Promise<number> {
 // 管理者アカウント（/api/admin/users。会社管理者のみ）
 // =========================================================
 export const adminUsersApi = new Hono<Env>()
-const companyAdminOnly = async (c: any, next: () => Promise<void>) => {
-  if (c.get('user')?.role !== 'company_admin') return c.json({ error: '管理者アカウントの管理は会社管理者だけが行えます' }, 403)
-  return next()
-}
+const companyAdminOnly = requirePerm('admin_users.manage', '管理者アカウントの管理は会社管理者だけが行えます')
 adminUsersApi.use('/users', companyAdminOnly)
 adminUsersApi.use('/users/*', companyAdminOnly)
 

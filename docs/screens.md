@@ -20,6 +20,7 @@ Field OS の画面の一覧です。新しく加わる開発者や外部の開�
 - `/staff`・`/admin`・`/hq` は、それぞれ1つのページ（SPA）で、ハッシュが変わると `route()` が描き直します。
 - 共通の部品は `public/static/common.js` にあります（HTML のエスケープ `esc`・ボタンの処理をまとめる `delegate`・二重送信を防ぐ `withSubmitLock` など）。画面の文字列に値を入れるときは `esc` を通し、`onclick` などの属性に値を埋め込まず、`data-*` と `delegate` を使います。
 - 見た目は Tailwind CSS（`npm run build` で `public/static/style.css` を作ります）と、`card`・`badge`・`btn`・`inp` などのクラスです。
+  色・角丸・影・文字の大きさは `src/input.css` の `:root` の変数（トークン）で決めます（`bg-primary-600`・`text-neutral-500`・`bg-surface` など。一覧と使い方は [design-tokens.md](design-tokens.md)）。
 - 外部のライブラリ（axios・dayjs・Chart.js・flatpickr など）は jsDelivr から、版を固定して読み込みます（`src/index.tsx` の `SRI`）。
 
 ## 2. ページ（URL）と読み込む JS
@@ -135,7 +136,7 @@ flowchart LR
   - `#attendance-history` 履歴・CSV
 - **人材**
   - `#staff` スタッフマスタ
-  - `#employees` 従業員管理（会社管理者・事務担当だけに出す）
+  - `#employees` 従業員管理（権限の表の `hr.manage` を持つロールだけに出す）
   - `#partners` 協力会社
   - `#recruit` 募集・応募
   - `#consult` 相談対応
@@ -213,7 +214,7 @@ flowchart LR
 | `#report` | 日報入力 | `renderReportWithHistory` [static/staff.js:1741](../public/static/staff.js#L1741) | POST `/api/staff/daily-report`<br>GET `/api/staff/daily-report/:shiftId`<br>GET `/api/staff/handover/:shiftId`<br>GET `/api/staff/home`<br>GET `/api/staff/my-reports`<br>GET `/api/staff/pending-daily-reports` |
 | `#shift` | シフト | `renderShifts` [static/staff.js:1286](../public/static/staff.js#L1286) | GET `/api/staff/availability/summary`<br>GET `/api/staff/shifts` |
 
-### `/admin`（ルートの表: [admin-menu.ts:36](../src/admin-menu.ts#L36)）
+### `/admin`（ルートの表: [admin-menu.ts:37](../src/admin-menu.ts#L37)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|
