@@ -5,7 +5,7 @@
 //       （scripts/w26-perms-baseline.json）と突き合わせる
 //   (2) 画面: /admin・/staff・/hq・/ の行き先、管理画面の左のメニューの項目がロールごとに前と同じ
 //   (3) /api/auth/me の permissions が表（src/lib/permissions.ts）と同じで、can_manage_hr も前と同じ
-//   (4) 表の中身: 4ロールの操作の一覧、表にない操作は会社管理者だけ、docs/permissions.md に全部の操作がある
+//   (4) 表の中身: 4ロールの操作の一覧、表にない操作の名前はだれにも許さない、ロールの直書きが残っていない、docs/permissions.md に全部の操作がある
 //   ロール: ログインなし・staff・company_admin・office_staff・field_manager・sales_manager・system_admin・本部の閲覧（system_admin が企業の許可で管理画面を見る）。
 //   roster_only はログインできない（名簿のみ）、client_viewer は最初の DB のコメントにだけある名前で、使っている行はない
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
