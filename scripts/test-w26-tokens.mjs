@@ -223,7 +223,8 @@ else {
     const cs = (sel, prop) => `getComputedStyle(document.querySelector(${JSON.stringify(sel)})).getPropertyValue(${JSON.stringify(prop)})`
     const before = await ev(`JSON.stringify({ body: ${cs('body', 'background-color')}, logo: ${cs('.shadow-brand', 'background-color')}, shadow: ${cs('.shadow-brand', 'box-shadow')}, card: ${cs('.rounded-2xl.bg-surface', 'border-radius')}, font: ${cs('body', 'font-family')}, color: ${cs('body', 'color')} })`)
     const b = JSON.parse(before || '{}')
-    ok('6) ログインの画面: 地・ロゴ・影・角丸・文字の色が前と同じ値', b.body === 'rgb(249, 250, 251)' && b.logo === 'rgb(37, 99, 235)' && b.shadow === 'rgb(191, 219, 254) 0px 10px 15px -3px, rgb(191, 219, 254) 0px 4px 6px -4px' && b.card === '16px' && /Hiragino Kaku Gothic ProN/.test(b.font) && b.color === 'rgb(0, 0, 0)', b)
+    // 影の前の 2 つ（rgba(0, 0, 0, 0) 0px 0px 0px 0px）は Tailwind の ring の空の値で、トークン化の前から付いている
+    ok('6) ログインの画面: 地・ロゴ・影・角丸・文字の色が前と同じ値', b.body === 'rgb(249, 250, 251)' && b.logo === 'rgb(37, 99, 235)' && String(b.shadow).replace(/^(rgba\(0, 0, 0, 0\) 0px 0px 0px 0px, )+/, '') === 'rgb(191, 219, 254) 0px 10px 15px -3px, rgb(191, 219, 254) 0px 4px 6px -4px' && b.card === '16px' && /Hiragino Kaku Gothic ProN/.test(b.font) && b.color === 'rgb(0, 0, 0)', b)
     ok('6) tokenColor が :root の色を rgba() で返す', await ev(`tokenColor('primary', .15, 'x') + '|' + tokenColor('primary-600') + '|' + tokenColor('no-such', 1, 'fb')`) === 'rgba(37,99,235,0.15)|rgba(37,99,235,1)|fb')
     // 候補を当てるときと同じように、段の変数の値だけを変えると、クラスで付けた色も共通クラスの色も変わる
     const after = await ev(`(() => { const r = document.documentElement.style; r.setProperty('--color-primary-600', '31 95 175'); r.setProperty('--color-neutral-50', '246 247 249'); r.setProperty('--radius-2xl', '8px');
