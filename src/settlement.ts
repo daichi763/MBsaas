@@ -113,8 +113,19 @@ const sameActual = (a: { start: string | null; end: string | null; brk: number |
 const REPORT_COLS = ACTUAL_REPORT_TYPES.map(t => `(SELECT a.reported_at FROM attendance_reports a WHERE a.shift_id = s.shift_id AND a.report_type = '${t}') AS r_${t}`).join(',\n      ')
 // 精算の一覧では、シフトの報告を1回の副問い合わせでまとめて読み（種類ごと・端末の数え方ごとに読み直さない。#9938）、applyReportJson で
 // REPORT_COLS と同じ r_check_in などの列と、報告用URLの端末の数（link_devices）にする
-const REPORT_JSON_COL = `(SELECT json_group_array(json_array(a.report_type, a.reported_at, a.entry_method, a.device_id, a.device_info))
+// 端末ID・user-agent は報告用URLの報告（entry_method = 'link'）の端末の数にだけ使うので、ほかの報告では読まない
+// （アプリの報告の user-agent は1件 100〜300 文字あり、シフトごとに8件を読むと結果が大きくなり Worker の CPU を使うため。#9970）
+const REPORT_JSON_COL = `(SELECT json_group_array(json_array(a.report_type, a.reported_at, a.entry_method,
+          CASE WHEN a.entry_method = 'link' THEN a.device_id END, CASE WHEN a.entry_method = 'link' THEN a.device_info END))
         FROM attendance_reports a WHERE a.shift_id = s.shift_id) AS reports_json`
+// 精算の一覧で読むシフトの列（s.* から、精算の計算・表示に使わない列（登録者・メモ・枠・単価の由来・スタッフの返信・前日確認など）を除いたもの。
+// 結果を小さくして Worker の CPU を減らす #9970）。計算に使う列を足したら、ここにも足す
+const SETTLE_SHIFT_COLUMNS = ['shift_id', 'company_id', 'staff_id', 'project_id', 'work_date', 'start_time', 'end_time', 'location', 'role', 'unit_price', 'transportation_fee', 'status',
+  'site_id', 'break_minutes', 'bill_unit_type', 'bill_rate', 'bill_qty', 'pay_unit_type', 'pay_rate', 'pay_qty', 'pay_amount',
+  'bill_transport_type', 'bill_transport_amount', 'pay_transport_type', 'pay_transport_amount', 'bill_adjust', 'pay_adjust', 'adjust_note',
+  'payee_type', 'payee_affiliation_id', 'payee_company_id', 'price_locked', 'attendance_mode', 'daily_report_mode',
+  'actual_start', 'actual_end', 'actual_break_minutes', 'actual_source', 'actual_note', 'settle_status', 'settled_at', 'settled_by',
+  'attendance_types_fixed', 'qty_locked', 'absent_at', 'pay_premium', 'premium_night_minutes', 'premium_overtime_minutes', 'premium_holiday_minutes'].map(c => 's.' + c).join(', ')
 function applyReportJson(r: any) {
   let reps: any[] = []
   try { reps = JSON.parse(r.reports_json || '[]') } catch { }
@@ -339,7 +350,7 @@ export async function loadSettleMoney(db: D1Database, companyId: number, from: s
 async function loadRows(db: D1Database, companyId: number, f: Filters, shiftIds?: number[]) {
   const { w, bind } = settleWhere(companyId, f, shiftIds)
   // manual_correction_at: 実績が手入力のときに承認した打刻修正（承認の操作履歴に applied_while_manual を記録している）
-  const rows = (await db.prepare(`SELECT s.*, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, cl.client_name,
+  const rows = (await db.prepare(`SELECT ${SETTLE_SHIFT_COLUMNS}, p.project_name, p.client_id, p.hours_basis, p.time_round_minutes, p.pay_time_round, p.default_break_minutes, cl.client_name,
       st.site_name, us.name AS staff_name, sp.affiliation_type, er.employee_number,
       aff.affiliation_name AS payee_affiliation_name, pco.company_name AS payee_company_name,
       (SELECT MAX(c.decided_at) FROM attendance_corrections c WHERE c.shift_id = s.shift_id AND c.status = 'approved') AS last_correction_at,

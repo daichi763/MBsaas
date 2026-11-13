@@ -27,7 +27,8 @@ export function atMinutes(workDate: string, minutes: number): string {
   const days = Math.floor(minutes / 1440)
   const rest = minutes - days * 1440
   const hh = String(Math.floor(rest / 60)).padStart(2, '0'), mm = String(rest % 60).padStart(2, '0')
-  return `${addDays(workDate, days)} ${hh}:${mm}:00`
+  // 同じ日なら日付の計算（Date）をしない（精算・ホームで行ごとに何度も呼ぶため。#9970）
+  return `${days === 0 && /^\d{4}-\d{2}-\d{2}$/.test(workDate) ? workDate : addDays(workDate, days)} ${hh}:${mm}:00`
 }
 const earlier = (a: string, b: string) => (a < b ? a : b)
 const later = (a: string, b: string) => (a > b ? a : b)

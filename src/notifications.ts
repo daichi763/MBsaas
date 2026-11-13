@@ -457,8 +457,11 @@ function notificationRoutes(scope: 'admin' | 'staff') {
   }
   app.post('/notifications/:id{[0-9]+}/read', async (c) => {
     const ids = await userIds(c)
-    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = COALESCE(read_at, ?) WHERE notification_id = ? AND ${inIds(ids)}`).bind(nowJST(), c.req.param('id'), ...ids).run()
-    if (!r.meta.changes) return c.json({ error: '通知が見つかりません' }, 404)
+    // 既読の行は書き直さない（開くたびに同じ行を書くと書き込みの行数が増えるため。#9976）。0件なら、すでに既読か無いかを確かめる
+    const r = await c.env.DB.prepare(`UPDATE user_notifications SET read_at = ? WHERE notification_id = ? AND ${inIds(ids)} AND read_at IS NULL`).bind(nowJST(), c.req.param('id'), ...ids).run()
+    if (!r.meta.changes && !(await c.env.DB.prepare(`SELECT 1 FROM user_notifications WHERE notification_id = ? AND ${inIds(ids)}`).bind(c.req.param('id'), ...ids).first())) {
+      return c.json({ error: '通知が見つかりません' }, 404)
+    }
     return c.json({ ok: true })
   })
   return app

@@ -823,8 +823,11 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
 const IN_SERVICE_BATCH = 500
 const IN_SERVICE_MAX_BATCHES = 4
 const ENDED_EMPLOYMENT_BATCH = 50 // 雇用終了の従業員データを1回で消す人数
-// 位置情報・写真が残っている勤怠の行。migrations/0063 の部分索引 idx_attendance_location_photo と同じ式にする
-const LOCATION_PHOTO_SQL = '(latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL)'
+// 位置情報・写真が残っている勤怠の行。migrations/0063 の部分索引 idx_attendance_location_photo と同じ式にする。
+// 別名（alias）を付けた形は、ほかの表と結合する文で使う（本部の週次アクティブ。#9976）
+export const locationPhotoSql = (alias = '') =>
+  '(' + ['latitude', 'longitude', 'address', 'device_info', 'device_id', 'photo_key'].map(c => `${alias ? alias + '.' : ''}${c} IS NOT NULL`).join(' OR ') + ')'
+const LOCATION_PHOTO_SQL = locationPhotoSql()
 // 在職中の削除の対象（dry-run・実行ログの対象名）
 export const IN_SERVICE_TARGETS = ['attendance_location', 'attendance_photos', 'consultations_done', 'follow_logs_done', 'board_proposals_settled',
   'ended_employee_records', 'ended_employee_documents', 'ended_employment_periods'] as const
@@ -1181,6 +1184,9 @@ export type OffboardingTable = {
 const OB_USERS = `(SELECT user_id FROM users WHERE company_id = $C AND role != 'system_admin')`
 const OB_STAFF = '(SELECT staff_id FROM staff_profiles WHERE company_id = $C)'
 const OB_CO = 'company_id = $C'
+// 打刻は企業の索引（idx_attendance_company）を使わず、その企業のシフト・スタッフから引く（打刻のたびの索引の書き込みを減らすため、
+// 次の Sprint でこの索引を消す。#9976）。company_id の条件も残し、ほかの企業の行には触れない
+const OB_ATTENDANCE = `${OB_CO} AND (shift_id IN (SELECT shift_id FROM shifts WHERE company_id = $C) OR staff_id IN ${OB_STAFF})`
 const OB_NOTICES = 'notice_id IN (SELECT notice_id FROM notices WHERE company_id = $C)'
 // 削除の順（参照する側が先）。書き出しにもこの一覧を使う
 export const OFFBOARDING_TABLES: OffboardingTable[] = [
@@ -1195,7 +1201,7 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'attendance_correction_events', label: '打刻修正の操作履歴', table: 'attendance_correction_events', where: OB_CO },
   { target: 'notification_emails', label: '打刻修正の通知メール', table: 'notification_emails', where: OB_CO },
   { target: 'attendance_corrections', label: '打刻修正の申請', table: 'attendance_corrections', where: OB_CO },
-  { target: 'attendance_reports', label: '出退勤記録', table: 'attendance_reports', where: OB_CO },
+  { target: 'attendance_reports', label: '出退勤記録', table: 'attendance_reports', where: OB_ATTENDANCE },
   // Sprint 15（w15-report-edit）: 日報の実績の修正の履歴（#9707）
   { target: 'daily_report_edits', label: '日報の実績の修正の履歴', table: 'daily_report_edits', where: OB_CO },
   // Sprint 24（w24-requests）: 日報のコメント（#9965）
@@ -1306,10 +1312,11 @@ const OFFBOARDING_KEPT_TABLES = ['login_events', 'roster_consents', 'board_posts
 // 書き出しで出さない列（ログインの秘密の情報と、他社との連携に使う鍵）
 const OFFBOARDING_SECRET_COL_RE = /password|secret|token|recovery|totp|link_key|relink_code/i
 
-// R2 のファイル（写真・書類）。source は元の表（ファイルの取得は表と行の ID で行う）
-type ObFileSource = { source: string; bucket: 'photos' | 'documents' | 'contracts'; idCol: string; keyCol: string; nameCol: string | null; whenCol: string; refCol: string }
+// R2 のファイル（写真・書類）。source は元の表（ファイルの取得は表と行の ID で行う）。
+// where は企業の行の条件（$C を企業 ID に置き換える。省略時は company_id = $C）
+type ObFileSource = { source: string; bucket: 'photos' | 'documents' | 'contracts'; idCol: string; keyCol: string; nameCol: string | null; whenCol: string; refCol: string; where?: string }
 export const OFFBOARDING_FILE_SOURCES: ObFileSource[] = [
-  { source: 'attendance_reports', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id' },
+  { source: 'attendance_reports', bucket: 'photos', idCol: 'attendance_id', keyCol: 'photo_key', nameCol: null, whenCol: 'reported_at', refCol: 'staff_id', where: OB_ATTENDANCE },
   { source: 'staff_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'employee_documents', bucket: 'documents', idCol: 'document_id', keyCol: 'storage_key', nameCol: 'original_file_name', whenCol: 'uploaded_at', refCol: 'staff_id' },
   { source: 'attendance_correction_attachments', bucket: 'photos', idCol: 'attachment_id', keyCol: 'photo_key', nameCol: null, whenCol: 'created_at', refCol: 'staff_id' },
@@ -1328,6 +1335,7 @@ function obWhere(where: string, companyId: number): { sql: string; binds: number
   const parts = where.split('$C')
   return { sql: `(${parts.join('?')})`, binds: Array(parts.length - 1).fill(companyId) }
 }
+const fileWhere = (f: ObFileSource) => f.where || OB_CO
 
 /**
  * 企業のデータの件数（表ごと・R2 のファイルの元の表ごと）。問い合わせの回数を抑えるため1文で数える（企業 ID は WITH で1回だけ渡す）。
@@ -1337,7 +1345,7 @@ export async function countOffboardingData(db: D1Database, companyId: number): P
   const cid = '(SELECT cid FROM k)'
   const cols = [
     ...OFFBOARDING_TABLES.map((t, i) => `(SELECT COUNT(*) FROM ${t.table} WHERE (${t.where.split('$C').join(cid)})) AS t${i}`),
-    ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = ${cid} AND ${f.keyCol} IS NOT NULL) AS f${i}`),
+    ...OFFBOARDING_FILE_SOURCES.map((f, i) => `(SELECT COUNT(*) FROM ${f.source} WHERE (${fileWhere(f).split('$C').join(cid)}) AND ${f.keyCol} IS NOT NULL) AS f${i}`),
   ]
   // D1 は1つの結果の列を 100 までしか返せないので、OFFBOARDING_COUNT_COLS 列ずつの文に分けて1回の batch で数える（表を足して 100 を超えたため。w6-push）
   const parts: string[][] = []
@@ -1384,16 +1392,17 @@ export async function listOffboardingFiles(db: D1Database, companyId: number, of
   // 元の表が増えて UNION ALL でまとめると D1 の上限（too many terms in compound SELECT）に当たるため、表ごとに問い合わせる
   const sources = [...OFFBOARDING_FILE_SOURCES].sort((x, y) => x.source < y.source ? -1 : x.source > y.source ? 1 : 0)
   const cnt = await db.prepare(`WITH k(cid) AS (SELECT ?) SELECT ${sources.map((f, i) =>
-    `(SELECT COUNT(*) FROM ${f.source} WHERE company_id = (SELECT cid FROM k) AND ${f.keyCol} IS NOT NULL) AS c${i}`).join(', ')}`).bind(companyId).first() as Record<string, number> | null
+    `(SELECT COUNT(*) FROM ${f.source} WHERE (${fileWhere(f).split('$C').join('(SELECT cid FROM k)')}) AND ${f.keyCol} IS NOT NULL) AS c${i}`).join(', ')}`).bind(companyId).first() as Record<string, number> | null
   const out: OffboardingFile[] = []
   let skip = Math.max(0, offset), want = Math.max(0, limit)
   for (let i = 0; i < sources.length && want > 0; i++) {
     const n = Number(cnt?.[`c${i}`]) || 0
     if (skip >= n) { skip -= n; continue }
     const f = sources[i]
+    const w = obWhere(fileWhere(f), companyId)
     const rows = (await db.prepare(`SELECT '${f.source}' AS source, '${f.bucket}' AS bucket, ${f.idCol} AS id, ${f.keyCol} AS r2_key,
         ${f.nameCol || 'NULL'} AS file_name, ${f.whenCol} AS created_at, ${f.refCol} AS ref_id
-      FROM ${f.source} WHERE company_id = ? AND ${f.keyCol} IS NOT NULL ORDER BY ${f.idCol} LIMIT ? OFFSET ?`).bind(companyId, want, skip).all()).results as OffboardingFile[]
+      FROM ${f.source} WHERE ${w.sql} AND ${f.keyCol} IS NOT NULL ORDER BY ${f.idCol} LIMIT ? OFFSET ?`).bind(...w.binds, want, skip).all()).results as OffboardingFile[]
     out.push(...rows); want -= rows.length; skip = 0
   }
   return out
@@ -1435,8 +1444,11 @@ export async function runOffboardingDeletion(db: D1Database, buckets: Offboardin
     while (used < OFFBOARDING_QUERY_BUDGET && step < N + 3) {
       if (step === 0) {
         // R2 のキーを控える（D1 の行を消すとキーが分からなくなるため、最初にまとめて控える）
-        await db.batch(OFFBOARDING_FILE_SOURCES.map(f => db.prepare(`INSERT OR IGNORE INTO offboarding_pending_r2 (bucket, r2_key, offboarding_id)
-          SELECT '${f.bucket}', ${f.keyCol}, ? FROM ${f.source} WHERE company_id = ? AND ${f.keyCol} IS NOT NULL`).bind(oid, cid)))
+        await db.batch(OFFBOARDING_FILE_SOURCES.map(f => {
+          const w = obWhere(fileWhere(f), cid)
+          return db.prepare(`INSERT OR IGNORE INTO offboarding_pending_r2 (bucket, r2_key, offboarding_id)
+          SELECT '${f.bucket}', ${f.keyCol}, ? FROM ${f.source} WHERE ${w.sql} AND ${f.keyCol} IS NOT NULL`).bind(oid, ...w.binds)
+        }))
         used++; step++
       } else if (step <= N) {
         const t = OB_DELETE_TABLES[step - 1]
