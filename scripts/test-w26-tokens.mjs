@@ -58,18 +58,19 @@ ok(':root に変数がある（段の色・役割の色・角丸・影・文字�
     for (const m of s.matchAll(/(?<![\w-])(?:[a-z0-9-]+:)*text-\[(9|10|11)px\]/g)) sizes.push(f + ' ' + m[0])
   }
   ok('1) bg-white は bg-surface に、text-[11px]・[10px]・[9px] は text-2xs・3xs・4xs に置き換わっている', !bgWhite.length && !sizes.length, { bgWhite, sizes })
-  // style の直書きの色（#xxxxxx・rgba）。印刷用の別ウィンドウ・CDN の部品が読めないときの案内・グラフの色だけは残す
+  // style の直書きの色（#xxxxxx）。印刷用の別ウィンドウ・CDN の部品が読めないときの案内・グラフの色だけは残す。
+  // 透明度つきの rgba() は残す（rgb(var(--…) / a) にすると Chrome の重ね方が変わって 1 段ずれるため。docs/design-tokens.md）
   const hex = []
   for (const f of cm.targetFiles().filter(f => /^public\/static\/|^src\/index\.tsx$/.test(f))) {
     read(f).split('\n').forEach((l, i) => {
       if (/<style>|LIB_FALLBACK|theme-color|ACHART_|window\.open|tokenColor\(/.test(l)) return
       for (const m of l.matchAll(/(style="[^"]*"|style='[^']*'|cssText\s*=\s*'[^']*'|^#tour-[^{]*\{.*)/g)) {
-        const bad = m[0].match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b(?![0-9a-fA-F])|rgba\((?!0,\s*0,\s*0,)[^)]*\)/g)
+        const bad = m[0].match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b(?![0-9a-fA-F])|rgb\(var\([^)]*\)\s*\/[^)]*\)/g)
         if (bad) hex.push(`${f}:${i + 1} ${bad.join(' ')}`)
       }
     })
   }
-  ok('1) 画面の JS・index.tsx の style・cssText・案内の CSS に #xxxxxx・rgba（黒の影を除く）が残っていない', hex.length === 0, hex)
+  ok('1) 画面の JS・index.tsx の style・cssText・案内の CSS に #xxxxxx が残っていない（透明度つきの色を rgb(var(--…) / a) で作っていない）', hex.length === 0, hex)
   const chart = read('public/static/admin.js')
   ok('1) グラフ（canvas）の主色は tokenColor で変数から読む（読めないときは今の値）', (chart.match(/tokenColor\('primary', [.\d]+, '(#2563eb|rgba\(37,99,235,\.15\))'\)/g) || []).length === 5 && !/['"]#2563eb['"],/.test(chart.replace(/tokenColor\([^)]*\)/g, '')), (chart.match(/tokenColor\([^)]*\)/g) || []).length)
   const common = read('public/static/common.js')
@@ -126,9 +127,9 @@ ok(':root に変数がある（段の色・役割の色・角丸・影・文字�
   // 共通クラスの値（役割の変数をたどった値）が、前の直書きの値と同じ
   const was = {
     '.card': ['rgb(255 255 255)', 'rgb(243 244 246)', '1rem', '0 1px 2px rgba(0,0,0,.03)'],
-    '.btn-primary': ['rgb(37 99 235)'], '.inp:focus': ['rgb(59 130 246)', 'rgb(59 130 246 / .1)'], '.modal-bg': ['rgb(15 23 42 / .5)'],
+    '.btn-primary': ['rgb(37 99 235)'], '.inp:focus': ['rgb(59 130 246)', '0 0 0 3px rgba(59,130,246,.1)'], '.modal-bg': ['rgba(15,23,42,.5)'],
     '.badge-purple': ['rgb(237 233 254)', 'rgb(109 40 217)'], '.toast-msg': ['rgb(17 24 39)', 'rgb(255 255 255)', '.8rem', '.85rem', '0 8px 20px rgba(0,0,0,.25)'],
-    '.report-btn.next': ['rgb(37 99 235)', 'rgb(239 246 255)', '0 4px 12px rgb(37 99 235 / .12)'],
+    '.report-btn.next': ['rgb(37 99 235)', 'rgb(239 246 255)', '0 4px 12px rgba(37,99,235,.12)'],
   }
   const badC = []
   for (const [sel, vals] of Object.entries(was)) {
@@ -142,8 +143,8 @@ ok(':root に変数がある（段の色・役割の色・角丸・影・文字�
 // ---------- 4) input.css・tailwind.config ----------
 {
   const outside = css.replace(/:root\s*\{[\s\S]*?\n {2}\}/, '').replace(/\/\*[\s\S]*?\*\//g, '')
-  const hex = outside.match(/#[0-9a-fA-F]{3,6}\b(?![\w-]*\s*[{,])|rgba?\([0-9][^)]*\)/g) || []
-  ok('4) src/input.css の :root の外に #xxxxxx・rgba() の直書きが無い（色は変数から）', hex.length === 0, hex)
+  const hex = outside.match(/#[0-9a-fA-F]{3,6}\b(?![\w-]*\s*[{,])|rgba?\([0-9][^)]*\)|rgb\(var\([^)]*\)\s*\/[^)]*\)/g) || []
+  ok('4) src/input.css の :root の外に #xxxxxx・rgba() の直書きが無く、透明度つきの色を rgb(var(--…) / a) で作っていない', hex.length === 0, hex)
   const used = new Set([...css.matchAll(/var\((--[a-z0-9-]+)/g)].map(m => m[1]))
   const cfg = read('tailwind.config.js')
   const fam = [...cfg.matchAll(/family\('([a-z0-9-]+)'/g)].map(m => m[1])
@@ -154,7 +155,7 @@ ok(':root に変数がある（段の色・役割の色・角丸・影・文字�
   const local = new Set(['--side-w', '--tw-shadow', '--tw-ring-offset-shadow', '--tw-ring-shadow'])
   const missing = [...used].filter(v => !v.endsWith('-') && !VARS.has(v) && !local.has(v))
   ok('4) 使っている変数（input.css・tailwind.config.js・画面の JS の style）は、すべて :root にある', missing.length === 0, missing)
-  const need = ['--color-bg', '--color-surface', '--color-primary', '--color-primary-hover', '--color-primary-soft', '--color-text', '--color-text-sub', '--color-muted', '--color-border', '--color-danger', '--color-success', '--color-warning', '--color-on-primary', '--radius-card', '--radius-ctrl', '--shadow-card', '--font-sans']
+  const need = ['--color-bg', '--color-backdrop', '--color-surface', '--color-primary', '--color-primary-hover', '--color-primary-soft', '--color-text', '--color-text-sub', '--color-muted', '--color-border', '--color-danger', '--color-success', '--color-warning', '--color-on-primary', '--radius-card', '--radius-ctrl', '--shadow-card', '--font-sans']
   ok('4) 候補 A〜G を値の差し替えで当てるための役割の変数がある（bg・surface・primary・text・muted・border・danger・角丸・影・文字）', need.every(v => VARS.has(v)), need.filter(v => !VARS.has(v)))
   ok('4) 役割の色は段の色を指す（段の値を変えれば、共通クラスとクラスの両方が変わる）', VARS.get('--color-primary') === 'var(--color-primary-600)' && VARS.get('--color-border') === 'var(--color-neutral-200)' && VARS.get('--color-muted') === 'var(--color-neutral-500)')
   ok('4) tailwind.config.js は色・角丸・影・文字の大きさを変数で決める（theme.extend）', /primary: family\('primary'/.test(cfg) && /lg: 'var\(--radius-lg\)'/.test(cfg) && /lg: 'var\(--shadow-lg\)'/.test(cfg) && /xs: \['var\(--text-xs\)', \{ lineHeight: 'var\(--leading-xs\)' \}\]/.test(cfg) && /<alpha-value>/.test(cfg))

@@ -51,13 +51,9 @@ async function styleValue(s) {
       if (k === '#ffffff') return 'rgb(var(--color-surface))'
       return t.has(k) ? `rgb(var(--color-${t.get(k)}))` : h
     })
-    // rgba(R,G,B,透明度): 段の色と同じ R G B なら変数にする（白は面、モーダルの後ろの暗い色は --color-overlay。黒の影はそのまま）
-    .replace(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([.\d]+)\)/g, (m, r, g, b, a) => {
-      const k = '#' + [r, g, b].map(v => Number(v).toString(16).padStart(2, '0')).join('')
-      if (k === '#ffffff') return `rgb(var(--color-surface) / ${a})`
-      if (k === '#0f172a') return `rgb(var(--color-overlay) / ${a})`
-      return t.has(k) ? `rgb(var(--color-${t.get(k)}) / ${a})` : m
-    })
+  // 透明度つきの rgba(R,G,B,a) は変えない。rgb(var(--…) / a) にすると、Chrome は透明度を丸めずに重ねるため、
+  // 重ねた色が 1 段（255 段階の 1）ずれることがある（rgba(15,23,42,.5) は 148、rgb(15 23 42 / .5) は 149）。
+  // 見た目を変えないため、透明度つきの色は src/input.css では値ごとの変数（--color-backdrop・--shadow-focus など）にし、JS の中は今の値のままにする
 }
 
 // style を置き換えない行（別ウィンドウの印刷・メールなど、style.css を読まない HTML）。

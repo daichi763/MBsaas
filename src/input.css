@@ -11,7 +11,8 @@
 @layer base {
   /* ---------- 見た目のトークン ----------
      見た目を変えるときは、この値だけを変える（クラスや画面の JS は変えない）。今の値は、トークン化の前の見た目と同じ。
-     色は「R G B」の 3 つの数（rgb(var(--color-…)) や rgb(var(--color-…) / .5) で使う。Tailwind のクラスは tailwind.config.js が同じ変数を見る） */
+     色は「R G B」の 3 つの数（rgb(var(--color-…)) で使う。Tailwind のクラスは tailwind.config.js が同じ変数を見る）。
+     透明度つきの色は rgb(var(--…) / .5) にせず、--color-backdrop・--shadow-focus のように値ごとの変数にする（下の説明） */
   :root {
     /* 段のある色。neutral = 灰、primary = 主色、danger = 誤り・削除、warning = 注意、success = 済み・正常、
        accent・accent-2・accent-3 = 分類の差し色、notice = 位置なし・仮押さえなど、success-2・warning-2 = 少しだけ使う別の緑・黄、
@@ -99,7 +100,8 @@
     --color-success-soft: var(--color-success-50);
     --color-warning: var(--color-warning-700);
     --color-warning-soft: var(--color-warning-100);
-    --color-overlay: 15 23 42;                        /* モーダルの後ろを暗くする色（.5 の透明度で使う） */
+    /* 透明度つきの色・影は、値ごとの変数にする（rgb(var(--…) / .5) で作ると、Chrome の重ね方が変わって 1 段ずれることがあるため） */
+    --color-backdrop: rgba(15,23,42,.5);              /* モーダルの後ろを暗くする色 */
     --color-toast: var(--color-neutral-900);          /* トーストの地 */
 
     /* 角丸。段（rounded・rounded-lg など）と、共通クラスの役割 */
@@ -117,7 +119,10 @@
     --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
     --shadow-brand: 0 10px 15px -3px rgb(var(--color-primary-200)), 0 4px 6px -4px rgb(var(--color-primary-200)); /* ログインの画面のロゴ */
     --shadow-card: 0 1px 2px rgba(0,0,0,.03);
-    --shadow-next: 0 4px 12px rgb(var(--color-primary-600) / .12); /* スタッフアプリの次の報告 */
+    --shadow-next: 0 4px 12px rgba(37,99,235,.12);   /* スタッフアプリの次の報告（主色の影） */
+    --shadow-focus: 0 0 0 3px rgba(59,130,246,.1);   /* 入力欄のフォーカス（--color-focus の色） */
+    --shadow-cell-selected: 0 0 0 3px rgba(37,99,235,.15); /* シフト管理の選んだマス */
+    --shadow-cell-bulk: 0 0 0 3px rgba(220,38,38,.18);     /* シフト管理のまとめて削除で選んだマス */
     --shadow-toast: 0 8px 20px rgba(0,0,0,.25);
     --shadow-float: 0 10px 25px rgba(0,0,0,.12);        /* 開いたメニュー */
     --shadow-float-strong: 0 10px 25px rgba(0,0,0,.15); /* 下に固定した保存のバー */
@@ -191,7 +196,7 @@
 
   /* フォーム */
   .inp { width: 100%; padding: .6rem .8rem; border: 1px solid rgb(var(--color-border)); border-radius: var(--radius-ctrl); font-size: var(--text-input); outline: none; }
-  .inp:focus { border-color: rgb(var(--color-focus)); box-shadow: 0 0 0 3px rgb(var(--color-focus) / .1); }
+  .inp:focus { border-color: rgb(var(--color-focus)); box-shadow: var(--shadow-focus); }
   .btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; padding: .55rem 1rem; border-radius: var(--radius-ctrl); font-weight: 700; font-size: var(--text-btn); transition: all .15s; cursor: pointer; }
   .btn-primary { background: rgb(var(--color-primary)); color: rgb(var(--color-on-primary)); }
   .btn-primary:hover { background: rgb(var(--color-primary-hover)); }
@@ -201,7 +206,7 @@
   .btn:disabled { opacity: .5; cursor: not-allowed; }
 
   /* モーダル */
-  .modal-bg { position: fixed; inset: 0; background: rgb(var(--color-overlay) / .5); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .modal-bg { position: fixed; inset: 0; background: var(--color-backdrop); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 1rem; }
   .modal-box { background: rgb(var(--color-surface)); border-radius: var(--radius-card); width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; color: rgb(var(--color-text-strong)); }
 
   /* 報告ボタン(スタッフ) */
@@ -269,7 +274,7 @@
 .board-menu-item { display: flex; align-items: center; gap: .5rem; width: 100%; text-align: left; padding: .5rem .6rem; border-radius: var(--radius-lg); font-size: .82rem; color: rgb(var(--color-neutral-700)); }
 .board-menu-item:hover { background: rgb(var(--color-surface-muted)); }
 .board-cell { cursor: pointer; }
-.board-cell.is-sel { outline: 2px solid rgb(var(--color-primary)); outline-offset: -1px; box-shadow: 0 0 0 3px rgb(var(--color-primary-600) / .15); }
+.board-cell.is-sel { outline: 2px solid rgb(var(--color-primary)); outline-offset: -1px; box-shadow: var(--shadow-cell-selected); }
 .board-need { display: inline-block; font-size: .68rem; font-weight: 700; border-radius: .3rem; padding: 0 .35rem; }
 .board-need.short { background: rgb(var(--color-danger-soft)); color: rgb(var(--color-danger-strong)); }
 .board-need.full { background: rgb(var(--color-success-100)); color: rgb(var(--color-success-700)); }
@@ -284,7 +289,7 @@
 /* 枠のまとめて削除（Sprint 12 #9501）: 選択中の帯と、選んだマス */
 .board-bulkbar { position: sticky; top: .5rem; z-index: 30; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; background: rgb(var(--color-danger-50)); border: 1px solid rgb(var(--color-danger-200)); border-radius: var(--radius-xl); padding: .5rem .75rem; margin-bottom: .75rem; }
 .board-bulkbar[hidden] { display: none; }
-.board-cell.is-bulk { outline: 2px solid rgb(var(--color-danger)); outline-offset: -1px; box-shadow: 0 0 0 3px rgb(var(--color-danger-600) / .18); }
+.board-cell.is-bulk { outline: 2px solid rgb(var(--color-danger)); outline-offset: -1px; box-shadow: var(--shadow-cell-bulk); }
 .bulk-check { width: .9rem; height: .9rem; margin-right: .3rem; vertical-align: -2px; accent-color: rgb(var(--color-danger)); cursor: pointer; }
 .board-inherit { background: rgb(var(--color-primary-soft)); border-radius: .6rem; padding: .5rem .6rem; font-size: .75rem; color: rgb(var(--color-neutral-700)); }
 .board-cand { display: flex; flex-direction: column; gap: .3rem; }

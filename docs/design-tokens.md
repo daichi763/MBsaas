@@ -15,7 +15,11 @@ UI の仕上げ（候補 A〜G）は、**変数の値を変えるだけ**で当�
 
 ## 変数の一覧
 
-色は `R G B` の 3 つの数で持つ（`rgb(var(--color-primary))`、透明にするときは `rgb(var(--color-primary) / .5)`）。Tailwind のクラスの透明度（`bg-surface/90` など）も効く。
+色は `R G B` の 3 つの数で持つ（`rgb(var(--color-primary))`）。Tailwind のクラスの透明度（`bg-surface/90` など）も効く。
+
+透明度つきの色を CSS に書くときは `rgb(var(--color-…) / .5)` にせず、`--color-backdrop: rgba(15,23,42,.5)` のように**値ごとの変数**にする。
+Chrome は `rgba(…, .5)` と `rgb(… / .5)` で重ね方が違い、重ねた色が 1 段（255 段階の 1）ずれることがある（白の上に重ねると青が 148 と 149。トークン化の確認で見つけた）。
+Tailwind のクラスの透明度（`bg-surface/90`）は、トークン化の前から `rgb(… / 0.9)` の書き方なので変わらない。
 
 ### 段のある色（クラスで使う）
 
@@ -57,7 +61,7 @@ UI の仕上げ（候補 A〜G）は、**変数の値を変えるだけ**で当�
 | `--color-danger` / `-soft` / `-strong` | danger-600 / 100 / 700 | |
 | `--color-success` / `-soft` | success-500 / 50 | |
 | `--color-warning` / `-soft` | warning-700 / 100 | |
-| `--color-overlay` | 15 23 42 | モーダル・案内の後ろを暗くする色 |
+| `--color-backdrop` | rgba(15,23,42,.5) | モーダルの後ろを暗くする色（透明度ごとの値） |
 | `--color-toast` | neutral-900 | トーストの地 |
 
 役割の色は段の色を指しているので、段の値を変えれば共通クラスとクラスの両方が変わる。共通クラスだけを変えたいときは役割の変数を上書きする。
@@ -71,6 +75,7 @@ UI の仕上げ（候補 A〜G）は、**変数の値を変えるだけ**で当�
 | `--shadow-sm` `--shadow` `--shadow-md` `--shadow-lg` | Tailwind の既定 | `shadow-sm`〜`shadow-lg` |
 | `--shadow-brand` | shadow-lg の形で primary-200 の色 | ログインの画面のロゴ（`shadow-brand`。前の `shadow-lg shadow-blue-200`） |
 | `--shadow-card` `--shadow-next` `--shadow-toast` `--shadow-float` `--shadow-float-strong` | | `.card`・次の報告・トースト・開いたメニュー・保存のバー |
+| `--shadow-focus` `--shadow-cell-selected` `--shadow-cell-bulk` | | 入力欄のフォーカス・シフト管理の選んだマス・まとめて削除で選んだマス |
 | `--font-sans` | ヒラギノ角ゴ・Noto Sans JP・メイリオ | body |
 | `--text-xs`〜`--text-4xl` と `--leading-xs`〜`--leading-4xl` | Tailwind の既定 | `text-xs`〜`text-4xl`（行の高さも） |
 | `--text-2xs` `--text-3xs` `--text-4xs` | 11px / 10px / 9px | `text-2xs` `text-3xs` `text-4xs`（前の `text-[11px]` など。行の高さは決めない） |
@@ -110,6 +115,7 @@ UI の仕上げ（候補 A〜G）は、**変数の値を変えるだけ**で当�
 | 印刷用の別ウィンドウ（`roster.js` の ID カード・`src/settlement.ts`・`src/shift-board.ts` の印刷の HTML） | style.css を読まない別の文書 |
 | `index.tsx` の `LIB_FALLBACK`（CDN の部品を読めなかったときの案内） | 通信の悪いときに style.css も読めない場合に備える |
 | `index.tsx` の `<meta name="theme-color">`・`manifest.webmanifest` | ブラウザ・OS が読む値で、CSS の変数は使えない |
+| 画面の JS の中の透明度つきの色（`tour.js` の案内の暗い幕・光る枠、`common.js` のモーダルの閉じるボタンの地の `rgba(…)`） | 上の「透明度つきの色」のとおり、`rgb(var(--…) / a)` にすると 1 段ずれるため。変えるときは値ごとの変数を足す |
 | 実績分析のグラフの分類の色（`admin.js` の `ACHART_COLORS`） | グラフの見分け用の色。主色のグラフは `tokenColor('primary')`（common.js）で変数から読む |
 | `admin.js` の資料の置き場の `ondragover`・`ondragleave` とその対の行（`border-blue-400` `bg-blue-50`） | イベント属性の中は変えない約束。onclick などを整理するときに一緒に置き換える |
 | シフト管理の部品の小さな角丸（.3rem〜.9rem）・左のメニューの見出しの角 | その部品だけの形。候補で変えるときは個別に直す |

@@ -133,7 +133,7 @@ function addModalCloseButtons() {
     b.className = 'modal-x text-neutral-400 hover:text-neutral-600'
     b.dataset.action = 'modalX'
     b.setAttribute('aria-label', '閉じる'); b.title = '閉じる'
-    b.style.cssText = 'position:sticky;top:0;float:right;z-index:1;width:2rem;height:2rem;margin:-.75rem -.75rem .25rem .5rem;border-radius:9999px;background:rgb(var(--color-surface) / .9);font-size:1.1rem;line-height:2rem;text-align:center'
+    b.style.cssText = 'position:sticky;top:0;float:right;z-index:1;width:2rem;height:2rem;margin:-.75rem -.75rem .25rem .5rem;border-radius:9999px;background:rgba(255,255,255,.9);font-size:1.1rem;line-height:2rem;text-align:center'
     b.innerHTML = '<i class="fas fa-xmark"></i>'
     box.insertBefore(b, box.firstChild)
   })
