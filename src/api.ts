@@ -1425,6 +1425,8 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
   const idsJson = bindJsonArray(ids)
   const att = attendanceTypesBatch(db, 'SELECT value FROM json_each(?)', [idsJson])
   const dIds = dailyShifts.map(s => s.shift_id as number)
+  // 報告の詳細（遅延・早退・打刻の方法・時刻の扱い）はホームに出すシフト（dailyShifts）の分だけ読み、報告漏れの候補は種類だけを読む（#9970）
+  const shown = new Set(dIds), missedIds = ids.filter(id => !shown.has(id))
   const dStaff = [...new Set(dailyShifts.map(s => s.staff_id as number))]
   const dDates = [...new Set(dailyShifts.map(s => s.work_date as string))]
   const res = await db.batch([
@@ -1436,14 +1438,15 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
     // 電波がない場所で押して後から送った報告は、押した時刻で記録したこと（device_time）と受け取った時刻も出す（#427）
     db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id,
       time_source, received_at
-      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(idsJson),
+      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(dIds)),
+    db.prepare(`SELECT shift_id, report_type FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(missedIds)),
     db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN ${JSON_IN} AND status = 'pending'`).bind(idsJson),
     ...(dIds.length ? [db.prepare(`SELECT shift_id, staff_id, work_date, project_id, manager_checked, manager_checked_at FROM daily_reports
       WHERE shift_id IN (${dIds.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${dStaff.map(() => '?').join(',')}) AND work_date IN (${dDates.map(() => '?').join(',')}))`)
       .bind(...dIds, ...dStaff, ...dDates)] : []),
   ])
   const types = att.resolve(res.slice(0, att.statements.length))
-  const [modeRes, repRes, pendRes, dailyRes] = res.slice(att.statements.length)
+  const [modeRes, repRes, missedRepRes, pendRes, dailyRes] = res.slice(att.statements.length)
   const modes = new Map<number, ReturnType<typeof resolveModes>>()
   for (const r of (modeRes.results || []) as any[]) {
     const m = resolveModes({ daily_report_mode: r.p_dr }, { daily_report_mode: r.sp_dr }, { attendance_mode: r.s_att, daily_report_mode: r.s_dr })
@@ -1462,6 +1465,8 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
       entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null,
       ...deviceTimeMark(r) }
   }
+  // 報告漏れの候補は、報告があるかどうかだけを使う（homeMissedView）
+  for (const r of (missedRepRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.reports[r.report_type] = { report_type: r.report_type } }
   for (const r of (pendRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
   const drows = (dailyRes?.results || []) as any[]
   for (const s of dailyShifts) {
