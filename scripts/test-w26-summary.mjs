@@ -299,12 +299,17 @@ ok('スキルシートの通算の稼働日（日報の数）が、日報の表�
 // ---------- データが倍になっても、集計済みの月の読み取りはほとんど増えない ----------
 {
   const path = `/api/admin/analytics/series?from=${from8}&to=${LAST_SUM}&unit=month&project_id=${P1}&metric=field&key=mnp&split=staff`
+  // 項目の指標は values_json を json_each で読むので、D1 はその JSON のキーの数も読み取りの行に数える（全体・順位・選んだ人の3つの文）。
+  // 日報を足すと、その月・その人に今まで無かったキーが増えることがある（日付によって変わる）ので、その分は許す。日報の数には比例しない
+  const keyRows = async () => (await sql(`SELECT COUNT(*) AS n FROM report_month_summaries ms, json_each(ms.values_json)
+    WHERE ms.company_id = 1 AND ms.project_id = ${P1} AND ms.ym >= '${from8}' AND ms.ym <= '${LAST_SUM}'`))[0].n
   await admin.get(path)
-  const before = await admin.get(path)
+  const before = await admin.get(path), keysBefore = await keyRows()
   await insertReports(2400, 11)
   await admin.get(path)
-  const after = await admin.get(path)
-  ok('過去の日報を倍にしても、集計済みの月のグラフの読み取りの行はほとんど増えない', after.read <= before.read + 50, { before: before.read, after: after.read })
+  const after = await admin.get(path), keysAfter = await keyRows()
+  ok('過去の日報を倍にしても、集計済みの月のグラフの読み取りの行はほとんど増えない（増えるのは項目のキーの分だけ）',
+    after.read <= before.read + 50 + 3 * Math.max(0, keysAfter - keysBefore), { before: before.read, after: after.read, keys: [keysBefore, keysAfter] })
   info('確定した月だけのグラフ（案件1・項目・スタッフ別）の読み取り 2400件→4800件', [before.read, after.read])
   await same('日報を倍にした後のグラフ（8か月・月ごと・案件別）', `/api/admin/analytics/series?from=${from8}&to=${cur}&unit=month&split=project`)
   await same('日報を倍にした後の実績分析（3か月前・案件1）', `/api/admin/analytics?month=${ymAdd(cur, -3)}&project_id=${P1}`)
