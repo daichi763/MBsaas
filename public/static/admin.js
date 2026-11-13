@@ -1,4 +1,4 @@
-// Field OS 管理者用SPA
+// Mobital 管理者用SPA
 const $app = document.getElementById('app')
 let ME = null
 
@@ -1300,7 +1300,7 @@ function drawStaffTable(filter) {
       <div class="flex gap-2 flex-wrap">
         <button class="btn btn-outline" data-action="reloadStaffList" title="最新の情報に読み直す" aria-label="読み直す"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
-        <a class="btn btn-outline" href="#partners" title="協力会社（Field OS 未契約の所属元）の一覧・連絡先の編集・統合"><i class="fas fa-building"></i>協力会社</a>
+        <a class="btn btn-outline" href="#partners" title="協力会社（Mobital 未契約の所属元）の一覧・連絡先の編集・統合"><i class="fas fa-building"></i>協力会社</a>
         <button class="btn btn-outline" onclick="showQuickRegister && showQuickRegister()"><i class="fas fa-bolt"></i>仮登録（氏名・電話のみ）</button>
         <button class="btn btn-primary" onclick="showAddRoster()"><i class="fas fa-user-plus"></i>新規追加</button>
       </div>

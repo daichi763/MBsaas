@@ -7,9 +7,9 @@
 
 | 画面の言葉 | 意味 | テーブル・列・コード |
 |---|---|---|
-| 導入企業・企業・会社 | Field OS を使う人材会社。1社 = 1テナント | `companies`。業務データの表は `company_id` を持つ |
+| 導入企業・企業・会社 | Mobital を使う人材会社。1社 = 1テナント | `companies`。業務データの表は `company_id` を持つ |
 | 会社コード | ログインで入れる、導入企業の識別子 | `companies.company_code` |
-| 本部・SaaS本部・システム管理者 | Field OS を運営する側。`/hq` を使う | `users.role = 'system_admin'`。所属は本部専用の企業行 `companies.active_status = 'internal'`（`migrations/0033_account_admin.sql`） |
+| 本部・SaaS本部・システム管理者 | Mobital を運営する側。`/hq` を使う | `users.role = 'system_admin'`。所属は本部専用の企業行 `companies.active_status = 'internal'`（`migrations/0033_account_admin.sql`） |
 | 停止（企業） | 本部が企業の利用を止めた状態。ログイン・API・報告用URLが使えなくなる | `companies.active_status = 'inactive'`（`src/lib/auth.ts:98`） |
 | 管理者 | 導入企業の社員で、管理画面を使う人 | `users.role` が `company_admin`（会社管理者）・`office_staff`（事務担当）・`sales_manager`（営業管理者）・`field_manager`（現場管理者）。まとめて `ADMIN_ROLES`（`src/lib/permissions.ts:11`）。できることの違いは権限の表（[permissions.md](permissions.md)） |
 | スタッフ | 導入企業から現場に出る人。スタッフアプリを使う | `users.role = 'staff'` と `staff_profiles` の行 |
@@ -17,7 +17,7 @@
 | ログインなし（名簿のみ） | ログインを持たない人（スタッフマスタだけの行・仮登録） | `users.role = 'roster_only'` |
 | 人物・スタッフID（連携用） | 会社をまたいで同じ人を表す。連携に使う恒久のコード | `persons`、`persons.global_staff_code`（`FS` で始まる。`src/roster.ts:269`） |
 | クライアント | 案件をくれる会社。こちらが**請求する**相手 | `clients`。担当者は `client_contacts` |
-| 協力会社（以前の名前は「取引先」） | Field OS を使っていない会社で、スタッフを出してくれて、こちらが**支払う**相手。クライアントを兼ねるときは1対1でつなぐ | `staff_affiliations`（API のパスは `/api/admin/roster/partners` のまま）。つながりは `staff_affiliations.client_id`（D-15） |
+| 協力会社（以前の名前は「取引先」） | Mobital を使っていない会社で、スタッフを出してくれて、こちらが**支払う**相手。クライアントを兼ねるときは1対1でつなぐ | `staff_affiliations`（API のパスは `/api/admin/roster/partners` のまま）。つながりは `staff_affiliations.client_id`（D-15） |
 | 開催場所 | クライアントの現場（店舗・催事の会場など） | `sites` |
 
 ## 2. スタッフの区分（所属区分）
@@ -30,7 +30,7 @@
 | 自社日雇い | `daily_worker` | 自社が日雇いで雇う人。従業員データは不要 |
 | 個人事業主 | `freelance` | 個人で請け負う人 |
 | 協力会社所属 | `partner_manual` | 協力会社から出てもらう人（所属は `staff_profiles.partner_affiliation_id`） |
-| 他社連携 | `linked_external` | Field OS を使っている別の会社（所属元）から連携で受けた人。基本項目は所属元の行を読む（D-03） |
+| 他社連携 | `linked_external` | Mobital を使っている別の会社（所属元）から連携で受けた人。基本項目は所属元の行を読む（D-03） |
 | スキルシートのみ | `skillsheet_only` | ログインなし。スキルシートを作るためだけの行 |
 
 ## 3. スタッフの管理
@@ -77,7 +77,7 @@
 | 支払先 | 自社給与・日雇い給与・個人事業主・協力会社・他社（連携元） | `shifts.payee_type` が `payroll` / `payroll_daily` / `freelance` / `partner` / `linked` |
 | 精算・確定 | 実績を確かめて金額を確定すること。確定したシフトは変えられない | `shifts.settle_status` が `planned`（未確定）/ `confirmed`（確定）（`src/settlement.ts`） |
 | 請求前確認 | クライアントへの請求の前の確認画面 | 画面 `#billing`、API `GET /api/admin/billing-check` |
-| 利用料（本部の請求） | **本部が導入企業に請求する** Field OS の利用料。上の「請求」とは別 | `company_billing_months`・`hq_plan_prices`（cron `billing_close`） |
+| 利用料（本部の請求） | **本部が導入企業に請求する** Mobital の利用料。上の「請求」とは別 | `company_billing_months`・`hq_plan_prices`（cron `billing_close`） |
 
 ## 6. 勤怠・日報・報告
 

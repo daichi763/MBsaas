@@ -1,6 +1,6 @@
 # DB 設計書（Cloudflare D1）
 
-Field OS のデータベース（Cloudflare D1。中身は SQLite）の設計資料です。新しく加わる開発者や外部の開発会社が、前提知識なしで読めるように書いています。
+Mobital のデータベース（Cloudflare D1。中身は SQLite）の設計資料です。新しく加わる開発者や外部の開発会社が、前提知識なしで読めるように書いています。
 
 - 関連する資料: [API 一覧](api.md)・[画面一覧](screens.md)
 - 置き場所: リポジトリの `docs/`。コードと一緒に変更し、Sprint の終わりに作り直します。
@@ -4705,7 +4705,7 @@ END
 | `buildSnapshot` | [board.ts:569](../src/board.ts#L569) |
 | `shapeProposal` | [board.ts:604](../src/board.ts#L604) |
 | `runRetentionCleanup` | [services/retention.ts:987](../src/services/retention.ts#L987) |
-| `CRON_JOBS` | [index.tsx:869](../src/index.tsx#L869) |
+| `CRON_JOBS` | [index.tsx:878](../src/index.tsx#L878) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:128](../src/services/retention.ts#L128) |
 | `purgeExpiredTokens` | [services/retention.ts:1133](../src/services/retention.ts#L1133) |
 | `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1175](../src/services/retention.ts#L1175) |

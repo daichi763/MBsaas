@@ -6,6 +6,8 @@
 
 > **注（2026-11-09 追記）**: この指示書の Cloudflare Pages・`mbsaas.pages.dev` の記述（冒頭・第1章・第8章）は古い情報です。本番は Cloudflare Workers の `mbsaas`（https://mbsaas.saas-2a2.workers.dev ）で、GitHub の main へのマージで Workers Builds がデプロイします（[decisions.md](decisions.md) の D-32）。旧 Pages のプロジェクト `mbsaas` は、2026-11-09 に確かめて存在しません（D-49）。今の構成は [architecture.md](architecture.md) を見てください。
 
+> **注（2026-11-14 追記）**: この指示書の「Field OS」は、今のサービス名 **Mobital** のことです（2026-11 に改名）。本番の URL は `https://app.mobital.jp` に移します（[operations.md](operations.md) の「本番の URL を app.mobital.jp に移す」）。
+
 ---
 
 ## 0. この指示書の位置づけ(重要)

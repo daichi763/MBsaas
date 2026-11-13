@@ -1,4 +1,4 @@
-// Field OS スタッフ用SPA
+// Mobital スタッフ用SPA
 // axios・dayjs を読み込めなかったときはここで止める（理由は head の LIB_FALLBACK が画面に出す。#409）
 if (!window.axios || !window.dayjs) throw new Error('axios / dayjs を読み込めませんでした')
 const $app = document.getElementById('app')

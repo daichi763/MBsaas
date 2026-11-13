@@ -107,7 +107,7 @@ const failCases = [
   ['本番の DEMO_MODE が "true"', editProd('"DEMO_MODE": "false"', '"DEMO_MODE": "true"')],
   ['本番の RETENTION_ENABLED が "false"', editProd('"RETENTION_ENABLED": "true"', '"RETENTION_ENABLED": "false"')],
   ['本番の MAIL_ENABLED がない', editProd('"MAIL_ENABLED": "true",', '')],
-  ['本番の APP_BASE_URL が localhost', editProd('"APP_BASE_URL": "https://mbsaas.saas-2a2.workers.dev"', '"APP_BASE_URL": "http://localhost:8787"')],
+  ['本番の APP_BASE_URL が localhost', editProd('"APP_BASE_URL": "https://app.mobital.jp"', '"APP_BASE_URL": "http://localhost:8787"')],
   ['本番の APP_BASE_URL が http', editProd('"APP_BASE_URL": "https://', '"APP_BASE_URL": "http://')],
   ['本番の preview_urls が true', editProd('"preview_urls": false', '"preview_urls": true')],
   ['本番の observability がない', editProd('"observability": {', '"observability_old": {')],

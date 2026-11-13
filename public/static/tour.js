@@ -522,7 +522,7 @@
   const ADMIN_WELCOME = {
     key: 'admin-welcome',
     steps: [
-      { title: 'Field OS の主な機能', body: P('クライアント → 案件 → スタッフ → シフト → 日報・勤怠の確認 → 精算 の順に、実際の画面で案内します。',
+      { title: 'Mobital の主な機能', body: P('クライアント → 案件 → スタッフ → シフト → 日報・勤怠の確認 → 精算 の順に、実際の画面で案内します。',
         '［次へ］で進み、［スキップ］でいつでも終われます。キーボードでは →・Enter で次へ、← で前へ、Esc で閉じます。') },
       { route: 'clients', sel: '[onclick^="showAddClient"]', title: '1. クライアント',
         body: P('まず、取引先（請求先）の会社を登録します。', '「クライアント登録」から、会社名・住所・締め日・担当者などを入れます。') },
@@ -637,7 +637,7 @@
     }
     if (!rec) {
       showPrompt({
-        title: 'Field OS へようこそ',
+        title: 'Mobital へようこそ',
         body: P('主な機能（クライアント → 案件 → スタッフ → シフト → 日報・勤怠の確認 → 精算）を、実際の画面で順に案内します（3分ほど）。'),
         buttons: [{ act: 'later', label: 'あとで' }, { act: 'start', label: '始める', primary: true }],
         acts: { later, start: () => startTour(ADMIN_WELCOME, 1) },
@@ -894,7 +894,7 @@
       say('はじめの準備は、次に管理画面を開いたときに続きから案内します（右上の「？」からも始められます）', 4500)
     }
     showPrompt({
-      title: rec ? 'はじめの準備の続き' : 'Field OS へようこそ',
+      title: rec ? 'はじめの準備の続き' : 'Mobital へようこそ',
       body: (rec ? P('まだ済んでいない準備があります。済んでいない項目から、続きを案内します。')
         : P('使い始めるための準備（5つ）を、実際に登録しながら順に案内します（10分ほど）。', '済んでいる項目は飛ばします。途中で「あとで」にしても、次に開いたときに続きから案内します。'))
         + setupListHtml(d),

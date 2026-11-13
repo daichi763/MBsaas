@@ -207,7 +207,7 @@ function checkRow(ctx: ImportCtx, seen: FileSeen, line: number, keys: (string | 
     const pname = raw.partner_name || ''
     if (!pname) errors.push('協力会社の人は協力会社名を入れてください')
     else if (pname === ctx.ownName) errors.push('自社名は協力会社として登録できません（区分を「自社雇用」にしてください）')
-    else if (ctx.otherCompanyNames.has(pname)) errors.push(`「${pname}」はField OSの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）`)
+    else if (ctx.otherCompanyNames.has(pname)) errors.push(`「${pname}」はMobitalの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）`)
     else if (ctx.mergedPartners.has(pname)) notes.push(`協力会社「${pname}」は「${ctx.mergedPartners.get(pname)}」に統合済みのため、「${ctx.mergedPartners.get(pname)}」に所属させます`)
     else if (!ctx.partners.has(pname)) notes.push(`協力会社「${pname}」を新しく登録します`)
     data.partner_name = ctx.mergedPartners.get(pname) || pname

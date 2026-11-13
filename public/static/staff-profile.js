@@ -1,4 +1,4 @@
-// Field OS スタッフ画面: 自分のスタッフマスタ情報・連携用QR（フェーズE）
+// Mobital スタッフ画面: 自分のスタッフマスタ情報・連携用QR（フェーズE）
 // staff.js のヘルパー（loading / esc / $app）を利用する。staff.js の後に読み込むこと。
 // ※企業間チャット・稼働先追記項目・評価メモ等は本人には一切表示しない（APIも返さない）。
 const GENDER_LABEL = { male: '男性', female: '女性', other: 'その他', unspecified: '回答しない' }
@@ -132,7 +132,7 @@ delegate('copyMyStaffId', async () => {
 })
 delegate('shareMyStaffId', async () => {
   if (!MY_STAFF_ID.code || !navigator.share) return
-  try { await navigator.share({ text: `Field OS スタッフID: ${MY_STAFF_ID.code}（${MY_STAFF_ID.name}）` }) } catch (e) {
+  try { await navigator.share({ text: `Mobital スタッフID: ${MY_STAFF_ID.code}（${MY_STAFF_ID.name}）` }) } catch (e) {
     if (!e || e.name !== 'AbortError') toast('共有できませんでした。「IDをコピー」を使ってください')
   }
 })

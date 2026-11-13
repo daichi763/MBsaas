@@ -97,7 +97,7 @@ for (const p of ['/staff', '/admin', '/hq']) {
   ok('ログイン画面の script に構文エラーがない', syntaxOk)
   const m = await fetch(`${BASE}/manifest.webmanifest`)
   let mj = null; try { mj = await m.json() } catch { }
-  ok('#308 マニフェストを配信する', m.status === 200 && mj?.name === 'Field OS' && mj.icons?.length >= 2, mj)
+  ok('#308 マニフェストを配信する', m.status === 200 && mj?.name === 'Mobital' && mj.icons?.length >= 2, mj)
   ok('#308 アイコンを配信する', (await fetch(`${BASE}/static/icon-180.png`)).status === 200 && (await fetch(`${BASE}/static/icon-512.png`)).status === 200)
   for (const p of ['/reset-password?token=x', '/verify-email?token=x']) {
     const h = await (await fetch(`${BASE}${p}`)).text()
