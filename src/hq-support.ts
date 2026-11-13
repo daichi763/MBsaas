@@ -41,7 +41,7 @@ const SUPPORT_DETAIL_MAX = 2000
 const SUPPORT_DAILY_LIMIT = 10
 
 function supportRequestEmail(p: { companyName: string; companyCode: string; requester: string; menu: string; detail: string; preferredAt: string; contact: string; url: string }) {
-  const subject = `【Field OS】伴走支援の依頼: ${p.companyName}（${p.menu}）`
+  const subject = `【Mobital】伴走支援の依頼: ${p.companyName}（${p.menu}）`
   const rows: [string, string][] = [['企業', `${p.companyName}（${p.companyCode}）`], ['依頼者', p.requester], ['メニュー', p.menu], ['希望日時', p.preferredAt || '指定なし'], ['連絡先', p.contact || '指定なし']]
   const html = `
     <div style="font-family: -apple-system, 'Hiragino Kaku Gothic ProN', sans-serif; line-height:1.7; color:#111827; max-width:520px; margin:0 auto;">

@@ -18,7 +18,7 @@ export function passwordResetEmail(params: { name: string; resetUrl: string; exp
       <p>このURLは${expiresInHours}時間有効です。${account ? escapeHtml(after) : ''}</p>
       <p style="color:#6b7280;font-size:13px;">心当たりがない場合は、このメールを無視してください。ログインできない場合は、所属の会社の担当者にお問い合わせください。</p>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
-      <p style="color:#9ca3af;font-size:12px;">Field OS</p>
+      <p style="color:#9ca3af;font-size:12px;">Mobital</p>
     </div>`
   const text = `${name} 様
 
@@ -31,6 +31,6 @@ ${resetUrl}
 ${account ? after + '\n' : ''}心当たりがない場合は、このメールを無視してください。
 ログインできない場合は、所属の会社の担当者にお問い合わせください。
 
-Field OS`
+Mobital`
   return { subject, html, text }
 }

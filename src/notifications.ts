@@ -2028,7 +2028,7 @@ pushDeviceRoutes(notificationsStaffApi)
 const PUSH_BODY_MAX = 120
 notificationsStaffApi.get('/push/latest', async (c) => {
   const u = c.get('user')
-  const generic = { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: '/staff#notifications', tag: 'fieldos' }
+  const generic = { title: 'Mobital', body: '新しい通知があります。アプリを開いて確認してください', link: '/staff#notifications', tag: 'fieldos' }
   const o = ownsSub(u)
   const s = await c.env.DB.prepare(`SELECT subscription_id, test_requested_at FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(c.req.query('endpoint') || '', ...o.binds).first() as any
   if (!s) return c.json({ ...generic, generic: true })
@@ -2057,7 +2057,7 @@ notificationsStaffApi.get('/push/latest', async (c) => {
 pushDeviceRoutes(notificationsAdminApi)
 notificationsAdminApi.get('/push/latest', async (c) => {
   const u = c.get('user')
-  const generic = { title: 'Field OS 管理', body: '新しい通知があります。管理画面を開いて確認してください', link: '/admin#notifications', tag: 'fieldos-admin' }
+  const generic = { title: 'Mobital 管理', body: '新しい通知があります。管理画面を開いて確認してください', link: '/admin#notifications', tag: 'fieldos-admin' }
   const o = ownsSub(u)
   const s = await c.env.DB.prepare(`SELECT subscription_id, test_requested_at FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(c.req.query('endpoint') || '', ...o.binds).first() as any
   if (!s) return c.json({ ...generic, generic: true })
@@ -2079,7 +2079,7 @@ notificationsAdminApi.get('/push/latest', async (c) => {
 pushDeviceRoutes(notificationsHqApi)
 notificationsHqApi.get('/push/latest', async (c) => {
   const u = c.get('user')
-  const generic = { title: 'Field OS 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: '/hq#errors', tag: 'fieldos-hq' }
+  const generic = { title: 'Mobital 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: '/hq#errors', tag: 'fieldos-hq' }
   const o = ownsSub(u)
   const s = await c.env.DB.prepare(`SELECT subscription_id, test_requested_at FROM push_subscriptions WHERE endpoint = ? AND ${o.sql}`).bind(c.req.query('endpoint') || '', ...o.binds).first() as any
   if (!s) return c.json({ ...generic, generic: true })
