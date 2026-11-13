@@ -9,7 +9,6 @@
 //   npm run build && npx wrangler dev --local --port 9031 --persist-to <保存先> で起動していること
 // 実行: BASE=http://127.0.0.1:9031 node --import ./scripts/fetch-origin.mjs scripts/test-w26-tokens.mjs
 //   画面の確認は、ヘッドレスの Chrome がある環境だけで行う（CHROME=<chrome.exe のパス>。無ければ省く）
-import { spawn } from 'child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
@@ -204,9 +203,9 @@ try {
 const CHROME = process.env.CHROME || ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find(p => existsSync(p))
 if (!served || !CHROME || typeof WebSocket !== 'function') console.log('SKIP  6) 画面の確認（ヘッドレスの Chrome が見つからないか、サーバーに接続できません）')
 else {
-  const PORT = Number(process.env.CDP_PORT || 9034)
+  const PORT = await (await import('./lib/chrome.mjs')).freePort()  // 空いているポート（#9980）
   const prof = mkdtempSync(join(tmpdir(), 'w26tok-'))
-  const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1280,900', '--no-first-run', 'about:blank'], { stdio: 'ignore' })
+  const chrome = await (await import('./lib/chrome.mjs')).launchChrome(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1280,900', '--no-first-run', 'about:blank'], { stdio: 'ignore' })
   const wait = ms => new Promise(r => setTimeout(r, ms))
   try {
     let list
