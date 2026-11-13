@@ -300,7 +300,9 @@ ok('スキルシートの通算の稼働日（日報の数）が、日報の表�
   ok('スキルシートの集計はスタッフの索引で引く（会社の行をすべて読まない）', /idx_report_month_summaries_staff/.test(plan), plan)
   const trg = (await sql(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'daily_reports' AND name LIKE 'trg_daily_reports_summary_%' ORDER BY name`)).map(r => r.name)
   ok('日報のトリガー（追加・削除・更新）がある', trg.length === 3, trg)
-  // 解約企業の削除（retention.ts）は rowid で消すので、新しい表に rowid があること（WITHOUT ROWID だと消せない）
+  // 解約企業の削除（retention.ts）は rowid で消すので、新しい表に rowid があること（WITHOUT ROWID だと消せない）。
+  // 上の same() の最後で印を消しているので、集計を作ってから確かめる
+  must(await admin.get(`/api/admin/analytics?month=${ymAdd(cur, -3)}`), 'analytics (印を作る)')
   const rid = await sql(`SELECT (SELECT rowid FROM report_summary_months LIMIT 1) AS a, (SELECT rowid FROM report_month_summaries LIMIT 1) AS b,
     (SELECT rowid FROM report_day_summaries LIMIT 1) AS c`)
   ok('集計の表は rowid で引ける（解約企業の削除の形）', rid[0].a != null && rid[0].b != null && rid[0].c != null, rid)
