@@ -42,6 +42,7 @@
 	// ローカルの既定: メールは送らない・定期削除は dry-run・メールのリンクはローカルを指す・デモ案内を出す
 	"vars": {
 		"MAIL_FROM": "Mobital <onboarding@resend.dev>",
+		"MAIL_REPLY_TO": "support@mobital.jp",
 		"APP_BASE_URL": "http://localhost:8787",
 		"MAIL_ENABLED": "false",
 		"RETENTION_ENABLED": "false",

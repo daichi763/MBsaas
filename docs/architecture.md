@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Field OS を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-12 時点の `review-fixes` ブランチ、コミット `c708b12` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-13 時点の `review-fixes` ブランチ、コミット `42be9a7` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -88,7 +88,7 @@ flowchart LR
 | D1 | すべての業務データ（SQLite 互換）。バインディング名 `DB` | `wrangler.jsonc:17`、`migrations/*.sql` |
 | R2 | 写真・書類のファイル。バケットは非公開で、ファイルは必ずログイン確認付きの API から返す | `wrangler.jsonc:24`（`PHOTOS`・`DOCUMENTS`・`CONTRACTS`） |
 | Cron Triggers | 毎日 3:00・3:30（日本時間）と15分おきに定期処理を起動する | `wrangler.jsonc:39`、`src/index.tsx:869`（`CRON_JOBS`） |
-| Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:92` |
+| Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:94` |
 | Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:184` |
 | Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:146`（`/sw.js`） |
 | Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:267`・`277` |
@@ -180,9 +180,9 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 ### 6.1 Resend（メール）
 
 - 送信は `src/services/email.ts` の `sendEmail` / `sendEmailBatch` に集めています。メールの文面は `src/email-templates/` にあります。
-- 送るかどうか（`src/services/email.ts:110` の `mailMode`）: `MAIL_ENABLED` が `'true'` でなければ（未設定も含む。`canSendMail` と同じ判定。#9967）送らずに記録だけ残す（`skipped`）。`RESEND_API_KEY` か `MAIL_FROM` がなければ `not_configured`（送信失敗として記録）。
+- 送るかどうか（`src/services/email.ts:112` の `mailMode`）: `MAIL_ENABLED` が `'true'` でなければ（未設定も含む。`canSendMail` と同じ判定。#9967）送らずに記録だけ残す（`skipped`）。`RESEND_API_KEY` か `MAIL_FROM` がなければ `not_configured`（送信失敗として記録）。
 - 送信の記録は `email_logs` テーブル（本文と API キーは残さない）。本部画面の「メール送信」と、管理画面の「通知」の中のメール送信状況で見られます。
-- 不達・迷惑メールの報告・配信済みは、Resend の Webhook（`POST /webhooks/resend`）で受け取ります。`RESEND_WEBHOOK_SECRET` で Svix 形式の署名を確かめ、未設定なら 503、署名が違えば 401 を返します（`src/services/email.ts:290`〜`298`）。不達・迷惑メールの報告があったアドレスは `email_suppressions` に入れ、以後は送りません。
+- 不達・迷惑メールの報告・配信済みは、Resend の Webhook（`POST /webhooks/resend`）で受け取ります。`RESEND_WEBHOOK_SECRET` で Svix 形式の署名を確かめ、未設定なら 503、署名が違えば 401 を返します（`src/services/email.ts:292`〜`300`）。不達・迷惑メールの報告があったアドレスは `email_suppressions` に入れ、以後は送りません。
 - 現在の本番: `RESEND_API_KEY` を登録していないため、本番からメールは送られません（[decisions.md](decisions.md) の D-31）。
 
 ### 6.2 Web Push（プッシュ通知）
@@ -351,14 +351,15 @@ docs/                     この資料と機能ごとの仕様
 
 ### 12.1 `vars`（`wrangler.jsonc` に書く。デプロイのたびにこの値になる）
 
-| 名前 | ローカル（`wrangler.jsonc:43`） | 本番（`wrangler.jsonc:82`） | 意味 |
+| 名前 | ローカル（`wrangler.jsonc:43`） | 本番（`wrangler.jsonc:83`） | 意味 |
 |---|---|---|---|
-| `MAIL_FROM` | Resend のテスト用アドレス | 同じ（独自ドメインに変える予定） | メールの送信元。`resend.dev` のテスト用アドレスは Resend のアカウント所有者にしか届かない（`src/services/email.ts:123`〜`126`） |
+| `MAIL_FROM` | Resend のテスト用アドレス | 同じ（独自ドメインに変える予定） | メールの送信元。`resend.dev` のテスト用アドレスは Resend のアカウント所有者にしか届かない（`src/services/email.ts:125`〜`128`） |
 | `APP_BASE_URL` | `http://localhost:8787` | 本番の URL | メールの中のリンク、VAPID の連絡先の既定 |
-| `MAIL_ENABLED` | `false` | `true` | `'true'` 以外（未設定も含む）ならメールを送らず記録だけ（`src/services/email.ts:111`） |
+| `MAIL_ENABLED` | `false` | `true` | `'true'` 以外（未設定も含む）ならメールを送らず記録だけ（`src/services/email.ts:113`） |
 | `RETENTION_ENABLED` | `false` | `true` | `'true'` のときだけデータ保持の削除を実際に行う。それ以外は dry-run（`src/index.tsx:880`） |
 | `DEMO_MODE` | `true` | `false` | `'true'` のときだけ、ログイン画面にデモアカウントの案内を出す（`src/index.tsx:309`） |
 | `DB_SIZE_LIMIT_MB` | `500` | `500` | D1 の DB の大きさの上限（MB）。本部画面の「DB の大きさ」の割合・段階をこの値に対して計算する。今は無料プランの 500MB。有料プラン（10GB）に切り替えたら両方を `10240` に変える（`src/services/monitor.ts` の `dbSizeLimitMb`。[monitoring.md](monitoring.md) の 10 章） |
+| `MAIL_REPLY_TO` | `support@mobital.jp` | `support@mobital.jp` | 自動メールへの返信先の既定。メールごとの返信先（企業が設定した問い合わせ先。お知らせのメール）があればそちらを使う（`src/services/email.ts` の `toResendEmail`） |
 
 次の `vars` は省略できます（`wrangler.jsonc` に書かなければ既定の値。`src/lib/error-log.ts:41`〜`47`）。変え方は [monitoring.md](monitoring.md) の「通知の目安を変える」にあります。
 
@@ -376,8 +377,8 @@ docs/                     この資料と機能ごとの仕様
 
 | 名前 | 使う所 | 未設定のときの動き |
 |---|---|---|
-| `RESEND_API_KEY` | メール送信（`src/services/email.ts:112`・`165`） | メールを送らず、送信失敗（`mail_not_configured`）として記録する。**本番は未登録**（D-31） |
-| `RESEND_WEBHOOK_SECRET` | Resend の Webhook の署名の確認（`src/services/email.ts:292`） | Webhook に 503 を返す（不達の記録が更新されない） |
+| `RESEND_API_KEY` | メール送信（`src/services/email.ts:114`・`167`） | メールを送らず、送信失敗（`mail_not_configured`）として記録する。**本番は未登録**（D-31） |
+| `RESEND_WEBHOOK_SECRET` | Resend の Webhook の署名の確認（`src/services/email.ts:294`） | Webhook に 503 を返す（不達の記録が更新されない） |
 | `TURNSTILE_SITE_KEY` | 募集ページに Turnstile を出す（`src/recruit.ts:258`） | 2つそろわなければ Turnstile を使わない。片方だけのときは管理画面に状態を出す（`src/recruit.ts:268`〜`271`） |
 | `TURNSTILE_SECRET_KEY` | Turnstile の判定（`src/recruit.ts:305`） | 同上 |
 | `RATE_LIMIT_SALT` | 応募の回数の制限に使う IP のハッシュの塩（`src/recruit.ts:376`） | `TURNSTILE_SECRET_KEY` を塩にする。どちらもなければ短いハッシュ（4桁）にし、ログに警告を出す |
