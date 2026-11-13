@@ -75,7 +75,7 @@
     --color-surface: 255 255 255;                     /* カード・入力欄・メニューの面 */
     --color-surface-muted: var(--color-neutral-100);  /* 押せる物に乗せたときの面・灰の札 */
     --color-surface-hover: var(--color-neutral-50);   /* 表の行・枠付きのボタンに乗せたときの面・表の見出し */
-    --color-ink: 0 0 0;                               /* 文字の色を決めていない所の文字（今はブラウザの既定の黒） */
+    --color-body-text: 0 0 0;                         /* 文字の色を決めていない所の文字（今はブラウザの既定の黒） */
     --color-text: var(--color-neutral-800);           /* 本文 */
     --color-text-strong: var(--color-neutral-900);    /* モーダルの文字 */
     --color-text-sub: var(--color-neutral-600);       /* 補足の文字・枠付きのボタン */
@@ -146,7 +146,7 @@
   }
 
   * { -webkit-tap-highlight-color: transparent; }
-  body { font-family: var(--font-sans); color: rgb(var(--color-ink)); }
+  body { font-family: var(--font-sans); color: rgb(var(--color-body-text)); }
   /* 枠の色を決めていない所の枠（Tailwind の既定と同じ値）と、入力欄の空のときの文字 */
   *, ::before, ::after { border-color: rgb(var(--color-border)); }
   input::placeholder, textarea::placeholder { color: rgb(var(--color-faint)); }

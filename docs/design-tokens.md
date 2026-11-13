@@ -51,7 +51,7 @@ Tailwind のクラスの透明度（`bg-surface/90`）は、トークン化の�
 | `--color-surface` | 白 | カード・入力欄・メニュー（クラスは `bg-surface`） |
 | `--color-surface-muted` | neutral-100 | 押せる物に乗せたときの面・灰の札 |
 | `--color-surface-hover` | neutral-50 | 表の行・枠付きのボタンに乗せたとき・表の見出し |
-| `--color-ink` | 黒 | 文字の色を決めていない所（body） |
+| `--color-body-text` | 黒 | 文字の色を決めていない所（body）。クラスの `text-ink` はこれではなく `--color-text`（本文） |
 | `--color-text` / `--color-text-strong` / `--color-text-sub` | neutral-800 / 900 / 600 | 本文・モーダル・補足 |
 | `--color-muted` / `--color-faint` | neutral-500 / 400 | 薄い文字・アイコン・入力欄の空のときの文字 |
 | `--color-border` / `--color-border-subtle` / `--color-border-strong` | neutral-200 / 100 / 300 | 入力欄・表（色を決めていない枠もこれ）・カード・強めの枠 |
@@ -106,6 +106,7 @@ Tailwind のクラスの透明度（`bg-surface/90`）は、トークン化の�
 - 書いてしまったときや、ほかの作業から直書きのクラスが入ったときは、`node scripts/tokens-codemod.mjs` を流すと置き換わる（何度流しても同じ結果）。
   先に `node scripts/tokens-codemod.mjs --order` を流すと、置き換えで名前の並びが変わり、同じ要素の同じ種類のクラスで効く方が入れ替わる所を出す（0 件であること）。
 - `scripts/test-w26-tokens.mjs` が、直書きが残っていないことと、値が前と同じことを確かめる。
+- 色の付いた影（`shadow-lg shadow-primary-200` のような組み合わせ）は効かない。`shadow-sm`〜`shadow-lg` の値が変数なので、Tailwind が色を差し替えた影を作れないため。色の付いた影が要るときは、`--shadow-brand` のように値ごとの変数と `boxShadow` のクラスを足す。
 
 ## 変数にしていない所（理由）
 
