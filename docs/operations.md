@@ -115,7 +115,7 @@ Sprint 25 までは次の3本が `npm test` で必ず落ちていました（[de
 
 | テスト | 落ちていた理由 | 直し方 |
 |---|---|---|
-| `test-history.mjs` | `test-report-settings` → `test-corrections` → `test-notifications` が同じ DB に作ったデータを前提にしているが、`npm test` はテストごとに DB を作り直す | 先頭のコメントの `// run-tests:` の4行で、前提のテストから同じ DB で順に流す（`scripts/test-history.mjs:9`〜`13`） |
+| `test-history.mjs` | `test-report-settings` → `test-corrections` → `test-notifications` が同じ DB に作ったデータを前提にしているが、`npm test` はテストごとに DB を作り直す。また、申請 CSV の確認が「今日の 8:00」の打刻漏れを申請していたので、日本時間の 0〜8 時に流すと「まだ来ていない日時」（400）で落ちていた | 先頭のコメントの `// run-tests:` の4行で、前提のテストから同じ DB で順に流す（`scripts/test-history.mjs:9`〜`13`）。申請する日時は前日の 22:00 にした |
 | `test-w4-notifications-mail.mjs` | 先頭のコメントの `<WEBHOOK_SECRET と同じ値>` が起動のオプションとして読み取られ、`<` がシェルのリダイレクトになってサーバーが起動しない | `// run-tests:` の行に、Webhook の秘密の値（テストの既定値）を書いた（`scripts/test-w4-notifications-mail.mjs:9`）。`< >` や日本語を含む値は、起動に使わないようにした |
 | `test-notifications.mjs` | 先頭のコメントの `--var MAIL_ENABLED:false（既定）` も読み取られ、後の値でメールが無効のまま起動していた | `// run-tests:` の2行で、メールを有効にした回と `--mail-disabled` の回を同じ DB で順に流す（`scripts/test-notifications.mjs:11`〜`12`）。同じ名前の `--var` が2回あるときは最初の値を使う |
 
